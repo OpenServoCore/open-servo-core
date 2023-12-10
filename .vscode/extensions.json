@@ -1,0 +1,12 @@
+{
+    "recommendations": [
+        "aaron-bond.better-comments",
+        "qiaojie.binary-viewer",
+        "streetsidesoftware.code-spell-checker",
+        "ms-toolsai.jupyter",
+        "antyos.openscad",
+        "1yib.rust-bundle",
+        "ms-vscode.vscode-serial-monitor",
+        "tamasfe.even-better-toml"
+    ]
+}
