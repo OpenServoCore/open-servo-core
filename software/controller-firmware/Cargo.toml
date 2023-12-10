@@ -1,0 +1,37 @@
+[package]
+edition = "2021"
+name = "motor-driver"
+version = "0.1.0"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+cortex-m = {version = "0.7.7", features = ["critical-section-single-core"]}
+cortex-m-rt = "0.7.3"
+embedded-hal = "0.2.7"
+
+nb = "1.1.0"
+stm32f4xx-hal = {version = "0.18.0", features = ["stm32f401", "rt", "otg-fs", "usb_fs"]}
+
+cortex-m-rtic = {version = "1.1.4", features = ["test-critical-section"]}
+dwt-systick-monotonic = "1.1"
+panic-rtt-target = {version = "0.1.2", features = ["cortex-m"]}
+rtic-monotonic = "1.0"
+rtt-target = "0.4.0"
+ufmt = "0.2.0"
+
+bbqueue = {version = "0.5.1", features = ["thumbv6"]}
+bincode = {version = "2.0.0-rc.3", features = ["derive"], default-features = false}
+heapless = "0.8.0"
+panic-halt = "0.2.0"
+usb-device = {version = "0.2.9"}
+usbd-serial = "0.1.1"
+
+[profile.release]
+lto = true
+opt-level = "z"
+
+[[bin]]
+bench = false
+name = "motor-driver"
+test = false

@@ -1,0 +1,13 @@
+.DS_Store
+
+# For rust
+**/*.rs.bk
+.#*
+.gdb_history
+Cargo.lock
+target
+logs
+
+# For jupyter labs
+.ipynb_checkpoints
+.virtual_documents

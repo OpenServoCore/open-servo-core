@@ -1,0 +1,76 @@
+#![no_main]
+#![no_std]
+
+// Current rise time is 200 uS on motor coil
+// Vsense at peak current is 0.78 V
+//
+// Calculating Inductance:
+//
+// Using Tao = L/R inductance timing formula, L = Tao * R
+// Tao = current rise time / 5 = 200uS / 5 = 40uS
+// R is the two high and low bridge MOSFET's Rdson value.
+// The DRV8231A driver has both gates Rdson value as: 300 mOhm, or 0.3 Ohm, thus R = 0.3 + 0.3 = 0.6 Ohm
+// finally, L = 40uS * 0.6 Ohm = 24 uH
+//
+// Calculating Ideal RPM:
+// We will attempt to drive the motor at Tao to create continuous current.
+// So, the PWM frequency should be 1/40uS = 25 kHz.
+// However, driving the motor at 25kHz made the initial in-rush current too slow to overcome the static friction.
+// The second attempt will try to drive it at 3Tau
+
+// Halt on panic
+use panic_halt as _;
+
+use cortex_m_rt::entry;
+use stm32f4xx_hal::{
+    pac::{self, TIM1},
+    prelude::*,
+    timer::{Channel1, Channel2},
+};
+
+const PWM_HZ: u32 = 6250;
+
+#[entry]
+fn main() -> ! {
+    if let Some(dp) = pac::Peripherals::take() {
+        // Set up the system clock.
+        let rcc = dp.RCC.constrain();
+        let clocks = rcc
+            .cfgr
+            .use_hse(25.MHz())
+            .sysclk(84.MHz())
+            .hclk(84.MHz())
+            .pclk1(42.MHz())
+            .pclk2(84.MHz())
+            .require_pll48clk()
+            .freeze();
+
+        let gpioa = dp.GPIOA.split();
+        // let mut pa8 = gpioa.pa8.into_push_pull_output();
+        // let mut pa9 = gpioa.pa9.into_push_pull_output();
+
+        // pa8.set_high();
+        // pa9.set_low();
+
+        let channels = (Channel1::new(gpioa.pa8), Channel2::new(gpioa.pa9));
+
+        let pwm = dp.TIM1.pwm_hz(channels, PWM_HZ.Hz(), &clocks).split();
+        unsafe {
+            let tim = &*TIM1::ptr();
+
+            // invert the pwm signal for slow decay mode
+            tim.ccmr1_output()
+                .write(|w| w.oc1m().pwm_mode2().oc2m().pwm_mode2());
+        }
+
+        let (mut ch1, _ch2) = pwm;
+        let max_duty = ch1.get_max_duty();
+        let duty = (max_duty / 2) as u16;
+        ch1.set_duty(duty);
+        ch1.enable();
+    }
+
+    loop {
+        cortex_m::asm::nop();
+    }
+}
