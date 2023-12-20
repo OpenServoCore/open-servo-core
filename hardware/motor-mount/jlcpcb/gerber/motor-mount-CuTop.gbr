@@ -1,0 +1,93 @@
+%TF.GenerationSoftware,KiCad,Pcbnew,7.0.9*%
+%TF.CreationDate,2023-12-14T21:55:59-08:00*%
+%TF.ProjectId,motor-mount,6d6f746f-722d-46d6-9f75-6e742e6b6963,rev?*%
+%TF.SameCoordinates,Original*%
+%TF.FileFunction,Copper,L1,Top*%
+%TF.FilePolarity,Positive*%
+%FSLAX46Y46*%
+G04 Gerber Fmt 4.6, Leading zero omitted, Abs format (unit mm)*
+G04 Created by KiCad (PCBNEW 7.0.9) date 2023-12-14 21:55:59*
+%MOMM*%
+%LPD*%
+G01*
+G04 APERTURE LIST*
+G04 Aperture macros list*
+%AMRoundRect*
+0 Rectangle with rounded corners*
+0 $1 Rounding radius*
+0 $2 $3 $4 $5 $6 $7 $8 $9 X,Y pos of 4 corners*
+0 Add a 4 corners polygon primitive as box body*
+4,1,4,$2,$3,$4,$5,$6,$7,$8,$9,$2,$3,0*
+0 Add four circle primitives for the rounded corners*
+1,1,$1+$1,$2,$3*
+1,1,$1+$1,$4,$5*
+1,1,$1+$1,$6,$7*
+1,1,$1+$1,$8,$9*
+0 Add four rect primitives between the rounded corners*
+20,1,$1+$1,$2,$3,$4,$5,0*
+20,1,$1+$1,$4,$5,$6,$7,0*
+20,1,$1+$1,$6,$7,$8,$9,0*
+20,1,$1+$1,$8,$9,$2,$3,0*%
+G04 Aperture macros list end*
+%TA.AperFunction,SMDPad,CuDef*%
+%ADD10RoundRect,0.250000X-0.650000X0.325000X-0.650000X-0.325000X0.650000X-0.325000X0.650000X0.325000X0*%
+%TD*%
+%TA.AperFunction,ComponentPad*%
+%ADD11RoundRect,0.750000X-0.500000X0.000000X0.500000X0.000000X0.500000X0.000000X-0.500000X0.000000X0*%
+%TD*%
+%TA.AperFunction,ComponentPad*%
+%ADD12R,1.700000X1.700000*%
+%TD*%
+%TA.AperFunction,ComponentPad*%
+%ADD13O,1.700000X1.700000*%
+%TD*%
+%TA.AperFunction,Conductor*%
+%ADD14C,2.032000*%
+%TD*%
+G04 APERTURE END LIST*
+D10*
+%TO.P,C1,1*%
+%TO.N,+VDC*%
+X25146000Y-22860000D03*
+%TO.P,C1,2*%
+%TO.N,-VDC*%
+X25146000Y-25810000D03*
+%TD*%
+D11*
+%TO.P,M1,1,+*%
+%TO.N,+VDC*%
+X30790000Y-20828000D03*
+%TO.P,M1,2,-*%
+%TO.N,-VDC*%
+X30790000Y-27828000D03*
+%TD*%
+D12*
+%TO.P,J1,1,Pin_1*%
+%TO.N,+VDC*%
+X21590000Y-23114000D03*
+D13*
+%TO.P,J1,2,Pin_2*%
+%TO.N,-VDC*%
+X21590000Y-25654000D03*
+%TD*%
+D14*
+%TO.N,+VDC*%
+X21590000Y-23114000D02*
+X22352000Y-22352000D01*
+X29650232Y-20828000D02*
+X30790000Y-20828000D01*
+X22352000Y-22352000D02*
+X28126232Y-22352000D01*
+X28126232Y-22352000D02*
+X29650232Y-20828000D01*
+%TO.N,-VDC*%
+X29650232Y-27828000D02*
+X30790000Y-27828000D01*
+X21590000Y-25654000D02*
+X22098000Y-26162000D01*
+X27984232Y-26162000D02*
+X29650232Y-27828000D01*
+X22098000Y-26162000D02*
+X27984232Y-26162000D01*
+%TD*%
+M02*
