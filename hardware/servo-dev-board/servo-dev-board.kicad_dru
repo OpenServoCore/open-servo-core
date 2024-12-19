@@ -71,7 +71,7 @@
 # This rule handles diameter minimum and maximum for ALL holes.
 # Other specialized rules handle restrictions (e.g. Via, PTH, NPTH) 
 (rule "Hole diameter"
-	(constraint hole_size (min 0.2mm) (max 6.3mm))
+	(constraint hole_size (min 0.15mm) (max 6.3mm))
 )
 
 (rule "Hole (NPTH) diameter"
@@ -92,7 +92,7 @@
 (rule "Annular ring width (via and PTH)"
 	(layer outer)
 	(condition "A.isPlated()")
-	(constraint annular_width (min 0.075mm))
+	(constraint annular_width (min 0.05mm))
 )
 
 (rule "Clearance: hole to hole (perimeter), different nets"
