@@ -30,3 +30,6 @@ fp-info-cache
 
 # Do not check in lock files
 *.lck
+
+# Ignore JLC PCB generated production files. Users can generate by installing the plugin. All parts info are on components.
+**/jlcpcb
