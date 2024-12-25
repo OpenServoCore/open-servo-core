@@ -11,6 +11,7 @@ panic-probe = { version = "0.3", features = ["print-defmt"] }
 stm32f4xx-hal = {version="0.22", features = ["stm32f401", "defmt", "rtic2", "rtic-tim3"]}
 rtic = { version = "2.1", features = [ "thumbv7-backend" ] }
 rtic-time = { version = "2.0" }
+pid = { version = "4.0" }
 
 # cargo build/run
 [profile.dev]

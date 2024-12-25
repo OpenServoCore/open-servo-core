@@ -21,6 +21,8 @@ use crate::hal::{
     timer::{CenterAlignedMode, MonoTimerUs, PwmChannel},
 };
 
+use pid::Pid;
+
 type Mono = MonoTimerUs<TIM3>;
 
 use rtic::app;
@@ -35,8 +37,9 @@ mod app {
     pub struct AdcValues {
         current: u16, // mV
         position: u16,
-        desired_position: u16,
+        setpoint: u16,
         temperature: u16,
+        pwm_duty: f32,
     }
 
     type MotorPwm = (PwmChannel<TIM1, 0>, PwmChannel<TIM1, 1>);
@@ -46,8 +49,8 @@ mod app {
     const RCC_HSE_CLOCK_HZ: u32 = 25_000_000;
     const RCC_SYSCLK_HZ: u32 = 72_000_000;
 
-    const PWM_FREQUENCY: u32 = 10_000;
-    const PWM_MAX_DUTY: u32 = RCC_SYSCLK_HZ / PWM_FREQUENCY / 2;
+    const PWM_FREQUENCY: u32 = 20_000;
+    const PWM_MAX_DUTY: u16 = (RCC_SYSCLK_HZ / PWM_FREQUENCY / 2) as u16;
 
     const ADC_BUFFER_SIZE: usize = 4;
 
@@ -58,11 +61,13 @@ mod app {
     // current = adc_value (in mV) * ISENSE_FACTOR will result in mA
     const ISENSE_FACTOR: f32 = ISENSE_AIPROPI / ISENSE_RESISTOR_OHM; // uA / V
 
-    const KP: f32 = 0.0;
-    const KI: f32 = 0.0;
-    const KD: f32 = 0.0;
-    const POS_MAX: u16 = 4000;
-    const POS_MIN: u16 = 500;
+    const PID_KP: f32 = 40.0;
+    const PID_KP_MAX: f32 = PWM_MAX_DUTY as f32;
+    const PID_KI: f32 = 0.0;
+    const PID_KI_MAX: f32 = PWM_MAX_DUTY as f32 * 0.8;
+    const PID_KD: f32 = 0.0;
+    const PID_KD_MAX: f32 = PWM_MAX_DUTY as f32 * 0.8;
+    const PID_MAX_OUTPUT: f32 = (PWM_MAX_DUTY - 1) as f32;
 
     // Shared resources go here
     #[shared]
@@ -77,6 +82,7 @@ mod app {
         led: PC13<Output>,
         adc_transfer: AdcTransfer,
         adc_buffer: Option<&'static mut AdcBuffer>,
+        pid: Pid<f32>,
     }
 
     #[init(local = [
@@ -181,6 +187,14 @@ mod app {
         let adc_buffer = Some(ctx.local.adc_buffer2);
 
         /*
+         * PID Controller
+         */
+        let mut pid = Pid::<f32>::new(0.0, PID_MAX_OUTPUT);
+        pid.p(PID_KP, PID_KP_MAX);
+        pid.i(PID_KI, PID_KI_MAX);
+        pid.d(PID_KD, PID_KD_MAX);
+
+        /*
          * LED
          */
         let led = gpioc.pc13.into_push_pull_output();
@@ -194,8 +208,9 @@ mod app {
                 adc_values: AdcValues {
                     current: 0,
                     position: 0,
-                    desired_position: 0,
+                    setpoint: 0,
                     temperature: 0,
+                    pwm_duty: 0.0,
                 },
             },
             Local {
@@ -203,6 +218,7 @@ mod app {
                 adc_transfer,
                 adc_buffer,
                 led,
+                pid,
             },
         )
     }
@@ -214,6 +230,7 @@ mod app {
             adc_transfer,
             motor_pwm,
             led,
+            pid,
         ],
         shared = [adc_values],
         priority = 5
@@ -224,6 +241,7 @@ mod app {
             adc_transfer,
             led,
             motor_pwm,
+            pid,
             ..
         } = cx.local;
 
@@ -236,24 +254,32 @@ mod app {
         let adc = adc_transfer.peripheral();
         let current = adc.sample_to_millivolts(buffer[0]);
         let position = buffer[1];
-        let desired_position = buffer[2];
+        let setpoint = buffer[2];
         let temperature = buffer[3];
 
         adc_buffer.replace(buffer);
 
+        // use PID to control motor
+        let control_output = pid
+            .setpoint(setpoint as f32)
+            .next_control_output(position as f32);
+
+        // update shared ADC values
         cx.shared.adc_values.lock(|adc_values| {
             adc_values.current = current;
             adc_values.position = position;
-            adc_values.desired_position = desired_position;
+            adc_values.setpoint = setpoint;
             adc_values.temperature = temperature;
+            adc_values.pwm_duty = control_output.output;
         });
 
-        // use PID to control motor
-        let error = desired_position as i32 - position as i32;
-        let p = (error as f32 * KP) as u32;
-        let i = (error as f32 * KI) as u32;
-
-
+        if control_output.output > 0.0 {
+            motor_pwm.0.set_duty(control_output.output as u16);
+            motor_pwm.1.set_duty(0);
+        } else {
+            motor_pwm.0.set_duty(0);
+            motor_pwm.1.set_duty(control_output.output.abs() as u16);
+        }
 
         led.set_high();
     }
@@ -263,28 +289,30 @@ mod app {
         loop {
             let mut current: u16 = 0;
             let mut position: u16 = 0;
-            let mut desired_position: u16 = 0;
+            let mut setpoint: u16 = 0;
             let mut raw_temp: u16 = 0;
+            let mut pwm_duty: f32 = 0.0;
             ctx.shared.adc_values.lock(|adc_values| {
                 current = adc_values.current;
                 position = adc_values.position;
-                desired_position = adc_values.desired_position;
+                setpoint = adc_values.setpoint;
                 raw_temp = adc_values.temperature;
+                pwm_duty = adc_values.pwm_duty;
             });
 
             let cal30 = VtempCal30::get().read() as f32;
             let cal110 = VtempCal110::get().read() as f32;
-            let temperature =
-                (110.0 - 30.0) * (raw_temp as f32 - cal30) / (cal110 - cal30) + 30.0;
+            let temperature = (110.0 - 30.0) * (raw_temp as f32 - cal30) / (cal110 - cal30) + 30.0;
 
             let current = ISENSE_FACTOR * f32::from(current);
 
             defmt::info!(
-                "Current: {} mA, Pos: {}, DPos: {}, Temp: {}",
+                "I: {} mA, P: {}, SP: {}, T: {}, D: {}",
                 current,
                 position,
-                desired_position,
+                setpoint,
                 temperature,
+                pwm_duty
             );
 
             Mono::delay(50.millis().into()).await;
