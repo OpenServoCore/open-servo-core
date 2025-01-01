@@ -12997,7 +12997,7 @@
 				(justify left)
 			)
 		)
-		(property "Value" "2K2"
+		(property "Value" "1K5"
 			(at 110.49 88.8999 0)
 			(effects
 				(font
@@ -13033,7 +13033,7 @@
 				(hide yes)
 			)
 		)
-		(property "LCSC" "C25768"
+		(property "LCSC" "C25867"
 			(at 110.49 86.3599 0)
 			(effects
 				(font
