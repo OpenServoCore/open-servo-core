@@ -7469,10 +7469,10 @@
 		)
 		(uuid "2da775ce-db63-4478-83bd-e7c4926aad9a")
 	)
-	(text_box "Limit current to 1A"
+	(text_box "Limit current to 1.46A"
 		(exclude_from_sim no)
-		(at 149.225 98.425 0)
-		(size 21.59 3.81)
+		(at 147.32 99.06 0)
+		(size 23.495 3.175)
 		(stroke
 			(width 0)
 			(type default)
@@ -7517,6 +7517,16 @@
 		)
 		(uuid "0d54b434-a578-4ab8-b22a-e2dbff4b02d4")
 	)
+	(text "Dec 31st, 2024"
+		(exclude_from_sim no)
+		(at 214.63 193.548 0)
+		(effects
+			(font
+				(size 1.27 1.27)
+			)
+		)
+		(uuid "14066ac3-b483-4a83-bbad-21940eb68852")
+	)
 	(text "Reset Button"
 		(exclude_from_sim no)
 		(at 31.496 65.024 0)
@@ -7526,6 +7536,16 @@
 			)
 		)
 		(uuid "2bbbb93f-8e92-47c5-ac3a-aff794843f60")
+	)
+	(text "Smart Servo Development Board"
+		(exclude_from_sim no)
+		(at 201.93 189.738 0)
+		(effects
+			(font
+				(size 1.27 1.27)
+			)
+		)
+		(uuid "3099d33f-c05a-47a4-ad64-adfdc5698bef")
 	)
 	(text "STM32F301 Micro Controller"
 		(exclude_from_sim no)
@@ -7576,6 +7596,16 @@
 			)
 		)
 		(uuid "5761aeaf-14d8-49ac-a6e6-fcc87c98d4a6")
+	)
+	(text "1.0.0-pre"
+		(exclude_from_sim no)
+		(at 273.812 193.294 0)
+		(effects
+			(font
+				(size 1.27 1.27)
+			)
+		)
+		(uuid "5db86075-9779-4178-b98b-e1ebad06baa0")
 	)
 	(text "5V to 3.3V Power Regulator (LDO)"
 		(exclude_from_sim no)

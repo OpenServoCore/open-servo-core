@@ -11568,6 +11568,18 @@
 			(justify mirror)
 		)
 	)
+	(gr_text "SMART SERVO BOARD\nMCU: STM32F301\nVersion:  1.0.0\nDesigned By: Aaron Qian"
+		(at 129.47 96.55 180)
+		(layer "B.SilkS")
+		(uuid "ee40da50-683f-442b-8010-4d9a618a6818")
+		(effects
+			(font
+				(size 1.5 1.5)
+				(thickness 0.1)
+			)
+			(justify left bottom mirror)
+		)
+	)
 	(gr_text "A4"
 		(at 136.4 113.25 0)
 		(layer "F.SilkS")
