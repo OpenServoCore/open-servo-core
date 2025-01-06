@@ -3445,7 +3445,7 @@
 		(fields_autoplaced yes)
 		(uuid "41a679b1-dc3e-4704-a6a9-b08b77066091")
 		(property "Reference" "R5"
-			(at 207.01 54.61 0)
+			(at 207.01 54.6099 0)
 			(effects
 				(font
 					(size 1.27 1.27)
@@ -3453,8 +3453,8 @@
 				(justify left)
 			)
 		)
-		(property "Value" "30"
-			(at 207.01 57.15 0)
+		(property "Value" "130"
+			(at 207.01 57.1499 0)
 			(effects
 				(font
 					(size 1.27 1.27)
