@@ -1,12 +1,15 @@
 #![no_main]
 #![no_std]
 
-use panic_probe as _;
+use cortex_m::asm;
 use defmt_rtt as _;
+use panic_probe as _;
 
+use cortex_m_rt::entry;
 use stm32f3::stm32f301 as pac;
 use stm32f3::stm32f301::interrupt;
-use cortex_m_rt::entry;
+
+static mut ADC_DATA: [u16; 5] = [0; 5];
 
 #[entry]
 fn main() -> ! {
@@ -16,32 +19,21 @@ fn main() -> ! {
     init_tim1_pwm(&p);
     init_tim2_counter(&p);
     init_led(&p);
-
-    defmt::info!("Starting PWM");
+    init_dma(&p);
+    init_adc(&p);
 
     unsafe {
-        pac::NVIC::unmask(pac::Interrupt::TIM1_CC);
         pac::NVIC::unmask(pac::Interrupt::TIM2);
+        pac::NVIC::unmask(pac::Interrupt::DMA1_CH1);
+        // pac::NVIC::unmask(pac::Interrupt::ADC1_IRQ);
     }
 
-    loop {
-    }
-}
+    defmt::info!("Initialized");
 
-// interrrupt handler for OC3REF
-#[interrupt]
-fn TIM1_CC() {
-    // defmt::info!("TIM1_CC interrupt");
+    // start ADC conversion
+    p.ADC1.cr.modify(|_, w| w.adstart().start_conversion());
 
-    // toggle PA2
-    unsafe {
-        (*pac::GPIOA::ptr()).odr.modify(|r, w| w.odr2().bit(!r.odr2().bit()));
-    }
-
-    // clear interrupt flag
-    unsafe {
-        (*pac::TIM1::ptr()).sr.modify(|_, w| w.cc2if().clear());
-    }
+    loop {}
 }
 
 // interrupt handler for TIM2
@@ -58,6 +50,186 @@ fn TIM2() {
     unsafe {
         (*pac::TIM2::ptr()).sr.modify(|_, w| w.uif().clear());
     }
+}
+
+#[interrupt]
+fn ADC1_IRQ() {
+    defmt::info!("ADC1_IRQ interrupt");
+
+    // clear interrupt flag
+    unsafe {
+        (*pac::ADC1::ptr()).isr.modify(|_, w| w.eos().clear());
+    }
+}
+
+#[interrupt]
+fn DMA1_CH1() {
+    defmt::info!("DMA1_CH1 interrupt");
+
+    // clear interrupt flag
+    unsafe {
+        (*pac::DMA1::ptr()).ifcr.write(|w| w.cgif1().set_bit());
+    }
+}
+
+fn init_dma(p: &pac::Peripherals) {
+    // enable DMA1 Channel 1
+    p.DMA1.ch1.cr.modify(|_, w| {
+        w.pl()
+            .low() // low priority
+            .circ()
+            .enabled() // enable circular mode
+            .dir()
+            .from_peripheral() // read from peripheral
+            .msize()
+            .bits16() // 16 bit memory size
+            .psize()
+            .bits16() // 16 bit peripheral size
+            .tcie()
+            .enabled() // enable transfer complete interrupt
+            .mem2mem()
+            .disabled() // memory to memory mode disabled
+            .minc()
+            .enabled() // increment memory address
+            .pinc()
+            .disabled() // do not increment peripheral address
+    });
+
+    p.DMA1
+        .ch1
+        .par
+        .write(|w| unsafe { w.bits(p.ADC1.dr.as_ptr() as u32) }); // set peripheral address to ADC1_DR
+
+    p.DMA1
+        .ch1
+        .mar
+        .write(|w| unsafe { w.bits(ADC_DATA.as_ptr() as u32) }); // set memory address to ADC_DATA
+
+    // set number of data to transfer
+    let size = p.ADC1.sqr1.read().l().bits() + 1;
+    p.DMA1.ch1.ndtr.write(|w| w.ndt().bits(size.into()));
+
+    // enable DMA1 Channel 1
+    p.DMA1.ch1.cr.modify(|_, w| w.en().enabled());
+}
+
+fn init_adc(p: &pac::Peripherals) {
+    let adc1 = &p.ADC1;
+
+    /*
+     * Configure ADC
+     */
+    p.ADC1_2.ccr.modify(|_, w| {
+        w.ckmode()
+            .sync_div1() // use synchronous clock mode
+            .tsen()
+            .enabled() // enable temperature sensor
+            .vrefen()
+            .enabled() // enable VREFINT
+    });
+
+    adc1.cfgr.modify(|_, w| {
+        w.res()
+            .bits12() // set ADC to 12 bit resolution
+            .align()
+            .right() // set ADC to right aligned
+            .cont()
+            .single() // set ADC to single conversion mode
+            .discen()
+            .disabled() // set ADC to disable discontinuous mode
+            .dmacfg()
+            .circular() // set ADC to circular DMA mode
+            .dmaen()
+            .enabled() // enable DMA
+            .ovrmod()
+            .overwrite() // set ADC to overwrite overrun
+            .exten()
+            .rising_edge() // set ADC to rising edge trigger
+            .extsel()
+            .tim1_trgo2() // set ADC to TIM1_TRGO2
+    });
+
+    // enable end of conversion interrupt
+    adc1.ier.modify(|_, w| w.eosie().enabled());
+
+    /*
+     * ADC calibration
+     */
+    // enable internal voltage regulator
+    adc1.cr.modify(|_, w| w.advregen().intermediate());
+    adc1.cr.modify(|_, w| w.advregen().enabled());
+    // we need to wait 10 us for the voltage regulator to stabilize
+    // we are running at 72 MHz, so 1 us = 72 cycles
+    asm::delay(10 * 72);
+
+    // run calibration
+    adc1.cr
+        .modify(|_, w| w.adcaldif().single_ended().adcal().calibration());
+    while adc1.cr.read().adcal().is_calibration() {}
+
+    // disable the internal voltage regulator, the internal analog calibration is kept
+    adc1.cr.modify(|_, w| w.advregen().intermediate());
+    adc1.cr.modify(|_, w| w.advregen().disabled());
+
+    // ADEN bit cannot be set during ADCAL=1 and 4 ADC clock cycle after the ADCAL bit is
+    // cleared by hardware
+    // ADC clock cycle is set to be 72 MHz / 1 = 72 MHz
+    asm::delay(4);
+
+    /*
+     * Configure ADC Channels
+     */
+    // configure PA0, PA1, PA2 as analog input
+    let gpioa = &p.GPIOA;
+    gpioa
+        .moder
+        .modify(|_, w| w.moder0().analog().moder1().analog().moder2().analog());
+    gpioa.pupdr.modify(|_, w| {
+        w.pupdr0()
+            .floating()
+            .pupdr1()
+            .floating()
+            .pupdr2()
+            .floating()
+    });
+
+    // configure channels for conversion
+    adc1.sqr1.modify(|_, w| unsafe {
+        w.l()
+            .bits(4) // set number of conversions to 5, this register counts from 0
+            .sq1()
+            .bits(18) // set vrefint ( ch 18 ) as first conversion
+            .sq2()
+            .bits(1) // set PA0  as second conversion
+            .sq3()
+            .bits(2) // set PA1 as third conversion
+            .sq4()
+            .bits(3) // set PA2 as fourth conversion
+    });
+
+    adc1.sqr2.modify(|_, w| unsafe {
+        w.sq5().bits(16) // set tempature sensor ( ch 16 ) as first conversion
+    });
+
+    // set sample time for channels
+    adc1.smpr1.modify(|_, w| {
+        w.smp1()
+            .cycles181_5()
+            .smp2()
+            .cycles181_5()
+            .smp3()
+            .cycles181_5()
+            .smp4()
+            .cycles181_5()
+            .smp5()
+            .cycles181_5()
+    });
+
+    /*
+     * ENABLE ADC
+     */
+    adc1.cr.modify(|_, w| w.aden().enabled());
+    while adc1.isr.read().adrdy().is_not_ready() {}
 }
 
 fn init_led(p: &pac::Peripherals) {
@@ -117,12 +289,12 @@ fn init_tim1_pwm(p: &pac::Peripherals) {
     // enable main output enable
     tim1.bdtr.modify(|_, w| w.moe().enabled());
 
-    // set trigger output to output compare 2 (OC2REF)
+    // set trigger output to output compare 2 (OC3REF)
     // this is used to trigger ADC conversions
     tim1.cr2.modify(|_, w| unsafe {
         // See STM32F301 Reference Manual section 17.4.2.
         // MMS2 register is used to trigger ADC conversions
-        w.mms2().bits(0b0101) // OC2REF
+        w.mms2().bits(0b0110) // OC3REF
     });
 
     // enable TIM1
@@ -135,95 +307,86 @@ fn init_tim1_pwm_channels(p: &pac::Peripherals) {
     let gpioa = &p.GPIOA;
     let tim1 = &p.TIM1;
 
-    // configure PA9 ( channel 2 ) as PWM output
+    // configure PA8 ( channel 1 ) as PWM output
     {
-        // configure PA9 as alternate function
-        gpioa.moder.modify(|_, w| w.moder9().alternate());
+        // configure PA8 as alternate function
+        gpioa.moder.modify(|_, w| w.moder8().alternate());
 
-        // set PA9 alternate function map to TIM1_CH2 ( AF6 )
-        gpioa.afrh.modify(|_, w| w.afrh9().af6());
+        // set PA8 alternate function map to TIM1_CH1 ( AF2 )
+        gpioa.afrh.modify(|_, w| w.afrh8().af2());
 
-        // configure PA9 as high speed output
-        gpioa.ospeedr.modify(|_, w| w.ospeedr9().high_speed());
+        // configure PA8 as high speed output
+        gpioa.ospeedr.modify(|_, w| w.ospeedr8().high_speed());
 
-        // configure PA9 as push-pull
-        gpioa.otyper.modify(|_, w| w.ot9().push_pull());
+        // configure PA8 as push-pull
+        gpioa.otyper.modify(|_, w| w.ot8().push_pull());
 
-        // configure PA9 as pull down
-        gpioa.pupdr.modify(|_, w| w.pupdr9().pull_down());
+        // configure PA8 as pull down
+        gpioa.pupdr.modify(|_, w| w.pupdr8().pull_down());
 
-        // configure TIM1 as PWM mode 1 and enable preload register
+        // configure Channel 1 as PWM mode 1 and enable preload register
         tim1.ccmr1_output().modify(|_, w| {
-            w.oc2pe().enabled() // enable preload register for Channel 2
-             .oc2m().pwm_mode1() // PWM mode 1 for Channel 2
+            w.oc1pe()
+                .enabled() // enable preload register for Channel 1
+                .oc1m()
+                .pwm_mode1() // PWM mode 1 for Channel 1
         });
 
-        // set PWM duty cycle to 50%
-        tim1.ccr2().modify(|_, w| w.ccr().bits(1800));
+        // set PWM duty cycle to 0
+        tim1.ccr1().write(|w| w.ccr().bits(0));
+
+        // enable PWM output
+        tim1.ccer.write(|w| w.cc1e().set_bit());
+    }
+
+    // configure TIM channel 3 to PWM output
+    {
+        // configure TIM1 as output compare and enable preload register
+        tim1.ccmr2_output().modify(|_, w| {
+            w.oc3pe()
+                .enabled() // enable preload register for Channel 3
+                .oc3m()
+                .pwm_mode1() // PWM mode 1 for Channel 3
+        });
+
+        // Set CCR to center of PWM period
+        tim1.ccr3().modify(|_, w| w.ccr().bits(1));
+
+        // enable PWM output
+        tim1.ccer.modify(|_, w| w.cc3e().set_bit());
+    }
+
+    // configure PA11 ( channel 4 ) as PWM output
+    {
+        // configure PA11 as alternate function
+        gpioa.moder.modify(|_, w| w.moder11().alternate());
+
+        // set PA11 alternate function map to TIM1_CH4 ( AF11 )
+        gpioa.afrh.modify(|_, w| w.afrh11().af11());
+
+        // configure PA11 as high speed output
+        gpioa.ospeedr.modify(|_, w| w.ospeedr11().high_speed());
+
+        // configure PA11 as push-pull
+        gpioa.otyper.modify(|_, w| w.ot11().push_pull());
+
+        // configure PA11 as pull down
+        gpioa.pupdr.modify(|_, w| w.pupdr11().pull_down());
+
+        // configure TIM1 as PWM mode 1 and enable preload register
+        tim1.ccmr2_output().modify(|_, w| {
+            w.oc4pe()
+                .enabled() // enable preload register for Channel 4
+                .oc4m()
+                .pwm_mode1() // PWM mode 1 for Channel 4
+        });
+
+        // set PWM duty cycle to 0
+        tim1.ccr2().modify(|_, w| w.ccr().bits(0));
 
         // enable PWM output
         tim1.ccer.modify(|_, w| w.cc2e().set_bit());
     }
-
-    //  // configure PA8 as PWM output
-    // {
-    //     // configure PA8 as alternate function
-    //     gpioa.afrh.modify(|_, w| w.afrh8().af2());
-
-    //     // configure PA8 as high speed output
-    //     gpioa.ospeedr.modify(|_, w| w.ospeedr8().high_speed());
-
-    //     // configure PA8 as push-pull
-    //     gpioa.otyper.modify(|_, w| w.ot8().push_pull());
-
-    //     // configure PA8 as alternate function
-    //     gpioa.moder.modify(|_, w| w.moder8().alternate());
-
-    //     // set PWM duty cycle to 0
-    //     tim1.ccr1().write(|w| w.ccr().bits(1800));
-
-    //     // enable PWM output
-    //     tim1.ccer.write(|w| w.cc1e().set_bit());
-
-    //     // enable counter
-    //     tim1.cr1.write(|w| w.cen().set_bit());
-    // }
-
-    // configure PA11 as PWM output
-    // {
-    //     // configure PA11 as alternate function
-    //     gpioa.afrh.modify(|_, w| w.afrh11().af2());
-
-    //     // configure PA11 as high speed output
-    //     gpioa.ospeedr.modify(|_, w| w.ospeedr11().high_speed());
-
-    //     // configure PA11 as push-pull
-    //     gpioa.otyper.modify(|_, w| w.ot11().push_pull());
-
-    //     // configure PA11 as alternate function
-    //     gpioa.moder.modify(|_, w| w.moder11().alternate());
-
-    //     // set PWM duty cycle to 0
-    //     tim1.ccr2().write(|w| w.ccr().bits(0));
-
-    //     // enable PWM output
-    //     tim1.ccer.write(|w| w.cc2e().set_bit());
-
-    //     // enable counter
-    //     tim1.cr1.write(|w| w.cen().set_bit());
-    // }
-
-    // configure pwm channel 3 without output
-    // {
-    //     // set PWM duty cycle to 1 to trigger ADC conversion
-    //     tim1.ccr3().write(|w| w.ccr().bits(1));
-
-    //     // enable PWM output
-    //     tim1.ccer.write(|w| w.cc3e().set_bit());
-
-    //     // enable counter
-    //     tim1.cr1.write(|w| w.cen().set_bit());
-    // }
 }
 
 fn init_rcc(p: &pac::Peripherals) {
@@ -245,8 +408,10 @@ fn init_rcc(p: &pac::Peripherals) {
     // configure PLL
     rcc.cfgr2.modify(|_, w| w.prediv().div2()); // HSE is 16 MHz, so divide by 2 to get 8 MHz
     rcc.cfgr.modify(|_, w| {
-        w.pllsrc().hse_div_prediv() // Use HSE as PLL source
-         .pllmul().mul9() // 8 MHz * 9 = 72 MHz
+        w.pllsrc()
+            .hse_div_prediv() // Use HSE as PLL source
+            .pllmul()
+            .mul9() // 8 MHz * 9 = 72 MHz
     });
 
     // enable PLL
@@ -258,10 +423,14 @@ fn init_rcc(p: &pac::Peripherals) {
 
     // set AHB prescaler
     rcc.cfgr.modify(|_, w| {
-        w.hpre().div1() // AHB is 72 MHz
-            .mcopre().div1() // MCO is 72 MHz
-            .ppre1().div2() // APB1 is 36 MHz
-            .ppre2().div1() // APB2 is 72 MHz
+        w.hpre()
+            .div1() // AHB is 72 MHz
+            .mcopre()
+            .div1() // MCO is 72 MHz
+            .ppre1()
+            .div2() // APB1 is 36 MHz
+            .ppre2()
+            .div1() // APB2 is 72 MHz
     });
 
     // Wait for the new prescalers to kick in
@@ -278,16 +447,19 @@ fn init_rcc(p: &pac::Peripherals) {
     while rcc.cr.read().hsirdy().is_ready() {}
 
     // reset and enable Power Control
-    rcc.apb1enr.modify(|_, w| w.pwren().enabled());
-    rcc.apb1rstr.modify(|_, w| w.pwrrst().set_bit());
-    rcc.apb1rstr.modify(|_, w| w.pwrrst().clear_bit());
+    // Enables access to the PWR_CR register
+    // rcc.apb1enr.modify(|_, w| w.pwren().enabled());
+    // rcc.apb1rstr.modify(|_, w| w.pwrrst().set_bit());
+    // rcc.apb1rstr.modify(|_, w| w.pwrrst().clear_bit());
 
     // reset and enable System Configuration Controller
-    rcc.apb2enr.modify(|_, w| w.syscfgen().enabled());
-    rcc.apb2rstr.modify(|_, w| w.syscfgrst().set_bit());
-    rcc.apb2rstr.modify(|_, w| w.syscfgrst().clear_bit());
+    // Enables access to the EXTI and COMP registers
+    // rcc.apb2enr.modify(|_, w| w.syscfgen().enabled());
+    // rcc.apb2rstr.modify(|_, w| w.syscfgrst().set_bit());
+    // rcc.apb2rstr.modify(|_, w| w.syscfgrst().clear_bit());
 
     // enable FLITF clock
+    // This provides read / write access to the Flash memory
     rcc.ahbenr.modify(|_, w| w.flitfen().enabled());
 
     // enable TIM1
@@ -301,11 +473,8 @@ fn init_rcc(p: &pac::Peripherals) {
     rcc.apb1rstr.modify(|_, w| w.tim2rst().clear_bit());
 
     // enable GPIOA, GPIOB, GPIOC
-    rcc.ahbenr.modify(|_, w| {
-        w.iopaen().enabled()
-         .iopben().enabled()
-         .iopcen().enabled()
-    });
+    rcc.ahbenr
+        .modify(|_, w| w.iopaen().enabled().iopben().enabled().iopcen().enabled());
 
     // enable ADC1
     rcc.ahbenr.modify(|_, w| w.adc1en().enabled());
