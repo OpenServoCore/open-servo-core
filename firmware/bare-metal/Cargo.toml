@@ -6,7 +6,7 @@ edition = "2021"
 [dependencies]
 stm32f3 = { version = "0.15.1", features = ["stm32f301", "rt"] }
 cortex-m = { version = "0.7", features = ["critical-section-single-core"] }
-cortex-m-rt = { version = "0.6.13" }
+cortex-m-rt = { version = "0.7.5" }
 defmt = { version = "0.3", features = ["encoding-rzcobs"] }
 defmt-rtt = { version = "0.4.1" }
 panic-probe = { version = "0.3", features = ["print-defmt"] }
