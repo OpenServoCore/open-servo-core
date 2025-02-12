@@ -9,6 +9,10 @@ use cortex_m_rt::entry;
 use stm32f3::stm32f301 as pac;
 use stm32f3::stm32f301::interrupt;
 
+const VREFINT_CAL_ADDR: u32 = 0x1FFFF7BA;
+const TS_CAL1_ADDR: u32 = 0x1FFFF7B8;
+const TS_CAL2_ADDR: u32 = 0x1FFFF7C2;
+
 static mut ADC_DATA: [u16; 5] = [0; 5];
 
 #[entry]
@@ -40,10 +44,12 @@ fn main() -> ! {
 fn TIM2() {
     defmt::info!("TIM2 interrupt");
 
-    // toggle PA2
-    // unsafe {
-    //     (*pac::GPIOA::ptr()).odr.modify(|r, w| w.odr2().bit(!r.odr2().bit()));
-    // }
+    // toggle PA3
+    unsafe {
+        (*pac::GPIOA::ptr())
+            .odr
+            .modify(|r, w| w.odr3().bit(!r.odr3().bit()));
+    }
 
     // clear interrupt flag
     unsafe {
@@ -54,12 +60,12 @@ fn TIM2() {
 #[interrupt]
 fn DMA1_CH1() {
     let dma1 = unsafe { &(*pac::DMA1::ptr()) };
-    let [is_complete, is_error] = cortex_m::interrupt::free(|_|
+    let [is_complete, is_error] = cortex_m::interrupt::free(|_| {
         [
             dma1.isr.read().tcif1().is_complete(),
             dma1.isr.read().teif1().is_error(),
         ]
-    );
+    });
 
     // check interrupt flag for transfer complete
     if !is_complete {
@@ -74,21 +80,56 @@ fn DMA1_CH1() {
     }
 
     // clone ADC_DATA to local variable
-    let adc_data = cortex_m::interrupt::free(|_| unsafe { ADC_DATA });
+    let mut vref: u16 =0;
+    let mut pot: u16 =0;
+    let mut isns: u16 =0;
+    let mut setpoint: u16 =0;
+    let mut temp: u16 =0;
+
+    cortex_m::interrupt::free(|_| unsafe {
+        vref = ADC_DATA[0];
+        pot = ADC_DATA[1];
+        isns = ADC_DATA[2];
+        setpoint = ADC_DATA[3];
+        temp = ADC_DATA[4];
+    });
+
+    let vdda = convert_vdda(vref);
+    let temp = convert_temperature(temp, vdda);
 
     defmt::info!(
-        "ADCDATA: {=u16} {=u16} {=u16} {=u16} {=u16}",
-         adc_data[0],
-         adc_data[1],
-         adc_data[2],
-         adc_data[3],
-         adc_data[4],
+        "vdda={=f32}A pot={=u16} isns={=u16} setpoint={=u16} temp={=f32}C",
+        vdda,
+        pot,
+        isns,
+        setpoint,
+        temp,
     );
 
     // clear interrupt flag
     unsafe {
         (*pac::DMA1::ptr()).ifcr.write(|w| w.cgif1().set_bit());
     }
+}
+
+fn convert_temperature(adc_value: u16, vdda_value: f32) -> f32 {
+    let ts_cal1: u16 = unsafe { core::ptr::read(TS_CAL1_ADDR as *const u16) };
+    let ts_cal2: u16 = unsafe { core::ptr::read(TS_CAL2_ADDR as *const u16) };
+    let ts_cal1_temp: f32 = 30.0;
+    let ts_cal2_temp: f32 = 110.0;
+    let ts_cal1_voltage: f32 = 3.3 * ts_cal1 as f32 / 4095.0;
+    let ts_cal2_voltage: f32 = 3.3 * ts_cal2 as f32 / 4095.0;
+    let ts_slope: f32 = (ts_cal2_temp - ts_cal1_temp) / (ts_cal2_voltage - ts_cal1_voltage);
+    let ts_offset: f32 = ts_cal1_temp - ts_slope * ts_cal1_voltage;
+    let temp_voltage = vdda_value * adc_value as f32 / 4095.0;
+    let temp = ts_slope * temp_voltage + ts_offset;
+    return temp;
+}
+
+fn convert_vdda(adc_value: u16) -> f32 {
+    let vrefint_cal: u16 = unsafe { core::ptr::read(VREFINT_CAL_ADDR as *const u16) };
+    let vdda = 3.3 * vrefint_cal as f32 / adc_value as f32;
+    return vdda;
 }
 
 fn init_dma(p: &pac::Peripherals) {
@@ -228,7 +269,6 @@ fn init_adc(p: &pac::Peripherals) {
         w.sq5().bits(16) // set tempature sensor ( ch 16 ) as first conversion
     });
 
-
     // set sample time for channels
     adc1.smpr1.modify(|_, w| {
         w.smp1()
@@ -256,20 +296,20 @@ fn init_adc(p: &pac::Peripherals) {
 fn init_led(p: &pac::Peripherals) {
     let gpioa = &p.GPIOA;
 
-    // configure PA2 as output
-    gpioa.moder.modify(|_, w| w.moder2().output());
+    // configure PA3 as output
+    gpioa.moder.modify(|_, w| w.moder3().output());
 
-    // configure PA2 as push-pull
-    gpioa.otyper.modify(|_, w| w.ot2().push_pull());
+    // configure PA3 as push-pull
+    gpioa.otyper.modify(|_, w| w.ot3().push_pull());
 
-    // configure PA2 as high speed output
-    gpioa.ospeedr.modify(|_, w| w.ospeedr2().high_speed());
+    // configure PA3 as high speed output
+    gpioa.ospeedr.modify(|_, w| w.ospeedr3().high_speed());
 
-    // configure PA2 as no pull-up, no pull-down
-    gpioa.pupdr.modify(|_, w| w.pupdr2().floating());
+    // configure PA3 as no pull-up, no pull-down
+    gpioa.pupdr.modify(|_, w| w.pupdr3().floating());
 
-    // set PA2 to low
-    gpioa.odr.modify(|_, w| w.odr2().low());
+    // set PA3 to low
+    gpioa.odr.modify(|_, w| w.odr3().low());
 }
 
 fn init_tim2_counter(p: &pac::Peripherals) {
