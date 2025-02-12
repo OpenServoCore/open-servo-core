@@ -25,7 +25,6 @@ fn main() -> ! {
     unsafe {
         pac::NVIC::unmask(pac::Interrupt::TIM2);
         pac::NVIC::unmask(pac::Interrupt::DMA1_CH1);
-        // pac::NVIC::unmask(pac::Interrupt::ADC1_IRQ);
     }
 
     defmt::info!("Initialized");
@@ -53,18 +52,38 @@ fn TIM2() {
 }
 
 #[interrupt]
-fn ADC1_IRQ() {
-    defmt::info!("ADC1_IRQ interrupt");
-
-    // clear interrupt flag
-    unsafe {
-        (*pac::ADC1::ptr()).isr.modify(|_, w| w.eos().clear());
-    }
-}
-
-#[interrupt]
 fn DMA1_CH1() {
-    defmt::info!("DMA1_CH1 interrupt");
+    let dma1 = unsafe { &(*pac::DMA1::ptr()) };
+    let [is_complete, is_error] = cortex_m::interrupt::free(|_|
+        [
+            dma1.isr.read().tcif1().is_complete(),
+            dma1.isr.read().teif1().is_error(),
+        ]
+    );
+
+    // check interrupt flag for transfer complete
+    if !is_complete {
+        defmt::info!("Transfer complete interrupt flag not set");
+        return;
+    }
+
+    // check interrupt flag for transfer error
+    if is_error {
+        defmt::error!("Transfer error interrupt flag set");
+        return;
+    }
+
+    // clone ADC_DATA to local variable
+    let adc_data = cortex_m::interrupt::free(|_| unsafe { ADC_DATA });
+
+    defmt::info!(
+        "ADCDATA: {=u16} {=u16} {=u16} {=u16} {=u16}",
+         adc_data[0],
+         adc_data[1],
+         adc_data[2],
+         adc_data[3],
+         adc_data[4],
+    );
 
     // clear interrupt flag
     unsafe {
@@ -87,6 +106,8 @@ fn init_dma(p: &pac::Peripherals) {
             .bits16() // 16 bit peripheral size
             .tcie()
             .enabled() // enable transfer complete interrupt
+            .teie()
+            .enabled() // enable transfer error interrupt
             .mem2mem()
             .disabled() // memory to memory mode disabled
             .minc()
@@ -105,9 +126,8 @@ fn init_dma(p: &pac::Peripherals) {
         .mar
         .write(|w| unsafe { w.bits(ADC_DATA.as_ptr() as u32) }); // set memory address to ADC_DATA
 
-    // set number of data to transfer
-    let size = p.ADC1.sqr1.read().l().bits() + 1;
-    p.DMA1.ch1.ndtr.write(|w| w.ndt().bits(size.into()));
+    // set number of data to transfer to 5 because we are converting 5 channels
+    p.DMA1.ch1.ndtr.write(|w| w.ndt().bits(5));
 
     // enable DMA1 Channel 1
     p.DMA1.ch1.cr.modify(|_, w| w.en().enabled());
@@ -142,15 +162,12 @@ fn init_adc(p: &pac::Peripherals) {
             .dmaen()
             .enabled() // enable DMA
             .ovrmod()
-            .overwrite() // set ADC to overwrite overrun
+            .preserve() // set ADC to preserve overrun
             .exten()
             .rising_edge() // set ADC to rising edge trigger
             .extsel()
             .tim1_trgo2() // set ADC to TIM1_TRGO2
     });
-
-    // enable end of conversion interrupt
-    adc1.ier.modify(|_, w| w.eosie().enabled());
 
     /*
      * ADC calibration
@@ -200,29 +217,33 @@ fn init_adc(p: &pac::Peripherals) {
             .sq1()
             .bits(18) // set vrefint ( ch 18 ) as first conversion
             .sq2()
-            .bits(1) // set PA0  as second conversion
+            .bits(1) // set PA0 ( ch 1 )  as second conversion
             .sq3()
-            .bits(2) // set PA1 as third conversion
+            .bits(2) // set PA1 ( ch 2 )  as third conversion
             .sq4()
-            .bits(3) // set PA2 as fourth conversion
+            .bits(3) // set PA2 ( ch 3 ) as fourth conversion
     });
 
     adc1.sqr2.modify(|_, w| unsafe {
         w.sq5().bits(16) // set tempature sensor ( ch 16 ) as first conversion
     });
 
+
     // set sample time for channels
     adc1.smpr1.modify(|_, w| {
         w.smp1()
-            .cycles181_5()
+            .cycles181_5() // PA0
             .smp2()
-            .cycles181_5()
+            .cycles181_5() // PA1
             .smp3()
-            .cycles181_5()
-            .smp4()
-            .cycles181_5()
-            .smp5()
-            .cycles181_5()
+            .cycles181_5() // PA2
+    });
+
+    adc1.smpr2.modify(|_, w| {
+        w.smp16()
+            .cycles181_5() // VREFINT
+            .smp18()
+            .cycles181_5() // Temperature sensor
     });
 
     /*
@@ -257,8 +278,8 @@ fn init_tim2_counter(p: &pac::Peripherals) {
     // set prescaler to 72, so that the counter will increment every 1 us
     tim2.psc.write(|w| w.psc().bits(72));
 
-    // set auto-reload register to 1_000_000, so that the counter will overflow every 1 second
-    tim2.arr.write(|w| unsafe { w.arr().bits(1_000_000) });
+    // set auto-reload register to 100_000, so that the counter will overflow every 0.1 second
+    tim2.arr.write(|w| unsafe { w.arr().bits(100_000) });
 
     // generate an update event to load the prescaler value to the counter
     tim2.egr.write(|w| w.ug().update());
