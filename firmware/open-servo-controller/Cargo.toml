@@ -10,4 +10,4 @@ cortex-m-rt = { version = "0.7.5" }
 defmt = { version = "0.3", features = ["encoding-rzcobs"] }
 defmt-rtt = { version = "0.4.1" }
 panic-probe = { version = "0.3", features = ["print-defmt"] }
-pid = "4.0.0"
+pid = { version = "4.0.0" }

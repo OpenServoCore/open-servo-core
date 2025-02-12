@@ -1,11 +1,15 @@
 #![no_main]
 #![no_std]
 
+use core::cell::Cell;
+
 use cortex_m::asm;
 use defmt_rtt as _;
 use panic_probe as _;
 
+use cortex_m::interrupt::{free, Mutex};
 use cortex_m_rt::entry;
+
 use stm32f3::stm32f301 as pac;
 use stm32f3::stm32f301::interrupt;
 
@@ -13,7 +17,7 @@ const VREFINT_CAL_ADDR: u32 = 0x1FFFF7BA;
 const TS_CAL1_ADDR: u32 = 0x1FFFF7B8;
 const TS_CAL2_ADDR: u32 = 0x1FFFF7C2;
 
-static mut ADC_DATA: [u16; 5] = [0; 5];
+static ADC_DATA: Mutex<Cell<Option<&[u16; 5]>>> = Mutex::new(Cell::new(Option::None));
 
 #[entry]
 fn main() -> ! {
@@ -80,18 +84,19 @@ fn DMA1_CH1() {
     }
 
     // clone ADC_DATA to local variable
-    let mut vref: u16 =0;
-    let mut pot: u16 =0;
-    let mut isns: u16 =0;
-    let mut setpoint: u16 =0;
-    let mut temp: u16 =0;
+    let mut vref: u16 = 0;
+    let mut pot: u16 = 0;
+    let mut isns: u16 = 0;
+    let mut setpoint: u16 = 0;
+    let mut temp: u16 = 0;
 
-    cortex_m::interrupt::free(|_| unsafe {
-        vref = ADC_DATA[0];
-        pot = ADC_DATA[1];
-        isns = ADC_DATA[2];
-        setpoint = ADC_DATA[3];
-        temp = ADC_DATA[4];
+    free(|cs| {
+        let adc_data = ADC_DATA.borrow(cs).get().unwrap();
+        vref = adc_data[0];
+        pot = adc_data[1];
+        isns = adc_data[2];
+        setpoint = adc_data[3];
+        temp = adc_data[4];
     });
 
     let vdda = convert_vdda(vref);
@@ -162,10 +167,13 @@ fn init_dma(p: &pac::Peripherals) {
         .par
         .write(|w| unsafe { w.bits(p.ADC1.dr.as_ptr() as u32) }); // set peripheral address to ADC1_DR
 
+    let adc_data = cortex_m::singleton!(: [u16; 5] = [0; 5]).unwrap();
     p.DMA1
         .ch1
         .mar
-        .write(|w| unsafe { w.bits(ADC_DATA.as_ptr() as u32) }); // set memory address to ADC_DATA
+        .write(|w| unsafe { w.bits(adc_data.as_ptr() as u32) }); // set memory address to ADC_DATA
+
+    free(|cs| ADC_DATA.borrow(cs).set(Some(adc_data)));
 
     // set number of data to transfer to 5 because we are converting 5 channels
     p.DMA1.ch1.ndtr.write(|w| w.ndt().bits(5));
