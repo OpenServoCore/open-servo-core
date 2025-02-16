@@ -1,23 +1,84 @@
 #![no_main]
 #![no_std]
 
-use core::cell::Cell;
-
-use cortex_m::asm;
 use defmt_rtt as _;
 use panic_probe as _;
 
-use cortex_m::interrupt::{free, Mutex};
+use core::cell::RefCell;
+use cortex_m::{
+    asm,
+    interrupt::{free, Mutex},
+};
 use cortex_m_rt::entry;
-
+use pid::Pid;
 use stm32f3::stm32f301 as pac;
-use stm32f3::stm32f301::interrupt;
+
+use pac::interrupt;
+
+#[derive(Copy, Clone, defmt::Format)]
+struct SystemState {
+    // Desired Servo Position
+    pub setpoint: u16,
+
+    // Current Servo Position
+    pub position: u16,
+
+    // PWM Duty Cycle
+    pub pwm_duty: i32,
+
+    // Current in mA
+    pub current: f32,
+
+    // VDDA Voltage
+    pub vdda: f32,
+
+    // Chip Temperature in Celsius
+    pub temperature: f32,
+}
+
+impl SystemState {
+    fn new() -> Self {
+        SystemState {
+            setpoint: 0,
+            position: 0,
+            pwm_duty: 0,
+            current: 0.0,
+            vdda: 0.0,
+            temperature: 0.0,
+        }
+    }
+}
 
 const VREFINT_CAL_ADDR: u32 = 0x1FFFF7BA;
 const TS_CAL1_ADDR: u32 = 0x1FFFF7B8;
 const TS_CAL2_ADDR: u32 = 0x1FFFF7C2;
 
-static ADC_DATA: Mutex<Cell<Option<&[u16; 5]>>> = Mutex::new(Cell::new(Option::None));
+// RCC parameters
+// const RCC_HSE_CLOCK_HZ: u32 = 16_000_000;
+const RCC_SYSCLK_HZ: u32 = 72_000_000;
+
+// Current sense parameters
+const ISENSE_AIPROPI: f32 = 1500.0; // uA/A
+const ISENSE_RESISTOR_OHM: f32 = 2200.0; // Ohm
+const ISENSE_FACTOR: f32 = ISENSE_AIPROPI / ISENSE_RESISTOR_OHM; // uA / V
+
+// PWM parameters
+const PWM_FREQUENCY: u32 = 20_000;
+const PWM_MAX_DUTY: u16 = ((RCC_SYSCLK_HZ / PWM_FREQUENCY / 2) - 1) as u16;
+const PWM_REVERSE: bool = false;
+
+// PID controller parameters
+const PID_KP: f32 = 40.0;
+const PID_KI: f32 = 0.0;
+const PID_KD: f32 = 0.0;
+const PID_KP_MAX: f32 = PWM_MAX_DUTY as f32;
+const PID_KI_MAX: f32 = PWM_MAX_DUTY as f32 * 0.8;
+const PID_KD_MAX: f32 = PWM_MAX_DUTY as f32 * 0.8;
+const PID_OUTPUT_MAX: f32 = PWM_MAX_DUTY as f32;
+
+static ADC_DATA: Mutex<RefCell<Option<&[u16; 5]>>> = Mutex::new(RefCell::new(Option::None));
+static PID_CONTROLLER: Mutex<RefCell<Option<Pid<f32>>>> = Mutex::new(RefCell::new(Option::None));
+static SYSTEM_STATE: Mutex<RefCell<Option<SystemState>>> = Mutex::new(RefCell::new(Option::None));
 
 #[entry]
 fn main() -> ! {
@@ -30,6 +91,18 @@ fn main() -> ! {
     init_dma(&p);
     init_adc(&p);
 
+    // intialize PID controller
+    let mut pid: Pid<f32> = Pid::new(0.0, PID_OUTPUT_MAX);
+    pid.p(PID_KP, PID_KP_MAX);
+    pid.i(PID_KI, PID_KI_MAX);
+    pid.d(PID_KD, PID_KD_MAX);
+    free(|cs| PID_CONTROLLER.borrow(cs).replace(Some(pid)));
+
+    // initialize system state
+    let system_state = SystemState::new();
+    free(|cs| SYSTEM_STATE.borrow(cs).replace(Some(system_state)));
+
+    // enable interrupts
     unsafe {
         pac::NVIC::unmask(pac::Interrupt::TIM2);
         pac::NVIC::unmask(pac::Interrupt::DMA1_CH1);
@@ -54,6 +127,10 @@ fn TIM2() {
             .odr
             .modify(|r, w| w.odr3().bit(!r.odr3().bit()));
     }
+
+    // clone system state to local variable
+    let system_state = free(|cs| SYSTEM_STATE.borrow(cs).borrow().unwrap());
+    defmt::info!("{}", system_state);
 
     // clear interrupt flag
     unsafe {
@@ -84,32 +161,54 @@ fn DMA1_CH1() {
     }
 
     // clone ADC_DATA to local variable
-    let mut vref: u16 = 0;
-    let mut pot: u16 = 0;
-    let mut isns: u16 = 0;
-    let mut setpoint: u16 = 0;
-    let mut temp: u16 = 0;
+    let [vref, pot, isns, mut setpoint, temp] =
+        free(|cs| ADC_DATA.borrow(cs).borrow().unwrap().clone());
 
-    free(|cs| {
-        let adc_data = ADC_DATA.borrow(cs).get().unwrap();
-        vref = adc_data[0];
-        pot = adc_data[1];
-        isns = adc_data[2];
-        setpoint = adc_data[3];
-        temp = adc_data[4];
+    // hardcode for now
+    setpoint = 2048;
+
+    // calculate pwm duty cycle using PID controller
+    let pid_output = free(|cs| {
+        let mut pid_option = PID_CONTROLLER.borrow(cs).borrow_mut();
+        let pid = pid_option.as_mut().unwrap();
+        pid.setpoint(setpoint).next_control_output(pot as f32)
     });
+    let mut duty: i32 = pid_output.output as i32;
+    if PWM_REVERSE {
+        duty = duty * -1;
+    }
 
+    // set PWM duty cycle
+    let tim1 = unsafe { &(*pac::TIM1::ptr()) };
+    if duty > 0 {
+        let duty: u16 = duty as u16;
+
+        tim1.ccr1().write(|w| w.ccr().bits(duty));
+        tim1.ccr4().write(|w| w.ccr().bits(0));
+    } else {
+        let duty: u16 = (duty * -1) as u16;
+
+        tim1.ccr1().write(|w| w.ccr().bits(0));
+        tim1.ccr4().write(|w| w.ccr().bits(duty));
+    }
+
+    // convert ADC values to physical values
     let vdda = convert_vdda(vref);
     let temp = convert_temperature(temp, vdda);
+    let current = convert_current(isns, vdda);
 
-    defmt::info!(
-        "vdda={=f32}A pot={=u16} isns={=u16} setpoint={=u16} temp={=f32}C",
-        vdda,
-        pot,
-        isns,
-        setpoint,
-        temp,
-    );
+    // update system state
+    free(|cs| {
+        let mut system_state_options = SYSTEM_STATE.borrow(cs).borrow_mut();
+        let system_state = system_state_options.as_mut().unwrap();
+
+        system_state.setpoint = setpoint;
+        system_state.position = pot;
+        system_state.pwm_duty = duty;
+        system_state.vdda = vdda;
+        system_state.current = current;
+        system_state.temperature = temp;
+    });
 
     // clear interrupt flag
     unsafe {
@@ -135,6 +234,16 @@ fn convert_vdda(adc_value: u16) -> f32 {
     let vrefint_cal: u16 = unsafe { core::ptr::read(VREFINT_CAL_ADDR as *const u16) };
     let vdda = 3.3 * vrefint_cal as f32 / adc_value as f32;
     return vdda;
+}
+
+fn convert_voltage(adc_value: u16, vdda_value: f32) -> f32 {
+    vdda_value * adc_value as f32 / PWM_MAX_DUTY as f32
+}
+
+fn convert_current(adc_value: u16, vdda_value: f32) -> f32 {
+    let isense_voltage = convert_voltage(adc_value, vdda_value);
+    let current = isense_voltage * ISENSE_FACTOR / 1000.0; // convert uA to mA
+    return current;
 }
 
 fn init_dma(p: &pac::Peripherals) {
@@ -173,7 +282,7 @@ fn init_dma(p: &pac::Peripherals) {
         .mar
         .write(|w| unsafe { w.bits(adc_data.as_ptr() as u32) }); // set memory address to ADC_DATA
 
-    free(|cs| ADC_DATA.borrow(cs).set(Some(adc_data)));
+    free(|cs| ADC_DATA.borrow(cs).replace(Some(adc_data)));
 
     // set number of data to transfer to 5 because we are converting 5 channels
     p.DMA1.ch1.ndtr.write(|w| w.ndt().bits(5));
@@ -381,8 +490,8 @@ fn init_tim1_pwm_channels(p: &pac::Peripherals) {
         // configure PA8 as alternate function
         gpioa.moder.modify(|_, w| w.moder8().alternate());
 
-        // set PA8 alternate function map to TIM1_CH1 ( AF2 )
-        gpioa.afrh.modify(|_, w| w.afrh8().af2());
+        // set PA8 alternate function map to TIM1_CH1 ( AF6 )
+        gpioa.afrh.modify(|_, w| w.afrh8().af6());
 
         // configure PA8 as high speed output
         gpioa.ospeedr.modify(|_, w| w.ospeedr8().high_speed());
@@ -451,10 +560,10 @@ fn init_tim1_pwm_channels(p: &pac::Peripherals) {
         });
 
         // set PWM duty cycle to 0
-        tim1.ccr2().modify(|_, w| w.ccr().bits(0));
+        tim1.ccr4().modify(|_, w| w.ccr().bits(0));
 
         // enable PWM output
-        tim1.ccer.modify(|_, w| w.cc2e().set_bit());
+        tim1.ccer.modify(|_, w| w.cc4e().set_bit());
     }
 }
 

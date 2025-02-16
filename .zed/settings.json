@@ -1,0 +1,14 @@
+{
+  "lsp": {
+    "rust-analyzer": {
+      "initialization_options": {
+        "check": {
+          "allTargets": false,
+          "targets": "thumbv7em-none-eabihf"
+        },
+        "linkedProjects": ["firmware/open-servo-controller/Cargo.toml"]
+      }
+    }
+  },
+  "format_on_save": "on"
+}

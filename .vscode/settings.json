@@ -1,10 +1,6 @@
 {
-    "cSpell.words": [
-        "bkpt",
-        "brtt",
-        "defmt",
-        "EXTI",
-        "rtic",
-        "systick"
-    ]
+  "rust-analyzer.check.allTargets": false,
+  "rust-analyzer.check.targets": "thumbv7em-none-eabihf",
+  "rust-analyzer.linkedProjects": ["firmware/open-servo-controller/Cargo.toml"],
+  "cSpell.enabled": false
 }
