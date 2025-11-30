@@ -2048,7 +2048,7 @@
 				(type solid)
 			)
 			(layer "B.SilkS")
-			(uuid "c20e2318-75f9-45e9-9d41-b8f7d0121e1f")
+			(uuid "f97ba2b3-4128-4e38-9a9e-9fea3744db20")
 		)
 		(fp_line
 			(start -0.8889 -1.299975)
@@ -2058,7 +2058,7 @@
 				(type solid)
 			)
 			(layer "B.SilkS")
-			(uuid "b38c70d9-021c-40a7-9674-a6750d27d92c")
+			(uuid "a3815b3d-1352-4597-b595-b8f08c7647d8")
 		)
 		(fp_line
 			(start -0.8889 1.300051)
@@ -2068,7 +2068,7 @@
 				(type solid)
 			)
 			(layer "B.SilkS")
-			(uuid "6d93e2c5-f072-4d13-8f3a-3e8a8eae493c")
+			(uuid "ceca4725-62d1-402e-ae3f-09e02c14e5c0")
 		)
 		(fp_line
 			(start -0.824968 1.550013)
@@ -2078,7 +2078,7 @@
 				(type solid)
 			)
 			(layer "B.SilkS")
-			(uuid "05714b11-f969-4282-8968-bf87a1751b74")
+			(uuid "f8dbdac4-66aa-4c7a-90a9-c6eb11b60515")
 		)
 		(fp_line
 			(start 0.889103 -1.299975)
@@ -2088,7 +2088,7 @@
 				(type solid)
 			)
 			(layer "B.SilkS")
-			(uuid "9ef1269b-1de1-414c-8635-dcd591349739")
+			(uuid "822f7f27-86f7-4131-adec-57f0d0b583a2")
 		)
 		(fp_circle
 			(center -0.799949 -1.699975)
@@ -2099,7 +2099,7 @@
 			)
 			(fill no)
 			(layer "B.SilkS")
-			(uuid "e2908e5e-955b-4d16-aa50-f974f32a0b79")
+			(uuid "fbce8008-0246-4d5d-8591-f04a1ae5e176")
 		)
 		(fp_circle
 			(center -0.700025 -0.949962)
@@ -2110,7 +2110,7 @@
 			)
 			(fill no)
 			(layer "B.SilkS")
-			(uuid "e50b4fd2-a98a-4993-ab66-4a05386eb37c")
+			(uuid "4d944842-5a33-4ff9-886e-9a784ba55933")
 		)
 		(fp_circle
 			(center -0.749936 -1.149987)
@@ -2121,7 +2121,7 @@
 			)
 			(fill no)
 			(layer "B.Fab")
-			(uuid "89c79139-55eb-4ab3-85c2-667b2119481a")
+			(uuid "77c06e0c-6d5e-4f31-abed-2b389f82002e")
 		)
 		(pad "1" smd rect
 			(at -0.400051 -0.664973 270)
@@ -2158,7 +2158,7 @@
 			(uuid "59dbc68b-e32e-409e-84dd-89270541bee7")
 		)
 		(embedded_fonts no)
-		(model "/Users/aaron/projects/open-servo-core/hardware/common/3DModels/OPTO-SMD-4_ITR1204SR10A.step"
+		(model "${KIPRJMOD}/../common/3DModels/OPTO-SMD-4_ITR1204SR10A.step"
 			(offset
 				(xyz 0.000051 0.000025 0.6)
 			)
@@ -2250,7 +2250,7 @@
 				(type solid)
 			)
 			(layer "B.SilkS")
-			(uuid "71b34202-9ec6-48c2-a555-e92c94a782dd")
+			(uuid "7e421996-ac3a-4a07-b3d3-4f6aa6feb734")
 		)
 		(fp_line
 			(start -0.8889 -1.299975)
@@ -2260,7 +2260,7 @@
 				(type solid)
 			)
 			(layer "B.SilkS")
-			(uuid "25840a73-8ece-4c44-813b-c2ee23d191d9")
+			(uuid "f69a0810-8b9d-40fb-9210-ebcb12b29d3b")
 		)
 		(fp_line
 			(start -0.8889 1.300051)
@@ -2270,7 +2270,7 @@
 				(type solid)
 			)
 			(layer "B.SilkS")
-			(uuid "9e936db2-7762-4023-9eb8-32d38c36db20")
+			(uuid "5a2835f1-a9a2-4f3b-a0a5-18811f601472")
 		)
 		(fp_line
 			(start -0.824968 1.550013)
@@ -2280,7 +2280,7 @@
 				(type solid)
 			)
 			(layer "B.SilkS")
-			(uuid "5bcec82e-be7e-477a-9f3a-a4942347468f")
+			(uuid "0f8ff275-4a99-4abd-924f-0bb098956884")
 		)
 		(fp_line
 			(start 0.889103 -1.299975)
@@ -2290,7 +2290,7 @@
 				(type solid)
 			)
 			(layer "B.SilkS")
-			(uuid "be15eccf-163c-4103-a461-6b4fb2e409bf")
+			(uuid "849532cf-6350-4702-844d-bcc997bc4cc0")
 		)
 		(fp_circle
 			(center -0.799949 -1.699975)
@@ -2301,7 +2301,7 @@
 			)
 			(fill no)
 			(layer "B.SilkS")
-			(uuid "a72bcb20-9b20-460d-b54f-b7f6f81e11f3")
+			(uuid "a91ad951-db02-4126-8712-00aade7978a9")
 		)
 		(fp_circle
 			(center -0.700025 -0.949962)
@@ -2312,7 +2312,7 @@
 			)
 			(fill no)
 			(layer "B.SilkS")
-			(uuid "d05d7789-2a3a-448d-a4bd-ebd22d569444")
+			(uuid "8943fe5d-f2d6-476f-bf16-e7527c2c78c5")
 		)
 		(fp_circle
 			(center -0.749936 -1.149987)
@@ -2323,7 +2323,7 @@
 			)
 			(fill no)
 			(layer "B.Fab")
-			(uuid "96ec6e37-f002-424b-b607-dc52e986a77c")
+			(uuid "c3bebd42-a3c1-4116-bf64-e4a2e054db68")
 		)
 		(pad "1" smd rect
 			(at -0.400051 -0.664973 270)
@@ -2360,7 +2360,7 @@
 			(uuid "e8fcb5d4-1023-4952-a892-fb87d8b7d694")
 		)
 		(embedded_fonts no)
-		(model "/Users/aaron/projects/open-servo-core/hardware/common/3DModels/OPTO-SMD-4_ITR1204SR10A.step"
+		(model "${KIPRJMOD}/../common/3DModels/OPTO-SMD-4_ITR1204SR10A.step"
 			(offset
 				(xyz 0.000051 0.000025 0.6)
 			)
