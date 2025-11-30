@@ -464,7 +464,9 @@
     }
   },
   "libraries": {
-    "pinned_footprint_libs": [],
+    "pinned_footprint_libs": [
+      "open-servo-core"
+    ],
     "pinned_symbol_libs": []
   },
   "meta": {
@@ -509,7 +511,7 @@
       "specctra_dsn": "",
       "step": "../../../../Desktop/encoder-board.step",
       "svg": "",
-      "vrml": ""
+      "vrml": "../../../../Desktop/encoder-board.wrl"
     },
     "page_layout_descr_file": ""
   },
