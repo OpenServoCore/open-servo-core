@@ -1,0 +1,7 @@
+Comment,Designator,Footprint,LCSC,Quantity
+100nF,"C1,C2",C_0805_2012Metric_Pad1.18x1.45mm_HandSolder,C28233,2
+10uF,C3,C_0805_2012Metric_Pad1.18x1.45mm_HandSolder,C15850,1
+390,"R2,R4",R_0805_2012Metric_Pad1.20x1.40mm_HandSolder,C17655,2
+680,"R1,R3",R_0805_2012Metric_Pad1.20x1.40mm_HandSolder,C17798,2
+Conn_01x04,J1,PinHeader_1x04_P2.54mm_Vertical,C2905435,1
+ITR1204SR10A_TR(BY),"U1,U2",OPTO-SMD-4_ITR1204SR10A,C475373,2

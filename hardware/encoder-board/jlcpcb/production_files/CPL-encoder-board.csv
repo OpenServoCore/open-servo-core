@@ -1,0 +1,11 @@
+Designator,Val,Package,Mid X,Mid Y,Rotation,Layer
+C1,100nF,C_0805_2012Metric_Pad1.18x1.45mm_HandSolder,115.0,-102.0,0.0,top
+C2,100nF,C_0805_2012Metric_Pad1.18x1.45mm_HandSolder,110.0,-102.0,180.0,top
+C3,10uF,C_0805_2012Metric_Pad1.18x1.45mm_HandSolder,120.0,-123.0375,-90.0,top
+J1,Conn_01x04,PinHeader_1x04_P2.54mm_Vertical,112.19,-123.0,90.0,top
+R1,680,R_0805_2012Metric_Pad1.20x1.40mm_HandSolder,115.0,-108.0,0.0,top
+R2,390,R_0805_2012Metric_Pad1.20x1.40mm_HandSolder,118.0,-105.0,90.0,top
+R3,680,R_0805_2012Metric_Pad1.20x1.40mm_HandSolder,110.0,-108.0,180.0,top
+R4,390,R_0805_2012Metric_Pad1.20x1.40mm_HandSolder,107.0,-105.0,90.0,top
+U1,ITR1204SR10A_TR(BY),OPTO-SMD-4_ITR1204SR10A,114.0,-105.0,180.0,bottom
+U2,ITR1204SR10A_TR(BY),OPTO-SMD-4_ITR1204SR10A,111.0,-105.0,180.0,bottom
