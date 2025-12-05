@@ -5,10 +5,10 @@ use defmt_rtt as _;
 use panic_probe as _;
 
 mod hw;
-mod hw_stm32;
+mod hw_stm32f301;
 
 use hw::Hw; // Import the Hw trait
-use hw_stm32::StmHw; // Import the STM32 implementation
+use hw_stm32f301::Stm32f301Hw; // Import the STM32F301 implementation
 
 use core::cell::RefCell;
 use cortex_m::interrupt::{free, Mutex};
@@ -67,19 +67,19 @@ const PID_OUTPUT_MAX: f32 = PWM_MAX_DUTY as f32;
 
 static PID_CONTROLLER: Mutex<RefCell<Option<Pid<f32>>>> = Mutex::new(RefCell::new(Option::None));
 static SYSTEM_STATE: Mutex<RefCell<Option<SystemState>>> = Mutex::new(RefCell::new(Option::None));
-static HW: Mutex<RefCell<Option<StmHw>>> = Mutex::new(RefCell::new(Option::None));
+static HW: Mutex<RefCell<Option<Stm32f301Hw>>> = Mutex::new(RefCell::new(Option::None));
 
 #[entry]
 fn main() -> ! {
     let p = pac::Peripherals::take().unwrap();
 
     // Use init functions from hw_stm32 module
-    hw_stm32::init_rcc(&p);
-    hw_stm32::init_tim1_pwm(&p);
-    hw_stm32::init_tim2_counter(&p);
-    hw_stm32::init_gpio(&p); // This initializes LED on PA3
-    hw_stm32::init_dma(&p);
-    hw_stm32::init_adc(&p);
+    hw_stm32f301::init_rcc(&p);
+    hw_stm32f301::init_tim1_pwm(&p);
+    hw_stm32f301::init_tim2_counter(&p);
+    hw_stm32f301::init_gpio(&p); // This initializes LED on PA3
+    hw_stm32f301::init_dma(&p);
+    hw_stm32f301::init_adc(&p);
 
     // intialize PID controller
     let mut pid: Pid<f32> = Pid::new(0.0, PID_OUTPUT_MAX);
@@ -93,7 +93,7 @@ fn main() -> ! {
     free(|cs| SYSTEM_STATE.borrow(cs).replace(Some(system_state)));
 
     // initialize hardware abstraction
-    let hw = StmHw::new();
+    let hw = Stm32f301Hw::new();
     free(|cs| HW.borrow(cs).replace(Some(hw)));
 
     // enable interrupts
@@ -203,5 +203,5 @@ fn DMA1_CH1() {
     }
 }
 
-// Conversion functions moved to hw_stm32::hw_impl
+// Conversion functions moved to hw_stm32f301::hw_impl
 // The Hw trait now handles all sensor conversions internally
