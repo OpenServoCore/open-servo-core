@@ -1,12 +1,6 @@
-use core::cell::RefCell;
-use cortex_m::{
-    asm,
-    interrupt::{free, Mutex},
-};
+use cortex_m::asm;
 use stm32f3::stm32f301 as pac;
-
-pub static ADC_DATA: Mutex<RefCell<Option<&'static [u16; 5]>>> =
-    Mutex::new(RefCell::new(Option::None));
+use crate::hw::adc_dma;
 
 pub fn init_dma(p: &pac::Peripherals) {
     // enable DMA1 Channel 1
@@ -38,13 +32,10 @@ pub fn init_dma(p: &pac::Peripherals) {
         .par
         .write(|w| unsafe { w.bits(p.ADC1.dr.as_ptr() as u32) }); // set peripheral address to ADC1_DR
 
-    let adc_data = cortex_m::singleton!(: [u16; 5] = [0; 5]).unwrap();
     p.DMA1
         .ch1
         .mar
-        .write(|w| unsafe { w.bits(adc_data.as_ptr() as u32) }); // set memory address to ADC_DATA
-
-    free(|cs| ADC_DATA.borrow(cs).replace(Some(adc_data)));
+        .write(|w| unsafe { w.bits(adc_dma::dma_target_ptr() as u32) }); // set memory address for DMA
 
     // set number of data to transfer to 5 because we are converting 5 channels
     p.DMA1.ch1.ndtr.write(|w| w.ndt().bits(5));
