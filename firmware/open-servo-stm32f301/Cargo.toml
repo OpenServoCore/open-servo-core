@@ -1,0 +1,34 @@
+[package]
+name = "open-servo-stm32f301"
+version.workspace = true
+edition.workspace = true
+
+[[bin]]
+name = "servo-stm32f301"
+path = "src/main.rs"
+
+[dependencies]
+# Workspace dependencies
+open-servo-core = { path = "../open-servo-core" }
+open-servo-control = { path = "../open-servo-control" }
+open-servo-hw = { path = "../open-servo-hw" }
+
+# STM32-specific
+stm32f3 = { version = "0.15.1", features = ["stm32f301", "rt"] }
+cortex-m = { workspace = true }
+cortex-m-rt = { version = "0.7.5" }
+
+# Debug/logging
+defmt = { workspace = true }
+defmt-rtt = { version = "0.4.1" }
+panic-probe = { version = "0.3", features = ["print-defmt"] }
+
+# Other
+heapless = { workspace = true }
+pid = { workspace = true }
+
+[features]
+default = ["potentiometer", "current-sense"]
+potentiometer = []
+encoder = []
+current-sense = []

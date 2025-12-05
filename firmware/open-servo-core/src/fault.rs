@@ -1,6 +1,7 @@
-use crate::hw::Hw;
+use open_servo_hw::MotorDriver;
 
-#[derive(Debug, Clone, Copy, defmt::Format)]
+#[derive(Debug, Clone, Copy)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
 pub enum FaultKind {
     OverCurrent,
     OverTemp,
@@ -9,7 +10,8 @@ pub enum FaultKind {
     EncoderFault,
 }
 
-#[derive(Debug, Clone, Copy, defmt::Format)]
+#[derive(Debug, Clone, Copy)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
 pub enum FaultState {
     Ok,
     Latched(FaultKind),
@@ -27,19 +29,21 @@ impl FaultState {
     pub fn raise(&mut self, kind: FaultKind) {
         if matches!(self, FaultState::Ok) {
             *self = FaultState::Latched(kind);
+            #[cfg(feature = "defmt")]
             defmt::error!("Fault raised: {:?}", kind);
         }
     }
 
     pub fn clear(&mut self) {
         if self.is_faulted() {
+            #[cfg(feature = "defmt")]
             defmt::info!("Fault cleared");
             *self = FaultState::Ok;
         }
     }
 
     /// Safety-critical fault response - disable motor immediately
-    pub fn apply_safety<H: Hw>(&self, hw: &mut H) {
+    pub fn apply_safety<H: MotorDriver>(&self, hw: &mut H) {
         if self.is_faulted() {
             hw.set_pwm(0);
             hw.set_enable(false);
