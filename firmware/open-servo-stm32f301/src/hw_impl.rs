@@ -1,7 +1,7 @@
 use stm32f3::stm32f301 as pac;
+use open_servo_hw::{UartPort, adc_dma};
 
-use super::init::tim::PWM_MAX_DUTY;
-use crate::hw::{adc_dma, Hw, UartPort};
+use crate::init::tim::PWM_MAX_DUTY;
 
 // ADC calibration constants
 const VREFINT_CAL_ADDR: u32 = 0x1FFFF7BA;
@@ -64,26 +64,26 @@ impl Stm32f301Hw {
     }
 }
 
-impl Hw for Stm32f301Hw {
-    fn phase_current(&self) -> u16 {
+impl Stm32f301Hw {
+    pub fn phase_current(&self) -> u16 {
         let [vref, _pot, isns, _setpoint, _temp] = Self::get_adc_values();
         let vdda = Self::convert_vdda(vref);
         let current_ma = Self::convert_current(isns, vdda);
         current_ma as u16
     }
 
-    fn position(&self) -> u16 {
+    pub fn position(&self) -> u16 {
         let [_vref, pot, _isns, _setpoint, _temp] = Self::get_adc_values();
         pot
     }
 
-    fn bus_voltage(&self) -> u16 {
+    pub fn bus_voltage(&self) -> u16 {
         let [vref, _pot, _isns, _setpoint, _temp] = Self::get_adc_values();
         let vdda = Self::convert_vdda(vref);
         (vdda * 1000.0) as u16 // Convert to millivolts
     }
 
-    fn temperature(&self) -> Option<u16> {
+    pub fn temperature(&self) -> Option<u16> {
         let [vref, _pot, _isns, _setpoint, temp] = Self::get_adc_values();
         let vdda = Self::convert_vdda(vref);
         let temp_celsius = Self::convert_temperature(temp, vdda);
@@ -91,12 +91,12 @@ impl Hw for Stm32f301Hw {
         Some((temp_kelvin * 10.0) as u16) // Convert to decikelvin
     }
 
-    fn motor_temperature(&self) -> Option<u16> {
+    pub fn motor_temperature(&self) -> Option<u16> {
         // Not implemented for V0 - no motor temp sensor
         None
     }
 
-    fn set_pwm(&mut self, duty: i32) {
+    pub fn set_pwm(&mut self, duty: i32) {
         let max_duty = PWM_MAX_DUTY as i32;
         let duty = duty.clamp(-max_duty, max_duty);
 
@@ -109,7 +109,7 @@ impl Hw for Stm32f301Hw {
         }
     }
 
-    fn set_enable(&mut self, en: bool) {
+    pub fn set_enable(&mut self, en: bool) {
         // For V0, we can use LED pin (PA3) as enable indicator
         if en {
             self.gpioa().odr.modify(|_, w| w.odr3().high());
@@ -118,16 +118,16 @@ impl Hw for Stm32f301Hw {
         }
     }
 
-    fn now_us(&self) -> u32 {
+    pub fn now_us(&self) -> u32 {
         // Read TIM2 counter (configured to count microseconds)
         self.tim2().cnt.read().cnt().bits()
     }
 
-    fn uart_write(&mut self, _port: UartPort, _buf: &[u8]) {
+    pub fn uart_write(&mut self, _port: UartPort, _buf: &[u8]) {
         // Not implemented for V0
     }
 
-    fn uart_read_byte(&mut self, _port: UartPort) -> Option<u8> {
+    pub fn uart_read_byte(&mut self, _port: UartPort) -> Option<u8> {
         // Not implemented for V0
         None
     }

@@ -1,6 +1,6 @@
 use cortex_m::asm;
 use stm32f3::stm32f301 as pac;
-use crate::hw::adc_dma;
+use open_servo_hw::adc_dma;
 
 pub fn init_dma(p: &pac::Peripherals) {
     // enable DMA1 Channel 1
