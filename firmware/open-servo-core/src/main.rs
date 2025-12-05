@@ -1,8 +1,15 @@
 #![no_main]
 #![no_std]
+// temporarily disable the following during refactoring
+#![allow(dead_code)]
+#![allow(unused_imports)]
+#![allow(unused_assignments)]
 
 use defmt_rtt as _;
 use panic_probe as _;
+
+mod hw_stm32;
+mod hw_trait;
 
 use core::cell::RefCell;
 use cortex_m::{
