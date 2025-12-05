@@ -1,4 +1,5 @@
 #![no_std]
+#![forbid(unsafe_code)]
 
 pub mod app;
 pub mod event;

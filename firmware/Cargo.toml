@@ -3,6 +3,7 @@ members = [
     "open-servo-core",
     "open-servo-control",
     "open-servo-hw",
+    "open-servo-hw-utils",
     "open-servo-stm32f301",
 ]
 resolver = "2"

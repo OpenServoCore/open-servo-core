@@ -12,6 +12,7 @@ path = "src/main.rs"
 open-servo-core = { path = "../open-servo-core" }
 open-servo-control = { path = "../open-servo-control" }
 open-servo-hw = { path = "../open-servo-hw" }
+open-servo-hw-utils = { path = "../open-servo-hw-utils" }
 
 # STM32-specific
 stm32f3 = { version = "0.15.1", features = ["stm32f301", "rt"] }

@@ -210,6 +210,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "open-servo-hw-utils"
+version = "0.1.0"
+
+[[package]]
 name = "open-servo-stm32f301"
 version = "0.1.0"
 dependencies = [
@@ -221,6 +225,7 @@ dependencies = [
  "open-servo-control",
  "open-servo-core",
  "open-servo-hw",
+ "open-servo-hw-utils",
  "panic-probe",
  "pid",
  "stm32f3",

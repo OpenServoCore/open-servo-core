@@ -7,10 +7,12 @@ use panic_probe as _;
 mod hw_impl;
 mod init;
 mod board;
+mod adc_sample;
 
 use board::Board;
-use open_servo_core::{App, EventProducer, EventConsumer, Event};
+use open_servo_core::{App, EventProducer, EventConsumer, Event, EventQueue};
 use open_servo_control::PidController;
+use heapless::spsc::Queue;
 
 use core::cell::RefCell;
 use cortex_m::interrupt::{free, Mutex};
@@ -19,11 +21,17 @@ use stm32f3::stm32f301 as pac;
 
 use pac::interrupt;
 
+// Event queue size for this board
+const EVENT_QUEUE_SIZE: usize = 32;
+
+// Global static storage for the event queue
+static mut EVENT_QUEUE_STORAGE: Queue<Event, EVENT_QUEUE_SIZE> = Queue::new();
+
 // Global static storage for App, Hardware, and Event system
 static APP: Mutex<RefCell<Option<App<PidController>>>> = Mutex::new(RefCell::new(None));
 static BOARD: Mutex<RefCell<Option<Board>>> = Mutex::new(RefCell::new(None));
-static EVENT_PRODUCER: Mutex<RefCell<Option<EventProducer>>> = Mutex::new(RefCell::new(None));
-static EVENT_CONSUMER: Mutex<RefCell<Option<EventConsumer>>> = Mutex::new(RefCell::new(None));
+static EVENT_PRODUCER: Mutex<RefCell<Option<EventProducer<EVENT_QUEUE_SIZE>>>> = Mutex::new(RefCell::new(None));
+static EVENT_CONSUMER: Mutex<RefCell<Option<EventConsumer<EVENT_QUEUE_SIZE>>>> = Mutex::new(RefCell::new(None));
 
 #[entry]
 fn main() -> ! {
@@ -33,7 +41,10 @@ fn main() -> ! {
 
     // Initialize event system
     // Safety: Only called once at startup before interrupts
-    let event_queue = unsafe { open_servo_core::EventQueue::init() };
+    let event_queue = unsafe {
+        let queue_ref = &mut *core::ptr::addr_of_mut!(EVENT_QUEUE_STORAGE);
+        EventQueue::from_queue(queue_ref)
+    };
     let (producer, consumer) = event_queue.split();
     
     // Store event producer for ISR access
@@ -59,29 +70,41 @@ fn main() -> ! {
 
     // Main event loop
     loop {
-        // Process all pending events
-        free(|cs| {
+        // Pop one event at a time to minimize critical section duration
+        let event = free(|cs| {
             let mut consumer_ref = EVENT_CONSUMER.borrow(cs).borrow_mut();
-            if let Some(consumer) = consumer_ref.as_mut() {
-                while let Some(event) = consumer.dequeue() {
-                    let mut app_ref = APP.borrow(cs).borrow_mut();
-                    let mut board_ref = BOARD.borrow(cs).borrow_mut();
-                    
-                    if let (Some(app), Some(board)) = (app_ref.as_mut(), board_ref.as_mut()) {
-                        app.handle_event(board, event);
-                    }
-                }
-            }
+            consumer_ref.as_mut().and_then(|c| c.dequeue())
         });
         
-        // Wait for interrupt (low power until next event)
-        cortex_m::asm::wfi();
+        // Process event outside critical section (but still needs CS for shared state)
+        if let Some(event) = event {
+            free(|cs| {
+                let mut app_ref = APP.borrow(cs).borrow_mut();
+                let mut board_ref = BOARD.borrow(cs).borrow_mut();
+                
+                if let (Some(app), Some(board)) = (app_ref.as_mut(), board_ref.as_mut()) {
+                    app.handle_event(board, event);
+                }
+            });
+        } else {
+            // No events pending - wait for interrupt (low power mode)
+            cortex_m::asm::wfi();
+        }
     }
 }
 
 // TIM2 interrupt - Slow tick for telemetry/status (e.g. 100Hz)
 #[interrupt]
 fn TIM2() {
+    // Check for queue overflow and raise fault if detected
+    if EventProducer::<EVENT_QUEUE_SIZE>::check_overflow() {
+        free(|cs| {
+            if let Some(producer) = EVENT_PRODUCER.borrow(cs).borrow_mut().as_mut() {
+                let _ = producer.enqueue(Event::Fault(open_servo_core::FaultKind::QueuePressure));
+            }
+        });
+    }
+    
     // Enqueue SlowTick event
     free(|cs| {
         if let Some(producer) = EVENT_PRODUCER.borrow(cs).borrow_mut().as_mut() {

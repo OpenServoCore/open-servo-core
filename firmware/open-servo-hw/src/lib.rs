@@ -1,7 +1,7 @@
 #![no_std]
+#![forbid(unsafe_code)]
 
 pub mod traits;
-pub mod adc_dma;
 pub mod types;
 
 pub use traits::*;

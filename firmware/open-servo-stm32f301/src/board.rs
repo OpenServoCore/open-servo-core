@@ -1,6 +1,6 @@
 use stm32f3::stm32f301 as pac;
 
-use open_servo_hw::{MotorDriver, UartDriver, SystemTime, UartPort};
+use open_servo_hw::{BdcMotorDriver, UartDriver, SystemTime, UartPort};
 use open_servo_control::{PositionSensor, CurrentSensor, VoltageSensor, TemperatureSensor};
 
 use crate::hw_impl::Stm32f301Hw;
@@ -38,7 +38,7 @@ impl Board {
 
 // Implement all the required traits by delegating to the hardware implementation
 
-impl MotorDriver for Board {
+impl BdcMotorDriver for Board {
     fn set_pwm(&mut self, duty: i32) {
         self.hw.set_pwm(duty);
     }
@@ -47,9 +47,15 @@ impl MotorDriver for Board {
         self.hw.set_enable(enabled);
     }
     
+    fn coast(&mut self) {
+        // High impedance - disable driver
+        self.hw.set_enable(false);
+    }
+    
     fn brake(&mut self) {
-        // Not implemented for basic H-bridge
+        // Short motor terminals - set PWM to 0 with driver enabled
         self.hw.set_pwm(0);
+        self.hw.set_enable(true);
     }
 }
 
