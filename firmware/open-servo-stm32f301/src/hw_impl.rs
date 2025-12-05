@@ -1,7 +1,9 @@
 use stm32f3::stm32f301 as pac;
-use open_servo_hw::{UartPort, adc_dma};
+use open_servo_hw::UartPort;
+use open_servo_hw_utils::adc_dma;
 
 use crate::init::tim::PWM_MAX_DUTY;
+use crate::adc_sample::AdcSample;
 
 // ADC calibration constants
 const VREFINT_CAL_ADDR: u32 = 0x1FFFF7BA;
@@ -36,8 +38,9 @@ impl Stm32f301Hw {
         unsafe { &(*pac::GPIOA::ptr()) }
     }
 
-    fn get_adc_values() -> [u16; 5] {
-        adc_dma::read_block()
+    fn get_adc_sample() -> AdcSample {
+        let buffer = adc_dma::read_block();
+        AdcSample::from_dma_buffer(buffer)
     }
 
     fn convert_vdda(vref_raw: u16) -> f32 {
@@ -66,27 +69,27 @@ impl Stm32f301Hw {
 
 impl Stm32f301Hw {
     pub fn phase_current(&self) -> u16 {
-        let [vref, _pot, isns, _setpoint, _temp] = Self::get_adc_values();
-        let vdda = Self::convert_vdda(vref);
-        let current_ma = Self::convert_current(isns, vdda);
+        let sample = Self::get_adc_sample();
+        let vdda = Self::convert_vdda(sample.vrefint_raw);
+        let current_ma = Self::convert_current(sample.current_raw, vdda);
         current_ma as u16
     }
 
     pub fn position(&self) -> u16 {
-        let [_vref, pot, _isns, _setpoint, _temp] = Self::get_adc_values();
-        pot
+        let sample = Self::get_adc_sample();
+        sample.position_raw
     }
 
     pub fn bus_voltage(&self) -> u16 {
-        let [vref, _pot, _isns, _setpoint, _temp] = Self::get_adc_values();
-        let vdda = Self::convert_vdda(vref);
+        let sample = Self::get_adc_sample();
+        let vdda = Self::convert_vdda(sample.vrefint_raw);
         (vdda * 1000.0) as u16 // Convert to millivolts
     }
 
     pub fn temperature(&self) -> Option<u16> {
-        let [vref, _pot, _isns, _setpoint, temp] = Self::get_adc_values();
-        let vdda = Self::convert_vdda(vref);
-        let temp_celsius = Self::convert_temperature(temp, vdda);
+        let sample = Self::get_adc_sample();
+        let vdda = Self::convert_vdda(sample.vrefint_raw);
+        let temp_celsius = Self::convert_temperature(sample.temperature_raw, vdda);
         let temp_kelvin = temp_celsius + 273.15;
         Some((temp_kelvin * 10.0) as u16) // Convert to decikelvin
     }

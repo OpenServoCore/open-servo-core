@@ -1,4 +1,4 @@
-use open_servo_hw::MotorDriver;
+use open_servo_hw::BdcMotorDriver;
 
 #[derive(Debug, Clone, Copy)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
@@ -43,7 +43,7 @@ impl FaultState {
     }
 
     /// Safety-critical fault response - disable motor immediately
-    pub fn apply_safety<H: MotorDriver>(&self, hw: &mut H) {
+    pub fn apply_safety<H: BdcMotorDriver>(&self, hw: &mut H) {
         if self.is_faulted() {
             hw.set_pwm(0);
             hw.set_enable(false);

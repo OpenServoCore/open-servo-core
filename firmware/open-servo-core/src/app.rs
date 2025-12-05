@@ -1,4 +1,4 @@
-use open_servo_hw::{MotorDriver, SystemTime};
+use open_servo_hw::BdcMotorDriver;
 use open_servo_control::{ControlLoop, PositionSensor, CurrentSensor, VoltageSensor, TemperatureSensor};
 use super::fault::{FaultKind, FaultState};
 use super::event::Event;
@@ -48,7 +48,7 @@ impl<C: ControlLoop> App<C> {
     /// This must execute deterministically without blocking
     pub fn on_control_tick<H>(&mut self, hw: &mut H)
     where
-        H: MotorDriver + PositionSensor + CurrentSensor + VoltageSensor + TemperatureSensor
+        H: BdcMotorDriver + PositionSensor + CurrentSensor + VoltageSensor + TemperatureSensor
     {
         // If faulted, ensure motor is safe and exit early
         if self.fault_state.is_faulted() {
@@ -80,7 +80,7 @@ impl<C: ControlLoop> App<C> {
     /// Handle soft events (called from main loop)
     pub fn handle_event<H>(&mut self, _hw: &mut H, event: Event)
     where
-        H: MotorDriver
+        H: BdcMotorDriver
     {
         match event {
             Event::UartRx { port: _, byte: _ } => {
@@ -100,7 +100,7 @@ impl<C: ControlLoop> App<C> {
     }
 
     /// Raise a fault (called from safety ISR or fault detection)
-    pub fn raise_fault<H: MotorDriver>(&mut self, hw: &mut H, kind: FaultKind) {
+    pub fn raise_fault<H: BdcMotorDriver>(&mut self, hw: &mut H, kind: FaultKind) {
         self.fault_state.raise(kind);
         self.fault_state.apply_safety(hw);
         
@@ -109,7 +109,7 @@ impl<C: ControlLoop> App<C> {
     }
 
     /// Clear fault (called via debug command or protocol)
-    pub fn clear_fault<H: MotorDriver>(&mut self, _hw: &mut H) {
+    pub fn clear_fault<H: BdcMotorDriver>(&mut self, _hw: &mut H) {
         self.fault_state.clear();
         self.controller.reset();
     }
