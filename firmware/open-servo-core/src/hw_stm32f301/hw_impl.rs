@@ -14,11 +14,11 @@ const ISENSE_AIPROPI: f32 = 1500.0; // uA/A
 const ISENSE_RESISTOR_OHM: f32 = 2200.0; // Ohm
 const ISENSE_FACTOR: f32 = ISENSE_AIPROPI / ISENSE_RESISTOR_OHM; // uA / V
 
-pub struct StmHw;
+pub struct Stm32f301Hw;
 
-impl StmHw {
+impl Stm32f301Hw {
     pub fn new() -> Self {
-        StmHw
+        Stm32f301Hw
     }
     
     #[inline(always)]
@@ -64,7 +64,7 @@ impl StmHw {
     }
 }
 
-impl Hw for StmHw {
+impl Hw for Stm32f301Hw {
     fn phase_current(&self) -> u16 {
         let [vref, _pot, isns, _setpoint, _temp] = Self::get_adc_values();
         let vdda = Self::convert_vdda(vref);
