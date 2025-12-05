@@ -6,6 +6,7 @@ use panic_probe as _;
 
 mod hw;
 mod hw_stm32f301;
+mod servo_core;
 
 use hw::Hw; // Import the Hw trait
 use hw_stm32f301::Stm32f301Hw; // Import the STM32F301 implementation
