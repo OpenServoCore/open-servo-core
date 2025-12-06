@@ -1,0 +1,10 @@
+[package]
+name = "open-servo-hw-utils"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+
+[dependencies]
+
+[features]
+default = []

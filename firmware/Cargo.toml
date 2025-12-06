@@ -1,0 +1,30 @@
+[workspace]
+members = [
+    "open-servo-core",
+    "open-servo-control",
+    "open-servo-hw",
+    "open-servo-hw-utils",
+    "open-servo-stm32f301",
+]
+resolver = "2"
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+authors = ["Aaron Q"]
+
+[workspace.dependencies]
+heapless = "0.8"
+pid = "4.0"
+cortex-m = { version = "0.7", features = ["critical-section-single-core"] }
+defmt = { version = "0.3", features = ["encoding-rzcobs"] }
+
+[profile.dev]
+panic = "abort"
+opt-level = "z"  # Optimize for size
+lto = "thin"     # Enable thin link-time optimization
+
+[profile.release]
+panic = "abort"
+lto = true       # Enable full link-time optimization
+codegen-units = 1  # Single codegen unit for better optimization
