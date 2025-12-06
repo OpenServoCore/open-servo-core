@@ -1,4 +1,5 @@
 use pid::Pid;
+use crate::units::*;
 use crate::traits::ControlLoop;
 
 #[derive(Debug, Clone, Copy)]
@@ -35,9 +36,9 @@ impl Default for PidConfig {
 pub struct PidController {
     pid: Pid<f32>,
     config: PidConfig,
-    setpoint: u16,
-    last_position: u16,
-    last_current: u16,
+    setpoint: CentiDeg,
+    last_position: CentiDeg,
+    last_current: MilliAmp,
 }
 
 impl PidController {
@@ -50,44 +51,48 @@ impl PidController {
         Self {
             pid,
             config,
-            setpoint: 2048, // Center position for 12-bit ADC
-            last_position: 0,
-            last_current: 0,
+            setpoint: CentiDeg::from_deg(90), // 90 degrees
+            last_position: CentiDeg::from_cdeg(0),
+            last_current: MilliAmp::from_ma(0),
         }
     }
 
-    pub fn set_setpoint(&mut self, setpoint: u16) {
+    pub fn set_setpoint(&mut self, setpoint: CentiDeg) {
         self.setpoint = setpoint;
     }
 
-    pub fn get_setpoint(&self) -> u16 {
+    pub fn get_setpoint(&self) -> CentiDeg {
         self.setpoint
     }
 
-    pub fn get_last_position(&self) -> u16 {
+    pub fn get_last_position(&self) -> CentiDeg {
         self.last_position
     }
 
-    pub fn get_last_current(&self) -> u16 {
+    pub fn get_last_current(&self) -> MilliAmp {
         self.last_current
     }
 
-    pub fn step(&mut self, current_ma: u16, position: u16, _bus_voltage_mv: u16) -> i32 {
+    pub fn step(&mut self, current: MilliAmp, position: CentiDeg, _bus_voltage: MilliVolt) -> i32 {
         self.last_position = position;
-        self.last_current = current_ma;
+        self.last_current = current;
+
+        // Convert to float for PID library (use raw centidegrees as float)
+        let setpoint_f32 = self.setpoint.as_cdeg() as f32;
+        let position_f32 = position.as_cdeg() as f32;
 
         // Run PID control on position
         let pid_output = self.pid
-            .setpoint(self.setpoint)
-            .next_control_output(position as f32);
+            .setpoint(setpoint_f32)
+            .next_control_output(position_f32);
 
-        let mut duty = pid_output.output as i32;
+        let mut output = pid_output.output;
         
         if self.config.reverse {
-            duty = -duty;
+            output = -output;
         }
 
-        duty
+        output as i32
     }
 
     /// Update PID gains at runtime
@@ -111,32 +116,39 @@ impl PidController {
 }
 
 impl ControlLoop for PidController {
-    fn compute(&mut self, _setpoint: u16, position: u16, _current: Option<u16>) -> i32 {
+    fn compute(&mut self, _setpoint: CentiDeg, position: CentiDeg, current: Option<MilliAmp>) -> i32 {
         self.last_position = position;
+        if let Some(c) = current {
+            self.last_current = c;
+        }
         
-        // Run PID control on position
+        // Convert to float for PID library
+        let setpoint_f32 = self.setpoint.as_cdeg() as f32;
+        let position_f32 = position.as_cdeg() as f32;
+        
+        // Run PID control on position (in centidegrees)
         let pid_output = self.pid
-            .setpoint(self.setpoint)
-            .next_control_output(position as f32);
+            .setpoint(setpoint_f32)
+            .next_control_output(position_f32);
 
-        let mut duty = pid_output.output as i32;
+        let mut output = pid_output.output;
         
         if self.config.reverse {
-            duty = -duty;
+            output = -output;
         }
 
-        duty
+        output as i32
     }
     
     fn reset(&mut self) {
         self.reset_pid();
     }
     
-    fn set_setpoint(&mut self, setpoint: u16) {
+    fn set_setpoint(&mut self, setpoint: CentiDeg) {
         self.setpoint = setpoint;
     }
     
-    fn get_setpoint(&self) -> u16 {
+    fn get_setpoint(&self) -> CentiDeg {
         self.setpoint
     }
 }

@@ -1,7 +1,7 @@
 use stm32f3::stm32f301 as pac;
 
 use open_servo_hw::{BdcMotorDriver, UartDriver, SystemTime, UartPort};
-use open_servo_control::{PositionSensor, CurrentSensor, VoltageSensor, TemperatureSensor};
+use open_servo_control::{PositionSensor, CurrentSensor, VoltageSensor, TemperatureSensor, CentiDeg, MilliAmp, MilliVolt, DeciC};
 
 use crate::hw_impl::Stm32f301Hw;
 
@@ -77,26 +77,42 @@ impl UartDriver for Board {
 
 #[cfg(feature = "potentiometer")]
 impl PositionSensor for Board {
-    fn read_position(&self) -> u16 {
+    fn read_position_raw(&self) -> u16 {
+        self.hw.position_raw()
+    }
+    
+    fn read_position(&self) -> CentiDeg {
         self.hw.position()
     }
 }
 
 #[cfg(feature = "current-sense")]
 impl CurrentSensor for Board {
-    fn read_current(&self) -> u16 {
-        self.hw.phase_current()
+    fn read_current_raw(&self) -> u16 {
+        self.hw.current_raw()
+    }
+    
+    fn read_current(&self) -> MilliAmp {
+        self.hw.current()
     }
 }
 
 impl VoltageSensor for Board {
-    fn read_voltage(&self) -> u16 {
-        self.hw.bus_voltage()
+    fn read_voltage_raw(&self) -> u16 {
+        self.hw.voltage_raw()
+    }
+    
+    fn read_voltage(&self) -> MilliVolt {
+        self.hw.voltage()
     }
 }
 
 impl TemperatureSensor for Board {
-    fn read_temperature(&self) -> Option<u16> {
+    fn read_temperature_raw(&self) -> Option<u16> {
+        self.hw.temperature_raw()
+    }
+    
+    fn read_temperature(&self) -> Option<DeciC> {
         self.hw.temperature()
     }
 }

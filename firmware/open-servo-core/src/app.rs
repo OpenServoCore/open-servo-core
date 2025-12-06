@@ -1,29 +1,29 @@
 use open_servo_hw::BdcMotorDriver;
 use open_servo_control::{ControlLoop, PositionSensor, CurrentSensor, VoltageSensor, TemperatureSensor};
+use open_servo_control::{CentiDeg, MilliAmp, MilliVolt, DeciC};
 use super::fault::{FaultKind, FaultState};
 use super::event::Event;
 
 /// System state information for debugging/telemetry
 #[derive(Copy, Clone)]
-#[cfg_attr(feature = "defmt", derive(defmt::Format))]
 pub struct SystemState {
-    pub setpoint: u16,
-    pub position: u16,
+    pub setpoint: CentiDeg,
+    pub position: CentiDeg,
     pub pwm_duty: i32,
-    pub current_ma: u16,
-    pub bus_voltage_mv: u16,
-    pub temperature_dk: Option<u16>,
+    pub current: MilliAmp,
+    pub bus_voltage: MilliVolt,
+    pub temperature: Option<DeciC>,
 }
 
 impl SystemState {
     fn new() -> Self {
         SystemState {
-            setpoint: 0,
-            position: 0,
+            setpoint: CentiDeg::from_cdeg(0),
+            position: CentiDeg::from_cdeg(0),
             pwm_duty: 0,
-            current_ma: 0,
-            bus_voltage_mv: 0,
-            temperature_dk: None,
+            current: MilliAmp::from_ma(0),
+            bus_voltage: MilliVolt::from_mv(0),
+            temperature: None,
         }
     }
 }
@@ -64,7 +64,7 @@ impl<C: ControlLoop> App<C> {
 
         // Run control loop
         let pwm_command = self.controller.compute(self.controller.get_setpoint(), position, Some(current));
-
+        
         // Apply PWM command
         hw.set_pwm(pwm_command);
 
@@ -72,9 +72,9 @@ impl<C: ControlLoop> App<C> {
         self.system_state.setpoint = self.controller.get_setpoint();
         self.system_state.position = position;
         self.system_state.pwm_duty = pwm_command;
-        self.system_state.current_ma = current;
-        self.system_state.bus_voltage_mv = bus_voltage;
-        self.system_state.temperature_dk = temperature;
+        self.system_state.current = current;
+        self.system_state.bus_voltage = bus_voltage;
+        self.system_state.temperature = temperature;
     }
 
     /// Handle soft events (called from main loop)
@@ -124,8 +124,8 @@ impl<C: ControlLoop> App<C> {
         self.fault_state.is_faulted()
     }
 
-    /// Set controller setpoint
-    pub fn set_setpoint(&mut self, setpoint: u16) {
+    /// Set controller setpoint (in centidegrees)
+    pub fn set_setpoint(&mut self, setpoint: CentiDeg) {
         self.controller.set_setpoint(setpoint);
     }
 }

@@ -1,0 +1,36 @@
+# STM32F301 (ARM Cortex-M4)
+[target.thumbv7em-none-eabihf]
+runner = "probe-rs run --chip STM32F301K8Ux"
+rustflags = [
+  "-C", "linker=flip-link",
+  "-C", "link-arg=-Tlink.x",
+  "-C", "link-arg=-Tdefmt.x",
+  "-C", "link-arg=--nmagic",
+]
+
+# CH32V003 (RISC-V) - will be added later
+# [target.riscv32imac-unknown-none-elf]
+# runner = "wch-link flash --chip CH32V003"
+# rustflags = [
+#   "-C", "link-arg=-Tlink.x",
+#   "-C", "link-arg=-Tdefmt.x",
+# ]
+
+# Don't set a default target - specify it per package
+
+[alias]
+# Generic aliases
+rb = "run"
+rrb = "run --release"
+bbr = "build --release"
+
+# Board-specific aliases
+stm32 = "run -p open-servo-stm32f301 --target thumbv7em-none-eabihf"
+stm32-release = "run -p open-servo-stm32f301 --target thumbv7em-none-eabihf --release"
+
+# Future CH32V003 aliases
+# ch32 = "run -p open-servo-ch32v003 --target riscv32imac-unknown-none-elf"
+# ch32-release = "run -p open-servo-ch32v003 --target riscv32imac-unknown-none-elf --release"
+
+[env]
+DEFMT_LOG = "trace"
