@@ -1,0 +1,19 @@
+[package]
+name = "open-servo-control"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+pid = { workspace = true }
+
+[features]
+default = ["pid"]
+pid = []
+cascade = []
+velocity = []
+foc = []
+defmt = ["dep:defmt"]
+
+[dependencies.defmt]
+workspace = true
+optional = true

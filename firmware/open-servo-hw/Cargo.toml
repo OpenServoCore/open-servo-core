@@ -1,0 +1,14 @@
+[package]
+name = "open-servo-hw"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+# No hardware-specific dependencies, just traits and common utilities
+
+[features]
+defmt = ["dep:defmt"]
+
+[dependencies.defmt]
+workspace = true
+optional = true
