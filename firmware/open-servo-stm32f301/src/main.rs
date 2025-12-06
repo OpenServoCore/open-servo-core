@@ -11,7 +11,8 @@ mod adc_sample;
 
 use board::Board;
 use open_servo_core::{App, EventProducer, EventConsumer, Event, EventQueue};
-use open_servo_control::PidController;
+use open_servo_control::{PidController, PositionSensor, CurrentSensor, VoltageSensor, TemperatureSensor};
+use open_servo_control::CentiDeg;
 use heapless::spsc::Queue;
 
 use core::cell::RefCell;
@@ -105,6 +106,39 @@ fn TIM2() {
         });
     }
     
+    // Log sensor data directly
+    free(|cs| {
+        let board_ref = BOARD.borrow(cs).borrow();
+        if let Some(board) = board_ref.as_ref() {
+            let position_raw = board.read_position_raw();
+            let position = board.read_position();
+            let current = board.read_current();
+            let current_raw = board.read_current_raw();
+            let voltage = board.read_voltage();
+            let temperature = board.read_temperature();
+            
+            // Get position in degrees with decimal
+            let deg = position.as_deg();
+            let deg_frac = (position.as_cdeg() - deg * 100).abs() / 10;
+            
+            // Already in display units
+            let current_ma = current.as_ma();
+            let voltage_mv = voltage.as_mv();
+            let temp_c = temperature.map(|t| t.as_celsius()).unwrap_or(0);
+            
+            defmt::info!(
+                "Pos: {}.{}° (raw: {}) | I: {}mA (raw: {}) | V: {}mV | T: {}°C",
+                deg,
+                deg_frac,
+                position_raw, 
+                current_ma,
+                current_raw,
+                voltage_mv, 
+                temp_c
+            );
+        }
+    });
+    
     // Enqueue SlowTick event
     free(|cs| {
         if let Some(producer) = EVENT_PRODUCER.borrow(cs).borrow_mut().as_mut() {
@@ -156,8 +190,8 @@ fn DMA1_CH1() {
         let mut board_ref = BOARD.borrow(cs).borrow_mut();
         
         if let (Some(app), Some(board)) = (app_ref.as_mut(), board_ref.as_mut()) {
-            // For V0, hardcode setpoint (will come from UART protocol in V1)
-            app.set_setpoint(2048); // Center position
+            // For V0, hardcode setpoint to 90 degrees
+            app.set_setpoint(CentiDeg::from_deg(90));
             
             // Run control loop
             app.on_control_tick(board);

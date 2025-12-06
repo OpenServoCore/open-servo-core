@@ -21,6 +21,10 @@ defmt = { version = "0.3", features = ["encoding-rzcobs"] }
 
 [profile.dev]
 panic = "abort"
+opt-level = "z"  # Optimize for size
+lto = "thin"     # Enable thin link-time optimization
 
 [profile.release]
 panic = "abort"
+lto = true       # Enable full link-time optimization
+codegen-units = 1  # Single codegen unit for better optimization
