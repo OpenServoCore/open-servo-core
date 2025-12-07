@@ -1,8 +1,8 @@
 #![no_main]
 #![no_std]
 
-use defmt_rtt as _;
-use panic_probe as _;
+use panic_rtt_target as _;
+use rtt_target::rtt_init_defmt;
 
 mod hw_impl;
 mod init;
@@ -36,6 +36,9 @@ static EVENT_CONSUMER: Mutex<RefCell<Option<EventConsumer<EVENT_QUEUE_SIZE>>>> =
 
 #[entry]
 fn main() -> ! {
+    // Initialize RTT for defmt logging (must be first)
+    rtt_init_defmt!();
+
     // Initialize board with all peripherals
     let board = Board::init();
     free(|cs| BOARD.borrow(cs).replace(Some(board)));

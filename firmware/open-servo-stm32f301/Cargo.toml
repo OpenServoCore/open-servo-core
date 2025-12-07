@@ -21,8 +21,8 @@ cortex-m-rt = { version = "0.7.5" }
 
 # Debug/logging
 defmt = { workspace = true }
-defmt-rtt = { version = "0.4.1" }
-panic-probe = { version = "0.3", features = ["print-defmt"] }
+rtt-target = { version = "0.6", features = ["defmt"] }
+panic-rtt-target = { version = "0.2", features = ["defmt"] }
 
 # Other
 heapless = { workspace = true }
