@@ -16,13 +16,15 @@ authors = ["Aaron Q"]
 [workspace.dependencies]
 heapless = "0.8"
 pid = "4.0"
-cortex-m = { version = "0.7", features = ["critical-section-single-core"] }
 defmt = { version = "0.3", features = ["encoding-rzcobs"] }
+rtt-target = { version = "0.6", features = ["defmt"] }
+panic-rtt-target = { version = "0.2", features = ["defmt"] }
 
 [profile.dev]
 panic = "abort"
 opt-level = "z"  # Optimize for size
-lto = "thin"     # Enable thin link-time optimization
+lto = true       # Enable full link-time optimization
+codegen-units = 1  # Single codegen unit for better optimization
 
 [profile.release]
 panic = "abort"
