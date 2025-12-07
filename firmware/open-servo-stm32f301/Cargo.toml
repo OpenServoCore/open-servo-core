@@ -16,13 +16,13 @@ open-servo-hw-utils = { path = "../open-servo-hw-utils" }
 
 # STM32-specific
 stm32f3 = { version = "0.15.1", features = ["stm32f301", "rt"] }
-cortex-m = { workspace = true }
+cortex-m = { version = "0.7", features = ["critical-section-single-core"] }
 cortex-m-rt = { version = "0.7.5" }
 
 # Debug/logging
 defmt = { workspace = true }
-rtt-target = { version = "0.6", features = ["defmt"] }
-panic-rtt-target = { version = "0.2", features = ["defmt"] }
+rtt-target = { workspace = true }
+panic-rtt-target = { workspace = true }
 
 # Other
 heapless = { workspace = true }
