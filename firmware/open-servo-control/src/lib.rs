@@ -15,4 +15,4 @@ pub use traits::*;
 pub use units::*;
 
 #[cfg(feature = "pid")]
-pub use pid::{PidController, PidConfig};
+pub use pid::{PidConfig, PidController};

@@ -1,6 +1,6 @@
-use pid::Pid;
-use crate::units::*;
 use crate::traits::ControlLoop;
+use crate::units::*;
+use pid::Pid;
 
 #[derive(Debug, Clone, Copy)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
@@ -19,7 +19,7 @@ impl Default for PidConfig {
     fn default() -> Self {
         // PWM_MAX_DUTY is ~1799 for 20kHz PWM at 72MHz
         const PWM_MAX: f32 = 1799.0;
-        
+
         Self {
             kp: 40.0,
             ki: 0.0,
@@ -82,12 +82,13 @@ impl PidController {
         let position_f32 = position.as_cdeg() as f32;
 
         // Run PID control on position
-        let pid_output = self.pid
+        let pid_output = self
+            .pid
             .setpoint(setpoint_f32)
             .next_control_output(position_f32);
 
         let mut output = pid_output.output;
-        
+
         if self.config.reverse {
             output = -output;
         }
@@ -100,7 +101,7 @@ impl PidController {
         self.config.kp = kp;
         self.config.ki = ki;
         self.config.kd = kd;
-        
+
         self.pid.p(kp, self.config.kp_max);
         self.pid.i(ki, self.config.ki_max);
         self.pid.d(kd, self.config.kd_max);
@@ -116,38 +117,44 @@ impl PidController {
 }
 
 impl ControlLoop for PidController {
-    fn compute(&mut self, _setpoint: CentiDeg, position: CentiDeg, current: Option<MilliAmp>) -> i32 {
+    fn compute(
+        &mut self,
+        _setpoint: CentiDeg,
+        position: CentiDeg,
+        current: Option<MilliAmp>,
+    ) -> i32 {
         self.last_position = position;
         if let Some(c) = current {
             self.last_current = c;
         }
-        
+
         // Convert to float for PID library
         let setpoint_f32 = self.setpoint.as_cdeg() as f32;
         let position_f32 = position.as_cdeg() as f32;
-        
+
         // Run PID control on position (in centidegrees)
-        let pid_output = self.pid
+        let pid_output = self
+            .pid
             .setpoint(setpoint_f32)
             .next_control_output(position_f32);
 
         let mut output = pid_output.output;
-        
+
         if self.config.reverse {
             output = -output;
         }
 
         output as i32
     }
-    
+
     fn reset(&mut self) {
         self.reset_pid();
     }
-    
+
     fn set_setpoint(&mut self, setpoint: CentiDeg) {
         self.setpoint = setpoint;
     }
-    
+
     fn get_setpoint(&self) -> CentiDeg {
         self.setpoint
     }

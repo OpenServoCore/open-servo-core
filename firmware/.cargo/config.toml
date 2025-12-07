@@ -25,8 +25,8 @@ rrb = "run --release"
 bbr = "build --release"
 
 # Board-specific aliases
-stm32 = "run -p open-servo-stm32f301 --target thumbv7em-none-eabihf"
-stm32-release = "run -p open-servo-stm32f301 --target thumbv7em-none-eabihf --release"
+stm32 = "embed --target thumbv7em-none-eabihf -p open-servo-stm32f301"
+stm32-release = "embed --target thumbv7em-none-eabihf -p open-servo-stm32f301 --release"
 
 # Future CH32V003 aliases
 # ch32 = "run -p open-servo-ch32v003 --target riscv32imac-unknown-none-elf"

@@ -1,0 +1,22 @@
+[default.general]
+chip = "STM32F301K8Ux"
+
+[default.rtt]
+enabled = true
+timeout = 3000
+
+# Tab 0: defmt logs (channel 0, up only)
+# Tab 1: REPL interactive (channel 1, up + down paired)
+tabs = [
+    { up_channel = 0, name = "defmt", format = "Defmt" },
+    { up_channel = 1, down_channel = 1, name = "repl", format = "String" },
+]
+
+[default.reset]
+halt_afterwards = false
+
+[default.flashing]
+enabled = true
+
+[default.gdb]
+enabled = false

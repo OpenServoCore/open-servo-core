@@ -1,10 +1,10 @@
-use stm32f3::stm32f301 as pac;
+use open_servo_control::{mul_div_i32, Adc12, CentiDeg, DeciC, MilliAmp, MilliVolt};
 use open_servo_hw::UartPort;
 use open_servo_hw_utils::adc_dma;
-use open_servo_control::{Adc12, MilliAmp, MilliVolt, CentiDeg, DeciC, mul_div_i32};
+use stm32f3::stm32f301 as pac;
 
-use crate::init::tim::PWM_MAX_DUTY;
 use crate::adc_sample::AdcSample;
+use crate::init::tim::PWM_MAX_DUTY;
 
 // ADC calibration constants
 const VREFINT_CAL_ADDR: u32 = 0x1FFFF7BA;
@@ -17,17 +17,17 @@ impl Stm32f301Hw {
     pub fn new() -> Self {
         Stm32f301Hw
     }
-    
+
     #[inline(always)]
     fn tim1(&self) -> &pac::tim1::RegisterBlock {
         unsafe { &(*pac::TIM1::ptr()) }
     }
-    
+
     #[inline(always)]
     fn tim2(&self) -> &pac::tim2::RegisterBlock {
         unsafe { &(*pac::TIM2::ptr()) }
     }
-    
+
     #[inline(always)]
     fn gpioa(&self) -> &pac::gpioa::RegisterBlock {
         unsafe { &(*pac::GPIOA::ptr()) }
@@ -52,23 +52,23 @@ impl Stm32f301Hw {
     fn convert_temperature_dc(adc_value: u16, vdda_mv: u16) -> DeciC {
         let ts_cal1: u16 = unsafe { core::ptr::read(TS_CAL1_ADDR as *const u16) };
         let ts_cal2: u16 = unsafe { core::ptr::read(TS_CAL2_ADDR as *const u16) };
-        
+
         // Calibration points: 30°C and 110°C at 3.3V
         // Calculate actual temperature using linear interpolation
         // temp_c = 30 + (adc - ts_cal1) * 80 / (ts_cal2 - ts_cal1) * 3300 / vdda_mv
-        
+
         // Ensure calibration values are valid
         if ts_cal2 <= ts_cal1 || vdda_mv == 0 {
             // Invalid calibration data or vdda, return room temperature
             return DeciC::from_celsius(25);
         }
-        
+
         let adc_normalized = mul_div_i32(adc_value as i32, 3300, vdda_mv as i32);
         let cal_diff = (ts_cal2 as i32) - (ts_cal1 as i32);
         let adc_diff = adc_normalized - (ts_cal1 as i32);
-        
+
         let temp_c = 30 + mul_div_i32(adc_diff, 80, cal_diff);
-        
+
         // Clamp to reasonable range
         let temp_c = temp_c.clamp(-40, 125);
         DeciC::from_celsius(temp_c as i16)
@@ -80,7 +80,7 @@ impl Stm32f301Hw {
         let sample = Self::get_adc_sample();
         sample.current_raw
     }
-    
+
     pub fn current(&self) -> MilliAmp {
         let sample = Self::get_adc_sample();
         MilliAmp::from_ipropi_adc(Adc12::from_raw(sample.current_raw))
@@ -90,7 +90,7 @@ impl Stm32f301Hw {
         let sample = Self::get_adc_sample();
         sample.position_raw
     }
-    
+
     pub fn position(&self) -> CentiDeg {
         let raw = self.position_raw();
         CentiDeg::from_pot_adc(Adc12::from_raw(raw))
@@ -100,7 +100,7 @@ impl Stm32f301Hw {
         let sample = Self::get_adc_sample();
         sample.vrefint_raw // VREF ADC value as proxy for bus voltage
     }
-    
+
     pub fn voltage(&self) -> MilliVolt {
         let sample = Self::get_adc_sample();
         let vdda_mv = Self::convert_vdda_mv(sample.vrefint_raw);
@@ -111,7 +111,7 @@ impl Stm32f301Hw {
         let sample = Self::get_adc_sample();
         Some(sample.temperature_raw)
     }
-    
+
     pub fn temperature(&self) -> Option<DeciC> {
         let sample = Self::get_adc_sample();
         let vdda_mv = Self::convert_vdda_mv(sample.vrefint_raw);

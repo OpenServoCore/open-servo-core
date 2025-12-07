@@ -29,7 +29,8 @@ heapless = { workspace = true }
 pid = { workspace = true }
 
 [features]
-default = ["potentiometer", "current-sense"]
+default = ["potentiometer", "current-sense", "debug_rtt"]
 potentiometer = []
 encoder = []
 current-sense = []
+debug_rtt = []

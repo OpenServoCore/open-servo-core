@@ -1,8 +1,10 @@
-use open_servo_hw::BdcMotorDriver;
-use open_servo_control::{ControlLoop, PositionSensor, CurrentSensor, VoltageSensor, TemperatureSensor};
-use open_servo_control::{CentiDeg, MilliAmp, MilliVolt, DeciC};
-use super::fault::{FaultKind, FaultState};
 use super::event::Event;
+use super::fault::{FaultKind, FaultState};
+use open_servo_control::{CentiDeg, DeciC, MilliAmp, MilliVolt};
+use open_servo_control::{
+    ControlLoop, CurrentSensor, PositionSensor, TemperatureSensor, VoltageSensor,
+};
+use open_servo_hw::BdcMotorDriver;
 
 /// System state information for debugging/telemetry
 #[derive(Copy, Clone)]
@@ -48,7 +50,7 @@ impl<C: ControlLoop> App<C> {
     /// This must execute deterministically without blocking
     pub fn on_control_tick<H>(&mut self, hw: &mut H)
     where
-        H: BdcMotorDriver + PositionSensor + CurrentSensor + VoltageSensor + TemperatureSensor
+        H: BdcMotorDriver + PositionSensor + CurrentSensor + VoltageSensor + TemperatureSensor,
     {
         // If faulted, ensure motor is safe and exit early
         if self.fault_state.is_faulted() {
@@ -63,8 +65,10 @@ impl<C: ControlLoop> App<C> {
         let temperature = hw.read_temperature();
 
         // Run control loop
-        let pwm_command = self.controller.compute(self.controller.get_setpoint(), position, Some(current));
-        
+        let pwm_command =
+            self.controller
+                .compute(self.controller.get_setpoint(), position, Some(current));
+
         // Apply PWM command
         hw.set_pwm(pwm_command);
 
@@ -80,7 +84,7 @@ impl<C: ControlLoop> App<C> {
     /// Handle soft events (called from main loop)
     pub fn handle_event<H>(&mut self, _hw: &mut H, event: Event)
     where
-        H: BdcMotorDriver
+        H: BdcMotorDriver,
     {
         match event {
             Event::UartRx { port: _, byte: _ } => {
@@ -103,7 +107,7 @@ impl<C: ControlLoop> App<C> {
     pub fn raise_fault<H: BdcMotorDriver>(&mut self, hw: &mut H, kind: FaultKind) {
         self.fault_state.raise(kind);
         self.fault_state.apply_safety(hw);
-        
+
         // Reset controller to clear integral windup
         self.controller.reset();
     }

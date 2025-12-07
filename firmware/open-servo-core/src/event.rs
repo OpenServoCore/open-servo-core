@@ -1,7 +1,7 @@
-use heapless::spsc::{Consumer, Producer, Queue};
-use open_servo_hw::UartPort;
 use super::fault::FaultKind;
 use core::sync::atomic::{AtomicBool, Ordering};
+use heapless::spsc::{Consumer, Producer, Queue};
+use open_servo_hw::UartPort;
 
 /// Events that flow through the system
 #[derive(Debug, Clone, Copy)]
@@ -9,10 +9,10 @@ use core::sync::atomic::{AtomicBool, Ordering};
 pub enum Event {
     /// UART byte received
     UartRx { port: UartPort, byte: u8 },
-    
+
     /// Slow tick for periodic tasks (e.g., telemetry, status)
     SlowTick,
-    
+
     /// Fault occurred (for monitoring/logging, not safety-critical path)
     Fault(FaultKind),
 }
@@ -28,7 +28,7 @@ pub struct EventQueue<const N: usize> {
 
 impl<const N: usize> EventQueue<N> {
     /// Initialize the event queue from a static mutable queue
-    /// 
+    ///
     /// The queue must have 'static lifetime and this should only be called once
     /// before any interrupts are enabled.
     pub fn from_queue(queue: &'static mut Queue<Event, N>) -> Self {
@@ -39,8 +39,12 @@ impl<const N: usize> EventQueue<N> {
     /// Split into producer and consumer
     pub fn split(self) -> (EventProducer<N>, EventConsumer<N>) {
         (
-            EventProducer { producer: self.producer },
-            EventConsumer { consumer: self.consumer },
+            EventProducer {
+                producer: self.producer,
+            },
+            EventConsumer {
+                consumer: self.consumer,
+            },
         )
     }
 }
@@ -62,7 +66,7 @@ impl<const N: usize> EventProducer<N> {
             true
         }
     }
-    
+
     /// Check and clear queue overflow flag
     /// Returns true if overflow occurred since last check
     pub fn check_overflow() -> bool {
