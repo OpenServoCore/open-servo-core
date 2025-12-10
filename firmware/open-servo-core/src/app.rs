@@ -9,10 +9,12 @@
 
 use open_servo_control::ControlLoop;
 use open_servo_hw::motor::BdcMotorDriver;
-use open_servo_hw::sensor::{
-    PositionSensor, SafetyCurrentSource, SafetyTemperatureSource, SafetyVoltageSource,
-};
-use open_servo_math::{CentiDeg, DeciC, MilliAmp};
+#[cfg(feature = "current-sense-bus")]
+use open_servo_hw::sensor::SafetyCurrentSource;
+use open_servo_hw::sensor::{PositionSensor, SafetyMcuTempSource, SafetyVoltageSource};
+use open_servo_math::{CentiDeg, DeciC};
+#[cfg(feature = "current-sense-bus")]
+use open_servo_math::MilliAmp;
 
 use crate::event::Event;
 use crate::fault::FaultKind;
@@ -35,7 +37,7 @@ pub use crate::servo_core::SystemState as AppSystemState;
 /// - `PositionSensor` - Position feedback (required)
 /// - `SafetyCurrentSource` - Current sensing (optional via blanket impl)
 /// - `SafetyVoltageSource` - Voltage sensing (optional via blanket impl)
-/// - `SafetyTemperatureSource` - Temperature sensing (optional via blanket impl)
+/// - `SafetyMcuTempSource` - MCU temperature sensing (optional via blanket impl)
 ///
 /// Boards without certain sensors implement the Safety*Source traits
 /// directly, returning `None`. SafetyManager then skips those checks.
@@ -59,20 +61,48 @@ impl<C: ControlLoop> App<C> {
     ///
     /// Safety checks are performed in ServoCore. Checks for missing sensors
     /// (those returning `None`) are automatically skipped.
+    #[cfg(feature = "current-sense-bus")]
     pub fn on_control_tick<H>(&mut self, hw: &mut H)
     where
         H: BdcMotorDriver
             + PositionSensor
             + SafetyCurrentSource
             + SafetyVoltageSource
-            + SafetyTemperatureSource,
+            + SafetyMcuTempSource,
     {
         // Build inputs from hardware
         let inputs = FastInputs {
             position: hw.read_position(),
             current: hw.read_safety_current(),
             bus_voltage: hw.read_safety_voltage(),
-            temperature: hw.read_safety_temperature(),
+            temperature: hw.read_safety_mcu_temp(),
+        };
+
+        // Run pure control logic
+        let outputs = self.core.fast_tick(inputs);
+
+        // Apply outputs to hardware
+        if outputs.motor_enable {
+            hw.set_pwm(outputs.pwm_command);
+        } else {
+            hw.set_pwm(0);
+            hw.set_enable(false);
+        }
+    }
+
+    /// Hard real-time control tick (called from DMA/Timer ISR at 10kHz).
+    ///
+    /// Version without current sensing.
+    #[cfg(not(feature = "current-sense-bus"))]
+    pub fn on_control_tick<H>(&mut self, hw: &mut H)
+    where
+        H: BdcMotorDriver + PositionSensor + SafetyVoltageSource + SafetyMcuTempSource,
+    {
+        // Build inputs from hardware (no current sensor)
+        let inputs = FastInputs {
+            position: hw.read_position(),
+            bus_voltage: hw.read_safety_voltage(),
+            temperature: hw.read_safety_mcu_temp(),
         };
 
         // Run pure control logic
@@ -169,14 +199,15 @@ impl<C: ControlLoop> App<C> {
         self.core.safety_mut().set_thresholds(thresholds);
     }
 
-    /// Set over-current threshold.
+    /// Set over-current threshold (requires `current-sense` feature).
+    #[cfg(feature = "current-sense-bus")]
     pub fn set_current_limit(&mut self, limit: MilliAmp) {
         self.core.safety_mut().thresholds_mut().current_limit = limit;
     }
 
-    /// Set over-temperature threshold.
-    pub fn set_temp_limit(&mut self, limit: DeciC) {
-        self.core.safety_mut().thresholds_mut().temp_limit = limit;
+    /// Set MCU over-temperature threshold.
+    pub fn set_mcu_temp_limit(&mut self, limit: DeciC) {
+        self.core.safety_mut().thresholds_mut().mcu_temp_limit = limit;
     }
 
     /// Set maximum position delta per tick.

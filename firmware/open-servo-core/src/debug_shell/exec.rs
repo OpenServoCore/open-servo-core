@@ -10,13 +10,17 @@ use crate::safety::SafetyThresholds;
 use crate::App;
 use open_servo_control::ControlLoop;
 use open_servo_hw::{BdcMotorDriver, DebugIo};
-use open_servo_math::{CentiDeg, DeciC, DerivativeMode, Gain, MilliAmp};
+use open_servo_math::{CentiDeg, DeciC, DerivativeMode, Gain};
+#[cfg(feature = "current-sense-bus")]
+use open_servo_math::MilliAmp;
 
 /// Format FaultKind as a short string.
 fn fault_str(kind: FaultKind) -> &'static str {
     match kind {
         FaultKind::OverCurrent => "overcurrent",
-        FaultKind::OverTemp => "overtemp",
+        FaultKind::McuOverTemp => "mcu_overtemp",
+        FaultKind::MotorOverTemp => "motor_overtemp",
+        FaultKind::DriverOverTemp => "driver_overtemp",
         FaultKind::UnderVoltage => "undervolt",
         FaultKind::QueuePressure => "queue",
         FaultKind::EncoderFault => "encoder",
@@ -42,6 +46,7 @@ impl<D: DebugIo> DebugShell<D> {
             Command::Fault(FaultCmd::Clear) => self.cmd_fault_clear(app, hw),
             Command::Set(SetCmd::Sp(val)) => self.cmd_set_sp(app, val),
             Command::Limit(LimitCmd::Show) => self.cmd_limit_show(app),
+            #[cfg(feature = "current-sense-bus")]
             Command::Limit(LimitCmd::Current(val)) => self.cmd_limit_current(app, val),
             Command::Limit(LimitCmd::Temp(val)) => self.cmd_limit_temp(app, val),
             Command::Limit(LimitCmd::Delta(val)) => self.cmd_limit_delta(app, val),
@@ -77,6 +82,7 @@ impl<D: DebugIo> DebugShell<D> {
         self.println("  pid pos set <kp> <ki> <kd> - set all gains");
         self.println("  pid pos mode err|meas     - set D mode");
         self.println("  limit                     - show safety limits");
+        #[cfg(feature = "current-sense-bus")]
         self.println("  limit current [mA]        - get/set current limit");
         self.println("  limit temp [dC]           - get/set temp limit");
         self.println("  limit delta [cdeg]        - get/set max pos delta");
@@ -101,12 +107,15 @@ impl<D: DebugIo> DebugShell<D> {
         );
         self.println(&buf);
 
-        // Current (optional)
+        // Current (only with current-sense feature)
         buf.clear();
-        if let Some(current) = s.current {
-            let _ = write!(buf, "I={}mA", current.as_ma());
-        } else {
-            let _ = write!(buf, "I=n/a");
+        #[cfg(feature = "current-sense-bus")]
+        {
+            if let Some(current) = s.current {
+                let _ = write!(buf, "I={}mA", current.as_ma());
+            } else {
+                let _ = write!(buf, "I=n/a");
+            }
         }
 
         // Voltage (optional)
@@ -167,11 +176,19 @@ impl<D: DebugIo> DebugShell<D> {
         let t = app.get_thresholds();
         let mut buf: String<96> = String::new();
 
+        #[cfg(feature = "current-sense-bus")]
         let _ = write!(
             buf,
-            "current={}mA temp={}dC delta={}cdeg",
+            "current={}mA mcu_temp={}dC delta={}cdeg",
             t.current_limit.as_ma(),
-            t.temp_limit.as_dc(),
+            t.mcu_temp_limit.as_dc(),
+            t.position_max_delta.as_cdeg(),
+        );
+        #[cfg(not(feature = "current-sense-bus"))]
+        let _ = write!(
+            buf,
+            "mcu_temp={}dC delta={}cdeg",
+            t.mcu_temp_limit.as_dc(),
             t.position_max_delta.as_cdeg(),
         );
         self.println(&buf);
@@ -201,6 +218,7 @@ impl<D: DebugIo> DebugShell<D> {
         self.println(&buf);
     }
 
+    #[cfg(feature = "current-sense-bus")]
     fn cmd_limit_current<C: ControlLoop>(&mut self, app: &mut App<C>, val: Option<i16>) {
         if let Some(ma) = val {
             app.set_current_limit(MilliAmp::from_ma(ma));
@@ -217,14 +235,14 @@ impl<D: DebugIo> DebugShell<D> {
 
     fn cmd_limit_temp<C: ControlLoop>(&mut self, app: &mut App<C>, val: Option<i16>) {
         if let Some(dc) = val {
-            app.set_temp_limit(DeciC::from_dc(dc));
+            app.set_mcu_temp_limit(DeciC::from_dc(dc));
             let mut buf: String<48> = String::new();
-            let _ = write!(buf, "ok, temp={}dC", dc);
+            let _ = write!(buf, "ok, mcu_temp={}dC", dc);
             self.println(&buf);
         } else {
             let t = app.get_thresholds();
             let mut buf: String<48> = String::new();
-            let _ = write!(buf, "temp={}dC", t.temp_limit.as_dc());
+            let _ = write!(buf, "mcu_temp={}dC", t.mcu_temp_limit.as_dc());
             self.println(&buf);
         }
     }

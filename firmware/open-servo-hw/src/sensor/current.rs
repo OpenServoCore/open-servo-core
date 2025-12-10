@@ -37,6 +37,8 @@ impl<T: BusCurrentSensor> SafetyCurrentSource for T {
 /// Phase current sensing (for BLDC FOC, 2-3 shunts).
 ///
 /// Used for field-oriented control where per-phase current is needed.
+/// Only available when `current-sense-phase` feature is enabled.
+#[cfg(feature = "current-sense-phase")]
 pub trait PhaseCurrentSensor {
     /// Read phase currents (A, B, C) in milliamps.
     ///

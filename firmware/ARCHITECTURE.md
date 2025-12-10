@@ -726,4 +726,191 @@ This architecture ensures:
 - **defmt-based logging** provides leveled logs with small target-side code size, and can be feature-gated off on tiny MCUs.
 - **Minimal ISR work**, with all parsing, logging, and RTT interaction done in the main loop, and bounded per-iteration work in the debug shell.
 
-The RTT-based debug REPL plus defmt logging act as a “soft dev console” that can be expanded over time (more commands, binary snapshots) without touching the hard real-time control loop or safety-critical paths.
+The RTT-based debug REPL plus defmt logging act as a "soft dev console" that can be expanded over time (more commands, binary snapshots) without touching the hard real-time control loop or safety-critical paths.
+
+---
+
+## **15. Capability Features & Compile-Time Enforcement**
+
+Hardware capabilities are expressed as Cargo features that propagate from board crates through the core logic. This enables:
+
+- **Compile-time guarantees**: Control loops requiring specific sensors fail to compile if the sensor feature is missing
+- **Code size optimization**: Unused capability code is excluded from the binary
+- **Clean call sites**: No `#[cfg]` scattered throughout business logic
+
+### **15.1 Feature Propagation Chain**
+
+Features flow from board crates (which know what hardware exists) down to logic crates:
+
+```
+open-servo-stm32f301               open-servo-core                  open-servo-control
+┌────────────────────┐             ┌────────────────────┐           ┌────────────────────┐
+│ current-sense-bus ─┼────────────→│ current-sense-bus ─┼──────────→│ current-sense-bus  │
+│ debug-shell ───────┼────────────→│ debug-shell        │           │                    │
+└────────────────────┘             └────────────────────┘           └────────────────────┘
+```
+
+In `Cargo.toml`:
+
+```toml
+# Board crate (open-servo-stm32f301)
+[features]
+current-sense-bus = ["open-servo-core/current-sense-bus"]
+debug-shell = ["open-servo-core/debug-shell"]
+
+# Core crate (open-servo-core)
+[features]
+current-sense-bus = ["open-servo-control/current-sense-bus"]
+debug-shell = []
+
+# Control crate (open-servo-control)
+[features]
+current-sense-bus = []               # Bus current (BDC)
+cascade = ["current-sense-bus"]      # Requires bus current sensing
+foc = ["open-servo-hw/motor-bldc", "open-servo-hw/current-sense-phase"]  # BLDC path
+```
+
+### **15.2 Required vs Optional Features**
+
+**Required capabilities** are assumed to always exist—code compiles unconditionally:
+
+| Capability | Description | Notes |
+|------------|-------------|-------|
+| Position sensor | Servo output angle feedback | Required for any servo. Board implements `PositionSensor` trait. |
+| `pid` | Basic position PID | Default control loop, always compiled. |
+
+The specific position sensor technology (potentiometer, magnetic encoder, etc.) is a **board-level implementation detail**. Core only sees `PositionSensor::read_position()`.
+
+**Optional capabilities** may or may not exist on a given board:
+
+| Feature | Description | When Missing |
+|---------|-------------|--------------|
+| `current-sense-bus` | Bus current measurement (BDC) | Overcurrent protection disabled, cascade unavailable |
+| `debug-shell` | RTT/UART debug REPL | No interactive debugging (~12KB flash saved) |
+| `cascade` | Cascaded control loops | Must use position-only PID |
+| `motor-encoder` | Motor-side encoder | No backlash compensation (future feature) |
+
+**BLDC/FOC features** (future - different hardware stack):
+
+| Feature | Description | Required Hardware |
+|---------|-------------|-------------------|
+| `motor-bldc` | 3-phase BLDC driver traits | 3-phase inverter, hall sensors or encoder |
+| `current-sense-phase` | Per-phase current measurement | 2-3 current shunts |
+| `foc` | Field-oriented control | Both `motor-bldc` + `current-sense-phase` |
+
+The key distinction:
+- **Required**: Code assumes it exists. No `#[cfg]` gates. Board must implement the trait.
+- **Optional**: Code must handle absence gracefully via stub pattern or `#[cfg]` gates.
+- **Motor-specific**: BDC and BLDC are separate hardware stacks with different traits.
+
+### **15.3 Always-Callable Stub Pattern**
+
+Safety and input methods always exist but become no-ops when their capability is missing. This keeps call sites clean:
+
+```rust
+// SafetyManager - method always exists
+pub fn check_current(&self, current: Option<MilliAmp>) -> Option<FaultKind> {
+    #[cfg(feature = "current-sense-bus")]
+    {
+        current.and_then(|c| {
+            if c.abs() > self.thresholds.current_limit {
+                Some(FaultKind::OverCurrent)
+            } else {
+                None
+            }
+        })
+    }
+    #[cfg(not(feature = "current-sense-bus"))]
+    {
+        let _ = current;
+        None  // No-op when current sensing unavailable
+    }
+}
+
+// FastInputs - accessor always exists
+impl FastInputs {
+    pub fn current(&self) -> Option<MilliAmp> {
+        #[cfg(feature = "current-sense-bus")]
+        { self.current }
+        #[cfg(not(feature = "current-sense-bus"))]
+        { None }
+    }
+}
+```
+
+Call sites are unconditional:
+
+```rust
+// No #[cfg] needed - check_current is always callable
+if let Some(fault) = self.safety.check_current(inputs.current()) {
+    self.raise_fault(fault);
+    return FastOutputs::fault(fault);
+}
+```
+
+### **15.4 Compile-Time Enforcement**
+
+Control loops that require specific sensors declare feature dependencies:
+
+```toml
+# In open-servo-control/Cargo.toml
+cascade = ["current-sense-bus"]  # Cascade control needs bus current feedback
+```
+
+Attempting to enable `cascade` without `current-sense-bus` produces a compile error:
+
+```
+error: feature `cascade` requires feature `current-sense-bus`
+```
+
+This prevents configuration mistakes that would result in runtime failures.
+
+### **15.5 Debug Shell Command Visibility**
+
+Commands for unavailable capabilities are completely hidden—not shown in help, not parsed:
+
+```rust
+pub enum LimitCmd {
+    #[cfg(feature = "current-sense-bus")]
+    Current(Option<i16>),  // Only exists when bus current sensing available
+    Temp(Option<i16>),
+    // ...
+}
+
+fn cmd_help(&mut self) {
+    self.println("commands:");
+    #[cfg(feature = "current-sense-bus")]
+    self.println("  limit current [mA]  - get/set current limit");
+    self.println("  limit temp [dC]     - get/set temp limit");
+    // ...
+}
+```
+
+This provides a clean UX: users only see commands that actually work on their hardware.
+
+### **15.6 Adding New Capabilities**
+
+To add a new capability (e.g., `encoder`):
+
+1. **Define feature in control crate** with any dependencies:
+   ```toml
+   # open-servo-control/Cargo.toml
+   encoder = []
+   velocity-pid = ["encoder"]  # Velocity control needs encoder
+   ```
+
+2. **Propagate through core**:
+   ```toml
+   # open-servo-core/Cargo.toml
+   encoder = ["open-servo-control/encoder"]
+   ```
+
+3. **Enable in board crate**:
+   ```toml
+   # open-servo-stm32f301/Cargo.toml
+   encoder = ["open-servo-core/encoder"]
+   ```
+
+4. **Gate related code** using the stub pattern (methods always exist) or `#[cfg]` (types/fields).
+
+5. **Hide debug commands** for the capability when feature is disabled.

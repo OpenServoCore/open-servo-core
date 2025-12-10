@@ -37,6 +37,7 @@ pub enum SetCmd {
 #[derive(Debug)]
 pub enum LimitCmd {
     Show,
+    #[cfg(feature = "current-sense-bus")]
     Current(Option<i16>),
     Temp(Option<i16>),
     Delta(Option<i16>),
@@ -135,6 +136,7 @@ impl Command {
 
             "limit" => match ap.next_str() {
                 None => Ok(Command::Limit(LimitCmd::Show)),
+                #[cfg(feature = "current-sense-bus")]
                 Some("current") => {
                     let val = ap.next::<i16>("mA")?;
                     ap.end()?;
@@ -308,6 +310,7 @@ mod tests {
         assert!(matches!(parse("limit"), Ok(Command::Limit(LimitCmd::Show))));
     }
 
+    #[cfg(feature = "current-sense-bus")]
     #[test]
     fn test_limit_current() {
         // Get current value

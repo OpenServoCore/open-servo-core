@@ -9,9 +9,9 @@ use open_servo_math::{CentiDeg, DeciC, MilliAmp};
 /// while detecting faults before DRV8231A hardware limiting (~1.5A)
 pub const DEFAULT_CURRENT_LIMIT_MA: i16 = 800;
 
-/// Default over-temperature threshold: 800 deciC (80.0°C)
+/// Default MCU over-temperature threshold: 800 deciC (80.0°C)
 /// STM32F301 max junction temp is 105°C, leave margin
-pub const DEFAULT_TEMP_LIMIT_DC: i16 = 800;
+pub const DEFAULT_MCU_TEMP_LIMIT_DC: i16 = 800;
 
 /// Default max position change per tick: 500 centidegrees (5.0°)
 /// At 10kHz, this allows ~50,000 deg/sec motion
@@ -54,7 +54,7 @@ pub struct SafetyThresholds {
     pub current_limit: MilliAmp,
 
     /// Maximum allowed MCU temperature
-    pub temp_limit: DeciC,
+    pub mcu_temp_limit: DeciC,
 
     /// Maximum allowed position change per control tick
     pub position_max_delta: CentiDeg,
@@ -85,7 +85,7 @@ impl Default for SafetyThresholds {
     fn default() -> Self {
         Self {
             current_limit: MilliAmp::from_ma(DEFAULT_CURRENT_LIMIT_MA),
-            temp_limit: DeciC::from_dc(DEFAULT_TEMP_LIMIT_DC),
+            mcu_temp_limit: DeciC::from_dc(DEFAULT_MCU_TEMP_LIMIT_DC),
             position_max_delta: CentiDeg::from_cdeg(DEFAULT_POS_MAX_DELTA_CDEG),
             sensor_fault_count: DEFAULT_SENSOR_FAULT_COUNT,
             position_min: CentiDeg::from_cdeg(DEFAULT_POSITION_MIN_CDEG),

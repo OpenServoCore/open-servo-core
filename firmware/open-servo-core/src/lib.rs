@@ -6,13 +6,14 @@
 //! - `App`: Hardware orchestrator that wires ServoCore to hardware traits
 //! - `SafetyManager`: Consolidated safety monitoring
 //! - `FaultState`: Fault detection and latching
-//! - `DebugShell`: Interactive debug REPL
+//! - `DebugShell`: Interactive debug REPL (requires `debug-shell` feature)
 //! - `EventQueue`: Lock-free event passing from ISRs to main loop
 
 #![no_std]
 #![forbid(unsafe_code)]
 
 pub mod app;
+#[cfg(feature = "debug-shell")]
 pub mod debug_shell;
 pub mod event;
 pub mod fault;
@@ -23,6 +24,7 @@ pub mod servo_core;
 
 // Re-export commonly used items
 pub use app::App;
+#[cfg(feature = "debug-shell")]
 pub use debug_shell::DebugShell;
 pub use event::{Event, EventConsumer, EventProducer, EventQueue};
 pub use fault::{FaultKind, FaultState};

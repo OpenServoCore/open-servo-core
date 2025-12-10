@@ -27,7 +27,7 @@ use open_servo_math::{CentiDeg, DeciC, MilliAmp};
 ///
 /// Safety checks gracefully handle missing sensors:
 /// - `check_current(None)` returns `None` (no fault possible)
-/// - `check_temperature(None)` returns `None` (no fault possible)
+/// - `check_mcu_temperature(None)` returns `None` (no fault possible)
 ///
 /// This allows boards without certain sensors to skip those safety checks
 /// while still benefiting from other protections.
@@ -80,31 +80,42 @@ impl SafetyManager {
     /// Returns `None` if:
     /// - `current` is `None` (no sensor available, check skipped)
     /// - Current is within limits
+    /// - The `current-sense` feature is disabled (always returns `None`)
     ///
     /// Returns `Some(FaultKind::OverCurrent)` if current exceeds limit.
+    ///
+    /// This method always exists but becomes a no-op when `current-sense` is disabled.
     #[inline]
     pub fn check_current(&self, current: Option<MilliAmp>) -> Option<FaultKind> {
-        current.and_then(|c| {
-            if c.abs() > self.thresholds.current_limit {
-                Some(FaultKind::OverCurrent)
-            } else {
-                None
-            }
-        })
+        #[cfg(feature = "current-sense-bus")]
+        {
+            current.and_then(|c| {
+                if c.abs() > self.thresholds.current_limit {
+                    Some(FaultKind::OverCurrent)
+                } else {
+                    None
+                }
+            })
+        }
+        #[cfg(not(feature = "current-sense-bus"))]
+        {
+            let _ = current; // silence unused warning
+            None
+        }
     }
 
-    /// Check if temperature exceeds the threshold.
+    /// Check if MCU temperature exceeds the threshold.
     ///
     /// Returns `None` if:
     /// - `temp` is `None` (no sensor available, check skipped)
     /// - Temperature is within limits
     ///
-    /// Returns `Some(FaultKind::OverTemp)` if temperature exceeds limit.
+    /// Returns `Some(FaultKind::McuOverTemp)` if temperature exceeds limit.
     #[inline]
-    pub fn check_temperature(&self, temp: Option<DeciC>) -> Option<FaultKind> {
+    pub fn check_mcu_temperature(&self, temp: Option<DeciC>) -> Option<FaultKind> {
         temp.and_then(|t| {
-            if t > self.thresholds.temp_limit {
-                Some(FaultKind::OverTemp)
+            if t > self.thresholds.mcu_temp_limit {
+                Some(FaultKind::McuOverTemp)
             } else {
                 None
             }
@@ -219,12 +230,15 @@ mod tests {
 
     // ========== check_current tests ==========
 
+    // This test always passes - check_current always exists and returns None for None input
     #[test]
     fn test_check_current_none_returns_none() {
         let safety = SafetyManager::new();
         assert_eq!(safety.check_current(None), None);
     }
 
+    // These tests only make sense when current-sense is enabled
+    #[cfg(feature = "current-sense-bus")]
     #[test]
     fn test_check_current_under_limit() {
         let safety = SafetyManager::new();
@@ -233,6 +247,7 @@ mod tests {
         assert_eq!(safety.check_current(Some(MilliAmp::from_ma(799))), None);
     }
 
+    #[cfg(feature = "current-sense-bus")]
     #[test]
     fn test_check_current_over_limit() {
         let safety = SafetyManager::new();
@@ -247,29 +262,38 @@ mod tests {
         );
     }
 
-    // ========== check_temperature tests ==========
+    // When current-sense is disabled, check_current always returns None (no-op)
+    #[cfg(not(feature = "current-sense-bus"))]
+    #[test]
+    fn test_check_current_disabled_always_none() {
+        let safety = SafetyManager::new();
+        // Even with a value that would trigger overcurrent, returns None
+        assert_eq!(safety.check_current(Some(MilliAmp::from_ma(10000))), None);
+    }
+
+    // ========== check_mcu_temperature tests ==========
 
     #[test]
-    fn test_check_temperature_none_returns_none() {
+    fn test_check_mcu_temperature_none_returns_none() {
         let safety = SafetyManager::new();
-        assert_eq!(safety.check_temperature(None), None);
+        assert_eq!(safety.check_mcu_temperature(None), None);
     }
 
     #[test]
-    fn test_check_temperature_under_limit() {
+    fn test_check_mcu_temperature_under_limit() {
         let safety = SafetyManager::new();
         // Default limit is 800 deciC (80°C)
-        assert_eq!(safety.check_temperature(Some(DeciC::from_dc(500))), None);
-        assert_eq!(safety.check_temperature(Some(DeciC::from_dc(799))), None);
+        assert_eq!(safety.check_mcu_temperature(Some(DeciC::from_dc(500))), None);
+        assert_eq!(safety.check_mcu_temperature(Some(DeciC::from_dc(799))), None);
     }
 
     #[test]
-    fn test_check_temperature_over_limit() {
+    fn test_check_mcu_temperature_over_limit() {
         let safety = SafetyManager::new();
         // Default limit is 800 deciC (80°C)
         assert_eq!(
-            safety.check_temperature(Some(DeciC::from_dc(801))),
-            Some(FaultKind::OverTemp)
+            safety.check_mcu_temperature(Some(DeciC::from_dc(801))),
+            Some(FaultKind::McuOverTemp)
         );
     }
 

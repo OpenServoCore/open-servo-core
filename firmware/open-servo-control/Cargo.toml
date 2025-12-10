@@ -5,13 +5,15 @@ edition.workspace = true
 
 [dependencies]
 open-servo-math = { path = "../open-servo-math" }
+open-servo-hw = { path = "../open-servo-hw" }
 
 [features]
 default = ["pid"]
 pid = []
-cascade = []
-velocity = []
-foc = []
+cascade = ["current-sense-bus"]  # Cascade control requires bus current sensing
+current-sense-bus = []           # Bus current sensing (BDC)
+# BLDC/FOC path (future) - requires different hardware
+foc = ["open-servo-hw/motor-bldc", "open-servo-hw/current-sense-phase"]
 defmt = ["dep:defmt", "open-servo-math/defmt"]
 
 [dependencies.defmt]

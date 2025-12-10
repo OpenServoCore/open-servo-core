@@ -8,8 +8,15 @@ use open_servo_hw::BdcMotorDriver;
 pub enum FaultKind {
     /// Motor current exceeded threshold
     OverCurrent,
-    /// Temperature exceeded threshold
-    OverTemp,
+    /// MCU/PCB temperature exceeded threshold
+    /// Fault action: full shutdown
+    McuOverTemp,
+    /// Motor winding temperature exceeded threshold (future)
+    /// Fault action: derate torque/PWM
+    MotorOverTemp,
+    /// Driver IC temperature exceeded threshold (future)
+    /// Fault action: stop driving, MCU can still log
+    DriverOverTemp,
     /// Bus voltage too low
     UnderVoltage,
     /// Event queue overflow (system overloaded)
@@ -116,7 +123,7 @@ mod tests {
     fn test_first_fault_wins() {
         let mut state = FaultState::new();
         state.raise(FaultKind::OverCurrent);
-        state.raise(FaultKind::OverTemp); // should be ignored
+        state.raise(FaultKind::McuOverTemp); // should be ignored
         state.raise(FaultKind::Stall); // should be ignored
 
         // First fault (OverCurrent) should still be latched

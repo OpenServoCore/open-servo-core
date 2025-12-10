@@ -10,6 +10,8 @@ open-servo-control = { path = "../open-servo-control" }
 open-servo-hw = { path = "../open-servo-hw" }
 
 [features]
+debug-shell = []
+current-sense-bus = ["open-servo-control/current-sense-bus"]
 defmt = ["dep:defmt", "open-servo-math/defmt", "open-servo-hw/defmt", "open-servo-control/defmt"]
 
 [dependencies.defmt]

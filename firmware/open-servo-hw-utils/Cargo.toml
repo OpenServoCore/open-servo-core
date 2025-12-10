@@ -5,6 +5,3 @@ edition.workspace = true
 authors.workspace = true
 
 [dependencies]
-
-[features]
-default = []

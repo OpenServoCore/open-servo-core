@@ -3,12 +3,13 @@
 
 use panic_rtt_target as _;
 
+mod adc_config;
 mod adc_sample;
 mod board;
 mod hw_impl;
 mod init;
 
-#[cfg(feature = "debug_rtt")]
+#[cfg(feature = "debug-shell")]
 mod debug_rtt;
 
 use board::Board;
@@ -23,9 +24,9 @@ use stm32f3::stm32f301 as pac;
 
 use pac::interrupt;
 
-#[cfg(feature = "debug_rtt")]
+#[cfg(feature = "debug-shell")]
 use debug_rtt::RttDebugIo;
-#[cfg(feature = "debug_rtt")]
+#[cfg(feature = "debug-shell")]
 use open_servo_core::DebugShell;
 
 // Event queue size for this board
@@ -42,18 +43,18 @@ static EVENT_PRODUCER: Mutex<RefCell<Option<EventProducer<EVENT_QUEUE_SIZE>>>> =
 static EVENT_CONSUMER: Mutex<RefCell<Option<EventConsumer<EVENT_QUEUE_SIZE>>>> =
     Mutex::new(RefCell::new(None));
 
-#[cfg(feature = "debug_rtt")]
+#[cfg(feature = "debug-shell")]
 static DEBUG_SHELL: Mutex<RefCell<Option<DebugShell<RttDebugIo>>>> = Mutex::new(RefCell::new(None));
 
 #[entry]
 fn main() -> ! {
     // Initialize RTT channels (must be first)
-    // When debug_rtt is enabled, this sets up both defmt and REPL channels
+    // When debug-shell is enabled, this sets up both defmt and REPL channels
     // Otherwise, just initialize defmt
-    #[cfg(feature = "debug_rtt")]
+    #[cfg(feature = "debug-shell")]
     let rtt_io = RttDebugIo::init();
 
-    #[cfg(not(feature = "debug_rtt"))]
+    #[cfg(not(feature = "debug-shell"))]
     rtt_target::rtt_init_defmt!();
 
     // Initialize board with all peripherals
@@ -82,7 +83,7 @@ fn main() -> ! {
     free(|cs| APP.borrow(cs).replace(Some(app)));
 
     // Initialize debug shell (if enabled)
-    #[cfg(feature = "debug_rtt")]
+    #[cfg(feature = "debug-shell")]
     {
         let debug_shell = DebugShell::new(rtt_io);
         free(|cs| DEBUG_SHELL.borrow(cs).replace(Some(debug_shell)));
@@ -119,7 +120,7 @@ fn main() -> ! {
         }
 
         // 2. Pump debug shell (Tier 3)
-        #[cfg(feature = "debug_rtt")]
+        #[cfg(feature = "debug-shell")]
         free(|cs| {
             let mut shell_ref = DEBUG_SHELL.borrow(cs).borrow_mut();
             let mut app_ref = APP.borrow(cs).borrow_mut();

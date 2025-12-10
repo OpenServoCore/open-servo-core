@@ -4,11 +4,24 @@ use stm32f3::stm32f301 as pac;
 
 use open_servo_hw::motor::BdcMotorDriver;
 use open_servo_hw::peripheral::{SystemTime, UartDriver};
-#[cfg(not(feature = "current-sense"))]
+#[cfg(feature = "current-sense-bus")]
+use open_servo_hw::sensor::BusCurrentSensor;
+#[cfg(not(feature = "current-sense-bus"))]
 use open_servo_hw::sensor::SafetyCurrentSource;
-use open_servo_hw::sensor::{
-    BusCurrentSensor, BusVoltageSensor, PositionSensor, TemperatureSensor,
-};
+#[cfg(not(feature = "temp-sense-mcu"))]
+use open_servo_hw::sensor::SafetyMcuTempSource;
+#[cfg(feature = "temp-sense-mcu")]
+use open_servo_hw::sensor::McuTemperatureSensor;
+use open_servo_hw::sensor::PositionSensor;
+use open_servo_hw::sensor::SafetyVoltageSource;
+#[cfg(feature = "temp-sense-motor")]
+use open_servo_hw::sensor::MotorTemperatureSensor;
+#[cfg(not(feature = "temp-sense-motor"))]
+use open_servo_hw::sensor::SafetyMotorTempSource;
+#[cfg(feature = "voltage-sense-motor")]
+use open_servo_hw::sensor::MotorVoltageSensor;
+#[cfg(not(feature = "voltage-sense-motor"))]
+use open_servo_hw::sensor::SafetyMotorVoltageSource;
 use open_servo_hw::UartPort;
 use open_servo_math::{CentiDeg, DeciC, MilliAmp, MilliVolt};
 
@@ -36,7 +49,6 @@ impl Board {
         crate::init::init_rcc(&p);
         crate::init::init_tim1_pwm(&p);
         crate::init::init_tim2_counter(&p);
-        crate::init::init_gpio(&p);
         crate::init::init_dma(&p);
         crate::init::init_adc(&p);
 
@@ -96,8 +108,7 @@ impl UartDriver for Board {
 // Sensor traits
 // ============================================================================
 
-// Position sensor (always available via potentiometer or encoder)
-#[cfg(feature = "potentiometer")]
+// Position sensor (required - always available)
 impl PositionSensor for Board {
     fn read_position(&self) -> CentiDeg {
         self.hw.position()
@@ -109,7 +120,7 @@ impl PositionSensor for Board {
 }
 
 // Current sensor (optional based on feature)
-#[cfg(feature = "current-sense")]
+#[cfg(feature = "current-sense-bus")]
 impl BusCurrentSensor for Board {
     fn read_bus_current(&self) -> MilliAmp {
         self.hw.current()
@@ -122,35 +133,79 @@ impl BusCurrentSensor for Board {
 
 // When current-sense feature is disabled, we need to explicitly implement
 // SafetyCurrentSource to return None
-#[cfg(not(feature = "current-sense"))]
+#[cfg(not(feature = "current-sense-bus"))]
 impl SafetyCurrentSource for Board {
     fn read_safety_current(&self) -> Option<MilliAmp> {
         None // No current sensor on this board variant
     }
 }
 
-// Voltage sensor (always available via bus voltage divider)
-impl BusVoltageSensor for Board {
-    fn read_bus_voltage(&self) -> MilliVolt {
-        self.hw.voltage()
-    }
-
-    fn read_bus_voltage_raw(&self) -> u16 {
-        self.hw.voltage_raw()
+// This board does not have bus voltage sensing (only VDDA measurement)
+impl SafetyVoltageSource for Board {
+    fn read_safety_voltage(&self) -> Option<MilliVolt> {
+        None
     }
 }
 
-// Note: SafetyVoltageSource is auto-implemented via blanket impl since we implement BusVoltageSensor
-
-// Temperature sensor (always available via MCU internal sensor)
-impl TemperatureSensor for Board {
-    fn read_temperature(&self) -> Option<DeciC> {
-        self.hw.temperature()
+// MCU Temperature sensor (optional based on feature)
+#[cfg(feature = "temp-sense-mcu")]
+impl McuTemperatureSensor for Board {
+    fn read_mcu_temperature(&self) -> Option<DeciC> {
+        self.hw.mcu_temperature()
     }
 
-    fn read_temperature_raw(&self) -> Option<u16> {
-        self.hw.temperature_raw()
+    fn read_mcu_temperature_raw(&self) -> Option<u16> {
+        self.hw.mcu_temperature_raw()
     }
 }
 
-// Note: SafetyTemperatureSource is auto-implemented via blanket impl since we implement TemperatureSensor
+// When temp-sense-mcu feature is disabled, we need to explicitly implement
+// SafetyMcuTempSource to return None
+#[cfg(not(feature = "temp-sense-mcu"))]
+impl SafetyMcuTempSource for Board {
+    fn read_safety_mcu_temp(&self) -> Option<DeciC> {
+        None // No MCU temperature sensor on this board variant
+    }
+}
+
+// Note: When temp-sense-mcu is enabled, SafetyMcuTempSource is auto-implemented via blanket impl
+
+// Motor voltage sensing (optional based on feature)
+#[cfg(feature = "voltage-sense-motor")]
+impl MotorVoltageSensor for Board {
+    fn read_motor_voltage(&self) -> (MilliVolt, MilliVolt) {
+        self.hw.motor_voltage()
+    }
+
+    fn read_motor_voltage_raw(&self) -> (u16, u16) {
+        self.hw.motor_voltage_raw()
+    }
+}
+
+// When voltage-sense-motor feature is disabled, implement SafetyMotorVoltageSource directly
+#[cfg(not(feature = "voltage-sense-motor"))]
+impl SafetyMotorVoltageSource for Board {
+    fn read_safety_motor_voltage(&self) -> Option<(MilliVolt, MilliVolt)> {
+        None // No motor voltage sensor on this board variant
+    }
+}
+
+// Motor temperature sensing (optional based on feature)
+#[cfg(feature = "temp-sense-motor")]
+impl MotorTemperatureSensor for Board {
+    fn read_motor_temperature(&self) -> Option<DeciC> {
+        Some(self.hw.motor_temperature())
+    }
+
+    fn read_motor_temperature_raw(&self) -> Option<u16> {
+        Some(self.hw.motor_temperature_raw())
+    }
+}
+
+// When temp-sense-motor feature is disabled, implement SafetyMotorTempSource directly
+#[cfg(not(feature = "temp-sense-motor"))]
+impl SafetyMotorTempSource for Board {
+    fn read_safety_motor_temp(&self) -> Option<DeciC> {
+        None // No motor temperature sensor on this board variant
+    }
+}

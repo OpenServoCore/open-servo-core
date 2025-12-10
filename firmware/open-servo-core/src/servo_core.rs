@@ -5,7 +5,9 @@
 //! system by feeding it synthetic inputs.
 
 use open_servo_control::ControlLoop;
-use open_servo_math::{CentiDeg, DeciC, MilliAmp, MilliVolt};
+use open_servo_math::{CentiDeg, DeciC, MilliVolt};
+#[cfg(feature = "current-sense-bus")]
+use open_servo_math::MilliAmp;
 
 use crate::fault::{FaultKind, FaultState};
 use crate::inputs::FastInputs;
@@ -22,7 +24,8 @@ pub struct SystemState {
     pub position: CentiDeg,
     /// Current PWM duty cycle
     pub pwm_duty: i32,
-    /// Current reading (if available)
+    /// Current reading (requires `current-sense` feature)
+    #[cfg(feature = "current-sense-bus")]
     pub current: Option<MilliAmp>,
     /// Bus voltage reading (if available)
     pub bus_voltage: Option<MilliVolt>,
@@ -106,8 +109,8 @@ impl<C: ControlLoop> ServoCore<C> {
             }
         };
 
-        // 2. Check current threshold (if sensor available)
-        if let Some(fault) = self.safety.check_current(inputs.current) {
+        // 2. Check current threshold (no-op if current-sense disabled)
+        if let Some(fault) = self.safety.check_current(inputs.current()) {
             self.raise_fault(fault);
             return FastOutputs::fault(fault);
         }
@@ -116,7 +119,7 @@ impl<C: ControlLoop> ServoCore<C> {
         let clamped_setpoint = self.safety.clamp_setpoint(self.controller.get_setpoint());
         let pwm_command = self
             .controller
-            .compute(clamped_setpoint, position, inputs.current);
+            .compute(clamped_setpoint, position, inputs.current());
 
         // 4. Check for stall (PWM saturated but no movement)
         let output_max = self.controller.output_max();
@@ -131,6 +134,7 @@ impl<C: ControlLoop> ServoCore<C> {
             setpoint: clamped_setpoint,
             position,
             pwm_duty: pwm_command,
+            #[cfg(feature = "current-sense-bus")]
             current: inputs.current,
             bus_voltage: inputs.bus_voltage,
             temperature: inputs.temperature,
@@ -144,10 +148,10 @@ impl<C: ControlLoop> ServoCore<C> {
     /// Performs less critical checks that don't need 10kHz rate.
     /// Returns fault kind if a fault was raised.
     pub fn slow_tick(&mut self) -> Option<FaultKind> {
-        // Check temperature using cached value from fast tick
+        // Check MCU temperature using cached value from fast tick
         if let Some(fault) = self
             .safety
-            .check_temperature(self.safety.last_temperature())
+            .check_mcu_temperature(self.safety.last_temperature())
         {
             self.raise_fault(fault);
             return Some(fault);
@@ -230,6 +234,7 @@ impl<C: ControlLoop> ServoCore<C> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use open_servo_math::MilliAmp;
 
     /// Minimal mock controller for testing ServoCore.
     struct MockController {
@@ -285,6 +290,7 @@ mod tests {
     fn make_inputs(position: i16) -> FastInputs {
         FastInputs {
             position: CentiDeg::from_cdeg(position),
+            #[cfg(feature = "current-sense-bus")]
             current: None,
             bus_voltage: None,
             temperature: None,
@@ -322,6 +328,7 @@ mod tests {
         assert!(outputs.motor_enable); // Skip keeps motor enabled, just sends 0 PWM
     }
 
+    #[cfg(feature = "current-sense-bus")]
     #[test]
     fn test_fast_tick_faults_on_overcurrent() {
         let mut core = ServoCore::new(MockController::new());
@@ -366,15 +373,16 @@ mod tests {
         // Cache high temperature via fast_tick
         let inputs = FastInputs {
             position: CentiDeg::from_cdeg(9000),
+            #[cfg(feature = "current-sense-bus")]
             current: None,
             bus_voltage: None,
             temperature: Some(DeciC::from_dc(900)), // 90°C, over 80°C limit
         };
         core.fast_tick(inputs);
 
-        // slow_tick should detect overtemp
+        // slow_tick should detect MCU overtemp
         let fault = core.slow_tick();
-        assert_eq!(fault, Some(FaultKind::OverTemp));
+        assert_eq!(fault, Some(FaultKind::McuOverTemp));
         assert!(core.is_faulted());
     }
 
@@ -385,6 +393,7 @@ mod tests {
         // Cache normal temperature
         let inputs = FastInputs {
             position: CentiDeg::from_cdeg(9000),
+            #[cfg(feature = "current-sense-bus")]
             current: None,
             bus_voltage: None,
             temperature: Some(DeciC::from_dc(250)), // 25°C, well under limit
@@ -439,6 +448,7 @@ mod tests {
 
         let inputs = FastInputs {
             position: CentiDeg::from_cdeg(8000),
+            #[cfg(feature = "current-sense-bus")]
             current: Some(MilliAmp::from_ma(200)),
             bus_voltage: Some(MilliVolt::from_mv(3300)),
             temperature: Some(DeciC::from_dc(300)),
@@ -451,6 +461,7 @@ mod tests {
         let state = core.system_state();
         assert_eq!(state.position.as_cdeg(), 8000);
         assert_eq!(state.pwm_duty, 750);
+        #[cfg(feature = "current-sense-bus")]
         assert_eq!(state.current, Some(MilliAmp::from_ma(200)));
         assert_eq!(state.bus_voltage, Some(MilliVolt::from_mv(3300)));
         assert_eq!(state.temperature, Some(DeciC::from_dc(300)));

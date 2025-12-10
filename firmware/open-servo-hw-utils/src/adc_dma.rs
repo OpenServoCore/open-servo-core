@@ -1,15 +1,17 @@
 use core::cell::UnsafeCell;
 
-const N: usize = 5;
-
+/// Const-generic ADC DMA buffer.
+/// Board crate instantiates with the appropriate channel count.
 #[repr(transparent)]
-pub struct AdcDmaBuf(UnsafeCell<[u16; N]>);
+pub struct AdcDmaBuf<const N: usize>(UnsafeCell<[u16; N]>);
 
-unsafe impl Sync for AdcDmaBuf {}
+unsafe impl<const N: usize> Sync for AdcDmaBuf<N> {}
 
-static BUF: AdcDmaBuf = AdcDmaBuf(UnsafeCell::new([0; N]));
+impl<const N: usize> AdcDmaBuf<N> {
+    pub const fn new() -> Self {
+        Self(UnsafeCell::new([0; N]))
+    }
 
-impl AdcDmaBuf {
     pub fn ptr(&self) -> *mut u16 {
         self.0.get().cast()
     }
@@ -23,12 +25,4 @@ impl AdcDmaBuf {
         }
         out
     }
-}
-
-pub fn dma_target_ptr() -> *mut u16 {
-    BUF.ptr()
-}
-
-pub fn read_block() -> [u16; N] {
-    BUF.snapshot()
 }

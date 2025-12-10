@@ -29,8 +29,9 @@ panic-rtt-target = { workspace = true }
 heapless = { workspace = true }
 
 [features]
-default = ["potentiometer", "current-sense", "debug_rtt"]
-potentiometer = []
-encoder = []
-current-sense = []
-debug_rtt = []
+default = ["current-sense-bus", "temp-sense-mcu", "debug-shell"]
+current-sense-bus = ["open-servo-core/current-sense-bus"]
+temp-sense-mcu = []       # MCU internal temperature sensing
+temp-sense-motor = []     # Motor NTC thermistor on PA4 (ch 5)
+voltage-sense-motor = []  # Motor terminal voltage dividers on PA2/PA3 (ch 3/4)
+debug-shell = ["open-servo-core/debug-shell"]
