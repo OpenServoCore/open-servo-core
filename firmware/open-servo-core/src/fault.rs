@@ -86,3 +86,70 @@ impl Default for FaultState {
         Self::new()
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_new_starts_ok() {
+        let state = FaultState::new();
+        assert!(!state.is_faulted());
+        assert_eq!(state, FaultState::Ok);
+    }
+
+    #[test]
+    fn test_default_is_ok() {
+        let state = FaultState::default();
+        assert!(!state.is_faulted());
+    }
+
+    #[test]
+    fn test_raise_transitions_to_latched() {
+        let mut state = FaultState::new();
+        state.raise(FaultKind::OverCurrent);
+        assert!(state.is_faulted());
+        assert_eq!(state.fault_kind(), Some(FaultKind::OverCurrent));
+    }
+
+    #[test]
+    fn test_first_fault_wins() {
+        let mut state = FaultState::new();
+        state.raise(FaultKind::OverCurrent);
+        state.raise(FaultKind::OverTemp); // should be ignored
+        state.raise(FaultKind::Stall); // should be ignored
+
+        // First fault (OverCurrent) should still be latched
+        assert_eq!(state.fault_kind(), Some(FaultKind::OverCurrent));
+    }
+
+    #[test]
+    fn test_clear_transitions_to_ok() {
+        let mut state = FaultState::new();
+        state.raise(FaultKind::Stall);
+        assert!(state.is_faulted());
+
+        state.clear();
+        assert!(!state.is_faulted());
+        assert_eq!(state.fault_kind(), None);
+    }
+
+    #[test]
+    fn test_fault_kind_returns_correct_value() {
+        let mut state = FaultState::new();
+        assert_eq!(state.fault_kind(), None);
+
+        state.raise(FaultKind::PositionError);
+        assert_eq!(state.fault_kind(), Some(FaultKind::PositionError));
+
+        state.clear();
+        assert_eq!(state.fault_kind(), None);
+    }
+
+    #[test]
+    fn test_clear_on_ok_is_noop() {
+        let mut state = FaultState::new();
+        state.clear(); // should not panic or change state
+        assert!(!state.is_faulted());
+    }
+}

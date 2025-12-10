@@ -308,3 +308,139 @@ impl EncoderCount {
         self.0
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // ========== CentiDeg tests ==========
+
+    #[test]
+    fn test_centideg_from_deg() {
+        assert_eq!(CentiDeg::from_deg(90).as_cdeg(), 9000);
+        assert_eq!(CentiDeg::from_deg(0).as_cdeg(), 0);
+        assert_eq!(CentiDeg::from_deg(-45).as_cdeg(), -4500);
+    }
+
+    #[test]
+    fn test_centideg_as_deg() {
+        assert_eq!(CentiDeg::from_cdeg(9000).as_deg(), 90);
+        assert_eq!(CentiDeg::from_cdeg(9050).as_deg(), 90); // truncates
+        assert_eq!(CentiDeg::from_cdeg(-4500).as_deg(), -45);
+    }
+
+    #[test]
+    fn test_centideg_from_pot_adc_endpoints() {
+        // ADC 0 -> -500 cdeg (-5°)
+        assert_eq!(CentiDeg::from_pot_adc(Adc12::from_raw(0)).as_cdeg(), -500);
+        // ADC 4095 -> 18500 cdeg (185°)
+        assert_eq!(CentiDeg::from_pot_adc(Adc12::from_raw(4095)).as_cdeg(), 18500);
+    }
+
+    #[test]
+    fn test_centideg_from_pot_adc_midpoint() {
+        // ADC ~2048 should be ~90° (9000 cdeg)
+        let mid = CentiDeg::from_pot_adc(Adc12::from_raw(2048));
+        // Expected: -500 + (2048 * 19000 / 4095) ≈ -500 + 9502 = 9002
+        assert!((mid.as_cdeg() - 9000).abs() < 50);
+    }
+
+    // ========== MilliAmp tests ==========
+
+    #[test]
+    fn test_milliamp_from_ipropi_adc() {
+        // ADC 0 -> 0 mA
+        assert_eq!(MilliAmp::from_ipropi_adc(Adc12::from_raw(0)).as_ma(), 0);
+        // ADC 1000 -> ~244 mA
+        let ma = MilliAmp::from_ipropi_adc(Adc12::from_raw(1000)).as_ma();
+        assert!((ma - 244).abs() < 2);
+        // ADC 4095 -> ~1000 mA
+        let ma = MilliAmp::from_ipropi_adc(Adc12::from_raw(4095)).as_ma();
+        assert!((ma - 1000).abs() < 5);
+    }
+
+    #[test]
+    fn test_milliamp_abs() {
+        assert_eq!(MilliAmp::from_ma(100).abs().as_ma(), 100);
+        assert_eq!(MilliAmp::from_ma(-100).abs().as_ma(), 100);
+        assert_eq!(MilliAmp::from_ma(0).abs().as_ma(), 0);
+    }
+
+    // ========== MilliVolt tests ==========
+
+    #[test]
+    fn test_millivolt_from_adc12() {
+        // ADC 0 -> 0 mV
+        assert_eq!(MilliVolt::from_adc12(Adc12::from_raw(0), 3300).as_mv(), 0);
+        // ADC 4095 -> 3300 mV (full scale)
+        assert_eq!(MilliVolt::from_adc12(Adc12::from_raw(4095), 3300).as_mv(), 3300);
+        // ADC 2048 -> ~1650 mV (midpoint)
+        let mv = MilliVolt::from_adc12(Adc12::from_raw(2048), 3300).as_mv();
+        assert!((mv - 1650).abs() < 2);
+    }
+
+    // ========== DeciC tests ==========
+
+    #[test]
+    fn test_decic_celsius_roundtrip() {
+        assert_eq!(DeciC::from_celsius(25).as_celsius(), 25);
+        assert_eq!(DeciC::from_celsius(-10).as_celsius(), -10);
+        assert_eq!(DeciC::from_celsius(0).as_celsius(), 0);
+    }
+
+    #[test]
+    fn test_decic_kelvin_conversion() {
+        // 0°C = 273K
+        let dc = DeciC::from_celsius(0);
+        assert!((dc.to_kelvin() as i32 - 273).abs() <= 1);
+
+        // 273K -> ~0°C
+        let dc = DeciC::from_kelvin(273);
+        assert!(dc.as_celsius().abs() <= 1);
+    }
+
+    #[test]
+    fn test_decic_fahrenheit_conversion() {
+        // 32°F = 0°C
+        let dc = DeciC::from_fahrenheit(32);
+        assert!(dc.as_celsius().abs() <= 1);
+
+        // 212°F = 100°C
+        let dc = DeciC::from_fahrenheit(212);
+        assert!((dc.as_celsius() - 100).abs() <= 1);
+
+        // 0°C -> 32°F
+        let f = DeciC::from_celsius(0).as_fahrenheit();
+        assert!((f - 32).abs() <= 1);
+    }
+
+    // ========== Arithmetic tests ==========
+
+    #[test]
+    fn test_saturating_add() {
+        let a = CentiDeg::from_cdeg(i16::MAX - 100);
+        let b = CentiDeg::from_cdeg(200);
+        assert_eq!((a + b).as_cdeg(), i16::MAX); // saturates
+    }
+
+    #[test]
+    fn test_saturating_sub() {
+        let a = CentiDeg::from_cdeg(i16::MIN + 100);
+        let b = CentiDeg::from_cdeg(200);
+        assert_eq!((a - b).as_cdeg(), i16::MIN); // saturates
+    }
+
+    #[test]
+    fn test_neg() {
+        assert_eq!((-CentiDeg::from_cdeg(100)).as_cdeg(), -100);
+        assert_eq!((-CentiDeg::from_cdeg(-100)).as_cdeg(), 100);
+    }
+
+    // ========== Adc12 tests ==========
+
+    #[test]
+    fn test_adc12_masks_to_12bit() {
+        assert_eq!(Adc12::from_raw(0xFFFF).as_raw(), 0x0FFF);
+        assert_eq!(Adc12::from_raw(0x1234).as_raw(), 0x0234);
+    }
+}

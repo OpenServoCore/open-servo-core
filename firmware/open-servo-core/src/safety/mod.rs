@@ -212,3 +212,240 @@ impl SafetyManager {
         &self.sensor_health
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // ========== check_current tests ==========
+
+    #[test]
+    fn test_check_current_none_returns_none() {
+        let safety = SafetyManager::new();
+        assert_eq!(safety.check_current(None), None);
+    }
+
+    #[test]
+    fn test_check_current_under_limit() {
+        let safety = SafetyManager::new();
+        // Default limit is 800mA
+        assert_eq!(safety.check_current(Some(MilliAmp::from_ma(500))), None);
+        assert_eq!(safety.check_current(Some(MilliAmp::from_ma(799))), None);
+    }
+
+    #[test]
+    fn test_check_current_over_limit() {
+        let safety = SafetyManager::new();
+        // Default limit is 800mA
+        assert_eq!(
+            safety.check_current(Some(MilliAmp::from_ma(801))),
+            Some(FaultKind::OverCurrent)
+        );
+        assert_eq!(
+            safety.check_current(Some(MilliAmp::from_ma(1000))),
+            Some(FaultKind::OverCurrent)
+        );
+    }
+
+    // ========== check_temperature tests ==========
+
+    #[test]
+    fn test_check_temperature_none_returns_none() {
+        let safety = SafetyManager::new();
+        assert_eq!(safety.check_temperature(None), None);
+    }
+
+    #[test]
+    fn test_check_temperature_under_limit() {
+        let safety = SafetyManager::new();
+        // Default limit is 800 deciC (80°C)
+        assert_eq!(safety.check_temperature(Some(DeciC::from_dc(500))), None);
+        assert_eq!(safety.check_temperature(Some(DeciC::from_dc(799))), None);
+    }
+
+    #[test]
+    fn test_check_temperature_over_limit() {
+        let safety = SafetyManager::new();
+        // Default limit is 800 deciC (80°C)
+        assert_eq!(
+            safety.check_temperature(Some(DeciC::from_dc(801))),
+            Some(FaultKind::OverTemp)
+        );
+    }
+
+    // ========== check_stall tests ==========
+
+    #[test]
+    fn test_check_stall_no_saturation() {
+        let mut safety = SafetyManager::new();
+        // Not saturated - should never fault
+        for _ in 0..2000 {
+            assert_eq!(
+                safety.check_stall(CentiDeg::from_cdeg(9000), false),
+                None
+            );
+        }
+    }
+
+    #[test]
+    fn test_check_stall_moving() {
+        let mut safety = SafetyManager::new();
+        // Saturated but moving - counter should reset each tick
+        // Use smaller increments to avoid i16 overflow
+        for i in 0..200i16 {
+            let pos = CentiDeg::from_cdeg(i * 100); // Moving 1° per tick
+            assert_eq!(safety.check_stall(pos, true), None);
+        }
+    }
+
+    #[test]
+    fn test_check_stall_triggers_after_timeout() {
+        let mut safety = SafetyManager::new();
+        // Default timeout is 1000 ticks
+        // First call: delta from 0 is large, resets counter, sets last_position=9000
+        let pos = CentiDeg::from_cdeg(9000);
+        safety.check_stall(pos, true); // Initialize last_position
+
+        // Next 999 ticks - counter goes 1..999 (no fault yet)
+        for _ in 0..999 {
+            assert_eq!(safety.check_stall(pos, true), None);
+        }
+
+        // Counter reaches 1000 on this tick - fault!
+        assert_eq!(safety.check_stall(pos, true), Some(FaultKind::Stall));
+    }
+
+    #[test]
+    fn test_check_stall_resets_on_movement() {
+        let mut safety = SafetyManager::new();
+        let pos = CentiDeg::from_cdeg(9000);
+
+        // Initialize last_position
+        safety.check_stall(pos, true);
+        // Build up stall count
+        for _ in 0..500 {
+            safety.check_stall(pos, true);
+        }
+
+        // Move - should reset counter (delta > tolerance)
+        let new_pos = CentiDeg::from_cdeg(9500); // Move 5°
+        safety.check_stall(new_pos, true);
+
+        // Need 1000 ticks to fault: 999 with no fault, then 1000th triggers
+        for _ in 0..999 {
+            assert_eq!(safety.check_stall(new_pos, true), None);
+        }
+        assert_eq!(safety.check_stall(new_pos, true), Some(FaultKind::Stall));
+    }
+
+    // ========== check_position_error tests ==========
+
+    #[test]
+    fn test_check_position_error_within_limit() {
+        let mut safety = SafetyManager::new();
+        // Default limit is 3000 cdeg (30°)
+        let sp = CentiDeg::from_cdeg(9000);
+        let pos = CentiDeg::from_cdeg(9000 + 2000); // 20° error
+
+        for _ in 0..100 {
+            assert_eq!(safety.check_position_error(sp, pos), None);
+        }
+    }
+
+    #[test]
+    fn test_check_position_error_triggers_after_timeout() {
+        let mut safety = SafetyManager::new();
+        // Default: 3000 cdeg limit, 50 tick timeout (at 100Hz)
+        let sp = CentiDeg::from_cdeg(9000);
+        let pos = CentiDeg::from_cdeg(0); // -90° error (way over 30°)
+
+        // First 49 ticks - no fault
+        for _ in 0..49 {
+            assert_eq!(safety.check_position_error(sp, pos), None);
+        }
+
+        // 50th tick - fault!
+        assert_eq!(
+            safety.check_position_error(sp, pos),
+            Some(FaultKind::PositionError)
+        );
+    }
+
+    #[test]
+    fn test_check_position_error_resets_when_corrected() {
+        let mut safety = SafetyManager::new();
+        let sp = CentiDeg::from_cdeg(9000);
+        let bad_pos = CentiDeg::from_cdeg(0);
+
+        // Build up error count
+        for _ in 0..25 {
+            safety.check_position_error(sp, bad_pos);
+        }
+
+        // Position corrects - should reset counter
+        let good_pos = CentiDeg::from_cdeg(8900); // Within 30° of setpoint
+        safety.check_position_error(sp, good_pos);
+
+        // Need another 50 ticks to fault
+        for _ in 0..49 {
+            assert_eq!(safety.check_position_error(sp, bad_pos), None);
+        }
+        assert_eq!(
+            safety.check_position_error(sp, bad_pos),
+            Some(FaultKind::PositionError)
+        );
+    }
+
+    // ========== clamp_setpoint tests ==========
+
+    #[test]
+    fn test_clamp_setpoint_within_bounds() {
+        let safety = SafetyManager::new();
+        // Default bounds: 0 to 18000 cdeg
+        let sp = CentiDeg::from_cdeg(9000);
+        assert_eq!(safety.clamp_setpoint(sp).as_cdeg(), 9000);
+    }
+
+    #[test]
+    fn test_clamp_setpoint_below_min() {
+        let safety = SafetyManager::new();
+        let sp = CentiDeg::from_cdeg(-1000);
+        assert_eq!(safety.clamp_setpoint(sp).as_cdeg(), 0); // Clamped to min
+    }
+
+    #[test]
+    fn test_clamp_setpoint_above_max() {
+        let safety = SafetyManager::new();
+        let sp = CentiDeg::from_cdeg(20000);
+        assert_eq!(safety.clamp_setpoint(sp).as_cdeg(), 18000); // Clamped to max
+    }
+
+    // ========== reset tests ==========
+
+    #[test]
+    fn test_reset_clears_counters() {
+        let mut safety = SafetyManager::new();
+
+        // Build up stall and error counts
+        let pos = CentiDeg::from_cdeg(9000);
+        for _ in 0..500 {
+            safety.check_stall(pos, true);
+        }
+        for _ in 0..25 {
+            safety.check_position_error(CentiDeg::from_cdeg(9000), CentiDeg::from_cdeg(0));
+        }
+
+        safety.reset();
+
+        // After reset, need full timeout to fault again
+        for _ in 0..999 {
+            assert_eq!(safety.check_stall(pos, true), None);
+        }
+        for _ in 0..49 {
+            assert_eq!(
+                safety.check_position_error(CentiDeg::from_cdeg(9000), CentiDeg::from_cdeg(0)),
+                None
+            );
+        }
+    }
+}

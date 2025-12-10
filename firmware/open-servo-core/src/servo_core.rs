@@ -226,3 +226,233 @@ impl<C: ControlLoop> ServoCore<C> {
         &self.controller
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Minimal mock controller for testing ServoCore.
+    struct MockController {
+        setpoint: CentiDeg,
+        output: i32,
+        output_max: i32,
+        reset_called: bool,
+    }
+
+    impl MockController {
+        fn new() -> Self {
+            Self {
+                setpoint: CentiDeg::from_cdeg(9000),
+                output: 0,
+                output_max: 1799,
+                reset_called: false,
+            }
+        }
+
+        fn set_output(&mut self, output: i32) {
+            self.output = output;
+        }
+    }
+
+    impl ControlLoop for MockController {
+        fn compute(
+            &mut self,
+            _setpoint: CentiDeg,
+            _position: CentiDeg,
+            _current: Option<MilliAmp>,
+        ) -> i32 {
+            self.output
+        }
+
+        fn reset(&mut self) {
+            self.reset_called = true;
+            self.output = 0;
+        }
+
+        fn set_setpoint(&mut self, setpoint: CentiDeg) {
+            self.setpoint = setpoint;
+        }
+
+        fn get_setpoint(&self) -> CentiDeg {
+            self.setpoint
+        }
+
+        fn output_max(&self) -> i32 {
+            self.output_max
+        }
+    }
+
+    fn make_inputs(position: i16) -> FastInputs {
+        FastInputs {
+            position: CentiDeg::from_cdeg(position),
+            current: None,
+            bus_voltage: None,
+            temperature: None,
+        }
+    }
+
+    // ========== fast_tick tests ==========
+
+    #[test]
+    fn test_fast_tick_returns_safe_when_faulted() {
+        let mut core = ServoCore::new(MockController::new());
+
+        // Manually fault the core
+        core.fault_state.raise(FaultKind::OverCurrent);
+        assert!(core.is_faulted());
+
+        // fast_tick should return safe outputs
+        let outputs = core.fast_tick(make_inputs(9000));
+        assert_eq!(outputs.pwm_command, 0);
+        assert!(!outputs.motor_enable);
+    }
+
+    #[test]
+    fn test_fast_tick_skips_on_bad_position() {
+        let mut core = ServoCore::new(MockController::new());
+        core.controller_mut().set_output(500); // Would produce output if position was valid
+
+        // First tick initializes sensor health at position 9000
+        core.fast_tick(make_inputs(9000));
+
+        // Sudden large jump should be rejected (delta > max_delta threshold)
+        // Skip keeps motor enabled but outputs PWM 0 (hold position, don't actuate on bad data)
+        let outputs = core.fast_tick(make_inputs(0)); // Jump from 9000 to 0
+        assert_eq!(outputs.pwm_command, 0);
+        assert!(outputs.motor_enable); // Skip keeps motor enabled, just sends 0 PWM
+    }
+
+    #[test]
+    fn test_fast_tick_faults_on_overcurrent() {
+        let mut core = ServoCore::new(MockController::new());
+
+        // Initialize with normal position
+        core.fast_tick(make_inputs(9000));
+
+        // Trigger overcurrent (default limit is 800mA)
+        let inputs = FastInputs {
+            position: CentiDeg::from_cdeg(9000),
+            current: Some(MilliAmp::from_ma(1000)), // Over 800mA limit
+            bus_voltage: None,
+            temperature: None,
+        };
+
+        let outputs = core.fast_tick(inputs);
+        assert!(core.is_faulted());
+        assert_eq!(core.fault_state().fault_kind(), Some(FaultKind::OverCurrent));
+        assert_eq!(outputs.pwm_command, 0);
+    }
+
+    #[test]
+    fn test_fast_tick_normal_operation() {
+        let mut core = ServoCore::new(MockController::new());
+        core.controller_mut().set_output(500);
+
+        // Initialize position
+        core.fast_tick(make_inputs(9000));
+
+        // Normal tick should produce output
+        let outputs = core.fast_tick(make_inputs(9000));
+        assert!(outputs.motor_enable);
+        assert_eq!(outputs.pwm_command, 500);
+    }
+
+    // ========== slow_tick tests ==========
+
+    #[test]
+    fn test_slow_tick_faults_on_overtemp() {
+        let mut core = ServoCore::new(MockController::new());
+
+        // Cache high temperature via fast_tick
+        let inputs = FastInputs {
+            position: CentiDeg::from_cdeg(9000),
+            current: None,
+            bus_voltage: None,
+            temperature: Some(DeciC::from_dc(900)), // 90°C, over 80°C limit
+        };
+        core.fast_tick(inputs);
+
+        // slow_tick should detect overtemp
+        let fault = core.slow_tick();
+        assert_eq!(fault, Some(FaultKind::OverTemp));
+        assert!(core.is_faulted());
+    }
+
+    #[test]
+    fn test_slow_tick_no_fault_when_normal() {
+        let mut core = ServoCore::new(MockController::new());
+
+        // Cache normal temperature
+        let inputs = FastInputs {
+            position: CentiDeg::from_cdeg(9000),
+            current: None,
+            bus_voltage: None,
+            temperature: Some(DeciC::from_dc(250)), // 25°C, well under limit
+        };
+        core.fast_tick(inputs);
+
+        // slow_tick should return None
+        assert_eq!(core.slow_tick(), None);
+        assert!(!core.is_faulted());
+    }
+
+    // ========== clear_fault tests ==========
+
+    #[test]
+    fn test_clear_fault_resets_all_state() {
+        let mut core = ServoCore::new(MockController::new());
+
+        // Fault the core
+        core.fault_state.raise(FaultKind::Stall);
+        assert!(core.is_faulted());
+
+        // Clear fault
+        core.clear_fault();
+
+        // Should be unfaulted and controller reset
+        assert!(!core.is_faulted());
+        assert!(core.controller_mut().reset_called);
+    }
+
+    // ========== setpoint tests ==========
+
+    #[test]
+    fn test_setpoint_clamped_to_bounds() {
+        let mut core = ServoCore::new(MockController::new());
+
+        // Try to set setpoint above max (default max is 18000 cdeg = 180°)
+        core.set_setpoint(CentiDeg::from_cdeg(20000));
+        assert_eq!(core.get_setpoint().as_cdeg(), 18000);
+
+        // Try to set setpoint below min (default min is 0)
+        core.set_setpoint(CentiDeg::from_cdeg(-1000));
+        assert_eq!(core.get_setpoint().as_cdeg(), 0);
+    }
+
+    // ========== system state tests ==========
+
+    #[test]
+    fn test_system_state_updated_after_tick() {
+        let mut core = ServoCore::new(MockController::new());
+        core.controller_mut().set_output(750);
+        core.controller_mut().setpoint = CentiDeg::from_cdeg(9000);
+
+        let inputs = FastInputs {
+            position: CentiDeg::from_cdeg(8000),
+            current: Some(MilliAmp::from_ma(200)),
+            bus_voltage: Some(MilliVolt::from_mv(3300)),
+            temperature: Some(DeciC::from_dc(300)),
+        };
+
+        // Need two ticks - first initializes position sensor
+        core.fast_tick(inputs);
+        core.fast_tick(inputs);
+
+        let state = core.system_state();
+        assert_eq!(state.position.as_cdeg(), 8000);
+        assert_eq!(state.pwm_duty, 750);
+        assert_eq!(state.current, Some(MilliAmp::from_ma(200)));
+        assert_eq!(state.bus_voltage, Some(MilliVolt::from_mv(3300)));
+        assert_eq!(state.temperature, Some(DeciC::from_dc(300)));
+    }
+}

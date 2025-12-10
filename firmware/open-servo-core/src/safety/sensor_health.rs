@@ -97,3 +97,91 @@ impl SensorHealth {
         self.bad_position_count
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const MAX_DELTA: CentiDeg = CentiDeg(500); // 5° max change per tick
+
+    #[test]
+    fn test_first_reading_always_valid() {
+        let mut health = SensorHealth::new();
+        let result = health.validate_position(CentiDeg::from_cdeg(9000), MAX_DELTA);
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap().as_cdeg(), 9000);
+        assert_eq!(health.bad_count(), 0);
+    }
+
+    #[test]
+    fn test_small_delta_accepted() {
+        let mut health = SensorHealth::new();
+        // Initialize
+        health.validate_position(CentiDeg::from_cdeg(9000), MAX_DELTA).unwrap();
+
+        // Small change (100 cdeg = 1°) should be accepted
+        let result = health.validate_position(CentiDeg::from_cdeg(9100), MAX_DELTA);
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap().as_cdeg(), 9100);
+        assert_eq!(health.bad_count(), 0);
+    }
+
+    #[test]
+    fn test_large_delta_rejected() {
+        let mut health = SensorHealth::new();
+        // Initialize at 90°
+        health.validate_position(CentiDeg::from_cdeg(9000), MAX_DELTA).unwrap();
+
+        // Large jump (1000 cdeg = 10°) should be rejected
+        let result = health.validate_position(CentiDeg::from_cdeg(10000), MAX_DELTA);
+        assert!(result.is_err());
+        assert_eq!(result.unwrap_err(), 1);
+        assert_eq!(health.bad_count(), 1);
+
+        // Another bad reading increments counter
+        let result = health.validate_position(CentiDeg::from_cdeg(10000), MAX_DELTA);
+        assert!(result.is_err());
+        assert_eq!(result.unwrap_err(), 2);
+        assert_eq!(health.bad_count(), 2);
+    }
+
+    #[test]
+    fn test_good_reading_resets_counter() {
+        let mut health = SensorHealth::new();
+        health.validate_position(CentiDeg::from_cdeg(9000), MAX_DELTA).unwrap();
+
+        // Cause some bad readings
+        health.validate_position(CentiDeg::from_cdeg(15000), MAX_DELTA).unwrap_err();
+        health.validate_position(CentiDeg::from_cdeg(15000), MAX_DELTA).unwrap_err();
+        assert_eq!(health.bad_count(), 2);
+
+        // Good reading (back near last good position) should reset counter
+        let result = health.validate_position(CentiDeg::from_cdeg(9100), MAX_DELTA);
+        assert!(result.is_ok());
+        assert_eq!(health.bad_count(), 0);
+    }
+
+    #[test]
+    fn test_reset_clears_state() {
+        let mut health = SensorHealth::new();
+        health.validate_position(CentiDeg::from_cdeg(9000), MAX_DELTA).unwrap();
+        health.validate_position(CentiDeg::from_cdeg(15000), MAX_DELTA).unwrap_err();
+
+        health.reset();
+
+        // After reset, next reading should be accepted as first reading
+        assert_eq!(health.bad_count(), 0);
+        let result = health.validate_position(CentiDeg::from_cdeg(15000), MAX_DELTA);
+        assert!(result.is_ok()); // First reading always accepted
+    }
+
+    #[test]
+    fn test_last_good_position_preserved_on_bad_reading() {
+        let mut health = SensorHealth::new();
+        health.validate_position(CentiDeg::from_cdeg(9000), MAX_DELTA).unwrap();
+
+        // Bad reading should not update last_good_position
+        health.validate_position(CentiDeg::from_cdeg(15000), MAX_DELTA).unwrap_err();
+        assert_eq!(health.last_good_position().as_cdeg(), 9000);
+    }
+}

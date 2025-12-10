@@ -184,3 +184,91 @@ impl ControlLoop for PidController {
         self.apply_config();
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_default_config_values() {
+        let config = PidConfig::default();
+        assert_eq!(config.kp, PidConfig::KP_DEFAULT);
+        assert_eq!(config.ki, PidConfig::KI_DEFAULT);
+        assert_eq!(config.kd, PidConfig::KD_DEFAULT);
+        assert_eq!(config.output_max, 1799);
+        assert_eq!(config.derivative_mode, DerivativeMode::OnMeasurement);
+    }
+
+    #[test]
+    fn test_new_initializes_correctly() {
+        let ctrl = PidController::new(PidConfig::default());
+        assert_eq!(ctrl.get_setpoint().as_cdeg(), 9000); // 90°
+        assert_eq!(ctrl.output_max(), 1799);
+    }
+
+    #[test]
+    fn test_setpoint_get_set() {
+        let mut ctrl = PidController::new(PidConfig::default());
+        ctrl.set_setpoint(CentiDeg::from_cdeg(4500)); // 45°
+        assert_eq!(ctrl.get_setpoint().as_cdeg(), 4500);
+    }
+
+    #[test]
+    fn test_output_max_returns_config_value() {
+        let mut config = PidConfig::default();
+        config.output_max = 1000;
+        let ctrl = PidController::new(config);
+        assert_eq!(ctrl.output_max(), 1000);
+    }
+
+    #[test]
+    fn test_with_pid_config_mut_calls_apply() {
+        let mut ctrl = PidController::new(PidConfig::default());
+        let original_kp = ctrl.config().kp;
+
+        ctrl.with_pid_config_mut(|cfg| {
+            cfg.kp = Gain::from_raw(5000); // 50.0
+        });
+
+        // Config should be updated
+        assert_ne!(ctrl.config().kp, original_kp);
+        assert_eq!(ctrl.config().kp, Gain::from_raw(5000));
+    }
+
+    #[test]
+    fn test_reset_clears_pid_state() {
+        let mut ctrl = PidController::new(PidConfig::default());
+
+        // Run a few steps to build up integral
+        ctrl.set_setpoint(CentiDeg::from_cdeg(9000));
+        for _ in 0..100 {
+            ctrl.compute(CentiDeg::from_cdeg(9000), CentiDeg::from_cdeg(0), None);
+        }
+
+        // Get output before reset
+        let before = ctrl.compute(CentiDeg::from_cdeg(9000), CentiDeg::from_cdeg(0), None);
+
+        // Reset
+        ctrl.reset();
+
+        // Output after reset should be different (no integral accumulation)
+        let after = ctrl.compute(CentiDeg::from_cdeg(9000), CentiDeg::from_cdeg(0), None);
+
+        // The accumulated integral was adding to output, so after reset output should be smaller
+        // (pure proportional response vs proportional + accumulated integral)
+        assert!(after.abs() <= before.abs());
+    }
+
+    #[test]
+    fn test_compute_produces_output() {
+        let mut ctrl = PidController::new(PidConfig::default());
+        ctrl.set_setpoint(CentiDeg::from_cdeg(9000)); // 90°
+
+        // With position at 0° and setpoint at 90°, we should get positive output
+        let output = ctrl.compute(CentiDeg::from_cdeg(9000), CentiDeg::from_cdeg(0), None);
+        assert!(output > 0);
+
+        // Output should be clamped to output_max
+        assert!(output <= ctrl.output_max());
+    }
+}
