@@ -13,6 +13,7 @@ open-servo-core = { path = "../open-servo-core" }
 open-servo-control = { path = "../open-servo-control" }
 open-servo-hw = { path = "../open-servo-hw" }
 open-servo-hw-utils = { path = "../open-servo-hw-utils" }
+open-servo-math = { path = "../open-servo-math" }
 
 # STM32-specific
 stm32f3 = { version = "0.15.1", features = ["stm32f301", "rt"] }
@@ -26,7 +27,6 @@ panic-rtt-target = { workspace = true }
 
 # Other
 heapless = { workspace = true }
-pid = { workspace = true }
 
 [features]
 default = ["potentiometer", "current-sense", "debug_rtt"]

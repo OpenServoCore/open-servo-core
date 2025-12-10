@@ -7,37 +7,37 @@
 use core::ops::{Add, Div, Mul, Neg, Sub};
 
 /// Voltage in millivolts (1 LSB = 1 mV)
-#[derive(Copy, Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Copy, Clone, Debug, Default, PartialEq, Eq, PartialOrd, Ord)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
 pub struct MilliVolt(pub i16);
 
 /// Current in milliamps (1 LSB = 1 mA)
-#[derive(Copy, Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Copy, Clone, Debug, Default, PartialEq, Eq, PartialOrd, Ord)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
 pub struct MilliAmp(pub i16);
 
 /// Angle in centidegrees (1 LSB = 0.01°)
-#[derive(Copy, Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Copy, Clone, Debug, Default, PartialEq, Eq, PartialOrd, Ord)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
 pub struct CentiDeg(pub i16);
 
 /// Angular velocity in 0.1 deg/s (1 LSB = 0.1 deg/s)
-#[derive(Copy, Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Copy, Clone, Debug, Default, PartialEq, Eq, PartialOrd, Ord)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
 pub struct DegPerSec10(pub i16);
 
 /// Temperature in 0.1°C (1 LSB = 0.1°C)
-#[derive(Copy, Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Copy, Clone, Debug, Default, PartialEq, Eq, PartialOrd, Ord)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
 pub struct DeciC(pub i16);
 
 /// Raw 12-bit ADC value
-#[derive(Copy, Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Copy, Clone, Debug, Default, PartialEq, Eq, PartialOrd, Ord)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
 pub struct Adc12(pub u16);
 
 /// Raw encoder count
-#[derive(Copy, Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Copy, Clone, Debug, Default, PartialEq, Eq, PartialOrd, Ord)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
 pub struct EncoderCount(pub u16);
 
@@ -151,6 +151,12 @@ impl MilliAmp {
         let raw = code.0 as i32;
         let ma = mul_div_i32(raw, 244, 1000);
         MilliAmp(ma.clamp(0, i16::MAX as i32) as i16)
+    }
+
+    /// Get absolute value of current (for threshold comparisons)
+    #[inline]
+    pub fn abs(self) -> Self {
+        Self(self.0.saturating_abs())
     }
 }
 

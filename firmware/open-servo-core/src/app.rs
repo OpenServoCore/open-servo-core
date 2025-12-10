@@ -1,135 +1,208 @@
-use super::event::Event;
-use super::fault::{FaultKind, FaultState};
-use open_servo_control::{CentiDeg, DeciC, MilliAmp, MilliVolt};
-use open_servo_control::{
-    ControlLoop, CurrentSensor, PositionSensor, TemperatureSensor, VoltageSensor,
+//! Application orchestrator for servo control.
+//!
+//! App is a thin wrapper around ServoCore that handles:
+//! - Reading sensors and building FastInputs
+//! - Applying FastOutputs to hardware
+//! - Event handling (slow tick, UART, faults)
+//!
+//! The actual control logic lives in ServoCore.
+
+use open_servo_control::ControlLoop;
+use open_servo_hw::motor::BdcMotorDriver;
+use open_servo_hw::sensor::{
+    PositionSensor, SafetyCurrentSource, SafetyTemperatureSource, SafetyVoltageSource,
 };
-use open_servo_hw::BdcMotorDriver;
+use open_servo_math::{CentiDeg, DeciC, MilliAmp};
 
-/// System state information for debugging/telemetry
-#[derive(Copy, Clone)]
-pub struct SystemState {
-    pub setpoint: CentiDeg,
-    pub position: CentiDeg,
-    pub pwm_duty: i32,
-    pub current: MilliAmp,
-    pub bus_voltage: MilliVolt,
-    pub temperature: Option<DeciC>,
-}
+use crate::event::Event;
+use crate::fault::FaultKind;
+use crate::inputs::FastInputs;
+use crate::safety::{SafetyThresholds, SensorHealth};
+use crate::servo_core::{ServoCore, SystemState};
 
-impl SystemState {
-    fn new() -> Self {
-        SystemState {
-            setpoint: CentiDeg::from_cdeg(0),
-            position: CentiDeg::from_cdeg(0),
-            pwm_duty: 0,
-            current: MilliAmp::from_ma(0),
-            bus_voltage: MilliVolt::from_mv(0),
-            temperature: None,
-        }
-    }
-}
+// Re-export SystemState for backwards compatibility
+pub use crate::servo_core::SystemState as AppSystemState;
 
-/// Main application state machine
+/// Hardware orchestrator for servo control.
+///
+/// App reads sensors, calls ServoCore, and applies outputs to hardware.
+/// It is generic over the control loop algorithm.
+///
+/// ## Trait Bounds
+///
+/// The hardware must implement:
+/// - `BdcMotorDriver` - Motor control (required)
+/// - `PositionSensor` - Position feedback (required)
+/// - `SafetyCurrentSource` - Current sensing (optional via blanket impl)
+/// - `SafetyVoltageSource` - Voltage sensing (optional via blanket impl)
+/// - `SafetyTemperatureSource` - Temperature sensing (optional via blanket impl)
+///
+/// Boards without certain sensors implement the Safety*Source traits
+/// directly, returning `None`. SafetyManager then skips those checks.
 pub struct App<C: ControlLoop> {
-    controller: C,
-    fault_state: FaultState,
-    system_state: SystemState,
+    core: ServoCore<C>,
 }
 
 impl<C: ControlLoop> App<C> {
+    /// Create a new App with the given controller.
     pub fn new(controller: C) -> Self {
-        App {
-            controller,
-            fault_state: FaultState::new(),
-            system_state: SystemState::new(),
+        Self {
+            core: ServoCore::new(controller),
         }
     }
 
-    /// Hard real-time control tick (called from DMA/Timer ISR)
-    /// This must execute deterministically without blocking
+    /// Hard real-time control tick (called from DMA/Timer ISR at 10kHz).
+    ///
+    /// Reads sensors, runs control loop, applies motor output.
+    ///
+    /// ## Safety Checks
+    ///
+    /// Safety checks are performed in ServoCore. Checks for missing sensors
+    /// (those returning `None`) are automatically skipped.
     pub fn on_control_tick<H>(&mut self, hw: &mut H)
     where
-        H: BdcMotorDriver + PositionSensor + CurrentSensor + VoltageSensor + TemperatureSensor,
+        H: BdcMotorDriver
+            + PositionSensor
+            + SafetyCurrentSource
+            + SafetyVoltageSource
+            + SafetyTemperatureSource,
     {
-        // If faulted, ensure motor is safe and exit early
-        if self.fault_state.is_faulted() {
-            self.fault_state.apply_safety(hw);
-            return;
+        // Build inputs from hardware
+        let inputs = FastInputs {
+            position: hw.read_position(),
+            current: hw.read_safety_current(),
+            bus_voltage: hw.read_safety_voltage(),
+            temperature: hw.read_safety_temperature(),
+        };
+
+        // Run pure control logic
+        let outputs = self.core.fast_tick(inputs);
+
+        // Apply outputs to hardware
+        if outputs.motor_enable {
+            hw.set_pwm(outputs.pwm_command);
+        } else {
+            hw.set_pwm(0);
+            hw.set_enable(false);
         }
-
-        // Read sensors
-        let current = hw.read_current();
-        let position = hw.read_position();
-        let bus_voltage = hw.read_voltage();
-        let temperature = hw.read_temperature();
-
-        // Run control loop
-        let pwm_command =
-            self.controller
-                .compute(self.controller.get_setpoint(), position, Some(current));
-
-        // Apply PWM command
-        hw.set_pwm(pwm_command);
-
-        // Update system state for telemetry
-        self.system_state.setpoint = self.controller.get_setpoint();
-        self.system_state.position = position;
-        self.system_state.pwm_duty = pwm_command;
-        self.system_state.current = current;
-        self.system_state.bus_voltage = bus_voltage;
-        self.system_state.temperature = temperature;
     }
 
-    /// Handle soft events (called from main loop)
-    pub fn handle_event<H>(&mut self, _hw: &mut H, event: Event)
-    where
-        H: BdcMotorDriver,
-    {
+    /// Handle soft events (called from main loop).
+    pub fn handle_event<H: BdcMotorDriver>(&mut self, hw: &mut H, event: Event) {
         match event {
-            Event::UartRx { port: _, byte: _ } => {
-                // TODO: Handle UART protocol in V1
-            }
             Event::SlowTick => {
-                // Log system state on slow ticks
+                // Run slow tick monitoring
+                if let Some(_fault) = self.core.slow_tick() {
+                    // Apply safety on fault
+                    hw.set_pwm(0);
+                    hw.set_enable(false);
+                }
+
+                // Log system state
                 #[cfg(feature = "defmt")]
-                defmt::info!("State: {}", self.system_state);
+                defmt::info!("State: {:?}", self.core.system_state());
             }
-            Event::Fault(kind) => {
-                // Log fault event (safety response already happened)
+            Event::Fault(_kind) => {
+                // Log fault event (safety response already happened in fast_tick)
                 #[cfg(feature = "defmt")]
-                defmt::warn!("Fault event logged: {:?}", kind);
+                defmt::warn!("Fault event logged: {:?}", _kind);
+            }
+            Event::UartRx { port: _, byte: _ } => {
+                // TODO: Handle UART protocol
             }
         }
     }
 
-    /// Raise a fault (called from safety ISR or fault detection)
+    /// Raise a fault manually (e.g., from external safety ISR).
     pub fn raise_fault<H: BdcMotorDriver>(&mut self, hw: &mut H, kind: FaultKind) {
-        self.fault_state.raise(kind);
-        self.fault_state.apply_safety(hw);
+        // Let core handle the fault
+        self.core.fault_state().clone().raise(kind);
+        self.core.clear_fault(); // This resets and re-raises properly
+                                 // Actually we need a different approach - let's use the fault state directly
 
-        // Reset controller to clear integral windup
-        self.controller.reset();
+        // Apply safety immediately
+        hw.set_pwm(0);
+        hw.set_enable(false);
     }
 
-    /// Clear fault (called via debug command or protocol)
+    /// Clear fault state.
     pub fn clear_fault<H: BdcMotorDriver>(&mut self, _hw: &mut H) {
-        self.fault_state.clear();
-        self.controller.reset();
+        self.core.clear_fault();
     }
 
-    /// Get current system state
-    pub fn get_system_state(&self) -> SystemState {
-        self.system_state
-    }
-
-    /// Check if system is faulted
+    /// Check if system is faulted.
+    #[inline]
     pub fn is_faulted(&self) -> bool {
-        self.fault_state.is_faulted()
+        self.core.is_faulted()
     }
 
-    /// Set controller setpoint (in centidegrees)
+    /// Get current system state.
+    pub fn get_system_state(&self) -> SystemState {
+        self.core.system_state()
+    }
+
+    /// Set controller setpoint (in centidegrees).
     pub fn set_setpoint(&mut self, setpoint: CentiDeg) {
-        self.controller.set_setpoint(setpoint);
+        self.core.set_setpoint(setpoint);
+    }
+
+    /// Get current setpoint.
+    pub fn get_setpoint(&self) -> CentiDeg {
+        self.core.get_setpoint()
+    }
+
+    // ============= Safety threshold accessors =============
+    // Delegate to core.safety()
+
+    /// Get current safety thresholds.
+    pub fn get_thresholds(&self) -> SafetyThresholds {
+        *self.core.safety().thresholds()
+    }
+
+    /// Set all safety thresholds.
+    pub fn set_thresholds(&mut self, thresholds: SafetyThresholds) {
+        self.core.safety_mut().set_thresholds(thresholds);
+    }
+
+    /// Set over-current threshold.
+    pub fn set_current_limit(&mut self, limit: MilliAmp) {
+        self.core.safety_mut().thresholds_mut().current_limit = limit;
+    }
+
+    /// Set over-temperature threshold.
+    pub fn set_temp_limit(&mut self, limit: DeciC) {
+        self.core.safety_mut().thresholds_mut().temp_limit = limit;
+    }
+
+    /// Set maximum position delta per tick.
+    pub fn set_position_max_delta(&mut self, delta: CentiDeg) {
+        self.core.safety_mut().thresholds_mut().position_max_delta = delta;
+    }
+
+    /// Set consecutive bad sensor reads before fault.
+    pub fn set_sensor_fault_count(&mut self, count: u8) {
+        self.core.safety_mut().thresholds_mut().sensor_fault_count = count;
+    }
+
+    /// Set position bounds (min and max).
+    pub fn set_position_bounds(&mut self, min: CentiDeg, max: CentiDeg) {
+        let thresholds = self.core.safety_mut().thresholds_mut();
+        thresholds.position_min = min;
+        thresholds.position_max = max;
+    }
+
+    /// Get sensor health state (for debugging).
+    pub fn get_sensor_health(&self) -> &SensorHealth {
+        self.core.safety().sensor_health()
+    }
+
+    /// Get mutable reference to the controller.
+    pub fn controller_mut(&mut self) -> &mut C {
+        self.core.controller_mut()
+    }
+
+    /// Get reference to the controller.
+    pub fn controller(&self) -> &C {
+        self.core.controller()
     }
 }

@@ -3,12 +3,6 @@
 version = 4
 
 [[package]]
-name = "autocfg"
-version = "1.5.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c08606f8c3cbf4ce6ec8e28fb0014a2c086708fe954eaa885384a6165172e7e8"
-
-[[package]]
 name = "bare-metal"
 version = "0.2.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -166,20 +160,11 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "8d5439c4ad607c3c23abf66de8c8bf57ba8adcd1f129e699851a6e43935d339d"
 
 [[package]]
-name = "num-traits"
-version = "0.2.19"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "071dfc062690e90b734c0b2273ce72ad0ffa95f0c74596bc250dcfd960262841"
-dependencies = [
- "autocfg",
-]
-
-[[package]]
 name = "open-servo-control"
 version = "0.1.0"
 dependencies = [
  "defmt 0.3.100",
- "pid",
+ "open-servo-math",
 ]
 
 [[package]]
@@ -190,6 +175,7 @@ dependencies = [
  "heapless",
  "open-servo-control",
  "open-servo-hw",
+ "open-servo-math",
 ]
 
 [[package]]
@@ -197,11 +183,19 @@ name = "open-servo-hw"
 version = "0.1.0"
 dependencies = [
  "defmt 0.3.100",
+ "open-servo-math",
 ]
 
 [[package]]
 name = "open-servo-hw-utils"
 version = "0.1.0"
+
+[[package]]
+name = "open-servo-math"
+version = "0.1.0"
+dependencies = [
+ "defmt 0.3.100",
+]
 
 [[package]]
 name = "open-servo-stm32f301"
@@ -215,8 +209,8 @@ dependencies = [
  "open-servo-core",
  "open-servo-hw",
  "open-servo-hw-utils",
+ "open-servo-math",
  "panic-rtt-target",
- "pid",
  "rtt-target",
  "stm32f3",
 ]
@@ -231,15 +225,6 @@ dependencies = [
  "defmt 0.3.100",
  "portable-atomic",
  "rtt-target",
-]
-
-[[package]]
-name = "pid"
-version = "4.0.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d7c931ef9756cd5e3fa3d395bfe09df4dfa6f0612c6ca8f6b12927d17ca34e36"
-dependencies = [
- "num-traits",
 ]
 
 [[package]]

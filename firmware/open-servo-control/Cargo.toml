@@ -4,7 +4,7 @@ version.workspace = true
 edition.workspace = true
 
 [dependencies]
-pid = { workspace = true }
+open-servo-math = { path = "../open-servo-math" }
 
 [features]
 default = ["pid"]
@@ -12,7 +12,7 @@ pid = []
 cascade = []
 velocity = []
 foc = []
-defmt = ["dep:defmt"]
+defmt = ["dep:defmt", "open-servo-math/defmt"]
 
 [dependencies.defmt]
 workspace = true

@@ -4,10 +4,10 @@ version.workspace = true
 edition.workspace = true
 
 [dependencies]
-# No hardware-specific dependencies, just traits and common utilities
+open-servo-math = { path = "../open-servo-math" }
 
 [features]
-defmt = ["dep:defmt"]
+defmt = ["dep:defmt", "open-servo-math/defmt"]
 
 [dependencies.defmt]
 workspace = true

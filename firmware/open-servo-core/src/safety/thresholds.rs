@@ -1,0 +1,83 @@
+//! Safety thresholds for fault detection.
+
+use open_servo_math::{CentiDeg, DeciC, MilliAmp};
+
+// ============= Default threshold constants =============
+
+/// Default over-current threshold: 800 mA
+/// Observed stall current ~180mA; 800mA provides margin for transients
+/// while detecting faults before DRV8231A hardware limiting (~1.5A)
+pub const DEFAULT_CURRENT_LIMIT_MA: i16 = 800;
+
+/// Default over-temperature threshold: 800 deciC (80.0°C)
+/// STM32F301 max junction temp is 105°C, leave margin
+pub const DEFAULT_TEMP_LIMIT_DC: i16 = 800;
+
+/// Default max position change per tick: 500 centidegrees (5.0°)
+/// At 10kHz, this allows ~50,000 deg/sec motion
+pub const DEFAULT_POS_MAX_DELTA_CDEG: i16 = 500;
+
+/// Default consecutive bad sensor reads before hard fault: 10
+/// At 10kHz, this is ~1ms of bad readings
+pub const DEFAULT_SENSOR_FAULT_COUNT: u8 = 10;
+
+/// Default minimum position: 0 centidegrees (0°)
+/// Mechanical hard limit is -5°
+pub const DEFAULT_POSITION_MIN_CDEG: i16 = 0;
+
+/// Default maximum position: 18000 centidegrees (180°)
+/// Mechanical hard limit is 185°
+pub const DEFAULT_POSITION_MAX_CDEG: i16 = 18000;
+
+/// Safety thresholds for automatic fault detection.
+///
+/// All thresholds use the same unit types as sensor readings
+/// to ensure type-safe comparisons.
+#[derive(Debug, Clone, Copy)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
+pub struct SafetyThresholds {
+    /// Maximum allowed motor current (absolute value compared)
+    pub current_limit: MilliAmp,
+
+    /// Maximum allowed MCU temperature
+    pub temp_limit: DeciC,
+
+    /// Maximum allowed position change per control tick
+    pub position_max_delta: CentiDeg,
+
+    /// Consecutive bad sensor reads before hard fault
+    pub sensor_fault_count: u8,
+
+    /// Minimum allowed position (setpoint clamped to this)
+    pub position_min: CentiDeg,
+
+    /// Maximum allowed position (setpoint clamped to this)
+    pub position_max: CentiDeg,
+}
+
+impl Default for SafetyThresholds {
+    fn default() -> Self {
+        Self {
+            current_limit: MilliAmp::from_ma(DEFAULT_CURRENT_LIMIT_MA),
+            temp_limit: DeciC::from_dc(DEFAULT_TEMP_LIMIT_DC),
+            position_max_delta: CentiDeg::from_cdeg(DEFAULT_POS_MAX_DELTA_CDEG),
+            sensor_fault_count: DEFAULT_SENSOR_FAULT_COUNT,
+            position_min: CentiDeg::from_cdeg(DEFAULT_POSITION_MIN_CDEG),
+            position_max: CentiDeg::from_cdeg(DEFAULT_POSITION_MAX_CDEG),
+        }
+    }
+}
+
+impl SafetyThresholds {
+    /// Clamp a setpoint to the configured position bounds.
+    ///
+    /// This prevents the servo from driving into mechanical stops.
+    #[inline]
+    pub fn clamp_setpoint(&self, setpoint: CentiDeg) -> CentiDeg {
+        let val = setpoint
+            .as_cdeg()
+            .max(self.position_min.as_cdeg())
+            .min(self.position_max.as_cdeg());
+        CentiDeg::from_cdeg(val)
+    }
+}

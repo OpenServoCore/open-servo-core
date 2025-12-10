@@ -5,6 +5,7 @@ members = [
     "open-servo-hw",
     "open-servo-hw-utils",
     "open-servo-stm32f301",
+    "open-servo-math",
 ]
 resolver = "2"
 
@@ -15,7 +16,6 @@ authors = ["Aaron Q"]
 
 [workspace.dependencies]
 heapless = "0.8"
-pid = "4.0"
 defmt = { version = "0.3", features = ["encoding-rzcobs"] }
 rtt-target = { version = "0.6", features = ["defmt"] }
 panic-rtt-target = { version = "0.2", features = ["defmt"] }
@@ -28,5 +28,6 @@ codegen-units = 1  # Single codegen unit for better optimization
 
 [profile.release]
 panic = "abort"
+opt-level = "z"  # Optimize for size
 lto = true       # Enable full link-time optimization
 codegen-units = 1  # Single codegen unit for better optimization

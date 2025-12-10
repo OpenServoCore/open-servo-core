@@ -1,0 +1,12 @@
+[package]
+name = "open-servo-math"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+
+[features]
+defmt = ["dep:defmt"]
+
+[dependencies.defmt]
+workspace = true
+optional = true

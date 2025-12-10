@@ -1,0 +1,309 @@
+//! Command execution - hardware-aware side effects.
+//!
+//! This module contains all the code that interacts with App and hardware.
+
+use core::fmt::Write;
+use heapless::String;
+
+use crate::safety::SafetyThresholds;
+use crate::App;
+use open_servo_control::ControlLoop;
+use open_servo_hw::{BdcMotorDriver, DebugIo};
+use open_servo_math::{CentiDeg, DeciC, DerivativeMode, Gain, MilliAmp};
+
+use super::command::{Command, FaultCmd, LimitCmd, PidCmd, PidField, SetCmd};
+use super::DebugShell;
+
+impl<D: DebugIo> DebugShell<D> {
+    /// Execute a parsed command.
+    pub(super) fn exec_command<C, H>(&mut self, app: &mut App<C>, hw: &mut H, cmd: Command)
+    where
+        C: ControlLoop,
+        H: BdcMotorDriver,
+    {
+        match cmd {
+            Command::Help => self.cmd_help(),
+            Command::State => self.cmd_state(app),
+            Command::Fault(FaultCmd::Show) => self.cmd_fault_show(app),
+            Command::Fault(FaultCmd::Clear) => self.cmd_fault_clear(app, hw),
+            Command::Set(SetCmd::Sp(val)) => self.cmd_set_sp(app, val),
+            Command::Limit(LimitCmd::Show) => self.cmd_limit_show(app),
+            Command::Limit(LimitCmd::Current(val)) => self.cmd_limit_current(app, val),
+            Command::Limit(LimitCmd::Temp(val)) => self.cmd_limit_temp(app, val),
+            Command::Limit(LimitCmd::Delta(val)) => self.cmd_limit_delta(app, val),
+            Command::Limit(LimitCmd::Faults(val)) => self.cmd_limit_faults(app, val),
+            Command::Limit(LimitCmd::Pos(min, max)) => self.cmd_limit_pos(app, min, max),
+            Command::Limit(LimitCmd::Reset) => self.cmd_limit_reset(app),
+            Command::Pid(PidCmd::Show) => self.cmd_pid_show(app),
+            Command::Pid(PidCmd::SetOne { field, value }) => {
+                self.cmd_pid_set_one(app, field, value)
+            }
+            Command::Pid(PidCmd::SetAll { kp, ki, kd }) => self.cmd_pid_set_all(app, kp, ki, kd),
+            Command::Pid(PidCmd::Mode(mode)) => self.cmd_pid_mode(app, mode),
+        }
+    }
+
+    // ========================================================================
+    // Command handlers
+    // ========================================================================
+
+    fn cmd_help(&mut self) {
+        self.println("commands:");
+        self.println("  help, ?                   - show this help");
+        self.println("  state, s                  - show system state");
+        self.println("  fault                     - show fault status");
+        self.println("  fault clear               - clear latched fault");
+        self.println("  set sp <cdeg>             - set setpoint");
+        self.println("  pid pos                   - show PID config");
+        self.println("  pid pos set kp <f32>      - set Kp gain");
+        self.println("  pid pos set ki <f32>      - set Ki gain");
+        self.println("  pid pos set kd <f32>      - set Kd gain");
+        self.println("  pid pos set <kp> <ki> <kd> - set all gains");
+        self.println("  pid pos mode err|meas     - set D mode");
+        self.println("  limit                     - show safety limits");
+        self.println("  limit current [mA]        - get/set current limit");
+        self.println("  limit temp [dC]           - get/set temp limit");
+        self.println("  limit delta [cdeg]        - get/set max pos delta");
+        self.println("  limit faults [n]          - get/set fault count");
+        self.println("  limit pos <min> <max>     - set position bounds");
+        self.println("  limit reset               - restore defaults");
+    }
+
+    fn cmd_state<C: ControlLoop>(&mut self, app: &App<C>) {
+        let s = app.get_system_state();
+        let mut buf: String<96> = String::new();
+
+        // Position and setpoint (always available)
+        let _ = write!(
+            buf,
+            "sp={} pos={} pwm={}",
+            s.setpoint.as_cdeg(),
+            s.position.as_cdeg(),
+            s.pwm_duty,
+        );
+        self.println(&buf);
+
+        // Current (optional)
+        buf.clear();
+        if let Some(current) = s.current {
+            let _ = write!(buf, "I={}mA", current.as_ma());
+        } else {
+            let _ = write!(buf, "I=n/a");
+        }
+
+        // Voltage (optional)
+        if let Some(voltage) = s.bus_voltage {
+            let _ = write!(buf, " V={}mV", voltage.as_mv());
+        } else {
+            let _ = write!(buf, " V=n/a");
+        }
+        self.println(&buf);
+
+        // Temperature (optional)
+        if let Some(temp) = s.temperature {
+            buf.clear();
+            let _ = write!(buf, "T={}dC", temp.as_dc());
+            self.println(&buf);
+        }
+
+        let health = app.get_sensor_health();
+        if health.bad_count() > 0 {
+            buf.clear();
+            let _ = write!(buf, "sensor: {} bad reads", health.bad_count());
+            self.println(&buf);
+        }
+
+        if app.is_faulted() {
+            self.println("FAULT: latched");
+        } else {
+            self.println("fault: none");
+        }
+    }
+
+    fn cmd_fault_show<C: ControlLoop>(&mut self, app: &App<C>) {
+        if app.is_faulted() {
+            self.println("FAULT: latched");
+        } else {
+            self.println("fault: none");
+        }
+    }
+
+    fn cmd_fault_clear<C: ControlLoop, H: BdcMotorDriver>(&mut self, app: &mut App<C>, hw: &mut H) {
+        app.clear_fault(hw);
+        self.println("fault cleared");
+    }
+
+    fn cmd_set_sp<C: ControlLoop>(&mut self, app: &mut App<C>, val: i16) {
+        let sp = CentiDeg::from_cdeg(val);
+        app.set_setpoint(sp);
+        let mut buf: String<64> = String::new();
+        let _ = write!(buf, "ok, sp={}", sp.as_cdeg());
+        self.println(&buf);
+    }
+
+    fn cmd_limit_show<C: ControlLoop>(&mut self, app: &App<C>) {
+        let t = app.get_thresholds();
+        let mut buf: String<96> = String::new();
+
+        let _ = write!(
+            buf,
+            "current={}mA temp={}dC delta={}cdeg",
+            t.current_limit.as_ma(),
+            t.temp_limit.as_dc(),
+            t.position_max_delta.as_cdeg(),
+        );
+        self.println(&buf);
+
+        buf.clear();
+        let _ = write!(
+            buf,
+            "faults={} pos=[{},{}]cdeg",
+            t.sensor_fault_count,
+            t.position_min.as_cdeg(),
+            t.position_max.as_cdeg(),
+        );
+        self.println(&buf);
+
+        let health = app.get_sensor_health();
+        buf.clear();
+        let _ = write!(buf, "bad_reads={}", health.bad_count());
+        self.println(&buf);
+    }
+
+    fn cmd_limit_current<C: ControlLoop>(&mut self, app: &mut App<C>, val: Option<i16>) {
+        if let Some(ma) = val {
+            app.set_current_limit(MilliAmp::from_ma(ma));
+            let mut buf: String<48> = String::new();
+            let _ = write!(buf, "ok, current={}mA", ma);
+            self.println(&buf);
+        } else {
+            let t = app.get_thresholds();
+            let mut buf: String<48> = String::new();
+            let _ = write!(buf, "current={}mA", t.current_limit.as_ma());
+            self.println(&buf);
+        }
+    }
+
+    fn cmd_limit_temp<C: ControlLoop>(&mut self, app: &mut App<C>, val: Option<i16>) {
+        if let Some(dc) = val {
+            app.set_temp_limit(DeciC::from_dc(dc));
+            let mut buf: String<48> = String::new();
+            let _ = write!(buf, "ok, temp={}dC", dc);
+            self.println(&buf);
+        } else {
+            let t = app.get_thresholds();
+            let mut buf: String<48> = String::new();
+            let _ = write!(buf, "temp={}dC", t.temp_limit.as_dc());
+            self.println(&buf);
+        }
+    }
+
+    fn cmd_limit_delta<C: ControlLoop>(&mut self, app: &mut App<C>, val: Option<i16>) {
+        if let Some(cd) = val {
+            app.set_position_max_delta(CentiDeg::from_cdeg(cd));
+            let mut buf: String<48> = String::new();
+            let _ = write!(buf, "ok, delta={}cdeg", cd);
+            self.println(&buf);
+        } else {
+            let t = app.get_thresholds();
+            let mut buf: String<48> = String::new();
+            let _ = write!(buf, "delta={}cdeg", t.position_max_delta.as_cdeg());
+            self.println(&buf);
+        }
+    }
+
+    fn cmd_limit_faults<C: ControlLoop>(&mut self, app: &mut App<C>, val: Option<u8>) {
+        if let Some(n) = val {
+            app.set_sensor_fault_count(n);
+            let mut buf: String<48> = String::new();
+            let _ = write!(buf, "ok, faults={}", n);
+            self.println(&buf);
+        } else {
+            let t = app.get_thresholds();
+            let mut buf: String<48> = String::new();
+            let _ = write!(buf, "faults={}", t.sensor_fault_count);
+            self.println(&buf);
+        }
+    }
+
+    fn cmd_limit_pos<C: ControlLoop>(&mut self, app: &mut App<C>, min: i16, max: i16) {
+        app.set_position_bounds(CentiDeg::from_cdeg(min), CentiDeg::from_cdeg(max));
+        let mut buf: String<48> = String::new();
+        let _ = write!(buf, "ok, pos=[{},{}]cdeg", min, max);
+        self.println(&buf);
+    }
+
+    fn cmd_limit_reset<C: ControlLoop>(&mut self, app: &mut App<C>) {
+        app.set_thresholds(SafetyThresholds::default());
+        self.println("ok, thresholds reset");
+    }
+
+    // ========================================================================
+    // PID command handlers
+    // ========================================================================
+
+    fn cmd_pid_show<C: ControlLoop>(&mut self, app: &App<C>) {
+        if let Some(cfg) = app.controller().pid_config() {
+            let mut buf: String<96> = String::new();
+            let mode_str = match cfg.derivative_mode {
+                DerivativeMode::OnError => "err",
+                DerivativeMode::OnMeasurement => "meas",
+            };
+            let _ = write!(
+                buf,
+                "pos: kp={} ki={} kd={} mode={} out=[-{},{}]",
+                cfg.kp, cfg.ki, cfg.kd, mode_str, cfg.output_max, cfg.output_max
+            );
+            self.println(&buf);
+        } else {
+            self.println("err: pid config not available");
+        }
+    }
+
+    fn cmd_pid_set_one<C: ControlLoop>(&mut self, app: &mut App<C>, field: PidField, value: Gain) {
+        // Use the closure pattern to update config and rebuild atomically
+        app.controller_mut().with_pid_config_mut(|cfg| match field {
+            PidField::Kp => cfg.kp = value,
+            PidField::Ki => cfg.ki = value,
+            PidField::Kd => cfg.kd = value,
+        });
+
+        // Print confirmation
+        let field_name = match field {
+            PidField::Kp => "kp",
+            PidField::Ki => "ki",
+            PidField::Kd => "kd",
+        };
+        let mut buf: String<48> = String::new();
+        let _ = write!(buf, "ok, {}={}", field_name, value);
+        self.println(&buf);
+    }
+
+    fn cmd_pid_set_all<C: ControlLoop>(&mut self, app: &mut App<C>, kp: Gain, ki: Gain, kd: Gain) {
+        // Use the closure pattern to update all gains and rebuild atomically
+        app.controller_mut().with_pid_config_mut(|cfg| {
+            cfg.kp = kp;
+            cfg.ki = ki;
+            cfg.kd = kd;
+        });
+
+        let mut buf: String<64> = String::new();
+        let _ = write!(buf, "ok, kp={} ki={} kd={}", kp, ki, kd);
+        self.println(&buf);
+    }
+
+    fn cmd_pid_mode<C: ControlLoop>(&mut self, app: &mut App<C>, mode: DerivativeMode) {
+        // Use the closure pattern to update mode and rebuild atomically
+        app.controller_mut().with_pid_config_mut(|cfg| {
+            cfg.derivative_mode = mode;
+        });
+
+        let mode_str = match mode {
+            DerivativeMode::OnError => "err",
+            DerivativeMode::OnMeasurement => "meas",
+        };
+        let mut buf: String<32> = String::new();
+        let _ = write!(buf, "ok, mode={}", mode_str);
+        self.println(&buf);
+    }
+}
