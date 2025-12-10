@@ -1,0 +1,15 @@
+{
+  "permissions": {
+    "allow": [
+      "WebSearch",
+      "WebFetch(domain:www.ti.com)",
+      "WebFetch(domain:blog.mbedded.ninja)",
+      "WebFetch(domain:github.com)",
+      "WebFetch(domain:www.alldatasheet.com)",
+      "WebFetch(domain:www.lcsc.com)",
+      "Bash(pip3 list:*)",
+      "Bash(pipx list:*)",
+      "Bash(easyeda2kicad:*)"
+    ]
+  }
+}
