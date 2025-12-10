@@ -29,6 +29,20 @@ pub const DEFAULT_POSITION_MIN_CDEG: i16 = 0;
 /// Mechanical hard limit is 185°
 pub const DEFAULT_POSITION_MAX_CDEG: i16 = 18000;
 
+/// Default stall detection timeout: 1000 ticks (100ms at 10kHz)
+pub const DEFAULT_STALL_TIMEOUT_TICKS: u16 = 1000;
+
+/// Default stall position tolerance: 10 centidegrees (0.1°)
+/// Position must change by more than this to not be considered stalled
+pub const DEFAULT_STALL_POSITION_TOLERANCE_CDEG: i16 = 10;
+
+/// Default position error limit: 3000 centidegrees (30°)
+/// Fault if |setpoint - position| exceeds this for too long
+pub const DEFAULT_POSITION_ERROR_LIMIT_CDEG: i16 = 3000;
+
+/// Default position error timeout: 50 ticks (500ms at 100Hz slow loop)
+pub const DEFAULT_POSITION_ERROR_TIMEOUT_TICKS: u16 = 50;
+
 /// Safety thresholds for automatic fault detection.
 ///
 /// All thresholds use the same unit types as sensor readings
@@ -53,6 +67,18 @@ pub struct SafetyThresholds {
 
     /// Maximum allowed position (setpoint clamped to this)
     pub position_max: CentiDeg,
+
+    /// Stall detection timeout in ticks
+    pub stall_timeout_ticks: u16,
+
+    /// Position change tolerance for stall detection
+    pub stall_position_tolerance: CentiDeg,
+
+    /// Maximum allowed position error before fault
+    pub position_error_limit: CentiDeg,
+
+    /// Position error timeout in ticks
+    pub position_error_timeout_ticks: u16,
 }
 
 impl Default for SafetyThresholds {
@@ -64,6 +90,10 @@ impl Default for SafetyThresholds {
             sensor_fault_count: DEFAULT_SENSOR_FAULT_COUNT,
             position_min: CentiDeg::from_cdeg(DEFAULT_POSITION_MIN_CDEG),
             position_max: CentiDeg::from_cdeg(DEFAULT_POSITION_MAX_CDEG),
+            stall_timeout_ticks: DEFAULT_STALL_TIMEOUT_TICKS,
+            stall_position_tolerance: CentiDeg::from_cdeg(DEFAULT_STALL_POSITION_TOLERANCE_CDEG),
+            position_error_limit: CentiDeg::from_cdeg(DEFAULT_POSITION_ERROR_LIMIT_CDEG),
+            position_error_timeout_ticks: DEFAULT_POSITION_ERROR_TIMEOUT_TICKS,
         }
     }
 }

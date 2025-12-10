@@ -25,6 +25,12 @@ pub trait ControlLoop {
     /// Get current setpoint (in centidegrees for position control).
     fn get_setpoint(&self) -> CentiDeg;
 
+    /// Get maximum output magnitude for saturation detection.
+    /// Default: 1799 (typical 20kHz PWM at 72MHz)
+    fn output_max(&self) -> i32 {
+        1799
+    }
+
     // =========================================================================
     // Optional PID config interface (for controllers that support it)
     // =========================================================================

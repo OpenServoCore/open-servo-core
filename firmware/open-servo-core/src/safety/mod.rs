@@ -37,6 +37,12 @@ pub struct SafetyManager {
     thresholds: SafetyThresholds,
     sensor_health: SensorHealth,
     last_temperature: Option<DeciC>,
+    /// Last position for stall detection
+    stall_last_position: CentiDeg,
+    /// Consecutive ticks with PWM saturated and no movement
+    stall_count: u16,
+    /// Consecutive ticks with large position error
+    position_error_count: u16,
 }
 
 impl Default for SafetyManager {
@@ -52,6 +58,9 @@ impl SafetyManager {
             thresholds: SafetyThresholds::default(),
             sensor_health: SensorHealth::new(),
             last_temperature: None,
+            stall_last_position: CentiDeg::from_cdeg(0),
+            stall_count: 0,
+            position_error_count: 0,
         }
     }
 
@@ -120,6 +129,53 @@ impl SafetyManager {
         self.sensor_health.bad_count() >= self.thresholds.sensor_fault_count
     }
 
+    /// Check for motor stall (PWM saturated but no movement).
+    ///
+    /// Call this every control tick with current position and PWM saturation state.
+    /// Returns `Some(FaultKind::Stall)` if stall persists for configured timeout.
+    #[inline]
+    pub fn check_stall(&mut self, position: CentiDeg, pwm_saturated: bool) -> Option<FaultKind> {
+        let pos_delta = (position.as_cdeg() - self.stall_last_position.as_cdeg()).abs();
+        let position_unchanged = pos_delta <= self.thresholds.stall_position_tolerance.as_cdeg();
+
+        if pwm_saturated && position_unchanged {
+            self.stall_count = self.stall_count.saturating_add(1);
+            if self.stall_count >= self.thresholds.stall_timeout_ticks {
+                return Some(FaultKind::Stall);
+            }
+        } else {
+            self.stall_count = 0;
+        }
+
+        // Update last position for next tick
+        self.stall_last_position = position;
+        None
+    }
+
+    /// Check for persistent large position error.
+    ///
+    /// Call this every control tick with setpoint and position.
+    /// Returns `Some(FaultKind::PositionError)` if large error persists for configured timeout.
+    #[inline]
+    pub fn check_position_error(
+        &mut self,
+        setpoint: CentiDeg,
+        position: CentiDeg,
+    ) -> Option<FaultKind> {
+        let error = (setpoint.as_cdeg() - position.as_cdeg()).abs();
+
+        if error > self.thresholds.position_error_limit.as_cdeg() {
+            self.position_error_count = self.position_error_count.saturating_add(1);
+            if self.position_error_count >= self.thresholds.position_error_timeout_ticks {
+                return Some(FaultKind::PositionError);
+            }
+        } else {
+            self.position_error_count = 0;
+        }
+
+        None
+    }
+
     /// Clamp setpoint to position bounds.
     #[inline]
     pub fn clamp_setpoint(&self, setpoint: CentiDeg) -> CentiDeg {
@@ -130,6 +186,8 @@ impl SafetyManager {
     pub fn reset(&mut self) {
         self.sensor_health.reset();
         self.last_temperature = None;
+        self.stall_count = 0;
+        self.position_error_count = 0;
     }
 
     // ============= Threshold accessors =============

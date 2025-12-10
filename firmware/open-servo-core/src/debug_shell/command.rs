@@ -42,6 +42,8 @@ pub enum LimitCmd {
     Delta(Option<i16>),
     Faults(Option<u8>),
     Pos(i16, i16),
+    Stall(Option<u16>),
+    Error(Option<i16>),
     Reset,
 }
 
@@ -158,6 +160,16 @@ impl Command {
                     let max = ap.req::<i16>("max")?;
                     ap.end()?;
                     Ok(Command::Limit(LimitCmd::Pos(min, max)))
+                }
+                Some("stall") => {
+                    let val = ap.next::<u16>("ticks")?;
+                    ap.end()?;
+                    Ok(Command::Limit(LimitCmd::Stall(val)))
+                }
+                Some("error") => {
+                    let val = ap.next::<i16>("cdeg")?;
+                    ap.end()?;
+                    Ok(Command::Limit(LimitCmd::Error(val)))
                 }
                 Some("reset") => {
                     ap.end()?;

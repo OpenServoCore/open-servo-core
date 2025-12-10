@@ -82,6 +82,7 @@ impl<C: ControlLoop> ServoCore<C> {
     /// 2. Validate position sensor (skip tick on bad reading)
     /// 3. Check current threshold (if sensor available)
     /// 4. Run control loop with clamped setpoint
+    /// 5. Check for motor stall (PWM saturated + no movement)
     #[inline]
     pub fn fast_tick(&mut self, inputs: FastInputs) -> FastOutputs {
         // If already faulted, return safe state
@@ -117,7 +118,15 @@ impl<C: ControlLoop> ServoCore<C> {
             .controller
             .compute(clamped_setpoint, position, inputs.current);
 
-        // 4. Update system state for telemetry
+        // 4. Check for stall (PWM saturated but no movement)
+        let output_max = self.controller.output_max();
+        let pwm_saturated = pwm_command.abs() >= output_max;
+        if let Some(fault) = self.safety.check_stall(position, pwm_saturated) {
+            self.raise_fault(fault);
+            return FastOutputs::fault(fault);
+        }
+
+        // 5. Update system state for telemetry
         self.system_state = SystemState {
             setpoint: clamped_setpoint,
             position,
@@ -143,6 +152,15 @@ impl<C: ControlLoop> ServoCore<C> {
             self.raise_fault(fault);
             return Some(fault);
         }
+
+        // Check for persistent position error (supervisory, doesn't need 10kHz)
+        let setpoint = self.system_state.setpoint;
+        let position = self.system_state.position;
+        if let Some(fault) = self.safety.check_position_error(setpoint, position) {
+            self.raise_fault(fault);
+            return Some(fault);
+        }
+
         None
     }
 

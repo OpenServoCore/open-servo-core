@@ -16,6 +16,10 @@ pub enum FaultKind {
     QueuePressure,
     /// Position sensor giving invalid readings
     EncoderFault,
+    /// Motor stalled (PWM saturated but no movement)
+    Stall,
+    /// Position error too large for too long
+    PositionError,
 }
 
 /// Fault state - either OK or latched with a specific fault kind.

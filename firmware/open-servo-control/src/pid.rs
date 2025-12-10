@@ -168,6 +168,10 @@ impl ControlLoop for PidController {
         self.setpoint
     }
 
+    fn output_max(&self) -> i32 {
+        self.config.output_max
+    }
+
     fn pid_config(&self) -> Option<&PidConfig> {
         Some(&self.config)
     }

@@ -136,6 +136,11 @@ impl<C: ControlLoop> App<C> {
         self.core.is_faulted()
     }
 
+    /// Get the current fault kind, if any.
+    pub fn fault_kind(&self) -> Option<FaultKind> {
+        self.core.fault_state().fault_kind()
+    }
+
     /// Get current system state.
     pub fn get_system_state(&self) -> SystemState {
         self.core.system_state()
@@ -189,6 +194,16 @@ impl<C: ControlLoop> App<C> {
         let thresholds = self.core.safety_mut().thresholds_mut();
         thresholds.position_min = min;
         thresholds.position_max = max;
+    }
+
+    /// Set stall detection timeout in ticks.
+    pub fn set_stall_timeout(&mut self, ticks: u16) {
+        self.core.safety_mut().thresholds_mut().stall_timeout_ticks = ticks;
+    }
+
+    /// Set position error limit.
+    pub fn set_position_error_limit(&mut self, limit: CentiDeg) {
+        self.core.safety_mut().thresholds_mut().position_error_limit = limit;
     }
 
     /// Get sensor health state (for debugging).

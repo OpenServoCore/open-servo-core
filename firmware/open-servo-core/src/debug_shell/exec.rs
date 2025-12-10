@@ -5,11 +5,25 @@
 use core::fmt::Write;
 use heapless::String;
 
+use crate::fault::FaultKind;
 use crate::safety::SafetyThresholds;
 use crate::App;
 use open_servo_control::ControlLoop;
 use open_servo_hw::{BdcMotorDriver, DebugIo};
 use open_servo_math::{CentiDeg, DeciC, DerivativeMode, Gain, MilliAmp};
+
+/// Format FaultKind as a short string.
+fn fault_str(kind: FaultKind) -> &'static str {
+    match kind {
+        FaultKind::OverCurrent => "overcurrent",
+        FaultKind::OverTemp => "overtemp",
+        FaultKind::UnderVoltage => "undervolt",
+        FaultKind::QueuePressure => "queue",
+        FaultKind::EncoderFault => "encoder",
+        FaultKind::Stall => "stall",
+        FaultKind::PositionError => "pos_error",
+    }
+}
 
 use super::command::{Command, FaultCmd, LimitCmd, PidCmd, PidField, SetCmd};
 use super::DebugShell;
@@ -33,6 +47,8 @@ impl<D: DebugIo> DebugShell<D> {
             Command::Limit(LimitCmd::Delta(val)) => self.cmd_limit_delta(app, val),
             Command::Limit(LimitCmd::Faults(val)) => self.cmd_limit_faults(app, val),
             Command::Limit(LimitCmd::Pos(min, max)) => self.cmd_limit_pos(app, min, max),
+            Command::Limit(LimitCmd::Stall(val)) => self.cmd_limit_stall(app, val),
+            Command::Limit(LimitCmd::Error(val)) => self.cmd_limit_error(app, val),
             Command::Limit(LimitCmd::Reset) => self.cmd_limit_reset(app),
             Command::Pid(PidCmd::Show) => self.cmd_pid_show(app),
             Command::Pid(PidCmd::SetOne { field, value }) => {
@@ -66,6 +82,8 @@ impl<D: DebugIo> DebugShell<D> {
         self.println("  limit delta [cdeg]        - get/set max pos delta");
         self.println("  limit faults [n]          - get/set fault count");
         self.println("  limit pos <min> <max>     - set position bounds");
+        self.println("  limit stall [ticks]       - get/set stall timeout");
+        self.println("  limit error [cdeg]        - get/set error limit");
         self.println("  limit reset               - restore defaults");
     }
 
@@ -113,16 +131,20 @@ impl<D: DebugIo> DebugShell<D> {
             self.println(&buf);
         }
 
-        if app.is_faulted() {
-            self.println("FAULT: latched");
+        if let Some(kind) = app.fault_kind() {
+            let mut buf: String<32> = String::new();
+            let _ = write!(buf, "FAULT: {}", fault_str(kind));
+            self.println(&buf);
         } else {
             self.println("fault: none");
         }
     }
 
     fn cmd_fault_show<C: ControlLoop>(&mut self, app: &App<C>) {
-        if app.is_faulted() {
-            self.println("FAULT: latched");
+        if let Some(kind) = app.fault_kind() {
+            let mut buf: String<32> = String::new();
+            let _ = write!(buf, "FAULT: {}", fault_str(kind));
+            self.println(&buf);
         } else {
             self.println("fault: none");
         }
@@ -161,6 +183,15 @@ impl<D: DebugIo> DebugShell<D> {
             t.sensor_fault_count,
             t.position_min.as_cdeg(),
             t.position_max.as_cdeg(),
+        );
+        self.println(&buf);
+
+        buf.clear();
+        let _ = write!(
+            buf,
+            "stall={}ticks error={}cdeg",
+            t.stall_timeout_ticks,
+            t.position_error_limit.as_cdeg(),
         );
         self.println(&buf);
 
@@ -231,6 +262,34 @@ impl<D: DebugIo> DebugShell<D> {
         let mut buf: String<48> = String::new();
         let _ = write!(buf, "ok, pos=[{},{}]cdeg", min, max);
         self.println(&buf);
+    }
+
+    fn cmd_limit_stall<C: ControlLoop>(&mut self, app: &mut App<C>, val: Option<u16>) {
+        if let Some(ticks) = val {
+            app.set_stall_timeout(ticks);
+            let mut buf: String<48> = String::new();
+            let _ = write!(buf, "ok, stall={}ticks", ticks);
+            self.println(&buf);
+        } else {
+            let t = app.get_thresholds();
+            let mut buf: String<48> = String::new();
+            let _ = write!(buf, "stall={}ticks", t.stall_timeout_ticks);
+            self.println(&buf);
+        }
+    }
+
+    fn cmd_limit_error<C: ControlLoop>(&mut self, app: &mut App<C>, val: Option<i16>) {
+        if let Some(cdeg) = val {
+            app.set_position_error_limit(CentiDeg::from_cdeg(cdeg));
+            let mut buf: String<48> = String::new();
+            let _ = write!(buf, "ok, error={}cdeg", cdeg);
+            self.println(&buf);
+        } else {
+            let t = app.get_thresholds();
+            let mut buf: String<48> = String::new();
+            let _ = write!(buf, "error={}cdeg", t.position_error_limit.as_cdeg());
+            self.println(&buf);
+        }
     }
 
     fn cmd_limit_reset<C: ControlLoop>(&mut self, app: &mut App<C>) {
