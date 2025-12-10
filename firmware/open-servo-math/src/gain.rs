@@ -62,7 +62,7 @@ impl core::fmt::Display for Gain {
         let scaled = scaled.abs();
         let int_part = scaled / 100;
         let frac_part = scaled % 100;
-        write!(f, "{}{}.{:02}", sign, int_part, frac_pxart)
+        write!(f, "{}{}.{:02}", sign, int_part, frac_part)
     }
 }
 
