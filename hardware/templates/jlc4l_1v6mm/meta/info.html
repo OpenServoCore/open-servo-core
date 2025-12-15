@@ -1,0 +1,95 @@
+<html>
+  <head>
+    <title>JLCPCB 4-Layer 1.6mm Template</title>
+  </head>
+  <body>
+    <h1>JLCPCB 4-Layer 1.6mm PCB Template</h1>
+    
+    <p>
+      This project template provides a pre-configured KiCad project optimized for manufacturing with JLCPCB's 4-layer 1.6mm PCB service. 
+      It includes design rules, net classes, and stackup configuration tailored to JLCPCB's manufacturing capabilities.
+    </p>
+
+    <h2>Key Features</h2>
+    <ul>
+      <li><strong>Stackup:</strong> 4-layer, 1.6mm thickness</li>
+      <li><strong>Manufacturer:</strong> JLCPCB</li>
+      <li><strong>Min Track Width:</strong> 0.09mm (3.5 mil)</li>
+      <li><strong>Min Via Diameter:</strong> 0.45mm with 0.2mm drill</li>
+      <li><strong>Min Clearance:</strong> 0.09mm</li>
+    </ul>
+
+    <h2>Pre-configured Net Classes</h2>
+    <table border="1" cellpadding="5">
+      <tr>
+        <th>Net Class</th>
+        <th>Track Width</th>
+        <th>Via Size</th>
+        <th>Clearance</th>
+        <th>Pattern Match</th>
+      </tr>
+      <tr>
+        <td><strong>Default</strong></td>
+        <td>0.2mm</td>
+        <td>0.6/0.3mm</td>
+        <td>0.2mm</td>
+        <td>Ground nets (GND, AGND, PGND, DGND)</td>
+      </tr>
+      <tr>
+        <td><strong>Dense</strong></td>
+        <td>0.1mm</td>
+        <td>0.45/0.2mm</td>
+        <td>0.1mm</td>
+        <td>High-density routing</td>
+      </tr>
+      <tr>
+        <td><strong>Signal</strong></td>
+        <td>0.25mm</td>
+        <td>0.6/0.3mm</td>
+        <td>0.2mm</td>
+        <td>General signals</td>
+      </tr>
+      <tr>
+        <td><strong>Power</strong></td>
+        <td>0.5mm</td>
+        <td>0.8/0.4mm</td>
+        <td>0.25mm</td>
+        <td>Power nets (3V3, 5V, VCC, VDD, VBUS)</td>
+      </tr>
+      <tr>
+        <td><strong>Motor</strong></td>
+        <td>1.0mm</td>
+        <td>1.0/0.5mm</td>
+        <td>0.25mm</td>
+        <td>Motor/high-current nets (VM, MOTOR*, VBAT, VIN)</td>
+      </tr>
+    </table>
+
+    <h2>Design Rules</h2>
+    <p>
+      The template includes JLCPCB-compliant design rules with appropriate margins for reliable manufacturing:
+    </p>
+    <ul>
+      <li>Minimum copper edge clearance: 0.3mm</li>
+      <li>Minimum hole-to-hole spacing: 0.254mm</li>
+      <li>Minimum annular ring: 0.075mm</li>
+      <li>Solder mask bridge prevention enabled</li>
+      <li>Teardrop generation configured for vias and pads</li>
+    </ul>
+
+    <h2>Usage</h2>
+    <p>
+      This template is ideal for projects requiring:
+    </p>
+    <ul>
+      <li>Mixed-signal designs with power and motor control</li>
+      <li>Cost-effective 4-layer manufacturing</li>
+      <li>JLCPCB assembly service compatibility</li>
+      <li>Servo control and motor driver applications</li>
+    </ul>
+
+    <p>
+      <em>Template created for the Open Servo Core project</em>
+    </p>
+  </body>
+</html>

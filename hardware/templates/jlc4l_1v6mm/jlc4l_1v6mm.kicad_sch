@@ -1,0 +1,21 @@
+(kicad_sch
+	(version 20250114)
+	(generator "eeschema")
+	(generator_version "9.0")
+	(uuid "6062e7d2-0c72-467e-b49c-6387ba053e09")
+	(paper "A")
+	(title_block
+		(title "${PROJECT} / ${BOARD}")
+		(rev "${REV}")
+		(comment 1 "Fab: ${FAB}")
+		(comment 2 "Stackup: ${STACKUP}")
+		(comment 3 "DRU: ${DRU}")
+	)
+	(lib_symbols)
+	(sheet_instances
+		(path "/"
+			(page "1")
+		)
+	)
+	(embedded_fonts no)
+)
