@@ -172,6 +172,17 @@ Optimized for low-cost production:
 
 ## TODO / Future Improvements
 
+### Critical Values to Double-Check Before PCB Routing
+- [ ] **Current shunt (R2):** Verify 0.1Ω gives good ADC range (0-330mV at 1A through 3.3x op-amp gain)
+- [ ] **Voltage dividers (R4/R5):** Confirm 10kΩ divider properly scales 5V motor to ADC range
+- [ ] **UART pullup (R1):** Verify 10kΩ optimal for 2Mbps half-duplex
+- [ ] **RC filter (R10/C6):** Check 1kΩ + 100nF = 1.6kHz cutoff for POT noise
+- [ ] **Bulk caps (C4/C5):** Confirm 2x10µF sufficient for motor transients
+- [ ] **P-MOSFET RDS(on):** Verify 17mΩ = 17mV drop at 1A peak is acceptable
+- [ ] **Motor pad spacing:** Confirm 7.4mm (3.7mm each side from center)
+- [ ] **Debug pad pitch:** Verify 1.27mm for pogo pins
+- [ ] **Package sizes:** Verify all footprints match actual parts (especially QFN-20)
+
 ### Rev B Changes
 1. **Add test points on back side**
    - Add second 1x4 array at 1.27mm pitch (same as debug interface)
