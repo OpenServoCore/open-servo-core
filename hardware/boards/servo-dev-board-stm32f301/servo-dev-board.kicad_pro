@@ -601,7 +601,16 @@
     "equivalence_files": []
   },
   "erc": {
-    "erc_exclusions": [],
+    "erc_exclusions": [
+      [
+        "lib_symbol_mismatch|1231900|825500|d6eb4688-6e2f-42ad-93da-1c0993029c04|00000000-0000-0000-0000-000000000000|||",
+        ""
+      ],
+      [
+        "power_pin_not_driven|1333500|800100|539ba574-953f-4847-8d98-cb654b448a30|00000000-0000-0000-0000-000000000000|/60f68cec-0222-4fb9-8815-7ba43c9e9ee4|/60f68cec-0222-4fb9-8815-7ba43c9e9ee4|",
+        "Kicad library error. OUT2 is output, not Power input."
+      ]
+    ],
     "meta": {
       "version": 0
     },
@@ -823,7 +832,9 @@
     }
   },
   "libraries": {
-    "pinned_footprint_libs": [],
+    "pinned_footprint_libs": [
+      "lib"
+    ],
     "pinned_symbol_libs": [
       "lib"
     ]

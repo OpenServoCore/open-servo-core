@@ -488,8 +488,12 @@
     }
   },
   "libraries": {
-    "pinned_footprint_libs": [],
-    "pinned_symbol_libs": []
+    "pinned_footprint_libs": [
+      "shared"
+    ],
+    "pinned_symbol_libs": [
+      "shared"
+    ]
   },
   "meta": {
     "filename": "jlc4l_1v6mm.kicad_pro",

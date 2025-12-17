@@ -25,7 +25,7 @@
 				)
 			)
 		)
-		(property "Footprint" "WSON8_DSG_TEX"
+		(property "Footprint" "common:DRV8231ADSGR"
 			(at 22.86 8.636 0)
 			(effects
 				(font
@@ -302,7 +302,7 @@
 				)
 			)
 		)
-		(property "Footprint" "open-servo-core:OPTO-SMD-4_ITR1204SR10A"
+		(property "Footprint" "common:OPTO-SMD-4_ITR1204SR10A"
 			(at 0 -10.16 0)
 			(effects
 				(font
@@ -771,7 +771,7 @@
 				)
 			)
 		)
-		(property "Footprint" "footprints:UQFN-20_L3.0-W3.0-P0.40-BL-EP1.7"
+		(property "Footprint" "common:UQFN-20_L3.0-W3.0-P0.40-BL-EP1.7"
 			(at 0 -19.05 0)
 			(effects
 				(font
@@ -1231,7 +1231,7 @@
     )
     (property
       "Footprint"
-      "footprints:TDFN-6_L1.0-W1.0-P0.35-BL"
+      "common:TDFN-6_L1.0-W1.0-P0.35-BL"
       (id 2)
       (at 0 -10.16 0)
       (effects (font (size 1.27 1.27) ) hide)
@@ -1256,37 +1256,37 @@
         (stroke (width 0) (type default) (color 0 0 0 0))
         (fill (type none))
       )
-      (pin unspecified line
+      (pin no_connect line
         (at -10.16 2.54 0)
         (length 2.54)
         (name "NC" (effects (font (size 1.27 1.27))))
         (number "1" (effects (font (size 1.27 1.27))))
       )
-      (pin unspecified line
+      (pin input line
         (at -10.16 -0.00 0)
         (length 2.54)
         (name "INA" (effects (font (size 1.27 1.27))))
         (number "2" (effects (font (size 1.27 1.27))))
       )
-      (pin unspecified line
+      (pin power_in line
         (at -10.16 -2.54 0)
         (length 2.54)
         (name "GND" (effects (font (size 1.27 1.27))))
         (number "3" (effects (font (size 1.27 1.27))))
       )
-      (pin unspecified line
+      (pin open_collector line
         (at 10.16 -2.54 180)
         (length 2.54)
         (name "OUTY" (effects (font (size 1.27 1.27))))
         (number "4" (effects (font (size 1.27 1.27))))
       )
-      (pin unspecified line
+      (pin no_connect line
         (at 10.16 -0.00 180)
         (length 2.54)
         (name "NC" (effects (font (size 1.27 1.27))))
         (number "5" (effects (font (size 1.27 1.27))))
       )
-      (pin unspecified line
+      (pin power_in line
         (at 10.16 2.54 180)
         (length 2.54)
         (name "VCC" (effects (font (size 1.27 1.27))))
@@ -1313,7 +1313,7 @@
     )
     (property
       "Footprint"
-      "footprints:DFN-6L_L2.0-W2.0-P0.65-BL_BRCS300PXX"
+      "common:DFN-6L_L2.0-W2.0-P0.65-BL_BRCS300PXX"
       (id 2)
       (at 0 -12.70 0)
       (effects (font (size 1.27 1.27) ) hide)
@@ -1403,49 +1403,49 @@
         (stroke (width 0) (type default) (color 0 0 0 0))
         (fill (type background))
       )
-      (pin unspecified line
+      (pin passive line
         (at 0.00 5.08 270)
         (length 2.54)
         (name "D" (effects (font (size 1.27 1.27))))
         (number "1" (effects (font (size 1.27 1.27))))
       )
-      (pin unspecified line
+      (pin input line
         (at -7.62 -0.00 0)
         (length 2.54)
         (name "G" (effects (font (size 1.27 1.27))))
         (number "3" (effects (font (size 1.27 1.27))))
       )
-      (pin unspecified line
+      (pin passive line
         (at 0.00 -5.08 90)
         (length 2.54)
         (name "S" (effects (font (size 1.27 1.27))))
         (number "4" (effects (font (size 1.27 1.27))))
       )
-      (pin unspecified line
+      (pin passive line
         (at 2.54 -5.08 90)
         (length 2.54)
         (name "S" (effects (font (size 1.27 1.27))))
         (number "8" (effects (font (size 1.27 1.27))))
       )
-      (pin unspecified line
+      (pin passive line
         (at 2.54 5.08 270)
         (length 2.54)
         (name "D" (effects (font (size 1.27 1.27))))
         (number "2" (effects (font (size 1.27 1.27))))
       )
-      (pin unspecified line
+      (pin passive line
         (at 5.08 5.08 270)
         (length 2.54)
         (name "D" (effects (font (size 1.27 1.27))))
         (number "5" (effects (font (size 1.27 1.27))))
       )
-      (pin unspecified line
+      (pin passive line
         (at 7.62 5.08 270)
         (length 2.54)
         (name "D" (effects (font (size 1.27 1.27))))
         (number "6" (effects (font (size 1.27 1.27))))
       )
-      (pin unspecified line
+      (pin passive line
         (at 10.16 5.08 270)
         (length 2.54)
         (name "D" (effects (font (size 1.27 1.27))))

@@ -1,0 +1,80 @@
+(footprint "NetTie-2_SMD_0.2mm"
+	(version 20241229)
+	(generator "pcbnew")
+	(generator_version "9.0")
+	(layer "F.Cu")
+	(descr "Net tie, 2 pin, 0.2mm trace width for fine pitch boards")
+	(tags "net tie")
+	(property "Reference" "NT**"
+		(at 0 -0.7 0)
+		(layer "F.SilkS")
+		(hide yes)
+		(uuid "ac722afb-4137-49c1-97b0-ed868517e198")
+		(effects
+			(font
+				(size 0.5 0.5)
+				(thickness 0.1)
+			)
+		)
+	)
+	(property "Value" "NetTie"
+		(at 0 0.7 0)
+		(layer "F.Fab")
+		(hide yes)
+		(uuid "feebcb36-8d3d-4701-a267-d48805f656a1")
+		(effects
+			(font
+				(size 0.5 0.5)
+				(thickness 0.1)
+			)
+		)
+	)
+	(property "Datasheet" ""
+		(at 0 0 0)
+		(layer "F.Fab")
+		(hide yes)
+		(uuid "5a6f5860-eae1-4590-b4a5-475392dfcca4")
+		(effects
+			(font
+				(size 1.27 1.27)
+				(thickness 0.15)
+			)
+		)
+	)
+	(property "Description" ""
+		(at 0 0 0)
+		(layer "F.Fab")
+		(hide yes)
+		(uuid "dfe97c90-0d01-421b-af20-861ac8ef7516")
+		(effects
+			(font
+				(size 1.27 1.27)
+				(thickness 0.15)
+			)
+		)
+	)
+	(attr exclude_from_pos_files exclude_from_bom)
+	(fp_line
+		(start -0.05 0)
+		(end 0.05 0)
+		(stroke
+			(width 0.2)
+			(type default)
+		)
+		(layer "F.Cu")
+		(uuid "c65a9410-1141-462f-a299-bbf70a135c9c")
+	)
+	(pad "1" smd circle
+		(at -0.05 0)
+		(size 0.2 0.2)
+		(layers "F.Cu")
+		(uuid "ffa2a218-527a-4376-8598-44e749be5073")
+	)
+	(pad "2" smd circle
+		(at 0.05 0)
+		(size 0.2 0.2)
+		(layers "F.Cu")
+		(uuid "0269b7b9-e553-4235-835f-5eb3ce4d6773")
+	)
+	(embedded_fonts no)
+)
