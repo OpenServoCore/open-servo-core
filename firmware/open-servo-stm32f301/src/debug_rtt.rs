@@ -1,62 +1,78 @@
 //! RTT-based DebugIo implementation for STM32F301.
 //!
-//! Uses RTT channels for debug REPL I/O:
-//! - Channel 0: defmt binary logs (up only)
-//! - Channel 1: REPL interactive (up + down, paired for cargo-embed)
+//! Uses two RTT channels:
+//! - Channel 0: Logger output (write-only, global with critical section)
+//! - Channel 1: REPL (read/write, owned by shell, lock-free)
 
 use open_servo_hw::DebugIo;
 use rtt_target::{rtt_init, ChannelMode, DownChannel, UpChannel};
 
-/// RTT-based debug I/O for the REPL.
-///
-/// Holds the RTT channels for REPL communication (separate from defmt).
+/// RTT-based debug I/O for the REPL (channel 1).
 pub struct RttDebugIo {
     up: UpChannel,
     down: DownChannel,
 }
 
-impl RttDebugIo {
-    /// Initialize RTT with all channels and return the REPL I/O handle.
-    ///
-    /// This sets up:
-    /// - Channel 0: defmt (up only)
-    /// - Channel 1: REPL (up + down paired for interactive use)
-    ///
-    /// Must be called once at startup before any defmt logging or REPL use.
-    pub fn init() -> Self {
-        let channels = rtt_init! {
-            up: {
-                0: {
-                    size: 1024,
-                    mode: ChannelMode::NoBlockSkip,
-                    name: "defmt"
-                }
-                1: {
-                    size: 512,
-                    mode: ChannelMode::NoBlockSkip,
-                    name: "repl"
-                }
-            }
-            down: {
-                0: {
-                    size: 16,
-                    name: "unused"
-                }
-                1: {
-                    size: 128,
-                    name: "repl"
-                }
-            }
-        };
+/// RTT-based logger output (channel 0).
+/// Implements DebugIo for use with open-servo-log.
+pub struct RttLoggerIo {
+    up: UpChannel,
+}
 
-        // Configure defmt to use channel 0
-        rtt_target::set_defmt_channel(channels.up.0);
-
-        Self {
-            up: channels.up.1,
-            down: channels.down.1,
+/// Initialize RTT channels and return both logger and REPL I/O handles.
+///
+/// Returns (logger_io, repl_io):
+/// - logger_io: Channel 0 for logging (store in static for logger)
+/// - repl_io: Channel 1 for REPL (give to DebugShell)
+pub fn init_rtt() -> (RttLoggerIo, RttDebugIo) {
+    let channels = rtt_init! {
+        up: {
+            0: {
+                size: 512,
+                mode: ChannelMode::NoBlockSkip,
+                name: "log"
+            }
+            1: {
+                size: 512,
+                mode: ChannelMode::NoBlockSkip,
+                name: "repl"
+            }
         }
+        down: {
+            0: {
+                size: 16,
+                name: "unused"
+            }
+            1: {
+                size: 128,
+                name: "repl"
+            }
+        }
+    };
+
+    let logger_io = RttLoggerIo {
+        up: channels.up.0,
+    };
+
+    let repl_io = RttDebugIo {
+        up: channels.up.1,
+        down: channels.down.1,
+    };
+
+    (logger_io, repl_io)
+}
+
+impl DebugIo for RttLoggerIo {
+    fn try_read(&mut self) -> Option<u8> {
+        // Logger is write-only
+        None
     }
+
+    fn write(&mut self, data: &[u8]) {
+        self.up.write(data);
+    }
+
+    fn flush(&mut self) {}
 }
 
 impl DebugIo for RttDebugIo {

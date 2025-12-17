@@ -5,10 +5,10 @@ chip = "STM32F301K8Ux"
 enabled = true
 timeout = 3000
 
-# Tab 0: defmt logs (channel 0, up only)
-# Tab 1: REPL interactive (channel 1, up + down paired)
+# Channel 0: Log output (up only)
+# Channel 1: REPL interactive (up + down paired)
 tabs = [
-    { up_channel = 0, name = "defmt", format = "Defmt" },
+    { up_channel = 0, name = "log", format = "String" },
     { up_channel = 1, down_channel = 1, name = "repl", format = "String" },
 ]
 

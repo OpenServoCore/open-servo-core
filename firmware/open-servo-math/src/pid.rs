@@ -68,7 +68,6 @@ impl<const HAS_I: bool, const HAS_D: bool> PidI16<HAS_I, HAS_D> {
     ///
     /// Integral limits are auto-derived from output limits:
     ///   integ_min = out_min << FRAC, integ_max = out_max << FRAC.
-    #[inline]
     pub fn new_auto_anti_windup(
         kp: i16,
         ki: i16,
@@ -90,7 +89,6 @@ impl<const HAS_I: bool, const HAS_D: bool> PidI16<HAS_I, HAS_D> {
     /// Construct a PID controller with explicit integral limits.
     ///
     /// `integ_min` / `integ_max` are in accumulator units (before >> GAIN_FRAC_BITS).
-    #[inline]
     pub fn new_with_integral_limits(
         kp: i16,
         ki: i16,
@@ -142,7 +140,6 @@ impl<const HAS_I: bool, const HAS_D: bool> PidI16<HAS_I, HAS_D> {
     /// - `sp`: setpoint in plant units (e.g. centideg).
     /// - `pv`: process variable (measurement) in same units.
     /// - returns: control output clamped to [out_min, out_max].
-    #[inline]
     pub fn step(&mut self, sp: i32, pv: i32) -> i32 {
         let frac = Self::GAIN_FRAC_BITS;
 
@@ -203,7 +200,6 @@ impl<const HAS_I: bool, const HAS_D: bool> PidI16<HAS_I, HAS_D> {
     }
 
     /// Set gains at runtime.
-    #[inline]
     pub fn set_gains(&mut self, kp: i16, ki: i16, kd: i16) {
         self.kp = kp;
         self.ki = ki;
@@ -229,7 +225,6 @@ impl<const HAS_I: bool, const HAS_D: bool> PidI16<HAS_I, HAS_D> {
     }
 
     /// Set output limits at runtime.
-    #[inline]
     pub fn set_output_limits(&mut self, out_min: i32, out_max: i32) {
         let (out_min, out_max) = if out_min <= out_max {
             (out_min, out_max)

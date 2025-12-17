@@ -4,7 +4,8 @@ version.workspace = true
 edition.workspace = true
 
 [dependencies]
-heapless = { workspace = true }
+heapless = { workspace = true, features = ["ufmt"] }
+ufmt = { workspace = true }
 open-servo-math = { path = "../open-servo-math" }
 open-servo-control = { path = "../open-servo-control" }
 open-servo-hw = { path = "../open-servo-hw" }

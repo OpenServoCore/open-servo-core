@@ -2,8 +2,8 @@
 //!
 //! This module contains all the code that interacts with App and hardware.
 
-use core::fmt::Write;
 use heapless::String;
+use ufmt::uwrite;
 
 use crate::fault::FaultKind;
 use crate::safety::SafetyThresholds;
@@ -98,7 +98,7 @@ impl<D: DebugIo> DebugShell<D> {
         let mut buf: String<96> = String::new();
 
         // Position and setpoint (always available)
-        let _ = write!(
+        let _ = uwrite!(
             buf,
             "sp={} pos={} pwm={}",
             s.setpoint.as_cdeg(),
@@ -112,37 +112,37 @@ impl<D: DebugIo> DebugShell<D> {
         #[cfg(feature = "current-sense-bus")]
         {
             if let Some(current) = s.current {
-                let _ = write!(buf, "I={}mA", current.as_ma());
+                let _ = uwrite!(buf, "I={}mA", current.as_ma());
             } else {
-                let _ = write!(buf, "I=n/a");
+                let _ = uwrite!(buf, "I=n/a");
             }
         }
 
         // Voltage (optional)
         if let Some(voltage) = s.bus_voltage {
-            let _ = write!(buf, " V={}mV", voltage.as_mv());
+            let _ = uwrite!(buf, " V={}mV", voltage.as_mv());
         } else {
-            let _ = write!(buf, " V=n/a");
+            let _ = uwrite!(buf, " V=n/a");
         }
         self.println(&buf);
 
         // Temperature (optional)
         if let Some(temp) = s.temperature {
             buf.clear();
-            let _ = write!(buf, "T={}dC", temp.as_dc());
+            let _ = uwrite!(buf, "T={}dC", temp.as_dc());
             self.println(&buf);
         }
 
         let health = app.get_sensor_health();
         if health.bad_count() > 0 {
             buf.clear();
-            let _ = write!(buf, "sensor: {} bad reads", health.bad_count());
+            let _ = uwrite!(buf, "sensor: {} bad reads", health.bad_count());
             self.println(&buf);
         }
 
         if let Some(kind) = app.fault_kind() {
             let mut buf: String<32> = String::new();
-            let _ = write!(buf, "FAULT: {}", fault_str(kind));
+            let _ = uwrite!(buf, "FAULT: {}", fault_str(kind));
             self.println(&buf);
         } else {
             self.println("fault: none");
@@ -152,7 +152,7 @@ impl<D: DebugIo> DebugShell<D> {
     fn cmd_fault_show<C: ControlLoop>(&mut self, app: &App<C>) {
         if let Some(kind) = app.fault_kind() {
             let mut buf: String<32> = String::new();
-            let _ = write!(buf, "FAULT: {}", fault_str(kind));
+            let _ = uwrite!(buf, "FAULT: {}", fault_str(kind));
             self.println(&buf);
         } else {
             self.println("fault: none");
@@ -168,7 +168,7 @@ impl<D: DebugIo> DebugShell<D> {
         let sp = CentiDeg::from_cdeg(val);
         app.set_setpoint(sp);
         let mut buf: String<64> = String::new();
-        let _ = write!(buf, "ok, sp={}", sp.as_cdeg());
+        let _ = uwrite!(buf, "ok, sp={}", sp.as_cdeg());
         self.println(&buf);
     }
 
@@ -177,7 +177,7 @@ impl<D: DebugIo> DebugShell<D> {
         let mut buf: String<96> = String::new();
 
         #[cfg(feature = "current-sense-bus")]
-        let _ = write!(
+        let _ = uwrite!(
             buf,
             "current={}mA mcu_temp={}dC delta={}cdeg",
             t.current_limit.as_ma(),
@@ -185,7 +185,7 @@ impl<D: DebugIo> DebugShell<D> {
             t.position_max_delta.as_cdeg(),
         );
         #[cfg(not(feature = "current-sense-bus"))]
-        let _ = write!(
+        let _ = uwrite!(
             buf,
             "mcu_temp={}dC delta={}cdeg",
             t.mcu_temp_limit.as_dc(),
@@ -194,7 +194,7 @@ impl<D: DebugIo> DebugShell<D> {
         self.println(&buf);
 
         buf.clear();
-        let _ = write!(
+        let _ = uwrite!(
             buf,
             "faults={} pos=[{},{}]cdeg",
             t.sensor_fault_count,
@@ -204,7 +204,7 @@ impl<D: DebugIo> DebugShell<D> {
         self.println(&buf);
 
         buf.clear();
-        let _ = write!(
+        let _ = uwrite!(
             buf,
             "stall={}ticks error={}cdeg",
             t.stall_timeout_ticks,
@@ -214,7 +214,7 @@ impl<D: DebugIo> DebugShell<D> {
 
         let health = app.get_sensor_health();
         buf.clear();
-        let _ = write!(buf, "bad_reads={}", health.bad_count());
+        let _ = uwrite!(buf, "bad_reads={}", health.bad_count());
         self.println(&buf);
     }
 
@@ -223,12 +223,12 @@ impl<D: DebugIo> DebugShell<D> {
         if let Some(ma) = val {
             app.set_current_limit(MilliAmp::from_ma(ma));
             let mut buf: String<48> = String::new();
-            let _ = write!(buf, "ok, current={}mA", ma);
+            let _ = uwrite!(buf, "ok, current={}mA", ma);
             self.println(&buf);
         } else {
             let t = app.get_thresholds();
             let mut buf: String<48> = String::new();
-            let _ = write!(buf, "current={}mA", t.current_limit.as_ma());
+            let _ = uwrite!(buf, "current={}mA", t.current_limit.as_ma());
             self.println(&buf);
         }
     }
@@ -237,12 +237,12 @@ impl<D: DebugIo> DebugShell<D> {
         if let Some(dc) = val {
             app.set_mcu_temp_limit(DeciC::from_dc(dc));
             let mut buf: String<48> = String::new();
-            let _ = write!(buf, "ok, mcu_temp={}dC", dc);
+            let _ = uwrite!(buf, "ok, mcu_temp={}dC", dc);
             self.println(&buf);
         } else {
             let t = app.get_thresholds();
             let mut buf: String<48> = String::new();
-            let _ = write!(buf, "mcu_temp={}dC", t.mcu_temp_limit.as_dc());
+            let _ = uwrite!(buf, "mcu_temp={}dC", t.mcu_temp_limit.as_dc());
             self.println(&buf);
         }
     }
@@ -251,12 +251,12 @@ impl<D: DebugIo> DebugShell<D> {
         if let Some(cd) = val {
             app.set_position_max_delta(CentiDeg::from_cdeg(cd));
             let mut buf: String<48> = String::new();
-            let _ = write!(buf, "ok, delta={}cdeg", cd);
+            let _ = uwrite!(buf, "ok, delta={}cdeg", cd);
             self.println(&buf);
         } else {
             let t = app.get_thresholds();
             let mut buf: String<48> = String::new();
-            let _ = write!(buf, "delta={}cdeg", t.position_max_delta.as_cdeg());
+            let _ = uwrite!(buf, "delta={}cdeg", t.position_max_delta.as_cdeg());
             self.println(&buf);
         }
     }
@@ -265,12 +265,12 @@ impl<D: DebugIo> DebugShell<D> {
         if let Some(n) = val {
             app.set_sensor_fault_count(n);
             let mut buf: String<48> = String::new();
-            let _ = write!(buf, "ok, faults={}", n);
+            let _ = uwrite!(buf, "ok, faults={}", n);
             self.println(&buf);
         } else {
             let t = app.get_thresholds();
             let mut buf: String<48> = String::new();
-            let _ = write!(buf, "faults={}", t.sensor_fault_count);
+            let _ = uwrite!(buf, "faults={}", t.sensor_fault_count);
             self.println(&buf);
         }
     }
@@ -278,7 +278,7 @@ impl<D: DebugIo> DebugShell<D> {
     fn cmd_limit_pos<C: ControlLoop>(&mut self, app: &mut App<C>, min: i16, max: i16) {
         app.set_position_bounds(CentiDeg::from_cdeg(min), CentiDeg::from_cdeg(max));
         let mut buf: String<48> = String::new();
-        let _ = write!(buf, "ok, pos=[{},{}]cdeg", min, max);
+        let _ = uwrite!(buf, "ok, pos=[{},{}]cdeg", min, max);
         self.println(&buf);
     }
 
@@ -286,12 +286,12 @@ impl<D: DebugIo> DebugShell<D> {
         if let Some(ticks) = val {
             app.set_stall_timeout(ticks);
             let mut buf: String<48> = String::new();
-            let _ = write!(buf, "ok, stall={}ticks", ticks);
+            let _ = uwrite!(buf, "ok, stall={}ticks", ticks);
             self.println(&buf);
         } else {
             let t = app.get_thresholds();
             let mut buf: String<48> = String::new();
-            let _ = write!(buf, "stall={}ticks", t.stall_timeout_ticks);
+            let _ = uwrite!(buf, "stall={}ticks", t.stall_timeout_ticks);
             self.println(&buf);
         }
     }
@@ -300,12 +300,12 @@ impl<D: DebugIo> DebugShell<D> {
         if let Some(cdeg) = val {
             app.set_position_error_limit(CentiDeg::from_cdeg(cdeg));
             let mut buf: String<48> = String::new();
-            let _ = write!(buf, "ok, error={}cdeg", cdeg);
+            let _ = uwrite!(buf, "ok, error={}cdeg", cdeg);
             self.println(&buf);
         } else {
             let t = app.get_thresholds();
             let mut buf: String<48> = String::new();
-            let _ = write!(buf, "error={}cdeg", t.position_error_limit.as_cdeg());
+            let _ = uwrite!(buf, "error={}cdeg", t.position_error_limit.as_cdeg());
             self.println(&buf);
         }
     }
@@ -326,7 +326,7 @@ impl<D: DebugIo> DebugShell<D> {
                 DerivativeMode::OnError => "err",
                 DerivativeMode::OnMeasurement => "meas",
             };
-            let _ = write!(
+            let _ = uwrite!(
                 buf,
                 "pos: kp={} ki={} kd={} mode={} out=[-{},{}]",
                 cfg.kp, cfg.ki, cfg.kd, mode_str, cfg.output_max, cfg.output_max
@@ -352,7 +352,7 @@ impl<D: DebugIo> DebugShell<D> {
             PidField::Kd => "kd",
         };
         let mut buf: String<48> = String::new();
-        let _ = write!(buf, "ok, {}={}", field_name, value);
+        let _ = uwrite!(buf, "ok, {}={}", field_name, value);
         self.println(&buf);
     }
 
@@ -365,7 +365,7 @@ impl<D: DebugIo> DebugShell<D> {
         });
 
         let mut buf: String<64> = String::new();
-        let _ = write!(buf, "ok, kp={} ki={} kd={}", kp, ki, kd);
+        let _ = uwrite!(buf, "ok, kp={} ki={} kd={}", kp, ki, kd);
         self.println(&buf);
     }
 
@@ -380,7 +380,7 @@ impl<D: DebugIo> DebugShell<D> {
             DerivativeMode::OnMeasurement => "meas",
         };
         let mut buf: String<32> = String::new();
-        let _ = write!(buf, "ok, mode={}", mode_str);
+        let _ = uwrite!(buf, "ok, mode={}", mode_str);
         self.println(&buf);
     }
 }

@@ -18,7 +18,4 @@ fn main() {
     // here, we ensure the build script is only re-run when
     // `memory.x` is changed.
     println!("cargo:rerun-if-changed=memory.x");
-
-    // Also tell linker to use defmt
-    println!("cargo:rustc-link-arg=-Tdefmt.x");
 }

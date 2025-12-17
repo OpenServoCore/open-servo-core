@@ -48,7 +48,6 @@ impl SensorHealth {
     /// On a bad reading, the counter is incremented but the last good position
     /// is preserved. The caller should check if count >= threshold to trigger
     /// a fault.
-    #[inline]
     pub fn validate_position(
         &mut self,
         reading: CentiDeg,

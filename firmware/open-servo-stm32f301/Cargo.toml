@@ -21,12 +21,13 @@ cortex-m = { version = "0.7", features = ["critical-section-single-core"] }
 cortex-m-rt = { version = "0.7.5" }
 
 # Debug/logging
-defmt = { workspace = true }
-rtt-target = { workspace = true }
-panic-rtt-target = { workspace = true }
+rtt-target = "0.6"
+panic-halt = "1.0"
+open-servo-log = { path = "../open-servo-log" }
 
 # Other
 heapless = { workspace = true }
+ufmt = { workspace = true }
 
 [features]
 default = ["current-sense-bus", "temp-sense-mcu", "debug-shell"]

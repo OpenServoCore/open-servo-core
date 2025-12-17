@@ -69,7 +69,6 @@ impl SafetyManager {
     /// Returns:
     /// - `Ok(position)` if the reading is valid
     /// - `Err(count)` if the reading is invalid (count = consecutive bad reads)
-    #[inline]
     pub fn validate_position(&mut self, reading: CentiDeg) -> Result<CentiDeg, u8> {
         self.sensor_health
             .validate_position(reading, self.thresholds.position_max_delta)
@@ -85,7 +84,6 @@ impl SafetyManager {
     /// Returns `Some(FaultKind::OverCurrent)` if current exceeds limit.
     ///
     /// This method always exists but becomes a no-op when `current-sense` is disabled.
-    #[inline]
     pub fn check_current(&self, current: Option<MilliAmp>) -> Option<FaultKind> {
         #[cfg(feature = "current-sense-bus")]
         {
@@ -111,7 +109,6 @@ impl SafetyManager {
     /// - Temperature is within limits
     ///
     /// Returns `Some(FaultKind::McuOverTemp)` if temperature exceeds limit.
-    #[inline]
     pub fn check_mcu_temperature(&self, temp: Option<DeciC>) -> Option<FaultKind> {
         temp.and_then(|t| {
             if t > self.thresholds.mcu_temp_limit {
@@ -144,7 +141,6 @@ impl SafetyManager {
     ///
     /// Call this every control tick with current position and PWM saturation state.
     /// Returns `Some(FaultKind::Stall)` if stall persists for configured timeout.
-    #[inline]
     pub fn check_stall(&mut self, position: CentiDeg, pwm_saturated: bool) -> Option<FaultKind> {
         let pos_delta = (position.as_cdeg() - self.stall_last_position.as_cdeg()).abs();
         let position_unchanged = pos_delta <= self.thresholds.stall_position_tolerance.as_cdeg();
@@ -167,7 +163,6 @@ impl SafetyManager {
     ///
     /// Call this every control tick with setpoint and position.
     /// Returns `Some(FaultKind::PositionError)` if large error persists for configured timeout.
-    #[inline]
     pub fn check_position_error(
         &mut self,
         setpoint: CentiDeg,

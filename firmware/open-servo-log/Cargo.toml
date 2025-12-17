@@ -1,0 +1,18 @@
+[package]
+name = "open-servo-log"
+version.workspace = true
+edition.workspace = true
+
+[features]
+default = ["log-info"]
+log-error = []
+log-warn = ["log-error"]
+log-info = ["log-warn"]
+log-debug = ["log-info"]
+log-trace = ["log-debug"]
+
+[dependencies]
+ufmt = { workspace = true }
+heapless = { workspace = true }
+open-servo-hw = { path = "../open-servo-hw" }
+critical-section = "1.2"

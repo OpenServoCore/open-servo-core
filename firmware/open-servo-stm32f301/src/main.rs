@@ -1,7 +1,7 @@
 #![no_main]
 #![no_std]
 
-use panic_rtt_target as _;
+use panic_halt as _;
 
 mod adc_config;
 mod adc_sample;
@@ -25,9 +25,11 @@ use stm32f3::stm32f301 as pac;
 use pac::interrupt;
 
 #[cfg(feature = "debug-shell")]
-use debug_rtt::RttDebugIo;
+use debug_rtt::{init_rtt, RttDebugIo, RttLoggerIo};
 #[cfg(feature = "debug-shell")]
 use open_servo_core::DebugShell;
+#[cfg(feature = "debug-shell")]
+use open_servo_log::info;
 
 // Event queue size for this board
 const EVENT_QUEUE_SIZE: usize = 32;
@@ -46,16 +48,28 @@ static EVENT_CONSUMER: Mutex<RefCell<Option<EventConsumer<EVENT_QUEUE_SIZE>>>> =
 #[cfg(feature = "debug-shell")]
 static DEBUG_SHELL: Mutex<RefCell<Option<DebugShell<RttDebugIo>>>> = Mutex::new(RefCell::new(None));
 
+// Static storage for logger I/O (used by open-servo-log)
+#[cfg(feature = "debug-shell")]
+static mut LOGGER_IO: Option<RttLoggerIo> = None;
+
 #[entry]
 fn main() -> ! {
-    // Initialize RTT channels (must be first)
-    // When debug-shell is enabled, this sets up both defmt and REPL channels
-    // Otherwise, just initialize defmt
+    // Initialize RTT channels (when debug-shell enabled)
+    // Channel 0: Logger (global, with critical section)
+    // Channel 1: REPL (owned by shell, lock-free)
     #[cfg(feature = "debug-shell")]
-    let rtt_io = RttDebugIo::init();
+    let rtt_io = {
+        let (logger_io, repl_io) = init_rtt();
 
-    #[cfg(not(feature = "debug-shell"))]
-    rtt_target::rtt_init_defmt!();
+        // Store logger io in static and initialize logger
+        // Safety: Only called once at startup before interrupts
+        unsafe {
+            LOGGER_IO = Some(logger_io);
+            open_servo_log::init(LOGGER_IO.as_mut().unwrap());
+        }
+
+        repl_io
+    };
 
     // Initialize board with all peripherals
     let board = Board::init();
@@ -95,7 +109,8 @@ fn main() -> ! {
         pac::NVIC::unmask(pac::Interrupt::DMA1_CH1); // ADC DMA complete
     }
 
-    defmt::info!("System initialized - entering main loop");
+    #[cfg(feature = "debug-shell")]
+    info!("System initialized");
 
     // Main event loop
     loop {
@@ -153,9 +168,8 @@ fn TIM2() {
     // Enqueue SlowTick event
     free(|cs| {
         if let Some(producer) = EVENT_PRODUCER.borrow(cs).borrow_mut().as_mut() {
-            if !producer.enqueue(Event::SlowTick) {
-                defmt::warn!("Event queue full - dropped SlowTick");
-            }
+            // Silently drop if queue full - QueuePressure fault handles this
+            let _ = producer.enqueue(Event::SlowTick);
         }
     });
 
@@ -179,13 +193,11 @@ fn DMA1_CH1() {
     });
 
     if !is_complete {
-        defmt::warn!("DMA1_CH1: Transfer not complete");
         return;
     }
 
     if is_error {
-        defmt::error!("DMA1_CH1: Transfer error");
-        // Could enqueue a fault event here if desired
+        // Enqueue fault event for DMA transfer error
         free(|cs| {
             if let Some(producer) = EVENT_PRODUCER.borrow(cs).borrow_mut().as_mut() {
                 let _ = producer.enqueue(Event::Fault(open_servo_core::FaultKind::EncoderFault));

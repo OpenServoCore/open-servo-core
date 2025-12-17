@@ -7,6 +7,9 @@ authors.workspace = true
 [features]
 defmt = ["dep:defmt"]
 
+[dependencies]
+ufmt = { workspace = true }
+
 [dependencies.defmt]
 workspace = true
 optional = true

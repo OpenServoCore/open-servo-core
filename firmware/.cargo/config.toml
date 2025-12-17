@@ -4,8 +4,8 @@ runner = "probe-rs run --chip STM32F301K8Ux"
 rustflags = [
   "-C", "linker=flip-link",
   "-C", "link-arg=-Tlink.x",
-  "-C", "link-arg=-Tdefmt.x",
   "-C", "link-arg=--nmagic",
+  "-C", "link-arg=--icf=all",
 ]
 
 # CH32V003 (RISC-V) - will be added later
@@ -16,7 +16,9 @@ rustflags = [
 #   "-C", "link-arg=-Tdefmt.x",
 # ]
 
-# Don't set a default target - specify it per package
+# Default target for STM32F301
+[build]
+target = "thumbv7em-none-eabihf"
 
 [alias]
 # Generic aliases
@@ -33,4 +35,6 @@ stm32-release = "embed --target thumbv7em-none-eabihf -p open-servo-stm32f301 --
 # ch32-release = "run -p open-servo-ch32v003 --target riscv32imac-unknown-none-elf --release"
 
 [env]
-DEFMT_LOG = "trace"
+
+[unstable]
+build-std = ["core"]

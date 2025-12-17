@@ -15,8 +15,8 @@ mod arg_parser;
 mod command;
 mod exec;
 
-use core::fmt::Write;
 use heapless::String;
+use ufmt::uwrite;
 
 use crate::App;
 use open_servo_control::ControlLoop;
@@ -112,7 +112,7 @@ impl<D: DebugIo> DebugShell<D> {
             ParseError::Empty => {}
             ParseError::UnknownCommand(c) => {
                 let mut buf: String<64> = String::new();
-                let _ = write!(buf, "unknown command: {}", c);
+                let _ = uwrite!(buf, "unknown command: {}", c);
                 self.println(&buf);
             }
             ParseError::UnknownSubcommand(s) => {
@@ -120,18 +120,18 @@ impl<D: DebugIo> DebugShell<D> {
                     self.println("missing subcommand");
                 } else {
                     let mut buf: String<64> = String::new();
-                    let _ = write!(buf, "unknown subcommand: {}", s);
+                    let _ = uwrite!(buf, "unknown subcommand: {}", s);
                     self.println(&buf);
                 }
             }
             ParseError::Arg(ArgError::Missing(name)) => {
                 let mut buf: String<64> = String::new();
-                let _ = write!(buf, "missing argument: {}", name);
+                let _ = uwrite!(buf, "missing argument: {}", name);
                 self.println(&buf);
             }
             ParseError::Arg(ArgError::Invalid(name)) => {
                 let mut buf: String<64> = String::new();
-                let _ = write!(buf, "invalid {}", name);
+                let _ = uwrite!(buf, "invalid {}", name);
                 self.println(&buf);
             }
             ParseError::Arg(ArgError::Extra) => {

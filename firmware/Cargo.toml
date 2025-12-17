@@ -4,6 +4,7 @@ members = [
     "open-servo-control",
     "open-servo-hw",
     "open-servo-hw-utils",
+    "open-servo-log",
     "open-servo-stm32f301",
     "open-servo-math",
 ]
@@ -16,6 +17,7 @@ authors = ["Aaron Q"]
 
 [workspace.dependencies]
 heapless = "0.8"
+ufmt = "0.2"
 defmt = { version = "0.3", features = ["encoding-rzcobs"] }
 rtt-target = { version = "0.6", features = ["defmt"] }
 panic-rtt-target = { version = "0.2", features = ["defmt"] }
@@ -25,9 +27,11 @@ panic = "abort"
 opt-level = "z"  # Optimize for size
 lto = true       # Enable full link-time optimization
 codegen-units = 1  # Single codegen unit for better optimization
+strip = "symbols"  # Strip symbol table, keep DWARF for debugging
 
 [profile.release]
 panic = "abort"
 opt-level = "z"  # Optimize for size
 lto = true       # Enable full link-time optimization
 codegen-units = 1  # Single codegen unit for better optimization
+strip = "symbols"  # Strip symbol table, keep DWARF for debugging

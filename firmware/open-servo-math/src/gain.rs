@@ -66,6 +66,27 @@ impl core::fmt::Display for Gain {
     }
 }
 
+impl ufmt::uDisplay for Gain {
+    fn fmt<W>(&self, f: &mut ufmt::Formatter<'_, W>) -> Result<(), W::Error>
+    where
+        W: ufmt::uWrite + ?Sized,
+    {
+        let scaled = self.0;
+        if scaled < 0 {
+            ufmt::uwrite!(f, "-")?;
+        }
+        let scaled = scaled.abs();
+        let int_part = scaled / 100;
+        let frac_part = scaled % 100;
+        // Manual zero-padding for frac_part (ufmt doesn't support {:02})
+        if frac_part < 10 {
+            ufmt::uwrite!(f, "{}.0{}", int_part, frac_part)
+        } else {
+            ufmt::uwrite!(f, "{}.{}", int_part, frac_part)
+        }
+    }
+}
+
 /// Error returned when parsing a gain value fails.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum GainParseError {
