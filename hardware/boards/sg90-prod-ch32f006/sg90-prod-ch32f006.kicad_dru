@@ -1,6 +1,7 @@
 (version 1)
 # Custom Design Rules (DRC) for KiCAD 8.0 (Stored in '<project>.kicad_dru' file).
 #
+# Optimized for: JLCPCB 8-layer, 1oz copper, tiny board
 # Matching JLCPCB capabilities: https://jlcpcb.com/capabilities/pcb-capabilities
 #
 # KiCad documentation: https://docs.kicad.org/master/id/pcbnew/pcbnew_advanced.html#custom_design_rules
@@ -34,21 +35,16 @@
 
 (rule "JLCPCB: Via Hole Size"
 	(condition "A.Type == 'Via'")
-  # Choose between:
-  # 1-2 Layers
-	# (constraint hole_size (min 0.3mm))
-  # 4-6 Layers (more costly)
-  # (constraint hole_size (min 0.15mm))
-  # 4-6 Layers (preferred)
+	# 8-layer preferred (cheaper): 0.2mm hole
+	# 8-layer premium (costly): 0.15mm hole
 	(constraint hole_size (min 0.2mm))
 )
 
 (rule "JLCPCB: Via Annular Ring"
 	(condition "A.Type == 'Via'")
-  # Choose between:
-  # 1-6 Layers
-  # (constraint annular_width (min 0.05mm))
-  # 1-6 Layers (preferred)
+	# Min 0.075mm annular ring
+	# With 0.2mm hole: min via diameter = 0.35mm
+	# Use 0.125mm annular (0.45mm via) to avoid 4-Wire Kelvin Test extra cost
 	(constraint annular_width (min 0.075mm))
 )
 
@@ -109,7 +105,8 @@
 
 (rule "JLCPCB: Pad to Pad Clearance (Pad without Hole, Different Nets)"
 	(condition "A.Type == 'Pad' && (A.Pad_Type != 'Through-hole' && A.Pad_Type != 'NPTH, mechanical') && B.Type == 'Pad' && (B.Pad_Type != 'Through-hole' && B.Pad_Type != 'NPTH, mechanical') && A.Net != B.Net")
-	(constraint clearance (min 0.127mm))
+	# 8-layer 1oz: 0.09mm, 1-2 layer 1oz: 0.127mm
+	(constraint clearance (min 0.09mm))
 )
 
 (rule "JLCPCB: Pad Hole to Pad Hole Clearance (Pad with Hole, Different Nets)"
@@ -120,7 +117,8 @@
 # NOTE: This is not stated specifically, but is implied by other rules.
 (rule "JLCPCB: Via/Pad to Via/Pad Clearance (Different Nets)"
 	(condition "(A.Type == 'Pad' || A.Type == 'Via') && (B.Type == 'Pad' || B.Type == 'Via') && A.Net != B.Net")
-	(constraint clearance (min 0.127mm))
+	# 8-layer 1oz: 0.09mm, 1-2 layer 1oz: 0.127mm
+	(constraint clearance (min 0.09mm))
 )
 
 # NOTE: This is not stated specifically, but is implied by other rules.
@@ -149,49 +147,38 @@
 	(constraint clearance (min 0.2mm))
 )
 
+(rule "JLCPCB: SMD Pad to Trace"
+	(condition "A.Type == 'Pad' && A.Pad_Type == 'SMD' && B.Type == 'Track' && A.Net != B.Net")
+	(constraint clearance (min 0.09mm))
+)
+
 
 # --- Minimum Trace Width and Spacing ---
 
 (rule "JLCPCB: Trace Width (Outer Layer)"
 	(layer outer)
 	(condition "A.Type == 'Track'")
-  # Choose between:
-  # 1-2 Layers (1oz)
-  # (constraint track_width (min 0.127mm))
-  # 4-6 Layers (1oz and 0.5oz)
+	# 8-layer 1oz: 0.09mm (3.5 mil)
 	(constraint track_width (min 0.09mm))
-  # 1-6 Layers (2oz)
-  # (constraint track_width (min 0.2mm))
 )
 (rule "JLCPCB: Trace Spacing (Outer Layer)"
 	(layer outer)
 	(condition "A.Type == 'Track' && B.Type == 'Track'")
-  # Choose between:
-  # 1-2 Layers (1oz)
-  # (constraint clearance (min 0.127mm))
-  # 4-6 Layers (1oz and 0.5oz)
+	# 8-layer 1oz: 0.09mm (3.5 mil)
 	(constraint clearance (min 0.09mm))
-  # 1-6 Layers (2oz)
-  # (constraint clearance (min 0.2mm))
 )
 
 (rule "JLCPCB: Trace Width (Inner Layer)"
 	(layer inner)
 	(condition "A.Type == 'Track'")
-  # Choose between:
-  # 4-6 Layers (1oz and 0.5oz)
+	# 8-layer 1oz: 0.09mm (3.5 mil)
 	(constraint track_width (min 0.09mm))
-  # 4-6 Layers (2oz)
-  # (constraint track_width (min 0.2mm))
 )
 (rule "JLCPCB: Trace Spacing (Inner Layer)"
 	(layer inner)
 	(condition "A.Type == 'Track' && B.Type == 'Track'")
-  # Choose between:
-  # 4-6 Layers (1oz and 0.5oz)
+	# 8-layer 1oz: 0.09mm (3.5 mil)
 	(constraint clearance (min 0.09mm))
-  # 4-6 Layers (2oz)
-  # (constraint clearance (min 0.2mm))
 )
 
 
