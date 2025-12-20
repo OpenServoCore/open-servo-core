@@ -280,88 +280,6 @@
       )
     )
   )
-  (symbol "SN74LVC1G07DSFR_C42445855"
-    (in_bom yes)
-    (on_board yes)
-    (property
-      "Reference"
-      "U"
-      (id 0)
-      (at 0 7.62 0)
-      (effects (font (size 1.27 1.27) ) )
-    )
-    (property
-      "Value"
-      "SN74LVC1G07DSFR_C42445855"
-      (id 1)
-      (at 0 -7.62 0)
-      (effects (font (size 1.27 1.27) ) )
-    )
-    (property
-      "Footprint"
-      "shared:TDFN-6_L1.0-W1.0-P0.35-BL"
-      (id 2)
-      (at 0 -10.16 0)
-      (effects (font (size 1.27 1.27) ) hide)
-    )
-    (property
-      "LCSC Part"
-      "C42445855"
-      (id 5)
-      (at 0 -12.70 0)
-      (effects (font (size 1.27 1.27) ) hide)
-    )
-    (symbol "SN74LVC1G07DSFR_C42445855_0_1"
-      (rectangle
-        (start -7.62 5.08)
-        (end 7.62 -5.08)
-        (stroke (width 0) (type default) (color 0 0 0 0))
-        (fill (type background))
-      )
-      (circle
-        (center -6.35 3.81)
-        (radius 0.38)
-        (stroke (width 0) (type default) (color 0 0 0 0))
-        (fill (type none))
-      )
-      (pin no_connect line
-        (at -10.16 2.54 0)
-        (length 2.54)
-        (name "NC" (effects (font (size 1.27 1.27))))
-        (number "1" (effects (font (size 1.27 1.27))))
-      )
-      (pin input line
-        (at -10.16 -0.00 0)
-        (length 2.54)
-        (name "INA" (effects (font (size 1.27 1.27))))
-        (number "2" (effects (font (size 1.27 1.27))))
-      )
-      (pin power_in line
-        (at -10.16 -2.54 0)
-        (length 2.54)
-        (name "GND" (effects (font (size 1.27 1.27))))
-        (number "3" (effects (font (size 1.27 1.27))))
-      )
-      (pin open_collector line
-        (at 10.16 -2.54 180)
-        (length 2.54)
-        (name "OUTY" (effects (font (size 1.27 1.27))))
-        (number "4" (effects (font (size 1.27 1.27))))
-      )
-      (pin no_connect line
-        (at 10.16 -0.00 180)
-        (length 2.54)
-        (name "NC" (effects (font (size 1.27 1.27))))
-        (number "5" (effects (font (size 1.27 1.27))))
-      )
-      (pin power_in line
-        (at 10.16 2.54 180)
-        (length 2.54)
-        (name "VCC" (effects (font (size 1.27 1.27))))
-        (number "6" (effects (font (size 1.27 1.27))))
-      )
-    )
-  )
   (symbol "BRCS150P02ZJ"
     (in_bom yes)
     (on_board yes)
@@ -1332,6 +1250,158 @@
         (length 2.54)
         (name "IN" (effects (font (size 1.27 1.27))))
         (number "6" (effects (font (size 1.27 1.27))))
+      )
+    )
+  )
+  (symbol "TPAP2210K-3.3TRG1"
+    (in_bom yes)
+    (on_board yes)
+    (property
+      "Reference"
+      "U"
+      (id 0)
+      (at 0 7.62 0)
+      (effects (font (size 1.27 1.27) ) )
+    )
+    (property
+      "Value"
+      "TPAP2210K-3.3TRG1"
+      (id 1)
+      (at 0 -7.62 0)
+      (effects (font (size 1.27 1.27) ) )
+    )
+    (property
+      "Footprint"
+      "shared:SOT-23-5_L2.9-W1.6-P0.95-LS2.8-BR"
+      (id 2)
+      (at 0 -10.16 0)
+      (effects (font (size 1.27 1.27) ) hide)
+    )
+    (property
+      "LCSC Part"
+      "C49190789"
+      (id 5)
+      (at 0 -12.70 0)
+      (effects (font (size 1.27 1.27) ) hide)
+    )
+    (symbol "TPAP2210K-3.3TRG1_0_1"
+      (rectangle
+        (start -7.62 5.08)
+        (end 7.62 -5.08)
+        (stroke (width 0) (type default) (color 0 0 0 0))
+        (fill (type background))
+      )
+      (circle
+        (center -6.35 3.81)
+        (radius 0.38)
+        (stroke (width 0) (type default) (color 0 0 0 0))
+        (fill (type none))
+      )
+      (pin power_out line
+        (at 10.16 2.54 180)
+        (length 2.54)
+        (name "VOUT" (effects (font (size 1.27 1.27))))
+        (number "5" (effects (font (size 1.27 1.27))))
+      )
+      (pin no_connect line
+        (at 10.16 -2.54 180)
+        (length 2.54)
+        (name "NC" (effects (font (size 1.27 1.27))))
+        (number "4" (effects (font (size 1.27 1.27))))
+      )
+      (pin input line
+        (at -10.16 -2.54 0)
+        (length 2.54)
+        (name "EN" (effects (font (size 1.27 1.27))))
+        (number "3" (effects (font (size 1.27 1.27))))
+      )
+      (pin power_in line
+        (at -10.16 -0.00 0)
+        (length 2.54)
+        (name "GND" (effects (font (size 1.27 1.27))))
+        (number "2" (effects (font (size 1.27 1.27))))
+      )
+      (pin power_in line
+        (at -10.16 2.54 0)
+        (length 2.54)
+        (name "VIN" (effects (font (size 1.27 1.27))))
+        (number "1" (effects (font (size 1.27 1.27))))
+      )
+    )
+  )
+  (symbol "SN74LVC1G07DRLR_C19829624"
+    (in_bom yes)
+    (on_board yes)
+    (property
+      "Reference"
+      "U"
+      (id 0)
+      (at 0 7.62 0)
+      (effects (font (size 1.27 1.27) ) )
+    )
+    (property
+      "Value"
+      "SN74LVC1G07DRLR_C19829624"
+      (id 1)
+      (at 0 -7.62 0)
+      (effects (font (size 1.27 1.27) ) )
+    )
+    (property
+      "Footprint"
+      "shared:SOT-553-5_L1.6-W1.2-P0.50-LS1.6-BL"
+      (id 2)
+      (at 0 -10.16 0)
+      (effects (font (size 1.27 1.27) ) hide)
+    )
+    (property
+      "LCSC Part"
+      "C19829624"
+      (id 5)
+      (at 0 -12.70 0)
+      (effects (font (size 1.27 1.27) ) hide)
+    )
+    (symbol "SN74LVC1G07DRLR_C19829624_0_1"
+      (rectangle
+        (start -6.35 5.08)
+        (end 6.35 -5.08)
+        (stroke (width 0) (type default) (color 0 0 0 0))
+        (fill (type background))
+      )
+      (circle
+        (center -5.08 3.81)
+        (radius 0.38)
+        (stroke (width 0) (type default) (color 0 0 0 0))
+        (fill (type none))
+      )
+      (pin no_connect line
+        (at -8.89 2.54 0)
+        (length 2.54)
+        (name "NC" (effects (font (size 1.27 1.27))))
+        (number "1" (effects (font (size 1.27 1.27))))
+      )
+      (pin input line
+        (at -8.89 -0.00 0)
+        (length 2.54)
+        (name "A" (effects (font (size 1.27 1.27))))
+        (number "2" (effects (font (size 1.27 1.27))))
+      )
+      (pin power_in line
+        (at -8.89 -2.54 0)
+        (length 2.54)
+        (name "GND" (effects (font (size 1.27 1.27))))
+        (number "3" (effects (font (size 1.27 1.27))))
+      )
+      (pin open_collector line
+        (at 8.89 -2.54 180)
+        (length 2.54)
+        (name "Y" (effects (font (size 1.27 1.27))))
+        (number "4" (effects (font (size 1.27 1.27))))
+      )
+      (pin power_in line
+        (at 8.89 2.54 180)
+        (length 2.54)
+        (name "VCC" (effects (font (size 1.27 1.27))))
+        (number "5" (effects (font (size 1.27 1.27))))
       )
     )
   )

@@ -4,21 +4,22 @@ A compact, high-precision servo controller designed to replace the control circu
 
 ## Features
 
-- **MCU**: CH32V006F8U6 RISC-V microcontroller (48MHz, 32KB flash, 4KB RAM)
-- **Motor Driver**: Integrated DRV8837C H-bridge (1.8A peak)
+- **MCU**: CH32V006F8U6 RISC-V microcontroller (48MHz, 62KB flash, 8KB RAM)
+- **Motor Driver**: Integrated DRV8837 H-bridge (1.8A peak, IN1/IN2 dual PWM control)
 - **Position Sensing**: 12-bit ADC with RC filtering for 0.1-0.2° precision
-- **Current Sensing**: 0.1Ω shunt with internal op-amp
-- **Protection**: P-channel MOSFET reverse polarity protection (17mΩ RDS(on))
+- **Current Sensing**: 0.1Ω shunt resistor with ADC monitoring
+- **Voltage Sensing**: Motor phase and input voltage monitoring via resistor dividers
 - **Communication**: 2Mbps half-duplex UART over single DATA line
-- **Power**: 5V operation, no LDO required
+- **Power**: 3.3-8.4V input (1-2S LiPo compatible), 3.3V logic via LDO
 - **Size**: 10x12.5mm, single-sided assembly
 - **Debug**: 4-pin SWD interface for programming with WCH-LinkE
 
 ## Specifications
 
-- Input Voltage: 4.5-5.5V
+- Input Voltage (VIN): 3.3-8.4V (1S-2S LiPo compatible)
+- Logic Voltage: 3.3V (regulated via TPAP2210K LDO)
 - Continuous Current: 200mA (typical servo operation)
-- Peak Current: 1A (stall condition)
+- Peak Current: 1.8A (motor driver limit)
 - Position Resolution: 0.044°/count (4096 counts over 180°)
 - PWM Frequency: 10kHz center-aligned
 - Communication: 2Mbps half-duplex UART
@@ -28,73 +29,45 @@ A compact, high-precision servo controller designed to replace the control circu
 
 | Ref | Description | Package | LCSC # | Qty | Unit Price @5 | Unit Price @150 | Unit Price @500 |
 |-----|-------------|---------|--------|-----|---------------|-----------------|-----------------|
-| U1 | CH32V006F8U6 MCU | QFN-20 3x3mm | C42431288 | 1 | $0.2643 | $0.1838 | $0.1537 |
-| U2 | DRV8837CDSGR Motor Driver | WSON-8 | C191000 | 1 | $0.098 | $0.0666 | $0.0587 |
-| U3 | 74LVC1G07DSFR Buffer | TDFN-6 1x1mm | C42445855 | 1 | $0.0466 | $0.0317 | $0.0280 |
-| Q1 | BRCS150P02ZJ P-MOSFET | DFN-6 2x2mm | C22448985 | 1 | $0.0747 | $0.0522 | $0.0466 |
-| R1 | 10kΩ 1% | 0603 | Generic | 1 | $0.01 | $0.002 | $0.002 |
-| R2 | 0.1Ω 1% 1/4W | 0603/0805 | Generic | 1 | $0.02 | $0.003 | $0.003 |
-| R3 | 10kΩ 1% | 0603 | Generic | 1 | $0.01 | $0.002 | $0.002 |
-| R4,R5 | 10kΩ 1% | 0603 | Generic | 2 | $0.01 | $0.002 | $0.002 |
-| R6,R7 | 0Ω | 0603 | Generic | 2 | $0.01 | $0.001 | $0.001 |
-| R8 | 0Ω | 0603 | Generic | 1 | $0.01 | $0.001 | $0.001 |
-| R9 | 10kΩ 1% | 0603 | Generic | 1 | $0.01 | $0.002 | $0.002 |
-| R10 | 1kΩ 1% | 0603 | Generic | 1 | $0.01 | $0.002 | $0.002 |
-| C1,C2 | 100nF 16V X7R | 0603 | Generic | 2 | $0.01 | $0.002 | $0.002 |
-| C3 | 1µF 16V X7R | 0603 | Generic | 1 | $0.01 | $0.003 | $0.003 |
-| C4,C5 | 10µF 10V X5R | 0603/0805 | Generic | 2 | $0.02 | $0.005 | $0.004 |
-| C6 | 100nF 16V X7R | 0603 | Generic | 1 | $0.01 | $0.002 | $0.002 |
-| **Components Total** | | | | | **$0.664** | **~$0.35** | **$0.326** |
-| **PCB** | 10x12.5mm 4-layer | - | - | 1 | **$1.40** | **$0.25** | **$0.11** |
-| **TOTAL per board** | | | | | **$2.064** | **$0.60** | **$0.436** |
-| **TOTAL** | | | | | **$10.32** | **$90.00** | **$218.00** |
+| U1 | TPAP2210K-3.3TRG1 3.3V LDO | SOT-23-5 | C49190789 | 1 | $0.0767 | $0.052 | $0.0458 |
+| U2 | SN74LVC1G07DRLR Buffer | SOT-553 1.6x1.2mm | C19829624 | 1 | $0.0509 | $0.0447 | $0.0393 |
+| U3 | DRV8837DSGR-JSM Motor Driver | WSON-8 2x2mm | C22447132 | 1 | $0.0982 | $0.0662 | $0.0582 |
+| U4 | CH32V006F8U6 MCU | QFN-20 3x3mm | C42431288 | 1 | $0.2643 | $0.1838 | $0.1537 |
+| D1 | PESD5V0L1UL ESD Protection | SOD-882 | C3001948 | 1 | $0.02 | $0.01 | $0.008 |
+| R1,R2 | 1kΩ (DATA pullup, buffer pullup) | 0603 | Generic | 2 | $0.01 | $0.002 | $0.002 |
+| R3,R6,R8,R10,R12 | 10kΩ (nSLEEP pulldown, voltage divider low) | 0603 | Generic | 5 | $0.01 | $0.002 | $0.002 |
+| R4 | 0.1Ω 1% (current shunt) | 1206 | Generic | 1 | $0.02 | $0.003 | $0.003 |
+| R5 | 330Ω (series resistor) | 0603 | Generic | 1 | $0.01 | $0.002 | $0.002 |
+| R7,R9,R11 | 20kΩ (voltage divider high) | 0603 | Generic | 3 | $0.01 | $0.002 | $0.002 |
+| C1a,C1b | 10µF 25V X5R (bulk, parallel) | 0603 | Generic | 2 | $0.02 | $0.005 | $0.004 |
+| C2,C3 | 1µF 16V X7R (LDO output) | 0603 | Generic | 2 | $0.01 | $0.003 | $0.003 |
+| C4,C6,C7,C8 | 0.1µF 16V X7R (decoupling) | 0603 | Generic | 4 | $0.01 | $0.002 | $0.002 |
+| C5 | 100nF (RC filter) | 0603 | Generic | 1 | $0.01 | $0.002 | $0.002 |
+| NT1,NT2 | Net tie (ground connections) | - | - | 2 | - | - | - |
+| **Components Total** | | | | | **~$0.73** | **~$0.40** | **~$0.36** |
+| **PCB** | 10x12.5mm 8-layer | - | - | 1 | **$2.00** | **$0.30** | **$0.15** |
+| **TOTAL per board** | | | | | **~$2.73** | **~$0.70** | **~$0.51** |
 
-### Cost Breakdown by Quantity
-
-#### Prototype Run (5 boards)
-- Components (5 sets): $0.664 × 5 = $3.32
-- PCB (5 boards): $2.00 + $5.00 shipping = $7.00
-- **Total for 5 boards: $10.32**
-- **Cost per board: $2.06**
-- **Selling at $3/board: $15 revenue - Profit: $4.68 (45% margin)**
-- **Selling at $5/board: $25 revenue - Profit: $14.68 (142% margin)**
-
-#### Small Production (150 boards)
-- Components (150 sets): ~$0.35 × 150 = $52.50
-- PCB (150 boards): $32.00 + $5.00 shipping = $37.00
-- **Total for 150 boards: $89.50**
-- **Cost per board: $0.60**
-- **Selling at $2-3/board: $300-450 revenue**
-- **Gross profit: $210.50-360.50**
-
-#### Medium Production (500 boards)
-- Components (500 sets): $0.326 × 500 = $163.00
-- PCB (500 boards): $50.20 + $5.00 shipping = $55.20
-- **Total for 500 boards: $218.20**
-- **Cost per board: $0.44**
-- **Selling at $2/board: $1,000 revenue**
-- **Gross profit: $781.80 (358% markup!)**
-
-*Prices shown are from LCSC in USD. Passive component prices are estimates for generic parts.*
+*Prices shown are from LCSC in USD. Passive component prices are estimates for generic parts. 8-layer PCB pricing estimated for JLCPCB.*
 
 ## Pinout
 
-### Power Connector (J1) - 3 pins
-1. V_IN (5V)
+### Servo Input Connector (J1) - 3 pins
+1. VIN (3.3-8.4V)
 2. DATA (Half-duplex UART, 2Mbps)
 3. GND
 
-### Motor Connector (J3) - 2 wire pads
-1. MOT_A - Motor terminal A (7.4mm spacing)
-2. MOT_B - Motor terminal B
+### Motor Connector (J2) - 2 wire pads
+1. OUTA - Motor terminal A
+2. OUTB - Motor terminal B
 
-### Potentiometer Connector (J2) - 3 pads
-1. POT_VCC - Potentiometer power (5V)
-2. POT_WIPER - Position feedback
-3. POT_GND - Potentiometer ground
+### Potentiometer Connector (J3) - 3 pads
+1. +3.3V - Potentiometer power
+2. POT - Position feedback (wiper)
+3. GND - Potentiometer ground
 
 ### Debug Interface (J4) - 4 pads, 1.27mm pitch
-1. 5V - Power from debugger
+1. +3.3V - Power from debugger
 2. GND - Ground
 3. SWDIO - Single-wire debug
 4. NC - Not connected
@@ -102,28 +75,36 @@ A compact, high-precision servo controller designed to replace the control circu
 ## Design Notes
 
 ### Power Architecture
-- Single 5V rail operation eliminates need for LDO
-- P-channel MOSFET provides reverse polarity protection with only 17mV drop at 1A
-- Bulk capacitance (2x10µF) handles motor transients
-- No ferrite bead needed due to synchronized ADC sampling
+- **Dual-rail design:** VIN (3.3-8.4V) for motor, 3.3V regulated for logic
+- **LDO:** TPAP2210K-3.3 (20V max input, 250mA) provides 3.3V rail for MCU and analog circuits
+- **Motor power:** Direct from VIN through DRV8837 H-bridge
+- **Ground separation:** PGND (power) and GND (signal) joined via net tie for star grounding
+- **Current sensing:** 0.1Ω shunt between motor driver and PGND
+- **Bulk capacitance:** 2× 10µF (20µF total) on VIN handles motor transients
 
 ### ADC Precision
 - 12-bit ADC provides 22.8 counts per degree (0.044°/count theoretical)
-- RC filter (1kΩ + 100nF) on POT input reduces wiper noise
+- RC filter (10kΩ + 100nF) on POT input reduces wiper noise (fc ≈ 160Hz)
 - 4-16x oversampling in firmware improves effective resolution
 - Center-aligned PWM with mid-duty ADC sampling avoids switching noise
 
+### Voltage Sensing
+All voltage sensing uses 20kΩ/10kΩ dividers (ratio = 0.333):
+- **VINS:** Input voltage monitoring (8.4V max → 2.8V at ADC)
+- **VSNA/VSNB:** Motor phase voltage sensing for back-EMF detection
+- **VPOS:** Potentiometer position (direct, no divider needed - powered from 3.3V)
+
 ### Current Sensing
-- 0.1Ω shunt resistor in series with motor ground
-- Internal op-amp amplifies voltage drop
-- ADC watchdog enables hardware overcurrent protection
-- Kelvin connections (0Ω resistors R6,R7) for accurate sensing
+- 0.1Ω shunt resistor between motor driver GND and PGND
+- At 1A: Vshunt = 100mV (ADC reads ~124 counts at 3.3V reference)
+- Software overcurrent protection via ADC threshold
+- Resolution: ~8mA per ADC count
 
 ### Communication
 - Half-duplex UART at 2Mbps over single DATA line
 - 74LVC1G07 open-drain buffer enables bidirectional communication
-- 10kΩ pullup (R1) sized for 2Mbps operation
-- Compatible with standard servo protocols
+- 1kΩ pullup (R1) sized for 2Mbps operation
+- ESD protection via PESD5V0L1UL TVS diode
 
 ## Assembly
 
@@ -138,7 +119,7 @@ All components are on the top side with no vias in pads.
 ## Programming
 
 Program using WCH-LinkE debugger/programmer:
-- Supports 5V target voltage
+- Supports 3.3V target voltage
 - Single-wire debug (SWD) interface
 - Compatible with MounRiver Studio IDE
 - printf debugging available over SWD
@@ -164,42 +145,56 @@ The board is designed to fit inside standard SG90 servo cases:
 ## Manufacturing
 
 Optimized for low-cost production:
-- Total BOM cost: ~$0.43 at 500 qty
-- Single-sided assembly reduces assembly cost
+- Total BOM cost: ~$0.35 at 500 qty
+- Single-sided (front) assembly
 - Standard 0603 passives (except current shunt)
 - All components available from LCSC
-- 4-layer PCB for better thermal management
+- 8-layer PCB for signal integrity and compact routing
+- **Cheapest option:** PCB + stencil only, manual reflow assembly
+
+### JLCPCB Pricing Options
+
+**Option 1: PCB + Stencil Only (manual assembly)**
+| Item | Cost |
+|------|------|
+| PCB (5 boards) | $2.00 |
+| Stencil (top only) | $10.29 |
+| Engrave text | $0.48 |
+| Shipping | ~$5.00 |
+| **Total** | **~$18** |
+
+*Best for prototyping. Order components separately from LCSC.*
+
+**Option 2: JLCPCB Assembly (5 boards, front side only)**
+| Item | Cost |
+|------|------|
+| PCB Price | $2.00 |
+| Setup Fee | $8.00 |
+| Stencil | $1.50 |
+| Components (12 items) | $3.20 |
+| Extended Components Fee | $12.00 |
+| SMT Assembly | $0.72 |
+| Nitrogen Reflow | $0.88 |
+| **Total** | **$28.30** |
+
+*~$5.66/board. Build time: 5-6 days PCB + 1-2 days assembly.*
+
+**Back side (hand solder):** 3 easy components
+- 0.1Ω sense resistor (1206)
+- AO3401A P-FET (SOT-23-3)
+- TPAP2210K-3.3TRG1 LDO (SOT-23-5)
 
 ## TODO / Future Improvements
 
-### Critical Values to Double-Check Before PCB Routing
-- [ ] **Current shunt (R2):** Verify 0.1Ω gives good ADC range (0-330mV at 1A through 3.3x op-amp gain)
-- [ ] **Voltage dividers (R4/R5):** Confirm 10kΩ divider properly scales 5V motor to ADC range
-- [ ] **UART pullup (R1):** Verify 10kΩ optimal for 2Mbps half-duplex
-- [ ] **RC filter (R10/C6):** Check 1kΩ + 100nF = 1.6kHz cutoff for POT noise
-- [ ] **Bulk caps (C4/C5):** Confirm 2x10µF sufficient for motor transients
-- [ ] **P-MOSFET RDS(on):** Verify 17mΩ = 17mV drop at 1A peak is acceptable
-- [ ] **Motor pad spacing:** Confirm 7.4mm (3.7mm each side from center)
+### Critical Values to Verify
+- [x] **Voltage dividers (20k/10k):** 8.4V × 0.333 = 2.8V (safe for 3.3V ADC) ✓
+- [x] **Current shunt (0.1Ω):** 1A × 0.1Ω = 100mV → ~124 ADC counts ✓
+- [x] **DATA pullup (1kΩ):** Suitable for 2Mbps with open-drain buffer ✓
+- [x] **RC filter (10kΩ + 100nF):** fc = 160Hz, good for pot noise filtering ✓
+- [x] **ESD protection:** PESD5V0L1UL on DATA line ✓
+- [x] **LDO thermal:** TPAP2210K handles (8.4V-3.3V) × 50mA = 255mW in SOT-23-5 ✓
+- [ ] **Motor pad spacing:** Confirm fits SG90 motor wires
 - [ ] **Debug pad pitch:** Verify 1.27mm for pogo pins
-- [ ] **Package sizes:** Verify all footprints match actual parts (especially QFN-20)
-
-### Rev B Changes
-1. **Add test points on back side**
-   - Add second 1x4 array at 1.27mm pitch (same as debug interface)
-   - Uses same pogo pin clip for both programming and testing
-   - **Debug array (1x4):** 5V, GND, SWDIO, NC (existing)
-   - **Test array (1x4):** SEN_I, SEN_POT, PWM_A, V_MCU
-   - Both arrays accessible from back when installed in servo
-   - *Rationale: Single pogo clip tool works for both debug and test*
-
-2. **Add ESD protection**
-   - TVS diode on DATA line (SOD-523 or 0402 package)
-   - Protects against ESD during cable plug/unplug
-   - Suggested part: PESD5V0S1BL or similar 5.5V TVS (~$0.05)
-
-3. **Consider fiducial marker**
-   - Single 1mm fiducial for JLCPCB assembly alignment
-   - Only if assembly house requires it
 
 ### Firmware Features (Planned)
 - Backlash compensation
@@ -207,6 +202,8 @@ Optimized for low-cost production:
 - Position calibration LUT
 - Multi-drop addressing
 - Synchronized motion commands
+- Input voltage monitoring and low-battery warning
+- Back-EMF based stall detection
 
 ## License
 

@@ -19,6 +19,7 @@
 	(property "Value" "Servo"
 		(at 0 2 0)
 		(layer "F.Fab")
+		(hide yes)
 		(uuid "8462b6da-fb07-4fd7-a31c-46282b99aaff")
 		(effects
 			(font
@@ -52,19 +53,58 @@
 		)
 	)
 	(attr through_hole)
+	(fp_text user "V"
+		(at -0.5 1.5 0)
+		(unlocked yes)
+		(layer "F.SilkS")
+		(uuid "5b73e00c-55c2-4e13-9c70-d34d7926a489")
+		(effects
+			(font
+				(size 1 1)
+				(thickness 0.1)
+			)
+			(justify left)
+		)
+	)
+	(fp_text user "G"
+		(at -2.5 1.5 0)
+		(unlocked yes)
+		(layer "F.SilkS")
+		(uuid "a81bee75-7ed5-4380-8532-1cb9fc517f7a")
+		(effects
+			(font
+				(size 1 1)
+				(thickness 0.1)
+			)
+			(justify left)
+		)
+	)
+	(fp_text user "D"
+		(at 1.5 1.5 0)
+		(unlocked yes)
+		(layer "F.SilkS")
+		(uuid "c8ed4a5c-cf76-42ea-98d8-d14638679fc6")
+		(effects
+			(font
+				(size 1 1)
+				(thickness 0.1)
+			)
+			(justify left)
+		)
+	)
 	(pad "1" thru_hole circle
 		(at -2 0)
 		(size 1.6 1.6)
 		(drill 0.8)
-		(layers "*.Cu" "F.Mask")
+		(layers "*.Cu" "*.Mask")
 		(remove_unused_layers no)
 		(uuid "586187be-ddb7-4fc0-9213-19abab2e4491")
 	)
 	(pad "2" thru_hole circle
-		(at 0 0)
+		(at 0 0 90)
 		(size 1.6 1.6)
 		(drill 0.8)
-		(layers "*.Cu" "F.Mask")
+		(layers "*.Cu" "*.Mask")
 		(remove_unused_layers no)
 		(uuid "419e03f2-faa9-4402-83e1-e7f703514868")
 	)
@@ -72,7 +112,7 @@
 		(at 2 0)
 		(size 1.6 1.6)
 		(drill 0.8)
-		(layers "*.Cu" "F.Mask")
+		(layers "*.Cu" "*.Mask")
 		(remove_unused_layers no)
 		(uuid "7305c694-15ad-496d-b7d6-f3ef0335bb1b")
 	)

@@ -62,7 +62,7 @@
 	(constraint hole_size (min 0.5mm))
 )
 
-# TODO: Hole to board edge ≥ 1 mm. Min. board size 10 × 10 mm.
+# NOTE: Hole to board edge ≥ 1 mm implemented in "Board Outlines" section. Min. board size 10 × 10 mm.
 (rule "JLCPCB: Castellated Hole Size"
 	(layer outer)
 	(condition "A.Type == 'Pad' && A.Fabrication_Property == 'Castellated pad'")
@@ -229,4 +229,36 @@
 	(constraint edge_clearance (min 0.3mm))
   # V-Cut Panel
 	# (constraint edge_clearance (min 0.4mm))
+)
+
+(rule "JLCPCB: Pad to Board Edge"
+	(condition "A.Type == 'Pad'")
+  # Choose between:
+  # Routed
+	(constraint edge_clearance (min 0.3mm))
+  # V-Cut Panel
+	# (constraint edge_clearance (min 0.4mm))
+)
+
+(rule "JLCPCB: Via to Board Edge"
+	(condition "A.Type == 'Via'")
+  # Choose between:
+  # Routed
+	(constraint edge_clearance (min 0.3mm))
+  # V-Cut Panel
+	# (constraint edge_clearance (min 0.4mm))
+)
+
+(rule "JLCPCB: Zone to Board Edge"
+	(condition "A.Type == 'Zone'")
+  # Choose between:
+  # Routed
+	(constraint edge_clearance (min 0.3mm))
+  # V-Cut Panel
+	# (constraint edge_clearance (min 0.4mm))
+)
+
+(rule "JLCPCB: Hole to Board Edge"
+	(condition "A.isPlated() || A.Type == 'Via'")
+	(constraint edge_clearance (min 1.0mm))
 )

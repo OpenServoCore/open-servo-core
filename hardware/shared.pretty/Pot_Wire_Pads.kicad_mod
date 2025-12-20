@@ -19,6 +19,7 @@
 	(property "Value" "Pot"
 		(at 0 2 0)
 		(layer "F.Fab")
+		(hide yes)
 		(uuid "0a29ea51-8b77-4c1c-a454-cb51679f2dd3")
 		(effects
 			(font
@@ -52,358 +53,86 @@
 		)
 	)
 	(attr through_hole)
+	(fp_text user "-"
+		(at 2.5 1.5 0)
+		(unlocked yes)
+		(layer "F.SilkS")
+		(uuid "a2ee2ac8-dae0-4e7d-a96e-8bceb18c38d1")
+		(effects
+			(font
+				(size 1 1)
+				(thickness 0.1)
+			)
+		)
+	)
+	(fp_text user "W"
+		(at 0 1.75 0)
+		(unlocked yes)
+		(layer "F.SilkS")
+		(uuid "a9c8ee1e-5683-449c-bdce-f2378763d38a")
+		(effects
+			(font
+				(size 1 1)
+				(thickness 0.1)
+			)
+		)
+	)
+	(fp_text user "+"
+		(at -2.5 1.5 0)
+		(unlocked yes)
+		(layer "F.SilkS")
+		(uuid "e74e927c-c674-4539-a952-d2deffdcac89")
+		(effects
+			(font
+				(size 1 1)
+				(thickness 0.1)
+			)
+		)
+	)
+	(pad "1" smd circle
+		(at -2.54 0)
+		(size 1.8 1.8)
+		(layers "F.Cu" "F.Mask")
+		(uuid "06e41655-b7aa-42c7-a2b4-1b9b4d8048d3")
+	)
 	(pad "1" thru_hole circle
 		(at -2.54 0)
 		(size 1.8 1.8)
 		(drill 0.9)
-		(layers "*.Cu" "*.Mask")
-		(remove_unused_layers no)
+		(layers "*.Cu" "F.Mask")
+		(remove_unused_layers yes)
+		(keep_end_layers no)
 		(uuid "85bea31f-bc26-4b3f-9a1d-b7366de90c04")
-		(padstack
-			(mode custom)
-			(layer "In1.Cu"
-				(shape circle)
-				(size 1.8 1.8)
-				(zone_connect -1)
-			)
-			(layer "In2.Cu"
-				(shape circle)
-				(size 1.8 1.8)
-				(zone_connect -1)
-			)
-			(layer "In3.Cu"
-				(shape circle)
-				(size 1.8 1.8)
-				(zone_connect -1)
-			)
-			(layer "In4.Cu"
-				(shape circle)
-				(size 1.8 1.8)
-				(zone_connect -1)
-			)
-			(layer "In5.Cu"
-				(shape circle)
-				(size 1.8 1.8)
-				(zone_connect -1)
-			)
-			(layer "In6.Cu"
-				(shape circle)
-				(size 1.8 1.8)
-				(zone_connect -1)
-			)
-			(layer "In7.Cu"
-				(shape circle)
-				(size 1.8 1.8)
-				(zone_connect -1)
-			)
-			(layer "In8.Cu"
-				(shape circle)
-				(size 1.8 1.8)
-				(zone_connect -1)
-			)
-			(layer "In9.Cu"
-				(shape circle)
-				(size 1.8 1.8)
-				(zone_connect -1)
-			)
-			(layer "In10.Cu"
-				(shape circle)
-				(size 1.8 1.8)
-				(zone_connect -1)
-			)
-			(layer "In11.Cu"
-				(shape circle)
-				(size 1.8 1.8)
-				(zone_connect -1)
-			)
-			(layer "In12.Cu"
-				(shape circle)
-				(size 1.8 1.8)
-				(zone_connect -1)
-			)
-			(layer "In13.Cu"
-				(shape circle)
-				(size 1.8 1.8)
-				(zone_connect -1)
-			)
-			(layer "In14.Cu"
-				(shape circle)
-				(size 1.8 1.8)
-				(zone_connect -1)
-			)
-			(layer "In15.Cu"
-				(shape circle)
-				(size 1.8 1.8)
-				(zone_connect -1)
-			)
-			(layer "In16.Cu"
-				(shape circle)
-				(size 1.8 1.8)
-				(zone_connect -1)
-			)
-			(layer "In17.Cu"
-				(shape circle)
-				(size 1.8 1.8)
-				(zone_connect -1)
-			)
-			(layer "In18.Cu"
-				(shape circle)
-				(size 1.8 1.8)
-				(zone_connect -1)
-			)
-			(layer "In19.Cu"
-				(shape circle)
-				(size 1.8 1.8)
-				(zone_connect -1)
-			)
-			(layer "In20.Cu"
-				(shape circle)
-				(size 1.8 1.8)
-				(zone_connect -1)
-			)
-			(layer "In21.Cu"
-				(shape circle)
-				(size 1.8 1.8)
-				(zone_connect -1)
-			)
-			(layer "In22.Cu"
-				(shape circle)
-				(size 1.8 1.8)
-				(zone_connect -1)
-			)
-			(layer "In23.Cu"
-				(shape circle)
-				(size 1.8 1.8)
-				(zone_connect -1)
-			)
-			(layer "In24.Cu"
-				(shape circle)
-				(size 1.8 1.8)
-				(zone_connect -1)
-			)
-			(layer "In25.Cu"
-				(shape circle)
-				(size 1.8 1.8)
-				(zone_connect -1)
-			)
-			(layer "In26.Cu"
-				(shape circle)
-				(size 1.8 1.8)
-				(zone_connect -1)
-			)
-			(layer "In27.Cu"
-				(shape circle)
-				(size 1.8 1.8)
-				(zone_connect -1)
-			)
-			(layer "In28.Cu"
-				(shape circle)
-				(size 1.8 1.8)
-				(zone_connect -1)
-			)
-			(layer "In29.Cu"
-				(shape circle)
-				(size 1.8 1.8)
-				(zone_connect -1)
-			)
-			(layer "In30.Cu"
-				(shape circle)
-				(size 1.8 1.8)
-				(zone_connect -1)
-			)
-			(layer "B.Cu"
-				(shape circle)
-				(size 0.9 0.9)
-				(zone_connect -1)
-			)
-		)
+	)
+	(pad "2" smd circle
+		(at 0 0)
+		(size 1.8 1.8)
+		(layers "F.Cu" "F.Mask")
+		(uuid "b7ad31e0-9dab-4f7d-bdea-5e3a0cc54cba")
 	)
 	(pad "2" thru_hole circle
 		(at 0 0)
 		(size 1.8 1.8)
 		(drill 0.9)
-		(layers "*.Cu" "F.Mask")
-		(remove_unused_layers no)
+		(layers "*.Cu" "*.Mask")
+		(remove_unused_layers yes)
+		(keep_end_layers no)
 		(uuid "1937b8b1-712e-4a95-b349-eca3a145e241")
-		(padstack
-			(mode custom)
-			(layer "In1.Cu"
-				(shape circle)
-				(size 1.8 1.8)
-				(zone_connect -1)
-			)
-			(layer "In2.Cu"
-				(shape circle)
-				(size 1.8 1.8)
-				(zone_connect -1)
-			)
-			(layer "In3.Cu"
-				(shape circle)
-				(size 1.8 1.8)
-				(zone_connect -1)
-			)
-			(layer "In4.Cu"
-				(shape circle)
-				(size 1.8 1.8)
-				(zone_connect -1)
-			)
-			(layer "In5.Cu"
-				(shape circle)
-				(size 1.8 1.8)
-				(zone_connect -1)
-			)
-			(layer "In6.Cu"
-				(shape circle)
-				(size 1.8 1.8)
-				(zone_connect -1)
-			)
-			(layer "In7.Cu"
-				(shape circle)
-				(size 1.8 1.8)
-				(zone_connect -1)
-			)
-			(layer "In8.Cu"
-				(shape circle)
-				(size 1.8 1.8)
-				(zone_connect -1)
-			)
-			(layer "In9.Cu"
-				(shape circle)
-				(size 1.8 1.8)
-				(zone_connect -1)
-			)
-			(layer "In10.Cu"
-				(shape circle)
-				(size 1.8 1.8)
-				(zone_connect -1)
-			)
-			(layer "In11.Cu"
-				(shape circle)
-				(size 1.8 1.8)
-				(zone_connect -1)
-			)
-			(layer "In12.Cu"
-				(shape circle)
-				(size 1.8 1.8)
-				(zone_connect -1)
-			)
-			(layer "In13.Cu"
-				(shape circle)
-				(size 1.8 1.8)
-				(zone_connect -1)
-			)
-			(layer "In14.Cu"
-				(shape circle)
-				(size 1.8 1.8)
-				(zone_connect -1)
-			)
-			(layer "In15.Cu"
-				(shape circle)
-				(size 1.8 1.8)
-				(zone_connect -1)
-			)
-			(layer "In16.Cu"
-				(shape circle)
-				(size 1.8 1.8)
-				(zone_connect -1)
-			)
-			(layer "In17.Cu"
-				(shape circle)
-				(size 1.8 1.8)
-				(zone_connect -1)
-			)
-			(layer "In18.Cu"
-				(shape circle)
-				(size 1.8 1.8)
-				(zone_connect -1)
-			)
-			(layer "In19.Cu"
-				(shape circle)
-				(size 1.8 1.8)
-				(zone_connect -1)
-			)
-			(layer "In20.Cu"
-				(shape circle)
-				(size 1.8 1.8)
-				(zone_connect -1)
-			)
-			(layer "In21.Cu"
-				(shape circle)
-				(size 1.8 1.8)
-				(zone_connect -1)
-			)
-			(layer "In22.Cu"
-				(shape circle)
-				(size 1.8 1.8)
-				(zone_connect -1)
-			)
-			(layer "In23.Cu"
-				(shape circle)
-				(size 1.8 1.8)
-				(zone_connect -1)
-			)
-			(layer "In24.Cu"
-				(shape circle)
-				(size 1.8 1.8)
-				(zone_connect -1)
-			)
-			(layer "In25.Cu"
-				(shape circle)
-				(size 1.8 1.8)
-				(zone_connect -1)
-			)
-			(layer "In26.Cu"
-				(shape circle)
-				(size 1.8 1.8)
-				(zone_connect -1)
-			)
-			(layer "In27.Cu"
-				(shape circle)
-				(size 1.8 1.8)
-				(zone_connect -1)
-			)
-			(layer "In28.Cu"
-				(shape circle)
-				(size 1.8 1.8)
-				(zone_connect -1)
-			)
-			(layer "In29.Cu"
-				(shape circle)
-				(size 1.8 1.8)
-				(zone_connect -1)
-			)
-			(layer "In30.Cu"
-				(shape circle)
-				(size 1.8 1.8)
-				(zone_connect -1)
-			)
-			(layer "B.Cu"
-				(shape circle)
-				(size 0.9 0.9)
-				(zone_connect -1)
-			)
-		)
+	)
+	(pad "3" smd circle
+		(at 2.54 0)
+		(size 1.8 1.8)
+		(layers "F.Cu" "F.Mask")
+		(uuid "80894555-b254-4ec3-9ecb-bf3a63717ab2")
 	)
 	(pad "3" thru_hole circle
 		(at 2.54 0)
 		(size 1.8 1.8)
 		(drill 0.9)
 		(layers "*.Cu" "F.Mask")
-		(remove_unused_layers no)
+		(remove_unused_layers yes)
+		(keep_end_layers no)
 		(uuid "1fee40f9-bb7b-49a8-a315-7d3fd02d6536")
-		(padstack
-			(mode front_inner_back)
-			(layer "Inner"
-				(shape circle)
-				(size 1.8 1.8)
-				(zone_connect -1)
-			)
-			(layer "B.Cu"
-				(shape circle)
-				(size 0.9 0.9)
-				(zone_connect -1)
-			)
-		)
 	)
 	(embedded_fonts no)
 )

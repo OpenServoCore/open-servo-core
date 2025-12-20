@@ -52,6 +52,32 @@
 		)
 	)
 	(attr through_hole)
+	(fp_text user "A"
+		(at -4.25 2.25 0)
+		(unlocked yes)
+		(layer "F.SilkS")
+		(uuid "a669683e-c45c-4477-aec4-9f26087ac216")
+		(effects
+			(font
+				(size 1 1)
+				(thickness 0.1)
+			)
+			(justify left bottom)
+		)
+	)
+	(fp_text user "B"
+		(at 3.25 2.25 0)
+		(unlocked yes)
+		(layer "F.SilkS")
+		(uuid "d5794335-bf6b-4328-8e3e-8b7717cbd28a")
+		(effects
+			(font
+				(size 1 1)
+				(thickness 0.1)
+			)
+			(justify left bottom)
+		)
+	)
 	(fp_text user "${REFERENCE}"
 		(at 0 0 0)
 		(layer "F.Fab")
@@ -63,51 +89,25 @@
 			)
 		)
 	)
-	(pad "1" thru_hole circle
-		(at -1 0)
-		(size 1.8 1.8)
-		(drill 0.9)
-		(layers "*.Cu" "F.Mask")
-		(remove_unused_layers yes)
-		(keep_end_layers yes)
-		(zone_connect 2)
-		(uuid "f33096c1-82cb-4679-b3c7-2312cb9ff568")
-		(padstack
-			(mode front_inner_back)
-			(layer "Inner"
-				(shape circle)
-				(size 1.8 1.8)
-				(zone_connect 2)
-			)
-			(layer "B.Cu"
-				(shape circle)
-				(size 0.9 0.9)
-				(zone_connect 2)
-			)
-		)
-	)
-	(pad "2" thru_hole circle
-		(at 1 0)
+	(pad "1" thru_hole roundrect
+		(at -3.8 0)
 		(size 1.8 1.8)
 		(drill 0.9)
 		(layers "*.Cu" "*.Mask")
-		(remove_unused_layers yes)
-		(keep_end_layers yes)
+		(remove_unused_layers no)
+		(roundrect_rratio 0.1388888889)
+		(zone_connect 2)
+		(uuid "f33096c1-82cb-4679-b3c7-2312cb9ff568")
+	)
+	(pad "2" thru_hole roundrect
+		(at 3.8 0)
+		(size 1.8 1.8)
+		(drill 0.9)
+		(layers "*.Cu" "*.Mask")
+		(remove_unused_layers no)
+		(roundrect_rratio 0.1388888889)
 		(zone_connect 2)
 		(uuid "6b82dd14-3bde-4674-8a80-8f3bd010fd15")
-		(padstack
-			(mode front_inner_back)
-			(layer "Inner"
-				(shape circle)
-				(size 1.8 1.8)
-				(zone_connect 2)
-			)
-			(layer "B.Cu"
-				(shape circle)
-				(size 0.9 0.9)
-				(zone_connect 2)
-			)
-		)
 	)
 	(embedded_fonts no)
 )
