@@ -53,42 +53,6 @@
 		)
 	)
 	(attr through_hole)
-	(fp_text user "-"
-		(at 2.5 1.5 0)
-		(unlocked yes)
-		(layer "F.SilkS")
-		(uuid "a2ee2ac8-dae0-4e7d-a96e-8bceb18c38d1")
-		(effects
-			(font
-				(size 1 1)
-				(thickness 0.1)
-			)
-		)
-	)
-	(fp_text user "W"
-		(at 0 1.75 0)
-		(unlocked yes)
-		(layer "F.SilkS")
-		(uuid "a9c8ee1e-5683-449c-bdce-f2378763d38a")
-		(effects
-			(font
-				(size 1 1)
-				(thickness 0.1)
-			)
-		)
-	)
-	(fp_text user "+"
-		(at -2.5 1.5 0)
-		(unlocked yes)
-		(layer "F.SilkS")
-		(uuid "e74e927c-c674-4539-a952-d2deffdcac89")
-		(effects
-			(font
-				(size 1 1)
-				(thickness 0.1)
-			)
-		)
-	)
 	(pad "1" smd circle
 		(at -2.54 0)
 		(size 1.8 1.8)
