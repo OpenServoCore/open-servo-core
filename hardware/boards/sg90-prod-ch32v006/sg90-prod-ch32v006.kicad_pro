@@ -498,7 +498,7 @@
     ]
   },
   "meta": {
-    "filename": "sg90-prod-ch32f006.kicad_pro",
+    "filename": "sg90-prod-ch32v006.kicad_pro",
     "version": 3
   },
   "net_settings": {
@@ -715,8 +715,8 @@
     ]
   ],
   "text_variables": {
-    "BOARD": "sg90-prod-ch32f006",
-    "DRU": "sg90-prod-ch32f006.kicad_dru",
+    "BOARD": "sg90-prod-ch32v006",
+    "DRU": "sg90-prod-ch32v006.kicad_dru",
     "FAB": "JLCPCB",
     "PROJECT": "open-servo-core",
     "REV": "v0.0",

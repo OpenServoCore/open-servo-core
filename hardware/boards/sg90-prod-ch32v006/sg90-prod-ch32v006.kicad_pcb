@@ -164,8 +164,8 @@
 			(outputdirectory "")
 		)
 	)
-	(property "BOARD" "sg90-prod-ch32f006")
-	(property "DRU" "sg90-prod-ch32f006.kicad_dru")
+	(property "BOARD" "sg90-prod-ch32v006")
+	(property "DRU" "sg90-prod-ch32v006.kicad_dru")
 	(property "FAB" "JLCPCB")
 	(property "PROJECT" "open-servo-core")
 	(property "REV" "v0.0")
@@ -269,7 +269,7 @@
 		(property ki_fp_filters "R_*")
 		(path "/0a991f95-89e8-4b69-a4e1-259be1384629")
 		(sheetname "/")
-		(sheetfile "sg90-prod-ch32f006.kicad_sch")
+		(sheetfile "sg90-prod-ch32v006.kicad_sch")
 		(attr smd)
 		(fp_line
 			(start -0.153641 0.38)
@@ -480,7 +480,7 @@
 		)
 		(path "/89385c83-bbb0-441e-81a0-e893946da0f8")
 		(sheetname "/")
-		(sheetfile "sg90-prod-ch32f006.kicad_sch")
+		(sheetfile "sg90-prod-ch32v006.kicad_sch")
 		(attr smd)
 		(fp_line
 			(start -0.87 0.68)
@@ -683,7 +683,7 @@
 		(property ki_fp_filters "C_*")
 		(path "/c1234567-89ab-cdef-0123-456789abcdef")
 		(sheetname "/")
-		(sheetfile "sg90-prod-ch32f006.kicad_sch")
+		(sheetfile "sg90-prod-ch32v006.kicad_sch")
 		(attr smd)
 		(fp_line
 			(start -0.107836 0.36)
@@ -896,7 +896,7 @@
 		(property ki_fp_filters "R_*")
 		(path "/2552200c-d3f2-4a63-8d09-348c72e5e250")
 		(sheetname "/")
-		(sheetfile "sg90-prod-ch32f006.kicad_sch")
+		(sheetfile "sg90-prod-ch32v006.kicad_sch")
 		(attr smd)
 		(fp_line
 			(start -0.153641 -0.38)
@@ -1097,7 +1097,7 @@
 		(property ki_fp_filters "Connector*:*_1x??_*")
 		(path "/30fab0d3-26e3-45f8-a822-b9d83f87b048")
 		(sheetname "/")
-		(sheetfile "sg90-prod-ch32f006.kicad_sch")
+		(sheetfile "sg90-prod-ch32v006.kicad_sch")
 		(attr through_hole exclude_from_pos_files exclude_from_bom)
 		(fp_text user "B"
 			(at 2.84 0.18 0)
@@ -1222,7 +1222,7 @@
 		(property ki_fp_filters "R_*")
 		(path "/635569bc-c205-495e-94ec-bf39520a1225")
 		(sheetname "/")
-		(sheetfile "sg90-prod-ch32f006.kicad_sch")
+		(sheetfile "sg90-prod-ch32v006.kicad_sch")
 		(attr smd)
 		(fp_line
 			(start -0.153641 0.38)
@@ -1435,7 +1435,7 @@
 		(property ki_fp_filters "R_*")
 		(path "/be6c16af-1515-4b85-9f80-00b8a84755f9")
 		(sheetname "/")
-		(sheetfile "sg90-prod-ch32f006.kicad_sch")
+		(sheetfile "sg90-prod-ch32v006.kicad_sch")
 		(attr smd)
 		(fp_line
 			(start -0.153641 -0.38)
@@ -1648,7 +1648,7 @@
 		(property ki_fp_filters "C_*")
 		(path "/c4234567-89ab-cdef-0123-456789abcdef")
 		(sheetname "/")
-		(sheetfile "sg90-prod-ch32f006.kicad_sch")
+		(sheetfile "sg90-prod-ch32v006.kicad_sch")
 		(attr smd)
 		(fp_line
 			(start -0.107836 0.36)
@@ -1851,7 +1851,7 @@
 		(property ki_fp_filters "D*SOD?882")
 		(path "/494809fd-ab0e-4f4a-97ce-81e2acfa8e94")
 		(sheetname "/")
-		(sheetfile "sg90-prod-ch32f006.kicad_sch")
+		(sheetfile "sg90-prod-ch32v006.kicad_sch")
 		(attr smd)
 		(fp_line
 			(start -0.81 -0.610001)
@@ -2141,7 +2141,7 @@
 		)
 		(path "/32aa8f94-f386-474e-9388-6d90f7788907")
 		(sheetname "/")
-		(sheetfile "sg90-prod-ch32f006.kicad_sch")
+		(sheetfile "sg90-prod-ch32v006.kicad_sch")
 		(attr through_hole)
 		(fp_line
 			(start 1.6 -1.6)
@@ -2541,7 +2541,7 @@
 		(property ki_fp_filters "R_*")
 		(path "/b91e9537-0119-4f87-85b5-bce69fdd015c")
 		(sheetname "/")
-		(sheetfile "sg90-prod-ch32f006.kicad_sch")
+		(sheetfile "sg90-prod-ch32v006.kicad_sch")
 		(attr smd)
 		(fp_line
 			(start -0.153641 -0.38)
@@ -2754,7 +2754,7 @@
 		(property ki_fp_filters "C_*")
 		(path "/c5234567-89ab-cdef-0123-456789abcdef")
 		(sheetname "/")
-		(sheetfile "sg90-prod-ch32f006.kicad_sch")
+		(sheetfile "sg90-prod-ch32v006.kicad_sch")
 		(attr smd)
 		(fp_line
 			(start -0.107836 -0.36)
@@ -2965,7 +2965,7 @@
 		(property ki_fp_filters "R_*")
 		(path "/e9820dd2-11bc-418e-9b63-041a7b98af52")
 		(sheetname "/")
-		(sheetfile "sg90-prod-ch32f006.kicad_sch")
+		(sheetfile "sg90-prod-ch32v006.kicad_sch")
 		(attr smd)
 		(fp_line
 			(start -0.153641 0.38)
@@ -3178,7 +3178,7 @@
 		(property ki_fp_filters "R_*")
 		(path "/5fcb9c48-e96b-45f1-a4b6-125cb2a0de1f")
 		(sheetname "/")
-		(sheetfile "sg90-prod-ch32f006.kicad_sch")
+		(sheetfile "sg90-prod-ch32v006.kicad_sch")
 		(attr smd)
 		(fp_line
 			(start -0.153641 -0.38)
@@ -3379,7 +3379,7 @@
 		(property ki_fp_filters "Net*Tie*")
 		(path "/eeacf4f2-6a2c-46a7-ace7-a10e69817cfe")
 		(sheetname "/")
-		(sheetfile "sg90-prod-ch32f006.kicad_sch")
+		(sheetfile "sg90-prod-ch32v006.kicad_sch")
 		(attr exclude_from_pos_files exclude_from_bom allow_soldermask_bridges)
 		(net_tie_pad_groups "1,2")
 		(fp_line
@@ -3486,7 +3486,7 @@
 		(property ki_fp_filters "WSON*1EP*2x2mm*P0.5mm*")
 		(path "/934dd593-e705-4b1e-9a49-d054c2027006")
 		(sheetname "/")
-		(sheetfile "sg90-prod-ch32f006.kicad_sch")
+		(sheetfile "sg90-prod-ch32v006.kicad_sch")
 		(attr smd)
 		(fp_line
 			(start -1.01 -1.14)
@@ -3804,7 +3804,7 @@
 		(property ki_fp_filters "R_*")
 		(path "/a3670834-07ba-433f-a3ff-b38a0015c3d2")
 		(sheetname "/")
-		(sheetfile "sg90-prod-ch32f006.kicad_sch")
+		(sheetfile "sg90-prod-ch32v006.kicad_sch")
 		(attr smd)
 		(fp_line
 			(start -0.153641 -0.38)
@@ -4017,7 +4017,7 @@
 		(property ki_fp_filters "C_*")
 		(path "/4fc5cf8d-01f7-47ac-ad24-27a1a53d95b0")
 		(sheetname "/")
-		(sheetfile "sg90-prod-ch32f006.kicad_sch")
+		(sheetfile "sg90-prod-ch32v006.kicad_sch")
 		(attr smd)
 		(fp_line
 			(start -0.107836 0.36)
@@ -4230,7 +4230,7 @@
 		(property ki_fp_filters "R_*")
 		(path "/a837aba2-db5c-4db7-80a9-76acc23909a3")
 		(sheetname "/")
-		(sheetfile "sg90-prod-ch32f006.kicad_sch")
+		(sheetfile "sg90-prod-ch32v006.kicad_sch")
 		(attr smd)
 		(fp_line
 			(start -0.153641 -0.38)
@@ -4443,7 +4443,7 @@
 		(property ki_fp_filters "R_*")
 		(path "/a1c197cd-6997-49d9-bb98-df9baf076f3e")
 		(sheetname "/")
-		(sheetfile "sg90-prod-ch32f006.kicad_sch")
+		(sheetfile "sg90-prod-ch32v006.kicad_sch")
 		(attr smd)
 		(fp_line
 			(start -0.153641 0.38)
@@ -4654,7 +4654,7 @@
 		(property ki_fp_filters "R_*")
 		(path "/00dbda94-30e5-4260-9edd-18f80d31741c")
 		(sheetname "/")
-		(sheetfile "sg90-prod-ch32f006.kicad_sch")
+		(sheetfile "sg90-prod-ch32v006.kicad_sch")
 		(attr smd)
 		(fp_line
 			(start -0.153641 0.38)
@@ -4867,7 +4867,7 @@
 		(property ki_fp_filters "R_*")
 		(path "/c76be95b-c232-4192-bb89-8301de90211c")
 		(sheetname "/")
-		(sheetfile "sg90-prod-ch32f006.kicad_sch")
+		(sheetfile "sg90-prod-ch32v006.kicad_sch")
 		(attr smd)
 		(fp_line
 			(start -0.153641 -0.38)
@@ -5080,7 +5080,7 @@
 		(property ki_fp_filters "C_*")
 		(path "/6be1ca46-85fa-43ef-9aa6-eb8a332dce91")
 		(sheetname "/")
-		(sheetfile "sg90-prod-ch32f006.kicad_sch")
+		(sheetfile "sg90-prod-ch32v006.kicad_sch")
 		(attr smd)
 		(fp_line
 			(start -0.107836 0.36)
@@ -5293,7 +5293,7 @@
 		(property ki_fp_filters "C_*")
 		(path "/c3234567-89ab-cdef-0123-456789abcdef")
 		(sheetname "/")
-		(sheetfile "sg90-prod-ch32f006.kicad_sch")
+		(sheetfile "sg90-prod-ch32v006.kicad_sch")
 		(attr smd)
 		(fp_line
 			(start -0.107836 -0.36)
@@ -5506,7 +5506,7 @@
 		(property ki_fp_filters "C_*")
 		(path "/57b7e812-6bc2-4514-9245-6191ac7d3c5f")
 		(sheetname "/")
-		(sheetfile "sg90-prod-ch32f006.kicad_sch")
+		(sheetfile "sg90-prod-ch32v006.kicad_sch")
 		(attr smd)
 		(fp_line
 			(start -0.107836 0.36)
@@ -5723,7 +5723,7 @@
 		(property ki_fp_filters "R_*")
 		(path "/332977fd-30c6-4e4f-9324-a6a30d14c6a9")
 		(sheetname "/")
-		(sheetfile "sg90-prod-ch32f006.kicad_sch")
+		(sheetfile "sg90-prod-ch32v006.kicad_sch")
 		(attr smd)
 		(fp_line
 			(start -0.727064 -0.91)
@@ -5941,7 +5941,7 @@
 		(property ki_fp_filters "SOT?23*")
 		(path "/415f116a-5981-47cd-ab94-49c3a0ca4ebe")
 		(sheetname "/")
-		(sheetfile "sg90-prod-ch32f006.kicad_sch")
+		(sheetfile "sg90-prod-ch32v006.kicad_sch")
 		(attr smd)
 		(fp_line
 			(start 0.76 1.56)
@@ -6285,7 +6285,7 @@
 		(property ki_fp_filters "Inductor_* L_* *Ferrite*")
 		(path "/3942772d-091b-471b-8694-2bee1e9472cf")
 		(sheetname "/")
-		(sheetfile "sg90-prod-ch32f006.kicad_sch")
+		(sheetfile "sg90-prod-ch32v006.kicad_sch")
 		(attr smd)
 		(fp_line
 			(start -0.162779 0.51)
@@ -6491,7 +6491,7 @@
 		(property ki_fp_filters "Net*Tie*")
 		(path "/56ba5bc5-4ed9-4dde-a156-b0d498022a95")
 		(sheetname "/")
-		(sheetfile "sg90-prod-ch32f006.kicad_sch")
+		(sheetfile "sg90-prod-ch32v006.kicad_sch")
 		(attr exclude_from_pos_files exclude_from_bom allow_soldermask_bridges)
 		(net_tie_pad_groups "1,2")
 		(fp_line
@@ -6587,7 +6587,7 @@
 		(property ki_fp_filters "Connector*:*_1x??_*")
 		(path "/a7f78610-6db0-437c-aef1-f2329f251f0c")
 		(sheetname "/")
-		(sheetfile "sg90-prod-ch32f006.kicad_sch")
+		(sheetfile "sg90-prod-ch32v006.kicad_sch")
 		(attr smd exclude_from_pos_files exclude_from_bom)
 		(fp_line
 			(start -2.5 0.6)
@@ -6729,7 +6729,7 @@
 		(property ki_fp_filters "Connector*:*_1x??_*")
 		(path "/82a35824-3de0-4f60-b4b5-c3eb15a1f1da")
 		(sheetname "/")
-		(sheetfile "sg90-prod-ch32f006.kicad_sch")
+		(sheetfile "sg90-prod-ch32v006.kicad_sch")
 		(attr through_hole exclude_from_pos_files exclude_from_bom)
 		(fp_text user "D"
 			(at 1.31 -0.63 0)
@@ -6866,7 +6866,7 @@
 		(property ki_fp_filters "C_*")
 		(path "/c4155b30-17bc-445f-b8fb-0f0aa362d841")
 		(sheetname "/")
-		(sheetfile "sg90-prod-ch32f006.kicad_sch")
+		(sheetfile "sg90-prod-ch32v006.kicad_sch")
 		(attr smd)
 		(fp_line
 			(start -0.14058 0.51)
@@ -7072,7 +7072,7 @@
 		(property ki_fp_filters "Connector*:*_1x??_*")
 		(path "/2d8633a7-d37f-47fe-87f8-0dae7d9b60de")
 		(sheetname "/")
-		(sheetfile "sg90-prod-ch32f006.kicad_sch")
+		(sheetfile "sg90-prod-ch32v006.kicad_sch")
 		(attr through_hole exclude_from_pos_files exclude_from_bom)
 		(pad "1" thru_hole circle
 			(at -2.54 0 270)
@@ -7214,7 +7214,7 @@
 		)
 		(path "/535ef78c-9553-40ca-a67e-4a6f7605536a")
 		(sheetname "/")
-		(sheetfile "sg90-prod-ch32f006.kicad_sch")
+		(sheetfile "sg90-prod-ch32v006.kicad_sch")
 		(attr through_hole)
 		(fp_line
 			(start -0.42 1.39)
@@ -7398,7 +7398,7 @@
 		(property ki_fp_filters "Net*Tie*")
 		(path "/6c68033e-53de-4216-9d31-7fe007e2aed6")
 		(sheetname "/")
-		(sheetfile "sg90-prod-ch32f006.kicad_sch")
+		(sheetfile "sg90-prod-ch32v006.kicad_sch")
 		(attr exclude_from_pos_files exclude_from_bom allow_soldermask_bridges)
 		(net_tie_pad_groups "1,2")
 		(fp_line
@@ -7506,7 +7506,7 @@
 		(property ki_fp_filters "C_*")
 		(path "/7bb8e9b4-1d0f-4c8d-a3d2-256cdb0771e1")
 		(sheetname "/")
-		(sheetfile "sg90-prod-ch32f006.kicad_sch")
+		(sheetfile "sg90-prod-ch32v006.kicad_sch")
 		(attr smd)
 		(fp_line
 			(start -0.14058 -0.51)

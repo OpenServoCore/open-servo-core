@@ -5572,7 +5572,7 @@
 			(uuid "5f9b3e71-b669-494d-a5b2-1a5e72d67a96")
 		)
 		(instances
-			(project "sg90-prod-ch32f006"
+			(project "sg90-prod-ch32v006"
 				(path "/6062e7d2-0c72-467e-b49c-6387ba053e09"
 					(reference "R5")
 					(unit 1)
@@ -5641,7 +5641,7 @@
 			(uuid "092d9b58-0ef7-4663-b449-3e5e8dab703e")
 		)
 		(instances
-			(project "sg90-prod-ch32f006"
+			(project "sg90-prod-ch32v006"
 				(path "/6062e7d2-0c72-467e-b49c-6387ba053e09"
 					(reference "R3")
 					(unit 1)
@@ -5708,7 +5708,7 @@
 			(uuid "fd1ec65e-c7c5-42f7-9f30-fe07adeb2e46")
 		)
 		(instances
-			(project "sg90-prod-ch32f006"
+			(project "sg90-prod-ch32v006"
 				(path "/6062e7d2-0c72-467e-b49c-6387ba053e09"
 					(reference "#FLG01")
 					(unit 1)
@@ -5774,7 +5774,7 @@
 			(uuid "50524c3e-ae33-4a42-92bc-d8ae0c3f27f4")
 		)
 		(instances
-			(project "sg90-prod-ch32f006"
+			(project "sg90-prod-ch32v006"
 				(path "/6062e7d2-0c72-467e-b49c-6387ba053e09"
 					(reference "#PWR014")
 					(unit 1)
@@ -5907,7 +5907,7 @@
 			(uuid "5cedf5d5-1c13-4f00-a742-c01e71d3418b")
 		)
 		(instances
-			(project "sg90-prod-ch32f006"
+			(project "sg90-prod-ch32v006"
 				(path "/6062e7d2-0c72-467e-b49c-6387ba053e09"
 					(reference "#PWR03")
 					(unit 1)
@@ -5973,7 +5973,7 @@
 			(uuid "37f01194-2da8-4ba4-8d5d-9138f70e439a")
 		)
 		(instances
-			(project "sg90-prod-ch32f006"
+			(project "sg90-prod-ch32v006"
 				(path "/6062e7d2-0c72-467e-b49c-6387ba053e09"
 					(reference "#PWR019")
 					(unit 1)
@@ -6042,7 +6042,7 @@
 			(uuid "e00a403f-6ea1-477d-af90-aff15d137286")
 		)
 		(instances
-			(project "sg90-prod-ch32f006"
+			(project "sg90-prod-ch32v006"
 				(path "/6062e7d2-0c72-467e-b49c-6387ba053e09"
 					(reference "R8")
 					(unit 1)
@@ -6108,7 +6108,7 @@
 			(uuid "745e6693-3086-4093-9005-2049afd791b1")
 		)
 		(instances
-			(project "sg90-prod-ch32f006"
+			(project "sg90-prod-ch32v006"
 				(path "/6062e7d2-0c72-467e-b49c-6387ba053e09"
 					(reference "#PWR05")
 					(unit 1)
@@ -6179,7 +6179,7 @@
 			(uuid "61d2f44e-d8c3-40ea-8591-14f3cdb8d5a3")
 		)
 		(instances
-			(project "sg90-prod-ch32f006"
+			(project "sg90-prod-ch32v006"
 				(path "/6062e7d2-0c72-467e-b49c-6387ba053e09"
 					(reference "J4")
 					(unit 1)
@@ -6247,7 +6247,7 @@
 			(uuid "19a99bf0-8e5b-45fa-84bb-61b7d6322df9")
 		)
 		(instances
-			(project "sg90-prod-ch32f006"
+			(project "sg90-prod-ch32v006"
 				(path "/6062e7d2-0c72-467e-b49c-6387ba053e09"
 					(reference "J2")
 					(unit 1)
@@ -6312,7 +6312,7 @@
 			(uuid "54c4bb32-0c67-471a-b4bc-fdbf4844e409")
 		)
 		(instances
-			(project "sg90-prod-ch32f006"
+			(project "sg90-prod-ch32v006"
 				(path "/6062e7d2-0c72-467e-b49c-6387ba053e09"
 					(reference "#PWR09")
 					(unit 1)
@@ -6378,7 +6378,7 @@
 			(uuid "b9a907a4-dca8-46c5-a94a-193d45d0accd")
 		)
 		(instances
-			(project "sg90-prod-ch32f006"
+			(project "sg90-prod-ch32v006"
 				(path "/6062e7d2-0c72-467e-b49c-6387ba053e09"
 					(reference "#PWR04")
 					(unit 1)
@@ -6579,7 +6579,7 @@
 			(uuid "0a772f3d-8e9d-4f83-ad8b-d664d5e92bb1")
 		)
 		(instances
-			(project "sg90-prod-ch32f006"
+			(project "sg90-prod-ch32v006"
 				(path "/6062e7d2-0c72-467e-b49c-6387ba053e09"
 					(reference "R4")
 					(unit 1)
@@ -6788,7 +6788,7 @@
 			(uuid "e32feeea-0fac-4165-b67a-b59c8566ce84")
 		)
 		(instances
-			(project "sg90-prod-ch32f006"
+			(project "sg90-prod-ch32v006"
 				(path "/6062e7d2-0c72-467e-b49c-6387ba053e09"
 					(reference "#PWR08")
 					(unit 1)
@@ -6858,7 +6858,7 @@
 			(uuid "9fadeac2-933f-4043-a852-85f756233f48")
 		)
 		(instances
-			(project "sg90-prod-ch32f006"
+			(project "sg90-prod-ch32v006"
 				(path "/6062e7d2-0c72-467e-b49c-6387ba053e09"
 					(reference "D1")
 					(unit 1)
@@ -6927,7 +6927,7 @@
 			(uuid "1c3223fa-2ba3-4ba6-b00b-49b911463aae")
 		)
 		(instances
-			(project "sg90-prod-ch32f006"
+			(project "sg90-prod-ch32v006"
 				(path "/6062e7d2-0c72-467e-b49c-6387ba053e09"
 					(reference "C5")
 					(unit 1)
@@ -6992,7 +6992,7 @@
 			(uuid "87b35fd3-ad51-4597-aa0b-045fb0d10803")
 		)
 		(instances
-			(project "sg90-prod-ch32f006"
+			(project "sg90-prod-ch32v006"
 				(path "/6062e7d2-0c72-467e-b49c-6387ba053e09"
 					(reference "#PWR07")
 					(unit 1)
@@ -7148,7 +7148,7 @@
 			(uuid "0f046393-9dfd-4139-a709-c1c8ac2f07d6")
 		)
 		(instances
-			(project "sg90-prod-ch32f006"
+			(project "sg90-prod-ch32v006"
 				(path "/6062e7d2-0c72-467e-b49c-6387ba053e09"
 					(reference "NT2")
 					(unit 1)
@@ -7214,7 +7214,7 @@
 			(uuid "5600efff-c00d-46af-887e-0520c853b54d")
 		)
 		(instances
-			(project "sg90-prod-ch32f006"
+			(project "sg90-prod-ch32v006"
 				(path "/6062e7d2-0c72-467e-b49c-6387ba053e09"
 					(reference "#PWR023")
 					(unit 1)
@@ -7281,7 +7281,7 @@
 			(uuid "66c19a01-7392-4412-97eb-529e84f070e5")
 		)
 		(instances
-			(project "sg90-prod-ch32f006"
+			(project "sg90-prod-ch32v006"
 				(path "/6062e7d2-0c72-467e-b49c-6387ba053e09"
 					(reference "C3")
 					(unit 1)
@@ -7348,7 +7348,7 @@
 			(uuid "5982e7b8-0114-40c5-a434-7b0b327ef2a2")
 		)
 		(instances
-			(project "sg90-prod-ch32f006"
+			(project "sg90-prod-ch32v006"
 				(path "/6062e7d2-0c72-467e-b49c-6387ba053e09"
 					(reference "#PWR017")
 					(unit 1)
@@ -7415,7 +7415,7 @@
 			(uuid "a6decb54-5b42-4da8-b2de-7056f7ab24fb")
 		)
 		(instances
-			(project "sg90-prod-ch32f006"
+			(project "sg90-prod-ch32v006"
 				(path "/6062e7d2-0c72-467e-b49c-6387ba053e09"
 					(reference "#PWR06")
 					(unit 1)
@@ -7485,7 +7485,7 @@
 			(uuid "ba10d3bf-a9d0-4630-a414-ae66d5fe8478")
 		)
 		(instances
-			(project "sg90-prod-ch32f006"
+			(project "sg90-prod-ch32v006"
 				(path "/6062e7d2-0c72-467e-b49c-6387ba053e09"
 					(reference "R1")
 					(unit 1)
@@ -7550,7 +7550,7 @@
 			(uuid "8a0608f7-4f42-4043-946c-b346202106fc")
 		)
 		(instances
-			(project "sg90-prod-ch32f006"
+			(project "sg90-prod-ch32v006"
 				(path "/6062e7d2-0c72-467e-b49c-6387ba053e09"
 					(reference "#PWR026")
 					(unit 1)
@@ -7619,7 +7619,7 @@
 			(uuid "b7996c26-3c76-46be-8d0d-a847f815a9a1")
 		)
 		(instances
-			(project "sg90-prod-ch32f006"
+			(project "sg90-prod-ch32v006"
 				(path "/6062e7d2-0c72-467e-b49c-6387ba053e09"
 					(reference "R7")
 					(unit 1)
@@ -7684,7 +7684,7 @@
 			(uuid "7aa44ebb-5a9f-464c-a2cf-cc340257abac")
 		)
 		(instances
-			(project "sg90-prod-ch32f006"
+			(project "sg90-prod-ch32v006"
 				(path "/6062e7d2-0c72-467e-b49c-6387ba053e09"
 					(reference "#PWR010")
 					(unit 1)
@@ -7751,7 +7751,7 @@
 			(uuid "d2411dd3-3a28-48e1-b7dc-2af5cb8caa50")
 		)
 		(instances
-			(project "sg90-prod-ch32f006"
+			(project "sg90-prod-ch32v006"
 				(path "/6062e7d2-0c72-467e-b49c-6387ba053e09"
 					(reference "#FLG04")
 					(unit 1)
@@ -7818,7 +7818,7 @@
 			(uuid "9cdcd882-cf12-4095-b110-13589080b98f")
 		)
 		(instances
-			(project "sg90-prod-ch32f006"
+			(project "sg90-prod-ch32v006"
 				(path "/6062e7d2-0c72-467e-b49c-6387ba053e09"
 					(reference "C2")
 					(unit 1)
@@ -7888,7 +7888,7 @@
 			(uuid "4fbabda5-e050-4e34-a05b-58fe0f9c236a")
 		)
 		(instances
-			(project "sg90-prod-ch32f006"
+			(project "sg90-prod-ch32v006"
 				(path "/6062e7d2-0c72-467e-b49c-6387ba053e09"
 					(reference "NT3")
 					(unit 1)
@@ -7953,7 +7953,7 @@
 			(uuid "68d5a05b-055b-40bf-b5a7-1d5ccb7e6202")
 		)
 		(instances
-			(project "sg90-prod-ch32f006"
+			(project "sg90-prod-ch32v006"
 				(path "/6062e7d2-0c72-467e-b49c-6387ba053e09"
 					(reference "#PWR016")
 					(unit 1)
@@ -8018,7 +8018,7 @@
 			(uuid "add3a81a-98ca-4850-a658-decce88c6fad")
 		)
 		(instances
-			(project "sg90-prod-ch32f006"
+			(project "sg90-prod-ch32v006"
 				(path "/6062e7d2-0c72-467e-b49c-6387ba053e09"
 					(reference "#PWR022")
 					(unit 1)
@@ -8151,7 +8151,7 @@
 			(uuid "1e6c4bbc-b4bb-47c6-a2dd-fc4f43fbc515")
 		)
 		(instances
-			(project "sg90-prod-ch32f006"
+			(project "sg90-prod-ch32v006"
 				(path "/6062e7d2-0c72-467e-b49c-6387ba053e09"
 					(reference "C8")
 					(unit 1)
@@ -8216,7 +8216,7 @@
 			(uuid "7bd5649b-e4b8-48ee-9388-6650b1de0b9c")
 		)
 		(instances
-			(project "sg90-prod-ch32f006"
+			(project "sg90-prod-ch32v006"
 				(path "/6062e7d2-0c72-467e-b49c-6387ba053e09"
 					(reference "#PWR029")
 					(unit 1)
@@ -8504,7 +8504,7 @@
 			(uuid "9b38ba35-cf64-4668-83d2-8ca2151c45ac")
 		)
 		(instances
-			(project "sg90-prod-ch32f006"
+			(project "sg90-prod-ch32v006"
 				(path "/6062e7d2-0c72-467e-b49c-6387ba053e09"
 					(reference "#PWR01")
 					(unit 1)
@@ -8570,7 +8570,7 @@
 			(uuid "a221e692-7e26-43d9-8050-147f9c6e9d9c")
 		)
 		(instances
-			(project "sg90-prod-ch32f006"
+			(project "sg90-prod-ch32v006"
 				(path "/6062e7d2-0c72-467e-b49c-6387ba053e09"
 					(reference "#PWR013")
 					(unit 1)
@@ -8736,7 +8736,7 @@
 			(uuid "d2fc5d1c-f5f4-40c7-a430-b962544cc58e")
 		)
 		(instances
-			(project "sg90-prod-ch32f006"
+			(project "sg90-prod-ch32v006"
 				(path "/6062e7d2-0c72-467e-b49c-6387ba053e09"
 					(reference "R2")
 					(unit 1)
@@ -8805,7 +8805,7 @@
 			(uuid "b9598355-6515-4d97-9dd0-7a82f05f5044")
 		)
 		(instances
-			(project "sg90-prod-ch32f006"
+			(project "sg90-prod-ch32v006"
 				(path "/6062e7d2-0c72-467e-b49c-6387ba053e09"
 					(reference "R6")
 					(unit 1)
@@ -8948,7 +8948,7 @@
 			(uuid "57a41f01-850b-4165-a1de-054d89c9ca99")
 		)
 		(instances
-			(project "sg90-prod-ch32f006"
+			(project "sg90-prod-ch32v006"
 				(path "/6062e7d2-0c72-467e-b49c-6387ba053e09"
 					(reference "R9")
 					(unit 1)
@@ -9015,7 +9015,7 @@
 			(uuid "564387af-c06c-415b-bcc0-f7df5bff38b8")
 		)
 		(instances
-			(project "sg90-prod-ch32f006"
+			(project "sg90-prod-ch32v006"
 				(path "/6062e7d2-0c72-467e-b49c-6387ba053e09"
 					(reference "#FLG02")
 					(unit 1)
@@ -9084,7 +9084,7 @@
 			(uuid "094de996-dca3-4159-b87a-430b1671fe2d")
 		)
 		(instances
-			(project "sg90-prod-ch32f006"
+			(project "sg90-prod-ch32v006"
 				(path "/6062e7d2-0c72-467e-b49c-6387ba053e09"
 					(reference "R10")
 					(unit 1)
@@ -9149,7 +9149,7 @@
 			(uuid "78ecfc0a-9498-4bd5-8939-e58dfd0dbae0")
 		)
 		(instances
-			(project "sg90-prod-ch32f006"
+			(project "sg90-prod-ch32v006"
 				(path "/6062e7d2-0c72-467e-b49c-6387ba053e09"
 					(reference "#PWR015")
 					(unit 1)
@@ -9218,7 +9218,7 @@
 			(uuid "803240f8-2a9f-49c3-a143-b884c63539c9")
 		)
 		(instances
-			(project "sg90-prod-ch32f006"
+			(project "sg90-prod-ch32v006"
 				(path "/6062e7d2-0c72-467e-b49c-6387ba053e09"
 					(reference "R11")
 					(unit 1)
@@ -9287,7 +9287,7 @@
 			(uuid "c1234567-89ab-cdef-0123-456789abcde2")
 		)
 		(instances
-			(project "sg90-prod-ch32f006"
+			(project "sg90-prod-ch32v006"
 				(path "/6062e7d2-0c72-467e-b49c-6387ba053e09"
 					(reference "C4")
 					(unit 1)
@@ -9354,7 +9354,7 @@
 			(uuid "c3234567-89ab-cdef-0123-456789abcde2")
 		)
 		(instances
-			(project "sg90-prod-ch32f006"
+			(project "sg90-prod-ch32v006"
 				(path "/6062e7d2-0c72-467e-b49c-6387ba053e09"
 					(reference "C7")
 					(unit 1)
@@ -9421,7 +9421,7 @@
 			(uuid "4b5ba42b-dd6e-44ad-922a-1916ecab1090")
 		)
 		(instances
-			(project "sg90-prod-ch32f006"
+			(project "sg90-prod-ch32v006"
 				(path "/6062e7d2-0c72-467e-b49c-6387ba053e09"
 					(reference "C1")
 					(unit 1)
@@ -9488,7 +9488,7 @@
 			(uuid "c4234567-89ab-cdef-0123-456789abcde2")
 		)
 		(instances
-			(project "sg90-prod-ch32f006"
+			(project "sg90-prod-ch32v006"
 				(path "/6062e7d2-0c72-467e-b49c-6387ba053e09"
 					(reference "C6")
 					(unit 1)
@@ -9555,7 +9555,7 @@
 			(uuid "a18b1070-fe6d-40d7-a98b-72b660ea4183")
 		)
 		(instances
-			(project "sg90-prod-ch32f006"
+			(project "sg90-prod-ch32v006"
 				(path "/6062e7d2-0c72-467e-b49c-6387ba053e09"
 					(reference "#FLG03")
 					(unit 1)
@@ -9624,7 +9624,7 @@
 			(uuid "c5234567-89ab-cdef-0123-456789abcde2")
 		)
 		(instances
-			(project "sg90-prod-ch32f006"
+			(project "sg90-prod-ch32v006"
 				(path "/6062e7d2-0c72-467e-b49c-6387ba053e09"
 					(reference "C9")
 					(unit 1)
@@ -9693,7 +9693,7 @@
 			(uuid "a46ccd65-14e9-4f7b-ae70-f86e0970c91d")
 		)
 		(instances
-			(project "sg90-prod-ch32f006"
+			(project "sg90-prod-ch32v006"
 				(path "/6062e7d2-0c72-467e-b49c-6387ba053e09"
 					(reference "R12")
 					(unit 1)
@@ -9760,7 +9760,7 @@
 			(uuid "c1492c30-b8b2-4d81-9019-28829c0fd89e")
 		)
 		(instances
-			(project "sg90-prod-ch32f006"
+			(project "sg90-prod-ch32v006"
 				(path "/6062e7d2-0c72-467e-b49c-6387ba053e09"
 					(reference "#PWR024")
 					(unit 1)
@@ -9827,7 +9827,7 @@
 			(uuid "ec4e5850-86db-4388-b845-1fc6afd05448")
 		)
 		(instances
-			(project "sg90-prod-ch32f006"
+			(project "sg90-prod-ch32v006"
 				(path "/6062e7d2-0c72-467e-b49c-6387ba053e09"
 					(reference "#PWR027")
 					(unit 1)
@@ -9894,7 +9894,7 @@
 			(uuid "d70e7142-9372-460d-8e05-2d767709c1f7")
 		)
 		(instances
-			(project "sg90-prod-ch32f006"
+			(project "sg90-prod-ch32v006"
 				(path "/6062e7d2-0c72-467e-b49c-6387ba053e09"
 					(reference "#PWR020")
 					(unit 1)
@@ -9959,7 +9959,7 @@
 			(uuid "0c0bb60b-6b9a-4352-bfdf-5b18ea8c15e6")
 		)
 		(instances
-			(project "sg90-prod-ch32f006"
+			(project "sg90-prod-ch32v006"
 				(path "/6062e7d2-0c72-467e-b49c-6387ba053e09"
 					(reference "#PWR028")
 					(unit 1)
@@ -10026,7 +10026,7 @@
 			(uuid "7675e648-95ba-486e-bb6f-821a467f2665")
 		)
 		(instances
-			(project "sg90-prod-ch32f006"
+			(project "sg90-prod-ch32v006"
 				(path "/6062e7d2-0c72-467e-b49c-6387ba053e09"
 					(reference "#PWR018")
 					(unit 1)
@@ -10096,7 +10096,7 @@
 			(uuid "e422a5e5-bd92-4175-9982-922dbbadaf6c")
 		)
 		(instances
-			(project "sg90-prod-ch32f006"
+			(project "sg90-prod-ch32v006"
 				(path "/6062e7d2-0c72-467e-b49c-6387ba053e09"
 					(reference "TH1")
 					(unit 1)
@@ -10165,7 +10165,7 @@
 			(uuid "48ee5ab1-6cd7-4ae6-a7db-48feb1ba505f")
 		)
 		(instances
-			(project "sg90-prod-ch32f006"
+			(project "sg90-prod-ch32v006"
 				(path "/6062e7d2-0c72-467e-b49c-6387ba053e09"
 					(reference "NT1")
 					(unit 1)
@@ -10232,7 +10232,7 @@
 			(uuid "ff95d476-4dff-4823-8b51-127a21c7be70")
 		)
 		(instances
-			(project "sg90-prod-ch32f006"
+			(project "sg90-prod-ch32v006"
 				(path "/6062e7d2-0c72-467e-b49c-6387ba053e09"
 					(reference "#PWR012")
 					(unit 1)
@@ -10298,7 +10298,7 @@
 			(uuid "7e7d1c8c-fa06-4f7e-bec3-9b45b80c998e")
 		)
 		(instances
-			(project "sg90-prod-ch32f006"
+			(project "sg90-prod-ch32v006"
 				(path "/6062e7d2-0c72-467e-b49c-6387ba053e09"
 					(reference "#PWR021")
 					(unit 1)
