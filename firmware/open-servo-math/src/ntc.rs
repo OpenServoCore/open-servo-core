@@ -3,6 +3,7 @@
 //! No floating point - pure integer math with linear interpolation.
 //!
 //! The lookup table is board-specific and should be defined in the board crate.
+//! Tables can be generated at compile-time using the `ntc_gen` module.
 
 /// Convert ADC reading to temperature in centi-Celsius using a lookup table.
 ///
