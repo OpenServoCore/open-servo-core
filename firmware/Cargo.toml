@@ -27,11 +27,9 @@ panic = "abort"
 opt-level = "z"  # Optimize for size
 lto = true       # Enable full link-time optimization
 codegen-units = 1  # Single codegen unit for better optimization
-strip = "symbols"  # Strip symbol table, keep DWARF for debugging
 
 [profile.release]
 panic = "abort"
 opt-level = "z"  # Optimize for size
 lto = true       # Enable full link-time optimization
 codegen-units = 1  # Single codegen unit for better optimization
-strip = "symbols"  # Strip symbol table, keep DWARF for debugging
