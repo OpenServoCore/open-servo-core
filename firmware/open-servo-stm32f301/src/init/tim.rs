@@ -3,7 +3,7 @@ use stm32f3::stm32f301 as pac;
 
 // PWM parameters
 const PWM_FREQUENCY: u32 = 20_000;
-pub const PWM_MAX_DUTY: u16 = ((RCC_SYSCLK_HZ / PWM_FREQUENCY / 2) - 1) as u16;
+pub const PWM_MAX_DUTY: u16 = ((RCC_SYSCLK_HZ / PWM_FREQUENCY) - 1) as u16;
 
 pub fn init_tim1_pwm(p: &pac::Peripherals) {
     let tim1 = &p.TIM1;
@@ -15,7 +15,7 @@ pub fn init_tim1_pwm(p: &pac::Peripherals) {
     tim1.cr1.modify(|_, w| w.cms().center_aligned1().dir().up());
 
     // set PWM frequency to 10 kHz center aligned ( 20 KHz PWM frequency)
-    tim1.arr.write(|w| w.arr().bits(3599)); // 72 MHz / 3600 = 20 kHz
+    tim1.arr.write(|w| w.arr().bits(PWM_MAX_DUTY)); // 72 MHz / 3600 = 20 kHz
     tim1.psc.write(|w| w.psc().bits(0)); // 72 MHz / 1 = 72 MHz
 
     // generate an update event to load the prescaler value to the counter

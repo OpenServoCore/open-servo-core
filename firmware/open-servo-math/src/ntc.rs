@@ -4,7 +4,7 @@
 //!
 //! The lookup table is board-specific and should be defined in the board crate.
 
-/// Convert ADC reading to temperature in deci-Celsius using a lookup table.
+/// Convert ADC reading to temperature in centi-Celsius using a lookup table.
 ///
 /// Assumes low-side NTC configuration:
 /// - VCC → R_fixed → ADC → NTC → GND
@@ -13,16 +13,16 @@
 ///
 /// # Arguments
 /// * `adc_raw` - 12-bit ADC reading (0-4095)
-/// * `lut` - Lookup table of (ADC value, temperature in deci-Celsius) pairs,
+/// * `lut` - Lookup table of (ADC value, temperature in centi-Celsius) pairs,
 ///           sorted by descending ADC value
 ///
 /// # Returns
-/// Temperature in deci-Celsius (e.g., 250 = 25.0°C)
+/// Temperature in centi-Celsius (e.g., 2500 = 25.00°C)
 /// Clamped to the table's min/max range.
-pub fn ntc_lut_to_deci_celsius(adc_raw: u16, lut: &[(u16, i16)]) -> i16 {
+pub fn ntc_lut_to_centi_celsius(adc_raw: u16, lut: &[(u16, i16)]) -> i16 {
     // Handle empty table
     if lut.is_empty() {
-        return 250; // Default to 25°C
+        return 2500; // Default to 25°C
     }
 
     // Handle out-of-range: ADC too high = very cold
@@ -52,7 +52,7 @@ pub fn ntc_lut_to_deci_celsius(adc_raw: u16, lut: &[(u16, i16)]) -> i16 {
     }
 
     // Fallback (shouldn't reach here with valid input)
-    250 // 25.0°C
+    2500 // 25.00°C
 }
 
 #[cfg(test)]
@@ -61,29 +61,29 @@ mod tests {
 
     /// Test lookup table: 10K B3950 NTC with 10K fixed resistor, low-side
     const TEST_LUT: [(u16, i16); 5] = [
-        (3133, 0),   //   0°C
-        (2274, 200), //  20°C
-        (2048, 250), //  25°C
-        (1826, 300), //  30°C
-        (1078, 500), //  50°C
+        (3133, 0),    //   0°C
+        (2274, 2000), //  20°C
+        (2048, 2500), //  25°C
+        (1826, 3000), //  30°C
+        (1078, 5000), //  50°C
     ];
 
     #[test]
     fn test_exact_table_values() {
-        assert_eq!(ntc_lut_to_deci_celsius(2048, &TEST_LUT), 250); // 25°C
-        assert_eq!(ntc_lut_to_deci_celsius(3133, &TEST_LUT), 0); // 0°C
-        assert_eq!(ntc_lut_to_deci_celsius(1078, &TEST_LUT), 500); // 50°C
+        assert_eq!(ntc_lut_to_centi_celsius(2048, &TEST_LUT), 2500); // 25°C
+        assert_eq!(ntc_lut_to_centi_celsius(3133, &TEST_LUT), 0); // 0°C
+        assert_eq!(ntc_lut_to_centi_celsius(1078, &TEST_LUT), 5000); // 50°C
     }
 
     #[test]
     fn test_interpolation() {
         // Test interpolation between 20°C (2274) and 25°C (2048)
         // Midpoint ADC = (2274 + 2048) / 2 = 2161
-        // Expected temp = (200 + 250) / 2 = 225 (22.5°C)
-        let temp = ntc_lut_to_deci_celsius(2161, &TEST_LUT);
+        // Expected temp = (2000 + 2500) / 2 = 2250 (22.50°C)
+        let temp = ntc_lut_to_centi_celsius(2161, &TEST_LUT);
         assert!(
-            (temp - 225).abs() <= 5,
-            "Expected ~225, got {}",
+            (temp - 2250).abs() <= 50,
+            "Expected ~2250, got {}",
             temp
         );
     }
@@ -91,17 +91,17 @@ mod tests {
     #[test]
     fn test_out_of_range_cold() {
         // ADC higher than table max = clamp to coldest
-        assert_eq!(ntc_lut_to_deci_celsius(4000, &TEST_LUT), 0); // 0°C (coldest in table)
+        assert_eq!(ntc_lut_to_centi_celsius(4000, &TEST_LUT), 0); // 0°C (coldest in table)
     }
 
     #[test]
     fn test_out_of_range_hot() {
         // ADC lower than table min = clamp to hottest
-        assert_eq!(ntc_lut_to_deci_celsius(200, &TEST_LUT), 500); // 50°C (hottest in table)
+        assert_eq!(ntc_lut_to_centi_celsius(200, &TEST_LUT), 5000); // 50°C (hottest in table)
     }
 
     #[test]
     fn test_empty_table() {
-        assert_eq!(ntc_lut_to_deci_celsius(2048, &[]), 250); // Default 25°C
+        assert_eq!(ntc_lut_to_centi_celsius(2048, &[]), 2500); // Default 25°C
     }
 }

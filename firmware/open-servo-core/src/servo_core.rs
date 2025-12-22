@@ -5,7 +5,7 @@
 //! system by feeding it synthetic inputs.
 
 use open_servo_control::ControlLoop;
-use open_servo_math::{CentiDeg, DeciC, MilliVolt};
+use open_servo_math::{CentiC, CentiDeg, Duty, MilliVolt};
 #[cfg(feature = "current-sense-bus")]
 use open_servo_math::MilliAmp;
 
@@ -23,14 +23,14 @@ pub struct SystemState {
     /// Current position feedback
     pub position: CentiDeg,
     /// Current PWM duty cycle
-    pub pwm_duty: i32,
+    pub pwm_duty: Duty,
     /// Current reading (requires `current-sense` feature)
     #[cfg(feature = "current-sense-bus")]
     pub current: Option<MilliAmp>,
     /// Bus voltage reading (if available)
     pub bus_voltage: Option<MilliVolt>,
     /// Temperature reading (if available)
-    pub temperature: Option<DeciC>,
+    pub temperature: Option<CentiC>,
 }
 
 /// Pure servo control core - no hardware dependencies.
@@ -95,6 +95,9 @@ impl<C: ControlLoop> ServoCore<C> {
 
         // Cache temperature for slow tick check
         self.safety.update_temperature(inputs.temperature);
+        
+        // Accumulate I² for thermal model (actual update happens in slow tick)
+        self.safety.accumulate_thermal_i_squared(inputs.current());
 
         // 1. Validate position sensor
         let position = match self.safety.validate_position(inputs.position) {
@@ -114,7 +117,7 @@ impl<C: ControlLoop> ServoCore<C> {
             self.raise_fault(fault);
             return FastOutputs::fault(fault);
         }
-
+        
         // 3. Clamp setpoint to position bounds and run control loop
         let clamped_setpoint = self.safety.clamp_setpoint(self.controller.get_setpoint());
         let pwm_command = self
@@ -122,8 +125,7 @@ impl<C: ControlLoop> ServoCore<C> {
             .compute(clamped_setpoint, position, inputs.current());
 
         // 4. Check for stall (PWM saturated but no movement)
-        let output_max = self.controller.output_max();
-        let pwm_saturated = pwm_command.abs() >= output_max;
+        let pwm_saturated = pwm_command.abs() >= Duty::MAX.abs();
         if let Some(fault) = self.safety.check_stall(position, pwm_saturated) {
             self.raise_fault(fault);
             return FastOutputs::fault(fault);
@@ -148,11 +150,20 @@ impl<C: ControlLoop> ServoCore<C> {
     /// Performs less critical checks that don't need 10kHz rate.
     /// Returns fault kind if a fault was raised.
     pub fn slow_tick(&mut self) -> Option<FaultKind> {
+        // Update thermal model with accumulated I² from fast ticks
+        self.safety.update_thermal_slow();
+        
         // Check MCU temperature using cached value from fast tick
         if let Some(fault) = self
             .safety
             .check_mcu_temperature(self.safety.last_temperature())
         {
+            self.raise_fault(fault);
+            return Some(fault);
+        }
+        
+        // Check motor temperature (thermal model)
+        if let Some(fault) = self.safety.check_motor_temperature() {
             self.raise_fault(fault);
             return Some(fault);
         }
@@ -239,8 +250,7 @@ mod tests {
     /// Minimal mock controller for testing ServoCore.
     struct MockController {
         setpoint: CentiDeg,
-        output: i32,
-        output_max: i32,
+        output: Duty,
         reset_called: bool,
     }
 
@@ -248,13 +258,12 @@ mod tests {
         fn new() -> Self {
             Self {
                 setpoint: CentiDeg::from_cdeg(9000),
-                output: 0,
-                output_max: 1799,
+                output: Duty::ZERO,
                 reset_called: false,
             }
         }
 
-        fn set_output(&mut self, output: i32) {
+        fn set_output(&mut self, output: Duty) {
             self.output = output;
         }
     }
@@ -265,13 +274,13 @@ mod tests {
             _setpoint: CentiDeg,
             _position: CentiDeg,
             _current: Option<MilliAmp>,
-        ) -> i32 {
+        ) -> Duty {
             self.output
         }
 
         fn reset(&mut self) {
             self.reset_called = true;
-            self.output = 0;
+            self.output = Duty::ZERO;
         }
 
         fn set_setpoint(&mut self, setpoint: CentiDeg) {
@@ -280,10 +289,6 @@ mod tests {
 
         fn get_setpoint(&self) -> CentiDeg {
             self.setpoint
-        }
-
-        fn output_max(&self) -> i32 {
-            self.output_max
         }
     }
 
@@ -309,14 +314,14 @@ mod tests {
 
         // fast_tick should return safe outputs
         let outputs = core.fast_tick(make_inputs(9000));
-        assert_eq!(outputs.pwm_command, 0);
+        assert_eq!(outputs.pwm_command, Duty::ZERO);
         assert!(!outputs.motor_enable);
     }
 
     #[test]
     fn test_fast_tick_skips_on_bad_position() {
         let mut core = ServoCore::new(MockController::new());
-        core.controller_mut().set_output(500); // Would produce output if position was valid
+        core.controller_mut().set_output(Duty::from_raw(500)); // Would produce output if position was valid
 
         // First tick initializes sensor health at position 9000
         core.fast_tick(make_inputs(9000));
@@ -324,7 +329,7 @@ mod tests {
         // Sudden large jump should be rejected (delta > max_delta threshold)
         // Skip keeps motor enabled but outputs PWM 0 (hold position, don't actuate on bad data)
         let outputs = core.fast_tick(make_inputs(0)); // Jump from 9000 to 0
-        assert_eq!(outputs.pwm_command, 0);
+        assert_eq!(outputs.pwm_command, Duty::ZERO);
         assert!(outputs.motor_enable); // Skip keeps motor enabled, just sends 0 PWM
     }
 
@@ -347,13 +352,13 @@ mod tests {
         let outputs = core.fast_tick(inputs);
         assert!(core.is_faulted());
         assert_eq!(core.fault_state().fault_kind(), Some(FaultKind::OverCurrent));
-        assert_eq!(outputs.pwm_command, 0);
+        assert_eq!(outputs.pwm_command, Duty::ZERO);
     }
 
     #[test]
     fn test_fast_tick_normal_operation() {
         let mut core = ServoCore::new(MockController::new());
-        core.controller_mut().set_output(500);
+        core.controller_mut().set_output(Duty::from_raw(500));
 
         // Initialize position
         core.fast_tick(make_inputs(9000));
@@ -361,7 +366,7 @@ mod tests {
         // Normal tick should produce output
         let outputs = core.fast_tick(make_inputs(9000));
         assert!(outputs.motor_enable);
-        assert_eq!(outputs.pwm_command, 500);
+        assert_eq!(outputs.pwm_command, Duty::from_raw(500));
     }
 
     // ========== slow_tick tests ==========
@@ -376,7 +381,7 @@ mod tests {
             #[cfg(feature = "current-sense-bus")]
             current: None,
             bus_voltage: None,
-            temperature: Some(DeciC::from_dc(900)), // 90°C, over 80°C limit
+            temperature: Some(CentiC::from_centi_c(9000)), // 90°C, over 80°C limit
         };
         core.fast_tick(inputs);
 
@@ -396,7 +401,7 @@ mod tests {
             #[cfg(feature = "current-sense-bus")]
             current: None,
             bus_voltage: None,
-            temperature: Some(DeciC::from_dc(250)), // 25°C, well under limit
+            temperature: Some(CentiC::from_centi_c(2500)), // 25°C, well under limit
         };
         core.fast_tick(inputs);
 
@@ -443,7 +448,7 @@ mod tests {
     #[test]
     fn test_system_state_updated_after_tick() {
         let mut core = ServoCore::new(MockController::new());
-        core.controller_mut().set_output(750);
+        core.controller_mut().set_output(Duty::from_raw(750));
         core.controller_mut().setpoint = CentiDeg::from_cdeg(9000);
 
         let inputs = FastInputs {
@@ -451,7 +456,7 @@ mod tests {
             #[cfg(feature = "current-sense-bus")]
             current: Some(MilliAmp::from_ma(200)),
             bus_voltage: Some(MilliVolt::from_mv(3300)),
-            temperature: Some(DeciC::from_dc(300)),
+            temperature: Some(CentiC::from_centi_c(3000)),
         };
 
         // Need two ticks - first initializes position sensor
@@ -460,10 +465,10 @@ mod tests {
 
         let state = core.system_state();
         assert_eq!(state.position.as_cdeg(), 8000);
-        assert_eq!(state.pwm_duty, 750);
+        assert_eq!(state.pwm_duty, Duty::from_raw(750));
         #[cfg(feature = "current-sense-bus")]
         assert_eq!(state.current, Some(MilliAmp::from_ma(200)));
         assert_eq!(state.bus_voltage, Some(MilliVolt::from_mv(3300)));
-        assert_eq!(state.temperature, Some(DeciC::from_dc(300)));
+        assert_eq!(state.temperature, Some(CentiC::from_centi_c(3000)));
     }
 }

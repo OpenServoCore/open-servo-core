@@ -1,13 +1,15 @@
 //! Brushed DC motor driver traits.
 
+use open_servo_math::Duty;
+
 /// Brushed DC motor driver control (H-bridge).
 ///
 /// Implementations control motor direction and speed via PWM.
 pub trait BdcMotorDriver {
-    /// Set PWM duty cycle (-max to +max).
+    /// Set PWM duty cycle (normalized).
     ///
-    /// Positive = forward, Negative = reverse.
-    fn set_pwm(&mut self, duty: i32);
+    /// Positive = forward, Negative = reverse, Zero = stopped.
+    fn set_pwm(&mut self, duty: Duty);
 
     /// Enable/disable motor driver.
     fn set_enable(&mut self, enabled: bool);

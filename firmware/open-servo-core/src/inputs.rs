@@ -1,6 +1,6 @@
 //! Input structures for the servo control loop.
 
-use open_servo_math::{CentiDeg, DeciC, MilliAmp, MilliVolt};
+use open_servo_math::{CentiC, CentiDeg, MilliAmp, MilliVolt};
 
 /// Inputs for the fast (10kHz) control tick.
 ///
@@ -22,7 +22,7 @@ pub struct FastInputs {
     pub bus_voltage: Option<MilliVolt>,
 
     /// Temperature reading. `None` = no over-temp protection.
-    pub temperature: Option<DeciC>,
+    pub temperature: Option<CentiC>,
 }
 
 impl FastInputs {
@@ -32,7 +32,7 @@ impl FastInputs {
         position: CentiDeg,
         current: Option<MilliAmp>,
         bus_voltage: Option<MilliVolt>,
-        temperature: Option<DeciC>,
+        temperature: Option<CentiC>,
     ) -> Self {
         Self {
             position,
@@ -47,7 +47,7 @@ impl FastInputs {
     pub fn new(
         position: CentiDeg,
         bus_voltage: Option<MilliVolt>,
-        temperature: Option<DeciC>,
+        temperature: Option<CentiC>,
     ) -> Self {
         Self {
             position,

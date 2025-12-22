@@ -23,7 +23,7 @@ use open_servo_hw::sensor::MotorVoltageSensor;
 #[cfg(not(feature = "voltage-sense-motor"))]
 use open_servo_hw::sensor::SafetyMotorVoltageSource;
 use open_servo_hw::UartPort;
-use open_servo_math::{CentiDeg, DeciC, MilliAmp, MilliVolt};
+use open_servo_math::{CentiC, CentiDeg, Duty, MilliAmp, MilliVolt};
 
 use crate::hw_impl::Stm32f301Hw;
 
@@ -64,7 +64,7 @@ impl Board {
 // ============================================================================
 
 impl BdcMotorDriver for Board {
-    fn set_pwm(&mut self, duty: i32) {
+    fn set_pwm(&mut self, duty: Duty) {
         self.hw.set_pwm(duty);
     }
 
@@ -79,7 +79,7 @@ impl BdcMotorDriver for Board {
 
     fn brake(&mut self) {
         // Short motor terminals - set PWM to 0 with driver enabled
-        self.hw.set_pwm(0);
+        self.hw.set_pwm(Duty::ZERO);
         self.hw.set_enable(true);
     }
 }
@@ -150,7 +150,7 @@ impl SafetyVoltageSource for Board {
 // MCU Temperature sensor (optional based on feature)
 #[cfg(feature = "temp-sense-mcu")]
 impl McuTemperatureSensor for Board {
-    fn read_mcu_temperature(&self) -> Option<DeciC> {
+    fn read_mcu_temperature(&self) -> Option<CentiC> {
         self.hw.mcu_temperature()
     }
 
@@ -163,7 +163,7 @@ impl McuTemperatureSensor for Board {
 // SafetyMcuTempSource to return None
 #[cfg(not(feature = "temp-sense-mcu"))]
 impl SafetyMcuTempSource for Board {
-    fn read_safety_mcu_temp(&self) -> Option<DeciC> {
+    fn read_safety_mcu_temp(&self) -> Option<CentiC> {
         None // No MCU temperature sensor on this board variant
     }
 }
@@ -193,7 +193,7 @@ impl SafetyMotorVoltageSource for Board {
 // Motor temperature sensing (optional based on feature)
 #[cfg(feature = "temp-sense-motor")]
 impl MotorTemperatureSensor for Board {
-    fn read_motor_temperature(&self) -> Option<DeciC> {
+    fn read_motor_temperature(&self) -> Option<CentiC> {
         Some(self.hw.motor_temperature())
     }
 
@@ -205,7 +205,7 @@ impl MotorTemperatureSensor for Board {
 // When temp-sense-motor feature is disabled, implement SafetyMotorTempSource directly
 #[cfg(not(feature = "temp-sense-motor"))]
 impl SafetyMotorTempSource for Board {
-    fn read_safety_motor_temp(&self) -> Option<DeciC> {
+    fn read_safety_motor_temp(&self) -> Option<CentiC> {
         None // No motor temperature sensor on this board variant
     }
 }

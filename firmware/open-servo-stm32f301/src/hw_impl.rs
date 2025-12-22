@@ -1,15 +1,19 @@
 #[cfg(feature = "current-sense-bus")]
 use open_servo_control::MilliAmp;
 #[cfg(any(feature = "temp-sense-mcu", feature = "temp-sense-motor"))]
-use open_servo_control::DeciC;
-use open_servo_control::{mul_div_i32, Adc12, CentiDeg, MilliVolt};
+use open_servo_control::CentiC;
+use open_servo_control::{mul_div_i32, Adc12, CentiDeg, Duty, MilliVolt};
 #[cfg(feature = "temp-sense-motor")]
-use open_servo_control::ntc_lut_to_deci_celsius;
+use open_servo_control::ntc_lut_to_centi_celsius;
 use open_servo_hw::UartPort;
 use stm32f3::stm32f301 as pac;
 
 use crate::adc_sample::AdcSample;
 use crate::init::tim::PWM_MAX_DUTY;
+
+// Motor polarity configuration
+// Set to true if motor is wired backwards (swaps PWM channels)
+const REVERSE_MOTOR_POLARITY: bool = false;
 
 // ADC calibration constants
 const VREFINT_CAL_ADDR: u32 = 0x1FFFF7BA;
@@ -51,7 +55,7 @@ impl Stm32f301Hw {
     }
 
     #[cfg(feature = "temp-sense-mcu")]
-    fn convert_temperature_dc(adc_value: u16, vdda_mv: u16) -> DeciC {
+    fn convert_temperature_cc(adc_value: u16, vdda_mv: u16) -> CentiC {
         let ts_cal1: u16 = unsafe { core::ptr::read(TS_CAL1_ADDR as *const u16) };
         let ts_cal2: u16 = unsafe { core::ptr::read(TS_CAL2_ADDR as *const u16) };
 
@@ -62,7 +66,7 @@ impl Stm32f301Hw {
         // Ensure calibration values are valid
         if ts_cal2 <= ts_cal1 || vdda_mv == 0 {
             // Invalid calibration data or vdda, return room temperature
-            return DeciC::from_celsius(25);
+            return CentiC::from_celsius(25);
         }
 
         let adc_normalized = mul_div_i32(adc_value as i32, 3300, vdda_mv as i32);
@@ -73,7 +77,7 @@ impl Stm32f301Hw {
 
         // Clamp to reasonable range
         let temp_c = temp_c.clamp(-40, 125);
-        DeciC::from_celsius(temp_c as i16)
+        CentiC::from_celsius(temp_c as i16)
     }
 }
 
@@ -122,13 +126,13 @@ impl Stm32f301Hw {
         Some(sample.mcu_temp_raw)
     }
 
-    /// Read MCU internal temperature in deci-Celsius.
+    /// Read MCU internal temperature in centi-Celsius.
     #[cfg(feature = "temp-sense-mcu")]
-    pub fn mcu_temperature(&self) -> Option<DeciC> {
+    pub fn mcu_temperature(&self) -> Option<CentiC> {
         let sample = Self::get_adc_sample();
         let vdda_mv = Self::convert_vdda_mv(sample.vrefint_raw);
-        let temp_dc = Self::convert_temperature_dc(sample.mcu_temp_raw, vdda_mv);
-        Some(temp_dc)
+        let temp_cc = Self::convert_temperature_cc(sample.mcu_temp_raw, vdda_mv);
+        Some(temp_cc)
     }
 
     /// Read raw motor terminal voltage ADC values.
@@ -158,45 +162,50 @@ impl Stm32f301Hw {
         sample.motor_temp_raw
     }
 
-    /// Read motor temperature in deci-Celsius.
+    /// Read motor temperature in centi-Celsius.
     ///
     /// Uses lookup table for 10K B3950 NTC with 10K fixed resistor, low-side config:
     /// VCC → 10K fixed → ADC (PA4) → NTC → GND
     #[cfg(feature = "temp-sense-motor")]
-    pub fn motor_temperature(&self) -> DeciC {
+    pub fn motor_temperature(&self) -> CentiC {
         /// Lookup table: 10K B3950 NTC, 10K fixed resistor, low-side configuration.
         /// Sorted by descending ADC (ascending temperature).
+        /// Values are in centi-degrees (0.01°C)
         const MOTOR_NTC_LUT: [(u16, i16); 13] = [
-            (3469, -100), // -10°C
-            (3133, 0),    //   0°C
-            (2725, 100),  //  10°C
-            (2274, 200),  //  20°C
-            (2048, 250),  //  25°C
-            (1826, 300),  //  30°C
-            (1421, 400),  //  40°C
-            (1078, 500),  //  50°C
-            (810, 600),   //  60°C
-            (609, 700),   //  70°C
-            (459, 800),   //  80°C
-            (351, 900),   //  90°C
-            (271, 1000),  // 100°C
+            (3469, -1000), // -10°C
+            (3133, 0),     //   0°C
+            (2725, 1000),  //  10°C
+            (2274, 2000),  //  20°C
+            (2048, 2500),  //  25°C
+            (1826, 3000),  //  30°C
+            (1421, 4000),  //  40°C
+            (1078, 5000),  //  50°C
+            (810, 6000),   //  60°C
+            (609, 7000),   //  70°C
+            (459, 8000),   //  80°C
+            (351, 9000),   //  90°C
+            (271, 10000),  // 100°C
         ];
 
         let raw = self.motor_temperature_raw();
-        let dc = ntc_lut_to_deci_celsius(raw, &MOTOR_NTC_LUT);
-        DeciC::from_dc(dc)
+        let cc = ntc_lut_to_centi_celsius(raw, &MOTOR_NTC_LUT);
+        CentiC::from_centi_c(cc)
     }
 
-    pub fn set_pwm(&mut self, duty: i32) {
-        let max_duty = PWM_MAX_DUTY as i32;
-        let duty = duty.clamp(-max_duty, max_duty);
+    pub fn set_pwm(&mut self, duty: Duty) {
+        // Scale normalized duty to hardware PWM range
+        let scaled = duty.scale_to(PWM_MAX_DUTY);
+        let scaled = scaled.clamp(-(PWM_MAX_DUTY as i32), PWM_MAX_DUTY as i32);
 
-        if duty > 0 {
-            self.tim1().ccr1().write(|w| w.ccr().bits(duty as u16));
+        // Apply polarity reversal if configured
+        let scaled = if REVERSE_MOTOR_POLARITY { -scaled } else { scaled };
+
+        if scaled > 0 {
+            self.tim1().ccr1().write(|w| w.ccr().bits(scaled as u16));
             self.tim1().ccr4().write(|w| w.ccr().bits(0));
         } else {
             self.tim1().ccr1().write(|w| w.ccr().bits(0));
-            self.tim1().ccr4().write(|w| w.ccr().bits((-duty) as u16));
+            self.tim1().ccr4().write(|w| w.ccr().bits((-scaled) as u16));
         }
     }
 

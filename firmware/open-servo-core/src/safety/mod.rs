@@ -10,13 +10,15 @@
 //! - 100Hz (slow tick): Temperature check
 
 mod sensor_health;
+mod thermal_fault;
 mod thresholds;
 
 pub use sensor_health::*;
+pub use thermal_fault::*;
 pub use thresholds::*;
 
 use crate::fault::FaultKind;
-use open_servo_math::{CentiDeg, DeciC, MilliAmp};
+use open_servo_math::{CentiC, CentiDeg, MilliAmp, ThermalModel};
 
 /// Consolidated safety monitoring for servo control.
 ///
@@ -36,7 +38,9 @@ use open_servo_math::{CentiDeg, DeciC, MilliAmp};
 pub struct SafetyManager {
     thresholds: SafetyThresholds,
     sensor_health: SensorHealth,
-    last_temperature: Option<DeciC>,
+    thermal_model: ThermalModel,
+    thermal_fault: ThermalFaultDetector,
+    last_temperature: Option<CentiC>,
     /// Last position for stall detection
     stall_last_position: CentiDeg,
     /// Consecutive ticks with PWM saturated and no movement
@@ -57,6 +61,8 @@ impl SafetyManager {
         Self {
             thresholds: SafetyThresholds::default(),
             sensor_health: SensorHealth::new(),
+            thermal_model: ThermalModel::default(),
+            thermal_fault: ThermalFaultDetector::default(),
             last_temperature: None,
             stall_last_position: CentiDeg::from_cdeg(0),
             stall_count: 0,
@@ -109,7 +115,7 @@ impl SafetyManager {
     /// - Temperature is within limits
     ///
     /// Returns `Some(FaultKind::McuOverTemp)` if temperature exceeds limit.
-    pub fn check_mcu_temperature(&self, temp: Option<DeciC>) -> Option<FaultKind> {
+    pub fn check_mcu_temperature(&self, temp: Option<CentiC>) -> Option<FaultKind> {
         temp.and_then(|t| {
             if t > self.thresholds.mcu_temp_limit {
                 Some(FaultKind::McuOverTemp)
@@ -121,13 +127,13 @@ impl SafetyManager {
 
     /// Update cached temperature (called during fast tick).
     #[inline]
-    pub fn update_temperature(&mut self, temp: Option<DeciC>) {
+    pub fn update_temperature(&mut self, temp: Option<CentiC>) {
         self.last_temperature = temp;
     }
 
     /// Get cached temperature for slow tick check.
     #[inline]
-    pub fn last_temperature(&self) -> Option<DeciC> {
+    pub fn last_temperature(&self) -> Option<CentiC> {
         self.last_temperature
     }
 
@@ -182,6 +188,46 @@ impl SafetyManager {
         None
     }
 
+    /// Accumulate I² for thermal model (fast tick - 10kHz).
+    ///
+    /// Call this every fast tick with current measurement.
+    /// The thermal model internally accumulates I² for averaging.
+    #[inline]
+    pub fn accumulate_thermal_i_squared(&mut self, current: Option<MilliAmp>) {
+        self.thermal_model.update_fast(current.map(|c| c.as_ma()));
+    }
+    
+    /// Update thermal model and check for faults (slow tick - 100Hz).
+    ///
+    /// Call this from slow tick to update the thermal physics model
+    /// and check for temperature faults.
+    pub fn update_thermal_slow(&mut self) {
+        // Use MCU temp as ambient estimate
+        let ambient_cdeg = self.last_temperature
+            .map(|t| t.as_centi_c())
+            .unwrap_or(2500);  // Default to 25°C if no temp sensor
+        
+        // Update thermal model - it handles I² averaging internally
+        self.thermal_model.update_slow(ambient_cdeg);
+    }
+    
+    /// Check if motor has exceeded safe temperature.
+    #[inline]
+    pub fn check_motor_temperature(&mut self) -> Option<FaultKind> {
+        let temp = self.thermal_model.temperature_cdeg();
+        self.thermal_fault.check_fault(temp)
+    }
+    
+    /// Get motor temperature in degrees (for debug display).
+    pub fn motor_temp_deg(&self) -> i16 {
+        self.thermal_model.temperature_deg()
+    }
+    
+    /// Get motor temperature rise in degrees (for debug display).
+    pub fn motor_temp_rise_deg(&self) -> i16 {
+        self.thermal_model.temp_rise_deg()
+    }
+
     /// Clamp setpoint to position bounds.
     #[inline]
     pub fn clamp_setpoint(&self, setpoint: CentiDeg) -> CentiDeg {
@@ -189,11 +235,23 @@ impl SafetyManager {
     }
 
     /// Reset safety state after fault clear.
+    /// 
+    /// NOTE: This only resets fault detection state, NOT physical state.
+    /// Temperature and I² accumulation continue to track physical reality.
     pub fn reset(&mut self) {
         self.sensor_health.reset();
-        self.last_temperature = None;
+        
+        // Try to reset thermal fault (only succeeds if cool enough)
+        let temp = self.thermal_model.temperature_cdeg();
+        self.thermal_fault.try_reset(temp);
+        
+        // Reset fault detection counters
         self.stall_count = 0;
         self.position_error_count = 0;
+        
+        // Do NOT reset:
+        // - thermal_model (physical temperature state)
+        // - last_temperature (just cached sensor data)
     }
 
     // ============= Threshold accessors =============
@@ -277,17 +335,17 @@ mod tests {
     #[test]
     fn test_check_mcu_temperature_under_limit() {
         let safety = SafetyManager::new();
-        // Default limit is 800 deciC (80°C)
-        assert_eq!(safety.check_mcu_temperature(Some(DeciC::from_dc(500))), None);
-        assert_eq!(safety.check_mcu_temperature(Some(DeciC::from_dc(799))), None);
+        // Default limit is 8000 centiC (80°C)
+        assert_eq!(safety.check_mcu_temperature(Some(CentiC::from_centi_c(5000))), None);
+        assert_eq!(safety.check_mcu_temperature(Some(CentiC::from_centi_c(7999))), None);
     }
 
     #[test]
     fn test_check_mcu_temperature_over_limit() {
         let safety = SafetyManager::new();
-        // Default limit is 800 deciC (80°C)
+        // Default limit is 8000 centiC (80°C)
         assert_eq!(
-            safety.check_mcu_temperature(Some(DeciC::from_dc(801))),
+            safety.check_mcu_temperature(Some(CentiC::from_centi_c(8001))),
             Some(FaultKind::McuOverTemp)
         );
     }

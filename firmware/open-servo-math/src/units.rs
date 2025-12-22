@@ -26,10 +26,12 @@ pub struct CentiDeg(pub i16);
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
 pub struct DegPerSec10(pub i16);
 
-/// Temperature in 0.1°C (1 LSB = 0.1°C)
+/// Temperature in 0.01°C (1 LSB = 0.01°C, centi-degrees Celsius)
+/// Range: -327.68°C to +327.67°C
+/// Used for all temperature measurements and thermal calculations
 #[derive(Copy, Clone, Debug, Default, PartialEq, Eq, PartialOrd, Ord)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
-pub struct DeciC(pub i16);
+pub struct CentiC(pub i16);
 
 /// Raw 12-bit ADC value
 #[derive(Copy, Clone, Debug, Default, PartialEq, Eq, PartialOrd, Ord)]
@@ -40,6 +42,12 @@ pub struct Adc12(pub u16);
 #[derive(Copy, Clone, Debug, Default, PartialEq, Eq, PartialOrd, Ord)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
 pub struct EncoderCount(pub u16);
+
+/// PWM duty cycle in normalized units (-32768 to 32767)
+/// -32768 = full reverse, 0 = stopped, 32767 = full forward
+#[derive(Copy, Clone, Debug, Default, PartialEq, Eq, PartialOrd, Ord)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
+pub struct Duty(pub i16);
 
 // Macro to implement basic arithmetic operations for unit types
 macro_rules! impl_unit_int_ops {
@@ -90,7 +98,8 @@ impl_unit_int_ops!(MilliVolt);
 impl_unit_int_ops!(MilliAmp);
 impl_unit_int_ops!(CentiDeg);
 impl_unit_int_ops!(DegPerSec10);
-impl_unit_int_ops!(DeciC);
+impl_unit_int_ops!(CentiC);
+impl_unit_int_ops!(Duty);
 
 // Helper function for integer multiplication and division with rounding
 #[inline]
@@ -233,54 +242,71 @@ impl DegPerSec10 {
     }
 }
 
-impl DeciC {
+impl CentiC {
+    /// Create from raw centi-degrees value
     #[inline]
-    pub const fn from_dc(dc: i16) -> Self {
-        Self(dc)
+    pub const fn from_centi_c(cc: i16) -> Self {
+        Self(cc)
     }
 
+    /// Get raw centi-degrees value
     #[inline]
-    pub const fn as_dc(self) -> i16 {
+    pub const fn as_centi_c(self) -> i16 {
         self.0
     }
 
+    /// Create from whole degrees Celsius
     #[inline]
     pub const fn from_celsius(c: i16) -> Self {
-        Self(c * 10)
+        Self(c * 100)
     }
 
+    /// Convert to whole degrees Celsius (truncates)
     #[inline]
     pub const fn as_celsius(self) -> i16 {
-        self.0 / 10
+        self.0 / 100
     }
 
+    /// Create from deci-degrees (0.1°C)
+    #[inline]
+    pub const fn from_deci_c(dc: i16) -> Self {
+        Self(dc * 10)
+    }
+
+    /// Convert to deci-degrees (0.1°C, truncates)
+    #[inline]
+    pub const fn as_deci_c(self) -> i16 {
+        self.0 / 10
+    }
+    
+    /// Create from Kelvin temperature
     #[inline]
     pub fn from_kelvin(k: u16) -> Self {
-        // deciC = (K - 273.15) * 10
-        let dc = (k as i32 - 273) * 10 - 15;
-        DeciC(dc.clamp(i16::MIN as i32, i16::MAX as i32) as i16)
+        // centiC = (K - 273.15) * 100
+        let cc = ((k as i32 - 273) * 100) - 15;
+        CentiC(cc.clamp(i16::MIN as i32, i16::MAX as i32) as i16)
     }
 
     #[inline]
     pub fn to_kelvin(self) -> u16 {
-        // K = deciC / 10 + 273.15
-        let k = (self.0 as i32 + 2732) / 10;
+        // K = centiC / 100 + 273.15
+        let k = (self.0 as i32 + 27315) / 100;
         k.clamp(0, u16::MAX as i32) as u16
     }
 
     #[inline]
     pub fn from_fahrenheit(f: i16) -> Self {
         // C = (F - 32) * 5/9
-        // deciC = (F - 32) * 50 / 9
-        let dc = mul_div_i32(f as i32 - 32, 50, 9);
-        DeciC(dc.clamp(i16::MIN as i32, i16::MAX as i32) as i16)
+        // centiC = (F - 32) * 500 / 9
+        let cc = mul_div_i32(f as i32 - 32, 500, 9);
+        CentiC(cc.clamp(i16::MIN as i32, i16::MAX as i32) as i16)
     }
 
     #[inline]
     pub fn as_fahrenheit(self) -> i16 {
         // F = C * 9/5 + 32
-        // F = deciC * 9 / 50 + 32
-        let f = mul_div_i32(self.0 as i32, 9, 50) + 32;
+        // F = centiC * 9 / 500 + 32
+        let f = mul_div_i32(self.0 as i32, 9, 500) + 32;
         f.clamp(i16::MIN as i32, i16::MAX as i32) as i16
     }
 }
@@ -306,6 +332,45 @@ impl EncoderCount {
     #[inline]
     pub const fn as_raw(self) -> u16 {
         self.0
+    }
+}
+
+impl Duty {
+    /// Maximum duty cycle (full forward)
+    pub const MAX: Self = Self(i16::MAX);
+    /// Minimum duty cycle (full reverse)
+    pub const MIN: Self = Self(i16::MIN);
+    /// Zero duty cycle (stopped)
+    pub const ZERO: Self = Self(0);
+    
+    #[inline]
+    pub const fn from_raw(raw: i16) -> Self {
+        Self(raw)
+    }
+    
+    #[inline]
+    pub const fn as_raw(self) -> i16 {
+        self.0
+    }
+    
+    /// Scale to hardware PWM value given max value
+    #[inline]
+    pub fn scale_to(self, max: u16) -> i32 {
+        // Scale from -32768..32767 to -max..max
+        ((self.0 as i32) * (max as i32)) / 32768
+    }
+    
+    /// Create from hardware PWM value given max value
+    #[inline]
+    pub fn from_hw(hw_value: i32, max: u16) -> Self {
+        let normalized = (hw_value * 32768) / (max as i32);
+        Self(normalized.clamp(i16::MIN as i32, i16::MAX as i32) as i16)
+    }
+    
+    /// Get absolute value
+    #[inline]
+    pub fn abs(self) -> Self {
+        Self(self.0.saturating_abs())
     }
 }
 
@@ -379,38 +444,38 @@ mod tests {
         assert!((mv - 1650).abs() < 2);
     }
 
-    // ========== DeciC tests ==========
+    // ========== CentiC tests ==========
 
     #[test]
-    fn test_decic_celsius_roundtrip() {
-        assert_eq!(DeciC::from_celsius(25).as_celsius(), 25);
-        assert_eq!(DeciC::from_celsius(-10).as_celsius(), -10);
-        assert_eq!(DeciC::from_celsius(0).as_celsius(), 0);
+    fn test_centi_c_celsius_roundtrip() {
+        assert_eq!(CentiC::from_celsius(25).as_celsius(), 25);
+        assert_eq!(CentiC::from_celsius(-10).as_celsius(), -10);
+        assert_eq!(CentiC::from_celsius(0).as_celsius(), 0);
     }
 
     #[test]
-    fn test_decic_kelvin_conversion() {
+    fn test_centi_c_kelvin_conversion() {
         // 0°C = 273K
-        let dc = DeciC::from_celsius(0);
-        assert!((dc.to_kelvin() as i32 - 273).abs() <= 1);
+        let cc = CentiC::from_celsius(0);
+        assert!((cc.to_kelvin() as i32 - 273).abs() <= 1);
 
         // 273K -> ~0°C
-        let dc = DeciC::from_kelvin(273);
-        assert!(dc.as_celsius().abs() <= 1);
+        let cc = CentiC::from_kelvin(273);
+        assert!(cc.as_celsius().abs() <= 1);
     }
 
     #[test]
-    fn test_decic_fahrenheit_conversion() {
+    fn test_centi_c_fahrenheit_conversion() {
         // 32°F = 0°C
-        let dc = DeciC::from_fahrenheit(32);
-        assert!(dc.as_celsius().abs() <= 1);
+        let cc = CentiC::from_fahrenheit(32);
+        assert!(cc.as_celsius().abs() <= 1);
 
         // 212°F = 100°C
-        let dc = DeciC::from_fahrenheit(212);
-        assert!((dc.as_celsius() - 100).abs() <= 1);
+        let cc = CentiC::from_fahrenheit(212);
+        assert!((cc.as_celsius() - 100).abs() <= 1);
 
         // 0°C -> 32°F
-        let f = DeciC::from_celsius(0).as_fahrenheit();
+        let f = CentiC::from_celsius(0).as_fahrenheit();
         assert!((f - 32).abs() <= 1);
     }
 

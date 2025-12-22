@@ -1,5 +1,5 @@
 use crate::traits::ControlLoop;
-use open_servo_math::{CentiDeg, DerivativeMode, Gain, MilliAmp, MilliVolt, PidControllerI16};
+use open_servo_math::{CentiDeg, DerivativeMode, Duty, FilterI32, Gain, MilliAmp, MilliVolt, PidControllerI16};
 
 /// PID configuration with human-friendly gains.
 ///
@@ -14,10 +14,11 @@ pub struct PidConfig {
     pub ki: Gain,
     /// Derivative gain
     pub kd: Gain,
-    /// Maximum output magnitude (e.g. PWM duty cycle limit)
-    pub output_max: i32,
     /// Derivative calculation mode
     pub derivative_mode: DerivativeMode,
+    /// Position filter strength (0 = no filter, higher = more filtering)
+    /// Alpha = 1 / 2^position_filter_shift
+    pub position_filter_shift: u8,
 }
 
 impl PidConfig {
@@ -25,30 +26,28 @@ impl PidConfig {
     // Recommended starting gains for BDC servo position control
     // =======================================================================
 
-    /// Conservative Kp for initial bring-up.
-    /// At 1° error: ~15 PWM counts. At 90° error: ~1400 PWM counts.
-    pub const KP_DEFAULT: Gain = Gain::from_raw(4000); // 40.0
+    /// Default Kp tuned for responsive control.
+    /// At 1° error: ~0.5 PWM counts. At 90° error: ~450 PWM counts.
+    pub const KP_DEFAULT: Gain = Gain::from_raw(500); // 5.0
 
-    /// Small Ki for steady-state error correction.
-    /// Use sparingly - accumulates fast at 10kHz!
-    pub const KI_DEFAULT: Gain = Gain::from_raw(10); // 0.10
+    /// Ki disabled to prevent integral windup at 10kHz control rate.
+    /// Enable only if steady-state error correction is needed.
+    pub const KI_DEFAULT: Gain = Gain::from_raw(0); // 0.0
 
-    /// Moderate Kd for overshoot damping.
-    /// Roughly Kp/4. Use with DerivativeMode::OnMeasurement.
-    pub const KD_DEFAULT: Gain = Gain::from_raw(1000); // 10.0
+    /// Kd for overshoot damping.
+    /// Set to match Kp for balanced response.
+    pub const KD_DEFAULT: Gain = Gain::from_raw(500); // 5.0
 }
 
-impl Default for PidConfig {
-    fn default() -> Self {
-        // PWM_MAX_DUTY is ~1799 for 20kHz PWM at 72MHz
-        const PWM_MAX: i32 = 1799;
-
+impl PidConfig {
+    /// Create a new PidConfig with default settings.
+    pub fn new() -> Self {
         Self {
             kp: Self::KP_DEFAULT,
             ki: Self::KI_DEFAULT,
             kd: Self::KD_DEFAULT,
-            output_max: PWM_MAX,
             derivative_mode: DerivativeMode::OnMeasurement,
+            position_filter_shift: 3,  // Default moderate filtering (alpha = 0.125)
         }
     }
 }
@@ -59,6 +58,7 @@ pub struct PidController {
     setpoint: CentiDeg,
     last_position: CentiDeg,
     last_current: MilliAmp,
+    position_filter: FilterI32,
 }
 
 impl PidController {
@@ -72,8 +72,8 @@ impl PidController {
             ki,
             kd,
             config.derivative_mode,
-            -config.output_max,
-            config.output_max,
+            i16::MIN as i32,
+            i16::MAX as i32,
         );
 
         Self {
@@ -82,6 +82,7 @@ impl PidController {
             setpoint: CentiDeg::from_deg(90), // 90 degrees
             last_position: CentiDeg::from_cdeg(0),
             last_current: MilliAmp::from_ma(0),
+            position_filter: FilterI32::new(config.position_filter_shift),
         }
     }
 
@@ -97,9 +98,14 @@ impl PidController {
             ki,
             kd,
             self.config.derivative_mode,
-            -self.config.output_max,
-            self.config.output_max,
+            i16::MIN as i32,
+            i16::MAX as i32,
         );
+        
+        // Update filter if shift changed
+        if self.position_filter.alpha_shift() != self.config.position_filter_shift {
+            self.position_filter = FilterI32::new(self.config.position_filter_shift);
+        }
     }
 
     /// Get read-only reference to config.
@@ -123,14 +129,15 @@ impl PidController {
         self.last_current
     }
 
-    pub fn step(&mut self, current: MilliAmp, position: CentiDeg, _bus_voltage: MilliVolt) -> i32 {
+    pub fn step(&mut self, current: MilliAmp, position: CentiDeg, _bus_voltage: MilliVolt) -> Duty {
         self.last_position = position;
         self.last_current = current;
 
         let sp = self.setpoint.as_cdeg() as i32;
         let pv = position.as_cdeg() as i32;
 
-        self.pid.step(sp, pv)
+        let output = self.pid.step(sp, pv);
+        Duty::from_raw(output.clamp(i16::MIN as i32, i16::MAX as i32) as i16)
     }
 
     fn reset_pid(&mut self) {
@@ -141,23 +148,30 @@ impl PidController {
 impl ControlLoop for PidController {
     fn compute(
         &mut self,
-        _setpoint: CentiDeg,
+        setpoint: CentiDeg,
         position: CentiDeg,
         current: Option<MilliAmp>,
-    ) -> i32 {
-        self.last_position = position;
+    ) -> Duty {
+        // Filter the position measurement (convert to i32 first)
+        let position_i32 = position.as_cdeg() as i32;
+        let filtered_i32 = self.position_filter.update(position_i32);
+        
+        // Store as CentiDeg for compatibility (clamp to i16 range)
+        self.last_position = CentiDeg::from_cdeg(filtered_i32.clamp(i16::MIN as i32, i16::MAX as i32) as i16);
         if let Some(c) = current {
             self.last_current = c;
         }
 
-        let sp = self.setpoint.as_cdeg() as i32;
-        let pv = position.as_cdeg() as i32;
+        let sp = setpoint.as_cdeg() as i32;
+        let pv = filtered_i32;
 
-        self.pid.step(sp, pv)
+        let output = self.pid.step(sp, pv);
+        Duty::from_raw(output.clamp(i16::MIN as i32, i16::MAX as i32) as i16)
     }
 
     fn reset(&mut self) {
         self.reset_pid();
+        self.position_filter.reset();
     }
 
     fn set_setpoint(&mut self, setpoint: CentiDeg) {
@@ -166,10 +180,6 @@ impl ControlLoop for PidController {
 
     fn get_setpoint(&self) -> CentiDeg {
         self.setpoint
-    }
-
-    fn output_max(&self) -> i32 {
-        self.config.output_max
     }
 
     fn pid_config(&self) -> Option<&PidConfig> {
@@ -190,40 +200,31 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_default_config_values() {
-        let config = PidConfig::default();
+    fn test_new_config_values() {
+        let config = PidConfig::new();
         assert_eq!(config.kp, PidConfig::KP_DEFAULT);
         assert_eq!(config.ki, PidConfig::KI_DEFAULT);
         assert_eq!(config.kd, PidConfig::KD_DEFAULT);
-        assert_eq!(config.output_max, 1799);
         assert_eq!(config.derivative_mode, DerivativeMode::OnMeasurement);
     }
 
     #[test]
     fn test_new_initializes_correctly() {
-        let ctrl = PidController::new(PidConfig::default());
+        let ctrl = PidController::new(PidConfig::new());
         assert_eq!(ctrl.get_setpoint().as_cdeg(), 9000); // 90°
-        assert_eq!(ctrl.output_max(), 1799);
     }
 
     #[test]
     fn test_setpoint_get_set() {
-        let mut ctrl = PidController::new(PidConfig::default());
+        let mut ctrl = PidController::new(PidConfig::new());
         ctrl.set_setpoint(CentiDeg::from_cdeg(4500)); // 45°
         assert_eq!(ctrl.get_setpoint().as_cdeg(), 4500);
     }
 
-    #[test]
-    fn test_output_max_returns_config_value() {
-        let mut config = PidConfig::default();
-        config.output_max = 1000;
-        let ctrl = PidController::new(config);
-        assert_eq!(ctrl.output_max(), 1000);
-    }
 
     #[test]
     fn test_with_pid_config_mut_calls_apply() {
-        let mut ctrl = PidController::new(PidConfig::default());
+        let mut ctrl = PidController::new(PidConfig::new());
         let original_kp = ctrl.config().kp;
 
         ctrl.with_pid_config_mut(|cfg| {
@@ -237,7 +238,7 @@ mod tests {
 
     #[test]
     fn test_reset_clears_pid_state() {
-        let mut ctrl = PidController::new(PidConfig::default());
+        let mut ctrl = PidController::new(PidConfig::new());
 
         // Run a few steps to build up integral
         ctrl.set_setpoint(CentiDeg::from_cdeg(9000));
@@ -261,14 +262,15 @@ mod tests {
 
     #[test]
     fn test_compute_produces_output() {
-        let mut ctrl = PidController::new(PidConfig::default());
+        let mut ctrl = PidController::new(PidConfig::new());
         ctrl.set_setpoint(CentiDeg::from_cdeg(9000)); // 90°
 
         // With position at 0° and setpoint at 90°, we should get positive output
         let output = ctrl.compute(CentiDeg::from_cdeg(9000), CentiDeg::from_cdeg(0), None);
-        assert!(output > 0);
+        assert!(output.as_raw() > 0);
 
-        // Output should be clamped to output_max
-        assert!(output <= ctrl.output_max());
+        // Output should be clamped to i16 range
+        assert!(output.as_raw() <= i16::MAX);
+        assert!(output.as_raw() >= i16::MIN);
     }
 }

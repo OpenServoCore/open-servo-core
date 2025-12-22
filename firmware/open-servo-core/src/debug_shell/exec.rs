@@ -10,7 +10,7 @@ use crate::safety::SafetyThresholds;
 use crate::App;
 use open_servo_control::ControlLoop;
 use open_servo_hw::{BdcMotorDriver, DebugIo};
-use open_servo_math::{CentiDeg, DeciC, DerivativeMode, Gain};
+use open_servo_math::{CentiC, CentiDeg, DerivativeMode, Gain};
 #[cfg(feature = "current-sense-bus")]
 use open_servo_math::MilliAmp;
 
@@ -103,7 +103,7 @@ impl<D: DebugIo> DebugShell<D> {
             "sp={} pos={} pwm={}",
             s.setpoint.as_cdeg(),
             s.position.as_cdeg(),
-            s.pwm_duty,
+            s.pwm_duty.as_raw(),
         );
         self.println(&buf);
 
@@ -129,9 +129,16 @@ impl<D: DebugIo> DebugShell<D> {
         // Temperature (optional)
         if let Some(temp) = s.temperature {
             buf.clear();
-            let _ = uwrite!(buf, "T={}dC", temp.as_dc());
+            let _ = uwrite!(buf, "T={}cC", temp.as_centi_c());
             self.println(&buf);
         }
+        
+        // Motor temperature (thermal model)
+        buf.clear();
+        let motor_temp = app.get_motor_temp_deg();
+        let motor_rise = app.get_motor_temp_rise_deg();
+        let _ = uwrite!(buf, "Motor: {}°C (rise: {}°C)", motor_temp, motor_rise);
+        self.println(&buf);
 
         let health = app.get_sensor_health();
         if health.bad_count() > 0 {
@@ -179,16 +186,16 @@ impl<D: DebugIo> DebugShell<D> {
         #[cfg(feature = "current-sense-bus")]
         let _ = uwrite!(
             buf,
-            "current={}mA mcu_temp={}dC delta={}cdeg",
+            "current={}mA mcu_temp={}cC delta={}cdeg",
             t.current_limit.as_ma(),
-            t.mcu_temp_limit.as_dc(),
+            t.mcu_temp_limit.as_centi_c(),
             t.position_max_delta.as_cdeg(),
         );
         #[cfg(not(feature = "current-sense-bus"))]
         let _ = uwrite!(
             buf,
-            "mcu_temp={}dC delta={}cdeg",
-            t.mcu_temp_limit.as_dc(),
+            "mcu_temp={}cC delta={}cdeg",
+            t.mcu_temp_limit.as_centi_c(),
             t.position_max_delta.as_cdeg(),
         );
         self.println(&buf);
@@ -234,15 +241,15 @@ impl<D: DebugIo> DebugShell<D> {
     }
 
     fn cmd_limit_temp<C: ControlLoop>(&mut self, app: &mut App<C>, val: Option<i16>) {
-        if let Some(dc) = val {
-            app.set_mcu_temp_limit(DeciC::from_dc(dc));
+        if let Some(cc) = val {
+            app.set_mcu_temp_limit(CentiC::from_centi_c(cc));
             let mut buf: String<48> = String::new();
-            let _ = uwrite!(buf, "ok, mcu_temp={}dC", dc);
+            let _ = uwrite!(buf, "ok, mcu_temp={}cC", cc);
             self.println(&buf);
         } else {
             let t = app.get_thresholds();
             let mut buf: String<48> = String::new();
-            let _ = uwrite!(buf, "mcu_temp={}dC", t.mcu_temp_limit.as_dc());
+            let _ = uwrite!(buf, "mcu_temp={}cC", t.mcu_temp_limit.as_centi_c());
             self.println(&buf);
         }
     }
@@ -328,8 +335,8 @@ impl<D: DebugIo> DebugShell<D> {
             };
             let _ = uwrite!(
                 buf,
-                "pos: kp={} ki={} kd={} mode={} out=[-{},{}]",
-                cfg.kp, cfg.ki, cfg.kd, mode_str, cfg.output_max, cfg.output_max
+                "pos: kp={} ki={} kd={} mode={} out=[-32768,32767]",
+                cfg.kp, cfg.ki, cfg.kd, mode_str
             );
             self.println(&buf);
         } else {

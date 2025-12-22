@@ -4,7 +4,7 @@
 
 #[cfg(feature = "pid")]
 use crate::PidConfig;
-use open_servo_math::{CentiDeg, MilliAmp};
+use open_servo_math::{CentiDeg, Duty, MilliAmp};
 
 /// Control loop trait for position servo algorithms.
 ///
@@ -14,7 +14,7 @@ pub trait ControlLoop {
     ///
     /// Returns PWM duty cycle command.
     fn compute(&mut self, setpoint: CentiDeg, position: CentiDeg, current: Option<MilliAmp>)
-        -> i32;
+        -> Duty;
 
     /// Reset controller state (e.g., clear integral term).
     fn reset(&mut self);
@@ -24,12 +24,6 @@ pub trait ControlLoop {
 
     /// Get current setpoint (in centidegrees for position control).
     fn get_setpoint(&self) -> CentiDeg;
-
-    /// Get maximum output magnitude for saturation detection.
-    /// Default: 1799 (typical 20kHz PWM at 72MHz)
-    fn output_max(&self) -> i32 {
-        1799
-    }
 
     // =========================================================================
     // Optional PID config interface (for controllers that support it)

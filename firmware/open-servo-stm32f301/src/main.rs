@@ -90,7 +90,7 @@ fn main() -> ! {
     free(|cs| EVENT_CONSUMER.borrow(cs).replace(Some(consumer)));
 
     // Initialize control algorithm
-    let controller = PidController::new(open_servo_control::PidConfig::default());
+    let controller = PidController::new(open_servo_control::PidConfig::new());
 
     // Initialize App (core control logic)
     let app = App::new(controller);

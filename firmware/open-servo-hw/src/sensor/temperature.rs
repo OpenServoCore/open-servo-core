@@ -5,7 +5,7 @@
 //! - Motor temp: derate torque/PWM (protect the actuator)
 //! - Driver temp: stop driving, MCU can still log/report
 
-use open_servo_math::DeciC;
+use open_servo_math::CentiC;
 
 // ============================================================================
 // MCU / PCB Temperature
@@ -16,10 +16,10 @@ use open_servo_math::DeciC;
 /// Used for over-temperature protection of the microcontroller.
 /// Fault action: full shutdown (McuOverTemp).
 pub trait McuTemperatureSensor {
-    /// Read MCU temperature in 0.1°C (DeciC).
+    /// Read MCU temperature in 0.01°C (CentiC).
     ///
     /// Returns `None` if reading is not available (e.g., ADC not ready).
-    fn read_mcu_temperature(&self) -> Option<DeciC>;
+    fn read_mcu_temperature(&self) -> Option<CentiC>;
 
     /// Read raw MCU temperature ADC value.
     ///
@@ -37,13 +37,13 @@ pub trait SafetyMcuTempSource {
     ///
     /// Returns `None` if the board has no MCU temp sensor,
     /// which causes SafetyManager to skip MCU over-temperature checks.
-    fn read_safety_mcu_temp(&self) -> Option<DeciC>;
+    fn read_safety_mcu_temp(&self) -> Option<CentiC>;
 }
 
 // Blanket impl: McuTemperatureSensor automatically provides SafetyMcuTempSource
 impl<T: McuTemperatureSensor> SafetyMcuTempSource for T {
     #[inline]
-    fn read_safety_mcu_temp(&self) -> Option<DeciC> {
+    fn read_safety_mcu_temp(&self) -> Option<CentiC> {
         self.read_mcu_temperature()
     }
 }
@@ -57,10 +57,10 @@ impl<T: McuTemperatureSensor> SafetyMcuTempSource for T {
 /// Used for over-temperature protection of the motor/actuator.
 /// Fault action: derate torque/PWM (MotorOverTemp).
 pub trait MotorTemperatureSensor {
-    /// Read motor winding temperature in 0.1°C (DeciC).
+    /// Read motor winding temperature in 0.01°C (CentiC).
     ///
     /// Returns `None` if reading is not available.
-    fn read_motor_temperature(&self) -> Option<DeciC>;
+    fn read_motor_temperature(&self) -> Option<CentiC>;
 
     /// Read raw motor temperature ADC value.
     ///
@@ -76,13 +76,13 @@ pub trait SafetyMotorTempSource {
     /// Read motor temperature for safety checks.
     ///
     /// Returns `None` if the board has no motor temp sensor.
-    fn read_safety_motor_temp(&self) -> Option<DeciC>;
+    fn read_safety_motor_temp(&self) -> Option<CentiC>;
 }
 
 // Blanket impl: MotorTemperatureSensor automatically provides SafetyMotorTempSource
 impl<T: MotorTemperatureSensor> SafetyMotorTempSource for T {
     #[inline]
-    fn read_safety_motor_temp(&self) -> Option<DeciC> {
+    fn read_safety_motor_temp(&self) -> Option<CentiC> {
         self.read_motor_temperature()
     }
 }
@@ -96,10 +96,10 @@ impl<T: MotorTemperatureSensor> SafetyMotorTempSource for T {
 /// Used for over-temperature protection of the driver IC.
 /// Fault action: stop driving, MCU can still log/report (DriverOverTemp).
 pub trait DriverTemperatureSensor {
-    /// Read driver IC temperature in 0.1°C (DeciC).
+    /// Read driver IC temperature in 0.01°C (CentiC).
     ///
     /// Returns `None` if reading is not available.
-    fn read_driver_temperature(&self) -> Option<DeciC>;
+    fn read_driver_temperature(&self) -> Option<CentiC>;
 }
 
 /// Safety capability trait for driver temperature sensing.
@@ -110,13 +110,13 @@ pub trait SafetyDriverTempSource {
     /// Read driver temperature for safety checks.
     ///
     /// Returns `None` if the board has no driver temp sensor.
-    fn read_safety_driver_temp(&self) -> Option<DeciC>;
+    fn read_safety_driver_temp(&self) -> Option<CentiC>;
 }
 
 // Blanket impl: DriverTemperatureSensor automatically provides SafetyDriverTempSource
 impl<T: DriverTemperatureSensor> SafetyDriverTempSource for T {
     #[inline]
-    fn read_safety_driver_temp(&self) -> Option<DeciC> {
+    fn read_safety_driver_temp(&self) -> Option<CentiC> {
         self.read_driver_temperature()
     }
 }

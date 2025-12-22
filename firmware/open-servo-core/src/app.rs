@@ -12,7 +12,7 @@ use open_servo_hw::motor::BdcMotorDriver;
 #[cfg(feature = "current-sense-bus")]
 use open_servo_hw::sensor::SafetyCurrentSource;
 use open_servo_hw::sensor::{PositionSensor, SafetyMcuTempSource, SafetyVoltageSource};
-use open_servo_math::{CentiDeg, DeciC};
+use open_servo_math::{CentiC, CentiDeg, Duty};
 #[cfg(feature = "current-sense-bus")]
 use open_servo_math::MilliAmp;
 
@@ -85,7 +85,7 @@ impl<C: ControlLoop> App<C> {
         if outputs.motor_enable {
             hw.set_pwm(outputs.pwm_command);
         } else {
-            hw.set_pwm(0);
+            hw.set_pwm(Duty::ZERO);
             hw.set_enable(false);
         }
     }
@@ -112,7 +112,7 @@ impl<C: ControlLoop> App<C> {
         if outputs.motor_enable {
             hw.set_pwm(outputs.pwm_command);
         } else {
-            hw.set_pwm(0);
+            hw.set_pwm(Duty::ZERO);
             hw.set_enable(false);
         }
     }
@@ -124,7 +124,7 @@ impl<C: ControlLoop> App<C> {
                 // Run slow tick monitoring
                 if let Some(_fault) = self.core.slow_tick() {
                     // Apply safety on fault
-                    hw.set_pwm(0);
+                    hw.set_pwm(Duty::ZERO);
                     hw.set_enable(false);
                 }
 
@@ -151,7 +151,7 @@ impl<C: ControlLoop> App<C> {
                                  // Actually we need a different approach - let's use the fault state directly
 
         // Apply safety immediately
-        hw.set_pwm(0);
+        hw.set_pwm(Duty::ZERO);
         hw.set_enable(false);
     }
 
@@ -206,7 +206,7 @@ impl<C: ControlLoop> App<C> {
     }
 
     /// Set MCU over-temperature threshold.
-    pub fn set_mcu_temp_limit(&mut self, limit: DeciC) {
+    pub fn set_mcu_temp_limit(&mut self, limit: CentiC) {
         self.core.safety_mut().thresholds_mut().mcu_temp_limit = limit;
     }
 
@@ -240,6 +240,16 @@ impl<C: ControlLoop> App<C> {
     /// Get sensor health state (for debugging).
     pub fn get_sensor_health(&self) -> &SensorHealth {
         self.core.safety().sensor_health()
+    }
+    
+    /// Get estimated motor temperature in degrees.
+    pub fn get_motor_temp_deg(&self) -> i16 {
+        self.core.safety().motor_temp_deg()
+    }
+    
+    /// Get motor temperature rise above ambient in degrees.
+    pub fn get_motor_temp_rise_deg(&self) -> i16 {
+        self.core.safety().motor_temp_rise_deg()
     }
 
     /// Get mutable reference to the controller.
