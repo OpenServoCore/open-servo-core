@@ -18,6 +18,7 @@ pub enum Command {
     Set(SetCmd),
     Limit(LimitCmd),
     Pid(PidCmd),
+    Motor(MotorCmd),
 }
 
 /// Fault subcommands.
@@ -25,6 +26,14 @@ pub enum Command {
 pub enum FaultCmd {
     Show,
     Clear,
+}
+
+/// Motor control subcommands.
+#[derive(Debug)]
+pub enum MotorCmd {
+    Status,
+    Engage,
+    Disengage,
 }
 
 /// Set subcommands.
@@ -181,6 +190,22 @@ impl Command {
             },
 
             "pid" => Self::parse_pid(ap),
+            
+            "motor" => match ap.next_str() {
+                None | Some("status") => {
+                    ap.end()?;
+                    Ok(Command::Motor(MotorCmd::Status))
+                },
+                Some("engage") => {
+                    ap.end()?;
+                    Ok(Command::Motor(MotorCmd::Engage))
+                },
+                Some("disengage") => {
+                    ap.end()?;
+                    Ok(Command::Motor(MotorCmd::Disengage))
+                },
+                Some(other) => Err(ParseError::UnknownSubcommand(other)),
+            },
 
             other => Err(ParseError::UnknownCommand(other)),
         }

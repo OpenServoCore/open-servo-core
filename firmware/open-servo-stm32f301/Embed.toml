@@ -8,8 +8,8 @@ timeout = 3000
 # Channel 0: REPL interactive (up + down paired)
 # Channel 1: defmt logging (up only)
 tabs = [
-    { up_channel = 0, down_channel = 0, name = "repl", format = "String" },
-    { up_channel = 1, name = "defmt", format = "Defmt" },
+    { up_channel = 0, name = "defmt", format = "Defmt" },
+    { up_channel = 1, down_channel = 0, name = "repl", format = "String" },
 ]
 
 [default.reset]

@@ -4,8 +4,6 @@
 
 use open_servo_hw::DebugIo;
 use rtt_target::{rtt_init, ChannelMode, DownChannel, UpChannel};
-#[cfg(feature = "defmt")]
-use rtt_target::set_defmt_channel;
 
 /// RTT-based debug I/O for the REPL (channel 1).
 pub struct RttDebugIo {
@@ -23,12 +21,12 @@ pub fn init_rtt() -> RttDebugIo {
             0: {
                 size: 512,
                 mode: ChannelMode::NoBlockSkip,
-                name: "repl"
+                name: "defmt"
             }
             1: {
                 size: 512,
                 mode: ChannelMode::NoBlockSkip,
-                name: "defmt"
+                name: "repl"
             }
         }
         down: {
@@ -38,13 +36,13 @@ pub fn init_rtt() -> RttDebugIo {
             }
         }
     };
-    
+
     // Set channel 1 as defmt channel when defmt is enabled
     #[cfg(feature = "defmt")]
-    rtt_target::set_defmt_channel(channels.up.1);
-    
+    rtt_target::set_defmt_channel(channels.up.0);
+
     RttDebugIo {
-        up: channels.up.0,
+        up: channels.up.1,
         down: channels.down.0,
     }
 }

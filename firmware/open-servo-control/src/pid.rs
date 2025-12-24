@@ -79,7 +79,7 @@ impl PidController {
         Self {
             config,
             pid,
-            setpoint: CentiDeg::from_deg(90), // 90 degrees
+            setpoint: CentiDeg::from_cdeg(0), // Start at 0 degrees (disengaged)
             last_position: CentiDeg::from_cdeg(0),
             last_current: MilliAmp::from_ma(0),
             position_filter: FilterI32::new(config.position_filter_shift),

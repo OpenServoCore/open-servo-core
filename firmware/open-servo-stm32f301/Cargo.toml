@@ -22,8 +22,8 @@ cortex-m = { version = "0.7", features = ["critical-section-single-core"] }
 cortex-m-rt = { version = "0.7.5" }
 
 # Debug/logging
-rtt-target = { version = "0.6", features = ["defmt"] }
-panic-rtt-target = { version = "0.2", features = ["defmt"] }
+rtt-target = { version = "0.6" }
+panic-rtt-target = { version = "0.2" }
 
 # Other
 heapless = { workspace = true }
@@ -40,4 +40,4 @@ temp-sense-mcu = []       # MCU internal temperature sensing
 temp-sense-motor = []     # Motor NTC thermistor on PA4 (ch 5)
 voltage-sense-motor = []  # Motor terminal voltage dividers on PA2/PA3 (ch 3/4)
 debug-shell = ["open-servo-core/debug-shell"]
-defmt = ["open-servo-core/defmt", "dep:defmt"]
+defmt = ["open-servo-core/defmt", "dep:defmt", "rtt-target/defmt", "panic-rtt-target/defmt"]

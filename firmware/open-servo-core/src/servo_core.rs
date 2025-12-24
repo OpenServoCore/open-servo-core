@@ -63,6 +63,7 @@ pub struct ServoCore<C: ControlLoop> {
     fault_state: FaultState,
     safety: SafetyManager,
     system_state: SystemState,
+    motor_engaged: bool,
 }
 
 impl<C: ControlLoop> ServoCore<C> {
@@ -73,6 +74,7 @@ impl<C: ControlLoop> ServoCore<C> {
             fault_state: FaultState::new(),
             safety: SafetyManager::new(),
             system_state: SystemState::default(),
+            motor_engaged: false, // Start disengaged
         }
     }
 
@@ -90,6 +92,11 @@ impl<C: ControlLoop> ServoCore<C> {
     /// 5. Check for motor stall (PWM saturated + no movement)
     #[inline]
     pub fn fast_tick(&mut self, inputs: FastInputs) -> FastOutputs {
+        // If motor is disengaged, return safe state (motor disabled)
+        if !self.motor_engaged {
+            return FastOutputs::safe();
+        }
+        
         // If already faulted, return safe state
         if self.fault_state.is_faulted() {
             return FastOutputs::safe();
@@ -254,6 +261,21 @@ impl<C: ControlLoop> ServoCore<C> {
     /// Get reference to the controller.
     pub fn controller(&self) -> &C {
         &self.controller
+    }
+    
+    /// Engage the motor (enable control)
+    pub fn engage(&mut self) {
+        self.motor_engaged = true;
+    }
+    
+    /// Disengage the motor (disable control, motor will coast)
+    pub fn disengage(&mut self) {
+        self.motor_engaged = false;
+    }
+    
+    /// Check if the motor is engaged
+    pub fn is_engaged(&self) -> bool {
+        self.motor_engaged
     }
 }
 

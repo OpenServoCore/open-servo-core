@@ -29,7 +29,7 @@ fn fault_str(kind: FaultKind) -> &'static str {
     }
 }
 
-use super::command::{Command, FaultCmd, LimitCmd, PidCmd, PidField, SetCmd};
+use super::command::{Command, FaultCmd, LimitCmd, MotorCmd, PidCmd, PidField, SetCmd};
 use super::DebugShell;
 
 impl<D: DebugIo> DebugShell<D> {
@@ -61,6 +61,9 @@ impl<D: DebugIo> DebugShell<D> {
             }
             Command::Pid(PidCmd::SetAll { kp, ki, kd }) => self.cmd_pid_set_all(app, kp, ki, kd),
             Command::Pid(PidCmd::Mode(mode)) => self.cmd_pid_mode(app, mode),
+            Command::Motor(MotorCmd::Status) => self.cmd_motor_status(app),
+            Command::Motor(MotorCmd::Engage) => self.cmd_motor_engage(app, hw),
+            Command::Motor(MotorCmd::Disengage) => self.cmd_motor_disengage(app, hw),
         }
     }
 
@@ -74,6 +77,9 @@ impl<D: DebugIo> DebugShell<D> {
         self.println("  state, s                  - show system state");
         self.println("  fault                     - show fault status");
         self.println("  fault clear               - clear latched fault");
+        self.println("  motor                     - show motor status");
+        self.println("  motor engage              - engage motor (enable)");
+        self.println("  motor disengage           - disengage motor (disable)");
         self.println("  set sp <cdeg>             - set setpoint");
         self.println("  pid pos                   - show PID config");
         self.println("  pid pos set kp <f32>      - set Kp gain");
@@ -389,5 +395,23 @@ impl<D: DebugIo> DebugShell<D> {
         let mut buf: String<32> = String::new();
         let _ = uwrite!(buf, "ok, mode={}", mode_str);
         self.println(&buf);
+    }
+    
+    fn cmd_motor_status<C: ControlLoop>(&mut self, app: &App<C>) {
+        let engaged = app.is_motor_engaged();
+        let status = if engaged { "engaged" } else { "disengaged" };
+        let mut buf: String<32> = String::new();
+        let _ = uwrite!(buf, "motor: {}", status);
+        self.println(&buf);
+    }
+    
+    fn cmd_motor_engage<C: ControlLoop, H: BdcMotorDriver>(&mut self, app: &mut App<C>, _hw: &mut H) {
+        app.engage_motor();
+        self.println("motor engaged");
+    }
+    
+    fn cmd_motor_disengage<C: ControlLoop, H: BdcMotorDriver>(&mut self, app: &mut App<C>, hw: &mut H) {
+        app.disengage_motor(hw);
+        self.println("motor disengaged");
     }
 }

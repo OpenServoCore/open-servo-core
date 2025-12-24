@@ -317,4 +317,22 @@ impl<C: ControlLoop> App<C> {
     pub fn controller(&self) -> &C {
         self.core.controller()
     }
+    
+    /// Engage the motor (enable control)
+    pub fn engage_motor(&mut self) {
+        self.core.engage();
+    }
+    
+    /// Disengage the motor (disable control, motor will coast)
+    pub fn disengage_motor<H: BdcMotorDriver>(&mut self, hw: &mut H) {
+        self.core.disengage();
+        // Immediately apply safe state to hardware
+        hw.set_pwm(Duty::ZERO);
+        hw.set_enable(false);
+    }
+    
+    /// Check if the motor is engaged
+    pub fn is_motor_engaged(&self) -> bool {
+        self.core.is_engaged()
+    }
 }
