@@ -5,7 +5,7 @@
 //! system by feeding it synthetic inputs.
 
 use open_servo_control::ControlLoop;
-use open_servo_math::{CentiC, CentiDeg, Duty, MilliVolt};
+use open_servo_math::{CentiC, CentiDeg, Duty, MilliVolt, DegPerSec10, ComplianceConfig};
 #[cfg(feature = "current-sense-bus")]
 use open_servo_math::MilliAmp;
 
@@ -13,6 +13,53 @@ use crate::fault::{FaultKind, FaultState};
 use crate::inputs::FastInputs;
 use crate::outputs::FastOutputs;
 use crate::safety::SafetyManager;
+
+/// Servo operating mode for compliance behavior
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
+pub enum ServoMode {
+    /// Actively moving to setpoint
+    Move,
+    /// Holding position with reduced force
+    Hold,
+    /// Yielding to external force (backdrive detected)
+    Yield,
+}
+
+/// Control loop frequency - MUST match how often fast_tick() is called
+/// This is NOT the PWM frequency or ADC sample rate
+const CONTROL_HZ: u32 = 10000;  // 10kHz fast_tick rate
+const CONTROL_DT_US: u32 = 1_000_000 / CONTROL_HZ;
+
+/// Current limits (conservative defaults)
+const DEFAULT_MOVE_LIMIT_MA: i16 = 800;
+const DEFAULT_HOLD_LIMIT_MA: i16 = 150;
+
+/// Velocity computation
+const VELOCITY_DECIMATE: u16 = 10;  // Update every 1ms
+
+/// Mode thresholds with hysteresis
+const HOLD_ENTER_ERROR_CDEG: i16 = 500;   // 5°
+const HOLD_EXIT_ERROR_CDEG: i16 = 700;    // 7°
+const HOLD_ENTER_VEL_DPS10: i16 = 100;    // 10°/s
+const HOLD_EXIT_VEL_DPS10: i16 = 150;     // 15°/s
+const BACKDRIVE_VEL_THRESHOLD: i16 = 300;  // 30°/s
+
+/// Timing (derived from CONTROL_HZ)
+const SETPOINT_SETTLE_TICKS: u32 = (400 * CONTROL_HZ) / 1000;  // 400ms
+const HOLD_ENTRY_TICKS: u32 = (300 * CONTROL_HZ) / 1000;       // 300ms
+const YIELD_DURATION_TICKS: u32 = (200 * CONTROL_HZ) / 1000;   // 200ms
+const YIELD_COAST_TICKS: u32 = (100 * CONTROL_HZ) / 1000;      // 100ms
+
+/// Backdrive detection
+const U_DEADBAND: i16 = 1638;  // 5% for sign comparison
+const BACKDRIVE_PERSIST: u8 = 5;  // Require 5 consecutive detections
+
+/// Hold duty cap curve parameters
+const HOLD_ERROR_START: i16 = 500;   // 5° - start ramping
+const HOLD_ERROR_END: i16 = 1500;    // 15° - max cap
+const HOLD_DUTY_MIN: i16 = 6553;     // 20% at small error
+const HOLD_DUTY_MAX: i16 = 14746;    // 45% at large error
 
 /// System state snapshot for telemetry and debugging.
 #[derive(Debug, Clone, Copy, Default)]
@@ -31,8 +78,8 @@ pub struct SystemState {
     pub bus_voltage: Option<MilliVolt>,
     /// Temperature reading (if available)
     pub temperature: Option<CentiC>,
-    /// Torque is currently being limited
-    pub torque_limited: bool,
+    /// Compliance is currently being limited
+    pub compliance_limited: bool,
 }
 
 /// Pure servo control core - no hardware dependencies.
@@ -64,17 +111,78 @@ pub struct ServoCore<C: ControlLoop> {
     safety: SafetyManager,
     system_state: SystemState,
     motor_engaged: bool,
+    
+    // Compliance state
+    mode: ServoMode,
+    tick_counter: u32,
+    
+    // Velocity tracking (decimated)
+    velocity_update_counter: u16,
+    measured_velocity: DegPerSec10,
+    prev_position: CentiDeg,
+    
+    // Setpoint tracking
+    prev_setpoint: CentiDeg,
+    setpoint_unchanged_ticks: u32,
+    hold_conditions_met_ticks: u32,
+    
+    // Backdrive detection
+    prev_pwm_command: i16,
+    prev_error: i16,
+    backdrive_detect_count: u8,
+    yield_enter_tick: u32,
+    yield_until_tick: u32,
+    
+    // Dual compliance configs
+    move_compliance_config: ComplianceConfig,
+    hold_compliance_config: ComplianceConfig,
 }
 
 impl<C: ControlLoop> ServoCore<C> {
     /// Create a new ServoCore with the given controller.
     pub fn new(controller: C) -> Self {
+        // Create default compliance configs
+        let move_config = ComplianceConfig {
+            limit_ma: DEFAULT_MOVE_LIMIT_MA,
+            ..ComplianceConfig::default()
+        };
+        
+        let hold_config = ComplianceConfig {
+            limit_ma: DEFAULT_HOLD_LIMIT_MA,
+            ..ComplianceConfig::default()
+        };
+        
         Self {
             controller,
             fault_state: FaultState::new(),
             safety: SafetyManager::new(),
             system_state: SystemState::default(),
             motor_engaged: false, // Start disengaged
+            
+            // Compliance state
+            mode: ServoMode::Move,
+            tick_counter: 0,
+            
+            // Velocity tracking
+            velocity_update_counter: 0,
+            measured_velocity: DegPerSec10::from_dps10(0),
+            prev_position: CentiDeg::from_cdeg(0),
+            
+            // Setpoint tracking
+            prev_setpoint: CentiDeg::from_cdeg(0),
+            setpoint_unchanged_ticks: 0,
+            hold_conditions_met_ticks: 0,
+            
+            // Backdrive detection
+            prev_pwm_command: 0,
+            prev_error: 0,
+            backdrive_detect_count: 0,
+            yield_enter_tick: 0,
+            yield_until_tick: 0,
+            
+            // Compliance configs
+            move_compliance_config: move_config,
+            hold_compliance_config: hold_config,
         }
     }
 
@@ -92,6 +200,9 @@ impl<C: ControlLoop> ServoCore<C> {
     /// 5. Check for motor stall (PWM saturated + no movement)
     #[inline]
     pub fn fast_tick(&mut self, inputs: FastInputs) -> FastOutputs {
+        // Always increment master tick counter
+        self.tick_counter = self.tick_counter.wrapping_add(1);
+        
         // If motor is disengaged, return safe state (motor disabled)
         if !self.motor_engaged {
             return FastOutputs::safe();
@@ -127,23 +238,81 @@ impl<C: ControlLoop> ServoCore<C> {
             return FastOutputs::fault(fault);
         }
         
-        // 3. Update torque limiter with current reading and get PWM direction
-        // We need the setpoint to determine intended direction for blanking
+        // Update velocity (decimated with countdown)
+        self.update_velocity(position);
+        
+        // Track setpoint changes and clamp
         let clamped_setpoint = self.safety.clamp_setpoint(self.controller.get_setpoint());
-        let direction_hint = (clamped_setpoint - position).as_cdeg();
+        self.update_setpoint_tracking(clamped_setpoint);
         
-        // Time delta for 10kHz control loop is 100 microseconds
-        const TICK_DT_US: u32 = 100;
-        self.safety.torque_limiter_mut().update(inputs.current(), direction_hint, TICK_DT_US);
+        // Calculate error for mode decisions
+        let error = (clamped_setpoint - position).as_cdeg();
         
-        // 4. Get torque limits and apply to controller
-        let (min_duty, max_duty) = self.safety.torque_limiter().get_limits();
+        // Update compliance mode
+        let mode_changed = self.update_compliance_mode(position, clamped_setpoint, error);
+        
+        // Switch compliance config on mode transitions
+        if mode_changed {
+            match self.mode {
+                ServoMode::Move => {
+                    self.safety.compliance_limiter_mut().set_config(self.move_compliance_config);
+                }
+                ServoMode::Hold | ServoMode::Yield => {
+                    self.safety.compliance_limiter_mut().set_config(self.hold_compliance_config);
+                }
+            }
+        }
+        
+        // 3. Update compliance limiter with current reading
+        self.safety.compliance_limiter_mut().update(inputs.current(), error, CONTROL_DT_US);
+        
+        // 4. Get base limits from compliance limiter
+        let (mut min_duty, mut max_duty) = self.safety.compliance_limiter().get_limits();
+        
+        // Apply mode-specific limits
+        match self.mode {
+            ServoMode::Move => {
+                // Use full torque limiter limits
+            }
+            
+            ServoMode::Hold => {
+                // Apply error-based duty cap curve
+                let duty_cap = self.calculate_hold_duty_cap(error.abs());
+                min_duty = min_duty.max(-duty_cap as i32);
+                max_duty = max_duty.min(duty_cap as i32);
+            }
+            
+            ServoMode::Yield => {
+                let yield_elapsed = self.tick_counter.saturating_sub(self.yield_enter_tick);
+                
+                if yield_elapsed < YIELD_COAST_TICKS {
+                    // Pure coast for first 100ms
+                    min_duty = 0;
+                    max_duty = 0;
+                } else {
+                    // Optional small duty to "feel alive"
+                    min_duty = -1638;  // 5%
+                    max_duty = 1638;
+                }
+                
+                // Reset controller on YIELD entry
+                if yield_elapsed == 0 {
+                    self.controller.reset();
+                }
+            }
+        }
+        
+        // Set limits BEFORE compute (automatic anti-windup)
         self.controller.set_output_limits(min_duty, max_duty);
         
         // 5. Run control loop with dynamic limits
         let pwm_command = self
             .controller
             .compute(clamped_setpoint, position, inputs.current());
+
+        // Update tracking for next tick (unconditional)
+        self.prev_pwm_command = pwm_command.as_raw();
+        self.prev_error = error;
 
         // 6. Check for stall (PWM saturated but no movement)
         let pwm_saturated = pwm_command.abs() >= Duty::MAX.abs();
@@ -161,7 +330,7 @@ impl<C: ControlLoop> ServoCore<C> {
             current: inputs.current,
             bus_voltage: inputs.bus_voltage,
             temperature: inputs.temperature,
-            torque_limited: self.safety.torque_limiter().is_limited(),
+            compliance_limited: self.safety.compliance_limiter().is_limited(),
         };
 
         FastOutputs::normal(pwm_command)
@@ -264,18 +433,197 @@ impl<C: ControlLoop> ServoCore<C> {
     }
     
     /// Engage the motor (enable control)
-    pub fn engage(&mut self) {
+    /// If there's no setpoint, sets it to the current position to hold
+    pub fn engage(&mut self, current_position: CentiDeg) {
         self.motor_engaged = true;
+        
+        // If controller has no setpoint (was disengaged), set it to current position
+        // This prevents jumping to zero on engage
+        if !self.controller.has_setpoint() {
+            self.controller.set_setpoint(current_position);
+        }
     }
     
     /// Disengage the motor (disable control, motor will coast)
     pub fn disengage(&mut self) {
         self.motor_engaged = false;
+        // Clear the setpoint so next engage will capture current position
+        self.controller.clear_setpoint();
     }
     
     /// Check if the motor is engaged
     pub fn is_engaged(&self) -> bool {
         self.motor_engaged
+    }
+    
+    /// Update velocity estimation (decimated)
+    fn update_velocity(&mut self, position: CentiDeg) {
+        // Countdown pattern: updates exactly every N ticks
+        if self.velocity_update_counter == 0 {
+            let delta_cdeg = (position - self.prev_position).as_cdeg() as i32;
+            
+            // Direct calculation to avoid truncation
+            // vel_dps10 = (delta_cdeg * CONTROL_HZ) / (10 * VELOCITY_DECIMATE)
+            let vel_dps10_raw = (delta_cdeg * CONTROL_HZ as i32) / (10 * VELOCITY_DECIMATE as i32);
+            let vel_dps10 = vel_dps10_raw.clamp(-32767, 32767);
+            
+            // IIR filter in i32 space to avoid overflow
+            let old = self.measured_velocity.as_dps10() as i32;
+            let new = vel_dps10;
+            let filtered = (new + 3 * old) / 4;  // 0.25 new + 0.75 old
+            
+            self.measured_velocity = DegPerSec10::from_dps10(
+                filtered.clamp(-32767, 32767) as i16
+            );
+            
+            self.prev_position = position;
+            self.velocity_update_counter = VELOCITY_DECIMATE - 1;
+        } else {
+            self.velocity_update_counter -= 1;
+        }
+    }
+    
+    /// Update setpoint tracking
+    fn update_setpoint_tracking(&mut self, setpoint: CentiDeg) {
+        if setpoint != self.prev_setpoint {
+            // Setpoint changed
+            self.setpoint_unchanged_ticks = 0;
+            self.prev_setpoint = setpoint;
+        } else {
+            // Setpoint unchanged, increment counter (saturating)
+            self.setpoint_unchanged_ticks = self.setpoint_unchanged_ticks.saturating_add(1);
+        }
+    }
+    
+    /// Check for backdrive condition
+    fn check_backdrive(&mut self, velocity: DegPerSec10, error: i16) -> bool {
+        // Only in HOLD mode
+        if self.mode != ServoMode::Hold {
+            return false;
+        }
+        
+        let vel = velocity.as_dps10();
+        let vel_abs = vel.abs();
+        
+        // Must exceed velocity threshold
+        if vel_abs <= BACKDRIVE_VEL_THRESHOLD {
+            self.backdrive_detect_count = 0;
+            return false;
+        }
+        
+        // Sign mismatch with deadband
+        let u = self.prev_pwm_command;
+        let u_active = u.abs() > U_DEADBAND;
+        let opposing = u_active && ((vel > 0) != (u > 0));
+        
+        // Error growing (with small deadband)
+        let error_growing = error.abs() > self.prev_error.abs() + 10;
+        
+        // Require either condition
+        if opposing || error_growing {
+            self.backdrive_detect_count = self.backdrive_detect_count.saturating_add(1);
+            if self.backdrive_detect_count >= BACKDRIVE_PERSIST {
+                return true;
+            }
+        } else {
+            self.backdrive_detect_count = 0;
+        }
+        
+        false
+    }
+    
+    /// Update compliance mode based on conditions
+    fn update_compliance_mode(&mut self, _position: CentiDeg, _setpoint: CentiDeg, error: i16) -> bool {
+        let prev_mode = self.mode;
+        let error_abs = error.abs();
+        let vel_abs = self.measured_velocity.as_dps10().abs();
+        
+        match self.mode {
+            ServoMode::Move => {
+                // Check if conditions met for HOLD
+                let hold_conditions = 
+                    self.setpoint_unchanged_ticks >= SETPOINT_SETTLE_TICKS &&
+                    error_abs < HOLD_ENTER_ERROR_CDEG &&
+                    vel_abs < HOLD_ENTER_VEL_DPS10;
+                    
+                if hold_conditions {
+                    self.hold_conditions_met_ticks = self.hold_conditions_met_ticks.saturating_add(1);
+                    if self.hold_conditions_met_ticks >= HOLD_ENTRY_TICKS {
+                        self.mode = ServoMode::Hold;
+                        self.hold_conditions_met_ticks = 0;
+                    }
+                } else {
+                    self.hold_conditions_met_ticks = 0;
+                }
+            }
+            
+            ServoMode::Hold => {
+                // Check exit conditions (with hysteresis)
+                if self.setpoint_unchanged_ticks < 100 ||  // Recent change
+                   error_abs > HOLD_EXIT_ERROR_CDEG ||
+                   vel_abs > HOLD_EXIT_VEL_DPS10 {
+                    
+                    self.mode = ServoMode::Move;
+                    self.backdrive_detect_count = 0;
+                }
+                // Check for backdrive
+                else if self.check_backdrive(self.measured_velocity, error) {
+                    self.mode = ServoMode::Yield;
+                    self.yield_enter_tick = self.tick_counter;
+                    self.yield_until_tick = self.tick_counter + YIELD_DURATION_TICKS;
+                    self.backdrive_detect_count = 0;
+                }
+            }
+            
+            ServoMode::Yield => {
+                if self.tick_counter >= self.yield_until_tick {
+                    self.mode = ServoMode::Hold;
+                }
+            }
+        }
+        
+        prev_mode != self.mode
+    }
+    
+    /// Calculate hold duty cap based on error
+    fn calculate_hold_duty_cap(&self, error_cdeg: i16) -> i16 {
+        if error_cdeg <= HOLD_ERROR_START {
+            HOLD_DUTY_MIN
+        } else if error_cdeg >= HOLD_ERROR_END {
+            HOLD_DUTY_MAX
+        } else {
+            // Linear interpolation
+            let range = (HOLD_ERROR_END - HOLD_ERROR_START) as i32;
+            let progress = (error_cdeg - HOLD_ERROR_START) as i32;
+            let duty_range = (HOLD_DUTY_MAX - HOLD_DUTY_MIN) as i32;
+            HOLD_DUTY_MIN + ((duty_range * progress) / range) as i16
+        }
+    }
+    
+    /// Set move mode current limit
+    pub fn set_move_current_limit(&mut self, ma: i16) {
+        self.move_compliance_config.limit_ma = ma;
+        if self.mode == ServoMode::Move {
+            self.safety.compliance_limiter_mut().set_config(self.move_compliance_config);
+        }
+    }
+    
+    /// Set hold mode current limit
+    pub fn set_hold_current_limit(&mut self, ma: i16) {
+        self.hold_compliance_config.limit_ma = ma;
+        if self.mode == ServoMode::Hold || self.mode == ServoMode::Yield {
+            self.safety.compliance_limiter_mut().set_config(self.hold_compliance_config);
+        }
+    }
+    
+    /// Get current compliance mode
+    pub fn compliance_mode(&self) -> ServoMode {
+        self.mode
+    }
+    
+    /// Get measured velocity
+    pub fn measured_velocity(&self) -> DegPerSec10 {
+        self.measured_velocity
     }
 }
 

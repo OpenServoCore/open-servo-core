@@ -125,14 +125,6 @@ impl MilliVolt {
         Self(v * 1000)
     }
 
-    #[inline]
-    pub fn from_adc12(code: Adc12, vref_mv: u16) -> Self {
-        // mv = code * vref_mv / 4095
-        let raw = code.0 as i32;
-        let vref = vref_mv as i32;
-        let mv = mul_div_i32(raw, vref, 4095);
-        MilliVolt(mv.clamp(i16::MIN as i32, i16::MAX as i32) as i16)
-    }
 }
 
 impl MilliAmp {
@@ -151,16 +143,6 @@ impl MilliAmp {
         Self(a * 1000)
     }
 
-    /// Convert from DRV8231A IPROPI ADC reading
-    /// IPROPI = 1500µA/A through 2.2kΩ resistor
-    /// Results in approximately 0.244 mA per ADC count
-    #[inline]
-    pub fn from_ipropi_adc(code: Adc12) -> Self {
-        // ma = code * 244 / 1000 (approximately 0.244 mA/count)
-        let raw = code.0 as i32;
-        let ma = mul_div_i32(raw, 244, 1000);
-        MilliAmp(ma.clamp(0, i16::MAX as i32) as i16)
-    }
 
     /// Get absolute value of current (for threshold comparisons)
     #[inline]
@@ -190,15 +172,6 @@ impl CentiDeg {
         self.0 / 100
     }
 
-    /// Convert from raw ADC reading for potentiometer position
-    /// Maps 0-4095 to -500 to 18500 centidegrees (-5° to 185°)
-    #[inline]
-    pub fn from_pot_adc(code: Adc12) -> Self {
-        // Map 0-4095 to -500 to 18500 (190° range in centidegrees)
-        let raw = code.0 as i32;
-        let cdeg = -500 + mul_div_i32(raw, 19000, 4095);
-        CentiDeg(cdeg.clamp(i16::MIN as i32, i16::MAX as i32) as i16)
-    }
 
     /// Convert to milliradians for trig calculations if needed
     #[inline]

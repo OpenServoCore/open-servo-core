@@ -9,15 +9,15 @@
 //! - 10kHz (control tick): Position validation, current check, setpoint clamping
 //! - 100Hz (slow tick): Temperature check
 
+mod compliance_limiter;
 mod sensor_health;
 mod thermal_fault;
 mod thresholds;
-mod torque_limiter;
 
+pub use compliance_limiter::ComplianceLimiter;
 pub use sensor_health::*;
 pub use thermal_fault::*;
 pub use thresholds::*;
-pub use torque_limiter::TorqueLimiter;
 
 use crate::fault::FaultKind;
 use open_servo_math::{CentiC, CentiDeg, MilliAmp, ThermalModel};
@@ -42,7 +42,7 @@ pub struct SafetyManager {
     sensor_health: SensorHealth,
     thermal_model: ThermalModel,
     thermal_fault: ThermalFaultDetector,
-    torque_limiter: TorqueLimiter,
+    compliance_limiter: ComplianceLimiter,
     last_temperature: Option<CentiC>,
     /// Last position for stall detection
     stall_last_position: CentiDeg,
@@ -66,7 +66,7 @@ impl SafetyManager {
             sensor_health: SensorHealth::new(),
             thermal_model: ThermalModel::default(),
             thermal_fault: ThermalFaultDetector::default(),
-            torque_limiter: TorqueLimiter::default(),
+            compliance_limiter: ComplianceLimiter::default(),
             last_temperature: None,
             stall_last_position: CentiDeg::from_cdeg(0),
             stall_count: 0,
@@ -238,16 +238,16 @@ impl SafetyManager {
         self.thresholds.clamp_setpoint(setpoint)
     }
     
-    /// Get mutable reference to torque limiter for updates.
+    /// Get mutable reference to compliance limiter for updates.
     #[inline]
-    pub fn torque_limiter_mut(&mut self) -> &mut TorqueLimiter {
-        &mut self.torque_limiter
+    pub fn compliance_limiter_mut(&mut self) -> &mut ComplianceLimiter {
+        &mut self.compliance_limiter
     }
     
-    /// Get reference to torque limiter for reading state.
+    /// Get reference to compliance limiter for reading state.
     #[inline]
-    pub fn torque_limiter(&self) -> &TorqueLimiter {
-        &self.torque_limiter
+    pub fn compliance_limiter(&self) -> &ComplianceLimiter {
+        &self.compliance_limiter
     }
 
     /// Reset safety state after fault clear.

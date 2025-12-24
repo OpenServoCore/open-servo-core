@@ -53,7 +53,7 @@ impl<D: DebugIo> DebugShell<D> {
     pub fn poll<C, H>(&mut self, app: &mut App<C>, hw: &mut H)
     where
         C: ControlLoop,
-        H: BdcMotorDriver,
+        H: BdcMotorDriver + open_servo_hw::sensor::PositionSensor,
     {
         for _ in 0..MAX_BYTES_PER_POLL {
             let Some(b) = self.io.try_read() else { break };
@@ -91,18 +91,29 @@ impl<D: DebugIo> DebugShell<D> {
     fn handle_line<C, H>(&mut self, app: &mut App<C>, hw: &mut H, line: &str)
     where
         C: ControlLoop,
-        H: BdcMotorDriver,
+        H: BdcMotorDriver + open_servo_hw::sensor::PositionSensor,
     {
         let line = line.trim();
         if line.is_empty() {
             return;
         }
 
+        // Echo the command
+        let mut echo: String<128> = String::new();
+        let _ = uwrite!(echo, "> {}", line);
+        self.println(&echo);
+
         let mut ap = ArgParser::new(line);
         match Command::parse(&mut ap) {
-            Ok(cmd) => self.exec_command(app, hw, cmd),
+            Ok(cmd) => {
+                self.exec_command(app, hw, cmd);
+                self.println(""); // Add newline after command output
+            }
             Err(ParseError::Empty) => {}
-            Err(e) => self.print_parse_error(e),
+            Err(e) => {
+                self.print_parse_error(e);
+                self.println(""); // Add newline after error
+            }
         }
     }
 

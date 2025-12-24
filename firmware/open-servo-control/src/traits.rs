@@ -25,6 +25,20 @@ pub trait ControlLoop {
     /// Get current setpoint (in centidegrees for position control).
     fn get_setpoint(&self) -> CentiDeg;
     
+    /// Check if a setpoint has been set (for disengage/engage logic)
+    fn has_setpoint(&self) -> bool {
+        // Default implementation: assume we always have a setpoint
+        // Controllers can override this if they track setpoint state
+        true
+    }
+    
+    /// Clear the setpoint (for disengage)
+    fn clear_setpoint(&mut self) {
+        // Default implementation: set to zero
+        // Controllers can override this to clear Option<CentiDeg>
+        self.set_setpoint(CentiDeg::from_cdeg(0));
+    }
+    
     /// Set output limits dynamically (for torque limiting).
     /// 
     /// Used by the torque limiter to dynamically adjust PWM limits

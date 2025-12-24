@@ -4,10 +4,10 @@ use open_servo_math::{CentiC, CentiDeg, MilliAmp};
 
 // ============= Default threshold constants =============
 
-/// Default over-current threshold: 800 mA
-/// Observed stall current ~180mA; 800mA provides margin for transients
-/// while detecting faults before DRV8231A hardware limiting (~1.5A)
-pub const DEFAULT_CURRENT_LIMIT_MA: i16 = 800;
+/// Default over-current threshold: 1200 mA
+/// Provides headroom for normal operation while still protecting
+/// against genuine overcurrent conditions before DRV8231A hardware limiting (~1.5A)
+pub const DEFAULT_CURRENT_LIMIT_MA: i16 = 1200;
 
 /// Default MCU over-temperature threshold: 8000 centiC (80.0°C)
 /// STM32F301 max junction temp is 105°C, leave margin

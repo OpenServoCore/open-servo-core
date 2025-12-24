@@ -84,8 +84,9 @@ fn init_tim1_pwm_channels(p: &pac::Peripherals) {
                 .pwm_mode1() // PWM mode 1 for Channel 3
         });
 
-        // Set CCR to center of PWM period
-        tim1.ccr3().modify(|_, w| w.ccr().bits(1));
+        // Set CCR3 to center of PWM period for ADC trigger
+        // This ensures ADC samples IPROPI at a stable point, avoiding switching transients
+        tim1.ccr3().modify(|_, w| w.ccr().bits(PWM_MAX_DUTY / 2));
 
         // enable PWM output
         tim1.ccer.modify(|_, w| w.cc3e().set_bit());

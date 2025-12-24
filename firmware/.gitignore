@@ -33,3 +33,7 @@
 
 # RTT session files
 rtt.log
+
+# Debug logs
+logs/
+*/logs/

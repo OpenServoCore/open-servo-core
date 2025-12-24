@@ -319,8 +319,13 @@ impl<C: ControlLoop> App<C> {
     }
     
     /// Engage the motor (enable control)
-    pub fn engage_motor(&mut self) {
-        self.core.engage();
+    pub fn engage_motor<H>(&mut self, hw: &mut H) 
+    where
+        H: PositionSensor,
+    {
+        // Read current position to hold when engaging
+        let current_position = hw.read_position();
+        self.core.engage(current_position);
     }
     
     /// Disengage the motor (disable control, motor will coast)
@@ -334,5 +339,15 @@ impl<C: ControlLoop> App<C> {
     /// Check if the motor is engaged
     pub fn is_motor_engaged(&self) -> bool {
         self.core.is_engaged()
+    }
+    
+    /// Get read-only reference to the core
+    pub fn core(&self) -> &ServoCore<C> {
+        &self.core
+    }
+    
+    /// Get mutable reference to the core
+    pub fn core_mut(&mut self) -> &mut ServoCore<C> {
+        &mut self.core
     }
 }

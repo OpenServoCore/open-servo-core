@@ -55,7 +55,7 @@ impl PidConfig {
 pub struct PidController {
     config: PidConfig,
     pid: PidControllerI16,
-    setpoint: CentiDeg,
+    setpoint: Option<CentiDeg>,
     last_position: CentiDeg,
     last_current: MilliAmp,
     position_filter: FilterI32,
@@ -79,7 +79,7 @@ impl PidController {
         Self {
             config,
             pid,
-            setpoint: CentiDeg::from_cdeg(0), // Start at 0 degrees (disengaged)
+            setpoint: None, // No setpoint when disengaged
             last_position: CentiDeg::from_cdeg(0),
             last_current: MilliAmp::from_ma(0),
             position_filter: FilterI32::new(config.position_filter_shift),
@@ -114,11 +114,24 @@ impl PidController {
     }
 
     pub fn set_setpoint(&mut self, setpoint: CentiDeg) {
-        self.setpoint = setpoint;
+        self.setpoint = Some(setpoint);
     }
 
-    pub fn get_setpoint(&self) -> CentiDeg {
+    pub fn get_setpoint(&self) -> Option<CentiDeg> {
         self.setpoint
+    }
+    
+    pub fn get_setpoint_or_default(&self) -> CentiDeg {
+        // Return setpoint if set, otherwise return 0 as default
+        self.setpoint.unwrap_or(CentiDeg::from_cdeg(0))
+    }
+    
+    pub fn clear_setpoint(&mut self) {
+        self.setpoint = None;
+    }
+    
+    pub fn has_setpoint(&self) -> bool {
+        self.setpoint.is_some()
     }
 
     pub fn get_last_position(&self) -> CentiDeg {
@@ -133,7 +146,12 @@ impl PidController {
         self.last_position = position;
         self.last_current = current;
 
-        let sp = self.setpoint.as_cdeg() as i32;
+        // If no setpoint, output zero (motor disengaged)
+        let Some(setpoint) = self.setpoint else {
+            return Duty::ZERO;
+        };
+
+        let sp = setpoint.as_cdeg() as i32;
         let pv = position.as_cdeg() as i32;
 
         let output = self.pid.step(sp, pv);
@@ -152,6 +170,11 @@ impl ControlLoop for PidController {
         position: CentiDeg,
         current: Option<MilliAmp>,
     ) -> Duty {
+        // If no internal setpoint, return zero (motor disengaged)
+        if self.setpoint.is_none() {
+            return Duty::ZERO;
+        }
+        
         // Filter the position measurement (convert to i32 first)
         let position_i32 = position.as_cdeg() as i32;
         let filtered_i32 = self.position_filter.update(position_i32);
@@ -175,11 +198,20 @@ impl ControlLoop for PidController {
     }
 
     fn set_setpoint(&mut self, setpoint: CentiDeg) {
-        self.setpoint = setpoint;
+        self.setpoint = Some(setpoint);
     }
 
     fn get_setpoint(&self) -> CentiDeg {
-        self.setpoint
+        // Return setpoint if set, otherwise 0 for compatibility
+        self.setpoint.unwrap_or(CentiDeg::from_cdeg(0))
+    }
+    
+    fn has_setpoint(&self) -> bool {
+        self.setpoint.is_some()
+    }
+    
+    fn clear_setpoint(&mut self) {
+        self.setpoint = None;
     }
     
     fn set_output_limits(&mut self, min: i32, max: i32) {
@@ -215,14 +247,16 @@ mod tests {
     #[test]
     fn test_new_initializes_correctly() {
         let ctrl = PidController::new(PidConfig::new());
-        assert_eq!(ctrl.get_setpoint().as_cdeg(), 9000); // 90°
+        assert_eq!(ctrl.get_setpoint_or_default().as_cdeg(), 0); // No setpoint initially, returns 0
+        assert!(!ctrl.has_setpoint()); // Should have no setpoint
     }
 
     #[test]
     fn test_setpoint_get_set() {
         let mut ctrl = PidController::new(PidConfig::new());
         ctrl.set_setpoint(CentiDeg::from_cdeg(4500)); // 45°
-        assert_eq!(ctrl.get_setpoint().as_cdeg(), 4500);
+        assert_eq!(ctrl.get_setpoint_or_default().as_cdeg(), 4500);
+        assert!(ctrl.has_setpoint()); // Should have a setpoint now
     }
 
 

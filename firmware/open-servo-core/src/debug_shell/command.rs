@@ -19,6 +19,7 @@ pub enum Command {
     Limit(LimitCmd),
     Pid(PidCmd),
     Motor(MotorCmd),
+    Compliance(ComplianceCmd),
 }
 
 /// Fault subcommands.
@@ -34,6 +35,15 @@ pub enum MotorCmd {
     Status,
     Engage,
     Disengage,
+}
+
+/// Compliance subcommands.
+#[derive(Debug)]
+pub enum ComplianceCmd {
+    Show,
+    MoveMa(i16),
+    HoldMa(i16),
+    Vel(i16),
 }
 
 /// Set subcommands.
@@ -203,6 +213,29 @@ impl Command {
                 Some("disengage") => {
                     ap.end()?;
                     Ok(Command::Motor(MotorCmd::Disengage))
+                },
+                Some(other) => Err(ParseError::UnknownSubcommand(other)),
+            },
+            
+            "compliance" => match ap.next_str() {
+                None | Some("show") => {
+                    ap.end()?;
+                    Ok(Command::Compliance(ComplianceCmd::Show))
+                },
+                Some("move") => {
+                    let ma = ap.req::<i16>("milliamps")?;
+                    ap.end()?;
+                    Ok(Command::Compliance(ComplianceCmd::MoveMa(ma)))
+                },
+                Some("hold") => {
+                    let ma = ap.req::<i16>("milliamps")?;
+                    ap.end()?;
+                    Ok(Command::Compliance(ComplianceCmd::HoldMa(ma)))
+                },
+                Some("vel") => {
+                    let dps = ap.req::<i16>("deg/s")?;
+                    ap.end()?;
+                    Ok(Command::Compliance(ComplianceCmd::Vel(dps)))
                 },
                 Some(other) => Err(ParseError::UnknownSubcommand(other)),
             },

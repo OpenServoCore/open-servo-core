@@ -10,6 +10,7 @@ use crate::safety::SafetyThresholds;
 use crate::App;
 use open_servo_control::ControlLoop;
 use open_servo_hw::{BdcMotorDriver, DebugIo};
+use open_servo_hw::sensor::PositionSensor;
 use open_servo_math::{CentiC, CentiDeg, DerivativeMode, Gain};
 #[cfg(feature = "current-sense-bus")]
 use open_servo_math::MilliAmp;
@@ -29,15 +30,16 @@ fn fault_str(kind: FaultKind) -> &'static str {
     }
 }
 
-use super::command::{Command, FaultCmd, LimitCmd, MotorCmd, PidCmd, PidField, SetCmd};
+use super::command::{Command, ComplianceCmd, FaultCmd, LimitCmd, MotorCmd, PidCmd, PidField, SetCmd};
 use super::DebugShell;
+use crate::servo_core::ServoMode;
 
 impl<D: DebugIo> DebugShell<D> {
     /// Execute a parsed command.
     pub(super) fn exec_command<C, H>(&mut self, app: &mut App<C>, hw: &mut H, cmd: Command)
     where
         C: ControlLoop,
-        H: BdcMotorDriver,
+        H: BdcMotorDriver + PositionSensor,
     {
         match cmd {
             Command::Help => self.cmd_help(),
@@ -64,6 +66,10 @@ impl<D: DebugIo> DebugShell<D> {
             Command::Motor(MotorCmd::Status) => self.cmd_motor_status(app),
             Command::Motor(MotorCmd::Engage) => self.cmd_motor_engage(app, hw),
             Command::Motor(MotorCmd::Disengage) => self.cmd_motor_disengage(app, hw),
+            Command::Compliance(ComplianceCmd::Show) => self.cmd_compliance_show(app),
+            Command::Compliance(ComplianceCmd::MoveMa(ma)) => self.cmd_compliance_move_ma(app, ma),
+            Command::Compliance(ComplianceCmd::HoldMa(ma)) => self.cmd_compliance_hold_ma(app, ma),
+            Command::Compliance(ComplianceCmd::Vel(dps)) => self.cmd_compliance_vel(app, dps),
         }
     }
 
@@ -75,18 +81,23 @@ impl<D: DebugIo> DebugShell<D> {
         self.println("commands:");
         self.println("  help, ?                   - show this help");
         self.println("  state, s                  - show system state");
+        self.println("");
         self.println("  fault                     - show fault status");
         self.println("  fault clear               - clear latched fault");
+        self.println("");
         self.println("  motor                     - show motor status");
         self.println("  motor engage              - engage motor (enable)");
         self.println("  motor disengage           - disengage motor (disable)");
+        self.println("");
         self.println("  set sp <cdeg>             - set setpoint");
+        self.println("");
         self.println("  pid pos                   - show PID config");
         self.println("  pid pos set kp <f32>      - set Kp gain");
         self.println("  pid pos set ki <f32>      - set Ki gain");
         self.println("  pid pos set kd <f32>      - set Kd gain");
         self.println("  pid pos set <kp> <ki> <kd> - set all gains");
         self.println("  pid pos mode err|meas     - set D mode");
+        self.println("");
         self.println("  limit                     - show safety limits");
         #[cfg(feature = "current-sense-bus")]
         self.println("  limit current [mA]        - get/set current limit");
@@ -97,6 +108,11 @@ impl<D: DebugIo> DebugShell<D> {
         self.println("  limit stall [ticks]       - get/set stall timeout");
         self.println("  limit error [cdeg]        - get/set error limit");
         self.println("  limit reset               - restore defaults");
+        self.println("");
+        self.println("  compliance                - show compliance mode & settings");
+        self.println("  compliance move <mA>      - set move mode current limit");
+        self.println("  compliance hold <mA>      - set hold mode current limit");
+        self.println("  compliance vel <dps>      - set backdrive velocity threshold");
     }
 
     fn cmd_state<C: ControlLoop>(&mut self, app: &App<C>) {
@@ -405,13 +421,79 @@ impl<D: DebugIo> DebugShell<D> {
         self.println(&buf);
     }
     
-    fn cmd_motor_engage<C: ControlLoop, H: BdcMotorDriver>(&mut self, app: &mut App<C>, _hw: &mut H) {
-        app.engage_motor();
+    fn cmd_motor_engage<C: ControlLoop, H>(&mut self, app: &mut App<C>, hw: &mut H) 
+    where
+        H: BdcMotorDriver + open_servo_hw::sensor::PositionSensor,
+    {
+        app.engage_motor(hw);
         self.println("motor engaged");
     }
     
     fn cmd_motor_disengage<C: ControlLoop, H: BdcMotorDriver>(&mut self, app: &mut App<C>, hw: &mut H) {
         app.disengage_motor(hw);
         self.println("motor disengaged");
+    }
+    
+    // ========================================================================
+    // Compliance commands
+    // ========================================================================
+    
+    fn cmd_compliance_show<C: ControlLoop>(&mut self, app: &App<C>) {
+        let core = app.core();
+        let mode = core.compliance_mode();
+        let velocity = core.measured_velocity();
+        
+        let mode_str = match mode {
+            ServoMode::Move => "MOVE",
+            ServoMode::Hold => "HOLD",
+            ServoMode::Yield => "YIELD",
+        };
+        
+        let mut buf: String<64> = String::new();
+        let _ = uwrite!(buf, "mode: {}, vel: {} dps", mode_str, velocity.as_dps10() / 10);
+        self.println(&buf);
+        
+        // Show current limits
+        buf.clear();
+        let _ = uwrite!(buf, "move: 800mA, hold: 150mA"); // TODO: Make these accessible
+        self.println(&buf);
+    }
+    
+    fn cmd_compliance_move_ma<C: ControlLoop>(&mut self, app: &mut App<C>, ma: i16) {
+        if ma < 100 || ma > 1500 {
+            self.println("error: move limit must be 100-1500 mA");
+            return;
+        }
+        
+        app.core_mut().set_move_current_limit(ma);
+        
+        let mut buf: String<32> = String::new();
+        let _ = uwrite!(buf, "move limit: {}mA", ma);
+        self.println(&buf);
+    }
+    
+    fn cmd_compliance_hold_ma<C: ControlLoop>(&mut self, app: &mut App<C>, ma: i16) {
+        if ma < 100 || ma > 800 {
+            self.println("error: hold limit must be 100-800 mA");
+            return;
+        }
+        
+        app.core_mut().set_hold_current_limit(ma);
+        
+        let mut buf: String<32> = String::new();
+        let _ = uwrite!(buf, "hold limit: {}mA", ma);
+        self.println(&buf);
+    }
+    
+    fn cmd_compliance_vel<C: ControlLoop>(&mut self, _app: &mut App<C>, dps: i16) {
+        if dps < 10 || dps > 100 {
+            self.println("error: backdrive vel must be 10-100 deg/s");
+            return;
+        }
+        
+        // TODO: Make backdrive velocity threshold configurable
+        let mut buf: String<48> = String::new();
+        let _ = uwrite!(buf, "backdrive threshold: {} deg/s (not yet impl)", dps);
+        self.println(&buf);
     }
 }
