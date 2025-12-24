@@ -31,6 +31,8 @@ pub struct SystemState {
     pub bus_voltage: Option<MilliVolt>,
     /// Temperature reading (if available)
     pub temperature: Option<CentiC>,
+    /// Torque is currently being limited
+    pub torque_limited: bool,
 }
 
 /// Pure servo control core - no hardware dependencies.
@@ -118,20 +120,32 @@ impl<C: ControlLoop> ServoCore<C> {
             return FastOutputs::fault(fault);
         }
         
-        // 3. Clamp setpoint to position bounds and run control loop
+        // 3. Update torque limiter with current reading and get PWM direction
+        // We need the setpoint to determine intended direction for blanking
         let clamped_setpoint = self.safety.clamp_setpoint(self.controller.get_setpoint());
+        let direction_hint = (clamped_setpoint - position).as_cdeg();
+        
+        // Time delta for 10kHz control loop is 100 microseconds
+        const TICK_DT_US: u32 = 100;
+        self.safety.torque_limiter_mut().update(inputs.current(), direction_hint, TICK_DT_US);
+        
+        // 4. Get torque limits and apply to controller
+        let (min_duty, max_duty) = self.safety.torque_limiter().get_limits();
+        self.controller.set_output_limits(min_duty, max_duty);
+        
+        // 5. Run control loop with dynamic limits
         let pwm_command = self
             .controller
             .compute(clamped_setpoint, position, inputs.current());
 
-        // 4. Check for stall (PWM saturated but no movement)
+        // 6. Check for stall (PWM saturated but no movement)
         let pwm_saturated = pwm_command.abs() >= Duty::MAX.abs();
         if let Some(fault) = self.safety.check_stall(position, pwm_saturated) {
             self.raise_fault(fault);
             return FastOutputs::fault(fault);
         }
 
-        // 5. Update system state for telemetry
+        // 7. Update system state for telemetry
         self.system_state = SystemState {
             setpoint: clamped_setpoint,
             position,
@@ -140,6 +154,7 @@ impl<C: ControlLoop> ServoCore<C> {
             current: inputs.current,
             bus_voltage: inputs.bus_voltage,
             temperature: inputs.temperature,
+            torque_limited: self.safety.torque_limiter().is_limited(),
         };
 
         FastOutputs::normal(pwm_command)
@@ -285,6 +300,10 @@ mod tests {
 
         fn set_setpoint(&mut self, setpoint: CentiDeg) {
             self.setpoint = setpoint;
+        }
+
+        fn set_output_limits(&mut self, _min: i32, _max: i32) {
+            // Mock implementation - do nothing
         }
 
         fn get_setpoint(&self) -> CentiDeg {

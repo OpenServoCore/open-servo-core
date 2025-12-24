@@ -5,7 +5,10 @@ edition.workspace = true
 authors.workspace = true
 
 [features]
+default = []
 defmt = ["dep:defmt"]
+# Enable std for tests (automatically enabled by cargo test)
+std = []
 
 [dependencies]
 ufmt = { workspace = true }
@@ -13,3 +16,10 @@ ufmt = { workspace = true }
 [dependencies.defmt]
 workspace = true
 optional = true
+
+[dev-dependencies]
+# Dev dependencies are only used for tests and can use std
+
+[lib]
+# Enable test harness
+test = true

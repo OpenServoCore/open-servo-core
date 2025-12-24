@@ -181,6 +181,10 @@ impl ControlLoop for PidController {
     fn get_setpoint(&self) -> CentiDeg {
         self.setpoint
     }
+    
+    fn set_output_limits(&mut self, min: i32, max: i32) {
+        self.pid.set_output_limits(min, max);
+    }
 
     fn pid_config(&self) -> Option<&PidConfig> {
         Some(&self.config)

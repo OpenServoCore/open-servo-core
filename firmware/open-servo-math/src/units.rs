@@ -343,6 +343,13 @@ impl Duty {
     /// Zero duty cycle (stopped)
     pub const ZERO: Self = Self(0);
     
+    /// Convert to percentage (-100 to 100)
+    #[inline]
+    pub fn to_percentage(self) -> i8 {
+        // Scale from i16 range to -100..100
+        ((self.0 as i32 * 100) / i16::MAX as i32) as i8
+    }
+    
     #[inline]
     pub const fn from_raw(raw: i16) -> Self {
         Self(raw)

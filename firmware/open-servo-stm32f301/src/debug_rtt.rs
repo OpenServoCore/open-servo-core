@@ -1,11 +1,11 @@
 //! RTT-based DebugIo implementation for STM32F301.
 //!
-//! Uses two RTT channels:
-//! - Channel 0: Logger output (write-only, global with critical section)
-//! - Channel 1: REPL (read/write, owned by shell, lock-free)
+//! Uses RTT channel 0 for REPL (bidirectional), channel 1 for defmt (up only)
 
 use open_servo_hw::DebugIo;
 use rtt_target::{rtt_init, ChannelMode, DownChannel, UpChannel};
+#[cfg(feature = "defmt")]
+use rtt_target::set_defmt_channel;
 
 /// RTT-based debug I/O for the REPL (channel 1).
 pub struct RttDebugIo {
@@ -13,66 +13,40 @@ pub struct RttDebugIo {
     down: DownChannel,
 }
 
-/// RTT-based logger output (channel 0).
-/// Implements DebugIo for use with open-servo-log.
-pub struct RttLoggerIo {
-    up: UpChannel,
-}
-
-/// Initialize RTT channels and return both logger and REPL I/O handles.
+/// Initialize RTT channels and return REPL I/O handle.
 ///
-/// Returns (logger_io, repl_io):
-/// - logger_io: Channel 0 for logging (store in static for logger)
-/// - repl_io: Channel 1 for REPL (give to DebugShell)
-pub fn init_rtt() -> (RttLoggerIo, RttDebugIo) {
+/// Returns repl_io for channel 0 (channel 1 is for defmt when enabled)
+pub fn init_rtt() -> RttDebugIo {
+    // Initialize all channels in one call
     let channels = rtt_init! {
         up: {
             0: {
                 size: 512,
                 mode: ChannelMode::NoBlockSkip,
-                name: "log"
+                name: "repl"
             }
             1: {
                 size: 512,
                 mode: ChannelMode::NoBlockSkip,
-                name: "repl"
+                name: "defmt"
             }
         }
         down: {
             0: {
-                size: 16,
-                name: "unused"
-            }
-            1: {
                 size: 128,
                 name: "repl"
             }
         }
     };
-
-    let logger_io = RttLoggerIo {
+    
+    // Set channel 1 as defmt channel when defmt is enabled
+    #[cfg(feature = "defmt")]
+    rtt_target::set_defmt_channel(channels.up.1);
+    
+    RttDebugIo {
         up: channels.up.0,
-    };
-
-    let repl_io = RttDebugIo {
-        up: channels.up.1,
-        down: channels.down.1,
-    };
-
-    (logger_io, repl_io)
-}
-
-impl DebugIo for RttLoggerIo {
-    fn try_read(&mut self) -> Option<u8> {
-        // Logger is write-only
-        None
+        down: channels.down.0,
     }
-
-    fn write(&mut self, data: &[u8]) {
-        self.up.write(data);
-    }
-
-    fn flush(&mut self) {}
 }
 
 impl DebugIo for RttDebugIo {

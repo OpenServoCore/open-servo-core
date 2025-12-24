@@ -9,6 +9,7 @@ use core::str::FromStr;
 /// Parses from strings like "40", "-3.5", "0.12" without linking float parsing code.
 /// Displays as "40.00" using integer-only formatting (no core::fmt::float).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
 pub struct Gain(i32); // scaled by 100
 
 impl Gain {

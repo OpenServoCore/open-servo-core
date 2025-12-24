@@ -12,10 +12,12 @@
 mod sensor_health;
 mod thermal_fault;
 mod thresholds;
+mod torque_limiter;
 
 pub use sensor_health::*;
 pub use thermal_fault::*;
 pub use thresholds::*;
+pub use torque_limiter::TorqueLimiter;
 
 use crate::fault::FaultKind;
 use open_servo_math::{CentiC, CentiDeg, MilliAmp, ThermalModel};
@@ -40,6 +42,7 @@ pub struct SafetyManager {
     sensor_health: SensorHealth,
     thermal_model: ThermalModel,
     thermal_fault: ThermalFaultDetector,
+    torque_limiter: TorqueLimiter,
     last_temperature: Option<CentiC>,
     /// Last position for stall detection
     stall_last_position: CentiDeg,
@@ -63,6 +66,7 @@ impl SafetyManager {
             sensor_health: SensorHealth::new(),
             thermal_model: ThermalModel::default(),
             thermal_fault: ThermalFaultDetector::default(),
+            torque_limiter: TorqueLimiter::default(),
             last_temperature: None,
             stall_last_position: CentiDeg::from_cdeg(0),
             stall_count: 0,
@@ -232,6 +236,18 @@ impl SafetyManager {
     #[inline]
     pub fn clamp_setpoint(&self, setpoint: CentiDeg) -> CentiDeg {
         self.thresholds.clamp_setpoint(setpoint)
+    }
+    
+    /// Get mutable reference to torque limiter for updates.
+    #[inline]
+    pub fn torque_limiter_mut(&mut self) -> &mut TorqueLimiter {
+        &mut self.torque_limiter
+    }
+    
+    /// Get reference to torque limiter for reading state.
+    #[inline]
+    pub fn torque_limiter(&self) -> &TorqueLimiter {
+        &self.torque_limiter
     }
 
     /// Reset safety state after fault clear.

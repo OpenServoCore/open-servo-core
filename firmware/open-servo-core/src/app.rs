@@ -43,6 +43,7 @@ pub use crate::servo_core::SystemState as AppSystemState;
 /// directly, returning `None`. SafetyManager then skips those checks.
 pub struct App<C: ControlLoop> {
     core: ServoCore<C>,
+    slow_tick_counter: u8,
 }
 
 impl<C: ControlLoop> App<C> {
@@ -50,6 +51,7 @@ impl<C: ControlLoop> App<C> {
     pub fn new(controller: C) -> Self {
         Self {
             core: ServoCore::new(controller),
+            slow_tick_counter: 0,
         }
     }
 
@@ -126,6 +128,60 @@ impl<C: ControlLoop> App<C> {
                     // Apply safety on fault
                     hw.set_pwm(Duty::ZERO);
                     hw.set_enable(false);
+                }
+
+                // Simple tick logging every 0.5 seconds
+                // Current timer is ~10Hz, so 5 ticks = 0.5 seconds
+                self.slow_tick_counter += 1;
+                if self.slow_tick_counter >= 5 {
+                    self.slow_tick_counter = 0;
+                    
+                    #[cfg(feature = "debug-shell")]
+                    {
+                        // Get system state and safety
+                        let state = self.core.system_state();
+                        let safety = self.core.safety();
+                        
+                        // Position and control
+                        let pos = state.position.as_cdeg();
+                        let setpoint = state.setpoint.as_cdeg();
+                        let pos_error = setpoint - pos;
+                        
+                        // Temperatures
+                        let mcu_temp = safety.last_temperature()
+                            .map(|t| t.as_centi_c() / 100)  // Convert to degrees
+                            .unwrap_or(0);
+                        let motor_temp = safety.motor_temp_deg();
+                        let motor_rise = safety.motor_temp_rise_deg();
+                        
+                        // Electrical
+                        let vdd_mv = state.bus_voltage
+                            .map(|v| v.as_mv())
+                            .unwrap_or(0);
+                        
+                        #[cfg(feature = "current-sense-bus")]
+                        let current_ma = state.current
+                            .map(|c| c.as_ma())
+                            .unwrap_or(0);
+                        
+                        let pwm_pct = state.pwm_duty.to_percentage();
+                        
+                        // Log with current if available
+                        #[cfg(feature = "current-sense-bus")]
+                        #[cfg(feature = "defmt")]
+                        defmt::info!("pos={} sp={} err={} pwm={}% I={}mA V={}mV mcu={}C mot={}C rise={}C", 
+                            pos, setpoint, pos_error, pwm_pct, current_ma, vdd_mv,
+                            mcu_temp, motor_temp, motor_rise
+                        );
+                        
+                        // Log without current if not available  
+                        #[cfg(not(feature = "current-sense-bus"))]
+                        #[cfg(feature = "defmt")]
+                        defmt::info!("pos={} sp={} err={} pwm={}% V={}mV mcu={}C mot={}C rise={}C", 
+                            pos, setpoint, pos_error, pwm_pct, vdd_mv,
+                            mcu_temp, motor_temp, motor_rise
+                        );
+                    }
                 }
 
                 // Log system state

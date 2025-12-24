@@ -4,11 +4,19 @@ members = [
     "open-servo-control",
     "open-servo-hw",
     "open-servo-hw-utils",
-    "open-servo-log",
     "open-servo-stm32f301",
     "open-servo-math",
 ]
 resolver = "2"
+
+# Exclude board crates from default members to prevent their configs from affecting tests
+default-members = [
+    "open-servo-core",
+    "open-servo-control",
+    "open-servo-hw",
+    "open-servo-hw-utils",
+    "open-servo-math",
+]
 
 [workspace.package]
 version = "0.1.0"

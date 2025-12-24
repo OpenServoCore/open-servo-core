@@ -24,6 +24,13 @@ pub trait ControlLoop {
 
     /// Get current setpoint (in centidegrees for position control).
     fn get_setpoint(&self) -> CentiDeg;
+    
+    /// Set output limits dynamically (for torque limiting).
+    /// 
+    /// Used by the torque limiter to dynamically adjust PWM limits
+    /// based on current measurements. Implementations should update
+    /// their internal limits and adjust anti-windup accordingly.
+    fn set_output_limits(&mut self, min: i32, max: i32);
 
     // =========================================================================
     // Optional PID config interface (for controllers that support it)

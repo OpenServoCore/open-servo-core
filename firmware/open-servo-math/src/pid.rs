@@ -8,6 +8,7 @@
 
 /// Derivative calculation mode.
 #[derive(Copy, Clone, Debug, Default, PartialEq, Eq)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
 pub enum DerivativeMode {
     /// D = Kd * (error - prev_error)
     #[default]
