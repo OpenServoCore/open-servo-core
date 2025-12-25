@@ -232,16 +232,16 @@ mod tests {
     fn test_sustained_overcurrent_triggers_limiting() {
         let config = ComplianceConfig::new(600, 50, 3, 230, 3277);
         let mut model = ComplianceModel::new(config);
-        
+
         // First two samples shouldn't trigger (deglitch = 3)
-        model.update(Some(MilliAmp::from_ma(600)), 100);
+        model.update(Some(MilliAmp::from_ma(650)), 100); // Above 600mA limit
         assert_eq!(model.state(), LimitState::Normal);
-        
-        model.update(Some(MilliAmp::from_ma(600)), 100);
+
+        model.update(Some(MilliAmp::from_ma(650)), 100);
         assert_eq!(model.state(), LimitState::Normal);
-        
+
         // Third consecutive sample should trigger
-        model.update(Some(MilliAmp::from_ma(600)), 100);
+        model.update(Some(MilliAmp::from_ma(650)), 100);
         assert_eq!(model.state(), LimitState::Limiting);
         
         // Duty should be backed off
@@ -254,17 +254,17 @@ mod tests {
     fn test_deglitch_prevents_single_spike() {
         let config = ComplianceConfig::new(600, 50, 3, 230, 3277);
         let mut model = ComplianceModel::new(config);
-        
-        // Single spike
-        model.update(Some(MilliAmp::from_ma(600)), 100);
+
+        // Single spike (above 600mA limit)
+        model.update(Some(MilliAmp::from_ma(650)), 100);
         assert_eq!(model.state(), LimitState::Normal);
-        
+
         // Back to normal current resets counter
         model.update(Some(MilliAmp::from_ma(400)), 100);
         assert_eq!(model.state(), LimitState::Normal);
-        
+
         // Another spike doesn't trigger (counter was reset)
-        model.update(Some(MilliAmp::from_ma(600)), 100);
+        model.update(Some(MilliAmp::from_ma(650)), 100);
         assert_eq!(model.state(), LimitState::Normal);
     }
     
@@ -272,10 +272,10 @@ mod tests {
     fn test_recovery_at_correct_rate() {
         let config = ComplianceConfig::new(600, 50, 3, 230, 3277);
         let mut model = ComplianceModel::new(config);
-        
-        // Trigger limiting
+
+        // Trigger limiting (above 600mA limit)
         for _ in 0..3 {
-            model.update(Some(MilliAmp::from_ma(600)), 100);
+            model.update(Some(MilliAmp::from_ma(650)), 100);
         }
         let limited_cap = model.duty_cap();
         
@@ -298,25 +298,25 @@ mod tests {
     fn test_hysteresis_prevents_oscillation() {
         let config = ComplianceConfig::new(600, 50, 3, 230, 3277);
         let mut model = ComplianceModel::new(config);
-        
-        // Trigger limiting
+
+        // Trigger limiting (above 600mA limit)
         for _ in 0..3 {
-            model.update(Some(MilliAmp::from_ma(600)), 100);
+            model.update(Some(MilliAmp::from_ma(650)), 100);
         }
         assert_eq!(model.state(), LimitState::Limiting);
         let limited_cap = model.duty_cap();
         
-        // Current in hysteresis band (450-500mA) - should hold state
-        model.update(Some(MilliAmp::from_ma(475)), 100);
+        // Current in hysteresis band (550-600mA) - should hold state
+        model.update(Some(MilliAmp::from_ma(575)), 100);
         assert_eq!(model.state(), LimitState::Limiting);
         assert_eq!(model.duty_cap(), limited_cap); // No change
-        
-        // Drop below hysteresis - should start recovery
-        model.update(Some(MilliAmp::from_ma(440)), 100);
+
+        // Drop below hysteresis (< 550mA) - should start recovery
+        model.update(Some(MilliAmp::from_ma(500)), 100);
         assert_eq!(model.state(), LimitState::Recovering);
-        
+
         // Back in hysteresis band - should hold recovery state
-        model.update(Some(MilliAmp::from_ma(475)), 100);
+        model.update(Some(MilliAmp::from_ma(575)), 100);
         assert_eq!(model.state(), LimitState::Recovering);
         let recovering_cap = model.duty_cap();
         assert_eq!(model.duty_cap(), recovering_cap); // No change
@@ -336,13 +336,13 @@ mod tests {
     
     #[test]
     fn test_minimum_duty_cap() {
-        let mut config = ComplianceConfig::new(600, 50, 3, 128, 3277); // 0.5 - aggressive backoff
+        let config = ComplianceConfig::new(600, 50, 3, 128, 3277); // 0.5 - aggressive backoff
         let mut model = ComplianceModel::new(config);
-        
-        // Keep triggering to drive duty down
+
+        // Keep triggering to drive duty down (above 600mA limit)
         for _ in 0..20 {
             for _ in 0..3 {
-                model.update(Some(MilliAmp::from_ma(600)), 100);
+                model.update(Some(MilliAmp::from_ma(650)), 100);
             }
         }
         

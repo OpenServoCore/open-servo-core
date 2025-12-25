@@ -20,6 +20,8 @@ use ufmt::uwrite;
 
 use crate::App;
 use open_servo_control::ControlLoop;
+#[cfg(feature = "pid")]
+use open_servo_control::PidTunable;
 use open_servo_hw::{BdcMotorDriver, DebugIo};
 
 use arg_parser::{ArgError, ArgParser};
@@ -50,7 +52,44 @@ impl<D: DebugIo> DebugShell<D> {
     ///
     /// This should be called from the main loop. It reads up to
     /// MAX_BYTES_PER_POLL bytes per call to avoid starving other tasks.
+    #[cfg(feature = "pid")]
     pub fn poll<C, H>(&mut self, app: &mut App<C>, hw: &mut H)
+    where
+        C: ControlLoop + PidTunable,
+        H: BdcMotorDriver + open_servo_hw::sensor::PositionSensor,
+    {
+        self.poll_inner(app, hw)
+    }
+
+    /// Pump the debug shell (no PID support).
+    #[cfg(not(feature = "pid"))]
+    pub fn poll<C, H>(&mut self, app: &mut App<C>, hw: &mut H)
+    where
+        C: ControlLoop,
+        H: BdcMotorDriver + open_servo_hw::sensor::PositionSensor,
+    {
+        self.poll_inner(app, hw)
+    }
+
+    #[cfg(feature = "pid")]
+    fn poll_inner<C, H>(&mut self, app: &mut App<C>, hw: &mut H)
+    where
+        C: ControlLoop + PidTunable,
+        H: BdcMotorDriver + open_servo_hw::sensor::PositionSensor,
+    {
+        for _ in 0..MAX_BYTES_PER_POLL {
+            let Some(b) = self.io.try_read() else { break };
+
+            if self.push_byte(b) {
+                // Got a complete line
+                let line = self.take_line();
+                self.handle_line(app, hw, &line);
+            }
+        }
+    }
+
+    #[cfg(not(feature = "pid"))]
+    fn poll_inner<C, H>(&mut self, app: &mut App<C>, hw: &mut H)
     where
         C: ControlLoop,
         H: BdcMotorDriver + open_servo_hw::sensor::PositionSensor,
@@ -88,7 +127,56 @@ impl<D: DebugIo> DebugShell<D> {
     }
 
     /// Handle a complete command line.
+    #[cfg(feature = "pid")]
     fn handle_line<C, H>(&mut self, app: &mut App<C>, hw: &mut H, line: &str)
+    where
+        C: ControlLoop + PidTunable,
+        H: BdcMotorDriver + open_servo_hw::sensor::PositionSensor,
+    {
+        self.handle_line_inner(app, hw, line)
+    }
+
+    #[cfg(not(feature = "pid"))]
+    fn handle_line<C, H>(&mut self, app: &mut App<C>, hw: &mut H, line: &str)
+    where
+        C: ControlLoop,
+        H: BdcMotorDriver + open_servo_hw::sensor::PositionSensor,
+    {
+        self.handle_line_inner(app, hw, line)
+    }
+
+    #[cfg(feature = "pid")]
+    fn handle_line_inner<C, H>(&mut self, app: &mut App<C>, hw: &mut H, line: &str)
+    where
+        C: ControlLoop + PidTunable,
+        H: BdcMotorDriver + open_servo_hw::sensor::PositionSensor,
+    {
+        let line = line.trim();
+        if line.is_empty() {
+            return;
+        }
+
+        // Echo the command
+        let mut echo: String<128> = String::new();
+        let _ = uwrite!(echo, "> {}", line);
+        self.println(&echo);
+
+        let mut ap = ArgParser::new(line);
+        match Command::parse(&mut ap) {
+            Ok(cmd) => {
+                self.exec_command(app, hw, cmd);
+                self.println(""); // Add newline after command output
+            }
+            Err(ParseError::Empty) => {}
+            Err(e) => {
+                self.print_parse_error(e);
+                self.println(""); // Add newline after error
+            }
+        }
+    }
+
+    #[cfg(not(feature = "pid"))]
+    fn handle_line_inner<C, H>(&mut self, app: &mut App<C>, hw: &mut H, line: &str)
     where
         C: ControlLoop,
         H: BdcMotorDriver + open_servo_hw::sensor::PositionSensor,

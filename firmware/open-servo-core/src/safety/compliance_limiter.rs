@@ -145,13 +145,13 @@ mod tests {
         
         // After blanking period, current should be processed
         for _ in 0..DIRECTION_CHANGE_BLANKING_TICKS {
-            limiter.update(Some(MilliAmp::from_ma(600)), 100, 100);
+            limiter.update(Some(MilliAmp::from_ma(650)), 100, 100); // Above 600mA limit
         }
         assert!(!limiter.is_blanking());
-        
+
         // Now sustained overcurrent should trigger limiting (after deglitch)
-        limiter.update(Some(MilliAmp::from_ma(600)), 100, 100);
-        limiter.update(Some(MilliAmp::from_ma(600)), 100, 100);
+        limiter.update(Some(MilliAmp::from_ma(650)), 100, 100);
+        limiter.update(Some(MilliAmp::from_ma(650)), 100, 100);
         assert!(limiter.is_limited());
     }
     
@@ -208,11 +208,11 @@ mod tests {
             limiter.update(Some(MilliAmp::from_ma(100)), 100, 100);
         }
         
-        // Now trigger actual limiting
+        // Now trigger actual limiting (current must be > limit, not >=)
         for _ in 0..3 {
-            limiter.update(Some(MilliAmp::from_ma(600)), 100, 100);
+            limiter.update(Some(MilliAmp::from_ma(650)), 100, 100); // Above 600mA limit
         }
-        
+
         assert!(limiter.is_limited());
         assert_eq!(limiter.state(), LimitState::Limiting);
         assert!(limiter.duty_cap() < 32767);

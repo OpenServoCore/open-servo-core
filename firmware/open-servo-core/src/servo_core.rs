@@ -4,7 +4,7 @@
 //! without any hardware dependencies. It can be fully tested on a host
 //! system by feeding it synthetic inputs.
 
-use open_servo_control::ControlLoop;
+use open_servo_control::{ControlInput, ControlLoop, DutyLimits};
 use open_servo_hw::{BoardSafetyConfig, BoardThermalConfig};
 use open_servo_math::{CentiC, CentiDeg, Duty, MilliVolt, DegPerSec10, ComplianceConfig, ThermalModel};
 #[cfg(feature = "current-sense-bus")]
@@ -108,7 +108,10 @@ pub struct ServoCore<C: ControlLoop> {
     safety: SafetyManager,
     system_state: SystemState,
     motor_engaged: bool,
-    
+
+    // Setpoint owned by ServoCore (Stage 1 refactor)
+    setpoint: Option<CentiDeg>,
+
     // Compliance state
     mode: ServoMode,
     tick_counter: u32,
@@ -171,7 +174,10 @@ impl<C: ControlLoop> ServoCore<C> {
             safety: SafetyManager::new(thresholds, thermal_model, move_compliance_config.clone()),
             system_state: SystemState::default(),
             motor_engaged: false, // Start disengaged
-            
+
+            // Setpoint owned by ServoCore
+            setpoint: None,
+
             // Compliance state
             mode: ServoMode::Move,
             tick_counter: 0,
@@ -253,83 +259,100 @@ impl<C: ControlLoop> ServoCore<C> {
         
         // Update velocity (decimated with countdown)
         self.update_velocity(position);
-        
-        // Track setpoint changes and clamp
-        let clamped_setpoint = self.safety.clamp_setpoint(self.controller.get_setpoint());
+
+        // Get setpoint - if None, return safe (motor disengaged or no target)
+        let Some(setpoint) = self.setpoint else {
+            return FastOutputs::safe();
+        };
+
+        // Clamp setpoint to bounds and track changes
+        let clamped_setpoint = self.safety.clamp_setpoint(setpoint);
         self.update_setpoint_tracking(clamped_setpoint);
-        
+
         // Calculate error for mode decisions
         let error = (clamped_setpoint - position).as_cdeg();
-        
+
         // Update compliance mode
         let mode_changed = self.update_compliance_mode(position, clamped_setpoint, error);
-        
+
         // Switch compliance config on mode transitions
         if mode_changed {
             match self.mode {
                 ServoMode::Move => {
-                    self.safety.compliance_limiter_mut().set_config(self.move_compliance_config);
+                    self.safety
+                        .compliance_limiter_mut()
+                        .set_config(self.move_compliance_config);
                 }
                 ServoMode::Hold | ServoMode::Yield => {
-                    self.safety.compliance_limiter_mut().set_config(self.hold_compliance_config);
+                    self.safety
+                        .compliance_limiter_mut()
+                        .set_config(self.hold_compliance_config);
                 }
             }
         }
-        
+
         // 3. Update compliance limiter with current reading
-        self.safety.compliance_limiter_mut().update(inputs.current(), error, CONTROL_DT_US);
-        
+        self.safety
+            .compliance_limiter_mut()
+            .update(inputs.current(), error, CONTROL_DT_US);
+
         // 4. Get base limits from compliance limiter
         let (mut min_duty, mut max_duty) = self.safety.compliance_limiter().get_limits();
-        
+
         // Apply mode-specific limits
         match self.mode {
             ServoMode::Move => {
                 // Use full torque limiter limits
             }
-            
+
             ServoMode::Hold => {
                 // Apply error-based duty cap curve
                 let duty_cap = self.calculate_hold_duty_cap(error.abs());
                 min_duty = min_duty.max(-duty_cap as i32);
                 max_duty = max_duty.min(duty_cap as i32);
             }
-            
+
             ServoMode::Yield => {
                 let yield_elapsed = self.tick_counter.saturating_sub(self.yield_enter_tick);
-                
+
                 if yield_elapsed < YIELD_COAST_TICKS {
                     // Pure coast for first 100ms
                     min_duty = 0;
                     max_duty = 0;
                 } else {
                     // Optional small duty to "feel alive"
-                    min_duty = -1638;  // 5%
+                    min_duty = -1638; // 5%
                     max_duty = 1638;
                 }
-                
+
                 // Reset controller on YIELD entry
                 if yield_elapsed == 0 {
                     self.controller.reset();
                 }
             }
         }
-        
-        // Set limits BEFORE compute (automatic anti-windup)
-        self.controller.set_output_limits(min_duty, max_duty);
-        
-        // 5. Run control loop with dynamic limits
-        let pwm_command = self
-            .controller
-            .compute(clamped_setpoint, position, inputs.current());
 
-        // Update tracking for next tick (unconditional)
-        self.prev_pwm_command = pwm_command.as_raw();
+        // 5. Build ControlInput and run controller
+        let input = ControlInput {
+            setpoint: clamped_setpoint,
+            position,
+            velocity: Some(self.measured_velocity),
+            current: inputs.current(),
+            bus_voltage: inputs.bus_voltage,
+            limits: DutyLimits {
+                min: Duty::from_raw(min_duty.clamp(i16::MIN as i32, i16::MAX as i32) as i16),
+                max: Duty::from_raw(max_duty.clamp(i16::MIN as i32, i16::MAX as i32) as i16),
+            },
+        };
+
+        let output = self.controller.fast_tick(&input);
+
+        // Update tracking for next tick
+        self.prev_pwm_command = output.duty.as_raw();
         self.prev_error = error;
 
-        // 6. Check for stall (PWM saturated but no movement)
-        let pwm_saturated = pwm_command.abs() >= Duty::MAX.abs();
-        if let Some(fault) = self.safety.check_stall(position, pwm_saturated) {
+        // 6. Check for stall using output.saturated (per-tick limits, not Duty::MAX)
+        if let Some(fault) = self.safety.check_stall(position, output.saturated) {
             self.raise_fault(fault);
             return FastOutputs::fault(fault);
         }
@@ -338,7 +361,7 @@ impl<C: ControlLoop> ServoCore<C> {
         self.system_state = SystemState {
             setpoint: clamped_setpoint,
             position,
-            pwm_duty: pwm_command,
+            pwm_duty: output.duty,
             #[cfg(feature = "current-sense-bus")]
             current: inputs.current,
             bus_voltage: inputs.bus_voltage,
@@ -346,7 +369,7 @@ impl<C: ControlLoop> ServoCore<C> {
             compliance_limited: self.safety.compliance_limiter().is_limited(),
         };
 
-        FastOutputs::normal(pwm_command)
+        FastOutputs::normal(output.duty)
     }
 
     /// Slow monitoring tick (100Hz).
@@ -427,12 +450,17 @@ impl<C: ControlLoop> ServoCore<C> {
     /// The setpoint is clamped to position bounds.
     pub fn set_setpoint(&mut self, setpoint: CentiDeg) {
         let clamped = self.safety.clamp_setpoint(setpoint);
-        self.controller.set_setpoint(clamped);
+        self.setpoint = Some(clamped);
     }
 
     /// Get the current setpoint.
-    pub fn get_setpoint(&self) -> CentiDeg {
-        self.controller.get_setpoint()
+    pub fn get_setpoint(&self) -> Option<CentiDeg> {
+        self.setpoint
+    }
+
+    /// Clear the setpoint (for disengagement).
+    pub fn clear_setpoint(&mut self) {
+        self.setpoint = None;
     }
 
     /// Get mutable reference to the controller.
@@ -449,19 +477,21 @@ impl<C: ControlLoop> ServoCore<C> {
     /// If there's no setpoint, sets it to the current position to hold
     pub fn engage(&mut self, current_position: CentiDeg) {
         self.motor_engaged = true;
-        
-        // If controller has no setpoint (was disengaged), set it to current position
+
+        // If no setpoint (was disengaged), set it to current position
         // This prevents jumping to zero on engage
-        if !self.controller.has_setpoint() {
-            self.controller.set_setpoint(current_position);
+        if self.setpoint.is_none() {
+            self.setpoint = Some(current_position);
         }
     }
-    
+
     /// Disengage the motor (disable control, motor will coast)
     pub fn disengage(&mut self) {
         self.motor_engaged = false;
         // Clear the setpoint so next engage will capture current position
-        self.controller.clear_setpoint();
+        self.setpoint = None;
+        // Reset controller state (clear integrator, derivative history)
+        self.controller.reset();
     }
     
     /// Check if the motor is engaged
@@ -643,11 +673,12 @@ impl<C: ControlLoop> ServoCore<C> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use open_servo_math::MilliAmp;
+    use open_servo_control::ControlOutput;
+    use open_servo_hw::{BoardSafetyConfig, BoardThermalConfig};
+    use open_servo_math::ComplianceConfig;
 
     /// Minimal mock controller for testing ServoCore.
     struct MockController {
-        setpoint: CentiDeg,
         output: Duty,
         reset_called: bool,
     }
@@ -655,7 +686,6 @@ mod tests {
     impl MockController {
         fn new() -> Self {
             Self {
-                setpoint: CentiDeg::from_cdeg(9000),
                 output: Duty::ZERO,
                 reset_called: false,
             }
@@ -667,52 +697,49 @@ mod tests {
     }
 
     impl ControlLoop for MockController {
-        fn compute(
-            &mut self,
-            _setpoint: CentiDeg,
-            _position: CentiDeg,
-            _current: Option<MilliAmp>,
-        ) -> Duty {
-            self.output
-        }
-
         fn reset(&mut self) {
             self.reset_called = true;
             self.output = Duty::ZERO;
         }
 
-        fn set_setpoint(&mut self, setpoint: CentiDeg) {
-            self.setpoint = setpoint;
+        fn fast_tick(&mut self, _input: &ControlInput) -> ControlOutput {
+            ControlOutput {
+                duty: self.output,
+                saturated: false,
+            }
         }
 
-        fn set_output_limits(&mut self, _min: i32, _max: i32) {
-            // Mock implementation - do nothing
-        }
+        fn medium_tick(&mut self, _input: &ControlInput) {}
+        fn slow_tick(&mut self, _input: &ControlInput) {}
+    }
 
-        fn get_setpoint(&self) -> CentiDeg {
-            self.setpoint
-        }
-        
-        fn has_setpoint(&self) -> bool {
-            true // Mock always has a setpoint
-        }
-        
-        fn clear_setpoint(&mut self) {
-            self.setpoint = CentiDeg::from_cdeg(0);
-        }
-        
-        #[cfg(feature = "pid")]
-        fn pid_config(&self) -> Option<&open_servo_control::PidConfig> {
-            None // Mock controller doesn't have PID config
-        }
-        
-        #[cfg(feature = "pid")]
-        fn with_pid_config_mut<F>(&mut self, _f: F) -> bool
-        where
-            F: FnOnce(&mut open_servo_control::PidConfig),
-        {
-            false // Mock controller doesn't have PID config
-        }
+    /// Create a ServoCore with default test configuration.
+    fn make_core(controller: MockController) -> ServoCore<MockController> {
+        let safety_config = BoardSafetyConfig {
+            current_limit_ma: 800,
+            mcu_temp_limit_cc: 8000,
+            position_max_delta_cdeg: 500,
+            sensor_fault_count: 10,
+            position_min_cdeg: 0,
+            position_max_cdeg: 18000,
+            stall_timeout_ticks: 1000,
+            stall_position_tolerance_cdeg: 10,
+            position_error_limit_cdeg: 3000,
+            position_error_timeout_ticks: 50,
+        };
+        let thermal_config = BoardThermalConfig {
+            resistance_mohm: 5000,        // 5.0Ω
+            thermal_resistance_cw: 1000,  // 10°C/W
+            thermal_capacity_cj: 1500,    // 15 J/°C
+        };
+        let compliance_config = ComplianceConfig::new(600, 50, 3, 230, 3277);
+        ServoCore::new(
+            controller,
+            safety_config,
+            thermal_config,
+            compliance_config.clone(),
+            compliance_config,
+        )
     }
 
     fn make_inputs(position: i16) -> FastInputs {
@@ -729,7 +756,8 @@ mod tests {
 
     #[test]
     fn test_fast_tick_returns_safe_when_faulted() {
-        let mut core = ServoCore::new(MockController::new());
+        let mut core = make_core(MockController::new());
+        core.engage(CentiDeg::from_cdeg(9000));
 
         // Manually fault the core
         core.fault_state.raise(FaultKind::OverCurrent);
@@ -743,8 +771,9 @@ mod tests {
 
     #[test]
     fn test_fast_tick_skips_on_bad_position() {
-        let mut core = ServoCore::new(MockController::new());
+        let mut core = make_core(MockController::new());
         core.controller_mut().set_output(Duty::from_raw(500)); // Would produce output if position was valid
+        core.engage(CentiDeg::from_cdeg(9000));
 
         // First tick initializes sensor health at position 9000
         core.fast_tick(make_inputs(9000));
@@ -759,7 +788,8 @@ mod tests {
     #[cfg(feature = "current-sense-bus")]
     #[test]
     fn test_fast_tick_faults_on_overcurrent() {
-        let mut core = ServoCore::new(MockController::new());
+        let mut core = make_core(MockController::new());
+        core.engage(CentiDeg::from_cdeg(9000));
 
         // Initialize with normal position
         core.fast_tick(make_inputs(9000));
@@ -780,8 +810,9 @@ mod tests {
 
     #[test]
     fn test_fast_tick_normal_operation() {
-        let mut core = ServoCore::new(MockController::new());
+        let mut core = make_core(MockController::new());
         core.controller_mut().set_output(Duty::from_raw(500));
+        core.engage(CentiDeg::from_cdeg(9000));
 
         // Initialize position
         core.fast_tick(make_inputs(9000));
@@ -796,7 +827,8 @@ mod tests {
 
     #[test]
     fn test_slow_tick_faults_on_overtemp() {
-        let mut core = ServoCore::new(MockController::new());
+        let mut core = make_core(MockController::new());
+        core.engage(CentiDeg::from_cdeg(9000)); // Must engage for fast_tick to cache temperature
 
         // Cache high temperature via fast_tick
         let inputs = FastInputs {
@@ -816,7 +848,7 @@ mod tests {
 
     #[test]
     fn test_slow_tick_no_fault_when_normal() {
-        let mut core = ServoCore::new(MockController::new());
+        let mut core = make_core(MockController::new());
 
         // Cache normal temperature
         let inputs = FastInputs {
@@ -837,7 +869,7 @@ mod tests {
 
     #[test]
     fn test_clear_fault_resets_all_state() {
-        let mut core = ServoCore::new(MockController::new());
+        let mut core = make_core(MockController::new());
 
         // Fault the core
         core.fault_state.raise(FaultKind::Stall);
@@ -855,24 +887,25 @@ mod tests {
 
     #[test]
     fn test_setpoint_clamped_to_bounds() {
-        let mut core = ServoCore::new(MockController::new());
+        let mut core = make_core(MockController::new());
 
         // Try to set setpoint above max (default max is 18000 cdeg = 180°)
         core.set_setpoint(CentiDeg::from_cdeg(20000));
-        assert_eq!(core.get_setpoint().as_cdeg(), 18000);
+        assert_eq!(core.get_setpoint().unwrap().as_cdeg(), 18000);
 
         // Try to set setpoint below min (default min is 0)
         core.set_setpoint(CentiDeg::from_cdeg(-1000));
-        assert_eq!(core.get_setpoint().as_cdeg(), 0);
+        assert_eq!(core.get_setpoint().unwrap().as_cdeg(), 0);
     }
 
     // ========== system state tests ==========
 
     #[test]
     fn test_system_state_updated_after_tick() {
-        let mut core = ServoCore::new(MockController::new());
+        let mut core = make_core(MockController::new());
         core.controller_mut().set_output(Duty::from_raw(750));
-        core.controller_mut().setpoint = CentiDeg::from_cdeg(9000);
+        core.set_setpoint(CentiDeg::from_cdeg(9000)); // Use core's setpoint now
+        core.engage(CentiDeg::from_cdeg(8000)); // Must engage for tick to run controller
 
         let inputs = FastInputs {
             position: CentiDeg::from_cdeg(8000),

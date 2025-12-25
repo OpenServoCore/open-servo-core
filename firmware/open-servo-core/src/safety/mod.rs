@@ -295,13 +295,33 @@ impl SafetyManager {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use open_servo_math::{ComplianceConfig, ThermalModel};
+
+    /// Create a SafetyManager with default test values.
+    fn make_safety() -> SafetyManager {
+        let thresholds = SafetyThresholds::new(
+            800,    // current_limit_ma
+            8000,   // mcu_temp_limit_cc (80°C)
+            500,    // position_max_delta_cdeg
+            10,     // sensor_fault_count
+            0,      // position_min_cdeg
+            18000,  // position_max_cdeg
+            1000,   // stall_timeout_ticks
+            10,     // stall_position_tolerance_cdeg
+            3000,   // position_error_limit_cdeg
+            50,     // position_error_timeout_ticks
+        );
+        let thermal_model = ThermalModel::new(5000, 1000, 1500);
+        let compliance_config = ComplianceConfig::new(600, 50, 3, 230, 3277);
+        SafetyManager::new(thresholds, thermal_model, compliance_config)
+    }
 
     // ========== check_current tests ==========
 
     // This test always passes - check_current always exists and returns None for None input
     #[test]
     fn test_check_current_none_returns_none() {
-        let safety = SafetyManager::new();
+        let safety = make_safety();
         assert_eq!(safety.check_current(None), None);
     }
 
@@ -309,7 +329,7 @@ mod tests {
     #[cfg(feature = "current-sense-bus")]
     #[test]
     fn test_check_current_under_limit() {
-        let safety = SafetyManager::new();
+        let safety = make_safety();
         // Default limit is 800mA
         assert_eq!(safety.check_current(Some(MilliAmp::from_ma(500))), None);
         assert_eq!(safety.check_current(Some(MilliAmp::from_ma(799))), None);
@@ -318,7 +338,7 @@ mod tests {
     #[cfg(feature = "current-sense-bus")]
     #[test]
     fn test_check_current_over_limit() {
-        let safety = SafetyManager::new();
+        let safety = make_safety();
         // Default limit is 800mA
         assert_eq!(
             safety.check_current(Some(MilliAmp::from_ma(801))),
@@ -334,7 +354,7 @@ mod tests {
     #[cfg(not(feature = "current-sense-bus"))]
     #[test]
     fn test_check_current_disabled_always_none() {
-        let safety = SafetyManager::new();
+        let safety = make_safety();
         // Even with a value that would trigger overcurrent, returns None
         assert_eq!(safety.check_current(Some(MilliAmp::from_ma(10000))), None);
     }
@@ -343,13 +363,13 @@ mod tests {
 
     #[test]
     fn test_check_mcu_temperature_none_returns_none() {
-        let safety = SafetyManager::new();
+        let safety = make_safety();
         assert_eq!(safety.check_mcu_temperature(None), None);
     }
 
     #[test]
     fn test_check_mcu_temperature_under_limit() {
-        let safety = SafetyManager::new();
+        let safety = make_safety();
         // Default limit is 8000 centiC (80°C)
         assert_eq!(safety.check_mcu_temperature(Some(CentiC::from_centi_c(5000))), None);
         assert_eq!(safety.check_mcu_temperature(Some(CentiC::from_centi_c(7999))), None);
@@ -357,7 +377,7 @@ mod tests {
 
     #[test]
     fn test_check_mcu_temperature_over_limit() {
-        let safety = SafetyManager::new();
+        let safety = make_safety();
         // Default limit is 8000 centiC (80°C)
         assert_eq!(
             safety.check_mcu_temperature(Some(CentiC::from_centi_c(8001))),
@@ -369,7 +389,7 @@ mod tests {
 
     #[test]
     fn test_check_stall_no_saturation() {
-        let mut safety = SafetyManager::new();
+        let mut safety = make_safety();
         // Not saturated - should never fault
         for _ in 0..2000 {
             assert_eq!(
@@ -381,7 +401,7 @@ mod tests {
 
     #[test]
     fn test_check_stall_moving() {
-        let mut safety = SafetyManager::new();
+        let mut safety = make_safety();
         // Saturated but moving - counter should reset each tick
         // Use smaller increments to avoid i16 overflow
         for i in 0..200i16 {
@@ -392,7 +412,7 @@ mod tests {
 
     #[test]
     fn test_check_stall_triggers_after_timeout() {
-        let mut safety = SafetyManager::new();
+        let mut safety = make_safety();
         // Default timeout is 1000 ticks
         // First call: delta from 0 is large, resets counter, sets last_position=9000
         let pos = CentiDeg::from_cdeg(9000);
@@ -409,7 +429,7 @@ mod tests {
 
     #[test]
     fn test_check_stall_resets_on_movement() {
-        let mut safety = SafetyManager::new();
+        let mut safety = make_safety();
         let pos = CentiDeg::from_cdeg(9000);
 
         // Initialize last_position
@@ -434,7 +454,7 @@ mod tests {
 
     #[test]
     fn test_check_position_error_within_limit() {
-        let mut safety = SafetyManager::new();
+        let mut safety = make_safety();
         // Default limit is 3000 cdeg (30°)
         let sp = CentiDeg::from_cdeg(9000);
         let pos = CentiDeg::from_cdeg(9000 + 2000); // 20° error
@@ -446,7 +466,7 @@ mod tests {
 
     #[test]
     fn test_check_position_error_triggers_after_timeout() {
-        let mut safety = SafetyManager::new();
+        let mut safety = make_safety();
         // Default: 3000 cdeg limit, 50 tick timeout (at 100Hz)
         let sp = CentiDeg::from_cdeg(9000);
         let pos = CentiDeg::from_cdeg(0); // -90° error (way over 30°)
@@ -465,7 +485,7 @@ mod tests {
 
     #[test]
     fn test_check_position_error_resets_when_corrected() {
-        let mut safety = SafetyManager::new();
+        let mut safety = make_safety();
         let sp = CentiDeg::from_cdeg(9000);
         let bad_pos = CentiDeg::from_cdeg(0);
 
@@ -492,7 +512,7 @@ mod tests {
 
     #[test]
     fn test_clamp_setpoint_within_bounds() {
-        let safety = SafetyManager::new();
+        let safety = make_safety();
         // Default bounds: 0 to 18000 cdeg
         let sp = CentiDeg::from_cdeg(9000);
         assert_eq!(safety.clamp_setpoint(sp).as_cdeg(), 9000);
@@ -500,14 +520,14 @@ mod tests {
 
     #[test]
     fn test_clamp_setpoint_below_min() {
-        let safety = SafetyManager::new();
+        let safety = make_safety();
         let sp = CentiDeg::from_cdeg(-1000);
         assert_eq!(safety.clamp_setpoint(sp).as_cdeg(), 0); // Clamped to min
     }
 
     #[test]
     fn test_clamp_setpoint_above_max() {
-        let safety = SafetyManager::new();
+        let safety = make_safety();
         let sp = CentiDeg::from_cdeg(20000);
         assert_eq!(safety.clamp_setpoint(sp).as_cdeg(), 18000); // Clamped to max
     }
@@ -516,7 +536,7 @@ mod tests {
 
     #[test]
     fn test_reset_clears_counters() {
-        let mut safety = SafetyManager::new();
+        let mut safety = make_safety();
 
         // Build up stall and error counts
         let pos = CentiDeg::from_cdeg(9000);

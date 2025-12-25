@@ -9,9 +9,13 @@ use crate::fault::FaultKind;
 use crate::safety::SafetyThresholds;
 use crate::App;
 use open_servo_control::ControlLoop;
+#[cfg(feature = "pid")]
+use open_servo_control::PidTunable;
 use open_servo_hw::{BdcMotorDriver, DebugIo};
 use open_servo_hw::sensor::PositionSensor;
-use open_servo_math::{CentiC, CentiDeg, DerivativeMode, Gain};
+use open_servo_math::{CentiC, CentiDeg};
+#[cfg(feature = "pid")]
+use open_servo_math::{DerivativeMode, Gain};
 #[cfg(feature = "current-sense-bus")]
 use open_servo_math::MilliAmp;
 
@@ -30,15 +34,41 @@ fn fault_str(kind: FaultKind) -> &'static str {
     }
 }
 
-use super::command::{Command, ComplianceCmd, FaultCmd, LimitCmd, MotorCmd, PidCmd, PidField, SetCmd};
+use super::command::{Command, ComplianceCmd, FaultCmd, LimitCmd, MotorCmd, SetCmd};
+#[cfg(feature = "pid")]
+use super::command::{PidCmd, PidField};
 use super::DebugShell;
 use crate::servo_core::ServoMode;
 
 impl<D: DebugIo> DebugShell<D> {
     /// Execute a parsed command.
+    ///
+    /// When the `pid` feature is enabled, this also requires `PidTunable`
+    /// to support PID tuning commands.
+    #[cfg(feature = "pid")]
+    pub(super) fn exec_command<C, H>(&mut self, app: &mut App<C>, hw: &mut H, cmd: Command)
+    where
+        C: ControlLoop + PidTunable,
+        H: BdcMotorDriver + PositionSensor,
+    {
+        self.exec_command_inner(app, hw, cmd)
+    }
+
+    /// Execute a parsed command (no PID tuning support).
+    #[cfg(not(feature = "pid"))]
     pub(super) fn exec_command<C, H>(&mut self, app: &mut App<C>, hw: &mut H, cmd: Command)
     where
         C: ControlLoop,
+        H: BdcMotorDriver + PositionSensor,
+    {
+        self.exec_command_inner(app, hw, cmd)
+    }
+
+    /// Inner command dispatcher.
+    #[cfg(feature = "pid")]
+    fn exec_command_inner<C, H>(&mut self, app: &mut App<C>, hw: &mut H, cmd: Command)
+    where
+        C: ControlLoop + PidTunable,
         H: BdcMotorDriver + PositionSensor,
     {
         match cmd {
@@ -63,6 +93,39 @@ impl<D: DebugIo> DebugShell<D> {
             }
             Command::Pid(PidCmd::SetAll { kp, ki, kd }) => self.cmd_pid_set_all(app, kp, ki, kd),
             Command::Pid(PidCmd::Mode(mode)) => self.cmd_pid_mode(app, mode),
+            Command::Motor(MotorCmd::Status) => self.cmd_motor_status(app),
+            Command::Motor(MotorCmd::Engage) => self.cmd_motor_engage(app, hw),
+            Command::Motor(MotorCmd::Disengage) => self.cmd_motor_disengage(app, hw),
+            Command::Compliance(ComplianceCmd::Show) => self.cmd_compliance_show(app),
+            Command::Compliance(ComplianceCmd::MoveMa(ma)) => self.cmd_compliance_move_ma(app, ma),
+            Command::Compliance(ComplianceCmd::HoldMa(ma)) => self.cmd_compliance_hold_ma(app, ma),
+            Command::Compliance(ComplianceCmd::Vel(dps)) => self.cmd_compliance_vel(app, dps),
+        }
+    }
+
+    /// Inner command dispatcher (no PID support).
+    #[cfg(not(feature = "pid"))]
+    fn exec_command_inner<C, H>(&mut self, app: &mut App<C>, hw: &mut H, cmd: Command)
+    where
+        C: ControlLoop,
+        H: BdcMotorDriver + PositionSensor,
+    {
+        match cmd {
+            Command::Help => self.cmd_help(),
+            Command::State => self.cmd_state(app),
+            Command::Fault(FaultCmd::Show) => self.cmd_fault_show(app),
+            Command::Fault(FaultCmd::Clear) => self.cmd_fault_clear(app, hw),
+            Command::Set(SetCmd::Sp(val)) => self.cmd_set_sp(app, val),
+            Command::Limit(LimitCmd::Show) => self.cmd_limit_show(app),
+            #[cfg(feature = "current-sense-bus")]
+            Command::Limit(LimitCmd::Current(val)) => self.cmd_limit_current(app, val),
+            Command::Limit(LimitCmd::Temp(val)) => self.cmd_limit_temp(app, val),
+            Command::Limit(LimitCmd::Delta(val)) => self.cmd_limit_delta(app, val),
+            Command::Limit(LimitCmd::Faults(val)) => self.cmd_limit_faults(app, val),
+            Command::Limit(LimitCmd::Pos(min, max)) => self.cmd_limit_pos(app, min, max),
+            Command::Limit(LimitCmd::Stall(val)) => self.cmd_limit_stall(app, val),
+            Command::Limit(LimitCmd::Error(val)) => self.cmd_limit_error(app, val),
+            Command::Limit(LimitCmd::Reset) => self.cmd_limit_reset(app),
             Command::Motor(MotorCmd::Status) => self.cmd_motor_status(app),
             Command::Motor(MotorCmd::Engage) => self.cmd_motor_engage(app, hw),
             Command::Motor(MotorCmd::Disengage) => self.cmd_motor_disengage(app, hw),
@@ -363,25 +426,24 @@ impl<D: DebugIo> DebugShell<D> {
     // PID command handlers
     // ========================================================================
 
-    fn cmd_pid_show<C: ControlLoop>(&mut self, app: &App<C>) {
-        if let Some(cfg) = app.controller().pid_config() {
-            let mut buf: String<96> = String::new();
-            let mode_str = match cfg.derivative_mode {
-                DerivativeMode::OnError => "err",
-                DerivativeMode::OnMeasurement => "meas",
-            };
-            let _ = uwrite!(
-                buf,
-                "pos: kp={} ki={} kd={} mode={} out=[-32768,32767]",
-                cfg.kp, cfg.ki, cfg.kd, mode_str
-            );
-            self.println(&buf);
-        } else {
-            self.println("err: pid config not available");
-        }
+    #[cfg(feature = "pid")]
+    fn cmd_pid_show<C: ControlLoop + PidTunable>(&mut self, app: &App<C>) {
+        let cfg = app.controller().pid_config();
+        let mut buf: String<96> = String::new();
+        let mode_str = match cfg.derivative_mode {
+            DerivativeMode::OnError => "err",
+            DerivativeMode::OnMeasurement => "meas",
+        };
+        let _ = uwrite!(
+            buf,
+            "pos: kp={} ki={} kd={} mode={} out=[-32768,32767]",
+            cfg.kp, cfg.ki, cfg.kd, mode_str
+        );
+        self.println(&buf);
     }
 
-    fn cmd_pid_set_one<C: ControlLoop>(&mut self, app: &mut App<C>, field: PidField, value: Gain) {
+    #[cfg(feature = "pid")]
+    fn cmd_pid_set_one<C: ControlLoop + PidTunable>(&mut self, app: &mut App<C>, field: PidField, value: Gain) {
         // Use the closure pattern to update config and rebuild atomically
         app.controller_mut().with_pid_config_mut(|cfg| match field {
             PidField::Kp => cfg.kp = value,
@@ -400,7 +462,8 @@ impl<D: DebugIo> DebugShell<D> {
         self.println(&buf);
     }
 
-    fn cmd_pid_set_all<C: ControlLoop>(&mut self, app: &mut App<C>, kp: Gain, ki: Gain, kd: Gain) {
+    #[cfg(feature = "pid")]
+    fn cmd_pid_set_all<C: ControlLoop + PidTunable>(&mut self, app: &mut App<C>, kp: Gain, ki: Gain, kd: Gain) {
         // Use the closure pattern to update all gains and rebuild atomically
         app.controller_mut().with_pid_config_mut(|cfg| {
             cfg.kp = kp;
@@ -413,7 +476,8 @@ impl<D: DebugIo> DebugShell<D> {
         self.println(&buf);
     }
 
-    fn cmd_pid_mode<C: ControlLoop>(&mut self, app: &mut App<C>, mode: DerivativeMode) {
+    #[cfg(feature = "pid")]
+    fn cmd_pid_mode<C: ControlLoop + PidTunable>(&mut self, app: &mut App<C>, mode: DerivativeMode) {
         // Use the closure pattern to update mode and rebuild atomically
         app.controller_mut().with_pid_config_mut(|cfg| {
             cfg.derivative_mode = mode;

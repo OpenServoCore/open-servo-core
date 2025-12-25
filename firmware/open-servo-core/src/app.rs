@@ -250,8 +250,8 @@ impl<C: ControlLoop> App<C> {
         self.core.set_setpoint(setpoint);
     }
 
-    /// Get current setpoint.
-    pub fn get_setpoint(&self) -> CentiDeg {
+    /// Get current setpoint (None if motor disengaged or no target set).
+    pub fn get_setpoint(&self) -> Option<CentiDeg> {
         self.core.get_setpoint()
     }
 

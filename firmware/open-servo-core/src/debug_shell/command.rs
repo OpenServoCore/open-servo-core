@@ -3,6 +3,7 @@
 //! Pure parsing with no hardware dependencies - can be unit tested on host.
 
 use super::arg_parser::{ArgError, ArgParser};
+#[cfg(feature = "pid")]
 use open_servo_math::{DerivativeMode, Gain};
 
 // ============================================================================
@@ -17,6 +18,7 @@ pub enum Command {
     Fault(FaultCmd),
     Set(SetCmd),
     Limit(LimitCmd),
+    #[cfg(feature = "pid")]
     Pid(PidCmd),
     Motor(MotorCmd),
     Compliance(ComplianceCmd),
@@ -79,6 +81,7 @@ pub enum LimitCmd {
 ///
 /// Gains are parsed as fixed-point (e.g. "40.0" → Gain) to avoid
 /// linking the ~10KB core::num::dec2flt float parsing code.
+#[cfg(feature = "pid")]
 #[derive(Debug)]
 pub enum PidCmd {
     /// Show all gains
@@ -92,6 +95,7 @@ pub enum PidCmd {
 }
 
 /// PID gain field selector.
+#[cfg(feature = "pid")]
 #[derive(Debug, Clone, Copy)]
 pub enum PidField {
     Kp,
@@ -199,8 +203,9 @@ impl Command {
                 Some(other) => Err(ParseError::UnknownSubcommand(other)),
             },
 
+            #[cfg(feature = "pid")]
             "pid" => Self::parse_pid(ap),
-            
+
             "motor" => match ap.next_str() {
                 None | Some("status") => {
                     ap.end()?;
@@ -246,6 +251,7 @@ impl Command {
 
     /// Parse PID subcommands.
     /// Grammar: pid pos show | pid pos set ... | pid pos mode ...
+    #[cfg(feature = "pid")]
     fn parse_pid<'a>(ap: &mut ArgParser<'a>) -> Result<Self, ParseError<'a>> {
         match ap.next_str() {
             // pid pos ...
@@ -257,6 +263,7 @@ impl Command {
     }
 
     /// Parse PID loop subcommands (show, set, mode).
+    #[cfg(feature = "pid")]
     fn parse_pid_loop<'a>(ap: &mut ArgParser<'a>) -> Result<Self, ParseError<'a>> {
         match ap.next_str() {
             Some("show") | None => {
@@ -270,6 +277,7 @@ impl Command {
     }
 
     /// Parse: pid pos set kp <gain> | pid pos set <kp> <ki> <kd>
+    #[cfg(feature = "pid")]
     fn parse_pid_set<'a>(ap: &mut ArgParser<'a>) -> Result<Self, ParseError<'a>> {
         match ap.next_str() {
             Some("kp") => {
@@ -309,6 +317,7 @@ impl Command {
     }
 
     /// Parse: pid pos mode err|meas
+    #[cfg(feature = "pid")]
     fn parse_pid_mode<'a>(ap: &mut ArgParser<'a>) -> Result<Self, ParseError<'a>> {
         match ap.next_str() {
             Some("err") | Some("error") => {

@@ -374,41 +374,16 @@ mod tests {
         assert_eq!(CentiDeg::from_cdeg(-4500).as_deg(), -45);
     }
 
-    // Removed from_pot_adc tests - this conversion is now board-specific
-    // and handled by board implementations
+    // Removed from_pot_adc, from_ipropi_adc, from_adc12 tests - these conversions
+    // are now board-specific and handled by board implementations
 
     // ========== MilliAmp tests ==========
-
-    #[test]
-    fn test_milliamp_from_ipropi_adc() {
-        // ADC 0 -> 0 mA
-        assert_eq!(MilliAmp::from_ipropi_adc(Adc12::from_raw(0)).as_ma(), 0);
-        // ADC 1000 -> ~244 mA
-        let ma = MilliAmp::from_ipropi_adc(Adc12::from_raw(1000)).as_ma();
-        assert!((ma - 244).abs() < 2);
-        // ADC 4095 -> ~1000 mA
-        let ma = MilliAmp::from_ipropi_adc(Adc12::from_raw(4095)).as_ma();
-        assert!((ma - 1000).abs() < 5);
-    }
 
     #[test]
     fn test_milliamp_abs() {
         assert_eq!(MilliAmp::from_ma(100).abs().as_ma(), 100);
         assert_eq!(MilliAmp::from_ma(-100).abs().as_ma(), 100);
         assert_eq!(MilliAmp::from_ma(0).abs().as_ma(), 0);
-    }
-
-    // ========== MilliVolt tests ==========
-
-    #[test]
-    fn test_millivolt_from_adc12() {
-        // ADC 0 -> 0 mV
-        assert_eq!(MilliVolt::from_adc12(Adc12::from_raw(0), 3300).as_mv(), 0);
-        // ADC 4095 -> 3300 mV (full scale)
-        assert_eq!(MilliVolt::from_adc12(Adc12::from_raw(4095), 3300).as_mv(), 3300);
-        // ADC 2048 -> ~1650 mV (midpoint)
-        let mv = MilliVolt::from_adc12(Adc12::from_raw(2048), 3300).as_mv();
-        assert!((mv - 1650).abs() < 2);
     }
 
     // ========== CentiC tests ==========

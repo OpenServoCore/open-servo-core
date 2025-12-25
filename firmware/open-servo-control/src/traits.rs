@@ -1,57 +1,128 @@
 //! Control loop traits for servo control algorithms.
 //!
-//! Sensor traits have been moved to `open-servo-hw::sensor`.
+//! Stage 1 refactor: Minimal trait with ControlInput/ControlOutput.
+//! - Controllers own only algorithm state (integrators, filters, etc.)
+//! - ServoCore owns setpoint, engagement, mode, safety state
+//! - Limits passed via ControlInput, saturation returned via ControlOutput
 
 #[cfg(feature = "pid")]
 use crate::PidConfig;
-use open_servo_math::{CentiDeg, Duty, MilliAmp};
+use open_servo_math::{CentiDeg, DegPerSec10, Duty, MilliAmp, MilliVolt};
 
-/// Control loop trait for position servo algorithms.
+// =============================================================================
+// Control I/O Types
+// =============================================================================
+
+/// Dynamic duty limits for a single tick.
+#[derive(Debug, Clone, Copy)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
+pub struct DutyLimits {
+    pub min: Duty,
+    pub max: Duty,
+}
+
+impl DutyLimits {
+    /// Create new duty limits.
+    pub fn new(min: Duty, max: Duty) -> Self {
+        Self { min, max }
+    }
+
+    /// Full range limits (no restriction).
+    pub const fn full() -> Self {
+        Self {
+            min: Duty::MIN,
+            max: Duty::MAX,
+        }
+    }
+}
+
+/// Inputs to the control loop for a single tick.
+#[derive(Debug, Clone, Copy)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
+pub struct ControlInput {
+    /// Target position (required - core only calls controller when engaged)
+    pub setpoint: CentiDeg,
+    /// Current measured position
+    pub position: CentiDeg,
+    /// Measured velocity (if available)
+    pub velocity: Option<DegPerSec10>,
+    /// Measured motor current (if available)
+    pub current: Option<MilliAmp>,
+    /// Bus voltage (if available)
+    pub bus_voltage: Option<MilliVolt>,
+    /// Dynamic duty limits for this tick
+    pub limits: DutyLimits,
+}
+
+/// Output from the control loop.
+#[derive(Debug, Clone, Copy)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
+pub struct ControlOutput {
+    /// Computed duty cycle
+    pub duty: Duty,
+    /// True if duty was clamped to limits (for anti-windup / stall detection)
+    pub saturated: bool,
+}
+
+impl ControlOutput {
+    /// Create a zero output (stopped, not saturated).
+    pub const fn zero() -> Self {
+        Self {
+            duty: Duty::ZERO,
+            saturated: false,
+        }
+    }
+}
+
+// =============================================================================
+// ControlLoop Trait
+// =============================================================================
+
+/// Minimal control loop trait for position servo algorithms.
 ///
-/// Implementations include PID, cascade control, velocity loops, etc.
+/// Controllers implement pure control math:
+/// - Own only algorithm state (integrators, filters, etc.)
+/// - Receive setpoint/limits via ControlInput (no internal storage)
+/// - Return saturated flag for stall detection
+///
+/// ServoCore owns:
+/// - Setpoint (Option<CentiDeg>)
+/// - Engagement state
+/// - Compliance mode
+/// - Safety/fault state
 pub trait ControlLoop {
-    /// Compute control output based on sensor inputs.
-    ///
-    /// Returns PWM duty cycle command.
-    fn compute(&mut self, setpoint: CentiDeg, position: CentiDeg, current: Option<MilliAmp>)
-        -> Duty;
-
-    /// Reset controller state (e.g., clear integral term).
+    /// Reset controller state (integrators, filters, derivative history).
     fn reset(&mut self);
 
-    /// Update setpoint (in centidegrees for position control).
-    fn set_setpoint(&mut self, setpoint: CentiDeg);
+    /// Fast tick (10kHz) - compute control output.
+    ///
+    /// Implementations must:
+    /// - Compute duty from input.setpoint and input.position
+    /// - Clamp output to input.limits
+    /// - Set saturated=true if clamped at min or max limit
+    fn fast_tick(&mut self, input: &ControlInput) -> ControlOutput;
 
-    /// Get current setpoint (in centidegrees for position control).
-    fn get_setpoint(&self) -> CentiDeg;
-    
-    /// Check if a setpoint has been set (for disengage/engage logic)
-    fn has_setpoint(&self) -> bool;
-    
-    /// Clear the setpoint (for disengage)
-    fn clear_setpoint(&mut self);
-    
-    /// Set output limits dynamically (for torque limiting).
-    /// 
-    /// Used by the torque limiter to dynamically adjust PWM limits
-    /// based on current measurements. Implementations should update
-    /// their internal limits and adjust anti-windup accordingly.
-    fn set_output_limits(&mut self, min: i32, max: i32);
+    /// Medium tick (~1kHz) - optional intermediate processing.
+    fn medium_tick(&mut self, input: &ControlInput);
 
-    // =========================================================================
-    // Optional PID config interface (for controllers that support it)
-    // =========================================================================
+    /// Slow tick (~100Hz) - optional slow processing.
+    fn slow_tick(&mut self, input: &ControlInput);
+}
 
+// =============================================================================
+// PidTunable Trait (separate from ControlLoop)
+// =============================================================================
+
+/// Trait for controllers that expose PID tuning.
+///
+/// Separated from ControlLoop so that:
+/// - Non-PID controllers don't need stub implementations
+/// - Debug shell can require PidTunable only for PID commands
+#[cfg(feature = "pid")]
+pub trait PidTunable {
     /// Get read-only access to PID config.
-    /// Returns `None` if the controller doesn't have a PID config.
-    #[cfg(feature = "pid")]
-    fn pid_config(&self) -> Option<&PidConfig>;
+    fn pid_config(&self) -> &PidConfig;
 
     /// Mutate PID config and apply atomically.
-    /// The closure runs, then `apply_config()` is called automatically.
-    /// Returns true if config was updated, false for non-PID controllers.
-    #[cfg(feature = "pid")]
-    fn with_pid_config_mut<F>(&mut self, f: F) -> bool
-    where
-        F: FnOnce(&mut PidConfig);
+    fn with_pid_config_mut<F: FnOnce(&mut PidConfig)>(&mut self, f: F);
 }

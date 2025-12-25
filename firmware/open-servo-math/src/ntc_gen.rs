@@ -34,6 +34,7 @@
 ///
 /// # Example
 /// ```
+/// use open_servo_math::ntc_gen::generate_ntc_lut;
 /// const LUT: [(u16, i16); 16] = generate_ntc_lut::<16>(
 ///     10_000.0,  // 10kΩ at 25°C
 ///     3380.0,    // B constant
@@ -144,8 +145,8 @@ const fn ln_f32(x: f32) -> f32 {
     let mut scaled_x = x;
     let mut scale_count = 0;
     
-    // Scale down if x > 2
-    while scaled_x > 2.0 {
+    // Scale down if x >= 2 (keep in range [0.5, 2.0) for better convergence)
+    while scaled_x >= 2.0 {
         scaled_x = scaled_x / 2.0;
         scale_count += 1;
     }
@@ -194,6 +195,7 @@ pub mod presets {
     ///
     /// # Example
     /// ```
+    /// use open_servo_math::ntc_gen::presets::ntc_10k_b3380;
     /// const LUT: [(u16, i16); 16] = ntc_10k_b3380::<16>(10_000.0);
     /// ```
     pub const fn ntc_10k_b3380<const N: usize>(r_pullup: f32) -> [(u16, i16); N] {
@@ -213,6 +215,7 @@ pub mod presets {
     ///
     /// # Example
     /// ```
+    /// use open_servo_math::ntc_gen::presets::ntc_10k_b3950;
     /// const LUT: [(u16, i16); 16] = ntc_10k_b3950::<16>(10_000.0);
     /// ```
     pub const fn ntc_10k_b3950<const N: usize>(r_pullup: f32) -> [(u16, i16); N] {
@@ -232,6 +235,7 @@ pub mod presets {
     ///
     /// # Example
     /// ```
+    /// use open_servo_math::ntc_gen::presets::ntc_custom;
     /// const LUT: [(u16, i16); 20] = ntc_custom::<20>(
     ///     10_000.0, 3380.0, 10_000.0, 0.0, 100.0
     /// );
