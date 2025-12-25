@@ -250,6 +250,12 @@ impl<C: ControlLoop> ServoCore<C> {
     /// - Controller update (fast_tick on ControlLoop)
     /// - Output limit application from cached policy values
     ///
+    /// ## NOT Allowed (must be in medium_tick)
+    ///
+    /// - Mode transitions (Move/Hold/Yield)
+    /// - Timing comparisons against constants
+    /// - FSM state changes
+    ///
     /// ## Safety Checks (in order)
     ///
     /// 1. If already faulted, return safe outputs
