@@ -19,6 +19,8 @@ pub struct MediumSnapshot {
     pub pos_last: CentiDeg,
     /// Number of samples in this window.
     pub sample_count: u16,
+    /// Total window duration in microseconds (fast_dt_us × sample_count).
+    pub window_dt_us: u32,
 }
 
 /// Accumulates fast-tick samples between medium ticks.
@@ -124,6 +126,7 @@ impl FastAccumulator {
             current_peak_abs,
             pos_last,
             sample_count: self.sample_count,
+            window_dt_us,
         };
 
         // Reset for next window
@@ -302,5 +305,18 @@ mod tests {
 
         // Accumulator should be reset (subsequent call also returns None)
         assert!(acc.take_snapshot(100).is_none());
+    }
+
+    #[test]
+    fn test_window_dt_us_in_snapshot() {
+        let mut acc = FastAccumulator::new();
+        // 10 samples at 100us each = 1000us window
+        for _ in 0..10 {
+            acc.observe(CentiDeg::from_cdeg(0), None);
+        }
+
+        let snap = acc.take_snapshot(100).unwrap();
+        assert_eq!(snap.window_dt_us, 1000);
+        assert_eq!(snap.sample_count, 10);
     }
 }

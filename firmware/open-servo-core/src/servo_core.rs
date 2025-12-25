@@ -30,8 +30,7 @@ pub enum ServoMode {
     Yield,
 }
 
-/// Time-based constants (converted to ticks at runtime via update_fast_dt_us)
-const VELOCITY_PERIOD_US: u32 = 1000; // 1ms velocity window
+/// Time-based constants for policy/state machine logic
 const BACKDRIVE_PERSIST_US: u32 = 500; // 0.5ms for backdrive detection
 
 /// Mode timing (microseconds)
@@ -115,20 +114,20 @@ pub struct ServoCore<C: ControlLoop> {
     mode: ServoMode,
     tick_counter: u32,
 
-    // Velocity tracking (decimated)
-    velocity_update_counter: u16,
+    // Velocity (from MediumSnapshot, no decimation counter needed)
     measured_velocity: DegPerSec10,
     prev_position: CentiDeg,
 
-    // Setpoint tracking
+    // Setpoint tracking (time-based)
     prev_setpoint: CentiDeg,
-    setpoint_unchanged_ticks: u32,
-    hold_conditions_met_ticks: u32,
+    setpoint_unchanged_us: u32,
+    hold_conditions_met_us: u32,
 
-    // Backdrive detection
+    // Backdrive detection (time-based)
     prev_pwm_command: i16,
     prev_error: i16,
-    backdrive_detect_count: u16,
+    backdrive_elapsed_us: u32,
+    // TODO: yield timing remains tick-based; convert when yield logic moves fully to medium
     yield_enter_tick: u32,
     yield_until_tick: u32,
 
@@ -142,15 +141,11 @@ pub struct ServoCore<C: ControlLoop> {
     /// Fast-tick accumulator for windowed statistics (medium tick).
     fast_accum: FastAccumulator,
 
-    // Cached fast_dt_us and derived tick counts
+    // Cached fast_dt_us and derived tick counts for yield (tick-based)
     fast_dt_us: u32,
-    velocity_decimate_ticks: u16,
-    backdrive_persist_ticks: u16,
-    setpoint_settle_ticks: u32,
-    hold_entry_ticks: u32,
+    // TODO: yield timing remains tick-based; convert when yield logic moves fully to medium
     yield_duration_ticks: u32,
     yield_coast_ticks: u32,
-    setpoint_recent_change_ticks: u32,
 }
 
 impl<C: ControlLoop> ServoCore<C> {
@@ -197,20 +192,19 @@ impl<C: ControlLoop> ServoCore<C> {
             mode: ServoMode::Move,
             tick_counter: 0,
 
-            // Velocity tracking
-            velocity_update_counter: 0,
+            // Velocity (from MediumSnapshot)
             measured_velocity: DegPerSec10::from_dps10(0),
             prev_position: CentiDeg::from_cdeg(0),
 
-            // Setpoint tracking
+            // Setpoint tracking (time-based, updated in medium tick)
             prev_setpoint: CentiDeg::from_cdeg(0),
-            setpoint_unchanged_ticks: 0,
-            hold_conditions_met_ticks: 0,
+            setpoint_unchanged_us: 0,
+            hold_conditions_met_us: 0,
 
-            // Backdrive detection
+            // Backdrive detection (time-based, updated in medium tick)
             prev_pwm_command: 0,
             prev_error: 0,
-            backdrive_detect_count: 0,
+            backdrive_elapsed_us: 0,
             yield_enter_tick: 0,
             yield_until_tick: 0,
 
@@ -224,15 +218,10 @@ impl<C: ControlLoop> ServoCore<C> {
             // Fast-tick accumulator for medium tick
             fast_accum: FastAccumulator::new(),
 
-            // Derived timing: placeholders, computed below via update_fast_dt_us()
+            // Cached fast_dt_us and yield timing (tick-based)
             fast_dt_us: 0,
-            velocity_decimate_ticks: 1,
-            backdrive_persist_ticks: 1,
-            setpoint_settle_ticks: 1,
-            hold_entry_ticks: 1,
             yield_duration_ticks: 1,
             yield_coast_ticks: 1,
-            setpoint_recent_change_ticks: 1,
         };
 
         // Initialize derived timing from SafetyManager's default fast_dt_us
@@ -292,10 +281,8 @@ impl<C: ControlLoop> ServoCore<C> {
             return FastOutputs::fault(fault);
         }
 
-        // Update velocity (decimated with countdown)
-        self.update_velocity(position);
-
         // Accumulate for medium-tick windowed stats (only when engaged and not faulted)
+        // Velocity is now computed in control_medium_tick from MediumSnapshot
         if self.can_run_control_ticks() {
             self.fast_accum.observe(position, inputs.current());
         }
@@ -308,12 +295,11 @@ impl<C: ControlLoop> ServoCore<C> {
         // Saturate i32 -> i16 for safety clamping
         let sp_sat = sp32.to_centi_deg_sat();
 
-        // Clamp setpoint to bounds and track changes
+        // Clamp setpoint to bounds
         let clamped_setpoint = self.safety.clamp_setpoint(sp_sat);
         // Store the effective clamped setpoint so internal state remains within safety bounds
         // and doesn't repeatedly re-clamp each tick.
         self.setpoint = Some(CentiDeg32::from(clamped_setpoint));
-        self.update_setpoint_tracking(clamped_setpoint);
 
         // i32 math for error - prevents overflow
         let sp = CentiDeg32::from(clamped_setpoint);
@@ -323,24 +309,8 @@ impl<C: ControlLoop> ServoCore<C> {
         // For mode + limiter APIs (expect i16), saturate err32 -> i16
         let error: i16 = err32.to_cdeg_i16_sat();
 
-        // Update compliance mode
-        let mode_changed = self.update_compliance_mode(position, clamped_setpoint, error);
-
-        // Switch compliance config on mode transitions
-        if mode_changed {
-            match self.mode {
-                ServoMode::Move => {
-                    self.safety
-                        .compliance_limiter_mut()
-                        .set_config(self.move_compliance_config);
-                }
-                ServoMode::Hold | ServoMode::Yield => {
-                    self.safety
-                        .compliance_limiter_mut()
-                        .set_config(self.hold_compliance_config);
-                }
-            }
-        }
+        // Note: Setpoint tracking and compliance mode transitions happen in control_medium_tick
+        // to use time-based thresholds. Fast_tick uses the current mode for limits.
 
         // 3. Update compliance limiter with current reading
         let fast_dt_us = self.safety.fast_dt_us();
@@ -474,25 +444,68 @@ impl<C: ControlLoop> ServoCore<C> {
     /// Uses windowed statistics from FastAccumulator:
     /// - velocity: derived from position delta over window
     /// - current: average over window
+    ///
+    /// Also runs time-based policy logic:
+    /// - setpoint tracking (time unchanged)
+    /// - compliance mode transitions (Move/Hold/Yield)
+    /// - backdrive detection
     pub fn control_medium_tick(&mut self) {
         if !self.can_run_control_ticks() {
             return;
         }
 
         // Take snapshot (computes window velocity/avg current, resets accumulator)
-        if let Some(snap) = self.fast_accum.take_snapshot(self.safety.fast_dt_us()) {
-            if let Some(ref base_input) = self.last_input {
-                let medium_input = ControlInput {
-                    setpoint: base_input.setpoint,
-                    position: snap.pos_last,
-                    velocity: Some(snap.velocity_dps10),
-                    current: snap.current_avg,
-                    bus_voltage: base_input.bus_voltage,
-                    limits: base_input.limits,
-                };
-                self.controller.medium_tick(&medium_input);
+        let Some(snap) = self.fast_accum.take_snapshot(self.safety.fast_dt_us()) else {
+            return;
+        };
+
+        let window_dt_us = snap.window_dt_us;
+
+        // Update velocity from snapshot
+        self.measured_velocity = snap.velocity_dps10;
+        self.prev_position = snap.pos_last;
+
+        // Copy values from last_input to avoid borrow conflicts
+        let Some(base_input) = self.last_input else {
+            return;
+        };
+
+        // Update setpoint tracking (time-based)
+        self.update_setpoint_tracking_medium(base_input.setpoint, window_dt_us);
+
+        // Compute error for mode transitions
+        let error = (base_input.setpoint.as_cdeg() as i32 - snap.pos_last.as_cdeg() as i32)
+            .clamp(i16::MIN as i32, i16::MAX as i32) as i16;
+
+        // Update compliance mode (may transition Move/Hold/Yield)
+        let mode_changed = self.update_compliance_mode_medium(error, window_dt_us);
+
+        // Switch compliance config on mode transitions
+        if mode_changed {
+            match self.mode {
+                ServoMode::Move => {
+                    self.safety
+                        .compliance_limiter_mut()
+                        .set_config(self.move_compliance_config);
+                }
+                ServoMode::Hold | ServoMode::Yield => {
+                    self.safety
+                        .compliance_limiter_mut()
+                        .set_config(self.hold_compliance_config);
+                }
             }
         }
+
+        // Build medium input and call controller
+        let medium_input = ControlInput {
+            setpoint: base_input.setpoint,
+            position: snap.pos_last,
+            velocity: Some(snap.velocity_dps10),
+            current: snap.current_avg,
+            bus_voltage: base_input.bus_voltage,
+            limits: base_input.limits,
+        };
+        self.controller.medium_tick(&medium_input);
     }
 
     /// Raise a fault internally.
@@ -599,51 +612,25 @@ impl<C: ControlLoop> ServoCore<C> {
         self.motor_engaged && !self.fault_state.is_faulted()
     }
 
-    /// Update velocity estimation (decimated)
-    fn update_velocity(&mut self, position: CentiDeg) {
-        // Countdown pattern: updates exactly every N ticks
-        if self.velocity_update_counter == 0 {
-            let delta_cdeg =
-                (CentiDeg32::from(position) - CentiDeg32::from(self.prev_position)).as_cdeg();
-
-            // Tick-rate-independent velocity: delta_cdeg * 100_000 / window_us
-            // window_us = velocity_decimate_ticks * fast_dt_us
-            // Use i64 to avoid overflow (delta_cdeg * 100_000 can exceed i32)
-            let window_us = (self.velocity_decimate_ticks as u32).saturating_mul(self.fast_dt_us);
-            let vel_dps10_raw = if window_us > 0 {
-                ((delta_cdeg as i64) * 100_000 / (window_us as i64)) as i32
-            } else {
-                0
-            };
-            let vel_dps10 = vel_dps10_raw.clamp(-32767, 32767);
-
-            // IIR filter in i32 space to avoid overflow
-            let old = self.measured_velocity.as_dps10() as i32;
-            let filtered = (vel_dps10 + 3 * old) / 4; // 0.25 new + 0.75 old
-
-            self.measured_velocity = DegPerSec10::from_dps10(filtered.clamp(-32767, 32767) as i16);
-
-            self.prev_position = position;
-            self.velocity_update_counter = self.velocity_decimate_ticks.saturating_sub(1);
-        } else {
-            self.velocity_update_counter -= 1;
-        }
-    }
-
-    /// Update setpoint tracking
-    fn update_setpoint_tracking(&mut self, setpoint: CentiDeg) {
+    /// Update setpoint tracking (time-based, called from medium tick)
+    fn update_setpoint_tracking_medium(&mut self, setpoint: CentiDeg, window_dt_us: u32) {
         if setpoint != self.prev_setpoint {
-            // Setpoint changed
-            self.setpoint_unchanged_ticks = 0;
+            // Setpoint changed - reset accumulated time
+            self.setpoint_unchanged_us = 0;
             self.prev_setpoint = setpoint;
         } else {
-            // Setpoint unchanged, increment counter (saturating)
-            self.setpoint_unchanged_ticks = self.setpoint_unchanged_ticks.saturating_add(1);
+            // Setpoint unchanged - accumulate time
+            self.setpoint_unchanged_us = self.setpoint_unchanged_us.saturating_add(window_dt_us);
         }
     }
 
-    /// Check for backdrive condition
-    fn check_backdrive(&mut self, velocity: DegPerSec10, error: i16) -> bool {
+    /// Check for backdrive condition (time-based, called from medium tick)
+    fn check_backdrive_medium(
+        &mut self,
+        velocity: DegPerSec10,
+        error: i16,
+        window_dt_us: u32,
+    ) -> bool {
         // Only in HOLD mode
         if self.mode != ServoMode::Hold {
             return false;
@@ -654,7 +641,7 @@ impl<C: ControlLoop> ServoCore<C> {
 
         // Must exceed velocity threshold
         if vel_abs <= BACKDRIVE_VEL_THRESHOLD {
-            self.backdrive_detect_count = 0;
+            self.backdrive_elapsed_us = 0;
             return false;
         }
 
@@ -668,68 +655,66 @@ impl<C: ControlLoop> ServoCore<C> {
         let prev_error_abs = self.prev_error.saturating_abs();
         let error_growing = error_abs > prev_error_abs.saturating_add(10);
 
-        // Require either condition
+        // Require either condition to accumulate time
         if opposing || error_growing {
-            self.backdrive_detect_count = self.backdrive_detect_count.saturating_add(1);
-            if self.backdrive_detect_count >= self.backdrive_persist_ticks {
+            self.backdrive_elapsed_us = self.backdrive_elapsed_us.saturating_add(window_dt_us);
+            if self.backdrive_elapsed_us >= BACKDRIVE_PERSIST_US {
                 return true;
             }
         } else {
-            self.backdrive_detect_count = 0;
+            self.backdrive_elapsed_us = 0;
         }
 
         false
     }
 
-    /// Update compliance mode based on conditions
-    fn update_compliance_mode(
-        &mut self,
-        _position: CentiDeg,
-        _setpoint: CentiDeg,
-        error: i16,
-    ) -> bool {
+    /// Update compliance mode based on conditions (time-based, called from medium tick)
+    fn update_compliance_mode_medium(&mut self, error: i16, window_dt_us: u32) -> bool {
         let prev_mode = self.mode;
         let error_abs = error.saturating_abs();
         let vel_abs = self.measured_velocity.as_dps10().saturating_abs();
 
         match self.mode {
             ServoMode::Move => {
-                // Check if conditions met for HOLD
-                let hold_conditions = self.setpoint_unchanged_ticks >= self.setpoint_settle_ticks
+                // Check if conditions met for HOLD (all thresholds are now in microseconds)
+                let hold_conditions = self.setpoint_unchanged_us >= SETPOINT_SETTLE_US
                     && error_abs < HOLD_ENTER_ERROR_CDEG
                     && vel_abs < HOLD_ENTER_VEL_DPS10;
 
                 if hold_conditions {
-                    self.hold_conditions_met_ticks =
-                        self.hold_conditions_met_ticks.saturating_add(1);
-                    if self.hold_conditions_met_ticks >= self.hold_entry_ticks {
+                    self.hold_conditions_met_us =
+                        self.hold_conditions_met_us.saturating_add(window_dt_us);
+                    if self.hold_conditions_met_us >= HOLD_ENTRY_US {
                         self.mode = ServoMode::Hold;
-                        self.hold_conditions_met_ticks = 0;
+                        self.hold_conditions_met_us = 0;
                     }
                 } else {
-                    self.hold_conditions_met_ticks = 0;
+                    self.hold_conditions_met_us = 0;
                 }
             }
 
             ServoMode::Hold => {
-                // Check exit conditions (with hysteresis)
-                if self.setpoint_unchanged_ticks < self.setpoint_recent_change_ticks
+                // Check exit conditions (with hysteresis, time-based)
+                if self.setpoint_unchanged_us < SETPOINT_RECENT_CHANGE_US
                     || error_abs > HOLD_EXIT_ERROR_CDEG
                     || vel_abs > HOLD_EXIT_VEL_DPS10
                 {
                     self.mode = ServoMode::Move;
-                    self.backdrive_detect_count = 0;
+                    self.backdrive_elapsed_us = 0;
                 }
                 // Check for backdrive
-                else if self.check_backdrive(self.measured_velocity, error) {
+                else if self.check_backdrive_medium(self.measured_velocity, error, window_dt_us) {
                     self.mode = ServoMode::Yield;
+                    // TODO: yield timing remains tick-based; convert when yield logic moves fully to medium
                     self.yield_enter_tick = self.tick_counter;
-                    self.yield_until_tick = self.tick_counter + self.yield_duration_ticks;
-                    self.backdrive_detect_count = 0;
+                    self.yield_until_tick =
+                        self.tick_counter.saturating_add(self.yield_duration_ticks);
+                    self.backdrive_elapsed_us = 0;
                 }
             }
 
             ServoMode::Yield => {
+                // TODO: yield timing remains tick-based; convert when yield logic moves fully to medium
                 if self.tick_counter >= self.yield_until_tick {
                     self.mode = ServoMode::Hold;
                 }
@@ -774,11 +759,14 @@ impl<C: ControlLoop> ServoCore<C> {
         }
     }
 
-    /// Update the fast-tick period and recompute all derived timing fields.
+    /// Update the fast-tick period and recompute yield timing fields.
     ///
     /// Called by the app layer when the board's actual tick rate is known or changes.
     /// At dt_us=100 (10kHz), derived values match historical defaults.
     /// The function returns early if dt_us hasn't changed.
+    ///
+    /// Note: Most timing is now time-based (via window_dt_us in medium tick).
+    /// Only yield timing remains tick-based until yield logic moves fully to medium.
     pub fn update_fast_dt_us(&mut self, dt_us: u32) {
         use crate::timing::ticks_from_us;
 
@@ -789,18 +777,13 @@ impl<C: ControlLoop> ServoCore<C> {
 
         self.fast_dt_us = dt_us;
 
-        // Recompute all derived ticks (clamp to at least 1)
-        self.velocity_decimate_ticks = ticks_from_us(dt_us, VELOCITY_PERIOD_US).max(1) as u16;
-        self.backdrive_persist_ticks = ticks_from_us(dt_us, BACKDRIVE_PERSIST_US).max(1) as u16;
-        self.setpoint_settle_ticks = ticks_from_us(dt_us, SETPOINT_SETTLE_US).max(1);
-        self.hold_entry_ticks = ticks_from_us(dt_us, HOLD_ENTRY_US).max(1);
+        // TODO: yield timing remains tick-based; convert when yield logic moves fully to medium
         self.yield_duration_ticks = ticks_from_us(dt_us, YIELD_DURATION_US).max(1);
         self.yield_coast_ticks = ticks_from_us(dt_us, YIELD_COAST_US).max(1);
-        self.setpoint_recent_change_ticks = ticks_from_us(dt_us, SETPOINT_RECENT_CHANGE_US).max(1);
 
-        // Sanity checks (debug only): all derived ticks must be >= 1
-        debug_assert!(self.velocity_decimate_ticks >= 1);
-        debug_assert!(self.backdrive_persist_ticks >= 1);
+        // Sanity checks (debug only)
+        debug_assert!(self.yield_duration_ticks >= 1);
+        debug_assert!(self.yield_coast_ticks >= 1);
     }
 
     /// Get current compliance mode
@@ -1068,7 +1051,7 @@ mod tests {
 
     #[test]
     fn check_backdrive_saturating_abs_regression() {
-        // Regression test: actually execute check_backdrive() with prev_error = i16::MIN
+        // Regression test: actually execute check_backdrive_medium() with prev_error = i16::MIN
         // to ensure the saturating_abs() fix is exercised in real code path.
         let mut core = make_core(MockController::new());
         core.engage(CentiDeg::from_cdeg(9000));
@@ -1082,10 +1065,11 @@ mod tests {
         // Velocity exceeds threshold (300), error is small
         let velocity = DegPerSec10::from_dps10(500);
         let error: i16 = 0;
+        let window_dt_us: u32 = 1000; // 1ms window
 
-        // Execute check_backdrive - this DEFINITELY executes the error_growing line
+        // Execute check_backdrive_medium - this DEFINITELY executes the error_growing line
         // If saturating_abs() wasn't used, i16::MIN.abs() would overflow to -32768
-        let result = core.check_backdrive(velocity, error);
+        let result = core.check_backdrive_medium(velocity, error, window_dt_us);
 
         // Error is NOT growing:
         //   error_abs = 0
@@ -1094,104 +1078,142 @@ mod tests {
         // opposing = false (prev_pwm_command = 0, so u_active = false)
         // Neither condition met, so result = false
         assert!(!result);
-        assert_eq!(core.backdrive_detect_count, 0);
+        assert_eq!(core.backdrive_elapsed_us, 0);
     }
 
-    // ========== Derived timing tests ==========
+    // ========== Derived timing tests (yield timing only - others are now time-based) ==========
 
     #[test]
-    fn test_derived_timing_at_default_dt() {
+    fn test_yield_timing_at_default_dt() {
         // new() uses SafetyManager's default fast_dt_us (100us), so values match 10kHz defaults
-        let mut core = make_core(MockController::new());
+        let core = make_core(MockController::new());
         assert_eq!(core.fast_dt_us, 100);
-        assert_eq!(core.velocity_decimate_ticks, 10);
-        assert_eq!(core.backdrive_persist_ticks, 5);
-        assert_eq!(core.setpoint_settle_ticks, 4000);
-        assert_eq!(core.hold_entry_ticks, 3000);
-        assert_eq!(core.yield_duration_ticks, 2000);
-        assert_eq!(core.yield_coast_ticks, 1000);
-        assert_eq!(core.setpoint_recent_change_ticks, 100);
-
-        // Calling update_fast_dt_us with same value is a no-op
-        core.update_fast_dt_us(100);
-        assert_eq!(core.fast_dt_us, 100);
-        assert_eq!(core.velocity_decimate_ticks, 10);
+        // Only yield timing remains tick-based
+        assert_eq!(core.yield_duration_ticks, 2000); // 200_000us / 100us
+        assert_eq!(core.yield_coast_ticks, 1000); // 100_000us / 100us
     }
 
     #[test]
-    fn test_derived_timing_at_different_rate() {
+    fn test_yield_timing_at_different_rate() {
         // With dt_us=125 (8kHz)
         let mut core = make_core(MockController::new());
         core.update_fast_dt_us(125);
 
         assert_eq!(core.fast_dt_us, 125);
-        assert_eq!(core.velocity_decimate_ticks, 8); // 1000/125 = 8
-        assert_eq!(core.backdrive_persist_ticks, 4); // 500/125 = 4
-        assert_eq!(core.setpoint_settle_ticks, 3200); // 400_000/125 = 3200
-        assert_eq!(core.hold_entry_ticks, 2400); // 300_000/125 = 2400
         assert_eq!(core.yield_duration_ticks, 1600); // 200_000/125 = 1600
         assert_eq!(core.yield_coast_ticks, 800); // 100_000/125 = 800
-        assert_eq!(core.setpoint_recent_change_ticks, 80); // 10_000/125 = 80
     }
 
     #[test]
-    fn test_derived_timing_rounds_up() {
-        // With dt_us=150 (6.67kHz), test rounding up
-        let mut core = make_core(MockController::new());
-        core.update_fast_dt_us(150);
-
-        // 1000/150 = 6.67 -> rounds up to 7
-        assert_eq!(core.velocity_decimate_ticks, 7);
-        // 500/150 = 3.33 -> rounds up to 4
-        assert_eq!(core.backdrive_persist_ticks, 4);
-    }
-
-    #[test]
-    fn test_derived_timing_clamps_to_min_1() {
+    fn test_yield_timing_clamps_to_min_1() {
         // With very slow tick rate, ensure minimum 1 tick
         let mut core = make_core(MockController::new());
         core.update_fast_dt_us(2_000_000); // 2 second ticks (absurd but tests clamp)
 
-        assert!(core.velocity_decimate_ticks >= 1);
-        assert!(core.backdrive_persist_ticks >= 1);
-        assert!(core.setpoint_settle_ticks >= 1);
-        assert!(core.hold_entry_ticks >= 1);
         assert!(core.yield_duration_ticks >= 1);
         assert!(core.yield_coast_ticks >= 1);
-        assert!(core.setpoint_recent_change_ticks >= 1);
     }
 
     #[test]
-    fn test_derived_timing_clamps_dt_us_to_min_1() {
+    fn test_yield_timing_clamps_dt_us_to_min_1() {
         // Zero dt_us should be clamped to 1
         let mut core = make_core(MockController::new());
         core.update_fast_dt_us(0);
 
         // dt_us should be clamped to 1
         assert_eq!(core.fast_dt_us, 1);
-        // At 1us/tick, ticks = duration_us (with rounding)
-        assert_eq!(core.velocity_decimate_ticks, 1000);
-        assert_eq!(core.backdrive_persist_ticks, 500);
     }
 
     #[test]
-    fn test_derived_timing_idempotent() {
+    fn test_yield_timing_idempotent() {
         // Calling update_fast_dt_us with same value leaves fields unchanged
         let mut core = make_core(MockController::new());
-        let before = (
-            core.velocity_decimate_ticks,
-            core.backdrive_persist_ticks,
-            core.setpoint_settle_ticks,
-        );
+        let before = (core.yield_duration_ticks, core.yield_coast_ticks);
         core.update_fast_dt_us(100);
         core.update_fast_dt_us(100); // Second call
-        assert_eq!(
-            (
-                core.velocity_decimate_ticks,
-                core.backdrive_persist_ticks,
-                core.setpoint_settle_ticks,
-            ),
-            before
-        );
+        assert_eq!((core.yield_duration_ticks, core.yield_coast_ticks), before);
+    }
+
+    // ========== Time-based policy tests ==========
+
+    #[test]
+    fn test_hold_entry_time_based() {
+        // Hold mode should be entered when hold_conditions_met_us >= HOLD_ENTRY_US
+        let mut core = make_core(MockController::new());
+        core.engage(CentiDeg::from_cdeg(9000));
+
+        // Set state so hold conditions are met
+        core.setpoint_unchanged_us = SETPOINT_SETTLE_US; // >= 400ms
+        core.mode = ServoMode::Move;
+
+        // Error and velocity below thresholds
+        let error: i16 = 100; // < HOLD_ENTER_ERROR_CDEG (500)
+        let window_dt_us: u32 = 100_000; // 100ms per medium tick (hypothetical)
+
+        // First call: accumulates 100ms (not enough for HOLD_ENTRY_US = 300ms)
+        core.update_compliance_mode_medium(error, window_dt_us);
+        assert_eq!(core.mode, ServoMode::Move);
+        assert_eq!(core.hold_conditions_met_us, 100_000);
+
+        // Second call: accumulates another 100ms (200ms total, still not enough)
+        core.update_compliance_mode_medium(error, window_dt_us);
+        assert_eq!(core.mode, ServoMode::Move);
+        assert_eq!(core.hold_conditions_met_us, 200_000);
+
+        // Third call: accumulates another 100ms (300ms total, equals HOLD_ENTRY_US)
+        core.update_compliance_mode_medium(error, window_dt_us);
+        assert_eq!(core.mode, ServoMode::Hold);
+        assert_eq!(core.hold_conditions_met_us, 0); // Reset after transition
+    }
+
+    #[test]
+    fn test_backdrive_time_based() {
+        // Backdrive should trigger when backdrive_elapsed_us >= BACKDRIVE_PERSIST_US (500us)
+        let mut core = make_core(MockController::new());
+        core.engage(CentiDeg::from_cdeg(9000));
+        core.mode = ServoMode::Hold;
+        core.prev_pwm_command = 5000; // Active PWM (must exceed U_DEADBAND = 1638)
+
+        let velocity = DegPerSec10::from_dps10(-500); // Opposing velocity (>300 threshold)
+        let error: i16 = 0;
+        let window_dt_us: u32 = 200; // 200us per medium tick
+
+        // First call: accumulates 200us (not enough for 500us threshold)
+        let result = core.check_backdrive_medium(velocity, error, window_dt_us);
+        assert!(!result);
+        assert_eq!(core.backdrive_elapsed_us, 200);
+
+        // Second call: accumulates another 200us (400us total, still not enough)
+        let result = core.check_backdrive_medium(velocity, error, window_dt_us);
+        assert!(!result);
+        assert_eq!(core.backdrive_elapsed_us, 400);
+
+        // Third call: accumulates another 200us (600us total, exceeds 500us)
+        let result = core.check_backdrive_medium(velocity, error, window_dt_us);
+        assert!(result);
+    }
+
+    #[test]
+    fn test_setpoint_settle_time_based() {
+        // setpoint_unchanged_us should accumulate via window_dt_us
+        let mut core = make_core(MockController::new());
+        core.engage(CentiDeg::from_cdeg(9000));
+        core.prev_setpoint = CentiDeg::from_cdeg(9000);
+
+        let setpoint = CentiDeg::from_cdeg(9000); // Same setpoint
+        let window_dt_us: u32 = 100_000; // 100ms
+
+        // First call: accumulates 100ms
+        core.update_setpoint_tracking_medium(setpoint, window_dt_us);
+        assert_eq!(core.setpoint_unchanged_us, 100_000);
+
+        // Second call: accumulates another 100ms
+        core.update_setpoint_tracking_medium(setpoint, window_dt_us);
+        assert_eq!(core.setpoint_unchanged_us, 200_000);
+
+        // Change setpoint - should reset
+        let new_setpoint = CentiDeg::from_cdeg(9100);
+        core.update_setpoint_tracking_medium(new_setpoint, window_dt_us);
+        assert_eq!(core.setpoint_unchanged_us, 0);
     }
 }
