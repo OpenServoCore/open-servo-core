@@ -161,17 +161,19 @@ impl ControlLoop for PidController {
         let sp = input.setpoint.as_cdeg() as i32;
         let pv = filtered_i32;
 
-        // Compute raw output (i32 from PID core)
-        let raw_output = self.pid.step(sp, pv);
-
-        // Clamp to provided limits
+        // Apply per-tick limits to PID core (updates integral anti-windup too)
         let min = input.limits.min.as_raw() as i32;
         let max = input.limits.max.as_raw() as i32;
-        let clamped = raw_output.clamp(min, max);
-        let saturated = clamped == min || clamped == max;
+        self.pid.set_output_limits_auto_anti_windup(min, max);
 
-        // Safe cast: clamp to i16 range before converting to Duty
-        let duty_raw = clamped.clamp(i16::MIN as i32, i16::MAX as i32) as i16;
+        // Compute output (now properly clamped by PID core)
+        let raw_output = self.pid.step(sp, pv);
+
+        // Saturation detection (PID core already clamped to [min, max])
+        let saturated = raw_output == min || raw_output == max;
+
+        // Safe cast to i16 (should already be in range, but defensive)
+        let duty_raw = raw_output.clamp(i16::MIN as i32, i16::MAX as i32) as i16;
 
         ControlOutput {
             duty: Duty::from_raw(duty_raw),

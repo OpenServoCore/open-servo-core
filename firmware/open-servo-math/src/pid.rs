@@ -236,6 +236,34 @@ impl<const HAS_I: bool, const HAS_D: bool> PidI16<HAS_I, HAS_D> {
         self.out_max = out_max;
     }
 
+    /// Set output limits AND re-derive integral anti-windup clamps.
+    ///
+    /// Also immediately clamps the current integral accumulator to prevent
+    /// stale windup from "dumping" when limits widen again.
+    ///
+    /// Use this when dynamically changing limits per-tick (e.g., compliance mode).
+    pub fn set_output_limits_auto_anti_windup(&mut self, out_min: i32, out_max: i32) {
+        // Sort if swapped
+        let (out_min, out_max) = if out_min <= out_max {
+            (out_min, out_max)
+        } else {
+            (out_max, out_min)
+        };
+
+        // Update output limits
+        self.out_min = out_min;
+        self.out_max = out_max;
+
+        // Re-derive integral limits (same formula as new_auto_anti_windup)
+        let frac = Self::GAIN_FRAC_BITS;
+        let scale = 1i32 << frac;
+        self.integ_min = out_min.saturating_mul(scale);
+        self.integ_max = out_max.saturating_mul(scale);
+
+        // Immediately clamp current integral to prevent stale accumulator
+        self.integ = self.integ.clamp(self.integ_min, self.integ_max);
+    }
+
     /// Get current output limits.
     #[inline]
     pub fn output_limits(&self) -> (i32, i32) {
@@ -395,5 +423,40 @@ mod tests {
         }
         let out = pi.step(-1000, 0);
         assert_eq!(out, -100);
+    }
+
+    #[test]
+    fn test_shrink_limits_clamps_integral() {
+        // Create PI controller with wide limits, ki nonzero
+        let mut pi: PiControllerI16 = PiControllerI16::new_auto_anti_windup(
+            0,   // kp = 0 (pure I to isolate integral behavior)
+            256, // ki = 1.0
+            0,
+            DerivativeMode::OnError,
+            -1000,
+            1000,
+        );
+
+        // Drive integral high with large positive error
+        for _ in 0..100 {
+            pi.step(1000, 0);
+        }
+        // Output should be at +1000 (saturated at wide limit)
+        assert_eq!(pi.step(1000, 0), 1000);
+
+        // Now shrink limits to [-100, 100]
+        pi.set_output_limits_auto_anti_windup(-100, 100);
+
+        // Output must immediately be within new limits
+        let out = pi.step(1000, 0);
+        assert!(out <= 100, "output {} exceeds new max 100", out);
+        assert!(out >= -100, "output {} below new min -100", out);
+
+        // Flip error negative - should respond promptly (not stuck due to huge stored integral)
+        for _ in 0..10 {
+            pi.step(-1000, 0);
+        }
+        let out = pi.step(-1000, 0);
+        assert_eq!(out, -100, "should hit negative limit after error reversal");
     }
 }
