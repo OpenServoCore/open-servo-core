@@ -5,6 +5,7 @@ use open_servo_core::{Event, EventProducer, FaultKind};
 use pac::interrupt;
 use stm32f3::stm32f301 as pac;
 
+use crate::config::{CONTROL_FAST_DT_US, CONTROL_MEDIUM_DECIMATE, CONTROL_MEDIUM_DT_US};
 use crate::system::{SystemState, EVENT_QUEUE_SIZE};
 
 /// TIM2 interrupt - System tick domain (housekeeping/telemetry, 100Hz).
@@ -29,10 +30,6 @@ fn TIM2() {
         (*pac::TIM2::ptr()).sr.modify(|_, w| w.uif().clear());
     }
 }
-
-/// Decimation factor for ControlMedium tick (10 kHz / 10 = 1 kHz).
-// TODO(Stage 3): Derive from board timing config instead of hardcoding.
-const CONTROL_MEDIUM_DECIMATE: u8 = 10;
 
 /// Counter for ControlMedium decimation (ControlFast domain).
 static mut CONTROL_MEDIUM_COUNTER: u8 = 0;
@@ -65,7 +62,7 @@ fn DMA1_CH1() {
     // Execute hard real-time control tick
     // This runs deterministically without blocking
     SystemState::with_app_and_board(|app, board| {
-        app.on_control_tick(board);
+        app.on_control_fast_tick(board, CONTROL_FAST_DT_US);
 
         // ControlMedium tick - decimated from ControlFast to stay aligned to ADC samples.
         let fire_medium = unsafe {
@@ -78,7 +75,7 @@ fn DMA1_CH1() {
             }
         };
         if fire_medium {
-            app.on_control_medium_tick();
+            app.on_control_medium_tick_dt(CONTROL_MEDIUM_DT_US);
         }
     });
 

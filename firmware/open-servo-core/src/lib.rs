@@ -25,6 +25,7 @@ pub mod servo_core;
 mod test_harness;
 #[cfg(test)]
 mod test_support;
+pub mod tick;
 
 // Re-export commonly used items
 pub use app::App;
@@ -36,3 +37,4 @@ pub use inputs::FastInputs;
 pub use outputs::FastOutputs;
 pub use safety::{SafetyManager, SafetyThresholds, SensorHealth};
 pub use servo_core::{ServoCore, SystemState};
+pub use tick::{TickCtx, TickDomain};

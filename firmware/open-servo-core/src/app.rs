@@ -23,6 +23,7 @@ use crate::fault::FaultKind;
 use crate::inputs::FastInputs;
 use crate::safety::{SafetyThresholds, SensorHealth};
 use crate::servo_core::{ServoCore, SystemState};
+use crate::tick::{TickCtx, TickDomain};
 
 // Re-export SystemState for backwards compatibility
 pub use crate::servo_core::SystemState as AppSystemState;
@@ -46,6 +47,10 @@ pub use crate::servo_core::SystemState as AppSystemState;
 pub struct App<C: ControlLoop> {
     core: ServoCore<C>,
     slow_tick_counter: u8,
+    // Sequence counters for tick domains
+    control_fast_seq: u32,
+    control_medium_seq: u32,
+    system_seq: u32,
 }
 
 impl<C: ControlLoop> App<C> {
@@ -65,6 +70,9 @@ impl<C: ControlLoop> App<C> {
                 hold_compliance_config,
             ),
             slow_tick_counter: 0,
+            control_fast_seq: 0,
+            control_medium_seq: 0,
+            system_seq: 0,
         }
     }
 
@@ -228,6 +236,66 @@ impl<C: ControlLoop> App<C> {
     /// No hardware access needed; just forwards to core.
     pub fn on_control_medium_tick(&mut self) {
         self.core.control_medium_tick();
+    }
+
+    /// Shared setup for ControlFast tick (seq counter + ctx).
+    #[inline]
+    fn on_control_fast_tick_impl(&mut self, dt_us: u32) {
+        self.control_fast_seq = self.control_fast_seq.wrapping_add(1);
+        let _ctx = TickCtx {
+            domain: TickDomain::ControlFast,
+            dt_us,
+            seq: self.control_fast_seq,
+        };
+    }
+
+    /// Called from ISR at ControlFast rate (10kHz).
+    /// Wraps on_control_tick with timing context for future use.
+    #[cfg(feature = "current-sense-bus")]
+    pub fn on_control_fast_tick<H>(&mut self, hw: &mut H, dt_us: u32)
+    where
+        H: BdcMotorDriver
+            + PositionSensor
+            + SafetyCurrentSource
+            + SafetyVoltageSource
+            + SafetyMcuTempSource,
+    {
+        self.on_control_fast_tick_impl(dt_us);
+        self.on_control_tick(hw);
+    }
+
+    /// Called from ISR at ControlFast rate (10kHz).
+    /// Wraps on_control_tick with timing context for future use.
+    #[cfg(not(feature = "current-sense-bus"))]
+    pub fn on_control_fast_tick<H>(&mut self, hw: &mut H, dt_us: u32)
+    where
+        H: BdcMotorDriver + PositionSensor + SafetyVoltageSource + SafetyMcuTempSource,
+    {
+        self.on_control_fast_tick_impl(dt_us);
+        self.on_control_tick(hw);
+    }
+
+    /// Called from ISR at ControlMedium rate (1kHz).
+    pub fn on_control_medium_tick_dt(&mut self, dt_us: u32) {
+        self.control_medium_seq = self.control_medium_seq.wrapping_add(1);
+        let _ctx = TickCtx {
+            domain: TickDomain::ControlMedium,
+            dt_us,
+            seq: self.control_medium_seq,
+        };
+        self.on_control_medium_tick();
+    }
+
+    /// Called at System rate (100Hz) for housekeeping.
+    /// TODO: Wire into Event::SlowTick handling in a future stage.
+    pub fn on_system_tick_dt(&mut self, dt_us: u32) {
+        self.system_seq = self.system_seq.wrapping_add(1);
+        let _ctx = TickCtx {
+            domain: TickDomain::System,
+            dt_us,
+            seq: self.system_seq,
+        };
+        // Future: will hold system-level logic.
     }
 
     /// Raise a fault manually (e.g., from external safety ISR).

@@ -6,6 +6,17 @@ use open_servo_math::ComplianceConfig;
 /// Slow tick frequency in Hz
 pub const SLOW_HZ: u32 = 100;
 
+// Tick timing constants (authoritative for this board)
+pub const CONTROL_FAST_HZ: u32 = 10_000;
+pub const CONTROL_FAST_DT_US: u32 = 1_000_000 / CONTROL_FAST_HZ; // 100µs
+
+// TODO: CONTROL_MEDIUM_DECIMATE should be derived from timing config later
+pub const CONTROL_MEDIUM_DECIMATE: u8 = 10;
+pub const CONTROL_MEDIUM_DT_US: u32 = CONTROL_FAST_DT_US * (CONTROL_MEDIUM_DECIMATE as u32); // 1000µs
+
+pub const SYSTEM_HZ: u32 = SLOW_HZ; // TIM2 "system tick" today
+pub const SYSTEM_DT_US: u32 = 1_000_000 / SYSTEM_HZ; // 10,000µs
+
 /// Board-specific configuration provider
 pub struct BoardConfigProvider;
 
