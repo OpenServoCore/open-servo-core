@@ -58,8 +58,10 @@ impl BoardConfigProvider {
     /// Fault if |setpoint - position| exceeds this for too long
     pub const POSITION_ERROR_LIMIT_CDEG: i16 = 3000;
 
-    /// Position error timeout: 50 ticks (500ms at 100Hz slow loop)
-    pub const POSITION_ERROR_TIMEOUT_TICKS: u16 = 50;
+    /// Position error timeout: 500ms
+    /// Fault if large position error persists for this duration.
+    /// (Fixes previous bug: was 50 ticks checked at 10kHz = 5ms, not 500ms)
+    pub const POSITION_ERROR_TIMEOUT_US: u32 = 500_000;
 }
 
 // Compliance configuration constants
@@ -138,7 +140,7 @@ impl BoardConfigProvider {
             stall_timeout_ticks: Self::STALL_TIMEOUT_TICKS,
             stall_position_tolerance_cdeg: Self::STALL_POSITION_TOLERANCE_CDEG,
             position_error_limit_cdeg: Self::POSITION_ERROR_LIMIT_CDEG,
-            position_error_timeout_ticks: Self::POSITION_ERROR_TIMEOUT_TICKS,
+            position_error_timeout_us: Self::POSITION_ERROR_TIMEOUT_US,
         }
     }
 

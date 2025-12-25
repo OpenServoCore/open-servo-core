@@ -26,6 +26,7 @@ mod test_harness;
 #[cfg(test)]
 mod test_support;
 pub mod tick;
+pub mod timing;
 
 // Re-export commonly used items
 pub use app::App;

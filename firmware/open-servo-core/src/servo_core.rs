@@ -31,8 +31,9 @@ pub enum ServoMode {
 
 /// Control loop frequency - MUST match how often fast_tick() is called
 /// This is NOT the PWM frequency or ADC sample rate
+/// Note: CONTROL_HZ is still used for velocity math and mode timing constants.
+/// The actual dt_us for compliance/safety comes from SafetyManager::fast_dt_us().
 const CONTROL_HZ: u32 = 10000; // 10kHz fast_tick rate
-const CONTROL_DT_US: u32 = 1_000_000 / CONTROL_HZ;
 
 /// Velocity computation
 const VELOCITY_DECIMATE: u16 = 10; // Update every 1ms
@@ -163,7 +164,7 @@ impl<C: ControlLoop> ServoCore<C> {
             safety_config.stall_timeout_ticks,
             safety_config.stall_position_tolerance_cdeg,
             safety_config.position_error_limit_cdeg,
-            safety_config.position_error_timeout_ticks,
+            safety_config.position_error_timeout_us,
         );
 
         // Create thermal model from board config
@@ -311,9 +312,10 @@ impl<C: ControlLoop> ServoCore<C> {
         }
 
         // 3. Update compliance limiter with current reading
+        let fast_dt_us = self.safety.fast_dt_us();
         self.safety
             .compliance_limiter_mut()
-            .update(inputs.current(), error, CONTROL_DT_US);
+            .update(inputs.current(), error, fast_dt_us);
 
         // 4. Get base limits from compliance limiter
         let (mut min_duty, mut max_duty) = self.safety.compliance_limiter().get_limits();

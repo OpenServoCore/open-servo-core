@@ -247,6 +247,12 @@ impl<C: ControlLoop> App<C> {
             dt_us,
             seq: self.control_fast_seq,
         };
+
+        // Update SafetyManager's fast_dt_us only if changed (avoid recompute spam)
+        let safety = self.core.safety_mut();
+        if safety.fast_dt_us() != dt_us {
+            safety.set_fast_dt_us(dt_us);
+        }
     }
 
     /// Called from ISR at ControlFast rate (10kHz).

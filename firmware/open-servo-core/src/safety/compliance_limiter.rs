@@ -6,9 +6,9 @@
 
 use open_servo_math::{ComplianceConfig, ComplianceModel, LimitState, MilliAmp};
 
-/// Direction change blanking duration in control ticks.
-/// At 10kHz, 10 ticks = 1ms blanking after direction change.
-const DIRECTION_CHANGE_BLANKING_TICKS: u8 = 10;
+/// Default direction change blanking duration in microseconds.
+/// 1000µs = 1ms blanking after direction change (matches old 10 ticks @ 10kHz).
+const DEFAULT_BLANKING_US: u32 = 1000;
 
 /// Compliance limiter with safety integration.
 ///
@@ -20,8 +20,11 @@ pub struct ComplianceLimiter {
     /// Mathematical compliance model
     model: ComplianceModel,
 
-    /// Direction change blanking counter
-    blanking_cnt: u8,
+    /// Direction change blanking duration in microseconds (config)
+    blanking_us: u32,
+
+    /// Remaining blanking time in microseconds (runtime counter)
+    blanking_remaining_us: u32,
 
     /// Last PWM direction for change detection
     last_direction: Direction,
@@ -41,10 +44,22 @@ enum Direction {
 
 impl ComplianceLimiter {
     /// Create a new compliance limiter with the given configuration.
+    ///
+    /// Uses default blanking duration of 1ms. Use `with_blanking_us` for custom blanking.
     pub fn new(config: ComplianceConfig) -> Self {
+        Self::with_blanking_us(config, DEFAULT_BLANKING_US)
+    }
+
+    /// Create a new compliance limiter with custom blanking duration.
+    ///
+    /// # Parameters
+    /// - `config`: Compliance model configuration
+    /// - `blanking_us`: Direction change blanking duration in microseconds
+    pub fn with_blanking_us(config: ComplianceConfig, blanking_us: u32) -> Self {
         Self {
             model: ComplianceModel::new(config),
-            blanking_cnt: 0,
+            blanking_us,
+            blanking_remaining_us: 0,
             last_direction: Direction::Stopped,
             compliance_limited: false,
         }
@@ -68,13 +83,13 @@ impl ComplianceLimiter {
 
         // Start blanking on direction change
         if new_direction != self.last_direction && new_direction != Direction::Stopped {
-            self.blanking_cnt = DIRECTION_CHANGE_BLANKING_TICKS;
+            self.blanking_remaining_us = self.blanking_us;
         }
         self.last_direction = new_direction;
 
         // Apply blanking - ignore current during transients
-        let effective_current = if self.blanking_cnt > 0 {
-            self.blanking_cnt = self.blanking_cnt.saturating_sub(1);
+        let effective_current = if self.blanking_remaining_us > 0 {
+            self.blanking_remaining_us = self.blanking_remaining_us.saturating_sub(dt_us);
             None // Ignore current during blanking
         } else {
             current
@@ -111,13 +126,13 @@ impl ComplianceLimiter {
 
     /// Check if currently in blanking period.
     pub fn is_blanking(&self) -> bool {
-        self.blanking_cnt > 0
+        self.blanking_remaining_us > 0
     }
 
     /// Reset limiter to initial state.
     pub fn reset(&mut self) {
         self.model.reset();
-        self.blanking_cnt = 0;
+        self.blanking_remaining_us = 0;
         self.last_direction = Direction::Stopped;
         self.compliance_limited = false;
     }
@@ -132,6 +147,9 @@ impl ComplianceLimiter {
 mod tests {
     use super::*;
 
+    // With default blanking_us = 1000 and dt_us = 100, blanking takes 10 ticks
+    const BLANKING_TICKS_AT_10KHZ: u32 = DEFAULT_BLANKING_US / 100;
+
     #[test]
     fn test_direction_change_blanking() {
         let config = ComplianceConfig::new(600, 50, 3, 230, 3277);
@@ -143,7 +161,7 @@ mod tests {
         assert!(!limiter.is_limited()); // Should not limit during blanking
 
         // After blanking period, current should be processed
-        for _ in 0..DIRECTION_CHANGE_BLANKING_TICKS {
+        for _ in 0..BLANKING_TICKS_AT_10KHZ {
             limiter.update(Some(MilliAmp::from_ma(650)), 100, 100); // Above 600mA limit
         }
         assert!(!limiter.is_blanking());
@@ -163,7 +181,7 @@ mod tests {
         limiter.update(Some(MilliAmp::from_ma(400)), 100, 100);
         assert!(limiter.is_blanking());
 
-        // Consume some blanking ticks
+        // Consume some blanking time (500µs = 5 ticks)
         for _ in 0..5 {
             limiter.update(Some(MilliAmp::from_ma(400)), 100, 100);
         }
@@ -172,8 +190,8 @@ mod tests {
         limiter.update(Some(MilliAmp::from_ma(400)), -100, 100);
         assert!(limiter.is_blanking());
 
-        // Should need full blanking period again
-        for _ in 0..DIRECTION_CHANGE_BLANKING_TICKS - 1 {
+        // Should need full blanking period again (minus one for the direction change tick)
+        for _ in 0..(BLANKING_TICKS_AT_10KHZ - 1) {
             limiter.update(Some(MilliAmp::from_ma(400)), -100, 100);
         }
         assert!(!limiter.is_blanking());
@@ -202,8 +220,8 @@ mod tests {
         assert!(!limiter.is_limited());
         assert_eq!(limiter.state(), LimitState::Normal);
 
-        // Trigger limiting (skip blanking for test)
-        for _ in 0..DIRECTION_CHANGE_BLANKING_TICKS {
+        // Consume blanking period
+        for _ in 0..BLANKING_TICKS_AT_10KHZ {
             limiter.update(Some(MilliAmp::from_ma(100)), 100, 100);
         }
 
@@ -215,5 +233,24 @@ mod tests {
         assert!(limiter.is_limited());
         assert_eq!(limiter.state(), LimitState::Limiting);
         assert!(limiter.duty_cap() < 32767);
+    }
+
+    #[test]
+    fn test_time_based_blanking_at_different_rates() {
+        let config = ComplianceConfig::new(600, 50, 3, 230, 3277);
+        let mut limiter = ComplianceLimiter::new(config);
+
+        // At 1kHz (dt_us = 1000) with blanking_us = 1000, blanking is consumed
+        // in the same tick that triggers it (1000 - 1000 = 0)
+        limiter.update(Some(MilliAmp::from_ma(400)), 100, 1000);
+        assert!(!limiter.is_blanking()); // Consumed in same tick
+
+        // At slower rates (dt_us = 500), blanking persists across ticks
+        let mut limiter2 = ComplianceLimiter::new(config);
+        limiter2.update(Some(MilliAmp::from_ma(400)), 100, 500);
+        assert!(limiter2.is_blanking()); // 1000 - 500 = 500µs remaining
+
+        limiter2.update(Some(MilliAmp::from_ma(400)), 100, 500);
+        assert!(!limiter2.is_blanking()); // Now consumed
     }
 }

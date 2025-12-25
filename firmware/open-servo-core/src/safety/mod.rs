@@ -20,6 +20,7 @@ pub use thermal_fault::*;
 pub use thresholds::*;
 
 use crate::fault::FaultKind;
+use crate::timing::ticks_from_us;
 use open_servo_math::{CentiC, CentiDeg, ComplianceConfig, MilliAmp, ThermalModel};
 
 /// Consolidated safety monitoring for servo control.
@@ -50,6 +51,10 @@ pub struct SafetyManager {
     stall_count: u16,
     /// Consecutive ticks with large position error
     position_error_count: u16,
+    /// Fast-domain tick period in microseconds (default 100 = 10kHz)
+    fast_dt_us: u32,
+    /// Derived position error timeout in ticks (computed from config + fast_dt_us)
+    position_error_timeout_ticks: u32,
 }
 
 impl SafetyManager {
@@ -59,6 +64,12 @@ impl SafetyManager {
         thermal_model: ThermalModel,
         move_compliance_config: ComplianceConfig,
     ) -> Self {
+        // Default to 100µs (10kHz) - will be updated by set_fast_dt_us
+        let fast_dt_us = 100;
+        // Derive position error timeout ticks from config
+        let position_error_timeout_ticks =
+            ticks_from_us(fast_dt_us, thresholds.position_error_timeout_us);
+
         Self {
             thresholds,
             sensor_health: SensorHealth::new(),
@@ -69,6 +80,8 @@ impl SafetyManager {
             stall_last_position: CentiDeg::from_cdeg(0),
             stall_count: 0,
             position_error_count: 0,
+            fast_dt_us,
+            position_error_timeout_ticks,
         }
     }
 
@@ -186,7 +199,8 @@ impl SafetyManager {
 
         if err > limit_i32 {
             self.position_error_count = self.position_error_count.saturating_add(1);
-            if self.position_error_count >= self.thresholds.position_error_timeout_ticks {
+            // Use derived tick count (computed from time-based config + fast_dt_us)
+            if (self.position_error_count as u32) >= self.position_error_timeout_ticks {
                 return Some(FaultKind::PositionError);
             }
         } else {
@@ -275,6 +289,26 @@ impl SafetyManager {
         // - last_temperature (just cached sensor data)
     }
 
+    // ============= Timing configuration =============
+
+    /// Get the fast-domain tick period in microseconds.
+    #[inline]
+    pub fn fast_dt_us(&self) -> u32 {
+        self.fast_dt_us
+    }
+
+    /// Set the fast-domain tick period and recompute derived tick counters.
+    ///
+    /// Call this once at startup with the board's actual fast tick period.
+    /// This allows safety timeouts to be configured in time units (microseconds)
+    /// and converted to tick counts based on the actual tick rate.
+    pub fn set_fast_dt_us(&mut self, dt_us: u32) {
+        self.fast_dt_us = dt_us;
+        // Recompute derived position error timeout ticks from time-based config
+        self.position_error_timeout_ticks =
+            ticks_from_us(dt_us, self.thresholds.position_error_timeout_us);
+    }
+
     // ============= Threshold accessors =============
 
     /// Get current safety thresholds.
@@ -305,6 +339,8 @@ mod tests {
 
     /// Create a SafetyManager with default test values.
     fn make_safety() -> SafetyManager {
+        // Use 5000µs (5ms) for tests - gives 50 ticks at dt_us=100 (10kHz)
+        // This keeps test iteration counts reasonable while testing time-based logic
         let thresholds = SafetyThresholds::new(
             800,   // current_limit_ma
             8000,  // mcu_temp_limit_cc (80°C)
@@ -315,7 +351,7 @@ mod tests {
             1000,  // stall_timeout_ticks
             10,    // stall_position_tolerance_cdeg
             3000,  // position_error_limit_cdeg
-            50,    // position_error_timeout_ticks
+            5000,  // position_error_timeout_us (5ms = 50 ticks @ 10kHz)
         );
         let thermal_model = ThermalModel::new(5000, 1000, 1500);
         let compliance_config = ComplianceConfig::new(600, 50, 3, 230, 3277);
@@ -476,7 +512,7 @@ mod tests {
     #[test]
     fn test_check_position_error_triggers_after_timeout() {
         let mut safety = make_safety();
-        // Default: 3000 cdeg limit, 50 tick timeout (at 100Hz)
+        // Test config: 3000 cdeg limit, 5000µs timeout = 50 ticks @ 10kHz
         let sp = CentiDeg::from_cdeg(9000);
         let pos = CentiDeg::from_cdeg(0); // -90° error (way over 30°)
 

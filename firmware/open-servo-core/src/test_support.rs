@@ -61,7 +61,7 @@ pub fn make_core(controller: MockController) -> ServoCore<MockController> {
         stall_timeout_ticks: 1000,
         stall_position_tolerance_cdeg: 10,
         position_error_limit_cdeg: 3000,
-        position_error_timeout_ticks: 50,
+        position_error_timeout_us: 5000, // 5ms = 50 ticks @ 10kHz for fast test iterations
     };
     let thermal_config = BoardThermalConfig {
         resistance_mohm: 5000,       // 5.0 ohm

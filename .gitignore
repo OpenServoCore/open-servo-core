@@ -7,4 +7,7 @@
 .Trashes
 ehthumbs.db
 Thumbs.db
+
+# AI temp files
 .claude
+.serena

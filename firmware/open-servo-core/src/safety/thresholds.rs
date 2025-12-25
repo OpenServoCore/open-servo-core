@@ -36,8 +36,8 @@ pub struct SafetyThresholds {
     /// Maximum allowed position error before fault
     pub position_error_limit: CentiDeg,
 
-    /// Position error timeout in ticks
-    pub position_error_timeout_ticks: u16,
+    /// Position error timeout in microseconds
+    pub position_error_timeout_us: u32,
 }
 
 impl SafetyThresholds {
@@ -53,7 +53,7 @@ impl SafetyThresholds {
         stall_timeout_ticks: u16,
         stall_position_tolerance_cdeg: i16,
         position_error_limit_cdeg: i16,
-        position_error_timeout_ticks: u16,
+        position_error_timeout_us: u32,
     ) -> Self {
         Self {
             current_limit: MilliAmp::from_ma(current_limit_ma),
@@ -65,7 +65,7 @@ impl SafetyThresholds {
             stall_timeout_ticks,
             stall_position_tolerance: CentiDeg::from_cdeg(stall_position_tolerance_cdeg),
             position_error_limit: CentiDeg::from_cdeg(position_error_limit_cdeg),
-            position_error_timeout_ticks,
+            position_error_timeout_us,
         }
     }
 

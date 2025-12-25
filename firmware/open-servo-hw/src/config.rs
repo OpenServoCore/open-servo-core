@@ -27,8 +27,8 @@ pub struct BoardSafetyConfig {
     pub stall_position_tolerance_cdeg: i16,
     /// Maximum allowed position error before fault
     pub position_error_limit_cdeg: i16,
-    /// Position error timeout in ticks
-    pub position_error_timeout_ticks: u16,
+    /// Position error timeout in microseconds
+    pub position_error_timeout_us: u32,
 }
 
 /// Board-specific thermal model configuration.
