@@ -15,7 +15,7 @@ use open_servo_math::{
 
 use crate::accumulator::FastAccumulator;
 use crate::fault::{FaultKind, FaultState};
-use crate::inputs::FastInputs;
+use crate::inputs::{build_medium_control_input, FastInputs};
 use crate::outputs::FastOutputs;
 use crate::safety::{SafetyManager, SafetyThresholds};
 
@@ -500,14 +500,7 @@ impl<C: ControlLoop> ServoCore<C> {
         }
 
         // Build medium input and call controller
-        let medium_input = ControlInput {
-            setpoint: base_input.setpoint,
-            position: snap.pos_last,
-            velocity: Some(snap.velocity_dps10),
-            current: snap.current_avg,
-            bus_voltage: base_input.bus_voltage,
-            limits: base_input.limits,
-        };
+        let medium_input = build_medium_control_input(&base_input, &snap);
         self.controller.medium_tick(_ctx, &medium_input);
     }
 
