@@ -1,8 +1,5 @@
 //! Fault types and state management.
 
-use open_servo_hw::BdcMotorDriver;
-use open_servo_math::Duty;
-
 /// Types of faults that can occur during servo operation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
@@ -75,16 +72,6 @@ impl FaultState {
             #[cfg(feature = "defmt")]
             defmt::info!("Fault cleared");
             *self = FaultState::Ok;
-        }
-    }
-
-    /// Apply safety response - disable motor immediately.
-    ///
-    /// Called when a fault is raised to ensure safe state.
-    pub fn apply_safety<H: BdcMotorDriver>(&self, hw: &mut H) {
-        if self.is_faulted() {
-            hw.set_pwm(Duty::ZERO);
-            hw.set_enable(false);
         }
     }
 }

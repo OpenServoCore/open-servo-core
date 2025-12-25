@@ -21,6 +21,10 @@ pub mod inputs;
 pub mod outputs;
 pub mod safety;
 pub mod servo_core;
+#[cfg(test)]
+mod test_harness;
+#[cfg(test)]
+mod test_support;
 
 // Re-export commonly used items
 pub use app::App;
