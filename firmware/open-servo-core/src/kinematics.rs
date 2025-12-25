@@ -39,7 +39,6 @@ impl SensorLimits {
     }
 }
 
-
 /// Physical/mechanical limits of the servo mechanism.
 #[derive(Debug, Clone, Copy)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
@@ -54,12 +53,11 @@ impl MechanicalLimits {
     /// Create new mechanical limits with explicit values.
     pub fn new(min_cdeg: i32, max_cdeg: i32) -> Self {
         Self {
-            min_cdeg: CentiDeg32::from_cdeg32(min_cdeg),
-            max_cdeg: CentiDeg32::from_cdeg32(max_cdeg),
+            min_cdeg: CentiDeg32::from_cdeg(min_cdeg),
+            max_cdeg: CentiDeg32::from_cdeg(max_cdeg),
         }
     }
 }
-
 
 /// User-configurable soft limits (must be within mechanical limits).
 #[derive(Debug, Clone, Copy)]
@@ -75,12 +73,11 @@ impl UserLimits {
     /// Create new user limits with explicit values.
     pub fn new(min_cdeg: i32, max_cdeg: i32) -> Self {
         Self {
-            min_cdeg: CentiDeg32::from_cdeg32(min_cdeg),
-            max_cdeg: CentiDeg32::from_cdeg32(max_cdeg),
+            min_cdeg: CentiDeg32::from_cdeg(min_cdeg),
+            max_cdeg: CentiDeg32::from_cdeg(max_cdeg),
         }
     }
 }
-
 
 /// Servo kinematics configuration.
 ///
@@ -109,7 +106,7 @@ impl Kinematics {
         Self {
             angle_domain,
             mechanical_limits,
-            zero_offset: CentiDeg32::from_cdeg32(zero_offset),
+            zero_offset: CentiDeg32::from_cdeg(zero_offset),
             direction,
         }
     }
@@ -119,23 +116,23 @@ impl Kinematics {
     /// Apply direction and zero offset to a raw angle.
     pub fn apply_calibration(&self, angle: CentiDeg32) -> CentiDeg32 {
         let mut result = angle;
-        
+
         // Apply direction
         if self.direction == Direction::Reversed {
             result = -result;
         }
-        
+
         // Apply zero offset
         result = result + self.zero_offset;
-        
+
         result
     }
-    
+
     /// Check if angle is within mechanical limits.
     pub fn is_within_mechanical_limits(&self, angle: CentiDeg32) -> bool {
         angle >= self.mechanical_limits.min_cdeg && angle <= self.mechanical_limits.max_cdeg
     }
-    
+
     /// Clamp angle to mechanical limits.
     pub fn clamp_to_mechanical(&self, angle: CentiDeg32) -> CentiDeg32 {
         if angle < self.mechanical_limits.min_cdeg {
@@ -169,14 +166,14 @@ impl LimitSystem {
             user,
         }
     }
-    
+
     /// Validate that user limits are within mechanical limits.
     pub fn validate(&self) -> bool {
-        self.user.min_cdeg >= self.mechanical.min_cdeg &&
-        self.user.max_cdeg <= self.mechanical.max_cdeg &&
-        self.user.min_cdeg < self.user.max_cdeg
+        self.user.min_cdeg >= self.mechanical.min_cdeg
+            && self.user.max_cdeg <= self.mechanical.max_cdeg
+            && self.user.min_cdeg < self.user.max_cdeg
     }
-    
+
     /// Clamp angle to user limits.
     pub fn clamp_to_user(&self, angle: CentiDeg32) -> CentiDeg32 {
         if angle < self.user.min_cdeg {

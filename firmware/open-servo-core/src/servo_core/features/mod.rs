@@ -4,12 +4,18 @@
 //! - safety: Sensor health, fault counters
 //! - limits: Position limits (wraps kinematics.rs)
 //! - compliance: ComplianceLimiter, mode switching
-//! - yield_: Yield timing and phases
+//! - backdrive: Backdrive window timing and phases
 //! - thermal: Thermal model and fault detection
 
-// Feature modules will be added in Commit 2:
-// pub mod safety;
-// pub mod limits;
-// pub mod compliance;
-// pub mod yield_;
-// pub mod thermal;
+pub mod backdrive;
+pub mod compliance;
+pub mod limits;
+pub mod safety;
+pub mod thermal;
+
+// Re-export types for convenience
+pub use backdrive::{BackdrivePhase, BackdriveState};
+pub use compliance::{ComplianceConfig, ComplianceState};
+pub use limits::LimitsConfig;
+pub use safety::{SafetyConfig, SafetyState};
+pub use thermal::{ThermalConfig, ThermalState};

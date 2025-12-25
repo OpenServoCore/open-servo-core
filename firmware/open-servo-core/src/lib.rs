@@ -19,6 +19,7 @@ pub mod debug_shell;
 pub mod event;
 pub mod fault;
 pub mod inputs;
+pub mod kinematics;
 pub mod outputs;
 pub mod safety;
 pub mod servo_core;
