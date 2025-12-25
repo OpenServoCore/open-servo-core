@@ -5,7 +5,7 @@
 use crate::{FastInputs, ServoCore};
 use open_servo_control::{ControlInput, ControlLoop, ControlOutput};
 use open_servo_hw::{BoardSafetyConfig, BoardThermalConfig};
-use open_servo_math::{CentiDeg, ComplianceConfig, Duty};
+use open_servo_math::{CentiDeg, ComplianceConfig, Duty, TickCtx};
 
 /// Minimal mock controller for testing ServoCore.
 pub struct MockController {
@@ -38,15 +38,15 @@ impl ControlLoop for MockController {
         self.output = Duty::ZERO;
     }
 
-    fn fast_tick(&mut self, _input: &ControlInput) -> ControlOutput {
+    fn fast_tick(&mut self, _ctx: &TickCtx, _input: &ControlInput) -> ControlOutput {
         ControlOutput {
             duty: self.output,
             saturated: self.saturated,
         }
     }
 
-    fn medium_tick(&mut self, _input: &ControlInput) {}
-    fn slow_tick(&mut self, _input: &ControlInput) {}
+    fn medium_tick(&mut self, _ctx: &TickCtx, _input: &ControlInput) {}
+    fn slow_tick(&mut self, _ctx: &TickCtx, _input: &ControlInput) {}
 }
 
 /// Create a ServoCore with default test configuration.

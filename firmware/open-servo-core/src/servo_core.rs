@@ -8,6 +8,7 @@ use open_servo_control::{ControlInput, ControlLoop, DutyLimits};
 use open_servo_hw::{BoardSafetyConfig, BoardThermalConfig};
 #[cfg(feature = "current-sense-bus")]
 use open_servo_math::MilliAmp;
+use open_servo_math::TickCtx;
 use open_servo_math::{
     CentiC, CentiDeg, CentiDeg32, ComplianceConfig, DegPerSec10, Duty, MilliVolt, ThermalModel,
 };
@@ -91,12 +92,14 @@ pub struct SystemState {
 /// let mut core = ServoCore::new(PidController::default());
 ///
 /// // In control ISR:
+/// let ctx = TickCtx { domain: TickDomain::ControlFast, dt_us: 100, seq: 0 };
 /// let inputs = FastInputs { position, current, bus_voltage, temperature };
-/// let outputs = core.fast_tick(inputs);
+/// let outputs = core.fast_tick(&ctx, inputs);
 /// // Apply outputs to hardware
 ///
 /// // In slow tick:
-/// if let Some(fault) = core.slow_tick() {
+/// let ctx = TickCtx { domain: TickDomain::System, dt_us: 10000, seq: 0 };
+/// if let Some(fault) = core.slow_tick(&ctx) {
 ///     // Handle fault
 /// }
 /// ```
@@ -242,7 +245,7 @@ impl<C: ControlLoop> ServoCore<C> {
     /// 4. Run control loop with clamped setpoint
     /// 5. Check for motor stall (PWM saturated + no movement)
     #[inline]
-    pub fn fast_tick(&mut self, inputs: FastInputs) -> FastOutputs {
+    pub fn fast_tick(&mut self, _ctx: &TickCtx, inputs: FastInputs) -> FastOutputs {
         // Always increment master tick counter
         self.tick_counter = self.tick_counter.wrapping_add(1);
 
@@ -367,7 +370,7 @@ impl<C: ControlLoop> ServoCore<C> {
             },
         };
 
-        let output = self.controller.fast_tick(&input);
+        let output = self.controller.fast_tick(_ctx, &input);
 
         // Cache input for medium/slow tick (ControlMedium domain)
         self.last_input = Some(input);
@@ -401,7 +404,7 @@ impl<C: ControlLoop> ServoCore<C> {
     ///
     /// Performs less critical checks that don't need 10kHz rate.
     /// Returns fault kind if a fault was raised.
-    pub fn slow_tick(&mut self) -> Option<FaultKind> {
+    pub fn slow_tick(&mut self, _ctx: &TickCtx) -> Option<FaultKind> {
         // Update thermal model with accumulated I² from fast ticks
         self.safety.update_thermal_slow();
 
@@ -431,7 +434,7 @@ impl<C: ControlLoop> ServoCore<C> {
         // Call controller's slow tick with same gating as medium_tick
         if self.can_run_control_ticks() {
             if let Some(ref input) = self.last_input {
-                self.controller.slow_tick(input);
+                self.controller.slow_tick(_ctx, input);
             }
         }
 
@@ -449,7 +452,7 @@ impl<C: ControlLoop> ServoCore<C> {
     /// - setpoint tracking (time unchanged)
     /// - compliance mode transitions (Move/Hold/Yield)
     /// - backdrive detection
-    pub fn control_medium_tick(&mut self) {
+    pub fn control_medium_tick(&mut self, _ctx: &TickCtx) {
         if !self.can_run_control_ticks() {
             return;
         }
@@ -505,7 +508,7 @@ impl<C: ControlLoop> ServoCore<C> {
             bus_voltage: base_input.bus_voltage,
             limits: base_input.limits,
         };
-        self.controller.medium_tick(&medium_input);
+        self.controller.medium_tick(_ctx, &medium_input);
     }
 
     /// Raise a fault internally.
@@ -811,12 +814,23 @@ impl<C: ControlLoop> ServoCore<C> {
 mod tests {
     use super::*;
     use crate::test_support::{make_core, make_inputs, MockController};
+    use open_servo_math::TickDomain;
+
+    /// Create a dummy TickCtx for testing.
+    fn test_ctx() -> TickCtx {
+        TickCtx {
+            domain: TickDomain::ControlFast,
+            dt_us: 100,
+            seq: 0,
+        }
+    }
 
     // ========== fast_tick tests ==========
 
     #[test]
     fn test_fast_tick_returns_safe_when_faulted() {
         let mut core = make_core(MockController::new());
+        let ctx = test_ctx();
         core.engage(CentiDeg::from_cdeg(9000));
 
         // Manually fault the core
@@ -824,7 +838,7 @@ mod tests {
         assert!(core.is_faulted());
 
         // fast_tick should return safe outputs
-        let outputs = core.fast_tick(make_inputs(9000));
+        let outputs = core.fast_tick(&ctx, make_inputs(9000));
         assert_eq!(outputs.pwm_command, Duty::ZERO);
         assert!(!outputs.motor_enable);
     }
@@ -832,15 +846,16 @@ mod tests {
     #[test]
     fn test_fast_tick_skips_on_bad_position() {
         let mut core = make_core(MockController::new());
+        let ctx = test_ctx();
         core.controller_mut().set_output(Duty::from_raw(500)); // Would produce output if position was valid
         core.engage(CentiDeg::from_cdeg(9000));
 
         // First tick initializes sensor health at position 9000
-        core.fast_tick(make_inputs(9000));
+        core.fast_tick(&ctx, make_inputs(9000));
 
         // Sudden large jump should be rejected (delta > max_delta threshold)
         // Skip keeps motor enabled but outputs PWM 0 (hold position, don't actuate on bad data)
-        let outputs = core.fast_tick(make_inputs(0)); // Jump from 9000 to 0
+        let outputs = core.fast_tick(&ctx, make_inputs(0)); // Jump from 9000 to 0
         assert_eq!(outputs.pwm_command, Duty::ZERO);
         assert!(outputs.motor_enable); // Skip keeps motor enabled, just sends 0 PWM
     }
@@ -849,10 +864,11 @@ mod tests {
     #[test]
     fn test_fast_tick_faults_on_overcurrent() {
         let mut core = make_core(MockController::new());
+        let ctx = test_ctx();
         core.engage(CentiDeg::from_cdeg(9000));
 
         // Initialize with normal position
-        core.fast_tick(make_inputs(9000));
+        core.fast_tick(&ctx, make_inputs(9000));
 
         // Trigger overcurrent (default limit is 800mA)
         let inputs = FastInputs {
@@ -862,7 +878,7 @@ mod tests {
             temperature: None,
         };
 
-        let outputs = core.fast_tick(inputs);
+        let outputs = core.fast_tick(&ctx, inputs);
         assert!(core.is_faulted());
         assert_eq!(
             core.fault_state().fault_kind(),
@@ -874,14 +890,15 @@ mod tests {
     #[test]
     fn test_fast_tick_normal_operation() {
         let mut core = make_core(MockController::new());
+        let ctx = test_ctx();
         core.controller_mut().set_output(Duty::from_raw(500));
         core.engage(CentiDeg::from_cdeg(9000));
 
         // Initialize position
-        core.fast_tick(make_inputs(9000));
+        core.fast_tick(&ctx, make_inputs(9000));
 
         // Normal tick should produce output
-        let outputs = core.fast_tick(make_inputs(9000));
+        let outputs = core.fast_tick(&ctx, make_inputs(9000));
         assert!(outputs.motor_enable);
         assert_eq!(outputs.pwm_command, Duty::from_raw(500));
     }
@@ -891,6 +908,7 @@ mod tests {
     #[test]
     fn test_slow_tick_faults_on_overtemp() {
         let mut core = make_core(MockController::new());
+        let ctx = test_ctx();
         core.engage(CentiDeg::from_cdeg(9000)); // Must engage for fast_tick to cache temperature
 
         // Cache high temperature via fast_tick
@@ -901,10 +919,10 @@ mod tests {
             bus_voltage: None,
             temperature: Some(CentiC::from_centi_c(9000)), // 90°C, over 80°C limit
         };
-        core.fast_tick(inputs);
+        core.fast_tick(&ctx, inputs);
 
         // slow_tick should detect MCU overtemp
-        let fault = core.slow_tick();
+        let fault = core.slow_tick(&ctx);
         assert_eq!(fault, Some(FaultKind::McuOverTemp));
         assert!(core.is_faulted());
     }
@@ -912,6 +930,7 @@ mod tests {
     #[test]
     fn test_slow_tick_no_fault_when_normal() {
         let mut core = make_core(MockController::new());
+        let ctx = test_ctx();
 
         // Cache normal temperature
         let inputs = FastInputs {
@@ -921,10 +940,10 @@ mod tests {
             bus_voltage: None,
             temperature: Some(CentiC::from_centi_c(2500)), // 25°C, well under limit
         };
-        core.fast_tick(inputs);
+        core.fast_tick(&ctx, inputs);
 
         // slow_tick should return None
-        assert_eq!(core.slow_tick(), None);
+        assert_eq!(core.slow_tick(&ctx), None);
         assert!(!core.is_faulted());
     }
 
@@ -966,6 +985,7 @@ mod tests {
     #[test]
     fn test_system_state_updated_after_tick() {
         let mut core = make_core(MockController::new());
+        let ctx = test_ctx();
         core.controller_mut().set_output(Duty::from_raw(750));
         core.set_setpoint(CentiDeg::from_cdeg(9000)); // Use core's setpoint now
         core.engage(CentiDeg::from_cdeg(8000)); // Must engage for tick to run controller
@@ -979,8 +999,8 @@ mod tests {
         };
 
         // Need two ticks - first initializes position sensor
-        core.fast_tick(inputs);
-        core.fast_tick(inputs);
+        core.fast_tick(&ctx, inputs);
+        core.fast_tick(&ctx, inputs);
 
         let state = core.system_state();
         assert_eq!(state.position.as_cdeg(), 8000);
@@ -1008,23 +1028,25 @@ mod tests {
     #[test]
     fn test_fast_tick_error_no_overflow() {
         let mut core = make_core(MockController::new());
+        let ctx = test_ctx();
         core.engage(CentiDeg::from_cdeg(-30000));
         core.set_setpoint_i32_for_test(30000);
         let inputs = make_inputs(-30000);
-        let outputs = core.fast_tick(inputs);
+        let outputs = core.fast_tick(&ctx, inputs);
         assert!(outputs.motor_enable);
     }
 
     #[test]
     fn test_fast_tick_persists_clamped_setpoint() {
         let mut core = make_core(MockController::new());
+        let ctx = test_ctx();
         core.engage(CentiDeg::from_cdeg(0));
 
         // Put an out-of-range internal setpoint
         core.set_setpoint_i32_for_test(40000);
 
         // Tick once to trigger clamping + persistence
-        let _ = core.fast_tick(make_inputs(0));
+        let _ = core.fast_tick(&ctx, make_inputs(0));
 
         // Internal setpoint should now be clamped to configured position_max
         let expected_max = CentiDeg32::from(core.safety().thresholds().position_max);

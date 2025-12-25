@@ -88,7 +88,7 @@ impl<C: ControlLoop> App<C> {
     /// Safety checks are performed in ServoCore. Checks for missing sensors
     /// (those returning `None`) are automatically skipped.
     #[cfg(feature = "current-sense-bus")]
-    pub fn on_control_tick<H>(&mut self, hw: &mut H)
+    pub fn on_control_tick<H>(&mut self, ctx: &TickCtx, hw: &mut H)
     where
         H: BdcMotorDriver
             + PositionSensor
@@ -105,7 +105,7 @@ impl<C: ControlLoop> App<C> {
         };
 
         // Run pure control logic
-        let outputs = self.core.fast_tick(inputs);
+        let outputs = self.core.fast_tick(ctx, inputs);
 
         // Apply outputs to hardware
         if outputs.motor_enable {
@@ -120,7 +120,7 @@ impl<C: ControlLoop> App<C> {
     ///
     /// Version without current sensing.
     #[cfg(not(feature = "current-sense-bus"))]
-    pub fn on_control_tick<H>(&mut self, hw: &mut H)
+    pub fn on_control_tick<H>(&mut self, ctx: &TickCtx, hw: &mut H)
     where
         H: BdcMotorDriver + PositionSensor + SafetyVoltageSource + SafetyMcuTempSource,
     {
@@ -132,7 +132,7 @@ impl<C: ControlLoop> App<C> {
         };
 
         // Run pure control logic
-        let outputs = self.core.fast_tick(inputs);
+        let outputs = self.core.fast_tick(ctx, inputs);
 
         // Apply outputs to hardware
         if outputs.motor_enable {
@@ -147,8 +147,16 @@ impl<C: ControlLoop> App<C> {
     pub fn handle_event<H: BdcMotorDriver>(&mut self, hw: &mut H, event: Event) {
         match event {
             Event::SlowTick => {
+                // Build ctx for slow tick (System domain, ~10ms at 100Hz)
+                self.system_seq = self.system_seq.wrapping_add(1);
+                let ctx = TickCtx {
+                    domain: TickDomain::System,
+                    dt_us: 10_000, // Nominal 100Hz
+                    seq: self.system_seq,
+                };
+
                 // Run slow tick monitoring
-                if let Some(_fault) = self.core.slow_tick() {
+                if let Some(_fault) = self.core.slow_tick(&ctx) {
                     // Apply safety on fault
                     hw.set_pwm(Duty::ZERO);
                     hw.set_enable(false);
@@ -236,15 +244,15 @@ impl<C: ControlLoop> App<C> {
 
     /// ControlMedium tick delegate - called from decimated fast tick ISR.
     /// No hardware access needed; just forwards to core.
-    pub fn on_control_medium_tick(&mut self) {
-        self.core.control_medium_tick();
+    pub fn on_control_medium_tick(&mut self, ctx: &TickCtx) {
+        self.core.control_medium_tick(ctx);
     }
 
     /// Shared setup for ControlFast tick (seq counter + ctx).
     #[inline]
-    fn on_control_fast_tick_impl(&mut self, dt_us: u32) {
+    fn on_control_fast_tick_impl(&mut self, dt_us: u32) -> TickCtx {
         self.control_fast_seq = self.control_fast_seq.wrapping_add(1);
-        let _ctx = TickCtx {
+        let ctx = TickCtx {
             domain: TickDomain::ControlFast,
             dt_us,
             seq: self.control_fast_seq,
@@ -256,6 +264,8 @@ impl<C: ControlLoop> App<C> {
             self.core.safety_mut().set_fast_dt_us(dt_us);
             self.core.update_fast_dt_us(dt_us);
         }
+
+        ctx
     }
 
     /// Called from ISR at ControlFast rate (nominal 10kHz, actual rate from dt_us).
@@ -269,8 +279,8 @@ impl<C: ControlLoop> App<C> {
             + SafetyVoltageSource
             + SafetyMcuTempSource,
     {
-        self.on_control_fast_tick_impl(dt_us);
-        self.on_control_tick(hw);
+        let ctx = self.on_control_fast_tick_impl(dt_us);
+        self.on_control_tick(&ctx, hw);
     }
 
     /// Called from ISR at ControlFast rate (nominal 10kHz, actual rate from dt_us).
@@ -280,19 +290,19 @@ impl<C: ControlLoop> App<C> {
     where
         H: BdcMotorDriver + PositionSensor + SafetyVoltageSource + SafetyMcuTempSource,
     {
-        self.on_control_fast_tick_impl(dt_us);
-        self.on_control_tick(hw);
+        let ctx = self.on_control_fast_tick_impl(dt_us);
+        self.on_control_tick(&ctx, hw);
     }
 
     /// Called from ISR at ControlMedium rate (1kHz).
     pub fn on_control_medium_tick_dt(&mut self, dt_us: u32) {
         self.control_medium_seq = self.control_medium_seq.wrapping_add(1);
-        let _ctx = TickCtx {
+        let ctx = TickCtx {
             domain: TickDomain::ControlMedium,
             dt_us,
             seq: self.control_medium_seq,
         };
-        self.on_control_medium_tick();
+        self.on_control_medium_tick(&ctx);
     }
 
     /// Called at System rate (100Hz) for housekeeping.

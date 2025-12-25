@@ -13,7 +13,16 @@ use crate::outputs::FastOutputs;
 use crate::servo_core::{ServoCore, ServoMode};
 use crate::test_support::{make_core, make_inputs, repeat_inputs, MockController};
 use open_servo_control::ControlLoop;
-use open_servo_math::{CentiDeg, Duty};
+use open_servo_math::{CentiDeg, Duty, TickCtx, TickDomain};
+
+/// Create a dummy TickCtx for testing.
+fn test_ctx() -> TickCtx {
+    TickCtx {
+        domain: TickDomain::ControlFast,
+        dt_us: 100,
+        seq: 0,
+    }
+}
 
 // TODO(Stage 5): Thermal invariant tests require ThermalModel from open-servo-math.
 // Consider creating a dedicated thermal test module or integration test that can
@@ -72,10 +81,11 @@ pub fn run_fast_ticks<C: ControlLoop>(
     core: &mut ServoCore<C>,
     inputs: impl IntoIterator<Item = FastInputs>,
 ) -> Vec<(FastOutputs, Snapshot)> {
+    let ctx = test_ctx();
     inputs
         .into_iter()
         .map(|input| {
-            let outputs = core.fast_tick(input);
+            let outputs = core.fast_tick(&ctx, input);
             let snapshot = Snapshot::from_tick(core, &input, &outputs);
             (outputs, snapshot)
         })
@@ -96,17 +106,23 @@ pub fn run_with_slow<C: ControlLoop>(
     inputs: impl IntoIterator<Item = FastInputs>,
     slow_every: usize,
 ) -> Vec<(FastOutputs, Snapshot)> {
+    let fast_ctx = test_ctx();
+    let slow_ctx = TickCtx {
+        domain: TickDomain::System,
+        dt_us: 10_000,
+        seq: 0,
+    };
     let mut results = Vec::new();
     let mut tick_count = 0usize;
 
     for input in inputs {
-        let outputs = core.fast_tick(input);
+        let outputs = core.fast_tick(&fast_ctx, input);
         let snapshot = Snapshot::from_tick(core, &input, &outputs);
         results.push((outputs, snapshot));
 
         tick_count += 1;
         if slow_every > 0 && tick_count % slow_every == 0 {
-            core.slow_tick();
+            core.slow_tick(&slow_ctx);
         }
     }
 
@@ -118,13 +134,14 @@ pub fn run_with_slow<C: ControlLoop>(
 #[test]
 fn test_stall_triggers_at_timeout() {
     let mut core = make_core(MockController::new());
+    let ctx = test_ctx();
     let timeout = core.safety().thresholds().stall_timeout_ticks as usize;
 
     core.engage(CentiDeg::from_cdeg(9000));
     core.set_setpoint(CentiDeg::from_cdeg(9100));
 
     // Initialize sensor health
-    core.fast_tick(make_inputs(9000));
+    core.fast_tick(&ctx, make_inputs(9000));
 
     // Set BOTH output and saturation
     core.controller_mut().set_output(Duty::MAX);
@@ -140,7 +157,7 @@ fn test_stall_triggers_at_timeout() {
     }
 
     // Final tick should trigger stall
-    let outputs = core.fast_tick(make_inputs(9000));
+    let outputs = core.fast_tick(&ctx, make_inputs(9000));
     assert!(core.is_faulted(), "should fault at timeout");
     assert_eq!(outputs.fault, Some(FaultKind::Stall));
 }
@@ -148,13 +165,14 @@ fn test_stall_triggers_at_timeout() {
 #[test]
 fn test_stall_counter_resets_on_movement() {
     let mut core = make_core(MockController::new());
+    let ctx = test_ctx();
     let timeout = core.safety().thresholds().stall_timeout_ticks as usize;
 
     core.engage(CentiDeg::from_cdeg(9000));
     core.set_setpoint(CentiDeg::from_cdeg(9100));
 
     // Initialize
-    core.fast_tick(make_inputs(9000));
+    core.fast_tick(&ctx, make_inputs(9000));
 
     // Set BOTH output and saturation
     core.controller_mut().set_output(Duty::MAX);
@@ -172,7 +190,7 @@ fn test_stall_counter_resets_on_movement() {
         .stall_position_tolerance
         .as_cdeg() as i32;
     let new_position: i16 = (9000i32 + tol + 1).clamp(i16::MIN as i32, i16::MAX as i32) as i16;
-    core.fast_tick(make_inputs(new_position));
+    core.fast_tick(&ctx, make_inputs(new_position));
 
     // Run (timeout - 1) at new position - counter should have reset
     let results = run_fast_ticks(
@@ -191,13 +209,14 @@ fn test_stall_counter_resets_on_movement() {
 #[test]
 fn test_no_stall_without_saturation() {
     let mut core = make_core(MockController::new());
+    let ctx = test_ctx();
     let timeout = core.safety().thresholds().stall_timeout_ticks as usize;
 
     core.engage(CentiDeg::from_cdeg(9000));
     core.set_setpoint(CentiDeg::from_cdeg(9100));
 
     // Initialize sensor health
-    core.fast_tick(make_inputs(9000));
+    core.fast_tick(&ctx, make_inputs(9000));
 
     // High duty but NOT saturated - stall should NOT trigger
     core.controller_mut().set_output(Duty::MAX);

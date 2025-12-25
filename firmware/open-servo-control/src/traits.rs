@@ -7,6 +7,8 @@
 
 #[cfg(feature = "pid")]
 use crate::PidConfig;
+// Re-export TickCtx for convenience
+pub use open_servo_math::TickCtx;
 use open_servo_math::{CentiDeg, DegPerSec10, Duty, MilliAmp, MilliVolt};
 
 // =============================================================================
@@ -100,13 +102,13 @@ pub trait ControlLoop {
     /// - Compute duty from input.setpoint and input.position
     /// - Clamp output to input.limits
     /// - Set saturated=true if clamped at min or max limit
-    fn fast_tick(&mut self, input: &ControlInput) -> ControlOutput;
+    fn fast_tick(&mut self, ctx: &TickCtx, input: &ControlInput) -> ControlOutput;
 
     /// Medium tick (~1kHz) - optional intermediate processing.
-    fn medium_tick(&mut self, input: &ControlInput);
+    fn medium_tick(&mut self, ctx: &TickCtx, input: &ControlInput);
 
     /// Slow tick (~100Hz) - optional slow processing.
-    fn slow_tick(&mut self, input: &ControlInput);
+    fn slow_tick(&mut self, ctx: &TickCtx, input: &ControlInput);
 }
 
 // =============================================================================

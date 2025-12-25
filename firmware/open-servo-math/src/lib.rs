@@ -21,6 +21,7 @@ pub mod ntc;
 pub mod ntc_gen;
 pub mod pid;
 pub mod thermal;
+pub mod tick;
 pub mod units;
 
 pub use compliance_model::{ComplianceConfig, ComplianceModel, LimitState};
@@ -30,4 +31,5 @@ pub use ntc::*;
 pub use ntc_gen::{generate_ntc_lut, presets};
 pub use pid::*;
 pub use thermal::ThermalModel;
+pub use tick::{TickCtx, TickDomain};
 pub use units::*;

@@ -1,6 +1,6 @@
 use crate::traits::{ControlInput, ControlLoop, ControlOutput, PidTunable};
 use open_servo_math::{
-    CentiDeg, DerivativeMode, Duty, FilterI32, Gain, MilliAmp, PidControllerI16,
+    CentiDeg, DerivativeMode, Duty, FilterI32, Gain, MilliAmp, PidControllerI16, TickCtx,
 };
 
 /// PID configuration with human-friendly gains.
@@ -146,7 +146,7 @@ impl ControlLoop for PidController {
         self.position_filter.reset();
     }
 
-    fn fast_tick(&mut self, input: &ControlInput) -> ControlOutput {
+    fn fast_tick(&mut self, _ctx: &TickCtx, input: &ControlInput) -> ControlOutput {
         // Filter the position measurement
         let position_i32 = input.position.as_cdeg() as i32;
         let filtered_i32 = self.position_filter.update(position_i32);
@@ -183,11 +183,11 @@ impl ControlLoop for PidController {
         }
     }
 
-    fn medium_tick(&mut self, _input: &ControlInput) {
+    fn medium_tick(&mut self, _ctx: &TickCtx, _input: &ControlInput) {
         // No-op for PID controller
     }
 
-    fn slow_tick(&mut self, _input: &ControlInput) {
+    fn slow_tick(&mut self, _ctx: &TickCtx, _input: &ControlInput) {
         // No-op for PID controller
     }
 }
@@ -215,6 +215,16 @@ impl PidTunable for PidController {
 mod tests {
     use super::*;
     use crate::traits::DutyLimits;
+    use open_servo_math::TickDomain;
+
+    /// Create a dummy TickCtx for testing.
+    fn test_ctx() -> TickCtx {
+        TickCtx {
+            domain: TickDomain::ControlFast,
+            dt_us: 100,
+            seq: 0,
+        }
+    }
 
     fn make_input(setpoint: i16, position: i16) -> ControlInput {
         ControlInput {
@@ -253,21 +263,22 @@ mod tests {
     #[test]
     fn test_reset_clears_pid_state() {
         let mut ctrl = PidController::new(PidConfig::new());
+        let ctx = test_ctx();
 
         // Run a few steps to build up integral
         let input = make_input(9000, 0);
         for _ in 0..100 {
-            ctrl.fast_tick(&input);
+            ctrl.fast_tick(&ctx, &input);
         }
 
         // Get output before reset
-        let before = ctrl.fast_tick(&input);
+        let before = ctrl.fast_tick(&ctx, &input);
 
         // Reset
         ctrl.reset();
 
         // Output after reset should be different (no integral accumulation)
-        let after = ctrl.fast_tick(&input);
+        let after = ctrl.fast_tick(&ctx, &input);
 
         // The accumulated integral was adding to output, so after reset output should be smaller
         // (pure proportional response vs proportional + accumulated integral)
@@ -277,10 +288,11 @@ mod tests {
     #[test]
     fn test_fast_tick_produces_output() {
         let mut ctrl = PidController::new(PidConfig::new());
+        let ctx = test_ctx();
 
         // With position at 0° and setpoint at 90°, we should get positive output
         let input = make_input(9000, 0);
-        let output = ctrl.fast_tick(&input);
+        let output = ctrl.fast_tick(&ctx, &input);
         assert!(output.duty.as_raw() > 0);
 
         // Output should be clamped to i16 range
@@ -291,6 +303,7 @@ mod tests {
     #[test]
     fn test_saturation_flag() {
         let mut ctrl = PidController::new(PidConfig::new());
+        let ctx = test_ctx();
 
         // Create input with tight limits
         let input = ControlInput {
@@ -303,7 +316,7 @@ mod tests {
         };
 
         // With large error, output should saturate
-        let output = ctrl.fast_tick(&input);
+        let output = ctrl.fast_tick(&ctx, &input);
         assert!(output.saturated);
         assert!(output.duty.as_raw() == 100 || output.duty.as_raw() == -100);
     }
@@ -311,6 +324,7 @@ mod tests {
     #[test]
     fn test_no_saturation_with_small_error() {
         let mut ctrl = PidController::new(PidConfig::new());
+        let ctx = test_ctx();
 
         // Create input with small error (position close to setpoint)
         let input = ControlInput {
@@ -323,7 +337,7 @@ mod tests {
         };
 
         // With tiny error, output should not saturate
-        let output = ctrl.fast_tick(&input);
+        let output = ctrl.fast_tick(&ctx, &input);
         assert!(!output.saturated);
     }
 }
