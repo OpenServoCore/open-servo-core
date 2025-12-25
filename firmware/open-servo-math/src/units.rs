@@ -21,6 +21,12 @@ pub struct MilliAmp(pub i16);
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
 pub struct CentiDeg(pub i16);
 
+/// Angle in centidegrees with i32 backing for overflow-safe internal math.
+/// Use CentiDeg (i16) for public APIs and wire formats.
+#[derive(Copy, Clone, Debug, Default, PartialEq, Eq, PartialOrd, Ord)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
+pub struct CentiDeg32(pub i32);
+
 /// Angular velocity in 0.1 deg/s (1 LSB = 0.1 deg/s)
 #[derive(Copy, Clone, Debug, Default, PartialEq, Eq, PartialOrd, Ord)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
@@ -178,6 +184,76 @@ impl CentiDeg {
     pub fn to_mrad(self) -> i32 {
         // mrad = cdeg * 174.5329 / 1000  (π/180 * 100)
         mul_div_i32(self.0 as i32, 175, 1000)
+    }
+}
+
+impl CentiDeg32 {
+    /// Create from raw i32 centidegrees
+    #[inline]
+    pub const fn from_cdeg(cdeg: i32) -> Self {
+        Self(cdeg)
+    }
+
+    /// Get raw i32 centidegrees value
+    #[inline]
+    pub const fn as_cdeg(self) -> i32 {
+        self.0
+    }
+
+    /// Saturate to i16 range
+    #[inline]
+    pub const fn to_cdeg_i16_sat(self) -> i16 {
+        if self.0 > i16::MAX as i32 {
+            i16::MAX
+        } else if self.0 < i16::MIN as i32 {
+            i16::MIN
+        } else {
+            self.0 as i16
+        }
+    }
+
+    /// Convert to CentiDeg (i16) with saturation
+    #[inline]
+    pub const fn to_centi_deg_sat(self) -> CentiDeg {
+        CentiDeg(self.to_cdeg_i16_sat())
+    }
+}
+
+impl From<CentiDeg> for CentiDeg32 {
+    #[inline]
+    fn from(cd: CentiDeg) -> Self {
+        Self(cd.0 as i32)
+    }
+}
+
+impl From<i32> for CentiDeg32 {
+    #[inline]
+    fn from(val: i32) -> Self {
+        Self(val)
+    }
+}
+
+impl Add for CentiDeg32 {
+    type Output = Self;
+    #[inline]
+    fn add(self, rhs: Self) -> Self {
+        Self(self.0.saturating_add(rhs.0))
+    }
+}
+
+impl Sub for CentiDeg32 {
+    type Output = Self;
+    #[inline]
+    fn sub(self, rhs: Self) -> Self {
+        Self(self.0.saturating_sub(rhs.0))
+    }
+}
+
+impl Neg for CentiDeg32 {
+    type Output = Self;
+    #[inline]
+    fn neg(self) -> Self {
+        Self(self.0.saturating_neg())
     }
 }
 
@@ -372,6 +448,64 @@ mod tests {
         assert_eq!(CentiDeg::from_cdeg(9000).as_deg(), 90);
         assert_eq!(CentiDeg::from_cdeg(9050).as_deg(), 90); // truncates
         assert_eq!(CentiDeg::from_cdeg(-4500).as_deg(), -45);
+    }
+
+    // ========== CentiDeg32 tests ==========
+
+    #[test]
+    fn test_centideg32_positive_overflow_saturates() {
+        let cd32 = CentiDeg32::from_cdeg(40000);
+        assert_eq!(cd32.to_cdeg_i16_sat(), i16::MAX);
+        assert_eq!(cd32.to_centi_deg_sat().as_cdeg(), i16::MAX);
+    }
+
+    #[test]
+    fn test_centideg32_negative_overflow_saturates() {
+        let cd32 = CentiDeg32::from_cdeg(-40000);
+        assert_eq!(cd32.to_cdeg_i16_sat(), i16::MIN);
+        assert_eq!(cd32.to_centi_deg_sat().as_cdeg(), i16::MIN);
+    }
+
+    #[test]
+    fn test_centideg32_subtraction_no_wrap() {
+        // 30000 - (-30000) = 60000, which exceeds i16 range but fits in i32
+        let sp = CentiDeg32::from_cdeg(30000);
+        let pv = CentiDeg32::from_cdeg(-30000);
+        let err = sp - pv;
+        assert_eq!(err.as_cdeg(), 60000); // i32 can hold this
+        assert_eq!(err.to_cdeg_i16_sat(), i16::MAX); // saturates when converting to i16
+    }
+
+    #[test]
+    fn test_centideg32_roundtrip() {
+        // Normal value roundtrips correctly
+        let cd = CentiDeg::from_cdeg(9000);
+        let cd32 = CentiDeg32::from(cd);
+        let cd_back = cd32.to_centi_deg_sat();
+        assert_eq!(cd, cd_back);
+
+        // Negative value roundtrips correctly
+        let cd = CentiDeg::from_cdeg(-4500);
+        let cd32 = CentiDeg32::from(cd);
+        let cd_back = cd32.to_centi_deg_sat();
+        assert_eq!(cd, cd_back);
+    }
+
+    #[test]
+    fn test_centideg32_saturating_arithmetic() {
+        // Add saturates at i32::MAX
+        let a = CentiDeg32::from_cdeg(i32::MAX - 100);
+        let b = CentiDeg32::from_cdeg(200);
+        assert_eq!((a + b).as_cdeg(), i32::MAX);
+
+        // Sub saturates at i32::MIN
+        let a = CentiDeg32::from_cdeg(i32::MIN + 100);
+        let b = CentiDeg32::from_cdeg(200);
+        assert_eq!((a - b).as_cdeg(), i32::MIN);
+
+        // Neg saturates i32::MIN -> i32::MAX
+        let a = CentiDeg32::from_cdeg(i32::MIN);
+        assert_eq!((-a).as_cdeg(), i32::MAX);
     }
 
     // Removed from_pot_adc, from_ipropi_adc, from_adc12 tests - these conversions

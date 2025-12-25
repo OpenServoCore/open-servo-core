@@ -6,7 +6,7 @@
 
 use open_servo_control::{ControlInput, ControlLoop, DutyLimits};
 use open_servo_hw::{BoardSafetyConfig, BoardThermalConfig};
-use open_servo_math::{CentiC, CentiDeg, Duty, MilliVolt, DegPerSec10, ComplianceConfig, ThermalModel};
+use open_servo_math::{CentiC, CentiDeg, CentiDeg32, Duty, MilliVolt, DegPerSec10, ComplianceConfig, ThermalModel};
 #[cfg(feature = "current-sense-bus")]
 use open_servo_math::MilliAmp;
 
@@ -14,9 +14,6 @@ use crate::fault::{FaultKind, FaultState};
 use crate::inputs::FastInputs;
 use crate::outputs::FastOutputs;
 use crate::safety::{SafetyManager, SafetyThresholds};
-
-/// Internal i32 centidegrees for overflow-safe math
-type Cdeg32 = i32;
 
 /// Servo operating mode for compliance behavior
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -113,7 +110,7 @@ pub struct ServoCore<C: ControlLoop> {
     motor_engaged: bool,
 
     // Setpoint owned by ServoCore (Stage 1 refactor)
-    setpoint: Option<Cdeg32>,
+    setpoint: Option<CentiDeg32>,
 
     // Compliance state
     mode: ServoMode,
@@ -264,28 +261,27 @@ impl<C: ControlLoop> ServoCore<C> {
         self.update_velocity(position);
 
         // Get setpoint - if None, return safe (motor disengaged or no target)
-        let Some(sp_i32) = self.setpoint else {
+        let Some(sp32) = self.setpoint else {
             return FastOutputs::safe();
         };
 
-        // Saturate i32 -> i16 BEFORE constructing CentiDeg (avoid wrap)
-        let sp_sat_i16 = sp_i32.clamp(i16::MIN as i32, i16::MAX as i32) as i16;
-        let sp_sat = CentiDeg::from_cdeg(sp_sat_i16);
+        // Saturate i32 -> i16 for safety clamping
+        let sp_sat = sp32.to_centi_deg_sat();
 
         // Clamp setpoint to bounds and track changes
         let clamped_setpoint = self.safety.clamp_setpoint(sp_sat);
         // Store the effective clamped setpoint so internal state remains within safety bounds
         // and doesn't repeatedly re-clamp each tick.
-        self.setpoint = Some(clamped_setpoint.as_cdeg() as Cdeg32);
+        self.setpoint = Some(CentiDeg32::from(clamped_setpoint));
         self.update_setpoint_tracking(clamped_setpoint);
 
         // i32 math for error - prevents overflow
-        let sp32: Cdeg32 = clamped_setpoint.as_cdeg() as Cdeg32;
-        let pos32: Cdeg32 = position.as_cdeg() as Cdeg32;
-        let err32: Cdeg32 = sp32 - pos32;
+        let sp = CentiDeg32::from(clamped_setpoint);
+        let pv = CentiDeg32::from(position);
+        let err32 = sp - pv;
 
         // For mode + limiter APIs (expect i16), saturate err32 -> i16
-        let error: i16 = err32.clamp(i16::MIN as i32, i16::MAX as i32) as i16;
+        let error: i16 = err32.to_cdeg_i16_sat();
 
         // Update compliance mode
         let mode_changed = self.update_compliance_mode(position, clamped_setpoint, error);
@@ -465,15 +461,12 @@ impl<C: ControlLoop> ServoCore<C> {
     /// The setpoint is clamped to position bounds.
     pub fn set_setpoint(&mut self, setpoint: CentiDeg) {
         let clamped = self.safety.clamp_setpoint(setpoint);
-        self.setpoint = Some(clamped.as_cdeg() as Cdeg32);
+        self.setpoint = Some(CentiDeg32::from(clamped));
     }
 
     /// Get the current setpoint.
     pub fn get_setpoint(&self) -> Option<CentiDeg> {
-        self.setpoint.map(|v| {
-            let v_i16 = v.clamp(i16::MIN as i32, i16::MAX as i32) as i16;
-            CentiDeg::from_cdeg(v_i16)
-        })
+        self.setpoint.map(|v| v.to_centi_deg_sat())
     }
 
     /// Clear the setpoint (for disengagement).
@@ -497,7 +490,7 @@ impl<C: ControlLoop> ServoCore<C> {
         self.motor_engaged = true;
         if self.setpoint.is_none() {
             let clamped = self.safety.clamp_setpoint(current_position);
-            self.setpoint = Some(clamped.as_cdeg() as Cdeg32);
+            self.setpoint = Some(CentiDeg32::from(clamped));
         }
     }
 
@@ -687,7 +680,7 @@ impl<C: ControlLoop> ServoCore<C> {
 
     #[cfg(test)]
     fn set_setpoint_i32_for_test(&mut self, sp: i32) {
-        self.setpoint = Some(sp);
+        self.setpoint = Some(CentiDeg32::from_cdeg(sp));
     }
 }
 
@@ -985,7 +978,7 @@ mod tests {
         let _ = core.fast_tick(make_inputs(0));
 
         // Internal setpoint should now be clamped to configured position_max
-        let expected_max = core.safety().thresholds().position_max.as_cdeg() as i32;
+        let expected_max = CentiDeg32::from(core.safety().thresholds().position_max);
         assert_eq!(core.setpoint, Some(expected_max));
     }
 }
