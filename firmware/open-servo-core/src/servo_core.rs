@@ -129,8 +129,9 @@ pub struct ServoCore<C: ControlLoop> {
     prev_pwm_command: i16,
     prev_error: i16,
     backdrive_elapsed_us: u32,
-    // TODO: yield timing remains tick-based; convert when yield logic moves fully to medium
-    yield_enter_tick: u32,
+    // Yield timing (time-based, accumulated in medium tick)
+    yield_elapsed_us: u32,
+    yield_enter_tick: u32, // TODO: remove in Stage 12 after confirming unused
     yield_needs_reset: bool,
 
     // Dual compliance configs
@@ -206,6 +207,7 @@ impl<C: ControlLoop> ServoCore<C> {
             prev_pwm_command: 0,
             prev_error: 0,
             backdrive_elapsed_us: 0,
+            yield_elapsed_us: 0,
             yield_enter_tick: 0,
             yield_needs_reset: false,
 
@@ -336,9 +338,8 @@ impl<C: ControlLoop> ServoCore<C> {
             }
 
             ServoMode::Yield => {
-                let yield_elapsed = self.tick_counter.wrapping_sub(self.yield_enter_tick);
-
-                if yield_elapsed < self.yield_coast_ticks {
+                // Use time-based elapsed (accumulated in medium tick)
+                if self.yield_elapsed_us < YIELD_COAST_US {
                     // Pure coast for first 100ms
                     min_duty = 0;
                     max_duty = 0;
@@ -508,6 +509,7 @@ impl<C: ControlLoop> ServoCore<C> {
         self.controller.reset();
         self.last_input = None;
         self.fast_accum.reset();
+        self.yield_elapsed_us = 0;
         self.yield_needs_reset = false;
     }
 
@@ -593,7 +595,8 @@ impl<C: ControlLoop> ServoCore<C> {
         self.last_input = None;
         // Reset accumulator (no partial windows across state transitions)
         self.fast_accum.reset();
-        // Clear yield reset flag
+        // Clear yield timing state
+        self.yield_elapsed_us = 0;
         self.yield_needs_reset = false;
     }
 
@@ -702,18 +705,22 @@ impl<C: ControlLoop> ServoCore<C> {
                 // Check for backdrive
                 else if self.check_backdrive_medium(self.measured_velocity, error, window_dt_us) {
                     self.mode = ServoMode::Yield;
-                    // TODO: yield timing remains tick-based; convert when yield logic moves fully to medium
-                    self.yield_enter_tick = self.tick_counter;
+                    self.yield_elapsed_us = 0; // Reset on entry
+                    self.yield_enter_tick = self.tick_counter; // TODO: remove in Stage 12
                     self.yield_needs_reset = true;
                     self.backdrive_elapsed_us = 0;
                 }
             }
 
             ServoMode::Yield => {
-                // TODO: yield timing remains tick-based; convert when yield logic moves fully to medium
-                let yield_elapsed = self.tick_counter.wrapping_sub(self.yield_enter_tick);
-                if yield_elapsed >= self.yield_duration_ticks {
+                // Accumulate time-based elapsed (only when window_dt_us > 0, clamp to duration)
+                if window_dt_us > 0 {
+                    self.yield_elapsed_us =
+                        (self.yield_elapsed_us + window_dt_us).min(YIELD_DURATION_US);
+                }
+                if self.yield_elapsed_us >= YIELD_DURATION_US {
                     self.mode = ServoMode::Hold;
+                    self.yield_elapsed_us = 0; // Reset on exit
                     self.yield_needs_reset = false;
                 }
             }
@@ -811,8 +818,14 @@ impl<C: ControlLoop> ServoCore<C> {
 
     #[cfg(test)]
     fn set_yield_state_for_test(&mut self, enter_tick: u32, needs_reset: bool) {
+        self.yield_elapsed_us = 0;
         self.yield_enter_tick = enter_tick;
         self.yield_needs_reset = needs_reset;
+    }
+
+    #[cfg(test)]
+    fn yield_elapsed_us(&self) -> u32 {
+        self.yield_elapsed_us
     }
 
     #[cfg(test)]
@@ -1306,7 +1319,91 @@ mod tests {
     }
 
     #[test]
-    fn test_yield_exits_across_tick_wrap() {
+    fn test_yield_elapsed_wraps_safely() {
+        // Test that yield_elapsed_us clamps to YIELD_DURATION_US and doesn't overflow
+        // (replaces old tick-wrap test since timing is now time-based)
+        let mut core = make_core(MockController::new());
+        core.engage(CentiDeg::from_cdeg(9000));
+
+        // Force into Yield mode
+        core.set_mode_for_test(ServoMode::Yield);
+        core.set_yield_state_for_test(0, true);
+
+        let error: i16 = 100;
+
+        // Use a large window_dt_us to test clamping
+        let window_dt_us: u32 = YIELD_DURATION_US / 2; // 100ms per tick
+
+        // First tick: should accumulate 100ms
+        core.update_compliance_mode_medium(error, window_dt_us);
+        assert_eq!(core.yield_elapsed_us(), YIELD_DURATION_US / 2);
+        assert_eq!(core.mode(), ServoMode::Yield);
+
+        // Second tick: should clamp to YIELD_DURATION_US and exit
+        core.update_compliance_mode_medium(error, window_dt_us);
+        assert_eq!(core.mode(), ServoMode::Hold);
+        assert_eq!(core.yield_elapsed_us(), 0); // Reset on exit
+
+        // Re-enter Yield and test with very large dt to ensure clamping
+        core.set_mode_for_test(ServoMode::Yield);
+        core.set_yield_state_for_test(0, true);
+
+        // Single tick with huge dt should clamp and exit
+        let huge_dt = u32::MAX / 2;
+        core.update_compliance_mode_medium(error, huge_dt);
+        assert_eq!(core.mode(), ServoMode::Hold);
+        assert_eq!(core.yield_elapsed_us(), 0);
+    }
+
+    #[test]
+    fn test_yield_duration_time_based() {
+        // Test that Yield exits after YIELD_DURATION_US (200ms) using time-based accumulation
+        // Vary window_dt_us to prove independence from tick rate
+
+        for window_dt_us in [500u32, 1000, 2000] {
+            let mut core = make_core(MockController::new());
+            core.engage(CentiDeg::from_cdeg(9000));
+
+            // Force into Yield mode
+            core.set_mode_for_test(ServoMode::Yield);
+            core.set_yield_state_for_test(0, true);
+
+            let error: i16 = 100;
+            let mut accumulated_us: u32 = 0;
+            let mut tick_count = 0;
+
+            // Simulate medium ticks until we reach YIELD_DURATION_US
+            while accumulated_us < YIELD_DURATION_US {
+                core.update_compliance_mode_medium(error, window_dt_us);
+                accumulated_us += window_dt_us;
+                tick_count += 1;
+
+                if accumulated_us < YIELD_DURATION_US {
+                    assert_eq!(
+                        core.mode(),
+                        ServoMode::Yield,
+                        "window_dt_us={}: Should remain in Yield at tick {} (accumulated {}us < {}us)",
+                        window_dt_us,
+                        tick_count,
+                        accumulated_us,
+                        YIELD_DURATION_US
+                    );
+                }
+            }
+
+            // Should have transitioned to Hold on the exact tick that crossed threshold
+            assert_eq!(
+                core.mode(),
+                ServoMode::Hold,
+                "window_dt_us={}: Should exit Yield to Hold when accumulated >= YIELD_DURATION_US",
+                window_dt_us
+            );
+        }
+    }
+
+    #[test]
+    fn test_yield_coast_phase_time_based() {
+        // Test that coast phase ends exactly at YIELD_COAST_US (100ms)
         let mut core = make_core(MockController::new());
         let ctx = test_ctx();
         core.engage(CentiDeg::from_cdeg(9000));
@@ -1314,45 +1411,111 @@ mod tests {
         // Initialize position sensor
         core.fast_tick(&ctx, make_inputs(9000));
 
-        // Set tick_counter near u32::MAX to test wrap
-        let start_tick = u32::MAX - 100;
-        core.set_tick_counter_for_test(start_tick);
-
-        // Force into Yield mode, enter at current tick
+        // Force into Yield mode
         core.set_mode_for_test(ServoMode::Yield);
-        core.set_yield_state_for_test(start_tick, true);
+        core.set_yield_state_for_test(0, false); // needs_reset=false to isolate coast test
 
-        // Verify we're in Yield mode
-        assert_eq!(core.mode(), ServoMode::Yield);
+        let error: i16 = 100;
+        let window_dt_us: u32 = 10_000; // 10ms per medium tick
+        let mut accumulated_us: u32 = 0;
 
-        // At default 10kHz (100us), yield_duration_ticks = 2000
-        // Run fast_tick calls to advance past wrap and through yield duration
-        // We need to run enough ticks to wrap around and exceed yield_duration_ticks
-        for i in 0..2100 {
-            core.fast_tick(&ctx, make_inputs(9000));
+        // Coast phase: yield_elapsed_us < YIELD_COAST_US
+        while accumulated_us < YIELD_COAST_US {
+            core.update_compliance_mode_medium(error, window_dt_us);
+            accumulated_us += window_dt_us;
 
-            // After medium tick runs, check mode
-            // Note: mode transition happens in update_compliance_mode_medium
-            // which is called from control_medium_tick
-            core.control_medium_tick(&ctx);
+            // yield_elapsed_us should match accumulated time (clamped)
+            assert_eq!(
+                core.yield_elapsed_us(),
+                accumulated_us.min(YIELD_DURATION_US),
+                "yield_elapsed_us should track accumulated time"
+            );
 
-            // Should still be in Yield until duration elapsed
-            if (i as u32) < core.yield_duration_ticks - 1 {
-                assert_eq!(
-                    core.mode(),
-                    ServoMode::Yield,
-                    "Should remain in Yield at tick {}, elapsed {}",
-                    i,
-                    core.tick_counter.wrapping_sub(start_tick)
+            if accumulated_us < YIELD_COAST_US {
+                // Still in coast phase - fast_tick should apply zero duty
+                assert!(
+                    core.yield_elapsed_us() < YIELD_COAST_US,
+                    "Should be in coast phase at {}us < {}us",
+                    core.yield_elapsed_us(),
+                    YIELD_COAST_US
                 );
             }
         }
 
-        // After enough ticks, should have transitioned to Hold
+        // After crossing YIELD_COAST_US, should be in alive phase
+        assert!(
+            core.yield_elapsed_us() >= YIELD_COAST_US,
+            "Should be in alive phase at {}us >= {}us",
+            core.yield_elapsed_us(),
+            YIELD_COAST_US
+        );
+    }
+
+    #[test]
+    fn test_yield_elapsed_reset_on_entry_and_exit() {
+        // Test that yield_elapsed_us is reset on entry and exit, and stays 0 in non-Yield modes
+        let mut core = make_core(MockController::new());
+        core.engage(CentiDeg::from_cdeg(9000));
+
+        let error: i16 = 100;
+        let window_dt_us: u32 = 10_000; // 10ms
+
+        // Start in Move mode
+        core.set_mode_for_test(ServoMode::Move);
         assert_eq!(
-            core.mode(),
-            ServoMode::Hold,
-            "Should exit Yield to Hold after duration even with tick wrap"
+            core.yield_elapsed_us(),
+            0,
+            "yield_elapsed_us should be 0 in Move"
+        );
+
+        // Run several medium ticks in Move - yield_elapsed_us should remain 0
+        for _ in 0..10 {
+            core.update_compliance_mode_medium(error, window_dt_us);
+            // Mode might transition to Hold due to conditions, but yield_elapsed_us should stay 0
+        }
+        assert_eq!(
+            core.yield_elapsed_us(),
+            0,
+            "yield_elapsed_us should remain 0 in Move/Hold"
+        );
+
+        // Force into Yield mode (simulating backdrive detection)
+        core.set_mode_for_test(ServoMode::Yield);
+        core.set_yield_state_for_test(0, true);
+        assert_eq!(
+            core.yield_elapsed_us(),
+            0,
+            "yield_elapsed_us should be 0 on Yield entry"
+        );
+
+        // Accumulate some time in Yield
+        for _ in 0..5 {
+            core.update_compliance_mode_medium(error, window_dt_us);
+        }
+        assert!(
+            core.yield_elapsed_us() > 0,
+            "yield_elapsed_us should accumulate in Yield mode"
+        );
+
+        // Run until Yield exits to Hold
+        while core.mode() == ServoMode::Yield {
+            core.update_compliance_mode_medium(error, window_dt_us);
+        }
+        assert_eq!(core.mode(), ServoMode::Hold);
+        assert_eq!(
+            core.yield_elapsed_us(),
+            0,
+            "yield_elapsed_us should be reset to 0 on Yield exit"
+        );
+
+        // Stay in Hold for several medium ticks - yield_elapsed_us should remain 0
+        for _ in 0..10 {
+            core.update_compliance_mode_medium(error, window_dt_us);
+        }
+        assert_eq!(
+            core.yield_elapsed_us(),
+            0,
+            "yield_elapsed_us should remain 0 while in Hold"
         );
     }
 }
