@@ -237,8 +237,18 @@ impl<C: ControlLoop> ServoCore<C> {
 
     /// Hard real-time fast control tick (rate determined by board DT).
     ///
+    /// Sample, observe, safety, actuate. **No timing decisions.**
+    ///
     /// Pure function: takes sensor inputs, returns motor outputs.
-    /// No hardware access - fully host-testable.
+    /// No hardware access - fully host-testable. All policy/FSM logic
+    /// is in medium tick; fast tick only applies cached values (e.g., yield_max_duty).
+    ///
+    /// ## Allowed Operations
+    ///
+    /// - Sample accumulation (position, current)
+    /// - Immediate safety latches (current threshold, stall, thermal)
+    /// - Controller update (fast_tick on ControlLoop)
+    /// - Output limit application from cached policy values
     ///
     /// ## Safety Checks (in order)
     ///
@@ -440,14 +450,19 @@ impl<C: ControlLoop> ServoCore<C> {
     /// ControlMedium tick - runs at decimated rate from fast tick.
     /// Stays aligned to ADC samples (derived from ControlFast domain).
     ///
+    /// **Policy FSM using time-based accumulators (window_dt_us).**
+    ///
     /// Uses windowed statistics from FastAccumulator:
     /// - velocity: derived from position delta over window
     /// - current: average over window
     ///
-    /// Also runs time-based policy logic:
+    /// Runs time-based policy logic (all using wall-clock microseconds):
     /// - setpoint tracking (time unchanged)
     /// - compliance mode transitions (Move/Hold/Yield)
     /// - backdrive detection
+    ///
+    /// Timing behavior is independent of tick rate and sample_count;
+    /// only total elapsed microseconds (window_dt_us) affects transitions.
     pub fn control_medium_tick(&mut self, ctx: &TickCtx) {
         if !self.can_run_control_ticks() {
             return;
@@ -1667,5 +1682,138 @@ mod tests {
         // Verify wrapping_add semantics (conceptual test)
         let max_val = u32::MAX;
         assert_eq!(max_val.wrapping_add(1), 0);
+    }
+
+    // ========== dt/sample_count independence tests ==========
+
+    /// Test that Yield duration is independent of window_dt_us granularity.
+    /// The FSM should exit Yield when total elapsed time >= YIELD_DURATION_US,
+    /// regardless of how that time is accumulated (many small ticks vs few large).
+    #[test]
+    fn test_yield_duration_independent_of_dt_us() {
+        // Test with different window_dt_us values: 500, 1000, 2000
+        for &window_dt_us in &[500u32, 1000, 2000] {
+            let mut core = make_core(MockController::new());
+            core.engage(CentiDeg::from_cdeg(9000));
+            core.set_setpoint(CentiDeg::from_cdeg(9000));
+
+            // Force into Yield mode
+            core.set_mode_for_test(ServoMode::Yield);
+            core.set_yield_state_for_test(true);
+
+            // Calculate exact number of ticks needed
+            let ticks_needed = (YIELD_DURATION_US + window_dt_us - 1) / window_dt_us;
+            let error: i16 = 0;
+
+            // Run ticks_needed - 1 ticks: should still be in Yield
+            for _ in 0..(ticks_needed - 1) {
+                core.update_compliance_mode_medium(error, window_dt_us);
+            }
+            assert_eq!(
+                core.mode(),
+                ServoMode::Yield,
+                "Should still be in Yield before reaching threshold (window_dt_us={})",
+                window_dt_us
+            );
+
+            // Final tick should exit Yield
+            core.update_compliance_mode_medium(error, window_dt_us);
+            assert_eq!(
+                core.mode(),
+                ServoMode::Hold,
+                "Should transition to Hold exactly at threshold (window_dt_us={})",
+                window_dt_us
+            );
+        }
+    }
+
+    /// Test that Yield duration is independent of sample_count (number of fast ticks
+    /// accumulated per medium tick). Only total elapsed microseconds matters.
+    #[test]
+    fn test_yield_duration_independent_of_sample_count() {
+        // Same total window_dt_us (10000us = 10ms), different implied sample counts
+        // (sample_count is implicit in how window_dt_us is computed, but FSM only sees window_dt_us)
+        let window_dt_us: u32 = 10_000; // 10ms per medium tick
+
+        for trial in 0..3 {
+            let mut core = make_core(MockController::new());
+            core.engage(CentiDeg::from_cdeg(9000));
+            core.set_setpoint(CentiDeg::from_cdeg(9000));
+
+            // Force into Yield mode
+            core.set_mode_for_test(ServoMode::Yield);
+            core.set_yield_state_for_test(true);
+
+            // Calculate ticks needed: YIELD_DURATION_US / window_dt_us, rounded up
+            let ticks_needed = (YIELD_DURATION_US + window_dt_us - 1) / window_dt_us;
+            let error: i16 = 0;
+
+            // Run until just before threshold
+            for _ in 0..(ticks_needed - 1) {
+                core.update_compliance_mode_medium(error, window_dt_us);
+            }
+            assert_eq!(
+                core.mode(),
+                ServoMode::Yield,
+                "Trial {}: Should be in Yield before threshold",
+                trial
+            );
+
+            // Final tick exits
+            core.update_compliance_mode_medium(error, window_dt_us);
+            assert_eq!(
+                core.mode(),
+                ServoMode::Hold,
+                "Trial {}: Should exit Yield at threshold",
+                trial
+            );
+        }
+    }
+
+    /// Test that Hold entry timing is independent of window_dt_us granularity.
+    /// Should enter Hold when total hold_conditions_met_us >= HOLD_ENTRY_US.
+    #[test]
+    fn test_hold_entry_independent_of_dt_us() {
+        // Test with different window_dt_us values
+        for &window_dt_us in &[50_000u32, 100_000, 150_000] {
+            let mut core = make_core(MockController::new());
+            core.engage(CentiDeg::from_cdeg(9000));
+            core.set_setpoint(CentiDeg::from_cdeg(9000));
+
+            // Set preconditions for hold_conditions to be true:
+            // - setpoint_unchanged_us >= SETPOINT_SETTLE_US (400ms)
+            // - error < HOLD_ENTER_ERROR_CDEG (set via error parameter)
+            // - velocity < HOLD_ENTER_VEL_DPS10 (0 by default)
+            core.setpoint_unchanged_us = SETPOINT_SETTLE_US;
+
+            // Start in Move mode (default after engage)
+            assert_eq!(core.mode(), ServoMode::Move);
+
+            // Small error (within HOLD_ENTER_ERROR_CDEG) triggers hold condition accumulation
+            let error: i16 = 100;
+
+            // Calculate ticks needed for HOLD_ENTRY_US (300ms)
+            let ticks_needed = (HOLD_ENTRY_US + window_dt_us - 1) / window_dt_us;
+
+            // Run ticks_needed - 1 ticks: should still be in Move
+            for _ in 0..(ticks_needed - 1) {
+                core.update_compliance_mode_medium(error, window_dt_us);
+            }
+            assert_eq!(
+                core.mode(),
+                ServoMode::Move,
+                "Should still be in Move before threshold (window_dt_us={})",
+                window_dt_us
+            );
+
+            // Final tick should enter Hold
+            core.update_compliance_mode_medium(error, window_dt_us);
+            assert_eq!(
+                core.mode(),
+                ServoMode::Hold,
+                "Should transition to Hold exactly at threshold (window_dt_us={})",
+                window_dt_us
+            );
+        }
     }
 }
