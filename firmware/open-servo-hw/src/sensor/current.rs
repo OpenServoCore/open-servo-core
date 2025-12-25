@@ -15,23 +15,20 @@ pub trait BusCurrentSensor {
 
 /// Safety capability trait for current sensing.
 ///
-/// ALL boards implement this trait. Boards with current sensing get
-/// automatic implementation via blanket impl. Boards without current
-/// sensing implement this directly, returning `None`.
+/// ALL boards must implement this trait explicitly.
+/// 
+/// - Boards WITH current sensing: implement both `BusCurrentSensor` and this trait,
+///   typically returning `Some(self.read_bus_current())`
+/// - Boards WITHOUT current sensing: implement only this trait, returning `None`
+///
+/// This explicit implementation requirement ensures board capabilities are 
+/// clear and intentional at the implementation site.
 pub trait SafetyCurrentSource {
     /// Read current for safety checks.
     ///
     /// Returns `None` if the board has no current sensor,
     /// which causes SafetyManager to skip over-current checks.
     fn read_safety_current(&self) -> Option<MilliAmp>;
-}
-
-// Blanket impl: BusCurrentSensor automatically provides SafetyCurrentSource
-impl<T: BusCurrentSensor> SafetyCurrentSource for T {
-    #[inline]
-    fn read_safety_current(&self) -> Option<MilliAmp> {
-        Some(self.read_bus_current())
-    }
 }
 
 /// Phase current sensing (for BLDC FOC, 2-3 shunts).

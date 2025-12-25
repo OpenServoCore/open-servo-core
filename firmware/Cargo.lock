@@ -192,6 +192,10 @@ dependencies = [
 [[package]]
 name = "open-servo-hw-utils"
 version = "0.1.0"
+dependencies = [
+ "open-servo-hw",
+ "rtt-target",
+]
 
 [[package]]
 name = "open-servo-math"
@@ -215,7 +219,6 @@ dependencies = [
  "open-servo-hw-utils",
  "open-servo-math",
  "panic-rtt-target",
- "rtt-target",
  "stm32f3",
  "ufmt",
 ]

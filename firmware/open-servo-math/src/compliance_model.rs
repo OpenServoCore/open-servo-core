@@ -43,17 +43,25 @@ pub struct ComplianceConfig {
     pub recovery_rate: i16,
 }
 
-impl Default for ComplianceConfig {
-    fn default() -> Self {
+impl ComplianceConfig {
+    /// Create a new compliance config with explicit values.
+    pub fn new(
+        limit_ma: i16,
+        hysteresis_ma: i16,
+        deglitch_samples: u8,
+        backoff_factor_q8: u16,
+        recovery_rate: i16,
+    ) -> Self {
         Self {
-            limit_ma: 600,              // 600mA limit - balanced for normal operation
-            hysteresis_ma: 50,          // 50mA hysteresis band
-            deglitch_samples: 3,        // 3 consecutive samples
-            backoff_factor_q8: 230,     // 0.9 backoff factor (gentler)
-            recovery_rate: 3277,        // 10% per second recovery
+            limit_ma,
+            hysteresis_ma,
+            deglitch_samples,
+            backoff_factor_q8,
+            recovery_rate,
         }
     }
 }
+
 
 /// Pure mathematical compliance limiting model.
 ///
@@ -83,11 +91,6 @@ impl ComplianceModel {
             over_cnt: 0,
             state: LimitState::Normal,
         }
-    }
-    
-    /// Create with default configuration.
-    pub fn default() -> Self {
-        Self::new(ComplianceConfig::default())
     }
     
     /// Update the model with a new current reading.
@@ -227,7 +230,8 @@ mod tests {
     
     #[test]
     fn test_sustained_overcurrent_triggers_limiting() {
-        let mut model = ComplianceModel::default();
+        let config = ComplianceConfig::new(600, 50, 3, 230, 3277);
+        let mut model = ComplianceModel::new(config);
         
         // First two samples shouldn't trigger (deglitch = 3)
         model.update(Some(MilliAmp::from_ma(600)), 100);
@@ -248,7 +252,8 @@ mod tests {
     
     #[test]
     fn test_deglitch_prevents_single_spike() {
-        let mut model = ComplianceModel::default();
+        let config = ComplianceConfig::new(600, 50, 3, 230, 3277);
+        let mut model = ComplianceModel::new(config);
         
         // Single spike
         model.update(Some(MilliAmp::from_ma(600)), 100);
@@ -265,7 +270,8 @@ mod tests {
     
     #[test]
     fn test_recovery_at_correct_rate() {
-        let mut model = ComplianceModel::default();
+        let config = ComplianceConfig::new(600, 50, 3, 230, 3277);
+        let mut model = ComplianceModel::new(config);
         
         // Trigger limiting
         for _ in 0..3 {
@@ -290,7 +296,8 @@ mod tests {
     
     #[test]
     fn test_hysteresis_prevents_oscillation() {
-        let mut model = ComplianceModel::default();
+        let config = ComplianceConfig::new(600, 50, 3, 230, 3277);
+        let mut model = ComplianceModel::new(config);
         
         // Trigger limiting
         for _ in 0..3 {
@@ -317,7 +324,8 @@ mod tests {
     
     #[test]
     fn test_no_limiting_without_sensor() {
-        let mut model = ComplianceModel::default();
+        let config = ComplianceConfig::new(600, 50, 3, 230, 3277);
+        let mut model = ComplianceModel::new(config);
         
         // No sensor (None) should never limit
         let (min, max) = model.update(None, 100);
@@ -328,8 +336,7 @@ mod tests {
     
     #[test]
     fn test_minimum_duty_cap() {
-        let mut config = ComplianceConfig::default();
-        config.backoff_factor_q8 = 128; // 0.5 - aggressive backoff
+        let mut config = ComplianceConfig::new(600, 50, 3, 128, 3277); // 0.5 - aggressive backoff
         let mut model = ComplianceModel::new(config);
         
         // Keep triggering to drive duty down

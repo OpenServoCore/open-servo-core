@@ -18,12 +18,14 @@
 #![no_std]
 #![forbid(unsafe_code)]
 
+pub mod config;
 pub mod motor;
 pub mod peripheral;
 pub mod sensor;
 pub mod types;
 
 // Re-export commonly used items at crate root for convenience
+pub use config::{BoardConfig, BoardKinematicsConfig, BoardSafetyConfig, BoardThermalConfig};
 pub use motor::BdcMotorDriver;
 #[cfg(feature = "motor-bldc")]
 pub use motor::BldcMotorDriver;

@@ -29,23 +29,20 @@ pub trait McuTemperatureSensor {
 
 /// Safety capability trait for MCU temperature sensing.
 ///
-/// ALL boards implement this trait. Boards with MCU temp sensing get
-/// automatic implementation via blanket impl. Boards without MCU temp
-/// sensing implement this directly, returning `None`.
+/// ALL boards must implement this trait explicitly.
+/// 
+/// - Boards WITH MCU temp sensing: implement both `McuTemperatureSensor` and this trait,
+///   typically returning `self.read_mcu_temperature()`
+/// - Boards WITHOUT MCU temp sensing: implement only this trait, returning `None`
+///
+/// This explicit implementation requirement ensures board capabilities are 
+/// clear and intentional at the implementation site.
 pub trait SafetyMcuTempSource {
     /// Read MCU temperature for safety checks.
     ///
     /// Returns `None` if the board has no MCU temp sensor,
     /// which causes SafetyManager to skip MCU over-temperature checks.
     fn read_safety_mcu_temp(&self) -> Option<CentiC>;
-}
-
-// Blanket impl: McuTemperatureSensor automatically provides SafetyMcuTempSource
-impl<T: McuTemperatureSensor> SafetyMcuTempSource for T {
-    #[inline]
-    fn read_safety_mcu_temp(&self) -> Option<CentiC> {
-        self.read_mcu_temperature()
-    }
 }
 
 // ============================================================================
@@ -70,21 +67,19 @@ pub trait MotorTemperatureSensor {
 
 /// Safety capability trait for motor temperature sensing.
 ///
-/// Boards with motor temp sensing get automatic implementation via blanket impl.
-/// Boards without motor temp sensing implement this directly, returning `None`.
+/// Boards must implement this trait explicitly.
+/// 
+/// - Boards WITH motor temp sensing: implement both `MotorTemperatureSensor` and this trait,
+///   typically returning `self.read_motor_temperature()`
+/// - Boards WITHOUT motor temp sensing: implement only this trait, returning `None`
+///
+/// This explicit implementation requirement ensures board capabilities are 
+/// clear and intentional at the implementation site.
 pub trait SafetyMotorTempSource {
     /// Read motor temperature for safety checks.
     ///
     /// Returns `None` if the board has no motor temp sensor.
     fn read_safety_motor_temp(&self) -> Option<CentiC>;
-}
-
-// Blanket impl: MotorTemperatureSensor automatically provides SafetyMotorTempSource
-impl<T: MotorTemperatureSensor> SafetyMotorTempSource for T {
-    #[inline]
-    fn read_safety_motor_temp(&self) -> Option<CentiC> {
-        self.read_motor_temperature()
-    }
 }
 
 // ============================================================================
@@ -104,19 +99,17 @@ pub trait DriverTemperatureSensor {
 
 /// Safety capability trait for driver temperature sensing.
 ///
-/// Boards with driver temp sensing get automatic implementation via blanket impl.
-/// Boards without driver temp sensing implement this directly, returning `None`.
+/// Boards must implement this trait explicitly.
+/// 
+/// - Boards WITH driver temp sensing: implement both `DriverTemperatureSensor` and this trait,
+///   typically returning `self.read_driver_temperature()`
+/// - Boards WITHOUT driver temp sensing: implement only this trait, returning `None`
+///
+/// This explicit implementation requirement ensures board capabilities are 
+/// clear and intentional at the implementation site.
 pub trait SafetyDriverTempSource {
     /// Read driver temperature for safety checks.
     ///
     /// Returns `None` if the board has no driver temp sensor.
     fn read_safety_driver_temp(&self) -> Option<CentiC>;
-}
-
-// Blanket impl: DriverTemperatureSensor automatically provides SafetyDriverTempSource
-impl<T: DriverTemperatureSensor> SafetyDriverTempSource for T {
-    #[inline]
-    fn read_safety_driver_temp(&self) -> Option<CentiC> {
-        self.read_driver_temperature()
-    }
 }

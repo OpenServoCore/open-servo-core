@@ -159,16 +159,6 @@ impl ThermalModel {
     }
 }
 
-impl Default for ThermalModel {
-    /// Default configuration for small servo motor (e.g., SG90).
-    fn default() -> Self {
-        Self::new(
-            5000,  // 5.0Ω winding resistance
-            1000,  // 10°C/W thermal resistance
-            1500,  // 15 J/°C heat capacity
-        )
-    }
-}
 
 #[cfg(test)]
 mod tests {
@@ -176,7 +166,7 @@ mod tests {
     
     #[test]
     fn test_basic_heating() {
-        let mut model = ThermalModel::default();
+        let mut model = ThermalModel::new(5000, 1000, 1500);
         model.init(2500); // 25°C ambient
         
         // Apply 500mA for 100 fast ticks (10ms at 10kHz)
@@ -193,7 +183,7 @@ mod tests {
     
     #[test]
     fn test_cooling() {
-        let mut model = ThermalModel::default();
+        let mut model = ThermalModel::new(5000, 1000, 1500);
         model.temp_q16_cdeg = 5000 << 16; // Start at 50°C
         model.ambient_temp_cdeg = 2500; // 25°C ambient
         
@@ -213,7 +203,7 @@ mod tests {
     
     #[test]
     fn test_steady_state() {
-        let mut model = ThermalModel::default();
+        let mut model = ThermalModel::new(5000, 1000, 1500);
         model.init(2500); // 25°C
         
         // Apply constant 200mA for many cycles
@@ -232,7 +222,7 @@ mod tests {
     
     #[test]
     fn test_no_samples() {
-        let mut model = ThermalModel::default();
+        let mut model = ThermalModel::new(5000, 1000, 1500);
         model.init(3000); // 30°C
         
         // Call slow update without any fast updates

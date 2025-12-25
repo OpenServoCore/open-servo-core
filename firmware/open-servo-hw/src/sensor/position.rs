@@ -13,13 +13,13 @@ pub trait PositionSensor {
     fn read_position_raw(&self) -> u16;
 }
 
-/// Secondary position sensor for sensor fusion (optional).
+///Motor position sensor for sensor fusion (optional).
 ///
 /// Example: encoder + potentiometer for absolute + incremental.
-pub trait SecondaryPositionSensor {
-    /// Read secondary position in centidegrees.
-    fn read_secondary_position(&self) -> CentiDeg;
+pub trait MotorPositionSensor {
+    /// Read motor position in centidegrees.
+    fn read_motor_position(&self) -> CentiDeg;
 
-    /// Read raw secondary position value.
-    fn read_secondary_position_raw(&self) -> u16;
+    /// Read raw motor position value.
+    fn read_motor_position_raw(&self) -> u16;
 }

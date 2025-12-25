@@ -102,15 +102,6 @@ impl ThermalFaultDetector {
     }
 }
 
-impl Default for ThermalFaultDetector {
-    /// Default configuration for servo motor.
-    fn default() -> Self {
-        Self::new(
-            10000,  // 100°C max
-            1000,   // 10°C hysteresis (recover at 90°C)
-        )
-    }
-}
 
 #[cfg(test)]
 mod tests {
@@ -118,7 +109,7 @@ mod tests {
     
     #[test]
     fn test_fault_trigger() {
-        let mut detector = ThermalFaultDetector::default();
+        let mut detector = ThermalFaultDetector::new(10000, 1000);
         
         // Below limit - no fault
         assert_eq!(detector.check_fault(9900), None);
@@ -131,7 +122,7 @@ mod tests {
     
     #[test]
     fn test_hysteresis() {
-        let mut detector = ThermalFaultDetector::default();
+        let mut detector = ThermalFaultDetector::new(10000, 1000);
         
         // Trigger fault
         detector.check_fault(10100); // 101°C
@@ -152,7 +143,7 @@ mod tests {
     
     #[test]
     fn test_try_reset() {
-        let mut detector = ThermalFaultDetector::default();
+        let mut detector = ThermalFaultDetector::new(10000, 1000);
         
         // Trigger fault
         detector.check_fault(10100);

@@ -26,18 +26,10 @@ pub trait ControlLoop {
     fn get_setpoint(&self) -> CentiDeg;
     
     /// Check if a setpoint has been set (for disengage/engage logic)
-    fn has_setpoint(&self) -> bool {
-        // Default implementation: assume we always have a setpoint
-        // Controllers can override this if they track setpoint state
-        true
-    }
+    fn has_setpoint(&self) -> bool;
     
     /// Clear the setpoint (for disengage)
-    fn clear_setpoint(&mut self) {
-        // Default implementation: set to zero
-        // Controllers can override this to clear Option<CentiDeg>
-        self.set_setpoint(CentiDeg::from_cdeg(0));
-    }
+    fn clear_setpoint(&mut self);
     
     /// Set output limits dynamically (for torque limiting).
     /// 
@@ -53,18 +45,13 @@ pub trait ControlLoop {
     /// Get read-only access to PID config.
     /// Returns `None` if the controller doesn't have a PID config.
     #[cfg(feature = "pid")]
-    fn pid_config(&self) -> Option<&PidConfig> {
-        None
-    }
+    fn pid_config(&self) -> Option<&PidConfig>;
 
     /// Mutate PID config and apply atomically.
     /// The closure runs, then `apply_config()` is called automatically.
-    /// Default: no-op for non-PID controllers.
+    /// Returns true if config was updated, false for non-PID controllers.
     #[cfg(feature = "pid")]
-    fn with_pid_config_mut<F>(&mut self, _f: F)
+    fn with_pid_config_mut<F>(&mut self, f: F) -> bool
     where
-        F: FnOnce(&mut PidConfig),
-    {
-        // Default: no-op for non-PID controllers
-    }
+        F: FnOnce(&mut PidConfig);
 }

@@ -15,23 +15,20 @@ pub trait BusVoltageSensor {
 
 /// Safety capability trait for voltage sensing.
 ///
-/// ALL boards implement this trait. Boards with voltage sensing get
-/// automatic implementation via blanket impl. Boards without voltage
-/// sensing implement this directly, returning `None`.
+/// ALL boards must implement this trait explicitly.
+/// 
+/// - Boards WITH voltage sensing: implement both `BusVoltageSensor` and this trait,
+///   typically returning `Some(self.read_bus_voltage())`
+/// - Boards WITHOUT voltage sensing: implement only this trait, returning `None`
+///
+/// This explicit implementation requirement ensures board capabilities are 
+/// clear and intentional at the implementation site.
 pub trait SafetyVoltageSource {
     /// Read voltage for safety checks.
     ///
     /// Returns `None` if the board has no voltage sensor,
     /// which causes SafetyManager to skip under-voltage checks.
     fn read_safety_voltage(&self) -> Option<MilliVolt>;
-}
-
-// Blanket impl: BusVoltageSensor automatically provides SafetyVoltageSource
-impl<T: BusVoltageSensor> SafetyVoltageSource for T {
-    #[inline]
-    fn read_safety_voltage(&self) -> Option<MilliVolt> {
-        Some(self.read_bus_voltage())
-    }
 }
 
 // ============================================================================
@@ -62,20 +59,18 @@ pub trait MotorVoltageSensor {
 
 /// Safety capability trait for motor voltage sensing.
 ///
-/// Boards with motor voltage sensing get automatic implementation via
-/// blanket impl. Boards without implement this directly, returning `None`.
+/// Boards must implement this trait explicitly.
+/// 
+/// - Boards WITH motor voltage sensing: implement both `MotorVoltageSensor` and this trait,
+///   typically returning `Some(self.read_motor_voltage())`
+/// - Boards WITHOUT motor voltage sensing: implement only this trait, returning `None`
+///
+/// This explicit implementation requirement ensures board capabilities are 
+/// clear and intentional at the implementation site.
 pub trait SafetyMotorVoltageSource {
     /// Read motor terminal voltages for safety/diagnostic checks.
     ///
     /// Returns `None` if the board has no motor voltage sensor.
     /// Returns `Some((V+, V-))` with both terminal voltages.
     fn read_safety_motor_voltage(&self) -> Option<(MilliVolt, MilliVolt)>;
-}
-
-// Blanket impl: MotorVoltageSensor automatically provides SafetyMotorVoltageSource
-impl<T: MotorVoltageSensor> SafetyMotorVoltageSource for T {
-    #[inline]
-    fn read_safety_motor_voltage(&self) -> Option<(MilliVolt, MilliVolt)> {
-        Some(self.read_motor_voltage())
-    }
 }

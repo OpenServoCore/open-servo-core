@@ -20,7 +20,7 @@ pub use thermal_fault::*;
 pub use thresholds::*;
 
 use crate::fault::FaultKind;
-use open_servo_math::{CentiC, CentiDeg, MilliAmp, ThermalModel};
+use open_servo_math::{CentiC, CentiDeg, ComplianceConfig, MilliAmp, ThermalModel};
 
 /// Consolidated safety monitoring for servo control.
 ///
@@ -52,21 +52,20 @@ pub struct SafetyManager {
     position_error_count: u16,
 }
 
-impl Default for SafetyManager {
-    fn default() -> Self {
-        Self::new()
-    }
-}
 
 impl SafetyManager {
-    /// Create a new SafetyManager with default thresholds.
-    pub fn new() -> Self {
+    /// Create a new SafetyManager with explicit configuration.
+    pub fn new(
+        thresholds: SafetyThresholds,
+        thermal_model: ThermalModel,
+        move_compliance_config: ComplianceConfig,
+    ) -> Self {
         Self {
-            thresholds: SafetyThresholds::default(),
+            thresholds,
             sensor_health: SensorHealth::new(),
-            thermal_model: ThermalModel::default(),
-            thermal_fault: ThermalFaultDetector::default(),
-            compliance_limiter: ComplianceLimiter::default(),
+            thermal_model,
+            thermal_fault: ThermalFaultDetector::new(10000, 1000), // 100°C max, 10°C hysteresis
+            compliance_limiter: ComplianceLimiter::new(move_compliance_config),
             last_temperature: None,
             stall_last_position: CentiDeg::from_cdeg(0),
             stall_count: 0,

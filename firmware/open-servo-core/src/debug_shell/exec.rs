@@ -340,7 +340,22 @@ impl<D: DebugIo> DebugShell<D> {
     }
 
     fn cmd_limit_reset<C: ControlLoop>(&mut self, app: &mut App<C>) {
-        app.set_thresholds(SafetyThresholds::default());
+        // Note: These values should come from the board configuration
+        // but we don't have access to it here. These match STM32F301 board.
+        // TODO: Consider passing board config through App for runtime resets
+        let thresholds = SafetyThresholds::new(
+            1200,   // current_limit_ma
+            8000,   // mcu_temp_limit_cc
+            500,    // position_max_delta_cdeg
+            10,     // sensor_fault_count
+            0,      // position_min_cdeg
+            18000,  // position_max_cdeg
+            1000,   // stall_timeout_ticks
+            10,     // stall_position_tolerance_cdeg
+            3000,   // position_error_limit_cdeg
+            50,     // position_error_timeout_ticks
+        );
+        app.set_thresholds(thresholds);
         self.println("ok, thresholds reset");
     }
 

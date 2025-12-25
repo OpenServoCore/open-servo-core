@@ -50,10 +50,6 @@ impl ComplianceLimiter {
         }
     }
     
-    /// Create with default configuration.
-    pub fn default() -> Self {
-        Self::new(ComplianceConfig::default())
-    }
     
     /// Update the limiter with new current reading and PWM direction.
     ///
@@ -139,7 +135,8 @@ mod tests {
     
     #[test]
     fn test_direction_change_blanking() {
-        let mut limiter = ComplianceLimiter::default();
+        let config = ComplianceConfig::new(600, 50, 3, 230, 3277);
+        let mut limiter = ComplianceLimiter::new(config);
         
         // High current during direction change should be ignored
         limiter.update(Some(MilliAmp::from_ma(600)), 100, 100);
@@ -160,7 +157,8 @@ mod tests {
     
     #[test]
     fn test_direction_change_resets_blanking() {
-        let mut limiter = ComplianceLimiter::default();
+        let config = ComplianceConfig::new(600, 50, 3, 230, 3277);
+        let mut limiter = ComplianceLimiter::new(config);
         
         // Forward direction
         limiter.update(Some(MilliAmp::from_ma(400)), 100, 100);
@@ -184,7 +182,8 @@ mod tests {
     
     #[test]
     fn test_stopped_to_moving_triggers_blanking() {
-        let mut limiter = ComplianceLimiter::default();
+        let config = ComplianceConfig::new(600, 50, 3, 230, 3277);
+        let mut limiter = ComplianceLimiter::new(config);
         
         // Start from stopped
         limiter.update(Some(MilliAmp::from_ma(0)), 0, 100);
@@ -197,7 +196,8 @@ mod tests {
     
     #[test]
     fn test_telemetry_flags() {
-        let mut limiter = ComplianceLimiter::default();
+        let config = ComplianceConfig::new(600, 50, 3, 230, 3277);
+        let mut limiter = ComplianceLimiter::new(config);
         
         // Initially not limited
         assert!(!limiter.is_limited());

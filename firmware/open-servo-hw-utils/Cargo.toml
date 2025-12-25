@@ -5,3 +5,9 @@ edition.workspace = true
 authors.workspace = true
 
 [dependencies]
+open-servo-hw = { path = "../open-servo-hw" }
+rtt-target = { workspace = true, optional = true }
+
+[features]
+rtt = ["dep:rtt-target"]
+defmt = ["rtt-target?/defmt"]

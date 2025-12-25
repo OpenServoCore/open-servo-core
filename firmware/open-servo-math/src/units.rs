@@ -374,21 +374,8 @@ mod tests {
         assert_eq!(CentiDeg::from_cdeg(-4500).as_deg(), -45);
     }
 
-    #[test]
-    fn test_centideg_from_pot_adc_endpoints() {
-        // ADC 0 -> -500 cdeg (-5°)
-        assert_eq!(CentiDeg::from_pot_adc(Adc12::from_raw(0)).as_cdeg(), -500);
-        // ADC 4095 -> 18500 cdeg (185°)
-        assert_eq!(CentiDeg::from_pot_adc(Adc12::from_raw(4095)).as_cdeg(), 18500);
-    }
-
-    #[test]
-    fn test_centideg_from_pot_adc_midpoint() {
-        // ADC ~2048 should be ~90° (9000 cdeg)
-        let mid = CentiDeg::from_pot_adc(Adc12::from_raw(2048));
-        // Expected: -500 + (2048 * 19000 / 4095) ≈ -500 + 9502 = 9002
-        assert!((mid.as_cdeg() - 9000).abs() < 50);
-    }
+    // Removed from_pot_adc tests - this conversion is now board-specific
+    // and handled by board implementations
 
     // ========== MilliAmp tests ==========
 

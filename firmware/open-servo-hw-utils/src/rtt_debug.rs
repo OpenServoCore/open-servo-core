@@ -1,11 +1,13 @@
-//! RTT-based DebugIo implementation for STM32F301.
+//! RTT-based DebugIo implementation for embedded targets.
 //!
-//! Uses RTT channel 0 for REPL (bidirectional), channel 1 for defmt (up only)
+//! Uses RTT channel 0 for defmt (up only), channel 1 for REPL (bidirectional)
+//! 
+//! This is a generic implementation that can be used by any Cortex-M board.
 
 use open_servo_hw::DebugIo;
 use rtt_target::{rtt_init, ChannelMode, DownChannel, UpChannel};
 
-/// RTT-based debug I/O for the REPL (channel 1).
+/// RTT-based debug I/O for the REPL.
 pub struct RttDebugIo {
     up: UpChannel,
     down: DownChannel,
@@ -13,7 +15,10 @@ pub struct RttDebugIo {
 
 /// Initialize RTT channels and return REPL I/O handle.
 ///
-/// Returns repl_io for channel 0 (channel 1 is for defmt when enabled)
+/// Sets up:
+/// - Channel 0 (up): defmt logging
+/// - Channel 1 (up): REPL output  
+/// - Channel 0 (down): REPL input
 pub fn init_rtt() -> RttDebugIo {
     // Initialize all channels in one call
     let channels = rtt_init! {
@@ -37,7 +42,7 @@ pub fn init_rtt() -> RttDebugIo {
         }
     };
 
-    // Set channel 1 as defmt channel when defmt is enabled
+    // Set channel 0 as defmt channel when defmt is enabled
     #[cfg(feature = "defmt")]
     rtt_target::set_defmt_channel(channels.up.0);
 

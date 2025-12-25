@@ -2,13 +2,14 @@
 
 use stm32f3::stm32f301 as pac;
 
+use open_servo_hw::config::{BoardConfig, BoardKinematicsConfig, BoardSafetyConfig, BoardThermalConfig};
 use open_servo_hw::motor::BdcMotorDriver;
 use open_servo_hw::peripheral::{SystemTime, UartDriver};
 #[cfg(feature = "current-sense-bus")]
 use open_servo_hw::sensor::BusCurrentSensor;
-#[cfg(not(feature = "current-sense-bus"))]
+// Always import SafetyCurrentSource since we always implement it
 use open_servo_hw::sensor::SafetyCurrentSource;
-#[cfg(not(feature = "temp-sense-mcu"))]
+// Always import SafetyMcuTempSource since we always implement it
 use open_servo_hw::sensor::SafetyMcuTempSource;
 #[cfg(feature = "temp-sense-mcu")]
 use open_servo_hw::sensor::McuTemperatureSensor;
@@ -16,28 +17,28 @@ use open_servo_hw::sensor::PositionSensor;
 use open_servo_hw::sensor::SafetyVoltageSource;
 #[cfg(feature = "temp-sense-motor")]
 use open_servo_hw::sensor::MotorTemperatureSensor;
-#[cfg(not(feature = "temp-sense-motor"))]
+// Always import SafetyMotorTempSource since we always implement it
 use open_servo_hw::sensor::SafetyMotorTempSource;
 #[cfg(feature = "voltage-sense-motor")]
 use open_servo_hw::sensor::MotorVoltageSensor;
-#[cfg(not(feature = "voltage-sense-motor"))]
+// Always import SafetyMotorVoltageSource since we always implement it
 use open_servo_hw::sensor::SafetyMotorVoltageSource;
 use open_servo_hw::UartPort;
-use open_servo_math::{CentiC, CentiDeg, Duty, MilliAmp, MilliVolt};
+use open_servo_math::{CentiC, CentiDeg, ComplianceConfig, Duty, MilliAmp, MilliVolt};
 
-use crate::hw_impl::Stm32f301Hw;
+use crate::config::BoardConfigProvider;
+use crate::sensors::SensorReader;
+use crate::pwm::PwmController;
 
 /// Board wrapper that implements all required traits.
-///
-/// This delegates to the underlying Stm32f301Hw for actual hardware access.
 pub struct Board {
-    hw: Stm32f301Hw,
+    sensors: SensorReader,
 }
 
 impl Board {
     pub fn new() -> Self {
         Board {
-            hw: Stm32f301Hw::new(),
+            sensors: SensorReader::new(),
         }
     }
 
@@ -65,22 +66,21 @@ impl Board {
 
 impl BdcMotorDriver for Board {
     fn set_pwm(&mut self, duty: Duty) {
-        self.hw.set_pwm(duty);
+        PwmController::set_pwm(duty);
     }
 
-    fn set_enable(&mut self, enabled: bool) {
-        self.hw.set_enable(enabled);
+    fn set_enable(&mut self, _enabled: bool) {
+        // No hardware enable pin on this board - motor driver is always enabled
     }
 
     fn coast(&mut self) {
-        // High impedance - disable driver
-        self.hw.set_enable(false);
+        // High impedance - use PWM controller coast mode
+        PwmController::coast();
     }
 
     fn brake(&mut self) {
-        // Short motor terminals - set PWM to 0 with driver enabled
-        self.hw.set_pwm(Duty::ZERO);
-        self.hw.set_enable(true);
+        // Short motor terminals - use PWM controller brake mode
+        PwmController::brake();
     }
 }
 
@@ -90,17 +90,20 @@ impl BdcMotorDriver for Board {
 
 impl SystemTime for Board {
     fn now_us(&self) -> u32 {
-        self.hw.now_us()
+        // Read TIM2 counter (configured to count microseconds)
+        let tim2 = unsafe { &(*pac::TIM2::ptr()) };
+        tim2.cnt.read().cnt().bits()
     }
 }
 
 impl UartDriver for Board {
-    fn uart_write(&mut self, port: UartPort, data: &[u8]) {
-        self.hw.uart_write(port, data);
+    fn uart_write(&mut self, _port: UartPort, _data: &[u8]) {
+        // Not implemented for V0
     }
 
-    fn uart_read_byte(&mut self, port: UartPort) -> Option<u8> {
-        self.hw.uart_read_byte(port)
+    fn uart_read_byte(&mut self, _port: UartPort) -> Option<u8> {
+        // Not implemented for V0
+        None
     }
 }
 
@@ -111,11 +114,11 @@ impl UartDriver for Board {
 // Position sensor (required - always available)
 impl PositionSensor for Board {
     fn read_position(&self) -> CentiDeg {
-        self.hw.position()
+        self.sensors.position()
     }
 
     fn read_position_raw(&self) -> u16 {
-        self.hw.position_raw()
+        self.sensors.position_raw()
     }
 }
 
@@ -123,16 +126,23 @@ impl PositionSensor for Board {
 #[cfg(feature = "current-sense-bus")]
 impl BusCurrentSensor for Board {
     fn read_bus_current(&self) -> MilliAmp {
-        self.hw.current()
+        self.sensors.current()
     }
 
     fn read_bus_current_raw(&self) -> u16 {
-        self.hw.current_raw()
+        self.sensors.current_raw()
     }
 }
 
-// When current-sense feature is disabled, we need to explicitly implement
-// SafetyCurrentSource to return None
+// When current-sense feature is enabled, explicitly implement SafetyCurrentSource
+#[cfg(feature = "current-sense-bus")]
+impl SafetyCurrentSource for Board {
+    fn read_safety_current(&self) -> Option<MilliAmp> {
+        Some(self.read_bus_current())
+    }
+}
+
+// When current-sense feature is disabled, implement SafetyCurrentSource to return None
 #[cfg(not(feature = "current-sense-bus"))]
 impl SafetyCurrentSource for Board {
     fn read_safety_current(&self) -> Option<MilliAmp> {
@@ -151,16 +161,23 @@ impl SafetyVoltageSource for Board {
 #[cfg(feature = "temp-sense-mcu")]
 impl McuTemperatureSensor for Board {
     fn read_mcu_temperature(&self) -> Option<CentiC> {
-        self.hw.mcu_temperature()
+        self.sensors.mcu_temperature()
     }
 
     fn read_mcu_temperature_raw(&self) -> Option<u16> {
-        self.hw.mcu_temperature_raw()
+        self.sensors.mcu_temperature_raw()
     }
 }
 
-// When temp-sense-mcu feature is disabled, we need to explicitly implement
-// SafetyMcuTempSource to return None
+// When temp-sense-mcu feature is enabled, explicitly implement SafetyMcuTempSource
+#[cfg(feature = "temp-sense-mcu")]
+impl SafetyMcuTempSource for Board {
+    fn read_safety_mcu_temp(&self) -> Option<CentiC> {
+        self.read_mcu_temperature()
+    }
+}
+
+// When temp-sense-mcu feature is disabled, implement SafetyMcuTempSource to return None
 #[cfg(not(feature = "temp-sense-mcu"))]
 impl SafetyMcuTempSource for Board {
     fn read_safety_mcu_temp(&self) -> Option<CentiC> {
@@ -168,17 +185,24 @@ impl SafetyMcuTempSource for Board {
     }
 }
 
-// Note: When temp-sense-mcu is enabled, SafetyMcuTempSource is auto-implemented via blanket impl
 
 // Motor voltage sensing (optional based on feature)
 #[cfg(feature = "voltage-sense-motor")]
 impl MotorVoltageSensor for Board {
     fn read_motor_voltage(&self) -> (MilliVolt, MilliVolt) {
-        self.hw.motor_voltage()
+        self.sensors.motor_voltage()
     }
 
     fn read_motor_voltage_raw(&self) -> (u16, u16) {
-        self.hw.motor_voltage_raw()
+        self.sensors.motor_voltage_raw()
+    }
+}
+
+// When voltage-sense-motor feature is enabled, explicitly implement SafetyMotorVoltageSource
+#[cfg(feature = "voltage-sense-motor")]
+impl SafetyMotorVoltageSource for Board {
+    fn read_safety_motor_voltage(&self) -> Option<(MilliVolt, MilliVolt)> {
+        Some(self.read_motor_voltage())
     }
 }
 
@@ -194,11 +218,19 @@ impl SafetyMotorVoltageSource for Board {
 #[cfg(feature = "temp-sense-motor")]
 impl MotorTemperatureSensor for Board {
     fn read_motor_temperature(&self) -> Option<CentiC> {
-        Some(self.hw.motor_temperature())
+        Some(self.sensors.motor_temperature())
     }
 
     fn read_motor_temperature_raw(&self) -> Option<u16> {
-        Some(self.hw.motor_temperature_raw())
+        Some(self.sensors.motor_temperature_raw())
+    }
+}
+
+// When temp-sense-motor feature is enabled, explicitly implement SafetyMotorTempSource
+#[cfg(feature = "temp-sense-motor")]
+impl SafetyMotorTempSource for Board {
+    fn read_safety_motor_temp(&self) -> Option<CentiC> {
+        self.read_motor_temperature()
     }
 }
 
@@ -207,5 +239,35 @@ impl MotorTemperatureSensor for Board {
 impl SafetyMotorTempSource for Board {
     fn read_safety_motor_temp(&self) -> Option<CentiC> {
         None // No motor temperature sensor on this board variant
+    }
+}
+
+// ============================================================================
+// Board configuration provider
+// ============================================================================
+
+impl BoardConfig for Board {
+    fn safety_config(&self) -> BoardSafetyConfig {
+        BoardConfigProvider::safety_config()
+    }
+    
+    fn move_compliance_config(&self) -> ComplianceConfig {
+        BoardConfigProvider::move_compliance_config()
+    }
+    
+    fn hold_compliance_config(&self) -> ComplianceConfig {
+        BoardConfigProvider::hold_compliance_config()
+    }
+    
+    fn thermal_config(&self) -> BoardThermalConfig {
+        BoardConfigProvider::thermal_config()
+    }
+    
+    fn kinematics_config(&self) -> BoardKinematicsConfig {
+        BoardConfigProvider::kinematics_config()
+    }
+    
+    fn pid_gains(&self) -> (i32, i32, i32) {
+        BoardConfigProvider::pid_gains()
     }
 }

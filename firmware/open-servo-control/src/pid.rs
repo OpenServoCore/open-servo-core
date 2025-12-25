@@ -222,12 +222,13 @@ impl ControlLoop for PidController {
         Some(&self.config)
     }
 
-    fn with_pid_config_mut<F>(&mut self, f: F)
+    fn with_pid_config_mut<F>(&mut self, f: F) -> bool
     where
         F: FnOnce(&mut PidConfig),
     {
         f(&mut self.config);
         self.apply_config();
+        true // PID controller always has config, so always returns true
     }
 }
 

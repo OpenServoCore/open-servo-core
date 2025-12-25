@@ -5,14 +5,15 @@
 //! system by feeding it synthetic inputs.
 
 use open_servo_control::ControlLoop;
-use open_servo_math::{CentiC, CentiDeg, Duty, MilliVolt, DegPerSec10, ComplianceConfig};
+use open_servo_hw::{BoardSafetyConfig, BoardThermalConfig};
+use open_servo_math::{CentiC, CentiDeg, Duty, MilliVolt, DegPerSec10, ComplianceConfig, ThermalModel};
 #[cfg(feature = "current-sense-bus")]
 use open_servo_math::MilliAmp;
 
 use crate::fault::{FaultKind, FaultState};
 use crate::inputs::FastInputs;
 use crate::outputs::FastOutputs;
-use crate::safety::SafetyManager;
+use crate::safety::{SafetyManager, SafetyThresholds};
 
 /// Servo operating mode for compliance behavior
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -30,10 +31,6 @@ pub enum ServoMode {
 /// This is NOT the PWM frequency or ADC sample rate
 const CONTROL_HZ: u32 = 10000;  // 10kHz fast_tick rate
 const CONTROL_DT_US: u32 = 1_000_000 / CONTROL_HZ;
-
-/// Current limits (conservative defaults)
-const DEFAULT_MOVE_LIMIT_MA: i16 = 800;
-const DEFAULT_HOLD_LIMIT_MA: i16 = 150;
 
 /// Velocity computation
 const VELOCITY_DECIMATE: u16 = 10;  // Update every 1ms
@@ -139,23 +136,39 @@ pub struct ServoCore<C: ControlLoop> {
 }
 
 impl<C: ControlLoop> ServoCore<C> {
-    /// Create a new ServoCore with the given controller.
-    pub fn new(controller: C) -> Self {
-        // Create default compliance configs
-        let move_config = ComplianceConfig {
-            limit_ma: DEFAULT_MOVE_LIMIT_MA,
-            ..ComplianceConfig::default()
-        };
+    /// Create a new ServoCore with the given controller and board configuration.
+    pub fn new(
+        controller: C,
+        safety_config: BoardSafetyConfig,
+        thermal_config: BoardThermalConfig,
+        move_compliance_config: ComplianceConfig,
+        hold_compliance_config: ComplianceConfig,
+    ) -> Self {
+        // Create safety thresholds from board config
+        let thresholds = SafetyThresholds::new(
+            safety_config.current_limit_ma,
+            safety_config.mcu_temp_limit_cc,
+            safety_config.position_max_delta_cdeg,
+            safety_config.sensor_fault_count,
+            safety_config.position_min_cdeg,
+            safety_config.position_max_cdeg,
+            safety_config.stall_timeout_ticks,
+            safety_config.stall_position_tolerance_cdeg,
+            safety_config.position_error_limit_cdeg,
+            safety_config.position_error_timeout_ticks,
+        );
         
-        let hold_config = ComplianceConfig {
-            limit_ma: DEFAULT_HOLD_LIMIT_MA,
-            ..ComplianceConfig::default()
-        };
+        // Create thermal model from board config
+        let thermal_model = ThermalModel::new(
+            thermal_config.resistance_mohm,
+            thermal_config.thermal_resistance_cw,
+            thermal_config.thermal_capacity_cj,
+        );
         
         Self {
             controller,
             fault_state: FaultState::new(),
-            safety: SafetyManager::new(),
+            safety: SafetyManager::new(thresholds, thermal_model, move_compliance_config.clone()),
             system_state: SystemState::default(),
             motor_engaged: false, // Start disengaged
             
@@ -181,8 +194,8 @@ impl<C: ControlLoop> ServoCore<C> {
             yield_until_tick: 0,
             
             // Compliance configs
-            move_compliance_config: move_config,
-            hold_compliance_config: hold_config,
+            move_compliance_config,
+            hold_compliance_config,
         }
     }
 
@@ -678,6 +691,27 @@ mod tests {
 
         fn get_setpoint(&self) -> CentiDeg {
             self.setpoint
+        }
+        
+        fn has_setpoint(&self) -> bool {
+            true // Mock always has a setpoint
+        }
+        
+        fn clear_setpoint(&mut self) {
+            self.setpoint = CentiDeg::from_cdeg(0);
+        }
+        
+        #[cfg(feature = "pid")]
+        fn pid_config(&self) -> Option<&open_servo_control::PidConfig> {
+            None // Mock controller doesn't have PID config
+        }
+        
+        #[cfg(feature = "pid")]
+        fn with_pid_config_mut<F>(&mut self, _f: F) -> bool
+        where
+            F: FnOnce(&mut open_servo_control::PidConfig),
+        {
+            false // Mock controller doesn't have PID config
         }
     }
 

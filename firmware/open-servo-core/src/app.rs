@@ -7,7 +7,9 @@
 //!
 //! The actual control logic lives in ServoCore.
 
-use open_servo_control::ControlLoop;
+use open_servo_control::{ControlLoop, PidController, PidConfig};
+use open_servo_math::Gain;
+use open_servo_hw::config::BoardConfig;
 use open_servo_hw::motor::BdcMotorDriver;
 #[cfg(feature = "current-sense-bus")]
 use open_servo_hw::sensor::SafetyCurrentSource;
@@ -47,10 +49,21 @@ pub struct App<C: ControlLoop> {
 }
 
 impl<C: ControlLoop> App<C> {
-    /// Create a new App with the given controller.
-    pub fn new(controller: C) -> Self {
+    /// Create a new App with the given controller and board configuration.
+    pub fn new<B: BoardConfig>(controller: C, board_config: &B) -> Self {
+        let safety_config = board_config.safety_config();
+        let thermal_config = board_config.thermal_config();
+        let move_compliance_config = board_config.move_compliance_config();
+        let hold_compliance_config = board_config.hold_compliance_config();
+        
         Self {
-            core: ServoCore::new(controller),
+            core: ServoCore::new(
+                controller,
+                safety_config,
+                thermal_config,
+                move_compliance_config,
+                hold_compliance_config,
+            ),
             slow_tick_counter: 0,
         }
     }
@@ -349,5 +362,26 @@ impl<C: ControlLoop> App<C> {
     /// Get mutable reference to the core
     pub fn core_mut(&mut self) -> &mut ServoCore<C> {
         &mut self.core
+    }
+}
+
+impl App<PidController> {
+    /// Create a new App with a PID controller from board configuration.
+    ///
+    /// This convenience constructor creates a PID controller internally
+    /// from the board's PID gains, making initialization cleaner.
+    pub fn new_with_pid<B: BoardConfig>(board_config: &B) -> Self {
+        // Get PID gains from board configuration
+        let (kp, ki, kd) = board_config.pid_gains();
+        
+        // Create PID config from board gains
+        let mut pid_config = PidConfig::new();
+        pid_config.kp = Gain::from_raw(kp);
+        pid_config.ki = Gain::from_raw(ki);
+        pid_config.kd = Gain::from_raw(kd);
+        
+        // Create controller and app
+        let controller = PidController::new(pid_config);
+        Self::new(controller, board_config)
     }
 }
