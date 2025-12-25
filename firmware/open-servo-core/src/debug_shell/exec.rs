@@ -179,16 +179,16 @@ impl<D: DebugIo> DebugShell<D> {
     }
 
     fn cmd_state<C: ControlLoop>(&mut self, app: &App<C>) {
-        let s = app.get_system_state();
+        let rt = app.runtime();
         let mut buf: String<96> = String::new();
 
         // Position and setpoint (always available)
         let _ = uwrite!(
             buf,
             "sp={} pos={} pwm={}",
-            s.setpoint.as_cdeg(),
-            s.position.as_cdeg(),
-            s.pwm_duty.as_raw(),
+            rt.setpoint.as_cdeg(),
+            rt.position.as_cdeg(),
+            rt.pwm_duty.as_raw(),
         );
         self.println(&buf);
 

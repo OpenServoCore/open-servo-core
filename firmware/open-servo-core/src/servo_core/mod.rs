@@ -4,6 +4,13 @@
 //! without any hardware dependencies. It can be fully tested on a host
 //! system by feeding it synthetic inputs.
 
+pub mod config;
+pub mod features;
+pub mod internal;
+pub mod runtime;
+
+pub use runtime::CoreRuntime;
+
 use open_servo_control::{ControlInput, ControlLoop, DutyLimits};
 use open_servo_hw::{BoardSafetyConfig, BoardThermalConfig};
 #[cfg(feature = "current-sense-bus")]
@@ -20,10 +27,11 @@ use crate::outputs::FastOutputs;
 use crate::safety::{SafetyManager, SafetyThresholds};
 
 /// Servo operating mode for compliance behavior
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
 pub enum ServoMode {
     /// Actively moving to setpoint
+    #[default]
     Move,
     /// Holding position with reduced force
     Hold,
@@ -59,27 +67,6 @@ const HOLD_ERROR_END: i16 = 1500; // 15° - max cap
 const HOLD_DUTY_MIN: i16 = 6553; // 20% at small error
 const HOLD_DUTY_MAX: i16 = 14746; // 45% at large error
 
-/// System state snapshot for telemetry and debugging.
-#[derive(Debug, Clone, Copy, Default)]
-#[cfg_attr(feature = "defmt", derive(defmt::Format))]
-pub struct SystemState {
-    /// Current setpoint
-    pub setpoint: CentiDeg,
-    /// Current position feedback
-    pub position: CentiDeg,
-    /// Current PWM duty cycle
-    pub pwm_duty: Duty,
-    /// Current reading (requires `current-sense` feature)
-    #[cfg(feature = "current-sense-bus")]
-    pub current: Option<MilliAmp>,
-    /// Bus voltage reading (if available)
-    pub bus_voltage: Option<MilliVolt>,
-    /// Temperature reading (if available)
-    pub temperature: Option<CentiC>,
-    /// Compliance is currently being limited
-    pub compliance_limited: bool,
-}
-
 /// Pure servo control core - no hardware dependencies.
 ///
 /// ServoCore owns:
@@ -109,7 +96,7 @@ pub struct ServoCore<C: ControlLoop> {
     controller: C,
     fault_state: FaultState,
     safety: SafetyManager,
-    system_state: SystemState,
+    runtime: CoreRuntime,
     motor_engaged: bool,
 
     // Setpoint owned by ServoCore (Stage 1 refactor)
@@ -182,7 +169,7 @@ impl<C: ControlLoop> ServoCore<C> {
             controller,
             fault_state: FaultState::new(),
             safety: SafetyManager::new(thresholds, thermal_model, move_compliance_config.clone()),
-            system_state: SystemState::default(),
+            runtime: CoreRuntime::default(),
             motor_engaged: false, // Start disengaged
 
             // Setpoint owned by ServoCore
@@ -384,8 +371,8 @@ impl<C: ControlLoop> ServoCore<C> {
             return FastOutputs::fault(fault);
         }
 
-        // 7. Update system state for telemetry
-        self.system_state = SystemState {
+        // 7. Update runtime for telemetry
+        self.runtime = CoreRuntime {
             setpoint: clamped_setpoint,
             position,
             pwm_duty: output.duty,
@@ -393,7 +380,11 @@ impl<C: ControlLoop> ServoCore<C> {
             current: inputs.current,
             bus_voltage: inputs.bus_voltage,
             temperature: inputs.temperature,
+            mode: self.mode,
+            velocity: self.measured_velocity,
             compliance_limited: self.safety.compliance_limiter().is_limited(),
+            fast_seq: self.fast_seq,
+            engaged: self.motor_engaged,
         };
 
         FastOutputs::normal(output.duty)
@@ -423,8 +414,8 @@ impl<C: ControlLoop> ServoCore<C> {
         }
 
         // Check for persistent position error (supervisory, doesn't need 10kHz)
-        let setpoint = self.system_state.setpoint;
-        let position = self.system_state.position;
+        let setpoint = self.runtime.setpoint;
+        let position = self.runtime.position;
         if let Some(fault) = self.safety.check_position_error(setpoint, position) {
             self.raise_fault(fault);
             return Some(fault);
@@ -536,9 +527,9 @@ impl<C: ControlLoop> ServoCore<C> {
         &self.fault_state
     }
 
-    /// Get the current system state snapshot.
-    pub fn system_state(&self) -> SystemState {
-        self.system_state
+    /// Get the current runtime state snapshot.
+    pub fn runtime(&self) -> &CoreRuntime {
+        &self.runtime
     }
 
     /// Get reference to safety manager.
@@ -1015,10 +1006,10 @@ mod tests {
         assert_eq!(core.get_setpoint().unwrap().as_cdeg(), 0);
     }
 
-    // ========== system state tests ==========
+    // ========== runtime tests ==========
 
     #[test]
-    fn test_system_state_updated_after_tick() {
+    fn test_runtime_updated_after_tick() {
         let mut core = make_core(MockController::new());
         let ctx = test_ctx();
         core.controller_mut().set_output(Duty::from_raw(750));
@@ -1037,13 +1028,13 @@ mod tests {
         core.fast_tick(&ctx, inputs);
         core.fast_tick(&ctx, inputs);
 
-        let state = core.system_state();
-        assert_eq!(state.position.as_cdeg(), 8000);
-        assert_eq!(state.pwm_duty, Duty::from_raw(750));
+        let rt = core.runtime();
+        assert_eq!(rt.position.as_cdeg(), 8000);
+        assert_eq!(rt.pwm_duty, Duty::from_raw(750));
         #[cfg(feature = "current-sense-bus")]
-        assert_eq!(state.current, Some(MilliAmp::from_ma(200)));
-        assert_eq!(state.bus_voltage, Some(MilliVolt::from_mv(3300)));
-        assert_eq!(state.temperature, Some(CentiC::from_centi_c(3000)));
+        assert_eq!(rt.current, Some(MilliAmp::from_ma(200)));
+        assert_eq!(rt.bus_voltage, Some(MilliVolt::from_mv(3300)));
+        assert_eq!(rt.temperature, Some(CentiC::from_centi_c(3000)));
     }
 
     #[test]

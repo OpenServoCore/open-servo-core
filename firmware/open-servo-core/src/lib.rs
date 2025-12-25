@@ -38,5 +38,5 @@ pub use fault::{FaultKind, FaultState};
 pub use inputs::FastInputs;
 pub use outputs::FastOutputs;
 pub use safety::{SafetyManager, SafetyThresholds, SensorHealth};
-pub use servo_core::{ServoCore, SystemState};
+pub use servo_core::{CoreRuntime, ServoCore, ServoMode};
 pub use tick::{TickCtx, TickDomain};

@@ -22,11 +22,8 @@ use crate::event::Event;
 use crate::fault::FaultKind;
 use crate::inputs::FastInputs;
 use crate::safety::{SafetyThresholds, SensorHealth};
-use crate::servo_core::{ServoCore, SystemState};
+use crate::servo_core::{CoreRuntime, ServoCore};
 use crate::tick::{TickCtx, TickDomain};
-
-// Re-export SystemState for backwards compatibility
-pub use crate::servo_core::SystemState as AppSystemState;
 
 /// Hardware orchestrator for servo control.
 ///
@@ -169,13 +166,13 @@ impl<C: ControlLoop> App<C> {
 
                     #[cfg(feature = "debug-shell")]
                     {
-                        // Get system state and safety
-                        let state = self.core.system_state();
+                        // Get runtime state and safety
+                        let rt = self.core.runtime();
                         let safety = self.core.safety();
 
                         // Position and control
-                        let pos = state.position.as_cdeg();
-                        let setpoint = state.setpoint.as_cdeg();
+                        let pos = rt.position.as_cdeg();
+                        let setpoint = rt.setpoint.as_cdeg();
                         let pos_error = setpoint - pos;
 
                         // Temperatures
@@ -227,9 +224,9 @@ impl<C: ControlLoop> App<C> {
                     }
                 }
 
-                // Log system state
+                // Log runtime state
                 #[cfg(feature = "defmt")]
-                defmt::info!("State: {:?}", self.core.system_state());
+                defmt::info!("State: {:?}", self.core.runtime());
             }
             Event::Fault(_kind) => {
                 // Log fault event (safety response already happened in fast_tick)
@@ -339,9 +336,9 @@ impl<C: ControlLoop> App<C> {
         self.core.fault_state().fault_kind()
     }
 
-    /// Get current system state.
-    pub fn get_system_state(&self) -> SystemState {
-        self.core.system_state()
+    /// Get current runtime state.
+    pub fn runtime(&self) -> &CoreRuntime {
+        self.core.runtime()
     }
 
     /// Set controller setpoint (in centidegrees).
