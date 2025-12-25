@@ -39,6 +39,8 @@ const SETPOINT_SETTLE_US: u32 = 400_000; // 400ms
 const HOLD_ENTRY_US: u32 = 300_000; // 300ms
 const YIELD_DURATION_US: u32 = 200_000; // 200ms
 const YIELD_COAST_US: u32 = 100_000; // 100ms
+/// 5% alive clamp during Yield to keep loop responsive
+const YIELD_ALIVE_DUTY_MAX: i16 = 1638;
 const SETPOINT_RECENT_CHANGE_US: u32 = 10_000; // 10ms hysteresis
 
 /// Mode thresholds with hysteresis
@@ -131,6 +133,7 @@ pub struct ServoCore<C: ControlLoop> {
     backdrive_elapsed_us: u32,
     // Yield timing (time-based, accumulated in medium tick)
     yield_elapsed_us: u32,
+    yield_max_duty: i16, // 0 = coast, YIELD_ALIVE_DUTY_MAX = alive (set by medium tick)
     yield_enter_tick: u32, // TODO: remove in Stage 12 after confirming unused
     yield_needs_reset: bool,
 
@@ -208,6 +211,7 @@ impl<C: ControlLoop> ServoCore<C> {
             prev_error: 0,
             backdrive_elapsed_us: 0,
             yield_elapsed_us: 0,
+            yield_max_duty: 0,
             yield_enter_tick: 0,
             yield_needs_reset: false,
 
@@ -338,16 +342,9 @@ impl<C: ControlLoop> ServoCore<C> {
             }
 
             ServoMode::Yield => {
-                // Use time-based elapsed (accumulated in medium tick)
-                if self.yield_elapsed_us < YIELD_COAST_US {
-                    // Pure coast for first 100ms
-                    min_duty = 0;
-                    max_duty = 0;
-                } else {
-                    // Optional small duty to "feel alive"
-                    min_duty = -1638; // 5%
-                    max_duty = 1638;
-                }
+                // Use yield_max_duty set by medium tick (no timing decisions in fast tick)
+                min_duty = -(self.yield_max_duty as i32);
+                max_duty = self.yield_max_duty as i32;
 
                 // Reset controller on YIELD entry (once)
                 if self.yield_needs_reset {
@@ -510,6 +507,7 @@ impl<C: ControlLoop> ServoCore<C> {
         self.last_input = None;
         self.fast_accum.reset();
         self.yield_elapsed_us = 0;
+        self.yield_max_duty = 0;
         self.yield_needs_reset = false;
     }
 
@@ -597,6 +595,7 @@ impl<C: ControlLoop> ServoCore<C> {
         self.fast_accum.reset();
         // Clear yield timing state
         self.yield_elapsed_us = 0;
+        self.yield_max_duty = 0;
         self.yield_needs_reset = false;
     }
 
@@ -706,6 +705,7 @@ impl<C: ControlLoop> ServoCore<C> {
                 else if self.check_backdrive_medium(self.measured_velocity, error, window_dt_us) {
                     self.mode = ServoMode::Yield;
                     self.yield_elapsed_us = 0; // Reset on entry
+                    self.yield_max_duty = 0; // Coast phase on entry
                     self.yield_enter_tick = self.tick_counter; // TODO: remove in Stage 12
                     self.yield_needs_reset = true;
                     self.backdrive_elapsed_us = 0;
@@ -718,9 +718,16 @@ impl<C: ControlLoop> ServoCore<C> {
                     self.yield_elapsed_us =
                         (self.yield_elapsed_us + window_dt_us).min(YIELD_DURATION_US);
                 }
+                // Update duty phase based on elapsed time
+                self.yield_max_duty = if self.yield_elapsed_us < YIELD_COAST_US {
+                    0 // Coast phase
+                } else {
+                    YIELD_ALIVE_DUTY_MAX // Alive phase
+                };
                 if self.yield_elapsed_us >= YIELD_DURATION_US {
                     self.mode = ServoMode::Hold;
                     self.yield_elapsed_us = 0; // Reset on exit
+                    self.yield_max_duty = 0;
                     self.yield_needs_reset = false;
                 }
             }
@@ -819,6 +826,7 @@ impl<C: ControlLoop> ServoCore<C> {
     #[cfg(test)]
     fn set_yield_state_for_test(&mut self, enter_tick: u32, needs_reset: bool) {
         self.yield_elapsed_us = 0;
+        self.yield_max_duty = 0;
         self.yield_enter_tick = enter_tick;
         self.yield_needs_reset = needs_reset;
     }
@@ -826,6 +834,11 @@ impl<C: ControlLoop> ServoCore<C> {
     #[cfg(test)]
     fn yield_elapsed_us(&self) -> u32 {
         self.yield_elapsed_us
+    }
+
+    #[cfg(test)]
+    fn yield_max_duty(&self) -> i16 {
+        self.yield_max_duty
     }
 
     #[cfg(test)]
@@ -1517,5 +1530,107 @@ mod tests {
             0,
             "yield_elapsed_us should remain 0 while in Hold"
         );
+    }
+
+    #[test]
+    fn test_yield_coast_zero_duty() {
+        // During coast phase (first 100ms), yield_max_duty should be 0
+        let mut core = make_core(MockController::new());
+        core.engage(CentiDeg::from_cdeg(9000));
+
+        // Force into Yield mode
+        core.set_mode_for_test(ServoMode::Yield);
+        core.set_yield_state_for_test(0, false);
+
+        let error: i16 = 100;
+        let window_dt_us: u32 = 10_000; // 10ms
+        let mut accumulated_us: u32 = 0;
+
+        // Coast phase: 0 to YIELD_COAST_US (100ms)
+        while accumulated_us < YIELD_COAST_US {
+            core.update_compliance_mode_medium(error, window_dt_us);
+            accumulated_us += window_dt_us;
+
+            if accumulated_us < YIELD_COAST_US {
+                assert_eq!(
+                    core.yield_max_duty(),
+                    0,
+                    "yield_max_duty should be 0 during coast phase at {}us",
+                    accumulated_us
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn test_yield_alive_limited_duty() {
+        // After coast phase (100ms), yield_max_duty should be YIELD_ALIVE_DUTY_MAX
+        let mut core = make_core(MockController::new());
+        core.engage(CentiDeg::from_cdeg(9000));
+
+        // Force into Yield mode
+        core.set_mode_for_test(ServoMode::Yield);
+        core.set_yield_state_for_test(0, false);
+
+        let error: i16 = 100;
+
+        // Advance to exactly YIELD_COAST_US
+        core.update_compliance_mode_medium(error, YIELD_COAST_US);
+        assert_eq!(
+            core.yield_max_duty(),
+            YIELD_ALIVE_DUTY_MAX,
+            "yield_max_duty should be YIELD_ALIVE_DUTY_MAX after coast phase"
+        );
+
+        // Continue in alive phase until near exit
+        core.update_compliance_mode_medium(error, YIELD_COAST_US / 2); // 50ms more
+        assert_eq!(
+            core.yield_max_duty(),
+            YIELD_ALIVE_DUTY_MAX,
+            "yield_max_duty should remain YIELD_ALIVE_DUTY_MAX in alive phase"
+        );
+    }
+
+    #[test]
+    fn test_yield_max_duty_set_by_medium_tick() {
+        // Test that yield_max_duty transitions exactly at YIELD_COAST_US boundary
+        let mut core = make_core(MockController::new());
+        core.engage(CentiDeg::from_cdeg(9000));
+
+        // Force into Yield mode
+        core.set_mode_for_test(ServoMode::Yield);
+        core.set_yield_state_for_test(0, false);
+
+        let error: i16 = 100;
+        let window_dt_us: u32 = 25_000; // 25ms per tick
+
+        // After 25ms: coast phase (0 < 100ms)
+        core.update_compliance_mode_medium(error, window_dt_us);
+        assert_eq!(core.yield_elapsed_us(), 25_000);
+        assert_eq!(core.yield_max_duty(), 0);
+
+        // After 50ms: still coast phase
+        core.update_compliance_mode_medium(error, window_dt_us);
+        assert_eq!(core.yield_elapsed_us(), 50_000);
+        assert_eq!(core.yield_max_duty(), 0);
+
+        // After 75ms: still coast phase
+        core.update_compliance_mode_medium(error, window_dt_us);
+        assert_eq!(core.yield_elapsed_us(), 75_000);
+        assert_eq!(core.yield_max_duty(), 0);
+
+        // After 100ms: transition to alive phase
+        core.update_compliance_mode_medium(error, window_dt_us);
+        assert_eq!(core.yield_elapsed_us(), 100_000);
+        assert_eq!(
+            core.yield_max_duty(),
+            YIELD_ALIVE_DUTY_MAX,
+            "yield_max_duty should transition to YIELD_ALIVE_DUTY_MAX exactly at YIELD_COAST_US"
+        );
+
+        // After 125ms: still alive phase
+        core.update_compliance_mode_medium(error, window_dt_us);
+        assert_eq!(core.yield_elapsed_us(), 125_000);
+        assert_eq!(core.yield_max_duty(), YIELD_ALIVE_DUTY_MAX);
     }
 }
