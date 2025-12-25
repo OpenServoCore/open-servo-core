@@ -2,7 +2,9 @@
 
 use stm32f3::stm32f301 as pac;
 
-use open_servo_hw::config::{BoardConfig, BoardKinematicsConfig, BoardSafetyConfig, BoardThermalConfig};
+use open_servo_hw::config::{
+    BoardConfig, BoardKinematicsConfig, BoardSafetyConfig, BoardThermalConfig,
+};
 use open_servo_hw::motor::BdcMotorDriver;
 use open_servo_hw::peripheral::{SystemTime, UartDriver};
 #[cfg(feature = "current-sense-bus")]
@@ -10,25 +12,25 @@ use open_servo_hw::sensor::BusCurrentSensor;
 // Always import SafetyCurrentSource since we always implement it
 use open_servo_hw::sensor::SafetyCurrentSource;
 // Always import SafetyMcuTempSource since we always implement it
-use open_servo_hw::sensor::SafetyMcuTempSource;
 #[cfg(feature = "temp-sense-mcu")]
 use open_servo_hw::sensor::McuTemperatureSensor;
-use open_servo_hw::sensor::PositionSensor;
-use open_servo_hw::sensor::SafetyVoltageSource;
 #[cfg(feature = "temp-sense-motor")]
 use open_servo_hw::sensor::MotorTemperatureSensor;
+use open_servo_hw::sensor::PositionSensor;
+use open_servo_hw::sensor::SafetyMcuTempSource;
+use open_servo_hw::sensor::SafetyVoltageSource;
 // Always import SafetyMotorTempSource since we always implement it
-use open_servo_hw::sensor::SafetyMotorTempSource;
 #[cfg(feature = "voltage-sense-motor")]
 use open_servo_hw::sensor::MotorVoltageSensor;
+use open_servo_hw::sensor::SafetyMotorTempSource;
 // Always import SafetyMotorVoltageSource since we always implement it
 use open_servo_hw::sensor::SafetyMotorVoltageSource;
 use open_servo_hw::UartPort;
 use open_servo_math::{CentiC, CentiDeg, ComplianceConfig, Duty, MilliAmp, MilliVolt};
 
 use crate::config::BoardConfigProvider;
-use crate::sensors::SensorReader;
 use crate::pwm::PwmController;
+use crate::sensors::SensorReader;
 
 /// Board wrapper that implements all required traits.
 pub struct Board {
@@ -185,7 +187,6 @@ impl SafetyMcuTempSource for Board {
     }
 }
 
-
 // Motor voltage sensing (optional based on feature)
 #[cfg(feature = "voltage-sense-motor")]
 impl MotorVoltageSensor for Board {
@@ -250,23 +251,23 @@ impl BoardConfig for Board {
     fn safety_config(&self) -> BoardSafetyConfig {
         BoardConfigProvider::safety_config()
     }
-    
+
     fn move_compliance_config(&self) -> ComplianceConfig {
         BoardConfigProvider::move_compliance_config()
     }
-    
+
     fn hold_compliance_config(&self) -> ComplianceConfig {
         BoardConfigProvider::hold_compliance_config()
     }
-    
+
     fn thermal_config(&self) -> BoardThermalConfig {
         BoardConfigProvider::thermal_config()
     }
-    
+
     fn kinematics_config(&self) -> BoardKinematicsConfig {
         BoardConfigProvider::kinematics_config()
     }
-    
+
     fn pid_gains(&self) -> (i32, i32, i32) {
         BoardConfigProvider::pid_gains()
     }

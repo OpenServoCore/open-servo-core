@@ -110,8 +110,11 @@ pub fn init_adc(p: &pac::Peripherals) {
      * Configure ADC
      */
     p.ADC1_2.ccr.modify(|_, w| {
-        let w = w.ckmode().sync_div1() // use synchronous clock mode
-            .vrefen().enabled(); // enable VREFINT
+        let w = w
+            .ckmode()
+            .sync_div1() // use synchronous clock mode
+            .vrefen()
+            .enabled(); // enable VREFINT
         #[cfg(feature = "temp-sense-mcu")]
         let w = w.tsen().enabled(); // enable temperature sensor
         w
@@ -208,8 +211,10 @@ pub fn init_adc(p: &pac::Peripherals) {
 
     // SQ1 and SQ2 are always set (vrefint, position)
     adc1.sqr1.modify(|_, w| unsafe {
-        w.sq1().bits(18) // vrefint (ch 18)
-            .sq2().bits(1)  // PA0 position (ch 1)
+        w.sq1()
+            .bits(18) // vrefint (ch 18)
+            .sq2()
+            .bits(1) // PA0 position (ch 1)
     });
 
     // Build sequence dynamically - track next slot

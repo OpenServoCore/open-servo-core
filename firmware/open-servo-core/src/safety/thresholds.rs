@@ -68,7 +68,7 @@ impl SafetyThresholds {
             position_error_timeout_ticks,
         }
     }
-    
+
     /// Clamp a setpoint to the configured position bounds.
     ///
     /// This prevents the servo from driving into mechanical stops.

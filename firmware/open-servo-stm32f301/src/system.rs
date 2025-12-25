@@ -9,9 +9,9 @@ use open_servo_core::{App, Event, EventConsumer, EventProducer};
 use crate::board::Board;
 
 #[cfg(feature = "debug-shell")]
-use open_servo_hw_utils::rtt_debug::RttDebugIo;
-#[cfg(feature = "debug-shell")]
 use open_servo_core::DebugShell;
+#[cfg(feature = "debug-shell")]
+use open_servo_hw_utils::rtt_debug::RttDebugIo;
 
 /// Event queue size for this board
 pub const EVENT_QUEUE_SIZE: usize = 32;
@@ -28,8 +28,7 @@ static EVENT_CONSUMER: Mutex<RefCell<Option<EventConsumer<EVENT_QUEUE_SIZE>>>> =
     Mutex::new(RefCell::new(None));
 
 #[cfg(feature = "debug-shell")]
-static DEBUG_SHELL: Mutex<RefCell<Option<DebugShell<RttDebugIo>>>> = 
-    Mutex::new(RefCell::new(None));
+static DEBUG_SHELL: Mutex<RefCell<Option<DebugShell<RttDebugIo>>>> = Mutex::new(RefCell::new(None));
 
 impl SystemState {
     /// Initialize system state with app and board
@@ -41,7 +40,10 @@ impl SystemState {
     }
 
     /// Initialize event system
-    pub fn init_event_system(producer: EventProducer<EVENT_QUEUE_SIZE>, consumer: EventConsumer<EVENT_QUEUE_SIZE>) {
+    pub fn init_event_system(
+        producer: EventProducer<EVENT_QUEUE_SIZE>,
+        consumer: EventConsumer<EVENT_QUEUE_SIZE>,
+    ) {
         free(|cs| {
             EVENT_PRODUCER.borrow(cs).replace(Some(producer));
             EVENT_CONSUMER.borrow(cs).replace(Some(consumer));
@@ -64,7 +66,7 @@ impl SystemState {
         free(|cs| {
             let mut app_ref = APP.borrow(cs).borrow_mut();
             let mut board_ref = BOARD.borrow(cs).borrow_mut();
-            
+
             if let (Some(app), Some(board)) = (app_ref.as_mut(), board_ref.as_mut()) {
                 f(app, board);
             }
@@ -72,7 +74,7 @@ impl SystemState {
     }
 
     /// Access event producer
-    pub fn with_event_producer<F>(f: F) 
+    pub fn with_event_producer<F>(f: F)
     where
         F: FnOnce(&mut EventProducer<EVENT_QUEUE_SIZE>),
     {

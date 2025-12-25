@@ -18,13 +18,29 @@ const IDX_MOTOR_VPOS: usize = 2;
 const IDX_MOTOR_VNEG: usize = IDX_MOTOR_VPOS + 1;
 
 // Motor temp index depends on current + motor voltage
-#[cfg(all(feature = "temp-sense-motor", feature = "current-sense-bus", feature = "voltage-sense-motor"))]
+#[cfg(all(
+    feature = "temp-sense-motor",
+    feature = "current-sense-bus",
+    feature = "voltage-sense-motor"
+))]
 const IDX_MOTOR_TEMP: usize = 5;
-#[cfg(all(feature = "temp-sense-motor", feature = "current-sense-bus", not(feature = "voltage-sense-motor")))]
+#[cfg(all(
+    feature = "temp-sense-motor",
+    feature = "current-sense-bus",
+    not(feature = "voltage-sense-motor")
+))]
 const IDX_MOTOR_TEMP: usize = 3;
-#[cfg(all(feature = "temp-sense-motor", not(feature = "current-sense-bus"), feature = "voltage-sense-motor"))]
+#[cfg(all(
+    feature = "temp-sense-motor",
+    not(feature = "current-sense-bus"),
+    feature = "voltage-sense-motor"
+))]
 const IDX_MOTOR_TEMP: usize = 4;
-#[cfg(all(feature = "temp-sense-motor", not(feature = "current-sense-bus"), not(feature = "voltage-sense-motor")))]
+#[cfg(all(
+    feature = "temp-sense-motor",
+    not(feature = "current-sense-bus"),
+    not(feature = "voltage-sense-motor")
+))]
 const IDX_MOTOR_TEMP: usize = 2;
 
 // MCU temp is always last (when enabled)

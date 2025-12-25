@@ -16,12 +16,12 @@ pub trait BusCurrentSensor {
 /// Safety capability trait for current sensing.
 ///
 /// ALL boards must implement this trait explicitly.
-/// 
+///
 /// - Boards WITH current sensing: implement both `BusCurrentSensor` and this trait,
 ///   typically returning `Some(self.read_bus_current())`
 /// - Boards WITHOUT current sensing: implement only this trait, returning `None`
 ///
-/// This explicit implementation requirement ensures board capabilities are 
+/// This explicit implementation requirement ensures board capabilities are
 /// clear and intentional at the implementation site.
 pub trait SafetyCurrentSource {
     /// Read current for safety checks.

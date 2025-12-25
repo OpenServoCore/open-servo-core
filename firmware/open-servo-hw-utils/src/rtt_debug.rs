@@ -1,7 +1,7 @@
 //! RTT-based DebugIo implementation for embedded targets.
 //!
 //! Uses RTT channel 0 for defmt (up only), channel 1 for REPL (bidirectional)
-//! 
+//!
 //! This is a generic implementation that can be used by any Cortex-M board.
 
 use open_servo_hw::DebugIo;

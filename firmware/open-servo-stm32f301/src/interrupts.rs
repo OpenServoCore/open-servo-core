@@ -2,8 +2,8 @@
 
 use cortex_m::interrupt::free;
 use open_servo_core::{Event, EventProducer, FaultKind};
-use stm32f3::stm32f301 as pac;
 use pac::interrupt;
+use stm32f3::stm32f301 as pac;
 
 use crate::system::SystemState;
 

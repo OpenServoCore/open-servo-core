@@ -1,5 +1,5 @@
 //! Low-pass filters for servo sensor data
-//! 
+//!
 //! Exponential moving average filters using fixed-point math,
 //! optimized for servo control system values.
 
@@ -24,16 +24,16 @@ impl FilterU16 {
             state: None,
         }
     }
-    
+
     /// Get the current alpha shift value
     pub fn alpha_shift(&self) -> u8 {
         self.alpha_shift
     }
-    
+
     /// Update filter with new sample, returns filtered value
     pub fn update(&mut self, sample: u16) -> u16 {
         let sample_u32 = sample as u32;
-        
+
         match self.state {
             None => {
                 // Initialize on first sample
@@ -52,12 +52,12 @@ impl FilterU16 {
             }
         }
     }
-    
+
     /// Reset filter state
     pub fn reset(&mut self) {
         self.state = None;
     }
-    
+
     /// Get current filtered value without updating
     pub fn value(&self) -> Option<u16> {
         self.state.map(|s| (s >> self.alpha_shift) as u16)
@@ -81,16 +81,16 @@ impl FilterI16 {
             state: None,
         }
     }
-    
+
     /// Get the current alpha shift value
     pub fn alpha_shift(&self) -> u8 {
         self.alpha_shift
     }
-    
+
     /// Update filter with new sample, returns filtered value
     pub fn update(&mut self, sample: i16) -> i16 {
         let sample_i32 = sample as i32;
-        
+
         match self.state {
             None => {
                 self.state = Some(sample_i32 << self.alpha_shift);
@@ -107,12 +107,12 @@ impl FilterI16 {
             }
         }
     }
-    
+
     /// Reset filter state
     pub fn reset(&mut self) {
         self.state = None;
     }
-    
+
     /// Get current filtered value without updating
     pub fn value(&self) -> Option<i16> {
         self.state.map(|s| (s >> self.alpha_shift) as i16)
@@ -137,16 +137,16 @@ impl FilterI32 {
             state: None,
         }
     }
-    
+
     /// Get the current alpha shift value
     pub fn alpha_shift(&self) -> u8 {
         self.alpha_shift
     }
-    
+
     /// Update filter with new sample, returns filtered value
     pub fn update(&mut self, sample: i32) -> i32 {
         let sample_i64 = sample as i64;
-        
+
         match self.state {
             None => {
                 self.state = Some(sample_i64 << self.alpha_shift);
@@ -163,12 +163,12 @@ impl FilterI32 {
             }
         }
     }
-    
+
     /// Reset filter state
     pub fn reset(&mut self) {
         self.state = None;
     }
-    
+
     /// Get current filtered value without updating
     pub fn value(&self) -> Option<i32> {
         self.state.map(|s| (s >> self.alpha_shift) as i32)
@@ -178,61 +178,61 @@ impl FilterI32 {
 /// Recommended filter strengths for different sensors
 pub mod presets {
     /// Position sensor (potentiometer): moderate filtering
-    pub const POSITION_FILTER_SHIFT: u8 = 3;  // alpha = 0.125
-    
+    pub const POSITION_FILTER_SHIFT: u8 = 3; // alpha = 0.125
+
     /// Current sensor: light filtering (fast response needed)
-    pub const CURRENT_FILTER_SHIFT: u8 = 2;   // alpha = 0.25
-    
+    pub const CURRENT_FILTER_SHIFT: u8 = 2; // alpha = 0.25
+
     /// Temperature sensor: heavy filtering (slow changing)
-    pub const TEMP_FILTER_SHIFT: u8 = 5;      // alpha = 0.03125
-    
+    pub const TEMP_FILTER_SHIFT: u8 = 5; // alpha = 0.03125
+
     /// Voltage sensor: moderate filtering
-    pub const VOLTAGE_FILTER_SHIFT: u8 = 3;   // alpha = 0.125
+    pub const VOLTAGE_FILTER_SHIFT: u8 = 3; // alpha = 0.125
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    
+
     #[test]
     fn test_u16_filter() {
         let mut filter = FilterU16::new(2); // alpha = 0.25
-        
+
         // First sample initializes
         assert_eq!(filter.update(1000), 1000);
-        
+
         // Step change should be filtered
         let result = filter.update(2000);
         assert!(result > 1000 && result < 2000);
-        
+
         // Should converge towards new value
         for _ in 0..10 {
             filter.update(2000);
         }
         assert!(filter.value().unwrap() > 1900);
     }
-    
+
     #[test]
     fn test_i16_filter() {
         let mut filter = FilterI16::new(2);
-        
+
         // Works with negative values
         assert_eq!(filter.update(-1000), -1000);
         let result = filter.update(-2000);
         assert!(result < -1000 && result > -2000);
     }
-    
+
     #[test]
     fn test_i32_filter() {
         let mut filter = FilterI32::new(2);
-        
+
         // First sample initializes
         assert_eq!(filter.update(10000), 10000);
-        
+
         // Step change should be filtered
         let result = filter.update(20000);
         assert!(result > 10000 && result < 20000);
-        
+
         // Test with large values
         filter.reset();
         assert_eq!(filter.update(100000), 100000);

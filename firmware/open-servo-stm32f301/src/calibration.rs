@@ -1,9 +1,9 @@
 //! ADC calibration and conversion functions for STM32F301 board.
 
-#[cfg(feature = "current-sense-bus")]
-use open_servo_math::MilliAmp;
 #[cfg(feature = "temp-sense-mcu")]
 use open_servo_math::CentiC;
+#[cfg(feature = "current-sense-bus")]
+use open_servo_math::MilliAmp;
 use open_servo_math::{mul_div_i32, CentiDeg, MilliVolt};
 
 // ADC calibration memory addresses
@@ -17,30 +17,30 @@ pub const TS_CAL2_ADDR: u32 = 0x1FFFF7C2;
 pub struct BoardCalibration {
     // Current sensing (DRV8231A IPROPI)
     #[cfg(feature = "current-sense-bus")]
-    pub ripropi_ohms: u32,           // IPROPI sense resistor value
+    pub ripropi_ohms: u32, // IPROPI sense resistor value
     #[cfg(feature = "current-sense-bus")]
-    pub ipropi_gain_ua_per_a: u32,   // DRV8231A current mirror gain
-    
+    pub ipropi_gain_ua_per_a: u32, // DRV8231A current mirror gain
+
     // Position sensing (potentiometer)
-    pub pot_min_cdeg: i16,           // Minimum position in centidegrees
-    pub pot_max_cdeg: i16,           // Maximum position in centidegrees
-    
+    pub pot_min_cdeg: i16, // Minimum position in centidegrees
+    pub pot_max_cdeg: i16, // Maximum position in centidegrees
+
     // ADC configuration
-    pub adc_max: u16,                // Maximum ADC value (12-bit = 4095)
+    pub adc_max: u16, // Maximum ADC value (12-bit = 4095)
 }
 
 impl Default for BoardCalibration {
     fn default() -> Self {
         Self {
             #[cfg(feature = "current-sense-bus")]
-            ripropi_ohms: 1500,           // 1.5kΩ on this board
+            ripropi_ohms: 1500, // 1.5kΩ on this board
             #[cfg(feature = "current-sense-bus")]
-            ipropi_gain_ua_per_a: 1500,   // DRV8231A datasheet value
-            
-            pot_min_cdeg: -500,           // -5° minimum
-            pot_max_cdeg: 18500,          // 185° maximum
-            
-            adc_max: 4095,                // 12-bit ADC
+            ipropi_gain_ua_per_a: 1500, // DRV8231A datasheet value
+
+            pot_min_cdeg: -500,  // -5° minimum
+            pot_max_cdeg: 18500, // 185° maximum
+
+            adc_max: 4095, // 12-bit ADC
         }
     }
 }
@@ -53,18 +53,19 @@ impl BoardCalibration {
         // 1. ADC code → IPROPI voltage: V = raw * vdda_mv / adc_max
         // 2. IPROPI voltage → IPROPI current: I = V / RIPROPI
         // 3. IPROPI current → motor current: I_motor = I / (gain_uA/A * 1e-6)
-        
+
         let raw = raw as u64;
         let vdda = vdda_mv as u64;
-        
+
         // Calculate: I_motor_mA = raw * vdda_mv * 1000000 / (adc_max * RIPROPI * gain_uA/A)
         let num = raw * vdda * 1_000_000u64;
-        let den = (self.adc_max as u64) * (self.ripropi_ohms as u64) * (self.ipropi_gain_ua_per_a as u64);
-        
+        let den =
+            (self.adc_max as u64) * (self.ripropi_ohms as u64) * (self.ipropi_gain_ua_per_a as u64);
+
         let ma = if den > 0 { (num / den) as u16 } else { 0 };
         MilliAmp::from_ma(ma as i16)
     }
-    
+
     /// Convert potentiometer ADC reading to position
     pub fn position_from_adc(&self, raw: u16) -> CentiDeg {
         // Map ADC range [0, adc_max] to position range [pot_min_cdeg, pot_max_cdeg]
@@ -73,7 +74,7 @@ impl BoardCalibration {
         let cdeg = self.pot_min_cdeg as i32 + mul_div_i32(raw, range, self.adc_max as i32);
         CentiDeg::from_cdeg(cdeg.clamp(i16::MIN as i32, i16::MAX as i32) as i16)
     }
-    
+
     /// Convert ADC reading to voltage
     pub fn voltage_from_adc(&self, raw: u16, vdda_mv: u16) -> MilliVolt {
         // V = raw * vdda_mv / adc_max
@@ -128,7 +129,10 @@ pub fn motor_voltage_from_adc(vpos_raw: u16, vneg_raw: u16) -> (MilliVolt, Milli
     // Each terminal: 0-4095 ADC = 0-5000mV
     let vpos_mv = mul_div_i32(vpos_raw as i32, 5000, 4095);
     let vneg_mv = mul_div_i32(vneg_raw as i32, 5000, 4095);
-    (MilliVolt::from_mv(vpos_mv as i16), MilliVolt::from_mv(vneg_mv as i16))
+    (
+        MilliVolt::from_mv(vpos_mv as i16),
+        MilliVolt::from_mv(vneg_mv as i16),
+    )
 }
 
 #[cfg(all(test, feature = "current-sense-bus"))]
@@ -140,37 +144,49 @@ mod tests {
         let cal = BoardCalibration::default();
         // Test with nominal VDDA = 3.3V
         let vdda_mv = 3300;
-        
+
         // Test cases with expected values for 1.5kΩ RIPROPI
         // At 200mA: IPROPI = 200mA * 1500µA/A = 0.3mA through 1.5kΩ = 0.45V
         // ADC = 0.45V / 3.3V * 4095 = 559
         let ma = cal.current_from_adc(559, vdda_mv);
-        assert!((ma.as_ma() - 200).abs() < 5, "200mA test failed: got {}mA", ma.as_ma());
-        
+        assert!(
+            (ma.as_ma() - 200).abs() < 5,
+            "200mA test failed: got {}mA",
+            ma.as_ma()
+        );
+
         // At 800mA: IPROPI = 800mA * 1500µA/A = 1.2mA through 1.5kΩ = 1.8V
         // ADC = 1.8V / 3.3V * 4095 = 2234
         let ma = cal.current_from_adc(2234, vdda_mv);
-        assert!((ma.as_ma() - 800).abs() < 5, "800mA test failed: got {}mA", ma.as_ma());
-        
+        assert!(
+            (ma.as_ma() - 800).abs() < 5,
+            "800mA test failed: got {}mA",
+            ma.as_ma()
+        );
+
         // At 0mA: ADC = 0
         let ma = cal.current_from_adc(0, vdda_mv);
         assert_eq!(ma.as_ma(), 0, "0mA test failed");
-        
+
         // Test with different VDDA (3.0V)
         let vdda_mv = 3000;
         // At 500mA with 3.0V VDDA: 0.75V / 3.0V * 4095 = 1024
         let ma = cal.current_from_adc(1024, vdda_mv);
-        assert!((ma.as_ma() - 500).abs() < 5, "500mA @ 3.0V test failed: got {}mA", ma.as_ma());
+        assert!(
+            (ma.as_ma() - 500).abs() < 5,
+            "500mA @ 3.0V test failed: got {}mA",
+            ma.as_ma()
+        );
     }
-    
+
     #[test]
     fn test_position_conversion() {
         let cal = BoardCalibration::default();
-        
+
         // Test endpoints
         assert_eq!(cal.position_from_adc(0).as_cdeg(), -500, "Min position");
         assert_eq!(cal.position_from_adc(4095).as_cdeg(), 18500, "Max position");
-        
+
         // Test midpoint (should be around 90°)
         let mid = cal.position_from_adc(2048);
         assert!((mid.as_cdeg() - 9000).abs() < 50, "Midpoint position");

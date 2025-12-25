@@ -89,8 +89,8 @@ impl BoardConfigProvider {
     pub const SENSOR_RAW_MAX: u16 = 4095;
 
     /// Mechanical limits in centidegrees
-    pub const MECHANICAL_MIN_CDEG: i32 = -500;   // -5°
-    pub const MECHANICAL_MAX_CDEG: i32 = 18500;  // 185°
+    pub const MECHANICAL_MIN_CDEG: i32 = -500; // -5°
+    pub const MECHANICAL_MAX_CDEG: i32 = 18500; // 185°
 
     /// Zero calibration offset
     pub const ZERO_OFFSET_CDEG: i32 = 0;
@@ -127,7 +127,7 @@ impl BoardConfigProvider {
             position_error_timeout_ticks: Self::POSITION_ERROR_TIMEOUT_TICKS,
         }
     }
-    
+
     pub fn move_compliance_config() -> ComplianceConfig {
         ComplianceConfig::new(
             Self::MOVE_CURRENT_LIMIT_MA,
@@ -137,7 +137,7 @@ impl BoardConfigProvider {
             Self::COMPLIANCE_RECOVERY_RATE,
         )
     }
-    
+
     pub fn hold_compliance_config() -> ComplianceConfig {
         ComplianceConfig::new(
             Self::HOLD_CURRENT_LIMIT_MA,
@@ -147,7 +147,7 @@ impl BoardConfigProvider {
             Self::COMPLIANCE_RECOVERY_RATE,
         )
     }
-    
+
     pub fn thermal_config() -> BoardThermalConfig {
         BoardThermalConfig {
             resistance_mohm: Self::MOTOR_RESISTANCE_MOHM,
@@ -155,7 +155,7 @@ impl BoardConfigProvider {
             thermal_capacity_cj: Self::THERMAL_CAPACITY_CJ,
         }
     }
-    
+
     pub fn kinematics_config() -> BoardKinematicsConfig {
         BoardKinematicsConfig {
             sensor_raw_min: Self::SENSOR_RAW_MIN,
@@ -166,8 +166,12 @@ impl BoardConfigProvider {
             reversed: Self::MOTOR_REVERSED,
         }
     }
-    
+
     pub fn pid_gains() -> (i32, i32, i32) {
-        (Self::PID_KP_Q8 as i32, Self::PID_KI_Q8 as i32, Self::PID_KD_Q8 as i32)
+        (
+            Self::PID_KP_Q8 as i32,
+            Self::PID_KI_Q8 as i32,
+            Self::PID_KD_Q8 as i32,
+        )
     }
 }

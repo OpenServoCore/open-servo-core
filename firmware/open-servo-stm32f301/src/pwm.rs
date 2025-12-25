@@ -1,8 +1,8 @@
 //! PWM motor control logic for STM32F301 with DRV8231A driver.
 
+use crate::init::tim::PWM_MAX_DUTY;
 use open_servo_math::Duty;
 use stm32f3::stm32f301 as pac;
-use crate::init::tim::PWM_MAX_DUTY;
 
 /// Motor polarity configuration
 /// Set to true if motor is wired backwards (swaps PWM channels)
@@ -29,35 +29,41 @@ impl PwmController {
     /// - IN1=0, IN2=0: Coast (high-Z)
     pub fn set_pwm(duty: Duty) {
         let tim1 = unsafe { &(*pac::TIM1::ptr()) };
-        
+
         // Scale normalized duty to hardware PWM range
         let scaled = duty.scale_to(PWM_MAX_DUTY);
         let scaled = scaled.clamp(-(PWM_MAX_DUTY as i32), PWM_MAX_DUTY as i32);
 
         // Apply polarity reversal if configured
-        let scaled = if REVERSE_MOTOR_POLARITY { -scaled } else { scaled };
-        
+        let scaled = if REVERSE_MOTOR_POLARITY {
+            -scaled
+        } else {
+            scaled
+        };
+
         if scaled > 0 {
             let drive_duty = scaled as u16;
             if drive_duty > BRAKE_MODE_THRESHOLD {
                 // High duty: use drive-brake for better control
-                tim1.ccr1().write(|w| w.ccr().bits(PWM_MAX_DUTY));  // IN1 always HIGH
-                tim1.ccr4().write(|w| w.ccr().bits(PWM_MAX_DUTY - drive_duty)); // IN2 inverted PWM
+                tim1.ccr1().write(|w| w.ccr().bits(PWM_MAX_DUTY)); // IN1 always HIGH
+                tim1.ccr4()
+                    .write(|w| w.ccr().bits(PWM_MAX_DUTY - drive_duty)); // IN2 inverted PWM
             } else {
                 // Low duty: use drive-coast for compliance
-                tim1.ccr1().write(|w| w.ccr().bits(drive_duty));  // IN1 PWM
-                tim1.ccr4().write(|w| w.ccr().bits(0));           // IN2 always LOW
+                tim1.ccr1().write(|w| w.ccr().bits(drive_duty)); // IN1 PWM
+                tim1.ccr4().write(|w| w.ccr().bits(0)); // IN2 always LOW
             }
         } else if scaled < 0 {
             let drive_duty = (-scaled) as u16;
             if drive_duty > BRAKE_MODE_THRESHOLD {
                 // High duty: use drive-brake for better control
-                tim1.ccr1().write(|w| w.ccr().bits(PWM_MAX_DUTY - drive_duty)); // IN1 inverted PWM
-                tim1.ccr4().write(|w| w.ccr().bits(PWM_MAX_DUTY));  // IN2 always HIGH
+                tim1.ccr1()
+                    .write(|w| w.ccr().bits(PWM_MAX_DUTY - drive_duty)); // IN1 inverted PWM
+                tim1.ccr4().write(|w| w.ccr().bits(PWM_MAX_DUTY)); // IN2 always HIGH
             } else {
                 // Low duty: use drive-coast for compliance
-                tim1.ccr1().write(|w| w.ccr().bits(0));           // IN1 always LOW
-                tim1.ccr4().write(|w| w.ccr().bits(drive_duty));  // IN2 PWM
+                tim1.ccr1().write(|w| w.ccr().bits(0)); // IN1 always LOW
+                tim1.ccr4().write(|w| w.ccr().bits(drive_duty)); // IN2 PWM
             }
         } else {
             // Stopped: coast mode (both LOW) for less resistance

@@ -52,7 +52,6 @@ pub struct SafetyManager {
     position_error_count: u16,
 }
 
-
 impl SafetyManager {
     /// Create a new SafetyManager with explicit configuration.
     pub fn new(
@@ -205,33 +204,34 @@ impl SafetyManager {
     pub fn accumulate_thermal_i_squared(&mut self, current: Option<MilliAmp>) {
         self.thermal_model.update_fast(current.map(|c| c.as_ma()));
     }
-    
+
     /// Update thermal model and check for faults (slow tick - 100Hz).
     ///
     /// Call this from slow tick to update the thermal physics model
     /// and check for temperature faults.
     pub fn update_thermal_slow(&mut self) {
         // Use MCU temp as ambient estimate
-        let ambient_cdeg = self.last_temperature
+        let ambient_cdeg = self
+            .last_temperature
             .map(|t| t.as_centi_c())
-            .unwrap_or(2500);  // Default to 25°C if no temp sensor
-        
+            .unwrap_or(2500); // Default to 25°C if no temp sensor
+
         // Update thermal model - it handles I² averaging internally
         self.thermal_model.update_slow(ambient_cdeg);
     }
-    
+
     /// Check if motor has exceeded safe temperature.
     #[inline]
     pub fn check_motor_temperature(&mut self) -> Option<FaultKind> {
         let temp = self.thermal_model.temperature_cdeg();
         self.thermal_fault.check_fault(temp)
     }
-    
+
     /// Get motor temperature in degrees (for debug display).
     pub fn motor_temp_deg(&self) -> i16 {
         self.thermal_model.temperature_deg()
     }
-    
+
     /// Get motor temperature rise in degrees (for debug display).
     pub fn motor_temp_rise_deg(&self) -> i16 {
         self.thermal_model.temp_rise_deg()
@@ -242,13 +242,13 @@ impl SafetyManager {
     pub fn clamp_setpoint(&self, setpoint: CentiDeg) -> CentiDeg {
         self.thresholds.clamp_setpoint(setpoint)
     }
-    
+
     /// Get mutable reference to compliance limiter for updates.
     #[inline]
     pub fn compliance_limiter_mut(&mut self) -> &mut ComplianceLimiter {
         &mut self.compliance_limiter
     }
-    
+
     /// Get reference to compliance limiter for reading state.
     #[inline]
     pub fn compliance_limiter(&self) -> &ComplianceLimiter {
@@ -256,20 +256,20 @@ impl SafetyManager {
     }
 
     /// Reset safety state after fault clear.
-    /// 
+    ///
     /// NOTE: This only resets fault detection state, NOT physical state.
     /// Temperature and I² accumulation continue to track physical reality.
     pub fn reset(&mut self) {
         self.sensor_health.reset();
-        
+
         // Try to reset thermal fault (only succeeds if cool enough)
         let temp = self.thermal_model.temperature_cdeg();
         self.thermal_fault.try_reset(temp);
-        
+
         // Reset fault detection counters
         self.stall_count = 0;
         self.position_error_count = 0;
-        
+
         // Do NOT reset:
         // - thermal_model (physical temperature state)
         // - last_temperature (just cached sensor data)
@@ -306,16 +306,16 @@ mod tests {
     /// Create a SafetyManager with default test values.
     fn make_safety() -> SafetyManager {
         let thresholds = SafetyThresholds::new(
-            800,    // current_limit_ma
-            8000,   // mcu_temp_limit_cc (80°C)
-            500,    // position_max_delta_cdeg
-            10,     // sensor_fault_count
-            0,      // position_min_cdeg
-            18000,  // position_max_cdeg
-            1000,   // stall_timeout_ticks
-            10,     // stall_position_tolerance_cdeg
-            3000,   // position_error_limit_cdeg
-            50,     // position_error_timeout_ticks
+            800,   // current_limit_ma
+            8000,  // mcu_temp_limit_cc (80°C)
+            500,   // position_max_delta_cdeg
+            10,    // sensor_fault_count
+            0,     // position_min_cdeg
+            18000, // position_max_cdeg
+            1000,  // stall_timeout_ticks
+            10,    // stall_position_tolerance_cdeg
+            3000,  // position_error_limit_cdeg
+            50,    // position_error_timeout_ticks
         );
         let thermal_model = ThermalModel::new(5000, 1000, 1500);
         let compliance_config = ComplianceConfig::new(600, 50, 3, 230, 3277);
@@ -377,8 +377,14 @@ mod tests {
     fn test_check_mcu_temperature_under_limit() {
         let safety = make_safety();
         // Default limit is 8000 centiC (80°C)
-        assert_eq!(safety.check_mcu_temperature(Some(CentiC::from_centi_c(5000))), None);
-        assert_eq!(safety.check_mcu_temperature(Some(CentiC::from_centi_c(7999))), None);
+        assert_eq!(
+            safety.check_mcu_temperature(Some(CentiC::from_centi_c(5000))),
+            None
+        );
+        assert_eq!(
+            safety.check_mcu_temperature(Some(CentiC::from_centi_c(7999))),
+            None
+        );
     }
 
     #[test]
@@ -398,10 +404,7 @@ mod tests {
         let mut safety = make_safety();
         // Not saturated - should never fault
         for _ in 0..2000 {
-            assert_eq!(
-                safety.check_stall(CentiDeg::from_cdeg(9000), false),
-                None
-            );
+            assert_eq!(safety.check_stall(CentiDeg::from_cdeg(9000), false), None);
         }
     }
 

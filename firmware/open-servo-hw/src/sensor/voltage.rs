@@ -16,12 +16,12 @@ pub trait BusVoltageSensor {
 /// Safety capability trait for voltage sensing.
 ///
 /// ALL boards must implement this trait explicitly.
-/// 
+///
 /// - Boards WITH voltage sensing: implement both `BusVoltageSensor` and this trait,
 ///   typically returning `Some(self.read_bus_voltage())`
 /// - Boards WITHOUT voltage sensing: implement only this trait, returning `None`
 ///
-/// This explicit implementation requirement ensures board capabilities are 
+/// This explicit implementation requirement ensures board capabilities are
 /// clear and intentional at the implementation site.
 pub trait SafetyVoltageSource {
     /// Read voltage for safety checks.
@@ -60,12 +60,12 @@ pub trait MotorVoltageSensor {
 /// Safety capability trait for motor voltage sensing.
 ///
 /// Boards must implement this trait explicitly.
-/// 
+///
 /// - Boards WITH motor voltage sensing: implement both `MotorVoltageSensor` and this trait,
 ///   typically returning `Some(self.read_motor_voltage())`
 /// - Boards WITHOUT motor voltage sensing: implement only this trait, returning `None`
 ///
-/// This explicit implementation requirement ensures board capabilities are 
+/// This explicit implementation requirement ensures board capabilities are
 /// clear and intentional at the implementation site.
 pub trait SafetyMotorVoltageSource {
     /// Read motor terminal voltages for safety/diagnostic checks.

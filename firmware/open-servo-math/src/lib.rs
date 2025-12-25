@@ -23,8 +23,8 @@ pub mod pid;
 pub mod thermal;
 pub mod units;
 
-pub use compliance_model::{ComplianceModel, ComplianceConfig, LimitState};
-pub use filter::{FilterU16, FilterI16, FilterI32};
+pub use compliance_model::{ComplianceConfig, ComplianceModel, LimitState};
+pub use filter::{FilterI16, FilterI32, FilterU16};
 pub use gain::*;
 pub use ntc::*;
 pub use ntc_gen::{generate_ntc_lut, presets};

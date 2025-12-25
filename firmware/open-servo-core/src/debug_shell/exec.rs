@@ -11,13 +11,13 @@ use crate::App;
 use open_servo_control::ControlLoop;
 #[cfg(feature = "pid")]
 use open_servo_control::PidTunable;
-use open_servo_hw::{BdcMotorDriver, DebugIo};
 use open_servo_hw::sensor::PositionSensor;
+use open_servo_hw::{BdcMotorDriver, DebugIo};
+#[cfg(feature = "current-sense-bus")]
+use open_servo_math::MilliAmp;
 use open_servo_math::{CentiC, CentiDeg};
 #[cfg(feature = "pid")]
 use open_servo_math::{DerivativeMode, Gain};
-#[cfg(feature = "current-sense-bus")]
-use open_servo_math::MilliAmp;
 
 /// Format FaultKind as a short string.
 fn fault_str(kind: FaultKind) -> &'static str {
@@ -217,7 +217,7 @@ impl<D: DebugIo> DebugShell<D> {
             let _ = uwrite!(buf, "T={}cC", temp.as_centi_c());
             self.println(&buf);
         }
-        
+
         // Motor temperature (thermal model)
         buf.clear();
         let motor_temp = app.get_motor_temp_deg();
@@ -407,16 +407,16 @@ impl<D: DebugIo> DebugShell<D> {
         // but we don't have access to it here. These match STM32F301 board.
         // TODO: Consider passing board config through App for runtime resets
         let thresholds = SafetyThresholds::new(
-            1200,   // current_limit_ma
-            8000,   // mcu_temp_limit_cc
-            500,    // position_max_delta_cdeg
-            10,     // sensor_fault_count
-            0,      // position_min_cdeg
-            18000,  // position_max_cdeg
-            1000,   // stall_timeout_ticks
-            10,     // stall_position_tolerance_cdeg
-            3000,   // position_error_limit_cdeg
-            50,     // position_error_timeout_ticks
+            1200,  // current_limit_ma
+            8000,  // mcu_temp_limit_cc
+            500,   // position_max_delta_cdeg
+            10,    // sensor_fault_count
+            0,     // position_min_cdeg
+            18000, // position_max_cdeg
+            1000,  // stall_timeout_ticks
+            10,    // stall_position_tolerance_cdeg
+            3000,  // position_error_limit_cdeg
+            50,    // position_error_timeout_ticks
         );
         app.set_thresholds(thresholds);
         self.println("ok, thresholds reset");
@@ -437,13 +437,21 @@ impl<D: DebugIo> DebugShell<D> {
         let _ = uwrite!(
             buf,
             "pos: kp={} ki={} kd={} mode={} out=[-32768,32767]",
-            cfg.kp, cfg.ki, cfg.kd, mode_str
+            cfg.kp,
+            cfg.ki,
+            cfg.kd,
+            mode_str
         );
         self.println(&buf);
     }
 
     #[cfg(feature = "pid")]
-    fn cmd_pid_set_one<C: ControlLoop + PidTunable>(&mut self, app: &mut App<C>, field: PidField, value: Gain) {
+    fn cmd_pid_set_one<C: ControlLoop + PidTunable>(
+        &mut self,
+        app: &mut App<C>,
+        field: PidField,
+        value: Gain,
+    ) {
         // Use the closure pattern to update config and rebuild atomically
         app.controller_mut().with_pid_config_mut(|cfg| match field {
             PidField::Kp => cfg.kp = value,
@@ -463,7 +471,13 @@ impl<D: DebugIo> DebugShell<D> {
     }
 
     #[cfg(feature = "pid")]
-    fn cmd_pid_set_all<C: ControlLoop + PidTunable>(&mut self, app: &mut App<C>, kp: Gain, ki: Gain, kd: Gain) {
+    fn cmd_pid_set_all<C: ControlLoop + PidTunable>(
+        &mut self,
+        app: &mut App<C>,
+        kp: Gain,
+        ki: Gain,
+        kd: Gain,
+    ) {
         // Use the closure pattern to update all gains and rebuild atomically
         app.controller_mut().with_pid_config_mut(|cfg| {
             cfg.kp = kp;
@@ -477,7 +491,11 @@ impl<D: DebugIo> DebugShell<D> {
     }
 
     #[cfg(feature = "pid")]
-    fn cmd_pid_mode<C: ControlLoop + PidTunable>(&mut self, app: &mut App<C>, mode: DerivativeMode) {
+    fn cmd_pid_mode<C: ControlLoop + PidTunable>(
+        &mut self,
+        app: &mut App<C>,
+        mode: DerivativeMode,
+    ) {
         // Use the closure pattern to update mode and rebuild atomically
         app.controller_mut().with_pid_config_mut(|cfg| {
             cfg.derivative_mode = mode;
@@ -491,7 +509,7 @@ impl<D: DebugIo> DebugShell<D> {
         let _ = uwrite!(buf, "ok, mode={}", mode_str);
         self.println(&buf);
     }
-    
+
     fn cmd_motor_status<C: ControlLoop>(&mut self, app: &App<C>) {
         let engaged = app.is_motor_engaged();
         let status = if engaged { "engaged" } else { "disengaged" };
@@ -499,77 +517,86 @@ impl<D: DebugIo> DebugShell<D> {
         let _ = uwrite!(buf, "motor: {}", status);
         self.println(&buf);
     }
-    
-    fn cmd_motor_engage<C: ControlLoop, H>(&mut self, app: &mut App<C>, hw: &mut H) 
+
+    fn cmd_motor_engage<C: ControlLoop, H>(&mut self, app: &mut App<C>, hw: &mut H)
     where
         H: BdcMotorDriver + open_servo_hw::sensor::PositionSensor,
     {
         app.engage_motor(hw);
         self.println("motor engaged");
     }
-    
-    fn cmd_motor_disengage<C: ControlLoop, H: BdcMotorDriver>(&mut self, app: &mut App<C>, hw: &mut H) {
+
+    fn cmd_motor_disengage<C: ControlLoop, H: BdcMotorDriver>(
+        &mut self,
+        app: &mut App<C>,
+        hw: &mut H,
+    ) {
         app.disengage_motor(hw);
         self.println("motor disengaged");
     }
-    
+
     // ========================================================================
     // Compliance commands
     // ========================================================================
-    
+
     fn cmd_compliance_show<C: ControlLoop>(&mut self, app: &App<C>) {
         let core = app.core();
         let mode = core.compliance_mode();
         let velocity = core.measured_velocity();
-        
+
         let mode_str = match mode {
             ServoMode::Move => "MOVE",
             ServoMode::Hold => "HOLD",
             ServoMode::Yield => "YIELD",
         };
-        
+
         let mut buf: String<64> = String::new();
-        let _ = uwrite!(buf, "mode: {}, vel: {} dps", mode_str, velocity.as_dps10() / 10);
+        let _ = uwrite!(
+            buf,
+            "mode: {}, vel: {} dps",
+            mode_str,
+            velocity.as_dps10() / 10
+        );
         self.println(&buf);
-        
+
         // Show current limits
         buf.clear();
         let _ = uwrite!(buf, "move: 800mA, hold: 150mA"); // TODO: Make these accessible
         self.println(&buf);
     }
-    
+
     fn cmd_compliance_move_ma<C: ControlLoop>(&mut self, app: &mut App<C>, ma: i16) {
         if ma < 100 || ma > 1500 {
             self.println("error: move limit must be 100-1500 mA");
             return;
         }
-        
+
         app.core_mut().set_move_current_limit(ma);
-        
+
         let mut buf: String<32> = String::new();
         let _ = uwrite!(buf, "move limit: {}mA", ma);
         self.println(&buf);
     }
-    
+
     fn cmd_compliance_hold_ma<C: ControlLoop>(&mut self, app: &mut App<C>, ma: i16) {
         if ma < 100 || ma > 800 {
             self.println("error: hold limit must be 100-800 mA");
             return;
         }
-        
+
         app.core_mut().set_hold_current_limit(ma);
-        
+
         let mut buf: String<32> = String::new();
         let _ = uwrite!(buf, "hold limit: {}mA", ma);
         self.println(&buf);
     }
-    
+
     fn cmd_compliance_vel<C: ControlLoop>(&mut self, _app: &mut App<C>, dps: i16) {
         if dps < 10 || dps > 100 {
             self.println("error: backdrive vel must be 10-100 deg/s");
             return;
         }
-        
+
         // TODO: Make backdrive velocity threshold configurable
         let mut buf: String<48> = String::new();
         let _ = uwrite!(buf, "backdrive threshold: {} deg/s (not yet impl)", dps);

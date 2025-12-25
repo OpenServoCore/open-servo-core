@@ -30,12 +30,12 @@ pub trait McuTemperatureSensor {
 /// Safety capability trait for MCU temperature sensing.
 ///
 /// ALL boards must implement this trait explicitly.
-/// 
+///
 /// - Boards WITH MCU temp sensing: implement both `McuTemperatureSensor` and this trait,
 ///   typically returning `self.read_mcu_temperature()`
 /// - Boards WITHOUT MCU temp sensing: implement only this trait, returning `None`
 ///
-/// This explicit implementation requirement ensures board capabilities are 
+/// This explicit implementation requirement ensures board capabilities are
 /// clear and intentional at the implementation site.
 pub trait SafetyMcuTempSource {
     /// Read MCU temperature for safety checks.
@@ -68,12 +68,12 @@ pub trait MotorTemperatureSensor {
 /// Safety capability trait for motor temperature sensing.
 ///
 /// Boards must implement this trait explicitly.
-/// 
+///
 /// - Boards WITH motor temp sensing: implement both `MotorTemperatureSensor` and this trait,
 ///   typically returning `self.read_motor_temperature()`
 /// - Boards WITHOUT motor temp sensing: implement only this trait, returning `None`
 ///
-/// This explicit implementation requirement ensures board capabilities are 
+/// This explicit implementation requirement ensures board capabilities are
 /// clear and intentional at the implementation site.
 pub trait SafetyMotorTempSource {
     /// Read motor temperature for safety checks.
@@ -100,12 +100,12 @@ pub trait DriverTemperatureSensor {
 /// Safety capability trait for driver temperature sensing.
 ///
 /// Boards must implement this trait explicitly.
-/// 
+///
 /// - Boards WITH driver temp sensing: implement both `DriverTemperatureSensor` and this trait,
 ///   typically returning `self.read_driver_temperature()`
 /// - Boards WITHOUT driver temp sensing: implement only this trait, returning `None`
 ///
-/// This explicit implementation requirement ensures board capabilities are 
+/// This explicit implementation requirement ensures board capabilities are
 /// clear and intentional at the implementation site.
 pub trait SafetyDriverTempSource {
     /// Read driver temperature for safety checks.

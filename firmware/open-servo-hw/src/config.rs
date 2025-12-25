@@ -3,7 +3,7 @@
 //! This trait eliminates the need for generic Default implementations,
 //! ensuring all configurations are explicitly provided by the board.
 
-use open_servo_math::{ComplianceConfig};
+use open_servo_math::ComplianceConfig;
 
 /// Board-specific safety threshold configuration.
 #[derive(Debug, Clone, Copy)]
@@ -68,19 +68,19 @@ pub struct BoardKinematicsConfig {
 pub trait BoardConfig {
     /// Get safety configuration.
     fn safety_config(&self) -> BoardSafetyConfig;
-    
+
     /// Get compliance configuration for move mode.
     fn move_compliance_config(&self) -> ComplianceConfig;
-    
+
     /// Get compliance configuration for hold mode.
     fn hold_compliance_config(&self) -> ComplianceConfig;
-    
+
     /// Get thermal model configuration.
     fn thermal_config(&self) -> BoardThermalConfig;
-    
+
     /// Get kinematics configuration.
     fn kinematics_config(&self) -> BoardKinematicsConfig;
-    
+
     /// Get PID gains as (kp, ki, kd) in raw i32 format.
     /// These will be converted to Gain types by the controller.
     fn pid_gains(&self) -> (i32, i32, i32);

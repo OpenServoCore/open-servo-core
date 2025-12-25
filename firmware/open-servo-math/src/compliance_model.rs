@@ -28,16 +28,16 @@ pub enum LimitState {
 pub struct ComplianceConfig {
     /// Current limit threshold in milliamps
     pub limit_ma: i16,
-    
+
     /// Hysteresis for recovery (recovery starts at limit_ma - hysteresis_ma)
     pub hysteresis_ma: i16,
-    
+
     /// Number of consecutive over-limit samples before triggering
     pub deglitch_samples: u8,
-    
+
     /// Backoff factor in Q8 format (256 = 1.0, 225 = 0.88)
     pub backoff_factor_q8: u16,
-    
+
     /// Recovery rate in duty units per second
     /// E.g., 3277 = 10% of full scale per second
     pub recovery_rate: i16,
@@ -62,7 +62,6 @@ impl ComplianceConfig {
     }
 }
 
-
 /// Pure mathematical compliance limiting model.
 ///
 /// Calculates duty cycle limits based on current measurements.
@@ -71,13 +70,13 @@ impl ComplianceConfig {
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
 pub struct ComplianceModel {
     config: ComplianceConfig,
-    
+
     /// Current duty cycle limit (0 to Duty::MAX)
     duty_cap: i16,
-    
+
     /// Consecutive over-current sample count
     over_cnt: u8,
-    
+
     /// Current limiting state
     state: LimitState,
 }
@@ -92,7 +91,7 @@ impl ComplianceModel {
             state: LimitState::Normal,
         }
     }
-    
+
     /// Update the model with a new current reading.
     ///
     /// # Parameters
@@ -106,15 +105,15 @@ impl ComplianceModel {
         let Some(current_ma) = current else {
             return self.get_limits();
         };
-        
+
         let abs_current = current_ma.abs().as_ma();
         let recovery_threshold = self.config.limit_ma - self.config.hysteresis_ma;
-        
+
         match self.state {
             LimitState::Normal => {
                 if abs_current > self.config.limit_ma {
                     self.over_cnt = self.over_cnt.saturating_add(1);
-                    
+
                     if self.over_cnt >= self.config.deglitch_samples {
                         // Trigger limiting
                         self.apply_backoff();
@@ -126,7 +125,7 @@ impl ComplianceModel {
                     self.over_cnt = 0;
                 }
             }
-            
+
             LimitState::Limiting => {
                 // Check if we can start recovery
                 if abs_current < recovery_threshold {
@@ -137,7 +136,7 @@ impl ComplianceModel {
                 }
                 // Hold state if in hysteresis band
             }
-            
+
             LimitState::Recovering => {
                 if abs_current > self.config.limit_ma {
                     // Over limit again, back to limiting
@@ -146,7 +145,7 @@ impl ComplianceModel {
                 } else if abs_current < recovery_threshold {
                     // Continue recovery
                     self.apply_recovery(dt_us);
-                    
+
                     // Check if fully recovered
                     if self.duty_cap >= Duty::MAX.as_raw() {
                         self.duty_cap = Duty::MAX.as_raw();
@@ -157,36 +156,36 @@ impl ComplianceModel {
                 // Hold state if in hysteresis band (450-500mA)
             }
         }
-        
+
         self.get_limits()
     }
-    
+
     /// Apply backoff by reducing duty cap.
     fn apply_backoff(&mut self) {
         // Multiply by backoff factor using Q8 arithmetic
         let new_cap = ((self.duty_cap as i32 * self.config.backoff_factor_q8 as i32) >> 8) as i16;
-        
+
         // Ensure minimum cap (at least 10% to maintain some control)
         const MIN_CAP: i16 = 3277; // 10% of Duty::MAX
         self.duty_cap = new_cap.max(MIN_CAP);
     }
-    
+
     /// Apply recovery by increasing duty cap.
     fn apply_recovery(&mut self, dt_us: u32) {
         // Calculate recovery step based on time delta
         // recovery_step = recovery_rate * dt_seconds
         // = recovery_rate * dt_us / 1_000_000
         let recovery_step = ((self.config.recovery_rate as i32 * dt_us as i32) / 1_000_000) as i16;
-        
+
         // Apply recovery
         self.duty_cap = self.duty_cap.saturating_add(recovery_step);
-        
+
         // Cap at maximum
         if self.duty_cap > Duty::MAX.as_raw() {
             self.duty_cap = Duty::MAX.as_raw();
         }
     }
-    
+
     /// Get current duty cycle limits.
     ///
     /// Returns (min, max) tuple for flexibility.
@@ -195,29 +194,29 @@ impl ComplianceModel {
         let limit = self.duty_cap as i32;
         (-limit, limit)
     }
-    
+
     /// Get current limiting state.
     pub fn state(&self) -> LimitState {
         self.state
     }
-    
+
     /// Check if compliance is currently being limited.
     pub fn is_limited(&self) -> bool {
         self.state != LimitState::Normal || self.duty_cap < Duty::MAX.as_raw()
     }
-    
+
     /// Get current duty cap value (for telemetry).
     pub fn duty_cap(&self) -> i16 {
         self.duty_cap
     }
-    
+
     /// Reset to initial state.
     pub fn reset(&mut self) {
         self.duty_cap = Duty::MAX.as_raw();
         self.over_cnt = 0;
         self.state = LimitState::Normal;
     }
-    
+
     /// Update configuration.
     pub fn set_config(&mut self, config: ComplianceConfig) {
         self.config = config;
@@ -227,7 +226,7 @@ impl ComplianceModel {
 #[cfg(test)]
 mod tests {
     use super::*;
-    
+
     #[test]
     fn test_sustained_overcurrent_triggers_limiting() {
         let config = ComplianceConfig::new(600, 50, 3, 230, 3277);
@@ -243,13 +242,13 @@ mod tests {
         // Third consecutive sample should trigger
         model.update(Some(MilliAmp::from_ma(650)), 100);
         assert_eq!(model.state(), LimitState::Limiting);
-        
+
         // Duty should be backed off
         let (min, max) = model.get_limits();
         assert!(max < Duty::MAX.as_raw() as i32);
         assert_eq!(min, -max);
     }
-    
+
     #[test]
     fn test_deglitch_prevents_single_spike() {
         let config = ComplianceConfig::new(600, 50, 3, 230, 3277);
@@ -267,7 +266,7 @@ mod tests {
         model.update(Some(MilliAmp::from_ma(650)), 100);
         assert_eq!(model.state(), LimitState::Normal);
     }
-    
+
     #[test]
     fn test_recovery_at_correct_rate() {
         let config = ComplianceConfig::new(600, 50, 3, 230, 3277);
@@ -278,22 +277,26 @@ mod tests {
             model.update(Some(MilliAmp::from_ma(650)), 100);
         }
         let limited_cap = model.duty_cap();
-        
+
         // Start recovery at low current
         model.update(Some(MilliAmp::from_ma(400)), 100);
         assert_eq!(model.state(), LimitState::Recovering);
-        
+
         // Recovery at 10% per second = 3277 per second
         // 100ms = 0.1 seconds = ~328 units recovery
         let dt_us = 100_000; // 100ms
         model.update(Some(MilliAmp::from_ma(400)), dt_us);
         let recovered_cap = model.duty_cap();
-        
+
         // Should have recovered by approximately 328 units
         let recovery = recovered_cap - limited_cap;
-        assert!(recovery > 250 && recovery < 400, "Recovery was {} units", recovery);
+        assert!(
+            recovery > 250 && recovery < 400,
+            "Recovery was {} units",
+            recovery
+        );
     }
-    
+
     #[test]
     fn test_hysteresis_prevents_oscillation() {
         let config = ComplianceConfig::new(600, 50, 3, 230, 3277);
@@ -305,7 +308,7 @@ mod tests {
         }
         assert_eq!(model.state(), LimitState::Limiting);
         let limited_cap = model.duty_cap();
-        
+
         // Current in hysteresis band (550-600mA) - should hold state
         model.update(Some(MilliAmp::from_ma(575)), 100);
         assert_eq!(model.state(), LimitState::Limiting);
@@ -321,19 +324,19 @@ mod tests {
         let recovering_cap = model.duty_cap();
         assert_eq!(model.duty_cap(), recovering_cap); // No change
     }
-    
+
     #[test]
     fn test_no_limiting_without_sensor() {
         let config = ComplianceConfig::new(600, 50, 3, 230, 3277);
         let mut model = ComplianceModel::new(config);
-        
+
         // No sensor (None) should never limit
         let (min, max) = model.update(None, 100);
         assert_eq!(min, -Duty::MAX.as_raw() as i32);
         assert_eq!(max, Duty::MAX.as_raw() as i32);
         assert_eq!(model.state(), LimitState::Normal);
     }
-    
+
     #[test]
     fn test_minimum_duty_cap() {
         let config = ComplianceConfig::new(600, 50, 3, 128, 3277); // 0.5 - aggressive backoff
@@ -345,7 +348,7 @@ mod tests {
                 model.update(Some(MilliAmp::from_ma(650)), 100);
             }
         }
-        
+
         // Should never go below 10% (3277)
         assert!(model.duty_cap() >= 3277);
     }

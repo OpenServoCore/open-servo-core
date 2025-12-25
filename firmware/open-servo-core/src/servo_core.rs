@@ -6,9 +6,11 @@
 
 use open_servo_control::{ControlInput, ControlLoop, DutyLimits};
 use open_servo_hw::{BoardSafetyConfig, BoardThermalConfig};
-use open_servo_math::{CentiC, CentiDeg, CentiDeg32, Duty, MilliVolt, DegPerSec10, ComplianceConfig, ThermalModel};
 #[cfg(feature = "current-sense-bus")]
 use open_servo_math::MilliAmp;
+use open_servo_math::{
+    CentiC, CentiDeg, CentiDeg32, ComplianceConfig, DegPerSec10, Duty, MilliVolt, ThermalModel,
+};
 
 use crate::fault::{FaultKind, FaultState};
 use crate::inputs::FastInputs;
@@ -29,34 +31,34 @@ pub enum ServoMode {
 
 /// Control loop frequency - MUST match how often fast_tick() is called
 /// This is NOT the PWM frequency or ADC sample rate
-const CONTROL_HZ: u32 = 10000;  // 10kHz fast_tick rate
+const CONTROL_HZ: u32 = 10000; // 10kHz fast_tick rate
 const CONTROL_DT_US: u32 = 1_000_000 / CONTROL_HZ;
 
 /// Velocity computation
-const VELOCITY_DECIMATE: u16 = 10;  // Update every 1ms
+const VELOCITY_DECIMATE: u16 = 10; // Update every 1ms
 
 /// Mode thresholds with hysteresis
-const HOLD_ENTER_ERROR_CDEG: i16 = 500;   // 5°
-const HOLD_EXIT_ERROR_CDEG: i16 = 700;    // 7°
-const HOLD_ENTER_VEL_DPS10: i16 = 100;    // 10°/s
-const HOLD_EXIT_VEL_DPS10: i16 = 150;     // 15°/s
-const BACKDRIVE_VEL_THRESHOLD: i16 = 300;  // 30°/s
+const HOLD_ENTER_ERROR_CDEG: i16 = 500; // 5°
+const HOLD_EXIT_ERROR_CDEG: i16 = 700; // 7°
+const HOLD_ENTER_VEL_DPS10: i16 = 100; // 10°/s
+const HOLD_EXIT_VEL_DPS10: i16 = 150; // 15°/s
+const BACKDRIVE_VEL_THRESHOLD: i16 = 300; // 30°/s
 
 /// Timing (derived from CONTROL_HZ)
-const SETPOINT_SETTLE_TICKS: u32 = (400 * CONTROL_HZ) / 1000;  // 400ms
-const HOLD_ENTRY_TICKS: u32 = (300 * CONTROL_HZ) / 1000;       // 300ms
-const YIELD_DURATION_TICKS: u32 = (200 * CONTROL_HZ) / 1000;   // 200ms
-const YIELD_COAST_TICKS: u32 = (100 * CONTROL_HZ) / 1000;      // 100ms
+const SETPOINT_SETTLE_TICKS: u32 = (400 * CONTROL_HZ) / 1000; // 400ms
+const HOLD_ENTRY_TICKS: u32 = (300 * CONTROL_HZ) / 1000; // 300ms
+const YIELD_DURATION_TICKS: u32 = (200 * CONTROL_HZ) / 1000; // 200ms
+const YIELD_COAST_TICKS: u32 = (100 * CONTROL_HZ) / 1000; // 100ms
 
 /// Backdrive detection
-const U_DEADBAND: i16 = 1638;  // 5% for sign comparison
-const BACKDRIVE_PERSIST: u8 = 5;  // Require 5 consecutive detections
+const U_DEADBAND: i16 = 1638; // 5% for sign comparison
+const BACKDRIVE_PERSIST: u8 = 5; // Require 5 consecutive detections
 
 /// Hold duty cap curve parameters
-const HOLD_ERROR_START: i16 = 500;   // 5° - start ramping
-const HOLD_ERROR_END: i16 = 1500;    // 15° - max cap
-const HOLD_DUTY_MIN: i16 = 6553;     // 20% at small error
-const HOLD_DUTY_MAX: i16 = 14746;    // 45% at large error
+const HOLD_ERROR_START: i16 = 500; // 5° - start ramping
+const HOLD_ERROR_END: i16 = 1500; // 15° - max cap
+const HOLD_DUTY_MIN: i16 = 6553; // 20% at small error
+const HOLD_DUTY_MAX: i16 = 14746; // 45% at large error
 
 /// System state snapshot for telemetry and debugging.
 #[derive(Debug, Clone, Copy, Default)]
@@ -115,24 +117,24 @@ pub struct ServoCore<C: ControlLoop> {
     // Compliance state
     mode: ServoMode,
     tick_counter: u32,
-    
+
     // Velocity tracking (decimated)
     velocity_update_counter: u16,
     measured_velocity: DegPerSec10,
     prev_position: CentiDeg,
-    
+
     // Setpoint tracking
     prev_setpoint: CentiDeg,
     setpoint_unchanged_ticks: u32,
     hold_conditions_met_ticks: u32,
-    
+
     // Backdrive detection
     prev_pwm_command: i16,
     prev_error: i16,
     backdrive_detect_count: u8,
     yield_enter_tick: u32,
     yield_until_tick: u32,
-    
+
     // Dual compliance configs
     move_compliance_config: ComplianceConfig,
     hold_compliance_config: ComplianceConfig,
@@ -160,14 +162,14 @@ impl<C: ControlLoop> ServoCore<C> {
             safety_config.position_error_limit_cdeg,
             safety_config.position_error_timeout_ticks,
         );
-        
+
         // Create thermal model from board config
         let thermal_model = ThermalModel::new(
             thermal_config.resistance_mohm,
             thermal_config.thermal_resistance_cw,
             thermal_config.thermal_capacity_cj,
         );
-        
+
         Self {
             controller,
             fault_state: FaultState::new(),
@@ -181,24 +183,24 @@ impl<C: ControlLoop> ServoCore<C> {
             // Compliance state
             mode: ServoMode::Move,
             tick_counter: 0,
-            
+
             // Velocity tracking
             velocity_update_counter: 0,
             measured_velocity: DegPerSec10::from_dps10(0),
             prev_position: CentiDeg::from_cdeg(0),
-            
+
             // Setpoint tracking
             prev_setpoint: CentiDeg::from_cdeg(0),
             setpoint_unchanged_ticks: 0,
             hold_conditions_met_ticks: 0,
-            
+
             // Backdrive detection
             prev_pwm_command: 0,
             prev_error: 0,
             backdrive_detect_count: 0,
             yield_enter_tick: 0,
             yield_until_tick: 0,
-            
+
             // Compliance configs
             move_compliance_config,
             hold_compliance_config,
@@ -221,12 +223,12 @@ impl<C: ControlLoop> ServoCore<C> {
     pub fn fast_tick(&mut self, inputs: FastInputs) -> FastOutputs {
         // Always increment master tick counter
         self.tick_counter = self.tick_counter.wrapping_add(1);
-        
+
         // If motor is disengaged, return safe state (motor disabled)
         if !self.motor_engaged {
             return FastOutputs::safe();
         }
-        
+
         // If already faulted, return safe state
         if self.fault_state.is_faulted() {
             return FastOutputs::safe();
@@ -234,7 +236,7 @@ impl<C: ControlLoop> ServoCore<C> {
 
         // Cache temperature for slow tick check
         self.safety.update_temperature(inputs.temperature);
-        
+
         // Accumulate I² for thermal model (actual update happens in slow tick)
         self.safety.accumulate_thermal_i_squared(inputs.current());
 
@@ -256,7 +258,7 @@ impl<C: ControlLoop> ServoCore<C> {
             self.raise_fault(fault);
             return FastOutputs::fault(fault);
         }
-        
+
         // Update velocity (decimated with countdown)
         self.update_velocity(position);
 
@@ -318,7 +320,7 @@ impl<C: ControlLoop> ServoCore<C> {
 
             ServoMode::Hold => {
                 // Apply error-based duty cap curve
-                let duty_cap = self.calculate_hold_duty_cap(error.abs());
+                let duty_cap = self.calculate_hold_duty_cap(error.saturating_abs());
                 min_duty = min_duty.max(-duty_cap as i32);
                 max_duty = max_duty.min(duty_cap as i32);
             }
@@ -390,7 +392,7 @@ impl<C: ControlLoop> ServoCore<C> {
     pub fn slow_tick(&mut self) -> Option<FaultKind> {
         // Update thermal model with accumulated I² from fast ticks
         self.safety.update_thermal_slow();
-        
+
         // Check MCU temperature using cached value from fast tick
         if let Some(fault) = self
             .safety
@@ -399,7 +401,7 @@ impl<C: ControlLoop> ServoCore<C> {
             self.raise_fault(fault);
             return Some(fault);
         }
-        
+
         // Check motor temperature (thermal model)
         if let Some(fault) = self.safety.check_motor_temperature() {
             self.raise_fault(fault);
@@ -483,7 +485,7 @@ impl<C: ControlLoop> ServoCore<C> {
     pub fn controller(&self) -> &C {
         &self.controller
     }
-    
+
     /// Engage the motor (enable control)
     /// If there's no setpoint, sets it to the current position to hold
     pub fn engage(&mut self, current_position: CentiDeg) {
@@ -502,39 +504,38 @@ impl<C: ControlLoop> ServoCore<C> {
         // Reset controller state (clear integrator, derivative history)
         self.controller.reset();
     }
-    
+
     /// Check if the motor is engaged
     pub fn is_engaged(&self) -> bool {
         self.motor_engaged
     }
-    
+
     /// Update velocity estimation (decimated)
     fn update_velocity(&mut self, position: CentiDeg) {
         // Countdown pattern: updates exactly every N ticks
         if self.velocity_update_counter == 0 {
-            let delta_cdeg = (position - self.prev_position).as_cdeg() as i32;
-            
+            let delta_cdeg =
+                (CentiDeg32::from(position) - CentiDeg32::from(self.prev_position)).as_cdeg();
+
             // Direct calculation to avoid truncation
             // vel_dps10 = (delta_cdeg * CONTROL_HZ) / (10 * VELOCITY_DECIMATE)
             let vel_dps10_raw = (delta_cdeg * CONTROL_HZ as i32) / (10 * VELOCITY_DECIMATE as i32);
             let vel_dps10 = vel_dps10_raw.clamp(-32767, 32767);
-            
+
             // IIR filter in i32 space to avoid overflow
             let old = self.measured_velocity.as_dps10() as i32;
             let new = vel_dps10;
-            let filtered = (new + 3 * old) / 4;  // 0.25 new + 0.75 old
-            
-            self.measured_velocity = DegPerSec10::from_dps10(
-                filtered.clamp(-32767, 32767) as i16
-            );
-            
+            let filtered = (new + 3 * old) / 4; // 0.25 new + 0.75 old
+
+            self.measured_velocity = DegPerSec10::from_dps10(filtered.clamp(-32767, 32767) as i16);
+
             self.prev_position = position;
             self.velocity_update_counter = VELOCITY_DECIMATE - 1;
         } else {
             self.velocity_update_counter -= 1;
         }
     }
-    
+
     /// Update setpoint tracking
     fn update_setpoint_tracking(&mut self, setpoint: CentiDeg) {
         if setpoint != self.prev_setpoint {
@@ -546,31 +547,33 @@ impl<C: ControlLoop> ServoCore<C> {
             self.setpoint_unchanged_ticks = self.setpoint_unchanged_ticks.saturating_add(1);
         }
     }
-    
+
     /// Check for backdrive condition
     fn check_backdrive(&mut self, velocity: DegPerSec10, error: i16) -> bool {
         // Only in HOLD mode
         if self.mode != ServoMode::Hold {
             return false;
         }
-        
+
         let vel = velocity.as_dps10();
-        let vel_abs = vel.abs();
-        
+        let vel_abs = vel.saturating_abs();
+
         // Must exceed velocity threshold
         if vel_abs <= BACKDRIVE_VEL_THRESHOLD {
             self.backdrive_detect_count = 0;
             return false;
         }
-        
+
         // Sign mismatch with deadband
         let u = self.prev_pwm_command;
-        let u_active = u.abs() > U_DEADBAND;
+        let u_active = u.saturating_abs() > U_DEADBAND;
         let opposing = u_active && ((vel > 0) != (u > 0));
-        
+
         // Error growing (with small deadband)
-        let error_growing = error.abs() > self.prev_error.abs() + 10;
-        
+        let error_abs = error.saturating_abs();
+        let prev_error_abs = self.prev_error.saturating_abs();
+        let error_growing = error_abs > prev_error_abs.saturating_add(10);
+
         // Require either condition
         if opposing || error_growing {
             self.backdrive_detect_count = self.backdrive_detect_count.saturating_add(1);
@@ -580,26 +583,31 @@ impl<C: ControlLoop> ServoCore<C> {
         } else {
             self.backdrive_detect_count = 0;
         }
-        
+
         false
     }
-    
+
     /// Update compliance mode based on conditions
-    fn update_compliance_mode(&mut self, _position: CentiDeg, _setpoint: CentiDeg, error: i16) -> bool {
+    fn update_compliance_mode(
+        &mut self,
+        _position: CentiDeg,
+        _setpoint: CentiDeg,
+        error: i16,
+    ) -> bool {
         let prev_mode = self.mode;
-        let error_abs = error.abs();
-        let vel_abs = self.measured_velocity.as_dps10().abs();
-        
+        let error_abs = error.saturating_abs();
+        let vel_abs = self.measured_velocity.as_dps10().saturating_abs();
+
         match self.mode {
             ServoMode::Move => {
                 // Check if conditions met for HOLD
-                let hold_conditions = 
-                    self.setpoint_unchanged_ticks >= SETPOINT_SETTLE_TICKS &&
-                    error_abs < HOLD_ENTER_ERROR_CDEG &&
-                    vel_abs < HOLD_ENTER_VEL_DPS10;
-                    
+                let hold_conditions = self.setpoint_unchanged_ticks >= SETPOINT_SETTLE_TICKS
+                    && error_abs < HOLD_ENTER_ERROR_CDEG
+                    && vel_abs < HOLD_ENTER_VEL_DPS10;
+
                 if hold_conditions {
-                    self.hold_conditions_met_ticks = self.hold_conditions_met_ticks.saturating_add(1);
+                    self.hold_conditions_met_ticks =
+                        self.hold_conditions_met_ticks.saturating_add(1);
                     if self.hold_conditions_met_ticks >= HOLD_ENTRY_TICKS {
                         self.mode = ServoMode::Hold;
                         self.hold_conditions_met_ticks = 0;
@@ -608,13 +616,13 @@ impl<C: ControlLoop> ServoCore<C> {
                     self.hold_conditions_met_ticks = 0;
                 }
             }
-            
+
             ServoMode::Hold => {
                 // Check exit conditions (with hysteresis)
                 if self.setpoint_unchanged_ticks < 100 ||  // Recent change
                    error_abs > HOLD_EXIT_ERROR_CDEG ||
-                   vel_abs > HOLD_EXIT_VEL_DPS10 {
-                    
+                   vel_abs > HOLD_EXIT_VEL_DPS10
+                {
                     self.mode = ServoMode::Move;
                     self.backdrive_detect_count = 0;
                 }
@@ -626,17 +634,17 @@ impl<C: ControlLoop> ServoCore<C> {
                     self.backdrive_detect_count = 0;
                 }
             }
-            
+
             ServoMode::Yield => {
                 if self.tick_counter >= self.yield_until_tick {
                     self.mode = ServoMode::Hold;
                 }
             }
         }
-        
+
         prev_mode != self.mode
     }
-    
+
     /// Calculate hold duty cap based on error
     fn calculate_hold_duty_cap(&self, error_cdeg: i16) -> i16 {
         if error_cdeg <= HOLD_ERROR_START {
@@ -651,28 +659,32 @@ impl<C: ControlLoop> ServoCore<C> {
             HOLD_DUTY_MIN + ((duty_range * progress) / range) as i16
         }
     }
-    
+
     /// Set move mode current limit
     pub fn set_move_current_limit(&mut self, ma: i16) {
         self.move_compliance_config.limit_ma = ma;
         if self.mode == ServoMode::Move {
-            self.safety.compliance_limiter_mut().set_config(self.move_compliance_config);
+            self.safety
+                .compliance_limiter_mut()
+                .set_config(self.move_compliance_config);
         }
     }
-    
+
     /// Set hold mode current limit
     pub fn set_hold_current_limit(&mut self, ma: i16) {
         self.hold_compliance_config.limit_ma = ma;
         if self.mode == ServoMode::Hold || self.mode == ServoMode::Yield {
-            self.safety.compliance_limiter_mut().set_config(self.hold_compliance_config);
+            self.safety
+                .compliance_limiter_mut()
+                .set_config(self.hold_compliance_config);
         }
     }
-    
+
     /// Get current compliance mode
     pub fn compliance_mode(&self) -> ServoMode {
         self.mode
     }
-    
+
     /// Get measured velocity
     pub fn measured_velocity(&self) -> DegPerSec10 {
         self.measured_velocity
@@ -681,6 +693,11 @@ impl<C: ControlLoop> ServoCore<C> {
     #[cfg(test)]
     fn set_setpoint_i32_for_test(&mut self, sp: i32) {
         self.setpoint = Some(CentiDeg32::from_cdeg(sp));
+    }
+
+    #[cfg(test)]
+    fn set_prev_error_for_test(&mut self, prev_error: i16) {
+        self.prev_error = prev_error;
     }
 }
 
@@ -742,9 +759,9 @@ mod tests {
             position_error_timeout_ticks: 50,
         };
         let thermal_config = BoardThermalConfig {
-            resistance_mohm: 5000,        // 5.0Ω
-            thermal_resistance_cw: 1000,  // 10°C/W
-            thermal_capacity_cj: 1500,    // 15 J/°C
+            resistance_mohm: 5000,       // 5.0Ω
+            thermal_resistance_cw: 1000, // 10°C/W
+            thermal_capacity_cj: 1500,   // 15 J/°C
         };
         let compliance_config = ComplianceConfig::new(600, 50, 3, 230, 3277);
         ServoCore::new(
@@ -818,7 +835,10 @@ mod tests {
 
         let outputs = core.fast_tick(inputs);
         assert!(core.is_faulted());
-        assert_eq!(core.fault_state().fault_kind(), Some(FaultKind::OverCurrent));
+        assert_eq!(
+            core.fault_state().fault_kind(),
+            Some(FaultKind::OverCurrent)
+        );
         assert_eq!(outputs.pwm_command, Duty::ZERO);
     }
 
@@ -980,5 +1000,54 @@ mod tests {
         // Internal setpoint should now be clamped to configured position_max
         let expected_max = CentiDeg32::from(core.safety().thresholds().position_max);
         assert_eq!(core.setpoint, Some(expected_max));
+    }
+
+    #[test]
+    fn test_saturating_abs_prevents_i16_min_bug() {
+        // Regression test: i16::MIN.abs() returns i16::MIN (negative!) due to overflow.
+        // The old logic: cur.abs() > prev.abs() + 10 would give wrong results.
+        // let prev = i16::MIN;
+        // let cur: i16 = 0;
+        // let old_logic = cur.abs() > prev.abs() + 10; // WRONG: prev.abs() is -32768
+
+        let prev = i16::MIN;
+        let cur: i16 = 0;
+        let new_logic = cur.saturating_abs() > prev.saturating_abs().saturating_add(10);
+        // cur.saturating_abs() = 0
+        // prev.saturating_abs() = 32767 (saturated from MIN)
+        // prev.saturating_abs().saturating_add(10) = 32767 (saturated)
+        // 0 > 32767 = false
+        assert!(!new_logic);
+    }
+
+    #[test]
+    fn check_backdrive_saturating_abs_regression() {
+        // Regression test: actually execute check_backdrive() with prev_error = i16::MIN
+        // to ensure the saturating_abs() fix is exercised in real code path.
+        let mut core = make_core(MockController::new());
+        core.engage(CentiDeg::from_cdeg(9000));
+
+        // Force HOLD mode (required for check_backdrive to pass first gate)
+        core.mode = ServoMode::Hold;
+
+        // Set prev_error to i16::MIN - the edge case that would overflow with .abs()
+        core.set_prev_error_for_test(i16::MIN);
+
+        // Velocity exceeds threshold (300), error is small
+        let velocity = DegPerSec10::from_dps10(500);
+        let error: i16 = 0;
+
+        // Execute check_backdrive - this DEFINITELY executes the error_growing line
+        // If saturating_abs() wasn't used, i16::MIN.abs() would overflow to -32768
+        let result = core.check_backdrive(velocity, error);
+
+        // Error is NOT growing:
+        //   error_abs = 0
+        //   prev_error_abs = 32767 (saturated from i16::MIN)
+        //   0 > 32767.saturating_add(10) = false
+        // opposing = false (prev_pwm_command = 0, so u_active = false)
+        // Neither condition met, so result = false
+        assert!(!result);
+        assert_eq!(core.backdrive_detect_count, 0);
     }
 }

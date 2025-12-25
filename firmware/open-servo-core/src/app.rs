@@ -7,16 +7,16 @@
 //!
 //! The actual control logic lives in ServoCore.
 
-use open_servo_control::{ControlLoop, PidController, PidConfig};
-use open_servo_math::Gain;
+use open_servo_control::{ControlLoop, PidConfig, PidController};
 use open_servo_hw::config::BoardConfig;
 use open_servo_hw::motor::BdcMotorDriver;
 #[cfg(feature = "current-sense-bus")]
 use open_servo_hw::sensor::SafetyCurrentSource;
 use open_servo_hw::sensor::{PositionSensor, SafetyMcuTempSource, SafetyVoltageSource};
-use open_servo_math::{CentiC, CentiDeg, Duty};
+use open_servo_math::Gain;
 #[cfg(feature = "current-sense-bus")]
 use open_servo_math::MilliAmp;
+use open_servo_math::{CentiC, CentiDeg, Duty};
 
 use crate::event::Event;
 use crate::fault::FaultKind;
@@ -55,7 +55,7 @@ impl<C: ControlLoop> App<C> {
         let thermal_config = board_config.thermal_config();
         let move_compliance_config = board_config.move_compliance_config();
         let hold_compliance_config = board_config.hold_compliance_config();
-        
+
         Self {
             core: ServoCore::new(
                 controller,
@@ -148,51 +148,63 @@ impl<C: ControlLoop> App<C> {
                 self.slow_tick_counter += 1;
                 if self.slow_tick_counter >= 5 {
                     self.slow_tick_counter = 0;
-                    
+
                     #[cfg(feature = "debug-shell")]
                     {
                         // Get system state and safety
                         let state = self.core.system_state();
                         let safety = self.core.safety();
-                        
+
                         // Position and control
                         let pos = state.position.as_cdeg();
                         let setpoint = state.setpoint.as_cdeg();
                         let pos_error = setpoint - pos;
-                        
+
                         // Temperatures
-                        let mcu_temp = safety.last_temperature()
-                            .map(|t| t.as_centi_c() / 100)  // Convert to degrees
+                        let mcu_temp = safety
+                            .last_temperature()
+                            .map(|t| t.as_centi_c() / 100) // Convert to degrees
                             .unwrap_or(0);
                         let motor_temp = safety.motor_temp_deg();
                         let motor_rise = safety.motor_temp_rise_deg();
-                        
+
                         // Electrical
-                        let vdd_mv = state.bus_voltage
-                            .map(|v| v.as_mv())
-                            .unwrap_or(0);
-                        
+                        let vdd_mv = state.bus_voltage.map(|v| v.as_mv()).unwrap_or(0);
+
                         #[cfg(feature = "current-sense-bus")]
-                        let current_ma = state.current
-                            .map(|c| c.as_ma())
-                            .unwrap_or(0);
-                        
+                        let current_ma = state.current.map(|c| c.as_ma()).unwrap_or(0);
+
                         let pwm_pct = state.pwm_duty.to_percentage();
-                        
+
                         // Log with current if available
                         #[cfg(feature = "current-sense-bus")]
                         #[cfg(feature = "defmt")]
-                        defmt::info!("pos={} sp={} err={} pwm={}% I={}mA V={}mV mcu={}C mot={}C rise={}C", 
-                            pos, setpoint, pos_error, pwm_pct, current_ma, vdd_mv,
-                            mcu_temp, motor_temp, motor_rise
+                        defmt::info!(
+                            "pos={} sp={} err={} pwm={}% I={}mA V={}mV mcu={}C mot={}C rise={}C",
+                            pos,
+                            setpoint,
+                            pos_error,
+                            pwm_pct,
+                            current_ma,
+                            vdd_mv,
+                            mcu_temp,
+                            motor_temp,
+                            motor_rise
                         );
-                        
-                        // Log without current if not available  
+
+                        // Log without current if not available
                         #[cfg(not(feature = "current-sense-bus"))]
                         #[cfg(feature = "defmt")]
-                        defmt::info!("pos={} sp={} err={} pwm={}% V={}mV mcu={}C mot={}C rise={}C", 
-                            pos, setpoint, pos_error, pwm_pct, vdd_mv,
-                            mcu_temp, motor_temp, motor_rise
+                        defmt::info!(
+                            "pos={} sp={} err={} pwm={}% V={}mV mcu={}C mot={}C rise={}C",
+                            pos,
+                            setpoint,
+                            pos_error,
+                            pwm_pct,
+                            vdd_mv,
+                            mcu_temp,
+                            motor_temp,
+                            motor_rise
                         );
                     }
                 }
@@ -310,12 +322,12 @@ impl<C: ControlLoop> App<C> {
     pub fn get_sensor_health(&self) -> &SensorHealth {
         self.core.safety().sensor_health()
     }
-    
+
     /// Get estimated motor temperature in degrees.
     pub fn get_motor_temp_deg(&self) -> i16 {
         self.core.safety().motor_temp_deg()
     }
-    
+
     /// Get motor temperature rise above ambient in degrees.
     pub fn get_motor_temp_rise_deg(&self) -> i16 {
         self.core.safety().motor_temp_rise_deg()
@@ -330,9 +342,9 @@ impl<C: ControlLoop> App<C> {
     pub fn controller(&self) -> &C {
         self.core.controller()
     }
-    
+
     /// Engage the motor (enable control)
-    pub fn engage_motor<H>(&mut self, hw: &mut H) 
+    pub fn engage_motor<H>(&mut self, hw: &mut H)
     where
         H: PositionSensor,
     {
@@ -340,7 +352,7 @@ impl<C: ControlLoop> App<C> {
         let current_position = hw.read_position();
         self.core.engage(current_position);
     }
-    
+
     /// Disengage the motor (disable control, motor will coast)
     pub fn disengage_motor<H: BdcMotorDriver>(&mut self, hw: &mut H) {
         self.core.disengage();
@@ -348,17 +360,17 @@ impl<C: ControlLoop> App<C> {
         hw.set_pwm(Duty::ZERO);
         hw.set_enable(false);
     }
-    
+
     /// Check if the motor is engaged
     pub fn is_motor_engaged(&self) -> bool {
         self.core.is_engaged()
     }
-    
+
     /// Get read-only reference to the core
     pub fn core(&self) -> &ServoCore<C> {
         &self.core
     }
-    
+
     /// Get mutable reference to the core
     pub fn core_mut(&mut self) -> &mut ServoCore<C> {
         &mut self.core
@@ -373,13 +385,13 @@ impl App<PidController> {
     pub fn new_with_pid<B: BoardConfig>(board_config: &B) -> Self {
         // Get PID gains from board configuration
         let (kp, ki, kd) = board_config.pid_gains();
-        
+
         // Create PID config from board gains
         let mut pid_config = PidConfig::new();
         pid_config.kp = Gain::from_raw(kp);
         pid_config.ki = Gain::from_raw(ki);
         pid_config.kd = Gain::from_raw(kd);
-        
+
         // Create controller and app
         let controller = PidController::new(pid_config);
         Self::new(controller, board_config)

@@ -82,11 +82,7 @@ mod tests {
         // Midpoint ADC = (2274 + 2048) / 2 = 2161
         // Expected temp = (2000 + 2500) / 2 = 2250 (22.50°C)
         let temp = ntc_lut_to_centi_celsius(2161, &TEST_LUT);
-        assert!(
-            (temp - 2250).abs() <= 50,
-            "Expected ~2250, got {}",
-            temp
-        );
+        assert!((temp - 2250).abs() <= 50, "Expected ~2250, got {}", temp);
     }
 
     #[test]

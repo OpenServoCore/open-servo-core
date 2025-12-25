@@ -1,15 +1,15 @@
 //! Sensor reading implementations for STM32F301 board.
 
-use open_servo_math::{CentiC, CentiDeg, MilliAmp, MilliVolt};
 #[cfg(feature = "temp-sense-motor")]
 use open_servo_math::ntc_lut_to_centi_celsius;
+use open_servo_math::{CentiC, CentiDeg, MilliAmp, MilliVolt};
 
 use crate::adc_sample::AdcSample;
-use crate::calibration::{BoardCalibration, convert_vdda_mv};
 #[cfg(feature = "temp-sense-mcu")]
 use crate::calibration::convert_temperature_cc;
 #[cfg(feature = "voltage-sense-motor")]
 use crate::calibration::motor_voltage_from_adc;
+use crate::calibration::{convert_vdda_mv, BoardCalibration};
 
 /// Motor temperature NTC lookup table
 /// 10K B3950 NTC with 10K fixed resistor, low-side configuration:
@@ -52,7 +52,7 @@ impl SensorReader {
     }
 
     // Position sensor methods
-    
+
     /// Read raw position ADC value
     pub fn position_raw(&self) -> u16 {
         let sample = Self::get_adc_sample();
@@ -66,7 +66,7 @@ impl SensorReader {
     }
 
     // Current sensor methods
-    
+
     /// Read raw current ADC value
     #[cfg(feature = "current-sense-bus")]
     pub fn current_raw(&self) -> u16 {
@@ -79,11 +79,12 @@ impl SensorReader {
     pub fn current(&self) -> MilliAmp {
         let sample = Self::get_adc_sample();
         let vdda_mv = convert_vdda_mv(sample.vrefint_raw);
-        self.calibration.current_from_adc(sample.current_raw, vdda_mv)
+        self.calibration
+            .current_from_adc(sample.current_raw, vdda_mv)
     }
 
     // Voltage sensor methods
-    
+
     /// Read raw VREFINT ADC value (used to calculate VDDA)
     pub fn vdda_raw(&self) -> u16 {
         let sample = Self::get_adc_sample();
@@ -114,7 +115,7 @@ impl SensorReader {
     }
 
     // Temperature sensor methods
-    
+
     /// Read raw MCU internal temperature sensor ADC value
     #[cfg(feature = "temp-sense-mcu")]
     pub fn mcu_temperature_raw(&self) -> Option<u16> {
@@ -150,7 +151,7 @@ impl SensorReader {
     pub fn safety_current(&self) -> Option<MilliAmp> {
         #[cfg(feature = "current-sense-bus")]
         return Some(self.current());
-        
+
         #[cfg(not(feature = "current-sense-bus"))]
         return None;
     }
@@ -159,7 +160,7 @@ impl SensorReader {
     pub fn safety_mcu_temp(&self) -> Option<CentiC> {
         #[cfg(feature = "temp-sense-mcu")]
         return self.mcu_temperature();
-        
+
         #[cfg(not(feature = "temp-sense-mcu"))]
         return None;
     }
@@ -168,7 +169,7 @@ impl SensorReader {
     pub fn safety_motor_temp(&self) -> Option<CentiC> {
         #[cfg(feature = "temp-sense-motor")]
         return Some(self.motor_temperature());
-        
+
         #[cfg(not(feature = "temp-sense-motor"))]
         return None;
     }
@@ -177,7 +178,7 @@ impl SensorReader {
     pub fn safety_motor_voltage(&self) -> Option<(MilliVolt, MilliVolt)> {
         #[cfg(feature = "voltage-sense-motor")]
         return Some(self.motor_voltage());
-        
+
         #[cfg(not(feature = "voltage-sense-motor"))]
         return None;
     }

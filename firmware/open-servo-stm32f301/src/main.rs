@@ -29,15 +29,14 @@ use cortex_m_rt::entry;
 use stm32f3::stm32f301 as pac;
 
 #[cfg(feature = "debug-shell")]
-use open_servo_hw_utils::rtt_debug::init_rtt;
-#[cfg(feature = "debug-shell")]
 use open_servo_core::DebugShell;
+#[cfg(feature = "debug-shell")]
+use open_servo_hw_utils::rtt_debug::init_rtt;
 
 use heapless::spsc::Queue;
 
 // Global static storage for the event queue
 static mut EVENT_QUEUE_STORAGE: Queue<open_servo_core::Event, EVENT_QUEUE_SIZE> = Queue::new();
-
 
 #[entry]
 fn main() -> ! {
@@ -49,10 +48,10 @@ fn main() -> ! {
 
     // Initialize board with all peripherals
     let board = Board::init();
-    
+
     // Initialize App with PID controller from board config
     let app = App::new_with_pid(&board);
-    
+
     // Store app and board in system state
     SystemState::init_app_and_board(app, board);
 

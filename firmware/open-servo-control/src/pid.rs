@@ -1,5 +1,7 @@
 use crate::traits::{ControlInput, ControlLoop, ControlOutput, PidTunable};
-use open_servo_math::{CentiDeg, DerivativeMode, Duty, FilterI32, Gain, MilliAmp, PidControllerI16};
+use open_servo_math::{
+    CentiDeg, DerivativeMode, Duty, FilterI32, Gain, MilliAmp, PidControllerI16,
+};
 
 /// PID configuration with human-friendly gains.
 ///

@@ -4,7 +4,7 @@
 //! control system. Handles direction change blanking and provides
 //! telemetry information.
 
-use open_servo_math::{MilliAmp, ComplianceModel, ComplianceConfig, LimitState};
+use open_servo_math::{ComplianceConfig, ComplianceModel, LimitState, MilliAmp};
 
 /// Direction change blanking duration in control ticks.
 /// At 10kHz, 10 ticks = 1ms blanking after direction change.
@@ -19,13 +19,13 @@ const DIRECTION_CHANGE_BLANKING_TICKS: u8 = 10;
 pub struct ComplianceLimiter {
     /// Mathematical compliance model
     model: ComplianceModel,
-    
+
     /// Direction change blanking counter
     blanking_cnt: u8,
-    
+
     /// Last PWM direction for change detection
     last_direction: Direction,
-    
+
     /// Flag indicating if compliance is currently limited
     compliance_limited: bool,
 }
@@ -49,8 +49,7 @@ impl ComplianceLimiter {
             compliance_limited: false,
         }
     }
-    
-    
+
     /// Update the limiter with new current reading and PWM direction.
     ///
     /// # Parameters
@@ -66,13 +65,13 @@ impl ComplianceLimiter {
         } else {
             Direction::Stopped
         };
-        
+
         // Start blanking on direction change
         if new_direction != self.last_direction && new_direction != Direction::Stopped {
             self.blanking_cnt = DIRECTION_CHANGE_BLANKING_TICKS;
         }
         self.last_direction = new_direction;
-        
+
         // Apply blanking - ignore current during transients
         let effective_current = if self.blanking_cnt > 0 {
             self.blanking_cnt = self.blanking_cnt.saturating_sub(1);
@@ -80,41 +79,41 @@ impl ComplianceLimiter {
         } else {
             current
         };
-        
+
         // Update model with effective current
         self.model.update(effective_current, dt_us);
-        
+
         // Update telemetry flag
         self.compliance_limited = self.model.is_limited();
     }
-    
+
     /// Get current duty cycle limits.
     ///
     /// Returns (min, max) tuple for PID output limits.
     pub fn get_limits(&self) -> (i32, i32) {
         self.model.get_limits()
     }
-    
+
     /// Check if compliance is currently being limited.
     pub fn is_limited(&self) -> bool {
         self.compliance_limited
     }
-    
+
     /// Get current limiting state for telemetry.
     pub fn state(&self) -> LimitState {
         self.model.state()
     }
-    
+
     /// Get current duty cap value for telemetry.
     pub fn duty_cap(&self) -> i16 {
         self.model.duty_cap()
     }
-    
+
     /// Check if currently in blanking period.
     pub fn is_blanking(&self) -> bool {
         self.blanking_cnt > 0
     }
-    
+
     /// Reset limiter to initial state.
     pub fn reset(&mut self) {
         self.model.reset();
@@ -122,7 +121,7 @@ impl ComplianceLimiter {
         self.last_direction = Direction::Stopped;
         self.compliance_limited = false;
     }
-    
+
     /// Update configuration.
     pub fn set_config(&mut self, config: ComplianceConfig) {
         self.model.set_config(config);
@@ -132,17 +131,17 @@ impl ComplianceLimiter {
 #[cfg(test)]
 mod tests {
     use super::*;
-    
+
     #[test]
     fn test_direction_change_blanking() {
         let config = ComplianceConfig::new(600, 50, 3, 230, 3277);
         let mut limiter = ComplianceLimiter::new(config);
-        
+
         // High current during direction change should be ignored
         limiter.update(Some(MilliAmp::from_ma(600)), 100, 100);
         assert!(limiter.is_blanking());
         assert!(!limiter.is_limited()); // Should not limit during blanking
-        
+
         // After blanking period, current should be processed
         for _ in 0..DIRECTION_CHANGE_BLANKING_TICKS {
             limiter.update(Some(MilliAmp::from_ma(650)), 100, 100); // Above 600mA limit
@@ -154,60 +153,60 @@ mod tests {
         limiter.update(Some(MilliAmp::from_ma(650)), 100, 100);
         assert!(limiter.is_limited());
     }
-    
+
     #[test]
     fn test_direction_change_resets_blanking() {
         let config = ComplianceConfig::new(600, 50, 3, 230, 3277);
         let mut limiter = ComplianceLimiter::new(config);
-        
+
         // Forward direction
         limiter.update(Some(MilliAmp::from_ma(400)), 100, 100);
         assert!(limiter.is_blanking());
-        
+
         // Consume some blanking ticks
         for _ in 0..5 {
             limiter.update(Some(MilliAmp::from_ma(400)), 100, 100);
         }
-        
+
         // Change to reverse - should reset blanking
         limiter.update(Some(MilliAmp::from_ma(400)), -100, 100);
         assert!(limiter.is_blanking());
-        
+
         // Should need full blanking period again
         for _ in 0..DIRECTION_CHANGE_BLANKING_TICKS - 1 {
             limiter.update(Some(MilliAmp::from_ma(400)), -100, 100);
         }
         assert!(!limiter.is_blanking());
     }
-    
+
     #[test]
     fn test_stopped_to_moving_triggers_blanking() {
         let config = ComplianceConfig::new(600, 50, 3, 230, 3277);
         let mut limiter = ComplianceLimiter::new(config);
-        
+
         // Start from stopped
         limiter.update(Some(MilliAmp::from_ma(0)), 0, 100);
         assert!(!limiter.is_blanking());
-        
+
         // Move forward - should trigger blanking
         limiter.update(Some(MilliAmp::from_ma(400)), 100, 100);
         assert!(limiter.is_blanking());
     }
-    
+
     #[test]
     fn test_telemetry_flags() {
         let config = ComplianceConfig::new(600, 50, 3, 230, 3277);
         let mut limiter = ComplianceLimiter::new(config);
-        
+
         // Initially not limited
         assert!(!limiter.is_limited());
         assert_eq!(limiter.state(), LimitState::Normal);
-        
+
         // Trigger limiting (skip blanking for test)
         for _ in 0..DIRECTION_CHANGE_BLANKING_TICKS {
             limiter.update(Some(MilliAmp::from_ma(100)), 100, 100);
         }
-        
+
         // Now trigger actual limiting (current must be > limit, not >=)
         for _ in 0..3 {
             limiter.update(Some(MilliAmp::from_ma(650)), 100, 100); // Above 600mA limit
