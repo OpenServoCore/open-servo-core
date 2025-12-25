@@ -2,7 +2,7 @@
 
 use open_servo_math::{CentiC, CentiDeg, MilliAmp, MilliVolt};
 
-/// Inputs for the fast (10kHz) control tick.
+/// Inputs for the ControlFast tick.
 ///
 /// Optional fields are `None` when the board doesn't have that sensor.
 /// SafetyManager skips corresponding checks for `None` values.

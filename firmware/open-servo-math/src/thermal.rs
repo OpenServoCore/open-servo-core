@@ -59,7 +59,7 @@ impl ThermalModel {
         }
     }
 
-    /// Accumulate current measurement (fast tick - typically 10kHz).
+    /// Accumulate current measurement (ControlFast tick).
     ///
     /// Call this at high frequency to accumulate I² samples for averaging.
     /// The accumulated values will be processed in `update_slow`.

@@ -79,7 +79,7 @@ impl<C: ControlLoop> App<C> {
         }
     }
 
-    /// Hard real-time control tick (called from DMA/Timer ISR at 10kHz).
+    /// Hard real-time control tick (called from DMA/Timer ISR at ControlFast rate).
     ///
     /// Reads sensors, runs control loop, applies motor output.
     ///
@@ -116,7 +116,7 @@ impl<C: ControlLoop> App<C> {
         }
     }
 
-    /// Hard real-time control tick (called from DMA/Timer ISR at 10kHz).
+    /// Hard real-time control tick (called from DMA/Timer ISR at ControlFast rate).
     ///
     /// Version without current sensing.
     #[cfg(not(feature = "current-sense-bus"))]
@@ -154,8 +154,7 @@ impl<C: ControlLoop> App<C> {
                     hw.set_enable(false);
                 }
 
-                // Simple tick logging every 0.5 seconds
-                // Current timer is ~10Hz, so 5 ticks = 0.5 seconds
+                // Periodic tick logging (every 5 slow ticks = 50ms at 100Hz System rate)
                 self.slow_tick_counter += 1;
                 if self.slow_tick_counter >= 5 {
                     self.slow_tick_counter = 0;
@@ -259,7 +258,7 @@ impl<C: ControlLoop> App<C> {
         }
     }
 
-    /// Called from ISR at ControlFast rate (10kHz).
+    /// Called from ISR at ControlFast rate (nominal 10kHz, actual rate from dt_us).
     /// Wraps on_control_tick with timing context for future use.
     #[cfg(feature = "current-sense-bus")]
     pub fn on_control_fast_tick<H>(&mut self, hw: &mut H, dt_us: u32)
@@ -274,7 +273,7 @@ impl<C: ControlLoop> App<C> {
         self.on_control_tick(hw);
     }
 
-    /// Called from ISR at ControlFast rate (10kHz).
+    /// Called from ISR at ControlFast rate (nominal 10kHz, actual rate from dt_us).
     /// Wraps on_control_tick with timing context for future use.
     #[cfg(not(feature = "current-sense-bus"))]
     pub fn on_control_fast_tick<H>(&mut self, hw: &mut H, dt_us: u32)

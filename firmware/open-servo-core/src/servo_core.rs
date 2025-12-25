@@ -235,8 +235,8 @@ impl<C: ControlLoop> ServoCore<C> {
             setpoint_recent_change_ticks: 1,
         };
 
-        // Compute derived timing from constants (assumes 10kHz default)
-        servo.update_fast_dt_us(100);
+        // Initialize derived timing from SafetyManager's default fast_dt_us
+        servo.update_fast_dt_us(servo.safety.fast_dt_us());
         servo
     }
 
@@ -1101,7 +1101,7 @@ mod tests {
 
     #[test]
     fn test_derived_timing_at_default_dt() {
-        // new() calls update_fast_dt_us(100), so values match 10kHz defaults
+        // new() uses SafetyManager's default fast_dt_us (100us), so values match 10kHz defaults
         let mut core = make_core(MockController::new());
         assert_eq!(core.fast_dt_us, 100);
         assert_eq!(core.velocity_decimate_ticks, 10);

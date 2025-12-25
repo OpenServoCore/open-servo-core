@@ -13,8 +13,10 @@
 /// Number of ticks, rounded up to ensure the full duration is covered.
 #[inline]
 pub const fn ticks_from_us(dt_us: u32, duration_us: u32) -> u32 {
-    // Ceiling division: (duration + dt - 1) / dt
-    (duration_us + dt_us - 1) / dt_us
+    // Defensive: treat dt_us=0 as 1us/tick (consistent with ServoCore clamping)
+    let dt = if dt_us == 0 { 1 } else { dt_us };
+    // Ceiling division with saturating add to prevent overflow
+    (duration_us.saturating_add(dt - 1)) / dt
 }
 
 /// Convert a duration in milliseconds to tick count at the given dt.
@@ -63,5 +65,12 @@ mod tests {
         assert_eq!(ticks_from_us(1000, 1000), 1);
         // 1ms at 10000us/tick (100Hz) = 1 tick (rounds up from 0.1)
         assert_eq!(ticks_from_us(10000, 1000), 1);
+    }
+
+    #[test]
+    fn test_ticks_from_us_zero_dt() {
+        // dt_us=0 treated as 1us/tick (consistent with ServoCore clamping)
+        assert_eq!(ticks_from_us(0, 100), 100);
+        assert_eq!(ticks_from_us(0, 0), 0);
     }
 }

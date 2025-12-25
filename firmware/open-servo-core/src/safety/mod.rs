@@ -303,6 +303,7 @@ impl SafetyManager {
     /// This allows safety timeouts to be configured in time units (microseconds)
     /// and converted to tick counts based on the actual tick rate.
     pub fn set_fast_dt_us(&mut self, dt_us: u32) {
+        let dt_us = dt_us.max(1); // Defensive: clamp to at least 1us
         self.fast_dt_us = dt_us;
         // Recompute derived position error timeout ticks from time-based config
         self.position_error_timeout_ticks =

@@ -94,7 +94,7 @@ pub trait ControlLoop {
     /// Reset controller state (integrators, filters, derivative history).
     fn reset(&mut self);
 
-    /// Fast tick (10kHz) - compute control output.
+    /// Fast tick (ControlFast rate) - compute control output.
     ///
     /// Implementations must:
     /// - Compute duty from input.setpoint and input.position

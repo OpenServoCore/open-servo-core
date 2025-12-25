@@ -1,6 +1,6 @@
 //! Fast-tick accumulator for windowed statistics.
 //!
-//! Collects position and current samples during fast ticks (10kHz),
+//! Collects position and current samples during ControlFast ticks,
 //! producing aggregated snapshots for medium-tick (1kHz) processing.
 
 use open_servo_math::{CentiDeg, DegPerSec10, MilliAmp};

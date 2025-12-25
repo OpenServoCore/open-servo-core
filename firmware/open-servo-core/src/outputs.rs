@@ -3,7 +3,7 @@
 use crate::fault::FaultKind;
 use open_servo_math::Duty;
 
-/// Outputs from the fast (10kHz) control tick.
+/// Outputs from the ControlFast tick.
 ///
 /// Tells the App how to actuate the motor and whether a fault occurred.
 #[derive(Debug, Clone, Copy, Default)]

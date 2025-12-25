@@ -3,7 +3,7 @@
 /// Identifies which timing domain a tick belongs to.
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub enum TickDomain {
-    /// Hard real-time control loop (10kHz from ADC DMA).
+    /// Hard real-time control loop (ControlFast rate from ADC DMA).
     ControlFast,
     /// Decimated control loop (1kHz, derived from ControlFast).
     ControlMedium,
