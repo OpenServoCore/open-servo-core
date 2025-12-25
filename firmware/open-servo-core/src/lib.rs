@@ -3,6 +3,9 @@
 //! This crate provides the platform-agnostic servo controller core:
 //!
 //! - `ServoCore`: Pure control logic with no hardware dependencies
+//! - `CoreConfig`: Servo configuration (limits, safety, compliance, thermal)
+//! - `CoreInternal`: Mutable internal state (feature states, accumulators)
+//! - `CoreRuntime`: Read-only telemetry snapshot
 //! - `App`: Hardware orchestrator that wires ServoCore to hardware traits
 //! - `SafetyManager`: Consolidated safety monitoring
 //! - `FaultState`: Fault detection and latching
@@ -39,5 +42,6 @@ pub use fault::{FaultKind, FaultState};
 pub use inputs::FastInputs;
 pub use outputs::FastOutputs;
 pub use safety::{SafetyManager, SafetyThresholds, SensorHealth};
-pub use servo_core::{CoreRuntime, ServoCore, ServoMode};
+pub use servo_core::features::LimitsConfig;
+pub use servo_core::{CoreConfig, CoreInternal, CoreRuntime, ServoCore, ServoMode};
 pub use tick::{TickCtx, TickDomain};
