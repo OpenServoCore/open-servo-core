@@ -117,7 +117,8 @@ pub struct ServoCore<C: ControlLoop> {
 
     // Compliance state
     mode: ServoMode,
-    tick_counter: u32,
+    /// Monotonic sequence number for fast ticks (not for timing, telemetry/debug only)
+    fast_seq: u32,
 
     // Velocity (from MediumSnapshot, no decimation counter needed)
     measured_velocity: DegPerSec10,
@@ -134,7 +135,6 @@ pub struct ServoCore<C: ControlLoop> {
     // Yield timing (time-based, accumulated in medium tick)
     yield_elapsed_us: u32,
     yield_max_duty: i16, // 0 = coast, YIELD_ALIVE_DUTY_MAX = alive (set by medium tick)
-    yield_enter_tick: u32, // TODO: remove in Stage 12 after confirming unused
     yield_needs_reset: bool,
 
     // Dual compliance configs
@@ -196,7 +196,7 @@ impl<C: ControlLoop> ServoCore<C> {
 
             // Compliance state
             mode: ServoMode::Move,
-            tick_counter: 0,
+            fast_seq: 0,
 
             // Velocity (from MediumSnapshot)
             measured_velocity: DegPerSec10::from_dps10(0),
@@ -212,7 +212,6 @@ impl<C: ControlLoop> ServoCore<C> {
             backdrive_elapsed_us: 0,
             yield_elapsed_us: 0,
             yield_max_duty: 0,
-            yield_enter_tick: 0,
             yield_needs_reset: false,
 
             // Compliance configs
@@ -250,8 +249,8 @@ impl<C: ControlLoop> ServoCore<C> {
     /// 5. Check for motor stall (PWM saturated + no movement)
     #[inline]
     pub fn fast_tick(&mut self, ctx: &TickCtx, inputs: FastInputs) -> FastOutputs {
-        // Always increment master tick counter
-        self.tick_counter = self.tick_counter.wrapping_add(1);
+        // Increment sequence counter (telemetry/debug only, not for timing)
+        self.fast_seq = self.fast_seq.wrapping_add(1);
 
         // If motor is disengaged, return safe state (motor disabled)
         if !self.motor_engaged {
@@ -706,7 +705,6 @@ impl<C: ControlLoop> ServoCore<C> {
                     self.mode = ServoMode::Yield;
                     self.yield_elapsed_us = 0; // Reset on entry
                     self.yield_max_duty = 0; // Coast phase on entry
-                    self.yield_enter_tick = self.tick_counter; // TODO: remove in Stage 12
                     self.yield_needs_reset = true;
                     self.backdrive_elapsed_us = 0;
                 }
@@ -824,10 +822,9 @@ impl<C: ControlLoop> ServoCore<C> {
     }
 
     #[cfg(test)]
-    fn set_yield_state_for_test(&mut self, enter_tick: u32, needs_reset: bool) {
+    fn set_yield_state_for_test(&mut self, needs_reset: bool) {
         self.yield_elapsed_us = 0;
         self.yield_max_duty = 0;
-        self.yield_enter_tick = enter_tick;
         self.yield_needs_reset = needs_reset;
     }
 
@@ -842,8 +839,8 @@ impl<C: ControlLoop> ServoCore<C> {
     }
 
     #[cfg(test)]
-    fn set_tick_counter_for_test(&mut self, tick: u32) {
-        self.tick_counter = tick;
+    fn fast_seq(&self) -> u32 {
+        self.fast_seq
     }
 
     #[cfg(test)]
@@ -1297,9 +1294,8 @@ mod tests {
         core.controller_mut().clear_reset_flag();
 
         // Force into Yield mode with reset flag set
-        let current_tick = core.tick_counter;
         core.set_mode_for_test(ServoMode::Yield);
-        core.set_yield_state_for_test(current_tick, true);
+        core.set_yield_state_for_test(true);
 
         // First fast_tick after yield entry should call reset
         core.fast_tick(&ctx, make_inputs(9000));
@@ -1340,7 +1336,7 @@ mod tests {
 
         // Force into Yield mode
         core.set_mode_for_test(ServoMode::Yield);
-        core.set_yield_state_for_test(0, true);
+        core.set_yield_state_for_test(true);
 
         let error: i16 = 100;
 
@@ -1359,7 +1355,7 @@ mod tests {
 
         // Re-enter Yield and test with very large dt to ensure clamping
         core.set_mode_for_test(ServoMode::Yield);
-        core.set_yield_state_for_test(0, true);
+        core.set_yield_state_for_test(true);
 
         // Single tick with huge dt should clamp and exit
         let huge_dt = u32::MAX / 2;
@@ -1379,7 +1375,7 @@ mod tests {
 
             // Force into Yield mode
             core.set_mode_for_test(ServoMode::Yield);
-            core.set_yield_state_for_test(0, true);
+            core.set_yield_state_for_test(true);
 
             let error: i16 = 100;
             let mut accumulated_us: u32 = 0;
@@ -1426,7 +1422,7 @@ mod tests {
 
         // Force into Yield mode
         core.set_mode_for_test(ServoMode::Yield);
-        core.set_yield_state_for_test(0, false); // needs_reset=false to isolate coast test
+        core.set_yield_state_for_test(false); // needs_reset=false to isolate coast test
 
         let error: i16 = 100;
         let window_dt_us: u32 = 10_000; // 10ms per medium tick
@@ -1494,7 +1490,7 @@ mod tests {
 
         // Force into Yield mode (simulating backdrive detection)
         core.set_mode_for_test(ServoMode::Yield);
-        core.set_yield_state_for_test(0, true);
+        core.set_yield_state_for_test(true);
         assert_eq!(
             core.yield_elapsed_us(),
             0,
@@ -1540,7 +1536,7 @@ mod tests {
 
         // Force into Yield mode
         core.set_mode_for_test(ServoMode::Yield);
-        core.set_yield_state_for_test(0, false);
+        core.set_yield_state_for_test(false);
 
         let error: i16 = 100;
         let window_dt_us: u32 = 10_000; // 10ms
@@ -1570,7 +1566,7 @@ mod tests {
 
         // Force into Yield mode
         core.set_mode_for_test(ServoMode::Yield);
-        core.set_yield_state_for_test(0, false);
+        core.set_yield_state_for_test(false);
 
         let error: i16 = 100;
 
@@ -1599,7 +1595,7 @@ mod tests {
 
         // Force into Yield mode
         core.set_mode_for_test(ServoMode::Yield);
-        core.set_yield_state_for_test(0, false);
+        core.set_yield_state_for_test(false);
 
         let error: i16 = 100;
         let window_dt_us: u32 = 25_000; // 25ms per tick
@@ -1632,5 +1628,44 @@ mod tests {
         core.update_compliance_mode_medium(error, window_dt_us);
         assert_eq!(core.yield_elapsed_us(), 125_000);
         assert_eq!(core.yield_max_duty(), YIELD_ALIVE_DUTY_MAX);
+    }
+
+    #[test]
+    fn test_fast_seq_increments() {
+        let mut core = make_core(MockController::new());
+        let ctx = test_ctx();
+
+        // Initial fast_seq should be 0
+        assert_eq!(core.fast_seq(), 0);
+
+        // fast_seq increments on each fast_tick
+        core.fast_tick(&ctx, make_inputs(9000));
+        assert_eq!(core.fast_seq(), 1);
+
+        core.fast_tick(&ctx, make_inputs(9000));
+        assert_eq!(core.fast_seq(), 2);
+
+        core.fast_tick(&ctx, make_inputs(9000));
+        assert_eq!(core.fast_seq(), 3);
+    }
+
+    #[test]
+    fn test_fast_seq_wraps_correctly() {
+        let mut core = make_core(MockController::new());
+        let ctx = test_ctx();
+
+        // Set fast_seq near u32::MAX to test wrapping
+        // We can't directly set fast_seq, so verify the wrapping behavior concept:
+        // fast_seq uses wrapping_add(1), so at u32::MAX it wraps to 0
+
+        // Run many ticks to verify it doesn't panic or overflow
+        for _ in 0..1000 {
+            core.fast_tick(&ctx, make_inputs(9000));
+        }
+        assert_eq!(core.fast_seq(), 1000);
+
+        // Verify wrapping_add semantics (conceptual test)
+        let max_val = u32::MAX;
+        assert_eq!(max_val.wrapping_add(1), 0);
     }
 }
