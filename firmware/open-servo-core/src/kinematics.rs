@@ -22,20 +22,27 @@ pub enum Direction {
     Reversed,
 }
 
-/// Raw sensor limits in ADC or encoder counts.
+/// Sensor position limits in centidegrees.
+///
+/// Represents the full range of positions the sensor can report.
+/// Board crates are responsible for normalizing raw ADC/encoder
+/// values to centidegrees before passing to core.
 #[derive(Debug, Clone, Copy)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
 pub struct SensorLimits {
-    /// Minimum raw sensor value
-    pub raw_min: u16,
-    /// Maximum raw sensor value  
-    pub raw_max: u16,
+    /// Minimum sensor position in centidegrees
+    pub min_cdeg: CentiDeg32,
+    /// Maximum sensor position in centidegrees
+    pub max_cdeg: CentiDeg32,
 }
 
 impl SensorLimits {
-    /// Create new sensor limits with explicit values.
-    pub fn new(raw_min: u16, raw_max: u16) -> Self {
-        Self { raw_min, raw_max }
+    /// Create new sensor limits with explicit values in centidegrees.
+    pub fn new(min_cdeg: i32, max_cdeg: i32) -> Self {
+        Self {
+            min_cdeg: CentiDeg32::from_cdeg(min_cdeg),
+            max_cdeg: CentiDeg32::from_cdeg(max_cdeg),
+        }
     }
 }
 

@@ -2,19 +2,13 @@
 //!
 //! Manages the ComplianceLimiter and handles switching between Move/Hold modes
 //! with their different compliance configurations.
+//!
+//! Hold duty curve parameters come from PolicyConfig (board-supplied).
 
 use crate::safety::ComplianceLimiter;
+use crate::servo_core::features::PolicyConfig;
 use crate::servo_core::ServoMode;
 use open_servo_math::{ComplianceConfig as LimiterConfig, MilliAmp};
-
-/// Hold duty cap curve parameters.
-///
-/// The duty cap ramps linearly from HOLD_DUTY_MIN at small errors
-/// to HOLD_DUTY_MAX at large errors.
-const HOLD_ERROR_START: i16 = 500; // 5° - start ramping
-const HOLD_ERROR_END: i16 = 1500; // 15° - max cap
-const HOLD_DUTY_MIN: i16 = 6553; // 20% at small error
-const HOLD_DUTY_MAX: i16 = 14746; // 45% at large error
 
 /// Compliance configuration for different modes.
 ///
@@ -25,36 +19,6 @@ pub struct ComplianceConfig {
     pub move_config: LimiterConfig,
     /// Configuration for Hold mode
     pub hold_config: LimiterConfig,
-}
-
-impl ComplianceConfig {
-    /// Create ComplianceConfig with sensible defaults.
-    ///
-    /// Defaults:
-    /// - Limit: 1500mA
-    /// - Hysteresis: 200mA
-    /// - Deglitch: 3 samples
-    /// - Backoff: 0.88 (225/256)
-    /// - Recovery: 10%/sec (3277)
-    pub fn with_defaults() -> Self {
-        let default_config = LimiterConfig::new(
-            1500, // limit_ma
-            200,  // hysteresis_ma
-            3,    // deglitch_samples
-            225,  // backoff_factor_q8 (0.88)
-            3277, // recovery_rate (10%/sec)
-        );
-        Self {
-            move_config: default_config,
-            hold_config: default_config,
-        }
-    }
-}
-
-impl Default for ComplianceConfig {
-    fn default() -> Self {
-        Self::with_defaults()
-    }
 }
 
 impl ComplianceConfig {
@@ -115,18 +79,23 @@ pub fn get_limits(state: &ComplianceState) -> (i32, i32) {
 /// Compute dynamic hold duty cap based on position error.
 ///
 /// Returns the maximum duty magnitude in Hold mode, which ramps
-/// from 20% at 5° error to 45% at 15° error.
-pub fn compute_hold_duty_cap(error_abs: i16) -> i16 {
-    if error_abs <= HOLD_ERROR_START {
-        HOLD_DUTY_MIN
-    } else if error_abs >= HOLD_ERROR_END {
-        HOLD_DUTY_MAX
+/// from hold_duty_min at small errors to hold_duty_max at large errors.
+pub fn compute_hold_duty_cap(error_abs: i16, policy: &PolicyConfig) -> i16 {
+    let error_start = policy.hold_duty_error_start.as_cdeg();
+    let error_end = policy.hold_duty_error_end.as_cdeg();
+    let duty_min = policy.hold_duty_min.as_raw();
+    let duty_max = policy.hold_duty_max.as_raw();
+
+    if error_abs <= error_start {
+        duty_min
+    } else if error_abs >= error_end {
+        duty_max
     } else {
         // Linear ramp between start and end
-        let range_error = HOLD_ERROR_END - HOLD_ERROR_START;
-        let range_duty = HOLD_DUTY_MAX - HOLD_DUTY_MIN;
-        let progress = error_abs - HOLD_ERROR_START;
-        HOLD_DUTY_MIN + (progress as i32 * range_duty as i32 / range_error as i32) as i16
+        let range_error = error_end - error_start;
+        let range_duty = duty_max - duty_min;
+        let progress = error_abs - error_start;
+        duty_min + (progress as i32 * range_duty as i32 / range_error as i32) as i16
     }
 }
 
@@ -158,31 +127,62 @@ pub fn reset(state: &mut ComplianceState, config: &ComplianceConfig) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use open_servo_math::{CentiDeg, DegPerSec10, Duty};
+
+    /// Test config: 1500mA limit, 200mA hysteresis, 3 deglitch, 0.88 backoff, 10%/s recovery
+    fn test_compliance_config() -> ComplianceConfig {
+        let cfg = LimiterConfig::new(1500, 200, 3, 225, 3277);
+        ComplianceConfig::new(cfg, cfg)
+    }
+
+    /// Test policy config with standard hold duty curve.
+    fn test_policy() -> PolicyConfig {
+        PolicyConfig {
+            hold_enter_error: CentiDeg::from_cdeg(500),
+            hold_exit_error: CentiDeg::from_cdeg(700),
+            hold_enter_vel: DegPerSec10::from_dps10(100),
+            hold_exit_vel: DegPerSec10::from_dps10(150),
+            backdrive_vel_threshold: DegPerSec10::from_dps10(300),
+            backdrive_deadband: Duty::from_raw(1638),
+            backdrive_persist_us: 500,
+            yield_alive_duty_max: Duty::from_raw(1638),
+            yield_coast_us: 100_000,
+            yield_duration_us: 200_000,
+            hold_duty_error_start: CentiDeg::from_cdeg(500),
+            hold_duty_error_end: CentiDeg::from_cdeg(1500),
+            hold_duty_min: Duty::from_raw(6553),
+            hold_duty_max: Duty::from_raw(14746),
+        }
+    }
 
     #[test]
     fn test_hold_duty_cap_at_small_error() {
-        let cap = compute_hold_duty_cap(0);
-        assert_eq!(cap, HOLD_DUTY_MIN);
+        let policy = test_policy();
+        let cap = compute_hold_duty_cap(0, &policy);
+        assert_eq!(cap, policy.hold_duty_min.as_raw());
 
-        let cap = compute_hold_duty_cap(HOLD_ERROR_START);
-        assert_eq!(cap, HOLD_DUTY_MIN);
+        let cap = compute_hold_duty_cap(policy.hold_duty_error_start.as_cdeg(), &policy);
+        assert_eq!(cap, policy.hold_duty_min.as_raw());
     }
 
     #[test]
     fn test_hold_duty_cap_at_large_error() {
-        let cap = compute_hold_duty_cap(HOLD_ERROR_END);
-        assert_eq!(cap, HOLD_DUTY_MAX);
+        let policy = test_policy();
+        let cap = compute_hold_duty_cap(policy.hold_duty_error_end.as_cdeg(), &policy);
+        assert_eq!(cap, policy.hold_duty_max.as_raw());
 
-        let cap = compute_hold_duty_cap(HOLD_ERROR_END + 1000);
-        assert_eq!(cap, HOLD_DUTY_MAX);
+        let cap = compute_hold_duty_cap(policy.hold_duty_error_end.as_cdeg() + 1000, &policy);
+        assert_eq!(cap, policy.hold_duty_max.as_raw());
     }
 
     #[test]
     fn test_hold_duty_cap_ramp() {
+        let policy = test_policy();
         // Midpoint should be roughly midway
-        let midpoint_error = (HOLD_ERROR_START + HOLD_ERROR_END) / 2;
-        let cap = compute_hold_duty_cap(midpoint_error);
-        let expected_mid = (HOLD_DUTY_MIN + HOLD_DUTY_MAX) / 2;
+        let midpoint_error =
+            (policy.hold_duty_error_start.as_cdeg() + policy.hold_duty_error_end.as_cdeg()) / 2;
+        let cap = compute_hold_duty_cap(midpoint_error, &policy);
+        let expected_mid = (policy.hold_duty_min.as_raw() + policy.hold_duty_max.as_raw()) / 2;
 
         // Allow some rounding error
         assert!((cap - expected_mid).abs() <= 1);
@@ -190,7 +190,7 @@ mod tests {
 
     #[test]
     fn test_switch_config() {
-        let config = ComplianceConfig::default();
+        let config = test_compliance_config();
         let mut state = ComplianceState::new(config.move_config);
         assert_eq!(state.mode, ServoMode::Move);
 

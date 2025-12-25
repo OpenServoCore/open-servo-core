@@ -2,15 +2,13 @@
 //!
 //! When backdrive is detected, the servo enters a timed window that allows
 //! external forces to move the mechanism. The window has two phases:
-//! - Coast (0-100ms): PWM duty capped at 0, letting the servo coast
-//! - Alive (100-200ms): PWM duty capped at low value, maintaining some position
+//! - Coast (0-Nms): PWM duty capped at 0, letting the servo coast
+//! - Alive (N-Mms): PWM duty capped at low value, maintaining some position
+//!
+//! Timing parameters come from PolicyConfig (board-supplied).
 
+use crate::servo_core::features::PolicyConfig;
 use crate::servo_core::ServoMode;
-
-/// Backdrive window timing constants
-pub const BACKDRIVE_DURATION_US: u32 = 200_000; // 200ms total window
-pub const BACKDRIVE_COAST_US: u32 = 100_000; // 100ms coast phase
-pub const BACKDRIVE_ALIVE_DUTY_MAX: i16 = 1638; // ~5% duty during alive phase
 
 /// Phase within the backdrive window
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -52,24 +50,24 @@ impl BackdriveState {
 ///
 /// Called during medium tick when in Yield mode.
 /// Updates elapsed_us and max_duty based on which phase we're in.
-pub fn update_backdrive_window(state: &mut BackdriveState, dt_us: u32) {
-    // Accumulate time, clamping to BACKDRIVE_DURATION_US
+pub fn update_backdrive_window(state: &mut BackdriveState, policy: &PolicyConfig, dt_us: u32) {
+    // Accumulate time, clamping to yield_duration_us
     state.elapsed_us = state
         .elapsed_us
         .saturating_add(dt_us)
-        .min(BACKDRIVE_DURATION_US);
+        .min(policy.yield_duration_us);
 
     // Set max_duty based on phase
-    state.max_duty = if state.elapsed_us < BACKDRIVE_COAST_US {
+    state.max_duty = if state.elapsed_us < policy.yield_coast_us {
         0 // Coast phase
     } else {
-        BACKDRIVE_ALIVE_DUTY_MAX // Alive phase
+        policy.yield_alive_duty_max.as_raw() // Alive phase
     };
 }
 
 /// Get current backdrive phase from state.
-pub fn get_backdrive_phase(state: &BackdriveState) -> BackdrivePhase {
-    if state.elapsed_us < BACKDRIVE_COAST_US {
+pub fn get_backdrive_phase(state: &BackdriveState, policy: &PolicyConfig) -> BackdrivePhase {
+    if state.elapsed_us < policy.yield_coast_us {
         BackdrivePhase::Coast
     } else {
         BackdrivePhase::Alive
@@ -78,9 +76,9 @@ pub fn get_backdrive_phase(state: &BackdriveState) -> BackdrivePhase {
 
 /// Check if backdrive window has completed and mode should exit.
 ///
-/// Returns true when elapsed_us >= BACKDRIVE_DURATION_US.
-pub fn should_exit_backdrive(state: &BackdriveState) -> bool {
-    state.elapsed_us >= BACKDRIVE_DURATION_US
+/// Returns true when elapsed_us >= yield_duration_us.
+pub fn should_exit_backdrive(state: &BackdriveState, policy: &PolicyConfig) -> bool {
+    state.elapsed_us >= policy.yield_duration_us
 }
 
 /// Called when entering backdrive window (Yield mode).
@@ -107,69 +105,95 @@ pub fn next_mode_after_backdrive() -> ServoMode {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use open_servo_math::{CentiDeg, DegPerSec10, Duty};
+
+    /// Create test policy config with standard timing.
+    fn test_policy() -> PolicyConfig {
+        PolicyConfig {
+            hold_enter_error: CentiDeg::from_cdeg(500),
+            hold_exit_error: CentiDeg::from_cdeg(700),
+            hold_enter_vel: DegPerSec10::from_dps10(100),
+            hold_exit_vel: DegPerSec10::from_dps10(150),
+            backdrive_vel_threshold: DegPerSec10::from_dps10(300),
+            backdrive_deadband: Duty::from_raw(1638),
+            backdrive_persist_us: 500,
+            yield_alive_duty_max: Duty::from_raw(1638),
+            yield_coast_us: 100_000,
+            yield_duration_us: 200_000,
+            hold_duty_error_start: CentiDeg::from_cdeg(500),
+            hold_duty_error_end: CentiDeg::from_cdeg(1500),
+            hold_duty_min: Duty::from_raw(6553),
+            hold_duty_max: Duty::from_raw(14746),
+        }
+    }
 
     #[test]
     fn test_backdrive_phase_coast() {
+        let policy = test_policy();
         let state = BackdriveState {
             elapsed_us: 0,
             max_duty: 0,
             needs_reset: false,
         };
-        assert_eq!(get_backdrive_phase(&state), BackdrivePhase::Coast);
+        assert_eq!(get_backdrive_phase(&state, &policy), BackdrivePhase::Coast);
     }
 
     #[test]
     fn test_backdrive_phase_alive() {
+        let policy = test_policy();
         let state = BackdriveState {
-            elapsed_us: BACKDRIVE_COAST_US,
-            max_duty: BACKDRIVE_ALIVE_DUTY_MAX,
+            elapsed_us: policy.yield_coast_us,
+            max_duty: policy.yield_alive_duty_max.as_raw(),
             needs_reset: false,
         };
-        assert_eq!(get_backdrive_phase(&state), BackdrivePhase::Alive);
+        assert_eq!(get_backdrive_phase(&state, &policy), BackdrivePhase::Alive);
     }
 
     #[test]
     fn test_backdrive_timing_coast_to_alive() {
+        let policy = test_policy();
         let mut state = BackdriveState::new();
         on_backdrive_entry(&mut state);
         assert_eq!(state.max_duty, 0);
         assert!(state.needs_reset);
 
         // Accumulate to just before coast end
-        update_backdrive_window(&mut state, BACKDRIVE_COAST_US - 1);
+        update_backdrive_window(&mut state, &policy, policy.yield_coast_us - 1);
         assert_eq!(state.max_duty, 0);
-        assert!(!should_exit_backdrive(&state));
+        assert!(!should_exit_backdrive(&state, &policy));
 
         // Cross into alive phase
-        update_backdrive_window(&mut state, 2);
-        assert_eq!(state.max_duty, BACKDRIVE_ALIVE_DUTY_MAX);
-        assert!(!should_exit_backdrive(&state));
+        update_backdrive_window(&mut state, &policy, 2);
+        assert_eq!(state.max_duty, policy.yield_alive_duty_max.as_raw());
+        assert!(!should_exit_backdrive(&state, &policy));
     }
 
     #[test]
     fn test_should_exit_backdrive() {
+        let policy = test_policy();
         let mut state = BackdriveState::new();
         on_backdrive_entry(&mut state);
 
         // Accumulate to just before exit
-        update_backdrive_window(&mut state, BACKDRIVE_DURATION_US - 1);
-        assert!(!should_exit_backdrive(&state));
+        update_backdrive_window(&mut state, &policy, policy.yield_duration_us - 1);
+        assert!(!should_exit_backdrive(&state, &policy));
 
         // Cross exit threshold
-        update_backdrive_window(&mut state, 2);
-        assert!(should_exit_backdrive(&state));
+        update_backdrive_window(&mut state, &policy, 2);
+        assert!(should_exit_backdrive(&state, &policy));
     }
 
     #[test]
     fn test_elapsed_clamps_to_duration() {
+        let policy = test_policy();
         let mut state = BackdriveState {
-            elapsed_us: BACKDRIVE_DURATION_US - 10,
+            elapsed_us: policy.yield_duration_us - 10,
             max_duty: 0,
             needs_reset: false,
         };
 
         // Try to accumulate way past duration
-        update_backdrive_window(&mut state, 1_000_000);
-        assert_eq!(state.elapsed_us, BACKDRIVE_DURATION_US);
+        update_backdrive_window(&mut state, &policy, 1_000_000);
+        assert_eq!(state.elapsed_us, policy.yield_duration_us);
     }
 }

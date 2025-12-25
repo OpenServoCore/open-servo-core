@@ -57,6 +57,8 @@ impl<C: ControlLoop> App<C> {
     pub fn new<B: BoardConfig>(controller: C, board_config: &B) -> Self {
         let safety_config = board_config.safety_config();
         let thermal_config = board_config.thermal_config();
+        let kinematics_config = board_config.kinematics_config();
+        let policy_config = board_config.policy_config();
         let move_compliance_config = board_config.move_compliance_config();
         let hold_compliance_config = board_config.hold_compliance_config();
 
@@ -65,6 +67,8 @@ impl<C: ControlLoop> App<C> {
                 controller,
                 safety_config,
                 thermal_config,
+                kinematics_config,
+                policy_config,
                 move_compliance_config,
                 hold_compliance_config,
             ),
@@ -166,9 +170,8 @@ impl<C: ControlLoop> App<C> {
 
                     #[cfg(feature = "debug-shell")]
                     {
-                        // Get runtime state and safety
+                        // Get runtime state
                         let rt = self.core.runtime();
-                        let safety = self.core.safety();
 
                         // Position and control
                         let pos = rt.position.as_cdeg();
@@ -176,20 +179,20 @@ impl<C: ControlLoop> App<C> {
                         let pos_error = setpoint - pos;
 
                         // Temperatures
-                        let mcu_temp = safety
-                            .last_temperature()
+                        let mcu_temp = rt
+                            .temperature
                             .map(|t| t.as_centi_c() / 100) // Convert to degrees
                             .unwrap_or(0);
-                        let motor_temp = safety.motor_temp_deg();
-                        let motor_rise = safety.motor_temp_rise_deg();
+                        let motor_temp = self.core.motor_temp_deg();
+                        let motor_rise = self.core.motor_temp_rise_deg();
 
                         // Electrical
-                        let vdd_mv = state.bus_voltage.map(|v| v.as_mv()).unwrap_or(0);
+                        let vdd_mv = rt.bus_voltage.map(|v| v.as_mv()).unwrap_or(0);
 
                         #[cfg(feature = "current-sense-bus")]
-                        let current_ma = state.current.map(|c| c.as_ma()).unwrap_or(0);
+                        let current_ma = rt.current.map(|c| c.as_ma()).unwrap_or(0);
 
-                        let pwm_pct = state.pwm_duty.to_percentage();
+                        let pwm_pct = rt.pwm_duty.to_percentage();
 
                         // Log with current if available
                         #[cfg(feature = "current-sense-bus")]

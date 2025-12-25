@@ -17,43 +17,6 @@ pub struct SafetyConfig {
 }
 
 impl SafetyConfig {
-    /// Create SafetyConfig with sensible defaults.
-    ///
-    /// Defaults:
-    /// - Current limit: 2000mA
-    /// - MCU temp limit: 80°C
-    /// - Position max delta: 50° per tick
-    /// - Sensor fault count: 5
-    /// - Position range: 0-327° (i16 max)
-    /// - Stall timeout: 500 ticks
-    /// - Stall tolerance: 1°
-    /// - Position error limit: 30°
-    /// - Position error timeout: 500ms
-    pub fn with_defaults() -> Self {
-        Self {
-            thresholds: SafetyThresholds::new(
-                2000,    // current_limit_ma
-                8000,    // mcu_temp_limit_cc (80°C)
-                5000,    // position_max_delta_cdeg (50°)
-                5,       // sensor_fault_count
-                0,       // position_min_cdeg
-                32700,   // position_max_cdeg (327°, ~i16::MAX)
-                500,     // stall_timeout_ticks
-                100,     // stall_position_tolerance_cdeg (1°)
-                3000,    // position_error_limit_cdeg (30°)
-                500_000, // position_error_timeout_us (500ms)
-            ),
-        }
-    }
-}
-
-impl Default for SafetyConfig {
-    fn default() -> Self {
-        Self::with_defaults()
-    }
-}
-
-impl SafetyConfig {
     /// Create a new SafetyConfig with the given thresholds.
     pub fn new(thresholds: SafetyThresholds) -> Self {
         Self { thresholds }
@@ -244,8 +207,20 @@ pub fn check_mcu_temperature(config: &SafetyConfig, temp: Option<CentiC>) -> Opt
 mod tests {
     use super::*;
 
+    /// Test safety config with reasonable values for testing
     fn make_config() -> SafetyConfig {
-        SafetyConfig::default()
+        SafetyConfig::new(SafetyThresholds::new(
+            2000,    // current_limit_ma
+            8000,    // mcu_temp_limit_cc (80°C)
+            5000,    // position_max_delta_cdeg (50°)
+            5,       // sensor_fault_count
+            0,       // position_min_cdeg
+            32700,   // position_max_cdeg (327°, ~i16::MAX)
+            500,     // stall_timeout_ticks
+            100,     // stall_position_tolerance_cdeg (1°)
+            3000,    // position_error_limit_cdeg (30°)
+            500_000, // position_error_timeout_us (500ms)
+        ))
     }
 
     #[test]

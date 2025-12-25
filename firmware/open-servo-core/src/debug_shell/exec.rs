@@ -196,7 +196,7 @@ impl<D: DebugIo> DebugShell<D> {
         buf.clear();
         #[cfg(feature = "current-sense-bus")]
         {
-            if let Some(current) = s.current {
+            if let Some(current) = rt.current {
                 let _ = uwrite!(buf, "I={}mA", current.as_ma());
             } else {
                 let _ = uwrite!(buf, "I=n/a");
@@ -204,7 +204,7 @@ impl<D: DebugIo> DebugShell<D> {
         }
 
         // Voltage (optional)
-        if let Some(voltage) = s.bus_voltage {
+        if let Some(voltage) = rt.bus_voltage {
             let _ = uwrite!(buf, " V={}mV", voltage.as_mv());
         } else {
             let _ = uwrite!(buf, " V=n/a");
@@ -212,7 +212,7 @@ impl<D: DebugIo> DebugShell<D> {
         self.println(&buf);
 
         // Temperature (optional)
-        if let Some(temp) = s.temperature {
+        if let Some(temp) = rt.temperature {
             buf.clear();
             let _ = uwrite!(buf, "T={}cC", temp.as_centi_c());
             self.println(&buf);
@@ -541,8 +541,8 @@ impl<D: DebugIo> DebugShell<D> {
 
     fn cmd_compliance_show<C: ControlLoop>(&mut self, app: &App<C>) {
         let core = app.core();
-        let mode = core.compliance_mode();
-        let velocity = core.measured_velocity();
+        let mode = core.mode();
+        let velocity = core.runtime().velocity;
 
         let mode_str = match mode {
             ServoMode::Move => "MOVE",
@@ -565,29 +565,27 @@ impl<D: DebugIo> DebugShell<D> {
         self.println(&buf);
     }
 
-    fn cmd_compliance_move_ma<C: ControlLoop>(&mut self, app: &mut App<C>, ma: i16) {
+    fn cmd_compliance_move_ma<C: ControlLoop>(&mut self, _app: &mut App<C>, ma: i16) {
         if ma < 100 || ma > 1500 {
             self.println("error: move limit must be 100-1500 mA");
             return;
         }
 
-        app.core_mut().set_move_current_limit(ma);
-
-        let mut buf: String<32> = String::new();
-        let _ = uwrite!(buf, "move limit: {}mA", ma);
+        // TODO: Dynamic config not yet implemented
+        let mut buf: String<48> = String::new();
+        let _ = uwrite!(buf, "move limit {}mA (runtime change pending)", ma);
         self.println(&buf);
     }
 
-    fn cmd_compliance_hold_ma<C: ControlLoop>(&mut self, app: &mut App<C>, ma: i16) {
+    fn cmd_compliance_hold_ma<C: ControlLoop>(&mut self, _app: &mut App<C>, ma: i16) {
         if ma < 100 || ma > 800 {
             self.println("error: hold limit must be 100-800 mA");
             return;
         }
 
-        app.core_mut().set_hold_current_limit(ma);
-
-        let mut buf: String<32> = String::new();
-        let _ = uwrite!(buf, "hold limit: {}mA", ma);
+        // TODO: Dynamic config not yet implemented
+        let mut buf: String<48> = String::new();
+        let _ = uwrite!(buf, "hold limit {}mA (runtime change pending)", ma);
         self.println(&buf);
     }
 

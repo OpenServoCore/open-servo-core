@@ -20,23 +20,13 @@ pub struct ThermalConfig {
     pub default_ambient_cdeg: i16,
 }
 
-impl Default for ThermalConfig {
-    fn default() -> Self {
-        Self {
-            max_temp_cdeg: 10000,       // 100°C
-            hysteresis_cdeg: 1000,      // 10°C
-            default_ambient_cdeg: 2500, // 25°C
-        }
-    }
-}
-
 impl ThermalConfig {
-    /// Create a new ThermalConfig.
-    pub fn new(max_temp_cdeg: i16, hysteresis_cdeg: i16) -> Self {
+    /// Create a new ThermalConfig with all parameters.
+    pub fn new(max_temp_cdeg: i16, hysteresis_cdeg: i16, default_ambient_cdeg: i16) -> Self {
         Self {
             max_temp_cdeg,
             hysteresis_cdeg,
-            default_ambient_cdeg: 2500,
+            default_ambient_cdeg,
         }
     }
 }
@@ -124,13 +114,18 @@ pub fn motor_temp_rise_deg(state: &ThermalState) -> i16 {
 mod tests {
     use super::*;
 
+    /// Test config: 100°C max temp, 10°C hysteresis, 25°C default ambient
+    fn test_thermal_config() -> ThermalConfig {
+        ThermalConfig::new(10000, 1000, 2500)
+    }
+
     fn make_thermal_state() -> ThermalState {
         // Reasonable defaults for testing:
         // - 100mΩ winding resistance
         // - 10 °C/W thermal resistance
         // - 5 J/°C thermal capacity
         let model = ThermalModel::new(100, 1000, 500);
-        let config = ThermalConfig::default();
+        let config = test_thermal_config();
         ThermalState::new(model, &config)
     }
 
@@ -151,7 +146,7 @@ mod tests {
     #[test]
     fn test_update_slow_uses_cached_temp() {
         let mut state = make_thermal_state();
-        let config = ThermalConfig::default();
+        let config = test_thermal_config();
 
         state.update_temperature(Some(CentiC::from_centi_c(3000))); // 30°C
         update_slow(&mut state, &config, 10_000); // 10ms
@@ -161,7 +156,7 @@ mod tests {
     #[test]
     fn test_update_slow_uses_default_when_no_temp() {
         let mut state = make_thermal_state();
-        let config = ThermalConfig::default();
+        let config = test_thermal_config();
 
         state.update_temperature(None);
         update_slow(&mut state, &config, 10_000); // 10ms

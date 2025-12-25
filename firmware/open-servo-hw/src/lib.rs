@@ -25,7 +25,9 @@ pub mod sensor;
 pub mod types;
 
 // Re-export commonly used items at crate root for convenience
-pub use config::{BoardConfig, BoardKinematicsConfig, BoardSafetyConfig, BoardThermalConfig};
+pub use config::{
+    BoardConfig, BoardKinematicsConfig, BoardPolicyConfig, BoardSafetyConfig, BoardThermalConfig,
+};
 pub use motor::BdcMotorDriver;
 #[cfg(feature = "motor-bldc")]
 pub use motor::BldcMotorDriver;

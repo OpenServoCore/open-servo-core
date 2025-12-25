@@ -1,7 +1,9 @@
 //! Board configuration constants and structures for STM32F301 with SG90 servo.
 
-use open_servo_hw::config::{BoardKinematicsConfig, BoardSafetyConfig, BoardThermalConfig};
-use open_servo_math::ComplianceConfig;
+use open_servo_hw::config::{
+    BoardKinematicsConfig, BoardPolicyConfig, BoardSafetyConfig, BoardThermalConfig,
+};
+use open_servo_math::{CentiDeg, ComplianceConfig, DegPerSec10, Duty};
 
 /// Slow tick frequency in Hz
 pub const SLOW_HZ: u32 = 100;
@@ -96,6 +98,15 @@ impl BoardConfigProvider {
 
     /// Heat capacity: 15 J/°C
     pub const THERMAL_CAPACITY_CJ: i16 = 1500;
+
+    /// Maximum motor temperature before fault: 100°C
+    pub const MAX_MOTOR_TEMP_CDEG: i16 = 10000;
+
+    /// Temperature hysteresis for fault reset: 10°C
+    pub const THERMAL_HYSTERESIS_CDEG: i16 = 1000;
+
+    /// Default ambient temperature when no sensor: 25°C
+    pub const DEFAULT_AMBIENT_CDEG: i16 = 2500;
 }
 
 // Kinematics constants
@@ -103,6 +114,10 @@ impl BoardConfigProvider {
     /// 12-bit ADC range
     pub const SENSOR_RAW_MIN: u16 = 0;
     pub const SENSOR_RAW_MAX: u16 = 4095;
+
+    /// Sensor position range (full 360° potentiometer)
+    pub const SENSOR_MIN_CDEG: i32 = 0;
+    pub const SENSOR_MAX_CDEG: i32 = 36000;
 
     /// Mechanical limits in centidegrees
     pub const MECHANICAL_MIN_CDEG: i32 = -500; // -5°
@@ -125,6 +140,43 @@ impl BoardConfigProvider {
 
     /// Derivative gain: 5.0 -> 1280 in Q8.8
     pub const PID_KD_Q8: i16 = 1280;
+}
+
+// Policy/FSM constants for Move/Hold/Yield behavior
+impl BoardConfigProvider {
+    // --- Hold mode entry/exit thresholds ---
+    /// Position error threshold to enter Hold mode: 5°
+    pub const HOLD_ENTER_ERROR_CDEG: i16 = 500;
+    /// Position error threshold to exit Hold mode: 7°
+    pub const HOLD_EXIT_ERROR_CDEG: i16 = 700;
+    /// Velocity threshold to enter Hold mode: 10°/s
+    pub const HOLD_ENTER_VEL_DPS10: i16 = 100;
+    /// Velocity threshold to exit Hold mode: 15°/s
+    pub const HOLD_EXIT_VEL_DPS10: i16 = 150;
+
+    // --- Backdrive/Yield detection ---
+    /// Velocity threshold for backdrive detection: 30°/s
+    pub const BACKDRIVE_VEL_THRESHOLD_DPS10: i16 = 300;
+    /// PWM deadband for backdrive detection: 5%
+    pub const BACKDRIVE_DEADBAND_DUTY: i16 = 1638;
+    /// Backdrive persistence time before yield: 0.5ms
+    pub const BACKDRIVE_PERSIST_US: u32 = 500;
+    /// Maximum duty during yield alive phase: 5%
+    pub const YIELD_ALIVE_DUTY_MAX: i16 = 1638;
+    /// Coast phase duration within yield window: 100ms
+    pub const YIELD_COAST_US: u32 = 100_000;
+    /// Total yield window duration: 200ms
+    pub const YIELD_DURATION_US: u32 = 200_000;
+
+    // --- Hold mode duty curve ---
+    /// Error at which hold duty curve starts ramping: 5°
+    pub const HOLD_DUTY_ERROR_START_CDEG: i16 = 500;
+    /// Error at which hold duty curve reaches max: 15°
+    pub const HOLD_DUTY_ERROR_END_CDEG: i16 = 1500;
+    /// Minimum hold duty at small errors: 20%
+    pub const HOLD_DUTY_MIN: i16 = 6553;
+    /// Maximum hold duty at large errors: 45%
+    pub const HOLD_DUTY_MAX: i16 = 14746;
 }
 
 // Configuration factory methods
@@ -169,6 +221,9 @@ impl BoardConfigProvider {
             resistance_mohm: Self::MOTOR_RESISTANCE_MOHM,
             thermal_resistance_cw: Self::THERMAL_RESISTANCE_CW,
             thermal_capacity_cj: Self::THERMAL_CAPACITY_CJ,
+            max_temp_cdeg: Self::MAX_MOTOR_TEMP_CDEG,
+            hysteresis_cdeg: Self::THERMAL_HYSTERESIS_CDEG,
+            default_ambient_cdeg: Self::DEFAULT_AMBIENT_CDEG,
         }
     }
 
@@ -176,6 +231,8 @@ impl BoardConfigProvider {
         BoardKinematicsConfig {
             sensor_raw_min: Self::SENSOR_RAW_MIN,
             sensor_raw_max: Self::SENSOR_RAW_MAX,
+            sensor_min_cdeg: Self::SENSOR_MIN_CDEG,
+            sensor_max_cdeg: Self::SENSOR_MAX_CDEG,
             mechanical_min_cdeg: Self::MECHANICAL_MIN_CDEG,
             mechanical_max_cdeg: Self::MECHANICAL_MAX_CDEG,
             zero_offset_cdeg: Self::ZERO_OFFSET_CDEG,
@@ -189,5 +246,24 @@ impl BoardConfigProvider {
             Self::PID_KI_Q8 as i32,
             Self::PID_KD_Q8 as i32,
         )
+    }
+
+    pub fn policy_config() -> BoardPolicyConfig {
+        BoardPolicyConfig {
+            hold_enter_error: CentiDeg::from_cdeg(Self::HOLD_ENTER_ERROR_CDEG),
+            hold_exit_error: CentiDeg::from_cdeg(Self::HOLD_EXIT_ERROR_CDEG),
+            hold_enter_vel: DegPerSec10::from_dps10(Self::HOLD_ENTER_VEL_DPS10),
+            hold_exit_vel: DegPerSec10::from_dps10(Self::HOLD_EXIT_VEL_DPS10),
+            backdrive_vel_threshold: DegPerSec10::from_dps10(Self::BACKDRIVE_VEL_THRESHOLD_DPS10),
+            backdrive_deadband: Duty::from_raw(Self::BACKDRIVE_DEADBAND_DUTY),
+            backdrive_persist_us: Self::BACKDRIVE_PERSIST_US,
+            yield_alive_duty_max: Duty::from_raw(Self::YIELD_ALIVE_DUTY_MAX),
+            yield_coast_us: Self::YIELD_COAST_US,
+            yield_duration_us: Self::YIELD_DURATION_US,
+            hold_duty_error_start: CentiDeg::from_cdeg(Self::HOLD_DUTY_ERROR_START_CDEG),
+            hold_duty_error_end: CentiDeg::from_cdeg(Self::HOLD_DUTY_ERROR_END_CDEG),
+            hold_duty_min: Duty::from_raw(Self::HOLD_DUTY_MIN),
+            hold_duty_max: Duty::from_raw(Self::HOLD_DUTY_MAX),
+        }
     }
 }

@@ -204,7 +204,8 @@ pub fn control_fast<C: ControlLoop>(
 
         ServoMode::Hold => {
             // Apply error-based duty cap curve
-            let duty_cap = compliance::compute_hold_duty_cap(protected.error.saturating_abs());
+            let duty_cap =
+                compliance::compute_hold_duty_cap(protected.error.saturating_abs(), &config.policy);
             min_duty = min_duty.max(-duty_cap as i32);
             max_duty = max_duty.min(duty_cap as i32);
         }

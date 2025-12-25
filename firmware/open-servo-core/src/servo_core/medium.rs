@@ -16,31 +16,15 @@ use open_servo_math::{CentiDeg, CentiDeg32, DegPerSec10, TickCtx};
 // Policy timing constants (microseconds)
 // ============================================================================
 
+// Policy timing constants (TODO: consider moving to board config)
 /// Time setpoint must be stable before considering Hold entry
 pub(crate) const SETPOINT_SETTLE_US: u32 = 400_000; // 400ms
 /// Time hold conditions must persist for mode transition
 pub(crate) const HOLD_ENTRY_US: u32 = 300_000; // 300ms
 /// Recent setpoint change threshold (for exit hysteresis)
 pub(crate) const SETPOINT_RECENT_CHANGE_US: u32 = 10_000; // 10ms
-/// Time backdrive condition must persist before triggering Yield
-pub(crate) const BACKDRIVE_PERSIST_US: u32 = 500; // 0.5ms
 
-// ============================================================================
-// Mode transition thresholds (with hysteresis)
-// ============================================================================
-
-/// Error threshold for entering Hold mode (centidegrees)
-const HOLD_ENTER_ERROR_CDEG: i16 = 500; // 5°
-/// Error threshold for exiting Hold mode (centidegrees)
-const HOLD_EXIT_ERROR_CDEG: i16 = 700; // 7°
-/// Velocity threshold for entering Hold mode (dps*10)
-const HOLD_ENTER_VEL_DPS10: i16 = 100; // 10°/s
-/// Velocity threshold for exiting Hold mode (dps*10)
-const HOLD_EXIT_VEL_DPS10: i16 = 150; // 15°/s
-/// Velocity threshold for backdrive detection (dps*10)
-const BACKDRIVE_VEL_THRESHOLD: i16 = 300; // 30°/s
-/// PWM deadband for sign comparison
-const U_DEADBAND: i16 = 1638; // 5%
+// Mode transition thresholds come from config.policy (BoardPolicyConfig)
 
 /// Policy decision from medium tick.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -227,10 +211,15 @@ pub fn aggregate_medium(internal: &mut CoreInternal, fast_dt_us: u32) -> Option<
 /// Run policy FSM based on current state and snapshot.
 ///
 /// Returns PolicyDecision indicating whether to change modes.
-pub fn policy_medium(internal: &CoreInternal, snap: &MediumSnapshot) -> PolicyDecision {
+pub fn policy_medium(
+    internal: &CoreInternal,
+    config: &CoreConfig,
+    snap: &MediumSnapshot,
+) -> PolicyDecision {
     let window_dt_us = snap.window_dt_us;
     let velocity = snap.velocity_dps10;
     let vel_abs = velocity.as_dps10().saturating_abs();
+    let policy = &config.policy;
 
     // Get error from setpoint vs position
     let Some(setpoint32) = internal.setpoint else {
@@ -249,8 +238,8 @@ pub fn policy_medium(internal: &CoreInternal, snap: &MediumSnapshot) -> PolicyDe
             }
 
             // Check hold entry conditions
-            let hold_conditions =
-                error_abs < HOLD_ENTER_ERROR_CDEG && vel_abs < HOLD_ENTER_VEL_DPS10;
+            let hold_conditions = error_abs < policy.hold_enter_error.as_cdeg()
+                && vel_abs < policy.hold_enter_vel.as_dps10();
 
             if hold_conditions {
                 // Check if conditions have been met long enough
@@ -269,15 +258,15 @@ pub fn policy_medium(internal: &CoreInternal, snap: &MediumSnapshot) -> PolicyDe
             // Check exit conditions (hysteresis thresholds)
             let setpoint_changed =
                 internal.setpoint_tracker.unchanged_us < SETPOINT_RECENT_CHANGE_US;
-            let error_too_large = error_abs > HOLD_EXIT_ERROR_CDEG;
-            let velocity_too_high = vel_abs > HOLD_EXIT_VEL_DPS10;
+            let error_too_large = error_abs > policy.hold_exit_error.as_cdeg();
+            let velocity_too_high = vel_abs > policy.hold_exit_vel.as_dps10();
 
             if setpoint_changed || error_too_large || velocity_too_high {
                 return PolicyDecision::TransitionTo(ServoMode::Move);
             }
 
             // Check for backdrive (opposing velocity/PWM condition)
-            if check_backdrive_condition(internal, velocity, error, window_dt_us) {
+            if check_backdrive_condition(internal, config, velocity, error, window_dt_us) {
                 return PolicyDecision::TransitionTo(ServoMode::Yield);
             }
 
@@ -287,7 +276,7 @@ pub fn policy_medium(internal: &CoreInternal, snap: &MediumSnapshot) -> PolicyDe
         ServoMode::Yield => {
             // Yield timing is handled by backdrive window
             // Check if window has completed
-            if backdrive::should_exit_backdrive(&internal.backdrive) {
+            if backdrive::should_exit_backdrive(&internal.backdrive, &config.policy) {
                 return PolicyDecision::TransitionTo(backdrive::next_mode_after_backdrive());
             }
             PolicyDecision::NoChange
@@ -298,21 +287,24 @@ pub fn policy_medium(internal: &CoreInternal, snap: &MediumSnapshot) -> PolicyDe
 /// Check for backdrive condition in Hold mode.
 fn check_backdrive_condition(
     internal: &CoreInternal,
+    config: &CoreConfig,
     velocity: DegPerSec10,
     _error: i16,
     window_dt_us: u32,
 ) -> bool {
+    let policy = &config.policy;
     let vel = velocity.as_dps10();
     let vel_abs = vel.saturating_abs();
 
     // Must exceed velocity threshold
-    if vel_abs <= BACKDRIVE_VEL_THRESHOLD {
+    if vel_abs <= policy.backdrive_vel_threshold.as_dps10() {
         return false;
     }
 
     // Sign mismatch with deadband (using cached previous PWM)
     let u = internal.backdrive_detector.prev_pwm;
-    let u_active = u.saturating_abs() > U_DEADBAND;
+    let deadband = policy.backdrive_deadband.as_raw();
+    let u_active = u.saturating_abs() > deadband;
     let opposing = u_active && ((vel > 0) != (u > 0));
 
     // Error growing (with small deadband)
@@ -327,7 +319,7 @@ fn check_backdrive_condition(
             .backdrive_detector
             .elapsed_us
             .saturating_add(window_dt_us);
-        if elapsed >= BACKDRIVE_PERSIST_US {
+        if elapsed >= policy.backdrive_persist_us {
             return true;
         }
     }
@@ -370,10 +362,11 @@ pub fn apply_policy(
     let vel_abs = internal.measured_velocity.as_dps10().saturating_abs();
 
     // Update hold conditions tracker (only in Move mode)
+    let policy = &config.policy;
     if internal.mode == ServoMode::Move {
         let hold_conditions = internal.setpoint_tracker.unchanged_us >= SETPOINT_SETTLE_US
-            && error_abs < HOLD_ENTER_ERROR_CDEG
-            && vel_abs < HOLD_ENTER_VEL_DPS10;
+            && error_abs < policy.hold_enter_error.as_cdeg()
+            && vel_abs < policy.hold_enter_vel.as_dps10();
         internal
             .hold_tracker
             .update(hold_conditions, window_dt_us, HOLD_ENTRY_US);
@@ -386,13 +379,15 @@ pub fn apply_policy(
         let vel_abs_check = vel.saturating_abs();
 
         let u = internal.backdrive_detector.prev_pwm;
-        let u_active = u.saturating_abs() > U_DEADBAND;
+        let deadband = policy.backdrive_deadband.as_raw();
+        let u_active = u.saturating_abs() > deadband;
         let opposing = u_active && ((vel > 0) != (u > 0));
 
         let prev_error_abs = internal.backdrive_detector.prev_error.saturating_abs();
         let error_growing = error_abs > prev_error_abs.saturating_add(10);
 
-        if vel_abs_check > BACKDRIVE_VEL_THRESHOLD && (opposing || error_growing) {
+        if vel_abs_check > policy.backdrive_vel_threshold.as_dps10() && (opposing || error_growing)
+        {
             internal.backdrive_detector.elapsed_us = internal
                 .backdrive_detector
                 .elapsed_us
@@ -404,7 +399,7 @@ pub fn apply_policy(
 
     // Update backdrive window timing (only in Yield mode)
     if internal.mode == ServoMode::Yield {
-        backdrive::update_backdrive_window(&mut internal.backdrive, window_dt_us);
+        backdrive::update_backdrive_window(&mut internal.backdrive, &config.policy, window_dt_us);
     }
 
     // Apply mode transition if requested
@@ -471,7 +466,7 @@ pub fn run_medium_tick<C: ControlLoop>(
     };
 
     // Run policy FSM
-    let decision = policy_medium(internal, &snap);
+    let decision = policy_medium(internal, config, &snap);
 
     // Apply policy and update state
     apply_policy(internal, config, &snap, decision);

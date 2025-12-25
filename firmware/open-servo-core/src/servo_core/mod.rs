@@ -20,7 +20,9 @@ pub use internal::CoreInternal;
 pub use runtime::CoreRuntime;
 
 use open_servo_control::ControlLoop;
-use open_servo_hw::{BoardSafetyConfig, BoardThermalConfig};
+use open_servo_hw::{
+    BoardKinematicsConfig, BoardPolicyConfig, BoardSafetyConfig, BoardThermalConfig,
+};
 use open_servo_math::TickCtx;
 use open_servo_math::{CentiDeg, CentiDeg32, ComplianceConfig, ThermalModel};
 
@@ -90,6 +92,8 @@ impl<C: ControlLoop> ServoCore<C> {
         controller: C,
         safety_config: BoardSafetyConfig,
         thermal_config: BoardThermalConfig,
+        kinematics_config: BoardKinematicsConfig,
+        policy_config: BoardPolicyConfig,
         move_compliance_config: ComplianceConfig,
         hold_compliance_config: ComplianceConfig,
     ) -> Self {
@@ -115,27 +119,40 @@ impl<C: ControlLoop> ServoCore<C> {
         );
 
         // Create hierarchical limits from board config
-        // Sensor limits default to full range, mechanical = user = board config limits
         use crate::kinematics::{MechanicalLimits, SensorLimits, UserLimits};
         let limits = features::LimitsConfig::new(
-            SensorLimits::new(0, 36000), // Full sensor range (0-360°)
+            SensorLimits::new(
+                kinematics_config.sensor_min_cdeg,
+                kinematics_config.sensor_max_cdeg,
+            ),
             MechanicalLimits::new(
-                safety_config.position_min_cdeg as i32,
-                safety_config.position_max_cdeg as i32,
+                kinematics_config.mechanical_min_cdeg,
+                kinematics_config.mechanical_max_cdeg,
             ),
             UserLimits::new(
                 safety_config.position_min_cdeg as i32,
                 safety_config.position_max_cdeg as i32,
             ),
         )
-        .unwrap_or_default(); // Fall back to default if limits invalid
+        .expect("LimitsConfig: invalid limits hierarchy");
+
+        // Thermal fault config from board
+        let thermal_config = features::ThermalConfig::new(
+            thermal_config.max_temp_cdeg,
+            thermal_config.hysteresis_cdeg,
+            thermal_config.default_ambient_cdeg,
+        );
+
+        // Policy config from board
+        let policy = features::PolicyConfig::from_board(&policy_config);
 
         // Build CoreConfig from feature configs
         let config = CoreConfig::new(
             limits,
             features::SafetyConfig::new(thresholds),
             features::ComplianceConfig::new(move_compliance_config.clone(), hold_compliance_config),
-            features::ThermalConfig::default(),
+            thermal_config,
+            policy,
         );
 
         // Build CoreInternal with feature state

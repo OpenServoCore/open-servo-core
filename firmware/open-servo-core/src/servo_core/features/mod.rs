@@ -6,10 +6,12 @@
 //! - compliance: ComplianceLimiter, mode switching
 //! - backdrive: Backdrive window timing and phases
 //! - thermal: Thermal model and fault detection
+//! - policy: Move/Hold/Yield FSM thresholds
 
 pub mod backdrive;
 pub mod compliance;
 pub mod limits;
+pub mod policy;
 pub mod safety;
 pub mod thermal;
 
@@ -17,5 +19,6 @@ pub mod thermal;
 pub use backdrive::{BackdrivePhase, BackdriveState};
 pub use compliance::{ComplianceConfig, ComplianceState};
 pub use limits::LimitsConfig;
+pub use policy::PolicyConfig;
 pub use safety::{SafetyConfig, SafetyState};
 pub use thermal::{ThermalConfig, ThermalState};

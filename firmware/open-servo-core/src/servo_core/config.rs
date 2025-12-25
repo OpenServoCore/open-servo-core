@@ -2,7 +2,9 @@
 //!
 //! All servo configuration lives here, organized by feature.
 
-use crate::servo_core::features::{ComplianceConfig, LimitsConfig, SafetyConfig, ThermalConfig};
+use crate::servo_core::features::{
+    ComplianceConfig, LimitsConfig, PolicyConfig, SafetyConfig, ThermalConfig,
+};
 
 /// Configuration for the servo core.
 ///
@@ -17,6 +19,8 @@ pub struct CoreConfig {
     pub compliance: ComplianceConfig,
     /// Thermal model parameters
     pub thermal: ThermalConfig,
+    /// Move/Hold/Yield FSM policy
+    pub policy: PolicyConfig,
 }
 
 impl CoreConfig {
@@ -26,12 +30,14 @@ impl CoreConfig {
         safety: SafetyConfig,
         compliance: ComplianceConfig,
         thermal: ThermalConfig,
+        policy: PolicyConfig,
     ) -> Self {
         Self {
             limits,
             safety,
             compliance,
             thermal,
+            policy,
         }
     }
 }

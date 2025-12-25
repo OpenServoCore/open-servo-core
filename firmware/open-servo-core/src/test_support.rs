@@ -4,8 +4,10 @@
 
 use crate::{FastInputs, ServoCore};
 use open_servo_control::{ControlInput, ControlLoop, ControlOutput};
-use open_servo_hw::{BoardSafetyConfig, BoardThermalConfig};
-use open_servo_math::{CentiDeg, ComplianceConfig, Duty, TickCtx};
+use open_servo_hw::{
+    BoardKinematicsConfig, BoardPolicyConfig, BoardSafetyConfig, BoardThermalConfig,
+};
+use open_servo_math::{CentiDeg, ComplianceConfig, DegPerSec10, Duty, TickCtx};
 
 /// Minimal mock controller for testing ServoCore.
 pub struct MockController {
@@ -74,12 +76,43 @@ pub fn make_core(controller: MockController) -> ServoCore<MockController> {
         resistance_mohm: 5000,       // 5.0 ohm
         thermal_resistance_cw: 1000, // 10 C/W
         thermal_capacity_cj: 1500,   // 15 J/C
+        max_temp_cdeg: 10000,        // 100°C
+        hysteresis_cdeg: 1000,       // 10°C
+        default_ambient_cdeg: 2500,  // 25°C
+    };
+    let kinematics_config = BoardKinematicsConfig {
+        sensor_raw_min: 0,
+        sensor_raw_max: 4095,
+        sensor_min_cdeg: 0,
+        sensor_max_cdeg: 36000,
+        mechanical_min_cdeg: -500,
+        mechanical_max_cdeg: 18500,
+        zero_offset_cdeg: 0,
+        reversed: false,
+    };
+    let policy_config = BoardPolicyConfig {
+        hold_enter_error: CentiDeg::from_cdeg(500),
+        hold_exit_error: CentiDeg::from_cdeg(700),
+        hold_enter_vel: DegPerSec10::from_dps10(100),
+        hold_exit_vel: DegPerSec10::from_dps10(150),
+        backdrive_vel_threshold: DegPerSec10::from_dps10(300),
+        backdrive_deadband: Duty::from_raw(1638),
+        backdrive_persist_us: 500,
+        yield_alive_duty_max: Duty::from_raw(1638),
+        yield_coast_us: 100_000,
+        yield_duration_us: 200_000,
+        hold_duty_error_start: CentiDeg::from_cdeg(500),
+        hold_duty_error_end: CentiDeg::from_cdeg(1500),
+        hold_duty_min: Duty::from_raw(6553),
+        hold_duty_max: Duty::from_raw(14746),
     };
     let compliance_config = ComplianceConfig::new(600, 50, 3, 230, 3277);
     ServoCore::new(
         controller,
         safety_config,
         thermal_config,
+        kinematics_config,
+        policy_config,
         compliance_config.clone(),
         compliance_config,
     )

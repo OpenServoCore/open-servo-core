@@ -15,19 +15,6 @@ pub struct LimitsConfig {
     pub limit_system: LimitSystem,
 }
 
-impl Default for LimitsConfig {
-    fn default() -> Self {
-        // Default to full sensor range with no additional limits
-        Self {
-            limit_system: LimitSystem::new(
-                SensorLimits::new(0, 36000),     // 0-360° sensor range
-                MechanicalLimits::new(0, 36000), // Full mechanical range
-                UserLimits::new(0, 36000),       // Full user range
-            ),
-        }
-    }
-}
-
 impl LimitsConfig {
     /// Create a new LimitsConfig with the given limits.
     ///
