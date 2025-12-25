@@ -119,7 +119,6 @@ pub struct ServoCore<C: ControlLoop> {
 
     // Velocity (from MediumSnapshot, no decimation counter needed)
     measured_velocity: DegPerSec10,
-    prev_position: CentiDeg,
 
     // Setpoint tracking (time-based)
     prev_setpoint: CentiDeg,
@@ -132,7 +131,7 @@ pub struct ServoCore<C: ControlLoop> {
     backdrive_elapsed_us: u32,
     // TODO: yield timing remains tick-based; convert when yield logic moves fully to medium
     yield_enter_tick: u32,
-    yield_until_tick: u32,
+    yield_needs_reset: bool,
 
     // Dual compliance configs
     move_compliance_config: ComplianceConfig,
@@ -197,7 +196,6 @@ impl<C: ControlLoop> ServoCore<C> {
 
             // Velocity (from MediumSnapshot)
             measured_velocity: DegPerSec10::from_dps10(0),
-            prev_position: CentiDeg::from_cdeg(0),
 
             // Setpoint tracking (time-based, updated in medium tick)
             prev_setpoint: CentiDeg::from_cdeg(0),
@@ -209,7 +207,7 @@ impl<C: ControlLoop> ServoCore<C> {
             prev_error: 0,
             backdrive_elapsed_us: 0,
             yield_enter_tick: 0,
-            yield_until_tick: 0,
+            yield_needs_reset: false,
 
             // Compliance configs
             move_compliance_config,
@@ -245,7 +243,7 @@ impl<C: ControlLoop> ServoCore<C> {
     /// 4. Run control loop with clamped setpoint
     /// 5. Check for motor stall (PWM saturated + no movement)
     #[inline]
-    pub fn fast_tick(&mut self, _ctx: &TickCtx, inputs: FastInputs) -> FastOutputs {
+    pub fn fast_tick(&mut self, ctx: &TickCtx, inputs: FastInputs) -> FastOutputs {
         // Always increment master tick counter
         self.tick_counter = self.tick_counter.wrapping_add(1);
 
@@ -338,7 +336,7 @@ impl<C: ControlLoop> ServoCore<C> {
             }
 
             ServoMode::Yield => {
-                let yield_elapsed = self.tick_counter.saturating_sub(self.yield_enter_tick);
+                let yield_elapsed = self.tick_counter.wrapping_sub(self.yield_enter_tick);
 
                 if yield_elapsed < self.yield_coast_ticks {
                     // Pure coast for first 100ms
@@ -350,9 +348,10 @@ impl<C: ControlLoop> ServoCore<C> {
                     max_duty = 1638;
                 }
 
-                // Reset controller on YIELD entry
-                if yield_elapsed == 0 {
+                // Reset controller on YIELD entry (once)
+                if self.yield_needs_reset {
                     self.controller.reset();
+                    self.yield_needs_reset = false;
                 }
             }
         }
@@ -370,7 +369,7 @@ impl<C: ControlLoop> ServoCore<C> {
             },
         };
 
-        let output = self.controller.fast_tick(_ctx, &input);
+        let output = self.controller.fast_tick(ctx, &input);
 
         // Cache input for medium/slow tick (ControlMedium domain)
         self.last_input = Some(input);
@@ -404,7 +403,7 @@ impl<C: ControlLoop> ServoCore<C> {
     ///
     /// Performs less critical checks that don't need 10kHz rate.
     /// Returns fault kind if a fault was raised.
-    pub fn slow_tick(&mut self, _ctx: &TickCtx) -> Option<FaultKind> {
+    pub fn slow_tick(&mut self, ctx: &TickCtx) -> Option<FaultKind> {
         // Update thermal model with accumulated I² from fast ticks
         self.safety.update_thermal_slow();
 
@@ -434,7 +433,7 @@ impl<C: ControlLoop> ServoCore<C> {
         // Call controller's slow tick with same gating as medium_tick
         if self.can_run_control_ticks() {
             if let Some(ref input) = self.last_input {
-                self.controller.slow_tick(_ctx, input);
+                self.controller.slow_tick(ctx, input);
             }
         }
 
@@ -452,7 +451,7 @@ impl<C: ControlLoop> ServoCore<C> {
     /// - setpoint tracking (time unchanged)
     /// - compliance mode transitions (Move/Hold/Yield)
     /// - backdrive detection
-    pub fn control_medium_tick(&mut self, _ctx: &TickCtx) {
+    pub fn control_medium_tick(&mut self, ctx: &TickCtx) {
         if !self.can_run_control_ticks() {
             return;
         }
@@ -466,7 +465,6 @@ impl<C: ControlLoop> ServoCore<C> {
 
         // Update velocity from snapshot
         self.measured_velocity = snap.velocity_dps10;
-        self.prev_position = snap.pos_last;
 
         // Copy values from last_input to avoid borrow conflicts
         let Some(base_input) = self.last_input else {
@@ -501,7 +499,7 @@ impl<C: ControlLoop> ServoCore<C> {
 
         // Build medium input and call controller
         let medium_input = build_medium_control_input(&base_input, &snap);
-        self.controller.medium_tick(_ctx, &medium_input);
+        self.controller.medium_tick(ctx, &medium_input);
     }
 
     /// Raise a fault internally.
@@ -510,6 +508,7 @@ impl<C: ControlLoop> ServoCore<C> {
         self.controller.reset();
         self.last_input = None;
         self.fast_accum.reset();
+        self.yield_needs_reset = false;
     }
 
     /// Clear fault state and reset safety monitoring.
@@ -594,6 +593,8 @@ impl<C: ControlLoop> ServoCore<C> {
         self.last_input = None;
         // Reset accumulator (no partial windows across state transitions)
         self.fast_accum.reset();
+        // Clear yield reset flag
+        self.yield_needs_reset = false;
     }
 
     /// Check if the motor is engaged
@@ -703,16 +704,17 @@ impl<C: ControlLoop> ServoCore<C> {
                     self.mode = ServoMode::Yield;
                     // TODO: yield timing remains tick-based; convert when yield logic moves fully to medium
                     self.yield_enter_tick = self.tick_counter;
-                    self.yield_until_tick =
-                        self.tick_counter.saturating_add(self.yield_duration_ticks);
+                    self.yield_needs_reset = true;
                     self.backdrive_elapsed_us = 0;
                 }
             }
 
             ServoMode::Yield => {
                 // TODO: yield timing remains tick-based; convert when yield logic moves fully to medium
-                if self.tick_counter >= self.yield_until_tick {
+                let yield_elapsed = self.tick_counter.wrapping_sub(self.yield_enter_tick);
+                if yield_elapsed >= self.yield_duration_ticks {
                     self.mode = ServoMode::Hold;
+                    self.yield_needs_reset = false;
                 }
             }
         }
@@ -800,6 +802,27 @@ impl<C: ControlLoop> ServoCore<C> {
     #[cfg(test)]
     fn set_prev_error_for_test(&mut self, prev_error: i16) {
         self.prev_error = prev_error;
+    }
+
+    #[cfg(test)]
+    fn set_mode_for_test(&mut self, mode: ServoMode) {
+        self.mode = mode;
+    }
+
+    #[cfg(test)]
+    fn set_yield_state_for_test(&mut self, enter_tick: u32, needs_reset: bool) {
+        self.yield_enter_tick = enter_tick;
+        self.yield_needs_reset = needs_reset;
+    }
+
+    #[cfg(test)]
+    fn set_tick_counter_for_test(&mut self, tick: u32) {
+        self.tick_counter = tick;
+    }
+
+    #[cfg(test)]
+    fn mode(&self) -> ServoMode {
+        self.mode
     }
 }
 
@@ -1230,5 +1253,106 @@ mod tests {
         let new_setpoint = CentiDeg::from_cdeg(9100);
         core.update_setpoint_tracking_medium(new_setpoint, window_dt_us);
         assert_eq!(core.setpoint_unchanged_us, 0);
+    }
+
+    // ========== Yield entry reset tests ==========
+
+    #[test]
+    fn test_yield_entry_resets_controller() {
+        let mut core = make_core(MockController::new());
+        let ctx = test_ctx();
+        core.engage(CentiDeg::from_cdeg(9000));
+
+        // Initialize position sensor
+        core.fast_tick(&ctx, make_inputs(9000));
+
+        // Clear any reset calls from engage
+        core.controller_mut().reset_count = 0;
+        core.controller_mut().clear_reset_flag();
+
+        // Force into Yield mode with reset flag set
+        let current_tick = core.tick_counter;
+        core.set_mode_for_test(ServoMode::Yield);
+        core.set_yield_state_for_test(current_tick, true);
+
+        // First fast_tick after yield entry should call reset
+        core.fast_tick(&ctx, make_inputs(9000));
+        assert!(
+            core.controller().reset_called,
+            "controller.reset() should be called on first Yield fast_tick"
+        );
+        assert_eq!(
+            core.controller().reset_count,
+            1,
+            "reset should be called exactly once"
+        );
+
+        // Clear flag to track additional calls
+        core.controller_mut().clear_reset_flag();
+
+        // Additional fast_ticks should NOT call reset again
+        for _ in 0..10 {
+            core.fast_tick(&ctx, make_inputs(9000));
+        }
+        assert!(
+            !core.controller().reset_called,
+            "controller.reset() should not be called on subsequent Yield ticks"
+        );
+        assert_eq!(
+            core.controller().reset_count,
+            1,
+            "reset count should still be 1"
+        );
+    }
+
+    #[test]
+    fn test_yield_exits_across_tick_wrap() {
+        let mut core = make_core(MockController::new());
+        let ctx = test_ctx();
+        core.engage(CentiDeg::from_cdeg(9000));
+
+        // Initialize position sensor
+        core.fast_tick(&ctx, make_inputs(9000));
+
+        // Set tick_counter near u32::MAX to test wrap
+        let start_tick = u32::MAX - 100;
+        core.set_tick_counter_for_test(start_tick);
+
+        // Force into Yield mode, enter at current tick
+        core.set_mode_for_test(ServoMode::Yield);
+        core.set_yield_state_for_test(start_tick, true);
+
+        // Verify we're in Yield mode
+        assert_eq!(core.mode(), ServoMode::Yield);
+
+        // At default 10kHz (100us), yield_duration_ticks = 2000
+        // Run fast_tick calls to advance past wrap and through yield duration
+        // We need to run enough ticks to wrap around and exceed yield_duration_ticks
+        for i in 0..2100 {
+            core.fast_tick(&ctx, make_inputs(9000));
+
+            // After medium tick runs, check mode
+            // Note: mode transition happens in update_compliance_mode_medium
+            // which is called from control_medium_tick
+            core.control_medium_tick(&ctx);
+
+            // Should still be in Yield until duration elapsed
+            if (i as u32) < core.yield_duration_ticks - 1 {
+                assert_eq!(
+                    core.mode(),
+                    ServoMode::Yield,
+                    "Should remain in Yield at tick {}, elapsed {}",
+                    i,
+                    core.tick_counter.wrapping_sub(start_tick)
+                );
+            }
+        }
+
+        // After enough ticks, should have transitioned to Hold
+        assert_eq!(
+            core.mode(),
+            ServoMode::Hold,
+            "Should exit Yield to Hold after duration even with tick wrap"
+        );
     }
 }

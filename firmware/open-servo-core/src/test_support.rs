@@ -12,6 +12,7 @@ pub struct MockController {
     pub output: Duty,
     pub saturated: bool,
     pub reset_called: bool,
+    pub reset_count: u32,
 }
 
 impl MockController {
@@ -20,6 +21,7 @@ impl MockController {
             output: Duty::ZERO,
             saturated: false,
             reset_called: false,
+            reset_count: 0,
         }
     }
 
@@ -30,11 +32,16 @@ impl MockController {
     pub fn set_saturated(&mut self, saturated: bool) {
         self.saturated = saturated;
     }
+
+    pub fn clear_reset_flag(&mut self) {
+        self.reset_called = false;
+    }
 }
 
 impl ControlLoop for MockController {
     fn reset(&mut self) {
         self.reset_called = true;
+        self.reset_count += 1;
         self.output = Duty::ZERO;
     }
 
