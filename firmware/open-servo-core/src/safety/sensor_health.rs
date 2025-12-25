@@ -61,10 +61,13 @@ impl SensorHealth {
             return Ok(reading);
         }
 
-        // Check if delta is reasonable
-        let delta = (reading.as_cdeg() - self.last_good_position.as_cdeg()).abs();
+        // Check if delta is reasonable - use i32 to prevent overflow
+        let reading_i32 = reading.as_cdeg() as i32;
+        let last_i32 = self.last_good_position.as_cdeg() as i32;
+        let delta = (reading_i32 - last_i32).abs();
+        let max_i32 = max_delta.as_cdeg() as i32;
 
-        if delta <= max_delta.as_cdeg() {
+        if delta <= max_i32 {
             // Good reading - update last good and reset counter
             self.last_good_position = reading;
             self.bad_position_count = 0;

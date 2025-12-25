@@ -151,8 +151,11 @@ impl SafetyManager {
     /// Call this every control tick with current position and PWM saturation state.
     /// Returns `Some(FaultKind::Stall)` if stall persists for configured timeout.
     pub fn check_stall(&mut self, position: CentiDeg, pwm_saturated: bool) -> Option<FaultKind> {
-        let pos_delta = (position.as_cdeg() - self.stall_last_position.as_cdeg()).abs();
-        let position_unchanged = pos_delta <= self.thresholds.stall_position_tolerance.as_cdeg();
+        let pos_i32 = position.as_cdeg() as i32;
+        let last_i32 = self.stall_last_position.as_cdeg() as i32;
+        let pos_delta = (pos_i32 - last_i32).abs();
+        let tol_i32 = self.thresholds.stall_position_tolerance.as_cdeg() as i32;
+        let position_unchanged = pos_delta <= tol_i32;
 
         if pwm_saturated && position_unchanged {
             self.stall_count = self.stall_count.saturating_add(1);
@@ -177,9 +180,12 @@ impl SafetyManager {
         setpoint: CentiDeg,
         position: CentiDeg,
     ) -> Option<FaultKind> {
-        let error = (setpoint.as_cdeg() - position.as_cdeg()).abs();
+        let sp_i32 = setpoint.as_cdeg() as i32;
+        let pos_i32 = position.as_cdeg() as i32;
+        let err = (sp_i32 - pos_i32).abs();
+        let limit_i32 = self.thresholds.position_error_limit.as_cdeg() as i32;
 
-        if error > self.thresholds.position_error_limit.as_cdeg() {
+        if err > limit_i32 {
             self.position_error_count = self.position_error_count.saturating_add(1);
             if self.position_error_count >= self.thresholds.position_error_timeout_ticks {
                 return Some(FaultKind::PositionError);
