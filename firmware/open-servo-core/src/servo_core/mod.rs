@@ -12,6 +12,8 @@ pub mod medium;
 pub mod runtime;
 pub mod slow;
 
+pub use config::CoreConfig;
+pub use internal::CoreInternal;
 pub use runtime::CoreRuntime;
 
 use open_servo_control::{ControlInput, ControlLoop, DutyLimits};
@@ -102,6 +104,13 @@ pub struct ServoCore<C: ControlLoop> {
     runtime: CoreRuntime,
     motor_engaged: bool,
 
+    // Dual compliance configs (will move to CoreConfig in Commit 6)
+    move_compliance_config: ComplianceConfig,
+    hold_compliance_config: ComplianceConfig,
+
+    //--- Fields below will move to CoreInternal in Commit 6 ---
+    // For now, keep them here to minimize test churn
+
     // Setpoint owned by ServoCore (Stage 1 refactor)
     setpoint: Option<CentiDeg32>,
 
@@ -126,10 +135,6 @@ pub struct ServoCore<C: ControlLoop> {
     yield_elapsed_us: u32,
     yield_max_duty: i16, // 0 = coast, YIELD_ALIVE_DUTY_MAX = alive (set by medium tick)
     yield_needs_reset: bool,
-
-    // Dual compliance configs
-    move_compliance_config: ComplianceConfig,
-    hold_compliance_config: ComplianceConfig,
 
     /// Cached input from last successful fast_tick (for medium/slow tick use).
     last_input: Option<ControlInput>,
@@ -175,6 +180,10 @@ impl<C: ControlLoop> ServoCore<C> {
             runtime: CoreRuntime::default(),
             motor_engaged: false, // Start disengaged
 
+            // Compliance configs
+            move_compliance_config,
+            hold_compliance_config,
+
             // Setpoint owned by ServoCore
             setpoint: None,
 
@@ -197,10 +206,6 @@ impl<C: ControlLoop> ServoCore<C> {
             yield_elapsed_us: 0,
             yield_max_duty: 0,
             yield_needs_reset: false,
-
-            // Compliance configs
-            move_compliance_config,
-            hold_compliance_config,
 
             // Cached input for medium/slow tick
             last_input: None,

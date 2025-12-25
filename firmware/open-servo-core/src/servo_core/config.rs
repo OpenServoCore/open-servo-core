@@ -1,10 +1,37 @@
 //! CoreConfig - Writable configuration owned by features.
 //!
-//! This module will contain feature configuration subtrees.
-//! For Commit 1, this is a stub; feature configs will be added in Commit 2.
+//! All servo configuration lives here, organized by feature.
 
-// Placeholder for future feature configs:
-// pub limits: LimitsConfig,
-// pub safety: SafetyConfig,
-// pub compliance: ComplianceConfig,
-// pub thermal: ThermalConfig,
+use crate::servo_core::features::{ComplianceConfig, LimitsConfig, SafetyConfig, ThermalConfig};
+
+/// Configuration for the servo core.
+///
+/// Contains all tunable parameters organized by feature.
+#[derive(Debug, Clone)]
+pub struct CoreConfig {
+    /// Position limits (from kinematics)
+    pub limits: LimitsConfig,
+    /// Safety thresholds
+    pub safety: SafetyConfig,
+    /// Compliance mode configs (move/hold)
+    pub compliance: ComplianceConfig,
+    /// Thermal model parameters
+    pub thermal: ThermalConfig,
+}
+
+impl CoreConfig {
+    /// Create a new CoreConfig with given feature configs.
+    pub fn new(
+        limits: LimitsConfig,
+        safety: SafetyConfig,
+        compliance: ComplianceConfig,
+        thermal: ThermalConfig,
+    ) -> Self {
+        Self {
+            limits,
+            safety,
+            compliance,
+            thermal,
+        }
+    }
+}
