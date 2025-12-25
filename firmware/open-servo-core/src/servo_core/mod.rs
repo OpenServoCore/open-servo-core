@@ -5,9 +5,12 @@
 //! system by feeding it synthetic inputs.
 
 pub mod config;
+pub mod fast;
 pub mod features;
 pub mod internal;
+pub mod medium;
 pub mod runtime;
+pub mod slow;
 
 pub use runtime::CoreRuntime;
 
