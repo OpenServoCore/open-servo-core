@@ -261,7 +261,6 @@ impl<C: ControlLoop> App<C> {
         // Update timing only if changed (avoid per-tick recompute)
         if dt_us != self.last_fast_dt_us {
             self.last_fast_dt_us = dt_us;
-            self.core.safety_mut().set_fast_dt_us(dt_us);
             self.core.update_fast_dt_us(dt_us);
         }
 

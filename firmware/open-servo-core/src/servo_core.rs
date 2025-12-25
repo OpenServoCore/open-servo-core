@@ -146,9 +146,6 @@ pub struct ServoCore<C: ControlLoop> {
 
     /// Fast-tick accumulator for windowed statistics (medium tick).
     fast_accum: FastAccumulator,
-
-    // Cached fast_dt_us for per-sample timing
-    fast_dt_us: u32,
 }
 
 impl<C: ControlLoop> ServoCore<C> {
@@ -181,7 +178,7 @@ impl<C: ControlLoop> ServoCore<C> {
             thermal_config.thermal_capacity_cj,
         );
 
-        let mut servo = Self {
+        let servo = Self {
             controller,
             fault_state: FaultState::new(),
             safety: SafetyManager::new(thresholds, thermal_model, move_compliance_config.clone()),
@@ -220,13 +217,8 @@ impl<C: ControlLoop> ServoCore<C> {
 
             // Fast-tick accumulator for medium tick
             fast_accum: FastAccumulator::new(),
-
-            // Cached fast_dt_us for per-sample timing
-            fast_dt_us: 0,
         };
 
-        // Initialize fast_dt_us from SafetyManager's default
-        servo.update_fast_dt_us(servo.safety.fast_dt_us());
         servo
     }
 
@@ -792,12 +784,7 @@ impl<C: ControlLoop> ServoCore<C> {
     /// Called by the app layer when the board's actual tick rate is known or changes.
     /// Returns early if dt_us hasn't changed. Clamps to at least 1us.
     pub fn update_fast_dt_us(&mut self, dt_us: u32) {
-        let dt_us = dt_us.max(1); // Defensive: clamp to at least 1us
-        if dt_us == self.fast_dt_us {
-            return;
-        }
-
-        self.fast_dt_us = dt_us;
+        self.safety.set_fast_dt_us(dt_us);
     }
 
     /// Get current compliance mode
@@ -1160,7 +1147,7 @@ mod tests {
         core.update_fast_dt_us(0);
 
         // dt_us should be clamped to 1
-        assert_eq!(core.fast_dt_us, 1);
+        assert_eq!(core.safety().fast_dt_us(), 1);
     }
 
     // ========== Time-based policy tests ==========
