@@ -12,6 +12,7 @@
 #![no_std]
 #![forbid(unsafe_code)]
 
+pub mod accumulator;
 pub mod app;
 #[cfg(feature = "debug-shell")]
 pub mod debug_shell;

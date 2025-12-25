@@ -12,6 +12,7 @@ use open_servo_math::{
     CentiC, CentiDeg, CentiDeg32, ComplianceConfig, DegPerSec10, Duty, MilliVolt, ThermalModel,
 };
 
+use crate::accumulator::FastAccumulator;
 use crate::fault::{FaultKind, FaultState};
 use crate::inputs::FastInputs;
 use crate::outputs::FastOutputs;
@@ -142,6 +143,9 @@ pub struct ServoCore<C: ControlLoop> {
 
     /// Cached input from last successful fast_tick (for medium/slow tick use).
     last_input: Option<ControlInput>,
+
+    /// Fast-tick accumulator for windowed statistics (medium tick).
+    fast_accum: FastAccumulator,
 }
 
 impl<C: ControlLoop> ServoCore<C> {
@@ -211,6 +215,9 @@ impl<C: ControlLoop> ServoCore<C> {
 
             // Cached input for medium/slow tick
             last_input: None,
+
+            // Fast-tick accumulator for medium tick
+            fast_accum: FastAccumulator::new(),
         }
     }
 
@@ -268,6 +275,11 @@ impl<C: ControlLoop> ServoCore<C> {
 
         // Update velocity (decimated with countdown)
         self.update_velocity(position);
+
+        // Accumulate for medium-tick windowed stats (only when engaged and not faulted)
+        if self.can_run_control_ticks() {
+            self.fast_accum.observe(position, inputs.current());
+        }
 
         // Get setpoint - if None, return safe (motor disengaged or no target)
         let Some(sp32) = self.setpoint else {
@@ -439,13 +451,28 @@ impl<C: ControlLoop> ServoCore<C> {
 
     /// ControlMedium tick - runs at decimated rate from fast tick.
     /// Stays aligned to ADC samples (derived from ControlFast domain).
+    ///
+    /// Uses windowed statistics from FastAccumulator:
+    /// - velocity: derived from position delta over window
+    /// - current: average over window
     pub fn control_medium_tick(&mut self) {
         if !self.can_run_control_ticks() {
             return;
         }
 
-        if let Some(ref input) = self.last_input {
-            self.controller.medium_tick(input);
+        // Take snapshot (computes window velocity/avg current, resets accumulator)
+        if let Some(snap) = self.fast_accum.take_snapshot(self.safety.fast_dt_us()) {
+            if let Some(ref base_input) = self.last_input {
+                let medium_input = ControlInput {
+                    setpoint: base_input.setpoint,
+                    position: snap.pos_last,
+                    velocity: Some(snap.velocity_dps10),
+                    current: snap.current_avg,
+                    bus_voltage: base_input.bus_voltage,
+                    limits: base_input.limits,
+                };
+                self.controller.medium_tick(&medium_input);
+            }
         }
     }
 
@@ -454,6 +481,7 @@ impl<C: ControlLoop> ServoCore<C> {
         self.fault_state.raise(kind);
         self.controller.reset();
         self.last_input = None;
+        self.fast_accum.reset();
     }
 
     /// Clear fault state and reset safety monitoring.
@@ -536,6 +564,8 @@ impl<C: ControlLoop> ServoCore<C> {
         self.controller.reset();
         // Clear cached input (no medium/slow tick while disengaged)
         self.last_input = None;
+        // Reset accumulator (no partial windows across state transitions)
+        self.fast_accum.reset();
     }
 
     /// Check if the motor is engaged
