@@ -100,11 +100,19 @@ impl SafetyState {
     }
 }
 
+/// Check if sensor fault threshold has been exceeded.
+///
+/// Returns true if bad_count >= sensor_fault_count.
+#[inline]
+pub fn is_sensor_fault(state: &SafetyState, config: &SafetyConfig) -> bool {
+    state.sensor_health.bad_count() >= config.thresholds.sensor_fault_count
+}
+
 /// Validate a position reading and check for sensor faults.
 ///
 /// Returns:
 /// - `Ok(position)` if the reading is valid
-/// - `Err(FaultKind::EncoderFault)` if too many consecutive bad readings
+/// - `Err(FaultKind::EncoderFault)` if reading is bad (caller checks is_sensor_fault for skip vs fault)
 pub fn check_position(
     state: &mut SafetyState,
     config: &SafetyConfig,
@@ -115,7 +123,8 @@ pub fn check_position(
         .validate_position(reading, config.thresholds.position_max_delta)
     {
         Ok(pos) => {
-            // Check if we've exceeded sensor fault threshold
+            // Good reading - check if we've exceeded sensor fault threshold (shouldn't happen
+            // since validate_position resets bad_count on good reading, but check anyway)
             if state.sensor_health.bad_count() >= config.thresholds.sensor_fault_count {
                 Err(FaultKind::EncoderFault)
             } else {
@@ -123,13 +132,8 @@ pub fn check_position(
             }
         }
         Err(_bad_count) => {
-            // Still might be under threshold
-            if state.sensor_health.bad_count() >= config.thresholds.sensor_fault_count {
-                Err(FaultKind::EncoderFault)
-            } else {
-                // Use last good position
-                Ok(state.sensor_health.last_good_position())
-            }
+            // Bad reading - always return Err, caller uses is_sensor_fault to decide skip vs fault
+            Err(FaultKind::EncoderFault)
         }
     }
 }

@@ -80,16 +80,17 @@ pub fn accumulate_i_squared(state: &mut ThermalState, current: Option<MilliAmp>)
     state.model.update_fast(current.map(|c| c.as_ma()));
 }
 
-/// Update thermal model physics (slow tick - 100Hz).
+/// Update thermal model physics (slow tick).
 ///
 /// Uses MCU temperature as ambient estimate, or default if no sensor.
-pub fn update_slow(state: &mut ThermalState, config: &ThermalConfig) {
+/// dt_us is the time since last call (from TickCtx).
+pub fn update_slow(state: &mut ThermalState, config: &ThermalConfig, dt_us: u32) {
     let ambient_cdeg = state
         .last_temperature
         .map(|t| t.as_centi_c())
         .unwrap_or(config.default_ambient_cdeg);
 
-    state.model.update_slow(ambient_cdeg);
+    state.model.update_slow(ambient_cdeg, dt_us);
 }
 
 /// Check if motor has exceeded safe temperature.
@@ -153,8 +154,8 @@ mod tests {
         let config = ThermalConfig::default();
 
         state.update_temperature(Some(CentiC::from_centi_c(3000))); // 30°C
-        update_slow(&mut state, &config);
-        // Should not panic
+        update_slow(&mut state, &config, 10_000); // 10ms
+                                                  // Should not panic
     }
 
     #[test]
@@ -163,8 +164,8 @@ mod tests {
         let config = ThermalConfig::default();
 
         state.update_temperature(None);
-        update_slow(&mut state, &config);
-        // Should not panic, uses default ambient
+        update_slow(&mut state, &config, 10_000); // 10ms
+                                                  // Should not panic, uses default ambient
     }
 
     #[test]

@@ -64,7 +64,7 @@ impl Snapshot {
             motor_enable: outputs.motor_enable,
             faulted: core.is_faulted(),
             fault_kind: outputs.fault,
-            mode: core.compliance_mode(),
+            mode: core.mode(),
         }
     }
 }
@@ -135,7 +135,7 @@ pub fn run_with_slow<C: ControlLoop>(
 fn test_stall_triggers_at_timeout() {
     let mut core = make_core(MockController::new());
     let ctx = test_ctx();
-    let timeout = core.safety().thresholds().stall_timeout_ticks as usize;
+    let timeout = core.safety_thresholds().stall_timeout_ticks as usize;
 
     core.engage(CentiDeg::from_cdeg(9000));
     core.set_setpoint(CentiDeg::from_cdeg(9100));
@@ -166,7 +166,7 @@ fn test_stall_triggers_at_timeout() {
 fn test_stall_counter_resets_on_movement() {
     let mut core = make_core(MockController::new());
     let ctx = test_ctx();
-    let timeout = core.safety().thresholds().stall_timeout_ticks as usize;
+    let timeout = core.safety_thresholds().stall_timeout_ticks as usize;
 
     core.engage(CentiDeg::from_cdeg(9000));
     core.set_setpoint(CentiDeg::from_cdeg(9100));
@@ -184,11 +184,7 @@ fn test_stall_counter_resets_on_movement() {
     assert!(!core.is_faulted(), "should not fault at half timeout");
 
     // Move beyond tolerance to reset counter (safe i32 math)
-    let tol = core
-        .safety()
-        .thresholds()
-        .stall_position_tolerance
-        .as_cdeg() as i32;
+    let tol = core.safety_thresholds().stall_position_tolerance.as_cdeg() as i32;
     let new_position: i16 = (9000i32 + tol + 1).clamp(i16::MIN as i32, i16::MAX as i32) as i16;
     core.fast_tick(&ctx, make_inputs(new_position));
 
@@ -210,7 +206,7 @@ fn test_stall_counter_resets_on_movement() {
 fn test_no_stall_without_saturation() {
     let mut core = make_core(MockController::new());
     let ctx = test_ctx();
-    let timeout = core.safety().thresholds().stall_timeout_ticks as usize;
+    let timeout = core.safety_thresholds().stall_timeout_ticks as usize;
 
     core.engage(CentiDeg::from_cdeg(9000));
     core.set_setpoint(CentiDeg::from_cdeg(9100));

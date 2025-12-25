@@ -40,7 +40,7 @@ use crate::tick::{TickCtx, TickDomain};
 /// - `SafetyMcuTempSource` - MCU temperature sensing (optional via blanket impl)
 ///
 /// Boards without certain sensors implement the Safety*Source traits
-/// directly, returning `None`. SafetyManager then skips those checks.
+/// directly, returning `None`. Safety checks are then skipped.
 pub struct App<C: ControlLoop> {
     core: ServoCore<C>,
     slow_tick_counter: u8,
@@ -356,65 +356,65 @@ impl<C: ControlLoop> App<C> {
 
     /// Get current safety thresholds.
     pub fn get_thresholds(&self) -> SafetyThresholds {
-        *self.core.safety().thresholds()
+        *self.core.safety_thresholds()
     }
 
     /// Set all safety thresholds.
     pub fn set_thresholds(&mut self, thresholds: SafetyThresholds) {
-        self.core.safety_mut().set_thresholds(thresholds);
+        *self.core.safety_thresholds_mut() = thresholds;
     }
 
     /// Set over-current threshold (requires `current-sense` feature).
     #[cfg(feature = "current-sense-bus")]
     pub fn set_current_limit(&mut self, limit: MilliAmp) {
-        self.core.safety_mut().thresholds_mut().current_limit = limit;
+        self.core.safety_thresholds_mut().current_limit = limit;
     }
 
     /// Set MCU over-temperature threshold.
     pub fn set_mcu_temp_limit(&mut self, limit: CentiC) {
-        self.core.safety_mut().thresholds_mut().mcu_temp_limit = limit;
+        self.core.safety_thresholds_mut().mcu_temp_limit = limit;
     }
 
     /// Set maximum position delta per tick.
     pub fn set_position_max_delta(&mut self, delta: CentiDeg) {
-        self.core.safety_mut().thresholds_mut().position_max_delta = delta;
+        self.core.safety_thresholds_mut().position_max_delta = delta;
     }
 
     /// Set consecutive bad sensor reads before fault.
     pub fn set_sensor_fault_count(&mut self, count: u8) {
-        self.core.safety_mut().thresholds_mut().sensor_fault_count = count;
+        self.core.safety_thresholds_mut().sensor_fault_count = count;
     }
 
     /// Set position bounds (min and max).
     pub fn set_position_bounds(&mut self, min: CentiDeg, max: CentiDeg) {
-        let thresholds = self.core.safety_mut().thresholds_mut();
+        let thresholds = self.core.safety_thresholds_mut();
         thresholds.position_min = min;
         thresholds.position_max = max;
     }
 
     /// Set stall detection timeout in ticks.
     pub fn set_stall_timeout(&mut self, ticks: u16) {
-        self.core.safety_mut().thresholds_mut().stall_timeout_ticks = ticks;
+        self.core.safety_thresholds_mut().stall_timeout_ticks = ticks;
     }
 
     /// Set position error limit.
     pub fn set_position_error_limit(&mut self, limit: CentiDeg) {
-        self.core.safety_mut().thresholds_mut().position_error_limit = limit;
+        self.core.safety_thresholds_mut().position_error_limit = limit;
     }
 
     /// Get sensor health state (for debugging).
     pub fn get_sensor_health(&self) -> &SensorHealth {
-        self.core.safety().sensor_health()
+        self.core.sensor_health()
     }
 
     /// Get estimated motor temperature in degrees.
     pub fn get_motor_temp_deg(&self) -> i16 {
-        self.core.safety().motor_temp_deg()
+        self.core.motor_temp_deg()
     }
 
     /// Get motor temperature rise above ambient in degrees.
     pub fn get_motor_temp_rise_deg(&self) -> i16 {
-        self.core.safety().motor_temp_rise_deg()
+        self.core.motor_temp_rise_deg()
     }
 
     /// Get mutable reference to the controller.

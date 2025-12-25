@@ -75,17 +75,18 @@ impl ThermalModel {
         }
     }
 
-    /// Apply thermal physics and return temperature (slow tick - typically 100Hz).
+    /// Apply thermal physics and return temperature.
     ///
     /// Processes accumulated I² samples, applies heating/cooling physics,
     /// and updates the temperature estimate.
     ///
     /// # Arguments
     /// * `ambient_cdeg` - Ambient temperature in centi-degrees
+    /// * `dt_us` - Time delta in microseconds since last call
     ///
     /// # Returns
     /// Current temperature estimate in centi-degrees
-    pub fn update_slow(&mut self, ambient_cdeg: i16) -> i16 {
+    pub fn update_slow(&mut self, ambient_cdeg: i16, dt_us: u32) -> i16 {
         self.ambient_temp_cdeg = ambient_cdeg;
 
         // Calculate average I² if we have samples
@@ -114,10 +115,16 @@ impl ThermalModel {
         // Net power in milli-watts
         let net_power_mw = power_mw as i32 - power_out_mw;
 
-        // Temperature change for 10ms period (100Hz tick)
-        // ΔT_cdeg = P_mW × 10 / C_cJ
-        // In Q16: ΔT_q16 = (P_mW × 10 << 16) / C_cJ
-        let temp_change_q16 = ((net_power_mw * 10) << 16) / (self.thermal_capacity_cj as i32);
+        // Cap dt_us to 1 second for safety
+        let dt_us_capped = dt_us.min(1_000_000) as i64;
+
+        // Temperature change scaled by actual dt (all math in i64 to avoid overflow)
+        // ΔT_cdeg = P_mW × dt_ms / C_cJ
+        // In Q16: ΔT_q16 = (P_mW × dt_us << 16) / (C_cJ × 1000)
+        // Using microseconds directly avoids quantization issues with sub-ms ticks
+        let num = (net_power_mw as i64) * dt_us_capped << 16;
+        let denom = (self.thermal_capacity_cj as i64).max(1) * 1000;
+        let temp_change_q16 = (num / denom).clamp(i32::MIN as i64, i32::MAX as i64) as i32;
 
         // Update temperature in Q16
         self.temp_q16_cdeg = self.temp_q16_cdeg.saturating_add(temp_change_q16);
@@ -170,7 +177,7 @@ mod tests {
         }
 
         let initial = model.temperature_cdeg();
-        let final_temp = model.update_slow(2500);
+        let final_temp = model.update_slow(2500, 10_000); // 10ms
 
         // Should heat up slightly
         assert!(final_temp > initial);
@@ -188,7 +195,7 @@ mod tests {
             for _ in 0..100 {
                 model.update_fast(None);
             }
-            model.update_slow(2500);
+            model.update_slow(2500, 10_000); // 10ms
         }
 
         let final_temp = model.temperature_cdeg();
@@ -211,7 +218,7 @@ mod tests {
             for _ in 0..100 {
                 model.update_fast(Some(200));
             }
-            model.update_slow(2500);
+            model.update_slow(2500, 10_000); // 10ms
         }
 
         let rise = model.temp_rise_deg();
@@ -229,7 +236,7 @@ mod tests {
         model.init(3000); // 30°C
 
         // Call slow update without any fast updates
-        let temp = model.update_slow(2500); // 25°C ambient
+        let temp = model.update_slow(2500, 10_000); // 25°C ambient, 10ms
 
         // Should cool toward ambient
         assert!(temp < 3000);

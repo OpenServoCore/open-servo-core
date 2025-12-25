@@ -3,11 +3,11 @@
 //! All mutable state that isn't in CoreRuntime (telemetry) lives here.
 
 use crate::accumulator::FastAccumulator;
-use crate::servo_core::features::{BackdriveState, SafetyState, ThermalState};
+use crate::servo_core::features::{BackdriveState, ComplianceState, SafetyState, ThermalState};
 use crate::servo_core::medium::{BackdriveDetector, HoldConditionsTracker, SetpointTracker};
 use crate::servo_core::ServoMode;
 use open_servo_control::ControlInput;
-use open_servo_math::{CentiDeg32, DegPerSec10};
+use open_servo_math::{CentiDeg32, ComplianceConfig as LimiterConfig, DegPerSec10};
 
 /// Mutable internal state for the servo core.
 ///
@@ -18,6 +18,8 @@ pub struct CoreInternal {
     pub safety: SafetyState,
     /// Thermal model state
     pub thermal: ThermalState,
+    /// Compliance limiter state
+    pub compliance: ComplianceState,
     /// Backdrive/yield window state
     pub backdrive: BackdriveState,
 
@@ -44,11 +46,14 @@ pub struct CoreInternal {
 }
 
 impl CoreInternal {
-    /// Create a new CoreInternal with default state.
-    pub fn new(safety: SafetyState, thermal: ThermalState) -> Self {
+    /// Create a new CoreInternal with feature state.
+    ///
+    /// The `move_config` is the initial compliance limiter config (Move mode).
+    pub fn new(safety: SafetyState, thermal: ThermalState, move_config: LimiterConfig) -> Self {
         Self {
             safety,
             thermal,
+            compliance: ComplianceState::new(move_config),
             backdrive: BackdriveState::new(),
             setpoint_tracker: SetpointTracker::new(),
             hold_tracker: HoldConditionsTracker::new(),

@@ -7,7 +7,7 @@ use open_servo_math::{CentiC, CentiDeg, MilliAmp, MilliVolt};
 /// Inputs for the ControlFast tick.
 ///
 /// Optional fields are `None` when the board doesn't have that sensor.
-/// SafetyManager skips corresponding checks for `None` values.
+/// Safety checks are skipped for `None` values.
 ///
 /// The `current` field is only available when the `current-sense` feature is enabled.
 #[derive(Debug, Clone, Copy, Default)]
