@@ -226,12 +226,7 @@ impl<C: ControlLoop> App<C> {
 
     /// Raise a fault manually (e.g., from external safety ISR).
     pub fn raise_fault<H: BdcMotorDriver>(&mut self, hw: &mut H, kind: FaultKind) {
-        // Let core handle the fault
-        self.core.fault_state().clone().raise(kind);
-        self.core.clear_fault(); // This resets and re-raises properly
-                                 // Actually we need a different approach - let's use the fault state directly
-
-        // Apply safety immediately
+        self.core.raise_fault(kind);
         hw.set_pwm(Duty::ZERO);
         hw.set_enable(false);
     }

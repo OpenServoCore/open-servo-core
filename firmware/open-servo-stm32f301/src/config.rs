@@ -3,6 +3,9 @@
 use open_servo_hw::config::{BoardKinematicsConfig, BoardSafetyConfig, BoardThermalConfig};
 use open_servo_math::ComplianceConfig;
 
+/// Slow tick frequency in Hz
+pub const SLOW_HZ: u32 = 100;
+
 /// Board-specific configuration provider
 pub struct BoardConfigProvider;
 

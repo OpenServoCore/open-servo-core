@@ -5,10 +5,7 @@ use open_servo_core::{Event, EventProducer, FaultKind};
 use pac::interrupt;
 use stm32f3::stm32f301 as pac;
 
-use crate::system::SystemState;
-
-/// Event queue size must match main.rs
-const EVENT_QUEUE_SIZE: usize = 32;
+use crate::system::{SystemState, EVENT_QUEUE_SIZE};
 
 /// TIM2 interrupt - Slow tick for telemetry/status (e.g. 100Hz)
 #[interrupt]

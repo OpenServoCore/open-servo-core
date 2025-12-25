@@ -420,7 +420,7 @@ impl<C: ControlLoop> ServoCore<C> {
     }
 
     /// Raise a fault internally.
-    fn raise_fault(&mut self, kind: FaultKind) {
+    pub fn raise_fault(&mut self, kind: FaultKind) {
         self.fault_state.raise(kind);
         self.controller.reset();
     }

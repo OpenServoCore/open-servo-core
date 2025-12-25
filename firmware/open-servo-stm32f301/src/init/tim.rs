@@ -128,11 +128,12 @@ fn init_tim1_pwm_channels(p: &pac::Peripherals) {
 pub fn init_tim2_counter(p: &pac::Peripherals) {
     let tim2 = &p.TIM2;
 
-    // set prescaler to 72, so that the counter will increment every 1 us
-    tim2.psc.write(|w| w.psc().bits(72));
+    // TIM2 timer clock is 72MHz (APB1 div2 => timer x2).
+    // PSC=71 => counter tick is 1us (72MHz / 72 = 1MHz).
+    tim2.psc.write(|w| w.psc().bits(71));
 
-    // set auto-reload register to 100_000, so that the counter will overflow every 0.1 second
-    tim2.arr.write(|w| unsafe { w.arr().bits(100_000) });
+    // ARR=9999 => overflow period is 10ms (100Hz).
+    tim2.arr.write(|w| unsafe { w.arr().bits(9_999) });
 
     // generate an update event to load the prescaler value to the counter
     tim2.egr.write(|w| w.ug().update());
