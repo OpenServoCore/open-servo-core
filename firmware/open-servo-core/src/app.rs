@@ -51,6 +51,8 @@ pub struct App<C: ControlLoop> {
     control_fast_seq: u32,
     control_medium_seq: u32,
     system_seq: u32,
+    // Cached fast_dt_us for change detection
+    last_fast_dt_us: u32,
 }
 
 impl<C: ControlLoop> App<C> {
@@ -73,6 +75,7 @@ impl<C: ControlLoop> App<C> {
             control_fast_seq: 0,
             control_medium_seq: 0,
             system_seq: 0,
+            last_fast_dt_us: 0,
         }
     }
 
@@ -248,10 +251,11 @@ impl<C: ControlLoop> App<C> {
             seq: self.control_fast_seq,
         };
 
-        // Update SafetyManager's fast_dt_us only if changed (avoid recompute spam)
-        let safety = self.core.safety_mut();
-        if safety.fast_dt_us() != dt_us {
-            safety.set_fast_dt_us(dt_us);
+        // Update timing only if changed (avoid per-tick recompute)
+        if dt_us != self.last_fast_dt_us {
+            self.last_fast_dt_us = dt_us;
+            self.core.safety_mut().set_fast_dt_us(dt_us);
+            self.core.update_fast_dt_us(dt_us);
         }
     }
 
