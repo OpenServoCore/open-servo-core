@@ -224,6 +224,12 @@ impl<C: ControlLoop> App<C> {
         }
     }
 
+    /// ControlMedium tick delegate - called from decimated fast tick ISR.
+    /// No hardware access needed; just forwards to core.
+    pub fn on_control_medium_tick(&mut self) {
+        self.core.control_medium_tick();
+    }
+
     /// Raise a fault manually (e.g., from external safety ISR).
     pub fn raise_fault<H: BdcMotorDriver>(&mut self, hw: &mut H, kind: FaultKind) {
         self.core.raise_fault(kind);

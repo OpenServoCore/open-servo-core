@@ -7,7 +7,8 @@ use stm32f3::stm32f301 as pac;
 
 use crate::system::{SystemState, EVENT_QUEUE_SIZE};
 
-/// TIM2 interrupt - Slow tick for telemetry/status (e.g. 100Hz)
+/// TIM2 interrupt - System tick domain (housekeeping/telemetry, 100Hz).
+/// This is System tick (housekeeping) domain; later we may split ControlSlow vs System.
 #[interrupt]
 fn TIM2() {
     // Check for queue overflow and raise fault if detected
@@ -28,6 +29,13 @@ fn TIM2() {
         (*pac::TIM2::ptr()).sr.modify(|_, w| w.uif().clear());
     }
 }
+
+/// Decimation factor for ControlMedium tick (10 kHz / 10 = 1 kHz).
+// TODO(Stage 3): Derive from board timing config instead of hardcoding.
+const CONTROL_MEDIUM_DECIMATE: u8 = 10;
+
+/// Counter for ControlMedium decimation (ControlFast domain).
+static mut CONTROL_MEDIUM_COUNTER: u8 = 0;
 
 /// DMA1_CH1 interrupt - ADC DMA transfer complete (control loop trigger)
 #[interrupt]
@@ -58,6 +66,20 @@ fn DMA1_CH1() {
     // This runs deterministically without blocking
     SystemState::with_app_and_board(|app, board| {
         app.on_control_tick(board);
+
+        // ControlMedium tick - decimated from ControlFast to stay aligned to ADC samples.
+        let fire_medium = unsafe {
+            CONTROL_MEDIUM_COUNTER += 1;
+            if CONTROL_MEDIUM_COUNTER >= CONTROL_MEDIUM_DECIMATE {
+                CONTROL_MEDIUM_COUNTER = 0;
+                true
+            } else {
+                false
+            }
+        };
+        if fire_medium {
+            app.on_control_medium_tick();
+        }
     });
 
     // Clear interrupt flag

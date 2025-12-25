@@ -138,6 +138,9 @@ pub struct ServoCore<C: ControlLoop> {
     // Dual compliance configs
     move_compliance_config: ComplianceConfig,
     hold_compliance_config: ComplianceConfig,
+
+    /// Cached input from last successful fast_tick (for medium/slow tick use).
+    last_input: Option<ControlInput>,
 }
 
 impl<C: ControlLoop> ServoCore<C> {
@@ -204,6 +207,9 @@ impl<C: ControlLoop> ServoCore<C> {
             // Compliance configs
             move_compliance_config,
             hold_compliance_config,
+
+            // Cached input for medium/slow tick
+            last_input: None,
         }
     }
 
@@ -360,6 +366,9 @@ impl<C: ControlLoop> ServoCore<C> {
 
         let output = self.controller.fast_tick(&input);
 
+        // Cache input for medium/slow tick (ControlMedium domain)
+        self.last_input = Some(input);
+
         // Update tracking for next tick
         self.prev_pwm_command = output.duty.as_raw();
         self.prev_error = error;
@@ -416,13 +425,33 @@ impl<C: ControlLoop> ServoCore<C> {
             return Some(fault);
         }
 
+        // Call controller's slow tick with same gating as medium_tick
+        if self.can_run_control_ticks() {
+            if let Some(ref input) = self.last_input {
+                self.controller.slow_tick(input);
+            }
+        }
+
         None
+    }
+
+    /// ControlMedium tick - runs at decimated rate from fast tick.
+    /// Stays aligned to ADC samples (derived from ControlFast domain).
+    pub fn control_medium_tick(&mut self) {
+        if !self.can_run_control_ticks() {
+            return;
+        }
+
+        if let Some(ref input) = self.last_input {
+            self.controller.medium_tick(input);
+        }
     }
 
     /// Raise a fault internally.
     pub fn raise_fault(&mut self, kind: FaultKind) {
         self.fault_state.raise(kind);
         self.controller.reset();
+        self.last_input = None;
     }
 
     /// Clear fault state and reset safety monitoring.
@@ -503,11 +532,20 @@ impl<C: ControlLoop> ServoCore<C> {
         self.setpoint = None;
         // Reset controller state (clear integrator, derivative history)
         self.controller.reset();
+        // Clear cached input (no medium/slow tick while disengaged)
+        self.last_input = None;
     }
 
     /// Check if the motor is engaged
     pub fn is_engaged(&self) -> bool {
         self.motor_engaged
+    }
+
+    /// Check if control ticks (medium/slow) should run.
+    /// Centralized gating for controller tick methods.
+    #[inline]
+    fn can_run_control_ticks(&self) -> bool {
+        self.motor_engaged && !self.fault_state.is_faulted()
     }
 
     /// Update velocity estimation (decimated)
