@@ -104,6 +104,9 @@ pub struct ServoCore<C: ControlLoop> {
     runtime: CoreRuntime,
     motor_engaged: bool,
 
+    // Hierarchical position limits (from kinematics)
+    limits: features::LimitsConfig,
+
     // Dual compliance configs (will move to CoreConfig in Commit 6)
     move_compliance_config: ComplianceConfig,
     hold_compliance_config: ComplianceConfig,
@@ -173,12 +176,31 @@ impl<C: ControlLoop> ServoCore<C> {
             thermal_config.thermal_capacity_cj,
         );
 
+        // Create hierarchical limits from board config
+        // Sensor limits default to full range, mechanical = user = board config limits
+        use crate::kinematics::{MechanicalLimits, SensorLimits, UserLimits};
+        let limits = features::LimitsConfig::new(
+            SensorLimits::new(0, 36000), // Full sensor range (0-360°)
+            MechanicalLimits::new(
+                safety_config.position_min_cdeg as i32,
+                safety_config.position_max_cdeg as i32,
+            ),
+            UserLimits::new(
+                safety_config.position_min_cdeg as i32,
+                safety_config.position_max_cdeg as i32,
+            ),
+        )
+        .unwrap_or_default(); // Fall back to default if limits invalid
+
         let servo = Self {
             controller,
             fault_state: FaultState::new(),
             safety: SafetyManager::new(thresholds, thermal_model, move_compliance_config.clone()),
             runtime: CoreRuntime::default(),
             motor_engaged: false, // Start disengaged
+
+            // Hierarchical limits
+            limits,
 
             // Compliance configs
             move_compliance_config,
@@ -296,17 +318,17 @@ impl<C: ControlLoop> ServoCore<C> {
             return FastOutputs::safe();
         };
 
-        // Saturate i32 -> i16 for safety clamping
-        let sp_sat = sp32.to_centi_deg_sat();
-
-        // Clamp setpoint to bounds
-        let clamped_setpoint = self.safety.clamp_setpoint(sp_sat);
+        // Clamp setpoint to hierarchical limits (sensor → mechanical → user)
+        let clamped32 = self.limits.clamp_setpoint(sp32);
         // Store the effective clamped setpoint so internal state remains within safety bounds
         // and doesn't repeatedly re-clamp each tick.
-        self.setpoint = Some(CentiDeg32::from(clamped_setpoint));
+        self.setpoint = Some(clamped32);
+
+        // Convert to i16 for mode/limiter APIs
+        let clamped_setpoint = clamped32.to_centi_deg_sat();
 
         // i32 math for error - prevents overflow
-        let sp = CentiDeg32::from(clamped_setpoint);
+        let sp = clamped32;
         let pv = CentiDeg32::from(position);
         let err32 = sp - pv;
 
@@ -550,12 +572,23 @@ impl<C: ControlLoop> ServoCore<C> {
         &mut self.safety
     }
 
+    /// Get reference to limits configuration.
+    pub fn limits(&self) -> &features::LimitsConfig {
+        &self.limits
+    }
+
+    /// Get mutable reference to limits configuration.
+    pub fn limits_mut(&mut self) -> &mut features::LimitsConfig {
+        &mut self.limits
+    }
+
     /// Set the control setpoint (in centidegrees).
     ///
-    /// The setpoint is clamped to position bounds.
+    /// The setpoint is clamped to hierarchical position limits.
     pub fn set_setpoint(&mut self, setpoint: CentiDeg) {
-        let clamped = self.safety.clamp_setpoint(setpoint);
-        self.setpoint = Some(CentiDeg32::from(clamped));
+        let sp32 = CentiDeg32::from(setpoint);
+        let clamped = self.limits.clamp_setpoint(sp32);
+        self.setpoint = Some(clamped);
     }
 
     /// Get the current setpoint.
@@ -583,8 +616,9 @@ impl<C: ControlLoop> ServoCore<C> {
     pub fn engage(&mut self, current_position: CentiDeg) {
         self.motor_engaged = true;
         if self.setpoint.is_none() {
-            let clamped = self.safety.clamp_setpoint(current_position);
-            self.setpoint = Some(CentiDeg32::from(clamped));
+            let pos32 = CentiDeg32::from(current_position);
+            let clamped = self.limits.clamp_setpoint(pos32);
+            self.setpoint = Some(clamped);
         }
     }
 
