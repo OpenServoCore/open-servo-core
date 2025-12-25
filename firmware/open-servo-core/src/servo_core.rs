@@ -147,11 +147,8 @@ pub struct ServoCore<C: ControlLoop> {
     /// Fast-tick accumulator for windowed statistics (medium tick).
     fast_accum: FastAccumulator,
 
-    // Cached fast_dt_us and derived tick counts for yield (tick-based)
+    // Cached fast_dt_us for per-sample timing
     fast_dt_us: u32,
-    // TODO: yield timing remains tick-based; convert when yield logic moves fully to medium
-    yield_duration_ticks: u32,
-    yield_coast_ticks: u32,
 }
 
 impl<C: ControlLoop> ServoCore<C> {
@@ -224,13 +221,11 @@ impl<C: ControlLoop> ServoCore<C> {
             // Fast-tick accumulator for medium tick
             fast_accum: FastAccumulator::new(),
 
-            // Cached fast_dt_us and yield timing (tick-based)
+            // Cached fast_dt_us for per-sample timing
             fast_dt_us: 0,
-            yield_duration_ticks: 1,
-            yield_coast_ticks: 1,
         };
 
-        // Initialize derived timing from SafetyManager's default fast_dt_us
+        // Initialize fast_dt_us from SafetyManager's default
         servo.update_fast_dt_us(servo.safety.fast_dt_us());
         servo
     }
@@ -734,8 +729,10 @@ impl<C: ControlLoop> ServoCore<C> {
             ServoMode::Yield => {
                 // Accumulate time-based elapsed (only when window_dt_us > 0, clamp to duration)
                 if window_dt_us > 0 {
-                    self.yield_elapsed_us =
-                        (self.yield_elapsed_us + window_dt_us).min(YIELD_DURATION_US);
+                    self.yield_elapsed_us = self
+                        .yield_elapsed_us
+                        .saturating_add(window_dt_us)
+                        .min(YIELD_DURATION_US);
                 }
                 // Update duty phase based on elapsed time
                 self.yield_max_duty = if self.yield_elapsed_us < YIELD_COAST_US {
@@ -790,31 +787,17 @@ impl<C: ControlLoop> ServoCore<C> {
         }
     }
 
-    /// Update the fast-tick period and recompute yield timing fields.
+    /// Update cached fast_dt_us when tick rate changes.
     ///
     /// Called by the app layer when the board's actual tick rate is known or changes.
-    /// At dt_us=100 (10kHz), derived values match historical defaults.
-    /// The function returns early if dt_us hasn't changed.
-    ///
-    /// Note: Most timing is now time-based (via window_dt_us in medium tick).
-    /// Only yield timing remains tick-based until yield logic moves fully to medium.
+    /// Returns early if dt_us hasn't changed. Clamps to at least 1us.
     pub fn update_fast_dt_us(&mut self, dt_us: u32) {
-        use crate::timing::ticks_from_us;
-
         let dt_us = dt_us.max(1); // Defensive: clamp to at least 1us
         if dt_us == self.fast_dt_us {
             return;
         }
 
         self.fast_dt_us = dt_us;
-
-        // TODO: yield timing remains tick-based; convert when yield logic moves fully to medium
-        self.yield_duration_ticks = ticks_from_us(dt_us, YIELD_DURATION_US).max(1);
-        self.yield_coast_ticks = ticks_from_us(dt_us, YIELD_COAST_US).max(1);
-
-        // Sanity checks (debug only)
-        debug_assert!(self.yield_duration_ticks >= 1);
-        debug_assert!(self.yield_coast_ticks >= 1);
     }
 
     /// Get current compliance mode
@@ -852,6 +835,11 @@ impl<C: ControlLoop> ServoCore<C> {
     #[cfg(test)]
     fn yield_elapsed_us(&self) -> u32 {
         self.yield_elapsed_us
+    }
+
+    #[cfg(test)]
+    fn set_fast_seq_for_test(&mut self, val: u32) {
+        self.fast_seq = val;
     }
 
     #[cfg(test)]
@@ -1163,57 +1151,16 @@ mod tests {
         assert_eq!(core.backdrive_elapsed_us, 0);
     }
 
-    // ========== Derived timing tests (yield timing only - others are now time-based) ==========
+    // ========== update_fast_dt_us tests ==========
 
     #[test]
-    fn test_yield_timing_at_default_dt() {
-        // new() uses SafetyManager's default fast_dt_us (100us), so values match 10kHz defaults
-        let core = make_core(MockController::new());
-        assert_eq!(core.fast_dt_us, 100);
-        // Only yield timing remains tick-based
-        assert_eq!(core.yield_duration_ticks, 2000); // 200_000us / 100us
-        assert_eq!(core.yield_coast_ticks, 1000); // 100_000us / 100us
-    }
-
-    #[test]
-    fn test_yield_timing_at_different_rate() {
-        // With dt_us=125 (8kHz)
-        let mut core = make_core(MockController::new());
-        core.update_fast_dt_us(125);
-
-        assert_eq!(core.fast_dt_us, 125);
-        assert_eq!(core.yield_duration_ticks, 1600); // 200_000/125 = 1600
-        assert_eq!(core.yield_coast_ticks, 800); // 100_000/125 = 800
-    }
-
-    #[test]
-    fn test_yield_timing_clamps_to_min_1() {
-        // With very slow tick rate, ensure minimum 1 tick
-        let mut core = make_core(MockController::new());
-        core.update_fast_dt_us(2_000_000); // 2 second ticks (absurd but tests clamp)
-
-        assert!(core.yield_duration_ticks >= 1);
-        assert!(core.yield_coast_ticks >= 1);
-    }
-
-    #[test]
-    fn test_yield_timing_clamps_dt_us_to_min_1() {
+    fn test_update_fast_dt_us_clamps_zero() {
         // Zero dt_us should be clamped to 1
         let mut core = make_core(MockController::new());
         core.update_fast_dt_us(0);
 
         // dt_us should be clamped to 1
         assert_eq!(core.fast_dt_us, 1);
-    }
-
-    #[test]
-    fn test_yield_timing_idempotent() {
-        // Calling update_fast_dt_us with same value leaves fields unchanged
-        let mut core = make_core(MockController::new());
-        let before = (core.yield_duration_ticks, core.yield_coast_ticks);
-        core.update_fast_dt_us(100);
-        core.update_fast_dt_us(100); // Second call
-        assert_eq!((core.yield_duration_ticks, core.yield_coast_ticks), before);
     }
 
     // ========== Time-based policy tests ==========
@@ -1676,18 +1623,16 @@ mod tests {
         let ctx = test_ctx();
 
         // Set fast_seq near u32::MAX to test wrapping
-        // We can't directly set fast_seq, so verify the wrapping behavior concept:
-        // fast_seq uses wrapping_add(1), so at u32::MAX it wraps to 0
+        core.set_fast_seq_for_test(u32::MAX - 1);
+        assert_eq!(core.fast_seq(), u32::MAX - 1);
 
-        // Run many ticks to verify it doesn't panic or overflow
-        for _ in 0..1000 {
-            core.fast_tick(&ctx, make_inputs(9000));
-        }
-        assert_eq!(core.fast_seq(), 1000);
+        // First tick: MAX-1 -> MAX
+        core.fast_tick(&ctx, make_inputs(9000));
+        assert_eq!(core.fast_seq(), u32::MAX);
 
-        // Verify wrapping_add semantics (conceptual test)
-        let max_val = u32::MAX;
-        assert_eq!(max_val.wrapping_add(1), 0);
+        // Second tick: wraps to 0
+        core.fast_tick(&ctx, make_inputs(9000));
+        assert_eq!(core.fast_seq(), 0);
     }
 
     // ========== dt/sample_count independence tests ==========
