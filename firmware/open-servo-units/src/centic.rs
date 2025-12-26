@@ -1,6 +1,6 @@
 //! Temperature in centi-degrees Celsius.
 
-use crate::helpers::mul_div_i32;
+use crate::helpers::{div_round_i32, mul_div_round_i32};
 use crate::macros::impl_unit_int_ops;
 
 /// Temperature in 0.01°C (1 LSB = 0.01°C, centi-degrees Celsius)
@@ -60,7 +60,7 @@ impl CentiC {
     #[inline]
     pub fn to_kelvin(self) -> u16 {
         // K = centiC / 100 + 273.15
-        let k = (self.0 as i32 + 27315) / 100;
+        let k = div_round_i32(self.0 as i32 + 27315, 100);
         k.clamp(0, u16::MAX as i32) as u16
     }
 
@@ -68,7 +68,7 @@ impl CentiC {
     pub fn from_fahrenheit(f: i16) -> Self {
         // C = (F - 32) * 5/9
         // centiC = (F - 32) * 500 / 9
-        let cc = mul_div_i32(f as i32 - 32, 500, 9);
+        let cc = mul_div_round_i32(f as i32 - 32, 500, 9);
         CentiC(cc.clamp(i16::MIN as i32, i16::MAX as i32) as i16)
     }
 
@@ -76,7 +76,7 @@ impl CentiC {
     pub fn as_fahrenheit(self) -> i16 {
         // F = C * 9/5 + 32
         // F = centiC * 9 / 500 + 32
-        let f = mul_div_i32(self.0 as i32, 9, 500) + 32;
+        let f = mul_div_round_i32(self.0 as i32, 9, 500) + 32;
         f.clamp(i16::MIN as i32, i16::MAX as i32) as i16
     }
 }
@@ -99,6 +99,16 @@ mod tests {
 
         let cc = CentiC::from_kelvin(273);
         assert!(cc.as_celsius().abs() <= 1);
+    }
+
+    #[test]
+    fn test_kelvin_rounding() {
+        // 27350 centiC + 27315 = 54665, / 100 = 546.65 -> rounds to 547
+        assert_eq!(CentiC::from_centi_c(27350).to_kelvin(), 547);
+        // 27340 centiC + 27315 = 54655, / 100 = 546.55 -> rounds to 547
+        assert_eq!(CentiC::from_centi_c(27340).to_kelvin(), 547);
+        // 27330 centiC + 27315 = 54645, / 100 = 546.45 -> rounds to 546
+        assert_eq!(CentiC::from_centi_c(27330).to_kelvin(), 546);
     }
 
     #[test]

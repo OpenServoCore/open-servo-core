@@ -4,7 +4,7 @@
 use open_servo_math::CentiC;
 #[cfg(feature = "current-sense-bus")]
 use open_servo_math::MilliAmp;
-use open_servo_math::{mul_div_i32, CentiDeg, MilliVolt};
+use open_servo_math::{mul_div_round_i32, CentiDeg, MilliVolt};
 
 // ADC calibration memory addresses
 pub const VREFINT_CAL_ADDR: u32 = 0x1FFFF7BA;
@@ -71,14 +71,14 @@ impl BoardCalibration {
         // Map ADC range [0, adc_max] to position range [pot_min_cdeg, pot_max_cdeg]
         let raw = raw as i32;
         let range = (self.pot_max_cdeg - self.pot_min_cdeg) as i32;
-        let cdeg = self.pot_min_cdeg as i32 + mul_div_i32(raw, range, self.adc_max as i32);
+        let cdeg = self.pot_min_cdeg as i32 + mul_div_round_i32(raw, range, self.adc_max as i32);
         CentiDeg::from_cdeg(cdeg.clamp(i16::MIN as i32, i16::MAX as i32) as i16)
     }
 
     /// Convert ADC reading to voltage
     pub fn voltage_from_adc(&self, raw: u16, vdda_mv: u16) -> MilliVolt {
         // V = raw * vdda_mv / adc_max
-        let mv = mul_div_i32(raw as i32, vdda_mv as i32, self.adc_max as i32);
+        let mv = mul_div_round_i32(raw as i32, vdda_mv as i32, self.adc_max as i32);
         MilliVolt::from_mv(mv.clamp(0, i16::MAX as i32) as i16)
     }
 }
@@ -92,7 +92,7 @@ pub fn convert_vdda_mv(vref_raw: u16) -> u16 {
     }
     let vrefint_cal: u16 = unsafe { core::ptr::read(VREFINT_CAL_ADDR as *const u16) };
     // vdda_mv = 3300 * vrefint_cal / vref_raw
-    mul_div_i32(3300, vrefint_cal as i32, vref_raw as i32) as u16
+    mul_div_round_i32(3300, vrefint_cal as i32, vref_raw as i32) as u16
 }
 
 /// Convert MCU internal temperature sensor ADC reading to temperature
@@ -111,11 +111,11 @@ pub fn convert_temperature_cc(adc_value: u16, vdda_mv: u16) -> CentiC {
         return CentiC::from_celsius(25);
     }
 
-    let adc_normalized = mul_div_i32(adc_value as i32, 3300, vdda_mv as i32);
+    let adc_normalized = mul_div_round_i32(adc_value as i32, 3300, vdda_mv as i32);
     let cal_diff = (ts_cal2 as i32) - (ts_cal1 as i32);
     let adc_diff = adc_normalized - (ts_cal1 as i32);
 
-    let temp_c = 30 + mul_div_i32(adc_diff, 80, cal_diff);
+    let temp_c = 30 + mul_div_round_i32(adc_diff, 80, cal_diff);
 
     // Clamp to reasonable range
     let temp_c = temp_c.clamp(-40, 125);
@@ -127,8 +127,8 @@ pub fn convert_temperature_cc(adc_value: u16, vdda_mv: u16) -> CentiC {
 #[cfg(feature = "voltage-sense-motor")]
 pub fn motor_voltage_from_adc(vpos_raw: u16, vneg_raw: u16) -> (MilliVolt, MilliVolt) {
     // Each terminal: 0-4095 ADC = 0-5000mV
-    let vpos_mv = mul_div_i32(vpos_raw as i32, 5000, 4095);
-    let vneg_mv = mul_div_i32(vneg_raw as i32, 5000, 4095);
+    let vpos_mv = mul_div_round_i32(vpos_raw as i32, 5000, 4095);
+    let vneg_mv = mul_div_round_i32(vneg_raw as i32, 5000, 4095);
     (
         MilliVolt::from_mv(vpos_mv as i16),
         MilliVolt::from_mv(vneg_mv as i16),

@@ -6,7 +6,7 @@ authors.workspace = true
 
 [features]
 default = []
-defmt = ["dep:defmt"]
+defmt = ["dep:defmt", "open-servo-units/defmt"]
 # Enable std for tests (automatically enabled by cargo test)
 std = []
 

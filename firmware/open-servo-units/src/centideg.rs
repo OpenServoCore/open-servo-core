@@ -1,6 +1,6 @@
 //! Angular position in centidegrees.
 
-use crate::helpers::mul_div_i32;
+use crate::helpers::mul_div_round_i32;
 use crate::macros::impl_unit_int_ops;
 
 /// Angle in centidegrees (1 LSB = 0.01°)
@@ -35,7 +35,7 @@ impl CentiDeg {
     #[inline]
     pub fn to_mrad(self) -> i32 {
         // mrad = cdeg * 174.5329 / 1000  (π/180 * 100)
-        mul_div_i32(self.0 as i32, 175, 1000)
+        mul_div_round_i32(self.0 as i32, 175, 1000)
     }
 }
 
