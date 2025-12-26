@@ -13,7 +13,7 @@ pub mod cascade;
 pub use open_servo_math::*;
 
 // Re-export commonly used items
-pub use traits::{ControlInput, ControlLoop, ControlOutput, DutyLimits};
+pub use traits::{ControlInput, ControlLoop, ControlOutput, EffortLimits};
 
 #[cfg(feature = "pid")]
 pub use traits::PidTunable;

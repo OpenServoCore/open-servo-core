@@ -2,7 +2,7 @@
 
 #[cfg(feature = "current-sense-bus")]
 use open_servo_math::MilliAmp;
-use open_servo_math::{CentiC, CentiDeg, DegPerSec10, Duty, MilliVolt};
+use open_servo_math::{CentiC, CentiDeg, DegPerSec10, Effort, MilliVolt};
 
 use super::ServoMode;
 
@@ -17,8 +17,8 @@ pub struct CoreRuntime {
     pub setpoint: CentiDeg,
     /// Current position feedback
     pub position: CentiDeg,
-    /// Current PWM duty cycle
-    pub pwm_duty: Duty,
+    /// Current motor effort
+    pub effort: Effort,
     /// Current reading (requires `current-sense-bus` feature)
     #[cfg(feature = "current-sense-bus")]
     pub current: Option<MilliAmp>,

@@ -122,8 +122,8 @@ impl HoldConditionsTracker {
 /// Backdrive detection state.
 #[derive(Debug, Clone, Default)]
 pub struct BackdriveDetector {
-    /// Previous PWM command for sign comparison
-    pub prev_pwm: i16,
+    /// Previous effort command for sign comparison
+    pub prev_effort: i16,
     /// Previous error for sign comparison
     pub prev_error: i16,
     /// Time backdrive condition has persisted (microseconds)
@@ -183,14 +183,14 @@ impl BackdriveDetector {
             self.elapsed_us = 0;
         }
 
-        self.prev_pwm = pwm;
+        self.prev_effort = pwm;
         self.prev_error = error;
         false
     }
 
     /// Reset detector state.
     pub fn reset(&mut self) {
-        self.prev_pwm = 0;
+        self.prev_effort = 0;
         self.prev_error = 0;
         self.elapsed_us = 0;
     }
@@ -302,7 +302,7 @@ fn check_backdrive_condition(
     }
 
     // Sign mismatch with deadband (using cached previous PWM)
-    let u = internal.backdrive_detector.prev_pwm;
+    let u = internal.backdrive_detector.prev_effort;
     let deadband = policy.backdrive_deadband.as_raw();
     let u_active = u.saturating_abs() > deadband;
     let opposing = u_active && ((vel > 0) != (u > 0));
@@ -378,7 +378,7 @@ pub fn apply_policy(
         let vel = velocity.as_dps10();
         let vel_abs_check = vel.saturating_abs();
 
-        let u = internal.backdrive_detector.prev_pwm;
+        let u = internal.backdrive_detector.prev_effort;
         let deadband = policy.backdrive_deadband.as_raw();
         let u_active = u.saturating_abs() > deadband;
         let opposing = u_active && ((vel > 0) != (u > 0));

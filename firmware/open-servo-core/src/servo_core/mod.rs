@@ -419,7 +419,7 @@ impl<C: ControlLoop> ServoCore<C> {
 mod tests {
     use super::*;
     use crate::test_support::{make_core, make_inputs, MockController};
-    use open_servo_math::{CentiC, Duty, MilliVolt, TickDomain};
+    use open_servo_math::{CentiC, Effort, MilliVolt, TickDomain};
 
     /// Create a dummy TickCtx for testing.
     fn test_ctx() -> TickCtx {
@@ -444,7 +444,7 @@ mod tests {
 
         // fast_tick should return safe outputs
         let outputs = core.fast_tick(&ctx, make_inputs(9000));
-        assert_eq!(outputs.pwm_command, Duty::ZERO);
+        assert_eq!(outputs.effort, Effort::ZERO);
         assert!(!outputs.motor_enable);
     }
 
@@ -452,16 +452,16 @@ mod tests {
     fn test_fast_tick_skips_on_bad_position() {
         let mut core = make_core(MockController::new());
         let ctx = test_ctx();
-        core.controller_mut().set_output(Duty::from_raw(500)); // Would produce output if position was valid
+        core.controller_mut().set_output(Effort::from_raw(500)); // Would produce output if position was valid
         core.engage(CentiDeg::from_cdeg(9000));
 
         // First tick initializes sensor health at position 9000
         core.fast_tick(&ctx, make_inputs(9000));
 
         // Sudden large jump should be rejected (delta > max_delta threshold)
-        // Skip keeps motor enabled but outputs PWM 0 (hold position, don't actuate on bad data)
+        // Skip keeps motor enabled but outputs effort 0 (hold position, don't actuate on bad data)
         let outputs = core.fast_tick(&ctx, make_inputs(0)); // Jump from 9000 to 0
-        assert_eq!(outputs.pwm_command, Duty::ZERO);
+        assert_eq!(outputs.effort, Effort::ZERO);
         assert!(outputs.motor_enable); // Skip keeps motor enabled, just sends 0 PWM
     }
 
@@ -489,14 +489,14 @@ mod tests {
             core.fault_state().fault_kind(),
             Some(FaultKind::OverCurrent)
         );
-        assert_eq!(outputs.pwm_command, Duty::ZERO);
+        assert_eq!(outputs.effort, Effort::ZERO);
     }
 
     #[test]
     fn test_fast_tick_normal_operation() {
         let mut core = make_core(MockController::new());
         let ctx = test_ctx();
-        core.controller_mut().set_output(Duty::from_raw(500));
+        core.controller_mut().set_output(Effort::from_raw(500));
         core.engage(CentiDeg::from_cdeg(9000));
 
         // Initialize position
@@ -505,7 +505,7 @@ mod tests {
         // Normal tick should produce output
         let outputs = core.fast_tick(&ctx, make_inputs(9000));
         assert!(outputs.motor_enable);
-        assert_eq!(outputs.pwm_command, Duty::from_raw(500));
+        assert_eq!(outputs.effort, Effort::from_raw(500));
     }
 
     // ========== slow_tick tests ==========
@@ -591,7 +591,7 @@ mod tests {
     fn test_runtime_updated_after_tick() {
         let mut core = make_core(MockController::new());
         let ctx = test_ctx();
-        core.controller_mut().set_output(Duty::from_raw(750));
+        core.controller_mut().set_output(Effort::from_raw(750));
         core.set_setpoint(CentiDeg::from_cdeg(9000)); // Use core's setpoint now
         core.engage(CentiDeg::from_cdeg(8000)); // Must engage for tick to run controller
 
@@ -609,7 +609,7 @@ mod tests {
 
         let rt = core.runtime();
         assert_eq!(rt.position.as_cdeg(), 8000);
-        assert_eq!(rt.pwm_duty, Duty::from_raw(750));
+        assert_eq!(rt.effort, Effort::from_raw(750));
         #[cfg(feature = "current-sense-bus")]
         assert_eq!(rt.current, Some(MilliAmp::from_ma(200)));
         assert_eq!(rt.bus_voltage, Some(MilliVolt::from_mv(3300)));

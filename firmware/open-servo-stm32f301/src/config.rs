@@ -3,7 +3,7 @@
 use open_servo_hw::config::{
     BoardKinematicsConfig, BoardPolicyConfig, BoardSafetyConfig, BoardThermalConfig,
 };
-use open_servo_math::{CentiDeg, ComplianceConfig, DegPerSec10, Duty};
+use open_servo_math::{CentiDeg, ComplianceConfig, DegPerSec10, Effort};
 
 /// Slow tick frequency in Hz
 pub const SLOW_HZ: u32 = 100;
@@ -255,15 +255,15 @@ impl BoardConfigProvider {
             hold_enter_vel: DegPerSec10::from_dps10(Self::HOLD_ENTER_VEL_DPS10),
             hold_exit_vel: DegPerSec10::from_dps10(Self::HOLD_EXIT_VEL_DPS10),
             backdrive_vel_threshold: DegPerSec10::from_dps10(Self::BACKDRIVE_VEL_THRESHOLD_DPS10),
-            backdrive_deadband: Duty::from_raw(Self::BACKDRIVE_DEADBAND_DUTY),
+            backdrive_deadband: Effort::from_raw(Self::BACKDRIVE_DEADBAND_DUTY),
             backdrive_persist_us: Self::BACKDRIVE_PERSIST_US,
-            yield_alive_duty_max: Duty::from_raw(Self::YIELD_ALIVE_DUTY_MAX),
+            yield_alive_effort_max: Effort::from_raw(Self::YIELD_ALIVE_DUTY_MAX),
             yield_coast_us: Self::YIELD_COAST_US,
             yield_duration_us: Self::YIELD_DURATION_US,
-            hold_duty_error_start: CentiDeg::from_cdeg(Self::HOLD_DUTY_ERROR_START_CDEG),
-            hold_duty_error_end: CentiDeg::from_cdeg(Self::HOLD_DUTY_ERROR_END_CDEG),
-            hold_duty_min: Duty::from_raw(Self::HOLD_DUTY_MIN),
-            hold_duty_max: Duty::from_raw(Self::HOLD_DUTY_MAX),
+            hold_effort_error_start: CentiDeg::from_cdeg(Self::HOLD_DUTY_ERROR_START_CDEG),
+            hold_effort_error_end: CentiDeg::from_cdeg(Self::HOLD_DUTY_ERROR_END_CDEG),
+            hold_effort_min: Effort::from_raw(Self::HOLD_DUTY_MIN),
+            hold_effort_max: Effort::from_raw(Self::HOLD_DUTY_MAX),
         }
     }
 }

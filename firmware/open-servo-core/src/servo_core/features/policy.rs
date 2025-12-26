@@ -3,7 +3,7 @@
 //! All policy tuning comes from board config.
 
 use open_servo_hw::BoardPolicyConfig;
-use open_servo_math::{CentiDeg, DegPerSec10, Duty};
+use open_servo_math::{CentiDeg, DegPerSec10, Effort};
 
 /// Policy configuration.
 ///
@@ -18,17 +18,17 @@ pub struct PolicyConfig {
 
     /// Backdrive/yield detection
     pub backdrive_vel_threshold: DegPerSec10,
-    pub backdrive_deadband: Duty,
+    pub backdrive_deadband: Effort,
     pub backdrive_persist_us: u32,
-    pub yield_alive_duty_max: Duty,
+    pub yield_alive_effort_max: Effort,
     pub yield_coast_us: u32,
     pub yield_duration_us: u32,
 
-    /// Hold duty curve
-    pub hold_duty_error_start: CentiDeg,
-    pub hold_duty_error_end: CentiDeg,
-    pub hold_duty_min: Duty,
-    pub hold_duty_max: Duty,
+    /// Hold effort curve
+    pub hold_effort_error_start: CentiDeg,
+    pub hold_effort_error_end: CentiDeg,
+    pub hold_effort_min: Effort,
+    pub hold_effort_max: Effort,
 }
 
 impl PolicyConfig {
@@ -42,13 +42,13 @@ impl PolicyConfig {
             backdrive_vel_threshold: board.backdrive_vel_threshold,
             backdrive_deadband: board.backdrive_deadband,
             backdrive_persist_us: board.backdrive_persist_us,
-            yield_alive_duty_max: board.yield_alive_duty_max,
+            yield_alive_effort_max: board.yield_alive_effort_max,
             yield_coast_us: board.yield_coast_us,
             yield_duration_us: board.yield_duration_us,
-            hold_duty_error_start: board.hold_duty_error_start,
-            hold_duty_error_end: board.hold_duty_error_end,
-            hold_duty_min: board.hold_duty_min,
-            hold_duty_max: board.hold_duty_max,
+            hold_effort_error_start: board.hold_effort_error_start,
+            hold_effort_error_end: board.hold_effort_error_end,
+            hold_effort_min: board.hold_effort_min,
+            hold_effort_max: board.hold_effort_max,
         }
     }
 }

@@ -8,7 +8,7 @@
 //! integration and safety logic are handled by the ComplianceLimiter in
 //! the safety module.
 
-use crate::{Duty, MilliAmp};
+use crate::{Effort, MilliAmp};
 
 /// State of the compliance limiting system.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -71,8 +71,8 @@ impl ComplianceConfig {
 pub struct ComplianceModel {
     config: ComplianceConfig,
 
-    /// Current duty cycle limit (0 to Duty::MAX)
-    duty_cap: i16,
+    /// Current effort limit (0 to Effort::MAX)
+    effort_cap: i16,
 
     /// Consecutive over-current sample count
     over_cnt: u8,
@@ -86,7 +86,7 @@ impl ComplianceModel {
     pub fn new(config: ComplianceConfig) -> Self {
         Self {
             config,
-            duty_cap: Duty::MAX.as_raw(),
+            effort_cap: Effort::MAX.as_raw(),
             over_cnt: 0,
             state: LimitState::Normal,
         }
@@ -147,8 +147,8 @@ impl ComplianceModel {
                     self.apply_recovery(dt_us);
 
                     // Check if fully recovered
-                    if self.duty_cap >= Duty::MAX.as_raw() {
-                        self.duty_cap = Duty::MAX.as_raw();
+                    if self.effort_cap >= Effort::MAX.as_raw() {
+                        self.effort_cap = Effort::MAX.as_raw();
                         self.state = LimitState::Normal;
                         self.over_cnt = 0;
                     }
@@ -160,17 +160,17 @@ impl ComplianceModel {
         self.get_limits()
     }
 
-    /// Apply backoff by reducing duty cap.
+    /// Apply backoff by reducing effort cap.
     fn apply_backoff(&mut self) {
         // Multiply by backoff factor using Q8 arithmetic
-        let new_cap = ((self.duty_cap as i32 * self.config.backoff_factor_q8 as i32) >> 8) as i16;
+        let new_cap = ((self.effort_cap as i32 * self.config.backoff_factor_q8 as i32) >> 8) as i16;
 
         // Ensure minimum cap (at least 10% to maintain some control)
-        const MIN_CAP: i16 = 3277; // 10% of Duty::MAX
-        self.duty_cap = new_cap.max(MIN_CAP);
+        const MIN_CAP: i16 = 3277; // 10% of Effort::MAX
+        self.effort_cap = new_cap.max(MIN_CAP);
     }
 
-    /// Apply recovery by increasing duty cap.
+    /// Apply recovery by increasing effort cap.
     fn apply_recovery(&mut self, dt_us: u32) {
         // Calculate recovery step based on time delta
         // recovery_step = recovery_rate * dt_seconds
@@ -178,20 +178,20 @@ impl ComplianceModel {
         let recovery_step = ((self.config.recovery_rate as i32 * dt_us as i32) / 1_000_000) as i16;
 
         // Apply recovery
-        self.duty_cap = self.duty_cap.saturating_add(recovery_step);
+        self.effort_cap = self.effort_cap.saturating_add(recovery_step);
 
         // Cap at maximum
-        if self.duty_cap > Duty::MAX.as_raw() {
-            self.duty_cap = Duty::MAX.as_raw();
+        if self.effort_cap > Effort::MAX.as_raw() {
+            self.effort_cap = Effort::MAX.as_raw();
         }
     }
 
-    /// Get current duty cycle limits.
+    /// Get current effort limits.
     ///
     /// Returns (min, max) tuple for flexibility.
     /// Currently symmetric but supports future asymmetric limits.
     pub fn get_limits(&self) -> (i32, i32) {
-        let limit = self.duty_cap as i32;
+        let limit = self.effort_cap as i32;
         (-limit, limit)
     }
 
@@ -202,17 +202,17 @@ impl ComplianceModel {
 
     /// Check if compliance is currently being limited.
     pub fn is_limited(&self) -> bool {
-        self.state != LimitState::Normal || self.duty_cap < Duty::MAX.as_raw()
+        self.state != LimitState::Normal || self.effort_cap < Effort::MAX.as_raw()
     }
 
-    /// Get current duty cap value (for telemetry).
-    pub fn duty_cap(&self) -> i16 {
-        self.duty_cap
+    /// Get current effort cap value (for telemetry).
+    pub fn effort_cap(&self) -> i16 {
+        self.effort_cap
     }
 
     /// Reset to initial state.
     pub fn reset(&mut self) {
-        self.duty_cap = Duty::MAX.as_raw();
+        self.effort_cap = Effort::MAX.as_raw();
         self.over_cnt = 0;
         self.state = LimitState::Normal;
     }
@@ -243,9 +243,9 @@ mod tests {
         model.update(Some(MilliAmp::from_ma(650)), 100);
         assert_eq!(model.state(), LimitState::Limiting);
 
-        // Duty should be backed off
+        // Effort should be backed off
         let (min, max) = model.get_limits();
-        assert!(max < Duty::MAX.as_raw() as i32);
+        assert!(max < Effort::MAX.as_raw() as i32);
         assert_eq!(min, -max);
     }
 
@@ -276,7 +276,7 @@ mod tests {
         for _ in 0..3 {
             model.update(Some(MilliAmp::from_ma(650)), 100);
         }
-        let limited_cap = model.duty_cap();
+        let limited_cap = model.effort_cap();
 
         // Start recovery at low current
         model.update(Some(MilliAmp::from_ma(400)), 100);
@@ -286,7 +286,7 @@ mod tests {
         // 100ms = 0.1 seconds = ~328 units recovery
         let dt_us = 100_000; // 100ms
         model.update(Some(MilliAmp::from_ma(400)), dt_us);
-        let recovered_cap = model.duty_cap();
+        let recovered_cap = model.effort_cap();
 
         // Should have recovered by approximately 328 units
         let recovery = recovered_cap - limited_cap;
@@ -307,12 +307,12 @@ mod tests {
             model.update(Some(MilliAmp::from_ma(650)), 100);
         }
         assert_eq!(model.state(), LimitState::Limiting);
-        let limited_cap = model.duty_cap();
+        let limited_cap = model.effort_cap();
 
         // Current in hysteresis band (550-600mA) - should hold state
         model.update(Some(MilliAmp::from_ma(575)), 100);
         assert_eq!(model.state(), LimitState::Limiting);
-        assert_eq!(model.duty_cap(), limited_cap); // No change
+        assert_eq!(model.effort_cap(), limited_cap); // No change
 
         // Drop below hysteresis (< 550mA) - should start recovery
         model.update(Some(MilliAmp::from_ma(500)), 100);
@@ -321,8 +321,8 @@ mod tests {
         // Back in hysteresis band - should hold recovery state
         model.update(Some(MilliAmp::from_ma(575)), 100);
         assert_eq!(model.state(), LimitState::Recovering);
-        let recovering_cap = model.duty_cap();
-        assert_eq!(model.duty_cap(), recovering_cap); // No change
+        let recovering_cap = model.effort_cap();
+        assert_eq!(model.effort_cap(), recovering_cap); // No change
     }
 
     #[test]
@@ -332,8 +332,8 @@ mod tests {
 
         // No sensor (None) should never limit
         let (min, max) = model.update(None, 100);
-        assert_eq!(min, -Duty::MAX.as_raw() as i32);
-        assert_eq!(max, Duty::MAX.as_raw() as i32);
+        assert_eq!(min, -Effort::MAX.as_raw() as i32);
+        assert_eq!(max, Effort::MAX.as_raw() as i32);
         assert_eq!(model.state(), LimitState::Normal);
     }
 
@@ -350,6 +350,6 @@ mod tests {
         }
 
         // Should never go below 10% (3277)
-        assert!(model.duty_cap() >= 3277);
+        assert!(model.effort_cap() >= 3277);
     }
 }

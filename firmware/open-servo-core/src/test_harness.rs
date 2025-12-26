@@ -13,7 +13,7 @@ use crate::outputs::FastOutputs;
 use crate::servo_core::{ServoCore, ServoMode};
 use crate::test_support::{make_core, make_inputs, repeat_inputs, MockController};
 use open_servo_control::ControlLoop;
-use open_servo_math::{CentiDeg, Duty, TickCtx, TickDomain};
+use open_servo_math::{CentiDeg, Effort, TickCtx, TickDomain};
 
 /// Create a dummy TickCtx for testing.
 fn test_ctx() -> TickCtx {
@@ -38,8 +38,8 @@ pub struct Snapshot {
     pub position: CentiDeg,
     /// Current setpoint (if any)
     pub setpoint: Option<CentiDeg>,
-    /// PWM command from output
-    pub pwm: Duty,
+    /// Effort command from output
+    pub effort: Effort,
     /// Motor enable state from output
     pub motor_enable: bool,
     /// Whether the core is currently faulted
@@ -60,7 +60,7 @@ impl Snapshot {
         Self {
             position: inputs.position,
             setpoint: core.get_setpoint(),
-            pwm: outputs.pwm_command,
+            effort: outputs.effort,
             motor_enable: outputs.motor_enable,
             faulted: core.is_faulted(),
             fault_kind: outputs.fault,
@@ -144,7 +144,7 @@ fn test_stall_triggers_at_timeout() {
     core.fast_tick(&ctx, make_inputs(9000));
 
     // Set BOTH output and saturation
-    core.controller_mut().set_output(Duty::MAX);
+    core.controller_mut().set_output(Effort::MAX);
     core.controller_mut().set_saturated(true);
 
     // Build input sequence: (timeout - 1) ticks at position 9000
@@ -175,7 +175,7 @@ fn test_stall_counter_resets_on_movement() {
     core.fast_tick(&ctx, make_inputs(9000));
 
     // Set BOTH output and saturation
-    core.controller_mut().set_output(Duty::MAX);
+    core.controller_mut().set_output(Effort::MAX);
     core.controller_mut().set_saturated(true);
 
     // Run half timeout at position 9000
@@ -215,7 +215,7 @@ fn test_no_stall_without_saturation() {
     core.fast_tick(&ctx, make_inputs(9000));
 
     // High duty but NOT saturated - stall should NOT trigger
-    core.controller_mut().set_output(Duty::MAX);
+    core.controller_mut().set_output(Effort::MAX);
     core.controller_mut().set_saturated(false);
 
     // Run timeout + 5 ticks at constant position

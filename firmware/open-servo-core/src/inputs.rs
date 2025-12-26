@@ -112,8 +112,8 @@ pub fn build_medium_control_input(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use open_servo_control::DutyLimits;
-    use open_servo_math::{DegPerSec10, Duty};
+    use open_servo_control::EffortLimits;
+    use open_servo_math::{DegPerSec10, Effort};
 
     #[test]
     fn test_build_medium_control_input() {
@@ -123,7 +123,7 @@ mod tests {
             velocity: None,                      // Will be overwritten by snapshot
             current: None,                       // Will be overwritten by snapshot
             bus_voltage: Some(MilliVolt::from_mv(12000)),
-            limits: DutyLimits::new(Duty::from_raw(-5000), Duty::from_raw(5000)),
+            limits: EffortLimits::new(Effort::from_raw(-5000), Effort::from_raw(5000)),
         };
 
         let snap = MediumSnapshot {

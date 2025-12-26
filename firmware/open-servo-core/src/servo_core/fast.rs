@@ -13,8 +13,8 @@ use crate::servo_core::features::{compliance, safety, thermal};
 use crate::servo_core::internal::CoreInternal;
 use crate::servo_core::runtime::CoreRuntime;
 use crate::servo_core::ServoMode;
-use open_servo_control::{ControlInput, ControlLoop, DutyLimits};
-use open_servo_math::{CentiDeg, CentiDeg32, Duty, MilliVolt, TickCtx};
+use open_servo_control::{ControlInput, ControlLoop, EffortLimits};
+use open_servo_math::{CentiDeg, CentiDeg32, Effort, MilliAmp, MilliVolt, TickCtx};
 
 /// Data observed from fast tick inputs.
 #[derive(Debug, Clone)]
@@ -194,7 +194,7 @@ pub fn control_fast<C: ControlLoop>(
     );
 
     // Get base limits from compliance limiter
-    let (mut min_duty, mut max_duty) = compliance::get_limits(&internal.compliance);
+    let (mut min_effort, mut max_effort) = compliance::get_limits(&internal.compliance);
 
     // Apply mode-specific limits
     match internal.mode {
@@ -203,17 +203,17 @@ pub fn control_fast<C: ControlLoop>(
         }
 
         ServoMode::Hold => {
-            // Apply error-based duty cap curve
-            let duty_cap =
-                compliance::compute_hold_duty_cap(protected.error.saturating_abs(), &config.policy);
-            min_duty = min_duty.max(-duty_cap as i32);
-            max_duty = max_duty.min(duty_cap as i32);
+            // Apply error-based effort cap curve
+            let effort_cap =
+                compliance::compute_hold_effort_cap(protected.error.saturating_abs(), &config.policy);
+            min_effort = min_effort.max(-effort_cap as i32);
+            max_effort = max_effort.min(effort_cap as i32);
         }
 
         ServoMode::Yield => {
-            // Use yield_max_duty set by medium tick
-            min_duty = -(internal.backdrive.max_duty as i32);
-            max_duty = internal.backdrive.max_duty as i32;
+            // Use yield_max_effort set by medium tick
+            min_effort = -(internal.backdrive.max_effort as i32);
+            max_effort = internal.backdrive.max_effort as i32;
 
             // Reset controller on YIELD entry (once)
             if internal.backdrive.needs_reset {
@@ -233,9 +233,9 @@ pub fn control_fast<C: ControlLoop>(
         #[cfg(not(feature = "current-sense-bus"))]
         current: None,
         bus_voltage: protected.bus_voltage,
-        limits: DutyLimits {
-            min: Duty::from_raw(min_duty.clamp(i16::MIN as i32, i16::MAX as i32) as i16),
-            max: Duty::from_raw(max_duty.clamp(i16::MIN as i32, i16::MAX as i32) as i16),
+        limits: EffortLimits {
+            min: Effort::from_raw(min_effort.clamp(i16::MIN as i32, i16::MAX as i32) as i16),
+            max: Effort::from_raw(max_effort.clamp(i16::MIN as i32, i16::MAX as i32) as i16),
         },
     };
 
@@ -257,7 +257,7 @@ pub fn actuate_fast(
     ctrl_output: &open_servo_control::ControlOutput,
 ) -> FastTickResult {
     // Update tracking for backdrive detection
-    internal.backdrive_detector.prev_pwm = ctrl_output.duty.as_raw();
+    internal.backdrive_detector.prev_effort = ctrl_output.effort.as_raw();
     internal.backdrive_detector.prev_error = protected.error;
 
     // Check for stall
@@ -273,7 +273,7 @@ pub fn actuate_fast(
     // Update runtime in place
     runtime.setpoint = protected.setpoint;
     runtime.position = protected.position;
-    runtime.pwm_duty = ctrl_output.duty;
+    runtime.effort = ctrl_output.effort;
     #[cfg(feature = "current-sense-bus")]
     {
         runtime.current = protected.current;
@@ -286,7 +286,7 @@ pub fn actuate_fast(
     runtime.fast_seq = internal.fast_seq;
     runtime.engaged = true; // We only get here if engaged
 
-    FastTickResult::normal(FastOutputs::normal(ctrl_output.duty))
+    FastTickResult::normal(FastOutputs::normal(ctrl_output.effort))
 }
 
 /// Execute complete fast tick pipeline.

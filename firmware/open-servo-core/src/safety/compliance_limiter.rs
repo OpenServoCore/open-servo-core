@@ -119,9 +119,9 @@ impl ComplianceLimiter {
         self.model.state()
     }
 
-    /// Get current duty cap value for telemetry.
-    pub fn duty_cap(&self) -> i16 {
-        self.model.duty_cap()
+    /// Get current effort cap value for telemetry.
+    pub fn effort_cap(&self) -> i16 {
+        self.model.effort_cap()
     }
 
     /// Check if currently in blanking period.
@@ -232,7 +232,7 @@ mod tests {
 
         assert!(limiter.is_limited());
         assert_eq!(limiter.state(), LimitState::Limiting);
-        assert!(limiter.duty_cap() < 32767);
+        assert!(limiter.effort_cap() < 32767);
     }
 
     #[test]

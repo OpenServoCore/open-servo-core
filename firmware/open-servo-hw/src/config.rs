@@ -3,7 +3,7 @@
 //! This trait eliminates the need for generic Default implementations,
 //! ensuring all configurations are explicitly provided by the board.
 
-use open_servo_math::{CentiDeg, ComplianceConfig, DegPerSec10, Duty};
+use open_servo_math::{CentiDeg, ComplianceConfig, DegPerSec10, Effort};
 
 /// Board-specific safety threshold configuration.
 #[derive(Debug, Clone, Copy)]
@@ -91,26 +91,26 @@ pub struct BoardPolicyConfig {
     // --- Backdrive/Yield detection ---
     /// Velocity threshold for backdrive detection
     pub backdrive_vel_threshold: DegPerSec10,
-    /// PWM deadband for backdrive detection
-    pub backdrive_deadband: Duty,
+    /// Effort deadband for backdrive detection
+    pub backdrive_deadband: Effort,
     /// Backdrive persistence time before yield (microseconds)
     pub backdrive_persist_us: u32,
-    /// Maximum duty during yield alive phase
-    pub yield_alive_duty_max: Duty,
+    /// Maximum effort during yield alive phase
+    pub yield_alive_effort_max: Effort,
     /// Coast phase duration within yield window (microseconds)
     pub yield_coast_us: u32,
     /// Total yield window duration (microseconds)
     pub yield_duration_us: u32,
 
-    // --- Hold mode duty curve ---
-    /// Error at which hold duty curve starts ramping
-    pub hold_duty_error_start: CentiDeg,
-    /// Error at which hold duty curve reaches max
-    pub hold_duty_error_end: CentiDeg,
-    /// Minimum hold duty at small errors
-    pub hold_duty_min: Duty,
-    /// Maximum hold duty at large errors
-    pub hold_duty_max: Duty,
+    // --- Hold mode effort curve ---
+    /// Error at which hold effort curve starts ramping
+    pub hold_effort_error_start: CentiDeg,
+    /// Error at which hold effort curve reaches max
+    pub hold_effort_error_end: CentiDeg,
+    /// Minimum hold effort at small errors
+    pub hold_effort_min: Effort,
+    /// Maximum hold effort at large errors
+    pub hold_effort_max: Effort,
 }
 
 /// Board configuration provider trait.

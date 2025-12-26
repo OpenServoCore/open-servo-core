@@ -13,7 +13,7 @@ mod centic;
 mod centideg;
 mod centideg32;
 mod deg_per_sec10;
-mod duty;
+mod effort;
 mod encoder_count;
 mod helpers;
 mod hertz;
@@ -26,7 +26,7 @@ pub use centic::CentiC;
 pub use centideg::CentiDeg;
 pub use centideg32::CentiDeg32;
 pub use deg_per_sec10::DegPerSec10;
-pub use duty::Duty;
+pub use effort::Effort;
 pub use encoder_count::EncoderCount;
 pub use helpers::{
     div_round_i32, div_round_u32, mul_div_round_i32, mul_div_round_i64, mul_div_round_u32,

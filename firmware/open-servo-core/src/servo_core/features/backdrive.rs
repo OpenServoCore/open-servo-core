@@ -2,8 +2,8 @@
 //!
 //! When backdrive is detected, the servo enters a timed window that allows
 //! external forces to move the mechanism. The window has two phases:
-//! - Coast (0-Nms): PWM duty capped at 0, letting the servo coast
-//! - Alive (N-Mms): PWM duty capped at low value, maintaining some position
+//! - Coast (0-Nms): effort capped at 0, letting the servo coast
+//! - Alive (N-Mms): effort capped at low value, maintaining some position
 //!
 //! Timing parameters come from PolicyConfig (board-supplied).
 
@@ -13,9 +13,9 @@ use crate::servo_core::ServoMode;
 /// Phase within the backdrive window
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BackdrivePhase {
-    /// Coast phase (0-100ms): zero duty
+    /// Coast phase (0-100ms): zero effort
     Coast,
-    /// Alive phase (100-200ms): low duty allowed
+    /// Alive phase (100-200ms): low effort allowed
     Alive,
 }
 
@@ -26,8 +26,8 @@ pub enum BackdrivePhase {
 pub struct BackdriveState {
     /// Accumulated time in backdrive window (microseconds)
     pub elapsed_us: u32,
-    /// Maximum duty magnitude during window (set by medium tick, used by fast tick)
-    pub max_duty: i16,
+    /// Maximum effort magnitude during window (set by medium tick, used by fast tick)
+    pub max_effort: i16,
     /// Flag to reset controller on next fast tick after entering window
     pub needs_reset: bool,
 }
@@ -41,7 +41,7 @@ impl BackdriveState {
     /// Reset backdrive state (called on window exit or clear_fault)
     pub fn reset(&mut self) {
         self.elapsed_us = 0;
-        self.max_duty = 0;
+        self.max_effort = 0;
         self.needs_reset = false;
     }
 }
@@ -49,7 +49,7 @@ impl BackdriveState {
 /// Update backdrive window timing based on elapsed time.
 ///
 /// Called during medium tick when in Yield mode.
-/// Updates elapsed_us and max_duty based on which phase we're in.
+/// Updates elapsed_us and max_effort based on which phase we're in.
 pub fn update_backdrive_window(state: &mut BackdriveState, policy: &PolicyConfig, dt_us: u32) {
     // Accumulate time, clamping to yield_duration_us
     state.elapsed_us = state
@@ -57,11 +57,11 @@ pub fn update_backdrive_window(state: &mut BackdriveState, policy: &PolicyConfig
         .saturating_add(dt_us)
         .min(policy.yield_duration_us);
 
-    // Set max_duty based on phase
-    state.max_duty = if state.elapsed_us < policy.yield_coast_us {
+    // Set max_effort based on phase
+    state.max_effort = if state.elapsed_us < policy.yield_coast_us {
         0 // Coast phase
     } else {
-        policy.yield_alive_duty_max.as_raw() // Alive phase
+        policy.yield_alive_effort_max.as_raw() // Alive phase
     };
 }
 
@@ -86,7 +86,7 @@ pub fn should_exit_backdrive(state: &BackdriveState, policy: &PolicyConfig) -> b
 /// Resets elapsed time and sets up for coast phase.
 pub fn on_backdrive_entry(state: &mut BackdriveState) {
     state.elapsed_us = 0;
-    state.max_duty = 0;
+    state.max_effort = 0;
     state.needs_reset = true;
 }
 
@@ -105,7 +105,7 @@ pub fn next_mode_after_backdrive() -> ServoMode {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use open_servo_math::{CentiDeg, DegPerSec10, Duty};
+    use open_servo_math::{CentiDeg, DegPerSec10, Effort};
 
     /// Create test policy config with standard timing.
     fn test_policy() -> PolicyConfig {
@@ -115,15 +115,15 @@ mod tests {
             hold_enter_vel: DegPerSec10::from_dps10(100),
             hold_exit_vel: DegPerSec10::from_dps10(150),
             backdrive_vel_threshold: DegPerSec10::from_dps10(300),
-            backdrive_deadband: Duty::from_raw(1638),
+            backdrive_deadband: Effort::from_raw(1638),
             backdrive_persist_us: 500,
-            yield_alive_duty_max: Duty::from_raw(1638),
+            yield_alive_effort_max: Effort::from_raw(1638),
             yield_coast_us: 100_000,
             yield_duration_us: 200_000,
-            hold_duty_error_start: CentiDeg::from_cdeg(500),
-            hold_duty_error_end: CentiDeg::from_cdeg(1500),
-            hold_duty_min: Duty::from_raw(6553),
-            hold_duty_max: Duty::from_raw(14746),
+            hold_effort_error_start: CentiDeg::from_cdeg(500),
+            hold_effort_error_end: CentiDeg::from_cdeg(1500),
+            hold_effort_min: Effort::from_raw(6553),
+            hold_effort_max: Effort::from_raw(14746),
         }
     }
 
@@ -132,7 +132,7 @@ mod tests {
         let policy = test_policy();
         let state = BackdriveState {
             elapsed_us: 0,
-            max_duty: 0,
+            max_effort: 0,
             needs_reset: false,
         };
         assert_eq!(get_backdrive_phase(&state, &policy), BackdrivePhase::Coast);
@@ -143,7 +143,7 @@ mod tests {
         let policy = test_policy();
         let state = BackdriveState {
             elapsed_us: policy.yield_coast_us,
-            max_duty: policy.yield_alive_duty_max.as_raw(),
+            max_effort: policy.yield_alive_effort_max.as_raw(),
             needs_reset: false,
         };
         assert_eq!(get_backdrive_phase(&state, &policy), BackdrivePhase::Alive);
@@ -154,17 +154,17 @@ mod tests {
         let policy = test_policy();
         let mut state = BackdriveState::new();
         on_backdrive_entry(&mut state);
-        assert_eq!(state.max_duty, 0);
+        assert_eq!(state.max_effort, 0);
         assert!(state.needs_reset);
 
         // Accumulate to just before coast end
         update_backdrive_window(&mut state, &policy, policy.yield_coast_us - 1);
-        assert_eq!(state.max_duty, 0);
+        assert_eq!(state.max_effort, 0);
         assert!(!should_exit_backdrive(&state, &policy));
 
         // Cross into alive phase
         update_backdrive_window(&mut state, &policy, 2);
-        assert_eq!(state.max_duty, policy.yield_alive_duty_max.as_raw());
+        assert_eq!(state.max_effort, policy.yield_alive_effort_max.as_raw());
         assert!(!should_exit_backdrive(&state, &policy));
     }
 
@@ -188,7 +188,7 @@ mod tests {
         let policy = test_policy();
         let mut state = BackdriveState {
             elapsed_us: policy.yield_duration_us - 10,
-            max_duty: 0,
+            max_effort: 0,
             needs_reset: false,
         };
 

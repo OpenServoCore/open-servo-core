@@ -3,7 +3,7 @@
 //! Manages the ComplianceLimiter and handles switching between Move/Hold modes
 //! with their different compliance configurations.
 //!
-//! Hold duty curve parameters come from PolicyConfig (board-supplied).
+//! Hold effort curve parameters come from PolicyConfig (board-supplied).
 
 use crate::safety::ComplianceLimiter;
 use crate::servo_core::features::PolicyConfig;
@@ -71,31 +71,31 @@ pub fn update_limiter(
 
 /// Get current compliance limits from limiter.
 ///
-/// Returns (min, max) duty limits as i32 values.
+/// Returns (min, max) effort limits as i32 values.
 pub fn get_limits(state: &ComplianceState) -> (i32, i32) {
     state.limiter.get_limits()
 }
 
-/// Compute dynamic hold duty cap based on position error.
+/// Compute dynamic hold effort cap based on position error.
 ///
-/// Returns the maximum duty magnitude in Hold mode, which ramps
-/// from hold_duty_min at small errors to hold_duty_max at large errors.
-pub fn compute_hold_duty_cap(error_abs: i16, policy: &PolicyConfig) -> i16 {
-    let error_start = policy.hold_duty_error_start.as_cdeg();
-    let error_end = policy.hold_duty_error_end.as_cdeg();
-    let duty_min = policy.hold_duty_min.as_raw();
-    let duty_max = policy.hold_duty_max.as_raw();
+/// Returns the maximum effort magnitude in Hold mode, which ramps
+/// from hold_effort_min at small errors to hold_effort_max at large errors.
+pub fn compute_hold_effort_cap(error_abs: i16, policy: &PolicyConfig) -> i16 {
+    let error_start = policy.hold_effort_error_start.as_cdeg();
+    let error_end = policy.hold_effort_error_end.as_cdeg();
+    let effort_min = policy.hold_effort_min.as_raw();
+    let effort_max = policy.hold_effort_max.as_raw();
 
     if error_abs <= error_start {
-        duty_min
+        effort_min
     } else if error_abs >= error_end {
-        duty_max
+        effort_max
     } else {
         // Linear ramp between start and end
         let range_error = error_end - error_start;
-        let range_duty = duty_max - duty_min;
+        let range_effort = effort_max - effort_min;
         let progress = error_abs - error_start;
-        duty_min + (progress as i32 * range_duty as i32 / range_error as i32) as i16
+        effort_min + (progress as i32 * range_effort as i32 / range_error as i32) as i16
     }
 }
 
@@ -127,7 +127,7 @@ pub fn reset(state: &mut ComplianceState, config: &ComplianceConfig) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use open_servo_math::{CentiDeg, DegPerSec10, Duty};
+    use open_servo_math::{CentiDeg, DegPerSec10, Effort};
 
     /// Test config: 1500mA limit, 200mA hysteresis, 3 deglitch, 0.88 backoff, 10%/s recovery
     fn test_compliance_config() -> ComplianceConfig {
@@ -135,7 +135,7 @@ mod tests {
         ComplianceConfig::new(cfg, cfg)
     }
 
-    /// Test policy config with standard hold duty curve.
+    /// Test policy config with standard hold effort curve.
     fn test_policy() -> PolicyConfig {
         PolicyConfig {
             hold_enter_error: CentiDeg::from_cdeg(500),
@@ -143,46 +143,46 @@ mod tests {
             hold_enter_vel: DegPerSec10::from_dps10(100),
             hold_exit_vel: DegPerSec10::from_dps10(150),
             backdrive_vel_threshold: DegPerSec10::from_dps10(300),
-            backdrive_deadband: Duty::from_raw(1638),
+            backdrive_deadband: Effort::from_raw(1638),
             backdrive_persist_us: 500,
-            yield_alive_duty_max: Duty::from_raw(1638),
+            yield_alive_effort_max: Effort::from_raw(1638),
             yield_coast_us: 100_000,
             yield_duration_us: 200_000,
-            hold_duty_error_start: CentiDeg::from_cdeg(500),
-            hold_duty_error_end: CentiDeg::from_cdeg(1500),
-            hold_duty_min: Duty::from_raw(6553),
-            hold_duty_max: Duty::from_raw(14746),
+            hold_effort_error_start: CentiDeg::from_cdeg(500),
+            hold_effort_error_end: CentiDeg::from_cdeg(1500),
+            hold_effort_min: Effort::from_raw(6553),
+            hold_effort_max: Effort::from_raw(14746),
         }
     }
 
     #[test]
-    fn test_hold_duty_cap_at_small_error() {
+    fn test_hold_effort_cap_at_small_error() {
         let policy = test_policy();
-        let cap = compute_hold_duty_cap(0, &policy);
-        assert_eq!(cap, policy.hold_duty_min.as_raw());
+        let cap = compute_hold_effort_cap(0, &policy);
+        assert_eq!(cap, policy.hold_effort_min.as_raw());
 
-        let cap = compute_hold_duty_cap(policy.hold_duty_error_start.as_cdeg(), &policy);
-        assert_eq!(cap, policy.hold_duty_min.as_raw());
+        let cap = compute_hold_effort_cap(policy.hold_effort_error_start.as_cdeg(), &policy);
+        assert_eq!(cap, policy.hold_effort_min.as_raw());
     }
 
     #[test]
-    fn test_hold_duty_cap_at_large_error() {
+    fn test_hold_effort_cap_at_large_error() {
         let policy = test_policy();
-        let cap = compute_hold_duty_cap(policy.hold_duty_error_end.as_cdeg(), &policy);
-        assert_eq!(cap, policy.hold_duty_max.as_raw());
+        let cap = compute_hold_effort_cap(policy.hold_effort_error_end.as_cdeg(), &policy);
+        assert_eq!(cap, policy.hold_effort_max.as_raw());
 
-        let cap = compute_hold_duty_cap(policy.hold_duty_error_end.as_cdeg() + 1000, &policy);
-        assert_eq!(cap, policy.hold_duty_max.as_raw());
+        let cap = compute_hold_effort_cap(policy.hold_effort_error_end.as_cdeg() + 1000, &policy);
+        assert_eq!(cap, policy.hold_effort_max.as_raw());
     }
 
     #[test]
-    fn test_hold_duty_cap_ramp() {
+    fn test_hold_effort_cap_ramp() {
         let policy = test_policy();
         // Midpoint should be roughly midway
         let midpoint_error =
-            (policy.hold_duty_error_start.as_cdeg() + policy.hold_duty_error_end.as_cdeg()) / 2;
-        let cap = compute_hold_duty_cap(midpoint_error, &policy);
-        let expected_mid = (policy.hold_duty_min.as_raw() + policy.hold_duty_max.as_raw()) / 2;
+            (policy.hold_effort_error_start.as_cdeg() + policy.hold_effort_error_end.as_cdeg()) / 2;
+        let cap = compute_hold_effort_cap(midpoint_error, &policy);
+        let expected_mid = (policy.hold_effort_min.as_raw() + policy.hold_effort_max.as_raw()) / 2;
 
         // Allow some rounding error
         assert!((cap - expected_mid).abs() <= 1);

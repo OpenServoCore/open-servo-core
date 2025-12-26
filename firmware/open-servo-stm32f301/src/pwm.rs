@@ -1,7 +1,7 @@
 //! PWM motor control logic for STM32F301 with DRV8231A driver.
 
 use crate::init::tim::PWM_MAX_DUTY;
-use open_servo_math::Duty;
+use open_servo_math::{mul_div_round_i32, Effort};
 use stm32f3::stm32f301 as pac;
 
 /// Motor polarity configuration
@@ -24,14 +24,18 @@ impl PwmController {
     ///
     /// DRV8231A truth table:
     /// - IN1=1, IN2=0: Forward drive
-    /// - IN1=0, IN2=1: Reverse drive  
+    /// - IN1=0, IN2=1: Reverse drive
     /// - IN1=1, IN2=1: Brake (low-side slow decay)
     /// - IN1=0, IN2=0: Coast (high-Z)
-    pub fn set_pwm(duty: Duty) {
+    pub fn set_effort(effort: Effort) {
         let tim1 = unsafe { &(*pac::TIM1::ptr()) };
 
-        // Scale normalized duty to hardware PWM range
-        let scaled = duty.scale_to(PWM_MAX_DUTY);
+        // Scale normalized effort (-32768..32767) to hardware PWM range (0..PWM_MAX_DUTY)
+        let scaled = mul_div_round_i32(
+            effort.as_raw() as i32,
+            PWM_MAX_DUTY as i32,
+            (i16::MAX as i32) + 1,
+        );
         let scaled = scaled.clamp(-(PWM_MAX_DUTY as i32), PWM_MAX_DUTY as i32);
 
         // Apply polarity reversal if configured

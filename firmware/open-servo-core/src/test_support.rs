@@ -7,11 +7,11 @@ use open_servo_control::{ControlInput, ControlLoop, ControlOutput};
 use open_servo_hw::{
     BoardKinematicsConfig, BoardPolicyConfig, BoardSafetyConfig, BoardThermalConfig,
 };
-use open_servo_math::{CentiDeg, ComplianceConfig, DegPerSec10, Duty, TickCtx};
+use open_servo_math::{CentiDeg, ComplianceConfig, DegPerSec10, Effort, TickCtx};
 
 /// Minimal mock controller for testing ServoCore.
 pub struct MockController {
-    pub output: Duty,
+    pub output: Effort,
     pub saturated: bool,
     pub reset_called: bool,
     pub reset_count: u32,
@@ -20,14 +20,14 @@ pub struct MockController {
 impl MockController {
     pub fn new() -> Self {
         Self {
-            output: Duty::ZERO,
+            output: Effort::ZERO,
             saturated: false,
             reset_called: false,
             reset_count: 0,
         }
     }
 
-    pub fn set_output(&mut self, output: Duty) {
+    pub fn set_output(&mut self, output: Effort) {
         self.output = output;
     }
 
@@ -44,12 +44,12 @@ impl ControlLoop for MockController {
     fn reset(&mut self) {
         self.reset_called = true;
         self.reset_count += 1;
-        self.output = Duty::ZERO;
+        self.output = Effort::ZERO;
     }
 
     fn fast_tick(&mut self, _ctx: &TickCtx, _input: &ControlInput) -> ControlOutput {
         ControlOutput {
-            duty: self.output,
+            effort: self.output,
             saturated: self.saturated,
         }
     }
@@ -96,15 +96,15 @@ pub fn make_core(controller: MockController) -> ServoCore<MockController> {
         hold_enter_vel: DegPerSec10::from_dps10(100),
         hold_exit_vel: DegPerSec10::from_dps10(150),
         backdrive_vel_threshold: DegPerSec10::from_dps10(300),
-        backdrive_deadband: Duty::from_raw(1638),
+        backdrive_deadband: Effort::from_raw(1638),
         backdrive_persist_us: 500,
-        yield_alive_duty_max: Duty::from_raw(1638),
+        yield_alive_effort_max: Effort::from_raw(1638),
         yield_coast_us: 100_000,
         yield_duration_us: 200_000,
-        hold_duty_error_start: CentiDeg::from_cdeg(500),
-        hold_duty_error_end: CentiDeg::from_cdeg(1500),
-        hold_duty_min: Duty::from_raw(6553),
-        hold_duty_max: Duty::from_raw(14746),
+        hold_effort_error_start: CentiDeg::from_cdeg(500),
+        hold_effort_error_end: CentiDeg::from_cdeg(1500),
+        hold_effort_min: Effort::from_raw(6553),
+        hold_effort_max: Effort::from_raw(14746),
     };
     let compliance_config = ComplianceConfig::new(600, 50, 3, 230, 3277);
     ServoCore::new(

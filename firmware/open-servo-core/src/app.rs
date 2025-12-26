@@ -16,7 +16,7 @@ use open_servo_hw::sensor::{PositionSensor, SafetyMcuTempSource, SafetyVoltageSo
 use open_servo_math::Gain;
 #[cfg(feature = "current-sense-bus")]
 use open_servo_math::MilliAmp;
-use open_servo_math::{CentiC, CentiDeg, Duty};
+use open_servo_math::{CentiC, CentiDeg, Effort};
 
 use crate::event::Event;
 use crate::fault::FaultKind;
@@ -110,9 +110,9 @@ impl<C: ControlLoop> App<C> {
 
         // Apply outputs to hardware
         if outputs.motor_enable {
-            hw.set_pwm(outputs.pwm_command);
+            hw.set_effort(outputs.effort);
         } else {
-            hw.set_pwm(Duty::ZERO);
+            hw.set_effort(Effort::ZERO);
             hw.set_enable(false);
         }
     }
@@ -137,9 +137,9 @@ impl<C: ControlLoop> App<C> {
 
         // Apply outputs to hardware
         if outputs.motor_enable {
-            hw.set_pwm(outputs.pwm_command);
+            hw.set_effort(outputs.effort);
         } else {
-            hw.set_pwm(Duty::ZERO);
+            hw.set_effort(Effort::ZERO);
             hw.set_enable(false);
         }
     }
@@ -159,7 +159,7 @@ impl<C: ControlLoop> App<C> {
                 // Run slow tick monitoring
                 if let Some(_fault) = self.core.slow_tick(&ctx) {
                     // Apply safety on fault
-                    hw.set_pwm(Duty::ZERO);
+                    hw.set_effort(Effort::ZERO);
                     hw.set_enable(false);
                 }
 
@@ -192,7 +192,7 @@ impl<C: ControlLoop> App<C> {
                         #[cfg(feature = "current-sense-bus")]
                         let current_ma = rt.current.map(|c| c.as_ma()).unwrap_or(0);
 
-                        let pwm_pct = rt.pwm_duty.to_percentage();
+                        let pwm_pct = rt.effort.to_percentage();
 
                         // Log with current if available
                         #[cfg(feature = "current-sense-bus")]
@@ -319,7 +319,7 @@ impl<C: ControlLoop> App<C> {
     /// Raise a fault manually (e.g., from external safety ISR).
     pub fn raise_fault<H: BdcMotorDriver>(&mut self, hw: &mut H, kind: FaultKind) {
         self.core.raise_fault(kind);
-        hw.set_pwm(Duty::ZERO);
+        hw.set_effort(Effort::ZERO);
         hw.set_enable(false);
     }
 
@@ -444,7 +444,7 @@ impl<C: ControlLoop> App<C> {
     pub fn disengage_motor<H: BdcMotorDriver>(&mut self, hw: &mut H) {
         self.core.disengage();
         // Immediately apply safe state to hardware
-        hw.set_pwm(Duty::ZERO);
+        hw.set_effort(Effort::ZERO);
         hw.set_enable(false);
     }
 

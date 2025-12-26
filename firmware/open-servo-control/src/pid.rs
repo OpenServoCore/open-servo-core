@@ -1,6 +1,6 @@
 use crate::traits::{ControlInput, ControlLoop, ControlOutput, PidTunable};
 use open_servo_math::{
-    CentiDeg, DerivativeMode, Duty, FilterI32, Gain, MilliAmp, PidControllerI16, TickCtx,
+    CentiDeg, DerivativeMode, Effort, FilterI32, Gain, MilliAmp, PidControllerI16, TickCtx,
 };
 
 /// PID configuration with human-friendly gains.
@@ -175,10 +175,10 @@ impl ControlLoop for PidController {
         let saturated = raw_output == min || raw_output == max;
 
         // Safe cast to i16 (should already be in range, but defensive)
-        let duty_raw = raw_output.clamp(i16::MIN as i32, i16::MAX as i32) as i16;
+        let effort_raw = raw_output.clamp(i16::MIN as i32, i16::MAX as i32) as i16;
 
         ControlOutput {
-            duty: Duty::from_raw(duty_raw),
+            effort: Effort::from_raw(effort_raw),
             saturated,
         }
     }
@@ -214,7 +214,7 @@ impl PidTunable for PidController {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::traits::DutyLimits;
+    use crate::traits::EffortLimits;
     use open_servo_math::TickDomain;
 
     /// Create a dummy TickCtx for testing.
@@ -233,7 +233,7 @@ mod tests {
             velocity: None,
             current: None,
             bus_voltage: None,
-            limits: DutyLimits::full(),
+            limits: EffortLimits::full(),
         }
     }
 
@@ -282,7 +282,7 @@ mod tests {
 
         // The accumulated integral was adding to output, so after reset output should be smaller
         // (pure proportional response vs proportional + accumulated integral)
-        assert!(after.duty.abs() <= before.duty.abs());
+        assert!(after.effort.abs() <= before.effort.abs());
     }
 
     #[test]
@@ -293,11 +293,11 @@ mod tests {
         // With position at 0° and setpoint at 90°, we should get positive output
         let input = make_input(9000, 0);
         let output = ctrl.fast_tick(&ctx, &input);
-        assert!(output.duty.as_raw() > 0);
+        assert!(output.effort.as_raw() > 0);
 
         // Output should be clamped to i16 range
-        assert!(output.duty.as_raw() <= i16::MAX);
-        assert!(output.duty.as_raw() >= i16::MIN);
+        assert!(output.effort.as_raw() <= i16::MAX);
+        assert!(output.effort.as_raw() >= i16::MIN);
     }
 
     #[test]
@@ -312,13 +312,13 @@ mod tests {
             velocity: None,
             current: None,
             bus_voltage: None,
-            limits: DutyLimits::new(Duty::from_raw(-100), Duty::from_raw(100)),
+            limits: EffortLimits::new(Effort::from_raw(-100), Effort::from_raw(100)),
         };
 
         // With large error, output should saturate
         let output = ctrl.fast_tick(&ctx, &input);
         assert!(output.saturated);
-        assert!(output.duty.as_raw() == 100 || output.duty.as_raw() == -100);
+        assert!(output.effort.as_raw() == 100 || output.effort.as_raw() == -100);
     }
 
     #[test]
@@ -333,7 +333,7 @@ mod tests {
             velocity: None,
             current: None,
             bus_voltage: None,
-            limits: DutyLimits::full(),
+            limits: EffortLimits::full(),
         };
 
         // With tiny error, output should not saturate

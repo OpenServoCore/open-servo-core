@@ -185,10 +185,10 @@ impl<D: DebugIo> DebugShell<D> {
         // Position and setpoint (always available)
         let _ = uwrite!(
             buf,
-            "sp={} pos={} pwm={}",
+            "sp={} pos={} eff={}",
             rt.setpoint.as_cdeg(),
             rt.position.as_cdeg(),
-            rt.pwm_duty.as_raw(),
+            rt.effort.as_raw(),
         );
         self.println(&buf);
 

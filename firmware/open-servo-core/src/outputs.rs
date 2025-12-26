@@ -1,7 +1,7 @@
 //! Output structures from the servo control loop.
 
 use crate::fault::FaultKind;
-use open_servo_math::Duty;
+use open_servo_math::Effort;
 
 /// Outputs from the ControlFast tick.
 ///
@@ -9,8 +9,8 @@ use open_servo_math::Duty;
 #[derive(Debug, Clone, Copy, Default)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
 pub struct FastOutputs {
-    /// PWM duty cycle command (normalized).
-    pub pwm_command: Duty,
+    /// Motor effort command (normalized).
+    pub effort: Effort,
 
     /// Whether the motor should be enabled.
     pub motor_enable: bool,
@@ -21,20 +21,20 @@ pub struct FastOutputs {
 
 impl FastOutputs {
     /// Create outputs for normal operation.
-    pub fn normal(pwm_command: Duty) -> Self {
+    pub fn normal(effort: Effort) -> Self {
         Self {
-            pwm_command,
+            effort,
             motor_enable: true,
             fault: None,
         }
     }
 
-    /// Create safe outputs - motor disabled, zero PWM.
+    /// Create safe outputs - motor disabled, zero effort.
     ///
     /// Used when faulted or during transient sensor issues.
     pub fn safe() -> Self {
         Self {
-            pwm_command: Duty::ZERO,
+            effort: Effort::ZERO,
             motor_enable: false,
             fault: None,
         }
@@ -43,7 +43,7 @@ impl FastOutputs {
     /// Create safe outputs with a fault indication.
     pub fn fault(kind: FaultKind) -> Self {
         Self {
-            pwm_command: Duty::ZERO,
+            effort: Effort::ZERO,
             motor_enable: false,
             fault: Some(kind),
         }
@@ -51,10 +51,10 @@ impl FastOutputs {
 
     /// Create outputs for skipping actuation (bad sensor reading).
     ///
-    /// Motor stays enabled but no PWM command issued.
+    /// Motor stays enabled but no effort command issued.
     pub fn skip() -> Self {
         Self {
-            pwm_command: Duty::ZERO,
+            effort: Effort::ZERO,
             motor_enable: true,
             fault: None,
         }

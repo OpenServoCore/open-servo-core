@@ -3,7 +3,7 @@
 use stm32f3::stm32f301 as pac;
 
 use open_servo_hw::config::{
-    BoardConfig, BoardKinematicsConfig, BoardSafetyConfig, BoardThermalConfig,
+    BoardConfig, BoardKinematicsConfig, BoardPolicyConfig, BoardSafetyConfig, BoardThermalConfig,
 };
 use open_servo_hw::motor::BdcMotorDriver;
 use open_servo_hw::peripheral::{SystemTime, UartDriver};
@@ -26,7 +26,7 @@ use open_servo_hw::sensor::SafetyMotorTempSource;
 // Always import SafetyMotorVoltageSource since we always implement it
 use open_servo_hw::sensor::SafetyMotorVoltageSource;
 use open_servo_hw::UartPort;
-use open_servo_math::{CentiC, CentiDeg, ComplianceConfig, Duty, MilliAmp, MilliVolt};
+use open_servo_math::{CentiC, CentiDeg, ComplianceConfig, Effort, MilliAmp, MilliVolt};
 
 use crate::config::BoardConfigProvider;
 use crate::pwm::PwmController;
@@ -67,8 +67,8 @@ impl Board {
 // ============================================================================
 
 impl BdcMotorDriver for Board {
-    fn set_pwm(&mut self, duty: Duty) {
-        PwmController::set_pwm(duty);
+    fn set_effort(&mut self, effort: Effort) {
+        PwmController::set_effort(effort);
     }
 
     fn set_enable(&mut self, _enabled: bool) {
@@ -266,6 +266,10 @@ impl BoardConfig for Board {
 
     fn kinematics_config(&self) -> BoardKinematicsConfig {
         BoardConfigProvider::kinematics_config()
+    }
+
+    fn policy_config(&self) -> BoardPolicyConfig {
+        BoardConfigProvider::policy_config()
     }
 
     fn pid_gains(&self) -> (i32, i32, i32) {

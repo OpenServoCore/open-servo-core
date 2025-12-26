@@ -9,31 +9,31 @@
 use crate::PidConfig;
 // Re-export TickCtx for convenience
 pub use open_servo_math::TickCtx;
-use open_servo_math::{CentiDeg, DegPerSec10, Duty, MilliAmp, MilliVolt};
+use open_servo_math::{CentiDeg, DegPerSec10, Effort, MilliAmp, MilliVolt};
 
 // =============================================================================
 // Control I/O Types
 // =============================================================================
 
-/// Dynamic duty limits for a single tick.
+/// Dynamic effort limits for a single tick.
 #[derive(Debug, Clone, Copy)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
-pub struct DutyLimits {
-    pub min: Duty,
-    pub max: Duty,
+pub struct EffortLimits {
+    pub min: Effort,
+    pub max: Effort,
 }
 
-impl DutyLimits {
-    /// Create new duty limits.
-    pub fn new(min: Duty, max: Duty) -> Self {
+impl EffortLimits {
+    /// Create new effort limits.
+    pub fn new(min: Effort, max: Effort) -> Self {
         Self { min, max }
     }
 
     /// Full range limits (no restriction).
     pub const fn full() -> Self {
         Self {
-            min: Duty::MIN,
-            max: Duty::MAX,
+            min: Effort::MIN,
+            max: Effort::MAX,
         }
     }
 }
@@ -52,17 +52,17 @@ pub struct ControlInput {
     pub current: Option<MilliAmp>,
     /// Bus voltage (if available)
     pub bus_voltage: Option<MilliVolt>,
-    /// Dynamic duty limits for this tick
-    pub limits: DutyLimits,
+    /// Dynamic effort limits for this tick
+    pub limits: EffortLimits,
 }
 
 /// Output from the control loop.
 #[derive(Debug, Clone, Copy)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
 pub struct ControlOutput {
-    /// Computed duty cycle
-    pub duty: Duty,
-    /// True if duty was clamped to limits (for anti-windup / stall detection)
+    /// Computed motor effort
+    pub effort: Effort,
+    /// True if effort was clamped to limits (for anti-windup / stall detection)
     pub saturated: bool,
 }
 
@@ -70,7 +70,7 @@ impl ControlOutput {
     /// Create a zero output (stopped, not saturated).
     pub const fn zero() -> Self {
         Self {
-            duty: Duty::ZERO,
+            effort: Effort::ZERO,
             saturated: false,
         }
     }
