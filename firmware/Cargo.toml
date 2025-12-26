@@ -1,21 +1,37 @@
 [workspace]
 members = [
-    "open-servo-core",
-    "open-servo-control",
+    # Base shared libraries
+    "open-servo-units",
+    "open-servo-math",
+
+    # Base hardware libraries
     "open-servo-hw",
     "open-servo-hw-utils",
+
+    # Base control libraries
+    "open-servo-kernel-api",
+    "open-servo-core", # legacy, will be replaced by "open-servo-kernel"
+    "open-servo-control",
+
+    # Board-specific crates
     "open-servo-stm32f301",
-    "open-servo-math",
 ]
 resolver = "2"
 
 # Exclude board crates from default members to prevent their configs from affecting tests
 default-members = [
-    "open-servo-core",
-    "open-servo-control",
+    # Base shared libraries
+    "open-servo-units",
+    "open-servo-math",
+
+    # Base hardware libraries
     "open-servo-hw",
     "open-servo-hw-utils",
-    "open-servo-math",
+
+    # Base control libraries
+    "open-servo-kernel-api",
+    "open-servo-core", # legacy, will be replaced by "open-servo-kernel"
+    "open-servo-control",
 ]
 
 [workspace.package]

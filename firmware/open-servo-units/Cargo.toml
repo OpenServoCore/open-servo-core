@@ -1,0 +1,17 @@
+[package]
+name = "open-servo-units"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+
+[features]
+default = []
+std = []
+defmt = ["dep:defmt"]
+
+[dependencies.defmt]
+workspace = true
+optional = true
+
+[lib]
+test = true

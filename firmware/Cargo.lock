@@ -198,10 +198,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "open-servo-kernel-api"
+version = "0.1.0"
+dependencies = [
+ "defmt 0.3.100",
+ "open-servo-units",
+]
+
+[[package]]
 name = "open-servo-math"
 version = "0.1.0"
 dependencies = [
  "defmt 0.3.100",
+ "open-servo-units",
  "ufmt",
 ]
 
@@ -221,6 +230,13 @@ dependencies = [
  "panic-rtt-target",
  "stm32f3",
  "ufmt",
+]
+
+[[package]]
+name = "open-servo-units"
+version = "0.1.0"
+dependencies = [
+ "defmt 0.3.100",
 ]
 
 [[package]]

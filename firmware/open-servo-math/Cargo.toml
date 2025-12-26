@@ -12,14 +12,8 @@ std = []
 
 [dependencies]
 ufmt = { workspace = true }
-
-[dependencies.defmt]
-workspace = true
-optional = true
-
-[dev-dependencies]
-# Dev dependencies are only used for tests and can use std
+defmt = { workspace = true, optional = true }
+open-servo-units = { path = "../open-servo-units", default-features = false }
 
 [lib]
-# Enable test harness
 test = true
