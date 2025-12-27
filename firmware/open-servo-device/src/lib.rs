@@ -24,7 +24,7 @@ pub mod device;
 pub mod uart_bus;
 
 // Re-export the main seams for convenience.
-pub use comms_service::{CommsService, DxlService, EchoPolicy, HostOp, HostResp};
+pub use comms_service::{CommsService, DxlService, EchoPolicy, HostError, HostOp, HostResp, HostResult};
 pub use device::Device;
 pub use uart_bus::{UartBus, UartError};
 
@@ -41,7 +41,8 @@ pub use open_servo_units as units;
 /// ```
 pub mod prelude {
     pub use crate::{
-        CommsService, Device, DxlService, EchoPolicy, HostOp, HostResp, UartBus, UartError,
+        CommsService, Device, DxlService, EchoPolicy, HostError, HostOp, HostResp, HostResult,
+        UartBus, UartError,
     };
 
     pub use open_servo_hw::*;

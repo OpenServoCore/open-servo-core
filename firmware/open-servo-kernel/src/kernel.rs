@@ -9,17 +9,21 @@
 //! - Fault gating returns `MotorCommand::safe()`
 //! - Disengage resets the PID integrator (simple, deterministic)
 
-use open_servo_hw::v2::io::{DriveMode, MotorCommand, SensorFrame};
+use open_servo_hw::v2::io::{DriveMode, MotorCommand, MotorHints, SensorFrame};
 use open_servo_kernel_api::faults::GateReason;
+use open_servo_kernel_api::faults::FaultSink;
+use open_servo_kernel_api::host_op::{HostError, HostOp, HostResp, HostResult};
+use open_servo_kernel_api::kernel::{Kernel, KernelHost};
 use open_servo_kernel_api::mode::{ModeError, ModeRequest, OperatingMode};
 use open_servo_kernel_api::regs::{RegAddr, RegError, RegValue};
+use open_servo_kernel_api::reset::ResetScope;
 use open_servo_kernel_api::telemetry::ids as tid;
 use open_servo_kernel_api::TelemetrySink;
-use open_servo_kernel_api::{KernelCtx, TickCtx, TickDomain, TimeStampUs};
-use open_servo_units::{CentiDeg32, Effort, MicroSecond};
+use open_servo_kernel_api::{TickCtx, TickDomain};
+use open_servo_units::{Effort, MicroSecond};
 
 use crate::regs as r;
-use crate::state::{KernelConfig, KernelState};
+use crate::state::{KernelConfig, KernelState, PendingOps};
 
 /// Concrete kernel.
 pub struct ServoKernel {
@@ -28,6 +32,9 @@ pub struct ServoKernel {
 
     /// Pending mode request (deferred policy hook).
     pending_mode: Option<OperatingMode>,
+
+    /// Pending host operations (deferred to safe boundary).
+    pending: PendingOps,
 }
 
 impl ServoKernel {
@@ -37,6 +44,7 @@ impl ServoKernel {
             cfg,
             st: KernelState::default(),
             pending_mode: None,
+            pending: PendingOps::default(),
         }
     }
 
@@ -57,6 +65,7 @@ impl ServoKernel {
     /// The board decides how often to call each domain; the kernel defines behavior.
     pub fn tick<F, T>(&mut self, ctx: &mut TickCtx<'_, F, T>) -> MotorCommand
     where
+        F: FaultSink + ?Sized,
         T: TelemetrySink + ?Sized,
     {
         // Domain-specific work.
@@ -79,6 +88,7 @@ impl ServoKernel {
 
     fn tick_fast<F, T>(&mut self, ctx: &mut TickCtx<'_, F, T>) -> MotorCommand
     where
+        F: FaultSink + ?Sized,
         T: TelemetrySink + ?Sized,
     {
         let gate = self.compute_gate_reason();
@@ -115,12 +125,14 @@ impl ServoKernel {
                 driver_en: true,
                 mode: DriveMode::Coast,
                 effort: Effort::ZERO,
+                hints: MotorHints::default(),
             }
         } else {
             MotorCommand {
                 driver_en: true,
-                mode: DriveMode::Drive(DecayMode::Slow),
+                mode: DriveMode::Drive,
                 effort,
+                hints: MotorHints::default(),
             }
         };
 
@@ -130,6 +142,7 @@ impl ServoKernel {
 
     fn tick_medium<F, T>(&mut self, ctx: &mut TickCtx<'_, F, T>)
     where
+        F: FaultSink + ?Sized,
         T: TelemetrySink + ?Sized,
     {
         // Stage-0: no windowing yet.
@@ -139,6 +152,7 @@ impl ServoKernel {
 
     fn tick_slow<F, T>(&mut self, _ctx: &mut TickCtx<'_, F, T>)
     where
+        F: FaultSink + ?Sized,
         T: TelemetrySink + ?Sized,
     {
         // Stage-0: thermal/safety supervisors later.
@@ -146,8 +160,12 @@ impl ServoKernel {
 
     fn tick_system<F, T>(&mut self, _ctx: &mut TickCtx<'_, F, T>)
     where
+        F: FaultSink + ?Sized,
         T: TelemetrySink + ?Sized,
     {
+        // Apply deferred resets (safe boundary).
+        self.apply_pending_reset();
+
         // Apply deferred mode requests (policy hook).
         if let Some(m) = self.pending_mode.take() {
             // Stage-0 policy: only switch if disengaged.
@@ -156,6 +174,25 @@ impl ServoKernel {
                 self.pending_mode = Some(m);
             } else {
                 self.apply_mode(m);
+            }
+        }
+    }
+
+    /// Apply pending reset if queued.
+    fn apply_pending_reset(&mut self) {
+        if let Some(scope) = self.pending.reset_req.take() {
+            match scope {
+                ResetScope::Control => {
+                    // Reset controller/filter integrators.
+                    self.st.pos_i = 0;
+                    self.st.last_pos_err = 0;
+                }
+                ResetScope::AllState => {
+                    // Reset all feature states (control + monitors + thermal model).
+                    self.st.pos_i = 0;
+                    self.st.last_pos_err = 0;
+                    // Future: reset thermal model, monitors, etc.
+                }
             }
         }
     }
@@ -240,7 +277,7 @@ impl ServoKernel {
             r::addr::LAST_EFFORT_RAW => RegValue::I32(self.st.last_cmd.effort.as_raw() as i32),
             r::addr::LAST_POS_CDEG32 => RegValue::I32(self.st.pos.as_cdeg()),
 
-            _ => return Err(RegError::NoSuchRegister),
+            _ => return Err(RegError::InvalidAddr),
         })
     }
 
@@ -277,7 +314,65 @@ impl ServoKernel {
                 Ok(())
             }
 
-            _ => Err(RegError::NoSuchRegister),
+            _ => Err(RegError::InvalidAddr),
+        }
+    }
+}
+
+// =============================================================================
+// Kernel trait implementation
+// =============================================================================
+
+impl Kernel for ServoKernel {
+    type Frame = SensorFrame;
+    type Command = MotorCommand;
+
+    #[inline]
+    fn update_frame(&mut self, frame: Self::Frame) {
+        self.st.update_frame(frame);
+    }
+
+    fn tick<F, T>(&mut self, ctx: &mut TickCtx<'_, F, T>) -> Self::Command
+    where
+        F: FaultSink + ?Sized,
+        T: TelemetrySink + ?Sized,
+    {
+        ServoKernel::tick(self, ctx)
+    }
+}
+
+// =============================================================================
+// KernelHost implementation
+// =============================================================================
+
+impl KernelHost for ServoKernel {
+    fn apply_op(&mut self, op: HostOp) -> HostResult {
+        match op {
+            HostOp::RegRead { addr } => {
+                self.reg_read(addr).map(HostResp::RegValue).map_err(Into::into)
+            }
+
+            HostOp::RegWrite { addr, value } => {
+                self.reg_write(addr, value)?;
+                Ok(HostResp::Ack)
+            }
+
+            HostOp::ModeRequest(req) => {
+                self.request_mode(req)?;
+                Ok(HostResp::Ack)
+            }
+
+            HostOp::FaultAck { id: _ } => Err(HostError::UnsupportedOp), // Stage-0
+            HostOp::FaultAckAll => Err(HostError::UnsupportedOp),        // Stage-0
+            HostOp::PersistCommit => Err(HostError::UnsupportedOp),      // Stage-0
+
+            HostOp::SoftReset(scope) => {
+                // Deferred: set pending flag, actual reset on System tick.
+                self.pending.reset_req = Some(scope);
+                Ok(HostResp::Ack)
+            }
+
+            HostOp::Ping => Ok(HostResp::Pong),
         }
     }
 }

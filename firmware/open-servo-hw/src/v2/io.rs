@@ -125,6 +125,26 @@ impl SensorFrame {
     }
 }
 
+impl Default for SensorFrame {
+    /// Default frame with zeroed/unavailable values.
+    ///
+    /// Useful for kernel state initialization. Not recommended for production
+    /// board code—prefer explicit construction.
+    fn default() -> Self {
+        Self {
+            pos: CentiDeg32::from_cdeg(0),
+            current: MotorCurrentSample::default(),
+            mcu_vdd: MilliVolt::from_mv(0),
+            vsys: Sampled::Unavailable,
+            ambient_temp: CentiC::from_centi_c(0),
+            motor_temp: Sampled::Unavailable,
+            motor_pos: Sampled::Unavailable,
+            motor_v: Sampled::Unavailable,
+            driver_ok: false,
+        }
+    }
+}
+
 // ============================================================================
 // Motor actuation boundary
 // ============================================================================

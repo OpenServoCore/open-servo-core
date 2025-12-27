@@ -1,12 +1,13 @@
 //! Kernel-owned state.
 //!
-//! This is the “shared state struct” the kernel uses internally.
-//! It is *not* a public regmap yet; it’s just a clean container so you can
+//! This is the "shared state struct" the kernel uses internally.
+//! It is *not* a public regmap yet; it's just a clean container so you can
 //! evolve storage without spreading fields everywhere.
 
 use open_servo_hw::v2::io::{MotorCommand, SensorFrame};
 use open_servo_kernel_api::faults::GateReason;
 use open_servo_kernel_api::mode::OperatingMode;
+use open_servo_kernel_api::reset::ResetScope;
 use open_servo_units::{CentiDeg32, Effort, MicroSecond};
 
 /// PID gains (Stage-0).
@@ -26,7 +27,7 @@ pub struct PidGains {
 
 /// Kernel configuration (tunable).
 ///
-/// This is “knobs”; you can later back it with regmap/EEPROM.
+/// This is "knobs"; you can later back it with regmap/EEPROM.
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
 #[derive(Copy, Clone, Debug, Default, PartialEq, Eq)]
 pub struct KernelConfig {
@@ -38,6 +39,19 @@ pub struct KernelConfig {
     /// Output clamp in normalized effort (abs).
     /// (Stage-0: simple clamp; later: compliance/limits/current/thermal budgets.)
     pub effort_limit_raw: i16,
+}
+
+/// Pending host operations (deferred to safe boundary).
+///
+/// When a host operation needs to affect state that shouldn't be modified
+/// mid-tick (e.g., controller reset), we record the request here and apply
+/// it on a safe boundary (typically System or Slow tick).
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
+#[derive(Copy, Clone, Debug, Default, PartialEq, Eq)]
+pub struct PendingOps {
+    /// Pending soft reset request.
+    pub reset_req: Option<ResetScope>,
+    // Future: persist_req: bool, etc.
 }
 
 /// Runtime state (mutable).

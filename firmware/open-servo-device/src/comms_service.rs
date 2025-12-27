@@ -5,7 +5,7 @@
 //!
 //! The service is a state machine that:
 //! - ingests RX bytes
-//! - emits host operations (reg read/write, mode request)
+//! - emits host operations (reg read/write, mode request, etc.)
 //! - receives host responses
 //! - exposes TX bytes for a reply packet
 //!
@@ -14,42 +14,15 @@
 //! `Device` uses [`CommsService`] without knowing the underlying protocol.
 //! Dynamixel implementations should implement this trait; CAN or other protocols
 //! can do the same with appropriate adapters.
+//!
+//! ## Host Operations
+//!
+//! Host operations are defined in [`open_servo_kernel_api::host_op`].
+//! This module re-exports the types for convenience, but the canonical
+//! definition lives in kernel-api.
 
-use open_servo_kernel_api::{
-    mode::ModeRequest,
-    regs::{RegAddr, RegValue},
-};
-
-/// Operations requested by the protocol layer.
-///
-/// The device runner executes these against the kernel host-plane (`KernelHost`)
-/// and then feeds results back to the service as [`HostResp`].
-#[derive(Copy, Clone, Debug, Eq, PartialEq)]
-pub enum HostOp {
-    /// Read a register address.
-    RegRead { addr: RegAddr },
-
-    /// Write a register address.
-    RegWrite { addr: RegAddr, value: RegValue },
-
-    /// Request a mode change.
-    ModeRequest(ModeRequest),
-}
-
-/// Result of applying a [`HostOp`].
-///
-/// The service translates errors into protocol-specific error codes.
-#[derive(Copy, Clone, Debug, Eq, PartialEq)]
-pub enum HostResp {
-    /// Register read result.
-    RegValue(RegValue),
-
-    /// Successful completion for writes/mode requests.
-    Ok,
-
-    /// Generic failure.
-    Err,
-}
+// Re-export host operation types from kernel-api (canonical source).
+pub use open_servo_kernel_api::host_op::{HostError, HostOp, HostResp, HostResult};
 
 /// Preference for how to handle single-wire TX echo.
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
@@ -65,7 +38,7 @@ pub enum EchoPolicy {
 /// Pull-driven design:
 /// - Device drains UART RX and calls `ingest_rx_byte()`
 /// - Service produces `HostOp` via `next_op()`
-/// - Device executes op against `KernelHost` and calls `push_resp()`
+/// - Device executes op against `KernelHost` and calls `push_result()`
 /// - Service exposes reply bytes via `tx_pop()`
 /// - Device sends bytes using `UartBus`
 ///
@@ -85,8 +58,11 @@ pub trait CommsService {
     /// Get the next requested host operation, if any.
     fn next_op(&mut self) -> Option<HostOp>;
 
-    /// Provide response for the last host op.
-    fn push_resp(&mut self, resp: HostResp);
+    /// Provide result for the last host op.
+    ///
+    /// The service implementation is responsible for mapping `HostResult`
+    /// to protocol-specific response packets (including error codes).
+    fn push_result(&mut self, result: HostResult);
 
     /// Pop one TX byte to send, if any.
     fn tx_pop(&mut self) -> Option<u8>;

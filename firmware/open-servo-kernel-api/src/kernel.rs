@@ -8,8 +8,7 @@
 //! (register map, protocol errors, mode requests) from polluting real-time scheduling.
 
 use crate::{
-    mode::{ModeError, ModeRequest},
-    regs::{RegAddr, RegError, RegValue},
+    host_op::{HostOp, HostResult},
     tick_ctx::TickCtx,
     FaultSink, TelemetrySink,
 };
@@ -59,21 +58,33 @@ pub trait Kernel {
 
 /// Host/control-plane interface.
 ///
-/// This exists so a comms service (Dynamixel, CAN, USB, etc.) can:
-/// - read/write registers
-/// - request mode changes
+/// Protocol services (Dynamixel, CAN, USB, etc.) call [`apply_op`] to execute
+/// control-plane operations against the kernel.
 ///
-/// without needing access to the concrete kernel type.
+/// This trait provides a single dispatch point for all host operations,
+/// replacing the legacy `reg_read`/`reg_write`/`request_mode` methods.
+///
+/// # Single-Writer Contract
+///
+/// `apply_op` may only be called from one context at a time.
+/// Boards must ensure mutual exclusion (critical sections, priority masking).
+/// This contract allows implementations to avoid atomics.
+///
+/// [`apply_op`]: KernelHost::apply_op
 pub trait KernelHost {
-    /// Read a register-like value.
-    fn reg_read(&self, addr: RegAddr) -> Result<RegValue, RegError>;
-
-    /// Write a register-like value.
-    fn reg_write(&mut self, addr: RegAddr, value: RegValue) -> Result<(), RegError>;
-
-    /// Request a mode change.
+    /// Apply a host operation and return the result.
     ///
-    /// Mode switching policy is kernel-defined. The request may be accepted,
-    /// deferred, or rejected (error).
-    fn request_mode(&mut self, req: ModeRequest) -> Result<(), ModeError>;
+    /// This is the primary dispatch point for all control-plane operations.
+    /// Protocol adapters should use this rather than individual methods.
+    ///
+    /// # Operations
+    ///
+    /// See [`HostOp`] for the full set of supported operations:
+    /// - Register read/write
+    /// - Mode requests
+    /// - Fault acknowledgment
+    /// - Persistence commit
+    /// - Soft reset
+    /// - Ping
+    fn apply_op(&mut self, op: HostOp) -> HostResult;
 }

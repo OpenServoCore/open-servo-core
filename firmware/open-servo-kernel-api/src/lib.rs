@@ -51,8 +51,10 @@
 //! - Or `use open_servo_kernel_api::{MilliAmp, CentiDeg32, Effort, ...};`
 
 pub mod controller;
+pub mod debug_guard;
 pub mod faults;
 pub mod graph;
+pub mod host_op;
 pub mod io;
 pub mod kernel;
 pub mod mailbox;
@@ -74,14 +76,16 @@ pub use open_servo_units::*;
 
 // Commonly used exports (optional but convenient).
 pub use controller::Controller;
+pub use debug_guard::DebugReentrancyGuard;
 pub use faults::{FaultKind, FaultSink, GateReason};
 pub use graph::{Chain, Graph, GraphExt, SwitchByMode};
-pub use kernel::Kernel;
+pub use host_op::{FaultId, HostError, HostOp, HostResp, HostResult};
+pub use kernel::{Kernel, KernelHost};
 pub use mailbox::Mailbox;
 pub use mode::{ModeError, ModeRequest, OperatingMode};
 pub use rates::DomainRatesHz;
 pub use regs::{RegAddr, RegError, RegMap, RegValue};
-pub use reset::{ResetReason, Resettable};
+pub use reset::{ResetReason, ResetScope, Resettable};
 pub use role::{HasRole, Role};
 pub use telemetry::{TelemetryId, TelemetrySink};
 pub use tick::{Tick, TickDomain};
@@ -95,14 +99,16 @@ pub use wired::{run_wired, Wired};
 /// Prefer `use open_servo_kernel_api::prelude::*;` in kernel and board crates.
 pub mod prelude {
     pub use crate::controller::Controller;
+    pub use crate::debug_guard::DebugReentrancyGuard;
     pub use crate::faults::{FaultKind, FaultSink, GateReason};
     pub use crate::graph::{Chain, Graph, GraphExt, SwitchByMode};
-    pub use crate::kernel::Kernel;
+    pub use crate::host_op::{FaultId, HostError, HostOp, HostResp, HostResult};
+    pub use crate::kernel::{Kernel, KernelHost};
     pub use crate::mailbox::Mailbox;
     pub use crate::mode::{ModeError, ModeRequest, OperatingMode};
     pub use crate::rates::DomainRatesHz;
     pub use crate::regs::{RegAddr, RegError, RegMap, RegValue};
-    pub use crate::reset::{ResetReason, Resettable};
+    pub use crate::reset::{ResetReason, ResetScope, Resettable};
     pub use crate::role::{HasRole, Role};
     pub use crate::telemetry::{TelemetryId, TelemetrySink};
     pub use crate::tick::{Tick, TickDomain};

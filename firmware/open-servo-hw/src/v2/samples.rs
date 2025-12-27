@@ -155,5 +155,12 @@ pub enum MotorCurrent {
     BldcPhases((MilliAmp, MilliAmp, MilliAmp)),
 }
 
+impl Default for MotorCurrent {
+    /// Default to BDC zero current.
+    fn default() -> Self {
+        Self::Bdc(MilliAmp::from_ma(0))
+    }
+}
+
 /// Motor current sample wrapper.
 pub type MotorCurrentSample = MotorCurrent;

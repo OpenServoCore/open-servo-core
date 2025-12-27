@@ -25,7 +25,7 @@ use open_servo_kernel_api::{
 
 use open_servo_units::MicroSecond;
 
-use crate::comms_service::{CommsService, EchoPolicy, HostOp, HostResp};
+use crate::comms_service::{CommsService, EchoPolicy, HostOp, HostResult};
 use crate::uart_bus::UartBus;
 
 /// Device glue type.
@@ -142,8 +142,8 @@ where
 
         // 2) Execute all requested ops.
         while let Some(op) = self.comms.next_op() {
-            let resp = self.exec_op(op);
-            self.comms.push_resp(resp);
+            let result = self.exec_op(op);
+            self.comms.push_result(result);
         }
 
         // 3) Start TX if pending and bus idle.
@@ -180,23 +180,13 @@ where
         }
     }
 
+    /// Execute a host operation against the kernel.
+    ///
+    /// This delegates to [`KernelHost::apply_op`] and returns the result.
+    /// The comms service is responsible for mapping the result to
+    /// protocol-specific response packets.
     #[inline]
-    fn exec_op(&mut self, op: HostOp) -> HostResp {
-        match op {
-            HostOp::RegRead { addr } => match self.kernel.reg_read(addr) {
-                Ok(v) => HostResp::RegValue(v),
-                Err(_) => HostResp::Err,
-            },
-
-            HostOp::RegWrite { addr, value } => match self.kernel.reg_write(addr, value) {
-                Ok(()) => HostResp::Ok,
-                Err(_) => HostResp::Err,
-            },
-
-            HostOp::ModeRequest(req) => match self.kernel.request_mode(req) {
-                Ok(()) => HostResp::Ok,
-                Err(_) => HostResp::Err,
-            },
-        }
+    fn exec_op(&mut self, op: HostOp) -> HostResult {
+        self.kernel.apply_op(op)
     }
 }

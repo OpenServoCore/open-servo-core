@@ -74,6 +74,37 @@ impl ResetReason {
     }
 }
 
+/// Scope of a soft reset operation requested via [`HostOp::SoftReset`].
+///
+/// This enum describes *what* should be reset when the host requests a
+/// soft reset. The kernel defers the actual reset to a safe boundary
+/// (typically System or Slow tick).
+///
+/// ## Mapping to [`ResetReason`]
+///
+/// When the kernel applies a pending soft reset, it propagates a
+/// corresponding `ResetReason` to nodes:
+///
+/// - `Control` → typically triggers [`ResetReason::ConfigChanged`]
+/// - `AllState` → typically triggers a full reinit akin to [`ResetReason::Engage`]
+///
+/// [`HostOp::SoftReset`]: crate::host_op::HostOp::SoftReset
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub enum ResetScope {
+    /// Reset controller/filter integrators and bridge windows.
+    ///
+    /// Use when tuning parameters changed or user wants to clear
+    /// accumulated controller state without full re-engage.
+    Control,
+
+    /// Reset all feature states (control + monitors + thermal model).
+    ///
+    /// More comprehensive than `Control`; clears all internal state
+    /// but does not wipe configuration.
+    AllState,
+}
+
 /// Reset/lifecycle hook for nodes/features/controllers that have internal state.
 ///
 /// Intended usage:

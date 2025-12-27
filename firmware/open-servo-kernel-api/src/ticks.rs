@@ -188,7 +188,7 @@ pub trait Node<M>: HasRole + Resettable {
 /// Responsibilities:
 /// - track per-domain sequence counters (`Tick.seq`)
 /// - construct [`Tick`] values for each domain (`next_control_fast`, etc.)
-/// - provide ergonomic “binders” (`on_control_fast`, etc.) so multi-rate nodes can be
+/// - provide ergonomic "binders" (`on_control_fast`, etc.) so multi-rate nodes can be
 ///   called without UFCS noise
 ///
 /// Non-goals (intentionally not part of this crate):
@@ -197,6 +197,15 @@ pub trait Node<M>: HasRole + Resettable {
 /// - selecting what nodes run in which order
 ///
 /// The **board/kernel** decides when to call these methods (rates/timers/divisors).
+///
+/// # Single-Writer Contract
+///
+/// `KernelCtx` must only be accessed by one writer at a time. Typical usage:
+/// - Board owns `KernelCtx` in its Device/System struct
+/// - ISRs call `next_*` methods through critical section or priority masking
+///
+/// This crate does NOT use atomics for sequence counters. The single-writer
+/// contract must be enforced by the board.
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
 #[derive(Copy, Clone, Debug)]
 pub struct KernelCtx {
@@ -244,6 +253,20 @@ impl KernelCtx {
             seq_medium: 0,
             seq_slow: 0,
             seq_system: 0,
+        }
+    }
+
+    /// Get current sequence for a domain (without advancing).
+    ///
+    /// This is useful for diagnostics, checking for missed ticks, or
+    /// correlating events across domains.
+    #[inline]
+    pub fn current_seq(&self, domain: TickDomain) -> u32 {
+        match domain {
+            TickDomain::ControlFast => self.seq_fast,
+            TickDomain::ControlMedium => self.seq_medium,
+            TickDomain::ControlSlow => self.seq_slow,
+            TickDomain::System => self.seq_system,
         }
     }
 

@@ -4,10 +4,30 @@ use crate::{FaultSink, TelemetrySink, TickDomain, TimeStampUs};
 /// Per-tick execution context.
 ///
 /// This is what nodes receive during `tick()` so they can:
-/// - access timing (`tick.dt`, `tick.domain`)
+/// - access timing (`tick.dt`, `tick.domain`, `tick.seq`)
 /// - access monotonic time (`now`)
 /// - raise faults
 /// - emit telemetry (system id)
+///
+/// # Timing Semantics
+///
+/// - `tick.dt`: delta time since *this domain's* last tick
+/// - `tick.seq`: per-domain sequence counter (wrapping, monotonic within domain)
+/// - `now`: global monotonic timestamp (cross-domain correlation)
+///
+/// # Multi-Timer Scheduling
+///
+/// Each domain may be driven by a different hardware timer. The `seq` counter
+/// is per-domain, allowing detection of missed ticks or out-of-order processing.
+/// Boards provide `dt` based on actual elapsed time, not assumed cadence.
+///
+/// # Non-Reentrancy Contract
+///
+/// `TickCtx` is NOT safe for concurrent access. Boards must ensure:
+/// - Only one tick executes at a time per domain
+/// - ISRs do not preempt an in-progress tick of the same domain
+///
+/// This contract allows implementations to avoid atomics (CH32V006 compatible).
 pub struct TickCtx<'a, F, T>
 where
     F: FaultSink + ?Sized,
@@ -48,5 +68,23 @@ where
             expected,
             self.tick.domain
         );
+    }
+
+    /// Delta time in microseconds since last tick of this domain.
+    ///
+    /// This is a convenience accessor for `self.tick.dt.0`.
+    #[inline]
+    pub fn dt_us(&self) -> u32 {
+        self.tick.dt.0
+    }
+
+    /// Per-domain monotonic sequence counter.
+    ///
+    /// This is a convenience accessor for `self.tick.seq`.
+    /// The sequence is monotonically increasing within each domain
+    /// and wraps at `u32::MAX`.
+    #[inline]
+    pub fn domain_seq(&self) -> u32 {
+        self.tick.seq
     }
 }
