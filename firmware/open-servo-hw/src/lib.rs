@@ -2,6 +2,7 @@
 //!
 //! This crate defines:
 //!
+//! - **Board trait** (`board`): Unified hardware abstraction interface
 //! - **Boundary types** (`io`): `SensorFrame`, `MotorCommand` for board↔kernel
 //! - **Sample vocabulary** (`samples`): `Sampled<T>` and typed sample aliases
 //! - **Capability flags** (`capability`): Runtime hardware capability detection
@@ -17,6 +18,7 @@
 #![forbid(unsafe_code)]
 
 pub mod adc;
+pub mod board;
 pub mod capability;
 pub mod config;
 pub mod io;
@@ -52,6 +54,7 @@ pub use types::UartPort;
 
 // New boundary types (replacing legacy traits)
 pub use adc::AdcResolution;
+pub use board::Board;
 pub use capability::{MotorType, SensorCapabilities, SensorCapability};
 pub use io::{DriveMode, MotorCommand, SensorFrame};
 pub use samples::{
