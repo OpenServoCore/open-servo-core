@@ -1,3 +1,4 @@
+#![no_std]
 //! Hardware abstraction for open-servo.
 //!
 //! This crate defines:

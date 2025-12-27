@@ -1,3 +1,4 @@
+#![no_std]
 //! # open-servo-kernel-api
 //!
 //! Hard API boundary shared by kernel/controller/board crates.

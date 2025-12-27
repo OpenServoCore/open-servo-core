@@ -19,6 +19,7 @@ members = [
 
     # Board-specific crates
     "open-servo-stm32f301",
+    "open-servo-board-stm32f301",
 ]
 resolver = "2"
 

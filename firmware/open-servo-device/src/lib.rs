@@ -1,3 +1,4 @@
+#![no_std]
 //! # open-servo-device
 //!
 //! Glue layer between:
