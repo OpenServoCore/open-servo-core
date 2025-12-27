@@ -24,6 +24,17 @@ where
     F: FaultSink + ?Sized,
     T: TelemetrySink + ?Sized,
 {
+    /// Construct a new tick context.
+    #[inline]
+    pub fn new(tick: Tick, now: TimeStampUs, faults: &'a mut F, telem: &'a mut T) -> Self {
+        Self {
+            tick,
+            now,
+            faults,
+            telem,
+        }
+    }
+
     /// Validate the tick and assert expected domain.
     ///
     /// This is debug-only; it compiles out in release builds.

@@ -204,8 +204,10 @@ pub fn control_fast<C: ControlLoop>(
 
         ServoMode::Hold => {
             // Apply error-based effort cap curve
-            let effort_cap =
-                compliance::compute_hold_effort_cap(protected.error.saturating_abs(), &config.policy);
+            let effort_cap = compliance::compute_hold_effort_cap(
+                protected.error.saturating_abs(),
+                &config.policy,
+            );
             min_effort = min_effort.max(-effort_cap as i32);
             max_effort = max_effort.min(effort_cap as i32);
         }

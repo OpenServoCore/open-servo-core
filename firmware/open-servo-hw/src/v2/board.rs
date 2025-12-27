@@ -3,8 +3,9 @@
 //! The `Board` trait is the single interface between kernel and hardware.
 //! It replaces the previous 24+ fragmented traits with a minimal, cohesive API.
 
-use crate::capability::{MotorType, SensorCapabilities};
-use crate::io::{MotorCommand, SensorFrame};
+use crate::v2::capability::{MotorType, SensorCapabilities};
+use crate::v2::io::{MotorCommand, SensorFrame};
+use crate::v2::ServoPosKind;
 
 /// Unified hardware abstraction for servo boards.
 ///
@@ -18,6 +19,9 @@ use crate::io::{MotorCommand, SensorFrame};
 /// - Optional sensors use [`Sampled::Unavailable`] when not present
 /// - Motor commands go through [`MotorCommand`]
 pub trait Board {
+    /// Servo position semantics for this board.
+    fn servo_pos_kind(&self) -> ServoPosKind;
+
     /// Motor topology for this board (BDC or BLDC).
     fn motor_type(&self) -> MotorType;
 

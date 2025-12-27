@@ -10,8 +10,12 @@ members = [
 
     # Base control libraries
     "open-servo-kernel-api",
+    "open-servo-kernel",
     "open-servo-core", # legacy, will be replaced by "open-servo-kernel"
     "open-servo-control",
+
+    # Device that ties hardware and control together
+    "open-servo-device",
 
     # Board-specific crates
     "open-servo-stm32f301",
@@ -30,8 +34,12 @@ default-members = [
 
     # Base control libraries
     "open-servo-kernel-api",
+    "open-servo-kernel",
     "open-servo-core", # legacy, will be replaced by "open-servo-kernel"
     "open-servo-control",
+
+    # Device that ties hardware and control together
+    "open-servo-device",
 ]
 
 [workspace.package]

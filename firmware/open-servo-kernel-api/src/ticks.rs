@@ -247,16 +247,48 @@ impl KernelCtx {
         }
     }
 
-    impl_next_tick!(next_control_fast, seq_fast, TickDomain::ControlFast, "Next tick context for ControlFast.");
-    impl_next_tick!(next_control_medium, seq_medium, TickDomain::ControlMedium, "Next tick context for ControlMedium.");
-    impl_next_tick!(next_control_slow, seq_slow, TickDomain::ControlSlow, "Next tick context for ControlSlow.");
-    impl_next_tick!(next_system, seq_system, TickDomain::System, "Next tick context for System.");
+    impl_next_tick!(
+        next_control_fast,
+        seq_fast,
+        TickDomain::ControlFast,
+        "Next tick context for ControlFast."
+    );
+    impl_next_tick!(
+        next_control_medium,
+        seq_medium,
+        TickDomain::ControlMedium,
+        "Next tick context for ControlMedium."
+    );
+    impl_next_tick!(
+        next_control_slow,
+        seq_slow,
+        TickDomain::ControlSlow,
+        "Next tick context for ControlSlow."
+    );
+    impl_next_tick!(
+        next_system,
+        seq_system,
+        TickDomain::System,
+        "Next tick context for System."
+    );
 
     // ---- Explicit binders (ergonomics + compile-time domain selection) ----
 
-    impl_on_domain!(on_control_fast, CtlFast, "Bind a node to the ControlFast domain.");
-    impl_on_domain!(on_control_medium, CtlMedium, "Bind a node to the ControlMedium domain.");
-    impl_on_domain!(on_control_slow, CtlSlow, "Bind a node to the ControlSlow domain.");
+    impl_on_domain!(
+        on_control_fast,
+        CtlFast,
+        "Bind a node to the ControlFast domain."
+    );
+    impl_on_domain!(
+        on_control_medium,
+        CtlMedium,
+        "Bind a node to the ControlMedium domain."
+    );
+    impl_on_domain!(
+        on_control_slow,
+        CtlSlow,
+        "Bind a node to the ControlSlow domain."
+    );
     impl_on_domain!(on_system, Sys, "Bind a node to the System domain.");
 }
 

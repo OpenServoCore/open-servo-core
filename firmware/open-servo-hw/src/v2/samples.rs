@@ -83,9 +83,7 @@ impl<T: Copy> Sampled<T> {
 // in one place if needed.
 
 /// Primary servo position sensor sample (pot/hall).
-///
-/// Uses overflow-safe internal representation.
-pub type ServoPosSample = Sampled<CentiDeg32>;
+pub type ServoPosSample = CentiDeg32;
 
 /// Optional secondary motor position sensor sample (custom optical encoder).
 pub type MotorPosSample = Sampled<EncoderCount>;
@@ -99,13 +97,13 @@ pub type MotorPosSample = Sampled<EncoderCount>;
 ///
 /// The intent is: a stable ambient-ish reference for supervisors and thermal models,
 /// not a precise die-junction measurement.
-pub type AmbientTempSample = Sampled<CentiC>;
+pub type AmbientTempSample = CentiC;
 
 /// Optional motor temperature sample (NTC).
 pub type MotorTempSample = Sampled<CentiC>;
 
 /// MCU supply / internal ADC VDD/VDDIO sample.
-pub type McuVddSample = Sampled<MilliVolt>;
+pub type McuVddSample = MilliVolt;
 
 /// System supply (VSYS/VBAT) sample.
 pub type VsysSample = Sampled<MilliVolt>;
@@ -114,12 +112,19 @@ pub type VsysSample = Sampled<MilliVolt>;
 ///
 /// This is conservative by design.
 /// - Many BDC designs can provide two node voltages (`a`, `b`) per frame.
-/// - BLDC per-phase voltage sensing schema is not decided yet; add later when stable.
+/// - BLDC per-phase voltage sensing schema varies widely; we provide all three phases.
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub enum MotorVoltage {
     /// BDC / H-bridge node voltages (two nodes).
     Bdc { a: MilliVolt, b: MilliVolt },
+
+    /// BLDC: three phase voltages in (a, b, c) order.
+    BldcPhases {
+        a: MilliVolt,
+        b: MilliVolt,
+        c: MilliVolt,
+    },
 }
 
 /// Motor voltage sample wrapper.
@@ -151,4 +156,4 @@ pub enum MotorCurrent {
 }
 
 /// Motor current sample wrapper.
-pub type MotorCurrentSample = Sampled<MotorCurrent>;
+pub type MotorCurrentSample = MotorCurrent;

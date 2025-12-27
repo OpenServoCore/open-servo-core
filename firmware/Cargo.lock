@@ -182,6 +182,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "open-servo-device"
+version = "0.1.0"
+dependencies = [
+ "defmt 0.3.100",
+ "open-servo-hw",
+ "open-servo-kernel-api",
+ "open-servo-units",
+]
+
+[[package]]
 name = "open-servo-hw"
 version = "0.1.0"
 dependencies = [
@@ -195,8 +205,17 @@ name = "open-servo-hw-utils"
 version = "0.1.0"
 dependencies = [
  "open-servo-hw",
- "open-servo-units",
  "rtt-target",
+]
+
+[[package]]
+name = "open-servo-kernel"
+version = "0.1.0"
+dependencies = [
+ "defmt 0.3.100",
+ "open-servo-hw",
+ "open-servo-kernel-api",
+ "open-servo-units",
 ]
 
 [[package]]

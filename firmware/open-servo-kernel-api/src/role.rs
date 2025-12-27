@@ -21,22 +21,28 @@ use crate::TickDomain;
 #[repr(u8)]
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub enum Role {
-    /// Control law (PID, cascaded loops, feedforward).
+    /// Control laws (PID, cascaded loops, feedforward).
     Control = 0,
+
     /// Signal conditioning (LPF, moving avg, debouncer, differentiator).
     Filter = 1,
-    /// Physical/plant models and estimators (thermal, motor, observers).
-    Model = 2,
-    /// Health monitoring / protection checks (fault detection, watchdog).
-    Monitor = 3,
-    /// Constraints and gating (clamps, budgets, soft limits, torque limiting).
+
+    /// State derivation / observers / tracking that integrate over time.
+    /// (Pure plant models belong in `open-servo-math`.)
+    Estimator = 2,
+
+    /// Health checks + fault detection + watchdogs (raises faults).
+    Guard = 3,
+
+    /// Constraints/budgets/gating/clamps (may shape commands, not necessarily faults).
     Limiter = 4,
-    /// Configuration/state container / register-facing state / persistence policy.
-    State = 5,
-    /// Housekeeping / logging / telemetry / background tasks.
-    System = 6,
-    /// Protocol-facing logic (optional; often lives outside nodes).
-    Protocol = 7,
+
+    /// Diagnostics/telemetry/background tasks (non-control, non-safety).
+    Service = 5,
+
+    /// (Optional) Persistence policy / commit state machines (EEPROM/flash).
+    /// Consider keeping this out of the node graph entirely.
+    Persistence = 6,
 }
 
 /// Declarative role metadata for a node type.
@@ -49,33 +55,51 @@ pub trait HasRole {
 
 impl Role {
     #[inline]
-    pub fn debug_expected_domains(self) -> &'static [TickDomain] {
+    pub const fn debug_allowed_domains(self) -> &'static [TickDomain] {
         match self {
             Role::Control => &[
                 TickDomain::ControlFast,
                 TickDomain::ControlMedium,
                 TickDomain::ControlSlow,
             ],
+
+            // Filters are everywhere (including debouncers in System).
             Role::Filter => &[
                 TickDomain::ControlFast,
                 TickDomain::ControlMedium,
                 TickDomain::ControlSlow,
                 TickDomain::System,
             ],
-            Role::Model => &[
+
+            // Estimators can be fast (vel estimation), but commonly medium/slow/system.
+            Role::Estimator => &[
+                TickDomain::ControlFast,
                 TickDomain::ControlMedium,
                 TickDomain::ControlSlow,
                 TickDomain::System,
             ],
-            Role::Monitor => &[
+
+            // Guards are often fast/medium, but some are slow/system (thermal, sanity checks).
+            Role::Guard => &[
                 TickDomain::ControlFast,
                 TickDomain::ControlMedium,
+                TickDomain::ControlSlow,
                 TickDomain::System,
             ],
-            Role::Limiter => &[TickDomain::ControlFast, TickDomain::ControlMedium],
-            Role::State => &[TickDomain::ControlMedium, TickDomain::System],
-            Role::System => &[TickDomain::System],
-            Role::Protocol => &[TickDomain::System],
+
+            // Limiters show up everywhere: setpoint clamps (slow/medium), effort clamps (fast),
+            // gating decisions (fast/medium).
+            Role::Limiter => &[
+                TickDomain::ControlFast,
+                TickDomain::ControlMedium,
+                TickDomain::ControlSlow,
+            ],
+
+            // Housekeeping & telemetry: primarily System; allow Slow if you treat slow as supervisory.
+            Role::Service => &[TickDomain::ControlSlow, TickDomain::System],
+
+            // Optional: persistence policy should be system-only.
+            Role::Persistence => &[TickDomain::System],
         }
     }
 }
@@ -84,10 +108,7 @@ impl Role {
 pub fn debug_assert_role_domain<N: HasRole>(domain: TickDomain) {
     #[cfg(debug_assertions)]
     {
-        let ok = N::ROLE
-            .debug_expected_domains()
-            .iter()
-            .any(|d| *d == domain);
+        let ok = N::ROLE.debug_allowed_domains().iter().any(|d| *d == domain);
 
         debug_assert!(
             ok,

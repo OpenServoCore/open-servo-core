@@ -4,6 +4,24 @@
 //! feature flags. All sensor/peripheral code is compiled in, but boards report
 //! which capabilities are actually available at runtime.
 
+use open_servo_math::CentiDeg;
+
+// ============================================================================
+// Servo position kind
+// ============================================================================
+
+/// Servo position kind
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub enum ServoPosKind {
+    /// Normal micro servo pot/magnet with mechanical stops.
+    /// No wrap; `pos_est = servo_pos_raw`.
+    Bounded { min: CentiDeg, max: CentiDeg },
+
+    /// Absolute 360 sensor that wraps at 0/360.
+    /// Kernel may unwrap across boundary.
+    Wrap360,
+}
+
 // ============================================================================
 // Motor topology
 // ============================================================================
