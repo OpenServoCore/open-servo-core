@@ -1,14 +1,30 @@
-//! Cross-domain “wire” primitive.
+//! Cross-domain "wire" primitive.
 //!
 //! `Mailbox<T>` is intended to live in **kernel-owned shared state** to carry values
 //! between nodes running in different tick domains (fast/medium/slow/system).
 //!
-//! It is **not** atomic and does not imply ISR-safety. Use it when your kernel
-//! orchestrates access (common in single-threaded embedded tick pipelines).
-//!
 //! Typical use:
 //! - slow loop writes a velocity setpoint for a fast loop
 //! - medium loop writes a torque budget for a fast loop
+//!
+//! # Safety: Non-Atomic, Same-Context Assumption
+//!
+//! **`Mailbox<T>` is NOT atomic.** It assumes one of the following:
+//!
+//! 1. All tick domains run in the **same interrupt priority / thread context**, OR
+//! 2. Callers use a **critical section** around read/write operations
+//!
+//! If `slow_tick` writes from one ISR priority and `fast_tick` reads from another
+//! **without synchronization**, you have a **data race** (undefined behavior in Rust).
+//!
+//! This is intentional for performance: most embedded servo kernels run all ticks
+//! in the same DMA/ADC ISR context or use a cooperative scheduler. If you need
+//! ISR-safe cross-domain communication across priority levels, use:
+//! - Atomics (e.g., `AtomicI32` for small values)
+//! - A proper SPSC queue (e.g., `heapless::spsc::Queue`)
+//! - Critical sections (e.g., `cortex_m::interrupt::free`)
+//!
+//! # Example
 //!
 //! ```rust,ignore
 //! use open_servo_kernel_api::Mailbox;

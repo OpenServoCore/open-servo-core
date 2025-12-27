@@ -60,7 +60,7 @@ pub trait Graph<M, S>: Resettable {
 /// This is the core bridge that lets you build higher-order graphs.
 impl<M, S, N> Graph<M, S> for N
 where
-    N: Wired<M, S> + Resettable,
+    N: Wired<M, S>,
 {
     #[inline]
     fn run<F, T>(&mut self, state: &mut S, ctx: &mut TickCtx<'_, F, T>)
@@ -74,7 +74,7 @@ where
         // 3) push output back to state
         let input = self.pull(state);
         let out = self.step(ctx, input);
-        self.push(state, &out);
+        self.push(state, out);
     }
 }
 

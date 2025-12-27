@@ -66,8 +66,8 @@
 //!         (state.vel_sp, state.vel)
 //!     }
 //!
-//!     fn push(&mut self, state: &mut State, out: &Effort) {
-//!         state.effort = *out;
+//!     fn push(&mut self, state: &mut State, out: Effort) {
+//!         state.effort = out;
 //!     }
 //! }
 //!
@@ -95,12 +95,14 @@ pub trait Wired<M, S>: Node<M> {
     /// - Prefer assembling small `Copy` “wire” values (unit newtypes, small structs).
     fn pull(&mut self, state: &S) -> Self::In;
 
-    /// Write this node’s output back into shared state.
+    /// Write this node's output back into shared state.
     ///
     /// Contract:
     /// - Should only write results into `state`.
     /// - Avoid additional computation when possible (keep compute in `tick()`).
-    fn push(&mut self, state: &mut S, out: &Self::Out);
+    ///
+    /// Note: `out` is passed by value since `Out: Copy`. This avoids `*out` noise.
+    fn push(&mut self, state: &mut S, out: Self::Out);
 }
 
 /// Run a wired node using the blessed “kernel owns state” pattern.
@@ -121,6 +123,6 @@ where
 {
     let input = node.pull(state);
     let out = node.step(ctx, input);
-    node.push(state, &out);
+    node.push(state, out);
     out
 }

@@ -1,9 +1,34 @@
-//! Normalized motor effort.
+//! Normalized actuator effort.
+//!
+//! `Effort` is a **dimensionless normalized command** representing actuator authority.
+//! It is intentionally unit-free: boards map it to their physical actuator interface
+//! (PWM duty, FOC Iq request, etc.).
+//!
+//! # Semantics
+//!
+//! - **Range:** full `i16` range: -32768..32767 (Q15-ish)
+//! - **Sign:** negative = reverse, positive = forward, zero = no command
+//! - **Meaning:** "how much actuator authority to apply", not current/torque/voltage
+//!
+//! # Board Mapping
+//!
+//! - **BDC (H-bridge):** typically mapped to PWM duty cycle
+//! - **BLDC (FOC):** typically mapped to torque-producing current (Iq) request
+//!
+//! The kernel produces `Effort`; the board translates it to electrical commands.
 
 use crate::macros::impl_unit_int_ops;
 
-/// Normalized motor effort in units (-32768 to 32767)
-/// -32768 = full reverse, 0 = stopped, 32767 = full forward
+/// Dimensionless normalized actuator command.
+///
+/// Range: -32768..32767 (full `i16`).
+///
+/// - Negative = reverse direction
+/// - Zero = no commanded effort
+/// - Positive = forward direction
+///
+/// This is **not** a physical unit (not current, not torque, not duty).
+/// Boards map `Effort` to their actuator interface (PWM duty, FOC Iq, etc.).
 #[derive(Copy, Clone, Debug, Default, PartialEq, Eq, PartialOrd, Ord)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
 pub struct Effort(pub i16);

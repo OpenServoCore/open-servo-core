@@ -120,9 +120,13 @@ pub mod ids {
     pub const CURR_MA: TelemetryId = 3;
     pub const VOLT_MV: TelemetryId = 4;
 
-    /// Normalized control command (dimensionless), raw i16 typically stored in i32.
+    /// Dimensionless normalized actuator command (raw `i16` stored as `i32`).
+    ///
+    /// - **Range:** -32768..32767 (full `i16`, Q15-ish)
+    /// - **Meaning:** "how much actuator authority", not current/torque/voltage
     ///
     /// This is the kernel-level "what we asked the actuator to do" signal.
+    /// Board maps to PWM duty (BDC) or Iq request (BLDC FOC).
     pub const EFFORT_RAW: TelemetryId = 5;
 
     // =========================

@@ -26,11 +26,11 @@ pub enum TickDomain {
     System,
 }
 
-/// A tick “frame” describing one occurrence of a domain.
+/// A tick "frame" describing one occurrence of a domain.
 ///
 /// - `domain` = which conceptual domain this tick belongs to
 /// - `dt`     = delta time in microseconds since the last tick of this domain
-/// - `seq`    = monotonic counter for this domain (wrapping OK)
+/// - `seq`    = monotonic counter for this domain (wrapping OK, monotonic within domain)
 ///
 /// The kernel uses this to keep behavior disciplined and portable across boards.
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
@@ -41,10 +41,24 @@ pub struct Tick {
     pub seq: u32,
 }
 
+/// Sanity upper bound for dt: 1 second (1_000_000 µs).
+///
+/// If a tick has dt > 1s, something is seriously wrong (missed ticks, timer overflow, etc.).
+const DT_UPPER_BOUND_US: u32 = 1_000_000;
+
 impl Tick {
     /// Debug-only sanity checks.
+    ///
+    /// Asserts:
+    /// - `dt > 0` (time must advance)
+    /// - `dt < 1 second` (sanity bound; indicates missed ticks or misconfiguration)
     #[inline]
     pub fn debug_assert_valid(&self) {
-        debug_assert!(self.dt > MicroSecond::ZERO, "TickCtx.dt_us must be > 0");
+        debug_assert!(self.dt > MicroSecond::ZERO, "Tick.dt must be > 0");
+        debug_assert!(
+            self.dt.0 < DT_UPPER_BOUND_US,
+            "Tick.dt must be < 1 second (sanity bound); got {} µs",
+            self.dt.0
+        );
     }
 }

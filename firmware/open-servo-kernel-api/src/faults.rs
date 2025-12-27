@@ -29,6 +29,22 @@
 //! - `FAULT_SEQ`: monotonic sequence counter (increments on fault edge)
 //!
 //! See `telemetry::ids::*` for suggested IDs.
+//!
+//! # Invariant: Nodes Must Not Read Fault State
+//!
+//! Nodes receive only `&mut dyn FaultSink` via `TickCtx`. They can **raise** faults
+//! but cannot:
+//! - query whether a fault is latched (`is_faulted`, `has`, `mask`)
+//! - clear faults ([`FaultAdmin`] methods)
+//!
+//! Fault-based gating (output disable, mode restrictions) is **kernel policy**.
+//! Nodes should NOT branch on fault state; they should produce outputs normally
+//! and let the kernel gate them.
+//!
+//! This separation ensures:
+//! - Safety policy is centralized in the kernel
+//! - Nodes remain testable in isolation
+//! - No "self-clearing" foot-guns
 
 /// Fault kinds are part of the API surface because they affect kernel gating
 /// and externally-visible telemetry/tooling.

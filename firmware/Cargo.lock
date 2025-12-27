@@ -195,6 +195,7 @@ name = "open-servo-hw-utils"
 version = "0.1.0"
 dependencies = [
  "open-servo-hw",
+ "open-servo-units",
  "rtt-target",
 ]
 
