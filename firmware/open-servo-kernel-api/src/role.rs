@@ -1,19 +1,24 @@
 //! Node roles (declarative metadata).
 //!
-//! Roles are intentionally named like traditional embedded C/C++ modules/classes:
-//! control / filter / model / monitor / limiter / state / system.
+//! Roles are *review tools*, not scheduling tools.
+//! Scheduling remains by TickDomain.
 //!
-//! The kernel does **not** schedule by role; scheduling is still by tick domain.
-//! Roles exist to force clarity in review and keep the architecture legible.
+//! The goals:
+//! - Make intent obvious from the type (and file name).
+//! - Enable cheap debug assertions that a node runs in reasonable domains.
+//! - Keep architecture legible as the graph grows.
 //!
-//! ```rust,ignore
-//! use open_servo_kernel_api::role::{HasRole, Role};
-//!
-//! pub struct ThermalModel;
-//! impl HasRole for ThermalModel {
-//!     const ROLE: Role = Role::Model;
-//! }
-//! ```
+//! Naming guidance (recommended):
+//! - state_*        => Role::State
+//! - estimator_*    => Role::Estimator
+//! - filter_*       => Role::Filter
+//! - control_*      => Role::Control
+//! - limiter_*      => Role::Limiter
+//! - monitor_*      => Role::Monitor
+//! - model_*        => Role::Model
+//! - actuation_*    => Role::Actuation
+//! - service_*      => Role::Service
+//! - persist_*      => Role::Persistence
 
 use crate::TickDomain;
 
@@ -21,8 +26,9 @@ use crate::TickDomain;
 #[repr(u8)]
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub enum Role {
-    /// Control laws (PID, cascaded loops, feedforward).
-    Control = 0,
+    /// Moves raw inputs into kernel state, tracks setpoints, mode requests, etc.
+    /// Also includes cross-domain "bridge" accumulators (fast->medium).
+    State = 0,
 
     /// Signal conditioning (LPF, moving avg, debouncer, differentiator).
     Filter = 1,
@@ -31,18 +37,29 @@ pub enum Role {
     /// (Pure plant models belong in `open-servo-math`.)
     Estimator = 2,
 
-    /// Health checks + fault detection + watchdogs (raises faults).
-    Guard = 3,
+    /// Control laws (PID, cascaded loops, feedforward).
+    Control = 3,
 
     /// Constraints/budgets/gating/clamps (may shape commands, not necessarily faults).
     Limiter = 4,
 
-    /// Diagnostics/telemetry/background tasks (non-control, non-safety).
-    Service = 5,
+    /// Health checks + fault detection + watchdogs (raise faults).
+    /// Monitor nodes should be *raise-only* and never clear faults directly.
+    Monitor = 5,
 
-    /// (Optional) Persistence policy / commit state machines (EEPROM/flash).
-    /// Consider keeping this out of the node graph entirely.
-    Persistence = 6,
+    /// Physics/plant/thermal models (time integration, energy estimates, etc).
+    Model = 6,
+
+    /// The final conversion into actuation outputs (e.g., effort -> MotorCommand).
+    /// Prefer a single Actuation node per domain (especially fast).
+    Actuation = 7,
+
+    /// Diagnostics/telemetry/background tasks (non-control, non-safety).
+    Service = 8,
+
+    /// Persistence policy / commit state machines (EEPROM/flash orchestration).
+    /// Often better kept out of the realtime graph; but role exists if needed.
+    Persistence = 9,
 }
 
 /// Declarative role metadata for a node type.
@@ -54,16 +71,19 @@ pub trait HasRole {
 }
 
 impl Role {
+    /// Conservative defaults for where roles "make sense".
+    /// This is intentionally not perfect; it's a debug/review guardrail.
     #[inline]
     pub const fn debug_allowed_domains(self) -> &'static [TickDomain] {
         match self {
-            Role::Control => &[
+            // State updates can occur anywhere, but cross-domain bridges usually happen fast/medium.
+            Role::State => &[
                 TickDomain::ControlFast,
                 TickDomain::ControlMedium,
                 TickDomain::ControlSlow,
+                TickDomain::System,
             ],
 
-            // Filters are everywhere (including debouncers in System).
             Role::Filter => &[
                 TickDomain::ControlFast,
                 TickDomain::ControlMedium,
@@ -71,7 +91,6 @@ impl Role {
                 TickDomain::System,
             ],
 
-            // Estimators can be fast (vel estimation), but commonly medium/slow/system.
             Role::Estimator => &[
                 TickDomain::ControlFast,
                 TickDomain::ControlMedium,
@@ -79,26 +98,41 @@ impl Role {
                 TickDomain::System,
             ],
 
-            // Guards are often fast/medium, but some are slow/system (thermal, sanity checks).
-            Role::Guard => &[
+            Role::Control => &[
                 TickDomain::ControlFast,
                 TickDomain::ControlMedium,
                 TickDomain::ControlSlow,
-                TickDomain::System,
             ],
 
-            // Limiters show up everywhere: setpoint clamps (slow/medium), effort clamps (fast),
-            // gating decisions (fast/medium).
+            // Limiters are used a lot in control domains; allow System if you want supervisory limiters,
+            // but default to control domains to keep actuators honest.
             Role::Limiter => &[
                 TickDomain::ControlFast,
                 TickDomain::ControlMedium,
                 TickDomain::ControlSlow,
             ],
 
+            // Monitors are usually fast/medium/slow; allow System for thermal + sanity checks.
+            Role::Monitor => &[
+                TickDomain::ControlFast,
+                TickDomain::ControlMedium,
+                TickDomain::ControlSlow,
+                TickDomain::System,
+            ],
+
+            // Models often run medium/slow/system. Allow fast if needed, but prefer not.
+            Role::Model => &[
+                TickDomain::ControlMedium,
+                TickDomain::ControlSlow,
+                TickDomain::System,
+            ],
+
+            // Actuation is normally fast (and sometimes medium in certain architectures).
+            Role::Actuation => &[TickDomain::ControlFast, TickDomain::ControlMedium],
+
             // Housekeeping & telemetry: primarily System; allow Slow if you treat slow as supervisory.
             Role::Service => &[TickDomain::ControlSlow, TickDomain::System],
 
-            // Optional: persistence policy should be system-only.
             Role::Persistence => &[TickDomain::System],
         }
     }
