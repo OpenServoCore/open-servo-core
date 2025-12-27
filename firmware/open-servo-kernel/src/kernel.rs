@@ -10,8 +10,8 @@
 //! - Disengage resets the PID integrator (simple, deterministic)
 
 use open_servo_hw::v2::io::{DriveMode, MotorCommand, MotorHints, SensorFrame};
-use open_servo_kernel_api::faults::GateReason;
 use open_servo_kernel_api::faults::FaultSink;
+use open_servo_kernel_api::faults::GateReason;
 use open_servo_kernel_api::host_op::{HostError, HostOp, HostResp, HostResult};
 use open_servo_kernel_api::kernel::{Kernel, KernelHost};
 use open_servo_kernel_api::mode::{ModeError, ModeRequest, OperatingMode};
@@ -348,9 +348,10 @@ impl Kernel for ServoKernel {
 impl KernelHost for ServoKernel {
     fn apply_op(&mut self, op: HostOp) -> HostResult {
         match op {
-            HostOp::RegRead { addr } => {
-                self.reg_read(addr).map(HostResp::RegValue).map_err(Into::into)
-            }
+            HostOp::RegRead { addr } => self
+                .reg_read(addr)
+                .map(HostResp::RegValue)
+                .map_err(Into::into),
 
             HostOp::RegWrite { addr, value } => {
                 self.reg_write(addr, value)?;

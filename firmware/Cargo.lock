@@ -185,7 +185,9 @@ dependencies = [
 name = "open-servo-device"
 version = "0.1.0"
 dependencies = [
+ "critical-section",
  "defmt 0.3.100",
+ "heapless",
  "open-servo-hw",
  "open-servo-kernel-api",
  "open-servo-units",

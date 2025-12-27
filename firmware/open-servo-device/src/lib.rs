@@ -21,11 +21,16 @@
 
 pub mod comms_service;
 pub mod device;
+pub mod executor;
+pub mod main_loop;
 pub mod uart_bus;
 
 // Re-export the main seams for convenience.
-pub use comms_service::{CommsService, DxlService, EchoPolicy, HostError, HostOp, HostResp, HostResult};
+pub use comms_service::{
+    CommsService, DxlService, EchoPolicy, HostError, HostOp, HostResp, HostResult,
+};
 pub use device::Device;
+pub use executor::Executor;
 pub use uart_bus::{UartBus, UartError};
 
 // Common re-exports so downstream crates don't need to import everything manually.
@@ -40,9 +45,10 @@ pub use open_servo_units as units;
 /// use open_servo_device::prelude::*;
 /// ```
 pub mod prelude {
+    pub use crate::main_loop::{drain_and_respond, parse_and_enqueue};
     pub use crate::{
-        CommsService, Device, DxlService, EchoPolicy, HostError, HostOp, HostResp, HostResult,
-        UartBus, UartError,
+        CommsService, Device, DxlService, EchoPolicy, Executor, HostError, HostOp, HostResp,
+        HostResult, UartBus, UartError,
     };
 
     pub use open_servo_hw::*;
