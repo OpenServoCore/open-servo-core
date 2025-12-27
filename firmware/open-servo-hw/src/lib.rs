@@ -4,6 +4,8 @@
 //!
 //! - **Boundary types** (`io`): `SensorFrame`, `MotorCommand` for board↔kernel
 //! - **Sample vocabulary** (`samples`): `Sampled<T>` and typed sample aliases
+//! - **Capability flags** (`capability`): Runtime hardware capability detection
+//! - **ADC vocabulary** (`adc`): Resolution enum for calibration functions
 //! - **Config structs** (`config`): Board configuration shapes
 //!
 //! ## Legacy modules (to be removed)
@@ -14,6 +16,8 @@
 #![no_std]
 #![forbid(unsafe_code)]
 
+pub mod adc;
+pub mod capability;
 pub mod config;
 pub mod io;
 pub mod motor;
@@ -47,6 +51,8 @@ pub use sensor::VelocitySensor;
 pub use types::UartPort;
 
 // New boundary types (replacing legacy traits)
+pub use adc::AdcResolution;
+pub use capability::{MotorType, SensorCapabilities, SensorCapability};
 pub use io::{DriveMode, MotorCommand, SensorFrame};
 pub use samples::{
     AmbientTempSample, McuVddSample, MotorCurrent, MotorCurrentSample, MotorPosSample,
