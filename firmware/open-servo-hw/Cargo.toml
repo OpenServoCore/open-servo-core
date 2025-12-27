@@ -5,9 +5,10 @@ edition.workspace = true
 
 [dependencies]
 open-servo-math = { path = "../open-servo-math" }
+open-servo-units = { path = "../open-servo-units" }
 
 [features]
-defmt = ["dep:defmt", "open-servo-math/defmt"]
+defmt = ["dep:defmt", "open-servo-math/defmt", "open-servo-units/defmt"]
 motor-bldc = []           # BLDC motor driver traits (future)
 current-sense-phase = []  # 3-phase current sensing for FOC (future)
 

@@ -1,26 +1,24 @@
-//! Hardware abstraction traits for open-servo.
+//! Hardware abstraction for open-servo.
 //!
-//! This crate defines the hardware interface that board crates implement.
-//! It provides:
+//! This crate defines:
 //!
-//! - **Sensor traits** (`sensor`): Position, current, voltage, temperature sensing
-//! - **Motor traits** (`motor`): BDC and BLDC motor driver control
-//! - **Peripheral traits** (`peripheral`): UART, timing, debug I/O
+//! - **Boundary types** (`io`): `SensorFrame`, `MotorCommand` for board↔kernel
+//! - **Sample vocabulary** (`samples`): `Sampled<T>` and typed sample aliases
+//! - **Config structs** (`config`): Board configuration shapes
 //!
-//! ## Safety Capability Traits
+//! ## Legacy modules (to be removed)
 //!
-//! Sensor traits include "Safety*Source" variants that return `Option<T>`.
-//! Boards with a sensor get automatic implementation via blanket impl.
-//! Boards without implement the safety trait directly, returning `None`.
-//!
-//! This allows SafetyManager to automatically skip checks for unavailable sensors.
+//! The following modules are deprecated and will be deleted:
+//! - `sensor`, `motor`, `peripheral`, `types`
 
 #![no_std]
 #![forbid(unsafe_code)]
 
 pub mod config;
+pub mod io;
 pub mod motor;
 pub mod peripheral;
+pub mod samples;
 pub mod sensor;
 pub mod types;
 
@@ -47,3 +45,10 @@ pub use sensor::SafetyMotorVoltageSource;
 pub use sensor::SafetyVoltageSource;
 pub use sensor::VelocitySensor;
 pub use types::UartPort;
+
+// New boundary types (replacing legacy traits)
+pub use io::{DriveMode, MotorCommand, SensorFrame};
+pub use samples::{
+    AmbientTempSample, McuVddSample, MotorCurrent, MotorCurrentSample, MotorPosSample,
+    MotorTempSample, MotorVoltage, MotorVoltageSample, Sampled, ServoPosSample, VsysSample,
+};

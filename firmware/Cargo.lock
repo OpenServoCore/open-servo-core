@@ -187,6 +187,7 @@ version = "0.1.0"
 dependencies = [
  "defmt 0.3.100",
  "open-servo-math",
+ "open-servo-units",
 ]
 
 [[package]]

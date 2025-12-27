@@ -4,7 +4,7 @@
 //! cross crate boundaries (board ↔ kernel ↔ controllers).
 //!
 //! # Why this exists
-//! Many real embedded pipelines need to represent more than “present or not”.
+//! Many real embedded pipelines need to represent more than "present or not".
 //! We distinguish three states for each measurement:
 //! - [`Sampled::Unavailable`]: not implemented / not routed on this board/build
 //! - [`Sampled::Invalid`]: implemented, but not valid right now (boot, ADC not ready, fault)
@@ -12,12 +12,8 @@
 //!
 //! This is intentionally *not* a math/processing module. No accumulation, filtering,
 //! or estimation belongs here.
-//!
-//! # Relationship to `open-servo-hw`
-//! - Raw per-frame sampling truth (e.g. `SensorSample`, `BoardCaps`) belongs in `open-servo-hw`.
-//! - The types here are **kernel-facing sample vocabulary** that keep call sites explicit.
 
-use crate::units::*;
+use open_servo_units::*;
 
 /// A sampled measurement with explicit availability/validity.
 ///
@@ -96,7 +92,7 @@ pub type MotorPosSample = Sampled<EncoderCount>;
 
 /// Ambient temperature proxy sample.
 ///
-/// This is the single “environment” temperature channel exposed to the kernel.
+/// This is the single "environment" temperature channel exposed to the kernel.
 /// Boards are free to source this from:
 /// - MCU internal temperature sensor
 /// - an NTC on the PCB
