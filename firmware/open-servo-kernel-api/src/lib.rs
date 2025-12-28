@@ -36,7 +36,6 @@
 //! - [`io`]: board/kernel IO shapes using unit newtypes
 //! - [`controller`]: controller algorithm boundary (controllers are not nodes)
 //! - [`faults`]: fault vocabulary + sink boundary
-//! - [`regs`]: register op vocabulary (future registry/regmap work)
 //! - [`reset`]: optional lifecycle hook (`Resettable`)
 //! - [`role`]: required node intent labeling (`HasRole` / `Role`)
 //! - [`mode`]: minimal operating mode vocabulary
@@ -61,7 +60,6 @@ pub mod kernel;
 pub mod mailbox;
 pub mod mode;
 pub mod rates;
-pub mod regs;
 pub mod reset;
 pub mod role;
 pub mod shadow;
@@ -86,7 +84,6 @@ pub use kernel::{Kernel, KernelHost};
 pub use mailbox::Mailbox;
 pub use mode::{ModeError, ModeRequest, OperatingMode};
 pub use rates::DomainRatesHz;
-pub use regs::{RegAddr, RegError, RegMap, RegValue};
 pub use reset::{ResetReason, ResetScope, Resettable};
 pub use role::{HasRole, Role};
 pub use shadow::{CommitResult, FieldDesc, KernelView, ShadowKernel, ShadowTable};
@@ -110,7 +107,6 @@ pub mod prelude {
     pub use crate::mailbox::Mailbox;
     pub use crate::mode::{ModeError, ModeRequest, OperatingMode};
     pub use crate::rates::DomainRatesHz;
-    pub use crate::regs::{RegAddr, RegError, RegMap, RegValue};
     pub use crate::reset::{ResetReason, ResetScope, Resettable};
     pub use crate::role::{HasRole, Role};
     pub use crate::shadow::{CommitResult, FieldDesc, KernelView, ShadowKernel, ShadowTable};

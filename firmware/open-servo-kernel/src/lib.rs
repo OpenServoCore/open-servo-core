@@ -7,13 +7,9 @@
 //! - PID position control + open-loop effort
 //! - Clear gating (fault/engage/driver_ok)
 //! - Minimal mode switching policy
-//! - Minimal host-plane register ops (not full regmap yet)
-//!
-//! This crate intentionally does **not** commit to a registry architecture yet.
-//! You can evolve to a real regmap later without breaking the realtime contract.
+//! - Shadow table integration for host-plane register I/O
 
 pub mod kernel;
-pub mod regs;
 pub mod shadow_fields;
 pub mod state;
 

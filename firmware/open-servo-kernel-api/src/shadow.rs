@@ -52,8 +52,21 @@ pub struct ShadowTable<const N: usize> {
 }
 
 impl<const N: usize> ShadowTable<N> {
+    /// Maximum table size supported by dirty tracking (1024 bytes).
+    ///
+    /// MAX_DIRTY_WORDS * 32 bits * DIRTY_BLOCK_SIZE bytes/block.
+    pub const MAX_TABLE_SIZE: usize = MAX_DIRTY_WORDS * 32 * DIRTY_BLOCK_SIZE;
+
     /// Create a new shadow table initialized to zero.
+    ///
+    /// # Compile-time check
+    ///
+    /// Fails to compile if N exceeds dirty tracking capacity (1024 bytes).
     pub const fn new() -> Self {
+        // Compile-time capacity check: array length mismatch if N > MAX_TABLE_SIZE.
+        // RHS is [(); 1] when N <= MAX, [(); 0] when N > MAX → type error.
+        const { assert!(N <= Self::MAX_TABLE_SIZE, "ShadowTable size exceeds dirty tracking capacity (max 1024 bytes)") };
+
         Self {
             bytes: [0u8; N],
             dirty: [0u32; MAX_DIRTY_WORDS],

@@ -17,7 +17,6 @@
 //! [`KernelHost::apply_op`]: crate::kernel::KernelHost::apply_op
 
 use crate::mode::{ModeError, ModeRequest};
-use crate::regs::{RegAddr, RegError, RegValue};
 
 // Re-export ResetScope for convenience (canonical definition is in reset.rs).
 pub use crate::reset::ResetScope;
@@ -41,12 +40,6 @@ pub struct FaultId(pub u16);
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub enum HostOp {
-    /// Read a register address.
-    RegRead { addr: RegAddr },
-
-    /// Write a register address.
-    RegWrite { addr: RegAddr, value: RegValue },
-
     /// Request a mode change.
     ModeRequest(ModeRequest),
 
@@ -78,11 +71,8 @@ pub enum HostOp {
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub enum HostResp {
-    /// Acknowledgment (writes, mode requests, acks, reset, persist).
+    /// Acknowledgment (mode requests, acks, reset, persist).
     Ack,
-
-    /// Register read result.
-    RegValue(RegValue),
 
     /// Pong response to Ping.
     Pong,
@@ -92,9 +82,6 @@ pub enum HostResp {
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub enum HostError {
-    /// Register access error.
-    Reg(RegError),
-
     /// Mode change refused.
     Mode(ModeError),
 
@@ -113,13 +100,6 @@ pub enum HostError {
 
 /// Result type for host operations.
 pub type HostResult = Result<HostResp, HostError>;
-
-impl From<RegError> for HostError {
-    #[inline]
-    fn from(e: RegError) -> Self {
-        HostError::Reg(e)
-    }
-}
 
 impl From<ModeError> for HostError {
     #[inline]

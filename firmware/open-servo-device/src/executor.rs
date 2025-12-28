@@ -75,7 +75,7 @@ pub struct Executor<K> {
 
     /// Pending result from last slow tick if result queue was full.
     ///
-    /// This ensures we never drop a result (especially RegRead responses).
+    /// This ensures we never drop a sideband command response.
     /// If set, we try to enqueue it before processing more ops.
     pending_result: Option<HostResult>,
 }

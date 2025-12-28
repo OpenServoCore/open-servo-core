@@ -2,7 +2,9 @@
 //!
 //! This implements two planes:
 //! - Realtime plane: `update_frame()` and `tick()`
-//! - Host plane: reg reads/writes and mode requests
+//! - Host plane: sideband commands (mode, fault ack, persist, reset) via HostOp
+//!
+//! Register I/O is handled exclusively via shadow table (ShadowKernel trait).
 //!
 //! Stage-0 policy choices (easy to change later):
 //! - Mode switch allowed only when disengaged
@@ -15,7 +17,6 @@ use open_servo_kernel_api::faults::GateReason;
 use open_servo_kernel_api::host_op::{HostError, HostOp, HostResp, HostResult};
 use open_servo_kernel_api::kernel::{Kernel, KernelHost};
 use open_servo_kernel_api::mode::{ModeError, ModeRequest, OperatingMode};
-use open_servo_kernel_api::regs::{RegAddr, RegError, RegValue};
 use open_servo_kernel_api::reset::ResetScope;
 use open_servo_kernel_api::shadow::{CommitResult, KernelView, ShadowKernel};
 use open_servo_kernel_api::telemetry::ids as tid;
@@ -23,7 +24,6 @@ use open_servo_kernel_api::TelemetrySink;
 use open_servo_kernel_api::{TickCtx, TickDomain};
 use open_servo_units::{Effort, MicroSecond};
 
-use crate::regs as r;
 use crate::shadow_fields::{ctrl, telem};
 use crate::state::{KernelConfig, KernelState, PendingOps};
 
@@ -255,7 +255,7 @@ impl ServoKernel {
     }
 
     // =========================================================================
-    // Host plane (minimal reg ops / mode requests)
+    // Host plane (sideband commands)
     // =========================================================================
 
     pub fn request_mode(&mut self, req: ModeRequest) -> Result<(), ModeError> {
@@ -265,59 +265,6 @@ impl ServoKernel {
         }
         self.pending_mode = Some(req.mode);
         Ok(())
-    }
-
-    pub fn reg_read(&self, addr: RegAddr) -> Result<RegValue, RegError> {
-        Ok(match addr {
-            r::addr::ENGAGED => r::reg_read_engaged(self.st.engaged),
-            r::addr::MODE => r::reg_read_mode(self.st.mode),
-            r::addr::POS_SP_CDEG32 => r::reg_read_pos_sp(self.st.pos_sp),
-            r::addr::OPEN_LOOP_EFFORT_RAW => r::reg_read_effort(self.st.open_loop_effort),
-
-            // Debug:
-            r::addr::LAST_GATE => RegValue::U32(self.st.last_gate as u32),
-            r::addr::LAST_EFFORT_RAW => RegValue::I32(self.st.last_cmd.effort.as_raw() as i32),
-            r::addr::LAST_POS_CDEG32 => RegValue::I32(self.st.pos.as_cdeg()),
-
-            _ => return Err(RegError::InvalidAddr),
-        })
-    }
-
-    pub fn reg_write(&mut self, addr: RegAddr, value: RegValue) -> Result<(), RegError> {
-        match addr {
-            r::addr::ENGAGED => {
-                let en = r::reg_write_engaged(value)?;
-                // Disengage side effects: clear controller state.
-                if self.st.engaged && !en {
-                    self.st.pos_i = 0;
-                    self.st.last_pos_err = 0;
-                }
-                self.st.engaged = en;
-                Ok(())
-            }
-
-            r::addr::MODE => {
-                let m = r::reg_write_mode(value)?;
-                // Use same policy as request_mode: only switch when disengaged.
-                if self.st.engaged {
-                    return Err(RegError::Busy);
-                }
-                self.pending_mode = Some(m);
-                Ok(())
-            }
-
-            r::addr::POS_SP_CDEG32 => {
-                self.st.pos_sp = r::reg_write_pos_sp(value)?;
-                Ok(())
-            }
-
-            r::addr::OPEN_LOOP_EFFORT_RAW => {
-                self.st.open_loop_effort = r::reg_write_effort(value)?;
-                Ok(())
-            }
-
-            _ => Err(RegError::InvalidAddr),
-        }
     }
 }
 
@@ -350,16 +297,6 @@ impl Kernel for ServoKernel {
 impl KernelHost for ServoKernel {
     fn apply_op(&mut self, op: HostOp) -> HostResult {
         match op {
-            HostOp::RegRead { addr } => self
-                .reg_read(addr)
-                .map(HostResp::RegValue)
-                .map_err(Into::into),
-
-            HostOp::RegWrite { addr, value } => {
-                self.reg_write(addr, value)?;
-                Ok(HostResp::Ack)
-            }
-
             HostOp::ModeRequest(req) => {
                 self.request_mode(req)?;
                 Ok(HostResp::Ack)
