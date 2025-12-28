@@ -5,6 +5,8 @@
 //! - DMA circular mode for automatic buffer fill
 //! - DMA transfer complete interrupt for control tick
 
+use core::ptr::addr_of;
+
 use stm32f3::stm32f301::{ADC1, ADC1_2, DMA1};
 
 use crate::adc_config::ADC_CHANNEL_COUNT;
@@ -21,7 +23,7 @@ pub fn configure_adc() {
 
     // ADC clock configuration (in common register)
     // CKMODE = 0b01: Synchronous clock, HCLK/1
-    adc_common.ccr.modify(|_, w| unsafe { w.ckmode().bits(0b01) });
+    adc_common.ccr.modify(|_, w| w.ckmode().bits(0b01));
 
     // Enable ADC voltage regulator
     // ADVREGEN = 0b01 to enable
@@ -65,10 +67,13 @@ pub fn configure_adc() {
     dma.ch1.par.write(|w| unsafe { w.pa().bits(adc.dr.as_ptr() as u32) });
 
     // Memory address = ADC_DMA_BUF
-    dma.ch1.mar.write(|w| unsafe { w.ma().bits(ADC_DMA_BUF.as_ptr() as u32) });
+    // SAFETY: ADC_DMA_BUF is static and valid for the lifetime of the program
+    dma.ch1
+        .mar
+        .write(|w| unsafe { w.ma().bits(addr_of!(ADC_DMA_BUF) as u32) });
 
     // Number of data items
-    dma.ch1.ndtr.write(|w| unsafe { w.ndt().bits(ADC_CHANNEL_COUNT as u16) });
+    dma.ch1.ndtr.write(|w| w.ndt().bits(ADC_CHANNEL_COUNT as u16));
 
     // DMA configuration:
     // - Circular mode

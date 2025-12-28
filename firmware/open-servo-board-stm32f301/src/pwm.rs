@@ -18,15 +18,15 @@ pub fn apply_motor_command(cmd: MotorCommand) {
 
     if !cmd.driver_en {
         // Driver disabled: coast
-        tim1.ccr1().write(|w| unsafe { w.ccr().bits(0) });
-        tim1.ccr4().write(|w| unsafe { w.ccr().bits(0) });
+        tim1.ccr1().write(|w| w.ccr().bits(0));
+        tim1.ccr4().write(|w| w.ccr().bits(0));
         return;
     }
 
     match cmd.mode {
         DriveMode::Coast => {
-            tim1.ccr1().write(|w| unsafe { w.ccr().bits(0) });
-            tim1.ccr4().write(|w| unsafe { w.ccr().bits(0) });
+            tim1.ccr1().write(|w| w.ccr().bits(0));
+            tim1.ccr4().write(|w| w.ccr().bits(0));
         }
         DriveMode::Drive => {
             // Map effort to duty cycle
@@ -37,20 +37,20 @@ pub fn apply_motor_command(cmd: MotorCommand) {
             if effort >= 0 {
                 // Forward drive
                 let duty = effort_to_duty(effort);
-                tim1.ccr1().write(|w| unsafe { w.ccr().bits(duty) });
-                tim1.ccr4().write(|w| unsafe { w.ccr().bits(0) });
+                tim1.ccr1().write(|w| w.ccr().bits(duty));
+                tim1.ccr4().write(|w| w.ccr().bits(0));
             } else {
                 // Reverse drive
                 let duty = effort_to_duty(effort.saturating_neg());
-                tim1.ccr1().write(|w| unsafe { w.ccr().bits(0) });
-                tim1.ccr4().write(|w| unsafe { w.ccr().bits(duty) });
+                tim1.ccr1().write(|w| w.ccr().bits(0));
+                tim1.ccr4().write(|w| w.ccr().bits(duty));
             }
         }
         DriveMode::Brake => {
             // Active brake: both high (slow decay)
             // Stage-0: treat as coast for safety
-            tim1.ccr1().write(|w| unsafe { w.ccr().bits(0) });
-            tim1.ccr4().write(|w| unsafe { w.ccr().bits(0) });
+            tim1.ccr1().write(|w| w.ccr().bits(0));
+            tim1.ccr4().write(|w| w.ccr().bits(0));
         }
     }
 }

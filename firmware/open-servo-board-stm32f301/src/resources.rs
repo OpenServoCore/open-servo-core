@@ -5,6 +5,8 @@
 //! - Control-plane: SPSC queues with critical-section guards
 //! - ISR-owned: Executor and sinks (single-writer from ADC ISR)
 
+use core::ptr::addr_of_mut;
+
 use heapless::spsc::{Consumer, Producer, Queue};
 use open_servo_device::executor::Executor;
 use open_servo_kernel::ServoKernel;
@@ -76,17 +78,17 @@ pub unsafe fn init_queues() -> (
     &'static mut Producer<'static, HostOp, QUEUE_CAPACITY>,
     &'static mut Consumer<'static, HostResult, QUEUE_CAPACITY>,
 ) {
-    let (op_prod, op_cons) = OP_QUEUE.split();
-    let (result_prod, result_cons) = RESULT_QUEUE.split();
+    let (op_prod, op_cons) = (*addr_of_mut!(OP_QUEUE)).split();
+    let (result_prod, result_cons) = (*addr_of_mut!(RESULT_QUEUE)).split();
 
-    OP_PROD = Some(op_prod);
-    OP_CONS = Some(op_cons);
-    RESULT_PROD = Some(result_prod);
-    RESULT_CONS = Some(result_cons);
+    *addr_of_mut!(OP_PROD) = Some(op_prod);
+    *addr_of_mut!(OP_CONS) = Some(op_cons);
+    *addr_of_mut!(RESULT_PROD) = Some(result_prod);
+    *addr_of_mut!(RESULT_CONS) = Some(result_cons);
 
     (
-        OP_PROD.as_mut().unwrap(),
-        RESULT_CONS.as_mut().unwrap(),
+        (*addr_of_mut!(OP_PROD)).as_mut().unwrap(),
+        (*addr_of_mut!(RESULT_CONS)).as_mut().unwrap(),
     )
 }
 
@@ -95,7 +97,7 @@ pub unsafe fn init_queues() -> (
 /// # Safety
 /// Must be called exactly once before interrupts are enabled.
 pub unsafe fn set_isr_resources(executor: Executor<ServoKernel>) {
-    EXECUTOR = Some(executor);
+    *addr_of_mut!(EXECUTOR) = Some(executor);
 }
 
 /// Get mutable reference to executor (ISR-only).
@@ -104,7 +106,7 @@ pub unsafe fn set_isr_resources(executor: Executor<ServoKernel>) {
 /// Must only be called from ADC DMA ISR.
 #[inline]
 pub unsafe fn get_executor() -> &'static mut Executor<ServoKernel> {
-    EXECUTOR.as_mut().unwrap()
+    (*addr_of_mut!(EXECUTOR)).as_mut().unwrap()
 }
 
 /// Get ISR-side queue handles.
@@ -117,8 +119,8 @@ pub unsafe fn get_isr_queues() -> (
     &'static mut Producer<'static, HostResult, QUEUE_CAPACITY>,
 ) {
     (
-        OP_CONS.as_mut().unwrap(),
-        RESULT_PROD.as_mut().unwrap(),
+        (*addr_of_mut!(OP_CONS)).as_mut().unwrap(),
+        (*addr_of_mut!(RESULT_PROD)).as_mut().unwrap(),
     )
 }
 
@@ -128,7 +130,7 @@ pub unsafe fn get_isr_queues() -> (
 /// Must only be called from ADC DMA ISR.
 #[inline]
 pub unsafe fn get_fault_sink() -> &'static mut StubFaultSink {
-    &mut FAULT_SINK
+    &mut *addr_of_mut!(FAULT_SINK)
 }
 
 /// Get mutable reference to telemetry sink (ISR-only).
@@ -137,5 +139,5 @@ pub unsafe fn get_fault_sink() -> &'static mut StubFaultSink {
 /// Must only be called from ADC DMA ISR.
 #[inline]
 pub unsafe fn get_telem_sink() -> &'static mut StubTelemetrySink {
-    &mut TELEM_SINK
+    &mut *addr_of_mut!(TELEM_SINK)
 }

@@ -6,10 +6,12 @@
 //! - RX DMA circular mode
 //! - IDLE interrupt for waking main loop
 
+use core::ptr::addr_of;
+
 use stm32f3::stm32f301::{DMA1, USART1};
 
 use crate::config::PCLK2_HZ;
-use crate::resources::UART_RX_DMA_BUF;
+use crate::resources::{UART_RX_BUF_SIZE, UART_RX_DMA_BUF};
 
 /// UART baud rate.
 pub const BAUD_RATE: u32 = 1_000_000; // 1Mbps for Dynamixel
@@ -36,7 +38,7 @@ pub fn configure_usart() {
         w.pce().clear_bit(); // No parity
         w.over8().clear_bit() // Oversampling by 16
     });
-    usart.cr2.modify(|_, w| unsafe { w.stop().bits(0b00) }); // 1 stop bit
+    usart.cr2.modify(|_, w| w.stop().bits(0b00)); // 1 stop bit
 
     // Enable RX and TX
     usart.cr1.modify(|_, w| {
@@ -58,12 +60,11 @@ pub fn configure_usart() {
     dma.ch5.par.write(|w| unsafe { w.pa().bits(usart.rdr.as_ptr() as u32) });
 
     // Memory address = UART_RX_DMA_BUF
-    dma.ch5.mar.write(|w| unsafe { w.ma().bits(UART_RX_DMA_BUF.as_ptr() as u32) });
+    // SAFETY: UART_RX_DMA_BUF is static and valid for 'static lifetime
+    dma.ch5.mar.write(|w| unsafe { w.ma().bits(addr_of!(UART_RX_DMA_BUF) as u32) });
 
     // Number of data items = buffer size
-    dma.ch5
-        .ndtr
-        .write(|w| unsafe { w.ndt().bits(UART_RX_DMA_BUF.len() as u16) });
+    dma.ch5.ndtr.write(|w| w.ndt().bits(UART_RX_BUF_SIZE as u16));
 
     // DMA configuration:
     // - Circular mode

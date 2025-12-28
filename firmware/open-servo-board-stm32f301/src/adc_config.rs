@@ -9,29 +9,21 @@
 
 /// Number of ADC channels in the conversion sequence.
 pub const ADC_CHANNEL_COUNT: usize = {
-    let mut count = 2; // VREFINT + position always
+    let base = 2; // VREFINT + position always
 
     #[cfg(feature = "current-sense-bus")]
-    {
-        count += 1;
-    }
+    let base = base + 1;
 
     #[cfg(feature = "voltage-sense-motor")]
-    {
-        count += 2;
-    }
+    let base = base + 2;
 
     #[cfg(feature = "temp-sense-mcu")]
-    {
-        count += 1;
-    }
+    let base = base + 1;
 
     #[cfg(feature = "temp-sense-motor")]
-    {
-        count += 1;
-    }
+    let base = base + 1;
 
-    count
+    base
 };
 
 /// ADC DMA buffer type.

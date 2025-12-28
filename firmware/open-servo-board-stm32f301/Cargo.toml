@@ -33,7 +33,7 @@ workspace = true
 optional = true
 
 [features]
-default = ["defmt"]
+default = ["defmt", "current-sense-bus", "temp-sense-mcu"]
 current-sense-bus = []
 temp-sense-mcu = []
 temp-sense-motor = []

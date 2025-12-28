@@ -28,7 +28,7 @@ impl UartBus {
     #[inline]
     pub fn tx_push(&mut self, byte: u8) {
         let usart = unsafe { &*USART1::ptr() };
-        usart.tdr.write(|w| unsafe { w.tdr().bits(byte as u16) });
+        usart.tdr.write(|w| w.tdr().bits(byte as u16));
         self.tx_active = true;
     }
 

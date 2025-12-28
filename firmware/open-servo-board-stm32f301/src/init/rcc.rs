@@ -35,12 +35,12 @@ pub fn configure_rcc() {
 
     // Configure PLL: HSE/2 * 9 = 72MHz
     // PREDIV = /2
-    rcc.cfgr2.modify(|_, w| unsafe { w.prediv().bits(0b0001) }); // /2
+    rcc.cfgr2.modify(|_, w| w.prediv().bits(0b0001)); // /2
 
     // PLLSRC = HSE/PREDIV, PLLMUL = x9
     rcc.cfgr.modify(|_, w| {
         w.pllsrc().hse_div_prediv(); // PLL source = HSE/PREDIV
-        unsafe { w.pllmul().bits(0b0111) } // x9
+        w.pllmul().bits(0b0111) // x9
     });
 
     // Enable PLL
