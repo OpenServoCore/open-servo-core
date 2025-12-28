@@ -24,6 +24,7 @@ pub mod comms_service;
 pub mod device;
 pub mod executor;
 pub mod main_loop;
+pub mod shadow_storage;
 pub mod uart_bus;
 
 // Re-export the main seams for convenience.
@@ -32,6 +33,7 @@ pub use comms_service::{
 };
 pub use device::Device;
 pub use executor::Executor;
+pub use shadow_storage::{HeaplessStagingBuffer, ShadowStorage, StdShadowStorage};
 pub use uart_bus::{UartBus, UartError};
 
 // Common re-exports so downstream crates don't need to import everything manually.
@@ -48,8 +50,8 @@ pub use open_servo_units as units;
 pub mod prelude {
     pub use crate::main_loop::{drain_and_respond, parse_and_enqueue};
     pub use crate::{
-        CommsService, Device, DxlService, EchoPolicy, Executor, HostError, HostOp, HostResp,
-        HostResult, UartBus, UartError,
+        CommsService, Device, DxlService, EchoPolicy, Executor, HeaplessStagingBuffer, HostError,
+        HostOp, HostResp, HostResult, ShadowStorage, StdShadowStorage, UartBus, UartError,
     };
 
     pub use open_servo_hw::*;

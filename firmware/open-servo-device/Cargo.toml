@@ -11,6 +11,9 @@ heapless              = { workspace = true }
 critical-section      = { workspace = true }
 defmt                 = { workspace = true, optional = true }
 
+[dev-dependencies]
+critical-section = { workspace = true, features = ["std"] }
+
 [features]
 default = []
 defmt = [

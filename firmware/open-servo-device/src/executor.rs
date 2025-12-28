@@ -29,12 +29,15 @@ use open_servo_hw::v2::io::{MotorCommand, SensorFrame};
 use open_servo_kernel_api::{
     host_op::{HostOp, HostResult},
     kernel::{Kernel, KernelHost},
+    shadow::ShadowKernel,
     tick_ctx::TickCtx,
     ticks::KernelCtx,
     timebase::TimeStampUs,
     FaultSink, TelemetrySink,
 };
 use open_servo_units::MicroSecond;
+
+use crate::shadow_storage::ShadowStorage;
 
 /// Decimation ratio: ControlFast → ControlMedium (10kHz → 1kHz).
 pub const MEDIUM_DECIMATE: u8 = 10;
@@ -79,7 +82,7 @@ pub struct Executor<K> {
 
 impl<K> Executor<K>
 where
-    K: Kernel<Frame = SensorFrame, Command = MotorCommand> + KernelHost,
+    K: Kernel<Frame = SensorFrame, Command = MotorCommand> + KernelHost + ShadowKernel,
 {
     /// Create a new executor with the given kernel.
     #[inline]
@@ -116,7 +119,7 @@ where
     ///
     /// All queue operations are wrapped in critical sections for safety
     /// across ISR/main priority boundaries.
-    pub fn on_adc_complete<F, T, const OP_CAP: usize, const RESULT_CAP: usize>(
+    pub fn on_adc_complete<F, T, const OP_CAP: usize, const RESULT_CAP: usize, const N: usize>(
         &mut self,
         frame: SensorFrame,
         fast_dt_us: MicroSecond,
@@ -125,6 +128,7 @@ where
         result_prod: &mut Producer<'_, HostResult, RESULT_CAP>,
         faults: &mut F,
         telem: &mut T,
+        shadow: &ShadowStorage<N>,
     ) -> MotorCommand
     where
         F: FaultSink,
@@ -147,6 +151,18 @@ where
             let tick = self.kctx.next_control_medium(medium_dt);
             let mut ctx = TickCtx::new(tick, now, faults, telem);
             let _ = self.kernel.tick(&mut ctx);
+
+            // Medium tick boundary: publish telemetry + commit shadow if dirty.
+            // SAFETY: on_adc_complete is called from ISR context only.
+            shadow.kernel_with_view(|view| {
+                // Publish telemetry (does NOT mark dirty).
+                self.kernel.publish_telemetry(view);
+
+                // Commit dirty shadow→live if any host writes pending.
+                if view.ctrl_dirty() {
+                    let _ = self.kernel.commit_shadow(view);
+                }
+            });
 
             // Decimation: ControlSlow.
             self.slow_counter += 1;

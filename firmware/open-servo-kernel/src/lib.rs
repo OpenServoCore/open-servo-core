@@ -14,6 +14,7 @@
 
 pub mod kernel;
 pub mod regs;
+pub mod shadow_fields;
 pub mod state;
 
 pub use kernel::ServoKernel;

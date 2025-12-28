@@ -17,12 +17,14 @@ use open_servo_kernel_api::kernel::{Kernel, KernelHost};
 use open_servo_kernel_api::mode::{ModeError, ModeRequest, OperatingMode};
 use open_servo_kernel_api::regs::{RegAddr, RegError, RegValue};
 use open_servo_kernel_api::reset::ResetScope;
+use open_servo_kernel_api::shadow::{CommitResult, KernelView, ShadowKernel};
 use open_servo_kernel_api::telemetry::ids as tid;
 use open_servo_kernel_api::TelemetrySink;
 use open_servo_kernel_api::{TickCtx, TickDomain};
 use open_servo_units::{Effort, MicroSecond};
 
 use crate::regs as r;
+use crate::shadow_fields::{ctrl, telem};
 use crate::state::{KernelConfig, KernelState, PendingOps};
 
 /// Concrete kernel.
@@ -375,5 +377,97 @@ impl KernelHost for ServoKernel {
 
             HostOp::Ping => Ok(HostResp::Pong),
         }
+    }
+}
+
+// =============================================================================
+// ShadowKernel implementation
+// =============================================================================
+
+impl ShadowKernel for ServoKernel {
+    fn publish_telemetry(&self, view: &mut KernelView<'_>) {
+        // Position (i32 LE).
+        let _ = view.write_telem(telem::POS_CDEG32, &self.st.pos.as_cdeg().to_le_bytes());
+
+        // Effort (i16 LE).
+        let _ = view.write_telem(telem::EFFORT_RAW, &self.st.last_cmd.effort.as_raw().to_le_bytes());
+
+        // Engaged (u8).
+        let _ = view.write_telem(telem::ENGAGED, &[if self.st.engaged { 1 } else { 0 }]);
+
+        // Mode (u8).
+        let _ = view.write_telem(telem::MODE, &[self.st.mode as u8]);
+
+        // Fault mask (u32 LE). Stage-0: no faults tracked yet.
+        let _ = view.write_telem(telem::FAULT_MASK, &0u32.to_le_bytes());
+
+        // Gate reason (u8).
+        let _ = view.write_telem(telem::GATE_REASON, &[self.st.last_gate as u8]);
+    }
+
+    fn commit_shadow(&mut self, view: &mut KernelView<'_>) -> CommitResult {
+        if !view.ctrl_dirty() {
+            return CommitResult::NothingToCommit;
+        }
+
+        // Check ENGAGED field.
+        if view.is_range_dirty(ctrl::ENGAGED.offset, ctrl::ENGAGED.len as u16) {
+            let mut buf = [0u8; 1];
+            if view.read_ctrl(ctrl::ENGAGED.offset, &mut buf).is_ok() {
+                let new_engaged = buf[0] != 0;
+                // Disengage side effects: clear controller state.
+                if self.st.engaged && !new_engaged {
+                    self.st.pos_i = 0;
+                    self.st.last_pos_err = 0;
+                }
+                self.st.engaged = new_engaged;
+                view.clear_range_dirty(ctrl::ENGAGED.offset, ctrl::ENGAGED.len as u16);
+            }
+        }
+
+        // Check MODE field.
+        if view.is_range_dirty(ctrl::MODE.offset, ctrl::MODE.len as u16) {
+            let mut buf = [0u8; 1];
+            if view.read_ctrl(ctrl::MODE.offset, &mut buf).is_ok() {
+                match buf[0] {
+                    0 => {
+                        self.pending_mode = Some(OperatingMode::Position);
+                        view.clear_range_dirty(ctrl::MODE.offset, ctrl::MODE.len as u16);
+                    }
+                    1 => {
+                        self.pending_mode = Some(OperatingMode::OpenLoop);
+                        view.clear_range_dirty(ctrl::MODE.offset, ctrl::MODE.len as u16);
+                    }
+                    _ => {
+                        // Invalid value: return error, dirty bit stays set.
+                        return CommitResult::ValidationError {
+                            offset: ctrl::MODE.offset,
+                        };
+                    }
+                }
+            }
+        }
+
+        // Check GOAL_POS field (i32 LE).
+        if view.is_range_dirty(ctrl::GOAL_POS.offset, ctrl::GOAL_POS.len as u16) {
+            let mut buf = [0u8; 4];
+            if view.read_ctrl(ctrl::GOAL_POS.offset, &mut buf).is_ok() {
+                let val = i32::from_le_bytes(buf);
+                self.st.pos_sp = open_servo_units::CentiDeg32::from_cdeg(val);
+                view.clear_range_dirty(ctrl::GOAL_POS.offset, ctrl::GOAL_POS.len as u16);
+            }
+        }
+
+        // Check OPEN_LOOP_EFFORT field (i16 LE).
+        if view.is_range_dirty(ctrl::OPEN_LOOP_EFFORT.offset, ctrl::OPEN_LOOP_EFFORT.len as u16) {
+            let mut buf = [0u8; 2];
+            if view.read_ctrl(ctrl::OPEN_LOOP_EFFORT.offset, &mut buf).is_ok() {
+                let val = i16::from_le_bytes(buf);
+                self.st.open_loop_effort = Effort::from_raw(val);
+                view.clear_range_dirty(ctrl::OPEN_LOOP_EFFORT.offset, ctrl::OPEN_LOOP_EFFORT.len as u16);
+            }
+        }
+
+        CommitResult::Ok
     }
 }
