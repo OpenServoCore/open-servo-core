@@ -3,12 +3,12 @@
 //! Architecture:
 //! - Data-plane: DMA buffers (no per-byte critical section)
 //! - Control-plane: SPSC queues with critical-section guards
-//! - ISR-owned: Executor and sinks (single-writer from ADC ISR)
+//! - ISR-owned: ControlExecutor and sinks (single-writer from ADC ISR)
 
 use core::ptr::addr_of_mut;
 
 use heapless::spsc::{Consumer, Producer, Queue};
-use open_servo_device::executor::Executor;
+use open_servo_device::executor::ControlExecutor;
 use open_servo_device::shadow_storage::ShadowStorage;
 use open_servo_kernel::ServoKernel;
 use open_servo_kernel_api::host_op::{HostOp, HostResult};
@@ -58,8 +58,8 @@ static mut RESULT_CONS: Option<Consumer<'static, HostResult, QUEUE_CAPACITY>> = 
 // ISR-owned resources
 // =============================================================================
 
-/// Executor wrapper (single-writer, owned by ADC ISR).
-static mut EXECUTOR: Option<Executor<ServoKernel>> = None;
+/// ControlExecutor wrapper (single-writer, owned by ADC ISR).
+static mut EXECUTOR: Option<ControlExecutor<ServoKernel>> = None;
 
 /// Fault sink (ISR-only).
 static mut FAULT_SINK: StubFaultSink = StubFaultSink;
@@ -103,7 +103,7 @@ pub unsafe fn init_queues() -> (
 ///
 /// # Safety
 /// Must be called exactly once before interrupts are enabled.
-pub unsafe fn set_isr_resources(executor: Executor<ServoKernel>) {
+pub unsafe fn set_isr_resources(executor: ControlExecutor<ServoKernel>) {
     *addr_of_mut!(EXECUTOR) = Some(executor);
 }
 
@@ -112,7 +112,7 @@ pub unsafe fn set_isr_resources(executor: Executor<ServoKernel>) {
 /// # Safety
 /// Must only be called from ADC DMA ISR.
 #[inline]
-pub unsafe fn get_executor() -> &'static mut Executor<ServoKernel> {
+pub unsafe fn get_executor() -> &'static mut ControlExecutor<ServoKernel> {
     (*addr_of_mut!(EXECUTOR)).as_mut().unwrap()
 }
 

@@ -8,7 +8,7 @@
 //! - Half-duplex TX management via [`poll_tx`](Device::poll_tx)
 //! - Board/comms wiring
 //!
-//! For kernel execution, use [`Executor`](crate::executor::Executor) which runs
+//! For kernel execution, use [`ControlExecutor`](crate::executor::ControlExecutor) which runs
 //! in the ADC ISR and enforces single-writer semantics.
 //!
 //! ## Echo Handling
@@ -26,7 +26,7 @@ use crate::uart_bus::UartBus;
 ///
 /// `C` is the communications service (e.g. Dynamixel, CAN adapter).
 ///
-/// For kernel execution, use [`Executor`](crate::executor::Executor) separately.
+/// For kernel execution, use [`ControlExecutor`](crate::executor::ControlExecutor) separately.
 pub struct Device<B, C> {
     pub board: B,
     pub comms: C,
@@ -53,7 +53,7 @@ where
     /// - [`main_loop::parse_and_enqueue`](crate::main_loop::parse_and_enqueue)
     /// - [`main_loop::drain_and_respond`](crate::main_loop::drain_and_respond)
     ///
-    /// With the [`Executor`](crate::executor::Executor) running in ADC ISR.
+    /// With the [`ControlExecutor`](crate::executor::ControlExecutor) running in ADC ISR.
     pub fn poll_tx(&mut self) {
         let echo_policy = self.comms.echo_policy();
 

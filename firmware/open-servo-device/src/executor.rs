@@ -1,6 +1,6 @@
-//! Executor: single-writer kernel runner for ADC ISR context.
+//! ControlExecutor: single-writer kernel runner for ADC ISR context.
 //!
-//! The [`Executor`] owns the kernel and runs all tick domains from a single
+//! The [`ControlExecutor`] owns the kernel and runs all tick domains from a single
 //! ADC DMA completion ISR. This enforces the single-writer contract:
 //!
 //! - Only the ADC ISR calls `kernel.tick()` and `kernel.apply_op()`
@@ -63,7 +63,7 @@ pub const MAX_OPS_PER_SLOW: u8 = 4;
 /// - `K`: Kernel type implementing both [`Kernel`] and [`KernelHost`]
 /// - `OP_CAP`: Capacity of the op queue (e.g., 16)
 /// - `RESULT_CAP`: Capacity of the result queue (e.g., 16)
-pub struct Executor<K> {
+pub struct ControlExecutor<K> {
     /// The kernel (owns all control state).
     kernel: K,
 
@@ -83,7 +83,7 @@ pub struct Executor<K> {
     pending_result: Option<HostResult>,
 }
 
-impl<K> Executor<K>
+impl<K> ControlExecutor<K>
 where
     K: Kernel<Frame = SensorFrame, Command = MotorCommand> + KernelHost + ShadowKernel,
 {

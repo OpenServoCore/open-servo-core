@@ -32,7 +32,7 @@ pub use comms_service::{
     CommsService, DxlService, EchoPolicy, HostError, HostOp, HostResp, HostResult,
 };
 pub use device::Device;
-pub use executor::Executor;
+pub use executor::ControlExecutor;
 pub use shadow_storage::{HeaplessStagingBuffer, ShadowStorage, StdShadowStorage};
 pub use uart_bus::{UartBus, UartError};
 
@@ -50,7 +50,7 @@ pub use open_servo_units as units;
 pub mod prelude {
     pub use crate::main_loop::{drain_and_respond, parse_and_enqueue};
     pub use crate::{
-        CommsService, Device, DxlService, EchoPolicy, Executor, HeaplessStagingBuffer, HostError,
+        CommsService, ControlExecutor, Device, DxlService, EchoPolicy, HeaplessStagingBuffer, HostError,
         HostOp, HostResp, HostResult, ShadowStorage, StdShadowStorage, UartBus, UartError,
     };
 

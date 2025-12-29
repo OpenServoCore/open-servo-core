@@ -12,7 +12,7 @@ use core::panic::PanicInfo;
 
 use cortex_m::asm::wfi;
 use cortex_m_rt::entry;
-use open_servo_device::executor::Executor;
+use open_servo_device::executor::ControlExecutor;
 use open_servo_kernel::ServoKernel;
 use stm32f3::stm32f301::DMA1;
 
@@ -57,7 +57,7 @@ fn main() -> ! {
 
     // Create kernel and executor
     let kernel = ServoKernel::new(kernel_config());
-    let executor = Executor::new(kernel);
+    let executor = ControlExecutor::new(kernel);
 
     // Set ISR resources
     unsafe { set_isr_resources(executor) };

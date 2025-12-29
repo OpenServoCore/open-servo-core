@@ -79,7 +79,7 @@ The **runtime glue**.
 
 Owns:
 - `ShadowStorage`: the actual `[u8; N]` + dirty bits + staging buffer, plus concurrency discipline
-- `Executor`: tick scheduling / boundaries and calling kernel methods at the right times
+- `ControlExecutor`: tick scheduling / boundaries and calling kernel methods at the right times
 - (Later) comms RX/TX services, packet parsing, scheduling, etc.
 
 ### 2.5 Board crates (e.g. `open-servo-board-stm32f301`)
