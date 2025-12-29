@@ -48,10 +48,19 @@ pub fn configure_adc() {
         w.exten().rising_edge() // Trigger on rising edge
     });
 
-    // Configure sample time for all channels (181.5 cycles)
+    // Configure sample times per channel based on source impedance
     // SMPR1 covers channels 1-9, SMPR2 covers channels 10-18
-    adc.smpr1.write(|w| unsafe { w.bits(0x3FFFFFFF) }); // All max sample time
-    adc.smpr2.write(|w| unsafe { w.bits(0x07FFFFFF) }); // All max sample time
+    adc.smpr1.modify(|_, w| {
+        w.smp1().cycles61_5()  // ch1 position (10kΩ pot)
+         .smp2().cycles19_5()  // ch2 current (1.5kΩ RIPROPI)
+         .smp3().cycles181_5() // ch3 motor V+
+         .smp4().cycles181_5() // ch4 motor V-
+         .smp5().cycles181_5() // ch5 motor temp
+    });
+    adc.smpr2.modify(|_, w| {
+        w.smp16().cycles181_5() // ch16 MCU temp (2.2µs min)
+         .smp17().cycles601_5() // ch17 VREFINT (4µs min!)
+    });
 
     // Configure conversion sequence
     // SQR1: L = sequence length - 1, SQ1-SQ4

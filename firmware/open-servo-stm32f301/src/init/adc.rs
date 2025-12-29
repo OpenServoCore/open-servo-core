@@ -243,7 +243,7 @@ pub fn init_adc(p: &pac::Peripherals) {
 
     // Internal channels
     adc1.smpr2.modify(|_, w| {
-        let w = w.smp18().cycles181_5(); // VREFINT (ch 18)
+        let w = w.smp18().cycles601_5(); // VREFINT (ch 18) - 4µs minimum required
         #[cfg(feature = "temp-sense-mcu")]
         let w = w.smp16().cycles181_5(); // MCU Temperature sensor (ch 16)
         w
