@@ -32,12 +32,16 @@ The kernel’s **live state** is mutated only by the **tick/ISR context**.
 
 This keeps control behavior deterministic and prevents “mid-step” config changes.
 
-### 1.3 CH32V006 constraint (no atomics)
+### 1.3 Atomics and portability
 
-We assume a target may have **no hardware atomics** (CH32V006). Therefore:
+MCU atomics support varies:
+- **Cortex-M3+**: Native hardware atomics
+- **CH32V006**: No hardware atomics (uses critical-section emulation)
 
+This project optimizes for the lowest common denominator:
 - Shared memory between main loop and ISR uses **`critical_section`** discipline
-- Use `heapless`/portable patterns that are compatible with critical sections
+- `heapless` uses `portable-atomic` which auto-detects and falls back to CS
+- Explicit CS wrappers ensure consistent behavior across all targets
 
 ---
 
@@ -386,10 +390,11 @@ decision.
 - Host/comms never calls into kernel internals to “set config”; it only writes shadow bytes.
 - Any ISR used for timing (e.g., scheduled TX) must only flip a flag and must not mutate kernel state.
 
-**CH32V006 atomics**
-- Assume **no native atomics** on CH32V006 for this project.
-- Use `critical_section` for shared data protection and prefer heapless/portable-atomic patterns that
-  fall back to critical sections.
+**Atomics support**
+- Cortex-M3+ has native atomics; CH32V006 does not
+- `heapless` and `portable-atomic` auto-detect and fall back to critical sections
+- Explicit CS wrappers in `open-servo-device` ensure portable behavior
+- Kernel developers should optimize for the lowest common denominator
 
 > Status: implemented at the seam level (ShadowStorage host methods use CS; kernel methods are ISR-only).
 

@@ -20,8 +20,11 @@
 //!
 //! ## Thread Safety
 //!
-//! All queue operations use critical sections for safety across ISR/main boundaries.
-//! This is required because `heapless::spsc` internal guarantees vary by target.
+//! Queue operations are wrapped in explicit critical sections for portability.
+//! Note: heapless spsc queues are lock-free on MCUs with native atomics (Cortex-M3+),
+//! but some targets (CH32V006) lack hardware atomics and use critical-section
+//! emulation via `portable-atomic`. The explicit CS wrappers ensure consistent
+//! behavior across all targets - optimize code for the lowest common denominator.
 
 use heapless::spsc::{Consumer, Producer};
 
@@ -229,19 +232,21 @@ where
     }
 }
 
-/// Dequeue from a Consumer within a critical section.
+/// Dequeue from a Consumer atomically.
 ///
-/// This ensures safety across ISR/main priority boundaries on both
-/// Cortex-M and RISC-V (CH32V006) targets.
+/// heapless spsc is lock-free on MCUs with native atomics (Cortex-M3+), but
+/// CH32V006 lacks hardware atomics and uses CS emulation via `portable-atomic`.
+/// This explicit wrapper ensures consistent behavior across all targets.
 #[inline]
 fn cs_dequeue<T, const N: usize>(cons: &mut Consumer<'_, T, N>) -> Option<T> {
     critical_section::with(|_| cons.dequeue())
 }
 
-/// Enqueue to a Producer within a critical section.
+/// Enqueue to a Producer atomically.
 ///
-/// This ensures safety across ISR/main priority boundaries on both
-/// Cortex-M and RISC-V (CH32V006) targets.
+/// heapless spsc is lock-free on MCUs with native atomics (Cortex-M3+), but
+/// CH32V006 lacks hardware atomics and uses CS emulation via `portable-atomic`.
+/// This explicit wrapper ensures consistent behavior across all targets.
 #[inline]
 fn cs_enqueue<T, const N: usize>(prod: &mut Producer<'_, T, N>, val: T) -> Result<(), T> {
     critical_section::with(|_| prod.enqueue(val))
