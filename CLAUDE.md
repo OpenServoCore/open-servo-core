@@ -157,5 +157,6 @@ Examples:
 
 ## Commit message hygiene
 
-- Do not include “Claude”, “AI”, “Generated-by”, “Co-authored-by”, or any self-tagging in commit messages.
-- Use concise one-liners in imperative mood (e.g., “Fix …”, “Widen …”, “Clamp …”).
+- Use concise one-liners in imperative mood (e.g., "Fix …", "Add …", "Refactor …").
+- No bullet points or detailed descriptions in commit messages.
+- Never tag yourself (no "Claude", "AI", "Generated-by", "Co-authored-by", etc.).
