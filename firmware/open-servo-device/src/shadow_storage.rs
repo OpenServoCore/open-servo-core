@@ -17,7 +17,7 @@ use core::cell::UnsafeCell;
 
 use heapless::Vec;
 use open_servo_kernel_api::shadow::{
-    layout, HostView, KernelView, ShadowError, ShadowTable, StagedWrite, StageResult,
+    layout, HostView, KernelView, ShadowError, ShadowTable, StageResult, StagedWrite,
     StagingBuffer, DIRTY_BLOCK_SIZE,
 };
 
@@ -68,7 +68,9 @@ impl StagingBuffer for HeaplessStagingBuffer {
         }
 
         // Copy data
-        self.data.extend_from_slice(data).map_err(|_| StageResult::BufferFull)?;
+        self.data
+            .extend_from_slice(data)
+            .map_err(|_| StageResult::BufferFull)?;
 
         // Record entry
         self.entries

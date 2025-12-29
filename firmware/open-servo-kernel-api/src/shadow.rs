@@ -65,7 +65,12 @@ impl<const N: usize> ShadowTable<N> {
     pub const fn new() -> Self {
         // Compile-time capacity check: array length mismatch if N > MAX_TABLE_SIZE.
         // RHS is [(); 1] when N <= MAX, [(); 0] when N > MAX → type error.
-        const { assert!(N <= Self::MAX_TABLE_SIZE, "ShadowTable size exceeds dirty tracking capacity (max 1024 bytes)") };
+        const {
+            assert!(
+                N <= Self::MAX_TABLE_SIZE,
+                "ShadowTable size exceeds dirty tracking capacity (max 1024 bytes)"
+            )
+        };
 
         Self {
             bytes: [0u8; N],
@@ -276,11 +281,9 @@ pub mod layout {
         }
         let end = offset.saturating_add(len).saturating_sub(1);
         // Entire range in control region
-        let in_ctrl = offset >= CTRL_START
-            && end < CTRL_START + CTRL_LEN;
+        let in_ctrl = offset >= CTRL_START && end < CTRL_START + CTRL_LEN;
         // Entire range in config region
-        let in_config = offset >= CONFIG_START
-            && end < CONFIG_START + CONFIG_LEN;
+        let in_config = offset >= CONFIG_START && end < CONFIG_START + CONFIG_LEN;
         in_ctrl || in_config
     }
 
@@ -782,7 +785,10 @@ mod tests {
     fn test_out_of_bounds() {
         let mut table = ShadowTable::<64>::new();
 
-        assert_eq!(table.write(60, &[1, 2, 3, 4, 5]), Err(ShadowError::OutOfBounds));
+        assert_eq!(
+            table.write(60, &[1, 2, 3, 4, 5]),
+            Err(ShadowError::OutOfBounds)
+        );
         assert_eq!(table.read(60, &mut [0u8; 5]), Err(ShadowError::OutOfBounds));
     }
 

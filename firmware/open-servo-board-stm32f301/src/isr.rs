@@ -10,7 +10,9 @@ use stm32f3::stm32f301::{DMA1, USART1};
 use crate::config::FAST_DT_US;
 use crate::monotonic::now_us;
 use crate::pwm::apply_motor_command;
-use crate::resources::{get_executor, get_fault_sink, get_isr_queues, get_telem_sink};
+use crate::resources::{
+    get_executor, get_fault_sink, get_isr_queues, get_shadow_storage, get_telem_sink,
+};
 use crate::sensors::read_sensor_frame;
 
 /// DMA1 Channel 1 interrupt (ADC transfer complete).
@@ -38,6 +40,7 @@ fn DMA1_CH1() {
         let (op_cons, result_prod) = unsafe { get_isr_queues() };
         let faults = unsafe { get_fault_sink() };
         let telem = unsafe { get_telem_sink() };
+        let shadow = get_shadow_storage();
 
         // Run executor tick
         let cmd = executor.on_adc_complete(
@@ -48,6 +51,7 @@ fn DMA1_CH1() {
             result_prod,
             faults,
             telem,
+            shadow,
         );
 
         // Apply motor command

@@ -9,6 +9,7 @@ use core::ptr::addr_of_mut;
 
 use heapless::spsc::{Consumer, Producer, Queue};
 use open_servo_device::executor::Executor;
+use open_servo_device::shadow_storage::ShadowStorage;
 use open_servo_kernel::ServoKernel;
 use open_servo_kernel_api::host_op::{HostOp, HostResult};
 
@@ -65,6 +66,12 @@ static mut FAULT_SINK: StubFaultSink = StubFaultSink;
 
 /// Telemetry sink (ISR-only).
 static mut TELEM_SINK: StubTelemetrySink = StubTelemetrySink;
+
+/// Shadow table size (512 bytes covers TELEM + CTRL + CONFIG regions).
+pub const SHADOW_TABLE_SIZE: usize = 512;
+
+/// Shadow storage (shared between main and ISR with discipline).
+static SHADOW_STORAGE: ShadowStorage<SHADOW_TABLE_SIZE> = ShadowStorage::new();
 
 // =============================================================================
 // Initialization functions
@@ -140,4 +147,14 @@ pub unsafe fn get_fault_sink() -> &'static mut StubFaultSink {
 #[inline]
 pub unsafe fn get_telem_sink() -> &'static mut StubTelemetrySink {
     &mut *addr_of_mut!(TELEM_SINK)
+}
+
+/// Get reference to shadow storage (ISR and main loop).
+///
+/// Access discipline:
+/// - Main loop uses `host_*` methods (with critical_section)
+/// - ISR uses `kernel_*` methods (single-writer, no CS needed)
+#[inline]
+pub fn get_shadow_storage() -> &'static ShadowStorage<SHADOW_TABLE_SIZE> {
+    &SHADOW_STORAGE
 }

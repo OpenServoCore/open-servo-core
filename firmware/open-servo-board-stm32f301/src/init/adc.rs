@@ -42,8 +42,8 @@ pub fn configure_adc() {
         w.cont().clear_bit(); // Single conversion mode
         w.dmaen().set_bit(); // DMA enabled
         w.dmacfg().set_bit(); // DMA circular mode
-        // External trigger: TIM1_TRGO2
-        // EXTSEL = 0b01010 for TIM1_TRGO2 (check reference manual)
+                              // External trigger: TIM1_TRGO2
+                              // EXTSEL = 0b01010 for TIM1_TRGO2 (check reference manual)
         unsafe { w.extsel().bits(0b01010) };
         w.exten().rising_edge() // Trigger on rising edge
     });
@@ -64,7 +64,9 @@ pub fn configure_adc() {
     dma.ch1.cr.modify(|_, w| w.en().clear_bit());
 
     // Peripheral address = ADC1_DR
-    dma.ch1.par.write(|w| unsafe { w.pa().bits(adc.dr.as_ptr() as u32) });
+    dma.ch1
+        .par
+        .write(|w| unsafe { w.pa().bits(adc.dr.as_ptr() as u32) });
 
     // Memory address = ADC_DMA_BUF
     // SAFETY: ADC_DMA_BUF is static and valid for the lifetime of the program
@@ -73,7 +75,9 @@ pub fn configure_adc() {
         .write(|w| unsafe { w.ma().bits(addr_of!(ADC_DMA_BUF) as u32) });
 
     // Number of data items
-    dma.ch1.ndtr.write(|w| w.ndt().bits(ADC_CHANNEL_COUNT as u16));
+    dma.ch1
+        .ndtr
+        .write(|w| w.ndt().bits(ADC_CHANNEL_COUNT as u16));
 
     // DMA configuration:
     // - Circular mode

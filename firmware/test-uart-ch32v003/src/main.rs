@@ -64,9 +64,8 @@ fn configure_rcc() {
         w.bits(val)
     });
 
-    rcc.ctlr().modify(|r, w| unsafe {
-        w.bits(r.bits() | (1 << 24))
-    });
+    rcc.ctlr()
+        .modify(|r, w| unsafe { w.bits(r.bits() | (1 << 24)) });
 
     while (rcc.ctlr().read().bits() & (1 << 25)) == 0 {}
 
@@ -77,12 +76,10 @@ fn configure_rcc() {
 
     while (rcc.cfgr0().read().bits() >> 2) & 0b11 != 0b10 {}
 
-    rcc.apb2pcenr().modify(|r, w| unsafe {
-        w.bits(r.bits() | (1 << 0) | (1 << 5) | (1 << 14))
-    });
-    rcc.ahbpcenr().modify(|r, w| unsafe {
-        w.bits(r.bits() | (1 << 0))
-    });
+    rcc.apb2pcenr()
+        .modify(|r, w| unsafe { w.bits(r.bits() | (1 << 0) | (1 << 5) | (1 << 14)) });
+    rcc.ahbpcenr()
+        .modify(|r, w| unsafe { w.bits(r.bits() | (1 << 0)) });
 }
 
 fn configure_gpio() {
@@ -92,21 +89,23 @@ fn configure_gpio() {
     gpiod.cfglr().modify(|r, w| unsafe {
         let val = r.bits();
         let cleared = val & !(0xF << 20);
-        w.bits(cleared | (0xF << 20))  // 0xF = AF open-drain 50MHz
+        w.bits(cleared | (0xF << 20)) // 0xF = AF open-drain 50MHz
     });
 
     // Enable internal pull-up on PD5
-    gpiod.outdr().modify(|r, w| unsafe {
-        w.bits(r.bits() | (1 << 5))
-    });
+    gpiod
+        .outdr()
+        .modify(|r, w| unsafe { w.bits(r.bits() | (1 << 5)) });
 }
 
 fn configure_dma() {
     let dma = unsafe { &*DMA1::ptr() };
 
     // Disable TX and RX channels
-    dma.cfgr4().modify(|r, w| unsafe { w.bits(r.bits() & !(1 << 0)) });
-    dma.cfgr5().modify(|r, w| unsafe { w.bits(r.bits() & !(1 << 0)) });
+    dma.cfgr4()
+        .modify(|r, w| unsafe { w.bits(r.bits() & !(1 << 0)) });
+    dma.cfgr5()
+        .modify(|r, w| unsafe { w.bits(r.bits() & !(1 << 0)) });
 
     dma.intfcr().write(|w| unsafe { w.bits(0xFFFF_FFFF) });
 
@@ -118,17 +117,18 @@ fn configure_dma() {
     dma.cfgr4().write(|w| unsafe { w.bits(0) });
     dma.cfgr4().modify(|r, w| unsafe {
         let val = r.bits();
-        let val = val | (1 << 4);   // DIR=1 (memory to peripheral)
-        let val = val | (1 << 7);   // MINC=1
-        let val = val | (1 << 12);  // PL=01 (medium)
-        let val = val | (1 << 1);   // TCIE=1
-        // All other bits (PINC, MSIZE, PSIZE, CIRC, HTIE, TEIE) stay 0
+        let val = val | (1 << 4); // DIR=1 (memory to peripheral)
+        let val = val | (1 << 7); // MINC=1
+        let val = val | (1 << 12); // PL=01 (medium)
+        let val = val | (1 << 1); // TCIE=1
+                                  // All other bits (PINC, MSIZE, PSIZE, CIRC, HTIE, TEIE) stay 0
         w.bits(val)
     });
 
     // RX Channel 5: Configure AND enable, but no DMAR (Step 2b)
     dma.paddr5().write(|w| unsafe { w.bits(usart_dr) });
-    dma.maddr5().write(|w| unsafe { w.bits(RX_BUF.as_ptr() as u32) });
+    dma.maddr5()
+        .write(|w| unsafe { w.bits(RX_BUF.as_ptr() as u32) });
     dma.cntr5().write(|w| unsafe { w.bits(RX_BUF_SIZE as u32) });
     // Use write(0) first to ensure all bits are cleared (including HTIE, TEIE)
     dma.cfgr5().write(|w| unsafe { w.bits(0) });
@@ -136,41 +136,44 @@ fn configure_dma() {
         let val = r.bits();
         // DIR=0 (peripheral to memory), MINC=1, PL=01
         // All interrupt enables (TCIE, HTIE, TEIE) stay 0
-        let val = val | (1 << 7);   // MINC=1
-        let val = val | (1 << 12);  // PL=01 (medium)
+        let val = val | (1 << 7); // MINC=1
+        let val = val | (1 << 12); // PL=01 (medium)
         w.bits(val)
     });
     // Enable DMA5 but DMAR stays 0 (USART won't trigger DMA requests)
-    dma.cfgr5().modify(|r, w| unsafe { w.bits(r.bits() | (1 << 0)) });
+    dma.cfgr5()
+        .modify(|r, w| unsafe { w.bits(r.bits() | (1 << 0)) });
 }
 
 fn configure_usart() {
     let usart = unsafe { &*USART1::ptr() };
 
-    usart.ctlr1().modify(|r, w| unsafe { w.bits(r.bits() & !(1 << 13)) });
+    usart
+        .ctlr1()
+        .modify(|r, w| unsafe { w.bits(r.bits() & !(1 << 13)) });
 
     let brr = PCLK_HZ / BAUD_RATE;
     usart.brr().write(|w| unsafe { w.bits(brr) });
 
     usart.ctlr1().modify(|r, w| unsafe {
         let val = r.bits();
-        let val = val & !(1 << 12);  // M=0 (8 data bits)
-        let val = val & !(1 << 10);  // PCE=0 (no parity)
-        let val = val | (1 << 3);    // TE=1
-        let val = val | (1 << 2);    // RE=1
-        let val = val & !(1 << 5);   // RXNEIE=0 (no RX interrupt, using DMA)
+        let val = val & !(1 << 12); // M=0 (8 data bits)
+        let val = val & !(1 << 10); // PCE=0 (no parity)
+        let val = val | (1 << 3); // TE=1
+        let val = val | (1 << 2); // RE=1
+        let val = val & !(1 << 5); // RXNEIE=0 (no RX interrupt, using DMA)
         w.bits(val)
     });
 
-    usart.ctlr2().modify(|r, w| unsafe {
-        w.bits(r.bits() & !(0b11 << 12))
-    });
+    usart
+        .ctlr2()
+        .modify(|r, w| unsafe { w.bits(r.bits() & !(0b11 << 12)) });
 
     usart.ctlr3().modify(|r, w| unsafe {
         let val = r.bits();
-        let val = val | (1 << 3);   // HDSEL=1
-        let val = val | (1 << 7);   // DMAT=1 (DMA TX)
-        // NOTE: Do NOT set DMAR here! Must wait until after UE=1 per WCH example
+        let val = val | (1 << 3); // HDSEL=1
+        let val = val | (1 << 7); // DMAT=1 (DMA TX)
+                                  // NOTE: Do NOT set DMAR here! Must wait until after UE=1 per WCH example
         let val = val & !(1 << 1);
         let val = val & !(1 << 5);
         w.bits(val)
@@ -184,11 +187,15 @@ fn start_usart() {
     let _ = usart.datar().read().bits();
 
     // Enable USART first (UE=1)
-    usart.ctlr1().modify(|r, w| unsafe { w.bits(r.bits() | (1 << 13)) });
+    usart
+        .ctlr1()
+        .modify(|r, w| unsafe { w.bits(r.bits() | (1 << 13)) });
 
     // Step 2c: Enable DMAR after UE=1 (per WCH example order)
     delay(100);
-    usart.ctlr3().modify(|r, w| unsafe { w.bits(r.bits() | (1 << 6)) }); // DMAR=1
+    usart
+        .ctlr3()
+        .modify(|r, w| unsafe { w.bits(r.bits() | (1 << 6)) }); // DMAR=1
 }
 
 fn dma_tx_start(data: &[u8]) {
@@ -200,13 +207,16 @@ fn dma_tx_start(data: &[u8]) {
     }
 
     // Disable channel, clear flags, configure, then enable
-    dma.cfgr4().modify(|r, w| unsafe { w.bits(r.bits() & !(1 << 0)) });
+    dma.cfgr4()
+        .modify(|r, w| unsafe { w.bits(r.bits() & !(1 << 0)) });
     dma.intfcr().write(|w| unsafe { w.bits(0xF << 12) });
 
-    dma.maddr4().write(|w| unsafe { w.bits(TX_BUF.as_ptr() as u32) });
+    dma.maddr4()
+        .write(|w| unsafe { w.bits(TX_BUF.as_ptr() as u32) });
     dma.cntr4().write(|w| unsafe { w.bits(len as u32) });
 
-    dma.cfgr4().modify(|r, w| unsafe { w.bits(r.bits() | (1 << 0)) });
+    dma.cfgr4()
+        .modify(|r, w| unsafe { w.bits(r.bits() | (1 << 0)) });
 }
 
 fn dma_tx_wait() {
@@ -227,7 +237,8 @@ fn rx_reset() {
     let dma = unsafe { &*DMA1::ptr() };
 
     // Disable RX DMA channel
-    dma.cfgr5().modify(|r, w| unsafe { w.bits(r.bits() & !(1 << 0)) });
+    dma.cfgr5()
+        .modify(|r, w| unsafe { w.bits(r.bits() & !(1 << 0)) });
     // Wait for DMA to actually stop (critical for avoiding memory corruption)
     while (dma.cfgr5().read().bits() & 1) != 0 {
         nop();
@@ -241,7 +252,8 @@ fn rx_reset() {
     }
 
     // Reset DMA counter and memory address
-    dma.maddr5().write(|w| unsafe { w.bits(RX_BUF.as_ptr() as u32) });
+    dma.maddr5()
+        .write(|w| unsafe { w.bits(RX_BUF.as_ptr() as u32) });
     dma.cntr5().write(|w| unsafe { w.bits(RX_BUF_SIZE as u32) });
 
     // Clear any pending flags
@@ -251,7 +263,8 @@ fn rx_reset() {
     RX_START_NDTR.store(RX_BUF_SIZE, Ordering::Release);
 
     // Re-enable RX DMA channel
-    dma.cfgr5().modify(|r, w| unsafe { w.bits(r.bits() | (1 << 0)) });
+    dma.cfgr5()
+        .modify(|r, w| unsafe { w.bits(r.bits() | (1 << 0)) });
 }
 
 fn rx_get_count() -> usize {

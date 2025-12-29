@@ -63,6 +63,7 @@ pub struct KernelState {
     // ===== Host-visible / conceptual state =====
     pub engaged: bool,
     pub mode: OperatingMode,
+    pub fault_mask: u32,
 
     // ===== Commands/setpoints =====
     pub pos_sp: CentiDeg32,
@@ -91,6 +92,7 @@ impl Default for KernelState {
         Self {
             engaged: false,
             mode: OperatingMode::Position,
+            fault_mask: 0,
             pos_sp: CentiDeg32::from_cdeg(0),
             open_loop_effort: Effort::ZERO,
             frame: SensorFrame::default(),

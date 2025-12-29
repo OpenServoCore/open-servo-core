@@ -57,14 +57,20 @@ pub fn configure_usart() {
     dma.ch5.cr.modify(|_, w| w.en().clear_bit());
 
     // Peripheral address = USART1_RDR
-    dma.ch5.par.write(|w| unsafe { w.pa().bits(usart.rdr.as_ptr() as u32) });
+    dma.ch5
+        .par
+        .write(|w| unsafe { w.pa().bits(usart.rdr.as_ptr() as u32) });
 
     // Memory address = UART_RX_DMA_BUF
     // SAFETY: UART_RX_DMA_BUF is static and valid for 'static lifetime
-    dma.ch5.mar.write(|w| unsafe { w.ma().bits(addr_of!(UART_RX_DMA_BUF) as u32) });
+    dma.ch5
+        .mar
+        .write(|w| unsafe { w.ma().bits(addr_of!(UART_RX_DMA_BUF) as u32) });
 
     // Number of data items = buffer size
-    dma.ch5.ndtr.write(|w| w.ndt().bits(UART_RX_BUF_SIZE as u16));
+    dma.ch5
+        .ndtr
+        .write(|w| w.ndt().bits(UART_RX_BUF_SIZE as u16));
 
     // DMA configuration:
     // - Circular mode

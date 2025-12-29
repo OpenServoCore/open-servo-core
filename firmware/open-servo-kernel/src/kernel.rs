@@ -14,7 +14,7 @@
 use open_servo_hw::v2::io::{DriveMode, MotorCommand, MotorHints, SensorFrame};
 use open_servo_kernel_api::faults::FaultSink;
 use open_servo_kernel_api::faults::GateReason;
-use open_servo_kernel_api::host_op::{HostError, HostOp, HostResp, HostResult};
+use open_servo_kernel_api::host_op::{FaultId, HostError, HostOp, HostResp, HostResult};
 use open_servo_kernel_api::kernel::{Kernel, KernelHost};
 use open_servo_kernel_api::mode::{ModeError, ModeRequest, OperatingMode};
 use open_servo_kernel_api::reset::ResetScope;
@@ -200,6 +200,8 @@ impl ServoKernel {
     }
 
     /// Return the gating reason (Ok means control may run).
+    ///
+    /// Precedence is intentional: Disengaged → DriverNotOk → Faulted → Ok
     #[inline]
     fn compute_gate_reason(&self) -> GateReason {
         if !self.st.engaged {
@@ -208,8 +210,9 @@ impl ServoKernel {
         if !self.st.frame.driver_ok {
             return GateReason::DriverNotOk;
         }
-        // Stage-0: fault gating is not wired yet (depends on your FaultLatch integration).
-        // If you have kernel-owned FaultLatch, check it here and return Faulted.
+        if self.st.fault_mask != 0 {
+            return GateReason::Faulted;
+        }
         GateReason::Ok
     }
 
@@ -294,6 +297,18 @@ impl Kernel for ServoKernel {
 // KernelHost implementation
 // =============================================================================
 
+/// Convert FaultId to bit position in fault_mask.
+/// Returns None if id >= 32 (invalid).
+#[inline]
+fn fault_bit(id: FaultId) -> Option<u32> {
+    let bit = id.0 as u32;
+    if bit < 32 {
+        Some(bit)
+    } else {
+        None
+    }
+}
+
 impl KernelHost for ServoKernel {
     fn apply_op(&mut self, op: HostOp) -> HostResult {
         match op {
@@ -302,9 +317,18 @@ impl KernelHost for ServoKernel {
                 Ok(HostResp::Ack)
             }
 
-            HostOp::FaultAck { id: _ } => Err(HostError::UnsupportedOp), // Stage-0
-            HostOp::FaultAckAll => Err(HostError::UnsupportedOp),        // Stage-0
-            HostOp::PersistCommit => Err(HostError::UnsupportedOp),      // Stage-0
+            HostOp::FaultAck { id } => match fault_bit(id) {
+                Some(bit) => {
+                    self.st.fault_mask &= !(1u32 << bit); // idempotent clear
+                    Ok(HostResp::Ack)
+                }
+                None => Err(HostError::FaultAck), // Invalid ID (>= 32)
+            },
+            HostOp::FaultAckAll => {
+                self.st.fault_mask = 0;
+                Ok(HostResp::Ack)
+            }
+            HostOp::PersistCommit => Err(HostError::UnsupportedOp), // Stage-0
 
             HostOp::SoftReset(scope) => {
                 // Deferred: set pending flag, actual reset on System tick.
@@ -327,7 +351,10 @@ impl ShadowKernel for ServoKernel {
         let _ = view.write_telem(telem::POS_CDEG32, &self.st.pos.as_cdeg().to_le_bytes());
 
         // Effort (i16 LE).
-        let _ = view.write_telem(telem::EFFORT_RAW, &self.st.last_cmd.effort.as_raw().to_le_bytes());
+        let _ = view.write_telem(
+            telem::EFFORT_RAW,
+            &self.st.last_cmd.effort.as_raw().to_le_bytes(),
+        );
 
         // Engaged (u8).
         let _ = view.write_telem(telem::ENGAGED, &[if self.st.engaged { 1 } else { 0 }]);
@@ -335,8 +362,8 @@ impl ShadowKernel for ServoKernel {
         // Mode (u8).
         let _ = view.write_telem(telem::MODE, &[self.st.mode as u8]);
 
-        // Fault mask (u32 LE). Stage-0: no faults tracked yet.
-        let _ = view.write_telem(telem::FAULT_MASK, &0u32.to_le_bytes());
+        // Fault mask (u32 LE).
+        let _ = view.write_telem(telem::FAULT_MASK, &self.st.fault_mask.to_le_bytes());
 
         // Gate reason (u8).
         let _ = view.write_telem(telem::GATE_REASON, &[self.st.last_gate as u8]);
@@ -347,33 +374,25 @@ impl ShadowKernel for ServoKernel {
             return CommitResult::NothingToCommit;
         }
 
-        // Check ENGAGED field.
-        if view.is_range_dirty(ctrl::ENGAGED.offset, ctrl::ENGAGED.len as u16) {
-            let mut buf = [0u8; 1];
-            if view.read_ctrl(ctrl::ENGAGED.offset, &mut buf).is_ok() {
-                let new_engaged = buf[0] != 0;
-                // Disengage side effects: clear controller state.
-                if self.st.engaged && !new_engaged {
-                    self.st.pos_i = 0;
-                    self.st.last_pos_err = 0;
-                }
-                self.st.engaged = new_engaged;
-                view.clear_range_dirty(ctrl::ENGAGED.offset, ctrl::ENGAGED.len as u16);
-            }
-        }
+        // Track which fields to clear dirty bits for after all processing.
+        // (Block-based dirty tracking means we must validate first, apply second.)
+        let mut clear_engaged = false;
+        let mut clear_mode = false;
+        let mut clear_goal_pos = false;
+        let mut clear_effort = false;
 
-        // Check MODE field.
-        if view.is_range_dirty(ctrl::MODE.offset, ctrl::MODE.len as u16) {
+        // Phase 1: Validate MODE (must happen before any clearing).
+        let pending_mode = if view.is_range_dirty(ctrl::MODE.offset, ctrl::MODE.len as u16) {
             let mut buf = [0u8; 1];
             if view.read_ctrl(ctrl::MODE.offset, &mut buf).is_ok() {
                 match buf[0] {
                     0 => {
-                        self.pending_mode = Some(OperatingMode::Position);
-                        view.clear_range_dirty(ctrl::MODE.offset, ctrl::MODE.len as u16);
+                        clear_mode = true;
+                        Some(OperatingMode::Position)
                     }
                     1 => {
-                        self.pending_mode = Some(OperatingMode::OpenLoop);
-                        view.clear_range_dirty(ctrl::MODE.offset, ctrl::MODE.len as u16);
+                        clear_mode = true;
+                        Some(OperatingMode::OpenLoop)
                     }
                     _ => {
                         // Invalid value: return error, dirty bit stays set.
@@ -382,29 +401,216 @@ impl ShadowKernel for ServoKernel {
                         };
                     }
                 }
+            } else {
+                None
             }
-        }
+        } else {
+            None
+        };
 
-        // Check GOAL_POS field (i32 LE).
-        if view.is_range_dirty(ctrl::GOAL_POS.offset, ctrl::GOAL_POS.len as u16) {
+        // Phase 2: Read all dirty fields (before any clearing).
+        let new_engaged = if view.is_range_dirty(ctrl::ENGAGED.offset, ctrl::ENGAGED.len as u16) {
+            let mut buf = [0u8; 1];
+            if view.read_ctrl(ctrl::ENGAGED.offset, &mut buf).is_ok() {
+                clear_engaged = true;
+                Some(buf[0] != 0)
+            } else {
+                None
+            }
+        } else {
+            None
+        };
+
+        let new_goal_pos = if view.is_range_dirty(ctrl::GOAL_POS.offset, ctrl::GOAL_POS.len as u16)
+        {
             let mut buf = [0u8; 4];
             if view.read_ctrl(ctrl::GOAL_POS.offset, &mut buf).is_ok() {
-                let val = i32::from_le_bytes(buf);
-                self.st.pos_sp = open_servo_units::CentiDeg32::from_cdeg(val);
-                view.clear_range_dirty(ctrl::GOAL_POS.offset, ctrl::GOAL_POS.len as u16);
+                clear_goal_pos = true;
+                Some(i32::from_le_bytes(buf))
+            } else {
+                None
             }
+        } else {
+            None
+        };
+
+        let new_effort = if view.is_range_dirty(
+            ctrl::OPEN_LOOP_EFFORT.offset,
+            ctrl::OPEN_LOOP_EFFORT.len as u16,
+        ) {
+            let mut buf = [0u8; 2];
+            if view
+                .read_ctrl(ctrl::OPEN_LOOP_EFFORT.offset, &mut buf)
+                .is_ok()
+            {
+                clear_effort = true;
+                Some(i16::from_le_bytes(buf))
+            } else {
+                None
+            }
+        } else {
+            None
+        };
+
+        // Phase 3: Apply all values (after reading, before clearing).
+        if let Some(engaged) = new_engaged {
+            // Disengage side effects: clear controller state.
+            if self.st.engaged && !engaged {
+                self.st.pos_i = 0;
+                self.st.last_pos_err = 0;
+            }
+            self.st.engaged = engaged;
         }
 
-        // Check OPEN_LOOP_EFFORT field (i16 LE).
-        if view.is_range_dirty(ctrl::OPEN_LOOP_EFFORT.offset, ctrl::OPEN_LOOP_EFFORT.len as u16) {
-            let mut buf = [0u8; 2];
-            if view.read_ctrl(ctrl::OPEN_LOOP_EFFORT.offset, &mut buf).is_ok() {
-                let val = i16::from_le_bytes(buf);
-                self.st.open_loop_effort = Effort::from_raw(val);
-                view.clear_range_dirty(ctrl::OPEN_LOOP_EFFORT.offset, ctrl::OPEN_LOOP_EFFORT.len as u16);
-            }
+        if let Some(mode) = pending_mode {
+            self.pending_mode = Some(mode);
+        }
+
+        if let Some(pos) = new_goal_pos {
+            self.st.pos_sp = open_servo_units::CentiDeg32::from_cdeg(pos);
+        }
+
+        if let Some(effort) = new_effort {
+            self.st.open_loop_effort = Effort::from_raw(effort);
+        }
+
+        // Phase 4: Clear dirty bits for all processed fields.
+        if clear_engaged {
+            view.clear_range_dirty(ctrl::ENGAGED.offset, ctrl::ENGAGED.len as u16);
+        }
+        if clear_mode {
+            view.clear_range_dirty(ctrl::MODE.offset, ctrl::MODE.len as u16);
+        }
+        if clear_goal_pos {
+            view.clear_range_dirty(ctrl::GOAL_POS.offset, ctrl::GOAL_POS.len as u16);
+        }
+        if clear_effort {
+            view.clear_range_dirty(
+                ctrl::OPEN_LOOP_EFFORT.offset,
+                ctrl::OPEN_LOOP_EFFORT.len as u16,
+            );
         }
 
         CommitResult::Ok
+    }
+}
+
+// =============================================================================
+// Tests
+// =============================================================================
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::shadow_fields::{ctrl, telem};
+    use crate::state::KernelConfig;
+    use open_servo_kernel_api::faults::GateReason;
+    use open_servo_kernel_api::mode::OperatingMode;
+    use open_servo_kernel_api::shadow::{CommitResult, HostView, KernelView, ShadowTable};
+    use open_servo_units::{CentiDeg32, Effort};
+
+    fn make_kernel() -> ServoKernel {
+        ServoKernel::new(KernelConfig::default())
+    }
+
+    #[test]
+    fn test_commit_invalid_mode_preserves_dirty() {
+        let mut kernel = make_kernel();
+        let mut table = ShadowTable::<512>::new();
+        // Host writes invalid MODE (0xFF)
+        {
+            let (bytes, dirty) = table.as_mut_slices();
+            let mut host = HostView::new(bytes, dirty);
+            host.write(ctrl::MODE.offset, &[0xFF]).unwrap();
+        }
+        // Kernel commits
+        let (bytes, dirty) = table.as_mut_slices();
+        let mut view = KernelView::new(bytes, dirty);
+        let result = kernel.commit_shadow(&mut view);
+        assert_eq!(
+            result,
+            CommitResult::ValidationError {
+                offset: ctrl::MODE.offset
+            }
+        );
+        // Dirty bit still set
+        assert!(view.is_range_dirty(ctrl::MODE.offset, ctrl::MODE.len as u16));
+    }
+
+    #[test]
+    fn test_commit_valid_clears_dirty_per_field() {
+        let mut kernel = make_kernel();
+        let mut table = ShadowTable::<512>::new();
+        // Host writes valid ENGAGED=1 and GOAL_POS=1000
+        {
+            let (bytes, dirty) = table.as_mut_slices();
+            let mut host = HostView::new(bytes, dirty);
+            host.write(ctrl::ENGAGED.offset, &[1]).unwrap();
+            host.write(ctrl::GOAL_POS.offset, &1000i32.to_le_bytes())
+                .unwrap();
+        }
+        // Kernel commits
+        let (bytes, dirty) = table.as_mut_slices();
+        let mut view = KernelView::new(bytes, dirty);
+        let result = kernel.commit_shadow(&mut view);
+        assert_eq!(result, CommitResult::Ok);
+        assert!(kernel.st.engaged);
+        assert_eq!(kernel.st.pos_sp.as_cdeg(), 1000);
+        // Dirty bits cleared
+        assert!(!view.is_range_dirty(ctrl::ENGAGED.offset, 1));
+        assert!(!view.is_range_dirty(ctrl::GOAL_POS.offset, 4));
+    }
+
+    #[test]
+    fn test_disengage_clears_integrator() {
+        let mut kernel = make_kernel();
+        // Set engaged with non-zero integrator
+        kernel.st.engaged = true;
+        kernel.st.pos_i = 12345;
+        kernel.st.last_pos_err = -100;
+        let mut table = ShadowTable::<512>::new();
+        // Host writes ENGAGED=0 (disengage)
+        {
+            let (bytes, dirty) = table.as_mut_slices();
+            let mut host = HostView::new(bytes, dirty);
+            host.write(ctrl::ENGAGED.offset, &[0]).unwrap();
+        }
+        let (bytes, dirty) = table.as_mut_slices();
+        let mut view = KernelView::new(bytes, dirty);
+        kernel.commit_shadow(&mut view);
+        assert!(!kernel.st.engaged);
+        assert_eq!(kernel.st.pos_i, 0);
+        assert_eq!(kernel.st.last_pos_err, 0);
+    }
+
+    #[test]
+    fn test_publish_telemetry_le_encoding() {
+        let mut kernel = make_kernel();
+        kernel.st.pos = CentiDeg32::from_cdeg(0x12345678);
+        kernel.st.last_cmd.effort = Effort::from_raw(0x1234);
+        kernel.st.engaged = true;
+        kernel.st.mode = OperatingMode::OpenLoop;
+        kernel.st.fault_mask = 0xDEADBEEF;
+        kernel.st.last_gate = GateReason::Ok;
+        let mut table = ShadowTable::<512>::new();
+        let (bytes, dirty) = table.as_mut_slices();
+        let mut view = KernelView::new(bytes, dirty);
+        kernel.publish_telemetry(&mut view);
+        // Read back and verify LE encoding
+        let mut buf4 = [0u8; 4];
+        let mut buf2 = [0u8; 2];
+        let mut buf1 = [0u8; 1];
+        table.read(telem::POS_CDEG32, &mut buf4).unwrap();
+        assert_eq!(buf4, 0x12345678i32.to_le_bytes());
+        table.read(telem::EFFORT_RAW, &mut buf2).unwrap();
+        assert_eq!(buf2, 0x1234i16.to_le_bytes());
+        table.read(telem::ENGAGED, &mut buf1).unwrap();
+        assert_eq!(buf1, [1]);
+        table.read(telem::MODE, &mut buf1).unwrap();
+        assert_eq!(buf1, [1]); // OpenLoop = 1
+        table.read(telem::FAULT_MASK, &mut buf4).unwrap();
+        assert_eq!(buf4, 0xDEADBEEFu32.to_le_bytes());
+        table.read(telem::GATE_REASON, &mut buf1).unwrap();
+        assert_eq!(buf1, [0]); // Ok = 0
     }
 }

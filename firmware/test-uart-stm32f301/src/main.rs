@@ -34,7 +34,7 @@ static TIMER_TICK: AtomicBool = AtomicBool::new(false);
 defmt::timestamp!("{=u32:us}", {
     // DWT CYCCNT at 100MHz, convert to microseconds
     let cyccnt = cortex_m::peripheral::DWT::cycle_count();
-    cyccnt / 100  // 100 cycles per microsecond at 100MHz
+    cyccnt / 100 // 100 cycles per microsecond at 100MHz
 });
 
 #[entry]
@@ -75,11 +75,16 @@ fn main() -> ! {
 
     // Show USART register values
     let usart = unsafe { &*USART1::ptr() };
-    defmt::info!("BRR={} (expect 868 for 100MHz/115200)", usart.brr.read().bits());
-    defmt::info!("CR1=0x{:04x} CR2=0x{:04x} CR3=0x{:04x}",
+    defmt::info!(
+        "BRR={} (expect 868 for 100MHz/115200)",
+        usart.brr.read().bits()
+    );
+    defmt::info!(
+        "CR1=0x{:04x} CR2=0x{:04x} CR3=0x{:04x}",
         usart.cr1.read().bits(),
         usart.cr2.read().bits(),
-        usart.cr3.read().bits());
+        usart.cr3.read().bits()
+    );
 
     configure_nvic();
     start_usart();
@@ -99,10 +104,10 @@ fn configure_rcc() {
     // Configure PLL: HSE 25MHz / 25 * 200 / 2 = 100MHz
     rcc.pllcfgr.modify(|_, w| unsafe {
         w.pllsrc().hse();
-        w.pllm().bits(25);   // VCO input = 25/25 = 1MHz
-        w.plln().bits(200);  // VCO = 1 * 200 = 200MHz
-        w.pllp().div2();     // SYSCLK = 200/2 = 100MHz
-        w.pllq().bits(4)     // USB = 200/4 = 50MHz (not used)
+        w.pllm().bits(25); // VCO input = 25/25 = 1MHz
+        w.plln().bits(200); // VCO = 1 * 200 = 200MHz
+        w.pllp().div2(); // SYSCLK = 200/2 = 100MHz
+        w.pllq().bits(4) // USB = 200/4 = 50MHz (not used)
     });
 
     // Enable PLL
@@ -112,16 +117,16 @@ fn configure_rcc() {
     // Set flash latency for 100MHz (3 wait states) + enable acceleration
     flash.acr.modify(|_, w| {
         w.latency().bits(3);
-        w.icen().set_bit();    // Instruction cache enable
-        w.dcen().set_bit();    // Data cache enable
-        w.prften().set_bit()   // Prefetch enable
+        w.icen().set_bit(); // Instruction cache enable
+        w.dcen().set_bit(); // Data cache enable
+        w.prften().set_bit() // Prefetch enable
     });
 
     // Configure prescalers
     rcc.cfgr.modify(|_, w| {
-        w.hpre().div1();   // AHB = 100MHz
-        w.ppre1().div2();  // APB1 = 50MHz (max)
-        w.ppre2().div1()   // APB2 = 100MHz
+        w.hpre().div1(); // AHB = 100MHz
+        w.ppre1().div2(); // APB1 = 50MHz (max)
+        w.ppre2().div1() // APB2 = 100MHz
     });
 
     // Switch to PLL
@@ -145,7 +150,7 @@ fn configure_gpio() {
     gpioa.afrh.modify(|_, w| w.afrh9().af7());
     gpioa.ospeedr.modify(|_, w| w.ospeedr9().very_high_speed());
     gpioa.otyper.modify(|_, w| w.ot9().open_drain());
-    gpioa.pupdr.modify(|_, w| w.pupdr9().pull_up());  // Internal pull-up
+    gpioa.pupdr.modify(|_, w| w.pupdr9().pull_up()); // Internal pull-up
 }
 
 fn configure_dma() {
@@ -166,31 +171,35 @@ fn configure_dma() {
     // TX Stream 7: Memory -> USART1_DR, with transfer complete interrupt
     dma.st[7].par.write(|w| unsafe { w.bits(usart_dr) });
     dma.st[7].cr.modify(|_, w| unsafe {
-        w.chsel().bits(4);     // Channel 4
-        w.dir().bits(0b01);    // Memory to peripheral
-        w.minc().set_bit();    // Memory increment
-        w.pinc().clear_bit();  // Peripheral fixed
-        w.msize().bits(0b00);  // Byte
-        w.psize().bits(0b00);  // Byte
-        w.circ().clear_bit();  // No circular
-        w.pl().bits(0b01);     // Medium priority
-        w.tcie().set_bit()     // Transfer complete interrupt
+        w.chsel().bits(4); // Channel 4
+        w.dir().bits(0b01); // Memory to peripheral
+        w.minc().set_bit(); // Memory increment
+        w.pinc().clear_bit(); // Peripheral fixed
+        w.msize().bits(0b00); // Byte
+        w.psize().bits(0b00); // Byte
+        w.circ().clear_bit(); // No circular
+        w.pl().bits(0b01); // Medium priority
+        w.tcie().set_bit() // Transfer complete interrupt
     });
 
     // RX Stream 2: USART1_DR -> Memory
     dma.st[2].par.write(|w| unsafe { w.bits(usart_dr) });
-    dma.st[2].m0ar.write(|w| unsafe { w.bits(RX_BUF.as_ptr() as u32) });
-    dma.st[2].ndtr.write(|w| unsafe { w.bits(RX_BUF_SIZE as u32) });
+    dma.st[2]
+        .m0ar
+        .write(|w| unsafe { w.bits(RX_BUF.as_ptr() as u32) });
+    dma.st[2]
+        .ndtr
+        .write(|w| unsafe { w.bits(RX_BUF_SIZE as u32) });
     dma.st[2].cr.modify(|_, w| unsafe {
-        w.chsel().bits(4);     // Channel 4
-        w.dir().bits(0b00);    // Peripheral to memory
-        w.minc().set_bit();    // Memory increment
-        w.pinc().clear_bit();  // Peripheral fixed
-        w.msize().bits(0b00);  // Byte
-        w.psize().bits(0b00);  // Byte
-        w.circ().clear_bit();  // No circular (will reset manually)
-        w.pl().bits(0b01);     // Medium priority
-        w.tcie().clear_bit()   // No interrupt (poll NDTR)
+        w.chsel().bits(4); // Channel 4
+        w.dir().bits(0b00); // Peripheral to memory
+        w.minc().set_bit(); // Memory increment
+        w.pinc().clear_bit(); // Peripheral fixed
+        w.msize().bits(0b00); // Byte
+        w.psize().bits(0b00); // Byte
+        w.circ().clear_bit(); // No circular (will reset manually)
+        w.pl().bits(0b01); // Medium priority
+        w.tcie().clear_bit() // No interrupt (poll NDTR)
     });
 
     // Enable RX DMA stream
@@ -206,26 +215,26 @@ fn configure_usart() {
     usart.brr.write(|w| unsafe { w.bits(brr) });
 
     usart.cr1.modify(|_, w| {
-        w.m().clear_bit();     // 8 data bits
-        w.pce().clear_bit();   // No parity
-        w.over8().clear_bit()  // 16x oversampling
+        w.m().clear_bit(); // 8 data bits
+        w.pce().clear_bit(); // No parity
+        w.over8().clear_bit() // 16x oversampling
     });
     usart.cr2.modify(|_, w| {
-        w.stop().bits(0b00);    // 1 stop bit
-        w.linen().clear_bit();  // Required for HDSEL
-        w.clken().clear_bit()   // Required for HDSEL
+        w.stop().bits(0b00); // 1 stop bit
+        w.linen().clear_bit(); // Required for HDSEL
+        w.clken().clear_bit() // Required for HDSEL
     });
 
     usart.cr1.modify(|_, w| {
-        w.te().set_bit();      // Transmitter enable
-        w.re().set_bit();      // Receiver enable
+        w.te().set_bit(); // Transmitter enable
+        w.re().set_bit(); // Receiver enable
         w.rxneie().clear_bit() // No RX interrupt (using DMA)
     });
 
     usart.cr3.modify(|_, w| {
-        w.hdsel().set_bit();   // Half-duplex mode
-        w.dmat().set_bit();    // DMA transmit enable
-        w.dmar().set_bit();    // DMA receive enable
+        w.hdsel().set_bit(); // Half-duplex mode
+        w.dmat().set_bit(); // DMA transmit enable
+        w.dmar().set_bit(); // DMA receive enable
         w.iren().clear_bit();
         w.scen().clear_bit()
     });
@@ -239,8 +248,8 @@ fn configure_timer() {
     // ARR = 9999 -> 10kHz / 10000 = 1Hz
     tim.psc.write(|w| w.psc().bits(9999));
     tim.arr.write(|w| w.arr().bits(9999));
-    tim.dier.modify(|_, w| w.uie().set_bit());  // Update interrupt enable
-    tim.cr1.modify(|_, w| w.cen().set_bit());   // Counter enable
+    tim.dier.modify(|_, w| w.uie().set_bit()); // Update interrupt enable
+    tim.cr1.modify(|_, w| w.cen().set_bit()); // Counter enable
 }
 
 fn configure_nvic() {
@@ -262,7 +271,7 @@ fn start_usart() {
 #[interrupt]
 fn TIM2() {
     let tim = unsafe { &*stm32f4::stm32f411::TIM2::ptr() };
-    tim.sr.modify(|_, w| w.uif().clear_bit());  // Clear update flag
+    tim.sr.modify(|_, w| w.uif().clear_bit()); // Clear update flag
     TIMER_TICK.store(true, Ordering::SeqCst);
 }
 
@@ -273,7 +282,6 @@ fn DMA2_STREAM7() {
     dma.hifcr.write(|w| unsafe { w.bits(0x0F40_0000) });
     TX_COMPLETE.store(true, Ordering::SeqCst);
 }
-
 
 fn dma_tx_start(data: &[u8]) {
     let dma = unsafe { &*DMA2::ptr() };
@@ -290,7 +298,9 @@ fn dma_tx_start(data: &[u8]) {
 
     dma.hifcr.write(|w| unsafe { w.bits(0x0F40_0000) });
 
-    dma.st[7].m0ar.write(|w| unsafe { w.bits(TX_BUF.as_ptr() as u32) });
+    dma.st[7]
+        .m0ar
+        .write(|w| unsafe { w.bits(TX_BUF.as_ptr() as u32) });
     dma.st[7].ndtr.write(|w| unsafe { w.bits(len as u32) });
 
     dma.st[7].cr.modify(|_, w| w.en().set_bit());
@@ -320,8 +330,12 @@ fn rx_reset() {
     }
 
     // Reset DMA counter and memory address
-    dma.st[2].m0ar.write(|w| unsafe { w.bits(RX_BUF.as_ptr() as u32) });
-    dma.st[2].ndtr.write(|w| unsafe { w.bits(RX_BUF_SIZE as u32) });
+    dma.st[2]
+        .m0ar
+        .write(|w| unsafe { w.bits(RX_BUF.as_ptr() as u32) });
+    dma.st[2]
+        .ndtr
+        .write(|w| unsafe { w.bits(RX_BUF_SIZE as u32) });
 
     // Clear any pending flags
     dma.lifcr.write(|w| unsafe { w.bits(0x003D_0000) }); // Stream 2
@@ -371,7 +385,8 @@ fn run_master() -> ! {
         let start = tim.cnt.read().cnt().bits();
         let mut got_response = false;
 
-        while tim.cnt.read().cnt().bits().wrapping_sub(start) < 10000 { // 1 second timeout
+        while tim.cnt.read().cnt().bits().wrapping_sub(start) < 10000 {
+            // 1 second timeout
             let count = rx_get_count();
             // Need more than echo_len bytes AND ending with newline
             if count > echo_len {
