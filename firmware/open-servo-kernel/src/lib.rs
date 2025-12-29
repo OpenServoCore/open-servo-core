@@ -10,7 +10,6 @@
 //! - Shadow table integration for host-plane register I/O
 
 pub mod kernel;
-pub mod shadow_fields;
 pub mod state;
 
 pub use kernel::ServoKernel;

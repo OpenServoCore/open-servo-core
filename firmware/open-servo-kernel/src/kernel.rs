@@ -24,7 +24,7 @@ use open_servo_kernel_api::TelemetrySink;
 use open_servo_kernel_api::{TickCtx, TickDomain};
 use open_servo_units::{Effort, MicroSecond};
 
-use crate::shadow_fields::{ctrl, telem};
+use open_servo_registry::compat::{ctrl, telem};
 use crate::state::{KernelConfig, KernelState, PendingOps};
 
 /// Concrete kernel.
@@ -502,7 +502,7 @@ impl ShadowKernel for ServoKernel {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::shadow_fields::{ctrl, telem};
+    use open_servo_registry::compat::{ctrl, telem};
     use crate::state::KernelConfig;
     use open_servo_kernel_api::faults::GateReason;
     use open_servo_kernel_api::mode::OperatingMode;

@@ -1,0 +1,13 @@
+[package]
+name = "open-servo-registry"
+version.workspace = true
+edition.workspace = true
+
+[features]
+default = []
+defmt = ["dep:defmt", "open-servo-shadow/defmt"]
+
+[dependencies]
+open-servo-shadow = { path = "../open-servo-shadow", default-features = false }
+open-servo-kernel-api = { path = "../open-servo-kernel-api", default-features = false }
+defmt = { workspace = true, optional = true }

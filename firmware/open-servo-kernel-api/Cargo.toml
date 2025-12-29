@@ -4,10 +4,11 @@ version.workspace = true
 edition.workspace = true
 
 [features]
-defmt = ["dep:defmt", "open-servo-units/defmt"]
+defmt = ["dep:defmt", "open-servo-units/defmt", "open-servo-shadow/defmt"]
 
 [dependencies]
 open-servo-units = { path = "../open-servo-units", default-features = false }
+open-servo-shadow = { path = "../open-servo-shadow", default-features = false }
 
 [dependencies.defmt]
 workspace = true

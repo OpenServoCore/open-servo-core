@@ -3,6 +3,8 @@ members = [
     # Base shared libraries
     "open-servo-units",
     "open-servo-math",
+    "open-servo-shadow",
+    "open-servo-registry",
 
     # Base hardware libraries
     "open-servo-hw",
@@ -32,6 +34,8 @@ default-members = [
     # Base shared libraries
     "open-servo-units",
     "open-servo-math",
+    "open-servo-shadow",
+    "open-servo-registry",
 
     # Base hardware libraries
     "open-servo-hw",
