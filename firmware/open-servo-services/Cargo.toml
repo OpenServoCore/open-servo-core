@@ -1,0 +1,42 @@
+[package]
+name = "open-servo-services"
+version.workspace = true
+edition.workspace = true
+
+# Embassy async service tasks for non-RT operations.
+# This crate owns all embassy dependencies; device crate stays glue-only.
+
+[features]
+default = []
+
+# Target architecture (exactly one required when building board crate)
+arch-cortex-m = ["embassy-executor/arch-cortex-m"]
+arch-riscv32 = ["embassy-executor/arch-riscv32"]
+
+defmt = [
+    "dep:defmt",
+    "open-servo-device/defmt",
+    "open-servo-kernel-api/defmt",
+]
+
+[dependencies]
+# Embassy async runtime (no HAL - board uses PAC directly)
+embassy-executor = { workspace = true, features = ["executor-thread", "nightly"] }
+embassy-sync = { workspace = true }
+embassy-time = { workspace = true, features = ["generic-queue-8"] }
+
+# Workspace crates
+open-servo-device = { path = "../open-servo-device", default-features = false }
+open-servo-kernel-api = { path = "../open-servo-kernel-api", default-features = false }
+open-servo-registry = { path = "../open-servo-registry", default-features = false }
+open-servo-units = { path = "../open-servo-units", default-features = false }
+
+# Async IO traits
+embedded-io-async = { workspace = true }
+
+# Shared deps
+heapless = { workspace = true }
+critical-section = { workspace = true }
+
+# Optional
+defmt = { workspace = true, optional = true }

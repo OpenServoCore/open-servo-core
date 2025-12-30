@@ -2,7 +2,7 @@
 //!
 //! This implements two planes:
 //! - Realtime plane: `update_frame()` and `tick()`
-//! - Host plane: sideband commands (mode, fault ack, persist, reset) via HostOp
+//! - Host plane: sideband commands (mode, fault ack, reset) via KernelOp
 //!
 //! Register I/O is handled exclusively via shadow table (ShadowKernel trait).
 //!
@@ -14,9 +14,9 @@
 use open_servo_hw::v2::io::{DriveMode, MotorCommand, MotorHints, SensorFrame};
 use open_servo_kernel_api::faults::FaultSink;
 use open_servo_kernel_api::faults::GateReason;
-use open_servo_kernel_api::host_op::{FaultId, HostError, HostOp, HostResp, HostResult};
 use open_servo_kernel_api::kernel::{Kernel, KernelHost};
 use open_servo_kernel_api::mode::{ModeError, ModeRequest, OperatingMode};
+use open_servo_kernel_api::ops::{FaultId, KernelOp, KernelResult};
 use open_servo_kernel_api::reset::ResetScope;
 use open_servo_kernel_api::shadow::{CommitResult, KernelView, ShadowKernel};
 use open_servo_kernel_api::telemetry::ids as tid;
@@ -310,33 +310,42 @@ fn fault_bit(id: FaultId) -> Option<u32> {
 }
 
 impl KernelHost for ServoKernel {
-    fn apply_op(&mut self, op: HostOp) -> HostResult {
+    fn apply_op(&mut self, op: KernelOp) -> KernelResult {
         match op {
-            HostOp::ModeRequest(req) => {
-                self.request_mode(req)?;
-                Ok(HostResp::Ack)
-            }
+            KernelOp::ModeRequest(req) => match self.request_mode(req) {
+                Ok(()) => KernelResult::Ok,
+                Err(e) => match e {
+                    ModeError::Unsupported => KernelResult::InvalidMode,
+                    ModeError::Busy => KernelResult::Busy,
+                    ModeError::Faulted => KernelResult::Faulted,
+                },
+            },
 
-            HostOp::FaultAck { id } => match fault_bit(id) {
+            KernelOp::FaultAck { id } => match fault_bit(id) {
                 Some(bit) => {
                     self.st.fault_mask &= !(1u32 << bit); // idempotent clear
-                    Ok(HostResp::Ack)
+                    KernelResult::Ok
                 }
-                None => Err(HostError::FaultAck), // Invalid ID (>= 32)
+                None => KernelResult::FaultAckRefused, // Invalid ID (>= 32)
             },
-            HostOp::FaultAckAll => {
-                self.st.fault_mask = 0;
-                Ok(HostResp::Ack)
-            }
-            HostOp::PersistCommit => Err(HostError::UnsupportedOp), // Stage-0
 
-            HostOp::SoftReset(scope) => {
+            KernelOp::FaultAckAll => {
+                self.st.fault_mask = 0;
+                KernelResult::Ok
+            }
+
+            KernelOp::CommitShadow => {
+                // Shadow commit is automatic on medium tick; explicit request is a no-op.
+                KernelResult::Ok
+            }
+
+            KernelOp::SoftReset(scope) => {
                 // Deferred: set pending flag, actual reset on System tick.
                 self.pending.reset_req = Some(scope);
-                Ok(HostResp::Ack)
+                KernelResult::Ok
             }
 
-            HostOp::Ping => Ok(HostResp::Pong),
+            KernelOp::Ping => KernelResult::Ok,
         }
     }
 }

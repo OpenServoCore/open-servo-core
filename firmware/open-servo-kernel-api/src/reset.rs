@@ -74,7 +74,7 @@ impl ResetReason {
     }
 }
 
-/// Scope of a soft reset operation requested via [`HostOp::SoftReset`].
+/// Scope of a soft reset operation requested via [`KernelOp::SoftReset`].
 ///
 /// This enum describes *what* should be reset when the host requests a
 /// soft reset. The kernel defers the actual reset to a safe boundary
@@ -88,7 +88,7 @@ impl ResetReason {
 /// - `Control` → typically triggers [`ResetReason::ConfigChanged`]
 /// - `AllState` → typically triggers a full reinit akin to [`ResetReason::Engage`]
 ///
-/// [`HostOp::SoftReset`]: crate::host_op::HostOp::SoftReset
+/// [`KernelOp::SoftReset`]: crate::ops::KernelOp::SoftReset
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub enum ResetScope {

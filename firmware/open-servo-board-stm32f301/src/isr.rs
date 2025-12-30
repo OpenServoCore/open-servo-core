@@ -2,7 +2,9 @@
 //!
 //! DMA1_CH1: ADC transfer complete - highest priority, runs control tick
 //! USART1: IDLE interrupt - wakes main loop from WFI
+//! SysTick: Debug shell polling signal
 
+use cortex_m_rt::exception;
 use open_servo_units::MicroSecond;
 use stm32f3::stm32f301::interrupt;
 use stm32f3::stm32f301::{DMA1, USART1};
@@ -11,7 +13,7 @@ use crate::config::FAST_DT_US;
 use crate::monotonic::now_us;
 use crate::pwm::apply_motor_command;
 use crate::resources::{
-    get_executor, get_fault_sink, get_isr_queues, get_shadow_storage, get_telem_sink,
+    debug_tick, get_executor, get_fault_sink, get_isr_queues, get_shadow_storage, get_telem_sink,
 };
 use crate::sensors::read_sensor_frame;
 
@@ -75,4 +77,13 @@ fn USART1_EXTI25() {
 
     // Interrupt return itself wakes main from WFI
     // No further action needed
+}
+
+/// SysTick exception (debug shell polling).
+///
+/// Signals the debug shell to check for RTT input.
+/// Runs at 1kHz, configured in main.rs.
+#[exception]
+fn SysTick() {
+    debug_tick().signal(());
 }

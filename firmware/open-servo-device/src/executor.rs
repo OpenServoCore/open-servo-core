@@ -4,7 +4,7 @@
 //! ADC DMA completion ISR. This enforces the single-writer contract:
 //!
 //! - Only the ADC ISR calls `kernel.tick()` and `kernel.apply_op()`
-//! - Main loop only produces [`HostOp`]s and consumes [`HostResult`]s via queues
+//! - Async services produce [`KernelOp`]s and consume [`KernelResult`]s via queues
 //!
 //! ## Decimation
 //!
@@ -16,7 +16,7 @@
 //! | ControlMedium | 1kHz | Every 10th fast tick |
 //! | ControlSlow | 200Hz | Every 5th medium tick (50th fast tick) |
 //!
-//! Host operations are applied at the ControlSlow boundary with a bounded budget.
+//! Kernel operations are applied at the ControlSlow boundary with a bounded budget.
 //!
 //! ## Thread Safety
 //!
@@ -30,8 +30,8 @@ use heapless::spsc::{Consumer, Producer};
 
 use open_servo_hw::v2::io::{MotorCommand, SensorFrame};
 use open_servo_kernel_api::{
-    host_op::{HostOp, HostResult},
     kernel::{Kernel, KernelHost},
+    ops::{KernelOp, KernelResult},
     shadow::ShadowKernel,
     tick_ctx::TickCtx,
     ticks::KernelCtx,
@@ -78,9 +78,9 @@ pub struct ControlExecutor<K> {
 
     /// Pending result from last slow tick if result queue was full.
     ///
-    /// This ensures we never drop a sideband command response.
+    /// This ensures we never drop a kernel op response.
     /// If set, we try to enqueue it before processing more ops.
-    pending_result: Option<HostResult>,
+    pending_result: Option<KernelResult>,
 }
 
 impl<K> ControlExecutor<K>
@@ -127,8 +127,8 @@ where
         frame: SensorFrame,
         fast_dt_us: MicroSecond,
         now: TimeStampUs,
-        op_cons: &mut Consumer<'_, HostOp, OP_CAP>,
-        result_prod: &mut Producer<'_, HostResult, RESULT_CAP>,
+        op_cons: &mut Consumer<'_, KernelOp, OP_CAP>,
+        result_prod: &mut Producer<'_, KernelResult, RESULT_CAP>,
         faults: &mut F,
         telem: &mut T,
         shadow: &ShadowStorage<N>,
@@ -185,15 +185,15 @@ where
         cmd
     }
 
-    /// Apply pending host operations with backpressure handling.
+    /// Apply pending kernel operations with backpressure handling.
     ///
     /// This is called at the ControlSlow boundary (200Hz) with a bounded budget.
     /// If the result queue is full, we stash the result and stop processing
     /// to avoid dropping any responses.
     fn apply_pending_ops<const OP_CAP: usize, const RESULT_CAP: usize>(
         &mut self,
-        op_cons: &mut Consumer<'_, HostOp, OP_CAP>,
-        result_prod: &mut Producer<'_, HostResult, RESULT_CAP>,
+        op_cons: &mut Consumer<'_, KernelOp, OP_CAP>,
+        result_prod: &mut Producer<'_, KernelResult, RESULT_CAP>,
     ) {
         // 1) First, try to flush any pending result from last tick.
         if let Some(result) = self.pending_result.take() {

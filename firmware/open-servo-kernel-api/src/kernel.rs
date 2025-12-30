@@ -2,13 +2,13 @@
 //!
 //! Split into two planes:
 //! - [`Kernel`]: real-time control plane (called from tick schedule)
-//! - [`KernelHost`]: control/config plane (called from comms / host services)
+//! - [`KernelHost`]: control/config plane (called from RT executor at tick boundary)
 //!
 //! This split keeps the tick path minimal and stable, and prevents comms concerns
 //! (register map, protocol errors, mode requests) from polluting real-time scheduling.
 
 use crate::{
-    host_op::{HostOp, HostResult},
+    ops::{KernelOp, KernelResult},
     tick_ctx::TickCtx,
     FaultSink, TelemetrySink,
 };
@@ -58,33 +58,29 @@ pub trait Kernel {
 
 /// Host/control-plane interface.
 ///
-/// Protocol services (Dynamixel, CAN, USB, etc.) call [`apply_op`] to execute
-/// control-plane operations against the kernel.
+/// The RT executor (`ControlExecutor`) calls [`apply_op`] at tick boundaries
+/// to execute kernel operations queued by async services.
 ///
-/// This trait provides a single dispatch point for all host operations,
-/// replacing the legacy `reg_read`/`reg_write`/`request_mode` methods.
+/// # Single-Outstanding Contract
 ///
-/// # Single-Writer Contract
-///
-/// `apply_op` may only be called from one context at a time.
-/// Boards must ensure mutual exclusion (critical sections, priority masking).
-/// This contract allows implementations to avoid atomics.
+/// Operations follow single-outstanding semantics:
+/// - Only one `KernelOp` in flight at a time
+/// - Producer waits for `KernelResult` before enqueuing next op
+/// - This guarantees 1:1 op-to-result correspondence
 ///
 /// [`apply_op`]: KernelHost::apply_op
 pub trait KernelHost {
-    /// Apply a host operation and return the result.
+    /// Apply a kernel operation and return the result.
     ///
-    /// This is the primary dispatch point for all control-plane operations.
-    /// Protocol adapters should use this rather than individual methods.
+    /// Called by the RT executor at tick boundaries (typically slow tick).
     ///
     /// # Operations
     ///
-    /// See [`HostOp`] for the full set of supported operations:
-    /// - Register read/write
+    /// See [`KernelOp`] for the full set:
     /// - Mode requests
     /// - Fault acknowledgment
-    /// - Persistence commit
+    /// - Shadow commit
     /// - Soft reset
     /// - Ping
-    fn apply_op(&mut self, op: HostOp) -> HostResult;
+    fn apply_op(&mut self, op: KernelOp) -> KernelResult;
 }

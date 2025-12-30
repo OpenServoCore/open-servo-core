@@ -2,8 +2,13 @@
 //!
 //! These functions run in the main loop context (not ISR) and handle:
 //!
-//! - Parsing RX bytes into [`HostOp`]s
-//! - Draining [`HostResult`]s and sending responses
+//! - Parsing RX bytes into [`KernelOp`]s
+//! - Draining [`KernelResult`]s and sending responses
+//!
+//! ## Migration Note
+//!
+//! This is a **legacy sync interface**. New code should use the async services
+//! in `open-servo-services` which handle protocol parsing as embassy tasks.
 //!
 //! ## Thread Safety
 //!
@@ -15,11 +20,11 @@
 
 use heapless::spsc::{Consumer, Producer};
 
-use open_servo_kernel_api::host_op::{HostError, HostOp, HostResult};
+use open_servo_kernel_api::ops::{KernelOp, KernelResult};
 
 use crate::comms_service::CommsService;
 
-/// Parse RX bytes into HostOps and enqueue them.
+/// Parse RX bytes into KernelOps and enqueue them.
 ///
 /// This function drains bytes from the RX queue, feeds them to the comms service
 /// parser, and enqueues any produced operations to the op queue.
@@ -35,7 +40,7 @@ use crate::comms_service::CommsService;
 /// - `Ok(count)`: Number of ops successfully enqueued
 /// - `Err(())`: Op queue became full, some ops may have been rejected
 ///
-/// When the op queue is full, the comms service receives a `Busy` error
+/// When the op queue is full, the comms service receives a `Busy` result
 /// via [`CommsService::push_result`] so it can respond appropriately.
 ///
 /// # Queue Safety
@@ -43,7 +48,7 @@ use crate::comms_service::CommsService;
 /// All queue operations are wrapped in critical sections.
 pub fn parse_and_enqueue<C, const RX_CAP: usize, const OP_CAP: usize>(
     rx_cons: &mut Consumer<'_, u8, RX_CAP>,
-    op_prod: &mut Producer<'_, HostOp, OP_CAP>,
+    op_prod: &mut Producer<'_, KernelOp, OP_CAP>,
     parser: &mut C,
 ) -> Result<usize, ()>
 where
@@ -62,8 +67,8 @@ where
         if cs_enqueue(op_prod, op).is_ok() {
             enqueued += 1;
         } else {
-            // Op queue full: reject with Busy error.
-            parser.push_result(Err(HostError::Busy));
+            // Op queue full: reject with Busy result.
+            parser.push_result(KernelResult::Busy);
             had_full = true;
         }
     }
@@ -93,7 +98,7 @@ where
 ///
 /// All queue operations are wrapped in critical sections.
 pub fn drain_and_respond<C, const RESULT_CAP: usize>(
-    result_cons: &mut Consumer<'_, HostResult, RESULT_CAP>,
+    result_cons: &mut Consumer<'_, KernelResult, RESULT_CAP>,
     responder: &mut C,
 ) -> usize
 where

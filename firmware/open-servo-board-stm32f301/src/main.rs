@@ -1,20 +1,24 @@
 #![no_std]
 #![no_main]
+#![feature(impl_trait_in_assoc_type)]
 
 //! STM32F301 board entry point.
 //!
 //! Implements the executor-based architecture:
 //! - ADC DMA ISR owns the kernel (single-writer)
-//! - Main loop handles UART RX parsing and TX flushing
+//! - Embassy executor runs debug shell in main context
 //! - Two-phase init: configure_* then start_*
 
-use core::panic::PanicInfo;
+use panic_rtt_target as _;
 
-use cortex_m::asm::wfi;
+use cortex_m::peripheral::syst::SystClkSource;
 use cortex_m_rt::entry;
+use embassy_executor::Executor;
 use open_servo_device::executor::ControlExecutor;
+use open_servo_hw_utils::rtt_async::RttAsyncIo;
 use open_servo_kernel::ServoKernel;
-use stm32f3::stm32f301::DMA1;
+use open_servo_services::run_debug_shell;
+use static_cell::StaticCell;
 
 use open_servo_board_stm32f301::config::kernel_config;
 use open_servo_board_stm32f301::init::{
@@ -23,20 +27,25 @@ use open_servo_board_stm32f301::init::{
     start_usart_rx_dma,
 };
 use open_servo_board_stm32f301::resources::{
-    init_queues, set_isr_resources, UART_RX_BUF_SIZE, UART_RX_DMA_BUF,
+    debug_tick, get_shadow_storage, init_queues, set_isr_resources,
 };
 
-/// Panic handler.
-#[panic_handler]
-fn panic(_info: &PanicInfo) -> ! {
-    loop {
-        cortex_m::asm::bkpt();
-    }
-}
+// Define defmt timestamp (required by defmt when enabled)
+#[cfg(feature = "defmt")]
+defmt::timestamp!("{=u32:us}", { 0 }); // dummy timestamp
+
+/// System clock frequency.
+const SYSCLK_HZ: u32 = 72_000_000;
+
+/// Debug shell polling rate.
+const DEBUG_TICK_HZ: u32 = 1_000;
 
 /// Main entry point.
 #[entry]
 fn main() -> ! {
+    // Get core peripherals for SysTick setup
+    let mut core = cortex_m::Peripherals::take().unwrap();
+
     // =========================================================================
     // Phase 1: Configure peripherals (no starts)
     // =========================================================================
@@ -75,42 +84,36 @@ fn main() -> ! {
     enable_interrupts();
 
     // =========================================================================
-    // Main loop
+    // Configure SysTick for debug shell polling
+    // =========================================================================
+    let syst = &mut core.SYST;
+    syst.set_clock_source(SystClkSource::Core);
+    syst.set_reload(SYSCLK_HZ / DEBUG_TICK_HZ - 1);
+    syst.clear_current();
+    syst.enable_interrupt();
+    syst.enable_counter();
+
+    // =========================================================================
+    // Run Embassy executor with debug shell
     // =========================================================================
 
-    // UART RX read cursor
-    let mut rx_read_idx: usize = 0;
+    // Create Embassy executor
+    static EXECUTOR: StaticCell<Executor> = StaticCell::new();
+    let executor = EXECUTOR.init(Executor::new());
 
-    loop {
-        // Consume RX bytes from DMA circular buffer
-        // Stage-0: just drain to keep up with DMA, no parsing yet
-        let write_idx = read_uart_dma_write_idx();
-
-        while rx_read_idx != write_idx {
-            // Stage-0: discard bytes (StubComms)
-            let _byte = unsafe { UART_RX_DMA_BUF[rx_read_idx] };
-            rx_read_idx = (rx_read_idx + 1) % UART_RX_BUF_SIZE;
-        }
-
-        // Stage-0: no TX flushing (StubComms produces nothing)
-
-        // Sleep until interrupt
-        wfi();
-    }
+    // Run executor with debug shell task
+    executor.run(|spawner| {
+        spawner.must_spawn(debug_shell_task());
+    });
 }
 
-/// Read UART DMA write index from NDTR.
+/// Debug shell embassy task.
 ///
-/// Reads NDTR twice to ensure stable value (DMA may be mid-update).
-#[inline]
-fn read_uart_dma_write_idx() -> usize {
-    let dma = unsafe { &*DMA1::ptr() };
-
-    loop {
-        let a = dma.ch5.ndtr.read().ndt().bits();
-        let b = dma.ch5.ndtr.read().ndt().bits();
-        if a == b {
-            return UART_RX_BUF_SIZE - (a as usize);
-        }
-    }
+/// Initializes RTT and runs the debug shell. RTT is initialized here rather
+/// than in main() because the task needs ownership of the RttAsyncIo.
+#[embassy_executor::task]
+async fn debug_shell_task() {
+    // Initialize RTT with SysTick-driven polling signal
+    let rtt = RttAsyncIo::init(debug_tick());
+    run_debug_shell(rtt, get_shadow_storage()).await;
 }

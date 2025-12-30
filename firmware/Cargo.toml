@@ -19,6 +19,9 @@ members = [
     # Device that ties hardware and control together
     "open-servo-device",
 
+    # Embassy async services (non-RT tasks)
+    "open-servo-services",
+
     # Board-specific crates
     "open-servo-stm32f301",
     "open-servo-board-stm32f301",
@@ -63,6 +66,14 @@ ufmt = "0.2"
 defmt = { version = "0.3", features = ["encoding-rzcobs"] }
 rtt-target = { version = "0.6", features = ["defmt"] }
 panic-rtt-target = { version = "0.2", features = ["defmt"] }
+
+# Embassy async runtime (executor + sync primitives + time)
+embassy-executor = { version = "0.7", default-features = false }
+embassy-sync = { version = "0.6", default-features = false }
+embassy-time = { version = "0.4", default-features = false }
+
+# Async IO traits
+embedded-io-async = "0.6"
 
 [profile.dev]
 panic = "abort"

@@ -7,11 +7,13 @@
 
 use core::ptr::addr_of_mut;
 
+use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
+use embassy_sync::signal::Signal;
 use heapless::spsc::{Consumer, Producer, Queue};
 use open_servo_device::executor::ControlExecutor;
 use open_servo_device::shadow_storage::ShadowStorage;
 use open_servo_kernel::ServoKernel;
-use open_servo_kernel_api::host_op::{HostOp, HostResult};
+use open_servo_kernel_api::ops::{KernelOp, KernelResult};
 
 use crate::adc_config::{AdcBuffer, ADC_CHANNEL_COUNT};
 use crate::sinks::{StubFaultSink, StubTelemetrySink};
@@ -42,17 +44,17 @@ pub static mut UART_RX_DMA_BUF: [u8; UART_RX_BUF_SIZE] = [0u8; UART_RX_BUF_SIZE]
 // Control-plane: SPSC queues
 // =============================================================================
 
-/// HostOp queue (main → ADC ISR).
-static mut OP_QUEUE: Queue<HostOp, QUEUE_CAPACITY> = Queue::new();
+/// KernelOp queue (main/async → ADC ISR).
+static mut OP_QUEUE: Queue<KernelOp, QUEUE_CAPACITY> = Queue::new();
 
-/// HostResult queue (ADC ISR → main).
-static mut RESULT_QUEUE: Queue<HostResult, QUEUE_CAPACITY> = Queue::new();
+/// KernelResult queue (ADC ISR → main/async).
+static mut RESULT_QUEUE: Queue<KernelResult, QUEUE_CAPACITY> = Queue::new();
 
 /// Queue halves storage (set once at init).
-static mut OP_PROD: Option<Producer<'static, HostOp, QUEUE_CAPACITY>> = None;
-static mut OP_CONS: Option<Consumer<'static, HostOp, QUEUE_CAPACITY>> = None;
-static mut RESULT_PROD: Option<Producer<'static, HostResult, QUEUE_CAPACITY>> = None;
-static mut RESULT_CONS: Option<Consumer<'static, HostResult, QUEUE_CAPACITY>> = None;
+static mut OP_PROD: Option<Producer<'static, KernelOp, QUEUE_CAPACITY>> = None;
+static mut OP_CONS: Option<Consumer<'static, KernelOp, QUEUE_CAPACITY>> = None;
+static mut RESULT_PROD: Option<Producer<'static, KernelResult, QUEUE_CAPACITY>> = None;
+static mut RESULT_CONS: Option<Consumer<'static, KernelResult, QUEUE_CAPACITY>> = None;
 
 // =============================================================================
 // ISR-owned resources
@@ -74,6 +76,19 @@ pub const SHADOW_TABLE_SIZE: usize = 1024;
 static SHADOW_STORAGE: ShadowStorage<SHADOW_TABLE_SIZE> = ShadowStorage::new();
 
 // =============================================================================
+// Debug shell signal (SysTick → async)
+// =============================================================================
+
+/// Signal for debug shell polling (signaled by SysTick ISR).
+static DEBUG_TICK: Signal<CriticalSectionRawMutex, ()> = Signal::new();
+
+/// Get reference to debug tick signal (for SysTick ISR and async shell).
+#[inline]
+pub fn debug_tick() -> &'static Signal<CriticalSectionRawMutex, ()> {
+    &DEBUG_TICK
+}
+
+// =============================================================================
 // Initialization functions
 // =============================================================================
 
@@ -82,8 +97,8 @@ static SHADOW_STORAGE: ShadowStorage<SHADOW_TABLE_SIZE> = ShadowStorage::new();
 /// # Safety
 /// Must be called exactly once before interrupts are enabled.
 pub unsafe fn init_queues() -> (
-    &'static mut Producer<'static, HostOp, QUEUE_CAPACITY>,
-    &'static mut Consumer<'static, HostResult, QUEUE_CAPACITY>,
+    &'static mut Producer<'static, KernelOp, QUEUE_CAPACITY>,
+    &'static mut Consumer<'static, KernelResult, QUEUE_CAPACITY>,
 ) {
     let (op_prod, op_cons) = (*addr_of_mut!(OP_QUEUE)).split();
     let (result_prod, result_cons) = (*addr_of_mut!(RESULT_QUEUE)).split();
@@ -122,8 +137,8 @@ pub unsafe fn get_executor() -> &'static mut ControlExecutor<ServoKernel> {
 /// Must only be called from ADC DMA ISR.
 #[inline]
 pub unsafe fn get_isr_queues() -> (
-    &'static mut Consumer<'static, HostOp, QUEUE_CAPACITY>,
-    &'static mut Producer<'static, HostResult, QUEUE_CAPACITY>,
+    &'static mut Consumer<'static, KernelOp, QUEUE_CAPACITY>,
+    &'static mut Producer<'static, KernelResult, QUEUE_CAPACITY>,
 ) {
     (
         (*addr_of_mut!(OP_CONS)).as_mut().unwrap(),
