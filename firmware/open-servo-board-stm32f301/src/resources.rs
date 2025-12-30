@@ -67,8 +67,8 @@ static mut FAULT_SINK: StubFaultSink = StubFaultSink;
 /// Telemetry sink (ISR-only).
 static mut TELEM_SINK: StubTelemetrySink = StubTelemetrySink;
 
-/// Shadow table size (512 bytes covers TELEM + CTRL + CONFIG regions).
-pub const SHADOW_TABLE_SIZE: usize = 512;
+/// Shadow table size (1024 bytes, Dynamixel Protocol 2.0 compatible).
+pub const SHADOW_TABLE_SIZE: usize = 1024;
 
 /// Shadow storage (shared between main and ISR with discipline).
 static SHADOW_STORAGE: ShadowStorage<SHADOW_TABLE_SIZE> = ShadowStorage::new();

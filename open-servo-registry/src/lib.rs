@@ -60,11 +60,11 @@ pub const VENDOR_START: u16 = 0x200;
 
 /// Lookup field by name (case-insensitive prefix match) across all regions.
 ///
-/// Search order: eeprom, ram, vendor (standard Dynamixel first for compatibility).
+/// Search order: vendor, ram, eeprom.
 pub fn find(name: &str) -> Option<&'static RegSpec> {
-    eeprom::find(name)
+    vendor::find(name)
         .or_else(|| ram::find(name))
-        .or_else(|| vendor::find(name))
+        .or_else(|| eeprom::find(name))
 }
 
 /// Lookup field by address across all regions.

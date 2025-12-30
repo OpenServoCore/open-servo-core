@@ -24,7 +24,7 @@ use open_servo_kernel_api::TelemetrySink;
 use open_servo_kernel_api::{TickCtx, TickDomain};
 use open_servo_units::{Effort, MicroSecond};
 
-use open_servo_registry::compat::{ctrl, telem};
+use open_servo_registry::{ctrl, telem};
 use crate::state::{KernelConfig, KernelState, PendingOps};
 
 /// Concrete kernel.
@@ -348,29 +348,29 @@ impl KernelHost for ServoKernel {
 impl ShadowKernel for ServoKernel {
     fn publish_telemetry(&self, view: &mut KernelView<'_>) {
         // Position (i32 LE).
-        let _ = view.write_telem(telem::POS_CDEG32, &self.st.pos.as_cdeg().to_le_bytes());
+        let _ = view.write(telem::POS_CDEG32, &self.st.pos.as_cdeg().to_le_bytes());
 
         // Effort (i16 LE).
-        let _ = view.write_telem(
+        let _ = view.write(
             telem::EFFORT_RAW,
             &self.st.last_cmd.effort.as_raw().to_le_bytes(),
         );
 
         // Engaged (u8).
-        let _ = view.write_telem(telem::ENGAGED, &[if self.st.engaged { 1 } else { 0 }]);
+        let _ = view.write(telem::ENGAGED, &[if self.st.engaged { 1 } else { 0 }]);
 
         // Mode (u8).
-        let _ = view.write_telem(telem::MODE, &[self.st.mode as u8]);
+        let _ = view.write(telem::MODE, &[self.st.mode as u8]);
 
         // Fault mask (u32 LE).
-        let _ = view.write_telem(telem::FAULT_MASK, &self.st.fault_mask.to_le_bytes());
+        let _ = view.write(telem::FAULT_MASK, &self.st.fault_mask.to_le_bytes());
 
         // Gate reason (u8).
-        let _ = view.write_telem(telem::GATE_REASON, &[self.st.last_gate as u8]);
+        let _ = view.write(telem::GATE_REASON, &[self.st.last_gate as u8]);
     }
 
     fn commit_shadow(&mut self, view: &mut KernelView<'_>) -> CommitResult {
-        if !view.ctrl_dirty() {
+        if !view.any_dirty() {
             return CommitResult::NothingToCommit;
         }
 
@@ -384,7 +384,7 @@ impl ShadowKernel for ServoKernel {
         // Phase 1: Validate MODE (must happen before any clearing).
         let pending_mode = if view.is_range_dirty(ctrl::MODE.offset, ctrl::MODE.len as u16) {
             let mut buf = [0u8; 1];
-            if view.read_ctrl(ctrl::MODE.offset, &mut buf).is_ok() {
+            if view.read(ctrl::MODE.offset, &mut buf).is_ok() {
                 match buf[0] {
                     0 => {
                         clear_mode = true;
@@ -411,7 +411,7 @@ impl ShadowKernel for ServoKernel {
         // Phase 2: Read all dirty fields (before any clearing).
         let new_engaged = if view.is_range_dirty(ctrl::ENGAGED.offset, ctrl::ENGAGED.len as u16) {
             let mut buf = [0u8; 1];
-            if view.read_ctrl(ctrl::ENGAGED.offset, &mut buf).is_ok() {
+            if view.read(ctrl::ENGAGED.offset, &mut buf).is_ok() {
                 clear_engaged = true;
                 Some(buf[0] != 0)
             } else {
@@ -424,7 +424,7 @@ impl ShadowKernel for ServoKernel {
         let new_goal_pos = if view.is_range_dirty(ctrl::GOAL_POS.offset, ctrl::GOAL_POS.len as u16)
         {
             let mut buf = [0u8; 4];
-            if view.read_ctrl(ctrl::GOAL_POS.offset, &mut buf).is_ok() {
+            if view.read(ctrl::GOAL_POS.offset, &mut buf).is_ok() {
                 clear_goal_pos = true;
                 Some(i32::from_le_bytes(buf))
             } else {
@@ -440,7 +440,7 @@ impl ShadowKernel for ServoKernel {
         ) {
             let mut buf = [0u8; 2];
             if view
-                .read_ctrl(ctrl::OPEN_LOOP_EFFORT.offset, &mut buf)
+                .read(ctrl::OPEN_LOOP_EFFORT.offset, &mut buf)
                 .is_ok()
             {
                 clear_effort = true;
@@ -502,7 +502,7 @@ impl ShadowKernel for ServoKernel {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use open_servo_registry::compat::{ctrl, telem};
+    use open_servo_registry::{ctrl, telem};
     use crate::state::KernelConfig;
     use open_servo_kernel_api::faults::GateReason;
     use open_servo_kernel_api::mode::OperatingMode;
@@ -516,7 +516,7 @@ mod tests {
     #[test]
     fn test_commit_invalid_mode_preserves_dirty() {
         let mut kernel = make_kernel();
-        let mut table = ShadowTable::<512>::new();
+        let mut table = ShadowTable::<1024>::new();
         // Host writes invalid MODE (0xFF)
         {
             let (bytes, dirty) = table.as_mut_slices();
@@ -540,7 +540,7 @@ mod tests {
     #[test]
     fn test_commit_valid_clears_dirty_per_field() {
         let mut kernel = make_kernel();
-        let mut table = ShadowTable::<512>::new();
+        let mut table = ShadowTable::<1024>::new();
         // Host writes valid ENGAGED=1 and GOAL_POS=1000
         {
             let (bytes, dirty) = table.as_mut_slices();
@@ -568,7 +568,7 @@ mod tests {
         kernel.st.engaged = true;
         kernel.st.pos_i = 12345;
         kernel.st.last_pos_err = -100;
-        let mut table = ShadowTable::<512>::new();
+        let mut table = ShadowTable::<1024>::new();
         // Host writes ENGAGED=0 (disengage)
         {
             let (bytes, dirty) = table.as_mut_slices();
@@ -592,7 +592,7 @@ mod tests {
         kernel.st.mode = OperatingMode::OpenLoop;
         kernel.st.fault_mask = 0xDEADBEEF;
         kernel.st.last_gate = GateReason::Ok;
-        let mut table = ShadowTable::<512>::new();
+        let mut table = ShadowTable::<1024>::new();
         let (bytes, dirty) = table.as_mut_slices();
         let mut view = KernelView::new(bytes, dirty);
         kernel.publish_telemetry(&mut view);

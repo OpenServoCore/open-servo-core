@@ -240,63 +240,69 @@ impl<const N: usize> Default for ShadowTable<N> {
 }
 
 // ============================================================================
-// Region Layout (Stable ABI)
+// Region Layout (Dynamixel Protocol 2.0)
 // ============================================================================
 
-/// Region layout constants (stable ABI).
+/// Region layout constants (Dynamixel Protocol 2.0 compatible).
 ///
-/// Field offsets *within* regions are kernel-crate-specific, not part of this API.
+/// The shadow table provides 1:1 mapping to Dynamixel protocol addresses.
+/// Access control (R/Rw/RwEepromLocked) is per-register and handled by
+/// the registry crate, not by region.
 pub mod layout {
-    /// Telemetry region: Host-RO, kernel writes. Bytes 0x0000..0x007F.
-    pub const TELEM_START: u16 = 0x0000;
-    /// Telemetry region length: 128 bytes.
-    pub const TELEM_LEN: u16 = 128;
+    /// Total shadow table size (protocol address space).
+    pub const TABLE_SIZE: u16 = 1024;
 
-    /// Control region: Host-RW, kernel reads. Bytes 0x0080..0x00FF.
-    pub const CTRL_START: u16 = 0x0080;
-    /// Control region length: 128 bytes.
-    pub const CTRL_LEN: u16 = 128;
+    /// EEPROM region: Non-volatile configuration. Bytes 0x000..0x03F.
+    /// Host RW when torque disabled, kernel reads.
+    pub const EEPROM_START: u16 = 0x000;
+    pub const EEPROM_LEN: u16 = 64;
 
-    /// Config region: Host-RW, kernel reads (persistent). Bytes 0x0100..0x01FF.
-    pub const CONFIG_START: u16 = 0x0100;
-    /// Config region length: 256 bytes.
-    pub const CONFIG_LEN: u16 = 256;
+    /// RAM region: Runtime state and control. Bytes 0x040..0x0FB.
+    /// Mixed R/Rw per register (defined in registry).
+    pub const RAM_START: u16 = 0x040;
+    pub const RAM_LEN: u16 = 188; // 0x40..0xFB = 188 bytes
 
-    /// Check if an offset is in the telemetry (RO) region.
+    /// Reserved region. Bytes 0x0FC..0x1FF.
+    pub const RESERVED_START: u16 = 0x0FC;
+    pub const RESERVED_LEN: u16 = 260;
+
+    /// Vendor region: High-resolution and debug. Bytes 0x200..0x3FF.
+    /// Mixed R/Rw per register (defined in registry).
+    pub const VENDOR_START: u16 = 0x200;
+    pub const VENDOR_LEN: u16 = 512;
+
+    /// Check if address is in EEPROM region.
     #[inline]
-    pub const fn is_telem(offset: u16) -> bool {
-        offset >= TELEM_START && offset < TELEM_START + TELEM_LEN
+    pub const fn is_eeprom(offset: u16) -> bool {
+        offset < EEPROM_START + EEPROM_LEN
     }
 
-    /// Check if an offset is in a RW region (control or config).
+    /// Check if address is in RAM region.
     #[inline]
-    pub const fn is_rw(offset: u16) -> bool {
-        (offset >= CTRL_START && offset < CTRL_START + CTRL_LEN)
-            || (offset >= CONFIG_START && offset < CONFIG_START + CONFIG_LEN)
+    pub const fn is_ram(offset: u16) -> bool {
+        offset >= RAM_START && offset < RAM_START + RAM_LEN
     }
 
-    /// Check if a range is entirely in a RW region.
+    /// Check if address is in vendor region.
     #[inline]
-    pub const fn is_range_rw(offset: u16, len: u16) -> bool {
+    pub const fn is_vendor(offset: u16) -> bool {
+        offset >= VENDOR_START && offset < VENDOR_START + VENDOR_LEN
+    }
+
+    /// Check if address is valid (in any defined region).
+    #[inline]
+    pub const fn is_valid(offset: u16) -> bool {
+        offset < TABLE_SIZE
+    }
+
+    /// Check if a range is entirely within table bounds.
+    #[inline]
+    pub const fn is_range_valid(offset: u16, len: u16) -> bool {
         if len == 0 {
             return true;
         }
-        let end = offset.saturating_add(len).saturating_sub(1);
-        // Entire range in control region
-        let in_ctrl = offset >= CTRL_START && end < CTRL_START + CTRL_LEN;
-        // Entire range in config region
-        let in_config = offset >= CONFIG_START && end < CONFIG_START + CONFIG_LEN;
-        in_ctrl || in_config
-    }
-
-    /// Check if a range is entirely in the telemetry region.
-    #[inline]
-    pub const fn is_range_telem(offset: u16, len: u16) -> bool {
-        if len == 0 {
-            return true;
-        }
-        let end = offset.saturating_add(len).saturating_sub(1);
-        offset >= TELEM_START && end < TELEM_START + TELEM_LEN
+        let end = offset.saturating_add(len);
+        end <= TABLE_SIZE
     }
 }
 
@@ -429,13 +435,14 @@ impl<'a, S: StagingBuffer> HostView<'a, S> {
         Ok(())
     }
 
-    /// Write bytes to RW regions only.
+    /// Write bytes to shadow table.
     ///
-    /// Marks affected blocks as dirty. For immediate commit.
+    /// Marks affected blocks as dirty. Access control (R/Rw/RwEepromLocked)
+    /// is handled by the registry/protocol layer, not here.
     pub fn write(&mut self, offset: u16, data: &[u8]) -> Result<(), ShadowError> {
         let len = data.len() as u16;
-        if !layout::is_range_rw(offset, len) {
-            return Err(ShadowError::ReadOnly);
+        if !layout::is_range_valid(offset, len) {
+            return Err(ShadowError::OutOfBounds);
         }
         let start = offset as usize;
         let end = start.saturating_add(data.len());
@@ -451,10 +458,11 @@ impl<'a, S: StagingBuffer> HostView<'a, S> {
     ///
     /// Data is copied to staging buffer; applied atomically on `action()`.
     /// Returns `StageResult::NotEnabled` if staging is not configured.
+    /// Access control is handled by the registry/protocol layer.
     pub fn stage_write_range(&mut self, offset: u16, data: &[u8]) -> StageResult {
         let len = data.len() as u16;
-        if !layout::is_range_rw(offset, len) {
-            return StageResult::ReadOnly;
+        if !layout::is_range_valid(offset, len) {
+            return StageResult::OutOfBounds;
         }
         let end = offset as usize + data.len();
         if end > self.bytes.len() {
@@ -543,14 +551,13 @@ impl<'a> KernelView<'a> {
         Self { bytes, dirty }
     }
 
-    /// Read from control/config region.
+    /// Read bytes from shadow table.
     ///
-    /// Returns `ReadOnly` if trying to read from telemetry region
-    /// (kernel should already know telemetry values).
-    pub fn read_ctrl(&self, offset: u16, buf: &mut [u8]) -> Result<(), ShadowError> {
+    /// Kernel can read any address to get host-written values.
+    pub fn read(&self, offset: u16, buf: &mut [u8]) -> Result<(), ShadowError> {
         let len = buf.len() as u16;
-        if !layout::is_range_rw(offset, len) {
-            return Err(ShadowError::ReadOnly);
+        if !layout::is_range_valid(offset, len) {
+            return Err(ShadowError::OutOfBounds);
         }
         let start = offset as usize;
         let end = start.saturating_add(buf.len());
@@ -561,13 +568,14 @@ impl<'a> KernelView<'a> {
         Ok(())
     }
 
-    /// Write to telemetry region. **Does NOT mark dirty.**
+    /// Write bytes to shadow table. **Does NOT mark dirty.**
     ///
-    /// Telemetry updates never trigger commits.
-    pub fn write_telem(&mut self, offset: u16, data: &[u8]) -> Result<(), ShadowError> {
+    /// Used for publishing telemetry (read-only registers from host perspective).
+    /// The registry defines which registers are R vs Rw.
+    pub fn write(&mut self, offset: u16, data: &[u8]) -> Result<(), ShadowError> {
         let len = data.len() as u16;
-        if !layout::is_range_telem(offset, len) {
-            return Err(ShadowError::WriteOnly);
+        if !layout::is_range_valid(offset, len) {
+            return Err(ShadowError::OutOfBounds);
         }
         let start = offset as usize;
         let end = start.saturating_add(data.len());
@@ -575,25 +583,13 @@ impl<'a> KernelView<'a> {
             return Err(ShadowError::OutOfBounds);
         }
         self.bytes[start..end].copy_from_slice(data);
-        // NOTE: No dirty marking for telemetry writes
+        // NOTE: No dirty marking for kernel writes (telemetry publishing)
         Ok(())
     }
 
-    /// Check if control/config region has any pending writes.
-    pub fn ctrl_dirty(&self) -> bool {
-        // Check blocks covering CTRL and CONFIG regions
-        let ctrl_start_block = layout::CTRL_START as usize / DIRTY_BLOCK_SIZE;
-        let config_end = (layout::CONFIG_START + layout::CONFIG_LEN) as usize;
-        let config_end_block = config_end.saturating_sub(1) / DIRTY_BLOCK_SIZE;
-
-        for block in ctrl_start_block..=config_end_block {
-            let word_idx = block / 32;
-            let bit_idx = block % 32;
-            if word_idx < self.dirty.len() && (self.dirty[word_idx] & (1 << bit_idx)) != 0 {
-                return true;
-            }
-        }
-        false
+    /// Check if any block in the table has pending writes.
+    pub fn any_dirty(&self) -> bool {
+        self.dirty.iter().any(|&w| w != 0)
     }
 
     /// Check if any block in the given byte range is dirty.
@@ -710,83 +706,81 @@ mod tests {
 
     #[test]
     fn test_layout_region_checks() {
-        // Telemetry region: 0x00..0x7F
-        assert!(layout::is_telem(0x00));
-        assert!(layout::is_telem(0x7F));
-        assert!(!layout::is_telem(0x80));
+        // EEPROM region: 0x00..0x3F
+        assert!(layout::is_eeprom(0x00));
+        assert!(layout::is_eeprom(0x3F));
+        assert!(!layout::is_eeprom(0x40));
 
-        // Control region: 0x80..0xFF
-        assert!(layout::is_rw(0x80));
-        assert!(layout::is_rw(0xFF));
+        // RAM region: 0x40..0xFB
+        assert!(layout::is_ram(0x40));
+        assert!(layout::is_ram(0xFB));
+        assert!(!layout::is_ram(0xFC));
 
-        // Config region: 0x100..0x1FF
-        assert!(layout::is_rw(0x100));
-        assert!(layout::is_rw(0x1FF));
+        // Vendor region: 0x200..0x3FF
+        assert!(layout::is_vendor(0x200));
+        assert!(layout::is_vendor(0x3FF));
+        assert!(!layout::is_vendor(0x400));
 
-        // Gap between telemetry and control
-        assert!(!layout::is_telem(0x80));
+        // Valid address checks
+        assert!(layout::is_valid(0x00));
+        assert!(layout::is_valid(0x3FF));
+        assert!(!layout::is_valid(0x400));
 
         // Range checks
-        assert!(layout::is_range_telem(0x00, 128));
-        assert!(!layout::is_range_telem(0x00, 129)); // extends past
-        assert!(layout::is_range_rw(0x80, 128));
-        assert!(layout::is_range_rw(0x100, 256));
+        assert!(layout::is_range_valid(0x00, 64));
+        assert!(layout::is_range_valid(0x200, 512));
+        assert!(!layout::is_range_valid(0x3F0, 32)); // extends past 1024
     }
 
     #[test]
     fn test_host_view_read_write() {
-        let mut table = ShadowTable::<512>::new();
+        let mut table = ShadowTable::<1024>::new();
         let (bytes, dirty) = table.as_mut_slices();
         let mut view = HostView::new(bytes, dirty);
 
         // Host can read anywhere
         let mut buf = [0u8; 4];
-        assert!(view.read(0x00, &mut buf).is_ok()); // telemetry region
-        assert!(view.read(0x80, &mut buf).is_ok()); // control region
+        assert!(view.read(0x00, &mut buf).is_ok()); // EEPROM
+        assert!(view.read(0x40, &mut buf).is_ok()); // RAM
+        assert!(view.read(0x200, &mut buf).is_ok()); // Vendor
 
-        // Host can only write to RW regions
-        assert_eq!(view.write(0x00, &[1, 2, 3, 4]), Err(ShadowError::ReadOnly)); // telemetry
-        assert!(view.write(0x80, &[1, 2, 3, 4]).is_ok()); // control - OK
-        assert!(view.write(0x100, &[5, 6, 7, 8]).is_ok()); // config - OK
+        // Host can write anywhere (access control in registry)
+        assert!(view.write(0x00, &[1, 2, 3, 4]).is_ok()); // EEPROM
+        assert!(view.write(0x40, &[5, 6, 7, 8]).is_ok()); // RAM
+        assert!(view.write(0x200, &[9, 10, 11, 12]).is_ok()); // Vendor
     }
 
     #[test]
     fn test_kernel_view_read_write() {
-        let mut table = ShadowTable::<512>::new();
+        let mut table = ShadowTable::<1024>::new();
 
-        // Pre-populate some data
-        table.as_bytes_mut()[0x80..0x84].copy_from_slice(&[1, 2, 3, 4]);
+        // Pre-populate some data at RAM address (Goal Position = 116)
+        table.as_bytes_mut()[116..120].copy_from_slice(&[1, 2, 3, 4]);
 
         let (bytes, dirty) = table.as_mut_slices();
         let mut view = KernelView::new(bytes, dirty);
 
-        // Kernel can read control/config
+        // Kernel can read anywhere
         let mut buf = [0u8; 4];
-        assert!(view.read_ctrl(0x80, &mut buf).is_ok());
+        assert!(view.read(116, &mut buf).is_ok());
         assert_eq!(buf, [1, 2, 3, 4]);
 
-        // Kernel cannot read telemetry region (should use internal state)
-        assert_eq!(view.read_ctrl(0x00, &mut buf), Err(ShadowError::ReadOnly));
+        // Kernel can write anywhere (for telemetry publishing)
+        assert!(view.write(132, &[10, 20, 30, 40]).is_ok()); // Present Position
 
-        // Kernel can write to telemetry region
-        assert!(view.write_telem(0x00, &[10, 20, 30, 40]).is_ok());
-
-        // Kernel cannot write to control region via write_telem
-        assert_eq!(view.write_telem(0x80, &[1, 2]), Err(ShadowError::WriteOnly));
-
-        // write_telem does NOT mark dirty
-        assert!(!view.ctrl_dirty());
+        // Kernel write does NOT mark dirty
+        assert!(!view.any_dirty());
     }
 
     #[test]
     fn test_host_view_marks_dirty_kernel_view_reads() {
-        let mut table = ShadowTable::<512>::new();
+        let mut table = ShadowTable::<1024>::new();
 
-        // Host writes to control region
+        // Host writes to RAM region (Goal Position = 116)
         {
             let (bytes, dirty) = table.as_mut_slices();
             let mut host = HostView::new(bytes, dirty);
-            host.write(0x80, &[0xAB, 0xCD]).unwrap();
+            host.write(116, &[0xAB, 0xCD, 0xEF, 0x12]).unwrap();
         }
 
         // Kernel checks dirty and reads
@@ -794,39 +788,49 @@ mod tests {
             let (bytes, dirty) = table.as_mut_slices();
             let mut kernel = KernelView::new(bytes, dirty);
 
-            assert!(kernel.ctrl_dirty());
-            assert!(kernel.is_range_dirty(0x80, 2));
+            assert!(kernel.any_dirty());
+            assert!(kernel.is_range_dirty(116, 4));
 
-            let mut buf = [0u8; 2];
-            kernel.read_ctrl(0x80, &mut buf).unwrap();
-            assert_eq!(buf, [0xAB, 0xCD]);
+            let mut buf = [0u8; 4];
+            kernel.read(116, &mut buf).unwrap();
+            assert_eq!(buf, [0xAB, 0xCD, 0xEF, 0x12]);
 
             // Clear per-field
-            kernel.clear_range_dirty(0x80, 2);
-            assert!(!kernel.is_range_dirty(0x80, 2));
-            assert!(!kernel.ctrl_dirty());
+            kernel.clear_range_dirty(116, 4);
+            assert!(!kernel.is_range_dirty(116, 4));
+            assert!(!kernel.any_dirty());
         }
     }
 
     #[test]
-    fn test_kernel_telem_write_no_dirty() {
-        let mut table = ShadowTable::<512>::new();
+    fn test_kernel_write_no_dirty() {
+        let mut table = ShadowTable::<1024>::new();
 
         {
             let (bytes, dirty) = table.as_mut_slices();
             let mut kernel = KernelView::new(bytes, dirty);
 
-            // Write telemetry
-            kernel.write_telem(0x00, &[1, 2, 3, 4]).unwrap();
+            // Write to Present Position (132) - read-only from host perspective
+            kernel.write(132, &[1, 2, 3, 4]).unwrap();
 
             // No dirty bits set
-            assert!(!kernel.ctrl_dirty());
-            assert!(!kernel.is_range_dirty(0x00, 4));
+            assert!(!kernel.any_dirty());
+            assert!(!kernel.is_range_dirty(132, 4));
         }
 
         // Data was written
         let mut buf = [0u8; 4];
-        table.read(0x00, &mut buf).unwrap();
+        table.read(132, &mut buf).unwrap();
         assert_eq!(buf, [1, 2, 3, 4]);
+    }
+
+    #[test]
+    fn test_1024_byte_table() {
+        let table = ShadowTable::<1024>::new();
+        assert_eq!(table.size(), 1024);
+
+        // Should be able to access vendor region at end
+        let mut buf = [0u8; 4];
+        assert!(table.read(0x3FC, &mut buf).is_ok()); // Last 4 bytes
     }
 }

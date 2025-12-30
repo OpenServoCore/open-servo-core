@@ -17,7 +17,7 @@ use core::cell::UnsafeCell;
 
 use heapless::Vec;
 use open_servo_kernel_api::shadow::{
-    layout, HostView, KernelView, ShadowError, ShadowTable, StageResult, StagedWrite,
+    HostView, KernelView, ShadowError, ShadowTable, StageResult, StagedWrite,
     StagingBuffer, DIRTY_BLOCK_SIZE,
 };
 
@@ -27,8 +27,8 @@ pub const STAGE_DATA_CAP: usize = 64;
 /// Maximum number of staged write entries.
 pub const STAGE_ENTRY_CAP: usize = 8;
 
-/// Standard table size (512 bytes).
-pub const DEFAULT_TABLE_SIZE: usize = 512;
+/// Standard table size (1024 bytes, Dynamixel Protocol 2.0 compatible).
+pub const DEFAULT_TABLE_SIZE: usize = 1024;
 
 /// Heapless-based staging buffer implementation.
 pub struct HeaplessStagingBuffer {
@@ -204,29 +204,18 @@ impl<const N: usize> ShadowStorage<N> {
     // Kernel methods (ISR only, no CS, single-writer)
     // ========================================================================
 
-    /// Check if control region has pending writes.
+    /// Check if any region has pending writes from host.
     ///
     /// # Safety
     ///
     /// Must be called from ISR context only.
-    pub fn kernel_ctrl_dirty(&self) -> bool {
+    pub fn kernel_any_dirty(&self) -> bool {
         // SAFETY: ISR context, single-writer
         let table = unsafe { &*self.table.get() };
         let dirty = table.dirty_bits();
 
-        // Check blocks covering CTRL and CONFIG regions
-        let ctrl_start_block = layout::CTRL_START as usize / DIRTY_BLOCK_SIZE;
-        let config_end = (layout::CONFIG_START + layout::CONFIG_LEN) as usize;
-        let config_end_block = config_end.saturating_sub(1) / DIRTY_BLOCK_SIZE;
-
-        for block in ctrl_start_block..=config_end_block {
-            let word_idx = block / 32;
-            let bit_idx = block % 32;
-            if word_idx < dirty.len() && (dirty[word_idx] & (1 << bit_idx)) != 0 {
-                return true;
-            }
-        }
-        false
+        // Check if any dirty bit is set
+        dirty.iter().any(|&word| word != 0)
     }
 
     /// Access kernel view via scoped closure (ISR context).
@@ -292,58 +281,58 @@ mod tests {
 
     #[test]
     fn test_shadow_storage_host_read_write() {
-        let storage = ShadowStorage::<512>::new();
+        let storage = ShadowStorage::<1024>::new();
 
-        // Write to control region
-        storage.host_write(0x80, &[0xAB, 0xCD]).unwrap();
+        // Write to RAM region (position_d_gain at 0x50 = 80)
+        storage.host_write(0x50, &[0xAB, 0xCD]).unwrap();
 
         // Read back
         let mut buf = [0u8; 2];
-        storage.host_read(0x80, &mut buf).unwrap();
+        storage.host_read(0x50, &mut buf).unwrap();
         assert_eq!(buf, [0xAB, 0xCD]);
 
-        // Read telemetry region (initially zero)
+        // Read EEPROM region (initially zero)
         storage.host_read(0x00, &mut buf).unwrap();
         assert_eq!(buf, [0, 0]);
     }
 
     #[test]
     fn test_shadow_storage_kernel_view() {
-        let storage = ShadowStorage::<512>::new();
+        let storage = ShadowStorage::<1024>::new();
 
-        // Host writes
-        storage.host_write(0x80, &[1, 2, 3, 4]).unwrap();
+        // Host writes to RAM region (position_d_gain at 0x50 = 80)
+        storage.host_write(0x50, &[1, 2, 3, 4]).unwrap();
 
         // Kernel reads via view
         storage.kernel_with_view(|view| {
-            assert!(view.ctrl_dirty());
+            assert!(view.any_dirty());
 
             let mut buf = [0u8; 4];
-            view.read_ctrl(0x80, &mut buf).unwrap();
+            view.read(0x50, &mut buf).unwrap();
             assert_eq!(buf, [1, 2, 3, 4]);
 
-            // Write telemetry
-            view.write_telem(0x00, &[0xDE, 0xAD]).unwrap();
+            // Write to vendor region (present_pos_cdeg at 516)
+            view.write(516, &[0xDE, 0xAD]).unwrap();
 
             // Clear dirty
-            view.clear_range_dirty(0x80, 4);
-            assert!(!view.ctrl_dirty());
+            view.clear_range_dirty(0x50, 4);
+            assert!(!view.any_dirty());
         });
 
-        // Verify telemetry was written
+        // Verify vendor write was applied
         let mut buf = [0u8; 2];
-        storage.host_read(0x00, &mut buf).unwrap();
+        storage.host_read(516, &mut buf).unwrap();
         assert_eq!(buf, [0xDE, 0xAD]);
     }
 
     #[test]
     fn test_shadow_storage_staging() {
-        let storage = ShadowStorage::<512>::new();
+        let storage = ShadowStorage::<1024>::new();
 
-        // Stage writes via host view
+        // Stage writes via host view (using RAM region addresses)
         storage.host_with_view(|view| {
-            assert_eq!(view.stage_write_range(0x80, &[1, 2]), StageResult::Ok);
-            assert_eq!(view.stage_write_range(0x84, &[3, 4]), StageResult::Ok);
+            assert_eq!(view.stage_write_range(0x50, &[1, 2]), StageResult::Ok);
+            assert_eq!(view.stage_write_range(0x54, &[3, 4]), StageResult::Ok);
             assert!(view.has_staged());
 
             // ACTION: apply staged writes
@@ -354,13 +343,13 @@ mod tests {
 
         // Verify writes applied
         let mut buf = [0u8; 4];
-        storage.host_read(0x80, &mut buf).unwrap();
-        assert_eq!(buf, [1, 2, 0, 0]); // First write at 0x80
+        storage.host_read(0x50, &mut buf).unwrap();
+        assert_eq!(buf, [1, 2, 0, 0]); // First write at 0x50
 
-        storage.host_read(0x84, &mut buf).unwrap();
-        assert_eq!(buf, [3, 4, 0, 0]); // Second write at 0x84
+        storage.host_read(0x54, &mut buf).unwrap();
+        assert_eq!(buf, [3, 4, 0, 0]); // Second write at 0x54
 
         // Check dirty bits set
-        assert!(storage.kernel_ctrl_dirty());
+        assert!(storage.kernel_any_dirty());
     }
 }

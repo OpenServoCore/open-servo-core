@@ -162,7 +162,7 @@ where
                 self.kernel.publish_telemetry(view);
 
                 // Commit dirty shadow→live if any host writes pending.
-                if view.ctrl_dirty() {
+                if view.any_dirty() {
                     let _ = self.kernel.commit_shadow(view);
                 }
             });
