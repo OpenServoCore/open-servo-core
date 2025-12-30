@@ -58,12 +58,7 @@ pub struct RegSpec {
 
 impl RegSpec {
     /// Create a new register specification.
-    pub const fn new(
-        name: &'static str,
-        address: u16,
-        encoding: Encoding,
-        access: Access,
-    ) -> Self {
+    pub const fn new(name: &'static str, address: u16, encoding: Encoding, access: Access) -> Self {
         Self {
             name,
             address,

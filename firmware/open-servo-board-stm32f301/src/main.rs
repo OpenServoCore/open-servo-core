@@ -12,7 +12,7 @@
 use panic_rtt_target as _;
 
 use cortex_m::peripheral::syst::SystClkSource;
-use cortex_m_rt::entry;
+use cortex_m_rt::{entry, pre_init};
 use embassy_executor::Executor;
 use open_servo_device::executor::ControlExecutor;
 use open_servo_hw_utils::rtt_async::RttAsyncIo;
@@ -39,6 +39,14 @@ const SYSCLK_HZ: u32 = 72_000_000;
 
 /// Debug shell polling rate.
 const DEBUG_TICK_HZ: u32 = 1_000;
+
+/// Enable debug during sleep modes before anything else runs.
+/// This ensures SWD always works for recovery, even if firmware crashes.
+#[pre_init]
+unsafe fn pre_init() {
+    const DBGMCU_CR: *mut u32 = 0xE004_2004 as *mut u32;
+    DBGMCU_CR.write_volatile(0x7); // DBG_SLEEP | DBG_STOP | DBG_STANDBY
+}
 
 /// Main entry point.
 #[entry]

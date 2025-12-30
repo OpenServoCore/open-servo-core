@@ -24,8 +24,8 @@ use open_servo_kernel_api::TelemetrySink;
 use open_servo_kernel_api::{TickCtx, TickDomain};
 use open_servo_units::{Effort, MicroSecond};
 
-use open_servo_registry::{ctrl, telem};
 use crate::state::{KernelConfig, KernelState, PendingOps};
+use open_servo_registry::{ctrl, telem};
 
 /// Concrete kernel.
 pub struct ServoKernel {
@@ -448,10 +448,7 @@ impl ShadowKernel for ServoKernel {
             ctrl::OPEN_LOOP_EFFORT.len as u16,
         ) {
             let mut buf = [0u8; 2];
-            if view
-                .read(ctrl::OPEN_LOOP_EFFORT.offset, &mut buf)
-                .is_ok()
-            {
+            if view.read(ctrl::OPEN_LOOP_EFFORT.offset, &mut buf).is_ok() {
                 clear_effort = true;
                 Some(i16::from_le_bytes(buf))
             } else {
@@ -511,11 +508,11 @@ impl ShadowKernel for ServoKernel {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use open_servo_registry::{ctrl, telem};
     use crate::state::KernelConfig;
     use open_servo_kernel_api::faults::GateReason;
     use open_servo_kernel_api::mode::OperatingMode;
     use open_servo_kernel_api::shadow::{CommitResult, HostView, KernelView, ShadowTable};
+    use open_servo_registry::{ctrl, telem};
     use open_servo_units::{CentiDeg32, Effort};
 
     fn make_kernel() -> ServoKernel {

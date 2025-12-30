@@ -17,8 +17,8 @@ use core::cell::UnsafeCell;
 
 use heapless::Vec;
 use open_servo_kernel_api::shadow::{
-    HostView, KernelView, ShadowError, ShadowTable, StageResult, StagedWrite,
-    StagingBuffer, DIRTY_BLOCK_SIZE,
+    HostView, KernelView, ShadowError, ShadowTable, StageResult, StagedWrite, StagingBuffer,
+    DIRTY_BLOCK_SIZE,
 };
 
 /// Staging buffer capacity (bytes).

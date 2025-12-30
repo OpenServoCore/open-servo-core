@@ -48,7 +48,8 @@ pub fn configure_gpio() {
     gpioa.ospeedr.modify(|_, w| w.ospeedr9().high_speed());
     gpioa.afrh.modify(|_, w| w.afrh9().af7());
 
-    // PA10: AF7 (USART1_RX), input (configured as alternate for USART)
+    // PA10: AF7 (USART1_RX), input with pull-up (idle high when disconnected)
     gpioa.moder.modify(|_, w| w.moder10().alternate());
+    gpioa.pupdr.modify(|_, w| w.pupdr10().pull_up());
     gpioa.afrh.modify(|_, w| w.afrh10().af7());
 }

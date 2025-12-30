@@ -136,9 +136,8 @@ mod tests {
     fn test_all_fields_count() {
         let count = all_fields().count();
         // Should have all EEPROM + RAM + Vendor fields
-        let expected = eeprom::EEPROM_FIELDS.len()
-            + ram::RAM_FIELDS.len()
-            + vendor::VENDOR_FIELDS.len();
+        let expected =
+            eeprom::EEPROM_FIELDS.len() + ram::RAM_FIELDS.len() + vendor::VENDOR_FIELDS.len();
         assert_eq!(count, expected);
     }
 }
