@@ -25,7 +25,7 @@ use open_servo_kernel_api::{TickCtx, TickDomain};
 use open_servo_units::{Effort, MicroSecond};
 
 use crate::state::{KernelConfig, KernelState, PendingOps};
-use open_servo_registry::{ctrl, telem};
+use open_servo_registry::vendor;
 
 /// Concrete kernel.
 pub struct ServoKernel {
@@ -356,45 +356,85 @@ impl KernelHost for ServoKernel {
 
 impl ShadowKernel for ServoKernel {
     fn publish_telemetry(&self, view: &mut KernelView<'_>) {
-        // Position (i32 LE).
-        let _ = view.write(telem::POS_CDEG32, &self.st.pos.as_cdeg().to_le_bytes());
+        use open_servo_hw::v2::samples::{MotorCurrent, MotorVoltage, Sampled};
 
-        // Effort (i16 LE).
-        let _ = view.write(
-            telem::EFFORT_RAW,
-            &self.st.last_cmd.effort.as_raw().to_le_bytes(),
-        );
+        // Position.
+        let _ = vendor::reg::PRESENT_POS_CDEG.write(view, self.st.pos.as_cdeg());
 
-        // Engaged (u8).
-        let _ = view.write(telem::ENGAGED, &[if self.st.engaged { 1 } else { 0 }]);
+        // Effort.
+        let _ = vendor::reg::CONTROL_OUTPUT.write(view, self.st.last_cmd.effort.as_raw());
 
-        // Mode (u8).
-        let _ = view.write(telem::MODE, &[self.st.mode as u8]);
+        // Engaged.
+        let _ = vendor::reg::ENGAGED_MIRROR.write(view, self.st.engaged);
 
-        // Fault mask (u32 LE).
-        let _ = view.write(telem::FAULT_MASK, &self.st.fault_mask.to_le_bytes());
+        // Mode.
+        let _ = vendor::reg::MODE_MIRROR.write(view, self.st.mode as u8);
 
-        // Gate reason (u8).
-        let _ = view.write(telem::GATE_REASON, &[self.st.last_gate as u8]);
+        // Fault mask.
+        let _ = vendor::reg::FAULT_HISTORY.write(view, self.st.fault_mask);
+
+        // Gate reason.
+        let _ = vendor::reg::GATE_REASON.write(view, self.st.last_gate as u8);
+
+        // Ambient temperature.
+        let _ = vendor::reg::PRESENT_TEMP_CENTIC.write(view, self.st.frame.ambient_temp.as_centi_c());
+
+        // MCU VDD.
+        let _ = vendor::reg::PRESENT_VOLTAGE_MV.write(view, self.st.frame.mcu_vdd.as_mv());
+
+        // Motor current.
+        let current_ma = match self.st.frame.current {
+            MotorCurrent::Bdc(ma) => ma.as_ma(),
+            MotorCurrent::BldcPhases((a, _, _)) => a.as_ma(),
+        };
+        let _ = vendor::reg::PRESENT_CURRENT_MA.write(view, current_ma);
+
+        // Motor temperature (optional).
+        if let Sampled::Value(temp) = self.st.frame.motor_temp {
+            let _ = vendor::reg::MOTOR_TEMP_CENTIC.write(view, temp.as_centi_c());
+        }
+
+        // Motor terminal voltages (optional).
+        if let Sampled::Value(mv) = self.st.frame.motor_v {
+            match mv {
+                MotorVoltage::Bdc { a, b } => {
+                    let _ = vendor::reg::MOTOR_VPLUS_MV.write(view, a.as_mv());
+                    let _ = vendor::reg::MOTOR_VMINUS_MV.write(view, b.as_mv());
+                }
+                MotorVoltage::BldcPhases { a, b, .. } => {
+                    let _ = vendor::reg::MOTOR_VPLUS_MV.write(view, a.as_mv());
+                    let _ = vendor::reg::MOTOR_VMINUS_MV.write(view, b.as_mv());
+                }
+            }
+        }
     }
 
     fn commit_shadow(&mut self, view: &mut KernelView<'_>) -> CommitResult {
+        use open_servo_registry::reg::Reg;
+
         if !view.any_dirty() {
             return CommitResult::NothingToCommit;
         }
 
+        // Type aliases for the control registers we're reading.
+        type ModeReg = Reg<open_servo_registry::RW, u8>;
+        type EngagedReg = Reg<open_servo_registry::RW, bool>;
+        type GoalPosReg = Reg<open_servo_registry::RW, i32>;
+        type EffortReg = Reg<open_servo_registry::RW, i16>;
+
         // Track which fields to clear dirty bits for after all processing.
-        // (Block-based dirty tracking means we must validate first, apply second.)
         let mut clear_engaged = false;
         let mut clear_mode = false;
         let mut clear_goal_pos = false;
         let mut clear_effort = false;
 
         // Phase 1: Validate MODE (must happen before any clearing).
-        let pending_mode = if view.is_range_dirty(ctrl::MODE.offset, ctrl::MODE.len as u16) {
-            let mut buf = [0u8; 1];
-            if view.read(ctrl::MODE.offset, &mut buf).is_ok() {
-                match buf[0] {
+        let pending_mode = if view.is_range_dirty(
+            vendor::reg::OPERATING_MODE.offset,
+            ModeReg::len(),
+        ) {
+            if let Ok(mode_val) = vendor::reg::OPERATING_MODE.read(view) {
+                match mode_val {
                     0 => {
                         clear_mode = true;
                         Some(OperatingMode::Position)
@@ -404,9 +444,8 @@ impl ShadowKernel for ServoKernel {
                         Some(OperatingMode::OpenLoop)
                     }
                     _ => {
-                        // Invalid value: return error, dirty bit stays set.
                         return CommitResult::ValidationError {
-                            offset: ctrl::MODE.offset,
+                            offset: vendor::reg::OPERATING_MODE.offset,
                         };
                     }
                 }
@@ -418,11 +457,13 @@ impl ShadowKernel for ServoKernel {
         };
 
         // Phase 2: Read all dirty fields (before any clearing).
-        let new_engaged = if view.is_range_dirty(ctrl::ENGAGED.offset, ctrl::ENGAGED.len as u16) {
-            let mut buf = [0u8; 1];
-            if view.read(ctrl::ENGAGED.offset, &mut buf).is_ok() {
+        let new_engaged = if view.is_range_dirty(
+            vendor::reg::TORQUE_ENABLE.offset,
+            EngagedReg::len(),
+        ) {
+            if let Ok(engaged) = vendor::reg::TORQUE_ENABLE.read(view) {
                 clear_engaged = true;
-                Some(buf[0] != 0)
+                Some(engaged)
             } else {
                 None
             }
@@ -430,12 +471,13 @@ impl ShadowKernel for ServoKernel {
             None
         };
 
-        let new_goal_pos = if view.is_range_dirty(ctrl::GOAL_POS.offset, ctrl::GOAL_POS.len as u16)
-        {
-            let mut buf = [0u8; 4];
-            if view.read(ctrl::GOAL_POS.offset, &mut buf).is_ok() {
+        let new_goal_pos = if view.is_range_dirty(
+            vendor::reg::GOAL_POS_CDEG.offset,
+            GoalPosReg::len(),
+        ) {
+            if let Ok(pos) = vendor::reg::GOAL_POS_CDEG.read(view) {
                 clear_goal_pos = true;
-                Some(i32::from_le_bytes(buf))
+                Some(pos)
             } else {
                 None
             }
@@ -444,13 +486,12 @@ impl ShadowKernel for ServoKernel {
         };
 
         let new_effort = if view.is_range_dirty(
-            ctrl::OPEN_LOOP_EFFORT.offset,
-            ctrl::OPEN_LOOP_EFFORT.len as u16,
+            vendor::reg::GOAL_PWM.offset,
+            EffortReg::len(),
         ) {
-            let mut buf = [0u8; 2];
-            if view.read(ctrl::OPEN_LOOP_EFFORT.offset, &mut buf).is_ok() {
+            if let Ok(effort) = vendor::reg::GOAL_PWM.read(view) {
                 clear_effort = true;
-                Some(i16::from_le_bytes(buf))
+                Some(effort)
             } else {
                 None
             }
@@ -460,7 +501,6 @@ impl ShadowKernel for ServoKernel {
 
         // Phase 3: Apply all values (after reading, before clearing).
         if let Some(engaged) = new_engaged {
-            // Disengage side effects: clear controller state.
             if self.st.engaged && !engaged {
                 self.st.pos_i = 0;
                 self.st.last_pos_err = 0;
@@ -482,19 +522,16 @@ impl ShadowKernel for ServoKernel {
 
         // Phase 4: Clear dirty bits for all processed fields.
         if clear_engaged {
-            view.clear_range_dirty(ctrl::ENGAGED.offset, ctrl::ENGAGED.len as u16);
+            view.clear_range_dirty(vendor::reg::TORQUE_ENABLE.offset, EngagedReg::len());
         }
         if clear_mode {
-            view.clear_range_dirty(ctrl::MODE.offset, ctrl::MODE.len as u16);
+            view.clear_range_dirty(vendor::reg::OPERATING_MODE.offset, ModeReg::len());
         }
         if clear_goal_pos {
-            view.clear_range_dirty(ctrl::GOAL_POS.offset, ctrl::GOAL_POS.len as u16);
+            view.clear_range_dirty(vendor::reg::GOAL_POS_CDEG.offset, GoalPosReg::len());
         }
         if clear_effort {
-            view.clear_range_dirty(
-                ctrl::OPEN_LOOP_EFFORT.offset,
-                ctrl::OPEN_LOOP_EFFORT.len as u16,
-            );
+            view.clear_range_dirty(vendor::reg::GOAL_PWM.offset, EffortReg::len());
         }
 
         CommitResult::Ok

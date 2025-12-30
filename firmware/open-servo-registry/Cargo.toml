@@ -8,6 +8,8 @@ default = []
 defmt = ["dep:defmt", "open-servo-shadow/defmt"]
 
 [dependencies]
+open-servo-macros = { path = "../open-servo-macros" }
 open-servo-shadow = { path = "../open-servo-shadow", default-features = false }
 open-servo-kernel-api = { path = "../open-servo-kernel-api", default-features = false }
+open-servo-units = { path = "../open-servo-units", default-features = false }
 defmt = { workspace = true, optional = true }

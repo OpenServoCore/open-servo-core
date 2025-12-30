@@ -27,17 +27,28 @@
 //! if let Some(spec) = vendor::find("goal_pos_cdeg") {
 //!     println!("Vendor: {}", spec.name);
 //! }
+//!
+//! // Typed register access
+//! use open_servo_registry::{Reg, RW, ViewWrite};
+//! const GOAL_POS: Reg<RW, i32> = Reg::new(512);
+//! GOAL_POS.write(&mut view, 1000)?;
 //! ```
 
 #![no_std]
 
 pub mod eeprom;
 pub mod ram;
+pub mod reg;
 pub mod spec;
 pub mod vendor;
+pub mod view;
 
 // Re-export main types
-pub use spec::{Access, Encoding, RangeSpec, RegSpec};
+pub use spec::{Access, Encoding, RangeSpec, RegSpec, UnitEncoding};
+
+// Re-export typed register access
+pub use reg::{Reg, RO, RW, RWE, WO};
+pub use view::{ViewRead, ViewWrite};
 
 // Re-export vendor module items for kernel use
 pub use vendor::{ctrl, telem, VENDOR_FIELDS};

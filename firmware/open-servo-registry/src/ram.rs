@@ -3,245 +3,112 @@
 //! These registers are volatile and writable when torque is enabled.
 
 use crate::spec::{Access, Encoding, RangeSpec, RegSpec};
+use open_servo_macros::RegMap;
 
 // ============================================================================
-// RAM Register Addresses (from REGISTER_MAP.md)
+// Register Map Definition
 // ============================================================================
 
-pub mod addr {
-    // Control registers
-    pub const TORQUE_ENABLE: u16 = 64;
-    pub const LED: u16 = 65;
-    pub const STATUS_RETURN_LEVEL: u16 = 68;
-    pub const REGISTERED_INSTRUCTION: u16 = 69;
-    pub const HARDWARE_ERROR_STATUS: u16 = 70;
+#[derive(RegMap)]
+#[regmap(base = 64, fields = "RAM_FIELDS")]
+#[allow(dead_code)]
+struct RamRegs {
+    // Control registers (64-70)
+    #[reg(RW)]
+    torque_enable: bool, // 64
+    #[reg(RW)]
+    led: u8, // 65
+    _reserved1: [u8; 2], // 66-67
+    #[reg(RW)]
+    status_return_level: u8, // 68
+    #[reg(RO)]
+    registered_instruction: u8, // 69
+    #[reg(RO)]
+    hardware_error_status: u8, // 70
 
-    // PID gains
-    pub const VELOCITY_I_GAIN: u16 = 76;
-    pub const VELOCITY_P_GAIN: u16 = 78;
-    pub const POSITION_D_GAIN: u16 = 80;
-    pub const POSITION_I_GAIN: u16 = 82;
-    pub const POSITION_P_GAIN: u16 = 84;
-    pub const FEEDFORWARD_2ND_GAIN: u16 = 88;
-    pub const FEEDFORWARD_1ST_GAIN: u16 = 90;
+    // Reserved (71-75)
+    _reserved2: [u8; 5], // 71-75
 
-    // Goal/profile
-    pub const BUS_WATCHDOG: u16 = 98;
-    pub const GOAL_PWM: u16 = 100;
-    pub const GOAL_CURRENT: u16 = 102;
-    pub const GOAL_VELOCITY: u16 = 104;
-    pub const PROFILE_ACCELERATION: u16 = 108;
-    pub const PROFILE_VELOCITY: u16 = 112;
-    pub const GOAL_POSITION: u16 = 116;
+    // PID gains (76-91)
+    #[reg(RW)]
+    velocity_i_gain: u16, // 76
+    #[reg(RW)]
+    velocity_p_gain: u16, // 78
+    #[reg(RW)]
+    position_d_gain: u16, // 80
+    #[reg(RW)]
+    position_i_gain: u16, // 82
+    #[reg(RW)]
+    position_p_gain: u16, // 84
+    _reserved3: [u8; 2], // 86-87
+    #[reg(RW)]
+    feedforward_2nd_gain: u16, // 88
+    #[reg(RW)]
+    feedforward_1st_gain: u16, // 90
 
-    // Telemetry
-    pub const REALTIME_TICK: u16 = 120;
-    pub const MOVING: u16 = 122;
-    pub const MOVING_STATUS: u16 = 123;
-    pub const PRESENT_PWM: u16 = 124;
-    pub const PRESENT_CURRENT: u16 = 126;
-    pub const PRESENT_VELOCITY: u16 = 128;
-    pub const PRESENT_POSITION: u16 = 132;
-    pub const VELOCITY_TRAJECTORY: u16 = 136;
-    pub const POSITION_TRAJECTORY: u16 = 140;
-    pub const PRESENT_INPUT_VOLTAGE: u16 = 144;
-    pub const PRESENT_TEMPERATURE: u16 = 146;
-    pub const BACKUP_READY: u16 = 147;
+    // Reserved (92-97)
+    _reserved4: [u8; 6], // 92-97
 
-    // Indirect access
-    pub const INDIRECT_ADDRESS_BASE: u16 = 168;
-    pub const INDIRECT_DATA_BASE: u16 = 224;
+    // Goal/profile (98-119)
+    #[reg(RW)]
+    bus_watchdog: u8, // 98
+    _reserved5: [u8; 1], // 99
+    #[reg(RW)]
+    goal_pwm: i16, // 100
+    #[reg(RW)]
+    goal_current: i16, // 102
+    #[reg(RW)]
+    goal_velocity: i32, // 104
+    #[reg(RW)]
+    profile_acceleration: u32, // 108
+    #[reg(RW)]
+    profile_velocity: u32, // 112
+    #[reg(RW)]
+    goal_position: i32, // 116
+
+    // Telemetry (120-147)
+    #[reg(RO)]
+    realtime_tick: u16, // 120
+    #[reg(RO)]
+    moving: bool, // 122
+    #[reg(RO)]
+    moving_status: u8, // 123
+    #[reg(RO)]
+    present_pwm: i16, // 124
+    #[reg(RO)]
+    present_current: i16, // 126
+    #[reg(RO)]
+    present_velocity: i32, // 128
+    #[reg(RO)]
+    present_position: i32, // 132
+    #[reg(RO)]
+    velocity_trajectory: i32, // 136
+    #[reg(RO)]
+    position_trajectory: i32, // 140
+    #[reg(RO)]
+    present_input_voltage: u16, // 144
+    #[reg(RO)]
+    present_temperature: u8, // 146
+    #[reg(RO)]
+    backup_ready: u8, // 147
+
+    // Reserved (148-167)
+    _reserved6: [u8; 20], // 148-167
+
+                          // Indirect access ranges handled separately below
 }
-
-// ============================================================================
-// Register Specifications
-// ============================================================================
-
-/// All RAM region fields (excluding indirect ranges).
-pub const RAM_FIELDS: &[RegSpec] = &[
-    // Control registers
-    RegSpec::new(
-        "torque_enable",
-        addr::TORQUE_ENABLE,
-        Encoding::Bool,
-        Access::Rw,
-    ),
-    RegSpec::new("led", addr::LED, Encoding::U8, Access::Rw),
-    RegSpec::new(
-        "status_return_level",
-        addr::STATUS_RETURN_LEVEL,
-        Encoding::U8,
-        Access::Rw,
-    ),
-    RegSpec::new(
-        "registered_instruction",
-        addr::REGISTERED_INSTRUCTION,
-        Encoding::U8,
-        Access::R,
-    ),
-    RegSpec::new(
-        "hardware_error_status",
-        addr::HARDWARE_ERROR_STATUS,
-        Encoding::U8,
-        Access::R,
-    ),
-    // PID gains
-    RegSpec::new(
-        "velocity_i_gain",
-        addr::VELOCITY_I_GAIN,
-        Encoding::U16Le,
-        Access::Rw,
-    ),
-    RegSpec::new(
-        "velocity_p_gain",
-        addr::VELOCITY_P_GAIN,
-        Encoding::U16Le,
-        Access::Rw,
-    ),
-    RegSpec::new(
-        "position_d_gain",
-        addr::POSITION_D_GAIN,
-        Encoding::U16Le,
-        Access::Rw,
-    ),
-    RegSpec::new(
-        "position_i_gain",
-        addr::POSITION_I_GAIN,
-        Encoding::U16Le,
-        Access::Rw,
-    ),
-    RegSpec::new(
-        "position_p_gain",
-        addr::POSITION_P_GAIN,
-        Encoding::U16Le,
-        Access::Rw,
-    ),
-    RegSpec::new(
-        "feedforward_2nd_gain",
-        addr::FEEDFORWARD_2ND_GAIN,
-        Encoding::U16Le,
-        Access::Rw,
-    ),
-    RegSpec::new(
-        "feedforward_1st_gain",
-        addr::FEEDFORWARD_1ST_GAIN,
-        Encoding::U16Le,
-        Access::Rw,
-    ),
-    // Goal/profile
-    RegSpec::new("bus_watchdog", addr::BUS_WATCHDOG, Encoding::U8, Access::Rw),
-    RegSpec::new("goal_pwm", addr::GOAL_PWM, Encoding::I16Le, Access::Rw),
-    RegSpec::new(
-        "goal_current",
-        addr::GOAL_CURRENT,
-        Encoding::I16Le,
-        Access::Rw,
-    ),
-    RegSpec::new(
-        "goal_velocity",
-        addr::GOAL_VELOCITY,
-        Encoding::I32Le,
-        Access::Rw,
-    ),
-    RegSpec::new(
-        "profile_acceleration",
-        addr::PROFILE_ACCELERATION,
-        Encoding::U32Le,
-        Access::Rw,
-    ),
-    RegSpec::new(
-        "profile_velocity",
-        addr::PROFILE_VELOCITY,
-        Encoding::U32Le,
-        Access::Rw,
-    ),
-    RegSpec::new(
-        "goal_position",
-        addr::GOAL_POSITION,
-        Encoding::I32Le,
-        Access::Rw,
-    ),
-    // Telemetry
-    RegSpec::new(
-        "realtime_tick",
-        addr::REALTIME_TICK,
-        Encoding::U16Le,
-        Access::R,
-    ),
-    RegSpec::new("moving", addr::MOVING, Encoding::Bool, Access::R),
-    RegSpec::new(
-        "moving_status",
-        addr::MOVING_STATUS,
-        Encoding::U8,
-        Access::R,
-    ),
-    RegSpec::new("present_pwm", addr::PRESENT_PWM, Encoding::I16Le, Access::R),
-    RegSpec::new(
-        "present_current",
-        addr::PRESENT_CURRENT,
-        Encoding::I16Le,
-        Access::R,
-    ),
-    RegSpec::new(
-        "present_velocity",
-        addr::PRESENT_VELOCITY,
-        Encoding::I32Le,
-        Access::R,
-    ),
-    RegSpec::new(
-        "present_position",
-        addr::PRESENT_POSITION,
-        Encoding::I32Le,
-        Access::R,
-    ),
-    RegSpec::new(
-        "velocity_trajectory",
-        addr::VELOCITY_TRAJECTORY,
-        Encoding::I32Le,
-        Access::R,
-    ),
-    RegSpec::new(
-        "position_trajectory",
-        addr::POSITION_TRAJECTORY,
-        Encoding::I32Le,
-        Access::R,
-    ),
-    RegSpec::new(
-        "present_input_voltage",
-        addr::PRESENT_INPUT_VOLTAGE,
-        Encoding::U16Le,
-        Access::R,
-    ),
-    RegSpec::new(
-        "present_temperature",
-        addr::PRESENT_TEMPERATURE,
-        Encoding::U8,
-        Access::R,
-    ),
-    RegSpec::new("backup_ready", addr::BACKUP_READY, Encoding::U8, Access::R),
-];
 
 // ============================================================================
 // Indirect Access Ranges
 // ============================================================================
 
-/// Indirect Address registers (28 x u16).
-pub const INDIRECT_ADDRESS: RangeSpec = RangeSpec::new(
-    "indirect_addr",
-    addr::INDIRECT_ADDRESS_BASE,
-    28,
-    Encoding::U16Le,
-    Access::Rw,
-);
+/// Indirect Address registers (28 x u16) starting at 168.
+pub const INDIRECT_ADDRESS: RangeSpec =
+    RangeSpec::new("indirect_addr", 168, 28, Encoding::U16Le, Access::RW);
 
-/// Indirect Data registers (28 x u8).
-pub const INDIRECT_DATA: RangeSpec = RangeSpec::new(
-    "indirect_data",
-    addr::INDIRECT_DATA_BASE,
-    28,
-    Encoding::U8,
-    Access::Rw,
-);
+/// Indirect Data registers (28 x u8) starting at 224.
+pub const INDIRECT_DATA: RangeSpec =
+    RangeSpec::new("indirect_data", 224, 28, Encoding::U8, Access::RW);
 
 // ============================================================================
 // Lookup
@@ -257,7 +124,6 @@ pub fn find(name: &str) -> Option<&'static RegSpec> {
     None
 }
 
-/// Check if `haystack` starts with `needle` (ASCII case-insensitive).
 fn starts_with_ignore_case(haystack: &str, needle: &str) -> bool {
     if needle.len() > haystack.len() {
         return false;
@@ -305,12 +171,22 @@ mod tests {
 
     #[test]
     fn test_ram_access() {
-        // Control fields are Rw
         let spec = find("torque_enable").unwrap();
-        assert_eq!(spec.access, Access::Rw);
+        assert_eq!(spec.access, Access::RW);
 
-        // Telemetry fields are R
         let spec = find("present_position").unwrap();
-        assert_eq!(spec.access, Access::R);
+        assert_eq!(spec.access, Access::RO);
+    }
+
+    #[test]
+    fn test_addresses_computed() {
+        assert_eq!(addr::TORQUE_ENABLE, 64);
+        assert_eq!(addr::LED, 65);
+        assert_eq!(addr::STATUS_RETURN_LEVEL, 68);
+        assert_eq!(addr::VELOCITY_I_GAIN, 76);
+        assert_eq!(addr::GOAL_PWM, 100);
+        assert_eq!(addr::GOAL_POSITION, 116);
+        assert_eq!(addr::PRESENT_POSITION, 132);
+        assert_eq!(addr::PRESENT_TEMPERATURE, 146);
     }
 }

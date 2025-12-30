@@ -53,5 +53,99 @@ pub mod idx {
     #[cfg(all(feature = "voltage-sense-motor", feature = "current-sense-bus"))]
     pub const VOLTAGE_B: usize = 4;
 
-    // Additional indices for temp sensors would follow same pattern
+    // Motor temp index depends on prior features
+    // Base = 2, +1 for current, +2 for voltage
+    #[cfg(all(
+        feature = "temp-sense-motor",
+        not(feature = "current-sense-bus"),
+        not(feature = "voltage-sense-motor")
+    ))]
+    pub const MOTOR_TEMP: usize = 2;
+
+    #[cfg(all(
+        feature = "temp-sense-motor",
+        feature = "current-sense-bus",
+        not(feature = "voltage-sense-motor")
+    ))]
+    pub const MOTOR_TEMP: usize = 3;
+
+    #[cfg(all(
+        feature = "temp-sense-motor",
+        not(feature = "current-sense-bus"),
+        feature = "voltage-sense-motor"
+    ))]
+    pub const MOTOR_TEMP: usize = 4;
+
+    #[cfg(all(
+        feature = "temp-sense-motor",
+        feature = "current-sense-bus",
+        feature = "voltage-sense-motor"
+    ))]
+    pub const MOTOR_TEMP: usize = 5;
+
+    // MCU temp index depends on all prior features
+    // Base = 2, +1 for current, +2 for voltage, +1 for motor_temp
+    #[cfg(all(
+        feature = "temp-sense-mcu",
+        not(feature = "current-sense-bus"),
+        not(feature = "voltage-sense-motor"),
+        not(feature = "temp-sense-motor")
+    ))]
+    pub const MCU_TEMP: usize = 2;
+
+    #[cfg(all(
+        feature = "temp-sense-mcu",
+        feature = "current-sense-bus",
+        not(feature = "voltage-sense-motor"),
+        not(feature = "temp-sense-motor")
+    ))]
+    pub const MCU_TEMP: usize = 3;
+
+    #[cfg(all(
+        feature = "temp-sense-mcu",
+        not(feature = "current-sense-bus"),
+        feature = "voltage-sense-motor",
+        not(feature = "temp-sense-motor")
+    ))]
+    pub const MCU_TEMP: usize = 4;
+
+    #[cfg(all(
+        feature = "temp-sense-mcu",
+        feature = "current-sense-bus",
+        feature = "voltage-sense-motor",
+        not(feature = "temp-sense-motor")
+    ))]
+    pub const MCU_TEMP: usize = 5;
+
+    #[cfg(all(
+        feature = "temp-sense-mcu",
+        not(feature = "current-sense-bus"),
+        not(feature = "voltage-sense-motor"),
+        feature = "temp-sense-motor"
+    ))]
+    pub const MCU_TEMP: usize = 3;
+
+    #[cfg(all(
+        feature = "temp-sense-mcu",
+        feature = "current-sense-bus",
+        not(feature = "voltage-sense-motor"),
+        feature = "temp-sense-motor"
+    ))]
+    pub const MCU_TEMP: usize = 4;
+
+    #[cfg(all(
+        feature = "temp-sense-mcu",
+        not(feature = "current-sense-bus"),
+        feature = "voltage-sense-motor",
+        feature = "temp-sense-motor"
+    ))]
+    pub const MCU_TEMP: usize = 5;
+
+    #[cfg(all(
+        feature = "temp-sense-mcu",
+        feature = "current-sense-bus",
+        feature = "voltage-sense-motor",
+        feature = "temp-sense-motor"
+    ))]
+    pub const MCU_TEMP: usize = 6;
 }

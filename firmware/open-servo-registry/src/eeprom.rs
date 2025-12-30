@@ -2,171 +2,67 @@
 //!
 //! These registers are persisted and require Torque Enable = 0 to write.
 
-use crate::spec::{Access, Encoding, RegSpec};
+use crate::spec::RegSpec;
+use open_servo_macros::RegMap;
 
 // ============================================================================
-// EEPROM Register Addresses (from REGISTER_MAP.md)
+// Register Map Definition
 // ============================================================================
 
-pub mod addr {
-    pub const MODEL_NUMBER: u16 = 0;
-    pub const MODEL_INFORMATION: u16 = 2;
-    pub const FIRMWARE_VERSION: u16 = 6;
-    pub const ID: u16 = 7;
-    pub const BAUD_RATE: u16 = 8;
-    pub const RETURN_DELAY_TIME: u16 = 9;
-    pub const DRIVE_MODE: u16 = 10;
-    pub const OPERATING_MODE: u16 = 11;
-    pub const SECONDARY_ID: u16 = 12;
-    pub const PROTOCOL_TYPE: u16 = 13;
-    pub const HOMING_OFFSET: u16 = 20;
-    pub const MOVING_THRESHOLD: u16 = 24;
-    pub const TEMPERATURE_LIMIT: u16 = 31;
-    pub const MAX_VOLTAGE_LIMIT: u16 = 32;
-    pub const MIN_VOLTAGE_LIMIT: u16 = 34;
-    pub const PWM_LIMIT: u16 = 36;
-    pub const CURRENT_LIMIT: u16 = 38;
-    pub const VELOCITY_LIMIT: u16 = 44;
-    pub const MAX_POSITION_LIMIT: u16 = 48;
-    pub const MIN_POSITION_LIMIT: u16 = 52;
-    pub const STARTUP_CONFIGURATION: u16 = 60;
-    pub const PWM_SLOPE: u16 = 62;
+#[derive(RegMap)]
+#[regmap(base = 0, fields = "EEPROM_FIELDS")]
+#[allow(dead_code)]
+struct EepromRegs {
+    #[reg(RO)]
+    model_number: u16, // 0
+    #[reg(RO)]
+    model_information: u32, // 2
+    #[reg(RO)]
+    firmware_version: u8, // 6
+    #[reg(RWE)]
+    id: u8, // 7
+    #[reg(RWE)]
+    baud_rate: u8, // 8
+    #[reg(RWE)]
+    return_delay_time: u8, // 9
+    #[reg(RWE)]
+    drive_mode: u8, // 10
+    #[reg(RWE)]
+    operating_mode: u8, // 11
+    #[reg(RWE)]
+    secondary_id: u8, // 12
+    #[reg(RO)]
+    protocol_type: u8, // 13
+    _reserved1: [u8; 6], // 14-19
+    #[reg(RWE)]
+    homing_offset: i32, // 20
+    #[reg(RWE)]
+    moving_threshold: u32, // 24
+    _reserved2: [u8; 3], // 28-30
+    #[reg(RWE)]
+    temperature_limit: u8, // 31
+    #[reg(RWE)]
+    max_voltage_limit: u16, // 32
+    #[reg(RWE)]
+    min_voltage_limit: u16, // 34
+    #[reg(RWE)]
+    pwm_limit: u16, // 36
+    #[reg(RWE)]
+    current_limit: u16, // 38
+    _reserved3: [u8; 4], // 40-43
+    #[reg(RWE)]
+    velocity_limit: u32, // 44
+    #[reg(RWE)]
+    max_position_limit: i32, // 48
+    #[reg(RWE)]
+    min_position_limit: i32, // 52
+    _reserved4: [u8; 4], // 56-59
+    #[reg(RWE)]
+    startup_configuration: u8, // 60
+    _reserved5: [u8; 1], // 61
+    #[reg(RWE)]
+    pwm_slope: u8, // 62
 }
-
-// ============================================================================
-// Register Specifications
-// ============================================================================
-
-/// All EEPROM region fields.
-pub const EEPROM_FIELDS: &[RegSpec] = &[
-    RegSpec::new(
-        "model_number",
-        addr::MODEL_NUMBER,
-        Encoding::U16Le,
-        Access::R,
-    ),
-    RegSpec::new(
-        "model_information",
-        addr::MODEL_INFORMATION,
-        Encoding::U32Le,
-        Access::R,
-    ),
-    RegSpec::new(
-        "firmware_version",
-        addr::FIRMWARE_VERSION,
-        Encoding::U8,
-        Access::R,
-    ),
-    RegSpec::new("id", addr::ID, Encoding::U8, Access::RwEepromLocked),
-    RegSpec::new(
-        "baud_rate",
-        addr::BAUD_RATE,
-        Encoding::U8,
-        Access::RwEepromLocked,
-    ),
-    RegSpec::new(
-        "return_delay_time",
-        addr::RETURN_DELAY_TIME,
-        Encoding::U8,
-        Access::RwEepromLocked,
-    ),
-    RegSpec::new(
-        "drive_mode",
-        addr::DRIVE_MODE,
-        Encoding::U8,
-        Access::RwEepromLocked,
-    ),
-    RegSpec::new(
-        "operating_mode",
-        addr::OPERATING_MODE,
-        Encoding::U8,
-        Access::RwEepromLocked,
-    ),
-    RegSpec::new(
-        "secondary_id",
-        addr::SECONDARY_ID,
-        Encoding::U8,
-        Access::RwEepromLocked,
-    ),
-    RegSpec::new(
-        "protocol_type",
-        addr::PROTOCOL_TYPE,
-        Encoding::U8,
-        Access::R,
-    ),
-    RegSpec::new(
-        "homing_offset",
-        addr::HOMING_OFFSET,
-        Encoding::I32Le,
-        Access::RwEepromLocked,
-    ),
-    RegSpec::new(
-        "moving_threshold",
-        addr::MOVING_THRESHOLD,
-        Encoding::U32Le,
-        Access::RwEepromLocked,
-    ),
-    RegSpec::new(
-        "temperature_limit",
-        addr::TEMPERATURE_LIMIT,
-        Encoding::U8,
-        Access::RwEepromLocked,
-    ),
-    RegSpec::new(
-        "max_voltage_limit",
-        addr::MAX_VOLTAGE_LIMIT,
-        Encoding::U16Le,
-        Access::RwEepromLocked,
-    ),
-    RegSpec::new(
-        "min_voltage_limit",
-        addr::MIN_VOLTAGE_LIMIT,
-        Encoding::U16Le,
-        Access::RwEepromLocked,
-    ),
-    RegSpec::new(
-        "pwm_limit",
-        addr::PWM_LIMIT,
-        Encoding::U16Le,
-        Access::RwEepromLocked,
-    ),
-    RegSpec::new(
-        "current_limit",
-        addr::CURRENT_LIMIT,
-        Encoding::U16Le,
-        Access::RwEepromLocked,
-    ),
-    RegSpec::new(
-        "velocity_limit",
-        addr::VELOCITY_LIMIT,
-        Encoding::U32Le,
-        Access::RwEepromLocked,
-    ),
-    RegSpec::new(
-        "max_position_limit",
-        addr::MAX_POSITION_LIMIT,
-        Encoding::I32Le,
-        Access::RwEepromLocked,
-    ),
-    RegSpec::new(
-        "min_position_limit",
-        addr::MIN_POSITION_LIMIT,
-        Encoding::I32Le,
-        Access::RwEepromLocked,
-    ),
-    RegSpec::new(
-        "startup_configuration",
-        addr::STARTUP_CONFIGURATION,
-        Encoding::U8,
-        Access::RwEepromLocked,
-    ),
-    RegSpec::new(
-        "pwm_slope",
-        addr::PWM_SLOPE,
-        Encoding::U8,
-        Access::RwEepromLocked,
-    ),
-];
 
 // ============================================================================
 // Lookup
@@ -182,7 +78,6 @@ pub fn find(name: &str) -> Option<&'static RegSpec> {
     None
 }
 
-/// Check if `haystack` starts with `needle` (ASCII case-insensitive).
 fn starts_with_ignore_case(haystack: &str, needle: &str) -> bool {
     if needle.len() > haystack.len() {
         return false;
@@ -197,6 +92,7 @@ fn starts_with_ignore_case(haystack: &str, needle: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::spec::Access;
 
     #[test]
     fn test_find_exact() {
@@ -214,12 +110,35 @@ mod tests {
 
     #[test]
     fn test_eeprom_access() {
-        // Most EEPROM fields are RwEepromLocked
         let spec = find("id").unwrap();
-        assert_eq!(spec.access, Access::RwEepromLocked);
+        assert_eq!(spec.access, Access::RWE);
 
-        // But some are read-only
         let spec = find("model_number").unwrap();
-        assert_eq!(spec.access, Access::R);
+        assert_eq!(spec.access, Access::RO);
+    }
+
+    #[test]
+    fn test_addresses_computed() {
+        assert_eq!(addr::MODEL_NUMBER, 0);
+        assert_eq!(addr::MODEL_INFORMATION, 2);
+        assert_eq!(addr::FIRMWARE_VERSION, 6);
+        assert_eq!(addr::ID, 7);
+        assert_eq!(addr::HOMING_OFFSET, 20);
+        assert_eq!(addr::TEMPERATURE_LIMIT, 31);
+        assert_eq!(addr::VELOCITY_LIMIT, 44);
+        assert_eq!(addr::STARTUP_CONFIGURATION, 60);
+        assert_eq!(addr::PWM_SLOPE, 62);
+    }
+
+    #[test]
+    fn test_reserved_fields() {
+        // Find a reserved field
+        let reserved = EEPROM_FIELDS
+            .iter()
+            .find(|f| f.name == "_reserved1")
+            .unwrap();
+        assert_eq!(reserved.address, 14);
+        assert_eq!(reserved.len(), 6);
+        assert_eq!(reserved.access, Access::Reserved);
     }
 }

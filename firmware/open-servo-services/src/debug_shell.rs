@@ -145,9 +145,11 @@ fn cmd_list(prefix: Option<&str>, out: &mut String<OUT_BUF_CAP>) {
     for spec in open_servo_registry::all_fields() {
         if starts_with_ignore_case(spec.name, prefix) {
             let access_ch = match spec.access {
-                Access::R => 'R',
-                Access::Rw => 'W',
-                Access::RwEepromLocked => 'E',
+                Access::RO => 'R',
+                Access::WO => 'O',
+                Access::RW => 'W',
+                Access::RWE => 'E',
+                Access::Reserved => '-',
             };
             let _ = write!(
                 out,
@@ -230,17 +232,17 @@ fn cmd_write<const N: usize>(
 
     // Check access control
     match spec.access {
-        Access::R => {
+        Access::RO | Access::Reserved => {
             let _ = write!(out, "Error: {} is read-only\r\n", spec.name);
             return;
         }
-        Access::RwEepromLocked => {
+        Access::RWE => {
             if is_torque_enabled(shadow) {
                 let _ = write!(out, "Error: {} locked (torque enabled)\r\n", spec.name);
                 return;
             }
         }
-        Access::Rw => {}
+        Access::RW | Access::WO => {}
     }
 
     // Parse value
@@ -415,6 +417,9 @@ fn format_value(buf: &[u8], encoding: Encoding, out: &mut String<OUT_BUF_CAP>) {
                 let _ = write!(out, "unknown ({})", idx);
             }
         }
+        Encoding::Reserved(len) => {
+            let _ = write!(out, "<reserved {} bytes>", len);
+        }
     }
 }
 
@@ -480,6 +485,10 @@ fn parse_value(s: &str, encoding: Encoding, buf: &mut [u8]) -> bool {
                     return true;
                 }
             }
+        }
+        Encoding::Reserved(_) => {
+            // Reserved fields are not writable
+            return false;
         }
     }
 

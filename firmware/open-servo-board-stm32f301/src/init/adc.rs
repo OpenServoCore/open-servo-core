@@ -23,7 +23,15 @@ pub fn configure_adc() {
 
     // ADC clock configuration (in common register)
     // CKMODE = 0b01: Synchronous clock, HCLK/1
-    adc_common.ccr.modify(|_, w| w.ckmode().bits(0b01));
+    // Enable VREFINT (always needed for VDD calculation)
+    adc_common.ccr.modify(|_, w| {
+        w.ckmode().bits(0b01);
+        w.vrefen().set_bit()
+    });
+
+    // Enable internal temperature sensor if feature enabled
+    #[cfg(feature = "temp-sense-mcu")]
+    adc_common.ccr.modify(|_, w| w.tsen().set_bit());
 
     // Enable ADC voltage regulator
     // ADVREGEN = 0b01 to enable
@@ -65,8 +73,8 @@ pub fn configure_adc() {
     adc.smpr2.modify(|_, w| {
         w.smp16()
             .cycles181_5() // ch16 MCU temp (2.2µs min)
-            .smp17()
-            .cycles601_5() // ch17 VREFINT (4µs min!)
+            .smp18()
+            .cycles601_5() // ch18 VREFINT (4µs min!)
     });
 
     // Configure conversion sequence
@@ -116,13 +124,20 @@ pub fn configure_adc() {
 }
 
 /// Configure ADC conversion sequence based on enabled features.
+///
+/// Sequence order (matches adc_config::idx):
+/// - SQ1: ch18 VREFINT (always)
+/// - SQ2: ch1 position (always)
+/// - SQ3: ch2 current (if current-sense-bus)
+/// - SQ4/5: ch3/ch4 motor V+/V- (if voltage-sense-motor)
+/// - SQn: ch5 motor temp (if temp-sense-motor)
+/// - SQn: ch16 MCU temp (if temp-sense-mcu)
 fn configure_adc_sequence(adc: &stm32f3::stm32f301::adc1::RegisterBlock) {
-    // Sequence length in SQR1.L
+    // Sequence length in SQR1.L (L = number of conversions - 1)
     let len = ADC_CHANNEL_COUNT as u8 - 1;
 
-    // Build sequence based on features
     // Channel mapping:
-    // - VREFINT = ch17 (internal)
+    // - VREFINT = ch18 (internal)
     // - Position = ch1 (PA0)
     // - Current = ch2 (PA1) if current-sense-bus
     // - VoltageA = ch3 (PA2) if voltage-sense-motor
@@ -130,18 +145,72 @@ fn configure_adc_sequence(adc: &stm32f3::stm32f301::adc1::RegisterBlock) {
     // - MotorTemp = ch5 (PA4) if temp-sense-motor
     // - McuTemp = ch16 (internal) if temp-sense-mcu
 
-    // For stage-0, just configure basic sequence
-    // SQ1 = ch17 (VREFINT)
-    // SQ2 = ch1 (position)
+    // Track current sequence slot (1-indexed for SQR registers)
+    let mut slot = 1u8;
+
+    // SQ1 = ch18 (VREFINT) - always first
+    // SQ2 = ch1 (position) - always second
     adc.sqr1.write(|w| unsafe {
         w.l().bits(len);
-        w.sq1().bits(17); // VREFINT
-        w.sq2().bits(1) // Position
+        w.sq1().bits(18); // VREFINT on ch18
+        w.sq2().bits(1) // Position on ch1
     });
+    slot = 3;
 
-    // Additional channels based on features
+    // Current sense (ch2) if enabled
     #[cfg(feature = "current-sense-bus")]
-    adc.sqr1.modify(|_, w| unsafe { w.sq3().bits(2) }); // Current on ch2
+    {
+        adc.sqr1.modify(|_, w| unsafe { w.sq3().bits(2) });
+        slot = 4;
+    }
+
+    // Motor voltage sensing (ch3, ch4) if enabled
+    #[cfg(feature = "voltage-sense-motor")]
+    {
+        match slot {
+            3 => {
+                adc.sqr1.modify(|_, w| unsafe {
+                    w.sq3().bits(3); // V+ on ch3
+                    w.sq4().bits(4) // V- on ch4
+                });
+            }
+            4 => {
+                adc.sqr1.modify(|_, w| unsafe { w.sq4().bits(3) }); // V+ on ch3
+                adc.sqr2.write(|w| unsafe { w.sq5().bits(4) }); // V- on ch4
+            }
+            _ => {}
+        }
+        slot += 2;
+    }
+
+    // Motor temperature (ch5) if enabled
+    #[cfg(feature = "temp-sense-motor")]
+    {
+        match slot {
+            3 => adc.sqr1.modify(|_, w| unsafe { w.sq3().bits(5) }),
+            4 => adc.sqr1.modify(|_, w| unsafe { w.sq4().bits(5) }),
+            5 => adc.sqr2.modify(|_, w| unsafe { w.sq5().bits(5) }),
+            6 => adc.sqr2.modify(|_, w| unsafe { w.sq6().bits(5) }),
+            _ => {}
+        }
+        slot += 1;
+    }
+
+    // MCU temperature (ch16) if enabled - always last
+    #[cfg(feature = "temp-sense-mcu")]
+    {
+        match slot {
+            3 => adc.sqr1.modify(|_, w| unsafe { w.sq3().bits(16) }),
+            4 => adc.sqr1.modify(|_, w| unsafe { w.sq4().bits(16) }),
+            5 => adc.sqr2.modify(|_, w| unsafe { w.sq5().bits(16) }),
+            6 => adc.sqr2.modify(|_, w| unsafe { w.sq6().bits(16) }),
+            7 => adc.sqr2.modify(|_, w| unsafe { w.sq7().bits(16) }),
+            _ => {}
+        }
+    }
+
+    // Suppress unused variable warning when no optional features enabled
+    let _ = slot;
 }
 
 /// Start ADC DMA operation.

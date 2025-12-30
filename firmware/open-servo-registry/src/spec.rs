@@ -1,15 +1,82 @@
 //! Register specification types for REPL and tooling.
 
+use open_servo_units::{CentiC, CentiDeg, CentiDeg32, MilliAmp, MilliVolt};
+
+// ============================================================================
+// Encoding trait for type-safe register definitions
+// ============================================================================
+
+/// Trait for types that have a well-defined register encoding.
+///
+/// Implement this for unit types to enable type-safe register specifications.
+pub trait UnitEncoding {
+    /// The register encoding for this type.
+    const ENCODING: Encoding;
+}
+
+impl UnitEncoding for u8 {
+    const ENCODING: Encoding = Encoding::U8;
+}
+
+impl UnitEncoding for i16 {
+    const ENCODING: Encoding = Encoding::I16Le;
+}
+
+impl UnitEncoding for u16 {
+    const ENCODING: Encoding = Encoding::U16Le;
+}
+
+impl UnitEncoding for i32 {
+    const ENCODING: Encoding = Encoding::I32Le;
+}
+
+impl UnitEncoding for u32 {
+    const ENCODING: Encoding = Encoding::U32Le;
+}
+
+impl UnitEncoding for bool {
+    const ENCODING: Encoding = Encoding::Bool;
+}
+
+// Unit type encodings (derived from their backing storage)
+impl UnitEncoding for CentiC {
+    const ENCODING: Encoding = Encoding::I16Le; // CentiC(pub i16)
+}
+
+impl UnitEncoding for CentiDeg {
+    const ENCODING: Encoding = Encoding::I16Le; // CentiDeg(pub i16)
+}
+
+impl UnitEncoding for CentiDeg32 {
+    const ENCODING: Encoding = Encoding::I32Le; // CentiDeg32(pub i32)
+}
+
+impl UnitEncoding for MilliVolt {
+    const ENCODING: Encoding = Encoding::I16Le; // MilliVolt(pub i16)
+}
+
+impl UnitEncoding for MilliAmp {
+    const ENCODING: Encoding = Encoding::I16Le; // MilliAmp(pub i16)
+}
+
+// ============================================================================
+// Access control
+// ============================================================================
+
 /// Access control for registers.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
 pub enum Access {
     /// Read-only (telemetry/status).
-    R,
+    RO,
+    /// Write-only.
+    WO,
     /// Read-write (RAM, always writable).
-    Rw,
+    RW,
     /// Read-write but requires Torque Enable = 0 (EEPROM).
-    RwEepromLocked,
+    RWE,
+    /// Reserved - access error on read/write.
+    Reserved,
 }
 
 /// Field encoding hint for display/parsing.
@@ -30,6 +97,8 @@ pub enum Encoding {
     Bool,
     /// Enumeration with string names indexed by value.
     Enum(&'static [&'static str]),
+    /// Reserved region with explicit byte length.
+    Reserved(u8),
 }
 
 impl Encoding {
@@ -39,6 +108,7 @@ impl Encoding {
             Encoding::U8 | Encoding::Bool | Encoding::Enum(_) => 1,
             Encoding::I16Le | Encoding::U16Le => 2,
             Encoding::I32Le | Encoding::U32Le => 4,
+            Encoding::Reserved(n) => *n,
         }
     }
 }
@@ -67,6 +137,26 @@ impl RegSpec {
         }
     }
 
+    /// Create a type-safe register specification.
+    ///
+    /// The encoding is derived from the type's `UnitEncoding` implementation,
+    /// ensuring the register encoding matches the unit type.
+    ///
+    /// # Example
+    /// ```ignore
+    /// use open_servo_units::CentiDeg32;
+    /// let spec = RegSpec::typed::<CentiDeg32>("goal_pos_cdeg", 512, Access::RW);
+    /// assert_eq!(spec.encoding, Encoding::I32Le);
+    /// ```
+    pub const fn typed<T: UnitEncoding>(name: &'static str, address: u16, access: Access) -> Self {
+        Self {
+            name,
+            address,
+            encoding: T::ENCODING,
+            access,
+        }
+    }
+
     /// Get the byte length of this register.
     pub const fn len(&self) -> u8 {
         self.encoding.len()
@@ -74,7 +164,29 @@ impl RegSpec {
 
     /// Check if this register is writable.
     pub const fn is_writable(&self) -> bool {
-        matches!(self.access, Access::Rw | Access::RwEepromLocked)
+        matches!(self.access, Access::RW | Access::RWE | Access::WO)
+    }
+
+    /// Check if this register is readable.
+    pub const fn is_readable(&self) -> bool {
+        matches!(self.access, Access::RO | Access::RW | Access::RWE)
+    }
+
+    /// Check if this is a reserved/undefined region.
+    pub const fn is_reserved(&self) -> bool {
+        matches!(self.access, Access::Reserved)
+    }
+
+    /// Create a reserved field specification.
+    ///
+    /// Reserved fields return Access Error on read/write.
+    pub const fn reserved(name: &'static str, address: u16, len: u8) -> Self {
+        Self {
+            name,
+            address,
+            encoding: Encoding::Reserved(len),
+            access: Access::Reserved,
+        }
     }
 }
 

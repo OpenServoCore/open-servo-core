@@ -5,6 +5,7 @@ members = [
     "open-servo-math",
     "open-servo-shadow",
     "open-servo-registry",
+    "open-servo-macros",
 
     # Base hardware libraries
     "open-servo-hw",
