@@ -8,8 +8,7 @@ use open_servo_hw::v2::samples::MotorVoltage;
 use open_servo_hw::v2::samples::{MotorCurrent, Sampled};
 use open_servo_units::{CentiC, MilliAmp, MilliVolt};
 
-use crate::adc_config::idx;
-use crate::calibration::{adc_to_position, vdd_from_vrefint};
+use crate::adc_config::Channels;
 #[cfg(feature = "current-sense-bus")]
 use crate::calibration::adc_to_current_ma;
 #[cfg(feature = "temp-sense-mcu")]
@@ -18,6 +17,7 @@ use crate::calibration::adc_to_mcu_temp;
 use crate::calibration::adc_to_motor_mv;
 #[cfg(feature = "temp-sense-motor")]
 use crate::calibration::adc_to_ntc_temp;
+use crate::calibration::{adc_to_position, vdd_from_vrefint};
 use crate::resources::ADC_DMA_BUF;
 
 /// Read sensor frame from ADC DMA buffer.
@@ -30,36 +30,37 @@ pub unsafe fn read_sensor_frame() -> SensorFrame {
     // SAFETY: DMA transfer is complete, buffer is stable. Using addr_of to
     // avoid creating a reference to the mutable static.
     let buf = &*addr_of!(ADC_DMA_BUF);
+    let ch = Channels::new(buf);
 
     // Always available: VDD from VREFINT calibration
-    let vdd_mv = vdd_from_vrefint(buf[idx::VREFINT]);
+    let vdd_mv = vdd_from_vrefint(ch.vrefint());
 
     // Always available: position
-    let pos = adc_to_position(buf[idx::POSITION]);
+    let pos = adc_to_position(ch.position());
 
     // Motor current (feature-gated)
     #[cfg(feature = "current-sense-bus")]
-    let current = MotorCurrent::Bdc(MilliAmp::from_ma(adc_to_current_ma(buf[idx::CURRENT], vdd_mv)));
+    let current = MotorCurrent::Bdc(MilliAmp::from_ma(adc_to_current_ma(ch.current(), vdd_mv)));
     #[cfg(not(feature = "current-sense-bus"))]
     let current = MotorCurrent::default();
 
     // Ambient temperature from MCU internal sensor (feature-gated)
     #[cfg(feature = "temp-sense-mcu")]
-    let ambient_temp = CentiC::from_centi_c(adc_to_mcu_temp(buf[idx::MCU_TEMP], vdd_mv));
+    let ambient_temp = CentiC::from_centi_c(adc_to_mcu_temp(ch.mcu_temp(), vdd_mv));
     #[cfg(not(feature = "temp-sense-mcu"))]
     let ambient_temp = CentiC::from_centi_c(2500); // Fallback 25°C
 
     // Motor temperature from NTC (feature-gated, optional)
     #[cfg(feature = "temp-sense-motor")]
-    let motor_temp = Sampled::Value(CentiC::from_centi_c(adc_to_ntc_temp(buf[idx::MOTOR_TEMP], vdd_mv)));
+    let motor_temp = Sampled::Value(CentiC::from_centi_c(adc_to_ntc_temp(ch.motor_temp(), vdd_mv)));
     #[cfg(not(feature = "temp-sense-motor"))]
     let motor_temp = Sampled::Unavailable;
 
     // Motor voltage from dividers (feature-gated, optional)
     #[cfg(feature = "voltage-sense-motor")]
     let motor_v = Sampled::Value(MotorVoltage::Bdc {
-        a: MilliVolt::from_mv(adc_to_motor_mv(buf[idx::VOLTAGE_A], vdd_mv)),
-        b: MilliVolt::from_mv(adc_to_motor_mv(buf[idx::VOLTAGE_B], vdd_mv)),
+        a: MilliVolt::from_mv(adc_to_motor_mv(ch.voltage_a(), vdd_mv)),
+        b: MilliVolt::from_mv(adc_to_motor_mv(ch.voltage_b(), vdd_mv)),
     });
     #[cfg(not(feature = "voltage-sense-motor"))]
     let motor_v = Sampled::Unavailable;

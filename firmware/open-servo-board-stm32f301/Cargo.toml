@@ -15,6 +15,7 @@ open-servo-hw = { path = "../open-servo-hw" }
 open-servo-hw-utils = { path = "../open-servo-hw-utils", features = ["async"] }
 open-servo-kernel = { path = "../open-servo-kernel" }
 open-servo-kernel-api = { path = "../open-servo-kernel-api" }
+open-servo-macros = { path = "../open-servo-macros" }
 open-servo-services = { path = "../open-servo-services", features = ["arch-cortex-m"] }
 open-servo-units = { path = "../open-servo-units" }
 
