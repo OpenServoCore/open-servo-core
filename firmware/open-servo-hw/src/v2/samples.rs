@@ -3,75 +3,147 @@
 //! This module defines small **vocabulary types** representing measurements that
 //! cross crate boundaries (board ↔ kernel ↔ controllers).
 //!
-//! # Why this exists
-//! Many real embedded pipelines need to represent more than "present or not".
-//! We distinguish three states for each measurement:
-//! - [`Sampled::Unavailable`]: not implemented / not routed on this board/build
-//! - [`Sampled::Invalid`]: implemented, but not valid right now (boot, ADC not ready, fault)
-//! - [`Sampled::Value`]: valid sample value
+//! # Design
+//!
+//! Two orthogonal concerns for sensor readings:
+//! - **Availability**: Is the sensor present on this board? → Use `Option<Reading<T>>`
+//! - **Validity**: Is *this* reading good? → Use `Reading<T>::Valid` vs `Reading<T>::Invalid`
+//!
+//! For sensors that are always present, use `Reading<T, R>` directly.
+//! For optional sensors, wrap in `Option<Reading<T, R>>`.
+//!
+//! The raw ADC value is always accessible via `Reading::raw()`, even when the
+//! reading is invalid - this is critical for debugging.
 //!
 //! This is intentionally *not* a math/processing module. No accumulation, filtering,
 //! or estimation belongs here.
 
 use open_servo_units::*;
 
-/// A sampled measurement with explicit availability/validity.
+// =============================================================================
+// Reading<T, R> - core validity + raw tracking
+// =============================================================================
+
+/// A sensor reading that tracks validity and raw ADC value.
 ///
-/// Intended use:
-/// - `Unavailable`: sensor/feature not present on this board/build
-/// - `Invalid`: present, but not usable *right now*
-/// - `Value(v)`: valid sample
+/// Use this for sensors that always exist on the board. For optional sensors,
+/// wrap in `Option<Reading<T, R>>`.
+///
+/// # Type Parameters
+/// - `T`: The converted/processed value type (e.g., `CentiDeg32`, `MilliAmp`)
+/// - `R`: The raw ADC value type (defaults to `u16`)
+///
+/// # Examples
+/// ```ignore
+/// // Always-present sensor
+/// let pos: Reading<CentiDeg32> = Reading::Valid { value: pos_cdeg, raw: adc_raw };
+///
+/// // Optional sensor
+/// let motor_temp: Option<Reading<CentiC>> = Some(Reading::Valid { value: temp, raw });
+/// let no_sensor: Option<Reading<CentiC>> = None;  // sensor not on this board
+/// ```
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
-pub enum Sampled<T: Copy> {
-    /// Not implemented / not available on this board.
-    Unavailable,
-    /// Implemented, but not valid right now.
-    Invalid,
-    /// Valid sample.
-    Value(T),
+pub enum Reading<T: Copy, R: Copy = u16> {
+    /// Reading is invalid (out of range, ADC error, etc.) but raw value is available.
+    Invalid { raw: R },
+    /// Valid reading with converted value and raw ADC value.
+    Valid { value: T, raw: R },
 }
 
-impl<T: Copy> Default for Sampled<T> {
+impl<T: Copy, R: Copy> Reading<T, R> {
+    /// Returns `true` if this reading is valid.
     #[inline]
+    pub fn is_valid(&self) -> bool {
+        matches!(self, Reading::Valid { .. })
+    }
+
+    /// Get the converted value if valid, or `None` if invalid.
+    #[inline]
+    pub fn value(&self) -> Option<T> {
+        match self {
+            Reading::Valid { value, .. } => Some(*value),
+            Reading::Invalid { .. } => None,
+        }
+    }
+
+    /// Get the raw ADC value. Always available, even for invalid readings.
+    ///
+    /// This is critical for debugging - you can always see what the ADC read.
+    #[inline]
+    pub fn raw(&self) -> R {
+        match self {
+            Reading::Valid { raw, .. } | Reading::Invalid { raw } => *raw,
+        }
+    }
+
+    /// Get the converted value or a fallback if invalid.
+    #[inline]
+    pub fn value_or(self, fallback: T) -> T {
+        match self {
+            Reading::Valid { value, .. } => value,
+            Reading::Invalid { .. } => fallback,
+        }
+    }
+
+    /// Map the converted value if valid, preserving raw.
+    #[inline]
+    pub fn map<U: Copy>(self, f: impl FnOnce(T) -> U) -> Reading<U, R> {
+        match self {
+            Reading::Valid { value, raw } => Reading::Valid {
+                value: f(value),
+                raw,
+            },
+            Reading::Invalid { raw } => Reading::Invalid { raw },
+        }
+    }
+}
+
+// =============================================================================
+// Raw ADC types for multi-channel sensors
+// =============================================================================
+
+/// Raw ADC values for motor current sensing.
+///
+/// The enum discriminant matches `MotorCurrent` - board creates the appropriate variant.
+/// Kernel pattern-matches to handle both BDC and BLDC without compile-time flags.
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub enum MotorCurrentRaw {
+    /// BDC: single bus current sense.
+    Bdc(u16),
+    /// BLDC: three phase current ADC values (a, b, c).
+    ///
+    /// If the board only measures 2 phases, it should derive the third
+    /// (ic = -(ia + ib)) and store the derived raw value here.
+    Bldc(u16, u16, u16),
+}
+
+impl Default for MotorCurrentRaw {
     fn default() -> Self {
-        Sampled::Unavailable
+        Self::Bdc(0)
     }
 }
 
-impl<T: Copy> Sampled<T> {
-    /// Returns `true` iff this sample is a valid value.
-    #[inline]
-    pub fn is_valid(self) -> bool {
-        matches!(self, Sampled::Value(_))
-    }
+/// Raw ADC values for motor voltage sensing.
+///
+/// The enum discriminant matches `MotorVoltage` - board creates the appropriate variant.
+/// Kernel pattern-matches to handle both BDC and BLDC without compile-time flags.
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub enum MotorVoltageRaw {
+    /// BDC: two terminal voltage ADC values (V+, V-).
+    Bdc(u16, u16),
+    /// BLDC: three phase voltage ADC values (a, b, c).
+    ///
+    /// If the board only measures 2 phases, it should derive the third
+    /// and store the derived raw value here.
+    Bldc(u16, u16, u16),
+}
 
-    /// Convert to `Option<T>` (drops Invalid/Unavailable).
-    #[inline]
-    pub fn as_option(self) -> Option<T> {
-        match self {
-            Sampled::Value(v) => Some(v),
-            _ => None,
-        }
-    }
-
-    /// Map the contained value if valid.
-    #[inline]
-    pub fn map<U: Copy>(self, f: impl FnOnce(T) -> U) -> Sampled<U> {
-        match self {
-            Sampled::Unavailable => Sampled::Unavailable,
-            Sampled::Invalid => Sampled::Invalid,
-            Sampled::Value(v) => Sampled::Value(f(v)),
-        }
-    }
-
-    /// Get the value or a fallback.
-    #[inline]
-    pub fn unwrap_or(self, fallback: T) -> T {
-        match self {
-            Sampled::Value(v) => v,
-            _ => fallback,
-        }
+impl Default for MotorVoltageRaw {
+    fn default() -> Self {
+        Self::Bdc(0, 0)
     }
 }
 
@@ -81,12 +153,17 @@ impl<T: Copy> Sampled<T> {
 //
 // These keep call sites readable and allow you to change underlying representation
 // in one place if needed.
+//
+// Convention:
+// - Mandatory sensors use `Reading<T>` directly
+// - Optional sensors use `Option<Reading<T>>`
 
 /// Primary servo position sensor sample (pot/hall).
-pub type ServoPosSample = CentiDeg32;
+/// Always present; tracks validity and raw ADC value.
+pub type ServoPosSample = Reading<CentiDeg32>;
 
 /// Optional secondary motor position sensor sample (custom optical encoder).
-pub type MotorPosSample = Sampled<EncoderCount>;
+pub type MotorPosSample = Option<Reading<EncoderCount>>;
 
 /// Ambient temperature proxy sample.
 ///
@@ -97,16 +174,17 @@ pub type MotorPosSample = Sampled<EncoderCount>;
 ///
 /// The intent is: a stable ambient-ish reference for supervisors and thermal models,
 /// not a precise die-junction measurement.
-pub type AmbientTempSample = CentiC;
+pub type AmbientTempSample = Reading<CentiC>;
 
 /// Optional motor temperature sample (NTC).
-pub type MotorTempSample = Sampled<CentiC>;
+pub type MotorTempSample = Option<Reading<CentiC>>;
 
 /// MCU supply / internal ADC VDD/VDDIO sample.
-pub type McuVddSample = MilliVolt;
+/// Always present; tracks validity and raw ADC value.
+pub type McuVddSample = Reading<MilliVolt>;
 
 /// System supply (VSYS/VBAT) sample.
-pub type VsysSample = Sampled<MilliVolt>;
+pub type VsysSample = Option<Reading<MilliVolt>>;
 
 /// Motor voltage measurement shape.
 ///
@@ -127,8 +205,8 @@ pub enum MotorVoltage {
     },
 }
 
-/// Motor voltage sample wrapper.
-pub type MotorVoltageSample = Sampled<MotorVoltage>;
+/// Motor voltage sample wrapper (optional; uses MotorVoltageRaw for raw values).
+pub type MotorVoltageSample = Option<Reading<MotorVoltage, MotorVoltageRaw>>;
 
 /// Motor current measurement shape (topology-aware).
 ///
@@ -162,5 +240,5 @@ impl Default for MotorCurrent {
     }
 }
 
-/// Motor current sample wrapper.
-pub type MotorCurrentSample = MotorCurrent;
+/// Motor current sample wrapper (always present; uses MotorCurrentRaw for raw values).
+pub type MotorCurrentSample = Reading<MotorCurrent, MotorCurrentRaw>;

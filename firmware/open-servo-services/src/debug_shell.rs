@@ -212,7 +212,9 @@ async fn cmd_write<IO: Write, const N: usize>(
     let field = match field {
         Some(f) => f,
         None => {
-            let _ = io.write_all(b"Usage: write <name|0xADDR> <value>\r\n").await;
+            let _ = io
+                .write_all(b"Usage: write <name|0xADDR> <value>\r\n")
+                .await;
             return;
         }
     };
@@ -220,7 +222,9 @@ async fn cmd_write<IO: Write, const N: usize>(
     let value_str = match value {
         Some(v) => v,
         None => {
-            let _ = io.write_all(b"Usage: write <name|0xADDR> <value>\r\n").await;
+            let _ = io
+                .write_all(b"Usage: write <name|0xADDR> <value>\r\n")
+                .await;
             return;
         }
     };
@@ -314,60 +318,170 @@ async fn cmd_dump<IO: Write, const N: usize>(
 
 /// Status command - show key telemetry fields.
 async fn cmd_status<IO: Write, const N: usize>(shadow: &ShadowStorage<N>, io: &mut IO) {
-    // Operating mode
     let mut buf = [0u8; 4];
+    let mut out: String<OUT_BUF_CAP> = String::new();
+
+    // === Line 1: Mode / Torque / Engaged / Gate ===
     let _ = shadow.host_read(vendor::addr::OPERATING_MODE, &mut buf[..1]);
     let mode = match buf[0] {
         0 => "Position",
         1 => "OpenLoop",
         _ => "Unknown",
     };
-
-    // Torque enable (host input)
     let _ = shadow.host_read(vendor::addr::TORQUE_ENABLE, &mut buf[..1]);
     let torque = if buf[0] != 0 { "ON" } else { "OFF" };
-
-    // Engaged mirror (kernel state)
     let _ = shadow.host_read(vendor::addr::ENGAGED_MIRROR, &mut buf[..1]);
     let engaged = if buf[0] != 0 { "YES" } else { "NO" };
-
-    // Gate reason (why control may be gated)
     let _ = shadow.host_read(vendor::addr::GATE_REASON, &mut buf[..1]);
     let gate = match buf[0] {
         0 => "Ok",
         1 => "Disengaged",
         2 => "DriverNotOk",
         3 => "Faulted",
-        _ => "Unknown",
+        _ => "?",
     };
-
-    // Goal position (i32)
-    let _ = shadow.host_read(vendor::addr::GOAL_POS_CDEG, &mut buf[..4]);
-    let goal_pos = i32::from_le_bytes(buf);
-
-    // Present position (i32)
-    let _ = shadow.host_read(vendor::addr::PRESENT_POS_CDEG, &mut buf[..4]);
-    let pres_pos = i32::from_le_bytes(buf);
-
-    // Present current (i16)
-    let _ = shadow.host_read(vendor::addr::PRESENT_CURRENT_MA, &mut buf[..2]);
-    let current = i16::from_le_bytes([buf[0], buf[1]]);
-
-    // Control output (i16)
-    let _ = shadow.host_read(vendor::addr::CONTROL_OUTPUT, &mut buf[..2]);
-    let effort = i16::from_le_bytes([buf[0], buf[1]]);
-
-    // Fault status
-    let _ = shadow.host_read(vendor::addr::FAULT_STATUS, &mut buf[..1]);
-    let fault = buf[0];
-
-    let mut out: String<OUT_BUF_CAP> = String::new();
     let _ = write!(
         out,
-        "Mode: {} | Torque: {} | Engaged: {} | Gate: {}\r\n\
-         Goal: {} cdeg | Pos: {} cdeg\r\n\
-         Current: {} mA | Effort: {} | Fault: 0x{:02X}\r\n",
-        mode, torque, engaged, gate, goal_pos, pres_pos, current, effort, fault
+        "Mode: {} | Torque: {} | Engaged: {} | Gate: {}\r\n",
+        mode, torque, engaged, gate
+    );
+    let _ = io.write_all(out.as_bytes()).await;
+    out.clear();
+
+    // === Line 2: Position (goal, present, raw) ===
+    let _ = shadow.host_read(vendor::addr::GOAL_POS_CDEG, &mut buf[..4]);
+    let goal_pos = i32::from_le_bytes(buf);
+    let _ = shadow.host_read(vendor::addr::PRESENT_POS_CDEG, &mut buf[..4]);
+    let pres_pos = i32::from_le_bytes(buf);
+    let _ = shadow.host_read(vendor::addr::POSITION_RAW, &mut buf[..2]);
+    let pos_raw = u16::from_le_bytes([buf[0], buf[1]]);
+    let _ = write!(
+        out,
+        "Goal: {} cdeg | Pos: {} cdeg (raw: {})\r\n",
+        goal_pos, pres_pos, pos_raw
+    );
+    let _ = io.write_all(out.as_bytes()).await;
+    out.clear();
+
+    // === Line 3: Current (a/b/c, raw) ===
+    let _ = shadow.host_read(vendor::addr::PRESENT_CURRENT_MA, &mut buf[..2]);
+    let current_a = i16::from_le_bytes([buf[0], buf[1]]);
+    let _ = shadow.host_read(vendor::addr::MOTOR_CURRENT_A_RAW, &mut buf[..2]);
+    let cur_raw_a = u16::from_le_bytes([buf[0], buf[1]]);
+    let _ = write!(out, "Current: {} mA (raw: {})", current_a, cur_raw_a);
+
+    // Check for BLDC (b/c non-zero)
+    let _ = shadow.host_read(vendor::addr::MOTOR_CURRENT_B_MA, &mut buf[..2]);
+    let current_b = i16::from_le_bytes([buf[0], buf[1]]);
+    let _ = shadow.host_read(vendor::addr::MOTOR_CURRENT_C_MA, &mut buf[..2]);
+    let current_c = i16::from_le_bytes([buf[0], buf[1]]);
+    if current_b != 0 || current_c != 0 {
+        let _ = write!(out, " [B:{} C:{}]", current_b, current_c);
+    }
+    let _ = write!(out, "\r\n");
+    let _ = io.write_all(out.as_bytes()).await;
+    out.clear();
+
+    // === Line 4: VDD / Ambient temp ===
+    let _ = shadow.host_read(vendor::addr::PRESENT_VOLTAGE_MV, &mut buf[..2]);
+    let vdd_mv = i16::from_le_bytes([buf[0], buf[1]]);
+    let _ = shadow.host_read(vendor::addr::VREFINT_RAW, &mut buf[..2]);
+    let vref_raw = u16::from_le_bytes([buf[0], buf[1]]);
+    let _ = shadow.host_read(vendor::addr::PRESENT_TEMP_CENTIC, &mut buf[..2]);
+    let ambient_cc = i16::from_le_bytes([buf[0], buf[1]]);
+    let _ = shadow.host_read(vendor::addr::AMBIENT_TEMP_RAW, &mut buf[..2]);
+    let ambient_raw = u16::from_le_bytes([buf[0], buf[1]]);
+    let _ = write!(
+        out,
+        "VDD: {} mV (vref: {}) | Ambient: {} cC (raw: {})\r\n",
+        vdd_mv, vref_raw, ambient_cc, ambient_raw
+    );
+    let _ = io.write_all(out.as_bytes()).await;
+    out.clear();
+
+    // === Line 5: Motor temp / Motor voltage ===
+    let _ = shadow.host_read(vendor::addr::MOTOR_TEMP_CENTIC, &mut buf[..2]);
+    let motor_temp = i16::from_le_bytes([buf[0], buf[1]]);
+    let _ = shadow.host_read(vendor::addr::MOTOR_TEMP_RAW, &mut buf[..2]);
+    let motor_temp_raw = u16::from_le_bytes([buf[0], buf[1]]);
+
+    let _ = shadow.host_read(vendor::addr::MOTOR_VPLUS_MV, &mut buf[..2]);
+    let mv_a = i16::from_le_bytes([buf[0], buf[1]]);
+    let _ = shadow.host_read(vendor::addr::MOTOR_VMINUS_MV, &mut buf[..2]);
+    let mv_b = i16::from_le_bytes([buf[0], buf[1]]);
+
+    // Use sentinel i16::MIN to detect N/A
+    if motor_temp_raw != 0 {
+        let _ = write!(
+            out,
+            "MotorTemp: {} cC (raw: {})",
+            motor_temp, motor_temp_raw
+        );
+    } else {
+        let _ = write!(out, "MotorTemp: N/A");
+    }
+
+    let _ = shadow.host_read(vendor::addr::MOTOR_VOLTAGE_A_RAW, &mut buf[..2]);
+    let mv_raw_a = u16::from_le_bytes([buf[0], buf[1]]);
+    if mv_raw_a != 0 {
+        let _ = write!(out, " | MotorV: {}/{} mV", mv_a, mv_b);
+    } else {
+        let _ = write!(out, " | MotorV: N/A");
+    }
+    let _ = write!(out, "\r\n");
+    let _ = io.write_all(out.as_bytes()).await;
+    out.clear();
+
+    // === Line 6: Effort / Fault ===
+    let _ = shadow.host_read(vendor::addr::CONTROL_OUTPUT, &mut buf[..2]);
+    let effort = i16::from_le_bytes([buf[0], buf[1]]);
+    let _ = shadow.host_read(vendor::addr::FAULT_STATUS, &mut buf[..1]);
+    let fault = buf[0];
+    let _ = shadow.host_read(vendor::addr::FAULT_HISTORY, &mut buf[..4]);
+    let fault_hist = u32::from_le_bytes(buf);
+    let _ = write!(
+        out,
+        "Effort: {} | Fault: 0x{:02X} | History: 0x{:08X}\r\n",
+        effort, fault, fault_hist
+    );
+    let _ = io.write_all(out.as_bytes()).await;
+    out.clear();
+
+    // === Line 7: Board capabilities ===
+    let _ = shadow.host_read(vendor::addr::MOTOR_TYPE, &mut buf[..1]);
+    let motor_type = match buf[0] {
+        0 => "BDC",
+        1 => "BLDC",
+        _ => "?",
+    };
+    let _ = shadow.host_read(vendor::addr::SERVO_POS_KIND, &mut buf[..1]);
+    let pos_kind = buf[0];
+    let _ = shadow.host_read(vendor::addr::SERVO_POS_MIN_CDEG, &mut buf[..2]);
+    let pos_min = i16::from_le_bytes([buf[0], buf[1]]);
+    let _ = shadow.host_read(vendor::addr::SERVO_POS_MAX_CDEG, &mut buf[..2]);
+    let pos_max = i16::from_le_bytes([buf[0], buf[1]]);
+
+    let _ = write!(out, "Motor: {}", motor_type);
+    if pos_kind == 0 {
+        let _ = write!(out, " | Pos: Bounded[{},{}]", pos_min, pos_max);
+    } else {
+        let _ = write!(out, " | Pos: Wrap360");
+    }
+    let _ = write!(out, "\r\n");
+    let _ = io.write_all(out.as_bytes()).await;
+    out.clear();
+
+    // === Line 8: Sensor capabilities ===
+    let _ = shadow.host_read(vendor::addr::SENSOR_CAPS, &mut buf[..4]);
+    let caps = u32::from_le_bytes(buf);
+    let mv_cap = if caps & (1 << 0) != 0 { "Y" } else { "N" };
+    let mt_cap = if caps & (1 << 1) != 0 { "Y" } else { "N" };
+    let vs_cap = if caps & (1 << 2) != 0 { "Y" } else { "N" };
+    let enc_cap = if caps & (1 << 3) != 0 { "Y" } else { "N" };
+    let _ = write!(
+        out,
+        "Caps: MotorV={} MotorTemp={} Vsys={} Encoder={}\r\n",
+        mv_cap, mt_cap, vs_cap, enc_cap
     );
     let _ = io.write_all(out.as_bytes()).await;
 }

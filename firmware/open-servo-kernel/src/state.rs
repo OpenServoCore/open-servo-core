@@ -4,6 +4,7 @@
 //! It is *not* a public regmap yet; it's just a clean container so you can
 //! evolve storage without spreading fields everywhere.
 
+use open_servo_hw::v2::capability::{MotorType, SensorCapabilities, ServoPosKind};
 use open_servo_hw::v2::io::{MotorCommand, SensorFrame};
 use open_servo_kernel_api::faults::GateReason;
 use open_servo_kernel_api::mode::OperatingMode;
@@ -29,8 +30,8 @@ pub struct PidGains {
 /// Kernel configuration (tunable).
 ///
 /// This is "knobs"; you can later back it with regmap/EEPROM.
-#[cfg_attr(feature = "defmt", derive(defmt::Format))]
-#[derive(Copy, Clone, Debug, Default, PartialEq, Eq)]
+/// Board crates must construct this explicitly - no Default impl.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub struct KernelConfig {
     pub pos_pid: PidGains,
 
@@ -40,6 +41,16 @@ pub struct KernelConfig {
     /// Output clamp in normalized effort (abs).
     /// (Stage-0: simple clamp; later: compliance/limits/current/thermal budgets.)
     pub effort_limit_raw: i16,
+
+    // === Board capabilities (set once at init) ===
+    /// Servo position sensor semantics for this board.
+    pub servo_pos_kind: ServoPosKind,
+
+    /// Motor topology for this board (BDC or BLDC).
+    pub motor_type: MotorType,
+
+    /// Runtime capability flags for optional sensors.
+    pub sensor_caps: SensorCapabilities,
 }
 
 /// Pending host operations (deferred to safe boundary).
@@ -114,12 +125,13 @@ impl KernelState {
     }
 }
 
-
 impl KernelState {
     #[inline]
     pub fn update_frame(&mut self, frame: SensorFrame) {
         self.frame = frame;
-        // Stage-0: just lift pos directly.
-        self.pos = frame.pos;
+        // Extract position from Reading (keep last known good if invalid).
+        if let Some(pos_val) = frame.pos.value() {
+            self.pos = pos_val;
+        }
     }
 }

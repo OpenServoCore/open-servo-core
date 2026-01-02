@@ -33,19 +33,22 @@ use open_servo_units::*;
 /// "Frame" refers to the board sampling cadence (PWM → ADC → DMA → ISR),
 /// not a specific control-loop rate.
 ///
-/// ### Invariants vs optionals
-/// This struct is a *shape*, not a guarantee that every field is present.
-/// Presence is typically represented at the sample type level (e.g. `Sampled<T>`),
-/// so boards can return `Unavailable` for sensors that don't exist on the hardware.
+/// ### Sensor availability vs validity
 ///
-/// The kernel may also consult board capability flags (in the `Board` trait)
-/// to avoid checking availability on hot paths, but `SensorFrame` should remain
-/// well-defined even when optional sensors are absent.
+/// Two orthogonal concerns for sensor readings:
+/// - **Availability**: Is the sensor present on this board? → Use `Option<Reading<T>>`
+/// - **Validity**: Is *this particular* reading good? → Use `Reading::Valid` vs `Reading::Invalid`
+///
+/// For mandatory sensors that are always present on all boards, use `Reading<T>` directly.
+/// For optional sensors that may not exist on all boards, wrap in `Option<Reading<T>>`.
+///
+/// The raw ADC value is always accessible via `Reading::raw()`, even when the
+/// reading is invalid - this is critical for debugging.
 ///
 /// ### Motor topology differences
-/// Some samples are topology-dependent (e.g. motor current: BDC is single channel,
-/// BLDC may have A/B/C phase currents). Those are represented by topology-aware
-/// sample types in `samples.rs`.
+/// Motor current and voltage samples use topology-aware enums (BDC vs BLDC) that
+/// carry the appropriate number of channels. The board creates the correct variant
+/// based on motor type; the kernel pattern-matches to handle both without compile-time flags.
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub struct SensorFrame {
@@ -126,20 +129,22 @@ impl SensorFrame {
 }
 
 impl Default for SensorFrame {
-    /// Default frame with zeroed/unavailable values.
+    /// Default frame with invalid/unavailable values.
     ///
     /// Useful for kernel state initialization. Not recommended for production
-    /// board code—prefer explicit construction.
+    /// board code—prefer explicit construction with actual readings.
     fn default() -> Self {
         Self {
-            pos: CentiDeg32::from_cdeg(0),
-            current: MotorCurrentSample::default(),
-            mcu_vdd: MilliVolt::from_mv(0),
-            vsys: Sampled::Unavailable,
-            ambient_temp: CentiC::from_centi_c(0),
-            motor_temp: Sampled::Unavailable,
-            motor_pos: Sampled::Unavailable,
-            motor_v: Sampled::Unavailable,
+            pos: Reading::Invalid { raw: 0 },
+            current: Reading::Invalid {
+                raw: MotorCurrentRaw::default(),
+            },
+            mcu_vdd: Reading::Invalid { raw: 0 },
+            vsys: None,
+            ambient_temp: Reading::Invalid { raw: 0 },
+            motor_temp: None,
+            motor_pos: None,
+            motor_v: None,
             driver_ok: false,
         }
     }

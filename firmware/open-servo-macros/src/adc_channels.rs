@@ -50,10 +50,8 @@ impl Parse for AdcChannelsAttr {
         }
 
         Ok(AdcChannelsAttr {
-            buffer_name: buffer_name
-                .ok_or_else(|| input.error("missing `buffer` attribute"))?,
-            count_name: count_name
-                .ok_or_else(|| input.error("missing `count` attribute"))?,
+            buffer_name: buffer_name.ok_or_else(|| input.error("missing `buffer` attribute"))?,
+            count_name: count_name.ok_or_else(|| input.error("missing `count` attribute"))?,
         })
     }
 }
@@ -297,7 +295,10 @@ pub fn impl_adc_channels(input: &DeriveInput) -> syn::Result<TokenStream> {
         .iter()
         .map(|feat| {
             // Count how many channels use this feature
-            let n = channels.iter().filter(|ch| ch.feature.as_ref() == Some(feat)).count();
+            let n = channels
+                .iter()
+                .filter(|ch| ch.feature.as_ref() == Some(feat))
+                .count();
             quote! {
                 #[cfg(feature = #feat)]
                 let base = base + #n;

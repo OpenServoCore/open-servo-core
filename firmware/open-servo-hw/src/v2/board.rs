@@ -16,7 +16,7 @@ use crate::v2::ServoPosKind;
 ///
 /// - Board owns ADC DMA buffer internally (sidesteps const generic in trait)
 /// - All sensor readings are returned via [`SensorFrame`]
-/// - Optional sensors use [`Sampled::Unavailable`] when not present
+/// - Optional sensors use `None` when not present, `Some(Reading::Valid/Invalid)` otherwise
 /// - Motor commands go through [`MotorCommand`]
 pub trait Board {
     /// Servo position semantics for this board.

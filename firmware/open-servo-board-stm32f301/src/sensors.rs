@@ -3,9 +3,9 @@
 use core::ptr::addr_of;
 
 use open_servo_hw::v2::io::SensorFrame;
+use open_servo_hw::v2::samples::{MotorCurrent, MotorCurrentRaw, Reading};
 #[cfg(feature = "voltage-sense-motor")]
-use open_servo_hw::v2::samples::MotorVoltage;
-use open_servo_hw::v2::samples::{MotorCurrent, Sampled};
+use open_servo_hw::v2::samples::{MotorVoltage, MotorVoltageRaw};
 use open_servo_units::{CentiC, MilliAmp, MilliVolt};
 
 use crate::adc_config::Channels;
@@ -33,46 +33,87 @@ pub unsafe fn read_sensor_frame() -> SensorFrame {
     let ch = Channels::new(buf);
 
     // Always available: VDD from VREFINT calibration
-    let vdd_mv = vdd_from_vrefint(ch.vrefint());
+    let vrefint_raw = ch.vrefint();
+    let vdd_mv = vdd_from_vrefint(vrefint_raw);
 
     // Always available: position
-    let pos = adc_to_position(ch.position());
+    let pos_raw = ch.position();
+    let pos = Reading::Valid {
+        value: adc_to_position(pos_raw),
+        raw: pos_raw,
+    };
 
     // Motor current (feature-gated)
     #[cfg(feature = "current-sense-bus")]
-    let current = MotorCurrent::Bdc(MilliAmp::from_ma(adc_to_current_ma(ch.current(), vdd_mv)));
+    let current = {
+        let raw = ch.current();
+        Reading::Valid {
+            value: MotorCurrent::Bdc(MilliAmp::from_ma(adc_to_current_ma(raw, vdd_mv))),
+            raw: MotorCurrentRaw::Bdc(raw),
+        }
+    };
     #[cfg(not(feature = "current-sense-bus"))]
-    let current = MotorCurrent::default();
+    let current = Reading::Invalid {
+        raw: MotorCurrentRaw::default(),
+    };
+
+    // MCU VDD with VREFINT as raw value
+    let mcu_vdd = Reading::Valid {
+        value: MilliVolt::from_mv(vdd_mv),
+        raw: vrefint_raw,
+    };
 
     // Ambient temperature from MCU internal sensor (feature-gated)
     #[cfg(feature = "temp-sense-mcu")]
-    let ambient_temp = CentiC::from_centi_c(adc_to_mcu_temp(ch.mcu_temp(), vdd_mv));
+    let ambient_temp = {
+        let raw = ch.mcu_temp();
+        Reading::Valid {
+            value: CentiC::from_centi_c(adc_to_mcu_temp(raw, vdd_mv)),
+            raw,
+        }
+    };
     #[cfg(not(feature = "temp-sense-mcu"))]
-    let ambient_temp = CentiC::from_centi_c(2500); // Fallback 25°C
+    let ambient_temp = Reading::Valid {
+        value: CentiC::from_centi_c(2500), // Fallback 25°C
+        raw: 0,
+    };
 
     // Motor temperature from NTC (feature-gated, optional)
     #[cfg(feature = "temp-sense-motor")]
-    let motor_temp = Sampled::Value(CentiC::from_centi_c(adc_to_ntc_temp(ch.motor_temp(), vdd_mv)));
+    let motor_temp = {
+        let raw = ch.motor_temp();
+        Some(Reading::Valid {
+            value: CentiC::from_centi_c(adc_to_ntc_temp(raw, vdd_mv)),
+            raw,
+        })
+    };
     #[cfg(not(feature = "temp-sense-motor"))]
-    let motor_temp = Sampled::Unavailable;
+    let motor_temp = None;
 
     // Motor voltage from dividers (feature-gated, optional)
     #[cfg(feature = "voltage-sense-motor")]
-    let motor_v = Sampled::Value(MotorVoltage::Bdc {
-        a: MilliVolt::from_mv(adc_to_motor_mv(ch.voltage_a(), vdd_mv)),
-        b: MilliVolt::from_mv(adc_to_motor_mv(ch.voltage_b(), vdd_mv)),
-    });
+    let motor_v = {
+        let raw_a = ch.voltage_a();
+        let raw_b = ch.voltage_b();
+        Some(Reading::Valid {
+            value: MotorVoltage::Bdc {
+                a: MilliVolt::from_mv(adc_to_motor_mv(raw_a, vdd_mv)),
+                b: MilliVolt::from_mv(adc_to_motor_mv(raw_b, vdd_mv)),
+            },
+            raw: MotorVoltageRaw::Bdc(raw_a, raw_b),
+        })
+    };
     #[cfg(not(feature = "voltage-sense-motor"))]
-    let motor_v = Sampled::Unavailable;
+    let motor_v = None;
 
     SensorFrame {
         pos,
         current,
-        mcu_vdd: MilliVolt::from_mv(vdd_mv),
-        vsys: Sampled::Unavailable, // Not implemented on this board
+        mcu_vdd,
+        vsys: None, // Not implemented on this board
         ambient_temp,
         motor_temp,
-        motor_pos: Sampled::Unavailable, // No encoder on this board
+        motor_pos: None, // No encoder on this board
         motor_v,
         driver_ok: true, // TODO: read DRV8231A fault pin
     }

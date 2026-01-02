@@ -44,10 +44,10 @@ pub const IPROPI_GAIN_UA_PER_A: u32 = 1500;
 // =============================================================================
 
 /// Potentiometer minimum position in centidegrees.
-pub const POT_MIN_CDEG: i32 = -500; // -5°
+pub const POT_MIN_CDEG: i32 = -9500; // -95°
 
 /// Potentiometer maximum position in centidegrees.
-pub const POT_MAX_CDEG: i32 = 18500; // 185°
+pub const POT_MAX_CDEG: i32 = 9500; // +95°
 
 // =============================================================================
 // Conversion Functions

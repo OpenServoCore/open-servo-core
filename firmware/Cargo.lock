@@ -396,6 +396,7 @@ dependencies = [
  "open-servo-kernel",
  "open-servo-kernel-api",
  "open-servo-macros",
+ "open-servo-math",
  "open-servo-services",
  "open-servo-units",
  "panic-rtt-target",

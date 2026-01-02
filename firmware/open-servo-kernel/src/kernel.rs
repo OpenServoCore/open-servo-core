@@ -332,10 +332,13 @@ impl KernelHost for ServoKernel {
 
 impl ShadowKernel for ServoKernel {
     fn publish_telemetry(&self, view: &mut KernelView<'_>) {
-        use open_servo_hw::v2::samples::{MotorCurrent, MotorVoltage, Sampled};
+        use open_servo_hw::v2::samples::{
+            MotorCurrent, MotorCurrentRaw, MotorVoltage, MotorVoltageRaw,
+        };
 
-        // Position.
+        // Position (converted + raw).
         let _ = vendor::reg::PRESENT_POS_CDEG.write(view, self.st.pos.as_cdeg());
+        let _ = vendor::reg::POSITION_RAW.write(view, self.st.frame.pos.raw());
 
         // Effort.
         let _ = vendor::reg::CONTROL_OUTPUT.write(view, self.st.last_cmd.effort.as_raw());
@@ -352,35 +355,102 @@ impl ShadowKernel for ServoKernel {
         // Gate reason.
         let _ = vendor::reg::GATE_REASON.write(view, self.st.last_gate as u8);
 
-        // Ambient temperature.
-        let _ = vendor::reg::PRESENT_TEMP_CENTIC.write(view, self.st.frame.ambient_temp.as_centi_c());
+        // Ambient temperature (converted + raw).
+        let ambient_cc = self
+            .st
+            .frame
+            .ambient_temp
+            .value()
+            .map(|v| v.as_centi_c())
+            .unwrap_or(0);
+        let _ = vendor::reg::PRESENT_TEMP_CENTIC.write(view, ambient_cc);
+        let _ = vendor::reg::AMBIENT_TEMP_RAW.write(view, self.st.frame.ambient_temp.raw());
 
-        // MCU VDD.
-        let _ = vendor::reg::PRESENT_VOLTAGE_MV.write(view, self.st.frame.mcu_vdd.as_mv());
+        // MCU VDD (converted + raw as VREFINT).
+        let mcu_mv = self
+            .st
+            .frame
+            .mcu_vdd
+            .value()
+            .map(|v| v.as_mv())
+            .unwrap_or(0);
+        let _ = vendor::reg::PRESENT_VOLTAGE_MV.write(view, mcu_mv);
+        let _ = vendor::reg::VREFINT_RAW.write(view, self.st.frame.mcu_vdd.raw());
 
-        // Motor current.
-        let current_ma = match self.st.frame.current {
-            MotorCurrent::Bdc(ma) => ma.as_ma(),
-            MotorCurrent::BldcPhases((a, _, _)) => a.as_ma(),
+        // Motor current (converted + raw, handles BDC/BLDC).
+        let (current_a, current_b, current_c) = self
+            .st
+            .frame
+            .current
+            .value()
+            .map(|c| match c {
+                MotorCurrent::Bdc(ma) => (ma.as_ma(), 0i16, 0i16),
+                MotorCurrent::BldcPhases((a, b, c)) => (a.as_ma(), b.as_ma(), c.as_ma()),
+            })
+            .unwrap_or((0, 0, 0));
+        let _ = vendor::reg::PRESENT_CURRENT_MA.write(view, current_a);
+        let _ = vendor::reg::MOTOR_CURRENT_B_MA.write(view, current_b);
+        let _ = vendor::reg::MOTOR_CURRENT_C_MA.write(view, current_c);
+
+        // Motor current raw.
+        let (raw_a, raw_b, raw_c) = match self.st.frame.current.raw() {
+            MotorCurrentRaw::Bdc(a) => (a, 0u16, 0u16),
+            MotorCurrentRaw::Bldc(a, b, c) => (a, b, c),
         };
-        let _ = vendor::reg::PRESENT_CURRENT_MA.write(view, current_ma);
+        let _ = vendor::reg::MOTOR_CURRENT_A_RAW.write(view, raw_a);
+        let _ = vendor::reg::MOTOR_CURRENT_B_RAW.write(view, raw_b);
+        let _ = vendor::reg::MOTOR_CURRENT_C_RAW.write(view, raw_c);
 
-        // Motor temperature (optional).
-        if let Sampled::Value(temp) = self.st.frame.motor_temp {
-            let _ = vendor::reg::MOTOR_TEMP_CENTIC.write(view, temp.as_centi_c());
+        // Motor temperature (optional, converted + raw).
+        if let Some(reading) = &self.st.frame.motor_temp {
+            if let Some(temp) = reading.value() {
+                let _ = vendor::reg::MOTOR_TEMP_CENTIC.write(view, temp.as_centi_c());
+            }
+            let _ = vendor::reg::MOTOR_TEMP_RAW.write(view, reading.raw());
         }
 
-        // Motor terminal voltages (optional).
-        if let Sampled::Value(mv) = self.st.frame.motor_v {
-            match mv {
-                MotorVoltage::Bdc { a, b } => {
-                    let _ = vendor::reg::MOTOR_VPLUS_MV.write(view, a.as_mv());
-                    let _ = vendor::reg::MOTOR_VMINUS_MV.write(view, b.as_mv());
+        // Motor terminal voltages (optional, converted + raw, handles BDC/BLDC).
+        if let Some(reading) = &self.st.frame.motor_v {
+            if let Some(mv) = reading.value() {
+                match mv {
+                    MotorVoltage::Bdc { a, b } => {
+                        let _ = vendor::reg::MOTOR_VPLUS_MV.write(view, a.as_mv());
+                        let _ = vendor::reg::MOTOR_VMINUS_MV.write(view, b.as_mv());
+                        let _ = vendor::reg::MOTOR_VOLTAGE_C_MV.write(view, 0i16);
+                    }
+                    MotorVoltage::BldcPhases { a, b, c } => {
+                        let _ = vendor::reg::MOTOR_VPLUS_MV.write(view, a.as_mv());
+                        let _ = vendor::reg::MOTOR_VMINUS_MV.write(view, b.as_mv());
+                        let _ = vendor::reg::MOTOR_VOLTAGE_C_MV.write(view, c.as_mv());
+                    }
                 }
-                MotorVoltage::BldcPhases { a, b, .. } => {
-                    let _ = vendor::reg::MOTOR_VPLUS_MV.write(view, a.as_mv());
-                    let _ = vendor::reg::MOTOR_VMINUS_MV.write(view, b.as_mv());
-                }
+            }
+            // Motor voltage raw.
+            let (raw_a, raw_b, raw_c) = match reading.raw() {
+                MotorVoltageRaw::Bdc(a, b) => (a, b, 0u16),
+                MotorVoltageRaw::Bldc(a, b, c) => (a, b, c),
+            };
+            let _ = vendor::reg::MOTOR_VOLTAGE_A_RAW.write(view, raw_a);
+            let _ = vendor::reg::MOTOR_VOLTAGE_B_RAW.write(view, raw_b);
+            let _ = vendor::reg::MOTOR_VOLTAGE_C_RAW.write(view, raw_c);
+        }
+
+        // Board capabilities (static, but written every telemetry cycle for simplicity).
+        let _ = vendor::reg::SENSOR_CAPS.write(view, self.cfg.sensor_caps.bits());
+        let _ = vendor::reg::MOTOR_TYPE.write(view, self.cfg.motor_type as u8);
+
+        // Servo position kind.
+        use open_servo_hw::v2::capability::ServoPosKind;
+        match self.cfg.servo_pos_kind {
+            ServoPosKind::Bounded { min, max } => {
+                let _ = vendor::reg::SERVO_POS_KIND.write(view, 0u8);
+                let _ = vendor::reg::SERVO_POS_MIN_CDEG.write(view, min.as_cdeg());
+                let _ = vendor::reg::SERVO_POS_MAX_CDEG.write(view, max.as_cdeg());
+            }
+            ServoPosKind::Wrap360 => {
+                let _ = vendor::reg::SERVO_POS_KIND.write(view, 1u8);
+                let _ = vendor::reg::SERVO_POS_MIN_CDEG.write(view, 0i16);
+                let _ = vendor::reg::SERVO_POS_MAX_CDEG.write(view, 0i16);
             }
         }
     }
@@ -405,66 +475,57 @@ impl ShadowKernel for ServoKernel {
         let mut clear_effort = false;
 
         // Phase 1: Validate MODE (must happen before any clearing).
-        let pending_mode = if view.is_range_dirty(
-            vendor::reg::OPERATING_MODE.offset,
-            ModeReg::len(),
-        ) {
-            if let Ok(mode_val) = vendor::reg::OPERATING_MODE.read(view) {
-                match mode_val {
-                    0 => {
-                        clear_mode = true;
-                        Some(OperatingMode::Position)
+        let pending_mode =
+            if view.is_range_dirty(vendor::reg::OPERATING_MODE.offset, ModeReg::len()) {
+                if let Ok(mode_val) = vendor::reg::OPERATING_MODE.read(view) {
+                    match mode_val {
+                        0 => {
+                            clear_mode = true;
+                            Some(OperatingMode::Position)
+                        }
+                        1 => {
+                            clear_mode = true;
+                            Some(OperatingMode::OpenLoop)
+                        }
+                        _ => {
+                            return CommitResult::ValidationError {
+                                offset: vendor::reg::OPERATING_MODE.offset,
+                            };
+                        }
                     }
-                    1 => {
-                        clear_mode = true;
-                        Some(OperatingMode::OpenLoop)
-                    }
-                    _ => {
-                        return CommitResult::ValidationError {
-                            offset: vendor::reg::OPERATING_MODE.offset,
-                        };
-                    }
+                } else {
+                    None
                 }
             } else {
                 None
-            }
-        } else {
-            None
-        };
+            };
 
         // Phase 2: Read all dirty fields (before any clearing).
-        let new_engaged = if view.is_range_dirty(
-            vendor::reg::TORQUE_ENABLE.offset,
-            EngagedReg::len(),
-        ) {
-            if let Ok(engaged) = vendor::reg::TORQUE_ENABLE.read(view) {
-                clear_engaged = true;
-                Some(engaged)
+        let new_engaged =
+            if view.is_range_dirty(vendor::reg::TORQUE_ENABLE.offset, EngagedReg::len()) {
+                if let Ok(engaged) = vendor::reg::TORQUE_ENABLE.read(view) {
+                    clear_engaged = true;
+                    Some(engaged)
+                } else {
+                    None
+                }
             } else {
                 None
-            }
-        } else {
-            None
-        };
+            };
 
-        let new_goal_pos = if view.is_range_dirty(
-            vendor::reg::GOAL_POS_CDEG.offset,
-            GoalPosReg::len(),
-        ) {
-            if let Ok(pos) = vendor::reg::GOAL_POS_CDEG.read(view) {
-                clear_goal_pos = true;
-                Some(pos)
+        let new_goal_pos =
+            if view.is_range_dirty(vendor::reg::GOAL_POS_CDEG.offset, GoalPosReg::len()) {
+                if let Ok(pos) = vendor::reg::GOAL_POS_CDEG.read(view) {
+                    clear_goal_pos = true;
+                    Some(pos)
+                } else {
+                    None
+                }
             } else {
                 None
-            }
-        } else {
-            None
-        };
+            };
 
-        let new_effort = if view.is_range_dirty(
-            vendor::reg::GOAL_PWM.offset,
-            EffortReg::len(),
-        ) {
+        let new_effort = if view.is_range_dirty(vendor::reg::GOAL_PWM.offset, EffortReg::len()) {
             if let Ok(effort) = vendor::reg::GOAL_PWM.read(view) {
                 clear_effort = true;
                 Some(effort)
@@ -520,7 +581,7 @@ impl ShadowKernel for ServoKernel {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::state::KernelConfig;
+    use crate::test_support::test_kernel_config;
     use open_servo_kernel_api::faults::GateReason;
     use open_servo_kernel_api::mode::OperatingMode;
     use open_servo_kernel_api::shadow::{CommitResult, HostView, KernelView, ShadowTable};
@@ -528,7 +589,7 @@ mod tests {
     use open_servo_units::{CentiDeg32, Effort};
 
     fn make_kernel() -> ServoKernel {
-        ServoKernel::new(KernelConfig::default())
+        ServoKernel::new(test_kernel_config())
     }
 
     #[test]

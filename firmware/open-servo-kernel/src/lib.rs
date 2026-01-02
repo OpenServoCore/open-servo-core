@@ -11,6 +11,8 @@
 
 pub mod kernel;
 pub mod state;
+#[cfg(test)]
+mod test_support;
 
 pub use kernel::ServoKernel;
 pub use state::{KernelConfig, KernelState, PidGains};

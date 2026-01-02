@@ -2,7 +2,11 @@
 //!
 //! Per CLAUDE.md: core defines schemas; board provides values.
 
+use open_servo_hw::v2::capability::{MotorType, SensorCapabilities, ServoPosKind};
+#[cfg(any(feature = "voltage-sense-motor", feature = "temp-sense-motor"))]
+use open_servo_hw::v2::capability::SensorCapability;
 use open_servo_kernel::{KernelConfig, PidGains};
+use open_servo_math::CentiDeg;
 
 /// System clock frequency (Hz).
 pub const SYSCLK_HZ: u32 = 72_000_000;
@@ -41,6 +45,18 @@ pub const SLOW_DECIMATE: u32 = 5;
 /// Use `Gain::from_f32(5.0).to_q8_8()` to calculate, or multiply by 256.
 /// Examples: 256 = 1.0, 512 = 2.0, 1280 = 5.0
 pub fn kernel_config() -> KernelConfig {
+    // Build sensor capabilities based on enabled features
+    #[allow(unused_mut)]
+    let mut sensor_caps = SensorCapabilities::empty();
+    #[cfg(feature = "voltage-sense-motor")]
+    {
+        sensor_caps = sensor_caps.with(SensorCapability::MotorVoltage);
+    }
+    #[cfg(feature = "temp-sense-motor")]
+    {
+        sensor_caps = sensor_caps.with(SensorCapability::MotorTemp);
+    }
+
     KernelConfig {
         pos_pid: PidGains {
             kp: 1280, // 5.0
@@ -49,5 +65,13 @@ pub fn kernel_config() -> KernelConfig {
         },
         hold_deadband_cdeg: 50,
         effort_limit_raw: 16000,
+
+        // Board capabilities
+        servo_pos_kind: ServoPosKind::Bounded {
+            min: CentiDeg::from_cdeg(-9500), // -95°
+            max: CentiDeg::from_cdeg(9500),  // +95°
+        },
+        motor_type: MotorType::Bdc,
+        sensor_caps,
     }
 }
