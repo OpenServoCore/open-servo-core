@@ -138,17 +138,27 @@ impl Role {
     }
 }
 
-#[inline]
-pub fn debug_assert_role_domain<N: HasRole>(domain: TickDomain) {
-    #[cfg(debug_assertions)]
-    {
-        let ok = N::ROLE.debug_allowed_domains().iter().any(|d| *d == domain);
-
-        debug_assert!(
-            ok,
-            "Role/domain mismatch: role={:?} domain={:?}",
-            N::ROLE,
-            domain
-        );
-    }
+/// Assert that a node's role is allowed in the given domain (debug builds only).
+///
+/// Usage: `debug_assert_role_domain!(MyNode, domain);`
+///
+/// In release builds, this compiles to nothing.
+#[macro_export]
+macro_rules! debug_assert_role_domain {
+    ($node:ty, $domain:expr) => {
+        #[cfg(debug_assertions)]
+        {
+            let domain = $domain;
+            let ok = <$node as $crate::role::HasRole>::ROLE
+                .debug_allowed_domains()
+                .iter()
+                .any(|d| *d == domain);
+            debug_assert!(
+                ok,
+                "Role/domain mismatch: role={:?} domain={:?}",
+                <$node as $crate::role::HasRole>::ROLE,
+                domain
+            );
+        }
+    };
 }

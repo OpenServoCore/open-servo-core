@@ -3,6 +3,10 @@
 target = "thumbv7em-none-eabihf"
 
 [target.thumbv7em-none-eabihf]
+# Use osctl as the runner: cargo run will flash and open GUI
+# Install with: cargo install --path ../../tools/osctl
+runner = "osctl"
+
 rustflags = [
   "-C", "linker=flip-link",
   "-C", "link-arg=-Tlink.x",

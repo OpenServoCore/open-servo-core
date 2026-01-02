@@ -10,8 +10,9 @@ rtt-target = { workspace = true, optional = true }
 embedded-io-async = { workspace = true, optional = true }
 embassy-sync = { workspace = true, optional = true }
 critical-section = { workspace = true, optional = true }
+defmt = { workspace = true, optional = true }
 
 [features]
 rtt = ["dep:rtt-target"]
 async = ["rtt", "dep:embedded-io-async", "dep:embassy-sync", "dep:critical-section"]
-defmt = ["rtt-target?/defmt"]
+defmt = ["dep:defmt", "rtt-target?/defmt"]

@@ -15,9 +15,9 @@ use cortex_m::peripheral::syst::SystClkSource;
 use cortex_m_rt::{entry, pre_init};
 use embassy_executor::Executor;
 use open_servo_device::executor::ControlExecutor;
-use open_servo_hw_utils::rtt_async::RttAsyncIo;
+use open_servo_hw_utils::rtt_async::{RttChannels, RttRpcIo};
 use open_servo_kernel::ServoKernel;
-use open_servo_services::run_debug_shell;
+use open_servo_services::{run_debug_shell, RpcService};
 use static_cell::StaticCell;
 
 use open_servo_board_stm32f301::config::kernel_config;
@@ -27,12 +27,16 @@ use open_servo_board_stm32f301::init::{
     start_usart_rx_dma,
 };
 use open_servo_board_stm32f301::resources::{
-    debug_tick, get_shadow_storage, init_queues, set_isr_resources,
+    get_shadow_storage, init_queues, rpc_tick, set_isr_resources, shell_tick,
 };
 
-// Define defmt timestamp (required by defmt when enabled)
+// Define defmt timestamp using TIM2 monotonic counter (1µs resolution)
 #[cfg(feature = "defmt")]
-defmt::timestamp!("{=u32:us}", { 0 }); // dummy timestamp
+defmt::timestamp!("{=u32:us}", {
+    use stm32f3::stm32f301::TIM2;
+    // SAFETY: TIM2 is configured and running, CNT read is always safe
+    unsafe { (*TIM2::ptr()).cnt.read().bits() }
+});
 
 /// System clock frequency.
 const SYSCLK_HZ: u32 = 72_000_000;
@@ -102,26 +106,45 @@ fn main() -> ! {
     syst.enable_counter();
 
     // =========================================================================
-    // Run Embassy executor with debug shell
+    // Run Embassy executor with debug shell and RPC
     // =========================================================================
 
     // Create Embassy executor
     static EXECUTOR: StaticCell<Executor> = StaticCell::new();
     let executor = EXECUTOR.init(Executor::new());
 
-    // Run executor with debug shell task
+    // Run executor with tasks
     executor.run(|spawner| {
-        spawner.must_spawn(debug_shell_task());
+        spawner.must_spawn(rtt_tasks());
     });
 }
 
-/// Debug shell embassy task.
+/// RTT tasks - initializes RTT and runs shell + RPC concurrently.
 ///
-/// Initializes RTT and runs the debug shell. RTT is initialized here rather
-/// than in main() because the task needs ownership of the RttAsyncIo.
+/// RTT must be initialized once, then channels are split for each task.
 #[embassy_executor::task]
-async fn debug_shell_task() {
-    // Initialize RTT with SysTick-driven polling signal
-    let rtt = RttAsyncIo::init(debug_tick());
-    run_debug_shell(rtt, get_shadow_storage()).await;
+async fn rtt_tasks() {
+    // Initialize RTT with separate signals for shell and RPC
+    let rtt = RttChannels::init(shell_tick(), rpc_tick());
+
+    // Run debug shell and RPC service concurrently
+    // Using select to allow both to run (join would require both to complete)
+    embassy_futures::select::select(
+        run_debug_shell(rtt.shell, get_shadow_storage()),
+        run_rpc_service(rtt.rpc),
+    )
+    .await;
+}
+
+/// RPC service task.
+async fn run_rpc_service(rpc_io: RttRpcIo) {
+    // Buffer for RPC transport
+    static RPC_BUF: StaticCell<[u8; 512]> = StaticCell::new();
+    let buf = RPC_BUF.init([0u8; 512]);
+
+    // Create RPC service with the IO and shadow storage
+    let mut service = RpcService::new(rpc_io, buf, get_shadow_storage());
+
+    // Run the RPC service loop
+    service.run().await
 }

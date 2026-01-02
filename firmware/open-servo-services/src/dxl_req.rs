@@ -19,7 +19,7 @@
 use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
 use embassy_sync::signal::Signal;
 
-use open_servo_kernel_api::ops::{KernelOp, KernelResult, Op, ServiceOp};
+use open_servo_kernel_api::ops::{KernelResult, Op};
 
 /// Signal type for KernelResult notification (ISR → async).
 pub type KernelResultSignal = Signal<CriticalSectionRawMutex, KernelResult>;

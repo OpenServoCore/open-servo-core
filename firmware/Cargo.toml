@@ -6,6 +6,7 @@ members = [
     "open-servo-shadow",
     "open-servo-registry",
     "open-servo-macros",
+    "open-servo-rpc",
 
     # Base hardware libraries
     "open-servo-hw",
@@ -40,6 +41,7 @@ default-members = [
     "open-servo-math",
     "open-servo-shadow",
     "open-servo-registry",
+    "open-servo-rpc",
 
     # Base hardware libraries
     "open-servo-hw",
@@ -72,6 +74,7 @@ panic-rtt-target = { version = "0.2", features = ["defmt"] }
 embassy-executor = { version = "0.7", default-features = false }
 embassy-sync = { version = "0.6", default-features = false }
 embassy-time = { version = "0.4", default-features = false }
+embassy-time-driver = { version = "0.2", default-features = false }
 
 # Async IO traits
 embedded-io-async = "0.6"

@@ -28,6 +28,9 @@ cortex-m-rt = { version = "0.7.5" }
 # Embassy async runtime
 embassy-executor = { workspace = true, features = ["arch-cortex-m", "executor-thread"] }
 embassy-sync = { workspace = true }
+embassy-time = { workspace = true }
+embassy-time-driver = { workspace = true }
+embassy-futures = "0.1"
 
 # Other
 heapless = { workspace = true }

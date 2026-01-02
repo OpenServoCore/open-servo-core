@@ -21,15 +21,3 @@ panic-rtt-target = { workspace = true }
 [features]
 default = []
 single-wire = []  # HDSEL mode: TX open-drain with self-echo
-
-[profile.dev]
-panic = "abort"
-strip = false
-lto = true
-opt-level = "s"
-
-[profile.release]
-panic = "abort"
-strip = false
-lto = true
-opt-level = "s"

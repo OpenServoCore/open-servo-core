@@ -30,6 +30,12 @@ open-servo-device = { path = "../open-servo-device", default-features = false }
 open-servo-kernel-api = { path = "../open-servo-kernel-api", default-features = false }
 open-servo-registry = { path = "../open-servo-registry", default-features = false }
 open-servo-units = { path = "../open-servo-units", default-features = false }
+open-servo-rpc = { path = "../open-servo-rpc", default-features = false }
+
+# RPC
+postcard = { version = "1.0", default-features = false }
+postcard-rpc = { version = "0.12", default-features = false, features = ["embedded-io-async-0_6-server"] }
+cobs = { version = "0.3", default-features = false }
 
 # Async IO traits
 embedded-io-async = { workspace = true }

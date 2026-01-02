@@ -2,7 +2,6 @@ use core::marker::PhantomData;
 
 use open_servo_units::MicroSecond;
 
-use crate::role::debug_assert_role_domain;
 use crate::tick::{Tick, TickDomain};
 use crate::tick_ctx::TickCtx;
 use crate::{FaultSink, HasRole, Resettable, TelemetrySink};
@@ -361,7 +360,7 @@ macro_rules! impl_mode_view {
                 F: FaultSink + ?Sized,
                 T: TelemetrySink + ?Sized,
             {
-                debug_assert_role_domain::<N>($domain);
+                $crate::debug_assert_role_domain!(N, $domain);
                 ctx.debug_assert_domain($domain);
                 self.node.tick(ctx)
             }
@@ -377,7 +376,7 @@ macro_rules! impl_mode_view {
                 F: FaultSink + ?Sized,
                 T: TelemetrySink + ?Sized,
             {
-                debug_assert_role_domain::<N>($domain);
+                $crate::debug_assert_role_domain!(N, $domain);
                 ctx.debug_assert_domain($domain);
                 self.node.step(ctx, input)
             }

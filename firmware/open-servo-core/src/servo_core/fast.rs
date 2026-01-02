@@ -14,7 +14,7 @@ use crate::servo_core::internal::CoreInternal;
 use crate::servo_core::runtime::CoreRuntime;
 use crate::servo_core::ServoMode;
 use open_servo_control::{ControlInput, ControlLoop, EffortLimits};
-use open_servo_math::{CentiDeg, CentiDeg32, Effort, MilliAmp, MilliVolt, TickCtx};
+use open_servo_math::{CentiDeg, CentiDeg32, Effort, MilliVolt, TickCtx};
 
 /// Data observed from fast tick inputs.
 #[derive(Debug, Clone)]

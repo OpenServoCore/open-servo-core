@@ -19,6 +19,7 @@ pub mod pwm;
 pub mod resources;
 pub mod sensors;
 pub mod sinks;
+pub mod time_driver;
 pub mod uart_bus;
 
 pub use config::kernel_config;

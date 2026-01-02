@@ -52,6 +52,8 @@ pub mod debug_shell;
 pub mod dxl_req;
 pub mod dxl_rx;
 pub mod persist;
+pub mod rpc;
+pub mod rpc_transport;
 
 // Re-exports for convenience
 pub use embassy_executor::Spawner;
@@ -64,3 +66,5 @@ pub use debug_shell::run_debug_shell;
 pub use dxl_req::{DxlReqTask, KernelResultSignal, Response};
 pub use dxl_rx::{DxlRxTask, OpChannel, OP_CHANNEL_CAPACITY};
 pub use persist::{PersistResult, PersistSignal, PersistTask};
+pub use rpc::RpcService;
+pub use rpc_transport::RttTransport;

@@ -39,6 +39,7 @@
 //! }
 //! ```
 
+#[cfg(debug_assertions)]
 use core::cell::Cell;
 
 use crate::tick::TickDomain;

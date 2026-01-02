@@ -13,7 +13,8 @@ use crate::config::FAST_DT_US;
 use crate::monotonic::now_us;
 use crate::pwm::apply_motor_command;
 use crate::resources::{
-    debug_tick, get_executor, get_fault_sink, get_isr_queues, get_shadow_storage, get_telem_sink,
+    get_executor, get_fault_sink, get_isr_queues, get_shadow_storage, get_telem_sink, rpc_tick,
+    shell_tick,
 };
 use crate::sensors::read_sensor_frame;
 
@@ -79,11 +80,14 @@ fn USART1_EXTI25() {
     // No further action needed
 }
 
-/// SysTick exception (debug shell polling).
+/// SysTick exception (async task polling).
 ///
-/// Signals the debug shell to check for RTT input.
+/// Signals shell and RPC tasks to check for RTT input.
+/// Also checks embassy-time alarms for expired timers.
 /// Runs at 1kHz, configured in main.rs.
 #[exception]
 fn SysTick() {
-    debug_tick().signal(());
+    shell_tick().signal(());
+    rpc_tick().signal(());
+    crate::time_driver::check_alarms();
 }

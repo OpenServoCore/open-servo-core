@@ -76,16 +76,25 @@ pub const SHADOW_TABLE_SIZE: usize = 1024;
 static SHADOW_STORAGE: ShadowStorage<SHADOW_TABLE_SIZE> = ShadowStorage::new();
 
 // =============================================================================
-// Debug shell signal (SysTick → async)
+// Async task signals (SysTick → async tasks)
 // =============================================================================
 
 /// Signal for debug shell polling (signaled by SysTick ISR).
-static DEBUG_TICK: Signal<CriticalSectionRawMutex, ()> = Signal::new();
+static SHELL_TICK: Signal<CriticalSectionRawMutex, ()> = Signal::new();
 
-/// Get reference to debug tick signal (for SysTick ISR and async shell).
+/// Signal for RPC service polling (signaled by SysTick ISR).
+static RPC_TICK: Signal<CriticalSectionRawMutex, ()> = Signal::new();
+
+/// Get reference to shell tick signal.
 #[inline]
-pub fn debug_tick() -> &'static Signal<CriticalSectionRawMutex, ()> {
-    &DEBUG_TICK
+pub fn shell_tick() -> &'static Signal<CriticalSectionRawMutex, ()> {
+    &SHELL_TICK
+}
+
+/// Get reference to RPC tick signal.
+#[inline]
+pub fn rpc_tick() -> &'static Signal<CriticalSectionRawMutex, ()> {
+    &RPC_TICK
 }
 
 // =============================================================================
