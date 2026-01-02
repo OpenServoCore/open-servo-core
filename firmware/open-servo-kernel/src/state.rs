@@ -8,20 +8,21 @@ use open_servo_hw::v2::io::{MotorCommand, SensorFrame};
 use open_servo_kernel_api::faults::GateReason;
 use open_servo_kernel_api::mode::OperatingMode;
 use open_servo_kernel_api::reset::ResetScope;
+use open_servo_math::pid::{DerivativeMode, PidControllerI16};
 use open_servo_units::{CentiDeg32, Effort, MicroSecond};
 
-/// PID gains (Stage-0).
+/// PID gains in Q8.8 fixed-point format.
 ///
-/// You’ll likely replace this with your controller crate types later.
-/// Keep it tiny and explicit for now.
+/// Gain = raw_value / 256. E.g., kp=1280 means 5.0 proportional gain.
+/// Use `open_servo_math::gain::Gain::from_f32(5.0).to_q8_8()` to convert.
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
 #[derive(Copy, Clone, Debug, Default, PartialEq, Eq)]
 pub struct PidGains {
-    /// Proportional gain in Q?? (project-defined).
+    /// Proportional gain in Q8.8 (raw / 256).
     pub kp: i16,
-    /// Integral gain in Q?? (project-defined).
+    /// Integral gain in Q8.8 (raw / 256).
     pub ki: i16,
-    /// Derivative gain in Q?? (project-defined).
+    /// Derivative gain in Q8.8 (raw / 256).
     pub kd: i16,
 }
 
@@ -56,9 +57,9 @@ pub struct PendingOps {
 
 /// Runtime state (mutable).
 ///
-/// Keep this “boring and obvious” — it becomes your foundation.
+/// Keep this "boring and obvious" — it becomes your foundation.
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
-#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+#[derive(Debug)]
 pub struct KernelState {
     // ===== Host-visible / conceptual state =====
     pub engaged: bool,
@@ -79,16 +80,17 @@ pub struct KernelState {
     pub last_cmd: MotorCommand,
     pub last_gate: GateReason,
 
-    // ===== Simple internal integrators (Stage-0 PID) =====
-    pub pos_i: i32,
-    pub last_pos_err: i32,
+    // ===== Position PID controller =====
+    pub pos_pid: PidControllerI16,
 
     /// Optional: track last dt for sanity checks.
     pub last_dt: MicroSecond,
 }
 
-impl Default for KernelState {
-    fn default() -> Self {
+impl KernelState {
+    /// Create state with specified PID gains and effort limits.
+    pub fn new(gains: PidGains, effort_limit: i16) -> Self {
+        let lim = effort_limit.abs() as i32;
         Self {
             engaged: false,
             mode: OperatingMode::Position,
@@ -99,12 +101,19 @@ impl Default for KernelState {
             pos: CentiDeg32(0),
             last_cmd: MotorCommand::safe(),
             last_gate: GateReason::Disengaged,
-            pos_i: 0,
-            last_pos_err: 0,
+            pos_pid: PidControllerI16::new_auto_anti_windup(
+                gains.kp,
+                gains.ki,
+                gains.kd,
+                DerivativeMode::OnMeasurement, // Avoids derivative kick on setpoint steps
+                -lim,
+                lim,
+            ),
             last_dt: MicroSecond::from_us(0),
         }
     }
 }
+
 
 impl KernelState {
     #[inline]

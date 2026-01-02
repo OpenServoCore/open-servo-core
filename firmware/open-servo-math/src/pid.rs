@@ -27,6 +27,8 @@ pub enum DerivativeMode {
 /// - [`PControllerI16`] - Pure P controller (no I, no D)
 /// - [`PiControllerI16`] - PI controller (no D)
 /// - [`PidControllerI16`] - Full PID controller
+#[derive(Debug, Clone, Copy)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
 pub struct PidI16<const HAS_I: bool, const HAS_D: bool> {
     /// Gains in Q8.8 fixed-point
     kp: i16,

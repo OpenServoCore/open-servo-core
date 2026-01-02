@@ -323,9 +323,23 @@ async fn cmd_status<IO: Write, const N: usize>(shadow: &ShadowStorage<N>, io: &m
         _ => "Unknown",
     };
 
-    // Torque enable
+    // Torque enable (host input)
     let _ = shadow.host_read(vendor::addr::TORQUE_ENABLE, &mut buf[..1]);
     let torque = if buf[0] != 0 { "ON" } else { "OFF" };
+
+    // Engaged mirror (kernel state)
+    let _ = shadow.host_read(vendor::addr::ENGAGED_MIRROR, &mut buf[..1]);
+    let engaged = if buf[0] != 0 { "YES" } else { "NO" };
+
+    // Gate reason (why control may be gated)
+    let _ = shadow.host_read(vendor::addr::GATE_REASON, &mut buf[..1]);
+    let gate = match buf[0] {
+        0 => "Ok",
+        1 => "Disengaged",
+        2 => "DriverNotOk",
+        3 => "Faulted",
+        _ => "Unknown",
+    };
 
     // Goal position (i32)
     let _ = shadow.host_read(vendor::addr::GOAL_POS_CDEG, &mut buf[..4]);
@@ -339,6 +353,10 @@ async fn cmd_status<IO: Write, const N: usize>(shadow: &ShadowStorage<N>, io: &m
     let _ = shadow.host_read(vendor::addr::PRESENT_CURRENT_MA, &mut buf[..2]);
     let current = i16::from_le_bytes([buf[0], buf[1]]);
 
+    // Control output (i16)
+    let _ = shadow.host_read(vendor::addr::CONTROL_OUTPUT, &mut buf[..2]);
+    let effort = i16::from_le_bytes([buf[0], buf[1]]);
+
     // Fault status
     let _ = shadow.host_read(vendor::addr::FAULT_STATUS, &mut buf[..1]);
     let fault = buf[0];
@@ -346,10 +364,10 @@ async fn cmd_status<IO: Write, const N: usize>(shadow: &ShadowStorage<N>, io: &m
     let mut out: String<OUT_BUF_CAP> = String::new();
     let _ = write!(
         out,
-        "Mode: {} | Torque: {}\r\n\
+        "Mode: {} | Torque: {} | Engaged: {} | Gate: {}\r\n\
          Goal: {} cdeg | Pos: {} cdeg\r\n\
-         Current: {} mA | Fault: 0x{:02X}\r\n",
-        mode, torque, goal_pos, pres_pos, current, fault
+         Current: {} mA | Effort: {} | Fault: 0x{:02X}\r\n",
+        mode, torque, engaged, gate, goal_pos, pres_pos, current, effort, fault
     );
     let _ = io.write_all(out.as_bytes()).await;
 }

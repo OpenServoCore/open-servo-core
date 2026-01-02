@@ -7,6 +7,9 @@ use stm32f3::stm32f301::TIM1;
 
 use crate::config::PWM_ARR;
 
+/// Motor polarity reversal. Set true if motor runs backwards.
+const REVERSE_MOTOR: bool = false;
+
 /// Apply motor command to PWM outputs.
 ///
 /// Maps effort to duty cycle on CH1 (forward) or CH4 (reverse).
@@ -32,7 +35,10 @@ pub fn apply_motor_command(cmd: MotorCommand) {
             // Map effort to duty cycle
             // Effort is i16 (-32768 to 32767)
             // Positive = forward (CH1), negative = reverse (CH4)
-            let effort = cmd.effort.as_raw();
+            let mut effort = cmd.effort.as_raw();
+            if REVERSE_MOTOR {
+                effort = effort.saturating_neg();
+            }
 
             if effort >= 0 {
                 // Forward drive

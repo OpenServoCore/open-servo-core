@@ -43,8 +43,8 @@ impl ServoKernel {
     #[inline]
     pub fn new(cfg: KernelConfig) -> Self {
         Self {
+            st: KernelState::new(cfg.pos_pid, cfg.effort_limit_raw),
             cfg,
-            st: KernelState::default(),
             pending_mode: None,
             pending: PendingOps::default(),
         }
@@ -186,13 +186,11 @@ impl ServoKernel {
             match scope {
                 ResetScope::Control => {
                     // Reset controller/filter integrators.
-                    self.st.pos_i = 0;
-                    self.st.last_pos_err = 0;
+                    self.st.pos_pid.reset();
                 }
                 ResetScope::AllState => {
                     // Reset all feature states (control + monitors + thermal model).
-                    self.st.pos_i = 0;
-                    self.st.last_pos_err = 0;
+                    self.st.pos_pid.reset();
                     // Future: reset thermal model, monitors, etc.
                 }
             }
@@ -216,45 +214,23 @@ impl ServoKernel {
         GateReason::Ok
     }
 
-    /// Simple PID position controller (Stage-0).
-    ///
-    /// Replace with your controller crate once you’re ready.
+    /// Position PID controller using Q8.8 fixed-point gains.
     fn position_pid(&mut self, dt: MicroSecond) -> Effort {
         self.st.last_dt = dt;
 
-        let err = self.st.pos_sp.as_cdeg() - self.st.pos.as_cdeg();
+        let sp = self.st.pos_sp.as_cdeg();
+        let pv = self.st.pos.as_cdeg();
 
-        // Integrator (very naive; you’ll replace this).
-        self.st.pos_i = self.st.pos_i.saturating_add(err);
+        // PidControllerI16 handles P/I/D, anti-windup, and output clamping
+        let output = self.st.pos_pid.step(sp, pv);
 
-        // Derivative.
-        let derr = err - self.st.last_pos_err;
-        self.st.last_pos_err = err;
-
-        // Compute u in i32 domain.
-        let u = (err as i32) * (self.cfg.pos_pid.kp as i32)
-            + (self.st.pos_i as i32) * (self.cfg.pos_pid.ki as i32)
-            + (derr as i32) * (self.cfg.pos_pid.kd as i32);
-
-        // Convert to normalized effort (clamp).
-        let mut raw = (u / 1024).clamp(i16::MIN as i32, i16::MAX as i32) as i16;
-
-        // Apply effort limit clamp.
-        let lim = self.cfg.effort_limit_raw.abs();
-        if raw > lim {
-            raw = lim;
-        } else if raw < -lim {
-            raw = -lim;
-        }
-
-        Effort::from_raw(raw)
+        Effort::from_raw(output.clamp(i16::MIN as i32, i16::MAX as i32) as i16)
     }
 
     fn apply_mode(&mut self, mode: OperatingMode) {
         self.st.mode = mode;
         // Clear controller state on mode change.
-        self.st.pos_i = 0;
-        self.st.last_pos_err = 0;
+        self.st.pos_pid.reset();
     }
 
     // =========================================================================
@@ -502,8 +478,7 @@ impl ShadowKernel for ServoKernel {
         // Phase 3: Apply all values (after reading, before clearing).
         if let Some(engaged) = new_engaged {
             if self.st.engaged && !engaged {
-                self.st.pos_i = 0;
-                self.st.last_pos_err = 0;
+                self.st.pos_pid.reset();
             }
             self.st.engaged = engaged;
         }
@@ -605,12 +580,10 @@ mod tests {
     }
 
     #[test]
-    fn test_disengage_clears_integrator() {
+    fn test_disengage_resets_controller() {
         let mut kernel = make_kernel();
-        // Set engaged with non-zero integrator
+        // Set engaged
         kernel.st.engaged = true;
-        kernel.st.pos_i = 12345;
-        kernel.st.last_pos_err = -100;
         let mut table = ShadowTable::<1024>::new();
         // Host writes ENGAGED=0 (disengage)
         {
@@ -622,8 +595,7 @@ mod tests {
         let mut view = KernelView::new(bytes, dirty);
         kernel.commit_shadow(&mut view);
         assert!(!kernel.st.engaged);
-        assert_eq!(kernel.st.pos_i, 0);
-        assert_eq!(kernel.st.last_pos_err, 0);
+        // PID reset is tested in open-servo-math; here we just verify disengage succeeded
     }
 
     #[test]

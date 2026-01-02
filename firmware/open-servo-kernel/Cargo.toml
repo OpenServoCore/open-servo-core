@@ -9,6 +9,7 @@ open-servo-kernel-api = { path = "../open-servo-kernel-api", default-features = 
 open-servo-registry   = { path = "../open-servo-registry", default-features = false }
 open-servo-units      = { path = "../open-servo-units", default-features = false }
 open-servo-hw         = { path = "../open-servo-hw", default-features = false }
+open-servo-math       = { path = "../open-servo-math", default-features = false }
 defmt                 = { workspace = true, optional = true }
 
 [features]
@@ -19,4 +20,5 @@ defmt = [
   "open-servo-registry/defmt",
   "open-servo-units/defmt",
   "open-servo-hw/defmt",
+  "open-servo-math/defmt",
 ]
