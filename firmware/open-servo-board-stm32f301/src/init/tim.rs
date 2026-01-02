@@ -3,7 +3,7 @@
 //! TIM1: PWM generation + ADC trigger
 //! - 10kHz electrical PWM, center-aligned mode (counter 0→ARR→0)
 //! - CH1/CH4 for H-bridge drive
-//! - CH3 for ADC trigger near PWM peak (OC3REF → TRGO2)
+//! - Update event triggers ADC at valley (TRGO2)
 //!
 //! TIM2: Monotonic microsecond counter
 //! - 1MHz tick (1µs resolution)
@@ -36,21 +36,13 @@ pub fn configure_tim1() {
     // 4. Enable main output (required for advanced timers)
     tim1.bdtr.modify(|_, w| w.moe().enabled());
 
-    // 5. Set TRGO2 = OC3REF (0b0110) for ADC trigger
-    tim1.cr2.modify(|_, w| unsafe { w.mms2().bits(0b0110) });
+    // 5. Set TRGO2 = Update event (0b0010) for ADC trigger at valley (CNT=0)
+    tim1.cr2.modify(|_, w| unsafe { w.mms2().bits(0b0010) });
 
     // === Channel 1: PWM output ===
     tim1.ccmr1_output()
         .modify(|_, w| w.oc1pe().enabled().oc1m().pwm_mode1());
     tim1.ccr1().write(|w| w.ccr().bits(0)); // Initial duty = 0
-
-    // === Channel 3: ADC trigger near PWM peak ===
-    // PWM Mode 2 + CCR3 = ARR-1 gives rising edge at CNT = ARR-1 (one tick before peak)
-    // Note: CH5/CH6 exist but OC5REF/OC6REF don't route to TRGO2 on STM32F301
-    // ADC triggers once per 10kHz electrical PWM cycle
-    tim1.ccmr2_output()
-        .modify(|_, w| w.oc3pe().enabled().oc3m().pwm_mode2());
-    tim1.ccr3().write(|w| w.ccr().bits(PWM_ARR - 1));
 
     // === Channel 4: PWM output ===
     tim1.ccmr2_output()
