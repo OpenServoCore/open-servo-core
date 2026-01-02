@@ -17,7 +17,7 @@ use core::fmt::Write as FmtWrite;
 use embedded_io_async::{Read, Write};
 use heapless::String;
 use open_servo_device::shadow_storage::ShadowStorage;
-use open_servo_registry::{vendor, Access, Encoding, RegSpec};
+use open_servo_registry::{vendor, Access, Encoding, RegSpec, VENDOR_FIELDS};
 
 /// Line buffer capacity.
 const LINE_BUF_CAP: usize = 128;
@@ -135,11 +135,11 @@ async fn cmd_help<IO: Write>(io: &mut IO) {
         .await;
 }
 
-/// List command - list all fields matching optional prefix (streaming).
+/// List command - list all vendor fields matching optional prefix (streaming).
 async fn cmd_list<IO: Write>(prefix: Option<&str>, io: &mut IO) {
     let prefix = prefix.unwrap_or("");
 
-    for spec in open_servo_registry::all_fields() {
+    for spec in VENDOR_FIELDS {
         if starts_with_ignore_case(spec.name, prefix) {
             let access_ch = match spec.access {
                 Access::RO => 'R',
@@ -372,8 +372,8 @@ fn lookup_field(s: &str) -> Option<&'static RegSpec> {
         return open_servo_registry::find_by_address(addr);
     }
 
-    // Try name prefix
-    open_servo_registry::find(s)
+    // Try name prefix (vendor registers only)
+    vendor::find(s)
 }
 
 /// Parse hex address (0x...).
