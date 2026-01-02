@@ -1,9 +1,9 @@
 //! Timer configuration.
 //!
 //! TIM1: PWM generation + ADC trigger
-//! - 20kHz PWM, center-aligned mode
+//! - 10kHz electrical PWM, center-aligned mode (counter 0→ARR→0)
 //! - CH1/CH4 for H-bridge drive
-//! - TRGO2 triggers ADC at PWM center
+//! - CH3 for ADC trigger near PWM peak (OC3REF → TRGO2)
 //!
 //! TIM2: Monotonic microsecond counter
 //! - 1MHz tick (1µs resolution)
@@ -15,70 +15,64 @@ use crate::config::PWM_ARR;
 
 /// Configure TIM1 for PWM and ADC triggering.
 ///
-/// Does NOT start the timer (CEN not set).
+/// Register order: arpe → cms/dir → arr/psc → bdtr → mms2 → channels → egr → ccer
+///
+/// Does NOT start the timer (CEN not set until start_tim1).
 pub fn configure_tim1() {
     // SAFETY: We have exclusive access during init.
     let tim1 = unsafe { &*TIM1::ptr() };
 
-    // Prescaler = 0 (72MHz timer clock)
-    tim1.psc.write(|w| w.psc().bits(0));
+    // 1. Enable auto-reload preload FIRST (like old crate)
+    tim1.cr1.modify(|_, w| w.arpe().enabled());
 
-    // ARR = 3599 for 20kHz PWM in center-aligned mode
-    // f_pwm = f_tim / (2 * (ARR + 1)) for center-aligned
-    // 20kHz = 72MHz / (2 * 3600) = 72MHz / 7200 = 10kHz... wait that's wrong
-    // Actually for center-aligned: f_pwm = f_tim / ((ARR+1) * 2)
-    // So ARR = f_tim / (f_pwm * 2) - 1 = 72M / 40k - 1 = 1799
-    // But we want 20kHz update rate for ADC, so ARR = 3599 gives 10kHz PWM
-    // Let's use ARR = 1799 for 20kHz PWM
+    // 2. Set center-aligned mode with direction
+    tim1.cr1.modify(|_, w| w.cms().center_aligned1().dir().up());
+
+    // 3. Set ARR and PSC
+    // f_pwm = f_tim / (2 * (ARR + 1)) = 72MHz / 7200 = 10kHz electrical
     tim1.arr.write(|w| w.arr().bits(PWM_ARR));
+    tim1.psc.write(|w| w.psc().bits(0)); // No prescaler
 
-    // Center-aligned mode 1 (counter counts up and down)
-    tim1.cr1.modify(|_, w| w.cms().bits(0b01));
+    // 4. Enable main output (required for advanced timers)
+    tim1.bdtr.modify(|_, w| w.moe().enabled());
 
-    // CH1: PWM mode 1, preload enabled
-    tim1.ccmr1_output().modify(|_, w| {
-        w.oc1pe().set_bit(); // Preload enable
-        w.oc1m().bits(0b0110) // PWM mode 1
-    });
+    // 5. Set TRGO2 = OC3REF (0b0110) for ADC trigger
+    tim1.cr2.modify(|_, w| unsafe { w.mms2().bits(0b0110) });
 
-    // CH4: PWM mode 1, preload enabled
-    tim1.ccmr2_output().modify(|_, w| {
-        w.oc4pe().set_bit(); // Preload enable
-        w.oc4m().bits(0b0110) // PWM mode 1
-    });
+    // === Channel 1: PWM output ===
+    tim1.ccmr1_output()
+        .modify(|_, w| w.oc1pe().enabled().oc1m().pwm_mode1());
+    tim1.ccr1().write(|w| w.ccr().bits(0)); // Initial duty = 0
 
-    // Enable CH1 and CH4 outputs
-    tim1.ccer.modify(|_, w| {
-        w.cc1e().set_bit();
-        w.cc4e().set_bit()
-    });
+    // === Channel 3: ADC trigger near PWM peak ===
+    // PWM Mode 2 + CCR3 = ARR-1 gives rising edge at CNT = ARR-1 (one tick before peak)
+    // Note: CH5/CH6 exist but OC5REF/OC6REF don't route to TRGO2 on STM32F301
+    // ADC triggers once per 10kHz electrical PWM cycle
+    tim1.ccmr2_output()
+        .modify(|_, w| w.oc3pe().enabled().oc3m().pwm_mode2());
+    tim1.ccr3().write(|w| w.ccr().bits(PWM_ARR - 1));
 
-    // Configure TRGO2 = OC1REF (or use update event)
-    // MMS2 bits in CR2 control TRGO2
-    // 0b0100 = OC1REF used as TRGO2
-    // SAFETY: 0b0100 is a valid MMS2 value (compare - OC1REF signal)
-    tim1.cr2.modify(|_, w| unsafe { w.mms2().bits(0b0100) });
+    // === Channel 4: PWM output ===
+    tim1.ccmr2_output()
+        .modify(|_, w| w.oc4pe().enabled().oc4m().pwm_mode1());
+    tim1.ccr4().write(|w| w.ccr().bits(0)); // Initial duty = 0
 
-    // Enable main output (required for advanced timers)
-    tim1.bdtr.modify(|_, w| w.moe().set_bit());
+    // 6. Generate update event to load preload registers (ARR, PSC, CCRx)
+    tim1.egr.write(|w| w.ug().update());
 
-    // Enable ARR preload
-    tim1.cr1.modify(|_, w| w.arpe().set_bit());
-
-    // Initial duty cycle = 0 (safe)
-    tim1.ccr1().write(|w| w.ccr().bits(0));
-    tim1.ccr4().write(|w| w.ccr().bits(0));
+    // 7. Enable CH1, CH4 outputs (CH3 is internal trigger only, no CC3E needed)
+    tim1.ccer.modify(|_, w| w.cc1e().set_bit().cc4e().set_bit());
 }
 
 /// Start TIM1 (enable counter).
 pub fn start_tim1() {
     let tim1 = unsafe { &*TIM1::ptr() };
-    tim1.cr1.modify(|_, w| w.cen().set_bit());
+    tim1.cr1.modify(|_, w| w.cen().enabled());
 }
 
 /// Configure TIM2 as monotonic microsecond counter.
 ///
-/// Does NOT start the timer (CEN not set).
+/// Does NOT start the timer (CEN not set until start_tim2).
 pub fn configure_tim2() {
     // SAFETY: We have exclusive access during init.
     let tim2 = unsafe { &*TIM2::ptr() };
@@ -90,6 +84,9 @@ pub fn configure_tim2() {
     // SAFETY: Any 32-bit value is valid for ARR
     tim2.arr.write(|w| unsafe { w.arr().bits(0xFFFF_FFFF) });
 
+    // Generate update event to load prescaler
+    tim2.egr.write(|w| w.ug().update());
+
     // No interrupts, just free-running
     tim2.dier.reset();
 }
@@ -97,5 +94,5 @@ pub fn configure_tim2() {
 /// Start TIM2 (enable counter).
 pub fn start_tim2() {
     let tim2 = unsafe { &*TIM2::ptr() };
-    tim2.cr1.modify(|_, w| w.cen().set_bit());
+    tim2.cr1.modify(|_, w| w.cen().enabled());
 }

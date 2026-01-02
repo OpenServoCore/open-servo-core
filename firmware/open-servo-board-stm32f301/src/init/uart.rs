@@ -1,7 +1,7 @@
 //! USART1 + RX DMA configuration.
 //!
 //! USART1 is configured for:
-//! - 1Mbps baud rate (or 115200 for debug)
+//! - 1Mbps baud rate (Dynamixel protocol)
 //! - 8N1
 //! - RX DMA circular mode
 //! - IDLE interrupt for waking main loop
@@ -25,7 +25,7 @@ pub fn configure_usart() {
     let dma = unsafe { &*DMA1::ptr() };
 
     // Disable USART during configuration
-    usart.cr1.modify(|_, w| w.ue().clear_bit());
+    usart.cr1.modify(|_, w| w.ue().disabled());
 
     // Configure baud rate
     // BRR = PCLK2 / BAUD_RATE
@@ -33,28 +33,23 @@ pub fn configure_usart() {
     usart.brr.write(|w| unsafe { w.bits(brr) });
 
     // 8N1, oversampling by 16
-    usart.cr1.modify(|_, w| {
-        w.m().clear_bit(); // 8 data bits
-        w.pce().clear_bit(); // No parity
-        w.over8().clear_bit() // Oversampling by 16
-    });
-    usart.cr2.modify(|_, w| w.stop().bits(0b00)); // 1 stop bit
+    usart
+        .cr1
+        .modify(|_, w| w.m().bit8().pce().disabled().over8().oversampling16());
+    usart.cr2.modify(|_, w| w.stop().stop1());
 
     // Enable RX and TX
-    usart.cr1.modify(|_, w| {
-        w.re().set_bit(); // Receiver enable
-        w.te().set_bit() // Transmitter enable
-    });
+    usart.cr1.modify(|_, w| w.re().enabled().te().enabled());
 
     // Enable IDLE interrupt (for waking main loop)
-    usart.cr1.modify(|_, w| w.idleie().set_bit());
+    usart.cr1.modify(|_, w| w.idleie().enabled());
 
     // Enable DMA receive
-    usart.cr3.modify(|_, w| w.dmar().set_bit());
+    usart.cr3.modify(|_, w| w.dmar().enabled());
 
     // Configure DMA1 Channel 5 for USART1_RX
     // Disable channel first
-    dma.ch5.cr.modify(|_, w| w.en().clear_bit());
+    dma.ch5.cr.modify(|_, w| w.en().disabled());
 
     // Peripheral address = USART1_RDR
     dma.ch5
@@ -79,27 +74,33 @@ pub fn configure_usart() {
     // - 8-bit transfers
     // - No interrupt (IDLE ISR handles wake)
     dma.ch5.cr.modify(|_, w| {
-        w.circ().set_bit(); // Circular mode
-        w.dir().clear_bit(); // Peripheral to memory
-        w.minc().set_bit(); // Memory increment
-        w.pinc().clear_bit(); // Peripheral fixed
-        unsafe {
-            w.msize().bits(0b00); // 8-bit memory
-            w.psize().bits(0b00); // 8-bit peripheral
-            w.pl().bits(0b01); // Medium priority
-        }
-        w.tcie().clear_bit() // No transfer complete interrupt
+        w.circ()
+            .enabled()
+            .dir()
+            .from_peripheral()
+            .minc()
+            .enabled()
+            .pinc()
+            .disabled()
+            .msize()
+            .bits8()
+            .psize()
+            .bits8()
+            .pl()
+            .medium()
+            .tcie()
+            .disabled()
     });
 }
 
 /// Start USART RX DMA.
 pub fn start_usart_rx_dma() {
     let dma = unsafe { &*DMA1::ptr() };
-    dma.ch5.cr.modify(|_, w| w.en().set_bit());
+    dma.ch5.cr.modify(|_, w| w.en().enabled());
 }
 
 /// Enable USART1.
 pub fn start_usart() {
     let usart = unsafe { &*USART1::ptr() };
-    usart.cr1.modify(|_, w| w.ue().set_bit());
+    usart.cr1.modify(|_, w| w.ue().enabled());
 }
