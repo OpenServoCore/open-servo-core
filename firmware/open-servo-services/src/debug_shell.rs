@@ -36,7 +36,6 @@ where
     IO: Read + Write,
 {
     let mut line_buf: String<LINE_BUF_CAP> = String::new();
-    let mut out_buf: String<OUT_BUF_CAP> = String::new();
 
     // Print banner
     let _ = write_str(&mut io, "\r\n=== Debug Shell ===\r\n> ").await;
@@ -55,12 +54,7 @@ where
             b'\n' => {
                 let _ = write_str(&mut io, "\r\n").await;
 
-                out_buf.clear();
-                execute_command(&line_buf, shadow, &mut out_buf);
-
-                if !out_buf.is_empty() {
-                    let _ = io.write_all(out_buf.as_bytes()).await;
-                }
+                execute_command(&line_buf, shadow, &mut io).await;
 
                 line_buf.clear();
                 let _ = write_str(&mut io, "> ").await;
@@ -94,11 +88,11 @@ async fn write_str<IO: Write>(io: &mut IO, s: &str) -> Result<(), IO::Error> {
     io.write_all(s.as_bytes()).await
 }
 
-/// Execute a command and write output to the buffer.
-fn execute_command<const N: usize>(
+/// Execute a command and stream output to IO.
+async fn execute_command<IO: Write, const N: usize>(
     line: &str,
     shadow: &ShadowStorage<N>,
-    out: &mut String<OUT_BUF_CAP>,
+    io: &mut IO,
 ) {
     let line = line.trim();
     if line.is_empty() {
@@ -112,34 +106,37 @@ fn execute_command<const N: usize>(
     };
 
     match cmd.to_ascii_lowercase().as_str() {
-        "help" | "?" => cmd_help(out),
-        "list" | "ls" => cmd_list(parts.next(), out),
-        "read" | "r" => cmd_read(parts.next(), shadow, out),
-        "write" | "w" => cmd_write(parts.next(), parts.next(), shadow, out),
-        "dump" | "d" => cmd_dump(parts.next(), parts.next(), shadow, out),
-        "status" | "st" => cmd_status(shadow, out),
+        "help" | "?" => cmd_help(io).await,
+        "list" | "ls" => cmd_list(parts.next(), io).await,
+        "read" | "r" => cmd_read(parts.next(), shadow, io).await,
+        "write" | "w" => cmd_write(parts.next(), parts.next(), shadow, io).await,
+        "dump" | "d" => cmd_dump(parts.next(), parts.next(), shadow, io).await,
+        "status" | "st" => cmd_status(shadow, io).await,
         _ => {
-            let _ = write!(out, "Unknown command: {}\r\n", cmd);
+            let mut buf: String<64> = String::new();
+            let _ = write!(buf, "Unknown command: {}\r\n", cmd);
+            let _ = io.write_all(buf.as_bytes()).await;
         }
     }
 }
 
 /// Help command.
-fn cmd_help(out: &mut String<OUT_BUF_CAP>) {
-    let _ = write!(
-        out,
-        "Commands:\r\n\
+async fn cmd_help<IO: Write>(io: &mut IO) {
+    let _ = io
+        .write_all(
+            b"Commands:\r\n\
          help          - Show this help\r\n\
          list [prefix] - List fields\r\n\
          read <field>  - Read register\r\n\
          write <f> <v> - Write register\r\n\
          dump <addr> <len> - Hex dump\r\n\
-         status        - Show status\r\n"
-    );
+         status        - Show status\r\n",
+        )
+        .await;
 }
 
-/// List command - list all fields matching optional prefix.
-fn cmd_list(prefix: Option<&str>, out: &mut String<OUT_BUF_CAP>) {
+/// List command - list all fields matching optional prefix (streaming).
+async fn cmd_list<IO: Write>(prefix: Option<&str>, io: &mut IO) {
     let prefix = prefix.unwrap_or("");
 
     for spec in open_servo_registry::all_fields() {
@@ -151,28 +148,30 @@ fn cmd_list(prefix: Option<&str>, out: &mut String<OUT_BUF_CAP>) {
                 Access::RWE => 'E',
                 Access::Reserved => '-',
             };
+            let mut line: String<64> = String::new();
             let _ = write!(
-                out,
+                line,
                 "{} 0x{:03X} {} {}\r\n",
                 access_ch,
                 spec.address,
                 spec.encoding.len(),
                 spec.name
             );
+            let _ = io.write_all(line.as_bytes()).await;
         }
     }
 }
 
 /// Read command - read a register by name or address.
-fn cmd_read<const N: usize>(
+async fn cmd_read<IO: Write, const N: usize>(
     field: Option<&str>,
     shadow: &ShadowStorage<N>,
-    out: &mut String<OUT_BUF_CAP>,
+    io: &mut IO,
 ) {
     let field = match field {
         Some(f) => f,
         None => {
-            let _ = write!(out, "Usage: read <name|0xADDR>\r\n");
+            let _ = io.write_all(b"Usage: read <name|0xADDR>\r\n").await;
             return;
         }
     };
@@ -180,7 +179,9 @@ fn cmd_read<const N: usize>(
     let spec = match lookup_field(field) {
         Some(s) => s,
         None => {
-            let _ = write!(out, "Field not found: {}\r\n", field);
+            let mut buf: String<64> = String::new();
+            let _ = write!(buf, "Field not found: {}\r\n", field);
+            let _ = io.write_all(buf.as_bytes()).await;
             return;
         }
     };
@@ -189,27 +190,29 @@ fn cmd_read<const N: usize>(
     let mut buf = [0u8; 4];
     let len = spec.encoding.len() as usize;
     if shadow.host_read(spec.address, &mut buf[..len]).is_err() {
-        let _ = write!(out, "Read error\r\n");
+        let _ = io.write_all(b"Read error\r\n").await;
         return;
     }
 
     // Format based on encoding
+    let mut out: String<OUT_BUF_CAP> = String::new();
     let _ = write!(out, "{} = ", spec.name);
-    format_value(&buf[..len], spec.encoding, out);
+    format_value(&buf[..len], spec.encoding, &mut out);
     let _ = write!(out, "\r\n");
+    let _ = io.write_all(out.as_bytes()).await;
 }
 
 /// Write command - write a register by name or address.
-fn cmd_write<const N: usize>(
+async fn cmd_write<IO: Write, const N: usize>(
     field: Option<&str>,
     value: Option<&str>,
     shadow: &ShadowStorage<N>,
-    out: &mut String<OUT_BUF_CAP>,
+    io: &mut IO,
 ) {
     let field = match field {
         Some(f) => f,
         None => {
-            let _ = write!(out, "Usage: write <name|0xADDR> <value>\r\n");
+            let _ = io.write_all(b"Usage: write <name|0xADDR> <value>\r\n").await;
             return;
         }
     };
@@ -217,7 +220,7 @@ fn cmd_write<const N: usize>(
     let value_str = match value {
         Some(v) => v,
         None => {
-            let _ = write!(out, "Usage: write <name|0xADDR> <value>\r\n");
+            let _ = io.write_all(b"Usage: write <name|0xADDR> <value>\r\n").await;
             return;
         }
     };
@@ -225,7 +228,9 @@ fn cmd_write<const N: usize>(
     let spec = match lookup_field(field) {
         Some(s) => s,
         None => {
-            let _ = write!(out, "Field not found: {}\r\n", field);
+            let mut buf: String<64> = String::new();
+            let _ = write!(buf, "Field not found: {}\r\n", field);
+            let _ = io.write_all(buf.as_bytes()).await;
             return;
         }
     };
@@ -233,12 +238,16 @@ fn cmd_write<const N: usize>(
     // Check access control
     match spec.access {
         Access::RO | Access::Reserved => {
-            let _ = write!(out, "Error: {} is read-only\r\n", spec.name);
+            let mut buf: String<64> = String::new();
+            let _ = write!(buf, "Error: {} is read-only\r\n", spec.name);
+            let _ = io.write_all(buf.as_bytes()).await;
             return;
         }
         Access::RWE => {
             if is_torque_enabled(shadow) {
-                let _ = write!(out, "Error: {} locked (torque enabled)\r\n", spec.name);
+                let mut buf: String<64> = String::new();
+                let _ = write!(buf, "Error: {} locked (torque enabled)\r\n", spec.name);
+                let _ = io.write_all(buf.as_bytes()).await;
                 return;
             }
         }
@@ -249,32 +258,36 @@ fn cmd_write<const N: usize>(
     let mut buf = [0u8; 4];
     let len = spec.encoding.len() as usize;
     if !parse_value(value_str, spec.encoding, &mut buf[..len]) {
+        let mut out: String<64> = String::new();
         let _ = write!(out, "Invalid value: {}\r\n", value_str);
+        let _ = io.write_all(out.as_bytes()).await;
         return;
     }
 
     // Write to shadow
     if shadow.host_write(spec.address, &buf[..len]).is_err() {
-        let _ = write!(out, "Write error\r\n");
+        let _ = io.write_all(b"Write error\r\n").await;
         return;
     }
 
+    let mut out: String<OUT_BUF_CAP> = String::new();
     let _ = write!(out, "OK: {} = ", spec.name);
-    format_value(&buf[..len], spec.encoding, out);
+    format_value(&buf[..len], spec.encoding, &mut out);
     let _ = write!(out, "\r\n");
+    let _ = io.write_all(out.as_bytes()).await;
 }
 
 /// Dump command - hex dump of shadow bytes.
-fn cmd_dump<const N: usize>(
+async fn cmd_dump<IO: Write, const N: usize>(
     addr: Option<&str>,
     len: Option<&str>,
     shadow: &ShadowStorage<N>,
-    out: &mut String<OUT_BUF_CAP>,
+    io: &mut IO,
 ) {
     let addr = match addr.and_then(parse_hex_or_dec) {
         Some(a) => a as u16,
         None => {
-            let _ = write!(out, "Usage: dump <0xADDR> <len>\r\n");
+            let _ = io.write_all(b"Usage: dump <0xADDR> <len>\r\n").await;
             return;
         }
     };
@@ -286,19 +299,21 @@ fn cmd_dump<const N: usize>(
 
     let mut buf = [0u8; 64];
     if shadow.host_read(addr, &mut buf[..len]).is_err() {
-        let _ = write!(out, "Read error\r\n");
+        let _ = io.write_all(b"Read error\r\n").await;
         return;
     }
 
+    let mut out: String<OUT_BUF_CAP> = String::new();
     let _ = write!(out, "0x{:03X}:", addr);
     for b in &buf[..len] {
         let _ = write!(out, " {:02X}", b);
     }
     let _ = write!(out, "\r\n");
+    let _ = io.write_all(out.as_bytes()).await;
 }
 
 /// Status command - show key telemetry fields.
-fn cmd_status<const N: usize>(shadow: &ShadowStorage<N>, out: &mut String<OUT_BUF_CAP>) {
+async fn cmd_status<IO: Write, const N: usize>(shadow: &ShadowStorage<N>, io: &mut IO) {
     // Operating mode
     let mut buf = [0u8; 4];
     let _ = shadow.host_read(vendor::addr::OPERATING_MODE, &mut buf[..1]);
@@ -328,6 +343,7 @@ fn cmd_status<const N: usize>(shadow: &ShadowStorage<N>, out: &mut String<OUT_BU
     let _ = shadow.host_read(vendor::addr::FAULT_STATUS, &mut buf[..1]);
     let fault = buf[0];
 
+    let mut out: String<OUT_BUF_CAP> = String::new();
     let _ = write!(
         out,
         "Mode: {} | Torque: {}\r\n\
@@ -335,6 +351,7 @@ fn cmd_status<const N: usize>(shadow: &ShadowStorage<N>, out: &mut String<OUT_BU
          Current: {} mA | Fault: 0x{:02X}\r\n",
         mode, torque, goal_pos, pres_pos, current, fault
     );
+    let _ = io.write_all(out.as_bytes()).await;
 }
 
 // ============================================================================
