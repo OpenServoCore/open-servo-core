@@ -1,7 +1,7 @@
 //! Main application state and UI.
 
 use crate::panels::{ControlPanel, FlashPanel, RegistryPanel, TelemetryPanel};
-use crate::rtt::{DefmtDecoder, RpcClient, RttEvent, RttSession};
+use crate::rtt::{DebugProbeInfo, DefmtDecoder, RpcClient, RttEvent, RttSession};
 use crate::Args;
 use egui::Context;
 use std::path::PathBuf;
@@ -81,13 +81,30 @@ impl LogLevel {
 pub struct ConnectRequest {
     pub elf_path: Option<PathBuf>,
     pub chip: Option<String>,
-    pub probe: Option<String>,
+    pub probe_idx: Option<usize>,
 }
 
 /// Commands to the connection thread.
 pub enum ConnectCommand {
     Disconnect,
     SendRpc(Vec<u8>),
+}
+
+/// Flash progress phase.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum FlashPhase {
+    Erasing,
+    Programming,
+    #[allow(dead_code)]
+    Verifying, // For future use
+}
+
+/// Flash progress info.
+#[derive(Debug, Clone)]
+pub struct FlashProgress {
+    pub phase: FlashPhase,
+    pub progress: f32, // 0.0 to 1.0
+    pub message: String,
 }
 
 /// Events from the connection thread.
@@ -97,6 +114,8 @@ pub enum ConnectEvent {
     Error(String),
     Log(LogEntry),
     RpcResponse(Vec<u8>),
+    FlashProgress(FlashProgress),
+    FlashComplete,
 }
 
 /// Main application.
@@ -120,6 +139,9 @@ pub struct OsctlApp {
 
     // RPC
     rpc_client: RpcClient,
+
+    // Flash progress (shown as modal)
+    flash_progress: Option<FlashProgress>,
 }
 
 #[derive(Clone)]
@@ -146,19 +168,20 @@ impl Default for LogFilter {
 }
 
 impl OsctlApp {
-    pub fn new(_cc: &eframe::CreationContext<'_>, args: Args) -> Self {
+    pub fn new(_cc: &eframe::CreationContext<'_>, args: Args, initial_probes: Vec<DebugProbeInfo>) -> Self {
         let mut app = Self {
             active_panel: ActivePanel::default(),
             connection_state: ConnectionState::default(),
             cmd_tx: None,
             event_rx: None,
-            flash_panel: FlashPanel::default(),
+            flash_panel: FlashPanel::with_probes(initial_probes),
             registry_panel: RegistryPanel::default(),
             telemetry_panel: TelemetryPanel::default(),
             control_panel: ControlPanel::default(),
             logs: Vec::new(),
             log_filter: LogFilter::default(),
             rpc_client: RpcClient::new(),
+            flash_progress: None,
         };
 
         // If an ELF path was provided, set it in the flash panel
@@ -168,7 +191,15 @@ impl OsctlApp {
 
         // Auto-connect if ELF provided or attach mode
         if args.elf_path.is_some() || args.attach {
-            app.start_connection(args.elf_path, args.chip, args.probe);
+            // Select probe (from command line or first available)
+            let probe_info = if let Some(ref selector) = args.probe {
+                // User specified a probe selector on command line
+                RttSession::select_probe(app.flash_panel.probes().to_vec(), Some(selector)).ok()
+            } else {
+                // Use first probe
+                app.flash_panel.get_probe(0).cloned()
+            };
+            app.start_connection(args.elf_path, args.chip, probe_info);
         }
 
         app
@@ -178,8 +209,18 @@ impl OsctlApp {
         &mut self,
         elf_path: Option<PathBuf>,
         chip: Option<String>,
-        probe: Option<String>,
+        probe_info: Option<DebugProbeInfo>,
     ) {
+        // Probe must be selected on main thread (macOS HID requirement)
+        let probe_info = match probe_info {
+            Some(p) => p,
+            None => {
+                self.connection_state = ConnectionState::Error("No probe selected".to_string());
+                self.add_log(LogLevel::Error, "system", "No probe selected");
+                return;
+            }
+        };
+
         let (cmd_tx, cmd_rx) = mpsc::channel();
         let (event_tx, event_rx) = mpsc::channel();
 
@@ -189,9 +230,9 @@ impl OsctlApp {
 
         let elf_for_decoder = elf_path.clone();
 
-        // Spawn connection thread
+        // Spawn connection thread (probe already selected, safe to open on background thread)
         thread::spawn(move || {
-            connection_thread(cmd_rx, event_tx, elf_path, elf_for_decoder, chip, probe);
+            connection_thread(cmd_rx, event_tx, elf_path, elf_for_decoder, chip, probe_info);
         });
     }
 
@@ -217,14 +258,17 @@ impl OsctlApp {
                         chip,
                         version: None,
                     };
+                    self.flash_progress = None;
                     self.add_log(LogLevel::Info, "system", "Connected to target");
                 }
                 ConnectEvent::Disconnected => {
                     self.connection_state = ConnectionState::Disconnected;
+                    self.flash_progress = None;
                     self.add_log(LogLevel::Info, "system", "Disconnected");
                 }
                 ConnectEvent::Error(msg) => {
                     self.connection_state = ConnectionState::Error(msg.clone());
+                    self.flash_progress = None;
                     self.add_log(LogLevel::Error, "system", &msg);
                 }
                 ConnectEvent::Log(entry) => {
@@ -237,6 +281,12 @@ impl OsctlApp {
                 ConnectEvent::RpcResponse(data) => {
                     // Handle RPC responses
                     self.handle_rpc_response(&data);
+                }
+                ConnectEvent::FlashProgress(progress) => {
+                    self.flash_progress = Some(progress);
+                }
+                ConnectEvent::FlashComplete => {
+                    self.flash_progress = None;
                 }
             }
         }
@@ -292,7 +342,11 @@ impl eframe::App for OsctlApp {
         // Process pending connect request from flash panel
         if let Some(req) = self.flash_panel.pending_connect.take() {
             if !matches!(self.connection_state, ConnectionState::Connected { .. } | ConnectionState::Connecting) {
-                self.start_connection(req.elf_path, req.chip, req.probe);
+                // Get the selected probe from flash panel
+                let probe_info = req.probe_idx.and_then(|idx| {
+                    self.flash_panel.get_probe(idx).cloned()
+                });
+                self.start_connection(req.elf_path, req.chip, probe_info);
             }
         }
 
@@ -383,8 +437,37 @@ impl eframe::App for OsctlApp {
                     });
             });
 
+        // Flash progress modal (blocks interaction with rest of UI)
+        if let Some(ref progress) = self.flash_progress {
+            egui::Window::new("Flashing...")
+                .collapsible(false)
+                .resizable(false)
+                .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+                .show(ctx, |ui| {
+                    ui.set_min_width(300.0);
+
+                    let phase_label = match progress.phase {
+                        FlashPhase::Erasing => "Erasing",
+                        FlashPhase::Programming => "Programming",
+                        FlashPhase::Verifying => "Verifying",
+                    };
+
+                    ui.label(phase_label);
+                    ui.add(egui::ProgressBar::new(progress.progress).show_percentage());
+
+                    if !progress.message.is_empty() {
+                        ui.label(&progress.message);
+                    }
+                });
+        }
+
         // Central panel with active panel content
         egui::CentralPanel::default().show(ctx, |ui| {
+            // Disable UI during flashing
+            if self.flash_progress.is_some() {
+                ui.disable();
+            }
+
             let is_connected = matches!(self.connection_state, ConnectionState::Connected { .. });
             let cmd_tx = self.cmd_tx.clone();
 
@@ -416,20 +499,41 @@ fn connection_thread(
     elf_path: Option<PathBuf>,
     elf_for_decoder: Option<PathBuf>,
     chip: Option<String>,
-    probe: Option<String>,
+    probe_info: DebugProbeInfo,
 ) {
-    // Try to connect
+    // Create a channel for flash progress that forwards to event_tx
+    let (progress_tx, progress_rx) = mpsc::channel::<FlashProgress>();
+    let event_tx_clone = event_tx.clone();
+
+    // Spawn a thread to forward progress events
+    let progress_forwarder = std::thread::spawn(move || {
+        while let Ok(progress) = progress_rx.recv() {
+            if event_tx_clone.send(ConnectEvent::FlashProgress(progress)).is_err() {
+                break;
+            }
+        }
+    });
+
+    // Try to connect (flashing happens here if elf_path provided)
     let session = match RttSession::connect(
+        probe_info,
         elf_path.as_deref(),
         chip.as_deref(),
-        probe.as_deref(),
+        Some(&progress_tx),
     ) {
         Ok(s) => s,
         Err(e) => {
+            drop(progress_tx); // Stop the forwarder
+            let _ = progress_forwarder.join();
             let _ = event_tx.send(ConnectEvent::Error(e.to_string()));
             return;
         }
     };
+
+    // Signal flash complete and stop forwarder
+    let _ = event_tx.send(ConnectEvent::FlashComplete);
+    drop(progress_tx);
+    let _ = progress_forwarder.join();
 
     let _ = event_tx.send(ConnectEvent::Connected {
         chip: session.chip().to_string(),

@@ -36,11 +36,12 @@ pub struct Args {
 }
 
 fn main() -> Result<()> {
-    // Initialize tracing
+    // Initialize tracing (silence verbose probe-rs logs)
     tracing_subscriber::fmt()
         .with_env_filter(
             tracing_subscriber::EnvFilter::from_default_env()
-                .add_directive(tracing::Level::INFO.into()),
+                .add_directive(tracing::Level::INFO.into())
+                .add_directive("probe_rs::flashing=warn".parse().unwrap()),
         )
         .init();
 
@@ -49,6 +50,9 @@ fn main() -> Result<()> {
     if !args.attach && args.elf_path.is_none() {
         anyhow::bail!("Either provide an ELF path or use --attach");
     }
+
+    // Enumerate probes on main thread BEFORE starting event loop (required on macOS)
+    let initial_probes = rtt::RttSession::list_probes();
 
     // Run the GUI
     let options = eframe::NativeOptions {
@@ -61,7 +65,7 @@ fn main() -> Result<()> {
     eframe::run_native(
         "osctl - Open Servo Control",
         options,
-        Box::new(|cc| Ok(Box::new(app::OsctlApp::new(cc, args)))),
+        Box::new(|cc| Ok(Box::new(app::OsctlApp::new(cc, args, initial_probes)))),
     )
     .map_err(|e| anyhow::anyhow!("eframe error: {}", e))
 }

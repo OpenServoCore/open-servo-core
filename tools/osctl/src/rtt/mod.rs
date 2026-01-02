@@ -7,5 +7,5 @@ pub mod session;
 pub mod transport;
 
 pub use defmt_decoder::DefmtDecoder;
-pub use session::{RttEvent, RttSession};
+pub use session::{DebugProbeInfo, RttEvent, RttSession};
 pub use transport::{RpcClient, RpcResponse};

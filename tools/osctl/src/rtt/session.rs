@@ -1,14 +1,18 @@
 //! RTT session management using probe-rs.
 
 use anyhow::{Context, Result};
-use probe_rs::flashing::{download_file, Format};
+use probe_rs::flashing::{DownloadOptions, FlashProgress as ProbeFlashProgress, Format, ProgressEvent};
 use probe_rs::probe::list::Lister;
+pub use probe_rs::probe::DebugProbeInfo;
 use probe_rs::rtt::Rtt;
 use probe_rs::{Permissions, Session};
+use std::cell::Cell;
 use std::path::Path;
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::thread::{self, JoinHandle};
 use std::time::Duration;
+
+use crate::app::{FlashPhase, FlashProgress};
 
 /// RTT channel indices.
 pub mod channels {
@@ -51,31 +55,19 @@ pub struct RttSession {
 }
 
 impl RttSession {
-    /// List available debug probes.
-    pub fn list_probes() -> Vec<String> {
+    /// List available debug probes (must be called from main thread on macOS).
+    pub fn list_probes() -> Vec<DebugProbeInfo> {
         let lister = Lister::new();
-        lister
-            .list_all()
-            .into_iter()
-            .map(|p| format!("{} ({})", p.identifier, p.serial_number.unwrap_or_default()))
-            .collect()
+        lister.list_all()
     }
 
-    /// Connect to a probe and optionally flash firmware.
-    pub fn connect(
-        elf_path: Option<&Path>,
-        chip: Option<&str>,
-        probe_selector: Option<&str>,
-    ) -> Result<Self> {
-        let lister = Lister::new();
-        let probes = lister.list_all();
-
+    /// Select a probe by selector string, or return the first one.
+    pub fn select_probe(probes: Vec<DebugProbeInfo>, selector: Option<&str>) -> Result<DebugProbeInfo> {
         if probes.is_empty() {
             anyhow::bail!("No debug probes found");
         }
 
-        // Select probe
-        let probe_info = if let Some(selector) = probe_selector {
+        if let Some(selector) = selector {
             probes
                 .into_iter()
                 .find(|p| {
@@ -85,11 +77,22 @@ impl RttSession {
                             .map(|s| s.contains(selector))
                             .unwrap_or(false)
                 })
-                .context("No matching probe found")?
+                .context("No matching probe found")
         } else {
-            probes.into_iter().next().unwrap()
-        };
+            Ok(probes.into_iter().next().unwrap())
+        }
+    }
 
+    /// Connect to a pre-selected probe and optionally flash firmware.
+    ///
+    /// Note: On macOS, probe enumeration (list_probes/select_probe) must be done
+    /// on the main thread. This function can be called from any thread.
+    pub fn connect(
+        probe_info: DebugProbeInfo,
+        elf_path: Option<&Path>,
+        chip: Option<&str>,
+        progress_tx: Option<&Sender<FlashProgress>>,
+    ) -> Result<Self> {
         let probe = probe_info.open().context("Failed to open probe")?;
 
         // Determine chip
@@ -108,7 +111,82 @@ impl RttSession {
 
         // Flash if ELF provided
         if let Some(elf) = elf_path {
-            download_file(&mut session, elf, Format::Elf).context("Failed to flash firmware")?;
+            // Track progress state (Cell for interior mutability in Fn closure)
+            let erase_done = Cell::new(0u64);
+            let program_total = Cell::new(0u64);
+            let program_done = Cell::new(0u64);
+
+            let progress_tx_clone = progress_tx.cloned();
+            let progress = ProbeFlashProgress::new(move |event| {
+                if let Some(ref tx) = progress_tx_clone {
+                    match event {
+                        ProgressEvent::Initialized { .. } => {
+                            let _ = tx.send(FlashProgress {
+                                phase: FlashPhase::Erasing,
+                                progress: 0.0,
+                                message: String::new(),
+                            });
+                        }
+                        ProgressEvent::StartedErasing => {
+                            erase_done.set(0);
+                        }
+                        ProgressEvent::SectorErased { size, .. } => {
+                            let done = erase_done.get() + size;
+                            erase_done.set(done);
+                            let _ = tx.send(FlashProgress {
+                                phase: FlashPhase::Erasing,
+                                progress: 0.5, // Indeterminate - we don't know total
+                                message: format!("{} bytes erased", done),
+                            });
+                        }
+                        ProgressEvent::FinishedErasing => {
+                            let _ = tx.send(FlashProgress {
+                                phase: FlashPhase::Erasing,
+                                progress: 1.0,
+                                message: "Erase complete".to_string(),
+                            });
+                        }
+                        ProgressEvent::StartedProgramming { length } => {
+                            program_total.set(length);
+                            program_done.set(0);
+                            let _ = tx.send(FlashProgress {
+                                phase: FlashPhase::Programming,
+                                progress: 0.0,
+                                message: format!("0 / {} bytes", length),
+                            });
+                        }
+                        ProgressEvent::PageProgrammed { size, .. } => {
+                            let done = program_done.get() + size as u64;
+                            program_done.set(done);
+                            let total = program_total.get();
+                            let progress_val = if total > 0 {
+                                (done as f32 / total as f32).min(1.0)
+                            } else {
+                                0.5
+                            };
+                            let _ = tx.send(FlashProgress {
+                                phase: FlashPhase::Programming,
+                                progress: progress_val,
+                                message: format!("{} / {} bytes", done, total),
+                            });
+                        }
+                        ProgressEvent::FinishedProgramming => {
+                            let _ = tx.send(FlashProgress {
+                                phase: FlashPhase::Programming,
+                                progress: 1.0,
+                                message: "Programming complete".to_string(),
+                            });
+                        }
+                        _ => {}
+                    }
+                }
+            });
+
+            let mut options = DownloadOptions::default();
+            options.progress = Some(progress);
+
+            probe_rs::flashing::download_file_with_options(&mut session, elf, Format::Elf, options)
+                .context("Failed to flash firmware")?;
         }
 
         // Reset and run
