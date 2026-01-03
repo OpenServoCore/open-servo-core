@@ -43,7 +43,7 @@ impl RttChannels {
     ///
     /// This initializes RTT with:
     /// - Up channel 0: "defmt" (512 bytes, NoBlockSkip)
-    /// - Up channel 1: "rpc" (1024 bytes, NoBlockTrim)
+    /// - Up channel 1: "rpc" (512 bytes, NoBlockTrim)
     /// - Down channel 0: "rpc" (256 bytes)
     pub fn init(rpc_signal: &'static RpcTickSignal) -> Self {
         let channels = rtt_init! {
@@ -54,7 +54,7 @@ impl RttChannels {
                     name: "defmt"
                 }
                 1: {
-                    size: 1024,
+                    size: 512,
                     mode: ChannelMode::NoBlockTrim,
                     name: "rpc"
                 }

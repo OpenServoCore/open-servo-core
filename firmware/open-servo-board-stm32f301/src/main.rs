@@ -128,9 +128,9 @@ async fn rtt_tasks() {
 
 /// RPC service task.
 async fn run_rpc_service(rpc_io: RttRpcIo) {
-    // Buffer for RPC transport
-    static RPC_BUF: StaticCell<[u8; 512]> = StaticCell::new();
-    let buf = RPC_BUF.init([0u8; 512]);
+    // Buffer for RPC transport (COBS max for 128-byte msg is ~131 bytes)
+    static RPC_BUF: StaticCell<[u8; 192]> = StaticCell::new();
+    let buf = RPC_BUF.init([0u8; 192]);
 
     // Create RPC service with the IO and shadow storage
     let mut service = RpcService::new(rpc_io, buf, get_shadow_storage());

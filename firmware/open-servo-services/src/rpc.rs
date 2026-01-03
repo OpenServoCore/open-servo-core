@@ -50,7 +50,6 @@ impl<'a, IO: Read + Write, const N: usize> RpcService<'a, IO, N> {
     /// Run the RPC service loop.
     pub async fn run(&mut self) -> ! {
         let mut rx_buf = [0u8; MAX_MSG_SIZE];
-        let mut work_buf = [0u8; MAX_MSG_SIZE];
 
         loop {
             // If streaming, wait for either RPC data or stream timer
@@ -70,8 +69,7 @@ impl<'a, IO: Read + Write, const N: usize> RpcService<'a, IO, N> {
                 let timeout = config.next_send.saturating_duration_since(now);
                 match embassy_time::with_timeout(timeout, self.transport.recv(&mut rx_buf)).await {
                     Ok(Ok(len)) if len > 0 => {
-                        work_buf[..len].copy_from_slice(&rx_buf[..len]);
-                        self.handle_request(&work_buf[..len]).await;
+                        self.handle_request(&rx_buf[..len]).await;
                     }
                     Ok(Ok(_)) | Ok(Err(_)) | Err(_) => {
                         // Timeout or no data - loop will check stream timer
@@ -81,8 +79,7 @@ impl<'a, IO: Read + Write, const N: usize> RpcService<'a, IO, N> {
                 // Not streaming - just wait for RPC data
                 match self.transport.recv(&mut rx_buf).await {
                     Ok(len) if len > 0 => {
-                        work_buf[..len].copy_from_slice(&rx_buf[..len]);
-                        self.handle_request(&work_buf[..len]).await;
+                        self.handle_request(&rx_buf[..len]).await;
                     }
                     Ok(_) | Err(_) => {}
                 }
@@ -103,9 +100,7 @@ impl<'a, IO: Read + Write, const N: usize> RpcService<'a, IO, N> {
             let mut buf = [0u8; 4];
             // Read 4 bytes for each address (simplification)
             if self.shadow.host_read(addr, &mut buf).is_ok() {
-                for &b in &buf {
-                    let _ = data.push(b);
-                }
+                let _ = data.extend_from_slice(&buf);
             }
         }
 
@@ -136,17 +131,17 @@ impl<'a, IO: Read + Write, const N: usize> RpcService<'a, IO, N> {
         let seq = u32::from_le_bytes(data[8..12].try_into().unwrap_or_default());
         let payload = &data[12..];
 
-        // Response buffer
-        let mut resp_payload: Vec<u8, 128> = Vec::new();
-        let mut has_response = false;
+        // Encode directly to response buffer (no intermediate Vec)
+        let mut resp_buf = [0u8; MAX_MSG_SIZE];
+        resp_buf[0..8].copy_from_slice(&key.to_le_bytes());
+        resp_buf[8..12].copy_from_slice(&seq.to_le_bytes());
 
-        match key {
+        let payload_len = match key {
             KEY_SYS_PING => {
                 let resp: RpcResp<()> = RpcResp::ok(());
-                if let Ok(encoded) = postcard::to_slice(&resp, &mut [0u8; 16]) {
-                    let _ = resp_payload.extend_from_slice(encoded);
-                    has_response = true;
-                }
+                postcard::to_slice(&resp, &mut resp_buf[12..])
+                    .map(|s| s.len())
+                    .unwrap_or(0)
             }
             KEY_SYS_INFO => {
                 let info = DeviceInfo {
@@ -156,55 +151,50 @@ impl<'a, IO: Read + Write, const N: usize> RpcService<'a, IO, N> {
                     motor_type: 0,
                 };
                 let resp: RpcResp<DeviceInfo> = RpcResp::ok(info);
-                if let Ok(encoded) = postcard::to_slice(&resp, &mut [0u8; 64]) {
-                    let _ = resp_payload.extend_from_slice(encoded);
-                    has_response = true;
-                }
+                postcard::to_slice(&resp, &mut resp_buf[12..])
+                    .map(|s| s.len())
+                    .unwrap_or(0)
             }
             KEY_REG_READ => {
                 if let Ok(req) = postcard::from_bytes::<ReadRegReq>(payload) {
                     let resp = self.handle_read_reg(req);
-                    if let Ok(encoded) = postcard::to_slice(&resp, &mut [0u8; 64]) {
-                        let _ = resp_payload.extend_from_slice(encoded);
-                        has_response = true;
-                    }
+                    postcard::to_slice(&resp, &mut resp_buf[12..])
+                        .map(|s| s.len())
+                        .unwrap_or(0)
+                } else {
+                    0
                 }
             }
             KEY_REG_WRITE => {
                 if let Ok(req) = postcard::from_bytes::<WriteRegReq>(payload) {
                     let resp = self.handle_write_reg(req);
-                    if let Ok(encoded) = postcard::to_slice(&resp, &mut [0u8; 64]) {
-                        let _ = resp_payload.extend_from_slice(encoded);
-                        has_response = true;
-                    }
+                    postcard::to_slice(&resp, &mut resp_buf[12..])
+                        .map(|s| s.len())
+                        .unwrap_or(0)
+                } else {
+                    0
                 }
             }
             KEY_REG_STREAM_START => {
                 if let Ok(req) = postcard::from_bytes::<RegStreamStartReq>(payload) {
                     let resp = self.handle_stream_start(req);
-                    if let Ok(encoded) = postcard::to_slice(&resp, &mut [0u8; 64]) {
-                        let _ = resp_payload.extend_from_slice(encoded);
-                        has_response = true;
-                    }
+                    postcard::to_slice(&resp, &mut resp_buf[12..])
+                        .map(|s| s.len())
+                        .unwrap_or(0)
+                } else {
+                    0
                 }
             }
             KEY_REG_STREAM_STOP => {
                 let resp = self.handle_stream_stop();
-                if let Ok(encoded) = postcard::to_slice(&resp, &mut [0u8; 64]) {
-                    let _ = resp_payload.extend_from_slice(encoded);
-                    has_response = true;
-                }
+                postcard::to_slice(&resp, &mut resp_buf[12..])
+                    .map(|s| s.len())
+                    .unwrap_or(0)
             }
-            _ => {}
-        }
+            _ => 0,
+        };
 
-        // Send response
-        if has_response {
-            let mut resp_buf = [0u8; MAX_MSG_SIZE];
-            resp_buf[0..8].copy_from_slice(&key.to_le_bytes());
-            resp_buf[8..12].copy_from_slice(&seq.to_le_bytes());
-            let payload_len = resp_payload.len();
-            resp_buf[12..12 + payload_len].copy_from_slice(&resp_payload);
+        if payload_len > 0 {
             let _ = self.transport.send(&resp_buf[..12 + payload_len]).await;
         }
     }
@@ -215,9 +205,7 @@ impl<'a, IO: Read + Write, const N: usize> RpcService<'a, IO, N> {
 
         if self.shadow.host_read(req.addr, &mut buf[..len]).is_ok() {
             let mut data = Vec::new();
-            for &b in &buf[..len] {
-                let _ = data.push(b);
-            }
+            let _ = data.extend_from_slice(&buf[..len]);
             RpcResp::ok(data)
         } else {
             RpcResp::err(RpcError::InvalidAddress)

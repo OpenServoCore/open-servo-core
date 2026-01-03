@@ -6,7 +6,7 @@ use embedded_io_async::{Read, Write};
 use heapless::Vec;
 
 /// Maximum RPC message size.
-pub const MAX_MSG_SIZE: usize = 256;
+pub const MAX_MSG_SIZE: usize = 128;
 
 /// COBS-encoded buffer size (worst case: every byte is 0x00).
 pub const COBS_BUF_SIZE: usize = MAX_MSG_SIZE + (MAX_MSG_SIZE / 254) + 2;
