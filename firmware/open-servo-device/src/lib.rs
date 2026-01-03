@@ -26,6 +26,7 @@ pub mod comms_service;
 pub mod device;
 pub mod executor;
 pub mod main_loop;
+pub mod reg_ops;
 pub mod shadow_storage;
 pub mod uart_bus;
 

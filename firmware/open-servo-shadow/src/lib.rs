@@ -626,6 +626,24 @@ impl<'a> KernelView<'a> {
             }
         }
     }
+
+    /// Mark dirty bits for a specific byte range.
+    ///
+    /// Used by facade translation to mark vendor targets dirty after writes.
+    pub fn mark_range_dirty(&mut self, offset: u16, len: u16) {
+        if len == 0 {
+            return;
+        }
+        let start_block = offset as usize / DIRTY_BLOCK_SIZE;
+        let end_block = (offset as usize + len as usize).saturating_sub(1) / DIRTY_BLOCK_SIZE;
+        for block in start_block..=end_block {
+            let word_idx = block / 32;
+            let bit_idx = block % 32;
+            if word_idx < self.dirty.len() {
+                self.dirty[word_idx] |= 1 << bit_idx;
+            }
+        }
+    }
 }
 
 #[cfg(test)]
@@ -832,5 +850,39 @@ mod tests {
         // Should be able to access vendor region at end
         let mut buf = [0u8; 4];
         assert!(table.read(0x3FC, &mut buf).is_ok()); // Last 4 bytes
+    }
+
+    #[test]
+    fn test_kernel_view_mark_range_dirty() {
+        let mut table = ShadowTable::<1024>::new();
+
+        {
+            let (bytes, dirty) = table.as_mut_slices();
+            let mut kernel = KernelView::new(bytes, dirty);
+
+            // Initially no dirty bits
+            assert!(!kernel.any_dirty());
+
+            // Mark a single block dirty (offset 0x50, len 4 = block 5)
+            kernel.mark_range_dirty(0x50, 4);
+            assert!(kernel.is_range_dirty(0x50, 4));
+            assert!(kernel.any_dirty());
+
+            // Clear and verify
+            kernel.clear_range_dirty(0x50, 4);
+            assert!(!kernel.is_range_dirty(0x50, 4));
+            assert!(!kernel.any_dirty());
+
+            // Mark multiple blocks dirty (offset 0x10, len 20 spans blocks 1 and 2)
+            kernel.mark_range_dirty(0x10, 20);
+            assert!(kernel.is_range_dirty(0x10, 20));
+            assert!(kernel.is_range_dirty(0x10, 1)); // block 1
+            assert!(kernel.is_range_dirty(0x20, 1)); // block 2
+
+            // Zero length should be no-op
+            kernel.clear_range_dirty(0, 1024);
+            kernel.mark_range_dirty(0x100, 0);
+            assert!(!kernel.is_range_dirty(0x100, 4));
+        }
     }
 }
