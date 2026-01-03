@@ -199,17 +199,22 @@ pub fn translate_dirty_facade_to_vendor(view: &mut KernelView<'_>) {
 /// Reads vendor registers, encodes to facade format, writes facade.
 /// Does NOT mark dirty (these are RO from host perspective).
 ///
+/// Safe write-back: only updates facade if the facade range is NOT dirty,
+/// avoiding clobber of pending host writes.
+///
 /// This function should be called after `kernel.publish_telemetry()`.
 pub fn publish_vendor_to_facade(view: &mut KernelView<'_>) {
-    let ctx = CodecCtx::from_view(&*view);
-
     // present_position (vendor 516 -> facade 132, len 4, Position codec)
-    let mut buf = [0u8; 4];
-    if view.read(vendor_addr::PRESENT_POS_CDEG, &mut buf).is_ok() {
-        let cdeg = i32::from_le_bytes(buf);
-        let pulses = encode_position(cdeg, &ctx);
-        let _ = view.write(facade_addr::PRESENT_POSITION, &pulses.to_le_bytes());
-        // NOTE: Do NOT mark dirty - this is RO telemetry
+    // Safe write-back: only update facade if NOT dirty (avoid clobbering host pending writes)
+    if !view.is_range_dirty(facade_addr::PRESENT_POSITION, 4) {
+        let ctx = CodecCtx::from_view(&*view);
+        let mut buf = [0u8; 4];
+        if view.read(vendor_addr::PRESENT_POS_CDEG, &mut buf).is_ok() {
+            let cdeg = i32::from_le_bytes(buf);
+            let pulses = encode_position(cdeg, &ctx);
+            let _ = view.write(facade_addr::PRESENT_POSITION, &pulses.to_le_bytes());
+            // NOTE: Do NOT mark dirty - this is RO telemetry
+        }
     }
 }
 
@@ -414,5 +419,51 @@ mod tests {
         // Should NOT clamp even if outside limits
         let cdeg = decode_position(2000, &ctx);
         assert_eq!(cdeg, pulses_to_cdeg(2000)); // ~17600, not clamped
+    }
+
+    #[test]
+    fn test_publish_vendor_to_facade_skips_when_facade_dirty() {
+        let mut table = ShadowTable::<1024>::new();
+
+        // Seed context (all fields read by CodecCtx::from_view)
+        table
+            .write_no_dirty(vendor_addr::OPERATING_MODE, &[0])
+            .unwrap();
+        table
+            .write_no_dirty(vendor_addr::SERVO_POS_KIND, &[0])
+            .unwrap();
+        table
+            .write_no_dirty(vendor_addr::POS_MIN_LIMIT_CDEG, &(-18000i32).to_le_bytes())
+            .unwrap();
+        table
+            .write_no_dirty(vendor_addr::POS_MAX_LIMIT_CDEG, &(18000i32).to_le_bytes())
+            .unwrap();
+
+        // Seed vendor present_pos_cdeg (kernel telemetry)
+        table
+            .write_no_dirty(vendor_addr::PRESENT_POS_CDEG, &(9000i32).to_le_bytes())
+            .unwrap();
+
+        // Host writes to facade addr 132 (marks dirty) - simulates pending write
+        let host_bytes = 0xDEADBEEFu32.to_le_bytes();
+        table
+            .write(facade_addr::PRESENT_POSITION, &host_bytes)
+            .unwrap();
+        assert!(table.is_range_dirty(facade_addr::PRESENT_POSITION, 4));
+
+        // Publish (should skip write because facade is dirty)
+        {
+            let (bytes, dirty) = table.as_mut_slices();
+            let mut view = KernelView::new(bytes, dirty);
+            publish_vendor_to_facade(&mut view);
+        }
+
+        // Assert: facade 132 remains the host-written bytes (NOT overwritten)
+        let mut buf = [0u8; 4];
+        table.read(facade_addr::PRESENT_POSITION, &mut buf).unwrap();
+        assert_eq!(buf, host_bytes, "facade should retain host-written bytes");
+
+        // Assert: dirty bit remains set
+        assert!(table.is_range_dirty(facade_addr::PRESENT_POSITION, 4));
     }
 }
