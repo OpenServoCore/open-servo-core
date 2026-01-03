@@ -355,7 +355,9 @@ mod tests {
 
         // 2. Host writes facade goal_position (marks dirty)
         // 1024 pulses should convert to ~9011 cdeg
-        shadow.host_write(facade_addr::GOAL_POSITION, &1024i32.to_le_bytes()).unwrap();
+        shadow
+            .host_write(facade_addr::GOAL_POSITION, &1024i32.to_le_bytes())
+            .unwrap();
 
         // Verify facade is dirty before running medium commit
         shadow.kernel_with_view(|view| {

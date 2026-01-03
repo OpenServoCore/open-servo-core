@@ -80,13 +80,19 @@ impl CodecCtx {
             ServoPosKind::Bounded
         };
 
-        let pos_min_cdeg = if view.read(vendor_addr::POS_MIN_LIMIT_CDEG, &mut buf4).is_ok() {
+        let pos_min_cdeg = if view
+            .read(vendor_addr::POS_MIN_LIMIT_CDEG, &mut buf4)
+            .is_ok()
+        {
             i32::from_le_bytes(buf4)
         } else {
             i32::MIN
         };
 
-        let pos_max_cdeg = if view.read(vendor_addr::POS_MAX_LIMIT_CDEG, &mut buf4).is_ok() {
+        let pos_max_cdeg = if view
+            .read(vendor_addr::POS_MAX_LIMIT_CDEG, &mut buf4)
+            .is_ok()
+        {
             i32::from_le_bytes(buf4)
         } else {
             i32::MAX
@@ -247,8 +253,12 @@ mod tests {
         let mut table = ShadowTable::<1024>::new();
 
         // Seed context: operating_mode=0, pos_kind=0 (Bounded), min=-18000, max=18000
-        table.write_no_dirty(vendor_addr::OPERATING_MODE, &[0]).unwrap();
-        table.write_no_dirty(vendor_addr::SERVO_POS_KIND, &[0]).unwrap();
+        table
+            .write_no_dirty(vendor_addr::OPERATING_MODE, &[0])
+            .unwrap();
+        table
+            .write_no_dirty(vendor_addr::SERVO_POS_KIND, &[0])
+            .unwrap();
         table
             .write_no_dirty(vendor_addr::POS_MIN_LIMIT_CDEG, &(-18000i32).to_le_bytes())
             .unwrap();
@@ -257,7 +267,9 @@ mod tests {
             .unwrap();
 
         // Host writes facade goal_position (marks dirty)
-        table.write(facade_addr::GOAL_POSITION, &1024i32.to_le_bytes()).unwrap();
+        table
+            .write(facade_addr::GOAL_POSITION, &1024i32.to_le_bytes())
+            .unwrap();
         assert!(table.is_range_dirty(facade_addr::GOAL_POSITION, 4));
 
         // Translate (scope KernelView to drop before reading table)
@@ -309,7 +321,9 @@ mod tests {
 
         // Host writes facade goal_pwm (i16 LE)
         let pwm: i16 = -500;
-        table.write(facade_addr::GOAL_PWM, &pwm.to_le_bytes()).unwrap();
+        table
+            .write(facade_addr::GOAL_PWM, &pwm.to_le_bytes())
+            .unwrap();
         assert!(table.is_range_dirty(facade_addr::GOAL_PWM, 2));
 
         // Translate
@@ -334,7 +348,9 @@ mod tests {
         let mut table = ShadowTable::<1024>::new();
 
         // Seed context
-        table.write_no_dirty(vendor_addr::SERVO_POS_KIND, &[0]).unwrap();
+        table
+            .write_no_dirty(vendor_addr::SERVO_POS_KIND, &[0])
+            .unwrap();
         table
             .write_no_dirty(vendor_addr::POS_MIN_LIMIT_CDEG, &(-18000i32).to_le_bytes())
             .unwrap();
