@@ -79,6 +79,11 @@ embassy-time-driver = { version = "0.2", default-features = false }
 # Async IO traits
 embedded-io-async = "0.6"
 
+# Storage traits and flash management
+embedded-storage = "0.3"
+embedded-storage-async = "0.4"
+sequential-storage = { version = "4.0", default-features = false }
+
 [profile.dev]
 panic = "abort"
 opt-level = "z"  # Optimize for size

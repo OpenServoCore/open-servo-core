@@ -29,6 +29,7 @@ embassy-time = { workspace = true, features = ["generic-queue-8"] }
 open-servo-device = { path = "../open-servo-device", default-features = false }
 open-servo-kernel-api = { path = "../open-servo-kernel-api", default-features = false }
 open-servo-registry = { path = "../open-servo-registry", default-features = false }
+open-servo-shadow = { path = "../open-servo-shadow", default-features = false }
 open-servo-units = { path = "../open-servo-units", default-features = false }
 open-servo-rpc = { path = "../open-servo-rpc", default-features = false }
 
@@ -39,6 +40,11 @@ cobs = { version = "0.3", default-features = false }
 
 # Async IO traits
 embedded-io-async = { workspace = true }
+
+# Storage traits and flash management
+embedded-storage = { workspace = true }
+embedded-storage-async = { workspace = true }
+sequential-storage = { workspace = true }
 
 # Shared deps
 heapless = { workspace = true }

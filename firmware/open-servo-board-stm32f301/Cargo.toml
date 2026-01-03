@@ -37,6 +37,10 @@ heapless = { workspace = true }
 critical-section = { workspace = true }
 static_cell = "2"
 
+# Storage
+embedded-storage = { workspace = true }
+embedded-storage-async = { workspace = true }
+
 # Debug/logging
 panic-rtt-target = { workspace = true }
 

@@ -2,9 +2,9 @@
 //!
 //! Per CLAUDE.md: core defines schemas; board provides values.
 
-use open_servo_hw::v2::capability::{MotorType, SensorCapabilities, ServoPosKind};
 #[cfg(any(feature = "voltage-sense-motor", feature = "temp-sense-motor"))]
 use open_servo_hw::v2::capability::SensorCapability;
+use open_servo_hw::v2::capability::{MotorType, SensorCapabilities, ServoPosKind};
 use open_servo_kernel::{KernelConfig, PidGains};
 use open_servo_math::CentiDeg;
 

@@ -22,7 +22,10 @@ struct WakeEntry {
 
 impl WakeEntry {
     const fn new() -> Self {
-        Self { at: u64::MAX, waker: None }
+        Self {
+            at: u64::MAX,
+            waker: None,
+        }
     }
 }
 
@@ -74,7 +77,12 @@ impl Driver for Tim2Driver {
             // Find a free slot or the slot with matching waker
             let mut slot = None;
             for (i, entry) in wakers.iter().enumerate() {
-                if entry.waker.as_ref().map(|w| w.will_wake(waker)).unwrap_or(false) {
+                if entry
+                    .waker
+                    .as_ref()
+                    .map(|w| w.will_wake(waker))
+                    .unwrap_or(false)
+                {
                     slot = Some(i);
                     break;
                 }

@@ -21,9 +21,14 @@ use open_servo_device::executor::ControlExecutor;
 use open_servo_hw_utils::rtt_async::{RttChannels, RttRpcIo};
 use open_servo_kernel::ServoKernel;
 #[cfg(feature = "osctl")]
+use open_servo_services::persist::PersistTask;
+#[cfg(feature = "osctl")]
 use open_servo_services::RpcService;
 #[cfg(feature = "osctl")]
 use static_cell::StaticCell;
+
+#[cfg(feature = "osctl")]
+use open_servo_board_stm32f301::flash::{EepromFlash, EEPROM_FLASH_SIZE};
 
 use open_servo_board_stm32f301::config::kernel_config;
 use open_servo_board_stm32f301::init::{
@@ -32,10 +37,8 @@ use open_servo_board_stm32f301::init::{
     start_usart_rx_dma,
 };
 #[cfg(feature = "osctl")]
-use open_servo_board_stm32f301::resources::get_shadow_storage;
+use open_servo_board_stm32f301::resources::{get_shadow_storage, persist_signal, rpc_tick};
 use open_servo_board_stm32f301::resources::{init_queues, set_isr_resources};
-#[cfg(feature = "osctl")]
-use open_servo_board_stm32f301::resources::rpc_tick;
 
 // Define defmt timestamp using TIM2 monotonic counter (1µs resolution)
 #[cfg(feature = "defmt")]
@@ -119,6 +122,27 @@ fn main() -> ! {
     }
 
     // =========================================================================
+    // Initialize persist task (restore EEPROM from flash)
+    // =========================================================================
+    #[cfg(feature = "osctl")]
+    {
+        static PERSIST_TASK: StaticCell<PersistTask<EepromFlash>> = StaticCell::new();
+
+        // Create flash driver and persist task
+        let flash = unsafe { EepromFlash::new() };
+        let persist_task = PERSIST_TASK.init(PersistTask::new(flash, 0..EEPROM_FLASH_SIZE as u32));
+
+        // Initialize from flash (blocking on startup is ok)
+        // Note: We use block_on here since we're before the executor starts
+        // For now, skip async init and just log if there's an error
+        #[cfg(feature = "defmt")]
+        defmt::info!("Persist task created, will init in executor");
+
+        // Store reference for the async task
+        unsafe { PERSIST_TASK_REF = Some(persist_task as *mut _) };
+    }
+
+    // =========================================================================
     // Run Embassy executor with RPC service (osctl only)
     // =========================================================================
     #[cfg(feature = "osctl")]
@@ -130,6 +154,7 @@ fn main() -> ! {
         // Run executor with tasks
         executor.run(|spawner| {
             spawner.must_spawn(rtt_tasks());
+            spawner.must_spawn(persist_task_runner());
         });
     }
 
@@ -137,6 +162,50 @@ fn main() -> ! {
     #[cfg(not(feature = "osctl"))]
     loop {
         cortex_m::asm::wfi();
+    }
+}
+
+/// Static reference to persist task for async access.
+#[cfg(feature = "osctl")]
+static mut PERSIST_TASK_REF: Option<*mut PersistTask<EepromFlash>> = None;
+
+/// Get persist task reference.
+///
+/// # Safety
+/// Must only be called after init and from the persist task runner.
+#[cfg(feature = "osctl")]
+unsafe fn get_persist_task() -> &'static mut PersistTask<EepromFlash> {
+    &mut *PERSIST_TASK_REF.unwrap()
+}
+
+/// Persist task runner - waits for signal and persists EEPROM.
+#[cfg(feature = "osctl")]
+#[embassy_executor::task]
+async fn persist_task_runner() {
+    let signal = persist_signal();
+    let shadow = get_shadow_storage();
+
+    // Initialize from flash
+    let task = unsafe { get_persist_task() };
+    match task.init(shadow).await {
+        Ok(()) => {
+            #[cfg(feature = "defmt")]
+            defmt::info!("Persist init: {:?}", task.last_result());
+        }
+        Err(e) => {
+            #[cfg(feature = "defmt")]
+            defmt::error!("Persist init failed: {:?}", e);
+        }
+    }
+
+    // Main loop: wait for signal, then persist
+    loop {
+        signal.wait().await;
+
+        let result = task.persist(shadow).await;
+
+        #[cfg(feature = "defmt")]
+        defmt::info!("Persist result: {:?}", result);
     }
 }
 

@@ -12,6 +12,7 @@
 pub mod adc_config;
 pub mod calibration;
 pub mod config;
+pub mod flash;
 pub mod init;
 pub mod isr;
 pub mod monotonic;

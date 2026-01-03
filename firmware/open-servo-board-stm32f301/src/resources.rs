@@ -88,6 +88,15 @@ pub fn rpc_tick() -> &'static Signal<CriticalSectionRawMutex, ()> {
     &RPC_TICK
 }
 
+/// Signal for persist service (dxl_req → persist task).
+static PERSIST_SIGNAL: Signal<CriticalSectionRawMutex, ()> = Signal::new();
+
+/// Get reference to persist signal.
+#[inline]
+pub fn persist_signal() -> &'static Signal<CriticalSectionRawMutex, ()> {
+    &PERSIST_SIGNAL
+}
+
 // =============================================================================
 // Initialization functions
 // =============================================================================

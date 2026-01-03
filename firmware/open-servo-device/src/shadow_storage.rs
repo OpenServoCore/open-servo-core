@@ -17,8 +17,8 @@ use core::cell::UnsafeCell;
 
 use heapless::Vec;
 use open_servo_kernel_api::shadow::{
-    HostView, KernelView, ShadowError, ShadowTable, StageResult, StagedWrite, StagingBuffer,
-    DIRTY_BLOCK_SIZE,
+    layout, HostView, KernelView, ShadowError, ShadowTable, StageResult, StagedWrite,
+    StagingBuffer, DIRTY_BLOCK_SIZE,
 };
 
 /// Staging buffer capacity (bytes).
@@ -181,6 +181,18 @@ impl<const N: usize> ShadowStorage<N> {
             let mut view = HostView::new(bytes, dirty);
             view.write(offset, data)
         })
+    }
+
+    /// Write bytes to shadow table and check if EEPROM region was touched.
+    ///
+    /// Returns `Ok(true)` if the write succeeded and touched EEPROM region,
+    /// `Ok(false)` if the write succeeded but didn't touch EEPROM.
+    pub fn host_write_check_eeprom(&self, offset: u16, data: &[u8]) -> Result<bool, ShadowError> {
+        self.host_write(offset, data)?;
+        // Check if any byte in the write range is in EEPROM region (0x00-0x3F)
+        let end = offset.saturating_add(data.len() as u16);
+        let touched_eeprom = offset < layout::EEPROM_START + layout::EEPROM_LEN && end > 0;
+        Ok(touched_eeprom)
     }
 
     /// Access host view within critical section (scoped borrow).

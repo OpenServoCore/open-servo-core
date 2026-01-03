@@ -2,6 +2,7 @@
 //!
 //! Embassy async task that handles RPC requests over RTT.
 
+use crate::persist::PersistSignal;
 use crate::rpc_transport::{RttTransport, MAX_MSG_SIZE};
 use embassy_time::{Duration, Instant};
 use embedded_io_async::{Read, Write};
@@ -12,6 +13,7 @@ use open_servo_rpc::{
     KEY_REG_DATA, KEY_REG_READ, KEY_REG_STREAM_START, KEY_REG_STREAM_STOP, KEY_REG_WRITE,
     KEY_SYS_INFO, KEY_SYS_PING,
 };
+use open_servo_shadow::layout::EEPROM_LEN;
 
 /// Maximum packed size for streaming data.
 const MAX_STREAM_DATA_SIZE: usize = 64;
