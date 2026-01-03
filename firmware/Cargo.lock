@@ -580,6 +580,7 @@ dependencies = [
  "heapless 0.8.0",
  "open-servo-hw",
  "open-servo-kernel-api",
+ "open-servo-registry",
  "open-servo-units",
 ]
 
