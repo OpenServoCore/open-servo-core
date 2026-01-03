@@ -37,6 +37,7 @@
 #![no_std]
 
 pub mod eeprom;
+pub mod facade;
 pub mod ram;
 pub mod reg;
 pub mod spec;
