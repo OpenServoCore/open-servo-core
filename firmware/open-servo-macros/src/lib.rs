@@ -49,6 +49,7 @@
 //! - `impl Channels { pub fn new(...) -> Self; pub fn vrefint(&self) -> u16; ... }`
 
 mod adc_channels;
+mod facademap;
 mod regmap;
 
 use proc_macro::TokenStream;
@@ -73,6 +74,34 @@ pub fn derive_adc_channels(input: TokenStream) -> TokenStream {
     let input = parse_macro_input!(input as DeriveInput);
 
     match adc_channels::impl_adc_channels(&input) {
+        Ok(tokens) => tokens.into(),
+        Err(e) => e.to_compile_error().into(),
+    }
+}
+
+/// Derive macro for facade↔vendor mapping tables.
+///
+/// Generates a const array of `MapEntry` for translation dispatch.
+///
+/// # Example
+///
+/// ```ignore
+/// #[derive(FacadeMap)]
+/// #[facademap(table = "FACADE_MAPPINGS")]
+/// struct Mappings {
+///     #[map(
+///         src = crate::ram::addr::TORQUE_ENABLE, src_len = 1,
+///         dst = crate::vendor::addr::TORQUE_ENABLE, dst_len = 1,
+///         dir = Both, codec = Identity
+///     )]
+///     torque_enable: (),
+/// }
+/// ```
+#[proc_macro_derive(FacadeMap, attributes(facademap, map))]
+pub fn derive_facademap(input: TokenStream) -> TokenStream {
+    let input = parse_macro_input!(input as DeriveInput);
+
+    match facademap::impl_facademap(&input) {
         Ok(tokens) => tokens.into(),
         Err(e) => e.to_compile_error().into(),
     }

@@ -5,35 +5,126 @@
 //! - `goal_pwm`: facade 100 <-> vendor 583
 //! - `goal_position`: facade 116 <-> vendor 512 (with position codec)
 //! - `present_position`: facade 132 <-> vendor 516 (RO publish only)
+//!
+//! # Buffer Limitation
+//!
+//! Translation buffers are sized to [`MAX_MAP_LEN`] bytes (currently 4).
+//! All mapping entries must have `src_len` and `dst_len` <= `MAX_MAP_LEN`.
 
+use open_servo_macros::FacadeMap;
 use open_servo_shadow::KernelView;
 
+use crate::ram::addr as ram_addr;
+use crate::vendor::addr as vendor_addr;
+
 // ============================================================================
-// Address Constants
+// Constants
 // ============================================================================
 
-/// Facade (DXL-compatible RAM) addresses.
-mod facade_addr {
-    pub const TORQUE_ENABLE: u16 = 64;
-    pub const GOAL_PWM: u16 = 100;
-    pub const GOAL_POSITION: u16 = 116;
-    pub const PRESENT_POSITION: u16 = 132;
+/// Maximum byte length for a single mapping entry.
+///
+/// Translation buffers are sized to this value. All `src_len` and `dst_len`
+/// in [`FACADE_MAPPINGS`] must be <= this constant.
+pub const MAX_MAP_LEN: usize = 4;
+
+// ============================================================================
+// Mapping Types
+// ============================================================================
+
+/// Direction for facade↔vendor translation.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum MapDirection {
+    /// Facade → Vendor on dirty write.
+    ToVendor,
+    /// Vendor → Facade on publish (RO telemetry).
+    ToFacade,
+    /// Bidirectional (RW with read-back).
+    Both,
 }
 
-/// Vendor register addresses.
-mod vendor_addr {
-    pub const GOAL_POS_CDEG: u16 = 512;
-    pub const PRESENT_POS_CDEG: u16 = 516;
-    pub const POS_MIN_LIMIT_CDEG: u16 = 530;
-    pub const POS_MAX_LIMIT_CDEG: u16 = 534;
-    pub const TORQUE_ENABLE: u16 = 581;
-    pub const OPERATING_MODE: u16 = 582;
-    pub const GOAL_PWM: u16 = 583;
-    pub const SERVO_POS_KIND: u16 = 625;
+/// Codec kind for translation dispatch.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum CodecKind {
+    /// Copy bytes unchanged (requires equal src/dst lengths).
+    Identity,
+    /// Pulse ↔ centidegree conversion with optional clamping.
+    Position,
+}
+
+/// A single facade↔vendor mapping entry.
+#[derive(Clone, Copy, Debug)]
+pub struct MapEntry {
+    /// Field name for debugging.
+    pub name: &'static str,
+    /// Source address (facade for ToVendor, vendor for ToFacade).
+    pub src_addr: u16,
+    /// Source byte length.
+    pub src_len: u8,
+    /// Destination address (vendor for ToVendor, facade for ToFacade).
+    pub dst_addr: u16,
+    /// Destination byte length.
+    pub dst_len: u8,
+    /// Translation direction.
+    pub direction: MapDirection,
+    /// Codec to apply during translation.
+    pub codec: CodecKind,
 }
 
 // ============================================================================
-// Types
+// Generated Mapping Table
+// ============================================================================
+
+/// Facade↔Vendor mapping declarations.
+///
+/// This struct is only used for the derive macro. The actual mappings are
+/// in [`FACADE_MAPPINGS`].
+#[derive(FacadeMap)]
+#[facademap(table = "FACADE_MAPPINGS")]
+#[allow(dead_code)]
+struct FacadeMappings {
+    #[map(
+        src = ram_addr::TORQUE_ENABLE,
+        src_len = 1,
+        dst = vendor_addr::TORQUE_ENABLE,
+        dst_len = 1,
+        dir = Both,
+        codec = Identity
+    )]
+    torque_enable: (),
+
+    #[map(
+        src = ram_addr::GOAL_PWM,
+        src_len = 2,
+        dst = vendor_addr::GOAL_PWM,
+        dst_len = 2,
+        dir = ToVendor,
+        codec = Identity
+    )]
+    goal_pwm: (),
+
+    #[map(
+        src = ram_addr::GOAL_POSITION,
+        src_len = 4,
+        dst = vendor_addr::GOAL_POS_CDEG,
+        dst_len = 4,
+        dir = ToVendor,
+        codec = Position
+    )]
+    goal_position: (),
+
+    #[map(
+        src = ram_addr::PRESENT_POSITION,
+        src_len = 4,
+        dst = vendor_addr::PRESENT_POS_CDEG,
+        dst_len = 4,
+        dir = ToFacade,
+        codec = Position
+    )]
+    present_position: (),
+}
+
+// ============================================================================
+// Codec Types
 // ============================================================================
 
 /// Servo position mode (bounded vs wrap).
@@ -54,17 +145,17 @@ impl From<u8> for ServoPosKind {
 }
 
 /// Codec context read from vendor registers.
-struct CodecCtx {
+pub struct CodecCtx {
     #[allow(dead_code)]
-    operating_mode: u8,
-    servo_pos_kind: ServoPosKind,
-    pos_min_cdeg: i32,
-    pos_max_cdeg: i32,
+    pub operating_mode: u8,
+    pub servo_pos_kind: ServoPosKind,
+    pub pos_min_cdeg: i32,
+    pub pos_max_cdeg: i32,
 }
 
 impl CodecCtx {
     /// Read codec context from vendor registers via KernelView.
-    fn from_view(view: &KernelView<'_>) -> Self {
+    pub fn from_view(view: &KernelView<'_>) -> Self {
         let mut buf1 = [0u8; 1];
         let mut buf4 = [0u8; 4];
 
@@ -108,7 +199,59 @@ impl CodecCtx {
 }
 
 // ============================================================================
-// Position Codec
+// Codec Trait and Implementations
+// ============================================================================
+
+/// Trait for facade↔vendor codecs.
+pub trait Codec {
+    /// Decode src (facade) bytes to dst (vendor) bytes.
+    fn decode(src: &[u8], dst: &mut [u8], ctx: &CodecCtx);
+    /// Encode src (vendor) bytes to dst (facade) bytes.
+    fn encode(src: &[u8], dst: &mut [u8], ctx: &CodecCtx);
+}
+
+/// Identity codec: copy bytes unchanged.
+pub struct IdentityCodec;
+
+impl Codec for IdentityCodec {
+    fn decode(src: &[u8], dst: &mut [u8], _ctx: &CodecCtx) {
+        debug_assert_eq!(
+            src.len(),
+            dst.len(),
+            "Identity codec requires equal lengths"
+        );
+        dst.copy_from_slice(src);
+    }
+
+    fn encode(src: &[u8], dst: &mut [u8], _ctx: &CodecCtx) {
+        debug_assert_eq!(
+            src.len(),
+            dst.len(),
+            "Identity codec requires equal lengths"
+        );
+        dst.copy_from_slice(src);
+    }
+}
+
+/// Position codec: pulse ↔ centidegree conversion with optional clamping.
+pub struct PositionCodec;
+
+impl Codec for PositionCodec {
+    fn decode(src: &[u8], dst: &mut [u8], ctx: &CodecCtx) {
+        let pulses = i32::from_le_bytes([src[0], src[1], src[2], src[3]]);
+        let cdeg = decode_position(pulses, ctx);
+        dst.copy_from_slice(&cdeg.to_le_bytes());
+    }
+
+    fn encode(src: &[u8], dst: &mut [u8], ctx: &CodecCtx) {
+        let cdeg = i32::from_le_bytes([src[0], src[1], src[2], src[3]]);
+        let pulses = encode_position(cdeg, ctx);
+        dst.copy_from_slice(&pulses.to_le_bytes());
+    }
+}
+
+// ============================================================================
+// Position Codec Helpers
 // ============================================================================
 
 /// Decode pulses (facade i32) to centidegrees (vendor i32).
@@ -149,47 +292,61 @@ fn encode_position(cdeg: i32, ctx: &CodecCtx) -> i32 {
 }
 
 // ============================================================================
+// Codec Dispatch
+// ============================================================================
+
+/// Apply decode (facade → vendor) for the given codec kind.
+fn apply_codec_decode(codec: CodecKind, src: &[u8], dst: &mut [u8], ctx: &CodecCtx) {
+    match codec {
+        CodecKind::Identity => IdentityCodec::decode(src, dst, ctx),
+        CodecKind::Position => PositionCodec::decode(src, dst, ctx),
+    }
+}
+
+/// Apply encode (vendor → facade) for the given codec kind.
+fn apply_codec_encode(codec: CodecKind, src: &[u8], dst: &mut [u8], ctx: &CodecCtx) {
+    match codec {
+        CodecKind::Identity => IdentityCodec::encode(src, dst, ctx),
+        CodecKind::Position => PositionCodec::encode(src, dst, ctx),
+    }
+}
+
+// ============================================================================
 // Translation Functions
 // ============================================================================
 
 /// Translate dirty RW facade writes into canonical vendor registers.
 ///
-/// For each RW facade field:
+/// For each RW facade field in [`FACADE_MAPPINGS`]:
 /// - If facade range is dirty: read facade, decode, write vendor, mark vendor dirty, clear facade dirty
 ///
 /// This function should be called before `kernel.commit_shadow()`.
 pub fn translate_dirty_facade_to_vendor(view: &mut KernelView<'_>) {
     let ctx = CodecCtx::from_view(&*view);
 
-    // 1. torque_enable (facade 64 -> vendor 581, len 1, Bool/identity)
-    if view.is_range_dirty(facade_addr::TORQUE_ENABLE, 1) {
-        let mut buf = [0u8; 1];
-        if view.read(facade_addr::TORQUE_ENABLE, &mut buf).is_ok() {
-            let _ = view.write(vendor_addr::TORQUE_ENABLE, &buf);
-            view.mark_range_dirty(vendor_addr::TORQUE_ENABLE, 1);
-            view.clear_range_dirty(facade_addr::TORQUE_ENABLE, 1);
+    for entry in FACADE_MAPPINGS {
+        // Skip entries not in ToVendor direction
+        if !matches!(entry.direction, MapDirection::ToVendor | MapDirection::Both) {
+            continue;
         }
-    }
 
-    // 2. goal_pwm (facade 100 -> vendor 583, len 2, Identity i16 LE)
-    if view.is_range_dirty(facade_addr::GOAL_PWM, 2) {
-        let mut buf = [0u8; 2];
-        if view.read(facade_addr::GOAL_PWM, &mut buf).is_ok() {
-            let _ = view.write(vendor_addr::GOAL_PWM, &buf);
-            view.mark_range_dirty(vendor_addr::GOAL_PWM, 2);
-            view.clear_range_dirty(facade_addr::GOAL_PWM, 2);
+        // Skip if facade range is not dirty
+        if !view.is_range_dirty(entry.src_addr, entry.src_len as u16) {
+            continue;
         }
-    }
 
-    // 3. goal_position (facade 116 -> vendor 512, len 4, Position codec)
-    if view.is_range_dirty(facade_addr::GOAL_POSITION, 4) {
-        let mut buf = [0u8; 4];
-        if view.read(facade_addr::GOAL_POSITION, &mut buf).is_ok() {
-            let pulses = i32::from_le_bytes(buf);
-            let cdeg = decode_position(pulses, &ctx);
-            let _ = view.write(vendor_addr::GOAL_POS_CDEG, &cdeg.to_le_bytes());
-            view.mark_range_dirty(vendor_addr::GOAL_POS_CDEG, 4);
-            view.clear_range_dirty(facade_addr::GOAL_POSITION, 4);
+        let mut src_buf = [0u8; MAX_MAP_LEN];
+        let mut dst_buf = [0u8; MAX_MAP_LEN];
+        let src = &mut src_buf[..entry.src_len as usize];
+        let dst = &mut dst_buf[..entry.dst_len as usize];
+
+        if view.read(entry.src_addr, src).is_ok() {
+            apply_codec_decode(entry.codec, src, dst, &ctx);
+            // Only mark vendor dirty / clear facade dirty if write succeeds
+            if view.write(entry.dst_addr, dst).is_ok() {
+                view.mark_range_dirty(entry.dst_addr, entry.dst_len as u16);
+                view.clear_range_dirty(entry.src_addr, entry.src_len as u16);
+            }
         }
     }
 }
@@ -204,16 +361,28 @@ pub fn translate_dirty_facade_to_vendor(view: &mut KernelView<'_>) {
 ///
 /// This function should be called after `kernel.publish_telemetry()`.
 pub fn publish_vendor_to_facade(view: &mut KernelView<'_>) {
-    // present_position (vendor 516 -> facade 132, len 4, Position codec)
-    // Safe write-back: only update facade if NOT dirty (avoid clobbering host pending writes)
-    if !view.is_range_dirty(facade_addr::PRESENT_POSITION, 4) {
-        let ctx = CodecCtx::from_view(&*view);
-        let mut buf = [0u8; 4];
-        if view.read(vendor_addr::PRESENT_POS_CDEG, &mut buf).is_ok() {
-            let cdeg = i32::from_le_bytes(buf);
-            let pulses = encode_position(cdeg, &ctx);
-            let _ = view.write(facade_addr::PRESENT_POSITION, &pulses.to_le_bytes());
-            // NOTE: Do NOT mark dirty - this is RO telemetry
+    let ctx = CodecCtx::from_view(&*view);
+
+    for entry in FACADE_MAPPINGS {
+        // Skip entries not in ToFacade direction
+        if !matches!(entry.direction, MapDirection::ToFacade | MapDirection::Both) {
+            continue;
+        }
+
+        // Safe write-back: skip if facade is dirty (pending host write)
+        if view.is_range_dirty(entry.src_addr, entry.src_len as u16) {
+            continue;
+        }
+
+        let mut src_buf = [0u8; MAX_MAP_LEN];
+        let mut dst_buf = [0u8; MAX_MAP_LEN];
+        let src = &mut src_buf[..entry.dst_len as usize]; // read from vendor (dst_len)
+        let dst = &mut dst_buf[..entry.src_len as usize]; // write to facade (src_len)
+
+        if view.read(entry.dst_addr, src).is_ok() {
+            apply_codec_encode(entry.codec, src, dst, &ctx);
+            // Write to facade; ignore errors (RO telemetry, no dirty marking)
+            let _ = view.write(entry.src_addr, dst);
         }
     }
 }
@@ -273,9 +442,9 @@ mod tests {
 
         // Host writes facade goal_position (marks dirty)
         table
-            .write(facade_addr::GOAL_POSITION, &1024i32.to_le_bytes())
+            .write(ram_addr::GOAL_POSITION, &1024i32.to_le_bytes())
             .unwrap();
-        assert!(table.is_range_dirty(facade_addr::GOAL_POSITION, 4));
+        assert!(table.is_range_dirty(ram_addr::GOAL_POSITION, 4));
 
         // Translate (scope KernelView to drop before reading table)
         {
@@ -292,7 +461,7 @@ mod tests {
 
         // Assert: vendor range dirty, facade range not dirty
         assert!(table.is_range_dirty(vendor_addr::GOAL_POS_CDEG, 4));
-        assert!(!table.is_range_dirty(facade_addr::GOAL_POSITION, 4));
+        assert!(!table.is_range_dirty(ram_addr::GOAL_POSITION, 4));
     }
 
     #[test]
@@ -300,8 +469,8 @@ mod tests {
         let mut table = ShadowTable::<1024>::new();
 
         // Host writes facade torque_enable
-        table.write(facade_addr::TORQUE_ENABLE, &[1]).unwrap();
-        assert!(table.is_range_dirty(facade_addr::TORQUE_ENABLE, 1));
+        table.write(ram_addr::TORQUE_ENABLE, &[1]).unwrap();
+        assert!(table.is_range_dirty(ram_addr::TORQUE_ENABLE, 1));
 
         // Translate
         {
@@ -317,7 +486,7 @@ mod tests {
 
         // Assert: vendor dirty, facade not dirty
         assert!(table.is_range_dirty(vendor_addr::TORQUE_ENABLE, 1));
-        assert!(!table.is_range_dirty(facade_addr::TORQUE_ENABLE, 1));
+        assert!(!table.is_range_dirty(ram_addr::TORQUE_ENABLE, 1));
     }
 
     #[test]
@@ -326,10 +495,8 @@ mod tests {
 
         // Host writes facade goal_pwm (i16 LE)
         let pwm: i16 = -500;
-        table
-            .write(facade_addr::GOAL_PWM, &pwm.to_le_bytes())
-            .unwrap();
-        assert!(table.is_range_dirty(facade_addr::GOAL_PWM, 2));
+        table.write(ram_addr::GOAL_PWM, &pwm.to_le_bytes()).unwrap();
+        assert!(table.is_range_dirty(ram_addr::GOAL_PWM, 2));
 
         // Translate
         {
@@ -345,7 +512,7 @@ mod tests {
 
         // Assert: vendor dirty, facade not dirty
         assert!(table.is_range_dirty(vendor_addr::GOAL_PWM, 2));
-        assert!(!table.is_range_dirty(facade_addr::GOAL_PWM, 2));
+        assert!(!table.is_range_dirty(ram_addr::GOAL_PWM, 2));
     }
 
     #[test]
@@ -377,12 +544,12 @@ mod tests {
 
         // Assert: facade 132 has expected pulses
         let mut buf = [0u8; 4];
-        table.read(facade_addr::PRESENT_POSITION, &mut buf).unwrap();
+        table.read(ram_addr::PRESENT_POSITION, &mut buf).unwrap();
         let pulses = i32::from_le_bytes(buf);
         assert_eq!(pulses, cdeg_to_pulses(9000)); // ~1023
 
         // Assert: facade range is NOT dirty
-        assert!(!table.is_range_dirty(facade_addr::PRESENT_POSITION, 4));
+        assert!(!table.is_range_dirty(ram_addr::PRESENT_POSITION, 4));
     }
 
     #[test]
@@ -447,9 +614,9 @@ mod tests {
         // Host writes to facade addr 132 (marks dirty) - simulates pending write
         let host_bytes = 0xDEADBEEFu32.to_le_bytes();
         table
-            .write(facade_addr::PRESENT_POSITION, &host_bytes)
+            .write(ram_addr::PRESENT_POSITION, &host_bytes)
             .unwrap();
-        assert!(table.is_range_dirty(facade_addr::PRESENT_POSITION, 4));
+        assert!(table.is_range_dirty(ram_addr::PRESENT_POSITION, 4));
 
         // Publish (should skip write because facade is dirty)
         {
@@ -460,10 +627,117 @@ mod tests {
 
         // Assert: facade 132 remains the host-written bytes (NOT overwritten)
         let mut buf = [0u8; 4];
-        table.read(facade_addr::PRESENT_POSITION, &mut buf).unwrap();
+        table.read(ram_addr::PRESENT_POSITION, &mut buf).unwrap();
         assert_eq!(buf, host_bytes, "facade should retain host-written bytes");
 
         // Assert: dirty bit remains set
-        assert!(table.is_range_dirty(facade_addr::PRESENT_POSITION, 4));
+        assert!(table.is_range_dirty(ram_addr::PRESENT_POSITION, 4));
+    }
+
+    // ========================================================================
+    // New tests for Ticket 6
+    // ========================================================================
+
+    #[test]
+    fn test_mapping_table_has_expected_entries() {
+        // Verify the generated mapping table has 4 entries with correct addresses
+        assert_eq!(FACADE_MAPPINGS_COUNT, 4);
+        assert_eq!(FACADE_MAPPINGS.len(), 4);
+
+        // Check each entry
+        let torque = &FACADE_MAPPINGS[0];
+        assert_eq!(torque.name, "torque_enable");
+        assert_eq!(torque.src_addr, ram_addr::TORQUE_ENABLE);
+        assert_eq!(torque.dst_addr, vendor_addr::TORQUE_ENABLE);
+        assert_eq!(torque.src_len, 1);
+        assert_eq!(torque.dst_len, 1);
+        assert_eq!(torque.direction, MapDirection::Both);
+        assert_eq!(torque.codec, CodecKind::Identity);
+
+        let goal_pwm = &FACADE_MAPPINGS[1];
+        assert_eq!(goal_pwm.name, "goal_pwm");
+        assert_eq!(goal_pwm.src_addr, ram_addr::GOAL_PWM);
+        assert_eq!(goal_pwm.dst_addr, vendor_addr::GOAL_PWM);
+        assert_eq!(goal_pwm.src_len, 2);
+        assert_eq!(goal_pwm.dst_len, 2);
+        assert_eq!(goal_pwm.direction, MapDirection::ToVendor);
+        assert_eq!(goal_pwm.codec, CodecKind::Identity);
+
+        let goal_pos = &FACADE_MAPPINGS[2];
+        assert_eq!(goal_pos.name, "goal_position");
+        assert_eq!(goal_pos.src_addr, ram_addr::GOAL_POSITION);
+        assert_eq!(goal_pos.dst_addr, vendor_addr::GOAL_POS_CDEG);
+        assert_eq!(goal_pos.src_len, 4);
+        assert_eq!(goal_pos.dst_len, 4);
+        assert_eq!(goal_pos.direction, MapDirection::ToVendor);
+        assert_eq!(goal_pos.codec, CodecKind::Position);
+
+        let present_pos = &FACADE_MAPPINGS[3];
+        assert_eq!(present_pos.name, "present_position");
+        assert_eq!(present_pos.src_addr, ram_addr::PRESENT_POSITION);
+        assert_eq!(present_pos.dst_addr, vendor_addr::PRESENT_POS_CDEG);
+        assert_eq!(present_pos.src_len, 4);
+        assert_eq!(present_pos.dst_len, 4);
+        assert_eq!(present_pos.direction, MapDirection::ToFacade);
+        assert_eq!(present_pos.codec, CodecKind::Position);
+    }
+
+    #[test]
+    fn test_ctx_builder_bounded_vs_wrap360_affects_clamping() {
+        let mut table = ShadowTable::<1024>::new();
+
+        // Test 1: Bounded mode - should clamp
+        table
+            .write_no_dirty(vendor_addr::OPERATING_MODE, &[0])
+            .unwrap();
+        table
+            .write_no_dirty(vendor_addr::SERVO_POS_KIND, &[0]) // Bounded
+            .unwrap();
+        table
+            .write_no_dirty(vendor_addr::POS_MIN_LIMIT_CDEG, &(-9000i32).to_le_bytes())
+            .unwrap();
+        table
+            .write_no_dirty(vendor_addr::POS_MAX_LIMIT_CDEG, &(9000i32).to_le_bytes())
+            .unwrap();
+
+        // Write a large pulse value that exceeds limits
+        table
+            .write(ram_addr::GOAL_POSITION, &2000i32.to_le_bytes()) // ~17600 cdeg
+            .unwrap();
+
+        {
+            let (bytes, dirty) = table.as_mut_slices();
+            let mut view = KernelView::new(bytes, dirty);
+            translate_dirty_facade_to_vendor(&mut view);
+        }
+
+        let mut buf = [0u8; 4];
+        table.read(vendor_addr::GOAL_POS_CDEG, &mut buf).unwrap();
+        let cdeg_bounded = i32::from_le_bytes(buf);
+        assert_eq!(cdeg_bounded, 9000, "Bounded mode should clamp to max");
+
+        // Test 2: Wrap360 mode - should NOT clamp
+        table
+            .write_no_dirty(vendor_addr::SERVO_POS_KIND, &[1]) // Wrap360
+            .unwrap();
+
+        // Write the same large pulse value again
+        table
+            .write(ram_addr::GOAL_POSITION, &2000i32.to_le_bytes())
+            .unwrap();
+
+        {
+            let (bytes, dirty) = table.as_mut_slices();
+            let mut view = KernelView::new(bytes, dirty);
+            translate_dirty_facade_to_vendor(&mut view);
+        }
+
+        table.read(vendor_addr::GOAL_POS_CDEG, &mut buf).unwrap();
+        let cdeg_wrap = i32::from_le_bytes(buf);
+        assert_eq!(
+            cdeg_wrap,
+            pulses_to_cdeg(2000),
+            "Wrap360 mode should NOT clamp"
+        );
     }
 }
