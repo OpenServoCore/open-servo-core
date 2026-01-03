@@ -19,9 +19,9 @@ pub mod channels {
     /// defmt log output (target → host)
     pub const DEFMT_UP: usize = 0;
     /// RPC responses + telemetry (target → host)
-    pub const RPC_UP: usize = 2;
+    pub const RPC_UP: usize = 1;
     /// RPC requests (host → target)
-    pub const RPC_DOWN: usize = 1;
+    pub const RPC_DOWN: usize = 0;
 }
 
 /// Commands sent to the RTT polling thread.

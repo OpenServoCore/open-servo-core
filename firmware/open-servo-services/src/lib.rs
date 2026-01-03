@@ -16,7 +16,7 @@
 //!                ↑ KernelOp         KernelResult ↓
 //! ┌─────────────────────────────────────────────────┐
 //! │  Embassy Executor (main) - Services             │
-//! │    dxl_rx, dxl_req, persist, debug_repl, etc.   │
+//! │    dxl_rx, dxl_req, persist, rpc, etc.          │
 //! └─────────────────────────────────────────────────┘
 //! ```
 //!
@@ -32,7 +32,6 @@
 //! - [`dxl_rx`]: Parse DXL frames from UART RX buffer
 //! - [`dxl_req`]: Handle DXL requests, dispatch to kernel or shadow
 //! - [`persist`]: EEPROM/flash persistence on signal
-//! - [`debug_shell`]: Debug shell over RTT (not DXL bus)
 //!
 //! ## Usage
 //!
@@ -48,7 +47,6 @@
 //! ```
 
 // Task modules
-pub mod debug_shell;
 pub mod dxl_req;
 pub mod dxl_rx;
 pub mod persist;
@@ -62,7 +60,6 @@ pub use embassy_sync::channel::Channel;
 pub use embassy_sync::signal::Signal;
 
 // Task type re-exports
-pub use debug_shell::run_debug_shell;
 pub use dxl_req::{DxlReqTask, KernelResultSignal, Response};
 pub use dxl_rx::{DxlRxTask, OpChannel, OP_CHANNEL_CAPACITY};
 pub use persist::{PersistResult, PersistSignal, PersistTask};

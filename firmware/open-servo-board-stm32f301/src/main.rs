@@ -6,7 +6,7 @@
 //!
 //! Implements the executor-based architecture:
 //! - ADC DMA ISR owns the kernel (single-writer)
-//! - Embassy executor runs debug shell in main context
+//! - Embassy executor runs RPC service in main context
 //! - Two-phase init: configure_* then start_*
 
 use panic_rtt_target as _;
@@ -17,7 +17,7 @@ use embassy_executor::Executor;
 use open_servo_device::executor::ControlExecutor;
 use open_servo_hw_utils::rtt_async::{RttChannels, RttRpcIo};
 use open_servo_kernel::ServoKernel;
-use open_servo_services::{run_debug_shell, RpcService};
+use open_servo_services::RpcService;
 use static_cell::StaticCell;
 
 use open_servo_board_stm32f301::config::kernel_config;
@@ -27,7 +27,7 @@ use open_servo_board_stm32f301::init::{
     start_usart_rx_dma,
 };
 use open_servo_board_stm32f301::resources::{
-    get_shadow_storage, init_queues, rpc_tick, set_isr_resources, shell_tick,
+    get_shadow_storage, init_queues, rpc_tick, set_isr_resources,
 };
 
 // Define defmt timestamp using TIM2 monotonic counter (1µs resolution)
@@ -41,8 +41,8 @@ defmt::timestamp!("{=u32:us}", {
 /// System clock frequency.
 const SYSCLK_HZ: u32 = 72_000_000;
 
-/// Debug shell polling rate.
-const DEBUG_TICK_HZ: u32 = 1_000;
+/// RPC service polling rate.
+const RPC_TICK_HZ: u32 = 1_000;
 
 /// Enable debug during sleep modes before anything else runs.
 /// This ensures SWD always works for recovery, even if firmware crashes.
@@ -96,17 +96,17 @@ fn main() -> ! {
     enable_interrupts();
 
     // =========================================================================
-    // Configure SysTick for debug shell polling
+    // Configure SysTick for RPC service polling
     // =========================================================================
     let syst = &mut core.SYST;
     syst.set_clock_source(SystClkSource::Core);
-    syst.set_reload(SYSCLK_HZ / DEBUG_TICK_HZ - 1);
+    syst.set_reload(SYSCLK_HZ / RPC_TICK_HZ - 1);
     syst.clear_current();
     syst.enable_interrupt();
     syst.enable_counter();
 
     // =========================================================================
-    // Run Embassy executor with debug shell and RPC
+    // Run Embassy executor with RPC service
     // =========================================================================
 
     // Create Embassy executor
@@ -119,21 +119,11 @@ fn main() -> ! {
     });
 }
 
-/// RTT tasks - initializes RTT and runs shell + RPC concurrently.
-///
-/// RTT must be initialized once, then channels are split for each task.
+/// RTT task - initializes RTT and runs RPC service.
 #[embassy_executor::task]
 async fn rtt_tasks() {
-    // Initialize RTT with separate signals for shell and RPC
-    let rtt = RttChannels::init(shell_tick(), rpc_tick());
-
-    // Run debug shell and RPC service concurrently
-    // Using select to allow both to run (join would require both to complete)
-    embassy_futures::select::select(
-        run_debug_shell(rtt.shell, get_shadow_storage()),
-        run_rpc_service(rtt.rpc),
-    )
-    .await;
+    let rtt = RttChannels::init(rpc_tick());
+    run_rpc_service(rtt.rpc).await;
 }
 
 /// RPC service task.
