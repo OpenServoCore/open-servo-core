@@ -11,13 +11,18 @@
 
 use panic_rtt_target as _;
 
+#[cfg(feature = "osctl")]
 use cortex_m::peripheral::syst::SystClkSource;
 use cortex_m_rt::{entry, pre_init};
+#[cfg(feature = "osctl")]
 use embassy_executor::Executor;
 use open_servo_device::executor::ControlExecutor;
+#[cfg(feature = "osctl")]
 use open_servo_hw_utils::rtt_async::{RttChannels, RttRpcIo};
 use open_servo_kernel::ServoKernel;
+#[cfg(feature = "osctl")]
 use open_servo_services::RpcService;
+#[cfg(feature = "osctl")]
 use static_cell::StaticCell;
 
 use open_servo_board_stm32f301::config::kernel_config;
@@ -26,9 +31,11 @@ use open_servo_board_stm32f301::init::{
     configure_usart, enable_interrupts, start_adc_dma, start_tim1, start_tim2, start_usart,
     start_usart_rx_dma,
 };
-use open_servo_board_stm32f301::resources::{
-    get_shadow_storage, init_queues, rpc_tick, set_isr_resources,
-};
+#[cfg(feature = "osctl")]
+use open_servo_board_stm32f301::resources::get_shadow_storage;
+use open_servo_board_stm32f301::resources::{init_queues, set_isr_resources};
+#[cfg(feature = "osctl")]
+use open_servo_board_stm32f301::resources::rpc_tick;
 
 // Define defmt timestamp using TIM2 monotonic counter (1µs resolution)
 #[cfg(feature = "defmt")]
@@ -39,9 +46,11 @@ defmt::timestamp!("{=u32:us}", {
 });
 
 /// System clock frequency.
+#[cfg(feature = "osctl")]
 const SYSCLK_HZ: u32 = 72_000_000;
 
 /// RPC service polling rate.
+#[cfg(feature = "osctl")]
 const RPC_TICK_HZ: u32 = 1_000;
 
 /// Enable debug during sleep modes before anything else runs.
@@ -55,7 +64,8 @@ unsafe fn pre_init() {
 /// Main entry point.
 #[entry]
 fn main() -> ! {
-    // Get core peripherals for SysTick setup
+    // Get core peripherals for SysTick setup (osctl only)
+    #[cfg(feature = "osctl")]
     let mut core = cortex_m::Peripherals::take().unwrap();
 
     // =========================================================================
@@ -96,30 +106,42 @@ fn main() -> ! {
     enable_interrupts();
 
     // =========================================================================
-    // Configure SysTick for RPC service polling
+    // Configure SysTick for RPC service polling (osctl only)
     // =========================================================================
-    let syst = &mut core.SYST;
-    syst.set_clock_source(SystClkSource::Core);
-    syst.set_reload(SYSCLK_HZ / RPC_TICK_HZ - 1);
-    syst.clear_current();
-    syst.enable_interrupt();
-    syst.enable_counter();
+    #[cfg(feature = "osctl")]
+    {
+        let syst = &mut core.SYST;
+        syst.set_clock_source(SystClkSource::Core);
+        syst.set_reload(SYSCLK_HZ / RPC_TICK_HZ - 1);
+        syst.clear_current();
+        syst.enable_interrupt();
+        syst.enable_counter();
+    }
 
     // =========================================================================
-    // Run Embassy executor with RPC service
+    // Run Embassy executor with RPC service (osctl only)
     // =========================================================================
+    #[cfg(feature = "osctl")]
+    {
+        // Create Embassy executor
+        static EXECUTOR: StaticCell<Executor> = StaticCell::new();
+        let executor = EXECUTOR.init(Executor::new());
 
-    // Create Embassy executor
-    static EXECUTOR: StaticCell<Executor> = StaticCell::new();
-    let executor = EXECUTOR.init(Executor::new());
+        // Run executor with tasks
+        executor.run(|spawner| {
+            spawner.must_spawn(rtt_tasks());
+        });
+    }
 
-    // Run executor with tasks
-    executor.run(|spawner| {
-        spawner.must_spawn(rtt_tasks());
-    });
+    // Without osctl, just idle (kernel runs in ISR)
+    #[cfg(not(feature = "osctl"))]
+    loop {
+        cortex_m::asm::wfi();
+    }
 }
 
 /// RTT task - initializes RTT and runs RPC service.
+#[cfg(feature = "osctl")]
 #[embassy_executor::task]
 async fn rtt_tasks() {
     let rtt = RttChannels::init(rpc_tick());
@@ -127,6 +149,7 @@ async fn rtt_tasks() {
 }
 
 /// RPC service task.
+#[cfg(feature = "osctl")]
 async fn run_rpc_service(rpc_io: RttRpcIo) {
     // Buffer for RPC transport (COBS max for 128-byte msg is ~131 bytes)
     static RPC_BUF: StaticCell<[u8; 192]> = StaticCell::new();
