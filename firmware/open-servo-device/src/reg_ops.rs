@@ -43,6 +43,77 @@ impl<'a, const N: usize> RegOps<'a, N> {
     }
 }
 
+// ============================================================================
+// StreamPlan
+// ============================================================================
+
+/// Stream snapshot errors.
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
+pub enum StreamError {
+    /// Output buffer too small to hold all fields.
+    OutputTooSmall,
+    /// Shadow table read error.
+    Shadow(ShadowError),
+}
+
+impl From<ShadowError> for StreamError {
+    fn from(e: ShadowError) -> Self {
+        StreamError::Shadow(e)
+    }
+}
+
+/// Transport-agnostic streaming read plan.
+///
+/// Stores a list of (addr, len) pairs to read.
+/// Interval/timing is owned by the transport layer.
+pub struct StreamPlan<const MAX: usize> {
+    /// Fields to read: (address, length).
+    pub fields: heapless::Vec<(u16, u8), MAX>,
+}
+
+impl<const MAX: usize> StreamPlan<MAX> {
+    /// Create an empty stream plan.
+    pub const fn new() -> Self {
+        Self {
+            fields: heapless::Vec::new(),
+        }
+    }
+
+    /// Read all fields into output buffer.
+    ///
+    /// Returns total bytes written on success.
+    /// Returns `OutputTooSmall` if output buffer is smaller than `total_len()`.
+    /// Returns `Shadow(err)` if any read fails.
+    pub fn snapshot<const N: usize>(
+        &self,
+        ops: &RegOps<'_, N>,
+        out: &mut [u8],
+    ) -> Result<usize, StreamError> {
+        let mut offset = 0usize;
+        for &(addr, len) in &self.fields {
+            let len = len as usize;
+            if offset + len > out.len() {
+                return Err(StreamError::OutputTooSmall);
+            }
+            ops.read_range(addr, &mut out[offset..offset + len])?;
+            offset += len;
+        }
+        Ok(offset)
+    }
+
+    /// Total bytes that snapshot() will produce.
+    pub fn total_len(&self) -> usize {
+        self.fields.iter().map(|(_, len)| *len as usize).sum()
+    }
+}
+
+impl<const MAX: usize> Default for StreamPlan<MAX> {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -117,5 +188,53 @@ mod tests {
         let count = ops.action();
         assert_eq!(count, 0);
         assert!(!storage.kernel_any_dirty());
+    }
+
+    // ========================================================================
+    // StreamPlan tests
+    // ========================================================================
+
+    #[test]
+    fn test_stream_plan_snapshot_two_fields() {
+        let storage = ShadowStorage::<1024>::new();
+        let ops = RegOps::new(&storage);
+
+        // Write some test data
+        ops.write_range(0x10, &[1, 2]).unwrap();
+        ops.write_range(0x20, &[3, 4, 5]).unwrap();
+
+        // Create plan
+        let mut plan = StreamPlan::<4>::new();
+        plan.fields.push((0x10, 2)).unwrap();
+        plan.fields.push((0x20, 3)).unwrap();
+
+        // Snapshot
+        let mut out = [0u8; 10];
+        let len = plan.snapshot(&ops, &mut out).unwrap();
+        assert_eq!(len, 5);
+        assert_eq!(&out[..5], &[1, 2, 3, 4, 5]);
+    }
+
+    #[test]
+    fn test_stream_plan_snapshot_buffer_too_small() {
+        let storage = ShadowStorage::<1024>::new();
+        let ops = RegOps::new(&storage);
+
+        let mut plan = StreamPlan::<4>::new();
+        plan.fields.push((0x10, 4)).unwrap();
+        plan.fields.push((0x20, 4)).unwrap();
+
+        // Buffer only 6 bytes, need 8
+        let mut out = [0u8; 6];
+        let result = plan.snapshot(&ops, &mut out);
+        assert_eq!(result, Err(StreamError::OutputTooSmall));
+    }
+
+    #[test]
+    fn test_stream_plan_total_len() {
+        let mut plan = StreamPlan::<4>::new();
+        plan.fields.push((0x10, 2)).unwrap();
+        plan.fields.push((0x20, 4)).unwrap();
+        assert_eq!(plan.total_len(), 6);
     }
 }

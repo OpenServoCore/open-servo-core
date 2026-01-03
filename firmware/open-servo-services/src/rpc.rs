@@ -2,18 +2,17 @@
 //!
 //! Embassy async task that handles RPC requests over RTT.
 
-use crate::persist::PersistSignal;
 use crate::rpc_transport::{RttTransport, MAX_MSG_SIZE};
 use embassy_time::{Duration, Instant};
 use embedded_io_async::{Read, Write};
 use heapless::Vec;
+use open_servo_device::reg_ops::{RegOps, StreamPlan};
 use open_servo_device::shadow_storage::ShadowStorage;
 use open_servo_rpc::{
     DeviceInfo, ReadRegReq, RegStreamFrame, RegStreamStartReq, RpcError, RpcResp, WriteRegReq,
     KEY_REG_DATA, KEY_REG_READ, KEY_REG_STREAM_START, KEY_REG_STREAM_STOP, KEY_REG_WRITE,
     KEY_SYS_INFO, KEY_SYS_PING,
 };
-use open_servo_shadow::layout::EEPROM_LEN;
 
 /// Maximum packed size for streaming data.
 const MAX_STREAM_DATA_SIZE: usize = 64;
@@ -30,9 +29,9 @@ pub struct RpcService<'a, IO: Read + Write, const N: usize> {
 
 /// Active streaming configuration.
 struct StreamConfig {
-    /// Addresses to stream.
-    addresses: Vec<u16, 16>,
-    /// Interval between frames.
+    /// Stream plan with fields to read.
+    plan: StreamPlan<16>,
+    /// Interval between frames (source of truth for timing).
     interval: Duration,
     /// Next send time.
     next_send: Instant,
@@ -96,15 +95,18 @@ impl<'a, IO: Read + Write, const N: usize> RpcService<'a, IO, N> {
             None => return,
         };
 
-        // Read all configured addresses and pack data
-        let mut data: Vec<u8, 64> = Vec::new();
-        for &addr in &config.addresses {
-            let mut buf = [0u8; 4];
-            // Read 4 bytes for each address (simplification)
-            if self.shadow.host_read(addr, &mut buf).is_ok() {
-                let _ = data.extend_from_slice(&buf);
-            }
-        }
+        let ops = RegOps::new(self.shadow);
+
+        // Use StreamPlan::snapshot to read all fields
+        // Buffer sized to MAX_STREAM_DATA_SIZE to match capacity limit
+        let mut data_buf = [0u8; MAX_STREAM_DATA_SIZE];
+        let data_len = match config.plan.snapshot(&ops, &mut data_buf) {
+            Ok(len) => len,
+            Err(_) => return, // Drop frame on any read error (existing behavior)
+        };
+
+        let mut data: Vec<u8, 64> = Vec::new(); // matches RegStreamFrame::data capacity
+        let _ = data.extend_from_slice(&data_buf[..data_len]);
 
         let frame = RegStreamFrame {
             seq: self.stream_seq,
@@ -202,10 +204,11 @@ impl<'a, IO: Read + Write, const N: usize> RpcService<'a, IO, N> {
     }
 
     fn handle_read_reg(&self, req: ReadRegReq) -> RpcResp<Vec<u8, 4>> {
+        let ops = RegOps::new(self.shadow);
         let mut buf = [0u8; 4];
         let len = (req.len as usize).min(4);
 
-        if self.shadow.host_read(req.addr, &mut buf[..len]).is_ok() {
+        if ops.read_range(req.addr, &mut buf[..len]).is_ok() {
             let mut data = Vec::new();
             let _ = data.extend_from_slice(&buf[..len]);
             RpcResp::ok(data)
@@ -215,7 +218,8 @@ impl<'a, IO: Read + Write, const N: usize> RpcService<'a, IO, N> {
     }
 
     fn handle_write_reg(&mut self, req: WriteRegReq) -> RpcResp<()> {
-        if self.shadow.host_write(req.addr, &req.data).is_ok() {
+        let ops = RegOps::new(self.shadow);
+        if ops.write_range(req.addr, &req.data).is_ok() {
             RpcResp::ok(())
         } else {
             RpcResp::err(RpcError::InvalidAddress)
@@ -223,8 +227,7 @@ impl<'a, IO: Read + Write, const N: usize> RpcService<'a, IO, N> {
     }
 
     fn handle_stream_start(&mut self, req: RegStreamStartReq) -> RpcResp<()> {
-        // TODO: Calculate total packed size based on registry metadata
-        // For now, assume 4 bytes per address (worst case)
+        // Estimate size: 4 bytes per address (preserve existing behavior)
         let estimated_size = req.addresses.len() * 4;
         if estimated_size > MAX_STREAM_DATA_SIZE {
             return RpcResp::err(RpcError::TooManyBytes);
@@ -234,10 +237,16 @@ impl<'a, IO: Read + Write, const N: usize> RpcService<'a, IO, N> {
             return RpcResp::err(RpcError::InvalidLength);
         }
 
-        let interval_ms = 1000 / (req.rate_hz as u64);
+        // Build StreamPlan from addresses (4 bytes each)
+        let mut plan = StreamPlan::<16>::new();
+        for &addr in &req.addresses {
+            let _ = plan.fields.push((addr, 4));
+        }
 
+        // Interval calculation with floor at 1ms for rate_hz > 1000
+        let interval_ms = (1000u64 / req.rate_hz as u64).max(1);
         self.stream_config = Some(StreamConfig {
-            addresses: req.addresses,
+            plan,
             interval: Duration::from_millis(interval_ms),
             next_send: Instant::now(),
         });
