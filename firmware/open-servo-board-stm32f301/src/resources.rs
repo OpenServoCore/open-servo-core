@@ -97,6 +97,13 @@ pub fn persist_signal() -> &'static Signal<CriticalSectionRawMutex, ()> {
     &PERSIST_SIGNAL
 }
 
+/// Callback for persist signaling (called from ShadowStorage on EEPROM write).
+///
+/// Safe to call from critical section (Signal::signal is designed for this).
+pub fn on_eeprom_write() {
+    PERSIST_SIGNAL.signal(());
+}
+
 // =============================================================================
 // Initialization functions
 // =============================================================================

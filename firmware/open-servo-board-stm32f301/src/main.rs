@@ -36,9 +36,11 @@ use open_servo_board_stm32f301::init::{
     configure_usart, enable_interrupts, start_adc_dma, start_tim1, start_tim2, start_usart,
     start_usart_rx_dma,
 };
+use open_servo_board_stm32f301::resources::{
+    get_shadow_storage as get_shadow, init_queues, on_eeprom_write, set_isr_resources,
+};
 #[cfg(feature = "osctl")]
 use open_servo_board_stm32f301::resources::{get_shadow_storage, persist_signal, rpc_tick};
-use open_servo_board_stm32f301::resources::{init_queues, set_isr_resources};
 
 // Define defmt timestamp using TIM2 monotonic counter (1µs resolution)
 #[cfg(feature = "defmt")]
@@ -95,6 +97,9 @@ fn main() -> ! {
 
     // Set ISR resources
     unsafe { set_isr_resources(executor) };
+
+    // Wire up persist callback (EEPROM writes auto-trigger persist)
+    get_shadow().set_persist_callback(on_eeprom_write);
 
     // =========================================================================
     // Phase 2: Start peripherals in controlled order

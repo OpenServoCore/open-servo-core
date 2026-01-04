@@ -13,7 +13,7 @@
 //! Staging is implemented via `HeaplessStagingBuffer`, which uses heapless
 //! vectors to store staged writes until `action()` is called.
 
-use core::cell::UnsafeCell;
+use core::cell::{Cell, UnsafeCell};
 
 use heapless::Vec;
 use open_servo_kernel_api::shadow::{
@@ -30,6 +30,9 @@ pub const STAGE_ENTRY_CAP: usize = 8;
 /// Standard table size (1024 bytes, Dynamixel Protocol 2.0 compatible).
 pub const DEFAULT_TABLE_SIZE: usize = 1024;
 
+/// Callback type for persist signaling (must be safe to call from CS).
+pub type PersistCallback = fn();
+
 /// Heapless-based staging buffer implementation.
 pub struct HeaplessStagingBuffer {
     /// Staged data bytes.
@@ -45,6 +48,15 @@ impl HeaplessStagingBuffer {
             data: Vec::new(),
             entries: Vec::new(),
         }
+    }
+
+    /// Check if any staged write touches EEPROM region.
+    fn touches_eeprom(&self) -> bool {
+        let eeprom_end = layout::EEPROM_START + layout::EEPROM_LEN;
+        self.entries.iter().any(|entry| {
+            let end = entry.offset.saturating_add(entry.len);
+            entry.offset < eeprom_end && end > layout::EEPROM_START
+        })
     }
 }
 
@@ -141,6 +153,8 @@ pub struct ShadowStorage<const N: usize> {
     table: UnsafeCell<ShadowTable<N>>,
     /// Staging buffer (only accessed from host context with CS).
     staging: UnsafeCell<HeaplessStagingBuffer>,
+    /// Persist callback (called when EEPROM region is written).
+    persist_callback: Cell<Option<PersistCallback>>,
 }
 
 // SAFETY: Access discipline enforced by caller:
@@ -154,6 +168,22 @@ impl<const N: usize> ShadowStorage<N> {
         Self {
             table: UnsafeCell::new(ShadowTable::new()),
             staging: UnsafeCell::new(HeaplessStagingBuffer::new()),
+            persist_callback: Cell::new(None),
+        }
+    }
+
+    /// Set the persist callback (called when EEPROM region is written).
+    ///
+    /// The callback is called from within a critical section, so it must
+    /// be fast and non-blocking (e.g., just signal an async task).
+    pub fn set_persist_callback(&self, callback: PersistCallback) {
+        self.persist_callback.set(Some(callback));
+    }
+
+    /// Helper to signal persist if callback is set.
+    fn signal_persist(&self) {
+        if let Some(cb) = self.persist_callback.get() {
+            cb();
         }
     }
 
@@ -173,26 +203,23 @@ impl<const N: usize> ShadowStorage<N> {
     /// Write bytes to shadow table (main loop context).
     ///
     /// Only writes to RW regions (control/config).
+    /// Auto-signals persist if EEPROM region is touched.
     pub fn host_write(&self, offset: u16, data: &[u8]) -> Result<(), ShadowError> {
         critical_section::with(|_cs| {
             // SAFETY: We're in a critical section
             let table = unsafe { &mut *self.table.get() };
             let (bytes, dirty) = table.as_mut_slices();
             let mut view = HostView::new(bytes, dirty);
-            view.write(offset, data)
-        })
-    }
+            view.write(offset, data)?;
 
-    /// Write bytes to shadow table and check if EEPROM region was touched.
-    ///
-    /// Returns `Ok(true)` if the write succeeded and touched EEPROM region,
-    /// `Ok(false)` if the write succeeded but didn't touch EEPROM.
-    pub fn host_write_check_eeprom(&self, offset: u16, data: &[u8]) -> Result<bool, ShadowError> {
-        self.host_write(offset, data)?;
-        // Check if any byte in the write range is in EEPROM region (0x00-0x3F)
-        let end = offset.saturating_add(data.len() as u16);
-        let touched_eeprom = offset < layout::EEPROM_START + layout::EEPROM_LEN && end > 0;
-        Ok(touched_eeprom)
+            // Auto-signal persist if EEPROM region touched
+            let end = offset.saturating_add(data.len() as u16);
+            let eeprom_end = layout::EEPROM_START + layout::EEPROM_LEN;
+            if offset < eeprom_end && end > layout::EEPROM_START {
+                self.signal_persist();
+            }
+            Ok(())
+        })
     }
 
     /// Access host view within critical section (scoped borrow).
@@ -209,6 +236,42 @@ impl<const N: usize> ShadowStorage<N> {
             let (bytes, dirty) = table.as_mut_slices();
             let mut view = HostView::with_staging(bytes, dirty, staging);
             f(&mut view)
+        })
+    }
+
+    /// Stage a write for later ACTION commit.
+    ///
+    /// Use with `host_action()` to apply staged writes atomically.
+    pub fn host_stage(&self, offset: u16, data: &[u8]) -> StageResult {
+        critical_section::with(|_cs| {
+            let staging = unsafe { &mut *self.staging.get() };
+            staging
+                .try_stage(offset, data)
+                .map_or_else(|e| e, |()| StageResult::Ok)
+        })
+    }
+
+    /// Commit staged writes (ACTION instruction).
+    ///
+    /// Applies all staged writes atomically and signals persist if EEPROM was touched.
+    /// Returns the number of writes applied.
+    pub fn host_action(&self) -> usize {
+        critical_section::with(|_cs| {
+            let table = unsafe { &mut *self.table.get() };
+            let staging = unsafe { &mut *self.staging.get() };
+
+            // Check EEPROM touch before applying (entries will be cleared)
+            let touches_eeprom = staging.touches_eeprom();
+
+            let (bytes, dirty) = table.as_mut_slices();
+            let count = staging.apply_to(bytes, dirty);
+
+            // Signal persist if EEPROM was touched
+            if touches_eeprom && count > 0 {
+                self.signal_persist();
+            }
+
+            count
         })
     }
 
