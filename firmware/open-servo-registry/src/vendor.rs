@@ -18,9 +18,9 @@ pub const MODE_NAMES: &[&str] = &["Position", "OpenLoop"];
 #[allow(dead_code)]
 struct VendorRegs {
     // High-Resolution Access (512-539)
-    #[reg(RW)]
+    #[reg(access = RW, facade = crate::dxl::addr::GOAL_POSITION, codec = Position)]
     goal_pos_cdeg: i32, // 512
-    #[reg(RO)]
+    #[reg(access = RO, facade = crate::dxl::addr::PRESENT_POSITION, codec = Position)]
     present_pos_cdeg: i32, // 516
     #[reg(RW)]
     goal_vel_dps10: i32, // 520
@@ -30,9 +30,9 @@ struct VendorRegs {
     present_voltage_mv: i16, // 526
     #[reg(RO)]
     present_current_ma: i16, // 528
-    #[reg(RW)]
+    #[reg(RW, codec_ctx)]
     pos_min_limit_cdeg: i32, // 530
-    #[reg(RW)]
+    #[reg(RW, codec_ctx)]
     pos_max_limit_cdeg: i32, // 534
     #[reg(RO)]
     control_flags: u16, // 538
@@ -84,11 +84,11 @@ struct VendorRegs {
     fault_history: u32, // 577
 
     // Kernel-specific extensions (581+)
-    #[reg(RW)]
+    #[reg(access = RW, facade = crate::dxl::addr::TORQUE_ENABLE, codec = Identity)]
     torque_enable: bool, // 581
-    #[reg(RW)]
+    #[reg(RW, codec_ctx)]
     operating_mode: u8, // 582
-    #[reg(RW)]
+    #[reg(access = RW, facade = crate::dxl::addr::GOAL_PWM, codec = Identity)]
     goal_pwm: i16, // 583
     #[reg(RO)]
     engaged_mirror: bool, // 585
@@ -140,12 +140,20 @@ struct VendorRegs {
     sensor_caps: u32, // 620 - SensorCapabilities bitflags
     #[reg(RO)]
     motor_type: u8, // 624 - 0=BDC, 1=BLDC
-    #[reg(RO)]
+    #[reg(RO, codec_ctx)]
     servo_pos_kind: u8, // 625 - 0=Bounded, 1=Wrap360
     #[reg(RO)]
     servo_pos_min_cdeg: i16, // 626 - Bounded min (if applicable)
     #[reg(RO)]
     servo_pos_max_cdeg: i16, // 628 - Bounded max (if applicable)
+
+    // Persist telemetry (630+)
+    #[reg(RO)]
+    persist_status: u8, // 630 - 0=Ok, 1=Busy, 2=WriteFailed, 3=NoChange, 4=FirstBoot
+    #[reg(RO)]
+    persist_gen: u16, // 631 - Generation counter (increments on successful persist)
+    #[reg(RO)]
+    persist_pending: u8, // 633 - 1 if persist in progress, 0 otherwise
 }
 
 // ============================================================================
@@ -207,6 +215,11 @@ pub mod telem {
     pub const SERVO_POS_KIND: u16 = addr::SERVO_POS_KIND;
     pub const SERVO_POS_MIN_CDEG: u16 = addr::SERVO_POS_MIN_CDEG;
     pub const SERVO_POS_MAX_CDEG: u16 = addr::SERVO_POS_MAX_CDEG;
+
+    // Persist telemetry
+    pub const PERSIST_STATUS: u16 = addr::PERSIST_STATUS;
+    pub const PERSIST_GEN: u16 = addr::PERSIST_GEN;
+    pub const PERSIST_PENDING: u16 = addr::PERSIST_PENDING;
 }
 
 // ============================================================================

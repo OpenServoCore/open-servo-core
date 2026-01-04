@@ -75,6 +75,8 @@ pub enum Access {
     RW,
     /// Read-write but requires Torque Enable = 0 (EEPROM).
     RWE,
+    /// Facade alias - actual access derived from vendor register at runtime.
+    Facade,
     /// Reserved - access error on read/write.
     Reserved,
 }
@@ -110,6 +112,25 @@ impl Encoding {
             Encoding::I32Le | Encoding::U32Le => 4,
             Encoding::Reserved(n) => *n,
         }
+    }
+
+    /// Get a human-readable wire type string (e.g., "u8", "i16", "u32").
+    pub const fn wire_type(&self) -> &'static str {
+        match self {
+            Encoding::U8 => "u8",
+            Encoding::I16Le => "i16",
+            Encoding::U16Le => "u16",
+            Encoding::I32Le => "i32",
+            Encoding::U32Le => "u32",
+            Encoding::Bool => "bool",
+            Encoding::Enum(_) => "enum",
+            Encoding::Reserved(_) => "-",
+        }
+    }
+
+    /// Check if this encoding is signed.
+    pub const fn is_signed(&self) -> bool {
+        matches!(self, Encoding::I16Le | Encoding::I32Le)
     }
 }
 
@@ -189,6 +210,72 @@ impl RegSpec {
         }
     }
 }
+
+// ============================================================================
+// Facade mapping types
+// ============================================================================
+
+/// Direction for facade↔vendor translation.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
+pub enum MapDirection {
+    /// Facade → Vendor on dirty write.
+    ToVendor,
+    /// Vendor → Facade on publish (RO telemetry).
+    ToFacade,
+    /// Bidirectional (RW with read-back).
+    Both,
+}
+
+/// Codec kind for translation dispatch.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
+pub enum CodecKind {
+    /// Copy bytes unchanged (requires equal src/dst lengths).
+    Identity,
+    /// Pulse ↔ centidegree conversion with optional clamping.
+    Position,
+}
+
+/// A single facade↔vendor mapping entry.
+#[derive(Clone, Copy, Debug)]
+pub struct MapEntry {
+    /// Field name for debugging.
+    pub name: &'static str,
+    /// DXL (facade) address.
+    pub dxl_addr: u16,
+    /// DXL byte length.
+    pub dxl_len: u8,
+    /// Vendor address.
+    pub vendor_addr: u16,
+    /// Vendor byte length.
+    pub vendor_len: u8,
+    /// Translation direction.
+    pub direction: MapDirection,
+    /// Codec to apply during translation.
+    pub codec: CodecKind,
+}
+
+// ============================================================================
+// Indirect address types
+// ============================================================================
+
+/// Indirect address bank specification.
+#[derive(Clone, Copy, Debug)]
+pub struct IndirectBankSpec {
+    /// Bank number (1-indexed for DXL compat).
+    pub bank: u8,
+    /// Base address for indirect address array.
+    pub addr_base: u16,
+    /// Base address for indirect data array.
+    pub data_base: u16,
+    /// Number of slots in this bank.
+    pub slots: u8,
+}
+
+// ============================================================================
+// Range specification
+// ============================================================================
 
 /// Repeated register range (e.g., Indirect Address 1-28).
 #[derive(Clone, Copy, Debug)]

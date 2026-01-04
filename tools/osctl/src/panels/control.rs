@@ -51,11 +51,7 @@ impl ControlPanel {
         }
     }
 
-    fn send_position(
-        &self,
-        cmd_tx: &Option<Sender<ConnectCommand>>,
-        rpc_client: &mut RpcClient,
-    ) {
+    fn send_position(&self, cmd_tx: &Option<Sender<ConnectCommand>>, rpc_client: &mut RpcClient) {
         if let Some(ref tx) = cmd_tx {
             let req = WriteRegReq {
                 addr: ADDR_GOAL_POS_CDEG,
@@ -107,28 +103,22 @@ impl ControlPanel {
 
                 // Dial visualization (simplified circular representation)
                 let dial_size = 200.0;
-                let (response, painter) = ui.allocate_painter(
-                    egui::vec2(dial_size, dial_size),
-                    egui::Sense::drag(),
-                );
+                let (response, painter) =
+                    ui.allocate_painter(egui::vec2(dial_size, dial_size), egui::Sense::drag());
 
                 let center = response.rect.center();
                 let radius = dial_size / 2.0 - 10.0;
 
                 // Draw dial background
-                painter.circle_stroke(
-                    center,
-                    radius,
-                    egui::Stroke::new(2.0, egui::Color32::GRAY),
-                );
+                painter.circle_stroke(center, radius, egui::Stroke::new(2.0, egui::Color32::GRAY));
 
                 // Draw tick marks
                 for i in 0..12 {
                     let angle = (i as f32 * 30.0 - 90.0).to_radians();
                     let inner = center
                         + egui::vec2(angle.cos() * (radius - 15.0), angle.sin() * (radius - 15.0));
-                    let outer =
-                        center + egui::vec2(angle.cos() * (radius - 5.0), angle.sin() * (radius - 5.0));
+                    let outer = center
+                        + egui::vec2(angle.cos() * (radius - 5.0), angle.sin() * (radius - 5.0));
                     painter.line_segment(
                         [inner, outer],
                         egui::Stroke::new(1.0, egui::Color32::DARK_GRAY),
@@ -215,14 +205,22 @@ impl ControlPanel {
                 ui.add_space(10.0);
 
                 // Engage toggle
-                let engage_text = if self.engaged { "⚡ Engaged" } else { "○ Disengaged" };
+                let engage_text = if self.engaged {
+                    "⚡ Engaged"
+                } else {
+                    "○ Disengaged"
+                };
                 let engage_color = if self.engaged {
                     egui::Color32::from_rgb(50, 150, 50)
                 } else {
                     egui::Color32::from_rgb(80, 80, 80)
                 };
                 if ui
-                    .add(egui::Button::new(engage_text).fill(engage_color).min_size(egui::vec2(120.0, 30.0)))
+                    .add(
+                        egui::Button::new(engage_text)
+                            .fill(engage_color)
+                            .min_size(egui::vec2(120.0, 30.0)),
+                    )
                     .clicked()
                 {
                     self.engaged = !self.engaged;

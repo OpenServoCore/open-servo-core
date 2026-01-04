@@ -40,6 +40,9 @@ pub struct RW;
 /// Read-write access marker (EEPROM, locked when torque enabled).
 pub struct RWE;
 
+/// Facade alias marker (access derived from vendor register at runtime).
+pub struct Facade;
+
 // ============================================================================
 // Reg<A, T> struct
 // ============================================================================

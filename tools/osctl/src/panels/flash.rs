@@ -86,7 +86,11 @@ impl FlashPanel {
                     }
                 });
 
-            if ui.button("🔄").on_hover_text("Refresh probe list").clicked() {
+            if ui
+                .button("🔄")
+                .on_hover_text("Refresh probe list")
+                .clicked()
+            {
                 self.refresh_probes();
             }
         });
@@ -125,7 +129,10 @@ impl FlashPanel {
 
         ui.horizontal(|ui| {
             let has_probe = !self.probes.is_empty();
-            let can_flash = self.elf_path.is_some() && self.flash_progress.is_none() && !is_connected && has_probe;
+            let can_flash = self.elf_path.is_some()
+                && self.flash_progress.is_none()
+                && !is_connected
+                && has_probe;
 
             if ui
                 .add_enabled(can_flash, egui::Button::new("🔥 Flash & Connect"))
@@ -142,7 +149,10 @@ impl FlashPanel {
             }
 
             if ui
-                .add_enabled(!is_connected && has_probe, egui::Button::new("🔗 Attach Only"))
+                .add_enabled(
+                    !is_connected && has_probe,
+                    egui::Button::new("🔗 Attach Only"),
+                )
                 .clicked()
             {
                 self.flash_status = Some("Attaching...".to_string());
@@ -176,7 +186,10 @@ impl FlashPanel {
         if is_connected {
             ui.colored_label(egui::Color32::GREEN, "✓ Connected to target");
         } else if self.probes.is_empty() {
-            ui.colored_label(egui::Color32::YELLOW, "No probes detected. Connect a debugger and click 🔄");
+            ui.colored_label(
+                egui::Color32::YELLOW,
+                "No probes detected. Connect a debugger and click 🔄",
+            );
         } else {
             ui.label("Select a probe and ELF file, then click Flash or Attach.");
         }

@@ -21,6 +21,7 @@ open-servo-registry = { path = "../../firmware/open-servo-registry", default-fea
 # GUI
 eframe = "0.30"
 egui = "0.30"
+egui_extras = "0.30"
 egui_plot = "0.30"
 
 # Probe/debug

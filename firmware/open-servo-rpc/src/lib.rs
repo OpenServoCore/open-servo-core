@@ -142,3 +142,4 @@ pub const KEY_REG_STREAM_STOP: u64 = fnv1a_hash(b"reg/stream/stop");
 pub const KEY_REG_DATA: u64 = fnv1a_hash(b"reg/data");
 pub const KEY_SYS_PING: u64 = fnv1a_hash(b"sys/ping");
 pub const KEY_SYS_INFO: u64 = fnv1a_hash(b"sys/info");
+pub const KEY_SYS_ERASE_EEPROM: u64 = fnv1a_hash(b"sys/erase-eeprom");

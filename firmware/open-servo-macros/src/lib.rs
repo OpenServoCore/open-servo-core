@@ -49,14 +49,27 @@
 //! - `impl Channels { pub fn new(...) -> Self; pub fn vrefint(&self) -> u16; ... }`
 
 mod adc_channels;
-mod facademap;
 mod regmap;
 
 use proc_macro::TokenStream;
 use syn::{parse_macro_input, DeriveInput};
 
 /// Derive macro for register map definitions.
-#[proc_macro_derive(RegMap, attributes(regmap, reg))]
+///
+/// Supports the following field attributes:
+/// - `#[reg(RO|RW|RWE)]` - Standalone register with specified access
+/// - `#[reg(facade)]` - DXL facade alias (emits `Access::Facade`)
+/// - `#[reg(access=X, facade=EXPR, codec=IDENT)]` - Vendor register with DXL alias
+/// - `#[indirect_address(n)]` - Indirect address bank (requires `[u16; N]`)
+/// - `#[indirect_data(n)]` - Indirect data bank (requires `[u8; N]`)
+///
+/// For vendor regmaps (base >= 512) with facade attrs, generates:
+/// - `pub const FACADE_MAPPINGS: &[MapEntry] = &[...];`
+/// - `pub const FACADE_MAPPINGS_COUNT: usize = N;`
+///
+/// For DXL regmaps (base < 252) with indirect attrs, generates:
+/// - `pub const INDIRECT_BANKS: &[IndirectBankSpec] = &[...];`
+#[proc_macro_derive(RegMap, attributes(regmap, reg, indirect_address, indirect_data))]
 pub fn derive_regmap(input: TokenStream) -> TokenStream {
     let input = parse_macro_input!(input as DeriveInput);
 
@@ -74,34 +87,6 @@ pub fn derive_adc_channels(input: TokenStream) -> TokenStream {
     let input = parse_macro_input!(input as DeriveInput);
 
     match adc_channels::impl_adc_channels(&input) {
-        Ok(tokens) => tokens.into(),
-        Err(e) => e.to_compile_error().into(),
-    }
-}
-
-/// Derive macro for facade↔vendor mapping tables.
-///
-/// Generates a const array of `MapEntry` for translation dispatch.
-///
-/// # Example
-///
-/// ```ignore
-/// #[derive(FacadeMap)]
-/// #[facademap(table = "FACADE_MAPPINGS")]
-/// struct Mappings {
-///     #[map(
-///         src = crate::ram::addr::TORQUE_ENABLE, src_len = 1,
-///         dst = crate::vendor::addr::TORQUE_ENABLE, dst_len = 1,
-///         dir = Both, codec = Identity
-///     )]
-///     torque_enable: (),
-/// }
-/// ```
-#[proc_macro_derive(FacadeMap, attributes(facademap, map))]
-pub fn derive_facademap(input: TokenStream) -> TokenStream {
-    let input = parse_macro_input!(input as DeriveInput);
-
-    match facademap::impl_facademap(&input) {
         Ok(tokens) => tokens.into(),
         Err(e) => e.to_compile_error().into(),
     }

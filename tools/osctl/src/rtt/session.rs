@@ -1,7 +1,9 @@
 //! RTT session management using probe-rs.
 
 use anyhow::{Context, Result};
-use probe_rs::flashing::{DownloadOptions, FlashProgress as ProbeFlashProgress, Format, ProgressEvent};
+use probe_rs::flashing::{
+    DownloadOptions, FlashProgress as ProbeFlashProgress, Format, ProgressEvent,
+};
 use probe_rs::probe::list::Lister;
 pub use probe_rs::probe::DebugProbeInfo;
 use probe_rs::rtt::Rtt;
@@ -62,7 +64,10 @@ impl RttSession {
     }
 
     /// Select a probe by selector string, or return the first one.
-    pub fn select_probe(probes: Vec<DebugProbeInfo>, selector: Option<&str>) -> Result<DebugProbeInfo> {
+    pub fn select_probe(
+        probes: Vec<DebugProbeInfo>,
+        selector: Option<&str>,
+    ) -> Result<DebugProbeInfo> {
         if probes.is_empty() {
             anyhow::bail!("No debug probes found");
         }
@@ -236,7 +241,6 @@ impl RttSession {
         }
         events
     }
-
 }
 
 impl Drop for RttSession {

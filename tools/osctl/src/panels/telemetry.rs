@@ -85,12 +85,8 @@ fn parse_value(data: &[u8], encoding: Encoding) -> f64 {
         Encoding::Bool => data[0] as f64,
         Encoding::I16Le => i16::from_le_bytes([data[0], data[1]]) as f64,
         Encoding::U16Le => u16::from_le_bytes([data[0], data[1]]) as f64,
-        Encoding::I32Le => {
-            i32::from_le_bytes([data[0], data[1], data[2], data[3]]) as f64
-        }
-        Encoding::U32Le => {
-            u32::from_le_bytes([data[0], data[1], data[2], data[3]]) as f64
-        }
+        Encoding::I32Le => i32::from_le_bytes([data[0], data[1], data[2], data[3]]) as f64,
+        Encoding::U32Le => u32::from_le_bytes([data[0], data[1], data[2], data[3]]) as f64,
         Encoding::Enum(_) => data[0] as f64,
         Encoding::Reserved(_) => 0.0,
     }
@@ -211,7 +207,11 @@ impl TelemetryPanel {
 
             ui.separator();
 
-            let btn_text = if self.streaming { "⏹ Stop" } else { "▶ Start" };
+            let btn_text = if self.streaming {
+                "⏹ Stop"
+            } else {
+                "▶ Start"
+            };
             let btn_enabled = is_connected;
 
             if ui
@@ -291,11 +291,7 @@ impl TelemetryPanel {
         }
     }
 
-    fn start_streaming(
-        &self,
-        cmd_tx: &Option<Sender<ConnectCommand>>,
-        rpc_client: &mut RpcClient,
-    ) {
+    fn start_streaming(&self, cmd_tx: &Option<Sender<ConnectCommand>>, rpc_client: &mut RpcClient) {
         if let Some(ref tx) = cmd_tx {
             // Build address list from selected registers
             let mut addresses: HVec<u16, 16> = HVec::new();
@@ -316,11 +312,7 @@ impl TelemetryPanel {
         }
     }
 
-    fn stop_streaming(
-        &self,
-        cmd_tx: &Option<Sender<ConnectCommand>>,
-        rpc_client: &mut RpcClient,
-    ) {
+    fn stop_streaming(&self, cmd_tx: &Option<Sender<ConnectCommand>>, rpc_client: &mut RpcClient) {
         if let Some(ref tx) = cmd_tx {
             let req = RegStreamStopReq;
             if let Ok((data, _seq)) = rpc_client.encode_request("reg/stream/stop", &req) {

@@ -7,8 +7,7 @@
 //!
 //! | Range | Size | Region | Description |
 //! |-------|------|--------|-------------|
-//! | 0x000-0x03F | 64 | EEPROM | Persisted, locked when torque on |
-//! | 0x040-0x0FB | 188 | RAM | Volatile, writable |
+//! | 0x000-0x0FB | 252 | DXL | Dynamixel Protocol 2.0 compat layer |
 //! | 0x0FC-0x1FF | 260 | Reserved | Future use |
 //! | 0x200-0x3FF | 512 | Vendor | High-res kernel registers |
 //!
@@ -36,32 +35,34 @@
 
 #![no_std]
 
-pub mod eeprom;
+pub mod dxl;
 pub mod facade;
-pub mod ram;
 pub mod reg;
 pub mod spec;
 pub mod vendor;
 pub mod view;
 
 // Re-export main types
-pub use spec::{Access, Encoding, RangeSpec, RegSpec, UnitEncoding};
+pub use spec::{Access, Encoding, IndirectBankSpec, MapEntry, RangeSpec, RegSpec, UnitEncoding};
 
 // Re-export typed register access
-pub use reg::{Reg, RO, RW, RWE, WO};
+pub use reg::{Facade, Reg, RO, RW, RWE, WO};
 pub use view::{ViewRead, ViewWrite};
 
 // Re-export vendor module items for kernel use
 pub use vendor::{ctrl, telem, VENDOR_FIELDS};
 
+// Re-export DXL module items
+pub use dxl::{DXL_FIELDS, INDIRECT_BANKS};
+
 /// Maximum protocol address (1024-byte address space).
 pub const MAX_ADDRESS: u16 = 1024;
 
-/// EEPROM region start address.
-pub const EEPROM_START: u16 = 0x000;
+/// DXL region start address.
+pub const DXL_START: u16 = 0x000;
 
-/// RAM region start address.
-pub const RAM_START: u16 = 0x040;
+/// DXL region end address (exclusive).
+pub const DXL_END: u16 = 0x0FC;
 
 /// Vendor region start address.
 pub const VENDOR_START: u16 = 0x200;
@@ -72,11 +73,9 @@ pub const VENDOR_START: u16 = 0x200;
 
 /// Lookup field by name (case-insensitive prefix match) across all regions.
 ///
-/// Search order: eeprom, ram, vendor (standard Dynamixel first for compatibility).
+/// Search order: dxl, vendor (standard Dynamixel first for compatibility).
 pub fn find(name: &str) -> Option<&'static RegSpec> {
-    eeprom::find(name)
-        .or_else(|| ram::find(name))
-        .or_else(|| vendor::find(name))
+    dxl::find(name).or_else(|| vendor::find(name))
 }
 
 /// Lookup field by address across all regions.
@@ -87,14 +86,8 @@ pub fn find_by_address(address: u16) -> Option<&'static RegSpec> {
             return Some(field);
         }
     }
-    // Check RAM region
-    for field in ram::RAM_FIELDS {
-        if field.address == address {
-            return Some(field);
-        }
-    }
-    // Check EEPROM region
-    for field in eeprom::EEPROM_FIELDS {
+    // Check DXL region
+    for field in dxl::DXL_FIELDS {
         if field.address == address {
             return Some(field);
         }
@@ -104,10 +97,7 @@ pub fn find_by_address(address: u16) -> Option<&'static RegSpec> {
 
 /// Get all fields from all regions.
 pub fn all_fields() -> impl Iterator<Item = &'static RegSpec> {
-    eeprom::EEPROM_FIELDS
-        .iter()
-        .chain(ram::RAM_FIELDS.iter())
-        .chain(vendor::VENDOR_FIELDS.iter())
+    dxl::DXL_FIELDS.iter().chain(vendor::VENDOR_FIELDS.iter())
 }
 
 #[cfg(test)]
@@ -121,13 +111,13 @@ mod tests {
     }
 
     #[test]
-    fn test_find_ram() {
+    fn test_find_dxl() {
         let spec = find("torque_enable").unwrap();
         assert_eq!(spec.address, 64);
     }
 
     #[test]
-    fn test_find_eeprom() {
+    fn test_find_dxl_eeprom() {
         let spec = find("model_number").unwrap();
         assert_eq!(spec.address, 0);
     }
@@ -147,9 +137,8 @@ mod tests {
     #[test]
     fn test_all_fields_count() {
         let count = all_fields().count();
-        // Should have all EEPROM + RAM + Vendor fields
-        let expected =
-            eeprom::EEPROM_FIELDS.len() + ram::RAM_FIELDS.len() + vendor::VENDOR_FIELDS.len();
+        // Should have all DXL + Vendor fields
+        let expected = dxl::DXL_FIELDS.len() + vendor::VENDOR_FIELDS.len();
         assert_eq!(count, expected);
     }
 }

@@ -168,7 +168,11 @@ impl Default for LogFilter {
 }
 
 impl OsctlApp {
-    pub fn new(_cc: &eframe::CreationContext<'_>, args: Args, initial_probes: Vec<DebugProbeInfo>) -> Self {
+    pub fn new(
+        _cc: &eframe::CreationContext<'_>,
+        args: Args,
+        initial_probes: Vec<DebugProbeInfo>,
+    ) -> Self {
         let mut app = Self {
             active_panel: ActivePanel::default(),
             connection_state: ConnectionState::default(),
@@ -232,7 +236,14 @@ impl OsctlApp {
 
         // Spawn connection thread (probe already selected, safe to open on background thread)
         thread::spawn(move || {
-            connection_thread(cmd_rx, event_tx, elf_path, elf_for_decoder, chip, probe_info);
+            connection_thread(
+                cmd_rx,
+                event_tx,
+                elf_path,
+                elf_for_decoder,
+                chip,
+                probe_info,
+            );
         });
     }
 
@@ -322,10 +333,7 @@ impl OsctlApp {
                 let ver_str = version
                     .map(|(ma, mi, pa)| format!(" v{}.{}.{}", ma, mi, pa))
                     .unwrap_or_default();
-                ui.colored_label(
-                    egui::Color32::GREEN,
-                    format!("🟢 {}{}", chip, ver_str),
-                );
+                ui.colored_label(egui::Color32::GREEN, format!("🟢 {}{}", chip, ver_str));
             }
             ConnectionState::Error(e) => {
                 ui.colored_label(egui::Color32::RED, format!("🔴 {}", e));
@@ -341,11 +349,14 @@ impl eframe::App for OsctlApp {
 
         // Process pending connect request from flash panel
         if let Some(req) = self.flash_panel.pending_connect.take() {
-            if !matches!(self.connection_state, ConnectionState::Connected { .. } | ConnectionState::Connecting) {
+            if !matches!(
+                self.connection_state,
+                ConnectionState::Connected { .. } | ConnectionState::Connecting
+            ) {
                 // Get the selected probe from flash panel
-                let probe_info = req.probe_idx.and_then(|idx| {
-                    self.flash_panel.get_probe(idx).cloned()
-                });
+                let probe_info = req
+                    .probe_idx
+                    .and_then(|idx| self.flash_panel.get_probe(idx).cloned());
                 self.start_connection(req.elf_path, req.chip, probe_info);
             }
         }
@@ -384,10 +395,8 @@ impl eframe::App for OsctlApp {
                         .on_hover_text("Trace");
                     ui.toggle_value(&mut filter.debug, "D")
                         .on_hover_text("Debug");
-                    ui.toggle_value(&mut filter.info, "I")
-                        .on_hover_text("Info");
-                    ui.toggle_value(&mut filter.warn, "W")
-                        .on_hover_text("Warn");
+                    ui.toggle_value(&mut filter.info, "I").on_hover_text("Info");
+                    ui.toggle_value(&mut filter.warn, "W").on_hover_text("Warn");
                     ui.toggle_value(&mut filter.error, "E")
                         .on_hover_text("Error");
 
@@ -395,6 +404,39 @@ impl eframe::App for OsctlApp {
 
                     if ui.button("Clear").clicked() {
                         self.logs.clear();
+                    }
+
+                    if ui
+                        .button("Copy")
+                        .on_hover_text("Copy logs to clipboard")
+                        .clicked()
+                    {
+                        let text = self
+                            .logs
+                            .iter()
+                            .filter(|entry| match entry.level {
+                                LogLevel::Trace => self.log_filter.trace,
+                                LogLevel::Debug => self.log_filter.debug,
+                                LogLevel::Info => self.log_filter.info,
+                                LogLevel::Warn => self.log_filter.warn,
+                                LogLevel::Error => self.log_filter.error,
+                            })
+                            .map(|entry| {
+                                format!(
+                                    "{} {:5}{} {}",
+                                    entry.timestamp,
+                                    entry.level.label(),
+                                    if entry.module.is_empty() {
+                                        String::new()
+                                    } else {
+                                        format!(" {}", entry.module)
+                                    },
+                                    entry.message
+                                )
+                            })
+                            .collect::<Vec<_>>()
+                            .join("\n");
+                        ui.output_mut(|o| o.copied_text = text);
                     }
 
                     ui.toggle_value(&mut self.log_filter.auto_scroll, "⬇")
@@ -476,13 +518,16 @@ impl eframe::App for OsctlApp {
                     self.flash_panel.ui(ui, is_connected, &cmd_tx);
                 }
                 ActivePanel::Registry => {
-                    self.registry_panel.ui(ui, is_connected, &cmd_tx, &mut self.rpc_client);
+                    self.registry_panel
+                        .ui(ui, is_connected, &cmd_tx, &mut self.rpc_client);
                 }
                 ActivePanel::Telemetry => {
-                    self.telemetry_panel.ui(ui, is_connected, &cmd_tx, &mut self.rpc_client);
+                    self.telemetry_panel
+                        .ui(ui, is_connected, &cmd_tx, &mut self.rpc_client);
                 }
                 ActivePanel::Control => {
-                    self.control_panel.ui(ui, is_connected, &cmd_tx, &mut self.rpc_client);
+                    self.control_panel
+                        .ui(ui, is_connected, &cmd_tx, &mut self.rpc_client);
                 }
             }
         });
@@ -508,7 +553,10 @@ fn connection_thread(
     // Spawn a thread to forward progress events
     let progress_forwarder = std::thread::spawn(move || {
         while let Ok(progress) = progress_rx.recv() {
-            if event_tx_clone.send(ConnectEvent::FlashProgress(progress)).is_err() {
+            if event_tx_clone
+                .send(ConnectEvent::FlashProgress(progress))
+                .is_err()
+            {
                 break;
             }
         }

@@ -132,7 +132,11 @@ impl RpcClient {
     }
 
     /// Encode an RPC request for transmission. Returns (encoded_data, seq_number).
-    pub fn encode_request<T: serde::Serialize>(&mut self, path: &str, payload: &T) -> Result<(Vec<u8>, u32)> {
+    pub fn encode_request<T: serde::Serialize>(
+        &mut self,
+        path: &str,
+        payload: &T,
+    ) -> Result<(Vec<u8>, u32)> {
         // postcard-rpc wire format:
         // [key: 8 bytes][seq: 4 bytes][payload: postcard]
 

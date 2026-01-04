@@ -1,4 +1,11 @@
 //! RegMap derive macro implementation.
+//!
+//! Supports:
+//! - `#[reg(RO|RW|RWE)]` — simple access
+//! - `#[reg(facade)]` — DXL facade alias (emits Access::Facade)
+//! - `#[reg(access=X, facade=EXPR, codec=IDENT)]` — vendor with DXL alias
+//! - `#[indirect_address(n)]` — indirect address bank
+//! - `#[indirect_data(n)]` — indirect data bank
 
 use proc_macro2::TokenStream;
 use quote::{format_ident, quote};
@@ -14,7 +21,29 @@ enum Access {
     WO,
     RW,
     RWE,
+    Facade,
     Reserved,
+}
+
+/// Facade info for vendor registers.
+#[derive(Clone)]
+struct FacadeInfo {
+    dxl_addr: Expr,
+    codec: Ident,
+}
+
+/// Indirect bank info.
+#[derive(Clone)]
+struct IndirectInfo {
+    bank: u8,
+    kind: IndirectKind,
+    slots: usize,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum IndirectKind {
+    Address,
+    Data,
 }
 
 /// Parsed field information.
@@ -23,6 +52,9 @@ struct FieldInfo {
     ty: Type,
     access: Access,
     size: usize,
+    facade: Option<FacadeInfo>,
+    indirect: Option<IndirectInfo>,
+    is_codec_ctx: bool,
 }
 
 /// Parsed `#[regmap(...)]` attribute.
@@ -72,34 +104,204 @@ impl Parse for RegMapAttr {
     }
 }
 
-/// Parse `#[reg(RO|WO|RW|RWE)]` attribute from a field.
-fn parse_reg_attr(attrs: &[Attribute]) -> syn::Result<Option<Access>> {
+/// Parsed reg attribute content.
+struct RegAttrContent {
+    access: Option<Access>,
+    facade: Option<Expr>,
+    codec: Option<Ident>,
+    codec_ctx: bool,
+}
+
+impl Parse for RegAttrContent {
+    fn parse(input: ParseStream) -> syn::Result<Self> {
+        let mut access = None;
+        let mut facade = None;
+        let mut codec = None;
+        let mut codec_ctx = false;
+
+        // Try simple form first: #[reg(RO)] or #[reg(RO, codec_ctx)] or #[reg(facade)]
+        if input.peek(Ident) && !input.peek2(Token![=]) {
+            let ident: Ident = input.parse()?;
+            let ident_str = ident.to_string();
+            match ident_str.as_str() {
+                "RO" => access = Some(Access::RO),
+                "WO" => access = Some(Access::WO),
+                "RW" => access = Some(Access::RW),
+                "RWE" => access = Some(Access::RWE),
+                "facade" => access = Some(Access::Facade),
+                _ => {
+                    return Err(syn::Error::new_spanned(
+                        ident,
+                        format!("unknown access type: {}", ident_str),
+                    ))
+                }
+            }
+
+            // Check for additional flags after access specifier
+            while input.peek(Token![,]) {
+                input.parse::<Token![,]>()?;
+                if input.is_empty() {
+                    break;
+                }
+                let flag: Ident = input.parse()?;
+                let flag_str = flag.to_string();
+                match flag_str.as_str() {
+                    "codec_ctx" => codec_ctx = true,
+                    _ => {
+                        return Err(syn::Error::new_spanned(
+                            flag,
+                            format!("unknown flag: {}", flag_str),
+                        ))
+                    }
+                }
+            }
+
+            return Ok(RegAttrContent {
+                access,
+                facade,
+                codec,
+                codec_ctx,
+            });
+        }
+
+        // Key-value form: #[reg(access=RW, facade=EXPR, codec=IDENT, codec_ctx)]
+        while !input.is_empty() {
+            let key: Ident = input.parse()?;
+
+            // Check for bare flag (no =)
+            if !input.peek(Token![=]) {
+                match key.to_string().as_str() {
+                    "codec_ctx" => codec_ctx = true,
+                    _ => return Err(syn::Error::new_spanned(key, "unknown flag")),
+                }
+                if input.peek(Token![,]) {
+                    input.parse::<Token![,]>()?;
+                }
+                continue;
+            }
+
+            input.parse::<Token![=]>()?;
+
+            match key.to_string().as_str() {
+                "access" => {
+                    let val: Ident = input.parse()?;
+                    access = Some(match val.to_string().as_str() {
+                        "RO" => Access::RO,
+                        "WO" => Access::WO,
+                        "RW" => Access::RW,
+                        "RWE" => Access::RWE,
+                        _ => {
+                            return Err(syn::Error::new_spanned(val, "expected RO, WO, RW, or RWE"))
+                        }
+                    });
+                }
+                "facade" => {
+                    facade = Some(input.parse()?);
+                }
+                "codec" => {
+                    codec = Some(input.parse()?);
+                }
+                _ => return Err(syn::Error::new_spanned(key, "unknown reg attribute key")),
+            }
+
+            if input.peek(Token![,]) {
+                input.parse::<Token![,]>()?;
+            }
+        }
+
+        Ok(RegAttrContent {
+            access,
+            facade,
+            codec,
+            codec_ctx,
+        })
+    }
+}
+
+/// Parsed result from #[reg(...)] attribute.
+struct RegAttrResult {
+    access: Access,
+    facade: Option<FacadeInfo>,
+    codec_ctx: bool,
+}
+
+/// Parse `#[reg(...)]` attribute from a field.
+fn parse_reg_attr(attrs: &[Attribute]) -> syn::Result<Option<RegAttrResult>> {
     for attr in attrs {
         if attr.path().is_ident("reg") {
             let meta = &attr.meta;
             if let Meta::List(list) = meta {
-                let tokens = list.tokens.clone();
-                let ident: Ident = syn::parse2(tokens)?;
-                let access = match ident.to_string().as_str() {
-                    "RO" => Access::RO,
-                    "WO" => Access::WO,
-                    "RW" => Access::RW,
-                    "RWE" => Access::RWE,
-                    other => {
+                let content: RegAttrContent = syn::parse2(list.tokens.clone())?;
+
+                let access = content.access.ok_or_else(|| {
+                    syn::Error::new_spanned(&list.tokens, "missing access specifier")
+                })?;
+
+                // Validate facade ⇔ codec
+                match (&content.facade, &content.codec) {
+                    (Some(_), None) => {
                         return Err(syn::Error::new_spanned(
-                            ident,
-                            format!("unknown access type: {}", other),
+                            &list.tokens,
+                            "facade requires codec",
                         ))
                     }
-                };
-                return Ok(Some(access));
+                    (None, Some(_)) => {
+                        return Err(syn::Error::new_spanned(
+                            &list.tokens,
+                            "codec requires facade",
+                        ))
+                    }
+                    (Some(dxl_addr), Some(codec)) => {
+                        let facade_info = FacadeInfo {
+                            dxl_addr: dxl_addr.clone(),
+                            codec: codec.clone(),
+                        };
+                        return Ok(Some(RegAttrResult {
+                            access,
+                            facade: Some(facade_info),
+                            codec_ctx: content.codec_ctx,
+                        }));
+                    }
+                    (None, None) => {
+                        return Ok(Some(RegAttrResult {
+                            access,
+                            facade: None,
+                            codec_ctx: content.codec_ctx,
+                        }));
+                    }
+                }
             }
         }
     }
-    Ok(None) // No #[reg(...)] = Reserved
+    Ok(None)
 }
 
-/// Get size of a type. Supports primitives and `[u8; N]` arrays.
+/// Parse `#[indirect_address(n)]` or `#[indirect_data(n)]` attribute.
+fn parse_indirect_attr(attrs: &[Attribute]) -> syn::Result<Option<(u8, IndirectKind)>> {
+    for attr in attrs {
+        let kind = if attr.path().is_ident("indirect_address") {
+            IndirectKind::Address
+        } else if attr.path().is_ident("indirect_data") {
+            IndirectKind::Data
+        } else {
+            continue;
+        };
+
+        let meta = &attr.meta;
+        if let Meta::List(list) = meta {
+            let lit: Lit = syn::parse2(list.tokens.clone())?;
+            if let Lit::Int(lit_int) = lit {
+                let bank: u8 = lit_int.base10_parse()?;
+                return Ok(Some((bank, kind)));
+            } else {
+                return Err(syn::Error::new_spanned(lit, "expected integer literal"));
+            }
+        }
+    }
+    Ok(None)
+}
+
+/// Get size of a type. Supports primitives and `[u8; N]` / `[u16; N]` arrays.
 fn type_size(ty: &Type) -> syn::Result<usize> {
     match ty {
         Type::Path(tp) => {
@@ -119,7 +321,6 @@ fn type_size(ty: &Type) -> syn::Result<usize> {
             }
         }
         Type::Array(arr) => {
-            // [u8; N] - get N
             let elem_size = type_size(&arr.elem)?;
             if let Expr::Lit(lit) = &arr.len {
                 if let Lit::Int(lit_int) = &lit.lit {
@@ -136,6 +337,56 @@ fn type_size(ty: &Type) -> syn::Result<usize> {
     }
 }
 
+/// Get array element count for indirect banks.
+fn array_len(ty: &Type) -> syn::Result<usize> {
+    match ty {
+        Type::Array(arr) => {
+            if let Expr::Lit(lit) = &arr.len {
+                if let Lit::Int(lit_int) = &lit.lit {
+                    return lit_int.base10_parse();
+                }
+            }
+            Err(syn::Error::new_spanned(
+                &arr.len,
+                "expected integer literal for array length",
+            ))
+        }
+        _ => Err(syn::Error::new_spanned(ty, "expected array type")),
+    }
+}
+
+/// Validate indirect array element type.
+fn validate_indirect_type(ty: &Type, kind: IndirectKind) -> syn::Result<()> {
+    if let Type::Array(arr) = ty {
+        if let Type::Path(tp) = arr.elem.as_ref() {
+            let ident = tp.path.get_ident().map(|i| i.to_string());
+            let expected = match kind {
+                IndirectKind::Address => "u16",
+                IndirectKind::Data => "u8",
+            };
+            if ident.as_deref() == Some(expected) {
+                return Ok(());
+            }
+            return Err(syn::Error::new_spanned(
+                &arr.elem,
+                format!(
+                    "indirect_{} requires [{}; N], got {:?}",
+                    match kind {
+                        IndirectKind::Address => "address",
+                        IndirectKind::Data => "data",
+                    },
+                    expected,
+                    ident
+                ),
+            ));
+        }
+    }
+    Err(syn::Error::new_spanned(
+        ty,
+        "indirect attribute requires array type",
+    ))
+}
+
 /// Get the encoding token for a type.
 fn type_encoding(ty: &Type) -> TokenStream {
     match ty {
@@ -143,23 +394,22 @@ fn type_encoding(ty: &Type) -> TokenStream {
             let ident = tp.path.get_ident().map(|i| i.to_string());
             match ident.as_deref() {
                 Some("u8") => quote!(crate::spec::Encoding::U8),
-                Some("i8") => quote!(crate::spec::Encoding::U8), // No I8 variant, use U8
+                Some("i8") => quote!(crate::spec::Encoding::U8),
                 Some("bool") => quote!(crate::spec::Encoding::Bool),
                 Some("u16") => quote!(crate::spec::Encoding::U16Le),
                 Some("i16") => quote!(crate::spec::Encoding::I16Le),
                 Some("u32") => quote!(crate::spec::Encoding::U32Le),
                 Some("i32") => quote!(crate::spec::Encoding::I32Le),
-                Some("u64") => quote!(crate::spec::Encoding::U32Le), // No U64, fallback
-                Some("i64") => quote!(crate::spec::Encoding::I32Le), // No I64, fallback
-                // Unit types
+                Some("u64") => quote!(crate::spec::Encoding::U32Le),
+                Some("i64") => quote!(crate::spec::Encoding::I32Le),
                 Some("CentiC") | Some("CentiDeg") | Some("MilliVolt") | Some("MilliAmp") => {
                     quote!(crate::spec::Encoding::I16Le)
                 }
                 Some("CentiDeg32") => quote!(crate::spec::Encoding::I32Le),
-                _ => quote!(crate::spec::Encoding::U8), // Fallback
+                _ => quote!(crate::spec::Encoding::U8),
             }
         }
-        Type::Array(_) => quote!(crate::spec::Encoding::U8), // Reserved arrays
+        Type::Array(_) => quote!(crate::spec::Encoding::U8),
         _ => quote!(crate::spec::Encoding::U8),
     }
 }
@@ -177,7 +427,6 @@ fn type_primitive(ty: &Type) -> Option<TokenStream> {
                 Some("i16") => Some(quote!(i16)),
                 Some("u32") => Some(quote!(u32)),
                 Some("i32") => Some(quote!(i32)),
-                // Unit types map to their backing primitives
                 Some("CentiC") | Some("CentiDeg") | Some("MilliVolt") | Some("MilliAmp") => {
                     Some(quote!(i16))
                 }
@@ -185,7 +434,7 @@ fn type_primitive(ty: &Type) -> Option<TokenStream> {
                 _ => None,
             }
         }
-        Type::Array(_) => None, // Reserved arrays don't get Reg constants
+        Type::Array(_) => None,
         _ => None,
     }
 }
@@ -205,8 +454,10 @@ pub fn impl_regmap(input: &DeriveInput) -> syn::Result<TokenStream> {
 
     let base_addr = regmap_attr.base;
     let struct_name = &input.ident;
+    let is_vendor = base_addr >= 512;
+    let is_dxl = base_addr < 252;
 
-    // Default fields name: STRUCTNAME_FIELDS (e.g., EEPROM_REGS_FIELDS)
+    // Default fields name
     let fields_name = regmap_attr
         .fields_name
         .map(|s| format_ident!("{}", s))
@@ -229,22 +480,119 @@ pub fn impl_regmap(input: &DeriveInput) -> syn::Result<TokenStream> {
     for field in fields {
         let name = field.ident.clone().unwrap();
         let ty = field.ty.clone();
-        let access = parse_reg_attr(&field.attrs)?.unwrap_or(Access::Reserved);
+
+        // Check for indirect attribute first
+        if let Some((bank, kind)) = parse_indirect_attr(&field.attrs)? {
+            validate_indirect_type(&ty, kind)?;
+            let slots = array_len(&ty)?;
+            let size = type_size(&ty)?;
+            field_infos.push(FieldInfo {
+                name,
+                ty,
+                access: Access::RW, // Indirect registers are RW
+                size,
+                facade: None,
+                indirect: Some(IndirectInfo { bank, kind, slots }),
+                is_codec_ctx: false,
+            });
+            continue;
+        }
+
+        // Check for reg attribute
+        let reg_result = parse_reg_attr(&field.attrs)?;
+        let (access, facade, codec_ctx) = match reg_result {
+            Some(r) => (r.access, r.facade, r.codec_ctx),
+            None => (Access::Reserved, None, false),
+        };
         let size = type_size(&ty)?;
+
+        // Validate facade placement
+        if facade.is_some() && !is_vendor {
+            return Err(syn::Error::new_spanned(
+                &field.ident,
+                "facade attribute only allowed on vendor registers (base >= 512)",
+            ));
+        }
+        if access == Access::Facade && !is_dxl {
+            return Err(syn::Error::new_spanned(
+                &field.ident,
+                "#[reg(facade)] only allowed on DXL registers (base < 252)",
+            ));
+        }
+        // Validate codec_ctx placement
+        if codec_ctx && !is_vendor {
+            return Err(syn::Error::new_spanned(
+                &field.ident,
+                "codec_ctx only allowed on vendor registers (base >= 512)",
+            ));
+        }
 
         field_infos.push(FieldInfo {
             name,
             ty,
             access,
             size,
+            facade,
+            indirect: None,
+            is_codec_ctx: codec_ctx,
         });
     }
 
-    // Compute addresses
+    // Validate indirect bank pairing
+    let mut indirect_banks: std::collections::HashMap<
+        u8,
+        (Option<(u16, usize)>, Option<(u16, usize)>),
+    > = std::collections::HashMap::new();
+    let mut current_addr = base_addr;
+    for info in &field_infos {
+        let addr = current_addr;
+        if let Some(indirect) = &info.indirect {
+            let entry = indirect_banks.entry(indirect.bank).or_insert((None, None));
+            match indirect.kind {
+                IndirectKind::Address => entry.0 = Some((addr, indirect.slots)),
+                IndirectKind::Data => entry.1 = Some((addr, indirect.slots)),
+            }
+        }
+        current_addr += info.size as u16;
+    }
+    for (bank, (addr_info, data_info)) in &indirect_banks {
+        match (addr_info, data_info) {
+            (Some((_, addr_slots)), Some((_, data_slots))) => {
+                if addr_slots != data_slots {
+                    return Err(syn::Error::new(
+                        proc_macro2::Span::call_site(),
+                        format!(
+                            "indirect bank {} has mismatched slots: address={}, data={}",
+                            bank, addr_slots, data_slots
+                        ),
+                    ));
+                }
+            }
+            (Some(_), None) => {
+                return Err(syn::Error::new(
+                    proc_macro2::Span::call_site(),
+                    format!("indirect bank {} has address but no data", bank),
+                ));
+            }
+            (None, Some(_)) => {
+                return Err(syn::Error::new(
+                    proc_macro2::Span::call_site(),
+                    format!("indirect bank {} has data but no address", bank),
+                ));
+            }
+            (None, None) => {}
+        }
+    }
+
+    // Compute addresses and generate output
     let mut addr_consts = Vec::new();
     let mut reg_consts = Vec::new();
     let mut field_specs = Vec::new();
-    let mut current_addr = base_addr;
+    let mut facade_entries = Vec::new();
+    let mut indirect_bank_specs = Vec::new();
+    // Collect codec_ctx fields for CodecCtx struct generation
+    let mut codec_ctx_fields: Vec<(Ident, Type, u16, usize)> = Vec::new();
+    current_addr = base_addr;
 
     for info in &field_infos {
         let addr = current_addr;
@@ -252,6 +600,39 @@ pub fn impl_regmap(input: &DeriveInput) -> syn::Result<TokenStream> {
         let name_str = info.name.to_string();
         let encoding = type_encoding(&info.ty);
         let size = info.size as u8;
+
+        // Handle indirect fields
+        if let Some(indirect) = &info.indirect {
+            // Generate address constant for indirect arrays
+            addr_consts.push(quote! {
+                pub const #name_upper: u16 = #addr;
+            });
+
+            // Generate field spec (indirect arrays are RW)
+            field_specs.push(quote! {
+                crate::spec::RegSpec::new(#name_str, #addr, #encoding, crate::spec::Access::RW)
+            });
+
+            // Generate indirect bank spec (only once per bank, from address side)
+            if indirect.kind == IndirectKind::Address {
+                if let Some((_, Some((data_base, _)))) = indirect_banks.get(&indirect.bank) {
+                    let bank = indirect.bank;
+                    let slots = indirect.slots as u8;
+                    let data_base = *data_base;
+                    indirect_bank_specs.push(quote! {
+                        crate::spec::IndirectBankSpec {
+                            bank: #bank,
+                            addr_base: #addr,
+                            data_base: #data_base,
+                            slots: #slots,
+                        }
+                    });
+                }
+            }
+
+            current_addr += info.size as u16;
+            continue;
+        }
 
         // Generate address constant (skip reserved fields)
         if info.access != Access::Reserved {
@@ -266,6 +647,7 @@ pub fn impl_regmap(input: &DeriveInput) -> syn::Result<TokenStream> {
                     Access::WO => quote!(crate::reg::WO),
                     Access::RW => quote!(crate::reg::RW),
                     Access::RWE => quote!(crate::reg::RWE),
+                    Access::Facade => quote!(crate::reg::Facade),
                     Access::Reserved => unreachable!(),
                 };
                 reg_consts.push(quote! {
@@ -281,6 +663,7 @@ pub fn impl_regmap(input: &DeriveInput) -> syn::Result<TokenStream> {
             Access::WO => quote!(crate::spec::Access::WO),
             Access::RW => quote!(crate::spec::Access::RW),
             Access::RWE => quote!(crate::spec::Access::RWE),
+            Access::Facade => quote!(crate::spec::Access::Facade),
             Access::Reserved => quote!(crate::spec::Access::Reserved),
         };
 
@@ -294,11 +677,40 @@ pub fn impl_regmap(input: &DeriveInput) -> syn::Result<TokenStream> {
             });
         }
 
+        // Generate facade mapping entry (vendor registers only)
+        if let Some(facade) = &info.facade {
+            let dxl_addr = &facade.dxl_addr;
+            let codec = &facade.codec;
+            let vendor_len = size;
+            // Direction inferred from access
+            let direction = match info.access {
+                Access::RO => quote!(crate::spec::MapDirection::ToFacade),
+                _ => quote!(crate::spec::MapDirection::Both),
+            };
+
+            facade_entries.push(quote! {
+                crate::spec::MapEntry {
+                    name: #name_str,
+                    dxl_addr: #dxl_addr,
+                    dxl_len: #vendor_len, // Assume same length for now
+                    vendor_addr: #addr,
+                    vendor_len: #vendor_len,
+                    direction: #direction,
+                    codec: crate::spec::CodecKind::#codec,
+                }
+            });
+        }
+
+        // Collect codec_ctx fields
+        if info.is_codec_ctx {
+            codec_ctx_fields.push((info.name.clone(), info.ty.clone(), addr, info.size));
+        }
+
         current_addr += info.size as u16;
     }
 
     // Generate output
-    Ok(quote! {
+    let mut output = quote! {
         /// Generated address constants.
         pub mod addr {
             #(#addr_consts)*
@@ -310,8 +722,96 @@ pub fn impl_regmap(input: &DeriveInput) -> syn::Result<TokenStream> {
         }
 
         /// Generated field specifications.
-        pub const #fields_name: &[RegSpec] = &[
+        pub const #fields_name: &[crate::spec::RegSpec] = &[
             #(#field_specs),*
         ];
-    })
+    };
+
+    // Generate FACADE_MAPPINGS for vendor regmaps
+    if is_vendor && !facade_entries.is_empty() {
+        let count = facade_entries.len();
+        output.extend(quote! {
+            /// Generated facade↔vendor mapping table.
+            pub const FACADE_MAPPINGS: &[crate::spec::MapEntry] = &[
+                #(#facade_entries),*
+            ];
+
+            /// Number of facade mappings.
+            pub const FACADE_MAPPINGS_COUNT: usize = #count;
+        });
+    }
+
+    // Generate INDIRECT_BANKS for DXL regmaps
+    if is_dxl && !indirect_bank_specs.is_empty() {
+        output.extend(quote! {
+            /// Generated indirect bank specifications.
+            pub const INDIRECT_BANKS: &[crate::spec::IndirectBankSpec] = &[
+                #(#indirect_bank_specs),*
+            ];
+        });
+    }
+
+    // Generate CodecCtx for vendor regmaps with codec_ctx fields
+    if is_vendor && !codec_ctx_fields.is_empty() {
+        // Generate struct fields
+        let struct_fields: Vec<_> = codec_ctx_fields
+            .iter()
+            .filter_map(|(name, ty, _, _)| {
+                let prim = type_primitive(ty)?;
+                Some(quote! { pub #name: #prim })
+            })
+            .collect();
+
+        // Generate from_view reads
+        let read_stmts: Vec<_> = codec_ctx_fields
+            .iter()
+            .filter_map(|(name, ty, _, size)| {
+                let prim = type_primitive(ty)?;
+                let addr_const = format_ident!("{}", name.to_string().to_uppercase());
+                let read_stmt = match *size {
+                    1 => quote! {
+                        let mut buf = [0u8; 1];
+                        view.read(addr::#addr_const, &mut buf).expect("codec_ctx read");
+                        let #name = buf[0] as #prim;
+                    },
+                    2 => quote! {
+                        let mut buf = [0u8; 2];
+                        view.read(addr::#addr_const, &mut buf).expect("codec_ctx read");
+                        let #name = #prim::from_le_bytes(buf);
+                    },
+                    4 => quote! {
+                        let mut buf = [0u8; 4];
+                        view.read(addr::#addr_const, &mut buf).expect("codec_ctx read");
+                        let #name = #prim::from_le_bytes(buf);
+                    },
+                    _ => return None,
+                };
+                Some(read_stmt)
+            })
+            .collect();
+
+        // Generate field initializers for Self
+        let field_inits: Vec<_> = codec_ctx_fields
+            .iter()
+            .map(|(name, _, _, _)| quote! { #name })
+            .collect();
+
+        output.extend(quote! {
+            /// Context required by codecs for position translation.
+            #[derive(Debug, Clone, Copy)]
+            pub struct CodecCtx {
+                #(#struct_fields),*
+            }
+
+            impl CodecCtx {
+                /// Read codec context fields from shadow view.
+                pub fn from_view(view: &open_servo_shadow::KernelView<'_>) -> Self {
+                    #(#read_stmts)*
+                    Self { #(#field_inits),* }
+                }
+            }
+        });
+    }
+
+    Ok(output)
 }
