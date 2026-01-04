@@ -9,22 +9,25 @@
 //! - Page size: 2KB
 //! - Write size: 2 bytes (half-word)
 //! - EEPROM region: 0x0800_F000 - 0x0800_FFFF (4KB, 2 pages)
+//!
+//! ## Implementation Notes
+//!
+//! Based on embassy-stm32's proven flash driver pattern (f1f3.rs).
+//!
+//! **IMPORTANT**: HSI must remain enabled for flash programming to work!
+//! See RM0313: "For program and erase operations on the Flash memory,
+//! the internal RC oscillator (HSI) must be ON."
 
-use core::ptr;
+use core::ptr::write_volatile;
+use core::sync::atomic::{fence, Ordering};
 
 use embedded_storage::nor_flash::{ErrorType, NorFlashError, NorFlashErrorKind};
 use embedded_storage_async::nor_flash::{NorFlash, ReadNorFlash};
 use stm32f3::stm32f301::FLASH;
 
-/// Flash unlock keys.
+/// Flash unlock keys (same as embassy).
 const KEY1: u32 = 0x4567_0123;
 const KEY2: u32 = 0xCDEF_89AB;
-
-/// Flash base address.
-pub const FLASH_BASE: u32 = 0x0800_0000;
-
-/// Total flash size (64KB).
-pub const FLASH_SIZE: u32 = 64 * 1024;
 
 /// Page size (2KB).
 pub const PAGE_SIZE: usize = 2048;
@@ -64,11 +67,6 @@ impl NorFlashError for FlashError {
 }
 
 /// Flash driver for EEPROM storage region.
-///
-/// This driver only allows access to the reserved EEPROM region
-/// (last 4KB of flash) to prevent accidental code corruption.
-///
-/// Offsets are relative to the EEPROM region start (0 = 0x0800_F000).
 pub struct EepromFlash {
     _private: (),
 }
@@ -78,67 +76,148 @@ impl EepromFlash {
     ///
     /// # Safety
     ///
-    /// Only one instance should exist at a time. The caller must ensure
-    /// exclusive access to the flash peripheral.
+    /// Only one instance should exist at a time.
     pub unsafe fn new() -> Self {
         Self { _private: () }
     }
 
     /// Get the FLASH peripheral.
-    #[inline]
+    #[inline(always)]
     fn flash(&self) -> &stm32f3::stm32f301::flash::RegisterBlock {
         unsafe { &*FLASH::PTR }
     }
 
-    /// Unlock the flash for programming/erase.
-    fn unlock(&self) {
-        let flash = self.flash();
+    // =========================================================================
+    // Embassy-stm32 f1f3.rs functions (adapted)
+    // =========================================================================
 
-        // Check if already unlocked
-        if flash.cr.read().lock().is_unlocked() {
-            return;
-        }
-
-        // Write unlock sequence
-        flash.keyr.write(|w| w.bits(KEY1));
-        flash.keyr.write(|w| w.bits(KEY2));
+    /// Lock flash.
+    fn lock(&self) {
+        self.flash().cr.modify(|_, w| w.lock().lock());
     }
 
-    /// Lock the flash to prevent accidental writes.
-    fn lock(&self) {
+    /// Unlock flash.
+    fn unlock(&self) {
         let flash = self.flash();
-        flash.cr.modify(|_, w| w.lock().lock());
+        if flash.cr.read().lock().is_locked() {
+            flash.keyr.write(|w| w.bits(KEY1));
+            flash.keyr.write(|w| w.bits(KEY2));
+        }
+    }
+
+    /// Enable blocking write.
+    ///
+    /// NOTE: Must use modify() not write() - stm32f3 PAC's write() starts from
+    /// reset value (0x80 = LOCK), which would re-lock the flash!
+    fn enable_blocking_write(&self) {
+        self.flash().cr.modify(|_, w| w.pg().program());
+    }
+
+    /// Disable blocking write.
+    fn disable_blocking_write(&self) {
+        self.flash().cr.modify(|_, w| w.pg().clear_bit());
     }
 
     /// Wait for flash operation to complete.
-    ///
-    /// Returns error if operation failed.
-    fn wait_ready(&self) -> Result<(), FlashError> {
+    fn wait_ready_blocking(&self) -> Result<(), FlashError> {
+        loop {
+            let sr = self.flash().sr.read();
+
+            if !sr.bsy().is_active() {
+                if sr.wrprterr().is_error() {
+                    return Err(FlashError::WriteProtection);
+                }
+                if sr.pgerr().is_error() {
+                    return Err(FlashError::ProgramError);
+                }
+                return Ok(());
+            }
+        }
+    }
+
+    /// Clear all error flags.
+    fn clear_all_err(&self) {
+        self.flash().sr.modify(|_, w| w);
+    }
+
+    /// Write bytes to flash (must be half-word aligned).
+    fn blocking_write(&self, start_address: u32, buf: &[u8]) -> Result<(), FlashError> {
+        let mut address = start_address;
+        for chunk in buf.chunks(2) {
+            unsafe {
+                write_volatile(
+                    address as *mut u16,
+                    u16::from_le_bytes([chunk[0], chunk[1]]),
+                );
+            }
+            address += chunk.len() as u32;
+
+            // Prevents parallelism errors
+            fence(Ordering::SeqCst);
+
+            self.wait_ready_blocking()?;
+        }
+        Ok(())
+    }
+
+    /// Erase a flash sector (page).
+    fn blocking_erase_sector(&self, sector_start: u32) -> Result<(), FlashError> {
         let flash = self.flash();
 
-        // Poll BSY bit
-        while flash.sr.read().bsy().is_active() {
-            // In an async context, we could yield here
-            // For now, busy-wait
-            cortex_m::asm::nop();
+        flash.cr.modify(|_, w| w.per().page_erase());
+        flash.ar.write(|w| w.bits(sector_start));
+        flash.cr.modify(|_, w| w.strt().start());
+
+        // Wait for at least one clock cycle before reading BSY
+        // (STM32F3 errata section 2.2.8)
+        let _ = flash.cr.read();
+
+        let mut ret = self.wait_ready_blocking();
+
+        // Check EOP flag
+        if !flash.sr.read().eop().is_event() {
+            ret = Err(FlashError::ProgramError);
+        } else {
+            // Clear EOP by writing 1
+            flash.sr.write(|w| w.eop().reset());
         }
 
-        // Check for errors
-        let sr = flash.sr.read();
+        flash.cr.modify(|_, w| w.per().clear_bit());
+        self.clear_all_err();
 
-        if sr.pgerr().is_error() {
-            // Clear error flag
-            flash.sr.write(|w| w.pgerr().reset());
-            return Err(FlashError::ProgramError);
-        }
+        ret
+    }
 
-        if sr.wrprterr().is_error() {
-            // Clear error flag
-            flash.sr.write(|w| w.wrprterr().reset());
-            return Err(FlashError::WriteProtection);
-        }
+    /// Write chunk with unlock/lock handling.
+    fn write_chunk_unlocked(&self, address: u32, chunk: &[u8]) -> Result<(), FlashError> {
+        self.clear_all_err();
+        fence(Ordering::SeqCst);
+        self.unlock();
+        fence(Ordering::SeqCst);
+        self.enable_blocking_write();
+        fence(Ordering::SeqCst);
 
-        Ok(())
+        let result = self.blocking_write(address, chunk);
+
+        self.disable_blocking_write();
+        fence(Ordering::SeqCst);
+        self.lock();
+
+        result
+    }
+
+    /// Erase sector with unlock/lock handling.
+    fn erase_sector_unlocked(&self, sector_start: u32) -> Result<(), FlashError> {
+        self.clear_all_err();
+        fence(Ordering::SeqCst);
+        self.unlock();
+        fence(Ordering::SeqCst);
+
+        let result = self.blocking_erase_sector(sector_start);
+
+        self.lock();
+
+        result
     }
 
     /// Convert offset to absolute address, with bounds check.
@@ -153,49 +232,6 @@ impl EepromFlash {
 
         Ok(EEPROM_FLASH_START + offset)
     }
-
-    /// Erase a single page.
-    fn erase_page(&self, page_addr: u32) -> Result<(), FlashError> {
-        let flash = self.flash();
-
-        // Set page erase mode
-        flash.cr.modify(|_, w| w.per().page_erase());
-
-        // Write page address
-        flash.ar.write(|w| w.bits(page_addr));
-
-        // Start erase
-        flash.cr.modify(|_, w| w.strt().start());
-
-        // Wait for completion
-        self.wait_ready()?;
-
-        // Clear page erase mode
-        flash.cr.modify(|_, w| w.per().clear_bit());
-
-        Ok(())
-    }
-
-    /// Program a half-word (2 bytes).
-    fn program_halfword(&self, addr: u32, data: u16) -> Result<(), FlashError> {
-        let flash = self.flash();
-
-        // Set programming mode
-        flash.cr.modify(|_, w| w.pg().program());
-
-        // Write half-word
-        unsafe {
-            ptr::write_volatile(addr as *mut u16, data);
-        }
-
-        // Wait for completion
-        self.wait_ready()?;
-
-        // Clear programming mode
-        flash.cr.modify(|_, w| w.pg().clear_bit());
-
-        Ok(())
-    }
 }
 
 impl ErrorType for EepromFlash {
@@ -209,9 +245,8 @@ impl ReadNorFlash for EepromFlash {
         let addr = self.offset_to_addr(offset, bytes.len())?;
 
         // Direct memory read (flash is memory-mapped)
-        unsafe {
-            ptr::copy_nonoverlapping(addr as *const u8, bytes.as_mut_ptr(), bytes.len());
-        }
+        let flash_data = unsafe { core::slice::from_raw_parts(addr as *const u8, bytes.len()) };
+        bytes.copy_from_slice(flash_data);
 
         Ok(())
     }
@@ -236,25 +271,15 @@ impl NorFlash for EepromFlash {
             return Err(FlashError::OutOfBounds);
         }
 
-        self.unlock();
+        let mut addr = EEPROM_FLASH_START + from;
+        let end = EEPROM_FLASH_START + to;
 
-        let result = (|| {
-            let mut addr = EEPROM_FLASH_START + from;
-            let end = EEPROM_FLASH_START + to;
+        while addr < end {
+            self.erase_sector_unlocked(addr)?;
+            addr += PAGE_SIZE as u32;
+        }
 
-            while addr < end {
-                self.erase_page(addr)?;
-                addr += PAGE_SIZE as u32;
-
-                // Yield to executor between pages
-                // embassy_futures::yield_now().await would go here in true async
-            }
-
-            Ok(())
-        })();
-
-        self.lock();
-        result
+        Ok(())
     }
 
     async fn write(&mut self, offset: u32, bytes: &[u8]) -> Result<(), Self::Error> {
@@ -263,25 +288,15 @@ impl NorFlash for EepromFlash {
             return Err(FlashError::Alignment);
         }
 
-        let addr = self.offset_to_addr(offset, bytes.len())?;
+        let mut address = self.offset_to_addr(offset, bytes.len())?;
 
-        self.unlock();
+        // Write each WRITE_SIZE chunk
+        for chunk in bytes.chunks(WRITE_SIZE) {
+            self.write_chunk_unlocked(address, chunk)?;
+            address += WRITE_SIZE as u32;
+        }
 
-        let result = (|| {
-            let mut current_addr = addr;
-
-            for chunk in bytes.chunks(WRITE_SIZE) {
-                // Convert 2 bytes to u16 (little-endian)
-                let halfword = u16::from_le_bytes([chunk[0], chunk[1]]);
-                self.program_halfword(current_addr, halfword)?;
-                current_addr += WRITE_SIZE as u32;
-            }
-
-            Ok(())
-        })();
-
-        self.lock();
-        result
+        Ok(())
     }
 }
 

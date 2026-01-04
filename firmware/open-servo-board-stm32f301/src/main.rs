@@ -187,30 +187,20 @@ unsafe fn get_persist_task() -> &'static mut PersistTask<EepromFlash> {
 #[cfg(feature = "osctl")]
 #[embassy_executor::task]
 async fn persist_task_runner() {
+    // Wait for RTT to be initialized (rtt_tasks runs first)
+    embassy_time::Timer::after(embassy_time::Duration::from_millis(100)).await;
+
     let signal = persist_signal();
     let shadow = get_shadow_storage();
 
     // Initialize from flash
     let task = unsafe { get_persist_task() };
-    match task.init(shadow).await {
-        Ok(()) => {
-            #[cfg(feature = "defmt")]
-            defmt::info!("Persist init: {:?}", task.last_result());
-        }
-        Err(e) => {
-            #[cfg(feature = "defmt")]
-            defmt::error!("Persist init failed: {:?}", e);
-        }
-    }
+    let _ = task.init(shadow).await;
 
     // Main loop: wait for signal, then persist
     loop {
         signal.wait().await;
-
-        let result = task.persist(shadow).await;
-
-        #[cfg(feature = "defmt")]
-        defmt::info!("Persist result: {:?}", result);
+        let _ = task.persist(shadow).await;
     }
 }
 

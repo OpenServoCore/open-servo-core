@@ -50,7 +50,10 @@ pub fn configure_rcc() {
     while rcc.cr.read().pllrdy().is_not_ready() {}
 
     // 6. Set flash latency for 72MHz (2 wait states)
-    flash.acr.write(|w| w.latency().ws2());
+    // MUST use modify() not write() - write() clears prefetch buffer enable!
+    flash
+        .acr
+        .modify(|_, w| w.latency().ws2().prftbe().enabled());
 
     // 7. Set prescalers (includes mcopre like old crate)
     rcc.cfgr.modify(|_, w| {
@@ -71,9 +74,10 @@ pub fn configure_rcc() {
     rcc.cfgr.modify(|_, w| w.sw().pll());
     while !rcc.cfgr.read().sws().is_pll() {}
 
-    // 10. Disable HSI (no longer needed)
-    rcc.cr.modify(|_, w| w.hsion().off());
-    while rcc.cr.read().hsirdy().is_ready() {}
+    // 10. Keep HSI enabled - it's required for flash programming!
+    // Flash reads work without HSI, but programming needs it as the
+    // clock source for the flash controller's programming circuitry.
+    // rcc.cr.modify(|_, w| w.hsion().off());
 
     // 11. Enable FLITF clock (flash interface)
     rcc.ahbenr.modify(|_, w| w.flitfen().enabled());

@@ -120,6 +120,8 @@ pub struct PersistTask<F: NorFlash> {
     initialized: bool,
     /// Last persist result.
     last_result: Option<PersistResult>,
+    /// Generation counter (increments on successful persist).
+    generation: u16,
 }
 
 impl<F: NorFlash> PersistTask<F> {
@@ -134,12 +136,27 @@ impl<F: NorFlash> PersistTask<F> {
             last_known: [0xFF; EEPROM_SIZE], // Erased flash state
             initialized: false,
             last_result: None,
+            generation: 0,
         }
+    }
+
+    /// Write persist telemetry to shadow registers.
+    fn write_telemetry<const N: usize>(
+        &self,
+        shadow: &ShadowStorage<N>,
+        result: PersistResult,
+        pending: bool,
+    ) {
+        use open_servo_registry::vendor::telem;
+        let _ = shadow.host_write(telem::PERSIST_STATUS, &[result as u8]);
+        let _ = shadow.host_write(telem::PERSIST_GEN, &self.generation.to_le_bytes());
+        let _ = shadow.host_write(telem::PERSIST_PENDING, &[pending as u8]);
     }
 
     /// Initialize from flash (restore EEPROM region on boot).
     ///
     /// Call this once at startup to load saved data into shadow table.
+    /// If flash is corrupt/uninitialized, erases it automatically.
     pub async fn init<const N: usize>(
         &mut self,
         shadow: &ShadowStorage<N>,
@@ -165,18 +182,48 @@ impl<F: NorFlash> PersistTask<F> {
                     .map_err(|_| PersistResult::WriteFailed)?;
                 self.initialized = true;
                 self.last_result = Some(PersistResult::Ok);
+                self.write_telemetry(shadow, PersistResult::Ok, false);
                 Ok(())
             }
             Ok(None) => {
                 // First boot - no saved data
+                // But verify flash is actually erased (sequential-storage may return None for corrupt data)
+                let mut check_buf = [0u8; 4];
+                if self.flash.read(0, &mut check_buf).await.is_ok() && check_buf != [0xFF; 4] {
+                    // Flash has garbage data, erase it
+                    if self
+                        .flash
+                        .erase(self.flash_range.start, self.flash_range.end)
+                        .await
+                        .is_err()
+                    {
+                        self.last_result = Some(PersistResult::WriteFailed);
+                        self.write_telemetry(shadow, PersistResult::WriteFailed, false);
+                        return Err(PersistResult::WriteFailed);
+                    }
+                }
                 self.initialized = true;
                 self.last_result = Some(PersistResult::FirstBoot);
+                self.write_telemetry(shadow, PersistResult::FirstBoot, false);
                 Ok(())
             }
             Err(_) => {
-                // Flash error during init
-                self.last_result = Some(PersistResult::WriteFailed);
-                Err(PersistResult::WriteFailed)
+                // Flash error - likely corrupt/uninitialized, try to erase
+                if self
+                    .flash
+                    .erase(self.flash_range.start, self.flash_range.end)
+                    .await
+                    .is_ok()
+                {
+                    self.initialized = true;
+                    self.last_result = Some(PersistResult::FirstBoot);
+                    self.write_telemetry(shadow, PersistResult::FirstBoot, false);
+                    Ok(())
+                } else {
+                    self.last_result = Some(PersistResult::WriteFailed);
+                    self.write_telemetry(shadow, PersistResult::WriteFailed, false);
+                    Err(PersistResult::WriteFailed)
+                }
             }
         }
     }
@@ -192,10 +239,12 @@ impl<F: NorFlash> PersistTask<F> {
             .is_err()
         {
             self.last_result = Some(PersistResult::WriteFailed);
+            self.write_telemetry(shadow, PersistResult::WriteFailed, false);
             return PersistResult::WriteFailed;
         }
         if torque_buf[0] != 0 {
             self.last_result = Some(PersistResult::Busy);
+            self.write_telemetry(shadow, PersistResult::Busy, false);
             return PersistResult::Busy;
         }
 
@@ -203,14 +252,19 @@ impl<F: NorFlash> PersistTask<F> {
         let mut current = [0u8; EEPROM_SIZE];
         if shadow.host_read(EEPROM_START, &mut current).is_err() {
             self.last_result = Some(PersistResult::WriteFailed);
+            self.write_telemetry(shadow, PersistResult::WriteFailed, false);
             return PersistResult::WriteFailed;
         }
 
         // Diff check - skip write if unchanged
         if current == self.last_known {
             self.last_result = Some(PersistResult::NoChange);
+            self.write_telemetry(shadow, PersistResult::NoChange, false);
             return PersistResult::NoChange;
         }
+
+        // Write pending=true before flash operation
+        self.write_telemetry(shadow, PersistResult::Ok, true);
 
         // Write to flash
         let mut buf = [0u8; EEPROM_SIZE + 32];
@@ -229,11 +283,14 @@ impl<F: NorFlash> PersistTask<F> {
         match result {
             Ok(()) => {
                 self.last_known = current;
+                self.generation = self.generation.wrapping_add(1);
                 self.last_result = Some(PersistResult::Ok);
+                self.write_telemetry(shadow, PersistResult::Ok, false);
                 PersistResult::Ok
             }
             Err(_) => {
                 self.last_result = Some(PersistResult::WriteFailed);
+                self.write_telemetry(shadow, PersistResult::WriteFailed, false);
                 PersistResult::WriteFailed
             }
         }
