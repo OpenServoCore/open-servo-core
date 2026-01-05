@@ -32,10 +32,10 @@ use cortex_m::peripheral::syst::SystClkSource;
 use cortex_m_rt::{entry, pre_init};
 #[cfg(feature = "osctl")]
 use embassy_executor::Executor;
-use open_servo_runtime::executor::ControlExecutor;
 #[cfg(feature = "osctl")]
 use open_servo_hw_utils::rtt_async::{RttChannels, RttRpcIo};
 use open_servo_kernel::ServoKernel;
+use open_servo_runtime::executor::ControlExecutor;
 #[cfg(feature = "osctl")]
 use open_servo_services::persist::PersistTask;
 #[cfg(feature = "osctl")]

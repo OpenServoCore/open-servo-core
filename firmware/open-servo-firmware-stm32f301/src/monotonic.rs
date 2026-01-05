@@ -3,7 +3,7 @@
 //! TIM2 is configured as a 32-bit free-running counter at 1MHz (1µs resolution).
 //! This provides ~4295 seconds before wrap, sufficient for most timing needs.
 
-use open_servo_kernel_api::TimeStampUs;
+use open_servo_units::TimeStampUs;
 use stm32f3::stm32f301::TIM2;
 
 /// Read the current monotonic time in microseconds.
