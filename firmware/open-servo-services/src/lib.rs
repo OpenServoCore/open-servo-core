@@ -1,12 +1,9 @@
 #![no_std]
 //! # open-servo-services
 //!
-//! Async service logic for non-RT servo operations.
+//! Executor-agnostic async services for non-realtime servo operations.
 //!
 //! ## Architecture
-//!
-//! This crate provides pure async service logic. Orchestration (signal waiting,
-//! task dispatch) happens in the `runtime` crate via `Services::run_once()`.
 //!
 //! ```text
 //! ┌─────────────────────────────────────────────────┐
@@ -15,24 +12,45 @@
 //! └─────────────────────────────────────────────────┘
 //!                ↑ KernelOp         KernelResult ↓
 //! ┌─────────────────────────────────────────────────┐
-//! │  Async Executor (main) - runtime::Services      │
-//! │    Orchestrates: persist, rpc, dxl, etc.        │
+//! │  Async Executor (main loop)                     │
+//! │    persist, rpc, dxl services                   │
 //! └─────────────────────────────────────────────────┘
 //! ```
 //!
-//! ## Design Principles
+//! ## Executor-Agnostic Design
 //!
-//! - **Pure logic**: Service structs provide async methods, no signal storage
-//! - **Runtime orchestration**: `runtime::Services` handles signal dispatch
-//! - **Executor agnostic**: No direct embassy_sync dependency
-//! - **Standard I/O**: Uses `embedded-io-async` traits for UART
+//! This crate has **zero dependency on any async runtime** (embassy, tokio, etc).
+//! Services use trait bounds from [`open_servo_hw::v2`]:
+//!
+//! | Trait | Purpose |
+//! |-------|---------|
+//! | [`AsyncTimer`] | Monotonic time and delays |
+//! | [`SignalReader`] | Async event waiting |
+//! | [`SignalWriter`] | Event signaling (sync side) |
+//!
+//! Firmware provides concrete implementations via newtype wrappers:
+//!
+//! ```rust,ignore
+//! // In firmware crate
+//! struct EmbassyTimer;
+//! impl AsyncTimer for EmbassyTimer { ... }
+//!
+//! struct EmbassySignal(&'static Signal<...>);
+//! impl SignalReader for EmbassySignal { ... }
+//! ```
 //!
 //! ## Service Modules
 //!
-//! - [`persist`]: EEPROM/flash persistence logic
-//! - [`rpc`]: RPC service for debug/telemetry
-//! - [`dxl_rx`]: DXL frame parsing (stub)
-//! - [`dxl_req`]: DXL request handling (stub)
+//! | Module | Description |
+//! |--------|-------------|
+//! | [`persist`] | EEPROM/flash persistence with wear-leveling |
+//! | [`rpc`] | Debug/telemetry RPC over RTT |
+//! | [`dxl_rx`] | Dynamixel frame parsing |
+//! | [`dxl_req`] | Dynamixel request handling |
+//!
+//! [`AsyncTimer`]: open_servo_hw::v2::AsyncTimer
+//! [`SignalReader`]: open_servo_hw::v2::SignalReader
+//! [`SignalWriter`]: open_servo_hw::v2::SignalWriter
 
 // Task modules
 pub mod dxl_req;

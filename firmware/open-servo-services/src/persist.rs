@@ -1,23 +1,23 @@
-//! Persistence service task.
+//! EEPROM persistence service.
 //!
-//! This embassy task handles saving the EEPROM region (64 bytes) to internal
-//! flash using `sequential-storage` for wear-leveling.
+//! Saves the EEPROM region (64 bytes) to internal flash using
+//! `sequential-storage` for wear-leveling.
 //!
-//! ## Architecture
+//! ## Design
 //!
-//! ```text
-//! dxl_req_task → Signal<PersistRequest> → persist_task → sequential-storage → Flash
+//! - **Executor-agnostic**: Pure async, no runtime dependencies
+//! - **Diff-based writes**: Only writes changed bytes to minimize flash wear
+//! - **Safety gated**: Refuses to persist while servo is engaged (torque on)
+//!
+//! ## Usage
+//!
+//! ```rust,ignore
+//! let mut task = PersistTask::new(flash, 0..FLASH_SIZE);
+//! task.init(shadow).await?;  // Restore from flash on boot
+//!
+//! // Later, when signaled:
+//! task.persist(shadow).await;  // Save if changed
 //! ```
-//!
-//! ## Safety
-//!
-//! Persistence is only allowed when the servo is disengaged (torque off).
-//! The task checks this condition before starting a write operation.
-//!
-//! ## Write Strategy
-//!
-//! The shadow table's EEPROM region is compared against stored values.
-//! Only changed bytes trigger a write to minimize wear.
 
 use core::ops::Range;
 

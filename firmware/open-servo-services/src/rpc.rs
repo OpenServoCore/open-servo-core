@@ -1,6 +1,15 @@
-//! RPC service task.
+//! RPC service for debug/telemetry over RTT.
 //!
-//! Async RPC handler for debug/telemetry over RTT.
+//! Generic over [`AsyncTimer`] for executor-agnostic timing. The firmware
+//! provides a concrete timer implementation (e.g., `EmbassyTimer`).
+//!
+//! ## Features
+//!
+//! - Register read/write (`KEY_REG_READ`, `KEY_REG_WRITE`)
+//! - Telemetry streaming (`KEY_REG_STREAM_START`, `KEY_REG_STREAM_STOP`)
+//! - System info and ping
+//!
+//! [`AsyncTimer`]: open_servo_hw::v2::AsyncTimer
 
 use crate::rpc_transport::{RttTransport, MAX_MSG_SIZE};
 use embedded_io_async::{Read, Write};

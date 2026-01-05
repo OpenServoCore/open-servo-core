@@ -1,9 +1,33 @@
 //! Async primitive traits for executor-agnostic services.
 //!
-//! These traits abstract over `embassy_sync` and `rtic_sync` primitives,
-//! allowing services to be written once and work with any async executor.
+//! These traits abstract over runtime-specific primitives (`embassy_sync`, `rtic_sync`, etc.),
+//! allowing the `services` and `hw-utils` crates to remain portable.
 //!
-//! Firmware provides the concrete implementations (e.g., wrapping `embassy_sync::Signal`).
+//! ## Implementation Pattern
+//!
+//! Firmware provides concrete implementations via newtype wrappers:
+//!
+//! ```rust,ignore
+//! struct EmbassySignal(&'static Signal<CriticalSectionRawMutex, ()>);
+//!
+//! impl SignalReader for EmbassySignal {
+//!     async fn wait(&self) { self.0.wait().await; }
+//! }
+//!
+//! impl SignalWriter for EmbassySignal {
+//!     fn signal(&self) { self.0.signal(()); }
+//! }
+//! ```
+//!
+//! ## Trait Summary
+//!
+//! | Trait | Side | Purpose |
+//! |-------|------|---------|
+//! | [`SignalWriter`] | Sync (ISR) | Notify async tasks |
+//! | [`SignalReader`] | Async | Wait for notifications |
+//! | [`Sender`] | Sync | Send values to async tasks |
+//! | [`Receiver`] | Async | Receive values |
+//! | [`AsyncTimer`] | Async | Monotonic time and delays |
 
 use core::future::Future;
 

@@ -1,26 +1,29 @@
 //! Async RTT I/O adapter for RPC service.
 //!
 //! Provides `embedded_io_async` compatible RTT streams for RPC communication.
-//! Uses a poll-and-wait pattern driven by an external signal (e.g., SysTick).
+//! Generic over [`SignalReader`] for executor-agnostic async waiting.
 //!
 //! ## RTT Channel Layout
 //!
-//! - Up channel 0: defmt logging (NoBlockSkip)
-//! - Up channel 1: RPC responses/telemetry (NoBlockTrim)
-//! - Down channel 0: RPC requests
+//! | Channel | Direction | Purpose |
+//! |---------|-----------|---------|
+//! | Up 0 | Device → Host | defmt logging (NoBlockSkip) |
+//! | Up 1 | Device → Host | RPC responses (NoBlockTrim) |
+//! | Down 0 | Host → Device | RPC requests |
 //!
 //! ## Usage
 //!
-//! ```ignore
-//! // Board crate defines the wait signal implementing SignalReader
-//! static RPC_TICK: Signal<CriticalSectionRawMutex, ()> = Signal::new();
+//! ```rust,ignore
+//! // Firmware provides a SignalReader wrapper
+//! struct EmbassySignal(&'static Signal<...>);
+//! impl SignalReader for EmbassySignal { ... }
 //!
-//! // SysTick ISR signals it
-//! fn SysTick() { RPC_TICK.signal(()); }
-//!
-//! // Initialize RTT with signal reference
-//! let rtt = RttChannels::init(&RPC_TICK);
+//! // Initialize RTT with the signal
+//! let rtt = RttChannels::init(EmbassySignal(rpc_tick()));
+//! run_rpc_service(rtt.rpc).await;
 //! ```
+//!
+//! [`SignalReader`]: open_servo_hw::v2::SignalReader
 
 use embedded_io_async::{ErrorType, Read, Write};
 use open_servo_hw::v2::SignalReader;
