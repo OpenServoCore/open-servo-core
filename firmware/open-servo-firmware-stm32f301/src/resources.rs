@@ -144,6 +144,32 @@ pub fn on_eeprom_write() {
 }
 
 // =============================================================================
+// ServicePrimitives implementation
+// =============================================================================
+
+use open_servo_runtime::ServicePrimitives;
+
+/// ServicePrimitives implementation for STM32F301.
+///
+/// Provides async primitives backed by static embassy_sync signals.
+pub struct Stm32Primitives;
+
+impl ServicePrimitives for Stm32Primitives {
+    type PersistSignal = EmbassySignal;
+    type PersistSignalTx = EmbassySignal;
+
+    fn persist_signal(&self) -> (&Self::PersistSignalTx, &Self::PersistSignal) {
+        // Both TX and RX use the same signal (embassy Signal is bidirectional)
+        static TX: EmbassySignal = EmbassySignal(&PERSIST_SIGNAL);
+        static RX: EmbassySignal = EmbassySignal(&PERSIST_SIGNAL);
+        (&TX, &RX)
+    }
+}
+
+/// Global ServicePrimitives instance.
+pub static PRIMITIVES: Stm32Primitives = Stm32Primitives;
+
+// =============================================================================
 // Initialization functions
 // =============================================================================
 

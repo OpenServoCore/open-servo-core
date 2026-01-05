@@ -39,7 +39,6 @@ pub use device::Device;
 pub use executor::ControlExecutor;
 pub use runtime::Runtime;
 pub use service_primitives::ServicePrimitives;
-pub use services::{ServiceError, Services};
 pub use shadow_storage::{HeaplessStagingBuffer, ShadowStorage, StdShadowStorage};
 pub use uart_bus::{UartBus, UartError};
 

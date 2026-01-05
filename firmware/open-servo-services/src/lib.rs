@@ -52,16 +52,20 @@
 //! [`SignalReader`]: open_servo_hw::v2::SignalReader
 //! [`SignalWriter`]: open_servo_hw::v2::SignalWriter
 
-// Task modules
+// Service modules
+pub mod bundle;
 pub mod dxl_req;
 pub mod dxl_rx;
 pub mod persist;
 pub mod rpc;
 pub mod rpc_transport;
 
-// Task type re-exports
-pub use dxl_req::{DxlReqTask, Response};
-pub use dxl_rx::DxlRxTask;
+// Primary re-exports
+pub use bundle::{ServiceError, Services};
 pub use persist::{PersistResult, PersistTask};
 pub use rpc::RpcService;
 pub use rpc_transport::RttTransport;
+
+// Secondary re-exports
+pub use dxl_req::{DxlReqTask, Response};
+pub use dxl_rx::DxlRxTask;

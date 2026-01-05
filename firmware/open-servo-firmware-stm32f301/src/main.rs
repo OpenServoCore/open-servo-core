@@ -37,14 +37,14 @@ use open_servo_hw_utils::rtt_async::{RttChannels, RttRpcIo};
 use open_servo_kernel::ServoKernel;
 use open_servo_runtime::executor::ControlExecutor;
 #[cfg(feature = "osctl")]
-use open_servo_services::persist::PersistTask;
-#[cfg(feature = "osctl")]
-use open_servo_services::RpcService;
+use open_servo_services::{RpcService, Services};
 #[cfg(feature = "osctl")]
 use static_cell::StaticCell;
 
 #[cfg(feature = "osctl")]
 use crate::flash::{EepromFlash, EEPROM_FLASH_SIZE};
+#[cfg(feature = "osctl")]
+use crate::resources::{Stm32Primitives, PRIMITIVES};
 
 use crate::config::kernel_config;
 use crate::init::{
@@ -56,7 +56,7 @@ use crate::resources::{
     get_shadow_storage as get_shadow, init_queues, on_eeprom_write, set_isr_resources,
 };
 #[cfg(feature = "osctl")]
-use crate::resources::{get_shadow_storage, persist_signal, rpc_tick, EmbassySignal, EmbassyTimer};
+use crate::resources::{get_shadow_storage, rpc_tick, EmbassySignal, EmbassyTimer};
 
 // Define defmt timestamp using TIM2 monotonic counter (1µs resolution)
 #[cfg(feature = "defmt")]
@@ -143,28 +143,7 @@ fn main() -> ! {
     }
 
     // =========================================================================
-    // Initialize persist task (restore EEPROM from flash)
-    // =========================================================================
-    #[cfg(feature = "osctl")]
-    {
-        static PERSIST_TASK: StaticCell<PersistTask<EepromFlash>> = StaticCell::new();
-
-        // Create flash driver and persist task
-        let flash = unsafe { EepromFlash::new() };
-        let persist_task = PERSIST_TASK.init(PersistTask::new(flash, 0..EEPROM_FLASH_SIZE as u32));
-
-        // Initialize from flash (blocking on startup is ok)
-        // Note: We use block_on here since we're before the executor starts
-        // For now, skip async init and just log if there's an error
-        #[cfg(feature = "defmt")]
-        defmt::info!("Persist task created, will init in executor");
-
-        // Store reference for the async task
-        unsafe { PERSIST_TASK_REF = Some(persist_task as *mut _) };
-    }
-
-    // =========================================================================
-    // Run Embassy executor with RPC service (osctl only)
+    // Run Embassy executor with services (osctl only)
     // =========================================================================
     #[cfg(feature = "osctl")]
     {
@@ -175,7 +154,7 @@ fn main() -> ! {
         // Run executor with tasks
         executor.run(|spawner| {
             spawner.must_spawn(rtt_tasks());
-            spawner.must_spawn(persist_task_runner());
+            spawner.must_spawn(services_task());
         });
     }
 
@@ -186,37 +165,32 @@ fn main() -> ! {
     }
 }
 
-/// Static reference to persist task for async access.
-#[cfg(feature = "osctl")]
-static mut PERSIST_TASK_REF: Option<*mut PersistTask<EepromFlash>> = None;
-
-/// Get persist task reference.
-///
-/// # Safety
-/// Must only be called after init and from the persist task runner.
-#[cfg(feature = "osctl")]
-unsafe fn get_persist_task() -> &'static mut PersistTask<EepromFlash> {
-    &mut *PERSIST_TASK_REF.unwrap()
-}
-
-/// Persist task runner - waits for signal and persists EEPROM.
+/// Services task - runs persist and other async services.
 #[cfg(feature = "osctl")]
 #[embassy_executor::task]
-async fn persist_task_runner() {
+async fn services_task() {
     // Wait for RTT to be initialized (rtt_tasks runs first)
     embassy_time::Timer::after(embassy_time::Duration::from_millis(100)).await;
 
-    let signal = persist_signal();
-    let shadow = get_shadow_storage();
+    // Create flash driver
+    let flash = unsafe { EepromFlash::new() };
 
-    // Initialize from flash
-    let task = unsafe { get_persist_task() };
-    let _ = task.init(shadow).await;
+    // Create services bundle
+    let mut services: Services<'_, Stm32Primitives, EepromFlash, { crate::resources::SHADOW_TABLE_SIZE }> =
+        Services::new(&PRIMITIVES, flash, 0..EEPROM_FLASH_SIZE as u32, get_shadow_storage());
 
-    // Main loop: wait for signal, then persist
+    // Initialize (restore EEPROM from flash)
+    if let Err(e) = services.init().await {
+        #[cfg(feature = "defmt")]
+        defmt::error!("Services init failed: {:?}", e);
+    }
+
+    // Main loop
     loop {
-        signal.wait().await;
-        let _ = task.persist(shadow).await;
+        if let Err(e) = services.run_once().await {
+            #[cfg(feature = "defmt")]
+            defmt::error!("Service error: {:?}", e);
+        }
     }
 }
 
