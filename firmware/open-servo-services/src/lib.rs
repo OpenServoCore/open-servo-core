@@ -24,7 +24,7 @@
 //!
 //! - **Separation**: RT kernel is ISR-owned; services are async-owned
 //! - **Single-outstanding**: Only one `KernelOp` in flight at a time
-//! - **Copy-in TX**: `TxFrame` uses owned buffers (DMA can't outlive borrow)
+//! - **Standard I/O**: Uses `embedded-io-async` traits for UART
 //! - **Soft-time**: `embassy-time` for periodic tasks; DXL timing uses RT timer
 //!
 //! ## Tasks

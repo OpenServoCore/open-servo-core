@@ -576,6 +576,8 @@ name = "open-servo-hw"
 version = "0.1.0"
 dependencies = [
  "defmt 0.3.100",
+ "embedded-io-async",
+ "embedded-storage-async",
  "open-servo-math",
  "open-servo-units",
 ]
@@ -609,6 +611,7 @@ name = "open-servo-kernel-api"
 version = "0.1.0"
 dependencies = [
  "defmt 0.3.100",
+ "open-servo-hw",
  "open-servo-shadow",
  "open-servo-units",
 ]
@@ -658,6 +661,7 @@ version = "0.1.0"
 dependencies = [
  "critical-section",
  "defmt 0.3.100",
+ "embedded-storage-async",
  "heapless 0.8.0",
  "open-servo-hw",
  "open-servo-kernel-api",

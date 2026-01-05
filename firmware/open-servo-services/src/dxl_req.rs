@@ -14,7 +14,7 @@
 //! ## Response Flow
 //!
 //! After processing an op, the task builds a Dynamixel response frame and
-//! submits it via [`BusEngine::submit_tx`].
+//! sends it via the UART (using `embedded-io-async::Write`).
 
 use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
 use embassy_sync::signal::Signal;
@@ -81,5 +81,5 @@ pub struct Response {
 //    - Kernel(op): enqueue to RT, await signal, build response
 //    - Service(op): handle locally, build response
 //    - ShadowRead: read from shadow table, build response
-// 3. Submit response via BusEngine
+// 3. Send response via UART (embedded-io-async::Write)
 // 4. Loop
