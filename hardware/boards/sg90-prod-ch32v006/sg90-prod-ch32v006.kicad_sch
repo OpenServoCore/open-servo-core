@@ -3394,12 +3394,6 @@
 		(uuid "1ea6ded7-db0d-4f21-93fd-88e814e021e4")
 	)
 	(junction
-		(at 102.87 182.88)
-		(diameter 0)
-		(color 0 0 0 0)
-		(uuid "2f7afd0a-5b7c-4ddb-a351-25be8628c57b")
-	)
-	(junction
 		(at 73.66 173.99)
 		(diameter 0)
 		(color 0 0 0 0)
@@ -3532,6 +3526,10 @@
 	(no_connect
 		(at 135.89 127)
 		(uuid "b827365d-e67d-4326-a9b7-2d72e6c1e101")
+	)
+	(no_connect
+		(at 135.89 106.68)
+		(uuid "e1eff851-69f6-4277-ab88-b1be6d4a7b62")
 	)
 	(wire
 		(pts
@@ -3892,16 +3890,6 @@
 			(type default)
 		)
 		(uuid "36b41eed-ba6a-4791-92cb-7d5540d85a2c")
-	)
-	(wire
-		(pts
-			(xy 116.84 182.88) (xy 110.49 182.88)
-		)
-		(stroke
-			(width 0)
-			(type default)
-		)
-		(uuid "37b517d9-a38e-40e7-b335-3575bd58ff2e")
 	)
 	(wire
 		(pts
@@ -4285,7 +4273,7 @@
 	)
 	(wire
 		(pts
-			(xy 102.87 182.88) (xy 102.87 187.96)
+			(xy 102.87 177.8) (xy 102.87 187.96)
 		)
 		(stroke
 			(width 0)
@@ -4495,16 +4483,6 @@
 	)
 	(wire
 		(pts
-			(xy 105.41 182.88) (xy 102.87 182.88)
-		)
-		(stroke
-			(width 0)
-			(type default)
-		)
-		(uuid "a023c9b0-bc2b-4867-bba7-eda3d8b896d9")
-	)
-	(wire
-		(pts
 			(xy 30.48 48.26) (xy 30.48 53.34)
 		)
 		(stroke
@@ -4652,16 +4630,6 @@
 			(type default)
 		)
 		(uuid "b21d9163-0d63-4e93-9bf9-c98b39e66c56")
-	)
-	(wire
-		(pts
-			(xy 129.54 106.68) (xy 135.89 106.68)
-		)
-		(stroke
-			(width 0)
-			(type default)
-		)
-		(uuid "b4e9ab1f-4ca8-4385-85ff-3b4305ede2ec")
 	)
 	(wire
 		(pts
@@ -5015,16 +4983,6 @@
 	)
 	(wire
 		(pts
-			(xy 102.87 177.8) (xy 102.87 182.88)
-		)
-		(stroke
-			(width 0)
-			(type default)
-		)
-		(uuid "f020fff3-6eef-43cc-9b31-c5b88b7bb028")
-	)
-	(wire
-		(pts
 			(xy 180.34 156.21) (xy 175.26 156.21)
 		)
 		(stroke
@@ -5183,7 +5141,7 @@
 		)
 		(uuid "159be882-dde2-46c1-a007-76ef0a326be8")
 	)
-	(label "ISNS+"
+	(label "ISNS"
 		(at 259.08 104.14 180)
 		(effects
 			(font
@@ -5212,16 +5170,6 @@
 			(justify left bottom)
 		)
 		(uuid "25aef8b5-f4ed-43be-8cdc-123521140fb4")
-	)
-	(label "ISNS-"
-		(at 129.54 106.68 0)
-		(effects
-			(font
-				(size 1.27 1.27)
-			)
-			(justify left bottom)
-		)
-		(uuid "28f274c3-5358-410c-a619-7a068376ba71")
 	)
 	(label "TX"
 		(at 196.85 35.56 0)
@@ -5503,7 +5451,7 @@
 		)
 		(uuid "c2aac19a-4ded-4420-80c2-65bb3a37ebaa")
 	)
-	(label "ISNS+"
+	(label "ISNS"
 		(at 129.54 109.22 0)
 		(effects
 			(font
@@ -5583,7 +5531,7 @@
 		)
 		(uuid "ddf79310-d95d-4c70-8606-5c417594482d")
 	)
-	(label "ISNS+"
+	(label "ISNS"
 		(at 116.84 163.83 180)
 		(effects
 			(font
@@ -5612,16 +5560,6 @@
 			(justify left bottom)
 		)
 		(uuid "eeeb1dea-3127-4aaa-9cb4-ac56b1e19db3")
-	)
-	(label "ISNS-"
-		(at 116.84 182.88 180)
-		(effects
-			(font
-				(size 1.27 1.27)
-			)
-			(justify right bottom)
-		)
-		(uuid "f18c6812-f6c2-4253-888f-d958b9a96784")
 	)
 	(label "DATA"
 		(at 204.47 54.61 180)
@@ -8235,76 +8173,6 @@
 		)
 	)
 	(symbol
-		(lib_id "Device:NetTie_2")
-		(at 107.95 182.88 180)
-		(unit 1)
-		(exclude_from_sim no)
-		(in_bom no)
-		(on_board yes)
-		(dnp no)
-		(uuid "6c68033e-53de-4216-9d31-7fe007e2aed6")
-		(property "Reference" "NT3"
-			(at 106.68 181.61 0)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-				(justify right)
-			)
-		)
-		(property "Value" "NetTie_2"
-			(at 109.2199 181.61 90)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-				(justify right)
-				(hide yes)
-			)
-		)
-		(property "Footprint" "shared:NetTie-2_SMD_0.2mm"
-			(at 107.95 182.88 0)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-				(hide yes)
-			)
-		)
-		(property "Datasheet" "~"
-			(at 107.95 182.88 0)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-				(hide yes)
-			)
-		)
-		(property "Description" "Net tie, 2 pins"
-			(at 107.95 182.88 0)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-				(hide yes)
-			)
-		)
-		(pin "2"
-			(uuid "bafdb265-184a-40c0-9648-23dea180ef25")
-		)
-		(pin "1"
-			(uuid "4fbabda5-e050-4e34-a05b-58fe0f9c236a")
-		)
-		(instances
-			(project "sg90-prod-ch32v006"
-				(path "/6062e7d2-0c72-467e-b49c-6387ba053e09"
-					(reference "NT3")
-					(unit 1)
-				)
-			)
-		)
-	)
-	(symbol
 		(lib_id "power:+3.3V")
 		(at 248.92 156.21 270)
 		(unit 1)
@@ -8698,28 +8566,28 @@
 			)
 		)
 		(pin "4"
-			(uuid "8e08f3a6-5f5d-432f-a887-04753c550a29")
+			(uuid "8e08f3a6-5f5d-432f-a887-04753c550a2a")
 		)
 		(pin "6"
-			(uuid "d0ad793c-8105-4b71-b1d2-714662966671")
+			(uuid "d0ad793c-8105-4b71-b1d2-714662966672")
 		)
 		(pin "1"
-			(uuid "8c6810ef-2b00-4a4b-b17e-2185cc6c0552")
+			(uuid "8c6810ef-2b00-4a4b-b17e-2185cc6c0553")
 		)
 		(pin "2"
-			(uuid "1e003250-c8b8-4328-8f26-c90c7439da01")
+			(uuid "1e003250-c8b8-4328-8f26-c90c7439da02")
 		)
 		(pin "5"
-			(uuid "f871dde8-76a5-44ea-9b0e-09bf2cb4b7a5")
+			(uuid "f871dde8-76a5-44ea-9b0e-09bf2cb4b7a6")
 		)
 		(pin "8"
-			(uuid "3a3e2d36-167c-487a-9bfd-4a41d816ad0f")
+			(uuid "3a3e2d36-167c-487a-9bfd-4a41d816ad10")
 		)
 		(pin "3"
-			(uuid "d0bb1c99-df8f-42a1-a955-7624e83a6a00")
+			(uuid "d0bb1c99-df8f-42a1-a955-7624e83a6a01")
 		)
 		(pin "7"
-			(uuid "97f9a08c-cd44-4841-943d-52ac333a8fa6")
+			(uuid "97f9a08c-cd44-4841-943d-52ac333a8fa7")
 		)
 		(instances
 			(project ""
@@ -9666,28 +9534,28 @@
 			)
 		)
 		(pin "4"
-			(uuid "8e08f3a6-5f5d-432f-a887-04753c550a29")
+			(uuid "8e08f3a6-5f5d-432f-a887-04753c550a2b")
 		)
 		(pin "6"
-			(uuid "d0ad793c-8105-4b71-b1d2-714662966671")
+			(uuid "d0ad793c-8105-4b71-b1d2-714662966673")
 		)
 		(pin "1"
-			(uuid "8c6810ef-2b00-4a4b-b17e-2185cc6c0552")
+			(uuid "8c6810ef-2b00-4a4b-b17e-2185cc6c0554")
 		)
 		(pin "2"
-			(uuid "1e003250-c8b8-4328-8f26-c90c7439da01")
+			(uuid "1e003250-c8b8-4328-8f26-c90c7439da03")
 		)
 		(pin "5"
-			(uuid "f871dde8-76a5-44ea-9b0e-09bf2cb4b7a5")
+			(uuid "f871dde8-76a5-44ea-9b0e-09bf2cb4b7a7")
 		)
 		(pin "8"
-			(uuid "3a3e2d36-167c-487a-9bfd-4a41d816ad0f")
+			(uuid "3a3e2d36-167c-487a-9bfd-4a41d816ad11")
 		)
 		(pin "3"
-			(uuid "d0bb1c99-df8f-42a1-a955-7624e83a6a00")
+			(uuid "d0bb1c99-df8f-42a1-a955-7624e83a6a02")
 		)
 		(pin "7"
-			(uuid "97f9a08c-cd44-4841-943d-52ac333a8fa6")
+			(uuid "97f9a08c-cd44-4841-943d-52ac333a8fa8")
 		)
 		(instances
 			(project ""
