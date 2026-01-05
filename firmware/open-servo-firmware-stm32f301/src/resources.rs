@@ -10,13 +10,52 @@ use core::ptr::addr_of_mut;
 use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
 use embassy_sync::signal::Signal;
 use heapless::spsc::{Consumer, Producer, Queue};
-use open_servo_runtime::executor::ControlExecutor;
-use open_servo_runtime::shadow_storage::ShadowStorage;
+use embassy_time::{Duration, Instant, Timer};
+use open_servo_hw::v2::{AsyncTimer, SignalReader, SignalWriter};
+use open_servo_units::{MicroSecond, TimeStampUs};
 use open_servo_kernel::ServoKernel;
 use open_servo_kernel_api::ops::{KernelOp, KernelResult};
+use open_servo_runtime::executor::ControlExecutor;
+use open_servo_runtime::shadow_storage::ShadowStorage;
 
 use crate::adc_config::{AdcBuffer, ADC_CHANNEL_COUNT};
 use crate::sinks::{StubFaultSink, StubTelemetrySink};
+
+// =============================================================================
+// SignalReader/SignalWriter wrapper for embassy_sync::Signal
+// =============================================================================
+
+/// Newtype wrapper to implement SignalReader/SignalWriter for embassy Signal.
+#[derive(Clone, Copy)]
+pub struct EmbassySignal(pub &'static Signal<CriticalSectionRawMutex, ()>);
+
+impl SignalReader for EmbassySignal {
+    async fn wait(&self) {
+        self.0.wait().await;
+    }
+}
+
+impl SignalWriter for EmbassySignal {
+    fn signal(&self) {
+        self.0.signal(());
+    }
+}
+
+/// AsyncTimer implementation using embassy_time.
+#[derive(Clone, Copy, Default)]
+pub struct EmbassyTimer;
+
+impl AsyncTimer for EmbassyTimer {
+    fn now(&self) -> TimeStampUs {
+        // embassy_time::Instant uses ticks, convert to microseconds
+        let now = Instant::now();
+        TimeStampUs(now.as_micros() as u32)
+    }
+
+    async fn delay(&self, duration: MicroSecond) {
+        Timer::after(Duration::from_micros(duration.0 as u64)).await;
+    }
+}
 
 /// UART RX DMA buffer size.
 pub const UART_RX_BUF_SIZE: usize = 256;

@@ -16,10 +16,11 @@ defmt = [
 ]
 
 [dependencies]
-# Async timing for RPC timeouts
-embassy-time = { workspace = true, features = ["generic-queue-8"] }
+# Async combinators (select, pin_mut)
+futures = { version = "0.3", default-features = false }
 
 # Workspace crates
+open-servo-hw = { path = "../open-servo-hw", default-features = false }
 open-servo-runtime = { path = "../open-servo-runtime", default-features = false }
 open-servo-kernel-api = { path = "../open-servo-kernel-api", default-features = false }
 open-servo-registry = { path = "../open-servo-registry", default-features = false }

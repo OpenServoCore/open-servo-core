@@ -8,11 +8,9 @@ authors.workspace = true
 open-servo-hw = { path = "../open-servo-hw" }
 rtt-target = { workspace = true, optional = true }
 embedded-io-async = { workspace = true, optional = true }
-embassy-sync = { workspace = true, optional = true }
-critical-section = { workspace = true, optional = true }
 defmt = { workspace = true, optional = true }
 
 [features]
 rtt = ["dep:rtt-target"]
-async = ["rtt", "dep:embedded-io-async", "dep:embassy-sync", "dep:critical-section"]
+async = ["rtt", "dep:embedded-io-async"]
 defmt = ["dep:defmt", "rtt-target?/defmt"]

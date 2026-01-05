@@ -56,7 +56,7 @@ use crate::resources::{
     get_shadow_storage as get_shadow, init_queues, on_eeprom_write, set_isr_resources,
 };
 #[cfg(feature = "osctl")]
-use crate::resources::{get_shadow_storage, persist_signal, rpc_tick};
+use crate::resources::{get_shadow_storage, persist_signal, rpc_tick, EmbassySignal, EmbassyTimer};
 
 // Define defmt timestamp using TIM2 monotonic counter (1µs resolution)
 #[cfg(feature = "defmt")]
@@ -224,19 +224,19 @@ async fn persist_task_runner() {
 #[cfg(feature = "osctl")]
 #[embassy_executor::task]
 async fn rtt_tasks() {
-    let rtt = RttChannels::init(rpc_tick());
+    let rtt = RttChannels::init(EmbassySignal(rpc_tick()));
     run_rpc_service(rtt.rpc).await;
 }
 
 /// RPC service task.
 #[cfg(feature = "osctl")]
-async fn run_rpc_service(rpc_io: RttRpcIo) {
+async fn run_rpc_service(rpc_io: RttRpcIo<EmbassySignal>) {
     // Buffer for RPC transport (COBS max for 128-byte msg is ~131 bytes)
     static RPC_BUF: StaticCell<[u8; 192]> = StaticCell::new();
     let buf = RPC_BUF.init([0u8; 192]);
 
-    // Create RPC service with the IO and shadow storage
-    let mut service = RpcService::new(rpc_io, buf, get_shadow_storage());
+    // Create RPC service with the IO, timer, and shadow storage
+    let mut service = RpcService::new(rpc_io, buf, EmbassyTimer, get_shadow_storage());
 
     // Run the RPC service loop
     service.run().await

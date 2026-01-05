@@ -307,7 +307,6 @@ dependencies = [
  "critical-section",
  "document-features",
  "embassy-time-driver",
- "embassy-time-queue-utils",
  "embedded-hal 0.2.7",
  "embedded-hal 1.0.0",
  "embedded-hal-async",
@@ -321,16 +320,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "a0a244c7dc22c8d0289379c8d8830cae06bb93d8f990194d0de5efb3b5ae7ba6"
 dependencies = [
  "document-features",
-]
-
-[[package]]
-name = "embassy-time-queue-utils"
-version = "0.1.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "dc55c748d16908a65b166d09ce976575fb8852cf60ccd06174092b41064d8f83"
-dependencies = [
- "embassy-executor 0.7.0",
- "heapless 0.8.0",
 ]
 
 [[package]]
@@ -401,10 +390,40 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "3f9eec918d3f24069decb9af1554cad7c880e2da24a9afd88aca000531ab82c1"
 
 [[package]]
+name = "futures"
+version = "0.3.31"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "65bc07b1a8bc7c85c5f2e110c476c7389b4554ba72af57d8445ea63a576b0876"
+dependencies = [
+ "futures-channel",
+ "futures-core",
+ "futures-io",
+ "futures-sink",
+ "futures-task",
+ "futures-util",
+]
+
+[[package]]
+name = "futures-channel"
+version = "0.3.31"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "2dff15bf788c671c1934e366d07e30c1814a8ef514e1af724a602e8a2fbe1b10"
+dependencies = [
+ "futures-core",
+ "futures-sink",
+]
+
+[[package]]
 name = "futures-core"
 version = "0.3.31"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "05f29059c0c2090612e8d742178b0580d2dc940c837851ad723096f87af6663e"
+
+[[package]]
+name = "futures-io"
+version = "0.3.31"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "9e5c1b78ca4aae1ac06c48a526a655760685149f0d465d21f37abfe57ce075c6"
 
 [[package]]
 name = "futures-sink"
@@ -425,6 +444,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "9fa08315bb612088cc391249efdc3bc77536f16c91f6cf495e6fbe85b20a4a81"
 dependencies = [
  "futures-core",
+ "futures-sink",
  "futures-task",
  "pin-project-lite",
  "pin-utils",
@@ -586,9 +606,7 @@ dependencies = [
 name = "open-servo-hw-utils"
 version = "0.1.0"
 dependencies = [
- "critical-section",
  "defmt 0.3.100",
- "embassy-sync 0.6.2",
  "embedded-io-async",
  "open-servo-hw",
  "rtt-target",
@@ -676,11 +694,12 @@ dependencies = [
  "cobs 0.3.0",
  "critical-section",
  "defmt 0.3.100",
- "embassy-time",
  "embedded-io-async",
  "embedded-storage",
  "embedded-storage-async",
+ "futures",
  "heapless 0.8.0",
+ "open-servo-hw",
  "open-servo-kernel-api",
  "open-servo-registry",
  "open-servo-rpc",

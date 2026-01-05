@@ -7,6 +7,8 @@
 
 use core::future::Future;
 
+use open_servo_units::{MicroSecond, TimeStampUs};
+
 /// Async signal writer (sync side, callable from ISR).
 ///
 /// Used to notify async tasks from interrupt context.
@@ -37,4 +39,16 @@ pub trait Sender<T> {
 pub trait Receiver<T> {
     /// Wait for and receive a value.
     fn recv(&self) -> impl Future<Output = T>;
+}
+
+/// Async timer for delays and timeouts.
+///
+/// Provides executor-agnostic timing using our own `MicroSecond` and `TimeStampUs` types.
+/// Firmware implements this by wrapping `embassy_time::Timer` or similar.
+pub trait AsyncTimer {
+    /// Get current monotonic time.
+    fn now(&self) -> TimeStampUs;
+
+    /// Delay for the specified duration.
+    fn delay(&self, duration: MicroSecond) -> impl Future<Output = ()>;
 }

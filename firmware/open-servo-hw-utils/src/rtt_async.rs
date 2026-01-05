@@ -12,7 +12,7 @@
 //! ## Usage
 //!
 //! ```ignore
-//! // Board crate defines the wait signal
+//! // Board crate defines the wait signal implementing SignalReader
 //! static RPC_TICK: Signal<CriticalSectionRawMutex, ()> = Signal::new();
 //!
 //! // SysTick ISR signals it
@@ -22,20 +22,16 @@
 //! let rtt = RttChannels::init(&RPC_TICK);
 //! ```
 
-use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
-use embassy_sync::signal::Signal;
 use embedded_io_async::{ErrorType, Read, Write};
+use open_servo_hw::v2::SignalReader;
 use rtt_target::{rtt_init, ChannelMode, DownChannel, UpChannel};
 
-/// Type alias for the RPC tick signal.
-pub type RpcTickSignal = Signal<CriticalSectionRawMutex, ()>;
-
 /// RTT channels for RPC communication.
-pub struct RttChannels {
-    pub rpc: RttRpcIo,
+pub struct RttChannels<S: SignalReader> {
+    pub rpc: RttRpcIo<S>,
 }
 
-impl RttChannels {
+impl<S: SignalReader> RttChannels<S> {
     /// Initialize RTT and create async I/O adapter for RPC.
     ///
     /// The signal is used for async waiting on data availability.
@@ -45,7 +41,7 @@ impl RttChannels {
     /// - Up channel 0: "defmt" (512 bytes, NoBlockSkip)
     /// - Up channel 1: "rpc" (512 bytes, NoBlockTrim)
     /// - Down channel 0: "rpc" (256 bytes)
-    pub fn init(rpc_signal: &'static RpcTickSignal) -> Self {
+    pub fn init(rpc_signal: S) -> Self {
         let channels = rtt_init! {
             up: {
                 0: {
@@ -82,10 +78,10 @@ impl RttChannels {
 }
 
 /// Async RTT I/O for RPC communication.
-pub struct RttRpcIo {
+pub struct RttRpcIo<S: SignalReader> {
     up: UpChannel,
     down: DownChannel,
-    signal: &'static RpcTickSignal,
+    signal: S,
 }
 
 /// Error type for RTT I/O (infallible).
@@ -98,11 +94,11 @@ impl embedded_io_async::Error for RttError {
     }
 }
 
-impl ErrorType for RttRpcIo {
+impl<S: SignalReader> ErrorType for RttRpcIo<S> {
     type Error = RttError;
 }
 
-impl Read for RttRpcIo {
+impl<S: SignalReader> Read for RttRpcIo<S> {
     async fn read(&mut self, buf: &mut [u8]) -> Result<usize, Self::Error> {
         #[cfg(feature = "defmt")]
         use core::sync::atomic::{AtomicU32, Ordering};
@@ -130,7 +126,7 @@ impl Read for RttRpcIo {
     }
 }
 
-impl Write for RttRpcIo {
+impl<S: SignalReader> Write for RttRpcIo<S> {
     async fn write(&mut self, buf: &[u8]) -> Result<usize, Self::Error> {
         self.up.write(buf);
         Ok(buf.len())

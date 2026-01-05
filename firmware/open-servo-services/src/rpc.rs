@@ -1,11 +1,12 @@
 //! RPC service task.
 //!
-//! Embassy async task that handles RPC requests over RTT.
+//! Async RPC handler for debug/telemetry over RTT.
 
 use crate::rpc_transport::{RttTransport, MAX_MSG_SIZE};
-use embassy_time::{Duration, Instant};
 use embedded_io_async::{Read, Write};
+use futures::{future::Either, pin_mut};
 use heapless::Vec;
+use open_servo_hw::v2::AsyncTimer;
 use open_servo_runtime::reg_ops::{RegOps, StreamPlan};
 use open_servo_runtime::shadow_storage::ShadowStorage;
 use open_servo_rpc::{
@@ -13,13 +14,15 @@ use open_servo_rpc::{
     KEY_REG_DATA, KEY_REG_READ, KEY_REG_STREAM_START, KEY_REG_STREAM_STOP, KEY_REG_WRITE,
     KEY_SYS_INFO, KEY_SYS_PING,
 };
+use open_servo_units::{MicroSecond, TimeStampUs};
 
 /// Maximum packed size for streaming data.
 const MAX_STREAM_DATA_SIZE: usize = 64;
 
 /// RPC service state.
-pub struct RpcService<'a, IO: Read + Write, const N: usize> {
+pub struct RpcService<'a, IO: Read + Write, T: AsyncTimer, const N: usize> {
     transport: RttTransport<'a, IO>,
+    timer: T,
     shadow: &'static ShadowStorage<N>,
     /// Streaming configuration
     stream_config: Option<StreamConfig>,
@@ -31,17 +34,18 @@ pub struct RpcService<'a, IO: Read + Write, const N: usize> {
 struct StreamConfig {
     /// Stream plan with fields to read.
     plan: StreamPlan<16>,
-    /// Interval between frames (source of truth for timing).
-    interval: Duration,
+    /// Interval between frames in microseconds.
+    interval_us: MicroSecond,
     /// Next send time.
-    next_send: Instant,
+    next_send: TimeStampUs,
 }
 
-impl<'a, IO: Read + Write, const N: usize> RpcService<'a, IO, N> {
+impl<'a, IO: Read + Write, T: AsyncTimer, const N: usize> RpcService<'a, IO, T, N> {
     /// Create a new RPC service.
-    pub fn new(io: IO, transport_buf: &'a mut [u8], shadow: &'static ShadowStorage<N>) -> Self {
+    pub fn new(io: IO, transport_buf: &'a mut [u8], timer: T, shadow: &'static ShadowStorage<N>) -> Self {
         Self {
             transport: RttTransport::new(io, transport_buf),
+            timer,
             shadow,
             stream_config: None,
             stream_seq: 0,
@@ -55,25 +59,40 @@ impl<'a, IO: Read + Write, const N: usize> RpcService<'a, IO, N> {
         loop {
             // If streaming, wait for either RPC data or stream timer
             if let Some(ref config) = self.stream_config {
-                let now = Instant::now();
-                if now >= config.next_send {
+                let now = self.timer.now();
+                let elapsed = now.wrapping_since(config.next_send);
+
+                // Check if it's time to send (elapsed >= 0 means next_send is in the past)
+                if elapsed.0 < 0x8000_0000 {
                     // Time to send a stream frame
                     self.send_stream_frame().await;
                     // Update next send time
                     if let Some(ref mut config) = self.stream_config {
-                        config.next_send = now + config.interval;
+                        config.next_send = TimeStampUs(now.0.wrapping_add(config.interval_us.0));
                     }
                     continue;
                 }
 
-                // Wait for either RPC data or stream timer with short poll
-                let timeout = config.next_send.saturating_duration_since(now);
-                match embassy_time::with_timeout(timeout, self.transport.recv(&mut rx_buf)).await {
-                    Ok(Ok(len)) if len > 0 => {
-                        self.handle_request(&rx_buf[..len]).await;
+                // Wait for either RPC data or stream timer
+                let timeout = config.next_send.wrapping_since(now);
+
+                // Use a block to limit borrow scope
+                let recv_len = {
+                    let recv_fut = self.transport.recv(&mut rx_buf);
+                    let delay_fut = self.timer.delay(timeout);
+
+                    pin_mut!(recv_fut);
+                    pin_mut!(delay_fut);
+
+                    match futures::future::select(recv_fut, delay_fut).await {
+                        Either::Left((Ok(len), _)) => Some(len),
+                        Either::Left(_) | Either::Right(_) => None,
                     }
-                    Ok(Ok(_)) | Ok(Err(_)) | Err(_) => {
-                        // Timeout or no data - loop will check stream timer
+                };
+
+                if let Some(len) = recv_len {
+                    if len > 0 {
+                        self.handle_request(&rx_buf[..len]).await;
                     }
                 }
             } else {
@@ -243,12 +262,12 @@ impl<'a, IO: Read + Write, const N: usize> RpcService<'a, IO, N> {
             let _ = plan.fields.push((addr, 4));
         }
 
-        // Interval calculation with floor at 1ms for rate_hz > 1000
-        let interval_ms = (1000u64 / req.rate_hz as u64).max(1);
+        // Interval in microseconds with floor at 1000us (1ms) for rate_hz > 1000
+        let interval_us = (1_000_000u32 / req.rate_hz as u32).max(1000);
         self.stream_config = Some(StreamConfig {
             plan,
-            interval: Duration::from_millis(interval_ms),
-            next_send: Instant::now(),
+            interval_us: MicroSecond(interval_us),
+            next_send: self.timer.now(),
         });
         self.stream_seq = 0;
 
