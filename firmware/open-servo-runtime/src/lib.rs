@@ -1,40 +1,45 @@
 #![no_std]
 //! # open-servo-runtime
 //!
-//! Glue layer between:
+//! Application framework layer between:
 //! - **Hardware** (`open-servo-hw`): board IO, sensor frames, motor commands
 //! - **Kernel** (`open-servo-kernel-api`): control + register/mode host plane
 //! - **Protocol services** (e.g. Dynamixel, CAN): byte parsing and host operations
 //!
-//! This crate is intentionally thin. It provides:
-//! - a byte-oriented [`UartBus`] seam
-//! - a RT bus engine seam [`BusEngine`] for ISR-owned bus arbitration
-//! - a protocol service seam [`CommsService`] (trait-only; implementation can live elsewhere)
-//! - a [`Device`] runner skeleton showing how to wire board/kernel/service together
+//! This crate owns:
+//! - Resource management (buffers, queues, pools)
+//! - Protocol timing (half-duplex turnaround, etc.)
+//! - Runtime orchestration
 //!
-//! ## What does NOT belong here
-//! - Actual control logic (kernel)
-//! - Board peripheral drivers (hw)
-//! - Full Dynamixel implementation (can be in firmware crate or a separate `open-servo-dxl` crate)
+//! ## Crate Layering
+//!
+//! | Crate | Responsibility |
+//! |-------|----------------|
+//! | **hw** | Trait definitions only (Board, Timebase) |
+//! | **runtime** | Resource ownership, protocol timing, orchestration |
+//! | **firmware-*** | Hardware init, provides `impl Board` |
 //!
 //! ## Feature flags
 //! - `defmt`: enables `defmt::Format` where relevant by forwarding to deps
-//! - `heapless`: enables optional helpers (future ring buffers, packet buffers, etc.)
 
-pub mod bus;
 pub mod comms_service;
 pub mod device;
 pub mod executor;
 pub mod main_loop;
 pub mod reg_ops;
+pub mod runtime;
+pub mod service_primitives;
+pub mod services;
 pub mod shadow_storage;
 pub mod uart_bus;
 
 // Re-export the main seams for convenience.
-pub use bus::{BusEngine, TxFrame, TxSubmitResult, MAX_TX_FRAME};
 pub use comms_service::{CommsService, DxlService, EchoPolicy, KernelOp, KernelResult};
 pub use device::Device;
 pub use executor::ControlExecutor;
+pub use runtime::Runtime;
+pub use service_primitives::ServicePrimitives;
+pub use services::{ServiceError, Services};
 pub use shadow_storage::{HeaplessStagingBuffer, ShadowStorage, StdShadowStorage};
 pub use uart_bus::{UartBus, UartError};
 
@@ -50,7 +55,6 @@ pub use open_servo_units as units;
 /// use open_servo_runtime::prelude::*;
 /// ```
 pub mod prelude {
-    pub use crate::bus::{BusEngine, TxFrame, TxSubmitResult, MAX_TX_FRAME};
     pub use crate::main_loop::{drain_and_respond, parse_and_enqueue};
     pub use crate::{
         CommsService, ControlExecutor, Device, DxlService, EchoPolicy, HeaplessStagingBuffer,
