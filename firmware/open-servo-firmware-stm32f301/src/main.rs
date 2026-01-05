@@ -2,12 +2,28 @@
 #![no_main]
 #![feature(impl_trait_in_assoc_type)]
 
-//! STM32F301 board entry point.
+//! STM32F301 firmware entry point.
 //!
-//! Implements the executor-based architecture:
-//! - ADC DMA ISR owns the kernel (single-writer)
-//! - Embassy executor runs RPC service in main context
-//! - Two-phase init: configure_* then start_*
+//! Architecture:
+//! - Single-writer kernel: only ADC DMA ISR calls kernel.tick() / apply_op()
+//! - Two-phase init: configure_* then start_* in controlled order
+//! - Free-running TIM2 monotonic (1µs resolution)
+//! - Critical-section guarded SPSC queues (no atomics)
+
+// Hardware-specific modules
+mod adc_config;
+mod calibration;
+mod config;
+mod flash;
+mod init;
+mod isr;
+mod monotonic;
+mod pwm;
+mod resources;
+mod sensors;
+mod sinks;
+mod time_driver;
+mod uart_bus;
 
 use panic_rtt_target as _;
 
@@ -16,7 +32,7 @@ use cortex_m::peripheral::syst::SystClkSource;
 use cortex_m_rt::{entry, pre_init};
 #[cfg(feature = "osctl")]
 use embassy_executor::Executor;
-use open_servo_device::executor::ControlExecutor;
+use open_servo_runtime::executor::ControlExecutor;
 #[cfg(feature = "osctl")]
 use open_servo_hw_utils::rtt_async::{RttChannels, RttRpcIo};
 use open_servo_kernel::ServoKernel;
@@ -28,19 +44,19 @@ use open_servo_services::RpcService;
 use static_cell::StaticCell;
 
 #[cfg(feature = "osctl")]
-use open_servo_board_stm32f301::flash::{EepromFlash, EEPROM_FLASH_SIZE};
+use crate::flash::{EepromFlash, EEPROM_FLASH_SIZE};
 
-use open_servo_board_stm32f301::config::kernel_config;
-use open_servo_board_stm32f301::init::{
+use crate::config::kernel_config;
+use crate::init::{
     configure_adc, configure_gpio, configure_nvic, configure_rcc, configure_tim1, configure_tim2,
     configure_usart, enable_interrupts, start_adc_dma, start_tim1, start_tim2, start_usart,
     start_usart_rx_dma,
 };
-use open_servo_board_stm32f301::resources::{
+use crate::resources::{
     get_shadow_storage as get_shadow, init_queues, on_eeprom_write, set_isr_resources,
 };
 #[cfg(feature = "osctl")]
-use open_servo_board_stm32f301::resources::{get_shadow_storage, persist_signal, rpc_tick};
+use crate::resources::{get_shadow_storage, persist_signal, rpc_tick};
 
 // Define defmt timestamp using TIM2 monotonic counter (1µs resolution)
 #[cfg(feature = "defmt")]

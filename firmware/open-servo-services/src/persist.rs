@@ -24,7 +24,7 @@ use core::ops::Range;
 use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
 use embassy_sync::signal::Signal;
 use embedded_storage_async::nor_flash::NorFlash;
-use open_servo_device::shadow_storage::ShadowStorage;
+use open_servo_runtime::shadow_storage::ShadowStorage;
 use open_servo_shadow::layout::{EEPROM_LEN, EEPROM_START};
 use sequential_storage::cache::NoCache;
 use sequential_storage::map::{self, Key, SerializationError, Value};

@@ -18,15 +18,15 @@ members = [
     "open-servo-core", # legacy, will be replaced by "open-servo-kernel"
     "open-servo-control",
 
-    # Device that ties hardware and control together
-    "open-servo-device",
+    # Runtime that ties hardware and control together
+    "open-servo-runtime",
 
     # Embassy async services (non-RT tasks)
     "open-servo-services",
 
-    # Board-specific crates
+    # Firmware crates (board-specific binaries)
     "open-servo-stm32f301",
-    "open-servo-board-stm32f301",
+    "open-servo-firmware-stm32f301",
 
     # Test crates (throw-away)
     "test-uart-stm32f301",
@@ -53,8 +53,8 @@ default-members = [
     "open-servo-core", # legacy, will be replaced by "open-servo-kernel"
     "open-servo-control",
 
-    # Device that ties hardware and control together
-    "open-servo-device",
+    # Runtime that ties hardware and control together
+    "open-servo-runtime",
 ]
 
 [workspace.package]

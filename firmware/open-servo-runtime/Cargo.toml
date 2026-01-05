@@ -1,5 +1,5 @@
 [package]
-name = "open-servo-device"
+name = "open-servo-runtime"
 version.workspace = true
 edition.workspace = true
 

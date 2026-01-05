@@ -4,7 +4,7 @@ version.workspace = true
 edition.workspace = true
 
 # Embassy async service tasks for non-RT operations.
-# This crate owns all embassy dependencies; device crate stays glue-only.
+# This crate owns all embassy dependencies; runtime crate stays glue-only.
 
 [features]
 default = []
@@ -15,7 +15,7 @@ arch-riscv32 = ["embassy-executor/arch-riscv32"]
 
 defmt = [
     "dep:defmt",
-    "open-servo-device/defmt",
+    "open-servo-runtime/defmt",
     "open-servo-kernel-api/defmt",
 ]
 
@@ -26,7 +26,7 @@ embassy-sync = { workspace = true }
 embassy-time = { workspace = true, features = ["generic-queue-8"] }
 
 # Workspace crates
-open-servo-device = { path = "../open-servo-device", default-features = false }
+open-servo-runtime = { path = "../open-servo-runtime", default-features = false }
 open-servo-kernel-api = { path = "../open-servo-kernel-api", default-features = false }
 open-servo-registry = { path = "../open-servo-registry", default-features = false }
 open-servo-shadow = { path = "../open-servo-shadow", default-features = false }

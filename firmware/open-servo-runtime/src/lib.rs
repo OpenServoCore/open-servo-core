@@ -1,5 +1,5 @@
 #![no_std]
-//! # open-servo-device
+//! # open-servo-runtime
 //!
 //! Glue layer between:
 //! - **Hardware** (`open-servo-hw`): board IO, sensor frames, motor commands
@@ -47,7 +47,7 @@ pub use open_servo_units as units;
 ///
 /// Prefer:
 /// ```rust,ignore
-/// use open_servo_device::prelude::*;
+/// use open_servo_runtime::prelude::*;
 /// ```
 pub mod prelude {
     pub use crate::bus::{BusEngine, TxFrame, TxSubmitResult, MAX_TX_FRAME};

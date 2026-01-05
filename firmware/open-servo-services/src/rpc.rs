@@ -6,8 +6,8 @@ use crate::rpc_transport::{RttTransport, MAX_MSG_SIZE};
 use embassy_time::{Duration, Instant};
 use embedded_io_async::{Read, Write};
 use heapless::Vec;
-use open_servo_device::reg_ops::{RegOps, StreamPlan};
-use open_servo_device::shadow_storage::ShadowStorage;
+use open_servo_runtime::reg_ops::{RegOps, StreamPlan};
+use open_servo_runtime::shadow_storage::ShadowStorage;
 use open_servo_rpc::{
     DeviceInfo, ReadRegReq, RegStreamFrame, RegStreamStartReq, RpcError, RpcResp, WriteRegReq,
     KEY_REG_DATA, KEY_REG_READ, KEY_REG_STREAM_START, KEY_REG_STREAM_STOP, KEY_REG_WRITE,

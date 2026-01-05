@@ -521,36 +521,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "8d5439c4ad607c3c23abf66de8c8bf57ba8adcd1f129e699851a6e43935d339d"
 
 [[package]]
-name = "open-servo-board-stm32f301"
-version = "0.1.0"
-dependencies = [
- "cortex-m",
- "cortex-m-rt",
- "critical-section",
- "defmt 0.3.100",
- "embassy-executor 0.7.0",
- "embassy-futures",
- "embassy-sync 0.6.2",
- "embassy-time",
- "embassy-time-driver",
- "embedded-storage",
- "embedded-storage-async",
- "heapless 0.8.0",
- "open-servo-device",
- "open-servo-hw",
- "open-servo-hw-utils",
- "open-servo-kernel",
- "open-servo-kernel-api",
- "open-servo-macros",
- "open-servo-math",
- "open-servo-services",
- "open-servo-units",
- "panic-rtt-target",
- "static_cell",
- "stm32f3",
-]
-
-[[package]]
 name = "open-servo-control"
 version = "0.1.0"
 dependencies = [
@@ -572,16 +542,33 @@ dependencies = [
 ]
 
 [[package]]
-name = "open-servo-device"
+name = "open-servo-firmware-stm32f301"
 version = "0.1.0"
 dependencies = [
+ "cortex-m",
+ "cortex-m-rt",
  "critical-section",
  "defmt 0.3.100",
+ "embassy-executor 0.7.0",
+ "embassy-futures",
+ "embassy-sync 0.6.2",
+ "embassy-time",
+ "embassy-time-driver",
+ "embedded-storage",
+ "embedded-storage-async",
  "heapless 0.8.0",
  "open-servo-hw",
+ "open-servo-hw-utils",
+ "open-servo-kernel",
  "open-servo-kernel-api",
- "open-servo-registry",
+ "open-servo-macros",
+ "open-servo-math",
+ "open-servo-runtime",
+ "open-servo-services",
  "open-servo-units",
+ "panic-rtt-target",
+ "static_cell",
+ "stm32f3",
 ]
 
 [[package]]
@@ -666,6 +653,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "open-servo-runtime"
+version = "0.1.0"
+dependencies = [
+ "critical-section",
+ "defmt 0.3.100",
+ "heapless 0.8.0",
+ "open-servo-hw",
+ "open-servo-kernel-api",
+ "open-servo-registry",
+ "open-servo-units",
+]
+
+[[package]]
 name = "open-servo-services"
 version = "0.1.0"
 dependencies = [
@@ -679,10 +679,10 @@ dependencies = [
  "embedded-storage",
  "embedded-storage-async",
  "heapless 0.8.0",
- "open-servo-device",
  "open-servo-kernel-api",
  "open-servo-registry",
  "open-servo-rpc",
+ "open-servo-runtime",
  "open-servo-shadow",
  "open-servo-units",
  "postcard",

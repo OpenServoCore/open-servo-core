@@ -10,8 +10,8 @@ use core::ptr::addr_of_mut;
 use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
 use embassy_sync::signal::Signal;
 use heapless::spsc::{Consumer, Producer, Queue};
-use open_servo_device::executor::ControlExecutor;
-use open_servo_device::shadow_storage::ShadowStorage;
+use open_servo_runtime::executor::ControlExecutor;
+use open_servo_runtime::shadow_storage::ShadowStorage;
 use open_servo_kernel::ServoKernel;
 use open_servo_kernel_api::ops::{KernelOp, KernelResult};
 

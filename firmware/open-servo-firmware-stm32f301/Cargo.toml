@@ -1,16 +1,16 @@
 [package]
-name = "open-servo-board-stm32f301"
+name = "open-servo-firmware-stm32f301"
 version.workspace = true
 edition.workspace = true
 
 [[bin]]
-name = "servo-board-stm32f301"
+name = "servo-firmware-stm32f301"
 path = "src/main.rs"
 test = false
 
 [dependencies]
 # Workspace dependencies
-open-servo-device = { path = "../open-servo-device" }
+open-servo-runtime = { path = "../open-servo-runtime" }
 open-servo-hw = { path = "../open-servo-hw" }
 open-servo-hw-utils = { path = "../open-servo-hw-utils", features = ["async"] }
 open-servo-kernel = { path = "../open-servo-kernel" }
@@ -57,7 +57,7 @@ temp-sense-motor = []
 voltage-sense-motor = []
 defmt = [
     "dep:defmt",
-    "open-servo-device/defmt",
+    "open-servo-runtime/defmt",
     "open-servo-hw/defmt",
     "open-servo-hw-utils/defmt",
     "open-servo-kernel/defmt",
