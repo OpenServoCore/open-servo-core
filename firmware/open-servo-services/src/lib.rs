@@ -1,12 +1,12 @@
 #![no_std]
 //! # open-servo-services
 //!
-//! Embassy async tasks for non-RT servo operations.
+//! Async service logic for non-RT servo operations.
 //!
 //! ## Architecture
 //!
-//! This crate provides async service tasks that run in the embassy executor
-//! (main loop context), separate from the RT kernel (ADC ISR context).
+//! This crate provides pure async service logic. Orchestration (signal waiting,
+//! task dispatch) happens in the `runtime` crate via `Services::run_once()`.
 //!
 //! ```text
 //! ┌─────────────────────────────────────────────────┐
@@ -15,36 +15,24 @@
 //! └─────────────────────────────────────────────────┘
 //!                ↑ KernelOp         KernelResult ↓
 //! ┌─────────────────────────────────────────────────┐
-//! │  Embassy Executor (main) - Services             │
-//! │    dxl_rx, dxl_req, persist, rpc, etc.          │
+//! │  Async Executor (main) - runtime::Services      │
+//! │    Orchestrates: persist, rpc, dxl, etc.        │
 //! └─────────────────────────────────────────────────┘
 //! ```
 //!
 //! ## Design Principles
 //!
-//! - **Separation**: RT kernel is ISR-owned; services are async-owned
-//! - **Single-outstanding**: Only one `KernelOp` in flight at a time
+//! - **Pure logic**: Service structs provide async methods, no signal storage
+//! - **Runtime orchestration**: `runtime::Services` handles signal dispatch
+//! - **Executor agnostic**: No direct embassy_sync dependency
 //! - **Standard I/O**: Uses `embedded-io-async` traits for UART
-//! - **Soft-time**: `embassy-time` for periodic tasks; DXL timing uses RT timer
 //!
-//! ## Tasks
+//! ## Service Modules
 //!
-//! - [`dxl_rx`]: Parse DXL frames from UART RX buffer
-//! - [`dxl_req`]: Handle DXL requests, dispatch to kernel or shadow
-//! - [`persist`]: EEPROM/flash persistence on signal
-//!
-//! ## Usage
-//!
-//! Board crate spawns tasks in `#[embassy_executor::main]`:
-//!
-//! ```rust,ignore
-//! #[embassy_executor::main]
-//! async fn main(spawner: Spawner) {
-//!     spawner.spawn(dxl_rx_task(...)).unwrap();
-//!     spawner.spawn(dxl_req_task(...)).unwrap();
-//!     spawner.spawn(persist_task(...)).unwrap();
-//! }
-//! ```
+//! - [`persist`]: EEPROM/flash persistence logic
+//! - [`rpc`]: RPC service for debug/telemetry
+//! - [`dxl_rx`]: DXL frame parsing (stub)
+//! - [`dxl_req`]: DXL request handling (stub)
 
 // Task modules
 pub mod dxl_req;
@@ -53,15 +41,9 @@ pub mod persist;
 pub mod rpc;
 pub mod rpc_transport;
 
-// Re-exports for convenience
-pub use embassy_executor::Spawner;
-pub use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
-pub use embassy_sync::channel::Channel;
-pub use embassy_sync::signal::Signal;
-
 // Task type re-exports
-pub use dxl_req::{DxlReqTask, KernelResultSignal, Response};
-pub use dxl_rx::{DxlRxTask, OpChannel, OP_CHANNEL_CAPACITY};
-pub use persist::{PersistResult, PersistSignal, PersistTask};
+pub use dxl_req::{DxlReqTask, Response};
+pub use dxl_rx::DxlRxTask;
+pub use persist::{PersistResult, PersistTask};
 pub use rpc::RpcService;
 pub use rpc_transport::RttTransport;

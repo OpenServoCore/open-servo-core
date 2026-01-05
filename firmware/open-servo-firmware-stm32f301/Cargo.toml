@@ -17,7 +17,7 @@ open-servo-kernel = { path = "../open-servo-kernel" }
 open-servo-kernel-api = { path = "../open-servo-kernel-api" }
 open-servo-macros = { path = "../open-servo-macros" }
 open-servo-math = { path = "../open-servo-math" }
-open-servo-services = { path = "../open-servo-services", features = ["arch-cortex-m"] }
+open-servo-services = { path = "../open-servo-services" }
 open-servo-units = { path = "../open-servo-units" }
 
 # STM32-specific

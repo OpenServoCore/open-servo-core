@@ -676,8 +676,6 @@ dependencies = [
  "cobs 0.3.0",
  "critical-section",
  "defmt 0.3.100",
- "embassy-executor 0.7.0",
- "embassy-sync 0.6.2",
  "embassy-time",
  "embedded-io-async",
  "embedded-storage",

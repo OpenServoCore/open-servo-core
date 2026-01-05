@@ -20,17 +20,6 @@
 //! - Framing errors: re-sync to next header
 //! - Buffer overflow: drop oldest bytes to make room
 
-use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
-use embassy_sync::channel::Channel;
-
-use open_servo_kernel_api::ops::Op;
-
-/// Channel capacity for parsed operations.
-pub const OP_CHANNEL_CAPACITY: usize = 4;
-
-/// Op channel type (RX task → request task).
-pub type OpChannel = Channel<CriticalSectionRawMutex, Op, OP_CHANNEL_CAPACITY>;
-
 /// DXL RX task state.
 ///
 /// This is a stub - the actual parser state machine will be added later.

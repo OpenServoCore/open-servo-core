@@ -16,13 +16,7 @@
 //! After processing an op, the task builds a Dynamixel response frame and
 //! sends it via the UART (using `embedded-io-async::Write`).
 
-use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
-use embassy_sync::signal::Signal;
-
-use open_servo_kernel_api::ops::{KernelResult, Op};
-
-/// Signal type for KernelResult notification (ISR → async).
-pub type KernelResultSignal = Signal<CriticalSectionRawMutex, KernelResult>;
+use open_servo_kernel_api::ops::Op;
 
 /// DXL request handler task state.
 ///

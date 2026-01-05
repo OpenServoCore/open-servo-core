@@ -3,15 +3,11 @@ name = "open-servo-services"
 version.workspace = true
 edition.workspace = true
 
-# Embassy async service tasks for non-RT operations.
-# This crate owns all embassy dependencies; runtime crate stays glue-only.
+# Async service logic for non-RT operations (persist, RPC, DXL).
+# Pure async logic - orchestration happens in runtime crate.
 
 [features]
 default = []
-
-# Target architecture (exactly one required when building board crate)
-arch-cortex-m = ["embassy-executor/arch-cortex-m"]
-arch-riscv32 = ["embassy-executor/arch-riscv32"]
 
 defmt = [
     "dep:defmt",
@@ -20,9 +16,7 @@ defmt = [
 ]
 
 [dependencies]
-# Embassy async runtime (no HAL - board uses PAC directly)
-embassy-executor = { workspace = true, features = ["executor-thread", "nightly"] }
-embassy-sync = { workspace = true }
+# Async timing for RPC timeouts
 embassy-time = { workspace = true, features = ["generic-queue-8"] }
 
 # Workspace crates
