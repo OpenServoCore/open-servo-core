@@ -39,7 +39,6 @@
 //! - [`reset`]: optional lifecycle hook (`Resettable`)
 //! - [`role`]: required node intent labeling (`HasRole` / `Role`)
 //! - [`mode`]: minimal operating mode vocabulary
-//! - [`timebase`]: monotonic time source boundary
 //! - [`rates`]: declared domain rates (diagnostics/system-id metadata)
 //! - [`telemetry`]: structured numeric telemetry sink for system identification
 //! - [`mailbox`]: tiny cross-domain “wire” primitive (kernel-owned state fields)
@@ -67,7 +66,6 @@ pub mod telemetry;
 pub mod tick;
 pub mod tick_ctx;
 pub mod ticks;
-pub mod timebase;
 pub mod wired;
 
 // Re-export units as both a module and glob for convenience.
@@ -91,8 +89,11 @@ pub use telemetry::{TelemetryId, TelemetrySink};
 pub use tick::{Tick, TickDomain};
 pub use tick_ctx::TickCtx;
 pub use ticks::{CtlFast, CtlMedium, CtlSlow, KernelCtx, ModeView, Node, Sys};
-pub use timebase::{TimeStampUs, Timebase};
 pub use wired::{run_wired, Wired};
+
+// Re-export Timebase trait from open-servo-hw for convenience.
+// TimeStampUs is now in open-servo-units (re-exported above via units::*).
+pub use open_servo_hw::Timebase;
 
 /// Convenience imports for most users of the API boundary.
 ///
@@ -114,7 +115,8 @@ pub mod prelude {
     pub use crate::tick::{Tick, TickDomain};
     pub use crate::tick_ctx::TickCtx;
     pub use crate::ticks::{CtlFast, CtlMedium, CtlSlow, KernelCtx, ModeView, Node, Sys};
-    pub use crate::timebase::{TimeStampUs, Timebase};
     pub use crate::units::*;
     pub use crate::wired::{run_wired, Wired};
+    // Re-export Timebase from hw (TimeStampUs is in units::*)
+    pub use open_servo_hw::Timebase;
 }

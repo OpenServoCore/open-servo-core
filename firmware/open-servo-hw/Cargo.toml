@@ -6,6 +6,8 @@ edition.workspace = true
 [dependencies]
 open-servo-math = { path = "../open-servo-math" }
 open-servo-units = { path = "../open-servo-units" }
+embedded-storage-async = { workspace = true }
+embedded-io-async = { workspace = true }
 
 [features]
 defmt = ["dep:defmt", "open-servo-math/defmt", "open-servo-units/defmt"]

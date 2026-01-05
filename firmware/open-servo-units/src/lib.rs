@@ -20,6 +20,7 @@ mod hertz;
 mod microsecond;
 mod milliamp;
 mod millivolt;
+mod timestamp;
 
 pub use adc12::Adc12;
 pub use centic::CentiC;
@@ -36,3 +37,4 @@ pub use hertz::Hertz;
 pub use microsecond::MicroSecond;
 pub use milliamp::MilliAmp;
 pub use millivolt::MilliVolt;
+pub use timestamp::TimeStampUs;

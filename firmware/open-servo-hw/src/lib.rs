@@ -47,3 +47,4 @@ pub use sensor::SafetyMotorVoltageSource;
 pub use sensor::SafetyVoltageSource;
 pub use sensor::VelocitySensor;
 pub use types::UartPort;
+pub use v2::Timebase;

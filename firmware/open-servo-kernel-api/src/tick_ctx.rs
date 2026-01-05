@@ -1,5 +1,6 @@
 use crate::tick::Tick;
-use crate::{FaultSink, TelemetrySink, TickDomain, TimeStampUs};
+use crate::{FaultSink, TelemetrySink, TickDomain};
+use open_servo_units::TimeStampUs;
 
 /// Per-tick execution context.
 ///

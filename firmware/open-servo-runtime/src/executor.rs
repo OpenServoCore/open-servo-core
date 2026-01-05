@@ -35,11 +35,10 @@ use open_servo_kernel_api::{
     shadow::ShadowKernel,
     tick_ctx::TickCtx,
     ticks::KernelCtx,
-    timebase::TimeStampUs,
     FaultSink, TelemetrySink,
 };
 use open_servo_registry::facade;
-use open_servo_units::MicroSecond;
+use open_servo_units::{MicroSecond, TimeStampUs};
 
 use crate::shadow_storage::ShadowStorage;
 

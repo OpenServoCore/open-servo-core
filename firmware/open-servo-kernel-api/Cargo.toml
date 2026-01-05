@@ -9,6 +9,7 @@ defmt = ["dep:defmt", "open-servo-units/defmt", "open-servo-shadow/defmt"]
 [dependencies]
 open-servo-units = { path = "../open-servo-units", default-features = false }
 open-servo-shadow = { path = "../open-servo-shadow", default-features = false }
+open-servo-hw = { path = "../open-servo-hw", default-features = false }
 
 [dependencies.defmt]
 workspace = true
