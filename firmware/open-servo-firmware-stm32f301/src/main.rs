@@ -5,58 +5,51 @@
 //! STM32F301 firmware entry point.
 //!
 //! Architecture:
-//! - Single-writer kernel: only ADC DMA ISR calls kernel.tick() / apply_op()
+//! - Runtime owns Board + Kernel + Shadow + Queues
+//! - Single-writer kernel: only ADC DMA ISR calls runtime.run_fast_tick()
 //! - Two-phase init: configure_* then start_* in controlled order
 //! - Free-running TIM2 monotonic (1µs resolution)
-//! - Critical-section guarded SPSC queues (no atomics)
 
 // Hardware-specific modules
 mod adc_config;
+mod board;
 mod calibration;
 mod config;
 mod flash;
 mod init;
 mod isr;
-mod monotonic;
-mod pwm;
 mod resources;
-mod sensors;
 mod sinks;
 mod time_driver;
-mod uart_bus;
 
+// Panic handler: use runtime-embassy for osctl, direct for non-osctl
+#[cfg(feature = "osctl")]
+use open_servo_runtime_embassy::panic_handler as _;
+#[cfg(not(feature = "osctl"))]
 use panic_rtt_target as _;
 
 #[cfg(feature = "osctl")]
 use cortex_m::peripheral::syst::SystClkSource;
 use cortex_m_rt::{entry, pre_init};
+use open_servo_hw::config::BoardConfig;
+use open_servo_hw::v2::Board;
+use open_servo_kernel::{KernelConfig, PidGains, ServoKernel};
 #[cfg(feature = "osctl")]
-use embassy_executor::Executor;
-#[cfg(feature = "osctl")]
-use open_servo_hw_utils::rtt_async::{RttChannels, RttRpcIo};
-use open_servo_kernel::ServoKernel;
-use open_servo_runtime::executor::ControlExecutor;
-#[cfg(feature = "osctl")]
-use open_servo_services::{RpcService, Services};
-#[cfg(feature = "osctl")]
-use static_cell::StaticCell;
+use open_servo_runtime_embassy::{run, set_shadow};
+use open_servo_runtime_embassy::{save_signal, EmbassySignal};
 
-#[cfg(feature = "osctl")]
-use crate::flash::{EepromFlash, EEPROM_FLASH_SIZE};
-#[cfg(feature = "osctl")]
-use crate::resources::{Stm32Primitives, PRIMITIVES};
-
-use crate::config::kernel_config;
+use crate::board::Stm32f301Board;
 use crate::init::{
     configure_adc, configure_gpio, configure_nvic, configure_rcc, configure_tim1, configure_tim2,
     configure_usart, enable_interrupts, start_adc_dma, start_tim1, start_tim2, start_usart,
     start_usart_rx_dma,
 };
-use crate::resources::{
-    get_shadow_storage as get_shadow, init_queues, on_eeprom_write, set_isr_resources,
-};
+use crate::resources::init_runtime;
 #[cfg(feature = "osctl")]
-use crate::resources::{get_shadow_storage, rpc_tick, EmbassySignal, EmbassyTimer};
+use crate::resources::{get_embassy_runtime, init_embassy_runtime};
+
+#[cfg(feature = "osctl")]
+use crate::config::SYSCLK_HZ;
 
 // Define defmt timestamp using TIM2 monotonic counter (1µs resolution)
 #[cfg(feature = "defmt")]
@@ -65,10 +58,6 @@ defmt::timestamp!("{=u32:us}", {
     // SAFETY: TIM2 is configured and running, CNT read is always safe
     unsafe { (*TIM2::ptr()).cnt.read().bits() }
 });
-
-/// System clock frequency.
-#[cfg(feature = "osctl")]
-const SYSCLK_HZ: u32 = 72_000_000;
 
 /// RPC service polling rate.
 #[cfg(feature = "osctl")]
@@ -80,6 +69,23 @@ const RPC_TICK_HZ: u32 = 1_000;
 unsafe fn pre_init() {
     const DBGMCU_CR: *mut u32 = 0xE004_2004 as *mut u32;
     DBGMCU_CR.write_volatile(0x7); // DBG_SLEEP | DBG_STOP | DBG_STANDBY
+}
+
+/// Build KernelConfig from Board traits.
+fn kernel_config_from_board<B: Board + BoardConfig>(board: &B) -> KernelConfig {
+    let (kp, ki, kd) = board.pid_gains();
+    KernelConfig {
+        pos_pid: PidGains {
+            kp: kp as i16,
+            ki: ki as i16,
+            kd: kd as i16,
+        },
+        hold_deadband_cdeg: 50,
+        effort_limit_raw: 16000,
+        servo_pos_kind: board.servo_pos_kind(),
+        motor_type: board.motor_type(),
+        sensor_caps: board.sensor_capabilities(),
+    }
 }
 
 /// Main entry point.
@@ -101,21 +107,31 @@ fn main() -> ! {
     configure_nvic();
 
     // =========================================================================
-    // Initialize resources
+    // Create Runtime with Board and Kernel
     // =========================================================================
 
-    // Split queues (must happen before interrupts enabled)
-    let (_op_prod, _result_cons) = unsafe { init_queues() };
+    // Create board (owns flash, provides sensor/motor access)
+    let board = unsafe { Stm32f301Board::new() };
 
-    // Create kernel and executor
-    let kernel = ServoKernel::new(kernel_config());
-    let executor = ControlExecutor::new(kernel);
+    // Build kernel config from board traits
+    let config = kernel_config_from_board(&board);
 
-    // Set ISR resources
-    unsafe { set_isr_resources(executor) };
+    // Create kernel
+    let kernel = ServoKernel::new(config);
 
-    // Wire up persist callback (EEPROM writes auto-trigger persist)
-    get_shadow().set_persist_callback(on_eeprom_write);
+    // Create and initialize runtime with save signal for persist notifications
+    let runtime = unsafe { init_runtime(board, kernel, EmbassySignal(save_signal())) };
+
+    // Initialize runtime (splits queues, applies board defaults to shadow)
+    unsafe { runtime.init() };
+
+    // Wire up shadow reference for global access
+    #[cfg(feature = "osctl")]
+    set_shadow(runtime.shadow());
+
+    // Initialize embassy runtime wrapper (owns service lifecycle)
+    #[cfg(feature = "osctl")]
+    let _embassy_rt = unsafe { init_embassy_runtime(runtime) };
 
     // =========================================================================
     // Phase 2: Start peripherals in controlled order
@@ -147,15 +163,13 @@ fn main() -> ! {
     // =========================================================================
     #[cfg(feature = "osctl")]
     {
-        // Create Embassy executor
-        static EXECUTOR: StaticCell<Executor> = StaticCell::new();
-        let executor = EXECUTOR.init(Executor::new());
-
-        // Run executor with tasks
-        executor.run(|spawner| {
-            spawner.must_spawn(rtt_tasks());
-            spawner.must_spawn(services_task());
-        });
+        run(|spawner| {
+            open_servo_runtime_embassy::spawn_all_services!(
+                Stm32f301Board,
+                get_embassy_runtime(),
+                spawner
+            );
+        })
     }
 
     // Without osctl, just idle (kernel runs in ISR)
@@ -163,55 +177,4 @@ fn main() -> ! {
     loop {
         cortex_m::asm::wfi();
     }
-}
-
-/// Services task - runs persist and other async services.
-#[cfg(feature = "osctl")]
-#[embassy_executor::task]
-async fn services_task() {
-    // Wait for RTT to be initialized (rtt_tasks runs first)
-    embassy_time::Timer::after(embassy_time::Duration::from_millis(100)).await;
-
-    // Create flash driver
-    let flash = unsafe { EepromFlash::new() };
-
-    // Create services bundle
-    let mut services: Services<'_, Stm32Primitives, EepromFlash, { crate::resources::SHADOW_TABLE_SIZE }> =
-        Services::new(&PRIMITIVES, flash, 0..EEPROM_FLASH_SIZE as u32, get_shadow_storage());
-
-    // Initialize (restore EEPROM from flash)
-    if let Err(e) = services.init().await {
-        #[cfg(feature = "defmt")]
-        defmt::error!("Services init failed: {:?}", e);
-    }
-
-    // Main loop
-    loop {
-        if let Err(e) = services.run_once().await {
-            #[cfg(feature = "defmt")]
-            defmt::error!("Service error: {:?}", e);
-        }
-    }
-}
-
-/// RTT task - initializes RTT and runs RPC service.
-#[cfg(feature = "osctl")]
-#[embassy_executor::task]
-async fn rtt_tasks() {
-    let rtt = RttChannels::init(EmbassySignal(rpc_tick()));
-    run_rpc_service(rtt.rpc).await;
-}
-
-/// RPC service task.
-#[cfg(feature = "osctl")]
-async fn run_rpc_service(rpc_io: RttRpcIo<EmbassySignal>) {
-    // Buffer for RPC transport (COBS max for 128-byte msg is ~131 bytes)
-    static RPC_BUF: StaticCell<[u8; 192]> = StaticCell::new();
-    let buf = RPC_BUF.init([0u8; 192]);
-
-    // Create RPC service with the IO, timer, and shadow storage
-    let mut service = RpcService::new(rpc_io, buf, EmbassyTimer, get_shadow_storage());
-
-    // Run the RPC service loop
-    service.run().await
 }

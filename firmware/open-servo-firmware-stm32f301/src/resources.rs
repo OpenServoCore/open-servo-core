@@ -1,75 +1,104 @@
-//! Static resource storage for ISR and main loop.
+//! Static resources for firmware.
 //!
-//! Architecture:
-//! - Data-plane: DMA buffers (no per-byte critical section)
-//! - Control-plane: SPSC queues with critical-section guards
-//! - ISR-owned: ControlExecutor and sinks (single-writer from ADC ISR)
+//! Contains:
+//! - Runtime storage and accessor
+//! - EmbassyRuntime wrapper storage (osctl only)
+//! - DMA buffers (ADC, UART)
 
-use core::ptr::addr_of_mut;
-
-use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
-use embassy_sync::signal::Signal;
-use heapless::spsc::{Consumer, Producer, Queue};
-use embassy_time::{Duration, Instant, Timer};
-use open_servo_hw::v2::{AsyncTimer, SignalReader, SignalWriter};
-use open_servo_units::{MicroSecond, TimeStampUs};
 use open_servo_kernel::ServoKernel;
-use open_servo_kernel_api::ops::{KernelOp, KernelResult};
-use open_servo_runtime::executor::ControlExecutor;
-use open_servo_runtime::shadow_storage::ShadowStorage;
+use open_servo_runtime::Runtime;
+use open_servo_runtime_embassy::EmbassySignal;
+use static_cell::StaticCell;
+
+#[cfg(feature = "osctl")]
+use open_servo_runtime_embassy::EmbassyRuntime;
 
 use crate::adc_config::{AdcBuffer, ADC_CHANNEL_COUNT};
-use crate::sinks::{StubFaultSink, StubTelemetrySink};
+use crate::board::Stm32f301Board;
 
 // =============================================================================
-// SignalReader/SignalWriter wrapper for embassy_sync::Signal
+// Runtime storage
 // =============================================================================
 
-/// Newtype wrapper to implement SignalReader/SignalWriter for embassy Signal.
-#[derive(Clone, Copy)]
-pub struct EmbassySignal(pub &'static Signal<CriticalSectionRawMutex, ()>);
+/// Runtime type alias for this board with embassy signal type.
+pub type BoardRuntime = Runtime<Stm32f301Board, EmbassySignal>;
 
-impl SignalReader for EmbassySignal {
-    async fn wait(&self) {
-        self.0.wait().await;
-    }
+/// EmbassyRuntime type alias for this board.
+#[cfg(feature = "osctl")]
+pub type BoardEmbassyRuntime = EmbassyRuntime<Stm32f301Board>;
+
+/// Global runtime instance storage.
+static RUNTIME: StaticCell<BoardRuntime> = StaticCell::new();
+
+/// Global embassy runtime wrapper storage.
+#[cfg(feature = "osctl")]
+static EMBASSY_RT: StaticCell<BoardEmbassyRuntime> = StaticCell::new();
+
+/// Global runtime reference (set after init).
+static mut RUNTIME_REF: Option<&'static BoardRuntime> = None;
+
+/// Global embassy runtime reference (set after init).
+#[cfg(feature = "osctl")]
+static mut EMBASSY_RT_REF: Option<&'static BoardEmbassyRuntime> = None;
+
+/// Initialize the runtime with the given save signal.
+///
+/// The save signal is used to notify the persist service when EEPROM is modified.
+///
+/// # Safety
+/// Must be called exactly once, before interrupts are enabled.
+pub unsafe fn init_runtime(
+    board: Stm32f301Board,
+    kernel: ServoKernel,
+    save_signal: EmbassySignal,
+) -> &'static BoardRuntime {
+    let runtime = RUNTIME.init(Runtime::new(board, kernel, save_signal));
+    RUNTIME_REF = Some(runtime);
+    runtime
 }
 
-impl SignalWriter for EmbassySignal {
-    fn signal(&self) {
-        self.0.signal(());
-    }
+/// Initialize the embassy runtime wrapper.
+///
+/// Must be called after init_runtime() and before spawning tasks.
+///
+/// # Safety
+/// Must be called exactly once, after init_runtime().
+#[cfg(feature = "osctl")]
+pub unsafe fn init_embassy_runtime(runtime: &'static BoardRuntime) -> &'static BoardEmbassyRuntime {
+    let embassy_rt = EMBASSY_RT.init(EmbassyRuntime::new(runtime));
+    EMBASSY_RT_REF = Some(embassy_rt);
+    embassy_rt
 }
 
-/// AsyncTimer implementation using embassy_time.
-#[derive(Clone, Copy, Default)]
-pub struct EmbassyTimer;
-
-impl AsyncTimer for EmbassyTimer {
-    fn now(&self) -> TimeStampUs {
-        // embassy_time::Instant uses ticks, convert to microseconds
-        let now = Instant::now();
-        TimeStampUs(now.as_micros() as u32)
-    }
-
-    async fn delay(&self, duration: MicroSecond) {
-        Timer::after(Duration::from_micros(duration.0 as u64)).await;
-    }
+/// Get reference to the runtime (for ISR and async tasks).
+///
+/// # Safety
+/// Must only be called after runtime is initialized via init_runtime().
+#[inline]
+pub fn get_runtime() -> &'static BoardRuntime {
+    unsafe { RUNTIME_REF.unwrap_unchecked() }
 }
+
+/// Get reference to the embassy runtime (for async tasks).
+///
+/// # Safety
+/// Must only be called after init_embassy_runtime().
+#[cfg(feature = "osctl")]
+#[inline]
+pub fn get_embassy_runtime() -> &'static BoardEmbassyRuntime {
+    unsafe { EMBASSY_RT_REF.unwrap_unchecked() }
+}
+
+// =============================================================================
+// DMA buffers
+// =============================================================================
 
 /// UART RX DMA buffer size.
 pub const UART_RX_BUF_SIZE: usize = 256;
 
-/// Control-plane queue capacity.
-pub const QUEUE_CAPACITY: usize = 8;
-
-// =============================================================================
-// Data-plane: DMA buffers (no critical section per-byte)
-// =============================================================================
-
 /// ADC DMA target buffer.
 ///
-/// Written by DMA, read by ADC ISR.
+/// Written by DMA, read by Board::read_sensors() in ISR.
 #[no_mangle]
 pub static mut ADC_DMA_BUF: AdcBuffer = [0u16; ADC_CHANNEL_COUNT];
 
@@ -78,179 +107,3 @@ pub static mut ADC_DMA_BUF: AdcBuffer = [0u16; ADC_CHANNEL_COUNT];
 /// Written by DMA, read by main loop.
 #[no_mangle]
 pub static mut UART_RX_DMA_BUF: [u8; UART_RX_BUF_SIZE] = [0u8; UART_RX_BUF_SIZE];
-
-// =============================================================================
-// Control-plane: SPSC queues
-// =============================================================================
-
-/// KernelOp queue (main/async → ADC ISR).
-static mut OP_QUEUE: Queue<KernelOp, QUEUE_CAPACITY> = Queue::new();
-
-/// KernelResult queue (ADC ISR → main/async).
-static mut RESULT_QUEUE: Queue<KernelResult, QUEUE_CAPACITY> = Queue::new();
-
-/// Queue halves storage (set once at init).
-static mut OP_PROD: Option<Producer<'static, KernelOp, QUEUE_CAPACITY>> = None;
-static mut OP_CONS: Option<Consumer<'static, KernelOp, QUEUE_CAPACITY>> = None;
-static mut RESULT_PROD: Option<Producer<'static, KernelResult, QUEUE_CAPACITY>> = None;
-static mut RESULT_CONS: Option<Consumer<'static, KernelResult, QUEUE_CAPACITY>> = None;
-
-// =============================================================================
-// ISR-owned resources
-// =============================================================================
-
-/// ControlExecutor wrapper (single-writer, owned by ADC ISR).
-static mut EXECUTOR: Option<ControlExecutor<ServoKernel>> = None;
-
-/// Fault sink (ISR-only).
-static mut FAULT_SINK: StubFaultSink = StubFaultSink;
-
-/// Telemetry sink (ISR-only).
-static mut TELEM_SINK: StubTelemetrySink = StubTelemetrySink;
-
-/// Shadow table size (1024 bytes, Dynamixel Protocol 2.0 compatible).
-pub const SHADOW_TABLE_SIZE: usize = 1024;
-
-/// Shadow storage (shared between main and ISR with discipline).
-static SHADOW_STORAGE: ShadowStorage<SHADOW_TABLE_SIZE> = ShadowStorage::new();
-
-// =============================================================================
-// Async task signal (SysTick → RPC task)
-// =============================================================================
-
-/// Signal for RPC service polling (signaled by SysTick ISR).
-static RPC_TICK: Signal<CriticalSectionRawMutex, ()> = Signal::new();
-
-/// Get reference to RPC tick signal.
-#[inline]
-pub fn rpc_tick() -> &'static Signal<CriticalSectionRawMutex, ()> {
-    &RPC_TICK
-}
-
-/// Signal for persist service (dxl_req → persist task).
-static PERSIST_SIGNAL: Signal<CriticalSectionRawMutex, ()> = Signal::new();
-
-/// Get reference to persist signal.
-#[inline]
-pub fn persist_signal() -> &'static Signal<CriticalSectionRawMutex, ()> {
-    &PERSIST_SIGNAL
-}
-
-/// Callback for persist signaling (called from ShadowStorage on EEPROM write).
-///
-/// Safe to call from critical section (Signal::signal is designed for this).
-pub fn on_eeprom_write() {
-    PERSIST_SIGNAL.signal(());
-}
-
-// =============================================================================
-// ServicePrimitives implementation
-// =============================================================================
-
-use open_servo_runtime::ServicePrimitives;
-
-/// ServicePrimitives implementation for STM32F301.
-///
-/// Provides async primitives backed by static embassy_sync signals.
-pub struct Stm32Primitives;
-
-impl ServicePrimitives for Stm32Primitives {
-    type PersistSignal = EmbassySignal;
-    type PersistSignalTx = EmbassySignal;
-
-    fn persist_signal(&self) -> (&Self::PersistSignalTx, &Self::PersistSignal) {
-        // Both TX and RX use the same signal (embassy Signal is bidirectional)
-        static TX: EmbassySignal = EmbassySignal(&PERSIST_SIGNAL);
-        static RX: EmbassySignal = EmbassySignal(&PERSIST_SIGNAL);
-        (&TX, &RX)
-    }
-}
-
-/// Global ServicePrimitives instance.
-pub static PRIMITIVES: Stm32Primitives = Stm32Primitives;
-
-// =============================================================================
-// Initialization functions
-// =============================================================================
-
-/// Split queues and return main-side handles.
-///
-/// # Safety
-/// Must be called exactly once before interrupts are enabled.
-pub unsafe fn init_queues() -> (
-    &'static mut Producer<'static, KernelOp, QUEUE_CAPACITY>,
-    &'static mut Consumer<'static, KernelResult, QUEUE_CAPACITY>,
-) {
-    let (op_prod, op_cons) = (*addr_of_mut!(OP_QUEUE)).split();
-    let (result_prod, result_cons) = (*addr_of_mut!(RESULT_QUEUE)).split();
-
-    *addr_of_mut!(OP_PROD) = Some(op_prod);
-    *addr_of_mut!(OP_CONS) = Some(op_cons);
-    *addr_of_mut!(RESULT_PROD) = Some(result_prod);
-    *addr_of_mut!(RESULT_CONS) = Some(result_cons);
-
-    (
-        (*addr_of_mut!(OP_PROD)).as_mut().unwrap(),
-        (*addr_of_mut!(RESULT_CONS)).as_mut().unwrap(),
-    )
-}
-
-/// Set ISR resources.
-///
-/// # Safety
-/// Must be called exactly once before interrupts are enabled.
-pub unsafe fn set_isr_resources(executor: ControlExecutor<ServoKernel>) {
-    *addr_of_mut!(EXECUTOR) = Some(executor);
-}
-
-/// Get mutable reference to executor (ISR-only).
-///
-/// # Safety
-/// Must only be called from ADC DMA ISR.
-#[inline]
-pub unsafe fn get_executor() -> &'static mut ControlExecutor<ServoKernel> {
-    (*addr_of_mut!(EXECUTOR)).as_mut().unwrap()
-}
-
-/// Get ISR-side queue handles.
-///
-/// # Safety
-/// Must only be called from ADC DMA ISR.
-#[inline]
-pub unsafe fn get_isr_queues() -> (
-    &'static mut Consumer<'static, KernelOp, QUEUE_CAPACITY>,
-    &'static mut Producer<'static, KernelResult, QUEUE_CAPACITY>,
-) {
-    (
-        (*addr_of_mut!(OP_CONS)).as_mut().unwrap(),
-        (*addr_of_mut!(RESULT_PROD)).as_mut().unwrap(),
-    )
-}
-
-/// Get mutable reference to fault sink (ISR-only).
-///
-/// # Safety
-/// Must only be called from ADC DMA ISR.
-#[inline]
-pub unsafe fn get_fault_sink() -> &'static mut StubFaultSink {
-    &mut *addr_of_mut!(FAULT_SINK)
-}
-
-/// Get mutable reference to telemetry sink (ISR-only).
-///
-/// # Safety
-/// Must only be called from ADC DMA ISR.
-#[inline]
-pub unsafe fn get_telem_sink() -> &'static mut StubTelemetrySink {
-    &mut *addr_of_mut!(TELEM_SINK)
-}
-
-/// Get reference to shadow storage (ISR and main loop).
-///
-/// Access discipline:
-/// - Main loop uses `host_*` methods (with critical_section)
-/// - ISR uses `kernel_*` methods (single-writer, no CS needed)
-#[inline]
-pub fn get_shadow_storage() -> &'static ShadowStorage<SHADOW_TABLE_SIZE> {
-    &SHADOW_STORAGE
-}

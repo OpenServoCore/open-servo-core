@@ -1,6 +1,6 @@
 //! Interrupt service routines.
 //!
-//! DMA1_CH1: ADC transfer complete - highest priority, runs control tick
+//! DMA1_CH1: ADC transfer complete - highest priority, runs control tick via Runtime
 //! USART1: IDLE interrupt - wakes main loop from WFI
 //! SysTick: RPC service polling signal
 
@@ -10,12 +10,11 @@ use stm32f3::stm32f301::interrupt;
 use stm32f3::stm32f301::{DMA1, USART1};
 
 use crate::config::FAST_DT_US;
-use crate::monotonic::now_us;
-use crate::pwm::apply_motor_command;
-use crate::resources::{
-    get_executor, get_fault_sink, get_isr_queues, get_shadow_storage, get_telem_sink, rpc_tick,
-};
-use crate::sensors::read_sensor_frame;
+use crate::resources::get_runtime;
+use crate::sinks::{StubFaultSink, StubTelemetrySink};
+
+#[cfg(feature = "osctl")]
+use open_servo_runtime_embassy::rpc_tick;
 
 /// DMA1 Channel 1 interrupt (ADC transfer complete).
 ///
@@ -31,33 +30,20 @@ fn DMA1_CH1() {
         // Clear the flag
         dma.ifcr.write(|w| w.ctcif1().set_bit());
 
-        // Read sensor frame from DMA buffer
-        let frame = unsafe { read_sensor_frame() };
+        // Get runtime and run fast tick
+        let runtime = get_runtime();
 
-        // Get current time
-        let now = now_us();
+        // Sinks for fault/telemetry (stubs for now)
+        static mut FAULT_SINK: StubFaultSink = StubFaultSink;
+        static mut TELEM_SINK: StubTelemetrySink = StubTelemetrySink;
 
-        // Get ISR resources
-        let executor = unsafe { get_executor() };
-        let (op_cons, result_prod) = unsafe { get_isr_queues() };
-        let faults = unsafe { get_fault_sink() };
-        let telem = unsafe { get_telem_sink() };
-        let shadow = get_shadow_storage();
-
-        // Run executor tick
-        let cmd = executor.on_adc_complete(
-            frame,
-            MicroSecond::from_us(FAST_DT_US),
-            now,
-            op_cons,
-            result_prod,
-            faults,
-            telem,
-            shadow,
-        );
-
-        // Apply motor command
-        apply_motor_command(cmd);
+        unsafe {
+            runtime.run_fast_tick(
+                MicroSecond::from_us(FAST_DT_US),
+                &mut *core::ptr::addr_of_mut!(FAULT_SINK),
+                &mut *core::ptr::addr_of_mut!(TELEM_SINK),
+            );
+        }
     }
 }
 
@@ -81,11 +67,12 @@ fn USART1_EXTI25() {
 
 /// SysTick exception (async task polling).
 ///
-/// Signals RPC task to check for RTT input.
+/// Signals RPC task to check for RTT input (osctl only).
 /// Also checks embassy-time alarms for expired timers.
 /// Runs at 1kHz, configured in main.rs.
 #[exception]
 fn SysTick() {
+    #[cfg(feature = "osctl")]
     rpc_tick().signal(());
     crate::time_driver::check_alarms();
 }
