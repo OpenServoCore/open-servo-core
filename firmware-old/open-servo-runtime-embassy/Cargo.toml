@@ -1,0 +1,58 @@
+[package]
+name = "open-servo-runtime-embassy"
+version.workspace = true
+edition.workspace = true
+
+# Embassy-specific runtime implementation.
+# Provides async primitives and task spawning for services.
+
+[features]
+default = []
+
+# Architecture features - enable one to get the `run()` function
+arch-cortex-m = ["embassy-executor/arch-cortex-m", "embassy-executor/executor-thread"]
+arch-riscv32 = ["embassy-executor/arch-riscv32", "embassy-executor/executor-thread"]
+
+# Debug/development features
+osctl = ["defmt", "open-servo-hw-utils/async"]
+
+# Panic handler - re-exports panic_rtt_target for firmware use
+panic-rtt = ["dep:panic-rtt-target"]
+
+defmt = [
+    "dep:defmt",
+    "open-servo-runtime/defmt",
+    "open-servo-services/defmt",
+    "open-servo-hw/defmt",
+    "open-servo-hw-utils?/defmt",
+    "open-servo-units/defmt",
+]
+
+[dependencies]
+# Workspace crates
+open-servo-runtime = { path = "../open-servo-runtime", default-features = false }
+open-servo-services = { path = "../open-servo-services", default-features = false }
+open-servo-shadow = { path = "../open-servo-shadow", default-features = false }
+open-servo-hw = { path = "../open-servo-hw", default-features = false }
+open-servo-hw-utils = { path = "../open-servo-hw-utils", default-features = false, optional = true }
+open-servo-units = { path = "../open-servo-units", default-features = false }
+open-servo-registry = { path = "../open-servo-registry", default-features = false }
+
+# Embassy async runtime
+embassy-executor = { workspace = true, optional = true }
+embassy-sync = { workspace = true }
+embassy-time = { workspace = true }
+
+# Async IO traits
+embedded-io-async = { workspace = true }
+
+# Storage traits
+embedded-storage-async = { workspace = true }
+
+# Shared deps
+critical-section = { workspace = true }
+static_cell = "2.1"
+
+# Optional
+defmt = { workspace = true, optional = true }
+panic-rtt-target = { workspace = true, optional = true }
