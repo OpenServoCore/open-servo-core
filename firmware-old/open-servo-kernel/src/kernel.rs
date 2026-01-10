@@ -734,4 +734,156 @@ mod tests {
             assert_eq!(buf1, [0]); // Ok = 0
         });
     }
+
+    /// Integration test: full round-trip through shadow table.
+    ///
+    /// Simulates the real firmware flow:
+    /// 1. Host writes control registers (ENGAGED, MODE, GOAL_POS)
+    /// 2. Kernel commits from shadow → updates internal state
+    /// 3. Kernel publishes telemetry back to shadow
+    /// 4. Host reads telemetry → verifies round-trip
+    #[test]
+    fn test_full_shadow_roundtrip() {
+        let mut kernel = make_kernel();
+        let storage = make_storage();
+
+        // === Phase 1: Host writes control values ===
+        storage.host_shadow().with_view(|view: &mut TestHostView| {
+            // Enable servo
+            view.write_range(ctrl::ENGAGED.offset, &[1]).unwrap();
+            // Set position mode
+            view.write_range(ctrl::MODE.offset, &[0]).unwrap(); // Position = 0
+            // Set goal position to 4500 centidegrees (45°)
+            view.write_range(ctrl::GOAL_POS.offset, &4500i32.to_le_bytes()).unwrap();
+        });
+
+        // Verify dirty bits are set
+        unsafe {
+            storage.kernel_shadow().with_view_unchecked(|view: &mut TestKernelView| {
+                assert!(view.any_dirty(), "Shadow should have dirty bits after host write");
+            });
+        }
+
+        // === Phase 2: Kernel commits from shadow ===
+        let result = unsafe {
+            storage.kernel_shadow().with_view_unchecked(|view: &mut TestKernelView| {
+                kernel.commit_shadow(view)
+            })
+        };
+        assert_eq!(result, CommitResult::Ok);
+
+        // Verify kernel state was updated
+        assert!(kernel.st.engaged, "Kernel should be engaged");
+        assert_eq!(kernel.st.mode, OperatingMode::Position);
+        assert_eq!(kernel.st.pos_sp.as_cdeg(), 4500, "Goal position should be 4500 cdeg");
+
+        // Verify dirty bits are cleared
+        unsafe {
+            storage.kernel_shadow().with_view_unchecked(|view: &mut TestKernelView| {
+                assert!(!view.any_dirty(), "Dirty bits should be cleared after commit");
+            });
+        }
+
+        // === Phase 3: Simulate kernel operation (set current position) ===
+        kernel.st.pos = CentiDeg32::from_cdeg(4200); // Current pos slightly behind goal
+        kernel.st.last_cmd.effort = Effort::from_raw(500);
+        kernel.st.fault_mask = 0;
+        kernel.st.last_gate = GateReason::Ok;
+
+        // === Phase 4: Kernel publishes telemetry ===
+        unsafe {
+            storage.kernel_shadow().with_view_unchecked(|view: &mut TestKernelView| {
+                kernel.publish_telemetry(view);
+            });
+        }
+
+        // === Phase 5: Host reads telemetry back ===
+        storage.host_shadow().with_view(|view: &mut TestHostView| {
+            let mut buf4 = [0u8; 4];
+            let mut buf2 = [0u8; 2];
+            let mut buf1 = [0u8; 1];
+
+            // Verify position telemetry
+            view.read_range(telem::POS_CDEG32, &mut buf4).unwrap();
+            let pos = i32::from_le_bytes(buf4);
+            assert_eq!(pos, 4200, "Telemetry position should be 4200 cdeg");
+
+            // Verify effort telemetry
+            view.read_range(telem::EFFORT_RAW, &mut buf2).unwrap();
+            let effort = i16::from_le_bytes(buf2);
+            assert_eq!(effort, 500, "Telemetry effort should be 500");
+
+            // Verify engaged mirror
+            view.read_range(telem::ENGAGED, &mut buf1).unwrap();
+            assert_eq!(buf1[0], 1, "Telemetry engaged should be 1");
+
+            // Verify mode mirror
+            view.read_range(telem::MODE, &mut buf1).unwrap();
+            assert_eq!(buf1[0], 0, "Telemetry mode should be Position (0)");
+
+            // Verify no faults
+            view.read_range(telem::FAULT_MASK, &mut buf4).unwrap();
+            assert_eq!(buf4, [0, 0, 0, 0], "Fault mask should be 0");
+
+            // Verify gate reason
+            view.read_range(telem::GATE_REASON, &mut buf1).unwrap();
+            assert_eq!(buf1[0], 0, "Gate reason should be Ok (0)");
+        });
+    }
+
+    /// Integration test: multiple commit cycles with state changes.
+    ///
+    /// Tests that repeated host writes and kernel commits work correctly.
+    #[test]
+    fn test_multiple_commit_cycles() {
+        let mut kernel = make_kernel();
+        let storage = make_storage();
+
+        // Cycle 1: Engage and set position
+        storage.host_shadow().with_view(|view: &mut TestHostView| {
+            view.write_range(ctrl::ENGAGED.offset, &[1]).unwrap();
+            view.write_range(ctrl::GOAL_POS.offset, &1000i32.to_le_bytes()).unwrap();
+        });
+        unsafe {
+            storage.kernel_shadow().with_view_unchecked(|view: &mut TestKernelView| {
+                let result = kernel.commit_shadow(view);
+                assert_eq!(result, CommitResult::Ok);
+            });
+        }
+        assert!(kernel.st.engaged);
+        assert_eq!(kernel.st.pos_sp.as_cdeg(), 1000);
+
+        // Cycle 2: Change position while engaged
+        storage.host_shadow().with_view(|view: &mut TestHostView| {
+            view.write_range(ctrl::GOAL_POS.offset, &2000i32.to_le_bytes()).unwrap();
+        });
+        unsafe {
+            storage.kernel_shadow().with_view_unchecked(|view: &mut TestKernelView| {
+                let result = kernel.commit_shadow(view);
+                assert_eq!(result, CommitResult::Ok);
+            });
+        }
+        assert!(kernel.st.engaged, "Should still be engaged");
+        assert_eq!(kernel.st.pos_sp.as_cdeg(), 2000, "Position should update to 2000");
+
+        // Cycle 3: Disengage
+        storage.host_shadow().with_view(|view: &mut TestHostView| {
+            view.write_range(ctrl::ENGAGED.offset, &[0]).unwrap();
+        });
+        unsafe {
+            storage.kernel_shadow().with_view_unchecked(|view: &mut TestKernelView| {
+                let result = kernel.commit_shadow(view);
+                assert_eq!(result, CommitResult::Ok);
+            });
+        }
+        assert!(!kernel.st.engaged, "Should be disengaged");
+
+        // Cycle 4: Nothing dirty → NothingToCommit
+        unsafe {
+            storage.kernel_shadow().with_view_unchecked(|view: &mut TestKernelView| {
+                let result = kernel.commit_shadow(view);
+                assert_eq!(result, CommitResult::NothingToCommit);
+            });
+        }
+    }
 }
