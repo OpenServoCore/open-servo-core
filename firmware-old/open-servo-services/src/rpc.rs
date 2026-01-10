@@ -15,7 +15,7 @@
 //! [`ServiceTask<()>`]: crate::task::ServiceTask
 
 use crate::rpc_transport::{RttTransport, MAX_MSG_SIZE};
-use crate::service_ops::ServiceOps;
+use crate::service_ops::{HostOps, ServiceOps};
 use crate::task::ServiceTask;
 use embedded_io_async::{Read, Write};
 use futures::{future::Either, pin_mut};
@@ -26,7 +26,6 @@ use open_servo_rpc::{
     KEY_REG_DATA, KEY_REG_READ, KEY_REG_STREAM_START, KEY_REG_STREAM_STOP, KEY_REG_WRITE,
     KEY_SYS_INFO, KEY_SYS_PING,
 };
-use open_servo_shadow::HostShadow;
 use open_servo_units::{MicroSecond, TimeStampUs};
 
 /// Maximum packed size for streaming data.
@@ -34,8 +33,8 @@ const MAX_STREAM_DATA_SIZE: usize = 64;
 
 /// RPC service state.
 ///
-/// Generic over IO, shadow table (via [`HostShadow`] trait), and timer type.
-pub struct RpcService<'a, IO: Read + Write, S: HostShadow, T: AsyncTimer> {
+/// Generic over IO, shadow table (via [`HostOps`] trait), and timer type.
+pub struct RpcService<'a, IO: Read + Write, S: HostOps, T: AsyncTimer> {
     transport: RttTransport<'a, IO>,
     shadow: &'a S,
     timer: &'a T,
@@ -57,12 +56,12 @@ struct StreamConfig {
     next_send: TimeStampUs,
 }
 
-impl<'a, IO: Read + Write, S: HostShadow, T: AsyncTimer> RpcService<'a, IO, S, T> {
+impl<'a, IO: Read + Write, S: HostOps, T: AsyncTimer> RpcService<'a, IO, S, T> {
     /// Create a new RPC service.
     ///
     /// - `io`: Transport implementing async Read+Write
     /// - `transport_buf`: Buffer for COBS framing
-    /// - `shadow`: Shadow table for register access (any [`HostShadow`] implementor)
+    /// - `shadow`: Shadow table for register access (any [`HostOps`] implementor)
     /// - `timer`: Async timer for streaming
     pub fn new(io: IO, transport_buf: &'a mut [u8], shadow: &'a S, timer: &'a T) -> Self {
         Self {
@@ -313,7 +312,7 @@ impl<'a, IO: Read + Write, S: HostShadow, T: AsyncTimer> RpcService<'a, IO, S, T
 
 /// RpcService stores shadow and timer internally, so it doesn't need context.
 /// We use `()` as the context type.
-impl<'a, IO: Read + Write, S: HostShadow, T: AsyncTimer> ServiceTask<()>
+impl<'a, IO: Read + Write, S: HostOps, T: AsyncTimer> ServiceTask<()>
     for RpcService<'a, IO, S, T>
 {
     async fn init(&mut self, _ctx: &()) {

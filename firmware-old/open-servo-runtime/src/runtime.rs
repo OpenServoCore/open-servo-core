@@ -51,6 +51,7 @@ use heapless::spsc::{Consumer, Producer, Queue};
 
 use open_servo_hw::config::BoardConfig;
 use open_servo_hw::v2::board::Board;
+use open_servo_hw::v2::PersistW;
 use open_servo_hw::Timebase;
 use open_servo_kernel::ServoKernel;
 use open_servo_kernel_api::ops::{KernelOp, KernelResult};
@@ -58,11 +59,7 @@ use open_servo_kernel_api::{FaultSink, TelemetrySink};
 use open_servo_units::MicroSecond;
 
 use crate::executor::ControlExecutor;
-use crate::shadow_storage::ShadowStorage;
-use open_servo_hw::v2::PersistW;
-
-/// Shadow table size (1024 bytes, Dynamixel Protocol 2.0 compatible).
-pub const SHADOW_TABLE_SIZE: usize = 1024;
+use crate::shadow::{create_storage, ServoShadowStorage};
 
 /// Queue capacity for host operations.
 pub const QUEUE_CAPACITY: usize = 8;
@@ -86,7 +83,7 @@ pub struct Runtime<B, PW: PersistW> {
     executor: UnsafeCell<ControlExecutor>,
 
     /// The shadow storage (register table, 1024 bytes).
-    shadow: ShadowStorage<SHADOW_TABLE_SIZE, PW>,
+    shadow: ServoShadowStorage<PW>,
 
     /// Op queue: main/async → ADC ISR.
     op_queue: UnsafeCell<Queue<KernelOp, QUEUE_CAPACITY>>,
@@ -127,7 +124,7 @@ where
         Self {
             board: UnsafeCell::new(board),
             executor: UnsafeCell::new(ControlExecutor::new(kernel)),
-            shadow: ShadowStorage::new(save_signal),
+            shadow: create_storage(save_signal),
             op_queue: UnsafeCell::new(Queue::new()),
             result_queue: UnsafeCell::new(Queue::new()),
             op_prod: UnsafeCell::new(None),
@@ -175,6 +172,8 @@ where
     ///
     /// Writes DXL identity (RO) and EEPROM defaults (RW) to shadow.
     /// Called during init, before flash restore, so virgin flash keeps defaults.
+    ///
+    /// Uses `load_defaults` to avoid marking dirty bits (no persist trigger).
     fn apply_board_defaults(&self) {
         // SAFETY: Called during init before interrupts enabled
         let board = unsafe { &*self.board.get() };
@@ -183,29 +182,24 @@ where
 
         use open_servo_registry::dxl::addr;
 
-        // Write read-only fields (board-provided, immutable)
-        let _ = self
-            .shadow
-            .host_write(addr::MODEL_NUMBER, &identity.model_number.to_le_bytes());
-        let _ = self.shadow.host_write(
-            addr::MODEL_INFORMATION,
-            &identity.model_information.to_le_bytes(),
-        );
-        let _ = self
-            .shadow
-            .host_write(addr::FIRMWARE_VERSION, &[identity.firmware_version]);
-        let _ = self
-            .shadow
-            .host_write(addr::PROTOCOL_TYPE, &[identity.protocol_type]);
+        // Use load_defaults to write without marking dirty bits
+        let _ = self.shadow.load_defaults(|write| {
+            // Write read-only fields (board-provided, immutable)
+            write(addr::MODEL_NUMBER, &identity.model_number.to_le_bytes())?;
+            write(
+                addr::MODEL_INFORMATION,
+                &identity.model_information.to_le_bytes(),
+            )?;
+            write(addr::FIRMWARE_VERSION, &[identity.firmware_version])?;
+            write(addr::PROTOCOL_TYPE, &[identity.protocol_type])?;
 
-        // Write writable EEPROM fields (factory defaults)
-        let _ = self.shadow.host_write(addr::ID, &[defaults.id]);
-        let _ = self
-            .shadow
-            .host_write(addr::BAUD_RATE, &[defaults.baud_rate]);
-        let _ = self
-            .shadow
-            .host_write(addr::SECONDARY_ID, &[defaults.secondary_id]);
+            // Write writable EEPROM fields (factory defaults)
+            write(addr::ID, &[defaults.id])?;
+            write(addr::BAUD_RATE, &[defaults.baud_rate])?;
+            write(addr::SECONDARY_ID, &[defaults.secondary_id])?;
+
+            Ok(())
+        });
     }
 
     /// ADC ISR entrypoint: read sensors, run kernel, write motor.
@@ -250,9 +244,9 @@ where
 
     /// Get reference to shadow storage for host operations.
     ///
-    /// This is safe to call from main context. Use `host_*` methods.
+    /// This is safe to call from main context. Use `host_shadow().with_view(...)`.
     #[inline]
-    pub fn shadow(&self) -> &ShadowStorage<SHADOW_TABLE_SIZE, PW> {
+    pub fn shadow(&self) -> &ServoShadowStorage<PW> {
         &self.shadow
     }
 

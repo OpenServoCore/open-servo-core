@@ -3,7 +3,6 @@ members = [
     # Base shared libraries
     "open-servo-units",
     "open-servo-math",
-    "open-servo-shadow",
     "open-servo-registry",
     "open-servo-macros",
     "open-servo-rpc",
@@ -40,7 +39,6 @@ default-members = [
     # Base shared libraries
     "open-servo-units",
     "open-servo-math",
-    "open-servo-shadow",
     "open-servo-registry",
     "open-servo-rpc",
 
@@ -66,6 +64,8 @@ authors = ["Aaron Q"]
 [workspace.dependencies]
 heapless = "0.8"
 critical-section = "1.2"
+embedded-shadow = "0.1"
+bitmaps = { version = "3", default-features = false }
 ufmt = "0.2"
 defmt = { version = "0.3", features = ["encoding-rzcobs"] }
 rtt-target = { version = "0.6", features = ["defmt"] }

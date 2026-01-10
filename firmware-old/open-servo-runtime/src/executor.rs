@@ -29,6 +29,7 @@
 use heapless::spsc::{Consumer, Producer};
 
 use open_servo_hw::v2::io::{MotorCommand, SensorFrame};
+use open_servo_hw::v2::PersistW;
 use open_servo_kernel::ServoKernel;
 use open_servo_kernel_api::{
     kernel::KernelHost,
@@ -38,12 +39,9 @@ use open_servo_kernel_api::{
     FaultSink, TelemetrySink,
 };
 use open_servo_registry::facade;
-use open_servo_shadow::ShadowKernel;
 use open_servo_units::{MicroSecond, TimeStampUs};
 
-use crate::runtime::SHADOW_TABLE_SIZE;
-use crate::shadow_storage::ShadowStorage;
-use open_servo_hw::v2::PersistW;
+use crate::shadow::ServoShadowStorage;
 
 /// Decimation ratio: ControlFast → ControlMedium (10kHz → 1kHz).
 pub const MEDIUM_DECIMATE: u8 = 10;
@@ -125,7 +123,7 @@ impl ControlExecutor {
         result_prod: &mut Producer<'_, KernelResult, RESULT_CAP>,
         faults: &mut F,
         telem: &mut T,
-        shadow: &ShadowStorage<SHADOW_TABLE_SIZE, PW>,
+        shadow: &ServoShadowStorage<PW>,
     ) -> MotorCommand
     where
         F: FaultSink,
@@ -150,28 +148,25 @@ impl ControlExecutor {
             let mut ctx = TickCtx::new(tick, now, faults, telem);
             let _ = self.kernel.tick(&mut ctx);
 
-            // Medium tick boundary: facade translation + shadow commit + telemetry.
-            // Ordering is critical (see MASTER_PLAN.md):
-            // 1. translate_dirty_facade_to_vendor (always, before any_dirty check)
-            // 2. commit_shadow (only if dirty)
-            // 3. publish_telemetry (after commit)
-            // 4. publish_vendor_to_facade (last)
+            // Medium tick boundary: shadow commit + telemetry publish.
+            // Ordering:
+            // 1. commit_shadow (handles both facade and vendor dirty bits inline)
+            // 2. publish_telemetry (after commit)
+            // 3. publish_vendor_to_facade (last)
             // SAFETY: on_adc_complete is called from ISR context only.
-            shadow.kernel_with_view(|view| {
-                // 1. Translate dirty facade writes to vendor registers.
-                facade::translate_dirty_facade_to_vendor(view);
-
-                // 2. Commit dirty vendor registers to kernel state.
-                if view.any_dirty() {
+            unsafe {
+                shadow.kernel_shadow().with_view_unchecked(|view| {
+                    // 1. Commit dirty registers to kernel state.
+                    //    Facade translation is handled inline in commit_shadow.
                     let _ = self.kernel.commit_shadow(view);
-                }
 
-                // 3. Publish kernel telemetry to vendor registers.
-                self.kernel.publish_telemetry(view);
+                    // 2. Publish kernel telemetry to vendor registers.
+                    self.kernel.publish_telemetry(view);
 
-                // 4. Publish vendor telemetry to facade RO fields.
-                facade::publish_vendor_to_facade(view);
-            });
+                    // 3. Publish vendor telemetry to facade RO fields.
+                    facade::publish_vendor_to_facade(view);
+                });
+            }
 
             // Decimation: ControlSlow.
             self.slow_counter += 1;
@@ -258,157 +253,6 @@ fn cs_enqueue<T, const N: usize>(prod: &mut Producer<'_, T, N>, val: T) -> Resul
     critical_section::with(|_| prod.enqueue(val))
 }
 
-/// Run the medium tick shadow commit block for testing.
-///
-/// This executes the exact same sequence as the medium tick boundary:
-/// 1. translate_dirty_facade_to_vendor
-/// 2. commit_shadow (if dirty)
-/// 3. publish_telemetry
-/// 4. publish_vendor_to_facade
-#[cfg(test)]
-pub fn run_medium_commit_for_test<K, PW, const N: usize>(
-    kernel: &mut K,
-    shadow: &ShadowStorage<N, PW>,
-) where
-    K: ShadowKernel,
-    PW: PersistW,
-{
-    shadow.kernel_with_view(|view| {
-        facade::translate_dirty_facade_to_vendor(view);
-        if view.any_dirty() {
-            let _ = kernel.commit_shadow(view);
-        }
-        kernel.publish_telemetry(view);
-        facade::publish_vendor_to_facade(view);
-    });
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use core::cell::{Cell, RefCell};
-    use open_servo_hw::v2::SignalWriter;
-    use open_servo_kernel_api::CommitResult;
-    use open_servo_shadow::KernelView;
-
-    /// Vendor register addresses (copied from facade module).
-    mod vendor_addr {
-        pub const GOAL_POS_CDEG: u16 = 512;
-        pub const PRESENT_POS_CDEG: u16 = 516;
-        pub const POS_MIN_LIMIT_CDEG: u16 = 530;
-        pub const POS_MAX_LIMIT_CDEG: u16 = 534;
-        pub const SERVO_POS_KIND: u16 = 625;
-    }
-
-    /// Facade addresses (copied from facade module).
-    mod facade_addr {
-        pub const GOAL_POSITION: u16 = 116;
-        pub const PRESENT_POSITION: u16 = 132;
-    }
-
-    /// Mock persist signal for testing (writer side only).
-    struct MockPersistSignal(Cell<bool>);
-
-    impl MockPersistSignal {
-        const fn new() -> Self {
-            Self(Cell::new(false))
-        }
-    }
-
-    // Only need SignalWriter<()> - blanket impl provides PersistW
-    impl SignalWriter<()> for MockPersistSignal {
-        fn signal(&self, _: ()) {
-            self.0.set(true);
-        }
-    }
-
-    fn test_storage() -> ShadowStorage<1024, MockPersistSignal> {
-        ShadowStorage::new(MockPersistSignal::new())
-    }
-
-    /// Minimal mock kernel implementing only ShadowKernel.
-    struct MockKernel {
-        call_log: RefCell<heapless::Vec<&'static str, 16>>,
-    }
-
-    impl MockKernel {
-        fn new() -> Self {
-            Self {
-                call_log: RefCell::new(heapless::Vec::new()),
-            }
-        }
-
-        fn take_call_log(&self) -> heapless::Vec<&'static str, 16> {
-            core::mem::take(&mut *self.call_log.borrow_mut())
-        }
-    }
-
-    impl ShadowKernel for MockKernel {
-        fn commit_shadow(&mut self, view: &mut KernelView<'_>) -> CommitResult {
-            let _ = self.call_log.borrow_mut().push("commit_shadow");
-            // Clear vendor dirty range (simulate successful commit)
-            view.clear_range_dirty(vendor_addr::GOAL_POS_CDEG, 4);
-            CommitResult::Ok
-        }
-
-        fn publish_telemetry(&self, view: &mut KernelView<'_>) {
-            let _ = self.call_log.borrow_mut().push("publish_telemetry");
-            // Write a known value to PRESENT_POS_CDEG (9000 cdeg)
-            let _ = view.write(vendor_addr::PRESENT_POS_CDEG, &9000i32.to_le_bytes());
-        }
-    }
-
-    #[test]
-    fn test_medium_commit_ordering_and_facade_integration() {
-        let shadow = test_storage();
-
-        // 1. Seed vendor context via kernel_with_view + view.write (no dirty)
-        shadow.kernel_with_view(|view| {
-            // pos_kind = Bounded (0)
-            let _ = view.write(vendor_addr::SERVO_POS_KIND, &[0]);
-            // pos_min = -18000 cdeg
-            let _ = view.write(vendor_addr::POS_MIN_LIMIT_CDEG, &(-18000i32).to_le_bytes());
-            // pos_max = 18000 cdeg
-            let _ = view.write(vendor_addr::POS_MAX_LIMIT_CDEG, &(18000i32).to_le_bytes());
-        });
-
-        // 2. Host writes facade goal_position (marks dirty)
-        // 1024 pulses should convert to ~9011 cdeg
-        shadow
-            .host_write(facade_addr::GOAL_POSITION, &1024i32.to_le_bytes())
-            .unwrap();
-
-        // Verify facade is dirty before running medium commit
-        shadow.kernel_with_view(|view| {
-            assert!(view.is_range_dirty(facade_addr::GOAL_POSITION, 4));
-        });
-
-        // 3. Run medium commit
-        let mut mock = MockKernel::new();
-        run_medium_commit_for_test(&mut mock, &shadow);
-
-        // 4. Assert call log ordering: commit_shadow before publish_telemetry
-        let log = mock.take_call_log();
-        assert_eq!(log.as_slice(), &["commit_shadow", "publish_telemetry"]);
-
-        // 5. Assert side effects via kernel_with_view reads
-        shadow.kernel_with_view(|view| {
-            // Facade addr 116 is NOT dirty (cleared by translate before commit)
-            assert!(!view.is_range_dirty(facade_addr::GOAL_POSITION, 4));
-
-            // Vendor addr 512 has expected cdeg value (translation worked)
-            // 1024 pulses * 8.8 = ~9011 cdeg
-            let mut buf = [0u8; 4];
-            view.read(vendor_addr::GOAL_POS_CDEG, &mut buf).unwrap();
-            let cdeg = i32::from_le_bytes(buf);
-            assert_eq!(cdeg, 9011); // (1024 * 88 + 5) / 10 = 9011
-
-            // Facade addr 132 has pulses value (publish_vendor_to_facade ran last)
-            // MockKernel wrote 9000 cdeg to PRESENT_POS_CDEG
-            // 9000 cdeg / 8.8 = ~1023 pulses
-            view.read(facade_addr::PRESENT_POSITION, &mut buf).unwrap();
-            let pulses = i32::from_le_bytes(buf);
-            assert_eq!(pulses, 1023); // (9000 * 10 + 44) / 88 = 1023
-        });
-    }
-}
+// Note: Integration tests for the medium commit flow have been removed during the
+// embedded-shadow migration. They will be re-added when the kernel is adapted to
+// use the new API directly (without the ShadowKernel trait).

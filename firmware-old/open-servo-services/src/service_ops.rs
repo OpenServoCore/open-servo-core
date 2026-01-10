@@ -2,16 +2,32 @@
 //!
 //! Provides transport-agnostic register operations:
 //! - `read_range` / `write_range` for immediate access
-//! - `stage` / `action` for staged (ACTION-deferred) writes
 //! - `snapshot` for batched reads
 //! - `factory_reset` / `trigger_save` for persistence control
 //! - `ResetLevel` for factory reset field selection
+//!
+//! ## Note on Staging
+//!
+//! Stage/action operations for Dynamixel ACTION instruction are handled
+//! separately via embedded-shadow's PatchStagingBuffer at the firmware level.
 
+use embedded_shadow::ShadowError;
 use open_servo_hw::v2::{PersistW, ResetW};
-use open_servo_shadow::{HostShadow, ShadowError, StageResult};
 
 // Re-export ResetLevel for convenience
 pub use open_servo_hw::v2::ResetLevel;
+
+/// Trait for host-side shadow table operations.
+///
+/// This trait abstracts over the concrete shadow storage type,
+/// allowing services to work with any compatible implementation.
+pub trait HostOps {
+    /// Read bytes from shadow table.
+    fn host_read(&self, addr: u16, buf: &mut [u8]) -> Result<(), ShadowError>;
+
+    /// Write bytes immediately (marks dirty, may trigger persist).
+    fn host_write(&self, addr: u16, data: &[u8]) -> Result<(), ShadowError>;
+}
 
 /// Snapshot errors.
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
@@ -31,13 +47,13 @@ impl From<ShadowError> for SnapshotError {
 
 /// Service operations on shadow table.
 ///
-/// Wraps any [`HostShadow`] implementor to provide RPC/DXL-style register operations.
+/// Wraps any [`HostOps`] implementor to provide RPC/DXL-style register operations.
 /// All methods use the implementor's thread-safety mechanism (typically critical sections).
-pub struct ServiceOps<'a, S: HostShadow> {
+pub struct ServiceOps<'a, S: HostOps> {
     shadow: &'a S,
 }
 
-impl<'a, S: HostShadow> ServiceOps<'a, S> {
+impl<'a, S: HostOps> ServiceOps<'a, S> {
     /// Create a new ServiceOps wrapper.
     pub fn new(shadow: &'a S) -> Self {
         Self { shadow }
@@ -51,16 +67,6 @@ impl<'a, S: HostShadow> ServiceOps<'a, S> {
     /// Write bytes immediately (marks dirty).
     pub fn write_range(&self, addr: u16, data: &[u8]) -> Result<(), ShadowError> {
         self.shadow.host_write(addr, data)
-    }
-
-    /// Stage write for later ACTION (does NOT mark dirty).
-    pub fn stage(&self, addr: u16, data: &[u8]) -> StageResult {
-        self.shadow.host_stage(addr, data)
-    }
-
-    /// Apply all staged writes (marks dirty). Returns count applied.
-    pub fn action(&self) -> usize {
-        self.shadow.host_action()
     }
 
     /// Read multiple fields into output buffer.

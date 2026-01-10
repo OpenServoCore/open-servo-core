@@ -36,8 +36,9 @@ use core::ops::Range;
 use embedded_io_async::{Read, Write};
 use embedded_storage_async::nor_flash::MultiwriteNorFlash;
 
-use open_servo_services::{PersistSignals, PersistTask, RpcService, ServiceCtx, ServiceTask};
-use open_servo_shadow::HostShadow;
+use open_servo_services::{
+    HostOps, PersistSignals, PersistTask, RpcService, ServiceCtx, ServiceTask,
+};
 
 use crate::primitives::{EmbassySignal, EmbassyTimer, ResetSignalWrapper};
 use crate::signals::{reset_signal, save_signal};
@@ -59,8 +60,8 @@ use static_cell::StaticCell;
 ///
 /// - `flash`: Flash driver implementing `MultiwriteNorFlash`
 /// - `flash_range`: Address range to use for storage
-/// - `shadow`: Shadow table reference (any `HostShadow` implementor)
-pub async fn run_persist_loop<F: MultiwriteNorFlash, S: HostShadow>(
+/// - `shadow`: Shadow table reference (any `HostOps` implementor)
+pub async fn run_persist_loop<F: MultiwriteNorFlash, S: HostOps>(
     flash: F,
     flash_range: Range<u32>,
     shadow: &'static S,
@@ -94,8 +95,8 @@ pub async fn run_persist_loop<F: MultiwriteNorFlash, S: HostShadow>(
 ///
 /// - `io`: IO transport implementing `Read + Write`
 /// - `buf`: Buffer for COBS framing (recommend 192 bytes)
-/// - `shadow`: Shadow table reference (any `HostShadow` implementor)
-pub async fn run_rpc_loop<IO: Read + Write, S: HostShadow>(
+/// - `shadow`: Shadow table reference (any `HostOps` implementor)
+pub async fn run_rpc_loop<IO: Read + Write, S: HostOps>(
     io: IO,
     buf: &'static mut [u8],
     shadow: &'static S,

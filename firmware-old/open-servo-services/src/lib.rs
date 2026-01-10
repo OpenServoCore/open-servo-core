@@ -72,4 +72,4 @@ pub use task::ServiceTask;
 // Secondary re-exports
 pub use dxl_req::{DxlReqTask, Response};
 pub use dxl_rx::DxlRxTask;
-pub use service_ops::{ResetLevel, ServiceOps};
+pub use service_ops::{HostOps, ResetLevel, ServiceOps};

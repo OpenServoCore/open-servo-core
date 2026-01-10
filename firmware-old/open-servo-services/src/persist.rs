@@ -41,11 +41,11 @@ use futures::future::Either;
 use futures::pin_mut;
 use open_servo_hw::v2::{AsyncTimer, PersistR, ResetR};
 use open_servo_registry::{eeprom_idx_by_hash, RegSpec, EEPROM_COUNT, EEPROM_FIELDS};
-use open_servo_shadow::HostShadow;
 use sequential_storage::cache::NoCache;
 use sequential_storage::map::{self, Key, SerializationError, Value};
 
 use crate::service_ctx::ServiceCtx;
+use crate::service_ops::HostOps;
 use crate::task::ServiceTask;
 
 // Re-export from hw for convenience
@@ -283,19 +283,17 @@ where
     }
 
     /// Write persist telemetry to shadow registers.
-    fn write_telemetry<S: HostShadow, T: AsyncTimer>(
+    fn write_telemetry<S: HostOps, T: AsyncTimer>(
         &self,
         ctx: &ServiceCtx<'_, S, T>,
         result: PersistResult,
         pending: bool,
     ) {
         use open_servo_registry::vendor::telem;
-        ctx.shadow.with_host_view(|view| {
-            let r1 = view.write(telem::PERSIST_STATUS, &[result as u8]);
-            let r2 = view.write(telem::PERSIST_GEN, &self.generation.to_le_bytes());
-            let r3 = view.write(telem::PERSIST_PENDING, &[pending as u8]);
-            debug_assert!(r1.is_ok() && r2.is_ok() && r3.is_ok());
-        });
+        let r1 = ctx.shadow.host_write(telem::PERSIST_STATUS, &[result as u8]);
+        let r2 = ctx.shadow.host_write(telem::PERSIST_GEN, &self.generation.to_le_bytes());
+        let r3 = ctx.shadow.host_write(telem::PERSIST_PENDING, &[pending as u8]);
+        debug_assert!(r1.is_ok() && r2.is_ok() && r3.is_ok());
     }
 
     /// Get the last persist result.
@@ -313,7 +311,7 @@ where
     /// - `shadow`: Shadow table for writing restored values
     /// - `field`: Field specification
     /// - `buf`: Scratch buffer for sequential-storage
-    async fn restore_field<S: HostShadow>(
+    async fn restore_field<S: HostOps>(
         &mut self,
         shadow: &S,
         field: &RegSpec,
@@ -402,63 +400,56 @@ where
         }
     }
 
-    /// Snapshot all EEPROM field values from shadow in a single critical section.
+    /// Snapshot all EEPROM field values from shadow.
     ///
     /// Returns `Ok((snapshot, read_errors))` if torque is disabled.
     /// Returns `Err(PersistResult)` for early exit (busy or read error).
-    fn take_snapshot<S: HostShadow>(
+    fn take_snapshot<S: HostOps>(
         &self,
         shadow: &S,
     ) -> Result<([CacheEntry; EEPROM_COUNT], u8), PersistResult> {
         let mut snapshot = [CacheEntry::empty(); EEPROM_COUNT];
         let mut read_errors = 0u8;
 
-        let result = shadow.with_host_view(|view| {
-            // Check torque enable first
-            let mut torque_buf = [0u8; 1];
-            if view.read(TORQUE_ENABLE_ADDR, &mut torque_buf).is_err() {
-                return Err(PersistResult::WriteFailed);
-            }
-            if torque_buf[0] != 0 {
-                return Err(PersistResult::Busy);
+        // Check torque enable first
+        let mut torque_buf = [0u8; 1];
+        if shadow.host_read(TORQUE_ENABLE_ADDR, &mut torque_buf).is_err() {
+            return Err(PersistResult::WriteFailed);
+        }
+        if torque_buf[0] != 0 {
+            return Err(PersistResult::Busy);
+        }
+
+        // Read all EEPROM fields into snapshot
+        let mut data = [0u8; MAX_FIELD_LEN];
+        for field in EEPROM_FIELDS.iter() {
+            let len = field.len() as usize;
+            if len > MAX_FIELD_LEN {
+                continue;
             }
 
-            // Read all EEPROM fields into snapshot
-            let mut data = [0u8; MAX_FIELD_LEN];
-            for field in EEPROM_FIELDS.iter() {
-                let len = field.len() as usize;
-                if len > MAX_FIELD_LEN {
+            let idx = match eeprom_idx_by_hash(field.name_hash) {
+                Some(idx) => idx,
+                None => {
+                    debug_assert!(false, "EEPROM field {} not in hash map", field.name);
                     continue;
                 }
+            };
 
-                let idx = match eeprom_idx_by_hash(field.name_hash) {
-                    Some(idx) => idx,
-                    None => {
-                        debug_assert!(false, "EEPROM field {} not in hash map", field.name);
-                        continue;
-                    }
-                };
-
-                if view.read(field.address, &mut data[..len]).is_ok() {
-                    snapshot[idx] = CacheEntry::from_slice(&data[..len]);
-                } else {
-                    read_errors += 1;
-                }
+            if shadow.host_read(field.address, &mut data[..len]).is_ok() {
+                snapshot[idx] = CacheEntry::from_slice(&data[..len]);
+            } else {
+                read_errors += 1;
             }
-
-            Ok(())
-        });
-
-        match result {
-            Ok(()) => Ok((snapshot, read_errors)),
-            Err(e) => Err(e),
         }
+
+        Ok((snapshot, read_errors))
     }
 
     /// Compare snapshot to cache and save changed fields to flash.
     ///
     /// Returns `(saved_count, error_count)`.
-    async fn save_changed_fields<S: HostShadow, T: AsyncTimer>(
+    async fn save_changed_fields<S: HostOps, T: AsyncTimer>(
         &mut self,
         ctx: &ServiceCtx<'_, S, T>,
         snapshot: &[CacheEntry; EEPROM_COUNT],
@@ -507,7 +498,7 @@ where
     RR: ResetR,
 {
     /// Handle Save operation: save dirty EEPROM fields to flash.
-    async fn handle_save<S: HostShadow, T: AsyncTimer>(&mut self, ctx: &ServiceCtx<'_, S, T>) {
+    async fn handle_save<S: HostOps, T: AsyncTimer>(&mut self, ctx: &ServiceCtx<'_, S, T>) {
         // Take snapshot (single CS for torque check + all field reads)
         let (snapshot, read_errors) = match self.take_snapshot(ctx.shadow) {
             Ok(result) => result,
@@ -545,7 +536,7 @@ where
     /// Handle FactoryReset operation: delete non-preserved EEPROM keys.
     ///
     /// Deletes keys based on [`ResetLevel`], then triggers soft reset.
-    async fn handle_factory_reset<S: HostShadow, T: AsyncTimer>(
+    async fn handle_factory_reset<S: HostOps, T: AsyncTimer>(
         &mut self,
         ctx: &ServiceCtx<'_, S, T>,
         level: ResetLevel,
@@ -611,7 +602,7 @@ where
     F: MultiwriteNorFlash,
     PR: PersistR,
     RR: ResetR,
-    S: HostShadow,
+    S: HostOps,
     T: AsyncTimer,
 {
     async fn init(&mut self, ctx: &ServiceCtx<'_, S, T>) {

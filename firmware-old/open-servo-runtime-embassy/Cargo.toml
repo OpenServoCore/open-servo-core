@@ -32,7 +32,6 @@ defmt = [
 # Workspace crates
 open-servo-runtime = { path = "../open-servo-runtime", default-features = false }
 open-servo-services = { path = "../open-servo-services", default-features = false }
-open-servo-shadow = { path = "../open-servo-shadow", default-features = false }
 open-servo-hw = { path = "../open-servo-hw", default-features = false }
 open-servo-hw-utils = { path = "../open-servo-hw-utils", default-features = false, optional = true }
 open-servo-units = { path = "../open-servo-units", default-features = false }

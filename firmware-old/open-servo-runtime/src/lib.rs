@@ -29,18 +29,19 @@ pub mod main_loop;
 pub mod runtime;
 pub mod service_primitives;
 pub mod services;
-pub mod shadow_storage;
+pub mod shadow;
 pub mod uart_bus;
 
 // Re-export the main seams for convenience.
 pub use comms_service::{CommsService, DxlService, EchoPolicy, KernelOp, KernelResult};
 pub use device::Device;
 pub use executor::ControlExecutor;
-pub use runtime::{Runtime, SHADOW_TABLE_SIZE};
+pub use runtime::Runtime;
 pub use service_primitives::ServicePrimitives;
-pub use shadow_storage::{HeaplessStagingBuffer, ShadowStorage};
-// Re-export HostShadow trait from shadow crate for services
-pub use open_servo_shadow::HostShadow;
+pub use shadow::{
+    create_storage, create_test_storage, ServoShadowStorage, ServoPersistTrigger,
+    TestShadowStorage, SHADOW_BLOCK_COUNT, SHADOW_BLOCK_SIZE, SHADOW_TABLE_SIZE,
+};
 pub use uart_bus::{UartBus, UartError};
 
 // Common re-exports so downstream crates don't need to import everything manually.
@@ -68,8 +69,8 @@ pub fn init() {
 pub mod prelude {
     pub use crate::main_loop::{drain_and_respond, parse_and_enqueue};
     pub use crate::{
-        CommsService, ControlExecutor, Device, DxlService, EchoPolicy, HeaplessStagingBuffer,
-        KernelOp, KernelResult, ShadowStorage, UartBus, UartError,
+        CommsService, ControlExecutor, Device, DxlService, EchoPolicy, KernelOp, KernelResult,
+        ServoShadowStorage, UartBus, UartError,
     };
 
     pub use open_servo_hw::*;

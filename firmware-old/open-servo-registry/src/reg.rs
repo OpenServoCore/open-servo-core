@@ -7,8 +7,7 @@
 //! # Example
 //!
 //! ```ignore
-//! use open_servo_registry::reg::{Reg, RO, RW};
-//! use open_servo_registry::ViewRead;
+//! use open_servo_registry::reg::{Reg, RO, RW, ViewRead};
 //!
 //! const GOAL_POS: Reg<RW, i32> = Reg::new(512);
 //! const PRESENT_POS: Reg<RO, i32> = Reg::new(516);
@@ -20,9 +19,48 @@
 //! GOAL_POS.write(&mut view, 1000)?;
 //! ```
 
-use crate::view::{ViewRead, ViewWrite};
 use core::marker::PhantomData;
-use open_servo_shadow::ShadowError;
+use embedded_shadow::ShadowError;
+
+// ============================================================================
+// View abstraction traits
+// ============================================================================
+
+/// Trait for reading bytes from a shadow table view.
+pub trait ViewRead {
+    /// Read bytes from the given offset into the buffer.
+    fn read(&self, offset: u16, buf: &mut [u8]) -> Result<(), ShadowError>;
+}
+
+/// Trait for writing bytes to a shadow table view.
+pub trait ViewWrite {
+    /// Write bytes to the given offset.
+    fn write(&mut self, offset: u16, data: &[u8]) -> Result<(), ShadowError>;
+}
+
+// ============================================================================
+// ViewRead/ViewWrite implementations for embedded-shadow views
+// ============================================================================
+
+impl<const TS: usize, const BS: usize, const BC: usize> ViewRead
+    for embedded_shadow::view::KernelView<'_, TS, BS, BC>
+where
+    bitmaps::BitsImpl<BC>: bitmaps::Bits,
+{
+    fn read(&self, offset: u16, buf: &mut [u8]) -> Result<(), ShadowError> {
+        self.read_range(offset, buf)
+    }
+}
+
+impl<const TS: usize, const BS: usize, const BC: usize> ViewWrite
+    for embedded_shadow::view::KernelView<'_, TS, BS, BC>
+where
+    bitmaps::BitsImpl<BC>: bitmaps::Bits,
+{
+    fn write(&mut self, offset: u16, data: &[u8]) -> Result<(), ShadowError> {
+        self.write_range(offset, data)
+    }
+}
 
 // ============================================================================
 // Type-level access markers

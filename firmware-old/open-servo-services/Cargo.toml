@@ -11,7 +11,6 @@ default = []
 
 defmt = [
     "dep:defmt",
-    "open-servo-shadow/defmt",
     "open-servo-kernel-api/defmt",
 ]
 
@@ -23,7 +22,8 @@ futures = { version = "0.3", default-features = false }
 open-servo-hw = { path = "../open-servo-hw", default-features = false }
 open-servo-kernel-api = { path = "../open-servo-kernel-api", default-features = false }
 open-servo-registry = { path = "../open-servo-registry", default-features = false }
-open-servo-shadow = { path = "../open-servo-shadow", default-features = false }
+embedded-shadow = { workspace = true }
+bitmaps = { workspace = true }
 open-servo-units = { path = "../open-servo-units", default-features = false }
 open-servo-rpc = { path = "../open-servo-rpc", default-features = false }
 

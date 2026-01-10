@@ -1,7 +1,7 @@
 //! Shadow table commit types for kernel-api.
 //!
 //! This module defines the commit contract types. The actual shadow table
-//! mechanism and `ShadowKernel` trait live in `open_servo_shadow`.
+//! mechanism is provided by `embedded-shadow`.
 
 // ============================================================================
 // Kernel Commit Contract
@@ -41,18 +41,5 @@ impl FieldDesc {
     /// Create a new field descriptor.
     pub const fn new(offset: u16, len: u8) -> Self {
         Self { offset, len }
-    }
-
-    /// Check if this field overlaps a dirty range.
-    ///
-    /// Used to determine if a field needs to be committed.
-    pub const fn overlaps(&self, dirty_start: u16, dirty_len: u16) -> bool {
-        if dirty_len == 0 || self.len == 0 {
-            return false;
-        }
-        let field_end = self.offset.saturating_add(self.len as u16);
-        let dirty_end = dirty_start.saturating_add(dirty_len);
-        // Overlap if: field_start < dirty_end && dirty_start < field_end
-        self.offset < dirty_end && dirty_start < field_end
     }
 }

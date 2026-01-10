@@ -8,7 +8,7 @@
 //!
 //! ```text
 //! Runtime owns:
-//!   - ShadowStorage (implements HostShadow)
+//!   - ShadowStorage (implements HostOps)
 //!   - PersistTask (owns flash, signals, cache)
 //!   - RpcTask (owns transport)
 //!
@@ -17,8 +17,8 @@
 //!   and passes it to persist_task.handle_once(&ctx)
 //! ```
 
+use crate::service_ops::HostOps;
 use open_servo_hw::v2::AsyncTimer;
-use open_servo_shadow::HostShadow;
 
 /// Service context providing access to shared runtime resources.
 ///
@@ -26,16 +26,16 @@ use open_servo_shadow::HostShadow;
 ///
 /// # Generic Parameters
 ///
-/// - `S`: Shadow access type implementing [`HostShadow`]
+/// - `S`: Shadow access type implementing [`HostOps`]
 /// - `T`: Async timer type for delays and timestamps
-pub struct ServiceCtx<'a, S: HostShadow, T: AsyncTimer> {
+pub struct ServiceCtx<'a, S: HostOps, T: AsyncTimer> {
     /// Shadow storage for register access.
     pub shadow: &'a S,
     /// Async timer for delays and timestamps.
     pub timer: &'a T,
 }
 
-impl<'a, S: HostShadow, T: AsyncTimer> ServiceCtx<'a, S, T> {
+impl<'a, S: HostOps, T: AsyncTimer> ServiceCtx<'a, S, T> {
     /// Create a new service context.
     #[inline]
     pub fn new(shadow: &'a S, timer: &'a T) -> Self {

@@ -49,10 +49,10 @@
 
 pub mod dxl;
 pub mod facade;
+pub mod policy;
 pub mod reg;
 pub mod spec;
 pub mod vendor;
-pub mod view;
 
 use core::cell::RefCell;
 use critical_section::Mutex;
@@ -62,8 +62,10 @@ use heapless::FnvIndexMap;
 pub use spec::{Access, Encoding, IndirectBankSpec, MapEntry, RangeSpec, RegSpec, UnitEncoding};
 
 // Re-export typed register access
-pub use reg::{Facade, Reg, RO, RW, WO};
-pub use view::{ViewRead, ViewWrite};
+pub use reg::{Facade, Reg, ViewRead, ViewWrite, RO, RW, WO};
+
+// Re-export shadow policies for embedded-shadow integration
+pub use policy::{ServoAccessPolicy, ServoPersistPolicy};
 
 // Re-export vendor module items for kernel use
 pub use vendor::{ctrl, telem, VENDOR_FIELDS};

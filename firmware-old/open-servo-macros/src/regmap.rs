@@ -815,7 +815,7 @@ pub fn impl_regmap(input: &DeriveInput) -> syn::Result<TokenStream> {
             })
             .collect();
 
-        // Generate from_view reads
+        // Generate from_view reads (using embedded-shadow's KernelView API)
         let read_stmts: Vec<_> = codec_ctx_fields
             .iter()
             .filter_map(|(name, ty, _, size)| {
@@ -824,17 +824,17 @@ pub fn impl_regmap(input: &DeriveInput) -> syn::Result<TokenStream> {
                 let read_stmt = match *size {
                     1 => quote! {
                         let mut buf = [0u8; 1];
-                        view.read(addr::#addr_const, &mut buf).expect("codec_ctx read");
+                        view.read_range(addr::#addr_const, &mut buf).expect("codec_ctx read");
                         let #name = buf[0] as #prim;
                     },
                     2 => quote! {
                         let mut buf = [0u8; 2];
-                        view.read(addr::#addr_const, &mut buf).expect("codec_ctx read");
+                        view.read_range(addr::#addr_const, &mut buf).expect("codec_ctx read");
                         let #name = #prim::from_le_bytes(buf);
                     },
                     4 => quote! {
                         let mut buf = [0u8; 4];
-                        view.read(addr::#addr_const, &mut buf).expect("codec_ctx read");
+                        view.read_range(addr::#addr_const, &mut buf).expect("codec_ctx read");
                         let #name = #prim::from_le_bytes(buf);
                     },
                     _ => return None,
@@ -858,7 +858,12 @@ pub fn impl_regmap(input: &DeriveInput) -> syn::Result<TokenStream> {
 
             impl CodecCtx {
                 /// Read codec context fields from shadow view.
-                pub fn from_view(view: &open_servo_shadow::KernelView<'_>) -> Self {
+                pub fn from_view<const TS: usize, const BS: usize, const BC: usize>(
+                    view: &embedded_shadow::view::KernelView<'_, TS, BS, BC>,
+                ) -> Self
+                where
+                    bitmaps::BitsImpl<BC>: bitmaps::Bits,
+                {
                     #(#read_stmts)*
                     Self { #(#field_inits),* }
                 }
