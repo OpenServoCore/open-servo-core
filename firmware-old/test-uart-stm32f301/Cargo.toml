@@ -1,0 +1,21 @@
+[package]
+name = "test-uart-stm32f301"
+version = "0.1.0"
+edition = "2021"
+
+[[bin]]
+name = "test-uart-stm32f301"
+path = "src/main.rs"
+test = false
+
+[dependencies]
+stm32f4 = { version = "0.15", features = ["stm32f411", "rt"] }
+cortex-m = { version = "0.7", features = ["critical-section-single-core"] }
+cortex-m-rt = "0.7.5"
+defmt = { workspace = true }
+rtt-target = { workspace = true }
+panic-rtt-target = { workspace = true }
+
+[features]
+default = []
+single-wire = []  # HDSEL mode: TX open-drain with self-echo

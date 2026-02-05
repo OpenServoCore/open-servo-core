@@ -1,0 +1,29 @@
+[package]
+name = "open-servo-kernel"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+
+[dependencies]
+open-servo-kernel-api = { path = "../open-servo-kernel-api", default-features = false }
+embedded-shadow       = { workspace = true }
+bitmaps               = { workspace = true }
+open-servo-registry   = { path = "../open-servo-registry", default-features = false }
+open-servo-units      = { path = "../open-servo-units", default-features = false }
+open-servo-hw         = { path = "../open-servo-hw", default-features = false }
+open-servo-math       = { path = "../open-servo-math", default-features = false }
+defmt                 = { workspace = true, optional = true }
+
+[features]
+default = []
+defmt = [
+  "dep:defmt",
+  "open-servo-kernel-api/defmt",
+  "open-servo-registry/defmt",
+  "open-servo-units/defmt",
+  "open-servo-hw/defmt",
+  "open-servo-math/defmt",
+]
+
+[dev-dependencies]
+critical-section = { workspace = true, features = ["std"] }

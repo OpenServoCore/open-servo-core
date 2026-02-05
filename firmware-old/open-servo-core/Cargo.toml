@@ -1,0 +1,21 @@
+[package]
+name = "open-servo-core"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+heapless = { workspace = true, features = ["ufmt"] }
+ufmt = { workspace = true }
+open-servo-math = { path = "../open-servo-math" }
+open-servo-control = { path = "../open-servo-control" }
+open-servo-hw = { path = "../open-servo-hw" }
+
+[features]
+debug-shell = []
+current-sense-bus = ["open-servo-control/current-sense-bus"]
+pid = ["open-servo-control/pid"]
+defmt = ["dep:defmt", "open-servo-math/defmt", "open-servo-hw/defmt", "open-servo-control/defmt"]
+
+[dependencies.defmt]
+workspace = true
+optional = true

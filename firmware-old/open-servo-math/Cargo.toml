@@ -1,0 +1,19 @@
+[package]
+name = "open-servo-math"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+
+[features]
+default = []
+defmt = ["dep:defmt", "open-servo-units/defmt"]
+# Enable std for tests (automatically enabled by cargo test)
+std = []
+
+[dependencies]
+ufmt = { workspace = true }
+defmt = { workspace = true, optional = true }
+open-servo-units = { path = "../open-servo-units", default-features = false }
+
+[lib]
+test = true

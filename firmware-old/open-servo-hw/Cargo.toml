@@ -1,0 +1,19 @@
+[package]
+name = "open-servo-hw"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+open-servo-math = { path = "../open-servo-math" }
+open-servo-units = { path = "../open-servo-units" }
+embedded-storage-async = { workspace = true }
+embedded-io-async = { workspace = true }
+
+[features]
+defmt = ["dep:defmt", "open-servo-math/defmt", "open-servo-units/defmt"]
+motor-bldc = []           # BLDC motor driver traits (future)
+current-sense-phase = []  # 3-phase current sensing for FOC (future)
+
+[dependencies.defmt]
+workspace = true
+optional = true

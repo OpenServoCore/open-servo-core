@@ -1,0 +1,57 @@
+[package]
+name = "osctl"
+version = "0.1.0"
+edition = "2021"
+description = "Open Servo Control Tool - GUI for flashing, monitoring, and controlling servos"
+authors = ["Aaron Q"]
+
+[[bin]]
+name = "osctl"
+path = "src/main.rs"
+
+[[bin]]
+name = "cargo-osctl"
+path = "src/bin/cargo-osctl.rs"
+
+[dependencies]
+# Shared protocol types
+open-servo-rpc = { path = "../../firmware/open-servo-rpc", features = ["std"] }
+open-servo-registry = { path = "../../firmware/open-servo-registry", default-features = false }
+
+# GUI
+eframe = "0.30"
+egui = "0.30"
+egui_extras = "0.30"
+egui_plot = "0.30"
+
+# Probe/debug
+probe-rs = "0.25"
+
+# RPC
+postcard-rpc = { version = "0.12", features = ["use-std", "cobs-serial"] }
+postcard = "1.0"
+
+# Async runtime
+tokio = { version = "1", features = ["rt-multi-thread", "sync", "time", "macros"] }
+
+# CLI
+clap = { version = "4", features = ["derive"] }
+
+# File dialogs
+rfd = "0.15"
+
+# Logging
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+# Serialization
+serde = { version = "1", features = ["derive"] }
+
+# Error handling
+anyhow = "1"
+
+# Defmt log decoding
+defmt-decoder = "0.4"
+
+# Heapless collections (for RPC messages)
+heapless = "0.8"

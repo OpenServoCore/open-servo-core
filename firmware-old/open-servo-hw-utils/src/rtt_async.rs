@@ -1,0 +1,141 @@
+//! Async RTT I/O adapter for RPC service.
+//!
+//! Provides `embedded_io_async` compatible RTT streams for RPC communication.
+//! Generic over [`SignalReader`] for executor-agnostic async waiting.
+//!
+//! ## RTT Channel Layout
+//!
+//! | Channel | Direction | Purpose |
+//! |---------|-----------|---------|
+//! | Up 0 | Device → Host | defmt logging (NoBlockSkip) |
+//! | Up 1 | Device → Host | RPC responses (NoBlockTrim) |
+//! | Down 0 | Host → Device | RPC requests |
+//!
+//! ## Usage
+//!
+//! ```rust,ignore
+//! // Firmware provides a SignalReader wrapper
+//! struct EmbassySignal(&'static Signal<...>);
+//! impl SignalReader for EmbassySignal { ... }
+//!
+//! // Initialize RTT with the signal
+//! let rtt = RttChannels::init(EmbassySignal(rpc_tick()));
+//! run_rpc_service(rtt.rpc).await;
+//! ```
+//!
+//! [`SignalReader`]: open_servo_hw::v2::SignalReader
+
+use embedded_io_async::{ErrorType, Read, Write};
+use open_servo_hw::v2::SignalReader;
+use rtt_target::{rtt_init, ChannelMode, DownChannel, UpChannel};
+
+/// RTT channels for RPC communication.
+pub struct RttChannels<S: SignalReader> {
+    pub rpc: RttRpcIo<S>,
+}
+
+impl<S: SignalReader> RttChannels<S> {
+    /// Initialize RTT and create async I/O adapter for RPC.
+    ///
+    /// The signal is used for async waiting on data availability.
+    /// Typically signaled by a periodic interrupt (e.g., SysTick).
+    ///
+    /// This initializes RTT with:
+    /// - Up channel 0: "defmt" (512 bytes, NoBlockSkip)
+    /// - Up channel 1: "rpc" (512 bytes, NoBlockTrim)
+    /// - Down channel 0: "rpc" (256 bytes)
+    pub fn init(rpc_signal: S) -> Self {
+        let channels = rtt_init! {
+            up: {
+                0: {
+                    size: 512,
+                    mode: ChannelMode::NoBlockSkip,
+                    name: "defmt"
+                }
+                1: {
+                    size: 512,
+                    mode: ChannelMode::NoBlockTrim,
+                    name: "rpc"
+                }
+            }
+            down: {
+                0: {
+                    size: 256,
+                    name: "rpc"
+                }
+            }
+        };
+
+        // Set channel 0 as defmt channel when defmt is enabled
+        #[cfg(feature = "defmt")]
+        rtt_target::set_defmt_channel(channels.up.0);
+
+        Self {
+            rpc: RttRpcIo {
+                up: channels.up.1,
+                down: channels.down.0,
+                signal: rpc_signal,
+            },
+        }
+    }
+}
+
+/// Async RTT I/O for RPC communication.
+pub struct RttRpcIo<S: SignalReader> {
+    up: UpChannel,
+    down: DownChannel,
+    signal: S,
+}
+
+/// Error type for RTT I/O (infallible).
+#[derive(Debug, Copy, Clone)]
+pub struct RttError;
+
+impl embedded_io_async::Error for RttError {
+    fn kind(&self) -> embedded_io_async::ErrorKind {
+        embedded_io_async::ErrorKind::Other
+    }
+}
+
+impl<S: SignalReader> ErrorType for RttRpcIo<S> {
+    type Error = RttError;
+}
+
+impl<S: SignalReader> Read for RttRpcIo<S> {
+    async fn read(&mut self, buf: &mut [u8]) -> Result<usize, Self::Error> {
+        #[cfg(feature = "defmt")]
+        use core::sync::atomic::{AtomicU32, Ordering};
+        #[cfg(feature = "defmt")]
+        static POLL_COUNT: AtomicU32 = AtomicU32::new(0);
+
+        loop {
+            let n = self.down.read(buf);
+            if n > 0 {
+                #[cfg(feature = "defmt")]
+                defmt::info!("RPC down read: {} bytes", n);
+                return Ok(n);
+            }
+            // Log periodically to show loop is running
+            #[cfg(feature = "defmt")]
+            {
+                let count = POLL_COUNT.fetch_add(1, Ordering::Relaxed);
+                if count % 5000 == 0 {
+                    defmt::info!("RPC poll #{}", count);
+                }
+            }
+            // No data available, wait for signal then retry
+            self.signal.wait().await;
+        }
+    }
+}
+
+impl<S: SignalReader> Write for RttRpcIo<S> {
+    async fn write(&mut self, buf: &[u8]) -> Result<usize, Self::Error> {
+        self.up.write(buf);
+        Ok(buf.len())
+    }
+
+    async fn flush(&mut self) -> Result<(), Self::Error> {
+        Ok(())
+    }
+}

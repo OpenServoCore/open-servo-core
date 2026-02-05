@@ -1,0 +1,35 @@
+//! Mathematical primitives for servo control
+//!
+//! This crate provides:
+//! - Integer-based units with saturating arithmetic
+//! - Fixed-point PID controller with compile-time optimization
+//! - Gain type for float-free PID tuning
+//! - NTC thermistor temperature conversion
+//! - Low-pass filters for sensor data
+//! - Thermal model for resistive heating/cooling
+
+#![cfg_attr(not(test), no_std)]
+
+// When running tests, we can use std
+#[cfg(test)]
+extern crate std;
+
+pub mod compliance_model;
+pub mod filter;
+pub mod gain;
+pub mod ntc;
+pub mod ntc_gen;
+pub mod pid;
+pub mod thermal;
+pub mod tick;
+pub use open_servo_units as units;
+
+pub use compliance_model::{ComplianceConfig, ComplianceModel, LimitState};
+pub use filter::{FilterI16, FilterI32, FilterU16};
+pub use gain::*;
+pub use ntc::*;
+pub use ntc_gen::{generate_ntc_lut, presets};
+pub use open_servo_units::*;
+pub use pid::*;
+pub use thermal::ThermalModel;
+pub use tick::{TickCtx, TickDomain};

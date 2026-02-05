@@ -1,0 +1,135 @@
+//! Shared test utilities for open-servo-core tests.
+
+#![cfg(test)]
+
+use crate::{FastInputs, ServoCore};
+use open_servo_control::{ControlInput, ControlLoop, ControlOutput};
+use open_servo_hw::{
+    BoardKinematicsConfig, BoardPolicyConfig, BoardSafetyConfig, BoardThermalConfig,
+};
+use open_servo_math::{CentiDeg, ComplianceConfig, DegPerSec10, Effort, TickCtx};
+
+/// Minimal mock controller for testing ServoCore.
+pub struct MockController {
+    pub output: Effort,
+    pub saturated: bool,
+    pub reset_called: bool,
+    pub reset_count: u32,
+}
+
+impl MockController {
+    pub fn new() -> Self {
+        Self {
+            output: Effort::ZERO,
+            saturated: false,
+            reset_called: false,
+            reset_count: 0,
+        }
+    }
+
+    pub fn set_output(&mut self, output: Effort) {
+        self.output = output;
+    }
+
+    pub fn set_saturated(&mut self, saturated: bool) {
+        self.saturated = saturated;
+    }
+
+    pub fn clear_reset_flag(&mut self) {
+        self.reset_called = false;
+    }
+}
+
+impl ControlLoop for MockController {
+    fn reset(&mut self) {
+        self.reset_called = true;
+        self.reset_count += 1;
+        self.output = Effort::ZERO;
+    }
+
+    fn fast_tick(&mut self, _ctx: &TickCtx, _input: &ControlInput) -> ControlOutput {
+        ControlOutput {
+            effort: self.output,
+            saturated: self.saturated,
+        }
+    }
+
+    fn medium_tick(&mut self, _ctx: &TickCtx, _input: &ControlInput) {}
+    fn slow_tick(&mut self, _ctx: &TickCtx, _input: &ControlInput) {}
+}
+
+/// Create a ServoCore with default test configuration.
+pub fn make_core(controller: MockController) -> ServoCore<MockController> {
+    let safety_config = BoardSafetyConfig {
+        current_limit_ma: 800,
+        mcu_temp_limit_cc: 8000,
+        position_max_delta_cdeg: 500,
+        sensor_fault_count: 10,
+        position_min_cdeg: 0,
+        position_max_cdeg: 18000,
+        stall_timeout_ticks: 1000,
+        stall_position_tolerance_cdeg: 10,
+        position_error_limit_cdeg: 3000,
+        position_error_timeout_us: 5000, // 5ms = 50 ticks @ 10kHz for fast test iterations
+    };
+    let thermal_config = BoardThermalConfig {
+        resistance_mohm: 5000,       // 5.0 ohm
+        thermal_resistance_cw: 1000, // 10 C/W
+        thermal_capacity_cj: 1500,   // 15 J/C
+        max_temp_cdeg: 10000,        // 100°C
+        hysteresis_cdeg: 1000,       // 10°C
+        default_ambient_cdeg: 2500,  // 25°C
+    };
+    let kinematics_config = BoardKinematicsConfig {
+        sensor_raw_min: 0,
+        sensor_raw_max: 4095,
+        sensor_min_cdeg: 0,
+        sensor_max_cdeg: 36000,
+        mechanical_min_cdeg: -500,
+        mechanical_max_cdeg: 18500,
+        zero_offset_cdeg: 0,
+        reversed: false,
+    };
+    let policy_config = BoardPolicyConfig {
+        hold_enter_error: CentiDeg::from_cdeg(500),
+        hold_exit_error: CentiDeg::from_cdeg(700),
+        hold_enter_vel: DegPerSec10::from_dps10(100),
+        hold_exit_vel: DegPerSec10::from_dps10(150),
+        backdrive_vel_threshold: DegPerSec10::from_dps10(300),
+        backdrive_deadband: Effort::from_raw(1638),
+        backdrive_persist_us: 500,
+        yield_alive_effort_max: Effort::from_raw(1638),
+        yield_coast_us: 100_000,
+        yield_duration_us: 200_000,
+        hold_effort_error_start: CentiDeg::from_cdeg(500),
+        hold_effort_error_end: CentiDeg::from_cdeg(1500),
+        hold_effort_min: Effort::from_raw(6553),
+        hold_effort_max: Effort::from_raw(14746),
+    };
+    let compliance_config = ComplianceConfig::new(600, 50, 3, 230, 3277);
+    ServoCore::new(
+        controller,
+        safety_config,
+        thermal_config,
+        kinematics_config,
+        policy_config,
+        compliance_config.clone(),
+        compliance_config,
+    )
+}
+
+/// Create FastInputs with the given position.
+pub fn make_inputs(position: i16) -> FastInputs {
+    FastInputs {
+        position: CentiDeg::from_cdeg(position),
+        #[cfg(feature = "current-sense-bus")]
+        current: None,
+        bus_voltage: None,
+        temperature: None,
+    }
+}
+
+/// Create an iterator that repeats the given input N times.
+pub fn repeat_inputs(input: FastInputs, n: usize) -> impl Iterator<Item = FastInputs> {
+    core::iter::repeat(input).take(n)
+}

@@ -1,0 +1,98 @@
+[workspace]
+members = [
+    # Base shared libraries
+    "open-servo-units",
+    "open-servo-math",
+    "open-servo-registry",
+    "open-servo-macros",
+    "open-servo-rpc",
+
+    # Base hardware libraries
+    "open-servo-hw",
+    "open-servo-hw-utils",
+
+    # Base control libraries
+    "open-servo-kernel-api",
+    "open-servo-kernel",
+    "open-servo-core", # legacy, will be replaced by "open-servo-kernel"
+    "open-servo-control",
+
+    # Runtime that ties hardware and control together
+    "open-servo-runtime",
+    "open-servo-runtime-embassy",
+
+    # Embassy async services (non-RT tasks)
+    "open-servo-services",
+
+    # Firmware crates (board-specific binaries)
+    "open-servo-stm32f301",
+    "open-servo-firmware-stm32f301",
+
+    # Test crates (throw-away)
+    "test-uart-stm32f301",
+    "test-uart-ch32v003",
+]
+resolver = "2"
+
+# Exclude board crates from default members to prevent their configs from affecting tests
+default-members = [
+    # Base shared libraries
+    "open-servo-units",
+    "open-servo-math",
+    "open-servo-registry",
+    "open-servo-rpc",
+
+    # Base hardware libraries
+    "open-servo-hw",
+    "open-servo-hw-utils",
+
+    # Base control libraries
+    "open-servo-kernel-api",
+    "open-servo-kernel",
+    "open-servo-core", # legacy, will be replaced by "open-servo-kernel"
+    "open-servo-control",
+
+    # Runtime that ties hardware and control together
+    "open-servo-runtime",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+authors = ["Aaron Q"]
+
+[workspace.dependencies]
+heapless = "0.8"
+critical-section = "1.2"
+embedded-shadow = "0.1"
+bitmaps = { version = "3", default-features = false }
+ufmt = "0.2"
+defmt = { version = "0.3", features = ["encoding-rzcobs"] }
+rtt-target = { version = "0.6", features = ["defmt"] }
+panic-rtt-target = { version = "0.2", features = ["defmt"] }
+
+# Embassy async runtime (executor + sync primitives + time)
+embassy-executor = { version = "0.7", default-features = false }
+embassy-sync = { version = "0.6", default-features = false }
+embassy-time = { version = "0.4", default-features = false }
+embassy-time-driver = { version = "0.2", default-features = false }
+
+# Async IO traits
+embedded-io-async = "0.6"
+
+# Storage traits and flash management
+embedded-storage = "0.3"
+embedded-storage-async = "0.4"
+sequential-storage = { version = "4.0", default-features = false }
+
+[profile.dev]
+panic = "abort"
+opt-level = "z"  # Optimize for size
+lto = true       # Enable full link-time optimization
+codegen-units = 1  # Single codegen unit for better optimization
+
+[profile.release]
+panic = "abort"
+opt-level = "z"  # Optimize for size
+lto = true       # Enable full link-time optimization
+codegen-units = 1  # Single codegen unit for better optimization

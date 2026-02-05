@@ -1,0 +1,15 @@
+[package]
+name = "open-servo-rpc"
+version = "0.1.0"
+edition = "2021"
+description = "Shared RPC protocol types for open-servo host/device communication"
+
+[dependencies]
+postcard = { version = "1.0", default-features = false }
+postcard-schema = { version = "0.2", features = ["derive", "heapless-v0_8"] }
+serde = { version = "1", default-features = false, features = ["derive"] }
+heapless = { version = "0.8", features = ["serde"] }
+
+[features]
+default = []
+std = ["postcard/use-std"]

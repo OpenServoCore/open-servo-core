@@ -1,0 +1,15 @@
+[build]
+target = "riscv32ec-unknown-none-elf.json"
+
+[target.riscv32ec-unknown-none-elf]
+runner = "probe-rs run --chip CH32V003 --probe 1a86:8010"
+rustflags = [
+  "-C", "link-arg=-Tlink.x",
+  "-C", "link-arg=-Tdefmt.x",
+]
+
+[unstable]
+build-std = ["core"]
+
+[env]
+DEFMT_LOG = "trace"

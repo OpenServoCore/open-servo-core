@@ -1,0 +1,16 @@
+[package]
+name = "open-servo-hw-utils"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+
+[dependencies]
+open-servo-hw = { path = "../open-servo-hw" }
+rtt-target = { workspace = true, optional = true }
+embedded-io-async = { workspace = true, optional = true }
+defmt = { workspace = true, optional = true }
+
+[features]
+rtt = ["dep:rtt-target"]
+async = ["rtt", "dep:embedded-io-async"]
+defmt = ["dep:defmt", "rtt-target?/defmt"]

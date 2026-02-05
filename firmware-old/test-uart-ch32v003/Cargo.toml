@@ -1,0 +1,23 @@
+[package]
+name = "test-uart-ch32v003"
+version = "0.1.0"
+edition = "2021"
+
+[[bin]]
+name = "test-uart-ch32v003"
+path = "src/main.rs"
+test = false
+
+[dependencies]
+ch32v0 = { version = "0.2", features = ["ch32v003", "rt", "critical-section"] }
+qingke = "0.4"
+qingke-rt = "0.4"
+critical-section = "1.2"
+portable-atomic = { version = "1.11", features = ["critical-section"] }
+defmt = { workspace = true }
+rtt-target = { workspace = true }
+panic-rtt-target = { workspace = true }
+
+[features]
+default = []
+single-wire = []  # HDSEL mode: TX open-drain with self-echo
