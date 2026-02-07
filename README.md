@@ -12,13 +12,13 @@ This project aims to create a drop-in replacement control board for SG90 & MG90-
 
 ### ✅ **Working**
 
-**Hardware:** STM32 development board with motor control and sensing
-**Firmware:** Basic PID control, PWM motor drive, current sensing, ADC readings (see `firmware-old/`)
+- **Hardware:** STM32 development board with motor control and sensing
+- **Firmware:** Basic PID control, PWM motor drive, current sensing, ADC readings (see `firmware-old/`)
 
 ### 🔄 **In Progress**
 
-**Hardware:** Create CH32V006-based development board
-**Firmware:** System bringup with new development board, architecture redesign to simplify current design
+- **Hardware:** Create CH32V006-based development board
+- **Firmware:** System bringup with new development board, architecture redesign to simplify current design
 
 ## MVP Goals
 
