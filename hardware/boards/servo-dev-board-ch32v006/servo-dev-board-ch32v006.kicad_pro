@@ -496,7 +496,7 @@
     ]
   },
   "meta": {
-    "filename": "jlc4l_1v6mm.kicad_pro",
+    "filename": "servo-dev-board-ch32v006.kicad_pro",
     "version": 3
   },
   "net_settings": {
@@ -726,9 +726,9 @@
     ]
   ],
   "text_variables": {
-    "BOARD": "jlc4l_1v6mm",
-    "DRU": "jlc4l_1v6mm.kicad_dru",
-    "FAB": "JLCPCB",
+    "BOARD": "servo-dev-board-ch32v006",
+    "DRU": "servo-dev-board-ch32v006.kicad_dru",
+    "FAB": "JLCPCB / PCBWay",
     "PROJECT": "open-servo-core",
     "REV": "v0.0",
     "STACKUP": "4L 1.6mm"
