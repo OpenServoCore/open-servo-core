@@ -1581,4 +1581,229 @@
       )
     )
   )
+  (symbol "TYPE-C16PIN2MD(073)"
+    (in_bom yes)
+    (on_board yes)
+    (property
+      "Reference"
+      "USB"
+      (id 0)
+      (at 0 19.05 0)
+      (effects (font (size 1.27 1.27) ) )
+    )
+    (property
+      "Value"
+      "TYPE-C 16PIN 2MD(073)"
+      (id 1)
+      (at 0 -19.05 0)
+      (effects (font (size 1.27 1.27) ) )
+    )
+    (property
+      "Footprint"
+      "shared:USB-C-SMD_TYPE-C-6PIN-2MD-073"
+      (id 2)
+      (at 0 -21.59 0)
+      (effects (font (size 1.27 1.27) ) hide)
+    )
+    (property
+      "LCSC Part"
+      "C2765186"
+      (id 5)
+      (at 0 -24.13 0)
+      (effects (font (size 1.27 1.27) ) hide)
+    )
+    (symbol "TYPE-C16PIN2MD(073)_0_1"
+      (rectangle
+        (start -8.89 16.51)
+        (end 7.62 -16.51)
+        (stroke (width 0) (type default) (color 0 0 0 0))
+        (fill (type background))
+      )
+      (circle
+        (center -7.62 15.24)
+        (radius 0.38)
+        (stroke (width 0) (type default) (color 0 0 0 0))
+        (fill (type none))
+      )
+      (pin power_in line
+        (at -11.43 13.97 0)
+        (length 2.54)
+        (name "GND" (effects (font (size 1.27 1.27))))
+        (number "1" (effects (font (size 1.27 1.27))))
+      )
+      (pin power_in line
+        (at -11.43 11.43 0)
+        (length 2.54)
+        (name "VBUS" (effects (font (size 1.27 1.27))))
+        (number "2" (effects (font (size 1.27 1.27))))
+      )
+      (pin bidirectional line
+        (at -11.43 8.89 0)
+        (length 2.54)
+        (name "SBU2" (effects (font (size 1.27 1.27))))
+        (number "3" (effects (font (size 1.27 1.27))))
+      )
+      (pin bidirectional line
+        (at -11.43 6.35 0)
+        (length 2.54)
+        (name "CC1" (effects (font (size 1.27 1.27))))
+        (number "4" (effects (font (size 1.27 1.27))))
+      )
+      (pin bidirectional line
+        (at -11.43 3.81 0)
+        (length 2.54)
+        (name "DN2" (effects (font (size 1.27 1.27))))
+        (number "5" (effects (font (size 1.27 1.27))))
+      )
+      (pin bidirectional line
+        (at -11.43 1.27 0)
+        (length 2.54)
+        (name "DP1" (effects (font (size 1.27 1.27))))
+        (number "6" (effects (font (size 1.27 1.27))))
+      )
+      (pin bidirectional line
+        (at -11.43 -1.27 0)
+        (length 2.54)
+        (name "DN1" (effects (font (size 1.27 1.27))))
+        (number "7" (effects (font (size 1.27 1.27))))
+      )
+      (pin bidirectional line
+        (at -11.43 -3.81 0)
+        (length 2.54)
+        (name "DP2" (effects (font (size 1.27 1.27))))
+        (number "8" (effects (font (size 1.27 1.27))))
+      )
+      (pin bidirectional line
+        (at -11.43 -6.35 0)
+        (length 2.54)
+        (name "SBU1" (effects (font (size 1.27 1.27))))
+        (number "9" (effects (font (size 1.27 1.27))))
+      )
+      (pin bidirectional line
+        (at -11.43 -8.89 0)
+        (length 2.54)
+        (name "CC2" (effects (font (size 1.27 1.27))))
+        (number "10" (effects (font (size 1.27 1.27))))
+      )
+      (pin power_in line
+        (at -11.43 -11.43 0)
+        (length 2.54)
+        (name "VBUS" (effects (font (size 1.27 1.27))))
+        (number "11" (effects (font (size 1.27 1.27))))
+      )
+      (pin power_in line
+        (at -11.43 -13.97 0)
+        (length 2.54)
+        (name "GND" (effects (font (size 1.27 1.27))))
+        (number "12" (effects (font (size 1.27 1.27))))
+      )
+      (pin passive line
+        (at 10.16 -13.97 180)
+        (length 2.54)
+        (name "SHELL" (effects (font (size 1.27 1.27))))
+        (number "13" (effects (font (size 1.27 1.27))))
+      )
+      (pin passive line
+        (at 10.16 13.97 180)
+        (length 2.54)
+        (name "SHELL" (effects (font (size 1.27 1.27))))
+        (number "14" (effects (font (size 1.27 1.27))))
+      )
+    )
+  )
+  (symbol "TYPE-C6P(073)"
+    (in_bom yes)
+    (on_board yes)
+    (property
+      "Reference"
+      "USB"
+      (id 0)
+      (at 0 10.16 0)
+      (effects (font (size 1.27 1.27) ) )
+    )
+    (property
+      "Value"
+      "TYPE-C 6P(073)"
+      (id 1)
+      (at 0 -12.70 0)
+      (effects (font (size 1.27 1.27) ) )
+    )
+    (property
+      "Footprint"
+      "shared:TYPE-C-SMD_TYPE-C-6P-073"
+      (id 2)
+      (at 0 -15.24 0)
+      (effects (font (size 1.27 1.27) ) hide)
+    )
+    (property
+      "Datasheet"
+      "https://lcsc.com/product-detail/USB-Connectors_SHOU-HAN-TYPE-C-6P-073_C668623.html"
+      (id 3)
+      (at 0 -17.78 0)
+      (effects (font (size 1.27 1.27) ) hide)
+    )
+    (property
+      "LCSC Part"
+      "C668623"
+      (id 5)
+      (at 0 -20.32 0)
+      (effects (font (size 1.27 1.27) ) hide)
+    )
+    (symbol "TYPE-C6P(073)_0_1"
+      (rectangle
+        (start -7.62 7.62)
+        (end 7.62 -10.16)
+        (stroke (width 0) (type default) (color 0 0 0 0))
+        (fill (type background))
+      )
+      (circle
+        (center -6.35 6.35)
+        (radius 0.38)
+        (stroke (width 0) (type default) (color 0 0 0 0))
+        (fill (type none))
+      )
+      (pin passive line
+        (at 12.70 -0.00 180)
+        (length 5.08)
+        (name "EH" (effects (font (size 1.27 1.27))))
+        (number "7" (effects (font (size 1.27 1.27))))
+      )
+      (pin power_in line
+        (at -12.70 -7.62 0)
+        (length 5.08)
+        (name "GND" (effects (font (size 1.27 1.27))))
+        (number "A12" (effects (font (size 1.27 1.27))))
+      )
+      (pin power_in line
+        (at -12.70 -5.08 0)
+        (length 5.08)
+        (name "VBUS" (effects (font (size 1.27 1.27))))
+        (number "A9" (effects (font (size 1.27 1.27))))
+      )
+      (pin bidirectional line
+        (at -12.70 -0.00 0)
+        (length 5.08)
+        (name "CC1" (effects (font (size 1.27 1.27))))
+        (number "A5" (effects (font (size 1.27 1.27))))
+      )
+      (pin bidirectional line
+        (at -12.70 -2.54 0)
+        (length 5.08)
+        (name "CC2" (effects (font (size 1.27 1.27))))
+        (number "B5" (effects (font (size 1.27 1.27))))
+      )
+      (pin power_in line
+        (at -12.70 2.54 0)
+        (length 5.08)
+        (name "VBUS" (effects (font (size 1.27 1.27))))
+        (number "B9" (effects (font (size 1.27 1.27))))
+      )
+      (pin power_in line
+        (at -12.70 5.08 0)
+        (length 5.08)
+        (name "GND" (effects (font (size 1.27 1.27))))
+        (number "B12" (effects (font (size 1.27 1.27))))
+      )
+    )
+  )
 )
