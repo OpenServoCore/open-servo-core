@@ -7361,16 +7361,6 @@
 	)
 	(wire
 		(pts
-			(xy 255.27 26.67) (xy 247.65 26.67)
-		)
-		(stroke
-			(width 0)
-			(type default)
-		)
-		(uuid "db6c17f4-bc2c-4fdc-9960-5a6f1813ca44")
-	)
-	(wire
-		(pts
 			(xy 196.85 161.29) (xy 196.85 157.48)
 		)
 		(stroke
@@ -8148,16 +8138,6 @@
 			(justify left bottom)
 		)
 		(uuid "82d80b3c-4fd1-436d-911e-4cdb2d03d21d")
-	)
-	(label "PGND"
-		(at 247.65 26.67 0)
-		(effects
-			(font
-				(size 1.27 1.27)
-			)
-			(justify left bottom)
-		)
-		(uuid "84a066d2-b08e-4940-8b50-4686b366f275")
 	)
 	(label "TX"
 		(at 226.06 43.18 180)
@@ -13588,74 +13568,6 @@
 			(project "servo-dev-board-ch32v006"
 				(path "/6062e7d2-0c72-467e-b49c-6387ba053e09"
 					(reference "#PWR0131")
-					(unit 1)
-				)
-			)
-		)
-	)
-	(symbol
-		(lib_id "Connector:TestPoint_Probe")
-		(at 255.27 26.67 0)
-		(unit 1)
-		(exclude_from_sim no)
-		(in_bom yes)
-		(on_board yes)
-		(dnp no)
-		(fields_autoplaced yes)
-		(uuid "90552510-8436-4954-b0e0-ec24ee76a5cc")
-		(property "Reference" "TP21"
-			(at 259.08 25.0824 0)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-				(justify left)
-			)
-		)
-		(property "Value" "TestPoint_Probe"
-			(at 259.08 26.3524 0)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-				(justify left)
-				(hide yes)
-			)
-		)
-		(property "Footprint" "TestPoint:TestPoint_Keystone_5015_Micro_Mini"
-			(at 260.35 26.67 0)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-				(hide yes)
-			)
-		)
-		(property "Datasheet" "~"
-			(at 260.35 26.67 0)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-				(hide yes)
-			)
-		)
-		(property "Description" "test point (alternative probe-style design)"
-			(at 255.27 26.67 0)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-				(hide yes)
-			)
-		)
-		(pin "1"
-			(uuid "fa2b77d1-7e7f-4d16-9e42-41128da7d3ed")
-		)
-		(instances
-			(project "servo-dev-board-ch32v006"
-				(path "/6062e7d2-0c72-467e-b49c-6387ba053e09"
-					(reference "TP21")
 					(unit 1)
 				)
 			)
