@@ -538,7 +538,7 @@
         "microvia_diameter": 0.45,
         "microvia_drill": 0.2,
         "name": "Motor",
-        "pcb_color": "rgba(0, 0, 0, 0.000)",
+        "pcb_color": "rgb(255, 153, 0)",
         "priority": 0,
         "schematic_color": "rgba(0, 0, 0, 0.000)",
         "track_width": 1.0,
@@ -579,16 +579,12 @@
     "netclass_assignments": null,
     "netclass_patterns": [
       {
-        "netclass": "Default",
-        "pattern": "^GND$|^GND_.*|^AGND$|^PGND$|^DGND$"
-      },
-      {
-        "netclass": "Power",
-        "pattern": "^\\+?3V3$|^\\+?5V$|^VCC$|^VDD$|^VBUS$"
-      },
-      {
         "netclass": "Motor",
-        "pattern": "^VM$|^MOTOR.*|^M[12]$|^M[12]_.*|^VBAT$|^VIN$"
+        "pattern": "VSYS|/OUT(A|B)|BUS_VIN"
+      },
+      {
+        "netclass": "Default",
+        "pattern": "GND"
       }
     ]
   },
