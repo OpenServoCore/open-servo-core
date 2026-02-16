@@ -580,7 +580,7 @@
     "netclass_patterns": [
       {
         "netclass": "Motor",
-        "pattern": "VSYS|/OUT(A|B)|BUS_VIN"
+        "pattern": "VSYS|/OUT(A|B)|BUS_VIN|PGND"
       },
       {
         "netclass": "Default",
