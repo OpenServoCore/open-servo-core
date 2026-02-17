@@ -504,9 +504,9 @@
       {
         "bus_width": 12,
         "clearance": 0.2,
-        "diff_pair_gap": 0.2,
+        "diff_pair_gap": 0.5,
         "diff_pair_via_gap": 0.25,
-        "diff_pair_width": 0.2,
+        "diff_pair_width": 0.5,
         "line_style": 0,
         "microvia_diameter": 0.45,
         "microvia_drill": 0.2,
@@ -520,26 +520,36 @@
         "wire_width": 6
       },
       {
-        "clearance": 0.1,
-        "diff_pair_gap": 0.1,
-        "diff_pair_width": 0.1,
+        "clearance": 0.2,
         "microvia_diameter": 0.45,
         "microvia_drill": 0.2,
-        "name": "Dense",
-        "pcb_color": "rgba(0, 0, 0, 0.000)",
+        "name": "Analog Signal",
+        "pcb_color": "rgb(26, 124, 255)",
+        "priority": 2,
+        "schematic_color": "rgba(0, 0, 0, 0.000)",
+        "track_width": 0.25,
+        "via_diameter": 0.6,
+        "via_drill": 0.3
+      },
+      {
+        "clearance": 0.2,
+        "microvia_diameter": 0.45,
+        "microvia_drill": 0.2,
+        "name": "Digital Signal",
+        "pcb_color": "rgb(217, 31, 255)",
         "priority": 3,
         "schematic_color": "rgba(0, 0, 0, 0.000)",
-        "track_width": 0.1,
-        "via_diameter": 0.45,
-        "via_drill": 0.2
+        "track_width": 0.25,
+        "via_diameter": 0.6,
+        "via_drill": 0.3
       },
       {
         "clearance": 0.25,
         "microvia_diameter": 0.45,
         "microvia_drill": 0.2,
         "name": "Motor",
-        "pcb_color": "rgb(255, 153, 0)",
-        "priority": 0,
+        "pcb_color": "rgb(255, 66, 94)",
+        "priority": 1,
         "schematic_color": "rgba(0, 0, 0, 0.000)",
         "track_width": 1.0,
         "via_diameter": 1.0,
@@ -550,26 +560,12 @@
         "microvia_diameter": 0.45,
         "microvia_drill": 0.2,
         "name": "Power",
-        "pcb_color": "rgba(0, 0, 0, 0.000)",
-        "priority": 1,
+        "pcb_color": "rgb(22, 255, 55)",
+        "priority": 0,
         "schematic_color": "rgba(0, 0, 0, 0.000)",
-        "track_width": 0.5,
-        "via_diameter": 0.8,
-        "via_drill": 0.4
-      },
-      {
-        "clearance": 0.2,
-        "diff_pair_gap": 0.25,
-        "diff_pair_width": 0.25,
-        "microvia_diameter": 0.45,
-        "microvia_drill": 0.2,
-        "name": "Signal",
-        "pcb_color": "rgba(0, 0, 0, 0.000)",
-        "priority": 2,
-        "schematic_color": "rgba(0, 0, 0, 0.000)",
-        "track_width": 0.25,
-        "via_diameter": 0.6,
-        "via_drill": 0.3
+        "track_width": 1.0,
+        "via_diameter": 1.0,
+        "via_drill": 0.5
       }
     ],
     "meta": {
@@ -580,11 +576,23 @@
     "netclass_patterns": [
       {
         "netclass": "Motor",
-        "pattern": "VSYS|/OUT(A|B)|BUS_VIN|PGND"
+        "pattern": "/OUT(A|B)|PGND|VSYS"
       },
       {
         "netclass": "Default",
         "pattern": "GND"
+      },
+      {
+        "netclass": "Power",
+        "pattern": "VBUS|BUS_VIN|VBAT|VSYS"
+      },
+      {
+        "netclass": "Analog Signal",
+        "pattern": "/IN|/VSN|/VPOS|/VNTC|/ENC|/ISNS|"
+      },
+      {
+        "netclass": "Digital Signal",
+        "pattern": "/DATA|/TX|/RX"
       }
     ]
   },

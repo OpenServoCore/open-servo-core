@@ -9327,7 +9327,7 @@
 				(justify right)
 			)
 		)
-		(property "Value" "0.1uF"
+		(property "Value" "0.1µF"
 			(at 134.62 102.8699 0)
 			(effects
 				(font
@@ -9524,6 +9524,15 @@
 		)
 		(property "Description" "test point (alternative probe-style design)"
 			(at 237.49 25.4 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(hide yes)
+			)
+		)
+		(property "LCSC" "C5199798"
+			(at 241.3 23.8124 0)
 			(effects
 				(font
 					(size 1.27 1.27)
@@ -9876,6 +9885,15 @@
 				(hide yes)
 			)
 		)
+		(property "LCSC" "C5199798"
+			(at 259.08 30.1624 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(hide yes)
+			)
+		)
 		(pin "1"
 			(uuid "6081baf0-809b-4dee-a2b8-e5f25f4226f1")
 		)
@@ -10010,6 +10028,15 @@
 				(hide yes)
 			)
 		)
+		(property "LCSC" "C5199798"
+			(at 259.08 27.6224 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(hide yes)
+			)
+		)
 		(pin "1"
 			(uuid "eec6955a-79aa-4c0e-8c15-e5308d54aef2")
 		)
@@ -10079,6 +10106,15 @@
 				(hide yes)
 			)
 		)
+		(property "LCSC" "C5199798"
+			(at 214.63 28.8924 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(hide yes)
+			)
+		)
 		(pin "1"
 			(uuid "42209ca5-4fb8-4874-9660-b573bb2746e5")
 		)
@@ -10140,6 +10176,15 @@
 		)
 		(property "Description" "test point (alternative probe-style design)"
 			(at 237.49 30.48 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(hide yes)
+			)
+		)
+		(property "LCSC" "C5199798"
+			(at 241.3 28.8924 0)
 			(effects
 				(font
 					(size 1.27 1.27)
@@ -10273,6 +10318,15 @@
 		)
 		(property "Description" "test point (alternative probe-style design)"
 			(at 237.49 33.02 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(hide yes)
+			)
+		)
+		(property "LCSC" "C5199798"
+			(at 241.3 31.4324 0)
 			(effects
 				(font
 					(size 1.27 1.27)
@@ -10913,7 +10967,7 @@
 				(hide yes)
 			)
 		)
-		(property "LCSC" "C25744"
+		(property "LCSC" "C25741"
 			(at 36.576 38.862 0)
 			(effects
 				(font
@@ -11074,6 +11128,15 @@
 		)
 		(property "Description" "test point (alternative probe-style design)"
 			(at 237.49 45.72 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(hide yes)
+			)
+		)
+		(property "LCSC" "C5199798"
+			(at 241.3 44.1324 0)
 			(effects
 				(font
 					(size 1.27 1.27)
@@ -11374,7 +11437,7 @@
 				(hide yes)
 			)
 		)
-		(property "LCSC" "C25792"
+		(property "LCSC" "C25879"
 			(at 120.65 144.7799 0)
 			(effects
 				(font
@@ -11519,6 +11582,15 @@
 				(hide yes)
 			)
 		)
+		(property "LCSC" "C5199798"
+			(at 241.3 33.9724 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(hide yes)
+			)
+		)
 		(pin "1"
 			(uuid "f34c0f3c-f86b-4da4-8ac4-ba951568a128")
 		)
@@ -11650,7 +11722,7 @@
 				(hide yes)
 			)
 		)
-		(property "LCSC" "C25744"
+		(property "LCSC" "C25741"
 			(at 36.576 24.892 0)
 			(effects
 				(font
@@ -11810,6 +11882,15 @@
 				(hide yes)
 			)
 		)
+		(property "LCSC" "C5199798"
+			(at 214.63 23.8124 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(hide yes)
+			)
+		)
 		(pin "1"
 			(uuid "1d29086c-204b-4588-9359-f98abb339ce6")
 		)
@@ -11876,7 +11957,7 @@
 				(hide yes)
 			)
 		)
-		(property "LCSC" "C1525"
+		(property "LCSC" "C307331"
 			(at 201.676 39.116 0)
 			(effects
 				(font
@@ -11953,7 +12034,7 @@
 				(hide yes)
 			)
 		)
-		(property "LCSC" "C221895"
+		(property "LCSC" "C2681476"
 			(at 137.16 91.44 0)
 			(effects
 				(font
@@ -12025,6 +12106,15 @@
 		)
 		(property "Description" "test point (alternative probe-style design)"
 			(at 237.49 22.86 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(hide yes)
+			)
+		)
+		(property "LCSC" "C5199798"
+			(at 241.3 21.2724 0)
 			(effects
 				(font
 					(size 1.27 1.27)
@@ -12471,6 +12561,15 @@
 				(hide yes)
 			)
 		)
+		(property "LCSC" "C489717"
+			(at 52.07 139.7 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(hide yes)
+			)
+		)
 		(pin "1"
 			(uuid "27f1197f-16fa-429b-9c3c-0c10cd444127")
 		)
@@ -12758,7 +12857,7 @@
 	)
 	(symbol
 		(lib_id "power:+BATT")
-		(at 33.02 149.86 270)
+		(at 33.02 147.32 270)
 		(unit 1)
 		(exclude_from_sim no)
 		(in_bom yes)
@@ -12766,7 +12865,7 @@
 		(dnp no)
 		(uuid "6806d365-3ff1-4cff-9e23-671213733aef")
 		(property "Reference" "#PWR0127"
-			(at 29.21 149.86 0)
+			(at 29.21 147.32 0)
 			(effects
 				(font
 					(size 1.27 1.27)
@@ -12775,7 +12874,7 @@
 			)
 		)
 		(property "Value" "VBAT"
-			(at 38.608 149.86 90)
+			(at 38.608 147.32 90)
 			(effects
 				(font
 					(size 1.27 1.27)
@@ -12783,7 +12882,7 @@
 			)
 		)
 		(property "Footprint" ""
-			(at 33.02 149.86 0)
+			(at 33.02 147.32 0)
 			(effects
 				(font
 					(size 1.27 1.27)
@@ -12792,7 +12891,7 @@
 			)
 		)
 		(property "Datasheet" ""
-			(at 33.02 149.86 0)
+			(at 33.02 147.32 0)
 			(effects
 				(font
 					(size 1.27 1.27)
@@ -12801,7 +12900,7 @@
 			)
 		)
 		(property "Description" "Power symbol creates a global label with name \"+BATT\""
-			(at 33.02 149.86 0)
+			(at 33.02 147.32 0)
 			(effects
 				(font
 					(size 1.27 1.27)
@@ -12947,6 +13046,15 @@
 		)
 		(property "Description" "test point (alternative probe-style design)"
 			(at 218.44 27.94 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(hide yes)
+			)
+		)
+		(property "LCSC" "C5199798"
+			(at 214.63 26.3524 0)
 			(effects
 				(font
 					(size 1.27 1.27)
@@ -13294,6 +13402,15 @@
 				(hide yes)
 			)
 		)
+		(property "LCSC" "C485355"
+			(at 86.36 135.89 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(hide yes)
+			)
+		)
 		(pin "3"
 			(uuid "bbb76128-f80b-4693-8cfd-5856d12a616c")
 		)
@@ -13377,6 +13494,15 @@
 				(hide yes)
 			)
 		)
+		(property "LCSC" "C5199798"
+			(at 259.08 39.0524 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(hide yes)
+			)
+		)
 		(pin "1"
 			(uuid "76120be3-401f-4ab5-8f19-700f3a7f94bd")
 		)
@@ -13443,7 +13569,7 @@
 				(hide yes)
 			)
 		)
-		(property "LCSC" "C25744"
+		(property "LCSC" "C25905"
 			(at 48.514 193.548 0)
 			(effects
 				(font
@@ -13739,7 +13865,7 @@
 				(hide yes)
 			)
 		)
-		(property "LCSC" "C1525"
+		(property "LCSC" "C96446"
 			(at 166.116 96.52 0)
 			(effects
 				(font
@@ -13885,6 +14011,15 @@
 				(hide yes)
 			)
 		)
+		(property "LCSC" "C5199798"
+			(at 241.3 36.5124 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(hide yes)
+			)
+		)
 		(pin "1"
 			(uuid "a718d42c-184f-45a8-bffe-bf96d0032c52")
 		)
@@ -13947,6 +14082,15 @@
 		)
 		(property "Description" "test point (alternative probe-style design)"
 			(at 218.44 33.02 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(hide yes)
+			)
+		)
+		(property "LCSC" "C5199798"
+			(at 214.63 31.4324 0)
 			(effects
 				(font
 					(size 1.27 1.27)
@@ -14020,7 +14164,7 @@
 				(hide yes)
 			)
 		)
-		(property "LCSC" "C25744"
+		(property "LCSC" "C25905"
 			(at 56.134 193.548 0)
 			(effects
 				(font
@@ -14164,7 +14308,7 @@
 				(hide yes)
 			)
 		)
-		(property "LCSC" "C1525"
+		(property "LCSC" "C307331"
 			(at 120.142 28.956 0)
 			(effects
 				(font
@@ -14305,7 +14449,7 @@
 				(hide yes)
 			)
 		)
-		(property "LCSC" "C25744"
+		(property "LCSC" "C25741"
 			(at 36.576 52.832 0)
 			(effects
 				(font
@@ -14375,6 +14519,15 @@
 		)
 		(property "Description" "Generic connectable mounting pin connector, single row, 01x06, script generated (kicad-library-utils/schlib/autogen/connector/)"
 			(at 86.36 179.07 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(hide yes)
+			)
+		)
+		(property "LCSC" "C265070"
+			(at 86.36 167.64 0)
 			(effects
 				(font
 					(size 1.27 1.27)
@@ -14707,6 +14860,15 @@
 				(hide yes)
 			)
 		)
+		(property "LCSC" "C173752"
+			(at 26.67 139.7 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(hide yes)
+			)
+		)
 		(pin "1"
 			(uuid "f452bab0-e7c6-4e8a-99c8-2b6ed8ce09bd")
 		)
@@ -14772,6 +14934,15 @@
 		)
 		(property "Description" "test point (alternative probe-style design)"
 			(at 218.44 35.56 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(hide yes)
+			)
+		)
+		(property "LCSC" "C5199798"
+			(at 214.63 33.9724 0)
 			(effects
 				(font
 					(size 1.27 1.27)
@@ -14914,6 +15085,15 @@
 				(hide yes)
 			)
 		)
+		(property "LCSC" "C5199798"
+			(at 259.08 32.7024 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(hide yes)
+			)
+		)
 		(pin "1"
 			(uuid "17098e9b-18bf-4454-8cd6-784561df45f9")
 		)
@@ -14975,6 +15155,15 @@
 		)
 		(property "Description" "test point (alternative probe-style design)"
 			(at 237.49 27.94 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(hide yes)
+			)
+		)
+		(property "LCSC" "C5199798"
+			(at 241.3 26.3524 0)
 			(effects
 				(font
 					(size 1.27 1.27)
@@ -15127,6 +15316,15 @@
 				(hide yes)
 			)
 		)
+		(property "LCSC" "C5199798"
+			(at 214.63 44.1324 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(hide yes)
+			)
+		)
 		(pin "1"
 			(uuid "b555fe1a-2b69-4db2-a1c9-e1704c3dfc2b")
 		)
@@ -15188,6 +15386,15 @@
 		)
 		(property "Description" "test point (alternative probe-style design)"
 			(at 237.49 43.18 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(hide yes)
+			)
+		)
+		(property "LCSC" "C5199798"
+			(at 241.3 41.5924 0)
 			(effects
 				(font
 					(size 1.27 1.27)
@@ -15339,7 +15546,7 @@
 				(hide yes)
 			)
 		)
-		(property "LCSC" "C25764"
+		(property "LCSC" "C25765"
 			(at 192.278 141.478 0)
 			(effects
 				(font
@@ -15418,6 +15625,15 @@
 		)
 		(property "LCSC Part" "C668623"
 			(at 29.21 203.2 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(hide yes)
+			)
+		)
+		(property "LCSC" "C668623"
+			(at 29.21 170.18 0)
 			(effects
 				(font
 					(size 1.27 1.27)
@@ -16070,6 +16286,15 @@
 				(hide yes)
 			)
 		)
+		(property "LCSC" "C5199798"
+			(at 214.63 39.0524 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(hide yes)
+			)
+		)
 		(pin "1"
 			(uuid "204837fd-c2f6-49fb-8f6b-0ef0323fb4be")
 		)
@@ -16136,7 +16361,7 @@
 				(hide yes)
 			)
 		)
-		(property "LCSC" "C25764"
+		(property "LCSC" "C25765"
 			(at 215.392 141.986 0)
 			(effects
 				(font
@@ -16216,6 +16441,15 @@
 				(hide yes)
 			)
 		)
+		(property "LCSC" "C5199798"
+			(at 259.08 41.5924 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(hide yes)
+			)
+		)
 		(pin "1"
 			(uuid "819156c9-e909-4d3d-8bef-a8e18d24ee4d")
 		)
@@ -16280,7 +16514,7 @@
 				(hide yes)
 			)
 		)
-		(property "LCSC" "C1525"
+		(property "LCSC" "C307331"
 			(at 75.692 93.98 0)
 			(effects
 				(font
@@ -16497,7 +16731,7 @@
 				(hide yes)
 			)
 		)
-		(property "LCSC" "C1525"
+		(property "LCSC" "C307331"
 			(at 25.4 93.98 0)
 			(effects
 				(font
@@ -16707,7 +16941,7 @@
 				(hide yes)
 			)
 		)
-		(property "LCSC" "C1525"
+		(property "LCSC" "C307331"
 			(at 173.736 96.52 0)
 			(effects
 				(font
@@ -16816,7 +17050,7 @@
 	)
 	(symbol
 		(lib_id "power:GND")
-		(at 33.02 147.32 90)
+		(at 33.02 149.86 90)
 		(unit 1)
 		(exclude_from_sim no)
 		(in_bom yes)
@@ -16824,7 +17058,7 @@
 		(dnp no)
 		(uuid "c6e007de-83ea-4fc3-b8fc-fed5c88f26db")
 		(property "Reference" "#PWR0125"
-			(at 39.37 147.32 0)
+			(at 39.37 149.86 0)
 			(effects
 				(font
 					(size 1.27 1.27)
@@ -16833,7 +17067,7 @@
 			)
 		)
 		(property "Value" "GND"
-			(at 38.354 147.32 90)
+			(at 38.354 149.86 90)
 			(effects
 				(font
 					(size 1.27 1.27)
@@ -16841,7 +17075,7 @@
 			)
 		)
 		(property "Footprint" ""
-			(at 33.02 147.32 0)
+			(at 33.02 149.86 0)
 			(effects
 				(font
 					(size 1.27 1.27)
@@ -16850,7 +17084,7 @@
 			)
 		)
 		(property "Datasheet" ""
-			(at 33.02 147.32 0)
+			(at 33.02 149.86 0)
 			(effects
 				(font
 					(size 1.27 1.27)
@@ -16859,7 +17093,7 @@
 			)
 		)
 		(property "Description" "Power symbol creates a global label with name \"GND\" , ground"
-			(at 33.02 147.32 0)
+			(at 33.02 149.86 0)
 			(effects
 				(font
 					(size 1.27 1.27)
@@ -17143,6 +17377,15 @@
 				(hide yes)
 			)
 		)
+		(property "LCSC" "C5199798"
+			(at 241.3 39.0524 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(hide yes)
+			)
+		)
 		(pin "1"
 			(uuid "53545530-3a6d-4afe-a6d8-d371e6052305")
 		)
@@ -17336,6 +17579,15 @@
 		)
 		(property "Description" "test point (alternative probe-style design)"
 			(at 255.27 26.67 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(hide yes)
+			)
+		)
+		(property "LCSC" "C5199798"
+			(at 259.08 25.0824 0)
 			(effects
 				(font
 					(size 1.27 1.27)
@@ -17670,6 +17922,15 @@
 				(hide yes)
 			)
 		)
+		(property "LCSC" "C489717"
+			(at 71.12 139.7 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(hide yes)
+			)
+		)
 		(pin "1"
 			(uuid "bd30081d-f994-4540-8f3c-03112db441b5")
 		)
@@ -17940,7 +18201,7 @@
 				)
 			)
 		)
-		(property "Value" "68Ω"
+		(property "Value" "49.9Ω"
 			(at 173.99 44.45 90)
 			(effects
 				(font
@@ -17975,7 +18236,7 @@
 				(hide yes)
 			)
 		)
-		(property "LCSC" "C25792"
+		(property "LCSC" "C25120"
 			(at 175.26 40.64 0)
 			(effects
 				(font
@@ -18045,6 +18306,15 @@
 		)
 		(property "Description" "Generic connectable mounting pin connector, single row, 01x04, script generated (kicad-library-utils/schlib/autogen/connector/)"
 			(at 62.23 176.53 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(hide yes)
+			)
+		)
+		(property "LCSC" "C485354"
+			(at 62.23 167.64 0)
 			(effects
 				(font
 					(size 1.27 1.27)
@@ -18329,7 +18599,7 @@
 				(hide yes)
 			)
 		)
-		(property "LCSC" "C25792"
+		(property "LCSC" "C25104"
 			(at 135.89 144.7799 0)
 			(effects
 				(font
@@ -18403,6 +18673,15 @@
 		)
 		(property "Description" "test point (alternative probe-style design)"
 			(at 218.44 38.1 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(hide yes)
+			)
+		)
+		(property "LCSC" "C5199798"
+			(at 214.63 36.5124 0)
 			(effects
 				(font
 					(size 1.27 1.27)
@@ -18618,6 +18897,15 @@
 				(hide yes)
 			)
 		)
+		(property "LCSC" "C842614"
+			(at 151.13 40.64 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(hide yes)
+			)
+		)
 		(pin "3"
 			(uuid "587b4ae7-be7d-43f6-bb9f-6b3de65c0dc6")
 		)
@@ -18706,7 +18994,7 @@
 				(hide yes)
 			)
 		)
-		(property "LCSC" "C25792"
+		(property "LCSC" "C11702"
 			(at 149.86 144.7799 0)
 			(effects
 				(font
@@ -18780,6 +19068,15 @@
 		)
 		(property "Description" "test point (alternative probe-style design)"
 			(at 218.44 43.18 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(hide yes)
+			)
+		)
+		(property "LCSC" "C5199798"
+			(at 214.63 41.5924 0)
 			(effects
 				(font
 					(size 1.27 1.27)
@@ -18917,7 +19214,7 @@
 				(hide yes)
 			)
 		)
-		(property "LCSC" "C1525"
+		(property "LCSC" "C307331"
 			(at 91.44 71.628 0)
 			(effects
 				(font
