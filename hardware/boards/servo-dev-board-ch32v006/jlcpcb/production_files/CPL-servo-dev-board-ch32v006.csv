@@ -3,18 +3,18 @@ C1,10µF,C_0603_1608Metric,141.125,-85.7,0.0,top
 C10,47µF,C_1206_3216Metric,140.795,-92.41,0.0,top
 C11,47µF,C_1206_3216Metric,140.795,-90.11,0.0,top
 C12,47µF,C_1206_3216Metric,140.795,-87.81,0.0,top
-C13,0.1µF,C_0402_1005Metric,168.24,-81.08,0.0,top
-C14,10µF,C_0603_1608Metric,167.065,-90.68,0.0,top
-C15,0.1µF,C_0402_1005Metric,167.15,-91.88,0.0,top
+C13,0.1µF,C_0402_1005Metric,166.93,-89.77,0.0,top
+C14,10µF,C_0603_1608Metric,161.4825,-97.27,-90.0,top
+C15,0.1µF,C_0402_1005Metric,160.2825,-96.7,-90.0,top
 C2,1µF,C_0402_1005Metric,141.98,-84.5,0.0,top
 C3,1µF,C_0402_1005Metric,144.52,-80.7,180.0,top
-C4,0.1µF,C_0402_1005Metric,161.2,-86.52,-90.0,top
-C5,0.1µF,C_0402_1005Metric,136.6,-102.01,90.0,top
+C4,0.1µF,C_0402_1005Metric,164.0,-86.7,90.0,top
+C5,0.1µF,C_0402_1005Metric,154.63,-99.11,180.0,top
 C6,0.1µF,C_0402_1005Metric,142.6,-95.49,180.0,top
 C7,0.1µF,C_0402_1005Metric,139.4,-97.21,-90.0,top
 C8,0.1µF,C_0402_1005Metric,140.78,-95.49,0.0,top
 C9,10µF,C_0603_1608Metric,140.765,-94.3,0.0,top
-D1,ESD,D_SOD-882,163.84,-84.485,-90.0,top
+D1,ESD,D_SOD-882,161.85,-82.8,180.0,top
 FB1,600Ω@100MHz,L_0603_1608Metric,143.7275,-94.3,180.0,top
 J1,BATT JST-PH,CONN-TH_S2B-PH-K-S-LF-SN,136.65,-73.225,90.0,top
 J2,BUS JST-ZH,JST_ZH_B3B-ZR-SM4-TF_1x03-1MP_P1.50mm_Vertical,168.35,-72.85,90.0,top
@@ -33,22 +33,22 @@ R10,5.1kΩ,R_0402_1005Metric,139.0,-83.8,180.0,top
 R11,2.2kΩ,R_0402_1005Metric,154.84,-86.69,0.0,top
 R12,330Ω,R_0402_1005Metric,156.78,-86.69,0.0,top
 R13,1KΩ,R_0402_1005Metric,158.71,-86.68,0.0,top
-R14,10kΩ,R_0402_1005Metric,164.51,-100.41,90.0,top
-R15,20kΩ,R_0402_1005Metric,149.28,-82.02,0.0,top
-R16,10kΩ,R_0402_1005Metric,151.14,-82.02,0.0,top
-R17,20kΩ,R_0402_1005Metric,149.28,-82.96,0.0,top
-R18,10kΩ,R_0402_1005Metric,151.14,-82.96,0.0,top
+R14,10kΩ,R_0402_1005Metric,154.61,-96.3,0.0,top
+R15,20kΩ,R_0402_1005Metric,154.61,-94.28,0.0,top
+R16,10kΩ,R_0402_1005Metric,154.61,-95.22,180.0,top
+R17,20kΩ,R_0402_1005Metric,154.61,-93.34,0.0,top
+R18,10kΩ,R_0402_1005Metric,154.61,-92.4,180.0,top
 R2,100kΩ,R_0402_1005Metric,140.8025,-69.1125,0.0,top
 R3,100kΩ,R_0402_1005Metric,143.39,-69.6,180.0,top
-R4,47kΩ,R_0402_1005Metric,162.65,-89.5,-90.0,top
-R5,49.9Ω,R_0402_1005Metric,162.75,-84.66,90.0,top
-R6,4.7kΩ,R_0402_1005Metric,135.6,-101.99,90.0,top
+R4,47kΩ,R_0402_1005Metric,163.36,-88.2,0.0,top
+R5,49.9Ω,R_0402_1005Metric,162.2,-84.49,-90.0,top
+R6,4.7kΩ,R_0402_1005Metric,154.61,-98.18,180.0,top
 R7,10kΩ,R_0402_1005Metric,144.02,-93.09,180.0,top
-R8,10kΩ,R_0402_1005Metric,168.22,-87.71,0.0,top
+R8,10kΩ,R_0402_1005Metric,166.91,-96.4,0.0,top
 R9,5.1kΩ,R_0402_1005Metric,139.01,-82.8,180.0,top
-RS1,0.1Ω 1%,R_1206_3216Metric,144.45,-98.23,-90.0,top
-SW1,SW_Push,SW_SPST_PTS810,167.655,-84.395,-90.0,top
-TH1,NTC 10k,R_0402_1005Metric,165.5,-100.41,-90.0,top
+RS1,0.1Ω 1%,R_1206_3216Metric,141.44,-100.7325,90.0,top
+SW1,SW_Push,SW_SPST_PTS810,166.345,-93.085,-90.0,top
+TH1,NTC 10k,R_0402_1005Metric,154.61,-97.24,180.0,top
 TP1,TestPoint_Probe,TestPoint_Keystone_5015_Micro_Mini,132.5,-103.5,0.0,top
 TP10,TestPoint_Probe,TestPoint_Keystone_5015_Micro_Mini,177.5,-103.5,0.0,top
 TP11,TestPoint_Probe,TestPoint_Keystone_5015_Micro_Mini,132.5,-66.5,0.0,top
@@ -62,12 +62,12 @@ TP18,TestPoint_Probe,TestPoint_Keystone_5015_Micro_Mini,167.5,-64.0,0.0,top
 TP19,TestPoint_Probe,TestPoint_Keystone_5015_Micro_Mini,172.5,-64.0,0.0,top
 TP2,TestPoint_Probe,TestPoint_Keystone_5015_Micro_Mini,137.5,-106.0,0.0,top
 TP20,TestPoint_Probe,TestPoint_Keystone_5015_Micro_Mini,177.5,-66.5,0.0,top
-TP21,TestPoint_Probe,TestPoint_Keystone_5015_Micro_Mini,147.0,-75.0,90.0,top
-TP22,TestPoint_Probe,TestPoint_Keystone_5015_Micro_Mini,147.0,-80.0,90.0,top
-TP23,TestPoint_Probe,TestPoint_Keystone_5015_Micro_Mini,147.0,-85.0,90.0,top
-TP24,TestPoint_Probe,TestPoint_Keystone_5015_Micro_Mini,147.0,-90.0,90.0,top
-TP25,TestPoint_Probe,TestPoint_Keystone_5015_Micro_Mini,147.0,-95.1,90.0,top
-TP26,TestPoint_Probe,TestPoint_Keystone_5015_Micro_Mini,147.0,-100.0,-90.0,top
+TP21,TestPoint_Probe,TestPoint_Keystone_5015_Micro_Mini,148.5,-75.0,90.0,top
+TP22,TestPoint_Probe,TestPoint_Keystone_5015_Micro_Mini,148.5,-80.0,90.0,top
+TP23,TestPoint_Probe,TestPoint_Keystone_5015_Micro_Mini,148.5,-85.0,90.0,top
+TP24,TestPoint_Probe,TestPoint_Keystone_5015_Micro_Mini,148.5,-90.0,90.0,top
+TP25,TestPoint_Probe,TestPoint_Keystone_5015_Micro_Mini,148.5,-95.1,90.0,top
+TP26,TestPoint_Probe,TestPoint_Keystone_5015_Micro_Mini,148.5,-100.0,-90.0,top
 TP3,TestPoint_Probe,TestPoint_Keystone_5015_Micro_Mini,142.5,-106.0,0.0,top
 TP4,TestPoint_Probe,TestPoint_Keystone_5015_Micro_Mini,147.5,-106.0,0.0,top
 TP5,TestPoint_Probe,TestPoint_Keystone_5015_Micro_Mini,152.5,-106.0,0.0,top
@@ -76,7 +76,7 @@ TP7,TestPoint_Probe,TestPoint_Keystone_5015_Micro_Mini,162.5,-106.0,0.0,top
 TP8,TestPoint_Probe,TestPoint_Keystone_5015_Micro_Mini,167.5,-106.0,0.0,top
 TP9,TestPoint_Probe,TestPoint_Keystone_5015_Micro_Mini,172.5,-106.0,0.0,top
 U1,TPAP2210K-3.3TRG1,SOT-23-5_L2.9-W1.6-P0.95-LS2.8-BR,143.82,-82.720052,180.0,top
-U2,74LVC2G125RA3-7,X2-DFN1210-8_L1.2-W1.0-P0.30-BL,162.55,-86.67,0.0,top
+U2,74LVC2G125RA3-7,X2-DFN1210-8_L1.2-W1.0-P0.30-BL,162.55,-86.67,180.0,top
 U3,DRV8837DSGR-JSM,WSON-8-1EP_2x2mm_P0.5mm_EP0.9x1.6mm,141.72,-97.2,0.0,top
-U4,CH32V006F8U6,UQFN-20_L3.0-W3.0-P0.40-BL-EP1.7,164.5,-93.5,90.0,top
+U4,CH32V006F8U6,UQFN-20_L3.0-W3.0-P0.40-BL-EP1.7,158.5,-94.0,0.0,top
 USB1,TYPE-C 6P(073),TYPE-C-SMD_TYPE-C-6P-073,135.005,-83.32,-90.0,top
