@@ -761,6 +761,30 @@
     [
       "6062e7d2-0c72-467e-b49c-6387ba053e09",
       "Root"
+    ],
+    [
+      "1e728d76-963a-4d02-a5f6-92f3889aa8bb",
+      "POWER"
+    ],
+    [
+      "ada02f24-9f0e-4313-921a-475b46fb1a47",
+      "M_DRV"
+    ],
+    [
+      "77d3819f-1672-490a-859c-8df54ad0ab77",
+      "MCU"
+    ],
+    [
+      "120e2627-930f-4b00-8e4a-c64cf3d97f18",
+      "SERVO_IO"
+    ],
+    [
+      "d650f1be-e012-4c20-9ca8-eaa5ec4968ee",
+      "COMMS"
+    ],
+    [
+      "279fdd48-5106-437c-982b-915097006b04",
+      "DIAGNOSTICS"
     ]
   ],
   "text_variables": {
