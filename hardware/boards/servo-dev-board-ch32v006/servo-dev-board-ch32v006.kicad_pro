@@ -58,7 +58,12 @@
           "width": 0.0
         }
       ],
-      "drc_exclusions": [],
+      "drc_exclusions": [
+        [
+          "courtyards_overlap|134605000|111515591|32185192-031a-45e3-87e8-cda64ac5c371|e409aaf9-5602-495e-9a8c-84374ff1f7cf",
+          ""
+        ]
+      ],
       "meta": {
         "version": 2
       },
@@ -580,7 +585,7 @@
     "netclass_patterns": [
       {
         "netclass": "Motor",
-        "pattern": "/OUT(A|B)|PGND|VSYS"
+        "pattern": "/MOT_(A|B)|PGND|VSYS"
       },
       {
         "netclass": "Default",
@@ -588,7 +593,7 @@
       },
       {
         "netclass": "Power",
-        "pattern": "VBUS|BUS_VIN|VBAT|VSYS"
+        "pattern": "VBUS|VBAT|VEXT|VSYS"
       },
       {
         "netclass": "Analog Signal",

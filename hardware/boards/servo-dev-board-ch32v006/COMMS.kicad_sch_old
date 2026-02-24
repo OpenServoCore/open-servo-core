@@ -1829,7 +1829,7 @@
 		(exclude_from_sim no)
 		(in_bom yes)
 		(on_board yes)
-		(dnp no)
+		(dnp yes)
 		(fields_autoplaced yes)
 		(uuid "462df52c-4c1f-44c1-ab0f-3a1c48fdd86f")
 		(property "Reference" "D4"
