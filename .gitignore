@@ -11,3 +11,6 @@ Thumbs.db
 # AI temp files
 .claude
 .serena
+
+# misc temp files
+/target
