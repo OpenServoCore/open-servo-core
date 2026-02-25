@@ -1607,7 +1607,7 @@
 				)
 			)
 		)
-		(property "Footprint" "Package_SO:VSSOP-8_2.3x2mm_P0.5mm"
+		(property "Footprint" "shared:VSSOP-8_L2.3-W2.0-P0.50-LS3.1-BR"
 			(at 80.01 87.63 0)
 			(effects
 				(font
@@ -2282,7 +2282,7 @@
 				(justify left)
 			)
 		)
-		(property "Footprint" "Package_SO:VSSOP-8_2.3x2mm_P0.5mm"
+		(property "Footprint" "shared:VSSOP-8_L2.3-W2.0-P0.50-LS3.1-BR"
 			(at 39.37 86.36 0)
 			(effects
 				(font
@@ -2682,7 +2682,7 @@
 				)
 			)
 		)
-		(property "Footprint" "Package_SO:VSSOP-8_2.3x2mm_P0.5mm"
+		(property "Footprint" "shared:VSSOP-8_L2.3-W2.0-P0.50-LS3.1-BR"
 			(at 102.87 87.63 0)
 			(effects
 				(font
