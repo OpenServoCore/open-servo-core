@@ -54,10 +54,13 @@ Footprints in `shared.pretty/` reference 3D models using relative paths:
    - Find: `${KIPRJMOD}././shared.3dshapes`
    - Replace: `${KIPRJMOD}/../../shared.3dshapes`
 
+4. In `shared.kicad_sym`, rename the `LCSC Part` property to `LCSC` on the downloaded symbol.
+
 ## Post-Import Checklist
 
 - [ ] Symbol has correct footprint reference (`"shared:FOOTPRINT_NAME"`)
 - [ ] Footprint has correct 3D model path (`${KIPRJMOD}/../../shared.3dshapes/...`)
 - [ ] Pin types are correctly set: power_in (VCC/GND), input (control/data in), output (data out), passive (connectors) - NO "unspecified" pins allowed
 - [ ] 3D model displays correctly in KiCad 3D viewer
+- [ ] Symbol uses `LCSC` property (not `LCSC Part`) for the part number
 - [ ] Component source documented (LCSC part number)
