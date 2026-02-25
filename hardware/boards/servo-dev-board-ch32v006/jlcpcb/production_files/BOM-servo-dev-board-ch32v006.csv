@@ -2,12 +2,12 @@ Comment,Designator,Footprint,LCSC,Quantity
 0.1µF,"C10,C12,C13,C14,C15,C4,C5",C_0805_2012Metric_Pad1.18x1.45mm_HandSolder,C28233,7
 1.5kΩ,R3,R_0805_2012Metric_Pad1.20x1.40mm_HandSolder,C4310,1
 100mΩ 1%,RS1,R_1206_3216Metric,C25334,1
-100µF,C7,CP_Elec_6.3x5.4,C72494,1
+100µF,C7,CP_Elec_6.3x5.4,C19271225,1
 10kΩ,"R11,R12,R14,R15,R16,R6,R8,R9",R_0805_2012Metric_Pad1.20x1.40mm_HandSolder,C17414,8
 10kΩ 3950K,TH1,R_0805_2012Metric_Pad1.20x1.40mm_HandSolder,C95968,1
-10µF,"C1,C11,C6",C_0805_2012Metric_Pad1.18x1.45mm_HandSolder,C440198,3
+10µF,"C1,C11,C3,C6",C_0805_2012Metric_Pad1.18x1.45mm_HandSolder,C440198,4
 1kΩ,R10,R_0805_2012Metric_Pad1.20x1.40mm_HandSolder,C17513,1
-1µF,"C2,C3",C_0805_2012Metric_Pad1.18x1.45mm_HandSolder,C28323,2
+1µF,C2,C_0805_2012Metric_Pad1.18x1.45mm_HandSolder,C28323,1
 20kΩ,"R5,R7",R_0805_2012Metric_Pad1.20x1.40mm_HandSolder,C4328,2
 4.7kΩ,R13,R_0805_2012Metric_Pad1.20x1.40mm_HandSolder,C17673,1
 470Ω,R4,R_0805_2012Metric_Pad1.20x1.40mm_HandSolder,C17710,1

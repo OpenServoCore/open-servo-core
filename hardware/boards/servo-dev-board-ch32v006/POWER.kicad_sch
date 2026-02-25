@@ -4523,7 +4523,7 @@
 				)
 			)
 		)
-		(property "Value" "1µF"
+		(property "Value" "10µF"
 			(at 108.204 110.998 0)
 			(effects
 				(font

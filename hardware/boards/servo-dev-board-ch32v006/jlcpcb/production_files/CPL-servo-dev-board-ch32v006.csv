@@ -7,7 +7,7 @@ C13,0.1µF,C_0805_2012Metric_Pad1.18x1.45mm_HandSolder,147.8375,-67.2,0.0,top
 C14,0.1µF,C_0805_2012Metric_Pad1.18x1.45mm_HandSolder,154.03,-74.9,180.0,top
 C15,0.1µF,C_0805_2012Metric_Pad1.18x1.45mm_HandSolder,180.2,-82.1,0.0,top
 C2,1µF,C_0805_2012Metric_Pad1.18x1.45mm_HandSolder,142.5375,-106.5375,-90.0,top
-C3,1µF,C_0805_2012Metric_Pad1.18x1.45mm_HandSolder,153.7875,-105.4625,-90.0,top
+C3,10µF,C_0805_2012Metric_Pad1.18x1.45mm_HandSolder,153.7875,-105.4625,-90.0,top
 C4,0.1µF,C_0805_2012Metric_Pad1.18x1.45mm_HandSolder,152.0,-90.3,180.0,top
 C5,0.1µF,C_0805_2012Metric_Pad1.18x1.45mm_HandSolder,148.2125,-90.3,0.0,top
 C6,10µF,C_0805_2012Metric_Pad1.18x1.45mm_HandSolder,148.2125,-88.3,0.0,top
