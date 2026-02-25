@@ -1619,15 +1619,6 @@
 				(hide yes)
 			)
 		)
-		(property "LCSC Part" "C265404"
-			(at 43.18 68.58 0)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-				(hide yes)
-			)
-		)
 		(property "JLC Type" "Extended"
 			(at 43.18 50.8 0)
 			(effects

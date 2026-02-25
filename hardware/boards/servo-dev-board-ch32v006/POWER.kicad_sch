@@ -1325,15 +1325,6 @@
 					(hide yes)
 				)
 			)
-			(property "LCSC Part" "C668623"
-				(at 0 -20.32 0)
-				(effects
-					(font
-						(size 1.27 1.27)
-					)
-					(hide yes)
-				)
-			)
 			(symbol "TYPE-C6P(073)_0_1"
 				(rectangle
 					(start -7.62 7.62)
@@ -3376,15 +3367,6 @@
 				(hide yes)
 			)
 		)
-		(property "LCSC Part" "C8465"
-			(at 157.48 68.58 0)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-				(hide yes)
-			)
-		)
 		(property "LCSC" "C8465"
 			(at 157.48 48.26 0)
 			(effects
@@ -3985,15 +3967,6 @@
 				(hide yes)
 			)
 		)
-		(property "LCSC Part" "C173752"
-			(at 115.57 64.77 0)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-				(hide yes)
-			)
-		)
 		(property "LCSC" "C173752"
 			(at 116.84 41.91 0)
 			(effects
@@ -4159,15 +4132,6 @@
 		)
 		(property "Description" ""
 			(at 33.02 50.8 0)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-				(hide yes)
-			)
-		)
-		(property "LCSC Part" "C668623"
-			(at 33.02 71.12 0)
 			(effects
 				(font
 					(size 1.27 1.27)

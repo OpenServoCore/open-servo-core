@@ -2608,15 +2608,6 @@
 				(hide yes)
 			)
 		)
-		(property "LCSC Part" "C131339"
-			(at 104.14 64.77 0)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-				(hide yes)
-			)
-		)
 		(property "JLC Type" "Extended"
 			(at 104.14 49.53 0)
 			(effects
