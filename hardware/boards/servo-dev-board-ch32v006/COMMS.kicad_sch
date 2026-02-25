@@ -1807,6 +1807,15 @@
 				(hide yes)
 			)
 		)
+		(property "LCSC" "C28233"
+			(at 27.94 85.0899 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(hide yes)
+			)
+		)
 		(pin "2"
 			(uuid "eb0ca091-ea3e-484b-875e-f5b0fbde53a2")
 		)
@@ -2031,6 +2040,15 @@
 				(hide yes)
 			)
 		)
+		(property "LCSC" "C17414"
+			(at 162.56 87.6299 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(hide yes)
+			)
+		)
 		(pin "2"
 			(uuid "2e6c9408-98b9-4d18-8026-a4047e5c7dd2")
 		)
@@ -2168,6 +2186,15 @@
 				(hide yes)
 			)
 		)
+		(property "LCSC" "C17414"
+			(at 149.86 87.6299 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(hide yes)
+			)
+		)
 		(pin "2"
 			(uuid "56bbb705-8577-42a4-9d81-31b4a6a27423")
 		)
@@ -2229,6 +2256,15 @@
 		)
 		(property "Description" "Generic connector, single row, 01x03, script generated (kicad-library-utils/schlib/autogen/connector/)"
 			(at 38.1 49.53 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(hide yes)
+			)
+		)
+		(property "LCSC" "C49257"
+			(at 38.1 43.18 0)
 			(effects
 				(font
 					(size 1.27 1.27)
@@ -2413,6 +2449,15 @@
 				(hide yes)
 			)
 		)
+		(property "LCSC" "C49257"
+			(at 59.69 43.18 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(hide yes)
+			)
+		)
 		(pin "2"
 			(uuid "f7f1c9e5-d9a1-4b22-ac8c-8812c9170057")
 		)
@@ -2479,6 +2524,15 @@
 		)
 		(property "Description" "Resistor"
 			(at 134.62 88.9 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(hide yes)
+			)
+		)
+		(property "LCSC" "C17414"
+			(at 137.16 87.6299 0)
 			(effects
 				(font
 					(size 1.27 1.27)
@@ -2565,6 +2619,15 @@
 		)
 		(property "JLC Type" "Extended"
 			(at 104.14 49.53 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(hide yes)
+			)
+		)
+		(property "LCSC" "C131339"
+			(at 104.14 43.18 0)
 			(effects
 				(font
 					(size 1.27 1.27)

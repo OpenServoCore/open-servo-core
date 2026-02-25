@@ -2230,7 +2230,7 @@
 				(hide yes)
 			)
 		)
-		(property "LCSC" "C1525"
+		(property "LCSC" "C28233"
 			(at 147.32 58.4199 0)
 			(effects
 				(font
@@ -2771,7 +2771,7 @@
 				(hide yes)
 			)
 		)
-		(property "LCSC" "C96446"
+		(property "LCSC" "C440198"
 			(at 21.336 53.34 0)
 			(effects
 				(font
@@ -2840,6 +2840,15 @@
 		)
 		(property "Description" "Generic connector, double row, 02x03, odd/even pin numbering scheme (row 1 odd numbers, row 2 even numbers), script generated (kicad-library-utils/schlib/autogen/connector/)"
 			(at 67.31 107.95 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(hide yes)
+			)
+		)
+		(property "LCSC" "C65114"
+			(at 67.31 99.06 0)
 			(effects
 				(font
 					(size 1.27 1.27)
@@ -2993,7 +3002,7 @@
 				(hide yes)
 			)
 		)
-		(property "LCSC" "C25744"
+		(property "LCSC" "C17414"
 			(at 138.43 44.196 0)
 			(effects
 				(font
@@ -3071,7 +3080,7 @@
 				(hide yes)
 			)
 		)
-		(property "LCSC" "C307331"
+		(property "LCSC" "C28233"
 			(at 32.766 53.34 0)
 			(effects
 				(font
@@ -3216,7 +3225,7 @@
 				(hide yes)
 			)
 		)
-		(property "LCSC" "C11702"
+		(property "LCSC" "C17513"
 			(at 31.75 101.5999 0)
 			(effects
 				(font
