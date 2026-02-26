@@ -1643,6 +1643,15 @@
 				(hide yes)
 			)
 		)
+		(property "MFPN" "SN74LVC2G241DCUR"
+			(at 80.01 87.63 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(hide yes)
+			)
+		)
 		(property "JLC Type" "Extended"
 			(at 80.01 87.63 0)
 			(effects
@@ -1816,6 +1825,15 @@
 				(hide yes)
 			)
 		)
+		(property "MFPN" "CL21B104KCFNNNE"
+			(at 27.94 85.0899 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(hide yes)
+			)
+		)
 		(pin "2"
 			(uuid "eb0ca091-ea3e-484b-875e-f5b0fbde53a2")
 		)
@@ -1887,6 +1905,15 @@
 			)
 		)
 		(property "LCSC" "C2687118"
+			(at 146.05 49.53 90)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(hide yes)
+			)
+		)
+		(property "MFPN" "PESD5V0L1BA"
 			(at 146.05 49.53 90)
 			(effects
 				(font
@@ -2049,6 +2076,15 @@
 				(hide yes)
 			)
 		)
+		(property "MFPN" "0805W8F1002T5E"
+			(at 162.56 87.6299 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(hide yes)
+			)
+		)
 		(pin "2"
 			(uuid "2e6c9408-98b9-4d18-8026-a4047e5c7dd2")
 		)
@@ -2195,6 +2231,15 @@
 				(hide yes)
 			)
 		)
+		(property "MFPN" "0805W8F1002T5E"
+			(at 149.86 87.6299 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(hide yes)
+			)
+		)
 		(pin "2"
 			(uuid "56bbb705-8577-42a4-9d81-31b4a6a27423")
 		)
@@ -2264,6 +2309,15 @@
 			)
 		)
 		(property "LCSC" "C49257"
+			(at 38.1 43.18 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(hide yes)
+			)
+		)
+		(property "MFPN" "2.54-1*3P"
 			(at 38.1 43.18 0)
 			(effects
 				(font
@@ -2346,6 +2400,15 @@
 			)
 		)
 		(property "LCSC" "C10430"
+			(at 39.37 86.36 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(hide yes)
+			)
+		)
+		(property "MFPN" "SN74LVC2G241DCUR"
 			(at 39.37 86.36 0)
 			(effects
 				(font
@@ -2458,6 +2521,15 @@
 				(hide yes)
 			)
 		)
+		(property "MFPN" "2.54-1*3P"
+			(at 59.69 43.18 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(hide yes)
+			)
+		)
 		(pin "2"
 			(uuid "f7f1c9e5-d9a1-4b22-ac8c-8812c9170057")
 		)
@@ -2532,6 +2604,15 @@
 			)
 		)
 		(property "LCSC" "C17414"
+			(at 137.16 87.6299 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(hide yes)
+			)
+		)
+		(property "MFPN" "0805W8F1002T5E"
 			(at 137.16 87.6299 0)
 			(effects
 				(font
@@ -2618,6 +2699,15 @@
 			)
 		)
 		(property "LCSC" "C131339"
+			(at 104.14 43.18 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(hide yes)
+			)
+		)
+		(property "MFPN" "B3B-PH-K-S(LF)(SN)"
 			(at 104.14 43.18 0)
 			(effects
 				(font
@@ -2764,6 +2854,15 @@
 			)
 		)
 		(property "LCSC" "C10430"
+			(at 102.87 87.63 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(hide yes)
+			)
+		)
+		(property "MFPN" "SN74LVC2G241DCUR"
 			(at 102.87 87.63 0)
 			(effects
 				(font

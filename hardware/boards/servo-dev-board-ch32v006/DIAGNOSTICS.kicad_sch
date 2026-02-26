@@ -961,6 +961,15 @@
 				(hide yes)
 			)
 		)
+		(property "MFPN" "RH-5015"
+			(at 88.9 71.12 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(hide yes)
+			)
+		)
 		(property "JLC Type" "Extended"
 			(at 88.9 71.12 0)
 			(effects
@@ -1040,6 +1049,15 @@
 			)
 		)
 		(property "LCSC" "C5199798"
+			(at 139.7 76.2 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(hide yes)
+			)
+		)
+		(property "MFPN" "RH-5015"
 			(at 139.7 76.2 0)
 			(effects
 				(font
@@ -1135,6 +1153,15 @@
 				(hide yes)
 			)
 		)
+		(property "MFPN" "RH-5015"
+			(at 34.29 66.04 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(hide yes)
+			)
+		)
 		(property "JLC Type" "Extended"
 			(at 34.29 66.04 0)
 			(effects
@@ -1214,6 +1241,15 @@
 			)
 		)
 		(property "LCSC" "C5199798"
+			(at 34.29 71.12 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(hide yes)
+			)
+		)
+		(property "MFPN" "RH-5015"
 			(at 34.29 71.12 0)
 			(effects
 				(font
@@ -1309,6 +1345,15 @@
 				(hide yes)
 			)
 		)
+		(property "MFPN" "RH-5015"
+			(at 139.7 71.12 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(hide yes)
+			)
+		)
 		(property "JLC Type" "Extended"
 			(at 139.7 71.12 0)
 			(effects
@@ -1388,6 +1433,15 @@
 			)
 		)
 		(property "LCSC" "C5199798"
+			(at 88.9 86.36 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(hide yes)
+			)
+		)
+		(property "MFPN" "RH-5015"
 			(at 88.9 86.36 0)
 			(effects
 				(font
@@ -1483,6 +1537,15 @@
 				(hide yes)
 			)
 		)
+		(property "MFPN" "RH-5015"
+			(at 139.7 81.28 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(hide yes)
+			)
+		)
 		(property "JLC Type" "Extended"
 			(at 139.7 81.28 0)
 			(effects
@@ -1562,6 +1625,15 @@
 			)
 		)
 		(property "LCSC" "C5199798"
+			(at 34.29 45.72 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(hide yes)
+			)
+		)
+		(property "MFPN" "RH-5015"
 			(at 34.29 45.72 0)
 			(effects
 				(font
@@ -1724,6 +1796,15 @@
 				(hide yes)
 			)
 		)
+		(property "MFPN" "RH-5015"
+			(at 139.7 55.88 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(hide yes)
+			)
+		)
 		(property "JLC Type" "Extended"
 			(at 139.7 55.88 0)
 			(effects
@@ -1803,6 +1884,15 @@
 			)
 		)
 		(property "LCSC" "C5199798"
+			(at 88.9 60.96 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(hide yes)
+			)
+		)
+		(property "MFPN" "RH-5015"
 			(at 88.9 60.96 0)
 			(effects
 				(font
@@ -1898,6 +1988,15 @@
 				(hide yes)
 			)
 		)
+		(property "MFPN" "RH-5015"
+			(at 34.29 81.28 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(hide yes)
+			)
+		)
 		(property "JLC Type" "Extended"
 			(at 34.29 81.28 0)
 			(effects
@@ -1985,6 +2084,15 @@
 				(hide yes)
 			)
 		)
+		(property "MFPN" "RH-5015"
+			(at 88.9 45.72 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(hide yes)
+			)
+		)
 		(property "JLC Type" "Extended"
 			(at 88.9 45.72 0)
 			(effects
@@ -2064,6 +2172,15 @@
 			)
 		)
 		(property "LCSC" "C5199798"
+			(at 139.7 60.96 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(hide yes)
+			)
+		)
+		(property "MFPN" "RH-5015"
 			(at 139.7 60.96 0)
 			(effects
 				(font
@@ -2225,6 +2342,15 @@
 				(hide yes)
 			)
 		)
+		(property "MFPN" "RH-5015"
+			(at 34.29 91.44 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(hide yes)
+			)
+		)
 		(property "JLC Type" "Extended"
 			(at 34.29 91.44 0)
 			(effects
@@ -2304,6 +2430,15 @@
 			)
 		)
 		(property "LCSC" "C5199798"
+			(at 139.7 50.8 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(hide yes)
+			)
+		)
+		(property "MFPN" "RH-5015"
 			(at 139.7 50.8 0)
 			(effects
 				(font
@@ -2399,6 +2534,15 @@
 				(hide yes)
 			)
 		)
+		(property "MFPN" "RH-5015"
+			(at 34.29 76.2 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(hide yes)
+			)
+		)
 		(property "JLC Type" "Extended"
 			(at 34.29 76.2 0)
 			(effects
@@ -2478,6 +2622,15 @@
 			)
 		)
 		(property "LCSC" "C5199798"
+			(at 34.29 60.96 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(hide yes)
+			)
+		)
+		(property "MFPN" "RH-5015"
 			(at 34.29 60.96 0)
 			(effects
 				(font
@@ -2573,6 +2726,15 @@
 				(hide yes)
 			)
 		)
+		(property "MFPN" "RH-5015"
+			(at 34.29 55.88 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(hide yes)
+			)
+		)
 		(property "JLC Type" "Extended"
 			(at 34.29 55.88 0)
 			(effects
@@ -2652,6 +2814,15 @@
 			)
 		)
 		(property "LCSC" "C5199798"
+			(at 88.9 55.88 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(hide yes)
+			)
+		)
+		(property "MFPN" "RH-5015"
 			(at 88.9 55.88 0)
 			(effects
 				(font
@@ -2747,6 +2918,15 @@
 				(hide yes)
 			)
 		)
+		(property "MFPN" "RH-5015"
+			(at 88.9 81.28 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(hide yes)
+			)
+		)
 		(property "JLC Type" "Extended"
 			(at 88.9 81.28 0)
 			(effects
@@ -2826,6 +3006,15 @@
 			)
 		)
 		(property "LCSC" "C5199798"
+			(at 139.7 66.04 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(hide yes)
+			)
+		)
+		(property "MFPN" "RH-5015"
 			(at 139.7 66.04 0)
 			(effects
 				(font
@@ -2988,6 +3177,15 @@
 				(hide yes)
 			)
 		)
+		(property "MFPN" "RH-5015"
+			(at 88.9 91.44 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(hide yes)
+			)
+		)
 		(property "JLC Type" "Extended"
 			(at 88.9 91.44 0)
 			(effects
@@ -3075,6 +3273,15 @@
 				(hide yes)
 			)
 		)
+		(property "MFPN" "RH-5015"
+			(at 88.9 66.04 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(hide yes)
+			)
+		)
 		(property "JLC Type" "Extended"
 			(at 88.9 66.04 0)
 			(effects
@@ -3154,6 +3361,15 @@
 			)
 		)
 		(property "LCSC" "C5199798"
+			(at 88.9 76.2 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(hide yes)
+			)
+		)
+		(property "MFPN" "RH-5015"
 			(at 88.9 76.2 0)
 			(effects
 				(font
@@ -3316,6 +3532,15 @@
 				(hide yes)
 			)
 		)
+		(property "MFPN" "RH-5015"
+			(at 139.7 45.72 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(hide yes)
+			)
+		)
 		(property "JLC Type" "Extended"
 			(at 139.7 45.72 0)
 			(effects
@@ -3403,6 +3628,15 @@
 				(hide yes)
 			)
 		)
+		(property "MFPN" "RH-5015"
+			(at 34.29 86.36 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(hide yes)
+			)
+		)
 		(property "JLC Type" "Extended"
 			(at 34.29 86.36 0)
 			(effects
@@ -3482,6 +3716,15 @@
 			)
 		)
 		(property "LCSC" "C5199798"
+			(at 34.29 50.8 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(hide yes)
+			)
+		)
+		(property "MFPN" "RH-5015"
 			(at 34.29 50.8 0)
 			(effects
 				(font
@@ -3636,6 +3879,15 @@
 			)
 		)
 		(property "LCSC" "C5199798"
+			(at 88.9 50.8 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(hide yes)
+			)
+		)
+		(property "MFPN" "RH-5015"
 			(at 88.9 50.8 0)
 			(effects
 				(font

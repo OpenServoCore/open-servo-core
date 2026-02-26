@@ -248,6 +248,19 @@
 				)
 			)
 		)
+		(property "MFPN" "0805W8F1002T5E"
+			(at 0 0 0)
+			(unlocked yes)
+			(layer "F.Fab")
+			(hide yes)
+			(uuid "91769eb2-066a-4b78-b4da-ac1cbcbd23e5")
+			(effects
+				(font
+					(size 1 1)
+					(thickness 0.12)
+				)
+			)
+		)
 		(property ki_fp_filters "R_*")
 		(path "/77d3819f-1672-490a-859c-8df54ad0ab77/a3670834-07ba-433f-a3ff-b38a0015c3d2")
 		(sheetname "/MCU/")
@@ -396,6 +409,19 @@
 			(layer "F.Fab")
 			(hide yes)
 			(uuid "9880ff43-a3c2-4083-b1bd-8173671b445b")
+			(effects
+				(font
+					(size 1 1)
+					(thickness 0.12)
+				)
+			)
+		)
+		(property "MFPN" "0805W8F1002T5E"
+			(at 0 0 180)
+			(unlocked yes)
+			(layer "F.Fab")
+			(hide yes)
+			(uuid "877d4233-455e-4145-af02-0d14f1fa10b9")
 			(effects
 				(font
 					(size 1 1)
@@ -566,6 +592,19 @@
 			(layer "F.Fab")
 			(hide yes)
 			(uuid "0f990b2e-beaa-4369-af9c-21886e0369db")
+			(effects
+				(font
+					(size 1 1)
+					(thickness 0.12)
+				)
+			)
+		)
+		(property "MFPN" "RH-5015"
+			(at 0 0 0)
+			(unlocked yes)
+			(layer "F.Fab")
+			(hide yes)
+			(uuid "dbe88280-46c8-4db7-b1cb-afbd265f5b41")
 			(effects
 				(font
 					(size 1 1)
@@ -748,6 +787,19 @@
 			(layer "F.Fab")
 			(hide yes)
 			(uuid "f4be77de-4113-409c-84dc-3220408f0069")
+			(effects
+				(font
+					(size 1 1)
+					(thickness 0.12)
+				)
+			)
+		)
+		(property "MFPN" "PESD5V0L1BA"
+			(at 0 0 180)
+			(unlocked yes)
+			(layer "F.Fab")
+			(hide yes)
+			(uuid "61bb10f9-8bad-49b7-91a5-aedf37574b1f")
 			(effects
 				(font
 					(size 1 1)
@@ -1067,6 +1119,19 @@
 				)
 			)
 		)
+		(property "MFPN" "KT-0805Y"
+			(at 0 0 0)
+			(unlocked yes)
+			(layer "F.Fab")
+			(hide yes)
+			(uuid "30e8dbbd-2f5e-4064-a1ce-43955a0929ee")
+			(effects
+				(font
+					(size 1 1)
+					(thickness 0.12)
+				)
+			)
+		)
 		(property ki_fp_filters "LED* LED_SMD:* LED_THT:*")
 		(path "/1e728d76-963a-4d02-a5f6-92f3889aa8bb/08285f3f-9b7f-4484-afe1-ef286bbee655")
 		(sheetname "/POWER/")
@@ -1288,6 +1353,19 @@
 				)
 			)
 		)
+		(property "MFPN" "RH-5015"
+			(at 0 0 0)
+			(unlocked yes)
+			(layer "F.Fab")
+			(hide yes)
+			(uuid "381c3535-6f03-4bf7-bc6d-b4555972fc9a")
+			(effects
+				(font
+					(size 1 1)
+					(thickness 0.12)
+				)
+			)
+		)
 		(property ki_fp_filters "Pin* Test*")
 		(path "/279fdd48-5106-437c-982b-915097006b04/a507bf20-1f8f-4be6-9ffe-3c66a7f1bd06")
 		(sheetname "/DIAGNOSTICS/")
@@ -1470,6 +1548,19 @@
 				)
 			)
 		)
+		(property "MFPN" "RH-5015"
+			(at 0 0 90)
+			(unlocked yes)
+			(layer "F.Fab")
+			(hide yes)
+			(uuid "4dec8088-223a-4eaa-b6e0-f361a36a23a6")
+			(effects
+				(font
+					(size 1 1)
+					(thickness 0.12)
+				)
+			)
+		)
 		(property ki_fp_filters "Pin* Test*")
 		(path "/279fdd48-5106-437c-982b-915097006b04/b843ac8e-51f1-47ae-b36f-c3f95caaf6e5")
 		(sheetname "/DIAGNOSTICS/")
@@ -1637,6 +1728,19 @@
 				)
 			)
 		)
+		(property "MFPN" "0805W8F5101T5E"
+			(at 0 0 180)
+			(unlocked yes)
+			(layer "F.Fab")
+			(hide yes)
+			(uuid "96ed9a8b-ddc7-4f75-838e-81b4a0052779")
+			(effects
+				(font
+					(size 1 1)
+					(thickness 0.12)
+				)
+			)
+		)
 		(property ki_fp_filters "R_*")
 		(path "/1e728d76-963a-4d02-a5f6-92f3889aa8bb/8eba195a-010f-4e86-97c6-4b7c87d6352a")
 		(sheetname "/POWER/")
@@ -1795,6 +1899,19 @@
 			(layer "F.Fab")
 			(hide yes)
 			(uuid "bf4f385e-1aa6-44c6-8fda-e539214a1e12")
+			(effects
+				(font
+					(size 1 1)
+					(thickness 0.12)
+				)
+			)
+		)
+		(property "MFPN" "SN74LVC2G241DCUR"
+			(at 0 0 90)
+			(unlocked yes)
+			(layer "F.Fab")
+			(hide yes)
+			(uuid "4395668f-277a-4816-addc-426685387a9d")
 			(effects
 				(font
 					(size 1 1)
@@ -2063,6 +2180,19 @@
 				)
 			)
 		)
+		(property "MFPN" "KT-0805G"
+			(at 0 0 0)
+			(unlocked yes)
+			(layer "F.Fab")
+			(hide yes)
+			(uuid "a5ccea3c-9ff7-4539-98cf-badb3914beb6")
+			(effects
+				(font
+					(size 1 1)
+					(thickness 0.12)
+				)
+			)
+		)
 		(property ki_fp_filters "LED* LED_SMD:* LED_THT:*")
 		(path "/1e728d76-963a-4d02-a5f6-92f3889aa8bb/e5a58e60-54ba-4207-91e8-e80722f71964")
 		(sheetname "/POWER/")
@@ -2284,6 +2414,19 @@
 				)
 			)
 		)
+		(property "MFPN" "RH-5015"
+			(at 0 0 0)
+			(unlocked yes)
+			(layer "F.Fab")
+			(hide yes)
+			(uuid "6d040e3b-e788-4f9a-bdb3-e49ca8b0664d")
+			(effects
+				(font
+					(size 1 1)
+					(thickness 0.12)
+				)
+			)
+		)
 		(property ki_fp_filters "Pin* Test*")
 		(path "/279fdd48-5106-437c-982b-915097006b04/ab2938b4-ee05-4512-b85c-73b58addc7de")
 		(sheetname "/DIAGNOSTICS/")
@@ -2447,6 +2590,19 @@
 				(font
 					(size 1.27 1.27)
 					(thickness 0.15)
+				)
+			)
+		)
+		(property "MFPN" "PZ2.54-1X5P-H25"
+			(at 0 0 0)
+			(unlocked yes)
+			(layer "F.Fab")
+			(hide yes)
+			(uuid "c5eb9eb1-a815-445c-b2be-a3277e772223")
+			(effects
+				(font
+					(size 1 1)
+					(thickness 0.12)
 				)
 			)
 		)
@@ -2729,6 +2885,19 @@
 			(layer "F.Fab")
 			(hide yes)
 			(uuid "2c1526b3-03ff-496e-ba42-6e2f26cf016e")
+			(effects
+				(font
+					(size 1 1)
+					(thickness 0.12)
+				)
+			)
+		)
+		(property "MFPN" "SS54"
+			(at 0 0 0)
+			(unlocked yes)
+			(layer "F.Fab")
+			(hide yes)
+			(uuid "79feebf0-568b-4200-8352-c15e4dcf3730")
 			(effects
 				(font
 					(size 1 1)
@@ -3036,6 +3205,19 @@
 				)
 			)
 		)
+		(property "MFPN" "RH-5015"
+			(at 0 0 90)
+			(unlocked yes)
+			(layer "F.Fab")
+			(hide yes)
+			(uuid "6284f05f-4fd7-46ca-9404-4b07dc187c2f")
+			(effects
+				(font
+					(size 1 1)
+					(thickness 0.12)
+				)
+			)
+		)
 		(property ki_fp_filters "Pin* Test*")
 		(path "/279fdd48-5106-437c-982b-915097006b04/3066afd6-a214-44c6-a5b2-054579d32be5")
 		(sheetname "/DIAGNOSTICS/")
@@ -3202,6 +3384,19 @@
 				)
 			)
 		)
+		(property "MFPN" "0805W8F1002T5E"
+			(at 0 0 0)
+			(unlocked yes)
+			(layer "F.Fab")
+			(hide yes)
+			(uuid "4f076f58-59fb-4917-acfb-e7987f0fecb5")
+			(effects
+				(font
+					(size 1 1)
+					(thickness 0.12)
+				)
+			)
+		)
 		(property ki_fp_filters "R_*")
 		(path "/d650f1be-e012-4c20-9ca8-eaa5ec4968ee/72a47757-7e09-415e-8258-f328825bfe39")
 		(sheetname "/COMMS/")
@@ -3350,6 +3545,19 @@
 			(layer "F.Fab")
 			(hide yes)
 			(uuid "6bf6b58b-2a7b-458a-9088-66f38a14b697")
+			(effects
+				(font
+					(size 1 1)
+					(thickness 0.12)
+				)
+			)
+		)
+		(property "MFPN" "CL21B104KCFNNNE"
+			(at 0 0 270)
+			(unlocked yes)
+			(layer "F.Fab")
+			(hide yes)
+			(uuid "15769b6f-83e4-4936-88a3-0459723bfc29")
 			(effects
 				(font
 					(size 1 1)
@@ -3520,6 +3728,19 @@
 			(layer "F.Fab")
 			(hide yes)
 			(uuid "5dae4976-5d45-49a2-92fc-64460da4a5a9")
+			(effects
+				(font
+					(size 1 1)
+					(thickness 0.12)
+				)
+			)
+		)
+		(property "MFPN" "TS-1088-AR02016"
+			(at 0 0 0)
+			(unlocked yes)
+			(layer "F.Fab")
+			(hide yes)
+			(uuid "1a0ec803-4dff-43f3-a289-c62f1844ad6e")
 			(effects
 				(font
 					(size 1 1)
@@ -3792,6 +4013,19 @@
 				)
 			)
 		)
+		(property "MFPN" "1206W4F100LT5E"
+			(at 0 0 180)
+			(unlocked yes)
+			(layer "F.Fab")
+			(hide yes)
+			(uuid "489606a5-b02f-45bf-8a06-c405fbaead56")
+			(effects
+				(font
+					(size 1 1)
+					(thickness 0.12)
+				)
+			)
+		)
 		(property ki_fp_filters "R_*")
 		(path "/ada02f24-9f0e-4313-921a-475b46fb1a47/332977fd-30c6-4e4f-9324-a6a30d14c6a9")
 		(sheetname "/M_DRV/")
@@ -3940,6 +4174,19 @@
 			(layer "F.Fab")
 			(hide yes)
 			(uuid "07b46d12-5326-42d6-ad02-4581ccb45599")
+			(effects
+				(font
+					(size 1 1)
+					(thickness 0.12)
+				)
+			)
+		)
+		(property "MFPN" "VT1V101M-CRE54"
+			(at 0 0 0)
+			(unlocked yes)
+			(layer "F.Fab")
+			(hide yes)
+			(uuid "8bac0339-3354-4172-bc45-dcdcc3217fdd")
 			(effects
 				(font
 					(size 1 1)
@@ -4407,6 +4654,19 @@
 				)
 			)
 		)
+		(property "MFPN" "RH-5015"
+			(at 0 0 0)
+			(unlocked yes)
+			(layer "F.Fab")
+			(hide yes)
+			(uuid "ed887d95-421d-4af8-a449-b63e0a81da2a")
+			(effects
+				(font
+					(size 1 1)
+					(thickness 0.12)
+				)
+			)
+		)
 		(property ki_fp_filters "Pin* Test*")
 		(path "/279fdd48-5106-437c-982b-915097006b04/3e6f7a1a-df32-4abd-a7c0-78deff47d0eb")
 		(sheetname "/DIAGNOSTICS/")
@@ -4582,6 +4842,19 @@
 			(layer "F.Fab")
 			(hide yes)
 			(uuid "63c8ab5b-8914-487e-a9c7-f9f30412f532")
+			(effects
+				(font
+					(size 1 1)
+					(thickness 0.12)
+				)
+			)
+		)
+		(property "MFPN" "RH-5015"
+			(at 0 0 0)
+			(unlocked yes)
+			(layer "F.Fab")
+			(hide yes)
+			(uuid "44d3d781-57d0-48b9-b079-f0c14a5630a8")
 			(effects
 				(font
 					(size 1 1)
@@ -4771,6 +5044,19 @@
 				)
 			)
 		)
+		(property "MFPN" "RH-5015"
+			(at 0 0 90)
+			(unlocked yes)
+			(layer "F.Fab")
+			(hide yes)
+			(uuid "357c49f8-e78e-4f5a-b1eb-7732308acbd3")
+			(effects
+				(font
+					(size 1 1)
+					(thickness 0.12)
+				)
+			)
+		)
 		(property ki_fp_filters "Pin* Test*")
 		(path "/279fdd48-5106-437c-982b-915097006b04/dcee9bde-1824-4e88-abd6-e84362c3e0ab")
 		(sheetname "/DIAGNOSTICS/")
@@ -4934,6 +5220,19 @@
 				(font
 					(size 1.27 1.27)
 					(thickness 0.15)
+				)
+			)
+		)
+		(property "MFPN" "2.54-1*3P"
+			(at 0 0 0)
+			(unlocked yes)
+			(layer "F.Fab")
+			(hide yes)
+			(uuid "bea10cd7-0167-4047-90c6-8953380cf39a")
+			(effects
+				(font
+					(size 1 1)
+					(thickness 0.12)
 				)
 			)
 		)
@@ -5201,6 +5500,19 @@
 				)
 			)
 		)
+		(property "MFPN" "RH-5015"
+			(at 0 0 90)
+			(unlocked yes)
+			(layer "F.Fab")
+			(hide yes)
+			(uuid "c5abf2e0-016b-45d1-8d73-e783417b0e00")
+			(effects
+				(font
+					(size 1 1)
+					(thickness 0.12)
+				)
+			)
+		)
 		(property ki_fp_filters "Pin* Test*")
 		(path "/279fdd48-5106-437c-982b-915097006b04/a2467fba-d0e7-4fcc-941e-6ded4599eacd")
 		(sheetname "/DIAGNOSTICS/")
@@ -5376,6 +5688,19 @@
 			(layer "F.Fab")
 			(hide yes)
 			(uuid "8fe9349c-2d66-4bea-8d5d-8b59b4782153")
+			(effects
+				(font
+					(size 1 1)
+					(thickness 0.12)
+				)
+			)
+		)
+		(property "MFPN" "HT7533-1"
+			(at 0 0 180)
+			(unlocked yes)
+			(layer "F.Fab")
+			(hide yes)
+			(uuid "fd1a3705-5dd5-4718-95d9-b8ce8ccce4fb")
 			(effects
 				(font
 					(size 1 1)
@@ -5766,6 +6091,19 @@
 				)
 			)
 		)
+		(property "MFPN" "0805W8F5101T5E"
+			(at 0 0 180)
+			(unlocked yes)
+			(layer "F.Fab")
+			(hide yes)
+			(uuid "edc9ca55-e5e1-43a1-b8fb-f4e62870147d")
+			(effects
+				(font
+					(size 1 1)
+					(thickness 0.12)
+				)
+			)
+		)
 		(property ki_fp_filters "R_*")
 		(path "/1e728d76-963a-4d02-a5f6-92f3889aa8bb/78e27bf4-2b7b-4033-a211-78d052bfd2a1")
 		(sheetname "/POWER/")
@@ -5929,6 +6267,19 @@
 			(layer "F.Fab")
 			(hide yes)
 			(uuid "1f330db6-90de-461a-a8c9-a9f452d9ebc6")
+			(effects
+				(font
+					(size 1 1)
+					(thickness 0.12)
+				)
+			)
+		)
+		(property "MFPN" "RH-5015"
+			(at 0 0 0)
+			(unlocked yes)
+			(layer "F.Fab")
+			(hide yes)
+			(uuid "895e680d-348a-4f9e-8785-052ec18e0766")
 			(effects
 				(font
 					(size 1 1)
@@ -6103,6 +6454,19 @@
 				)
 			)
 		)
+		(property "MFPN" "CL21B104KCFNNNE"
+			(at 0 0 0)
+			(unlocked yes)
+			(layer "F.Fab")
+			(hide yes)
+			(uuid "98a8d1da-9658-4694-b9f3-7d506947fee9")
+			(effects
+				(font
+					(size 1 1)
+					(thickness 0.12)
+				)
+			)
+		)
 		(property ki_fp_filters "C_*")
 		(path "/ada02f24-9f0e-4313-921a-475b46fb1a47/c3234567-89ab-cdef-0123-456789abcdef")
 		(sheetname "/M_DRV/")
@@ -6254,6 +6618,19 @@
 				(font
 					(size 1.27 1.27)
 					(thickness 0.15)
+				)
+			)
+		)
+		(property "MFPN" "2.54-2*3P"
+			(at 0 0 0)
+			(unlocked yes)
+			(layer "F.Fab")
+			(hide yes)
+			(uuid "818cde5b-4484-4e9b-84dc-a01c41eab1c5")
+			(effects
+				(font
+					(size 1 1)
+					(thickness 0.12)
 				)
 			)
 		)
@@ -6665,6 +7042,19 @@
 				)
 			)
 		)
+		(property "MFPN" "0805W8F1002T5E"
+			(at 0 0 180)
+			(unlocked yes)
+			(layer "F.Fab")
+			(hide yes)
+			(uuid "7beed009-3e98-49de-9a41-2bb526669bdb")
+			(effects
+				(font
+					(size 1 1)
+					(thickness 0.12)
+				)
+			)
+		)
 		(property ki_fp_filters "R_*")
 		(path "/ada02f24-9f0e-4313-921a-475b46fb1a47/0a991f95-89e8-4b69-a4e1-259be1384629")
 		(sheetname "/M_DRV/")
@@ -6813,6 +7203,19 @@
 			(layer "F.Fab")
 			(hide yes)
 			(uuid "9b6ecedf-f001-4ea7-b144-b89beaf5fe57")
+			(effects
+				(font
+					(size 1 1)
+					(thickness 0.12)
+				)
+			)
+		)
+		(property "MFPN" "GRM21BR61H106KE43L"
+			(at 0 0 270)
+			(unlocked yes)
+			(layer "F.Fab")
+			(hide yes)
+			(uuid "c3afc882-a5b6-47ce-a12b-1cd37d12cb80")
 			(effects
 				(font
 					(size 1 1)
@@ -6983,6 +7386,19 @@
 			(layer "F.Fab")
 			(hide yes)
 			(uuid "09c3529c-f1ae-4d51-8a84-a085972aea73")
+			(effects
+				(font
+					(size 1 1)
+					(thickness 0.12)
+				)
+			)
+		)
+		(property "MFPN" "RH-5015"
+			(at 0 0 0)
+			(unlocked yes)
+			(layer "F.Fab")
+			(hide yes)
+			(uuid "0c74f634-0ef6-40f0-b24b-702d7f640e9d")
 			(effects
 				(font
 					(size 1 1)
@@ -7172,6 +7588,19 @@
 				)
 			)
 		)
+		(property "MFPN" "RH-5015"
+			(at 0 0 0)
+			(unlocked yes)
+			(layer "F.Fab")
+			(hide yes)
+			(uuid "a52b2b60-541d-4505-92f5-8ef9be43ff3d")
+			(effects
+				(font
+					(size 1 1)
+					(thickness 0.12)
+				)
+			)
+		)
 		(property ki_fp_filters "Pin* Test*")
 		(path "/279fdd48-5106-437c-982b-915097006b04/a619fd3c-7ec8-4d62-9a7a-48d813525427")
 		(sheetname "/DIAGNOSTICS/")
@@ -7354,6 +7783,19 @@
 				)
 			)
 		)
+		(property "MFPN" "RH-5015"
+			(at 0 0 0)
+			(unlocked yes)
+			(layer "F.Fab")
+			(hide yes)
+			(uuid "37ea59dc-09e4-41a4-801f-5539d98f2d6f")
+			(effects
+				(font
+					(size 1 1)
+					(thickness 0.12)
+				)
+			)
+		)
 		(property ki_fp_filters "Pin* Test*")
 		(path "/279fdd48-5106-437c-982b-915097006b04/e739f3a3-4bf0-41c3-bc2a-ca13b253d36b")
 		(sheetname "/DIAGNOSTICS/")
@@ -7521,6 +7963,19 @@
 				)
 			)
 		)
+		(property "MFPN" "CL21B104KCFNNNE"
+			(at 0 0 0)
+			(unlocked yes)
+			(layer "F.Fab")
+			(hide yes)
+			(uuid "f9a2d73f-9ee0-43a5-9e7f-8d7ca98b32e6")
+			(effects
+				(font
+					(size 1 1)
+					(thickness 0.12)
+				)
+			)
+		)
 		(property ki_fp_filters "C_*")
 		(path "/77d3819f-1672-490a-859c-8df54ad0ab77/03c4ddcb-731d-4e4b-9301-b82ee723336b")
 		(sheetname "/MCU/")
@@ -7669,6 +8124,19 @@
 			(layer "F.Fab")
 			(hide yes)
 			(uuid "0913160e-8405-43ce-90db-c4ed6dd4144e")
+			(effects
+				(font
+					(size 1 1)
+					(thickness 0.12)
+				)
+			)
+		)
+		(property "MFPN" "0805W8F1002T5E"
+			(at 0 0 180)
+			(unlocked yes)
+			(layer "F.Fab")
+			(hide yes)
+			(uuid "e7c57e59-4fc5-415a-a9cf-35dfee6e3561")
 			(effects
 				(font
 					(size 1 1)
@@ -7827,6 +8295,19 @@
 				(font
 					(size 1.27 1.27)
 					(thickness 0.15)
+				)
+			)
+		)
+		(property "MFPN" "2.54-1*3P"
+			(at 0 0 0)
+			(unlocked yes)
+			(layer "F.Fab")
+			(hide yes)
+			(uuid "686cdf1f-ecf0-4eee-8a01-eb0fee691aba")
+			(effects
+				(font
+					(size 1 1)
+					(thickness 0.12)
 				)
 			)
 		)
@@ -8079,6 +8560,19 @@
 				)
 			)
 		)
+		(property "MFPN" "SDNT2012X103F3950FTF"
+			(at 0 0 0)
+			(unlocked yes)
+			(layer "F.Fab")
+			(hide yes)
+			(uuid "43d2e6ce-692c-4346-b988-d79c6229dce8")
+			(effects
+				(font
+					(size 1 1)
+					(thickness 0.12)
+				)
+			)
+		)
 		(property ki_fp_filters "R_* RV_*")
 		(path "/120e2627-930f-4b00-8e4a-c64cf3d97f18/e9820dd2-11bc-418e-9b63-041a7b98af52")
 		(sheetname "/SERVO_IO/")
@@ -8227,6 +8721,19 @@
 			(layer "F.Fab")
 			(hide yes)
 			(uuid "1c9649ba-0b63-4f41-b516-925ec0ba4234")
+			(effects
+				(font
+					(size 1 1)
+					(thickness 0.12)
+				)
+			)
+		)
+		(property "MFPN" "0805W8F1501T5E"
+			(at 0 0 180)
+			(unlocked yes)
+			(layer "F.Fab")
+			(hide yes)
+			(uuid "0c1a4892-7140-4b98-a5c0-c8a6053a8dd3")
 			(effects
 				(font
 					(size 1 1)
@@ -8496,6 +9003,19 @@
 				)
 			)
 		)
+		(property "MFPN" "RH-5015"
+			(at 0 0 0)
+			(unlocked yes)
+			(layer "F.Fab")
+			(hide yes)
+			(uuid "a5d56d7f-2509-4f53-aeb1-f388fd2044f6")
+			(effects
+				(font
+					(size 1 1)
+					(thickness 0.12)
+				)
+			)
+		)
 		(property ki_fp_filters "Pin* Test*")
 		(path "/279fdd48-5106-437c-982b-915097006b04/a8c67554-5012-4803-89d5-4af84ce5f5f8")
 		(sheetname "/DIAGNOSTICS/")
@@ -8663,6 +9183,19 @@
 				)
 			)
 		)
+		(property "MFPN" "GRM21BR61H106KE43L"
+			(at 0 0 0)
+			(unlocked yes)
+			(layer "F.Fab")
+			(hide yes)
+			(uuid "970b3415-a672-4ea8-b49c-5d78a5cbffcd")
+			(effects
+				(font
+					(size 1 1)
+					(thickness 0.12)
+				)
+			)
+		)
 		(property ki_fp_filters "C_*")
 		(path "/ada02f24-9f0e-4313-921a-475b46fb1a47/7bb8e9b4-1d0f-4c8d-a3d2-256cdb0771e1")
 		(sheetname "/M_DRV/")
@@ -8814,6 +9347,19 @@
 				(font
 					(size 1.27 1.27)
 					(thickness 0.15)
+				)
+			)
+		)
+		(property "MFPN" "0805W8F1002T5E"
+			(at 0 0 0)
+			(unlocked yes)
+			(layer "F.Fab")
+			(hide yes)
+			(uuid "8f3d5ab3-68b0-4770-b254-a8402ce7c29f")
+			(effects
+				(font
+					(size 1 1)
+					(thickness 0.12)
 				)
 			)
 		)
@@ -8980,6 +9526,19 @@
 			(layer "F.Fab")
 			(hide yes)
 			(uuid "926bd95e-d256-4d9d-a8e5-87d92cf671e6")
+			(effects
+				(font
+					(size 1 1)
+					(thickness 0.12)
+				)
+			)
+		)
+		(property "MFPN" "RH-5015"
+			(at 0 0 90)
+			(unlocked yes)
+			(layer "F.Fab")
+			(hide yes)
+			(uuid "68fc029b-354e-45c9-b947-0809267ad768")
 			(effects
 				(font
 					(size 1 1)
@@ -9154,6 +9713,19 @@
 				)
 			)
 		)
+		(property "MFPN" "CL21B104KCFNNNE"
+			(at 0 0 180)
+			(unlocked yes)
+			(layer "F.Fab")
+			(hide yes)
+			(uuid "2a0f928c-cfb4-46bb-9501-e51a72082100")
+			(effects
+				(font
+					(size 1 1)
+					(thickness 0.12)
+				)
+			)
+		)
 		(property ki_fp_filters "C_*")
 		(path "/120e2627-930f-4b00-8e4a-c64cf3d97f18/4fc5cf8d-01f7-47ac-ad24-27a1a53d95b0")
 		(sheetname "/SERVO_IO/")
@@ -9305,6 +9877,19 @@
 				(font
 					(size 1.27 1.27)
 					(thickness 0.15)
+				)
+			)
+		)
+		(property "MFPN" "0805W8F1002T5E"
+			(at 0 0 0)
+			(unlocked yes)
+			(layer "F.Fab")
+			(hide yes)
+			(uuid "7bd3ae2d-82de-4abd-b580-85df8421b0f7")
+			(effects
+				(font
+					(size 1 1)
+					(thickness 0.12)
 				)
 			)
 		)
@@ -9569,6 +10154,19 @@
 				)
 			)
 		)
+		(property "MFPN" "0805W8F2002T5E"
+			(at 0 0 0)
+			(unlocked yes)
+			(layer "F.Fab")
+			(hide yes)
+			(uuid "907efbf9-1340-4757-b39f-2c46d950e03d")
+			(effects
+				(font
+					(size 1 1)
+					(thickness 0.12)
+				)
+			)
+		)
 		(property ki_fp_filters "R_*")
 		(path "/ada02f24-9f0e-4313-921a-475b46fb1a47/be6c16af-1515-4b85-9f80-00b8a84755f9")
 		(sheetname "/M_DRV/")
@@ -9717,6 +10315,19 @@
 			(layer "F.Fab")
 			(hide yes)
 			(uuid "16ce4002-8d90-49a3-92fa-12147a73b2ff")
+			(effects
+				(font
+					(size 1 1)
+					(thickness 0.12)
+				)
+			)
+		)
+		(property "MFPN" "0805W8F4700T5E"
+			(at 0 0 180)
+			(unlocked yes)
+			(layer "F.Fab")
+			(hide yes)
+			(uuid "45c32a7c-ca5b-409b-a08d-ecb04134d43f")
 			(effects
 				(font
 					(size 1 1)
@@ -9887,6 +10498,19 @@
 			(layer "F.Fab")
 			(hide yes)
 			(uuid "cb2e75d0-deaf-47b7-aab3-135fee0cffeb")
+			(effects
+				(font
+					(size 1 1)
+					(thickness 0.12)
+				)
+			)
+		)
+		(property "MFPN" "SS54"
+			(at 0 0 0)
+			(unlocked yes)
+			(layer "F.Fab")
+			(hide yes)
+			(uuid "a11e865f-36d1-41ac-b9d1-1680a20e9ced")
 			(effects
 				(font
 					(size 1 1)
@@ -10179,6 +10803,19 @@
 				)
 			)
 		)
+		(property "MFPN" "0805W8F1002T5E"
+			(at 0 0 180)
+			(unlocked yes)
+			(layer "F.Fab")
+			(hide yes)
+			(uuid "6015f260-5784-462e-bb7a-a6215641177d")
+			(effects
+				(font
+					(size 1 1)
+					(thickness 0.12)
+				)
+			)
+		)
 		(property ki_fp_filters "R_*")
 		(path "/ada02f24-9f0e-4313-921a-475b46fb1a47/c76be95b-c232-4192-bb89-8301de90211c")
 		(sheetname "/M_DRV/")
@@ -10327,6 +10964,19 @@
 			(layer "F.Fab")
 			(hide yes)
 			(uuid "eb5ad8f4-45b2-4155-b8d8-3d3ce60349f4")
+			(effects
+				(font
+					(size 1 1)
+					(thickness 0.12)
+				)
+			)
+		)
+		(property "MFPN" "CL21B105KBFNNNE"
+			(at 0 0 270)
+			(unlocked yes)
+			(layer "F.Fab")
+			(hide yes)
+			(uuid "f032cbb8-e9e7-4516-86c7-5b24e4c7b21d")
 			(effects
 				(font
 					(size 1 1)
@@ -10509,6 +11159,19 @@
 			(layer "F.Fab")
 			(hide yes)
 			(uuid "d279a10a-26df-4d0b-bc0e-b12eb376aca6")
+			(effects
+				(font
+					(size 1 1)
+					(thickness 0.12)
+				)
+			)
+		)
+		(property "MFPN" "NCD0805R1"
+			(at 0 0 0)
+			(unlocked yes)
+			(layer "F.Fab")
+			(hide yes)
+			(uuid "29498c43-d106-405d-bf5f-ad9d62d8b372")
 			(effects
 				(font
 					(size 1 1)
@@ -10739,6 +11402,19 @@
 			(layer "F.Fab")
 			(hide yes)
 			(uuid "06467346-e117-4f13-a8ba-8e16396a4755")
+			(effects
+				(font
+					(size 1 1)
+					(thickness 0.12)
+				)
+			)
+		)
+		(property "MFPN" "S2B-PH-K-S(LF)(SN)"
+			(at 0 0 90)
+			(unlocked yes)
+			(layer "F.Fab")
+			(hide yes)
+			(uuid "70be1029-c027-4c2a-96f9-58dc025d8996")
 			(effects
 				(font
 					(size 1 1)
@@ -11063,6 +11739,19 @@
 				)
 			)
 		)
+		(property "MFPN" "CL21B104KCFNNNE"
+			(at 0 0 0)
+			(unlocked yes)
+			(layer "F.Fab")
+			(hide yes)
+			(uuid "39951555-44b7-44a1-8276-7e7543bb11d7")
+			(effects
+				(font
+					(size 1 1)
+					(thickness 0.12)
+				)
+			)
+		)
 		(property ki_fp_filters "C_*")
 		(path "/d650f1be-e012-4c20-9ca8-eaa5ec4968ee/3daaaa0f-e332-4072-9e3a-ca99332c2df3")
 		(sheetname "/COMMS/")
@@ -11226,6 +11915,19 @@
 			(layer "F.Fab")
 			(hide yes)
 			(uuid "09276e18-7d3d-4f70-a806-635244a388fb")
+			(effects
+				(font
+					(size 1 1)
+					(thickness 0.12)
+				)
+			)
+		)
+		(property "MFPN" "RH-5015"
+			(at 0 0 0)
+			(unlocked yes)
+			(layer "F.Fab")
+			(hide yes)
+			(uuid "574c2a47-6136-4c3c-8371-b6ce112832f5")
 			(effects
 				(font
 					(size 1 1)
@@ -11415,6 +12117,19 @@
 				)
 			)
 		)
+		(property "MFPN" "RH-5015"
+			(at 0 0 90)
+			(unlocked yes)
+			(layer "F.Fab")
+			(hide yes)
+			(uuid "2d04c1b7-e1e0-4c3c-a656-5307914385f7")
+			(effects
+				(font
+					(size 1 1)
+					(thickness 0.12)
+				)
+			)
+		)
 		(property ki_fp_filters "Pin* Test*")
 		(path "/279fdd48-5106-437c-982b-915097006b04/6bae7f67-4648-43d7-a473-ad1c8e607493")
 		(sheetname "/DIAGNOSTICS/")
@@ -11582,6 +12297,19 @@
 				)
 			)
 		)
+		(property "MFPN" "CL21B104KCFNNNE"
+			(at 0 0 0)
+			(unlocked yes)
+			(layer "F.Fab")
+			(hide yes)
+			(uuid "1c1a715e-47a2-4927-81ba-c5be8201ba6d")
+			(effects
+				(font
+					(size 1 1)
+					(thickness 0.12)
+				)
+			)
+		)
 		(property ki_fp_filters "C_*")
 		(path "/77d3819f-1672-490a-859c-8df54ad0ab77/c5234567-89ab-cdef-0123-456789abcdef")
 		(sheetname "/MCU/")
@@ -11730,6 +12458,19 @@
 			(layer "F.Fab")
 			(hide yes)
 			(uuid "65824c2d-ef8c-4ed7-a1aa-13afd1dbf562")
+			(effects
+				(font
+					(size 1 1)
+					(thickness 0.12)
+				)
+			)
+		)
+		(property "MFPN" "0805W8F1001T5E"
+			(at 0 0 180)
+			(unlocked yes)
+			(layer "F.Fab")
+			(hide yes)
+			(uuid "46c1959b-ea6e-4e34-bdb5-d3a36c13f748")
 			(effects
 				(font
 					(size 1 1)
@@ -11905,6 +12646,19 @@
 				)
 			)
 		)
+		(property "MFPN" "GZ2012D601TF"
+			(at 0 0 180)
+			(unlocked yes)
+			(layer "F.Fab")
+			(hide yes)
+			(uuid "7384a8ce-782b-41db-883e-0026beb2c051")
+			(effects
+				(font
+					(size 1 1)
+					(thickness 0.12)
+				)
+			)
+		)
 		(property ki_fp_filters "Inductor_* L_* *Ferrite*")
 		(path "/ada02f24-9f0e-4313-921a-475b46fb1a47/3942772d-091b-471b-8694-2bee1e9472cf")
 		(sheetname "/M_DRV/")
@@ -12053,6 +12807,19 @@
 			(layer "F.Fab")
 			(hide yes)
 			(uuid "f8dc5602-d876-4b01-aab6-02a9ece1c1c7")
+			(effects
+				(font
+					(size 1 1)
+					(thickness 0.12)
+				)
+			)
+		)
+		(property "MFPN" "CL21B104KCFNNNE"
+			(at 0 0 180)
+			(unlocked yes)
+			(layer "F.Fab")
+			(hide yes)
+			(uuid "ee050b8b-4a3e-4bf7-8e1f-55b5eb734f28")
 			(effects
 				(font
 					(size 1 1)
@@ -12232,6 +12999,19 @@
 			(layer "F.Fab")
 			(hide yes)
 			(uuid "6655ada9-29d0-4337-b467-0be524ebc595")
+			(effects
+				(font
+					(size 1 1)
+					(thickness 0.12)
+				)
+			)
+		)
+		(property "MFPN" "B3B-PH-K-S(LF)(SN)"
+			(at 0 0 90)
+			(unlocked yes)
+			(layer "F.Fab")
+			(hide yes)
+			(uuid "f84e8a8d-7d19-4891-990e-3e76d96eb9e5")
 			(effects
 				(font
 					(size 1 1)
@@ -12519,6 +13299,19 @@
 			(layer "F.Fab")
 			(hide yes)
 			(uuid "63cb9ec0-4f2a-4037-8b10-df6435e96c4f")
+			(effects
+				(font
+					(size 1 1)
+					(thickness 0.12)
+				)
+			)
+		)
+		(property "MFPN" "TYPE-C 6P(073)"
+			(at 0 0 270)
+			(unlocked yes)
+			(layer "F.Fab")
+			(hide yes)
+			(uuid "9bfd14ef-7499-4f76-8dda-f62ef3c6be27")
 			(effects
 				(font
 					(size 1 1)
@@ -12843,6 +13636,19 @@
 				)
 			)
 		)
+		(property "MFPN" "RH-5015"
+			(at 0 0 0)
+			(unlocked yes)
+			(layer "F.Fab")
+			(hide yes)
+			(uuid "8a251c47-b268-42d9-b09d-ead398e28a80")
+			(effects
+				(font
+					(size 1 1)
+					(thickness 0.12)
+				)
+			)
+		)
 		(property ki_fp_filters "Pin* Test*")
 		(path "/279fdd48-5106-437c-982b-915097006b04/28ee0185-8cff-4091-9f70-f9a4b7d96441")
 		(sheetname "/DIAGNOSTICS/")
@@ -13014,6 +13820,19 @@
 			(layer "F.Fab")
 			(hide yes)
 			(uuid "3042dcac-6b86-4b18-b955-e4545111b5be")
+			(effects
+				(font
+					(size 1 1)
+					(thickness 0.12)
+				)
+			)
+		)
+		(property "MFPN" "WJ500V-5.08-2P"
+			(at 0 0 90)
+			(unlocked yes)
+			(layer "F.Fab")
+			(hide yes)
+			(uuid "252042a7-175e-4038-9d74-f09c1be78aa7")
 			(effects
 				(font
 					(size 1 1)
@@ -13286,6 +14105,19 @@
 				)
 			)
 		)
+		(property "MFPN" "RH-5015"
+			(at 0 0 0)
+			(unlocked yes)
+			(layer "F.Fab")
+			(hide yes)
+			(uuid "5618a834-0bc8-44ae-a7fc-ccb266327562")
+			(effects
+				(font
+					(size 1 1)
+					(thickness 0.12)
+				)
+			)
+		)
 		(property ki_fp_filters "Pin* Test*")
 		(path "/279fdd48-5106-437c-982b-915097006b04/7616a3a4-59d3-4bf2-a1d7-4e88011e0b18")
 		(sheetname "/DIAGNOSTICS/")
@@ -13461,6 +14293,19 @@
 			(layer "F.Fab")
 			(hide yes)
 			(uuid "3524b58f-e233-466c-bd7d-e6d8855b2a95")
+			(effects
+				(font
+					(size 1 1)
+					(thickness 0.12)
+				)
+			)
+		)
+		(property "MFPN" "DRV8212PDSGR"
+			(at 0 0 0)
+			(unlocked yes)
+			(layer "F.Fab")
+			(hide yes)
+			(uuid "3bfbea9f-265b-4c2d-81ba-f10405b8e51a")
 			(effects
 				(font
 					(size 1 1)
@@ -13786,6 +14631,19 @@
 				)
 			)
 		)
+		(property "MFPN" "GRM21BR61H106KE43L"
+			(at 0 0 0)
+			(unlocked yes)
+			(layer "F.Fab")
+			(hide yes)
+			(uuid "d5d01ce9-445f-4563-814d-f7d97fcb984c")
+			(effects
+				(font
+					(size 1 1)
+					(thickness 0.12)
+				)
+			)
+		)
 		(property ki_fp_filters "C_*")
 		(path "/77d3819f-1672-490a-859c-8df54ad0ab77/89030bb7-c00d-47df-8705-4ef364bf0aa3")
 		(sheetname "/MCU/")
@@ -13949,6 +14807,19 @@
 			(layer "F.Fab")
 			(hide yes)
 			(uuid "3b1ae705-f6ed-4d70-a3fc-f22b134002fb")
+			(effects
+				(font
+					(size 1 1)
+					(thickness 0.12)
+				)
+			)
+		)
+		(property "MFPN" "RH-5015"
+			(at 0 0 0)
+			(unlocked yes)
+			(layer "F.Fab")
+			(hide yes)
+			(uuid "e9bc0c02-1102-4623-84ef-657163f497f4")
 			(effects
 				(font
 					(size 1 1)
@@ -14138,6 +15009,19 @@
 				)
 			)
 		)
+		(property "MFPN" "RH-5015"
+			(at 0 0 0)
+			(unlocked yes)
+			(layer "F.Fab")
+			(hide yes)
+			(uuid "94749e86-af35-457a-a237-fe12910a95db")
+			(effects
+				(font
+					(size 1 1)
+					(thickness 0.12)
+				)
+			)
+		)
 		(property ki_fp_filters "Pin* Test*")
 		(path "/279fdd48-5106-437c-982b-915097006b04/7d4b359d-f24d-4048-974f-302f27a7c9a6")
 		(sheetname "/DIAGNOSTICS/")
@@ -14313,6 +15197,19 @@
 			(layer "F.Fab")
 			(hide yes)
 			(uuid "24a66c65-fedc-41de-b18a-3304fbafc7dd")
+			(effects
+				(font
+					(size 1 1)
+					(thickness 0.12)
+				)
+			)
+		)
+		(property "MFPN" "RH-5015"
+			(at 0 0 0)
+			(unlocked yes)
+			(layer "F.Fab")
+			(hide yes)
+			(uuid "d5f0ab4b-1d44-4fa3-86a3-049a0b69aadc")
 			(effects
 				(font
 					(size 1 1)
@@ -14504,6 +15401,19 @@
 			(layer "F.Fab")
 			(hide yes)
 			(uuid "8562a1d9-d237-4a29-a0ef-c67023ef596c")
+			(effects
+				(font
+					(size 1 1)
+					(thickness 0.12)
+				)
+			)
+		)
+		(property "MFPN" "S5B-ZR(LF)(SN)"
+			(at 0 0 270)
+			(unlocked yes)
+			(layer "F.Fab")
+			(hide yes)
+			(uuid "a8aed1bd-3d90-4178-b6c4-910b5d1854d5")
 			(effects
 				(font
 					(size 1 1)
@@ -14823,6 +15733,19 @@
 				)
 			)
 		)
+		(property "MFPN" "RH-5015"
+			(at 0 0 90)
+			(unlocked yes)
+			(layer "F.Fab")
+			(hide yes)
+			(uuid "3187d5ef-168e-41e9-8fd3-ac26b47eb63c")
+			(effects
+				(font
+					(size 1 1)
+					(thickness 0.12)
+				)
+			)
+		)
 		(property ki_fp_filters "Pin* Test*")
 		(path "/279fdd48-5106-437c-982b-915097006b04/3d3710b3-0368-4b26-8496-9df2bf13e02a")
 		(sheetname "/DIAGNOSTICS/")
@@ -15005,6 +15928,19 @@
 				)
 			)
 		)
+		(property "MFPN" "RH-5015"
+			(at 0 0 0)
+			(unlocked yes)
+			(layer "F.Fab")
+			(hide yes)
+			(uuid "0b60f4c5-87bd-4dc1-bfce-7e69d7683b1b")
+			(effects
+				(font
+					(size 1 1)
+					(thickness 0.12)
+				)
+			)
+		)
 		(property ki_fp_filters "Pin* Test*")
 		(path "/279fdd48-5106-437c-982b-915097006b04/d460c9af-294e-45b9-9bd2-881eb9fae4cd")
 		(sheetname "/DIAGNOSTICS/")
@@ -15180,6 +16116,19 @@
 			(layer "F.Fab")
 			(hide yes)
 			(uuid "d2d04b94-5cb7-4eaf-8aac-4488f2b6e7d9")
+			(effects
+				(font
+					(size 1 1)
+					(thickness 0.12)
+				)
+			)
+		)
+		(property "MFPN" "RH-5015"
+			(at 0 0 0)
+			(unlocked yes)
+			(layer "F.Fab")
+			(hide yes)
+			(uuid "dc3d47a9-6b54-4b0d-83c0-897347db6b60")
 			(effects
 				(font
 					(size 1 1)
@@ -15479,6 +16428,19 @@
 			(layer "F.Fab")
 			(hide yes)
 			(uuid "148be3e2-580f-4790-85b1-bc786ffa62c7")
+			(effects
+				(font
+					(size 1 1)
+					(thickness 0.12)
+				)
+			)
+		)
+		(property "MFPN" "CH32V006F8P6"
+			(at 0 0 0)
+			(unlocked yes)
+			(layer "F.Fab")
+			(hide yes)
+			(uuid "f75d0a67-c2f0-4814-8475-84a3e073d570")
 			(effects
 				(font
 					(size 1 1)
@@ -15959,6 +16921,19 @@
 				)
 			)
 		)
+		(property "MFPN" "RH-5015"
+			(at 0 0 0)
+			(unlocked yes)
+			(layer "F.Fab")
+			(hide yes)
+			(uuid "32614159-fdb4-4396-a546-a59a6ca61400")
+			(effects
+				(font
+					(size 1 1)
+					(thickness 0.12)
+				)
+			)
+		)
 		(property ki_fp_filters "Pin* Test*")
 		(path "/279fdd48-5106-437c-982b-915097006b04/ee5769d3-fc38-42e7-b4a1-c993e174cafa")
 		(sheetname "/DIAGNOSTICS/")
@@ -16135,6 +17110,19 @@
 			(layer "F.Fab")
 			(hide yes)
 			(uuid "04607b66-f913-4d37-b5ab-f4ac578da859")
+			(effects
+				(font
+					(size 1 1)
+					(thickness 0.12)
+				)
+			)
+		)
+		(property "MFPN" "RH-5015"
+			(at 0 0 90)
+			(unlocked yes)
+			(layer "F.Fab")
+			(hide yes)
+			(uuid "23cfada2-e9f4-4a0c-a9a3-bb929489bb79")
 			(effects
 				(font
 					(size 1 1)
@@ -16415,6 +17403,19 @@
 				)
 			)
 		)
+		(property "MFPN" "0805W8F2002T5E"
+			(at 0 0 0)
+			(unlocked yes)
+			(layer "F.Fab")
+			(hide yes)
+			(uuid "aaede86b-b503-4351-bf1b-4dcd84902830")
+			(effects
+				(font
+					(size 1 1)
+					(thickness 0.12)
+				)
+			)
+		)
 		(property ki_fp_filters "R_*")
 		(path "/ada02f24-9f0e-4313-921a-475b46fb1a47/a837aba2-db5c-4db7-80a9-76acc23909a3")
 		(sheetname "/M_DRV/")
@@ -16563,6 +17564,19 @@
 			(layer "F.Fab")
 			(hide yes)
 			(uuid "f04c10f6-774f-48bd-9c81-617392dc0d77")
+			(effects
+				(font
+					(size 1 1)
+					(thickness 0.12)
+				)
+			)
+		)
+		(property "MFPN" "0805W8F4701T5E"
+			(at 0 0 180)
+			(unlocked yes)
+			(layer "F.Fab")
+			(hide yes)
+			(uuid "3215d46c-45e4-4760-a135-d4a03a0b286d")
 			(effects
 				(font
 					(size 1 1)
@@ -16725,6 +17739,19 @@
 				)
 			)
 		)
+		(property "MFPN" "GRM21BR61H106KE43L"
+			(at 0 0 270)
+			(unlocked yes)
+			(layer "F.Fab")
+			(hide yes)
+			(uuid "6d630e6b-3ee9-4b17-8f98-c83d8ad07596")
+			(effects
+				(font
+					(size 1 1)
+					(thickness 0.12)
+				)
+			)
+		)
 		(property ki_fp_filters "C_*")
 		(path "/1e728d76-963a-4d02-a5f6-92f3889aa8bb/de244648-2874-4145-a986-279a9789d7c5")
 		(sheetname "/POWER/")
@@ -16873,6 +17900,19 @@
 			(layer "F.Fab")
 			(hide yes)
 			(uuid "96c09ebb-a09e-479b-8fc9-3d0c96300308")
+			(effects
+				(font
+					(size 1 1)
+					(thickness 0.12)
+				)
+			)
+		)
+		(property "MFPN" "2.54-2*2P"
+			(at 0 0 0)
+			(unlocked yes)
+			(layer "F.Fab")
+			(hide yes)
+			(uuid "30c5a69e-ed0d-4c13-9cf1-9103e4decfde")
 			(effects
 				(font
 					(size 1 1)
@@ -17175,6 +18215,19 @@
 				)
 			)
 		)
+		(property "MFPN" "RH-5015"
+			(at 0 0 0)
+			(unlocked yes)
+			(layer "F.Fab")
+			(hide yes)
+			(uuid "3067d879-3757-47d4-9d50-a3a201077de6")
+			(effects
+				(font
+					(size 1 1)
+					(thickness 0.12)
+				)
+			)
+		)
 		(property ki_fp_filters "Pin* Test*")
 		(path "/279fdd48-5106-437c-982b-915097006b04/3a6ae5e8-f640-4afc-8e31-a9b2f50298f6")
 		(sheetname "/DIAGNOSTICS/")
@@ -17350,6 +18403,19 @@
 			(layer "F.Fab")
 			(hide yes)
 			(uuid "248c58a2-3085-45db-a855-28df67e9618f")
+			(effects
+				(font
+					(size 1 1)
+					(thickness 0.12)
+				)
+			)
+		)
+		(property "MFPN" "SS54"
+			(at 0 0 0)
+			(unlocked yes)
+			(layer "F.Fab")
+			(hide yes)
+			(uuid "4336208b-5014-4f66-a92e-64bb5b14aed5")
 			(effects
 				(font
 					(size 1 1)

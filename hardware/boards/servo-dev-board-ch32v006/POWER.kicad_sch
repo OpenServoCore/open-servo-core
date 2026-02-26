@@ -2860,6 +2860,15 @@
 				(hide yes)
 			)
 		)
+		(property "MFPN" "CL21B105KBFNNNE"
+			(at 77.47 105.41 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(hide yes)
+			)
+		)
 		(pin "1"
 			(uuid "ed138921-36b6-4860-9453-d58edd52ba15")
 		)
@@ -2931,6 +2940,15 @@
 			)
 		)
 		(property "LCSC" "C2296"
+			(at 135.89 112.0774 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(hide yes)
+			)
+		)
+		(property "MFPN" "KT-0805Y"
 			(at 135.89 112.0774 0)
 			(effects
 				(font
@@ -3298,6 +3316,15 @@
 				(hide yes)
 			)
 		)
+		(property "MFPN" "0805W8F1501T5E"
+			(at 134.62 100.3299 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(hide yes)
+			)
+		)
 		(pin "1"
 			(uuid "380b3fc2-47e6-4326-ba2d-ab78c86f85f5")
 		)
@@ -3368,6 +3395,15 @@
 			)
 		)
 		(property "LCSC" "C8465"
+			(at 157.48 48.26 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(hide yes)
+			)
+		)
+		(property "MFPN" "WJ500V-5.08-2P"
 			(at 157.48 48.26 0)
 			(effects
 				(font
@@ -3583,6 +3619,15 @@
 				(hide yes)
 			)
 		)
+		(property "MFPN" "0805W8F5101T5E"
+			(at 80.518 42.926 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(hide yes)
+			)
+		)
 		(pin "1"
 			(uuid "af167f99-84a5-4bc7-9ce9-54a41da3da3b")
 		)
@@ -3652,6 +3697,15 @@
 			)
 		)
 		(property "LCSC" "C14289"
+			(at 92.71 104.14 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(hide yes)
+			)
+		)
+		(property "MFPN" "HT7533-1"
 			(at 92.71 104.14 0)
 			(effects
 				(font
@@ -3748,6 +3802,15 @@
 				(hide yes)
 			)
 		)
+		(property "MFPN" "0805W8F5101T5E"
+			(at 80.518 51.816 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(hide yes)
+			)
+		)
 		(pin "1"
 			(uuid "6feb2539-5fd3-42ce-b22b-b39518eba65d")
 		)
@@ -3816,6 +3879,15 @@
 			)
 		)
 		(property "LCSC" "C22452"
+			(at 34.29 93.98 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(hide yes)
+			)
+		)
+		(property "MFPN" "SS54"
 			(at 34.29 93.98 0)
 			(effects
 				(font
@@ -3976,6 +4048,15 @@
 				(hide yes)
 			)
 		)
+		(property "MFPN" "S2B-PH-K-S(LF)(SN)"
+			(at 116.84 41.91 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(hide yes)
+			)
+		)
 		(property "JLC Type" "Extended"
 			(at 115.57 50.8 0)
 			(effects
@@ -4053,6 +4134,15 @@
 			)
 		)
 		(property "LCSC" "C22452"
+			(at 34.29 114.3 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(hide yes)
+			)
+		)
+		(property "MFPN" "SS54"
 			(at 34.29 114.3 0)
 			(effects
 				(font
@@ -4140,6 +4230,15 @@
 			)
 		)
 		(property "LCSC" "C668623"
+			(at 33.02 38.1 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(hide yes)
+			)
+		)
+		(property "MFPN" "TYPE-C 6P(073)"
 			(at 33.02 38.1 0)
 			(effects
 				(font
@@ -4314,6 +4413,15 @@
 				(hide yes)
 			)
 		)
+		(property "MFPN" "SS54"
+			(at 34.29 104.14 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(hide yes)
+			)
+		)
 		(property "JLC Type" "Basic"
 			(at 34.29 104.14 0)
 			(effects
@@ -4464,6 +4572,15 @@
 				(hide yes)
 			)
 		)
+		(property "MFPN" "GRM21BR61H106KE43L"
+			(at 69.85 105.41 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(hide yes)
+			)
+		)
 		(pin "1"
 			(uuid "9fb3738c-ba68-46ef-a8b8-a861d6b56bd2")
 		)
@@ -4532,6 +4649,15 @@
 			)
 		)
 		(property "LCSC" "C440198"
+			(at 107.188 105.664 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(hide yes)
+			)
+		)
+		(property "MFPN" "GRM21BR61H106KE43L"
 			(at 107.188 105.664 0)
 			(effects
 				(font
@@ -4611,6 +4737,15 @@
 			)
 		)
 		(property "LCSC" "C2297"
+			(at 160.02 112.0774 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(hide yes)
+			)
+		)
+		(property "MFPN" "KT-0805G"
 			(at 160.02 112.0774 0)
 			(effects
 				(font
@@ -4774,6 +4909,15 @@
 			)
 		)
 		(property "LCSC" "C17710"
+			(at 158.75 100.3299 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(hide yes)
+			)
+		)
+		(property "MFPN" "0805W8F4700T5E"
 			(at 158.75 100.3299 0)
 			(effects
 				(font

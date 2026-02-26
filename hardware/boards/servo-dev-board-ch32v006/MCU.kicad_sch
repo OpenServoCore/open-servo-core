@@ -2230,6 +2230,15 @@
 				(hide yes)
 			)
 		)
+		(property "MFPN" "CL21B104KCFNNNE"
+			(at 147.32 58.4199 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(hide yes)
+			)
+		)
 		(pin "1"
 			(uuid "c9162886-0a21-4968-a148-740cb5696673")
 		)
@@ -2374,6 +2383,15 @@
 				(hide yes)
 			)
 		)
+		(property "MFPN" "NCD0805R1"
+			(at 33.02 112.0774 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(hide yes)
+			)
+		)
 		(property "Sim.Pins" "1=K 2=A"
 			(at 29.21 111.76 0)
 			(effects
@@ -2460,6 +2478,15 @@
 			)
 		)
 		(property "LCSC" "C52753342"
+			(at 90.17 82.55 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(hide yes)
+			)
+		)
+		(property "MFPN" "CH32V006F8P6"
 			(at 90.17 82.55 0)
 			(effects
 				(font
@@ -2600,6 +2627,15 @@
 			)
 		)
 		(property "LCSC" "C720477"
+			(at 161.29 59.69 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(hide yes)
+			)
+		)
+		(property "MFPN" "TS-1088-AR02016"
 			(at 161.29 59.69 0)
 			(effects
 				(font
@@ -2762,6 +2798,15 @@
 				(hide yes)
 			)
 		)
+		(property "MFPN" "GRM21BR61H106KE43L"
+			(at 21.336 53.34 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(hide yes)
+			)
+		)
 		(pin "1"
 			(uuid "482a8082-87d2-4f97-86ff-574b8a4c0a5e")
 		)
@@ -2830,6 +2875,15 @@
 			)
 		)
 		(property "LCSC" "C65114"
+			(at 67.31 99.06 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(hide yes)
+			)
+		)
+		(property "MFPN" "2.54-2*3P"
 			(at 67.31 99.06 0)
 			(effects
 				(font
@@ -2993,6 +3047,15 @@
 				(hide yes)
 			)
 		)
+		(property "MFPN" "0805W8F1002T5E"
+			(at 138.43 44.196 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(hide yes)
+			)
+		)
 		(pin "1"
 			(uuid "cc80c213-dc53-4edd-9b97-5ad05705c60b")
 		)
@@ -3063,6 +3126,15 @@
 			)
 		)
 		(property "LCSC" "C28233"
+			(at 32.766 53.34 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(hide yes)
+			)
+		)
+		(property "MFPN" "CL21B104KCFNNNE"
 			(at 32.766 53.34 0)
 			(effects
 				(font
@@ -3208,6 +3280,15 @@
 			)
 		)
 		(property "LCSC" "C17513"
+			(at 31.75 101.5999 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(hide yes)
+			)
+		)
+		(property "MFPN" "0805W8F1001T5E"
 			(at 31.75 101.5999 0)
 			(effects
 				(font
