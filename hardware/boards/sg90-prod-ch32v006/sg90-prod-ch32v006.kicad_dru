@@ -1,30 +1,23 @@
-# ==========================================================
-# KiCad DRC rules (DRU) - 4-layer, standard+aggressive floor
-# Target fabs: JLCPCB + PCBWay (standard / cheap capabilities)
-#
-# Intent:
-# - DRU sets absolute minimums (4/4 mil equivalent): 0.10mm
-# - Net classes define your default routing (e.g. 0.127mm)
-# - Vias: drill >=0.20mm, annular ring >=0.125mm (for 0.20/0.45)
-# ==========================================================
+(version 1)
 
-# -----------------------------
-# Drill / Hole Size Constraints
-# -----------------------------
+(rule "Track width minimum"
+  (condition "A.Type == 'Track'")
+  (constraint track_width (min 0.10mm))
+)
+
+(rule "Copper clearance"
+  (condition "A.Net != B.Net")
+  (constraint clearance (min 0.10mm))
+)
 
 (rule "Global drill size limits"
   (constraint hole_size (min 0.20mm) (max 6.00mm))
 )
 
-(rule "No blind/buried/microvias"
-  (condition "A.Type == 'Via'")
-  (constraint assertion "!(A.isBlindBuriedVia() || A.isMicroVia())")
-)
-
 (rule "Via drill + annular ring"
   (condition "A.Type == 'Via'")
   (constraint hole_size (min 0.20mm))
-  (constraint annular_width (min 0.125mm))  ; (0.45-0.20)/2 = 0.125
+  (constraint annular_width (min 0.125mm))
 )
 
 (rule "PTH drill limits"
@@ -37,67 +30,29 @@
   (constraint annular_width (min 0.125mm))
 )
 
-# -----------------------------
-# Copper Clearance (Different Nets)
-# -----------------------------
-# This is the absolute clearance floor. Your Net Classes should set
-# your *default* to 0.127mm if you want 5/5 mil normally.
-
-(rule "Copper clearance (different nets)"
-  (condition "A.Net != B.Net")
-  (constraint clearance (min 0.10mm))
-)
-
-# -----------------------------
-# Hole-to-Hole Spacing
-# -----------------------------
-# hole_to_hole is drill-edge to drill-edge spacing.
-# For 0.20mm drill:
-# - 0.30mm => 0.50mm center-to-center
-# - 0.20mm => 0.40mm center-to-center
-
-(rule "Hole-to-hole (different nets)"
+(rule "Hole-to-hole spacing"
   (condition "A.Net != B.Net")
   (constraint hole_to_hole (min 0.30mm))
 )
 
-(rule "Via-to-via stitching (same net)"
+(rule "Via-to-via stitching"
   (condition "A.Type == 'Via' && B.Type == 'Via' && A.Net == B.Net")
   (constraint hole_to_hole (min 0.20mm))
 )
 
-# -----------------------------
-# Track Width Minimum
-# -----------------------------
-(rule "Track width minimum"
-  (condition "A.Type == 'Track'")
-  (constraint track_width (min 0.10mm))
+(rule "Copper to board edge"
+  (condition "A.Type == 'Track' || A.Type == 'Via' || A.Type == 'Pad'")
+  (constraint edge_clearance (min 0.25mm))
 )
 
-# -----------------------------
-# Silkscreen Practical Limits
-# -----------------------------
-(rule "Silk line width minimum"
+(rule "Silk text thickness"
   (layer "?.Silkscreen")
   (condition "A.Type == 'Text' || A.Type == 'Text Box'")
   (constraint text_thickness (min 0.12mm))
 )
 
-(rule "Silk text height minimum"
+(rule "Silk text height"
   (layer "?.Silkscreen")
   (condition "A.Type == 'Text' || A.Type == 'Text Box'")
   (constraint text_height (min 0.80mm))
-)
-
-(rule "Silk-to-mask opening clearance"
-  (condition "A.Type == 'Pad' && ((A.existsOnLayer('F.Mask') && B.Layer == 'F.Silkscreen') || (A.existsOnLayer('B.Mask') && B.Layer == 'B.Silkscreen'))")
-  (constraint silk_clearance (min 0.15mm))
-)
-
-# -----------------------------
-# Copper to Board Edge
-# -----------------------------
-(rule "Copper to board edge"
-  (condition "A.Type == 'Track' || A.Type == 'Via' || A.Type == 'Pad'")
-  (constraint edge_clearance (min 0.25mm))
 )

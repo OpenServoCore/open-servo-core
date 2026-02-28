@@ -37,9 +37,9 @@
         "other_text_thickness": 0.12,
         "other_text_upright": false,
         "pads": {
-          "drill": 0.9,
-          "height": 1.8,
-          "width": 1.8
+          "drill": 0.75,
+          "height": 1.5,
+          "width": 1.5
         },
         "silk_line_width": 0.15,
         "silk_text_italic": false,
@@ -528,7 +528,7 @@
         "microvia_diameter": 0.45,
         "microvia_drill": 0.2,
         "name": "3V3",
-        "pcb_color": "rgba(0, 0, 0, 0.000)",
+        "pcb_color": "rgb(255, 214, 10)",
         "priority": 2,
         "schematic_color": "rgba(0, 0, 0, 0.000)",
         "track_width": 0.2,
@@ -542,7 +542,7 @@
         "microvia_diameter": 0.45,
         "microvia_drill": 0.2,
         "name": "ANALOG",
-        "pcb_color": "rgba(0, 0, 0, 0.000)",
+        "pcb_color": "rgb(191, 90, 242)",
         "priority": 3,
         "schematic_color": "rgba(0, 0, 0, 0.000)",
         "track_width": 0.127,
@@ -556,7 +556,7 @@
         "microvia_diameter": 0.45,
         "microvia_drill": 0.2,
         "name": "DIGITAL",
-        "pcb_color": "rgba(0, 0, 0, 0.000)",
+        "pcb_color": "rgb(10, 132, 255)",
         "priority": 4,
         "schematic_color": "rgba(0, 0, 0, 0.000)",
         "track_width": 0.127,
@@ -568,7 +568,7 @@
         "microvia_diameter": 0.45,
         "microvia_drill": 0.2,
         "name": "MOTOR",
-        "pcb_color": "rgba(0, 0, 0, 0.000)",
+        "pcb_color": "rgb(255, 59, 48)",
         "priority": 0,
         "schematic_color": "rgba(0, 0, 0, 0.000)",
         "track_width": 0.6,
@@ -580,7 +580,7 @@
         "microvia_diameter": 0.45,
         "microvia_drill": 0.2,
         "name": "VSYS_FEED",
-        "pcb_color": "rgba(0, 0, 0, 0.000)",
+        "pcb_color": "rgb(255, 149, 0)",
         "priority": 1,
         "schematic_color": "rgba(0, 0, 0, 0.000)",
         "track_width": 0.6,
@@ -611,7 +611,7 @@
         "pattern": "/ISNS(\\+|\\-)|/VSN(A|B)|/VNTC|/VPOS"
       },
       {
-        "netclass": "Default",
+        "netclass": "DIGITAL",
         "pattern": "/TX|/RX|/TX_EN|/DATA|/EN|/IN(1|2)|/SWDIO|/nRST"
       }
     ]
