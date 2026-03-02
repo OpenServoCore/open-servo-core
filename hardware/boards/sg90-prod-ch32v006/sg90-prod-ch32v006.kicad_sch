@@ -4181,6 +4181,16 @@
 		)
 		(uuid "6c6e87ca-2a8f-43a7-9c36-d19d68948659")
 	)
+	(wire
+		(pts
+			(xy 81.28 81.28) (xy 87.63 81.28)
+		)
+		(stroke
+			(width 0)
+			(type default)
+		)
+		(uuid "6c888362-2d01-41e7-a04e-1883d62bb642")
+	)
 	(polyline
 		(pts
 			(xy 11.43 71.12) (xy 107.95 71.12)
@@ -4480,6 +4490,16 @@
 			(type default)
 		)
 		(uuid "9ecd5865-5ae3-4901-9b70-8ee9c7a7a1b1")
+	)
+	(wire
+		(pts
+			(xy 95.25 81.28) (xy 101.6 81.28)
+		)
+		(stroke
+			(width 0)
+			(type default)
+		)
+		(uuid "9ed661f2-3320-4e4a-9a4f-a9590269f535")
 	)
 	(wire
 		(pts
@@ -5111,6 +5131,16 @@
 		)
 		(uuid "03dd0fb7-f43c-4704-b21b-91450510f51a")
 	)
+	(label "OUTB"
+		(at 101.6 81.28 180)
+		(effects
+			(font
+				(size 1.27 1.27)
+			)
+			(justify right bottom)
+		)
+		(uuid "08519880-f0fa-4df8-91c5-25a69d9b52aa")
+	)
 	(label "VPOS"
 		(at 259.08 114.3 180)
 		(effects
@@ -5320,6 +5350,16 @@
 			(justify right bottom)
 		)
 		(uuid "6db8203f-fdc4-4329-8da6-cb0b5653b6b1")
+	)
+	(label "OUTA"
+		(at 81.28 81.28 0)
+		(effects
+			(font
+				(size 1.27 1.27)
+			)
+			(justify left bottom)
+		)
+		(uuid "7427eeb2-f344-4cbe-9a78-6445239d29fe")
 	)
 	(label "VINS"
 		(at 33.02 173.99 180)
@@ -10988,6 +11028,82 @@
 			(project "sg90-prod-ch32v006"
 				(path "/6062e7d2-0c72-467e-b49c-6387ba053e09"
 					(reference "#PWR021")
+					(unit 1)
+				)
+			)
+		)
+	)
+	(symbol
+		(lib_id "Device:C")
+		(at 91.44 81.28 90)
+		(unit 1)
+		(exclude_from_sim no)
+		(in_bom yes)
+		(on_board yes)
+		(dnp no)
+		(uuid "fe047317-477d-462b-98a4-bc5634974f28")
+		(property "Reference" "C14"
+			(at 91.44 77.47 90)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+			)
+		)
+		(property "Value" "0.1µF"
+			(at 91.44 85.09 90)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+			)
+		)
+		(property "Footprint" "Capacitor_SMD:C_0402_1005Metric"
+			(at 71.13 118.9548 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(hide yes)
+			)
+		)
+		(property "Datasheet" "~"
+			(at 67.32 119.92 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(hide yes)
+			)
+		)
+		(property "Description" "Unpolarized capacitor"
+			(at 67.32 119.92 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(hide yes)
+			)
+		)
+		(property "LCSC" "C1525"
+			(at 88.9 79.248 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(hide yes)
+			)
+		)
+		(pin "1"
+			(uuid "b322f724-7ed7-4b1e-9fb6-a2e8f723a3a0")
+		)
+		(pin "2"
+			(uuid "819dfc99-8260-4893-b433-34b182c63ab7")
+		)
+		(instances
+			(project "sg90-prod-ch32v006"
+				(path "/6062e7d2-0c72-467e-b49c-6387ba053e09"
+					(reference "C14")
 					(unit 1)
 				)
 			)

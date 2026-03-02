@@ -1,0 +1,7 @@
+{
+  "name": "JLCPCB 4-Layer 1.6mm Template",
+  "description": "Pre-configured KiCad project optimized for JLCPCB 4-layer 1.6mm PCB manufacturing",
+  "version": "1.0.0",
+  "author": "Open Servo Core",
+  "keywords": ["JLCPCB", "4-layer", "1.6mm", "PCB", "template"]
+}

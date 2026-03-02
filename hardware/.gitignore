@@ -16,6 +16,7 @@ _autosave-*
 *-save.pro
 *-save.kicad_pcb
 fp-info-cache
+*.*_old
 
 # Netlist files (exported from Eeschema)
 *.net
@@ -26,3 +27,8 @@ fp-info-cache
 
 # Do not check in lock files
 *.lck
+
+# Ignore all generated production files
+*.zip
+*.csv
+boards/*/jlcpcb
