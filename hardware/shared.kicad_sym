@@ -454,6 +454,232 @@
 		)
 		(embedded_fonts no)
 	)
+	(symbol "74LVC2G241GS,115"
+		(exclude_from_sim no)
+		(in_bom yes)
+		(on_board yes)
+		(property "Reference" "U"
+			(at 0 7.62 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+			)
+		)
+		(property "Value" "74LVC2G241GS,115"
+			(at 0 -10.16 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+			)
+		)
+		(property "Footprint" "shared:XSON-8_L1.4-W1.0-P0.35-S0.55-BL"
+			(at 0 -12.7 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(hide yes)
+			)
+		)
+		(property "Datasheet" "https://lcsc.com/product-detail/presales_Nexperia-74LVC2G241GS-115_C548628.html"
+			(at 0 -15.24 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(hide yes)
+			)
+		)
+		(property "Description" ""
+			(at 0 0 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(hide yes)
+			)
+		)
+		(property "LCSC" "C548628"
+			(at 0 -17.78 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(hide yes)
+			)
+		)
+		(symbol "74LVC2G241GS,115_0_1"
+			(rectangle
+				(start -7.62 5.08)
+				(end 7.62 -7.62)
+				(stroke
+					(width 0)
+					(type default)
+				)
+				(fill
+					(type background)
+				)
+			)
+			(circle
+				(center -6.35 3.81)
+				(radius 0.38)
+				(stroke
+					(width 0)
+					(type default)
+				)
+				(fill
+					(type none)
+				)
+			)
+			(pin input line
+				(at -10.16 2.54 0)
+				(length 2.54)
+				(name "~{1OE}"
+					(effects
+						(font
+							(size 1.27 1.27)
+						)
+					)
+				)
+				(number "1"
+					(effects
+						(font
+							(size 1.27 1.27)
+						)
+					)
+				)
+			)
+			(pin input line
+				(at -10.16 0 0)
+				(length 2.54)
+				(name "1A"
+					(effects
+						(font
+							(size 1.27 1.27)
+						)
+					)
+				)
+				(number "2"
+					(effects
+						(font
+							(size 1.27 1.27)
+						)
+					)
+				)
+			)
+			(pin output line
+				(at -10.16 -2.54 0)
+				(length 2.54)
+				(name "2Y"
+					(effects
+						(font
+							(size 1.27 1.27)
+						)
+					)
+				)
+				(number "3"
+					(effects
+						(font
+							(size 1.27 1.27)
+						)
+					)
+				)
+			)
+			(pin power_in line
+				(at -10.16 -5.08 0)
+				(length 2.54)
+				(name "GND"
+					(effects
+						(font
+							(size 1.27 1.27)
+						)
+					)
+				)
+				(number "4"
+					(effects
+						(font
+							(size 1.27 1.27)
+						)
+					)
+				)
+			)
+			(pin power_in line
+				(at 10.16 2.54 180)
+				(length 2.54)
+				(name "VCC"
+					(effects
+						(font
+							(size 1.27 1.27)
+						)
+					)
+				)
+				(number "8"
+					(effects
+						(font
+							(size 1.27 1.27)
+						)
+					)
+				)
+			)
+			(pin input line
+				(at 10.16 0 180)
+				(length 2.54)
+				(name "2OE"
+					(effects
+						(font
+							(size 1.27 1.27)
+						)
+					)
+				)
+				(number "7"
+					(effects
+						(font
+							(size 1.27 1.27)
+						)
+					)
+				)
+			)
+			(pin output line
+				(at 10.16 -2.54 180)
+				(length 2.54)
+				(name "1Y"
+					(effects
+						(font
+							(size 1.27 1.27)
+						)
+					)
+				)
+				(number "6"
+					(effects
+						(font
+							(size 1.27 1.27)
+						)
+					)
+				)
+			)
+			(pin input line
+				(at 10.16 -5.08 180)
+				(length 2.54)
+				(name "2A"
+					(effects
+						(font
+							(size 1.27 1.27)
+						)
+					)
+				)
+				(number "5"
+					(effects
+						(font
+							(size 1.27 1.27)
+						)
+					)
+				)
+			)
+		)
+		(embedded_fonts no)
+	)
 	(symbol "B3B-PH-K-S(LF)(SN)"
 		(exclude_from_sim no)
 		(in_bom yes)
@@ -1533,7 +1759,7 @@
 			(pin bidirectional line
 				(at -21.59 -5.08 0)
 				(length 2.54)
-				(name "PD0"
+				(name "PD0/TX_2"
 					(effects
 						(font
 							(size 1.27 1.27)
@@ -1551,7 +1777,7 @@
 			(pin bidirectional line
 				(at -5.08 21.59 270)
 				(length 2.54)
-				(name "PD6/A6"
+				(name "PD6/A6/RX/TX_1"
 					(effects
 						(font
 							(size 1.27 1.27)
@@ -1587,7 +1813,7 @@
 			(pin bidirectional line
 				(at -2.54 21.59 270)
 				(length 2.54)
-				(name "PD5/A5"
+				(name "PD5/A5/TX/RX_1"
 					(effects
 						(font
 							(size 1.27 1.27)
@@ -1605,7 +1831,7 @@
 			(pin bidirectional line
 				(at -2.54 -21.59 90)
 				(length 2.54)
-				(name "PC0/TX_3"
+				(name "PC0/TX_3/T1C3_2"
 					(effects
 						(font
 							(size 1.27 1.27)
@@ -1749,7 +1975,7 @@
 			(pin bidirectional line
 				(at 21.59 2.54 180)
 				(length 2.54)
-				(name "PC7"
+				(name "PC7/T1C3_3"
 					(effects
 						(font
 							(size 1.27 1.27)
@@ -5032,106 +5258,4 @@
 		)
 		(embedded_fonts no)
 	)
-
-  (symbol "74LVC2G241GS,115"
-    (in_bom yes)
-    (on_board yes)
-    (property
-      "Reference"
-      "U"
-      (id 0)
-      (at 0 7.62 0)
-      (effects (font (size 1.27 1.27) ) )
-    )
-    (property
-      "Value"
-      "74LVC2G241GS,115"
-      (id 1)
-      (at 0 -10.16 0)
-      (effects (font (size 1.27 1.27) ) )
-    )
-    (property
-      "Footprint"
-      "shared:XSON-8_L1.4-W1.0-P0.35-S0.55-BL"
-      (id 2)
-      (at 0 -12.70 0)
-      (effects (font (size 1.27 1.27) ) hide)
-    )
-    (property
-      "Datasheet"
-      "https://lcsc.com/product-detail/presales_Nexperia-74LVC2G241GS-115_C548628.html"
-      (id 3)
-      (at 0 -15.24 0)
-      (effects (font (size 1.27 1.27) ) hide)
-    )
-    (property
-      "LCSC"
-      "C548628"
-      (id 5)
-      (at 0 -17.78 0)
-      (effects (font (size 1.27 1.27) ) hide)
-    )
-    (symbol "74LVC2G241GS,115_0_1"
-      (rectangle
-        (start -7.62 5.08)
-        (end 7.62 -7.62)
-        (stroke (width 0) (type default) (color 0 0 0 0))
-        (fill (type background))
-      )
-      (circle
-        (center -6.35 3.81)
-        (radius 0.38)
-        (stroke (width 0) (type default) (color 0 0 0 0))
-        (fill (type none))
-      )
-      (pin power_in line
-        (at 10.16 2.54 180)
-        (length 2.54)
-        (name "VCC" (effects (font (size 1.27 1.27))))
-        (number "8" (effects (font (size 1.27 1.27))))
-      )
-      (pin input line
-        (at 10.16 -0.00 180)
-        (length 2.54)
-        (name "2OE" (effects (font (size 1.27 1.27))))
-        (number "7" (effects (font (size 1.27 1.27))))
-      )
-      (pin output line
-        (at 10.16 -2.54 180)
-        (length 2.54)
-        (name "1Y" (effects (font (size 1.27 1.27))))
-        (number "6" (effects (font (size 1.27 1.27))))
-      )
-      (pin input line
-        (at 10.16 -5.08 180)
-        (length 2.54)
-        (name "2A" (effects (font (size 1.27 1.27))))
-        (number "5" (effects (font (size 1.27 1.27))))
-      )
-      (pin power_in line
-        (at -10.16 -5.08 0)
-        (length 2.54)
-        (name "GND" (effects (font (size 1.27 1.27))))
-        (number "4" (effects (font (size 1.27 1.27))))
-      )
-      (pin output line
-        (at -10.16 -2.54 0)
-        (length 2.54)
-        (name "2Y" (effects (font (size 1.27 1.27))))
-        (number "3" (effects (font (size 1.27 1.27))))
-      )
-      (pin input line
-        (at -10.16 -0.00 0)
-        (length 2.54)
-        (name "1A" (effects (font (size 1.27 1.27))))
-        (number "2" (effects (font (size 1.27 1.27))))
-      )
-      (pin input line
-        (at -10.16 2.54 0)
-        (length 2.54)
-        (name "~{1OE}" (effects (font (size 1.27 1.27))))
-        (number "1" (effects (font (size 1.27 1.27))))
-      )
-    )
-  )
 )

@@ -52,32 +52,6 @@
 		)
 	)
 	(attr through_hole)
-	(fp_text user "A"
-		(at -3.6 1 0)
-		(unlocked yes)
-		(layer "F.SilkS")
-		(uuid "a669683e-c45c-4477-aec4-9f26087ac216")
-		(effects
-			(font
-				(size 1 1)
-				(thickness 0.1)
-			)
-			(justify top)
-		)
-	)
-	(fp_text user "B"
-		(at 3.6 1 0)
-		(unlocked yes)
-		(layer "F.SilkS")
-		(uuid "d5794335-bf6b-4328-8e3e-8b7717cbd28a")
-		(effects
-			(font
-				(size 1 1)
-				(thickness 0.1)
-			)
-			(justify top)
-		)
-	)
 	(fp_text user "${REFERENCE}"
 		(at 0 0 0)
 		(layer "F.Fab")
@@ -90,7 +64,7 @@
 		)
 	)
 	(pad "1" thru_hole roundrect
-		(at -3.6 0)
+		(at -3.5 0)
 		(size 1.8 1.8)
 		(drill 0.75)
 		(layers "*.Cu" "*.Mask")
@@ -100,7 +74,7 @@
 		(uuid "f33096c1-82cb-4679-b3c7-2312cb9ff568")
 	)
 	(pad "2" thru_hole roundrect
-		(at 3.6 0)
+		(at 3.5 0)
 		(size 1.8 1.8)
 		(drill 0.75)
 		(layers "*.Cu" "*.Mask")
