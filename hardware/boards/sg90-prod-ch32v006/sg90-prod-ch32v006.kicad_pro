@@ -37,9 +37,9 @@
         "other_text_thickness": 0.12,
         "other_text_upright": false,
         "pads": {
-          "drill": 0.9,
-          "height": 1.8,
-          "width": 1.8
+          "drill": 0.75,
+          "height": 1.5,
+          "width": 1.5
         },
         "silk_line_width": 0.15,
         "silk_text_italic": false,
@@ -48,7 +48,7 @@
         "silk_text_thickness": 0.15,
         "silk_text_upright": false,
         "zones": {
-          "min_clearance": 0.3
+          "min_clearance": 0.127
         }
       },
       "diff_pair_dimensions": [
@@ -58,7 +58,20 @@
           "width": 0.0
         }
       ],
-      "drc_exclusions": [],
+      "drc_exclusions": [
+        [
+          "padstack|102100000|95000000|d62d844b-ae8a-4933-a12f-831f1af00e5b|00000000-0000-0000-0000-000000000000",
+          "J4 is a one sided TH"
+        ],
+        [
+          "padstack|103500000|92460000|c1616f3f-b454-406c-9ce8-e37e84addb83|00000000-0000-0000-0000-000000000000",
+          "J4 is a one sided TH"
+        ],
+        [
+          "padstack|103500000|97540000|36b7b4d3-6734-4a31-91f6-bf09b8f160d1|00000000-0000-0000-0000-000000000000",
+          "J4 is a one sided TH"
+        ]
+      ],
       "meta": {
         "version": 2
       },
@@ -123,22 +136,22 @@
       },
       "rules": {
         "max_error": 0.005,
-        "min_clearance": 0.09,
-        "min_connection": 0.09,
-        "min_copper_edge_clearance": 0.3,
+        "min_clearance": 0.1,
+        "min_connection": 0.1,
+        "min_copper_edge_clearance": 0.4,
         "min_groove_width": 0.0,
-        "min_hole_clearance": 0.254,
-        "min_hole_to_hole": 0.254,
+        "min_hole_clearance": 0.1,
+        "min_hole_to_hole": 0.3,
         "min_microvia_diameter": 0.2,
         "min_microvia_drill": 0.1,
         "min_resolved_spokes": 2,
         "min_silk_clearance": 0.0,
-        "min_text_height": 1.0,
-        "min_text_thickness": 0.15,
-        "min_through_hole_diameter": 0.2,
-        "min_track_width": 0.09,
-        "min_via_annular_width": 0.075,
-        "min_via_diameter": 0.45,
+        "min_text_height": 0.8,
+        "min_text_thickness": 0.12,
+        "min_through_hole_diameter": 0.3,
+        "min_track_width": 0.1,
+        "min_via_annular_width": 0.125,
+        "min_via_diameter": 0.55,
         "solder_mask_to_copper_clearance": 0.0,
         "use_height_for_length_calcs": true
       },
@@ -188,18 +201,9 @@
       ],
       "track_widths": [
         0.0,
-        0.09,
-        0.1,
-        0.12,
         0.127,
-        0.15,
         0.2,
-        0.25,
-        0.3,
-        0.4,
-        0.5,
-        0.8,
-        1.0
+        0.6
       ],
       "tuning_pattern_settings": {
         "diff_pair_defaults": {
@@ -233,20 +237,8 @@
           "drill": 0.0
         },
         {
-          "diameter": 0.45,
-          "drill": 0.2
-        },
-        {
-          "diameter": 0.6,
+          "diameter": 0.55,
           "drill": 0.3
-        },
-        {
-          "diameter": 0.8,
-          "drill": 0.4
-        },
-        {
-          "diameter": 1.0,
-          "drill": 0.5
         }
       ],
       "zones_allow_external_fillets": false
@@ -505,72 +497,86 @@
     "classes": [
       {
         "bus_width": 12,
-        "clearance": 0.1,
-        "diff_pair_gap": 0.2,
+        "clearance": 0.127,
+        "diff_pair_gap": 0.127,
         "diff_pair_via_gap": 0.25,
-        "diff_pair_width": 0.2,
+        "diff_pair_width": 0.127,
         "line_style": 0,
-        "microvia_diameter": 0.45,
-        "microvia_drill": 0.2,
+        "microvia_diameter": 0.55,
+        "microvia_drill": 0.3,
         "name": "Default",
         "pcb_color": "rgba(0, 0, 0, 0.000)",
         "priority": 2147483647,
         "schematic_color": "rgba(0, 0, 0, 0.000)",
-        "track_width": 0.1,
-        "via_diameter": 0.45,
-        "via_drill": 0.2,
+        "track_width": 0.127,
+        "via_diameter": 0.55,
+        "via_drill": 0.3,
         "wire_width": 6
       },
       {
-        "clearance": 0.1,
-        "diff_pair_gap": 0.1,
-        "diff_pair_width": 0.1,
-        "microvia_diameter": 0.45,
-        "microvia_drill": 0.2,
-        "name": "Dense",
-        "pcb_color": "rgba(0, 0, 0, 0.000)",
+        "clearance": 0.127,
+        "diff_pair_gap": 0.127,
+        "diff_pair_width": 0.127,
+        "microvia_diameter": 0.55,
+        "microvia_drill": 0.3,
+        "name": "3V3",
+        "pcb_color": "rgb(255, 214, 10)",
+        "priority": 2,
+        "schematic_color": "rgba(0, 0, 0, 0.000)",
+        "track_width": 0.2,
+        "via_diameter": 0.55,
+        "via_drill": 0.3
+      },
+      {
+        "clearance": 0.127,
+        "diff_pair_gap": 0.127,
+        "diff_pair_width": 0.127,
+        "microvia_diameter": 0.55,
+        "microvia_drill": 0.3,
+        "name": "ANALOG",
+        "pcb_color": "rgb(191, 90, 242)",
         "priority": 3,
         "schematic_color": "rgba(0, 0, 0, 0.000)",
-        "track_width": 0.1,
-        "via_diameter": 0.45,
-        "via_drill": 0.2
+        "track_width": 0.127,
+        "via_diameter": 0.55,
+        "via_drill": 0.3
       },
       {
-        "clearance": 0.25,
-        "microvia_diameter": 0.45,
-        "microvia_drill": 0.2,
-        "name": "Motor",
-        "pcb_color": "rgba(0, 0, 0, 0.000)",
-        "priority": 0,
+        "clearance": 0.127,
+        "diff_pair_gap": 0.127,
+        "diff_pair_width": 0.127,
+        "microvia_diameter": 0.55,
+        "microvia_drill": 0.3,
+        "name": "DIGITAL",
+        "pcb_color": "rgb(10, 132, 255)",
+        "priority": 4,
         "schematic_color": "rgba(0, 0, 0, 0.000)",
-        "track_width": 1.0,
-        "via_diameter": 1.0,
-        "via_drill": 0.5
-      },
-      {
-        "clearance": 0.25,
-        "microvia_diameter": 0.45,
-        "microvia_drill": 0.2,
-        "name": "Power",
-        "pcb_color": "rgba(0, 0, 0, 0.000)",
-        "priority": 1,
-        "schematic_color": "rgba(0, 0, 0, 0.000)",
-        "track_width": 0.5,
-        "via_diameter": 0.8,
-        "via_drill": 0.4
+        "track_width": 0.127,
+        "via_diameter": 0.55,
+        "via_drill": 0.3
       },
       {
         "clearance": 0.2,
-        "diff_pair_gap": 0.25,
-        "diff_pair_width": 0.25,
-        "microvia_diameter": 0.45,
-        "microvia_drill": 0.2,
-        "name": "Signal",
-        "pcb_color": "rgba(0, 0, 0, 0.000)",
-        "priority": 2,
+        "microvia_diameter": 0.55,
+        "microvia_drill": 0.3,
+        "name": "MOTOR",
+        "pcb_color": "rgb(255, 59, 48)",
+        "priority": 0,
         "schematic_color": "rgba(0, 0, 0, 0.000)",
-        "track_width": 0.25,
-        "via_diameter": 0.6,
+        "track_width": 0.6,
+        "via_diameter": 0.55,
+        "via_drill": 0.3
+      },
+      {
+        "clearance": 0.2,
+        "microvia_diameter": 0.55,
+        "microvia_drill": 0.3,
+        "name": "VSYS_FEED",
+        "pcb_color": "rgb(255, 149, 0)",
+        "priority": 1,
+        "schematic_color": "rgba(0, 0, 0, 0.000)",
+        "track_width": 0.6,
+        "via_diameter": 0.55,
         "via_drill": 0.3
       }
     ],
@@ -579,7 +585,28 @@
     },
     "net_colors": null,
     "netclass_assignments": null,
-    "netclass_patterns": []
+    "netclass_patterns": [
+      {
+        "netclass": "MOTOR",
+        "pattern": "/MOT_(A|B)|PGND"
+      },
+      {
+        "netclass": "VSYS_FEED",
+        "pattern": "VSYS"
+      },
+      {
+        "netclass": "3V3",
+        "pattern": "\\+3V3|/3V3_DRV"
+      },
+      {
+        "netclass": "ANALOG",
+        "pattern": "/ISNS(\\+|\\-)|/VSN(A|B)|/VNTC|/VPOS"
+      },
+      {
+        "netclass": "DIGITAL",
+        "pattern": "/TX|/RX|/TX_EN|/DATA|/EN|/IN(1|2)|/SWDIO|/nRST"
+      }
+    ]
   },
   "pcbnew": {
     "last_paths": {
@@ -622,6 +649,30 @@
           "group_by": false,
           "label": "Qty",
           "name": "${QUANTITY}",
+          "show": false
+        },
+        {
+          "group_by": false,
+          "label": "DNP",
+          "name": "${DNP}",
+          "show": false
+        },
+        {
+          "group_by": false,
+          "label": "Exclude from BOM",
+          "name": "${EXCLUDE_FROM_BOM}",
+          "show": false
+        },
+        {
+          "group_by": false,
+          "label": "Exclude from Board",
+          "name": "${EXCLUDE_FROM_BOARD}",
+          "show": false
+        },
+        {
+          "group_by": true,
+          "label": "Footprint",
+          "name": "Footprint",
           "show": true
         },
         {
@@ -631,27 +682,9 @@
           "show": true
         },
         {
-          "group_by": true,
-          "label": "DNP",
-          "name": "${DNP}",
-          "show": true
-        },
-        {
-          "group_by": true,
-          "label": "Exclude from BOM",
-          "name": "${EXCLUDE_FROM_BOM}",
-          "show": true
-        },
-        {
-          "group_by": true,
-          "label": "Exclude from Board",
-          "name": "${EXCLUDE_FROM_BOARD}",
-          "show": true
-        },
-        {
-          "group_by": true,
-          "label": "Footprint",
-          "name": "Footprint",
+          "group_by": false,
+          "label": "Description",
+          "name": "Description",
           "show": true
         },
         {
@@ -659,12 +692,36 @@
           "label": "Datasheet",
           "name": "Datasheet",
           "show": true
+        },
+        {
+          "group_by": false,
+          "label": "JLC Type",
+          "name": "JLC Type",
+          "show": true
+        },
+        {
+          "group_by": false,
+          "label": "LCSC",
+          "name": "LCSC",
+          "show": true
+        },
+        {
+          "group_by": false,
+          "label": "MFPN",
+          "name": "MFPN",
+          "show": true
+        },
+        {
+          "group_by": false,
+          "label": "#",
+          "name": "${ITEM_NUMBER}",
+          "show": false
         }
       ],
       "filter_string": "",
       "group_symbols": true,
-      "include_excluded_from_bom": true,
-      "name": "Default Editing",
+      "include_excluded_from_bom": false,
+      "name": "",
       "sort_asc": true,
       "sort_field": "Reference"
     },
