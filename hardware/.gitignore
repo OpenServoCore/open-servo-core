@@ -32,3 +32,6 @@ fp-info-cache
 *.zip
 *.csv
 boards/*/jlcpcb
+
+# KiCad History Files - Introduced in 10.0.0
+.history
