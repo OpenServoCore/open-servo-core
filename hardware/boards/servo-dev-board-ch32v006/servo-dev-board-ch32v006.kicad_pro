@@ -858,7 +858,8 @@
         "VSNA",
         "VSNB",
         "ISNS+",
-        "ISNS-"
+        "ISNS-",
+        "VSNS"
       ],
       "MOT_BUS": [
         "MOT_A",
@@ -924,7 +925,7 @@
         "uuid": "6062e7d2-0c72-467e-b49c-6387ba053e09"
       }
     ],
-    "used_designators": "NT3",
+    "used_designators": "",
     "variants": []
   },
   "sheets": [

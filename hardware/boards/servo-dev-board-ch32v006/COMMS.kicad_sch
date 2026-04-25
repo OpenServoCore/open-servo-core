@@ -922,6 +922,244 @@
 			)
 			(embedded_fonts no)
 		)
+		(symbol "Jumper:Jumper_3_Open"
+			(pin_names
+				(offset 0)
+				(hide yes)
+			)
+			(exclude_from_sim no)
+			(in_bom no)
+			(on_board yes)
+			(in_pos_files yes)
+			(duplicate_pin_numbers_are_jumpers no)
+			(property "Reference" "JP"
+				(at -2.54 -2.54 0)
+				(show_name no)
+				(do_not_autoplace no)
+				(effects
+					(font
+						(size 1.27 1.27)
+					)
+				)
+			)
+			(property "Value" "Jumper_3_Open"
+				(at 0 2.794 0)
+				(show_name no)
+				(do_not_autoplace no)
+				(effects
+					(font
+						(size 1.27 1.27)
+					)
+				)
+			)
+			(property "Footprint" ""
+				(at 0 0 0)
+				(show_name no)
+				(do_not_autoplace no)
+				(hide yes)
+				(effects
+					(font
+						(size 1.27 1.27)
+					)
+				)
+			)
+			(property "Datasheet" ""
+				(at 0 -10.16 0)
+				(show_name no)
+				(do_not_autoplace no)
+				(hide yes)
+				(effects
+					(font
+						(size 1.27 1.27)
+					)
+				)
+			)
+			(property "Description" "Jumper, 3-pole, both open"
+				(at 0 -12.7 0)
+				(show_name no)
+				(do_not_autoplace no)
+				(hide yes)
+				(effects
+					(font
+						(size 1.27 1.27)
+					)
+				)
+			)
+			(property private "KLC_S5.1" "This is a generic symbol, it has fp-filter, but no default footprint"
+				(at 0 -17.78 0)
+				(show_name yes)
+				(do_not_autoplace no)
+				(hide yes)
+				(effects
+					(font
+						(size 1.27 1.27)
+					)
+				)
+			)
+			(property private "KLC_S3.3" "Graphical-Symbol: thickness is 6mm, fill is background"
+				(at -1.27 -20.32 0)
+				(show_name yes)
+				(do_not_autoplace no)
+				(hide yes)
+				(effects
+					(font
+						(size 1.27 1.27)
+					)
+				)
+			)
+			(property "ki_keywords" "Jumper SPDT"
+				(at 0 0 0)
+				(show_name no)
+				(do_not_autoplace no)
+				(hide yes)
+				(effects
+					(font
+						(size 1.27 1.27)
+					)
+				)
+			)
+			(property "ki_fp_filters" "Jumper* TestPoint*3Pads* TestPoint*Bridge*"
+				(at 0 0 0)
+				(show_name no)
+				(do_not_autoplace no)
+				(hide yes)
+				(effects
+					(font
+						(size 1.27 1.27)
+					)
+				)
+			)
+			(symbol "Jumper_3_Open_0_0"
+				(circle
+					(center -2.032 0)
+					(radius 0.508)
+					(stroke
+						(width 0)
+						(type default)
+					)
+					(fill
+						(type none)
+					)
+				)
+				(circle
+					(center 0 0)
+					(radius 0.508)
+					(stroke
+						(width 0)
+						(type default)
+					)
+					(fill
+						(type none)
+					)
+				)
+				(circle
+					(center 2.032 0)
+					(radius 0.508)
+					(stroke
+						(width 0)
+						(type default)
+					)
+					(fill
+						(type none)
+					)
+				)
+			)
+			(symbol "Jumper_3_Open_0_1"
+				(arc
+					(start -2.032 1.016)
+					(mid -1.143 1.3235)
+					(end -0.254 1.016)
+					(stroke
+						(width 0)
+						(type default)
+					)
+					(fill
+						(type none)
+					)
+				)
+				(polyline
+					(pts
+						(xy 0 -0.508) (xy 0 -1.27)
+					)
+					(stroke
+						(width 0)
+						(type default)
+					)
+					(fill
+						(type none)
+					)
+				)
+				(arc
+					(start 0.254 1.016)
+					(mid 1.143 1.3235)
+					(end 2.032 1.016)
+					(stroke
+						(width 0)
+						(type default)
+					)
+					(fill
+						(type none)
+					)
+				)
+			)
+			(symbol "Jumper_3_Open_1_1"
+				(pin passive line
+					(at -5.08 0 0)
+					(length 2.54)
+					(name "A"
+						(effects
+							(font
+								(size 1.27 1.27)
+							)
+						)
+					)
+					(number "1"
+						(effects
+							(font
+								(size 1.27 1.27)
+							)
+						)
+					)
+				)
+				(pin passive line
+					(at 0 -3.81 90)
+					(length 2.54)
+					(name "C"
+						(effects
+							(font
+								(size 1.27 1.27)
+							)
+						)
+					)
+					(number "2"
+						(effects
+							(font
+								(size 1.27 1.27)
+							)
+						)
+					)
+				)
+				(pin passive line
+					(at 5.08 0 180)
+					(length 2.54)
+					(name "B"
+						(effects
+							(font
+								(size 1.27 1.27)
+							)
+						)
+					)
+					(number "3"
+						(effects
+							(font
+								(size 1.27 1.27)
+							)
+						)
+					)
+				)
+			)
+			(embedded_fonts no)
+		)
 		(symbol "power:GND"
 			(power global)
 			(pin_numbers
@@ -1110,6 +1348,18 @@
 		)
 		(uuid "c3b1f0e0-3632-455a-a68a-9ad19364d6f0")
 	)
+	(rectangle
+		(start 15.24 110.49)
+		(end 60.96 152.4)
+		(stroke
+			(width 0)
+			(type default)
+		)
+		(fill
+			(type none)
+		)
+		(uuid "e0db66cc-ca91-4a1e-9ffe-d0861bf268a8")
+	)
 	(text "ESD PROTECTION"
 		(exclude_from_sim no)
 		(at 128.27 31.75 0)
@@ -1169,6 +1419,18 @@
 			(justify left top)
 		)
 		(uuid "8dab33d7-319a-4486-8dea-eba909875b7c")
+	)
+	(text "UART / TTL SELECTION"
+		(exclude_from_sim no)
+		(at 19.05 113.03 0)
+		(effects
+			(font
+				(size 2 2)
+				(thickness 0.25)
+			)
+			(justify left top)
+		)
+		(uuid "b8b2e852-8d77-466b-b75a-3b8f9f29ef74")
 	)
 	(text "DXL TTL CONNECTOR\n2.54mm 3P VERTICAL"
 		(exclude_from_sim no)
@@ -1292,6 +1554,10 @@
 		(color 0 0 0 0)
 		(uuid "e057009c-dd73-4365-81f5-36c7c270e215")
 	)
+	(no_connect
+		(at 44.45 134.62)
+		(uuid "5b562f8e-f8cb-49fb-9f6b-28a0b020cca7")
+	)
 	(wire
 		(pts
 			(xy 39.37 74.93) (xy 41.91 74.93)
@@ -1331,6 +1597,26 @@
 			(type default)
 		)
 		(uuid "3c8f56f2-e02d-4594-932f-734cab20e7b1")
+	)
+	(wire
+		(pts
+			(xy 39.37 123.19) (xy 39.37 130.81)
+		)
+		(stroke
+			(width 0)
+			(type default)
+		)
+		(uuid "4c2ddb2d-4466-472d-88e3-b0118a8d3062")
+	)
+	(wire
+		(pts
+			(xy 31.75 134.62) (xy 34.29 134.62)
+		)
+		(stroke
+			(width 0)
+			(type default)
+		)
+		(uuid "52b500dd-e91c-4dfe-90a6-7e4ceec133e1")
 	)
 	(wire
 		(pts
@@ -1374,6 +1660,16 @@
 	)
 	(wire
 		(pts
+			(xy 116.84 87.63) (xy 115.57 87.63)
+		)
+		(stroke
+			(width 0)
+			(type default)
+		)
+		(uuid "9d1079b2-bf91-4d0d-8445-01e685d8d33a")
+	)
+	(wire
+		(pts
 			(xy 39.37 99.06) (xy 39.37 97.79)
 		)
 		(stroke
@@ -1384,13 +1680,13 @@
 	)
 	(wire
 		(pts
-			(xy 115.57 87.63) (xy 116.84 87.63)
+			(xy 64.77 87.63) (xy 69.85 87.63)
 		)
 		(stroke
 			(width 0)
 			(type default)
 		)
-		(uuid "ac2a4e66-b116-4812-8790-6951d315cd8d")
+		(uuid "c9b331e5-6b55-46b6-85fb-4bb0fb0700fe")
 	)
 	(wire
 		(pts
@@ -1422,6 +1718,26 @@
 		)
 		(uuid "f028c3a9-11cb-4a26-8a21-3b715423f016")
 	)
+	(label "JP_RX"
+		(at 39.37 123.19 270)
+		(effects
+			(font
+				(size 1.27 1.27)
+			)
+			(justify right bottom)
+		)
+		(uuid "189fa818-4e88-4584-aeea-0404ae4716f1")
+	)
+	(label "JP_RX"
+		(at 64.77 87.63 0)
+		(effects
+			(font
+				(size 1.27 1.27)
+			)
+			(justify left bottom)
+		)
+		(uuid "c370c611-c43e-48ea-81f7-e05945b81db0")
+	)
 	(hierarchical_label "VSYS"
 		(shape passive)
 		(at 33.02 49.53 180)
@@ -1445,7 +1761,7 @@
 		(uuid "249589ac-3cc3-41be-84da-3ed835b742e5")
 	)
 	(hierarchical_label "DATA"
-		(shape output)
+		(shape bidirectional)
 		(at 146.05 45.72 90)
 		(effects
 			(font
@@ -1454,6 +1770,17 @@
 			(justify left)
 		)
 		(uuid "2c891a81-0313-4a41-8fb7-f8e32e75cf92")
+	)
+	(hierarchical_label "RX"
+		(shape output)
+		(at 31.75 134.62 180)
+		(effects
+			(font
+				(size 1.27 1.27)
+			)
+			(justify right)
+		)
+		(uuid "38029d9e-8a1e-4c24-8c84-bf9f003ac135")
 	)
 	(hierarchical_label "VSYS"
 		(shape passive)
@@ -1467,7 +1794,7 @@
 		(uuid "4148e774-d3fc-48b4-abc8-f4215fed8a86")
 	)
 	(hierarchical_label "DATA"
-		(shape output)
+		(shape bidirectional)
 		(at 54.61 52.07 180)
 		(effects
 			(font
@@ -1500,7 +1827,7 @@
 		(uuid "6cf1a921-e0e6-47b7-affc-07739e6d4aa0")
 	)
 	(hierarchical_label "DATA"
-		(shape output)
+		(shape bidirectional)
 		(at 99.06 52.07 180)
 		(effects
 			(font
@@ -1544,7 +1871,7 @@
 		(uuid "a9fc8cdd-9d92-43e1-a1ac-f61a813df938")
 	)
 	(hierarchical_label "DATA"
-		(shape output)
+		(shape bidirectional)
 		(at 33.02 52.07 180)
 		(effects
 			(font
@@ -1564,17 +1891,6 @@
 			(justify left)
 		)
 		(uuid "b14fcb3c-0947-4460-bd82-14a3d6cfe913")
-	)
-	(hierarchical_label "RX"
-		(shape output)
-		(at 69.85 87.63 180)
-		(effects
-			(font
-				(size 1.27 1.27)
-			)
-			(justify right)
-		)
-		(uuid "b2463e8f-7b2c-4971-ae10-778d2b1d171b")
 	)
 	(hierarchical_label "VSYS"
 		(shape passive)
@@ -1621,7 +1937,7 @@
 		(in_pos_files yes)
 		(dnp no)
 		(uuid "0bd0dfc3-4d01-4989-975a-c437c411ae5e")
-		(property "Reference" "#PWR040"
+		(property "Reference" "#PWR044"
 			(at 48.26 46.99 0)
 			(hide yes)
 			(show_name no)
@@ -1682,7 +1998,7 @@
 		(instances
 			(project "servo-dev-board-ch32v006"
 				(path "/6062e7d2-0c72-467e-b49c-6387ba053e09/d650f1be-e012-4c20-9ca8-eaa5ec4968ee"
-					(reference "#PWR040")
+					(reference "#PWR044")
 					(unit 1)
 				)
 			)
@@ -1830,7 +2146,7 @@
 		(in_pos_files yes)
 		(dnp no)
 		(uuid "196a8d43-cf9c-4f2d-b0e7-12b186d360a0")
-		(property "Reference" "#PWR038"
+		(property "Reference" "#PWR042"
 			(at 26.67 46.99 0)
 			(hide yes)
 			(show_name no)
@@ -1891,7 +2207,111 @@
 		(instances
 			(project "servo-dev-board-ch32v006"
 				(path "/6062e7d2-0c72-467e-b49c-6387ba053e09/d650f1be-e012-4c20-9ca8-eaa5ec4968ee"
-					(reference "#PWR038")
+					(reference "#PWR042")
+					(unit 1)
+				)
+			)
+		)
+	)
+	(symbol
+		(lib_id "Jumper:Jumper_3_Open")
+		(at 39.37 134.62 180)
+		(unit 1)
+		(body_style 1)
+		(exclude_from_sim no)
+		(in_bom no)
+		(on_board yes)
+		(in_pos_files yes)
+		(dnp no)
+		(uuid "317ef0db-a212-4ab6-a652-0efae9728a75")
+		(property "Reference" "JP2"
+			(at 39.37 138.176 0)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+			)
+		)
+		(property "Value" "TLL | UART"
+			(at 39.37 140.97 0)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+			)
+		)
+		(property "Footprint" "Connector_PinHeader_2.54mm:PinHeader_1x03_P2.54mm_Vertical"
+			(at 39.37 134.62 0)
+			(hide yes)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+			)
+		)
+		(property "Datasheet" ""
+			(at 39.37 124.46 0)
+			(hide yes)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+			)
+		)
+		(property "Description" "Jumper, 3-pole, both open"
+			(at 39.37 121.92 0)
+			(hide yes)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+			)
+		)
+		(property private "KLC_S5.1" "This is a generic symbol, it has fp-filter, but no default footprint"
+			(at 39.37 116.84 0)
+			(hide yes)
+			(show_name yes)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+			)
+		)
+		(property private "KLC_S3.3" "Graphical-Symbol: thickness is 6mm, fill is background"
+			(at 40.64 114.3 0)
+			(hide yes)
+			(show_name yes)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+			)
+		)
+		(pin "1"
+			(uuid "11c12966-b1e3-4edd-a253-8ae70c29f129")
+		)
+		(pin "3"
+			(uuid "21122bc6-e102-42ec-b6df-66e5a4d20fec")
+		)
+		(pin "2"
+			(uuid "fc72404a-05b3-4284-aa7d-87c9f846e2f5")
+		)
+		(instances
+			(project "servo-dev-board-ch32v006"
+				(path "/6062e7d2-0c72-467e-b49c-6387ba053e09/d650f1be-e012-4c20-9ca8-eaa5ec4968ee"
+					(reference "JP2")
 					(unit 1)
 				)
 			)
@@ -1909,7 +2329,7 @@
 		(dnp no)
 		(fields_autoplaced yes)
 		(uuid "3daaaa0f-e332-4072-9e3a-ca99332c2df3")
-		(property "Reference" "C15"
+		(property "Reference" "C12"
 			(at 27.94 85.0899 0)
 			(show_name no)
 			(do_not_autoplace no)
@@ -1995,7 +2415,7 @@
 		(instances
 			(project "servo-dev-board-ch32v006"
 				(path "/6062e7d2-0c72-467e-b49c-6387ba053e09/d650f1be-e012-4c20-9ca8-eaa5ec4968ee"
-					(reference "C15")
+					(reference "C12")
 					(unit 1)
 				)
 			)
@@ -2013,7 +2433,7 @@
 		(dnp no)
 		(fields_autoplaced yes)
 		(uuid "462df52c-4c1f-44c1-ab0f-3a1c48fdd86f")
-		(property "Reference" "D4"
+		(property "Reference" "D5"
 			(at 148.59 48.2599 90)
 			(show_name no)
 			(do_not_autoplace no)
@@ -2110,7 +2530,7 @@
 		(instances
 			(project "servo-dev-board-ch32v006"
 				(path "/6062e7d2-0c72-467e-b49c-6387ba053e09/d650f1be-e012-4c20-9ca8-eaa5ec4968ee"
-					(reference "D4")
+					(reference "D5")
 					(unit 1)
 				)
 			)
@@ -2128,7 +2548,7 @@
 		(dnp no)
 		(fields_autoplaced yes)
 		(uuid "4a2966a7-4efc-4890-85f5-4c010e0d285c")
-		(property "Reference" "#PWR042"
+		(property "Reference" "#PWR046"
 			(at 146.05 59.69 0)
 			(hide yes)
 			(show_name no)
@@ -2188,7 +2608,7 @@
 		(instances
 			(project "servo-dev-board-ch32v006"
 				(path "/6062e7d2-0c72-467e-b49c-6387ba053e09/d650f1be-e012-4c20-9ca8-eaa5ec4968ee"
-					(reference "#PWR042")
+					(reference "#PWR046")
 					(unit 1)
 				)
 			)
@@ -2206,7 +2626,7 @@
 		(dnp no)
 		(fields_autoplaced yes)
 		(uuid "62ed7bc2-af32-410b-9ce7-f9c597d4db4a")
-		(property "Reference" "R16"
+		(property "Reference" "R17"
 			(at 162.56 87.6299 0)
 			(show_name no)
 			(do_not_autoplace no)
@@ -2292,7 +2712,7 @@
 		(instances
 			(project "servo-dev-board-ch32v006"
 				(path "/6062e7d2-0c72-467e-b49c-6387ba053e09/d650f1be-e012-4c20-9ca8-eaa5ec4968ee"
-					(reference "R16")
+					(reference "R17")
 					(unit 1)
 				)
 			)
@@ -2310,7 +2730,7 @@
 		(in_pos_files yes)
 		(dnp no)
 		(uuid "6e7f7975-b310-480d-ba10-5573b9451ff2")
-		(property "Reference" "#PWR041"
+		(property "Reference" "#PWR045"
 			(at 92.71 46.99 0)
 			(hide yes)
 			(show_name no)
@@ -2371,7 +2791,7 @@
 		(instances
 			(project "servo-dev-board-ch32v006"
 				(path "/6062e7d2-0c72-467e-b49c-6387ba053e09/d650f1be-e012-4c20-9ca8-eaa5ec4968ee"
-					(reference "#PWR041")
+					(reference "#PWR045")
 					(unit 1)
 				)
 			)
@@ -2389,7 +2809,7 @@
 		(dnp no)
 		(fields_autoplaced yes)
 		(uuid "72a47757-7e09-415e-8258-f328825bfe39")
-		(property "Reference" "R15"
+		(property "Reference" "R16"
 			(at 149.86 87.6299 0)
 			(show_name no)
 			(do_not_autoplace no)
@@ -2475,7 +2895,7 @@
 		(instances
 			(project "servo-dev-board-ch32v006"
 				(path "/6062e7d2-0c72-467e-b49c-6387ba053e09/d650f1be-e012-4c20-9ca8-eaa5ec4968ee"
-					(reference "R15")
+					(reference "R16")
 					(unit 1)
 				)
 			)
@@ -2492,7 +2912,7 @@
 		(in_pos_files yes)
 		(dnp no)
 		(uuid "9ec7be00-5d16-44b9-910d-5ed2d21c959e")
-		(property "Reference" "J7"
+		(property "Reference" "J8"
 			(at 38.1 43.18 0)
 			(show_name no)
 			(do_not_autoplace no)
@@ -2580,7 +3000,7 @@
 		(instances
 			(project "servo-dev-board-ch32v006"
 				(path "/6062e7d2-0c72-467e-b49c-6387ba053e09/d650f1be-e012-4c20-9ca8-eaa5ec4968ee"
-					(reference "J7")
+					(reference "J8")
 					(unit 1)
 				)
 			)
@@ -2730,7 +3150,7 @@
 		(in_pos_files yes)
 		(dnp no)
 		(uuid "a2b96271-e7c5-4b0a-9ad5-fb14ad582e41")
-		(property "Reference" "J8"
+		(property "Reference" "J9"
 			(at 59.69 43.18 0)
 			(show_name no)
 			(do_not_autoplace no)
@@ -2818,7 +3238,7 @@
 		(instances
 			(project "servo-dev-board-ch32v006"
 				(path "/6062e7d2-0c72-467e-b49c-6387ba053e09/d650f1be-e012-4c20-9ca8-eaa5ec4968ee"
-					(reference "J8")
+					(reference "J9")
 					(unit 1)
 				)
 			)
@@ -2836,7 +3256,7 @@
 		(dnp no)
 		(fields_autoplaced yes)
 		(uuid "ab977f0e-ffef-4277-98ae-44a3ec025b5d")
-		(property "Reference" "R14"
+		(property "Reference" "R15"
 			(at 137.16 87.6299 0)
 			(show_name no)
 			(do_not_autoplace no)
@@ -2922,7 +3342,7 @@
 		(instances
 			(project "servo-dev-board-ch32v006"
 				(path "/6062e7d2-0c72-467e-b49c-6387ba053e09/d650f1be-e012-4c20-9ca8-eaa5ec4968ee"
-					(reference "R14")
+					(reference "R15")
 					(unit 1)
 				)
 			)
@@ -2939,7 +3359,7 @@
 		(in_pos_files yes)
 		(dnp no)
 		(uuid "b377a0b4-23c8-4aa2-9ad8-a771ccec685f")
-		(property "Reference" "J9"
+		(property "Reference" "J10"
 			(at 104.14 43.18 0)
 			(show_name no)
 			(do_not_autoplace no)
@@ -3038,7 +3458,7 @@
 		(instances
 			(project "servo-dev-board-ch32v006"
 				(path "/6062e7d2-0c72-467e-b49c-6387ba053e09/d650f1be-e012-4c20-9ca8-eaa5ec4968ee"
-					(reference "J9")
+					(reference "J10")
 					(unit 1)
 				)
 			)
@@ -3056,7 +3476,7 @@
 		(dnp no)
 		(fields_autoplaced yes)
 		(uuid "c9026b12-0095-4a99-8752-68583d281fcd")
-		(property "Reference" "#PWR043"
+		(property "Reference" "#PWR047"
 			(at 147.32 99.06 0)
 			(hide yes)
 			(show_name no)
@@ -3116,7 +3536,7 @@
 		(instances
 			(project "servo-dev-board-ch32v006"
 				(path "/6062e7d2-0c72-467e-b49c-6387ba053e09/d650f1be-e012-4c20-9ca8-eaa5ec4968ee"
-					(reference "#PWR043")
+					(reference "#PWR047")
 					(unit 1)
 				)
 			)
@@ -3265,7 +3685,7 @@
 		(dnp no)
 		(fields_autoplaced yes)
 		(uuid "eba69ac3-6fb8-45ea-95a9-d8cdc4a4813c")
-		(property "Reference" "#PWR039"
+		(property "Reference" "#PWR043"
 			(at 39.37 105.41 0)
 			(hide yes)
 			(show_name no)
@@ -3325,7 +3745,7 @@
 		(instances
 			(project "servo-dev-board-ch32v006"
 				(path "/6062e7d2-0c72-467e-b49c-6387ba053e09/d650f1be-e012-4c20-9ca8-eaa5ec4968ee"
-					(reference "#PWR039")
+					(reference "#PWR043")
 					(unit 1)
 				)
 			)

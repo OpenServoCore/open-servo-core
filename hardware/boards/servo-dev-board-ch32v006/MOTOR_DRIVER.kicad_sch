@@ -1316,7 +1316,7 @@
 	)
 	(rectangle
 		(start 68.58 82.55)
-		(end 125.73 143.51)
+		(end 151.13 143.51)
 		(stroke
 			(width 0)
 			(type default)
@@ -1550,6 +1550,22 @@
 		(color 0 0 0 0)
 		(uuid "d48a1573-2931-4869-99b4-8d22ec609720")
 	)
+	(junction
+		(at 130.81 114.3)
+		(diameter 0)
+		(color 0 0 0 0)
+		(uuid "e6c231c6-55e0-45d8-be71-03bf0e397c0c")
+	)
+	(wire
+		(pts
+			(xy 140.97 49.53) (xy 140.97 50.8)
+		)
+		(stroke
+			(width 0)
+			(type default)
+		)
+		(uuid "00d2984f-424d-43b9-b3fb-c8bb68d52c00")
+	)
 	(wire
 		(pts
 			(xy 91.44 68.58) (xy 99.06 68.58)
@@ -1559,6 +1575,16 @@
 			(type default)
 		)
 		(uuid "09aba027-5a1a-457e-bbd6-ddbcd2a53fdb")
+	)
+	(wire
+		(pts
+			(xy 187.96 59.69) (xy 187.96 58.42)
+		)
+		(stroke
+			(width 0)
+			(type default)
+		)
+		(uuid "0bb0752c-64b2-424d-af21-22d0c837f3ae")
 	)
 	(wire
 		(pts
@@ -1592,7 +1618,7 @@
 	)
 	(wire
 		(pts
-			(xy 175.26 52.07) (xy 172.72 52.07)
+			(xy 173.99 52.07) (xy 172.72 52.07)
 		)
 		(stroke
 			(width 0)
@@ -1619,6 +1645,46 @@
 			(type default)
 		)
 		(uuid "3113a893-ac73-44ec-b9b0-97710e7430f3")
+	)
+	(wire
+		(pts
+			(xy 162.56 40.64) (xy 162.56 41.91)
+		)
+		(stroke
+			(width 0)
+			(type default)
+		)
+		(uuid "31cecea1-89b2-4fb4-845f-cba45f76735a")
+	)
+	(wire
+		(pts
+			(xy 151.13 57.15) (xy 152.4 57.15)
+		)
+		(stroke
+			(width 0)
+			(type default)
+		)
+		(uuid "34fd944c-333d-49b0-844a-2b730e2829aa")
+	)
+	(wire
+		(pts
+			(xy 140.97 59.69) (xy 140.97 58.42)
+		)
+		(stroke
+			(width 0)
+			(type default)
+		)
+		(uuid "35388bef-4c62-465c-8e03-17d8262bb9d2")
+	)
+	(wire
+		(pts
+			(xy 134.62 114.3) (xy 130.81 114.3)
+		)
+		(stroke
+			(width 0)
+			(type default)
+		)
+		(uuid "3f563dfe-a955-4e99-80e8-7ce75b0b2f1d")
 	)
 	(wire
 		(pts
@@ -1662,6 +1728,16 @@
 	)
 	(wire
 		(pts
+			(xy 162.56 68.58) (xy 162.56 67.31)
+		)
+		(stroke
+			(width 0)
+			(type default)
+		)
+		(uuid "53bedbaf-f3ee-47e8-893a-f49d71d9000c")
+	)
+	(wire
+		(pts
 			(xy 83.82 68.58) (xy 91.44 68.58)
 		)
 		(stroke
@@ -1682,6 +1758,16 @@
 	)
 	(wire
 		(pts
+			(xy 130.81 127) (xy 130.81 123.19)
+		)
+		(stroke
+			(width 0)
+			(type default)
+		)
+		(uuid "5a8eeedc-9398-4b4d-b76c-9a7211fe16de")
+	)
+	(wire
+		(pts
 			(xy 40.64 52.07) (xy 40.64 45.72)
 		)
 		(stroke
@@ -1689,6 +1775,16 @@
 			(type default)
 		)
 		(uuid "5cc81cbf-2802-4a7b-84c8-fbb959e5e668")
+	)
+	(wire
+		(pts
+			(xy 151.13 49.53) (xy 152.4 49.53)
+		)
+		(stroke
+			(width 0)
+			(type default)
+		)
+		(uuid "69429a05-2a3e-449f-934f-75e09220c64c")
 	)
 	(wire
 		(pts
@@ -1732,6 +1828,16 @@
 	)
 	(wire
 		(pts
+			(xy 130.81 113.03) (xy 130.81 114.3)
+		)
+		(stroke
+			(width 0)
+			(type default)
+		)
+		(uuid "784cfd3a-cc49-46d2-ab78-cd0e366214d2")
+	)
+	(wire
+		(pts
 			(xy 85.09 113.03) (xy 85.09 114.3)
 		)
 		(stroke
@@ -1749,6 +1855,16 @@
 			(type default)
 		)
 		(uuid "818c4e67-3b38-47d7-bac7-cbb5aca52fef")
+	)
+	(wire
+		(pts
+			(xy 187.96 49.53) (xy 187.96 50.8)
+		)
+		(stroke
+			(width 0)
+			(type default)
+		)
+		(uuid "85d9e433-38f5-40a1-bcd0-6e5bae025172")
 	)
 	(wire
 		(pts
@@ -1842,6 +1958,16 @@
 	)
 	(wire
 		(pts
+			(xy 130.81 114.3) (xy 130.81 115.57)
+		)
+		(stroke
+			(width 0)
+			(type default)
+		)
+		(uuid "c7164d36-f63b-42f4-aaf9-c807fd684c39")
+	)
+	(wire
+		(pts
 			(xy 85.09 104.14) (xy 85.09 105.41)
 		)
 		(stroke
@@ -1892,7 +2018,7 @@
 	)
 	(wire
 		(pts
-			(xy 175.26 49.53) (xy 172.72 49.53)
+			(xy 173.99 49.53) (xy 172.72 49.53)
 		)
 		(stroke
 			(width 0)
@@ -1919,6 +2045,16 @@
 			(type default)
 		)
 		(uuid "da2fd39f-28ca-4bd1-97c7-8e84a64ad7e4")
+	)
+	(wire
+		(pts
+			(xy 130.81 104.14) (xy 130.81 105.41)
+		)
+		(stroke
+			(width 0)
+			(type default)
+		)
+		(uuid "dda529e1-efe1-4ecc-8b65-42e049321a0f")
 	)
 	(wire
 		(pts
@@ -1949,6 +2085,16 @@
 			(type default)
 		)
 		(uuid "eb6457f5-5e95-45bc-af57-b7d98850ba96")
+	)
+	(wire
+		(pts
+			(xy 151.13 52.07) (xy 152.4 52.07)
+		)
+		(stroke
+			(width 0)
+			(type default)
+		)
+		(uuid "f01b126f-8b26-4785-a87c-8a454b0c4e00")
 	)
 	(wire
 		(pts
@@ -1993,7 +2139,7 @@
 	)
 	(hierarchical_label "IN1"
 		(shape input)
-		(at 152.4 49.53 180)
+		(at 151.13 49.53 180)
 		(effects
 			(font
 				(size 1.27 1.27)
@@ -2026,7 +2172,7 @@
 	)
 	(hierarchical_label "MOT_A"
 		(shape passive)
-		(at 175.26 49.53 0)
+		(at 173.99 49.53 0)
 		(effects
 			(font
 				(size 1.27 1.27)
@@ -2037,7 +2183,7 @@
 	)
 	(hierarchical_label "EN"
 		(shape input)
-		(at 152.4 57.15 180)
+		(at 151.13 57.15 180)
 		(effects
 			(font
 				(size 1.27 1.27)
@@ -2046,9 +2192,20 @@
 		)
 		(uuid "624675a6-d5f6-4ac6-bac0-cd638f811f7b")
 	)
+	(hierarchical_label "VSNS"
+		(shape output)
+		(at 134.62 114.3 0)
+		(effects
+			(font
+				(size 1.27 1.27)
+			)
+			(justify left)
+		)
+		(uuid "628232f8-6a0b-46d3-a2b1-69bb2d347bb2")
+	)
 	(hierarchical_label "IN2"
 		(shape input)
-		(at 152.4 52.07 180)
+		(at 151.13 52.07 180)
 		(effects
 			(font
 				(size 1.27 1.27)
@@ -2070,7 +2227,7 @@
 	)
 	(hierarchical_label "MOT_A"
 		(shape passive)
-		(at 187.96 50.8 90)
+		(at 187.96 49.53 90)
 		(effects
 			(font
 				(size 1.27 1.27)
@@ -2081,7 +2238,7 @@
 	)
 	(hierarchical_label "EN"
 		(shape input)
-		(at 140.97 50.8 90)
+		(at 140.97 49.53 90)
 		(effects
 			(font
 				(size 1.27 1.27)
@@ -2090,9 +2247,20 @@
 		)
 		(uuid "8536c91f-8441-4a75-9bd9-52bdf544b73e")
 	)
+	(hierarchical_label "VSYS"
+		(shape passive)
+		(at 130.81 104.14 90)
+		(effects
+			(font
+				(size 1.27 1.27)
+			)
+			(justify left)
+		)
+		(uuid "9bc20b45-2528-4f9f-a99d-60c196be5e93")
+	)
 	(hierarchical_label "MOT_B"
 		(shape passive)
-		(at 187.96 58.42 270)
+		(at 187.96 59.69 270)
 		(effects
 			(font
 				(size 1.27 1.27)
@@ -2103,7 +2271,7 @@
 	)
 	(hierarchical_label "MOT_B"
 		(shape passive)
-		(at 175.26 52.07 0)
+		(at 173.99 52.07 0)
 		(effects
 			(font
 				(size 1.27 1.27)
@@ -2147,7 +2315,7 @@
 	)
 	(hierarchical_label "VSYS"
 		(shape passive)
-		(at 162.56 41.91 90)
+		(at 162.56 40.64 90)
 		(effects
 			(font
 				(size 1.27 1.27)
@@ -2169,7 +2337,7 @@
 	)
 	(symbol
 		(lib_id "power:GND")
-		(at 162.56 67.31 0)
+		(at 162.56 68.58 0)
 		(unit 1)
 		(body_style 1)
 		(exclude_from_sim no)
@@ -2179,8 +2347,8 @@
 		(dnp no)
 		(fields_autoplaced yes)
 		(uuid "03550617-5521-4a94-9ae3-1c8aada635ed")
-		(property "Reference" "#PWR027"
-			(at 162.56 73.66 0)
+		(property "Reference" "#PWR032"
+			(at 162.56 74.93 0)
 			(hide yes)
 			(show_name no)
 			(do_not_autoplace no)
@@ -2191,7 +2359,7 @@
 			)
 		)
 		(property "Value" "PGND"
-			(at 162.56 72.39 0)
+			(at 162.56 73.66 0)
 			(show_name no)
 			(do_not_autoplace no)
 			(effects
@@ -2201,7 +2369,7 @@
 			)
 		)
 		(property "Footprint" ""
-			(at 162.56 67.31 0)
+			(at 162.56 68.58 0)
 			(hide yes)
 			(show_name no)
 			(do_not_autoplace no)
@@ -2212,7 +2380,7 @@
 			)
 		)
 		(property "Datasheet" ""
-			(at 162.56 67.31 0)
+			(at 162.56 68.58 0)
 			(hide yes)
 			(show_name no)
 			(do_not_autoplace no)
@@ -2223,7 +2391,7 @@
 			)
 		)
 		(property "Description" "Power symbol creates a global label with name \"GND\" , ground"
-			(at 162.56 67.31 0)
+			(at 162.56 68.58 0)
 			(hide yes)
 			(show_name no)
 			(do_not_autoplace no)
@@ -2239,7 +2407,7 @@
 		(instances
 			(project "servo-dev-board-ch32v006"
 				(path "/6062e7d2-0c72-467e-b49c-6387ba053e09/ada02f24-9f0e-4313-921a-475b46fb1a47"
-					(reference "#PWR027")
+					(reference "#PWR032")
 					(unit 1)
 				)
 			)
@@ -2256,8 +2424,8 @@
 		(in_pos_files yes)
 		(dnp no)
 		(uuid "0a991f95-89e8-4b69-a4e1-259be1384629")
-		(property "Reference" "R9"
-			(at 138.43 53.34 0)
+		(property "Reference" "R11"
+			(at 137.795 53.34 0)
 			(show_name no)
 			(do_not_autoplace no)
 			(effects
@@ -2340,6 +2508,109 @@
 		(instances
 			(project "servo-dev-board-ch32v006"
 				(path "/6062e7d2-0c72-467e-b49c-6387ba053e09/ada02f24-9f0e-4313-921a-475b46fb1a47"
+					(reference "R11")
+					(unit 1)
+				)
+			)
+		)
+	)
+	(symbol
+		(lib_id "Device:R")
+		(at 130.81 109.22 0)
+		(unit 1)
+		(body_style 1)
+		(exclude_from_sim no)
+		(in_bom yes)
+		(on_board yes)
+		(in_pos_files yes)
+		(dnp no)
+		(uuid "23569187-adbf-458d-ba96-56dd91ab801e")
+		(property "Reference" "R9"
+			(at 125.222 107.696 0)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(justify left)
+			)
+		)
+		(property "Value" "20kΩ"
+			(at 124.206 110.998 0)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(justify left)
+			)
+		)
+		(property "Footprint" "Resistor_SMD:R_0805_2012Metric_Pad1.20x1.40mm_HandSolder"
+			(at 129.032 109.22 90)
+			(hide yes)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+			)
+		)
+		(property "Datasheet" ""
+			(at 130.81 109.22 0)
+			(hide yes)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+			)
+		)
+		(property "Description" "Resistor"
+			(at 130.81 109.22 0)
+			(hide yes)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+			)
+		)
+		(property "LCSC" "C4328"
+			(at 125.222 107.696 0)
+			(hide yes)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+			)
+		)
+		(property "MFPN" "0805W8F2002T5E"
+			(at 125.222 107.696 0)
+			(hide yes)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+			)
+		)
+		(pin "1"
+			(uuid "7a8cd119-9e62-4ba4-9e49-bcd1ee2c83db")
+		)
+		(pin "2"
+			(uuid "bce3940a-fcd5-418d-a14b-04d6ffc9ff83")
+		)
+		(instances
+			(project "servo-dev-board-ch32v006"
+				(path "/6062e7d2-0c72-467e-b49c-6387ba053e09/ada02f24-9f0e-4313-921a-475b46fb1a47"
 					(reference "R9")
 					(unit 1)
 				)
@@ -2358,7 +2629,7 @@
 		(dnp no)
 		(fields_autoplaced yes)
 		(uuid "26e53dbf-f288-4a75-96f3-509b01fb0d94")
-		(property "Reference" "#PWR022"
+		(property "Reference" "#PWR026"
 			(at 40.64 71.12 0)
 			(hide yes)
 			(show_name no)
@@ -2418,7 +2689,7 @@
 		(instances
 			(project "servo-dev-board-ch32v006"
 				(path "/6062e7d2-0c72-467e-b49c-6387ba053e09/ada02f24-9f0e-4313-921a-475b46fb1a47"
-					(reference "#PWR022")
+					(reference "#PWR026")
 					(unit 1)
 				)
 			)
@@ -2436,7 +2707,7 @@
 		(dnp no)
 		(fields_autoplaced yes)
 		(uuid "2981484d-b8bf-4f38-8f02-a045626c3428")
-		(property "Reference" "#FLG05"
+		(property "Reference" "#FLG06"
 			(at 38.735 62.23 0)
 			(hide yes)
 			(show_name no)
@@ -2497,7 +2768,7 @@
 		(instances
 			(project "servo-dev-board-ch32v006"
 				(path "/6062e7d2-0c72-467e-b49c-6387ba053e09/ada02f24-9f0e-4313-921a-475b46fb1a47"
-					(reference "#FLG05")
+					(reference "#FLG06")
 					(unit 1)
 				)
 			)
@@ -2809,7 +3080,7 @@
 		(in_pos_files yes)
 		(dnp no)
 		(uuid "657887bb-e248-4278-beec-e70f8e2e2f8f")
-		(property "Reference" "#PWR021"
+		(property "Reference" "#PWR025"
 			(at 38.1 129.54 0)
 			(hide yes)
 			(show_name no)
@@ -2869,7 +3140,7 @@
 		(instances
 			(project "servo-dev-board-ch32v006"
 				(path "/6062e7d2-0c72-467e-b49c-6387ba053e09/ada02f24-9f0e-4313-921a-475b46fb1a47"
-					(reference "#PWR021")
+					(reference "#PWR025")
 					(unit 1)
 				)
 			)
@@ -2877,7 +3148,7 @@
 	)
 	(symbol
 		(lib_id "power:GND")
-		(at 140.97 58.42 0)
+		(at 140.97 59.69 0)
 		(unit 1)
 		(body_style 1)
 		(exclude_from_sim no)
@@ -2887,8 +3158,8 @@
 		(dnp no)
 		(fields_autoplaced yes)
 		(uuid "6d416d15-8502-4ca7-b284-431dea65fb2e")
-		(property "Reference" "#PWR026"
-			(at 140.97 64.77 0)
+		(property "Reference" "#PWR031"
+			(at 140.97 66.04 0)
 			(hide yes)
 			(show_name no)
 			(do_not_autoplace no)
@@ -2899,7 +3170,7 @@
 			)
 		)
 		(property "Value" "PGND"
-			(at 140.97 63.5 0)
+			(at 140.97 64.77 0)
 			(show_name no)
 			(do_not_autoplace no)
 			(effects
@@ -2909,7 +3180,7 @@
 			)
 		)
 		(property "Footprint" ""
-			(at 140.97 58.42 0)
+			(at 140.97 59.69 0)
 			(hide yes)
 			(show_name no)
 			(do_not_autoplace no)
@@ -2920,7 +3191,7 @@
 			)
 		)
 		(property "Datasheet" ""
-			(at 140.97 58.42 0)
+			(at 140.97 59.69 0)
 			(hide yes)
 			(show_name no)
 			(do_not_autoplace no)
@@ -2931,7 +3202,7 @@
 			)
 		)
 		(property "Description" "Power symbol creates a global label with name \"GND\" , ground"
-			(at 140.97 58.42 0)
+			(at 140.97 59.69 0)
 			(hide yes)
 			(show_name no)
 			(do_not_autoplace no)
@@ -2947,7 +3218,7 @@
 		(instances
 			(project "servo-dev-board-ch32v006"
 				(path "/6062e7d2-0c72-467e-b49c-6387ba053e09/ada02f24-9f0e-4313-921a-475b46fb1a47"
-					(reference "#PWR026")
+					(reference "#PWR031")
 					(unit 1)
 				)
 			)
@@ -2965,7 +3236,7 @@
 		(dnp no)
 		(fields_autoplaced yes)
 		(uuid "6f003e7f-ec7e-4961-9092-568ca2bb75ad")
-		(property "Reference" "#PWR020"
+		(property "Reference" "#PWR024"
 			(at 38.1 92.71 0)
 			(hide yes)
 			(show_name no)
@@ -3025,7 +3296,7 @@
 		(instances
 			(project "servo-dev-board-ch32v006"
 				(path "/6062e7d2-0c72-467e-b49c-6387ba053e09/ada02f24-9f0e-4313-921a-475b46fb1a47"
-					(reference "#PWR020")
+					(reference "#PWR024")
 					(unit 1)
 				)
 			)
@@ -3244,7 +3515,7 @@
 		(in_pos_files yes)
 		(dnp no)
 		(uuid "8c92f1db-460b-4fed-9b1e-bca65864a279")
-		(property "Reference" "#FLG06"
+		(property "Reference" "#FLG07"
 			(at 46.99 40.005 0)
 			(hide yes)
 			(show_name no)
@@ -3304,7 +3575,7 @@
 		(instances
 			(project "servo-dev-board-ch32v006"
 				(path "/6062e7d2-0c72-467e-b49c-6387ba053e09/ada02f24-9f0e-4313-921a-475b46fb1a47"
-					(reference "#FLG06")
+					(reference "#FLG07")
 					(unit 1)
 				)
 			)
@@ -3625,6 +3896,83 @@
 			(project "servo-dev-board-ch32v006"
 				(path "/6062e7d2-0c72-467e-b49c-6387ba053e09/ada02f24-9f0e-4313-921a-475b46fb1a47"
 					(reference "NT2")
+					(unit 1)
+				)
+			)
+		)
+	)
+	(symbol
+		(lib_id "power:GND")
+		(at 130.81 127 0)
+		(unit 1)
+		(body_style 1)
+		(exclude_from_sim no)
+		(in_bom yes)
+		(on_board yes)
+		(in_pos_files yes)
+		(dnp no)
+		(uuid "ad2511a1-c53b-4873-b61e-18db53033a7a")
+		(property "Reference" "#PWR030"
+			(at 130.81 133.35 0)
+			(hide yes)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+			)
+		)
+		(property "Value" "GND"
+			(at 130.81 132.08 0)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+			)
+		)
+		(property "Footprint" ""
+			(at 130.81 127 0)
+			(hide yes)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+			)
+		)
+		(property "Datasheet" ""
+			(at 130.81 127 0)
+			(hide yes)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+			)
+		)
+		(property "Description" "Power symbol creates a global label with name \"GND\" , ground"
+			(at 130.81 127 0)
+			(hide yes)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+			)
+		)
+		(pin "1"
+			(uuid "3bf0338d-17eb-45e8-b4a2-a6f525caced1")
+		)
+		(instances
+			(project "servo-dev-board-ch32v006"
+				(path "/6062e7d2-0c72-467e-b49c-6387ba053e09/ada02f24-9f0e-4313-921a-475b46fb1a47"
+					(reference "#PWR030")
 					(unit 1)
 				)
 			)
@@ -4152,7 +4500,7 @@
 		(in_pos_files yes)
 		(dnp no)
 		(uuid "cd77ab55-bcc4-4f4b-9e4a-16d20b9ca4b3")
-		(property "Reference" "#PWR024"
+		(property "Reference" "#PWR028"
 			(at 85.09 133.35 0)
 			(hide yes)
 			(show_name no)
@@ -4212,7 +4560,7 @@
 		(instances
 			(project "servo-dev-board-ch32v006"
 				(path "/6062e7d2-0c72-467e-b49c-6387ba053e09/ada02f24-9f0e-4313-921a-475b46fb1a47"
-					(reference "#PWR024")
+					(reference "#PWR028")
 					(unit 1)
 				)
 			)
@@ -4229,7 +4577,7 @@
 		(in_pos_files yes)
 		(dnp no)
 		(uuid "d264178c-39d7-4a36-b6e9-d3217aed33d8")
-		(property "Reference" "#PWR025"
+		(property "Reference" "#PWR029"
 			(at 109.22 133.35 0)
 			(hide yes)
 			(show_name no)
@@ -4289,7 +4637,7 @@
 		(instances
 			(project "servo-dev-board-ch32v006"
 				(path "/6062e7d2-0c72-467e-b49c-6387ba053e09/ada02f24-9f0e-4313-921a-475b46fb1a47"
-					(reference "#PWR025")
+					(reference "#PWR029")
 					(unit 1)
 				)
 			)
@@ -4307,7 +4655,7 @@
 		(dnp no)
 		(fields_autoplaced yes)
 		(uuid "e83bbcfb-12fe-48d4-bea6-39423ab73057")
-		(property "Reference" "#PWR023"
+		(property "Reference" "#PWR027"
 			(at 82.55 76.2 0)
 			(hide yes)
 			(show_name no)
@@ -4367,7 +4715,110 @@
 		(instances
 			(project "servo-dev-board-ch32v006"
 				(path "/6062e7d2-0c72-467e-b49c-6387ba053e09/ada02f24-9f0e-4313-921a-475b46fb1a47"
-					(reference "#PWR023")
+					(reference "#PWR027")
+					(unit 1)
+				)
+			)
+		)
+	)
+	(symbol
+		(lib_id "Device:R")
+		(at 130.81 119.38 0)
+		(unit 1)
+		(body_style 1)
+		(exclude_from_sim no)
+		(in_bom yes)
+		(on_board yes)
+		(in_pos_files yes)
+		(dnp no)
+		(uuid "f463b45f-5936-43f0-8b41-c8edc777d243")
+		(property "Reference" "R10"
+			(at 125.476 118.11 0)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(justify left)
+			)
+		)
+		(property "Value" "10kΩ"
+			(at 124.206 121.158 0)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(justify left)
+			)
+		)
+		(property "Footprint" "Resistor_SMD:R_0805_2012Metric_Pad1.20x1.40mm_HandSolder"
+			(at 129.032 119.38 90)
+			(hide yes)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+			)
+		)
+		(property "Datasheet" ""
+			(at 130.81 119.38 0)
+			(hide yes)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+			)
+		)
+		(property "Description" "Resistor"
+			(at 130.81 119.38 0)
+			(hide yes)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+			)
+		)
+		(property "LCSC" "C17414"
+			(at 125.476 118.11 0)
+			(hide yes)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+			)
+		)
+		(property "MFPN" "0805W8F1002T5E"
+			(at 125.476 118.11 0)
+			(hide yes)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+			)
+		)
+		(pin "1"
+			(uuid "afb94897-d594-4175-9a07-21170c84c79b")
+		)
+		(pin "2"
+			(uuid "7b94452e-a59e-4de4-bc09-654b1d34c723")
+		)
+		(instances
+			(project "servo-dev-board-ch32v006"
+				(path "/6062e7d2-0c72-467e-b49c-6387ba053e09/ada02f24-9f0e-4313-921a-475b46fb1a47"
+					(reference "R10")
 					(unit 1)
 				)
 			)
@@ -4384,7 +4835,7 @@
 		(in_pos_files yes)
 		(dnp no)
 		(uuid "fe047317-477d-462b-98a4-bc5634974f28")
-		(property "Reference" "C10"
+		(property "Reference" "C8"
 			(at 191.77 52.07 0)
 			(show_name no)
 			(do_not_autoplace no)
@@ -4468,7 +4919,7 @@
 		(instances
 			(project "servo-dev-board-ch32v006"
 				(path "/6062e7d2-0c72-467e-b49c-6387ba053e09/ada02f24-9f0e-4313-921a-475b46fb1a47"
-					(reference "C10")
+					(reference "C8")
 					(unit 1)
 				)
 			)
