@@ -1849,7 +1849,7 @@
 		(dnp no)
 		(fields_autoplaced yes)
 		(uuid "5379535e-10af-4ba0-b5d0-5ffa609c33a7")
-		(property "Reference" "#PWR050"
+		(property "Reference" "#PWR056"
 			(at 76.2 45.72 0)
 			(hide yes)
 			(show_name no)
@@ -1910,7 +1910,7 @@
 		(instances
 			(project "servo-dev-board-ch32v006"
 				(path "/6062e7d2-0c72-467e-b49c-6387ba053e09/279fdd48-5106-437c-982b-915097006b04"
-					(reference "#PWR050")
+					(reference "#PWR056")
 					(unit 1)
 				)
 			)
@@ -2498,7 +2498,7 @@
 		(dnp no)
 		(fields_autoplaced yes)
 		(uuid "9052de51-7984-4bf5-b445-c8d9192e7906")
-		(property "Reference" "#PWR051"
+		(property "Reference" "#PWR057"
 			(at 76.2 91.44 0)
 			(hide yes)
 			(show_name no)
@@ -2559,7 +2559,7 @@
 		(instances
 			(project "servo-dev-board-ch32v006"
 				(path "/6062e7d2-0c72-467e-b49c-6387ba053e09/279fdd48-5106-437c-982b-915097006b04"
-					(reference "#PWR051")
+					(reference "#PWR057")
 					(unit 1)
 				)
 			)
@@ -3488,7 +3488,7 @@
 		(dnp no)
 		(fields_autoplaced yes)
 		(uuid "bb93e530-000d-420f-9054-0815cf59dd89")
-		(property "Reference" "#PWR052"
+		(property "Reference" "#PWR058"
 			(at 127 60.96 0)
 			(hide yes)
 			(show_name no)
@@ -3549,7 +3549,7 @@
 		(instances
 			(project "servo-dev-board-ch32v006"
 				(path "/6062e7d2-0c72-467e-b49c-6387ba053e09/279fdd48-5106-437c-982b-915097006b04"
-					(reference "#PWR052")
+					(reference "#PWR058")
 					(unit 1)
 				)
 			)
@@ -3909,7 +3909,7 @@
 		(dnp no)
 		(fields_autoplaced yes)
 		(uuid "da72f985-56ba-424b-9b0e-25f661ed1dce")
-		(property "Reference" "#PWR049"
+		(property "Reference" "#PWR055"
 			(at 46.99 91.44 0)
 			(hide yes)
 			(show_name no)
@@ -3970,7 +3970,7 @@
 		(instances
 			(project "servo-dev-board-ch32v006"
 				(path "/6062e7d2-0c72-467e-b49c-6387ba053e09/279fdd48-5106-437c-982b-915097006b04"
-					(reference "#PWR049")
+					(reference "#PWR055")
 					(unit 1)
 				)
 			)
@@ -4330,7 +4330,7 @@
 		(dnp no)
 		(fields_autoplaced yes)
 		(uuid "f89655ce-968d-47d6-a889-de2b1f6fc511")
-		(property "Reference" "#PWR048"
+		(property "Reference" "#PWR054"
 			(at 46.99 45.72 0)
 			(hide yes)
 			(show_name no)
@@ -4391,7 +4391,7 @@
 		(instances
 			(project "servo-dev-board-ch32v006"
 				(path "/6062e7d2-0c72-467e-b49c-6387ba053e09/279fdd48-5106-437c-982b-915097006b04"
-					(reference "#PWR048")
+					(reference "#PWR054")
 					(unit 1)
 				)
 			)

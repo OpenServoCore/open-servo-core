@@ -1294,8 +1294,8 @@
 		)
 		(symbol "CH32V006F8P6_0_1"
 			(rectangle
-				(start -20.32 19.05)
-				(end 20.32 -19.05)
+				(start -13.97 19.05)
+				(end 13.97 -19.05)
 				(stroke
 					(width 0)
 					(type default)
@@ -1305,7 +1305,7 @@
 				)
 			)
 			(circle
-				(center -19.05 17.78)
+				(center -12.7 17.78)
 				(radius 0.38)
 				(stroke
 					(width 0)
@@ -1318,9 +1318,9 @@
 		)
 		(symbol "CH32V006F8P6_1_1"
 			(pin bidirectional line
-				(at -22.86 11.43 0)
+				(at -16.51 11.43 0)
 				(length 2.54)
-				(name "PD4/A7/T2C2_7"
+				(name "PD4"
 					(effects
 						(font
 							(size 1.27 1.27)
@@ -1334,11 +1334,13 @@
 						)
 					)
 				)
+				(alternate "A7" passive line)
+				(alternate "T2C2_7" bidirectional line)
 			)
 			(pin bidirectional line
-				(at -22.86 8.89 0)
+				(at -16.51 8.89 0)
 				(length 2.54)
-				(name "PD5/A5"
+				(name "PD5"
 					(effects
 						(font
 							(size 1.27 1.27)
@@ -1352,11 +1354,12 @@
 						)
 					)
 				)
+				(alternate "A5" passive line)
 			)
 			(pin bidirectional line
-				(at -22.86 6.35 0)
+				(at -16.51 6.35 0)
 				(length 2.54)
-				(name "PD6/A6"
+				(name "PD6"
 					(effects
 						(font
 							(size 1.27 1.27)
@@ -1370,11 +1373,12 @@
 						)
 					)
 				)
+				(alternate "A6" passive line)
 			)
 			(pin bidirectional line
-				(at -22.86 3.81 0)
+				(at -16.51 3.81 0)
 				(length 2.54)
-				(name "PA4/OPN2"
+				(name "PA4"
 					(effects
 						(font
 							(size 1.27 1.27)
@@ -1388,11 +1392,12 @@
 						)
 					)
 				)
+				(alternate "OPN2" passive line)
 			)
 			(pin bidirectional line
-				(at -22.86 1.27 0)
+				(at -16.51 1.27 0)
 				(length 2.54)
-				(name "PA1/A1"
+				(name "PA1"
 					(effects
 						(font
 							(size 1.27 1.27)
@@ -1406,11 +1411,12 @@
 						)
 					)
 				)
+				(alternate "A1" passive line)
 			)
 			(pin bidirectional line
-				(at -22.86 -1.27 0)
+				(at -16.51 -1.27 0)
 				(length 2.54)
-				(name "PA2/OPP0/T2C3_7"
+				(name "PA2"
 					(effects
 						(font
 							(size 1.27 1.27)
@@ -1424,9 +1430,11 @@
 						)
 					)
 				)
+				(alternate "OPP0" passive line)
+				(alternate "T2C3_7" bidirectional line)
 			)
 			(pin power_in line
-				(at -22.86 -3.81 0)
+				(at -16.51 -3.81 0)
 				(length 2.54)
 				(name "VSS"
 					(effects
@@ -1444,7 +1452,7 @@
 				)
 			)
 			(pin bidirectional line
-				(at -22.86 -6.35 0)
+				(at -16.51 -6.35 0)
 				(length 2.54)
 				(name "PD0"
 					(effects
@@ -1462,7 +1470,7 @@
 				)
 			)
 			(pin power_in line
-				(at -22.86 -8.89 0)
+				(at -16.51 -8.89 0)
 				(length 2.54)
 				(name "VDD"
 					(effects
@@ -1480,9 +1488,9 @@
 				)
 			)
 			(pin bidirectional line
-				(at -22.86 -11.43 0)
+				(at -16.51 -11.43 0)
 				(length 2.54)
-				(name "PC0/TX_3/T1C1N_7"
+				(name "PC0"
 					(effects
 						(font
 							(size 1.27 1.27)
@@ -1496,11 +1504,13 @@
 						)
 					)
 				)
+				(alternate "T1C1N_7" bidirectional line)
+				(alternate "TX_3" output line)
 			)
 			(pin bidirectional line
-				(at 22.86 -11.43 180)
+				(at 16.51 -11.43 180)
 				(length 2.54)
-				(name "T1C2N_7/RX_3/PC1"
+				(name "PC1"
 					(effects
 						(font
 							(size 1.27 1.27)
@@ -1514,11 +1524,13 @@
 						)
 					)
 				)
+				(alternate "RX_3" input line)
+				(alternate "T1C2N_7" bidirectional line)
 			)
 			(pin bidirectional line
-				(at 22.86 -8.89 180)
+				(at 16.51 -8.89 180)
 				(length 2.54)
-				(name "T1C3N_7/PC2"
+				(name "PC2"
 					(effects
 						(font
 							(size 1.27 1.27)
@@ -1532,9 +1544,10 @@
 						)
 					)
 				)
+				(alternate "T1C3N_7" bidirectional line)
 			)
 			(pin bidirectional line
-				(at 22.86 -6.35 180)
+				(at 16.51 -6.35 180)
 				(length 2.54)
 				(name "PC3"
 					(effects
@@ -1552,9 +1565,9 @@
 				)
 			)
 			(pin bidirectional line
-				(at 22.86 -3.81 180)
+				(at 16.51 -3.81 180)
 				(length 2.54)
-				(name "T1C1_7/A2/PC4"
+				(name "PC4"
 					(effects
 						(font
 							(size 1.27 1.27)
@@ -1568,11 +1581,13 @@
 						)
 					)
 				)
+				(alternate "A2" passive line)
+				(alternate "T1C1_7" bidirectional line)
 			)
 			(pin bidirectional line
-				(at 22.86 -1.27 180)
+				(at 16.51 -1.27 180)
 				(length 2.54)
-				(name "T1C2_7/PC5"
+				(name "PC5"
 					(effects
 						(font
 							(size 1.27 1.27)
@@ -1586,11 +1601,12 @@
 						)
 					)
 				)
+				(alternate "T1C2_7" bidirectional line)
 			)
 			(pin bidirectional line
-				(at 22.86 1.27 180)
+				(at 16.51 1.27 180)
 				(length 2.54)
-				(name "T1C3_7/PC6"
+				(name "PC6"
 					(effects
 						(font
 							(size 1.27 1.27)
@@ -1604,11 +1620,12 @@
 						)
 					)
 				)
+				(alternate "T1C3_7" bidirectional line)
 			)
 			(pin bidirectional line
-				(at 22.86 3.81 180)
+				(at 16.51 3.81 180)
 				(length 2.54)
-				(name "T1C4_7/PC7"
+				(name "PC7"
 					(effects
 						(font
 							(size 1.27 1.27)
@@ -1622,11 +1639,12 @@
 						)
 					)
 				)
+				(alternate "T1C4_7" bidirectional line)
 			)
 			(pin bidirectional line
-				(at 22.86 6.35 180)
+				(at 16.51 6.35 180)
 				(length 2.54)
-				(name "SWIO/PD1"
+				(name "PD1"
 					(effects
 						(font
 							(size 1.27 1.27)
@@ -1640,11 +1658,12 @@
 						)
 					)
 				)
+				(alternate "SWDIO" bidirectional line)
 			)
 			(pin bidirectional line
-				(at 22.86 8.89 180)
+				(at 16.51 8.89 180)
 				(length 2.54)
-				(name "A3/PD2"
+				(name "PD2"
 					(effects
 						(font
 							(size 1.27 1.27)
@@ -1658,11 +1677,12 @@
 						)
 					)
 				)
+				(alternate "A3" passive line)
 			)
 			(pin bidirectional line
-				(at 22.86 11.43 180)
+				(at 16.51 11.43 180)
 				(length 2.54)
-				(name "T2C1_7/A4/PD3"
+				(name "PD3"
 					(effects
 						(font
 							(size 1.27 1.27)
@@ -1676,6 +1696,8 @@
 						)
 					)
 				)
+				(alternate "A4" passive line)
+				(alternate "T2C1_7" bidirectional line)
 			)
 		)
 		(embedded_fonts no)

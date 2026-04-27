@@ -5,6 +5,193 @@
 	(uuid "5cdc5d5b-96cb-4c66-b3f3-7fe5d7e578e5")
 	(paper "A4")
 	(lib_symbols
+		(symbol "Connector_Generic:Conn_01x03"
+			(pin_names
+				(offset 1.016)
+				(hide yes)
+			)
+			(exclude_from_sim no)
+			(in_bom yes)
+			(on_board yes)
+			(in_pos_files yes)
+			(duplicate_pin_numbers_are_jumpers no)
+			(property "Reference" "J"
+				(at 0 5.08 0)
+				(show_name no)
+				(do_not_autoplace no)
+				(effects
+					(font
+						(size 1.27 1.27)
+					)
+				)
+			)
+			(property "Value" "Conn_01x03"
+				(at 0 -5.08 0)
+				(show_name no)
+				(do_not_autoplace no)
+				(effects
+					(font
+						(size 1.27 1.27)
+					)
+				)
+			)
+			(property "Footprint" ""
+				(at 0 0 0)
+				(show_name no)
+				(do_not_autoplace no)
+				(hide yes)
+				(effects
+					(font
+						(size 1.27 1.27)
+					)
+				)
+			)
+			(property "Datasheet" ""
+				(at 0 0 0)
+				(show_name no)
+				(do_not_autoplace no)
+				(hide yes)
+				(effects
+					(font
+						(size 1.27 1.27)
+					)
+				)
+			)
+			(property "Description" "Generic connector, single row, 01x03, script generated (kicad-library-utils/schlib/autogen/connector/)"
+				(at 0 0 0)
+				(show_name no)
+				(do_not_autoplace no)
+				(hide yes)
+				(effects
+					(font
+						(size 1.27 1.27)
+					)
+				)
+			)
+			(property "ki_keywords" "connector"
+				(at 0 0 0)
+				(show_name no)
+				(do_not_autoplace no)
+				(hide yes)
+				(effects
+					(font
+						(size 1.27 1.27)
+					)
+				)
+			)
+			(property "ki_fp_filters" "Connector*:*_1x??_*"
+				(at 0 0 0)
+				(show_name no)
+				(do_not_autoplace no)
+				(hide yes)
+				(effects
+					(font
+						(size 1.27 1.27)
+					)
+				)
+			)
+			(symbol "Conn_01x03_1_1"
+				(rectangle
+					(start -1.27 3.81)
+					(end 1.27 -3.81)
+					(stroke
+						(width 0.254)
+						(type default)
+					)
+					(fill
+						(type background)
+					)
+				)
+				(rectangle
+					(start -1.27 2.667)
+					(end 0 2.413)
+					(stroke
+						(width 0.1524)
+						(type default)
+					)
+					(fill
+						(type none)
+					)
+				)
+				(rectangle
+					(start -1.27 0.127)
+					(end 0 -0.127)
+					(stroke
+						(width 0.1524)
+						(type default)
+					)
+					(fill
+						(type none)
+					)
+				)
+				(rectangle
+					(start -1.27 -2.413)
+					(end 0 -2.667)
+					(stroke
+						(width 0.1524)
+						(type default)
+					)
+					(fill
+						(type none)
+					)
+				)
+				(pin passive line
+					(at -5.08 2.54 0)
+					(length 3.81)
+					(name "Pin_1"
+						(effects
+							(font
+								(size 1.27 1.27)
+							)
+						)
+					)
+					(number "1"
+						(effects
+							(font
+								(size 1.27 1.27)
+							)
+						)
+					)
+				)
+				(pin passive line
+					(at -5.08 0 0)
+					(length 3.81)
+					(name "Pin_2"
+						(effects
+							(font
+								(size 1.27 1.27)
+							)
+						)
+					)
+					(number "2"
+						(effects
+							(font
+								(size 1.27 1.27)
+							)
+						)
+					)
+				)
+				(pin passive line
+					(at -5.08 -2.54 0)
+					(length 3.81)
+					(name "Pin_3"
+						(effects
+							(font
+								(size 1.27 1.27)
+							)
+						)
+					)
+					(number "3"
+						(effects
+							(font
+								(size 1.27 1.27)
+							)
+						)
+					)
+				)
+			)
+			(embedded_fonts no)
+		)
 		(symbol "Device:C"
 			(pin_numbers
 				(hide yes)
@@ -1316,7 +1503,7 @@
 	)
 	(rectangle
 		(start 68.58 82.55)
-		(end 151.13 143.51)
+		(end 149.86 143.51)
 		(stroke
 			(width 0)
 			(type default)
@@ -1337,6 +1524,18 @@
 			(type none)
 		)
 		(uuid "a57cfddf-8ea3-4ee1-a63b-f622d5d79e20")
+	)
+	(rectangle
+		(start 152.4 82.55)
+		(end 203.2 143.51)
+		(stroke
+			(width 0)
+			(type default)
+		)
+		(fill
+			(type none)
+		)
+		(uuid "e77b2ec0-644f-43fc-9c72-d330bbfb1b8f")
 	)
 	(rectangle
 		(start 15.24 27.94)
@@ -1385,6 +1584,18 @@
 		)
 		(uuid "382d566c-96b1-404a-b5a6-9c089ff737d2")
 	)
+	(text "PWM Servo Header"
+		(exclude_from_sim no)
+		(at 154.94 85.09 0)
+		(effects
+			(font
+				(size 2 2)
+				(thickness 0.25)
+			)
+			(justify left top)
+		)
+		(uuid "56e791cc-574c-4696-b40c-470b91d53270")
+	)
 	(text "DRIVER LOGIC SUPPLY"
 		(exclude_from_sim no)
 		(at 17.78 30.48 0)
@@ -1420,6 +1631,26 @@
 			(justify left top)
 		)
 		(uuid "f521d3a9-2bf2-432d-ace2-a9a353f42a81")
+	)
+	(text_box "Conventional PWM Servo Header - For Servo ID"
+		(exclude_from_sim no)
+		(at 152.4 139.7 0)
+		(size 50.8 3.9483)
+		(margins 0.9525 0.9525 0.9525 0.9525)
+		(stroke
+			(width 0)
+			(type solid)
+		)
+		(fill
+			(type none)
+		)
+		(effects
+			(font
+				(size 1.27 1.27)
+			)
+			(justify left top)
+		)
+		(uuid "4f2571ee-1cb9-4771-a24c-a248b2b9bfaa")
 	)
 	(text_box "MOTOR DRIVER SUBSYSTEM"
 		(exclude_from_sim no)
@@ -2171,7 +2402,7 @@
 		(uuid "4c7891a8-8917-4240-8002-64eab90a051e")
 	)
 	(hierarchical_label "MOT_A"
-		(shape passive)
+		(shape output)
 		(at 173.99 49.53 0)
 		(effects
 			(font
@@ -2215,7 +2446,7 @@
 		(uuid "6b86ac84-1308-4fa0-9675-a1e2808eec73")
 	)
 	(hierarchical_label "MOT_A"
-		(shape passive)
+		(shape output)
 		(at 85.09 104.14 90)
 		(effects
 			(font
@@ -2226,7 +2457,7 @@
 		(uuid "6ea59d3c-f481-4ab4-8a36-7cb5cd230b0d")
 	)
 	(hierarchical_label "MOT_A"
-		(shape passive)
+		(shape output)
 		(at 187.96 49.53 90)
 		(effects
 			(font
@@ -2249,6 +2480,17 @@
 	)
 	(hierarchical_label "VSYS"
 		(shape passive)
+		(at 171.45 107.95 180)
+		(effects
+			(font
+				(size 1.27 1.27)
+			)
+			(justify right)
+		)
+		(uuid "8c22d70e-c530-4ae2-ac01-4d9df03e5473")
+	)
+	(hierarchical_label "VSYS"
+		(shape passive)
 		(at 130.81 104.14 90)
 		(effects
 			(font
@@ -2259,7 +2501,7 @@
 		(uuid "9bc20b45-2528-4f9f-a99d-60c196be5e93")
 	)
 	(hierarchical_label "MOT_B"
-		(shape passive)
+		(shape output)
 		(at 187.96 59.69 270)
 		(effects
 			(font
@@ -2270,7 +2512,7 @@
 		(uuid "b2e355f6-0745-4b4b-8c36-b08147812082")
 	)
 	(hierarchical_label "MOT_B"
-		(shape passive)
+		(shape output)
 		(at 173.99 52.07 0)
 		(effects
 			(font
@@ -2290,6 +2532,17 @@
 			(justify right)
 		)
 		(uuid "c0d1c1aa-e9a8-4350-b782-4e2a6143f83b")
+	)
+	(hierarchical_label "IN1"
+		(shape input)
+		(at 171.45 110.49 180)
+		(effects
+			(font
+				(size 1.27 1.27)
+			)
+			(justify right)
+		)
+		(uuid "c9b71496-7105-4a58-b019-1b99e38491b4")
 	)
 	(hierarchical_label "VSNB"
 		(shape output)
@@ -2325,7 +2578,7 @@
 		(uuid "f07f9393-341e-4499-ac7b-524bb55d3513")
 	)
 	(hierarchical_label "MOT_B"
-		(shape passive)
+		(shape output)
 		(at 109.22 104.14 90)
 		(effects
 			(font
@@ -2347,7 +2600,7 @@
 		(dnp no)
 		(fields_autoplaced yes)
 		(uuid "03550617-5521-4a94-9ae3-1c8aada635ed")
-		(property "Reference" "#PWR032"
+		(property "Reference" "#PWR037"
 			(at 162.56 74.93 0)
 			(hide yes)
 			(show_name no)
@@ -2407,7 +2660,7 @@
 		(instances
 			(project "servo-dev-board-ch32v006"
 				(path "/6062e7d2-0c72-467e-b49c-6387ba053e09/ada02f24-9f0e-4313-921a-475b46fb1a47"
-					(reference "#PWR032")
+					(reference "#PWR037")
 					(unit 1)
 				)
 			)
@@ -2629,7 +2882,7 @@
 		(dnp no)
 		(fields_autoplaced yes)
 		(uuid "26e53dbf-f288-4a75-96f3-509b01fb0d94")
-		(property "Reference" "#PWR026"
+		(property "Reference" "#PWR031"
 			(at 40.64 71.12 0)
 			(hide yes)
 			(show_name no)
@@ -2689,7 +2942,7 @@
 		(instances
 			(project "servo-dev-board-ch32v006"
 				(path "/6062e7d2-0c72-467e-b49c-6387ba053e09/ada02f24-9f0e-4313-921a-475b46fb1a47"
-					(reference "#PWR026")
+					(reference "#PWR031")
 					(unit 1)
 				)
 			)
@@ -3071,6 +3324,83 @@
 	)
 	(symbol
 		(lib_id "power:GND")
+		(at 171.45 113.03 0)
+		(unit 1)
+		(body_style 1)
+		(exclude_from_sim no)
+		(in_bom yes)
+		(on_board yes)
+		(in_pos_files yes)
+		(dnp no)
+		(uuid "5fd7f77f-e638-44b3-8d85-ff5755b0b85a")
+		(property "Reference" "#PWR038"
+			(at 171.45 119.38 0)
+			(hide yes)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+			)
+		)
+		(property "Value" "GND"
+			(at 171.45 118.11 0)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+			)
+		)
+		(property "Footprint" ""
+			(at 171.45 113.03 0)
+			(hide yes)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+			)
+		)
+		(property "Datasheet" ""
+			(at 171.45 113.03 0)
+			(hide yes)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+			)
+		)
+		(property "Description" "Power symbol creates a global label with name \"GND\" , ground"
+			(at 171.45 113.03 0)
+			(hide yes)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+			)
+		)
+		(pin "1"
+			(uuid "57c3e1a9-15a9-4758-a86c-0bf558ea1ac3")
+		)
+		(instances
+			(project "servo-dev-board-ch32v006"
+				(path "/6062e7d2-0c72-467e-b49c-6387ba053e09/ada02f24-9f0e-4313-921a-475b46fb1a47"
+					(reference "#PWR038")
+					(unit 1)
+				)
+			)
+		)
+	)
+	(symbol
+		(lib_id "power:GND")
 		(at 38.1 123.19 0)
 		(unit 1)
 		(body_style 1)
@@ -3080,7 +3410,7 @@
 		(in_pos_files yes)
 		(dnp no)
 		(uuid "657887bb-e248-4278-beec-e70f8e2e2f8f")
-		(property "Reference" "#PWR025"
+		(property "Reference" "#PWR030"
 			(at 38.1 129.54 0)
 			(hide yes)
 			(show_name no)
@@ -3140,7 +3470,7 @@
 		(instances
 			(project "servo-dev-board-ch32v006"
 				(path "/6062e7d2-0c72-467e-b49c-6387ba053e09/ada02f24-9f0e-4313-921a-475b46fb1a47"
-					(reference "#PWR025")
+					(reference "#PWR030")
 					(unit 1)
 				)
 			)
@@ -3158,7 +3488,7 @@
 		(dnp no)
 		(fields_autoplaced yes)
 		(uuid "6d416d15-8502-4ca7-b284-431dea65fb2e")
-		(property "Reference" "#PWR031"
+		(property "Reference" "#PWR036"
 			(at 140.97 66.04 0)
 			(hide yes)
 			(show_name no)
@@ -3218,7 +3548,7 @@
 		(instances
 			(project "servo-dev-board-ch32v006"
 				(path "/6062e7d2-0c72-467e-b49c-6387ba053e09/ada02f24-9f0e-4313-921a-475b46fb1a47"
-					(reference "#PWR031")
+					(reference "#PWR036")
 					(unit 1)
 				)
 			)
@@ -3236,7 +3566,7 @@
 		(dnp no)
 		(fields_autoplaced yes)
 		(uuid "6f003e7f-ec7e-4961-9092-568ca2bb75ad")
-		(property "Reference" "#PWR024"
+		(property "Reference" "#PWR029"
 			(at 38.1 92.71 0)
 			(hide yes)
 			(show_name no)
@@ -3296,7 +3626,7 @@
 		(instances
 			(project "servo-dev-board-ch32v006"
 				(path "/6062e7d2-0c72-467e-b49c-6387ba053e09/ada02f24-9f0e-4313-921a-475b46fb1a47"
-					(reference "#PWR024")
+					(reference "#PWR029")
 					(unit 1)
 				)
 			)
@@ -3820,6 +4150,91 @@
 		)
 	)
 	(symbol
+		(lib_id "Connector_Generic:Conn_01x03")
+		(at 176.53 110.49 0)
+		(unit 1)
+		(body_style 1)
+		(exclude_from_sim no)
+		(in_bom yes)
+		(on_board yes)
+		(in_pos_files yes)
+		(dnp no)
+		(fields_autoplaced yes)
+		(uuid "ac905cdd-a6f8-4912-924c-6d65dbe42b72")
+		(property "Reference" "J3"
+			(at 179.07 109.2199 0)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(justify left)
+			)
+		)
+		(property "Value" "Conn_01x03"
+			(at 179.07 111.7599 0)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(justify left)
+			)
+		)
+		(property "Footprint" "Connector_PinHeader_2.54mm:PinHeader_1x03_P2.54mm_Vertical"
+			(at 176.53 110.49 0)
+			(hide yes)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+			)
+		)
+		(property "Datasheet" ""
+			(at 176.53 110.49 0)
+			(hide yes)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+			)
+		)
+		(property "Description" "Generic connector, single row, 01x03, script generated (kicad-library-utils/schlib/autogen/connector/)"
+			(at 176.53 110.49 0)
+			(hide yes)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+			)
+		)
+		(pin "3"
+			(uuid "70053d45-6590-49f3-81a8-395aece64cca")
+		)
+		(pin "2"
+			(uuid "f6e50b53-19d3-4c96-b44f-252511cf7f01")
+		)
+		(pin "1"
+			(uuid "771c97fb-304c-4969-9aea-0b65ce2b82a6")
+		)
+		(instances
+			(project "servo-dev-board-ch32v006"
+				(path "/6062e7d2-0c72-467e-b49c-6387ba053e09/ada02f24-9f0e-4313-921a-475b46fb1a47"
+					(reference "J3")
+					(unit 1)
+				)
+			)
+		)
+	)
+	(symbol
 		(lib_id "Device:NetTie_2")
 		(at 41.91 118.11 180)
 		(unit 1)
@@ -3912,7 +4327,7 @@
 		(in_pos_files yes)
 		(dnp no)
 		(uuid "ad2511a1-c53b-4873-b61e-18db53033a7a")
-		(property "Reference" "#PWR030"
+		(property "Reference" "#PWR035"
 			(at 130.81 133.35 0)
 			(hide yes)
 			(show_name no)
@@ -3972,7 +4387,7 @@
 		(instances
 			(project "servo-dev-board-ch32v006"
 				(path "/6062e7d2-0c72-467e-b49c-6387ba053e09/ada02f24-9f0e-4313-921a-475b46fb1a47"
-					(reference "#PWR030")
+					(reference "#PWR035")
 					(unit 1)
 				)
 			)
@@ -4500,7 +4915,7 @@
 		(in_pos_files yes)
 		(dnp no)
 		(uuid "cd77ab55-bcc4-4f4b-9e4a-16d20b9ca4b3")
-		(property "Reference" "#PWR028"
+		(property "Reference" "#PWR033"
 			(at 85.09 133.35 0)
 			(hide yes)
 			(show_name no)
@@ -4560,7 +4975,7 @@
 		(instances
 			(project "servo-dev-board-ch32v006"
 				(path "/6062e7d2-0c72-467e-b49c-6387ba053e09/ada02f24-9f0e-4313-921a-475b46fb1a47"
-					(reference "#PWR028")
+					(reference "#PWR033")
 					(unit 1)
 				)
 			)
@@ -4577,7 +4992,7 @@
 		(in_pos_files yes)
 		(dnp no)
 		(uuid "d264178c-39d7-4a36-b6e9-d3217aed33d8")
-		(property "Reference" "#PWR029"
+		(property "Reference" "#PWR034"
 			(at 109.22 133.35 0)
 			(hide yes)
 			(show_name no)
@@ -4637,7 +5052,7 @@
 		(instances
 			(project "servo-dev-board-ch32v006"
 				(path "/6062e7d2-0c72-467e-b49c-6387ba053e09/ada02f24-9f0e-4313-921a-475b46fb1a47"
-					(reference "#PWR029")
+					(reference "#PWR034")
 					(unit 1)
 				)
 			)
@@ -4655,7 +5070,7 @@
 		(dnp no)
 		(fields_autoplaced yes)
 		(uuid "e83bbcfb-12fe-48d4-bea6-39423ab73057")
-		(property "Reference" "#PWR027"
+		(property "Reference" "#PWR032"
 			(at 82.55 76.2 0)
 			(hide yes)
 			(show_name no)
@@ -4715,7 +5130,7 @@
 		(instances
 			(project "servo-dev-board-ch32v006"
 				(path "/6062e7d2-0c72-467e-b49c-6387ba053e09/ada02f24-9f0e-4313-921a-475b46fb1a47"
-					(reference "#PWR027")
+					(reference "#PWR032")
 					(unit 1)
 				)
 			)

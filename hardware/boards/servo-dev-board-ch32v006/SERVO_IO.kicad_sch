@@ -2021,9 +2021,8 @@
 				)
 			)
 		)
-		(property "Value" "Jumper_3_Open"
+		(property "Value" "NTC|NTC_EXT"
 			(at 39.37 99.06 0)
-			(hide yes)
 			(show_name no)
 			(do_not_autoplace no)
 			(effects
@@ -2032,7 +2031,7 @@
 				)
 			)
 		)
-		(property "Footprint" ""
+		(property "Footprint" "Connector_PinHeader_2.54mm:PinHeader_1x03_P2.54mm_Vertical"
 			(at 39.37 92.71 0)
 			(hide yes)
 			(show_name no)
@@ -2117,7 +2116,7 @@
 		(dnp no)
 		(fields_autoplaced yes)
 		(uuid "22f4ab7a-b209-42fc-92a7-684c6ebdf064")
-		(property "Reference" "#PWR040"
+		(property "Reference" "#PWR046"
 			(at 91.44 107.95 0)
 			(hide yes)
 			(show_name no)
@@ -2177,7 +2176,7 @@
 		(instances
 			(project "servo-dev-board-ch32v006"
 				(path "/6062e7d2-0c72-467e-b49c-6387ba053e09/120e2627-930f-4b00-8e4a-c64cf3d97f18"
-					(reference "#PWR040")
+					(reference "#PWR046")
 					(unit 1)
 				)
 			)
@@ -2194,7 +2193,7 @@
 		(in_pos_files yes)
 		(dnp no)
 		(uuid "2a69dc7a-3cd8-4934-8ade-123bc0b191db")
-		(property "Reference" "J4"
+		(property "Reference" "J5"
 			(at 43.18 39.37 0)
 			(show_name no)
 			(do_not_autoplace no)
@@ -2298,7 +2297,7 @@
 		(instances
 			(project "servo-dev-board-ch32v006"
 				(path "/6062e7d2-0c72-467e-b49c-6387ba053e09/120e2627-930f-4b00-8e4a-c64cf3d97f18"
-					(reference "J4")
+					(reference "J5")
 					(unit 1)
 				)
 			)
@@ -2316,7 +2315,7 @@
 		(dnp no)
 		(fields_autoplaced yes)
 		(uuid "2bedc02a-8459-4ea7-81a0-ae30baab8c58")
-		(property "Reference" "#PWR041"
+		(property "Reference" "#PWR047"
 			(at 161.29 49.53 0)
 			(hide yes)
 			(show_name no)
@@ -2377,7 +2376,7 @@
 		(instances
 			(project "servo-dev-board-ch32v006"
 				(path "/6062e7d2-0c72-467e-b49c-6387ba053e09/120e2627-930f-4b00-8e4a-c64cf3d97f18"
-					(reference "#PWR041")
+					(reference "#PWR047")
 					(unit 1)
 				)
 			)
@@ -2601,7 +2600,7 @@
 		(dnp no)
 		(fields_autoplaced yes)
 		(uuid "701ab900-323c-49f2-b092-980addb66b5c")
-		(property "Reference" "#PWR039"
+		(property "Reference" "#PWR045"
 			(at 85.09 45.72 0)
 			(hide yes)
 			(show_name no)
@@ -2662,7 +2661,7 @@
 		(instances
 			(project "servo-dev-board-ch32v006"
 				(path "/6062e7d2-0c72-467e-b49c-6387ba053e09/120e2627-930f-4b00-8e4a-c64cf3d97f18"
-					(reference "#PWR039")
+					(reference "#PWR045")
 					(unit 1)
 				)
 			)
@@ -2782,7 +2781,7 @@
 		(in_pos_files yes)
 		(dnp no)
 		(uuid "d465f0bf-8c3e-483c-92a4-1ac627398ad2")
-		(property "Reference" "J5"
+		(property "Reference" "J6"
 			(at 53.34 94.615 0)
 			(show_name no)
 			(do_not_autoplace no)
@@ -2802,7 +2801,7 @@
 				)
 			)
 		)
-		(property "Footprint" ""
+		(property "Footprint" "Connector_PinHeader_2.54mm:PinHeader_1x02_P2.54mm_Vertical"
 			(at 53.34 97.79 0)
 			(hide yes)
 			(show_name no)
@@ -2844,7 +2843,7 @@
 		(instances
 			(project "servo-dev-board-ch32v006"
 				(path "/6062e7d2-0c72-467e-b49c-6387ba053e09/120e2627-930f-4b00-8e4a-c64cf3d97f18"
-					(reference "J5")
+					(reference "J6")
 					(unit 1)
 				)
 			)
@@ -2862,7 +2861,7 @@
 		(dnp no)
 		(fields_autoplaced yes)
 		(uuid "d8bae5f0-3294-4d22-9aae-605ce0fcda03")
-		(property "Reference" "#PWR037"
+		(property "Reference" "#PWR043"
 			(at 31.75 45.72 0)
 			(hide yes)
 			(show_name no)
@@ -2923,7 +2922,7 @@
 		(instances
 			(project "servo-dev-board-ch32v006"
 				(path "/6062e7d2-0c72-467e-b49c-6387ba053e09/120e2627-930f-4b00-8e4a-c64cf3d97f18"
-					(reference "#PWR037")
+					(reference "#PWR043")
 					(unit 1)
 				)
 			)
@@ -2940,7 +2939,7 @@
 		(in_pos_files yes)
 		(dnp no)
 		(uuid "e25b9f01-76e6-4b89-a6e8-8e5eae66528c")
-		(property "Reference" "#PWR038"
+		(property "Reference" "#PWR044"
 			(at 39.37 113.03 0)
 			(hide yes)
 			(show_name no)
@@ -3000,7 +2999,7 @@
 		(instances
 			(project "servo-dev-board-ch32v006"
 				(path "/6062e7d2-0c72-467e-b49c-6387ba053e09/120e2627-930f-4b00-8e4a-c64cf3d97f18"
-					(reference "#PWR038")
+					(reference "#PWR044")
 					(unit 1)
 				)
 			)
@@ -3120,7 +3119,7 @@
 		(in_pos_files yes)
 		(dnp no)
 		(uuid "ebe5c77e-d5be-424f-8ee9-59bbc977e2c0")
-		(property "Reference" "J7"
+		(property "Reference" "J8"
 			(at 148.59 43.18 0)
 			(show_name no)
 			(do_not_autoplace no)
@@ -3210,7 +3209,7 @@
 		(instances
 			(project "servo-dev-board-ch32v006"
 				(path "/6062e7d2-0c72-467e-b49c-6387ba053e09/120e2627-930f-4b00-8e4a-c64cf3d97f18"
-					(reference "J7")
+					(reference "J8")
 					(unit 1)
 				)
 			)
@@ -3227,7 +3226,7 @@
 		(in_pos_files yes)
 		(dnp no)
 		(uuid "fabe0ba9-b00c-4594-8f49-67b1cd2dadd3")
-		(property "Reference" "J6"
+		(property "Reference" "J7"
 			(at 96.52 40.64 0)
 			(show_name no)
 			(do_not_autoplace no)
@@ -3320,7 +3319,7 @@
 		(instances
 			(project "servo-dev-board-ch32v006"
 				(path "/6062e7d2-0c72-467e-b49c-6387ba053e09/120e2627-930f-4b00-8e4a-c64cf3d97f18"
-					(reference "J6")
+					(reference "J7")
 					(unit 1)
 				)
 			)

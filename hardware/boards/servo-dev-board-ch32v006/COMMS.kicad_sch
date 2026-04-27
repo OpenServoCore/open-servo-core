@@ -1937,7 +1937,7 @@
 		(in_pos_files yes)
 		(dnp no)
 		(uuid "0bd0dfc3-4d01-4989-975a-c437c411ae5e")
-		(property "Reference" "#PWR044"
+		(property "Reference" "#PWR050"
 			(at 48.26 46.99 0)
 			(hide yes)
 			(show_name no)
@@ -1998,7 +1998,7 @@
 		(instances
 			(project "servo-dev-board-ch32v006"
 				(path "/6062e7d2-0c72-467e-b49c-6387ba053e09/d650f1be-e012-4c20-9ca8-eaa5ec4968ee"
-					(reference "#PWR044")
+					(reference "#PWR050")
 					(unit 1)
 				)
 			)
@@ -2146,7 +2146,7 @@
 		(in_pos_files yes)
 		(dnp no)
 		(uuid "196a8d43-cf9c-4f2d-b0e7-12b186d360a0")
-		(property "Reference" "#PWR042"
+		(property "Reference" "#PWR048"
 			(at 26.67 46.99 0)
 			(hide yes)
 			(show_name no)
@@ -2207,7 +2207,7 @@
 		(instances
 			(project "servo-dev-board-ch32v006"
 				(path "/6062e7d2-0c72-467e-b49c-6387ba053e09/d650f1be-e012-4c20-9ca8-eaa5ec4968ee"
-					(reference "#PWR042")
+					(reference "#PWR048")
 					(unit 1)
 				)
 			)
@@ -2548,7 +2548,7 @@
 		(dnp no)
 		(fields_autoplaced yes)
 		(uuid "4a2966a7-4efc-4890-85f5-4c010e0d285c")
-		(property "Reference" "#PWR046"
+		(property "Reference" "#PWR052"
 			(at 146.05 59.69 0)
 			(hide yes)
 			(show_name no)
@@ -2608,7 +2608,7 @@
 		(instances
 			(project "servo-dev-board-ch32v006"
 				(path "/6062e7d2-0c72-467e-b49c-6387ba053e09/d650f1be-e012-4c20-9ca8-eaa5ec4968ee"
-					(reference "#PWR046")
+					(reference "#PWR052")
 					(unit 1)
 				)
 			)
@@ -2730,7 +2730,7 @@
 		(in_pos_files yes)
 		(dnp no)
 		(uuid "6e7f7975-b310-480d-ba10-5573b9451ff2")
-		(property "Reference" "#PWR045"
+		(property "Reference" "#PWR051"
 			(at 92.71 46.99 0)
 			(hide yes)
 			(show_name no)
@@ -2791,7 +2791,7 @@
 		(instances
 			(project "servo-dev-board-ch32v006"
 				(path "/6062e7d2-0c72-467e-b49c-6387ba053e09/d650f1be-e012-4c20-9ca8-eaa5ec4968ee"
-					(reference "#PWR045")
+					(reference "#PWR051")
 					(unit 1)
 				)
 			)
@@ -2912,7 +2912,7 @@
 		(in_pos_files yes)
 		(dnp no)
 		(uuid "9ec7be00-5d16-44b9-910d-5ed2d21c959e")
-		(property "Reference" "J8"
+		(property "Reference" "J9"
 			(at 38.1 43.18 0)
 			(show_name no)
 			(do_not_autoplace no)
@@ -3000,7 +3000,7 @@
 		(instances
 			(project "servo-dev-board-ch32v006"
 				(path "/6062e7d2-0c72-467e-b49c-6387ba053e09/d650f1be-e012-4c20-9ca8-eaa5ec4968ee"
-					(reference "J8")
+					(reference "J9")
 					(unit 1)
 				)
 			)
@@ -3150,7 +3150,7 @@
 		(in_pos_files yes)
 		(dnp no)
 		(uuid "a2b96271-e7c5-4b0a-9ad5-fb14ad582e41")
-		(property "Reference" "J9"
+		(property "Reference" "J10"
 			(at 59.69 43.18 0)
 			(show_name no)
 			(do_not_autoplace no)
@@ -3238,7 +3238,7 @@
 		(instances
 			(project "servo-dev-board-ch32v006"
 				(path "/6062e7d2-0c72-467e-b49c-6387ba053e09/d650f1be-e012-4c20-9ca8-eaa5ec4968ee"
-					(reference "J9")
+					(reference "J10")
 					(unit 1)
 				)
 			)
@@ -3359,7 +3359,7 @@
 		(in_pos_files yes)
 		(dnp no)
 		(uuid "b377a0b4-23c8-4aa2-9ad8-a771ccec685f")
-		(property "Reference" "J10"
+		(property "Reference" "J11"
 			(at 104.14 43.18 0)
 			(show_name no)
 			(do_not_autoplace no)
@@ -3458,7 +3458,7 @@
 		(instances
 			(project "servo-dev-board-ch32v006"
 				(path "/6062e7d2-0c72-467e-b49c-6387ba053e09/d650f1be-e012-4c20-9ca8-eaa5ec4968ee"
-					(reference "J10")
+					(reference "J11")
 					(unit 1)
 				)
 			)
@@ -3476,7 +3476,7 @@
 		(dnp no)
 		(fields_autoplaced yes)
 		(uuid "c9026b12-0095-4a99-8752-68583d281fcd")
-		(property "Reference" "#PWR047"
+		(property "Reference" "#PWR053"
 			(at 147.32 99.06 0)
 			(hide yes)
 			(show_name no)
@@ -3536,7 +3536,7 @@
 		(instances
 			(project "servo-dev-board-ch32v006"
 				(path "/6062e7d2-0c72-467e-b49c-6387ba053e09/d650f1be-e012-4c20-9ca8-eaa5ec4968ee"
-					(reference "#PWR047")
+					(reference "#PWR053")
 					(unit 1)
 				)
 			)
@@ -3685,7 +3685,7 @@
 		(dnp no)
 		(fields_autoplaced yes)
 		(uuid "eba69ac3-6fb8-45ea-95a9-d8cdc4a4813c")
-		(property "Reference" "#PWR043"
+		(property "Reference" "#PWR049"
 			(at 39.37 105.41 0)
 			(hide yes)
 			(show_name no)
@@ -3745,7 +3745,7 @@
 		(instances
 			(project "servo-dev-board-ch32v006"
 				(path "/6062e7d2-0c72-467e-b49c-6387ba053e09/d650f1be-e012-4c20-9ca8-eaa5ec4968ee"
-					(reference "#PWR043")
+					(reference "#PWR049")
 					(unit 1)
 				)
 			)

@@ -1077,8 +1077,8 @@
 			)
 			(symbol "CH32V006F8P6_0_1"
 				(rectangle
-					(start -20.32 19.05)
-					(end 20.32 -19.05)
+					(start -13.97 19.05)
+					(end 13.97 -19.05)
 					(stroke
 						(width 0)
 						(type default)
@@ -1088,7 +1088,7 @@
 					)
 				)
 				(circle
-					(center -19.05 17.78)
+					(center -12.7 17.78)
 					(radius 0.38)
 					(stroke
 						(width 0)
@@ -1101,9 +1101,9 @@
 			)
 			(symbol "CH32V006F8P6_1_1"
 				(pin bidirectional line
-					(at -22.86 11.43 0)
+					(at -16.51 11.43 0)
 					(length 2.54)
-					(name "PD4/A7/T2C2_7"
+					(name "PD4"
 						(effects
 							(font
 								(size 1.27 1.27)
@@ -1117,11 +1117,13 @@
 							)
 						)
 					)
+					(alternate "A7" passive line)
+					(alternate "T2C2_7" bidirectional line)
 				)
 				(pin bidirectional line
-					(at -22.86 8.89 0)
+					(at -16.51 8.89 0)
 					(length 2.54)
-					(name "PD5/A5"
+					(name "PD5"
 						(effects
 							(font
 								(size 1.27 1.27)
@@ -1135,11 +1137,12 @@
 							)
 						)
 					)
+					(alternate "A5" passive line)
 				)
 				(pin bidirectional line
-					(at -22.86 6.35 0)
+					(at -16.51 6.35 0)
 					(length 2.54)
-					(name "PD6/A6"
+					(name "PD6"
 						(effects
 							(font
 								(size 1.27 1.27)
@@ -1153,11 +1156,12 @@
 							)
 						)
 					)
+					(alternate "A6" passive line)
 				)
 				(pin bidirectional line
-					(at -22.86 3.81 0)
+					(at -16.51 3.81 0)
 					(length 2.54)
-					(name "PA4/OPN2"
+					(name "PA4"
 						(effects
 							(font
 								(size 1.27 1.27)
@@ -1171,11 +1175,12 @@
 							)
 						)
 					)
+					(alternate "OPN2" passive line)
 				)
 				(pin bidirectional line
-					(at -22.86 1.27 0)
+					(at -16.51 1.27 0)
 					(length 2.54)
-					(name "PA1/A1"
+					(name "PA1"
 						(effects
 							(font
 								(size 1.27 1.27)
@@ -1189,11 +1194,12 @@
 							)
 						)
 					)
+					(alternate "A1" passive line)
 				)
 				(pin bidirectional line
-					(at -22.86 -1.27 0)
+					(at -16.51 -1.27 0)
 					(length 2.54)
-					(name "PA2/OPP0/T2C3_7"
+					(name "PA2"
 						(effects
 							(font
 								(size 1.27 1.27)
@@ -1207,9 +1213,11 @@
 							)
 						)
 					)
+					(alternate "OPP0" passive line)
+					(alternate "T2C3_7" bidirectional line)
 				)
 				(pin power_in line
-					(at -22.86 -3.81 0)
+					(at -16.51 -3.81 0)
 					(length 2.54)
 					(name "VSS"
 						(effects
@@ -1227,7 +1235,7 @@
 					)
 				)
 				(pin bidirectional line
-					(at -22.86 -6.35 0)
+					(at -16.51 -6.35 0)
 					(length 2.54)
 					(name "PD0"
 						(effects
@@ -1245,7 +1253,7 @@
 					)
 				)
 				(pin power_in line
-					(at -22.86 -8.89 0)
+					(at -16.51 -8.89 0)
 					(length 2.54)
 					(name "VDD"
 						(effects
@@ -1263,9 +1271,9 @@
 					)
 				)
 				(pin bidirectional line
-					(at -22.86 -11.43 0)
+					(at -16.51 -11.43 0)
 					(length 2.54)
-					(name "PC0/TX_3/T1C1N_7"
+					(name "PC0"
 						(effects
 							(font
 								(size 1.27 1.27)
@@ -1279,11 +1287,13 @@
 							)
 						)
 					)
+					(alternate "T1C1N_7" bidirectional line)
+					(alternate "TX_3" output line)
 				)
 				(pin bidirectional line
-					(at 22.86 -11.43 180)
+					(at 16.51 -11.43 180)
 					(length 2.54)
-					(name "T1C2N_7/RX_3/PC1"
+					(name "PC1"
 						(effects
 							(font
 								(size 1.27 1.27)
@@ -1297,11 +1307,13 @@
 							)
 						)
 					)
+					(alternate "RX_3" input line)
+					(alternate "T1C2N_7" bidirectional line)
 				)
 				(pin bidirectional line
-					(at 22.86 -8.89 180)
+					(at 16.51 -8.89 180)
 					(length 2.54)
-					(name "T1C3N_7/PC2"
+					(name "PC2"
 						(effects
 							(font
 								(size 1.27 1.27)
@@ -1315,9 +1327,10 @@
 							)
 						)
 					)
+					(alternate "T1C3N_7" bidirectional line)
 				)
 				(pin bidirectional line
-					(at 22.86 -6.35 180)
+					(at 16.51 -6.35 180)
 					(length 2.54)
 					(name "PC3"
 						(effects
@@ -1335,9 +1348,9 @@
 					)
 				)
 				(pin bidirectional line
-					(at 22.86 -3.81 180)
+					(at 16.51 -3.81 180)
 					(length 2.54)
-					(name "T1C1_7/A2/PC4"
+					(name "PC4"
 						(effects
 							(font
 								(size 1.27 1.27)
@@ -1351,11 +1364,13 @@
 							)
 						)
 					)
+					(alternate "A2" passive line)
+					(alternate "T1C1_7" bidirectional line)
 				)
 				(pin bidirectional line
-					(at 22.86 -1.27 180)
+					(at 16.51 -1.27 180)
 					(length 2.54)
-					(name "T1C2_7/PC5"
+					(name "PC5"
 						(effects
 							(font
 								(size 1.27 1.27)
@@ -1369,11 +1384,12 @@
 							)
 						)
 					)
+					(alternate "T1C2_7" bidirectional line)
 				)
 				(pin bidirectional line
-					(at 22.86 1.27 180)
+					(at 16.51 1.27 180)
 					(length 2.54)
-					(name "T1C3_7/PC6"
+					(name "PC6"
 						(effects
 							(font
 								(size 1.27 1.27)
@@ -1387,11 +1403,12 @@
 							)
 						)
 					)
+					(alternate "T1C3_7" bidirectional line)
 				)
 				(pin bidirectional line
-					(at 22.86 3.81 180)
+					(at 16.51 3.81 180)
 					(length 2.54)
-					(name "T1C4_7/PC7"
+					(name "PC7"
 						(effects
 							(font
 								(size 1.27 1.27)
@@ -1405,11 +1422,12 @@
 							)
 						)
 					)
+					(alternate "T1C4_7" bidirectional line)
 				)
 				(pin bidirectional line
-					(at 22.86 6.35 180)
+					(at 16.51 6.35 180)
 					(length 2.54)
-					(name "SWIO/PD1"
+					(name "PD1"
 						(effects
 							(font
 								(size 1.27 1.27)
@@ -1423,11 +1441,12 @@
 							)
 						)
 					)
+					(alternate "SWDIO" bidirectional line)
 				)
 				(pin bidirectional line
-					(at 22.86 8.89 180)
+					(at 16.51 8.89 180)
 					(length 2.54)
-					(name "A3/PD2"
+					(name "PD2"
 						(effects
 							(font
 								(size 1.27 1.27)
@@ -1441,11 +1460,12 @@
 							)
 						)
 					)
+					(alternate "A3" passive line)
 				)
 				(pin bidirectional line
-					(at 22.86 11.43 180)
+					(at 16.51 11.43 180)
 					(length 2.54)
-					(name "T2C1_7/A4/PD3"
+					(name "PD3"
 						(effects
 							(font
 								(size 1.27 1.27)
@@ -1459,6 +1479,8 @@
 							)
 						)
 					)
+					(alternate "A4" passive line)
+					(alternate "T2C1_7" bidirectional line)
 				)
 			)
 			(embedded_fonts no)
@@ -1637,7 +1659,7 @@
 	)
 	(wire
 		(pts
-			(xy 116.84 50.8) (xy 110.49 50.8)
+			(xy 110.49 50.8) (xy 104.14 50.8)
 		)
 		(stroke
 			(width 0)
@@ -1786,7 +1808,7 @@
 		(uuid "1b78824d-f34b-49ce-a8e0-d38b11595b75")
 	)
 	(label "SWDIO"
-		(at 116.84 50.8 0)
+		(at 110.49 50.8 0)
 		(effects
 			(font
 				(size 1.27 1.27)
@@ -1797,7 +1819,7 @@
 	)
 	(hierarchical_label "IN1"
 		(shape output)
-		(at 110.49 55.88 0)
+		(at 104.14 55.88 0)
 		(effects
 			(font
 				(size 1.27 1.27)
@@ -1808,7 +1830,7 @@
 	)
 	(hierarchical_label "VSNS"
 		(shape input)
-		(at 64.77 55.88 180)
+		(at 71.12 55.88 180)
 		(effects
 			(font
 				(size 1.27 1.27)
@@ -1819,7 +1841,7 @@
 	)
 	(hierarchical_label "ENCA"
 		(shape input)
-		(at 110.49 45.72 0)
+		(at 104.14 45.72 0)
 		(effects
 			(font
 				(size 1.27 1.27)
@@ -1830,7 +1852,7 @@
 	)
 	(hierarchical_label "ISNS-"
 		(shape input)
-		(at 64.77 53.34 180)
+		(at 71.12 53.34 180)
 		(effects
 			(font
 				(size 1.27 1.27)
@@ -1841,7 +1863,7 @@
 	)
 	(hierarchical_label "EN"
 		(shape output)
-		(at 110.49 63.5 0)
+		(at 104.14 63.5 0)
 		(effects
 			(font
 				(size 1.27 1.27)
@@ -1852,7 +1874,7 @@
 	)
 	(hierarchical_label "VSNB"
 		(shape input)
-		(at 64.77 50.8 180)
+		(at 71.12 50.8 180)
 		(effects
 			(font
 				(size 1.27 1.27)
@@ -1874,7 +1896,7 @@
 	)
 	(hierarchical_label "RX"
 		(shape input)
-		(at 110.49 68.58 0)
+		(at 104.14 68.58 0)
 		(effects
 			(font
 				(size 1.27 1.27)
@@ -1896,7 +1918,7 @@
 	)
 	(hierarchical_label "ENCB"
 		(shape input)
-		(at 64.77 45.72 180)
+		(at 71.12 45.72 180)
 		(effects
 			(font
 				(size 1.27 1.27)
@@ -1907,7 +1929,7 @@
 	)
 	(hierarchical_label "STAT"
 		(shape output)
-		(at 110.49 53.34 0)
+		(at 104.14 53.34 0)
 		(effects
 			(font
 				(size 1.27 1.27)
@@ -1918,7 +1940,7 @@
 	)
 	(hierarchical_label "IN2"
 		(shape output)
-		(at 110.49 58.42 0)
+		(at 104.14 58.42 0)
 		(effects
 			(font
 				(size 1.27 1.27)
@@ -1951,7 +1973,7 @@
 	)
 	(hierarchical_label "ISNS+"
 		(shape input)
-		(at 64.77 58.42 180)
+		(at 71.12 58.42 180)
 		(effects
 			(font
 				(size 1.27 1.27)
@@ -1973,7 +1995,7 @@
 	)
 	(hierarchical_label "VSNA"
 		(shape input)
-		(at 64.77 48.26 180)
+		(at 71.12 48.26 180)
 		(effects
 			(font
 				(size 1.27 1.27)
@@ -1995,7 +2017,7 @@
 	)
 	(hierarchical_label "TX"
 		(shape output)
-		(at 64.77 68.58 180)
+		(at 71.12 68.58 180)
 		(effects
 			(font
 				(size 1.27 1.27)
@@ -2006,7 +2028,7 @@
 	)
 	(hierarchical_label "+3V3"
 		(shape passive)
-		(at 64.77 66.04 180)
+		(at 71.12 66.04 180)
 		(effects
 			(font
 				(size 1.27 1.27)
@@ -2017,7 +2039,7 @@
 	)
 	(hierarchical_label "TX_EN"
 		(shape output)
-		(at 110.49 66.04 0)
+		(at 104.14 66.04 0)
 		(effects
 			(font
 				(size 1.27 1.27)
@@ -2039,7 +2061,7 @@
 	)
 	(hierarchical_label "VPOS"
 		(shape input)
-		(at 110.49 48.26 0)
+		(at 104.14 48.26 0)
 		(effects
 			(font
 				(size 1.27 1.27)
@@ -2050,7 +2072,7 @@
 	)
 	(hierarchical_label "VNTC"
 		(shape input)
-		(at 110.49 60.96 0)
+		(at 104.14 60.96 0)
 		(effects
 			(font
 				(size 1.27 1.27)
@@ -2061,7 +2083,7 @@
 	)
 	(hierarchical_label "DBG"
 		(shape output)
-		(at 64.77 63.5 180)
+		(at 71.12 63.5 180)
 		(effects
 			(font
 				(size 1.27 1.27)
@@ -2081,7 +2103,7 @@
 		(in_pos_files yes)
 		(dnp no)
 		(uuid "0b43bb1b-1eb3-4c2c-b8c9-29bc1fa5b23c")
-		(property "Reference" "#PWR033"
+		(property "Reference" "#PWR039"
 			(at 26.67 68.58 0)
 			(hide yes)
 			(show_name no)
@@ -2141,7 +2163,7 @@
 		(instances
 			(project "servo-dev-board-ch32v006"
 				(path "/6062e7d2-0c72-467e-b49c-6387ba053e09/77d3819f-1672-490a-859c-8df54ad0ab77"
-					(reference "#PWR033")
+					(reference "#PWR039")
 					(unit 1)
 				)
 			)
@@ -2375,6 +2397,7 @@
 		)
 		(pin "5"
 			(uuid "d2ff5f83-68c7-423e-9e02-1700ff8a3be0")
+			(alternate "A1")
 		)
 		(pin "9"
 			(uuid "78b3f60f-0e36-4c76-809d-e75a2892ee8b")
@@ -2384,24 +2407,31 @@
 		)
 		(pin "3"
 			(uuid "97d04c3b-b6a9-4fcf-9420-7795f6a7a5d8")
+			(alternate "A6")
 		)
 		(pin "6"
 			(uuid "5559f694-9bbe-448a-8059-ae394705a608")
+			(alternate "OPP0")
 		)
 		(pin "2"
 			(uuid "e58c9147-295a-44bf-ba12-432c2899632f")
+			(alternate "A5")
 		)
 		(pin "4"
 			(uuid "9125b4df-f325-4248-83d5-b25cf5aa224f")
+			(alternate "OPN2")
 		)
 		(pin "1"
 			(uuid "f26978cd-8bb5-4d2b-8ce6-591304b8cd59")
+			(alternate "A7")
 		)
 		(pin "11"
 			(uuid "d08d6958-bd75-4a81-941e-61f9fb52b7bc")
+			(alternate "RX_3")
 		)
 		(pin "15"
 			(uuid "15a36a47-94c8-47cd-9f0c-3f4f001158f8")
+			(alternate "T1C2_7")
 		)
 		(pin "12"
 			(uuid "d8039372-8567-4956-b17f-b21fd076969c")
@@ -2411,24 +2441,31 @@
 		)
 		(pin "14"
 			(uuid "5ae8c950-0201-4e2c-bfc6-adb0a287b4bd")
+			(alternate "A2")
 		)
 		(pin "18"
 			(uuid "5396222c-76e5-48b7-8a4a-4ff6b4c8af36")
+			(alternate "SWDIO")
 		)
 		(pin "19"
 			(uuid "4c4a3a64-7867-4462-8350-c15800b035cc")
+			(alternate "A3")
 		)
 		(pin "10"
 			(uuid "9554d733-1028-4a4d-8db3-68a744aeb983")
+			(alternate "TX_3")
 		)
 		(pin "20"
 			(uuid "2e7af1a4-579d-4d34-92b5-6c9917a7d422")
+			(alternate "A4")
 		)
 		(pin "17"
 			(uuid "d7e68c66-f3e9-4fcb-b465-753fd8b33f35")
+			(alternate "T1C4_7")
 		)
 		(pin "16"
 			(uuid "059d8ec0-de4c-416d-a384-74905501662d")
+			(alternate "T1C3_7")
 		)
 		(instances
 			(project "servo-dev-board-ch32v006"
@@ -2530,7 +2567,7 @@
 		(dnp no)
 		(fields_autoplaced yes)
 		(uuid "5d97dcf0-71e8-4c57-9003-d65d595263bf")
-		(property "Reference" "#PWR034"
+		(property "Reference" "#PWR040"
 			(at 29.21 124.46 0)
 			(hide yes)
 			(show_name no)
@@ -2590,7 +2627,7 @@
 		(instances
 			(project "servo-dev-board-ch32v006"
 				(path "/6062e7d2-0c72-467e-b49c-6387ba053e09/77d3819f-1672-490a-859c-8df54ad0ab77"
-					(reference "#PWR034")
+					(reference "#PWR040")
 					(unit 1)
 				)
 			)
@@ -2598,7 +2635,7 @@
 	)
 	(symbol
 		(lib_id "power:GND")
-		(at 64.77 60.96 270)
+		(at 71.12 60.96 270)
 		(unit 1)
 		(body_style 1)
 		(exclude_from_sim no)
@@ -2607,8 +2644,8 @@
 		(in_pos_files yes)
 		(dnp no)
 		(uuid "78ac2f70-c4ab-4871-ad5c-ad29b36a31a5")
-		(property "Reference" "#PWR035"
-			(at 58.42 60.96 0)
+		(property "Reference" "#PWR041"
+			(at 64.77 60.96 0)
 			(hide yes)
 			(show_name no)
 			(do_not_autoplace no)
@@ -2619,7 +2656,7 @@
 			)
 		)
 		(property "Value" "GND"
-			(at 59.69 60.96 90)
+			(at 66.04 60.96 90)
 			(show_name no)
 			(do_not_autoplace no)
 			(effects
@@ -2629,7 +2666,7 @@
 			)
 		)
 		(property "Footprint" ""
-			(at 64.77 60.96 0)
+			(at 71.12 60.96 0)
 			(hide yes)
 			(show_name no)
 			(do_not_autoplace no)
@@ -2640,7 +2677,7 @@
 			)
 		)
 		(property "Datasheet" ""
-			(at 64.77 60.96 0)
+			(at 71.12 60.96 0)
 			(hide yes)
 			(show_name no)
 			(do_not_autoplace no)
@@ -2651,7 +2688,7 @@
 			)
 		)
 		(property "Description" "Power symbol creates a global label with name \"GND\" , ground"
-			(at 64.77 60.96 0)
+			(at 71.12 60.96 0)
 			(hide yes)
 			(show_name no)
 			(do_not_autoplace no)
@@ -2667,7 +2704,7 @@
 		(instances
 			(project "servo-dev-board-ch32v006"
 				(path "/6062e7d2-0c72-467e-b49c-6387ba053e09/77d3819f-1672-490a-859c-8df54ad0ab77"
-					(reference "#PWR035")
+					(reference "#PWR041")
 					(unit 1)
 				)
 			)
@@ -2787,7 +2824,7 @@
 		(in_pos_files yes)
 		(dnp no)
 		(uuid "928a98b8-a4b3-4769-b4f4-f7ec998cb8dd")
-		(property "Reference" "J3"
+		(property "Reference" "J4"
 			(at 67.31 99.06 0)
 			(show_name no)
 			(do_not_autoplace no)
@@ -2883,7 +2920,7 @@
 		(instances
 			(project "servo-dev-board-ch32v006"
 				(path "/6062e7d2-0c72-467e-b49c-6387ba053e09/77d3819f-1672-490a-859c-8df54ad0ab77"
-					(reference "J3")
+					(reference "J4")
 					(unit 1)
 				)
 			)
@@ -3107,7 +3144,7 @@
 		(in_pos_files yes)
 		(dnp no)
 		(uuid "fc004d18-2fc1-47e4-b8ad-d16622b57204")
-		(property "Reference" "#PWR036"
+		(property "Reference" "#PWR042"
 			(at 81.28 105.41 0)
 			(hide yes)
 			(show_name no)
@@ -3167,7 +3204,7 @@
 		(instances
 			(project "servo-dev-board-ch32v006"
 				(path "/6062e7d2-0c72-467e-b49c-6387ba053e09/77d3819f-1672-490a-859c-8df54ad0ab77"
-					(reference "#PWR036")
+					(reference "#PWR042")
 					(unit 1)
 				)
 			)
