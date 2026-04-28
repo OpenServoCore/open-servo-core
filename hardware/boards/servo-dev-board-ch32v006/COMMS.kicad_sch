@@ -1600,7 +1600,7 @@
 	)
 	(wire
 		(pts
-			(xy 39.37 123.19) (xy 39.37 130.81)
+			(xy 39.37 128.27) (xy 39.37 130.81)
 		)
 		(stroke
 			(width 0)
@@ -1610,7 +1610,7 @@
 	)
 	(wire
 		(pts
-			(xy 31.75 134.62) (xy 34.29 134.62)
+			(xy 26.67 134.62) (xy 34.29 134.62)
 		)
 		(stroke
 			(width 0)
@@ -1719,16 +1719,6 @@
 		(uuid "f028c3a9-11cb-4a26-8a21-3b715423f016")
 	)
 	(label "JP_RX"
-		(at 39.37 123.19 270)
-		(effects
-			(font
-				(size 1.27 1.27)
-			)
-			(justify right bottom)
-		)
-		(uuid "189fa818-4e88-4584-aeea-0404ae4716f1")
-	)
-	(label "JP_RX"
 		(at 64.77 87.63 0)
 		(effects
 			(font
@@ -1737,6 +1727,16 @@
 			(justify left bottom)
 		)
 		(uuid "c370c611-c43e-48ea-81f7-e05945b81db0")
+	)
+	(label "JP_RX"
+		(at 26.67 134.62 0)
+		(effects
+			(font
+				(size 1.27 1.27)
+			)
+			(justify left bottom)
+		)
+		(uuid "ec321ff8-c6ea-4884-83e9-e39d3290370b")
 	)
 	(hierarchical_label "VSYS"
 		(shape passive)
@@ -1770,17 +1770,6 @@
 			(justify left)
 		)
 		(uuid "2c891a81-0313-4a41-8fb7-f8e32e75cf92")
-	)
-	(hierarchical_label "RX"
-		(shape output)
-		(at 31.75 134.62 180)
-		(effects
-			(font
-				(size 1.27 1.27)
-			)
-			(justify right)
-		)
-		(uuid "38029d9e-8a1e-4c24-8c84-bf9f003ac135")
 	)
 	(hierarchical_label "VSYS"
 		(shape passive)
@@ -1913,6 +1902,17 @@
 			(justify left)
 		)
 		(uuid "e2a120f6-dc49-48a7-95d7-bee8f2f90b41")
+	)
+	(hierarchical_label "RX"
+		(shape output)
+		(at 39.37 128.27 90)
+		(effects
+			(font
+				(size 1.27 1.27)
+			)
+			(justify left)
+		)
+		(uuid "e3d6b4f7-e9a9-48c6-b932-e1bd80b69bef")
 	)
 	(hierarchical_label "+3V3"
 		(shape passive)

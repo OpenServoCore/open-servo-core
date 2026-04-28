@@ -2480,12 +2480,12 @@
 	)
 	(hierarchical_label "VSYS"
 		(shape passive)
-		(at 171.45 107.95 180)
+		(at 181.61 110.49 0)
 		(effects
 			(font
 				(size 1.27 1.27)
 			)
-			(justify right)
+			(justify left)
 		)
 		(uuid "8c22d70e-c530-4ae2-ac01-4d9df03e5473")
 	)
@@ -2535,12 +2535,12 @@
 	)
 	(hierarchical_label "IN1"
 		(shape input)
-		(at 171.45 110.49 180)
+		(at 181.61 107.95 0)
 		(effects
 			(font
 				(size 1.27 1.27)
 			)
-			(justify right)
+			(justify left)
 		)
 		(uuid "c9b71496-7105-4a58-b019-1b99e38491b4")
 	)
@@ -3324,7 +3324,7 @@
 	)
 	(symbol
 		(lib_id "power:GND")
-		(at 171.45 113.03 0)
+		(at 181.61 113.03 0)
 		(unit 1)
 		(body_style 1)
 		(exclude_from_sim no)
@@ -3334,7 +3334,7 @@
 		(dnp no)
 		(uuid "5fd7f77f-e638-44b3-8d85-ff5755b0b85a")
 		(property "Reference" "#PWR038"
-			(at 171.45 119.38 0)
+			(at 181.61 119.38 0)
 			(hide yes)
 			(show_name no)
 			(do_not_autoplace no)
@@ -3345,7 +3345,7 @@
 			)
 		)
 		(property "Value" "GND"
-			(at 171.45 118.11 0)
+			(at 181.61 118.11 0)
 			(show_name no)
 			(do_not_autoplace no)
 			(effects
@@ -3355,7 +3355,7 @@
 			)
 		)
 		(property "Footprint" ""
-			(at 171.45 113.03 0)
+			(at 181.61 113.03 0)
 			(hide yes)
 			(show_name no)
 			(do_not_autoplace no)
@@ -3366,7 +3366,7 @@
 			)
 		)
 		(property "Datasheet" ""
-			(at 171.45 113.03 0)
+			(at 181.61 113.03 0)
 			(hide yes)
 			(show_name no)
 			(do_not_autoplace no)
@@ -3377,7 +3377,7 @@
 			)
 		)
 		(property "Description" "Power symbol creates a global label with name \"GND\" , ground"
-			(at 171.45 113.03 0)
+			(at 181.61 113.03 0)
 			(hide yes)
 			(show_name no)
 			(do_not_autoplace no)
@@ -4150,91 +4150,6 @@
 		)
 	)
 	(symbol
-		(lib_id "Connector_Generic:Conn_01x03")
-		(at 176.53 110.49 0)
-		(unit 1)
-		(body_style 1)
-		(exclude_from_sim no)
-		(in_bom yes)
-		(on_board yes)
-		(in_pos_files yes)
-		(dnp no)
-		(fields_autoplaced yes)
-		(uuid "ac905cdd-a6f8-4912-924c-6d65dbe42b72")
-		(property "Reference" "J3"
-			(at 179.07 109.2199 0)
-			(show_name no)
-			(do_not_autoplace no)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-				(justify left)
-			)
-		)
-		(property "Value" "Conn_01x03"
-			(at 179.07 111.7599 0)
-			(show_name no)
-			(do_not_autoplace no)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-				(justify left)
-			)
-		)
-		(property "Footprint" "Connector_PinHeader_2.54mm:PinHeader_1x03_P2.54mm_Vertical"
-			(at 176.53 110.49 0)
-			(hide yes)
-			(show_name no)
-			(do_not_autoplace no)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-			)
-		)
-		(property "Datasheet" ""
-			(at 176.53 110.49 0)
-			(hide yes)
-			(show_name no)
-			(do_not_autoplace no)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-			)
-		)
-		(property "Description" "Generic connector, single row, 01x03, script generated (kicad-library-utils/schlib/autogen/connector/)"
-			(at 176.53 110.49 0)
-			(hide yes)
-			(show_name no)
-			(do_not_autoplace no)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-			)
-		)
-		(pin "3"
-			(uuid "70053d45-6590-49f3-81a8-395aece64cca")
-		)
-		(pin "2"
-			(uuid "f6e50b53-19d3-4c96-b44f-252511cf7f01")
-		)
-		(pin "1"
-			(uuid "771c97fb-304c-4969-9aea-0b65ce2b82a6")
-		)
-		(instances
-			(project "servo-dev-board-ch32v006"
-				(path "/6062e7d2-0c72-467e-b49c-6387ba053e09/ada02f24-9f0e-4313-921a-475b46fb1a47"
-					(reference "J3")
-					(unit 1)
-				)
-			)
-		)
-	)
-	(symbol
 		(lib_id "Device:NetTie_2")
 		(at 41.91 118.11 180)
 		(unit 1)
@@ -4976,6 +4891,89 @@
 			(project "servo-dev-board-ch32v006"
 				(path "/6062e7d2-0c72-467e-b49c-6387ba053e09/ada02f24-9f0e-4313-921a-475b46fb1a47"
 					(reference "#PWR033")
+					(unit 1)
+				)
+			)
+		)
+	)
+	(symbol
+		(lib_id "Connector_Generic:Conn_01x03")
+		(at 176.53 110.49 180)
+		(unit 1)
+		(body_style 1)
+		(exclude_from_sim no)
+		(in_bom yes)
+		(on_board yes)
+		(in_pos_files yes)
+		(dnp no)
+		(fields_autoplaced yes)
+		(uuid "d106aef9-bbf1-4793-8276-10d6f89354b7")
+		(property "Reference" "J3"
+			(at 176.53 101.6 0)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+			)
+		)
+		(property "Value" "SERVO"
+			(at 176.53 104.14 0)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+			)
+		)
+		(property "Footprint" "Connector_PinHeader_2.54mm:PinHeader_1x03_P2.54mm_Vertical"
+			(at 176.53 110.49 0)
+			(hide yes)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+			)
+		)
+		(property "Datasheet" ""
+			(at 176.53 110.49 0)
+			(hide yes)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+			)
+		)
+		(property "Description" "Generic connector, single row, 01x03, script generated (kicad-library-utils/schlib/autogen/connector/)"
+			(at 176.53 110.49 0)
+			(hide yes)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+			)
+		)
+		(pin "3"
+			(uuid "3b3cfa88-cb3f-4c2b-ba49-90cb4de95d1b")
+		)
+		(pin "2"
+			(uuid "603cc373-f9a6-4e01-8f20-c6ca80e605d8")
+		)
+		(pin "1"
+			(uuid "1dddcaed-7604-44df-92fa-c471203bfb88")
+		)
+		(instances
+			(project "servo-dev-board-ch32v006"
+				(path "/6062e7d2-0c72-467e-b49c-6387ba053e09/ada02f24-9f0e-4313-921a-475b46fb1a47"
+					(reference "J3")
 					(unit 1)
 				)
 			)

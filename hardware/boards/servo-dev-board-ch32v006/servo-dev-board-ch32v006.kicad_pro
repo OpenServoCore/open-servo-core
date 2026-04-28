@@ -50,7 +50,7 @@
         "silk_text_thickness": 0.15,
         "silk_text_upright": false,
         "zones": {
-          "min_clearance": 0.2
+          "min_clearance": 0.1
         }
       },
       "diff_pair_dimensions": [
@@ -607,7 +607,7 @@
     "netclass_patterns": [
       {
         "netclass": "Motor",
-        "pattern": "/MOT_(A|B)|PGND|VSYS"
+        "pattern": "/MOT_(A|B)|PGND|VSYS|VPROG"
       },
       {
         "netclass": "Default",
@@ -925,7 +925,7 @@
         "uuid": "6062e7d2-0c72-467e-b49c-6387ba053e09"
       }
     ],
-    "used_designators": "",
+    "used_designators": "J3",
     "variants": []
   },
   "sheets": [

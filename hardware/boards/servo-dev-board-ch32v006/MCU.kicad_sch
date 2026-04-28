@@ -1699,6 +1699,16 @@
 	)
 	(wire
 		(pts
+			(xy 62.23 111.76) (xy 62.23 110.49)
+		)
+		(stroke
+			(width 0)
+			(type default)
+		)
+		(uuid "795e9e80-9264-40e1-8306-a5778162a74f")
+	)
+	(wire
+		(pts
 			(xy 26.67 60.96) (xy 38.1 60.96)
 		)
 		(stroke
@@ -1706,16 +1716,6 @@
 			(type default)
 		)
 		(uuid "7ac87b25-5145-4a94-a8c0-63dd330f2dea")
-	)
-	(wire
-		(pts
-			(xy 62.23 109.22) (xy 62.23 107.95)
-		)
-		(stroke
-			(width 0)
-			(type default)
-		)
-		(uuid "7efa1853-a7d5-452d-854e-935521ce3173")
 	)
 	(wire
 		(pts
@@ -1798,14 +1798,14 @@
 		(uuid "f491a0f6-b106-451b-8fe0-5c23c679d8e5")
 	)
 	(label "SWDIO"
-		(at 62.23 109.22 180)
+		(at 62.23 111.76 180)
 		(effects
 			(font
 				(size 1.27 1.27)
 			)
 			(justify right bottom)
 		)
-		(uuid "1b78824d-f34b-49ce-a8e0-d38b11595b75")
+		(uuid "2d46499d-b4b3-4be7-b2b7-8384e586b78f")
 	)
 	(label "SWDIO"
 		(at 110.49 50.8 0)
@@ -1839,17 +1839,6 @@
 		)
 		(uuid "11df8cb3-9fc4-4a3f-b4d7-8bef6877c604")
 	)
-	(hierarchical_label "ENCA"
-		(shape input)
-		(at 104.14 45.72 0)
-		(effects
-			(font
-				(size 1.27 1.27)
-			)
-			(justify left)
-		)
-		(uuid "14c4e70f-a7fb-44d1-b252-b10a4d629ada")
-	)
 	(hierarchical_label "ISNS-"
 		(shape input)
 		(at 71.12 53.34 180)
@@ -1861,16 +1850,16 @@
 		)
 		(uuid "1db70dc6-5129-41f1-b055-2a39e708163c")
 	)
-	(hierarchical_label "EN"
-		(shape output)
-		(at 104.14 63.5 0)
+	(hierarchical_label "ENCA"
+		(shape input)
+		(at 71.12 45.72 180)
 		(effects
 			(font
 				(size 1.27 1.27)
 			)
-			(justify left)
+			(justify right)
 		)
-		(uuid "2d0a5237-bab4-4273-bb70-d5fa1f1314ec")
+		(uuid "20f51d58-69cb-457e-9dcd-1fc178fa071c")
 	)
 	(hierarchical_label "VSNB"
 		(shape input)
@@ -1885,14 +1874,14 @@
 	)
 	(hierarchical_label "VPROG"
 		(shape passive)
-		(at 74.93 107.95 0)
+		(at 74.93 110.49 0)
 		(effects
 			(font
 				(size 1.27 1.27)
 			)
 			(justify left)
 		)
-		(uuid "37a1fabb-9516-4c7c-92ea-2a562b95ae3e")
+		(uuid "335e4a33-bc6f-4de0-a9ab-36a0995f478a")
 	)
 	(hierarchical_label "RX"
 		(shape input)
@@ -1915,17 +1904,6 @@
 			(justify left)
 		)
 		(uuid "417503e3-1547-42cf-bdb8-f8a1449488e7")
-	)
-	(hierarchical_label "ENCB"
-		(shape input)
-		(at 71.12 45.72 180)
-		(effects
-			(font
-				(size 1.27 1.27)
-			)
-			(justify right)
-		)
-		(uuid "5320b1dc-356f-4205-8774-c09d02f3f6a2")
 	)
 	(hierarchical_label "STAT"
 		(shape output)
@@ -1960,16 +1938,16 @@
 		)
 		(uuid "6b04e9bb-9676-4b3a-b2a0-d663800761e7")
 	)
-	(hierarchical_label "TX"
+	(hierarchical_label "EN"
 		(shape output)
-		(at 74.93 110.49 0)
+		(at 71.12 63.5 180)
 		(effects
 			(font
 				(size 1.27 1.27)
 			)
-			(justify left)
+			(justify right)
 		)
-		(uuid "8d14c1f9-0a38-4d70-aa4f-9fbdbfb57bdb")
+		(uuid "8fe7bb31-7784-4a45-8c86-7102d59614a6")
 	)
 	(hierarchical_label "ISNS+"
 		(shape input)
@@ -1982,16 +1960,16 @@
 		)
 		(uuid "92bd1b1a-9647-42f1-a463-2169ee0ce514")
 	)
-	(hierarchical_label "RX"
-		(shape input)
-		(at 62.23 110.49 180)
+	(hierarchical_label "+3V3"
+		(shape passive)
+		(at 62.23 107.95 180)
 		(effects
 			(font
 				(size 1.27 1.27)
 			)
 			(justify right)
 		)
-		(uuid "9f57fecb-11e4-467c-9a76-b6fed9976b68")
+		(uuid "99467f74-206b-43be-85d6-f22cdf62368e")
 	)
 	(hierarchical_label "VSNA"
 		(shape input)
@@ -2003,6 +1981,17 @@
 			(justify right)
 		)
 		(uuid "a2e281ba-d25a-4a14-b41c-0f1c5597632a")
+	)
+	(hierarchical_label "RX"
+		(shape input)
+		(at 62.23 105.41 180)
+		(effects
+			(font
+				(size 1.27 1.27)
+			)
+			(justify right)
+		)
+		(uuid "afc1d92a-49a0-4aab-bc09-6e4e10d4c3c6")
 	)
 	(hierarchical_label "+3V3"
 		(shape passive)
@@ -2026,6 +2015,17 @@
 		)
 		(uuid "c7691704-4a1b-4ea5-ac42-930c406489b1")
 	)
+	(hierarchical_label "TX"
+		(shape output)
+		(at 74.93 105.41 0)
+		(effects
+			(font
+				(size 1.27 1.27)
+			)
+			(justify left)
+		)
+		(uuid "d2d3bcb7-caec-4615-afc9-84cfd843f01b")
+	)
 	(hierarchical_label "+3V3"
 		(shape passive)
 		(at 71.12 66.04 180)
@@ -2036,6 +2036,17 @@
 			(justify right)
 		)
 		(uuid "d42f039a-da4b-4d92-b542-67c057cb151d")
+	)
+	(hierarchical_label "DBG"
+		(shape output)
+		(at 104.14 63.5 0)
+		(effects
+			(font
+				(size 1.27 1.27)
+			)
+			(justify left)
+		)
+		(uuid "d521e534-cd0c-49f6-8b8f-2a2919258bb3")
 	)
 	(hierarchical_label "TX_EN"
 		(shape output)
@@ -2048,17 +2059,6 @@
 		)
 		(uuid "d5a71b1f-9bd9-475d-bf6c-5035c0ea815b")
 	)
-	(hierarchical_label "+3V3"
-		(shape passive)
-		(at 62.23 105.41 180)
-		(effects
-			(font
-				(size 1.27 1.27)
-			)
-			(justify right)
-		)
-		(uuid "da271754-8ec0-404d-b1b8-3d2df0b0df7f")
-	)
 	(hierarchical_label "VPOS"
 		(shape input)
 		(at 104.14 48.26 0)
@@ -2070,6 +2070,17 @@
 		)
 		(uuid "db541542-38df-418a-b0ec-75d902f0e2b1")
 	)
+	(hierarchical_label "ENCB"
+		(shape input)
+		(at 104.14 45.72 0)
+		(effects
+			(font
+				(size 1.27 1.27)
+			)
+			(justify left)
+		)
+		(uuid "dcd431ba-cbdc-4ff6-8d46-a415d0754cd9")
+	)
 	(hierarchical_label "VNTC"
 		(shape input)
 		(at 104.14 60.96 0)
@@ -2080,17 +2091,6 @@
 			(justify left)
 		)
 		(uuid "f4350ff6-134c-40c2-a1f0-35106744f7bb")
-	)
-	(hierarchical_label "DBG"
-		(shape output)
-		(at 71.12 63.5 180)
-		(effects
-			(font
-				(size 1.27 1.27)
-			)
-			(justify right)
-		)
-		(uuid "fc952cb0-5b14-4891-9ea0-3fc0502a1456")
 	)
 	(symbol
 		(lib_id "power:GND")
@@ -3030,6 +3030,83 @@
 		)
 	)
 	(symbol
+		(lib_id "power:GND")
+		(at 74.93 107.95 90)
+		(unit 1)
+		(body_style 1)
+		(exclude_from_sim no)
+		(in_bom yes)
+		(on_board yes)
+		(in_pos_files yes)
+		(dnp no)
+		(uuid "ea9d6e65-5854-4d41-b84d-d3a93309fd5a")
+		(property "Reference" "#PWR042"
+			(at 81.28 107.95 0)
+			(hide yes)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+			)
+		)
+		(property "Value" "GND"
+			(at 80.01 107.95 90)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+			)
+		)
+		(property "Footprint" ""
+			(at 74.93 107.95 0)
+			(hide yes)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+			)
+		)
+		(property "Datasheet" ""
+			(at 74.93 107.95 0)
+			(hide yes)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+			)
+		)
+		(property "Description" "Power symbol creates a global label with name \"GND\" , ground"
+			(at 74.93 107.95 0)
+			(hide yes)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+			)
+		)
+		(pin "1"
+			(uuid "219da2db-8547-40e9-9db0-3b4d11088bfc")
+		)
+		(instances
+			(project "servo-dev-board-ch32v006"
+				(path "/6062e7d2-0c72-467e-b49c-6387ba053e09/77d3819f-1672-490a-859c-8df54ad0ab77"
+					(reference "#PWR042")
+					(unit 1)
+				)
+			)
+		)
+	)
+	(symbol
 		(lib_id "Device:R")
 		(at 29.21 102.87 0)
 		(unit 1)
@@ -3128,83 +3205,6 @@
 			(project "servo-dev-board-ch32v006"
 				(path "/6062e7d2-0c72-467e-b49c-6387ba053e09/77d3819f-1672-490a-859c-8df54ad0ab77"
 					(reference "R12")
-					(unit 1)
-				)
-			)
-		)
-	)
-	(symbol
-		(lib_id "power:GND")
-		(at 74.93 105.41 90)
-		(unit 1)
-		(body_style 1)
-		(exclude_from_sim no)
-		(in_bom yes)
-		(on_board yes)
-		(in_pos_files yes)
-		(dnp no)
-		(uuid "fc004d18-2fc1-47e4-b8ad-d16622b57204")
-		(property "Reference" "#PWR042"
-			(at 81.28 105.41 0)
-			(hide yes)
-			(show_name no)
-			(do_not_autoplace no)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-			)
-		)
-		(property "Value" "GND"
-			(at 80.01 105.41 90)
-			(show_name no)
-			(do_not_autoplace no)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-			)
-		)
-		(property "Footprint" ""
-			(at 74.93 105.41 0)
-			(hide yes)
-			(show_name no)
-			(do_not_autoplace no)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-			)
-		)
-		(property "Datasheet" ""
-			(at 74.93 105.41 0)
-			(hide yes)
-			(show_name no)
-			(do_not_autoplace no)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-			)
-		)
-		(property "Description" "Power symbol creates a global label with name \"GND\" , ground"
-			(at 74.93 105.41 0)
-			(hide yes)
-			(show_name no)
-			(do_not_autoplace no)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-			)
-		)
-		(pin "1"
-			(uuid "edd8b3de-a824-4527-a719-7565055124b4")
-		)
-		(instances
-			(project "servo-dev-board-ch32v006"
-				(path "/6062e7d2-0c72-467e-b49c-6387ba053e09/77d3819f-1672-490a-859c-8df54ad0ab77"
-					(reference "#PWR042")
 					(unit 1)
 				)
 			)
