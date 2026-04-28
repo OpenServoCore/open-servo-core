@@ -1603,10 +1603,10 @@
 		)
 		(uuid "2205c2f7-70da-42af-936f-c3340ad76eec")
 	)
-	(text_box "Using CH32V006 primarily to reduce cost.\n\nPeripherals used:\n\n  • T1 for center aligned motor PWM (IN1, IN2) and driver enable (EN)\n  • OPA -> PGA -> internal ADC for current sensing (ISNS+, ISNS-)\n  • ADC channels (ISNS+ VPOS, VNTC, VSNS, VSNA, VSNB, ENCA, ENCB)\n  • UART for classic DXL TTL implementation (TX, RX, TX_EN)\n  • Status and debug pins (STAT, DBG)\n  • Debugger (SWDIO)\n\nNote: nRST is sacrificed for differential OPA, which is the heart of this board."
+	(text_box "Using CH32V006 primarily to reduce cost.\n\nPeripherals used:\n\n  • T1 for center aligned motor PWM (IN1, IN2) and driver enable (EN)\n  • OPA -> PGA -> ADC for differential current sensing (ISNS+, ISNS-)\n  • ADC channels (VPOS, VNTC, VSNS, VSNA, VSNB, ENCA, ENCB)\n  • UART for classic DXL TTL implementation (TX, RX, TX_EN)\n  • Status and debug pins (STAT, DBG)\n  • Debugger (SWDIO)\n\nNote:\n\n  • nRST is sacrificed for differential OPA\n  • OPA + CMP2 can be used for HW overcurrent detection\n  • Shunt value determines overcurrent threshold (~3.68A @ 10mOhm)"
 		(exclude_from_sim no)
 		(at 172.72 29.21 0)
-		(size 109.22 35.56)
+		(size 109.22 46.7709)
 		(margins 0.9525 0.9525 0.9525 0.9525)
 		(stroke
 			(width 0)

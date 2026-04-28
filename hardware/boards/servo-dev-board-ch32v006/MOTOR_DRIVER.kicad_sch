@@ -1694,7 +1694,7 @@
 		)
 		(uuid "a8b07c1f-3a9c-4525-98fd-9c5a3763db2b")
 	)
-	(text_box "Implements H-bridge motor drive with:\n\n  • Isolated logic supply\n  • Reservoir capacitors for surge current\n  • Low-side current shunt sensing\n  • Motor terminal voltage sensing"
+	(text_box "Implements H-bridge motor drive with:\n\n  • Isolated logic supply\n  • Reservoir capacitors for surge current\n  • Low-side current shunt sensing\n  • Motor terminal voltage sensing\n  • Power rail voltage sensing\n\n\nJammed PWM hobby servo connector. Use this board to driver a regular servo and measure their performance."
 		(exclude_from_sim no)
 		(at 209.55 27.94 0)
 		(size 72.39 36.83)

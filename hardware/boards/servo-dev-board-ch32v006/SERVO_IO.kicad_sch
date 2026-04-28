@@ -1546,7 +1546,7 @@
 		)
 		(uuid "e89c9eb6-a070-4482-bc79-62a93bcd911c")
 	)
-	(text_box "This subsystem interfaces with a micro/mini servo where the internal control board has been removed.\n\nRequired Servo Modifications:\n\nThe user must expose the following internal wires:\n\n  • DC Motor Terminals: MOT_A, MOT_B.\n  • Feedback Potentiometer: +3V3, POT (wiper), GND.\n\nConnection Options:\n\nFor convenience, the user can utilize either:\n\n  • JST-PH 5P Horizontal Connector (J4).\n  • 2.54mm 2x3P Pin Header (J5).\n\nServo Sensors:\n\n  • Potentiometer / Position Sensor with filtering.\n  • Onboard Temperature Sensor for board tempearture.\n  • Motor Encoder for backlash compensation ( future expansion ).\n\nMotor Winding Thermal Estimation Scheme:\n\n  • Baseline - Onboard temperature sensor.\n  • Power Input - Integrated current and voltage sensors for real-time electrical power to calculate resistive heating.\n\n\n"
+	(text_box "This subsystem interfaces with a micro/mini servo where the internal control board has been removed.\n\nRequired Servo Modifications:\n\nThe user must expose the following internal wires:\n\n  • DC Motor Terminals: MOT_A, MOT_B.\n  • Feedback Potentiometer: +3V3, POT (wiper), GND.\n\nConnection Options:\n\nFor convenience, the user can utilize either:\n\n  • JST-PH 5P Horizontal Connector (J4).\n  • 2.54mm 2x3P Pin Header (J5).\n\nServo Sensors:\n\n  • Potentiometer / Position Sensor with filtering.\n  • Onboard / External Temperature Sensor.\n  • Motor Encoder Connector ( future expansion ).\n\n"
 		(exclude_from_sim no)
 		(at 203.2 27.94 0)
 		(size 78.74 101.6)
