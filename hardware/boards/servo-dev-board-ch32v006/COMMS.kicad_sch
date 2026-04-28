@@ -2321,7 +2321,7 @@
 				)
 			)
 		)
-		(property "LCSC" "C49257"
+		(property "LCSC" "C41425293"
 			(at 39.37 134.62 0)
 			(hide yes)
 			(show_name no)
@@ -2332,7 +2332,7 @@
 				)
 			)
 		)
-		(property "MFPN" "2.54-1*3P"
+		(property "MFPN" "PZ254V-11-03P-RD"
 			(at 39.37 134.62 0)
 			(hide yes)
 			(show_name no)

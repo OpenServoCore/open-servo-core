@@ -11690,7 +11690,7 @@
 				)
 			)
 		)
-		(property "LCSC" "C49257"
+		(property "LCSC" "C41425293"
 			(at 0 0 90)
 			(unlocked yes)
 			(layer "F.Fab")
@@ -11703,7 +11703,7 @@
 				)
 			)
 		)
-		(property "MFPN" "2.54-1*3P"
+		(property "MFPN" "PZ254V-11-03P-RD"
 			(at 0 0 90)
 			(unlocked yes)
 			(layer "F.Fab")
@@ -11894,7 +11894,7 @@
 			(uuid "49f0840c-30f7-43d6-af2c-d2b741063e60")
 		)
 		(embedded_fonts no)
-		(model "${KICAD10_3DMODEL_DIR}/Connector_PinHeader_2.54mm.3dshapes/PinHeader_1x03_P2.54mm_Vertical.step"
+		(model "${KIPRJMOD}/../../shared.3dshapes/PinHeader_1x03_P2.54mm_Vertical_Red.step"
 			(offset
 				(xyz 0 0 0)
 			)
@@ -17218,7 +17218,7 @@
 				)
 			)
 		)
-		(property "LCSC" "C49257"
+		(property "LCSC" "C41425293"
 			(at 0 0 0)
 			(unlocked yes)
 			(layer "F.Fab")
@@ -17231,7 +17231,7 @@
 				)
 			)
 		)
-		(property "MFPN" "2.54-1*3P"
+		(property "MFPN" "PZ254V-11-03P-RD"
 			(at 0 0 0)
 			(unlocked yes)
 			(layer "F.Fab")
@@ -17422,7 +17422,7 @@
 			(uuid "d2834247-972a-42eb-8b4b-efc26f36316b")
 		)
 		(embedded_fonts no)
-		(model "${KICAD10_3DMODEL_DIR}/Connector_PinHeader_2.54mm.3dshapes/PinHeader_1x03_P2.54mm_Vertical.step"
+		(model "${KIPRJMOD}/../../shared.3dshapes/PinHeader_1x03_P2.54mm_Vertical_Red.step"
 			(offset
 				(xyz 0 0 0)
 			)
