@@ -1,0 +1,4 @@
+(sym_lib_table
+	(version 7)
+	(lib (name "shared") (type "KiCad") (uri "${KIPRJMOD}/../../shared.kicad_sym") (options "") (descr ""))
+)

@@ -518,7 +518,7 @@
     ]
   },
   "meta": {
-    "filename": "servo-dev-board-ch32v006.kicad_pro",
+    "filename": "osc-dev-v006.kicad_pro",
     "version": 3
   },
   "net_settings": {
@@ -932,8 +932,8 @@
     "subpart_id_separator": 0,
     "top_level_sheets": [
       {
-        "filename": "servo-dev-board-ch32v006.kicad_sch",
-        "name": "servo-dev-board-ch32v006",
+        "filename": "osc-dev-v006.kicad_sch",
+        "name": "osc-dev-v006",
         "uuid": "6062e7d2-0c72-467e-b49c-6387ba053e09"
       }
     ],

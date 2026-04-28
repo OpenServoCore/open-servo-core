@@ -2399,7 +2399,7 @@
 			(uuid "69700b3a-1e09-46de-995c-27862f7bf257")
 		)
 		(instances
-			(project "servo-dev-board-ch32v006"
+			(project "osc-dev-v006"
 				(path "/6062e7d2-0c72-467e-b49c-6387ba053e09"
 					(reference "#PWR010")
 					(unit 1)
@@ -2477,7 +2477,7 @@
 			(uuid "a9d0e10c-24d2-48fc-8b2b-f3241aeebec2")
 		)
 		(instances
-			(project "servo-dev-board-ch32v006"
+			(project "osc-dev-v006"
 				(path "/6062e7d2-0c72-467e-b49c-6387ba053e09"
 					(reference "#PWR09")
 					(unit 1)
@@ -2555,7 +2555,7 @@
 			(uuid "b85c2d3f-078e-4ea7-aaaa-417407c0b0be")
 		)
 		(instances
-			(project "servo-dev-board-ch32v006"
+			(project "osc-dev-v006"
 				(path "/6062e7d2-0c72-467e-b49c-6387ba053e09"
 					(reference "#PWR07")
 					(unit 1)
@@ -2654,7 +2654,7 @@
 			(uuid "4a2fed9c-5251-4799-86f5-9df899c8a8d6")
 		)
 		(instances
-			(project "servo-dev-board-ch32v006"
+			(project "osc-dev-v006"
 				(path "/6062e7d2-0c72-467e-b49c-6387ba053e09"
 					(reference "H1")
 					(unit 1)
@@ -2732,7 +2732,7 @@
 			(uuid "4a2378f6-1874-47c5-b9f5-bbc346fbca5d")
 		)
 		(instances
-			(project "servo-dev-board-ch32v006"
+			(project "osc-dev-v006"
 				(path "/6062e7d2-0c72-467e-b49c-6387ba053e09"
 					(reference "#PWR016")
 					(unit 1)
@@ -2809,7 +2809,7 @@
 			(uuid "33c12f88-852c-405a-ba9f-65603d05d675")
 		)
 		(instances
-			(project "servo-dev-board-ch32v006"
+			(project "osc-dev-v006"
 				(path "/6062e7d2-0c72-467e-b49c-6387ba053e09"
 					(reference "#PWR03")
 					(unit 1)
@@ -2908,7 +2908,7 @@
 			(uuid "5fc1b13d-8da7-45ba-982e-59b05f67dcaa")
 		)
 		(instances
-			(project "servo-dev-board-ch32v006"
+			(project "osc-dev-v006"
 				(path "/6062e7d2-0c72-467e-b49c-6387ba053e09"
 					(reference "H4")
 					(unit 1)
@@ -2986,7 +2986,7 @@
 			(uuid "fb2b5f88-d677-4f4c-b0b3-769425c7679b")
 		)
 		(instances
-			(project "servo-dev-board-ch32v006"
+			(project "osc-dev-v006"
 				(path "/6062e7d2-0c72-467e-b49c-6387ba053e09"
 					(reference "#PWR05")
 					(unit 1)
@@ -3065,7 +3065,7 @@
 			(uuid "df403774-22f8-4016-a909-31df49a24f01")
 		)
 		(instances
-			(project "servo-dev-board-ch32v006"
+			(project "osc-dev-v006"
 				(path "/6062e7d2-0c72-467e-b49c-6387ba053e09"
 					(reference "#PWR018")
 					(unit 1)
@@ -3143,7 +3143,7 @@
 			(uuid "b9a09aa3-64c7-454b-9ac9-da624eedce32")
 		)
 		(instances
-			(project "servo-dev-board-ch32v006"
+			(project "osc-dev-v006"
 				(path "/6062e7d2-0c72-467e-b49c-6387ba053e09"
 					(reference "#PWR04")
 					(unit 1)
@@ -3222,7 +3222,7 @@
 			(uuid "0ff84d7c-8a10-4cb6-b185-d6a348584df8")
 		)
 		(instances
-			(project "servo-dev-board-ch32v006"
+			(project "osc-dev-v006"
 				(path "/6062e7d2-0c72-467e-b49c-6387ba053e09"
 					(reference "#PWR020")
 					(unit 1)
@@ -3299,7 +3299,7 @@
 			(uuid "6a76f5df-73e9-40a3-919e-f2c289091678")
 		)
 		(instances
-			(project "servo-dev-board-ch32v006"
+			(project "osc-dev-v006"
 				(path "/6062e7d2-0c72-467e-b49c-6387ba053e09"
 					(reference "#PWR02")
 					(unit 1)
@@ -3377,7 +3377,7 @@
 			(uuid "fadf42ec-eb21-44cd-b38c-6408b841bfcd")
 		)
 		(instances
-			(project "servo-dev-board-ch32v006"
+			(project "osc-dev-v006"
 				(path "/6062e7d2-0c72-467e-b49c-6387ba053e09"
 					(reference "#PWR013")
 					(unit 1)
@@ -3456,7 +3456,7 @@
 			(uuid "de3cabdd-6a71-4544-b1df-484a953b6422")
 		)
 		(instances
-			(project "servo-dev-board-ch32v006"
+			(project "osc-dev-v006"
 				(path "/6062e7d2-0c72-467e-b49c-6387ba053e09"
 					(reference "#PWR012")
 					(unit 1)
@@ -3534,7 +3534,7 @@
 			(uuid "a19288af-dfca-4d73-bf7c-b5f8200d7544")
 		)
 		(instances
-			(project "servo-dev-board-ch32v006"
+			(project "osc-dev-v006"
 				(path "/6062e7d2-0c72-467e-b49c-6387ba053e09"
 					(reference "#PWR015")
 					(unit 1)
@@ -3612,7 +3612,7 @@
 			(uuid "db043073-faff-4306-b3ef-9e7c064f336c")
 		)
 		(instances
-			(project "servo-dev-board-ch32v006"
+			(project "osc-dev-v006"
 				(path "/6062e7d2-0c72-467e-b49c-6387ba053e09"
 					(reference "#PWR06")
 					(unit 1)
@@ -3690,7 +3690,7 @@
 			(uuid "d8549e5c-b849-420d-9e1f-516b521405a1")
 		)
 		(instances
-			(project "servo-dev-board-ch32v006"
+			(project "osc-dev-v006"
 				(path "/6062e7d2-0c72-467e-b49c-6387ba053e09"
 					(reference "#PWR011")
 					(unit 1)
@@ -3768,7 +3768,7 @@
 			(uuid "f9d484f2-9332-445f-9fb8-462b73ed8175")
 		)
 		(instances
-			(project "servo-dev-board-ch32v006"
+			(project "osc-dev-v006"
 				(path "/6062e7d2-0c72-467e-b49c-6387ba053e09"
 					(reference "#PWR019")
 					(unit 1)
@@ -3846,7 +3846,7 @@
 			(uuid "cd38bb31-db52-438c-be03-6198624b85c5")
 		)
 		(instances
-			(project "servo-dev-board-ch32v006"
+			(project "osc-dev-v006"
 				(path "/6062e7d2-0c72-467e-b49c-6387ba053e09"
 					(reference "#PWR017")
 					(unit 1)
@@ -3945,7 +3945,7 @@
 			(uuid "6341ce4e-d921-4f23-9d43-f9eb247977eb")
 		)
 		(instances
-			(project "servo-dev-board-ch32v006"
+			(project "osc-dev-v006"
 				(path "/6062e7d2-0c72-467e-b49c-6387ba053e09"
 					(reference "H2")
 					(unit 1)
@@ -4022,7 +4022,7 @@
 			(uuid "3f1e0eaf-e939-486d-bc89-1137a15dec04")
 		)
 		(instances
-			(project "servo-dev-board-ch32v006"
+			(project "osc-dev-v006"
 				(path "/6062e7d2-0c72-467e-b49c-6387ba053e09"
 					(reference "#PWR01")
 					(unit 1)
@@ -4121,7 +4121,7 @@
 			(uuid "e5f711cb-73ba-4b8a-aa94-b4c9929fc384")
 		)
 		(instances
-			(project "servo-dev-board-ch32v006"
+			(project "osc-dev-v006"
 				(path "/6062e7d2-0c72-467e-b49c-6387ba053e09"
 					(reference "H3")
 					(unit 1)
@@ -4198,7 +4198,7 @@
 			(uuid "3654db12-12ff-45b5-8b06-47dbea7f6f24")
 		)
 		(instances
-			(project "servo-dev-board-ch32v006"
+			(project "osc-dev-v006"
 				(path "/6062e7d2-0c72-467e-b49c-6387ba053e09"
 					(reference "#PWR08")
 					(unit 1)
@@ -4276,7 +4276,7 @@
 			(uuid "8983efa0-8489-46bb-b71b-0f6bbb4b2a23")
 		)
 		(instances
-			(project "servo-dev-board-ch32v006"
+			(project "osc-dev-v006"
 				(path "/6062e7d2-0c72-467e-b49c-6387ba053e09"
 					(reference "#PWR014")
 					(unit 1)
@@ -4354,7 +4354,7 @@
 			(uuid "ee2f77fd-092d-4b66-9be4-fa47e0ba1328")
 		)
 		(instances
-			(project "servo-dev-board-ch32v006"
+			(project "osc-dev-v006"
 				(path "/6062e7d2-0c72-467e-b49c-6387ba053e09"
 					(reference "#PWR021")
 					(unit 1)
@@ -4473,7 +4473,7 @@
 			)
 		)
 		(instances
-			(project "servo-dev-board-ch32v006"
+			(project "osc-dev-v006"
 				(path "/6062e7d2-0c72-467e-b49c-6387ba053e09"
 					(page "5")
 				)
@@ -4581,7 +4581,7 @@
 			)
 		)
 		(instances
-			(project "servo-dev-board-ch32v006"
+			(project "osc-dev-v006"
 				(path "/6062e7d2-0c72-467e-b49c-6387ba053e09"
 					(page "2")
 				)
@@ -4859,7 +4859,7 @@
 			)
 		)
 		(instances
-			(project "servo-dev-board-ch32v006"
+			(project "osc-dev-v006"
 				(path "/6062e7d2-0c72-467e-b49c-6387ba053e09"
 					(page "7")
 				)
@@ -5097,7 +5097,7 @@
 			)
 		)
 		(instances
-			(project "servo-dev-board-ch32v006"
+			(project "osc-dev-v006"
 				(path "/6062e7d2-0c72-467e-b49c-6387ba053e09"
 					(page "4")
 				)
@@ -5265,7 +5265,7 @@
 			)
 		)
 		(instances
-			(project "servo-dev-board-ch32v006"
+			(project "osc-dev-v006"
 				(path "/6062e7d2-0c72-467e-b49c-6387ba053e09"
 					(page "3")
 				)
@@ -5373,7 +5373,7 @@
 			)
 		)
 		(instances
-			(project "servo-dev-board-ch32v006"
+			(project "osc-dev-v006"
 				(path "/6062e7d2-0c72-467e-b49c-6387ba053e09"
 					(page "6")
 				)

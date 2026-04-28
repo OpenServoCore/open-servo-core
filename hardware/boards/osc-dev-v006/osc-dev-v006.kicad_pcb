@@ -2357,7 +2357,7 @@
 		(embedded_fonts no)
 		(model "${KIPRJMOD}/../../shared.3dshapes/VSSOP-8_L2.3-W2.0-P0.50-LS3.1-BL.wrl"
 			(offset
-				(xyz 0 -0 -0)
+				(xyz 0 0 0)
 			)
 			(scale
 				(xyz 1 1 1)
@@ -3220,7 +3220,7 @@
 				(xyz 1 1 1)
 			)
 			(rotate
-				(xyz -0 -0 -0)
+				(xyz 0 0 0)
 			)
 		)
 	)
@@ -8047,7 +8047,7 @@
 		(property ki_fp_filters "MountingHole*Pad*")
 		(path "/203cc499-5423-4223-8578-eed4d07568d4")
 		(sheetname "/")
-		(sheetfile "servo-dev-board-ch32v006.kicad_sch")
+		(sheetfile "osc-dev-v006.kicad_sch")
 		(units
 			(unit
 				(name "A")
@@ -12189,7 +12189,7 @@
 		(property ki_fp_filters "MountingHole*Pad*")
 		(path "/b9f96b9e-bfb4-4849-88e3-72528f64d5db")
 		(sheetname "/")
-		(sheetfile "servo-dev-board-ch32v006.kicad_sch")
+		(sheetfile "osc-dev-v006.kicad_sch")
 		(units
 			(unit
 				(name "A")
@@ -14058,7 +14058,7 @@
 				(xyz 1 1 1)
 			)
 			(rotate
-				(xyz -0 -0 180)
+				(xyz 0 0 180)
 			)
 		)
 	)
@@ -16009,7 +16009,7 @@
 				(xyz 1 1 1)
 			)
 			(rotate
-				(xyz -0 -0 -0)
+				(xyz 0 0 0)
 			)
 		)
 	)
@@ -16544,7 +16544,7 @@
 				(xyz 1 1 1)
 			)
 			(rotate
-				(xyz -0 -0 -0)
+				(xyz 0 0 0)
 			)
 		)
 	)
@@ -19445,7 +19445,7 @@
 		(property ki_fp_filters "MountingHole*Pad*")
 		(path "/3fbfb22e-53f2-41ee-bace-5025229f4e0a")
 		(sheetname "/")
-		(sheetfile "servo-dev-board-ch32v006.kicad_sch")
+		(sheetfile "osc-dev-v006.kicad_sch")
 		(units
 			(unit
 				(name "A")
@@ -20894,7 +20894,7 @@
 		(property ki_fp_filters "MountingHole*Pad*")
 		(path "/c3405f10-e5ee-4d21-855f-6aca71c3c5a7")
 		(sheetname "/")
-		(sheetfile "servo-dev-board-ch32v006.kicad_sch")
+		(sheetfile "osc-dev-v006.kicad_sch")
 		(units
 			(unit
 				(name "A")
