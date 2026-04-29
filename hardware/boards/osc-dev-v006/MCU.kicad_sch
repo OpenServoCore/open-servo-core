@@ -1850,17 +1850,6 @@
 		)
 		(uuid "1db70dc6-5129-41f1-b055-2a39e708163c")
 	)
-	(hierarchical_label "ENCA"
-		(shape input)
-		(at 71.12 45.72 180)
-		(effects
-			(font
-				(size 1.27 1.27)
-			)
-			(justify right)
-		)
-		(uuid "20f51d58-69cb-457e-9dcd-1fc178fa071c")
-	)
 	(hierarchical_label "VSNB"
 		(shape input)
 		(at 71.12 50.8 180)
@@ -1904,6 +1893,17 @@
 			(justify left)
 		)
 		(uuid "417503e3-1547-42cf-bdb8-f8a1449488e7")
+	)
+	(hierarchical_label "ENCA"
+		(shape input)
+		(at 104.14 45.72 0)
+		(effects
+			(font
+				(size 1.27 1.27)
+			)
+			(justify left)
+		)
+		(uuid "51bf79e5-7e01-4176-9790-4715909b2458")
 	)
 	(hierarchical_label "STAT"
 		(shape output)
@@ -1981,6 +1981,17 @@
 			(justify right)
 		)
 		(uuid "a2e281ba-d25a-4a14-b41c-0f1c5597632a")
+	)
+	(hierarchical_label "ENCB"
+		(shape input)
+		(at 71.12 45.72 180)
+		(effects
+			(font
+				(size 1.27 1.27)
+			)
+			(justify right)
+		)
+		(uuid "a658ca3b-ec97-44c7-ad9b-79e1f41d7752")
 	)
 	(hierarchical_label "RX"
 		(shape input)
@@ -2069,17 +2080,6 @@
 			(justify left)
 		)
 		(uuid "db541542-38df-418a-b0ec-75d902f0e2b1")
-	)
-	(hierarchical_label "ENCB"
-		(shape input)
-		(at 104.14 45.72 0)
-		(effects
-			(font
-				(size 1.27 1.27)
-			)
-			(justify left)
-		)
-		(uuid "dcd431ba-cbdc-4ff6-8d46-a415d0754cd9")
 	)
 	(hierarchical_label "VNTC"
 		(shape input)

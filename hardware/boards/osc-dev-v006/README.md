@@ -59,7 +59,7 @@ JST-PH 2P horizontal connector. **1S–2S LiPo only (3.0–8.4 V).** The DRV8212
 
 #### Screw Terminal — J2
 
-5.08 mm 2P screw terminal sharing the `VBAT` net with J1. Bench-friendly — sweep input voltage with a lab supply for characterisation. 1S–2S LiPo range applies.
+5.08 mm 2P screw terminal on its own `VEXT` net with a dedicated SS54 — independent from `J1`'s `VBAT` net so a short on one connector won't pull down the other. Bench-friendly: sweep input voltage with a lab supply for characterisation. Same 1S–2S LiPo range as `J1`.
 
 > **Note:** The fourth power input is the WCH-LinkE +5 V rail (`VPROG`) on **J4** pin 6 — see [Comms & debug → WCH-LinkE](#wch-linke--j4). A separate SS54 ORs `VPROG` into `VSYS`, so the LinkE alone can power the board for firmware-only sessions.
 
