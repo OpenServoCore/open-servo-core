@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="docs/logo.webp" alt="OpenServoCore logo" width="320">
+</p>
+
 # OpenServoCore
 
 > The definitive open platform for turning cheap servos into smart actuators.
