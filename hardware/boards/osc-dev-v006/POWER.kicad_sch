@@ -1808,7 +1808,7 @@
 		)
 		(uuid "18550ddd-567f-469c-8d8e-20a5283cea12")
 	)
-	(text_box "Designed to allow powering the system via USB, bench power supply, or LiPo Batteries.\n\nInputs:\n  • VBUS - USB power\n  • VBAT - Battery / Bench power, supports 1S / 2S LiPo Batteries\n\nOutputs:\n• VSYS - primary system rail\n• +3V3 - regulated logic rail\n\nFeatures:\n  • Schottky diode OR-ing\n  • reverse current protection\n  • low quiescent current LDO\n  • rail status indicators"
+	(text_box "Designed to allow powering the system via USB, bench power supply, or LiPo Batteries.\n\nInputs:\n  • VBUS - USB power\n  • VBAT - 1S / 2S LiPo Batteries\n  • VEXT - Terminal Block / Bench Power Supply\n  • VPROG - 5V power from WCH-LinkE\n\nOutputs:\n• VSYS - primary system rail\n• +3V3 - regulated logic rail\n\nFeatures:\n  • Schottky diode OR-ing\n  • reverse current protection\n  • low quiescent current LDO\n  • rail status indicators"
 		(exclude_from_sim no)
 		(at 180.34 27.94 0)
 		(size 101.6 101.6)
@@ -1921,16 +1921,10 @@
 		(uuid "309b11f7-ff06-4137-9ee8-5483e5e97e78")
 	)
 	(junction
-		(at 109.22 50.8)
+		(at 113.03 50.8)
 		(diameter 0)
 		(color 0 0 0 0)
-		(uuid "3f0386a9-fd1a-431a-9c48-2e7115f3f08d")
-	)
-	(junction
-		(at 40.64 104.14)
-		(diameter 0)
-		(color 0 0 0 0)
-		(uuid "434e241e-7f78-4bbc-a8a6-e0c9295379d3")
+		(uuid "5a272d7b-0877-4366-9302-54e8bbed2f84")
 	)
 	(junction
 		(at 80.01 114.3)
@@ -1939,10 +1933,10 @@
 		(uuid "618f9086-04d6-46d5-8165-3f3b66d7b9db")
 	)
 	(junction
-		(at 44.45 104.14)
+		(at 41.91 106.68)
 		(diameter 0)
 		(color 0 0 0 0)
-		(uuid "8145c0f7-969d-4b95-9294-cf260a8e564a")
+		(uuid "786509c0-0d20-48a1-b603-3292987265cd")
 	)
 	(junction
 		(at 151.13 50.8)
@@ -1957,10 +1951,28 @@
 		(uuid "a4320a79-ab0a-456a-955e-54c92d2192c1")
 	)
 	(junction
+		(at 41.91 111.76)
+		(diameter 0)
+		(color 0 0 0 0)
+		(uuid "a580d1ea-ca5b-4e8a-8623-7288c095a7a8")
+	)
+	(junction
 		(at 20.32 50.8)
 		(diameter 0)
 		(color 0 0 0 0)
 		(uuid "ac29a10c-0012-4174-a33a-f7afdaac375e")
+	)
+	(junction
+		(at 45.72 106.68)
+		(diameter 0)
+		(color 0 0 0 0)
+		(uuid "ba5e0156-1f04-4741-95b4-63c017da776d")
+	)
+	(junction
+		(at 41.91 101.6)
+		(diameter 0)
+		(color 0 0 0 0)
+		(uuid "d76c348c-40d3-4371-a91b-1f136a5e3713")
 	)
 	(junction
 		(at 92.71 114.3)
@@ -1992,23 +2004,13 @@
 	)
 	(wire
 		(pts
-			(xy 109.22 48.26) (xy 109.22 50.8)
+			(xy 113.03 53.34) (xy 113.03 54.61)
 		)
 		(stroke
 			(width 0)
 			(type default)
 		)
-		(uuid "021fe797-1a68-4b69-84d1-77b591fea790")
-	)
-	(wire
-		(pts
-			(xy 44.45 104.14) (xy 49.53 104.14)
-		)
-		(stroke
-			(width 0)
-			(type default)
-		)
-		(uuid "08f0946a-987c-4393-b947-be8b9b574aaf")
+		(uuid "0910875b-6d34-4295-8a94-dcf723c19cc7")
 	)
 	(wire
 		(pts
@@ -2022,7 +2024,7 @@
 	)
 	(wire
 		(pts
-			(xy 40.64 104.14) (xy 38.1 104.14)
+			(xy 38.1 101.6) (xy 41.91 101.6)
 		)
 		(stroke
 			(width 0)
@@ -2062,13 +2064,33 @@
 	)
 	(wire
 		(pts
-			(xy 26.67 93.98) (xy 30.48 93.98)
+			(xy 113.03 53.34) (xy 111.76 53.34)
+		)
+		(stroke
+			(width 0)
+			(type default)
+		)
+		(uuid "1915dd83-eb0e-439a-902c-1152723fe922")
+	)
+	(wire
+		(pts
+			(xy 26.67 91.44) (xy 30.48 91.44)
 		)
 		(stroke
 			(width 0)
 			(type default)
 		)
 		(uuid "1c4ebd78-eb7b-47da-b0eb-781909655819")
+	)
+	(wire
+		(pts
+			(xy 41.91 121.92) (xy 38.1 121.92)
+		)
+		(stroke
+			(width 0)
+			(type default)
+		)
+		(uuid "1c8cb53d-ec5d-4149-bd0a-e409014d9acd")
 	)
 	(wire
 		(pts
@@ -2079,16 +2101,6 @@
 			(type default)
 		)
 		(uuid "1cef17aa-ba92-4190-8282-5fe1b42f70f4")
-	)
-	(wire
-		(pts
-			(xy 109.22 50.8) (xy 110.49 50.8)
-		)
-		(stroke
-			(width 0)
-			(type default)
-		)
-		(uuid "201878b3-636b-495c-b440-fa7e0d81f40c")
 	)
 	(wire
 		(pts
@@ -2112,6 +2124,16 @@
 	)
 	(wire
 		(pts
+			(xy 113.03 48.26) (xy 113.03 50.8)
+		)
+		(stroke
+			(width 0)
+			(type default)
+		)
+		(uuid "2766ee95-9822-4a70-b517-8ca18e88da08")
+	)
+	(wire
+		(pts
 			(xy 83.82 57.15) (xy 83.82 55.88)
 		)
 		(stroke
@@ -2132,13 +2154,13 @@
 	)
 	(wire
 		(pts
-			(xy 106.68 50.8) (xy 109.22 50.8)
+			(xy 45.72 106.68) (xy 49.53 106.68)
 		)
 		(stroke
 			(width 0)
 			(type default)
 		)
-		(uuid "37a1651a-5367-488f-9704-59f8b1a7d4fe")
+		(uuid "3bc146de-1182-4347-bb3c-81ac29d4d659")
 	)
 	(wire
 		(pts
@@ -2152,16 +2174,6 @@
 	)
 	(wire
 		(pts
-			(xy 109.22 53.34) (xy 109.22 54.61)
-		)
-		(stroke
-			(width 0)
-			(type default)
-		)
-		(uuid "44ab6639-4e8a-4a7f-b1ef-708043a65fe7")
-	)
-	(wire
-		(pts
 			(xy 132.08 105.41) (xy 132.08 106.68)
 		)
 		(stroke
@@ -2169,16 +2181,6 @@
 			(type default)
 		)
 		(uuid "44dc7103-fe00-4365-9973-808e2f19b0bb")
-	)
-	(wire
-		(pts
-			(xy 40.64 114.3) (xy 40.64 104.14)
-		)
-		(stroke
-			(width 0)
-			(type default)
-		)
-		(uuid "478f6375-e9ca-459f-b326-bbf29f7d8948")
 	)
 	(wire
 		(pts
@@ -2322,6 +2324,16 @@
 	)
 	(wire
 		(pts
+			(xy 26.67 121.92) (xy 30.48 121.92)
+		)
+		(stroke
+			(width 0)
+			(type default)
+		)
+		(uuid "71c3650f-8e91-4560-ada5-276fdbe146e3")
+	)
+	(wire
+		(pts
 			(xy 132.08 116.84) (xy 132.08 115.57)
 		)
 		(stroke
@@ -2352,16 +2364,6 @@
 	)
 	(wire
 		(pts
-			(xy 109.22 53.34) (xy 110.49 53.34)
-		)
-		(stroke
-			(width 0)
-			(type default)
-		)
-		(uuid "80cb0517-f430-4a50-a21d-6237a884cd2a")
-	)
-	(wire
-		(pts
 			(xy 52.07 48.26) (xy 45.72 48.26)
 		)
 		(stroke
@@ -2369,6 +2371,16 @@
 			(type default)
 		)
 		(uuid "8464ff8b-2916-4389-bd15-49b7d30f81ec")
+	)
+	(wire
+		(pts
+			(xy 115.57 50.8) (xy 113.03 50.8)
+		)
+		(stroke
+			(width 0)
+			(type default)
+		)
+		(uuid "84eb92a4-eb80-4fa7-b6a2-094e1c2bfb12")
 	)
 	(wire
 		(pts
@@ -2392,13 +2404,13 @@
 	)
 	(wire
 		(pts
-			(xy 40.64 104.14) (xy 44.45 104.14)
+			(xy 41.91 106.68) (xy 41.91 111.76)
 		)
 		(stroke
 			(width 0)
 			(type default)
 		)
-		(uuid "8fb1bf66-6787-45a2-a7f6-be2ce1e8bddb")
+		(uuid "940fb42c-19cc-42a5-8ecd-141b11bba54d")
 	)
 	(wire
 		(pts
@@ -2442,17 +2454,17 @@
 	)
 	(wire
 		(pts
-			(xy 44.45 106.68) (xy 44.45 104.14)
+			(xy 41.91 111.76) (xy 41.91 121.92)
 		)
 		(stroke
 			(width 0)
 			(type default)
 		)
-		(uuid "a550c7fe-d1d5-4591-a8e4-3734cd821509")
+		(uuid "9b11abda-fe8b-4dae-be7e-f362c75b3e0a")
 	)
 	(wire
 		(pts
-			(xy 38.1 114.3) (xy 40.64 114.3)
+			(xy 38.1 111.76) (xy 41.91 111.76)
 		)
 		(stroke
 			(width 0)
@@ -2492,7 +2504,7 @@
 	)
 	(wire
 		(pts
-			(xy 26.67 104.14) (xy 30.48 104.14)
+			(xy 26.67 101.6) (xy 30.48 101.6)
 		)
 		(stroke
 			(width 0)
@@ -2502,13 +2514,23 @@
 	)
 	(wire
 		(pts
-			(xy 26.67 114.3) (xy 30.48 114.3)
+			(xy 26.67 111.76) (xy 30.48 111.76)
 		)
 		(stroke
 			(width 0)
 			(type default)
 		)
 		(uuid "c75a04af-7d14-407f-a291-a5852c46cc79")
+	)
+	(wire
+		(pts
+			(xy 41.91 106.68) (xy 45.72 106.68)
+		)
+		(stroke
+			(width 0)
+			(type default)
+		)
+		(uuid "c9731b7d-9e9f-48a7-b276-b9162f2c62b3")
 	)
 	(wire
 		(pts
@@ -2552,13 +2574,23 @@
 	)
 	(wire
 		(pts
-			(xy 40.64 93.98) (xy 38.1 93.98)
+			(xy 41.91 91.44) (xy 38.1 91.44)
 		)
 		(stroke
 			(width 0)
 			(type default)
 		)
 		(uuid "e1985b34-d24f-4d9a-a28f-f8b7961d1207")
+	)
+	(wire
+		(pts
+			(xy 113.03 50.8) (xy 111.76 50.8)
+		)
+		(stroke
+			(width 0)
+			(type default)
+		)
+		(uuid "e2b628f3-0b13-4914-a069-c1255c5577b6")
 	)
 	(wire
 		(pts
@@ -2579,6 +2611,16 @@
 			(type default)
 		)
 		(uuid "ec8fa0e5-53b9-4431-bc0c-7a7b768c3110")
+	)
+	(wire
+		(pts
+			(xy 41.91 101.6) (xy 41.91 106.68)
+		)
+		(stroke
+			(width 0)
+			(type default)
+		)
+		(uuid "eff8762c-a025-4932-b724-362ebdf621e7")
 	)
 	(wire
 		(pts
@@ -2612,7 +2654,7 @@
 	)
 	(wire
 		(pts
-			(xy 40.64 93.98) (xy 40.64 104.14)
+			(xy 41.91 91.44) (xy 41.91 101.6)
 		)
 		(stroke
 			(width 0)
@@ -2714,7 +2756,7 @@
 	)
 	(hierarchical_label "VEXT"
 		(shape input)
-		(at 26.67 114.3 180)
+		(at 26.67 111.76 180)
 		(effects
 			(font
 				(size 1.27 1.27)
@@ -2733,17 +2775,6 @@
 			(justify left)
 		)
 		(uuid "39a81874-4c04-4ef7-a27d-b24490b9adab")
-	)
-	(hierarchical_label "VBAT"
-		(shape input)
-		(at 106.68 50.8 180)
-		(effects
-			(font
-				(size 1.27 1.27)
-			)
-			(justify right)
-		)
-		(uuid "4a2e634e-c0f7-4f87-9e40-80dcd2a04dd4")
 	)
 	(hierarchical_label "VSYS"
 		(shape output)
@@ -2769,7 +2800,7 @@
 	)
 	(hierarchical_label "VSYS"
 		(shape output)
-		(at 49.53 104.14 0)
+		(at 49.53 106.68 0)
 		(effects
 			(font
 				(size 1.27 1.27)
@@ -2789,9 +2820,20 @@
 		)
 		(uuid "898afedb-aace-4aa9-8d83-bc0c8e049097")
 	)
+	(hierarchical_label "VPROG"
+		(shape input)
+		(at 26.67 121.92 180)
+		(effects
+			(font
+				(size 1.27 1.27)
+			)
+			(justify right)
+		)
+		(uuid "9970603b-f8da-4d32-b4a8-4dda0711e918")
+	)
 	(hierarchical_label "VBUS"
 		(shape input)
-		(at 26.67 93.98 180)
+		(at 26.67 91.44 180)
 		(effects
 			(font
 				(size 1.27 1.27)
@@ -2802,7 +2844,7 @@
 	)
 	(hierarchical_label "VBAT"
 		(shape input)
-		(at 26.67 104.14 180)
+		(at 26.67 101.6 180)
 		(effects
 			(font
 				(size 1.27 1.27)
@@ -2810,6 +2852,17 @@
 			(justify right)
 		)
 		(uuid "a2138f97-bcf9-4c7e-a31f-3a4c52cee680")
+	)
+	(hierarchical_label "VBAT"
+		(shape input)
+		(at 115.57 50.8 0)
+		(effects
+			(font
+				(size 1.27 1.27)
+			)
+			(justify left)
+		)
+		(uuid "c7caf6eb-738c-46fe-9adb-18f6731d4a70")
 	)
 	(hierarchical_label "+3V3"
 		(shape output)
@@ -2844,7 +2897,7 @@
 		(in_pos_files yes)
 		(dnp no)
 		(uuid "04db25f6-969b-42e6-b356-ba40b64cd843")
-		(property "Reference" "#PWR018"
+		(property "Reference" "#PWR027"
 			(at 151.13 60.96 0)
 			(hide yes)
 			(show_name no)
@@ -2902,9 +2955,9 @@
 			(uuid "8c17dcb6-af1e-4524-abb2-11041a81266d")
 		)
 		(instances
-			(project "servo-dev-board-ch32v006"
+			(project "osc-dev-v006"
 				(path "/6062e7d2-0c72-467e-b49c-6387ba053e09/1e728d76-963a-4d02-a5f6-92f3889aa8bb"
-					(reference "#PWR018")
+					(reference "#PWR027")
 					(unit 1)
 				)
 			)
@@ -2922,7 +2975,7 @@
 		(dnp no)
 		(fields_autoplaced yes)
 		(uuid "074ad41f-1704-4d32-81fc-611fac1d0b7a")
-		(property "Reference" "#PWR015"
+		(property "Reference" "#PWR024"
 			(at 92.71 121.92 0)
 			(hide yes)
 			(show_name no)
@@ -2980,9 +3033,9 @@
 			(uuid "41b77ac8-aa07-42ed-8883-1ba23cd16637")
 		)
 		(instances
-			(project "servo-dev-board-ch32v006"
+			(project "osc-dev-v006"
 				(path "/6062e7d2-0c72-467e-b49c-6387ba053e09/1e728d76-963a-4d02-a5f6-92f3889aa8bb"
-					(reference "#PWR015")
+					(reference "#PWR024")
 					(unit 1)
 				)
 			)
@@ -3074,6 +3127,28 @@
 				)
 			)
 		)
+		(property "KLC_S3.3" ""
+			(at 80.01 107.95 0)
+			(hide yes)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+			)
+		)
+		(property "KLC_S5.1" ""
+			(at 80.01 107.95 0)
+			(hide yes)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+			)
+		)
 		(pin "1"
 			(uuid "ed138921-36b6-4860-9453-d58edd52ba15")
 		)
@@ -3081,7 +3156,7 @@
 			(uuid "4bc2b9d7-109c-4598-a261-1125ccb4b610")
 		)
 		(instances
-			(project "servo-dev-board-ch32v006"
+			(project "osc-dev-v006"
 				(path "/6062e7d2-0c72-467e-b49c-6387ba053e09/1e728d76-963a-4d02-a5f6-92f3889aa8bb"
 					(reference "C2")
 					(unit 1)
@@ -3200,6 +3275,28 @@
 				)
 			)
 		)
+		(property "KLC_S3.3" ""
+			(at 132.08 111.76 90)
+			(hide yes)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+			)
+		)
+		(property "KLC_S5.1" ""
+			(at 132.08 111.76 90)
+			(hide yes)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+			)
+		)
 		(pin "2"
 			(uuid "c8ef9963-28c9-4e0f-ae33-cfe8024bcaae")
 		)
@@ -3207,87 +3304,9 @@
 			(uuid "1941c59f-0303-4765-a2f2-5c9f9000a23e")
 		)
 		(instances
-			(project "servo-dev-board-ch32v006"
+			(project "osc-dev-v006"
 				(path "/6062e7d2-0c72-467e-b49c-6387ba053e09/1e728d76-963a-4d02-a5f6-92f3889aa8bb"
 					(reference "LED1")
-					(unit 1)
-				)
-			)
-		)
-	)
-	(symbol
-		(lib_id "power:GND")
-		(at 109.22 54.61 0)
-		(mirror y)
-		(unit 1)
-		(body_style 1)
-		(exclude_from_sim no)
-		(in_bom yes)
-		(on_board yes)
-		(in_pos_files yes)
-		(dnp no)
-		(uuid "0a76b3b2-edbd-44ab-9895-502ee7fce00e")
-		(property "Reference" "#PWR016"
-			(at 109.22 60.96 0)
-			(hide yes)
-			(show_name no)
-			(do_not_autoplace no)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-			)
-		)
-		(property "Value" "GND"
-			(at 109.22 58.42 0)
-			(show_name no)
-			(do_not_autoplace no)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-			)
-		)
-		(property "Footprint" ""
-			(at 109.22 54.61 0)
-			(hide yes)
-			(show_name no)
-			(do_not_autoplace no)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-			)
-		)
-		(property "Datasheet" ""
-			(at 109.22 54.61 0)
-			(hide yes)
-			(show_name no)
-			(do_not_autoplace no)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-			)
-		)
-		(property "Description" "Power symbol creates a global label with name \"GND\" , ground"
-			(at 109.22 54.61 0)
-			(hide yes)
-			(show_name no)
-			(do_not_autoplace no)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-			)
-		)
-		(pin "1"
-			(uuid "cbf8ea20-1979-4213-951d-bc170e92d1c2")
-		)
-		(instances
-			(project "servo-dev-board-ch32v006"
-				(path "/6062e7d2-0c72-467e-b49c-6387ba053e09/1e728d76-963a-4d02-a5f6-92f3889aa8bb"
-					(reference "#PWR016")
 					(unit 1)
 				)
 			)
@@ -3304,7 +3323,7 @@
 		(in_pos_files yes)
 		(dnp no)
 		(uuid "0c0273fe-a5c5-4829-ace6-98ef37b0adf2")
-		(property "Reference" "#PWR017"
+		(property "Reference" "#PWR026"
 			(at 132.08 123.19 0)
 			(hide yes)
 			(show_name no)
@@ -3362,9 +3381,86 @@
 			(uuid "67eacd93-7dc0-4376-9eee-cf056c30f66b")
 		)
 		(instances
-			(project "servo-dev-board-ch32v006"
+			(project "osc-dev-v006"
 				(path "/6062e7d2-0c72-467e-b49c-6387ba053e09/1e728d76-963a-4d02-a5f6-92f3889aa8bb"
-					(reference "#PWR017")
+					(reference "#PWR026")
+					(unit 1)
+				)
+			)
+		)
+	)
+	(symbol
+		(lib_id "power:GND")
+		(at 113.03 54.61 0)
+		(unit 1)
+		(body_style 1)
+		(exclude_from_sim no)
+		(in_bom yes)
+		(on_board yes)
+		(in_pos_files yes)
+		(dnp no)
+		(uuid "1c2ff028-e016-420f-ac34-8c5903abb10a")
+		(property "Reference" "#PWR025"
+			(at 113.03 60.96 0)
+			(hide yes)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+			)
+		)
+		(property "Value" "GND"
+			(at 113.03 58.42 0)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+			)
+		)
+		(property "Footprint" ""
+			(at 113.03 54.61 0)
+			(hide yes)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+			)
+		)
+		(property "Datasheet" ""
+			(at 113.03 54.61 0)
+			(hide yes)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+			)
+		)
+		(property "Description" "Power symbol creates a global label with name \"GND\" , ground"
+			(at 113.03 54.61 0)
+			(hide yes)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+			)
+		)
+		(pin "1"
+			(uuid "c3017b4a-d91f-4d3c-b557-0ba27de88a32")
+		)
+		(instances
+			(project "osc-dev-v006"
+				(path "/6062e7d2-0c72-467e-b49c-6387ba053e09/1e728d76-963a-4d02-a5f6-92f3889aa8bb"
+					(reference "#PWR025")
 					(unit 1)
 				)
 			)
@@ -3381,7 +3477,7 @@
 		(in_pos_files yes)
 		(dnp no)
 		(uuid "232d2f08-5607-411c-bc76-7bbeed5433fa")
-		(property "Reference" "#PWR013"
+		(property "Reference" "#PWR022"
 			(at 46.99 72.39 0)
 			(hide yes)
 			(show_name no)
@@ -3439,9 +3535,9 @@
 			(uuid "4be25b7e-d255-4585-98d0-3fe655186d7b")
 		)
 		(instances
-			(project "servo-dev-board-ch32v006"
+			(project "osc-dev-v006"
 				(path "/6062e7d2-0c72-467e-b49c-6387ba053e09/1e728d76-963a-4d02-a5f6-92f3889aa8bb"
-					(reference "#PWR013")
+					(reference "#PWR022")
 					(unit 1)
 				)
 			)
@@ -3449,7 +3545,8 @@
 	)
 	(symbol
 		(lib_id "power:PWR_FLAG")
-		(at 109.22 48.26 0)
+		(at 113.03 48.26 0)
+		(mirror y)
 		(unit 1)
 		(body_style 1)
 		(exclude_from_sim no)
@@ -3457,9 +3554,9 @@
 		(on_board yes)
 		(in_pos_files yes)
 		(dnp no)
-		(uuid "37decd40-f9a0-4461-b9df-9286efa2ca76")
-		(property "Reference" "#FLG02"
-			(at 109.22 46.355 0)
+		(uuid "41b366d9-2e99-41c1-b5aa-c02294c0e819")
+		(property "Reference" "#FLG04"
+			(at 113.03 46.355 0)
 			(hide yes)
 			(show_name no)
 			(do_not_autoplace no)
@@ -3470,18 +3567,17 @@
 			)
 		)
 		(property "Value" "PWR_FLAG"
-			(at 109.22 44.45 0)
+			(at 113.03 44.45 0)
 			(show_name no)
 			(do_not_autoplace no)
 			(effects
 				(font
 					(size 1.27 1.27)
 				)
-				(justify left)
 			)
 		)
 		(property "Footprint" ""
-			(at 109.22 48.26 0)
+			(at 113.03 48.26 0)
 			(hide yes)
 			(show_name no)
 			(do_not_autoplace no)
@@ -3492,7 +3588,7 @@
 			)
 		)
 		(property "Datasheet" ""
-			(at 109.22 48.26 0)
+			(at 113.03 48.26 0)
 			(hide yes)
 			(show_name no)
 			(do_not_autoplace no)
@@ -3503,7 +3599,7 @@
 			)
 		)
 		(property "Description" "Special symbol for telling ERC where power comes from"
-			(at 109.22 48.26 0)
+			(at 113.03 48.26 0)
 			(hide yes)
 			(show_name no)
 			(do_not_autoplace no)
@@ -3514,12 +3610,12 @@
 			)
 		)
 		(pin "1"
-			(uuid "624a67f1-dae2-4701-ac53-535c85354abf")
+			(uuid "4bf80698-0c00-4340-944e-50d77d566417")
 		)
 		(instances
-			(project "servo-dev-board-ch32v006"
+			(project "osc-dev-v006"
 				(path "/6062e7d2-0c72-467e-b49c-6387ba053e09/1e728d76-963a-4d02-a5f6-92f3889aa8bb"
-					(reference "#FLG02")
+					(reference "#FLG04")
 					(unit 1)
 				)
 			)
@@ -3614,6 +3710,28 @@
 				)
 			)
 		)
+		(property "KLC_S3.3" ""
+			(at 132.08 101.6 0)
+			(hide yes)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+			)
+		)
+		(property "KLC_S5.1" ""
+			(at 132.08 101.6 0)
+			(hide yes)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+			)
+		)
 		(pin "1"
 			(uuid "380b3fc2-47e6-4326-ba2d-ab78c86f85f5")
 		)
@@ -3621,7 +3739,7 @@
 			(uuid "8e83d513-83eb-4465-9425-7dfb8bb7d137")
 		)
 		(instances
-			(project "servo-dev-board-ch32v006"
+			(project "osc-dev-v006"
 				(path "/6062e7d2-0c72-467e-b49c-6387ba053e09/1e728d76-963a-4d02-a5f6-92f3889aa8bb"
 					(reference "R3")
 					(unit 1)
@@ -3717,6 +3835,28 @@
 				)
 			)
 		)
+		(property "KLC_S3.3" ""
+			(at 157.48 50.8 0)
+			(hide yes)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+			)
+		)
+		(property "KLC_S5.1" ""
+			(at 157.48 50.8 0)
+			(hide yes)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+			)
+		)
 		(pin "1"
 			(uuid "dcc5fc21-6d6d-48b1-8ab9-90d9161ae83c")
 		)
@@ -3724,7 +3864,7 @@
 			(uuid "04d71575-9bdf-445f-8e7f-fd02a67796a7")
 		)
 		(instances
-			(project "servo-dev-board-ch32v006"
+			(project "osc-dev-v006"
 				(path "/6062e7d2-0c72-467e-b49c-6387ba053e09/1e728d76-963a-4d02-a5f6-92f3889aa8bb"
 					(reference "J2")
 					(unit 1)
@@ -3743,7 +3883,7 @@
 		(in_pos_files yes)
 		(dnp no)
 		(uuid "6ee516d0-b66f-488a-a28f-b7f0b2dba72b")
-		(property "Reference" "#PWR019"
+		(property "Reference" "#PWR028"
 			(at 156.21 123.19 0)
 			(hide yes)
 			(show_name no)
@@ -3801,9 +3941,9 @@
 			(uuid "eb4848b4-74fd-4ff1-adeb-46d9005ed6b1")
 		)
 		(instances
-			(project "servo-dev-board-ch32v006"
+			(project "osc-dev-v006"
 				(path "/6062e7d2-0c72-467e-b49c-6387ba053e09/1e728d76-963a-4d02-a5f6-92f3889aa8bb"
-					(reference "#PWR019")
+					(reference "#PWR028")
 					(unit 1)
 				)
 			)
@@ -3820,7 +3960,7 @@
 		(in_pos_files yes)
 		(dnp no)
 		(uuid "75b73c85-7a45-474f-b3b0-b9ab284da796")
-		(property "Reference" "#FLG07"
+		(property "Reference" "#FLG05"
 			(at 151.13 47.625 0)
 			(hide yes)
 			(show_name no)
@@ -3879,9 +4019,9 @@
 			(uuid "bd17bd90-0772-4bbe-85d4-132de7445d24")
 		)
 		(instances
-			(project "servo-dev-board-ch32v006"
+			(project "osc-dev-v006"
 				(path "/6062e7d2-0c72-467e-b49c-6387ba053e09/1e728d76-963a-4d02-a5f6-92f3889aa8bb"
-					(reference "#FLG07")
+					(reference "#FLG05")
 					(unit 1)
 				)
 			)
@@ -3973,6 +4113,28 @@
 				)
 			)
 		)
+		(property "KLC_S3.3" ""
+			(at 78.74 46.99 90)
+			(hide yes)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+			)
+		)
+		(property "KLC_S5.1" ""
+			(at 78.74 46.99 90)
+			(hide yes)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+			)
+		)
 		(pin "1"
 			(uuid "af167f99-84a5-4bc7-9ce9-54a41da3da3b")
 		)
@@ -3980,7 +4142,7 @@
 			(uuid "c212bc8a-4ce8-4105-9251-86056414a514")
 		)
 		(instances
-			(project "servo-dev-board-ch32v006"
+			(project "osc-dev-v006"
 				(path "/6062e7d2-0c72-467e-b49c-6387ba053e09/1e728d76-963a-4d02-a5f6-92f3889aa8bb"
 					(reference "R1")
 					(unit 1)
@@ -4086,6 +4248,28 @@
 				)
 			)
 		)
+		(property "KLC_S3.3" ""
+			(at 92.71 104.14 0)
+			(hide yes)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+			)
+		)
+		(property "KLC_S5.1" ""
+			(at 92.71 104.14 0)
+			(hide yes)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+			)
+		)
 		(pin "2"
 			(uuid "88081bd4-8469-4cd9-96c0-e563141ea603")
 		)
@@ -4096,7 +4280,7 @@
 			(uuid "0ff52359-3881-453a-be7a-d2b0d1400ae7")
 		)
 		(instances
-			(project "servo-dev-board-ch32v006"
+			(project "osc-dev-v006"
 				(path "/6062e7d2-0c72-467e-b49c-6387ba053e09/1e728d76-963a-4d02-a5f6-92f3889aa8bb"
 					(reference "U1")
 					(unit 1)
@@ -4190,6 +4374,28 @@
 				)
 			)
 		)
+		(property "KLC_S3.3" ""
+			(at 78.74 55.88 90)
+			(hide yes)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+			)
+		)
+		(property "KLC_S5.1" ""
+			(at 78.74 55.88 90)
+			(hide yes)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+			)
+		)
 		(pin "1"
 			(uuid "6feb2539-5fd3-42ce-b22b-b39518eba65d")
 		)
@@ -4197,7 +4403,7 @@
 			(uuid "b16520ac-a620-4381-8562-3e1a0cc34c2d")
 		)
 		(instances
-			(project "servo-dev-board-ch32v006"
+			(project "osc-dev-v006"
 				(path "/6062e7d2-0c72-467e-b49c-6387ba053e09/1e728d76-963a-4d02-a5f6-92f3889aa8bb"
 					(reference "R2")
 					(unit 1)
@@ -4207,7 +4413,7 @@
 	)
 	(symbol
 		(lib_id "Diode:SS34")
-		(at 34.29 93.98 180)
+		(at 34.29 91.44 180)
 		(unit 1)
 		(body_style 1)
 		(exclude_from_sim no)
@@ -4217,7 +4423,7 @@
 		(dnp no)
 		(uuid "934a34d9-4c1e-4346-8296-a8afa41594ca")
 		(property "Reference" "D1"
-			(at 34.29 91.44 0)
+			(at 34.29 88.9 0)
 			(show_name no)
 			(do_not_autoplace no)
 			(effects
@@ -4227,7 +4433,7 @@
 			)
 		)
 		(property "Value" "SS54"
-			(at 34.29 96.52 0)
+			(at 34.29 93.98 0)
 			(show_name no)
 			(do_not_autoplace no)
 			(effects
@@ -4237,7 +4443,7 @@
 			)
 		)
 		(property "Footprint" "Diode_SMD:D_SMA_Handsoldering"
-			(at 34.29 89.535 0)
+			(at 34.29 86.995 0)
 			(hide yes)
 			(show_name no)
 			(do_not_autoplace no)
@@ -4248,7 +4454,7 @@
 			)
 		)
 		(property "Datasheet" "https://jlcpcb.com/api/file/downloadByFileSystemAccessId/8579707587489042432"
-			(at 34.29 93.98 0)
+			(at 34.29 91.44 0)
 			(hide yes)
 			(show_name no)
 			(do_not_autoplace no)
@@ -4259,7 +4465,7 @@
 			)
 		)
 		(property "Description" "40V 5A Schottky Diode, SMA"
-			(at 34.29 93.98 0)
+			(at 34.29 91.44 0)
 			(hide yes)
 			(show_name no)
 			(do_not_autoplace no)
@@ -4270,7 +4476,7 @@
 			)
 		)
 		(property "LCSC" "C22452"
-			(at 34.29 93.98 0)
+			(at 34.29 91.44 0)
 			(hide yes)
 			(show_name no)
 			(do_not_autoplace no)
@@ -4281,7 +4487,7 @@
 			)
 		)
 		(property "MFPN" "SS54"
-			(at 34.29 93.98 0)
+			(at 34.29 91.44 0)
 			(hide yes)
 			(show_name no)
 			(do_not_autoplace no)
@@ -4292,7 +4498,29 @@
 			)
 		)
 		(property "JLC Type" "Basic"
-			(at 34.29 93.98 0)
+			(at 34.29 91.44 0)
+			(hide yes)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+			)
+		)
+		(property "KLC_S3.3" ""
+			(at 34.29 91.44 0)
+			(hide yes)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+			)
+		)
+		(property "KLC_S5.1" ""
+			(at 34.29 91.44 0)
 			(hide yes)
 			(show_name no)
 			(do_not_autoplace no)
@@ -4309,7 +4537,7 @@
 			(uuid "bc8eedc5-125e-4426-af55-47c69c7b42ec")
 		)
 		(instances
-			(project "servo-dev-board-ch32v006"
+			(project "osc-dev-v006"
 				(path "/6062e7d2-0c72-467e-b49c-6387ba053e09/1e728d76-963a-4d02-a5f6-92f3889aa8bb"
 					(reference "D1")
 					(unit 1)
@@ -4328,7 +4556,7 @@
 		(in_pos_files yes)
 		(dnp no)
 		(uuid "94bfd2fa-01ac-49b7-9752-8ef81ff272ee")
-		(property "Reference" "#FLG04"
+		(property "Reference" "#FLG02"
 			(at 48.895 63.5 0)
 			(hide yes)
 			(show_name no)
@@ -4387,9 +4615,9 @@
 			(uuid "c0726af4-c4b5-4638-8102-f26a398f77df")
 		)
 		(instances
-			(project "servo-dev-board-ch32v006"
+			(project "osc-dev-v006"
 				(path "/6062e7d2-0c72-467e-b49c-6387ba053e09/1e728d76-963a-4d02-a5f6-92f3889aa8bb"
-					(reference "#FLG04")
+					(reference "#FLG02")
 					(unit 1)
 				)
 			)
@@ -4397,7 +4625,7 @@
 	)
 	(symbol
 		(lib_id "Connector_Generic:Conn_01x02")
-		(at 115.57 50.8 0)
+		(at 106.68 53.34 180)
 		(unit 1)
 		(body_style 1)
 		(exclude_from_sim no)
@@ -4407,7 +4635,7 @@
 		(dnp no)
 		(uuid "975e6b95-7ac3-423a-b99f-e485cc6c815b")
 		(property "Reference" "J1"
-			(at 115.57 48.26 0)
+			(at 106.68 55.88 0)
 			(show_name no)
 			(do_not_autoplace no)
 			(effects
@@ -4417,7 +4645,7 @@
 			)
 		)
 		(property "Value" "JST-PH-H"
-			(at 115.57 45.72 0)
+			(at 106.68 58.42 0)
 			(hide yes)
 			(show_name no)
 			(do_not_autoplace no)
@@ -4428,7 +4656,7 @@
 			)
 		)
 		(property "Footprint" "shared:CONN-TH_S2B-PH-K-S-LF-SN"
-			(at 115.57 50.8 0)
+			(at 106.68 53.34 0)
 			(hide yes)
 			(show_name no)
 			(do_not_autoplace no)
@@ -4439,7 +4667,7 @@
 			)
 		)
 		(property "Datasheet" ""
-			(at 115.57 50.8 0)
+			(at 106.68 53.34 0)
 			(hide yes)
 			(show_name no)
 			(do_not_autoplace no)
@@ -4450,7 +4678,7 @@
 			)
 		)
 		(property "Description" "Generic connector, single row, 01x02, script generated (kicad-library-utils/schlib/autogen/connector/)"
-			(at 115.57 50.8 0)
+			(at 106.68 53.34 0)
 			(hide yes)
 			(show_name no)
 			(do_not_autoplace no)
@@ -4461,7 +4689,7 @@
 			)
 		)
 		(property "LCSC" "C173752"
-			(at 116.84 41.91 0)
+			(at 105.41 62.23 0)
 			(hide yes)
 			(show_name no)
 			(do_not_autoplace no)
@@ -4472,7 +4700,7 @@
 			)
 		)
 		(property "MFPN" "S2B-PH-K-S(LF)(SN)"
-			(at 116.84 41.91 0)
+			(at 105.41 62.23 0)
 			(hide yes)
 			(show_name no)
 			(do_not_autoplace no)
@@ -4483,7 +4711,29 @@
 			)
 		)
 		(property "JLC Type" "Extended"
-			(at 115.57 50.8 0)
+			(at 106.68 53.34 0)
+			(hide yes)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+			)
+		)
+		(property "KLC_S3.3" ""
+			(at 106.68 53.34 0)
+			(hide yes)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+			)
+		)
+		(property "KLC_S5.1" ""
+			(at 106.68 53.34 0)
 			(hide yes)
 			(show_name no)
 			(do_not_autoplace no)
@@ -4500,7 +4750,7 @@
 			(uuid "13e48bbd-6dc8-466c-a3b2-b8a66c82a558")
 		)
 		(instances
-			(project "servo-dev-board-ch32v006"
+			(project "osc-dev-v006"
 				(path "/6062e7d2-0c72-467e-b49c-6387ba053e09/1e728d76-963a-4d02-a5f6-92f3889aa8bb"
 					(reference "J1")
 					(unit 1)
@@ -4510,7 +4760,7 @@
 	)
 	(symbol
 		(lib_id "Diode:SS34")
-		(at 34.29 114.3 180)
+		(at 34.29 111.76 180)
 		(unit 1)
 		(body_style 1)
 		(exclude_from_sim no)
@@ -4520,7 +4770,7 @@
 		(dnp no)
 		(uuid "987b1ab4-9993-426f-89c0-d5d821e9203b")
 		(property "Reference" "D3"
-			(at 34.29 111.76 0)
+			(at 34.29 109.22 0)
 			(show_name no)
 			(do_not_autoplace no)
 			(effects
@@ -4530,7 +4780,7 @@
 			)
 		)
 		(property "Value" "SS54"
-			(at 34.29 116.84 0)
+			(at 34.29 114.3 0)
 			(show_name no)
 			(do_not_autoplace no)
 			(effects
@@ -4540,7 +4790,7 @@
 			)
 		)
 		(property "Footprint" "Diode_SMD:D_SMA_Handsoldering"
-			(at 34.29 109.855 0)
+			(at 34.29 107.315 0)
 			(hide yes)
 			(show_name no)
 			(do_not_autoplace no)
@@ -4551,7 +4801,7 @@
 			)
 		)
 		(property "Datasheet" "https://jlcpcb.com/api/file/downloadByFileSystemAccessId/8579707587489042432"
-			(at 34.29 114.3 0)
+			(at 34.29 111.76 0)
 			(hide yes)
 			(show_name no)
 			(do_not_autoplace no)
@@ -4562,7 +4812,7 @@
 			)
 		)
 		(property "Description" "40V 5A Schottky Diode, SMA"
-			(at 34.29 114.3 0)
+			(at 34.29 111.76 0)
 			(hide yes)
 			(show_name no)
 			(do_not_autoplace no)
@@ -4573,7 +4823,7 @@
 			)
 		)
 		(property "LCSC" "C22452"
-			(at 34.29 114.3 0)
+			(at 34.29 111.76 0)
 			(hide yes)
 			(show_name no)
 			(do_not_autoplace no)
@@ -4584,7 +4834,7 @@
 			)
 		)
 		(property "MFPN" "SS54"
-			(at 34.29 114.3 0)
+			(at 34.29 111.76 0)
 			(hide yes)
 			(show_name no)
 			(do_not_autoplace no)
@@ -4595,7 +4845,29 @@
 			)
 		)
 		(property "JLC Type" "Basic"
-			(at 34.29 114.3 0)
+			(at 34.29 111.76 0)
+			(hide yes)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+			)
+		)
+		(property "KLC_S3.3" ""
+			(at 34.29 111.76 0)
+			(hide yes)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+			)
+		)
+		(property "KLC_S5.1" ""
+			(at 34.29 111.76 0)
 			(hide yes)
 			(show_name no)
 			(do_not_autoplace no)
@@ -4612,9 +4884,143 @@
 			(uuid "b84a17d8-2269-40e0-b7cf-d88f3b0f7188")
 		)
 		(instances
-			(project "servo-dev-board-ch32v006"
+			(project "osc-dev-v006"
 				(path "/6062e7d2-0c72-467e-b49c-6387ba053e09/1e728d76-963a-4d02-a5f6-92f3889aa8bb"
 					(reference "D3")
+					(unit 1)
+				)
+			)
+		)
+	)
+	(symbol
+		(lib_id "Diode:SS34")
+		(at 34.29 121.92 180)
+		(unit 1)
+		(body_style 1)
+		(exclude_from_sim no)
+		(in_bom yes)
+		(on_board yes)
+		(in_pos_files yes)
+		(dnp no)
+		(uuid "9cdc4fe3-be2d-4c1a-bd79-1b414230a827")
+		(property "Reference" "D4"
+			(at 34.29 119.38 0)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+			)
+		)
+		(property "Value" "SS54"
+			(at 34.29 124.46 0)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+			)
+		)
+		(property "Footprint" "Diode_SMD:D_SMA_Handsoldering"
+			(at 34.29 117.475 0)
+			(hide yes)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+			)
+		)
+		(property "Datasheet" "https://jlcpcb.com/api/file/downloadByFileSystemAccessId/8579707587489042432"
+			(at 34.29 121.92 0)
+			(hide yes)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+			)
+		)
+		(property "Description" "40V 5A Schottky Diode, SMA"
+			(at 34.29 121.92 0)
+			(hide yes)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+			)
+		)
+		(property "LCSC" "C22452"
+			(at 34.29 121.92 0)
+			(hide yes)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+			)
+		)
+		(property "MFPN" "SS54"
+			(at 34.29 121.92 0)
+			(hide yes)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+			)
+		)
+		(property "JLC Type" "Basic"
+			(at 34.29 121.92 0)
+			(hide yes)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+			)
+		)
+		(property "KLC_S3.3" ""
+			(at 34.29 121.92 0)
+			(hide yes)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+			)
+		)
+		(property "KLC_S5.1" ""
+			(at 34.29 121.92 0)
+			(hide yes)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+			)
+		)
+		(pin "1"
+			(uuid "14148a94-acfc-44cd-8064-ca60198aa220")
+		)
+		(pin "2"
+			(uuid "f821622c-a4b8-4754-ad3b-c8a58327cae4")
+		)
+		(instances
+			(project "osc-dev-v006"
+				(path "/6062e7d2-0c72-467e-b49c-6387ba053e09/1e728d76-963a-4d02-a5f6-92f3889aa8bb"
+					(reference "D4")
 					(unit 1)
 				)
 			)
@@ -4719,6 +5125,28 @@
 				)
 			)
 		)
+		(property "KLC_S3.3" ""
+			(at 33.02 50.8 0)
+			(hide yes)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+			)
+		)
+		(property "KLC_S5.1" ""
+			(at 33.02 50.8 0)
+			(hide yes)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+			)
+		)
 		(pin "B12"
 			(uuid "1aa0f38d-fe6f-4148-8ee0-3e291782a179")
 		)
@@ -4741,7 +5169,7 @@
 			(uuid "1f2a4970-2973-4e42-8104-c68ad6bb80c9")
 		)
 		(instances
-			(project "servo-dev-board-ch32v006"
+			(project "osc-dev-v006"
 				(path "/6062e7d2-0c72-467e-b49c-6387ba053e09/1e728d76-963a-4d02-a5f6-92f3889aa8bb"
 					(reference "USB1")
 					(unit 1)
@@ -4751,7 +5179,7 @@
 	)
 	(symbol
 		(lib_id "power:PWR_FLAG")
-		(at 44.45 106.68 180)
+		(at 45.72 106.68 180)
 		(unit 1)
 		(body_style 1)
 		(exclude_from_sim no)
@@ -4761,7 +5189,7 @@
 		(dnp no)
 		(uuid "ac8b0bd9-c9f2-4f46-8361-efa6ca9a028c")
 		(property "Reference" "#FLG01"
-			(at 44.45 108.585 0)
+			(at 45.72 108.585 0)
 			(hide yes)
 			(show_name no)
 			(do_not_autoplace no)
@@ -4772,7 +5200,7 @@
 			)
 		)
 		(property "Value" "PWR_FLAG"
-			(at 44.45 110.49 0)
+			(at 45.72 110.49 0)
 			(show_name no)
 			(do_not_autoplace no)
 			(effects
@@ -4783,7 +5211,7 @@
 			)
 		)
 		(property "Footprint" ""
-			(at 44.45 106.68 0)
+			(at 45.72 106.68 0)
 			(hide yes)
 			(show_name no)
 			(do_not_autoplace no)
@@ -4794,7 +5222,7 @@
 			)
 		)
 		(property "Datasheet" ""
-			(at 44.45 106.68 0)
+			(at 45.72 106.68 0)
 			(hide yes)
 			(show_name no)
 			(do_not_autoplace no)
@@ -4805,7 +5233,7 @@
 			)
 		)
 		(property "Description" "Special symbol for telling ERC where power comes from"
-			(at 44.45 106.68 0)
+			(at 45.72 106.68 0)
 			(hide yes)
 			(show_name no)
 			(do_not_autoplace no)
@@ -4819,7 +5247,7 @@
 			(uuid "0819a342-9668-4313-8db1-4eecf5556a28")
 		)
 		(instances
-			(project "servo-dev-board-ch32v006"
+			(project "osc-dev-v006"
 				(path "/6062e7d2-0c72-467e-b49c-6387ba053e09/1e728d76-963a-4d02-a5f6-92f3889aa8bb"
 					(reference "#FLG01")
 					(unit 1)
@@ -4829,7 +5257,7 @@
 	)
 	(symbol
 		(lib_id "Diode:SS34")
-		(at 34.29 104.14 180)
+		(at 34.29 101.6 180)
 		(unit 1)
 		(body_style 1)
 		(exclude_from_sim no)
@@ -4839,7 +5267,7 @@
 		(dnp no)
 		(uuid "af4f9331-f675-4f73-a2e3-65a83be27d90")
 		(property "Reference" "D2"
-			(at 34.29 101.6 0)
+			(at 34.29 99.06 0)
 			(show_name no)
 			(do_not_autoplace no)
 			(effects
@@ -4849,7 +5277,7 @@
 			)
 		)
 		(property "Value" "SS54"
-			(at 34.29 106.68 0)
+			(at 34.29 104.14 0)
 			(show_name no)
 			(do_not_autoplace no)
 			(effects
@@ -4859,7 +5287,7 @@
 			)
 		)
 		(property "Footprint" "Diode_SMD:D_SMA_Handsoldering"
-			(at 34.29 99.695 0)
+			(at 34.29 97.155 0)
 			(hide yes)
 			(show_name no)
 			(do_not_autoplace no)
@@ -4870,7 +5298,7 @@
 			)
 		)
 		(property "Datasheet" "https://jlcpcb.com/api/file/downloadByFileSystemAccessId/8579707587489042432"
-			(at 34.29 104.14 0)
+			(at 34.29 101.6 0)
 			(hide yes)
 			(show_name no)
 			(do_not_autoplace no)
@@ -4881,7 +5309,7 @@
 			)
 		)
 		(property "Description" "40V 5A Schottky Diode, SMA"
-			(at 34.29 104.14 0)
+			(at 34.29 101.6 0)
 			(hide yes)
 			(show_name no)
 			(do_not_autoplace no)
@@ -4892,7 +5320,7 @@
 			)
 		)
 		(property "LCSC" "C22452"
-			(at 34.29 104.14 0)
+			(at 34.29 101.6 0)
 			(hide yes)
 			(show_name no)
 			(do_not_autoplace no)
@@ -4903,7 +5331,7 @@
 			)
 		)
 		(property "MFPN" "SS54"
-			(at 34.29 104.14 0)
+			(at 34.29 101.6 0)
 			(hide yes)
 			(show_name no)
 			(do_not_autoplace no)
@@ -4914,7 +5342,29 @@
 			)
 		)
 		(property "JLC Type" "Basic"
-			(at 34.29 104.14 0)
+			(at 34.29 101.6 0)
+			(hide yes)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+			)
+		)
+		(property "KLC_S3.3" ""
+			(at 34.29 101.6 0)
+			(hide yes)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+			)
+		)
+		(property "KLC_S5.1" ""
+			(at 34.29 101.6 0)
 			(hide yes)
 			(show_name no)
 			(do_not_autoplace no)
@@ -4931,7 +5381,7 @@
 			(uuid "355396c7-97da-4535-8dd1-8ad30b4e10ee")
 		)
 		(instances
-			(project "servo-dev-board-ch32v006"
+			(project "osc-dev-v006"
 				(path "/6062e7d2-0c72-467e-b49c-6387ba053e09/1e728d76-963a-4d02-a5f6-92f3889aa8bb"
 					(reference "D2")
 					(unit 1)
@@ -4950,7 +5400,7 @@
 		(in_pos_files yes)
 		(dnp no)
 		(uuid "d821e121-e0d5-4029-ba8d-8ee5e88af15c")
-		(property "Reference" "#PWR014"
+		(property "Reference" "#PWR023"
 			(at 83.82 63.5 0)
 			(hide yes)
 			(show_name no)
@@ -5008,9 +5458,9 @@
 			(uuid "2feeda59-1eba-4e8a-bf2f-cda017c7ac71")
 		)
 		(instances
-			(project "servo-dev-board-ch32v006"
+			(project "osc-dev-v006"
 				(path "/6062e7d2-0c72-467e-b49c-6387ba053e09/1e728d76-963a-4d02-a5f6-92f3889aa8bb"
-					(reference "#PWR014")
+					(reference "#PWR023")
 					(unit 1)
 				)
 			)
@@ -5102,6 +5552,28 @@
 				)
 			)
 		)
+		(property "KLC_S3.3" ""
+			(at 72.39 107.95 0)
+			(hide yes)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+			)
+		)
+		(property "KLC_S5.1" ""
+			(at 72.39 107.95 0)
+			(hide yes)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+			)
+		)
 		(pin "1"
 			(uuid "9fb3738c-ba68-46ef-a8b8-a861d6b56bd2")
 		)
@@ -5109,7 +5581,7 @@
 			(uuid "15481e9c-6b9f-42f3-bc96-99a9aaf9d16c")
 		)
 		(instances
-			(project "servo-dev-board-ch32v006"
+			(project "osc-dev-v006"
 				(path "/6062e7d2-0c72-467e-b49c-6387ba053e09/1e728d76-963a-4d02-a5f6-92f3889aa8bb"
 					(reference "C1")
 					(unit 1)
@@ -5203,6 +5675,28 @@
 				)
 			)
 		)
+		(property "KLC_S3.3" ""
+			(at 105.41 107.95 0)
+			(hide yes)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+			)
+		)
+		(property "KLC_S5.1" ""
+			(at 105.41 107.95 0)
+			(hide yes)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+			)
+		)
 		(pin "1"
 			(uuid "252051e9-f0f7-4cb3-bad0-f983e73a89db")
 		)
@@ -5210,7 +5704,7 @@
 			(uuid "4ca84b69-8b7c-41f7-8a38-55725a3e569e")
 		)
 		(instances
-			(project "servo-dev-board-ch32v006"
+			(project "osc-dev-v006"
 				(path "/6062e7d2-0c72-467e-b49c-6387ba053e09/1e728d76-963a-4d02-a5f6-92f3889aa8bb"
 					(reference "C3")
 					(unit 1)
@@ -5329,6 +5823,28 @@
 				)
 			)
 		)
+		(property "KLC_S3.3" ""
+			(at 156.21 111.76 90)
+			(hide yes)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+			)
+		)
+		(property "KLC_S5.1" ""
+			(at 156.21 111.76 90)
+			(hide yes)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+			)
+		)
 		(pin "2"
 			(uuid "ec13282a-fbda-4fd0-9f8c-7b2a7238d7b8")
 		)
@@ -5336,7 +5852,7 @@
 			(uuid "55b764f1-6ef7-4630-ad21-2632c98c3275")
 		)
 		(instances
-			(project "servo-dev-board-ch32v006"
+			(project "osc-dev-v006"
 				(path "/6062e7d2-0c72-467e-b49c-6387ba053e09/1e728d76-963a-4d02-a5f6-92f3889aa8bb"
 					(reference "LED2")
 					(unit 1)
@@ -5414,7 +5930,7 @@
 			(uuid "94d137c5-e6c7-4db9-92b9-372cda429f1d")
 		)
 		(instances
-			(project "servo-dev-board-ch32v006"
+			(project "osc-dev-v006"
 				(path "/6062e7d2-0c72-467e-b49c-6387ba053e09/1e728d76-963a-4d02-a5f6-92f3889aa8bb"
 					(reference "#FLG03")
 					(unit 1)
@@ -5511,6 +6027,28 @@
 				)
 			)
 		)
+		(property "KLC_S3.3" ""
+			(at 156.21 101.6 0)
+			(hide yes)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+			)
+		)
+		(property "KLC_S5.1" ""
+			(at 156.21 101.6 0)
+			(hide yes)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+			)
+		)
 		(pin "1"
 			(uuid "f955d6c0-0d6b-4db9-b07c-02c5ffd322f9")
 		)
@@ -5518,7 +6056,7 @@
 			(uuid "29e213dd-9c21-4557-a16e-97db57f2a71d")
 		)
 		(instances
-			(project "servo-dev-board-ch32v006"
+			(project "osc-dev-v006"
 				(path "/6062e7d2-0c72-467e-b49c-6387ba053e09/1e728d76-963a-4d02-a5f6-92f3889aa8bb"
 					(reference "R4")
 					(unit 1)
