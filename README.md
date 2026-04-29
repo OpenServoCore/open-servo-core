@@ -1,88 +1,77 @@
-# open-servo-core
+# OpenServoCore
 
-Democratize Robotics For Everyone
+> The definitive open platform for turning cheap servos into smart actuators.
 
-## Overview
+OpenServoCore (OSC) is open hardware and firmware that drops a CH32V006 control board into a $2-3 cloned hobby servo (SG90 and friends) and turns it into a DXL-style smart actuator — position feedback, current sensing, bus-addressable, programmable.
 
-This project aims to create a drop-in replacement control board for SG90 & MG90-class servos that adds cascade control, current sensing, and a DYNAMIXEL-style serial protocol. The goal is to make robotics more accessible by turning a $2.50 servo into a $5 smart actuator (vs $30+ for commercial alternatives). Built with bare-metal Rust on CH32V microcontrollers.
+The thesis is the price point: at mass-production volume, an OSC swap board should add **no more than ~$1 to the BOM** of a cloned servo. Cheap enough that "upgrade every servo in a robot to smart" stops being a premium decision and starts being a default.
 
-## Project Status
+## Status
 
-🚧 **Early Development** - Not ready for general use
+🚧 **In active development. Nothing here is shippable yet.** The firmware is being rewritten, the dev board is routed and awaiting fab, and the swap board is designed but not spun.
 
-### ✅ **Working**
+- 🟡 **OSC Dev CH32** (`osc-dev-v006`) — routed, docs ready, awaiting fab.
+- 🔭 **OSC SG90 CH32** (`sg90-prod-ch32v006`) — designed, not spun. Waiting on firmware v2 to be testable against.
+- ⚠️ **Firmware v1** (`firmware-old/`) — legacy. First pass was vibe-coded and got poor Reddit feedback. Kept as historical reference; **not a target for new work**.
+- 🔭 **Firmware v2** (rewrite) — not started. Architecture doc next; first module (transport or register table) is the Q2 milestone.
+- ✅ **tinyboot** (OSC bootloader) — v0.4.0 shipped. Lives at [`OpenServoCore/tinyboot`](https://github.com/OpenServoCore/tinyboot).
 
-- **Hardware:** STM32 development board with motor control and sensing
-- **Firmware:** Basic PID control, PWM motor drive, current sensing, ADC readings (see `firmware-old/`)
+## Repo map
 
-### 🔄 **In Progress**
+```
+open-servo-core/
+├── hardware/
+│   ├── boards/
+│   │   ├── osc-dev-v006/             # OSC Dev CH32 — has its own README with pinouts, jumpers, bringup notes
+│   │   ├── sg90-prod-ch32v006/       # OSC SG90 CH32 swap board (designed, not spun)
+│   │   ├── servo-dev-board-stm32f301/# Retired hobby-phase STM32 dev board (legacy)
+│   │   ├── encoder-board/            # Optional quadrature encoder breakout for J8 experiments
+│   │   └── motor-mount/              # 3D-printable test fixtures
+│   ├── shared.kicad_sym / shared.pretty / shared.3dshapes  # Shared KiCad libraries
+│   └── templates/                    # KiCad project templates
+├── firmware/                         # Firmware v2 lives here once the rewrite starts
+└── firmware-old/                     # Legacy firmware (do not use)
+```
 
-- **Hardware:** Create CH32V006-based development board
-- **Firmware:** System bringup with new development board, architecture redesign to simplify current design
+The OSC bootloader, [`tinyboot`](https://github.com/OpenServoCore/tinyboot), is a separate repo. It's part of the OSC firmware stack but versioned and released independently — its chip-support matrix (V003 / V00x / V103) is broader than the OSC boards on purpose.
 
-## MVP Goals
+## Naming
 
-**Protocol Compatibility:**
+OSC boards follow `OSC <Form> <ChipFamily>`:
 
-- Single-wire, half-duplex UART communication using Dynamixel Protocol 2.0
-- Four core commands: Ping, Read, Write, Reset
-- Basic control table functionality with standard register addresses
-- Error Code 2 (Instruction Error) for unimplemented features
+- **OSC Dev CH32** — dev board, exposes every rail and signal for firmware bringup. Directory: `osc-dev-v006`.
+- **OSC SG90 CH32** — swap board that physically replaces the SG90 factory PCB. Directory: `sg90-prod-ch32v006`.
 
-**Control System:**
-
-- Basic PID position control
-- Torque Enable/Disable functionality
-- PID tuning registers: Position P/I/D Gains (Address 80, 82, 84)
-- Homing Offset register (Address 20) for position calibration
-
-**Safety Features:**
-
-- Current limiting (Current Limit register, Address 38)
-- Temperature protection (Temperature Limit register, Address 31)
-- Voltage protection (Min/Max Voltage Limit registers, Address 32/34)
-- Position boundary enforcement (Angle Limit Error detection)
-- Configurable shutdown conditions (Shutdown register, Address 63)
-- Error status reporting (Hardware Error Status register, Address 70)
-
-**Target Cost:** Under $5 per modified servo while maintaining drop-in compatibility with SG90 & MG90 servos.
+Engineering SKUs (`osc-<form>-<chip>-rev-<letter>`) appear in BOMs and schematic title blocks; the names above are what you'll see in posts and docs.
 
 ## Hardware
 
-**CH32V006-based Control Boards:**
+OSC standardizes on the **CH32V006** — 48 MHz RISC-V, 62 KB flash, 8 KB RAM. Chosen because it's the chip that makes the ≤$1 BOM uplift work. No multi-chip roadmap; one chip, done well.
 
-**Development Board:**
+Each board has its own README with full schematics, pinouts, jumper behaviour, and bringup notes:
 
-- Designed for firmware development with easy pin access and test points
-- No size constraints for convenient debugging and prototyping
-- Current sensing via shunt resistor
-- Utilizes existing servo potentiometer for position feedback
-- Motor terminal voltage sensing
-- Battery/Vin voltage monitoring
+- **[OSC Dev CH32](hardware/boards/osc-dev-v006/README.md)** — accepts any gutted hobby servo, USB-C / 1S-2S LiPo / WCH-LinkE power, full edge test-point fanout. Routed, awaiting fab.
+- **[OSC SG90 CH32](hardware/boards/sg90-prod-ch32v006/README.md)** — compact swap board, 10×12.5 mm, double-sided. Designed; not yet spun.
 
-**Production Board:**
+## Firmware
 
-- Compact form factor designed to replace servo internal control boards
-- Drop-in replacement maintaining mechanical compatibility
-- Same sensing capabilities as development board
+The Rust firmware is mid-rewrite. The legacy `firmware-old/` tree contains the original architecture (multi-crate workspace targeting STM32F301 and partly CH32V003) and is kept for reference, but the v2 rewrite starts from a cleaner architecture targeting CH32V006 first. Plan: DXL-compatible register table, persistence, control loops, safety features. Estimated 3+ months once it begins.
 
-**Power System:**
-
-- Input: 1-2S LiPo battery (3.7V - 8.4V)
-- Motor drive: Direct Vin voltage
-- Logic: 3.3V regulated
-
-**Sensing Capabilities:**
-
-- Motor current via shunt resistor
-- Position via existing potentiometer
-- Motor terminal voltages
-- Input voltage monitoring
+When firmware v2 starts landing, build instructions will appear here.
 
 ## Contributing
 
-This is experimental research code in active development. Issues and discussions are welcome. Check the hardware folders for KiCad designs and the firmware folder for the Rust implementation.
+This is early — the most useful thing right now is **following along and asking questions**, not opening PRs.
+
+- **Discussions:** [github.com/OpenServoCore/open-servo-core/discussions](https://github.com/OpenServoCore/open-servo-core/discussions) — design questions, ideas, "is this on the roadmap?" go here.
+- **Build journey:** posts at [aaronqian.com](https://aaronqian.com) document the design decisions, dead ends, and what shipped each week.
+- **Issues:** open ones on this repo are scoped to specific work (README, LICENSE, board revisions). Pre-firmware-v2, contributor scope is small.
+
+Hardware sponsorship for the dev boards comes from **PCBWay**.
 
 ## License
 
-MIT License - See [LICENSE](LICENSE) file for details
+OSC is fully open. No dual licensing, no commercial gates.
+
+- **Firmware** — [MIT](LICENSE-MIT) **OR** [Apache-2.0](LICENSE-APACHE), at your option (Rust ecosystem convention).
+- **Hardware** (schematics, layouts, board files) — [CERN-OHL-P v2.0](LICENSE-HARDWARE).

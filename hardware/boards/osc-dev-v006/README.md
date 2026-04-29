@@ -4,6 +4,8 @@
 > Rev. B has not been fabricated or validated yet. Firmware is still in development. Everything below describes the _intended_ design — pinouts, signal names, jumper behaviour, and component values may still change once the board is brought up.
 > **Fabricate this at your own risk!**
 
+See [CHANGELOG.md](CHANGELOG.md) for revision history.
+
 OpenServoCore firmware development & validation board. CH32V006F8P6-based, designed to accept any gutted hobby servo (SG90, MG90, and similar) so firmware can be brought up and characterised against real motor / pot / encoder hardware.
 
 Component sizing favours flexibility over board cost: 5 A / 40 V Schottky power-OR (SS54), 4 A peak motor driver (DRV8212P), 10 mΩ / 333 mW low-side current shunt. Edge test points expose every rail and signal of interest for scope probing.
