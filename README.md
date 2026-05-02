@@ -7,7 +7,7 @@
 
 # OpenServoCore
 
-> The definitive open platform for turning cheap servos into smart actuators.
+> An open platform for turning cheap servos into smart actuators.
 
 OpenServoCore (OSC) is open hardware and firmware that drops a CH32V006 control board into a $2-3 cloned hobby servo (SG90 and friends) and turns it into a DXL-style smart actuator — position feedback, current sensing, bus-addressable, programmable.
 
