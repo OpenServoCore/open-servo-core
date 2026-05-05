@@ -74,7 +74,19 @@ This is early — the most useful thing right now is **following along and askin
 - **Build journey:** posts at [aaronqian.com](https://aaronqian.com) document the design decisions, dead ends, and what shipped each week.
 - **Issues:** open ones on this repo are scoped to specific work (README, LICENSE, board revisions). Pre-firmware-v2, contributor scope is small.
 
-Hardware sponsorship for the dev boards comes from **PCBWay**.
+## Hardware sponsorship
+
+Dev boards are fabricated and assembled by **[PCBWay](https://www.pcbway.com/)** — sponsor since Feb 2026.
+
+### Rev A
+
+Five PCBA boards delivered. Build and assembly quality clean across all five — no fabrication issues. Bring-up turned up design issues on my side (VDD/VSS swap, silkscreen errors), but those traced back to my own schematic, not the manufacturing. The process itself was painless. A late BOM swap (RS1 shunt `100 mΩ` → `10 mΩ`) was accepted without fuss; the pre-fab assembly review caught a pad-clearance concern before manufacturing.
+
+Full spin + bring-up writeup: [CH32V006 dev board first spin](https://aaronqian.com/projects/open-servo-core/logs/2026-04-03-ch32v006-dev-board-first-spin/).
+
+### Rev B
+
+In fabrication, awaiting validation. This section will be updated once bring-up validates — including the [`osc-dev-v006`](hardware/boards/osc-dev-v006/README.md) **Fabrication** section with a step-by-step PCBWay ordering walkthrough and a community-project link for one-click reorders.
 
 ## License
 

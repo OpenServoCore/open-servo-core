@@ -196,3 +196,9 @@ Three indicator LEDs are grouped in the upper-middle of the board.
 ## Programming
 
 Use a **WCH-LinkE** with the 2×3 J4 header. The link uses the CH32V006's 1-wire protocol. `+5V` on J4 is _not_ used for programming — it's available as a 5 V passthrough rail. The WCH-LinkE also provides TX/RX for a UART passthrough; if you use it, set **JP2** to `RX ↔ NC` so the TTL buffer doesn't contend with the LinkE for `RX`.
+
+## Fabrication
+
+Rev. A — fabricated and assembled by [PCBWay](https://www.pcbway.com/) (5× PCBA, sponsored, Mar 2026). Build quality clean; every bring-up issue traced to my own schematic, not fab. Full story: [Rev A bring-up writeup](https://aaronqian.com/projects/open-servo-core/logs/2026-04-03-ch32v006-dev-board-first-spin/).
+
+Rev. B — in fabrication, awaiting validation. This section will be updated once bring-up validates — step-by-step PCBWay ordering walkthrough using the design files in this directory, plus a direct link to the Rev. B PCBWay community project for one-click ordering with the validated BOM and assembly options.
