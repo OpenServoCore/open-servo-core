@@ -4,6 +4,7 @@
 
 # Cargo lock files
 lib/Cargo.lock
+ch32/Cargo.lock
 
 # IDE and editor files
 .idea/
