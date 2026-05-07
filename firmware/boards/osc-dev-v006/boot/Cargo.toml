@@ -1,0 +1,9 @@
+[package]
+name    = "osc-dev-v006-boot"
+version = "0.1.0"
+edition.workspace = true
+
+[dependencies]
+tinyboot-ch32    = { git = "https://github.com/OpenServoCore/tinyboot.git", tag = "v0.4.1", default-features = false, features = ["ch32v006x8x6", "system-flash"] }
+tinyboot-ch32-rt = "0.4"
+panic-halt       = "1"
