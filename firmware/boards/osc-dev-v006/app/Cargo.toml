@@ -4,8 +4,11 @@ version = "0.1.0"
 edition.workspace = true
 
 [dependencies]
-# osc-ch32 is the project's only HAL/runtime façade for app crates. It
-# owns the device.x, ISR shims, qingke-rt glue, and tinyboot app metadata
-# hand-off — apps must not pull ch32-hal or tinyboot-ch32 directly.
-osc-ch32   = { path = "../../../ch32", default-features = false }
-panic-halt = "1"
+# osc-ch32 is the app's HAL/runtime façade. It owns device.x, ISR shims,
+# and qingke-rt glue. Apps may pull tinyboot-ch32 directly only for the
+# `app_version!` metadata macro; UART processing, boot selection, and
+# everything else are owned by osc-ch32 and must not be reached around
+# it. Apps must not pull ch32-hal directly.
+osc-ch32      = { path = "../../../ch32", default-features = false }
+tinyboot-ch32 = { git = "https://github.com/OpenServoCore/tinyboot.git", tag = "v0.4.1", default-features = false, features = ["ch32v006x8x6", "system-flash"] }
+panic-halt    = "1"
