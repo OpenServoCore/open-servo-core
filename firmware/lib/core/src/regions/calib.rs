@@ -1,6 +1,9 @@
 //! CALIB region — single-copy persistent calibration with per-block CRC.
 
 use crate::page::PageHeader;
+use crate::regions::CALIB_BLOCK_SIZE;
+use crate::regmap::{Access, BlockDesc};
+use core::mem::{offset_of, size_of};
 
 #[derive(Copy, Clone)]
 #[repr(C)]
@@ -29,6 +32,29 @@ pub struct CalibRegs {
     pub pot_lut: PotLutBlock,
     pub bemf: BemfCalibBlock,
 }
+
+/// Body sizes (struct without the trailing PageHeader). Regmap only
+/// exposes the body to the host; the embedded header is internal CRC
+/// bookkeeping accessed by the persistence layer, not the protocol.
+const POT_LUT_BODY: u16 = (size_of::<PotLutBlock>() - size_of::<PageHeader>()) as u16;
+const BEMF_BODY: u16 = (size_of::<BemfCalibBlock>() - size_of::<PageHeader>()) as u16;
+
+/// Protocol-address slot map for CALIB. Each block slot is 256 B; only
+/// the body bytes are host-visible (the trailing PageHeader is reserved).
+pub const CALIB_BLOCKS: &[BlockDesc] = &[
+    BlockDesc {
+        addr_offset: 0 * CALIB_BLOCK_SIZE as u16,
+        size: POT_LUT_BODY,
+        struct_offset: offset_of!(CalibRegs, pot_lut) as u16,
+        access: Access::Rw,
+    },
+    BlockDesc {
+        addr_offset: 1 * CALIB_BLOCK_SIZE as u16,
+        size: BEMF_BODY,
+        struct_offset: offset_of!(CalibRegs, bemf) as u16,
+        access: Access::Rw,
+    },
+];
 
 impl PotLutBlock {
     pub const fn const_new() -> Self {

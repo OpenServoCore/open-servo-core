@@ -1,6 +1,9 @@
 //! CONFIG region — persistent A/B-mirrored runtime config.
 
 use crate::page::PageHeader;
+use crate::regions::CONFIG_BLOCK_SIZE;
+use crate::regmap::{Access, BlockDesc};
+use core::mem::{offset_of, size_of};
 
 #[derive(Copy, Clone)]
 #[repr(C)]
@@ -195,6 +198,55 @@ impl ConfigControl {
         }
     }
 }
+
+/// Protocol-address slot map for CONFIG. Block N starts at
+/// `CONFIG_BASE_ADDR + N * CONFIG_BLOCK_SIZE`. Unlisted indices are
+/// reserved and return AccessError.
+pub const CONFIG_BLOCKS: &[BlockDesc] = &[
+    BlockDesc {
+        addr_offset: 0 * CONFIG_BLOCK_SIZE as u16,
+        size: size_of::<ConfigIdentity>() as u16,
+        struct_offset: offset_of!(ConfigRegs, identity) as u16,
+        access: Access::Ro,
+    },
+    BlockDesc {
+        addr_offset: 1 * CONFIG_BLOCK_SIZE as u16,
+        size: size_of::<ConfigComms>() as u16,
+        struct_offset: offset_of!(ConfigRegs, comms) as u16,
+        access: Access::Rw,
+    },
+    BlockDesc {
+        addr_offset: 2 * CONFIG_BLOCK_SIZE as u16,
+        size: size_of::<ConfigPosLimits>() as u16,
+        struct_offset: (offset_of!(ConfigRegs, limits) + offset_of!(ConfigLimits, pos)) as u16,
+        access: Access::Rw,
+    },
+    BlockDesc {
+        addr_offset: 3 * CONFIG_BLOCK_SIZE as u16,
+        size: size_of::<ConfigStall>() as u16,
+        struct_offset: (offset_of!(ConfigRegs, safety) + offset_of!(ConfigSafety, stall)) as u16,
+        access: Access::Rw,
+    },
+    BlockDesc {
+        addr_offset: 4 * CONFIG_BLOCK_SIZE as u16,
+        size: size_of::<ConfigThermal>() as u16,
+        struct_offset: (offset_of!(ConfigRegs, safety) + offset_of!(ConfigSafety, thermal)) as u16,
+        access: Access::Rw,
+    },
+    BlockDesc {
+        addr_offset: 5 * CONFIG_BLOCK_SIZE as u16,
+        size: size_of::<ConfigControlPosition>() as u16,
+        struct_offset: (offset_of!(ConfigRegs, control) + offset_of!(ConfigControl, position))
+            as u16,
+        access: Access::Rw,
+    },
+    BlockDesc {
+        addr_offset: 15 * CONFIG_BLOCK_SIZE as u16,
+        size: size_of::<PageHeader>() as u16,
+        struct_offset: offset_of!(ConfigRegs, header) as u16,
+        access: Access::Ro,
+    },
+];
 
 impl ConfigRegs {
     pub const fn const_new() -> Self {

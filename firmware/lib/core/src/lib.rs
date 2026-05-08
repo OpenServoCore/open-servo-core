@@ -5,6 +5,7 @@ pub mod board;
 pub mod kernel;
 pub mod page;
 pub mod regions;
+pub mod regmap;
 pub mod sample_frame;
 pub mod services;
 pub mod shared;
@@ -19,6 +20,7 @@ pub use regions::{
     ControlLifecycle, ControlRegs, ControlStreaming, ControlTable, PotLutBlock, TelemetryConverted,
     TelemetryFault, TelemetryIntermediaries, TelemetryRaw, TelemetryRegs,
 };
+pub use regmap::{Access, BlockDesc, RegmapError};
 pub use sample_frame::{RawSamples, SampleFrame};
 pub use services::Services;
 pub use shared::Shared;

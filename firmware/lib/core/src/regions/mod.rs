@@ -1,8 +1,8 @@
 //! Control table — the host-visible register state.
 //!
 //! Each region's struct holds only active blocks; reserved slots have no SRAM
-//! mirror and the router returns Access Error. Struct layout is decoupled from
-//! the protocol address space — the router uses per-region block descriptors
+//! mirror and regmap returns Access Error. Struct layout is decoupled from
+//! the protocol address space — regmap uses per-region block descriptors
 //! to translate, and flash save/load uses the same descriptors.
 //!
 //!   CONFIG    0x0000..=0x01FF  (512 B)  — persistent A/B

@@ -1,5 +1,9 @@
 //! TELEMETRY region — RO from the host's perspective; written by the kernel.
 
+use crate::regions::TELEMETRY_BLOCK_SIZE;
+use crate::regmap::{Access, BlockDesc};
+use core::mem::{offset_of, size_of};
+
 #[derive(Copy, Clone)]
 #[repr(C)]
 pub struct TelemetryConverted {
@@ -106,6 +110,35 @@ impl TelemetryRaw {
         }
     }
 }
+
+/// Protocol-address slot map for TELEMETRY. All blocks RO from host.
+/// `fault_flags` clear-byte carve-out is enforced one layer up, not here.
+pub const TELEMETRY_BLOCKS: &[BlockDesc] = &[
+    BlockDesc {
+        addr_offset: 0 * TELEMETRY_BLOCK_SIZE as u16,
+        size: size_of::<TelemetryConverted>() as u16,
+        struct_offset: offset_of!(TelemetryRegs, converted) as u16,
+        access: Access::Ro,
+    },
+    BlockDesc {
+        addr_offset: 1 * TELEMETRY_BLOCK_SIZE as u16,
+        size: size_of::<TelemetryIntermediaries>() as u16,
+        struct_offset: offset_of!(TelemetryRegs, intermediaries) as u16,
+        access: Access::Ro,
+    },
+    BlockDesc {
+        addr_offset: 2 * TELEMETRY_BLOCK_SIZE as u16,
+        size: size_of::<TelemetryFault>() as u16,
+        struct_offset: offset_of!(TelemetryRegs, fault) as u16,
+        access: Access::Ro,
+    },
+    BlockDesc {
+        addr_offset: 3 * TELEMETRY_BLOCK_SIZE as u16,
+        size: size_of::<TelemetryRaw>() as u16,
+        struct_offset: offset_of!(TelemetryRegs, raw) as u16,
+        access: Access::Ro,
+    },
+];
 
 impl TelemetryRegs {
     pub const fn const_new() -> Self {
