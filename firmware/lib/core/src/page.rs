@@ -1,5 +1,7 @@
 //! Trailing 32 B header on every persistent page (CONFIG copy, CALIB block).
-//! `crc32` is IEEE over the leading `used_size` body bytes.
+//! `crc32` is IEEE over the leading `used_size` body bytes. `seq` is a
+//! monotonic per-region commit counter; A/B picks the higher-`seq` valid
+//! page on load.
 
 #[repr(u32)]
 #[derive(Copy, Clone, PartialEq, Eq, Debug)]
@@ -30,7 +32,7 @@ impl PageMagic {
 #[repr(C)]
 pub struct PageHeader {
     pub magic: u32,
-    pub revision: u32,
+    pub seq: u32,
     pub hw_rev_at_commit: u32,
     pub used_size: u16,
     /// Bit 0 = `page_active` (CONFIG A/B). Other bits reserved.
@@ -46,7 +48,7 @@ impl PageHeader {
     pub const fn const_erased() -> Self {
         Self {
             magic: PageMagic::Erased as u32,
-            revision: 0xFFFF_FFFF,
+            seq: 0xFFFF_FFFF,
             hw_rev_at_commit: 0xFFFF_FFFF,
             used_size: 0xFFFF,
             flags: 0xFF,
