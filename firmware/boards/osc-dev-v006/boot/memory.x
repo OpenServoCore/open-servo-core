@@ -1,12 +1,13 @@
 MEMORY
 {
-    RAM      : ORIGIN = 0x20000000, LENGTH = 8K
-    CODE     : ORIGIN = 0x00000000, LENGTH = 3K + 256
-    BOOT     : ORIGIN = 0x1FFF0000, LENGTH = 3K + 256
-    APP      : ORIGIN = 0x08000000, LENGTH = 62K - 768
-    EEPROM_A : ORIGIN = 0x0800F500, LENGTH = 256
-    EEPROM_B : ORIGIN = 0x0800F600, LENGTH = 256
-    META     : ORIGIN = 0x0800F700, LENGTH = 256
+    RAM      : ORIGIN = 0x20000000,                        LENGTH = 8K
+    CODE     : ORIGIN = 0x00000000,                        LENGTH = 3K + 256
+    BOOT     : ORIGIN = 0x1FFF0000,                        LENGTH = 3K + 256
+    APP      : ORIGIN = 0x08000000,                        LENGTH = 62K - 4K - 1K - 256
+    CONFIG_A : ORIGIN = 0x08000000 + 62K - 4K - 1K - 256,  LENGTH = 512
+    CONFIG_B : ORIGIN = 0x08000000 + 62K - 4K - 512 - 256, LENGTH = 512
+    CALIB    : ORIGIN = 0x08000000 + 62K - 4K - 256,       LENGTH = 4K
+    META     : ORIGIN = 0x08000000 + 62K - 256,            LENGTH = 256
 }
 
 REGION_ALIAS("FLASH",         CODE);
