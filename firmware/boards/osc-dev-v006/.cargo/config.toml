@@ -1,11 +1,11 @@
 [build]
-target = "riscv32ec-unknown-none-elf.json"
+target = "riscv32emc-unknown-none-elf.json"
 
 [unstable]
 build-std         = ["core"]
 json-target-spec  = true
 
-[target.riscv32ec-unknown-none-elf]
+[target.riscv32emc-unknown-none-elf]
 rustflags = [
   "-C", "link-arg=-Tlink.x",
   "-C", "link-arg=--nmagic",
