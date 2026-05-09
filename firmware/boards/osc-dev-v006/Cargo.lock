@@ -23,7 +23,7 @@ checksum = "9330f8b2ff13f34540b44e946ef35111825727b38d33286ef986142615121801"
 [[package]]
 name = "ch32-metapac"
 version = "0.1.0"
-source = "git+https://github.com/ch32-rs/ch32-metapac#94b2c9e5f3d52c1ab9132ebc9b176a7428441dc5"
+source = "git+https://github.com/ch32-rs/ch32-metapac#81de76fe481b7e6b4c9583e7a74d173786afc0d7"
 dependencies = [
  "riscv 0.12.1",
  "vcell",
@@ -65,6 +65,9 @@ checksum = "a21dea9854beb860f3062d10228ce9b976da520a73474aed3171ec276bc0c032"
 [[package]]
 name = "osc-ch32"
 version = "0.0.0"
+dependencies = [
+ "ch32-metapac",
+]
 
 [[package]]
 name = "osc-dev-v006-app"
@@ -249,7 +252,7 @@ dependencies = [
 [[package]]
 name = "tinyboot-ch32"
 version = "0.4.1"
-source = "git+https://github.com/OpenServoCore/tinyboot.git?tag=v0.4.1#6012fe516631411254646881f6be4a136a866f7a"
+source = "git+https://github.com/OpenServoCore/tinyboot.git?tag=tinyboot-ch32-v0.4.1#6012fe516631411254646881f6be4a136a866f7a"
 dependencies = [
  "ch32-metapac",
  "critical-section",
@@ -261,14 +264,14 @@ dependencies = [
 
 [[package]]
 name = "tinyboot-ch32-rt"
-version = "0.4.0"
+version = "0.4.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "44c1c0263c4750b1bebebe31af7b06534184ba82f9925139288c372765fc1eaf"
+checksum = "883604800ee4be7884b4a2bf9fc4c9731f4c09791852a7474c52a9ac4e8a6bb7"
 
 [[package]]
 name = "tinyboot-core"
 version = "0.4.0"
-source = "git+https://github.com/OpenServoCore/tinyboot.git?tag=v0.4.1#6012fe516631411254646881f6be4a136a866f7a"
+source = "git+https://github.com/OpenServoCore/tinyboot.git?tag=tinyboot-ch32-v0.4.1#6012fe516631411254646881f6be4a136a866f7a"
 dependencies = [
  "critical-section",
  "embedded-io",
@@ -280,7 +283,7 @@ dependencies = [
 [[package]]
 name = "tinyboot-protocol"
 version = "0.4.0"
-source = "git+https://github.com/OpenServoCore/tinyboot.git?tag=v0.4.1#6012fe516631411254646881f6be4a136a866f7a"
+source = "git+https://github.com/OpenServoCore/tinyboot.git?tag=tinyboot-ch32-v0.4.1#6012fe516631411254646881f6be4a136a866f7a"
 dependencies = [
  "bitflags",
  "embedded-io",

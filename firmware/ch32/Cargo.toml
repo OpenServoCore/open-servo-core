@@ -8,3 +8,8 @@ edition = "2021"
 license = "MIT OR Apache-2.0"
 
 [dependencies]
+ch32-metapac = { git = "https://github.com/ch32-rs/ch32-metapac", default-features = false, features = ["pac", "rt"] }
+
+[features]
+default = []
+ch32v006x8x6 = ["ch32-metapac/ch32v006x8x6"]

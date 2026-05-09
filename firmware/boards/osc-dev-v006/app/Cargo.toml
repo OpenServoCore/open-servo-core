@@ -11,7 +11,7 @@ edition.workspace = true
 #   - tinyboot-ch32: `app_version!` metadata macro only — UART processing,
 #     boot selection, and everything else are owned by osc-ch32.
 # Apps must not pull ch32-hal directly.
-osc-ch32      = { path = "../../../ch32", default-features = false }
+osc-ch32      = { path = "../../../ch32", default-features = false, features = ["ch32v006x8x6"] }
 qingke-rt     = { version = "0.6", features = ["v2"] }
-tinyboot-ch32 = { git = "https://github.com/OpenServoCore/tinyboot.git", tag = "v0.4.1", default-features = false, features = ["ch32v006x8x6", "system-flash"] }
+tinyboot-ch32 = { git = "https://github.com/OpenServoCore/tinyboot.git", tag = "tinyboot-ch32-v0.4.1", default-features = false, features = ["ch32v006x8x6", "system-flash"] }
 panic-halt    = "1"
