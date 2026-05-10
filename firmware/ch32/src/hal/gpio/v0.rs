@@ -46,14 +46,10 @@ pub fn configure(pin: Pin, mode: PinMode) {
     let shift = n * 4;
     let mask = !(0xFu32 << shift);
     let bits = ((mode.0 & 0x0F) as u32) << shift;
-    let prev = regs.cfglr().read().0;
-    regs.cfglr()
-        .write_value(ch32_metapac::gpio::regs::Cfglr(prev & mask | bits));
+    regs.cfglr().modify(|w| w.0 = (w.0 & mask) | bits);
 
     if mode.0 & 0xC0 != 0 {
-        let mut outdr = regs.outdr().read();
-        outdr.set_odr(n, mode.0 & 0x80 != 0);
-        regs.outdr().write_value(outdr);
+        regs.outdr().modify(|w| w.set_odr(n, mode.0 & 0x80 != 0));
     }
 }
 
