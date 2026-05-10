@@ -4,11 +4,15 @@ resolver = "2"
 [package]
 name    = "osc-ch32"
 version = "0.0.0"
-edition = "2021"
+edition = "2024"
 license = "MIT OR Apache-2.0"
 
 [dependencies]
-ch32-metapac = { git = "https://github.com/ch32-rs/ch32-metapac", default-features = false, features = ["pac", "rt"] }
+ch32-metapac     = { git = "https://github.com/ch32-rs/ch32-metapac", default-features = false, features = ["pac", "rt"] }
+embedded-storage = "0.3"
+
+[build-dependencies]
+ch32-metapac = { git = "https://github.com/ch32-rs/ch32-metapac", default-features = false, features = ["metadata"] }
 
 [features]
 default = []

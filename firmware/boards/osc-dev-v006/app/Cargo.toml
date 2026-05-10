@@ -11,5 +11,5 @@ bench = false
 [dependencies]
 osc-ch32      = { path = "../../../ch32", default-features = false, features = ["ch32v006x8x6"] }
 tinyboot-ch32 = { git = "https://github.com/OpenServoCore/tinyboot.git", tag = "tinyboot-ch32-v0.4.1", default-features = false, features = ["ch32v006x8x6", "system-flash"] }
-qingke-rt     = { version = "0.6", features = ["v2"] }
+qingke-rt     = { version = "0.7", features = ["v2"] }
 panic-halt    = "1"
