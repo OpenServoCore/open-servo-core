@@ -8,6 +8,7 @@ pub mod flash;
 pub mod gpio;
 pub mod pfic;
 pub mod rcc;
+pub mod systick;
 pub mod timer;
 pub mod usart;
 
