@@ -67,6 +67,7 @@ name = "osc-ch32"
 version = "0.0.0"
 dependencies = [
  "ch32-metapac",
+ "embedded-storage",
 ]
 
 [[package]]
