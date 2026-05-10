@@ -3,5 +3,6 @@
 
 pub use ch32_metapac as pac;
 
+pub mod board;
 pub mod flash;
 pub mod hal;
