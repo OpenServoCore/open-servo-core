@@ -3,15 +3,13 @@ name    = "osc-dev-v006-app"
 version = "0.1.0"
 edition.workspace = true
 
+[[bin]]
+name  = "osc-dev-v006-app"
+test  = false
+bench = false
+
 [dependencies]
-# osc-ch32 is the app's HAL façade — owns device.x, ISR shims, sensor
-# conversion, init sequencing. App-level deps in this list are kept to
-# the bare minimum the app entry point needs:
-#   - qingke-rt: `#[entry]` macro and the RV2 vector table.
-#   - tinyboot-ch32: `app_version!` metadata macro only — UART processing,
-#     boot selection, and everything else are owned by osc-ch32.
-# Apps must not pull ch32-hal directly.
 osc-ch32      = { path = "../../../ch32", default-features = false, features = ["ch32v006x8x6"] }
-qingke-rt     = { version = "0.6", features = ["v2"] }
 tinyboot-ch32 = { git = "https://github.com/OpenServoCore/tinyboot.git", tag = "tinyboot-ch32-v0.4.1", default-features = false, features = ["ch32v006x8x6", "system-flash"] }
+qingke-rt     = { version = "0.6", features = ["v2"] }
 panic-halt    = "1"

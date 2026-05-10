@@ -1,0 +1,36 @@
+{
+  "lsp": {
+    "rust-analyzer": {
+      "initialization_options": {
+        "linkedProjects": [
+          "firmware/lib/Cargo.toml",
+          "firmware/boards/osc-dev-v006/Cargo.toml"
+        ],
+        "check": {
+          "command": "clippy",
+          "allTargets": false
+        },
+        "cargo": {
+          "target": "riscv32imc-unknown-none-elf",
+          "allTargets": false,
+          "buildScripts": {
+            "enable": true
+          }
+        },
+        "procMacro": {
+          "enable": true
+        }
+      }
+    }
+  },
+  "languages": {
+    "Rust": {
+      "tab_size": 4,
+      "hard_tabs": false,
+      "format_on_save": "on"
+    },
+    "TOML": {
+      "tab_size": 2
+    }
+  }
+}

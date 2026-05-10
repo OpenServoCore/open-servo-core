@@ -204,13 +204,13 @@ impl ConfigControl {
 /// reserved and return AccessError.
 pub const CONFIG_BLOCKS: &[BlockDesc] = &[
     BlockDesc {
-        addr_offset: 0 * CONFIG_BLOCK_SIZE as u16,
+        addr_offset: 0,
         size: size_of::<ConfigIdentity>() as u16,
         struct_offset: offset_of!(ConfigRegs, identity) as u16,
         access: Access::Ro,
     },
     BlockDesc {
-        addr_offset: 1 * CONFIG_BLOCK_SIZE as u16,
+        addr_offset: CONFIG_BLOCK_SIZE as u16,
         size: size_of::<ConfigComms>() as u16,
         struct_offset: offset_of!(ConfigRegs, comms) as u16,
         access: Access::Rw,

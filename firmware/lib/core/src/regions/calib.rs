@@ -43,13 +43,13 @@ const BEMF_BODY: u16 = (size_of::<BemfCalibBlock>() - size_of::<PageHeader>()) a
 /// the body bytes are host-visible (the trailing PageHeader is reserved).
 pub const CALIB_BLOCKS: &[BlockDesc] = &[
     BlockDesc {
-        addr_offset: 0 * CALIB_BLOCK_SIZE as u16,
+        addr_offset: 0,
         size: POT_LUT_BODY,
         struct_offset: offset_of!(CalibRegs, pot_lut) as u16,
         access: Access::Rw,
     },
     BlockDesc {
-        addr_offset: 1 * CALIB_BLOCK_SIZE as u16,
+        addr_offset: CALIB_BLOCK_SIZE as u16,
         size: BEMF_BODY,
         struct_offset: offset_of!(CalibRegs, bemf) as u16,
         access: Access::Rw,

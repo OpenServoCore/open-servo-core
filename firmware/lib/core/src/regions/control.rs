@@ -60,13 +60,13 @@ impl ControlStreaming {
 /// Protocol-address slot map for CONTROL. Both blocks are host-RW.
 pub const CONTROL_BLOCKS: &[BlockDesc] = &[
     BlockDesc {
-        addr_offset: 0 * CONTROL_BLOCK_SIZE as u16,
+        addr_offset: 0,
         size: size_of::<ControlLifecycle>() as u16,
         struct_offset: offset_of!(ControlRegs, lifecycle) as u16,
         access: Access::Rw,
     },
     BlockDesc {
-        addr_offset: 1 * CONTROL_BLOCK_SIZE as u16,
+        addr_offset: CONTROL_BLOCK_SIZE as u16,
         size: size_of::<ControlStreaming>() as u16,
         struct_offset: offset_of!(ControlRegs, streaming) as u16,
         access: Access::Rw,

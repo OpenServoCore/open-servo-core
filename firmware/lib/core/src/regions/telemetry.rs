@@ -115,13 +115,13 @@ impl TelemetryRaw {
 /// `fault_flags` clear-byte carve-out is enforced one layer up, not here.
 pub const TELEMETRY_BLOCKS: &[BlockDesc] = &[
     BlockDesc {
-        addr_offset: 0 * TELEMETRY_BLOCK_SIZE as u16,
+        addr_offset: 0,
         size: size_of::<TelemetryConverted>() as u16,
         struct_offset: offset_of!(TelemetryRegs, converted) as u16,
         access: Access::Ro,
     },
     BlockDesc {
-        addr_offset: 1 * TELEMETRY_BLOCK_SIZE as u16,
+        addr_offset: TELEMETRY_BLOCK_SIZE as u16,
         size: size_of::<TelemetryIntermediaries>() as u16,
         struct_offset: offset_of!(TelemetryRegs, intermediaries) as u16,
         access: Access::Ro,

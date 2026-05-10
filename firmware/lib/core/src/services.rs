@@ -15,3 +15,9 @@ impl Services {
         }
     }
 }
+
+impl Default for Services {
+    fn default() -> Self {
+        Self::new()
+    }
+}
