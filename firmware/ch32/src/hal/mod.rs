@@ -1,7 +1,7 @@
 mod generated {
     include!(concat!(env!("OUT_DIR"), "/generated.rs"));
 }
-pub use generated::Pin;
+pub use generated::{Pin, UsartMapping};
 
 pub mod afio;
 pub mod flash;
@@ -9,6 +9,7 @@ pub mod gpio;
 pub mod pfic;
 pub mod rcc;
 pub mod timer;
+pub mod usart;
 
 #[inline(always)]
 pub fn delay_cycles(n: u32) {
