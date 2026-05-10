@@ -28,3 +28,8 @@ pub fn enable_gpio(port_index: usize) {
 pub fn enable_afio() {
     RCC.pb2pcenr().modify(|w| w.set_afioen(true));
 }
+
+#[inline]
+pub fn enable_tim1() {
+    RCC.pb2pcenr().modify(|w| w.set_tim1en(true));
+}
