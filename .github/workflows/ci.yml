@@ -1,0 +1,65 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build-test:
+    name: build + test (firmware/lib)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: firmware/lib
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust (nightly + clippy)
+        uses: dtolnay/rust-toolchain@nightly
+        with:
+          components: clippy
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: firmware/lib
+
+      - name: cargo clippy
+        run: cargo clippy --workspace --tests -- -D warnings
+
+      - name: cargo build
+        run: cargo build --workspace
+
+      - name: cargo test
+        run: cargo test --workspace
+
+  dxl-protocol-features:
+    name: dxl-protocol feature matrix
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: firmware/lib/dxl-protocol
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust (nightly)
+        uses: dtolnay/rust-toolchain@nightly
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: firmware/lib
+
+      - name: build --no-default-features
+        run: cargo build --no-default-features
+
+      - name: build --no-default-features --features heapless
+        run: cargo build --no-default-features --features heapless
+
+      - name: build --no-default-features --features alloc
+        run: cargo build --no-default-features --features alloc
+
+      - name: build --all-features
+        run: cargo build --all-features
