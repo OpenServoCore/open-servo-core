@@ -1,6 +1,6 @@
 use ch32_metapac::DMA1;
 
-use crate::statics::SHARED;
+use crate::statics::{KERNEL, SHARED};
 
 #[qingke_rt::interrupt]
 fn DMA1_CHANNEL1() {
@@ -9,5 +9,9 @@ fn DMA1_CHANNEL1() {
     unsafe {
         let tick = &raw mut (*SHARED.table.telemetry.get()).intermediaries.sample_tick;
         tick.write(tick.read().wrapping_add(1));
+
+        if let Some(kernel) = (*KERNEL.get()).as_mut() {
+            kernel.on_tick(&SHARED);
+        }
     }
 }

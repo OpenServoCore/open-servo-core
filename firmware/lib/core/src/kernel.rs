@@ -1,4 +1,4 @@
-use crate::{Board, SampleFrame, Shared};
+use crate::{Board, Shared};
 
 /// Real-time control kernel. Runs in the PWM ISR; one `on_tick` per period.
 pub struct Kernel<B: Board> {
@@ -24,7 +24,7 @@ impl<B: Board> Kernel<B> {
         }
     }
 
-    pub fn on_tick(&mut self, _frame: SampleFrame, _shared: &Shared) {
-        todo!()
+    pub fn on_tick(&mut self, _shared: &Shared) {
+        self.board.pulse_tick_indicator();
     }
 }

@@ -3,6 +3,8 @@ use osc_units::Effort;
 pub trait Board {
     fn caps(&self) -> Capabilities;
     fn write_motor(&mut self, cmd: MotorCmd);
+    /// Per-tick cadence indicator (e.g. status-LED toggle). Default no-op.
+    fn pulse_tick_indicator(&mut self) {}
 }
 
 /// Commanded motor state. The chip-side `Board` impl maps these to the

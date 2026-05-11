@@ -1,4 +1,5 @@
 use ch32_metapac::{ADC, adc::vals::Extsel, dma::vals::Dir};
+use osc_core::{Board, Capabilities, MotorCmd};
 
 use crate::hal::{
     Pin, Tim1Mapping, Tim2Mapping, adc, afio, delay_cycles, dma,
@@ -7,9 +8,7 @@ use crate::hal::{
 };
 use crate::statics::ADC_DMA_BUF;
 
-/// > 500 ms at 48 MHz to cover the OPA settle window. Cycle cost per loop iter
-/// is small but non-trivial; pick a value comfortably above the requirement.
-const OPA_SETTLE_CYCLES: u32 = 24_000_000;
+const OPA_SETTLE_CYCLES: u32 = 240_000;
 
 pub struct MotorConfig {
     pub tim1: Tim1Mapping,
@@ -123,6 +122,18 @@ impl Ch32Board {
     #[inline]
     pub fn set_stat_led(&self, on: bool) {
         gpio::set_level(self.stat_led, if on { Level::High } else { Level::Low });
+    }
+}
+
+impl Board for Ch32Board {
+    fn caps(&self) -> Capabilities {
+        Capabilities::default()
+    }
+
+    fn write_motor(&mut self, _cmd: MotorCmd) {}
+
+    fn pulse_tick_indicator(&mut self) {
+        gpio::toggle(self.stat_led);
     }
 }
 

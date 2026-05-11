@@ -63,3 +63,10 @@ pub fn set_level(pin: Pin, level: Level) {
         pin.gpio_regs().bcr().write(|w| w.0 = 1 << pin.pin_number());
     }
 }
+
+#[inline]
+pub fn toggle(pin: Pin) {
+    let regs = pin.gpio_regs();
+    let mask = 1u32 << pin.pin_number();
+    regs.outdr().modify(|w| w.0 ^= mask);
+}

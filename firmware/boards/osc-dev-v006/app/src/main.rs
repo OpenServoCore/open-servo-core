@@ -4,9 +4,10 @@
 use osc_ch32::{
     board::{BoardConfig, Ch32Board, CurrentSenseConfig, MotorConfig},
     hal::{
-        Pin, Tim1Mapping, Tim2Mapping, adc, delay_cycles, opa,
+        Pin, Tim1Mapping, Tim2Mapping, adc, opa,
         timer::{Channel, Polarity},
     },
+    statics::install_kernel,
 };
 use panic_halt as _;
 
@@ -33,10 +34,9 @@ fn main() -> ! {
         tim2: Tim2Mapping::Remap0,
     });
 
-    let mut on = false;
+    install_kernel(board);
+
     loop {
-        board.set_stat_led(on);
-        delay_cycles(3_000_000);
-        on = !on;
+        core::hint::spin_loop();
     }
 }
