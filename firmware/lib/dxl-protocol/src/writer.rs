@@ -1,7 +1,7 @@
+use crate::Instruction;
 use crate::buf::WriteBuf;
 use crate::crc::crc16;
-use crate::parser::{Packet, HEADER};
-use crate::Instruction;
+use crate::parser::{HEADER, Packet};
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub enum WriteError {

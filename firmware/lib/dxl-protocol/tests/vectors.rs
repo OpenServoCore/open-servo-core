@@ -1,4 +1,4 @@
-use dxl_protocol::{crc16, parse_one, write, Bytes, Instruction, Packet, ParseError, MAX_LENGTH};
+use dxl_protocol::{Bytes, Instruction, MAX_LENGTH, Packet, ParseError, crc16, parse_one, write};
 use heapless::Vec;
 
 const PING_ID1: &[u8] = &[0xFF, 0xFF, 0xFD, 0x00, 0x01, 0x03, 0x00, 0x01, 0x19, 0x4E];

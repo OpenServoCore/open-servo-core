@@ -1,6 +1,6 @@
+use crate::Instruction;
 use crate::bytes::{ByteIter, Bytes};
 use crate::crc::crc16;
-use crate::Instruction;
 
 pub const HEADER: [u8; 4] = [0xFF, 0xFF, 0xFD, 0x00];
 pub const BROADCAST_ID: u8 = 0xFE;

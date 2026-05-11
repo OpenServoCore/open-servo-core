@@ -102,10 +102,10 @@ mod tests {
 
     #[test]
     fn region_structs_fit_regions() {
-        assert!(size_of::<ConfigRegs>()    <= CONFIG_REGION_SIZE);
+        assert!(size_of::<ConfigRegs>() <= CONFIG_REGION_SIZE);
         assert!(size_of::<TelemetryRegs>() <= TELEMETRY_REGION_SIZE);
-        assert!(size_of::<ControlRegs>()   <= CONTROL_REGION_SIZE);
-        assert!(size_of::<CalibRegs>()     <= CALIB_REGION_SIZE);
+        assert!(size_of::<ControlRegs>() <= CONTROL_REGION_SIZE);
+        assert!(size_of::<CalibRegs>() <= CALIB_REGION_SIZE);
     }
 
     #[test]

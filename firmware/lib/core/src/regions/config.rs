@@ -269,11 +269,11 @@ mod tests {
 
     #[test]
     fn leaf_blocks_fit_block() {
-        assert!(size_of::<ConfigIdentity>()        <= CONFIG_BLOCK_SIZE);
-        assert!(size_of::<ConfigComms>()           <= CONFIG_BLOCK_SIZE);
-        assert!(size_of::<ConfigPosLimits>()       <= CONFIG_BLOCK_SIZE);
-        assert!(size_of::<ConfigStall>()           <= CONFIG_BLOCK_SIZE);
-        assert!(size_of::<ConfigThermal>()         <= CONFIG_BLOCK_SIZE);
+        assert!(size_of::<ConfigIdentity>() <= CONFIG_BLOCK_SIZE);
+        assert!(size_of::<ConfigComms>() <= CONFIG_BLOCK_SIZE);
+        assert!(size_of::<ConfigPosLimits>() <= CONFIG_BLOCK_SIZE);
+        assert!(size_of::<ConfigStall>() <= CONFIG_BLOCK_SIZE);
+        assert!(size_of::<ConfigThermal>() <= CONFIG_BLOCK_SIZE);
         assert!(size_of::<ConfigControlPosition>() <= CONFIG_BLOCK_SIZE);
     }
 }
