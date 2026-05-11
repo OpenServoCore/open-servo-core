@@ -3,6 +3,7 @@ mod generated {
 }
 pub use generated::{Pin, UsartMapping};
 
+pub mod adc;
 pub mod afio;
 pub mod flash;
 pub mod gpio;
