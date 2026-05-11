@@ -6,7 +6,7 @@
 //!
 //! Tests run with `std` (in `tests/`), but parser/writer are `no_std`.
 
-use dxl_protocol::{parse_one, write, Bytes, Packet, ParseError, HEADER, MAX_LENGTH};
+use dxl_protocol::{Bytes, HEADER, MAX_LENGTH, Packet, ParseError, parse_one, write};
 use heapless::Vec as HVec;
 
 /// Deterministic PRNG (xorshift64*).
@@ -321,9 +321,7 @@ fn parse_one_progress_invariant_long_random_inputs() {
 
 #[test]
 fn truncated_real_frame_returns_incomplete_at_each_step() {
-    const PING: &[u8] = &[
-        0xFF, 0xFF, 0xFD, 0x00, 0x01, 0x03, 0x00, 0x01, 0x19, 0x4E,
-    ];
+    const PING: &[u8] = &[0xFF, 0xFF, 0xFD, 0x00, 0x01, 0x03, 0x00, 0x01, 0x19, 0x4E];
     for n in 0..PING.len() {
         let r = parse_one(&PING[..n]);
         assert!(
@@ -493,11 +491,7 @@ fn short_input_with_no_partial_prefix_skips_immediately() {
 #[test]
 fn short_input_with_partial_prefix_returns_incomplete() {
     // Trailing prefix of HEADER — must wait for more bytes.
-    for partial in [
-        &[0xFFu8][..],
-        &[0xFF, 0xFF][..],
-        &[0xFF, 0xFF, 0xFD][..],
-    ] {
+    for partial in [&[0xFFu8][..], &[0xFF, 0xFF][..], &[0xFF, 0xFF, 0xFD][..]] {
         assert!(
             matches!(parse_one(partial), Err(ParseError::Incomplete)),
             "partial = {partial:02X?}"
@@ -575,5 +569,242 @@ fn round_trip_every_instruction() {
         let mut wire2: HVec<u8, 128> = HVec::new();
         write(&mut wire2, &pkt).unwrap();
         assert_eq!(&wire1[..], &wire2[..], "wire mismatch on {case:?}");
+    }
+}
+
+#[test]
+fn round_trip_random_fields_across_variants() {
+    // `round_trip_every_instruction` proves the byte-identical re-write
+    // property for one fixed example per variant. This randomises the
+    // fields (id, address, length, payload bytes, occasional stuffing
+    // triggers) and exercises every variant many times across a deterministic
+    // PRNG sweep — a field-encoding bug in any variant that happens to
+    // survive the one fixed example would surface here.
+    let mut rng = Rng::new(0xFA1AFE1);
+    const ITERS: usize = 5000;
+
+    for _ in 0..ITERS {
+        let mut body: HVec<u8, 96> = HVec::new();
+        let mut ids: HVec<u8, 32> = HVec::new();
+
+        let kind = rng.next_byte() % 16;
+        // Writer rejects 0xFF; remap deterministically to keep the sweep dense.
+        let id = match rng.next_byte() {
+            0xFF => 1,
+            b => b,
+        };
+        let addr = (rng.next_u64() & 0xFFFF) as u16;
+        let length = (rng.next_u64() & 0xFFFF) as u16;
+        let mode = rng.next_byte();
+        let error = rng.next_byte();
+
+        let body_target = (rng.next_u64() % 24) as usize;
+        while body.len() < body_target {
+            if rng.next_byte() < 32 && body.len() + 3 <= body.capacity() {
+                // ~1-in-8 chance of inserting a stuffing trigger.
+                body.extend_from_slice(&[0xFF, 0xFF, 0xFD]).unwrap();
+            } else {
+                body.push(rng.next_byte()).unwrap();
+            }
+        }
+        let ids_target = (rng.next_u64() % 8) as usize;
+        for _ in 0..ids_target {
+            // Real DXL ids are 0..=253; avoid 0xFE/0xFF reserved values.
+            ids.push(rng.next_byte() % 254).unwrap();
+        }
+
+        let pkt = match kind {
+            0 => Packet::Ping { id },
+            1 => Packet::Read {
+                id,
+                address: addr,
+                length,
+            },
+            2 => Packet::Write {
+                id,
+                address: addr,
+                data: Bytes::Raw(&body),
+            },
+            3 => Packet::RegWrite {
+                id,
+                address: addr,
+                data: Bytes::Raw(&body),
+            },
+            4 => Packet::Action { id },
+            5 => Packet::FactoryReset { id, mode },
+            6 => Packet::Reboot { id },
+            7 => Packet::Clear {
+                id,
+                body: Bytes::Raw(&body),
+            },
+            8 => Packet::ControlTableBackup {
+                id,
+                body: Bytes::Raw(&body),
+            },
+            9 => Packet::Status {
+                id,
+                error,
+                params: Bytes::Raw(&body),
+            },
+            10 => Packet::SyncRead {
+                address: addr,
+                length,
+                ids: Bytes::Raw(&ids),
+            },
+            11 => Packet::SyncWrite {
+                address: addr,
+                length,
+                body: Bytes::Raw(&body),
+            },
+            12 => Packet::FastSyncRead {
+                address: addr,
+                length,
+                ids: Bytes::Raw(&ids),
+            },
+            13 => Packet::BulkRead {
+                body: Bytes::Raw(&body),
+            },
+            14 => Packet::BulkWrite {
+                body: Bytes::Raw(&body),
+            },
+            _ => Packet::FastBulkRead {
+                body: Bytes::Raw(&body),
+            },
+        };
+
+        let mut wire1: HVec<u8, 256> = HVec::new();
+        write(&mut wire1, &pkt).expect("write");
+        let (parsed, n) = parse_one(&wire1).expect("parse");
+        assert_eq!(n, wire1.len());
+        let mut wire2: HVec<u8, 256> = HVec::new();
+        write(&mut wire2, &parsed).expect("re-write");
+        assert_eq!(
+            &wire1[..],
+            &wire2[..],
+            "wire mismatch on kind={kind} pkt={pkt:?}"
+        );
+    }
+}
+
+#[test]
+fn stuffing_round_trip_for_every_body_carrying_variant() {
+    // Each body-carrying variant's `decode()` arm independently chooses
+    // `Bytes::stuffed()` for its payload. A regression that swapped one to
+    // `Bytes::Raw` would silently corrupt that variant's payload whenever
+    // a stuffing trigger appeared in the logical bytes — but
+    // `round_trip_every_instruction`'s fixed fixtures contain no triggers,
+    // so the bug would not surface there. This test threads a trigger
+    // through each variant.
+    let logical: &[u8] = &[0xFF, 0xFF, 0xFD, 0x42, 0xFF, 0xFF, 0xFD, 0xAA];
+
+    let cases: &[(&str, Packet<'_>)] = &[
+        (
+            "Write",
+            Packet::Write {
+                id: 1,
+                address: 0x0010,
+                data: Bytes::Raw(logical),
+            },
+        ),
+        (
+            "RegWrite",
+            Packet::RegWrite {
+                id: 1,
+                address: 0x0010,
+                data: Bytes::Raw(logical),
+            },
+        ),
+        (
+            "Clear",
+            Packet::Clear {
+                id: 1,
+                body: Bytes::Raw(logical),
+            },
+        ),
+        (
+            "ControlTableBackup",
+            Packet::ControlTableBackup {
+                id: 1,
+                body: Bytes::Raw(logical),
+            },
+        ),
+        (
+            "Status",
+            Packet::Status {
+                id: 1,
+                error: 0,
+                params: Bytes::Raw(logical),
+            },
+        ),
+        (
+            "SyncWrite",
+            Packet::SyncWrite {
+                address: 0x0010,
+                length: 4,
+                body: Bytes::Raw(logical),
+            },
+        ),
+        (
+            "BulkRead",
+            Packet::BulkRead {
+                body: Bytes::Raw(logical),
+            },
+        ),
+        (
+            "BulkWrite",
+            Packet::BulkWrite {
+                body: Bytes::Raw(logical),
+            },
+        ),
+        (
+            "FastBulkRead",
+            Packet::FastBulkRead {
+                body: Bytes::Raw(logical),
+            },
+        ),
+    ];
+
+    for (name, pkt) in cases {
+        let mut wire: HVec<u8, 64> = HVec::new();
+        write(&mut wire, pkt).unwrap_or_else(|e| panic!("{name}: write failed: {e:?}"));
+
+        // Stuffing must have inserted at least 2 extra FDs (one per trigger).
+        let payload = &wire[8..wire.len() - 2];
+        let logical_fds = logical.iter().filter(|&&b| b == 0xFD).count();
+        let wire_fds = payload.iter().filter(|&&b| b == 0xFD).count();
+        assert!(
+            wire_fds >= logical_fds + 2,
+            "{name}: expected stuffing on wire, got {wire_fds} 0xFD bytes for {logical_fds} logical"
+        );
+
+        let (parsed, n) =
+            parse_one(&wire).unwrap_or_else(|e| panic!("{name}: parse failed: {e:?}"));
+        assert_eq!(n, wire.len(), "{name}: short parse");
+
+        let recovered = match parsed {
+            Packet::Write { data, .. } => data,
+            Packet::RegWrite { data, .. } => data,
+            Packet::Clear { body, .. } => body,
+            Packet::ControlTableBackup { body, .. } => body,
+            Packet::Status { params, .. } => params,
+            Packet::SyncWrite { body, .. } => body,
+            Packet::BulkRead { body } => body,
+            Packet::BulkWrite { body } => body,
+            Packet::FastBulkRead { body } => body,
+            other => panic!("{name}: parsed into unexpected variant {other:?}"),
+        };
+
+        assert_eq!(
+            recovered.unstuffed_len(),
+            logical.len(),
+            "{name}: length mismatch"
+        );
+        let mut buf = [0u8; 32];
+        let copied = recovered.copy_into(&mut buf).expect("copy_into");
+        assert_eq!(
+            &buf[..copied],
+            logical,
+            "{name}: payload mismatch after unstuffing"
+        );
     }
 }

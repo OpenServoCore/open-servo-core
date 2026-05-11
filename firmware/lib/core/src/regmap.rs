@@ -233,7 +233,9 @@ unsafe fn walk_write(
 mod tests {
     use super::*;
     use crate::ControlTable;
-    use crate::regions::{CALIB_BASE_ADDR, CONFIG_BASE_ADDR, CONTROL_BASE_ADDR, TELEMETRY_BASE_ADDR};
+    use crate::regions::{
+        CALIB_BASE_ADDR, CONFIG_BASE_ADDR, CONTROL_BASE_ADDR, TELEMETRY_BASE_ADDR,
+    };
 
     fn fresh() -> ControlTable {
         ControlTable::const_new()

@@ -159,9 +159,9 @@ mod tests {
 
     #[test]
     fn leaf_blocks_fit_block() {
-        assert!(size_of::<TelemetryConverted>()      <= TELEMETRY_BLOCK_SIZE);
+        assert!(size_of::<TelemetryConverted>() <= TELEMETRY_BLOCK_SIZE);
         assert!(size_of::<TelemetryIntermediaries>() <= TELEMETRY_BLOCK_SIZE);
-        assert!(size_of::<TelemetryFault>()          <= TELEMETRY_BLOCK_SIZE);
-        assert!(size_of::<TelemetryRaw>()            <= TELEMETRY_BLOCK_SIZE);
+        assert!(size_of::<TelemetryFault>() <= TELEMETRY_BLOCK_SIZE);
+        assert!(size_of::<TelemetryRaw>() <= TELEMETRY_BLOCK_SIZE);
     }
 }
