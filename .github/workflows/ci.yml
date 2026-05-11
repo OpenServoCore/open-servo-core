@@ -18,14 +18,17 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install Rust (nightly + clippy)
+      - name: Install Rust (nightly + clippy + rustfmt)
         uses: dtolnay/rust-toolchain@nightly
         with:
-          components: clippy
+          components: clippy, rustfmt
 
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: firmware/lib
+
+      - name: cargo fmt --check
+        run: cargo fmt --all -- --check
 
       - name: cargo clippy
         run: cargo clippy --workspace --tests -- -D warnings
