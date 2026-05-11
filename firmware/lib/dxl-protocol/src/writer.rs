@@ -1,7 +1,7 @@
+use crate::buf::WriteBuf;
 use crate::crc::crc16;
 use crate::parser::{Packet, HEADER};
 use crate::Instruction;
-use heapless::Vec;
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub enum WriteError {
@@ -9,7 +9,7 @@ pub enum WriteError {
     Invalid,
 }
 
-pub fn write<const N: usize>(out: &mut Vec<u8, N>, packet: &Packet<'_>) -> Result<(), WriteError> {
+pub fn write<W: WriteBuf>(out: &mut W, packet: &Packet<'_>) -> Result<(), WriteError> {
     match packet {
         Packet::Ping { id } => write_packet(out, *id, Instruction::Ping, &mut core::iter::empty()),
         Packet::Read {
@@ -98,8 +98,8 @@ const BROADCAST: u8 = crate::parser::BROADCAST_ID;
 /// On any failure (including `Overflow` partway through), `out` is truncated
 /// back to its length on entry — callers using `out` as a DMA TX buffer can
 /// assume that a failed write leaves prior frames untouched.
-fn write_packet<const N: usize, I: Iterator<Item = u8>>(
-    out: &mut Vec<u8, N>,
+fn write_packet<W: WriteBuf, I: Iterator<Item = u8>>(
+    out: &mut W,
     id: u8,
     instruction: Instruction,
     params: &mut I,
@@ -117,28 +117,28 @@ fn write_packet<const N: usize, I: Iterator<Item = u8>>(
     }
 }
 
-fn write_packet_body<const N: usize, I: Iterator<Item = u8>>(
-    out: &mut Vec<u8, N>,
+fn write_packet_body<W: WriteBuf, I: Iterator<Item = u8>>(
+    out: &mut W,
     start: usize,
     id: u8,
     instruction: Instruction,
     params: &mut I,
 ) -> Result<(), WriteError> {
-    push(out, HEADER[0])?;
-    push(out, HEADER[1])?;
-    push(out, HEADER[2])?;
-    push(out, HEADER[3])?;
-    push(out, id)?;
+    out.push(HEADER[0])?;
+    out.push(HEADER[1])?;
+    out.push(HEADER[2])?;
+    out.push(HEADER[3])?;
+    out.push(id)?;
     let len_pos = out.len();
-    push(out, 0)?;
-    push(out, 0)?;
-    push(out, instruction.as_u8())?;
+    out.push(0)?;
+    out.push(0)?;
+    out.push(instruction.as_u8())?;
 
     let mut last2: [u8; 2] = [0, instruction.as_u8()];
     for b in params.by_ref() {
-        push(out, b)?;
+        out.push(b)?;
         if last2[0] == 0xFF && last2[1] == 0xFF && b == 0xFD {
-            push(out, 0xFD)?;
+            out.push(0xFD)?;
             last2 = [0xFD, 0xFD];
         } else {
             last2 = [last2[1], b];
@@ -148,19 +148,15 @@ fn write_packet_body<const N: usize, I: Iterator<Item = u8>>(
     let stuffed_params_len = out.len() - (len_pos + 2 + 1);
     let length_value = (1 + stuffed_params_len + 2) as u16;
     let len_bytes = length_value.to_le_bytes();
-    out[len_pos] = len_bytes[0];
-    out[len_pos + 1] = len_bytes[1];
+    out.set(len_pos, len_bytes[0]);
+    out.set(len_pos + 1, len_bytes[1]);
 
-    let crc = crc16(&out[start..]);
+    let crc = crc16(&out.as_slice()[start..]);
     let crc_bytes = crc.to_le_bytes();
-    push(out, crc_bytes[0])?;
-    push(out, crc_bytes[1])?;
+    out.push(crc_bytes[0])?;
+    out.push(crc_bytes[1])?;
 
     Ok(())
-}
-
-fn push<const N: usize>(out: &mut Vec<u8, N>, b: u8) -> Result<(), WriteError> {
-    out.push(b).map_err(|_| WriteError::Overflow)
 }
 
 #[derive(Copy, Clone)]
