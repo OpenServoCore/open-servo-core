@@ -1,5 +1,7 @@
 use ch32_metapac::OPA;
 
+use crate::hal::Pin;
+
 const KEY1: u32 = 0x4567_0123;
 const KEY2: u32 = 0xCDEF_89AB;
 
@@ -14,11 +16,22 @@ pub enum Gain {
 
 #[derive(Copy, Clone)]
 #[repr(u8)]
-pub enum PosInput {
+pub enum PositiveInput {
     PA2 = 0b00,
     PD7 = 0b01,
     PD3 = 0b10,
     PD1 = 0b11,
+}
+
+impl PositiveInput {
+    pub const fn pin(self) -> Pin {
+        match self {
+            PositiveInput::PA2 => Pin::PA2,
+            PositiveInput::PD7 => Pin::PD7,
+            PositiveInput::PD3 => Pin::PD3,
+            PositiveInput::PD1 => Pin::PD1,
+        }
+    }
 }
 
 #[derive(Copy, Clone)]
@@ -44,7 +57,7 @@ fn unlock() {
 
 /// Caller must wait for the OPA to settle before sampling. Bring-up used
 /// 500 ms; actual minimum unknown.
-pub fn init_pga_single_ended(input: PosInput, gain: Gain, bias: Bias, output: Output) {
+pub fn init_pga_single_ended(input: PositiveInput, gain: Gain, bias: Bias, output: Output) {
     unlock();
     OPA.ctlr1().write(|w| {
         w.set_opa_hs1(true);

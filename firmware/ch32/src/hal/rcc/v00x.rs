@@ -1,6 +1,6 @@
 use ch32_metapac::{
     FLASH, RCC,
-    rcc::vals::{Hpre, Pllsrc, Sw},
+    rcc::vals::{Adcpre, Hpre, Pllsrc, Sw},
 };
 
 pub fn init_48mhz_hsi_pll() {
@@ -9,6 +9,7 @@ pub fn init_48mhz_hsi_pll() {
     RCC.cfgr0().modify(|w| {
         w.set_pllsrc(Pllsrc::HSI);
         w.set_hpre(Hpre::DIV1);
+        w.set_adcpre(Adcpre::DIV4);
     });
 
     RCC.ctlr().modify(|w| w.set_pllon(true));
@@ -32,4 +33,14 @@ pub fn enable_afio() {
 #[inline]
 pub fn enable_tim1() {
     RCC.pb2pcenr().modify(|w| w.set_tim1en(true));
+}
+
+#[inline]
+pub fn enable_adc1() {
+    RCC.pb2pcenr().modify(|w| w.set_adcen(true));
+}
+
+#[inline]
+pub fn enable_dma1() {
+    RCC.hbpcenr().modify(|w| w.set_dma1en(true));
 }

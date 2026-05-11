@@ -1,4 +1,4 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::env;
 use std::error::Error;
 use std::fmt::Write as FmtWrite;
@@ -191,7 +191,109 @@ fn generate_pin_and_usart_mapping(out: &Path) -> Result<(), Box<dyn Error>> {
 
     writeln!(code, "}}")?;
 
+    generate_timer_mappings(&mut code)?;
+
     fs::write(out.join("generated.rs"), code)?;
+    Ok(())
+}
+
+/// One `{Timer}Mapping` enum per timer peripheral. Each variant is a remap
+/// value; methods return the GPIO pin (or `None`) for each channel signal.
+fn generate_timer_mappings(code: &mut String) -> Result<(), Box<dyn Error>> {
+    const SIGNALS: &[(&str, &str)] = &[
+        ("CH1", "ch1_pin"),
+        ("CH2", "ch2_pin"),
+        ("CH3", "ch3_pin"),
+        ("CH4", "ch4_pin"),
+        ("ETR", "etr_pin"),
+        ("BKIN", "bkin_pin"),
+        ("CH1N", "ch1n_pin"),
+        ("CH2N", "ch2n_pin"),
+        ("CH3N", "ch3n_pin"),
+    ];
+
+    for p in METADATA.peripherals {
+        let Some(regs) = &p.registers else { continue };
+        if regs.kind != "timer" {
+            continue;
+        }
+
+        let mut remaps: BTreeSet<u8> = BTreeSet::new();
+        for pin in p.pins {
+            if let Some(r) = pin.remap {
+                remaps.insert(r);
+            }
+        }
+        if remaps.is_empty() {
+            continue;
+        }
+
+        let enum_name = format!("{}Mapping", capitalize_peripheral(p.name));
+        let timer_has_signal: BTreeSet<&str> = p.pins.iter().map(|pp| pp.signal).collect();
+
+        writeln!(code)?;
+        writeln!(code, "#[derive(Copy, Clone, Debug, PartialEq, Eq)]")?;
+        writeln!(code, "#[repr(u8)]")?;
+        writeln!(code, "#[allow(dead_code)]")?;
+        writeln!(code, "pub enum {enum_name} {{")?;
+        for r in &remaps {
+            writeln!(code, "    Remap{r} = {r},")?;
+        }
+        writeln!(code, "}}")?;
+        writeln!(code)?;
+
+        writeln!(code, "impl {enum_name} {{")?;
+        writeln!(code, "    #[inline(always)]")?;
+        writeln!(code, "    pub const fn remap_value(self) -> u8 {{ self as u8 }}")?;
+
+        for (signal, method) in SIGNALS {
+            if !timer_has_signal.contains(signal) {
+                continue;
+            }
+
+            let pins_by_remap: Vec<(u8, Option<&str>)> = remaps
+                .iter()
+                .map(|r| {
+                    let pin = p
+                        .pins
+                        .iter()
+                        .find(|pp| pp.remap == Some(*r) && pp.signal == *signal)
+                        .map(|pp| pp.pin);
+                    (*r, pin)
+                })
+                .collect();
+
+            // If every remap exposes this signal, the accessor can return `Pin`
+            // directly — no Option, no caller-side unwrap. Otherwise it stays
+            // `Option<Pin>` because some remap returns None.
+            let always_exposed = pins_by_remap.iter().all(|(_, pin)| pin.is_some());
+
+            writeln!(code)?;
+            if always_exposed {
+                writeln!(code, "    pub const fn {method}(self) -> Pin {{")?;
+                writeln!(code, "        match self {{")?;
+                for (r, pin) in &pins_by_remap {
+                    let name = pin.expect("always_exposed checked above");
+                    writeln!(code, "            {enum_name}::Remap{r} => Pin::{name},")?;
+                }
+            } else {
+                writeln!(code, "    pub const fn {method}(self) -> Option<Pin> {{")?;
+                writeln!(code, "        match self {{")?;
+                for (r, pin) in &pins_by_remap {
+                    let value = match pin {
+                        Some(name) => format!("Some(Pin::{name})"),
+                        None => "None".to_string(),
+                    };
+                    writeln!(code, "            {enum_name}::Remap{r} => {value},")?;
+                }
+            }
+            writeln!(code, "        }}")?;
+            writeln!(code, "    }}")?;
+        }
+
+        writeln!(code, "}}")?;
+    }
+
     Ok(())
 }
 

@@ -1,7 +1,7 @@
 mod generated {
     include!(concat!(env!("OUT_DIR"), "/generated.rs"));
 }
-pub use generated::{Pin, UsartMapping};
+pub use generated::{Pin, Tim1Mapping, Tim2Mapping, UsartMapping};
 
 pub mod adc;
 pub mod afio;

@@ -1,10 +1,27 @@
 use ch32_metapac::TIM1;
 use ch32_metapac::timer::vals::{Cms, Mms, Ocm};
 
+/// TIM1 input clock when `rcc::init_48mhz_hsi_pll` is in effect.
+const TIM_CLK_HZ: u32 = 48_000_000;
+
 #[derive(Copy, Clone)]
 pub enum Polarity {
     ActiveHigh,
     ActiveLow,
+}
+
+/// Pick the smallest prescaler such that ARR fits in `u16` for the requested
+/// center-aligned PWM frequency. Period = `2 * arr * (psc + 1)` timer ticks.
+pub const fn pwm_dividers_from_hz(freq_hz: u32) -> (u16, u16) {
+    let denom = 2 * freq_hz;
+    let mut psc: u32 = 0;
+    loop {
+        let arr = TIM_CLK_HZ / (denom * (psc + 1));
+        if arr > 0 && arr <= u16::MAX as u32 {
+            return (psc as u16, arr as u16);
+        }
+        psc += 1;
+    }
 }
 
 #[derive(Copy, Clone)]

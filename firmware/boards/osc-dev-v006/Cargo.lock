@@ -59,7 +59,7 @@ checksum = "9330f8b2ff13f34540b44e946ef35111825727b38d33286ef986142615121801"
 [[package]]
 name = "ch32-metapac"
 version = "0.1.0"
-source = "git+https://github.com/ch32-rs/ch32-metapac#70bdae45e7fdf1a1d35a37b1fc7940f9a7c0d01a"
+source = "git+https://github.com/ch32-rs/ch32-metapac#23d667214e30fae690c739d27efca4cfe0e042d0"
 dependencies = [
  "riscv 0.12.1",
  "vcell",
