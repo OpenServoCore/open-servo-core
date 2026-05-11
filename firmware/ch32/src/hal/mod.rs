@@ -6,6 +6,7 @@ pub use generated::{Pin, UsartMapping};
 pub mod afio;
 pub mod flash;
 pub mod gpio;
+pub mod opa;
 pub mod pfic;
 pub mod rcc;
 pub mod systick;
