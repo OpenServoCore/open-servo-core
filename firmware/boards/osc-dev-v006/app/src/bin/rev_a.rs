@@ -35,11 +35,9 @@ fn main() -> ! {
                 opa_input: opa::InputMode::SingleEnded(opa::PositiveInput::PA2),
                 opa_gain: opa::Gain::X32,
                 opa_bias: opa::Bias::MidRail,
-                // OPA output is hard-driven; CYCLES3 is plenty.
                 adc_sample_time: adc::SampleTime::CYCLES3,
             },
-            // Sample times sized to divider Thevenin impedance at fADC = 12 MHz.
-            // CYCLES9 clears ~13 kΩ R_AIN — covers all the high-Z dividers.
+            // CYCLES9 clears ~13 kΩ R_AIN at fADC=12 MHz; covers all dividers.
             sensors: Sensors {
                 pos: adc::Input::new(adc::Channel::IN7, adc::SampleTime::CYCLES9),
                 ntc: adc::Input::new(adc::Channel::IN2, adc::SampleTime::CYCLES9),
@@ -48,7 +46,7 @@ fn main() -> ! {
                     adc::Input::new(adc::Channel::IN5, adc::SampleTime::CYCLES9),
                     adc::Input::new(adc::Channel::IN6, adc::SampleTime::CYCLES9),
                 ),
-                // ENCA/ENCB header not populated on rev A — leave at CYCLES3.
+                // ENC header not populated on rev A.
                 enc: (
                     adc::Input::new(adc::Channel::IN4, adc::SampleTime::CYCLES3),
                     adc::Input::new(adc::Channel::IN3, adc::SampleTime::CYCLES3),
@@ -56,9 +54,9 @@ fn main() -> ! {
             },
         },
         calibration: Calibration {
-            // RS1 = 10 mΩ low-side shunt (osc-dev-v006 README).
+            // RS1 = 10 mΩ low-side shunt.
             shunt_r_mohm: 10,
-            // 20k/10k divider → V_adc = V_in · 1/3.
+            // 20k/10k → V_adc = V_in · 1/3.
             vbus_divider: Divider {
                 top_ohm: 20_000,
                 bot_ohm: 10_000,
@@ -67,8 +65,7 @@ fn main() -> ! {
                 top_ohm: 20_000,
                 bot_ohm: 10_000,
             },
-            // TH1 = SDNT2012X103F3950FTF: 10 kΩ, ±1 %, β = 3950 K @ 25 °C.
-            // R13 = 10 kΩ pull-up from +3V3; NTC to GND.
+            // TH1 SDNT2012X103F3950FTF; R13 = 10 kΩ pull-up to +3V3, NTC to GND.
             ntc: NtcCal {
                 beta: 3950,
                 r0_ohm: 10_000,
@@ -76,8 +73,7 @@ fn main() -> ! {
                 bias_r_ohm: 10_000,
             },
         },
-        // SG90 mechanical sweep: ±π/2 rad ≈ ±1_570_796 µrad. Linear-ramp
-        // endpoints until pot_lut lands in CALIB.
+        // SG90 ±π/2 rad ≈ ±1_570_796 µrad; linear ramp until pot_lut lands in CALIB.
         defaults: ConfigDefaults {
             pos_min_phys_urad: -1_570_796,
             pos_max_phys_urad: 1_570_796,

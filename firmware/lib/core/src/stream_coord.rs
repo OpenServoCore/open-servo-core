@@ -1,10 +1,9 @@
-//! Cross-domain RMW counters used by the kernel ↔ services handoff. Not part
-//! of the control table; lives as a separate field on `Shared`.
+//! Kernel ↔ services handoff counters. Separate from the control table.
 
 use portable_atomic::{AtomicU16, AtomicU32};
 
 pub struct StreamCoord {
-    /// ISR `fetch_add`s on each decimated tick; main reads + clears.
+    /// ISR `fetch_add` on each decimated tick; main reads + clears.
     pub pending: AtomicU32,
     /// Main writes after draining; ISR reads (diag only).
     pub consumed: AtomicU32,

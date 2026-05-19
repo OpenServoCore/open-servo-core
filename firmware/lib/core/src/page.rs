@@ -1,7 +1,5 @@
-//! Trailing 32 B header on every persistent page (CONFIG copy, CALIB block).
-//! `crc32` is IEEE over the leading `used_size` body bytes. `seq` is a
-//! monotonic per-region commit counter; A/B picks the higher-`seq` valid
-//! page on load.
+//! `crc32` is IEEE-32 over leading `used_size` body bytes.
+//! `seq` is the monotonic per-region commit counter — A/B picks higher-seq valid page.
 
 #[repr(u32)]
 #[derive(Copy, Clone, PartialEq, Eq, Debug)]
@@ -43,8 +41,7 @@ pub struct PageHeader {
 }
 
 impl PageHeader {
-    /// In-RAM mirror of fresh-erased flash (every byte 0xFF). `magic` reads
-    /// back as `PageMagic::Erased`, so load treats the slot as "no valid data".
+    /// All 0xFF, mirroring fresh-erased flash; load treats this as "no valid data".
     pub const fn const_erased() -> Self {
         Self {
             magic: PageMagic::Erased as u32,

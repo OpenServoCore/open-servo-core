@@ -20,10 +20,7 @@ pub enum Channel {
 }
 
 impl Channel {
-    /// GPIO pin that the channel samples, or `None` for internal channels
-    /// (`Vref`, `OpaOut`). The caller is responsible for configuring the
-    /// returned pin as analog input (`PinMode::INPUT_FLOATING`) and enabling
-    /// its GPIO port clock.
+    /// `None` for internal channels (Vref, OpaOut). Caller configures pin as analog input.
     pub const fn pin(self) -> Option<Pin> {
         match self {
             Channel::IN0 => Some(Pin::PA2),
@@ -39,12 +36,7 @@ impl Channel {
     }
 }
 
-/// An ADC input slot: which channel to sample, and how long to hold the
-/// sample-and-hold capacitor before conversion. Sample time should be
-/// chosen for the source impedance — higher-Z dividers need more cycles
-/// for the S/H cap to settle. `Channel::pin().unwrap().pin_number()` is
-/// the GPIO; the source impedance is the divider Thevenin equivalent
-/// looking out from that pin.
+/// Sample time should match source Z (divider Thevenin equivalent) for S/H settling.
 #[derive(Copy, Clone)]
 pub struct Input {
     pub channel: Channel,
@@ -60,7 +52,7 @@ impl Input {
     }
 }
 
-/// `channels.len()` must be 1..=16. Channels are converted in array order.
+/// `channels.len()` must be 1..=16.
 pub fn set_sequence(channels: &[Channel]) {
     assert!(!channels.is_empty() && channels.len() <= 16);
     for (i, &ch) in channels.iter().enumerate() {

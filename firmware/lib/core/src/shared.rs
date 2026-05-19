@@ -1,5 +1,3 @@
-//! Singleton state shared between kernel (ISR) and services (main loop).
-
 use crate::{ControlTable, StreamCoord};
 
 #[repr(C)]

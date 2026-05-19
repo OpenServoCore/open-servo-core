@@ -13,9 +13,7 @@ pub enum Level {
     High,
 }
 
-/// Packed pin config: `[ODR_HIGH(1) | ODR_LOW(1) | _(2) | CNF(2) | MODE(2)]`.
-///
-/// Bits 3:0 = CFGLR nibble (MODE low, CNF high). Bits 7/6 set ODR high/low.
+/// Packed: bits 3:0 = CFGLR nibble (MODE low, CNF high), bits 7/6 = ODR high/low.
 /// MODE: INPUT=00, OUTPUT_10MHZ=01. CNF<<2: PP=00, FLOAT/OD=01, PULL/AF_PP=10, AF_OD=11.
 #[derive(Copy, Clone)]
 pub struct PinMode(u8);

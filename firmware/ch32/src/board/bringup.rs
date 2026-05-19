@@ -1,7 +1,3 @@
-//! Boot-time hardware bring-up phases. Each phase is a standalone helper
-//! consuming only the slice of `BoardWiring` it needs, so `Ch32Board::new`
-//! reads as a linear timeline. None of these run after boot.
-
 use ch32_metapac::{ADC, adc::vals::Extsel, dma::vals::Dir};
 
 use crate::hal::{
@@ -15,8 +11,7 @@ use super::config::{BoardWiring, CurrentSenseConfig, MotorConfig, Sensors};
 
 const OPA_SETTLE_CYCLES: u32 = 240_000;
 
-/// Internal Vref source impedance is ~17 kΩ. At fADC = 12 MHz, CYCLES15 is
-/// the shortest setting whose max R_AIN clears that bound (~27 kΩ).
+// Vref Z_src ~17 kΩ; CYCLES15 is shortest that clears it at fADC=12 MHz.
 const VREF_SAMPLE_TIME: adc::SampleTime = adc::SampleTime::CYCLES15;
 
 fn tim1_channel_pin(mapping: Tim1Mapping, channel: timer::Channel) -> Pin {
@@ -28,9 +23,7 @@ fn tim1_channel_pin(mapping: Tim1Mapping, channel: timer::Channel) -> Pin {
     }
 }
 
-/// Materialise the sensor inputs in scan order. Mirrors the layout in
-/// `statics::ADC_SCAN_LEN` and the doc on `Sensors`: pos, ntc, vbus,
-/// vmotor.0, vmotor.1, enc.0, enc.1.
+// Order must mirror statics::ADC_SCAN_LEN: pos, ntc, vbus, vmotor.0, vmotor.1, enc.0, enc.1.
 fn sensor_inputs(s: &Sensors) -> [adc::Input; ADC_SENSOR_COUNT] {
     [
         s.pos, s.ntc, s.vbus, s.vmotor.0, s.vmotor.1, s.enc.0, s.enc.1,

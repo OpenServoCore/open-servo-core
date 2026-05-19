@@ -19,8 +19,6 @@ impl NorFlashError for FlashError {
     }
 }
 
-/// Chip flash region wrapper. `base` is the absolute flash address; `size`
-/// is the byte length of the addressable region.
 pub struct ChipFlash {
     base: u32,
     size: usize,

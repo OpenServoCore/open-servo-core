@@ -1,7 +1,6 @@
 use crate::Shared;
 
-/// Cooperative background services. Runs on the main thread; non-real-time
-/// work like DXL parsing, flash commits, status indicators.
+/// Main-thread cooperative background work (DXL parsing, flash commits, status).
 pub struct Services;
 
 impl Services {

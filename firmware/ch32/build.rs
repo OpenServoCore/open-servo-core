@@ -29,7 +29,7 @@ fn port_index(port: char) -> usize {
 fn generate_pin_and_usart_mapping(out: &Path) -> Result<(), Box<dyn Error>> {
     let mut code = String::new();
 
-    // Pin enum: discriminant = (port_index << 5) | pin_number.
+    // discriminant = (port_index << 5) | pin_number.
     let mut pins: Vec<(char, u8)> = Vec::new();
     for p in METADATA.peripherals {
         if let Some(regs) = &p.registers
@@ -81,7 +81,6 @@ fn generate_pin_and_usart_mapping(out: &Path) -> Result<(), Box<dyn Error>> {
     writeln!(code, "}}")?;
     writeln!(code)?;
 
-    // UsartMapping: one variant per (peripheral, remap_value).
     struct RemapGroup {
         peripheral_name: String,
         tx_pin: Option<String>,
@@ -197,8 +196,6 @@ fn generate_pin_and_usart_mapping(out: &Path) -> Result<(), Box<dyn Error>> {
     Ok(())
 }
 
-/// One `{Timer}Mapping` enum per timer peripheral. Each variant is a remap
-/// value; methods return the GPIO pin (or `None`) for each channel signal.
 fn generate_timer_mappings(code: &mut String) -> Result<(), Box<dyn Error>> {
     const SIGNALS: &[(&str, &str)] = &[
         ("CH1", "ch1_pin"),
@@ -266,9 +263,7 @@ fn generate_timer_mappings(code: &mut String) -> Result<(), Box<dyn Error>> {
                 })
                 .collect();
 
-            // If every remap exposes this signal, the accessor can return `Pin`
-            // directly — no Option, no caller-side unwrap. Otherwise it stays
-            // `Option<Pin>` because some remap returns None.
+            // Accessor returns `Pin` directly if every remap exposes signal; else `Option<Pin>`.
             let always_exposed = pins_by_remap.iter().all(|(_, pin)| pin.is_some());
 
             writeln!(code)?;
@@ -300,7 +295,6 @@ fn generate_timer_mappings(code: &mut String) -> Result<(), Box<dyn Error>> {
     Ok(())
 }
 
-/// "USART1" -> "Usart1"
 fn capitalize_peripheral(name: &str) -> String {
     let mut result = String::new();
     let mut capitalize_next = true;

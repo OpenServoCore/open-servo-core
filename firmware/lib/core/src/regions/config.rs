@@ -1,5 +1,3 @@
-//! CONFIG region — persistent A/B-mirrored runtime config.
-
 use crate::page::PageHeader;
 use crate::regions::CONFIG_BLOCK_SIZE;
 use crate::regmap::{Access, BlockDesc};
@@ -87,7 +85,7 @@ pub struct ConfigControlPosition {
     pub v_nominal_mv: u16,
 }
 
-/// Compact mirror of active blocks; on-disk page is full 512 B with reserved gaps.
+/// Compact in-RAM mirror; on-flash page is full 512 B with reserved gaps.
 #[derive(Copy, Clone)]
 #[repr(C)]
 pub struct ConfigRegs {
@@ -96,7 +94,7 @@ pub struct ConfigRegs {
     pub limits: ConfigLimits,
     pub safety: ConfigSafety,
     pub control: ConfigControl,
-    /// Host-RO. Writes into the header range return Access Error.
+    /// Host-RO; writes into header range return AccessError.
     pub header: PageHeader,
 }
 
@@ -199,9 +197,8 @@ impl ConfigControl {
     }
 }
 
-/// Protocol-address slot map for CONFIG. Block N starts at
-/// `CONFIG_BASE_ADDR + N * CONFIG_BLOCK_SIZE`. Unlisted indices are
-/// reserved and return AccessError.
+/// Block N starts at `CONFIG_BASE_ADDR + N * CONFIG_BLOCK_SIZE`;
+/// unlisted indices are reserved and return AccessError.
 pub const CONFIG_BLOCKS: &[BlockDesc] = &[
     BlockDesc {
         addr_offset: 0,

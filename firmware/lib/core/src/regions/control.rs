@@ -1,5 +1,3 @@
-//! CONTROL region — RW volatile runtime commands from the host.
-
 use crate::regions::CONTROL_BLOCK_SIZE;
 use crate::regmap::{Access, BlockDesc};
 use core::mem::{offset_of, size_of};
@@ -57,7 +55,6 @@ impl ControlStreaming {
     }
 }
 
-/// Protocol-address slot map for CONTROL. Both blocks are host-RW.
 pub const CONTROL_BLOCKS: &[BlockDesc] = &[
     BlockDesc {
         addr_offset: 0,

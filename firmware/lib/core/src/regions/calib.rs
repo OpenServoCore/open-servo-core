@@ -1,5 +1,3 @@
-//! CALIB region — single-copy persistent calibration with per-block CRC.
-
 use crate::page::PageHeader;
 use crate::regions::CALIB_BLOCK_SIZE;
 use crate::regmap::{Access, BlockDesc};
@@ -14,8 +12,7 @@ pub struct PotLutBlock {
     pub header: PageHeader,
 }
 
-/// Compact (40 B); flash-side block is 256 B with header at flash offset 0xE0.
-/// Save/load bridges layouts via the per-block descriptor.
+/// In-RAM 40 B; flash-side block is 256 B with header at flash offset 0xE0.
 #[derive(Copy, Clone)]
 #[repr(C)]
 pub struct BemfCalibBlock {
@@ -33,14 +30,10 @@ pub struct CalibRegs {
     pub bemf: BemfCalibBlock,
 }
 
-/// Body sizes (struct without the trailing PageHeader). Regmap only
-/// exposes the body to the host; the embedded header is internal CRC
-/// bookkeeping accessed by the persistence layer, not the protocol.
+// Body = struct minus trailing PageHeader; header is persistence-layer only, not host-visible.
 const POT_LUT_BODY: u16 = (size_of::<PotLutBlock>() - size_of::<PageHeader>()) as u16;
 const BEMF_BODY: u16 = (size_of::<BemfCalibBlock>() - size_of::<PageHeader>()) as u16;
 
-/// Protocol-address slot map for CALIB. Each block slot is 256 B; only
-/// the body bytes are host-visible (the trailing PageHeader is reserved).
 pub const CALIB_BLOCKS: &[BlockDesc] = &[
     BlockDesc {
         addr_offset: 0,

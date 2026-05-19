@@ -1,7 +1,7 @@
 use ch32_metapac::TIM1;
 use ch32_metapac::timer::vals::{Cms, Mms, Ocm};
 
-/// TIM1 input clock when `rcc::init_48mhz_hsi_pll` is in effect.
+// Assumes rcc::init_48mhz_hsi_pll.
 const TIM_CLK_HZ: u32 = 48_000_000;
 
 #[derive(Copy, Clone)]
@@ -10,8 +10,7 @@ pub enum Polarity {
     ActiveLow,
 }
 
-/// Pick the smallest prescaler such that ARR fits in `u16` for the requested
-/// center-aligned PWM frequency. Period = `2 * arr * (psc + 1)` timer ticks.
+/// Center-aligned period = `2 * arr * (psc + 1)` timer ticks; picks smallest psc that fits ARR in u16.
 pub const fn pwm_dividers_from_hz(freq_hz: u32) -> (u16, u16) {
     let denom = 2 * freq_hz;
     let mut psc: u32 = 0;
@@ -33,7 +32,7 @@ pub enum Channel {
     CH4 = 4,
 }
 
-/// ARPE on: CCR/ARR writes take effect at next UEV, not immediately.
+/// Sets ARPE: CCR/ARR writes take effect at next UEV, not immediately.
 pub fn init_center_aligned_pwm(prescaler: u16, period: u16) {
     TIM1.psc().write_value(prescaler);
     TIM1.atrlr().write_value(period);
@@ -69,8 +68,7 @@ pub fn set_trgo_update() {
     TIM1.ctlr2().modify(|w| w.set_mms(Mms::UPDATE));
 }
 
-/// Call after channel config, before output enable. Also fires TRGO —
-/// arm ADC after, not before.
+/// Fires TRGO as a side effect — arm ADC after, not before.
 pub fn force_update_event() {
     TIM1.swevgr().write(|w| w.set_ug(true));
 }

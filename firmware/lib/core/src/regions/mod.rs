@@ -1,9 +1,6 @@
-//! Control table — the host-visible register state.
-//!
-//! Each region's struct holds only active blocks; reserved slots have no SRAM
-//! mirror and regmap returns Access Error. Struct layout is decoupled from
-//! the protocol address space — regmap uses per-region block descriptors
-//! to translate, and flash save/load uses the same descriptors.
+//! Host-visible register state. Reserved slots have no SRAM mirror; regmap
+//! returns AccessError. Per-region block descriptors translate protocol
+//! addresses; flash save/load uses the same descriptors.
 //!
 //!   CONFIG    0x0000..=0x01FF  (512 B)  — persistent A/B
 //!   TELEMETRY 0x0200..=0x02FF  (256 B)  — RO from host
@@ -76,16 +73,10 @@ impl ControlTable {
         }
     }
 
-    /// Stamp per-board defaults into CONFIG. Called once during board
-    /// bring-up before IRQs are enabled — chip-lib is the sole writer to
-    /// `self.config` at this point. Once the flash persistence layer
-    /// lands, this will be the fallback path for Erased CONFIG copies
-    /// (load order: valid flash → these defaults → core's zero
-    /// `const_new`). Soft limits initialize to the physical limits per
-    /// the control-table doc.
+    /// Soft limits init to physical limits per control-table doc.
+    /// Caller must be sole writer (install-time, pre-IRQ).
     pub fn seed_config_defaults(&self, defaults: &ConfigDefaults) {
-        // SAFETY: install-time, IRQs disabled, sole writer. No other
-        // thread or ISR holds a reference to `self.config` yet.
+        // SAFETY: install-time, pre-IRQ, sole writer.
         let cfg = unsafe { &mut *self.config.get() };
         cfg.limits.pos.pos_min_phys_urad = defaults.pos_min_phys_urad;
         cfg.limits.pos.pos_max_phys_urad = defaults.pos_max_phys_urad;
@@ -93,7 +84,7 @@ impl ControlTable {
         cfg.limits.pos.pos_max_soft_urad = defaults.pos_max_phys_urad;
     }
 
-    /// Called once in `install` before PFIC IRQs are enabled — sole writer.
+    /// Called once pre-PFIC-IRQ — sole writer.
     pub fn load_config_from_flash<F: embedded_storage::nor_flash::ReadNorFlash>(
         &self,
         _flash: &mut F,
@@ -103,7 +94,7 @@ impl ControlTable {
         todo!()
     }
 
-    /// Called once in `install` before PFIC IRQs are enabled — sole writer.
+    /// Called once pre-PFIC-IRQ — sole writer.
     pub fn load_calib_from_flash<F: embedded_storage::nor_flash::ReadNorFlash>(
         &self,
         _flash: &mut F,

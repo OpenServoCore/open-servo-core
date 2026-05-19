@@ -7,7 +7,7 @@ const READ_ID1_ADDR132_LEN4: &[u8] = &[
     0xFF, 0xFF, 0xFD, 0x00, 0x01, 0x07, 0x00, 0x02, 0x84, 0x00, 0x04, 0x00, 0x1D, 0x15,
 ];
 
-// Write 512 (0x00000200) to Goal Position (address 116, 4 bytes) on ID 1.
+// Write 512 to Goal Position (addr 116, 4 B) on ID 1.
 const WRITE_ID1_GOAL512: &[u8] = &[
     0xFF, 0xFF, 0xFD, 0x00, 0x01, 0x09, 0x00, 0x03, 0x74, 0x00, 0x00, 0x02, 0x00, 0x00, 0xCA, 0x89,
 ];
@@ -262,7 +262,7 @@ fn bad_crc_is_reported() {
 
 #[test]
 fn oversized_length_is_rejected() {
-    // Crafted "header" with length = 0xFFFF, well above MAX_LENGTH.
+    // length 0xFFFF > MAX_LENGTH.
     let bad = [0xFFu8, 0xFF, 0xFD, 0x00, 0x01, 0xFF, 0xFF, 0x01];
     assert!((MAX_LENGTH as u32) < 0xFFFF);
     match parse_one(&bad) {
@@ -273,7 +273,7 @@ fn oversized_length_is_rejected() {
 
 #[test]
 fn undersized_length_is_rejected() {
-    // length = 2 is below the 3-byte minimum (instruction + crc).
+    // length 2 < min 3 (instruction + crc).
     let bad = [0xFFu8, 0xFF, 0xFD, 0x00, 0x01, 0x02, 0x00, 0x01];
     match parse_one(&bad) {
         Err(ParseError::BadLength { skip }) => assert_eq!(skip, 4),
@@ -283,10 +283,7 @@ fn undersized_length_is_rejected() {
 
 #[test]
 fn false_header_with_huge_length_does_not_wedge() {
-    // A spurious header with length = 0xFFFF would, before the cap, cause
-    // the parser to wait on ~64 KB of phantom data. With the cap it returns
-    // BadLength immediately, the caller drops 4 bytes, and the real PING
-    // sitting after the noise is recoverable.
+    // Phantom header with length=0xFFFF: without cap, parser would wait for ~64 KB.
     let mut buf: Vec<u8, 64> = Vec::new();
     buf.extend_from_slice(&[0xFF, 0xFF, 0xFD, 0x00, 0x42, 0xFF, 0xFF, 0x99])
         .unwrap();
@@ -298,8 +295,6 @@ fn false_header_with_huge_length_does_not_wedge() {
     };
     assert_eq!(skip, 4);
 
-    // After dropping the false header, the next call resyncs onto the real
-    // PING frame instead of skipping past it.
     let rest = &buf[skip..];
     let resync = match parse_one(rest) {
         Err(ParseError::Resync { skip }) => skip,

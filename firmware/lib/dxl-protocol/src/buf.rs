@@ -1,11 +1,6 @@
-//! Output buffer abstraction for the writer.
-//!
-//! The codec doesn't own or allocate an output buffer — callers pass one
-//! that implements this trait. Blanket impls for `heapless::Vec<u8, N>`
-//! and `alloc::vec::Vec<u8>` are opt-in via the `heapless` and `alloc`
-//! features; with neither enabled the crate ships only the trait, and
-//! downstream code provides its own impl for whatever buffer shape it
-//! owns (e.g. a DMA-resident `&mut [u8]` with a cursor).
+//! Callers provide the output buffer. Blanket impls for `heapless::Vec` and
+//! `alloc::vec::Vec` opt-in via the `heapless` / `alloc` features; without
+//! either, downstream provides its own impl (e.g. a DMA `&mut [u8]` + cursor).
 
 use crate::writer::WriteError;
 

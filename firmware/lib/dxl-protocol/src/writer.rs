@@ -92,12 +92,11 @@ pub fn write<W: WriteBuf>(out: &mut W, packet: &Packet<'_>) -> Result<(), WriteE
 
 const BROADCAST: u8 = crate::parser::BROADCAST_ID;
 
-/// id != 0xFF and instruction byte != 0xFD are required so the unstuffed
-/// prefix (header..instruction) cannot itself complete a stuffing trigger.
+/// id != 0xFF, instruction != 0xFD required so the unstuffed header..instruction
+/// prefix can't itself complete a stuffing trigger.
 ///
-/// On any failure (including `Overflow` partway through), `out` is truncated
-/// back to its length on entry — callers using `out` as a DMA TX buffer can
-/// assume that a failed write leaves prior frames untouched.
+/// On failure (including partial Overflow), `out` is truncated back to entry length
+/// — callers using a DMA TX buffer can rely on prior frames staying intact.
 fn write_packet<W: WriteBuf, I: Iterator<Item = u8>>(
     out: &mut W,
     id: u8,

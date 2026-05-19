@@ -1,8 +1,3 @@
-//! Chip-lib board surface: the `Ch32Board` type that satisfies
-//! `osc_core::Board`. Boot-time bring-up lives in `bringup`; per-tick
-//! raw → SI conversion lives in `convert`; the user-facing config types
-//! live in `config` and are re-exported here.
-
 mod bringup;
 mod config;
 mod convert;
@@ -31,13 +26,11 @@ use convert::{
     pos_to_microrads, shunt_to_milliamps, vdd_mv_from_vref, vmotor_diff_mv, volatile_snapshot_scan,
 };
 
-/// Pre-computed raw-domain scalars for `shunt_to_milliamps`. Derived once
-/// from `CurrentSenseConfig` in `Ch32Board::new` so the per-tick hot path
-/// doesn't match on `opa::Gain` / `opa::Bias` enums.
+/// Pre-computed once in `Ch32Board::new` so the per-tick hot path doesn't
+/// match on `opa::Gain` / `opa::Bias` enums.
 struct ShuntScale {
-    /// OPA quiescent ADC count (raw at zero shunt current).
+    /// OPA quiescent ADC count.
     bias_raw: u16,
-    /// PGA gain factor (`V_out = V_diff · factor + V_bias`).
     gain_factor: u16,
 }
 
@@ -66,11 +59,7 @@ impl Ch32Board {
         bring_up_analog_chain(&wiring.current_sense);
         configure_adc_dma_scan(&wiring.sensors, wiring.current_sense.adc_sample_time);
 
-        // Seed CONFIG before IRQs can read it. Sole writer at this point;
-        // the DMA TC ISR snapshots from `Shared` on every tick once KERNEL
-        // is installed (`install_kernel` runs after `new` returns). Once
-        // flash persistence lands, load order becomes: flash → these
-        // defaults → core's zero `const_new`.
+        // Sole writer to CONFIG: pre-IRQ, pre-install_kernel.
         SHARED.table.seed_config_defaults(&defaults);
 
         pfic::enable(pfic::Interrupt::DMA1_CHANNEL1);
@@ -88,22 +77,8 @@ impl Ch32Board {
         gpio::set_level(self.stat_led, if on { Level::High } else { Level::Low });
     }
 
-    /// Snapshot the latest ADC scan and convert it to engineering units.
-    /// Called from the DMA1 TC ISR after one PWM period's worth of scans
-    /// has landed in `ADC_DMA_BUF`. Uses the peak half-scan (ON-window
-    /// centre) for every field; `current` is the motor current during the
-    /// ON window, `vmotor` is the driven |V_A − V_B|. The trough half-scan
-    /// is reserved for freewheel diagnostics and not surfaced yet.
-    ///
-    /// Reads live values via `inputs` (snapped from `Shared` by the ISR
-    /// shim) — host writes via DXL take effect on the next tick.
-    /// Schematic-fixed constants come from `self.calibration` and the
-    /// pre-computed `self.shunt_scale`.
-    //
-    // TODO: replace `inputs: &FrameInputs` with a flash-backed read-only
-    // view once persistence lands. Torque-off serializes host writes
-    // against board reads, so the view can be plain raw pointers into
-    // the active CONFIG page and into CALIB — no per-tick snapshot.
+    /// Called from DMA1 TC ISR; uses peak half-scan (ON-window centre) for all fields.
+    /// Trough half-scan reserved for freewheel diagnostics.
     pub fn build_sample_frame(&self, inputs: &FrameInputs) -> SampleFrame {
         let scan = volatile_snapshot_scan();
         let peak = &scan[SCAN_PEAK_OFFSET..SCAN_PEAK_OFFSET + ADC_SCAN_LEN];
