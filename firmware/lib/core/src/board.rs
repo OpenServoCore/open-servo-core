@@ -1,5 +1,21 @@
 use osc_units::Effort;
 
+/// Per-board CONFIG seed values, supplied by chip-lib at boot and stamped
+/// into `ControlTable.config` before IRQs are enabled. Lives on the
+/// board → core boundary because these defaults vary by PCB / mechanical
+/// build (SG90 vs ph42, etc.) but the *runtime* values can be mutated
+/// freely by the host via DXL — so the board never reads from this struct
+/// after boot, only from `Shared.table.config`.
+///
+/// When the persistence layer lands, the load order becomes: valid CONFIG
+/// flash copy → board defaults → core's zero `const_new`. Today only the
+/// last two steps exist.
+#[derive(Copy, Clone, Debug, Default)]
+pub struct ConfigDefaults {
+    pub pos_min_phys_urad: i32,
+    pub pos_max_phys_urad: i32,
+}
+
 pub trait Board {
     fn caps(&self) -> Capabilities;
     fn write_motor(&mut self, cmd: MotorCmd);

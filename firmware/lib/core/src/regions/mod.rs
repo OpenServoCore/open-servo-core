@@ -30,6 +30,7 @@ pub use telemetry::{
     TelemetryConverted, TelemetryFault, TelemetryIntermediaries, TelemetryRaw, TelemetryRegs,
 };
 
+use crate::board::ConfigDefaults;
 use crate::page::PageHeader;
 
 pub const PAGE_HEADER_SIZE: usize = core::mem::size_of::<PageHeader>();
@@ -73,6 +74,23 @@ impl ControlTable {
             control: SyncUnsafeCell::new(ControlRegs::const_new()),
             calib: SyncUnsafeCell::new(CalibRegs::const_new()),
         }
+    }
+
+    /// Stamp per-board defaults into CONFIG. Called once during board
+    /// bring-up before IRQs are enabled — chip-lib is the sole writer to
+    /// `self.config` at this point. Once the flash persistence layer
+    /// lands, this will be the fallback path for Erased CONFIG copies
+    /// (load order: valid flash → these defaults → core's zero
+    /// `const_new`). Soft limits initialize to the physical limits per
+    /// the control-table doc.
+    pub fn seed_config_defaults(&self, defaults: &ConfigDefaults) {
+        // SAFETY: install-time, IRQs disabled, sole writer. No other
+        // thread or ISR holds a reference to `self.config` yet.
+        let cfg = unsafe { &mut *self.config.get() };
+        cfg.limits.pos.pos_min_phys_urad = defaults.pos_min_phys_urad;
+        cfg.limits.pos.pos_max_phys_urad = defaults.pos_max_phys_urad;
+        cfg.limits.pos.pos_min_soft_urad = defaults.pos_min_phys_urad;
+        cfg.limits.pos.pos_max_soft_urad = defaults.pos_max_phys_urad;
     }
 
     /// Called once in `install` before PFIC IRQs are enabled — sole writer.

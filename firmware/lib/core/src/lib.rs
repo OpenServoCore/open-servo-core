@@ -11,7 +11,7 @@ pub mod services;
 pub mod shared;
 pub mod stream_coord;
 
-pub use board::{Board, Capabilities, DecayMode, MotorCmd};
+pub use board::{Board, Capabilities, ConfigDefaults, DecayMode, MotorCmd};
 pub use kernel::{Kernel, KernelState};
 pub use page::{PageHeader, PageMagic};
 pub use regions::{
