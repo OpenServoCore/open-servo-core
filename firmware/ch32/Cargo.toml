@@ -11,6 +11,7 @@ license = "MIT OR Apache-2.0"
 ch32-metapac     = { git = "https://github.com/ch32-rs/ch32-metapac", default-features = false, features = ["pac", "rt"] }
 embedded-storage = "0.3"
 osc-core         = { path = "../lib/core" }
+osc-units        = { path = "../lib/units" }
 qingke-rt        = { version = "0.7", features = ["v2"] }
 
 [build-dependencies]
