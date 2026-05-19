@@ -21,7 +21,7 @@ pub use regions::{
     TelemetryFault, TelemetryIntermediaries, TelemetryRaw, TelemetryRegs,
 };
 pub use regmap::{Access, BlockDesc, RegmapError};
-pub use sample_frame::{RawSamples, SampleFrame};
+pub use sample_frame::{FrameInputs, RawSamples, SampleFrame};
 pub use services::Services;
 pub use shared::Shared;
 pub use stream_coord::StreamCoord;
