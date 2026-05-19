@@ -21,8 +21,7 @@ pub fn init_48mhz_hsi_pll() {
 
 #[inline]
 pub fn enable_gpio(port_index: usize) {
-    RCC.pb2pcenr()
-        .modify(|w| w.0 |= 1 << (2 + port_index));
+    RCC.pb2pcenr().modify(|w| w.0 |= 1 << (2 + port_index));
 }
 
 #[inline]

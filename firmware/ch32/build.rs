@@ -244,7 +244,10 @@ fn generate_timer_mappings(code: &mut String) -> Result<(), Box<dyn Error>> {
 
         writeln!(code, "impl {enum_name} {{")?;
         writeln!(code, "    #[inline(always)]")?;
-        writeln!(code, "    pub const fn remap_value(self) -> u8 {{ self as u8 }}")?;
+        writeln!(
+            code,
+            "    pub const fn remap_value(self) -> u8 {{ self as u8 }}"
+        )?;
 
         for (signal, method) in SIGNALS {
             if !timer_has_signal.contains(signal) {
