@@ -1,5 +1,7 @@
 use ch32_metapac::ADC;
 
+use crate::hal::Pin;
+
 pub use ch32_metapac::adc::vals::{Extsel, SampleTime};
 
 #[derive(Copy, Clone)]
@@ -15,6 +17,47 @@ pub enum Channel {
     IN7 = 7,
     Vref = 8,
     OpaOut = 9,
+}
+
+impl Channel {
+    /// GPIO pin that the channel samples, or `None` for internal channels
+    /// (`Vref`, `OpaOut`). The caller is responsible for configuring the
+    /// returned pin as analog input (`PinMode::INPUT_FLOATING`) and enabling
+    /// its GPIO port clock.
+    pub const fn pin(self) -> Option<Pin> {
+        match self {
+            Channel::IN0 => Some(Pin::PA2),
+            Channel::IN1 => Some(Pin::PA1),
+            Channel::IN2 => Some(Pin::PC4),
+            Channel::IN3 => Some(Pin::PD2),
+            Channel::IN4 => Some(Pin::PD3),
+            Channel::IN5 => Some(Pin::PD5),
+            Channel::IN6 => Some(Pin::PD6),
+            Channel::IN7 => Some(Pin::PD4),
+            Channel::Vref | Channel::OpaOut => None,
+        }
+    }
+}
+
+/// An ADC input slot: which channel to sample, and how long to hold the
+/// sample-and-hold capacitor before conversion. Sample time should be
+/// chosen for the source impedance — higher-Z dividers need more cycles
+/// for the S/H cap to settle. `Channel::pin().unwrap().pin_number()` is
+/// the GPIO; the source impedance is the divider Thevenin equivalent
+/// looking out from that pin.
+#[derive(Copy, Clone)]
+pub struct Input {
+    pub channel: Channel,
+    pub sample_time: SampleTime,
+}
+
+impl Input {
+    pub const fn new(channel: Channel, sample_time: SampleTime) -> Self {
+        Self {
+            channel,
+            sample_time,
+        }
+    }
 }
 
 /// `channels.len()` must be 1..=16. Channels are converted in array order.
