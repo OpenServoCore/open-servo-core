@@ -13,12 +13,17 @@ use osc_ch32::{
     },
     statics::install_kernel,
 };
+
 use panic_halt as _;
+
+#[cfg(feature = "defmt")]
+use defmt_rtt as _;
 
 tinyboot_ch32::app::app_version!();
 
 #[qingke_rt::entry]
 fn main() -> ! {
+    osc_ch32::log::info!("osc-dev-v006 rev A: boot");
     let board = Ch32Board::new(BoardConfig {
         wiring: BoardWiring {
             stat_led: Pin::PD0,

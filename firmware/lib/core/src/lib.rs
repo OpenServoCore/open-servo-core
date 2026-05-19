@@ -2,7 +2,9 @@
 #![feature(sync_unsafe_cell)]
 
 pub mod board;
+pub mod debug;
 pub mod kernel;
+pub mod log;
 pub mod page;
 pub mod regions;
 pub mod regmap;

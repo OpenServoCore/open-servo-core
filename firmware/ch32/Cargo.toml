@@ -13,6 +13,7 @@ embedded-storage = "0.3"
 osc-core         = { path = "../lib/core" }
 osc-units        = { path = "../lib/units" }
 qingke-rt        = { version = "0.7", features = ["v2"] }
+defmt            = { version = "1", optional = true }
 
 [build-dependencies]
 ch32-metapac = { git = "https://github.com/ch32-rs/ch32-metapac", default-features = false, features = ["metadata"] }
@@ -20,3 +21,4 @@ ch32-metapac = { git = "https://github.com/ch32-rs/ch32-metapac", default-featur
 [features]
 default = []
 ch32v006x8x6 = ["ch32-metapac/ch32v006x8x6"]
+defmt        = ["dep:defmt", "osc-core/defmt"]

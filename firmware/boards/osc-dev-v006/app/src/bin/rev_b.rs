@@ -13,12 +13,17 @@ use osc_ch32::{
     },
     statics::install_kernel,
 };
+
 use panic_halt as _;
+
+#[cfg(feature = "defmt")]
+use defmt_rtt as _;
 
 tinyboot_ch32::app::app_version!();
 
 #[qingke_rt::entry]
 fn main() -> ! {
+    osc_ch32::log::info!("osc-dev-v006 rev B: boot");
     let board = Ch32Board::new(BoardConfig {
         wiring: BoardWiring {
             // STAT on PC7 = TIM1_CH4 (Remap7); TODO drive via TIM1 instead of GPIO.

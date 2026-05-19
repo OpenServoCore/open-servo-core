@@ -76,6 +76,11 @@ impl ControlTable {
     /// Soft limits init to physical limits per control-table doc.
     /// Caller must be sole writer (install-time, pre-IRQ).
     pub fn seed_config_defaults(&self, defaults: &ConfigDefaults) {
+        crate::log::debug!(
+            "seed CONFIG.limits.pos: phys=[{}, {}] urad",
+            defaults.pos_min_phys_urad,
+            defaults.pos_max_phys_urad,
+        );
         // SAFETY: install-time, pre-IRQ, sole writer.
         let cfg = unsafe { &mut *self.config.get() };
         cfg.limits.pos.pos_min_phys_urad = defaults.pos_min_phys_urad;

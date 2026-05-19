@@ -42,6 +42,7 @@ pub struct Ch32Board {
 
 impl Ch32Board {
     pub fn new(cfg: BoardConfig) -> Self {
+        crate::log::info!("Ch32Board::new: start");
         let BoardConfig {
             wiring,
             calibration,
@@ -53,18 +54,34 @@ impl Ch32Board {
             gain_factor: wiring.current_sense.opa_gain.factor(),
         };
         let stat_led = wiring.stat_led;
+        crate::log::debug!(
+            "shunt scale: bias_raw={} gain_factor={}",
+            shunt_scale.bias_raw,
+            shunt_scale.gain_factor,
+        );
 
         enable_clocks_and_remaps(&wiring);
+        crate::log::debug!("clocks + remaps configured");
         configure_pins(&wiring);
+        crate::log::debug!("gpio configured");
         bring_up_analog_chain(&wiring.current_sense);
+        crate::log::debug!("opa settled");
         configure_adc_dma_scan(&wiring.sensors, wiring.current_sense.adc_sample_time);
+        crate::log::debug!(
+            "adc/dma scan armed: scan_len={} buf_len={}",
+            crate::statics::ADC_SCAN_LEN,
+            crate::statics::ADC_DMA_BUF_LEN,
+        );
 
         // Sole writer to CONFIG: pre-IRQ, pre-install_kernel.
         SHARED.table.seed_config_defaults(&defaults);
 
         pfic::enable(pfic::Interrupt::DMA1_CHANNEL1);
+        crate::log::debug!("pfic: DMA1_CHANNEL1 enabled");
         start_center_aligned_pwm(&wiring.motor);
+        crate::log::debug!("pwm running ({} Hz)", wiring.motor.pwm_freq_hz);
 
+        crate::log::info!("Ch32Board::new: complete");
         Self {
             stat_led,
             calibration,

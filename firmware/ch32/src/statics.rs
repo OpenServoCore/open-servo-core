@@ -24,6 +24,7 @@ pub fn install_kernel(board: Ch32Board) {
     unsafe {
         *KERNEL.get() = Some(Kernel::new(board));
     }
+    crate::log::info!("kernel installed; DMA TC ISR live");
 }
 
 pub fn read_sample_tick() -> u32 {
