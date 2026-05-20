@@ -20,7 +20,7 @@ The thesis is the price point: at mass-production volume, an OSC swap board shou
 - 🟡 **OSC Dev CH32** (`osc-dev-v006`) — routed, docs ready, awaiting fab.
 - 🔭 **OSC SG90 CH32** (`sg90-prod-ch32v006`) — designed, not spun. Waiting on firmware v2 to be testable against.
 - ⚠️ **Firmware v1** (`firmware-old/`) — legacy. First pass was vibe-coded and got poor Reddit feedback. Kept as historical reference; **not a target for new work**.
-- 🔭 **Firmware v2** (rewrite) — not started. Architecture doc next; first module (transport or register table) is the Q2 milestone.
+- 🟡 **Firmware v2** (rewrite) — in progress.
 - ✅ **tinyboot** (OSC bootloader) — v0.4.0 shipped. Lives at [`OpenServoCore/tinyboot`](https://github.com/OpenServoCore/tinyboot).
 
 ## Repo map
@@ -62,9 +62,9 @@ Each board has its own README with full schematics, pinouts, jumper behaviour, a
 
 ## Firmware
 
-The Rust firmware is mid-rewrite. The legacy `firmware-old/` tree contains the original architecture (multi-crate workspace targeting STM32F301 and partly CH32V003) and is kept for reference, but the v2 rewrite starts from a cleaner architecture targeting CH32V006 first. Plan: DXL-compatible register table, persistence, control loops, safety features. Estimated 3+ months once it begins.
+The Rust firmware is mid-rewrite. The legacy `firmware-old/` tree contains the original architecture (multi-crate workspace targeting STM32F301 and partly CH32V003) and is kept for reference, but the v2 rewrite starts from a cleaner architecture targeting CH32V006 first. Plan: DXL-compatible register table, persistence, control loops, safety features.
 
-When firmware v2 starts landing, build instructions will appear here.
+Build instructions will appear here as the rewrite matures.
 
 ## Contributing
 
