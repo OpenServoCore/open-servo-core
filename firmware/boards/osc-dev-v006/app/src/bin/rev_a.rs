@@ -4,14 +4,13 @@
 use osc_ch32::{
     ConfigDefaults,
     board::{
-        BoardConfig, BoardWiring, Calibration, Ch32Board, CurrentSenseConfig, Divider, MotorConfig,
-        NtcCal, Sensors,
+        BoardConfig, BoardWiring, Calibration, CurrentSenseConfig, Divider, MotorConfig, NtcCal,
+        Sensors,
     },
     hal::{
         Pin, Tim1Mapping, Tim2Mapping, adc, opa,
         timer::{Channel, Polarity},
     },
-    statics::install_kernel,
 };
 
 use panic_halt as _;
@@ -24,7 +23,7 @@ tinyboot_ch32::app::app_version!();
 #[qingke_rt::entry]
 fn main() -> ! {
     osc_ch32::log::info!("osc-dev-v006 rev A: boot");
-    let board = Ch32Board::new(BoardConfig {
+    osc_ch32::run(BoardConfig {
         wiring: BoardWiring {
             stat_led: Pin::PD0,
             dbg: Pin::PC3,
@@ -81,13 +80,5 @@ fn main() -> ! {
             pos_max_phys_urad: 1_570_796,
             vdd_mv: 3300,
         },
-    });
-
-    install_kernel(board);
-
-    loop {
-        #[cfg(feature = "defmt")]
-        osc_ch32::telemetry::pump();
-        core::hint::spin_loop();
-    }
+    })
 }
