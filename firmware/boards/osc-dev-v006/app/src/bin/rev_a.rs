@@ -1,17 +1,7 @@
 #![no_std]
 #![no_main]
 
-use osc_ch32::{
-    ConfigDefaults,
-    board::{
-        BoardConfig, BoardWiring, Calibration, CurrentSenseConfig, Divider, MotorConfig, NtcCal,
-        Sensors,
-    },
-    hal::{
-        Pin, Tim1Mapping, Tim2Mapping, adc, opa,
-        timer::{Channel, Polarity},
-    },
-};
+use osc_ch32::prelude::*;
 
 use panic_halt as _;
 
@@ -30,11 +20,11 @@ fn main() -> ! {
             tim2_remap: Tim2Mapping::Remap0,
             motor: MotorConfig {
                 tim1: Tim1Mapping::Remap7,
-                in1: Channel::CH3,
-                in2: Channel::CH2,
+                in1: timer::Channel::CH3,
+                in2: timer::Channel::CH2,
                 drv_en: Pin::PC7,
                 pwm_freq_hz: 20_000,
-                polarity: Polarity::ActiveHigh,
+                polarity: timer::Polarity::ActiveHigh,
             },
             current_sense: CurrentSenseConfig {
                 // rev_a's differential input is hardware-broken; current
