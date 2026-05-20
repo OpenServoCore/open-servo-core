@@ -14,11 +14,15 @@ pub enum Level {
 }
 
 /// Packed: bits 3:0 = CFGLR nibble (MODE low, CNF high), bits 7/6 = ODR high/low.
-/// MODE: INPUT=00, OUTPUT_10MHZ=01. CNF<<2: PP=00, FLOAT/OD=01, PULL/AF_PP=10, AF_OD=11.
+/// MODE: INPUT=00, OUTPUT_10MHZ=01. CNF<<2: PP/ANALOG=00, FLOAT/OD=01, PULL/AF_PP=10, AF_OD=11.
 #[derive(Copy, Clone)]
 pub struct PinMode(u8);
 
 impl PinMode {
+    /// MODE=00 (input) + CNF=00 (analog) — schmitt buffer disconnected so the
+    /// pin presents pure analog to the ADC mux / OPA input. Floating-input
+    /// (CNF=01) leaves the digital input buffer hot and clamps high-Z analog.
+    pub const ANALOG: Self = Self(0b0000);
     pub const INPUT_FLOATING: Self = Self(0b0100);
     pub const INPUT_PULL_UP: Self = Self(0b1000 | 0x80);
     pub const INPUT_PULL_DOWN: Self = Self(0b1000 | 0x40);
