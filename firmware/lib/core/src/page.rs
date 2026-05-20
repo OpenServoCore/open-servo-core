@@ -65,4 +65,30 @@ mod tests {
     fn page_header_is_32_bytes() {
         assert_eq!(size_of::<PageHeader>(), 32);
     }
+
+    #[test]
+    fn page_magic_round_trip() {
+        for m in [
+            PageMagic::Erased,
+            PageMagic::Config,
+            PageMagic::CalibPotLut,
+            PageMagic::CalibBemf,
+        ] {
+            assert_eq!(PageMagic::from_u32(m as u32), Some(m));
+        }
+    }
+
+    #[test]
+    fn page_magic_rejects_unknown() {
+        assert_eq!(PageMagic::from_u32(0), None);
+        assert_eq!(PageMagic::from_u32(0xDEAD_BEEF), None);
+        assert_eq!(PageMagic::from_u32(u32::from_le_bytes(*b"OSCX")), None);
+    }
+
+    #[test]
+    fn const_erased_matches_fresh_flash() {
+        let h = PageHeader::const_erased();
+        let bytes: [u8; 32] = unsafe { core::mem::transmute(h) };
+        assert_eq!(bytes, [0xFFu8; 32]);
+    }
 }
