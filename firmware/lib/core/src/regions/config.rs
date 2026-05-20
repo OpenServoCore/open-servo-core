@@ -70,6 +70,15 @@ pub struct ConfigControl {
     pub position: ConfigControlPosition,
 }
 
+/// ADC reference and analog-frontend cal. v006 has no usable internal Vref —
+/// `vdd_mv` is the DMM-measured VDD-at-chip-pin baked in per board.
+#[derive(Copy, Clone)]
+#[repr(C)]
+pub struct ConfigCalibration {
+    pub vdd_mv: u16,
+    pub _rsvd_align: u16,
+}
+
 #[derive(Copy, Clone)]
 #[repr(C)]
 pub struct ConfigControlPosition {
@@ -94,6 +103,7 @@ pub struct ConfigRegs {
     pub limits: ConfigLimits,
     pub safety: ConfigSafety,
     pub control: ConfigControl,
+    pub calibration: ConfigCalibration,
     /// Host-RO; writes into header range return AccessError.
     pub header: PageHeader,
 }
@@ -197,6 +207,15 @@ impl ConfigControl {
     }
 }
 
+impl ConfigCalibration {
+    pub const fn const_new() -> Self {
+        Self {
+            vdd_mv: 0,
+            _rsvd_align: 0,
+        }
+    }
+}
+
 /// Block N starts at `CONFIG_BASE_ADDR + N * CONFIG_BLOCK_SIZE`;
 /// unlisted indices are reserved and return AccessError.
 pub const CONFIG_BLOCKS: &[BlockDesc] = &[
@@ -238,6 +257,12 @@ pub const CONFIG_BLOCKS: &[BlockDesc] = &[
         access: Access::Rw,
     },
     BlockDesc {
+        addr_offset: 6 * CONFIG_BLOCK_SIZE as u16,
+        size: size_of::<ConfigCalibration>() as u16,
+        struct_offset: offset_of!(ConfigRegs, calibration) as u16,
+        access: Access::Rw,
+    },
+    BlockDesc {
         addr_offset: 15 * CONFIG_BLOCK_SIZE as u16,
         size: size_of::<PageHeader>() as u16,
         struct_offset: offset_of!(ConfigRegs, header) as u16,
@@ -253,6 +278,7 @@ impl ConfigRegs {
             limits: ConfigLimits::const_new(),
             safety: ConfigSafety::const_new(),
             control: ConfigControl::const_new(),
+            calibration: ConfigCalibration::const_new(),
             header: PageHeader::const_erased(),
         }
     }
@@ -272,5 +298,6 @@ mod tests {
         assert!(size_of::<ConfigStall>() <= CONFIG_BLOCK_SIZE);
         assert!(size_of::<ConfigThermal>() <= CONFIG_BLOCK_SIZE);
         assert!(size_of::<ConfigControlPosition>() <= CONFIG_BLOCK_SIZE);
+        assert!(size_of::<ConfigCalibration>() <= CONFIG_BLOCK_SIZE);
     }
 }

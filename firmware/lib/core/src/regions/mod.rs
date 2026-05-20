@@ -19,8 +19,8 @@ pub mod telemetry;
 
 pub use calib::{BemfCalibBlock, CalibRegs, PotLutBlock};
 pub use config::{
-    ConfigComms, ConfigControl, ConfigControlPosition, ConfigIdentity, ConfigLimits,
-    ConfigPosLimits, ConfigRegs, ConfigSafety, ConfigStall, ConfigThermal,
+    ConfigCalibration, ConfigComms, ConfigControl, ConfigControlPosition, ConfigIdentity,
+    ConfigLimits, ConfigPosLimits, ConfigRegs, ConfigSafety, ConfigStall, ConfigThermal,
 };
 pub use control::{ControlLifecycle, ControlRegs, ControlStreaming};
 pub use telemetry::{
@@ -77,9 +77,10 @@ impl ControlTable {
     /// Caller must be sole writer (install-time, pre-IRQ).
     pub fn seed_config_defaults(&self, defaults: &ConfigDefaults) {
         crate::log::debug!(
-            "seed CONFIG.limits.pos: phys=[{}, {}] urad",
+            "seed CONFIG.limits.pos: phys=[{}, {}] urad  vdd_mv={}",
             defaults.pos_min_phys_urad,
             defaults.pos_max_phys_urad,
+            defaults.vdd_mv,
         );
         // SAFETY: install-time, pre-IRQ, sole writer.
         let cfg = unsafe { &mut *self.config.get() };
@@ -87,6 +88,7 @@ impl ControlTable {
         cfg.limits.pos.pos_max_phys_urad = defaults.pos_max_phys_urad;
         cfg.limits.pos.pos_min_soft_urad = defaults.pos_min_phys_urad;
         cfg.limits.pos.pos_max_soft_urad = defaults.pos_max_phys_urad;
+        cfg.calibration.vdd_mv = defaults.vdd_mv;
     }
 
     /// Called once pre-PFIC-IRQ — sole writer.

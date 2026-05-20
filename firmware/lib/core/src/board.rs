@@ -6,6 +6,10 @@ use osc_units::Effort;
 pub struct ConfigDefaults {
     pub pos_min_phys_urad: i32,
     pub pos_max_phys_urad: i32,
+    /// VDD-at-chip-pin in mV. v006 ADC reference is VDD (no AVDD pin); single
+    /// DMM measurement turns ±2-3 % LDO tolerance into DMM-limited accuracy.
+    /// 3300 mV is the spec-typical fallback if the board hasn't been cal'd.
+    pub vdd_mv: u16,
 }
 
 pub trait Board {

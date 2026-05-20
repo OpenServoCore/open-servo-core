@@ -88,6 +88,10 @@ fn main() -> ! {
         defaults: ConfigDefaults {
             pos_min_phys_urad: -1_570_796,
             pos_max_phys_urad: 1_570_796,
+            // Spec-typical fallback. Replace with DMM-measured value at the
+            // VDD pin once the board is in service — host can also overwrite
+            // the live knob via CONFIG.calibration.vdd_mv at runtime.
+            vdd_mv: 3300,
         },
     });
 
