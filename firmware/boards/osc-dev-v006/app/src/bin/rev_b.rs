@@ -28,12 +28,15 @@ fn main() -> ! {
                 polarity: timer::Polarity::ActiveHigh,
             },
             current_sense: CurrentSenseConfig {
-                opa_input: opa::InputMode::Differential {
-                    pos: opa::PositiveInput::PA2,
-                    neg: opa::NegativeInput::PA4,
+                opa: opa::Config {
+                    input: opa::InputMode::Differential {
+                        pos: opa::PositiveInput::PA2,
+                        neg: opa::NegativeInput::PA4,
+                    },
+                    gain: opa::Gain::X32,
+                    bias: opa::Bias::MidRail,
+                    output: opa::Output::Internal,
                 },
-                opa_gain: opa::Gain::X32,
-                opa_bias: opa::Bias::MidRail,
                 adc_sample_time: adc::SampleTime::CYCLES9,
             },
             sensors: Sensors {

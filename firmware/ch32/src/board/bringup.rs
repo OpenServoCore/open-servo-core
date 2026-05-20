@@ -28,7 +28,7 @@ pub(super) fn run(wiring: &BoardWiring, defaults: &ConfigDefaults) -> BringupRes
     bring_up_analog_chain(&wiring.current_sense);
     crate::log::debug!("opa settled");
 
-    let shunt_bias_raw = wiring.current_sense.opa_bias.quiescent_raw();
+    let shunt_bias_raw = wiring.current_sense.opa.bias.quiescent_raw();
     configure_adc_dma_scan(&wiring.sensors, wiring.current_sense.adc_sample_time);
     crate::log::debug!(
         "adc/dma scan armed: scan_len={} buf_len={} shunt_bias_raw={}",
@@ -73,7 +73,7 @@ fn sensor_inputs(s: &Sensors) -> [adc::Input; ADC_SENSOR_COUNT] {
 fn enable_clocks_and_remaps(w: &BoardWiring) {
     let in1 = tim1_channel_pin(w.motor.tim1, w.motor.in1);
     let in2 = tim1_channel_pin(w.motor.tim1, w.motor.in2);
-    let opa_pos_pin = w.current_sense.opa_input.pos().pin();
+    let opa_pos_pin = w.current_sense.opa.input.pos().pin();
 
     rcc::init_48mhz_hsi_pll();
     rcc::enable_afio();
@@ -83,7 +83,7 @@ fn enable_clocks_and_remaps(w: &BoardWiring) {
     rcc::enable_gpio(in2.port_index());
     rcc::enable_gpio(w.motor.drv_en.port_index());
     rcc::enable_gpio(opa_pos_pin.port_index());
-    if let Some(neg_pin) = w.current_sense.opa_input.neg_pin() {
+    if let Some(neg_pin) = w.current_sense.opa.input.neg_pin() {
         rcc::enable_gpio(neg_pin.port_index());
     }
     for input in sensor_inputs(&w.sensors) {
@@ -102,7 +102,7 @@ fn enable_clocks_and_remaps(w: &BoardWiring) {
 fn configure_pins(w: &BoardWiring) {
     let in1 = tim1_channel_pin(w.motor.tim1, w.motor.in1);
     let in2 = tim1_channel_pin(w.motor.tim1, w.motor.in2);
-    let opa_pos_pin = w.current_sense.opa_input.pos().pin();
+    let opa_pos_pin = w.current_sense.opa.input.pos().pin();
 
     gpio::configure(w.stat_led, PinMode::OUTPUT_PUSH_PULL);
     gpio::set_level(w.stat_led, Level::Low);
@@ -118,7 +118,7 @@ fn configure_pins(w: &BoardWiring) {
     gpio::configure(in2, PinMode::AF_PUSH_PULL);
 
     gpio::configure(opa_pos_pin, PinMode::ANALOG);
-    if let Some(neg_pin) = w.current_sense.opa_input.neg_pin() {
+    if let Some(neg_pin) = w.current_sense.opa.input.neg_pin() {
         gpio::configure(neg_pin, PinMode::ANALOG);
     }
     for input in sensor_inputs(&w.sensors) {
@@ -129,12 +129,7 @@ fn configure_pins(w: &BoardWiring) {
 }
 
 fn bring_up_analog_chain(cs: &CurrentSenseConfig) {
-    opa::init_pga(
-        cs.opa_input,
-        cs.opa_gain,
-        cs.opa_bias,
-        opa::Output::Internal,
-    );
+    opa::init(&cs.opa);
     delay_ms(OPA_SETTLE_MS);
 }
 

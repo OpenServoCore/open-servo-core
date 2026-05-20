@@ -112,25 +112,32 @@ pub enum Output {
     Internal = 0b11,
 }
 
+pub struct Config {
+    pub input: InputMode,
+    pub gain: Gain,
+    pub bias: Bias,
+    pub output: Output,
+}
+
 fn unlock() {
     OPA.opa_key().write(|w| w.set_opa_key(KEY1));
     OPA.opa_key().write(|w| w.set_opa_key(KEY2));
 }
 
 /// Configures OPA1 as a PGA (RM 17.2.1.2–4). Caller settles before sampling.
-pub fn init_pga(mode: InputMode, gain: Gain, bias: Bias, output: Output) {
+pub fn init(cfg: &Config) {
     unlock();
     OPA.ctlr1().write(|w| {
         w.set_opa_hs1(true);
         // VBCMPSEL feeds CMP2 only; 0b11 leaves it unselected.
         w.set_vbcmpsel(0b11);
-        w.set_vbsel(matches!(bias, Bias::QuarterRail));
+        w.set_vbsel(matches!(cfg.bias, Bias::QuarterRail));
         w.set_vben(true);
-        w.set_pgadif(matches!(mode, InputMode::Differential { .. }));
+        w.set_pgadif(matches!(cfg.input, InputMode::Differential { .. }));
         w.set_fb_en1(true);
-        w.set_nsel1(gain as u8);
-        w.set_psel1(mode.pos() as u8);
-        w.set_mode1(output as u8);
+        w.set_nsel1(cfg.gain as u8);
+        w.set_psel1(cfg.input.pos() as u8);
+        w.set_mode1(cfg.output as u8);
         w.set_opa_en1(true);
     });
 }

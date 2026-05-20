@@ -12,9 +12,7 @@ pub struct MotorConfig {
 }
 
 pub struct CurrentSenseConfig {
-    pub opa_input: opa::InputMode,
-    pub opa_gain: opa::Gain,
-    pub opa_bias: opa::Bias,
+    pub opa: opa::Config,
     pub adc_sample_time: adc::SampleTime,
 }
 

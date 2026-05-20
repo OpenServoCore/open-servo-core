@@ -48,7 +48,7 @@ impl Ch32Board {
             defaults,
         } = cfg;
 
-        let gain_factor = wiring.current_sense.opa_gain.factor();
+        let gain_factor = wiring.current_sense.opa.gain.factor();
         let scales = Scales::new(&calibration, gain_factor);
         crate::log::debug!(
             "scales: gain_factor={} vbus_q32={} vmotor_q32={} shunt_q32={}",
