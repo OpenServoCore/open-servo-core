@@ -12,14 +12,14 @@ fn DMA1_CHANNEL1() {
         let tick = &raw mut (*SHARED.table.telemetry.get()).intermediaries.sample_tick;
         tick.write_volatile(tick.read_volatile().wrapping_add(1));
 
-        if let Some(kernel) = (*KERNEL.get()).as_mut() {
-            kernel.board.dbg_high();
-            let inputs = FrameInputs::snapshot(&SHARED);
-            let frame = kernel.board.sample(&inputs);
-            #[cfg(feature = "defmt")]
-            crate::telemetry::record_frame(&frame);
-            kernel.on_tick(frame, &SHARED);
-            kernel.board.dbg_low();
-        }
+        // SAFETY: PFIC unmasks DMA1_CHANNEL1 only after install_kernel writes KERNEL.
+        let kernel = (*KERNEL.get()).assume_init_mut();
+        kernel.board.dbg_high();
+        let inputs = FrameInputs::snapshot(&SHARED);
+        let frame = kernel.board.sample(&inputs);
+        #[cfg(feature = "defmt")]
+        crate::telemetry::record_frame(&frame);
+        kernel.on_tick(frame, &SHARED);
+        kernel.board.dbg_low();
     }
 }

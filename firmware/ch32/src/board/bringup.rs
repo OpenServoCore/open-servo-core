@@ -4,7 +4,7 @@ use osc_core::ConfigDefaults;
 use crate::hal::{
     Pin, Tim1Mapping, adc, afio, delay_ms, dma,
     gpio::{self, Level, PinMode},
-    opa, pfic, rcc, timer,
+    opa, rcc, timer,
 };
 use crate::statics::{ADC_DMA_BUF, ADC_DMA_BUF_LEN, ADC_SCAN_LEN, ADC_SENSOR_COUNT, SHARED};
 
@@ -39,9 +39,6 @@ pub(super) fn run(wiring: &BoardWiring, defaults: &ConfigDefaults) -> BringupRes
 
     // Sole writer to CONFIG: pre-IRQ, pre-install_kernel.
     SHARED.table.seed_config_defaults(defaults);
-
-    pfic::enable(pfic::Interrupt::DMA1_CHANNEL1);
-    crate::log::debug!("pfic: DMA1_CHANNEL1 enabled");
 
     let pwm_arr = start_center_aligned_pwm(&wiring.motor);
     crate::log::debug!(

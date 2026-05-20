@@ -1,7 +1,9 @@
 use core::cell::SyncUnsafeCell;
+use core::mem::MaybeUninit;
 use osc_core::{Kernel, Shared};
 
 use crate::board::Ch32Board;
+use crate::hal::pfic;
 
 /// In `Sensors` field order: pos, ntc, vbus, vmotor.0, vmotor.1.
 pub const ADC_SENSOR_COUNT: usize = 5;
@@ -18,13 +20,15 @@ pub static ADC_DMA_BUF: SyncUnsafeCell<[u16; ADC_DMA_BUF_LEN]> =
 
 pub static SHARED: Shared = Shared::const_new();
 
-/// `None` until `install_kernel` runs — DMA1 TC ISR ignores ticks while None.
-pub(crate) static KERNEL: SyncUnsafeCell<Option<Kernel<Ch32Board>>> = SyncUnsafeCell::new(None);
+/// Initialised by `install_kernel`; DMA TC IRQ is PFIC-masked until then.
+pub(crate) static KERNEL: SyncUnsafeCell<MaybeUninit<Kernel<Ch32Board>>> =
+    SyncUnsafeCell::new(MaybeUninit::uninit());
 
 pub fn install_kernel(board: Ch32Board) {
     unsafe {
-        *KERNEL.get() = Some(Kernel::new(board));
+        (*KERNEL.get()).write(Kernel::new(board));
     }
+    pfic::enable(pfic::Interrupt::DMA1_CHANNEL1);
     crate::log::info!("kernel installed; DMA TC ISR live");
 }
 
