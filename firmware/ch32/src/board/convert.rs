@@ -1,6 +1,6 @@
 use osc_units::{CentiCelsius, Microrads, Milliamps, Millivolts};
 
-use crate::statics::{ADC_DMA_BUF, ADC_DMA_BUF_LEN, ADC_SCAN_LEN};
+use crate::statics::{ADC_DMA_BUF, ADC_SCAN_LEN};
 
 use super::config::{Calibration, Divider, NtcCal};
 
@@ -52,14 +52,13 @@ pub(super) const SCAN_IDX_VMOTOR_A: usize = 3;
 pub(super) const SCAN_IDX_VMOTOR_B: usize = 4;
 pub(super) const SCAN_IDX_VCAL: usize = 5;
 
-pub(super) fn volatile_snapshot_scan() -> [u16; ADC_DMA_BUF_LEN] {
-    let src = ADC_DMA_BUF.get() as *const u16;
-    let mut out = [0u16; ADC_DMA_BUF_LEN];
-    for (i, slot) in out.iter_mut().enumerate() {
-        // SAFETY: `src.add(i)` stays in-bounds for i < ADC_DMA_BUF_LEN.
-        *slot = unsafe { src.add(i).read_volatile() };
-    }
-    out
+/// Read trough slots before peak; DMA overwrites trough first after TC.
+#[inline(always)]
+pub(super) fn scan_slot(offset: usize, idx: usize) -> u16 {
+    let i = offset + idx;
+    debug_assert!(i < 2 * ADC_SCAN_LEN);
+    // SAFETY: index bounded above; `ADC_DMA_BUF` is a fixed-length static.
+    unsafe { (ADC_DMA_BUF.get() as *const u16).add(i).read_volatile() }
 }
 
 /// EWMA low-pass, α = 1/128. `state_q6` keeps 6 sub-LSB bits.

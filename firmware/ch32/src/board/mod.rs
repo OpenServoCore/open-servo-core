@@ -16,14 +16,13 @@ use crate::hal::{
     gpio::{self, Level},
     timer,
 };
-use crate::statics::{ADC_SCAN_LEN, read_sample_tick};
+use crate::statics::read_sample_tick;
 
 use bringup::BringupResult;
 use convert::{
     SCAN_IDX_NTC, SCAN_IDX_POS, SCAN_IDX_SHUNT_POST, SCAN_IDX_VCAL, SCAN_IDX_VMOTOR_A,
     SCAN_IDX_VMOTOR_B, SCAN_PEAK_OFFSET, SCAN_TROUGH_OFFSET, Scales, VcalLpf, divider_to_mv,
-    ntc_to_centi_celsius, pos_to_microrads, shunt_to_milliamps, vmotor_diff_mv,
-    volatile_snapshot_scan,
+    ntc_to_centi_celsius, pos_to_microrads, scan_slot, shunt_to_milliamps, vmotor_diff_mv,
 };
 
 pub struct Ch32Board {
@@ -114,20 +113,17 @@ impl Ch32Board {
 impl Board for Ch32Board {
     /// Called from DMA1 TC ISR. Peak drives current; trough is diagnostic.
     fn sample(&mut self, inputs: &FrameInputs) -> SampleFrame {
-        let scan = volatile_snapshot_scan();
-        let peak = &scan[SCAN_PEAK_OFFSET..SCAN_PEAK_OFFSET + ADC_SCAN_LEN];
-        let trough = &scan[SCAN_TROUGH_OFFSET..SCAN_TROUGH_OFFSET + ADC_SCAN_LEN];
+        let raw_shunt_post_trough = scan_slot(SCAN_TROUGH_OFFSET, SCAN_IDX_SHUNT_POST);
+        let raw_vmotor_a_trough = scan_slot(SCAN_TROUGH_OFFSET, SCAN_IDX_VMOTOR_A);
+        let raw_vmotor_b_trough = scan_slot(SCAN_TROUGH_OFFSET, SCAN_IDX_VMOTOR_B);
 
-        let raw_shunt_post_peak = peak[SCAN_IDX_SHUNT_POST];
-        let raw_shunt_post_trough = trough[SCAN_IDX_SHUNT_POST];
-        let raw_pos = peak[SCAN_IDX_POS];
-        let raw_ntc = peak[SCAN_IDX_NTC];
+        let raw_shunt_post_peak = scan_slot(SCAN_PEAK_OFFSET, SCAN_IDX_SHUNT_POST);
+        let raw_pos = scan_slot(SCAN_PEAK_OFFSET, SCAN_IDX_POS);
+        let raw_ntc = scan_slot(SCAN_PEAK_OFFSET, SCAN_IDX_NTC);
+        let raw_vmotor_a = scan_slot(SCAN_PEAK_OFFSET, SCAN_IDX_VMOTOR_A);
+        let raw_vmotor_b = scan_slot(SCAN_PEAK_OFFSET, SCAN_IDX_VMOTOR_B);
+        let raw_vcal = scan_slot(SCAN_PEAK_OFFSET, SCAN_IDX_VCAL);
         let raw_vbus = 0u16;
-        let raw_vmotor_a = peak[SCAN_IDX_VMOTOR_A];
-        let raw_vmotor_a_trough = trough[SCAN_IDX_VMOTOR_A];
-        let raw_vmotor_b = peak[SCAN_IDX_VMOTOR_B];
-        let raw_vmotor_b_trough = trough[SCAN_IDX_VMOTOR_B];
-        let raw_vcal = peak[SCAN_IDX_VCAL];
 
         let filtered_vcal = self.vcal_lpf.update(raw_vcal);
         let vdd_mv = inputs.vdd_mv as u32;
