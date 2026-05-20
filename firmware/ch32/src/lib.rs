@@ -23,11 +23,6 @@ pub fn run(cfg: BoardConfig) -> ! {
     loop {
         #[cfg(feature = "defmt")]
         telemetry::pump();
-        #[cfg(target_arch = "riscv32")]
-        unsafe {
-            core::arch::asm!("wfi")
-        }
-        #[cfg(not(target_arch = "riscv32"))]
-        core::hint::spin_loop();
+        riscv::asm::wfi();
     }
 }

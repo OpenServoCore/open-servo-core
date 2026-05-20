@@ -323,6 +323,7 @@ dependencies = [
  "embedded-storage",
  "osc-core",
  "osc-units",
+ "riscv 0.12.1",
 ]
 
 [[package]]
