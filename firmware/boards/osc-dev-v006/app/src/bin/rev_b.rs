@@ -9,6 +9,7 @@ use panic_halt as _;
 use defmt_rtt as _;
 
 tinyboot_ch32::app::app_version!();
+osc_ch32::install_isrs!();
 
 #[qingke_rt::entry]
 fn main() -> ! {

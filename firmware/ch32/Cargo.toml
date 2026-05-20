@@ -12,7 +12,6 @@ ch32-metapac     = { git = "https://github.com/ch32-rs/ch32-metapac", default-fe
 embedded-storage = "0.3"
 osc-core         = { path = "../lib/core" }
 osc-units        = { path = "../lib/units" }
-qingke-rt        = { version = "0.7", features = ["v2"] }
 defmt            = { version = "1", optional = true }
 critical-section = { version = "1.2", optional = true }
 

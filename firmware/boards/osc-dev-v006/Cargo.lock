@@ -323,7 +323,6 @@ dependencies = [
  "embedded-storage",
  "osc-core",
  "osc-units",
- "qingke-rt",
 ]
 
 [[package]]
