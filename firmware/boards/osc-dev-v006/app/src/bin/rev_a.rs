@@ -64,7 +64,7 @@ fn main() -> ! {
             ntc: NtcCal {
                 beta: 3950,
                 r0_ohm: 10_000,
-                t0_dc: 250,
+                t0_cc: 2500,
                 bias_r_ohm: 10_000,
             },
         },

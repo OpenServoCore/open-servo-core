@@ -116,7 +116,7 @@ pub(super) fn shunt_to_milliamps(
 pub(super) fn ntc_to_centi_celsius(_raw: u16, cal: &NtcCal) -> CentiCelsius {
     // TODO: full β-model needs fixed-point ln; pass-through returns T₀.
     let _ = (cal.beta, cal.r0_ohm, cal.bias_r_ohm);
-    CentiCelsius(cal.t0_dc)
+    CentiCelsius(cal.t0_cc)
 }
 
 pub(super) fn pos_to_microrads(raw: u16, min_urad: i32, max_urad: i32) -> Microrads {

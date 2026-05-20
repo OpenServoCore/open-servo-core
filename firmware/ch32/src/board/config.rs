@@ -33,8 +33,8 @@ pub struct Divider {
 pub struct NtcCal {
     pub beta: u16,
     pub r0_ohm: u32,
-    /// T₀ in deci-°C (matches `osc_units::CentiCelsius`).
-    pub t0_dc: i16,
+    /// T₀ in centi-°C (matches `osc_units::CentiCelsius`).
+    pub t0_cc: i16,
     pub bias_r_ohm: u32,
 }
 

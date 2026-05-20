@@ -59,8 +59,8 @@ pub struct ConfigStall {
 pub struct ConfigThermal {
     pub motor_thermal_k_q88: u16,
     pub motor_thermal_tau_ms: u16,
-    pub winding_cutoff_dc: i16,
-    pub winding_recover_dc: i16,
+    pub winding_cutoff_cc: i16,
+    pub winding_recover_cc: i16,
     pub v_undervolt_mv: u16,
 }
 
@@ -165,8 +165,8 @@ impl ConfigThermal {
         Self {
             motor_thermal_k_q88: 0,
             motor_thermal_tau_ms: 0,
-            winding_cutoff_dc: 0,
-            winding_recover_dc: 0,
+            winding_cutoff_cc: 0,
+            winding_recover_cc: 0,
             v_undervolt_mv: 0,
         }
     }
