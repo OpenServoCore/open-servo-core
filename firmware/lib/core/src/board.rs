@@ -32,10 +32,6 @@ pub enum MotorCmd {
     Drive { duty: Effort, decay: DecayMode },
 }
 
-impl MotorCmd {
-    pub const ZERO: Self = Self::Disabled;
-}
-
 #[derive(Copy, Clone, Debug)]
 pub enum DecayMode {
     Fast,

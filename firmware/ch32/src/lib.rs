@@ -6,7 +6,7 @@ pub use osc_core::ConfigDefaults;
 pub use osc_core::bp;
 
 pub mod board;
-pub mod flash;
+pub mod chip_flash;
 pub mod hal;
 pub mod irq;
 pub mod log;

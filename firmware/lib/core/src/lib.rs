@@ -9,7 +9,6 @@ pub mod page;
 pub mod regions;
 pub mod regmap;
 pub mod sample_frame;
-pub mod services;
 pub mod shared;
 pub mod stream_coord;
 
@@ -24,6 +23,5 @@ pub use regions::{
 };
 pub use regmap::{Access, BlockDesc, RegmapError};
 pub use sample_frame::{FrameInputs, RawSamples, SampleFrame};
-pub use services::Services;
 pub use shared::Shared;
 pub use stream_coord::StreamCoord;
