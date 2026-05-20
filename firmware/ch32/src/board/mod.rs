@@ -22,7 +22,8 @@ use bringup::BringupResult;
 use convert::{
     SCAN_IDX_NTC, SCAN_IDX_POS, SCAN_IDX_SHUNT_POST, SCAN_IDX_VCAL, SCAN_IDX_VMOTOR_A,
     SCAN_IDX_VMOTOR_B, SCAN_PEAK_OFFSET, SCAN_TROUGH_OFFSET, Scales, VcalLpf, divider_to_mv,
-    ntc_to_centi_celsius, pos_to_microrads, scan_slot, shunt_to_milliamps, vmotor_diff_mv,
+    effort_to_ticks, ntc_to_centi_celsius, pos_to_microrads, scan_slot, shunt_to_milliamps,
+    vmotor_diff_mv,
 };
 
 pub struct Ch32Board {
@@ -84,13 +85,6 @@ impl Ch32Board {
             drv_en,
             pwm_arr,
         }
-    }
-
-    /// `mag·arr / 32767`, approximated with `>>15` to dodge soft-div in the ISR.
-    fn effort_to_ticks(&self, mag: u16) -> u16 {
-        let m = mag.min(i16::MAX as u16) as u32;
-        let prod = m * self.pwm_arr as u32;
-        ((prod + (1 << 14)) >> 15) as u16
     }
 
     #[inline]
@@ -188,7 +182,7 @@ impl Board for Ch32Board {
             }
             MotorCmd::Drive { duty, decay } => {
                 gpio::set_level(self.drv_en, Level::High);
-                let ticks = self.effort_to_ticks(duty.0.unsigned_abs());
+                let ticks = effort_to_ticks(duty.0.unsigned_abs(), self.pwm_arr);
                 if ticks == 0 {
                     // Slow decay at zero ticks would lock both legs HIGH = BRAKE; coast instead.
                     timer::set_duty(self.motor_in1, 0);

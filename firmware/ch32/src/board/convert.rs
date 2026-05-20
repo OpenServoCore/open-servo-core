@@ -125,6 +125,13 @@ pub(super) fn pos_to_microrads(raw: u16, min_urad: i32, max_urad: i32) -> Micror
     Microrads(min_urad.saturating_add(interp as i32))
 }
 
+/// `mag · arr / 32767`, approximated with `>>15` to dodge soft-div in the ISR.
+pub(super) fn effort_to_ticks(mag: u16, pwm_arr: u16) -> u16 {
+    let m = mag.min(i16::MAX as u16) as u32;
+    let prod = m * pwm_arr as u32;
+    ((prod + (1 << 14)) >> 15) as u16
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -270,5 +277,31 @@ mod tests {
         assert!(scales.vbus_q32 > 0);
         assert!(scales.vmotor_q32 > 0);
         assert!(scales.shunt_q32 > 0);
+    }
+
+    #[test]
+    fn effort_zero_maps_to_zero_ticks() {
+        assert_eq!(effort_to_ticks(0, 1200), 0);
+    }
+
+    #[test]
+    fn effort_full_scale_maps_to_arr() {
+        assert_eq!(effort_to_ticks(i16::MAX as u16, 1200), 1200);
+    }
+
+    #[test]
+    fn effort_clamps_above_i16_max() {
+        assert_eq!(effort_to_ticks(u16::MAX, 1200), 1200);
+    }
+
+    #[test]
+    fn effort_to_ticks_monotonic() {
+        let arr = 1200;
+        let mut last = 0;
+        for mag in (0..=i16::MAX as u16).step_by(317) {
+            let t = effort_to_ticks(mag, arr);
+            assert!(t >= last, "non-monotonic at mag={mag}: {last} -> {t}");
+            last = t;
+        }
     }
 }

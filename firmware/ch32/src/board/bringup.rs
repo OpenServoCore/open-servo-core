@@ -208,3 +208,50 @@ fn start_center_aligned_pwm(m: &MotorConfig) -> u16 {
     timer::start();
     arr
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::hal::adc::{Channel, Input, SampleTime};
+
+    fn rev_b_sensors() -> Sensors {
+        Sensors {
+            pos: Input::new(Channel::IN3, SampleTime::CYCLES9),
+            ntc: Input::new(Channel::IN2, SampleTime::CYCLES9),
+            vbus: Input::new(Channel::IN1, SampleTime::CYCLES9),
+            vmotor: (
+                Input::new(Channel::IN5, SampleTime::CYCLES9),
+                Input::new(Channel::IN6, SampleTime::CYCLES9),
+            ),
+        }
+    }
+
+    #[test]
+    fn validate_accepts_rev_b_config() {
+        validate_sensors(&rev_b_sensors());
+    }
+
+    #[test]
+    #[should_panic(expected = "duplicate sensor channel")]
+    fn validate_rejects_duplicate_channel() {
+        let mut s = rev_b_sensors();
+        s.ntc = Input::new(Channel::IN3, SampleTime::CYCLES9);
+        validate_sensors(&s);
+    }
+
+    #[test]
+    #[should_panic(expected = "internal ADC channel")]
+    fn validate_rejects_internal_channel() {
+        let mut s = rev_b_sensors();
+        s.pos = Input::new(Channel::Vcal, SampleTime::CYCLES9);
+        validate_sensors(&s);
+    }
+
+    #[test]
+    #[should_panic(expected = "internal ADC channel")]
+    fn validate_rejects_opa_out_as_sensor() {
+        let mut s = rev_b_sensors();
+        s.pos = Input::new(Channel::OpaOut, SampleTime::CYCLES9);
+        validate_sensors(&s);
+    }
+}
