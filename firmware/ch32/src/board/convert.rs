@@ -124,3 +124,151 @@ pub(super) fn pos_to_microrads(raw: u16, min_urad: i32, max_urad: i32) -> Micror
     let interp = (span * raw as i64) >> 12;
     Microrads(min_urad.saturating_add(interp as i32))
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const VDD_MV: u32 = 3300;
+    const HALF_PI_URAD: i32 = 1_570_796;
+
+    fn rev_b_calibration() -> Calibration {
+        Calibration {
+            shunt_r_mohm: 10,
+            vbus_divider: Divider {
+                top_ohm: 20_000,
+                bot_ohm: 10_000,
+            },
+            vmotor_divider: Divider {
+                top_ohm: 20_000,
+                bot_ohm: 10_000,
+            },
+            ntc: NtcCal {
+                beta: 3950,
+                r0_ohm: 10_000,
+                t0_cc: 2500,
+                bias_r_ohm: 10_000,
+            },
+        }
+    }
+
+    #[test]
+    fn shunt_zero_at_bias() {
+        let scale = shunt_q32(32, 10);
+        assert_eq!(shunt_to_milliamps(2048, 2048, VDD_MV, scale), Milliamps(0));
+    }
+
+    #[test]
+    fn shunt_sign_follows_bias_offset() {
+        let scale = shunt_q32(32, 10);
+        let above = shunt_to_milliamps(2148, 2048, VDD_MV, scale);
+        let below = shunt_to_milliamps(1948, 2048, VDD_MV, scale);
+        assert!(above.0 > 0, "above bias must be positive, got {}", above.0);
+        assert!(below.0 < 0, "below bias must be negative, got {}", below.0);
+        assert_eq!(above.0, -below.0);
+    }
+
+    #[test]
+    fn shunt_saturates_to_i16_range() {
+        let scale = shunt_q32(32, 10);
+        let max_pos = shunt_to_milliamps(u16::MAX, 0, VDD_MV, scale);
+        let max_neg = shunt_to_milliamps(0, u16::MAX, VDD_MV, scale);
+        assert_eq!(max_pos, Milliamps(i16::MAX));
+        assert_eq!(max_neg, Milliamps(i16::MIN));
+    }
+
+    #[test]
+    fn divider_known_two_to_one() {
+        let scale = divider_q32(&Divider {
+            top_ohm: 20_000,
+            bot_ohm: 10_000,
+        });
+        let v = divider_to_mv(2048, VDD_MV, scale);
+        assert!((4900..=5000).contains(&v.0), "got {}", v.0);
+    }
+
+    #[test]
+    fn divider_full_scale_caps_at_i16_max() {
+        let scale = divider_q32(&Divider {
+            top_ohm: 90_000,
+            bot_ohm: 10_000,
+        });
+        let v = divider_to_mv(4095, VDD_MV, scale);
+        assert_eq!(v, Millivolts(i16::MAX));
+    }
+
+    #[test]
+    fn vmotor_diff_is_symmetric() {
+        let scale = divider_q32(&Divider {
+            top_ohm: 20_000,
+            bot_ohm: 10_000,
+        });
+        let ab = vmotor_diff_mv(3000, 1000, VDD_MV, scale);
+        let ba = vmotor_diff_mv(1000, 3000, VDD_MV, scale);
+        assert_eq!(ab, ba);
+    }
+
+    #[test]
+    fn vmotor_diff_zero_when_equal() {
+        let scale = divider_q32(&Divider {
+            top_ohm: 20_000,
+            bot_ohm: 10_000,
+        });
+        assert_eq!(vmotor_diff_mv(2000, 2000, VDD_MV, scale), Millivolts(0));
+    }
+
+    #[test]
+    fn pos_endpoints_match_range() {
+        let lo = pos_to_microrads(0, -HALF_PI_URAD, HALF_PI_URAD);
+        let hi = pos_to_microrads(4095, -HALF_PI_URAD, HALF_PI_URAD);
+        assert_eq!(lo, Microrads(-HALF_PI_URAD));
+        let span_per_lsb = (2 * HALF_PI_URAD as i64) / 4096;
+        let err = (HALF_PI_URAD - hi.0) as i64;
+        assert!(err <= span_per_lsb + 1, "err={err} lsb={span_per_lsb}");
+    }
+
+    #[test]
+    fn pos_midpoint_near_zero() {
+        let mid = pos_to_microrads(2048, -HALF_PI_URAD, HALF_PI_URAD);
+        let span_per_lsb = (2 * HALF_PI_URAD as i64) / 4096;
+        assert!(
+            (mid.0 as i64).abs() <= span_per_lsb,
+            "midpoint not near zero: {}",
+            mid.0
+        );
+    }
+
+    #[test]
+    fn vcal_lpf_initialises_on_first_sample() {
+        let mut lpf = VcalLpf::new();
+        assert_eq!(lpf.update(1234), 1234);
+    }
+
+    #[test]
+    fn vcal_lpf_constant_input_steady_state() {
+        let mut lpf = VcalLpf::new();
+        lpf.update(500);
+        for _ in 0..256 {
+            assert_eq!(lpf.update(500), 500);
+        }
+    }
+
+    #[test]
+    fn vcal_lpf_step_converges() {
+        let mut lpf = VcalLpf::new();
+        lpf.update(0);
+        let mut last = 0;
+        for _ in 0..2000 {
+            last = lpf.update(1000) as i32;
+        }
+        assert!((last - 1000).abs() <= 2, "last={last}");
+    }
+
+    #[test]
+    fn scales_new_returns_nonzero_q32() {
+        let scales = Scales::new(&rev_b_calibration(), 32);
+        assert!(scales.vbus_q32 > 0);
+        assert!(scales.vmotor_q32 > 0);
+        assert!(scales.shunt_q32 > 0);
+    }
+}
