@@ -1,5 +1,5 @@
 use ch32_metapac::DMA1;
-use osc_core::FrameInputs;
+use osc_core::{Board, FrameInputs};
 
 use crate::statics::{KERNEL, SHARED};
 
@@ -15,7 +15,7 @@ fn DMA1_CHANNEL1() {
         if let Some(kernel) = (*KERNEL.get()).as_mut() {
             kernel.board.dbg_high();
             let inputs = FrameInputs::snapshot(&SHARED);
-            let frame = kernel.board.build_sample_frame(&inputs);
+            let frame = kernel.board.sample(&inputs);
             #[cfg(feature = "defmt")]
             crate::telemetry::record_frame(&frame);
             kernel.on_tick(frame, &SHARED);

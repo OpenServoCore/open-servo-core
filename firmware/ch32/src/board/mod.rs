@@ -9,7 +9,7 @@ pub use config::{
     Sensors,
 };
 
-use osc_core::{Board, Capabilities, FrameInputs, MotorCmd, RawSamples, SampleFrame};
+use osc_core::{Board, FrameInputs, MotorCmd, RawSamples, SampleFrame};
 
 use crate::hal::{
     Pin,
@@ -110,8 +110,11 @@ impl Ch32Board {
         gpio::set_level(self.dbg, Level::Low);
     }
 
+}
+
+impl Board for Ch32Board {
     /// Called from DMA1 TC ISR. Peak drives current; trough is diagnostic.
-    pub fn build_sample_frame(&mut self, inputs: &FrameInputs) -> SampleFrame {
+    fn sample(&mut self, inputs: &FrameInputs) -> SampleFrame {
         let scan = volatile_snapshot_scan();
         let peak = &scan[SCAN_PEAK_OFFSET..SCAN_PEAK_OFFSET + ADC_SCAN_LEN];
         let trough = &scan[SCAN_TROUGH_OFFSET..SCAN_TROUGH_OFFSET + ADC_SCAN_LEN];
@@ -165,12 +168,6 @@ impl Ch32Board {
                 vcal_lpf: filtered_vcal,
             },
         }
-    }
-}
-
-impl Board for Ch32Board {
-    fn caps(&self) -> Capabilities {
-        Capabilities::default()
     }
 
     // DRV8212P truth table: (1,1)=BRAKE, (0,0)=COAST, (1,0)=fwd, (0,1)=rev.

@@ -1,5 +1,7 @@
 use osc_units::Effort;
 
+use crate::{FrameInputs, SampleFrame};
+
 /// Stamped into `ControlTable.config` pre-IRQ; thereafter host-owned.
 #[derive(Copy, Clone, Debug, Default)]
 pub struct ConfigDefaults {
@@ -10,7 +12,10 @@ pub struct ConfigDefaults {
 }
 
 pub trait Board {
-    fn caps(&self) -> Capabilities;
+    fn caps(&self) -> Capabilities {
+        Capabilities::default()
+    }
+    fn sample(&mut self, inputs: &FrameInputs) -> SampleFrame;
     fn write_motor(&mut self, cmd: MotorCmd);
     fn pulse_tick_indicator(&mut self) {}
 }
