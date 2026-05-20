@@ -99,6 +99,8 @@ fn main() -> ! {
     install_kernel(board);
 
     loop {
+        #[cfg(feature = "defmt")]
+        osc_ch32::telemetry::pump();
         core::hint::spin_loop();
     }
 }

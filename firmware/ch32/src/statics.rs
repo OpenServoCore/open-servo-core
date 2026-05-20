@@ -28,6 +28,12 @@ pub fn install_kernel(board: Ch32Board) {
     crate::log::info!("kernel installed; DMA TC ISR live");
 }
 
+/// Volatile load — the DMA TC ISR writes this asynchronously and LLVM's
+/// intraprocedural alias analysis can't see that, so a plain read gets hoisted
+/// out of any spin loop. `read_volatile` forces the reload each call.
 pub fn read_sample_tick() -> u32 {
-    unsafe { (*SHARED.table.telemetry.get()).intermediaries.sample_tick }
+    unsafe {
+        let p = &raw const (*SHARED.table.telemetry.get()).intermediaries.sample_tick;
+        p.read_volatile()
+    }
 }

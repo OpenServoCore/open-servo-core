@@ -12,3 +12,5 @@ pub mod hal;
 pub mod irq;
 pub mod log;
 pub mod statics;
+#[cfg(feature = "defmt")]
+pub mod telemetry;

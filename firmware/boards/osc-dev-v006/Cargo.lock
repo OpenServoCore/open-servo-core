@@ -318,6 +318,7 @@ name = "osc-ch32"
 version = "0.0.0"
 dependencies = [
  "ch32-metapac",
+ "critical-section",
  "defmt",
  "embedded-storage",
  "osc-core",

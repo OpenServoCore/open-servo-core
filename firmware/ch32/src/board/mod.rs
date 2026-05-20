@@ -1,6 +1,8 @@
 mod bringup;
 mod config;
 mod convert;
+#[cfg(feature = "defmt")]
+mod diag;
 
 pub use config::{
     BoardConfig, BoardWiring, Calibration, CurrentSenseConfig, Divider, MotorConfig, NtcCal,
@@ -90,6 +92,9 @@ impl Ch32Board {
         crate::log::debug!("pfic: DMA1_CHANNEL1 enabled");
         let pwm_arr = start_center_aligned_pwm(&wiring.motor);
         crate::log::debug!("pwm running ({} Hz, arr={})", wiring.motor.pwm_freq_hz, pwm_arr);
+
+        #[cfg(feature = "defmt")]
+        diag::dump_init_regs();
 
         crate::log::info!("Ch32Board::new: complete");
         Self {
