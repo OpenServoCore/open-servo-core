@@ -1,29 +1,13 @@
-//! Regmap — byte-addressed access to the control table.
+//! Byte-addressed access to the control table.
 //!
-//! Translates host (addr, len) byte ranges into reads/writes against the
-//! in-RAM control-table mirror. Each region declares a `&[BlockDesc]`
-//! table mapping protocol-address block slots to (struct offset, active
-//! size, access). The walker traverses the table once per request:
+//! Per-region `&[BlockDesc]` tables map protocol slots to (struct offset, size, access):
+//! * Outside any region → `OutOfRange`. Cross-region spans → `OutOfRange`.
+//! * Reserved slot, or unused tail of an active block, or RO byte on write → `AccessError`.
+//! * Writes validate the full span before committing; failed write leaves the table untouched.
 //!
-//! * Bytes outside any region → `OutOfRange`.
-//! * Bytes inside a region but in a reserved slot, or in the unused tail
-//!   of an active block → `AccessError`.
-//! * Writes covering any RO byte → `AccessError`. Writes are validated
-//!   before any byte is committed, so a failed write leaves the table
-//!   untouched.
-//!
-//! Requests must lie entirely within one region. Cross-region spans
-//! return `OutOfRange`.
-//!
-//! Reads use raw pointer copies and never form `&RegionT`. Writes form
-//! a transient `&mut`-equivalent via `SyncUnsafeCell::get()`; callers
-//! must hold the appropriate single-writer guarantee for the region
-//! (CONFIG/CONTROL/CALIB written only from `services`, TELEMETRY written
-//! only from `kernel`).
-//!
-//! The same descriptor tables drive flash save/load, so the protocol
-//! layout, the SRAM mirror, and the on-flash page format stay consistent
-//! through one source of truth.
+//! Reads use raw-pointer copies, never form `&RegionT`. Writes form a transient
+//! `&mut`-equivalent via `SyncUnsafeCell::get()`; caller must hold the region's
+//! single-writer guarantee (CONFIG/CONTROL/CALIB from `services`, TELEMETRY from `kernel`).
 
 use crate::ControlTable;
 use crate::regions::calib::CALIB_BLOCKS;
@@ -37,10 +21,9 @@ use crate::regions::{
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub enum RegmapError {
-    /// Range is empty, wraps, or falls outside every region.
+    /// Empty, wrapping, or outside every region.
     OutOfRange,
-    /// Range hits a reserved slot, the unused tail of a block, or a RO
-    /// byte on a write.
+    /// Reserved slot, unused tail of a block, or RO byte on write.
     AccessError,
 }
 
@@ -54,16 +37,14 @@ pub enum Access {
 pub struct BlockDesc {
     /// Byte offset in the region's protocol address space.
     pub addr_offset: u16,
-    /// Active byte length. Bytes from `addr_offset+size` up to the next
-    /// block slot are reserved.
+    /// Active length. Bytes from `addr_offset+size` up to the next slot are reserved.
     pub size: u16,
-    /// Byte offset in the region struct (memcpy target/source).
+    /// Byte offset in the region struct.
     pub struct_offset: u16,
     pub access: Access,
 }
 
 impl ControlTable {
-    /// Copy `dst.len()` bytes starting at `addr` into `dst`.
     pub fn read_bytes(&self, addr: u16, dst: &mut [u8]) -> Result<(), RegmapError> {
         if dst.is_empty() {
             return Ok(());
@@ -74,8 +55,7 @@ impl ControlTable {
 
         if range_in(addr, end, CONFIG_BASE_ADDR, CONFIG_REGION_SIZE) {
             let base = self.config.get() as *const u8;
-            // SAFETY: SyncUnsafeCell::get() is non-null; descriptor sizes
-            // are verified in `region_structs_fit_regions`.
+            // SAFETY: get() non-null; descriptor sizes verified in `region_structs_fit_regions`.
             unsafe { walk_read(base, addr - CONFIG_BASE_ADDR, dst, CONFIG_BLOCKS) }
         } else if range_in(addr, end, TELEMETRY_BASE_ADDR, TELEMETRY_REGION_SIZE) {
             let base = self.telemetry.get() as *const u8;
@@ -91,12 +71,7 @@ impl ControlTable {
         }
     }
 
-    /// Write `src` to `[addr, addr+src.len())`. Validates the full span
-    /// against descriptors before any byte is committed; an AccessError
-    /// leaves the table untouched.
-    ///
-    /// Caller must be the region's sole writer for the duration of the
-    /// call (services for CONFIG/CONTROL/CALIB, kernel for TELEMETRY).
+    /// Caller must be the region's sole writer (services for CONFIG/CONTROL/CALIB, kernel for TELEMETRY).
     pub fn write_bytes(&self, addr: u16, src: &[u8]) -> Result<(), RegmapError> {
         if src.is_empty() {
             return Ok(());
@@ -128,7 +103,6 @@ fn range_in(addr: u16, end: usize, base: u16, size: usize) -> bool {
     (addr as usize) >= base && end <= base + size
 }
 
-/// Copy `dst.len()` bytes starting at `offset_in_region` into `dst`.
 /// Descriptors must be sorted by `addr_offset` and non-overlapping.
 unsafe fn walk_read(
     region_base: *const u8,
@@ -179,8 +153,7 @@ unsafe fn walk_write(
     src: &[u8],
     blocks: &[BlockDesc],
 ) -> Result<(), RegmapError> {
-    // Validate before mutating: any uncovered byte or RO byte aborts the
-    // whole write.
+    // Validate before mutating: any uncovered or RO byte aborts the whole write.
     let req_lo0 = offset_in_region as usize;
     let req_hi = req_lo0 + src.len();
     let mut req_lo = req_lo0;
@@ -252,7 +225,7 @@ mod tests {
     #[test]
     fn write_then_read_comms() {
         let t = fresh();
-        // CONFIG block 1 = comms, 4 bytes.
+        // block 1 (offset 32) = comms, 4 B.
         let comms_addr = CONFIG_BASE_ADDR + 32;
         let payload = [0x07u8, 0x03, 0x96, 0x00];
         t.write_bytes(comms_addr, &payload).unwrap();
@@ -277,7 +250,7 @@ mod tests {
 
     #[test]
     fn read_into_reserved_tail_fails() {
-        // identity is 12 bytes; bytes 12..32 within block 0 are reserved.
+        // identity = 12 B; bytes 12..32 in block 0 are reserved.
         let t = fresh();
         let mut buf = [0u8; 1];
         let err = t.read_bytes(CONFIG_BASE_ADDR + 12, &mut buf).unwrap_err();
@@ -286,10 +259,9 @@ mod tests {
 
     #[test]
     fn read_spanning_into_reserved_block_fails() {
-        // CONFIG block 6 (offset 0xC0) is reserved.
+        // Start in block 5 last 4 B, spill into reserved block 6.
         let t = fresh();
         let mut buf = [0u8; 8];
-        // Start in block 5 (control/position, last 4 bytes), spill into reserved.
         let addr = CONFIG_BASE_ADDR + (5 * 32) + 20;
         let err = t.read_bytes(addr, &mut buf).unwrap_err();
         assert_eq!(err, RegmapError::AccessError);
@@ -299,7 +271,7 @@ mod tests {
     fn cross_region_read_fails() {
         let t = fresh();
         let mut buf = [0u8; 8];
-        // Start near end of CONFIG, spill into TELEMETRY.
+        // End of CONFIG → spill into TELEMETRY.
         let err = t.read_bytes(0x01FE, &mut buf).unwrap_err();
         assert_eq!(err, RegmapError::OutOfRange);
     }
@@ -315,7 +287,6 @@ mod tests {
     #[test]
     fn write_control_lifecycle_full_block() {
         let t = fresh();
-        // ControlLifecycle = 16 B.
         let payload: [u8; 16] = [
             1, 3, 0, 0, // torque_enable, mode, padding
             0x10, 0x27, 0, 0, // goal_position = 10000
@@ -351,7 +322,7 @@ mod tests {
     #[test]
     fn calib_block_round_trip() {
         let t = fresh();
-        // CALIB block 1 = bemf, 40 B.
+        // block 1 = bemf, 40 B.
         let bemf_addr = CALIB_BASE_ADDR + 256;
         let mut payload = [0u8; 8];
         payload[0..2].copy_from_slice(&1234u16.to_le_bytes());
@@ -367,9 +338,138 @@ mod tests {
     #[test]
     fn calib_reserved_block_fails() {
         let t = fresh();
-        // CALIB block 2 (offset 512) is reserved.
+        // block 2 (offset 512) reserved.
         let mut buf = [0u8; 1];
         let err = t.read_bytes(CALIB_BASE_ADDR + 512, &mut buf).unwrap_err();
         assert_eq!(err, RegmapError::AccessError);
+    }
+
+    #[test]
+    fn write_config_pos_limits_round_trip() {
+        let t = fresh();
+        let addr = CONFIG_BASE_ADDR + 64;
+        let mut payload = [0u8; 16];
+        payload[0..4].copy_from_slice(&(-1_000_000i32).to_le_bytes());
+        payload[4..8].copy_from_slice(&1_000_000i32.to_le_bytes());
+        payload[8..12].copy_from_slice(&(-500_000i32).to_le_bytes());
+        payload[12..16].copy_from_slice(&500_000i32.to_le_bytes());
+        t.write_bytes(addr, &payload).unwrap();
+        let pos = unsafe { &*t.config.get() }.limits.pos;
+        assert_eq!(pos.pos_min_phys_urad, -1_000_000);
+        assert_eq!(pos.pos_max_phys_urad, 1_000_000);
+        assert_eq!(pos.pos_min_soft_urad, -500_000);
+        assert_eq!(pos.pos_max_soft_urad, 500_000);
+    }
+
+    #[test]
+    fn write_config_pid_round_trip() {
+        let t = fresh();
+        let addr = CONFIG_BASE_ADDR + 5 * 32;
+        let mut payload = [0u8; 16];
+        payload[0..2].copy_from_slice(&0x0100u16.to_le_bytes());
+        payload[2..4].copy_from_slice(&0x0040u16.to_le_bytes());
+        payload[4..6].copy_from_slice(&0x0080u16.to_le_bytes());
+        payload[8..12].copy_from_slice(&5000i32.to_le_bytes());
+        t.write_bytes(addr, &payload).unwrap();
+        let pid = unsafe { &*t.config.get() }.control.position;
+        assert_eq!(pid.pid_kp_q88, 0x0100);
+        assert_eq!(pid.pid_ki_q88, 0x0040);
+        assert_eq!(pid.pid_kd_q88, 0x0080);
+        assert_eq!(pid.pid_i_limit, 5000);
+    }
+
+    #[test]
+    fn write_control_streaming_round_trip() {
+        let t = fresh();
+        let addr = CONTROL_BASE_ADDR + 32;
+        let mut payload = [0u8; 12];
+        payload[0] = 1;
+        payload[1] = 4;
+        payload[2..4].copy_from_slice(&500u16.to_le_bytes());
+        payload[4..8].copy_from_slice(&0x0000_00ABu32.to_le_bytes());
+        t.write_bytes(addr, &payload).unwrap();
+        let s = unsafe { &*t.control.get() }.streaming;
+        assert_eq!(s.stream_enable, 1);
+        assert_eq!(s.stream_decimation, 4);
+        assert_eq!(s.stream_duration_ms, 500);
+        assert_eq!(s.stream_field_mask, 0xAB);
+    }
+
+    #[test]
+    fn write_calib_pot_lut_partial_does_not_smash_neighbours() {
+        let t = fresh();
+        let addr = CALIB_BASE_ADDR;
+        let payload = [0xAA, 0xBB, 0xCC, 0xDD];
+        t.write_bytes(addr, &payload).unwrap();
+        let pot = unsafe { &*t.calib.get() }.pot_lut;
+        assert_eq!(pot.raw_min, 0xBBAA);
+        assert_eq!(pot.raw_max, 0xDDCC);
+        assert_eq!(pot.lut[0], 0);
+    }
+
+    #[test]
+    fn write_spanning_block_body_into_reserved_tail_fails_atomically() {
+        let t = fresh();
+        let addr = CONFIG_BASE_ADDR + 3 * 32 + 8;
+        let payload = [0xFFu8; 32];
+        let err = t.write_bytes(addr, &payload).unwrap_err();
+        assert_eq!(err, RegmapError::AccessError);
+        let stall = unsafe { &*t.config.get() }.safety.stall;
+        assert_eq!(stall.stall_motion_threshold_urad, 0);
+    }
+
+    fn assert_blocks_sorted_and_bounded(blocks: &[BlockDesc], region_size: u16) {
+        for win in blocks.windows(2) {
+            let (a, b) = (&win[0], &win[1]);
+            assert!(
+                a.addr_offset + a.size <= b.addr_offset,
+                "blocks not sorted/non-overlapping: {:?} then {:?}",
+                a,
+                b,
+            );
+        }
+        if let Some(last) = blocks.last() {
+            assert!(
+                last.addr_offset + last.size <= region_size,
+                "last block runs past region end: {:?}",
+                last,
+            );
+        }
+    }
+
+    #[test]
+    fn config_blocks_sorted_and_bounded() {
+        use crate::regions::CONFIG_REGION_SIZE;
+        assert_blocks_sorted_and_bounded(CONFIG_BLOCKS, CONFIG_REGION_SIZE as u16);
+    }
+
+    #[test]
+    fn telemetry_blocks_sorted_and_bounded() {
+        use crate::regions::TELEMETRY_REGION_SIZE;
+        assert_blocks_sorted_and_bounded(TELEMETRY_BLOCKS, TELEMETRY_REGION_SIZE as u16);
+    }
+
+    #[test]
+    fn control_blocks_sorted_and_bounded() {
+        use crate::regions::CONTROL_REGION_SIZE;
+        assert_blocks_sorted_and_bounded(CONTROL_BLOCKS, CONTROL_REGION_SIZE as u16);
+    }
+
+    #[test]
+    fn calib_blocks_sorted_and_bounded() {
+        assert_blocks_sorted_and_bounded(CALIB_BLOCKS, CALIB_REGION_SIZE as u16);
+    }
+
+    #[test]
+    fn partial_write_preserves_unwritten_bytes() {
+        let t = fresh();
+        let comms_addr = CONFIG_BASE_ADDR + 32;
+        t.write_bytes(comms_addr, &[0x07, 0x03, 0x96, 0x00])
+            .unwrap();
+        t.write_bytes(comms_addr, &[0x09, 0x05]).unwrap();
+        let comms = unsafe { &*t.config.get() }.comms;
+        assert_eq!(comms.id, 0x09);
+        assert_eq!(comms.baud_rate_idx, 0x05);
+        assert_eq!(comms.return_delay_us, 0x0096);
     }
 }

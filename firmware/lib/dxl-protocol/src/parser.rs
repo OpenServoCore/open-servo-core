@@ -5,9 +5,8 @@ use crate::crc::crc16;
 pub const HEADER: [u8; 4] = [0xFF, 0xFF, 0xFD, 0x00];
 pub const BROADCAST_ID: u8 = 0xFE;
 
-/// Cap on the wire `Length` field. The field is u16 (up to 65535) but real
-/// DXL frames stay well under this. The cap bounds how long the parser will
-/// wait on a phantom header in random byte traffic.
+/// Cap on the wire `Length` field. Bounds how long the parser waits on a
+/// phantom header in random traffic; real frames stay well under this.
 pub const MAX_LENGTH: usize = 1024;
 
 #[derive(Copy, Clone, Debug)]
@@ -88,20 +87,16 @@ pub enum ParseError {
     BadLength { skip: usize },
 }
 
-/// Parse a single Protocol 2.0 frame from `input`.
-///
-/// On success returns the decoded `Packet` and the number of input bytes
-/// consumed. On error variants other than `Incomplete`, `skip` is the
-/// number of bytes the caller should drop before retrying.
+/// On error variants other than `Incomplete`, `skip` is the number of bytes
+/// the caller should drop before retrying.
 pub fn parse_one(input: &[u8]) -> Result<(Packet<'_>, usize), ParseError> {
     let header_off = match find_header(input) {
         Some(0) => 0,
         Some(n) => return Err(ParseError::Resync { skip: n }),
         None => {
-            // Keep only the longest suffix of `input` that is a proper
-            // prefix of HEADER — those are the only bytes that could yet
-            // form the start of a valid frame. HEADER has no internal
-            // repetition, so the candidate prefixes are 3, 2, 1, 0 bytes.
+            // Keep longest suffix that's a proper HEADER prefix — only those
+            // bytes could still complete a valid header. HEADER has no internal
+            // repetition, so candidates are 3, 2, 1, 0 bytes.
             let keep = if input.ends_with(&HEADER[..3]) {
                 3
             } else if input.ends_with(&HEADER[..2]) {
@@ -128,9 +123,8 @@ pub fn parse_one(input: &[u8]) -> Result<(Packet<'_>, usize), ParseError> {
     let id = frame[4];
     let length = u16::from_le_bytes([frame[5], frame[6]]) as usize;
 
-    // A bad length means we don't trust this header — step past it (4 bytes)
-    // rather than honoring its claimed frame size, so a spurious header in
-    // random traffic can't mask a real frame that follows.
+    // Bad length: don't trust this header. Step past 4 bytes rather than
+    // honoring its claimed size, so a phantom can't mask a real frame after.
     if !(3..=MAX_LENGTH).contains(&length) {
         return Err(ParseError::BadLength { skip: HEADER.len() });
     }
@@ -144,9 +138,8 @@ pub fn parse_one(input: &[u8]) -> Result<(Packet<'_>, usize), ParseError> {
     let computed = crc16(&frame[..crc_pos]);
     let received = u16::from_le_bytes([frame[crc_pos], frame[crc_pos + 1]]);
     if computed != received {
-        // Same reasoning: CRC failure could mean a corrupted real frame *or*
-        // a phantom header — drop just past the header and let the resync
-        // path find the next one.
+        // Could be a corrupted real frame *or* a phantom header — drop past
+        // the header and let resync find the next one.
         return Err(ParseError::BadCrc { skip: HEADER.len() });
     }
 

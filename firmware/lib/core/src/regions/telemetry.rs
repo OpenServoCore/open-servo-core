@@ -1,5 +1,3 @@
-//! TELEMETRY region — RO from the host's perspective; written by the kernel.
-
 use crate::regions::TELEMETRY_BLOCK_SIZE;
 use crate::regmap::{Access, BlockDesc};
 use core::mem::{offset_of, size_of};
@@ -27,8 +25,7 @@ pub struct TelemetryIntermediaries {
     pub sample_tick: u32,
 }
 
-/// `fault_flags` has a writable-RO carve-out: host writing 0x00 clears
-/// non-latched bits.
+/// `fault_flags` writable-RO carve-out: host writing 0x00 clears non-latched bits.
 #[derive(Copy, Clone)]
 #[repr(C)]
 pub struct TelemetryFault {
@@ -111,8 +108,7 @@ impl TelemetryRaw {
     }
 }
 
-/// Protocol-address slot map for TELEMETRY. All blocks RO from host.
-/// `fault_flags` clear-byte carve-out is enforced one layer up, not here.
+/// All blocks RO from host; `fault_flags` clear-byte carve-out enforced one layer up.
 pub const TELEMETRY_BLOCKS: &[BlockDesc] = &[
     BlockDesc {
         addr_offset: 0,

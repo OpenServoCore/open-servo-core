@@ -1,9 +1,6 @@
-//! Control table — the host-visible register state.
-//!
-//! Each region's struct holds only active blocks; reserved slots have no SRAM
-//! mirror and regmap returns Access Error. Struct layout is decoupled from
-//! the protocol address space — regmap uses per-region block descriptors
-//! to translate, and flash save/load uses the same descriptors.
+//! Host-visible register state. Reserved slots have no SRAM mirror; regmap
+//! returns AccessError. Per-region block descriptors translate protocol
+//! addresses; flash save/load uses the same descriptors.
 //!
 //!   CONFIG    0x0000..=0x01FF  (512 B)  — persistent A/B
 //!   TELEMETRY 0x0200..=0x02FF  (256 B)  — RO from host
@@ -22,14 +19,15 @@ pub mod telemetry;
 
 pub use calib::{BemfCalibBlock, CalibRegs, PotLutBlock};
 pub use config::{
-    ConfigComms, ConfigControl, ConfigControlPosition, ConfigIdentity, ConfigLimits,
-    ConfigPosLimits, ConfigRegs, ConfigSafety, ConfigStall, ConfigThermal,
+    ConfigCalibration, ConfigComms, ConfigControl, ConfigControlPosition, ConfigIdentity,
+    ConfigLimits, ConfigPosLimits, ConfigRegs, ConfigSafety, ConfigStall, ConfigThermal,
 };
 pub use control::{ControlLifecycle, ControlRegs, ControlStreaming};
 pub use telemetry::{
     TelemetryConverted, TelemetryFault, TelemetryIntermediaries, TelemetryRaw, TelemetryRegs,
 };
 
+use crate::board::ConfigDefaults;
 use crate::page::PageHeader;
 
 pub const PAGE_HEADER_SIZE: usize = core::mem::size_of::<PageHeader>();
@@ -75,7 +73,25 @@ impl ControlTable {
         }
     }
 
-    /// Called once in `install` before PFIC IRQs are enabled — sole writer.
+    /// Soft limits init to physical limits per control-table doc.
+    /// Caller must be sole writer (install-time, pre-IRQ).
+    pub fn seed_config_defaults(&self, defaults: &ConfigDefaults) {
+        crate::log::debug!(
+            "seed CONFIG.limits.pos: phys=[{}, {}] urad  vdd_mv={}",
+            defaults.pos_min_phys_urad,
+            defaults.pos_max_phys_urad,
+            defaults.vdd_mv,
+        );
+        // SAFETY: install-time, pre-IRQ, sole writer.
+        let cfg = unsafe { &mut *self.config.get() };
+        cfg.limits.pos.pos_min_phys_urad = defaults.pos_min_phys_urad;
+        cfg.limits.pos.pos_max_phys_urad = defaults.pos_max_phys_urad;
+        cfg.limits.pos.pos_min_soft_urad = defaults.pos_min_phys_urad;
+        cfg.limits.pos.pos_max_soft_urad = defaults.pos_max_phys_urad;
+        cfg.calibration.vdd_mv = defaults.vdd_mv;
+    }
+
+    /// Called once pre-PFIC-IRQ — sole writer.
     pub fn load_config_from_flash<F: embedded_storage::nor_flash::ReadNorFlash>(
         &self,
         _flash: &mut F,
@@ -85,7 +101,7 @@ impl ControlTable {
         todo!()
     }
 
-    /// Called once in `install` before PFIC IRQs are enabled — sole writer.
+    /// Called once pre-PFIC-IRQ — sole writer.
     pub fn load_calib_from_flash<F: embedded_storage::nor_flash::ReadNorFlash>(
         &self,
         _flash: &mut F,

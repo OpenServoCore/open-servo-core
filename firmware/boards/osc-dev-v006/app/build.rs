@@ -12,4 +12,8 @@ fn main() {
     println!("cargo:rerun-if-changed=memory.x");
     println!("cargo:rustc-link-arg=-Ttb-app.x");
     println!("cargo:rustc-link-arg=-Ttb-run-mode.x");
+
+    if std::env::var("CARGO_FEATURE_DEFMT").is_ok() {
+        println!("cargo:rustc-link-arg=-Tdefmt.x");
+    }
 }

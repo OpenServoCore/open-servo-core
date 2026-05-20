@@ -1,5 +1,3 @@
-//! CONFIG region — persistent A/B-mirrored runtime config.
-
 use crate::page::PageHeader;
 use crate::regions::CONFIG_BLOCK_SIZE;
 use crate::regmap::{Access, BlockDesc};
@@ -61,8 +59,8 @@ pub struct ConfigStall {
 pub struct ConfigThermal {
     pub motor_thermal_k_q88: u16,
     pub motor_thermal_tau_ms: u16,
-    pub winding_cutoff_dc: i16,
-    pub winding_recover_dc: i16,
+    pub winding_cutoff_cc: i16,
+    pub winding_recover_cc: i16,
     pub v_undervolt_mv: u16,
 }
 
@@ -70,6 +68,14 @@ pub struct ConfigThermal {
 #[repr(C)]
 pub struct ConfigControl {
     pub position: ConfigControlPosition,
+}
+
+/// `vdd_mv` is the DMM-measured VDD-at-chip-pin baked in per board.
+#[derive(Copy, Clone)]
+#[repr(C)]
+pub struct ConfigCalibration {
+    pub vdd_mv: u16,
+    pub _rsvd_align: u16,
 }
 
 #[derive(Copy, Clone)]
@@ -87,7 +93,7 @@ pub struct ConfigControlPosition {
     pub v_nominal_mv: u16,
 }
 
-/// Compact mirror of active blocks; on-disk page is full 512 B with reserved gaps.
+/// Compact in-RAM mirror; on-flash page is full 512 B with reserved gaps.
 #[derive(Copy, Clone)]
 #[repr(C)]
 pub struct ConfigRegs {
@@ -96,7 +102,8 @@ pub struct ConfigRegs {
     pub limits: ConfigLimits,
     pub safety: ConfigSafety,
     pub control: ConfigControl,
-    /// Host-RO. Writes into the header range return Access Error.
+    pub calibration: ConfigCalibration,
+    /// Host-RO; writes into header range return AccessError.
     pub header: PageHeader,
 }
 
@@ -158,8 +165,8 @@ impl ConfigThermal {
         Self {
             motor_thermal_k_q88: 0,
             motor_thermal_tau_ms: 0,
-            winding_cutoff_dc: 0,
-            winding_recover_dc: 0,
+            winding_cutoff_cc: 0,
+            winding_recover_cc: 0,
             v_undervolt_mv: 0,
         }
     }
@@ -199,9 +206,17 @@ impl ConfigControl {
     }
 }
 
-/// Protocol-address slot map for CONFIG. Block N starts at
-/// `CONFIG_BASE_ADDR + N * CONFIG_BLOCK_SIZE`. Unlisted indices are
-/// reserved and return AccessError.
+impl ConfigCalibration {
+    pub const fn const_new() -> Self {
+        Self {
+            vdd_mv: 0,
+            _rsvd_align: 0,
+        }
+    }
+}
+
+/// Block N starts at `CONFIG_BASE_ADDR + N * CONFIG_BLOCK_SIZE`;
+/// unlisted indices are reserved and return AccessError.
 pub const CONFIG_BLOCKS: &[BlockDesc] = &[
     BlockDesc {
         addr_offset: 0,
@@ -241,6 +256,12 @@ pub const CONFIG_BLOCKS: &[BlockDesc] = &[
         access: Access::Rw,
     },
     BlockDesc {
+        addr_offset: 6 * CONFIG_BLOCK_SIZE as u16,
+        size: size_of::<ConfigCalibration>() as u16,
+        struct_offset: offset_of!(ConfigRegs, calibration) as u16,
+        access: Access::Rw,
+    },
+    BlockDesc {
         addr_offset: 15 * CONFIG_BLOCK_SIZE as u16,
         size: size_of::<PageHeader>() as u16,
         struct_offset: offset_of!(ConfigRegs, header) as u16,
@@ -256,6 +277,7 @@ impl ConfigRegs {
             limits: ConfigLimits::const_new(),
             safety: ConfigSafety::const_new(),
             control: ConfigControl::const_new(),
+            calibration: ConfigCalibration::const_new(),
             header: PageHeader::const_erased(),
         }
     }
@@ -275,5 +297,6 @@ mod tests {
         assert!(size_of::<ConfigStall>() <= CONFIG_BLOCK_SIZE);
         assert!(size_of::<ConfigThermal>() <= CONFIG_BLOCK_SIZE);
         assert!(size_of::<ConfigControlPosition>() <= CONFIG_BLOCK_SIZE);
+        assert!(size_of::<ConfigCalibration>() <= CONFIG_BLOCK_SIZE);
     }
 }

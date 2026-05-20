@@ -13,14 +13,15 @@ pub enum Level {
     High,
 }
 
-/// Packed pin config: `[ODR_HIGH(1) | ODR_LOW(1) | _(2) | CNF(2) | MODE(2)]`.
-///
-/// Bits 3:0 = CFGLR nibble (MODE low, CNF high). Bits 7/6 set ODR high/low.
-/// MODE: INPUT=00, OUTPUT_10MHZ=01. CNF<<2: PP=00, FLOAT/OD=01, PULL/AF_PP=10, AF_OD=11.
+/// Packed: bits 3:0 = CFGLR nibble (MODE low, CNF high), bits 7/6 = ODR high/low.
+/// MODE: INPUT=00, OUTPUT_10MHZ=01. CNF<<2: PP/ANALOG=00, FLOAT/OD=01, PULL/AF_PP=10, AF_OD=11.
 #[derive(Copy, Clone)]
 pub struct PinMode(u8);
 
 impl PinMode {
+    /// MODE=00 + CNF=00. Disconnects the schmitt buffer; required for ADC/OPA
+    /// inputs (floating-input keeps the digital buffer hot and clamps high-Z).
+    pub const ANALOG: Self = Self(0b0000);
     pub const INPUT_FLOATING: Self = Self(0b0100);
     pub const INPUT_PULL_UP: Self = Self(0b1000 | 0x80);
     pub const INPUT_PULL_DOWN: Self = Self(0b1000 | 0x40);
@@ -62,4 +63,11 @@ pub fn set_level(pin: Pin, level: Level) {
     } else {
         pin.gpio_regs().bcr().write(|w| w.0 = 1 << pin.pin_number());
     }
+}
+
+#[inline]
+pub fn toggle(pin: Pin) {
+    let regs = pin.gpio_regs();
+    let mask = 1u32 << pin.pin_number();
+    regs.outdr().modify(|w| w.0 ^= mask);
 }

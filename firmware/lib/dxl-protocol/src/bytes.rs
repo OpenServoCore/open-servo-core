@@ -1,11 +1,7 @@
-/// Byte payload borrowed from a parsed frame (`Stuffed`, may contain
-/// inserted `0xFD` bytes) or supplied by the caller (`Raw`).
-///
-/// `Stuffed::prefix` carries the three logical bytes preceding `slice` so
-/// that an iterator handed a tail-slice can detect a trigger that spanned
-/// the cut. Top-level params from `parse_one` use `[0; 3]` because no valid
-/// Protocol 2.0 prefix byte completes a trigger (instruction `0xFD` is
-/// undefined).
+/// `Stuffed::prefix` carries the three logical bytes preceding `slice` so an
+/// iterator handed a tail-slice can detect a trigger that spanned the cut.
+/// Top-level params use `[0; 3]` — instruction 0xFD is undefined so no valid
+/// prefix completes a trigger.
 #[derive(Copy, Clone, Debug)]
 pub enum Bytes<'a> {
     Stuffed { slice: &'a [u8], prefix: [u8; 3] },
@@ -99,8 +95,7 @@ impl<'a> Iterator for ByteIter<'a> {
         let b = self.src[self.i];
         self.i += 1;
         if self.stuffed && b == 0xFD && self.last3 == [0xFF, 0xFF, 0xFD] {
-            // Advance past the trigger window so a logical FD immediately
-            // following does not get re-suppressed.
+            // Advance past trigger so a logical FD right after isn't re-suppressed.
             self.last3 = [self.last3[1], self.last3[2], 0xFD];
             return self.next();
         }

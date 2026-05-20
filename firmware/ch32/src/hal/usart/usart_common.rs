@@ -27,7 +27,6 @@ pub fn set_dma_rx(r: Regs, enable: bool) {
     r.ctlr3().modify(|w| w.set_dmar(enable));
 }
 
-/// DATAR address for use as the DMA controller's peripheral address.
 #[inline]
 pub fn data_addr(r: Regs) -> u32 {
     r.datar().as_ptr() as u32

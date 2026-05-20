@@ -12,7 +12,7 @@ fn wait_busy() {
         !FLASH.statr().read().wrprterr(),
         "flash write protection error"
     );
-    // Clear EOP (W1C) — required after every BUFRST, BUFLOAD, STRT.
+    // EOP is W1C — required after every BUFRST, BUFLOAD, STRT.
     FLASH.statr().modify(|w| w.set_eop(true));
 }
 
@@ -70,7 +70,6 @@ pub fn write(addr: u32, data: &[u8]) {
     });
     wait_busy();
 
-    // Load each 4-byte chunk into the buffer.
     let mut buf_addr = addr;
     let mut ptr = data.as_ptr() as *const u32;
     for _ in 0..data.len() / BUF_LOAD_SIZE {
