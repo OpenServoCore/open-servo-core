@@ -23,6 +23,6 @@ pub fn run(cfg: BoardConfig) -> ! {
     loop {
         #[cfg(feature = "defmt")]
         telemetry::pump();
-        core::hint::spin_loop();
+        unsafe { core::arch::asm!("wfi") }
     }
 }
