@@ -47,3 +47,23 @@ bitflags::bitflags! {
         const HAS_MOTOR_ENCODER = 1 << 0;
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use core::mem::size_of;
+
+    #[test]
+    fn motor_cmd_stays_small() {
+        assert!(size_of::<MotorCmd>() <= 8, "got {}", size_of::<MotorCmd>());
+    }
+
+    #[test]
+    fn capabilities_compose() {
+        let none = Capabilities::default();
+        assert!(none.is_empty());
+        let with_enc = Capabilities::HAS_MOTOR_ENCODER;
+        assert!(with_enc.contains(Capabilities::HAS_MOTOR_ENCODER));
+        assert_eq!(with_enc.bits(), 1);
+    }
+}
