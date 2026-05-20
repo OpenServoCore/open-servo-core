@@ -66,3 +66,54 @@ jobs:
 
       - name: build --all-features
         run: cargo build --all-features
+
+  ch32-build-test:
+    name: build + test (firmware/ch32)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: firmware/ch32
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust (nightly + clippy + rustfmt)
+        uses: dtolnay/rust-toolchain@nightly
+        with:
+          components: clippy, rustfmt
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: firmware/ch32
+
+      - name: cargo fmt --check
+        run: cargo fmt --all -- --check
+
+      - name: cargo clippy
+        run: cargo clippy --tests --features ch32v006x8x6 -- -D warnings
+
+      - name: cargo build
+        run: cargo build --features ch32v006x8x6
+
+      - name: cargo test
+        run: cargo test --features ch32v006x8x6 --lib
+
+  osc-dev-v006-cross-build:
+    name: cross-build (boards/osc-dev-v006)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: firmware/boards/osc-dev-v006
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust (nightly + rust-src)
+        uses: dtolnay/rust-toolchain@nightly
+        with:
+          components: rust-src
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: firmware/boards/osc-dev-v006
+
+      - name: cargo check --workspace
+        run: cargo check --workspace
