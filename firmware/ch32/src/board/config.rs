@@ -15,13 +15,9 @@ pub struct CurrentSenseConfig {
     pub opa_input: opa::InputMode,
     pub opa_gain: opa::Gain,
     pub opa_bias: opa::Bias,
-    /// OPA output is hard-driven; shortest sample time usually suffices.
     pub adc_sample_time: adc::SampleTime,
 }
 
-/// Non-shunt sensor inputs. Scan layout in DMA buffer is
-/// `[shunt, vref, pos, ntc, vbus, vmotor.0, vmotor.1]`;
-/// shunt and Vref slots are chip-lib-owned.
 pub struct Sensors {
     pub pos: adc::Input,
     pub ntc: adc::Input,
@@ -37,21 +33,17 @@ pub struct Divider {
 
 /// β-model NTC params: `R_ntc(T) = r0_ohm · exp(beta · (1/T − 1/T₀))`.
 pub struct NtcCal {
-    /// β in Kelvin.
     pub beta: u16,
     pub r0_ohm: u32,
-    /// T₀ in deci-°C (25.0 °C → 250) — matches `osc_units::CentiCelsius` (0.1 °C/unit).
+    /// T₀ in deci-°C (matches `osc_units::CentiCelsius`).
     pub t0_dc: i16,
-    /// Series bias resistor to VDD.
     pub bias_r_ohm: u32,
 }
 
 /// Schematic-derived constants identical across every unit of a PCB design.
-/// Per-unit calibration lives in flash CALIB, not here.
 pub struct Calibration {
     pub shunt_r_mohm: u16,
     pub vbus_divider: Divider,
-    /// Shared by V_motor_A and V_motor_B (matched dividers).
     pub vmotor_divider: Divider,
     pub ntc: NtcCal,
 }
@@ -59,7 +51,7 @@ pub struct Calibration {
 /// Schematic-fixed wiring; consumed during `Ch32Board::new` and not retained.
 pub struct BoardWiring {
     pub stat_led: Pin,
-    /// Scope/probe pad. Toggled once per DMA-TC ISR; scope frequency × 2 = ISR rate.
+    /// Scope/probe pad; toggled once per DMA-TC ISR.
     pub dbg: Pin,
     pub tim2_remap: Tim2Mapping,
     pub motor: MotorConfig,
@@ -67,7 +59,6 @@ pub struct BoardWiring {
     pub sensors: Sensors,
 }
 
-/// `defaults` is seeded into `Shared.table.config` once at boot; thereafter owned by host.
 pub struct BoardConfig {
     pub wiring: BoardWiring,
     pub calibration: Calibration,

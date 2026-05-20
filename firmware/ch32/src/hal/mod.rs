@@ -22,13 +22,11 @@ pub fn delay_cycles(n: u32) {
     }
 }
 
-/// Busy-wait for `ms` milliseconds using SYSTICK at HCLK = 48 MHz.
-/// Self-contained — initializes SYSTICK on entry, so it's safe to call
-/// before any other systick usage.
+/// Busy-wait for `ms` ms. Reinitializes SYSTICK on entry — safe to call early.
 pub fn delay_ms(ms: u32) {
     use ch32_metapac::SYSTICK;
     use ch32_metapac::systick::vals::Stclk;
-    let target = ms.saturating_mul(48_000); // 48 MHz / 1 ms per tick
+    let target = ms.saturating_mul(48_000);
     SYSTICK.cmp().write_value(u32::MAX);
     SYSTICK.cnt().write_value(0);
     SYSTICK.ctlr().write(|w| {

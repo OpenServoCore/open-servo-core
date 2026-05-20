@@ -1,11 +1,7 @@
-//! Post-init register snapshot. Emitted at `trace` level so it stays out
-//! of the way of normal info/debug logs but is one filter-knob away the
-//! next time we need to compare two boards bit-for-bit. Covers every
-//! peripheral touched by `Ch32Board::new`; if a new init step writes a
-//! register that isn't dumped here, add it.
+//! Post-init register snapshot at `trace` level. Covers every peripheral
+//! touched by `Ch32Board::new` — if a new init step writes a register that
+//! isn't dumped here, add it. PFIC IENR is write-only and intentionally omitted.
 
-// PFIC IENR is write-only on this peripheral — can't read enable state back,
-// so we rely on the boot-time `pfic: DMA1_CHANNEL1 enabled` debug log instead.
 use ch32_metapac::{ADC, AFIO, DMA1, GPIOA, GPIOC, GPIOD, OPA, RCC, TIM1};
 
 pub(super) fn dump_init_regs() {

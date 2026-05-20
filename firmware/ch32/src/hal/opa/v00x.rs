@@ -15,7 +15,6 @@ pub enum Gain {
 }
 
 impl Gain {
-    /// `V_out = (V+ − V−) · factor + V_bias`.
     pub const fn factor(self) -> u16 {
         match self {
             Gain::X4 => 4,
@@ -62,9 +61,7 @@ impl NegativeInput {
 
 #[derive(Copy, Clone)]
 pub enum InputMode {
-    /// Inverting input tied to internal ground (RM 17.2.1.2).
     SingleEnded(PositiveInput),
-    /// RM 17.2.1.3.
     Differential {
         pos: PositiveInput,
         neg: NegativeInput,
@@ -79,7 +76,6 @@ impl InputMode {
         }
     }
 
-    /// `None` in single-ended mode (no external negative pin).
     pub const fn neg_pin(self) -> Option<Pin> {
         match self {
             InputMode::SingleEnded(_) => None,
@@ -88,20 +84,17 @@ impl InputMode {
     }
 }
 
-/// PGA output bias (RM 17.2.1.4 / OPA_CTLR1.VBEN + VBSEL). Lets a bipolar
-/// signal sit in the OPA's unipolar output range. Required for differential
-/// PGA driving the internal ADC channel.
+/// PGA output bias (RM 17.2.1.4 / OPA_CTLR1.VBEN + VBSEL).
 #[derive(Copy, Clone)]
 #[repr(u8)]
 pub enum Bias {
-    /// VBSEL=0 → ~VDD/2 quiescent output.
+    /// ~VDD/2 quiescent.
     MidRail = 0,
-    /// VBSEL=1 → ~VDD/4 quiescent output.
+    /// ~VDD/4 quiescent.
     QuarterRail = 1,
 }
 
 impl Bias {
-    /// 12-bit ADC LSBs of the nominal quiescent output (raw == VDD-ratiometric).
     pub const fn quiescent_raw(self) -> u16 {
         match self {
             Bias::MidRail => 2048,
@@ -124,13 +117,12 @@ fn unlock() {
     OPA.opa_key().write(|w| w.set_opa_key(KEY2));
 }
 
-/// Configures OPA1 as a PGA (RM 17.2.1.2–4). Caller should give the OPA a
-/// brief settle window before sampling.
+/// Configures OPA1 as a PGA (RM 17.2.1.2–4). Caller settles before sampling.
 pub fn init_pga(mode: InputMode, gain: Gain, bias: Bias, output: Output) {
     unlock();
     OPA.ctlr1().write(|w| {
         w.set_opa_hs1(true);
-        // VBCMPSEL only feeds CMP2; 0b11 leaves it unselected.
+        // VBCMPSEL feeds CMP2 only; 0b11 leaves it unselected.
         w.set_vbcmpsel(0b11);
         w.set_vbsel(matches!(bias, Bias::QuarterRail));
         w.set_vben(true);

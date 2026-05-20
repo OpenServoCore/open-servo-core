@@ -33,11 +33,8 @@ pub struct Ch32Board {
     stat_led: Pin,
     dbg: Pin,
     calibration: Calibration,
-    /// Nominal OPA quiescent ADC count, derived from the configured `opa::Bias`.
-    /// Actual quiescent point on this silicon may drift; treat as a starting offset.
     shunt_bias_raw: u16,
     scales: Scales,
-    /// EWMA on the noisy IN10/Vcal channel; updated each frame.
     vcal_lpf: VcalLpf,
     motor_in1: timer::Channel,
     motor_in2: timer::Channel,
@@ -91,7 +88,11 @@ impl Ch32Board {
         pfic::enable(pfic::Interrupt::DMA1_CHANNEL1);
         crate::log::debug!("pfic: DMA1_CHANNEL1 enabled");
         let pwm_arr = start_center_aligned_pwm(&wiring.motor);
-        crate::log::debug!("pwm running ({} Hz, arr={})", wiring.motor.pwm_freq_hz, pwm_arr);
+        crate::log::debug!(
+            "pwm running ({} Hz, arr={})",
+            wiring.motor.pwm_freq_hz,
+            pwm_arr
+        );
 
         #[cfg(feature = "defmt")]
         diag::dump_init_regs();
@@ -111,9 +112,7 @@ impl Ch32Board {
         }
     }
 
-    /// Map an `Effort` magnitude (`0..=i16::MAX`) onto PWM ticks `0..=arr`.
-    /// Approximates `m·arr / 32767` with `(m·arr + ½·2^15) >> 15` — exact at
-    /// `m = i16::MAX`, max error ≈ 1 part in 32k elsewhere. Kills the soft-div.
+    /// `mag·arr / 32767`, approximated with `>>15` to dodge soft-div in the ISR.
     fn effort_to_ticks(&self, mag: u16) -> u16 {
         let m = mag.min(i16::MAX as u16) as u32;
         let prod = m * self.pwm_arr as u32;
@@ -125,8 +124,7 @@ impl Ch32Board {
         gpio::set_level(self.stat_led, if on { Level::High } else { Level::Low });
     }
 
-    /// Drive dbg HIGH at ISR entry. Pair with `dbg_low` at ISR exit so the
-    /// scope sees ISR rate as the pulse frequency and ISR runtime as the width.
+    /// Pair with `dbg_low` around an ISR body to scope rate × runtime.
     #[inline]
     pub fn dbg_high(&self) {
         gpio::set_level(self.dbg, Level::High);
@@ -137,9 +135,7 @@ impl Ch32Board {
         gpio::set_level(self.dbg, Level::Low);
     }
 
-    /// Called from DMA1 TC ISR. Peak half-scan (ON-window centre) drives the
-    /// production current reading; trough half-scan stays exposed as a
-    /// current-sense diagnostic.
+    /// Called from DMA1 TC ISR. Peak drives current; trough is diagnostic.
     pub fn build_sample_frame(&mut self, inputs: &FrameInputs) -> SampleFrame {
         let scan = volatile_snapshot_scan();
         let peak = &scan[SCAN_PEAK_OFFSET..SCAN_PEAK_OFFSET + ADC_SCAN_LEN];
@@ -203,13 +199,8 @@ impl Board for Ch32Board {
     }
 
     // DRV8212P truth table: (1,1)=BRAKE, (0,0)=COAST, (1,0)=fwd, (0,1)=rev.
-    // Drive uses slow decay (BRAKE↔drive) — bringup proved fast decay
-    // (COAST↔drive) doesn't deliver enough current at modest duty into
-    // low-inductance brushed motors. We keep both inputs on TIM1 PWM and
-    // park the "static-HIGH" leg by writing CCR>ARR; PWMMODE1 then holds
-    // it HIGH for the whole period. The driving leg writes CCR = ARR -
-    // ticks, so it sits LOW for `ticks` per period — that's the drive
-    // window where the bridge is (HIGH, LOW) or (LOW, HIGH).
+    // Slow decay: idle leg parked HIGH via CCR>ARR (PWMMODE1 holds HIGH);
+    // driving leg's CCR=ARR−ticks dips LOW for the drive window.
     fn write_motor(&mut self, cmd: MotorCmd) {
         const STATIC_HIGH: u16 = u16::MAX;
         match cmd {
@@ -233,11 +224,9 @@ impl Board for Ch32Board {
                 let ticks = self.effort_to_ticks(duty.0.unsigned_abs());
                 let drive_ccr = self.pwm_arr.saturating_sub(ticks);
                 if duty.0 >= 0 {
-                    // Forward: IN1 idle HIGH, IN2 dips LOW for the drive window.
                     timer::set_duty(self.motor_in1, STATIC_HIGH);
                     timer::set_duty(self.motor_in2, drive_ccr);
                 } else {
-                    // Reverse: IN2 idle HIGH, IN1 dips LOW for the drive window.
                     timer::set_duty(self.motor_in1, drive_ccr);
                     timer::set_duty(self.motor_in2, STATIC_HIGH);
                 }

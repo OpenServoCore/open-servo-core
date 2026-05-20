@@ -19,9 +19,8 @@ pub enum Level {
 pub struct PinMode(u8);
 
 impl PinMode {
-    /// MODE=00 (input) + CNF=00 (analog) — schmitt buffer disconnected so the
-    /// pin presents pure analog to the ADC mux / OPA input. Floating-input
-    /// (CNF=01) leaves the digital input buffer hot and clamps high-Z analog.
+    /// MODE=00 + CNF=00. Disconnects the schmitt buffer; required for ADC/OPA
+    /// inputs (floating-input keeps the digital buffer hot and clamps high-Z).
     pub const ANALOG: Self = Self(0b0000);
     pub const INPUT_FLOATING: Self = Self(0b0100);
     pub const INPUT_PULL_UP: Self = Self(0b1000 | 0x80);

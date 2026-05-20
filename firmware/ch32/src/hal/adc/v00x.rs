@@ -94,7 +94,8 @@ pub fn set_dma(enable: bool) {
     ADC.ctlr2().modify(|w| w.set_dma(enable));
 }
 
-/// CTLR3.ADC_LP — low-power mode.
+/// CTLR3.ADC_LP. Reset default is set; gates the internal OPA→IN9 path,
+/// so it must be cleared before the OpaOut channel reads non-zero.
 pub fn set_low_power(enable: bool) {
     ADC.ctlr3().modify(|w| w.set_adc_lp(enable));
 }

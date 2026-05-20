@@ -9,13 +9,7 @@ use crate::statics::{ADC_DMA_BUF, ADC_DMA_BUF_LEN, ADC_SENSOR_COUNT};
 
 use super::config::{BoardWiring, CurrentSenseConfig, MotorConfig, Sensors};
 
-/// Conservative post-`init_pga` settle.
 const OPA_SETTLE_MS: u32 = 1;
-
-// Timing budget at 20 kHz center-aligned PWM (CMS=3), peak+trough triggered:
-//   period = 50 µs, half = 25 µs, ADC clk = 12 MHz (HCLK/4).
-//   per channel: T_conv = SMP + 12 ADC cycles.
-// CYCLES9 → 7 × 21 cyc ≈ 12.25 µs per scan, ~50 % margin under the half-period.
 const VCAL_SAMPLE_TIME: adc::SampleTime = adc::SampleTime::CYCLES9;
 
 fn tim1_channel_pin(mapping: Tim1Mapping, channel: timer::Channel) -> Pin {
@@ -27,7 +21,7 @@ fn tim1_channel_pin(mapping: Tim1Mapping, channel: timer::Channel) -> Pin {
     }
 }
 
-// Order must mirror the scan tail in `configure_adc_dma_scan`: pos, ntc, vbus, vmotor.0, vmotor.1.
+// Order must mirror the scan tail in `configure_adc_dma_scan`.
 fn sensor_inputs(s: &Sensors) -> [adc::Input; ADC_SENSOR_COUNT] {
     [s.pos, s.ntc, s.vbus, s.vmotor.0, s.vmotor.1]
 }
@@ -101,9 +95,6 @@ pub(super) fn bring_up_analog_chain(cs: &CurrentSenseConfig) {
 }
 
 pub(super) fn configure_adc_dma_scan(sensors: &Sensors, opa_out_sample_time: adc::SampleTime) {
-    // Scan = [IN9/OpaOut, IN7/pos, IN2/ntc, IN5/vmA, IN6/vmB, IN10/Vcal].
-    // Slot 0 is the gained OPA output. Vcal trails the scan as the
-    // VDD-ratiometric tap.
     adc::set_sample_time(adc::Channel::OpaOut, opa_out_sample_time);
     adc::set_sample_time(sensors.pos.channel, sensors.pos.sample_time);
     adc::set_sample_time(sensors.ntc.channel, sensors.ntc.sample_time);
@@ -136,7 +127,6 @@ pub(super) fn configure_adc_dma_scan(sensors: &Sensors, opa_out_sample_time: adc
     };
     let paddr = ADC.rdatar().as_ptr() as u32;
     let maddr = ADC_DMA_BUF.get() as u32;
-    // Scan × {peak, trough} = ADC_DMA_BUF_LEN xfers/period → TC once per period.
     dma::configure(
         dma::Channel::CH1,
         &dma_cfg,
@@ -147,14 +137,12 @@ pub(super) fn configure_adc_dma_scan(sensors: &Sensors, opa_out_sample_time: adc
     dma::enable(dma::Channel::CH1);
 }
 
-/// Returns the configured ARR so the board can rescale `Effort`→duty later.
+/// Returns the configured ARR so `Effort`→duty rescale can avoid a soft-div.
 pub(super) fn start_center_aligned_pwm(m: &MotorConfig) -> u16 {
     let (psc, arr) = timer::pwm_dividers_from_hz(m.pwm_freq_hz);
     timer::init_center_aligned_pwm(psc, arr);
     timer::configure_pwm_channel(m.in1, m.polarity);
     timer::configure_pwm_channel(m.in2, m.polarity);
-    // Both channels at 0 → both IN1/IN2 LOW → H-bridge coast on the boot
-    // state. drv_en is still LOW so the driver is off regardless.
     timer::set_duty(m.in1, 0);
     timer::set_duty(m.in2, 0);
     timer::set_repetition(0);

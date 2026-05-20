@@ -70,7 +70,6 @@ pub struct ConfigControl {
     pub position: ConfigControlPosition,
 }
 
-/// ADC reference and analog-frontend cal. v006 has no usable internal Vref —
 /// `vdd_mv` is the DMM-measured VDD-at-chip-pin baked in per board.
 #[derive(Copy, Clone)]
 #[repr(C)]
