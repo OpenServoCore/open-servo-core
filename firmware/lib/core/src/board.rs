@@ -28,13 +28,15 @@ pub enum MotorCmd {
     Coast,
     /// `drv_en` HIGH, both low-side FETs on. Short-circuit braking.
     Brake,
-    /// `drv_en` HIGH, PWM drive with selected off-window decay.
+    /// `drv_en` HIGH, PWM drive with selectable off-window decay.
     Drive { duty: Effort, decay: DecayMode },
 }
 
 #[derive(Copy, Clone, Debug)]
 pub enum DecayMode {
+    /// Off-window = COAST (idle leg LOW). Low EMI, near-zero avg current on DRV8212P.
     Fast,
+    /// Off-window = BRAKE (idle leg HIGH). DRV8212P-correct for usable torque.
     Slow,
 }
 

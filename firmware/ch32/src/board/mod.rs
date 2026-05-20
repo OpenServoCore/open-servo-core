@@ -9,7 +9,7 @@ pub use config::{
     Sensors,
 };
 
-use osc_core::{Board, FrameInputs, MotorCmd, RawSamples, SampleFrame};
+use osc_core::{Board, DecayMode, FrameInputs, MotorCmd, RawSamples, SampleFrame};
 
 use crate::hal::{
     Pin,
@@ -109,7 +109,6 @@ impl Ch32Board {
     pub fn dbg_low(&self) {
         gpio::set_level(self.dbg, Level::Low);
     }
-
 }
 
 impl Board for Ch32Board {
@@ -171,8 +170,8 @@ impl Board for Ch32Board {
     }
 
     // DRV8212P truth table: (1,1)=BRAKE, (0,0)=COAST, (1,0)=fwd, (0,1)=rev.
-    // Slow decay: idle leg parked HIGH via CCR>ARR (PWMMODE1 holds HIGH);
-    // driving leg's CCR=ARR−ticks dips LOW for the drive window.
+    // Slow: idle leg HIGH (CCR>ARR holds PWMMODE1 HIGH), drive leg CCR=ARR-ticks.
+    // Fast: idle leg LOW  (CCR=0),                       drive leg CCR=ticks.
     fn write_motor(&mut self, cmd: MotorCmd) {
         const STATIC_HIGH: u16 = u16::MAX;
         match cmd {
@@ -191,17 +190,24 @@ impl Board for Ch32Board {
                 timer::set_duty(self.motor_in1, STATIC_HIGH);
                 timer::set_duty(self.motor_in2, STATIC_HIGH);
             }
-            MotorCmd::Drive { duty, decay: _ } => {
+            MotorCmd::Drive { duty, decay } => {
                 gpio::set_level(self.drv_en, Level::High);
                 let ticks = self.effort_to_ticks(duty.0.unsigned_abs());
-                let drive_ccr = self.pwm_arr.saturating_sub(ticks);
-                if duty.0 >= 0 {
-                    timer::set_duty(self.motor_in1, STATIC_HIGH);
-                    timer::set_duty(self.motor_in2, drive_ccr);
-                } else {
-                    timer::set_duty(self.motor_in1, drive_ccr);
-                    timer::set_duty(self.motor_in2, STATIC_HIGH);
+                if ticks == 0 {
+                    // Slow decay at zero ticks would lock both legs HIGH = BRAKE; coast instead.
+                    timer::set_duty(self.motor_in1, 0);
+                    timer::set_duty(self.motor_in2, 0);
+                    return;
                 }
+                let arr_minus = self.pwm_arr.saturating_sub(ticks);
+                let (in1, in2) = match (decay, duty.0 >= 0) {
+                    (DecayMode::Slow, true) => (STATIC_HIGH, arr_minus),
+                    (DecayMode::Slow, false) => (arr_minus, STATIC_HIGH),
+                    (DecayMode::Fast, true) => (ticks, 0),
+                    (DecayMode::Fast, false) => (0, ticks),
+                };
+                timer::set_duty(self.motor_in1, in1);
+                timer::set_duty(self.motor_in2, in2);
             }
         }
     }
