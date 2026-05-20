@@ -143,16 +143,20 @@ pub(super) fn configure_adc_dma_scan(sensors: &Sensors, opa_out_sample_time: adc
     dma::enable(dma::Channel::CH1);
 }
 
-pub(super) fn start_center_aligned_pwm(m: &MotorConfig) {
+/// Returns the configured ARR so the board can rescale `Effort`→duty later.
+pub(super) fn start_center_aligned_pwm(m: &MotorConfig) -> u16 {
     let (psc, arr) = timer::pwm_dividers_from_hz(m.pwm_freq_hz);
     timer::init_center_aligned_pwm(psc, arr);
     timer::configure_pwm_channel(m.in1, m.polarity);
     timer::configure_pwm_channel(m.in2, m.polarity);
-    timer::set_duty(m.in1, arr);
-    timer::set_duty(m.in2, arr);
+    // Both channels at 0 → both IN1/IN2 LOW → H-bridge coast on the boot
+    // state. drv_en is still LOW so the driver is off regardless.
+    timer::set_duty(m.in1, 0);
+    timer::set_duty(m.in2, 0);
     timer::set_repetition(0);
     timer::set_trgo_update();
     timer::enable_main_output();
     timer::force_update_event();
     timer::start();
+    arr
 }

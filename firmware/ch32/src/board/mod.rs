@@ -12,7 +12,7 @@ use osc_core::{Board, Capabilities, FrameInputs, MotorCmd, RawSamples, SampleFra
 use crate::hal::{
     Pin,
     gpio::{self, Level},
-    pfic,
+    pfic, timer,
 };
 use crate::statics::{ADC_SCAN_LEN, SHARED, read_sample_tick};
 
@@ -36,6 +36,10 @@ pub struct Ch32Board {
     scales: Scales,
     /// EWMA on the noisy IN10/Vcal channel; updated each frame.
     vcal_lpf: VcalLpf,
+    motor_in1: timer::Channel,
+    motor_in2: timer::Channel,
+    drv_en: Pin,
+    pwm_arr: u16,
 }
 
 impl Ch32Board {
@@ -58,6 +62,10 @@ impl Ch32Board {
             scales.shunt_q32,
         );
 
+        let motor_in1 = wiring.motor.in1;
+        let motor_in2 = wiring.motor.in2;
+        let drv_en = wiring.motor.drv_en;
+
         enable_clocks_and_remaps(&wiring);
         crate::log::debug!("clocks + remaps configured");
         configure_pins(&wiring);
@@ -78,8 +86,8 @@ impl Ch32Board {
 
         pfic::enable(pfic::Interrupt::DMA1_CHANNEL1);
         crate::log::debug!("pfic: DMA1_CHANNEL1 enabled");
-        start_center_aligned_pwm(&wiring.motor);
-        crate::log::debug!("pwm running ({} Hz)", wiring.motor.pwm_freq_hz);
+        let pwm_arr = start_center_aligned_pwm(&wiring.motor);
+        crate::log::debug!("pwm running ({} Hz, arr={})", wiring.motor.pwm_freq_hz, pwm_arr);
 
         crate::log::info!("Ch32Board::new: complete");
         Self {
@@ -88,7 +96,20 @@ impl Ch32Board {
             shunt_bias_raw,
             scales,
             vcal_lpf: VcalLpf::new(),
+            motor_in1,
+            motor_in2,
+            drv_en,
+            pwm_arr,
         }
+    }
+
+    /// Map an `Effort` magnitude (`0..=i16::MAX`) onto PWM ticks `0..=arr`.
+    /// Approximates `m·arr / 32767` with `(m·arr + ½·2^15) >> 15` — exact at
+    /// `m = i16::MAX`, max error ≈ 1 part in 32k elsewhere. Kills the soft-div.
+    fn effort_to_ticks(&self, mag: u16) -> u16 {
+        let m = mag.min(i16::MAX as u16) as u32;
+        let prod = m * self.pwm_arr as u32;
+        ((prod + (1 << 14)) >> 15) as u16
     }
 
     #[inline]
@@ -161,7 +182,48 @@ impl Board for Ch32Board {
         Capabilities::default()
     }
 
-    fn write_motor(&mut self, _cmd: MotorCmd) {}
+    // DRV8212P truth table: (1,1)=BRAKE, (0,0)=COAST, (1,0)=fwd, (0,1)=rev.
+    // Drive uses slow decay (BRAKE↔drive) — bringup proved fast decay
+    // (COAST↔drive) doesn't deliver enough current at modest duty into
+    // low-inductance brushed motors. We keep both inputs on TIM1 PWM and
+    // park the "static-HIGH" leg by writing CCR>ARR; PWMMODE1 then holds
+    // it HIGH for the whole period. The driving leg writes CCR = ARR -
+    // ticks, so it sits LOW for `ticks` per period — that's the drive
+    // window where the bridge is (HIGH, LOW) or (LOW, HIGH).
+    fn write_motor(&mut self, cmd: MotorCmd) {
+        const STATIC_HIGH: u16 = u16::MAX;
+        match cmd {
+            MotorCmd::Disabled => {
+                gpio::set_level(self.drv_en, Level::Low);
+                timer::set_duty(self.motor_in1, 0);
+                timer::set_duty(self.motor_in2, 0);
+            }
+            MotorCmd::Coast => {
+                gpio::set_level(self.drv_en, Level::High);
+                timer::set_duty(self.motor_in1, 0);
+                timer::set_duty(self.motor_in2, 0);
+            }
+            MotorCmd::Brake => {
+                gpio::set_level(self.drv_en, Level::High);
+                timer::set_duty(self.motor_in1, STATIC_HIGH);
+                timer::set_duty(self.motor_in2, STATIC_HIGH);
+            }
+            MotorCmd::Drive { duty, decay: _ } => {
+                gpio::set_level(self.drv_en, Level::High);
+                let ticks = self.effort_to_ticks(duty.0.unsigned_abs());
+                let drive_ccr = self.pwm_arr.saturating_sub(ticks);
+                if duty.0 >= 0 {
+                    // Forward: IN1 idle HIGH, IN2 dips LOW for the drive window.
+                    timer::set_duty(self.motor_in1, STATIC_HIGH);
+                    timer::set_duty(self.motor_in2, drive_ccr);
+                } else {
+                    // Reverse: IN2 idle HIGH, IN1 dips LOW for the drive window.
+                    timer::set_duty(self.motor_in1, drive_ccr);
+                    timer::set_duty(self.motor_in2, STATIC_HIGH);
+                }
+            }
+        }
+    }
 
     fn pulse_tick_indicator(&mut self) {
         gpio::toggle(self.stat_led);
