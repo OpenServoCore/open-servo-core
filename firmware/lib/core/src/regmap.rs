@@ -343,4 +343,91 @@ mod tests {
         let err = t.read_bytes(CALIB_BASE_ADDR + 512, &mut buf).unwrap_err();
         assert_eq!(err, RegmapError::AccessError);
     }
+
+    #[test]
+    fn write_config_pos_limits_round_trip() {
+        let t = fresh();
+        let addr = CONFIG_BASE_ADDR + 64;
+        let mut payload = [0u8; 16];
+        payload[0..4].copy_from_slice(&(-1_000_000i32).to_le_bytes());
+        payload[4..8].copy_from_slice(&1_000_000i32.to_le_bytes());
+        payload[8..12].copy_from_slice(&(-500_000i32).to_le_bytes());
+        payload[12..16].copy_from_slice(&500_000i32.to_le_bytes());
+        t.write_bytes(addr, &payload).unwrap();
+        let pos = unsafe { &*t.config.get() }.limits.pos;
+        assert_eq!(pos.pos_min_phys_urad, -1_000_000);
+        assert_eq!(pos.pos_max_phys_urad, 1_000_000);
+        assert_eq!(pos.pos_min_soft_urad, -500_000);
+        assert_eq!(pos.pos_max_soft_urad, 500_000);
+    }
+
+    #[test]
+    fn write_config_pid_round_trip() {
+        let t = fresh();
+        let addr = CONFIG_BASE_ADDR + 5 * 32;
+        let mut payload = [0u8; 16];
+        payload[0..2].copy_from_slice(&0x0100u16.to_le_bytes());
+        payload[2..4].copy_from_slice(&0x0040u16.to_le_bytes());
+        payload[4..6].copy_from_slice(&0x0080u16.to_le_bytes());
+        payload[8..12].copy_from_slice(&5000i32.to_le_bytes());
+        t.write_bytes(addr, &payload).unwrap();
+        let pid = unsafe { &*t.config.get() }.control.position;
+        assert_eq!(pid.pid_kp_q88, 0x0100);
+        assert_eq!(pid.pid_ki_q88, 0x0040);
+        assert_eq!(pid.pid_kd_q88, 0x0080);
+        assert_eq!(pid.pid_i_limit, 5000);
+    }
+
+    #[test]
+    fn write_control_streaming_round_trip() {
+        let t = fresh();
+        let addr = CONTROL_BASE_ADDR + 32;
+        let mut payload = [0u8; 12];
+        payload[0] = 1;
+        payload[1] = 4;
+        payload[2..4].copy_from_slice(&500u16.to_le_bytes());
+        payload[4..8].copy_from_slice(&0x0000_00ABu32.to_le_bytes());
+        t.write_bytes(addr, &payload).unwrap();
+        let s = unsafe { &*t.control.get() }.streaming;
+        assert_eq!(s.stream_enable, 1);
+        assert_eq!(s.stream_decimation, 4);
+        assert_eq!(s.stream_duration_ms, 500);
+        assert_eq!(s.stream_field_mask, 0xAB);
+    }
+
+    #[test]
+    fn write_calib_pot_lut_partial_does_not_smash_neighbours() {
+        let t = fresh();
+        let addr = CALIB_BASE_ADDR;
+        let payload = [0xAA, 0xBB, 0xCC, 0xDD];
+        t.write_bytes(addr, &payload).unwrap();
+        let pot = unsafe { &*t.calib.get() }.pot_lut;
+        assert_eq!(pot.raw_min, 0xBBAA);
+        assert_eq!(pot.raw_max, 0xDDCC);
+        assert_eq!(pot.lut[0], 0);
+    }
+
+    #[test]
+    fn write_spanning_block_body_into_reserved_tail_fails_atomically() {
+        let t = fresh();
+        let addr = CONFIG_BASE_ADDR + 3 * 32 + 8;
+        let payload = [0xFFu8; 32];
+        let err = t.write_bytes(addr, &payload).unwrap_err();
+        assert_eq!(err, RegmapError::AccessError);
+        let stall = unsafe { &*t.config.get() }.safety.stall;
+        assert_eq!(stall.stall_motion_threshold_urad, 0);
+    }
+
+    #[test]
+    fn partial_write_preserves_unwritten_bytes() {
+        let t = fresh();
+        let comms_addr = CONFIG_BASE_ADDR + 32;
+        t.write_bytes(comms_addr, &[0x07, 0x03, 0x96, 0x00])
+            .unwrap();
+        t.write_bytes(comms_addr, &[0x09, 0x05]).unwrap();
+        let comms = unsafe { &*t.config.get() }.comms;
+        assert_eq!(comms.id, 0x09);
+        assert_eq!(comms.baud_rate_idx, 0x05);
+        assert_eq!(comms.return_delay_us, 0x0096);
+    }
 }
