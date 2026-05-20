@@ -14,14 +14,11 @@ use osc_core::{Board, Capabilities, FrameInputs, MotorCmd, RawSamples, SampleFra
 use crate::hal::{
     Pin,
     gpio::{self, Level},
-    pfic, timer,
+    timer,
 };
-use crate::statics::{ADC_SCAN_LEN, SHARED, read_sample_tick};
+use crate::statics::{ADC_SCAN_LEN, read_sample_tick};
 
-use bringup::{
-    bring_up_analog_chain, configure_adc_dma_scan, configure_pins, enable_clocks_and_remaps,
-    start_center_aligned_pwm,
-};
+use bringup::BringupResult;
 use convert::{
     SCAN_IDX_NTC, SCAN_IDX_POS, SCAN_IDX_SHUNT_POST, SCAN_IDX_VCAL, SCAN_IDX_VMOTOR_A,
     SCAN_IDX_VMOTOR_B, SCAN_PEAK_OFFSET, SCAN_TROUGH_OFFSET, Scales, VcalLpf, divider_to_mv,
@@ -53,8 +50,6 @@ impl Ch32Board {
 
         let gain_factor = wiring.current_sense.opa_gain.factor();
         let scales = Scales::new(&calibration, gain_factor);
-        let stat_led = wiring.stat_led;
-        let dbg = wiring.dbg;
         crate::log::debug!(
             "scales: gain_factor={} vbus_q32={} vmotor_q32={} shunt_q32={}",
             gain_factor,
@@ -63,36 +58,16 @@ impl Ch32Board {
             scales.shunt_q32,
         );
 
+        let stat_led = wiring.stat_led;
+        let dbg = wiring.dbg;
         let motor_in1 = wiring.motor.in1;
         let motor_in2 = wiring.motor.in2;
         let drv_en = wiring.motor.drv_en;
 
-        enable_clocks_and_remaps(&wiring);
-        crate::log::debug!("clocks + remaps configured");
-        configure_pins(&wiring);
-        crate::log::debug!("gpio configured");
-        bring_up_analog_chain(&wiring.current_sense);
-        crate::log::debug!("opa settled");
-        let shunt_bias_raw = wiring.current_sense.opa_bias.quiescent_raw();
-        configure_adc_dma_scan(&wiring.sensors, wiring.current_sense.adc_sample_time);
-        crate::log::debug!(
-            "adc/dma scan armed: scan_len={} buf_len={} shunt_bias_raw={}",
-            crate::statics::ADC_SCAN_LEN,
-            crate::statics::ADC_DMA_BUF_LEN,
+        let BringupResult {
             shunt_bias_raw,
-        );
-
-        // Sole writer to CONFIG: pre-IRQ, pre-install_kernel.
-        SHARED.table.seed_config_defaults(&defaults);
-
-        pfic::enable(pfic::Interrupt::DMA1_CHANNEL1);
-        crate::log::debug!("pfic: DMA1_CHANNEL1 enabled");
-        let pwm_arr = start_center_aligned_pwm(&wiring.motor);
-        crate::log::debug!(
-            "pwm running ({} Hz, arr={})",
-            wiring.motor.pwm_freq_hz,
-            pwm_arr
-        );
+            pwm_arr,
+        } = bringup::run(&wiring, &defaults);
 
         #[cfg(feature = "defmt")]
         diag::dump_init_regs();

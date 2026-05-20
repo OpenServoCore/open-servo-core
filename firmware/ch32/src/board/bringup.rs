@@ -1,16 +1,60 @@
 use ch32_metapac::{ADC, adc::vals::Extsel, dma::vals::Dir};
+use osc_core::ConfigDefaults;
 
 use crate::hal::{
     Pin, Tim1Mapping, adc, afio, delay_ms, dma,
     gpio::{self, Level, PinMode},
-    opa, rcc, timer,
+    opa, pfic, rcc, timer,
 };
-use crate::statics::{ADC_DMA_BUF, ADC_DMA_BUF_LEN, ADC_SENSOR_COUNT};
+use crate::statics::{ADC_DMA_BUF, ADC_DMA_BUF_LEN, ADC_SCAN_LEN, ADC_SENSOR_COUNT, SHARED};
 
 use super::config::{BoardWiring, CurrentSenseConfig, MotorConfig, Sensors};
 
 const OPA_SETTLE_MS: u32 = 1;
 const VCAL_SAMPLE_TIME: adc::SampleTime = adc::SampleTime::CYCLES9;
+
+pub(super) struct BringupResult {
+    pub(super) shunt_bias_raw: u16,
+    pub(super) pwm_arr: u16,
+}
+
+pub(super) fn run(wiring: &BoardWiring, defaults: &ConfigDefaults) -> BringupResult {
+    enable_clocks_and_remaps(wiring);
+    crate::log::debug!("clocks + remaps configured");
+
+    configure_pins(wiring);
+    crate::log::debug!("gpio configured");
+
+    bring_up_analog_chain(&wiring.current_sense);
+    crate::log::debug!("opa settled");
+
+    let shunt_bias_raw = wiring.current_sense.opa_bias.quiescent_raw();
+    configure_adc_dma_scan(&wiring.sensors, wiring.current_sense.adc_sample_time);
+    crate::log::debug!(
+        "adc/dma scan armed: scan_len={} buf_len={} shunt_bias_raw={}",
+        ADC_SCAN_LEN,
+        ADC_DMA_BUF_LEN,
+        shunt_bias_raw,
+    );
+
+    // Sole writer to CONFIG: pre-IRQ, pre-install_kernel.
+    SHARED.table.seed_config_defaults(defaults);
+
+    pfic::enable(pfic::Interrupt::DMA1_CHANNEL1);
+    crate::log::debug!("pfic: DMA1_CHANNEL1 enabled");
+
+    let pwm_arr = start_center_aligned_pwm(&wiring.motor);
+    crate::log::debug!(
+        "pwm running ({} Hz, arr={})",
+        wiring.motor.pwm_freq_hz,
+        pwm_arr
+    );
+
+    BringupResult {
+        shunt_bias_raw,
+        pwm_arr,
+    }
+}
 
 fn tim1_channel_pin(mapping: Tim1Mapping, channel: timer::Channel) -> Pin {
     match channel {
@@ -26,7 +70,7 @@ fn sensor_inputs(s: &Sensors) -> [adc::Input; ADC_SENSOR_COUNT] {
     [s.pos, s.ntc, s.vbus, s.vmotor.0, s.vmotor.1]
 }
 
-pub(super) fn enable_clocks_and_remaps(w: &BoardWiring) {
+fn enable_clocks_and_remaps(w: &BoardWiring) {
     let in1 = tim1_channel_pin(w.motor.tim1, w.motor.in1);
     let in2 = tim1_channel_pin(w.motor.tim1, w.motor.in2);
     let opa_pos_pin = w.current_sense.opa_input.pos().pin();
@@ -55,7 +99,7 @@ pub(super) fn enable_clocks_and_remaps(w: &BoardWiring) {
     afio::set_tim_remap(2, w.tim2_remap.remap_value());
 }
 
-pub(super) fn configure_pins(w: &BoardWiring) {
+fn configure_pins(w: &BoardWiring) {
     let in1 = tim1_channel_pin(w.motor.tim1, w.motor.in1);
     let in2 = tim1_channel_pin(w.motor.tim1, w.motor.in2);
     let opa_pos_pin = w.current_sense.opa_input.pos().pin();
@@ -84,7 +128,7 @@ pub(super) fn configure_pins(w: &BoardWiring) {
     }
 }
 
-pub(super) fn bring_up_analog_chain(cs: &CurrentSenseConfig) {
+fn bring_up_analog_chain(cs: &CurrentSenseConfig) {
     opa::init_pga(
         cs.opa_input,
         cs.opa_gain,
@@ -94,7 +138,7 @@ pub(super) fn bring_up_analog_chain(cs: &CurrentSenseConfig) {
     delay_ms(OPA_SETTLE_MS);
 }
 
-pub(super) fn configure_adc_dma_scan(sensors: &Sensors, opa_out_sample_time: adc::SampleTime) {
+fn configure_adc_dma_scan(sensors: &Sensors, opa_out_sample_time: adc::SampleTime) {
     adc::set_sample_time(adc::Channel::OpaOut, opa_out_sample_time);
     adc::set_sample_time(sensors.pos.channel, sensors.pos.sample_time);
     adc::set_sample_time(sensors.ntc.channel, sensors.ntc.sample_time);
@@ -138,7 +182,7 @@ pub(super) fn configure_adc_dma_scan(sensors: &Sensors, opa_out_sample_time: adc
 }
 
 /// Returns the configured ARR so `Effort`→duty rescale can avoid a soft-div.
-pub(super) fn start_center_aligned_pwm(m: &MotorConfig) -> u16 {
+fn start_center_aligned_pwm(m: &MotorConfig) -> u16 {
     let (psc, arr) = timer::pwm_dividers_from_hz(m.pwm_freq_hz);
     timer::init_center_aligned_pwm(psc, arr);
     timer::configure_pwm_channel(m.in1, m.polarity);
