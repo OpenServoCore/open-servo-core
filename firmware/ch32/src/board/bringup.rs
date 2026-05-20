@@ -1,18 +1,22 @@
 use ch32_metapac::{ADC, adc::vals::Extsel, dma::vals::Dir};
 
 use crate::hal::{
-    Pin, Tim1Mapping, adc, afio, delay_cycles, dma,
+    Pin, Tim1Mapping, adc, afio, delay_ms, dma,
     gpio::{self, Level, PinMode},
     opa, rcc, timer,
 };
-use crate::statics::{ADC_DMA_BUF, ADC_DMA_BUF_LEN, ADC_SCAN_LEN, ADC_SENSOR_COUNT};
+use crate::statics::{ADC_DMA_BUF, ADC_DMA_BUF_LEN, ADC_SENSOR_COUNT};
 
 use super::config::{BoardWiring, CurrentSenseConfig, MotorConfig, Sensors};
 
-const OPA_SETTLE_CYCLES: u32 = 240_000;
+/// Conservative post-`init_pga` settle.
+const OPA_SETTLE_MS: u32 = 1;
 
-// Vref Z_src ~17 kΩ; CYCLES15 is shortest that clears it at fADC=12 MHz.
-const VREF_SAMPLE_TIME: adc::SampleTime = adc::SampleTime::CYCLES15;
+// Timing budget at 20 kHz center-aligned PWM (CMS=3), peak+trough triggered:
+//   period = 50 µs, half = 25 µs, ADC clk = 12 MHz (HCLK/4).
+//   per channel: T_conv = SMP + 12 ADC cycles.
+// CYCLES9 → 7 × 21 cyc ≈ 12.25 µs per scan, ~50 % margin under the half-period.
+const VCAL_SAMPLE_TIME: adc::SampleTime = adc::SampleTime::CYCLES9;
 
 fn tim1_channel_pin(mapping: Tim1Mapping, channel: timer::Channel) -> Pin {
     match channel {
@@ -23,11 +27,9 @@ fn tim1_channel_pin(mapping: Tim1Mapping, channel: timer::Channel) -> Pin {
     }
 }
 
-// Order must mirror statics::ADC_SCAN_LEN: pos, ntc, vbus, vmotor.0, vmotor.1, enc.0, enc.1.
+// Order must mirror the scan tail in `configure_adc_dma_scan`: pos, ntc, vbus, vmotor.0, vmotor.1.
 fn sensor_inputs(s: &Sensors) -> [adc::Input; ADC_SENSOR_COUNT] {
-    [
-        s.pos, s.ntc, s.vbus, s.vmotor.0, s.vmotor.1, s.enc.0, s.enc.1,
-    ]
+    [s.pos, s.ntc, s.vbus, s.vmotor.0, s.vmotor.1]
 }
 
 pub(super) fn enable_clocks_and_remaps(w: &BoardWiring) {
@@ -73,13 +75,13 @@ pub(super) fn configure_pins(w: &BoardWiring) {
     gpio::configure(in1, PinMode::AF_PUSH_PULL);
     gpio::configure(in2, PinMode::AF_PUSH_PULL);
 
-    gpio::configure(opa_pos_pin, PinMode::INPUT_FLOATING);
+    gpio::configure(opa_pos_pin, PinMode::ANALOG);
     if let Some(neg_pin) = w.current_sense.opa_input.neg_pin() {
-        gpio::configure(neg_pin, PinMode::INPUT_FLOATING);
+        gpio::configure(neg_pin, PinMode::ANALOG);
     }
     for input in sensor_inputs(&w.sensors) {
         if let Some(pin) = input.channel.pin() {
-            gpio::configure(pin, PinMode::INPUT_FLOATING);
+            gpio::configure(pin, PinMode::ANALOG);
         }
     }
 }
@@ -91,27 +93,34 @@ pub(super) fn bring_up_analog_chain(cs: &CurrentSenseConfig) {
         cs.opa_bias,
         opa::Output::Internal,
     );
-    delay_cycles(OPA_SETTLE_CYCLES);
+    delay_ms(OPA_SETTLE_MS);
 }
 
 pub(super) fn configure_adc_dma_scan(sensors: &Sensors, opa_out_sample_time: adc::SampleTime) {
+    // Scan = [IN9/OpaOut, IN7/pos, IN2/ntc, IN5/vmA, IN6/vmB, IN10/Vcal].
+    // Slot 0 is the gained OPA output. Vcal trails the scan as the
+    // VDD-ratiometric tap.
     adc::set_sample_time(adc::Channel::OpaOut, opa_out_sample_time);
-    let inputs = sensor_inputs(sensors);
-    for input in &inputs {
-        adc::set_sample_time(input.channel, input.sample_time);
-    }
-    adc::set_sample_time(adc::Channel::Vref, VREF_SAMPLE_TIME);
+    adc::set_sample_time(sensors.pos.channel, sensors.pos.sample_time);
+    adc::set_sample_time(sensors.ntc.channel, sensors.ntc.sample_time);
+    adc::set_sample_time(sensors.vmotor.0.channel, sensors.vmotor.0.sample_time);
+    adc::set_sample_time(sensors.vmotor.1.channel, sensors.vmotor.1.sample_time);
+    adc::set_sample_time(adc::Channel::Vcal, VCAL_SAMPLE_TIME);
+    adc::set_low_power(false);
 
-    // [shunt, pos, ntc, vbus, vmotor.0, vmotor.1, enc.0, enc.1, Vref] — 9 slots.
-    let mut seq = [adc::Channel::OpaOut; ADC_SCAN_LEN];
-    for (i, input) in inputs.iter().enumerate() {
-        seq[1 + i] = input.channel;
-    }
-    seq[ADC_SCAN_LEN - 1] = adc::Channel::Vref;
+    let seq = [
+        adc::Channel::OpaOut,
+        sensors.pos.channel,
+        sensors.ntc.channel,
+        sensors.vmotor.0.channel,
+        sensors.vmotor.1.channel,
+        adc::Channel::Vcal,
+    ];
     adc::set_sequence(&seq);
     adc::set_scan_mode(true);
     adc::set_dma(true);
     adc::set_external_trigger(Extsel::TIM1_TRGO);
+    adc::enable();
 
     let dma_cfg = dma::Config {
         dir: Dir::FROMPERIPHERAL,
@@ -132,7 +141,6 @@ pub(super) fn configure_adc_dma_scan(sensors: &Sensors, opa_out_sample_time: adc
         ADC_DMA_BUF_LEN as u16,
     );
     dma::enable(dma::Channel::CH1);
-    adc::enable();
 }
 
 pub(super) fn start_center_aligned_pwm(m: &MotorConfig) {

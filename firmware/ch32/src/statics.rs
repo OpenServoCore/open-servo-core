@@ -3,11 +3,12 @@ use osc_core::{Kernel, Shared};
 
 use crate::board::Ch32Board;
 
-/// In `Sensors` field order: pos, ntc, vbus, vmotor.0, vmotor.1, enc.0, enc.1.
-pub const ADC_SENSOR_COUNT: usize = 7;
+/// In `Sensors` field order: pos, ntc, vbus, vmotor.0, vmotor.1.
+pub const ADC_SENSOR_COUNT: usize = 5;
 
-/// `[shunt, pos, ntc, vbus, vmotor.0, vmotor.1, enc.0, enc.1, vref]` = 9 slots.
-pub const ADC_SCAN_LEN: usize = 1 + ADC_SENSOR_COUNT + 1;
+/// Scan = `[IN9/OpaOut, IN7/PD4/pos, IN2/PC4/ntc,
+///          IN5/PD5/vmA, IN6/PD6/vmB, IN10/Vcal]`. IN1 (PA1/vbus) excluded.
+pub const ADC_SCAN_LEN: usize = 6;
 
 /// Two scans per PWM period (peak + trough under center-aligned PWM, RCR=0).
 pub const ADC_DMA_BUF_LEN: usize = ADC_SCAN_LEN * 2;

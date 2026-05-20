@@ -37,12 +37,17 @@ fn main() -> ! {
                 polarity: Polarity::ActiveHigh,
             },
             current_sense: CurrentSenseConfig {
-                opa_input: opa::InputMode::SingleEnded(opa::PositiveInput::PA2),
+                // Differential PGA targeting rev_b. On rev_a the differential
+                // input is hardware-broken (ISNS- never reaches PA4 cleanly),
+                // so current readings here are garbage until rev_b lands.
+                opa_input: opa::InputMode::Differential {
+                    pos: opa::PositiveInput::PA2,
+                    neg: opa::NegativeInput::PA4,
+                },
                 opa_gain: opa::Gain::X32,
                 opa_bias: opa::Bias::MidRail,
-                adc_sample_time: adc::SampleTime::CYCLES3,
+                adc_sample_time: adc::SampleTime::CYCLES9,
             },
-            // CYCLES9 clears ~13 kΩ R_AIN at fADC=12 MHz; covers all dividers.
             sensors: Sensors {
                 pos: adc::Input::new(adc::Channel::IN7, adc::SampleTime::CYCLES9),
                 ntc: adc::Input::new(adc::Channel::IN2, adc::SampleTime::CYCLES9),
@@ -50,11 +55,6 @@ fn main() -> ! {
                 vmotor: (
                     adc::Input::new(adc::Channel::IN5, adc::SampleTime::CYCLES9),
                     adc::Input::new(adc::Channel::IN6, adc::SampleTime::CYCLES9),
-                ),
-                // ENC header not populated on rev A.
-                enc: (
-                    adc::Input::new(adc::Channel::IN4, adc::SampleTime::CYCLES3),
-                    adc::Input::new(adc::Channel::IN3, adc::SampleTime::CYCLES3),
                 ),
             },
         },

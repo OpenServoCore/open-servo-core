@@ -20,14 +20,13 @@ pub struct CurrentSenseConfig {
 }
 
 /// Non-shunt sensor inputs. Scan layout in DMA buffer is
-/// `[shunt, pos, ntc, vbus, vmotor.0, vmotor.1, enc.0, enc.1, vref]`;
+/// `[shunt, vref, pos, ntc, vbus, vmotor.0, vmotor.1]`;
 /// shunt and Vref slots are chip-lib-owned.
 pub struct Sensors {
     pub pos: adc::Input,
     pub ntc: adc::Input,
     pub vbus: adc::Input,
     pub vmotor: (adc::Input, adc::Input),
-    pub enc: (adc::Input, adc::Input),
 }
 
 /// `V_adc = V_in · bot_ohm / (top_ohm + bot_ohm)`.

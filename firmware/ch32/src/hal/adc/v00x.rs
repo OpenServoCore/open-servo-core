@@ -15,12 +15,14 @@ pub enum Channel {
     IN5 = 5,
     IN6 = 6,
     IN7 = 7,
-    Vref = 8,
+    // IN8 is unused on v006 (no external bonding on this package).
     OpaOut = 9,
+    /// IN10 = "Vcal" per datasheet block diagram. SMP lives in SAMPTR1.
+    Vcal = 10,
 }
 
 impl Channel {
-    /// `None` for internal channels (Vref, OpaOut). Caller configures pin as analog input.
+    /// `None` for internal channels (OpaOut, Vcal). Caller configures pin as analog input.
     pub const fn pin(self) -> Option<Pin> {
         match self {
             Channel::IN0 => Some(Pin::PA2),
@@ -31,7 +33,7 @@ impl Channel {
             Channel::IN5 => Some(Pin::PD5),
             Channel::IN6 => Some(Pin::PD6),
             Channel::IN7 => Some(Pin::PD4),
-            Channel::Vref | Channel::OpaOut => None,
+            Channel::OpaOut | Channel::Vcal => None,
         }
     }
 }
@@ -68,7 +70,13 @@ pub fn set_sequence(channels: &[Channel]) {
 }
 
 pub fn set_sample_time(channel: Channel, t: SampleTime) {
-    ADC.samptr2().modify(|w| w.set_smp(channel as usize, t));
+    let ch = channel as usize;
+    if ch < 10 {
+        ADC.samptr2().modify(|w| w.set_smp(ch, t));
+    } else {
+        // SAMPTR1 covers SMP10..SMP15 (n = 0..6).
+        ADC.samptr1().modify(|w| w.set_smp(ch - 10, t));
+    }
 }
 
 pub fn set_external_trigger(source: Extsel) {
@@ -86,6 +94,12 @@ pub fn set_dma(enable: bool) {
     ADC.ctlr2().modify(|w| w.set_dma(enable));
 }
 
+/// CTLR3.ADC_LP — low-power mode.
+pub fn set_low_power(enable: bool) {
+    ADC.ctlr3().modify(|w| w.set_adc_lp(enable));
+}
+
 pub fn enable() {
     ADC.ctlr2().modify(|w| w.set_adon(true));
+    crate::hal::delay_cycles(1_000);
 }

@@ -45,7 +45,11 @@ fn main() -> ! {
                 },
                 opa_gain: opa::Gain::X32,
                 opa_bias: opa::Bias::MidRail,
-                adc_sample_time: adc::SampleTime::CYCLES3,
+                // IN9 OPA tap empirically reads at any SMP C3..C241 on this
+                // silicon (verified via bringup isns_peak_dma 2026-05-20).
+                // CYCLES9 leaves the 7-channel scan at ~12 µs, well inside
+                // the 25 µs half-period budget → peak + trough both honored.
+                adc_sample_time: adc::SampleTime::CYCLES9,
             },
             // Rev B vs A: VPOS and ENCB swap (PD4 ↔ PD2); V_bus has real divider on PA1.
             // CYCLES9 clears ~13 kΩ R_AIN at fADC=12 MHz; covers all 5-7 kΩ taps.
@@ -56,11 +60,6 @@ fn main() -> ! {
                 vmotor: (
                     adc::Input::new(adc::Channel::IN5, adc::SampleTime::CYCLES9),
                     adc::Input::new(adc::Channel::IN6, adc::SampleTime::CYCLES9),
-                ),
-                // Quadrature is digital; CYCLES3 once wired up.
-                enc: (
-                    adc::Input::new(adc::Channel::IN4, adc::SampleTime::CYCLES3),
-                    adc::Input::new(adc::Channel::IN7, adc::SampleTime::CYCLES3),
                 ),
             },
         },
