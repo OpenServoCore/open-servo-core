@@ -80,3 +80,35 @@ pub fn enable_main_output() {
 pub fn start() {
     TIM1.ctlr1().modify(|w| w.set_cen(true));
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn realised_hz(psc: u16, arr: u16) -> u32 {
+        TIM_CLK_HZ / (2 * (psc as u32 + 1) * arr as u32)
+    }
+
+    #[test]
+    fn pwm_dividers_pin_production_freq() {
+        let (psc, arr) = pwm_dividers_from_hz(20_000);
+        assert_eq!((psc, arr), (0, 1200));
+        assert_eq!(realised_hz(psc, arr), 20_000);
+    }
+
+    #[test]
+    fn pwm_dividers_fits_low_freq() {
+        // 50 Hz needs a prescaler; product (psc+1)*arr fits u32.
+        let (psc, arr) = pwm_dividers_from_hz(50);
+        assert!(arr > 0);
+        let realised = realised_hz(psc, arr);
+        assert!((45..=55).contains(&realised), "got {realised}");
+    }
+
+    #[test]
+    fn pwm_dividers_high_freq() {
+        let (psc, arr) = pwm_dividers_from_hz(100_000);
+        assert_eq!(psc, 0);
+        assert_eq!(realised_hz(psc, arr), 100_000);
+    }
+}

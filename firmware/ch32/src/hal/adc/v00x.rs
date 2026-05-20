@@ -104,3 +104,47 @@ pub fn enable() {
     ADC.ctlr2().modify(|w| w.set_adon(true));
     crate::hal::delay_cycles(1_000);
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const EXTERNAL: &[Channel] = &[
+        Channel::IN0,
+        Channel::IN1,
+        Channel::IN2,
+        Channel::IN3,
+        Channel::IN4,
+        Channel::IN5,
+        Channel::IN6,
+        Channel::IN7,
+    ];
+
+    #[test]
+    fn external_channels_have_pins() {
+        for ch in EXTERNAL {
+            assert!(ch.pin().is_some(), "{:?} has no pin", *ch as u8);
+        }
+    }
+
+    #[test]
+    fn internal_channels_have_no_pin() {
+        assert!(Channel::OpaOut.pin().is_none());
+        assert!(Channel::Vcal.pin().is_none());
+    }
+
+    #[test]
+    fn external_channels_map_to_distinct_pins() {
+        for (i, a) in EXTERNAL.iter().enumerate() {
+            for b in &EXTERNAL[i + 1..] {
+                assert_ne!(
+                    a.pin().unwrap(),
+                    b.pin().unwrap(),
+                    "channels {:?} and {:?} share a pin",
+                    *a as u8,
+                    *b as u8
+                );
+            }
+        }
+    }
+}
