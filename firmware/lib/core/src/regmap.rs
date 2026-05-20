@@ -418,6 +418,48 @@ mod tests {
         assert_eq!(stall.stall_motion_threshold_urad, 0);
     }
 
+    fn assert_blocks_sorted_and_bounded(blocks: &[BlockDesc], region_size: u16) {
+        for win in blocks.windows(2) {
+            let (a, b) = (&win[0], &win[1]);
+            assert!(
+                a.addr_offset + a.size <= b.addr_offset,
+                "blocks not sorted/non-overlapping: {:?} then {:?}",
+                a,
+                b,
+            );
+        }
+        if let Some(last) = blocks.last() {
+            assert!(
+                last.addr_offset + last.size <= region_size,
+                "last block runs past region end: {:?}",
+                last,
+            );
+        }
+    }
+
+    #[test]
+    fn config_blocks_sorted_and_bounded() {
+        use crate::regions::CONFIG_REGION_SIZE;
+        assert_blocks_sorted_and_bounded(CONFIG_BLOCKS, CONFIG_REGION_SIZE as u16);
+    }
+
+    #[test]
+    fn telemetry_blocks_sorted_and_bounded() {
+        use crate::regions::TELEMETRY_REGION_SIZE;
+        assert_blocks_sorted_and_bounded(TELEMETRY_BLOCKS, TELEMETRY_REGION_SIZE as u16);
+    }
+
+    #[test]
+    fn control_blocks_sorted_and_bounded() {
+        use crate::regions::CONTROL_REGION_SIZE;
+        assert_blocks_sorted_and_bounded(CONTROL_BLOCKS, CONTROL_REGION_SIZE as u16);
+    }
+
+    #[test]
+    fn calib_blocks_sorted_and_bounded() {
+        assert_blocks_sorted_and_bounded(CALIB_BLOCKS, CALIB_REGION_SIZE as u16);
+    }
+
     #[test]
     fn partial_write_preserves_unwritten_bytes() {
         let t = fresh();
