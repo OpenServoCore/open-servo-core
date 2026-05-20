@@ -19,6 +19,8 @@ pub(super) struct BringupResult {
 }
 
 pub(super) fn run(wiring: &BoardWiring, defaults: &ConfigDefaults) -> BringupResult {
+    validate_sensors(&wiring.sensors);
+
     enable_clocks_and_remaps(wiring);
     crate::log::debug!("clocks + remaps configured");
 
@@ -65,6 +67,24 @@ fn tim1_channel_pin(mapping: Tim1Mapping, channel: timer::Channel) -> Pin {
 // Order must mirror the scan tail in `configure_adc_dma_scan`.
 fn sensor_inputs(s: &Sensors) -> [adc::Input; ADC_SENSOR_COUNT] {
     [s.pos, s.ntc, s.vbus, s.vmotor.0, s.vmotor.1]
+}
+
+fn validate_sensors(s: &Sensors) {
+    let inputs = sensor_inputs(s);
+    for (i, input) in inputs.iter().enumerate() {
+        assert!(
+            input.channel.pin().is_some(),
+            "sensor {} uses internal ADC channel — wire to an external pin",
+            i
+        );
+        for other in &inputs[i + 1..] {
+            assert!(
+                (input.channel as u8) != (other.channel as u8),
+                "duplicate sensor channel {}",
+                input.channel as u8
+            );
+        }
+    }
 }
 
 fn enable_clocks_and_remaps(w: &BoardWiring) {
