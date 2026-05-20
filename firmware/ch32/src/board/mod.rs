@@ -29,6 +29,7 @@ use convert::{
 
 pub struct Ch32Board {
     stat_led: Pin,
+    dbg: Pin,
     calibration: Calibration,
     /// Nominal OPA quiescent ADC count, derived from the configured `opa::Bias`.
     /// Actual quiescent point on this silicon may drift; treat as a starting offset.
@@ -54,6 +55,7 @@ impl Ch32Board {
         let gain_factor = wiring.current_sense.opa_gain.factor();
         let scales = Scales::new(&calibration, gain_factor);
         let stat_led = wiring.stat_led;
+        let dbg = wiring.dbg;
         crate::log::debug!(
             "scales: gain_factor={} vbus_q32={} vmotor_q32={} shunt_q32={}",
             gain_factor,
@@ -92,6 +94,7 @@ impl Ch32Board {
         crate::log::info!("Ch32Board::new: complete");
         Self {
             stat_led,
+            dbg,
             calibration,
             shunt_bias_raw,
             scales,
@@ -115,6 +118,18 @@ impl Ch32Board {
     #[inline]
     pub fn set_stat_led(&self, on: bool) {
         gpio::set_level(self.stat_led, if on { Level::High } else { Level::Low });
+    }
+
+    /// Drive dbg HIGH at ISR entry. Pair with `dbg_low` at ISR exit so the
+    /// scope sees ISR rate as the pulse frequency and ISR runtime as the width.
+    #[inline]
+    pub fn dbg_high(&self) {
+        gpio::set_level(self.dbg, Level::High);
+    }
+
+    #[inline]
+    pub fn dbg_low(&self) {
+        gpio::set_level(self.dbg, Level::Low);
     }
 
     /// Called from DMA1 TC ISR. Peak half-scan (ON-window centre) drives the

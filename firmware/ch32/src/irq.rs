@@ -13,9 +13,12 @@ fn DMA1_CHANNEL1() {
         tick.write(tick.read().wrapping_add(1));
 
         if let Some(kernel) = (*KERNEL.get()).as_mut() {
+            // Scope: pulse period = ISR rate, pulse width = ISR runtime.
+            kernel.board.dbg_high();
             let inputs = FrameInputs::snapshot(&SHARED);
             let frame = kernel.board.build_sample_frame(&inputs);
             kernel.on_tick(frame, &SHARED);
+            kernel.board.dbg_low();
         }
     }
 }

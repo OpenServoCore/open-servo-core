@@ -40,6 +40,7 @@ pub(super) fn enable_clocks_and_remaps(w: &BoardWiring) {
     rcc::init_48mhz_hsi_pll();
     rcc::enable_afio();
     rcc::enable_gpio(w.stat_led.port_index());
+    rcc::enable_gpio(w.dbg.port_index());
     rcc::enable_gpio(in1.port_index());
     rcc::enable_gpio(in2.port_index());
     rcc::enable_gpio(w.motor.drv_en.port_index());
@@ -67,6 +68,9 @@ pub(super) fn configure_pins(w: &BoardWiring) {
 
     gpio::configure(w.stat_led, PinMode::OUTPUT_PUSH_PULL);
     gpio::set_level(w.stat_led, Level::Low);
+
+    gpio::configure(w.dbg, PinMode::OUTPUT_PUSH_PULL);
+    gpio::set_level(w.dbg, Level::Low);
 
     // drv_en LOW = driver disabled (MotorCmd::Disabled boot state).
     gpio::configure(w.motor.drv_en, PinMode::OUTPUT_PUSH_PULL);

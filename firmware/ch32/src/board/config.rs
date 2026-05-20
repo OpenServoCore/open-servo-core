@@ -59,6 +59,8 @@ pub struct Calibration {
 /// Schematic-fixed wiring; consumed during `Ch32Board::new` and not retained.
 pub struct BoardWiring {
     pub stat_led: Pin,
+    /// Scope/probe pad. Toggled once per DMA-TC ISR; scope frequency × 2 = ISR rate.
+    pub dbg: Pin,
     pub tim2_remap: Tim2Mapping,
     pub motor: MotorConfig,
     pub current_sense: CurrentSenseConfig,

@@ -27,6 +27,8 @@ fn main() -> ! {
     let board = Ch32Board::new(BoardConfig {
         wiring: BoardWiring {
             stat_led: Pin::PD0,
+            // Scope pad exposed on this rev_a board.
+            dbg: Pin::PC3,
             tim2_remap: Tim2Mapping::Remap0,
             motor: MotorConfig {
                 tim1: Tim1Mapping::Remap7,
