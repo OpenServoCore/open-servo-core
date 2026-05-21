@@ -14,7 +14,7 @@ osc_ch32::install_isrs!();
 #[qingke_rt::entry]
 fn main() -> ! {
     osc_ch32::log::info!("osc-dev-v006 rev B: boot");
-    osc_ch32::run(BoardConfig {
+    osc_ch32::run!(BoardConfig {
         wiring: BoardWiring {
             // STAT on PC7 = TIM1_CH4 (Remap7); TODO drive via TIM1 instead of GPIO.
             stat_led: Pin::PC7,

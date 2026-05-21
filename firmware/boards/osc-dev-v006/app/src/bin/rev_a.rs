@@ -14,7 +14,7 @@ osc_ch32::install_isrs!();
 #[qingke_rt::entry]
 fn main() -> ! {
     osc_ch32::log::info!("osc-dev-v006 rev A: boot");
-    osc_ch32::run(BoardConfig {
+    osc_ch32::run!(BoardConfig {
         wiring: BoardWiring {
             stat_led: Pin::PD0,
             dbg: Pin::PC3,

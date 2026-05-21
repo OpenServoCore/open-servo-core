@@ -2,12 +2,13 @@ use ch32_metapac::{ADC, adc::vals::Extsel, dma::vals::Dir};
 use osc_core::{BaudRate, ConfigDefaults};
 
 use crate::hal::{
-    Pin, Tim1Mapping, adc, afio, delay_ms, dma,
+    adc, afio, delay_ms, dma,
     gpio::{self, Level, PinMode},
     opa, pfic, rcc, timer, usart,
 };
 use crate::statics::{
-    ADC_DMA_BUF, ADC_DMA_BUF_LEN, ADC_SCAN_LEN, ADC_SENSOR_COUNT, DXL_RX_BUF, DXL_RX_BUF_LEN, SHARED,
+    ADC_DMA_BUF, ADC_DMA_BUF_LEN, ADC_SCAN_LEN, ADC_SENSOR_COUNT, DXL_RX_BUF, DXL_RX_BUF_LEN,
+    SHARED,
 };
 
 use super::config::{BoardWiring, CurrentSenseConfig, Duplex, DxlBus, MotorConfig, Sensors};
@@ -23,8 +24,6 @@ pub(super) struct BringupResult {
 }
 
 pub(super) fn run(wiring: &BoardWiring, defaults: &ConfigDefaults) -> BringupResult {
-    validate_sensors(&wiring.sensors);
-
     enable_clocks_and_remaps(wiring);
     crate::log::debug!("clocks + remaps configured");
 
@@ -62,41 +61,14 @@ pub(super) fn run(wiring: &BoardWiring, defaults: &ConfigDefaults) -> BringupRes
     }
 }
 
-fn tim1_channel_pin(mapping: Tim1Mapping, channel: timer::Channel) -> Pin {
-    match channel {
-        timer::Channel::CH1 => mapping.ch1_pin(),
-        timer::Channel::CH2 => mapping.ch2_pin(),
-        timer::Channel::CH3 => mapping.ch3_pin(),
-        timer::Channel::CH4 => mapping.ch4_pin(),
-    }
-}
-
 // Order must mirror the scan tail in `configure_adc_dma_scan`.
 fn sensor_inputs(s: &Sensors) -> [adc::Input; ADC_SENSOR_COUNT] {
     [s.pos, s.ntc, s.vbus, s.vmotor.0, s.vmotor.1]
 }
 
-fn validate_sensors(s: &Sensors) {
-    let inputs = sensor_inputs(s);
-    for (i, input) in inputs.iter().enumerate() {
-        assert!(
-            input.channel.pin().is_some(),
-            "sensor {} uses internal ADC channel — wire to an external pin",
-            i
-        );
-        for other in &inputs[i + 1..] {
-            assert!(
-                (input.channel as u8) != (other.channel as u8),
-                "duplicate sensor channel {}",
-                input.channel as u8
-            );
-        }
-    }
-}
-
 fn enable_clocks_and_remaps(w: &BoardWiring) {
-    let in1 = tim1_channel_pin(w.motor.tim1, w.motor.in1);
-    let in2 = tim1_channel_pin(w.motor.tim1, w.motor.in2);
+    let in1 = w.motor.in1_pin();
+    let in2 = w.motor.in2_pin();
     let opa_pos_pin = w.current_sense.opa.input.pos().pin();
 
     rcc::init_48mhz_hsi_pll();
@@ -131,8 +103,8 @@ fn enable_clocks_and_remaps(w: &BoardWiring) {
 }
 
 fn configure_pins(w: &BoardWiring) {
-    let in1 = tim1_channel_pin(w.motor.tim1, w.motor.in1);
-    let in2 = tim1_channel_pin(w.motor.tim1, w.motor.in2);
+    let in1 = w.motor.in1_pin();
+    let in2 = w.motor.in2_pin();
     let opa_pos_pin = w.current_sense.opa.input.pos().pin();
 
     gpio::configure(w.stat_led, PinMode::OUTPUT_PUSH_PULL);
@@ -269,51 +241,4 @@ fn start_center_aligned_pwm(m: &MotorConfig) -> u16 {
     timer::force_update_event();
     timer::start();
     arr
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::hal::adc::{Channel, Input, SampleTime};
-
-    fn rev_b_sensors() -> Sensors {
-        Sensors {
-            pos: Input::new(Channel::IN3, SampleTime::CYCLES9),
-            ntc: Input::new(Channel::IN2, SampleTime::CYCLES9),
-            vbus: Input::new(Channel::IN1, SampleTime::CYCLES9),
-            vmotor: (
-                Input::new(Channel::IN5, SampleTime::CYCLES9),
-                Input::new(Channel::IN6, SampleTime::CYCLES9),
-            ),
-        }
-    }
-
-    #[test]
-    fn validate_accepts_rev_b_config() {
-        validate_sensors(&rev_b_sensors());
-    }
-
-    #[test]
-    #[should_panic(expected = "duplicate sensor channel")]
-    fn validate_rejects_duplicate_channel() {
-        let mut s = rev_b_sensors();
-        s.ntc = Input::new(Channel::IN3, SampleTime::CYCLES9);
-        validate_sensors(&s);
-    }
-
-    #[test]
-    #[should_panic(expected = "internal ADC channel")]
-    fn validate_rejects_internal_channel() {
-        let mut s = rev_b_sensors();
-        s.pos = Input::new(Channel::Vcal, SampleTime::CYCLES9);
-        validate_sensors(&s);
-    }
-
-    #[test]
-    #[should_panic(expected = "internal ADC channel")]
-    fn validate_rejects_opa_out_as_sensor() {
-        let mut s = rev_b_sensors();
-        s.pos = Input::new(Channel::OpaOut, SampleTime::CYCLES9);
-        validate_sensors(&s);
-    }
 }

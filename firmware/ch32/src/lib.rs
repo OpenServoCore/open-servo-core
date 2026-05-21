@@ -17,7 +17,18 @@ pub mod telemetry;
 
 use board::{BoardConfig, Ch32Board};
 
-pub fn run(cfg: BoardConfig) -> ! {
+/// Const-asserts pin-uniqueness on the `BoardConfig` literal, then runs.
+#[macro_export]
+macro_rules! run {
+    ($cfg:expr) => {{
+        const __OSC_CH32_CFG: $crate::board::BoardConfig = $cfg;
+        const _: () = __OSC_CH32_CFG.wiring.assert_valid();
+        $crate::__run(__OSC_CH32_CFG)
+    }};
+}
+
+#[doc(hidden)]
+pub fn __run(cfg: BoardConfig) -> ! {
     let board = Ch32Board::new(cfg);
     statics::install_kernel(board);
     loop {
