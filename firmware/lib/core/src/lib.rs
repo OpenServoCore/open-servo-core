@@ -10,7 +10,6 @@ pub mod regions;
 pub mod regmap;
 pub mod sample_frame;
 pub mod shared;
-pub mod stream_coord;
 
 pub use board::{Board, Capabilities, ConfigDefaults, DecayMode, MotorCmd};
 pub use kernel::{Kernel, KernelState};
@@ -25,4 +24,3 @@ pub use regions::{
 pub use regmap::{Access, BlockDesc, RegmapError};
 pub use sample_frame::{FrameInputs, RawSamples, SampleFrame};
 pub use shared::Shared;
-pub use stream_coord::StreamCoord;
