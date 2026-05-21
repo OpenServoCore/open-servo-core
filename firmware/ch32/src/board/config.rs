@@ -17,6 +17,15 @@ pub struct TxEn {
     pub tx_level: Level,
 }
 
+impl TxEn {
+    pub const fn idle_level(&self) -> Level {
+        match self.tx_level {
+            Level::High => Level::Low,
+            Level::Low => Level::High,
+        }
+    }
+}
+
 #[derive(Copy, Clone)]
 pub struct DxlBus {
     pub usart: UsartMapping,

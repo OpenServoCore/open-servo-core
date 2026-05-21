@@ -8,7 +8,7 @@ use crate::hal::{
 };
 use crate::statics::{
     ADC_DMA_BUF, ADC_DMA_BUF_LEN, ADC_SCAN_LEN, ADC_SENSOR_COUNT, DXL_RX_BUF, DXL_RX_BUF_LEN,
-    SHARED,
+    DXL_TX_BUF, DXL_TX_EN, SHARED,
 };
 
 use super::config::{BoardWiring, CurrentSenseConfig, Duplex, DxlBus, MotorConfig, Sensors};
@@ -140,15 +140,7 @@ fn configure_dxl_pins(d: &DxlBus) {
     }
     if let Some(ref t) = d.tx_en {
         gpio::configure(t.pin, PinMode::OUTPUT_PUSH_PULL);
-        gpio::set_level(t.pin, invert(t.tx_level));
-    }
-}
-
-#[inline]
-fn invert(level: Level) -> Level {
-    match level {
-        Level::High => Level::Low,
-        Level::Low => Level::High,
+        gpio::set_level(t.pin, t.idle_level());
     }
 }
 
@@ -222,6 +214,26 @@ fn bring_up_dxl(d: &DxlBus, baud: BaudRate) {
     );
     dma::enable(dma::Channel::CH5);
     usart::set_dma_rx(regs, true);
+
+    let tx_cfg = dma::Config {
+        dir: Dir::FROMMEMORY,
+        circ: false,
+        pinc: false,
+        minc: true,
+        size: dma::Size::BITS8,
+        tcie: false,
+    };
+    let tx_src = unsafe { (*DXL_TX_BUF.get()).as_ptr() } as u32;
+    dma::configure(
+        dma::Channel::CH4,
+        &tx_cfg,
+        usart::data_addr(regs),
+        tx_src,
+        0,
+    );
+
+    // Sole writer; IRQ-only reader unmasks below.
+    unsafe { *DXL_TX_EN.get() = d.tx_en };
 
     usart::set_idle_irq(regs, true);
     pfic::enable(pfic::Interrupt::USART1);

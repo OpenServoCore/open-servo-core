@@ -1,8 +1,9 @@
 use core::cell::SyncUnsafeCell;
 use core::mem::MaybeUninit;
+use heapless::Vec;
 use osc_core::{Kernel, Shared};
 
-use crate::board::Ch32Board;
+use crate::board::{Ch32Board, TxEn};
 use crate::hal::pfic;
 
 /// In `Sensors` field order: pos, ntc, vbus, vmotor.0, vmotor.1.
@@ -22,6 +23,13 @@ pub const DXL_RX_BUF_LEN: usize = 256;
 
 pub static DXL_RX_BUF: SyncUnsafeCell<[u8; DXL_RX_BUF_LEN]> =
     SyncUnsafeCell::new([0; DXL_RX_BUF_LEN]);
+
+pub const DXL_TX_BUF_LEN: usize = 256;
+
+pub static DXL_TX_BUF: SyncUnsafeCell<Vec<u8, DXL_TX_BUF_LEN>> = SyncUnsafeCell::new(Vec::new());
+
+/// Written once during `bring_up_dxl` before USART1 IRQ is unmasked; read-only thereafter.
+pub static DXL_TX_EN: SyncUnsafeCell<Option<TxEn>> = SyncUnsafeCell::new(None);
 
 pub static SHARED: Shared = Shared::const_new();
 

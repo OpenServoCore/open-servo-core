@@ -2,8 +2,8 @@ use ch32_metapac::{DMA1, USART1};
 use core::sync::atomic::Ordering;
 use osc_core::{Board, FrameInputs};
 
-use crate::hal::{dma, usart};
-use crate::statics::{DXL_RX_BUF_LEN, KERNEL, SHARED};
+use crate::hal::{dma, gpio, usart};
+use crate::statics::{DXL_RX_BUF_LEN, DXL_TX_BUF, DXL_TX_EN, KERNEL, SHARED};
 
 /// ADC DMA TC handler body — wire into the vector table via [`crate::install_isrs!`].
 pub fn on_adc_dma_tc() {
@@ -35,6 +35,20 @@ pub fn on_usart1() {
             .stream
             .dxl_rx_write_pos
             .store(write_pos, Ordering::Release);
+    }
+
+    if usart::is_tc(USART1) {
+        usart::set_tc_irq(USART1, false);
+        usart::clear_tc(USART1);
+        usart::set_dma_tx(USART1, false);
+        dma::disable(dma::Channel::CH4);
+        if let Some(t) = unsafe { *DXL_TX_EN.get() } {
+            gpio::set_level(t.pin, t.idle_level());
+        }
+        // SAFETY: TC IRQ runs strictly after start_dxl_tx and before any next
+        // writer touches DXL_TX_BUF — no concurrent access.
+        let buf = unsafe { &mut *DXL_TX_BUF.get() };
+        buf.clear();
     }
 }
 

@@ -42,6 +42,12 @@ pub fn configure(ch: Channel, cfg: &Config, paddr: u32, maddr: u32, count: u16) 
     });
 }
 
+/// Channel must be disabled when called.
+pub fn set_count(ch: Channel, count: u16) {
+    let n = (ch as u8 - 1) as usize;
+    DMA1.ch(n).ndtr().write(|w| w.set_ndt(count));
+}
+
 pub fn enable(ch: Channel) {
     let n = (ch as u8 - 1) as usize;
     DMA1.ch(n).cr().modify(|w| w.set_en(true));
