@@ -353,6 +353,7 @@ dependencies = [
  "defmt-rtt",
  "osc-ch32",
  "panic-halt",
+ "qingke",
  "qingke-rt",
  "tinyboot-ch32",
 ]

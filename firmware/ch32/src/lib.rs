@@ -24,6 +24,8 @@ macro_rules! run {
     ($cfg:expr) => {{
         const __OSC_CH32_CFG: $crate::board::BoardConfig = $cfg;
         const _: () = __OSC_CH32_CFG.wiring.assert_valid();
+        // qingke-rt sets WFITOWFE=1; undo it so `wfi` wakes on pending IRQs.
+        unsafe { ::qingke::pfic::wfi_to_wfe(false) };
         $crate::__run(__OSC_CH32_CFG)
     }};
 }
@@ -33,8 +35,7 @@ pub fn __run(cfg: BoardConfig) -> ! {
     let board = Ch32Board::new(cfg);
     statics::install(board);
     loop {
-        // SAFETY: `install` initialized SERVICES before this runs; ISRs never
-        // form a `&mut` to SERVICES, so no aliasing exists.
+        // SAFETY: SERVICES initialized in `install`; no ISR aliases it.
         let services = unsafe { (*statics::SERVICES.get()).assume_init_mut() };
         services.poll(&statics::SHARED);
         #[cfg(feature = "defmt")]
