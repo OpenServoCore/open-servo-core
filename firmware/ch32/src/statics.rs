@@ -1,11 +1,12 @@
 use core::cell::SyncUnsafeCell;
 use core::mem::MaybeUninit;
 use heapless::Vec;
-use osc_core::{Kernel, RingReader, Shared};
+use osc_core::{Kernel, Services, ServicesIo, Shared};
 use portable_atomic::AtomicU16;
 
 use crate::board::{Ch32Board, TxEn};
 use crate::hal::pfic;
+use crate::services::Ch32DxlIo;
 
 /// In `Sensors` field order: pos, ntc, vbus, vmotor.0, vmotor.1.
 pub const ADC_SENSOR_COUNT: usize = 5;
@@ -25,7 +26,7 @@ pub const DXL_RX_BUF_LEN: usize = 256;
 pub static DXL_RX_BUF: SyncUnsafeCell<[u8; DXL_RX_BUF_LEN]> =
     SyncUnsafeCell::new([0; DXL_RX_BUF_LEN]);
 
-/// USART1 IDLE handler stores the DMA write index; `dxl_handler::poll` reads it.
+/// USART1 IDLE handler stores the DMA write index; `Ch32DxlIo::rx_snapshot` reads it.
 pub static DXL_RX_WRITE_POS: AtomicU16 = AtomicU16::new(0);
 
 pub const DXL_TX_BUF_LEN: usize = 256;
@@ -35,23 +36,25 @@ pub static DXL_TX_BUF: SyncUnsafeCell<Vec<u8, DXL_TX_BUF_LEN>> = SyncUnsafeCell:
 /// Written once during `bring_up_dxl` before USART1 IRQ is unmasked; read-only thereafter.
 pub static DXL_TX_EN: SyncUnsafeCell<Option<TxEn>> = SyncUnsafeCell::new(None);
 
-/// Sole writer + reader: `dxl_handler::poll` on the main loop. Sized to
-/// DXL_RX_BUF so a full ring of unread bytes can land contiguously.
-pub static DXL_RX_READER: SyncUnsafeCell<RingReader<DXL_RX_BUF_LEN>> =
-    SyncUnsafeCell::new(RingReader::new());
-
 pub static SHARED: Shared = Shared::const_new();
 
-/// Initialised by `install_kernel`; DMA TC IRQ is PFIC-masked until then.
+/// Initialised by `install`; DMA TC IRQ is PFIC-masked until then.
 pub(crate) static KERNEL: SyncUnsafeCell<MaybeUninit<Kernel<Ch32Board>>> =
     SyncUnsafeCell::new(MaybeUninit::uninit());
 
-pub fn install_kernel(board: Ch32Board) {
+/// Initialised by `install`; sole `&mut` writer is the main loop.
+pub(crate) static SERVICES: SyncUnsafeCell<MaybeUninit<Services<Ch32DxlIo>>> =
+    SyncUnsafeCell::new(MaybeUninit::uninit());
+
+pub fn install(board: Ch32Board) {
     unsafe {
         (*KERNEL.get()).write(Kernel::new(board));
+        (*SERVICES.get()).write(Services::new(ServicesIo {
+            dxl_io: Ch32DxlIo::new(),
+        }));
     }
     pfic::enable(pfic::Interrupt::DMA1_CHANNEL1);
-    crate::log::info!("kernel installed; DMA TC ISR live");
+    crate::log::info!("kernel + services installed; DMA TC ISR live");
 }
 
 /// `read_volatile` is load-bearing: a plain read gets hoisted out of spin loops

@@ -9,15 +9,14 @@ pub use config::{
     MotorConfig, NtcCal, Sensors, TxEn,
 };
 
-use ch32_metapac::USART1;
 use osc_core::{Board, DecayMode, FrameInputs, MotorCmd, RawSamples, SampleFrame};
 
 use crate::hal::{
-    Pin, dma,
+    Pin,
     gpio::{self, Level},
-    timer, usart,
+    timer,
 };
-use crate::statics::{DXL_TX_BUF, DXL_TX_BUF_LEN, DXL_TX_EN, read_sample_tick};
+use crate::statics::read_sample_tick;
 
 use bringup::BringupResult;
 use convert::{
@@ -102,31 +101,6 @@ impl Ch32Board {
     #[inline]
     pub fn dbg_low(&self) {
         gpio::set_level(self.dbg, Level::Low);
-    }
-
-    pub fn dxl_tx_buf(&mut self) -> &mut heapless::Vec<u8, DXL_TX_BUF_LEN> {
-        // SAFETY: caller has `&mut self`; the IRQ-side `.clear()` only runs
-        // after a `start_dxl_tx` cycle this method initiated.
-        unsafe { &mut *DXL_TX_BUF.get() }
-    }
-
-    /// Hands `DXL_TX_BUF` to DMA1 CH4 → USART1.DR and arms the TC IRQ.
-    /// Caller must have pushed the outbound frame into `dxl_tx_buf()` first.
-    pub fn start_dxl_tx(&mut self) {
-        let len = self.dxl_tx_buf().len();
-        if len == 0 {
-            return;
-        }
-
-        if let Some(t) = unsafe { *DXL_TX_EN.get() } {
-            gpio::set_level(t.pin, t.tx_level);
-        }
-
-        dma::set_count(dma::Channel::CH4, len as u16);
-        usart::clear_tc(USART1);
-        usart::set_dma_tx(USART1, true);
-        usart::set_tc_irq(USART1, true);
-        dma::enable(dma::Channel::CH4);
     }
 }
 

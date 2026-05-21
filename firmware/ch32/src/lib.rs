@@ -7,11 +7,11 @@ pub use osc_core::{BaudRate, ConfigDefaults};
 
 pub mod board;
 pub mod chip_flash;
-pub mod dxl_handler;
 pub mod hal;
 pub mod irq;
 pub mod log;
 pub mod prelude;
+pub mod services;
 pub(crate) mod statics;
 #[cfg(feature = "defmt")]
 pub mod telemetry;
@@ -31,8 +31,12 @@ macro_rules! run {
 #[doc(hidden)]
 pub fn __run(cfg: BoardConfig) -> ! {
     let board = Ch32Board::new(cfg);
-    statics::install_kernel(board);
+    statics::install(board);
     loop {
+        // SAFETY: `install` initialized SERVICES before this runs; ISRs never
+        // form a `&mut` to SERVICES, so no aliasing exists.
+        let services = unsafe { (*statics::SERVICES.get()).assume_init_mut() };
+        services.poll(&statics::SHARED);
         #[cfg(feature = "defmt")]
         telemetry::pump();
         riscv::asm::wfi();
