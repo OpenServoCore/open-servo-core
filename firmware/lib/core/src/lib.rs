@@ -10,6 +10,7 @@ pub mod regions;
 pub mod regmap;
 pub mod ring_reader;
 pub mod sample_frame;
+pub mod services;
 pub mod shared;
 
 pub use board::{Board, Capabilities, ConfigDefaults, DecayMode, MotorCmd};
@@ -23,6 +24,8 @@ pub use regions::{
     TelemetryFault, TelemetryIntermediaries, TelemetryRaw, TelemetryRegs,
 };
 pub use regmap::{Access, BlockDesc, RegmapError};
-pub use ring_reader::RingReader;
+pub use ring_reader::{RingReader, RxSnapshot};
 pub use sample_frame::{FrameInputs, RawSamples, SampleFrame};
+pub use services::dxl::{Dxl, DxlIo};
+pub use services::{Services, ServicesIo};
 pub use shared::Shared;

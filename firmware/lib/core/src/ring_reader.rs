@@ -1,5 +1,28 @@
 use heapless::Vec;
 
+pub struct RxSnapshot<'a> {
+    ring: &'a [u8],
+    write_pos: u16,
+}
+
+impl<'a> RxSnapshot<'a> {
+    /// `write_pos` is the index where the next byte will land; must be in
+    /// `[0, ring.len())`. Circular DMA satisfies this: NDTR reloads from 0
+    /// to N on each cycle, so `N - remaining` ∈ [0, N).
+    pub fn new(ring: &'a [u8], write_pos: u16) -> Self {
+        debug_assert!((write_pos as usize) < ring.len(), "write_pos out of range");
+        Self { ring, write_pos }
+    }
+
+    pub fn ring(&self) -> &[u8] {
+        self.ring
+    }
+
+    pub fn write_pos(&self) -> u16 {
+        self.write_pos
+    }
+}
+
 pub struct RingReader<const N: usize> {
     scratch: Vec<u8, N>,
     last_read_pos: u16,
