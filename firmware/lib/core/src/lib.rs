@@ -8,6 +8,7 @@ pub mod log;
 pub mod page;
 pub mod regions;
 pub mod regmap;
+pub mod ring_reader;
 pub mod sample_frame;
 pub mod shared;
 
@@ -22,5 +23,6 @@ pub use regions::{
     TelemetryFault, TelemetryIntermediaries, TelemetryRaw, TelemetryRegs,
 };
 pub use regmap::{Access, BlockDesc, RegmapError};
+pub use ring_reader::RingReader;
 pub use sample_frame::{FrameInputs, RawSamples, SampleFrame};
 pub use shared::Shared;

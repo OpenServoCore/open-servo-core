@@ -12,7 +12,6 @@ pub mod hal;
 pub mod irq;
 pub mod log;
 pub mod prelude;
-pub mod ring_reader;
 pub(crate) mod statics;
 #[cfg(feature = "defmt")]
 pub mod telemetry;

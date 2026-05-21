@@ -1,12 +1,11 @@
 use core::cell::SyncUnsafeCell;
 use core::mem::MaybeUninit;
 use heapless::Vec;
-use osc_core::{Kernel, Shared};
+use osc_core::{Kernel, RingReader, Shared};
 use portable_atomic::AtomicU16;
 
 use crate::board::{Ch32Board, TxEn};
 use crate::hal::pfic;
-use crate::ring_reader::RingReader;
 
 /// In `Sensors` field order: pos, ntc, vbus, vmotor.0, vmotor.1.
 pub const ADC_SENSOR_COUNT: usize = 5;
