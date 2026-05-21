@@ -31,3 +31,35 @@ pub fn set_dma_rx(r: Regs, enable: bool) {
 pub fn data_addr(r: Regs) -> u32 {
     r.datar().as_ptr() as u32
 }
+
+#[inline]
+pub fn set_idle_irq(r: Regs, enable: bool) {
+    r.ctlr1().modify(|w| w.set_idleie(enable));
+}
+
+#[inline]
+pub fn set_tc_irq(r: Regs, enable: bool) {
+    r.ctlr1().modify(|w| w.set_tcie(enable));
+}
+
+#[inline]
+pub fn clear_idle(r: Regs) {
+    // SR-then-DR is the only way to clear IDLE.
+    let _ = r.statr().read();
+    let _ = r.datar().read();
+}
+
+#[inline]
+pub fn clear_tc(r: Regs) {
+    r.statr().modify(|w| w.set_tc(false));
+}
+
+#[inline]
+pub fn is_idle(r: Regs) -> bool {
+    r.statr().read().idle()
+}
+
+#[inline]
+pub fn is_tc(r: Regs) -> bool {
+    r.statr().read().tc()
+}

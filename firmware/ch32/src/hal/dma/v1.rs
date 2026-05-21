@@ -56,3 +56,8 @@ pub fn clear_tc_flag(ch: Channel) {
     let n = (ch as u8 - 1) as usize;
     DMA1.ifcr().write(|w| w.set_tcif(n, true));
 }
+
+pub fn remaining(ch: Channel) -> u16 {
+    let n = (ch as u8 - 1) as usize;
+    DMA1.ch(n).ndtr().read().ndt()
+}
