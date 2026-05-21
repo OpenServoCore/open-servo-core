@@ -23,9 +23,7 @@ critical-section = { version = "1.2", optional = true }
 ch32-metapac = { git = "https://github.com/ch32-rs/ch32-metapac", default-features = false, features = ["metadata"] }
 
 [features]
-default = []
+default      = ["ch32v006x8x6"]
 ch32v006x8x6 = ["ch32-metapac/ch32v006x8x6"]
-# rt = ch32-metapac vector table. Bins (riscv32 target) enable this;
-# host-side cargo test leaves it off (mach-o rejects the section names).
 rt           = ["ch32-metapac/rt"]
 defmt        = ["dep:defmt", "dep:critical-section", "osc-core/defmt"]
