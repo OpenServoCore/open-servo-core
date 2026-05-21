@@ -2,8 +2,8 @@
 #![feature(sync_unsafe_cell)]
 #![allow(unexpected_cfgs)]
 
-pub use osc_core::ConfigDefaults;
 pub use osc_core::bp;
+pub use osc_core::{BaudRate, ConfigDefaults};
 
 pub mod board;
 pub mod chip_flash;

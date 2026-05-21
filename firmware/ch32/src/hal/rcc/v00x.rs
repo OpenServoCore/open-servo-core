@@ -48,3 +48,8 @@ pub fn enable_adc1() {
 pub fn enable_dma1() {
     RCC.hbpcenr().modify(|w| w.set_dma1en(true));
 }
+
+#[inline]
+pub fn enable_usart1() {
+    RCC.pb2pcenr().modify(|w| w.set_usart1en(true));
+}

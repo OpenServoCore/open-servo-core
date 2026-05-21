@@ -18,6 +18,11 @@ pub const ADC_DMA_BUF_LEN: usize = ADC_SCAN_LEN * 2;
 pub static ADC_DMA_BUF: SyncUnsafeCell<[u16; ADC_DMA_BUF_LEN]> =
     SyncUnsafeCell::new([0; ADC_DMA_BUF_LEN]);
 
+pub const DXL_RX_BUF_LEN: usize = 256;
+
+pub static DXL_RX_BUF: SyncUnsafeCell<[u8; DXL_RX_BUF_LEN]> =
+    SyncUnsafeCell::new([0; DXL_RX_BUF_LEN]);
+
 pub static SHARED: Shared = Shared::const_new();
 
 /// Initialised by `install_kernel`; DMA TC IRQ is PFIC-masked until then.

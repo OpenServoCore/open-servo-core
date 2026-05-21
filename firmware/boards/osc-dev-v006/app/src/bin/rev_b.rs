@@ -49,6 +49,15 @@ fn main() -> ! {
                     adc::Input::new(adc::Channel::IN6, adc::SampleTime::CYCLES9),
                 ),
             },
+            dxl: DxlBus {
+                usart: UsartMapping::Usart1Remap3,
+                duplex: Duplex::Full,
+                rx_pull: gpio::Pull::None,
+                tx_en: Some(TxEn {
+                    pin: Pin::PC2,
+                    tx_level: gpio::Level::High,
+                }),
+            },
         },
         calibration: Calibration {
             shunt_r_mohm: 10,
@@ -72,6 +81,8 @@ fn main() -> ! {
             pos_min_phys_urad: -1_570_796,
             pos_max_phys_urad: 1_570_796,
             vdd_mv: 3300,
+            dxl_id: 1,
+            dxl_baud: BaudRate::B1000000,
         },
     })
 }

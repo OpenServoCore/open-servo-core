@@ -1,7 +1,9 @@
-use ch32_metapac::DMA1;
+use ch32_metapac::{DMA1, USART1};
+use core::sync::atomic::Ordering;
 use osc_core::{Board, FrameInputs};
 
-use crate::statics::{KERNEL, SHARED};
+use crate::hal::{dma, usart};
+use crate::statics::{DXL_RX_BUF_LEN, KERNEL, SHARED};
 
 /// ADC DMA TC handler body — wire into the vector table via [`crate::install_isrs!`].
 pub fn on_adc_dma_tc() {
@@ -24,6 +26,18 @@ pub fn on_adc_dma_tc() {
     }
 }
 
+pub fn on_usart1() {
+    if usart::is_idle(USART1) {
+        usart::clear_idle(USART1);
+        let remaining = dma::remaining(dma::Channel::CH5);
+        let write_pos = (DXL_RX_BUF_LEN as u16).wrapping_sub(remaining);
+        SHARED
+            .stream
+            .dxl_rx_write_pos
+            .store(write_pos, Ordering::Release);
+    }
+}
+
 /// Wires osc-ch32 ISR bodies into the vector table. Caller must depend on `qingke-rt`.
 #[macro_export]
 macro_rules! install_isrs {
@@ -31,6 +45,11 @@ macro_rules! install_isrs {
         #[::qingke_rt::interrupt]
         fn DMA1_CHANNEL1() {
             $crate::irq::on_adc_dma_tc();
+        }
+
+        #[::qingke_rt::interrupt]
+        fn USART1() {
+            $crate::irq::on_usart1();
         }
     };
 }

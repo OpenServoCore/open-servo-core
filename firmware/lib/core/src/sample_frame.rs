@@ -64,6 +64,7 @@ mod tests {
             pos_min_phys_urad: -1_500_000,
             pos_max_phys_urad: 1_500_000,
             vdd_mv: 3275,
+            ..Default::default()
         };
         shared.table.seed_config_defaults(&defaults);
 

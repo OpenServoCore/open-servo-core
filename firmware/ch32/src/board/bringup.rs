@@ -1,14 +1,18 @@
 use ch32_metapac::{ADC, adc::vals::Extsel, dma::vals::Dir};
-use osc_core::ConfigDefaults;
+use osc_core::{BaudRate, ConfigDefaults};
 
 use crate::hal::{
     Pin, Tim1Mapping, adc, afio, delay_ms, dma,
     gpio::{self, Level, PinMode},
-    opa, rcc, timer,
+    opa, pfic, rcc, timer, usart,
 };
-use crate::statics::{ADC_DMA_BUF, ADC_DMA_BUF_LEN, ADC_SCAN_LEN, ADC_SENSOR_COUNT, SHARED};
+use crate::statics::{
+    ADC_DMA_BUF, ADC_DMA_BUF_LEN, ADC_SCAN_LEN, ADC_SENSOR_COUNT, DXL_RX_BUF, DXL_RX_BUF_LEN, SHARED,
+};
 
-use super::config::{BoardWiring, CurrentSenseConfig, MotorConfig, Sensors};
+use super::config::{BoardWiring, CurrentSenseConfig, Duplex, DxlBus, MotorConfig, Sensors};
+
+const PCLK_HZ: u32 = 48_000_000;
 
 const OPA_SETTLE_MS: u32 = 1;
 const VCAL_SAMPLE_TIME: adc::SampleTime = adc::SampleTime::CYCLES9;
@@ -41,6 +45,9 @@ pub(super) fn run(wiring: &BoardWiring, defaults: &ConfigDefaults) -> BringupRes
 
     // Sole writer to CONFIG: pre-IRQ, pre-install_kernel.
     SHARED.table.seed_config_defaults(defaults);
+
+    bring_up_dxl(&wiring.dxl, defaults.dxl_baud);
+    crate::log::debug!("dxl usart + dma rx armed");
 
     let pwm_arr = start_center_aligned_pwm(&wiring.motor);
     crate::log::debug!(
@@ -108,12 +115,19 @@ fn enable_clocks_and_remaps(w: &BoardWiring) {
             rcc::enable_gpio(pin.port_index());
         }
     }
+    rcc::enable_gpio(w.dxl.usart.tx_pin().port_index());
+    rcc::enable_gpio(w.dxl.usart.rx_pin().port_index());
+    if let Some(ref t) = w.dxl.tx_en {
+        rcc::enable_gpio(t.pin.port_index());
+    }
     rcc::enable_tim1();
     rcc::enable_adc1();
     rcc::enable_dma1();
+    rcc::enable_usart1();
 
     afio::set_tim_remap(1, w.motor.tim1.remap_value());
     afio::set_tim_remap(2, w.tim2_remap.remap_value());
+    afio::set_usart_remap(w.dxl.usart.peripheral_index(), w.dxl.usart.remap_value());
 }
 
 fn configure_pins(w: &BoardWiring) {
@@ -142,6 +156,27 @@ fn configure_pins(w: &BoardWiring) {
         if let Some(pin) = input.channel.pin() {
             gpio::configure(pin, PinMode::ANALOG);
         }
+    }
+
+    configure_dxl_pins(&w.dxl);
+}
+
+fn configure_dxl_pins(d: &DxlBus) {
+    gpio::configure(d.usart.tx_pin(), PinMode::AF_PUSH_PULL);
+    if matches!(d.duplex, Duplex::Full) {
+        gpio::configure(d.usart.rx_pin(), PinMode::input_pull(d.rx_pull));
+    }
+    if let Some(ref t) = d.tx_en {
+        gpio::configure(t.pin, PinMode::OUTPUT_PUSH_PULL);
+        gpio::set_level(t.pin, invert(t.tx_level));
+    }
+}
+
+#[inline]
+fn invert(level: Level) -> Level {
+    match level {
+        Level::High => Level::Low,
+        Level::Low => Level::High,
     }
 }
 
@@ -191,6 +226,33 @@ fn configure_adc_dma_scan(sensors: &Sensors, opa_out_sample_time: adc::SampleTim
         ADC_DMA_BUF_LEN as u16,
     );
     dma::enable(dma::Channel::CH1);
+}
+
+fn bring_up_dxl(d: &DxlBus, baud: BaudRate) {
+    let regs = d.usart.regs();
+    let half_duplex = matches!(d.duplex, Duplex::Half);
+    usart::init(regs, PCLK_HZ, baud.as_hz(), half_duplex);
+
+    let dma_cfg = dma::Config {
+        dir: Dir::FROMPERIPHERAL,
+        circ: true,
+        pinc: false,
+        minc: true,
+        size: dma::Size::BITS8,
+        tcie: false,
+    };
+    dma::configure(
+        dma::Channel::CH5,
+        &dma_cfg,
+        usart::data_addr(regs),
+        DXL_RX_BUF.get() as u32,
+        DXL_RX_BUF_LEN as u16,
+    );
+    dma::enable(dma::Channel::CH5);
+    usart::set_dma_rx(regs, true);
+
+    usart::set_idle_irq(regs, true);
+    pfic::enable(pfic::Interrupt::USART1);
 }
 
 /// Returns the configured ARR so `Effort`→duty rescale can avoid a soft-div.

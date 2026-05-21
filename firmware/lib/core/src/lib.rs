@@ -15,6 +15,7 @@ pub mod stream_coord;
 pub use board::{Board, Capabilities, ConfigDefaults, DecayMode, MotorCmd};
 pub use kernel::{Kernel, KernelState};
 pub use page::{PageHeader, PageMagic};
+pub use regions::config::BaudRate;
 pub use regions::{
     BemfCalibBlock, CalibRegs, ConfigComms, ConfigControl, ConfigControlPosition, ConfigIdentity,
     ConfigLimits, ConfigPosLimits, ConfigRegs, ConfigSafety, ConfigStall, ConfigThermal,

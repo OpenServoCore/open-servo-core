@@ -1,6 +1,26 @@
 use osc_core::ConfigDefaults;
 
-use crate::hal::{Pin, Tim1Mapping, Tim2Mapping, adc, opa, timer};
+use crate::hal::{
+    Pin, Tim1Mapping, Tim2Mapping, UsartMapping, adc, gpio::Level, gpio::Pull, opa, timer,
+};
+
+pub enum Duplex {
+    Full,
+    Half,
+}
+
+pub struct TxEn {
+    pub pin: Pin,
+    /// Level driven to enable TX; inverse drives RX.
+    pub tx_level: Level,
+}
+
+pub struct DxlBus {
+    pub usart: UsartMapping,
+    pub duplex: Duplex,
+    pub rx_pull: Pull,
+    pub tx_en: Option<TxEn>,
+}
 
 pub struct MotorConfig {
     pub tim1: Tim1Mapping,
@@ -55,6 +75,7 @@ pub struct BoardWiring {
     pub motor: MotorConfig,
     pub current_sense: CurrentSenseConfig,
     pub sensors: Sensors,
+    pub dxl: DxlBus,
 }
 
 pub struct BoardConfig {

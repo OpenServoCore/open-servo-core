@@ -3,6 +3,49 @@ use crate::regions::CONFIG_BLOCK_SIZE;
 use crate::regmap::{Access, BlockDesc};
 use core::mem::{offset_of, size_of};
 
+/// DXL X-series baud rate indices. V006 USART caps at 3 Mbps; indices 6–7
+/// (4 Mbps, 4.5 Mbps) are absent and host writes of them get rejected.
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Default)]
+#[repr(u8)]
+pub enum BaudRate {
+    B9600 = 0,
+    B57600 = 1,
+    B115200 = 2,
+    #[default]
+    B1000000 = 3,
+    B2000000 = 4,
+    B3000000 = 5,
+}
+
+impl BaudRate {
+    pub const fn as_idx(self) -> u8 {
+        self as u8
+    }
+
+    pub const fn as_hz(self) -> u32 {
+        match self {
+            BaudRate::B9600 => 9_600,
+            BaudRate::B57600 => 57_600,
+            BaudRate::B115200 => 115_200,
+            BaudRate::B1000000 => 1_000_000,
+            BaudRate::B2000000 => 2_000_000,
+            BaudRate::B3000000 => 3_000_000,
+        }
+    }
+
+    pub const fn from_idx(idx: u8) -> Option<Self> {
+        match idx {
+            0 => Some(BaudRate::B9600),
+            1 => Some(BaudRate::B57600),
+            2 => Some(BaudRate::B115200),
+            3 => Some(BaudRate::B1000000),
+            4 => Some(BaudRate::B2000000),
+            5 => Some(BaudRate::B3000000),
+            _ => None,
+        }
+    }
+}
+
 #[derive(Copy, Clone)]
 #[repr(C)]
 pub struct ConfigIdentity {
