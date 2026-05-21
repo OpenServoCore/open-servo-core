@@ -1,7 +1,7 @@
 //! Parser robustness: no panics, no wedge, rejects foreign protocols, recovers
 //! real frames embedded in noise. Tests use `std`; parser/writer are `no_std`.
 
-use dxl_protocol::{Bytes, HEADER, MAX_LENGTH, Packet, ParseError, parse_one, write};
+use dxl_protocol::prelude::*;
 use heapless::Vec as HVec;
 
 // xorshift64*.
@@ -181,9 +181,9 @@ fn real_frames_with_random_garbage_between_recover_all() {
         let mut frame: HVec<u8, 32> = HVec::new();
         write(
             &mut frame,
-            &Packet::Ping {
+            &Packet::Ping(PingPacket {
                 id: ((i % 253) + 1) as u8,
-            },
+            }),
         )
         .unwrap();
         stream.extend_from_slice(&frame);
@@ -208,9 +208,9 @@ fn real_frames_byte_at_a_time_recover_all() {
         let mut frame: HVec<u8, 32> = HVec::new();
         write(
             &mut frame,
-            &Packet::Ping {
+            &Packet::Ping(PingPacket {
                 id: ((i % 253) + 1) as u8,
-            },
+            }),
         )
         .unwrap();
         stream.extend_from_slice(&frame);
@@ -230,9 +230,9 @@ fn real_frames_with_partial_corrupt_frames_recover_clean_ones() {
         let mut frame: HVec<u8, 32> = HVec::new();
         write(
             &mut frame,
-            &Packet::Ping {
+            &Packet::Ping(PingPacket {
                 id: ((i % 253) + 1) as u8,
-            },
+            }),
         )
         .unwrap();
         stream.extend_from_slice(&frame);
@@ -241,9 +241,9 @@ fn real_frames_with_partial_corrupt_frames_recover_clean_ones() {
         let mut frame: HVec<u8, 32> = HVec::new();
         write(
             &mut frame,
-            &Packet::Ping {
+            &Packet::Ping(PingPacket {
                 id: ((i % 253) + 1) as u8,
-            },
+            }),
         )
         .unwrap();
         let last = frame.len() - 1;
@@ -308,7 +308,7 @@ fn truncated_real_frame_returns_incomplete_at_each_step() {
     }
     let (pkt, n) = parse_one(PING).unwrap();
     assert_eq!(n, PING.len());
-    assert!(matches!(pkt, Packet::Ping { id: 1 }));
+    assert!(matches!(pkt, Packet::Ping(PingPacket { id: 1 })));
 }
 
 #[test]
@@ -352,14 +352,14 @@ fn over_maxlen_header_short_circuits() {
 #[test]
 fn writer_id_0xff_rejected() {
     let mut out: HVec<u8, 32> = HVec::new();
-    let err = write(&mut out, &Packet::Ping { id: 0xFF }).unwrap_err();
+    let err = write(&mut out, &Packet::Ping(PingPacket { id: 0xFF })).unwrap_err();
     assert_eq!(err, dxl_protocol::WriteError::Invalid);
 }
 
 #[test]
 fn writer_overflow_reported_and_rolled_back() {
     let mut tiny: HVec<u8, 5> = HVec::new();
-    let err = write(&mut tiny, &Packet::Ping { id: 1 }).unwrap_err();
+    let err = write(&mut tiny, &Packet::Ping(PingPacket { id: 1 })).unwrap_err();
     assert_eq!(err, dxl_protocol::WriteError::Overflow);
     assert!(
         tiny.is_empty(),
@@ -372,18 +372,18 @@ fn writer_overflow_reported_and_rolled_back() {
 fn writer_overflow_preserves_prior_frames() {
     // DMA TX buffer holds a frame; second write overflows — first must survive.
     let mut buf: HVec<u8, 16> = HVec::new();
-    write(&mut buf, &Packet::Ping { id: 1 }).unwrap();
+    write(&mut buf, &Packet::Ping(PingPacket { id: 1 })).unwrap();
     let snapshot: HVec<u8, 16> = buf.clone();
     let pre_len = buf.len();
 
     let big = [0u8; 32];
     let err = write(
         &mut buf,
-        &Packet::Status {
+        &Packet::Status(StatusPacket {
             id: 1,
             error: 0,
             params: Bytes::Raw(&big),
-        },
+        }),
     )
     .unwrap_err();
     assert_eq!(err, dxl_protocol::WriteError::Overflow);
@@ -392,16 +392,16 @@ fn writer_overflow_preserves_prior_frames() {
 
     let (pkt, n) = parse_one(&buf).unwrap();
     assert_eq!(n, buf.len());
-    assert!(matches!(pkt, Packet::Ping { id: 1 }));
+    assert!(matches!(pkt, Packet::Ping(PingPacket { id: 1 })));
 }
 
 #[test]
 fn writer_invalid_id_does_not_touch_buffer() {
     let mut buf: HVec<u8, 32> = HVec::new();
-    write(&mut buf, &Packet::Ping { id: 1 }).unwrap();
+    write(&mut buf, &Packet::Ping(PingPacket { id: 1 })).unwrap();
     let snapshot: HVec<u8, 32> = buf.clone();
 
-    let err = write(&mut buf, &Packet::Ping { id: 0xFF }).unwrap_err();
+    let err = write(&mut buf, &Packet::Ping(PingPacket { id: 0xFF })).unwrap_err();
     assert_eq!(err, dxl_protocol::WriteError::Invalid);
     assert_eq!(&buf[..], &snapshot[..]);
 }
@@ -465,62 +465,62 @@ fn short_input_with_partial_prefix_returns_incomplete() {
 #[test]
 fn round_trip_every_instruction() {
     let cases: &[Packet<'static>] = &[
-        Packet::Ping { id: 1 },
-        Packet::Read {
+        Packet::Ping(PingPacket { id: 1 }),
+        Packet::Read(ReadPacket {
             id: 1,
             address: 132,
             length: 4,
-        },
-        Packet::Write {
+        }),
+        Packet::Write(WritePacket {
             id: 1,
             address: 116,
             data: Bytes::Raw(&[0, 2, 0, 0]),
-        },
-        Packet::RegWrite {
+        }),
+        Packet::RegWrite(RegWritePacket {
             id: 1,
             address: 100,
             data: Bytes::Raw(&[0xAA]),
-        },
-        Packet::Action { id: 1 },
-        Packet::FactoryReset { id: 1, mode: 0xFF },
-        Packet::Reboot { id: 1 },
-        Packet::Clear {
+        }),
+        Packet::Action(ActionPacket { id: 1 }),
+        Packet::FactoryReset(FactoryResetPacket { id: 1, mode: 0xFF }),
+        Packet::Reboot(RebootPacket { id: 1 }),
+        Packet::Clear(ClearPacket {
             id: 1,
             body: Bytes::Raw(&[0x01, 0x02, 0x03]),
-        },
-        Packet::ControlTableBackup {
+        }),
+        Packet::ControlTableBackup(ControlTableBackupPacket {
             id: 1,
             body: Bytes::Raw(&[0xAA, 0xBB]),
-        },
-        Packet::Status {
+        }),
+        Packet::Status(StatusPacket {
             id: 1,
             error: 0,
             params: Bytes::Raw(&[0xDE, 0xAD]),
-        },
-        Packet::SyncRead {
+        }),
+        Packet::SyncRead(SyncReadPacket {
             address: 132,
             length: 4,
             ids: Bytes::Raw(&[1, 2, 3]),
-        },
-        Packet::SyncWrite {
+        }),
+        Packet::SyncWrite(SyncWritePacket {
             address: 116,
             length: 4,
             body: Bytes::Raw(&[1, 0, 1, 0, 0]),
-        },
-        Packet::FastSyncRead {
+        }),
+        Packet::FastSyncRead(FastSyncReadPacket {
             address: 132,
             length: 4,
             ids: Bytes::Raw(&[1, 2]),
-        },
-        Packet::BulkRead {
+        }),
+        Packet::BulkRead(BulkReadPacket {
             body: Bytes::Raw(&[1, 2]),
-        },
-        Packet::BulkWrite {
+        }),
+        Packet::BulkWrite(BulkWritePacket {
             body: Bytes::Raw(&[1, 2, 3]),
-        },
-        Packet::FastBulkRead {
+        }),
+        Packet::FastBulkRead(FastBulkReadPacket {
             body: Bytes::Raw(&[1, 2]),
-        },
+        }),
     ];
 
     for case in cases {
@@ -571,62 +571,62 @@ fn round_trip_random_fields_across_variants() {
         }
 
         let pkt = match kind {
-            0 => Packet::Ping { id },
-            1 => Packet::Read {
+            0 => Packet::Ping(PingPacket { id }),
+            1 => Packet::Read(ReadPacket {
                 id,
                 address: addr,
                 length,
-            },
-            2 => Packet::Write {
+            }),
+            2 => Packet::Write(WritePacket {
                 id,
                 address: addr,
                 data: Bytes::Raw(&body),
-            },
-            3 => Packet::RegWrite {
+            }),
+            3 => Packet::RegWrite(RegWritePacket {
                 id,
                 address: addr,
                 data: Bytes::Raw(&body),
-            },
-            4 => Packet::Action { id },
-            5 => Packet::FactoryReset { id, mode },
-            6 => Packet::Reboot { id },
-            7 => Packet::Clear {
+            }),
+            4 => Packet::Action(ActionPacket { id }),
+            5 => Packet::FactoryReset(FactoryResetPacket { id, mode }),
+            6 => Packet::Reboot(RebootPacket { id }),
+            7 => Packet::Clear(ClearPacket {
                 id,
                 body: Bytes::Raw(&body),
-            },
-            8 => Packet::ControlTableBackup {
+            }),
+            8 => Packet::ControlTableBackup(ControlTableBackupPacket {
                 id,
                 body: Bytes::Raw(&body),
-            },
-            9 => Packet::Status {
+            }),
+            9 => Packet::Status(StatusPacket {
                 id,
                 error,
                 params: Bytes::Raw(&body),
-            },
-            10 => Packet::SyncRead {
+            }),
+            10 => Packet::SyncRead(SyncReadPacket {
                 address: addr,
                 length,
                 ids: Bytes::Raw(&ids),
-            },
-            11 => Packet::SyncWrite {
+            }),
+            11 => Packet::SyncWrite(SyncWritePacket {
                 address: addr,
                 length,
                 body: Bytes::Raw(&body),
-            },
-            12 => Packet::FastSyncRead {
+            }),
+            12 => Packet::FastSyncRead(FastSyncReadPacket {
                 address: addr,
                 length,
                 ids: Bytes::Raw(&ids),
-            },
-            13 => Packet::BulkRead {
+            }),
+            13 => Packet::BulkRead(BulkReadPacket {
                 body: Bytes::Raw(&body),
-            },
-            14 => Packet::BulkWrite {
+            }),
+            14 => Packet::BulkWrite(BulkWritePacket {
                 body: Bytes::Raw(&body),
-            },
-            _ => Packet::FastBulkRead {
+            }),
+            _ => Packet::FastBulkRead(FastBulkReadPacket {
                 body: Bytes::Raw(&body),
-            },
+            }),
         };
 
         let mut wire1: HVec<u8, 256> = HVec::new();
@@ -652,67 +652,67 @@ fn stuffing_round_trip_for_every_body_carrying_variant() {
     let cases: &[(&str, Packet<'_>)] = &[
         (
             "Write",
-            Packet::Write {
+            Packet::Write(WritePacket {
                 id: 1,
                 address: 0x0010,
                 data: Bytes::Raw(logical),
-            },
+            }),
         ),
         (
             "RegWrite",
-            Packet::RegWrite {
+            Packet::RegWrite(RegWritePacket {
                 id: 1,
                 address: 0x0010,
                 data: Bytes::Raw(logical),
-            },
+            }),
         ),
         (
             "Clear",
-            Packet::Clear {
+            Packet::Clear(ClearPacket {
                 id: 1,
                 body: Bytes::Raw(logical),
-            },
+            }),
         ),
         (
             "ControlTableBackup",
-            Packet::ControlTableBackup {
+            Packet::ControlTableBackup(ControlTableBackupPacket {
                 id: 1,
                 body: Bytes::Raw(logical),
-            },
+            }),
         ),
         (
             "Status",
-            Packet::Status {
+            Packet::Status(StatusPacket {
                 id: 1,
                 error: 0,
                 params: Bytes::Raw(logical),
-            },
+            }),
         ),
         (
             "SyncWrite",
-            Packet::SyncWrite {
+            Packet::SyncWrite(SyncWritePacket {
                 address: 0x0010,
                 length: 4,
                 body: Bytes::Raw(logical),
-            },
+            }),
         ),
         (
             "BulkRead",
-            Packet::BulkRead {
+            Packet::BulkRead(BulkReadPacket {
                 body: Bytes::Raw(logical),
-            },
+            }),
         ),
         (
             "BulkWrite",
-            Packet::BulkWrite {
+            Packet::BulkWrite(BulkWritePacket {
                 body: Bytes::Raw(logical),
-            },
+            }),
         ),
         (
             "FastBulkRead",
-            Packet::FastBulkRead {
+            Packet::FastBulkRead(FastBulkReadPacket {
                 body: Bytes::Raw(logical),
-            },
+            }),
         ),
     ];
 
@@ -734,15 +734,15 @@ fn stuffing_round_trip_for_every_body_carrying_variant() {
         assert_eq!(n, wire.len(), "{name}: short parse");
 
         let recovered = match parsed {
-            Packet::Write { data, .. } => data,
-            Packet::RegWrite { data, .. } => data,
-            Packet::Clear { body, .. } => body,
-            Packet::ControlTableBackup { body, .. } => body,
-            Packet::Status { params, .. } => params,
-            Packet::SyncWrite { body, .. } => body,
-            Packet::BulkRead { body } => body,
-            Packet::BulkWrite { body } => body,
-            Packet::FastBulkRead { body } => body,
+            Packet::Write(p) => p.data,
+            Packet::RegWrite(p) => p.data,
+            Packet::Clear(p) => p.body,
+            Packet::ControlTableBackup(p) => p.body,
+            Packet::Status(p) => p.params,
+            Packet::SyncWrite(p) => p.body,
+            Packet::BulkRead(p) => p.body,
+            Packet::BulkWrite(p) => p.body,
+            Packet::FastBulkRead(p) => p.body,
             other => panic!("{name}: parsed into unexpected variant {other:?}"),
         };
 

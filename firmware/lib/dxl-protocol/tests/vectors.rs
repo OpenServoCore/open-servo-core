@@ -1,4 +1,5 @@
-use dxl_protocol::{Bytes, Instruction, MAX_LENGTH, Packet, ParseError, crc16, parse_one, write};
+use dxl_protocol::prelude::*;
+use dxl_protocol::{Instruction, crc16};
 use heapless::Vec;
 
 const PING_ID1: &[u8] = &[0xFF, 0xFF, 0xFD, 0x00, 0x01, 0x03, 0x00, 0x01, 0x19, 0x4E];
@@ -38,7 +39,7 @@ fn parse_ping() {
     let (pkt, n) = parse_one(PING_ID1).unwrap();
     assert_eq!(n, PING_ID1.len());
     match pkt {
-        Packet::Ping { id } => assert_eq!(id, 1),
+        Packet::Ping(p) => assert_eq!(p.id, 1),
         other => panic!("not Ping: {:?}", other),
     }
 }
@@ -48,14 +49,10 @@ fn parse_read() {
     let (pkt, n) = parse_one(READ_ID1_ADDR132_LEN4).unwrap();
     assert_eq!(n, READ_ID1_ADDR132_LEN4.len());
     match pkt {
-        Packet::Read {
-            id,
-            address,
-            length,
-        } => {
-            assert_eq!(id, 1);
-            assert_eq!(address, 132);
-            assert_eq!(length, 4);
+        Packet::Read(p) => {
+            assert_eq!(p.id, 1);
+            assert_eq!(p.address, 132);
+            assert_eq!(p.length, 4);
         }
         other => panic!("not Read: {:?}", other),
     }
@@ -66,11 +63,11 @@ fn parse_write() {
     let (pkt, n) = parse_one(WRITE_ID1_GOAL512).unwrap();
     assert_eq!(n, WRITE_ID1_GOAL512.len());
     match pkt {
-        Packet::Write { id, address, data } => {
-            assert_eq!(id, 1);
-            assert_eq!(address, 116);
+        Packet::Write(p) => {
+            assert_eq!(p.id, 1);
+            assert_eq!(p.address, 116);
             let mut buf = [0u8; 16];
-            let n = data.copy_into(&mut buf).unwrap();
+            let n = p.data.copy_into(&mut buf).unwrap();
             assert_eq!(&buf[..n], &[0x00, 0x02, 0x00, 0x00]);
         }
         other => panic!("not Write: {:?}", other),
@@ -80,13 +77,13 @@ fn parse_write() {
 #[test]
 fn parse_reboot() {
     let (pkt, _) = parse_one(REBOOT_ID1).unwrap();
-    assert!(matches!(pkt, Packet::Reboot { id: 1 }));
+    assert!(matches!(pkt, Packet::Reboot(RebootPacket { id: 1 })));
 }
 
 #[test]
 fn write_ping_matches_reference() {
     let mut out: Vec<u8, 32> = Vec::new();
-    write(&mut out, &Packet::Ping { id: 1 }).unwrap();
+    write(&mut out, &Packet::Ping(PingPacket { id: 1 })).unwrap();
     assert_eq!(&out[..], PING_ID1);
 }
 
@@ -95,11 +92,11 @@ fn write_read_matches_reference() {
     let mut out: Vec<u8, 32> = Vec::new();
     write(
         &mut out,
-        &Packet::Read {
+        &Packet::Read(ReadPacket {
             id: 1,
             address: 132,
             length: 4,
-        },
+        }),
     )
     .unwrap();
     assert_eq!(&out[..], READ_ID1_ADDR132_LEN4);
@@ -111,11 +108,11 @@ fn write_write_matches_reference() {
     let mut out: Vec<u8, 32> = Vec::new();
     write(
         &mut out,
-        &Packet::Write {
+        &Packet::Write(WritePacket {
             id: 1,
             address: 116,
             data: Bytes::Raw(&data),
-        },
+        }),
     )
     .unwrap();
     assert_eq!(&out[..], WRITE_ID1_GOAL512);
@@ -124,7 +121,7 @@ fn write_write_matches_reference() {
 #[test]
 fn write_reboot_matches_reference() {
     let mut out: Vec<u8, 32> = Vec::new();
-    write(&mut out, &Packet::Reboot { id: 1 }).unwrap();
+    write(&mut out, &Packet::Reboot(RebootPacket { id: 1 })).unwrap();
     assert_eq!(&out[..], REBOOT_ID1);
 }
 
@@ -134,26 +131,22 @@ fn write_status_round_trip() {
     let mut out: Vec<u8, 64> = Vec::new();
     write(
         &mut out,
-        &Packet::Status {
+        &Packet::Status(StatusPacket {
             id: 1,
             error: 0,
             params: Bytes::Raw(&params),
-        },
+        }),
     )
     .unwrap();
 
     let (pkt, n) = parse_one(&out).unwrap();
     assert_eq!(n, out.len());
     match pkt {
-        Packet::Status {
-            id,
-            error,
-            params: p,
-        } => {
-            assert_eq!(id, 1);
-            assert_eq!(error, 0);
+        Packet::Status(p) => {
+            assert_eq!(p.id, 1);
+            assert_eq!(p.error, 0);
             let mut buf = [0u8; 16];
-            let n = p.copy_into(&mut buf).unwrap();
+            let n = p.params.copy_into(&mut buf).unwrap();
             assert_eq!(&buf[..n], &params);
         }
         other => panic!("not Status: {:?}", other),
@@ -166,11 +159,11 @@ fn stuffing_round_trip() {
     let mut out: Vec<u8, 64> = Vec::new();
     write(
         &mut out,
-        &Packet::Write {
+        &Packet::Write(WritePacket {
             id: 1,
             address: 0x0040,
             data: Bytes::Raw(&data),
-        },
+        }),
     )
     .unwrap();
 
@@ -180,16 +173,12 @@ fn stuffing_round_trip() {
     let (pkt, n) = parse_one(&out).unwrap();
     assert_eq!(n, out.len());
     match pkt {
-        Packet::Write {
-            id,
-            address,
-            data: d,
-        } => {
-            assert_eq!(id, 1);
-            assert_eq!(address, 0x0040);
-            assert_eq!(d.unstuffed_len(), data.len());
+        Packet::Write(p) => {
+            assert_eq!(p.id, 1);
+            assert_eq!(p.address, 0x0040);
+            assert_eq!(p.data.unstuffed_len(), data.len());
             let mut buf = [0u8; 32];
-            let n = d.copy_into(&mut buf).unwrap();
+            let n = p.data.copy_into(&mut buf).unwrap();
             assert_eq!(&buf[..n], &data);
         }
         other => panic!("not Write: {:?}", other),
@@ -202,22 +191,20 @@ fn stuffing_at_field_boundary() {
     let mut out: Vec<u8, 64> = Vec::new();
     write(
         &mut out,
-        &Packet::Write {
+        &Packet::Write(WritePacket {
             id: 1,
             address: 0xFFFF,
             data: Bytes::Raw(&data),
-        },
+        }),
     )
     .unwrap();
 
     let (pkt, _) = parse_one(&out).unwrap();
     match pkt {
-        Packet::Write {
-            address, data: d, ..
-        } => {
-            assert_eq!(address, 0xFFFF);
+        Packet::Write(p) => {
+            assert_eq!(p.address, 0xFFFF);
             let mut buf = [0u8; 16];
-            let n = d.copy_into(&mut buf).unwrap();
+            let n = p.data.copy_into(&mut buf).unwrap();
             assert_eq!(&buf[..n], &data);
         }
         _ => panic!("not Write"),
@@ -237,7 +224,7 @@ fn resync_skips_leading_garbage() {
 
     let (pkt, n) = parse_one(&buf[3..]).unwrap();
     assert_eq!(n, PING_ID1.len());
-    assert!(matches!(pkt, Packet::Ping { id: 1 }));
+    assert!(matches!(pkt, Packet::Ping(PingPacket { id: 1 })));
 }
 
 #[test]
@@ -302,7 +289,7 @@ fn false_header_with_huge_length_does_not_wedge() {
     };
     let (pkt, n) = parse_one(&rest[resync..]).unwrap();
     assert_eq!(n, PING_ID1.len());
-    assert!(matches!(pkt, Packet::Ping { id: 1 }));
+    assert!(matches!(pkt, Packet::Ping(PingPacket { id: 1 })));
 }
 
 #[test]
@@ -331,25 +318,23 @@ fn round_trip_data(data: &[u8]) -> heapless::Vec<u8, 256> {
     let mut out: Vec<u8, 256> = Vec::new();
     write(
         &mut out,
-        &Packet::Write {
+        &Packet::Write(WritePacket {
             id: 1,
             address: 0x0010,
             data: Bytes::Raw(data),
-        },
+        }),
     )
     .unwrap();
     let (pkt, n) = parse_one(&out).unwrap();
     assert_eq!(n, out.len());
     match pkt {
-        Packet::Write {
-            data: d, address, ..
-        } => {
-            assert_eq!(address, 0x0010);
+        Packet::Write(p) => {
+            assert_eq!(p.address, 0x0010);
             let mut buf = [0u8; 256];
-            let n = d.copy_into(&mut buf).unwrap();
+            let n = p.data.copy_into(&mut buf).unwrap();
             let mut got: heapless::Vec<u8, 256> = Vec::new();
             got.extend_from_slice(&buf[..n]).unwrap();
-            assert_eq!(d.unstuffed_len(), data.len());
+            assert_eq!(p.data.unstuffed_len(), data.len());
             assert_eq!(&got[..], data);
             out
         }
@@ -417,24 +402,21 @@ fn stuff_trigger_spanning_address_boundary() {
     let data = [0xFDu8, 0x11, 0x22];
     write(
         &mut out,
-        &Packet::Write {
+        &Packet::Write(WritePacket {
             id: 1,
             address: 0xFFFF,
             data: Bytes::Raw(&data),
-        },
+        }),
     )
     .unwrap();
     let (pkt, _) = parse_one(&out).unwrap();
-    let Packet::Write {
-        address, data: d, ..
-    } = pkt
-    else {
+    let Packet::Write(p) = pkt else {
         panic!("not Write");
     };
-    assert_eq!(address, 0xFFFF);
-    assert_eq!(d.unstuffed_len(), data.len());
+    assert_eq!(p.address, 0xFFFF);
+    assert_eq!(p.data.unstuffed_len(), data.len());
     let mut buf = [0u8; 8];
-    let n = d.copy_into(&mut buf).unwrap();
+    let n = p.data.copy_into(&mut buf).unwrap();
     assert_eq!(&buf[..n], &data);
 }
 
@@ -444,19 +426,19 @@ fn stuff_trigger_spanning_address_then_more_in_data() {
     let mut out: Vec<u8, 64> = Vec::new();
     write(
         &mut out,
-        &Packet::Write {
+        &Packet::Write(WritePacket {
             id: 1,
             address: 0xFFFF,
             data: Bytes::Raw(&data),
-        },
+        }),
     )
     .unwrap();
     let (pkt, _) = parse_one(&out).unwrap();
-    let Packet::Write { data: d, .. } = pkt else {
+    let Packet::Write(p) = pkt else {
         panic!();
     };
     let mut buf = [0u8; 16];
-    let n = d.copy_into(&mut buf).unwrap();
+    let n = p.data.copy_into(&mut buf).unwrap();
     assert_eq!(&buf[..n], &data);
 }
 
@@ -466,19 +448,19 @@ fn stuff_unstuffed_len_matches_iter_count() {
     let mut out: Vec<u8, 64> = Vec::new();
     write(
         &mut out,
-        &Packet::Write {
+        &Packet::Write(WritePacket {
             id: 1,
             address: 0x0010,
             data: Bytes::Raw(&data),
-        },
+        }),
     )
     .unwrap();
     let (pkt, _) = parse_one(&out).unwrap();
-    let Packet::Write { data: d, .. } = pkt else {
+    let Packet::Write(p) = pkt else {
         panic!();
     };
-    assert_eq!(d.unstuffed_len(), data.len());
-    assert_eq!(d.iter().count(), data.len());
+    assert_eq!(p.data.unstuffed_len(), data.len());
+    assert_eq!(p.data.iter().count(), data.len());
 }
 
 #[test]
@@ -495,19 +477,19 @@ fn stuff_empty_payload() {
     let mut out: Vec<u8, 32> = Vec::new();
     write(
         &mut out,
-        &Packet::Write {
+        &Packet::Write(WritePacket {
             id: 1,
             address: 0x0010,
             data: Bytes::Raw(&[]),
-        },
+        }),
     )
     .unwrap();
     let (pkt, _) = parse_one(&out).unwrap();
-    let Packet::Write { data: d, .. } = pkt else {
+    let Packet::Write(p) = pkt else {
         panic!();
     };
-    assert_eq!(d.unstuffed_len(), 0);
-    assert_eq!(d.iter().next(), None);
+    assert_eq!(p.data.unstuffed_len(), 0);
+    assert_eq!(p.data.iter().next(), None);
 }
 
 #[test]
@@ -516,23 +498,20 @@ fn stuff_status_with_trigger_in_params() {
     let mut out: Vec<u8, 64> = Vec::new();
     write(
         &mut out,
-        &Packet::Status {
+        &Packet::Status(StatusPacket {
             id: 1,
             error: 0,
             params: Bytes::Raw(&params),
-        },
+        }),
     )
     .unwrap();
     let (pkt, _) = parse_one(&out).unwrap();
-    let Packet::Status {
-        error, params: p, ..
-    } = pkt
-    else {
+    let Packet::Status(p) = pkt else {
         panic!();
     };
-    assert_eq!(error, 0);
+    assert_eq!(p.error, 0);
     let mut buf = [0u8; 16];
-    let n = p.copy_into(&mut buf).unwrap();
+    let n = p.params.copy_into(&mut buf).unwrap();
     assert_eq!(&buf[..n], &params);
 }
 
@@ -542,11 +521,11 @@ fn stuff_forwarding_round_trip() {
     let mut wire1: Vec<u8, 64> = Vec::new();
     write(
         &mut wire1,
-        &Packet::Write {
+        &Packet::Write(WritePacket {
             id: 1,
             address: 0x0010,
             data: Bytes::Raw(&original_data),
-        },
+        }),
     )
     .unwrap();
 
@@ -566,19 +545,19 @@ fn stuff_long_payload_with_many_triggers() {
     let mut out: Vec<u8, 128> = Vec::new();
     write(
         &mut out,
-        &Packet::Write {
+        &Packet::Write(WritePacket {
             id: 1,
             address: 0x0010,
             data: Bytes::Raw(&data),
-        },
+        }),
     )
     .unwrap();
     let (pkt, _) = parse_one(&out).unwrap();
-    let Packet::Write { data: d, .. } = pkt else {
+    let Packet::Write(p) = pkt else {
         panic!();
     };
-    assert_eq!(d.unstuffed_len(), data.len());
+    assert_eq!(p.data.unstuffed_len(), data.len());
     let mut buf = [0u8; 64];
-    let n = d.copy_into(&mut buf).unwrap();
+    let n = p.data.copy_into(&mut buf).unwrap();
     assert_eq!(&buf[..n], &data[..]);
 }

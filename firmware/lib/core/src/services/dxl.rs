@@ -1,6 +1,4 @@
-use dxl_protocol::{
-    BROADCAST_ID, Bytes, Packet, ParseError, StatusError, WriteBuf, parse_one, write,
-};
+use dxl_protocol::prelude::*;
 
 use crate::{RegmapError, RingReader, RxSnapshot, Shared};
 
@@ -59,7 +57,7 @@ fn dispatch<D: DxlIo>(shared: &Shared, io: &mut D, packet: &Packet<'_>) {
     let target_id = packet_id(packet);
 
     let respond = match (packet, target_id) {
-        (Packet::Ping { .. }, Some(id)) => id == our_id || id == BROADCAST_ID,
+        (Packet::Ping(_), Some(id)) => id == our_id || id == BROADCAST_ID,
         (_, Some(id)) => id == our_id,
         (_, None) => false,
     };
@@ -68,10 +66,8 @@ fn dispatch<D: DxlIo>(shared: &Shared, io: &mut D, packet: &Packet<'_>) {
     }
 
     match packet {
-        Packet::Ping { .. } => send_ping_status(shared, io, our_id),
-        Packet::Read {
-            address, length, ..
-        } => send_read_status(shared, io, our_id, *address, *length),
+        Packet::Ping(_) => send_ping_status(shared, io, our_id),
+        Packet::Read(p) => send_read_status(shared, io, our_id, p.address, p.length),
         _ => send_status(io, our_id, StatusError::Instruction, &[]),
     }
 }
@@ -82,23 +78,23 @@ fn our_id(shared: &Shared) -> u8 {
 }
 
 fn packet_id(packet: &Packet<'_>) -> Option<u8> {
-    match *packet {
-        Packet::Ping { id }
-        | Packet::Read { id, .. }
-        | Packet::Write { id, .. }
-        | Packet::RegWrite { id, .. }
-        | Packet::Action { id }
-        | Packet::FactoryReset { id, .. }
-        | Packet::Reboot { id }
-        | Packet::Clear { id, .. }
-        | Packet::ControlTableBackup { id, .. }
-        | Packet::Status { id, .. } => Some(id),
-        Packet::SyncRead { .. }
-        | Packet::SyncWrite { .. }
-        | Packet::BulkRead { .. }
-        | Packet::BulkWrite { .. }
-        | Packet::FastSyncRead { .. }
-        | Packet::FastBulkRead { .. } => None,
+    match packet {
+        Packet::Ping(p) => Some(p.id),
+        Packet::Read(p) => Some(p.id),
+        Packet::Write(p) => Some(p.id),
+        Packet::RegWrite(p) => Some(p.id),
+        Packet::Action(p) => Some(p.id),
+        Packet::FactoryReset(p) => Some(p.id),
+        Packet::Reboot(p) => Some(p.id),
+        Packet::Clear(p) => Some(p.id),
+        Packet::ControlTableBackup(p) => Some(p.id),
+        Packet::Status(p) => Some(p.id),
+        Packet::SyncRead(_)
+        | Packet::SyncWrite(_)
+        | Packet::BulkRead(_)
+        | Packet::BulkWrite(_)
+        | Packet::FastSyncRead(_)
+        | Packet::FastBulkRead(_) => None,
     }
 }
 
@@ -129,11 +125,7 @@ fn send_read_status<D: DxlIo>(shared: &Shared, io: &mut D, id: u8, address: u16,
 fn send_status<D: DxlIo>(io: &mut D, id: u8, error: StatusError, params: &[u8]) {
     let buf = io.tx_buf();
     buf.truncate(0);
-    let packet = Packet::Status {
-        id,
-        error: error.as_u8(),
-        params: Bytes::Raw(params),
-    };
+    let packet = Packet::Status(StatusPacket::new(id, error.as_u8(), params));
     if write(buf, &packet).is_err() {
         buf.truncate(0);
         return;
@@ -197,12 +189,12 @@ mod tests {
         let (pkt, used) = parse_one(bytes).unwrap();
         assert_eq!(used, bytes.len());
         match pkt {
-            Packet::Status { id, error, params } => {
+            Packet::Status(p) => {
                 let mut out: Vec<u8, 64> = Vec::new();
-                for b in params.iter() {
+                for b in p.params.iter() {
                     out.push(b).unwrap();
                 }
-                (id, error, out)
+                (p.id, p.error, out)
             }
             _ => panic!("not a status packet"),
         }
@@ -214,7 +206,7 @@ mod tests {
         let mut io = FakeDxlIo::new();
         let mut h = Dxl::new();
 
-        let req = encode(&Packet::Ping { id: 0 });
+        let req = encode(&Packet::Ping(PingPacket::new(0)));
         io.feed(&req);
         h.poll(&shared, &mut io);
 
@@ -231,7 +223,7 @@ mod tests {
         let mut io = FakeDxlIo::new();
         let mut h = Dxl::new();
 
-        let req = encode(&Packet::Ping { id: BROADCAST_ID });
+        let req = encode(&Packet::Ping(PingPacket::new(BROADCAST_ID)));
         io.feed(&req);
         h.poll(&shared, &mut io);
 
@@ -247,7 +239,7 @@ mod tests {
         let mut io = FakeDxlIo::new();
         let mut h = Dxl::new();
 
-        let req = encode(&Packet::Ping { id: 17 });
+        let req = encode(&Packet::Ping(PingPacket::new(17)));
         io.feed(&req);
         h.poll(&shared, &mut io);
 
@@ -261,11 +253,7 @@ mod tests {
         let mut io = FakeDxlIo::new();
         let mut h = Dxl::new();
 
-        let req = encode(&Packet::Read {
-            id: 0,
-            address: 0,
-            length: 2,
-        });
+        let req = encode(&Packet::Read(ReadPacket::new(0, 0, 2)));
         io.feed(&req);
         h.poll(&shared, &mut io);
 
@@ -281,11 +269,7 @@ mod tests {
         let mut io = FakeDxlIo::new();
         let mut h = Dxl::new();
 
-        let req = encode(&Packet::Read {
-            id: 0,
-            address: 0,
-            length: 0,
-        });
+        let req = encode(&Packet::Read(ReadPacket::new(0, 0, 0)));
         io.feed(&req);
         h.poll(&shared, &mut io);
 
@@ -299,11 +283,7 @@ mod tests {
         let mut io = FakeDxlIo::new();
         let mut h = Dxl::new();
 
-        let req = encode(&Packet::Write {
-            id: 0,
-            address: 0,
-            data: Bytes::Raw(&[0x01]),
-        });
+        let req = encode(&Packet::Write(WritePacket::new(0, 0, &[0x01])));
         io.feed(&req);
         h.poll(&shared, &mut io);
 
