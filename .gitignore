@@ -2,15 +2,37 @@
 .DS_Store
 .DS_Store?
 ._*
-.*.sw[op]
 .Spotlight-V100
 .Trashes
 ehthumbs.db
 Thumbs.db
 
-# AI temp files
-.claude
-.serena
+# Editor / IDE
+.idea/
+*.iml
+.vscode/
+.zed/
+.claude/
+.serena/
+*.swp
+*.swo
+.*.sw[op]
+*~
 
-# misc temp files
+# General backup / debug
+*.bak
+*.tmp
+*.pdb
+
+# Python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+*.egg-info/
+.venv/
+venv/
+
+# Root-level Rust build (subdir Rust crates have their own)
 /target
