@@ -77,7 +77,7 @@ const STREAMING_ADDR: u16 = CONTROL_BASE_ADDR + CONTROL_BLOCK_SIZE as u16;
 const STREAMING_STRUCT: u16 = offset_of!(ControlRegs, streaming) as u16;
 
 // ControlLifecycle (skip _rsvd_align at +2..4 and trailing pad at +14..16)
-pub static FIELD_TORQUE_ENABLE: FieldDesc = FieldDesc {
+pub const FIELD_TORQUE_ENABLE: FieldDesc = FieldDesc {
     addr: LIFECYCLE_ADDR + offset_of!(ControlLifecycle, torque_enable) as u16,
     size: 1,
     struct_offset: LIFECYCLE_STRUCT + offset_of!(ControlLifecycle, torque_enable) as u16,
@@ -86,7 +86,7 @@ pub static FIELD_TORQUE_ENABLE: FieldDesc = FieldDesc {
         allowed: BOOL_ALLOWED,
     }],
 };
-pub static FIELD_MODE: FieldDesc = FieldDesc {
+pub const FIELD_MODE: FieldDesc = FieldDesc {
     addr: LIFECYCLE_ADDR + offset_of!(ControlLifecycle, mode) as u16,
     size: 1,
     struct_offset: LIFECYCLE_STRUCT + offset_of!(ControlLifecycle, mode) as u16,
@@ -95,35 +95,35 @@ pub static FIELD_MODE: FieldDesc = FieldDesc {
         allowed: Mode::ALLOWED,
     }],
 };
-pub static FIELD_GOAL_POSITION: FieldDesc = FieldDesc {
+pub const FIELD_GOAL_POSITION: FieldDesc = FieldDesc {
     addr: LIFECYCLE_ADDR + offset_of!(ControlLifecycle, goal_position) as u16,
     size: 4,
     struct_offset: LIFECYCLE_STRUCT + offset_of!(ControlLifecycle, goal_position) as u16,
     access: Access::Rw,
     validators: &[Validator::Cross(CrossField::WithinI32 {
-        lo: &config::FIELD_POS_MIN_SOFT_URAD,
-        hi: &config::FIELD_POS_MAX_SOFT_URAD,
+        lo_addr: config::POS_MIN_SOFT_URAD_ADDR,
+        hi_addr: config::POS_MAX_SOFT_URAD_ADDR,
     })],
 };
-pub static FIELD_GOAL_VELOCITY: FieldDesc = FieldDesc {
+pub const FIELD_GOAL_VELOCITY: FieldDesc = FieldDesc {
     addr: LIFECYCLE_ADDR + offset_of!(ControlLifecycle, goal_velocity) as u16,
     size: 4,
     struct_offset: LIFECYCLE_STRUCT + offset_of!(ControlLifecycle, goal_velocity) as u16,
     access: Access::Rw,
     validators: &[],
 };
-pub static FIELD_GOAL_EFFORT: FieldDesc = FieldDesc {
+pub const FIELD_GOAL_EFFORT: FieldDesc = FieldDesc {
     addr: LIFECYCLE_ADDR + offset_of!(ControlLifecycle, goal_effort) as u16,
     size: 2,
     struct_offset: LIFECYCLE_STRUCT + offset_of!(ControlLifecycle, goal_effort) as u16,
     access: Access::Rw,
     validators: &[Validator::Cross(CrossField::MagBoundedI16 {
-        bound: &config::FIELD_MAX_EFFORT,
+        bound_addr: config::MAX_EFFORT_ADDR,
     })],
 };
 
 // ControlStreaming
-pub static FIELD_STREAM_ENABLE: FieldDesc = FieldDesc {
+pub const FIELD_STREAM_ENABLE: FieldDesc = FieldDesc {
     addr: STREAMING_ADDR + offset_of!(ControlStreaming, stream_enable) as u16,
     size: 1,
     struct_offset: STREAMING_STRUCT + offset_of!(ControlStreaming, stream_enable) as u16,
@@ -132,14 +132,14 @@ pub static FIELD_STREAM_ENABLE: FieldDesc = FieldDesc {
         allowed: BOOL_ALLOWED,
     }],
 };
-pub static FIELD_STREAM_DECIMATION: FieldDesc = FieldDesc {
+pub const FIELD_STREAM_DECIMATION: FieldDesc = FieldDesc {
     addr: STREAMING_ADDR + offset_of!(ControlStreaming, stream_decimation) as u16,
     size: 1,
     struct_offset: STREAMING_STRUCT + offset_of!(ControlStreaming, stream_decimation) as u16,
     access: Access::Rw,
     validators: &[],
 };
-pub static FIELD_STREAM_DURATION_MS: FieldDesc = FieldDesc {
+pub const FIELD_STREAM_DURATION_MS: FieldDesc = FieldDesc {
     addr: STREAMING_ADDR + offset_of!(ControlStreaming, stream_duration_ms) as u16,
     size: 2,
     struct_offset: STREAMING_STRUCT + offset_of!(ControlStreaming, stream_duration_ms) as u16,
@@ -149,14 +149,14 @@ pub static FIELD_STREAM_DURATION_MS: FieldDesc = FieldDesc {
         hi: u16::MAX,
     }],
 };
-pub static FIELD_STREAM_FIELD_MASK: FieldDesc = FieldDesc {
+pub const FIELD_STREAM_FIELD_MASK: FieldDesc = FieldDesc {
     addr: STREAMING_ADDR + offset_of!(ControlStreaming, stream_field_mask) as u16,
     size: 4,
     struct_offset: STREAMING_STRUCT + offset_of!(ControlStreaming, stream_field_mask) as u16,
     access: Access::Rw,
     validators: &[],
 };
-pub static FIELD_STREAM_DROPPED: FieldDesc = FieldDesc {
+pub const FIELD_STREAM_DROPPED: FieldDesc = FieldDesc {
     addr: STREAMING_ADDR + offset_of!(ControlStreaming, stream_dropped) as u16,
     size: 4,
     struct_offset: STREAMING_STRUCT + offset_of!(ControlStreaming, stream_dropped) as u16,

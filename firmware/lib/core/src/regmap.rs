@@ -204,62 +204,62 @@ impl CompareOp {
 pub enum CrossField {
     CompareI16 {
         op: CompareOp,
-        other: &'static FieldDesc,
+        other_addr: u16,
     },
     CompareI32 {
         op: CompareOp,
-        other: &'static FieldDesc,
+        other_addr: u16,
     },
     WithinI16 {
-        lo: &'static FieldDesc,
-        hi: &'static FieldDesc,
+        lo_addr: u16,
+        hi_addr: u16,
     },
     WithinI32 {
-        lo: &'static FieldDesc,
-        hi: &'static FieldDesc,
+        lo_addr: u16,
+        hi_addr: u16,
     },
     /// `|self| ≤ |bound|`; `saturating_abs` on both sides so `i*::MIN` doesn't overflow.
     MagBoundedI16 {
-        bound: &'static FieldDesc,
+        bound_addr: u16,
     },
     MagBoundedI32 {
-        bound: &'static FieldDesc,
+        bound_addr: u16,
     },
 }
 
 impl CrossField {
     fn run(&self, view: &StagedView, self_addr: u16) -> Result<(), RegmapError> {
-        let ok = match self {
-            CrossField::CompareI16 { op, other } => {
+        let ok = match *self {
+            CrossField::CompareI16 { op, other_addr } => {
                 let a = read_le(view, self_addr, i16::from_le_bytes)?;
-                let b = read_le(view, other.addr, i16::from_le_bytes)?;
+                let b = read_le(view, other_addr, i16::from_le_bytes)?;
                 op.apply(&a, &b)
             }
-            CrossField::CompareI32 { op, other } => {
+            CrossField::CompareI32 { op, other_addr } => {
                 let a = read_le(view, self_addr, i32::from_le_bytes)?;
-                let b = read_le(view, other.addr, i32::from_le_bytes)?;
+                let b = read_le(view, other_addr, i32::from_le_bytes)?;
                 op.apply(&a, &b)
             }
-            CrossField::WithinI16 { lo, hi } => {
+            CrossField::WithinI16 { lo_addr, hi_addr } => {
                 let v = read_le(view, self_addr, i16::from_le_bytes)?;
-                let l = read_le(view, lo.addr, i16::from_le_bytes)?;
-                let h = read_le(view, hi.addr, i16::from_le_bytes)?;
+                let l = read_le(view, lo_addr, i16::from_le_bytes)?;
+                let h = read_le(view, hi_addr, i16::from_le_bytes)?;
                 (l..=h).contains(&v)
             }
-            CrossField::WithinI32 { lo, hi } => {
+            CrossField::WithinI32 { lo_addr, hi_addr } => {
                 let v = read_le(view, self_addr, i32::from_le_bytes)?;
-                let l = read_le(view, lo.addr, i32::from_le_bytes)?;
-                let h = read_le(view, hi.addr, i32::from_le_bytes)?;
+                let l = read_le(view, lo_addr, i32::from_le_bytes)?;
+                let h = read_le(view, hi_addr, i32::from_le_bytes)?;
                 (l..=h).contains(&v)
             }
-            CrossField::MagBoundedI16 { bound } => {
+            CrossField::MagBoundedI16 { bound_addr } => {
                 let v = read_le(view, self_addr, i16::from_le_bytes)?;
-                let b = read_le(view, bound.addr, i16::from_le_bytes)?;
+                let b = read_le(view, bound_addr, i16::from_le_bytes)?;
                 v.saturating_abs() <= b.saturating_abs()
             }
-            CrossField::MagBoundedI32 { bound } => {
+            CrossField::MagBoundedI32 { bound_addr } => {
                 let v = read_le(view, self_addr, i32::from_le_bytes)?;
-                let b = read_le(view, bound.addr, i32::from_le_bytes)?;
+                let b = read_le(view, bound_addr, i32::from_le_bytes)?;
                 v.saturating_abs() <= b.saturating_abs()
             }
         };
