@@ -149,8 +149,8 @@ impl Default for StagedWrites {
 /// in lockstep with that expansion (1:1, `offset_of!` for both addrs).
 #[derive(Copy, Clone, Debug)]
 pub struct FieldDesc {
-    /// Byte offset in the region's protocol address space.
-    pub addr_offset: u16,
+    /// Absolute control-table address.
+    pub addr: u16,
     pub size: u16,
     /// Byte offset in the region struct.
     pub struct_offset: u16,
@@ -239,11 +239,10 @@ impl<'a> StagedView<'a> {
     }
 }
 
-/// (struct base ptr, region base addr, field table) for the region containing
-/// `[addr, end)`. `None` if the range crosses or escapes every region.
+/// (struct base ptr, field table) for the region containing `[addr, end)`.
+/// `None` if the range crosses or escapes every region.
 struct RegionRef {
     base: *mut u8,
-    base_addr: u16,
     fields: &'static [FieldDesc],
 }
 
@@ -257,7 +256,7 @@ impl ControlTable {
             .ok_or(RegmapError::OutOfRange)?;
         let r = self.region_for(addr, end).ok_or(RegmapError::OutOfRange)?;
         // SAFETY: get() non-null; descriptor sizes verified in `region_structs_fit_regions`.
-        unsafe { walk_read(r.base, addr - r.base_addr, dst, r.fields) }
+        unsafe { walk_read(r.base, addr, dst, r.fields) }
     }
 
     /// Caller must be the region's sole writer (services for CONFIG/CONTROL/CALIB, kernel for TELEMETRY).
@@ -292,18 +291,9 @@ impl ControlTable {
         let r = self.region_for(addr, end).ok_or(RegmapError::OutOfRange)?;
         let saved_data = staged.data.len();
         let saved_entries = staged.entries.len();
-        let result =
-            stage_write(r.base_addr, addr - r.base_addr, src, r.fields, staged).and_then(|()| {
-                run_field_validators(
-                    self,
-                    staged,
-                    saved_entries,
-                    r.base_addr,
-                    addr - r.base_addr,
-                    src.len(),
-                    r.fields,
-                )
-            });
+        let result = stage_write(addr, src, r.fields, staged).and_then(|()| {
+            run_field_validators(self, staged, saved_entries, addr, src.len(), r.fields)
+        });
         if result.is_err() {
             staged.rewind(saved_data, saved_entries);
         }
@@ -326,7 +316,7 @@ impl ControlTable {
             let Some(r) = self.region_for(abs_addr, end) else {
                 continue;
             };
-            unsafe { commit_chunk(r.base, r.base_addr, abs_addr, data, r.fields) };
+            unsafe { commit_chunk(r.base, abs_addr, data, r.fields) };
         }
     }
 
@@ -334,25 +324,21 @@ impl ControlTable {
         if range_in(addr, end, CONFIG_BASE_ADDR, CONFIG_REGION_SIZE) {
             Some(RegionRef {
                 base: self.config.get() as *mut u8,
-                base_addr: CONFIG_BASE_ADDR,
                 fields: CONFIG_FIELDS,
             })
         } else if range_in(addr, end, TELEMETRY_BASE_ADDR, TELEMETRY_REGION_SIZE) {
             Some(RegionRef {
                 base: self.telemetry.get() as *mut u8,
-                base_addr: TELEMETRY_BASE_ADDR,
                 fields: TELEMETRY_FIELDS,
             })
         } else if range_in(addr, end, CONTROL_BASE_ADDR, CONTROL_REGION_SIZE) {
             Some(RegionRef {
                 base: self.control.get() as *mut u8,
-                base_addr: CONTROL_BASE_ADDR,
                 fields: CONTROL_FIELDS,
             })
         } else if range_in(addr, end, CALIB_BASE_ADDR, CALIB_REGION_SIZE) {
             Some(RegionRef {
                 base: self.calib.get() as *mut u8,
-                base_addr: CALIB_BASE_ADDR,
                 fields: CALIB_FIELDS,
             })
         } else {
@@ -366,24 +352,24 @@ fn range_in(addr: u16, end: usize, base: u16, size: usize) -> bool {
     (addr as usize) >= base && end <= base + size
 }
 
-/// Walk fields covering `[offset_in_region, +len)`. Calls `on_chunk(struct_off, buf_off, chunk_len)`
+/// Walk fields covering `[abs_start, +len)`. Calls `on_chunk(struct_off, buf_off, chunk_len)`
 /// for each overlapping byte run. Returns `AccessError` on a gap, or on an RO field if `require_rw`.
-/// Descriptors must be sorted by `addr_offset` and non-overlapping.
+/// Descriptors must be sorted by `addr` and non-overlapping.
 fn walk_fields(
-    offset_in_region: u16,
+    abs_start: u16,
     len: usize,
     fields: &[FieldDesc],
     require_rw: bool,
     mut on_chunk: impl FnMut(usize, usize, usize),
 ) -> Result<(), RegmapError> {
-    let req_hi = offset_in_region as usize + len;
-    let mut req_lo = offset_in_region as usize;
+    let req_hi = abs_start as usize + len;
+    let mut req_lo = abs_start as usize;
     let mut buf_pos = 0usize;
     for desc in fields {
         if req_lo >= req_hi {
             break;
         }
-        let blk_lo = desc.addr_offset as usize;
+        let blk_lo = desc.addr as usize;
         let blk_hi = blk_lo + desc.size as usize;
         if blk_hi <= req_lo {
             continue;
@@ -407,13 +393,13 @@ fn walk_fields(
 
 unsafe fn walk_read(
     region_base: *const u8,
-    offset_in_region: u16,
+    abs_start: u16,
     dst: &mut [u8],
     fields: &[FieldDesc],
 ) -> Result<(), RegmapError> {
     let dst_ptr = dst.as_mut_ptr();
     walk_fields(
-        offset_in_region,
+        abs_start,
         dst.len(),
         fields,
         false,
@@ -431,8 +417,7 @@ fn run_field_validators(
     table: &ControlTable,
     staged: &StagedWrites,
     start_entry: usize,
-    region_base_addr: u16,
-    offset_in_region: u16,
+    abs_start: u16,
     len: usize,
     fields: &[FieldDesc],
 ) -> Result<(), RegmapError> {
@@ -441,10 +426,10 @@ fn run_field_validators(
         staged,
         start_entry,
     };
-    let req_lo = offset_in_region as usize;
+    let req_lo = abs_start as usize;
     let req_hi = req_lo + len;
     for desc in fields {
-        let blk_lo = desc.addr_offset as usize;
+        let blk_lo = desc.addr as usize;
         let blk_hi = blk_lo + desc.size as usize;
         if blk_hi <= req_lo {
             continue;
@@ -455,13 +440,12 @@ fn run_field_validators(
         if desc.validators.is_empty() {
             continue;
         }
-        let abs_addr = region_base_addr.wrapping_add(desc.addr_offset);
         for v in desc.validators {
-            if let Err(e) = v.run(&view, abs_addr, desc.size) {
+            if let Err(e) = v.run(&view, desc.addr, desc.size) {
                 if let RegmapError::ValidationError(kind) = e {
                     log::warn!(
                         "regmap: validator rejected addr={} size={} kind={}",
-                        abs_addr,
+                        desc.addr,
                         desc.size,
                         kind.as_str(),
                     );
@@ -475,31 +459,22 @@ fn run_field_validators(
 
 /// Validate that `src` lies entirely in RW fields with no gaps; stage as one entry.
 fn stage_write(
-    region_base_addr: u16,
-    offset_in_region: u16,
+    abs_addr: u16,
     src: &[u8],
     fields: &[FieldDesc],
     staged: &mut StagedWrites,
 ) -> Result<(), RegmapError> {
-    walk_fields(offset_in_region, src.len(), fields, true, |_, _, _| {})?;
-    let abs_addr = region_base_addr.wrapping_add(offset_in_region);
+    walk_fields(abs_addr, src.len(), fields, true, |_, _, _| {})?;
     staged.push_chunk(abs_addr, src)
 }
 
 /// SAFETY: `region_base` points to the matching region struct; `[abs_addr, abs_addr+data.len())`
 /// is contained in that region and covered by RW fields per `fields`; caller has exclusive access.
-unsafe fn commit_chunk(
-    region_base: *mut u8,
-    region_base_addr: u16,
-    abs_addr: u16,
-    data: &[u8],
-    fields: &[FieldDesc],
-) {
-    let offset = abs_addr.wrapping_sub(region_base_addr);
+unsafe fn commit_chunk(region_base: *mut u8, abs_addr: u16, data: &[u8], fields: &[FieldDesc]) {
     let data_ptr = data.as_ptr();
     // stage_write already validated this range; walk_fields can't error here.
     let _ = walk_fields(
-        offset,
+        abs_addr,
         data.len(),
         fields,
         false,
@@ -756,11 +731,11 @@ mod tests {
         assert_eq!(stall.stall_motion_threshold_urad, 0);
     }
 
-    fn assert_fields_sorted_and_bounded(fields: &[FieldDesc], region_size: u16) {
+    fn assert_fields_sorted_and_bounded(fields: &[FieldDesc], region_end: u16) {
         for win in fields.windows(2) {
             let (a, b) = (&win[0], &win[1]);
             assert!(
-                a.addr_offset + a.size <= b.addr_offset,
+                a.addr + a.size <= b.addr,
                 "fields not sorted/non-overlapping: {:?} then {:?}",
                 a,
                 b,
@@ -768,7 +743,7 @@ mod tests {
         }
         if let Some(last) = fields.last() {
             assert!(
-                last.addr_offset + last.size <= region_size,
+                last.addr + last.size <= region_end,
                 "last field runs past region end: {:?}",
                 last,
             );
@@ -778,29 +753,38 @@ mod tests {
     #[test]
     fn config_fields_sorted_and_bounded() {
         use crate::regions::CONFIG_REGION_SIZE;
-        assert_fields_sorted_and_bounded(CONFIG_FIELDS, CONFIG_REGION_SIZE as u16);
+        assert_fields_sorted_and_bounded(
+            CONFIG_FIELDS,
+            CONFIG_BASE_ADDR + CONFIG_REGION_SIZE as u16,
+        );
     }
 
     #[test]
     fn telemetry_fields_sorted_and_bounded() {
         use crate::regions::TELEMETRY_REGION_SIZE;
-        assert_fields_sorted_and_bounded(TELEMETRY_FIELDS, TELEMETRY_REGION_SIZE as u16);
+        assert_fields_sorted_and_bounded(
+            TELEMETRY_FIELDS,
+            TELEMETRY_BASE_ADDR + TELEMETRY_REGION_SIZE as u16,
+        );
     }
 
     #[test]
     fn control_fields_sorted_and_bounded() {
         use crate::regions::CONTROL_REGION_SIZE;
-        assert_fields_sorted_and_bounded(CONTROL_FIELDS, CONTROL_REGION_SIZE as u16);
+        assert_fields_sorted_and_bounded(
+            CONTROL_FIELDS,
+            CONTROL_BASE_ADDR + CONTROL_REGION_SIZE as u16,
+        );
     }
 
     #[test]
     fn calib_fields_sorted_and_bounded() {
-        assert_fields_sorted_and_bounded(CALIB_FIELDS, CALIB_REGION_SIZE as u16);
+        assert_fields_sorted_and_bounded(CALIB_FIELDS, CALIB_BASE_ADDR + CALIB_REGION_SIZE as u16);
     }
 
     #[test]
     fn write_to_padding_gap_fails() {
-        // ControlLifecycle _rsvd_align gap at addr_offset 2..4.
+        // ControlLifecycle _rsvd_align gap at addr 2..4.
         let t = fresh();
         let err = write(&t, CONTROL_BASE_ADDR + 2, &[0u8, 0u8]).unwrap_err();
         assert_eq!(err, RegmapError::AccessError);
@@ -1061,7 +1045,7 @@ mod tests {
             Err(RegmapError::ValidationError(ValidationKind::Custom))
         }
         const TEST_FIELDS: &[FieldDesc] = &[FieldDesc {
-            addr_offset: 0,
+            addr: 0,
             size: 1,
             struct_offset: 0,
             access: Access::Rw,
@@ -1071,9 +1055,9 @@ mod tests {
         let mut staged = StagedWrites::default();
         let saved_entries = staged.entries.len();
         let saved_data = staged.data.len();
-        let stage = stage_write(0, 0, &[0xAA], TEST_FIELDS, &mut staged);
+        let stage = stage_write(0, &[0xAA], TEST_FIELDS, &mut staged);
         assert!(stage.is_ok());
-        let result = run_field_validators(&t, &staged, saved_entries, 0, 0, 1, TEST_FIELDS);
+        let result = run_field_validators(&t, &staged, saved_entries, 0, 1, TEST_FIELDS);
         assert_eq!(
             result,
             Err(RegmapError::ValidationError(ValidationKind::Custom)),
