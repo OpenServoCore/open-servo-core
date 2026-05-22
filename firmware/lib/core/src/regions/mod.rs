@@ -31,6 +31,14 @@ pub use telemetry::{
 
 use crate::board::ConfigDefaults;
 use crate::page::PageHeader;
+use crate::regmap::RegionDesc;
+
+pub const REGIONS: &[&RegionDesc] = &[
+    &config::CONFIG_REGION,
+    &telemetry::TELEMETRY_REGION,
+    &control::CONTROL_REGION,
+    &calib::CALIB_REGION,
+];
 
 pub const PAGE_HEADER_SIZE: usize = core::mem::size_of::<PageHeader>();
 

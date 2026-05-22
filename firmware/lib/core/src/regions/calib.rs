@@ -1,7 +1,7 @@
 use crate::page::PageHeader;
 use crate::regions::locks;
-use crate::regions::{CALIB_BASE_ADDR, CALIB_BLOCK_SIZE};
-use crate::regmap::{Access, FieldDesc, RegionDef};
+use crate::regions::{CALIB_BASE_ADDR, CALIB_BLOCK_SIZE, CALIB_REGION_SIZE};
+use crate::regmap::{Access, BlockDesc, FieldDesc, RegionDesc};
 use core::mem::{offset_of, size_of};
 
 #[derive(Copy, Clone)]
@@ -41,21 +41,21 @@ const BEMF_STRUCT: u16 = offset_of!(CalibRegs, bemf) as u16;
 pub const FIELD_RAW_MIN: FieldDesc = FieldDesc {
     addr: POT_LUT_ADDR + offset_of!(PotLutBlock, raw_min) as u16,
     size: 2,
-    struct_offset: POT_LUT_STRUCT + offset_of!(PotLutBlock, raw_min) as u16,
+    struct_offset: offset_of!(PotLutBlock, raw_min) as u16,
     access: Access::Rw,
     validators: &[],
 };
 pub const FIELD_RAW_MAX: FieldDesc = FieldDesc {
     addr: POT_LUT_ADDR + offset_of!(PotLutBlock, raw_max) as u16,
     size: 2,
-    struct_offset: POT_LUT_STRUCT + offset_of!(PotLutBlock, raw_max) as u16,
+    struct_offset: offset_of!(PotLutBlock, raw_max) as u16,
     access: Access::Rw,
     validators: &[],
 };
 pub const FIELD_LUT: FieldDesc = FieldDesc {
     addr: POT_LUT_ADDR + offset_of!(PotLutBlock, lut) as u16,
     size: size_of::<[i32; 55]>() as u16,
-    struct_offset: POT_LUT_STRUCT + offset_of!(PotLutBlock, lut) as u16,
+    struct_offset: offset_of!(PotLutBlock, lut) as u16,
     access: Access::Rw,
     validators: &[],
 };
@@ -64,43 +64,58 @@ pub const FIELD_LUT: FieldDesc = FieldDesc {
 pub const FIELD_KE_UVS_PER_RAD: FieldDesc = FieldDesc {
     addr: BEMF_ADDR + offset_of!(BemfCalibBlock, ke_uvs_per_rad) as u16,
     size: 2,
-    struct_offset: BEMF_STRUCT + offset_of!(BemfCalibBlock, ke_uvs_per_rad) as u16,
+    struct_offset: offset_of!(BemfCalibBlock, ke_uvs_per_rad) as u16,
     access: Access::Rw,
     validators: &[],
 };
 pub const FIELD_R_MOTOR_MOHM: FieldDesc = FieldDesc {
     addr: BEMF_ADDR + offset_of!(BemfCalibBlock, r_motor_mohm) as u16,
     size: 2,
-    struct_offset: BEMF_STRUCT + offset_of!(BemfCalibBlock, r_motor_mohm) as u16,
+    struct_offset: offset_of!(BemfCalibBlock, r_motor_mohm) as u16,
     access: Access::Rw,
     validators: &[],
 };
 pub const FIELD_CALIB_V_BUS_MV: FieldDesc = FieldDesc {
     addr: BEMF_ADDR + offset_of!(BemfCalibBlock, calib_v_bus_mv) as u16,
     size: 2,
-    struct_offset: BEMF_STRUCT + offset_of!(BemfCalibBlock, calib_v_bus_mv) as u16,
+    struct_offset: offset_of!(BemfCalibBlock, calib_v_bus_mv) as u16,
     access: Access::Rw,
     validators: &[],
 };
 pub const FIELD_CALIB_I_MA: FieldDesc = FieldDesc {
     addr: BEMF_ADDR + offset_of!(BemfCalibBlock, calib_i_ma) as u16,
     size: 2,
-    struct_offset: BEMF_STRUCT + offset_of!(BemfCalibBlock, calib_i_ma) as u16,
+    struct_offset: offset_of!(BemfCalibBlock, calib_i_ma) as u16,
     access: Access::Rw,
     validators: &[],
 };
 
-pub static CALIB_REGION: RegionDef = RegionDef {
+pub const BLOCK_POT_LUT: BlockDesc = BlockDesc {
+    addr: POT_LUT_ADDR,
+    size: size_of::<PotLutBlock>() as u16,
+    struct_offset: POT_LUT_STRUCT,
+    fields: &[FIELD_RAW_MIN, FIELD_RAW_MAX, FIELD_LUT],
+    validators: &[],
+};
+
+pub const BLOCK_BEMF: BlockDesc = BlockDesc {
+    addr: BEMF_ADDR,
+    size: size_of::<BemfCalibBlock>() as u16,
+    struct_offset: BEMF_STRUCT,
     fields: &[
-        FIELD_RAW_MIN,
-        FIELD_RAW_MAX,
-        FIELD_LUT,
         FIELD_KE_UVS_PER_RAD,
         FIELD_R_MOTOR_MOHM,
         FIELD_CALIB_V_BUS_MV,
         FIELD_CALIB_I_MA,
     ],
-    region_validators: &[locks::torque_locked],
+    validators: &[],
+};
+
+pub const CALIB_REGION: RegionDesc = RegionDesc {
+    addr: CALIB_BASE_ADDR,
+    size: CALIB_REGION_SIZE as u16,
+    blocks: &[BLOCK_POT_LUT, BLOCK_BEMF],
+    validators: &[locks::torque_locked],
 };
 
 impl PotLutBlock {

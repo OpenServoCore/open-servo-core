@@ -1,7 +1,9 @@
 use crate::page::PageHeader;
 use crate::regions::locks;
-use crate::regions::{CONFIG_BASE_ADDR, CONFIG_BLOCK_SIZE};
-use crate::regmap::{Access, BOOL_ALLOWED, CompareOp, CrossField, FieldDesc, RegionDef, Validator};
+use crate::regions::{CONFIG_BASE_ADDR, CONFIG_BLOCK_SIZE, CONFIG_REGION_SIZE};
+use crate::regmap::{
+    Access, BOOL_ALLOWED, BlockDesc, CompareOp, CrossField, FieldDesc, FieldValidator, RegionDesc,
+};
 use core::mem::{offset_of, size_of};
 
 /// DXL X-series baud rate indices. V006 USART caps at 3 Mbps; indices 6–7
@@ -304,8 +306,7 @@ const CALIBRATION_STRUCT: u16 = offset_of!(ConfigRegs, calibration) as u16;
 const HEADER_ADDR: u16 = CONFIG_BASE_ADDR + 15 * CONFIG_BLOCK_SIZE as u16;
 const HEADER_STRUCT: u16 = offset_of!(ConfigRegs, header) as u16;
 
-// *_ADDR consts let cross-field validators reference addrs without taking
-// `&FIELD_X`, which would force const-eval cycles between FieldDescs.
+// *_ADDR consts break the const-eval cycle that `&FIELD_X` in cross-field validators would form.
 pub const POS_MIN_PHYS_URAD_ADDR: u16 =
     POS_LIMITS_ADDR + offset_of!(ConfigPosLimits, pos_min_phys_urad) as u16;
 pub const POS_MAX_PHYS_URAD_ADDR: u16 =
@@ -325,28 +326,28 @@ pub const MAX_EFFORT_ADDR: u16 =
 pub const FIELD_MODEL_NUMBER: FieldDesc = FieldDesc {
     addr: IDENTITY_ADDR + offset_of!(ConfigIdentity, model_number) as u16,
     size: 2,
-    struct_offset: IDENTITY_STRUCT + offset_of!(ConfigIdentity, model_number) as u16,
+    struct_offset: offset_of!(ConfigIdentity, model_number) as u16,
     access: Access::Ro,
     validators: &[],
 };
 pub const FIELD_FIRMWARE_VERSION: FieldDesc = FieldDesc {
     addr: IDENTITY_ADDR + offset_of!(ConfigIdentity, firmware_version) as u16,
     size: 2,
-    struct_offset: IDENTITY_STRUCT + offset_of!(ConfigIdentity, firmware_version) as u16,
+    struct_offset: offset_of!(ConfigIdentity, firmware_version) as u16,
     access: Access::Ro,
     validators: &[],
 };
 pub const FIELD_HARDWARE_REVISION: FieldDesc = FieldDesc {
     addr: IDENTITY_ADDR + offset_of!(ConfigIdentity, hardware_revision) as u16,
     size: 4,
-    struct_offset: IDENTITY_STRUCT + offset_of!(ConfigIdentity, hardware_revision) as u16,
+    struct_offset: offset_of!(ConfigIdentity, hardware_revision) as u16,
     access: Access::Ro,
     validators: &[],
 };
 pub const FIELD_CAPABILITY_FLAGS: FieldDesc = FieldDesc {
     addr: IDENTITY_ADDR + offset_of!(ConfigIdentity, capability_flags) as u16,
     size: 4,
-    struct_offset: IDENTITY_STRUCT + offset_of!(ConfigIdentity, capability_flags) as u16,
+    struct_offset: offset_of!(ConfigIdentity, capability_flags) as u16,
     access: Access::Ro,
     validators: &[],
 };
@@ -355,23 +356,23 @@ pub const FIELD_CAPABILITY_FLAGS: FieldDesc = FieldDesc {
 pub const FIELD_ID: FieldDesc = FieldDesc {
     addr: COMMS_ADDR + offset_of!(ConfigComms, id) as u16,
     size: 1,
-    struct_offset: COMMS_STRUCT + offset_of!(ConfigComms, id) as u16,
+    struct_offset: offset_of!(ConfigComms, id) as u16,
     access: Access::Rw,
-    validators: &[Validator::RangeU8 { lo: 0, hi: 252 }],
+    validators: &[FieldValidator::RangeU8 { lo: 0, hi: 252 }],
 };
 pub const FIELD_BAUD_RATE_IDX: FieldDesc = FieldDesc {
     addr: COMMS_ADDR + offset_of!(ConfigComms, baud_rate_idx) as u16,
     size: 1,
-    struct_offset: COMMS_STRUCT + offset_of!(ConfigComms, baud_rate_idx) as u16,
+    struct_offset: offset_of!(ConfigComms, baud_rate_idx) as u16,
     access: Access::Rw,
-    validators: &[Validator::EnumU8 {
+    validators: &[FieldValidator::EnumU8 {
         allowed: BaudRate::ALLOWED,
     }],
 };
 pub const FIELD_RETURN_DELAY_2US: FieldDesc = FieldDesc {
     addr: COMMS_ADDR + offset_of!(ConfigComms, return_delay_2us) as u16,
     size: 1,
-    struct_offset: COMMS_STRUCT + offset_of!(ConfigComms, return_delay_2us) as u16,
+    struct_offset: offset_of!(ConfigComms, return_delay_2us) as u16,
     access: Access::Rw,
     validators: &[],
 };
@@ -380,9 +381,9 @@ pub const FIELD_RETURN_DELAY_2US: FieldDesc = FieldDesc {
 pub const FIELD_POS_MIN_PHYS_URAD: FieldDesc = FieldDesc {
     addr: POS_MIN_PHYS_URAD_ADDR,
     size: 4,
-    struct_offset: POS_LIMITS_STRUCT + offset_of!(ConfigPosLimits, pos_min_phys_urad) as u16,
+    struct_offset: offset_of!(ConfigPosLimits, pos_min_phys_urad) as u16,
     access: Access::Rw,
-    validators: &[Validator::Cross(CrossField::CompareI32 {
+    validators: &[FieldValidator::Cross(CrossField::CompareI32 {
         op: CompareOp::Lt,
         other_addr: POS_MAX_PHYS_URAD_ADDR,
     })],
@@ -390,9 +391,9 @@ pub const FIELD_POS_MIN_PHYS_URAD: FieldDesc = FieldDesc {
 pub const FIELD_POS_MAX_PHYS_URAD: FieldDesc = FieldDesc {
     addr: POS_MAX_PHYS_URAD_ADDR,
     size: 4,
-    struct_offset: POS_LIMITS_STRUCT + offset_of!(ConfigPosLimits, pos_max_phys_urad) as u16,
+    struct_offset: offset_of!(ConfigPosLimits, pos_max_phys_urad) as u16,
     access: Access::Rw,
-    validators: &[Validator::Cross(CrossField::CompareI32 {
+    validators: &[FieldValidator::Cross(CrossField::CompareI32 {
         op: CompareOp::Gt,
         other_addr: POS_MIN_PHYS_URAD_ADDR,
     })],
@@ -400,14 +401,14 @@ pub const FIELD_POS_MAX_PHYS_URAD: FieldDesc = FieldDesc {
 pub const FIELD_POS_MIN_SOFT_URAD: FieldDesc = FieldDesc {
     addr: POS_MIN_SOFT_URAD_ADDR,
     size: 4,
-    struct_offset: POS_LIMITS_STRUCT + offset_of!(ConfigPosLimits, pos_min_soft_urad) as u16,
+    struct_offset: offset_of!(ConfigPosLimits, pos_min_soft_urad) as u16,
     access: Access::Rw,
     validators: &[
-        Validator::Cross(CrossField::WithinI32 {
+        FieldValidator::Cross(CrossField::WithinI32 {
             lo_addr: POS_MIN_PHYS_URAD_ADDR,
             hi_addr: POS_MAX_PHYS_URAD_ADDR,
         }),
-        Validator::Cross(CrossField::CompareI32 {
+        FieldValidator::Cross(CrossField::CompareI32 {
             op: CompareOp::Lt,
             other_addr: POS_MAX_SOFT_URAD_ADDR,
         }),
@@ -416,14 +417,14 @@ pub const FIELD_POS_MIN_SOFT_URAD: FieldDesc = FieldDesc {
 pub const FIELD_POS_MAX_SOFT_URAD: FieldDesc = FieldDesc {
     addr: POS_MAX_SOFT_URAD_ADDR,
     size: 4,
-    struct_offset: POS_LIMITS_STRUCT + offset_of!(ConfigPosLimits, pos_max_soft_urad) as u16,
+    struct_offset: offset_of!(ConfigPosLimits, pos_max_soft_urad) as u16,
     access: Access::Rw,
     validators: &[
-        Validator::Cross(CrossField::WithinI32 {
+        FieldValidator::Cross(CrossField::WithinI32 {
             lo_addr: POS_MIN_PHYS_URAD_ADDR,
             hi_addr: POS_MAX_PHYS_URAD_ADDR,
         }),
-        Validator::Cross(CrossField::CompareI32 {
+        FieldValidator::Cross(CrossField::CompareI32 {
             op: CompareOp::Gt,
             other_addr: POS_MIN_SOFT_URAD_ADDR,
         }),
@@ -434,37 +435,37 @@ pub const FIELD_POS_MAX_SOFT_URAD: FieldDesc = FieldDesc {
 pub const FIELD_STALL_RESPONSE: FieldDesc = FieldDesc {
     addr: STALL_ADDR + offset_of!(ConfigStall, stall_response) as u16,
     size: 1,
-    struct_offset: STALL_STRUCT + offset_of!(ConfigStall, stall_response) as u16,
+    struct_offset: offset_of!(ConfigStall, stall_response) as u16,
     access: Access::Rw,
-    validators: &[Validator::EnumU8 {
+    validators: &[FieldValidator::EnumU8 {
         allowed: StallResponse::ALLOWED,
     }],
 };
 pub const FIELD_STALL_EFFORT_THRESHOLD: FieldDesc = FieldDesc {
     addr: STALL_ADDR + offset_of!(ConfigStall, stall_effort_threshold) as u16,
     size: 2,
-    struct_offset: STALL_STRUCT + offset_of!(ConfigStall, stall_effort_threshold) as u16,
+    struct_offset: offset_of!(ConfigStall, stall_effort_threshold) as u16,
     access: Access::Rw,
     validators: &[],
 };
 pub const FIELD_STALL_MOTION_THRESHOLD_URAD: FieldDesc = FieldDesc {
     addr: STALL_ADDR + offset_of!(ConfigStall, stall_motion_threshold_urad) as u16,
     size: 4,
-    struct_offset: STALL_STRUCT + offset_of!(ConfigStall, stall_motion_threshold_urad) as u16,
+    struct_offset: offset_of!(ConfigStall, stall_motion_threshold_urad) as u16,
     access: Access::Rw,
     validators: &[],
 };
 pub const FIELD_STALL_TIME_THRESHOLD_MS: FieldDesc = FieldDesc {
     addr: STALL_ADDR + offset_of!(ConfigStall, stall_time_threshold_ms) as u16,
     size: 2,
-    struct_offset: STALL_STRUCT + offset_of!(ConfigStall, stall_time_threshold_ms) as u16,
+    struct_offset: offset_of!(ConfigStall, stall_time_threshold_ms) as u16,
     access: Access::Rw,
     validators: &[],
 };
 pub const FIELD_COMPLY_RELEASE_WINDOW_MS: FieldDesc = FieldDesc {
     addr: STALL_ADDR + offset_of!(ConfigStall, comply_release_window_ms) as u16,
     size: 2,
-    struct_offset: STALL_STRUCT + offset_of!(ConfigStall, comply_release_window_ms) as u16,
+    struct_offset: offset_of!(ConfigStall, comply_release_window_ms) as u16,
     access: Access::Rw,
     validators: &[],
 };
@@ -473,23 +474,23 @@ pub const FIELD_COMPLY_RELEASE_WINDOW_MS: FieldDesc = FieldDesc {
 pub const FIELD_MOTOR_THERMAL_K_Q88: FieldDesc = FieldDesc {
     addr: THERMAL_ADDR + offset_of!(ConfigThermal, motor_thermal_k_q88) as u16,
     size: 2,
-    struct_offset: THERMAL_STRUCT + offset_of!(ConfigThermal, motor_thermal_k_q88) as u16,
+    struct_offset: offset_of!(ConfigThermal, motor_thermal_k_q88) as u16,
     access: Access::Rw,
     validators: &[],
 };
 pub const FIELD_MOTOR_THERMAL_TAU_MS: FieldDesc = FieldDesc {
     addr: THERMAL_ADDR + offset_of!(ConfigThermal, motor_thermal_tau_ms) as u16,
     size: 2,
-    struct_offset: THERMAL_STRUCT + offset_of!(ConfigThermal, motor_thermal_tau_ms) as u16,
+    struct_offset: offset_of!(ConfigThermal, motor_thermal_tau_ms) as u16,
     access: Access::Rw,
     validators: &[],
 };
 pub const FIELD_WINDING_CUTOFF_CC: FieldDesc = FieldDesc {
     addr: WINDING_CUTOFF_CC_ADDR,
     size: 2,
-    struct_offset: THERMAL_STRUCT + offset_of!(ConfigThermal, winding_cutoff_cc) as u16,
+    struct_offset: offset_of!(ConfigThermal, winding_cutoff_cc) as u16,
     access: Access::Rw,
-    validators: &[Validator::Cross(CrossField::CompareI16 {
+    validators: &[FieldValidator::Cross(CrossField::CompareI16 {
         op: CompareOp::Gt,
         other_addr: WINDING_RECOVER_CC_ADDR,
     })],
@@ -497,9 +498,9 @@ pub const FIELD_WINDING_CUTOFF_CC: FieldDesc = FieldDesc {
 pub const FIELD_WINDING_RECOVER_CC: FieldDesc = FieldDesc {
     addr: WINDING_RECOVER_CC_ADDR,
     size: 2,
-    struct_offset: THERMAL_STRUCT + offset_of!(ConfigThermal, winding_recover_cc) as u16,
+    struct_offset: offset_of!(ConfigThermal, winding_recover_cc) as u16,
     access: Access::Rw,
-    validators: &[Validator::Cross(CrossField::CompareI16 {
+    validators: &[FieldValidator::Cross(CrossField::CompareI16 {
         op: CompareOp::Lt,
         other_addr: WINDING_CUTOFF_CC_ADDR,
     })],
@@ -507,7 +508,7 @@ pub const FIELD_WINDING_RECOVER_CC: FieldDesc = FieldDesc {
 pub const FIELD_V_UNDERVOLT_MV: FieldDesc = FieldDesc {
     addr: THERMAL_ADDR + offset_of!(ConfigThermal, v_undervolt_mv) as u16,
     size: 2,
-    struct_offset: THERMAL_STRUCT + offset_of!(ConfigThermal, v_undervolt_mv) as u16,
+    struct_offset: offset_of!(ConfigThermal, v_undervolt_mv) as u16,
     access: Access::Rw,
     validators: &[],
 };
@@ -516,65 +517,65 @@ pub const FIELD_V_UNDERVOLT_MV: FieldDesc = FieldDesc {
 pub const FIELD_PID_KP_Q88: FieldDesc = FieldDesc {
     addr: CTRL_POS_ADDR + offset_of!(ConfigControlPosition, pid_kp_q88) as u16,
     size: 2,
-    struct_offset: CTRL_POS_STRUCT + offset_of!(ConfigControlPosition, pid_kp_q88) as u16,
+    struct_offset: offset_of!(ConfigControlPosition, pid_kp_q88) as u16,
     access: Access::Rw,
     validators: &[],
 };
 pub const FIELD_PID_KI_Q88: FieldDesc = FieldDesc {
     addr: CTRL_POS_ADDR + offset_of!(ConfigControlPosition, pid_ki_q88) as u16,
     size: 2,
-    struct_offset: CTRL_POS_STRUCT + offset_of!(ConfigControlPosition, pid_ki_q88) as u16,
+    struct_offset: offset_of!(ConfigControlPosition, pid_ki_q88) as u16,
     access: Access::Rw,
     validators: &[],
 };
 pub const FIELD_PID_KD_Q88: FieldDesc = FieldDesc {
     addr: CTRL_POS_ADDR + offset_of!(ConfigControlPosition, pid_kd_q88) as u16,
     size: 2,
-    struct_offset: CTRL_POS_STRUCT + offset_of!(ConfigControlPosition, pid_kd_q88) as u16,
+    struct_offset: offset_of!(ConfigControlPosition, pid_kd_q88) as u16,
     access: Access::Rw,
     validators: &[],
 };
 pub const FIELD_PID_I_LIMIT: FieldDesc = FieldDesc {
     addr: CTRL_POS_ADDR + offset_of!(ConfigControlPosition, pid_i_limit) as u16,
     size: 4,
-    struct_offset: CTRL_POS_STRUCT + offset_of!(ConfigControlPosition, pid_i_limit) as u16,
+    struct_offset: offset_of!(ConfigControlPosition, pid_i_limit) as u16,
     access: Access::Rw,
     validators: &[],
 };
 pub const FIELD_POS_DEADBAND_URAD: FieldDesc = FieldDesc {
     addr: CTRL_POS_ADDR + offset_of!(ConfigControlPosition, pos_deadband_urad) as u16,
     size: 4,
-    struct_offset: CTRL_POS_STRUCT + offset_of!(ConfigControlPosition, pos_deadband_urad) as u16,
+    struct_offset: offset_of!(ConfigControlPosition, pos_deadband_urad) as u16,
     access: Access::Rw,
     validators: &[],
 };
 pub const FIELD_PWM_DEADBAND_PCT: FieldDesc = FieldDesc {
     addr: CTRL_POS_ADDR + offset_of!(ConfigControlPosition, pwm_deadband_pct) as u16,
     size: 1,
-    struct_offset: CTRL_POS_STRUCT + offset_of!(ConfigControlPosition, pwm_deadband_pct) as u16,
+    struct_offset: offset_of!(ConfigControlPosition, pwm_deadband_pct) as u16,
     access: Access::Rw,
-    validators: &[Validator::RangeU8 { lo: 0, hi: 50 }],
+    validators: &[FieldValidator::RangeU8 { lo: 0, hi: 50 }],
 };
 pub const FIELD_V_COMP_ENABLE: FieldDesc = FieldDesc {
     addr: CTRL_POS_ADDR + offset_of!(ConfigControlPosition, v_comp_enable) as u16,
     size: 1,
-    struct_offset: CTRL_POS_STRUCT + offset_of!(ConfigControlPosition, v_comp_enable) as u16,
+    struct_offset: offset_of!(ConfigControlPosition, v_comp_enable) as u16,
     access: Access::Rw,
-    validators: &[Validator::EnumU8 {
+    validators: &[FieldValidator::EnumU8 {
         allowed: BOOL_ALLOWED,
     }],
 };
 pub const FIELD_MAX_EFFORT: FieldDesc = FieldDesc {
     addr: MAX_EFFORT_ADDR,
     size: 2,
-    struct_offset: CTRL_POS_STRUCT + offset_of!(ConfigControlPosition, max_effort) as u16,
+    struct_offset: offset_of!(ConfigControlPosition, max_effort) as u16,
     access: Access::Rw,
     validators: &[],
 };
 pub const FIELD_V_NOMINAL_MV: FieldDesc = FieldDesc {
     addr: CTRL_POS_ADDR + offset_of!(ConfigControlPosition, v_nominal_mv) as u16,
     size: 2,
-    struct_offset: CTRL_POS_STRUCT + offset_of!(ConfigControlPosition, v_nominal_mv) as u16,
+    struct_offset: offset_of!(ConfigControlPosition, v_nominal_mv) as u16,
     access: Access::Rw,
     validators: &[],
 };
@@ -583,7 +584,7 @@ pub const FIELD_V_NOMINAL_MV: FieldDesc = FieldDesc {
 pub const FIELD_VDD_MV: FieldDesc = FieldDesc {
     addr: CALIBRATION_ADDR + offset_of!(ConfigCalibration, vdd_mv) as u16,
     size: 2,
-    struct_offset: CALIBRATION_STRUCT + offset_of!(ConfigCalibration, vdd_mv) as u16,
+    struct_offset: offset_of!(ConfigCalibration, vdd_mv) as u16,
     access: Access::Rw,
     validators: &[],
 };
@@ -592,34 +593,78 @@ pub const FIELD_VDD_MV: FieldDesc = FieldDesc {
 pub const FIELD_HEADER: FieldDesc = FieldDesc {
     addr: HEADER_ADDR,
     size: size_of::<PageHeader>() as u16,
-    struct_offset: HEADER_STRUCT,
+    struct_offset: 0,
     access: Access::Ro,
     validators: &[],
 };
 
-pub static CONFIG_REGION: RegionDef = RegionDef {
+pub const BLOCK_IDENTITY: BlockDesc = BlockDesc {
+    addr: IDENTITY_ADDR,
+    size: size_of::<ConfigIdentity>() as u16,
+    struct_offset: IDENTITY_STRUCT,
     fields: &[
         FIELD_MODEL_NUMBER,
         FIELD_FIRMWARE_VERSION,
         FIELD_HARDWARE_REVISION,
         FIELD_CAPABILITY_FLAGS,
-        FIELD_ID,
-        FIELD_BAUD_RATE_IDX,
-        FIELD_RETURN_DELAY_2US,
+    ],
+    validators: &[],
+};
+
+pub const BLOCK_COMMS: BlockDesc = BlockDesc {
+    addr: COMMS_ADDR,
+    size: size_of::<ConfigComms>() as u16,
+    struct_offset: COMMS_STRUCT,
+    fields: &[FIELD_ID, FIELD_BAUD_RATE_IDX, FIELD_RETURN_DELAY_2US],
+    validators: &[],
+};
+
+pub const BLOCK_POS_LIMITS: BlockDesc = BlockDesc {
+    addr: POS_LIMITS_ADDR,
+    size: size_of::<ConfigPosLimits>() as u16,
+    struct_offset: POS_LIMITS_STRUCT,
+    fields: &[
         FIELD_POS_MIN_PHYS_URAD,
         FIELD_POS_MAX_PHYS_URAD,
         FIELD_POS_MIN_SOFT_URAD,
         FIELD_POS_MAX_SOFT_URAD,
+    ],
+    validators: &[],
+};
+
+pub const BLOCK_STALL: BlockDesc = BlockDesc {
+    addr: STALL_ADDR,
+    size: size_of::<ConfigStall>() as u16,
+    struct_offset: STALL_STRUCT,
+    fields: &[
         FIELD_STALL_RESPONSE,
         FIELD_STALL_EFFORT_THRESHOLD,
         FIELD_STALL_MOTION_THRESHOLD_URAD,
         FIELD_STALL_TIME_THRESHOLD_MS,
         FIELD_COMPLY_RELEASE_WINDOW_MS,
+    ],
+    validators: &[],
+};
+
+pub const BLOCK_THERMAL: BlockDesc = BlockDesc {
+    addr: THERMAL_ADDR,
+    size: size_of::<ConfigThermal>() as u16,
+    struct_offset: THERMAL_STRUCT,
+    fields: &[
         FIELD_MOTOR_THERMAL_K_Q88,
         FIELD_MOTOR_THERMAL_TAU_MS,
         FIELD_WINDING_CUTOFF_CC,
         FIELD_WINDING_RECOVER_CC,
         FIELD_V_UNDERVOLT_MV,
+    ],
+    validators: &[],
+};
+
+pub const BLOCK_CTRL_POS: BlockDesc = BlockDesc {
+    addr: CTRL_POS_ADDR,
+    size: size_of::<ConfigControlPosition>() as u16,
+    struct_offset: CTRL_POS_STRUCT,
+    fields: &[
         FIELD_PID_KP_Q88,
         FIELD_PID_KI_Q88,
         FIELD_PID_KD_Q88,
@@ -629,10 +674,40 @@ pub static CONFIG_REGION: RegionDef = RegionDef {
         FIELD_V_COMP_ENABLE,
         FIELD_MAX_EFFORT,
         FIELD_V_NOMINAL_MV,
-        FIELD_VDD_MV,
-        FIELD_HEADER,
     ],
-    region_validators: &[locks::torque_locked],
+    validators: &[],
+};
+
+pub const BLOCK_CALIBRATION: BlockDesc = BlockDesc {
+    addr: CALIBRATION_ADDR,
+    size: size_of::<ConfigCalibration>() as u16,
+    struct_offset: CALIBRATION_STRUCT,
+    fields: &[FIELD_VDD_MV],
+    validators: &[],
+};
+
+pub const BLOCK_HEADER: BlockDesc = BlockDesc {
+    addr: HEADER_ADDR,
+    size: size_of::<PageHeader>() as u16,
+    struct_offset: HEADER_STRUCT,
+    fields: &[FIELD_HEADER],
+    validators: &[],
+};
+
+pub const CONFIG_REGION: RegionDesc = RegionDesc {
+    addr: CONFIG_BASE_ADDR,
+    size: CONFIG_REGION_SIZE as u16,
+    blocks: &[
+        BLOCK_IDENTITY,
+        BLOCK_COMMS,
+        BLOCK_POS_LIMITS,
+        BLOCK_STALL,
+        BLOCK_THERMAL,
+        BLOCK_CTRL_POS,
+        BLOCK_CALIBRATION,
+        BLOCK_HEADER,
+    ],
+    validators: &[locks::torque_locked],
 };
 
 impl ConfigRegs {
