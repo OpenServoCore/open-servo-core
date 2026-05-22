@@ -287,24 +287,28 @@ pub const CONFIG_FIELDS: &[FieldDesc] = &[
         size: 2,
         struct_offset: IDENTITY_STRUCT + offset_of!(ConfigIdentity, model_number) as u16,
         access: Access::Ro,
+        validators: &[],
     },
     FieldDesc {
         addr_offset: IDENTITY_ADDR + offset_of!(ConfigIdentity, firmware_version) as u16,
         size: 2,
         struct_offset: IDENTITY_STRUCT + offset_of!(ConfigIdentity, firmware_version) as u16,
         access: Access::Ro,
+        validators: &[],
     },
     FieldDesc {
         addr_offset: IDENTITY_ADDR + offset_of!(ConfigIdentity, hardware_revision) as u16,
         size: 4,
         struct_offset: IDENTITY_STRUCT + offset_of!(ConfigIdentity, hardware_revision) as u16,
         access: Access::Ro,
+        validators: &[],
     },
     FieldDesc {
         addr_offset: IDENTITY_ADDR + offset_of!(ConfigIdentity, capability_flags) as u16,
         size: 4,
         struct_offset: IDENTITY_STRUCT + offset_of!(ConfigIdentity, capability_flags) as u16,
         access: Access::Ro,
+        validators: &[],
     },
     // ConfigComms
     FieldDesc {
@@ -312,18 +316,21 @@ pub const CONFIG_FIELDS: &[FieldDesc] = &[
         size: 1,
         struct_offset: COMMS_STRUCT + offset_of!(ConfigComms, id) as u16,
         access: Access::Rw,
+        validators: &[],
     },
     FieldDesc {
         addr_offset: COMMS_ADDR + offset_of!(ConfigComms, baud_rate_idx) as u16,
         size: 1,
         struct_offset: COMMS_STRUCT + offset_of!(ConfigComms, baud_rate_idx) as u16,
         access: Access::Rw,
+        validators: &[],
     },
     FieldDesc {
         addr_offset: COMMS_ADDR + offset_of!(ConfigComms, return_delay_us) as u16,
         size: 2,
         struct_offset: COMMS_STRUCT + offset_of!(ConfigComms, return_delay_us) as u16,
         access: Access::Rw,
+        validators: &[],
     },
     // ConfigPosLimits
     FieldDesc {
@@ -331,24 +338,28 @@ pub const CONFIG_FIELDS: &[FieldDesc] = &[
         size: 4,
         struct_offset: POS_LIMITS_STRUCT + offset_of!(ConfigPosLimits, pos_min_phys_urad) as u16,
         access: Access::Rw,
+        validators: &[],
     },
     FieldDesc {
         addr_offset: POS_LIMITS_ADDR + offset_of!(ConfigPosLimits, pos_max_phys_urad) as u16,
         size: 4,
         struct_offset: POS_LIMITS_STRUCT + offset_of!(ConfigPosLimits, pos_max_phys_urad) as u16,
         access: Access::Rw,
+        validators: &[],
     },
     FieldDesc {
         addr_offset: POS_LIMITS_ADDR + offset_of!(ConfigPosLimits, pos_min_soft_urad) as u16,
         size: 4,
         struct_offset: POS_LIMITS_STRUCT + offset_of!(ConfigPosLimits, pos_min_soft_urad) as u16,
         access: Access::Rw,
+        validators: &[],
     },
     FieldDesc {
         addr_offset: POS_LIMITS_ADDR + offset_of!(ConfigPosLimits, pos_max_soft_urad) as u16,
         size: 4,
         struct_offset: POS_LIMITS_STRUCT + offset_of!(ConfigPosLimits, pos_max_soft_urad) as u16,
         access: Access::Rw,
+        validators: &[],
     },
     // ConfigStall (skip _rsvd_align at +1)
     FieldDesc {
@@ -356,30 +367,35 @@ pub const CONFIG_FIELDS: &[FieldDesc] = &[
         size: 1,
         struct_offset: STALL_STRUCT + offset_of!(ConfigStall, stall_response) as u16,
         access: Access::Rw,
+        validators: &[],
     },
     FieldDesc {
         addr_offset: STALL_ADDR + offset_of!(ConfigStall, stall_effort_threshold) as u16,
         size: 2,
         struct_offset: STALL_STRUCT + offset_of!(ConfigStall, stall_effort_threshold) as u16,
         access: Access::Rw,
+        validators: &[],
     },
     FieldDesc {
         addr_offset: STALL_ADDR + offset_of!(ConfigStall, stall_motion_threshold_urad) as u16,
         size: 4,
         struct_offset: STALL_STRUCT + offset_of!(ConfigStall, stall_motion_threshold_urad) as u16,
         access: Access::Rw,
+        validators: &[],
     },
     FieldDesc {
         addr_offset: STALL_ADDR + offset_of!(ConfigStall, stall_time_threshold_ms) as u16,
         size: 2,
         struct_offset: STALL_STRUCT + offset_of!(ConfigStall, stall_time_threshold_ms) as u16,
         access: Access::Rw,
+        validators: &[],
     },
     FieldDesc {
         addr_offset: STALL_ADDR + offset_of!(ConfigStall, comply_release_window_ms) as u16,
         size: 2,
         struct_offset: STALL_STRUCT + offset_of!(ConfigStall, comply_release_window_ms) as u16,
         access: Access::Rw,
+        validators: &[],
     },
     // ConfigThermal
     FieldDesc {
@@ -387,30 +403,35 @@ pub const CONFIG_FIELDS: &[FieldDesc] = &[
         size: 2,
         struct_offset: THERMAL_STRUCT + offset_of!(ConfigThermal, motor_thermal_k_q88) as u16,
         access: Access::Rw,
+        validators: &[],
     },
     FieldDesc {
         addr_offset: THERMAL_ADDR + offset_of!(ConfigThermal, motor_thermal_tau_ms) as u16,
         size: 2,
         struct_offset: THERMAL_STRUCT + offset_of!(ConfigThermal, motor_thermal_tau_ms) as u16,
         access: Access::Rw,
+        validators: &[],
     },
     FieldDesc {
         addr_offset: THERMAL_ADDR + offset_of!(ConfigThermal, winding_cutoff_cc) as u16,
         size: 2,
         struct_offset: THERMAL_STRUCT + offset_of!(ConfigThermal, winding_cutoff_cc) as u16,
         access: Access::Rw,
+        validators: &[],
     },
     FieldDesc {
         addr_offset: THERMAL_ADDR + offset_of!(ConfigThermal, winding_recover_cc) as u16,
         size: 2,
         struct_offset: THERMAL_STRUCT + offset_of!(ConfigThermal, winding_recover_cc) as u16,
         access: Access::Rw,
+        validators: &[],
     },
     FieldDesc {
         addr_offset: THERMAL_ADDR + offset_of!(ConfigThermal, v_undervolt_mv) as u16,
         size: 2,
         struct_offset: THERMAL_STRUCT + offset_of!(ConfigThermal, v_undervolt_mv) as u16,
         access: Access::Rw,
+        validators: &[],
     },
     // ConfigControlPosition (skip _rsvd_align at +6..8)
     FieldDesc {
@@ -418,24 +439,28 @@ pub const CONFIG_FIELDS: &[FieldDesc] = &[
         size: 2,
         struct_offset: CTRL_POS_STRUCT + offset_of!(ConfigControlPosition, pid_kp_q88) as u16,
         access: Access::Rw,
+        validators: &[],
     },
     FieldDesc {
         addr_offset: CTRL_POS_ADDR + offset_of!(ConfigControlPosition, pid_ki_q88) as u16,
         size: 2,
         struct_offset: CTRL_POS_STRUCT + offset_of!(ConfigControlPosition, pid_ki_q88) as u16,
         access: Access::Rw,
+        validators: &[],
     },
     FieldDesc {
         addr_offset: CTRL_POS_ADDR + offset_of!(ConfigControlPosition, pid_kd_q88) as u16,
         size: 2,
         struct_offset: CTRL_POS_STRUCT + offset_of!(ConfigControlPosition, pid_kd_q88) as u16,
         access: Access::Rw,
+        validators: &[],
     },
     FieldDesc {
         addr_offset: CTRL_POS_ADDR + offset_of!(ConfigControlPosition, pid_i_limit) as u16,
         size: 4,
         struct_offset: CTRL_POS_STRUCT + offset_of!(ConfigControlPosition, pid_i_limit) as u16,
         access: Access::Rw,
+        validators: &[],
     },
     FieldDesc {
         addr_offset: CTRL_POS_ADDR + offset_of!(ConfigControlPosition, pos_deadband_urad) as u16,
@@ -443,30 +468,35 @@ pub const CONFIG_FIELDS: &[FieldDesc] = &[
         struct_offset: CTRL_POS_STRUCT
             + offset_of!(ConfigControlPosition, pos_deadband_urad) as u16,
         access: Access::Rw,
+        validators: &[],
     },
     FieldDesc {
         addr_offset: CTRL_POS_ADDR + offset_of!(ConfigControlPosition, pwm_deadband_pct) as u16,
         size: 1,
         struct_offset: CTRL_POS_STRUCT + offset_of!(ConfigControlPosition, pwm_deadband_pct) as u16,
         access: Access::Rw,
+        validators: &[],
     },
     FieldDesc {
         addr_offset: CTRL_POS_ADDR + offset_of!(ConfigControlPosition, v_comp_enable) as u16,
         size: 1,
         struct_offset: CTRL_POS_STRUCT + offset_of!(ConfigControlPosition, v_comp_enable) as u16,
         access: Access::Rw,
+        validators: &[],
     },
     FieldDesc {
         addr_offset: CTRL_POS_ADDR + offset_of!(ConfigControlPosition, max_effort) as u16,
         size: 2,
         struct_offset: CTRL_POS_STRUCT + offset_of!(ConfigControlPosition, max_effort) as u16,
         access: Access::Rw,
+        validators: &[],
     },
     FieldDesc {
         addr_offset: CTRL_POS_ADDR + offset_of!(ConfigControlPosition, v_nominal_mv) as u16,
         size: 2,
         struct_offset: CTRL_POS_STRUCT + offset_of!(ConfigControlPosition, v_nominal_mv) as u16,
         access: Access::Rw,
+        validators: &[],
     },
     // ConfigCalibration (skip _rsvd_align at +2..4)
     FieldDesc {
@@ -474,6 +504,7 @@ pub const CONFIG_FIELDS: &[FieldDesc] = &[
         size: 2,
         struct_offset: CALIBRATION_STRUCT + offset_of!(ConfigCalibration, vdd_mv) as u16,
         access: Access::Rw,
+        validators: &[],
     },
     // PageHeader (RO, host-opaque)
     FieldDesc {
@@ -481,6 +512,7 @@ pub const CONFIG_FIELDS: &[FieldDesc] = &[
         size: size_of::<PageHeader>() as u16,
         struct_offset: HEADER_STRUCT,
         access: Access::Ro,
+        validators: &[],
     },
 ];
 

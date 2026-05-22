@@ -145,6 +145,9 @@ impl<D: DxlIo> Dispatcher<'_, D> {
             Err(RegmapError::OutOfRange) => self.send_status(id, StatusError::DataRange, &[]),
             Err(RegmapError::AccessError) => self.send_status(id, StatusError::Access, &[]),
             Err(RegmapError::StagingFull) => self.send_status(id, StatusError::DataRange, &[]),
+            Err(RegmapError::ValidationError(_)) => {
+                self.send_status(id, StatusError::DataRange, &[])
+            }
         }
     }
 
@@ -176,6 +179,9 @@ impl<D: DxlIo> Dispatcher<'_, D> {
             Err(RegmapError::OutOfRange) => self.send_status(id, StatusError::DataRange, &[]),
             Err(RegmapError::AccessError) => self.send_status(id, StatusError::Access, &[]),
             Err(RegmapError::StagingFull) => self.send_status(id, StatusError::DataRange, &[]),
+            Err(RegmapError::ValidationError(_)) => {
+                self.send_status(id, StatusError::DataRange, &[])
+            }
         }
     }
 

@@ -67,30 +67,35 @@ pub const CONTROL_FIELDS: &[FieldDesc] = &[
         size: 1,
         struct_offset: LIFECYCLE_STRUCT + offset_of!(ControlLifecycle, torque_enable) as u16,
         access: Access::Rw,
+        validators: &[],
     },
     FieldDesc {
         addr_offset: LIFECYCLE_ADDR + offset_of!(ControlLifecycle, mode) as u16,
         size: 1,
         struct_offset: LIFECYCLE_STRUCT + offset_of!(ControlLifecycle, mode) as u16,
         access: Access::Rw,
+        validators: &[],
     },
     FieldDesc {
         addr_offset: LIFECYCLE_ADDR + offset_of!(ControlLifecycle, goal_position) as u16,
         size: 4,
         struct_offset: LIFECYCLE_STRUCT + offset_of!(ControlLifecycle, goal_position) as u16,
         access: Access::Rw,
+        validators: &[],
     },
     FieldDesc {
         addr_offset: LIFECYCLE_ADDR + offset_of!(ControlLifecycle, goal_velocity) as u16,
         size: 4,
         struct_offset: LIFECYCLE_STRUCT + offset_of!(ControlLifecycle, goal_velocity) as u16,
         access: Access::Rw,
+        validators: &[],
     },
     FieldDesc {
         addr_offset: LIFECYCLE_ADDR + offset_of!(ControlLifecycle, goal_effort) as u16,
         size: 2,
         struct_offset: LIFECYCLE_STRUCT + offset_of!(ControlLifecycle, goal_effort) as u16,
         access: Access::Rw,
+        validators: &[],
     },
     // ControlStreaming
     FieldDesc {
@@ -98,30 +103,35 @@ pub const CONTROL_FIELDS: &[FieldDesc] = &[
         size: 1,
         struct_offset: STREAMING_STRUCT + offset_of!(ControlStreaming, stream_enable) as u16,
         access: Access::Rw,
+        validators: &[],
     },
     FieldDesc {
         addr_offset: STREAMING_ADDR + offset_of!(ControlStreaming, stream_decimation) as u16,
         size: 1,
         struct_offset: STREAMING_STRUCT + offset_of!(ControlStreaming, stream_decimation) as u16,
         access: Access::Rw,
+        validators: &[],
     },
     FieldDesc {
         addr_offset: STREAMING_ADDR + offset_of!(ControlStreaming, stream_duration_ms) as u16,
         size: 2,
         struct_offset: STREAMING_STRUCT + offset_of!(ControlStreaming, stream_duration_ms) as u16,
         access: Access::Rw,
+        validators: &[],
     },
     FieldDesc {
         addr_offset: STREAMING_ADDR + offset_of!(ControlStreaming, stream_field_mask) as u16,
         size: 4,
         struct_offset: STREAMING_STRUCT + offset_of!(ControlStreaming, stream_field_mask) as u16,
         access: Access::Rw,
+        validators: &[],
     },
     FieldDesc {
         addr_offset: STREAMING_ADDR + offset_of!(ControlStreaming, stream_dropped) as u16,
         size: 4,
         struct_offset: STREAMING_STRUCT + offset_of!(ControlStreaming, stream_dropped) as u16,
         access: Access::Ro,
+        validators: &[],
     },
 ];
 

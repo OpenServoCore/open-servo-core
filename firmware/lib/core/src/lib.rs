@@ -23,7 +23,9 @@ pub use regions::{
     ControlLifecycle, ControlRegs, ControlStreaming, ControlTable, PotLutBlock, TelemetryConverted,
     TelemetryFault, TelemetryIntermediaries, TelemetryRaw, TelemetryRegs,
 };
-pub use regmap::{Access, FieldDesc, RegmapError, StagedWrites};
+pub use regmap::{
+    Access, FieldDesc, RegmapError, StagedView, StagedWrites, ValidationKind, Validator,
+};
 pub use ring_reader::{RingReader, RxSnapshot};
 pub use sample_frame::{FrameInputs, RawSamples, SampleFrame};
 pub use services::dxl::{Dxl, DxlIo};

@@ -14,6 +14,7 @@
 //! decomposition is shaped to match a future `#[derive(RegmapBlock)]` proc-macro 1:1.
 
 use crate::ControlTable;
+use crate::log;
 use crate::regions::calib::CALIB_FIELDS;
 use crate::regions::config::CONFIG_FIELDS;
 use crate::regions::control::CONTROL_FIELDS;
@@ -31,6 +32,30 @@ pub enum RegmapError {
     AccessError,
     /// Staging buffer has no room for this chunk.
     StagingFull,
+    /// A field validator rejected the staged value. All kinds map to wire `StatusError::DataRange`.
+    ValidationError(ValidationKind),
+}
+
+/// Which validator class rejected. Future kinds (e.g. `Locked` for torque-gated EEPROM)
+/// extend this enum; the dxl boundary keeps a single arm until they need a distinct wire code.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub enum ValidationKind {
+    /// Value not in the validator's allowed enum set.
+    Enum,
+    /// Value outside the validator's inclusive range.
+    Range,
+    /// Caller-supplied `Validator::Custom` returned an error.
+    Custom,
+}
+
+impl ValidationKind {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            ValidationKind::Enum => "enum",
+            ValidationKind::Range => "range",
+            ValidationKind::Custom => "custom",
+        }
+    }
 }
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
@@ -125,6 +150,97 @@ pub struct FieldDesc {
     /// Byte offset in the region struct.
     pub struct_offset: u16,
     pub access: Access,
+    pub validators: &'static [Validator],
+}
+
+/// Field-level value validator. Runs against a [`StagedView`] so it sees the
+/// pending write, not the live byte. Width is implicit per variant; attaching a
+/// width-mismatched variant to a field reads only the variant's bytes.
+#[derive(Copy, Clone, Debug)]
+pub enum Validator {
+    EnumU8 { allowed: &'static [u8] },
+    RangeU8 { lo: u8, hi: u8 },
+    RangeU16 { lo: u16, hi: u16 },
+    RangeI32 { lo: i32, hi: i32 },
+    Custom(fn(&StagedView, u16, u16) -> Result<(), RegmapError>),
+}
+
+impl Validator {
+    fn run(&self, view: &StagedView, addr: u16, size: u16) -> Result<(), RegmapError> {
+        match self {
+            Validator::EnumU8 { allowed } => {
+                let mut b = [0u8; 1];
+                view.read_bytes(addr, &mut b)?;
+                if allowed.contains(&b[0]) {
+                    Ok(())
+                } else {
+                    Err(RegmapError::ValidationError(ValidationKind::Enum))
+                }
+            }
+            Validator::RangeU8 { lo, hi } => {
+                let mut b = [0u8; 1];
+                view.read_bytes(addr, &mut b)?;
+                if (*lo..=*hi).contains(&b[0]) {
+                    Ok(())
+                } else {
+                    Err(RegmapError::ValidationError(ValidationKind::Range))
+                }
+            }
+            Validator::RangeU16 { lo, hi } => {
+                let mut b = [0u8; 2];
+                view.read_bytes(addr, &mut b)?;
+                let v = u16::from_le_bytes(b);
+                if (*lo..=*hi).contains(&v) {
+                    Ok(())
+                } else {
+                    Err(RegmapError::ValidationError(ValidationKind::Range))
+                }
+            }
+            Validator::RangeI32 { lo, hi } => {
+                let mut b = [0u8; 4];
+                view.read_bytes(addr, &mut b)?;
+                let v = i32::from_le_bytes(b);
+                if (*lo..=*hi).contains(&v) {
+                    Ok(())
+                } else {
+                    Err(RegmapError::ValidationError(ValidationKind::Range))
+                }
+            }
+            Validator::Custom(f) => f(view, addr, size),
+        }
+    }
+}
+
+/// Overlays staged-but-uncommitted bytes onto live-table reads so validators
+/// see the value about to be committed.
+pub struct StagedView<'a> {
+    table: &'a ControlTable,
+    staged: &'a StagedWrites,
+    start_entry: usize,
+}
+
+impl<'a> StagedView<'a> {
+    pub fn read_bytes(&self, addr: u16, dst: &mut [u8]) -> Result<(), RegmapError> {
+        self.table.read_bytes(addr, dst)?;
+        if dst.is_empty() {
+            return Ok(());
+        }
+        let req_lo = addr as usize;
+        let req_hi = req_lo + dst.len();
+        for (s_addr, s_data) in self.staged.iter_from(self.start_entry) {
+            let s_lo = s_addr as usize;
+            let s_hi = s_lo + s_data.len();
+            let lo = req_lo.max(s_lo);
+            let hi = req_hi.min(s_hi);
+            if lo < hi {
+                let dst_off = lo - req_lo;
+                let src_off = lo - s_lo;
+                dst[dst_off..dst_off + (hi - lo)]
+                    .copy_from_slice(&s_data[src_off..src_off + (hi - lo)]);
+            }
+        }
+        Ok(())
+    }
 }
 
 /// (struct base ptr, region base addr, field table) for the region containing
@@ -167,9 +283,19 @@ impl ControlTable {
         let saved_data = staged.data.len();
         let saved_entries = staged.entries.len();
 
-        let result = stage_write(r.base_addr, addr - r.base_addr, src, r.fields, staged);
+        let result =
+            stage_write(r.base_addr, addr - r.base_addr, src, r.fields, staged).and_then(|()| {
+                run_field_validators(
+                    self,
+                    staged,
+                    saved_entries,
+                    r.base_addr,
+                    addr - r.base_addr,
+                    src.len(),
+                    r.fields,
+                )
+            });
         if result.is_ok() {
-            // Step 4: field/region validators run here.
             unsafe { self.commit_staged_range(staged, saved_entries) };
         }
         staged.rewind(saved_data, saved_entries);
@@ -283,6 +409,52 @@ unsafe fn walk_read(
             );
         },
     )
+}
+
+fn run_field_validators(
+    table: &ControlTable,
+    staged: &StagedWrites,
+    start_entry: usize,
+    region_base_addr: u16,
+    offset_in_region: u16,
+    len: usize,
+    fields: &[FieldDesc],
+) -> Result<(), RegmapError> {
+    let view = StagedView {
+        table,
+        staged,
+        start_entry,
+    };
+    let req_lo = offset_in_region as usize;
+    let req_hi = req_lo + len;
+    for desc in fields {
+        let blk_lo = desc.addr_offset as usize;
+        let blk_hi = blk_lo + desc.size as usize;
+        if blk_hi <= req_lo {
+            continue;
+        }
+        if blk_lo >= req_hi {
+            break;
+        }
+        if desc.validators.is_empty() {
+            continue;
+        }
+        let abs_addr = region_base_addr.wrapping_add(desc.addr_offset);
+        for v in desc.validators {
+            if let Err(e) = v.run(&view, abs_addr, desc.size) {
+                if let RegmapError::ValidationError(kind) = e {
+                    log::warn!(
+                        "regmap: validator rejected addr={} size={} kind={}",
+                        abs_addr,
+                        desc.size,
+                        kind.as_str(),
+                    );
+                }
+                return Err(e);
+            }
+        }
+    }
+    Ok(())
 }
 
 /// Validate that `src` lies entirely in RW fields with no gaps; stage as one entry.
@@ -634,5 +806,184 @@ mod tests {
         assert_eq!(comms.id, 0x09);
         assert_eq!(comms.baud_rate_idx, 0x05);
         assert_eq!(comms.return_delay_us, 0x0096);
+    }
+
+    #[test]
+    fn staged_view_overlays_pending_bytes_on_live_table() {
+        let t = fresh();
+        let comms_addr = CONFIG_BASE_ADDR + 32;
+        write(&t, comms_addr, &[0x07, 0x03, 0x96, 0x00]).unwrap();
+        let mut staged = StagedWrites::default();
+        staged.push_chunk(comms_addr + 1, &[0xAA, 0xBB]).unwrap();
+        let view = StagedView {
+            table: &t,
+            staged: &staged,
+            start_entry: 0,
+        };
+        let mut buf = [0u8; 4];
+        view.read_bytes(comms_addr, &mut buf).unwrap();
+        assert_eq!(buf, [0x07, 0xAA, 0xBB, 0x00]);
+    }
+
+    #[test]
+    fn staged_view_ignores_entries_before_start_entry() {
+        let t = fresh();
+        let comms_addr = CONFIG_BASE_ADDR + 32;
+        write(&t, comms_addr, &[0x07, 0x03, 0x96, 0x00]).unwrap();
+        let mut staged = StagedWrites::default();
+        staged.push_chunk(comms_addr, &[0xFF]).unwrap();
+        let view = StagedView {
+            table: &t,
+            staged: &staged,
+            start_entry: 1,
+        };
+        let mut buf = [0u8; 1];
+        view.read_bytes(comms_addr, &mut buf).unwrap();
+        assert_eq!(buf, [0x07]);
+    }
+
+    #[test]
+    fn enum_u8_validator_accepts_listed_byte() {
+        let t = fresh();
+        let mut staged = StagedWrites::default();
+        staged.push_chunk(CONTROL_BASE_ADDR, &[1]).unwrap();
+        let view = StagedView {
+            table: &t,
+            staged: &staged,
+            start_entry: 0,
+        };
+        let v = Validator::EnumU8 { allowed: &[0, 1] };
+        assert_eq!(v.run(&view, CONTROL_BASE_ADDR, 1), Ok(()));
+    }
+
+    #[test]
+    fn enum_u8_validator_rejects_unlisted_byte() {
+        let t = fresh();
+        let mut staged = StagedWrites::default();
+        staged.push_chunk(CONTROL_BASE_ADDR, &[2]).unwrap();
+        let view = StagedView {
+            table: &t,
+            staged: &staged,
+            start_entry: 0,
+        };
+        let v = Validator::EnumU8 { allowed: &[0, 1] };
+        assert_eq!(
+            v.run(&view, CONTROL_BASE_ADDR, 1),
+            Err(RegmapError::ValidationError(ValidationKind::Enum)),
+        );
+    }
+
+    #[test]
+    fn range_u8_validator_accepts_and_rejects_at_bounds() {
+        let t = fresh();
+        let mut staged = StagedWrites::default();
+        staged.push_chunk(CONTROL_BASE_ADDR, &[5]).unwrap();
+        let view = StagedView {
+            table: &t,
+            staged: &staged,
+            start_entry: 0,
+        };
+        let v = Validator::RangeU8 { lo: 0, hi: 10 };
+        assert_eq!(v.run(&view, CONTROL_BASE_ADDR, 1), Ok(()));
+        let mut staged2 = StagedWrites::default();
+        staged2.push_chunk(CONTROL_BASE_ADDR, &[11]).unwrap();
+        let view2 = StagedView {
+            table: &t,
+            staged: &staged2,
+            start_entry: 0,
+        };
+        assert_eq!(
+            v.run(&view2, CONTROL_BASE_ADDR, 1),
+            Err(RegmapError::ValidationError(ValidationKind::Range)),
+        );
+    }
+
+    #[test]
+    fn range_u16_validator_reads_le_bytes() {
+        let t = fresh();
+        let mut staged = StagedWrites::default();
+        staged
+            .push_chunk(CONTROL_BASE_ADDR, &500u16.to_le_bytes())
+            .unwrap();
+        let view = StagedView {
+            table: &t,
+            staged: &staged,
+            start_entry: 0,
+        };
+        let v = Validator::RangeU16 { lo: 100, hi: 1000 };
+        assert_eq!(v.run(&view, CONTROL_BASE_ADDR, 2), Ok(()));
+        let mut staged2 = StagedWrites::default();
+        staged2
+            .push_chunk(CONTROL_BASE_ADDR, &50u16.to_le_bytes())
+            .unwrap();
+        let view2 = StagedView {
+            table: &t,
+            staged: &staged2,
+            start_entry: 0,
+        };
+        assert_eq!(
+            v.run(&view2, CONTROL_BASE_ADDR, 2),
+            Err(RegmapError::ValidationError(ValidationKind::Range)),
+        );
+    }
+
+    #[test]
+    fn range_i32_validator_handles_negative_bounds() {
+        // ControlLifecycle::goal_position lives at CONTROL_BASE_ADDR + 4 (after the
+        // _rsvd_align gap at offset 2..4), so a 4-byte read lands cleanly on one field.
+        let addr = CONTROL_BASE_ADDR + 4;
+        let t = fresh();
+        let mut staged = StagedWrites::default();
+        staged.push_chunk(addr, &(-100i32).to_le_bytes()).unwrap();
+        let view = StagedView {
+            table: &t,
+            staged: &staged,
+            start_entry: 0,
+        };
+        let v = Validator::RangeI32 {
+            lo: -1000,
+            hi: 1000,
+        };
+        assert_eq!(v.run(&view, addr, 4), Ok(()));
+        let mut staged2 = StagedWrites::default();
+        staged2.push_chunk(addr, &(-2000i32).to_le_bytes()).unwrap();
+        let view2 = StagedView {
+            table: &t,
+            staged: &staged2,
+            start_entry: 0,
+        };
+        assert_eq!(
+            v.run(&view2, addr, 4),
+            Err(RegmapError::ValidationError(ValidationKind::Range)),
+        );
+    }
+
+    #[test]
+    fn write_rejected_by_validator_leaves_live_table_unchanged() {
+        // Synthesise a one-field table with a validator that always rejects, and
+        // run it through the same stage→validate→commit path as `write_bytes`.
+        fn always_reject(_view: &StagedView, _addr: u16, _size: u16) -> Result<(), RegmapError> {
+            Err(RegmapError::ValidationError(ValidationKind::Custom))
+        }
+        const TEST_FIELDS: &[FieldDesc] = &[FieldDesc {
+            addr_offset: 0,
+            size: 1,
+            struct_offset: 0,
+            access: Access::Rw,
+            validators: &[Validator::Custom(always_reject)],
+        }];
+        let t = fresh();
+        let mut staged = StagedWrites::default();
+        let saved_entries = staged.entries.len();
+        let saved_data = staged.data.len();
+        let stage = stage_write(0, 0, &[0xAA], TEST_FIELDS, &mut staged);
+        assert!(stage.is_ok());
+        let result = run_field_validators(&t, &staged, saved_entries, 0, 0, 1, TEST_FIELDS);
+        assert_eq!(
+            result,
+            Err(RegmapError::ValidationError(ValidationKind::Custom)),
+        );
+        staged.rewind(saved_data, saved_entries);
+        assert!(staged.is_empty());
     }
 }

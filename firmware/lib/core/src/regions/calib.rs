@@ -43,18 +43,21 @@ pub const CALIB_FIELDS: &[FieldDesc] = &[
         size: 2,
         struct_offset: POT_LUT_STRUCT + offset_of!(PotLutBlock, raw_min) as u16,
         access: Access::Rw,
+        validators: &[],
     },
     FieldDesc {
         addr_offset: POT_LUT_ADDR + offset_of!(PotLutBlock, raw_max) as u16,
         size: 2,
         struct_offset: POT_LUT_STRUCT + offset_of!(PotLutBlock, raw_max) as u16,
         access: Access::Rw,
+        validators: &[],
     },
     FieldDesc {
         addr_offset: POT_LUT_ADDR + offset_of!(PotLutBlock, lut) as u16,
         size: size_of::<[i32; 55]>() as u16,
         struct_offset: POT_LUT_STRUCT + offset_of!(PotLutBlock, lut) as u16,
         access: Access::Rw,
+        validators: &[],
     },
     // BemfCalibBlock body (4 × u16)
     FieldDesc {
@@ -62,24 +65,28 @@ pub const CALIB_FIELDS: &[FieldDesc] = &[
         size: 2,
         struct_offset: BEMF_STRUCT + offset_of!(BemfCalibBlock, ke_uvs_per_rad) as u16,
         access: Access::Rw,
+        validators: &[],
     },
     FieldDesc {
         addr_offset: BEMF_ADDR + offset_of!(BemfCalibBlock, r_motor_mohm) as u16,
         size: 2,
         struct_offset: BEMF_STRUCT + offset_of!(BemfCalibBlock, r_motor_mohm) as u16,
         access: Access::Rw,
+        validators: &[],
     },
     FieldDesc {
         addr_offset: BEMF_ADDR + offset_of!(BemfCalibBlock, calib_v_bus_mv) as u16,
         size: 2,
         struct_offset: BEMF_STRUCT + offset_of!(BemfCalibBlock, calib_v_bus_mv) as u16,
         access: Access::Rw,
+        validators: &[],
     },
     FieldDesc {
         addr_offset: BEMF_ADDR + offset_of!(BemfCalibBlock, calib_i_ma) as u16,
         size: 2,
         struct_offset: BEMF_STRUCT + offset_of!(BemfCalibBlock, calib_i_ma) as u16,
         access: Access::Rw,
+        validators: &[],
     },
 ];
 
