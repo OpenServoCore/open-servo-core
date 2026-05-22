@@ -58,6 +58,11 @@ impl ValidationKind {
     }
 }
 
+/// Allowed bytes for `bool` fields in the control table. `bool`'s representation
+/// is `u8` with values `0` or `1`; any other byte yields UB on later access, so
+/// every typed-`bool` field MUST attach `EnumU8 { allowed: BOOL_ALLOWED }`.
+pub const BOOL_ALLOWED: &[u8] = &[0, 1];
+
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub enum Access {
     Ro,
@@ -526,18 +531,19 @@ mod tests {
 
     #[test]
     fn write_then_read_comms() {
+        use crate::regions::config::BaudRate;
         let t = fresh();
-        // block 1 (offset 32) = comms, 4 B.
+        // block 1 (offset 32) = comms, 3 B body (id u8 + baud_rate_idx u8 + return_delay_2us u8).
         let comms_addr = CONFIG_BASE_ADDR + 32;
-        let payload = [0x07u8, 0x03, 0x96, 0x00];
+        let payload = [0x07u8, 0x03, 75];
         write(&t, comms_addr, &payload).unwrap();
-        let mut buf = [0u8; 4];
+        let mut buf = [0u8; 3];
         t.read_bytes(comms_addr, &mut buf).unwrap();
         assert_eq!(buf, payload);
         let comms = unsafe { &*t.config.get() }.comms;
         assert_eq!(comms.id, 0x07);
-        assert_eq!(comms.baud_rate_idx, 0x03);
-        assert_eq!(comms.return_delay_us, 0x0096);
+        assert_eq!(comms.baud_rate_idx, BaudRate::B1000000);
+        assert_eq!(comms.return_delay_2us, 75);
     }
 
     #[test]
@@ -588,17 +594,18 @@ mod tests {
 
     #[test]
     fn write_control_lifecycle_full_block() {
+        use crate::regions::control::Mode;
         let t = fresh();
         // _rsvd_align gap at offset 2..4 forces a split write.
-        write(&t, CONTROL_BASE_ADDR, &[1, 3]).unwrap();
+        write(&t, CONTROL_BASE_ADDR, &[1, 1]).unwrap();
         let mut tail = [0u8; 10];
         tail[0..4].copy_from_slice(&10000i32.to_le_bytes());
         tail[4..8].copy_from_slice(&2000i32.to_le_bytes());
         tail[8..10].copy_from_slice(&320i16.to_le_bytes());
         write(&t, CONTROL_BASE_ADDR + 4, &tail).unwrap();
         let lc = unsafe { &*t.control.get() }.lifecycle;
-        assert_eq!(lc.torque_enable, 1);
-        assert_eq!(lc.mode, 3);
+        assert!(lc.torque_enable);
+        assert_eq!(lc.mode, Mode::PositionPid);
         assert_eq!(lc.goal_position, 10000);
         assert_eq!(lc.goal_velocity, 2000);
         assert_eq!(lc.goal_effort, 320);
@@ -692,7 +699,7 @@ mod tests {
         payload[4..8].copy_from_slice(&0x0000_00ABu32.to_le_bytes());
         write(&t, addr, &payload).unwrap();
         let s = unsafe { &*t.control.get() }.streaming;
-        assert_eq!(s.stream_enable, 1);
+        assert!(s.stream_enable);
         assert_eq!(s.stream_decimation, 4);
         assert_eq!(s.stream_duration_ms, 500);
         assert_eq!(s.stream_field_mask, 0xAB);
@@ -798,21 +805,22 @@ mod tests {
 
     #[test]
     fn partial_write_preserves_unwritten_bytes() {
+        use crate::regions::config::BaudRate;
         let t = fresh();
         let comms_addr = CONFIG_BASE_ADDR + 32;
-        write(&t, comms_addr, &[0x07, 0x03, 0x96, 0x00]).unwrap();
+        write(&t, comms_addr, &[0x07, 0x03, 75]).unwrap();
         write(&t, comms_addr, &[0x09, 0x05]).unwrap();
         let comms = unsafe { &*t.config.get() }.comms;
         assert_eq!(comms.id, 0x09);
-        assert_eq!(comms.baud_rate_idx, 0x05);
-        assert_eq!(comms.return_delay_us, 0x0096);
+        assert_eq!(comms.baud_rate_idx, BaudRate::B3000000);
+        assert_eq!(comms.return_delay_2us, 75);
     }
 
     #[test]
     fn staged_view_overlays_pending_bytes_on_live_table() {
         let t = fresh();
         let comms_addr = CONFIG_BASE_ADDR + 32;
-        write(&t, comms_addr, &[0x07, 0x03, 0x96, 0x00]).unwrap();
+        write(&t, comms_addr, &[0x07, 0x03, 75]).unwrap();
         let mut staged = StagedWrites::default();
         staged.push_chunk(comms_addr + 1, &[0xAA, 0xBB]).unwrap();
         let view = StagedView {
@@ -820,16 +828,16 @@ mod tests {
             staged: &staged,
             start_entry: 0,
         };
-        let mut buf = [0u8; 4];
+        let mut buf = [0u8; 3];
         view.read_bytes(comms_addr, &mut buf).unwrap();
-        assert_eq!(buf, [0x07, 0xAA, 0xBB, 0x00]);
+        assert_eq!(buf, [0x07, 0xAA, 0xBB]);
     }
 
     #[test]
     fn staged_view_ignores_entries_before_start_entry() {
         let t = fresh();
         let comms_addr = CONFIG_BASE_ADDR + 32;
-        write(&t, comms_addr, &[0x07, 0x03, 0x96, 0x00]).unwrap();
+        write(&t, comms_addr, &[0x07, 0x03, 75]).unwrap();
         let mut staged = StagedWrites::default();
         staged.push_chunk(comms_addr, &[0xFF]).unwrap();
         let view = StagedView {
@@ -956,6 +964,29 @@ mod tests {
             v.run(&view2, addr, 4),
             Err(RegmapError::ValidationError(ValidationKind::Range)),
         );
+    }
+
+    #[test]
+    fn write_bytes_invalid_bool_rejected_rolls_back() {
+        let t = fresh();
+        write(&t, CONTROL_BASE_ADDR, &[1]).unwrap();
+        assert!(unsafe { &*t.control.get() }.lifecycle.torque_enable);
+        let err = write(&t, CONTROL_BASE_ADDR, &[2]).unwrap_err();
+        assert_eq!(err, RegmapError::ValidationError(ValidationKind::Enum));
+        // Live byte must still reflect the prior write, not the rejected 0x02.
+        assert!(unsafe { &*t.control.get() }.lifecycle.torque_enable);
+    }
+
+    #[test]
+    fn write_bytes_out_of_range_u8_rejected_rolls_back() {
+        let t = fresh();
+        // ConfigComms.id is at CONFIG_BASE_ADDR + 32, RangeU8 0..=252.
+        let id_addr = CONFIG_BASE_ADDR + 32;
+        write(&t, id_addr, &[0x42]).unwrap();
+        assert_eq!(unsafe { &*t.config.get() }.comms.id, 0x42);
+        let err = write(&t, id_addr, &[253]).unwrap_err();
+        assert_eq!(err, RegmapError::ValidationError(ValidationKind::Range));
+        assert_eq!(unsafe { &*t.config.get() }.comms.id, 0x42);
     }
 
     #[test]

@@ -415,7 +415,7 @@ mod tests {
         assert_eq!(err, 0);
         assert!(params.is_empty());
         let lc = unsafe { &*shared.table.control.get() }.lifecycle;
-        assert_eq!(lc.torque_enable, 1);
+        assert!(lc.torque_enable);
     }
 
     #[test]
@@ -466,7 +466,7 @@ mod tests {
 
         assert_eq!(io.start_tx_count, 0);
         let lc = unsafe { &*shared.table.control.get() }.lifecycle;
-        assert_eq!(lc.torque_enable, 0);
+        assert!(!lc.torque_enable);
     }
 
     #[test]
@@ -486,6 +486,6 @@ mod tests {
 
         assert_eq!(io.start_tx_count, 0);
         let lc = unsafe { &*shared.table.control.get() }.lifecycle;
-        assert_eq!(lc.torque_enable, 1);
+        assert!(lc.torque_enable);
     }
 }

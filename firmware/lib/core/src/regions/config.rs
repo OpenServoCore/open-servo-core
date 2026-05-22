@@ -1,6 +1,6 @@
 use crate::page::PageHeader;
 use crate::regions::CONFIG_BLOCK_SIZE;
-use crate::regmap::{Access, FieldDesc};
+use crate::regmap::{Access, BOOL_ALLOWED, FieldDesc, Validator};
 use core::mem::{offset_of, size_of};
 
 /// DXL X-series baud rate indices. V006 USART caps at 3 Mbps; indices 6–7
@@ -18,6 +18,15 @@ pub enum BaudRate {
 }
 
 impl BaudRate {
+    pub const ALLOWED: &[u8] = &[
+        BaudRate::B9600 as u8,
+        BaudRate::B57600 as u8,
+        BaudRate::B115200 as u8,
+        BaudRate::B1000000 as u8,
+        BaudRate::B2000000 as u8,
+        BaudRate::B3000000 as u8,
+    ];
+
     pub const fn as_idx(self) -> u8 {
         self as u8
     }
@@ -46,6 +55,20 @@ impl BaudRate {
     }
 }
 
+/// Stall detector policy. `repr(u8)`; constructing from an unlisted discriminant is UB,
+/// so validators MUST gate writes to `StallResponse::ALLOWED`.
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Default)]
+#[repr(u8)]
+pub enum StallResponse {
+    #[default]
+    Disable = 0,
+    Comply = 1,
+}
+
+impl StallResponse {
+    pub const ALLOWED: &[u8] = &[StallResponse::Disable as u8, StallResponse::Comply as u8];
+}
+
 #[derive(Copy, Clone)]
 #[repr(C)]
 pub struct ConfigIdentity {
@@ -60,8 +83,8 @@ pub struct ConfigIdentity {
 #[repr(C)]
 pub struct ConfigComms {
     pub id: u8,
-    pub baud_rate_idx: u8,
-    pub return_delay_us: u16,
+    pub baud_rate_idx: BaudRate,
+    pub return_delay_2us: u8,
 }
 
 #[derive(Copy, Clone)]
@@ -89,7 +112,7 @@ pub struct ConfigSafety {
 #[derive(Copy, Clone)]
 #[repr(C)]
 pub struct ConfigStall {
-    pub stall_response: u8,
+    pub stall_response: StallResponse,
     pub _rsvd_align: u8,
     pub stall_effort_threshold: i16,
     pub stall_motion_threshold_urad: u32,
@@ -131,7 +154,7 @@ pub struct ConfigControlPosition {
     pub pid_i_limit: i32,
     pub pos_deadband_urad: u32,
     pub pwm_deadband_pct: u8,
-    pub v_comp_enable: u8,
+    pub v_comp_enable: bool,
     pub max_effort: i16,
     pub v_nominal_mv: u16,
 }
@@ -165,8 +188,8 @@ impl ConfigComms {
     pub const fn const_new() -> Self {
         Self {
             id: 0,
-            baud_rate_idx: 0,
-            return_delay_us: 0,
+            baud_rate_idx: BaudRate::B9600,
+            return_delay_2us: 0,
         }
     }
 }
@@ -193,7 +216,7 @@ impl ConfigLimits {
 impl ConfigStall {
     pub const fn const_new() -> Self {
         Self {
-            stall_response: 0,
+            stall_response: StallResponse::Disable,
             _rsvd_align: 0,
             stall_effort_threshold: 0,
             stall_motion_threshold_urad: 0,
@@ -234,7 +257,7 @@ impl ConfigControlPosition {
             pid_i_limit: 0,
             pos_deadband_urad: 0,
             pwm_deadband_pct: 0,
-            v_comp_enable: 0,
+            v_comp_enable: false,
             max_effort: 0,
             v_nominal_mv: 0,
         }
@@ -316,19 +339,21 @@ pub const CONFIG_FIELDS: &[FieldDesc] = &[
         size: 1,
         struct_offset: COMMS_STRUCT + offset_of!(ConfigComms, id) as u16,
         access: Access::Rw,
-        validators: &[],
+        validators: &[Validator::RangeU8 { lo: 0, hi: 252 }],
     },
     FieldDesc {
         addr_offset: COMMS_ADDR + offset_of!(ConfigComms, baud_rate_idx) as u16,
         size: 1,
         struct_offset: COMMS_STRUCT + offset_of!(ConfigComms, baud_rate_idx) as u16,
         access: Access::Rw,
-        validators: &[],
+        validators: &[Validator::EnumU8 {
+            allowed: BaudRate::ALLOWED,
+        }],
     },
     FieldDesc {
-        addr_offset: COMMS_ADDR + offset_of!(ConfigComms, return_delay_us) as u16,
-        size: 2,
-        struct_offset: COMMS_STRUCT + offset_of!(ConfigComms, return_delay_us) as u16,
+        addr_offset: COMMS_ADDR + offset_of!(ConfigComms, return_delay_2us) as u16,
+        size: 1,
+        struct_offset: COMMS_STRUCT + offset_of!(ConfigComms, return_delay_2us) as u16,
         access: Access::Rw,
         validators: &[],
     },
@@ -367,7 +392,9 @@ pub const CONFIG_FIELDS: &[FieldDesc] = &[
         size: 1,
         struct_offset: STALL_STRUCT + offset_of!(ConfigStall, stall_response) as u16,
         access: Access::Rw,
-        validators: &[],
+        validators: &[Validator::EnumU8 {
+            allowed: StallResponse::ALLOWED,
+        }],
     },
     FieldDesc {
         addr_offset: STALL_ADDR + offset_of!(ConfigStall, stall_effort_threshold) as u16,
@@ -475,14 +502,16 @@ pub const CONFIG_FIELDS: &[FieldDesc] = &[
         size: 1,
         struct_offset: CTRL_POS_STRUCT + offset_of!(ConfigControlPosition, pwm_deadband_pct) as u16,
         access: Access::Rw,
-        validators: &[],
+        validators: &[Validator::RangeU8 { lo: 0, hi: 50 }],
     },
     FieldDesc {
         addr_offset: CTRL_POS_ADDR + offset_of!(ConfigControlPosition, v_comp_enable) as u16,
         size: 1,
         struct_offset: CTRL_POS_STRUCT + offset_of!(ConfigControlPosition, v_comp_enable) as u16,
         access: Access::Rw,
-        validators: &[],
+        validators: &[Validator::EnumU8 {
+            allowed: BOOL_ALLOWED,
+        }],
     },
     FieldDesc {
         addr_offset: CTRL_POS_ADDR + offset_of!(ConfigControlPosition, max_effort) as u16,

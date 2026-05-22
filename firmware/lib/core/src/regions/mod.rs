@@ -21,8 +21,9 @@ pub use calib::{BemfCalibBlock, CalibRegs, PotLutBlock};
 pub use config::{
     ConfigCalibration, ConfigComms, ConfigControl, ConfigControlPosition, ConfigIdentity,
     ConfigLimits, ConfigPosLimits, ConfigRegs, ConfigSafety, ConfigStall, ConfigThermal,
+    StallResponse,
 };
-pub use control::{ControlLifecycle, ControlRegs, ControlStreaming};
+pub use control::{ControlLifecycle, ControlRegs, ControlStreaming, Mode};
 pub use telemetry::{
     TelemetryConverted, TelemetryFault, TelemetryIntermediaries, TelemetryRaw, TelemetryRegs,
 };
@@ -92,7 +93,7 @@ impl ControlTable {
         cfg.limits.pos.pos_max_soft_urad = defaults.pos_max_phys_urad;
         cfg.calibration.vdd_mv = defaults.vdd_mv;
         cfg.comms.id = defaults.dxl_id;
-        cfg.comms.baud_rate_idx = defaults.dxl_baud.as_idx();
+        cfg.comms.baud_rate_idx = defaults.dxl_baud;
     }
 
     /// Called once pre-PFIC-IRQ — sole writer.

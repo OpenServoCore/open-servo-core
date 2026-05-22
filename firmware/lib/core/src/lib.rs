@@ -20,11 +20,13 @@ pub use regions::config::BaudRate;
 pub use regions::{
     BemfCalibBlock, CalibRegs, ConfigComms, ConfigControl, ConfigControlPosition, ConfigIdentity,
     ConfigLimits, ConfigPosLimits, ConfigRegs, ConfigSafety, ConfigStall, ConfigThermal,
-    ControlLifecycle, ControlRegs, ControlStreaming, ControlTable, PotLutBlock, TelemetryConverted,
-    TelemetryFault, TelemetryIntermediaries, TelemetryRaw, TelemetryRegs,
+    ControlLifecycle, ControlRegs, ControlStreaming, ControlTable, Mode, PotLutBlock,
+    StallResponse, TelemetryConverted, TelemetryFault, TelemetryIntermediaries, TelemetryRaw,
+    TelemetryRegs,
 };
 pub use regmap::{
-    Access, FieldDesc, RegmapError, StagedView, StagedWrites, ValidationKind, Validator,
+    Access, BOOL_ALLOWED, FieldDesc, RegmapError, StagedView, StagedWrites, ValidationKind,
+    Validator,
 };
 pub use ring_reader::{RingReader, RxSnapshot};
 pub use sample_frame::{FrameInputs, RawSamples, SampleFrame};
