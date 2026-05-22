@@ -1,5 +1,6 @@
 use osc_units::Effort;
 
+use crate::regions::config::BaudRate;
 use crate::{FrameInputs, SampleFrame};
 
 /// Stamped into `ControlTable.config` pre-IRQ; thereafter host-owned.
@@ -9,6 +10,8 @@ pub struct ConfigDefaults {
     pub pos_max_phys_urad: i32,
     /// VDD-at-chip-pin in mV; the v006 ADC reference is VDD itself.
     pub vdd_mv: u16,
+    pub dxl_id: u8,
+    pub dxl_baud: BaudRate,
 }
 
 pub trait Board {

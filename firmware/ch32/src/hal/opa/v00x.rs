@@ -112,6 +112,7 @@ pub enum Output {
     Internal = 0b11,
 }
 
+#[derive(Copy, Clone)]
 pub struct Config {
     pub input: InputMode,
     pub gain: Gain,

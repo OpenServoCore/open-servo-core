@@ -9,9 +9,12 @@ license = "MIT OR Apache-2.0"
 
 [dependencies]
 ch32-metapac     = { git = "https://github.com/ch32-rs/ch32-metapac", default-features = false, features = ["pac"] }
+dxl-protocol     = { path = "../lib/dxl-protocol", features = ["heapless"] }
 embedded-storage = "0.3"
+heapless         = "0.9"
 osc-core         = { path = "../lib/core" }
 osc-units        = { path = "../lib/units" }
+portable-atomic  = { version = "1", default-features = false, features = ["critical-section"] }
 riscv            = "0.12"
 defmt            = { version = "1", optional = true }
 critical-section = { version = "1.2", optional = true }
@@ -20,9 +23,7 @@ critical-section = { version = "1.2", optional = true }
 ch32-metapac = { git = "https://github.com/ch32-rs/ch32-metapac", default-features = false, features = ["metadata"] }
 
 [features]
-default = []
+default      = ["ch32v006x8x6"]
 ch32v006x8x6 = ["ch32-metapac/ch32v006x8x6"]
-# rt = ch32-metapac vector table. Bins (riscv32 target) enable this;
-# host-side cargo test leaves it off (mach-o rejects the section names).
 rt           = ["ch32-metapac/rt"]
 defmt        = ["dep:defmt", "dep:critical-section", "osc-core/defmt"]

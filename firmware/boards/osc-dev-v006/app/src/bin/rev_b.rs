@@ -14,7 +14,7 @@ osc_ch32::install_isrs!();
 #[qingke_rt::entry]
 fn main() -> ! {
     osc_ch32::log::info!("osc-dev-v006 rev B: boot");
-    osc_ch32::run(BoardConfig {
+    osc_ch32::run!(BoardConfig {
         wiring: BoardWiring {
             // STAT on PC7 = TIM1_CH4 (Remap7); TODO drive via TIM1 instead of GPIO.
             stat_led: Pin::PC7,
@@ -49,6 +49,15 @@ fn main() -> ! {
                     adc::Input::new(adc::Channel::IN6, adc::SampleTime::CYCLES9),
                 ),
             },
+            dxl: DxlBus {
+                usart: UsartMapping::Usart1Remap3,
+                duplex: Duplex::Full,
+                rx_pull: gpio::Pull::None,
+                tx_en: Some(TxEn {
+                    pin: Pin::PC2,
+                    tx_level: gpio::Level::High,
+                }),
+            },
         },
         calibration: Calibration {
             shunt_r_mohm: 10,
@@ -72,6 +81,8 @@ fn main() -> ! {
             pos_min_phys_urad: -1_570_796,
             pos_max_phys_urad: 1_570_796,
             vdd_mv: 3300,
+            dxl_id: 1,
+            dxl_baud: BaudRate::B1000000,
         },
     })
 }

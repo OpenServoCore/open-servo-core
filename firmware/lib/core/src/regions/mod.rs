@@ -77,10 +77,12 @@ impl ControlTable {
     /// Caller must be sole writer (install-time, pre-IRQ).
     pub fn seed_config_defaults(&self, defaults: &ConfigDefaults) {
         crate::log::debug!(
-            "seed CONFIG.limits.pos: phys=[{}, {}] urad  vdd_mv={}",
+            "seed CONFIG: phys=[{}, {}] urad  vdd_mv={}  dxl_id={}  baud_idx={}",
             defaults.pos_min_phys_urad,
             defaults.pos_max_phys_urad,
             defaults.vdd_mv,
+            defaults.dxl_id,
+            defaults.dxl_baud.as_idx(),
         );
         // SAFETY: install-time, pre-IRQ, sole writer.
         let cfg = unsafe { &mut *self.config.get() };
@@ -89,6 +91,8 @@ impl ControlTable {
         cfg.limits.pos.pos_min_soft_urad = defaults.pos_min_phys_urad;
         cfg.limits.pos.pos_max_soft_urad = defaults.pos_max_phys_urad;
         cfg.calibration.vdd_mv = defaults.vdd_mv;
+        cfg.comms.id = defaults.dxl_id;
+        cfg.comms.baud_rate_idx = defaults.dxl_baud.as_idx();
     }
 
     /// Called once pre-PFIC-IRQ — sole writer.

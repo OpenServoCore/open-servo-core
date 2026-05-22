@@ -1,7 +1,7 @@
 use crate::Instruction;
 use crate::buf::WriteBuf;
 use crate::crc::crc16;
-use crate::parser::{HEADER, Packet};
+use crate::packet::{HEADER, Packet};
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub enum WriteError {
@@ -11,86 +11,72 @@ pub enum WriteError {
 
 pub fn write<W: WriteBuf>(out: &mut W, packet: &Packet<'_>) -> Result<(), WriteError> {
     match packet {
-        Packet::Ping { id } => write_packet(out, *id, Instruction::Ping, &mut core::iter::empty()),
-        Packet::Read {
-            id,
-            address,
-            length,
-        } => {
-            let mut params = U16Pair::new(*address, *length).into_iter();
-            write_packet(out, *id, Instruction::Read, &mut params)
+        Packet::Ping(p) => write_packet(out, p.id, Instruction::Ping, &mut core::iter::empty()),
+        Packet::Read(p) => {
+            let mut params = U16Pair::new(p.address, p.length).into_iter();
+            write_packet(out, p.id, Instruction::Read, &mut params)
         }
-        Packet::Write { id, address, data } => {
-            let mut params = U16One::new(*address).into_iter().chain(data.iter());
-            write_packet(out, *id, Instruction::Write, &mut params)
+        Packet::Write(p) => {
+            let mut params = U16One::new(p.address).into_iter().chain(p.data.iter());
+            write_packet(out, p.id, Instruction::Write, &mut params)
         }
-        Packet::RegWrite { id, address, data } => {
-            let mut params = U16One::new(*address).into_iter().chain(data.iter());
-            write_packet(out, *id, Instruction::RegWrite, &mut params)
+        Packet::RegWrite(p) => {
+            let mut params = U16One::new(p.address).into_iter().chain(p.data.iter());
+            write_packet(out, p.id, Instruction::RegWrite, &mut params)
         }
-        Packet::Action { id } => {
-            write_packet(out, *id, Instruction::Action, &mut core::iter::empty())
-        }
-        Packet::FactoryReset { id, mode } => write_packet(
+        Packet::Action(p) => write_packet(out, p.id, Instruction::Action, &mut core::iter::empty()),
+        Packet::FactoryReset(p) => write_packet(
             out,
-            *id,
+            p.id,
             Instruction::FactoryReset,
-            &mut core::iter::once(*mode),
+            &mut core::iter::once(p.mode),
         ),
-        Packet::Reboot { id } => {
-            write_packet(out, *id, Instruction::Reboot, &mut core::iter::empty())
+        Packet::Reboot(p) => write_packet(out, p.id, Instruction::Reboot, &mut core::iter::empty()),
+        Packet::Clear(p) => write_packet(out, p.id, Instruction::Clear, &mut p.body.iter()),
+        Packet::ControlTableBackup(p) => write_packet(
+            out,
+            p.id,
+            Instruction::ControlTableBackup,
+            &mut p.body.iter(),
+        ),
+        Packet::Status(p) => {
+            let mut params = core::iter::once(p.error).chain(p.params.iter());
+            write_packet(out, p.id, Instruction::Status, &mut params)
         }
-        Packet::Clear { id, body } => write_packet(out, *id, Instruction::Clear, &mut body.iter()),
-        Packet::ControlTableBackup { id, body } => {
-            write_packet(out, *id, Instruction::ControlTableBackup, &mut body.iter())
-        }
-        Packet::Status { id, error, params } => {
-            let mut p = core::iter::once(*error).chain(params.iter());
-            write_packet(out, *id, Instruction::Status, &mut p)
-        }
-        Packet::SyncRead {
-            address,
-            length,
-            ids,
-        } => {
-            let mut p = U16Pair::new(*address, *length)
+        Packet::SyncRead(p) => {
+            let mut params = U16Pair::new(p.address, p.length)
                 .into_iter()
-                .chain(ids.iter());
-            write_packet(out, BROADCAST, Instruction::SyncRead, &mut p)
+                .chain(p.ids.iter());
+            write_packet(out, BROADCAST, Instruction::SyncRead, &mut params)
         }
-        Packet::SyncWrite {
-            address,
-            length,
-            body,
-        } => {
-            let mut p = U16Pair::new(*address, *length)
+        Packet::SyncWrite(p) => {
+            let mut params = U16Pair::new(p.address, p.length)
                 .into_iter()
-                .chain(body.iter());
-            write_packet(out, BROADCAST, Instruction::SyncWrite, &mut p)
+                .chain(p.body.iter());
+            write_packet(out, BROADCAST, Instruction::SyncWrite, &mut params)
         }
-        Packet::FastSyncRead {
-            address,
-            length,
-            ids,
-        } => {
-            let mut p = U16Pair::new(*address, *length)
+        Packet::FastSyncRead(p) => {
+            let mut params = U16Pair::new(p.address, p.length)
                 .into_iter()
-                .chain(ids.iter());
-            write_packet(out, BROADCAST, Instruction::FastSyncRead, &mut p)
+                .chain(p.ids.iter());
+            write_packet(out, BROADCAST, Instruction::FastSyncRead, &mut params)
         }
-        Packet::BulkRead { body } => {
-            write_packet(out, BROADCAST, Instruction::BulkRead, &mut body.iter())
+        Packet::BulkRead(p) => {
+            write_packet(out, BROADCAST, Instruction::BulkRead, &mut p.body.iter())
         }
-        Packet::BulkWrite { body } => {
-            write_packet(out, BROADCAST, Instruction::BulkWrite, &mut body.iter())
+        Packet::BulkWrite(p) => {
+            write_packet(out, BROADCAST, Instruction::BulkWrite, &mut p.body.iter())
         }
-        Packet::FastBulkRead { body } => {
-            write_packet(out, BROADCAST, Instruction::FastBulkRead, &mut body.iter())
-        }
+        Packet::FastBulkRead(p) => write_packet(
+            out,
+            BROADCAST,
+            Instruction::FastBulkRead,
+            &mut p.body.iter(),
+        ),
     }
 }
 
-const BROADCAST: u8 = crate::parser::BROADCAST_ID;
+const BROADCAST: u8 = crate::packet::BROADCAST_ID;
 
 /// id != 0xFF, instruction != 0xFD required so the unstuffed header..instruction
 /// prefix can't itself complete a stuffing trigger.

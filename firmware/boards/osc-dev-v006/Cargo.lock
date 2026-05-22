@@ -155,6 +155,7 @@ name = "dxl-protocol"
 version = "0.0.0"
 dependencies = [
  "crc",
+ "heapless",
 ]
 
 [[package]]
@@ -320,9 +321,12 @@ dependencies = [
  "ch32-metapac",
  "critical-section",
  "defmt",
+ "dxl-protocol",
  "embedded-storage",
+ "heapless",
  "osc-core",
  "osc-units",
+ "portable-atomic",
  "riscv 0.12.1",
 ]
 
@@ -349,6 +353,7 @@ dependencies = [
  "defmt-rtt",
  "osc-ch32",
  "panic-halt",
+ "qingke",
  "qingke-rt",
  "tinyboot-ch32",
 ]

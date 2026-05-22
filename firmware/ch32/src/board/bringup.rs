@@ -1,14 +1,19 @@
 use ch32_metapac::{ADC, adc::vals::Extsel, dma::vals::Dir};
-use osc_core::ConfigDefaults;
+use osc_core::{BaudRate, ConfigDefaults};
 
 use crate::hal::{
-    Pin, Tim1Mapping, adc, afio, delay_ms, dma,
+    adc, afio, delay_ms, dma,
     gpio::{self, Level, PinMode},
-    opa, rcc, timer,
+    opa, pfic, rcc, timer, usart,
 };
-use crate::statics::{ADC_DMA_BUF, ADC_DMA_BUF_LEN, ADC_SCAN_LEN, ADC_SENSOR_COUNT, SHARED};
+use crate::statics::{
+    ADC_DMA_BUF, ADC_DMA_BUF_LEN, ADC_SCAN_LEN, ADC_SENSOR_COUNT, DXL_RX_BUF, DXL_RX_BUF_LEN,
+    DXL_TX_BUF, DXL_TX_EN, SHARED,
+};
 
-use super::config::{BoardWiring, CurrentSenseConfig, MotorConfig, Sensors};
+use super::config::{BoardWiring, CurrentSenseConfig, Duplex, DxlBus, MotorConfig, Sensors};
+
+const PCLK_HZ: u32 = 48_000_000;
 
 const OPA_SETTLE_MS: u32 = 1;
 const VCAL_SAMPLE_TIME: adc::SampleTime = adc::SampleTime::CYCLES9;
@@ -19,8 +24,6 @@ pub(super) struct BringupResult {
 }
 
 pub(super) fn run(wiring: &BoardWiring, defaults: &ConfigDefaults) -> BringupResult {
-    validate_sensors(&wiring.sensors);
-
     enable_clocks_and_remaps(wiring);
     crate::log::debug!("clocks + remaps configured");
 
@@ -42,6 +45,9 @@ pub(super) fn run(wiring: &BoardWiring, defaults: &ConfigDefaults) -> BringupRes
     // Sole writer to CONFIG: pre-IRQ, pre-install_kernel.
     SHARED.table.seed_config_defaults(defaults);
 
+    bring_up_dxl(&wiring.dxl, defaults.dxl_baud);
+    crate::log::debug!("dxl usart + dma rx armed");
+
     let pwm_arr = start_center_aligned_pwm(&wiring.motor);
     crate::log::debug!(
         "pwm running ({} Hz, arr={})",
@@ -55,41 +61,14 @@ pub(super) fn run(wiring: &BoardWiring, defaults: &ConfigDefaults) -> BringupRes
     }
 }
 
-fn tim1_channel_pin(mapping: Tim1Mapping, channel: timer::Channel) -> Pin {
-    match channel {
-        timer::Channel::CH1 => mapping.ch1_pin(),
-        timer::Channel::CH2 => mapping.ch2_pin(),
-        timer::Channel::CH3 => mapping.ch3_pin(),
-        timer::Channel::CH4 => mapping.ch4_pin(),
-    }
-}
-
 // Order must mirror the scan tail in `configure_adc_dma_scan`.
 fn sensor_inputs(s: &Sensors) -> [adc::Input; ADC_SENSOR_COUNT] {
     [s.pos, s.ntc, s.vbus, s.vmotor.0, s.vmotor.1]
 }
 
-fn validate_sensors(s: &Sensors) {
-    let inputs = sensor_inputs(s);
-    for (i, input) in inputs.iter().enumerate() {
-        assert!(
-            input.channel.pin().is_some(),
-            "sensor {} uses internal ADC channel — wire to an external pin",
-            i
-        );
-        for other in &inputs[i + 1..] {
-            assert!(
-                (input.channel as u8) != (other.channel as u8),
-                "duplicate sensor channel {}",
-                input.channel as u8
-            );
-        }
-    }
-}
-
 fn enable_clocks_and_remaps(w: &BoardWiring) {
-    let in1 = tim1_channel_pin(w.motor.tim1, w.motor.in1);
-    let in2 = tim1_channel_pin(w.motor.tim1, w.motor.in2);
+    let in1 = w.motor.in1_pin();
+    let in2 = w.motor.in2_pin();
     let opa_pos_pin = w.current_sense.opa.input.pos().pin();
 
     rcc::init_48mhz_hsi_pll();
@@ -108,17 +87,24 @@ fn enable_clocks_and_remaps(w: &BoardWiring) {
             rcc::enable_gpio(pin.port_index());
         }
     }
+    rcc::enable_gpio(w.dxl.usart.tx_pin().port_index());
+    rcc::enable_gpio(w.dxl.usart.rx_pin().port_index());
+    if let Some(ref t) = w.dxl.tx_en {
+        rcc::enable_gpio(t.pin.port_index());
+    }
     rcc::enable_tim1();
     rcc::enable_adc1();
     rcc::enable_dma1();
+    rcc::enable_usart1();
 
     afio::set_tim_remap(1, w.motor.tim1.remap_value());
     afio::set_tim_remap(2, w.tim2_remap.remap_value());
+    afio::set_usart_remap(w.dxl.usart.peripheral_index(), w.dxl.usart.remap_value());
 }
 
 fn configure_pins(w: &BoardWiring) {
-    let in1 = tim1_channel_pin(w.motor.tim1, w.motor.in1);
-    let in2 = tim1_channel_pin(w.motor.tim1, w.motor.in2);
+    let in1 = w.motor.in1_pin();
+    let in2 = w.motor.in2_pin();
     let opa_pos_pin = w.current_sense.opa.input.pos().pin();
 
     gpio::configure(w.stat_led, PinMode::OUTPUT_PUSH_PULL);
@@ -142,6 +128,19 @@ fn configure_pins(w: &BoardWiring) {
         if let Some(pin) = input.channel.pin() {
             gpio::configure(pin, PinMode::ANALOG);
         }
+    }
+
+    configure_dxl_pins(&w.dxl);
+}
+
+fn configure_dxl_pins(d: &DxlBus) {
+    gpio::configure(d.usart.tx_pin(), PinMode::AF_PUSH_PULL);
+    if matches!(d.duplex, Duplex::Full) {
+        gpio::configure(d.usart.rx_pin(), PinMode::input_pull(d.rx_pull));
+    }
+    if let Some(ref t) = d.tx_en {
+        gpio::configure(t.pin, PinMode::OUTPUT_PUSH_PULL);
+        gpio::set_level(t.pin, t.idle_level());
     }
 }
 
@@ -193,6 +192,53 @@ fn configure_adc_dma_scan(sensors: &Sensors, opa_out_sample_time: adc::SampleTim
     dma::enable(dma::Channel::CH1);
 }
 
+fn bring_up_dxl(d: &DxlBus, baud: BaudRate) {
+    let regs = d.usart.regs();
+    let half_duplex = matches!(d.duplex, Duplex::Half);
+    usart::init(regs, PCLK_HZ, baud.as_hz(), half_duplex);
+
+    let dma_cfg = dma::Config {
+        dir: Dir::FROMPERIPHERAL,
+        circ: true,
+        pinc: false,
+        minc: true,
+        size: dma::Size::BITS8,
+        tcie: false,
+    };
+    dma::configure(
+        dma::Channel::CH5,
+        &dma_cfg,
+        usart::data_addr(regs),
+        DXL_RX_BUF.get() as u32,
+        DXL_RX_BUF_LEN as u16,
+    );
+    dma::enable(dma::Channel::CH5);
+    usart::set_dma_rx(regs, true);
+
+    let tx_cfg = dma::Config {
+        dir: Dir::FROMMEMORY,
+        circ: false,
+        pinc: false,
+        minc: true,
+        size: dma::Size::BITS8,
+        tcie: false,
+    };
+    let tx_src = unsafe { (*DXL_TX_BUF.get()).as_ptr() } as u32;
+    dma::configure(
+        dma::Channel::CH4,
+        &tx_cfg,
+        usart::data_addr(regs),
+        tx_src,
+        0,
+    );
+
+    // Sole writer; IRQ-only reader unmasks below.
+    unsafe { *DXL_TX_EN.get() = d.tx_en };
+
+    usart::set_idle_irq(regs, true);
+    pfic::enable(pfic::Interrupt::USART1);
+}
+
 /// Returns the configured ARR so `Effort`→duty rescale can avoid a soft-div.
 fn start_center_aligned_pwm(m: &MotorConfig) -> u16 {
     let (psc, arr) = timer::pwm_dividers_from_hz(m.pwm_freq_hz);
@@ -207,51 +253,4 @@ fn start_center_aligned_pwm(m: &MotorConfig) -> u16 {
     timer::force_update_event();
     timer::start();
     arr
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::hal::adc::{Channel, Input, SampleTime};
-
-    fn rev_b_sensors() -> Sensors {
-        Sensors {
-            pos: Input::new(Channel::IN3, SampleTime::CYCLES9),
-            ntc: Input::new(Channel::IN2, SampleTime::CYCLES9),
-            vbus: Input::new(Channel::IN1, SampleTime::CYCLES9),
-            vmotor: (
-                Input::new(Channel::IN5, SampleTime::CYCLES9),
-                Input::new(Channel::IN6, SampleTime::CYCLES9),
-            ),
-        }
-    }
-
-    #[test]
-    fn validate_accepts_rev_b_config() {
-        validate_sensors(&rev_b_sensors());
-    }
-
-    #[test]
-    #[should_panic(expected = "duplicate sensor channel")]
-    fn validate_rejects_duplicate_channel() {
-        let mut s = rev_b_sensors();
-        s.ntc = Input::new(Channel::IN3, SampleTime::CYCLES9);
-        validate_sensors(&s);
-    }
-
-    #[test]
-    #[should_panic(expected = "internal ADC channel")]
-    fn validate_rejects_internal_channel() {
-        let mut s = rev_b_sensors();
-        s.pos = Input::new(Channel::Vcal, SampleTime::CYCLES9);
-        validate_sensors(&s);
-    }
-
-    #[test]
-    #[should_panic(expected = "internal ADC channel")]
-    fn validate_rejects_opa_out_as_sensor() {
-        let mut s = rev_b_sensors();
-        s.pos = Input::new(Channel::OpaOut, SampleTime::CYCLES9);
-        validate_sensors(&s);
-    }
 }

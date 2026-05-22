@@ -5,8 +5,8 @@ mod convert;
 mod diag;
 
 pub use config::{
-    BoardConfig, BoardWiring, Calibration, CurrentSenseConfig, Divider, MotorConfig, NtcCal,
-    Sensors,
+    BoardConfig, BoardWiring, Calibration, CurrentSenseConfig, Divider, Duplex, DxlBus,
+    MotorConfig, NtcCal, Sensors, TxEn,
 };
 
 use osc_core::{Board, DecayMode, FrameInputs, MotorCmd, RawSamples, SampleFrame};
