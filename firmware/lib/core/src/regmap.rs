@@ -1,19 +1,23 @@
 //! Byte-addressed access to the control table.
 //!
-//! Per-region `&[BlockDesc]` tables map protocol slots to (struct offset, size, access):
+//! Per-region `&[FieldDesc]` tables map protocol slots to (struct offset, size, access):
 //! * Outside any region → `OutOfRange`. Cross-region spans → `OutOfRange`.
-//! * Reserved slot, or unused tail of an active block, or RO byte on write → `AccessError`.
+//! * Padding gap, reserved slot, or RO byte on write → `AccessError`.
 //! * Writes validate the full span before committing; failed write leaves the table untouched.
 //!
 //! Reads use raw-pointer copies, never form `&RegionT`. Writes form a transient
 //! `&mut`-equivalent via `SyncUnsafeCell::get()`; caller must hold the region's
 //! single-writer guarantee (CONFIG/CONTROL/CALIB from `services`, TELEMETRY from `kernel`).
+//!
+//! Convention: struct fields whose name starts with `_rsvd_` (and trailing struct-alignment
+//! pad) are absent from `*_FIELDS` and remain gaps. Hand-written tables today; the per-block
+//! decomposition is shaped to match a future `#[derive(RegmapBlock)]` proc-macro 1:1.
 
 use crate::ControlTable;
-use crate::regions::calib::CALIB_BLOCKS;
-use crate::regions::config::CONFIG_BLOCKS;
-use crate::regions::control::CONTROL_BLOCKS;
-use crate::regions::telemetry::TELEMETRY_BLOCKS;
+use crate::regions::calib::CALIB_FIELDS;
+use crate::regions::config::CONFIG_FIELDS;
+use crate::regions::control::CONTROL_FIELDS;
+use crate::regions::telemetry::TELEMETRY_FIELDS;
 use crate::regions::{
     CALIB_BASE_ADDR, CALIB_REGION_SIZE, CONFIG_BASE_ADDR, CONFIG_REGION_SIZE, CONTROL_BASE_ADDR,
     CONTROL_REGION_SIZE, TELEMETRY_BASE_ADDR, TELEMETRY_REGION_SIZE,
@@ -23,7 +27,7 @@ use crate::regions::{
 pub enum RegmapError {
     /// Empty, wrapping, or outside every region.
     OutOfRange,
-    /// Reserved slot, unused tail of a block, or RO byte on write.
+    /// Padding gap, reserved slot, or RO byte on write.
     AccessError,
 }
 
@@ -33,11 +37,13 @@ pub enum Access {
     Rw,
 }
 
+/// One entry per host-visible struct field. Future: `#[derive(RegmapBlock)]` will
+/// emit these from the struct definition; today they are hand-written but kept
+/// in lockstep with that expansion (1:1, `offset_of!` for both addrs).
 #[derive(Copy, Clone, Debug)]
-pub struct BlockDesc {
+pub struct FieldDesc {
     /// Byte offset in the region's protocol address space.
     pub addr_offset: u16,
-    /// Active length. Bytes from `addr_offset+size` up to the next slot are reserved.
     pub size: u16,
     /// Byte offset in the region struct.
     pub struct_offset: u16,
@@ -56,16 +62,16 @@ impl ControlTable {
         if range_in(addr, end, CONFIG_BASE_ADDR, CONFIG_REGION_SIZE) {
             let base = self.config.get() as *const u8;
             // SAFETY: get() non-null; descriptor sizes verified in `region_structs_fit_regions`.
-            unsafe { walk_read(base, addr - CONFIG_BASE_ADDR, dst, CONFIG_BLOCKS) }
+            unsafe { walk_read(base, addr - CONFIG_BASE_ADDR, dst, CONFIG_FIELDS) }
         } else if range_in(addr, end, TELEMETRY_BASE_ADDR, TELEMETRY_REGION_SIZE) {
             let base = self.telemetry.get() as *const u8;
-            unsafe { walk_read(base, addr - TELEMETRY_BASE_ADDR, dst, TELEMETRY_BLOCKS) }
+            unsafe { walk_read(base, addr - TELEMETRY_BASE_ADDR, dst, TELEMETRY_FIELDS) }
         } else if range_in(addr, end, CONTROL_BASE_ADDR, CONTROL_REGION_SIZE) {
             let base = self.control.get() as *const u8;
-            unsafe { walk_read(base, addr - CONTROL_BASE_ADDR, dst, CONTROL_BLOCKS) }
+            unsafe { walk_read(base, addr - CONTROL_BASE_ADDR, dst, CONTROL_FIELDS) }
         } else if range_in(addr, end, CALIB_BASE_ADDR, CALIB_REGION_SIZE) {
             let base = self.calib.get() as *const u8;
-            unsafe { walk_read(base, addr - CALIB_BASE_ADDR, dst, CALIB_BLOCKS) }
+            unsafe { walk_read(base, addr - CALIB_BASE_ADDR, dst, CALIB_FIELDS) }
         } else {
             Err(RegmapError::OutOfRange)
         }
@@ -82,16 +88,16 @@ impl ControlTable {
 
         if range_in(addr, end, CONFIG_BASE_ADDR, CONFIG_REGION_SIZE) {
             let base = self.config.get() as *mut u8;
-            unsafe { walk_write(base, addr - CONFIG_BASE_ADDR, src, CONFIG_BLOCKS) }
+            unsafe { walk_write(base, addr - CONFIG_BASE_ADDR, src, CONFIG_FIELDS) }
         } else if range_in(addr, end, TELEMETRY_BASE_ADDR, TELEMETRY_REGION_SIZE) {
             let base = self.telemetry.get() as *mut u8;
-            unsafe { walk_write(base, addr - TELEMETRY_BASE_ADDR, src, TELEMETRY_BLOCKS) }
+            unsafe { walk_write(base, addr - TELEMETRY_BASE_ADDR, src, TELEMETRY_FIELDS) }
         } else if range_in(addr, end, CONTROL_BASE_ADDR, CONTROL_REGION_SIZE) {
             let base = self.control.get() as *mut u8;
-            unsafe { walk_write(base, addr - CONTROL_BASE_ADDR, src, CONTROL_BLOCKS) }
+            unsafe { walk_write(base, addr - CONTROL_BASE_ADDR, src, CONTROL_FIELDS) }
         } else if range_in(addr, end, CALIB_BASE_ADDR, CALIB_REGION_SIZE) {
             let base = self.calib.get() as *mut u8;
-            unsafe { walk_write(base, addr - CALIB_BASE_ADDR, src, CALIB_BLOCKS) }
+            unsafe { walk_write(base, addr - CALIB_BASE_ADDR, src, CALIB_FIELDS) }
         } else {
             Err(RegmapError::OutOfRange)
         }
@@ -108,13 +114,13 @@ unsafe fn walk_read(
     region_base: *const u8,
     offset_in_region: u16,
     dst: &mut [u8],
-    blocks: &[BlockDesc],
+    fields: &[FieldDesc],
 ) -> Result<(), RegmapError> {
     let mut req_lo = offset_in_region as usize;
     let req_hi = req_lo + dst.len();
     let mut dst_pos = 0usize;
 
-    for desc in blocks {
+    for desc in fields {
         if req_lo >= req_hi {
             break;
         }
@@ -151,13 +157,13 @@ unsafe fn walk_write(
     region_base: *mut u8,
     offset_in_region: u16,
     src: &[u8],
-    blocks: &[BlockDesc],
+    fields: &[FieldDesc],
 ) -> Result<(), RegmapError> {
     // Validate before mutating: any uncovered or RO byte aborts the whole write.
     let req_lo0 = offset_in_region as usize;
     let req_hi = req_lo0 + src.len();
     let mut req_lo = req_lo0;
-    for desc in blocks {
+    for desc in fields {
         if req_lo >= req_hi {
             break;
         }
@@ -177,7 +183,7 @@ unsafe fn walk_write(
 
     let mut req_lo = req_lo0;
     let mut src_pos = 0usize;
-    for desc in blocks {
+    for desc in fields {
         if req_lo >= req_hi {
             break;
         }
@@ -287,14 +293,13 @@ mod tests {
     #[test]
     fn write_control_lifecycle_full_block() {
         let t = fresh();
-        let payload: [u8; 16] = [
-            1, 3, 0, 0, // torque_enable, mode, padding
-            0x10, 0x27, 0, 0, // goal_position = 10000
-            0xD0, 0x07, 0, 0, // goal_velocity = 2000
-            0x40, 0x01, // goal_effort = 320
-            0, 0,
-        ];
-        t.write_bytes(CONTROL_BASE_ADDR, &payload).unwrap();
+        // _rsvd_align gap at offset 2..4 forces a split write.
+        t.write_bytes(CONTROL_BASE_ADDR, &[1, 3]).unwrap();
+        let mut tail = [0u8; 10];
+        tail[0..4].copy_from_slice(&10000i32.to_le_bytes());
+        tail[4..8].copy_from_slice(&2000i32.to_le_bytes());
+        tail[8..10].copy_from_slice(&320i16.to_le_bytes());
+        t.write_bytes(CONTROL_BASE_ADDR + 4, &tail).unwrap();
         let lc = unsafe { &*t.control.get() }.lifecycle;
         assert_eq!(lc.torque_enable, 1);
         assert_eq!(lc.mode, 3);
@@ -312,11 +317,12 @@ mod tests {
     }
 
     #[test]
-    fn telemetry_reads_succeed_for_active_blocks() {
+    fn telemetry_reads_succeed_for_active_fields() {
+        // TelemetryConverted covers 14 B; trailing struct-alignment pad is a gap.
         let t = fresh();
-        let mut buf = [0xAAu8; 16];
+        let mut buf = [0xAAu8; 14];
         t.read_bytes(TELEMETRY_BASE_ADDR, &mut buf).unwrap();
-        assert_eq!(buf, [0u8; 16]);
+        assert_eq!(buf, [0u8; 14]);
     }
 
     #[test]
@@ -365,12 +371,13 @@ mod tests {
     fn write_config_pid_round_trip() {
         let t = fresh();
         let addr = CONFIG_BASE_ADDR + 5 * 32;
-        let mut payload = [0u8; 16];
-        payload[0..2].copy_from_slice(&0x0100u16.to_le_bytes());
-        payload[2..4].copy_from_slice(&0x0040u16.to_le_bytes());
-        payload[4..6].copy_from_slice(&0x0080u16.to_le_bytes());
-        payload[8..12].copy_from_slice(&5000i32.to_le_bytes());
-        t.write_bytes(addr, &payload).unwrap();
+        // _rsvd_align gap at offset 6..8 forces a split write.
+        let mut head = [0u8; 6];
+        head[0..2].copy_from_slice(&0x0100u16.to_le_bytes());
+        head[2..4].copy_from_slice(&0x0040u16.to_le_bytes());
+        head[4..6].copy_from_slice(&0x0080u16.to_le_bytes());
+        t.write_bytes(addr, &head).unwrap();
+        t.write_bytes(addr + 8, &5000i32.to_le_bytes()).unwrap();
         let pid = unsafe { &*t.config.get() }.control.position;
         assert_eq!(pid.pid_kp_q88, 0x0100);
         assert_eq!(pid.pid_ki_q88, 0x0040);
@@ -418,46 +425,64 @@ mod tests {
         assert_eq!(stall.stall_motion_threshold_urad, 0);
     }
 
-    fn assert_blocks_sorted_and_bounded(blocks: &[BlockDesc], region_size: u16) {
-        for win in blocks.windows(2) {
+    fn assert_fields_sorted_and_bounded(fields: &[FieldDesc], region_size: u16) {
+        for win in fields.windows(2) {
             let (a, b) = (&win[0], &win[1]);
             assert!(
                 a.addr_offset + a.size <= b.addr_offset,
-                "blocks not sorted/non-overlapping: {:?} then {:?}",
+                "fields not sorted/non-overlapping: {:?} then {:?}",
                 a,
                 b,
             );
         }
-        if let Some(last) = blocks.last() {
+        if let Some(last) = fields.last() {
             assert!(
                 last.addr_offset + last.size <= region_size,
-                "last block runs past region end: {:?}",
+                "last field runs past region end: {:?}",
                 last,
             );
         }
     }
 
     #[test]
-    fn config_blocks_sorted_and_bounded() {
+    fn config_fields_sorted_and_bounded() {
         use crate::regions::CONFIG_REGION_SIZE;
-        assert_blocks_sorted_and_bounded(CONFIG_BLOCKS, CONFIG_REGION_SIZE as u16);
+        assert_fields_sorted_and_bounded(CONFIG_FIELDS, CONFIG_REGION_SIZE as u16);
     }
 
     #[test]
-    fn telemetry_blocks_sorted_and_bounded() {
+    fn telemetry_fields_sorted_and_bounded() {
         use crate::regions::TELEMETRY_REGION_SIZE;
-        assert_blocks_sorted_and_bounded(TELEMETRY_BLOCKS, TELEMETRY_REGION_SIZE as u16);
+        assert_fields_sorted_and_bounded(TELEMETRY_FIELDS, TELEMETRY_REGION_SIZE as u16);
     }
 
     #[test]
-    fn control_blocks_sorted_and_bounded() {
+    fn control_fields_sorted_and_bounded() {
         use crate::regions::CONTROL_REGION_SIZE;
-        assert_blocks_sorted_and_bounded(CONTROL_BLOCKS, CONTROL_REGION_SIZE as u16);
+        assert_fields_sorted_and_bounded(CONTROL_FIELDS, CONTROL_REGION_SIZE as u16);
     }
 
     #[test]
-    fn calib_blocks_sorted_and_bounded() {
-        assert_blocks_sorted_and_bounded(CALIB_BLOCKS, CALIB_REGION_SIZE as u16);
+    fn calib_fields_sorted_and_bounded() {
+        assert_fields_sorted_and_bounded(CALIB_FIELDS, CALIB_REGION_SIZE as u16);
+    }
+
+    #[test]
+    fn write_to_padding_gap_fails() {
+        // ControlLifecycle _rsvd_align gap at addr_offset 2..4.
+        let t = fresh();
+        let err = t
+            .write_bytes(CONTROL_BASE_ADDR + 2, &[0u8, 0u8])
+            .unwrap_err();
+        assert_eq!(err, RegmapError::AccessError);
+    }
+
+    #[test]
+    fn read_from_padding_gap_fails() {
+        let t = fresh();
+        let mut buf = [0u8; 2];
+        let err = t.read_bytes(CONTROL_BASE_ADDR + 2, &mut buf).unwrap_err();
+        assert_eq!(err, RegmapError::AccessError);
     }
 
     #[test]

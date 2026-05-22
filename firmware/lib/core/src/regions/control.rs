@@ -1,6 +1,6 @@
 use crate::regions::CONTROL_BLOCK_SIZE;
-use crate::regmap::{Access, BlockDesc};
-use core::mem::{offset_of, size_of};
+use crate::regmap::{Access, FieldDesc};
+use core::mem::offset_of;
 
 #[derive(Copy, Clone)]
 #[repr(C)]
@@ -55,17 +55,72 @@ impl ControlStreaming {
     }
 }
 
-pub const CONTROL_BLOCKS: &[BlockDesc] = &[
-    BlockDesc {
-        addr_offset: 0,
-        size: size_of::<ControlLifecycle>() as u16,
-        struct_offset: offset_of!(ControlRegs, lifecycle) as u16,
+const LIFECYCLE_ADDR: u16 = 0;
+const LIFECYCLE_STRUCT: u16 = offset_of!(ControlRegs, lifecycle) as u16;
+const STREAMING_ADDR: u16 = CONTROL_BLOCK_SIZE as u16;
+const STREAMING_STRUCT: u16 = offset_of!(ControlRegs, streaming) as u16;
+
+pub const CONTROL_FIELDS: &[FieldDesc] = &[
+    // ControlLifecycle (skip _rsvd_align at +2..4 and trailing pad at +14..16)
+    FieldDesc {
+        addr_offset: LIFECYCLE_ADDR + offset_of!(ControlLifecycle, torque_enable) as u16,
+        size: 1,
+        struct_offset: LIFECYCLE_STRUCT + offset_of!(ControlLifecycle, torque_enable) as u16,
         access: Access::Rw,
     },
-    BlockDesc {
-        addr_offset: CONTROL_BLOCK_SIZE as u16,
-        size: size_of::<ControlStreaming>() as u16,
-        struct_offset: offset_of!(ControlRegs, streaming) as u16,
+    FieldDesc {
+        addr_offset: LIFECYCLE_ADDR + offset_of!(ControlLifecycle, mode) as u16,
+        size: 1,
+        struct_offset: LIFECYCLE_STRUCT + offset_of!(ControlLifecycle, mode) as u16,
+        access: Access::Rw,
+    },
+    FieldDesc {
+        addr_offset: LIFECYCLE_ADDR + offset_of!(ControlLifecycle, goal_position) as u16,
+        size: 4,
+        struct_offset: LIFECYCLE_STRUCT + offset_of!(ControlLifecycle, goal_position) as u16,
+        access: Access::Rw,
+    },
+    FieldDesc {
+        addr_offset: LIFECYCLE_ADDR + offset_of!(ControlLifecycle, goal_velocity) as u16,
+        size: 4,
+        struct_offset: LIFECYCLE_STRUCT + offset_of!(ControlLifecycle, goal_velocity) as u16,
+        access: Access::Rw,
+    },
+    FieldDesc {
+        addr_offset: LIFECYCLE_ADDR + offset_of!(ControlLifecycle, goal_effort) as u16,
+        size: 2,
+        struct_offset: LIFECYCLE_STRUCT + offset_of!(ControlLifecycle, goal_effort) as u16,
+        access: Access::Rw,
+    },
+    // ControlStreaming
+    FieldDesc {
+        addr_offset: STREAMING_ADDR + offset_of!(ControlStreaming, stream_enable) as u16,
+        size: 1,
+        struct_offset: STREAMING_STRUCT + offset_of!(ControlStreaming, stream_enable) as u16,
+        access: Access::Rw,
+    },
+    FieldDesc {
+        addr_offset: STREAMING_ADDR + offset_of!(ControlStreaming, stream_decimation) as u16,
+        size: 1,
+        struct_offset: STREAMING_STRUCT + offset_of!(ControlStreaming, stream_decimation) as u16,
+        access: Access::Rw,
+    },
+    FieldDesc {
+        addr_offset: STREAMING_ADDR + offset_of!(ControlStreaming, stream_duration_ms) as u16,
+        size: 2,
+        struct_offset: STREAMING_STRUCT + offset_of!(ControlStreaming, stream_duration_ms) as u16,
+        access: Access::Rw,
+    },
+    FieldDesc {
+        addr_offset: STREAMING_ADDR + offset_of!(ControlStreaming, stream_field_mask) as u16,
+        size: 4,
+        struct_offset: STREAMING_STRUCT + offset_of!(ControlStreaming, stream_field_mask) as u16,
+        access: Access::Rw,
+    },
+    FieldDesc {
+        addr_offset: STREAMING_ADDR + offset_of!(ControlStreaming, stream_dropped) as u16,
+        size: 4,
+        struct_offset: STREAMING_STRUCT + offset_of!(ControlStreaming, stream_dropped) as u16,
         access: Access::Rw,
     },
 ];

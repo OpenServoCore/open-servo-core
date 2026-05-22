@@ -1,6 +1,6 @@
 use crate::page::PageHeader;
 use crate::regions::CONFIG_BLOCK_SIZE;
-use crate::regmap::{Access, BlockDesc};
+use crate::regmap::{Access, FieldDesc};
 use core::mem::{offset_of, size_of};
 
 /// DXL X-series baud rate indices. V006 USART caps at 3 Mbps; indices 6–7
@@ -259,55 +259,227 @@ impl ConfigCalibration {
 }
 
 /// Block N starts at `CONFIG_BASE_ADDR + N * CONFIG_BLOCK_SIZE`;
-/// unlisted indices are reserved and return AccessError.
-pub const CONFIG_BLOCKS: &[BlockDesc] = &[
-    BlockDesc {
-        addr_offset: 0,
-        size: size_of::<ConfigIdentity>() as u16,
-        struct_offset: offset_of!(ConfigRegs, identity) as u16,
+/// gaps (incl. `_rsvd_align` padding) and unlisted indices return AccessError.
+const IDENTITY_ADDR: u16 = 0;
+const IDENTITY_STRUCT: u16 = offset_of!(ConfigRegs, identity) as u16;
+const COMMS_ADDR: u16 = CONFIG_BLOCK_SIZE as u16;
+const COMMS_STRUCT: u16 = offset_of!(ConfigRegs, comms) as u16;
+const POS_LIMITS_ADDR: u16 = 2 * CONFIG_BLOCK_SIZE as u16;
+const POS_LIMITS_STRUCT: u16 =
+    (offset_of!(ConfigRegs, limits) + offset_of!(ConfigLimits, pos)) as u16;
+const STALL_ADDR: u16 = 3 * CONFIG_BLOCK_SIZE as u16;
+const STALL_STRUCT: u16 = (offset_of!(ConfigRegs, safety) + offset_of!(ConfigSafety, stall)) as u16;
+const THERMAL_ADDR: u16 = 4 * CONFIG_BLOCK_SIZE as u16;
+const THERMAL_STRUCT: u16 =
+    (offset_of!(ConfigRegs, safety) + offset_of!(ConfigSafety, thermal)) as u16;
+const CTRL_POS_ADDR: u16 = 5 * CONFIG_BLOCK_SIZE as u16;
+const CTRL_POS_STRUCT: u16 =
+    (offset_of!(ConfigRegs, control) + offset_of!(ConfigControl, position)) as u16;
+const CALIBRATION_ADDR: u16 = 6 * CONFIG_BLOCK_SIZE as u16;
+const CALIBRATION_STRUCT: u16 = offset_of!(ConfigRegs, calibration) as u16;
+const HEADER_ADDR: u16 = 15 * CONFIG_BLOCK_SIZE as u16;
+const HEADER_STRUCT: u16 = offset_of!(ConfigRegs, header) as u16;
+
+pub const CONFIG_FIELDS: &[FieldDesc] = &[
+    // ConfigIdentity (RO)
+    FieldDesc {
+        addr_offset: IDENTITY_ADDR + offset_of!(ConfigIdentity, model_number) as u16,
+        size: 2,
+        struct_offset: IDENTITY_STRUCT + offset_of!(ConfigIdentity, model_number) as u16,
         access: Access::Ro,
     },
-    BlockDesc {
-        addr_offset: CONFIG_BLOCK_SIZE as u16,
-        size: size_of::<ConfigComms>() as u16,
-        struct_offset: offset_of!(ConfigRegs, comms) as u16,
+    FieldDesc {
+        addr_offset: IDENTITY_ADDR + offset_of!(ConfigIdentity, firmware_version) as u16,
+        size: 2,
+        struct_offset: IDENTITY_STRUCT + offset_of!(ConfigIdentity, firmware_version) as u16,
+        access: Access::Ro,
+    },
+    FieldDesc {
+        addr_offset: IDENTITY_ADDR + offset_of!(ConfigIdentity, hardware_revision) as u16,
+        size: 4,
+        struct_offset: IDENTITY_STRUCT + offset_of!(ConfigIdentity, hardware_revision) as u16,
+        access: Access::Ro,
+    },
+    FieldDesc {
+        addr_offset: IDENTITY_ADDR + offset_of!(ConfigIdentity, capability_flags) as u16,
+        size: 4,
+        struct_offset: IDENTITY_STRUCT + offset_of!(ConfigIdentity, capability_flags) as u16,
+        access: Access::Ro,
+    },
+    // ConfigComms
+    FieldDesc {
+        addr_offset: COMMS_ADDR + offset_of!(ConfigComms, id) as u16,
+        size: 1,
+        struct_offset: COMMS_STRUCT + offset_of!(ConfigComms, id) as u16,
         access: Access::Rw,
     },
-    BlockDesc {
-        addr_offset: 2 * CONFIG_BLOCK_SIZE as u16,
-        size: size_of::<ConfigPosLimits>() as u16,
-        struct_offset: (offset_of!(ConfigRegs, limits) + offset_of!(ConfigLimits, pos)) as u16,
+    FieldDesc {
+        addr_offset: COMMS_ADDR + offset_of!(ConfigComms, baud_rate_idx) as u16,
+        size: 1,
+        struct_offset: COMMS_STRUCT + offset_of!(ConfigComms, baud_rate_idx) as u16,
         access: Access::Rw,
     },
-    BlockDesc {
-        addr_offset: 3 * CONFIG_BLOCK_SIZE as u16,
-        size: size_of::<ConfigStall>() as u16,
-        struct_offset: (offset_of!(ConfigRegs, safety) + offset_of!(ConfigSafety, stall)) as u16,
+    FieldDesc {
+        addr_offset: COMMS_ADDR + offset_of!(ConfigComms, return_delay_us) as u16,
+        size: 2,
+        struct_offset: COMMS_STRUCT + offset_of!(ConfigComms, return_delay_us) as u16,
         access: Access::Rw,
     },
-    BlockDesc {
-        addr_offset: 4 * CONFIG_BLOCK_SIZE as u16,
-        size: size_of::<ConfigThermal>() as u16,
-        struct_offset: (offset_of!(ConfigRegs, safety) + offset_of!(ConfigSafety, thermal)) as u16,
+    // ConfigPosLimits
+    FieldDesc {
+        addr_offset: POS_LIMITS_ADDR + offset_of!(ConfigPosLimits, pos_min_phys_urad) as u16,
+        size: 4,
+        struct_offset: POS_LIMITS_STRUCT + offset_of!(ConfigPosLimits, pos_min_phys_urad) as u16,
         access: Access::Rw,
     },
-    BlockDesc {
-        addr_offset: 5 * CONFIG_BLOCK_SIZE as u16,
-        size: size_of::<ConfigControlPosition>() as u16,
-        struct_offset: (offset_of!(ConfigRegs, control) + offset_of!(ConfigControl, position))
-            as u16,
+    FieldDesc {
+        addr_offset: POS_LIMITS_ADDR + offset_of!(ConfigPosLimits, pos_max_phys_urad) as u16,
+        size: 4,
+        struct_offset: POS_LIMITS_STRUCT + offset_of!(ConfigPosLimits, pos_max_phys_urad) as u16,
         access: Access::Rw,
     },
-    BlockDesc {
-        addr_offset: 6 * CONFIG_BLOCK_SIZE as u16,
-        size: size_of::<ConfigCalibration>() as u16,
-        struct_offset: offset_of!(ConfigRegs, calibration) as u16,
+    FieldDesc {
+        addr_offset: POS_LIMITS_ADDR + offset_of!(ConfigPosLimits, pos_min_soft_urad) as u16,
+        size: 4,
+        struct_offset: POS_LIMITS_STRUCT + offset_of!(ConfigPosLimits, pos_min_soft_urad) as u16,
         access: Access::Rw,
     },
-    BlockDesc {
-        addr_offset: 15 * CONFIG_BLOCK_SIZE as u16,
+    FieldDesc {
+        addr_offset: POS_LIMITS_ADDR + offset_of!(ConfigPosLimits, pos_max_soft_urad) as u16,
+        size: 4,
+        struct_offset: POS_LIMITS_STRUCT + offset_of!(ConfigPosLimits, pos_max_soft_urad) as u16,
+        access: Access::Rw,
+    },
+    // ConfigStall (skip _rsvd_align at +1)
+    FieldDesc {
+        addr_offset: STALL_ADDR + offset_of!(ConfigStall, stall_response) as u16,
+        size: 1,
+        struct_offset: STALL_STRUCT + offset_of!(ConfigStall, stall_response) as u16,
+        access: Access::Rw,
+    },
+    FieldDesc {
+        addr_offset: STALL_ADDR + offset_of!(ConfigStall, stall_effort_threshold) as u16,
+        size: 2,
+        struct_offset: STALL_STRUCT + offset_of!(ConfigStall, stall_effort_threshold) as u16,
+        access: Access::Rw,
+    },
+    FieldDesc {
+        addr_offset: STALL_ADDR + offset_of!(ConfigStall, stall_motion_threshold_urad) as u16,
+        size: 4,
+        struct_offset: STALL_STRUCT + offset_of!(ConfigStall, stall_motion_threshold_urad) as u16,
+        access: Access::Rw,
+    },
+    FieldDesc {
+        addr_offset: STALL_ADDR + offset_of!(ConfigStall, stall_time_threshold_ms) as u16,
+        size: 2,
+        struct_offset: STALL_STRUCT + offset_of!(ConfigStall, stall_time_threshold_ms) as u16,
+        access: Access::Rw,
+    },
+    FieldDesc {
+        addr_offset: STALL_ADDR + offset_of!(ConfigStall, comply_release_window_ms) as u16,
+        size: 2,
+        struct_offset: STALL_STRUCT + offset_of!(ConfigStall, comply_release_window_ms) as u16,
+        access: Access::Rw,
+    },
+    // ConfigThermal
+    FieldDesc {
+        addr_offset: THERMAL_ADDR + offset_of!(ConfigThermal, motor_thermal_k_q88) as u16,
+        size: 2,
+        struct_offset: THERMAL_STRUCT + offset_of!(ConfigThermal, motor_thermal_k_q88) as u16,
+        access: Access::Rw,
+    },
+    FieldDesc {
+        addr_offset: THERMAL_ADDR + offset_of!(ConfigThermal, motor_thermal_tau_ms) as u16,
+        size: 2,
+        struct_offset: THERMAL_STRUCT + offset_of!(ConfigThermal, motor_thermal_tau_ms) as u16,
+        access: Access::Rw,
+    },
+    FieldDesc {
+        addr_offset: THERMAL_ADDR + offset_of!(ConfigThermal, winding_cutoff_cc) as u16,
+        size: 2,
+        struct_offset: THERMAL_STRUCT + offset_of!(ConfigThermal, winding_cutoff_cc) as u16,
+        access: Access::Rw,
+    },
+    FieldDesc {
+        addr_offset: THERMAL_ADDR + offset_of!(ConfigThermal, winding_recover_cc) as u16,
+        size: 2,
+        struct_offset: THERMAL_STRUCT + offset_of!(ConfigThermal, winding_recover_cc) as u16,
+        access: Access::Rw,
+    },
+    FieldDesc {
+        addr_offset: THERMAL_ADDR + offset_of!(ConfigThermal, v_undervolt_mv) as u16,
+        size: 2,
+        struct_offset: THERMAL_STRUCT + offset_of!(ConfigThermal, v_undervolt_mv) as u16,
+        access: Access::Rw,
+    },
+    // ConfigControlPosition (skip _rsvd_align at +6..8)
+    FieldDesc {
+        addr_offset: CTRL_POS_ADDR + offset_of!(ConfigControlPosition, pid_kp_q88) as u16,
+        size: 2,
+        struct_offset: CTRL_POS_STRUCT + offset_of!(ConfigControlPosition, pid_kp_q88) as u16,
+        access: Access::Rw,
+    },
+    FieldDesc {
+        addr_offset: CTRL_POS_ADDR + offset_of!(ConfigControlPosition, pid_ki_q88) as u16,
+        size: 2,
+        struct_offset: CTRL_POS_STRUCT + offset_of!(ConfigControlPosition, pid_ki_q88) as u16,
+        access: Access::Rw,
+    },
+    FieldDesc {
+        addr_offset: CTRL_POS_ADDR + offset_of!(ConfigControlPosition, pid_kd_q88) as u16,
+        size: 2,
+        struct_offset: CTRL_POS_STRUCT + offset_of!(ConfigControlPosition, pid_kd_q88) as u16,
+        access: Access::Rw,
+    },
+    FieldDesc {
+        addr_offset: CTRL_POS_ADDR + offset_of!(ConfigControlPosition, pid_i_limit) as u16,
+        size: 4,
+        struct_offset: CTRL_POS_STRUCT + offset_of!(ConfigControlPosition, pid_i_limit) as u16,
+        access: Access::Rw,
+    },
+    FieldDesc {
+        addr_offset: CTRL_POS_ADDR + offset_of!(ConfigControlPosition, pos_deadband_urad) as u16,
+        size: 4,
+        struct_offset: CTRL_POS_STRUCT
+            + offset_of!(ConfigControlPosition, pos_deadband_urad) as u16,
+        access: Access::Rw,
+    },
+    FieldDesc {
+        addr_offset: CTRL_POS_ADDR + offset_of!(ConfigControlPosition, pwm_deadband_pct) as u16,
+        size: 1,
+        struct_offset: CTRL_POS_STRUCT + offset_of!(ConfigControlPosition, pwm_deadband_pct) as u16,
+        access: Access::Rw,
+    },
+    FieldDesc {
+        addr_offset: CTRL_POS_ADDR + offset_of!(ConfigControlPosition, v_comp_enable) as u16,
+        size: 1,
+        struct_offset: CTRL_POS_STRUCT + offset_of!(ConfigControlPosition, v_comp_enable) as u16,
+        access: Access::Rw,
+    },
+    FieldDesc {
+        addr_offset: CTRL_POS_ADDR + offset_of!(ConfigControlPosition, max_effort) as u16,
+        size: 2,
+        struct_offset: CTRL_POS_STRUCT + offset_of!(ConfigControlPosition, max_effort) as u16,
+        access: Access::Rw,
+    },
+    FieldDesc {
+        addr_offset: CTRL_POS_ADDR + offset_of!(ConfigControlPosition, v_nominal_mv) as u16,
+        size: 2,
+        struct_offset: CTRL_POS_STRUCT + offset_of!(ConfigControlPosition, v_nominal_mv) as u16,
+        access: Access::Rw,
+    },
+    // ConfigCalibration (skip _rsvd_align at +2..4)
+    FieldDesc {
+        addr_offset: CALIBRATION_ADDR + offset_of!(ConfigCalibration, vdd_mv) as u16,
+        size: 2,
+        struct_offset: CALIBRATION_STRUCT + offset_of!(ConfigCalibration, vdd_mv) as u16,
+        access: Access::Rw,
+    },
+    // PageHeader (RO, host-opaque)
+    FieldDesc {
+        addr_offset: HEADER_ADDR,
         size: size_of::<PageHeader>() as u16,
-        struct_offset: offset_of!(ConfigRegs, header) as u16,
+        struct_offset: HEADER_STRUCT,
         access: Access::Ro,
     },
 ];

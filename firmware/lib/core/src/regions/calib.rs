@@ -1,6 +1,6 @@
 use crate::page::PageHeader;
 use crate::regions::CALIB_BLOCK_SIZE;
-use crate::regmap::{Access, BlockDesc};
+use crate::regmap::{Access, FieldDesc};
 use core::mem::{offset_of, size_of};
 
 #[derive(Copy, Clone)]
@@ -30,21 +30,55 @@ pub struct CalibRegs {
     pub bemf: BemfCalibBlock,
 }
 
-// Body = struct minus trailing PageHeader; header is persistence-layer only, not host-visible.
-const POT_LUT_BODY: u16 = (size_of::<PotLutBlock>() - size_of::<PageHeader>()) as u16;
-const BEMF_BODY: u16 = (size_of::<BemfCalibBlock>() - size_of::<PageHeader>()) as u16;
+// Trailing PageHeader is persistence-layer only; not in field tables.
+const POT_LUT_ADDR: u16 = 0;
+const POT_LUT_STRUCT: u16 = offset_of!(CalibRegs, pot_lut) as u16;
+const BEMF_ADDR: u16 = CALIB_BLOCK_SIZE as u16;
+const BEMF_STRUCT: u16 = offset_of!(CalibRegs, bemf) as u16;
 
-pub const CALIB_BLOCKS: &[BlockDesc] = &[
-    BlockDesc {
-        addr_offset: 0,
-        size: POT_LUT_BODY,
-        struct_offset: offset_of!(CalibRegs, pot_lut) as u16,
+pub const CALIB_FIELDS: &[FieldDesc] = &[
+    // PotLutBlock body (raw_min, raw_max, lut)
+    FieldDesc {
+        addr_offset: POT_LUT_ADDR + offset_of!(PotLutBlock, raw_min) as u16,
+        size: 2,
+        struct_offset: POT_LUT_STRUCT + offset_of!(PotLutBlock, raw_min) as u16,
         access: Access::Rw,
     },
-    BlockDesc {
-        addr_offset: CALIB_BLOCK_SIZE as u16,
-        size: BEMF_BODY,
-        struct_offset: offset_of!(CalibRegs, bemf) as u16,
+    FieldDesc {
+        addr_offset: POT_LUT_ADDR + offset_of!(PotLutBlock, raw_max) as u16,
+        size: 2,
+        struct_offset: POT_LUT_STRUCT + offset_of!(PotLutBlock, raw_max) as u16,
+        access: Access::Rw,
+    },
+    FieldDesc {
+        addr_offset: POT_LUT_ADDR + offset_of!(PotLutBlock, lut) as u16,
+        size: size_of::<[i32; 55]>() as u16,
+        struct_offset: POT_LUT_STRUCT + offset_of!(PotLutBlock, lut) as u16,
+        access: Access::Rw,
+    },
+    // BemfCalibBlock body (4 × u16)
+    FieldDesc {
+        addr_offset: BEMF_ADDR + offset_of!(BemfCalibBlock, ke_uvs_per_rad) as u16,
+        size: 2,
+        struct_offset: BEMF_STRUCT + offset_of!(BemfCalibBlock, ke_uvs_per_rad) as u16,
+        access: Access::Rw,
+    },
+    FieldDesc {
+        addr_offset: BEMF_ADDR + offset_of!(BemfCalibBlock, r_motor_mohm) as u16,
+        size: 2,
+        struct_offset: BEMF_STRUCT + offset_of!(BemfCalibBlock, r_motor_mohm) as u16,
+        access: Access::Rw,
+    },
+    FieldDesc {
+        addr_offset: BEMF_ADDR + offset_of!(BemfCalibBlock, calib_v_bus_mv) as u16,
+        size: 2,
+        struct_offset: BEMF_STRUCT + offset_of!(BemfCalibBlock, calib_v_bus_mv) as u16,
+        access: Access::Rw,
+    },
+    FieldDesc {
+        addr_offset: BEMF_ADDR + offset_of!(BemfCalibBlock, calib_i_ma) as u16,
+        size: 2,
+        struct_offset: BEMF_STRUCT + offset_of!(BemfCalibBlock, calib_i_ma) as u16,
         access: Access::Rw,
     },
 ];

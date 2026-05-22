@@ -1,6 +1,6 @@
 use crate::regions::TELEMETRY_BLOCK_SIZE;
-use crate::regmap::{Access, BlockDesc};
-use core::mem::{offset_of, size_of};
+use crate::regmap::{Access, FieldDesc};
+use core::mem::offset_of;
 
 #[derive(Copy, Clone)]
 #[repr(C)]
@@ -108,30 +108,157 @@ impl TelemetryRaw {
     }
 }
 
-/// All blocks RO from host; `fault_flags` clear-byte carve-out enforced one layer up.
-pub const TELEMETRY_BLOCKS: &[BlockDesc] = &[
-    BlockDesc {
-        addr_offset: 0,
-        size: size_of::<TelemetryConverted>() as u16,
-        struct_offset: offset_of!(TelemetryRegs, converted) as u16,
+/// All fields RO from host; `fault_flags` clear-byte carve-out enforced one layer up.
+const CONVERTED_ADDR: u16 = 0;
+const CONVERTED_STRUCT: u16 = offset_of!(TelemetryRegs, converted) as u16;
+const INTERM_ADDR: u16 = TELEMETRY_BLOCK_SIZE as u16;
+const INTERM_STRUCT: u16 = offset_of!(TelemetryRegs, intermediaries) as u16;
+const FAULT_ADDR: u16 = 2 * TELEMETRY_BLOCK_SIZE as u16;
+const FAULT_STRUCT: u16 = offset_of!(TelemetryRegs, fault) as u16;
+const RAW_ADDR: u16 = 3 * TELEMETRY_BLOCK_SIZE as u16;
+const RAW_STRUCT: u16 = offset_of!(TelemetryRegs, raw) as u16;
+
+pub const TELEMETRY_FIELDS: &[FieldDesc] = &[
+    // TelemetryConverted
+    FieldDesc {
+        addr_offset: CONVERTED_ADDR + offset_of!(TelemetryConverted, present_position) as u16,
+        size: 4,
+        struct_offset: CONVERTED_STRUCT + offset_of!(TelemetryConverted, present_position) as u16,
         access: Access::Ro,
     },
-    BlockDesc {
-        addr_offset: TELEMETRY_BLOCK_SIZE as u16,
-        size: size_of::<TelemetryIntermediaries>() as u16,
-        struct_offset: offset_of!(TelemetryRegs, intermediaries) as u16,
+    FieldDesc {
+        addr_offset: CONVERTED_ADDR + offset_of!(TelemetryConverted, present_velocity) as u16,
+        size: 4,
+        struct_offset: CONVERTED_STRUCT + offset_of!(TelemetryConverted, present_velocity) as u16,
         access: Access::Ro,
     },
-    BlockDesc {
-        addr_offset: 2 * TELEMETRY_BLOCK_SIZE as u16,
-        size: size_of::<TelemetryFault>() as u16,
-        struct_offset: offset_of!(TelemetryRegs, fault) as u16,
+    FieldDesc {
+        addr_offset: CONVERTED_ADDR + offset_of!(TelemetryConverted, present_current) as u16,
+        size: 2,
+        struct_offset: CONVERTED_STRUCT + offset_of!(TelemetryConverted, present_current) as u16,
         access: Access::Ro,
     },
-    BlockDesc {
-        addr_offset: 3 * TELEMETRY_BLOCK_SIZE as u16,
-        size: size_of::<TelemetryRaw>() as u16,
-        struct_offset: offset_of!(TelemetryRegs, raw) as u16,
+    FieldDesc {
+        addr_offset: CONVERTED_ADDR + offset_of!(TelemetryConverted, present_temp) as u16,
+        size: 2,
+        struct_offset: CONVERTED_STRUCT + offset_of!(TelemetryConverted, present_temp) as u16,
+        access: Access::Ro,
+    },
+    FieldDesc {
+        addr_offset: CONVERTED_ADDR + offset_of!(TelemetryConverted, present_vbus_mv) as u16,
+        size: 2,
+        struct_offset: CONVERTED_STRUCT + offset_of!(TelemetryConverted, present_vbus_mv) as u16,
+        access: Access::Ro,
+    },
+    // TelemetryIntermediaries (skip _rsvd_align at +6..8)
+    FieldDesc {
+        addr_offset: INTERM_ADDR + offset_of!(TelemetryIntermediaries, vbus_filt_mv) as u16,
+        size: 2,
+        struct_offset: INTERM_STRUCT + offset_of!(TelemetryIntermediaries, vbus_filt_mv) as u16,
+        access: Access::Ro,
+    },
+    FieldDesc {
+        addr_offset: INTERM_ADDR + offset_of!(TelemetryIntermediaries, t_winding_dc) as u16,
+        size: 2,
+        struct_offset: INTERM_STRUCT + offset_of!(TelemetryIntermediaries, t_winding_dc) as u16,
+        access: Access::Ro,
+    },
+    FieldDesc {
+        addr_offset: INTERM_ADDR + offset_of!(TelemetryIntermediaries, pwm_duty_actual) as u16,
+        size: 2,
+        struct_offset: INTERM_STRUCT + offset_of!(TelemetryIntermediaries, pwm_duty_actual) as u16,
+        access: Access::Ro,
+    },
+    FieldDesc {
+        addr_offset: INTERM_ADDR + offset_of!(TelemetryIntermediaries, pid_error_last) as u16,
+        size: 4,
+        struct_offset: INTERM_STRUCT + offset_of!(TelemetryIntermediaries, pid_error_last) as u16,
+        access: Access::Ro,
+    },
+    FieldDesc {
+        addr_offset: INTERM_ADDR + offset_of!(TelemetryIntermediaries, pid_output_last) as u16,
+        size: 4,
+        struct_offset: INTERM_STRUCT + offset_of!(TelemetryIntermediaries, pid_output_last) as u16,
+        access: Access::Ro,
+    },
+    FieldDesc {
+        addr_offset: INTERM_ADDR + offset_of!(TelemetryIntermediaries, internal_goal) as u16,
+        size: 4,
+        struct_offset: INTERM_STRUCT + offset_of!(TelemetryIntermediaries, internal_goal) as u16,
+        access: Access::Ro,
+    },
+    FieldDesc {
+        addr_offset: INTERM_ADDR + offset_of!(TelemetryIntermediaries, sample_tick) as u16,
+        size: 4,
+        struct_offset: INTERM_STRUCT + offset_of!(TelemetryIntermediaries, sample_tick) as u16,
+        access: Access::Ro,
+    },
+    // TelemetryFault
+    FieldDesc {
+        addr_offset: FAULT_ADDR + offset_of!(TelemetryFault, mode_active) as u16,
+        size: 1,
+        struct_offset: FAULT_STRUCT + offset_of!(TelemetryFault, mode_active) as u16,
+        access: Access::Ro,
+    },
+    FieldDesc {
+        addr_offset: FAULT_ADDR + offset_of!(TelemetryFault, fault_flags) as u16,
+        size: 1,
+        struct_offset: FAULT_STRUCT + offset_of!(TelemetryFault, fault_flags) as u16,
+        access: Access::Ro,
+    },
+    FieldDesc {
+        addr_offset: FAULT_ADDR + offset_of!(TelemetryFault, fault_code) as u16,
+        size: 1,
+        struct_offset: FAULT_STRUCT + offset_of!(TelemetryFault, fault_code) as u16,
+        access: Access::Ro,
+    },
+    // TelemetryRaw
+    FieldDesc {
+        addr_offset: RAW_ADDR + offset_of!(TelemetryRaw, raw_pos) as u16,
+        size: 2,
+        struct_offset: RAW_STRUCT + offset_of!(TelemetryRaw, raw_pos) as u16,
+        access: Access::Ro,
+    },
+    FieldDesc {
+        addr_offset: RAW_ADDR + offset_of!(TelemetryRaw, raw_current) as u16,
+        size: 2,
+        struct_offset: RAW_STRUCT + offset_of!(TelemetryRaw, raw_current) as u16,
+        access: Access::Ro,
+    },
+    FieldDesc {
+        addr_offset: RAW_ADDR + offset_of!(TelemetryRaw, raw_temp) as u16,
+        size: 2,
+        struct_offset: RAW_STRUCT + offset_of!(TelemetryRaw, raw_temp) as u16,
+        access: Access::Ro,
+    },
+    FieldDesc {
+        addr_offset: RAW_ADDR + offset_of!(TelemetryRaw, raw_vbus) as u16,
+        size: 2,
+        struct_offset: RAW_STRUCT + offset_of!(TelemetryRaw, raw_vbus) as u16,
+        access: Access::Ro,
+    },
+    FieldDesc {
+        addr_offset: RAW_ADDR + offset_of!(TelemetryRaw, raw_vmotor_a) as u16,
+        size: 2,
+        struct_offset: RAW_STRUCT + offset_of!(TelemetryRaw, raw_vmotor_a) as u16,
+        access: Access::Ro,
+    },
+    FieldDesc {
+        addr_offset: RAW_ADDR + offset_of!(TelemetryRaw, raw_vmotor_b) as u16,
+        size: 2,
+        struct_offset: RAW_STRUCT + offset_of!(TelemetryRaw, raw_vmotor_b) as u16,
+        access: Access::Ro,
+    },
+    FieldDesc {
+        addr_offset: RAW_ADDR + offset_of!(TelemetryRaw, raw_enc_a) as u16,
+        size: 2,
+        struct_offset: RAW_STRUCT + offset_of!(TelemetryRaw, raw_enc_a) as u16,
+        access: Access::Ro,
+    },
+    FieldDesc {
+        addr_offset: RAW_ADDR + offset_of!(TelemetryRaw, raw_enc_b) as u16,
+        size: 2,
+        struct_offset: RAW_STRUCT + offset_of!(TelemetryRaw, raw_enc_b) as u16,
         access: Access::Ro,
     },
 ];
