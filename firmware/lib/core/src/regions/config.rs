@@ -1,6 +1,7 @@
 use crate::page::PageHeader;
+use crate::regions::locks;
 use crate::regions::{CONFIG_BASE_ADDR, CONFIG_BLOCK_SIZE};
-use crate::regmap::{Access, BOOL_ALLOWED, CompareOp, CrossField, FieldDesc, Validator};
+use crate::regmap::{Access, BOOL_ALLOWED, CompareOp, CrossField, FieldDesc, RegionDef, Validator};
 use core::mem::{offset_of, size_of};
 
 /// DXL X-series baud rate indices. V006 USART caps at 3 Mbps; indices 6–7
@@ -579,40 +580,43 @@ pub static FIELD_HEADER: FieldDesc = FieldDesc {
     validators: &[],
 };
 
-pub const CONFIG_FIELDS: &[FieldDesc] = &[
-    FIELD_MODEL_NUMBER,
-    FIELD_FIRMWARE_VERSION,
-    FIELD_HARDWARE_REVISION,
-    FIELD_CAPABILITY_FLAGS,
-    FIELD_ID,
-    FIELD_BAUD_RATE_IDX,
-    FIELD_RETURN_DELAY_2US,
-    FIELD_POS_MIN_PHYS_URAD,
-    FIELD_POS_MAX_PHYS_URAD,
-    FIELD_POS_MIN_SOFT_URAD,
-    FIELD_POS_MAX_SOFT_URAD,
-    FIELD_STALL_RESPONSE,
-    FIELD_STALL_EFFORT_THRESHOLD,
-    FIELD_STALL_MOTION_THRESHOLD_URAD,
-    FIELD_STALL_TIME_THRESHOLD_MS,
-    FIELD_COMPLY_RELEASE_WINDOW_MS,
-    FIELD_MOTOR_THERMAL_K_Q88,
-    FIELD_MOTOR_THERMAL_TAU_MS,
-    FIELD_WINDING_CUTOFF_CC,
-    FIELD_WINDING_RECOVER_CC,
-    FIELD_V_UNDERVOLT_MV,
-    FIELD_PID_KP_Q88,
-    FIELD_PID_KI_Q88,
-    FIELD_PID_KD_Q88,
-    FIELD_PID_I_LIMIT,
-    FIELD_POS_DEADBAND_URAD,
-    FIELD_PWM_DEADBAND_PCT,
-    FIELD_V_COMP_ENABLE,
-    FIELD_MAX_EFFORT,
-    FIELD_V_NOMINAL_MV,
-    FIELD_VDD_MV,
-    FIELD_HEADER,
-];
+pub static CONFIG_REGION: RegionDef = RegionDef {
+    fields: &[
+        FIELD_MODEL_NUMBER,
+        FIELD_FIRMWARE_VERSION,
+        FIELD_HARDWARE_REVISION,
+        FIELD_CAPABILITY_FLAGS,
+        FIELD_ID,
+        FIELD_BAUD_RATE_IDX,
+        FIELD_RETURN_DELAY_2US,
+        FIELD_POS_MIN_PHYS_URAD,
+        FIELD_POS_MAX_PHYS_URAD,
+        FIELD_POS_MIN_SOFT_URAD,
+        FIELD_POS_MAX_SOFT_URAD,
+        FIELD_STALL_RESPONSE,
+        FIELD_STALL_EFFORT_THRESHOLD,
+        FIELD_STALL_MOTION_THRESHOLD_URAD,
+        FIELD_STALL_TIME_THRESHOLD_MS,
+        FIELD_COMPLY_RELEASE_WINDOW_MS,
+        FIELD_MOTOR_THERMAL_K_Q88,
+        FIELD_MOTOR_THERMAL_TAU_MS,
+        FIELD_WINDING_CUTOFF_CC,
+        FIELD_WINDING_RECOVER_CC,
+        FIELD_V_UNDERVOLT_MV,
+        FIELD_PID_KP_Q88,
+        FIELD_PID_KI_Q88,
+        FIELD_PID_KD_Q88,
+        FIELD_PID_I_LIMIT,
+        FIELD_POS_DEADBAND_URAD,
+        FIELD_PWM_DEADBAND_PCT,
+        FIELD_V_COMP_ENABLE,
+        FIELD_MAX_EFFORT,
+        FIELD_V_NOMINAL_MV,
+        FIELD_VDD_MV,
+        FIELD_HEADER,
+    ],
+    region_validators: &[locks::torque_locked],
+};
 
 impl ConfigRegs {
     pub const fn const_new() -> Self {

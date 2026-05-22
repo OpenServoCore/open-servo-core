@@ -1,5 +1,5 @@
 use crate::regions::{TELEMETRY_BASE_ADDR, TELEMETRY_BLOCK_SIZE};
-use crate::regmap::{Access, FieldDesc};
+use crate::regmap::{Access, FieldDesc, RegionDef};
 use core::mem::offset_of;
 
 #[derive(Copy, Clone)]
@@ -287,31 +287,34 @@ pub static FIELD_RAW_ENC_B: FieldDesc = FieldDesc {
     validators: &[],
 };
 
-pub const TELEMETRY_FIELDS: &[FieldDesc] = &[
-    FIELD_PRESENT_POSITION,
-    FIELD_PRESENT_VELOCITY,
-    FIELD_PRESENT_CURRENT,
-    FIELD_PRESENT_TEMP,
-    FIELD_PRESENT_VBUS_MV,
-    FIELD_VBUS_FILT_MV,
-    FIELD_T_WINDING_DC,
-    FIELD_PWM_DUTY_ACTUAL,
-    FIELD_PID_ERROR_LAST,
-    FIELD_PID_OUTPUT_LAST,
-    FIELD_INTERNAL_GOAL,
-    FIELD_SAMPLE_TICK,
-    FIELD_MODE_ACTIVE,
-    FIELD_FAULT_FLAGS,
-    FIELD_FAULT_CODE,
-    FIELD_RAW_POS,
-    FIELD_RAW_CURRENT,
-    FIELD_RAW_TEMP,
-    FIELD_RAW_VBUS,
-    FIELD_RAW_VMOTOR_A,
-    FIELD_RAW_VMOTOR_B,
-    FIELD_RAW_ENC_A,
-    FIELD_RAW_ENC_B,
-];
+pub static TELEMETRY_REGION: RegionDef = RegionDef {
+    fields: &[
+        FIELD_PRESENT_POSITION,
+        FIELD_PRESENT_VELOCITY,
+        FIELD_PRESENT_CURRENT,
+        FIELD_PRESENT_TEMP,
+        FIELD_PRESENT_VBUS_MV,
+        FIELD_VBUS_FILT_MV,
+        FIELD_T_WINDING_DC,
+        FIELD_PWM_DUTY_ACTUAL,
+        FIELD_PID_ERROR_LAST,
+        FIELD_PID_OUTPUT_LAST,
+        FIELD_INTERNAL_GOAL,
+        FIELD_SAMPLE_TICK,
+        FIELD_MODE_ACTIVE,
+        FIELD_FAULT_FLAGS,
+        FIELD_FAULT_CODE,
+        FIELD_RAW_POS,
+        FIELD_RAW_CURRENT,
+        FIELD_RAW_TEMP,
+        FIELD_RAW_VBUS,
+        FIELD_RAW_VMOTOR_A,
+        FIELD_RAW_VMOTOR_B,
+        FIELD_RAW_ENC_A,
+        FIELD_RAW_ENC_B,
+    ],
+    region_validators: &[],
+};
 
 impl TelemetryRegs {
     pub const fn const_new() -> Self {

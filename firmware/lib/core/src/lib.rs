@@ -25,8 +25,8 @@ pub use regions::{
     TelemetryRegs,
 };
 pub use regmap::{
-    Access, BOOL_ALLOWED, CompareOp, CrossField, FieldDesc, RegmapError, StagedView, StagedWrites,
-    ValidationKind, Validator,
+    Access, BOOL_ALLOWED, CompareOp, CrossField, FieldDesc, RegionDef, RegionValidator,
+    RegmapError, StagedView, StagedWrites, ValidationKind, Validator,
 };
 pub use ring_reader::{RingReader, RxSnapshot};
 pub use sample_frame::{FrameInputs, RawSamples, SampleFrame};

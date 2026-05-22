@@ -1,6 +1,6 @@
 use crate::regions::config;
 use crate::regions::{CONTROL_BASE_ADDR, CONTROL_BLOCK_SIZE};
-use crate::regmap::{Access, BOOL_ALLOWED, CrossField, FieldDesc, Validator};
+use crate::regmap::{Access, BOOL_ALLOWED, CrossField, FieldDesc, RegionDef, Validator};
 use core::mem::offset_of;
 
 /// Position controller mode. `repr(u8)` so the byte-level commit path round-trips
@@ -164,18 +164,21 @@ pub static FIELD_STREAM_DROPPED: FieldDesc = FieldDesc {
     validators: &[],
 };
 
-pub const CONTROL_FIELDS: &[FieldDesc] = &[
-    FIELD_TORQUE_ENABLE,
-    FIELD_MODE,
-    FIELD_GOAL_POSITION,
-    FIELD_GOAL_VELOCITY,
-    FIELD_GOAL_EFFORT,
-    FIELD_STREAM_ENABLE,
-    FIELD_STREAM_DECIMATION,
-    FIELD_STREAM_DURATION_MS,
-    FIELD_STREAM_FIELD_MASK,
-    FIELD_STREAM_DROPPED,
-];
+pub static CONTROL_REGION: RegionDef = RegionDef {
+    fields: &[
+        FIELD_TORQUE_ENABLE,
+        FIELD_MODE,
+        FIELD_GOAL_POSITION,
+        FIELD_GOAL_VELOCITY,
+        FIELD_GOAL_EFFORT,
+        FIELD_STREAM_ENABLE,
+        FIELD_STREAM_DECIMATION,
+        FIELD_STREAM_DURATION_MS,
+        FIELD_STREAM_FIELD_MASK,
+        FIELD_STREAM_DROPPED,
+    ],
+    region_validators: &[],
+};
 
 impl ControlRegs {
     pub const fn const_new() -> Self {

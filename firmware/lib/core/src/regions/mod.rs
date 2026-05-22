@@ -15,6 +15,7 @@ use core::cell::SyncUnsafeCell;
 pub mod calib;
 pub mod config;
 pub mod control;
+pub mod locks;
 pub mod telemetry;
 
 pub use calib::{BemfCalibBlock, CalibRegs, PotLutBlock};

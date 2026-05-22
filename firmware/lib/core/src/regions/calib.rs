@@ -1,6 +1,7 @@
 use crate::page::PageHeader;
+use crate::regions::locks;
 use crate::regions::{CALIB_BASE_ADDR, CALIB_BLOCK_SIZE};
-use crate::regmap::{Access, FieldDesc};
+use crate::regmap::{Access, FieldDesc, RegionDef};
 use core::mem::{offset_of, size_of};
 
 #[derive(Copy, Clone)]
@@ -89,15 +90,18 @@ pub static FIELD_CALIB_I_MA: FieldDesc = FieldDesc {
     validators: &[],
 };
 
-pub const CALIB_FIELDS: &[FieldDesc] = &[
-    FIELD_RAW_MIN,
-    FIELD_RAW_MAX,
-    FIELD_LUT,
-    FIELD_KE_UVS_PER_RAD,
-    FIELD_R_MOTOR_MOHM,
-    FIELD_CALIB_V_BUS_MV,
-    FIELD_CALIB_I_MA,
-];
+pub static CALIB_REGION: RegionDef = RegionDef {
+    fields: &[
+        FIELD_RAW_MIN,
+        FIELD_RAW_MAX,
+        FIELD_LUT,
+        FIELD_KE_UVS_PER_RAD,
+        FIELD_R_MOTOR_MOHM,
+        FIELD_CALIB_V_BUS_MV,
+        FIELD_CALIB_I_MA,
+    ],
+    region_validators: &[locks::torque_locked],
+};
 
 impl PotLutBlock {
     pub const fn const_new() -> Self {

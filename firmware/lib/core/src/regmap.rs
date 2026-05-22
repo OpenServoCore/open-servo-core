@@ -15,10 +15,10 @@
 
 use crate::ControlTable;
 use crate::log;
-use crate::regions::calib::CALIB_FIELDS;
-use crate::regions::config::CONFIG_FIELDS;
-use crate::regions::control::CONTROL_FIELDS;
-use crate::regions::telemetry::TELEMETRY_FIELDS;
+use crate::regions::calib::CALIB_REGION;
+use crate::regions::config::CONFIG_REGION;
+use crate::regions::control::CONTROL_REGION;
+use crate::regions::telemetry::TELEMETRY_REGION;
 use crate::regions::{
     CALIB_BASE_ADDR, CALIB_REGION_SIZE, CONFIG_BASE_ADDR, CONFIG_REGION_SIZE, CONTROL_BASE_ADDR,
     CONTROL_REGION_SIZE, TELEMETRY_BASE_ADDR, TELEMETRY_REGION_SIZE,
@@ -32,21 +32,16 @@ pub enum RegmapError {
     AccessError,
     /// Staging buffer has no room for this chunk.
     StagingFull,
-    /// A field validator rejected the staged value. All kinds map to wire `StatusError::DataRange`.
+    /// All kinds map to wire `StatusError::DataRange`.
     ValidationError(ValidationKind),
 }
 
-/// Which validator class rejected. Future kinds (e.g. `Locked` for torque-gated EEPROM)
-/// extend this enum; the dxl boundary keeps a single arm until they need a distinct wire code.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub enum ValidationKind {
-    /// Value not in the validator's allowed enum set.
     Enum,
-    /// Value outside the validator's inclusive range.
     Range,
-    /// Cross-field comparison (Compare/Within/MagBounded) rejected the value.
     Compare,
-    /// Caller-supplied `Validator::Custom` returned an error.
+    Locked,
     Custom,
 }
 
@@ -56,6 +51,7 @@ impl ValidationKind {
             ValidationKind::Enum => "enum",
             ValidationKind::Range => "range",
             ValidationKind::Compare => "compare",
+            ValidationKind::Locked => "locked",
             ValidationKind::Custom => "custom",
         }
     }
@@ -159,6 +155,13 @@ pub struct FieldDesc {
     pub struct_offset: u16,
     pub access: Access,
     pub validators: &'static [Validator],
+}
+
+pub type RegionValidator = fn(&StagedView) -> Result<(), RegmapError>;
+
+pub struct RegionDef {
+    pub fields: &'static [FieldDesc],
+    pub region_validators: &'static [RegionValidator],
 }
 
 /// Field-level value validator. Runs against a [`StagedView`] so it sees the
@@ -345,11 +348,9 @@ impl<'a> StagedView<'a> {
     }
 }
 
-/// (struct base ptr, field table) for the region containing `[addr, end)`.
-/// `None` if the range crosses or escapes every region.
 struct RegionRef {
     base: *mut u8,
-    fields: &'static [FieldDesc],
+    def: &'static RegionDef,
 }
 
 impl ControlTable {
@@ -362,7 +363,7 @@ impl ControlTable {
             .ok_or(RegmapError::OutOfRange)?;
         let r = self.region_for(addr, end).ok_or(RegmapError::OutOfRange)?;
         // SAFETY: get() non-null; descriptor sizes verified in `region_structs_fit_regions`.
-        unsafe { walk_read(r.base, addr, dst, r.fields) }
+        unsafe { walk_read(r.base, addr, dst, r.def.fields) }
     }
 
     /// Caller must be the region's sole writer (services for CONFIG/CONTROL/CALIB, kernel for TELEMETRY).
@@ -397,9 +398,13 @@ impl ControlTable {
         let r = self.region_for(addr, end).ok_or(RegmapError::OutOfRange)?;
         let saved_data = staged.data.len();
         let saved_entries = staged.entries.len();
-        let result = stage_write(addr, src, r.fields, staged).and_then(|()| {
-            run_field_validators(self, staged, saved_entries, addr, src.len(), r.fields)
-        });
+        let result = stage_write(addr, src, r.def.fields, staged)
+            .and_then(|()| {
+                run_field_validators(self, staged, saved_entries, addr, src.len(), r.def.fields)
+            })
+            .and_then(|()| {
+                run_region_validators(self, staged, saved_entries, r.def.region_validators)
+            });
         if result.is_err() {
             staged.rewind(saved_data, saved_entries);
         }
@@ -422,7 +427,7 @@ impl ControlTable {
             let Some(r) = self.region_for(abs_addr, end) else {
                 continue;
             };
-            unsafe { commit_chunk(r.base, abs_addr, data, r.fields) };
+            unsafe { commit_chunk(r.base, abs_addr, data, r.def.fields) };
         }
     }
 
@@ -430,22 +435,22 @@ impl ControlTable {
         if range_in(addr, end, CONFIG_BASE_ADDR, CONFIG_REGION_SIZE) {
             Some(RegionRef {
                 base: self.config.get() as *mut u8,
-                fields: CONFIG_FIELDS,
+                def: &CONFIG_REGION,
             })
         } else if range_in(addr, end, TELEMETRY_BASE_ADDR, TELEMETRY_REGION_SIZE) {
             Some(RegionRef {
                 base: self.telemetry.get() as *mut u8,
-                fields: TELEMETRY_FIELDS,
+                def: &TELEMETRY_REGION,
             })
         } else if range_in(addr, end, CONTROL_BASE_ADDR, CONTROL_REGION_SIZE) {
             Some(RegionRef {
                 base: self.control.get() as *mut u8,
-                fields: CONTROL_FIELDS,
+                def: &CONTROL_REGION,
             })
         } else if range_in(addr, end, CALIB_BASE_ADDR, CALIB_REGION_SIZE) {
             Some(RegionRef {
                 base: self.calib.get() as *mut u8,
-                fields: CALIB_FIELDS,
+                def: &CALIB_REGION,
             })
         } else {
             None
@@ -558,6 +563,31 @@ fn run_field_validators(
                 }
                 return Err(e);
             }
+        }
+    }
+    Ok(())
+}
+
+fn run_region_validators(
+    table: &ControlTable,
+    staged: &StagedWrites,
+    start_entry: usize,
+    validators: &[RegionValidator],
+) -> Result<(), RegmapError> {
+    if validators.is_empty() {
+        return Ok(());
+    }
+    let view = StagedView {
+        table,
+        staged,
+        start_entry,
+    };
+    for v in validators {
+        if let Err(e) = v(&view) {
+            if let RegmapError::ValidationError(kind) = e {
+                log::warn!("regmap: region validator rejected kind={}", kind.as_str());
+            }
+            return Err(e);
         }
     }
     Ok(())
@@ -869,7 +899,7 @@ mod tests {
     fn config_fields_sorted_and_bounded() {
         use crate::regions::CONFIG_REGION_SIZE;
         assert_fields_sorted_and_bounded(
-            CONFIG_FIELDS,
+            CONFIG_REGION.fields,
             CONFIG_BASE_ADDR + CONFIG_REGION_SIZE as u16,
         );
     }
@@ -878,7 +908,7 @@ mod tests {
     fn telemetry_fields_sorted_and_bounded() {
         use crate::regions::TELEMETRY_REGION_SIZE;
         assert_fields_sorted_and_bounded(
-            TELEMETRY_FIELDS,
+            TELEMETRY_REGION.fields,
             TELEMETRY_BASE_ADDR + TELEMETRY_REGION_SIZE as u16,
         );
     }
@@ -887,14 +917,17 @@ mod tests {
     fn control_fields_sorted_and_bounded() {
         use crate::regions::CONTROL_REGION_SIZE;
         assert_fields_sorted_and_bounded(
-            CONTROL_FIELDS,
+            CONTROL_REGION.fields,
             CONTROL_BASE_ADDR + CONTROL_REGION_SIZE as u16,
         );
     }
 
     #[test]
     fn calib_fields_sorted_and_bounded() {
-        assert_fields_sorted_and_bounded(CALIB_FIELDS, CALIB_BASE_ADDR + CALIB_REGION_SIZE as u16);
+        assert_fields_sorted_and_bounded(
+            CALIB_REGION.fields,
+            CALIB_BASE_ADDR + CALIB_REGION_SIZE as u16,
+        );
     }
 
     #[test]
@@ -1267,6 +1300,63 @@ mod tests {
             Err(RegmapError::ValidationError(ValidationKind::Custom)),
         );
         staged.rewind(saved_data, saved_entries);
+        assert!(staged.is_empty());
+    }
+
+    #[test]
+    fn config_write_rejected_when_torque_enabled() {
+        use crate::regions::control::FIELD_TORQUE_ENABLE;
+        let t = fresh();
+        write(&t, FIELD_TORQUE_ENABLE.addr, &[1]).unwrap();
+        let err = write(&t, CONFIG_BASE_ADDR + 32, &[0x42]).unwrap_err();
+        assert_eq!(err, RegmapError::ValidationError(ValidationKind::Locked));
+        assert_eq!(unsafe { &*t.config.get() }.comms.id, 0);
+    }
+
+    #[test]
+    fn config_write_accepted_when_torque_disabled() {
+        let t = fresh();
+        write(&t, CONFIG_BASE_ADDR + 32, &[0x42]).unwrap();
+        assert_eq!(unsafe { &*t.config.get() }.comms.id, 0x42);
+    }
+
+    #[test]
+    fn calib_write_rejected_when_torque_enabled() {
+        use crate::regions::control::FIELD_TORQUE_ENABLE;
+        let t = fresh();
+        write(&t, FIELD_TORQUE_ENABLE.addr, &[1]).unwrap();
+        let err = write(&t, CALIB_BASE_ADDR, &[0xAA, 0xBB]).unwrap_err();
+        assert_eq!(err, RegmapError::ValidationError(ValidationKind::Locked));
+    }
+
+    #[test]
+    fn control_writes_ignore_torque_lock() {
+        use crate::regions::control::FIELD_TORQUE_ENABLE;
+        let t = fresh();
+        write(&t, FIELD_TORQUE_ENABLE.addr, &[1]).unwrap();
+        write(&t, FIELD_TORQUE_ENABLE.addr, &[0]).unwrap();
+    }
+
+    #[test]
+    fn field_validation_surfaces_before_lock() {
+        // Out-of-range CONFIG write under torque must report Range, not Locked.
+        use crate::regions::control::FIELD_TORQUE_ENABLE;
+        let t = fresh();
+        write(&t, FIELD_TORQUE_ENABLE.addr, &[1]).unwrap();
+        let err = write(&t, CONFIG_BASE_ADDR + 32, &[253]).unwrap_err();
+        assert_eq!(err, RegmapError::ValidationError(ValidationKind::Range));
+    }
+
+    #[test]
+    fn locked_rejection_rewinds_staging() {
+        use crate::regions::control::FIELD_TORQUE_ENABLE;
+        let t = fresh();
+        write(&t, FIELD_TORQUE_ENABLE.addr, &[1]).unwrap();
+        let mut staged = StagedWrites::default();
+        let err = t
+            .stage_bytes(CONFIG_BASE_ADDR + 32, &[0x42], &mut staged)
+            .unwrap_err();
+        assert_eq!(err, RegmapError::ValidationError(ValidationKind::Locked));
         assert!(staged.is_empty());
     }
 }
