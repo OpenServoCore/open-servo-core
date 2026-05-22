@@ -121,7 +121,7 @@ pub const CONTROL_FIELDS: &[FieldDesc] = &[
         addr_offset: STREAMING_ADDR + offset_of!(ControlStreaming, stream_dropped) as u16,
         size: 4,
         struct_offset: STREAMING_STRUCT + offset_of!(ControlStreaming, stream_dropped) as u16,
-        access: Access::Rw,
+        access: Access::Ro,
     },
 ];
 

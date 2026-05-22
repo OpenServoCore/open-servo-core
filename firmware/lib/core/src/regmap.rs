@@ -389,7 +389,7 @@ mod tests {
     fn write_control_streaming_round_trip() {
         let t = fresh();
         let addr = CONTROL_BASE_ADDR + 32;
-        let mut payload = [0u8; 12];
+        let mut payload = [0u8; 8];
         payload[0] = 1;
         payload[1] = 4;
         payload[2..4].copy_from_slice(&500u16.to_le_bytes());
@@ -400,6 +400,23 @@ mod tests {
         assert_eq!(s.stream_decimation, 4);
         assert_eq!(s.stream_duration_ms, 500);
         assert_eq!(s.stream_field_mask, 0xAB);
+    }
+
+    #[test]
+    fn write_to_stream_dropped_fails() {
+        let t = fresh();
+        let addr = CONTROL_BASE_ADDR + 32 + 8;
+        let err = t.write_bytes(addr, &[0u8; 4]).unwrap_err();
+        assert_eq!(err, RegmapError::AccessError);
+    }
+
+    #[test]
+    fn read_from_stream_dropped_succeeds() {
+        let t = fresh();
+        let addr = CONTROL_BASE_ADDR + 32 + 8;
+        let mut buf = [0xAAu8; 4];
+        t.read_bytes(addr, &mut buf).unwrap();
+        assert_eq!(buf, [0u8; 4]);
     }
 
     #[test]
