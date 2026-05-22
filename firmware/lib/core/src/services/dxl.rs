@@ -1,6 +1,6 @@
 use dxl_protocol::prelude::*;
 
-use crate::{RegmapError, RingReader, RxSnapshot, Shared};
+use crate::{RegmapError, RingReader, RxSnapshot, Shared, StagedWrites};
 
 pub const DXL_SCRATCH_LEN: usize = 256;
 pub const MAX_READ: usize = 128;
@@ -16,12 +16,14 @@ pub trait DxlIo {
 
 pub struct Dxl {
     reader: RingReader<DXL_SCRATCH_LEN>,
+    staged: StagedWrites,
 }
 
 impl Dxl {
     pub const fn new() -> Self {
         Self {
             reader: RingReader::new(),
+            staged: StagedWrites::new(),
         }
     }
 
@@ -29,10 +31,15 @@ impl Dxl {
         let snap = io.rx_snapshot();
         self.reader.ingest(snap.ring(), snap.write_pos());
 
+        let mut d = Dispatcher {
+            shared,
+            io,
+            staged: &mut self.staged,
+        };
         loop {
             match parse_one(self.reader.peek()) {
                 Ok((packet, used)) => {
-                    dispatch(shared, io, &packet);
+                    d.dispatch(&packet);
                     self.reader.consume(used);
                 }
                 Err(ParseError::Incomplete) => break,
@@ -53,172 +60,179 @@ impl Default for Dxl {
     }
 }
 
-fn dispatch<D: DxlIo>(shared: &Shared, io: &mut D, packet: &Packet<'_>) {
-    match packet {
-        Packet::Ping(p) => handle_ping(shared, io, p),
-        Packet::Read(p) => handle_read(shared, io, p),
-        Packet::Write(p) => handle_write(shared, io, p),
-        Packet::RegWrite(p) => handle_reg_write(shared, io, p),
-        Packet::Action(p) => handle_action(shared, io, p),
-        Packet::FactoryReset(p) => handle_factory_reset(shared, io, p),
-        Packet::Reboot(p) => handle_reboot(shared, io, p),
-        Packet::Clear(p) => handle_clear(shared, io, p),
-        Packet::ControlTableBackup(p) => handle_control_table_backup(shared, io, p),
-        Packet::SyncRead(p) => handle_sync_read(shared, io, p),
-        Packet::SyncWrite(p) => handle_sync_write(shared, io, p),
-        Packet::BulkRead(p) => handle_bulk_read(shared, io, p),
-        Packet::BulkWrite(p) => handle_bulk_write(shared, io, p),
-        Packet::FastSyncRead(p) => handle_fast_sync_read(shared, io, p),
-        Packet::FastBulkRead(p) => handle_fast_bulk_read(shared, io, p),
-        // Status frames are what we *send*; if one shows up inbound it's another
-        // device on the bus — drop silently.
-        Packet::Status(_) => {}
-    }
+struct Dispatcher<'a, D: DxlIo> {
+    shared: &'a Shared,
+    io: &'a mut D,
+    staged: &'a mut StagedWrites,
 }
 
-fn addressed(shared: &Shared, target: u8) -> Option<(u8, bool)> {
-    // SAFETY: comms.id is a single byte; ISR contexts read but don't mutate.
-    let id = unsafe { (*shared.table.config.get()).comms.id };
-
-    if target == id {
-        Some((id, true))
-    } else if target == BROADCAST_ID {
-        Some((id, false))
-    } else {
-        None
+impl<D: DxlIo> Dispatcher<'_, D> {
+    fn dispatch(&mut self, packet: &Packet<'_>) {
+        match packet {
+            Packet::Ping(p) => self.handle_ping(p),
+            Packet::Read(p) => self.handle_read(p),
+            Packet::Write(p) => self.handle_write(p),
+            Packet::RegWrite(p) => self.handle_reg_write(p),
+            Packet::Action(p) => self.handle_action(p),
+            Packet::FactoryReset(p) => self.handle_factory_reset(p),
+            Packet::Reboot(p) => self.handle_reboot(p),
+            Packet::Clear(p) => self.handle_clear(p),
+            Packet::ControlTableBackup(p) => self.handle_control_table_backup(p),
+            Packet::SyncRead(p) => self.handle_sync_read(p),
+            Packet::SyncWrite(p) => self.handle_sync_write(p),
+            Packet::BulkRead(p) => self.handle_bulk_read(p),
+            Packet::BulkWrite(p) => self.handle_bulk_write(p),
+            Packet::FastSyncRead(p) => self.handle_fast_sync_read(p),
+            Packet::FastBulkRead(p) => self.handle_fast_bulk_read(p),
+            // Inbound Status frames originate from another device on the bus; drop.
+            Packet::Status(_) => {}
+        }
     }
-}
 
-fn reply_unsupported<D: DxlIo>(shared: &Shared, io: &mut D, target: u8) {
-    if let Some((id, true)) = addressed(shared, target) {
-        send_status(io, id, StatusError::Instruction, &[]);
+    fn addressed(&self, target: u8) -> Option<(u8, bool)> {
+        // SAFETY: comms.id is a single byte; ISR contexts read but don't mutate.
+        let id = unsafe { (*self.shared.table.config.get()).comms.id };
+        if target == id {
+            Some((id, true))
+        } else if target == BROADCAST_ID {
+            Some((id, false))
+        } else {
+            None
+        }
     }
-}
 
-fn handle_ping<D: DxlIo>(shared: &Shared, io: &mut D, p: &PingPacket) {
-    let Some((id, _)) = addressed(shared, p.id) else {
-        return;
-    };
-    // SAFETY: identity is read-only after seed_config_defaults; no concurrent writers.
-    let identity = unsafe { (*shared.table.config.get()).identity };
-    let model = identity.model_number.to_le_bytes();
-    let fw = identity.firmware_version as u8;
-    let params = [model[0], model[1], fw];
-    send_status(io, id, StatusError::None, &params);
-}
-
-fn handle_read<D: DxlIo>(shared: &Shared, io: &mut D, p: &ReadPacket) {
-    let Some((id, true)) = addressed(shared, p.id) else {
-        return;
-    };
-    let len = p.length as usize;
-    if len == 0 || len > MAX_READ {
-        send_status(io, id, StatusError::DataRange, &[]);
-        return;
+    fn reply_unsupported(&mut self, target: u8) {
+        if let Some((id, true)) = self.addressed(target) {
+            self.send_status(id, StatusError::Instruction, &[]);
+        }
     }
-    let mut buf = [0u8; MAX_READ];
-    match shared.table.read_bytes(p.address, &mut buf[..len]) {
-        Ok(()) => send_status(io, id, StatusError::None, &buf[..len]),
-        Err(RegmapError::OutOfRange) => send_status(io, id, StatusError::DataRange, &[]),
-        Err(RegmapError::AccessError) => send_status(io, id, StatusError::Access, &[]),
-    }
-}
 
-fn handle_write<D: DxlIo>(shared: &Shared, io: &mut D, p: &WritePacket<'_>) {
-    let Some((id, direct)) = addressed(shared, p.id) else {
-        return;
-    };
-
-    let mut buf = [0u8; MAX_WRITE];
-    let len = match p.data.copy_into(&mut buf) {
-        Ok(n) => n,
-        Err(_) => {
-            if direct {
-                send_status(io, id, StatusError::DataRange, &[]);
-            }
+    fn send_status(&mut self, id: u8, error: StatusError, params: &[u8]) {
+        let buf = self.io.tx_buf();
+        buf.truncate(0);
+        let packet = Packet::Status(StatusPacket::new(id, error.as_u8(), params));
+        if write(buf, &packet).is_err() {
+            buf.truncate(0);
             return;
         }
-    };
-
-    let result = shared.table.write_bytes(p.address, &buf[..len]);
-    if !direct {
-        return;
+        self.io.start_tx();
     }
-    match result {
-        Ok(()) => send_status(io, id, StatusError::None, &[]),
-        Err(RegmapError::OutOfRange) => send_status(io, id, StatusError::DataRange, &[]),
-        Err(RegmapError::AccessError) => send_status(io, id, StatusError::Access, &[]),
+
+    fn handle_ping(&mut self, p: &PingPacket) {
+        let Some((id, _)) = self.addressed(p.id) else {
+            return;
+        };
+        // SAFETY: identity is read-only after seed_config_defaults; no concurrent writers.
+        let identity = unsafe { (*self.shared.table.config.get()).identity };
+        let model = identity.model_number.to_le_bytes();
+        let fw = identity.firmware_version as u8;
+        let params = [model[0], model[1], fw];
+        self.send_status(id, StatusError::None, &params);
     }
-}
 
-fn handle_reg_write<D: DxlIo>(shared: &Shared, io: &mut D, p: &RegWritePacket<'_>) {
-    // TODO: stage write into pending buffer; commit on Action.
-    reply_unsupported(shared, io, p.id);
-}
-
-fn handle_action<D: DxlIo>(shared: &Shared, io: &mut D, p: &ActionPacket) {
-    // TODO: commit pending RegWrite. Applies on broadcast too.
-    reply_unsupported(shared, io, p.id);
-}
-
-fn handle_factory_reset<D: DxlIo>(shared: &Shared, io: &mut D, p: &FactoryResetPacket) {
-    // TODO: reset CONFIG (and per-mode CALIB) to defaults, then reboot.
-    reply_unsupported(shared, io, p.id);
-}
-
-fn handle_reboot<D: DxlIo>(shared: &Shared, io: &mut D, p: &RebootPacket) {
-    // TODO: ack with Status, wait for TX TC, then trigger soft reset.
-    reply_unsupported(shared, io, p.id);
-}
-
-fn handle_clear<D: DxlIo>(shared: &Shared, io: &mut D, p: &ClearPacket<'_>) {
-    // TODO: clear multi-turn revolution counter (option 0x01, key "CLR\0").
-    reply_unsupported(shared, io, p.id);
-}
-
-fn handle_control_table_backup<D: DxlIo>(
-    shared: &Shared,
-    io: &mut D,
-    p: &ControlTableBackupPacket<'_>,
-) {
-    // TODO: store/restore CONFIG snapshot to a third flash slot (key "CTRL").
-    reply_unsupported(shared, io, p.id);
-}
-
-fn handle_sync_read<D: DxlIo>(_shared: &Shared, _io: &mut D, _p: &SyncReadPacket<'_>) {
-    // TODO: if our id appears in the list, reply in slot order using the
-    //       bus-turnaround timer (TIM3-SLTM) so slaves don't talk over each other.
-}
-
-fn handle_sync_write<D: DxlIo>(_shared: &Shared, _io: &mut D, _p: &SyncWritePacket<'_>) {
-    // TODO: scan (id, length-byte chunk) pairs, apply our chunk silently.
-}
-
-fn handle_bulk_read<D: DxlIo>(_shared: &Shared, _io: &mut D, _p: &BulkReadPacket<'_>) {
-    // TODO: scan (id, address, length) triples; reply in slot order.
-}
-
-fn handle_bulk_write<D: DxlIo>(_shared: &Shared, _io: &mut D, _p: &BulkWritePacket<'_>) {
-    // TODO: scan (id, address, length, data) tuples; apply our chunk silently.
-}
-
-fn handle_fast_sync_read<D: DxlIo>(_shared: &Shared, _io: &mut D, _p: &FastSyncReadPacket<'_>) {
-    // TODO: like sync_read but coalesced single-frame response.
-}
-
-fn handle_fast_bulk_read<D: DxlIo>(_shared: &Shared, _io: &mut D, _p: &FastBulkReadPacket<'_>) {
-    // TODO: like bulk_read but coalesced single-frame response.
-}
-
-fn send_status<D: DxlIo>(io: &mut D, id: u8, error: StatusError, params: &[u8]) {
-    let buf = io.tx_buf();
-    buf.truncate(0);
-    let packet = Packet::Status(StatusPacket::new(id, error.as_u8(), params));
-    if write(buf, &packet).is_err() {
-        buf.truncate(0);
-        return;
+    fn handle_read(&mut self, p: &ReadPacket) {
+        let Some((id, true)) = self.addressed(p.id) else {
+            return;
+        };
+        let len = p.length as usize;
+        if len == 0 || len > MAX_READ {
+            self.send_status(id, StatusError::DataRange, &[]);
+            return;
+        }
+        let mut buf = [0u8; MAX_READ];
+        match self.shared.table.read_bytes(p.address, &mut buf[..len]) {
+            Ok(()) => self.send_status(id, StatusError::None, &buf[..len]),
+            Err(RegmapError::OutOfRange) => self.send_status(id, StatusError::DataRange, &[]),
+            Err(RegmapError::AccessError) => self.send_status(id, StatusError::Access, &[]),
+            Err(RegmapError::StagingFull) => self.send_status(id, StatusError::DataRange, &[]),
+        }
     }
-    io.start_tx();
+
+    fn handle_write(&mut self, p: &WritePacket<'_>) {
+        let Some((id, direct)) = self.addressed(p.id) else {
+            return;
+        };
+
+        let mut buf = [0u8; MAX_WRITE];
+        let len = match p.data.copy_into(&mut buf) {
+            Ok(n) => n,
+            Err(_) => {
+                if direct {
+                    self.send_status(id, StatusError::DataRange, &[]);
+                }
+                return;
+            }
+        };
+
+        let result = self
+            .shared
+            .table
+            .write_bytes(p.address, &buf[..len], self.staged);
+        if !direct {
+            return;
+        }
+        match result {
+            Ok(()) => self.send_status(id, StatusError::None, &[]),
+            Err(RegmapError::OutOfRange) => self.send_status(id, StatusError::DataRange, &[]),
+            Err(RegmapError::AccessError) => self.send_status(id, StatusError::Access, &[]),
+            Err(RegmapError::StagingFull) => self.send_status(id, StatusError::DataRange, &[]),
+        }
+    }
+
+    fn handle_reg_write(&mut self, p: &RegWritePacket<'_>) {
+        // TODO: stage write into pending buffer; commit on Action.
+        self.reply_unsupported(p.id);
+    }
+
+    fn handle_action(&mut self, p: &ActionPacket) {
+        // TODO: commit pending RegWrite. Applies on broadcast too.
+        self.reply_unsupported(p.id);
+    }
+
+    fn handle_factory_reset(&mut self, p: &FactoryResetPacket) {
+        // TODO: reset CONFIG (and per-mode CALIB) to defaults, then reboot.
+        self.reply_unsupported(p.id);
+    }
+
+    fn handle_reboot(&mut self, p: &RebootPacket) {
+        // TODO: ack with Status, wait for TX TC, then trigger soft reset.
+        self.reply_unsupported(p.id);
+    }
+
+    fn handle_clear(&mut self, p: &ClearPacket<'_>) {
+        // TODO: clear multi-turn revolution counter (option 0x01, key "CLR\0").
+        self.reply_unsupported(p.id);
+    }
+
+    fn handle_control_table_backup(&mut self, p: &ControlTableBackupPacket<'_>) {
+        // TODO: store/restore CONFIG snapshot to a third flash slot (key "CTRL").
+        self.reply_unsupported(p.id);
+    }
+
+    fn handle_sync_read(&mut self, _p: &SyncReadPacket<'_>) {
+        // TODO: if our id appears in the list, reply in slot order using the
+        //       bus-turnaround timer (TIM3-SLTM) so slaves don't talk over each other.
+    }
+
+    fn handle_sync_write(&mut self, _p: &SyncWritePacket<'_>) {
+        // TODO: scan (id, length-byte chunk) pairs, apply our chunk silently.
+    }
+
+    fn handle_bulk_read(&mut self, _p: &BulkReadPacket<'_>) {
+        // TODO: scan (id, address, length) triples; reply in slot order.
+    }
+
+    fn handle_bulk_write(&mut self, _p: &BulkWritePacket<'_>) {
+        // TODO: scan (id, address, length, data) tuples; apply our chunk silently.
+    }
+
+    fn handle_fast_sync_read(&mut self, _p: &FastSyncReadPacket<'_>) {
+        // TODO: like sync_read but coalesced single-frame response.
+    }
+
+    fn handle_fast_bulk_read(&mut self, _p: &FastBulkReadPacket<'_>) {
+        // TODO: like bulk_read but coalesced single-frame response.
+    }
 }
 
 #[cfg(test)]
