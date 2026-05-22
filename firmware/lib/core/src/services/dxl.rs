@@ -4,6 +4,7 @@ use crate::{RegmapError, RingReader, RxSnapshot, Shared};
 
 pub const DXL_SCRATCH_LEN: usize = 256;
 pub const MAX_READ: usize = 128;
+pub const MAX_WRITE: usize = 128;
 
 pub trait DxlIo {
     type TxBuf: WriteBuf;
@@ -53,52 +54,51 @@ impl Default for Dxl {
 }
 
 fn dispatch<D: DxlIo>(shared: &Shared, io: &mut D, packet: &Packet<'_>) {
-    let our_id = our_id(shared);
-    let target_id = packet_id(packet);
-
-    let respond = match (packet, target_id) {
-        (Packet::Ping(_), Some(id)) => id == our_id || id == BROADCAST_ID,
-        (_, Some(id)) => id == our_id,
-        (_, None) => false,
-    };
-    if !respond {
-        return;
-    }
-
     match packet {
-        Packet::Ping(_) => send_ping_status(shared, io, our_id),
-        Packet::Read(p) => send_read_status(shared, io, our_id, p.address, p.length),
-        _ => send_status(io, our_id, StatusError::Instruction, &[]),
+        Packet::Ping(p) => handle_ping(shared, io, p),
+        Packet::Read(p) => handle_read(shared, io, p),
+        Packet::Write(p) => handle_write(shared, io, p),
+        Packet::RegWrite(p) => handle_reg_write(shared, io, p),
+        Packet::Action(p) => handle_action(shared, io, p),
+        Packet::FactoryReset(p) => handle_factory_reset(shared, io, p),
+        Packet::Reboot(p) => handle_reboot(shared, io, p),
+        Packet::Clear(p) => handle_clear(shared, io, p),
+        Packet::ControlTableBackup(p) => handle_control_table_backup(shared, io, p),
+        Packet::SyncRead(p) => handle_sync_read(shared, io, p),
+        Packet::SyncWrite(p) => handle_sync_write(shared, io, p),
+        Packet::BulkRead(p) => handle_bulk_read(shared, io, p),
+        Packet::BulkWrite(p) => handle_bulk_write(shared, io, p),
+        Packet::FastSyncRead(p) => handle_fast_sync_read(shared, io, p),
+        Packet::FastBulkRead(p) => handle_fast_bulk_read(shared, io, p),
+        // Status frames are what we *send*; if one shows up inbound it's another
+        // device on the bus — drop silently.
+        Packet::Status(_) => {}
     }
 }
 
-fn our_id(shared: &Shared) -> u8 {
+fn addressed(shared: &Shared, target: u8) -> Option<(u8, bool)> {
     // SAFETY: comms.id is a single byte; ISR contexts read but don't mutate.
-    unsafe { (*shared.table.config.get()).comms.id }
-}
+    let id = unsafe { (*shared.table.config.get()).comms.id };
 
-fn packet_id(packet: &Packet<'_>) -> Option<u8> {
-    match packet {
-        Packet::Ping(p) => Some(p.id),
-        Packet::Read(p) => Some(p.id),
-        Packet::Write(p) => Some(p.id),
-        Packet::RegWrite(p) => Some(p.id),
-        Packet::Action(p) => Some(p.id),
-        Packet::FactoryReset(p) => Some(p.id),
-        Packet::Reboot(p) => Some(p.id),
-        Packet::Clear(p) => Some(p.id),
-        Packet::ControlTableBackup(p) => Some(p.id),
-        Packet::Status(p) => Some(p.id),
-        Packet::SyncRead(_)
-        | Packet::SyncWrite(_)
-        | Packet::BulkRead(_)
-        | Packet::BulkWrite(_)
-        | Packet::FastSyncRead(_)
-        | Packet::FastBulkRead(_) => None,
+    if target == id {
+        Some((id, true))
+    } else if target == BROADCAST_ID {
+        Some((id, false))
+    } else {
+        None
     }
 }
 
-fn send_ping_status<D: DxlIo>(shared: &Shared, io: &mut D, id: u8) {
+fn reply_unsupported<D: DxlIo>(shared: &Shared, io: &mut D, target: u8) {
+    if let Some((id, true)) = addressed(shared, target) {
+        send_status(io, id, StatusError::Instruction, &[]);
+    }
+}
+
+fn handle_ping<D: DxlIo>(shared: &Shared, io: &mut D, p: &PingPacket) {
+    let Some((id, _)) = addressed(shared, p.id) else {
+        return;
+    };
     // SAFETY: identity is read-only after seed_config_defaults; no concurrent writers.
     let identity = unsafe { (*shared.table.config.get()).identity };
     let model = identity.model_number.to_le_bytes();
@@ -107,19 +107,107 @@ fn send_ping_status<D: DxlIo>(shared: &Shared, io: &mut D, id: u8) {
     send_status(io, id, StatusError::None, &params);
 }
 
-fn send_read_status<D: DxlIo>(shared: &Shared, io: &mut D, id: u8, address: u16, length: u16) {
-    let len = length as usize;
+fn handle_read<D: DxlIo>(shared: &Shared, io: &mut D, p: &ReadPacket) {
+    let Some((id, true)) = addressed(shared, p.id) else {
+        return;
+    };
+    let len = p.length as usize;
     if len == 0 || len > MAX_READ {
         send_status(io, id, StatusError::DataRange, &[]);
         return;
     }
-
     let mut buf = [0u8; MAX_READ];
-    match shared.table.read_bytes(address, &mut buf[..len]) {
+    match shared.table.read_bytes(p.address, &mut buf[..len]) {
         Ok(()) => send_status(io, id, StatusError::None, &buf[..len]),
         Err(RegmapError::OutOfRange) => send_status(io, id, StatusError::DataRange, &[]),
         Err(RegmapError::AccessError) => send_status(io, id, StatusError::Access, &[]),
     }
+}
+
+fn handle_write<D: DxlIo>(shared: &Shared, io: &mut D, p: &WritePacket<'_>) {
+    let Some((id, direct)) = addressed(shared, p.id) else {
+        return;
+    };
+
+    let mut buf = [0u8; MAX_WRITE];
+    let len = match p.data.copy_into(&mut buf) {
+        Ok(n) => n,
+        Err(_) => {
+            if direct {
+                send_status(io, id, StatusError::DataRange, &[]);
+            }
+            return;
+        }
+    };
+
+    let result = shared.table.write_bytes(p.address, &buf[..len]);
+    if !direct {
+        return;
+    }
+    match result {
+        Ok(()) => send_status(io, id, StatusError::None, &[]),
+        Err(RegmapError::OutOfRange) => send_status(io, id, StatusError::DataRange, &[]),
+        Err(RegmapError::AccessError) => send_status(io, id, StatusError::Access, &[]),
+    }
+}
+
+fn handle_reg_write<D: DxlIo>(shared: &Shared, io: &mut D, p: &RegWritePacket<'_>) {
+    // TODO: stage write into pending buffer; commit on Action.
+    reply_unsupported(shared, io, p.id);
+}
+
+fn handle_action<D: DxlIo>(shared: &Shared, io: &mut D, p: &ActionPacket) {
+    // TODO: commit pending RegWrite. Applies on broadcast too.
+    reply_unsupported(shared, io, p.id);
+}
+
+fn handle_factory_reset<D: DxlIo>(shared: &Shared, io: &mut D, p: &FactoryResetPacket) {
+    // TODO: reset CONFIG (and per-mode CALIB) to defaults, then reboot.
+    reply_unsupported(shared, io, p.id);
+}
+
+fn handle_reboot<D: DxlIo>(shared: &Shared, io: &mut D, p: &RebootPacket) {
+    // TODO: ack with Status, wait for TX TC, then trigger soft reset.
+    reply_unsupported(shared, io, p.id);
+}
+
+fn handle_clear<D: DxlIo>(shared: &Shared, io: &mut D, p: &ClearPacket<'_>) {
+    // TODO: clear multi-turn revolution counter (option 0x01, key "CLR\0").
+    reply_unsupported(shared, io, p.id);
+}
+
+fn handle_control_table_backup<D: DxlIo>(
+    shared: &Shared,
+    io: &mut D,
+    p: &ControlTableBackupPacket<'_>,
+) {
+    // TODO: store/restore CONFIG snapshot to a third flash slot (key "CTRL").
+    reply_unsupported(shared, io, p.id);
+}
+
+fn handle_sync_read<D: DxlIo>(_shared: &Shared, _io: &mut D, _p: &SyncReadPacket<'_>) {
+    // TODO: if our id appears in the list, reply in slot order using the
+    //       bus-turnaround timer (TIM3-SLTM) so slaves don't talk over each other.
+}
+
+fn handle_sync_write<D: DxlIo>(_shared: &Shared, _io: &mut D, _p: &SyncWritePacket<'_>) {
+    // TODO: scan (id, length-byte chunk) pairs, apply our chunk silently.
+}
+
+fn handle_bulk_read<D: DxlIo>(_shared: &Shared, _io: &mut D, _p: &BulkReadPacket<'_>) {
+    // TODO: scan (id, address, length) triples; reply in slot order.
+}
+
+fn handle_bulk_write<D: DxlIo>(_shared: &Shared, _io: &mut D, _p: &BulkWritePacket<'_>) {
+    // TODO: scan (id, address, length, data) tuples; apply our chunk silently.
+}
+
+fn handle_fast_sync_read<D: DxlIo>(_shared: &Shared, _io: &mut D, _p: &FastSyncReadPacket<'_>) {
+    // TODO: like sync_read but coalesced single-frame response.
+}
+
+fn handle_fast_bulk_read<D: DxlIo>(_shared: &Shared, _io: &mut D, _p: &FastBulkReadPacket<'_>) {
+    // TODO: like bulk_read but coalesced single-frame response.
 }
 
 fn send_status<D: DxlIo>(io: &mut D, id: u8, error: StatusError, params: &[u8]) {
@@ -283,11 +371,101 @@ mod tests {
         let mut io = FakeDxlIo::new();
         let mut h = Dxl::new();
 
-        let req = encode(&Packet::Write(WritePacket::new(0, 0, &[0x01])));
+        let req = encode(&Packet::Reboot(RebootPacket::new(0)));
         io.feed(&req);
         h.poll(&shared, &mut io);
 
         let (_, err, _) = parse_status(&io.tx);
         assert_eq!(err, StatusError::Instruction.as_u8());
+    }
+
+    #[test]
+    fn write_to_rw_address_succeeds_and_mutates() {
+        use crate::regions::CONTROL_BASE_ADDR;
+        let shared = Shared::const_new();
+        let mut io = FakeDxlIo::new();
+        let mut h = Dxl::new();
+
+        let req = encode(&Packet::Write(WritePacket::new(0, CONTROL_BASE_ADDR, &[1])));
+        io.feed(&req);
+        h.poll(&shared, &mut io);
+
+        let (id, err, params) = parse_status(&io.tx);
+        assert_eq!(id, 0);
+        assert_eq!(err, 0);
+        assert!(params.is_empty());
+        let lc = unsafe { &*shared.table.control.get() }.lifecycle;
+        assert_eq!(lc.torque_enable, 1);
+    }
+
+    #[test]
+    fn write_to_ro_address_replies_access_error() {
+        let shared = Shared::const_new();
+        let mut io = FakeDxlIo::new();
+        let mut h = Dxl::new();
+
+        // CONFIG addr 0 is identity.model_number (RO).
+        let req = encode(&Packet::Write(WritePacket::new(0, 0, &[0xAA, 0xBB])));
+        io.feed(&req);
+        h.poll(&shared, &mut io);
+
+        let (_, err, _) = parse_status(&io.tx);
+        assert_eq!(err, StatusError::Access.as_u8());
+        let identity = unsafe { &*shared.table.config.get() }.identity;
+        assert_eq!(identity.model_number, 0);
+    }
+
+    #[test]
+    fn write_to_unmapped_address_replies_data_range_error() {
+        let shared = Shared::const_new();
+        let mut io = FakeDxlIo::new();
+        let mut h = Dxl::new();
+
+        let req = encode(&Packet::Write(WritePacket::new(0, 0xFFFE, &[0x01])));
+        io.feed(&req);
+        h.poll(&shared, &mut io);
+
+        let (_, err, _) = parse_status(&io.tx);
+        assert_eq!(err, StatusError::DataRange.as_u8());
+    }
+
+    #[test]
+    fn write_to_other_id_silent_and_does_not_mutate() {
+        use crate::regions::CONTROL_BASE_ADDR;
+        let shared = Shared::const_new();
+        let mut io = FakeDxlIo::new();
+        let mut h = Dxl::new();
+
+        let req = encode(&Packet::Write(WritePacket::new(
+            17,
+            CONTROL_BASE_ADDR,
+            &[1],
+        )));
+        io.feed(&req);
+        h.poll(&shared, &mut io);
+
+        assert_eq!(io.start_tx_count, 0);
+        let lc = unsafe { &*shared.table.control.get() }.lifecycle;
+        assert_eq!(lc.torque_enable, 0);
+    }
+
+    #[test]
+    fn broadcast_write_applies_but_silent() {
+        use crate::regions::CONTROL_BASE_ADDR;
+        let shared = Shared::const_new();
+        let mut io = FakeDxlIo::new();
+        let mut h = Dxl::new();
+
+        let req = encode(&Packet::Write(WritePacket::new(
+            BROADCAST_ID,
+            CONTROL_BASE_ADDR,
+            &[1],
+        )));
+        io.feed(&req);
+        h.poll(&shared, &mut io);
+
+        assert_eq!(io.start_tx_count, 0);
+        let lc = unsafe { &*shared.table.control.get() }.lifecycle;
+        assert_eq!(lc.torque_enable, 1);
     }
 }
