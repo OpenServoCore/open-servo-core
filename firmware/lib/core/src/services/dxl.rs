@@ -6,6 +6,15 @@ pub const DXL_SCRATCH_LEN: usize = 256;
 pub const MAX_READ: usize = 128;
 pub const MAX_WRITE: usize = 128;
 
+fn regmap_error_to_status(e: RegmapError) -> StatusError {
+    match e {
+        RegmapError::OutOfRange => StatusError::DataRange,
+        RegmapError::AccessError => StatusError::Access,
+        RegmapError::StagingFull => StatusError::DataRange,
+        RegmapError::ValidationError(_) => StatusError::DataRange,
+    }
+}
+
 pub trait DxlIo {
     type TxBuf: WriteBuf;
 
@@ -142,12 +151,17 @@ impl<D: DxlIo> Dispatcher<'_, D> {
         let mut buf = [0u8; MAX_READ];
         match self.shared.table.read_bytes(p.address, &mut buf[..len]) {
             Ok(()) => self.send_status(id, StatusError::None, &buf[..len]),
-            Err(RegmapError::OutOfRange) => self.send_status(id, StatusError::DataRange, &[]),
-            Err(RegmapError::AccessError) => self.send_status(id, StatusError::Access, &[]),
-            Err(RegmapError::StagingFull) => self.send_status(id, StatusError::DataRange, &[]),
-            Err(RegmapError::ValidationError(_)) => {
-                self.send_status(id, StatusError::DataRange, &[])
-            }
+            Err(e) => self.send_status(id, regmap_error_to_status(e), &[]),
+        }
+    }
+
+    fn reply_table_result(&mut self, id: u8, direct: bool, result: Result<(), RegmapError>) {
+        if !direct {
+            return;
+        }
+        match result {
+            Ok(()) => self.send_status(id, StatusError::None, &[]),
+            Err(e) => self.send_status(id, regmap_error_to_status(e), &[]),
         }
     }
 
@@ -167,32 +181,46 @@ impl<D: DxlIo> Dispatcher<'_, D> {
             }
         };
 
+        // Sync Write wipes pending RegWrite staging per DXL convention.
+        self.staged.clear();
         let result = self
             .shared
             .table
             .write_bytes(p.address, &buf[..len], self.staged);
-        if !direct {
-            return;
-        }
-        match result {
-            Ok(()) => self.send_status(id, StatusError::None, &[]),
-            Err(RegmapError::OutOfRange) => self.send_status(id, StatusError::DataRange, &[]),
-            Err(RegmapError::AccessError) => self.send_status(id, StatusError::Access, &[]),
-            Err(RegmapError::StagingFull) => self.send_status(id, StatusError::DataRange, &[]),
-            Err(RegmapError::ValidationError(_)) => {
-                self.send_status(id, StatusError::DataRange, &[])
-            }
-        }
+        self.reply_table_result(id, direct, result);
     }
 
     fn handle_reg_write(&mut self, p: &RegWritePacket<'_>) {
-        // TODO: stage write into pending buffer; commit on Action.
-        self.reply_unsupported(p.id);
+        let Some((id, direct)) = self.addressed(p.id) else {
+            return;
+        };
+
+        let mut buf = [0u8; MAX_WRITE];
+        let len = match p.data.copy_into(&mut buf) {
+            Ok(n) => n,
+            Err(_) => {
+                if direct {
+                    self.send_status(id, StatusError::DataRange, &[]);
+                }
+                return;
+            }
+        };
+
+        let result = self
+            .shared
+            .table
+            .stage_bytes(p.address, &buf[..len], self.staged);
+        self.reply_table_result(id, direct, result);
     }
 
     fn handle_action(&mut self, p: &ActionPacket) {
-        // TODO: commit pending RegWrite. Applies on broadcast too.
-        self.reply_unsupported(p.id);
+        let Some((id, direct)) = self.addressed(p.id) else {
+            return;
+        };
+        self.shared.table.commit_staged(self.staged);
+        if direct {
+            self.send_status(id, StatusError::None, &[]);
+        }
     }
 
     fn handle_factory_reset(&mut self, p: &FactoryResetPacket) {
@@ -487,5 +515,165 @@ mod tests {
         assert_eq!(io.start_tx_count, 0);
         let lc = unsafe { &*shared.table.control.get() }.lifecycle;
         assert!(lc.torque_enable);
+    }
+
+    #[test]
+    fn reg_write_then_action_commits_to_live_table() {
+        use crate::regions::CONTROL_BASE_ADDR;
+        let shared = Shared::const_new();
+        let mut io = FakeDxlIo::new();
+        let mut h = Dxl::new();
+
+        let req = encode(&Packet::RegWrite(RegWritePacket::new(
+            0,
+            CONTROL_BASE_ADDR,
+            &[1],
+        )));
+        io.feed(&req);
+        h.poll(&shared, &mut io);
+        let (_, err, _) = parse_status(&io.tx);
+        assert_eq!(err, StatusError::None.as_u8());
+        assert!(
+            !unsafe { &*shared.table.control.get() }
+                .lifecycle
+                .torque_enable
+        );
+
+        io.tx.clear();
+        let req = encode(&Packet::Action(ActionPacket::new(0)));
+        io.feed(&req);
+        h.poll(&shared, &mut io);
+        let (_, err, _) = parse_status(&io.tx);
+        assert_eq!(err, StatusError::None.as_u8());
+        assert!(
+            unsafe { &*shared.table.control.get() }
+                .lifecycle
+                .torque_enable
+        );
+    }
+
+    #[test]
+    fn reg_write_to_ro_address_replies_access_error_immediately() {
+        let shared = Shared::const_new();
+        let mut io = FakeDxlIo::new();
+        let mut h = Dxl::new();
+
+        let req = encode(&Packet::RegWrite(RegWritePacket::new(0, 0, &[0xAA, 0xBB])));
+        io.feed(&req);
+        h.poll(&shared, &mut io);
+        let (_, err, _) = parse_status(&io.tx);
+        assert_eq!(err, StatusError::Access.as_u8());
+    }
+
+    #[test]
+    fn reg_write_invalid_value_rejected_at_stage_time() {
+        use crate::regions::CONTROL_BASE_ADDR;
+        let shared = Shared::const_new();
+        let mut io = FakeDxlIo::new();
+        let mut h = Dxl::new();
+
+        let req = encode(&Packet::RegWrite(RegWritePacket::new(
+            0,
+            CONTROL_BASE_ADDR,
+            &[2],
+        )));
+        io.feed(&req);
+        h.poll(&shared, &mut io);
+        let (_, err, _) = parse_status(&io.tx);
+        assert_eq!(err, StatusError::DataRange.as_u8());
+
+        io.tx.clear();
+        let req = encode(&Packet::Action(ActionPacket::new(0)));
+        io.feed(&req);
+        h.poll(&shared, &mut io);
+        let (_, err, _) = parse_status(&io.tx);
+        assert_eq!(err, StatusError::None.as_u8());
+        assert!(
+            !unsafe { &*shared.table.control.get() }
+                .lifecycle
+                .torque_enable
+        );
+    }
+
+    #[test]
+    fn sync_write_clears_pending_reg_write_staging() {
+        use crate::regions::CONTROL_BASE_ADDR;
+        use crate::regions::control::Mode;
+        let shared = Shared::const_new();
+        let mut io = FakeDxlIo::new();
+        let mut h = Dxl::new();
+
+        let req = encode(&Packet::RegWrite(RegWritePacket::new(
+            0,
+            CONTROL_BASE_ADDR,
+            &[1],
+        )));
+        io.feed(&req);
+        h.poll(&shared, &mut io);
+
+        io.tx.clear();
+        let req = encode(&Packet::Write(WritePacket::new(
+            0,
+            CONTROL_BASE_ADDR + 1,
+            &[1],
+        )));
+        io.feed(&req);
+        h.poll(&shared, &mut io);
+        assert_eq!(
+            unsafe { &*shared.table.control.get() }.lifecycle.mode,
+            Mode::PositionPid,
+        );
+
+        io.tx.clear();
+        let req = encode(&Packet::Action(ActionPacket::new(0)));
+        io.feed(&req);
+        h.poll(&shared, &mut io);
+        let (_, err, _) = parse_status(&io.tx);
+        assert_eq!(err, StatusError::None.as_u8());
+        assert!(
+            !unsafe { &*shared.table.control.get() }
+                .lifecycle
+                .torque_enable
+        );
+    }
+
+    #[test]
+    fn broadcast_reg_write_and_action_silent_but_commits() {
+        use crate::regions::CONTROL_BASE_ADDR;
+        let shared = Shared::const_new();
+        let mut io = FakeDxlIo::new();
+        let mut h = Dxl::new();
+
+        let req = encode(&Packet::RegWrite(RegWritePacket::new(
+            BROADCAST_ID,
+            CONTROL_BASE_ADDR,
+            &[1],
+        )));
+        io.feed(&req);
+        h.poll(&shared, &mut io);
+        assert_eq!(io.start_tx_count, 0);
+
+        let req = encode(&Packet::Action(ActionPacket::new(BROADCAST_ID)));
+        io.feed(&req);
+        h.poll(&shared, &mut io);
+        assert_eq!(io.start_tx_count, 0);
+        assert!(
+            unsafe { &*shared.table.control.get() }
+                .lifecycle
+                .torque_enable
+        );
+    }
+
+    #[test]
+    fn action_with_empty_staging_replies_ok() {
+        let shared = Shared::const_new();
+        let mut io = FakeDxlIo::new();
+        let mut h = Dxl::new();
+
+        let req = encode(&Packet::Action(ActionPacket::new(0)));
+        io.feed(&req);
+        h.poll(&shared, &mut io);
+        let (_, err, _) = parse_status(&io.tx);
+        assert_eq!(err, StatusError::None.as_u8());
     }
 }

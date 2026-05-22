@@ -182,37 +182,28 @@ impl Validator {
                     Err(RegmapError::ValidationError(ValidationKind::Enum))
                 }
             }
-            Validator::RangeU8 { lo, hi } => {
-                let mut b = [0u8; 1];
-                view.read_bytes(addr, &mut b)?;
-                if (*lo..=*hi).contains(&b[0]) {
-                    Ok(())
-                } else {
-                    Err(RegmapError::ValidationError(ValidationKind::Range))
-                }
-            }
-            Validator::RangeU16 { lo, hi } => {
-                let mut b = [0u8; 2];
-                view.read_bytes(addr, &mut b)?;
-                let v = u16::from_le_bytes(b);
-                if (*lo..=*hi).contains(&v) {
-                    Ok(())
-                } else {
-                    Err(RegmapError::ValidationError(ValidationKind::Range))
-                }
-            }
-            Validator::RangeI32 { lo, hi } => {
-                let mut b = [0u8; 4];
-                view.read_bytes(addr, &mut b)?;
-                let v = i32::from_le_bytes(b);
-                if (*lo..=*hi).contains(&v) {
-                    Ok(())
-                } else {
-                    Err(RegmapError::ValidationError(ValidationKind::Range))
-                }
-            }
+            Validator::RangeU8 { lo, hi } => check_range::<u8, 1>(view, addr, *lo, *hi, |b| b[0]),
+            Validator::RangeU16 { lo, hi } => check_range(view, addr, *lo, *hi, u16::from_le_bytes),
+            Validator::RangeI32 { lo, hi } => check_range(view, addr, *lo, *hi, i32::from_le_bytes),
             Validator::Custom(f) => f(view, addr, size),
         }
+    }
+}
+
+fn check_range<T: PartialOrd, const N: usize>(
+    view: &StagedView,
+    addr: u16,
+    lo: T,
+    hi: T,
+    decode: fn([u8; N]) -> T,
+) -> Result<(), RegmapError> {
+    let mut b = [0u8; N];
+    view.read_bytes(addr, &mut b)?;
+    let v = decode(b);
+    if (lo..=hi).contains(&v) {
+        Ok(())
+    } else {
+        Err(RegmapError::ValidationError(ValidationKind::Range))
     }
 }
 
@@ -270,8 +261,23 @@ impl ControlTable {
     }
 
     /// Caller must be the region's sole writer (services for CONFIG/CONTROL/CALIB, kernel for TELEMETRY).
-    /// Sync-write: stage + commit + rewind. Buffer unchanged on return.
     pub fn write_bytes(
+        &self,
+        addr: u16,
+        src: &[u8],
+        staged: &mut StagedWrites,
+    ) -> Result<(), RegmapError> {
+        let saved_data = staged.data.len();
+        let saved_entries = staged.entries.len();
+        self.stage_bytes(addr, src, staged)?;
+        // SAFETY: caller holds the region's single-writer guarantee.
+        unsafe { self.commit_staged_range(staged, saved_entries) };
+        staged.rewind(saved_data, saved_entries);
+        Ok(())
+    }
+
+    /// Stage + run all validators. Buffer rewinds on failure.
+    pub fn stage_bytes(
         &self,
         addr: u16,
         src: &[u8],
@@ -284,10 +290,8 @@ impl ControlTable {
             .checked_add(src.len())
             .ok_or(RegmapError::OutOfRange)?;
         let r = self.region_for(addr, end).ok_or(RegmapError::OutOfRange)?;
-
         let saved_data = staged.data.len();
         let saved_entries = staged.entries.len();
-
         let result =
             stage_write(r.base_addr, addr - r.base_addr, src, r.fields, staged).and_then(|()| {
                 run_field_validators(
@@ -300,11 +304,18 @@ impl ControlTable {
                     r.fields,
                 )
             });
-        if result.is_ok() {
-            unsafe { self.commit_staged_range(staged, saved_entries) };
+        if result.is_err() {
+            staged.rewind(saved_data, saved_entries);
         }
-        staged.rewind(saved_data, saved_entries);
         result
+    }
+
+    /// Commit all staged entries and clear the buffer. Validators ran at stage time.
+    /// Caller must be the sole writer of every region the entries touch.
+    pub fn commit_staged(&self, staged: &mut StagedWrites) {
+        // SAFETY: caller holds the regions' single-writer guarantees.
+        unsafe { self.commit_staged_range(staged, 0) };
+        staged.clear();
     }
 
     /// SAFETY: caller holds the region's single-writer guarantee.
@@ -964,6 +975,59 @@ mod tests {
             v.run(&view2, addr, 4),
             Err(RegmapError::ValidationError(ValidationKind::Range)),
         );
+    }
+
+    #[test]
+    fn stage_bytes_to_ro_address_fails_immediately() {
+        let t = fresh();
+        let mut staged = StagedWrites::default();
+        let err = t
+            .stage_bytes(CONFIG_BASE_ADDR, &[0xAA, 0xBB], &mut staged)
+            .unwrap_err();
+        assert_eq!(err, RegmapError::AccessError);
+        assert!(staged.is_empty());
+    }
+
+    #[test]
+    fn stage_then_commit_round_trip() {
+        let t = fresh();
+        let mut staged = StagedWrites::default();
+        t.stage_bytes(CONTROL_BASE_ADDR, &[1], &mut staged).unwrap();
+        assert!(!unsafe { &*t.control.get() }.lifecycle.torque_enable);
+        t.commit_staged(&mut staged);
+        assert!(unsafe { &*t.control.get() }.lifecycle.torque_enable);
+        assert!(staged.is_empty());
+    }
+
+    #[test]
+    fn stage_invalid_value_rejected_and_buffer_rewound() {
+        let t = fresh();
+        let mut staged = StagedWrites::default();
+        let err = t
+            .stage_bytes(CONTROL_BASE_ADDR, &[2], &mut staged)
+            .unwrap_err();
+        assert_eq!(err, RegmapError::ValidationError(ValidationKind::Enum));
+        assert!(staged.is_empty());
+    }
+
+    #[test]
+    fn commit_staged_empty_buffer_is_noop() {
+        let t = fresh();
+        let mut staged = StagedWrites::default();
+        t.commit_staged(&mut staged);
+        assert!(staged.is_empty());
+    }
+
+    #[test]
+    fn commit_staged_applies_multiple_entries_in_order() {
+        let t = fresh();
+        let mut staged = StagedWrites::default();
+        t.stage_bytes(CONTROL_BASE_ADDR, &[1], &mut staged).unwrap();
+        t.stage_bytes(CONFIG_BASE_ADDR + 32, &[0x42], &mut staged)
+            .unwrap();
+        t.commit_staged(&mut staged);
+        assert!(unsafe { &*t.control.get() }.lifecycle.torque_enable);
+        assert_eq!(unsafe { &*t.config.get() }.comms.id, 0x42);
     }
 
     #[test]
