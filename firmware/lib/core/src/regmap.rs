@@ -44,6 +44,8 @@ pub enum ValidationKind {
     Enum,
     /// Value outside the validator's inclusive range.
     Range,
+    /// Cross-field comparison (Compare/Within/MagBounded) rejected the value.
+    Compare,
     /// Caller-supplied `Validator::Custom` returned an error.
     Custom,
 }
@@ -53,6 +55,7 @@ impl ValidationKind {
         match self {
             ValidationKind::Enum => "enum",
             ValidationKind::Range => "range",
+            ValidationKind::Compare => "compare",
             ValidationKind::Custom => "custom",
         }
     }
@@ -167,16 +170,110 @@ pub enum Validator {
     RangeU8 { lo: u8, hi: u8 },
     RangeU16 { lo: u16, hi: u16 },
     RangeI32 { lo: i32, hi: i32 },
+    Cross(CrossField),
     Custom(fn(&StagedView, u16, u16) -> Result<(), RegmapError>),
+}
+
+#[derive(Copy, Clone, Debug)]
+pub enum CompareOp {
+    Lt,
+    Le,
+    Gt,
+    Ge,
+    Eq,
+    Ne,
+}
+
+impl CompareOp {
+    fn apply<T: PartialOrd>(self, a: &T, b: &T) -> bool {
+        match self {
+            CompareOp::Lt => a < b,
+            CompareOp::Le => a <= b,
+            CompareOp::Gt => a > b,
+            CompareOp::Ge => a >= b,
+            CompareOp::Eq => a == b,
+            CompareOp::Ne => a != b,
+        }
+    }
+}
+
+#[derive(Copy, Clone, Debug)]
+pub enum CrossField {
+    CompareI16 {
+        op: CompareOp,
+        other: &'static FieldDesc,
+    },
+    CompareI32 {
+        op: CompareOp,
+        other: &'static FieldDesc,
+    },
+    WithinI16 {
+        lo: &'static FieldDesc,
+        hi: &'static FieldDesc,
+    },
+    WithinI32 {
+        lo: &'static FieldDesc,
+        hi: &'static FieldDesc,
+    },
+    /// `|self| ≤ |bound|`; `saturating_abs` on both sides so `i*::MIN` doesn't overflow.
+    MagBoundedI16 {
+        bound: &'static FieldDesc,
+    },
+    MagBoundedI32 {
+        bound: &'static FieldDesc,
+    },
+}
+
+impl CrossField {
+    fn run(&self, view: &StagedView, self_addr: u16) -> Result<(), RegmapError> {
+        let ok = match self {
+            CrossField::CompareI16 { op, other } => {
+                let a = read_le(view, self_addr, i16::from_le_bytes)?;
+                let b = read_le(view, other.addr, i16::from_le_bytes)?;
+                op.apply(&a, &b)
+            }
+            CrossField::CompareI32 { op, other } => {
+                let a = read_le(view, self_addr, i32::from_le_bytes)?;
+                let b = read_le(view, other.addr, i32::from_le_bytes)?;
+                op.apply(&a, &b)
+            }
+            CrossField::WithinI16 { lo, hi } => {
+                let v = read_le(view, self_addr, i16::from_le_bytes)?;
+                let l = read_le(view, lo.addr, i16::from_le_bytes)?;
+                let h = read_le(view, hi.addr, i16::from_le_bytes)?;
+                (l..=h).contains(&v)
+            }
+            CrossField::WithinI32 { lo, hi } => {
+                let v = read_le(view, self_addr, i32::from_le_bytes)?;
+                let l = read_le(view, lo.addr, i32::from_le_bytes)?;
+                let h = read_le(view, hi.addr, i32::from_le_bytes)?;
+                (l..=h).contains(&v)
+            }
+            CrossField::MagBoundedI16 { bound } => {
+                let v = read_le(view, self_addr, i16::from_le_bytes)?;
+                let b = read_le(view, bound.addr, i16::from_le_bytes)?;
+                v.saturating_abs() <= b.saturating_abs()
+            }
+            CrossField::MagBoundedI32 { bound } => {
+                let v = read_le(view, self_addr, i32::from_le_bytes)?;
+                let b = read_le(view, bound.addr, i32::from_le_bytes)?;
+                v.saturating_abs() <= b.saturating_abs()
+            }
+        };
+        if ok {
+            Ok(())
+        } else {
+            Err(RegmapError::ValidationError(ValidationKind::Compare))
+        }
+    }
 }
 
 impl Validator {
     fn run(&self, view: &StagedView, addr: u16, size: u16) -> Result<(), RegmapError> {
         match self {
             Validator::EnumU8 { allowed } => {
-                let mut b = [0u8; 1];
-                view.read_bytes(addr, &mut b)?;
-                if allowed.contains(&b[0]) {
+                let b = read_le(view, addr, |b: [u8; 1]| b[0])?;
+                if allowed.contains(&b) {
                     Ok(())
                 } else {
                     Err(RegmapError::ValidationError(ValidationKind::Enum))
@@ -185,9 +282,20 @@ impl Validator {
             Validator::RangeU8 { lo, hi } => check_range::<u8, 1>(view, addr, *lo, *hi, |b| b[0]),
             Validator::RangeU16 { lo, hi } => check_range(view, addr, *lo, *hi, u16::from_le_bytes),
             Validator::RangeI32 { lo, hi } => check_range(view, addr, *lo, *hi, i32::from_le_bytes),
+            Validator::Cross(cross) => cross.run(view, addr),
             Validator::Custom(f) => f(view, addr, size),
         }
     }
+}
+
+fn read_le<T, const N: usize>(
+    view: &StagedView,
+    addr: u16,
+    decode: fn([u8; N]) -> T,
+) -> Result<T, RegmapError> {
+    let mut b = [0u8; N];
+    view.read_bytes(addr, &mut b)?;
+    Ok(decode(b))
 }
 
 fn check_range<T: PartialOrd, const N: usize>(
@@ -197,9 +305,7 @@ fn check_range<T: PartialOrd, const N: usize>(
     hi: T,
     decode: fn([u8; N]) -> T,
 ) -> Result<(), RegmapError> {
-    let mut b = [0u8; N];
-    view.read_bytes(addr, &mut b)?;
-    let v = decode(b);
+    let v = read_le(view, addr, decode)?;
     if (lo..=hi).contains(&v) {
         Ok(())
     } else {
@@ -580,8 +686,17 @@ mod tests {
 
     #[test]
     fn write_control_lifecycle_full_block() {
+        use crate::regions::config;
         use crate::regions::control::Mode;
         let t = fresh();
+        // Seed soft limits + max_effort so goal_position/goal_effort have non-degenerate windows.
+        let mut limits = [0u8; 16];
+        limits[0..4].copy_from_slice(&(-100_000i32).to_le_bytes());
+        limits[4..8].copy_from_slice(&100_000i32.to_le_bytes());
+        limits[8..12].copy_from_slice(&(-50_000i32).to_le_bytes());
+        limits[12..16].copy_from_slice(&50_000i32.to_le_bytes());
+        write(&t, CONFIG_BASE_ADDR + 64, &limits).unwrap();
+        write(&t, config::FIELD_MAX_EFFORT.addr, &500i16.to_le_bytes()).unwrap();
         // _rsvd_align gap at offset 2..4 forces a split write.
         write(&t, CONTROL_BASE_ADDR, &[1, 1]).unwrap();
         let mut tail = [0u8; 10];
@@ -959,6 +1074,95 @@ mod tests {
             v.run(&view2, addr, 4),
             Err(RegmapError::ValidationError(ValidationKind::Range)),
         );
+    }
+
+    #[test]
+    fn cross_compare_i16_dispatches_correctly() {
+        use crate::regions::config::{FIELD_WINDING_CUTOFF_CC, FIELD_WINDING_RECOVER_CC};
+        let t = fresh();
+        // Defaults are 0; lift cutoff before lowering recover or both writes reject.
+        write(&t, FIELD_WINDING_CUTOFF_CC.addr, &80i16.to_le_bytes()).unwrap();
+        write(&t, FIELD_WINDING_RECOVER_CC.addr, &50i16.to_le_bytes()).unwrap();
+        let err = write(&t, FIELD_WINDING_CUTOFF_CC.addr, &40i16.to_le_bytes()).unwrap_err();
+        assert_eq!(err, RegmapError::ValidationError(ValidationKind::Compare));
+        let mut buf = [0u8; 2];
+        t.read_bytes(FIELD_WINDING_CUTOFF_CC.addr, &mut buf)
+            .unwrap();
+        assert_eq!(i16::from_le_bytes(buf), 80);
+    }
+
+    #[test]
+    fn cross_compare_i32_dispatches_correctly() {
+        use crate::regions::config::{FIELD_POS_MAX_PHYS_URAD, FIELD_POS_MIN_PHYS_URAD};
+        let t = fresh();
+        let mut payload = [0u8; 8];
+        payload[0..4].copy_from_slice(&(-100i32).to_le_bytes());
+        payload[4..8].copy_from_slice(&100i32.to_le_bytes());
+        write(&t, FIELD_POS_MIN_PHYS_URAD.addr, &payload).unwrap();
+        let err = write(&t, FIELD_POS_MAX_PHYS_URAD.addr, &(-200i32).to_le_bytes()).unwrap_err();
+        assert_eq!(err, RegmapError::ValidationError(ValidationKind::Compare));
+    }
+
+    #[test]
+    fn cross_within_i32_dispatches_correctly() {
+        use crate::regions::config::{
+            FIELD_POS_MAX_SOFT_URAD, FIELD_POS_MIN_PHYS_URAD, FIELD_POS_MIN_SOFT_URAD,
+        };
+        let t = fresh();
+        let mut payload = [0u8; 16];
+        payload[0..4].copy_from_slice(&(-1000i32).to_le_bytes());
+        payload[4..8].copy_from_slice(&1000i32.to_le_bytes());
+        payload[8..12].copy_from_slice(&(-500i32).to_le_bytes());
+        payload[12..16].copy_from_slice(&500i32.to_le_bytes());
+        write(&t, FIELD_POS_MIN_PHYS_URAD.addr, &payload).unwrap();
+        let err = write(&t, FIELD_POS_MAX_SOFT_URAD.addr, &2000i32.to_le_bytes()).unwrap_err();
+        assert_eq!(err, RegmapError::ValidationError(ValidationKind::Compare));
+        write(&t, FIELD_POS_MAX_SOFT_URAD.addr, &900i32.to_le_bytes()).unwrap();
+        let mut buf = [0u8; 4];
+        t.read_bytes(FIELD_POS_MIN_SOFT_URAD.addr, &mut buf)
+            .unwrap();
+        assert_eq!(i32::from_le_bytes(buf), -500);
+    }
+
+    #[test]
+    fn cross_mag_bounded_i16_dispatches_correctly() {
+        use crate::regions::config::FIELD_MAX_EFFORT;
+        use crate::regions::control::FIELD_GOAL_EFFORT;
+        let t = fresh();
+        write(&t, FIELD_MAX_EFFORT.addr, &100i16.to_le_bytes()).unwrap();
+        write(&t, FIELD_GOAL_EFFORT.addr, &(-50i16).to_le_bytes()).unwrap();
+        write(&t, FIELD_GOAL_EFFORT.addr, &100i16.to_le_bytes()).unwrap();
+        let err = write(&t, FIELD_GOAL_EFFORT.addr, &200i16.to_le_bytes()).unwrap_err();
+        assert_eq!(err, RegmapError::ValidationError(ValidationKind::Compare));
+        let err = write(&t, FIELD_GOAL_EFFORT.addr, &(-200i16).to_le_bytes()).unwrap_err();
+        assert_eq!(err, RegmapError::ValidationError(ValidationKind::Compare));
+    }
+
+    #[test]
+    fn cross_mag_bounded_saturating_abs_handles_i_min() {
+        // Bare `-i16::MIN` would overflow; saturating_abs is what's under test.
+        let t = fresh();
+        let bound_addr = crate::regions::config::FIELD_MAX_EFFORT.addr;
+        let goal_addr = crate::regions::control::FIELD_GOAL_EFFORT.addr;
+        write(&t, bound_addr, &i16::MIN.to_le_bytes()).unwrap();
+        write(&t, goal_addr, &i16::MAX.to_le_bytes()).unwrap();
+        write(&t, goal_addr, &i16::MIN.to_le_bytes()).unwrap();
+    }
+
+    #[test]
+    fn compare_op_apply_covers_every_op() {
+        assert!(CompareOp::Lt.apply(&1, &2));
+        assert!(!CompareOp::Lt.apply(&2, &2));
+        assert!(CompareOp::Le.apply(&2, &2));
+        assert!(!CompareOp::Le.apply(&3, &2));
+        assert!(CompareOp::Gt.apply(&3, &2));
+        assert!(!CompareOp::Gt.apply(&2, &2));
+        assert!(CompareOp::Ge.apply(&2, &2));
+        assert!(!CompareOp::Ge.apply(&1, &2));
+        assert!(CompareOp::Eq.apply(&2, &2));
+        assert!(!CompareOp::Eq.apply(&1, &2));
+        assert!(CompareOp::Ne.apply(&1, &2));
+        assert!(!CompareOp::Ne.apply(&2, &2));
     }
 
     #[test]

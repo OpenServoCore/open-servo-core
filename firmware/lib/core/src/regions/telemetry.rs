@@ -119,35 +119,35 @@ const RAW_ADDR: u16 = TELEMETRY_BASE_ADDR + 3 * TELEMETRY_BLOCK_SIZE as u16;
 const RAW_STRUCT: u16 = offset_of!(TelemetryRegs, raw) as u16;
 
 // TelemetryConverted
-pub const FIELD_PRESENT_POSITION: FieldDesc = FieldDesc {
+pub static FIELD_PRESENT_POSITION: FieldDesc = FieldDesc {
     addr: CONVERTED_ADDR + offset_of!(TelemetryConverted, present_position) as u16,
     size: 4,
     struct_offset: CONVERTED_STRUCT + offset_of!(TelemetryConverted, present_position) as u16,
     access: Access::Ro,
     validators: &[],
 };
-pub const FIELD_PRESENT_VELOCITY: FieldDesc = FieldDesc {
+pub static FIELD_PRESENT_VELOCITY: FieldDesc = FieldDesc {
     addr: CONVERTED_ADDR + offset_of!(TelemetryConverted, present_velocity) as u16,
     size: 4,
     struct_offset: CONVERTED_STRUCT + offset_of!(TelemetryConverted, present_velocity) as u16,
     access: Access::Ro,
     validators: &[],
 };
-pub const FIELD_PRESENT_CURRENT: FieldDesc = FieldDesc {
+pub static FIELD_PRESENT_CURRENT: FieldDesc = FieldDesc {
     addr: CONVERTED_ADDR + offset_of!(TelemetryConverted, present_current) as u16,
     size: 2,
     struct_offset: CONVERTED_STRUCT + offset_of!(TelemetryConverted, present_current) as u16,
     access: Access::Ro,
     validators: &[],
 };
-pub const FIELD_PRESENT_TEMP: FieldDesc = FieldDesc {
+pub static FIELD_PRESENT_TEMP: FieldDesc = FieldDesc {
     addr: CONVERTED_ADDR + offset_of!(TelemetryConverted, present_temp) as u16,
     size: 2,
     struct_offset: CONVERTED_STRUCT + offset_of!(TelemetryConverted, present_temp) as u16,
     access: Access::Ro,
     validators: &[],
 };
-pub const FIELD_PRESENT_VBUS_MV: FieldDesc = FieldDesc {
+pub static FIELD_PRESENT_VBUS_MV: FieldDesc = FieldDesc {
     addr: CONVERTED_ADDR + offset_of!(TelemetryConverted, present_vbus_mv) as u16,
     size: 2,
     struct_offset: CONVERTED_STRUCT + offset_of!(TelemetryConverted, present_vbus_mv) as u16,
@@ -156,49 +156,49 @@ pub const FIELD_PRESENT_VBUS_MV: FieldDesc = FieldDesc {
 };
 
 // TelemetryIntermediaries (skip _rsvd_align at +6..8)
-pub const FIELD_VBUS_FILT_MV: FieldDesc = FieldDesc {
+pub static FIELD_VBUS_FILT_MV: FieldDesc = FieldDesc {
     addr: INTERM_ADDR + offset_of!(TelemetryIntermediaries, vbus_filt_mv) as u16,
     size: 2,
     struct_offset: INTERM_STRUCT + offset_of!(TelemetryIntermediaries, vbus_filt_mv) as u16,
     access: Access::Ro,
     validators: &[],
 };
-pub const FIELD_T_WINDING_DC: FieldDesc = FieldDesc {
+pub static FIELD_T_WINDING_DC: FieldDesc = FieldDesc {
     addr: INTERM_ADDR + offset_of!(TelemetryIntermediaries, t_winding_dc) as u16,
     size: 2,
     struct_offset: INTERM_STRUCT + offset_of!(TelemetryIntermediaries, t_winding_dc) as u16,
     access: Access::Ro,
     validators: &[],
 };
-pub const FIELD_PWM_DUTY_ACTUAL: FieldDesc = FieldDesc {
+pub static FIELD_PWM_DUTY_ACTUAL: FieldDesc = FieldDesc {
     addr: INTERM_ADDR + offset_of!(TelemetryIntermediaries, pwm_duty_actual) as u16,
     size: 2,
     struct_offset: INTERM_STRUCT + offset_of!(TelemetryIntermediaries, pwm_duty_actual) as u16,
     access: Access::Ro,
     validators: &[],
 };
-pub const FIELD_PID_ERROR_LAST: FieldDesc = FieldDesc {
+pub static FIELD_PID_ERROR_LAST: FieldDesc = FieldDesc {
     addr: INTERM_ADDR + offset_of!(TelemetryIntermediaries, pid_error_last) as u16,
     size: 4,
     struct_offset: INTERM_STRUCT + offset_of!(TelemetryIntermediaries, pid_error_last) as u16,
     access: Access::Ro,
     validators: &[],
 };
-pub const FIELD_PID_OUTPUT_LAST: FieldDesc = FieldDesc {
+pub static FIELD_PID_OUTPUT_LAST: FieldDesc = FieldDesc {
     addr: INTERM_ADDR + offset_of!(TelemetryIntermediaries, pid_output_last) as u16,
     size: 4,
     struct_offset: INTERM_STRUCT + offset_of!(TelemetryIntermediaries, pid_output_last) as u16,
     access: Access::Ro,
     validators: &[],
 };
-pub const FIELD_INTERNAL_GOAL: FieldDesc = FieldDesc {
+pub static FIELD_INTERNAL_GOAL: FieldDesc = FieldDesc {
     addr: INTERM_ADDR + offset_of!(TelemetryIntermediaries, internal_goal) as u16,
     size: 4,
     struct_offset: INTERM_STRUCT + offset_of!(TelemetryIntermediaries, internal_goal) as u16,
     access: Access::Ro,
     validators: &[],
 };
-pub const FIELD_SAMPLE_TICK: FieldDesc = FieldDesc {
+pub static FIELD_SAMPLE_TICK: FieldDesc = FieldDesc {
     addr: INTERM_ADDR + offset_of!(TelemetryIntermediaries, sample_tick) as u16,
     size: 4,
     struct_offset: INTERM_STRUCT + offset_of!(TelemetryIntermediaries, sample_tick) as u16,
@@ -207,21 +207,21 @@ pub const FIELD_SAMPLE_TICK: FieldDesc = FieldDesc {
 };
 
 // TelemetryFault
-pub const FIELD_MODE_ACTIVE: FieldDesc = FieldDesc {
+pub static FIELD_MODE_ACTIVE: FieldDesc = FieldDesc {
     addr: FAULT_ADDR + offset_of!(TelemetryFault, mode_active) as u16,
     size: 1,
     struct_offset: FAULT_STRUCT + offset_of!(TelemetryFault, mode_active) as u16,
     access: Access::Ro,
     validators: &[],
 };
-pub const FIELD_FAULT_FLAGS: FieldDesc = FieldDesc {
+pub static FIELD_FAULT_FLAGS: FieldDesc = FieldDesc {
     addr: FAULT_ADDR + offset_of!(TelemetryFault, fault_flags) as u16,
     size: 1,
     struct_offset: FAULT_STRUCT + offset_of!(TelemetryFault, fault_flags) as u16,
     access: Access::Ro,
     validators: &[],
 };
-pub const FIELD_FAULT_CODE: FieldDesc = FieldDesc {
+pub static FIELD_FAULT_CODE: FieldDesc = FieldDesc {
     addr: FAULT_ADDR + offset_of!(TelemetryFault, fault_code) as u16,
     size: 1,
     struct_offset: FAULT_STRUCT + offset_of!(TelemetryFault, fault_code) as u16,
@@ -230,56 +230,56 @@ pub const FIELD_FAULT_CODE: FieldDesc = FieldDesc {
 };
 
 // TelemetryRaw
-pub const FIELD_RAW_POS: FieldDesc = FieldDesc {
+pub static FIELD_RAW_POS: FieldDesc = FieldDesc {
     addr: RAW_ADDR + offset_of!(TelemetryRaw, raw_pos) as u16,
     size: 2,
     struct_offset: RAW_STRUCT + offset_of!(TelemetryRaw, raw_pos) as u16,
     access: Access::Ro,
     validators: &[],
 };
-pub const FIELD_RAW_CURRENT: FieldDesc = FieldDesc {
+pub static FIELD_RAW_CURRENT: FieldDesc = FieldDesc {
     addr: RAW_ADDR + offset_of!(TelemetryRaw, raw_current) as u16,
     size: 2,
     struct_offset: RAW_STRUCT + offset_of!(TelemetryRaw, raw_current) as u16,
     access: Access::Ro,
     validators: &[],
 };
-pub const FIELD_RAW_TEMP: FieldDesc = FieldDesc {
+pub static FIELD_RAW_TEMP: FieldDesc = FieldDesc {
     addr: RAW_ADDR + offset_of!(TelemetryRaw, raw_temp) as u16,
     size: 2,
     struct_offset: RAW_STRUCT + offset_of!(TelemetryRaw, raw_temp) as u16,
     access: Access::Ro,
     validators: &[],
 };
-pub const FIELD_RAW_VBUS: FieldDesc = FieldDesc {
+pub static FIELD_RAW_VBUS: FieldDesc = FieldDesc {
     addr: RAW_ADDR + offset_of!(TelemetryRaw, raw_vbus) as u16,
     size: 2,
     struct_offset: RAW_STRUCT + offset_of!(TelemetryRaw, raw_vbus) as u16,
     access: Access::Ro,
     validators: &[],
 };
-pub const FIELD_RAW_VMOTOR_A: FieldDesc = FieldDesc {
+pub static FIELD_RAW_VMOTOR_A: FieldDesc = FieldDesc {
     addr: RAW_ADDR + offset_of!(TelemetryRaw, raw_vmotor_a) as u16,
     size: 2,
     struct_offset: RAW_STRUCT + offset_of!(TelemetryRaw, raw_vmotor_a) as u16,
     access: Access::Ro,
     validators: &[],
 };
-pub const FIELD_RAW_VMOTOR_B: FieldDesc = FieldDesc {
+pub static FIELD_RAW_VMOTOR_B: FieldDesc = FieldDesc {
     addr: RAW_ADDR + offset_of!(TelemetryRaw, raw_vmotor_b) as u16,
     size: 2,
     struct_offset: RAW_STRUCT + offset_of!(TelemetryRaw, raw_vmotor_b) as u16,
     access: Access::Ro,
     validators: &[],
 };
-pub const FIELD_RAW_ENC_A: FieldDesc = FieldDesc {
+pub static FIELD_RAW_ENC_A: FieldDesc = FieldDesc {
     addr: RAW_ADDR + offset_of!(TelemetryRaw, raw_enc_a) as u16,
     size: 2,
     struct_offset: RAW_STRUCT + offset_of!(TelemetryRaw, raw_enc_a) as u16,
     access: Access::Ro,
     validators: &[],
 };
-pub const FIELD_RAW_ENC_B: FieldDesc = FieldDesc {
+pub static FIELD_RAW_ENC_B: FieldDesc = FieldDesc {
     addr: RAW_ADDR + offset_of!(TelemetryRaw, raw_enc_b) as u16,
     size: 2,
     struct_offset: RAW_STRUCT + offset_of!(TelemetryRaw, raw_enc_b) as u16,

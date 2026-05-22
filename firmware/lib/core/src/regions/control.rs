@@ -1,5 +1,6 @@
+use crate::regions::config;
 use crate::regions::{CONTROL_BASE_ADDR, CONTROL_BLOCK_SIZE};
-use crate::regmap::{Access, BOOL_ALLOWED, FieldDesc, Validator};
+use crate::regmap::{Access, BOOL_ALLOWED, CrossField, FieldDesc, Validator};
 use core::mem::offset_of;
 
 /// Position controller mode. `repr(u8)` so the byte-level commit path round-trips
@@ -76,7 +77,7 @@ const STREAMING_ADDR: u16 = CONTROL_BASE_ADDR + CONTROL_BLOCK_SIZE as u16;
 const STREAMING_STRUCT: u16 = offset_of!(ControlRegs, streaming) as u16;
 
 // ControlLifecycle (skip _rsvd_align at +2..4 and trailing pad at +14..16)
-pub const FIELD_TORQUE_ENABLE: FieldDesc = FieldDesc {
+pub static FIELD_TORQUE_ENABLE: FieldDesc = FieldDesc {
     addr: LIFECYCLE_ADDR + offset_of!(ControlLifecycle, torque_enable) as u16,
     size: 1,
     struct_offset: LIFECYCLE_STRUCT + offset_of!(ControlLifecycle, torque_enable) as u16,
@@ -85,7 +86,7 @@ pub const FIELD_TORQUE_ENABLE: FieldDesc = FieldDesc {
         allowed: BOOL_ALLOWED,
     }],
 };
-pub const FIELD_MODE: FieldDesc = FieldDesc {
+pub static FIELD_MODE: FieldDesc = FieldDesc {
     addr: LIFECYCLE_ADDR + offset_of!(ControlLifecycle, mode) as u16,
     size: 1,
     struct_offset: LIFECYCLE_STRUCT + offset_of!(ControlLifecycle, mode) as u16,
@@ -94,30 +95,35 @@ pub const FIELD_MODE: FieldDesc = FieldDesc {
         allowed: Mode::ALLOWED,
     }],
 };
-pub const FIELD_GOAL_POSITION: FieldDesc = FieldDesc {
+pub static FIELD_GOAL_POSITION: FieldDesc = FieldDesc {
     addr: LIFECYCLE_ADDR + offset_of!(ControlLifecycle, goal_position) as u16,
     size: 4,
     struct_offset: LIFECYCLE_STRUCT + offset_of!(ControlLifecycle, goal_position) as u16,
     access: Access::Rw,
-    validators: &[],
+    validators: &[Validator::Cross(CrossField::WithinI32 {
+        lo: &config::FIELD_POS_MIN_SOFT_URAD,
+        hi: &config::FIELD_POS_MAX_SOFT_URAD,
+    })],
 };
-pub const FIELD_GOAL_VELOCITY: FieldDesc = FieldDesc {
+pub static FIELD_GOAL_VELOCITY: FieldDesc = FieldDesc {
     addr: LIFECYCLE_ADDR + offset_of!(ControlLifecycle, goal_velocity) as u16,
     size: 4,
     struct_offset: LIFECYCLE_STRUCT + offset_of!(ControlLifecycle, goal_velocity) as u16,
     access: Access::Rw,
     validators: &[],
 };
-pub const FIELD_GOAL_EFFORT: FieldDesc = FieldDesc {
+pub static FIELD_GOAL_EFFORT: FieldDesc = FieldDesc {
     addr: LIFECYCLE_ADDR + offset_of!(ControlLifecycle, goal_effort) as u16,
     size: 2,
     struct_offset: LIFECYCLE_STRUCT + offset_of!(ControlLifecycle, goal_effort) as u16,
     access: Access::Rw,
-    validators: &[],
+    validators: &[Validator::Cross(CrossField::MagBoundedI16 {
+        bound: &config::FIELD_MAX_EFFORT,
+    })],
 };
 
 // ControlStreaming
-pub const FIELD_STREAM_ENABLE: FieldDesc = FieldDesc {
+pub static FIELD_STREAM_ENABLE: FieldDesc = FieldDesc {
     addr: STREAMING_ADDR + offset_of!(ControlStreaming, stream_enable) as u16,
     size: 1,
     struct_offset: STREAMING_STRUCT + offset_of!(ControlStreaming, stream_enable) as u16,
@@ -126,14 +132,14 @@ pub const FIELD_STREAM_ENABLE: FieldDesc = FieldDesc {
         allowed: BOOL_ALLOWED,
     }],
 };
-pub const FIELD_STREAM_DECIMATION: FieldDesc = FieldDesc {
+pub static FIELD_STREAM_DECIMATION: FieldDesc = FieldDesc {
     addr: STREAMING_ADDR + offset_of!(ControlStreaming, stream_decimation) as u16,
     size: 1,
     struct_offset: STREAMING_STRUCT + offset_of!(ControlStreaming, stream_decimation) as u16,
     access: Access::Rw,
     validators: &[],
 };
-pub const FIELD_STREAM_DURATION_MS: FieldDesc = FieldDesc {
+pub static FIELD_STREAM_DURATION_MS: FieldDesc = FieldDesc {
     addr: STREAMING_ADDR + offset_of!(ControlStreaming, stream_duration_ms) as u16,
     size: 2,
     struct_offset: STREAMING_STRUCT + offset_of!(ControlStreaming, stream_duration_ms) as u16,
@@ -143,14 +149,14 @@ pub const FIELD_STREAM_DURATION_MS: FieldDesc = FieldDesc {
         hi: u16::MAX,
     }],
 };
-pub const FIELD_STREAM_FIELD_MASK: FieldDesc = FieldDesc {
+pub static FIELD_STREAM_FIELD_MASK: FieldDesc = FieldDesc {
     addr: STREAMING_ADDR + offset_of!(ControlStreaming, stream_field_mask) as u16,
     size: 4,
     struct_offset: STREAMING_STRUCT + offset_of!(ControlStreaming, stream_field_mask) as u16,
     access: Access::Rw,
     validators: &[],
 };
-pub const FIELD_STREAM_DROPPED: FieldDesc = FieldDesc {
+pub static FIELD_STREAM_DROPPED: FieldDesc = FieldDesc {
     addr: STREAMING_ADDR + offset_of!(ControlStreaming, stream_dropped) as u16,
     size: 4,
     struct_offset: STREAMING_STRUCT + offset_of!(ControlStreaming, stream_dropped) as u16,
