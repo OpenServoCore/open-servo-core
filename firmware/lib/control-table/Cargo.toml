@@ -5,8 +5,9 @@ edition.workspace = true
 license.workspace = true
 
 [dependencies]
-heapless.workspace = true
-defmt              = { version = "1", optional = true }
+heapless.workspace             = true
+control-table-derive.workspace = true
+defmt                          = { version = "1", optional = true }
 
 [features]
 default = []

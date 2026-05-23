@@ -81,8 +81,18 @@ checksum = "4bd422bfb4f24a97243f60b6a4443e63d810c925d8da4bb2d8fde26a7c1d57ec"
 name = "control-table"
 version = "0.0.0"
 dependencies = [
+ "control-table-derive",
  "defmt",
  "heapless",
+]
+
+[[package]]
+name = "control-table-derive"
+version = "0.0.0"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn 2.0.117",
 ]
 
 [[package]]
