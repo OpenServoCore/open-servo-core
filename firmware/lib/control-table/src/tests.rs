@@ -55,8 +55,8 @@ impl Router for BlockValRouter {
     fn regions(&self) -> &'static [&'static RegionDesc] {
         BLOCK_VAL_REGIONS
     }
-    fn region_base(&self, _desc: &RegionDesc) -> *mut u8 {
-        self.storage.get() as *mut u8
+    fn region_base(&self, _desc: &RegionDesc) -> Option<*mut u8> {
+        Some(self.storage.get() as *mut u8)
     }
 }
 
@@ -142,8 +142,8 @@ impl Router for StubRouter {
     fn regions(&self) -> &'static [&'static RegionDesc] {
         ROUTING_REGIONS
     }
-    fn region_base(&self, _desc: &RegionDesc) -> *mut u8 {
-        self.storage.get() as *mut u8
+    fn region_base(&self, _desc: &RegionDesc) -> Option<*mut u8> {
+        Some(self.storage.get() as *mut u8)
     }
 }
 

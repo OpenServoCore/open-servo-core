@@ -109,8 +109,8 @@ fn router_regions_returns_the_regions_const() {
 #[test]
 fn region_base_resolves_each_region_to_its_cell_pointer() {
     let t = ControlTable::const_new();
-    let cfg_base = t.region_base(ConfigRegs::DESC);
-    let tlm_base = t.region_base(TelemetryRegs::DESC);
+    let cfg_base = t.region_base(ConfigRegs::DESC).unwrap();
+    let tlm_base = t.region_base(TelemetryRegs::DESC).unwrap();
     assert_eq!(cfg_base, t.config.get() as *mut u8);
     assert_eq!(tlm_base, t.telemetry.get() as *mut u8);
     assert_ne!(cfg_base, tlm_base);
@@ -125,7 +125,7 @@ fn region_base_returns_null_for_unknown_region_desc() {
         blocks: &[],
         validators: &[],
     };
-    assert!(t.region_base(&stranger).is_null());
+    assert!(t.region_base(&stranger).is_none());
 }
 
 #[test]

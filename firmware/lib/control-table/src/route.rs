@@ -6,7 +6,7 @@ use crate::validate::{run_block_validators, run_field_validators, run_region_val
 /// pointer from `region_base`; caller must hold its single-writer guarantee.
 pub trait Router {
     fn regions(&self) -> &'static [&'static RegionDesc];
-    fn region_base(&self, desc: &RegionDesc) -> *mut u8;
+    fn region_base(&self, desc: &RegionDesc) -> Option<*mut u8>;
 
     fn read_bytes(&self, addr: u16, dst: &mut [u8]) -> Result<(), Error>
     where
@@ -57,7 +57,7 @@ fn region_for(router: &dyn Router, addr: u16, end: usize) -> Option<RegionRef> {
         .copied()
         .find(|d| range_in(addr, end, d.addr, d.size as usize))?;
     Some(RegionRef {
-        base: router.region_base(def),
+        base: router.region_base(def)?,
         def,
     })
 }

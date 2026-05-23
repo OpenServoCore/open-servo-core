@@ -89,7 +89,9 @@ pub fn expand(input: &DeriveInput) -> syn::Result<TokenStream2> {
         let inner_ty = rf.inner_ty;
         quote! {
             if addr == <#inner_ty>::DESC.addr {
-                return ::control_table::RegionStorageRaw::region_ptr(&self.#ident) as *mut u8;
+                return ::core::option::Option::Some(
+                    ::control_table::RegionStorageRaw::region_ptr(&self.#ident) as *mut u8,
+                );
             }
         }
     });
@@ -117,10 +119,13 @@ pub fn expand(input: &DeriveInput) -> syn::Result<TokenStream2> {
                 Self::REGIONS
             }
 
-            fn region_base(&self, desc: &::control_table::RegionDesc) -> *mut u8 {
+            fn region_base(
+                &self,
+                desc: &::control_table::RegionDesc,
+            ) -> ::core::option::Option<*mut u8> {
                 let addr = desc.addr;
                 #(#region_base_arms)*
-                ::core::ptr::null_mut()
+                ::core::option::Option::None
             }
         }
 
