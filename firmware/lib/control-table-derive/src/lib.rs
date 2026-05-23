@@ -3,6 +3,7 @@ use syn::{DeriveInput, parse_macro_input};
 
 mod block;
 mod enums;
+mod region;
 
 #[proc_macro_derive(Block, attributes(ct_field, ct_block))]
 pub fn derive_block(input: TokenStream) -> TokenStream {
@@ -20,9 +21,12 @@ pub fn derive_enum(input: TokenStream) -> TokenStream {
         .into()
 }
 
-#[proc_macro_derive(Region, attributes(ct_region, ct_block))]
-pub fn derive_region(_input: TokenStream) -> TokenStream {
-    TokenStream::new()
+#[proc_macro_derive(Region, attributes(ct_region))]
+pub fn derive_region(input: TokenStream) -> TokenStream {
+    let input = parse_macro_input!(input as DeriveInput);
+    region::expand(&input)
+        .unwrap_or_else(syn::Error::into_compile_error)
+        .into()
 }
 
 #[proc_macro_derive(Table, attributes(ct_table))]
