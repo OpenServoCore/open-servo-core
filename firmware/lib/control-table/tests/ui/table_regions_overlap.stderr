@@ -1,0 +1,5 @@
+error[E0080]: evaluation panicked: Table regions overlap
+  --> tests/ui/table_regions_overlap.rs:61:10
+   |
+61 | #[derive(Table)]
+   |          ^^^^^ evaluation of `_` failed here

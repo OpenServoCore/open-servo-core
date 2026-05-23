@@ -1,0 +1,5 @@
+error[E0080]: evaluation panicked: Table region exceeds u16 address space
+  --> tests/ui/table_region_overflows_address_space.rs:34:10
+   |
+34 | #[derive(Table)]
+   |          ^^^^^ evaluation of `_` failed here

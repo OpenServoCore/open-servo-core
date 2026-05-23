@@ -72,6 +72,11 @@ pub fn expand(input: &DeriveInput) -> syn::Result<TokenStream2> {
         quote!(&<#ty>::DESC)
     });
 
+    let region_extents = region_fields.iter().map(|rf| {
+        let ty = rf.inner_ty;
+        quote!((<#ty>::DESC.addr, <#ty>::DESC.size))
+    });
+
     let const_new_inits = region_fields.iter().map(|rf| {
         let ident = rf.ident;
         let storage_ty = rf.storage_ty;
@@ -125,6 +130,28 @@ pub fn expand(input: &DeriveInput) -> syn::Result<TokenStream2> {
 
         const _: () = {
             assert!(::core::mem::size_of::<#table_ty>() <= (#max_sram as usize));
+        };
+
+        const _: () = {
+            const EXTENTS: &[(u16, u16)] = &[#(#region_extents),*];
+            let mut i = 0;
+            while i < EXTENTS.len() {
+                let (ai, si) = EXTENTS[i];
+                if (ai as u32) + (si as u32) > 0x10000 {
+                    panic!("Table region exceeds u16 address space");
+                }
+                let mut j = i + 1;
+                while j < EXTENTS.len() {
+                    let (aj, sj) = EXTENTS[j];
+                    let i_end = (ai as u32) + (si as u32);
+                    let j_end = (aj as u32) + (sj as u32);
+                    if (ai as u32) < j_end && (aj as u32) < i_end {
+                        panic!("Table regions overlap");
+                    }
+                    j += 1;
+                }
+                i += 1;
+            }
         };
     })
 }
