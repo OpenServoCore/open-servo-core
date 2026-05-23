@@ -73,19 +73,6 @@ pub enum FieldValidator {
     EnumU8 {
         allowed: &'static [u8],
     },
-    RangeU8 {
-        lo: u8,
-        hi: u8,
-    },
-    RangeU16 {
-        lo: u16,
-        hi: u16,
-    },
-    RangeI32 {
-        lo: i32,
-        hi: i32,
-    },
-    Cross(CrossField),
     CompareU8 {
         op: CompareOp,
         abs: bool,
@@ -130,32 +117,4 @@ pub enum CompareOp {
     Ge,
     Eq,
     Ne,
-}
-
-#[derive(Copy, Clone, Debug)]
-#[cfg_attr(feature = "defmt", derive(defmt::Format))]
-pub enum CrossField {
-    CompareI16 {
-        op: CompareOp,
-        other_addr: u16,
-    },
-    CompareI32 {
-        op: CompareOp,
-        other_addr: u16,
-    },
-    WithinI16 {
-        lo_addr: u16,
-        hi_addr: u16,
-    },
-    WithinI32 {
-        lo_addr: u16,
-        hi_addr: u16,
-    },
-    /// `saturating_abs` on both sides so `i*::MIN` doesn't overflow.
-    MagBoundedI16 {
-        bound_addr: u16,
-    },
-    MagBoundedI32 {
-        bound_addr: u16,
-    },
 }
