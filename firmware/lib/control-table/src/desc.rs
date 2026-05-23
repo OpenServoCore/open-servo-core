@@ -61,12 +61,55 @@ pub type RegionValidator = fn(&StagedView) -> Result<(), RegmapError>;
 
 #[derive(Copy, Clone, Debug)]
 pub enum FieldValidator {
-    EnumU8 { allowed: &'static [u8] },
-    RangeU8 { lo: u8, hi: u8 },
-    RangeU16 { lo: u16, hi: u16 },
-    RangeI32 { lo: i32, hi: i32 },
+    EnumU8 {
+        allowed: &'static [u8],
+    },
+    RangeU8 {
+        lo: u8,
+        hi: u8,
+    },
+    RangeU16 {
+        lo: u16,
+        hi: u16,
+    },
+    RangeI32 {
+        lo: i32,
+        hi: i32,
+    },
     Cross(CrossField),
+    CompareU8 {
+        op: CompareOp,
+        abs: bool,
+        rhs: Rhs<u8>,
+    },
+    CompareU16 {
+        op: CompareOp,
+        abs: bool,
+        rhs: Rhs<u16>,
+    },
+    CompareI8 {
+        op: CompareOp,
+        abs: bool,
+        rhs: Rhs<i8>,
+    },
+    CompareI16 {
+        op: CompareOp,
+        abs: bool,
+        rhs: Rhs<i16>,
+    },
+    CompareI32 {
+        op: CompareOp,
+        abs: bool,
+        rhs: Rhs<i32>,
+    },
     Custom(fn(&StagedView, u16, u16) -> Result<(), RegmapError>),
+}
+
+#[derive(Copy, Clone, Debug)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
+pub enum Rhs<T: Copy> {
+    Value(T),
+    Addr(u16),
 }
 
 #[derive(Copy, Clone, Debug)]

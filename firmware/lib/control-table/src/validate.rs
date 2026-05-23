@@ -1,5 +1,6 @@
 use crate::desc::{
-    BlockDesc, CompareOp, CrossField, FieldValidator, RegionValidator, RegmapError, ValidationKind,
+    BlockDesc, CompareOp, CrossField, FieldValidator, RegionValidator, RegmapError, Rhs,
+    ValidationKind,
 };
 use crate::route::Router;
 use crate::stage::{StagedView, StagedWrites};
@@ -82,6 +83,39 @@ impl FieldValidator {
                 check_range(view, addr, *lo, *hi, i32::from_le_bytes)
             }
             FieldValidator::Cross(cross) => cross.run(view, addr),
+            FieldValidator::CompareU8 { op, abs, rhs } => {
+                run_compare(view, addr, *op, *abs, *rhs, |b: [u8; 1]| b[0], |v| v)
+            }
+            FieldValidator::CompareU16 { op, abs, rhs } => {
+                run_compare(view, addr, *op, *abs, *rhs, u16::from_le_bytes, |v| v)
+            }
+            FieldValidator::CompareI8 { op, abs, rhs } => run_compare(
+                view,
+                addr,
+                *op,
+                *abs,
+                *rhs,
+                |b: [u8; 1]| b[0] as i8,
+                i8::saturating_abs,
+            ),
+            FieldValidator::CompareI16 { op, abs, rhs } => run_compare(
+                view,
+                addr,
+                *op,
+                *abs,
+                *rhs,
+                i16::from_le_bytes,
+                i16::saturating_abs,
+            ),
+            FieldValidator::CompareI32 { op, abs, rhs } => run_compare(
+                view,
+                addr,
+                *op,
+                *abs,
+                *rhs,
+                i32::from_le_bytes,
+                i32::saturating_abs,
+            ),
             FieldValidator::Custom(f) => f(view, addr, size),
         }
     }
@@ -109,6 +143,31 @@ fn check_range<T: PartialOrd, const N: usize>(
         Ok(())
     } else {
         Err(RegmapError::ValidationError(ValidationKind::Range))
+    }
+}
+
+fn run_compare<T: PartialOrd + Copy, const N: usize>(
+    view: &StagedView,
+    self_addr: u16,
+    op: CompareOp,
+    abs: bool,
+    rhs: Rhs<T>,
+    decode: fn([u8; N]) -> T,
+    saturating_abs: fn(T) -> T,
+) -> Result<(), RegmapError> {
+    let mut a = read_le(view, self_addr, decode)?;
+    let mut b = match rhs {
+        Rhs::Value(v) => v,
+        Rhs::Addr(other) => read_le(view, other, decode)?,
+    };
+    if abs {
+        a = saturating_abs(a);
+        b = saturating_abs(b);
+    }
+    if op.apply(&a, &b) {
+        Ok(())
+    } else {
+        Err(RegmapError::ValidationError(ValidationKind::Compare))
     }
 }
 

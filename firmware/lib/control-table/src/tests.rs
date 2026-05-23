@@ -153,6 +153,82 @@ fn staged_view_overlays_pending_bytes_on_live_data() {
     assert_eq!(buf, [0x11, 0xAA, 0xBB, 0x44]);
 }
 
+fn seed(r: &StubRouter, writes: &[(usize, &[u8])]) {
+    let ptr = r.storage.get();
+    for (off, bytes) in writes {
+        // SAFETY: tests are single-threaded; StubRouter storage is only touched here.
+        unsafe {
+            core::ptr::copy_nonoverlapping(bytes.as_ptr(), (ptr as *mut u8).add(*off), bytes.len())
+        };
+    }
+}
+
+#[test]
+fn compare_u16_value_rhs_checks_literal_bound() {
+    let r = StubRouter::new();
+    seed(&r, &[(0, &100u16.to_le_bytes())]);
+    let staged = StagedWrites::new();
+    let view = StagedView::new(&r, &staged, 0);
+    let pass = FieldValidator::CompareU16 {
+        op: CompareOp::Le,
+        abs: false,
+        rhs: Rhs::Value(200),
+    };
+    assert!(pass.run(&view, 0, 2).is_ok());
+    let fail = FieldValidator::CompareU16 {
+        op: CompareOp::Le,
+        abs: false,
+        rhs: Rhs::Value(50),
+    };
+    assert_eq!(
+        fail.run(&view, 0, 2),
+        Err(RegmapError::ValidationError(ValidationKind::Compare)),
+    );
+}
+
+#[test]
+fn compare_i32_addr_rhs_reads_value_at_other_addr() {
+    let r = StubRouter::new();
+    seed(
+        &r,
+        &[(0, &(-10i32).to_le_bytes()), (12, &100i32.to_le_bytes())],
+    );
+    let staged = StagedWrites::new();
+    let view = StagedView::new(&r, &staged, 0);
+    let v = FieldValidator::CompareI32 {
+        op: CompareOp::Lt,
+        abs: false,
+        rhs: Rhs::Addr(12),
+    };
+    assert!(v.run(&view, 0, 4).is_ok());
+}
+
+#[test]
+fn compare_i32_abs_compares_magnitudes() {
+    let r = StubRouter::new();
+    seed(
+        &r,
+        &[(0, &(-150i32).to_le_bytes()), (12, &100i32.to_le_bytes())],
+    );
+    let staged = StagedWrites::new();
+    let view = StagedView::new(&r, &staged, 0);
+    let fail = FieldValidator::CompareI32 {
+        op: CompareOp::Le,
+        abs: true,
+        rhs: Rhs::Addr(12),
+    };
+    assert_eq!(
+        fail.run(&view, 0, 4),
+        Err(RegmapError::ValidationError(ValidationKind::Compare)),
+    );
+    let pass = FieldValidator::CompareI32 {
+        op: CompareOp::Ge,
+        abs: true,
+        rhs: Rhs::Addr(12),
+    };
+    assert!(pass.run(&view, 0, 4).is_ok());
+}
+
 #[test]
 fn compare_op_apply_covers_every_op() {
     assert!(CompareOp::Lt.apply(&1, &2));
