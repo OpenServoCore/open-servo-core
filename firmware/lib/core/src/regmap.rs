@@ -12,8 +12,6 @@
 //! Struct fields whose name starts with `_rsvd_` are absent from `BlockDesc.fields` and remain
 //! gaps. Hand-written today; layout is shaped to match a future `#[derive(RegmapBlock)]` macro.
 
-use crate::log;
-
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub enum RegmapError {
     /// Empty, wrapping, or outside every region.
@@ -33,18 +31,6 @@ pub enum ValidationKind {
     Compare,
     Locked,
     Custom,
-}
-
-impl ValidationKind {
-    pub const fn as_str(self) -> &'static str {
-        match self {
-            ValidationKind::Enum => "enum",
-            ValidationKind::Range => "range",
-            ValidationKind::Compare => "compare",
-            ValidationKind::Locked => "locked",
-            ValidationKind::Custom => "custom",
-        }
-    }
 }
 
 /// Allowed bytes for `bool` fields in the control table. `bool`'s representation
@@ -592,17 +578,7 @@ fn run_field_validators(
                 continue;
             }
             for v in field.validators {
-                if let Err(e) = v.run(&view, field.addr, field.size) {
-                    if let RegmapError::ValidationError(kind) = e {
-                        log::warn!(
-                            "regmap: validator rejected addr={} size={} kind={}",
-                            field.addr,
-                            field.size,
-                            kind.as_str(),
-                        );
-                    }
-                    return Err(e);
-                }
+                v.run(&view, field.addr, field.size)?;
             }
         }
     }
@@ -624,12 +600,7 @@ fn run_region_validators(
         start_entry,
     };
     for v in validators {
-        if let Err(e) = v(&view) {
-            if let RegmapError::ValidationError(kind) = e {
-                log::warn!("regmap: region validator rejected kind={}", kind.as_str());
-            }
-            return Err(e);
-        }
+        v(&view)?;
     }
     Ok(())
 }
