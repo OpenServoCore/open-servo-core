@@ -1,6 +1,6 @@
 use crate::desc::{Access, BlockDesc, Error, RegionDesc};
 use crate::stage::StagedWrites;
-use crate::validate::{run_field_validators, run_region_validators};
+use crate::validate::{run_block_validators, run_field_validators, run_region_validators};
 
 /// `write_bytes`/`commit_staged` form a transient `&mut` to the region via the
 /// pointer from `region_base`; caller must hold its single-writer guarantee.
@@ -96,6 +96,9 @@ pub(crate) fn router_stage_bytes(
     let result = stage_write(addr, src, r.def.blocks, staged)
         .and_then(|()| {
             run_field_validators(router, staged, saved_entries, addr, src.len(), r.def.blocks)
+        })
+        .and_then(|()| {
+            run_block_validators(router, staged, saved_entries, addr, src.len(), r.def.blocks)
         })
         .and_then(|()| run_region_validators(router, staged, saved_entries, r.def.validators));
     if result.is_err() {

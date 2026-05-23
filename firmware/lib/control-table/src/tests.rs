@@ -9,6 +9,57 @@ fn always_reject(_view: &StagedView, _addr: u16, _size: u16) -> Result<(), Error
     Err(Error::ValidationError(ValidationKind::Custom))
 }
 
+fn block_reject(_view: &StagedView, _addr: u16, _size: u16) -> Result<(), Error> {
+    Err(Error::ValidationError(ValidationKind::Locked))
+}
+
+const BLOCK_VAL_BLOCKS: &[BlockDesc] = &[BlockDesc {
+    addr: 0,
+    size: 2,
+    struct_offset: 0,
+    fields: &[FieldDesc {
+        addr: 0,
+        size: 2,
+        struct_offset: 0,
+        access: Access::Rw,
+        validators: &[],
+    }],
+    validators: &[block_reject],
+}];
+
+static BLOCK_VAL_REGION: RegionDesc = RegionDesc {
+    addr: 0,
+    size: REGION_SIZE,
+    blocks: BLOCK_VAL_BLOCKS,
+    validators: &[],
+};
+
+static BLOCK_VAL_REGIONS: &[&RegionDesc] = &[&BLOCK_VAL_REGION];
+
+struct BlockValRouter {
+    storage: UnsafeCell<[u8; REGION_SIZE as usize]>,
+}
+
+// SAFETY: tests are single-threaded.
+unsafe impl Sync for BlockValRouter {}
+
+impl BlockValRouter {
+    const fn new() -> Self {
+        Self {
+            storage: UnsafeCell::new([0; REGION_SIZE as usize]),
+        }
+    }
+}
+
+impl Router for BlockValRouter {
+    fn regions(&self) -> &'static [&'static RegionDesc] {
+        BLOCK_VAL_REGIONS
+    }
+    fn region_base(&self, _desc: &RegionDesc) -> *mut u8 {
+        self.storage.get() as *mut u8
+    }
+}
+
 const REJECTING_BLOCKS: &[BlockDesc] = &[BlockDesc {
     addr: 0,
     size: 1,
@@ -135,6 +186,18 @@ fn stage_then_validator_reject_rewinds_buffer_and_does_not_commit() {
     let mut buf = [0xFFu8; 1];
     r.read_bytes(0, &mut buf).unwrap();
     assert_eq!(buf, [0u8]);
+}
+
+#[test]
+fn block_validator_rejection_short_circuits_write_and_does_not_commit() {
+    let r = BlockValRouter::new();
+    let mut staged = StagedWrites::new();
+    let err = r.write_bytes(0, &[0xAA, 0xBB], &mut staged).unwrap_err();
+    assert_eq!(err, Error::ValidationError(ValidationKind::Locked));
+    assert!(staged.is_empty());
+    let mut buf = [0xFFu8; 2];
+    r.read_bytes(0, &mut buf).unwrap();
+    assert_eq!(buf, [0u8, 0u8]);
 }
 
 #[test]

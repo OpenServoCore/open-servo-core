@@ -141,6 +141,37 @@ pub(crate) fn run_field_validators(
     Ok(())
 }
 
+pub(crate) fn run_block_validators(
+    router: &dyn Router,
+    staged: &StagedWrites,
+    start_entry: usize,
+    abs_start: u16,
+    len: usize,
+    blocks: &[BlockDesc],
+) -> Result<(), Error> {
+    let req_lo = abs_start as usize;
+    let req_hi = req_lo + len;
+    let mut view: Option<StagedView> = None;
+    for block in blocks {
+        let b_lo = block.addr as usize;
+        let b_hi = b_lo + block.size as usize;
+        if b_hi <= req_lo {
+            continue;
+        }
+        if b_lo >= req_hi {
+            break;
+        }
+        if block.validators.is_empty() {
+            continue;
+        }
+        let v = view.get_or_insert_with(|| StagedView::new(router, staged, start_entry));
+        for f in block.validators {
+            f(v, block.addr, block.size)?;
+        }
+    }
+    Ok(())
+}
+
 pub(crate) fn run_region_validators(
     router: &dyn Router,
     staged: &StagedWrites,
