@@ -1,7 +1,7 @@
 use dxl_protocol::prelude::*;
 
 use crate::{RingReader, RxSnapshot, Shared, StagedWrites};
-use control_table::Router;
+use control_table::{RegionStorage, Router};
 
 pub const DXL_SCRATCH_LEN: usize = 256;
 pub const MAX_READ: usize = 128;
@@ -98,8 +98,7 @@ impl<D: DxlIo> Dispatcher<'_, D> {
     }
 
     fn addressed(&self, target: u8) -> Option<(u8, bool)> {
-        // SAFETY: comms.id is a single byte; ISR contexts read but don't mutate.
-        let id = unsafe { (*self.shared.table.config.get()).comms.id };
+        let id = self.shared.table.config.with(|c| c.comms.id);
         if target == id {
             Some((id, true))
         } else if target == BROADCAST_ID {
@@ -130,8 +129,7 @@ impl<D: DxlIo> Dispatcher<'_, D> {
         let Some((id, _)) = self.addressed(p.id) else {
             return;
         };
-        // SAFETY: identity is read-only after seed_config_defaults; no concurrent writers.
-        let identity = unsafe { (*self.shared.table.config.get()).identity };
+        let identity = self.shared.table.config.with(|c| c.identity);
         let model = identity.model_number.to_le_bytes();
         let fw = identity.firmware_version as u8;
         let params = [model[0], model[1], fw];
@@ -446,7 +444,7 @@ mod tests {
         assert_eq!(id, 0);
         assert_eq!(err, 0);
         assert!(params.is_empty());
-        let lc = unsafe { &*shared.table.control.get() }.lifecycle;
+        let lc = shared.table.control.with(|c| c.lifecycle);
         assert!(lc.torque_enable);
     }
 
@@ -463,7 +461,7 @@ mod tests {
 
         let (_, err, _) = parse_status(&io.tx);
         assert_eq!(err, StatusError::Access.as_u8());
-        let identity = unsafe { &*shared.table.config.get() }.identity;
+        let identity = shared.table.config.with(|c| c.identity);
         assert_eq!(identity.model_number, 0);
     }
 
@@ -497,7 +495,7 @@ mod tests {
         h.poll(&shared, &mut io);
 
         assert_eq!(io.start_tx_count, 0);
-        let lc = unsafe { &*shared.table.control.get() }.lifecycle;
+        let lc = shared.table.control.with(|c| c.lifecycle);
         assert!(!lc.torque_enable);
     }
 
@@ -517,7 +515,7 @@ mod tests {
         h.poll(&shared, &mut io);
 
         assert_eq!(io.start_tx_count, 0);
-        let lc = unsafe { &*shared.table.control.get() }.lifecycle;
+        let lc = shared.table.control.with(|c| c.lifecycle);
         assert!(lc.torque_enable);
     }
 
@@ -537,11 +535,7 @@ mod tests {
         h.poll(&shared, &mut io);
         let (_, err, _) = parse_status(&io.tx);
         assert_eq!(err, StatusError::None.as_u8());
-        assert!(
-            !unsafe { &*shared.table.control.get() }
-                .lifecycle
-                .torque_enable
-        );
+        assert!(!shared.table.control.with(|c| c.lifecycle.torque_enable));
 
         io.tx.clear();
         let req = encode(&Packet::Action(ActionPacket::new(0)));
@@ -549,11 +543,7 @@ mod tests {
         h.poll(&shared, &mut io);
         let (_, err, _) = parse_status(&io.tx);
         assert_eq!(err, StatusError::None.as_u8());
-        assert!(
-            unsafe { &*shared.table.control.get() }
-                .lifecycle
-                .torque_enable
-        );
+        assert!(shared.table.control.with(|c| c.lifecycle.torque_enable));
     }
 
     #[test]
@@ -592,11 +582,7 @@ mod tests {
         h.poll(&shared, &mut io);
         let (_, err, _) = parse_status(&io.tx);
         assert_eq!(err, StatusError::None.as_u8());
-        assert!(
-            !unsafe { &*shared.table.control.get() }
-                .lifecycle
-                .torque_enable
-        );
+        assert!(!shared.table.control.with(|c| c.lifecycle.torque_enable));
     }
 
     #[test]
@@ -624,7 +610,7 @@ mod tests {
         io.feed(&req);
         h.poll(&shared, &mut io);
         assert_eq!(
-            unsafe { &*shared.table.control.get() }.lifecycle.mode,
+            shared.table.control.with(|c| c.lifecycle.mode),
             Mode::PositionPid,
         );
 
@@ -634,11 +620,7 @@ mod tests {
         h.poll(&shared, &mut io);
         let (_, err, _) = parse_status(&io.tx);
         assert_eq!(err, StatusError::None.as_u8());
-        assert!(
-            !unsafe { &*shared.table.control.get() }
-                .lifecycle
-                .torque_enable
-        );
+        assert!(!shared.table.control.with(|c| c.lifecycle.torque_enable));
     }
 
     #[test]
@@ -661,11 +643,7 @@ mod tests {
         io.feed(&req);
         h.poll(&shared, &mut io);
         assert_eq!(io.start_tx_count, 0);
-        assert!(
-            unsafe { &*shared.table.control.get() }
-                .lifecycle
-                .torque_enable
-        );
+        assert!(shared.table.control.with(|c| c.lifecycle.torque_enable));
     }
 
     #[test]

@@ -7,9 +7,11 @@
 //!   CONTROL   0x0300..=0x08FF  (1536 B) — RW volatile
 //!   CALIB     0x0900..=0x18FF  (4096 B) — single-copy + per-block CRC
 //!
-//! Owners form transient `&mut RegionT` via `&mut *cell.get()`; cross-domain
-//! readers use raw-pointer per-field reads, never form `&T`.
+//! Owners go through `RegionStorage::with`/`with_mut`. Cross-domain readers
+//! that must avoid forming `&T` (aliasing-sensitive paths) use raw-pointer
+//! per-field reads directly on `cell.get()`.
 
+use control_table::RegionStorage;
 use core::cell::SyncUnsafeCell;
 
 pub mod calib;
@@ -68,14 +70,15 @@ impl ControlTable {
             defaults.dxl_baud.as_idx(),
         );
         // SAFETY: install-time, pre-IRQ, sole writer.
-        let cfg = unsafe { &mut *self.config.get() };
-        cfg.pos_limits.pos_min_phys_urad = defaults.pos_min_phys_urad;
-        cfg.pos_limits.pos_max_phys_urad = defaults.pos_max_phys_urad;
-        cfg.pos_limits.pos_min_soft_urad = defaults.pos_min_phys_urad;
-        cfg.pos_limits.pos_max_soft_urad = defaults.pos_max_phys_urad;
-        cfg.calibration.vdd_mv = defaults.vdd_mv;
-        cfg.comms.id = defaults.dxl_id;
-        cfg.comms.baud_rate_idx = defaults.dxl_baud;
+        self.config.with_mut(|cfg| {
+            cfg.pos_limits.pos_min_phys_urad = defaults.pos_min_phys_urad;
+            cfg.pos_limits.pos_max_phys_urad = defaults.pos_max_phys_urad;
+            cfg.pos_limits.pos_min_soft_urad = defaults.pos_min_phys_urad;
+            cfg.pos_limits.pos_max_soft_urad = defaults.pos_max_phys_urad;
+            cfg.calibration.vdd_mv = defaults.vdd_mv;
+            cfg.comms.id = defaults.dxl_id;
+            cfg.comms.baud_rate_idx = defaults.dxl_baud;
+        });
     }
 
     /// Called once pre-PFIC-IRQ — sole writer.
