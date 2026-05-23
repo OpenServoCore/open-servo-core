@@ -55,6 +55,16 @@ pub enum StallResponse {
     Comply = 1,
 }
 
+/// DXL Status Return Level. Ordered None < Read < All. Ping replies regardless.
+#[derive(Copy, Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Default, Enum)]
+#[repr(u8)]
+pub enum StatusReturnLevel {
+    None = 0,
+    Read = 1,
+    #[default]
+    All = 2,
+}
+
 #[repr(C)]
 #[derive(Copy, Clone, Block)]
 pub struct ConfigIdentity {
@@ -76,6 +86,7 @@ pub struct ConfigComms {
     pub id: u8,
     pub baud_rate_idx: BaudRate,
     pub return_delay_2us: u8,
+    pub status_return_level: StatusReturnLevel,
 }
 
 #[repr(C)]

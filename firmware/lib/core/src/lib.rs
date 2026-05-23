@@ -23,7 +23,8 @@ pub use regions::{
     BemfCalibBlock, BootMode, CalibRegs, ConfigCalibration, ConfigComms, ConfigControlPosition,
     ConfigIdentity, ConfigPosLimits, ConfigRegs, ConfigStall, ConfigThermal, ControlLifecycle,
     ControlRegs, ControlStreaming, ControlSystem, ControlTable, Mode, PotLutBlock, StallResponse,
-    TelemetryConverted, TelemetryFault, TelemetryIntermediaries, TelemetryRaw, TelemetryRegs,
+    StatusReturnLevel, TelemetryConverted, TelemetryFault, TelemetryIntermediaries, TelemetryRaw,
+    TelemetryRegs,
 };
 pub use ring_reader::{RingReader, RxSnapshot};
 pub use sample_frame::{FrameInputs, RawSamples, SampleFrame};

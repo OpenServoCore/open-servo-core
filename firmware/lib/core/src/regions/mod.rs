@@ -23,7 +23,7 @@ pub mod telemetry;
 pub use calib::{BemfCalibBlock, CalibRegs, PotLutBlock};
 pub use config::{
     BaudRate, ConfigCalibration, ConfigComms, ConfigControlPosition, ConfigIdentity,
-    ConfigPosLimits, ConfigRegs, ConfigStall, ConfigThermal, StallResponse,
+    ConfigPosLimits, ConfigRegs, ConfigStall, ConfigThermal, StallResponse, StatusReturnLevel,
 };
 pub use control::{BootMode, ControlLifecycle, ControlRegs, ControlStreaming, ControlSystem, Mode};
 pub use telemetry::{

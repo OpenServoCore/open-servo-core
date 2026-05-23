@@ -1,6 +1,9 @@
 use dxl_protocol::prelude::*;
 
-use crate::{BootMode, Error, RegionStorage, RingReader, Router, RxSnapshot, Shared, StagedWrites};
+use crate::{
+    BootMode, Error, RegionStorage, RingReader, Router, RxSnapshot, Shared, StagedWrites,
+    StatusReturnLevel,
+};
 
 pub const DXL_SCRATCH_LEN: usize = 256;
 pub const MAX_READ: usize = 128;
@@ -110,11 +113,27 @@ impl<D: DxlIo> Dispatcher<'_, D> {
 
     fn reply_unsupported(&mut self, target: u8) {
         if let Some((id, true)) = self.addressed(target) {
-            self.send_status(id, StatusError::Instruction, &[]);
+            self.send_status(id, StatusError::Instruction, &[], StatusReturnLevel::All);
         }
     }
 
-    fn send_status(&mut self, id: u8, error: StatusError, params: &[u8]) {
+    fn level(&self) -> StatusReturnLevel {
+        self.shared
+            .table
+            .config
+            .with(|c| c.comms.status_return_level)
+    }
+
+    fn send_status(
+        &mut self,
+        id: u8,
+        error: StatusError,
+        params: &[u8],
+        min_level: StatusReturnLevel,
+    ) {
+        if self.level() < min_level {
+            return;
+        }
         let buf = self.io.tx_buf();
         buf.truncate(0);
         let packet = Packet::Status(StatusPacket::new(id, error.as_u8(), params));
@@ -133,7 +152,7 @@ impl<D: DxlIo> Dispatcher<'_, D> {
         let model = identity.model_number.to_le_bytes();
         let fw = identity.firmware_version as u8;
         let params = [model[0], model[1], fw];
-        self.send_status(id, StatusError::None, &params);
+        self.send_status(id, StatusError::None, &params, StatusReturnLevel::None);
     }
 
     fn handle_read(&mut self, p: &ReadPacket) {
@@ -142,13 +161,13 @@ impl<D: DxlIo> Dispatcher<'_, D> {
         };
         let len = p.length as usize;
         if len == 0 || len > MAX_READ {
-            self.send_status(id, StatusError::DataRange, &[]);
+            self.send_status(id, StatusError::DataRange, &[], StatusReturnLevel::Read);
             return;
         }
         let mut buf = [0u8; MAX_READ];
         match self.shared.table.read_bytes(p.address, &mut buf[..len]) {
-            Ok(()) => self.send_status(id, StatusError::None, &buf[..len]),
-            Err(e) => self.send_status(id, error_to_status(e), &[]),
+            Ok(()) => self.send_status(id, StatusError::None, &buf[..len], StatusReturnLevel::Read),
+            Err(e) => self.send_status(id, error_to_status(e), &[], StatusReturnLevel::Read),
         }
     }
 
@@ -157,8 +176,8 @@ impl<D: DxlIo> Dispatcher<'_, D> {
             return;
         }
         match result {
-            Ok(()) => self.send_status(id, StatusError::None, &[]),
-            Err(e) => self.send_status(id, error_to_status(e), &[]),
+            Ok(()) => self.send_status(id, StatusError::None, &[], StatusReturnLevel::All),
+            Err(e) => self.send_status(id, error_to_status(e), &[], StatusReturnLevel::All),
         }
     }
 
@@ -172,7 +191,7 @@ impl<D: DxlIo> Dispatcher<'_, D> {
             Ok(n) => n,
             Err(_) => {
                 if direct {
-                    self.send_status(id, StatusError::DataRange, &[]);
+                    self.send_status(id, StatusError::DataRange, &[], StatusReturnLevel::All);
                 }
                 return;
             }
@@ -197,7 +216,7 @@ impl<D: DxlIo> Dispatcher<'_, D> {
             Ok(n) => n,
             Err(_) => {
                 if direct {
-                    self.send_status(id, StatusError::DataRange, &[]);
+                    self.send_status(id, StatusError::DataRange, &[], StatusReturnLevel::All);
                 }
                 return;
             }
@@ -216,7 +235,7 @@ impl<D: DxlIo> Dispatcher<'_, D> {
         };
         self.shared.table.commit_staged(self.staged);
         if direct {
-            self.send_status(id, StatusError::None, &[]);
+            self.send_status(id, StatusError::None, &[], StatusReturnLevel::All);
         }
     }
 
@@ -231,7 +250,7 @@ impl<D: DxlIo> Dispatcher<'_, D> {
         };
         let mode = self.shared.table.control.with(|c| c.system.boot_mode);
         if direct {
-            self.send_status(id, StatusError::None, &[]);
+            self.send_status(id, StatusError::None, &[], StatusReturnLevel::All);
         }
         self.io.request_reboot(mode);
     }
@@ -764,5 +783,172 @@ mod tests {
 
         assert_eq!(io.reboot_count, 1);
         assert_eq!(io.last_reboot_mode, Some(BootMode::Bootloader));
+    }
+
+    fn set_level(shared: &Shared, level: StatusReturnLevel) {
+        shared
+            .table
+            .config
+            .with_mut(|c| c.comms.status_return_level = level);
+    }
+
+    #[test]
+    fn return_level_none_silences_write_ack_but_ping_replies() {
+        use crate::regions::CONTROL_BASE_ADDR;
+        let shared = Shared::new();
+        set_level(&shared, StatusReturnLevel::None);
+        let mut io = FakeDxlIo::new();
+        let mut h = Dxl::new();
+
+        let req = encode(&Packet::Write(WritePacket::new(0, CONTROL_BASE_ADDR, &[1])));
+        io.feed(&req);
+        h.poll(&shared, &mut io);
+        assert_eq!(io.start_tx_count, 0);
+        assert!(io.tx.is_empty());
+        assert!(shared.table.control.with(|c| c.lifecycle.torque_enable));
+
+        let req = encode(&Packet::Ping(PingPacket::new(0)));
+        io.feed(&req);
+        h.poll(&shared, &mut io);
+        assert_eq!(io.start_tx_count, 1);
+        let (_, err, _) = parse_status(&io.tx);
+        assert_eq!(err, 0);
+    }
+
+    #[test]
+    fn return_level_none_silences_read_reply() {
+        let shared = Shared::new();
+        set_level(&shared, StatusReturnLevel::None);
+        let mut io = FakeDxlIo::new();
+        let mut h = Dxl::new();
+
+        let req = encode(&Packet::Read(ReadPacket::new(0, 0, 2)));
+        io.feed(&req);
+        h.poll(&shared, &mut io);
+        assert_eq!(io.start_tx_count, 0);
+        assert!(io.tx.is_empty());
+    }
+
+    #[test]
+    fn return_level_read_silences_write_ack_but_read_replies() {
+        use crate::regions::CONTROL_BASE_ADDR;
+        let shared = Shared::new();
+        set_level(&shared, StatusReturnLevel::Read);
+        let mut io = FakeDxlIo::new();
+        let mut h = Dxl::new();
+
+        let req = encode(&Packet::Write(WritePacket::new(0, CONTROL_BASE_ADDR, &[1])));
+        io.feed(&req);
+        h.poll(&shared, &mut io);
+        assert_eq!(io.start_tx_count, 0);
+
+        let req = encode(&Packet::Read(ReadPacket::new(0, 0, 2)));
+        io.feed(&req);
+        h.poll(&shared, &mut io);
+        assert_eq!(io.start_tx_count, 1);
+        let (_, err, _) = parse_status(&io.tx);
+        assert_eq!(err, 0);
+    }
+
+    #[test]
+    fn return_level_none_silences_write_error_reply() {
+        let shared = Shared::new();
+        set_level(&shared, StatusReturnLevel::None);
+        let mut io = FakeDxlIo::new();
+        let mut h = Dxl::new();
+
+        let req = encode(&Packet::Write(WritePacket::new(0, 0, &[0xAA, 0xBB])));
+        io.feed(&req);
+        h.poll(&shared, &mut io);
+        assert_eq!(io.start_tx_count, 0);
+        assert!(io.tx.is_empty());
+    }
+
+    #[test]
+    fn return_level_none_silences_unsupported_instruction_error() {
+        let shared = Shared::new();
+        set_level(&shared, StatusReturnLevel::None);
+        let mut io = FakeDxlIo::new();
+        let mut h = Dxl::new();
+
+        let req = encode(&Packet::FactoryReset(FactoryResetPacket::new(0, 0xFF)));
+        io.feed(&req);
+        h.poll(&shared, &mut io);
+        assert_eq!(io.start_tx_count, 0);
+        assert!(io.tx.is_empty());
+    }
+
+    #[test]
+    fn return_level_none_silences_action_ack() {
+        use crate::regions::CONTROL_BASE_ADDR;
+        let shared = Shared::new();
+        set_level(&shared, StatusReturnLevel::None);
+        let mut io = FakeDxlIo::new();
+        let mut h = Dxl::new();
+
+        let req = encode(&Packet::RegWrite(RegWritePacket::new(
+            0,
+            CONTROL_BASE_ADDR,
+            &[1],
+        )));
+        io.feed(&req);
+        h.poll(&shared, &mut io);
+
+        let req = encode(&Packet::Action(ActionPacket::new(0)));
+        io.feed(&req);
+        h.poll(&shared, &mut io);
+
+        assert_eq!(io.start_tx_count, 0);
+        assert!(shared.table.control.with(|c| c.lifecycle.torque_enable));
+    }
+
+    #[test]
+    fn return_level_none_silences_reboot_ack_but_reboot_still_fires() {
+        let shared = Shared::new();
+        set_level(&shared, StatusReturnLevel::None);
+        let mut io = FakeDxlIo::new();
+        let mut h = Dxl::new();
+
+        let req = encode(&Packet::Reboot(RebootPacket::new(0)));
+        io.feed(&req);
+        h.poll(&shared, &mut io);
+
+        assert_eq!(io.start_tx_count, 0);
+        assert!(io.tx.is_empty());
+        assert_eq!(io.reboot_count, 1);
+        assert_eq!(io.last_reboot_mode, Some(BootMode::App));
+    }
+
+    #[test]
+    fn return_level_none_still_replies_to_ping() {
+        let shared = Shared::new();
+        set_level(&shared, StatusReturnLevel::None);
+        let mut io = FakeDxlIo::new();
+        let mut h = Dxl::new();
+
+        let req = encode(&Packet::Ping(PingPacket::new(0)));
+        io.feed(&req);
+        h.poll(&shared, &mut io);
+
+        assert_eq!(io.start_tx_count, 1);
+        let (id, err, params) = parse_status(&io.tx);
+        assert_eq!(id, 0);
+        assert_eq!(err, 0);
+        assert_eq!(&params[..], &[0, 0, 0]);
+    }
+
+    #[test]
+    fn return_level_read_replies_to_read_errors() {
+        let shared = Shared::new();
+        set_level(&shared, StatusReturnLevel::Read);
+        let mut io = FakeDxlIo::new();
+        let mut h = Dxl::new();
+
+        let req = encode(&Packet::Read(ReadPacket::new(0, 0xFFFE, 1)));
+        io.feed(&req);
+        h.poll(&shared, &mut io);
+
+        let (_, err, _) = parse_status(&io.tx);
+        assert_eq!(err, StatusError::DataRange.as_u8());
     }
 }
