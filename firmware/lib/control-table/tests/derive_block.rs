@@ -1,5 +1,5 @@
 use control_table::{
-    Access, BOOL_ALLOWED, Block, CompareOp, FieldValidator, RegmapError, Rhs, StagedView,
+    Access, BOOL_ALLOWED, Block, CompareOp, Enum, FieldValidator, RegmapError, Rhs, StagedView,
 };
 use core::mem::{offset_of, size_of};
 
@@ -188,13 +188,10 @@ fn allowed_overrides_default_with_provided_set() {
 }
 
 #[repr(u8)]
-#[derive(Copy, Clone)]
+#[derive(Copy, Clone, Enum)]
 enum FakeMode {
     Stop = 0,
     Go = 1,
-}
-impl FakeMode {
-    pub const ALLOWED: &[u8] = &[Self::Stop as u8, Self::Go as u8];
 }
 
 #[repr(C)]

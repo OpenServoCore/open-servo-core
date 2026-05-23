@@ -22,6 +22,15 @@ pub enum ValidationKind {
 /// `bool` is `u8` 0/1; any other byte yields UB on later access.
 pub const BOOL_ALLOWED: &[u8] = &[0, 1];
 
+#[diagnostic::on_unimplemented(
+    message = "`{Self}` does not expose an `ALLOWED` discriminant slice",
+    label = "missing `#[derive(control_table::Enum)]`",
+    note = "add `#[derive(Enum)]` and `#[repr(u8)]` to `{Self}` to generate `ALLOWED`"
+)]
+pub trait HasAllowed {
+    const ALLOWED: &'static [u8];
+}
+
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
 pub enum Access {

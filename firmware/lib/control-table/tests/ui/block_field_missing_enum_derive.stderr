@@ -1,0 +1,12 @@
+error[E0277]: `BareEnum` does not expose an `ALLOWED` discriminant slice
+  --> tests/ui/block_field_missing_enum_derive.rs:13:11
+   |
+13 |     mode: BareEnum,
+   |           ^^^^^^^^ missing `#[derive(control_table::Enum)]`
+   |
+help: the trait `HasAllowed` is not implemented for `BareEnum`
+  --> tests/ui/block_field_missing_enum_derive.rs:5:1
+   |
+ 5 | enum BareEnum {
+   | ^^^^^^^^^^^^^
+   = note: add `#[derive(Enum)]` and `#[repr(u8)]` to `BareEnum` to generate `ALLOWED`
