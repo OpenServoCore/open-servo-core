@@ -103,10 +103,7 @@ pub fn expand(input: &DeriveInput) -> syn::Result<TokenStream2> {
                 validators: &[#(#validators),*],
             }
         });
-        kept_upper.push(Ident::new(
-            &name.to_string().to_uppercase(),
-            name.span(),
-        ));
+        kept_upper.push(Ident::new(&name.to_string().to_uppercase(), name.span()));
         kept_idents.push(name);
     }
 

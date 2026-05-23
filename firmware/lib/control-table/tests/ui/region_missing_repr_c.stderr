@@ -1,0 +1,5 @@
+error: Region derive requires #[repr(C)]
+  --> tests/ui/region_missing_repr_c.rs:11:8
+   |
+11 | struct NoReprC {
+   |        ^^^^^^^

@@ -1,0 +1,8 @@
+error: Region requires a struct with named fields
+  --> tests/ui/region_tuple_struct.rs:9:1
+   |
+ 9 | / #[repr(C)]
+10 | | #[derive(Region)]
+11 | | #[ct_region(addr = 0, size = 8)]
+12 | | struct TupleRegion(Blk);
+   | |________________________^
