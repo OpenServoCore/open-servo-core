@@ -26,7 +26,7 @@ pub use regions::{
 };
 pub use regmap::{
     Access, BOOL_ALLOWED, BlockDesc, BlockValidator, CompareOp, CrossField, FieldDesc,
-    FieldValidator, RegionDesc, RegionValidator, RegmapError, StagedView, StagedWrites,
+    FieldValidator, RegionDesc, RegionValidator, RegmapError, Router, StagedView, StagedWrites,
     ValidationKind,
 };
 pub use ring_reader::{RingReader, RxSnapshot};

@@ -1,5 +1,6 @@
 use dxl_protocol::prelude::*;
 
+use crate::regmap::Router;
 use crate::{RegmapError, RingReader, RxSnapshot, Shared, StagedWrites};
 
 pub const DXL_SCRATCH_LEN: usize = 256;

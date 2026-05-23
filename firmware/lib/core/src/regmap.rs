@@ -12,11 +12,7 @@
 //! Struct fields whose name starts with `_rsvd_` are absent from `BlockDesc.fields` and remain
 //! gaps. Hand-written today; layout is shaped to match a future `#[derive(RegmapBlock)]` macro.
 
-use crate::ControlTable;
 use crate::log;
-use crate::regions::{
-    CALIB_BASE_ADDR, CONFIG_BASE_ADDR, CONTROL_BASE_ADDR, REGIONS, TELEMETRY_BASE_ADDR,
-};
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub enum RegmapError {
@@ -329,14 +325,14 @@ fn check_range<T: PartialOrd, const N: usize>(
 /// Overlays staged-but-uncommitted bytes onto live-table reads so validators
 /// see the value about to be committed.
 pub struct StagedView<'a> {
-    table: &'a ControlTable,
+    router: &'a dyn Router,
     staged: &'a StagedWrites,
     start_entry: usize,
 }
 
 impl<'a> StagedView<'a> {
     pub fn read_bytes(&self, addr: u16, dst: &mut [u8]) -> Result<(), RegmapError> {
-        self.table.read_bytes(addr, dst)?;
+        router_read_bytes(self.router, addr, dst)?;
         if dst.is_empty() {
             return Ok(());
         }
@@ -363,101 +359,118 @@ struct RegionRef {
     def: &'static RegionDesc,
 }
 
-impl ControlTable {
-    pub fn read_bytes(&self, addr: u16, dst: &mut [u8]) -> Result<(), RegmapError> {
-        if dst.is_empty() {
-            return Ok(());
-        }
-        let end = (addr as usize)
-            .checked_add(dst.len())
-            .ok_or(RegmapError::OutOfRange)?;
-        let r = self.region_for(addr, end).ok_or(RegmapError::OutOfRange)?;
-        // SAFETY: get() non-null; descriptor sizes verified in `region_structs_fit_regions`.
-        unsafe { walk_read(r.base, addr, dst, r.def.blocks) }
+/// `write_bytes`/`commit_staged` form a transient `&mut` to the region via the
+/// pointer from `region_base`; caller must hold its single-writer guarantee.
+pub trait Router {
+    fn regions(&self) -> &'static [&'static RegionDesc];
+    fn region_base(&self, desc: &RegionDesc) -> *mut u8;
+
+    fn read_bytes(&self, addr: u16, dst: &mut [u8]) -> Result<(), RegmapError>
+    where
+        Self: Sized,
+    {
+        router_read_bytes(self, addr, dst)
     }
 
-    /// Caller must be the region's sole writer (services for CONFIG/CONTROL/CALIB, kernel for TELEMETRY).
-    pub fn write_bytes(
+    fn write_bytes(
         &self,
         addr: u16,
         src: &[u8],
         staged: &mut StagedWrites,
-    ) -> Result<(), RegmapError> {
+    ) -> Result<(), RegmapError>
+    where
+        Self: Sized,
+    {
         let saved_data = staged.data.len();
         let saved_entries = staged.entries.len();
-        self.stage_bytes(addr, src, staged)?;
-        // SAFETY: caller holds the region's single-writer guarantee.
-        unsafe { self.commit_staged_range(staged, saved_entries) };
+        router_stage_bytes(self, addr, src, staged)?;
+        // SAFETY: caller upholds Router's single-writer contract.
+        unsafe { commit_staged_range(self, staged, saved_entries) };
         staged.rewind(saved_data, saved_entries);
         Ok(())
     }
 
-    /// Stage + run all validators. Buffer rewinds on failure.
-    pub fn stage_bytes(
+    fn stage_bytes(
         &self,
         addr: u16,
         src: &[u8],
         staged: &mut StagedWrites,
-    ) -> Result<(), RegmapError> {
-        if src.is_empty() {
-            return Ok(());
-        }
-        let end = (addr as usize)
-            .checked_add(src.len())
-            .ok_or(RegmapError::OutOfRange)?;
-        let r = self.region_for(addr, end).ok_or(RegmapError::OutOfRange)?;
-        let saved_data = staged.data.len();
-        let saved_entries = staged.entries.len();
-        let result = stage_write(addr, src, r.def.blocks, staged)
-            .and_then(|()| {
-                run_field_validators(self, staged, saved_entries, addr, src.len(), r.def.blocks)
-            })
-            .and_then(|()| run_region_validators(self, staged, saved_entries, r.def.validators));
-        if result.is_err() {
-            staged.rewind(saved_data, saved_entries);
-        }
-        result
+    ) -> Result<(), RegmapError>
+    where
+        Self: Sized,
+    {
+        router_stage_bytes(self, addr, src, staged)
     }
 
-    /// Commit all staged entries and clear the buffer. Validators ran at stage time.
-    /// Caller must be the sole writer of every region the entries touch.
-    pub fn commit_staged(&self, staged: &mut StagedWrites) {
-        // SAFETY: caller holds the regions' single-writer guarantees.
-        unsafe { self.commit_staged_range(staged, 0) };
+    fn commit_staged(&self, staged: &mut StagedWrites)
+    where
+        Self: Sized,
+    {
+        // SAFETY: caller upholds Router's single-writer contract.
+        unsafe { commit_staged_range(self, staged, 0) };
         staged.clear();
     }
+}
 
-    /// SAFETY: caller holds the region's single-writer guarantee.
-    unsafe fn commit_staged_range(&self, staged: &StagedWrites, start_entry: usize) {
-        for (abs_addr, data) in staged.iter_from(start_entry) {
-            let end = abs_addr as usize + data.len();
-            // stage_write guarantees single-region containment.
-            let Some(r) = self.region_for(abs_addr, end) else {
-                continue;
-            };
-            unsafe { commit_chunk(r.base, abs_addr, data, r.def.blocks) };
-        }
+fn region_for(router: &dyn Router, addr: u16, end: usize) -> Option<RegionRef> {
+    let def = router
+        .regions()
+        .iter()
+        .copied()
+        .find(|d| range_in(addr, end, d.addr, d.size as usize))?;
+    Some(RegionRef {
+        base: router.region_base(def),
+        def,
+    })
+}
+
+fn router_read_bytes(router: &dyn Router, addr: u16, dst: &mut [u8]) -> Result<(), RegmapError> {
+    if dst.is_empty() {
+        return Ok(());
     }
+    let end = (addr as usize)
+        .checked_add(dst.len())
+        .ok_or(RegmapError::OutOfRange)?;
+    let r = region_for(router, addr, end).ok_or(RegmapError::OutOfRange)?;
+    // SAFETY: get() non-null; descriptor sizes verified in `region_structs_fit_regions`.
+    unsafe { walk_read(r.base, addr, dst, r.def.blocks) }
+}
 
-    fn region_for(&self, addr: u16, end: usize) -> Option<RegionRef> {
-        let def = REGIONS
-            .iter()
-            .copied()
-            .find(|d| range_in(addr, end, d.addr, d.size as usize))?;
-        Some(RegionRef {
-            base: self.region_base(def),
-            def,
+fn router_stage_bytes(
+    router: &dyn Router,
+    addr: u16,
+    src: &[u8],
+    staged: &mut StagedWrites,
+) -> Result<(), RegmapError> {
+    if src.is_empty() {
+        return Ok(());
+    }
+    let end = (addr as usize)
+        .checked_add(src.len())
+        .ok_or(RegmapError::OutOfRange)?;
+    let r = region_for(router, addr, end).ok_or(RegmapError::OutOfRange)?;
+    let saved_data = staged.data.len();
+    let saved_entries = staged.entries.len();
+    let result = stage_write(addr, src, r.def.blocks, staged)
+        .and_then(|()| {
+            run_field_validators(router, staged, saved_entries, addr, src.len(), r.def.blocks)
         })
+        .and_then(|()| run_region_validators(router, staged, saved_entries, r.def.validators));
+    if result.is_err() {
+        staged.rewind(saved_data, saved_entries);
     }
+    result
+}
 
-    fn region_base(&self, desc: &RegionDesc) -> *mut u8 {
-        match desc.addr {
-            CONFIG_BASE_ADDR => self.config.get() as *mut u8,
-            TELEMETRY_BASE_ADDR => self.telemetry.get() as *mut u8,
-            CONTROL_BASE_ADDR => self.control.get() as *mut u8,
-            CALIB_BASE_ADDR => self.calib.get() as *mut u8,
-            _ => core::ptr::null_mut(),
-        }
+/// SAFETY: caller holds the region's single-writer guarantee.
+unsafe fn commit_staged_range(router: &dyn Router, staged: &StagedWrites, start_entry: usize) {
+    for (abs_addr, data) in staged.iter_from(start_entry) {
+        let end = abs_addr as usize + data.len();
+        // stage_write guarantees single-region containment.
+        let Some(r) = region_for(router, abs_addr, end) else {
+            continue;
+        };
+        unsafe { commit_chunk(r.base, abs_addr, data, r.def.blocks) };
     }
 }
 
@@ -543,7 +556,7 @@ unsafe fn walk_read(
 }
 
 fn run_field_validators(
-    table: &ControlTable,
+    router: &dyn Router,
     staged: &StagedWrites,
     start_entry: usize,
     abs_start: u16,
@@ -551,7 +564,7 @@ fn run_field_validators(
     blocks: &[BlockDesc],
 ) -> Result<(), RegmapError> {
     let view = StagedView {
-        table,
+        router,
         staged,
         start_entry,
     };
@@ -597,7 +610,7 @@ fn run_field_validators(
 }
 
 fn run_region_validators(
-    table: &ControlTable,
+    router: &dyn Router,
     staged: &StagedWrites,
     start_entry: usize,
     validators: &[RegionValidator],
@@ -606,7 +619,7 @@ fn run_region_validators(
         return Ok(());
     }
     let view = StagedView {
-        table,
+        router,
         staged,
         start_entry,
     };
@@ -987,7 +1000,7 @@ mod tests {
         let mut staged = StagedWrites::default();
         staged.push_chunk(comms_addr + 1, &[0xAA, 0xBB]).unwrap();
         let view = StagedView {
-            table: &t,
+            router: &t,
             staged: &staged,
             start_entry: 0,
         };
@@ -1004,7 +1017,7 @@ mod tests {
         let mut staged = StagedWrites::default();
         staged.push_chunk(comms_addr, &[0xFF]).unwrap();
         let view = StagedView {
-            table: &t,
+            router: &t,
             staged: &staged,
             start_entry: 1,
         };
@@ -1019,7 +1032,7 @@ mod tests {
         let mut staged = StagedWrites::default();
         staged.push_chunk(CONTROL_BASE_ADDR, &[1]).unwrap();
         let view = StagedView {
-            table: &t,
+            router: &t,
             staged: &staged,
             start_entry: 0,
         };
@@ -1033,7 +1046,7 @@ mod tests {
         let mut staged = StagedWrites::default();
         staged.push_chunk(CONTROL_BASE_ADDR, &[2]).unwrap();
         let view = StagedView {
-            table: &t,
+            router: &t,
             staged: &staged,
             start_entry: 0,
         };
@@ -1050,7 +1063,7 @@ mod tests {
         let mut staged = StagedWrites::default();
         staged.push_chunk(CONTROL_BASE_ADDR, &[5]).unwrap();
         let view = StagedView {
-            table: &t,
+            router: &t,
             staged: &staged,
             start_entry: 0,
         };
@@ -1059,7 +1072,7 @@ mod tests {
         let mut staged2 = StagedWrites::default();
         staged2.push_chunk(CONTROL_BASE_ADDR, &[11]).unwrap();
         let view2 = StagedView {
-            table: &t,
+            router: &t,
             staged: &staged2,
             start_entry: 0,
         };
@@ -1077,7 +1090,7 @@ mod tests {
             .push_chunk(CONTROL_BASE_ADDR, &500u16.to_le_bytes())
             .unwrap();
         let view = StagedView {
-            table: &t,
+            router: &t,
             staged: &staged,
             start_entry: 0,
         };
@@ -1088,7 +1101,7 @@ mod tests {
             .push_chunk(CONTROL_BASE_ADDR, &50u16.to_le_bytes())
             .unwrap();
         let view2 = StagedView {
-            table: &t,
+            router: &t,
             staged: &staged2,
             start_entry: 0,
         };
@@ -1107,7 +1120,7 @@ mod tests {
         let mut staged = StagedWrites::default();
         staged.push_chunk(addr, &(-100i32).to_le_bytes()).unwrap();
         let view = StagedView {
-            table: &t,
+            router: &t,
             staged: &staged,
             start_entry: 0,
         };
@@ -1119,7 +1132,7 @@ mod tests {
         let mut staged2 = StagedWrites::default();
         staged2.push_chunk(addr, &(-2000i32).to_le_bytes()).unwrap();
         let view2 = StagedView {
-            table: &t,
+            router: &t,
             staged: &staged2,
             start_entry: 0,
         };

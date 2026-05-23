@@ -31,7 +31,7 @@ pub use telemetry::{
 
 use crate::board::ConfigDefaults;
 use crate::page::PageHeader;
-use crate::regmap::RegionDesc;
+use crate::regmap::{RegionDesc, Router};
 
 pub const REGIONS: &[&RegionDesc] = &[
     &config::CONFIG_REGION,
@@ -122,6 +122,22 @@ impl ControlTable {
         _calib_base_addr: u32,
     ) {
         todo!()
+    }
+}
+
+impl Router for ControlTable {
+    fn regions(&self) -> &'static [&'static RegionDesc] {
+        REGIONS
+    }
+
+    fn region_base(&self, desc: &RegionDesc) -> *mut u8 {
+        match desc.addr {
+            CONFIG_BASE_ADDR => self.config.get() as *mut u8,
+            TELEMETRY_BASE_ADDR => self.telemetry.get() as *mut u8,
+            CONTROL_BASE_ADDR => self.control.get() as *mut u8,
+            CALIB_BASE_ADDR => self.calib.get() as *mut u8,
+            _ => core::ptr::null_mut(),
+        }
     }
 }
 
