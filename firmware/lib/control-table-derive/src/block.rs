@@ -291,6 +291,8 @@ fn build_validators(ty: &Type, attrs: &FieldAttrs) -> syn::Result<Vec<TokenStrea
     Ok(out)
 }
 
+/// Array / tuple / reference types fall through `Type::Path` and get no default
+/// validator; user must opt in via `allowed = …` or `custom = …`.
 fn default_enum_for_type(ty: &Type) -> Option<TokenStream2> {
     let Type::Path(tp) = ty else { return None };
     let path = &tp.path;

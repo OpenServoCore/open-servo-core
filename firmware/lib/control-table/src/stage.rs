@@ -1,6 +1,8 @@
 use crate::desc::Error;
 use crate::route::{Router, router_read_bytes};
 
+/// Sized to fit one max-length DXL Write (matches `dxl::MAX_WRITE`); multiple
+/// RegWrites share this budget before Action commits.
 pub const STAGE_DATA_CAP: usize = 128;
 pub const STAGE_ENTRY_CAP: usize = 16;
 

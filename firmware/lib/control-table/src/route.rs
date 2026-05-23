@@ -4,6 +4,10 @@ use crate::validate::{run_block_validators, run_field_validators, run_region_val
 
 /// `write_bytes`/`commit_staged` form a transient `&mut` to the region via the
 /// pointer from `region_base`; caller must hold its single-writer guarantee.
+///
+/// Default methods are gated `where Self: Sized` so they aren't callable via
+/// `&dyn Router` — `router_*` free fns take `&dyn Router` internally, and the
+/// `Sized` bound prevents the trait-object recursion that would otherwise result.
 pub trait Router {
     fn regions(&self) -> &'static [&'static RegionDesc];
     fn region_base(&self, desc: &RegionDesc) -> Option<*mut u8>;

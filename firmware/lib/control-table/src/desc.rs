@@ -49,6 +49,8 @@ pub struct FieldDesc {
     pub validators: &'static [FieldValidator],
 }
 
+/// `size` is `size_of::<Self>()` and may exceed the sum of `fields` (skipped fields
+/// stay in the layout for padding); walks return `AccessError` inside those gaps.
 #[derive(Copy, Clone, Debug)]
 pub struct BlockDesc {
     pub addr: u16,
