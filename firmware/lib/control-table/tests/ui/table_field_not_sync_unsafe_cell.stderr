@@ -1,4 +1,4 @@
-error: Table field must be `SyncUnsafeCell<T>`
+error: Table field must be a single-type-parameter storage type (e.g. `SyncUnsafeCell<R>`) impl'ing `RegionStorageRaw<R>`
  --> tests/ui/table_field_not_sync_unsafe_cell.rs:8:12
   |
 8 |     pub r: u32,

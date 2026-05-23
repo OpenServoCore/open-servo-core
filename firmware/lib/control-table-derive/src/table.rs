@@ -13,6 +13,7 @@ struct TableAttrs {
 
 struct RegionField<'a> {
     ident: &'a Ident,
+    storage_ty: &'a Type,
     inner_ty: &'a Type,
     addr_mod: Option<Path>,
 }
@@ -53,7 +54,8 @@ pub fn expand(input: &DeriveInput) -> syn::Result<TokenStream2> {
         };
         region_fields.push(RegionField {
             ident: f.ident.as_ref().unwrap(),
-            inner_ty: extract_sync_unsafe_cell_inner(f)?,
+            storage_ty: &f.ty,
+            inner_ty: extract_storage_inner_ty(f)?,
             addr_mod: field_attrs.addr_mod,
         });
     }
@@ -72,16 +74,17 @@ pub fn expand(input: &DeriveInput) -> syn::Result<TokenStream2> {
 
     let const_new_inits = region_fields.iter().map(|rf| {
         let ident = rf.ident;
-        let ty = rf.inner_ty;
-        quote!(#ident: ::core::cell::SyncUnsafeCell::new(<#ty>::const_new()))
+        let storage_ty = rf.storage_ty;
+        let inner_ty = rf.inner_ty;
+        quote!(#ident: <#storage_ty>::new(<#inner_ty>::const_new()))
     });
 
     let region_base_arms = region_fields.iter().map(|rf| {
         let ident = rf.ident;
-        let ty = rf.inner_ty;
+        let inner_ty = rf.inner_ty;
         quote! {
-            if addr == <#ty>::REGION_DESC.addr {
-                return self.#ident.get() as *mut u8;
+            if addr == <#inner_ty>::REGION_DESC.addr {
+                return ::control_table::RegionStorageRaw::region_ptr(&self.#ident) as *mut u8;
             }
         }
     });
@@ -200,44 +203,28 @@ fn parse_ct_region_attrs(attrs: &[Attribute]) -> syn::Result<Option<CtRegionAttr
     Ok(out)
 }
 
-fn extract_sync_unsafe_cell_inner(field: &Field) -> syn::Result<&Type> {
+fn extract_storage_inner_ty(field: &Field) -> syn::Result<&Type> {
+    const MSG: &str = "Table field must be a single-type-parameter storage type \
+        (e.g. `SyncUnsafeCell<R>`) impl'ing `RegionStorageRaw<R>`";
     let Type::Path(TypePath { qself: None, path }) = &field.ty else {
-        return Err(syn::Error::new(
-            field.ty.span(),
-            "Table field must be `SyncUnsafeCell<T>`",
-        ));
+        return Err(syn::Error::new(field.ty.span(), MSG));
     };
     let last = path
         .segments
         .last()
-        .ok_or_else(|| syn::Error::new(field.ty.span(), "Table field has empty type path"))?;
-    if last.ident != "SyncUnsafeCell" {
-        return Err(syn::Error::new(
-            field.ty.span(),
-            "Table field must be `SyncUnsafeCell<T>`",
-        ));
-    }
+        .ok_or_else(|| syn::Error::new(field.ty.span(), MSG))?;
     let PathArguments::AngleBracketed(args) = &last.arguments else {
-        return Err(syn::Error::new(
-            field.ty.span(),
-            "Table field `SyncUnsafeCell` requires a type argument",
-        ));
+        return Err(syn::Error::new(field.ty.span(), MSG));
     };
     let mut tys = args.args.iter().filter_map(|a| match a {
         GenericArgument::Type(t) => Some(t),
         _ => None,
     });
-    let inner = tys.next().ok_or_else(|| {
-        syn::Error::new(
-            field.ty.span(),
-            "Table field `SyncUnsafeCell` requires a type argument",
-        )
-    })?;
+    let inner = tys
+        .next()
+        .ok_or_else(|| syn::Error::new(field.ty.span(), MSG))?;
     if tys.next().is_some() {
-        return Err(syn::Error::new(
-            field.ty.span(),
-            "Table field `SyncUnsafeCell` takes exactly one type argument",
-        ));
+        return Err(syn::Error::new(field.ty.span(), MSG));
     }
     Ok(inner)
 }
