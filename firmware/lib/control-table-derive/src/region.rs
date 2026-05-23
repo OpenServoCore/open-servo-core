@@ -50,6 +50,9 @@ pub fn expand(input: &DeriveInput) -> syn::Result<TokenStream2> {
     let mut addr_mods: Vec<TokenStream2> = Vec::new();
 
     for field in &fields.named {
+        if parse_field_skip(&field.attrs)? {
+            continue;
+        }
         let field_name = field.ident.as_ref().unwrap();
         let block_ty_ident = block_type_ident(&field.ty)?;
         let block_ty = &field.ty;
@@ -176,6 +179,27 @@ fn parse_region_attrs(attrs: &[Attribute]) -> syn::Result<RegionAttrs> {
         })?;
     }
     Ok(out)
+}
+
+fn parse_field_skip(attrs: &[Attribute]) -> syn::Result<bool> {
+    let mut skip = false;
+    for attr in attrs {
+        if !attr.path().is_ident("ct_region") {
+            continue;
+        }
+        if matches!(attr.meta, syn::Meta::Path(_)) {
+            continue;
+        }
+        attr.parse_nested_meta(|m| {
+            if m.path.is_ident("skip") {
+                skip = true;
+                Ok(())
+            } else {
+                Err(m.error("unknown ct_region field key (expected `skip`)"))
+            }
+        })?;
+    }
+    Ok(skip)
 }
 
 fn block_type_ident(ty: &Type) -> syn::Result<&Ident> {

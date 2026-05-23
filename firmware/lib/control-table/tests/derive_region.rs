@@ -127,3 +127,32 @@ fn region_storage_size_fits_declared_size_const_assert() {
     // This assertion just keeps the invariant visible to humans reading the file.
     assert!(size_of::<TwoBlock>() <= 64);
 }
+
+#[repr(C)]
+struct Trailer {
+    pub _meta: [u8; 4],
+}
+
+mod with_skip {
+    use super::{BlkA, Trailer};
+    use control_table::Region;
+
+    #[repr(C)]
+    #[derive(Region)]
+    #[ct_region(addr = 200, size = 32)]
+    pub struct Skipping {
+        pub kept: BlkA,
+        #[ct_region(skip)]
+        pub _trailer: Trailer,
+    }
+}
+
+#[test]
+fn ct_region_skip_excludes_field_from_blocks_and_addr_hub() {
+    let d = with_skip::Skipping::REGION_DESC;
+    assert_eq!(d.blocks.len(), 1);
+    assert_eq!(
+        d.blocks[0].struct_offset,
+        offset_of!(with_skip::Skipping, kept) as u16
+    );
+}
