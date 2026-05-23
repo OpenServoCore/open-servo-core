@@ -22,11 +22,10 @@ pub use kernel::{Kernel, KernelState};
 pub use page::{PageHeader, PageMagic};
 pub use regions::config::BaudRate;
 pub use regions::{
-    BemfCalibBlock, CalibRegs, ConfigComms, ConfigControl, ConfigControlPosition, ConfigIdentity,
-    ConfigLimits, ConfigPosLimits, ConfigRegs, ConfigSafety, ConfigStall, ConfigThermal,
-    ControlLifecycle, ControlRegs, ControlStreaming, ControlTable, Mode, PotLutBlock,
-    StallResponse, TelemetryConverted, TelemetryFault, TelemetryIntermediaries, TelemetryRaw,
-    TelemetryRegs,
+    BemfCalibBlock, CalibRegs, ConfigCalibration, ConfigComms, ConfigControlPosition,
+    ConfigIdentity, ConfigPosLimits, ConfigRegs, ConfigStall, ConfigThermal, ControlLifecycle,
+    ControlRegs, ControlStreaming, ControlTable, Mode, PotLutBlock, StallResponse,
+    TelemetryConverted, TelemetryFault, TelemetryIntermediaries, TelemetryRaw, TelemetryRegs,
 };
 pub use ring_reader::{RingReader, RxSnapshot};
 pub use sample_frame::{FrameInputs, RawSamples, SampleFrame};

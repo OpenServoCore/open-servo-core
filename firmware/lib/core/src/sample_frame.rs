@@ -17,8 +17,8 @@ impl FrameInputs {
         unsafe {
             let cfg = shared.table.config.get();
             Self {
-                pos_min_phys_urad: (&raw const (*cfg).limits.pos.pos_min_phys_urad).read(),
-                pos_max_phys_urad: (&raw const (*cfg).limits.pos.pos_max_phys_urad).read(),
+                pos_min_phys_urad: (&raw const (*cfg).pos_limits.pos_min_phys_urad).read(),
+                pos_max_phys_urad: (&raw const (*cfg).pos_limits.pos_max_phys_urad).read(),
                 vdd_mv: (&raw const (*cfg).calibration.vdd_mv).read(),
             }
         }

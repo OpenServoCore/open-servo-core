@@ -20,9 +20,8 @@ pub mod telemetry;
 
 pub use calib::{BemfCalibBlock, CalibRegs, PotLutBlock};
 pub use config::{
-    ConfigCalibration, ConfigComms, ConfigControl, ConfigControlPosition, ConfigIdentity,
-    ConfigLimits, ConfigPosLimits, ConfigRegs, ConfigSafety, ConfigStall, ConfigThermal,
-    StallResponse,
+    BaudRate, ConfigCalibration, ConfigComms, ConfigControlPosition, ConfigIdentity,
+    ConfigPosLimits, ConfigRegs, ConfigStall, ConfigThermal, StallResponse,
 };
 pub use control::{ControlLifecycle, ControlRegs, ControlStreaming, Mode};
 pub use telemetry::{
@@ -30,35 +29,12 @@ pub use telemetry::{
 };
 
 use crate::board::ConfigDefaults;
-use crate::page::PageHeader;
-use control_table::{RegionDesc, Router};
-
-pub const REGIONS: &[&RegionDesc] = &[
-    &config::CONFIG_REGION,
-    &telemetry::TELEMETRY_REGION,
-    &control::CONTROL_REGION,
-    &calib::CALIB_REGION,
-];
-
-pub const PAGE_HEADER_SIZE: usize = core::mem::size_of::<PageHeader>();
+use control_table::Table;
 
 pub const CONFIG_REGION_SIZE: usize = 512;
-pub const CONFIG_BLOCK_SIZE: usize = 32;
-pub const CONFIG_BLOCK_COUNT: usize = CONFIG_REGION_SIZE / CONFIG_BLOCK_SIZE;
-pub const CONFIG_BODY_SIZE: usize = CONFIG_REGION_SIZE - PAGE_HEADER_SIZE;
-
 pub const TELEMETRY_REGION_SIZE: usize = 256;
-pub const TELEMETRY_BLOCK_SIZE: usize = 32;
-pub const TELEMETRY_BLOCK_COUNT: usize = TELEMETRY_REGION_SIZE / TELEMETRY_BLOCK_SIZE;
-
 pub const CONTROL_REGION_SIZE: usize = 1536;
-pub const CONTROL_BLOCK_SIZE: usize = 32;
-pub const CONTROL_BLOCK_COUNT: usize = CONTROL_REGION_SIZE / CONTROL_BLOCK_SIZE;
-
 pub const CALIB_REGION_SIZE: usize = 4096;
-pub const CALIB_BLOCK_SIZE: usize = 256;
-pub const CALIB_BLOCK_COUNT: usize = CALIB_REGION_SIZE / CALIB_BLOCK_SIZE;
-pub const CALIB_BLOCK_BODY_SIZE: usize = CALIB_BLOCK_SIZE - PAGE_HEADER_SIZE;
 
 pub const CONFIG_BASE_ADDR: u16 = 0x0000;
 pub const TELEMETRY_BASE_ADDR: u16 = 0x0200;
@@ -66,23 +42,20 @@ pub const CONTROL_BASE_ADDR: u16 = 0x0300;
 pub const CALIB_BASE_ADDR: u16 = 0x0900;
 
 #[repr(C)]
+#[derive(Table)]
+#[ct_table(max_sram = 1024)]
 pub struct ControlTable {
+    #[ct_region]
     pub config: SyncUnsafeCell<ConfigRegs>,
+    #[ct_region]
     pub telemetry: SyncUnsafeCell<TelemetryRegs>,
+    #[ct_region]
     pub control: SyncUnsafeCell<ControlRegs>,
+    #[ct_region]
     pub calib: SyncUnsafeCell<CalibRegs>,
 }
 
 impl ControlTable {
-    pub const fn const_new() -> Self {
-        Self {
-            config: SyncUnsafeCell::new(ConfigRegs::const_new()),
-            telemetry: SyncUnsafeCell::new(TelemetryRegs::const_new()),
-            control: SyncUnsafeCell::new(ControlRegs::const_new()),
-            calib: SyncUnsafeCell::new(CalibRegs::const_new()),
-        }
-    }
-
     /// Soft limits init to physical limits per control-table doc.
     /// Caller must be sole writer (install-time, pre-IRQ).
     pub fn seed_config_defaults(&self, defaults: &ConfigDefaults) {
@@ -96,10 +69,10 @@ impl ControlTable {
         );
         // SAFETY: install-time, pre-IRQ, sole writer.
         let cfg = unsafe { &mut *self.config.get() };
-        cfg.limits.pos.pos_min_phys_urad = defaults.pos_min_phys_urad;
-        cfg.limits.pos.pos_max_phys_urad = defaults.pos_max_phys_urad;
-        cfg.limits.pos.pos_min_soft_urad = defaults.pos_min_phys_urad;
-        cfg.limits.pos.pos_max_soft_urad = defaults.pos_max_phys_urad;
+        cfg.pos_limits.pos_min_phys_urad = defaults.pos_min_phys_urad;
+        cfg.pos_limits.pos_max_phys_urad = defaults.pos_max_phys_urad;
+        cfg.pos_limits.pos_min_soft_urad = defaults.pos_min_phys_urad;
+        cfg.pos_limits.pos_max_soft_urad = defaults.pos_max_phys_urad;
         cfg.calibration.vdd_mv = defaults.vdd_mv;
         cfg.comms.id = defaults.dxl_id;
         cfg.comms.baud_rate_idx = defaults.dxl_baud;
@@ -122,40 +95,5 @@ impl ControlTable {
         _calib_base_addr: u32,
     ) {
         todo!()
-    }
-}
-
-impl Router for ControlTable {
-    fn regions(&self) -> &'static [&'static RegionDesc] {
-        REGIONS
-    }
-
-    fn region_base(&self, desc: &RegionDesc) -> *mut u8 {
-        match desc.addr {
-            CONFIG_BASE_ADDR => self.config.get() as *mut u8,
-            TELEMETRY_BASE_ADDR => self.telemetry.get() as *mut u8,
-            CONTROL_BASE_ADDR => self.control.get() as *mut u8,
-            CALIB_BASE_ADDR => self.calib.get() as *mut u8,
-            _ => core::ptr::null_mut(),
-        }
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use core::mem::size_of;
-
-    #[test]
-    fn region_structs_fit_regions() {
-        assert!(size_of::<ConfigRegs>() <= CONFIG_REGION_SIZE);
-        assert!(size_of::<TelemetryRegs>() <= TELEMETRY_REGION_SIZE);
-        assert!(size_of::<ControlRegs>() <= CONTROL_REGION_SIZE);
-        assert!(size_of::<CalibRegs>() <= CALIB_REGION_SIZE);
-    }
-
-    #[test]
-    fn control_table_sram_footprint() {
-        assert!(size_of::<ControlTable>() <= 1024);
     }
 }

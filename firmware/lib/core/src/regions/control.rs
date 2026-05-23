@@ -1,14 +1,10 @@
 use crate::regions::config;
-use crate::regions::{CONTROL_BASE_ADDR, CONTROL_BLOCK_SIZE, CONTROL_REGION_SIZE};
-use control_table::{
-    Access, BOOL_ALLOWED, BlockDesc, CrossField, FieldDesc, FieldValidator, RegionDesc,
-};
-use core::mem::{offset_of, size_of};
+use control_table::{Block, Enum, Region};
 
 /// Position controller mode. `repr(u8)` so the byte-level commit path round-trips
 /// cleanly; validators MUST gate writes to `Mode::ALLOWED` because constructing a
 /// `Mode` from an unlisted discriminant is UB.
-#[derive(Copy, Clone, Debug, PartialEq, Eq, Default)]
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Default, Enum)]
 #[repr(u8)]
 pub enum Mode {
     #[default]
@@ -16,33 +12,38 @@ pub enum Mode {
     PositionPid = 1,
 }
 
-impl Mode {
-    pub const ALLOWED: &[u8] = &[Mode::OpenLoop as u8, Mode::PositionPid as u8];
-}
-
-#[derive(Copy, Clone)]
 #[repr(C)]
+#[derive(Copy, Clone, Block)]
 pub struct ControlLifecycle {
     pub torque_enable: bool,
     pub mode: Mode,
+    #[ct_field(skip)]
     pub _rsvd_align: [u8; 2],
+    #[ct_field(
+        ge = &config::addr::pos_limits::POS_MIN_SOFT_URAD,
+        le = &config::addr::pos_limits::POS_MAX_SOFT_URAD,
+    )]
     pub goal_position: i32,
     pub goal_velocity: i32,
+    #[ct_field(le = &config::addr::ctrl_pos::MAX_EFFORT, abs)]
     pub goal_effort: i16,
 }
 
-#[derive(Copy, Clone)]
 #[repr(C)]
+#[derive(Copy, Clone, Block)]
 pub struct ControlStreaming {
     pub stream_enable: bool,
     pub stream_decimation: u8,
+    #[ct_field(ge = 1u16)]
     pub stream_duration_ms: u16,
     pub stream_field_mask: u32,
+    #[ct_field(access = ro)]
     pub stream_dropped: u32,
 }
 
-#[derive(Copy, Clone)]
 #[repr(C)]
+#[derive(Copy, Clone, Region)]
+#[ct_region(addr = crate::regions::CONTROL_BASE_ADDR, size = crate::regions::CONTROL_REGION_SIZE)]
 pub struct ControlRegs {
     pub lifecycle: ControlLifecycle,
     pub streaming: ControlStreaming,
@@ -73,134 +74,6 @@ impl ControlStreaming {
     }
 }
 
-const LIFECYCLE_ADDR: u16 = CONTROL_BASE_ADDR;
-const LIFECYCLE_STRUCT: u16 = offset_of!(ControlRegs, lifecycle) as u16;
-const STREAMING_ADDR: u16 = CONTROL_BASE_ADDR + CONTROL_BLOCK_SIZE as u16;
-const STREAMING_STRUCT: u16 = offset_of!(ControlRegs, streaming) as u16;
-
-// ControlLifecycle (skip _rsvd_align at +2..4 and trailing pad at +14..16)
-pub const FIELD_TORQUE_ENABLE: FieldDesc = FieldDesc {
-    addr: LIFECYCLE_ADDR + offset_of!(ControlLifecycle, torque_enable) as u16,
-    size: 1,
-    struct_offset: offset_of!(ControlLifecycle, torque_enable) as u16,
-    access: Access::Rw,
-    validators: &[FieldValidator::EnumU8 {
-        allowed: BOOL_ALLOWED,
-    }],
-};
-pub const FIELD_MODE: FieldDesc = FieldDesc {
-    addr: LIFECYCLE_ADDR + offset_of!(ControlLifecycle, mode) as u16,
-    size: 1,
-    struct_offset: offset_of!(ControlLifecycle, mode) as u16,
-    access: Access::Rw,
-    validators: &[FieldValidator::EnumU8 {
-        allowed: Mode::ALLOWED,
-    }],
-};
-pub const FIELD_GOAL_POSITION: FieldDesc = FieldDesc {
-    addr: LIFECYCLE_ADDR + offset_of!(ControlLifecycle, goal_position) as u16,
-    size: 4,
-    struct_offset: offset_of!(ControlLifecycle, goal_position) as u16,
-    access: Access::Rw,
-    validators: &[FieldValidator::Cross(CrossField::WithinI32 {
-        lo_addr: config::POS_MIN_SOFT_URAD_ADDR,
-        hi_addr: config::POS_MAX_SOFT_URAD_ADDR,
-    })],
-};
-pub const FIELD_GOAL_VELOCITY: FieldDesc = FieldDesc {
-    addr: LIFECYCLE_ADDR + offset_of!(ControlLifecycle, goal_velocity) as u16,
-    size: 4,
-    struct_offset: offset_of!(ControlLifecycle, goal_velocity) as u16,
-    access: Access::Rw,
-    validators: &[],
-};
-pub const FIELD_GOAL_EFFORT: FieldDesc = FieldDesc {
-    addr: LIFECYCLE_ADDR + offset_of!(ControlLifecycle, goal_effort) as u16,
-    size: 2,
-    struct_offset: offset_of!(ControlLifecycle, goal_effort) as u16,
-    access: Access::Rw,
-    validators: &[FieldValidator::Cross(CrossField::MagBoundedI16 {
-        bound_addr: config::MAX_EFFORT_ADDR,
-    })],
-};
-
-// ControlStreaming
-pub const FIELD_STREAM_ENABLE: FieldDesc = FieldDesc {
-    addr: STREAMING_ADDR + offset_of!(ControlStreaming, stream_enable) as u16,
-    size: 1,
-    struct_offset: offset_of!(ControlStreaming, stream_enable) as u16,
-    access: Access::Rw,
-    validators: &[FieldValidator::EnumU8 {
-        allowed: BOOL_ALLOWED,
-    }],
-};
-pub const FIELD_STREAM_DECIMATION: FieldDesc = FieldDesc {
-    addr: STREAMING_ADDR + offset_of!(ControlStreaming, stream_decimation) as u16,
-    size: 1,
-    struct_offset: offset_of!(ControlStreaming, stream_decimation) as u16,
-    access: Access::Rw,
-    validators: &[],
-};
-pub const FIELD_STREAM_DURATION_MS: FieldDesc = FieldDesc {
-    addr: STREAMING_ADDR + offset_of!(ControlStreaming, stream_duration_ms) as u16,
-    size: 2,
-    struct_offset: offset_of!(ControlStreaming, stream_duration_ms) as u16,
-    access: Access::Rw,
-    validators: &[FieldValidator::RangeU16 {
-        lo: 1,
-        hi: u16::MAX,
-    }],
-};
-pub const FIELD_STREAM_FIELD_MASK: FieldDesc = FieldDesc {
-    addr: STREAMING_ADDR + offset_of!(ControlStreaming, stream_field_mask) as u16,
-    size: 4,
-    struct_offset: offset_of!(ControlStreaming, stream_field_mask) as u16,
-    access: Access::Rw,
-    validators: &[],
-};
-pub const FIELD_STREAM_DROPPED: FieldDesc = FieldDesc {
-    addr: STREAMING_ADDR + offset_of!(ControlStreaming, stream_dropped) as u16,
-    size: 4,
-    struct_offset: offset_of!(ControlStreaming, stream_dropped) as u16,
-    access: Access::Ro,
-    validators: &[],
-};
-
-pub const BLOCK_LIFECYCLE: BlockDesc = BlockDesc {
-    addr: LIFECYCLE_ADDR,
-    size: size_of::<ControlLifecycle>() as u16,
-    struct_offset: LIFECYCLE_STRUCT,
-    fields: &[
-        FIELD_TORQUE_ENABLE,
-        FIELD_MODE,
-        FIELD_GOAL_POSITION,
-        FIELD_GOAL_VELOCITY,
-        FIELD_GOAL_EFFORT,
-    ],
-    validators: &[],
-};
-
-pub const BLOCK_STREAMING: BlockDesc = BlockDesc {
-    addr: STREAMING_ADDR,
-    size: size_of::<ControlStreaming>() as u16,
-    struct_offset: STREAMING_STRUCT,
-    fields: &[
-        FIELD_STREAM_ENABLE,
-        FIELD_STREAM_DECIMATION,
-        FIELD_STREAM_DURATION_MS,
-        FIELD_STREAM_FIELD_MASK,
-        FIELD_STREAM_DROPPED,
-    ],
-    validators: &[],
-};
-
-pub const CONTROL_REGION: RegionDesc = RegionDesc {
-    addr: CONTROL_BASE_ADDR,
-    size: CONTROL_REGION_SIZE as u16,
-    blocks: &[BLOCK_LIFECYCLE, BLOCK_STREAMING],
-    validators: &[],
-};
-
 impl ControlRegs {
     pub const fn const_new() -> Self {
         Self {
@@ -213,12 +86,10 @@ impl ControlRegs {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::regions::CONTROL_BLOCK_SIZE;
     use core::mem::size_of;
 
     #[test]
-    fn leaf_blocks_fit_block() {
-        assert!(size_of::<ControlLifecycle>() <= CONTROL_BLOCK_SIZE);
-        assert!(size_of::<ControlStreaming>() <= CONTROL_BLOCK_SIZE);
+    fn region_fits_declared_size() {
+        assert!(size_of::<ControlRegs>() <= crate::regions::CONTROL_REGION_SIZE);
     }
 }
