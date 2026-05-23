@@ -1,4 +1,4 @@
-use crate::desc::{Access, BlockDesc, RegionDesc, RegmapError};
+use crate::desc::{Access, BlockDesc, Error, RegionDesc};
 use crate::stage::StagedWrites;
 use crate::validate::{run_field_validators, run_region_validators};
 
@@ -8,19 +8,14 @@ pub trait Router {
     fn regions(&self) -> &'static [&'static RegionDesc];
     fn region_base(&self, desc: &RegionDesc) -> *mut u8;
 
-    fn read_bytes(&self, addr: u16, dst: &mut [u8]) -> Result<(), RegmapError>
+    fn read_bytes(&self, addr: u16, dst: &mut [u8]) -> Result<(), Error>
     where
         Self: Sized,
     {
         router_read_bytes(self, addr, dst)
     }
 
-    fn write_bytes(
-        &self,
-        addr: u16,
-        src: &[u8],
-        staged: &mut StagedWrites,
-    ) -> Result<(), RegmapError>
+    fn write_bytes(&self, addr: u16, src: &[u8], staged: &mut StagedWrites) -> Result<(), Error>
     where
         Self: Sized,
     {
@@ -33,12 +28,7 @@ pub trait Router {
         Ok(())
     }
 
-    fn stage_bytes(
-        &self,
-        addr: u16,
-        src: &[u8],
-        staged: &mut StagedWrites,
-    ) -> Result<(), RegmapError>
+    fn stage_bytes(&self, addr: u16, src: &[u8], staged: &mut StagedWrites) -> Result<(), Error>
     where
         Self: Sized,
     {
@@ -76,14 +66,14 @@ pub(crate) fn router_read_bytes(
     router: &dyn Router,
     addr: u16,
     dst: &mut [u8],
-) -> Result<(), RegmapError> {
+) -> Result<(), Error> {
     if dst.is_empty() {
         return Ok(());
     }
     let end = (addr as usize)
         .checked_add(dst.len())
-        .ok_or(RegmapError::OutOfRange)?;
-    let r = region_for(router, addr, end).ok_or(RegmapError::OutOfRange)?;
+        .ok_or(Error::OutOfRange)?;
+    let r = region_for(router, addr, end).ok_or(Error::OutOfRange)?;
     // SAFETY: get() non-null; descriptor sizes verified at construction.
     unsafe { walk_read(r.base, addr, dst, r.def.blocks) }
 }
@@ -93,14 +83,14 @@ pub(crate) fn router_stage_bytes(
     addr: u16,
     src: &[u8],
     staged: &mut StagedWrites,
-) -> Result<(), RegmapError> {
+) -> Result<(), Error> {
     if src.is_empty() {
         return Ok(());
     }
     let end = (addr as usize)
         .checked_add(src.len())
-        .ok_or(RegmapError::OutOfRange)?;
-    let r = region_for(router, addr, end).ok_or(RegmapError::OutOfRange)?;
+        .ok_or(Error::OutOfRange)?;
+    let r = region_for(router, addr, end).ok_or(Error::OutOfRange)?;
     let saved_data = staged.data.len();
     let saved_entries = staged.entries.len();
     let result = stage_write(addr, src, r.def.blocks, staged)
@@ -144,7 +134,7 @@ fn walk_fields(
     blocks: &[BlockDesc],
     require_rw: bool,
     mut on_chunk: impl FnMut(usize, usize, usize),
-) -> Result<(), RegmapError> {
+) -> Result<(), Error> {
     let req_hi = abs_start as usize + len;
     let mut req_lo = abs_start as usize;
     let mut buf_pos = 0usize;
@@ -158,7 +148,7 @@ fn walk_fields(
             continue;
         }
         if b_lo > req_lo {
-            return Err(RegmapError::AccessError);
+            return Err(Error::AccessError);
         }
         let block_struct = block.struct_offset as usize;
         for field in block.fields {
@@ -171,7 +161,7 @@ fn walk_fields(
                 continue;
             }
             if f_lo > req_lo || (require_rw && field.access != Access::Rw) {
-                return Err(RegmapError::AccessError);
+                return Err(Error::AccessError);
             }
             let chunk_hi = req_hi.min(f_hi);
             let chunk_len = chunk_hi - req_lo;
@@ -182,7 +172,7 @@ fn walk_fields(
         }
     }
     if req_lo < req_hi {
-        Err(RegmapError::AccessError)
+        Err(Error::AccessError)
     } else {
         Ok(())
     }
@@ -193,7 +183,7 @@ unsafe fn walk_read(
     abs_start: u16,
     dst: &mut [u8],
     blocks: &[BlockDesc],
-) -> Result<(), RegmapError> {
+) -> Result<(), Error> {
     let dst_ptr = dst.as_mut_ptr();
     walk_fields(
         abs_start,
@@ -216,7 +206,7 @@ pub(crate) fn stage_write(
     src: &[u8],
     blocks: &[BlockDesc],
     staged: &mut StagedWrites,
-) -> Result<(), RegmapError> {
+) -> Result<(), Error> {
     walk_fields(abs_addr, src.len(), blocks, true, |_, _, _| {})?;
     staged.push_chunk(abs_addr, src)
 }

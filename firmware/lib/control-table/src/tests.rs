@@ -5,8 +5,8 @@ use core::cell::UnsafeCell;
 
 const REGION_SIZE: u16 = 32;
 
-fn always_reject(_view: &StagedView, _addr: u16, _size: u16) -> Result<(), RegmapError> {
-    Err(RegmapError::ValidationError(ValidationKind::Custom))
+fn always_reject(_view: &StagedView, _addr: u16, _size: u16) -> Result<(), Error> {
+    Err(Error::ValidationError(ValidationKind::Custom))
 }
 
 const REJECTING_BLOCKS: &[BlockDesc] = &[BlockDesc {
@@ -101,7 +101,7 @@ fn walk_fields_rejects_writes_into_padding_gap() {
     let r = StubRouter::new();
     let mut staged = StagedWrites::new();
     let err = r.write_bytes(4, &[0xAA], &mut staged).unwrap_err();
-    assert_eq!(err, RegmapError::AccessError);
+    assert_eq!(err, Error::AccessError);
     assert!(staged.is_empty());
 }
 
@@ -110,7 +110,7 @@ fn walk_fields_rejects_writes_to_ro_field() {
     let r = StubRouter::new();
     let mut staged = StagedWrites::new();
     let err = r.write_bytes(8, &[0xAA], &mut staged).unwrap_err();
-    assert_eq!(err, RegmapError::AccessError);
+    assert_eq!(err, Error::AccessError);
 }
 
 #[test]
@@ -129,10 +129,7 @@ fn stage_then_validator_reject_rewinds_buffer_and_does_not_commit() {
     let saved_entries = staged.entries.len();
     stage_write(0, &[0xAA], REJECTING_BLOCKS, &mut staged).unwrap();
     let reject = run_field_validators(&r, &staged, saved_entries, 0, 1, REJECTING_BLOCKS);
-    assert_eq!(
-        reject,
-        Err(RegmapError::ValidationError(ValidationKind::Custom)),
-    );
+    assert_eq!(reject, Err(Error::ValidationError(ValidationKind::Custom)),);
     staged.rewind(saved_data, saved_entries);
     assert!(staged.is_empty());
     let mut buf = [0xFFu8; 1];
@@ -182,7 +179,7 @@ fn compare_u16_value_rhs_checks_literal_bound() {
     };
     assert_eq!(
         fail.run(&view, 0, 2),
-        Err(RegmapError::ValidationError(ValidationKind::Compare)),
+        Err(Error::ValidationError(ValidationKind::Compare)),
     );
 }
 
@@ -219,7 +216,7 @@ fn compare_i32_abs_compares_magnitudes() {
     };
     assert_eq!(
         fail.run(&view, 0, 4),
-        Err(RegmapError::ValidationError(ValidationKind::Compare)),
+        Err(Error::ValidationError(ValidationKind::Compare)),
     );
     let pass = FieldValidator::CompareI32 {
         op: CompareOp::Ge,

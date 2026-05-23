@@ -1,18 +1,16 @@
 use dxl_protocol::prelude::*;
 
-use crate::{RegmapError, RingReader, RxSnapshot, Shared, StagedWrites};
+use crate::{RingReader, RxSnapshot, Shared, StagedWrites};
 use control_table::Router;
 
 pub const DXL_SCRATCH_LEN: usize = 256;
 pub const MAX_READ: usize = 128;
 pub const MAX_WRITE: usize = 128;
 
-fn regmap_error_to_status(e: RegmapError) -> StatusError {
+fn error_to_status(e: control_table::Error) -> StatusError {
     match e {
-        RegmapError::OutOfRange => StatusError::DataRange,
-        RegmapError::AccessError => StatusError::Access,
-        RegmapError::StagingFull => StatusError::DataRange,
-        RegmapError::ValidationError(_) => StatusError::DataRange,
+        control_table::Error::AccessError => StatusError::Access,
+        _ => StatusError::DataRange,
     }
 }
 
@@ -152,17 +150,22 @@ impl<D: DxlIo> Dispatcher<'_, D> {
         let mut buf = [0u8; MAX_READ];
         match self.shared.table.read_bytes(p.address, &mut buf[..len]) {
             Ok(()) => self.send_status(id, StatusError::None, &buf[..len]),
-            Err(e) => self.send_status(id, regmap_error_to_status(e), &[]),
+            Err(e) => self.send_status(id, error_to_status(e), &[]),
         }
     }
 
-    fn reply_table_result(&mut self, id: u8, direct: bool, result: Result<(), RegmapError>) {
+    fn reply_table_result(
+        &mut self,
+        id: u8,
+        direct: bool,
+        result: Result<(), control_table::Error>,
+    ) {
         if !direct {
             return;
         }
         match result {
             Ok(()) => self.send_status(id, StatusError::None, &[]),
-            Err(e) => self.send_status(id, regmap_error_to_status(e), &[]),
+            Err(e) => self.send_status(id, error_to_status(e), &[]),
         }
     }
 

@@ -11,8 +11,8 @@ mod validate;
 mod tests;
 
 pub use desc::{
-    Access, BOOL_ALLOWED, BlockDesc, BlockValidator, CompareOp, FieldDesc, FieldValidator,
-    HasAllowed, RegionDesc, RegionValidator, RegmapError, Rhs, ValidationKind,
+    Access, BOOL_ALLOWED, BlockDesc, BlockValidator, CompareOp, Error, FieldDesc, FieldValidator,
+    HasAllowed, RegionDesc, RegionValidator, Rhs, ValidationKind,
 };
 pub use region::{Region, RegionStorage, RegionStorageRaw};
 pub use route::Router;

@@ -1,4 +1,4 @@
-use crate::desc::RegmapError;
+use crate::desc::Error;
 use crate::route::{Router, router_read_bytes};
 
 pub const STAGE_DATA_CAP: usize = 128;
@@ -33,14 +33,14 @@ impl StagedWrites {
         self.entries.is_empty()
     }
 
-    pub(crate) fn push_chunk(&mut self, addr: u16, src: &[u8]) -> Result<(), RegmapError> {
+    pub(crate) fn push_chunk(&mut self, addr: u16, src: &[u8]) -> Result<(), Error> {
         let data_off = self.data.len();
         if data_off + src.len() > STAGE_DATA_CAP {
-            return Err(RegmapError::StagingFull);
+            return Err(Error::StagingFull);
         }
         self.data
             .extend_from_slice(src)
-            .map_err(|_| RegmapError::StagingFull)?;
+            .map_err(|_| Error::StagingFull)?;
         self.entries
             .push(StagedEntry {
                 addr,
@@ -49,7 +49,7 @@ impl StagedWrites {
             })
             .map_err(|_| {
                 self.data.truncate(data_off);
-                RegmapError::StagingFull
+                Error::StagingFull
             })?;
         Ok(())
     }
@@ -91,7 +91,7 @@ impl<'a> StagedView<'a> {
         }
     }
 
-    pub fn read_bytes(&self, addr: u16, dst: &mut [u8]) -> Result<(), RegmapError> {
+    pub fn read_bytes(&self, addr: u16, dst: &mut [u8]) -> Result<(), Error> {
         router_read_bytes(self.router, addr, dst)?;
         if dst.is_empty() {
             return Ok(());

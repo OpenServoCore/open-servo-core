@@ -2,7 +2,8 @@ use crate::stage::StagedView;
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
-pub enum RegmapError {
+#[non_exhaustive]
+pub enum Error {
     OutOfRange,
     AccessError,
     StagingFull,
@@ -65,8 +66,8 @@ pub struct RegionDesc {
     pub validators: &'static [RegionValidator],
 }
 
-pub type BlockValidator = fn(&StagedView, u16, u16) -> Result<(), RegmapError>;
-pub type RegionValidator = fn(&StagedView) -> Result<(), RegmapError>;
+pub type BlockValidator = fn(&StagedView, u16, u16) -> Result<(), Error>;
+pub type RegionValidator = fn(&StagedView) -> Result<(), Error>;
 
 #[derive(Copy, Clone, Debug)]
 pub enum FieldValidator {
@@ -98,7 +99,7 @@ pub enum FieldValidator {
         abs: bool,
         rhs: Rhs<i32>,
     },
-    Custom(fn(&StagedView, u16, u16) -> Result<(), RegmapError>),
+    Custom(fn(&StagedView, u16, u16) -> Result<(), Error>),
 }
 
 #[derive(Copy, Clone, Debug)]

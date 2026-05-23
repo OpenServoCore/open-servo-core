@@ -1,4 +1,4 @@
-use control_table::{Access, Block, RegmapError, StagedView};
+use control_table::{Access, Block, StagedView};
 use core::mem::{offset_of, size_of};
 
 #[repr(C)]
@@ -100,7 +100,7 @@ fn addr_hub_consts_resolve_to_absolute_field_addrs() {
     );
 }
 
-fn ok_region(_v: &StagedView) -> Result<(), RegmapError> {
+fn ok_region(_v: &StagedView) -> Result<(), control_table::Error> {
     Ok(())
 }
 

@@ -1,5 +1,5 @@
 use crate::desc::{
-    BlockDesc, CompareOp, FieldValidator, RegionValidator, RegmapError, Rhs, ValidationKind,
+    BlockDesc, CompareOp, Error, FieldValidator, RegionValidator, Rhs, ValidationKind,
 };
 use crate::route::Router;
 use crate::stage::{StagedView, StagedWrites};
@@ -18,14 +18,14 @@ impl CompareOp {
 }
 
 impl FieldValidator {
-    pub fn run(&self, view: &StagedView, addr: u16, size: u16) -> Result<(), RegmapError> {
+    pub fn run(&self, view: &StagedView, addr: u16, size: u16) -> Result<(), Error> {
         match self {
             FieldValidator::EnumU8 { allowed } => {
                 let b = read_le(view, addr, |b: [u8; 1]| b[0])?;
                 if allowed.contains(&b) {
                     Ok(())
                 } else {
-                    Err(RegmapError::ValidationError(ValidationKind::Enum))
+                    Err(Error::ValidationError(ValidationKind::Enum))
                 }
             }
             FieldValidator::CompareU8 { op, abs, rhs } => {
@@ -70,7 +70,7 @@ fn read_le<T, const N: usize>(
     view: &StagedView,
     addr: u16,
     decode: fn([u8; N]) -> T,
-) -> Result<T, RegmapError> {
+) -> Result<T, Error> {
     let mut b = [0u8; N];
     view.read_bytes(addr, &mut b)?;
     Ok(decode(b))
@@ -84,7 +84,7 @@ fn run_compare<T: PartialOrd + Copy, const N: usize>(
     rhs: Rhs<T>,
     decode: fn([u8; N]) -> T,
     saturating_abs: fn(T) -> T,
-) -> Result<(), RegmapError> {
+) -> Result<(), Error> {
     let mut a = read_le(view, self_addr, decode)?;
     let mut b = match rhs {
         Rhs::Value(v) => v,
@@ -97,7 +97,7 @@ fn run_compare<T: PartialOrd + Copy, const N: usize>(
     if op.apply(&a, &b) {
         Ok(())
     } else {
-        Err(RegmapError::ValidationError(ValidationKind::Compare))
+        Err(Error::ValidationError(ValidationKind::Compare))
     }
 }
 
@@ -108,7 +108,7 @@ pub(crate) fn run_field_validators(
     abs_start: u16,
     len: usize,
     blocks: &[BlockDesc],
-) -> Result<(), RegmapError> {
+) -> Result<(), Error> {
     let view = StagedView::new(router, staged, start_entry);
     let req_lo = abs_start as usize;
     let req_hi = req_lo + len;
@@ -146,7 +146,7 @@ pub(crate) fn run_region_validators(
     staged: &StagedWrites,
     start_entry: usize,
     validators: &[RegionValidator],
-) -> Result<(), RegmapError> {
+) -> Result<(), Error> {
     if validators.is_empty() {
         return Ok(());
     }

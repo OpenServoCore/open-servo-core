@@ -1,5 +1,5 @@
 use control_table::{
-    Access, BOOL_ALLOWED, Block, CompareOp, Enum, FieldValidator, RegmapError, Rhs, StagedView,
+    Access, BOOL_ALLOWED, Block, CompareOp, Enum, FieldValidator, Rhs, StagedView,
 };
 use core::mem::{offset_of, size_of};
 
@@ -150,7 +150,7 @@ fn multiple_compare_ops_share_abs_and_field() {
     assert!(ge_ok && le_ok);
 }
 
-fn my_custom(_v: &StagedView, _a: u16, _s: u16) -> Result<(), RegmapError> {
+fn my_custom(_v: &StagedView, _a: u16, _s: u16) -> Result<(), control_table::Error> {
     Ok(())
 }
 
@@ -210,7 +210,7 @@ fn user_type_field_gets_ty_allowed_default() {
     assert_eq!(allowed, FakeMode::ALLOWED);
 }
 
-fn block_check(_v: &StagedView, _a: u16, _s: u16) -> Result<(), RegmapError> {
+fn block_check(_v: &StagedView, _a: u16, _s: u16) -> Result<(), control_table::Error> {
     Ok(())
 }
 
