@@ -1,15 +1,14 @@
 use dxl_protocol::prelude::*;
 
-use crate::{RingReader, RxSnapshot, Shared, StagedWrites};
-use control_table::{RegionStorage, Router};
+use crate::{Error, RegionStorage, RingReader, Router, RxSnapshot, Shared, StagedWrites};
 
 pub const DXL_SCRATCH_LEN: usize = 256;
 pub const MAX_READ: usize = 128;
 pub const MAX_WRITE: usize = 128;
 
-fn error_to_status(e: control_table::Error) -> StatusError {
+fn error_to_status(e: Error) -> StatusError {
     match e {
-        control_table::Error::AccessError => StatusError::Access,
+        Error::AccessError => StatusError::Access,
         _ => StatusError::DataRange,
     }
 }
@@ -152,12 +151,7 @@ impl<D: DxlIo> Dispatcher<'_, D> {
         }
     }
 
-    fn reply_table_result(
-        &mut self,
-        id: u8,
-        direct: bool,
-        result: Result<(), control_table::Error>,
-    ) {
+    fn reply_table_result(&mut self, id: u8, direct: bool, result: Result<(), Error>) {
         if !direct {
             return;
         }
