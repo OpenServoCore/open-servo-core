@@ -78,6 +78,14 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "4bd422bfb4f24a97243f60b6a4443e63d810c925d8da4bb2d8fde26a7c1d57ec"
 
 [[package]]
+name = "control-table"
+version = "0.0.0"
+dependencies = [
+ "defmt",
+ "heapless",
+]
+
+[[package]]
 name = "cordyceps"
 version = "0.3.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -336,6 +344,7 @@ version = "0.0.0"
 dependencies = [
  "bbqueue",
  "bitflags 2.11.1",
+ "control-table",
  "critical-section",
  "defmt",
  "dxl-protocol",

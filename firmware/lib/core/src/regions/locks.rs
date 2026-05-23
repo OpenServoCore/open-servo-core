@@ -1,5 +1,5 @@
 use crate::regions::control;
-use crate::regmap::{RegmapError, StagedView, ValidationKind};
+use control_table::{RegmapError, StagedView, ValidationKind};
 
 pub fn torque_locked(view: &StagedView) -> Result<(), RegmapError> {
     let mut b = [0u8; 1];

@@ -13,12 +13,13 @@ critical-section.workspace = true
 bitflags.workspace         = true
 defmt                      = { version = "1", optional = true }
 
-osc-units.workspace    = true
-dxl-protocol.workspace = true
+osc-units.workspace     = true
+dxl-protocol.workspace  = true
+control-table.workspace = true
 
 [dev-dependencies]
 dxl-protocol = { workspace = true, features = ["heapless"] }
 
 [features]
 default = []
-defmt   = ["dep:defmt"]
+defmt   = ["dep:defmt", "control-table/defmt"]

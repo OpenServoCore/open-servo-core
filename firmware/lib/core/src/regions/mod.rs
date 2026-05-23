@@ -31,7 +31,7 @@ pub use telemetry::{
 
 use crate::board::ConfigDefaults;
 use crate::page::PageHeader;
-use crate::regmap::{RegionDesc, Router};
+use control_table::{RegionDesc, Router};
 
 pub const REGIONS: &[&RegionDesc] = &[
     &config::CONFIG_REGION,

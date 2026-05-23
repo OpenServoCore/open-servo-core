@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["core", "dxl-protocol", "units"]
+members = ["control-table", "core", "dxl-protocol", "units"]
 
 [workspace.package]
 edition = "2024"
@@ -15,6 +15,7 @@ critical-section = "1.2"
 bitflags         = "2"
 crc              = { version = "3", default-features = false }
 
-osc-units    = { path = "units" }
-dxl-protocol = { path = "dxl-protocol" }
-osc-core     = { path = "core" }
+osc-units     = { path = "units" }
+dxl-protocol  = { path = "dxl-protocol" }
+osc-core      = { path = "core" }
+control-table = { path = "control-table" }

@@ -1,5 +1,5 @@
 use crate::regions::{TELEMETRY_BASE_ADDR, TELEMETRY_BLOCK_SIZE, TELEMETRY_REGION_SIZE};
-use crate::regmap::{Access, BlockDesc, FieldDesc, RegionDesc};
+use control_table::{Access, BlockDesc, FieldDesc, RegionDesc};
 use core::mem::{offset_of, size_of};
 
 #[derive(Copy, Clone)]

@@ -1,7 +1,7 @@
 use crate::page::PageHeader;
 use crate::regions::locks;
 use crate::regions::{CONFIG_BASE_ADDR, CONFIG_BLOCK_SIZE, CONFIG_REGION_SIZE};
-use crate::regmap::{
+use control_table::{
     Access, BOOL_ALLOWED, BlockDesc, CompareOp, CrossField, FieldDesc, FieldValidator, RegionDesc,
 };
 use core::mem::{offset_of, size_of};

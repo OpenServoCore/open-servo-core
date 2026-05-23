@@ -1,6 +1,6 @@
 use crate::regions::config;
 use crate::regions::{CONTROL_BASE_ADDR, CONTROL_BLOCK_SIZE, CONTROL_REGION_SIZE};
-use crate::regmap::{
+use control_table::{
     Access, BOOL_ALLOWED, BlockDesc, CrossField, FieldDesc, FieldValidator, RegionDesc,
 };
 use core::mem::{offset_of, size_of};

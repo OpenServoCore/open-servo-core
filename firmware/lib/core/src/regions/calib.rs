@@ -1,7 +1,7 @@
 use crate::page::PageHeader;
 use crate::regions::locks;
 use crate::regions::{CALIB_BASE_ADDR, CALIB_BLOCK_SIZE, CALIB_REGION_SIZE};
-use crate::regmap::{Access, BlockDesc, FieldDesc, RegionDesc};
+use control_table::{Access, BlockDesc, FieldDesc, RegionDesc};
 use core::mem::{offset_of, size_of};
 
 #[derive(Copy, Clone)]
