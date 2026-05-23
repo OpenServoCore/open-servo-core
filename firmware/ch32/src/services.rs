@@ -2,10 +2,12 @@ use core::sync::atomic::Ordering;
 
 use ch32_metapac::USART1;
 use heapless::Vec;
-use osc_core::{DxlIo, RxSnapshot};
+use osc_core::{BootMode, DxlIo, RxSnapshot};
 
-use crate::hal::{dma, gpio, usart};
-use crate::statics::{DXL_RX_BUF, DXL_RX_WRITE_POS, DXL_TX_BUF, DXL_TX_BUF_LEN, DXL_TX_EN};
+use crate::hal::{dma, flash, gpio, pfic, usart};
+use crate::statics::{
+    DXL_REBOOT_PENDING, DXL_RX_BUF, DXL_RX_WRITE_POS, DXL_TX_BUF, DXL_TX_BUF_LEN, DXL_TX_EN,
+};
 
 pub struct Ch32DxlIo;
 
@@ -51,5 +53,13 @@ impl DxlIo for Ch32DxlIo {
         usart::set_dma_tx(USART1, true);
         usart::set_tc_irq(USART1, true);
         dma::enable(dma::Channel::CH4);
+    }
+
+    fn request_reboot(&mut self, mode: BootMode) {
+        flash::set_boot_mode(matches!(mode, BootMode::Bootloader));
+        DXL_REBOOT_PENDING.store(true, Ordering::Release);
+        if self.tx_buf().is_empty() {
+            pfic::software_reset();
+        }
     }
 }

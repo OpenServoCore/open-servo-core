@@ -2,8 +2,10 @@ use ch32_metapac::{DMA1, USART1};
 use core::sync::atomic::Ordering;
 use osc_core::{Board, FrameInputs};
 
-use crate::hal::{dma, gpio, usart};
-use crate::statics::{DXL_RX_BUF_LEN, DXL_RX_WRITE_POS, DXL_TX_BUF, DXL_TX_EN, KERNEL, SHARED};
+use crate::hal::{dma, gpio, pfic, usart};
+use crate::statics::{
+    DXL_REBOOT_PENDING, DXL_RX_BUF_LEN, DXL_RX_WRITE_POS, DXL_TX_BUF, DXL_TX_EN, KERNEL, SHARED,
+};
 
 /// ADC DMA TC handler body — wire into the vector table via [`crate::install_isrs!`].
 pub fn on_adc_dma_tc() {
@@ -46,6 +48,9 @@ pub fn on_usart1() {
         // writer touches DXL_TX_BUF — no concurrent access.
         let buf = unsafe { &mut *DXL_TX_BUF.get() };
         buf.clear();
+        if DXL_REBOOT_PENDING.load(Ordering::Acquire) {
+            pfic::software_reset();
+        }
     }
 }
 

@@ -20,9 +20,9 @@ pub use kernel::{Kernel, KernelState};
 pub use page::{PageHeader, PageMagic};
 pub use regions::config::BaudRate;
 pub use regions::{
-    BemfCalibBlock, CalibRegs, ConfigCalibration, ConfigComms, ConfigControlPosition,
+    BemfCalibBlock, BootMode, CalibRegs, ConfigCalibration, ConfigComms, ConfigControlPosition,
     ConfigIdentity, ConfigPosLimits, ConfigRegs, ConfigStall, ConfigThermal, ControlLifecycle,
-    ControlRegs, ControlStreaming, ControlTable, Mode, PotLutBlock, StallResponse,
+    ControlRegs, ControlStreaming, ControlSystem, ControlTable, Mode, PotLutBlock, StallResponse,
     TelemetryConverted, TelemetryFault, TelemetryIntermediaries, TelemetryRaw, TelemetryRegs,
 };
 pub use ring_reader::{RingReader, RxSnapshot};

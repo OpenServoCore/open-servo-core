@@ -12,6 +12,14 @@ pub enum Mode {
     PositionPid = 1,
 }
 
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Default, Enum)]
+#[repr(u8)]
+pub enum BootMode {
+    #[default]
+    App = 0,
+    Bootloader = 1,
+}
+
 #[repr(C)]
 #[derive(Copy, Clone, Block)]
 pub struct ControlLifecycle {
@@ -42,11 +50,18 @@ pub struct ControlStreaming {
 }
 
 #[repr(C)]
+#[derive(Copy, Clone, Block)]
+pub struct ControlSystem {
+    pub boot_mode: BootMode,
+}
+
+#[repr(C)]
 #[derive(Copy, Clone, Region)]
 #[ct_region(addr = crate::regions::CONTROL_BASE_ADDR, size = crate::regions::CONTROL_REGION_SIZE)]
 pub struct ControlRegs {
     pub lifecycle: ControlLifecycle,
     pub streaming: ControlStreaming,
+    pub system: ControlSystem,
 }
 
 #[cfg(test)]

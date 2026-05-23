@@ -1,6 +1,6 @@
 use dxl_protocol::prelude::*;
 
-use crate::{Error, RegionStorage, RingReader, Router, RxSnapshot, Shared, StagedWrites};
+use crate::{BootMode, Error, RegionStorage, RingReader, Router, RxSnapshot, Shared, StagedWrites};
 
 pub const DXL_SCRATCH_LEN: usize = 256;
 pub const MAX_READ: usize = 128;
@@ -19,6 +19,7 @@ pub trait DxlIo {
     fn rx_snapshot(&self) -> RxSnapshot<'_>;
     fn tx_buf(&mut self) -> &mut Self::TxBuf;
     fn start_tx(&mut self);
+    fn request_reboot(&mut self, mode: BootMode);
 }
 
 pub struct Dxl {
@@ -225,8 +226,14 @@ impl<D: DxlIo> Dispatcher<'_, D> {
     }
 
     fn handle_reboot(&mut self, p: &RebootPacket) {
-        // TODO: ack with Status, wait for TX TC, then trigger soft reset.
-        self.reply_unsupported(p.id);
+        let Some((id, direct)) = self.addressed(p.id) else {
+            return;
+        };
+        let mode = self.shared.table.control.with(|c| c.system.boot_mode);
+        if direct {
+            self.send_status(id, StatusError::None, &[]);
+        }
+        self.io.request_reboot(mode);
     }
 
     fn handle_clear(&mut self, p: &ClearPacket<'_>) {
@@ -276,6 +283,9 @@ mod tests {
         rx_write_pos: u16,
         tx: Vec<u8, 256>,
         start_tx_count: u32,
+        reboot_count: u32,
+        reboot_immediate_count: u32,
+        last_reboot_mode: Option<BootMode>,
     }
 
     impl FakeDxlIo {
@@ -285,6 +295,9 @@ mod tests {
                 rx_write_pos: 0,
                 tx: Vec::new(),
                 start_tx_count: 0,
+                reboot_count: 0,
+                reboot_immediate_count: 0,
+                last_reboot_mode: None,
             }
         }
 
@@ -308,6 +321,13 @@ mod tests {
         }
         fn start_tx(&mut self) {
             self.start_tx_count += 1;
+        }
+        fn request_reboot(&mut self, mode: BootMode) {
+            self.reboot_count += 1;
+            self.last_reboot_mode = Some(mode);
+            if self.tx.is_empty() {
+                self.reboot_immediate_count += 1;
+            }
         }
     }
 
@@ -415,7 +435,7 @@ mod tests {
         let mut io = FakeDxlIo::new();
         let mut h = Dxl::new();
 
-        let req = encode(&Packet::Reboot(RebootPacket::new(0)));
+        let req = encode(&Packet::FactoryReset(FactoryResetPacket::new(0, 0xFF)));
         io.feed(&req);
         h.poll(&shared, &mut io);
 
@@ -651,5 +671,98 @@ mod tests {
         h.poll(&shared, &mut io);
         let (_, err, _) = parse_status(&io.tx);
         assert_eq!(err, StatusError::None.as_u8());
+    }
+
+    #[test]
+    fn reboot_to_our_id_acks_then_defers_reset_until_tx_drains() {
+        let shared = Shared::new();
+        let mut io = FakeDxlIo::new();
+        let mut h = Dxl::new();
+
+        let req = encode(&Packet::Reboot(RebootPacket::new(0)));
+        io.feed(&req);
+        h.poll(&shared, &mut io);
+
+        let (id, err, params) = parse_status(&io.tx);
+        assert_eq!(id, 0);
+        assert_eq!(err, 0);
+        assert!(params.is_empty());
+        assert_eq!(io.reboot_count, 1);
+        assert_eq!(io.reboot_immediate_count, 0);
+        assert_eq!(io.last_reboot_mode, Some(BootMode::App));
+    }
+
+    #[test]
+    fn reboot_to_broadcast_resets_immediately_when_bus_idle() {
+        let shared = Shared::new();
+        let mut io = FakeDxlIo::new();
+        let mut h = Dxl::new();
+
+        let req = encode(&Packet::Reboot(RebootPacket::new(BROADCAST_ID)));
+        io.feed(&req);
+        h.poll(&shared, &mut io);
+
+        assert_eq!(io.start_tx_count, 0);
+        assert!(io.tx.is_empty());
+        assert_eq!(io.reboot_count, 1);
+        assert_eq!(io.reboot_immediate_count, 1);
+        assert_eq!(io.last_reboot_mode, Some(BootMode::App));
+    }
+
+    #[test]
+    fn reboot_to_broadcast_defers_when_prior_tx_in_flight() {
+        let shared = Shared::new();
+        let mut io = FakeDxlIo::new();
+        let mut h = Dxl::new();
+
+        io.tx.push(0xAA).unwrap();
+
+        let req = encode(&Packet::Reboot(RebootPacket::new(BROADCAST_ID)));
+        io.feed(&req);
+        h.poll(&shared, &mut io);
+
+        assert_eq!(io.reboot_count, 1);
+        assert_eq!(io.reboot_immediate_count, 0);
+        assert_eq!(&io.tx[..], &[0xAA]);
+    }
+
+    #[test]
+    fn reboot_to_other_id_silent_and_no_request() {
+        let shared = Shared::new();
+        let mut io = FakeDxlIo::new();
+        let mut h = Dxl::new();
+
+        let req = encode(&Packet::Reboot(RebootPacket::new(17)));
+        io.feed(&req);
+        h.poll(&shared, &mut io);
+
+        assert_eq!(io.start_tx_count, 0);
+        assert!(io.tx.is_empty());
+        assert_eq!(io.reboot_count, 0);
+        assert_eq!(io.reboot_immediate_count, 0);
+        assert_eq!(io.last_reboot_mode, None);
+    }
+
+    #[test]
+    fn reboot_honors_staged_boot_mode() {
+        use crate::regions::control::addr::system::BOOT_MODE;
+        let shared = Shared::new();
+        let mut io = FakeDxlIo::new();
+        let mut h = Dxl::new();
+
+        let req = encode(&Packet::Write(WritePacket::new(
+            0,
+            BOOT_MODE,
+            &[BootMode::Bootloader as u8],
+        )));
+        io.feed(&req);
+        h.poll(&shared, &mut io);
+
+        let req = encode(&Packet::Reboot(RebootPacket::new(0)));
+        io.feed(&req);
+        h.poll(&shared, &mut io);
+
+        assert_eq!(io.reboot_count, 1);
+        assert_eq!(io.last_reboot_mode, Some(BootMode::Bootloader));
     }
 }

@@ -2,7 +2,7 @@ use core::cell::SyncUnsafeCell;
 use core::mem::MaybeUninit;
 use heapless::Vec;
 use osc_core::{Kernel, Services, ServicesIo, Shared};
-use portable_atomic::AtomicU16;
+use portable_atomic::{AtomicBool, AtomicU16};
 
 use crate::board::{Ch32Board, TxEn};
 use crate::hal::pfic;
@@ -35,6 +35,9 @@ pub static DXL_TX_BUF: SyncUnsafeCell<Vec<u8, DXL_TX_BUF_LEN>> = SyncUnsafeCell:
 
 /// Written once during `bring_up_dxl` before USART1 IRQ is unmasked; read-only thereafter.
 pub static DXL_TX_EN: SyncUnsafeCell<Option<TxEn>> = SyncUnsafeCell::new(None);
+
+/// Set by `Ch32DxlIo::request_reboot`; USART1 TC ISR fires the soft reset after TX drains.
+pub static DXL_REBOOT_PENDING: AtomicBool = AtomicBool::new(false);
 
 pub static SHARED: Shared = Shared::new();
 

@@ -25,7 +25,7 @@ pub use config::{
     BaudRate, ConfigCalibration, ConfigComms, ConfigControlPosition, ConfigIdentity,
     ConfigPosLimits, ConfigRegs, ConfigStall, ConfigThermal, StallResponse,
 };
-pub use control::{ControlLifecycle, ControlRegs, ControlStreaming, Mode};
+pub use control::{BootMode, ControlLifecycle, ControlRegs, ControlStreaming, ControlSystem, Mode};
 pub use telemetry::{
     TelemetryConverted, TelemetryFault, TelemetryIntermediaries, TelemetryRaw, TelemetryRegs,
 };
