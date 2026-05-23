@@ -225,3 +225,42 @@ struct WithBlockVal {
 fn ct_block_validators_list_populates_validators_const() {
     assert_eq!(WithBlockVal::VALIDATORS.len(), 1);
 }
+
+#[test]
+fn fields_at_zero_slice_points_to_arr_with_same_layout() {
+    assert_eq!(Basic::FIELDS_AT_ZERO.len(), Basic::FIELDS_AT_ZERO_ARR.len());
+    for (slice_f, arr_f) in Basic::FIELDS_AT_ZERO
+        .iter()
+        .zip(Basic::FIELDS_AT_ZERO_ARR.iter())
+    {
+        assert_eq!(slice_f.addr, arr_f.addr);
+        assert_eq!(slice_f.size, arr_f.size);
+    }
+}
+
+#[repr(C)]
+#[derive(Block)]
+struct MetaTarget {
+    alpha: u8,
+    #[ct_field(skip)]
+    _skip: u8,
+    bravo: u16,
+}
+
+mod hub_via_meta_macro {
+    // Drives the Block-derive-emitted __ct_meta_MetaTarget macro the same way
+    // Region derive will, producing an `addr::*` style submodule of consts.
+    __ct_meta_MetaTarget!(@addr_consts base = 100u16, block_ty = super::MetaTarget);
+}
+
+#[test]
+fn meta_macro_emits_named_consts_for_kept_fields() {
+    assert_eq!(
+        hub_via_meta_macro::ALPHA,
+        100 + offset_of!(MetaTarget, alpha) as u16
+    );
+    assert_eq!(
+        hub_via_meta_macro::BRAVO,
+        100 + offset_of!(MetaTarget, bravo) as u16
+    );
+}

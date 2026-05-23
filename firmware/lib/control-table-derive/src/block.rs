@@ -76,6 +76,8 @@ pub fn expand(input: &DeriveInput) -> syn::Result<TokenStream2> {
     let block_validators = parse_block_validators(&input.attrs)?;
 
     let mut field_inits: Vec<TokenStream2> = Vec::new();
+    let mut kept_idents: Vec<&Ident> = Vec::new();
+    let mut kept_upper: Vec<Ident> = Vec::new();
     for field in &fields.named {
         let name = field.ident.as_ref().unwrap();
         let ty = &field.ty;
@@ -101,16 +103,37 @@ pub fn expand(input: &DeriveInput) -> syn::Result<TokenStream2> {
                 validators: &[#(#validators),*],
             }
         });
+        kept_upper.push(Ident::new(
+            &name.to_string().to_uppercase(),
+            name.span(),
+        ));
+        kept_idents.push(name);
     }
 
     let count = field_inits.len();
+    let meta_macro = Ident::new(&format!("__ct_meta_{struct_ty}"), struct_ty.span());
 
     Ok(quote! {
         impl #struct_ty {
-            pub const FIELDS_AT_ZERO: &'static [::control_table::FieldDesc] = &[#(#field_inits),*];
+            pub const FIELDS_AT_ZERO_ARR: [::control_table::FieldDesc; #count] =
+                [#(#field_inits),*];
+            pub const FIELDS_AT_ZERO: &'static [::control_table::FieldDesc] =
+                &Self::FIELDS_AT_ZERO_ARR;
             pub const FIELD_COUNT: usize = #count;
             pub const SIZE: u16 = ::core::mem::size_of::<Self>() as u16;
-            pub const VALIDATORS: &'static [::control_table::BlockValidator] = &[#(#block_validators),*];
+            pub const VALIDATORS: &'static [::control_table::BlockValidator] =
+                &[#(#block_validators),*];
+        }
+
+        #[doc(hidden)]
+        #[macro_export]
+        macro_rules! #meta_macro {
+            (@addr_consts base = $base:expr, block_ty = $bty:path) => {
+                #(
+                    pub const #kept_upper: u16 =
+                        $base + ::core::mem::offset_of!($bty, #kept_idents) as u16;
+                )*
+            };
         }
     })
 }
