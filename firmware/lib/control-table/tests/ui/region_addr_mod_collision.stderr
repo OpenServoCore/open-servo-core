@@ -1,0 +1,11 @@
+error[E0428]: the name `addr` is defined multiple times
+  --> tests/ui/region_addr_mod_collision.rs:17:10
+   |
+10 | #[derive(Region)]
+   |          ------ previous definition of the module `addr` here
+...
+17 | #[derive(Region)]
+   |          ^^^^^^ `addr` redefined here
+   |
+   = note: `addr` must be defined only once in the type namespace of this module
+   = note: this error originates in the derive macro `Region` (in Nightly builds, run with -Z macro-backtrace for more info)

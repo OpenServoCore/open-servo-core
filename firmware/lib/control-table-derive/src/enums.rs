@@ -16,6 +16,7 @@ pub fn expand(input: &DeriveInput) -> syn::Result<TokenStream2> {
     };
 
     let mut variant_idents: Vec<&Ident> = Vec::new();
+    let mut default_variant: Option<&Ident> = None;
     for v in &e.variants {
         if !matches!(v.fields, Fields::Unit) {
             return Err(syn::Error::new(
@@ -23,8 +24,23 @@ pub fn expand(input: &DeriveInput) -> syn::Result<TokenStream2> {
                 "Enum derive requires unit variants only",
             ));
         }
+        if v.attrs.iter().any(|a| a.path().is_ident("default")) {
+            default_variant = Some(&v.ident);
+        }
         variant_idents.push(&v.ident);
     }
+
+    let new_variant = default_variant.or_else(|| variant_idents.first().copied());
+    let new_impl = new_variant.map(|v| {
+        quote! {
+            #[allow(clippy::new_without_default)]
+            impl #enum_ty {
+                pub const fn new() -> Self {
+                    Self::#v
+                }
+            }
+        }
+    });
 
     Ok(quote! {
         impl #enum_ty {
@@ -36,6 +52,8 @@ pub fn expand(input: &DeriveInput) -> syn::Result<TokenStream2> {
         impl ::control_table::HasAllowed for #enum_ty {
             const ALLOWED: &'static [u8] = <Self>::ALLOWED;
         }
+
+        #new_impl
     })
 }
 

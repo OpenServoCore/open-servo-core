@@ -14,9 +14,7 @@ pub mod shared;
 
 pub use board::{Board, Capabilities, ConfigDefaults, DecayMode, MotorCmd};
 pub use control_table::{
-    Access, BOOL_ALLOWED, BlockDesc, BlockValidator, CompareOp, Error, FieldDesc, FieldValidator,
-    HasAllowed, Region, RegionDesc, RegionStorage, RegionStorageRaw, RegionValidator, Rhs, Router,
-    StagedView, StagedWrites, ValidationKind,
+    Error, Region, RegionStorage, Router, StagedView, StagedWrites, ValidationKind,
 };
 pub use kernel::{Kernel, KernelState};
 pub use page::{PageHeader, PageMagic};

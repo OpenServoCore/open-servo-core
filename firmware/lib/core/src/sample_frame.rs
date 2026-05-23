@@ -59,7 +59,7 @@ mod tests {
 
     #[test]
     fn snapshot_reads_back_seeded_defaults() {
-        let shared = Shared::const_new();
+        let shared = Shared::new();
         let defaults = ConfigDefaults {
             pos_min_phys_urad: -1_500_000,
             pos_max_phys_urad: 1_500_000,

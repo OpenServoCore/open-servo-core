@@ -8,6 +8,8 @@ use crate::validate::{run_block_validators, run_field_validators, run_region_val
 /// Default methods are gated `where Self: Sized` so they aren't callable via
 /// `&dyn Router` — `router_*` free fns take `&dyn Router` internally, and the
 /// `Sized` bound prevents the trait-object recursion that would otherwise result.
+/// Callers wanting to abstract over routers must take `&S: Router` generically,
+/// not `&dyn Router`.
 pub trait Router {
     fn regions(&self) -> &'static [&'static RegionDesc];
     fn region_base(&self, desc: &RegionDesc) -> Option<*mut u8>;
@@ -120,6 +122,7 @@ pub(crate) unsafe fn commit_staged_range(
     for (abs_addr, data) in staged.iter_from(start_entry) {
         let end = abs_addr as usize + data.len();
         let Some(r) = region_for(router, abs_addr, end) else {
+            debug_assert!(false, "staged entry resolved to no region at commit time");
             continue;
         };
         unsafe { commit_chunk(r.base, abs_addr, data, r.def.blocks) };

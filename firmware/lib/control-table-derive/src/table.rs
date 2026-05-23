@@ -77,18 +77,18 @@ pub fn expand(input: &DeriveInput) -> syn::Result<TokenStream2> {
         quote!((<#ty>::DESC.addr, <#ty>::DESC.size))
     });
 
-    let const_new_inits = region_fields.iter().map(|rf| {
+    let new_inits = region_fields.iter().map(|rf| {
         let ident = rf.ident;
         let storage_ty = rf.storage_ty;
         let inner_ty = rf.inner_ty;
-        quote!(#ident: <#storage_ty>::new(<#inner_ty>::const_new()))
+        quote!(#ident: <#storage_ty>::new(<#inner_ty>::new()))
     });
 
     let region_base_arms = region_fields.iter().map(|rf| {
         let ident = rf.ident;
         let inner_ty = rf.inner_ty;
         quote! {
-            if addr == <#inner_ty>::DESC.addr {
+            if ::core::ptr::eq(desc, <#inner_ty>::DESC) {
                 return ::core::option::Option::Some(
                     ::control_table::RegionStorageRaw::region_ptr(&self.#ident) as *mut u8,
                 );
@@ -108,9 +108,12 @@ pub fn expand(input: &DeriveInput) -> syn::Result<TokenStream2> {
         impl #table_ty {
             pub const REGIONS: &'static [&'static ::control_table::RegionDesc] =
                 &[#(#region_refs),*];
+        }
 
-            pub const fn const_new() -> Self {
-                Self { #(#const_new_inits),* }
+        #[allow(clippy::new_without_default)]
+        impl #table_ty {
+            pub const fn new() -> Self {
+                Self { #(#new_inits),* }
             }
         }
 
@@ -123,7 +126,6 @@ pub fn expand(input: &DeriveInput) -> syn::Result<TokenStream2> {
                 &self,
                 desc: &::control_table::RegionDesc,
             ) -> ::core::option::Option<*mut u8> {
-                let addr = desc.addr;
                 #(#region_base_arms)*
                 ::core::option::Option::None
             }
@@ -171,6 +173,11 @@ fn check_repr_c(attrs: &[Attribute], struct_span: proc_macro2::Span) -> syn::Res
             if m.path.is_ident("C") {
                 has_c = true;
                 Ok(())
+            } else if m.path.is_ident("packed") {
+                if m.input.peek(syn::token::Paren) {
+                    let _: proc_macro2::Group = m.input.parse()?;
+                }
+                Err(m.error("Table derive forbids #[repr(packed)] (unaligned reads + offset_of are unsound)"))
             } else if m.path.is_ident("align") {
                 if m.input.peek(syn::token::Paren) {
                     let _: proc_macro2::Group = m.input.parse()?;

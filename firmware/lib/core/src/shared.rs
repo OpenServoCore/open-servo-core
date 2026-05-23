@@ -5,10 +5,11 @@ pub struct Shared {
     pub table: ControlTable,
 }
 
+#[allow(clippy::new_without_default)]
 impl Shared {
-    pub const fn const_new() -> Self {
+    pub const fn new() -> Self {
         Self {
-            table: ControlTable::const_new(),
+            table: ControlTable::new(),
         }
     }
 }

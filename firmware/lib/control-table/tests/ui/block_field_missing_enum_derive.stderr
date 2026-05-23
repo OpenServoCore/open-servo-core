@@ -10,3 +10,14 @@ help: the trait `HasAllowed` is not implemented for `BareEnum`
  5 | enum BareEnum {
    | ^^^^^^^^^^^^^
    = note: add `#[derive(Enum)]` and `#[repr(u8)]` to `BareEnum` to generate `ALLOWED`
+
+error[E0599]: no variant or associated item named `new` found for enum `BareEnum` in the current scope
+  --> tests/ui/block_field_missing_enum_derive.rs:11:10
+   |
+ 5 | enum BareEnum {
+   | ------------- variant or associated item `new` not found for this enum
+...
+11 | #[derive(Block)]
+   |          ^^^^^ variant or associated item not found in `BareEnum`
+   |
+   = note: this error originates in the derive macro `Block` (in Nightly builds, run with -Z macro-backtrace for more info)

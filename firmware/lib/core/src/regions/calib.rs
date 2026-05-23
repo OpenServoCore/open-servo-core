@@ -35,35 +35,3 @@ pub struct CalibRegs {
     pub pot_lut: PotLutBlock,
     pub bemf: BemfCalibBlock,
 }
-
-impl PotLutBlock {
-    pub const fn const_new() -> Self {
-        Self {
-            raw_min: 0,
-            raw_max: 0,
-            lut: [0; 55],
-            header: PageHeader::const_erased(),
-        }
-    }
-}
-
-impl BemfCalibBlock {
-    pub const fn const_new() -> Self {
-        Self {
-            ke_uvs_per_rad: 0,
-            r_motor_mohm: 0,
-            calib_v_bus_mv: 0,
-            calib_i_ma: 0,
-            header: PageHeader::const_erased(),
-        }
-    }
-}
-
-impl CalibRegs {
-    pub const fn const_new() -> Self {
-        Self {
-            pot_lut: PotLutBlock::const_new(),
-            bemf: BemfCalibBlock::const_new(),
-        }
-    }
-}

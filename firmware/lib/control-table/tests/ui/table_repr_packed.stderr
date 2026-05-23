@@ -1,0 +1,5 @@
+error: Table derive forbids #[repr(packed)] (unaligned reads + offset_of are unsound)
+  --> tests/ui/table_repr_packed.rs:19:11
+   |
+19 | #[repr(C, packed)]
+   |           ^^^^^^

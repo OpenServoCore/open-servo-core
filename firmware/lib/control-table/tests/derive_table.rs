@@ -14,25 +14,11 @@ mod config {
         pub a1: u16,
     }
 
-    impl CfgA {
-        pub const fn const_new() -> Self {
-            Self { a0: 0, a1: 0 }
-        }
-    }
-
     #[repr(C)]
     #[derive(Region)]
     #[ct_region(addr = 0x0000, size = 16)]
     pub struct ConfigRegs {
         pub a: CfgA,
-    }
-
-    impl ConfigRegs {
-        pub const fn const_new() -> Self {
-            Self {
-                a: CfgA::const_new(),
-            }
-        }
     }
 }
 
@@ -45,25 +31,11 @@ mod telemetry {
         pub t0: u32,
     }
 
-    impl TlmA {
-        pub const fn const_new() -> Self {
-            Self { t0: 0 }
-        }
-    }
-
     #[repr(C)]
     #[derive(Region)]
     #[ct_region(addr = 0x0100, size = 8)]
     pub struct TelemetryRegs {
         pub a: TlmA,
-    }
-
-    impl TelemetryRegs {
-        pub const fn const_new() -> Self {
-            Self {
-                a: TlmA::const_new(),
-            }
-        }
     }
 }
 
@@ -89,8 +61,8 @@ fn regions_const_lists_each_region_desc_in_field_order() {
 }
 
 #[test]
-fn const_new_constructs_each_region_via_its_const_new() {
-    static TBL: ControlTable = ControlTable::const_new();
+fn new_constructs_each_region_via_its_new() {
+    static TBL: ControlTable = ControlTable::new();
     let cfg = unsafe { &*TBL.config.get() };
     assert_eq!(cfg.a.a0, 0);
     assert_eq!(cfg.a.a1, 0);
@@ -100,7 +72,7 @@ fn const_new_constructs_each_region_via_its_const_new() {
 
 #[test]
 fn router_regions_returns_the_regions_const() {
-    let t = ControlTable::const_new();
+    let t = ControlTable::new();
     let regions = t.regions();
     assert_eq!(regions.len(), 2);
     assert_eq!(regions[0].addr, ConfigRegs::DESC.addr);
@@ -108,7 +80,7 @@ fn router_regions_returns_the_regions_const() {
 
 #[test]
 fn region_base_resolves_each_region_to_its_cell_pointer() {
-    let t = ControlTable::const_new();
+    let t = ControlTable::new();
     let cfg_base = t.region_base(ConfigRegs::DESC).unwrap();
     let tlm_base = t.region_base(TelemetryRegs::DESC).unwrap();
     assert_eq!(cfg_base, t.config.get() as *mut u8);
@@ -117,11 +89,11 @@ fn region_base_resolves_each_region_to_its_cell_pointer() {
 }
 
 #[test]
-fn region_base_returns_null_for_unknown_region_desc() {
-    let t = ControlTable::const_new();
+fn region_base_returns_none_for_descriptor_we_did_not_emit() {
+    let t = ControlTable::new();
     let stranger = control_table::RegionDesc {
-        addr: 0xFFFF,
-        size: 0,
+        addr: ConfigRegs::DESC.addr,
+        size: ConfigRegs::DESC.size,
         blocks: &[],
         validators: &[],
     };
@@ -146,8 +118,6 @@ fn addr_hub_reexports_each_region_addr_module() {
 
 #[test]
 fn table_storage_size_fits_max_sram_const_assert() {
-    // const_assert in the derive output rejects oversized tables at compile time;
-    // this just keeps the invariant visible in source.
     assert!(size_of::<ControlTable>() <= 1024);
 }
 
@@ -159,24 +129,12 @@ mod renamed {
     pub struct Blk {
         pub x: u8,
     }
-    impl Blk {
-        pub const fn const_new() -> Self {
-            Self { x: 0 }
-        }
-    }
 
     #[repr(C)]
     #[derive(Region)]
     #[ct_region(addr = 0x0200, size = 8)]
     pub struct RenamedRegs {
         pub b: Blk,
-    }
-    impl RenamedRegs {
-        pub const fn const_new() -> Self {
-            Self {
-                b: Blk::const_new(),
-            }
-        }
     }
 }
 
@@ -196,7 +154,7 @@ mod with_override {
 
 #[test]
 fn addr_mod_override_re_exports_from_explicit_path_not_field_name() {
-    static TBL: with_override::OverrideTable = with_override::OverrideTable::const_new();
+    static TBL: with_override::OverrideTable = with_override::OverrideTable::new();
     let r = unsafe { &*TBL.renamed_field.get() };
     assert_eq!(r.b.x, 0);
 

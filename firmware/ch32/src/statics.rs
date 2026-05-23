@@ -36,7 +36,7 @@ pub static DXL_TX_BUF: SyncUnsafeCell<Vec<u8, DXL_TX_BUF_LEN>> = SyncUnsafeCell:
 /// Written once during `bring_up_dxl` before USART1 IRQ is unmasked; read-only thereafter.
 pub static DXL_TX_EN: SyncUnsafeCell<Option<TxEn>> = SyncUnsafeCell::new(None);
 
-pub static SHARED: Shared = Shared::const_new();
+pub static SHARED: Shared = Shared::new();
 
 /// Initialised by `install`; DMA TC IRQ is PFIC-masked until then.
 pub(crate) static KERNEL: SyncUnsafeCell<MaybeUninit<Kernel<Ch32Board>>> =

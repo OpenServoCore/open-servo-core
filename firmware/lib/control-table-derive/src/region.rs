@@ -48,12 +48,16 @@ pub fn expand(input: &DeriveInput) -> syn::Result<TokenStream2> {
     let mut rebased_consts: Vec<TokenStream2> = Vec::new();
     let mut block_descs: Vec<TokenStream2> = Vec::new();
     let mut addr_mods: Vec<TokenStream2> = Vec::new();
+    let mut new_inits: Vec<TokenStream2> = Vec::new();
 
     for field in &fields.named {
+        let field_name = field.ident.as_ref().unwrap();
+        let init = crate::block::default_init_for_type(&field.ty);
+        new_inits.push(quote!(#field_name: #init));
+
         if parse_field_skip(&field.attrs)? {
             continue;
         }
-        let field_name = field.ident.as_ref().unwrap();
         let block_ty_ident = block_type_ident(&field.ty)?;
         let block_ty = &field.ty;
 
@@ -85,7 +89,10 @@ pub fn expand(input: &DeriveInput) -> syn::Result<TokenStream2> {
             }
         });
 
-        let meta_macro = format_ident!("__ct_meta_{block_ty_ident}");
+        let meta_macro = Ident::new(
+            &crate::block::meta_macro_name(block_ty_ident),
+            block_ty_ident.span(),
+        );
         addr_mods.push(quote! {
             #[allow(dead_code)]
             pub mod #field_name {
@@ -115,6 +122,13 @@ pub fn expand(input: &DeriveInput) -> syn::Result<TokenStream2> {
                 };
         }
 
+        #[allow(clippy::new_without_default)]
+        impl #region_ty {
+            pub const fn new() -> Self {
+                Self { #(#new_inits),* }
+            }
+        }
+
         impl ::control_table::Region for #region_ty {}
 
         pub mod addr {
@@ -123,6 +137,28 @@ pub fn expand(input: &DeriveInput) -> syn::Result<TokenStream2> {
 
         const _: () = {
             assert!(::core::mem::size_of::<#region_ty>() <= (#size as usize));
+
+            let blocks = <#region_ty>::DESC.blocks;
+            let mut i = 0;
+            while i < blocks.len() {
+                assert!(
+                    (blocks[i].addr as u32) + (blocks[i].size as u32)
+                        <= (#addr as u32) + (#size as u32),
+                    "block extends past region end",
+                );
+                let mut j = i + 1;
+                while j < blocks.len() {
+                    let i_end = (blocks[i].addr as u32) + (blocks[i].size as u32);
+                    let j_end = (blocks[j].addr as u32) + (blocks[j].size as u32);
+                    assert!(
+                        (blocks[i].addr as u32) >= j_end
+                            || (blocks[j].addr as u32) >= i_end,
+                        "blocks overlap within region",
+                    );
+                    j += 1;
+                }
+                i += 1;
+            }
         };
     })
 }
@@ -137,6 +173,11 @@ fn check_repr_c(attrs: &[Attribute], struct_span: proc_macro2::Span) -> syn::Res
             if m.path.is_ident("C") {
                 has_c = true;
                 Ok(())
+            } else if m.path.is_ident("packed") {
+                if m.input.peek(syn::token::Paren) {
+                    let _: proc_macro2::Group = m.input.parse()?;
+                }
+                Err(m.error("Region derive forbids #[repr(packed)] (unaligned reads + offset_of are unsound)"))
             } else if m.path.is_ident("align") {
                 if m.input.peek(syn::token::Paren) {
                     let _: proc_macro2::Group = m.input.parse()?;

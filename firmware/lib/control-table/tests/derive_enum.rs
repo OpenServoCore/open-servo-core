@@ -63,6 +63,13 @@ impl HasAllowed for SparseHandRolled {
     const ALLOWED: &'static [u8] = &[Self::Low as u8, Self::High as u8];
 }
 
+impl SparseHandRolled {
+    #[allow(dead_code)]
+    pub const fn new() -> Self {
+        Self::Low
+    }
+}
+
 #[repr(C)]
 #[derive(Block)]
 struct UsesHandRolled {

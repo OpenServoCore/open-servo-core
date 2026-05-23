@@ -49,40 +49,6 @@ pub struct ControlRegs {
     pub streaming: ControlStreaming,
 }
 
-impl ControlLifecycle {
-    pub const fn const_new() -> Self {
-        Self {
-            torque_enable: false,
-            mode: Mode::OpenLoop,
-            _rsvd_align: [0; 2],
-            goal_position: 0,
-            goal_velocity: 0,
-            goal_effort: 0,
-        }
-    }
-}
-
-impl ControlStreaming {
-    pub const fn const_new() -> Self {
-        Self {
-            stream_enable: false,
-            stream_decimation: 0,
-            stream_duration_ms: 0,
-            stream_field_mask: 0,
-            stream_dropped: 0,
-        }
-    }
-}
-
-impl ControlRegs {
-    pub const fn const_new() -> Self {
-        Self {
-            lifecycle: ControlLifecycle::const_new(),
-            streaming: ControlStreaming::const_new(),
-        }
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;

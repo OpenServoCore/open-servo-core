@@ -1,0 +1,5 @@
+error: Region derive forbids #[repr(packed)] (unaligned reads + offset_of are unsound)
+ --> tests/ui/region_repr_packed.rs:9:11
+  |
+9 | #[repr(C, packed)]
+  |           ^^^^^^

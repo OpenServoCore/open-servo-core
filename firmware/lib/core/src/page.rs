@@ -40,9 +40,10 @@ pub struct PageHeader {
     pub crc32: u32,
 }
 
+#[allow(clippy::new_without_default)]
 impl PageHeader {
     /// All 0xFF, mirroring fresh-erased flash; load treats this as "no valid data".
-    pub const fn const_erased() -> Self {
+    pub const fn new() -> Self {
         Self {
             magic: PageMagic::Erased as u32,
             seq: 0xFFFF_FFFF,
@@ -86,8 +87,8 @@ mod tests {
     }
 
     #[test]
-    fn const_erased_matches_fresh_flash() {
-        let h = PageHeader::const_erased();
+    fn new_matches_fresh_erased_flash() {
+        let h = PageHeader::new();
         let bytes: [u8; 32] = unsafe { core::mem::transmute(h) };
         assert_eq!(bytes, [0xFFu8; 32]);
     }

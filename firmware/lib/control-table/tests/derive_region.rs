@@ -133,6 +133,13 @@ struct Trailer {
     pub _meta: [u8; 4],
 }
 
+impl Trailer {
+    #[allow(dead_code)]
+    pub const fn new() -> Self {
+        Self { _meta: [0; 4] }
+    }
+}
+
 mod with_skip {
     use super::{BlkA, Trailer};
     use control_table::Region;

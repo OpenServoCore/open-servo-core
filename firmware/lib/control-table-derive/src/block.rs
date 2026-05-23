@@ -78,10 +78,15 @@ pub fn expand(input: &DeriveInput) -> syn::Result<TokenStream2> {
     let mut field_inits: Vec<TokenStream2> = Vec::new();
     let mut kept_idents: Vec<&Ident> = Vec::new();
     let mut kept_upper: Vec<Ident> = Vec::new();
+    let mut new_inits: Vec<TokenStream2> = Vec::new();
     for field in &fields.named {
         let name = field.ident.as_ref().unwrap();
         let ty = &field.ty;
         let attrs = parse_field_attrs(&field.attrs)?;
+
+        let init = default_init_for_type(ty);
+        new_inits.push(quote!(#name: #init));
+
         if attrs.skip {
             continue;
         }
@@ -108,7 +113,7 @@ pub fn expand(input: &DeriveInput) -> syn::Result<TokenStream2> {
     }
 
     let count = field_inits.len();
-    let meta_macro = Ident::new(&format!("__ct_meta_{struct_ty}"), struct_ty.span());
+    let meta_macro = Ident::new(&meta_macro_name(struct_ty), struct_ty.span());
 
     Ok(quote! {
         impl #struct_ty {
@@ -120,6 +125,13 @@ pub fn expand(input: &DeriveInput) -> syn::Result<TokenStream2> {
                 fields: &Self::FIELDS,
                 validators: &[#(#block_validators),*],
             };
+        }
+
+        #[allow(clippy::new_without_default)]
+        impl #struct_ty {
+            pub const fn new() -> Self {
+                Self { #(#new_inits),* }
+            }
         }
 
         #[doc(hidden)]
@@ -343,6 +355,54 @@ fn compare_variant_for_type(ty: &Type) -> Option<Ident> {
         _ => return None,
     };
     Some(Ident::new(name, ident.span()))
+}
+
+/// Type-driven default for the auto-emitted `new()`. Primitives get their
+/// zero value; arrays recurse; anything else falls through to `<Ty>::new()`,
+/// which requires the field type to expose a `const fn new`.
+pub(crate) fn default_init_for_type(ty: &Type) -> TokenStream2 {
+    if let Type::Array(arr) = ty {
+        let inner = default_init_for_type(&arr.elem);
+        let len = &arr.len;
+        return quote!([#inner; #len]);
+    }
+    if let Type::Path(tp) = ty
+        && let Some(ident) = tp.path.get_ident()
+    {
+        let name = ident.to_string();
+        if name == "bool" {
+            return quote!(false);
+        }
+        if matches!(
+            name.as_str(),
+            "u8" | "u16"
+                | "u32"
+                | "u64"
+                | "u128"
+                | "i8"
+                | "i16"
+                | "i32"
+                | "i64"
+                | "i128"
+                | "usize"
+                | "isize"
+        ) {
+            return quote!(0);
+        }
+        if matches!(name.as_str(), "f32" | "f64") {
+            return quote!(0.0);
+        }
+    }
+    quote!(<#ty>::new())
+}
+
+/// `__ct_meta_<crate>_<Block>` — the `<crate>` prefix prevents name collisions
+/// at the consumer's crate root when two crates each derive a Block with the
+/// same name. Region derive must compute the same name for its invocation.
+pub(crate) fn meta_macro_name(struct_ty: &Ident) -> String {
+    let crate_name = std::env::var("CARGO_CRATE_NAME").unwrap_or_default();
+    let crate_part = crate_name.replace('-', "_");
+    format!("__ct_meta_{crate_part}_{struct_ty}")
 }
 
 fn build_rhs(expr: &Expr) -> TokenStream2 {

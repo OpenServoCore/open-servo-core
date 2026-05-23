@@ -334,7 +334,7 @@ mod tests {
 
     #[test]
     fn ping_to_our_id_replies() {
-        let shared = Shared::const_new();
+        let shared = Shared::new();
         let mut io = FakeDxlIo::new();
         let mut h = Dxl::new();
 
@@ -351,7 +351,7 @@ mod tests {
 
     #[test]
     fn ping_to_broadcast_replies() {
-        let shared = Shared::const_new();
+        let shared = Shared::new();
         let mut io = FakeDxlIo::new();
         let mut h = Dxl::new();
 
@@ -367,7 +367,7 @@ mod tests {
 
     #[test]
     fn ping_to_other_id_silent() {
-        let shared = Shared::const_new();
+        let shared = Shared::new();
         let mut io = FakeDxlIo::new();
         let mut h = Dxl::new();
 
@@ -381,7 +381,7 @@ mod tests {
 
     #[test]
     fn read_model_number_returns_two_bytes() {
-        let shared = Shared::const_new();
+        let shared = Shared::new();
         let mut io = FakeDxlIo::new();
         let mut h = Dxl::new();
 
@@ -397,7 +397,7 @@ mod tests {
 
     #[test]
     fn read_zero_length_rejects_with_data_range() {
-        let shared = Shared::const_new();
+        let shared = Shared::new();
         let mut io = FakeDxlIo::new();
         let mut h = Dxl::new();
 
@@ -411,7 +411,7 @@ mod tests {
 
     #[test]
     fn unsupported_instruction_replies_instruction_error() {
-        let shared = Shared::const_new();
+        let shared = Shared::new();
         let mut io = FakeDxlIo::new();
         let mut h = Dxl::new();
 
@@ -426,7 +426,7 @@ mod tests {
     #[test]
     fn write_to_rw_address_succeeds_and_mutates() {
         use crate::regions::CONTROL_BASE_ADDR;
-        let shared = Shared::const_new();
+        let shared = Shared::new();
         let mut io = FakeDxlIo::new();
         let mut h = Dxl::new();
 
@@ -444,7 +444,7 @@ mod tests {
 
     #[test]
     fn write_to_ro_address_replies_access_error() {
-        let shared = Shared::const_new();
+        let shared = Shared::new();
         let mut io = FakeDxlIo::new();
         let mut h = Dxl::new();
 
@@ -461,7 +461,7 @@ mod tests {
 
     #[test]
     fn write_to_unmapped_address_replies_data_range_error() {
-        let shared = Shared::const_new();
+        let shared = Shared::new();
         let mut io = FakeDxlIo::new();
         let mut h = Dxl::new();
 
@@ -476,7 +476,7 @@ mod tests {
     #[test]
     fn write_to_other_id_silent_and_does_not_mutate() {
         use crate::regions::CONTROL_BASE_ADDR;
-        let shared = Shared::const_new();
+        let shared = Shared::new();
         let mut io = FakeDxlIo::new();
         let mut h = Dxl::new();
 
@@ -496,7 +496,7 @@ mod tests {
     #[test]
     fn broadcast_write_applies_but_silent() {
         use crate::regions::CONTROL_BASE_ADDR;
-        let shared = Shared::const_new();
+        let shared = Shared::new();
         let mut io = FakeDxlIo::new();
         let mut h = Dxl::new();
 
@@ -516,7 +516,7 @@ mod tests {
     #[test]
     fn reg_write_then_action_commits_to_live_table() {
         use crate::regions::CONTROL_BASE_ADDR;
-        let shared = Shared::const_new();
+        let shared = Shared::new();
         let mut io = FakeDxlIo::new();
         let mut h = Dxl::new();
 
@@ -542,7 +542,7 @@ mod tests {
 
     #[test]
     fn reg_write_to_ro_address_replies_access_error_immediately() {
-        let shared = Shared::const_new();
+        let shared = Shared::new();
         let mut io = FakeDxlIo::new();
         let mut h = Dxl::new();
 
@@ -556,7 +556,7 @@ mod tests {
     #[test]
     fn reg_write_invalid_value_rejected_at_stage_time() {
         use crate::regions::CONTROL_BASE_ADDR;
-        let shared = Shared::const_new();
+        let shared = Shared::new();
         let mut io = FakeDxlIo::new();
         let mut h = Dxl::new();
 
@@ -583,7 +583,7 @@ mod tests {
     fn sync_write_clears_pending_reg_write_staging() {
         use crate::regions::CONTROL_BASE_ADDR;
         use crate::regions::control::Mode;
-        let shared = Shared::const_new();
+        let shared = Shared::new();
         let mut io = FakeDxlIo::new();
         let mut h = Dxl::new();
 
@@ -620,7 +620,7 @@ mod tests {
     #[test]
     fn broadcast_reg_write_and_action_silent_but_commits() {
         use crate::regions::CONTROL_BASE_ADDR;
-        let shared = Shared::const_new();
+        let shared = Shared::new();
         let mut io = FakeDxlIo::new();
         let mut h = Dxl::new();
 
@@ -642,7 +642,7 @@ mod tests {
 
     #[test]
     fn action_with_empty_staging_replies_ok() {
-        let shared = Shared::const_new();
+        let shared = Shared::new();
         let mut io = FakeDxlIo::new();
         let mut h = Dxl::new();
 

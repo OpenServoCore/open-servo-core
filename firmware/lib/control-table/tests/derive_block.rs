@@ -236,9 +236,9 @@ struct MetaTarget {
 }
 
 mod hub_via_meta_macro {
-    // Drives the Block-derive-emitted __ct_meta_MetaTarget macro the same way
-    // Region derive will, producing an `addr::*` style submodule of consts.
-    __ct_meta_MetaTarget!(@addr_consts base = 100u16, block_ty = super::MetaTarget);
+    // Drives the Block-derive-emitted __ct_meta macro the same way Region
+    // derive will, producing an `addr::*` style submodule of consts.
+    __ct_meta_derive_block_MetaTarget!(@addr_consts base = 100u16, block_ty = super::MetaTarget);
 }
 
 #[test]
