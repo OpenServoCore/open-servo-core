@@ -14,7 +14,7 @@ pub use desc::{
     Access, BOOL_ALLOWED, BlockDesc, BlockValidator, CompareOp, FieldDesc, FieldValidator,
     HasAllowed, RegionDesc, RegionValidator, RegmapError, Rhs, ValidationKind,
 };
-pub use region::{Region, RegionStorage};
+pub use region::{Region, RegionStorage, RegionStorageRaw};
 pub use route::Router;
 pub use stage::{STAGE_DATA_CAP, STAGE_ENTRY_CAP, StagedView, StagedWrites};
 

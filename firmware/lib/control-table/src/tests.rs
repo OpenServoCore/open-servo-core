@@ -248,6 +248,16 @@ fn sync_unsafe_cell_region_storage_with_and_with_mut_round_trip() {
 }
 
 #[test]
+fn sync_unsafe_cell_region_ptr_aliases_with_view() {
+    use core::cell::SyncUnsafeCell;
+    let cell: SyncUnsafeCell<Payload> = SyncUnsafeCell::new(Payload { a: 1, b: 2 });
+    let p = RegionStorageRaw::region_ptr(&cell);
+    // SAFETY: test owns the cell; no other accessor active.
+    unsafe { (*p).a = 9 };
+    assert_eq!(cell.with(|x| x.a), 9);
+}
+
+#[test]
 fn compare_op_apply_covers_every_op() {
     assert!(CompareOp::Lt.apply(&1, &2));
     assert!(!CompareOp::Lt.apply(&2, &2));
