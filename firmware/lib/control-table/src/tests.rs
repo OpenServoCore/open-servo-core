@@ -229,6 +229,24 @@ fn compare_i32_abs_compares_magnitudes() {
     assert!(pass.run(&view, 0, 4).is_ok());
 }
 
+struct Payload {
+    a: u8,
+    b: u16,
+}
+impl Region for Payload {}
+
+#[test]
+fn sync_unsafe_cell_region_storage_with_and_with_mut_round_trip() {
+    use core::cell::SyncUnsafeCell;
+    let cell: SyncUnsafeCell<Payload> = SyncUnsafeCell::new(Payload { a: 0, b: 0 });
+    cell.with_mut(|p| {
+        p.a = 7;
+        p.b = 0xBEEF;
+    });
+    let snap = cell.with(|p| (p.a, p.b));
+    assert_eq!(snap, (7, 0xBEEF));
+}
+
 #[test]
 fn compare_op_apply_covers_every_op() {
     assert!(CompareOp::Lt.apply(&1, &2));

@@ -115,6 +115,8 @@ pub fn expand(input: &DeriveInput) -> syn::Result<TokenStream2> {
                 };
         }
 
+        impl ::control_table::Region for #region_ty {}
+
         pub mod addr {
             #(#addr_mods)*
         }

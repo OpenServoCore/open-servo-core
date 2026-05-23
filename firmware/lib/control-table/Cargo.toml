@@ -13,5 +13,6 @@ defmt                          = { version = "1", optional = true }
 trybuild = "1"
 
 [features]
-default = []
-defmt   = ["dep:defmt"]
+default          = ["sync-unsafe-cell"]
+defmt            = ["dep:defmt"]
+sync-unsafe-cell = []
