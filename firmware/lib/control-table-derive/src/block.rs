@@ -112,14 +112,14 @@ pub fn expand(input: &DeriveInput) -> syn::Result<TokenStream2> {
 
     Ok(quote! {
         impl #struct_ty {
-            pub const FIELDS_AT_ZERO_ARR: [::control_table::FieldDesc; #count] =
-                [#(#field_inits),*];
-            pub const FIELDS_AT_ZERO: &'static [::control_table::FieldDesc] =
-                &Self::FIELDS_AT_ZERO_ARR;
-            pub const FIELD_COUNT: usize = #count;
-            pub const SIZE: u16 = ::core::mem::size_of::<Self>() as u16;
-            pub const VALIDATORS: &'static [::control_table::BlockValidator] =
-                &[#(#block_validators),*];
+            pub const FIELDS: [::control_table::FieldDesc; #count] = [#(#field_inits),*];
+            pub const DESC: ::control_table::BlockDesc = ::control_table::BlockDesc {
+                addr: 0,
+                size: ::core::mem::size_of::<Self>() as u16,
+                struct_offset: 0,
+                fields: &Self::FIELDS,
+                validators: &[#(#block_validators),*],
+            };
         }
 
         #[doc(hidden)]

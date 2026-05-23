@@ -84,8 +84,8 @@ struct ControlTable {
 fn regions_const_lists_each_region_desc_in_field_order() {
     let regions = ControlTable::REGIONS;
     assert_eq!(regions.len(), 2);
-    assert_eq!(regions[0].addr, ConfigRegs::REGION_DESC.addr);
-    assert_eq!(regions[1].addr, TelemetryRegs::REGION_DESC.addr);
+    assert_eq!(regions[0].addr, ConfigRegs::DESC.addr);
+    assert_eq!(regions[1].addr, TelemetryRegs::DESC.addr);
 }
 
 #[test]
@@ -103,14 +103,14 @@ fn router_regions_returns_the_regions_const() {
     let t = ControlTable::const_new();
     let regions = t.regions();
     assert_eq!(regions.len(), 2);
-    assert_eq!(regions[0].addr, ConfigRegs::REGION_DESC.addr);
+    assert_eq!(regions[0].addr, ConfigRegs::DESC.addr);
 }
 
 #[test]
 fn region_base_resolves_each_region_to_its_cell_pointer() {
     let t = ControlTable::const_new();
-    let cfg_base = t.region_base(ConfigRegs::REGION_DESC);
-    let tlm_base = t.region_base(TelemetryRegs::REGION_DESC);
+    let cfg_base = t.region_base(ConfigRegs::DESC);
+    let tlm_base = t.region_base(TelemetryRegs::DESC);
     assert_eq!(cfg_base, t.config.get() as *mut u8);
     assert_eq!(tlm_base, t.telemetry.get() as *mut u8);
     assert_ne!(cfg_base, tlm_base);
@@ -132,13 +132,13 @@ fn region_base_returns_null_for_unknown_region_desc() {
 fn addr_hub_reexports_each_region_addr_module() {
     assert_eq!(
         addr::config::a::A0,
-        ConfigRegs::REGION_DESC.addr
+        ConfigRegs::DESC.addr
             + core::mem::offset_of!(ConfigRegs, a) as u16
             + core::mem::offset_of!(config::CfgA, a0) as u16,
     );
     assert_eq!(
         addr::telemetry::a::T0,
-        TelemetryRegs::REGION_DESC.addr
+        TelemetryRegs::DESC.addr
             + core::mem::offset_of!(TelemetryRegs, a) as u16
             + core::mem::offset_of!(telemetry::TlmA, t0) as u16,
     );
@@ -202,7 +202,7 @@ fn addr_mod_override_re_exports_from_explicit_path_not_field_name() {
 
     assert_eq!(
         with_override::addr::renamed_field::b::X,
-        renamed::RenamedRegs::REGION_DESC.addr
+        renamed::RenamedRegs::DESC.addr
             + core::mem::offset_of!(renamed::RenamedRegs, b) as u16
             + core::mem::offset_of!(renamed::Blk, x) as u16,
     );

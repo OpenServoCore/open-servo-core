@@ -44,7 +44,7 @@ struct UsesEnum {
 
 #[test]
 fn block_field_typed_as_enum_picks_up_allowed_default() {
-    let v = UsesEnum::FIELDS_AT_ZERO[0].validators;
+    let v = UsesEnum::FIELDS[0].validators;
     assert_eq!(v.len(), 1);
     let FieldValidator::EnumU8 { allowed } = v[0] else {
         panic!("expected EnumU8")
@@ -71,7 +71,7 @@ struct UsesHandRolled {
 
 #[test]
 fn manual_has_allowed_impl_satisfies_block_default() {
-    let v = UsesHandRolled::FIELDS_AT_ZERO[0].validators;
+    let v = UsesHandRolled::FIELDS[0].validators;
     assert_eq!(v.len(), 1);
     let FieldValidator::EnumU8 { allowed } = v[0] else {
         panic!("expected EnumU8")

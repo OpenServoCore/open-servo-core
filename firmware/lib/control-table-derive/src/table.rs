@@ -69,7 +69,7 @@ pub fn expand(input: &DeriveInput) -> syn::Result<TokenStream2> {
 
     let region_refs = region_fields.iter().map(|rf| {
         let ty = rf.inner_ty;
-        quote!(&<#ty>::REGION_DESC)
+        quote!(&<#ty>::DESC)
     });
 
     let const_new_inits = region_fields.iter().map(|rf| {
@@ -83,7 +83,7 @@ pub fn expand(input: &DeriveInput) -> syn::Result<TokenStream2> {
         let ident = rf.ident;
         let inner_ty = rf.inner_ty;
         quote! {
-            if addr == <#inner_ty>::REGION_DESC.addr {
+            if addr == <#inner_ty>::DESC.addr {
                 return ::control_table::RegionStorageRaw::region_ptr(&self.#ident) as *mut u8;
             }
         }

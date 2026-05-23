@@ -63,8 +63,8 @@ pub fn expand(input: &DeriveInput) -> syn::Result<TokenStream2> {
 
         rebased_consts.push(quote! {
             pub(super) const #rebased_const:
-                [::control_table::FieldDesc; <#block_ty>::FIELD_COUNT] = {
-                let mut out = <#block_ty>::FIELDS_AT_ZERO_ARR;
+                [::control_table::FieldDesc; <#block_ty>::FIELDS.len()] = {
+                let mut out = <#block_ty>::FIELDS;
                 let base = #base_expr;
                 let mut i = 0;
                 while i < out.len() {
@@ -78,10 +78,10 @@ pub fn expand(input: &DeriveInput) -> syn::Result<TokenStream2> {
         block_descs.push(quote! {
             ::control_table::BlockDesc {
                 addr: #base_expr,
-                size: <#block_ty>::SIZE,
+                size: <#block_ty>::DESC.size,
                 struct_offset: ::core::mem::offset_of!(#region_ty, #field_name) as u16,
                 fields: &#impl_mod::#rebased_const,
-                validators: <#block_ty>::VALIDATORS,
+                validators: <#block_ty>::DESC.validators,
             }
         });
 
@@ -106,7 +106,7 @@ pub fn expand(input: &DeriveInput) -> syn::Result<TokenStream2> {
         }
 
         impl #region_ty {
-            pub const REGION_DESC: &'static ::control_table::RegionDesc =
+            pub const DESC: &'static ::control_table::RegionDesc =
                 &::control_table::RegionDesc {
                     addr: #addr as u16,
                     size: #size as u16,

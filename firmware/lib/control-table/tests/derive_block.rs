@@ -13,9 +13,9 @@ struct Basic {
 
 #[test]
 fn at_zero_addrs_track_offset_of_each_field() {
-    assert_eq!(Basic::SIZE, size_of::<Basic>() as u16);
-    assert_eq!(Basic::FIELD_COUNT, 3);
-    let f = Basic::FIELDS_AT_ZERO;
+    assert_eq!(Basic::DESC.size, size_of::<Basic>() as u16);
+    assert_eq!(Basic::FIELDS.len(), 3);
+    let f = Basic::FIELDS;
     assert_eq!(f[0].addr, offset_of!(Basic, a) as u16);
     assert_eq!(f[0].size, 1);
     assert_eq!(f[0].struct_offset, f[0].addr);
@@ -27,7 +27,7 @@ fn at_zero_addrs_track_offset_of_each_field() {
 
 #[test]
 fn bool_field_gets_default_enum_u8_bool_allowed() {
-    let v = Basic::FIELDS_AT_ZERO[2].validators;
+    let v = Basic::FIELDS[2].validators;
     assert_eq!(v.len(), 1);
     let FieldValidator::EnumU8 { allowed } = v[0] else {
         panic!("expected EnumU8")
@@ -37,13 +37,13 @@ fn bool_field_gets_default_enum_u8_bool_allowed() {
 
 #[test]
 fn primitive_int_fields_get_no_default_validator() {
-    assert!(Basic::FIELDS_AT_ZERO[0].validators.is_empty());
-    assert!(Basic::FIELDS_AT_ZERO[1].validators.is_empty());
+    assert!(Basic::FIELDS[0].validators.is_empty());
+    assert!(Basic::FIELDS[1].validators.is_empty());
 }
 
 #[test]
 fn default_block_validators_empty() {
-    assert!(Basic::VALIDATORS.is_empty());
+    assert!(Basic::DESC.validators.is_empty());
 }
 
 #[repr(C)]
@@ -57,9 +57,9 @@ struct WithPad {
 
 #[test]
 fn skip_excludes_field_but_preserves_struct_size() {
-    assert_eq!(WithPad::FIELD_COUNT, 2);
-    assert_eq!(WithPad::SIZE, size_of::<WithPad>() as u16);
-    let f = WithPad::FIELDS_AT_ZERO;
+    assert_eq!(WithPad::FIELDS.len(), 2);
+    assert_eq!(WithPad::DESC.size, size_of::<WithPad>() as u16);
+    let f = WithPad::FIELDS;
     assert_eq!(f[0].addr, 0);
     assert_eq!(f[1].addr, 4);
     assert_eq!(f[1].size, 4);
@@ -75,8 +75,8 @@ struct RoRw {
 
 #[test]
 fn access_attr_overrides_default_rw() {
-    assert_eq!(RoRw::FIELDS_AT_ZERO[0].access, Access::Ro);
-    assert_eq!(RoRw::FIELDS_AT_ZERO[1].access, Access::Rw);
+    assert_eq!(RoRw::FIELDS[0].access, Access::Ro);
+    assert_eq!(RoRw::FIELDS[1].access, Access::Rw);
 }
 
 #[repr(C)]
@@ -88,7 +88,7 @@ struct CompLit {
 
 #[test]
 fn literal_rhs_dispatches_to_value_variant() {
-    match CompLit::FIELDS_AT_ZERO[0].validators[0] {
+    match CompLit::FIELDS[0].validators[0] {
         FieldValidator::CompareU8 {
             op: CompareOp::Le,
             abs: false,
@@ -109,7 +109,7 @@ struct CompAddr {
 
 #[test]
 fn reference_rhs_dispatches_to_addr_variant() {
-    match CompAddr::FIELDS_AT_ZERO[0].validators[0] {
+    match CompAddr::FIELDS[0].validators[0] {
         FieldValidator::CompareI32 {
             op: CompareOp::Lt,
             abs: false,
@@ -128,7 +128,7 @@ struct AbsMulti {
 
 #[test]
 fn multiple_compare_ops_share_abs_and_field() {
-    let v = AbsMulti::FIELDS_AT_ZERO[0].validators;
+    let v = AbsMulti::FIELDS[0].validators;
     assert_eq!(v.len(), 2);
     let mut ge_ok = false;
     let mut le_ok = false;
@@ -163,7 +163,7 @@ struct WithCustom {
 
 #[test]
 fn custom_attr_emits_custom_validator() {
-    let v = WithCustom::FIELDS_AT_ZERO[0].validators;
+    let v = WithCustom::FIELDS[0].validators;
     assert_eq!(v.len(), 1);
     assert!(matches!(v[0], FieldValidator::Custom(_)));
 }
@@ -179,7 +179,7 @@ struct AllowOverride {
 
 #[test]
 fn allowed_overrides_default_with_provided_set() {
-    let v = AllowOverride::FIELDS_AT_ZERO[0].validators;
+    let v = AllowOverride::FIELDS[0].validators;
     assert_eq!(v.len(), 1);
     let FieldValidator::EnumU8 { allowed } = v[0] else {
         panic!("expected EnumU8")
@@ -202,7 +202,7 @@ struct WithMode {
 
 #[test]
 fn user_type_field_gets_ty_allowed_default() {
-    let v = WithMode::FIELDS_AT_ZERO[0].validators;
+    let v = WithMode::FIELDS[0].validators;
     assert_eq!(v.len(), 1);
     let FieldValidator::EnumU8 { allowed } = v[0] else {
         panic!("expected EnumU8")
@@ -223,19 +223,7 @@ struct WithBlockVal {
 
 #[test]
 fn ct_block_validators_list_populates_validators_const() {
-    assert_eq!(WithBlockVal::VALIDATORS.len(), 1);
-}
-
-#[test]
-fn fields_at_zero_slice_points_to_arr_with_same_layout() {
-    assert_eq!(Basic::FIELDS_AT_ZERO.len(), Basic::FIELDS_AT_ZERO_ARR.len());
-    for (slice_f, arr_f) in Basic::FIELDS_AT_ZERO
-        .iter()
-        .zip(Basic::FIELDS_AT_ZERO_ARR.iter())
-    {
-        assert_eq!(slice_f.addr, arr_f.addr);
-        assert_eq!(slice_f.size, arr_f.size);
-    }
+    assert_eq!(WithBlockVal::DESC.validators.len(), 1);
 }
 
 #[repr(C)]

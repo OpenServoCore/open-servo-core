@@ -32,7 +32,7 @@ use basic::TwoBlock;
 
 #[test]
 fn region_desc_carries_addr_and_size() {
-    let d = TwoBlock::REGION_DESC;
+    let d = TwoBlock::DESC;
     assert_eq!(d.addr, 100);
     assert_eq!(d.size, 64);
     assert_eq!(d.blocks.len(), 2);
@@ -40,18 +40,18 @@ fn region_desc_carries_addr_and_size() {
 
 #[test]
 fn block_desc_addr_is_region_base_plus_struct_offset() {
-    let blocks = TwoBlock::REGION_DESC.blocks;
+    let blocks = TwoBlock::DESC.blocks;
     assert_eq!(blocks[0].addr, 100 + offset_of!(TwoBlock, alpha) as u16);
     assert_eq!(blocks[1].addr, 100 + offset_of!(TwoBlock, beta) as u16);
     assert_eq!(blocks[0].struct_offset, offset_of!(TwoBlock, alpha) as u16);
     assert_eq!(blocks[1].struct_offset, offset_of!(TwoBlock, beta) as u16);
-    assert_eq!(blocks[0].size, BlkA::SIZE);
-    assert_eq!(blocks[1].size, BlkB::SIZE);
+    assert_eq!(blocks[0].size, BlkA::DESC.size);
+    assert_eq!(blocks[1].size, BlkB::DESC.size);
 }
 
 #[test]
 fn rebased_fields_are_absolute_addrs() {
-    let blocks = TwoBlock::REGION_DESC.blocks;
+    let blocks = TwoBlock::DESC.blocks;
     let alpha_base = 100 + offset_of!(TwoBlock, alpha) as u16;
     let beta_base = 100 + offset_of!(TwoBlock, beta) as u16;
 
@@ -76,7 +76,7 @@ fn rebased_fields_are_absolute_addrs() {
 
 #[test]
 fn field_access_preserved_through_rebase() {
-    let alpha_fields = TwoBlock::REGION_DESC.blocks[0].fields;
+    let alpha_fields = TwoBlock::DESC.blocks[0].fields;
     assert_eq!(alpha_fields[0].access, Access::Rw);
 }
 
@@ -118,7 +118,7 @@ mod with_validator {
 
 #[test]
 fn ct_region_validators_list_populates_region_validators() {
-    assert_eq!(with_validator::OneBlock::REGION_DESC.validators.len(), 1);
+    assert_eq!(with_validator::OneBlock::DESC.validators.len(), 1);
 }
 
 #[test]
@@ -149,7 +149,7 @@ mod with_skip {
 
 #[test]
 fn ct_region_skip_excludes_field_from_blocks_and_addr_hub() {
-    let d = with_skip::Skipping::REGION_DESC;
+    let d = with_skip::Skipping::DESC;
     assert_eq!(d.blocks.len(), 1);
     assert_eq!(
         d.blocks[0].struct_offset,
