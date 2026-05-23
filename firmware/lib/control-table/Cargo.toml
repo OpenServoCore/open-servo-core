@@ -9,6 +9,9 @@ heapless.workspace             = true
 control-table-derive.workspace = true
 defmt                          = { version = "1", optional = true }
 
+[dev-dependencies]
+trybuild = "1"
+
 [features]
 default = []
 defmt   = ["dep:defmt"]

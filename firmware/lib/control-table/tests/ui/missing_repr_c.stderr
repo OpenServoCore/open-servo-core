@@ -1,0 +1,5 @@
+error: Block derive requires #[repr(C)]
+ --> tests/ui/missing_repr_c.rs:4:8
+  |
+4 | struct NoRepr {
+  |        ^^^^^^

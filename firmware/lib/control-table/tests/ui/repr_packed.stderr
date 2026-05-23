@@ -1,0 +1,5 @@
+error: Block derive forbids #[repr(packed)] (unaligned reads + offset_of are unsound)
+ --> tests/ui/repr_packed.rs:3:11
+  |
+3 | #[repr(C, packed)]
+  |           ^^^^^^

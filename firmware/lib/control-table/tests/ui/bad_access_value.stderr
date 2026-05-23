@@ -1,0 +1,5 @@
+error: unknown access `wat` (expected ro|rw)
+ --> tests/ui/bad_access_value.rs:6:25
+  |
+6 |     #[ct_field(access = wat)]
+  |                         ^^^
