@@ -119,3 +119,72 @@ pub enum CompareOp {
     Eq,
     Ne,
 }
+
+#[cfg(feature = "defmt")]
+impl defmt::Format for FieldValidator {
+    fn format(&self, f: defmt::Formatter) {
+        match self {
+            Self::EnumU8 { allowed } => defmt::write!(f, "EnumU8 {{ allowed: {} }}", allowed),
+            Self::CompareU8 { op, abs, rhs } => {
+                defmt::write!(f, "CompareU8 {{ op: {}, abs: {}, rhs: {} }}", op, abs, rhs)
+            }
+            Self::CompareU16 { op, abs, rhs } => {
+                defmt::write!(f, "CompareU16 {{ op: {}, abs: {}, rhs: {} }}", op, abs, rhs)
+            }
+            Self::CompareI8 { op, abs, rhs } => {
+                defmt::write!(f, "CompareI8 {{ op: {}, abs: {}, rhs: {} }}", op, abs, rhs)
+            }
+            Self::CompareI16 { op, abs, rhs } => {
+                defmt::write!(f, "CompareI16 {{ op: {}, abs: {}, rhs: {} }}", op, abs, rhs)
+            }
+            Self::CompareI32 { op, abs, rhs } => {
+                defmt::write!(f, "CompareI32 {{ op: {}, abs: {}, rhs: {} }}", op, abs, rhs)
+            }
+            Self::Custom(_) => defmt::write!(f, "Custom(<fn>)"),
+        }
+    }
+}
+
+#[cfg(feature = "defmt")]
+impl defmt::Format for FieldDesc {
+    fn format(&self, f: defmt::Formatter) {
+        defmt::write!(
+            f,
+            "FieldDesc {{ addr: {}, size: {}, struct_offset: {}, access: {}, validators: {} }}",
+            self.addr,
+            self.size,
+            self.struct_offset,
+            self.access,
+            self.validators,
+        )
+    }
+}
+
+#[cfg(feature = "defmt")]
+impl defmt::Format for BlockDesc {
+    fn format(&self, f: defmt::Formatter) {
+        defmt::write!(
+            f,
+            "BlockDesc {{ addr: {}, size: {}, struct_offset: {}, fields: {}, validators: <{} fn> }}",
+            self.addr,
+            self.size,
+            self.struct_offset,
+            self.fields,
+            self.validators.len(),
+        )
+    }
+}
+
+#[cfg(feature = "defmt")]
+impl defmt::Format for RegionDesc {
+    fn format(&self, f: defmt::Formatter) {
+        defmt::write!(
+            f,
+            "RegionDesc {{ addr: {}, size: {}, blocks: {}, validators: <{} fn> }}",
+            self.addr,
+            self.size,
+            self.blocks,
+            self.validators.len(),
+        )
+    }
+}
