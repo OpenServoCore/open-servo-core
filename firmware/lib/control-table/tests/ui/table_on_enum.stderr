@@ -1,0 +1,11 @@
+error: Table can only be derived for structs
+ --> tests/ui/table_on_enum.rs:3:1
+  |
+3 | / #[repr(C)]
+4 | | #[derive(Table)]
+5 | | #[ct_table(max_sram = 1024)]
+6 | | enum NotAStruct {
+7 | |     A,
+8 | |     B,
+9 | | }
+  | |_^

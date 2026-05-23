@@ -1,0 +1,5 @@
+error: Table field must be `SyncUnsafeCell<T>`
+ --> tests/ui/table_field_not_sync_unsafe_cell.rs:8:12
+  |
+8 |     pub r: u32,
+  |            ^^^

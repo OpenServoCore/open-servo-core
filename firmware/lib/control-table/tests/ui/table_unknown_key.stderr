@@ -1,0 +1,5 @@
+error: unknown ct_table key (expected max_sram)
+  --> tests/ui/table_unknown_key.rs:31:29
+   |
+31 | #[ct_table(max_sram = 1024, nope = 1)]
+   |                             ^^^^

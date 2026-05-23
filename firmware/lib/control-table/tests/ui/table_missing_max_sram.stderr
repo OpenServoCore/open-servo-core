@@ -1,0 +1,5 @@
+error: Table requires `#[ct_table(max_sram = ...)]`
+  --> tests/ui/table_missing_max_sram.rs:31:8
+   |
+31 | struct NoMaxSram {
+   |        ^^^^^^^^^
