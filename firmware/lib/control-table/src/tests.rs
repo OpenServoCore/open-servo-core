@@ -1,0 +1,170 @@
+use crate::route::stage_write;
+use crate::validate::run_field_validators;
+use crate::*;
+use core::cell::UnsafeCell;
+
+const REGION_SIZE: u16 = 32;
+
+fn always_reject(_view: &StagedView, _addr: u16, _size: u16) -> Result<(), RegmapError> {
+    Err(RegmapError::ValidationError(ValidationKind::Custom))
+}
+
+const REJECTING_BLOCKS: &[BlockDesc] = &[BlockDesc {
+    addr: 0,
+    size: 1,
+    struct_offset: 0,
+    fields: &[FieldDesc {
+        addr: 0,
+        size: 1,
+        struct_offset: 0,
+        access: Access::Rw,
+        validators: &[FieldValidator::Custom(always_reject)],
+    }],
+    validators: &[],
+}];
+
+// Two blocks: RW block [0..4), gap [4..8), RW block [8..16) with first byte RO.
+const ROUTING_BLOCKS: &[BlockDesc] = &[
+    BlockDesc {
+        addr: 0,
+        size: 4,
+        struct_offset: 0,
+        fields: &[FieldDesc {
+            addr: 0,
+            size: 4,
+            struct_offset: 0,
+            access: Access::Rw,
+            validators: &[],
+        }],
+        validators: &[],
+    },
+    BlockDesc {
+        addr: 8,
+        size: 8,
+        struct_offset: 8,
+        fields: &[
+            FieldDesc {
+                addr: 8,
+                size: 1,
+                struct_offset: 0,
+                access: Access::Ro,
+                validators: &[],
+            },
+            FieldDesc {
+                addr: 9,
+                size: 7,
+                struct_offset: 1,
+                access: Access::Rw,
+                validators: &[],
+            },
+        ],
+        validators: &[],
+    },
+];
+
+static ROUTING_REGION: RegionDesc = RegionDesc {
+    addr: 0,
+    size: REGION_SIZE,
+    blocks: ROUTING_BLOCKS,
+    validators: &[],
+};
+
+static ROUTING_REGIONS: &[&RegionDesc] = &[&ROUTING_REGION];
+
+struct StubRouter {
+    storage: UnsafeCell<[u8; REGION_SIZE as usize]>,
+}
+
+// SAFETY: tests are single-threaded; the StubRouter is used as a fake
+// single-writer region for routing/staging checks.
+unsafe impl Sync for StubRouter {}
+
+impl StubRouter {
+    const fn new() -> Self {
+        Self {
+            storage: UnsafeCell::new([0; REGION_SIZE as usize]),
+        }
+    }
+}
+
+impl Router for StubRouter {
+    fn regions(&self) -> &'static [&'static RegionDesc] {
+        ROUTING_REGIONS
+    }
+    fn region_base(&self, _desc: &RegionDesc) -> *mut u8 {
+        self.storage.get() as *mut u8
+    }
+}
+
+#[test]
+fn walk_fields_rejects_writes_into_padding_gap() {
+    let r = StubRouter::new();
+    let mut staged = StagedWrites::new();
+    let err = r.write_bytes(4, &[0xAA], &mut staged).unwrap_err();
+    assert_eq!(err, RegmapError::AccessError);
+    assert!(staged.is_empty());
+}
+
+#[test]
+fn walk_fields_rejects_writes_to_ro_field() {
+    let r = StubRouter::new();
+    let mut staged = StagedWrites::new();
+    let err = r.write_bytes(8, &[0xAA], &mut staged).unwrap_err();
+    assert_eq!(err, RegmapError::AccessError);
+}
+
+#[test]
+fn walk_fields_allows_reads_through_ro_and_rw() {
+    let r = StubRouter::new();
+    let mut buf = [0xFFu8; 8];
+    r.read_bytes(8, &mut buf).unwrap();
+    assert_eq!(buf, [0u8; 8]);
+}
+
+#[test]
+fn stage_then_validator_reject_rewinds_buffer_and_does_not_commit() {
+    let r = StubRouter::new();
+    let mut staged = StagedWrites::new();
+    let saved_data = staged.data.len();
+    let saved_entries = staged.entries.len();
+    stage_write(0, &[0xAA], REJECTING_BLOCKS, &mut staged).unwrap();
+    let reject = run_field_validators(&r, &staged, saved_entries, 0, 1, REJECTING_BLOCKS);
+    assert_eq!(
+        reject,
+        Err(RegmapError::ValidationError(ValidationKind::Custom)),
+    );
+    staged.rewind(saved_data, saved_entries);
+    assert!(staged.is_empty());
+    let mut buf = [0xFFu8; 1];
+    r.read_bytes(0, &mut buf).unwrap();
+    assert_eq!(buf, [0u8]);
+}
+
+#[test]
+fn staged_view_overlays_pending_bytes_on_live_data() {
+    let r = StubRouter::new();
+    let mut staged = StagedWrites::new();
+    r.write_bytes(0, &[0x11, 0x22, 0x33, 0x44], &mut staged)
+        .unwrap();
+    staged.push_chunk(1, &[0xAA, 0xBB]).unwrap();
+    let view = StagedView::new(&r, &staged, 0);
+    let mut buf = [0u8; 4];
+    view.read_bytes(0, &mut buf).unwrap();
+    assert_eq!(buf, [0x11, 0xAA, 0xBB, 0x44]);
+}
+
+#[test]
+fn compare_op_apply_covers_every_op() {
+    assert!(CompareOp::Lt.apply(&1, &2));
+    assert!(!CompareOp::Lt.apply(&2, &2));
+    assert!(CompareOp::Le.apply(&2, &2));
+    assert!(!CompareOp::Le.apply(&3, &2));
+    assert!(CompareOp::Gt.apply(&3, &2));
+    assert!(!CompareOp::Gt.apply(&2, &2));
+    assert!(CompareOp::Ge.apply(&2, &2));
+    assert!(!CompareOp::Ge.apply(&1, &2));
+    assert!(CompareOp::Eq.apply(&2, &2));
+    assert!(!CompareOp::Eq.apply(&1, &2));
+    assert!(CompareOp::Ne.apply(&1, &2));
+    assert!(!CompareOp::Ne.apply(&2, &2));
+}

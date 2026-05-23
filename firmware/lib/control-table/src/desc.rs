@@ -1,0 +1,109 @@
+use crate::stage::StagedView;
+
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
+pub enum RegmapError {
+    OutOfRange,
+    AccessError,
+    StagingFull,
+    ValidationError(ValidationKind),
+}
+
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
+pub enum ValidationKind {
+    Enum,
+    Range,
+    Compare,
+    Locked,
+    Custom,
+}
+
+/// `bool` is `u8` 0/1; any other byte yields UB on later access.
+pub const BOOL_ALLOWED: &[u8] = &[0, 1];
+
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
+pub enum Access {
+    Ro,
+    Rw,
+}
+
+/// `struct_offset` is block-relative; the block's own offset is added during walks.
+#[derive(Copy, Clone, Debug)]
+pub struct FieldDesc {
+    pub addr: u16,
+    pub size: u16,
+    pub struct_offset: u16,
+    pub access: Access,
+    pub validators: &'static [FieldValidator],
+}
+
+#[derive(Copy, Clone, Debug)]
+pub struct BlockDesc {
+    pub addr: u16,
+    pub size: u16,
+    pub struct_offset: u16,
+    pub fields: &'static [FieldDesc],
+    pub validators: &'static [BlockValidator],
+}
+
+#[derive(Copy, Clone, Debug)]
+pub struct RegionDesc {
+    pub addr: u16,
+    pub size: u16,
+    pub blocks: &'static [BlockDesc],
+    pub validators: &'static [RegionValidator],
+}
+
+pub type BlockValidator = fn(&StagedView, u16, u16) -> Result<(), RegmapError>;
+pub type RegionValidator = fn(&StagedView) -> Result<(), RegmapError>;
+
+#[derive(Copy, Clone, Debug)]
+pub enum FieldValidator {
+    EnumU8 { allowed: &'static [u8] },
+    RangeU8 { lo: u8, hi: u8 },
+    RangeU16 { lo: u16, hi: u16 },
+    RangeI32 { lo: i32, hi: i32 },
+    Cross(CrossField),
+    Custom(fn(&StagedView, u16, u16) -> Result<(), RegmapError>),
+}
+
+#[derive(Copy, Clone, Debug)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
+pub enum CompareOp {
+    Lt,
+    Le,
+    Gt,
+    Ge,
+    Eq,
+    Ne,
+}
+
+#[derive(Copy, Clone, Debug)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
+pub enum CrossField {
+    CompareI16 {
+        op: CompareOp,
+        other_addr: u16,
+    },
+    CompareI32 {
+        op: CompareOp,
+        other_addr: u16,
+    },
+    WithinI16 {
+        lo_addr: u16,
+        hi_addr: u16,
+    },
+    WithinI32 {
+        lo_addr: u16,
+        hi_addr: u16,
+    },
+    /// `saturating_abs` on both sides so `i*::MIN` doesn't overflow.
+    MagBoundedI16 {
+        bound_addr: u16,
+    },
+    MagBoundedI32 {
+        bound_addr: u16,
+    },
+}
