@@ -3,10 +3,11 @@ use dxl_protocol::prelude::*;
 use crate::{Error, RegionStorage, Router, Shared, StagedWrites, StatusReturnLevel};
 
 use super::DxlIo;
-use super::slot::slot_period_us;
+use super::slot::{bulk_slot_delay_us, slot_period_us};
 
 const MAX_READ: usize = 128;
 const MAX_WRITE: usize = 128;
+const MAX_BULK_BODY: usize = 256;
 
 fn error_to_status(e: Error) -> StatusError {
     match e {
@@ -285,8 +286,67 @@ impl<'a, D: DxlIo> Dispatcher<'a, D> {
         // TODO: scan (id, length-byte chunk) pairs, apply our chunk silently.
     }
 
-    fn handle_bulk_read(&mut self, _p: &BulkReadPacket<'_>, _parsed_end: u32) {
-        // TODO: scan (id, address, length) triples; reply in slot order via idle_for + start_tx_after.
+    fn handle_bulk_read(&mut self, p: &BulkReadPacket<'_>, parsed_end: u32) {
+        let our_id = self.shared.table.config.with(|c| c.comms.id);
+
+        let mut body = [0u8; MAX_BULK_BODY];
+        let Ok(n) = p.body.copy_into(&mut body) else {
+            return;
+        };
+        let body = &body[..n];
+
+        let mut found = None;
+        for tup in body.chunks_exact(5) {
+            if tup[0] == our_id {
+                let address = u16::from_le_bytes([tup[1], tup[2]]);
+                let length = u16::from_le_bytes([tup[3], tup[4]]);
+                found = Some((address, length));
+                break;
+            }
+        }
+        let Some((address, length)) = found else {
+            return;
+        };
+
+        let Some(idle_tick) = self.io.idle_for(parsed_end) else {
+            return;
+        };
+
+        let baud = self.shared.table.config.with(|c| c.comms.baud_rate_idx);
+        let delay_us = bulk_slot_delay_us(body, our_id, baud).unwrap_or(0);
+
+        let len = length as usize;
+        if len == 0 || len > MAX_READ {
+            self.send_status_after(
+                our_id,
+                StatusError::DataRange,
+                &[],
+                StatusReturnLevel::Read,
+                idle_tick,
+                delay_us,
+            );
+            return;
+        }
+
+        let mut buf = [0u8; MAX_READ];
+        match self.shared.table.read_bytes(address, &mut buf[..len]) {
+            Ok(()) => self.send_status_after(
+                our_id,
+                StatusError::None,
+                &buf[..len],
+                StatusReturnLevel::Read,
+                idle_tick,
+                delay_us,
+            ),
+            Err(e) => self.send_status_after(
+                our_id,
+                error_to_status(e),
+                &[],
+                StatusReturnLevel::Read,
+                idle_tick,
+                delay_us,
+            ),
+        }
     }
 
     fn handle_bulk_write(&mut self, _p: &BulkWritePacket<'_>) {

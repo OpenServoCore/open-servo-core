@@ -787,6 +787,132 @@ fn sync_read_return_level_none_silences_reply() {
 }
 
 #[test]
+fn bulk_read_in_slot_zero_replies_immediately() {
+    let shared = Shared::new();
+    let mut io = FakeDxlIo::new();
+    let mut h = Dxl::new();
+
+    // (id=0, addr=0, length=2)
+    let body = [0, 0, 0, 2, 0];
+    let req = encode(&Packet::BulkRead(BulkReadPacket::new(&body)));
+    io.feed(&req);
+    h.poll(&shared, &mut io);
+
+    assert_eq!(io.start_tx_count, 1);
+    assert_eq!(io.scheduled_count, 0);
+    let (id, err, params) = parse_status(&io.tx);
+    assert_eq!(id, 0);
+    assert_eq!(err, 0);
+    assert_eq!(&params[..], &[0, 0]);
+}
+
+#[test]
+fn bulk_read_in_later_slot_sums_preceding_slot_periods() {
+    use super::slot::slot_period_us;
+    use crate::BaudRate;
+    let shared = Shared::new();
+    let mut io = FakeDxlIo::new();
+    let mut h = Dxl::new();
+    io.rx_idle_tick = 99;
+
+    // Preceding slots: id=9 length=4, id=7 length=8. Our slot: id=0 length=2.
+    let body = [9, 0, 0, 4, 0, 7, 0, 0, 8, 0, 0, 0, 0, 2, 0];
+    let req = encode(&Packet::BulkRead(BulkReadPacket::new(&body)));
+    io.feed(&req);
+    h.poll(&shared, &mut io);
+
+    assert_eq!(io.start_tx_count, 0);
+    assert_eq!(io.scheduled_count, 1);
+    assert_eq!(io.last_scheduled_idle_tick, Some(99));
+    let expected = slot_period_us(BaudRate::B1000000, 4) + slot_period_us(BaudRate::B1000000, 8);
+    assert_eq!(io.last_scheduled_delay_us, Some(expected));
+}
+
+#[test]
+fn bulk_read_silent_when_our_id_absent() {
+    let shared = Shared::new();
+    let mut io = FakeDxlIo::new();
+    let mut h = Dxl::new();
+
+    let body = [5, 0, 0, 2, 0, 7, 0, 0, 2, 0];
+    let req = encode(&Packet::BulkRead(BulkReadPacket::new(&body)));
+    io.feed(&req);
+    h.poll(&shared, &mut io);
+
+    assert_eq!(io.start_tx_count, 0);
+    assert_eq!(io.scheduled_count, 0);
+    assert!(io.tx.is_empty());
+}
+
+#[test]
+fn bulk_read_skips_when_idle_for_returns_none() {
+    let shared = Shared::new();
+    let mut io = FakeDxlIo::new();
+    let mut h = Dxl::new();
+
+    let body = [0, 0, 0, 2, 0];
+    let req = encode(&Packet::BulkRead(BulkReadPacket::new(&body)));
+    io.feed(&req);
+    io.rx_bytes_at_idle = io.rx_bytes_at_idle.wrapping_add(1);
+    h.poll(&shared, &mut io);
+
+    assert_eq!(io.start_tx_count, 0);
+    assert_eq!(io.scheduled_count, 0);
+    assert!(io.tx.is_empty());
+}
+
+#[test]
+fn bulk_read_uses_our_tuples_address_not_a_preceding_slots() {
+    let shared = Shared::new();
+    let mut io = FakeDxlIo::new();
+    let mut h = Dxl::new();
+
+    // Slot 0 (id=9): bogus address 0xFFFE; our slot (id=0): addr=0 len=2 → model_number.
+    let body = [9, 0xFE, 0xFF, 4, 0, 0, 0, 0, 2, 0];
+    let req = encode(&Packet::BulkRead(BulkReadPacket::new(&body)));
+    io.feed(&req);
+    h.poll(&shared, &mut io);
+
+    let (_, err, params) = parse_status(&io.tx);
+    assert_eq!(err, 0);
+    assert_eq!(&params[..], &[0, 0]);
+}
+
+#[test]
+fn bulk_read_data_range_error_still_replies_in_slot() {
+    let shared = Shared::new();
+    let mut io = FakeDxlIo::new();
+    let mut h = Dxl::new();
+
+    // Our tuple targets an unmapped address.
+    let body = [0, 0xFE, 0xFF, 1, 0];
+    let req = encode(&Packet::BulkRead(BulkReadPacket::new(&body)));
+    io.feed(&req);
+    h.poll(&shared, &mut io);
+
+    assert_eq!(io.start_tx_count, 1);
+    let (_, err, _) = parse_status(&io.tx);
+    assert_eq!(err, StatusError::DataRange.as_u8());
+}
+
+#[test]
+fn bulk_read_return_level_none_silences_reply() {
+    let shared = Shared::new();
+    set_level(&shared, StatusReturnLevel::None);
+    let mut io = FakeDxlIo::new();
+    let mut h = Dxl::new();
+
+    let body = [0, 0, 0, 2, 0];
+    let req = encode(&Packet::BulkRead(BulkReadPacket::new(&body)));
+    io.feed(&req);
+    h.poll(&shared, &mut io);
+
+    assert_eq!(io.start_tx_count, 0);
+    assert_eq!(io.scheduled_count, 0);
+    assert!(io.tx.is_empty());
+}
+
+#[test]
 fn start_tx_after_zero_short_circuits_to_start_tx() {
     let mut io = FakeDxlIo::new();
     io.start_tx_after(0, 0);
