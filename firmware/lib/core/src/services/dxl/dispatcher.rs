@@ -3,6 +3,7 @@ use dxl_protocol::prelude::*;
 use crate::{Error, RegionStorage, Router, Shared, StagedWrites, StatusReturnLevel};
 
 use super::DxlIo;
+use super::slot::slot_period_us;
 
 const MAX_READ: usize = 128;
 const MAX_WRITE: usize = 128;
@@ -89,6 +90,28 @@ impl<'a, D: DxlIo> Dispatcher<'a, D> {
             return;
         }
         self.io.start_tx();
+    }
+
+    fn send_status_after(
+        &mut self,
+        id: u8,
+        error: StatusError,
+        params: &[u8],
+        min_level: StatusReturnLevel,
+        idle_tick: u32,
+        delay_us: u32,
+    ) {
+        if self.level() < min_level {
+            return;
+        }
+        let buf = self.io.tx_buf();
+        buf.truncate(0);
+        let packet = Packet::Status(StatusPacket::new(id, error.as_u8(), params));
+        if write(buf, &packet).is_err() {
+            buf.truncate(0);
+            return;
+        }
+        self.io.start_tx_after(idle_tick, delay_us);
     }
 
     fn handle_ping(&mut self, p: &PingPacket) {
@@ -212,9 +235,50 @@ impl<'a, D: DxlIo> Dispatcher<'a, D> {
         self.reply_unsupported(p.id);
     }
 
-    fn handle_sync_read(&mut self, _p: &SyncReadPacket<'_>, _parsed_end: u32) {
-        // TODO: if our id appears in the list, reply in slot order using
-        //       self.io.idle_for(parsed_end) + start_tx_after.
+    fn handle_sync_read(&mut self, p: &SyncReadPacket<'_>, parsed_end: u32) {
+        let our_id = self.shared.table.config.with(|c| c.comms.id);
+        let Some(slot) = p.ids.iter().position(|id| id == our_id) else {
+            return;
+        };
+        let Some(idle_tick) = self.io.idle_for(parsed_end) else {
+            return;
+        };
+
+        let baud = self.shared.table.config.with(|c| c.comms.baud_rate_idx);
+        let delay_us = (slot as u32) * slot_period_us(baud, p.length);
+
+        let len = p.length as usize;
+        if len == 0 || len > MAX_READ {
+            self.send_status_after(
+                our_id,
+                StatusError::DataRange,
+                &[],
+                StatusReturnLevel::Read,
+                idle_tick,
+                delay_us,
+            );
+            return;
+        }
+
+        let mut buf = [0u8; MAX_READ];
+        match self.shared.table.read_bytes(p.address, &mut buf[..len]) {
+            Ok(()) => self.send_status_after(
+                our_id,
+                StatusError::None,
+                &buf[..len],
+                StatusReturnLevel::Read,
+                idle_tick,
+                delay_us,
+            ),
+            Err(e) => self.send_status_after(
+                our_id,
+                error_to_status(e),
+                &[],
+                StatusReturnLevel::Read,
+                idle_tick,
+                delay_us,
+            ),
+        }
     }
 
     fn handle_sync_write(&mut self, _p: &SyncWritePacket<'_>) {

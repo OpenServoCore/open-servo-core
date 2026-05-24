@@ -684,6 +684,109 @@ fn return_level_read_replies_to_read_errors() {
 }
 
 #[test]
+fn sync_read_in_slot_zero_replies_immediately() {
+    let shared = Shared::new();
+    let mut io = FakeDxlIo::new();
+    let mut h = Dxl::new();
+
+    let req = encode(&Packet::SyncRead(SyncReadPacket::new(0, 2, &[0])));
+    io.feed(&req);
+    h.poll(&shared, &mut io);
+
+    // slot 0 → delay 0 → FakeDxlIo short-circuits to start_tx.
+    assert_eq!(io.start_tx_count, 1);
+    assert_eq!(io.scheduled_count, 0);
+    let (id, err, params) = parse_status(&io.tx);
+    assert_eq!(id, 0);
+    assert_eq!(err, 0);
+    assert_eq!(&params[..], &[0, 0]);
+}
+
+#[test]
+fn sync_read_in_later_slot_schedules_with_slot_delay() {
+    use super::slot::slot_period_us;
+    use crate::BaudRate;
+    let shared = Shared::new();
+    let mut io = FakeDxlIo::new();
+    let mut h = Dxl::new();
+    io.rx_idle_tick = 42;
+
+    // ids = [9, 7, 0] → our slot index = 2.
+    let req = encode(&Packet::SyncRead(SyncReadPacket::new(0, 2, &[9, 7, 0])));
+    io.feed(&req);
+    h.poll(&shared, &mut io);
+
+    assert_eq!(io.start_tx_count, 0);
+    assert_eq!(io.scheduled_count, 1);
+    assert_eq!(io.last_scheduled_idle_tick, Some(42));
+    let expected = 2 * slot_period_us(BaudRate::B1000000, 2);
+    assert_eq!(io.last_scheduled_delay_us, Some(expected));
+}
+
+#[test]
+fn sync_read_silent_when_our_id_absent() {
+    let shared = Shared::new();
+    let mut io = FakeDxlIo::new();
+    let mut h = Dxl::new();
+
+    let req = encode(&Packet::SyncRead(SyncReadPacket::new(0, 2, &[5, 7, 9])));
+    io.feed(&req);
+    h.poll(&shared, &mut io);
+
+    assert_eq!(io.start_tx_count, 0);
+    assert_eq!(io.scheduled_count, 0);
+    assert!(io.tx.is_empty());
+}
+
+#[test]
+fn sync_read_skips_when_idle_for_returns_none() {
+    let shared = Shared::new();
+    let mut io = FakeDxlIo::new();
+    let mut h = Dxl::new();
+
+    let req = encode(&Packet::SyncRead(SyncReadPacket::new(0, 2, &[0])));
+    io.feed(&req);
+    // Force idle_for mismatch by advancing the counter past parsed_end.
+    io.rx_bytes_at_idle = io.rx_bytes_at_idle.wrapping_add(1);
+    h.poll(&shared, &mut io);
+
+    assert_eq!(io.start_tx_count, 0);
+    assert_eq!(io.scheduled_count, 0);
+    assert!(io.tx.is_empty());
+}
+
+#[test]
+fn sync_read_data_range_error_still_replies_in_slot() {
+    let shared = Shared::new();
+    let mut io = FakeDxlIo::new();
+    let mut h = Dxl::new();
+
+    let req = encode(&Packet::SyncRead(SyncReadPacket::new(0xFFFE, 1, &[0])));
+    io.feed(&req);
+    h.poll(&shared, &mut io);
+
+    assert_eq!(io.start_tx_count, 1);
+    let (_, err, _) = parse_status(&io.tx);
+    assert_eq!(err, StatusError::DataRange.as_u8());
+}
+
+#[test]
+fn sync_read_return_level_none_silences_reply() {
+    let shared = Shared::new();
+    set_level(&shared, StatusReturnLevel::None);
+    let mut io = FakeDxlIo::new();
+    let mut h = Dxl::new();
+
+    let req = encode(&Packet::SyncRead(SyncReadPacket::new(0, 2, &[0])));
+    io.feed(&req);
+    h.poll(&shared, &mut io);
+
+    assert_eq!(io.start_tx_count, 0);
+    assert_eq!(io.scheduled_count, 0);
+    assert!(io.tx.is_empty());
+}
+
+#[test]
 fn start_tx_after_zero_short_circuits_to_start_tx() {
     let mut io = FakeDxlIo::new();
     io.start_tx_after(0, 0);
