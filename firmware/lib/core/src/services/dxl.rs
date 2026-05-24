@@ -22,6 +22,7 @@ pub trait DxlIo {
     fn rx_snapshot(&self) -> RxSnapshot<'_>;
     fn tx_buf(&mut self) -> &mut Self::TxBuf;
     fn start_tx(&mut self);
+    fn start_tx_after(&mut self, delay_us: u32);
     fn request_reboot(&mut self, mode: BootMode);
 }
 
@@ -302,6 +303,8 @@ mod tests {
         rx_write_pos: u16,
         tx: Vec<u8, 256>,
         start_tx_count: u32,
+        scheduled_count: u32,
+        last_scheduled_delay_us: Option<u32>,
         reboot_count: u32,
         reboot_immediate_count: u32,
         last_reboot_mode: Option<BootMode>,
@@ -314,6 +317,8 @@ mod tests {
                 rx_write_pos: 0,
                 tx: Vec::new(),
                 start_tx_count: 0,
+                scheduled_count: 0,
+                last_scheduled_delay_us: None,
                 reboot_count: 0,
                 reboot_immediate_count: 0,
                 last_reboot_mode: None,
@@ -340,6 +345,14 @@ mod tests {
         }
         fn start_tx(&mut self) {
             self.start_tx_count += 1;
+        }
+        fn start_tx_after(&mut self, delay_us: u32) {
+            if delay_us == 0 {
+                self.start_tx();
+                return;
+            }
+            self.scheduled_count += 1;
+            self.last_scheduled_delay_us = Some(delay_us);
         }
         fn request_reboot(&mut self, mode: BootMode) {
             self.reboot_count += 1;
@@ -950,5 +963,23 @@ mod tests {
 
         let (_, err, _) = parse_status(&io.tx);
         assert_eq!(err, StatusError::DataRange.as_u8());
+    }
+
+    #[test]
+    fn start_tx_after_zero_short_circuits_to_start_tx() {
+        let mut io = FakeDxlIo::new();
+        io.start_tx_after(0);
+        assert_eq!(io.start_tx_count, 1);
+        assert_eq!(io.scheduled_count, 0);
+        assert_eq!(io.last_scheduled_delay_us, None);
+    }
+
+    #[test]
+    fn start_tx_after_nonzero_schedules_without_firing() {
+        let mut io = FakeDxlIo::new();
+        io.start_tx_after(150);
+        assert_eq!(io.start_tx_count, 0);
+        assert_eq!(io.scheduled_count, 1);
+        assert_eq!(io.last_scheduled_delay_us, Some(150));
     }
 }

@@ -4,9 +4,10 @@ use ch32_metapac::USART1;
 use heapless::Vec;
 use osc_core::{BootMode, DxlIo, RxSnapshot};
 
-use crate::hal::{dma, flash, gpio, pfic, usart};
+use crate::hal::{dma, flash, gpio, pfic, systick, usart};
 use crate::statics::{
-    DXL_REBOOT_PENDING, DXL_RX_BUF, DXL_RX_WRITE_POS, DXL_TX_BUF, DXL_TX_BUF_LEN, DXL_TX_EN,
+    DXL_REBOOT_PENDING, DXL_RX_BUF, DXL_RX_IDLE_TICK, DXL_RX_WRITE_POS, DXL_TX_BUF, DXL_TX_BUF_LEN,
+    DXL_TX_EN,
 };
 
 pub struct Ch32DxlIo;
@@ -14,6 +15,21 @@ pub struct Ch32DxlIo;
 impl Ch32DxlIo {
     pub const fn new() -> Self {
         Self
+    }
+
+    fn arm_tx(&mut self) -> bool {
+        let len = self.tx_buf().len();
+        if len == 0 {
+            return false;
+        }
+        if let Some(t) = unsafe { *DXL_TX_EN.get() } {
+            gpio::set_level(t.pin, t.tx_level);
+        }
+        dma::set_count(dma::Channel::CH4, len as u16);
+        usart::clear_tc(USART1);
+        usart::set_dma_tx(USART1, true);
+        usart::set_tc_irq(USART1, true);
+        true
     }
 }
 
@@ -41,18 +57,36 @@ impl DxlIo for Ch32DxlIo {
     }
 
     fn start_tx(&mut self) {
-        let len = self.tx_buf().len();
-        if len == 0 {
+        if !self.arm_tx() {
             return;
         }
-        if let Some(t) = unsafe { *DXL_TX_EN.get() } {
-            gpio::set_level(t.pin, t.tx_level);
-        }
-        dma::set_count(dma::Channel::CH4, len as u16);
-        usart::clear_tc(USART1);
-        usart::set_dma_tx(USART1, true);
-        usart::set_tc_irq(USART1, true);
         dma::enable(dma::Channel::CH4);
+    }
+
+    fn start_tx_after(&mut self, delay_us: u32) {
+        systick::set_irq(false);
+        systick::clear_match();
+
+        let idle_tick = DXL_RX_IDLE_TICK.load(Ordering::Acquire);
+        let needed = delay_us.saturating_mul(48);
+
+        if systick::ticks().wrapping_sub(idle_tick) >= needed {
+            self.start_tx();
+            return;
+        }
+
+        if !self.arm_tx() {
+            return;
+        }
+
+        systick::set_cmp(idle_tick.wrapping_add(needed));
+        systick::set_irq(true);
+
+        // CNTIF latches only on CNT==CMP up-count; if CNT crossed the deadline
+        // before CMP was written, the next match is ~89 s away on wrap.
+        if systick::ticks().wrapping_sub(idle_tick) >= needed {
+            crate::irq::on_systick_match();
+        }
     }
 
     fn request_reboot(&mut self, mode: BootMode) {
