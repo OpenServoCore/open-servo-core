@@ -4,7 +4,7 @@ use osc_core::{BaudRate, ConfigDefaults};
 use crate::hal::{
     adc, afio, clocks, delay_ms, dma,
     gpio::{self, Level, PinMode},
-    opa, pfic, rcc, timer, usart,
+    opa, rcc, timer, usart,
 };
 use crate::statics::{
     ADC_DMA_BUF, ADC_DMA_BUF_LEN, ADC_SCAN_LEN, ADC_SENSOR_COUNT, DXL_RX_BUF, DXL_RX_BUF_LEN,
@@ -234,7 +234,6 @@ fn bring_up_dxl(d: &DxlBus, baud: BaudRate) {
     unsafe { *DXL_TX_EN.get() = d.tx_en };
 
     usart::set_idle_irq(regs, true);
-    pfic::enable(pfic::Interrupt::USART1);
 }
 
 /// Returns the configured ARR so `Effort`→duty rescale can avoid a soft-div.

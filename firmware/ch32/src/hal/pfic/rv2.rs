@@ -3,6 +3,23 @@ use ch32_metapac::pfic::vals::Keycode;
 
 pub use ch32_metapac::Interrupt;
 
+/// QingKe V2A IPRIORn bit 7 selects preemption class; subpriority bits unused.
+#[derive(Copy, Clone)]
+pub enum Priority {
+    High,
+    Low,
+}
+
+impl Priority {
+    #[inline]
+    fn as_u8(self) -> u8 {
+        match self {
+            Self::High => 0x00,
+            Self::Low => 0x80,
+        }
+    }
+}
+
 #[inline]
 pub fn enable(irq: Interrupt) {
     let n = irq as u16;
@@ -14,6 +31,11 @@ pub fn enable(irq: Interrupt) {
         3 => PFIC.ienr4().write(|w| w.0 = bit),
         _ => {}
     }
+}
+
+#[inline]
+pub fn set_priority(irq: Interrupt, prio: Priority) {
+    PFIC.iprior(irq as usize).write_value(prio.as_u8());
 }
 
 pub fn software_reset() -> ! {

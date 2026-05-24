@@ -34,6 +34,7 @@ macro_rules! run {
 pub fn __run(cfg: BoardConfig) -> ! {
     let board = Ch32Board::new(cfg);
     statics::install(board);
+    statics::install_irqs();
     loop {
         // SAFETY: SERVICES initialized in `install`; no ISR aliases it.
         let services = unsafe { (*statics::SERVICES.get()).assume_init_mut() };
