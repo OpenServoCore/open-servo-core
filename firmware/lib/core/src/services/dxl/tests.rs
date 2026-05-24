@@ -8,9 +8,12 @@ use super::{Dxl, DxlIo};
 struct FakeDxlIo {
     rx_ring: [u8; 256],
     rx_write_pos: u16,
+    rx_bytes_at_idle: u32,
+    rx_idle_tick: u32,
     tx: Vec<u8, 256>,
     start_tx_count: u32,
     scheduled_count: u32,
+    last_scheduled_idle_tick: Option<u32>,
     last_scheduled_delay_us: Option<u32>,
     reboot_count: u32,
     reboot_immediate_count: u32,
@@ -22,9 +25,12 @@ impl FakeDxlIo {
         Self {
             rx_ring: [0; 256],
             rx_write_pos: 0,
+            rx_bytes_at_idle: 0,
+            rx_idle_tick: 0,
             tx: Vec::new(),
             start_tx_count: 0,
             scheduled_count: 0,
+            last_scheduled_idle_tick: None,
             last_scheduled_delay_us: None,
             reboot_count: 0,
             reboot_immediate_count: 0,
@@ -38,6 +44,7 @@ impl FakeDxlIo {
             self.rx_ring[idx] = b;
             self.rx_write_pos = self.rx_write_pos.wrapping_add(1) % (self.rx_ring.len() as u16);
         }
+        self.rx_bytes_at_idle = self.rx_bytes_at_idle.wrapping_add(bytes.len() as u32);
     }
 }
 
@@ -53,13 +60,17 @@ impl DxlIo for FakeDxlIo {
     fn start_tx(&mut self) {
         self.start_tx_count += 1;
     }
-    fn start_tx_after(&mut self, delay_us: u32) {
+    fn start_tx_after(&mut self, idle_tick: u32, delay_us: u32) {
         if delay_us == 0 {
             self.start_tx();
             return;
         }
         self.scheduled_count += 1;
+        self.last_scheduled_idle_tick = Some(idle_tick);
         self.last_scheduled_delay_us = Some(delay_us);
+    }
+    fn idle_for(&self, parsed_end: u32) -> Option<u32> {
+        (self.rx_bytes_at_idle == parsed_end).then_some(self.rx_idle_tick)
     }
     fn request_reboot(&mut self, mode: BootMode) {
         self.reboot_count += 1;
@@ -675,17 +686,19 @@ fn return_level_read_replies_to_read_errors() {
 #[test]
 fn start_tx_after_zero_short_circuits_to_start_tx() {
     let mut io = FakeDxlIo::new();
-    io.start_tx_after(0);
+    io.start_tx_after(0, 0);
     assert_eq!(io.start_tx_count, 1);
     assert_eq!(io.scheduled_count, 0);
+    assert_eq!(io.last_scheduled_idle_tick, None);
     assert_eq!(io.last_scheduled_delay_us, None);
 }
 
 #[test]
 fn start_tx_after_nonzero_schedules_without_firing() {
     let mut io = FakeDxlIo::new();
-    io.start_tx_after(150);
+    io.start_tx_after(42, 150);
     assert_eq!(io.start_tx_count, 0);
     assert_eq!(io.scheduled_count, 1);
+    assert_eq!(io.last_scheduled_idle_tick, Some(42));
     assert_eq!(io.last_scheduled_delay_us, Some(150));
 }

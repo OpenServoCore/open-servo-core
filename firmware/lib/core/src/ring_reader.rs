@@ -26,6 +26,7 @@ impl<'a> RxSnapshot<'a> {
 pub struct RingReader<const N: usize> {
     scratch: Vec<u8, N>,
     last_read_pos: u16,
+    consumed_total: u32,
 }
 
 impl<const N: usize> RingReader<N> {
@@ -33,7 +34,16 @@ impl<const N: usize> RingReader<N> {
         Self {
             scratch: Vec::new(),
             last_read_pos: 0,
+            consumed_total: 0,
         }
+    }
+
+    /// Cumulative bytes that have flowed past the reader (parser-consumed or
+    /// backpressure-dropped). u32 wraps in ~9.5 h of sustained max-rate RX;
+    /// callers compare via `==` against the ISR's matching counter, which
+    /// wraps in lockstep.
+    pub fn consumed_total(&self) -> u32 {
+        self.consumed_total
     }
 
     /// Append bytes from `ring[last_read_pos..write_pos]` (mod `ring.len()`) into
@@ -74,6 +84,7 @@ impl<const N: usize> RingReader<N> {
         let len = self.scratch.len();
         self.scratch.copy_within(n..len, 0);
         self.scratch.truncate(len - n);
+        self.consumed_total = self.consumed_total.wrapping_add(n as u32);
     }
 }
 
@@ -141,6 +152,17 @@ mod tests {
         r.ingest(&ring, 4);
         r.ingest(&ring, 7);
         assert_eq!(r.peek(), &[4, 5, 6, 7]);
+    }
+
+    #[test]
+    fn consumed_total_counts_both_consume_and_backpressure_drops() {
+        let mut r: RingReader<4> = RingReader::new();
+        let ring = [1, 2, 3, 4, 5, 6, 7, 8];
+        r.ingest(&ring, 4);
+        r.consume(2);
+        assert_eq!(r.consumed_total(), 2);
+        r.ingest(&ring, 7);
+        assert_eq!(r.consumed_total(), 3);
     }
 
     #[test]

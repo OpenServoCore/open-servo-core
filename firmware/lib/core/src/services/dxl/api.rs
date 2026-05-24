@@ -28,7 +28,8 @@ impl Dxl {
         loop {
             match parse_one(self.reader.peek()) {
                 Ok((packet, used)) => {
-                    d.dispatch(&packet);
+                    let parsed_end = self.reader.consumed_total().wrapping_add(used as u32);
+                    d.dispatch(packet, parsed_end);
                     self.reader.consume(used);
                 }
                 Err(ParseError::Incomplete) => break,

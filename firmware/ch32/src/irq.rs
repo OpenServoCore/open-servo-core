@@ -4,7 +4,8 @@ use osc_core::{Board, FrameInputs};
 
 use crate::hal::{dma, gpio, pfic, systick, usart};
 use crate::statics::{
-    DXL_REBOOT_PENDING, DXL_RX_BUF_LEN, DXL_RX_IDLE_TICK, DXL_RX_WRITE_POS, DXL_TX_BUF, DXL_TX_EN,
+    DXL_IDLE_HEAD, DXL_IDLE_RING, DXL_IDLE_RING_LEN, DXL_IDLE_TAIL, DXL_REBOOT_PENDING,
+    DXL_RX_BUF_LEN, DXL_RX_BYTES_AT_IDLE, DXL_RX_WRITE_POS, DXL_TX_BUF, DXL_TX_EN, IdleStamp,
     KERNEL, SHARED,
 };
 
@@ -35,8 +36,31 @@ pub fn on_usart1() {
         let idle_tick = systick::ticks();
         let remaining = dma::remaining(dma::Channel::CH5);
         let write_pos = (DXL_RX_BUF_LEN as u16).wrapping_sub(remaining);
+        let prev = DXL_RX_WRITE_POS.load(Ordering::Relaxed);
+        let delta = write_pos.wrapping_sub(prev) % (DXL_RX_BUF_LEN as u16);
+        let bytes_total = DXL_RX_BYTES_AT_IDLE
+            .load(Ordering::Relaxed)
+            .wrapping_add(delta as u32);
         DXL_RX_WRITE_POS.store(write_pos, Ordering::Release);
-        DXL_RX_IDLE_TICK.store(idle_tick, Ordering::Release);
+        DXL_RX_BYTES_AT_IDLE.store(bytes_total, Ordering::Relaxed);
+
+        let mask = (DXL_IDLE_RING_LEN as u8) - 1;
+        let head = DXL_IDLE_HEAD.load(Ordering::Relaxed);
+        let tail = DXL_IDLE_TAIL.load(Ordering::Relaxed);
+        // SAFETY: USART1 IDLE is the sole producer; the consumer wraps its
+        // walk in a critical section, so the slot at `head` is uncontested.
+        unsafe {
+            (*DXL_IDLE_RING.get())[head as usize] = IdleStamp {
+                bytes: bytes_total,
+                tick: idle_tick,
+            };
+        }
+        let next = (head + 1) & mask;
+        if next == tail {
+            // Drop-oldest: bump tail past the slot we're about to overwrite.
+            DXL_IDLE_TAIL.store((tail + 1) & mask, Ordering::Relaxed);
+        }
+        DXL_IDLE_HEAD.store(next, Ordering::Release);
     }
 
     if usart::is_tc(USART1) {

@@ -25,8 +25,8 @@ impl<'a, D: DxlIo> Dispatcher<'a, D> {
         Self { shared, io, staged }
     }
 
-    pub(super) fn dispatch(&mut self, packet: &Packet<'_>) {
-        match packet {
+    pub(super) fn dispatch(&mut self, packet: Packet<'_>, parsed_end: u32) {
+        match &packet {
             Packet::Ping(p) => self.handle_ping(p),
             Packet::Read(p) => self.handle_read(p),
             Packet::Write(p) => self.handle_write(p),
@@ -36,12 +36,12 @@ impl<'a, D: DxlIo> Dispatcher<'a, D> {
             Packet::Reboot(p) => self.handle_reboot(p),
             Packet::Clear(p) => self.handle_clear(p),
             Packet::ControlTableBackup(p) => self.handle_control_table_backup(p),
-            Packet::SyncRead(p) => self.handle_sync_read(p),
+            Packet::SyncRead(p) => self.handle_sync_read(p, parsed_end),
             Packet::SyncWrite(p) => self.handle_sync_write(p),
-            Packet::BulkRead(p) => self.handle_bulk_read(p),
+            Packet::BulkRead(p) => self.handle_bulk_read(p, parsed_end),
             Packet::BulkWrite(p) => self.handle_bulk_write(p),
-            Packet::FastSyncRead(p) => self.handle_fast_sync_read(p),
-            Packet::FastBulkRead(p) => self.handle_fast_bulk_read(p),
+            Packet::FastSyncRead(p) => self.handle_fast_sync_read(p, parsed_end),
+            Packet::FastBulkRead(p) => self.handle_fast_bulk_read(p, parsed_end),
             // Inbound Status frames originate from another device on the bus; drop.
             Packet::Status(_) => {}
         }
@@ -212,28 +212,28 @@ impl<'a, D: DxlIo> Dispatcher<'a, D> {
         self.reply_unsupported(p.id);
     }
 
-    fn handle_sync_read(&mut self, _p: &SyncReadPacket<'_>) {
-        // TODO: if our id appears in the list, reply in slot order using the
-        //       bus-turnaround timer (TIM3-SLTM) so slaves don't talk over each other.
+    fn handle_sync_read(&mut self, _p: &SyncReadPacket<'_>, _parsed_end: u32) {
+        // TODO: if our id appears in the list, reply in slot order using
+        //       self.io.idle_for(parsed_end) + start_tx_after.
     }
 
     fn handle_sync_write(&mut self, _p: &SyncWritePacket<'_>) {
         // TODO: scan (id, length-byte chunk) pairs, apply our chunk silently.
     }
 
-    fn handle_bulk_read(&mut self, _p: &BulkReadPacket<'_>) {
-        // TODO: scan (id, address, length) triples; reply in slot order.
+    fn handle_bulk_read(&mut self, _p: &BulkReadPacket<'_>, _parsed_end: u32) {
+        // TODO: scan (id, address, length) triples; reply in slot order via idle_for + start_tx_after.
     }
 
     fn handle_bulk_write(&mut self, _p: &BulkWritePacket<'_>) {
         // TODO: scan (id, address, length, data) tuples; apply our chunk silently.
     }
 
-    fn handle_fast_sync_read(&mut self, _p: &FastSyncReadPacket<'_>) {
-        // TODO: like sync_read but coalesced single-frame response.
+    fn handle_fast_sync_read(&mut self, _p: &FastSyncReadPacket<'_>, _parsed_end: u32) {
+        // TODO: like sync_read but coalesced single-frame response; fast_slot_delay_us.
     }
 
-    fn handle_fast_bulk_read(&mut self, _p: &FastBulkReadPacket<'_>) {
-        // TODO: like bulk_read but coalesced single-frame response.
+    fn handle_fast_bulk_read(&mut self, _p: &FastBulkReadPacket<'_>, _parsed_end: u32) {
+        // TODO: like bulk_read but coalesced single-frame response; fast_slot_delay_us.
     }
 }
