@@ -19,6 +19,9 @@ riscv            = "0.12"
 critical-section = "1.2"
 defmt            = { version = "1", optional = true }
 
+[dev-dependencies]
+critical-section = { version = "1.2", features = ["std"] }
+
 [build-dependencies]
 ch32-metapac = { git = "https://github.com/ch32-rs/ch32-metapac", default-features = false, features = ["metadata"] }
 

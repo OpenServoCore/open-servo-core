@@ -74,3 +74,85 @@ impl<T: Copy, const N: usize> DropOldestRing<T, N> {
         })
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn take_eq(target: u32) -> impl FnMut(u32) -> RingAction<u32> {
+        move |x| {
+            if x < target {
+                RingAction::Skip
+            } else if x == target {
+                RingAction::Take(x)
+            } else {
+                RingAction::Stop
+            }
+        }
+    }
+
+    #[test]
+    fn empty_ring_returns_none() {
+        let r: DropOldestRing<u32, 4> = DropOldestRing::new(0);
+        assert_eq!(r.pop_matching(take_eq(1)), None);
+    }
+
+    #[test]
+    fn take_matching_advances_past_it() {
+        let r: DropOldestRing<u32, 4> = DropOldestRing::new(0);
+        r.push(1);
+        r.push(2);
+        r.push(3);
+        assert_eq!(r.pop_matching(take_eq(2)), Some(2));
+        // 1 was Skip'd, 2 was Take'n; 3 remains.
+        assert_eq!(r.pop_matching(take_eq(3)), Some(3));
+        assert_eq!(r.pop_matching(take_eq(3)), None);
+    }
+
+    #[test]
+    fn stop_leaves_future_entries_in_place() {
+        let r: DropOldestRing<u32, 4> = DropOldestRing::new(0);
+        r.push(5);
+        // Target 3 is below 5 → Stop on first entry.
+        assert_eq!(r.pop_matching(take_eq(3)), None);
+        // Entry still there for a later call.
+        assert_eq!(r.pop_matching(take_eq(5)), Some(5));
+    }
+
+    #[test]
+    fn skip_drops_stale_entries_permanently() {
+        let r: DropOldestRing<u32, 4> = DropOldestRing::new(0);
+        r.push(1);
+        r.push(2);
+        r.push(3);
+        // Target 3 skips 1 and 2.
+        assert_eq!(r.pop_matching(take_eq(3)), Some(3));
+        // 1 and 2 are gone.
+        r.push(4);
+        assert_eq!(r.pop_matching(take_eq(2)), None);
+        assert_eq!(r.pop_matching(take_eq(4)), Some(4));
+    }
+
+    #[test]
+    fn drop_oldest_evicts_when_full() {
+        // N=4 means at most 3 entries before drop-oldest kicks in
+        // (one slot is left empty to disambiguate full vs empty).
+        let r: DropOldestRing<u32, 4> = DropOldestRing::new(0);
+        r.push(1);
+        r.push(2);
+        r.push(3);
+        // Fourth push evicts the oldest (1).
+        r.push(4);
+        assert_eq!(r.pop_matching(take_eq(1)), None);
+        assert_eq!(r.pop_matching(take_eq(4)), Some(4));
+    }
+
+    #[test]
+    fn head_and_tail_wrap_after_many_cycles() {
+        let r: DropOldestRing<u32, 4> = DropOldestRing::new(0);
+        for n in 1u32..=20 {
+            r.push(n);
+            assert_eq!(r.pop_matching(take_eq(n)), Some(n));
+        }
+    }
+}
