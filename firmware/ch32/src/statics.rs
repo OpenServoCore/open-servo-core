@@ -2,7 +2,7 @@ use core::cell::SyncUnsafeCell;
 use core::mem::MaybeUninit;
 use heapless::Vec;
 use osc_core::{Kernel, Services, ServicesIo, Shared};
-use portable_atomic::{AtomicBool, AtomicU8, AtomicU16, AtomicU32};
+use portable_atomic::{AtomicBool, AtomicU16};
 
 use crate::board::{Ch32Board, TxEn};
 use crate::hal::pfic;
@@ -28,26 +28,6 @@ pub static DXL_RX_BUF: SyncUnsafeCell<[u8; DXL_RX_BUF_LEN]> =
 
 /// USART1 IDLE handler stores the DMA write index; `Ch32DxlIo::rx_snapshot` reads it.
 pub static DXL_RX_WRITE_POS: AtomicU16 = AtomicU16::new(0);
-
-/// ISR-private cumulative DMA byte count at the last IDLE; carried forward
-/// across IDLEs so an entry evicted from the ring under drop-oldest doesn't
-/// lose the running total. Only the USART1 IDLE branch reads or writes this.
-pub(crate) static DXL_RX_BYTES_AT_IDLE: AtomicU32 = AtomicU32::new(0);
-
-#[derive(Copy, Clone)]
-pub(crate) struct IdleStamp {
-    pub bytes: u32,
-    pub tick: u32,
-}
-
-/// Must stay a power of two — the producer/consumer mask is `& (LEN - 1)`.
-pub(crate) const DXL_IDLE_RING_LEN: usize = 4;
-
-pub(crate) static DXL_IDLE_RING: SyncUnsafeCell<[IdleStamp; DXL_IDLE_RING_LEN]> =
-    SyncUnsafeCell::new([IdleStamp { bytes: 0, tick: 0 }; DXL_IDLE_RING_LEN]);
-
-pub(crate) static DXL_IDLE_HEAD: AtomicU8 = AtomicU8::new(0);
-pub(crate) static DXL_IDLE_TAIL: AtomicU8 = AtomicU8::new(0);
 
 pub const DXL_TX_BUF_LEN: usize = 256;
 

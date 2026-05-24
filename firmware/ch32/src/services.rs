@@ -5,9 +5,9 @@ use heapless::Vec;
 use osc_core::{BootMode, DxlIo, RxSnapshot};
 
 use crate::hal::{dma, flash, gpio, pfic, systick, usart};
+use crate::idle_ring;
 use crate::statics::{
-    DXL_IDLE_HEAD, DXL_IDLE_RING, DXL_IDLE_RING_LEN, DXL_IDLE_TAIL, DXL_REBOOT_PENDING, DXL_RX_BUF,
-    DXL_RX_WRITE_POS, DXL_TX_BUF, DXL_TX_BUF_LEN, DXL_TX_EN,
+    DXL_REBOOT_PENDING, DXL_RX_BUF, DXL_RX_WRITE_POS, DXL_TX_BUF, DXL_TX_BUF_LEN, DXL_TX_EN,
 };
 
 pub struct Ch32DxlIo;
@@ -89,29 +89,7 @@ impl DxlIo for Ch32DxlIo {
     }
 
     fn idle_for(&self, parsed_end: u32) -> Option<u32> {
-        // Mask IRQs so the producer can't push or evict while we walk the ring.
-        critical_section::with(|_| {
-            let mask = (DXL_IDLE_RING_LEN as u8) - 1;
-            let head = DXL_IDLE_HEAD.load(Ordering::Relaxed);
-            let mut tail = DXL_IDLE_TAIL.load(Ordering::Relaxed);
-            let mut hit = None;
-            while tail != head {
-                // SAFETY: producer is the USART1 IDLE ISR, masked by the CS.
-                let stamp = unsafe { (*DXL_IDLE_RING.get())[tail as usize] };
-                let delta = stamp.bytes.wrapping_sub(parsed_end) as i32;
-                if delta > 0 {
-                    // Future stamp — leave for a later call.
-                    break;
-                }
-                tail = (tail + 1) & mask;
-                if delta == 0 {
-                    hit = Some(stamp.tick);
-                    break;
-                }
-            }
-            DXL_IDLE_TAIL.store(tail, Ordering::Relaxed);
-            hit
-        })
+        idle_ring::pop_matching(parsed_end)
     }
 
     fn request_reboot(&mut self, mode: BootMode) {
