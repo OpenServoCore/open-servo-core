@@ -1,15 +1,20 @@
 use ch32_metapac::{
     FLASH, RCC,
-    rcc::vals::{Adcpre, Hpre, Pllsrc, Sw},
+    rcc::vals::{Pllsrc, Sw},
 };
 
-pub fn init_48mhz_hsi_pll() {
+use crate::hal::clocks::{adcpre_val, hpre_val};
+
+pub fn init_pll() {
+    const HPRE: ch32_metapac::rcc::vals::Hpre = hpre_val();
+    const ADCPRE: ch32_metapac::rcc::vals::Adcpre = adcpre_val();
+
     FLASH.actlr().modify(|w| w.set_latency(2));
 
     RCC.cfgr0().modify(|w| {
         w.set_pllsrc(Pllsrc::HSI);
-        w.set_hpre(Hpre::DIV1);
-        w.set_adcpre(Adcpre::DIV4);
+        w.set_hpre(HPRE);
+        w.set_adcpre(ADCPRE);
     });
 
     RCC.ctlr().modify(|w| w.set_pllon(true));

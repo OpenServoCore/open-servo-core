@@ -1,8 +1,7 @@
 use ch32_metapac::TIM1;
 use ch32_metapac::timer::vals::{Cms, Mms, Ocm};
 
-// Assumes rcc::init_48mhz_hsi_pll.
-const TIM_CLK_HZ: u32 = 48_000_000;
+use crate::hal::clocks::TIM_CLK_HZ;
 
 #[derive(Copy, Clone)]
 pub enum Polarity {

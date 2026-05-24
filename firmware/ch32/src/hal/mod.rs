@@ -5,6 +5,7 @@ pub use generated::{Pin, Tim1Mapping, Tim2Mapping, UsartMapping};
 
 pub mod adc;
 pub mod afio;
+pub mod clocks;
 pub mod dma;
 pub mod flash;
 pub mod gpio;
@@ -26,7 +27,7 @@ pub fn delay_cycles(n: u32) {
 pub fn delay_ms(ms: u32) {
     use ch32_metapac::SYSTICK;
     use ch32_metapac::systick::vals::Stclk;
-    let target = ms.saturating_mul(48_000);
+    let target = ms.saturating_mul(clocks::SYSTICK_TICKS_PER_MS);
     SYSTICK.cmp().write_value(u32::MAX);
     SYSTICK.cnt().write_value(0);
     SYSTICK.ctlr().write(|w| {

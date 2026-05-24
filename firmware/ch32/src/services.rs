@@ -68,7 +68,7 @@ impl DxlIo for Ch32DxlIo {
         systick::clear_match();
 
         let idle_tick = DXL_RX_IDLE_TICK.load(Ordering::Acquire);
-        let needed = delay_us.saturating_mul(48);
+        let needed = delay_us.saturating_mul(systick::TICKS_PER_US);
 
         if systick::ticks().wrapping_sub(idle_tick) >= needed {
             self.start_tx();

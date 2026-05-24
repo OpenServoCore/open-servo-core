@@ -2,7 +2,7 @@ use ch32_metapac::{ADC, adc::vals::Extsel, dma::vals::Dir};
 use osc_core::{BaudRate, ConfigDefaults};
 
 use crate::hal::{
-    adc, afio, delay_ms, dma,
+    adc, afio, clocks, delay_ms, dma,
     gpio::{self, Level, PinMode},
     opa, pfic, rcc, timer, usart,
 };
@@ -12,8 +12,6 @@ use crate::statics::{
 };
 
 use super::config::{BoardWiring, CurrentSenseConfig, Duplex, DxlBus, MotorConfig, Sensors};
-
-const PCLK_HZ: u32 = 48_000_000;
 
 const OPA_SETTLE_MS: u32 = 1;
 const VCAL_SAMPLE_TIME: adc::SampleTime = adc::SampleTime::CYCLES9;
@@ -71,7 +69,7 @@ fn enable_clocks_and_remaps(w: &BoardWiring) {
     let in2 = w.motor.in2_pin();
     let opa_pos_pin = w.current_sense.opa.input.pos().pin();
 
-    rcc::init_48mhz_hsi_pll();
+    rcc::init_pll();
     rcc::enable_afio();
     rcc::enable_gpio(w.stat_led.port_index());
     rcc::enable_gpio(w.dbg.port_index());
@@ -195,7 +193,7 @@ fn configure_adc_dma_scan(sensors: &Sensors, opa_out_sample_time: adc::SampleTim
 fn bring_up_dxl(d: &DxlBus, baud: BaudRate) {
     let regs = d.usart.regs();
     let half_duplex = matches!(d.duplex, Duplex::Half);
-    usart::init(regs, PCLK_HZ, baud.as_hz(), half_duplex);
+    usart::init(regs, clocks::PCLK_HZ, baud.as_hz(), half_duplex);
 
     let dma_cfg = dma::Config {
         dir: Dir::FROMPERIPHERAL,

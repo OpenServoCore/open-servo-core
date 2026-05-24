@@ -1,6 +1,8 @@
 use ch32_metapac::SYSTICK;
 use ch32_metapac::systick::vals::Stclk;
 
+pub use crate::hal::clocks::SYSTICK_TICKS_PER_US as TICKS_PER_US;
+
 pub fn init() {
     SYSTICK.cmp().write_value(u32::MAX);
     SYSTICK.cnt().write_value(0);
