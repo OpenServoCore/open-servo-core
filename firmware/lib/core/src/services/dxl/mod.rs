@@ -1,6 +1,7 @@
 mod api;
 mod dispatcher;
 mod io;
+pub mod slot;
 
 #[cfg(test)]
 mod tests;
