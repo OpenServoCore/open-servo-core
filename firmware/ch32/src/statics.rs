@@ -2,7 +2,7 @@ use core::cell::SyncUnsafeCell;
 use core::mem::MaybeUninit;
 use heapless::Vec;
 use osc_core::{Kernel, Services, ServicesIo, Shared};
-use portable_atomic::{AtomicBool, AtomicU16};
+use portable_atomic::{AtomicBool, AtomicU16, AtomicU32};
 
 use crate::board::{Ch32Board, TxEn};
 use crate::hal::pfic;
@@ -28,6 +28,8 @@ pub static DXL_RX_BUF: SyncUnsafeCell<[u8; DXL_RX_BUF_LEN]> =
 
 /// USART1 IDLE handler stores the DMA write index; `Ch32DxlIo::rx_snapshot` reads it.
 pub static DXL_RX_WRITE_POS: AtomicU16 = AtomicU16::new(0);
+
+pub static DXL_RX_IDLE_TICK: AtomicU32 = AtomicU32::new(0);
 
 pub const DXL_TX_BUF_LEN: usize = 256;
 

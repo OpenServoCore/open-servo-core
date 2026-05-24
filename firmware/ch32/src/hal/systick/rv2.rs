@@ -14,3 +14,18 @@ pub fn init() {
 pub fn ticks() -> u32 {
     SYSTICK.cnt().read()
 }
+
+#[inline(always)]
+pub fn set_cmp(value: u32) {
+    SYSTICK.cmp().write_value(value);
+}
+
+#[inline(always)]
+pub fn set_irq(enable: bool) {
+    SYSTICK.ctlr().modify(|w| w.set_stie(enable));
+}
+
+#[inline(always)]
+pub fn clear_match() {
+    SYSTICK.sr().write(|w| w.set_cntif(false));
+}
