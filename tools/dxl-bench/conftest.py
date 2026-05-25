@@ -27,6 +27,11 @@ def pytest_addoption(parser):
         help="Cargo bin target name to flash",
     )
     parser.addoption(
+        "--boot-bin",
+        default="osc-dev-v006-boot",
+        help="Bootloader bin target (flashed to system flash @ 0x1FFF0000)",
+    )
+    parser.addoption(
         "--no-flash",
         action="store_true",
         help="Skip cargo build + probe-rs flash (use the firmware already on the chip)",
@@ -58,6 +63,12 @@ def pytest_sessionstart(session):
     print("\n--- bench setup ---", flush=True)
 
     if do_flash:
+        boot_bin = config.getoption("--boot-bin")
+        boot_elf = ELF_DIR / boot_bin
+        _run(["cargo", "build", "--release", "--bin", boot_bin], cwd=BOARD_WS)
+        assert boot_elf.is_file(), f"boot ELF not found at {boot_elf}"
+        _run(["probe-rs", "download", str(boot_elf)])
+
         bin_name = config.getoption("--bin")
         elf = ELF_DIR / bin_name
         _run(["cargo", "build", "--release", "--bin", bin_name], cwd=BOARD_WS)
