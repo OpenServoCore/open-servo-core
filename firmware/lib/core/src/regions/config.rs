@@ -32,6 +32,22 @@ impl BaudRate {
         }
     }
 
+    /// Q16.16 µs per byte. Compile-time precomputed so slot math avoids the
+    /// software u64 divide on RV32EC.
+    pub const fn us_per_byte_q16(self) -> u32 {
+        const fn q16(baud_hz: u32) -> u32 {
+            (10u64 * 1_000_000 * (1u64 << 16) / baud_hz as u64) as u32
+        }
+        match self {
+            BaudRate::B9600 => const { q16(9_600) },
+            BaudRate::B57600 => const { q16(57_600) },
+            BaudRate::B115200 => const { q16(115_200) },
+            BaudRate::B1000000 => const { q16(1_000_000) },
+            BaudRate::B2000000 => const { q16(2_000_000) },
+            BaudRate::B3000000 => const { q16(3_000_000) },
+        }
+    }
+
     pub const fn from_idx(idx: u8) -> Option<Self> {
         match idx {
             0 => Some(BaudRate::B9600),

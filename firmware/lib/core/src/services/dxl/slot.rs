@@ -4,7 +4,6 @@ use crate::BaudRate;
 // bytes; the 4-byte margin covers worst-case byte stuffing and inter-slot bus turnaround.
 const STATUS_OVERHEAD: u32 = 11;
 const SLOT_MARGIN: u32 = 4;
-const BITS_PER_BYTE: u32 = 10;
 
 // Fast Sync/Bulk Read coalesce all slave replies into one Status frame:
 //   FF FF FD 00 FE LEN_lo LEN_hi 0x55  ERR_0 ID_0 data_0  ERR_1 ID_1 data_1 ... CRC_lo CRC_hi
@@ -16,8 +15,7 @@ const FAST_SLOT_PREFIX: u32 = 2;
 
 pub fn slot_period_us(baud: BaudRate, param_len: u16) -> u32 {
     let bytes = STATUS_OVERHEAD + param_len as u32 + SLOT_MARGIN;
-    let us = (bytes as u64) * (BITS_PER_BYTE as u64) * 1_000_000 / baud.as_hz() as u64;
-    us as u32
+    bytes_to_us(bytes, baud)
 }
 
 pub fn sync_slot_index(ids: &[u8], our_id: u8) -> Option<usize> {
@@ -25,13 +23,16 @@ pub fn sync_slot_index(ids: &[u8], our_id: u8) -> Option<usize> {
 }
 
 pub fn bulk_slot_delay_us(body: &[u8], our_id: u8, baud: BaudRate) -> Option<u32> {
-    let mut delay = 0u32;
+    let mut bytes = 0u32;
     for tup in body.chunks_exact(5) {
         if tup[0] == our_id {
-            return Some(delay);
+            return Some(bytes_to_us(bytes, baud));
         }
-        let len = u16::from_le_bytes([tup[3], tup[4]]);
-        delay = delay.saturating_add(slot_period_us(baud, len));
+        let len = u16::from_le_bytes([tup[3], tup[4]]) as u32;
+        bytes = bytes
+            .saturating_add(STATUS_OVERHEAD)
+            .saturating_add(len)
+            .saturating_add(SLOT_MARGIN);
     }
     None
 }
@@ -68,7 +69,7 @@ pub fn fast_bulk_slot_delay_us(slot_index: usize, body: &[u8], baud: BaudRate) -
 }
 
 fn bytes_to_us(bytes: u32, baud: BaudRate) -> u32 {
-    ((bytes as u64) * (BITS_PER_BYTE as u64) * 1_000_000 / baud.as_hz() as u64) as u32
+    ((bytes as u64 * baud.us_per_byte_q16() as u64) >> 16) as u32
 }
 
 #[cfg(test)]
