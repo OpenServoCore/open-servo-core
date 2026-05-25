@@ -2,6 +2,7 @@ use ch32_metapac::{DMA1, USART1};
 use core::sync::atomic::Ordering;
 use osc_core::{Board, FrameInputs};
 
+use crate::dxl_fast;
 use crate::hal::{dma, gpio, pfic, systick, usart};
 use crate::idle_ring;
 use crate::statics::{
@@ -32,6 +33,10 @@ pub fn on_adc_dma_tc() {
 pub fn on_usart1() {
     on_usart1_idle();
     on_usart1_tc();
+    // RXNE is self-gated by dxl_fast's stage; cheap when no snoop is active.
+    // STATR.RXNE always reads 0 in-ISR (DMA wins the clear race), so calling
+    // unconditionally on every USART1 entry is the only reliable trigger.
+    dxl_fast::on_rxne();
 }
 
 fn on_usart1_idle() {
@@ -63,15 +68,14 @@ fn on_usart1_tc() {
     // writer touches DXL_TX_BUF — no concurrent access.
     let buf = unsafe { &mut *DXL_TX_BUF.get() };
     buf.clear();
+    dxl_fast::cancel();
     if DXL_REBOOT_PENDING.load(Ordering::Acquire) {
         pfic::software_reset();
     }
 }
 
 pub fn on_systick_match() {
-    systick::clear_match();
-    systick::set_irq(false);
-    dma::enable(dma::Channel::CH4);
+    dxl_fast::on_systick();
 }
 
 /// Wires osc-ch32 ISR bodies into the vector table. Caller must depend on `qingke-rt`.

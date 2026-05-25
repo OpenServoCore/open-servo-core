@@ -1,13 +1,13 @@
 use core::sync::atomic::Ordering;
 
-use ch32_metapac::USART1;
 use heapless::Vec;
 use osc_core::{BootMode, DxlIo, RxSnapshot};
 
-use crate::hal::{dma, flash, gpio, pfic, systick, usart};
+use crate::dxl_fast;
+use crate::hal::{flash, pfic};
 use crate::idle_ring;
 use crate::statics::{
-    DXL_REBOOT_PENDING, DXL_RX_BUF, DXL_RX_WRITE_POS, DXL_TX_BUF, DXL_TX_BUF_LEN, DXL_TX_EN,
+    DXL_REBOOT_PENDING, DXL_RX_BUF, DXL_RX_WRITE_POS, DXL_TX_BUF, DXL_TX_BUF_LEN,
 };
 
 pub struct Ch32DxlIo;
@@ -15,21 +15,6 @@ pub struct Ch32DxlIo;
 impl Ch32DxlIo {
     pub const fn new() -> Self {
         Self
-    }
-
-    fn arm_tx(&mut self) -> bool {
-        let len = self.tx_buf().len();
-        if len == 0 {
-            return false;
-        }
-        if let Some(t) = unsafe { *DXL_TX_EN.get() } {
-            gpio::set_level(t.pin, t.tx_level);
-        }
-        dma::set_count(dma::Channel::CH4, len as u16);
-        usart::clear_tc(USART1);
-        usart::set_dma_tx(USART1, true);
-        usart::set_tc_irq(USART1, true);
-        true
     }
 }
 
@@ -57,35 +42,13 @@ impl DxlIo for Ch32DxlIo {
     }
 
     fn start_tx(&mut self) {
-        if !self.arm_tx() {
-            return;
+        if dxl_fast::arm_tx() {
+            dxl_fast::fire_now();
         }
-        dma::enable(dma::Channel::CH4);
     }
 
     fn start_tx_after(&mut self, idle_tick: u32, delay_us: u32) {
-        systick::set_irq(false);
-        systick::clear_match();
-
-        let needed = delay_us.saturating_mul(systick::TICKS_PER_US);
-
-        if systick::ticks().wrapping_sub(idle_tick) >= needed {
-            self.start_tx();
-            return;
-        }
-
-        if !self.arm_tx() {
-            return;
-        }
-
-        systick::set_cmp(idle_tick.wrapping_add(needed));
-        systick::set_irq(true);
-
-        // CNTIF latches only on CNT==CMP up-count; if CNT crossed the deadline
-        // before CMP was written, the next match is ~89 s away on wrap.
-        if systick::ticks().wrapping_sub(idle_tick) >= needed {
-            crate::irq::on_systick_match();
-        }
+        dxl_fast::start_plain_after(idle_tick, delay_us);
     }
 
     fn idle_for(&self, parsed_end: u32) -> Option<u32> {
@@ -94,12 +57,12 @@ impl DxlIo for Ch32DxlIo {
 
     fn start_fast_tx_after(
         &mut self,
-        _idle_tick: u32,
-        _switch_us: u32,
-        _fire_us: u32,
-        _frame_end: u32,
+        idle_tick: u32,
+        switch_us: u32,
+        fire_us: u32,
+        frame_end: u32,
     ) {
-        unimplemented!()
+        dxl_fast::start_fast_after(idle_tick, switch_us, fire_us, frame_end);
     }
 
     fn request_reboot(&mut self, mode: BootMode) {
