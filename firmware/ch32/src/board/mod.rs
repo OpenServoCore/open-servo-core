@@ -6,7 +6,7 @@ mod diag;
 
 pub use config::{
     BoardConfig, BoardWiring, Calibration, CurrentSenseConfig, Divider, Duplex, DxlBus,
-    MotorConfig, NtcCal, Sensors, TxEn,
+    MotorConfig, NtcCal, Precomputed, Sensors, TxEn,
 };
 
 use osc_core::{Board, DecayMode, FrameInputs, MotorCmd, RawSamples, SampleFrame};
@@ -40,7 +40,7 @@ pub struct Ch32Board {
 }
 
 impl Ch32Board {
-    pub fn new(cfg: BoardConfig) -> Self {
+    pub fn new(cfg: BoardConfig, pre: Precomputed) -> Self {
         crate::log::info!("Ch32Board::new: start");
         let BoardConfig {
             wiring,
@@ -48,14 +48,11 @@ impl Ch32Board {
             defaults,
         } = cfg;
 
-        let gain_factor = wiring.current_sense.opa.gain.factor();
-        let scales = Scales::new(&calibration, gain_factor);
         crate::log::debug!(
-            "scales: gain_factor={} vbus_q32={} vmotor_q32={} shunt_q32={}",
-            gain_factor,
-            scales.vbus_q32,
-            scales.vmotor_q32,
-            scales.shunt_q32,
+            "scales: vbus_q32={} vmotor_q32={} shunt_q32={}",
+            pre.scales.vbus_q32,
+            pre.scales.vmotor_q32,
+            pre.scales.shunt_q32,
         );
 
         let stat_led = wiring.stat_led;
@@ -64,10 +61,7 @@ impl Ch32Board {
         let motor_in2 = wiring.motor.in2;
         let drv_en = wiring.motor.drv_en;
 
-        let BringupResult {
-            shunt_bias_raw,
-            pwm_arr,
-        } = bringup::run(&wiring, &defaults);
+        let BringupResult { shunt_bias_raw } = bringup::run(&wiring, &defaults, &pre);
 
         #[cfg(feature = "defmt")]
         diag::dump_init_regs();
@@ -78,12 +72,12 @@ impl Ch32Board {
             dbg,
             calibration,
             shunt_bias_raw,
-            scales,
+            scales: pre.scales,
             vcal_lpf: VcalLpf::new(),
             motor_in1,
             motor_in2,
             drv_en,
-            pwm_arr,
+            pwm_arr: pre.pwm_arr,
         }
     }
 

@@ -19,23 +19,25 @@ pub(crate) mod statics;
 #[cfg(feature = "defmt")]
 pub mod telemetry;
 
-use board::{BoardConfig, Ch32Board};
+use board::{BoardConfig, Ch32Board, Precomputed};
 
 /// Const-asserts pin-uniqueness on the `BoardConfig` literal, then runs.
 #[macro_export]
 macro_rules! run {
     ($cfg:expr) => {{
         const __OSC_CH32_CFG: $crate::board::BoardConfig = $cfg;
+        const __OSC_CH32_PRE: $crate::board::Precomputed =
+            $crate::board::Precomputed::compute(&__OSC_CH32_CFG);
         const _: () = __OSC_CH32_CFG.wiring.assert_valid();
         // qingke-rt sets WFITOWFE=1; undo it so `wfi` wakes on pending IRQs.
         unsafe { ::qingke::pfic::wfi_to_wfe(false) };
-        $crate::__run(__OSC_CH32_CFG)
+        $crate::__run(__OSC_CH32_CFG, __OSC_CH32_PRE)
     }};
 }
 
 #[doc(hidden)]
-pub fn __run(cfg: BoardConfig) -> ! {
-    let board = Ch32Board::new(cfg);
+pub fn __run(cfg: BoardConfig, pre: Precomputed) -> ! {
+    let board = Ch32Board::new(cfg, pre);
     statics::install(board);
     statics::install_irqs();
     loop {

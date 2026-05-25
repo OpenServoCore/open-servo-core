@@ -1,8 +1,8 @@
 use ch32_metapac::{ADC, adc::vals::Extsel, dma::vals::Dir};
-use osc_core::{BaudRate, ConfigDefaults};
+use osc_core::ConfigDefaults;
 
 use crate::hal::{
-    adc, afio, clocks, delay_ms, dma,
+    adc, afio, delay_ms, dma,
     gpio::{self, Level, PinMode},
     opa, rcc, timer, usart,
 };
@@ -11,17 +11,20 @@ use crate::statics::{
     DXL_TX_BUF, DXL_TX_EN, SHARED,
 };
 
-use super::config::{BoardWiring, CurrentSenseConfig, Duplex, DxlBus, MotorConfig, Sensors};
+use super::config::{BoardWiring, CurrentSenseConfig, Duplex, DxlBus, MotorConfig, Precomputed, Sensors};
 
 const OPA_SETTLE_MS: u32 = 1;
 const VCAL_SAMPLE_TIME: adc::SampleTime = adc::SampleTime::CYCLES9;
 
 pub(super) struct BringupResult {
     pub(super) shunt_bias_raw: u16,
-    pub(super) pwm_arr: u16,
 }
 
-pub(super) fn run(wiring: &BoardWiring, defaults: &ConfigDefaults) -> BringupResult {
+pub(super) fn run(
+    wiring: &BoardWiring,
+    defaults: &ConfigDefaults,
+    pre: &Precomputed,
+) -> BringupResult {
     enable_clocks_and_remaps(wiring);
     crate::log::debug!("clocks + remaps configured");
 
@@ -43,20 +46,18 @@ pub(super) fn run(wiring: &BoardWiring, defaults: &ConfigDefaults) -> BringupRes
     // Sole writer to CONFIG: pre-IRQ, pre-install_kernel.
     SHARED.table.seed_config_defaults(defaults);
 
-    bring_up_dxl(&wiring.dxl, defaults.dxl_baud);
+    bring_up_dxl(&wiring.dxl, pre.usart_brr);
     crate::log::debug!("dxl usart + dma rx armed");
 
-    let pwm_arr = start_center_aligned_pwm(&wiring.motor);
+    start_center_aligned_pwm(&wiring.motor, pre.pwm_psc, pre.pwm_arr);
     crate::log::debug!(
-        "pwm running ({} Hz, arr={})",
+        "pwm running ({} Hz, psc={}, arr={})",
         wiring.motor.pwm_freq_hz,
-        pwm_arr
+        pre.pwm_psc,
+        pre.pwm_arr,
     );
 
-    BringupResult {
-        shunt_bias_raw,
-        pwm_arr,
-    }
+    BringupResult { shunt_bias_raw }
 }
 
 // Order must mirror the scan tail in `configure_adc_dma_scan`.
@@ -190,10 +191,10 @@ fn configure_adc_dma_scan(sensors: &Sensors, opa_out_sample_time: adc::SampleTim
     dma::enable(dma::Channel::CH1);
 }
 
-fn bring_up_dxl(d: &DxlBus, baud: BaudRate) {
+fn bring_up_dxl(d: &DxlBus, brr: u32) {
     let regs = d.usart.regs();
     let half_duplex = matches!(d.duplex, Duplex::Half);
-    usart::init(regs, clocks::PCLK_HZ, baud.as_hz(), half_duplex);
+    usart::init(regs, brr, half_duplex);
 
     let dma_cfg = dma::Config {
         dir: Dir::FROMPERIPHERAL,
@@ -236,9 +237,7 @@ fn bring_up_dxl(d: &DxlBus, baud: BaudRate) {
     usart::set_idle_irq(regs, true);
 }
 
-/// Returns the configured ARR so `Effort`→duty rescale can avoid a soft-div.
-fn start_center_aligned_pwm(m: &MotorConfig) -> u16 {
-    let (psc, arr) = timer::pwm_dividers_from_hz(m.pwm_freq_hz);
+fn start_center_aligned_pwm(m: &MotorConfig, psc: u16, arr: u16) {
     timer::init_center_aligned_pwm(psc, arr);
     timer::configure_pwm_channel(m.in1, m.polarity);
     timer::configure_pwm_channel(m.in2, m.polarity);
@@ -249,5 +248,4 @@ fn start_center_aligned_pwm(m: &MotorConfig) -> u16 {
     timer::enable_main_output();
     timer::force_update_event();
     timer::start();
-    arr
 }

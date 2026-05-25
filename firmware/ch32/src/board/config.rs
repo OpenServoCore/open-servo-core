@@ -197,3 +197,30 @@ pub struct BoardConfig {
     pub calibration: Calibration,
     pub defaults: ConfigDefaults,
 }
+
+/// Boot-time-derived values that the `run!` macro folds at compile time so the
+/// linker can drop __udivdi3 / __udivsi3 / __umodsi3 entirely.
+#[derive(Copy, Clone)]
+pub struct Precomputed {
+    pub scales: super::convert::Scales,
+    pub pwm_psc: u16,
+    pub pwm_arr: u16,
+    pub usart_brr: u32,
+}
+
+impl Precomputed {
+    pub const fn compute(cfg: &BoardConfig) -> Self {
+        let (pwm_psc, pwm_arr) =
+            crate::hal::timer::pwm_dividers_from_hz(cfg.wiring.motor.pwm_freq_hz);
+        let gain_factor = cfg.wiring.current_sense.opa.gain.factor();
+        Self {
+            scales: super::convert::Scales::new(&cfg.calibration, gain_factor),
+            pwm_psc,
+            pwm_arr,
+            usart_brr: crate::hal::usart::brr(
+                crate::hal::clocks::PCLK_HZ,
+                cfg.defaults.dxl_baud.as_hz(),
+            ),
+        }
+    }
+}

@@ -9,14 +9,14 @@ const ADC_MAX_RAW: u32 = 4095;
 /// Q32 reciprocals so the 20 kHz ISR runs a single `mulhu` per conversion
 /// instead of pulling in `__udivdi3` / `__divdi3`.
 #[derive(Copy, Clone)]
-pub(super) struct Scales {
-    pub(super) vbus_q32: u32,
-    pub(super) vmotor_q32: u32,
-    pub(super) shunt_q32: u32,
+pub struct Scales {
+    pub vbus_q32: u32,
+    pub vmotor_q32: u32,
+    pub shunt_q32: u32,
 }
 
 impl Scales {
-    pub(super) fn new(cal: &Calibration, gain_factor: u16) -> Self {
+    pub(super) const fn new(cal: &Calibration, gain_factor: u16) -> Self {
         Self {
             vbus_q32: divider_q32(&cal.vbus_divider),
             vmotor_q32: divider_q32(&cal.vmotor_divider),
@@ -25,20 +25,22 @@ impl Scales {
     }
 }
 
-fn divider_q32(d: &Divider) -> u32 {
-    let bot = d.bot_ohm.max(1) as u64;
+const fn divider_q32(d: &Divider) -> u32 {
+    let bot = if d.bot_ohm == 0 { 1 } else { d.bot_ohm } as u64;
     let sum = d.top_ohm.saturating_add(d.bot_ohm) as u64;
     let num = sum << 32;
     let den = ADC_MAX_RAW as u64 * bot;
-    (num / den).min(u32::MAX as u64) as u32
+    let q = num / den;
+    if q > u32::MAX as u64 { u32::MAX } else { q as u32 }
 }
 
-fn shunt_q32(gain_factor: u16, r_mohm: u16) -> u32 {
-    let g = gain_factor.max(1) as u64;
-    let r = r_mohm.max(1) as u64;
+const fn shunt_q32(gain_factor: u16, r_mohm: u16) -> u32 {
+    let g = if gain_factor == 0 { 1 } else { gain_factor } as u64;
+    let r = if r_mohm == 0 { 1 } else { r_mohm } as u64;
     let num = 1000u64 << 32;
     let den = ADC_MAX_RAW as u64 * g * r;
-    (num / den).min(u32::MAX as u64) as u32
+    let q = num / den;
+    if q > u32::MAX as u64 { u32::MAX } else { q as u32 }
 }
 
 // UG fires TRGO at CNT=0 before CEN=1, so the trough scan lands first.
