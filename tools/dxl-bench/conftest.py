@@ -117,6 +117,12 @@ def port(request):
     ph.closePort()
 
 
+@pytest.fixture(autouse=True)
+def _drain_serial_between_tests(port):
+    port.ser.reset_input_buffer()
+    yield
+
+
 @pytest.fixture(scope="session")
 def packet_handler():
     return PacketHandler(2.0)

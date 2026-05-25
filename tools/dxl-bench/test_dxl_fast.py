@@ -1,6 +1,10 @@
 import time
 
 from dxl_packet import (
+    BROADCAST_ID,
+    HEADER,
+    INSTR_STATUS,
+    _crc16,
     build_fast_bulk_read,
     build_fast_sync_read,
     parse_fast_response,
@@ -94,3 +98,56 @@ def test_fast_bulk_read_out_of_range_returns_error_slot(port, osc_id):
     assert slots[0].id == osc_id
     assert slots[0].error == 0x04, f"expected DataRange, got 0x{slots[0].error:02X}"
     assert slots[0].data == b"\x00\x00\x00\x00", f"expected zero-fill, got {slots[0].data.hex()}"
+
+
+def _read_exact(ser, n: int, timeout_s: float = 0.2) -> bytes:
+    saved = ser.timeout
+    ser.timeout = timeout_s
+    try:
+        return ser.read(n)
+    finally:
+        ser.timeout = saved
+
+
+def _expect_silence(ser, settle_s: float = 0.02):
+    time.sleep(settle_s)
+    n = ser.in_waiting
+    assert n == 0, f"expected silence, got {n} bytes: {ser.read(n).hex()}"
+
+
+def test_fast_sync_read_first_emits_header_and_body_only(port, osc_id):
+    port.writePort(build_fast_sync_read(addr=0, length=2, ids=[osc_id, FOREIGN_A, FOREIGN_B]))
+    chunk = _read_exact(port.ser, 12)
+    assert len(chunk) == 12, f"expected 12 bytes (header+body), got {len(chunk)}: {chunk.hex()}"
+    assert chunk[:4] == HEADER, f"bad header: {chunk[:4].hex()}"
+    assert chunk[4] == BROADCAST_ID, f"id field should be 0xFE, got 0x{chunk[4]:02X}"
+    packet_length = chunk[5] | (chunk[6] << 8)
+    assert packet_length == 3 + 3 * (2 + 2), f"LEN field = {packet_length}, want 15"
+    assert chunk[7] == INSTR_STATUS
+    assert chunk[8] == 0, f"err = 0x{chunk[8]:02X}"
+    assert chunk[9] == osc_id, f"slot id = {chunk[9]}, want {osc_id}"
+    _expect_silence(port.ser)
+
+
+def test_fast_sync_read_middle_emits_body_only(port, osc_id):
+    port.writePort(build_fast_sync_read(addr=0, length=2, ids=[FOREIGN_A, osc_id, FOREIGN_B]))
+    chunk = _read_exact(port.ser, 4)
+    assert len(chunk) == 4, f"expected 4 bytes (body only), got {len(chunk)}: {chunk.hex()}"
+    assert chunk[0] == 0, f"err = 0x{chunk[0]:02X}"
+    assert chunk[1] == osc_id, f"slot id = {chunk[1]}, want {osc_id}"
+    _expect_silence(port.ser)
+
+
+def test_fast_sync_read_last_emits_body_and_self_crc(port, osc_id):
+    port.writePort(build_fast_sync_read(addr=0, length=2, ids=[FOREIGN_A, FOREIGN_B, osc_id]))
+    chunk = _read_exact(port.ser, 6)
+    assert len(chunk) == 6, f"expected 6 bytes (body+CRC), got {len(chunk)}: {chunk.hex()}"
+    assert chunk[0] == 0, f"err = 0x{chunk[0]:02X}"
+    assert chunk[1] == osc_id, f"slot id = {chunk[1]}, want {osc_id}"
+    body = chunk[:4]
+    crc = chunk[4] | (chunk[5] << 8)
+    expected = _crc16(body)
+    assert crc == expected, (
+        f"CRC over body alone (no snoop) = 0x{crc:04X}, want 0x{expected:04X}"
+    )
+    _expect_silence(port.ser)
