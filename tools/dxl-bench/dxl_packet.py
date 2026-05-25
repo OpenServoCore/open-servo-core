@@ -17,6 +17,8 @@ INSTR_CONTROL_TABLE_BACKUP = 0x20
 INSTR_STATUS = 0x55
 INSTR_SYNC_READ = 0x82
 INSTR_BULK_READ = 0x92
+INSTR_FAST_SYNC_READ = 0x8A
+INSTR_FAST_BULK_READ = 0x9A
 
 HEADER = bytes([0xFF, 0xFF, 0xFD, 0x00])
 BROADCAST_ID = 0xFE
@@ -106,6 +108,64 @@ def build_bulk_read(tuples: Iterable[tuple[int, int, int]]) -> bytes:
             length & 0xFF, (length >> 8) & 0xFF,
         ])
     return build_packet(BROADCAST_ID, INSTR_BULK_READ, bytes(params))
+
+
+def build_fast_sync_read(addr: int, length: int, ids: Iterable[int]) -> bytes:
+    params = bytearray(
+        [addr & 0xFF, (addr >> 8) & 0xFF, length & 0xFF, (length >> 8) & 0xFF]
+    )
+    params.extend(ids)
+    return build_packet(BROADCAST_ID, INSTR_FAST_SYNC_READ, bytes(params))
+
+
+def build_fast_bulk_read(tuples: Iterable[tuple[int, int, int]]) -> bytes:
+    params = bytearray()
+    for (tid, addr, length) in tuples:
+        params.extend([
+            tid,
+            addr & 0xFF, (addr >> 8) & 0xFF,
+            length & 0xFF, (length >> 8) & 0xFF,
+        ])
+    return build_packet(BROADCAST_ID, INSTR_FAST_BULK_READ, bytes(params))
+
+
+class FastSlot(tuple):
+    @property
+    def error(self) -> int: return self[0]
+    @property
+    def id(self) -> int: return self[1]
+    @property
+    def data(self) -> bytes: return self[2]
+
+
+def parse_fast_response(frame: bytes, slot_lengths: list[int]) -> list[FastSlot]:
+    """Parse a Fast Sync/Bulk Status frame. slot_lengths: payload length per slot, in order."""
+    if len(frame) < 11:
+        raise ValueError(f"too short ({len(frame)} bytes): {frame.hex()}")
+    if frame[:4] != HEADER:
+        raise ValueError(f"bad header: {frame[:4].hex()}")
+    if frame[4] != BROADCAST_ID:
+        raise ValueError(f"Fast response id field should be 0xFE, got 0x{frame[4]:02X}")
+    length = frame[5] | (frame[6] << 8)
+    if 7 + length != len(frame):
+        raise ValueError(f"length field={length} != actual={len(frame) - 7}")
+    if frame[7] != INSTR_STATUS:
+        raise ValueError(f"not a Status frame: instr=0x{frame[7]:02X}")
+    crc_lo, crc_hi = frame[-2], frame[-1]
+    expected = _crc16(frame[:-2])
+    if (crc_lo | (crc_hi << 8)) != expected:
+        raise ValueError(f"CRC mismatch: got {crc_hi:02x}{crc_lo:02x}, want {expected:04x}")
+    body = frame[8:-2]
+    slots = []
+    i = 0
+    for slot_len in slot_lengths:
+        if i + 2 + slot_len > len(body):
+            raise ValueError(f"body too short for slot {len(slots)} (len {slot_len})")
+        slots.append(FastSlot((body[i], body[i + 1], bytes(body[i + 2 : i + 2 + slot_len]))))
+        i += 2 + slot_len
+    if i != len(body):
+        raise ValueError(f"body has {len(body) - i} trailing bytes after {len(slot_lengths)} slots")
+    return slots
 
 
 class StatusPacket(tuple):
