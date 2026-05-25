@@ -10,6 +10,10 @@ from typing import Iterable
 INSTR_PING = 0x01
 INSTR_READ = 0x02
 INSTR_WRITE = 0x03
+INSTR_FACTORY_RESET = 0x06
+INSTR_REBOOT = 0x08
+INSTR_CLEAR = 0x10
+INSTR_CONTROL_TABLE_BACKUP = 0x20
 INSTR_STATUS = 0x55
 INSTR_SYNC_READ = 0x82
 INSTR_BULK_READ = 0x92
@@ -47,6 +51,41 @@ def build_packet(id: int, instr: int, params: bytes = b"") -> bytes:
     body.append(crc & 0xFF)
     body.append((crc >> 8) & 0xFF)
     return bytes(body)
+
+
+def build_ping(id: int) -> bytes:
+    return build_packet(id, INSTR_PING)
+
+
+def build_read(id: int, addr: int, length: int) -> bytes:
+    params = bytes(
+        [addr & 0xFF, (addr >> 8) & 0xFF, length & 0xFF, (length >> 8) & 0xFF]
+    )
+    return build_packet(id, INSTR_READ, params)
+
+
+def build_write(id: int, addr: int, data: bytes) -> bytes:
+    params = bytearray([addr & 0xFF, (addr >> 8) & 0xFF])
+    params.extend(data)
+    return build_packet(id, INSTR_WRITE, bytes(params))
+
+
+def build_reboot(id: int) -> bytes:
+    return build_packet(id, INSTR_REBOOT)
+
+
+def build_factory_reset(id: int, option: int = 0xFF) -> bytes:
+    return build_packet(id, INSTR_FACTORY_RESET, bytes([option & 0xFF]))
+
+
+def build_clear(id: int, option: int = 0x01, key: bytes = b"CLR\0") -> bytes:
+    return build_packet(id, INSTR_CLEAR, bytes([option & 0xFF]) + key)
+
+
+def build_control_table_backup(
+    id: int, option: int = 0x01, key: bytes = b"CTRL"
+) -> bytes:
+    return build_packet(id, INSTR_CONTROL_TABLE_BACKUP, bytes([option & 0xFF]) + key)
 
 
 def build_sync_read(addr: int, length: int, ids: Iterable[int]) -> bytes:
