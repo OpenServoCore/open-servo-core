@@ -61,12 +61,13 @@ pub fn install(board: Ch32Board) {
 
 /// USART1 IDLE must preempt the ADC DMA TC handler to keep `idle_tick` capture
 /// sub-µs at 3 Mbaud — a ~30 µs ADC ISR would otherwise shift our slot deadline
-/// by the same amount. SysTick is a core IRQ, configured separately.
+/// by the same amount.
 pub fn install_irqs() {
     pfic::set_priority(pfic::Interrupt::USART1, pfic::Priority::High);
     pfic::set_priority(pfic::Interrupt::DMA1_CHANNEL1, pfic::Priority::Low);
     pfic::enable(pfic::Interrupt::USART1);
     pfic::enable(pfic::Interrupt::DMA1_CHANNEL1);
+    pfic::enable_systick();
     crate::log::info!("ISRs live");
 }
 

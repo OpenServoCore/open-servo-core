@@ -3,6 +3,9 @@ use ch32_metapac::pfic::vals::Keycode;
 
 pub use ch32_metapac::Interrupt;
 
+/// QingKe V2 core IRQ for SysTick (not in metapac `Interrupt`).
+const SYSTICK_IRQ: u32 = 12;
+
 /// QingKe V2A IPRIORn bit 7 selects preemption class; subpriority bits unused.
 #[derive(Copy, Clone)]
 pub enum Priority {
@@ -31,6 +34,13 @@ pub fn enable(irq: Interrupt) {
         3 => PFIC.ienr4().write(|w| w.0 = bit),
         _ => {}
     }
+}
+
+/// qingke-rt v2 init sets STIE + mstatus.MIE but never writes PFIC IENR1
+/// bit 12; without this, CNTIF latches but the SysTick vector never fires.
+#[inline]
+pub fn enable_systick() {
+    PFIC.ienr1().write(|w| w.0 = 1 << SYSTICK_IRQ);
 }
 
 #[inline]
