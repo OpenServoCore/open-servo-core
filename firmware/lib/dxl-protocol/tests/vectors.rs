@@ -1,5 +1,5 @@
 use dxl_protocol::prelude::*;
-use dxl_protocol::{Instruction, crc16};
+use dxl_protocol::{Instruction, crc16, crc16_continue};
 use heapless::Vec;
 
 const PING_ID1: &[u8] = &[0xFF, 0xFF, 0xFD, 0x00, 0x01, 0x03, 0x00, 0x01, 0x19, 0x4E];
@@ -31,6 +31,18 @@ fn crc_matches_known_frames() {
             "CRC mismatch on frame: {:02X?}",
             frame
         );
+    }
+}
+
+#[test]
+fn crc16_continue_matches_one_shot() {
+    let data: &[u8] = &[
+        0xFF, 0xFF, 0xFD, 0x00, 0x01, 0x07, 0x00, 0x02, 0x84, 0x00, 0x04, 0x00, 0x10, 0x11, 0x12,
+        0x13,
+    ];
+    for split in 0..=data.len() {
+        let (a, b) = data.split_at(split);
+        assert_eq!(crc16_continue(crc16(a), b), crc16(data), "split at {split}");
     }
 }
 

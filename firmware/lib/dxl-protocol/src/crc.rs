@@ -16,3 +16,10 @@ const DXL: Crc<u16> = Crc::<u16>::new(&DXL_CRC);
 pub fn crc16(bytes: &[u8]) -> u16 {
     DXL.checksum(bytes)
 }
+
+#[inline]
+pub fn crc16_continue(seed: u16, bytes: &[u8]) -> u16 {
+    let mut digest = DXL.digest_with_initial(seed);
+    digest.update(bytes);
+    digest.finalize()
+}

@@ -13,7 +13,7 @@ pub mod prelude;
 
 pub use buf::WriteBuf;
 pub use bytes::{ByteIter, Bytes, Overflow};
-pub use crc::crc16;
+pub use crc::{crc16, crc16_continue};
 pub use instruction::Instruction;
 pub use packet::{
     ActionPacket, BROADCAST_ID, BulkReadPacket, BulkWritePacket, ClearPacket,
