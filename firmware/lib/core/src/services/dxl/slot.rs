@@ -36,17 +36,38 @@ pub fn bulk_slot_delay_us(body: &[u8], our_id: u8, baud: BaudRate) -> Option<u32
     None
 }
 
-/// Byte-offset-to-µs delay for slot `slot_index` in a Fast Sync Read chain
-/// where every slot carries the same payload length. Caller must bounds-check
-/// `slot_index` against the chain length. (Fast Bulk Read has varied per-slot
-/// lengths; needs a body-walking variant.)
-pub fn fast_slot_delay_us(slot_index: usize, payload_len: u16, baud: BaudRate) -> u32 {
+/// Fast Sync Read variant: every slot carries the same payload length.
+/// (For varied per-slot lengths use `fast_bulk_slot_delay_us`.)
+pub fn fast_sync_slot_delay_us(slot_index: usize, payload_len: u16, baud: BaudRate) -> u32 {
     if slot_index == 0 {
         return 0;
     }
     let payload = payload_len as u32;
     let bytes =
         FAST_SLOT0_PREFIX + payload + (slot_index as u32 - 1) * (FAST_SLOT_PREFIX + payload);
+    bytes_to_us(bytes, baud)
+}
+
+/// Fast Bulk Read variant: walks `body`'s 5-byte `(id, addr, length)` tuples
+/// to sum each preceding slot's payload. Trailing partial tuples are ignored.
+pub fn fast_bulk_slot_delay_us(slot_index: usize, body: &[u8], baud: BaudRate) -> u32 {
+    if slot_index == 0 {
+        return 0;
+    }
+    let mut bytes = 0u32;
+    for (i, tup) in body.chunks_exact(5).enumerate().take(slot_index) {
+        let payload = u16::from_le_bytes([tup[3], tup[4]]) as u32;
+        let prefix = if i == 0 {
+            FAST_SLOT0_PREFIX
+        } else {
+            FAST_SLOT_PREFIX
+        };
+        bytes = bytes.saturating_add(prefix).saturating_add(payload);
+    }
+    bytes_to_us(bytes, baud)
+}
+
+fn bytes_to_us(bytes: u32, baud: BaudRate) -> u32 {
     ((bytes as u64) * (BITS_PER_BYTE as u64) * 1_000_000 / baud.as_hz() as u64) as u32
 }
 
@@ -113,22 +134,57 @@ mod tests {
     }
 
     #[test]
-    fn fast_slot_delay_us_slot_zero_is_zero() {
-        assert_eq!(fast_slot_delay_us(0, 4, BaudRate::B1000000), 0);
-        assert_eq!(fast_slot_delay_us(0, 128, BaudRate::B3000000), 0);
+    fn fast_sync_slot_delay_us_slot_zero_is_zero() {
+        assert_eq!(fast_sync_slot_delay_us(0, 4, BaudRate::B1000000), 0);
+        assert_eq!(fast_sync_slot_delay_us(0, 128, BaudRate::B3000000), 0);
     }
 
     #[test]
-    fn fast_slot_delay_us_matches_byte_time_at_1mbaud() {
+    fn fast_sync_slot_delay_us_matches_byte_time_at_1mbaud() {
         // slot 1: 10 + 4 = 14 bytes * 10 / 1e6 = 140 µs.
-        assert_eq!(fast_slot_delay_us(1, 4, BaudRate::B1000000), 140);
+        assert_eq!(fast_sync_slot_delay_us(1, 4, BaudRate::B1000000), 140);
         // slot 2: 14 + (2 + 4) = 20 bytes * 10 / 1e6 = 200 µs.
-        assert_eq!(fast_slot_delay_us(2, 4, BaudRate::B1000000), 200);
+        assert_eq!(fast_sync_slot_delay_us(2, 4, BaudRate::B1000000), 200);
     }
 
     #[test]
-    fn fast_slot_delay_us_at_3mbaud_floors() {
+    fn fast_sync_slot_delay_us_at_3mbaud_floors() {
         // 14 bytes * 10 / 3 = 46.66… → 46
-        assert_eq!(fast_slot_delay_us(1, 4, BaudRate::B3000000), 46);
+        assert_eq!(fast_sync_slot_delay_us(1, 4, BaudRate::B3000000), 46);
+    }
+
+    #[test]
+    fn fast_bulk_slot_delay_us_slot_zero_is_zero() {
+        let body = [1, 0, 0, 4, 0, 2, 0, 0, 8, 0];
+        assert_eq!(fast_bulk_slot_delay_us(0, &body, BaudRate::B1000000), 0);
+    }
+
+    #[test]
+    fn fast_bulk_slot_delay_us_matches_uniform_helper() {
+        // Three slots, all length 4 — should equal the Fast Sync uniform helper.
+        let body = [1, 0, 0, 4, 0, 2, 0, 0, 4, 0, 3, 0, 0, 4, 0];
+        for k in 0..3 {
+            assert_eq!(
+                fast_bulk_slot_delay_us(k, &body, BaudRate::B1000000),
+                fast_sync_slot_delay_us(k, 4, BaudRate::B1000000)
+            );
+        }
+    }
+
+    #[test]
+    fn fast_bulk_slot_delay_us_sums_varied_lengths() {
+        // slot 0: len=4, slot 1: len=8, slot 2: len=2.
+        // bytes to slot 1: FAST_SLOT0_PREFIX(10) + 4 = 14
+        // bytes to slot 2: 14 + FAST_SLOT_PREFIX(2) + 8 = 24
+        let body = [1, 0, 0, 4, 0, 2, 0, 0, 8, 0, 3, 0, 0, 2, 0];
+        assert_eq!(fast_bulk_slot_delay_us(1, &body, BaudRate::B1000000), 140);
+        assert_eq!(fast_bulk_slot_delay_us(2, &body, BaudRate::B1000000), 240);
+    }
+
+    #[test]
+    fn fast_bulk_slot_delay_us_ignores_trailing_partial_tuple() {
+        // Two complete tuples + 3 stray bytes.
+        let body = [1, 0, 0, 4, 0, 2, 0, 0, 8, 0, 9, 9, 9];
+        assert_eq!(fast_bulk_slot_delay_us(2, &body, BaudRate::B1000000), 240);
     }
 }
