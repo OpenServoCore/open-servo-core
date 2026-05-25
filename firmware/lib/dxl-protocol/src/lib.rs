@@ -3,6 +3,7 @@
 mod buf;
 mod bytes;
 mod crc;
+mod fast;
 mod instruction;
 mod packet;
 mod parser;
@@ -14,6 +15,7 @@ pub mod prelude;
 pub use buf::WriteBuf;
 pub use bytes::{ByteIter, Bytes, Overflow};
 pub use crc::{crc16, crc16_continue};
+pub use fast::{FastSlot, FastSlotBody, write_fast_slot};
 pub use instruction::Instruction;
 pub use packet::{
     ActionPacket, BROADCAST_ID, BulkReadPacket, BulkWritePacket, ClearPacket,

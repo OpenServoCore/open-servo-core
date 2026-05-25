@@ -1,5 +1,5 @@
 use dxl_protocol::prelude::*;
-use dxl_protocol::{Instruction, crc16, crc16_continue};
+use dxl_protocol::{FastSlot, FastSlotBody, Instruction, crc16, crc16_continue, write_fast_slot};
 use heapless::Vec;
 
 const PING_ID1: &[u8] = &[0xFF, 0xFF, 0xFD, 0x00, 0x01, 0x03, 0x00, 0x01, 0x19, 0x4E];
@@ -44,6 +44,132 @@ fn crc16_continue_matches_one_shot() {
         let (a, b) = data.split_at(split);
         assert_eq!(crc16_continue(crc16(a), b), crc16(data), "split at {split}");
     }
+}
+
+fn body_5() -> FastSlotBody<'static> {
+    FastSlotBody {
+        error: 0,
+        id: 5,
+        data: &[0x01, 0x00, 0x00, 0x00],
+    }
+}
+
+fn body_6() -> FastSlotBody<'static> {
+    FastSlotBody {
+        error: 0,
+        id: 6,
+        data: &[0x02, 0x00, 0x00, 0x00],
+    }
+}
+
+fn body_7() -> FastSlotBody<'static> {
+    FastSlotBody {
+        error: 0,
+        id: 7,
+        data: &[0x03, 0x00, 0x00, 0x00],
+    }
+}
+
+#[test]
+fn write_fast_slot_first_emits_header_then_body() {
+    let mut out: Vec<u8, 32> = Vec::new();
+    write_fast_slot(
+        &mut out,
+        &FastSlot::First {
+            header_length: 0x0015,
+            body: body_5(),
+        },
+    )
+    .unwrap();
+    assert_eq!(
+        out.as_slice(),
+        &[
+            0xFF, 0xFF, 0xFD, 0x00, 0xFE, 0x15, 0x00, 0x55, 0x00, 0x05, 0x01, 0x00, 0x00, 0x00,
+        ]
+    );
+}
+
+#[test]
+fn write_fast_slot_middle_emits_body_only() {
+    let mut out: Vec<u8, 32> = Vec::new();
+    write_fast_slot(&mut out, &FastSlot::Middle(body_6())).unwrap();
+    assert_eq!(out.as_slice(), &[0x00, 0x06, 0x02, 0x00, 0x00, 0x00]);
+}
+
+#[test]
+fn write_fast_slot_last_reserves_crc_placeholder() {
+    let mut out: Vec<u8, 32> = Vec::new();
+    write_fast_slot(&mut out, &FastSlot::Last(body_7())).unwrap();
+    assert_eq!(
+        out.as_slice(),
+        &[0x00, 0x07, 0x03, 0x00, 0x00, 0x00, 0xAA, 0xBB]
+    );
+}
+
+#[test]
+fn write_fast_slot_only_emits_header_body_and_crc_placeholder() {
+    let mut out: Vec<u8, 32> = Vec::new();
+    write_fast_slot(
+        &mut out,
+        &FastSlot::Only {
+            header_length: 0x0009,
+            body: body_5(),
+        },
+    )
+    .unwrap();
+    assert_eq!(
+        out.as_slice(),
+        &[
+            0xFF, 0xFF, 0xFD, 0x00, 0xFE, 0x09, 0x00, 0x55, 0x00, 0x05, 0x01, 0x00, 0x00, 0x00,
+            0xAA, 0xBB,
+        ]
+    );
+}
+
+#[test]
+fn write_fast_slot_three_slave_chain_assembles_to_valid_status_frame() {
+    let mut out: Vec<u8, 64> = Vec::new();
+    write_fast_slot(
+        &mut out,
+        &FastSlot::First {
+            header_length: 0x0015,
+            body: body_5(),
+        },
+    )
+    .unwrap();
+    write_fast_slot(&mut out, &FastSlot::Middle(body_6())).unwrap();
+    write_fast_slot(&mut out, &FastSlot::Last(body_7())).unwrap();
+
+    assert_eq!(out.len(), 28);
+    assert_eq!(out.as_slice()[26..28], [0xAA, 0xBB]);
+
+    let crc_offset = out.len() - 2;
+    let crc = crc16(&out.as_slice()[..crc_offset]);
+    let bytes = crc.to_le_bytes();
+    out[crc_offset] = bytes[0];
+    out[crc_offset + 1] = bytes[1];
+
+    let length_field = u16::from_le_bytes([out[5], out[6]]);
+    assert_eq!(length_field as usize, 1 + 3 * 6 + 2);
+    assert_eq!(
+        crc16(&out.as_slice()[..crc_offset]),
+        u16::from_le_bytes([out[crc_offset], out[crc_offset + 1]])
+    );
+}
+
+#[test]
+fn write_fast_slot_overflow_truncates() {
+    let mut out: Vec<u8, 8> = Vec::new();
+    let err = write_fast_slot(
+        &mut out,
+        &FastSlot::First {
+            header_length: 0x0015,
+            body: body_5(),
+        },
+    )
+    .unwrap_err();
+    assert_eq!(err, WriteError::Overflow);
+    assert!(out.is_empty());
 }
 
 #[test]
