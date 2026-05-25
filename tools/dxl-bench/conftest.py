@@ -114,3 +114,8 @@ def packet_handler():
 @pytest.fixture(scope="session")
 def osc_id(request):
     return request.config.getoption("--id")
+
+
+@pytest.fixture(scope="session")
+def baud(request):
+    return request.config.getoption("--baud")
