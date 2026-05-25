@@ -1,13 +1,15 @@
 use dxl_protocol::prelude::*;
+use dxl_protocol::{FastSlot, FastSlotBody, write_fast_slot};
 
 use crate::{Error, RegionStorage, Router, Shared, StagedWrites, StatusReturnLevel};
 
 use super::DxlIo;
-use super::slot::{bulk_slot_delay_us, slot_period_us};
+use super::slot::{bulk_slot_delay_us, fast_slot_delay_us, slot_period_us};
 
 const MAX_READ: usize = 128;
 const MAX_WRITE: usize = 128;
 const MAX_BULK_BODY: usize = 256;
+const MAX_FAST_SLOTS: usize = 32;
 
 fn error_to_status(e: Error) -> StatusError {
     match e {
@@ -353,8 +355,83 @@ impl<'a, D: DxlIo> Dispatcher<'a, D> {
         // TODO: scan (id, address, length, data) tuples; apply our chunk silently.
     }
 
-    fn handle_fast_sync_read(&mut self, _p: &FastSyncReadPacket<'_>, _parsed_end: u32) {
-        // TODO: like sync_read but coalesced single-frame response; fast_slot_delay_us.
+    fn handle_fast_sync_read(&mut self, p: &FastSyncReadPacket<'_>, parsed_end: u32) {
+        let our_id = self.shared.table.config.with(|c| c.comms.id);
+
+        let mut ids = [0u8; MAX_FAST_SLOTS];
+        let Ok(n_slots) = p.ids.copy_into(&mut ids) else {
+            return;
+        };
+        let ids = &ids[..n_slots];
+
+        let Some(our_slot) = ids.iter().position(|&id| id == our_id) else {
+            return;
+        };
+
+        if self.level() < StatusReturnLevel::Read {
+            return;
+        }
+
+        let len = p.length as usize;
+        if len == 0 || len > MAX_READ {
+            return;
+        }
+
+        let Some(idle_tick) = self.io.idle_for(parsed_end) else {
+            return;
+        };
+
+        let mut buf = [0u8; MAX_READ];
+        let error = match self.shared.table.read_bytes(p.address, &mut buf[..len]) {
+            Ok(()) => StatusError::None,
+            Err(e) => {
+                buf[..len].fill(0);
+                error_to_status(e)
+            }
+        };
+
+        let body = FastSlotBody {
+            error: error.as_u8(),
+            id: our_id,
+            data: &buf[..len],
+        };
+        let header_length = 3u16 + (n_slots as u16) * (2 + p.length);
+        let slot = match (our_slot, n_slots) {
+            (0, 1) => FastSlot::Only {
+                header_length,
+                body,
+            },
+            (0, _) => FastSlot::First {
+                header_length,
+                body,
+            },
+            (k, n) if k + 1 == n => FastSlot::Last(body),
+            _ => FastSlot::Middle(body),
+        };
+
+        let tx_buf = self.io.tx_buf();
+        tx_buf.truncate(0);
+        if write_fast_slot(tx_buf, &slot).is_err() {
+            tx_buf.truncate(0);
+            return;
+        }
+
+        let baud = self.shared.table.config.with(|c| c.comms.baud_rate_idx);
+        let payload_bytes = [p.length; MAX_FAST_SLOTS];
+        let payload_bytes = &payload_bytes[..n_slots];
+        let fire_us = fast_slot_delay_us(our_slot, payload_bytes, baud).unwrap_or(0);
+
+        if our_slot + 1 == n_slots {
+            let switch_us = if n_slots <= 1 {
+                fire_us
+            } else {
+                fast_slot_delay_us(n_slots - 2, payload_bytes, baud).unwrap_or(0)
+            };
+            self.io
+                .start_fast_tx_after(idle_tick, switch_us, fire_us, parsed_end);
+        } else {
+            self.io.start_tx_after(idle_tick, fire_us);
+        }
     }
 
     fn handle_fast_bulk_read(&mut self, _p: &FastBulkReadPacket<'_>, _parsed_end: u32) {

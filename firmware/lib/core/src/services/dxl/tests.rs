@@ -956,6 +956,188 @@ fn start_tx_after_nonzero_schedules_without_firing() {
 }
 
 #[test]
+fn fast_sync_read_only_slot_emits_only_with_crc_placeholder() {
+    let shared = Shared::new();
+    let mut io = FakeDxlIo::new();
+    let mut h = Dxl::new();
+    io.rx_idle_tick = 42;
+
+    let req = encode(&Packet::FastSyncRead(FastSyncReadPacket::new(0, 2, &[0])));
+    let parsed_end = req.len() as u32;
+    io.feed(&req);
+    h.poll(&shared, &mut io);
+
+    assert_eq!(io.fast_scheduled_count, 1);
+    assert_eq!(io.last_fast_idle_tick, Some(42));
+    assert_eq!(io.last_fast_switch_us, Some(0));
+    assert_eq!(io.last_fast_fire_us, Some(0));
+    assert_eq!(io.last_fast_frame_end, Some(parsed_end));
+    assert_eq!(io.start_tx_count, 0);
+    assert_eq!(io.scheduled_count, 0);
+
+    // Only: header(8) + err(1) + id(1) + data(2) + crc placeholder(2) = 14
+    assert_eq!(io.tx.len(), 14);
+    assert_eq!(&io.tx[..5], &[0xFF, 0xFF, 0xFD, 0x00, 0xFE]);
+    // length = 3 + 1*(2+2) = 7
+    assert_eq!(&io.tx[5..7], &[7, 0]);
+    assert_eq!(io.tx[7], 0x55);
+    assert_eq!(io.tx[8], 0); // error
+    assert_eq!(io.tx[9], 0); // our id
+    assert_eq!(&io.tx[10..12], &[0, 0]); // model_number defaults
+    assert_eq!(&io.tx[12..14], &[0xAA, 0xBB]); // CRC placeholder
+}
+
+#[test]
+fn fast_sync_read_first_slot_emits_header_no_crc_via_start_tx() {
+    let shared = Shared::new();
+    let mut io = FakeDxlIo::new();
+    let mut h = Dxl::new();
+    io.rx_idle_tick = 42;
+
+    // ids = [0, 7] → our slot = 0 of 2 → First (header + body, no CRC)
+    let req = encode(&Packet::FastSyncRead(FastSyncReadPacket::new(
+        0,
+        2,
+        &[0, 7],
+    )));
+    io.feed(&req);
+    h.poll(&shared, &mut io);
+
+    // slot 0 → delay 0 → FakeDxlIo short-circuits to start_tx.
+    assert_eq!(io.start_tx_count, 1);
+    assert_eq!(io.scheduled_count, 0);
+    assert_eq!(io.fast_scheduled_count, 0);
+
+    // First: header(8) + err(1) + id(1) + data(2) = 12, no placeholder.
+    assert_eq!(io.tx.len(), 12);
+    assert_eq!(&io.tx[..5], &[0xFF, 0xFF, 0xFD, 0x00, 0xFE]);
+    // length = 3 + 2*(2+2) = 11
+    assert_eq!(&io.tx[5..7], &[11, 0]);
+    assert_eq!(io.tx[7], 0x55);
+    assert_eq!(&io.tx[8..12], &[0, 0, 0, 0]); // err, id, model_lo, model_hi
+}
+
+#[test]
+fn fast_sync_read_middle_slot_emits_body_only_with_offset_delay() {
+    use super::slot::fast_slot_delay_us;
+    use crate::BaudRate;
+    let shared = Shared::new();
+    let mut io = FakeDxlIo::new();
+    let mut h = Dxl::new();
+    io.rx_idle_tick = 99;
+
+    // ids = [9, 0, 7] → our slot = 1 of 3 → Middle (body only)
+    let req = encode(&Packet::FastSyncRead(FastSyncReadPacket::new(
+        0,
+        2,
+        &[9, 0, 7],
+    )));
+    io.feed(&req);
+    h.poll(&shared, &mut io);
+
+    assert_eq!(io.scheduled_count, 1);
+    assert_eq!(io.start_tx_count, 0);
+    assert_eq!(io.fast_scheduled_count, 0);
+    assert_eq!(io.last_scheduled_idle_tick, Some(99));
+    let expected = fast_slot_delay_us(1, &[2, 2, 2], BaudRate::B1000000).unwrap();
+    assert_eq!(io.last_scheduled_delay_us, Some(expected));
+
+    // Middle: err(1) + id(1) + data(2) = 4
+    assert_eq!(io.tx.len(), 4);
+    assert_eq!(&io.tx[..], &[0, 0, 0, 0]);
+}
+
+#[test]
+fn fast_sync_read_last_slot_schedules_fast_with_switch_lt_fire() {
+    use super::slot::fast_slot_delay_us;
+    use crate::BaudRate;
+    let shared = Shared::new();
+    let mut io = FakeDxlIo::new();
+    let mut h = Dxl::new();
+    io.rx_idle_tick = 7;
+
+    // ids = [9, 0] → our slot = 1 of 2 → Last (body + CRC placeholder)
+    let req = encode(&Packet::FastSyncRead(FastSyncReadPacket::new(
+        0,
+        2,
+        &[9, 0],
+    )));
+    let parsed_end = req.len() as u32;
+    io.feed(&req);
+    h.poll(&shared, &mut io);
+
+    assert_eq!(io.fast_scheduled_count, 1);
+    assert_eq!(io.start_tx_count, 0);
+    assert_eq!(io.scheduled_count, 0);
+    assert_eq!(io.last_fast_idle_tick, Some(7));
+    let expected_fire = fast_slot_delay_us(1, &[2, 2], BaudRate::B1000000).unwrap();
+    let expected_switch = fast_slot_delay_us(0, &[2, 2], BaudRate::B1000000).unwrap();
+    assert_eq!(io.last_fast_fire_us, Some(expected_fire));
+    assert_eq!(io.last_fast_switch_us, Some(expected_switch));
+    assert!(expected_switch < expected_fire);
+    assert_eq!(io.last_fast_frame_end, Some(parsed_end));
+
+    // Last: err(1) + id(1) + data(2) + crc placeholder(2) = 6
+    assert_eq!(io.tx.len(), 6);
+    assert_eq!(&io.tx[..4], &[0, 0, 0, 0]);
+    assert_eq!(&io.tx[4..], &[0xAA, 0xBB]);
+}
+
+#[test]
+fn fast_sync_read_silent_when_our_id_absent() {
+    let shared = Shared::new();
+    let mut io = FakeDxlIo::new();
+    let mut h = Dxl::new();
+
+    let req = encode(&Packet::FastSyncRead(FastSyncReadPacket::new(
+        0,
+        2,
+        &[5, 7, 9],
+    )));
+    io.feed(&req);
+    h.poll(&shared, &mut io);
+
+    assert_eq!(io.start_tx_count, 0);
+    assert_eq!(io.scheduled_count, 0);
+    assert_eq!(io.fast_scheduled_count, 0);
+    assert!(io.tx.is_empty());
+}
+
+#[test]
+fn fast_sync_read_skips_when_idle_for_returns_none() {
+    let shared = Shared::new();
+    let mut io = FakeDxlIo::new();
+    let mut h = Dxl::new();
+
+    let req = encode(&Packet::FastSyncRead(FastSyncReadPacket::new(0, 2, &[0])));
+    io.feed(&req);
+    io.rx_bytes_at_idle = io.rx_bytes_at_idle.wrapping_add(1);
+    h.poll(&shared, &mut io);
+
+    assert_eq!(io.start_tx_count, 0);
+    assert_eq!(io.scheduled_count, 0);
+    assert_eq!(io.fast_scheduled_count, 0);
+    assert!(io.tx.is_empty());
+}
+
+#[test]
+fn fast_sync_read_return_level_none_silences_reply() {
+    let shared = Shared::new();
+    set_level(&shared, StatusReturnLevel::None);
+    let mut io = FakeDxlIo::new();
+    let mut h = Dxl::new();
+
+    let req = encode(&Packet::FastSyncRead(FastSyncReadPacket::new(0, 2, &[0])));
+    io.feed(&req);
+    h.poll(&shared, &mut io);
+
+    assert_eq!(io.start_tx_count, 0);
+    assert_eq!(io.scheduled_count, 0);
+    assert_eq!(io.fast_scheduled_count, 0);
+    assert!(io.tx.is_empty());
+}
+
+#[test]
 fn start_fast_tx_after_records_args() {
     let mut io = FakeDxlIo::new();
     io.start_fast_tx_after(42, 46, 66, 24);
