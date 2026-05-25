@@ -63,3 +63,18 @@ pub fn is_idle(r: Regs) -> bool {
 pub fn is_tc(r: Regs) -> bool {
     r.statr().read().tc()
 }
+
+#[inline]
+pub fn set_rxne_irq(r: Regs, enable: bool) {
+    r.ctlr1().modify(|w| w.set_rxneie(enable));
+}
+
+#[inline]
+pub fn is_rxne(r: Regs) -> bool {
+    r.statr().read().rxne()
+}
+
+#[inline]
+pub fn read_data(r: Regs) -> u8 {
+    r.datar().read().dr() as u8
+}
