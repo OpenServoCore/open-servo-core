@@ -11,13 +11,13 @@ pub struct FastSlotBody<'a> {
 
 pub enum FastSlot<'a> {
     First {
-        header_length: u16,
+        packet_length: u16,
         body: FastSlotBody<'a>,
     },
     Middle(FastSlotBody<'a>),
     Last(FastSlotBody<'a>),
     Only {
-        header_length: u16,
+        packet_length: u16,
         body: FastSlotBody<'a>,
     },
 }
@@ -41,10 +41,10 @@ pub fn write_fast_slot<W: WriteBuf>(out: &mut W, slot: &FastSlot<'_>) -> Result<
 fn write_fast_slot_inner<W: WriteBuf>(out: &mut W, slot: &FastSlot<'_>) -> Result<(), WriteError> {
     match slot {
         FastSlot::First {
-            header_length,
+            packet_length,
             body,
         } => {
-            write_header(out, *header_length)?;
+            write_header(out, *packet_length)?;
             write_body(out, body)?;
         }
         FastSlot::Middle(body) => {
@@ -55,10 +55,10 @@ fn write_fast_slot_inner<W: WriteBuf>(out: &mut W, slot: &FastSlot<'_>) -> Resul
             reserve_crc(out)?;
         }
         FastSlot::Only {
-            header_length,
+            packet_length,
             body,
         } => {
-            write_header(out, *header_length)?;
+            write_header(out, *packet_length)?;
             write_body(out, body)?;
             reserve_crc(out)?;
         }

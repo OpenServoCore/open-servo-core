@@ -36,24 +36,18 @@ pub fn bulk_slot_delay_us(body: &[u8], our_id: u8, baud: BaudRate) -> Option<u32
     None
 }
 
-pub fn fast_slot_first_byte_offset(slot_index: usize, payload_bytes: &[u16]) -> Option<u32> {
-    if slot_index >= payload_bytes.len() {
-        return None;
-    }
+/// Byte-offset-to-µs delay for slot `slot_index` in a Fast Sync Read chain
+/// where every slot carries the same payload length. Caller must bounds-check
+/// `slot_index` against the chain length. (Fast Bulk Read has varied per-slot
+/// lengths; needs a body-walking variant.)
+pub fn fast_slot_delay_us(slot_index: usize, payload_len: u16, baud: BaudRate) -> u32 {
     if slot_index == 0 {
-        return Some(0);
+        return 0;
     }
-    let mut offset = FAST_SLOT0_PREFIX.saturating_add(payload_bytes[0] as u32);
-    for &pl in &payload_bytes[1..slot_index] {
-        offset = offset.saturating_add(FAST_SLOT_PREFIX.saturating_add(pl as u32));
-    }
-    Some(offset)
-}
-
-pub fn fast_slot_delay_us(slot_index: usize, payload_bytes: &[u16], baud: BaudRate) -> Option<u32> {
-    let bytes = fast_slot_first_byte_offset(slot_index, payload_bytes)?;
-    let us = (bytes as u64) * (BITS_PER_BYTE as u64) * 1_000_000 / baud.as_hz() as u64;
-    Some(us as u32)
+    let payload = payload_len as u32;
+    let bytes =
+        FAST_SLOT0_PREFIX + payload + (slot_index as u32 - 1) * (FAST_SLOT_PREFIX + payload);
+    ((bytes as u64) * (BITS_PER_BYTE as u64) * 1_000_000 / baud.as_hz() as u64) as u32
 }
 
 #[cfg(test)]
@@ -119,54 +113,22 @@ mod tests {
     }
 
     #[test]
-    fn fast_slot_first_byte_offset_slot_zero_is_zero() {
-        assert_eq!(fast_slot_first_byte_offset(0, &[4, 4, 4]), Some(0));
-    }
-
-    #[test]
-    fn fast_slot_first_byte_offset_counts_slot0_prefix_plus_payloads() {
-        // slot 1 starts after slot 0's 10 + payload_0 = 14 bytes.
-        assert_eq!(fast_slot_first_byte_offset(1, &[4, 4, 4]), Some(14));
-        // slot 2 = 14 + (2 + payload_1) = 14 + 6 = 20 bytes.
-        assert_eq!(fast_slot_first_byte_offset(2, &[4, 4, 4]), Some(20));
-    }
-
-    #[test]
-    fn fast_slot_first_byte_offset_out_of_range_is_none() {
-        assert_eq!(fast_slot_first_byte_offset(3, &[4, 4, 4]), None);
-        assert_eq!(fast_slot_first_byte_offset(0, &[]), None);
-    }
-
-    #[test]
     fn fast_slot_delay_us_slot_zero_is_zero() {
-        assert_eq!(fast_slot_delay_us(0, &[4, 4], BaudRate::B1000000), Some(0));
+        assert_eq!(fast_slot_delay_us(0, 4, BaudRate::B1000000), 0);
+        assert_eq!(fast_slot_delay_us(0, 128, BaudRate::B3000000), 0);
     }
 
     #[test]
     fn fast_slot_delay_us_matches_byte_time_at_1mbaud() {
-        // 14 bytes * 10 bits / 1e6 baud = 140 µs.
-        assert_eq!(
-            fast_slot_delay_us(1, &[4, 4, 4], BaudRate::B1000000),
-            Some(140)
-        );
-        // 20 bytes * 10 / 1e6 = 200 µs.
-        assert_eq!(
-            fast_slot_delay_us(2, &[4, 4, 4], BaudRate::B1000000),
-            Some(200)
-        );
+        // slot 1: 10 + 4 = 14 bytes * 10 / 1e6 = 140 µs.
+        assert_eq!(fast_slot_delay_us(1, 4, BaudRate::B1000000), 140);
+        // slot 2: 14 + (2 + 4) = 20 bytes * 10 / 1e6 = 200 µs.
+        assert_eq!(fast_slot_delay_us(2, 4, BaudRate::B1000000), 200);
     }
 
     #[test]
     fn fast_slot_delay_us_at_3mbaud_floors() {
-        // 14 bytes * 10 / 3e6 = 46.66… µs → floor 46.
-        assert_eq!(
-            fast_slot_delay_us(1, &[4, 4, 4], BaudRate::B3000000),
-            Some(46)
-        );
-    }
-
-    #[test]
-    fn fast_slot_delay_us_out_of_range_is_none() {
-        assert_eq!(fast_slot_delay_us(2, &[4], BaudRate::B1000000), None);
+        // 14 bytes * 10 / 3 = 46.66… → 46
+        assert_eq!(fast_slot_delay_us(1, 4, BaudRate::B3000000), 46);
     }
 }

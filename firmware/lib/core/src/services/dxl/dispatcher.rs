@@ -18,6 +18,23 @@ fn error_to_status(e: Error) -> StatusError {
     }
 }
 
+/// Walk a Fast Sync Read `ids` list once: find our position and chain length.
+/// Bails out if the chain exceeds `MAX_FAST_SLOTS` or our id is absent.
+fn resolve_fast_slot(ids: &Bytes<'_>, our_id: u8) -> Option<(usize, usize)> {
+    let mut our_slot = None;
+    let mut n_slots = 0usize;
+    for (i, id) in ids.iter().enumerate() {
+        if i >= MAX_FAST_SLOTS {
+            return None;
+        }
+        if id == our_id && our_slot.is_none() {
+            our_slot = Some(i);
+        }
+        n_slots = i + 1;
+    }
+    our_slot.map(|s| (s, n_slots))
+}
+
 pub(super) struct Dispatcher<'a, D: DxlIo> {
     shared: &'a Shared,
     io: &'a mut D,
@@ -356,31 +373,24 @@ impl<'a, D: DxlIo> Dispatcher<'a, D> {
     }
 
     fn handle_fast_sync_read(&mut self, p: &FastSyncReadPacket<'_>, parsed_end: u32) {
-        let our_id = self.shared.table.config.with(|c| c.comms.id);
-
-        let mut ids = [0u8; MAX_FAST_SLOTS];
-        let Ok(n_slots) = p.ids.copy_into(&mut ids) else {
-            return;
-        };
-        let ids = &ids[..n_slots];
-
-        let Some(our_slot) = ids.iter().position(|&id| id == our_id) else {
-            return;
-        };
-
+        // Pre-flight bails, cheapest filter first; all silent.
         if self.level() < StatusReturnLevel::Read {
             return;
         }
-
         let len = p.length as usize;
         if len == 0 || len > MAX_READ {
             return;
         }
-
+        let our_id = self.shared.table.config.with(|c| c.comms.id);
+        let Some((our_slot, n_slots)) = resolve_fast_slot(&p.ids, our_id) else {
+            return;
+        };
         let Some(idle_tick) = self.io.idle_for(parsed_end) else {
             return;
         };
 
+        // Read data; on error zero-fill so the slot stays length-correct
+        // without leaking table contents past the error byte.
         let mut buf = [0u8; MAX_READ];
         let error = match self.shared.table.read_bytes(p.address, &mut buf[..len]) {
             Ok(()) => StatusError::None,
@@ -390,25 +400,25 @@ impl<'a, D: DxlIo> Dispatcher<'a, D> {
             }
         };
 
+        // Pick the wire-format variant for our position and emit it.
         let body = FastSlotBody {
             error: error.as_u8(),
             id: our_id,
             data: &buf[..len],
         };
-        let header_length = 3u16 + (n_slots as u16) * (2 + p.length);
+        let packet_length = 3u16 + (n_slots as u16) * (2 + p.length);
         let slot = match (our_slot, n_slots) {
             (0, 1) => FastSlot::Only {
-                header_length,
+                packet_length,
                 body,
             },
             (0, _) => FastSlot::First {
-                header_length,
+                packet_length,
                 body,
             },
             (k, n) if k + 1 == n => FastSlot::Last(body),
             _ => FastSlot::Middle(body),
         };
-
         let tx_buf = self.io.tx_buf();
         tx_buf.truncate(0);
         if write_fast_slot(tx_buf, &slot).is_err() {
@@ -416,25 +426,31 @@ impl<'a, D: DxlIo> Dispatcher<'a, D> {
             return;
         }
 
+        // Schedule TX. Last/Only own the trailing CRC patch via the snoop+fire
+        // path; First and Middle just emit at their byte offset.
         let baud = self.shared.table.config.with(|c| c.comms.baud_rate_idx);
-        let payload_bytes = [p.length; MAX_FAST_SLOTS];
-        let payload_bytes = &payload_bytes[..n_slots];
-        let fire_us = fast_slot_delay_us(our_slot, payload_bytes, baud).unwrap_or(0);
-
-        if our_slot + 1 == n_slots {
-            let switch_us = if n_slots <= 1 {
-                fire_us
-            } else {
-                fast_slot_delay_us(n_slots - 2, payload_bytes, baud).unwrap_or(0)
-            };
-            self.io
-                .start_fast_tx_after(idle_tick, switch_us, fire_us, parsed_end);
-        } else {
-            self.io.start_tx_after(idle_tick, fire_us);
+        let fire_us = fast_slot_delay_us(our_slot, p.length, baud);
+        match &slot {
+            // Only: no preceding slaves — switch == fire signals "skip snoop".
+            FastSlot::Only { .. } => {
+                self.io
+                    .start_fast_tx_after(idle_tick, fire_us, fire_us, parsed_end);
+            }
+            // Last with predecessors: snoop window spans slot N-2 onwards.
+            FastSlot::Last(_) => {
+                let switch_us = fast_slot_delay_us(n_slots - 2, p.length, baud);
+                self.io
+                    .start_fast_tx_after(idle_tick, switch_us, fire_us, parsed_end);
+            }
+            FastSlot::First { .. } | FastSlot::Middle(_) => {
+                self.io.start_tx_after(idle_tick, fire_us);
+            }
         }
     }
 
     fn handle_fast_bulk_read(&mut self, _p: &FastBulkReadPacket<'_>, _parsed_end: u32) {
-        // TODO: like bulk_read but coalesced single-frame response; fast_slot_delay_us.
+        // TODO: like bulk_read but coalesced single-frame response; needs a
+        // `fast_bulk_slot_delay_us(slot_index, body, baud)` helper that walks
+        // the bulk body (per-slot payload lengths vary, unlike Fast Sync).
     }
 }

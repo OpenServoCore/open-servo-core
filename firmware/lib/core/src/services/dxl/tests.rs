@@ -1039,7 +1039,7 @@ fn fast_sync_read_middle_slot_emits_body_only_with_offset_delay() {
     assert_eq!(io.start_tx_count, 0);
     assert_eq!(io.fast_scheduled_count, 0);
     assert_eq!(io.last_scheduled_idle_tick, Some(99));
-    let expected = fast_slot_delay_us(1, &[2, 2, 2], BaudRate::B1000000).unwrap();
+    let expected = fast_slot_delay_us(1, 2, BaudRate::B1000000);
     assert_eq!(io.last_scheduled_delay_us, Some(expected));
 
     // Middle: err(1) + id(1) + data(2) = 4
@@ -1070,8 +1070,8 @@ fn fast_sync_read_last_slot_schedules_fast_with_switch_lt_fire() {
     assert_eq!(io.start_tx_count, 0);
     assert_eq!(io.scheduled_count, 0);
     assert_eq!(io.last_fast_idle_tick, Some(7));
-    let expected_fire = fast_slot_delay_us(1, &[2, 2], BaudRate::B1000000).unwrap();
-    let expected_switch = fast_slot_delay_us(0, &[2, 2], BaudRate::B1000000).unwrap();
+    let expected_fire = fast_slot_delay_us(1, 2, BaudRate::B1000000);
+    let expected_switch = fast_slot_delay_us(0, 2, BaudRate::B1000000);
     assert_eq!(io.last_fast_fire_us, Some(expected_fire));
     assert_eq!(io.last_fast_switch_us, Some(expected_switch));
     assert!(expected_switch < expected_fire);

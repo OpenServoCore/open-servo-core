@@ -76,7 +76,7 @@ fn write_fast_slot_first_emits_header_then_body() {
     write_fast_slot(
         &mut out,
         &FastSlot::First {
-            header_length: 0x0015,
+            packet_length: 0x0015,
             body: body_5(),
         },
     )
@@ -112,7 +112,7 @@ fn write_fast_slot_only_emits_header_body_and_crc_placeholder() {
     write_fast_slot(
         &mut out,
         &FastSlot::Only {
-            header_length: 0x0009,
+            packet_length: 0x0009,
             body: body_5(),
         },
     )
@@ -132,7 +132,7 @@ fn write_fast_slot_three_slave_chain_assembles_to_valid_status_frame() {
     write_fast_slot(
         &mut out,
         &FastSlot::First {
-            header_length: 0x0015,
+            packet_length: 0x0015,
             body: body_5(),
         },
     )
@@ -163,7 +163,7 @@ fn write_fast_slot_overflow_truncates() {
     let err = write_fast_slot(
         &mut out,
         &FastSlot::First {
-            header_length: 0x0015,
+            packet_length: 0x0015,
             body: body_5(),
         },
     )
