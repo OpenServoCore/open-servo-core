@@ -15,5 +15,11 @@ pub trait DxlIo {
     /// later IDLE under producer drop-oldest. Callers must skip slot-timed
     /// replies when this returns `None`.
     fn idle_for(&self, parsed_end: u32) -> Option<u32>;
+    /// Last-slot fire path for Fast Sync/Bulk Read: snoop CRC from
+    /// `frame_end..`, fire TX at `idle_tick + fire_us`, patch the CRC
+    /// placeholder. `tx_buf` must already hold payload + 2-byte placeholder
+    /// from `FastSlot::Last` / `Only`. `switch_us == fire_us` signals `Only`
+    /// (no preceding slaves to snoop).
+    fn start_fast_tx_after(&mut self, idle_tick: u32, switch_us: u32, fire_us: u32, frame_end: u32);
     fn request_reboot(&mut self, mode: BootMode);
 }

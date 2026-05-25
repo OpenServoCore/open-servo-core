@@ -15,6 +15,11 @@ struct FakeDxlIo {
     scheduled_count: u32,
     last_scheduled_idle_tick: Option<u32>,
     last_scheduled_delay_us: Option<u32>,
+    fast_scheduled_count: u32,
+    last_fast_idle_tick: Option<u32>,
+    last_fast_switch_us: Option<u32>,
+    last_fast_fire_us: Option<u32>,
+    last_fast_frame_end: Option<u32>,
     reboot_count: u32,
     reboot_immediate_count: u32,
     last_reboot_mode: Option<BootMode>,
@@ -32,6 +37,11 @@ impl FakeDxlIo {
             scheduled_count: 0,
             last_scheduled_idle_tick: None,
             last_scheduled_delay_us: None,
+            fast_scheduled_count: 0,
+            last_fast_idle_tick: None,
+            last_fast_switch_us: None,
+            last_fast_fire_us: None,
+            last_fast_frame_end: None,
             reboot_count: 0,
             reboot_immediate_count: 0,
             last_reboot_mode: None,
@@ -71,6 +81,19 @@ impl DxlIo for FakeDxlIo {
     }
     fn idle_for(&self, parsed_end: u32) -> Option<u32> {
         (self.rx_bytes_at_idle == parsed_end).then_some(self.rx_idle_tick)
+    }
+    fn start_fast_tx_after(
+        &mut self,
+        idle_tick: u32,
+        switch_us: u32,
+        fire_us: u32,
+        frame_end: u32,
+    ) {
+        self.fast_scheduled_count += 1;
+        self.last_fast_idle_tick = Some(idle_tick);
+        self.last_fast_switch_us = Some(switch_us);
+        self.last_fast_fire_us = Some(fire_us);
+        self.last_fast_frame_end = Some(frame_end);
     }
     fn request_reboot(&mut self, mode: BootMode) {
         self.reboot_count += 1;
@@ -930,4 +953,17 @@ fn start_tx_after_nonzero_schedules_without_firing() {
     assert_eq!(io.scheduled_count, 1);
     assert_eq!(io.last_scheduled_idle_tick, Some(42));
     assert_eq!(io.last_scheduled_delay_us, Some(150));
+}
+
+#[test]
+fn start_fast_tx_after_records_args() {
+    let mut io = FakeDxlIo::new();
+    io.start_fast_tx_after(42, 46, 66, 24);
+    assert_eq!(io.fast_scheduled_count, 1);
+    assert_eq!(io.last_fast_idle_tick, Some(42));
+    assert_eq!(io.last_fast_switch_us, Some(46));
+    assert_eq!(io.last_fast_fire_us, Some(66));
+    assert_eq!(io.last_fast_frame_end, Some(24));
+    assert_eq!(io.start_tx_count, 0);
+    assert_eq!(io.scheduled_count, 0);
 }

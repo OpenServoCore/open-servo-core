@@ -92,6 +92,16 @@ impl DxlIo for Ch32DxlIo {
         idle_ring::pop_matching(parsed_end)
     }
 
+    fn start_fast_tx_after(
+        &mut self,
+        _idle_tick: u32,
+        _switch_us: u32,
+        _fire_us: u32,
+        _frame_end: u32,
+    ) {
+        unimplemented!()
+    }
+
     fn request_reboot(&mut self, mode: BootMode) {
         flash::set_boot_mode(matches!(mode, BootMode::Bootloader));
         DXL_REBOOT_PENDING.store(true, Ordering::Release);
