@@ -1,5 +1,5 @@
 //! Post-init register snapshot at `trace` level. Covers every peripheral
-//! touched by `Ch32Board::new` — if a new init step writes a register that
+//! touched by `Ch32KernelIo::new` — if a new init step writes a register that
 //! isn't dumped here, add it. PFIC IENR is write-only and intentionally omitted.
 
 use ch32_metapac::{ADC, AFIO, DMA1, GPIOA, GPIOC, GPIOD, OPA, RCC, TIM1};

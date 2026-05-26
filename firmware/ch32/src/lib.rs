@@ -19,7 +19,7 @@ pub(crate) mod statics;
 #[cfg(feature = "defmt")]
 pub mod telemetry;
 
-use board::{BoardConfig, Ch32Board, Precomputed};
+use board::{BoardConfig, Ch32KernelIo, Precomputed};
 
 /// Const-asserts pin-uniqueness on the `BoardConfig` literal, then runs.
 #[macro_export]
@@ -37,8 +37,8 @@ macro_rules! run {
 
 #[doc(hidden)]
 pub fn __run(cfg: BoardConfig, pre: Precomputed) -> ! {
-    let board = Ch32Board::new(cfg, pre);
-    statics::install(board);
+    let io = Ch32KernelIo::new(cfg, pre);
+    statics::install(io);
     statics::install_irqs();
     loop {
         // SAFETY: SERVICES initialized in `install`; no ISR aliases it.

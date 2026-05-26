@@ -4,11 +4,11 @@ use heapless::Vec;
 use osc_core::{Kernel, Services, Shared};
 use portable_atomic::{AtomicBool, AtomicU16};
 
-use crate::board::{Ch32Board, TxEn};
+use crate::board::{Ch32KernelIo, TxEn};
 use crate::hal::pfic;
 use crate::services::Ch32ServicesIo;
 
-/// In `Sensors` field order: pos, ntc, vbus, vmotor.0, vmotor.1.
+/// In `AdcPins` field order: pos, ntc, vbus, vmotor.0, vmotor.1.
 pub const ADC_SENSOR_COUNT: usize = 5;
 
 /// Scan = `[IN9/OpaOut, IN7/PD4/pos, IN2/PC4/ntc,
@@ -42,16 +42,16 @@ pub static DXL_REBOOT_PENDING: AtomicBool = AtomicBool::new(false);
 pub static SHARED: Shared = Shared::new();
 
 /// Initialised by `install`; DMA TC IRQ is PFIC-masked until then.
-pub(crate) static KERNEL: SyncUnsafeCell<MaybeUninit<Kernel<Ch32Board>>> =
+pub(crate) static KERNEL: SyncUnsafeCell<MaybeUninit<Kernel<Ch32KernelIo>>> =
     SyncUnsafeCell::new(MaybeUninit::uninit());
 
 /// Initialised by `install`; sole `&mut` writer is the main loop.
 pub(crate) static SERVICES: SyncUnsafeCell<MaybeUninit<Services<Ch32ServicesIo>>> =
     SyncUnsafeCell::new(MaybeUninit::uninit());
 
-pub fn install(board: Ch32Board) {
+pub fn install(io: Ch32KernelIo) {
     unsafe {
-        (*KERNEL.get()).write(Kernel::new(board));
+        (*KERNEL.get()).write(Kernel::new(io));
         (*SERVICES.get()).write(Services::new(Ch32ServicesIo::new()));
     }
     crate::log::info!("kernel + services installed");

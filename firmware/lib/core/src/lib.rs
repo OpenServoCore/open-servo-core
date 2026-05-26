@@ -1,9 +1,9 @@
 #![no_std]
 #![feature(sync_unsafe_cell)]
 
-pub mod board;
 pub mod debug;
 pub mod kernel;
+pub mod kernel_io;
 pub mod log;
 pub mod page;
 pub mod regions;
@@ -12,7 +12,7 @@ pub mod sample_frame;
 pub mod services;
 pub mod shared;
 
-pub use board::{Board, Capabilities, ConfigDefaults, DecayMode, MotorCmd};
+pub use kernel_io::{Capabilities, ConfigDefaults, DecayMode, KernelIo, Motor, MotorCmd, Sensors};
 pub use control_table::{
     Error, Region, RegionStorage, Router, StagedView, StagedWrites, ValidationKind,
 };

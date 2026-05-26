@@ -40,7 +40,7 @@ fn main() -> ! {
                 },
                 adc_sample_time: adc::SampleTime::CYCLES9,
             },
-            sensors: Sensors {
+            sensors: AdcPins {
                 pos: adc::Input::new(adc::Channel::IN3, adc::SampleTime::CYCLES9),
                 ntc: adc::Input::new(adc::Channel::IN2, adc::SampleTime::CYCLES9),
                 vbus: adc::Input::new(adc::Channel::IN1, adc::SampleTime::CYCLES9),

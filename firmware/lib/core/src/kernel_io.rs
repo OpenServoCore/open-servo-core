@@ -14,13 +14,28 @@ pub struct ConfigDefaults {
     pub dxl_baud: BaudRate,
 }
 
-pub trait Board {
+/// What the kernel control loop reads from the board hardware.
+pub trait Sensors {
+    /// One full ADC/encoder frame, called from the kernel tick.
+    fn sample(&mut self, inputs: &FrameInputs) -> SampleFrame;
+}
+
+/// What the kernel control loop writes to the motor driver.
+pub trait Motor {
+    fn write(&mut self, cmd: MotorCmd);
+}
+
+/// Bag of chip-side capabilities the kernel needs. Splits into disjoint
+/// sub-trait borrows so the kernel can hold both at once.
+pub trait KernelIo {
+    type Sensors: Sensors;
+    type Motor: Motor;
+
+    /// Servo-wide capability flags (e.g., HAS_MOTOR_ENCODER).
     fn caps(&self) -> Capabilities {
         Capabilities::default()
     }
-    fn sample(&mut self, inputs: &FrameInputs) -> SampleFrame;
-    fn write_motor(&mut self, cmd: MotorCmd);
-    fn pulse_tick_indicator(&mut self) {}
+    fn parts(&mut self) -> (&mut Self::Sensors, &mut Self::Motor);
 }
 
 #[derive(Copy, Clone, Debug)]

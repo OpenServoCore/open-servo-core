@@ -11,7 +11,7 @@ use crate::statics::{
     DXL_TX_BUF, DXL_TX_EN, SHARED,
 };
 
-use super::config::{BoardWiring, CurrentSenseConfig, Duplex, DxlBus, MotorConfig, Precomputed, Sensors};
+use super::config::{AdcPins, BoardWiring, CurrentSenseConfig, Duplex, DxlBus, MotorConfig, Precomputed};
 
 const OPA_SETTLE_MS: u32 = 1;
 const VCAL_SAMPLE_TIME: adc::SampleTime = adc::SampleTime::CYCLES9;
@@ -61,7 +61,7 @@ pub(super) fn run(
 }
 
 // Order must mirror the scan tail in `configure_adc_dma_scan`.
-fn sensor_inputs(s: &Sensors) -> [adc::Input; ADC_SENSOR_COUNT] {
+fn sensor_inputs(s: &AdcPins) -> [adc::Input; ADC_SENSOR_COUNT] {
     [s.pos, s.ntc, s.vbus, s.vmotor.0, s.vmotor.1]
 }
 
@@ -148,7 +148,7 @@ fn bring_up_analog_chain(cs: &CurrentSenseConfig) {
     delay_ms(OPA_SETTLE_MS);
 }
 
-fn configure_adc_dma_scan(sensors: &Sensors, opa_out_sample_time: adc::SampleTime) {
+fn configure_adc_dma_scan(sensors: &AdcPins, opa_out_sample_time: adc::SampleTime) {
     adc::set_sample_time(adc::Channel::OpaOut, opa_out_sample_time);
     adc::set_sample_time(sensors.pos.channel, sensors.pos.sample_time);
     adc::set_sample_time(sensors.ntc.channel, sensors.ntc.sample_time);

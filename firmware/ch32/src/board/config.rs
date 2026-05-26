@@ -70,7 +70,7 @@ pub struct CurrentSenseConfig {
 }
 
 #[derive(Copy, Clone)]
-pub struct Sensors {
+pub struct AdcPins {
     pub pos: adc::Input,
     pub ntc: adc::Input,
     pub vbus: adc::Input,
@@ -103,7 +103,7 @@ pub struct Calibration {
     pub ntc: NtcCal,
 }
 
-/// Schematic-fixed wiring; consumed during `Ch32Board::new` and not retained.
+/// Schematic-fixed wiring; consumed during `Ch32KernelIo::new` and not retained.
 #[derive(Copy, Clone)]
 pub struct BoardWiring {
     pub stat_led: Pin,
@@ -112,7 +112,7 @@ pub struct BoardWiring {
     pub tim2_remap: Tim2Mapping,
     pub motor: MotorConfig,
     pub current_sense: CurrentSenseConfig,
-    pub sensors: Sensors,
+    pub sensors: AdcPins,
     pub dxl: DxlBus,
 }
 
