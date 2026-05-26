@@ -3,9 +3,8 @@ use dxl_protocol::{FastSlot, FastSlotBody, write_fast_slot};
 
 use crate::{Error, RegionStorage, Router, Shared, StagedWrites, StatusReturnLevel};
 
-use super::io::SnoopWindow;
-use super::DxlIo;
 use super::slot::{bulk_slot_delay_us, bytes_to_us, slot_period_us};
+use super::{DeviceControl, DxlBus};
 
 const MAX_READ: usize = 128;
 const MAX_WRITE: usize = 128;
@@ -19,15 +18,26 @@ fn error_to_status(e: Error) -> StatusError {
     }
 }
 
-pub(super) struct Dispatcher<'a, D: DxlIo> {
+pub(super) struct Dispatcher<'a, B: DxlBus, D: DeviceControl> {
     shared: &'a Shared,
-    io: &'a mut D,
+    bus: &'a mut B,
+    device: &'a mut D,
     staged: &'a mut StagedWrites,
 }
 
-impl<'a, D: DxlIo> Dispatcher<'a, D> {
-    pub(super) fn new(shared: &'a Shared, io: &'a mut D, staged: &'a mut StagedWrites) -> Self {
-        Self { shared, io, staged }
+impl<'a, B: DxlBus, D: DeviceControl> Dispatcher<'a, B, D> {
+    pub(super) fn new(
+        shared: &'a Shared,
+        bus: &'a mut B,
+        device: &'a mut D,
+        staged: &'a mut StagedWrites,
+    ) -> Self {
+        Self {
+            shared,
+            bus,
+            device,
+            staged,
+        }
     }
 
     pub(super) fn dispatch(&mut self, packet: Packet<'_>, parsed_end: u32) {
@@ -90,14 +100,14 @@ impl<'a, D: DxlIo> Dispatcher<'a, D> {
         if self.level() < min_level {
             return;
         }
-        let buf = self.io.tx_buf();
+        let buf = self.bus.reply_buffer();
         buf.truncate(0);
         let packet = Packet::Status(StatusPacket::new(id, error.as_u8(), params));
         if write(buf, &packet).is_err() {
             buf.truncate(0);
             return;
         }
-        self.io.start_tx();
+        self.bus.send();
     }
 
     fn send_status_after(
@@ -106,20 +116,19 @@ impl<'a, D: DxlIo> Dispatcher<'a, D> {
         error: StatusError,
         params: &[u8],
         min_level: StatusReturnLevel,
-        idle_tick: u32,
         delay_us: u32,
     ) {
         if self.level() < min_level {
             return;
         }
-        let buf = self.io.tx_buf();
+        let buf = self.bus.reply_buffer();
         buf.truncate(0);
         let packet = Packet::Status(StatusPacket::new(id, error.as_u8(), params));
         if write(buf, &packet).is_err() {
             buf.truncate(0);
             return;
         }
-        self.io.start_tx_after(idle_tick, delay_us);
+        self.bus.send_after(delay_us);
     }
 
     fn handle_ping(&mut self, p: &PingPacket) {
@@ -218,7 +227,7 @@ impl<'a, D: DxlIo> Dispatcher<'a, D> {
     }
 
     fn handle_factory_reset(&mut self, p: &FactoryResetPacket) {
-        // TODO: reset CONFIG (and per-mode CALIB) to defaults, then reboot.
+        // TODO: erase CALIB region via Flash trait, then device.reboot().
         self.reply_unsupported(p.id);
     }
 
@@ -230,16 +239,16 @@ impl<'a, D: DxlIo> Dispatcher<'a, D> {
         if direct {
             self.send_status(id, StatusError::None, &[], StatusReturnLevel::All);
         }
-        self.io.request_reboot(mode);
+        self.device.reboot(mode);
     }
 
     fn handle_clear(&mut self, p: &ClearPacket<'_>) {
-        // TODO: clear multi-turn revolution counter (option 0x01, key "CLR\0").
+        // TODO: verify CLR\0 key, then ask kernel to zero multi-turn revolution count.
         self.reply_unsupported(p.id);
     }
 
     fn handle_control_table_backup(&mut self, p: &ControlTableBackupPacket<'_>) {
-        // TODO: store/restore CONFIG snapshot to a third flash slot (key "CTRL").
+        // TODO: verify CTRL key, then serialize CONFIG to a flash slot via Flash trait.
         self.reply_unsupported(p.id);
     }
 
@@ -248,9 +257,9 @@ impl<'a, D: DxlIo> Dispatcher<'a, D> {
         let Some(slot) = p.ids.iter().position(|id| id == our_id) else {
             return;
         };
-        let Some(idle_tick) = self.io.idle_for(parsed_end) else {
+        if !self.bus.request_complete(parsed_end) {
             return;
-        };
+        }
 
         let delay_us = (slot as u32) * slot_period_us(self.baud(), p.length);
 
@@ -261,7 +270,6 @@ impl<'a, D: DxlIo> Dispatcher<'a, D> {
                 StatusError::DataRange,
                 &[],
                 StatusReturnLevel::Read,
-                idle_tick,
                 delay_us,
             );
             return;
@@ -274,7 +282,6 @@ impl<'a, D: DxlIo> Dispatcher<'a, D> {
                 StatusError::None,
                 &buf[..len],
                 StatusReturnLevel::Read,
-                idle_tick,
                 delay_us,
             ),
             Err(e) => self.send_status_after(
@@ -282,7 +289,6 @@ impl<'a, D: DxlIo> Dispatcher<'a, D> {
                 error_to_status(e),
                 &[],
                 StatusReturnLevel::Read,
-                idle_tick,
                 delay_us,
             ),
         }
@@ -314,9 +320,9 @@ impl<'a, D: DxlIo> Dispatcher<'a, D> {
             return;
         };
 
-        let Some(idle_tick) = self.io.idle_for(parsed_end) else {
+        if !self.bus.request_complete(parsed_end) {
             return;
-        };
+        }
 
         let delay_us = bulk_slot_delay_us(body, our_id, self.baud()).unwrap_or(0);
 
@@ -327,7 +333,6 @@ impl<'a, D: DxlIo> Dispatcher<'a, D> {
                 StatusError::DataRange,
                 &[],
                 StatusReturnLevel::Read,
-                idle_tick,
                 delay_us,
             );
             return;
@@ -340,7 +345,6 @@ impl<'a, D: DxlIo> Dispatcher<'a, D> {
                 StatusError::None,
                 &buf[..len],
                 StatusReturnLevel::Read,
-                idle_tick,
                 delay_us,
             ),
             Err(e) => self.send_status_after(
@@ -348,7 +352,6 @@ impl<'a, D: DxlIo> Dispatcher<'a, D> {
                 error_to_status(e),
                 &[],
                 StatusReturnLevel::Read,
-                idle_tick,
                 delay_us,
             ),
         }
@@ -372,9 +375,9 @@ impl<'a, D: DxlIo> Dispatcher<'a, D> {
         if len == 0 || len > MAX_READ {
             return;
         }
-        let Some(idle_tick) = self.io.idle_for(parsed_end) else {
+        if !self.bus.request_complete(parsed_end) {
             return;
-        };
+        }
 
         // Zero-fill on error keeps slot length-correct; error byte signals it.
         let mut buf = [0u8; MAX_READ];
@@ -403,7 +406,7 @@ impl<'a, D: DxlIo> Dispatcher<'a, D> {
             FastSlotPosition::Middle => FastSlot::Middle(body),
             FastSlotPosition::Last => FastSlot::Last(body),
         };
-        let tx_buf = self.io.tx_buf();
+        let tx_buf = self.bus.reply_buffer();
         tx_buf.truncate(0);
         if write_fast_slot(tx_buf, &slot).is_err() {
             tx_buf.truncate(0);
@@ -414,21 +417,13 @@ impl<'a, D: DxlIo> Dispatcher<'a, D> {
         let fire_us = bytes_to_us(p.bytes_before(info.our_slot), baud);
         match info.position() {
             FastSlotPosition::Only => {
-                self.io.start_fast_tx_after(idle_tick, fire_us, None);
+                self.bus.send_with_snoop_crc(fire_us, None);
             }
             FastSlotPosition::Last => {
-                let open_us = bytes_to_us(p.bytes_before(info.n_slots - 2), baud);
-                self.io.start_fast_tx_after(
-                    idle_tick,
-                    fire_us,
-                    Some(SnoopWindow {
-                        open_us,
-                        rx_start: parsed_end,
-                    }),
-                );
+                self.bus.send_with_snoop_crc(fire_us, Some(parsed_end));
             }
             FastSlotPosition::First | FastSlotPosition::Middle => {
-                self.io.start_tx_after(idle_tick, fire_us);
+                self.bus.send_after(fire_us);
             }
         }
     }

@@ -2,30 +2,42 @@ use dxl_protocol::prelude::WriteBuf;
 
 use crate::{BootMode, RxSnapshot};
 
-/// Inter-slave CRC snoop window for Fast Sync/Bulk Read `Last` slots.
-#[derive(Copy, Clone, Debug, Eq, PartialEq)]
-pub struct SnoopWindow {
-    /// Offset from `idle_tick` at which the snoop opens (slot N-2 start).
-    pub open_us: u32,
-    /// Cumulative RX-ring byte offset where the snoop CRC begins.
-    pub rx_start: u32,
+/// What the DXL service layer reads from / writes to the bus, plus the
+/// minimal scheduling primitives slot-timed replies need.
+pub trait DxlBus {
+    type ReplyBuffer: WriteBuf;
+
+    fn received(&self) -> RxSnapshot<'_>;
+    fn reply_buffer(&mut self) -> &mut Self::ReplyBuffer;
+
+    /// True once the bus has been idle past `request_end` (the request finished
+    /// arriving). Stashes the resolved idle moment internally so any following
+    /// `send_after*` in this dispatch fires at the right deadline. Callers
+    /// MUST skip slot-timed replies when this returns `false`.
+    fn request_complete(&mut self, request_end: u32) -> bool;
+
+    fn send(&mut self);
+    /// `delay_us` measured from the request's trailing idle (stashed by the
+    /// preceding `request_complete`).
+    fn send_after(&mut self, delay_us: u32);
+    /// Same timing as `send_after`, plus: before TX, patch the reply's trailing
+    /// two bytes with a CRC of inter-slave bytes received from `snoop_from`
+    /// onward. `None` ⇒ Only-slot path (no predecessors to snoop).
+    fn send_with_snoop_crc(&mut self, delay_us: u32, snoop_from: Option<u32>);
 }
 
-pub trait DxlIo {
-    type TxBuf: WriteBuf;
+/// Lifecycle commands the dispatcher delivers to the device (reboot today;
+/// factory_reset / control_table_backup / clear when those handlers land).
+pub trait DeviceControl {
+    /// Reboot, honored after any in-flight TX drains.
+    fn reboot(&mut self, mode: BootMode);
+}
 
-    fn rx_snapshot(&self) -> RxSnapshot<'_>;
-    fn tx_buf(&mut self) -> &mut Self::TxBuf;
-    fn start_tx(&mut self);
-    fn start_tx_after(&mut self, idle_tick: u32, delay_us: u32);
-    /// SysTick value at the trailing IDLE of the packet whose final byte sits
-    /// at cumulative byte offset `parsed_end`. `None` when no stamp matches —
-    /// packet still mid-burst or stamp evicted by a later IDLE. Callers must
-    /// skip slot-timed replies when this returns `None`.
-    fn idle_for(&self, parsed_end: u32) -> Option<u32>;
-    /// Fire path for Fast Sync/Bulk Read. `tx_buf` must hold payload (and,
-    /// when `snoop` is `Some`, a trailing 2-byte CRC placeholder). `None` =
-    /// `Only` slot: no predecessors to snoop, fire directly.
-    fn start_fast_tx_after(&mut self, idle_tick: u32, fire_us: u32, snoop: Option<SnoopWindow>);
-    fn request_reboot(&mut self, mode: BootMode);
+/// The chip-side bundle of capabilities the services layer needs. Splits into
+/// disjoint sub-trait borrows so the dispatcher can hold bus + device at once.
+pub trait ServicesIo {
+    type Bus: DxlBus;
+    type Device: DeviceControl;
+
+    fn parts(&mut self) -> (&mut Self::Bus, &mut Self::Device);
 }

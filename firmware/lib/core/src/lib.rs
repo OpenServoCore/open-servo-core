@@ -28,6 +28,6 @@ pub use regions::{
 };
 pub use ring_reader::{RingReader, RxSnapshot};
 pub use sample_frame::{FrameInputs, RawSamples, SampleFrame};
-pub use services::dxl::{Dxl, DxlIo, SnoopWindow};
-pub use services::{Services, ServicesIo};
+pub use services::dxl::{DeviceControl, Dxl, DxlBus, ServicesIo};
+pub use services::Services;
 pub use shared::Shared;

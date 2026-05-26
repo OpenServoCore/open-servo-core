@@ -2,7 +2,6 @@ use core::cell::SyncUnsafeCell;
 
 use ch32_metapac::USART1;
 use dxl_protocol::crc16_continue;
-use osc_core::SnoopWindow;
 
 use crate::hal::{dma, gpio, systick, usart};
 use crate::statics::{DXL_RX_BUF, DXL_RX_BUF_LEN, DXL_TX_BUF, DXL_TX_EN};
@@ -11,7 +10,6 @@ use crate::statics::{DXL_RX_BUF, DXL_RX_BUF_LEN, DXL_TX_BUF, DXL_TX_EN};
 enum Stage {
     Idle,
     WaitingPlain,
-    WaitingSwitch,
     WaitingFire,
 }
 
@@ -37,7 +35,7 @@ const RX_MASK_U32: u32 = (DXL_RX_BUF_LEN - 1) as u32;
 /// TX_EN or enable the DMA channel — `fire_now` does both at the slot deadline
 /// so the bus stays in RX during any preceding snoop window.
 pub fn arm_tx() -> bool {
-    // SAFETY: caller has &mut Ch32DxlIo (sole writer to DXL_TX_BUF).
+    // SAFETY: caller has &mut Ch32Bus (sole writer to DXL_TX_BUF).
     let len = unsafe { (*DXL_TX_BUF.get()).as_slice().len() };
     if len == 0 {
         return false;
@@ -84,7 +82,10 @@ pub fn start_plain_after(idle_tick: u32, delay_us: u32) {
     }
 }
 
-pub fn start_fast_after(idle_tick: u32, fire_us: u32, snoop: Option<SnoopWindow>) {
+/// `snoop_from = Some(rx_offset)` arms RXNE-driven CRC accumulation from idle
+/// to fire, then patches the trailing 2-byte placeholder. `None` ⇒ Only slot,
+/// no inter-slave bytes to snoop.
+pub fn start_fast_after(idle_tick: u32, fire_us: u32, snoop_from: Option<u32>) {
     systick::set_irq(false);
     systick::clear_match();
 
@@ -96,24 +97,20 @@ pub fn start_fast_after(idle_tick: u32, fire_us: u32, snoop: Option<SnoopWindow>
     let fire_needed = fire_us.saturating_mul(systick::TICKS_PER_US);
     let fire_tick = idle_tick.wrapping_add(fire_needed);
 
-    let Some(snoop) = snoop else {
-        // Only slot — no predecessors to snoop, fire directly.
-        set_state(Stage::WaitingFire, fire_tick, 0, 0);
-        systick::set_cmp(fire_tick);
-        systick::set_irq(true);
-        if systick::ticks().wrapping_sub(idle_tick) >= fire_needed {
-            on_systick();
+    match snoop_from {
+        Some(rx_start) => {
+            let snoop_head = (rx_start & RX_MASK_U32) as u16;
+            set_state(Stage::WaitingFire, fire_tick, snoop_head, 0);
+            usart::set_rxne_irq(USART1, true);
         }
-        return;
-    };
+        None => {
+            set_state(Stage::WaitingFire, fire_tick, 0, 0);
+        }
+    }
 
-    let snoop_head = (snoop.rx_start & RX_MASK_U32) as u16;
-    let switch_needed = snoop.open_us.saturating_mul(systick::TICKS_PER_US);
-    let switch_tick = idle_tick.wrapping_add(switch_needed);
-    set_state(Stage::WaitingSwitch, fire_tick, snoop_head, 0);
-    systick::set_cmp(switch_tick);
+    systick::set_cmp(fire_tick);
     systick::set_irq(true);
-    if systick::ticks().wrapping_sub(idle_tick) >= switch_needed {
+    if systick::ticks().wrapping_sub(idle_tick) >= fire_needed {
         on_systick();
     }
 }
@@ -131,30 +128,12 @@ pub fn on_systick() {
             set_stage(Stage::Idle);
             fire_now();
         }
-        Stage::WaitingSwitch => {
-            // Bulk-CRC every byte landed since the request IDLE (slots 0..N-3
-            // and any prefix of N-2 already arrived); then enable RXNEIE so
-            // remaining N-2 bytes accumulate one-by-one until FIRE.
-            accumulate_snoop();
-            usart::set_rxne_irq(USART1, true);
-            // SAFETY: see top-of-fn note.
-            let fire_tick = unsafe {
-                let s = &mut *STATE.get();
-                s.stage = Stage::WaitingFire;
-                s.fire_tick
-            };
-            systick::set_cmp(fire_tick);
-            systick::set_irq(true);
-            if (systick::ticks().wrapping_sub(fire_tick) as i32) >= 0 {
-                on_systick();
-            }
-        }
         Stage::WaitingFire => {
             usart::set_rxne_irq(USART1, false);
             // Drain any byte that landed between the last RXNE and now.
             accumulate_snoop();
             // Enable TX FIRST — jitter cap is one byte time (3.33 µs at
-            // 3 Mbaud), CRC compute below races the DMA pre-fetch with
+            // 3 Mbaud); CRC compute below races the DMA pre-fetch with
             // (payload_end - 1) byte-times of slack.
             set_stage(Stage::Idle);
             fire_now();
@@ -258,19 +237,16 @@ mod tests {
 
     #[test]
     fn non_wrap_walk_matches_contiguous_crc() {
-        // head=2..write_pos=5 covers bytes [0x30, 0x40, 0x50].
         assert_eq!(ring_crc(0, &RING, 2, 5), crc16(&[0x30, 0x40, 0x50]));
     }
 
     #[test]
     fn wrap_walk_stitches_tail_and_head() {
-        // head=6, write_pos=2 covers [0x70, 0x80, 0x10, 0x20] across the wrap.
         assert_eq!(ring_crc(0, &RING, 6, 2), crc16(&[0x70, 0x80, 0x10, 0x20]));
     }
 
     #[test]
     fn seed_chaining_matches_single_pass() {
-        // Walking 1..4 then 4..7 must equal a single walk over 1..7.
         let mid = ring_crc(0, &RING, 1, 4);
         let chained = ring_crc(mid, &RING, 4, 7);
         assert_eq!(chained, ring_crc(0, &RING, 1, 7));
@@ -278,7 +254,6 @@ mod tests {
 
     #[test]
     fn seed_chaining_survives_wrap_boundary() {
-        // Tail-of-ring then head-of-ring must equal one wrap-spanning walk.
         let pre = ring_crc(0, &RING, 5, 0);
         let post = ring_crc(pre, &RING, 0, 3);
         assert_eq!(post, ring_crc(0, &RING, 5, 3));

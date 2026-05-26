@@ -2,8 +2,8 @@ use dxl_protocol::prelude::{ParseError, parse_one};
 
 use crate::{RingReader, Shared, StagedWrites};
 
-use super::DxlIo;
 use super::dispatcher::Dispatcher;
+use super::{DxlBus, ServicesIo};
 
 const DXL_SCRATCH_LEN: usize = 256;
 
@@ -20,11 +20,12 @@ impl Dxl {
         }
     }
 
-    pub fn poll<D: DxlIo>(&mut self, shared: &Shared, io: &mut D) {
-        let snap = io.rx_snapshot();
+    pub fn poll<I: ServicesIo>(&mut self, shared: &Shared, io: &mut I) {
+        let (bus, device) = io.parts();
+        let snap = bus.received();
         self.reader.ingest(snap.ring(), snap.write_pos());
 
-        let mut d = Dispatcher::new(shared, io, &mut self.staged);
+        let mut d = Dispatcher::new(shared, bus, device, &mut self.staged);
         loop {
             match parse_one(self.reader.peek()) {
                 Ok((packet, used)) => {
