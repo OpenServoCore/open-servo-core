@@ -31,7 +31,11 @@ const fn divider_q32(d: &Divider) -> u32 {
     let num = sum << 32;
     let den = ADC_MAX_RAW as u64 * bot;
     let q = num / den;
-    if q > u32::MAX as u64 { u32::MAX } else { q as u32 }
+    if q > u32::MAX as u64 {
+        u32::MAX
+    } else {
+        q as u32
+    }
 }
 
 const fn shunt_q32(gain_factor: u16, r_mohm: u16) -> u32 {
@@ -40,7 +44,11 @@ const fn shunt_q32(gain_factor: u16, r_mohm: u16) -> u32 {
     let num = 1000u64 << 32;
     let den = ADC_MAX_RAW as u64 * g * r;
     let q = num / den;
-    if q > u32::MAX as u64 { u32::MAX } else { q as u32 }
+    if q > u32::MAX as u64 {
+        u32::MAX
+    } else {
+        q as u32
+    }
 }
 
 // UG fires TRGO at CNT=0 before CEN=1, so the trough scan lands first.

@@ -27,8 +27,8 @@ pub use regions::{
 };
 pub use ring_reader::{RingReader, RxSnapshot};
 pub use sample_frame::{FrameInputs, RawSamples, SampleFrame};
-pub use services::dxl::Dxl;
 pub use services::Services;
+pub use services::dxl::Dxl;
 pub use shared::Shared;
 pub use traits::{
     Capabilities, DecayMode, DeviceControl, DxlBus, KernelIo, Motor, MotorCmd, Sensors, ServicesIo,

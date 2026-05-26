@@ -11,7 +11,9 @@ use crate::statics::{
     DXL_TX_BUF, DXL_TX_EN, SHARED,
 };
 
-use super::config::{AdcPins, BoardWiring, CurrentSenseConfig, Duplex, DxlBus, MotorConfig, Precomputed};
+use super::config::{
+    AdcPins, BoardWiring, CurrentSenseConfig, Duplex, DxlBus, MotorConfig, Precomputed,
+};
 
 const OPA_SETTLE_MS: u32 = 1;
 const VCAL_SAMPLE_TIME: adc::SampleTime = adc::SampleTime::CYCLES9;

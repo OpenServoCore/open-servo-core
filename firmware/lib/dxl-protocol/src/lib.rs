@@ -16,8 +16,8 @@ pub use buf::WriteBuf;
 pub use bytes::{ByteIter, Bytes, Overflow};
 pub use crc::{crc16, crc16_continue};
 pub use fast::{
-    FAST_SLOT0_PREFIX, FAST_SLOT_PREFIX, FastBulkTupleIter, FastReadPacket, FastSlot,
-    FastSlotBody, FastSlotInfo, FastSlotPosition, write_fast_slot,
+    FAST_SLOT_PREFIX, FAST_SLOT0_PREFIX, FastBulkTupleIter, FastReadPacket, FastSlot, FastSlotBody,
+    FastSlotInfo, FastSlotPosition, write_fast_slot,
 };
 pub use instruction::Instruction;
 pub use packet::{
