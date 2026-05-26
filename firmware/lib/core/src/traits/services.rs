@@ -1,6 +1,6 @@
 use dxl_protocol::prelude::WriteBuf;
 
-use crate::{BootMode, RxSnapshot};
+use crate::{BaudRate, BootMode, RxSnapshot};
 
 /// What the DXL service layer reads from / writes to the bus, plus the
 /// minimal scheduling primitives slot-timed replies need.
@@ -24,6 +24,12 @@ pub trait DxlBus {
     /// two bytes with a CRC of inter-slave bytes received from `snoop_from`
     /// onward. `None` ⇒ Only-slot path (no predecessors to snoop).
     fn send_with_snoop_crc(&mut self, delay_us: u32, snoop_from: Option<u32>);
+
+    /// Request a wire-rate change. Called after the Status reply for the
+    /// triggering WRITE has been queued but before it finishes transmitting —
+    /// implementations MUST defer the actual UART retune until TX completes,
+    /// otherwise the host can't decode the reply. Default no-op.
+    fn set_baud(&mut self, _rate: BaudRate) {}
 }
 
 /// Lifecycle commands the dispatcher delivers to the device (reboot today;

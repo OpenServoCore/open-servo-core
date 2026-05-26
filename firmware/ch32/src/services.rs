@@ -1,13 +1,16 @@
 use core::sync::atomic::Ordering;
 
 use heapless::Vec;
-use osc_core::{BootMode, DeviceControl, DxlBus, RxSnapshot, ServicesIo};
+use osc_core::{BaudRate, BootMode, DeviceControl, DxlBus, RxSnapshot, ServicesIo};
 
 use crate::dxl_fast;
+use crate::hal::clocks::PCLK_HZ;
+use crate::hal::usart;
 use crate::hal::{flash, pfic};
 use crate::idle_ring;
 use crate::statics::{
-    DXL_REBOOT_PENDING, DXL_RX_BUF, DXL_RX_WRITE_POS, DXL_TX_BUF, DXL_TX_BUF_LEN,
+    DXL_BAUD_PENDING_BRR, DXL_REBOOT_PENDING, DXL_RX_BUF, DXL_RX_WRITE_POS, DXL_TX_BUF,
+    DXL_TX_BUF_LEN,
 };
 
 /// Single &mut writer: the main loop holding the `Services` struct.
@@ -77,6 +80,11 @@ impl DxlBus for Ch32Bus {
             return;
         };
         dxl_fast::start_fast_after(idle_tick, delay_us, snoop_from);
+    }
+
+    fn set_baud(&mut self, rate: BaudRate) {
+        let brr = usart::brr(PCLK_HZ, rate.as_hz());
+        DXL_BAUD_PENDING_BRR.store(brr, Ordering::Release);
     }
 }
 

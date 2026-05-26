@@ -1,6 +1,7 @@
 use dxl_protocol::prelude::*;
 use dxl_protocol::{FastSlot, FastSlotBody, write_fast_slot};
 
+use crate::regions::config;
 use crate::traits::{DeviceControl, DxlBus};
 use crate::{Error, RegionStorage, Router, Shared, StagedWrites, StatusReturnLevel};
 
@@ -16,6 +17,11 @@ fn error_to_status(e: Error) -> StatusError {
         Error::AccessError => StatusError::Access,
         _ => StatusError::DataRange,
     }
+}
+
+fn touches_baud(addr: u16, len: usize) -> bool {
+    let baud_addr = config::addr::comms::BAUD_RATE_IDX;
+    addr <= baud_addr && (addr as u32) + (len as u32) > baud_addr as u32
 }
 
 pub(super) struct Dispatcher<'a, B: DxlBus, D: DeviceControl> {
@@ -190,7 +196,13 @@ impl<'a, B: DxlBus, D: DeviceControl> Dispatcher<'a, B, D> {
             .shared
             .table
             .write_bytes(p.address, &buf[..len], self.staged);
+        let baud_changed = result.is_ok() && touches_baud(p.address, len);
         self.reply_table_result(id, direct, result);
+        if baud_changed {
+            // reply queued, bus impl defers retune until TC.
+            let new_rate = self.shared.table.config.with(|c| c.comms.baud_rate_idx);
+            self.bus.set_baud(new_rate);
+        }
     }
 
     fn handle_reg_write(&mut self, p: &RegWritePacket<'_>) {

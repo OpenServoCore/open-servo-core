@@ -2,7 +2,7 @@ use core::cell::SyncUnsafeCell;
 use core::mem::MaybeUninit;
 use heapless::Vec;
 use osc_core::{Kernel, Services, Shared};
-use portable_atomic::{AtomicBool, AtomicU16};
+use portable_atomic::{AtomicBool, AtomicU16, AtomicU32};
 
 use crate::board::{Ch32KernelIo, TxEn};
 use crate::hal::pfic;
@@ -38,6 +38,11 @@ pub static DXL_TX_EN: SyncUnsafeCell<Option<TxEn>> = SyncUnsafeCell::new(None);
 
 /// Set by `Ch32Device::reboot`; USART1 TC ISR fires the soft reset after TX drains.
 pub static DXL_REBOOT_PENDING: AtomicBool = AtomicBool::new(false);
+
+/// Pending USART1 BRR change requested by a control-table BAUD write. 0 = none.
+/// TC ISR consumes after clearing DXL_TX_BUF so the Status reply ships at the
+/// old wire rate (host can still decode), then the next byte is at the new rate.
+pub static DXL_BAUD_PENDING_BRR: AtomicU32 = AtomicU32::new(0);
 
 pub static SHARED: Shared = Shared::new();
 

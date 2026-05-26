@@ -21,6 +21,15 @@ pub fn init(r: Regs, brr: u32, half_duplex: bool) {
     r.ctlr1().modify(|w| w.set_ue(true));
 }
 
+/// Bounces UE around a BRR change. Caller must ensure no TX/RX is in flight —
+/// retuning mid-byte will garbage the wire.
+#[inline]
+pub fn set_baud(r: Regs, brr: u32) {
+    r.ctlr1().modify(|w| w.set_ue(false));
+    r.brr().write_value(ch32_metapac::usart::regs::Brr(brr));
+    r.ctlr1().modify(|w| w.set_ue(true));
+}
+
 #[inline]
 pub fn set_dma_tx(r: Regs, enable: bool) {
     r.ctlr3().modify(|w| w.set_dmat(enable));

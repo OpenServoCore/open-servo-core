@@ -6,7 +6,8 @@ use crate::dxl_fast;
 use crate::hal::{dma, gpio, pfic, systick, usart};
 use crate::idle_ring;
 use crate::statics::{
-    DXL_REBOOT_PENDING, DXL_RX_BUF_LEN, DXL_RX_WRITE_POS, DXL_TX_BUF, DXL_TX_EN, KERNEL, SHARED,
+    DXL_BAUD_PENDING_BRR, DXL_REBOOT_PENDING, DXL_RX_BUF_LEN, DXL_RX_WRITE_POS, DXL_TX_BUF,
+    DXL_TX_EN, KERNEL, SHARED,
 };
 
 /// ADC DMA TC handler body — wire into the vector table via [`crate::install_isrs!`].
@@ -73,6 +74,10 @@ fn on_usart1_tc() {
     let buf = unsafe { &mut *DXL_TX_BUF.get() };
     buf.clear();
     dxl_fast::cancel();
+    let pending_brr = DXL_BAUD_PENDING_BRR.swap(0, Ordering::AcqRel);
+    if pending_brr != 0 {
+        usart::set_baud(USART1, pending_brr);
+    }
     if DXL_REBOOT_PENDING.load(Ordering::Acquire) {
         pfic::software_reset();
     }
