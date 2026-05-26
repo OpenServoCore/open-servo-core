@@ -30,7 +30,7 @@ pub use telemetry::{
     TelemetryConverted, TelemetryFault, TelemetryIntermediaries, TelemetryRaw, TelemetryRegs,
 };
 
-use crate::kernel_io::ConfigDefaults;
+use crate::regions::config::ConfigDefaults;
 use control_table::Table;
 
 pub const CONFIG_REGION_SIZE: usize = 512;

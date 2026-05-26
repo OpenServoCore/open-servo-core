@@ -1,4 +1,5 @@
-use crate::{KernelIo, SampleFrame, Shared};
+use crate::traits::KernelIo;
+use crate::{SampleFrame, Shared};
 
 /// Runs in the PWM ISR; one `on_tick` per period.
 pub struct Kernel<I: KernelIo> {

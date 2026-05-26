@@ -1,9 +1,10 @@
 use dxl_protocol::prelude::*;
 use heapless::Vec;
 
+use crate::traits::{DeviceControl, DxlBus, ServicesIo};
 use crate::{BootMode, RegionStorage, RxSnapshot, Shared, StatusReturnLevel};
 
-use super::{DeviceControl, Dxl, DxlBus, ServicesIo};
+use super::Dxl;
 
 struct FakeBus {
     rx_ring: [u8; 256],

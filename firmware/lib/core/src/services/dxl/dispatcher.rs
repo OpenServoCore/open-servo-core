@@ -1,10 +1,10 @@
 use dxl_protocol::prelude::*;
 use dxl_protocol::{FastSlot, FastSlotBody, write_fast_slot};
 
+use crate::traits::{DeviceControl, DxlBus};
 use crate::{Error, RegionStorage, Router, Shared, StagedWrites, StatusReturnLevel};
 
 use super::slot::{bulk_slot_delay_us, bytes_to_us, slot_period_us};
-use super::{DeviceControl, DxlBus};
 
 const MAX_READ: usize = 128;
 const MAX_WRITE: usize = 128;

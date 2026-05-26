@@ -1,18 +1,6 @@
 use osc_units::Effort;
 
-use crate::regions::config::BaudRate;
 use crate::{FrameInputs, SampleFrame};
-
-/// Stamped into `ControlTable.config` pre-IRQ; thereafter host-owned.
-#[derive(Copy, Clone, Debug, Default)]
-pub struct ConfigDefaults {
-    pub pos_min_phys_urad: i32,
-    pub pos_max_phys_urad: i32,
-    /// VDD-at-chip-pin in mV; the v006 ADC reference is VDD itself.
-    pub vdd_mv: u16,
-    pub dxl_id: u8,
-    pub dxl_baud: BaudRate,
-}
 
 /// What the kernel control loop reads from the board hardware.
 pub trait Sensors {

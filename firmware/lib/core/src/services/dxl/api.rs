@@ -1,9 +1,9 @@
 use dxl_protocol::prelude::{ParseError, parse_one};
 
+use crate::traits::{DxlBus, ServicesIo};
 use crate::{RingReader, Shared, StagedWrites};
 
 use super::dispatcher::Dispatcher;
-use super::{DxlBus, ServicesIo};
 
 const DXL_SCRATCH_LEN: usize = 256;
 

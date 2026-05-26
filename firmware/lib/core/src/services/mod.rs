@@ -1,7 +1,8 @@
 pub mod dxl;
 
+use crate::traits::ServicesIo;
 use crate::Shared;
-use dxl::{Dxl, ServicesIo};
+use dxl::Dxl;
 
 pub struct Services<I: ServicesIo> {
     pub io: I,

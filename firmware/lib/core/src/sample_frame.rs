@@ -55,7 +55,7 @@ pub struct RawSamples {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::kernel_io::ConfigDefaults;
+    use crate::regions::config::ConfigDefaults;
 
     #[test]
     fn snapshot_reads_back_seeded_defaults() {
