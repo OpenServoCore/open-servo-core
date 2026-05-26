@@ -2,6 +2,7 @@ use core::cell::SyncUnsafeCell;
 
 use ch32_metapac::USART1;
 use dxl_protocol::crc16_continue;
+use osc_core::SnoopWindow;
 
 use crate::hal::{dma, gpio, systick, usart};
 use crate::statics::{DXL_RX_BUF, DXL_RX_BUF_LEN, DXL_TX_BUF, DXL_TX_EN};
@@ -83,7 +84,7 @@ pub fn start_plain_after(idle_tick: u32, delay_us: u32) {
     }
 }
 
-pub fn start_fast_after(idle_tick: u32, switch_us: u32, fire_us: u32, frame_end: u32) {
+pub fn start_fast_after(idle_tick: u32, fire_us: u32, snoop: Option<SnoopWindow>) {
     systick::set_irq(false);
     systick::clear_match();
 
@@ -94,20 +95,20 @@ pub fn start_fast_after(idle_tick: u32, switch_us: u32, fire_us: u32, frame_end:
 
     let fire_needed = fire_us.saturating_mul(systick::TICKS_PER_US);
     let fire_tick = idle_tick.wrapping_add(fire_needed);
-    let snoop_head = (frame_end & RX_MASK_U32) as u16;
 
-    // switch_us == fire_us signals Only — no predecessors, skip snoop.
-    if switch_us == fire_us {
-        set_state(Stage::WaitingFire, fire_tick, snoop_head, 0);
+    let Some(snoop) = snoop else {
+        // Only slot — no predecessors to snoop, fire directly.
+        set_state(Stage::WaitingFire, fire_tick, 0, 0);
         systick::set_cmp(fire_tick);
         systick::set_irq(true);
         if systick::ticks().wrapping_sub(idle_tick) >= fire_needed {
             on_systick();
         }
         return;
-    }
+    };
 
-    let switch_needed = switch_us.saturating_mul(systick::TICKS_PER_US);
+    let snoop_head = (snoop.rx_start & RX_MASK_U32) as u16;
+    let switch_needed = snoop.open_us.saturating_mul(systick::TICKS_PER_US);
     let switch_tick = idle_tick.wrapping_add(switch_needed);
     set_state(Stage::WaitingSwitch, fire_tick, snoop_head, 0);
     systick::set_cmp(switch_tick);

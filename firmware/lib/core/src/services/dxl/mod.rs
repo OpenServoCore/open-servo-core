@@ -7,4 +7,4 @@ pub mod slot;
 mod tests;
 
 pub use api::Dxl;
-pub use io::DxlIo;
+pub use io::{DxlIo, SnoopWindow};

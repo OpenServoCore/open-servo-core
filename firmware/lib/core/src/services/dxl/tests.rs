@@ -3,7 +3,7 @@ use heapless::Vec;
 
 use crate::{BootMode, RegionStorage, RxSnapshot, Shared, StatusReturnLevel};
 
-use super::{Dxl, DxlIo};
+use super::{Dxl, DxlIo, SnoopWindow};
 
 struct FakeDxlIo {
     rx_ring: [u8; 256],
@@ -17,9 +17,8 @@ struct FakeDxlIo {
     last_scheduled_delay_us: Option<u32>,
     fast_scheduled_count: u32,
     last_fast_idle_tick: Option<u32>,
-    last_fast_switch_us: Option<u32>,
     last_fast_fire_us: Option<u32>,
-    last_fast_frame_end: Option<u32>,
+    last_fast_snoop: Option<Option<SnoopWindow>>,
     reboot_count: u32,
     reboot_immediate_count: u32,
     last_reboot_mode: Option<BootMode>,
@@ -39,9 +38,8 @@ impl FakeDxlIo {
             last_scheduled_delay_us: None,
             fast_scheduled_count: 0,
             last_fast_idle_tick: None,
-            last_fast_switch_us: None,
             last_fast_fire_us: None,
-            last_fast_frame_end: None,
+            last_fast_snoop: None,
             reboot_count: 0,
             reboot_immediate_count: 0,
             last_reboot_mode: None,
@@ -85,15 +83,13 @@ impl DxlIo for FakeDxlIo {
     fn start_fast_tx_after(
         &mut self,
         idle_tick: u32,
-        switch_us: u32,
         fire_us: u32,
-        frame_end: u32,
+        snoop: Option<SnoopWindow>,
     ) {
         self.fast_scheduled_count += 1;
         self.last_fast_idle_tick = Some(idle_tick);
-        self.last_fast_switch_us = Some(switch_us);
         self.last_fast_fire_us = Some(fire_us);
-        self.last_fast_frame_end = Some(frame_end);
+        self.last_fast_snoop = Some(snoop);
     }
     fn request_reboot(&mut self, mode: BootMode) {
         self.reboot_count += 1;
@@ -969,9 +965,9 @@ fn fast_sync_read_only_slot_emits_only_with_crc_placeholder() {
 
     assert_eq!(io.fast_scheduled_count, 1);
     assert_eq!(io.last_fast_idle_tick, Some(42));
-    assert_eq!(io.last_fast_switch_us, Some(0));
     assert_eq!(io.last_fast_fire_us, Some(0));
-    assert_eq!(io.last_fast_frame_end, Some(parsed_end));
+    assert_eq!(io.last_fast_snoop, Some(None));
+    let _ = parsed_end;
     assert_eq!(io.start_tx_count, 0);
     assert_eq!(io.scheduled_count, 0);
 
@@ -1019,19 +1015,17 @@ fn fast_sync_read_first_slot_emits_header_no_crc_via_start_tx() {
 
 #[test]
 fn fast_sync_read_middle_slot_emits_body_only_with_offset_delay() {
-    use super::slot::fast_sync_slot_delay_us;
+    use super::slot::bytes_to_us;
     use crate::BaudRate;
+    use dxl_protocol::FastReadPacket;
     let shared = Shared::new();
     let mut io = FakeDxlIo::new();
     let mut h = Dxl::new();
     io.rx_idle_tick = 99;
 
     // ids = [9, 0, 7] → our slot = 1 of 3 → Middle (body only)
-    let req = encode(&Packet::FastSyncRead(FastSyncReadPacket::new(
-        0,
-        2,
-        &[9, 0, 7],
-    )));
+    let p = FastSyncReadPacket::new(0, 2, &[9, 0, 7]);
+    let req = encode(&Packet::FastSyncRead(p));
     io.feed(&req);
     h.poll(&shared, &mut io);
 
@@ -1039,7 +1033,7 @@ fn fast_sync_read_middle_slot_emits_body_only_with_offset_delay() {
     assert_eq!(io.start_tx_count, 0);
     assert_eq!(io.fast_scheduled_count, 0);
     assert_eq!(io.last_scheduled_idle_tick, Some(99));
-    let expected = fast_sync_slot_delay_us(1, 2, BaudRate::B1000000);
+    let expected = bytes_to_us(p.bytes_before(1), BaudRate::B1000000);
     assert_eq!(io.last_scheduled_delay_us, Some(expected));
 
     // Middle: err(1) + id(1) + data(2) = 4
@@ -1048,20 +1042,18 @@ fn fast_sync_read_middle_slot_emits_body_only_with_offset_delay() {
 }
 
 #[test]
-fn fast_sync_read_last_slot_schedules_fast_with_switch_lt_fire() {
-    use super::slot::fast_sync_slot_delay_us;
+fn fast_sync_read_last_slot_schedules_fast_with_snoop_window() {
+    use super::slot::bytes_to_us;
     use crate::BaudRate;
+    use dxl_protocol::FastReadPacket;
     let shared = Shared::new();
     let mut io = FakeDxlIo::new();
     let mut h = Dxl::new();
     io.rx_idle_tick = 7;
 
     // ids = [9, 0] → our slot = 1 of 2 → Last (body + CRC placeholder)
-    let req = encode(&Packet::FastSyncRead(FastSyncReadPacket::new(
-        0,
-        2,
-        &[9, 0],
-    )));
+    let p = FastSyncReadPacket::new(0, 2, &[9, 0]);
+    let req = encode(&Packet::FastSyncRead(p));
     let parsed_end = req.len() as u32;
     io.feed(&req);
     h.poll(&shared, &mut io);
@@ -1070,12 +1062,17 @@ fn fast_sync_read_last_slot_schedules_fast_with_switch_lt_fire() {
     assert_eq!(io.start_tx_count, 0);
     assert_eq!(io.scheduled_count, 0);
     assert_eq!(io.last_fast_idle_tick, Some(7));
-    let expected_fire = fast_sync_slot_delay_us(1, 2, BaudRate::B1000000);
-    let expected_switch = fast_sync_slot_delay_us(0, 2, BaudRate::B1000000);
+    let expected_fire = bytes_to_us(p.bytes_before(1), BaudRate::B1000000);
+    let expected_open = bytes_to_us(p.bytes_before(0), BaudRate::B1000000);
     assert_eq!(io.last_fast_fire_us, Some(expected_fire));
-    assert_eq!(io.last_fast_switch_us, Some(expected_switch));
-    assert!(expected_switch < expected_fire);
-    assert_eq!(io.last_fast_frame_end, Some(parsed_end));
+    assert_eq!(
+        io.last_fast_snoop,
+        Some(Some(SnoopWindow {
+            open_us: expected_open,
+            rx_start: parsed_end,
+        })),
+    );
+    assert!(expected_open < expected_fire);
 
     // Last: err(1) + id(1) + data(2) + crc placeholder(2) = 6
     assert_eq!(io.tx.len(), 6);
@@ -1140,12 +1137,15 @@ fn fast_sync_read_return_level_none_silences_reply() {
 #[test]
 fn start_fast_tx_after_records_args() {
     let mut io = FakeDxlIo::new();
-    io.start_fast_tx_after(42, 46, 66, 24);
+    let snoop = SnoopWindow {
+        open_us: 46,
+        rx_start: 24,
+    };
+    io.start_fast_tx_after(42, 66, Some(snoop));
     assert_eq!(io.fast_scheduled_count, 1);
     assert_eq!(io.last_fast_idle_tick, Some(42));
-    assert_eq!(io.last_fast_switch_us, Some(46));
     assert_eq!(io.last_fast_fire_us, Some(66));
-    assert_eq!(io.last_fast_frame_end, Some(24));
+    assert_eq!(io.last_fast_snoop, Some(Some(snoop)));
     assert_eq!(io.start_tx_count, 0);
     assert_eq!(io.scheduled_count, 0);
 }
@@ -1166,9 +1166,9 @@ fn fast_bulk_read_only_slot_emits_only_with_crc_placeholder() {
 
     assert_eq!(io.fast_scheduled_count, 1);
     assert_eq!(io.last_fast_idle_tick, Some(42));
-    assert_eq!(io.last_fast_switch_us, Some(0));
     assert_eq!(io.last_fast_fire_us, Some(0));
-    assert_eq!(io.last_fast_frame_end, Some(parsed_end));
+    assert_eq!(io.last_fast_snoop, Some(None));
+    let _ = parsed_end;
     assert_eq!(io.start_tx_count, 0);
     assert_eq!(io.scheduled_count, 0);
 
@@ -1213,8 +1213,9 @@ fn fast_bulk_read_first_slot_emits_header_no_crc_via_start_tx() {
 
 #[test]
 fn fast_bulk_read_middle_slot_uses_per_slot_lengths_for_delay() {
-    use super::slot::fast_bulk_slot_delay_us;
+    use super::slot::bytes_to_us;
     use crate::BaudRate;
+    use dxl_protocol::FastReadPacket;
     let shared = Shared::new();
     let mut io = FakeDxlIo::new();
     let mut h = Dxl::new();
@@ -1222,7 +1223,8 @@ fn fast_bulk_read_middle_slot_uses_per_slot_lengths_for_delay() {
 
     // slot 0: id=9 len=4, slot 1 (us): id=0 addr=0 len=2, slot 2: id=7 len=8.
     let body = [9, 0, 0, 4, 0, 0, 0, 0, 2, 0, 7, 0, 0, 8, 0];
-    let req = encode(&Packet::FastBulkRead(FastBulkReadPacket::new(&body)));
+    let p = FastBulkReadPacket::new(&body);
+    let req = encode(&Packet::FastBulkRead(p));
     io.feed(&req);
     h.poll(&shared, &mut io);
 
@@ -1230,7 +1232,7 @@ fn fast_bulk_read_middle_slot_uses_per_slot_lengths_for_delay() {
     assert_eq!(io.start_tx_count, 0);
     assert_eq!(io.fast_scheduled_count, 0);
     assert_eq!(io.last_scheduled_idle_tick, Some(99));
-    let expected = fast_bulk_slot_delay_us(1, &body, BaudRate::B1000000);
+    let expected = bytes_to_us(p.bytes_before(1), BaudRate::B1000000);
     assert_eq!(io.last_scheduled_delay_us, Some(expected));
 
     // Middle: err(1) + id(1) + data(2) = 4
@@ -1239,9 +1241,10 @@ fn fast_bulk_read_middle_slot_uses_per_slot_lengths_for_delay() {
 }
 
 #[test]
-fn fast_bulk_read_last_slot_schedules_fast_with_switch_lt_fire() {
-    use super::slot::fast_bulk_slot_delay_us;
+fn fast_bulk_read_last_slot_schedules_fast_with_snoop_window() {
+    use super::slot::bytes_to_us;
     use crate::BaudRate;
+    use dxl_protocol::FastReadPacket;
     let shared = Shared::new();
     let mut io = FakeDxlIo::new();
     let mut h = Dxl::new();
@@ -1249,7 +1252,8 @@ fn fast_bulk_read_last_slot_schedules_fast_with_switch_lt_fire() {
 
     // slot 0: id=9 len=4, slot 1 (us): id=0 addr=0 len=2 → Last.
     let body = [9, 0, 0, 4, 0, 0, 0, 0, 2, 0];
-    let req = encode(&Packet::FastBulkRead(FastBulkReadPacket::new(&body)));
+    let p = FastBulkReadPacket::new(&body);
+    let req = encode(&Packet::FastBulkRead(p));
     let parsed_end = req.len() as u32;
     io.feed(&req);
     h.poll(&shared, &mut io);
@@ -1258,12 +1262,17 @@ fn fast_bulk_read_last_slot_schedules_fast_with_switch_lt_fire() {
     assert_eq!(io.start_tx_count, 0);
     assert_eq!(io.scheduled_count, 0);
     assert_eq!(io.last_fast_idle_tick, Some(7));
-    let expected_fire = fast_bulk_slot_delay_us(1, &body, BaudRate::B1000000);
-    let expected_switch = fast_bulk_slot_delay_us(0, &body, BaudRate::B1000000);
+    let expected_fire = bytes_to_us(p.bytes_before(1), BaudRate::B1000000);
+    let expected_open = bytes_to_us(p.bytes_before(0), BaudRate::B1000000);
     assert_eq!(io.last_fast_fire_us, Some(expected_fire));
-    assert_eq!(io.last_fast_switch_us, Some(expected_switch));
-    assert!(expected_switch < expected_fire);
-    assert_eq!(io.last_fast_frame_end, Some(parsed_end));
+    assert_eq!(
+        io.last_fast_snoop,
+        Some(Some(SnoopWindow {
+            open_us: expected_open,
+            rx_start: parsed_end,
+        })),
+    );
+    assert!(expected_open < expected_fire);
 
     // Last: err(1) + id(1) + data(2) + crc placeholder(2) = 6
     assert_eq!(io.tx.len(), 6);

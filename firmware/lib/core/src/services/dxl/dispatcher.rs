@@ -3,10 +3,9 @@ use dxl_protocol::{FastSlot, FastSlotBody, write_fast_slot};
 
 use crate::{Error, RegionStorage, Router, Shared, StagedWrites, StatusReturnLevel};
 
+use super::io::SnoopWindow;
 use super::DxlIo;
-use super::slot::{
-    bulk_slot_delay_us, fast_bulk_slot_delay_us, fast_sync_slot_delay_us, slot_period_us,
-};
+use super::slot::{bulk_slot_delay_us, bytes_to_us, slot_period_us};
 
 const MAX_READ: usize = 128;
 const MAX_WRITE: usize = 128;
@@ -18,59 +17,6 @@ fn error_to_status(e: Error) -> StatusError {
         Error::AccessError => StatusError::Access,
         _ => StatusError::DataRange,
     }
-}
-
-struct FastSyncResolved {
-    our_slot: usize,
-    n_slots: usize,
-}
-
-fn resolve_fast_sync_slot(ids: &Bytes<'_>, our_id: u8) -> Option<FastSyncResolved> {
-    let mut our_slot = None;
-    let mut n_slots = 0usize;
-    for (i, id) in ids.iter().enumerate() {
-        if i >= MAX_FAST_SLOTS {
-            return None;
-        }
-        if id == our_id && our_slot.is_none() {
-            our_slot = Some(i);
-        }
-        n_slots = i + 1;
-    }
-    our_slot.map(|our_slot| FastSyncResolved { our_slot, n_slots })
-}
-
-struct FastBulkResolved {
-    our_slot: usize,
-    n_slots: usize,
-    address: u16,
-    length: u16,
-    total_payload: u32,
-}
-
-fn resolve_fast_bulk_slot(body: &[u8], our_id: u8) -> Option<FastBulkResolved> {
-    let mut found = None;
-    let mut n_slots = 0usize;
-    let mut total_payload = 0u32;
-    for (i, tup) in body.chunks_exact(5).enumerate() {
-        if i >= MAX_FAST_SLOTS {
-            return None;
-        }
-        let length = u16::from_le_bytes([tup[3], tup[4]]);
-        if tup[0] == our_id && found.is_none() {
-            let address = u16::from_le_bytes([tup[1], tup[2]]);
-            found = Some((i, address, length));
-        }
-        total_payload = total_payload.saturating_add(length as u32);
-        n_slots = i + 1;
-    }
-    found.map(|(slot, address, length)| FastBulkResolved {
-        our_slot: slot,
-        n_slots,
-        address,
-        length,
-        total_payload,
-    })
 }
 
 pub(super) struct Dispatcher<'a, D: DxlIo> {
@@ -99,8 +45,8 @@ impl<'a, D: DxlIo> Dispatcher<'a, D> {
             Packet::SyncWrite(p) => self.handle_sync_write(p),
             Packet::BulkRead(p) => self.handle_bulk_read(p, parsed_end),
             Packet::BulkWrite(p) => self.handle_bulk_write(p),
-            Packet::FastSyncRead(p) => self.handle_fast_sync_read(p, parsed_end),
-            Packet::FastBulkRead(p) => self.handle_fast_bulk_read(p, parsed_end),
+            Packet::FastSyncRead(p) => self.handle_fast_read(p, parsed_end),
+            Packet::FastBulkRead(p) => self.handle_fast_read(p, parsed_end),
             // Inbound Status frames originate from another device on the bus; drop.
             Packet::Status(_) => {}
         }
@@ -128,6 +74,10 @@ impl<'a, D: DxlIo> Dispatcher<'a, D> {
             .table
             .config
             .with(|c| c.comms.status_return_level)
+    }
+
+    fn baud(&self) -> crate::BaudRate {
+        self.shared.table.config.with(|c| c.comms.baud_rate_idx)
     }
 
     fn send_status(
@@ -302,8 +252,7 @@ impl<'a, D: DxlIo> Dispatcher<'a, D> {
             return;
         };
 
-        let baud = self.shared.table.config.with(|c| c.comms.baud_rate_idx);
-        let delay_us = (slot as u32) * slot_period_us(baud, p.length);
+        let delay_us = (slot as u32) * slot_period_us(self.baud(), p.length);
 
         let len = p.length as usize;
         if len == 0 || len > MAX_READ {
@@ -369,8 +318,7 @@ impl<'a, D: DxlIo> Dispatcher<'a, D> {
             return;
         };
 
-        let baud = self.shared.table.config.with(|c| c.comms.baud_rate_idx);
-        let delay_us = bulk_slot_delay_us(body, our_id, baud).unwrap_or(0);
+        let delay_us = bulk_slot_delay_us(body, our_id, self.baud()).unwrap_or(0);
 
         let len = length as usize;
         if len == 0 || len > MAX_READ {
@@ -410,27 +358,27 @@ impl<'a, D: DxlIo> Dispatcher<'a, D> {
         // TODO: scan (id, address, length, data) tuples; apply our chunk silently.
     }
 
-    fn handle_fast_sync_read(&mut self, p: &FastSyncReadPacket<'_>, parsed_end: u32) {
-        // Pre-flight bails, cheapest filter first; all silent.
+    /// Up-front `level()` bail skips find_slot+read+encode when we'd silence
+    /// anyway, unlike Read/Write where `send_status` swallows it later.
+    fn handle_fast_read<P: FastReadPacket>(&mut self, p: &P, parsed_end: u32) {
         if self.level() < StatusReturnLevel::Read {
             return;
         }
-        let len = p.length as usize;
+        let our_id = self.shared.table.config.with(|c| c.comms.id);
+        let Some(info) = p.find_slot(our_id, MAX_FAST_SLOTS) else {
+            return;
+        };
+        let len = info.length as usize;
         if len == 0 || len > MAX_READ {
             return;
         }
-        let our_id = self.shared.table.config.with(|c| c.comms.id);
-        let Some(resolved) = resolve_fast_sync_slot(&p.ids, our_id) else {
-            return;
-        };
         let Some(idle_tick) = self.io.idle_for(parsed_end) else {
             return;
         };
 
-        // On error: zero-fill so the slot stays length-correct without
-        // leaking partial table contents.
+        // Zero-fill on error keeps slot length-correct; error byte signals it.
         let mut buf = [0u8; MAX_READ];
-        let error = match self.shared.table.read_bytes(p.address, &mut buf[..len]) {
+        let error = match self.shared.table.read_bytes(info.address, &mut buf[..len]) {
             Ok(()) => StatusError::None,
             Err(e) => {
                 buf[..len].fill(0);
@@ -443,18 +391,17 @@ impl<'a, D: DxlIo> Dispatcher<'a, D> {
             id: our_id,
             data: &buf[..len],
         };
-        let packet_length = 3u16 + (resolved.n_slots as u16) * (2 + p.length);
-        let slot = match (resolved.our_slot, resolved.n_slots) {
-            (0, 1) => FastSlot::Only {
-                packet_length,
+        let slot = match info.position() {
+            FastSlotPosition::Only => FastSlot::Only {
+                packet_length: info.packet_length,
                 body,
             },
-            (0, _) => FastSlot::First {
-                packet_length,
+            FastSlotPosition::First => FastSlot::First {
+                packet_length: info.packet_length,
                 body,
             },
-            (k, n) if k + 1 == n => FastSlot::Last(body),
-            _ => FastSlot::Middle(body),
+            FastSlotPosition::Middle => FastSlot::Middle(body),
+            FastSlotPosition::Last => FastSlot::Last(body),
         };
         let tx_buf = self.io.tx_buf();
         tx_buf.truncate(0);
@@ -463,107 +410,24 @@ impl<'a, D: DxlIo> Dispatcher<'a, D> {
             return;
         }
 
-        // Last/Only need snoop+fire for the CRC patch; First/Middle just emit.
-        let baud = self.shared.table.config.with(|c| c.comms.baud_rate_idx);
-        let fire_us = fast_sync_slot_delay_us(resolved.our_slot, p.length, baud);
-        match &slot {
-            // No predecessors — switch == fire signals "skip snoop".
-            FastSlot::Only { .. } => {
-                self.io
-                    .start_fast_tx_after(idle_tick, fire_us, fire_us, parsed_end);
+        let baud = self.baud();
+        let fire_us = bytes_to_us(p.bytes_before(info.our_slot), baud);
+        match info.position() {
+            FastSlotPosition::Only => {
+                self.io.start_fast_tx_after(idle_tick, fire_us, None);
             }
-            // Snoop window spans slot N-2 onwards.
-            FastSlot::Last(_) => {
-                let switch_us = fast_sync_slot_delay_us(resolved.n_slots - 2, p.length, baud);
-                self.io
-                    .start_fast_tx_after(idle_tick, switch_us, fire_us, parsed_end);
+            FastSlotPosition::Last => {
+                let open_us = bytes_to_us(p.bytes_before(info.n_slots - 2), baud);
+                self.io.start_fast_tx_after(
+                    idle_tick,
+                    fire_us,
+                    Some(SnoopWindow {
+                        open_us,
+                        rx_start: parsed_end,
+                    }),
+                );
             }
-            FastSlot::First { .. } | FastSlot::Middle(_) => {
-                self.io.start_tx_after(idle_tick, fire_us);
-            }
-        }
-    }
-
-    fn handle_fast_bulk_read(&mut self, p: &FastBulkReadPacket<'_>, parsed_end: u32) {
-        // Pre-flight bails, cheapest filter first; all silent.
-        if self.level() < StatusReturnLevel::Read {
-            return;
-        }
-        let mut body = [0u8; MAX_BULK_BODY];
-        let Ok(n) = p.body.copy_into(&mut body) else {
-            return;
-        };
-        let body = &body[..n];
-
-        let our_id = self.shared.table.config.with(|c| c.comms.id);
-        let Some(resolved) = resolve_fast_bulk_slot(body, our_id) else {
-            return;
-        };
-        let len = resolved.length as usize;
-        if len == 0 || len > MAX_READ {
-            return;
-        }
-        let Some(idle_tick) = self.io.idle_for(parsed_end) else {
-            return;
-        };
-
-        // On error: zero-fill so the slot stays length-correct without
-        // leaking partial table contents.
-        let mut buf = [0u8; MAX_READ];
-        let error = match self
-            .shared
-            .table
-            .read_bytes(resolved.address, &mut buf[..len])
-        {
-            Ok(()) => StatusError::None,
-            Err(e) => {
-                buf[..len].fill(0);
-                error_to_status(e)
-            }
-        };
-
-        let slot_body = FastSlotBody {
-            error: error.as_u8(),
-            id: our_id,
-            data: &buf[..len],
-        };
-        // LEN field covers instr(1) + sum(2 + payload_i) + crc(2).
-        let packet_length = (3u32 + (resolved.n_slots as u32) * 2 + resolved.total_payload) as u16;
-        let slot = match (resolved.our_slot, resolved.n_slots) {
-            (0, 1) => FastSlot::Only {
-                packet_length,
-                body: slot_body,
-            },
-            (0, _) => FastSlot::First {
-                packet_length,
-                body: slot_body,
-            },
-            (k, n) if k + 1 == n => FastSlot::Last(slot_body),
-            _ => FastSlot::Middle(slot_body),
-        };
-        let tx_buf = self.io.tx_buf();
-        tx_buf.truncate(0);
-        if write_fast_slot(tx_buf, &slot).is_err() {
-            tx_buf.truncate(0);
-            return;
-        }
-
-        // Last/Only need snoop+fire for the CRC patch; First/Middle just emit.
-        let baud = self.shared.table.config.with(|c| c.comms.baud_rate_idx);
-        let fire_us = fast_bulk_slot_delay_us(resolved.our_slot, body, baud);
-        match &slot {
-            // No predecessors — switch == fire signals "skip snoop".
-            FastSlot::Only { .. } => {
-                self.io
-                    .start_fast_tx_after(idle_tick, fire_us, fire_us, parsed_end);
-            }
-            // Snoop window spans slot N-2 onwards.
-            FastSlot::Last(_) => {
-                let switch_us = fast_bulk_slot_delay_us(resolved.n_slots - 2, body, baud);
-                self.io
-                    .start_fast_tx_after(idle_tick, switch_us, fire_us, parsed_end);
-            }
-            FastSlot::First { .. } | FastSlot::Middle(_) => {
+            FastSlotPosition::First | FastSlotPosition::Middle => {
                 self.io.start_tx_after(idle_tick, fire_us);
             }
         }

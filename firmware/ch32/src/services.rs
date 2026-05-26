@@ -1,7 +1,7 @@
 use core::sync::atomic::Ordering;
 
 use heapless::Vec;
-use osc_core::{BootMode, DxlIo, RxSnapshot};
+use osc_core::{BootMode, DxlIo, RxSnapshot, SnoopWindow};
 
 use crate::dxl_fast;
 use crate::hal::{flash, pfic};
@@ -58,11 +58,10 @@ impl DxlIo for Ch32DxlIo {
     fn start_fast_tx_after(
         &mut self,
         idle_tick: u32,
-        switch_us: u32,
         fire_us: u32,
-        frame_end: u32,
+        snoop: Option<SnoopWindow>,
     ) {
-        dxl_fast::start_fast_after(idle_tick, switch_us, fire_us, frame_end);
+        dxl_fast::start_fast_after(idle_tick, fire_us, snoop);
     }
 
     fn request_reboot(&mut self, mode: BootMode) {
