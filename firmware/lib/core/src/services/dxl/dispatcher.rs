@@ -413,16 +413,19 @@ impl<'a, B: DxlBus, D: DeviceControl> Dispatcher<'a, B, D> {
             return;
         }
 
-        let baud = self.baud();
-        let fire_us = bytes_to_us(p.bytes_before(info.our_slot), baud);
         match info.position() {
             FastSlotPosition::Only => {
-                self.bus.send_with_snoop_crc(fire_us, None);
+                // No predecessors → CRC is fully formed in the buffer and
+                // no snoop is needed, but we still owe the host the standard
+                // post-request idle before driving the line.
+                self.bus.send_after(0);
             }
             FastSlotPosition::Last => {
+                let fire_us = bytes_to_us(p.bytes_before(info.our_slot), self.baud());
                 self.bus.send_with_snoop_crc(fire_us, Some(parsed_end));
             }
             FastSlotPosition::First | FastSlotPosition::Middle => {
+                let fire_us = bytes_to_us(p.bytes_before(info.our_slot), self.baud());
                 self.bus.send_after(fire_us);
             }
         }

@@ -1,6 +1,7 @@
 use crate::Instruction;
 use crate::buf::WriteBuf;
 use crate::bytes::ByteIter;
+use crate::crc::crc16;
 use crate::packet::{BROADCAST_ID, FastBulkReadPacket, FastSyncReadPacket, HEADER};
 use crate::writer::WriteError;
 
@@ -211,9 +212,15 @@ fn write_fast_slot_inner<W: WriteBuf>(out: &mut W, slot: &FastSlot<'_>) -> Resul
             packet_length,
             body,
         } => {
+            let frame_start = out.len();
             write_header(out, *packet_length)?;
             write_body(out, body)?;
-            reserve_crc(out)?;
+            // No predecessors on the bus → CRC is purely local; no snoop and
+            // no fire-time patch required (unlike Last). Compute it here so
+            // the wire bytes are correct the instant we hit the DMA.
+            let crc = crc16(&out.as_slice()[frame_start..]);
+            out.push(crc as u8)?;
+            out.push((crc >> 8) as u8)?;
         }
     }
     Ok(())

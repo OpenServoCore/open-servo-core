@@ -107,7 +107,7 @@ fn write_fast_slot_last_reserves_crc_placeholder() {
 }
 
 #[test]
-fn write_fast_slot_only_emits_header_body_and_crc_placeholder() {
+fn write_fast_slot_only_emits_header_body_and_computed_crc() {
     let mut out: Vec<u8, 32> = Vec::new();
     write_fast_slot(
         &mut out,
@@ -117,13 +117,14 @@ fn write_fast_slot_only_emits_header_body_and_crc_placeholder() {
         },
     )
     .unwrap();
-    assert_eq!(
-        out.as_slice(),
-        &[
-            0xFF, 0xFF, 0xFD, 0x00, 0xFE, 0x09, 0x00, 0x55, 0x00, 0x05, 0x01, 0x00, 0x00, 0x00,
-            0xAA, 0xBB,
-        ]
-    );
+    let header_and_body = [
+        0xFF, 0xFF, 0xFD, 0x00, 0xFE, 0x09, 0x00, 0x55, 0x00, 0x05, 0x01, 0x00, 0x00, 0x00,
+    ];
+    let crc = crc16(&header_and_body).to_le_bytes();
+    let mut expected = [0u8; 16];
+    expected[..14].copy_from_slice(&header_and_body);
+    expected[14..].copy_from_slice(&crc);
+    assert_eq!(out.as_slice(), &expected);
 }
 
 #[test]

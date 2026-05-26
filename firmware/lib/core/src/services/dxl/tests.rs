@@ -961,21 +961,19 @@ fn send_with_snoop_crc_records_args() {
 }
 
 #[test]
-fn fast_sync_read_only_slot_emits_only_with_crc_placeholder() {
+fn fast_sync_read_only_slot_emits_only_via_send_with_computed_crc() {
     let shared = Shared::new();
     let mut io = FakeIo::new();
     let mut h = Dxl::new();
 
     let req = encode(&Packet::FastSyncRead(FastSyncReadPacket::new(0, 2, &[0])));
-    let parsed_end = req.len() as u32;
     io.feed(&req);
     h.poll(&shared, &mut io);
 
-    assert_eq!(io.bus.snoop_count, 1);
-    assert_eq!(io.bus.last_snoop_delay_us, Some(0));
-    assert_eq!(io.bus.last_snoop_from, Some(None));
-    let _ = parsed_end;
-    assert_eq!(io.bus.send_count, 0);
+    // Only-slot computes CRC locally and fires through plain send — no
+    // snoop, no slot-timed delay.
+    assert_eq!(io.bus.send_count, 1);
+    assert_eq!(io.bus.snoop_count, 0);
     assert_eq!(io.bus.after_count, 0);
 
     assert_eq!(io.bus.tx.len(), 14);
@@ -985,7 +983,8 @@ fn fast_sync_read_only_slot_emits_only_with_crc_placeholder() {
     assert_eq!(io.bus.tx[8], 0);
     assert_eq!(io.bus.tx[9], 0);
     assert_eq!(&io.bus.tx[10..12], &[0, 0]);
-    assert_eq!(&io.bus.tx[12..14], &[0xAA, 0xBB]);
+    let expected_crc = dxl_protocol::crc16(&io.bus.tx[..12]).to_le_bytes();
+    assert_eq!(&io.bus.tx[12..14], &expected_crc);
 }
 
 #[test]
@@ -1118,22 +1117,18 @@ fn fast_sync_read_return_level_none_silences_reply() {
 }
 
 #[test]
-fn fast_bulk_read_only_slot_emits_only_with_crc_placeholder() {
+fn fast_bulk_read_only_slot_emits_only_via_send_with_computed_crc() {
     let shared = Shared::new();
     let mut io = FakeIo::new();
     let mut h = Dxl::new();
 
     let body = [0, 0, 0, 2, 0];
     let req = encode(&Packet::FastBulkRead(FastBulkReadPacket::new(&body)));
-    let parsed_end = req.len() as u32;
     io.feed(&req);
     h.poll(&shared, &mut io);
 
-    assert_eq!(io.bus.snoop_count, 1);
-    assert_eq!(io.bus.last_snoop_delay_us, Some(0));
-    assert_eq!(io.bus.last_snoop_from, Some(None));
-    let _ = parsed_end;
-    assert_eq!(io.bus.send_count, 0);
+    assert_eq!(io.bus.send_count, 1);
+    assert_eq!(io.bus.snoop_count, 0);
     assert_eq!(io.bus.after_count, 0);
 
     assert_eq!(io.bus.tx.len(), 14);
@@ -1143,7 +1138,8 @@ fn fast_bulk_read_only_slot_emits_only_with_crc_placeholder() {
     assert_eq!(io.bus.tx[8], 0);
     assert_eq!(io.bus.tx[9], 0);
     assert_eq!(&io.bus.tx[10..12], &[0, 0]);
-    assert_eq!(&io.bus.tx[12..14], &[0xAA, 0xBB]);
+    let expected_crc = dxl_protocol::crc16(&io.bus.tx[..12]).to_le_bytes();
+    assert_eq!(&io.bus.tx[12..14], &expected_crc);
 }
 
 #[test]
