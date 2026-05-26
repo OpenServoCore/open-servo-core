@@ -11,6 +11,7 @@ pub mod ring_reader;
 pub mod sample_frame;
 pub mod services;
 pub mod shared;
+pub mod traits;
 
 pub use kernel_io::{Capabilities, ConfigDefaults, DecayMode, KernelIo, Motor, MotorCmd, Sensors};
 pub use control_table::{
