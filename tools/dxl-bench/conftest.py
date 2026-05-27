@@ -19,6 +19,17 @@ WCH_LINKE_PID = 0x8010
 INJECTOR_VID = 0xC0DE
 INJECTOR_PID = 0xCAFE
 
+# Allowlist of USB vendor IDs for known USB-UART bridge chips. Filtering by
+# vendor avoids picking up unrelated CDC-class devices (e.g. monitor "USB
+# Controls", touchscreen controllers) that enumerate via `comports()` but
+# aren't actual UART bridges. Pass `--port` for vendors not in this list.
+USB_UART_VIDS = frozenset([
+    0x0403,  # FTDI (FT232R, FT2232, FT4232, FT232H, FT231X, ...)
+    0x067B,  # Prolific (PL2303 family)
+    0x10C4,  # Silicon Labs (CP2102, CP2104, CP2105, CP2108, CP21xx)
+    0x1A86,  # WCH (CH340/CH341/CH343 — and the WCH-LinkE serial bridge)
+])
+
 # Mirror config::addr::comms::BAUD_RATE_IDX and the BaudRate enum.
 BAUD_RATE_IDX_ADDR = 13
 DEFAULT_BAUD = 1_000_000
@@ -61,30 +72,35 @@ def pytest_addoption(parser):
 # accepts unchanged. `p.vid` is None for non-USB or legacy ports on every
 # platform, so the same filter works everywhere.
 def _autodetect_port() -> str:
-    """Pick the single USB-UART device on the host. Excludes the injector
-    (separate VID/PID); fails clearly when zero or multiple candidates exist
-    so the caller knows to pass `--port`."""
+    """Pick the USB-UART device for the DXL bus. Filters to known UART chip
+    VIDs (see `USB_UART_VIDS`), then de-prefers the WCH-LinkE bridge — when
+    an FT232H/CP21xx/CH340 is also present, the dedicated bridge wins
+    silently; the WCH-LinkE only auto-picks (with a warning) when it's the
+    sole UART on the bus."""
     candidates = [
         p
         for p in serial.tools.list_ports.comports()
-        if p.vid is not None
-        and not (p.vid == INJECTOR_VID and p.pid == INJECTOR_PID)
+        if p.vid in USB_UART_VIDS
     ]
-    if not candidates:
+    preferred = [
+        p for p in candidates
+        if not (p.vid == WCH_LINKE_VID and p.pid == WCH_LINKE_PID)
+    ] or candidates
+    if not preferred:
         pytest.fail(
-            "no USB-UART device found; pass --port <path>",
+            "no USB-UART device found; pass --port=<path>",
             pytrace=False,
         )
-    if len(candidates) > 1:
+    if len(preferred) > 1:
         listing = "\n".join(
             f"  {p.device}  vid={p.vid:04x} pid={(p.pid or 0):04x}  {p.description or ''}"
-            for p in candidates
+            for p in preferred
         )
         pytest.fail(
-            f"multiple USB-UART devices found; disambiguate with --port <path>:\n{listing}",
+            f"multiple USB-UART devices found; disambiguate with --port=<path>:\n{listing}",
             pytrace=False,
         )
-    return candidates[0].device
+    return preferred[0].device
 
 
 def _warn_if_wch_linke(device_path: str) -> None:
