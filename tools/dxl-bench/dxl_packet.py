@@ -129,6 +129,23 @@ def build_fast_bulk_read(tuples: Iterable[tuple[int, int, int]]) -> bytes:
     return build_packet(BROADCAST_ID, INSTR_FAST_BULK_READ, bytes(params))
 
 
+def build_fast_first_bytes(
+    packet_length: int, err: int, slot_id: int, data: bytes
+) -> bytes:
+    """On-wire bytes for a FastSlot::First: DXL header + status overhead + this
+    slot's body (err + id + data). No CRC — only FastSlot::Last carries the
+    frame CRC, computed over everything that preceded it on the bus."""
+    pkt = bytearray(HEADER)
+    pkt.append(BROADCAST_ID)
+    pkt.append(packet_length & 0xFF)
+    pkt.append((packet_length >> 8) & 0xFF)
+    pkt.append(INSTR_STATUS)
+    pkt.append(err)
+    pkt.append(slot_id)
+    pkt.extend(data)
+    return bytes(pkt)
+
+
 class FastSlot(tuple):
     @property
     def error(self) -> int: return self[0]
