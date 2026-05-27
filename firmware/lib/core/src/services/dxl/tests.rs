@@ -63,13 +63,9 @@ impl DxlBus for FakeBus {
         self.rx_bytes_at_idle == request_end
     }
 
-    fn send(&mut self) {
-        self.send_count += 1;
-    }
-
     fn send_after(&mut self, delay_us: u32) {
         if delay_us == 0 {
-            self.send();
+            self.send_count += 1;
             return;
         }
         self.after_count += 1;

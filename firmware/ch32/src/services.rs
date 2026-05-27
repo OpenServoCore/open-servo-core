@@ -62,21 +62,19 @@ impl DxlBus for Ch32Bus {
         }
     }
 
-    fn send(&mut self) {
+    fn send_after(&mut self, delay_us: u32) {
         // Flush any stale slot setup: an unfired SysTick CMP from a prior
         // Sync/Fast op would otherwise re-fire DMA and patch CRC over this
         // reply's buffer.
         dxl_fast::cancel();
-        if dxl_fast::arm_tx() {
-            dxl_fast::fire_now();
+        match self.idle_tick.take() {
+            Some(idle_tick) => dxl_fast::start_plain_after(idle_tick, delay_us),
+            None => {
+                if dxl_fast::arm_tx() {
+                    dxl_fast::fire_now();
+                }
+            }
         }
-    }
-
-    fn send_after(&mut self, delay_us: u32) {
-        let Some(idle_tick) = self.idle_tick.take() else {
-            return;
-        };
-        dxl_fast::start_plain_after(idle_tick, delay_us);
     }
 
     fn send_with_snoop_crc(&mut self, delay_us: u32, snoop_from: Option<u32>) {

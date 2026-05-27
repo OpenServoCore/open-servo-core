@@ -12,13 +12,14 @@ pub trait DxlBus {
 
     /// True once the bus has been idle past `request_end` (the request finished
     /// arriving). Stashes the resolved idle moment internally so any following
-    /// `send_after*` in this dispatch fires at the right deadline. Callers
-    /// MUST skip slot-timed replies when this returns `false`.
+    /// `send_after*` in this dispatch fires at the right deadline. Slot-timed
+    /// callers (Sync/Bulk/Fast Read) MUST skip on `false`; direct unicasts
+    /// MAY proceed and accept the degraded immediate fire.
     fn request_complete(&mut self, request_end: u32) -> bool;
 
-    fn send(&mut self);
     /// `delay_us` measured from the request's trailing idle (stashed by the
-    /// preceding `request_complete`).
+    /// preceding `request_complete`). If no idle moment is stashed, fires
+    /// immediately as graceful degradation.
     fn send_after(&mut self, delay_us: u32);
     /// Same timing as `send_after`, plus: before TX, patch the reply's trailing
     /// two bytes with a CRC of inter-slave bytes received from `snoop_from`

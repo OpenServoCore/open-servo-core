@@ -113,7 +113,7 @@ impl<'a, B: DxlBus, D: DeviceControl> Dispatcher<'a, B, D> {
             buf.truncate(0);
             return;
         }
-        self.bus.send();
+        self.bus.send_after(0);
     }
 
     fn send_status_after(
