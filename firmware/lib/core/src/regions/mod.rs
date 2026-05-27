@@ -78,6 +78,7 @@ impl ControlTable {
             cfg.calibration.vdd_mv = defaults.vdd_mv;
             cfg.comms.id = defaults.dxl_id;
             cfg.comms.baud_rate_idx = defaults.dxl_baud;
+            cfg.comms.return_delay_2us = defaults.dxl_return_delay_2us;
         });
     }
 

@@ -206,4 +206,6 @@ pub struct ConfigDefaults {
     pub vdd_mv: u16,
     pub dxl_id: u8,
     pub dxl_baud: BaudRate,
+    /// DXL 2.0 RDT encoding: 2 µs units. Spec factory default = 125 (250 µs).
+    pub dxl_return_delay_2us: u8,
 }
