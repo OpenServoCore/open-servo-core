@@ -1,7 +1,4 @@
-import subprocess
-import tempfile
 import time
-from pathlib import Path
 
 import pytest
 import serial
@@ -11,23 +8,16 @@ from dynamixel_sdk import PacketHandler
 from dxl_packet import build_ping, build_write, parse_status, read_status_frame
 from echo_port_handler import EchoDrainingPortHandler
 
-# WCH-LinkE USB IDs — also matches the WCH-Link debug + serial bridge that
-# carries DXL bytes to/from the V006 in our bench rig.
+# WCH-LinkE USB IDs — used only to warn when its CDC serial bridge is the
+# auto-selected DXL bus path. Its USART firmware drops/delays bytes and
+# causes flaky tests; FT232H or similar dedicated USB-UART is preferred.
 WCH_LINKE_VID = 0x1A86
 WCH_LINKE_PID = 0x8010
 
-# nano-v203-injector USB CDC — host-commanded DXL Fast slot injector that
-# shares the bus with the V006 DUT. See firmware/boards/nano-v203-injector.
+# dxl-bus-injector USB CDC — host-commanded DXL bus injector + listener that
+# shares the bus with the V006 DUT. See tools/dxl-bus-injector.
 INJECTOR_VID = 0xC0DE
 INJECTOR_PID = 0xCAFE
-
-REPO_ROOT = Path(__file__).resolve().parents[2]
-BOARD_WS = REPO_ROOT / "firmware" / "boards" / "osc-dev-v006"
-ELF_DIR = BOARD_WS / "target" / "riscv32ec_zmmul-unknown-none-elf" / "release"
-
-# Mirror app/memory.x CALIB region.
-CALIB_ADDR = 0x0800_0000 + 62 * 1024 - 4 * 1024 - 256
-CALIB_LEN = 4 * 1024
 
 # Mirror config::addr::comms::BAUD_RATE_IDX and the BaudRate enum.
 BAUD_RATE_IDX_ADDR = 13
@@ -46,86 +36,82 @@ def pytest_addoption(parser):
     parser.addoption(
         "--port",
         default=None,
-        help="Serial device path (default: auto-detect WCH-LinkE)",
+        help="Serial device path (default: auto-detect any USB-UART)",
     )
     parser.addoption("--baud", default=1000000, type=int, help="UART baud rate")
     parser.addoption("--id", default=1, type=int, help="OSC servo DXL ID")
     parser.addoption(
-        "--bin",
-        default="osc-dev-v006-app-rev-a",
-        help="Cargo bin target name to flash",
-    )
-    parser.addoption(
-        "--boot-bin",
-        default="osc-dev-v006-boot",
-        help="Bootloader bin target (flashed to system flash @ 0x1FFF0000)",
-    )
-    parser.addoption(
-        "--no-flash",
-        action="store_true",
-        help="Skip cargo build + probe-rs flash (use the firmware already on the chip)",
-    )
-    parser.addoption(
-        "--no-calib",
-        action="store_true",
-        help="Skip CALIB save/wipe/restore (faster iteration; chip state preserved as-is)",
-    )
-    parser.addoption(
         "--injector-port",
         default=None,
-        help="V203 injector USB-CDC path (default: auto-detect by VID/PID)",
-    )
-    parser.addoption(
-        "--no-injector",
-        action="store_true",
-        help="Skip injector setup; tests that require it will be skipped",
+        help="V203 injector USB-CDC path (default: auto-detect by VID/PID; "
+             "absent injector simply skips injector-dependent tests)",
     )
 
 
-def _run(cmd, cwd=None):
-    print(f"[bench] $ {' '.join(str(c) for c in cmd)}", flush=True)
-    result = subprocess.run(cmd, cwd=cwd)
-    if result.returncode != 0:
-        pytest.fail(
-            f"command failed (exit {result.returncode}): {' '.join(str(c) for c in cmd)}",
-            pytrace=False,
-        )
-    return result
-
-
+# `serial.tools.list_ports.comports()` is cross-platform: IOKit on macOS,
+# sysfs on Linux, SetupDi on Windows. `p.device` returns the native path
+# (`/dev/cu.*`, `/dev/ttyUSB*` / `/dev/ttyACM*`, `COMn`) which `serial.Serial`
+# accepts unchanged. `p.vid` is None for non-USB or legacy ports on every
+# platform, so the same filter works everywhere.
 def _autodetect_port() -> str:
-    """Find the unique WCH-LinkE serial device. Fails with a clear message if
-    zero or multiple match — both ambiguous, both should require `--port`."""
-    matches = [
-        p.device
+    """Pick the single USB-UART device on the host. Excludes the injector
+    (separate VID/PID); fails clearly when zero or multiple candidates exist
+    so the caller knows to pass `--port`."""
+    candidates = [
+        p
         for p in serial.tools.list_ports.comports()
-        if p.vid == WCH_LINKE_VID and p.pid == WCH_LINKE_PID
+        if p.vid is not None
+        and not (p.vid == INJECTOR_VID and p.pid == INJECTOR_PID)
     ]
-    if len(matches) == 1:
-        return matches[0]
-    if not matches:
+    if not candidates:
         pytest.fail(
-            "no WCH-LinkE serial device found; pass --port <path> "
-            "(check `ls /dev/cu.usbmodem*` or plug the probe in)",
+            "no USB-UART device found; pass --port <path>",
             pytrace=False,
         )
-    pytest.fail(
-        f"multiple WCH-LinkE devices found ({matches}); "
-        "disambiguate with --port <path>",
-        pytrace=False,
-    )
+    if len(candidates) > 1:
+        listing = "\n".join(
+            f"  {p.device}  vid={p.vid:04x} pid={(p.pid or 0):04x}  {p.description or ''}"
+            for p in candidates
+        )
+        pytest.fail(
+            f"multiple USB-UART devices found; disambiguate with --port <path>:\n{listing}",
+            pytrace=False,
+        )
+    return candidates[0].device
+
+
+def _warn_if_wch_linke(device_path: str) -> None:
+    """Print a flake warning if `device_path` is a WCH-LinkE CDC bridge. See
+    `reference_wch_linke_dxl_bench_unreliable` — its USART firmware drops and
+    delays bytes under sustained DXL traffic."""
+    for p in serial.tools.list_ports.comports():
+        if (
+            p.device == device_path
+            and p.vid == WCH_LINKE_VID
+            and p.pid == WCH_LINKE_PID
+        ):
+            print(
+                "[bench] WARNING: bus is on a WCH-LinkE CDC serial bridge. "
+                "Its USART firmware drops/delays bytes and produces flaky "
+                "DXL test results — prefer an FT232H or other dedicated "
+                "USB-UART.",
+                flush=True,
+            )
+            return
 
 
 def _resolve_port(config) -> str:
     chosen = config.getoption("--port") or _autodetect_port()
+    _warn_if_wch_linke(chosen)
     config._bench_port_path = chosen
     return chosen
 
 
 def _autodetect_injector_port() -> str | None:
-    """Find the unique V203 injector CDC device, or None if absent. Unlike the
-    WCH-LinkE probe, the injector is optional — a missing one degrades to
-    skip-marking the tests that need it instead of failing the whole session."""
+    """Find the V203 injector CDC device, or None if absent. The injector is
+    optional — missing one degrades to skip-marking the tests that need it
+    rather than failing the whole session. Multiple matches still fail so we
+    don't silently pick the wrong device."""
     matches = [
         p.device
         for p in serial.tools.list_ports.comports()
@@ -143,8 +129,8 @@ def _autodetect_injector_port() -> str | None:
 
 
 class Injector:
-    """Thin USB-CDC client for the V203 injector's ASCII line protocol. See
-    `firmware/boards/nano-v203-injector/src/proto.rs` for the command grammar."""
+    """Thin USB-CDC client for the dxl-bus-injector's ASCII line protocol. See
+    `tools/dxl-bus-injector/src/proto.rs` for the command grammar."""
 
     def __init__(self, port_path: str):
         # 115200 is nominal-only for CDC ACM; the wire side runs whatever
@@ -284,74 +270,23 @@ def _ensure_chip_baud(port_path: str, dxl_id: int, target_bps: int) -> None:
 def pytest_sessionstart(session):
     # Session hook (not a fixture) so output lands before pytest's test-name lines.
     config = session.config
-    do_flash = not config.getoption("--no-flash")
-    do_calib = not config.getoption("--no-calib")
 
     print("\n--- bench setup ---", flush=True)
-
-    if do_flash:
-        boot_bin = config.getoption("--boot-bin")
-        boot_elf = ELF_DIR / boot_bin
-        _run(["cargo", "build", "--release", "--bin", boot_bin], cwd=BOARD_WS)
-        assert boot_elf.is_file(), f"boot ELF not found at {boot_elf}"
-        _run(["probe-rs", "download", str(boot_elf)])
-
-        bin_name = config.getoption("--bin")
-        elf = ELF_DIR / bin_name
-        _run(["cargo", "build", "--release", "--bin", bin_name], cwd=BOARD_WS)
-        assert elf.is_file(), f"ELF not found at {elf}"
-        _run(["probe-rs", "download", str(elf)])
-        _run(["probe-rs", "reset"])
-        time.sleep(0.3)
-
-    config._bench_calib_backup = None
-    if do_calib:
-        tmp_root = Path(tempfile.mkdtemp(prefix="dxl-bench-calib-"))
-        calib_backup = tmp_root / "calib_backup.bin"
-        _run([
-            "probe-rs", "read", "b8", hex(CALIB_ADDR), str(CALIB_LEN),
-            "--format", "binary",
-            "--output", str(calib_backup),
-        ])
-        _run(["probe-rs", "reset"])
-        time.sleep(0.3)
-        config._bench_calib_backup = calib_backup
 
     port_path = _resolve_port(config)
     print(f"[bench] port: {port_path}", flush=True)
     target_baud = config.getoption("--baud")
     _ensure_chip_baud(port_path, config.getoption("--id"), target_baud)
 
-    config._bench_injector_path = None
-    if not config.getoption("--no-injector"):
-        inj_path = config.getoption("--injector-port") or _autodetect_injector_port()
-        if inj_path is None:
-            print(
-                "[bench] injector: not detected — tests requiring it will skip "
-                "(pass --no-injector to silence this message)",
-                flush=True,
-            )
-        else:
-            print(f"[bench] injector: {inj_path}", flush=True)
-            _ensure_injector_baud(inj_path, target_baud)
-            config._bench_injector_path = inj_path
+    inj_path = config.getoption("--injector-port") or _autodetect_injector_port()
+    config._bench_injector_path = inj_path
+    if inj_path is None:
+        print("[bench] injector: not detected — injector tests will skip", flush=True)
+    else:
+        print(f"[bench] injector: {inj_path} (tuning to {target_baud} baud)", flush=True)
+        _ensure_injector_baud(inj_path, target_baud)
 
     print("--- bench setup complete ---\n", flush=True)
-
-
-def pytest_sessionfinish(session, exitstatus):
-    calib_backup = getattr(session.config, "_bench_calib_backup", None)
-    if calib_backup is None or not calib_backup.exists():
-        return
-    print("\n--- bench teardown ---", flush=True)
-    # Don't switch to `wlink flash --erase` — that's a chip-wide mass erase.
-    _run([
-        "probe-rs", "download",
-        "--binary-format", "bin",
-        "--base-address", hex(CALIB_ADDR),
-        str(calib_backup),
-    ])
-    _run(["probe-rs", "reset"])
 
 
 @pytest.fixture(scope="session")
