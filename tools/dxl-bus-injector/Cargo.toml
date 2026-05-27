@@ -1,0 +1,68 @@
+[package]
+name    = "dxl-bus-injector"
+version = "0.1.0"
+edition = "2024"
+description = "Host-commanded DXL bus injector + listener firmware for nanoCH32V203 — used by tools/dxl-bench"
+
+[lib]
+name = "dxl_bus_injector"
+path = "src/lib.rs"
+
+[[bin]]
+name  = "dxl-bus-injector"
+path  = "src/main.rs"
+
+[dependencies]
+
+# Gated to riscv32 so `cargo test --lib --target=<host>` doesn't pull in
+# portable-atomic's `unsafe-assume-single-core` (embedded-only) or any of the
+# WCH/embassy crates.
+[target.'cfg(target_arch = "riscv32")'.dependencies]
+# ch32-hal V203 metadata ships with empty dma_channels, so TxDma<USART1> isn't
+# generated; the hot path drives USART/DMA via metapac directly.
+ch32-hal  = { git = "https://github.com/ch32-rs/ch32-hal", default-features = false, features = [
+  "ch32v203c8t6",
+  "rt",
+  "embassy",
+  "time-driver-tim2",
+  "memory-x",
+] }
+# `unsafe-trust-wch-atomics` is qingke 0.7's compile gate (it uses
+# core::sync::atomic internally, which lowers to broken LR/SC on V4 per
+# QingKe V4 Manual V1.5 §1.1) — not a trust statement from us. Our own
+# cross-context state never emits LR/SC; portable-atomic with
+# `unsafe-assume-single-core` handles RMW via disable-IRQ.
+# See [[reference-qingke-v4-atomics-broken]].
+qingke    = { version = "0.7", features = ["v4", "critical-section-impl", "unsafe-trust-wch-atomics"] }
+qingke-rt = { version = "0.7", features = ["v4"] }
+
+embassy-executor = { version = "0.9", features = ["arch-spin", "executor-thread"] }
+embassy-futures  = "0.1"
+embassy-sync     = "0.7"
+embassy-time     = "0.5"
+embassy-usb      = { version = "0.5", default-features = false }
+# embassy-usb 0.5.1 was built against embassy-usb-driver 0.2.0; the 0.2.1
+# point release silently bumped embedded-io-async from 0.6 to 0.7. Pin
+# explicitly to dodge the trait-impl mismatch.
+embassy-usb-driver = "=0.2.0"
+
+portable-atomic  = { version = "1", features = ["unsafe-assume-single-core"] }
+critical-section = "1"
+heapless         = "0.8"
+static_cell      = "2"
+
+panic-halt = "1"
+
+[profile.release]
+opt-level     = 3
+lto           = true
+codegen-units = 1
+panic         = "abort"
+debug         = 2
+
+[profile.dev]
+opt-level     = 3
+lto           = true
+codegen-units = 1
+debug         = 2
+debug-assertions = false
