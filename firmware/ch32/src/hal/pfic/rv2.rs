@@ -48,6 +48,11 @@ pub fn set_priority(irq: Interrupt, prio: Priority) {
     PFIC.iprior(irq as usize).write_value(prio.as_u8());
 }
 
+#[inline]
+pub fn set_systick_priority(prio: Priority) {
+    PFIC.iprior(SYSTICK_IRQ as usize).write_value(prio.as_u8());
+}
+
 pub fn software_reset() -> ! {
     ch32_metapac::RCC.rstsckr().write(|w| w.0 = 1 << 24);
     PFIC.cfgr().write(|w| {

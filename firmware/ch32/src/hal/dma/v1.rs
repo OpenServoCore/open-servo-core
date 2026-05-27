@@ -67,3 +67,8 @@ pub fn remaining(ch: Channel) -> u16 {
     let n = (ch as u8 - 1) as usize;
     DMA1.ch(n).ndtr().read().ndt()
 }
+
+pub fn is_enabled(ch: Channel) -> bool {
+    let n = (ch as u8 - 1) as usize;
+    DMA1.ch(n).cr().read().en()
+}

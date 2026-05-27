@@ -63,6 +63,10 @@ impl DxlBus for Ch32Bus {
     }
 
     fn send(&mut self) {
+        // Flush any stale slot setup: an unfired SysTick CMP from a prior
+        // Sync/Fast op would otherwise re-fire DMA and patch CRC over this
+        // reply's buffer.
+        dxl_fast::cancel();
         if dxl_fast::arm_tx() {
             dxl_fast::fire_now();
         }

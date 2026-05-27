@@ -62,12 +62,10 @@ pub fn install(io: Ch32KernelIo) {
     crate::log::info!("kernel + services installed");
 }
 
-/// USART1 IDLE must preempt the ADC DMA TC handler to keep `idle_tick` capture
-/// sub-µs at 3 Mbaud — a ~30 µs ADC ISR would otherwise shift our slot deadline
-/// by the same amount.
 pub fn install_irqs() {
     pfic::set_priority(pfic::Interrupt::USART1, pfic::Priority::High);
     pfic::set_priority(pfic::Interrupt::DMA1_CHANNEL1, pfic::Priority::Low);
+    pfic::set_systick_priority(pfic::Priority::High);
     pfic::enable(pfic::Interrupt::USART1);
     pfic::enable(pfic::Interrupt::DMA1_CHANNEL1);
     pfic::enable_systick();

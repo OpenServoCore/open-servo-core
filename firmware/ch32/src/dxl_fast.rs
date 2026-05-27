@@ -40,6 +40,11 @@ pub fn arm_tx() -> bool {
     if len == 0 {
         return false;
     }
+    // `dma::set_count` requires CH4 disabled; arming over an in-flight TX
+    // silently keeps the old NDTR and corrupts the wire mid-byte.
+    if dma::is_enabled(dma::Channel::CH4) {
+        return false;
+    }
     dma::set_count(dma::Channel::CH4, len as u16);
     usart::clear_tc(USART1);
     usart::set_dma_tx(USART1, true);
@@ -68,6 +73,7 @@ pub fn start_plain_after(idle_tick: u32, delay_us: u32) {
         return;
     }
     if !arm_tx() {
+        cancel();
         return;
     }
 
@@ -90,7 +96,7 @@ pub fn start_fast_after(idle_tick: u32, fire_us: u32, snoop_from: Option<u32>) {
     systick::clear_match();
 
     if !arm_tx() {
-        set_stage(Stage::Idle);
+        cancel();
         return;
     }
 
@@ -152,6 +158,9 @@ pub fn on_rxne() {
 }
 
 pub fn cancel() {
+    systick::set_irq(false);
+    systick::clear_match();
+    usart::set_rxne_irq(USART1, false);
     set_stage(Stage::Idle);
 }
 
