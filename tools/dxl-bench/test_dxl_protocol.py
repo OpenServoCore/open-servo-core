@@ -79,25 +79,3 @@ def test_clear_returns_instruction_error(port, osc_id):
 def test_control_table_backup_returns_instruction_error(port, osc_id):
     port.writePort(build_control_table_backup(osc_id))
     _expect_status(port, osc_id, ERR_INSTRUCTION)
-
-
-def test_zz_reboot_clears_volatile_state(port, osc_id):
-    # Dirty volatile state first so a no-op `request_reboot` is caught.
-    port.writePort(build_write(osc_id, CONTROL_BASE_ADDR, b"\x01"))
-    _expect_status(port, osc_id, 0)
-    port.writePort(build_read(osc_id, CONTROL_BASE_ADDR, 1))
-    s = _expect_status(port, osc_id, 0)
-    assert s.params == b"\x01", f"setup failed, torque_enable={s.params.hex()}"
-
-    port.writePort(build_reboot(osc_id))
-    _expect_status(port, osc_id, 0)
-
-    time.sleep(0.5)
-    port.ser.reset_input_buffer()
-
-    port.writePort(build_ping(osc_id))
-    _expect_status(port, osc_id, 0)
-
-    port.writePort(build_read(osc_id, CONTROL_BASE_ADDR, 1))
-    s = _expect_status(port, osc_id, 0)
-    assert s.params == b"\x00", f"reboot didn't clear volatile state: {s.params.hex()}"

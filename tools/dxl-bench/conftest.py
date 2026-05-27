@@ -39,6 +39,13 @@ def pytest_addoption(parser):
         help="Serial device path (default: auto-detect any USB-UART)",
     )
     parser.addoption("--baud", default=1000000, type=int, help="UART baud rate")
+    parser.addoption(
+        "--tinyboot-baud",
+        default=3000000,
+        type=int,
+        help="Baud the bootloader runs at; mirrors `boot/src/main.rs` and must "
+             "be updated together if that file changes.",
+    )
     parser.addoption("--id", default=1, type=int, help="OSC servo DXL ID")
     parser.addoption(
         "--injector-port",
@@ -332,3 +339,8 @@ def osc_id(request):
 @pytest.fixture(scope="session")
 def baud(request):
     return request.config.getoption("--baud")
+
+
+@pytest.fixture(scope="session")
+def tinyboot_baud(request):
+    return request.config.getoption("--tinyboot-baud")
