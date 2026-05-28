@@ -64,6 +64,12 @@ def pytest_addoption(parser):
         help="V203 injector USB-CDC path (default: auto-detect by VID/PID; "
              "absent injector simply skips injector-dependent tests)",
     )
+    parser.addoption(
+        "--no-dut",
+        action="store_true",
+        help="Skip V006 ping/retune at session start (for INJ-only bench "
+             "probes where the DUT is unplugged for simpler wiring).",
+    )
 
 
 # `serial.tools.list_ports.comports()` is cross-platform: IOKit on macOS,
@@ -299,7 +305,10 @@ def pytest_sessionstart(session):
     port_path = _resolve_port(config)
     print(f"[bench] port: {port_path}", flush=True)
     target_baud = config.getoption("--baud")
-    _ensure_chip_baud(port_path, config.getoption("--id"), target_baud)
+    if config.getoption("--no-dut"):
+        print("[bench] --no-dut: skipping V006 ping/retune", flush=True)
+    else:
+        _ensure_chip_baud(port_path, config.getoption("--id"), target_baud)
 
     inj_path = config.getoption("--injector-port") or _autodetect_injector_port()
     config._bench_injector_path = inj_path
