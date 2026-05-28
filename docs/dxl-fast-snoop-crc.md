@@ -6,7 +6,19 @@ Companion to [dxl-rx-timing.md](dxl-rx-timing.md). Read that first — this doc 
 
 ---
 
-## 1. What the last slave has to do
+## 1. Three things we're trying to get right
+
+Before getting into the design it helps to spell out what we're actually after. Three things, all hard-won — we'd like to hang onto every one of them.
+
+**R1 — the fire SysTick lands on schedule.** Our reply has to start at exactly `wire-end + RDT + slot_offset` so it coalesces with the predecessor slot at zero idle gap. DXL Fast's jitter cap is one byte time — 3.33 µs at 3 Mbaud — and anything that shoves the fire SysTick back by more than a couple of microseconds breaks coalesce. The current code's RXNE-per-byte snoop hits exactly that: the last RXNE for slot N-2 tends to land inside the inter-slot idle gap, and since USART1 and SysTick share PFIC priority (§8.4 parent), SysTick CMP queues behind the in-flight RXNE. On the bench we see ~4 µs of slip at 3 Mbaud. That's the thing we most want to fix.
+
+**R2 — snoop CRC for the early slots happens "at DMA," not per byte.** DMA CH5 is already collecting every snoop byte silently; there's no protocol reason the CPU needs to wake up for each one. Per-byte RXNE stacks ~200 USART1 trap entries per Fast Last reply at 3 Mbaud, each ~3 µs of pure trap-entry overhead. That's ~600 µs of CPU spent doing nothing useful every Fast Read, and the ADC kernel pump (20 kHz, Low priority) gets preempted by every one of them — control loop jitter goes up whenever the bus is busy. We'd rather let DMA do the byte-shoveling it's built for and walk the buffer in batches at moments we pick.
+
+**R3 — slot N-2 is the awkward one, and whatever we do here can't compromise R1.** N-2's bytes arrive at the very end of the snoop window, right when fire is imminent. RXNE-during-N-2 is exactly what causes R1's failure, so if we drop RXNE we have to put N-2's CRC somewhere else. Post-fire is the natural place — TX is already shifting and the CPU has the `(n-2) × byte_time` prefetch window to work in (§3) — but that window is only 6–20 µs at 3 Mbaud, much less than the walk time for an asymmetric Bulk Read where one predecessor has a big payload and we have a tiny one. Two ways out: (a) drop USART1 to Low so SysTick at High preempts RXNE during snoop, or (b) get rid of RXNE entirely and find a CRC path for N-2 that respects the slack ceiling. V006's two-level PFIC makes (a) hard to layer cleanly without surprising the framing layer, so this design goes with (b).
+
+---
+
+## 2. What the last slave has to do
 
 A normal DXL Read reply is self-contained — we know every byte we're about to send, so we compute the CRC at build time and let DMA shovel the buffer onto the wire.
 
@@ -24,7 +36,7 @@ The bytes labeled `slot 0`..`slot 3` came from other slaves. They're already on 
 
 That's the snoop CRC. It's only needed for the **Last** slot (`FastSlotPosition::Last` in `firmware/lib/dxl-protocol/src/fast.rs`). Slot 0 (First), middle slots, and the Only-slot path emit no CRC at all — they only contribute payload.
 
-## 2. The hard part: TX DMA prefetch slack
+## 3. The hard part: TX DMA prefetch slack
 
 The fire ISR runs `fire_now()` (flip TX_EN high, enable DMA CH4) and then has a small window to patch the CRC bytes into the trailing slot of the TX buffer before DMA reads from those positions.
 
@@ -36,9 +48,9 @@ At 3 Mbaud `byte_time = 3.33 µs`. For a typical 4-byte-payload reply (`n = 8`, 
 
 That's the entire budget for "catch the running CRC up to the wire + fold our payload in + write 2 bytes." Miss it and the placeholder bytes (`[0xAA, 0xBB]` from `fast.rs::CRC_PLACEHOLDER`) land on the wire — the host sees a CRC mismatch and drops the frame.
 
-## 3. What we've tried
+## 4. What we've tried
 
-### 3.1 Walk everything at fire
+### 4.1 Walk everything at fire
 
 Simplest possible. Fire ISR, post-`fire_now()`, walks the whole RX ring from `parsed_end` (where the host's request ended) up to wherever NDTR currently points. CRC every byte. Fold in our payload. Write the 2 CRC bytes.
 
@@ -52,7 +64,7 @@ CRC walks at ~5 cycles/byte at 48 MHz = **~0.1 µs/byte**. Compare to slack:
 
 Asymmetric Bulk Read is the killer case: one slave returning `MAX_READ = 128` bytes, us returning 1 byte. 138 wire bytes to walk, 6.66 µs of slack. We lose.
 
-### 3.2 RXNE per byte (the current code)
+### 4.2 RXNE per byte (the current code)
 
 Enable USART1 RXNE_IE for the duration of the snoop window. Each received byte fires a USART1 IRQ; the handler reads NDTR, folds new bytes into the running CRC, advances `snoop_head`. By fire time the CRC is essentially current — the fire ISR sweeps up at most a one-byte straggle.
 
@@ -62,7 +74,7 @@ Worse: the **last** RXNE in the window lands inside the inter-slot idle gap righ
 
 And the 200 trap entries per Fast Read interleave badly with the 20 kHz ADC kernel pump. Control loop jitter goes up under traffic.
 
-### 3.3 The plan: SysTick peeks the DMA cursor
+### 4.3 The plan: SysTick peeks the DMA cursor
 
 Two SysTick CMP deadlines instead of one. The first fires a fixed margin before the real fire deadline, peeks the DMA cursor, bulk-walks whatever's there. The second is the same fire deadline we had before; it sweeps up a small straggle, fires TX, patches CRC.
 
@@ -81,7 +93,7 @@ DMA's RX channel (CH5, always on, §12 parent) is doing all the actual reception
 
 Crucially: **RXNE_IE stays off the entire time.** No per-byte interrupts. SysTick fires unimpeded at the deadline.
 
-## 4. Sizing the margin
+## 5. Sizing the margin
 
 Two constraints, both worst-case at 3 Mbaud (the fastest baud is also the tightest slack):
 
@@ -126,7 +138,7 @@ Typical Fast Sync — 5 slaves with 4-byte payloads:
 
 When `fire_us ≤ M` the snoop is small enough that one walk at fire fits trivially. No second SysTick entry needed; the FSM transitions straight from arm into `WaitingFire`.
 
-## 5. State machine update
+## 6. State machine update
 
 One state added to the reply-scheduler FSM from §7.2 of the parent doc:
 
@@ -160,7 +172,7 @@ One state added to the reply-scheduler FSM from §7.2 of the parent doc:
 
 The `WaitingSwitch → WaitingFire` transition is subject to the "CNTIF latches only on `CNT == CMP` up-count" gotcha from §8.3 of the parent doc — the set-and-recheck pattern after writing the new CMP is mandatory, otherwise an overshoot in the switch ISR (a 75 µs walk for a giant snoop is plausible) silently sleeps until the next 89-second wrap.
 
-## 6. What disappears
+## 7. What disappears
 
 The snoop owner of RXNE_IE no longer exists. The OR-composer from §7.3 of the parent doc collapses to a single owner (framing).
 
@@ -172,13 +184,13 @@ In code terms:
 
 USART1 IRQ entries during a Fast last-slave snoop window go from `N_wire_bytes` (today) to **zero**. SysTick CMP entries go from `1` to `1 or 2` depending on whether `fire_us > M`.
 
-## 7. Honest accounting
+## 8. Honest accounting
 
 What this buys:
 
-- **User-observed 4 µs SysTick fire delay at 3 Mbaud Fast Sync: gone.** No RXNE inside the inter-slot gap to queue ahead of SysTick.
-- **Control loop jitter from Fast Read snoop windows: gone.** Hundreds of USART1 trap entries vanish, ADC kernel pump (Low priority) no longer fights them.
-- **Asymmetric Bulk Read CRC correctness: preserved.** The 128-byte-predecessor + 1-byte-our-reply case that breaks walk-everything-at-fire works cleanly because the bulk-walk happens at `fire − 150 µs`, leaving only ~45 bytes of straggle for the fire ISR.
+- **R1: the 4 µs SysTick fire delay we measured at 3 Mbaud is gone.** RXNE is off; nothing same-priority can queue ahead of the fire SysTick.
+- **R2: control loop jitter from Fast Read snoop windows is gone.** Hundreds of USART1 trap entries vanish, and the ADC kernel pump (Low priority) no longer has to fight them. CRC accumulation happens in 1–2 SysTick ISRs total instead of ~200 USART1 ISRs.
+- **R3: asymmetric Bulk Read CRC stays correct without any priority dance.** The 128-byte-predecessor + 1-byte-our-reply case that breaks walk-everything-at-fire works cleanly because the bulk walk happens at `fire − 150 µs`, leaving only ~45 bytes of straggle for the fire ISR — well within even the smallest reply's prefetch slack.
 
 What this doesn't buy:
 
@@ -190,7 +202,7 @@ What this trades off:
 - One extra `Stage` and one extra constant (`SWITCH_MARGIN_US`).
 - The constant is a derived number with documented math, not a magic value. Re-derive if `DXL_RX_BUF_LEN` changes or the smallest-reply assumption changes.
 
-## 8. Why this isn't "use DMA half-transfer interrupt"
+## 9. Why this isn't "use DMA half-transfer interrupt"
 
 The DMA controller has Half-Transfer (HT) and Transfer-Complete (TC) interrupts that fire at fixed ring positions (half and full). Tempting to use HT_IE on CH5 as a "free" CRC accumulation point.
 
@@ -201,6 +213,6 @@ Two problems:
 
 SysTick CMP is deterministic, tied to *our* snoop window, and the FSM already has the infrastructure. `WaitingSwitch` reuses what's there; DMA HT would be a new IRQ source for strictly worse alignment.
 
-## 9. One-paragraph summary
+## 10. One-paragraph summary
 
 > The Fast Sync/Bulk Read last slave has to compute a CRC over predecessor slots' wire bytes and stitch it onto its own reply. Walking everything at fire blows past the V006's tight TX DMA prefetch slack as soon as the snoop crosses ~70 bytes for a small reply; firing RXNE per byte costs hundreds of USART1 IRQs at 3 Mbaud and shoves SysTick's fire deadline back by ~4 µs because USART1 and SysTick share PFIC priority. The fix is a second SysTick CMP deadline at `fire − 150 µs`, where the CPU peeks the RX DMA cursor (NDTR), bulk-walks the ring into a running CRC, and lets a ~45-byte straggle wait until the fire ISR. Two SysTick entries per Fast last-slave reply, zero RXNE entries. The 150 µs margin is derived from two constraints: the switch walk has to fit inside the margin (`M ≥ total / 10.3`, so 99 µs for our 1024-byte RX ring) and the straggle walk has to fit inside the TX prefetch slack (`M < (slack − patch) / 0.03`, so 188 µs for the smallest possible reply). The reply-scheduler FSM gains one state (`WaitingSwitch`), the RXNE composer collapses to a single owner (framing), and the 4 µs queueing penalty the user observed at 3 Mbaud disappears.
