@@ -182,7 +182,7 @@ What this buys:
 
 What this doesn't buy:
 
-- **The structural ~5 µs fire floor (§13 parent) is unchanged.** This proposal eliminates the *additional* 4 µs queueing delay; it doesn't move the floor itself. Closing the 3 Mbaud Fast spec gap still needs the TIM1 OPM hardware-driven fire lever (§13 parent, item 3).
+- **The chip's ~5 µs structural floor on the SysTick-fire path itself is unchanged.** That floor is the irreducible PFIC trap entry + ISR body + DMA EN write + TX_EN GPIO toggle on V006 V2 — the time from CMP-match to bytes leaving the wire even with nothing else happening. It's what "on time" *means* on this chip. v6 just removes the extra ~4 µs we were paying on top of it from RXNE-queueing contention. Today fire happens at floor + 4 µs; under v6 it happens at floor + 0. Closing the floor itself needs the TIM1 OPM hardware-driven fire lever (§13 parent, item 3).
 - **Total CRC walk work is unchanged.** We're rearranging when bytes get walked, not skipping any.
 
 What this trades off:
