@@ -52,6 +52,8 @@ pub fn arm_tx() -> bool {
     true
 }
 
+#[cfg_attr(target_arch = "riscv32", unsafe(link_section = ".highcode"))]
+#[inline(never)]
 pub fn fire_now() {
     // SAFETY: written once during bring-up before USART1 IRQ unmask.
     if let Some(t) = unsafe { *DXL_TX_EN.get() } {
@@ -121,6 +123,8 @@ pub fn start_fast_after(idle_tick: u32, fire_us: u32, snoop_from: Option<u32>) {
     }
 }
 
+#[cfg_attr(target_arch = "riscv32", unsafe(link_section = ".highcode"))]
+#[inline(never)]
 pub fn on_systick() {
     systick::clear_match();
     systick::set_irq(false);
@@ -136,13 +140,14 @@ pub fn on_systick() {
         }
         Stage::WaitingFire => {
             usart::set_rxne_irq(USART1, false);
-            // Drain any byte that landed between the last RXNE and now.
-            accumulate_snoop();
-            // Enable TX FIRST — jitter cap is one byte time (3.33 µs at
-            // 3 Mbaud); CRC compute below races the DMA pre-fetch with
-            // (payload_end - 1) byte-times of slack.
             set_stage(Stage::Idle);
+            // Fire FIRST — jitter cap is one byte time (3.33 µs at 3 Mbaud).
+            // Snoop CRC + frame CRC compute below race the DMA pre-fetch with
+            // (payload_end - 1) byte-times of slack. accumulate_snoop only
+            // touches STATE.bulk_crc; patch_crc writes TX_BUF[n-2..n] which
+            // DMA reaches last.
             fire_now();
+            accumulate_snoop();
             patch_crc();
         }
     }
@@ -164,6 +169,8 @@ pub fn cancel() {
     set_stage(Stage::Idle);
 }
 
+#[cfg_attr(target_arch = "riscv32", unsafe(link_section = ".highcode"))]
+#[inline(never)]
 fn patch_crc() {
     // SAFETY: see on_systick. Sole writer to DXL_TX_BUF in ISR context.
     unsafe {
@@ -179,6 +186,8 @@ fn patch_crc() {
     }
 }
 
+#[cfg_attr(target_arch = "riscv32", unsafe(link_section = ".highcode"))]
+#[inline(never)]
 fn accumulate_snoop() {
     let write_pos = current_rx_write_pos();
     // SAFETY: STATE accessed only from SysTick/USART1 ISRs (no mutual
@@ -195,6 +204,8 @@ fn accumulate_snoop() {
     }
 }
 
+#[cfg_attr(target_arch = "riscv32", unsafe(link_section = ".highcode"))]
+#[inline(never)]
 fn ring_crc(seed: u16, ring: &[u8], head: u16, write_pos: u16) -> u16 {
     if head == write_pos {
         return seed;

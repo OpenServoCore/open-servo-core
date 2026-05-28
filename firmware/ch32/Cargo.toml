@@ -14,10 +14,16 @@ embedded-storage = "0.3"
 heapless         = "0.9"
 osc-core         = { path = "../lib/core" }
 osc-units        = { path = "../lib/units" }
-portable-atomic  = { version = "1", default-features = false, features = ["critical-section"] }
+portable-atomic  = { version = "1", default-features = false }
 riscv            = "0.12"
 critical-section = "1.2"
 defmt            = { version = "1", optional = true }
+
+# RISC-V targets lack hardware CAS; opt into the single-core assumption so
+# RMW lowers to lw/sw pairs instead of pulling in critical-section. Host
+# builds (clippy, unit tests) use portable-atomic's native x86 path.
+[target.'cfg(target_arch = "riscv32")'.dependencies]
+portable-atomic = { version = "1", default-features = false, features = ["unsafe-assume-single-core"] }
 
 [dev-dependencies]
 critical-section = { version = "1.2", features = ["std"] }

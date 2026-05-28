@@ -83,6 +83,7 @@ fn on_usart1_tc() {
     }
 }
 
+#[inline(always)]
 pub fn on_systick_match() {
     dxl_fast::on_systick();
 }

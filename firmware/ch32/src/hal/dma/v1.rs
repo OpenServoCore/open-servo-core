@@ -48,6 +48,7 @@ pub fn set_count(ch: Channel, count: u16) {
     DMA1.ch(n).ndtr().write(|w| w.set_ndt(count));
 }
 
+#[inline]
 pub fn enable(ch: Channel) {
     let n = (ch as u8 - 1) as usize;
     DMA1.ch(n).cr().modify(|w| w.set_en(true));
@@ -63,6 +64,7 @@ pub fn clear_tc_flag(ch: Channel) {
     DMA1.ifcr().write(|w| w.set_tcif(n, true));
 }
 
+#[inline]
 pub fn remaining(ch: Channel) -> u16 {
     let n = (ch as u8 - 1) as usize;
     DMA1.ch(n).ndtr().read().ndt()
