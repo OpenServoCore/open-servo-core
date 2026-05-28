@@ -341,7 +341,96 @@ The snoop branch is deleted; framing's branch is unchanged:
 
 That's it. The snoop CRC machinery (TC + WaitingSwitch + fire) is entirely separate from this path.
 
-## 10. Honest accounting
+## 10. Suggested types and vocabulary
+
+A few types worth sketching so implementation and documentation share a vocabulary. These don't change the design — they name what §1–§9 already describe.
+
+### 10.1 Timing strategy
+
+```rust
+pub enum DxlTimingStrategy {
+    /// Low baud or short RDT: IDLE fires too late, so track packet end by length.
+    LengthCounted,
+
+    /// Normal/high baud: use UART IDLE and subtract one byte-time.
+    IdleBackdated,
+
+    /// Fast Sync/Bulk: chain status response after previous slave segment.
+    ChainedFastStatus,
+}
+```
+
+Maps onto the framing layer's mode FSM in [parent doc §7.1](dxl-rx-timing.md):
+
+- `LengthCounted` is parent doc's `Rxne` framing — per-byte RXNE entries publish a `(rx_cursor, systick)` cell. Named "length-counted" because the framing layer effectively tracks byte count to identify the last one.
+- `IdleBackdated` is parent doc's `Idle` framing — one IDLE IRQ per packet, backdated by `9 × BRR` ticks (parent §8.6) to recover wire-end.
+- `ChainedFastStatus` is *this* doc's contribution — the Fast Last-slave path that chains a snoop-CRC'd Status reply onto predecessor wire bytes. Orthogonal to (`LengthCounted`, `IdleBackdated`): the chain is its own strategy, but it still relies on whichever of those two published the host request's wire-end timestamp.
+
+The framing FSM picks `LengthCounted` vs `IdleBackdated` automatically from `(baud, RDT)`. `ChainedFastStatus` is selected per-reply by the dispatcher — only Fast Last-slave replies use it.
+
+### 10.2 Fast chain phases
+
+```rust
+pub enum FastChainPhase {
+    /// Observing previous slave bytes via DMA chunk events.
+    Snoop,
+    /// A near-tail timer has been armed to catch up CRC before our slot.
+    CatchupArmed,
+    /// Consuming final observed bytes and advancing rolling CRC.
+    Catchup,
+    /// TX DMA configured + fire CMP armed; waiting for fire deadline.
+    TxArmed,
+    /// TX DMA running; straggle walk in progress.
+    TxStreaming,
+    /// Final CRC bytes patched into TX before DMA fetched them.
+    CrcPatched,
+    Done,
+    Fault(FastChainFault),
+}
+```
+
+Finer-grained than the four-state FSM in §6 — useful as a *process model* (the lifecycle a chained reply goes through) rather than a runtime FSM. Mapping:
+
+| Phase | When | Where in code |
+|---|---|---|
+| `Snoop` | After arm; DMA CH5 TC handler walking ring chunks into the rolling CRC | TC handler body |
+| `CatchupArmed` | Same as Snoop — distinguished by "SysTick CMP at `fire − M` set and pending" | tail of `start_fast_after` |
+| `Catchup` | WaitingSwitch ISR body running its bulk walk | `on_systick` in WaitingSwitch arm |
+| `TxArmed` | Switch ISR done; fire CMP set; waiting for it to fire | between Switch ISR exit and Fire ISR entry |
+| `TxStreaming` | Fire ISR after `fire_now()`, straggle walk in progress | `on_systick` in WaitingFire arm |
+| `CrcPatched` | `patch_crc()` done, CRC bytes in TX buffer's trailing slot | end of `on_systick` in WaitingFire |
+| `Done` | USART1 TC has fired, bus released | TC handler |
+| `Fault(_)` | Any error path that aborts the chain | `cancel`-equivalent paths |
+
+In runtime code the actual `Stage` enum stays at four states (Idle, WaitingPlain, WaitingSwitch, WaitingFire) — that's what's needed for the FSM to make correct decisions. A `FastChainPhase` tracker can sit alongside as a `#[cfg(feature = "telemetry")]` shadow — useful for observing chain progress under bench instrumentation without complicating the hot path.
+
+### 10.3 Fault taxonomy
+
+```rust
+pub enum FastChainFault {
+    UnexpectedByteCount,
+    PreviousSlotTimeout,
+    SlotTimingMiss,
+    CrcPatchDeadlineMiss,
+    DmaOverrun,
+    UartError,
+}
+```
+
+What each one catches and which constraint it maps to:
+
+| Variant | Detected when | Constraint |
+|---|---|---|
+| `UnexpectedByteCount` | `accumulate_snoop` sees NDTR inconsistent — e.g. ring lapped twice between walks | Constraint D (TC latency) |
+| `PreviousSlotTimeout` | predecessor slot doesn't end before `fire_us` deadline | host/protocol issue |
+| `SlotTimingMiss` | SysTick CMP fires later than `fire_tick + 1 byte_time` (the R1 jitter cap) | R1, §13 parent |
+| `CrcPatchDeadlineMiss` | `patch_crc()` completes after TX DMA has already read past `n−2` | Constraint B |
+| `DmaOverrun` | DMA CH5 overrun flag set — wire rate exceeded drain rate | chip limit |
+| `UartError` | parity/framing/noise error on USART1 STATR | PHY/wire issue |
+
+None of these are wired up today — error paths silently revert to `Idle` via `cancel`. Faults this granular are mostly useful when we fuzz the wire under intentional fault injection, or when interop-testing against hosts whose framing we don't fully trust. A counter per variant under `#[cfg(feature = "defmt")]` would be a cheap first step.
+
+## 11. Honest accounting
 
 What this buys:
 
@@ -362,7 +451,7 @@ What this trades off:
 - TC_IE has to be stage-gated (enable in `start_fast_after`, disable in fire ISR and `cancel`), and TC_IF cleared before re-enable to avoid stale-pending spurious fires. ~6 lines of code.
 - The constants are derived numbers with documented math, not magic values. Re-derive if `DXL_RX_BUF_LEN` shrinks below 64 (Constraint C), grows past ~1545 (Constraint A), or the smallest-reply assumption changes (Constraint B). `MAX_LENGTH` is independent of all of this — it lives on the request-parser path, not the snoop path.
 
-## 11. Why TC, why gated, and why not just HT
+## 12. Why TC, why gated, and why not just HT
 
 The DMA controller offers both Half-Transfer (HT) and Transfer-Complete (TC) interrupts. The hybrid uses TC, gated to fire only during snoop. Two choices worth justifying:
 
@@ -372,6 +461,6 @@ The DMA controller offers both Half-Transfer (HT) and Transfer-Complete (TC) int
 
 **Why not just SysTick.** The other candidate we considered was the SysTick-only plan (WaitingSwitch + fire, no TC, 1024-byte ring sized to fit any plausible snoop in one shot). That works for typical traffic but breaks on R4 — oversize Fast Bulk Reads silently corrupt because the ring can't hold the whole snoop window. The hybrid keeps SysTick doing what it's good at (deterministic, tied to *our* deadlines) and adds TC to handle the wire-rate accumulation that SysTick alone can't bound.
 
-## 12. One-paragraph summary
+## 13. One-paragraph summary
 
 > The Fast Sync/Bulk Read last slave has to compute a CRC over predecessor slots' wire bytes and stitch it onto its own reply. Walking everything at fire blows past the V006's tight TX DMA prefetch slack as soon as the snoop crosses ~70 bytes for a small reply; firing RXNE per byte costs hundreds of USART1 IRQs at 3 Mbaud and shoves SysTick's fire deadline back by ~4 µs because USART1 and SysTick share PFIC priority; the SysTick-only plan that came before this one caps the snoop window at the ring size and silently CRC-corrupts oversize Fast Bulk Reads. The fix is a three-handed split: DMA Transfer-Complete on RX (CH5, stage-gated) pre-walks the CRC every time the 512-byte ring wraps; a SysTick CMP at `fire − 150 µs` walks whatever's accumulated since the last wrap; the fire ISR grabs a ~45-byte straggle and patches CRC into the TX buffer. All three handlers sit at PFIC HIGH and serialize cleanly. The ring drops from 1024 to 512 bytes, the snoop window stops being bounded by ring size, and oversize Fast Bulk Reads just work. The 150 µs margin still derives from two constraints — switch walk fits the margin (`N ≤ 10.3 × M`, comfortable at N = 512) and straggle walk fits the smallest reply's TX prefetch slack (`M < (slack − patch) / 0.03`, so M < 188 µs). The reply-scheduler FSM gains one state (`WaitingSwitch`), the RXNE composer collapses to a single owner (framing), the previously-unused DMA1_CH5 IRQ gets a stage-gated TC handler, and the 4 µs queueing penalty disappears.
