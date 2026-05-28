@@ -1,4 +1,4 @@
-# DXL Fast Last-Slave Snoop CRC on the CH32V006
+# DXL Fast Last-Slave Chain CRC on the CH32V006
 
 Companion to [dxl-rx-timing.md](dxl-rx-timing.md). Read that first — this doc assumes you already know what "the wire-end timestamp," "SysTick CMP fire," and "the V006's two PFIC priorities" mean.
 
@@ -131,10 +131,12 @@ For M = 150 µs: N ≤ 1545 bytes. Both 256 and 512 clear this comfortably — a
 
 Smallest reply has slack 6.66 µs (n = 4 at 3 Mbaud), patch ≈ 1 µs, so M < 188 µs.
 
-**Constraint C — no TC inside the straggle window.** If TC fires between switch and fire, it'd reset `snoop_head` mid-straggle and the fire ISR would walk the wrong range. Avoid by sizing N so DMA can't fill another full ring during M:
+**Constraint C — DMA can't lap during the straggle.** This is really a tighter version of D applied to the M-µs window: a single TC firing between switch and fire is fine (snoop_head reset + fire's walk semantics handle it consistently), but two wraps in M µs means DMA overwrites the tail TC just walked. So:
 
     N > M × bytes/µs = 45 bytes at 3 Mbaud, M = 150
     →  N ≥ 64
+
+Even at N = 64 this is hard to trip; at N = 512 it's not a thing.
 
 **Constraint D — TC IRQ latency before DMA laps `snoop_head`.** After TC fires, `snoop_head` jumps to 0; DMA keeps writing. If the TC handler is queued behind other HIGH-priority work (USART1 IDLE, SysTick), it has to finish before DMA writes N more bytes:
 
@@ -389,7 +391,7 @@ pub enum FastChainPhase {
 }
 ```
 
-Finer-grained than the four-state FSM in §6 — useful as a *process model* (the lifecycle a chained reply goes through) rather than a runtime FSM. Mapping:
+Finer-grained than the four-state runtime FSM in §6 — these phases are more "how do I picture what's happening" than state the code actually carries. Mapping each phase back to where it lives in the runtime FSM:
 
 | Phase | When | Where in code |
 |---|---|---|
