@@ -18,14 +18,29 @@ use qingke_rt::interrupt;
 use crate::inject::{APB1_HZ, BaudError, DEFAULT_BAUD};
 
 const RX_BUF_LEN: usize = 256;
-const _: () = assert!(RX_BUF_LEN.is_power_of_two(), "RX_BUF_LEN must be pow2 for ndtr mask");
+const _: () = assert!(
+    RX_BUF_LEN.is_power_of_two(),
+    "RX_BUF_LEN must be pow2 for ndtr mask"
+);
 const RX_BUF_MASK: u32 = (RX_BUF_LEN - 1) as u32;
 
 static RX_BUF: SyncUnsafeCell<[u8; RX_BUF_LEN]> = SyncUnsafeCell::new([0; RX_BUF_LEN]);
 
 const STAMP_RING_LEN: usize = 32;
 const STAMP_MASK: usize = STAMP_RING_LEN - 1;
-const _: () = assert!(STAMP_RING_LEN.is_power_of_two(), "STAMP_RING_LEN must be pow2");
+const _: () = assert!(
+    STAMP_RING_LEN.is_power_of_two(),
+    "STAMP_RING_LEN must be pow2"
+);
+
+/// SysTick ticks for one USART3 char-time; ISR backdates by this so `tick`
+/// lands at wire-end (IDLE asserts 9 bit-times later).
+static CHAR_TIME_SYSTICKS: AtomicU32 = AtomicU32::new(0);
+
+const fn char_time_systicks(brr: u32) -> u32 {
+    // USART bit-time = `brr` HCLK ticks; SysTick = HCLK/8 → 9 bit-times = 9 * brr / 8.
+    9 * brr / 8
+}
 
 #[derive(Copy, Clone, Default)]
 pub struct IdleStamp {
@@ -68,6 +83,10 @@ pub fn init() {
         // USART3 on APB1. Default 1 Mbaud to match `inject` + V006 wire rate;
         // host can retune via `set_baud` before bringing the bus up.
         USART3.brr().write(|w| w.0 = APB1_HZ / DEFAULT_BAUD);
+        CHAR_TIME_SYSTICKS.store(
+            char_time_systicks(APB1_HZ / DEFAULT_BAUD),
+            Ordering::Relaxed,
+        );
         USART3.ctlr2().modify(|w| w.set_stop(0b00));
         USART3.ctlr3().modify(|w| w.set_dmar(true));
         USART3.ctlr1().modify(|w| {
@@ -120,14 +139,20 @@ pub fn set_baud(bps: u32) -> Result<(), BaudError> {
     USART3.ctlr1().modify(|w| w.set_ue(false));
     USART3.brr().write(|w| w.0 = brr);
     USART3.ctlr1().modify(|w| w.set_ue(true));
+    CHAR_TIME_SYSTICKS.store(char_time_systicks(brr), Ordering::Relaxed);
     Ok(())
 }
 
 #[interrupt]
 fn USART3() {
-    // Capture timestamp as early as possible — every cycle of ISR prologue
-    // pushes the recorded tick further past the real IDLE edge.
-    let tick = SYSTICK.cntl().read();
+    // Backdate by one char-time so `tick` = wire-end (IDLE fires 9 bit-times later).
+    let tick = SYSTICK
+        .cntl()
+        .read()
+        .wrapping_sub(CHAR_TIME_SYSTICKS.load(Ordering::Relaxed));
+
+    // Scope marker: PA7 high until DMA EN brackets the listener→fire chain.
+    crate::debug::set();
 
     // STATR.IDLE is cleared by read-STATR-then-read-DATAR.
     let _ = USART3.statr().read();
@@ -164,4 +189,6 @@ fn USART3() {
     // in use (one atomic load); when armed, schedules SysTick CMP or fires
     // immediately depending on the configured offset.
     crate::inject::on_listen_idle(tick);
+
+    crate::led::signal();
 }

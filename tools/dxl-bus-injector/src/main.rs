@@ -2,6 +2,7 @@
 #![no_main]
 #![feature(sync_unsafe_cell)]
 
+mod debug;
 mod inject;
 mod led;
 mod listen;
@@ -33,8 +34,10 @@ async fn main(spawner: Spawner) {
 
     led::init();
     led::on(); // boot indicator — fires once firmware reaches main loop
+    debug::init();
     inject::init();
     listen::init();
 
+    spawner.must_spawn(led::blink());
     spawner.must_spawn(usb_cdc::run(p.USBD, p.PA12, p.PA11));
 }

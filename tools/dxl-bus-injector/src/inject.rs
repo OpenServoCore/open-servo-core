@@ -139,12 +139,13 @@ pub fn arm(payload: &[u8], fire_at_tick: u64) -> Result<(), ArmError> {
     })
 }
 
-/// Load `payload` into the TX buffer and fire `after_idle_ticks` after the
-/// next IDLE event the listener observes. USART IDLE asserts ~1 char time
-/// after end-of-byte (~3.3 µs @ 3 Mbaud, ~10 µs @ 1 Mbaud) — subtract that
-/// from the intended end-of-frame-to-fire delay.
+/// Load `payload` and fire `after_idle_ticks` after wire-end. Listener
+/// backdates by one char-time so the caller passes spec-relative "ticks
+/// after end-of-frame" — no char-time compensation needed.
 pub fn arm_after_idle(payload: &[u8], after_idle_ticks: u32) -> Result<(), ArmError> {
     critical_section::with(|_| -> Result<(), ArmError> {
+        // Reset scope marker LOW for a clean re-arm window before next IDLE.
+        crate::debug::clear();
         ARMED_AFTER_IDLE.store(false, Ordering::Release);
         disarm_systick();
         load_payload(payload)?;
@@ -177,9 +178,7 @@ pub fn on_listen_idle(idle_tick: u32) {
     // by subtracting that delta from the current u64 CNT.
     let now = SYSTICK.cnt().read();
     let elapsed = (now as u32).wrapping_sub(idle_tick);
-    let fire_at = now
-        .wrapping_sub(elapsed as u64)
-        .wrapping_add(after as u64);
+    let fire_at = now.wrapping_sub(elapsed as u64).wrapping_add(after as u64);
 
     schedule_or_fire_now(fire_at);
 }
@@ -228,6 +227,7 @@ fn schedule_or_fire_now(fire_at_tick: u64) {
     let now = SYSTICK.cnt().read();
     if fire_at_tick.saturating_sub(now) < FIRE_NOW_THRESHOLD_TICKS {
         store_fired_tick(now as u32);
+        crate::debug::clear();
         DMA1.ch(6).cr().modify(|w| w.set_en(true));
         SYSTICK.cmp().write_value(u64::MAX);
         return;
@@ -255,9 +255,12 @@ fn SysTick() {
     // the high half is irrelevant at slot timescales.
     store_fired_tick(SYSTICK.cntl().read());
 
+    crate::debug::clear();
     DMA1.ch(6).cr().modify(|w| w.set_en(true));
 
     // Park CMP far in the future so the IRQ doesn't keep firing on the wrap.
     // The next arm() resets it.
     SYSTICK.cmp().write_value(u64::MAX);
+
+    crate::led::signal();
 }

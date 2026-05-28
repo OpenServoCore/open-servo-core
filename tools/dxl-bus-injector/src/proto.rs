@@ -12,9 +12,9 @@
 //!       Arm `inject` to push `bytes` onto the wire when SysTick.CNT == `at`.
 //!       `at` is in HCLK/8 ticks (18 MHz at 144 MHz).
 //!   `ARM bytes=<hex> after_idle=<u32>`
-//!       Same TX, but fire `after_idle` ticks after the next listener IDLE.
-//!       USART IDLE asserts ~1 char time after end-of-byte (~3.3 µs @ 3 Mbaud,
-//!       ~10 µs @ 1 Mbaud) — subtract that from the intended offset.
+//!       Same TX, but fire `after_idle` ticks after the wire returns to idle.
+//!       Listener backdates IDLE-ISR entry by one char-time, so this is the
+//!       spec-natural "ticks after end-of-frame" — no compensation needed.
 //!   `TICK?`      → `TICK <u64>`           current SysTick.CNT
 //!   `LAST?`      → `LAST <u32>`           last `inject` kickoff tick (low half)
 //!   `DRAIN`      → `STAMP <tick> <head>`  one entry from the listen ring, or
@@ -67,7 +67,10 @@ pub fn handle_line(line: &[u8]) -> Reply {
         "BYTES" => Reply::Bytes(listen::byte_count()),
         "HZ" => Reply::HzPerUs(inject::ticks_per_us()),
         "DRAIN" => match listen::drain_stamp() {
-            Some(s) => Reply::Stamp { tick: s.tick, head: s.head },
+            Some(s) => Reply::Stamp {
+                tick: s.tick,
+                head: s.head,
+            },
             None => Reply::Empty,
         },
         _ => Reply::Err("unknown"),
@@ -110,7 +113,7 @@ fn fire(rest: &str) -> Reply {
 
     match inject::arm(&buf[..len], at) {
         Ok(()) => {
-            led::toggle();
+            led::signal();
             Reply::Ok
         }
         Err(inject::ArmError::TooLong) => Reply::Err("toolong"),
@@ -138,10 +141,9 @@ fn arm(rest: &str) -> Reply {
 
     match inject::arm_after_idle(&buf[..len], after) {
         Ok(()) => {
-            led::toggle();
+            led::signal();
             Reply::Ok
         }
         Err(inject::ArmError::TooLong) => Reply::Err("toolong"),
     }
 }
-

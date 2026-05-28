@@ -3,8 +3,14 @@
 //!
 //! PA15 is JTDI at reset — using it as GPIO requires disabling the JTAG-DP
 //! (we keep SW-DP on for probe-rs).
+//!
+//! Solid on when idle; ~10 Hz blink on activity (signal() latches; blink task drains).
 
 use ch32_hal::pac::{AFIO, GPIOA, RCC};
+use embassy_time::{Duration, Timer};
+use portable_atomic::{AtomicBool, Ordering};
+
+static ACTIVITY: AtomicBool = AtomicBool::new(false);
 
 pub fn init() {
     RCC.apb2pcenr().modify(|w| {
@@ -44,10 +50,29 @@ pub fn off() {
 }
 
 #[inline]
-pub fn toggle() {
+fn toggle() {
     if GPIOA.outdr().read().odr(15) {
         GPIOA.bshr().write(|w| w.set_br(15, true));
     } else {
         GPIOA.bshr().write(|w| w.set_bs(15, true));
+    }
+}
+
+/// Latch an activity tick — drained by the next `blink` poll. ISR-safe.
+#[inline]
+pub fn signal() {
+    ACTIVITY.store(true, Ordering::Relaxed);
+}
+
+/// Idle → solid on; activity tick → toggle. Spawn once from `main`.
+#[embassy_executor::task]
+pub async fn blink() {
+    loop {
+        if ACTIVITY.swap(false, Ordering::Relaxed) {
+            toggle();
+        } else {
+            on();
+        }
+        Timer::after(Duration::from_millis(50)).await;
     }
 }
