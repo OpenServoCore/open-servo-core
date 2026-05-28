@@ -6,8 +6,8 @@ use crate::dxl_fast;
 use crate::hal::{dma, gpio, pfic, systick, usart};
 use crate::idle_ring;
 use crate::statics::{
-    DXL_BAUD_PENDING_BRR, DXL_REBOOT_PENDING, DXL_RX_BUF_LEN, DXL_RX_WRITE_POS, DXL_TX_BUF,
-    DXL_TX_EN, KERNEL, SHARED,
+    DXL_BAUD_PENDING_BRR, DXL_CHAR_TIME_TICKS, DXL_REBOOT_PENDING, DXL_RX_BUF_LEN,
+    DXL_RX_WRITE_POS, DXL_TX_BUF, DXL_TX_EN, KERNEL, SHARED,
 };
 
 /// ADC DMA TC handler body — wire into the vector table via [`crate::install_isrs!`].
@@ -48,8 +48,10 @@ fn on_usart1_idle() {
     if !usart::is_idle(USART1) {
         return;
     }
+    // USART IDLE asserts 1 char-time after the wire returns to idle; backdate
+    // to recover the wire-end timestamp the dispatcher's fire_us math expects.
+    let idle_tick = systick::ticks().wrapping_sub(DXL_CHAR_TIME_TICKS.load(Ordering::Relaxed));
     usart::clear_idle(USART1);
-    let idle_tick = systick::ticks();
     let remaining = dma::remaining(dma::Channel::CH5);
     let write_pos = (DXL_RX_BUF_LEN as u16).wrapping_sub(remaining);
     let prev = DXL_RX_WRITE_POS.load(Ordering::Relaxed);
@@ -77,6 +79,7 @@ fn on_usart1_tc() {
     let pending_brr = DXL_BAUD_PENDING_BRR.swap(0, Ordering::AcqRel);
     if pending_brr != 0 {
         usart::set_baud(USART1, pending_brr);
+        DXL_CHAR_TIME_TICKS.store(pending_brr * 9, Ordering::Relaxed);
     }
     if DXL_REBOOT_PENDING.load(Ordering::Acquire) {
         pfic::software_reset();

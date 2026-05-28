@@ -44,6 +44,10 @@ pub static DXL_REBOOT_PENDING: AtomicBool = AtomicBool::new(false);
 /// old wire rate (host can still decode), then the next byte is at the new rate.
 pub static DXL_BAUD_PENDING_BRR: AtomicU32 = AtomicU32::new(0);
 
+/// HCLK ticks for one 10-bit char; on_usart1_idle backdates `idle_tick` by
+/// this so the dispatcher sees wire-end (IDLE fires 1 char-time later).
+pub static DXL_CHAR_TIME_TICKS: AtomicU32 = AtomicU32::new(0);
+
 pub static SHARED: Shared = Shared::new();
 
 /// Initialised by `install`; DMA TC IRQ is PFIC-masked until then.
