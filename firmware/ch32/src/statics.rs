@@ -1,11 +1,12 @@
 use core::cell::SyncUnsafeCell;
 use core::mem::MaybeUninit;
+use core::sync::atomic::Ordering;
 use heapless::Vec;
 use osc_core::{Kernel, Services, Shared};
 use portable_atomic::{AtomicBool, AtomicU16, AtomicU32};
 
 use crate::board::{Ch32KernelIo, TxEn};
-use crate::hal::pfic;
+use crate::hal::{pfic, systick};
 use crate::services::Ch32ServicesIo;
 
 /// In `AdcPins` field order: pos, ntc, vbus, vmotor.0, vmotor.1.
@@ -21,7 +22,7 @@ pub const ADC_DMA_BUF_LEN: usize = ADC_SCAN_LEN * 2;
 pub static ADC_DMA_BUF: SyncUnsafeCell<[u16; ADC_DMA_BUF_LEN]> =
     SyncUnsafeCell::new([0; ADC_DMA_BUF_LEN]);
 
-pub const DXL_RX_BUF_LEN: usize = 1024;
+pub const DXL_RX_BUF_LEN: usize = 512;
 
 pub static DXL_RX_BUF: SyncUnsafeCell<[u8; DXL_RX_BUF_LEN]> =
     SyncUnsafeCell::new([0; DXL_RX_BUF_LEN]);
@@ -44,9 +45,35 @@ pub static DXL_REBOOT_PENDING: AtomicBool = AtomicBool::new(false);
 /// old wire rate (host can still decode), then the next byte is at the new rate.
 pub static DXL_BAUD_PENDING_BRR: AtomicU32 = AtomicU32::new(0);
 
-/// HCLK ticks for one 10-bit char; on_usart1_idle backdates `idle_tick` by
-/// this so the dispatcher sees wire-end (IDLE fires 1 char-time later).
+/// HCLK ticks for 9 bit-times on the wire (brr × 9); on_usart1_idle
+/// backdates the request end tick by this to recover the moment the
+/// last byte's stop bit completed (IDLE counts the stop bit as bit 1
+/// of the 10 it needs, so it asserts 9 bit-times later).
 pub static DXL_CHAR_TIME_TICKS: AtomicU32 = AtomicU32::new(0);
+
+pub static DXL_BYTE_TIME_TICKS: AtomicU32 = AtomicU32::new(0);
+
+/// `(1 << 16) / byte_time_us` — precomputed reciprocal so the snoop ISR
+/// converts µs → bytes with a multiply + shift instead of a runtime divide
+/// (RV32EC + zmmul has no hardware divide).
+pub static DXL_BYTES_PER_US_Q16: AtomicU32 = AtomicU32::new(0);
+
+/// Called at bring-up and after a BAUD_RATE write — never on the snoop hot
+/// path, so the runtime division is fine here.
+pub fn store_baud_derived(brr: u32) {
+    DXL_CHAR_TIME_TICKS.store(brr.wrapping_mul(9), Ordering::Relaxed);
+    let byte_time_ticks = brr.wrapping_mul(10);
+    DXL_BYTE_TIME_TICKS.store(byte_time_ticks, Ordering::Relaxed);
+    // Round-to-nearest on the reciprocal so the ISR's product floors at
+    // the true completed-byte count; plain truncation drifts ~1 byte
+    // low on long snoops.
+    let bytes_per_us_q16 = if byte_time_ticks == 0 {
+        0
+    } else {
+        ((systick::TICKS_PER_US << 16) + byte_time_ticks / 2) / byte_time_ticks
+    };
+    DXL_BYTES_PER_US_Q16.store(bytes_per_us_q16, Ordering::Relaxed);
+}
 
 pub static SHARED: Shared = Shared::new();
 

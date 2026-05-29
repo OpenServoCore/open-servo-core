@@ -15,14 +15,17 @@ use crate::statics::{
 
 /// Single &mut writer: the main loop holding the `Services` struct.
 pub struct Ch32Bus {
-    /// SysTick at the request's trailing IDLE, stashed by `request_complete`
-    /// and consumed by the next `send_after*` to schedule the deadline.
-    idle_tick: Option<u32>,
+    /// SysTick at the request's stop-bit completion, stashed by
+    /// `request_complete` and consumed by the next `send_after*` to schedule
+    /// the deadline.
+    request_end_tick: Option<u32>,
 }
 
 impl Ch32Bus {
     pub const fn new() -> Self {
-        Self { idle_tick: None }
+        Self {
+            request_end_tick: None,
+        }
     }
 }
 
@@ -52,11 +55,11 @@ impl DxlBus for Ch32Bus {
     fn request_complete(&mut self, request_end: u32) -> bool {
         match idle_ring::pop_matching(request_end) {
             Some(tick) => {
-                self.idle_tick = Some(tick);
+                self.request_end_tick = Some(tick);
                 true
             }
             None => {
-                self.idle_tick = None;
+                self.request_end_tick = None;
                 false
             }
         }
@@ -67,8 +70,8 @@ impl DxlBus for Ch32Bus {
         // Sync/Fast op would otherwise re-fire DMA and patch CRC over this
         // reply's buffer.
         dxl_fast::cancel();
-        match self.idle_tick.take() {
-            Some(idle_tick) => dxl_fast::start_plain_after(idle_tick, delay_us),
+        match self.request_end_tick.take() {
+            Some(request_end_tick) => dxl_fast::start_plain_after(request_end_tick, delay_us),
             None => {
                 if dxl_fast::arm_tx() {
                     dxl_fast::fire_now();
@@ -78,10 +81,10 @@ impl DxlBus for Ch32Bus {
     }
 
     fn send_with_snoop_crc(&mut self, delay_us: u32, snoop_from: Option<u32>) {
-        let Some(idle_tick) = self.idle_tick.take() else {
+        let Some(request_end_tick) = self.request_end_tick.take() else {
             return;
         };
-        dxl_fast::start_fast_after(idle_tick, delay_us, snoop_from);
+        dxl_fast::start_fast_after(request_end_tick, delay_us, snoop_from);
     }
 
     fn set_baud(&mut self, rate: BaudRate) {

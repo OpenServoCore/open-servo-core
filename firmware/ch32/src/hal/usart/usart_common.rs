@@ -72,6 +72,32 @@ pub fn is_idle(r: Regs) -> bool {
     r.statr().read().idle()
 }
 
+#[derive(Copy, Clone, Default)]
+pub struct RxErrors {
+    pub ore: bool,
+    pub pe: bool,
+    pub fe: bool,
+    pub ne: bool,
+}
+
+#[inline]
+pub fn rx_errors(r: Regs) -> RxErrors {
+    let s = r.statr().read();
+    RxErrors {
+        ore: s.ore(),
+        pe: s.pe(),
+        fe: s.fe(),
+        ne: s.ne(),
+    }
+}
+
+/// SR-then-DR is the only way to clear ORE/PE/FE/NE on V006.
+#[inline]
+pub fn clear_rx_errors(r: Regs) {
+    let _ = r.statr().read();
+    let _ = r.datar().read();
+}
+
 #[inline]
 pub fn is_tc(r: Regs) -> bool {
     r.statr().read().tc()

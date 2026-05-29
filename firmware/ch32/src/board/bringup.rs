@@ -6,11 +6,9 @@ use crate::hal::{
     gpio::{self, Level, PinMode},
     opa, rcc, timer, usart,
 };
-use core::sync::atomic::Ordering;
-
 use crate::statics::{
-    ADC_DMA_BUF, ADC_DMA_BUF_LEN, ADC_SCAN_LEN, ADC_SENSOR_COUNT, DXL_CHAR_TIME_TICKS, DXL_RX_BUF,
-    DXL_RX_BUF_LEN, DXL_TX_BUF, DXL_TX_EN, SHARED,
+    ADC_DMA_BUF, ADC_DMA_BUF_LEN, ADC_SCAN_LEN, ADC_SENSOR_COUNT, DXL_RX_BUF, DXL_RX_BUF_LEN,
+    DXL_TX_BUF, DXL_TX_EN, SHARED, store_baud_derived,
 };
 
 use super::config::{
@@ -199,9 +197,7 @@ fn bring_up_dxl(d: &DxlBus, brr: u32) {
     let regs = d.usart.regs();
     let half_duplex = matches!(d.duplex, Duplex::Half);
     usart::init(regs, brr, half_duplex);
-    // 9 bit-times: USART IDLE counts the stop bit as bit 1 of the 10 it needs,
-    // so IDLE asserts 9 bit-times after wire-end-of-data, not 10.
-    DXL_CHAR_TIME_TICKS.store(brr * 9, Ordering::Relaxed);
+    store_baud_derived(brr);
 
     let dma_cfg = dma::Config {
         dir: Dir::FROMPERIPHERAL,

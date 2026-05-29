@@ -7,7 +7,7 @@ use crate::hal::{dma, gpio, pfic, systick, usart};
 use crate::idle_ring;
 use crate::statics::{
     DXL_BAUD_PENDING_BRR, DXL_CHAR_TIME_TICKS, DXL_REBOOT_PENDING, DXL_RX_BUF_LEN,
-    DXL_RX_WRITE_POS, DXL_TX_BUF, DXL_TX_EN, KERNEL, SHARED,
+    DXL_RX_WRITE_POS, DXL_TX_BUF, DXL_TX_EN, KERNEL, SHARED, store_baud_derived,
 };
 
 /// ADC DMA TC handler body — wire into the vector table via [`crate::install_isrs!`].
@@ -36,12 +36,26 @@ pub fn on_adc_dma_tc() {
 }
 
 pub fn on_usart1() {
+    on_usart1_rx_errors();
     on_usart1_idle();
     on_usart1_tc();
-    // RXNE is self-gated by dxl_fast's stage; cheap when no snoop is active.
-    // STATR.RXNE always reads 0 in-ISR (DMA wins the clear race), so calling
-    // unconditionally on every USART1 entry is the only reliable trigger.
-    dxl_fast::on_rxne();
+}
+
+fn on_usart1_rx_errors() {
+    let errs = usart::rx_errors(USART1);
+    if !(errs.ore || errs.pe || errs.fe || errs.ne) {
+        return;
+    }
+    if errs.ore {
+        dxl_fast::report_dma_overrun();
+    }
+    if errs.pe || errs.fe || errs.ne {
+        dxl_fast::report_uart_error();
+    }
+    // SR-then-DR clear is the only V006 path. Called only from on_usart1
+    // entry — post-IDLE or post-TC, both packet boundaries — so DMA has
+    // already drained DR and the extra DR read can't steal a pending byte.
+    usart::clear_rx_errors(USART1);
 }
 
 fn on_usart1_idle() {
@@ -49,15 +63,16 @@ fn on_usart1_idle() {
         return;
     }
     // USART IDLE asserts 1 char-time after the wire returns to idle; backdate
-    // to recover the wire-end timestamp the dispatcher's fire_us math expects.
-    let idle_tick = systick::ticks().wrapping_sub(DXL_CHAR_TIME_TICKS.load(Ordering::Relaxed));
+    // to recover the request end tick the dispatcher's fire_us math expects.
+    let request_end_tick =
+        systick::ticks().wrapping_sub(DXL_CHAR_TIME_TICKS.load(Ordering::Relaxed));
     usart::clear_idle(USART1);
     let remaining = dma::remaining(dma::Channel::CH5);
     let write_pos = (DXL_RX_BUF_LEN as u16).wrapping_sub(remaining);
     let prev = DXL_RX_WRITE_POS.load(Ordering::Relaxed);
     let delta = write_pos.wrapping_sub(prev) % (DXL_RX_BUF_LEN as u16);
     DXL_RX_WRITE_POS.store(write_pos, Ordering::Release);
-    idle_ring::record(delta, idle_tick);
+    idle_ring::record(delta, request_end_tick);
 }
 
 fn on_usart1_tc() {
@@ -79,7 +94,7 @@ fn on_usart1_tc() {
     let pending_brr = DXL_BAUD_PENDING_BRR.swap(0, Ordering::AcqRel);
     if pending_brr != 0 {
         usart::set_baud(USART1, pending_brr);
-        DXL_CHAR_TIME_TICKS.store(pending_brr * 9, Ordering::Relaxed);
+        store_baud_derived(pending_brr);
     }
     if DXL_REBOOT_PENDING.load(Ordering::Acquire) {
         pfic::software_reset();
@@ -91,7 +106,9 @@ pub fn on_systick_match() {
     dxl_fast::on_systick();
 }
 
-pub fn on_dma1_ch5_tc() {}
+pub fn on_dma1_ch5_tc() {
+    dxl_fast::on_dma1_ch5_tc();
+}
 
 /// Wires osc-ch32 ISR bodies into the vector table. Caller must depend on `qingke-rt`.
 #[macro_export]
