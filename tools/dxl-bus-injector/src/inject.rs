@@ -14,7 +14,7 @@ use ch32_hal::pac::{DMA1, GPIOA, RCC, SYSTICK, USART2};
 use dxl_bus_injector::parse::brr_for;
 use portable_atomic::{AtomicBool, Ordering};
 
-pub const TX_BUF_LEN: usize = 128;
+pub const TX_BUF_LEN: usize = 1024;
 
 /// SysTick CMP minus current CNT below this many ticks fires immediately
 /// instead of scheduling. 96 ticks ≈ 5.3 µs at 18 MHz — headroom over IRQ
