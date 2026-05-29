@@ -1011,6 +1011,7 @@ fn fast_sync_read_first_slot_emits_header_no_crc_via_send() {
 
 #[test]
 fn fast_sync_read_middle_slot_emits_body_only_with_offset_delay() {
+    use super::dispatcher::FIRE_STRUCTURAL_FLOOR_US;
     use super::slot::bytes_to_us;
     use crate::BaudRate;
     let shared = Shared::new();
@@ -1025,7 +1026,8 @@ fn fast_sync_read_middle_slot_emits_body_only_with_offset_delay() {
     assert_eq!(io.bus.after_count, 1);
     assert_eq!(io.bus.send_count, 0);
     assert_eq!(io.bus.snoop_count, 0);
-    let expected = bytes_to_us(p.bytes_before(1), BaudRate::B1000000);
+    let expected =
+        bytes_to_us(p.bytes_before(1), BaudRate::B1000000).saturating_sub(FIRE_STRUCTURAL_FLOOR_US);
     assert_eq!(io.bus.last_after_delay_us, Some(expected));
 
     assert_eq!(io.bus.tx.len(), 4);
@@ -1034,6 +1036,7 @@ fn fast_sync_read_middle_slot_emits_body_only_with_offset_delay() {
 
 #[test]
 fn fast_sync_read_last_slot_schedules_snoop_with_parsed_end() {
+    use super::dispatcher::FIRE_STRUCTURAL_FLOOR_US;
     use super::slot::bytes_to_us;
     use crate::BaudRate;
     let shared = Shared::new();
@@ -1049,7 +1052,8 @@ fn fast_sync_read_last_slot_schedules_snoop_with_parsed_end() {
     assert_eq!(io.bus.snoop_count, 1);
     assert_eq!(io.bus.send_count, 0);
     assert_eq!(io.bus.after_count, 0);
-    let expected_fire = bytes_to_us(p.bytes_before(1), BaudRate::B1000000);
+    let expected_fire =
+        bytes_to_us(p.bytes_before(1), BaudRate::B1000000).saturating_sub(FIRE_STRUCTURAL_FLOOR_US);
     assert_eq!(io.bus.last_snoop_delay_us, Some(expected_fire));
     assert_eq!(io.bus.last_snoop_from, Some(Some(parsed_end)));
 
@@ -1162,6 +1166,7 @@ fn fast_bulk_read_first_slot_emits_header_no_crc_via_send() {
 
 #[test]
 fn fast_bulk_read_middle_slot_uses_per_slot_lengths_for_delay() {
+    use super::dispatcher::FIRE_STRUCTURAL_FLOOR_US;
     use super::slot::bytes_to_us;
     use crate::BaudRate;
     let shared = Shared::new();
@@ -1177,7 +1182,8 @@ fn fast_bulk_read_middle_slot_uses_per_slot_lengths_for_delay() {
     assert_eq!(io.bus.after_count, 1);
     assert_eq!(io.bus.send_count, 0);
     assert_eq!(io.bus.snoop_count, 0);
-    let expected = bytes_to_us(p.bytes_before(1), BaudRate::B1000000);
+    let expected =
+        bytes_to_us(p.bytes_before(1), BaudRate::B1000000).saturating_sub(FIRE_STRUCTURAL_FLOOR_US);
     assert_eq!(io.bus.last_after_delay_us, Some(expected));
 
     assert_eq!(io.bus.tx.len(), 4);
@@ -1186,6 +1192,7 @@ fn fast_bulk_read_middle_slot_uses_per_slot_lengths_for_delay() {
 
 #[test]
 fn fast_bulk_read_last_slot_schedules_snoop_with_parsed_end() {
+    use super::dispatcher::FIRE_STRUCTURAL_FLOOR_US;
     use super::slot::bytes_to_us;
     use crate::BaudRate;
     let shared = Shared::new();
@@ -1202,7 +1209,8 @@ fn fast_bulk_read_last_slot_schedules_snoop_with_parsed_end() {
     assert_eq!(io.bus.snoop_count, 1);
     assert_eq!(io.bus.send_count, 0);
     assert_eq!(io.bus.after_count, 0);
-    let expected_fire = bytes_to_us(p.bytes_before(1), BaudRate::B1000000);
+    let expected_fire =
+        bytes_to_us(p.bytes_before(1), BaudRate::B1000000).saturating_sub(FIRE_STRUCTURAL_FLOOR_US);
     assert_eq!(io.bus.last_snoop_delay_us, Some(expected_fire));
     assert_eq!(io.bus.last_snoop_from, Some(Some(parsed_end)));
 
