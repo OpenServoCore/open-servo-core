@@ -1,13 +1,15 @@
 use ch32_metapac::{DMA1, USART1};
 use core::sync::atomic::Ordering;
 use osc_core::{FrameInputs, KernelIo, Sensors};
+use portable_atomic::{AtomicU16, AtomicU32};
 
 use crate::dxl_fast;
 use crate::hal::{dma, gpio, pfic, systick, usart};
 use crate::idle_ring;
 use crate::statics::{
     DXL_BAUD_PENDING_BRR, DXL_CHAR_TIME_TICKS, DXL_REBOOT_PENDING, DXL_RX_BUF_LEN,
-    DXL_RX_WRITE_POS, DXL_TX_BUF, DXL_TX_EN, KERNEL, SHARED, store_baud_derived,
+    DXL_RX_BYTE_COUNT, DXL_RX_STAMP_FIRST, DXL_RX_STAMP_LAST, DXL_RX_WRITE_POS, DXL_TX_BUF,
+    DXL_TX_EN, KERNEL, SHARED, store_baud_derived,
 };
 
 /// ADC DMA TC handler body — wire into the vector table via [`crate::install_isrs!`].
@@ -33,10 +35,37 @@ pub fn on_adc_dma_tc() {
     }
 }
 
+/// Per-packet RX byte stamps. RXNE IRQ is armed at bring-up and re-armed at
+/// every IDLE; it fires on byte 1 of the next packet, stamps the tick, latches
+/// the ring boundary, and disables itself. Bytes 2..N arrive silently via DMA;
+/// LAST recovers from the IDLE backdate, COUNT from NDTR delta against the
+/// boundary. One trap per RX packet — sustained ~40% CPU per-byte cost at 3
+/// Mbaud is the alternative.
+static RX_RUN_FIRST: AtomicU32 = AtomicU32::new(0);
+static RX_RUN_START_POS: AtomicU16 = AtomicU16::new(0);
+static RX_RUN_BOUNDARY_POS: AtomicU16 = AtomicU16::new(0);
+
 pub fn on_usart1() {
+    on_usart1_first_byte_stamp();
     on_usart1_rx_errors();
     on_usart1_idle();
     on_usart1_tc();
+}
+
+fn on_usart1_first_byte_stamp() {
+    if !usart::is_rxne_irq_enabled(USART1) {
+        return;
+    }
+    let remaining = dma::remaining(dma::Channel::CH5);
+    let pos = (DXL_RX_BUF_LEN as u16).wrapping_sub(remaining);
+    let boundary = RX_RUN_BOUNDARY_POS.load(Ordering::Relaxed);
+    if pos == boundary {
+        return;
+    }
+    let now = systick::ticks();
+    RX_RUN_FIRST.store(now, Ordering::Relaxed);
+    RX_RUN_START_POS.store(boundary, Ordering::Relaxed);
+    usart::set_rxne_irq(USART1, false);
 }
 
 fn on_usart1_rx_errors() {
@@ -74,9 +103,24 @@ fn on_usart1_idle() {
     let remaining = dma::remaining(dma::Channel::CH5);
     let write_pos = (DXL_RX_BUF_LEN as u16).wrapping_sub(remaining);
     let prev = DXL_RX_WRITE_POS.load(Ordering::Relaxed);
-    let delta = write_pos.wrapping_sub(prev) % (DXL_RX_BUF_LEN as u16);
+    let mask = (DXL_RX_BUF_LEN as u16).wrapping_sub(1);
+    let delta = write_pos.wrapping_sub(prev) & mask;
     DXL_RX_WRITE_POS.store(write_pos, Ordering::Release);
     idle_ring::record(delta, request_end_tick);
+
+    // Publish RX byte-stamp snapshot. START_POS was latched on byte 1's RXNE;
+    // LAST falls out of the IDLE backdate (end-of-byte-N tick).
+    let start = RX_RUN_START_POS.load(Ordering::Relaxed);
+    let count = write_pos.wrapping_sub(start) & mask;
+    let first = RX_RUN_FIRST.load(Ordering::Relaxed);
+    DXL_RX_STAMP_FIRST.store(first, Ordering::Relaxed);
+    DXL_RX_STAMP_LAST.store(request_end_tick, Ordering::Relaxed);
+    DXL_RX_BYTE_COUNT.store(count, Ordering::Release);
+
+    // Re-arm for next packet: latch boundary at current write_pos, re-enable
+    // the one-shot RXNE IRQ so the next byte 1 trap fires.
+    RX_RUN_BOUNDARY_POS.store(write_pos, Ordering::Relaxed);
+    usart::set_rxne_irq(USART1, true);
 }
 
 fn on_usart1_tc() {

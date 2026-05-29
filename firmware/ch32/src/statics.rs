@@ -63,6 +63,21 @@ pub static DXL_BYTE_TIME_TICKS: AtomicU32 = AtomicU32::new(0);
 /// (RV32EC + zmmul has no hardware divide).
 pub static DXL_BYTES_PER_US_Q16: AtomicU32 = AtomicU32::new(0);
 
+/// Snapshot of the most recently completed RX packet's byte-time stamps.
+/// Published atomically by USART1 IDLE handler: COUNT is the Release publish
+/// marker, so readers Acquire-load COUNT first then Relaxed-load FIRST/LAST.
+/// `count == 0` means no snapshot yet.
+///
+/// Stamps are SysTick values. `FIRST` is the end-of-byte-1 tick captured by a
+/// one-shot RXNE IRQ (re-armed each IDLE — see `irq::on_usart1_idle`). `LAST`
+/// is the IDLE backdated end-of-byte-N tick. The drift the chip is running at
+/// recovers as `(LAST - FIRST) / (COUNT - 1)`, compared against
+/// `DXL_BYTE_TIME_TICKS`. Used by A8 (per-shot fire_tick drift correction) and
+/// A9 (boot-time HSITRIM self-cal).
+pub static DXL_RX_STAMP_FIRST: AtomicU32 = AtomicU32::new(0);
+pub static DXL_RX_STAMP_LAST: AtomicU32 = AtomicU32::new(0);
+pub static DXL_RX_BYTE_COUNT: AtomicU16 = AtomicU16::new(0);
+
 /// Called at bring-up and after a BAUD_RATE write — never on the snoop hot
 /// path, so the runtime division is fine here.
 pub fn store_baud_derived(brr: u32) {

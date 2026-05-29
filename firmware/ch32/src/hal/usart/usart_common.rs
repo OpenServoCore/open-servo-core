@@ -109,6 +109,11 @@ pub fn set_rxne_irq(r: Regs, enable: bool) {
 }
 
 #[inline]
+pub fn is_rxne_irq_enabled(r: Regs) -> bool {
+    r.ctlr1().read().rxneie()
+}
+
+#[inline]
 pub fn is_rxne(r: Regs) -> bool {
     r.statr().read().rxne()
 }
