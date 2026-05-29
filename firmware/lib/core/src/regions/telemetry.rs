@@ -70,6 +70,25 @@ pub struct TelemetryRaw {
 }
 
 #[repr(C)]
+#[derive(Copy, Clone, Block)]
+pub struct TelemetryDxlLink {
+    #[ct_field(access = ro)]
+    pub illegal_transition: u32,
+    #[ct_field(access = ro)]
+    pub unexpected_byte_count: u32,
+    #[ct_field(access = ro)]
+    pub previous_slot_timeout: u32,
+    #[ct_field(access = ro)]
+    pub slot_timing_miss: u32,
+    #[ct_field(access = ro)]
+    pub crc_patch_deadline_miss: u32,
+    #[ct_field(access = ro)]
+    pub dma_overrun: u32,
+    #[ct_field(access = ro)]
+    pub uart_error: u32,
+}
+
+#[repr(C)]
 #[derive(Copy, Clone, Region)]
 #[ct_region(addr = crate::regions::TELEMETRY_BASE_ADDR, size = crate::regions::TELEMETRY_REGION_SIZE)]
 pub struct TelemetryRegs {
@@ -77,4 +96,5 @@ pub struct TelemetryRegs {
     pub intermediaries: TelemetryIntermediaries,
     pub fault: TelemetryFault,
     pub raw: TelemetryRaw,
+    pub link: TelemetryDxlLink,
 }

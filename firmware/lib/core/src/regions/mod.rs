@@ -27,7 +27,8 @@ pub use config::{
 };
 pub use control::{BootMode, ControlLifecycle, ControlRegs, ControlStreaming, ControlSystem, Mode};
 pub use telemetry::{
-    TelemetryConverted, TelemetryFault, TelemetryIntermediaries, TelemetryRaw, TelemetryRegs,
+    TelemetryConverted, TelemetryDxlLink, TelemetryFault, TelemetryIntermediaries, TelemetryRaw,
+    TelemetryRegs,
 };
 
 use crate::regions::config::ConfigDefaults;
