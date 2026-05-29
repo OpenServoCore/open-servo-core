@@ -21,7 +21,6 @@ pub fn on_adc_dma_tc() {
 
         // SAFETY: PFIC unmasks DMA1_CHANNEL1 only after install_kernel writes KERNEL.
         let kernel = (*KERNEL.get()).assume_init_mut();
-        kernel.io.dbg.scope_high();
         let inputs = FrameInputs::snapshot(&SHARED);
         let frame = {
             let (sensors, _motor) = kernel.io.parts();
@@ -30,7 +29,6 @@ pub fn on_adc_dma_tc() {
         #[cfg(feature = "defmt")]
         crate::telemetry::record_frame(&frame);
         kernel.on_tick(frame, &SHARED);
-        kernel.io.dbg.scope_low();
         kernel.io.dbg.pulse_tick();
     }
 }
@@ -49,8 +47,14 @@ fn on_usart1_rx_errors() {
     if errs.ore {
         dxl_fast::report_dma_overrun();
     }
-    if errs.pe || errs.fe || errs.ne {
-        dxl_fast::report_uart_error();
+    if errs.pe {
+        dxl_fast::report_parity_error();
+    }
+    if errs.fe {
+        dxl_fast::report_framing_error();
+    }
+    if errs.ne {
+        dxl_fast::report_noise_error();
     }
     // SR-then-DR clear is the only V006 path. Called only from on_usart1
     // entry — post-IDLE or post-TC, both packet boundaries — so DMA has

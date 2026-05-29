@@ -4,10 +4,14 @@ use core::sync::atomic::Ordering;
 use ch32_metapac::USART1;
 use dxl_protocol::crc16_continue;
 
-use crate::hal::{dma, gpio, systick, usart};
+use crate::hal::{
+    dma,
+    gpio::{self, Level},
+    systick, usart,
+};
 use crate::statics::{
-    DXL_BYTE_TIME_TICKS, DXL_BYTES_PER_US_Q16, DXL_RX_BUF, DXL_RX_BUF_LEN, DXL_TX_BUF, DXL_TX_EN,
-    SHARED,
+    DXL_BYTE_TIME_TICKS, DXL_BYTES_PER_US_Q16, DXL_DBG_PIN, DXL_RX_BUF, DXL_RX_BUF_LEN, DXL_TX_BUF,
+    DXL_TX_EN, SHARED,
 };
 
 /// Which request end tick detection + fire path a given reply takes.
@@ -42,8 +46,12 @@ pub enum FastChainFault {
     CrcPatchDeadlineMiss,
     /// USART STATR.ORE — RX outpaced DMA drain.
     DmaOverrun,
-    /// USART STATR.{PE,FE,NE} — parity / framing / noise on the wire.
-    UartError,
+    /// USART STATR.PE — parity error on the wire.
+    ParityError,
+    /// USART STATR.FE — framing error (stop bit missing).
+    FramingError,
+    /// USART STATR.NE — noise on the wire mid-bit.
+    NoiseError,
 }
 
 /// Where in the chain reply timeline we currently sit.
@@ -101,15 +109,28 @@ const RX_MASK_U32: u32 = (DXL_RX_BUF_LEN - 1) as u32;
 /// whatever bytes have accumulated since the last DMA TC; the fire ISR walks
 /// the M µs straggle and patches CRC inside the TX DMA prefetch window.
 ///
-/// Lower bound: switch walk must fit M, and at 3 Mbaud + N=512 a full ring
-/// walks in ~51 µs. Upper bound: M µs of straggle (~45 bytes at 3 Mbaud,
-/// ~4.5 µs of CRC) plus the ~1 µs patch must fit the smallest reply's TX
-/// prefetch slack of ~6.66 µs at 3 Mbaud, giving M ≤ ~188 µs. 150 sits in
-/// the middle with margin on both sides.
-const SWITCH_MARGIN_US: u32 = 150;
+/// Bench-measured CRC throughput on V006 is ~0.39 µs/byte (the design doc's
+/// 0.1 µs/byte estimate was optimistic — `Crc<u16>::digest` + `&[u8]` indirection
+/// roughly 4x the inner-loop cost). All constraints below use the measured
+/// rate.
+///
+/// Upper bound (Constraint B): straggle walk + patch must fit the smallest
+/// reply's TX prefetch slack. At M=100, 3 Mbaud, n=8 reply (slack 20 µs):
+/// straggle ≈ 30 B × 0.39 = 12 µs + patch ~2 µs + fire ~1 µs ≈ 15 µs total,
+/// leaving ~5 µs margin. n=4 replies (slack 6.66 µs) can't satisfy B at any
+/// usable M — Fast Last replies on this chip need ≥ 1 data byte (n ≥ 5).
+///
+/// Lower bound (Constraint A): switch walk must fit M. Realistic snoop
+/// windows ≤ 138 B (single 128-B INJ slot) walk in ~54 µs, comfortable at
+/// M=100. Pathological case — a full N=512 ring lapse right before switch —
+/// needs 512 × 0.39 ≈ 200 µs, which neither M=150 nor M=100 satisfies. This
+/// is a deferred risk; `SlotTimingMiss` catches it as a counter bump.
+const SWITCH_MARGIN_US: u32 = 100;
 
 /// TX_EN and DMA CH4 stay off so the bus remains in RX through any preceding
 /// snoop window; `fire_now` flips both at the slot deadline.
+#[cfg_attr(target_arch = "riscv32", unsafe(link_section = ".highcode"))]
+#[inline(never)]
 pub fn arm_tx() -> bool {
     // SAFETY: caller has &mut Ch32Bus (sole writer to DXL_TX_BUF).
     let len = unsafe { (*DXL_TX_BUF.get()).as_slice().len() };
@@ -138,6 +159,8 @@ pub fn fire_now() {
     dma::enable(dma::Channel::CH4);
 }
 
+#[cfg_attr(target_arch = "riscv32", unsafe(link_section = ".highcode"))]
+#[inline(never)]
 pub fn start_plain_after(request_end_tick: u32, delay_us: u32) {
     systick::set_irq(false);
     systick::clear_match();
@@ -167,6 +190,8 @@ pub fn start_plain_after(request_end_tick: u32, delay_us: u32) {
     }
 }
 
+#[cfg_attr(target_arch = "riscv32", unsafe(link_section = ".highcode"))]
+#[inline(never)]
 pub fn start_fast_after(request_end_tick: u32, fire_us: u32, snoop_from: Option<u32>) {
     systick::set_irq(false);
     systick::clear_match();
@@ -223,6 +248,7 @@ pub fn start_fast_after(request_end_tick: u32, fire_us: u32, snoop_from: Option<
     }
 }
 
+#[inline]
 fn predict_predecessor_bytes(fire_us: u32) -> u16 {
     // SAFETY: u8 access — no tearing. Boot-seeded or main-loop-written; ISR
     // here only reads.
@@ -238,7 +264,7 @@ fn predict_predecessor_bytes(fire_us: u32) -> u16 {
     // bytes_walked against the full predecessor reply length here.
     let snoop_us = fire_us.saturating_sub(rdt_us);
     let bytes_q16 = snoop_us.saturating_mul(bytes_per_us_q16);
-    ((bytes_q16 >> 16) as u32).min(u16::MAX as u32) as u16
+    (bytes_q16 >> 16).min(u16::MAX as u32) as u16
 }
 
 #[cfg_attr(target_arch = "riscv32", unsafe(link_section = ".highcode"))]
@@ -263,11 +289,13 @@ pub fn on_systick() {
             ..
         } => match phase {
             FastChainPhase::CatchupArmed | FastChainPhase::Snoop => {
+                dbg_high();
                 set_phase(FastChainPhase::Catchup);
                 accumulate_snoop();
                 set_phase(FastChainPhase::TxArmed);
                 systick::set_cmp(fire_tick);
                 systick::set_irq(true);
+                dbg_low();
                 let now = systick::ticks();
                 if (now.wrapping_sub(fire_tick) as i32) >= 0 {
                     on_systick();
@@ -292,9 +320,11 @@ pub fn on_systick() {
                 // prefetch, so the wire-side jitter window is just the time
                 // from here to `dma::enable`. The CRC patch below races a
                 // (payload_end - 1) byte-time slack against DMA's read cursor.
+                dbg_high();
                 fire_now();
                 accumulate_snoop();
                 patch_crc();
+                dbg_low();
                 if dma::remaining(dma::Channel::CH4) <= 2 {
                     report_fault(FastChainFault::CrcPatchDeadlineMiss);
                 }
@@ -311,10 +341,12 @@ pub fn on_systick() {
     }
 }
 
+#[inline(always)]
 fn byte_time_ticks_now() -> u32 {
     DXL_BYTE_TIME_TICKS.load(Ordering::Relaxed)
 }
 
+#[inline(always)]
 fn current_bytes_walked() -> u32 {
     // SAFETY: see on_systick.
     match unsafe { *STATE.get() } {
@@ -343,6 +375,7 @@ pub fn on_dma1_ch5_tc() {
         return;
     }
 
+    dbg_high();
     unsafe {
         if let ReplyState::Chain {
             snoop_head,
@@ -365,8 +398,11 @@ pub fn on_dma1_ch5_tc() {
     if matches!(phase_now, FastChainPhase::CatchupArmed) {
         set_phase(FastChainPhase::Snoop);
     }
+    dbg_low();
 }
 
+#[cfg_attr(target_arch = "riscv32", unsafe(link_section = ".highcode"))]
+#[inline(never)]
 pub fn cancel() {
     systick::set_irq(false);
     systick::clear_match();
@@ -374,12 +410,24 @@ pub fn cancel() {
     set_state(ReplyState::Idle);
 }
 
+#[inline(always)]
 pub fn report_dma_overrun() {
     report_fault(FastChainFault::DmaOverrun);
 }
 
-pub fn report_uart_error() {
-    report_fault(FastChainFault::UartError);
+#[inline(always)]
+pub fn report_parity_error() {
+    report_fault(FastChainFault::ParityError);
+}
+
+#[inline(always)]
+pub fn report_framing_error() {
+    report_fault(FastChainFault::FramingError);
+}
+
+#[inline(always)]
+pub fn report_noise_error() {
+    report_fault(FastChainFault::NoiseError);
 }
 
 #[cfg_attr(target_arch = "riscv32", unsafe(link_section = ".highcode"))]
@@ -444,16 +492,35 @@ fn ring_crc(seed: u16, ring: &[u8], head: u16, write_pos: u16) -> u16 {
     }
 }
 
+#[inline(always)]
 fn current_rx_write_pos() -> u16 {
     let remaining = dma::remaining(dma::Channel::CH5);
     (DXL_RX_BUF_LEN as u16).wrapping_sub(remaining) & RX_MASK_U16
 }
 
+#[inline(always)]
+fn dbg_high() {
+    // SAFETY: written once at bring-up before any ISR can read.
+    if let Some(p) = unsafe { *DXL_DBG_PIN.get() } {
+        gpio::set_level(p, Level::High);
+    }
+}
+
+#[inline(always)]
+fn dbg_low() {
+    if let Some(p) = unsafe { *DXL_DBG_PIN.get() } {
+        gpio::set_level(p, Level::Low);
+    }
+}
+
+#[inline(always)]
 fn set_state(new: ReplyState) {
     // SAFETY: see on_systick.
     unsafe { *STATE.get() = new };
 }
 
+#[cfg_attr(target_arch = "riscv32", unsafe(link_section = ".highcode"))]
+#[inline(never)]
 fn set_phase(new: FastChainPhase) {
     // SAFETY: see on_systick. The borrow on STATE is released before the
     // error path runs, since cancel() re-enters STATE. Calls outside Chain
@@ -478,6 +545,7 @@ fn set_phase(new: FastChainPhase) {
     }
 }
 
+#[inline]
 fn is_legal_transition(from: FastChainPhase, to: FastChainPhase) -> bool {
     use FastChainPhase::*;
     if matches!(to, Fault(_)) {
@@ -495,6 +563,8 @@ fn is_legal_transition(from: FastChainPhase, to: FastChainPhase) -> bool {
     )
 }
 
+#[cfg_attr(target_arch = "riscv32", unsafe(link_section = ".highcode"))]
+#[inline(never)]
 fn report_fault(f: FastChainFault) {
     unsafe {
         let link = &raw mut (*SHARED.table.telemetry.get()).link;
@@ -505,7 +575,9 @@ fn report_fault(f: FastChainFault) {
             FastChainFault::SlotTimingMiss => &raw mut (*link).slot_timing_miss,
             FastChainFault::CrcPatchDeadlineMiss => &raw mut (*link).crc_patch_deadline_miss,
             FastChainFault::DmaOverrun => &raw mut (*link).dma_overrun,
-            FastChainFault::UartError => &raw mut (*link).uart_error,
+            FastChainFault::ParityError => &raw mut (*link).parity_error,
+            FastChainFault::FramingError => &raw mut (*link).framing_error,
+            FastChainFault::NoiseError => &raw mut (*link).noise_error,
         };
         counter.write_volatile(counter.read_volatile().wrapping_add(1));
     }

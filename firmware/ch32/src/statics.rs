@@ -6,7 +6,7 @@ use osc_core::{Kernel, Services, Shared};
 use portable_atomic::{AtomicBool, AtomicU16, AtomicU32};
 
 use crate::board::{Ch32KernelIo, TxEn};
-use crate::hal::{pfic, systick};
+use crate::hal::{Pin, pfic, systick};
 use crate::services::Ch32ServicesIo;
 
 /// In `AdcPins` field order: pos, ntc, vbus, vmotor.0, vmotor.1.
@@ -36,6 +36,11 @@ pub static DXL_TX_BUF: SyncUnsafeCell<Vec<u8, DXL_TX_BUF_LEN>> = SyncUnsafeCell:
 
 /// Written once during `bring_up_dxl` before USART1 IRQ is unmasked; read-only thereafter.
 pub static DXL_TX_EN: SyncUnsafeCell<Option<TxEn>> = SyncUnsafeCell::new(None);
+
+/// Scope debug pin — bench instrumentation for the chain-CRC ISRs. Yanked
+/// out of `kernel.io.dbg` so the dxl_fast hot path can reach it without
+/// going through KERNEL. Seeded once at bring-up; ISR readers only.
+pub static DXL_DBG_PIN: SyncUnsafeCell<Option<Pin>> = SyncUnsafeCell::new(None);
 
 /// Set by `Ch32Device::reboot`; USART1 TC ISR fires the soft reset after TX drains.
 pub static DXL_REBOOT_PENDING: AtomicBool = AtomicBool::new(false);
@@ -67,11 +72,9 @@ pub fn store_baud_derived(brr: u32) {
     // Round-to-nearest on the reciprocal so the ISR's product floors at
     // the true completed-byte count; plain truncation drifts ~1 byte
     // low on long snoops.
-    let bytes_per_us_q16 = if byte_time_ticks == 0 {
-        0
-    } else {
-        ((systick::TICKS_PER_US << 16) + byte_time_ticks / 2) / byte_time_ticks
-    };
+    let bytes_per_us_q16 = ((systick::TICKS_PER_US << 16) + byte_time_ticks / 2)
+        .checked_div(byte_time_ticks)
+        .unwrap_or(0);
     DXL_BYTES_PER_US_Q16.store(bytes_per_us_q16, Ordering::Relaxed);
 }
 

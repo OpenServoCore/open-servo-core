@@ -144,10 +144,10 @@ impl MotorTrait for Ch32Motor {
     }
 }
 
-/// Status LED + scope pin — chip-side debug; not part of `KernelIo`.
+/// Status LED — chip-side debug; not part of `KernelIo`. Scope pin moved to
+/// `DXL_DBG_PIN` for chain-CRC ISR instrumentation.
 pub struct Ch32Dbg {
     stat_led: Pin,
-    scope: Pin,
 }
 
 impl Ch32Dbg {
@@ -155,17 +155,6 @@ impl Ch32Dbg {
     #[inline]
     pub fn pulse_tick(&self) {
         gpio::toggle(self.stat_led);
-    }
-
-    /// Pair with `scope_low` around an ISR body to scope rate × runtime.
-    #[inline]
-    pub fn scope_high(&self) {
-        gpio::set_level(self.scope, Level::High);
-    }
-
-    #[inline]
-    pub fn scope_low(&self) {
-        gpio::set_level(self.scope, Level::Low);
     }
 }
 
@@ -192,7 +181,6 @@ impl Ch32KernelIo {
         );
 
         let stat_led = wiring.stat_led;
-        let scope = wiring.dbg;
         let in1 = wiring.motor.in1;
         let in2 = wiring.motor.in2;
         let drv_en = wiring.motor.drv_en;
@@ -216,7 +204,7 @@ impl Ch32KernelIo {
                 drv_en,
                 pwm_arr: pre.pwm_arr,
             },
-            dbg: Ch32Dbg { stat_led, scope },
+            dbg: Ch32Dbg { stat_led },
         }
     }
 }

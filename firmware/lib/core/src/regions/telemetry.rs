@@ -69,23 +69,30 @@ pub struct TelemetryRaw {
     pub raw_enc_b: u16,
 }
 
+/// Host can Write zero to any field to clear it (bench instrumentation).
+/// Chip-side `report_fault` increments via raw pointer, bypassing the regmap.
+/// Concurrent host clear + ISR increment may drop one update — acceptable for bench.
 #[repr(C)]
 #[derive(Copy, Clone, Block)]
 pub struct TelemetryDxlLink {
-    #[ct_field(access = ro)]
+    #[ct_field(access = rw)]
     pub illegal_transition: u32,
-    #[ct_field(access = ro)]
+    #[ct_field(access = rw)]
     pub unexpected_byte_count: u32,
-    #[ct_field(access = ro)]
+    #[ct_field(access = rw)]
     pub previous_slot_timeout: u32,
-    #[ct_field(access = ro)]
+    #[ct_field(access = rw)]
     pub slot_timing_miss: u32,
-    #[ct_field(access = ro)]
+    #[ct_field(access = rw)]
     pub crc_patch_deadline_miss: u32,
-    #[ct_field(access = ro)]
+    #[ct_field(access = rw)]
     pub dma_overrun: u32,
-    #[ct_field(access = ro)]
-    pub uart_error: u32,
+    #[ct_field(access = rw)]
+    pub parity_error: u32,
+    #[ct_field(access = rw)]
+    pub framing_error: u32,
+    #[ct_field(access = rw)]
+    pub noise_error: u32,
 }
 
 #[repr(C)]

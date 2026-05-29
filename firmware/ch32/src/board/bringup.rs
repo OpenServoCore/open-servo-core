@@ -7,8 +7,8 @@ use crate::hal::{
     opa, rcc, timer, usart,
 };
 use crate::statics::{
-    ADC_DMA_BUF, ADC_DMA_BUF_LEN, ADC_SCAN_LEN, ADC_SENSOR_COUNT, DXL_RX_BUF, DXL_RX_BUF_LEN,
-    DXL_TX_BUF, DXL_TX_EN, SHARED, store_baud_derived,
+    ADC_DMA_BUF, ADC_DMA_BUF_LEN, ADC_SCAN_LEN, ADC_SENSOR_COUNT, DXL_DBG_PIN, DXL_RX_BUF,
+    DXL_RX_BUF_LEN, DXL_TX_BUF, DXL_TX_EN, SHARED, store_baud_derived,
 };
 
 use super::config::{
@@ -31,6 +31,7 @@ pub(super) fn run(
     crate::log::debug!("clocks + remaps configured");
 
     configure_pins(wiring);
+    seed_dbg_pin(wiring.dbg);
     crate::log::debug!("gpio configured");
 
     bring_up_analog_chain(&wiring.current_sense);
@@ -180,6 +181,7 @@ fn configure_adc_dma_scan(sensors: &AdcPins, opa_out_sample_time: adc::SampleTim
         minc: true,
         size: dma::Size::BITS16,
         tcie: true,
+        pl: dma::Pl::LOW,
     };
     let paddr = ADC.rdatar().as_ptr() as u32;
     let maddr = ADC_DMA_BUF.get() as u32;
@@ -199,6 +201,9 @@ fn bring_up_dxl(d: &DxlBus, brr: u32) {
     usart::init(regs, brr, half_duplex);
     store_baud_derived(brr);
 
+    // CH5 (RX snoop) outranks CH4 (TX) so DMA1 arbitration never starves the
+    // chain-CRC snoop during TxStreaming, when both channels are servicing
+    // USART1 at byte-rate.
     let dma_cfg = dma::Config {
         dir: Dir::FROMPERIPHERAL,
         circ: true,
@@ -206,6 +211,7 @@ fn bring_up_dxl(d: &DxlBus, brr: u32) {
         minc: true,
         size: dma::Size::BITS8,
         tcie: false,
+        pl: dma::Pl::VERYHIGH,
     };
     dma::configure(
         dma::Channel::CH5,
@@ -224,6 +230,7 @@ fn bring_up_dxl(d: &DxlBus, brr: u32) {
         minc: true,
         size: dma::Size::BITS8,
         tcie: false,
+        pl: dma::Pl::HIGH,
     };
     let tx_src = unsafe { (*DXL_TX_BUF.get()).as_ptr() } as u32;
     dma::configure(
@@ -238,6 +245,12 @@ fn bring_up_dxl(d: &DxlBus, brr: u32) {
     unsafe { *DXL_TX_EN.get() = d.tx_en };
 
     usart::set_idle_irq(regs, true);
+}
+
+pub(super) fn seed_dbg_pin(pin: crate::hal::Pin) {
+    // SAFETY: called once at bring-up before any ISR can read; chain-CRC
+    // ISRs only read.
+    unsafe { *DXL_DBG_PIN.get() = Some(pin) };
 }
 
 fn start_center_aligned_pwm(m: &MotorConfig, psc: u16, arr: u16) {

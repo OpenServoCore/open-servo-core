@@ -1,6 +1,6 @@
 use ch32_metapac::DMA1;
 
-pub use ch32_metapac::dma::vals::{Dir, Size};
+pub use ch32_metapac::dma::vals::{Dir, Pl, Size};
 
 #[derive(Copy, Clone)]
 #[repr(u8)]
@@ -23,6 +23,7 @@ pub struct Config {
     /// Applied to both peripheral and memory sides.
     pub size: Size,
     pub tcie: bool,
+    pub pl: Pl,
 }
 
 pub fn configure(ch: Channel, cfg: &Config, paddr: u32, maddr: u32, count: u16) {
@@ -39,6 +40,7 @@ pub fn configure(ch: Channel, cfg: &Config, paddr: u32, maddr: u32, count: u16) 
         w.set_psize(cfg.size);
         w.set_msize(cfg.size);
         w.set_tcie(cfg.tcie);
+        w.set_pl(cfg.pl);
     });
 }
 
