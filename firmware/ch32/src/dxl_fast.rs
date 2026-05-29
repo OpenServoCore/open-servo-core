@@ -289,13 +289,11 @@ pub fn on_systick() {
             ..
         } => match phase {
             FastChainPhase::CatchupArmed | FastChainPhase::Snoop => {
-                dbg_high();
                 set_phase(FastChainPhase::Catchup);
                 accumulate_snoop();
                 set_phase(FastChainPhase::TxArmed);
                 systick::set_cmp(fire_tick);
                 systick::set_irq(true);
-                dbg_low();
                 let now = systick::ticks();
                 if (now.wrapping_sub(fire_tick) as i32) >= 0 {
                     on_systick();
@@ -375,7 +373,6 @@ pub fn on_dma1_ch5_tc() {
         return;
     }
 
-    dbg_high();
     unsafe {
         if let ReplyState::Chain {
             snoop_head,
@@ -398,7 +395,6 @@ pub fn on_dma1_ch5_tc() {
     if matches!(phase_now, FastChainPhase::CatchupArmed) {
         set_phase(FastChainPhase::Snoop);
     }
-    dbg_low();
 }
 
 #[cfg_attr(target_arch = "riscv32", unsafe(link_section = ".highcode"))]
