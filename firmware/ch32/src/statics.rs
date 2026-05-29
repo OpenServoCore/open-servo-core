@@ -69,9 +69,11 @@ pub fn install(io: Ch32KernelIo) {
 pub fn install_irqs() {
     pfic::set_priority(pfic::Interrupt::USART1, pfic::Priority::High);
     pfic::set_priority(pfic::Interrupt::DMA1_CHANNEL1, pfic::Priority::Low);
+    pfic::set_priority(pfic::Interrupt::DMA1_CHANNEL5, pfic::Priority::High);
     pfic::set_systick_priority(pfic::Priority::High);
     pfic::enable(pfic::Interrupt::USART1);
     pfic::enable(pfic::Interrupt::DMA1_CHANNEL1);
+    pfic::enable(pfic::Interrupt::DMA1_CHANNEL5);
     pfic::enable_systick();
     crate::log::info!("ISRs live");
 }

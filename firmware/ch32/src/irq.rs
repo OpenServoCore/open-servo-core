@@ -91,6 +91,8 @@ pub fn on_systick_match() {
     dxl_fast::on_systick();
 }
 
+pub fn on_dma1_ch5_tc() {}
+
 /// Wires osc-ch32 ISR bodies into the vector table. Caller must depend on `qingke-rt`.
 #[macro_export]
 macro_rules! install_isrs {
@@ -98,6 +100,11 @@ macro_rules! install_isrs {
         #[::qingke_rt::interrupt]
         fn DMA1_CHANNEL1() {
             $crate::irq::on_adc_dma_tc();
+        }
+
+        #[::qingke_rt::interrupt]
+        fn DMA1_CHANNEL5() {
+            $crate::irq::on_dma1_ch5_tc();
         }
 
         #[::qingke_rt::interrupt]
