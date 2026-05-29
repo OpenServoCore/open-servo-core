@@ -1,16 +1,16 @@
 use core::sync::atomic::Ordering;
 
 use heapless::Vec;
-use osc_core::{BaudRate, BootMode, DeviceControl, DxlBus, RxSnapshot, ServicesIo};
+use osc_core::{BaudRate, BootMode, DeviceControl, DxlBus, RegionStorage, RxSnapshot, ServicesIo};
 
 use crate::dxl_fast;
 use crate::hal::clocks::PCLK_HZ;
 use crate::hal::usart;
-use crate::hal::{flash, pfic};
+use crate::hal::{flash, pfic, rcc};
 use crate::idle_ring;
 use crate::statics::{
-    DXL_BAUD_PENDING_BRR, DXL_REBOOT_PENDING, DXL_RX_BUF, DXL_RX_WRITE_POS, DXL_TX_BUF,
-    DXL_TX_BUF_LEN,
+    DXL_BAUD_PENDING_BRR, DXL_BYTE_TIME_TICKS, DXL_REBOOT_PENDING, DXL_RX_BUF, DXL_RX_BYTE_COUNT,
+    DXL_RX_STAMP_FIRST, DXL_RX_STAMP_LAST, DXL_RX_WRITE_POS, DXL_TX_BUF, DXL_TX_BUF_LEN, SHARED,
 };
 
 /// Single &mut writer: the main loop holding the `Services` struct.
@@ -90,6 +90,78 @@ impl DxlBus for Ch32Bus {
     fn set_baud(&mut self, rate: BaudRate) {
         let brr = usart::brr(PCLK_HZ, rate.as_hz());
         DXL_BAUD_PENDING_BRR.store(brr, Ordering::Release);
+    }
+
+    fn trigger_clock_cal(&mut self) {
+        // RX byte-stamp snapshot. COUNT load is Acquire; pairs with the IDLE
+        // ISR's Release store and orders the Relaxed FIRST/LAST reads.
+        let count = DXL_RX_BYTE_COUNT.load(Ordering::Acquire);
+        // 4 is the floor where (count - 1) is large enough for the divide to
+        // yield anything meaningful; in practice the bench cal packet is the
+        // 10-byte CAL frame itself, so we always have ≥ 9 intervals.
+        if count < 4 {
+            return;
+        }
+        let first = DXL_RX_STAMP_FIRST.load(Ordering::Relaxed);
+        let last = DXL_RX_STAMP_LAST.load(Ordering::Relaxed);
+        let nominal = DXL_BYTE_TIME_TICKS.load(Ordering::Relaxed);
+        if nominal == 0 {
+            return;
+        }
+
+        // FIRST = end-of-byte-1 grabbed inside RXNE ISR; LAST = IDLE backdate
+        // = end-of-byte-N. Span covers (count - 1) byte times.
+        //
+        // FIRST carries the RXNE-ISR entry latency as a constant offset, so
+        // observed reads SHORTER than reality by `isr_latency / (count - 1)`.
+        // At 3 Mbaud with a 10-byte cal packet that's ~17000 ppm of error —
+        // larger than the trim step. Bench-side mitigation: run CAL at low
+        // baud (1 Mbaud or below) so the offset is well under one step.
+        // Compensation lives in a follow-up; for now we just compute and
+        // apply.
+        //
+        // Math, derived to one soft divide. Direct form:
+        //   observed = span / intervals
+        //   step     = (observed - nominal) * scale / nominal     (rounded)
+        // Collapsed:
+        //   step     = (span - intervals * nominal) * scale
+        //              ---------------------------------------    (rounded)
+        //                       intervals * nominal
+        // V006 has no hardware divide; one soft div in main-loop context
+        // (CAL contract: torque off, kernel hot path not live) is fine.
+        // A8.2's per-shot runtime drift correction is where Q-format
+        // reciprocals will land.
+        let span = last.wrapping_sub(first);
+        let intervals = (count - 1) as u32;
+        let scale = (1_000_000 / rcc::CLOCK_TRIM_PPM_PER_STEP) as i32;
+        let denom = (intervals as i32).saturating_mul(nominal as i32);
+        if denom <= 0 {
+            return;
+        }
+        let numerator = (span as i32).saturating_sub(denom).saturating_mul(scale);
+        let round = if numerator >= 0 {
+            denom / 2
+        } else {
+            -(denom / 2)
+        };
+        let step = numerator.saturating_add(round) / denom;
+        if step == 0 {
+            return;
+        }
+
+        let current = SHARED.table.config.with(|c| c.comms.clock_trim) as i32;
+        let new_delta = (current + step).clamp(
+            rcc::CLOCK_TRIM_DELTA_MIN as i32,
+            rcc::CLOCK_TRIM_DELTA_MAX as i32,
+        ) as i8;
+        if new_delta as i32 == current {
+            return;
+        }
+        rcc::apply_clock_trim_delta(new_delta);
+        SHARED
+            .table
+            .config
+            .with_mut(|c| c.comms.clock_trim = new_delta);
     }
 }
 

@@ -64,6 +64,15 @@ const HSITRIM_DEFAULT: i16 = 16;
 /// HSITRIM[4:0] valid range upper bound.
 const HSITRIM_MAX: i16 = 31;
 
+/// Signed delta bounds for `apply_clock_trim_delta`. Anything outside this
+/// gets clamped by the chip register, so callers can use these as the math
+/// clamp before storing the result back into the control-table mirror.
+pub const CLOCK_TRIM_DELTA_MIN: i8 = -16;
+pub const CLOCK_TRIM_DELTA_MAX: i8 = 15;
+
+/// HSI step size in ppm of HCLK. V006 RM gives HSITRIM ≈ 0.25%/step.
+pub const CLOCK_TRIM_PPM_PER_STEP: u32 = 2500;
+
 /// Apply a signed clock-trim delta around the chip's HSITRIM default.
 /// ~0.25% HSI rate per step; out-of-range deltas are clamped.
 #[inline]

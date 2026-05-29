@@ -320,24 +320,24 @@ impl<'a, B: DxlBus, D: DeviceControl> Dispatcher<'a, B, D> {
     }
 
     fn handle_calibrate(&mut self, ctx: &Ctx, p: &CalibratePacket) {
-        let Some((id, direct)) = ctx.addressed(p.id) else {
+        // CAL is broadcast-only by contract: the trigger writes the chip's
+        // clock-trim register, which would garble any in-flight Status reply.
+        // Unicast CAL silently drops, same shape as SyncWrite / BulkWrite.
+        if p.id != BROADCAST_ID {
             return;
-        };
+        }
+        if !ctx.idle_pinned {
+            return;
+        }
         let torque_on = self
             .shared
             .table
             .control
             .with(|c| c.lifecycle.torque_enable);
         if torque_on {
-            if direct {
-                self.send_status(ctx, id, StatusError::Access, &[], StatusReturnLevel::All, 0);
-            }
             return;
         }
         self.bus.trigger_clock_cal();
-        if direct {
-            self.send_status(ctx, id, StatusError::None, &[], StatusReturnLevel::All, 0);
-        }
     }
 
     fn handle_reboot(&mut self, ctx: &Ctx, p: &RebootPacket) {

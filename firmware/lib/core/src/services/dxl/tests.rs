@@ -1303,7 +1303,7 @@ fn enable_torque(shared: &Shared) {
 }
 
 #[test]
-fn calibrate_broadcast_with_torque_off_triggers_silently() {
+fn calibrate_broadcast_torque_off_triggers_silently() {
     let shared = Shared::new();
     let mut io = FakeIo::new();
     let mut h = Dxl::new();
@@ -1317,26 +1317,8 @@ fn calibrate_broadcast_with_torque_off_triggers_silently() {
 }
 
 #[test]
-fn calibrate_unicast_with_torque_off_triggers_and_acks() {
+fn calibrate_unicast_silently_dropped() {
     let shared = Shared::new();
-    let mut io = FakeIo::new();
-    let mut h = Dxl::new();
-
-    let req = encode(&Packet::Calibrate(CalibratePacket::new(0)));
-    io.feed(&req);
-    h.poll(&shared, &mut io);
-
-    assert_eq!(io.bus.cal_count, 1);
-    let (id, err, params) = parse_status(&io.bus.tx);
-    assert_eq!(id, 0);
-    assert_eq!(err, 0);
-    assert!(params.is_empty());
-}
-
-#[test]
-fn calibrate_with_torque_on_unicast_returns_access_error_no_trigger() {
-    let shared = Shared::new();
-    enable_torque(&shared);
     let mut io = FakeIo::new();
     let mut h = Dxl::new();
 
@@ -1345,12 +1327,11 @@ fn calibrate_with_torque_on_unicast_returns_access_error_no_trigger() {
     h.poll(&shared, &mut io);
 
     assert_eq!(io.bus.cal_count, 0);
-    let (_, err, _) = parse_status(&io.bus.tx);
-    assert_eq!(err, StatusError::Access.as_u8());
+    assert!(io.bus.tx.is_empty());
 }
 
 #[test]
-fn calibrate_with_torque_on_broadcast_silent_no_trigger() {
+fn calibrate_broadcast_torque_on_silent_no_trigger() {
     let shared = Shared::new();
     enable_torque(&shared);
     let mut io = FakeIo::new();
@@ -1358,6 +1339,22 @@ fn calibrate_with_torque_on_broadcast_silent_no_trigger() {
 
     let req = encode(&Packet::Calibrate(CalibratePacket::new(BROADCAST_ID)));
     io.feed(&req);
+    h.poll(&shared, &mut io);
+
+    assert_eq!(io.bus.cal_count, 0);
+    assert!(io.bus.tx.is_empty());
+}
+
+#[test]
+fn calibrate_broadcast_skips_when_idle_anchor_missing() {
+    let shared = Shared::new();
+    let mut io = FakeIo::new();
+    let mut h = Dxl::new();
+
+    let req = encode(&Packet::Calibrate(CalibratePacket::new(BROADCAST_ID)));
+    io.feed(&req);
+    // Force `request_complete` to return false by mismatching the idle anchor.
+    io.bus.rx_bytes_at_idle = io.bus.rx_bytes_at_idle.wrapping_add(1);
     h.poll(&shared, &mut io);
 
     assert_eq!(io.bus.cal_count, 0);
