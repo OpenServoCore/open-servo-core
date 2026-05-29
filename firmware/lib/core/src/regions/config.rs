@@ -103,12 +103,12 @@ pub struct ConfigComms {
     pub baud_rate_idx: BaudRate,
     pub return_delay_2us: u8,
     pub status_return_level: StatusReturnLevel,
-    /// V006 HSITRIM[4:0]. Manual or A9-self-cal adjustment of the internal
-    /// HSI rate; reset = 16 (factory midpoint), ~0.25% per step. The chip
-    /// applies it via RCC.CTLR after the triggering Status reply ships, so
-    /// HCLK never shifts mid-byte.
-    #[ct_field(le = 31u8)]
-    pub hsi_trim: u8,
+    /// Signed delta applied to the device's factory clock-trim default at
+    /// bring-up. RO over the protocol — host-side adjustment would be a
+    /// foot-gun (mid-byte HCLK shifts) and the calibration path lives
+    /// inside firmware. 0 = use the factory default unchanged.
+    #[ct_field(access = ro)]
+    pub clock_trim: i8,
 }
 
 #[repr(C)]
@@ -214,8 +214,7 @@ pub struct ConfigDefaults {
     pub dxl_baud: BaudRate,
     /// DXL 2.0 RDT encoding: 2 µs units. Spec factory default = 125 (250 µs).
     pub dxl_return_delay_2us: u8,
-    /// V006 HSITRIM[4:0] seed. 16 = factory midpoint (matches RCC.CTLR reset).
-    /// Per-board calibration may bake a different value here; bring-up applies
-    /// it via RCC before unmasking IRQs.
-    pub hsi_trim: u8,
+    /// Initial `clock_trim` seed; signed delta from the device's factory
+    /// default. 0 = use the default unchanged.
+    pub clock_trim: i8,
 }

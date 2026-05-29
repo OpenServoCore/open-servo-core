@@ -59,10 +59,15 @@ pub fn enable_usart1() {
     RCC.pb2pcenr().modify(|w| w.set_usart1en(true));
 }
 
-/// HSITRIM[4:0] in RCC.CTLR. ~0.25% per step around 16 = factory midpoint.
-/// Caller masks high bits, but we mask defensively too. Live writes only —
-/// the USART1 TC ISR is the gatekeeper that keeps HCLK steady mid-byte.
+/// HSITRIM[4:0] reset value — the V006 factory mid-trim default.
+const HSITRIM_DEFAULT: i16 = 16;
+/// HSITRIM[4:0] valid range upper bound.
+const HSITRIM_MAX: i16 = 31;
+
+/// Apply a signed clock-trim delta around the chip's HSITRIM default.
+/// ~0.25% HSI rate per step; out-of-range deltas are clamped.
 #[inline]
-pub fn set_hsitrim(value: u8) {
-    RCC.ctlr().modify(|w| w.set_hsitrim(value & 0x1f));
+pub fn apply_clock_trim_delta(delta: i8) {
+    let v = (HSITRIM_DEFAULT + delta as i16).clamp(0, HSITRIM_MAX) as u8;
+    RCC.ctlr().modify(|w| w.set_hsitrim(v));
 }

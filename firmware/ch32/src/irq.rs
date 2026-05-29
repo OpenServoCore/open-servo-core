@@ -4,12 +4,12 @@ use osc_core::{FrameInputs, KernelIo, Sensors};
 use portable_atomic::{AtomicU16, AtomicU32};
 
 use crate::dxl_fast;
-use crate::hal::{dma, gpio, pfic, rcc, systick, usart};
+use crate::hal::{dma, gpio, pfic, systick, usart};
 use crate::idle_ring;
 use crate::statics::{
-    DXL_BAUD_PENDING_BRR, DXL_CHAR_TIME_TICKS, DXL_HSITRIM_PENDING, DXL_REBOOT_PENDING,
-    DXL_RX_BUF_LEN, DXL_RX_BYTE_COUNT, DXL_RX_STAMP_FIRST, DXL_RX_STAMP_LAST, DXL_RX_WRITE_POS,
-    DXL_TX_BUF, DXL_TX_EN, KERNEL, SHARED, store_baud_derived,
+    DXL_BAUD_PENDING_BRR, DXL_CHAR_TIME_TICKS, DXL_REBOOT_PENDING, DXL_RX_BUF_LEN,
+    DXL_RX_BYTE_COUNT, DXL_RX_STAMP_FIRST, DXL_RX_STAMP_LAST, DXL_RX_WRITE_POS, DXL_TX_BUF,
+    DXL_TX_EN, KERNEL, SHARED, store_baud_derived,
 };
 
 /// ADC DMA TC handler body — wire into the vector table via [`crate::install_isrs!`].
@@ -35,12 +35,8 @@ pub fn on_adc_dma_tc() {
     }
 }
 
-/// Per-packet RX byte stamps. RXNE IRQ is armed at bring-up and re-armed at
-/// every IDLE; it fires on byte 1 of the next packet, stamps the tick, latches
-/// the ring boundary, and disables itself. Bytes 2..N arrive silently via DMA;
-/// LAST recovers from the IDLE backdate, COUNT from NDTR delta against the
-/// boundary. One trap per RX packet — sustained ~40% CPU per-byte cost at 3
-/// Mbaud is the alternative.
+/// One-shot RXNE: armed at bring-up, re-armed each IDLE, stamps byte 1 then
+/// disables itself. Per-byte RXNE would burn ~40% CPU at 3 Mbaud.
 static RX_RUN_FIRST: AtomicU32 = AtomicU32::new(0);
 static RX_RUN_START_POS: AtomicU16 = AtomicU16::new(0);
 static RX_RUN_BOUNDARY_POS: AtomicU16 = AtomicU16::new(0);
@@ -143,10 +139,6 @@ fn on_usart1_tc() {
     if pending_brr != 0 {
         usart::set_baud(USART1, pending_brr);
         store_baud_derived(pending_brr);
-    }
-    let pending_trim = DXL_HSITRIM_PENDING.swap(0, Ordering::AcqRel);
-    if pending_trim & 0x80 != 0 {
-        rcc::set_hsitrim(pending_trim & 0x1f);
     }
     if DXL_REBOOT_PENDING.load(Ordering::Acquire) {
         pfic::software_reset();

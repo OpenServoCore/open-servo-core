@@ -3,7 +3,7 @@ use core::mem::MaybeUninit;
 use core::sync::atomic::Ordering;
 use heapless::Vec;
 use osc_core::{Kernel, Services, Shared};
-use portable_atomic::{AtomicBool, AtomicU8, AtomicU16, AtomicU32};
+use portable_atomic::{AtomicBool, AtomicU16, AtomicU32};
 
 use crate::board::{Ch32KernelIo, TxEn};
 use crate::hal::{Pin, pfic, systick};
@@ -50,11 +50,6 @@ pub static DXL_REBOOT_PENDING: AtomicBool = AtomicBool::new(false);
 /// old wire rate (host can still decode), then the next byte is at the new rate.
 pub static DXL_BAUD_PENDING_BRR: AtomicU32 = AtomicU32::new(0);
 
-/// Pending HSITRIM[4:0] change requested by a control-table hsi_trim write.
-/// Encoding: 0 = none, `0x80 | (trim & 0x1f)` = pending. TC ISR drains after
-/// the Status reply has shipped so HCLK never shifts mid-byte.
-pub static DXL_HSITRIM_PENDING: AtomicU8 = AtomicU8::new(0);
-
 /// HCLK ticks for 9 bit-times on the wire (brr × 9); on_usart1_idle
 /// backdates the request end tick by this to recover the moment the
 /// last byte's stop bit completed (IDLE counts the stop bit as bit 1
@@ -69,16 +64,11 @@ pub static DXL_BYTE_TIME_TICKS: AtomicU32 = AtomicU32::new(0);
 pub static DXL_BYTES_PER_US_Q16: AtomicU32 = AtomicU32::new(0);
 
 /// Snapshot of the most recently completed RX packet's byte-time stamps.
-/// Published atomically by USART1 IDLE handler: COUNT is the Release publish
-/// marker, so readers Acquire-load COUNT first then Relaxed-load FIRST/LAST.
-/// `count == 0` means no snapshot yet.
+/// `COUNT` is the Release publish marker; readers Acquire-load `COUNT` first
+/// then Relaxed-load `FIRST` / `LAST`. `count == 0` = no snapshot.
 ///
-/// Stamps are SysTick values. `FIRST` is the end-of-byte-1 tick captured by a
-/// one-shot RXNE IRQ (re-armed each IDLE — see `irq::on_usart1_idle`). `LAST`
-/// is the IDLE backdated end-of-byte-N tick. The drift the chip is running at
-/// recovers as `(LAST - FIRST) / (COUNT - 1)`, compared against
-/// `DXL_BYTE_TIME_TICKS`. Used by A8 (per-shot fire_tick drift correction) and
-/// A9 (boot-time HSITRIM self-cal).
+/// Stamps are SysTick values. `FIRST` = end-of-byte-1 tick (one-shot RXNE,
+/// re-armed each IDLE). `LAST` = IDLE-backdated end-of-byte-N tick.
 pub static DXL_RX_STAMP_FIRST: AtomicU32 = AtomicU32::new(0);
 pub static DXL_RX_STAMP_LAST: AtomicU32 = AtomicU32::new(0);
 pub static DXL_RX_BYTE_COUNT: AtomicU16 = AtomicU16::new(0);

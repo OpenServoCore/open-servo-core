@@ -28,8 +28,8 @@ pub(super) fn run(
     pre: &Precomputed,
 ) -> BringupResult {
     enable_clocks_and_remaps(wiring);
-    rcc::set_hsitrim(defaults.hsi_trim);
-    crate::log::debug!("clocks + remaps configured (hsi_trim={})", defaults.hsi_trim);
+    rcc::apply_clock_trim_delta(defaults.clock_trim);
+    crate::log::debug!("clocks + remaps configured (clock_trim={})", defaults.clock_trim);
 
     configure_pins(wiring);
     seed_dbg_pin(wiring.dbg);
