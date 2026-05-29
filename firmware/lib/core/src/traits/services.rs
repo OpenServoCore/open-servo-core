@@ -31,6 +31,13 @@ pub trait DxlBus {
     /// implementations MUST defer the actual UART retune until TX completes,
     /// otherwise the host can't decode the reply. Default no-op.
     fn set_baud(&mut self, _rate: BaudRate) {}
+
+    /// Notify the bus that RETURN_DELAY_TIME has changed. Framing-mode pickers
+    /// (`Plain` vs `Snoop` on Phase B) recompute their deadlines off RDT, so
+    /// the recompute has to happen the moment the host writes the field —
+    /// waiting until the next request leaves one transaction running on stale
+    /// timing. Default no-op.
+    fn set_return_delay(&mut self, _rdt_us: u32) {}
 }
 
 /// Lifecycle commands the dispatcher delivers to the device (reboot today;
