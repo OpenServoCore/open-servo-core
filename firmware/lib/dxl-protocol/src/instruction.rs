@@ -17,6 +17,11 @@ pub enum Instruction {
     BulkRead = 0x92,
     BulkWrite = 0x93,
     FastBulkRead = 0x9A,
+    /// OpenServoCore vendor-extension base (0xE0..0xEF reserved for osc verbs).
+    /// Far from Robotis's allocated clusters so a future protocol revision
+    /// can't quietly collide.
+    #[cfg(feature = "osc")]
+    Calibrate = 0xE0,
 }
 
 impl Instruction {
@@ -42,6 +47,8 @@ impl Instruction {
             0x92 => Self::BulkRead,
             0x93 => Self::BulkWrite,
             0x9A => Self::FastBulkRead,
+            #[cfg(feature = "osc")]
+            0xE0 => Self::Calibrate,
             _ => return None,
         })
     }

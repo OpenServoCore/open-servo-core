@@ -20,6 +20,8 @@ pub use fast::{
     FastSlotInfo, FastSlotPosition, write_fast_slot,
 };
 pub use instruction::Instruction;
+#[cfg(feature = "osc")]
+pub use packet::CalibratePacket;
 pub use packet::{
     ActionPacket, BROADCAST_ID, BulkReadPacket, BulkWritePacket, ClearPacket,
     ControlTableBackupPacket, FactoryResetPacket, FastBulkReadPacket, FastSyncReadPacket, HEADER,

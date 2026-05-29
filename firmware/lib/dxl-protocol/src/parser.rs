@@ -1,6 +1,8 @@
 use crate::Instruction;
 use crate::bytes::{ByteIter, Bytes};
 use crate::crc::crc16;
+#[cfg(feature = "osc")]
+use crate::packet::CalibratePacket;
 use crate::packet::{
     ActionPacket, BulkReadPacket, BulkWritePacket, ClearPacket, ControlTableBackupPacket,
     FactoryResetPacket, FastBulkReadPacket, FastSyncReadPacket, HEADER, MAX_LENGTH, Packet,
@@ -151,6 +153,8 @@ fn decode<'a>(
             Ok(Packet::FactoryReset(FactoryResetPacket { id, mode }))
         }
         Reboot => need_empty(params).map(|_| Packet::Reboot(RebootPacket { id })),
+        #[cfg(feature = "osc")]
+        Calibrate => need_empty(params).map(|_| Packet::Calibrate(CalibratePacket { id })),
         Clear => Ok(Packet::Clear(ClearPacket {
             id,
             body: Bytes::stuffed(params),

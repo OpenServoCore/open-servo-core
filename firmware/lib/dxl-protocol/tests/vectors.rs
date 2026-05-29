@@ -264,6 +264,32 @@ fn write_reboot_matches_reference() {
     assert_eq!(&out[..], REBOOT_ID1);
 }
 
+#[cfg(feature = "osc")]
+#[test]
+fn calibrate_round_trip() {
+    let mut out: Vec<u8, 32> = Vec::new();
+    write(&mut out, &Packet::Calibrate(CalibratePacket { id: 1 })).unwrap();
+    let (pkt, n) = parse_one(&out).unwrap();
+    assert_eq!(n, out.len());
+    assert!(matches!(pkt, Packet::Calibrate(CalibratePacket { id: 1 })));
+}
+
+#[cfg(feature = "osc")]
+#[test]
+fn parse_calibrate_broadcast() {
+    let mut out: Vec<u8, 32> = Vec::new();
+    write(
+        &mut out,
+        &Packet::Calibrate(CalibratePacket { id: BROADCAST_ID }),
+    )
+    .unwrap();
+    let (pkt, _) = parse_one(&out).unwrap();
+    assert!(matches!(
+        pkt,
+        Packet::Calibrate(CalibratePacket { id: BROADCAST_ID })
+    ));
+}
+
 #[test]
 fn write_status_round_trip() {
     let params = [0x06u8, 0x04, 0x26];

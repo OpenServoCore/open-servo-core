@@ -18,6 +18,7 @@ struct FakeBus {
     last_snoop_delay_us: Option<u32>,
     last_snoop_from: Option<Option<u32>>,
     last_request_end: Option<u32>,
+    cal_count: u32,
 }
 
 impl FakeBus {
@@ -34,6 +35,7 @@ impl FakeBus {
             last_snoop_delay_us: None,
             last_snoop_from: None,
             last_request_end: None,
+            cal_count: 0,
         }
     }
 
@@ -76,6 +78,10 @@ impl DxlBus for FakeBus {
         self.snoop_count += 1;
         self.last_snoop_delay_us = Some(delay_us);
         self.last_snoop_from = Some(snoop_from);
+    }
+
+    fn trigger_clock_cal(&mut self) {
+        self.cal_count += 1;
     }
 }
 
@@ -1286,5 +1292,74 @@ fn fast_bulk_read_return_level_none_silences_reply() {
     assert_eq!(io.bus.send_count, 0);
     assert_eq!(io.bus.after_count, 0);
     assert_eq!(io.bus.snoop_count, 0);
+    assert!(io.bus.tx.is_empty());
+}
+
+fn enable_torque(shared: &Shared) {
+    shared
+        .table
+        .control
+        .with_mut(|c| c.lifecycle.torque_enable = true);
+}
+
+#[test]
+fn calibrate_broadcast_with_torque_off_triggers_silently() {
+    let shared = Shared::new();
+    let mut io = FakeIo::new();
+    let mut h = Dxl::new();
+
+    let req = encode(&Packet::Calibrate(CalibratePacket::new(BROADCAST_ID)));
+    io.feed(&req);
+    h.poll(&shared, &mut io);
+
+    assert_eq!(io.bus.cal_count, 1);
+    assert!(io.bus.tx.is_empty());
+}
+
+#[test]
+fn calibrate_unicast_with_torque_off_triggers_and_acks() {
+    let shared = Shared::new();
+    let mut io = FakeIo::new();
+    let mut h = Dxl::new();
+
+    let req = encode(&Packet::Calibrate(CalibratePacket::new(0)));
+    io.feed(&req);
+    h.poll(&shared, &mut io);
+
+    assert_eq!(io.bus.cal_count, 1);
+    let (id, err, params) = parse_status(&io.bus.tx);
+    assert_eq!(id, 0);
+    assert_eq!(err, 0);
+    assert!(params.is_empty());
+}
+
+#[test]
+fn calibrate_with_torque_on_unicast_returns_access_error_no_trigger() {
+    let shared = Shared::new();
+    enable_torque(&shared);
+    let mut io = FakeIo::new();
+    let mut h = Dxl::new();
+
+    let req = encode(&Packet::Calibrate(CalibratePacket::new(0)));
+    io.feed(&req);
+    h.poll(&shared, &mut io);
+
+    assert_eq!(io.bus.cal_count, 0);
+    let (_, err, _) = parse_status(&io.bus.tx);
+    assert_eq!(err, StatusError::Access.as_u8());
+}
+
+#[test]
+fn calibrate_with_torque_on_broadcast_silent_no_trigger() {
+    let shared = Shared::new();
+    enable_torque(&shared);
+    let mut io = FakeIo::new();
+    let mut h = Dxl::new();
+
+    let req = encode(&Packet::Calibrate(CalibratePacket::new(BROADCAST_ID)));
+    io.feed(&req);
+    h.poll(&shared, &mut io);
+
+    assert_eq!(io.bus.cal_count, 0);
     assert!(io.bus.tx.is_empty());
 }

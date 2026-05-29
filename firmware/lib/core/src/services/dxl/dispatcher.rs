@@ -104,6 +104,7 @@ impl<'a, B: DxlBus, D: DeviceControl> Dispatcher<'a, B, D> {
             Packet::BulkWrite(p) => self.handle_bulk_write(&ctx, p),
             Packet::FastSyncRead(p) => self.handle_fast_read(&ctx, p, parsed_end),
             Packet::FastBulkRead(p) => self.handle_fast_read(&ctx, p, parsed_end),
+            Packet::Calibrate(p) => self.handle_calibrate(&ctx, p),
             // Inbound Status frames originate from another device on the bus; drop.
             Packet::Status(_) => {}
         }
@@ -316,6 +317,27 @@ impl<'a, B: DxlBus, D: DeviceControl> Dispatcher<'a, B, D> {
     fn handle_factory_reset(&mut self, ctx: &Ctx, p: &FactoryResetPacket) {
         // TODO: erase CALIB region via Flash trait, then device.reboot().
         self.reply_unsupported(ctx, p.id);
+    }
+
+    fn handle_calibrate(&mut self, ctx: &Ctx, p: &CalibratePacket) {
+        let Some((id, direct)) = ctx.addressed(p.id) else {
+            return;
+        };
+        let torque_on = self
+            .shared
+            .table
+            .control
+            .with(|c| c.lifecycle.torque_enable);
+        if torque_on {
+            if direct {
+                self.send_status(ctx, id, StatusError::Access, &[], StatusReturnLevel::All, 0);
+            }
+            return;
+        }
+        self.bus.trigger_clock_cal();
+        if direct {
+            self.send_status(ctx, id, StatusError::None, &[], StatusReturnLevel::All, 0);
+        }
     }
 
     fn handle_reboot(&mut self, ctx: &Ctx, p: &RebootPacket) {

@@ -103,6 +103,20 @@ impl RebootPacket {
     }
 }
 
+/// OpenServoCore extension — see [`crate::Instruction::Calibrate`].
+#[cfg(feature = "osc")]
+#[derive(Copy, Clone, Debug)]
+pub struct CalibratePacket {
+    pub id: u8,
+}
+
+#[cfg(feature = "osc")]
+impl CalibratePacket {
+    pub const fn new(id: u8) -> Self {
+        Self { id }
+    }
+}
+
 #[derive(Copy, Clone, Debug)]
 pub struct ClearPacket<'a> {
     pub id: u8,
@@ -258,4 +272,6 @@ pub enum Packet<'a> {
     BulkWrite(BulkWritePacket<'a>),
     FastSyncRead(FastSyncReadPacket<'a>),
     FastBulkRead(FastBulkReadPacket<'a>),
+    #[cfg(feature = "osc")]
+    Calibrate(CalibratePacket),
 }

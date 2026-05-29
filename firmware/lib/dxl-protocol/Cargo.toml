@@ -9,9 +9,13 @@ crc.workspace = true
 heapless      = { workspace = true, optional = true }
 
 [dev-dependencies]
-dxl-protocol = { path = ".", features = ["heapless"] }
+dxl-protocol = { path = ".", features = ["heapless", "osc"] }
 
 [features]
 default  = []
 heapless = ["dep:heapless"]
 alloc    = []
+# OpenServoCore extensions. Reserves the 0xE0..0xEF vendor-extension block
+# (currently: CAL = 0xE0). Off-by-default keeps this crate a clean DXL 2.0
+# implementation; turn on inside the osc-core stack.
+osc      = []

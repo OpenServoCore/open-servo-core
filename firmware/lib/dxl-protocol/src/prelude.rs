@@ -1,6 +1,8 @@
 pub use crate::buf::WriteBuf;
 pub use crate::bytes::Bytes;
 pub use crate::fast::{FastReadPacket, FastSlotInfo, FastSlotPosition};
+#[cfg(feature = "osc")]
+pub use crate::packet::CalibratePacket;
 pub use crate::packet::{
     ActionPacket, BROADCAST_ID, BulkReadPacket, BulkWritePacket, ClearPacket,
     ControlTableBackupPacket, FactoryResetPacket, FastBulkReadPacket, FastSyncReadPacket, HEADER,
