@@ -37,6 +37,11 @@ fn touches_baud(addr: u16, len: usize) -> bool {
     addr <= baud_addr && (addr as u32) + (len as u32) > baud_addr as u32
 }
 
+fn touches_hsitrim(addr: u16, len: usize) -> bool {
+    let trim_addr = config::addr::comms::HSI_TRIM;
+    addr <= trim_addr && (addr as u32) + (len as u32) > trim_addr as u32
+}
+
 struct Ctx {
     our_id: u8,
     rdt_us: u32,
@@ -251,11 +256,16 @@ impl<'a, B: DxlBus, D: DeviceControl> Dispatcher<'a, B, D> {
             .table
             .write_bytes(p.address, &buf[..len], self.staged);
         let baud_changed = result.is_ok() && touches_baud(p.address, len);
+        let hsitrim_changed = result.is_ok() && touches_hsitrim(p.address, len);
         self.reply_table_result(ctx, id, direct, result);
         if baud_changed {
             // reply queued, bus impl defers retune until TC.
             let new_rate = self.shared.table.config.with(|c| c.comms.baud_rate_idx);
             self.bus.set_baud(new_rate);
+        }
+        if hsitrim_changed {
+            let new_trim = self.shared.table.config.with(|c| c.comms.hsi_trim);
+            self.bus.set_hsi_trim(new_trim);
         }
     }
 

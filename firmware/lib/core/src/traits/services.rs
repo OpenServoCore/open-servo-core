@@ -31,6 +31,11 @@ pub trait DxlBus {
     /// implementations MUST defer the actual UART retune until TX completes,
     /// otherwise the host can't decode the reply. Default no-op.
     fn set_baud(&mut self, _rate: BaudRate) {}
+
+    /// Request an HSITRIM change (5 LSBs valid). Same TX-deferred semantics as
+    /// `set_baud`: changing HCLK mid-byte would garbage the reply. Default
+    /// no-op for hosts whose clock isn't software-trimmable.
+    fn set_hsi_trim(&mut self, _trim: u8) {}
 }
 
 /// Lifecycle commands the dispatcher delivers to the device (reboot today;

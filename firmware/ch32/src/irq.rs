@@ -4,12 +4,12 @@ use osc_core::{FrameInputs, KernelIo, Sensors};
 use portable_atomic::{AtomicU16, AtomicU32};
 
 use crate::dxl_fast;
-use crate::hal::{dma, gpio, pfic, systick, usart};
+use crate::hal::{dma, gpio, pfic, rcc, systick, usart};
 use crate::idle_ring;
 use crate::statics::{
-    DXL_BAUD_PENDING_BRR, DXL_CHAR_TIME_TICKS, DXL_REBOOT_PENDING, DXL_RX_BUF_LEN,
-    DXL_RX_BYTE_COUNT, DXL_RX_STAMP_FIRST, DXL_RX_STAMP_LAST, DXL_RX_WRITE_POS, DXL_TX_BUF,
-    DXL_TX_EN, KERNEL, SHARED, store_baud_derived,
+    DXL_BAUD_PENDING_BRR, DXL_CHAR_TIME_TICKS, DXL_HSITRIM_PENDING, DXL_REBOOT_PENDING,
+    DXL_RX_BUF_LEN, DXL_RX_BYTE_COUNT, DXL_RX_STAMP_FIRST, DXL_RX_STAMP_LAST, DXL_RX_WRITE_POS,
+    DXL_TX_BUF, DXL_TX_EN, KERNEL, SHARED, store_baud_derived,
 };
 
 /// ADC DMA TC handler body — wire into the vector table via [`crate::install_isrs!`].
@@ -143,6 +143,10 @@ fn on_usart1_tc() {
     if pending_brr != 0 {
         usart::set_baud(USART1, pending_brr);
         store_baud_derived(pending_brr);
+    }
+    let pending_trim = DXL_HSITRIM_PENDING.swap(0, Ordering::AcqRel);
+    if pending_trim & 0x80 != 0 {
+        rcc::set_hsitrim(pending_trim & 0x1f);
     }
     if DXL_REBOOT_PENDING.load(Ordering::Acquire) {
         pfic::software_reset();

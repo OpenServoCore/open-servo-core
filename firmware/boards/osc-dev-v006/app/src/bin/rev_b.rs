@@ -84,6 +84,8 @@ fn main() -> ! {
             dxl_id: 1,
             dxl_baud: BaudRate::B1000000,
             dxl_return_delay_2us: 125,
+            // Factory midpoint; A9.2 runtime cal pushes to the per-unit value.
+            hsi_trim: 16,
         },
     })
 }

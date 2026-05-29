@@ -58,3 +58,11 @@ pub fn enable_dma1() {
 pub fn enable_usart1() {
     RCC.pb2pcenr().modify(|w| w.set_usart1en(true));
 }
+
+/// HSITRIM[4:0] in RCC.CTLR. ~0.25% per step around 16 = factory midpoint.
+/// Caller masks high bits, but we mask defensively too. Live writes only —
+/// the USART1 TC ISR is the gatekeeper that keeps HCLK steady mid-byte.
+#[inline]
+pub fn set_hsitrim(value: u8) {
+    RCC.ctlr().modify(|w| w.set_hsitrim(value & 0x1f));
+}
