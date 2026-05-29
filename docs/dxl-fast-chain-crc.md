@@ -182,48 +182,91 @@ Typical Fast Sync — 5 slaves with 4-byte payloads, 26 wire bytes:
 
 When `fire_us ≤ M` the snoop is small enough that one walk at fire fits trivially. No switch, no TC; the FSM transitions straight from arm into `WaitingFire`.
 
-## 6. State machine update
+## 6. State machine
 
-One state added to the reply-scheduler FSM from §7.2 of the parent doc, plus a DMA TC handler that runs alongside it.
+The reply scheduler carries a richer state than the parent doc's three-state Stage. `ReplyState::Chain` encodes the Fast last-slave timeline as substages so each handler dispatches on phase directly, and illegal transitions are detectable as a fault (`FastChainFault::IllegalTransition`). The trade-off — ~20 bytes of static state vs a shadow-only design — buys type-state encoding of the FSM and observable hygiene faults.
 
-    states (was 3, now 4):
+    ReplyState:
       Idle
-      WaitingPlain
-      WaitingSwitch    ← new: snoop accumulation in progress
-      WaitingFire      ← unchanged shape; entered from arm OR from WaitingSwitch
+      Plain                     — non-snoop reply (Ping, Read, Sync slot,
+                                  Bulk slot, Fast Only/First/Middle)
+      Chain { phase,            — Fast last-slave reply with snoop CRC
+              fire_tick,
+              snoop_head,
+              bulk_crc,
+              expected_predecessor_bytes,
+              bytes_walked }
 
-    new transitions:
-      Idle → WaitingSwitch     Fast last-slave reply with fire_us > M
-                               - pre-configure DMA CH4 (count + source, EN=0)
-                               - record snoop_head = parsed_end & RX_MASK
-                               - clear DMA1_CH5 TC_IF, enable TC_IE
-                               - SysTick CMP at: wire-end + fire_us − M
+    FastChainPhase (substates of Chain):
+      CatchupArmed   — WaitingSwitch CMP pending, no DMA TC wrap seen yet
+      Snoop          — at least one TC wrap has folded a full ring into bulk_crc
+      Catchup        — WaitingSwitch CMP body running its bulk walk
+      TxArmed        — switch done; fire CMP set
+      TxStreaming    — fire CMP fired; TX shifting + straggle walk in progress
+      CrcPatched     — trailing CRC bytes patched into TX
+      Done           — USART1 TC drained the reply; bus released
+      Fault(_)       — chain aborted; matching counter incremented
 
-      WaitingSwitch → WaitingFire    first CMP fires
-                               - accumulate_snoop()  ← walks ring[snoop_head..NDTR]
-                               - SysTick CMP at: wire-end + fire_us
+    legal phase transitions (set_phase enforces; out-of-table calls bump
+    IllegalTransition and cancel; calls outside Chain are silent no-ops):
+      CatchupArmed → Snoop | Catchup
+      Snoop        → Catchup
+      Catchup      → TxArmed
+      TxArmed      → TxStreaming
+      TxStreaming  → CrcPatched
+      CrcPatched   → Done
+      *            → Fault(_)
 
-    new handler (runs alongside the FSM, no stage transition):
-      DMA1_CH5 TC fires        while stage ∈ {WaitingSwitch, WaitingFire}
-                               - walk ring[snoop_head..N] into bulk_crc
-                               - snoop_head = 0
-                               - clear TC_IF
+    transitions out of Idle (entered by the dispatcher):
+      Idle → Plain                     non-snoop reply gets scheduled
+                                       - pre-configure DMA CH4 (count + source, EN=0)
+                                       - SysTick CMP at: request_end + reply_delay
 
-    unchanged transitions (shape):
-      Idle → WaitingFire       Only-slot path, OR Fast last-slave with fire_us ≤ M
-                               - (TC_IE stays off — no snoop, walk at fire only)
+      Idle → Chain{CatchupArmed}       Fast last-slave with fire_us > M
+                                       - pre-configure DMA CH4
+                                       - snoop_head = parsed_end & RX_MASK
+                                       - expected_predecessor_bytes = predict(fire_us)
+                                       - clear DMA1_CH5 TC_IF, enable TC_IE
+                                       - SysTick CMP at: request_end + fire_us − M
 
-      WaitingFire → Idle       CMP fires:
-                               - fire_now()         ← jitter-critical, first
-                               - accumulate_snoop() ← straggle catch-up
-                               - patch CRC into TX buffer trailing 2 bytes
-                               - disable DMA1_CH5 TC_IE
+      Idle → Chain{TxArmed}            Only-slot path, OR Fast last-slave with
+                                       fire_us ≤ M (single walk at fire is enough)
+                                       - pre-configure DMA CH4
+                                       - TC_IE stays off
+                                       - SysTick CMP at: request_end + fire_us
 
-`cancel` still wipes back to Idle from any state and additionally disables TC_IE. Same idempotent contract.
+    SysTick CMP body (on_systick) dispatches on phase:
+      Chain{CatchupArmed | Snoop} CMP fires:
+                                       - set_phase(Catchup)
+                                       - accumulate_snoop() walks ring[snoop_head..NDTR]
+                                       - set_phase(TxArmed)
+                                       - SysTick CMP at: request_end + fire_us
 
-All three handlers (TC, WaitingSwitch CMP, WaitingFire CMP) sit at PFIC HIGH priority and serialize cleanly — each updates `snoop_head` atomically with respect to the others, and the order they happen to fire in doesn't affect correctness. The TC ISR is also the simplest of the three: walk a fixed-size block, reset `snoop_head` to a constant, clear a flag.
+      Chain{TxArmed} CMP fires:
+                                       - SlotTimingMiss check (now vs fire_tick)
+                                       - disable DMA1_CH5 TC_IE
+                                       - set_phase(TxStreaming)
+                                       - fire_now()             ← jitter-critical, first
+                                       - accumulate_snoop()     ← straggle catch-up
+                                       - patch CRC into TX trailing 2 bytes
+                                       - CrcPatchDeadlineMiss check
+                                       - PreviousSlotTimeout check
+                                       - set_phase(CrcPatched)
 
-The `WaitingSwitch → WaitingFire` transition is still subject to the "CNTIF latches only on `CNT == CMP` up-count" gotcha from §8.3 of the parent doc — the set-and-recheck pattern after writing the new CMP is mandatory, otherwise an overshoot in the switch ISR silently sleeps until the next 89-second wrap.
+    DMA1_CH5 TC IRQ body (on_dma1_ch5_tc), runs whenever TC fires:
+      always: clear TC_IF (stale flag would re-trigger on next unmask)
+      while phase ∈ {CatchupArmed, Snoop, TxArmed}:
+        - walk ring[snoop_head..N] into bulk_crc
+        - snoop_head = 0
+        - CatchupArmed → Snoop on first wrap
+
+`cancel` from any state goes back to Idle and disables TC_IE. Idempotent contract — running from Idle is a no-op, and any `set_phase` that races with cancel sees STATE = Idle and silently skips (no double-fault).
+
+`PreviousSlotTimeout` is checked in the TxArmed body after `accumulate_snoop` so it covers both the long-reply path (CatchupArmed → … → TxArmed) and the short-reply skip-switch path (Idle → TxArmed). The check is observational — the reply fires whether or not the predecessor delivered on time; the counter simply records the miss.
+
+All four hot-path handlers (USART1, SysTick CMP, DMA1_CH5 TC, USART1 TC) sit at PFIC HIGH priority and serialize cleanly — each updates `snoop_head` atomically with respect to the others, and the order they happen to fire in doesn't affect correctness. The TC ISR is also the simplest of the four: walk a fixed-size block, reset `snoop_head` to a constant, clear a flag.
+
+The `CatchupArmed/Snoop → TxArmed` transition is still subject to the "CNTIF latches only on `CNT == CMP` up-count" gotcha from §8.3 of the parent doc — the set-and-recheck pattern after writing the new CMP is mandatory, otherwise an overshoot in the switch ISR silently sleeps until the next 89-second wrap.
 
 ## 7. Two RX buffers, two caps, two different jobs
 
@@ -277,8 +320,9 @@ Kept:
 
 New:
 
-- `DMA1_CHANNEL5` IRQ vector wired up (currently unused). Priority HIGH (same as USART1 + SysTick), gated by stage so it only fires during snoop windows.
-- One `Stage` variant (`WaitingSwitch`) and one constant (`SWITCH_MARGIN_US = 150`).
+- `DMA1_CHANNEL5` IRQ vector wired up (previously unused). Priority HIGH (same as USART1 + SysTick), gated by phase so it only fires during snoop windows.
+- `ReplyState::Chain` variant carrying phase + chain bookkeeping; eight-state `FastChainPhase` substage enum; `SWITCH_MARGIN_US = 150` constant.
+- Per-fault counters in `TelemetryDxlLink` (`illegal_transition`, `unexpected_byte_count`, `previous_slot_timeout`, `slot_timing_miss`, `crc_patch_deadline_miss`, `dma_overrun`, `uart_error`) — observable from the host control table.
 
 ISR count for the snoop window goes from `N_wire_bytes` (today) to **`2 + ⌈total / N⌉`** — so 2 for small snoops (no TC), 3-4 for realistic Bulk Reads, growing linearly for huge ones rather than overflowing the buffer.
 
@@ -374,42 +418,35 @@ The framing FSM picks `LengthCounted` vs `IdleBackdated` automatically from `(ba
 
 ```rust
 pub enum FastChainPhase {
-    /// Observing previous slave bytes via DMA chunk events.
-    Snoop,
-    /// A near-tail timer has been armed to catch up CRC before our slot.
     CatchupArmed,
-    /// Consuming final observed bytes and advancing rolling CRC.
+    Snoop,
     Catchup,
-    /// TX DMA configured + fire CMP armed; waiting for fire deadline.
     TxArmed,
-    /// TX DMA running; straggle walk in progress.
     TxStreaming,
-    /// Final CRC bytes patched into TX before DMA fetched them.
     CrcPatched,
     Done,
     Fault(FastChainFault),
 }
 ```
 
-Finer-grained than the four-state runtime FSM in §6 — these phases are more "how do I picture what's happening" than state the code actually carries. Mapping each phase back to where it lives in the runtime FSM:
+The chain timeline. `ReplyState::Chain { phase, ... }` carries the current phase as runtime state — `set_phase` enforces the legal transition table from §6 and any out-of-table call bumps `FastChainFault::IllegalTransition` and cancels the chain. Each handler dispatches on phase: `on_systick` routes CatchupArmed/Snoop into the bulk walk, TxArmed into the fire-and-patch body; `on_dma1_ch5_tc` gates its walk on `phase ∈ {CatchupArmed, Snoop, TxArmed}`.
 
 | Phase | When | Where in code |
 |---|---|---|
-| `Snoop` | After arm; DMA CH5 TC handler walking ring chunks into the rolling CRC | TC handler body |
-| `CatchupArmed` | Same as Snoop — distinguished by "SysTick CMP at `fire − M` set and pending" | tail of `start_fast_after` |
-| `Catchup` | WaitingSwitch ISR body running its bulk walk | `on_systick` in WaitingSwitch arm |
-| `TxArmed` | Switch ISR done; fire CMP set; waiting for it to fire | between Switch ISR exit and Fire ISR entry |
-| `TxStreaming` | Fire ISR after `fire_now()`, straggle walk in progress | `on_systick` in WaitingFire arm |
-| `CrcPatched` | `patch_crc()` done, CRC bytes in TX buffer's trailing slot | end of `on_systick` in WaitingFire |
-| `Done` | USART1 TC has fired, bus released | TC handler |
-| `Fault(_)` | Any error path that aborts the chain | `cancel`-equivalent paths |
-
-In runtime code the actual `Stage` enum stays at four states (Idle, WaitingPlain, WaitingSwitch, WaitingFire) — that's what's needed for the FSM to make correct decisions. A `FastChainPhase` tracker can sit alongside as a `#[cfg(feature = "telemetry")]` shadow — useful for observing chain progress under bench instrumentation without complicating the hot path.
+| `CatchupArmed` | `start_fast_after` armed the switch CMP; no DMA TC wrap seen yet | tail of `start_fast_after` |
+| `Snoop` | First DMA TC wrap has folded a full ring into `bulk_crc` | tail of `on_dma1_ch5_tc` |
+| `Catchup` | `on_systick` running the switch-CMP bulk walk | `on_systick` CatchupArmed/Snoop arm |
+| `TxArmed` | Switch walk done; fire CMP set; or short-reply skip-switch path | end of CatchupArmed/Snoop arm; from `start_fast_after` direct |
+| `TxStreaming` | Fire ISR after `fire_now()`, straggle walk + CRC patch in progress | start of TxArmed arm body |
+| `CrcPatched` | `patch_crc()` done, CRC bytes in TX trailing slot | end of TxArmed arm body |
+| `Done` | USART1 TC has fired, bus released | (not yet wired — see A7) |
+| `Fault(_)` | Any error path that aborts the chain | `report_fault` + `cancel` |
 
 ### 10.3 Fault taxonomy
 
 ```rust
 pub enum FastChainFault {
+    IllegalTransition,
     UnexpectedByteCount,
     PreviousSlotTimeout,
     SlotTimingMiss,
@@ -423,14 +460,15 @@ What each one catches and which constraint it maps to:
 
 | Variant | Detected when | Constraint |
 |---|---|---|
+| `IllegalTransition` | `set_phase` called with a (from, to) pair not in the §6 legal table | FSM hygiene |
 | `UnexpectedByteCount` | `accumulate_snoop` sees NDTR inconsistent — e.g. ring lapped twice between walks | Constraint D (TC latency) |
-| `PreviousSlotTimeout` | predecessor slot doesn't end before `fire_us` deadline | host/protocol issue |
+| `PreviousSlotTimeout` | post-straggle-walk `bytes_walked` falls short of `expected_predecessor_bytes` | host/protocol issue |
 | `SlotTimingMiss` | SysTick CMP fires later than `fire_tick + 1 byte_time` (the R1 jitter cap) | R1, §13 parent |
 | `CrcPatchDeadlineMiss` | `patch_crc()` completes after TX DMA has already read past `n−2` | Constraint B |
-| `DmaOverrun` | DMA CH5 overrun flag set — wire rate exceeded drain rate | chip limit |
-| `UartError` | parity/framing/noise error on USART1 STATR | PHY/wire issue |
+| `DmaOverrun` | USART1 STATR.ORE — RX outpaced DMA drain | chip limit |
+| `UartError` | USART1 STATR.{PE,FE,NE} — parity / framing / noise | PHY/wire issue |
 
-None of these are wired up today — error paths silently revert to `Idle` via `cancel`. Faults this granular are mostly useful when we fuzz the wire under intentional fault injection, or when interop-testing against hosts whose framing we don't fully trust. A counter per variant under `#[cfg(feature = "defmt")]` would be a cheap first step.
+Each variant maps 1:1 to a u32 counter in `TelemetryDxlLink`. `report_fault` does a volatile RMW on the matching field. `UnexpectedByteCount` and `Done` are reserved for the bench-validation pass (A7) — the rest are live in the hot path today.
 
 ## 11. Honest accounting
 
@@ -449,8 +487,8 @@ What this doesn't buy:
 
 What this trades off:
 
-- One extra `Stage`, one extra constant (`SWITCH_MARGIN_US`), and a previously-unused DMA1_CH5 IRQ vector wired into the dispatch macro.
-- TC_IE has to be stage-gated (enable in `start_fast_after`, disable in fire ISR and `cancel`), and TC_IF cleared before re-enable to avoid stale-pending spurious fires. ~6 lines of code.
+- A richer `ReplyState::Chain` variant carrying the `FastChainPhase` substage + chain bookkeeping (~20 bytes of static state), one extra constant (`SWITCH_MARGIN_US`), and a previously-unused DMA1_CH5 IRQ vector wired into the dispatch macro.
+- TC_IE has to be phase-gated (enable in `start_fast_after`, disable in fire ISR and `cancel`), and TC_IF cleared before re-enable to avoid stale-pending spurious fires. ~6 lines of code.
 - The constants are derived numbers with documented math, not magic values. Re-derive if `DXL_RX_BUF_LEN` shrinks below 64 (Constraint C), grows past ~1545 (Constraint A), or the smallest-reply assumption changes (Constraint B). `MAX_LENGTH` is independent of all of this — it lives on the request-parser path, not the snoop path.
 
 ## 12. Why TC, why gated, and why not just HT
