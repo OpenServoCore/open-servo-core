@@ -59,6 +59,11 @@ pub fn disable(ch: Channel) {
     DMA1.ch(n).cr().modify(|w| w.set_en(false));
 }
 
+pub fn set_tcie(ch: Channel, enable: bool) {
+    let n = (ch as u8 - 1) as usize;
+    DMA1.ch(n).cr().modify(|w| w.set_tcie(enable));
+}
+
 pub fn clear_tc_flag(ch: Channel) {
     let n = (ch as u8 - 1) as usize;
     DMA1.ifcr().write(|w| w.set_tcif(n, true));
