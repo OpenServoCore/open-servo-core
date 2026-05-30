@@ -38,13 +38,6 @@ pub trait DxlBus {
     /// waiting until the next request leaves one transaction running on stale
     /// timing. Default no-op.
     fn set_return_delay(&mut self, _rdt_us: u32) {}
-
-    /// Boot-time clock-trim calibration trigger. Dispatcher calls this after a
-    /// CAL packet has been accepted (torque off). The implementation observes
-    /// byte-time on the just-received broadcast itself, computes drift, applies
-    /// the chip's trim register, and updates the `comms.clock_trim` mirror.
-    /// Default no-op so non-trimming chips can ignore CAL silently.
-    fn trigger_clock_cal(&mut self) {}
 }
 
 /// Lifecycle commands the dispatcher delivers to the device (reboot today;

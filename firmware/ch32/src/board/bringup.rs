@@ -253,9 +253,6 @@ fn bring_up_dxl(d: &DxlBus, brr: u32) {
     unsafe { *DXL_TX_EN.get() = d.tx_en };
 
     usart::set_idle_irq(regs, true);
-    // One-shot per packet: stamps byte 1's tick into DXL_RX_STAMP_FIRST, then
-    // disables itself. IDLE re-arms it for the next packet.
-    usart::set_rxne_irq(regs, true);
 }
 
 pub(super) fn seed_dbg_pin(pin: crate::hal::Pin) {

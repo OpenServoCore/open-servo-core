@@ -63,16 +63,6 @@ pub static DXL_BYTE_TIME_TICKS: AtomicU32 = AtomicU32::new(0);
 /// (RV32EC + zmmul has no hardware divide).
 pub static DXL_BYTES_PER_US_Q16: AtomicU32 = AtomicU32::new(0);
 
-/// Snapshot of the most recently completed RX packet's byte-time stamps.
-/// `COUNT` is the Release publish marker; readers Acquire-load `COUNT` first
-/// then Relaxed-load `FIRST` / `LAST`. `count == 0` = no snapshot.
-///
-/// Stamps are SysTick values. `FIRST` = end-of-byte-1 tick (one-shot RXNE,
-/// re-armed each IDLE). `LAST` = IDLE-backdated end-of-byte-N tick.
-pub static DXL_RX_STAMP_FIRST: AtomicU32 = AtomicU32::new(0);
-pub static DXL_RX_STAMP_LAST: AtomicU32 = AtomicU32::new(0);
-pub static DXL_RX_BYTE_COUNT: AtomicU16 = AtomicU16::new(0);
-
 /// Called at bring-up and after a BAUD_RATE write — never on the snoop hot
 /// path, so the runtime division is fine here.
 pub fn store_baud_derived(brr: u32) {
