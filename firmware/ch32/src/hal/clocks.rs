@@ -1,6 +1,8 @@
 use ch32_metapac::rcc::vals::{Adcpre, Hpre};
 
 pub const HSI_HZ: u32 = 24_000_000;
+/// V006 RM §3, RCC_CTLR: each HSITRIM step shifts HSI by ~60 kHz.
+pub const HSI_TRIM_STEP_HZ: u32 = 60_000;
 pub const PLL_MUL: u32 = 2;
 pub const SYSCLK_HZ: u32 = HSI_HZ * PLL_MUL;
 

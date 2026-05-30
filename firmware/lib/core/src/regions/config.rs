@@ -103,12 +103,16 @@ pub struct ConfigComms {
     pub baud_rate_idx: BaudRate,
     pub return_delay_2us: u8,
     pub status_return_level: StatusReturnLevel,
-    /// Signed delta applied to the device's factory clock-trim default at
-    /// bring-up. RO over the protocol — host-side adjustment would be a
-    /// foot-gun (mid-byte HCLK shifts) and the calibration path lives
-    /// inside firmware. 0 = use the factory default unchanged.
-    #[ct_field(access = ro)]
+    /// Signed delta from the chip's factory clock-trim default. Applied at
+    /// the next USART1 TC so the change never lands mid-byte.
     pub clock_trim: i8,
+    #[ct_field(skip)]
+    pub _rsvd_align: u8,
+    #[ct_field(access = ro)]
+    pub clock_step_ppm: u16,
+    /// Q8.8 µs. Does NOT trim the HSI despite the name; advances the Fast
+    /// slot fire time to absorb sub-step `clock_trim` residual.
+    pub clock_fine_trim_us: i16,
 }
 
 #[repr(C)]

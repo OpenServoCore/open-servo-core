@@ -3,7 +3,7 @@ use ch32_metapac::{
     rcc::vals::{Pllsrc, Sw},
 };
 
-use crate::hal::clocks::{adcpre_val, hpre_val};
+use crate::hal::clocks::{HSI_HZ, HSI_TRIM_STEP_HZ, adcpre_val, hpre_val};
 
 pub fn init_pll() {
     const HPRE: ch32_metapac::rcc::vals::Hpre = hpre_val();
@@ -70,8 +70,9 @@ const HSITRIM_MAX: i16 = 31;
 pub const CLOCK_TRIM_DELTA_MIN: i8 = -16;
 pub const CLOCK_TRIM_DELTA_MAX: i8 = 15;
 
-/// HSI step size in ppm of HCLK. V006 RM gives HSITRIM ≈ 0.25%/step.
-pub const CLOCK_TRIM_PPM_PER_STEP: u32 = 2500;
+/// u64 inside the const eval: STEP_HZ × 1_000_000 overflows u32.
+pub const CLOCK_TRIM_PPM_PER_STEP: u32 =
+    (HSI_TRIM_STEP_HZ as u64 * 1_000_000 / HSI_HZ as u64) as u32;
 
 /// Apply a signed clock-trim delta around the chip's HSITRIM default.
 /// ~0.25% HSI rate per step; out-of-range deltas are clamped.

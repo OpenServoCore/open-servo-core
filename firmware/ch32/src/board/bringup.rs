@@ -1,5 +1,5 @@
 use ch32_metapac::{ADC, adc::vals::Extsel, dma::vals::Dir};
-use osc_core::ConfigDefaults;
+use osc_core::{ConfigDefaults, RegionStorage};
 
 use crate::hal::{
     adc, afio, delay_ms, dma,
@@ -52,6 +52,10 @@ pub(super) fn run(
 
     // Sole writer to CONFIG: pre-IRQ, pre-install_kernel.
     SHARED.table.seed_config_defaults(defaults);
+    SHARED
+        .table
+        .config
+        .with_mut(|c| c.comms.clock_step_ppm = rcc::CLOCK_TRIM_PPM_PER_STEP as u16);
 
     bring_up_dxl(&wiring.dxl, pre.usart_brr);
     crate::log::debug!("dxl usart + dma rx armed");
