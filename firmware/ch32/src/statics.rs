@@ -63,16 +63,23 @@ pub static DXL_BYTE_TIME_TICKS: AtomicU32 = AtomicU32::new(0);
 /// (RV32EC + zmmul has no hardware divide).
 pub static DXL_BYTES_PER_US_Q16: AtomicU32 = AtomicU32::new(0);
 
-/// Silicon-fixed latency from SysTick CMP match to first bit on the wire:
-/// PFIC trap entry + `on_systick` body + `fire_now` + DMA prefetch + USART
-/// start-bit latch. Bench-calibrated per chip family via #37. Subtracted from
-/// nominal fire deadlines.
-pub const TX_LATENCY_TICKS: u16 = 144;
+/// Silicon-fixed latency from SysTick CMP match to first bit on the wire for
+/// the plain reply path: PFIC trap entry + `on_systick` body + `fire_now` +
+/// DMA prefetch + USART start-bit latch. Bench-calibrated per chip family via
+/// #52. Subtracted from nominal fire deadlines in `start_plain_after`.
+pub const TX_PLAIN_LATENCY_TICKS: u16 = 144;
 
-/// HCLK ticks the fire path subtracts from each nominal slot deadline. Sum of
-/// `TX_LATENCY_TICKS` + Q8.8 `clock_fine_trim_us` converted to ticks. Updated
-/// from USART1 TC after a Write touches `comms.clock_fine_trim_us`.
-pub static FIRE_ADVANCE_TICKS: AtomicU16 = AtomicU16::new(TX_LATENCY_TICKS);
+/// Same as `TX_PLAIN_LATENCY_TICKS` for the Fast Sync/Bulk chain path. Runs
+/// extra work before `fire_now` (DMA TCIE off, phase=TxStreaming, dbg pin,
+/// snoop-CRC scaffolding) so its effective latency is larger. Per-chip values
+/// from #52.
+pub const TX_FAST_LATENCY_TICKS: u16 = 144;
+
+/// Per-chip clock_fine_trim residual converted to HCLK ticks, summed at the
+/// fire site with the per-path latency const. Updated from USART1 TC after a
+/// Write touches `comms.clock_fine_trim_us`. Signed: a negative Q8.8 nudges
+/// fire later by partially cancelling the per-path const.
+pub static FIRE_ADVANCE_FINE_TICKS: AtomicI16 = AtomicI16::new(0);
 
 /// Pending HSI trim delta queued by a `comms.clock_trim` Write. `i16::MIN`
 /// (outside i8's native range) is the no-pending sentinel; USART1 TC swaps
@@ -85,13 +92,12 @@ pub static DXL_CLOCK_TRIM_PENDING: AtomicI16 = AtomicI16::new(CLOCK_TRIM_NO_PEND
 pub const CLOCK_FINE_TRIM_NO_PENDING: i32 = i32::MIN;
 pub static DXL_CLOCK_FINE_TRIM_PENDING: AtomicI32 = AtomicI32::new(CLOCK_FINE_TRIM_NO_PENDING);
 
-/// Q8.8 µs → ticks → sum with `TX_LATENCY_TICKS` → atomic publish for the
-/// fire path. Clamped to `u16`; negative residual that would advance past the
-/// deadline silently falls back to no compensation.
-pub fn recompute_fire_advance_ticks(q88_us: i16) {
+/// Q8.8 µs → ticks → atomic publish. Fire site sums with the per-path
+/// `TX_{PLAIN,FAST}_LATENCY_TICKS` and clamps the total to ≥ 0 there.
+pub fn recompute_fire_advance_fine_ticks(q88_us: i16) {
     let residual_ticks = (q88_us as i32 * crate::hal::systick::TICKS_PER_US as i32) >> 8;
-    let total = TX_LATENCY_TICKS as i32 + residual_ticks;
-    FIRE_ADVANCE_TICKS.store(total.clamp(0, u16::MAX as i32) as u16, Ordering::Release);
+    let clamped = residual_ticks.clamp(i16::MIN as i32, i16::MAX as i32) as i16;
+    FIRE_ADVANCE_FINE_TICKS.store(clamped, Ordering::Release);
 }
 
 /// Called at bring-up and after a BAUD_RATE write — never on the snoop hot

@@ -9,7 +9,7 @@ use crate::idle_ring;
 use crate::statics::{
     CLOCK_FINE_TRIM_NO_PENDING, CLOCK_TRIM_NO_PENDING, DXL_BAUD_PENDING_BRR, DXL_CHAR_TIME_TICKS,
     DXL_CLOCK_FINE_TRIM_PENDING, DXL_CLOCK_TRIM_PENDING, DXL_REBOOT_PENDING, DXL_RX_BUF_LEN,
-    DXL_RX_WRITE_POS, DXL_TX_BUF, DXL_TX_EN, KERNEL, SHARED, recompute_fire_advance_ticks,
+    DXL_RX_WRITE_POS, DXL_TX_BUF, DXL_TX_EN, KERNEL, SHARED, recompute_fire_advance_fine_ticks,
     store_baud_derived,
 };
 
@@ -111,7 +111,7 @@ fn on_usart1_tc() {
     let pending_fine =
         DXL_CLOCK_FINE_TRIM_PENDING.swap(CLOCK_FINE_TRIM_NO_PENDING, Ordering::AcqRel);
     if pending_fine != CLOCK_FINE_TRIM_NO_PENDING {
-        recompute_fire_advance_ticks(pending_fine as i16);
+        recompute_fire_advance_fine_ticks(pending_fine as i16);
     }
     if DXL_REBOOT_PENDING.load(Ordering::Acquire) {
         pfic::software_reset();

@@ -616,6 +616,15 @@ Honest accounting of what we hit and what we miss as of 2026-05-27.
 - ~5 µs from SysTick CMP → TX_EN GPIO high, post-highcode (V006 V2 structural floor).
 - USART1 + SysTick at same High priority (no preemption between them).
 
+**Per-path fire latency** (`firmware/ch32/src/statics.rs`, ticks at 48 MHz HCLK):
+
+    | path                            | const                     | initial bootstrap |
+    | ------------------------------- | ------------------------- | ----------------- |
+    | plain reply (`start_plain_after`) | `TX_PLAIN_LATENCY_TICKS`  | 144 (~3.0 µs)     |
+    | Fast chain (`start_fast_after`)   | `TX_FAST_LATENCY_TICKS`   | 144 (~3.0 µs)     |
+
+The Fast path does extra work before `fire_now` (DMA TCIE off, phase transition, dbg pin, snoop-CRC scaffolding) so its effective latency is larger. The split lets each path's wire-edge land at the scheduled tick — a single knob forces one path to overshoot. Per-chip values come from #52; the per-chip `clock_fine_trim_us` residual lives in a separate atomic and is summed at the fire site.
+
 **Per-baud accounting:**
 
     | baud  | byte time | plain DXL (RDT 250 µs) | Fast last-slave (jitter cap = 1 byte) |

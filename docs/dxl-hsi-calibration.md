@@ -79,11 +79,11 @@ The slave's HCLK is off from nominal by some ε. SysTick under- or over-counts p
 
 Corrected by the chip's hardware trim register (HSITRIM on V006), in ~0.25% steps. Coarse correction, leaves ±0.125% residual when the chip's true optimum lies between integer steps.
 
-### Phenomenon 2 — structural latency (intercept, family-constant)
+### Phenomenon 2 — structural latency (intercept, family-constant, per fire path)
 
 The chip's own time from "SysTick deadline reached" to "first bit on wire": PFIC trap entry + ISR body + DMA prefetch + start-bit latch. Every component is a deterministic number of HCLK cycles, so the whole intercept is a fixed value per chip family — same whether the predecessor was 4 bytes or 4000, same across every instance of the family.
 
-Corrected by a compile-time per-chip-family constant expressed in HCLK ticks. One number characterized once, applies to every chip of the family.
+Corrected by **two** compile-time per-chip-family constants in HCLK ticks — one per dispatcher fire path: `TX_PLAIN_LATENCY_TICKS` for the unicast reply path and `TX_FAST_LATENCY_TICKS` for the Fast Sync/Bulk chain path. The Fast path does extra work before `fire_now` (DMA TCIE off, FSM transition, snoop-CRC scaffolding) and so has a larger effective latency. A single shared knob forces one path to overshoot; the split nulls both.
 
 ### Phenomenon 3 — sub-trim drift residual (intercept, per-chip)
 
@@ -212,7 +212,7 @@ The fix is to use `floor()` (round toward −∞), which guarantees we always la
     HSITRIM = 16 + 4 = 20
     residual_ppm = 11250 - 4 * 2500 = +1250        ← still 0.125% slow after trim
 
-That residual is what the per-chip intercept compensation has to take up.
+That residual is what the per-chip intercept compensation has to take up. It's a single atomic shared across both fire paths — the per-path latency consts (§3 phenomenon 2) carry the path-specific bias, the fine-trim residual carries the per-chip bias.
 
 **Cost of biased rounding**: worst case wastes one trim step of headroom (chip lands at -1 step from optimal instead of ±half-step). V006 has ±16 steps; factory variation needs ~4. Plenty of margin.
 
@@ -373,13 +373,13 @@ Both writes use a pending-atomic apply-after-TC pattern:
 
 For `clock_trim`: write the new value to `RCC_CTLR.HSITRIM`. Single register store, sub-microsecond.
 
-For `fire_floor_drift_residual_us`: recompute `FIRE_FLOOR_TICKS` per §8 and store via atomic Release. Same single-multiply-shift + atomic store.
+For `fire_floor_drift_residual_us`: convert Q8.8 µs → signed HCLK ticks and publish via atomic Release into `FIRE_ADVANCE_FINE_TICKS`. The fire site sums this with the per-path `TX_{PLAIN,FAST}_LATENCY_TICKS` const and clamps to ≥ 0 before subtracting from the deadline — so the residual is a single shared atomic, not duplicated per path.
 
 **Why apply-after-TC matters.** Writing HSITRIM shifts HCLK, which shifts USART baud (since the BRR divider was computed against the previous HCLK). If we wrote HSITRIM while the Status reply was still in flight, bytes after the write would shift out at a slightly different baud than bytes before — the master's USART might or might not recover them depending on how big the jump was. By deferring to TC, the change happens on byte boundaries, when no bits are mid-flight. The slave's baud-change apply follows the same pattern for the same reason.
 
 **Side effect on the control loop.** HSITRIM shifts HCLK, which also shifts the SysTick rate the motor control loop is clocked off. Cal lands before torque-on, so there's no in-flight loop to disrupt — but post-cal, the loop interval is now anchored to a more accurate HCLK and the loop's own time-domain math (PID gains in time units, integral accumulation, etc.) is consequently more accurate. The bigger the factory drift the chip arrived with, the bigger the accuracy bonus.
 
-No baud-derived state needs recomputation after either change. `DXL_BYTE_TIME_TICKS = BRR × 10` is in HCLK cycles, and both HCLK and SysTick rates scale with HSI, so the _ratio_ (ticks per byte) is invariant. Same for `FIRE_FLOOR_TICKS` — it's a tick count, and tick rate moves with HSI.
+No baud-derived state needs recomputation after either change. `DXL_BYTE_TIME_TICKS = BRR × 10` is in HCLK cycles, and both HCLK and SysTick rates scale with HSI, so the _ratio_ (ticks per byte) is invariant. Same for the per-path latency consts and `FIRE_ADVANCE_FINE_TICKS` — both are tick counts, and tick rate moves with HSI.
 
 ---
 
