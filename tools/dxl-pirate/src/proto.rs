@@ -15,8 +15,13 @@
 //!       Same TX, but fire `after_idle` ticks after the wire returns to idle.
 //!       Listener backdates IDLE-ISR entry by one char-time, so this is the
 //!       spec-natural "ticks after end-of-frame" — no compensation needed.
+//!   `MASTER bytes=<hex>`
+//!       Fire `bytes` now as the bus master; USART2 TC IRQ captures wire-end
+//!       (T_request_end). Listener suppresses the IDLE stamp from our own
+//!       TX echo so the slave-side stamp ring isn't polluted.
 //!   `TICK?`      → `TICK <u64>`           current SysTick.CNT
 //!   `LAST?`      → `LAST <u32>`           last `inject` kickoff tick (low half)
+//!   `REQ?`       → `REQ <u32>`            last master TC stamp (low half)
 //!   `DRAIN`      → `STAMP <tick> <head>`  one entry from the listen ring, or
 //!                  `EMPTY`                if empty
 //!   `BYTES`      → `BYTES <u32>`          total RX bytes since boot
@@ -39,6 +44,7 @@ pub enum Reply {
     Err(&'static str),
     Tick(u64),
     Last(u32),
+    Req(u32),
     Stamp { tick: u32, head: u16 },
     Empty,
     Bytes(u32),
@@ -57,6 +63,9 @@ pub fn handle_line(line: &[u8]) -> Reply {
     if let Some(rest) = line.strip_prefix("ARM ") {
         return arm(rest);
     }
+    if let Some(rest) = line.strip_prefix("MASTER ") {
+        return master(rest);
+    }
     if let Some(rest) = line.strip_prefix("BAUD ") {
         return baud(rest);
     }
@@ -64,6 +73,7 @@ pub fn handle_line(line: &[u8]) -> Reply {
     match line {
         "TICK?" => Reply::Tick(inject::read_systick_cnt()),
         "LAST?" => Reply::Last(inject::last_fired_tick()),
+        "REQ?" => Reply::Req(inject::last_master_request_end()),
         "BYTES" => Reply::Bytes(listen::byte_count()),
         "HZ" => Reply::HzPerUs(inject::ticks_per_us()),
         "DRAIN" => match listen::drain_stamp() {
@@ -140,6 +150,32 @@ fn arm(rest: &str) -> Reply {
     };
 
     match inject::arm_after_idle(&buf[..len], after) {
+        Ok(()) => {
+            led::signal();
+            Reply::Ok
+        }
+        Err(inject::ArmError::TooLong) => Reply::Err("toolong"),
+    }
+}
+
+fn master(rest: &str) -> Reply {
+    let mut buf = [0u8; TX_BUF_LEN];
+    let mut len: Option<usize> = None;
+
+    for tok in rest.split_ascii_whitespace() {
+        let Some((k, v)) = tok.split_once('=') else {
+            return Reply::Err("kv");
+        };
+        match k {
+            "bytes" => len = decode_hex(v, &mut buf),
+            _ => return Reply::Err("key"),
+        }
+    }
+    let Some(len) = len else {
+        return Reply::Err("missing");
+    };
+
+    match inject::master_send(&buf[..len]) {
         Ok(()) => {
             led::signal();
             Reply::Ok

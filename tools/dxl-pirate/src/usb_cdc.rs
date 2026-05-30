@@ -104,6 +104,7 @@ async fn send_reply<'d, T: Instance + 'd>(
         }
         Reply::Tick(t) => write_u64(&mut out, b"TICK ", t),
         Reply::Last(t) => write_u32(&mut out, b"LAST ", t),
+        Reply::Req(t) => write_u32(&mut out, b"REQ ", t),
         Reply::Bytes(n) => write_u32(&mut out, b"BYTES ", n),
         Reply::HzPerUs(n) => write_u32(&mut out, b"HZ ", n),
         Reply::Stamp { tick, head } => write_stamp(&mut out, tick, head),

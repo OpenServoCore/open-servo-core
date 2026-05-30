@@ -173,17 +173,23 @@ fn USART3() {
         v
     };
 
-    let stamp = IdleStamp {
-        tick,
-        head: head as u16,
-    };
+    // Suppress the IDLE that follows the master's own TX echo: still bookkeep
+    // head + run the inject chain, just don't publish a stamp into the ring.
+    let suppress = crate::inject::SUPPRESS_NEXT_IDLE_STAMP.swap(false, Ordering::AcqRel);
 
-    let h = STAMP_HEAD.load(Ordering::Relaxed);
-    // SAFETY: SPSC producer; Release on STAMP_HEAD below publishes the slot.
-    unsafe {
-        (*STAMPS.get())[(h as usize) & STAMP_MASK] = stamp;
+    if !suppress {
+        let stamp = IdleStamp {
+            tick,
+            head: head as u16,
+        };
+
+        let h = STAMP_HEAD.load(Ordering::Relaxed);
+        // SAFETY: SPSC producer; Release on STAMP_HEAD below publishes the slot.
+        unsafe {
+            (*STAMPS.get())[(h as usize) & STAMP_MASK] = stamp;
+        }
+        STAMP_HEAD.store(h.wrapping_add(1), Ordering::Release);
     }
-    STAMP_HEAD.store(h.wrapping_add(1), Ordering::Release);
 
     // Kick off an `arm_after_idle` fire if one is pending. Cheap when not
     // in use (one atomic load); when armed, schedules SysTick CMP or fires
