@@ -139,18 +139,22 @@ pub fn init() {
         RCC.apb1pcenr().modify(|w| w.set_tim4en(true));
         RCC.ahbpcenr().modify(|w| w.set_dma1en(true));
 
-        // ── PA9 = USART1_TX (default mapping), AF open-drain, 50 MHz. HDSEL
-        // needs OD so the AF block's idle '1' becomes Hi-Z and the bus
-        // pull-up establishes the idle-HIGH state the listener (and USART
-        // RX) needs to assert IDLE. Bus pull-up lives on the DUT side.
+        // ── PA9 = USART1_TX (default mapping), AF push-pull, 50 MHz. HDSEL
+        // works with either OD or PP; we use PP because OD relies on a strong
+        // external bus pull-up to recover idle-HIGH between LOW bits, and the
+        // DUT's pull-up isn't strong enough to keep up at 1M+ baud — bytes
+        // get clipped after the first LOW transition. Collisions aren't a
+        // concern on this bench (single master + chip-side TX_EN gating), so
+        // active push-pull is safe and matches the pre-TIM4 USART2 config
+        // that's known to work on this hardware.
         //
         // ODR set HIGH first: belt-and-suspenders against any init phase
-        // where the GPIO momentarily falls back to ODR-controlled OD (e.g.,
+        // where the GPIO momentarily falls back to ODR-controlled (e.g.,
         // before USART CTLR1 enables UE, the AF block may not be actively
-        // driving and ODR=0 would pull the line LOW through the OD path).
+        // driving and ODR=0 would pull the line LOW).
         GPIOA.outdr().modify(|w| w.set_odr(9, true));
-        // CFGHR controls PA8..PA15; PA9 sits in bits [7:4]. Mode=11, CNF=11.
-        let cnf_mode_pa9 = 0b1111u32;
+        // CFGHR controls PA8..PA15; PA9 sits in bits [7:4]. Mode=11, CNF=10.
+        let cnf_mode_pa9 = 0b1011u32;
         GPIOA.cfghr().modify(|w| {
             let mut v = w.0;
             v &= !(0xF << 4);
