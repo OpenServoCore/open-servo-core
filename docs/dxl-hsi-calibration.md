@@ -173,43 +173,44 @@ Plus it already knows: `N` (count it requested), `baud_hz`, `RDT` (slave's reply
 
 ### 7.1 Deriving drift
 
-The slave's TX clock is its own HSI (via the BRR divider). The time it actually takes to emit (N − 1) byte intervals at the bus baud is what the HSE timer measures directly:
+The slave's TX clock is its own HSI (via the BRR divider). The time it actually takes to emit `(M − 1)` byte intervals at the bus baud is what the HSE timer measures directly, where `M` is the **total Status frame length** (header + framing + the N zero payload bytes + CRC = `N + 11` for the standard Status overhead). `T_first` lands at end-of-first-frame-byte, `T_last` at end-of-last-frame-byte, so the span covers the whole frame — not just the zero payload:
 
+    M           = N + 11                                  // header(4)+id(1)+len(2)+instr(1)+err(1)+crc(2)
     observed_us = (T_last_slave - T_first_slave) / hse_hz * 1_000_000
-    nominal_us  = (N - 1) * 10 / baud_hz * 1_000_000      // 10 bits per UART byte (8N1)
+    nominal_us  = (M - 1) * 10 / baud_hz * 1_000_000      // 10 bits per UART byte (8N1)
     drift_ppm   = (observed_us - nominal_us) / nominal_us * 1_000_000
 
-Sign reading:
+Sign reading (higher HSITRIM = faster HSI, per V006 RM §6 and verified on hardware):
 
-- `observed > nominal` → slave took _longer_ than nominal → slave's HSI is **slow** → raise HSITRIM.
-- `observed < nominal` → slave's HSI is **fast** → lower HSITRIM.
+- `observed > nominal` → slave took _longer_ than nominal → slave's HSI is **slow** → `drift_ppm > 0` → **raise** HSITRIM (positive step).
+- `observed < nominal` → slave's HSI is **fast** → `drift_ppm < 0` → **lower** HSITRIM (negative step).
 
-So the natural sign of `drift_ppm` is the _negation_ of what we want to add to the trim register. One flip:
+The natural sign of `drift_ppm` is exactly what we want to add to the trim register — no flip:
 
-    step_exact = -drift_ppm / ppm_per_step                 // real-valued, will be rounded
+    step_exact = drift_ppm / ppm_per_step                 // real-valued, will be rounded
 
 ### 7.2 Biased rounding (so the intercept compensation can always advance fire)
 
 Normal `round()` would land us on either side of optimal — half the chips end up fast, half slow. But the intercept compensation only _advances_ fire (subtracts ticks from the deadline); it can't push fire _later_. A chip on the fast side has no way to be corrected by the intercept alone, and ends up firing into the predecessor's last byte — a bus collision that the cal arithmetic considered "good enough."
 
-The fix is to use `floor()` (round toward −∞), which guarantees we always land on the slow side:
+The fix is to use `floor()` (round toward −∞), which guarantees we always land on the slow side (residual ≥ 0):
 
-    step         = floor(-drift_ppm / ppm_per_step)
-    residual_ppm = drift_ppm + step * ppm_per_step         // always in [-ppm_per_step, 0]
+    step         = floor(drift_ppm / ppm_per_step)
+    residual_ppm = drift_ppm - step * ppm_per_step         // always in [0, ppm_per_step)
 
 **Worked example 1** — a chip that's 1.25% slow at factory:
 
-    drift_ppm = -12500
+    drift_ppm = +12500
     floor(12500 / 2500) = 5  →  step = +5
     HSITRIM = 16 + 5 = 21
-    residual_ppm = -12500 + 5 * 2500 = 0          ← lucky landing exactly on a step
+    residual_ppm = 12500 - 5 * 2500 = 0           ← lucky landing exactly on a step
 
 **Worked example 2** — a chip that's a bit less slow, say 1.125%:
 
-    drift_ppm = -11250
+    drift_ppm = +11250
     floor(11250 / 2500) = 4  →  step = +4
     HSITRIM = 16 + 4 = 20
-    residual_ppm = -11250 + 4 * 2500 = -1250      ← still 0.125% slow after trim
+    residual_ppm = 11250 - 4 * 2500 = +1250        ← still 0.125% slow after trim
 
 That residual is what the per-chip intercept compensation has to take up.
 
@@ -219,9 +220,9 @@ That residual is what the per-chip intercept compensation has to take up.
 
 For a deployment target baud `b_op` and worst-case predecessor wire length `N_target` (defaults: 3 Mbaud, 128 bytes — see §9), the µs gap left by the residual drift is:
 
-    residual_us = -residual_ppm / 1_000_000 * N_target * byte_time(b_op)
+    residual_us = residual_ppm / 1_000_000 * N_target * byte_time(b_op)
 
-`residual_ppm` is always ≤ 0 (chip slow after trim), so `residual_us` is always ≥ 0. That's how much _extra_ fire-advance has to be applied to compensate. It rolls in on top of the structural intercept compensation:
+`residual_ppm` is always ≥ 0 (chip slow after trim, per §7.2 biased rounding), so `residual_us` is always ≥ 0. That's how much _extra_ fire-advance has to be applied to compensate. It rolls in on top of the structural intercept compensation:
 
     total_intercept_us = structural_us + residual_us
 
@@ -313,16 +314,16 @@ for slave_id in enumerated_slaves:
     send CAL(slave_id, count=128) at 1 Mbaud
     T_request_end, T_first, T_last = hse_timer.stamps_for(slave_id)
 
-    # § 7.1
-    drift_ppm = compute_drift_ppm(T_first, T_last, N=128, baud=1_000_000, hse_hz)
+    # § 7.1 — measurement spans the full Status frame (M = N + 11), not just N zeros.
+    drift_ppm = compute_drift_ppm(T_first, T_last, M=128+11, baud=1_000_000, hse_hz)
 
-    # § 7.2
-    step = floor(-drift_ppm / ppm_per_step)
+    # § 7.2 — biased rounding always lands on the slow side (residual ≥ 0).
+    step = floor(drift_ppm / ppm_per_step)
     new_trim = clamp(current_trim + step, TRIM_MIN, TRIM_MAX)
 
     # § 7.3
-    residual_ppm = drift_ppm + step * ppm_per_step
-    residual_us  = -residual_ppm / 1e6 * N_target * byte_time(b_op)
+    residual_ppm = drift_ppm - step * ppm_per_step
+    residual_us  = residual_ppm / 1e6 * N_target * byte_time(b_op)
     residual_q88 = round(residual_us * 256)                 # to i16 Q8.8
 
     if step != 0:
