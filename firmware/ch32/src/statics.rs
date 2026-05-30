@@ -3,7 +3,7 @@ use core::mem::MaybeUninit;
 use core::sync::atomic::Ordering;
 use heapless::Vec;
 use osc_core::{Kernel, Services, Shared};
-use portable_atomic::{AtomicBool, AtomicU16, AtomicU32};
+use portable_atomic::{AtomicBool, AtomicI16, AtomicI32, AtomicU16, AtomicU32};
 
 use crate::board::{Ch32KernelIo, TxEn};
 use crate::hal::{Pin, pfic, systick};
@@ -62,6 +62,37 @@ pub static DXL_BYTE_TIME_TICKS: AtomicU32 = AtomicU32::new(0);
 /// converts µs → bytes with a multiply + shift instead of a runtime divide
 /// (RV32EC + zmmul has no hardware divide).
 pub static DXL_BYTES_PER_US_Q16: AtomicU32 = AtomicU32::new(0);
+
+/// Silicon-fixed latency from SysTick CMP match to first bit on the wire:
+/// PFIC trap entry + `on_systick` body + `fire_now` + DMA prefetch + USART
+/// start-bit latch. Bench-calibrated per chip family via #37. Subtracted from
+/// nominal fire deadlines.
+pub const TX_LATENCY_TICKS: u16 = 144;
+
+/// HCLK ticks the fire path subtracts from each nominal slot deadline. Sum of
+/// `TX_LATENCY_TICKS` + Q8.8 `clock_fine_trim_us` converted to ticks. Updated
+/// from USART1 TC after a Write touches `comms.clock_fine_trim_us`.
+pub static FIRE_ADVANCE_TICKS: AtomicU16 = AtomicU16::new(TX_LATENCY_TICKS);
+
+/// Pending HSI trim delta queued by a `comms.clock_trim` Write. `i16::MIN`
+/// (outside i8's native range) is the no-pending sentinel; USART1 TC swaps
+/// it back to apply.
+pub const CLOCK_TRIM_NO_PENDING: i16 = i16::MIN;
+pub static DXL_CLOCK_TRIM_PENDING: AtomicI16 = AtomicI16::new(CLOCK_TRIM_NO_PENDING);
+
+/// Pending Q8.8 µs sub-trim residual queued by a `comms.clock_fine_trim_us`
+/// Write. `i32::MIN` (outside i16's native range) is the no-pending sentinel.
+pub const CLOCK_FINE_TRIM_NO_PENDING: i32 = i32::MIN;
+pub static DXL_CLOCK_FINE_TRIM_PENDING: AtomicI32 = AtomicI32::new(CLOCK_FINE_TRIM_NO_PENDING);
+
+/// Q8.8 µs → ticks → sum with `TX_LATENCY_TICKS` → atomic publish for the
+/// fire path. Clamped to `u16`; negative residual that would advance past the
+/// deadline silently falls back to no compensation.
+pub fn recompute_fire_advance_ticks(q88_us: i16) {
+    let residual_ticks = (q88_us as i32 * crate::hal::systick::TICKS_PER_US as i32) >> 8;
+    let total = TX_LATENCY_TICKS as i32 + residual_ticks;
+    FIRE_ADVANCE_TICKS.store(total.clamp(0, u16::MAX as i32) as u16, Ordering::Release);
+}
 
 /// Called at bring-up and after a BAUD_RATE write — never on the snoop hot
 /// path, so the runtime division is fine here.

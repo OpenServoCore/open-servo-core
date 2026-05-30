@@ -9,8 +9,8 @@ use crate::hal::usart;
 use crate::hal::{flash, pfic};
 use crate::idle_ring;
 use crate::statics::{
-    DXL_BAUD_PENDING_BRR, DXL_REBOOT_PENDING, DXL_RX_BUF, DXL_RX_WRITE_POS, DXL_TX_BUF,
-    DXL_TX_BUF_LEN,
+    DXL_BAUD_PENDING_BRR, DXL_CLOCK_FINE_TRIM_PENDING, DXL_CLOCK_TRIM_PENDING, DXL_REBOOT_PENDING,
+    DXL_RX_BUF, DXL_RX_WRITE_POS, DXL_TX_BUF, DXL_TX_BUF_LEN,
 };
 
 /// Single &mut writer: the main loop holding the `Services` struct.
@@ -90,6 +90,14 @@ impl DxlBus for Ch32Bus {
     fn set_baud(&mut self, rate: BaudRate) {
         let brr = usart::brr(PCLK_HZ, rate.as_hz());
         DXL_BAUD_PENDING_BRR.store(brr, Ordering::Release);
+    }
+
+    fn set_clock_trim(&mut self, delta: i8) {
+        DXL_CLOCK_TRIM_PENDING.store(delta as i16, Ordering::Release);
+    }
+
+    fn set_clock_fine_trim_us(&mut self, q88_us: i16) {
+        DXL_CLOCK_FINE_TRIM_PENDING.store(q88_us as i32, Ordering::Release);
     }
 }
 

@@ -30,6 +30,17 @@ fn touches_return_delay(addr: u16, len: usize) -> bool {
     addr <= rdt_addr && (addr as u32) + (len as u32) > rdt_addr as u32
 }
 
+fn touches_clock_trim(addr: u16, len: usize) -> bool {
+    let field_addr = config::addr::comms::CLOCK_TRIM;
+    addr <= field_addr && (addr as u32) + (len as u32) > field_addr as u32
+}
+
+fn touches_clock_fine_trim_us(addr: u16, len: usize) -> bool {
+    let field_addr = config::addr::comms::CLOCK_FINE_TRIM_US;
+    let field_end = field_addr as u32 + 2;
+    (addr as u32) < field_end && (addr as u32) + (len as u32) > field_addr as u32
+}
+
 struct Ctx {
     our_id: u8,
     rdt_us: u32,
@@ -246,6 +257,8 @@ impl<'a, B: DxlBus, D: DeviceControl> Dispatcher<'a, B, D> {
             .write_bytes(p.address, &buf[..len], self.staged);
         let baud_changed = result.is_ok() && touches_baud(p.address, len);
         let rdt_changed = result.is_ok() && touches_return_delay(p.address, len);
+        let clock_trim_changed = result.is_ok() && touches_clock_trim(p.address, len);
+        let clock_fine_trim_changed = result.is_ok() && touches_clock_fine_trim_us(p.address, len);
         self.reply_table_result(ctx, id, direct, result);
         if baud_changed {
             // reply queued, bus impl defers retune until TC.
@@ -259,6 +272,18 @@ impl<'a, B: DxlBus, D: DeviceControl> Dispatcher<'a, B, D> {
                 .config
                 .with(|c| c.comms.return_delay_2us as u32 * 2);
             self.bus.set_return_delay(new_rdt_us);
+        }
+        if clock_trim_changed {
+            let new_trim = self.shared.table.config.with(|c| c.comms.clock_trim);
+            self.bus.set_clock_trim(new_trim);
+        }
+        if clock_fine_trim_changed {
+            let new_q88 = self
+                .shared
+                .table
+                .config
+                .with(|c| c.comms.clock_fine_trim_us);
+            self.bus.set_clock_fine_trim_us(new_q88);
         }
     }
 

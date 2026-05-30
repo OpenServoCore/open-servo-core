@@ -11,7 +11,7 @@ use crate::hal::{
 };
 use crate::statics::{
     DXL_BYTE_TIME_TICKS, DXL_BYTES_PER_US_Q16, DXL_DBG_PIN, DXL_RX_BUF, DXL_RX_BUF_LEN, DXL_TX_BUF,
-    DXL_TX_EN, SHARED,
+    DXL_TX_EN, FIRE_ADVANCE_TICKS, SHARED,
 };
 
 /// Which request end tick detection + fire path a given reply takes.
@@ -127,10 +127,10 @@ const RX_MASK_U32: u32 = (DXL_RX_BUF_LEN - 1) as u32;
 /// is a deferred risk; `SlotTimingMiss` catches it as a counter bump.
 const SWITCH_MARGIN_US: u32 = 100;
 
-/// Silicon-fixed latency from SysTick CMP match to first bit on the wire:
-/// PFIC trap entry + `on_systick` body + `fire_now` + DMA prefetch + USART
-/// start-bit latch. Bench-calibrated per chip family via #37.
-const TX_LATENCY_TICKS: u32 = 144;
+#[inline(always)]
+fn fire_advance_ticks() -> u32 {
+    FIRE_ADVANCE_TICKS.load(Ordering::Relaxed) as u32
+}
 
 /// TX_EN and DMA CH4 stay off so the bus remains in RX through any preceding
 /// snoop window; `fire_now` flips both at the slot deadline.
@@ -172,7 +172,7 @@ pub fn start_plain_after(request_end_tick: u32, delay_us: u32) {
 
     let needed = delay_us
         .saturating_mul(systick::TICKS_PER_US)
-        .saturating_sub(TX_LATENCY_TICKS);
+        .saturating_sub(fire_advance_ticks());
 
     if systick::ticks().wrapping_sub(request_end_tick) >= needed {
         if arm_tx() {
@@ -210,7 +210,7 @@ pub fn start_fast_after(request_end_tick: u32, fire_us: u32, snoop_from: Option<
 
     let fire_needed = fire_us
         .saturating_mul(systick::TICKS_PER_US)
-        .saturating_sub(TX_LATENCY_TICKS);
+        .saturating_sub(fire_advance_ticks());
     let fire_tick = request_end_tick.wrapping_add(fire_needed);
 
     let snoop_head = match snoop_from {

@@ -38,6 +38,16 @@ pub trait DxlBus {
     /// waiting until the next request leaves one transaction running on stale
     /// timing. Default no-op.
     fn set_return_delay(&mut self, _rdt_us: u32) {}
+
+    /// Queue a new HSI trim delta. Implementations MUST defer the actual
+    /// register write until USART1 TC drains the in-flight Status reply,
+    /// since retuning HSI shifts the BRR divider mid-byte. Default no-op so
+    /// chips without an HSI trim lever ignore it silently.
+    fn set_clock_trim(&mut self, _delta: i8) {}
+
+    /// Queue a new Q8.8 µs sub-trim drift residual. Implementations recompute
+    /// their fire-advance compensation and apply at USART1 TC. Default no-op.
+    fn set_clock_fine_trim_us(&mut self, _q88_us: i16) {}
 }
 
 /// Lifecycle commands the dispatcher delivers to the device (reboot today;
