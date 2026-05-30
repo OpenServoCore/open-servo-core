@@ -115,13 +115,16 @@ async fn handle_xfer<'d, T: Instance + 'd>(
 
     let timeout = Timer::after(Duration::from_micros(req.reply_us as u64));
     let wait = async {
-        // Poll the ring; consume any Plain entries and stop on the first
-        // Round. 50 µs cadence is fine — a 1 Mbaud round-trip is ~300 µs and
-        // we just need ordering, not sub-tick precision.
+        // Poll the ring; pop any Plain entries and stop on the first Round.
+        // Peek-not-pop on Round so DRAIN still surfaces (req, first, last) to
+        // the host afterward. 50 µs cadence is fine — a 1 Mbaud round-trip is
+        // ~300 µs and we just need ordering, not sub-tick precision.
         loop {
-            match listen::drain_stamp() {
+            match listen::peek_stamp() {
                 Some(listen::IdleStamp::Round { .. }) => return,
-                Some(listen::IdleStamp::Plain { .. }) => continue,
+                Some(listen::IdleStamp::Plain { .. }) => {
+                    listen::drain_stamp();
+                }
                 None => Timer::after(Duration::from_micros(50)).await,
             }
         }

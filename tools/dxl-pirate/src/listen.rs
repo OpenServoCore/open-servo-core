@@ -159,6 +159,17 @@ pub fn drain_stamp() -> Option<IdleStamp> {
     Some(stamp)
 }
 
+/// Same as `drain_stamp` but doesn't advance the tail. Used by `XFER` to
+/// detect the reply IDLE without consuming the Round entry — DRAIN still
+/// surfaces (req, first, last) to the host afterward.
+pub fn peek_stamp() -> Option<IdleStamp> {
+    let tail = STAMP_TAIL.load(Ordering::Relaxed);
+    if tail == STAMP_HEAD.load(Ordering::Acquire) {
+        return None;
+    }
+    Some(unsafe { (*STAMPS.get())[(tail as usize) & STAMP_MASK] })
+}
+
 pub fn byte_count() -> u32 {
     unsafe { ptr::read_volatile(BYTES_TOTAL.get()) }
 }
