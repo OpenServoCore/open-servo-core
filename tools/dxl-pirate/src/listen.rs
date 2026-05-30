@@ -11,7 +11,7 @@ use core::ptr;
 use ch32_hal::pac::Interrupt;
 use ch32_hal::pac::dma::vals::{Dir, Size};
 use ch32_hal::pac::{DMA1, GPIOB, RCC, SYSTICK, USART3};
-use dxl_bus_injector::parse::brr_for;
+use dxl_pirate::parse::brr_for;
 use portable_atomic::{AtomicU32, Ordering};
 use qingke_rt::interrupt;
 

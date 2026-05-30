@@ -1,8 +1,10 @@
-# dxl-bus-injector
+# dxl-pirate
 
-Firmware that turns a MuseLab nanoCH32V203 into a host-driven probe for the
-Dynamixel 2.0 bus. Two things it does that a plain USB-UART can't:
+Firmware that turns a MuseLab nanoCH32V203 into a host-driven multi-tool for
+the Dynamixel 2.0 bus. Three things it does that a plain USB-UART can't:
 
+- **Master** the bus from the host: send arbitrary request bytes and stamp the
+  master's last-bit-out tick (`T_request_end`).
 - **Inject** raw byte payloads onto the bus with sub-microsecond start jitter,
   scheduled either at an absolute SysTick value or a chosen delay after the
   next idle on the wire.
@@ -10,7 +12,8 @@ Dynamixel 2.0 bus. Two things it does that a plain USB-UART can't:
   you can see exactly when a servo starts and finishes transmitting.
 
 `tools/dxl-bench` uses it to exercise DXL Fast Sync/Bulk Read coalescing at
-3 Mbaud, but it's useful standalone for poking at any DXL servo.
+3 Mbaud and to drive master-side HSI calibration, but it's useful standalone
+for poking at any DXL servo.
 
 ## Hardware
 
@@ -43,7 +46,7 @@ Build once, then push it over USB with `wchisp`:
 ```
 cargo build --release
 wchisp info                                   # confirm the chip is alive
-wchisp flash target/riscv32imac-unknown-none-elf/release/dxl-bus-injector
+wchisp flash target/riscv32imac-unknown-none-elf/release/dxl-pirate
 ```
 
 You may need to hold the BOOT button while plugging in (or pressing RESET) to

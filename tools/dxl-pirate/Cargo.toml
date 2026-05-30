@@ -1,15 +1,15 @@
 [package]
-name    = "dxl-bus-injector"
+name    = "dxl-pirate"
 version = "0.1.0"
 edition = "2024"
-description = "Host-commanded DXL bus injector + listener firmware for nanoCH32V203 — used by tools/dxl-bench"
+description = "Host-commanded DXL bus multi-tool (master + listener + injector) firmware for nanoCH32V203 — used by tools/dxl-bench"
 
 [lib]
-name = "dxl_bus_injector"
+name = "dxl_pirate"
 path = "src/lib.rs"
 
 [[bin]]
-name  = "dxl-bus-injector"
+name  = "dxl-pirate"
 path  = "src/main.rs"
 
 [dependencies]

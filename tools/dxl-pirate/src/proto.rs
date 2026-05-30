@@ -29,7 +29,7 @@
 
 use core::str;
 
-use dxl_bus_injector::parse::decode_hex;
+use dxl_pirate::parse::decode_hex;
 
 use crate::inject::TX_BUF_LEN;
 use crate::{inject, led, listen};

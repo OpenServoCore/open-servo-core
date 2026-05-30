@@ -14,8 +14,8 @@ from echo_port_handler import EchoDrainingPortHandler
 WCH_LINKE_VID = 0x1A86
 WCH_LINKE_PID = 0x8010
 
-# dxl-bus-injector USB CDC — host-commanded DXL bus injector + listener that
-# shares the bus with the V006 DUT. See tools/dxl-bus-injector.
+# dxl-pirate USB CDC — host-commanded DXL bus multi-tool (master + listener +
+# injector) that shares the bus with the V006 DUT. See tools/dxl-pirate.
 INJECTOR_VID = 0xC0DE
 INJECTOR_PID = 0xCAFE
 
@@ -158,8 +158,8 @@ def _autodetect_injector_port() -> str | None:
 
 
 class Injector:
-    """Thin USB-CDC client for the dxl-bus-injector's ASCII line protocol. See
-    `tools/dxl-bus-injector/src/proto.rs` for the command grammar."""
+    """Thin USB-CDC client for the dxl-pirate's ASCII line protocol. See
+    `tools/dxl-pirate/src/proto.rs` for the command grammar."""
 
     def __init__(self, port_path: str):
         # 115200 is nominal-only for CDC ACM; the wire side runs whatever

@@ -4,7 +4,7 @@ Validates that the injector's listener→fire chain is small and
 baud-independent. Any baud drift here localizes a timing bug to the INJ side.
 
 Bench setup expected:
-  - V203 dxl-bus-injector on the bus (USB-CDC)
+  - V203 dxl-pirate on the bus (USB-CDC)
   - FT232H (or other USB-UART) for the host side of the bus
   - Scope ch1 on the data line, ch2 on PA7 (injector debug pin)
   - Scope trigger: ch2 rising edge, Single

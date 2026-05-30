@@ -2,7 +2,7 @@
 
 Bench setup expected (per session notes):
   - rev_b on the DXL bus via FT232H
-  - V203 dxl-bus-injector on the same bus, acting as slot 0
+  - V203 dxl-pirate on the same bus, acting as slot 0
   - Scope ch1 on the data line, ch2 on rev_b's dbg pin
   - Scope trigger: ch2 rising edge, Single
 

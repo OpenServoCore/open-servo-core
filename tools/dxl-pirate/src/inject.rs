@@ -11,7 +11,7 @@ use core::ptr;
 
 use ch32_hal::pac::dma::vals::{Dir, Size};
 use ch32_hal::pac::{DMA1, GPIOA, RCC, SYSTICK, USART2};
-use dxl_bus_injector::parse::brr_for;
+use dxl_pirate::parse::brr_for;
 use portable_atomic::{AtomicBool, Ordering};
 
 pub const TX_BUF_LEN: usize = 1024;

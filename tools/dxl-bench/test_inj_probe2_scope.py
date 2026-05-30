@@ -5,7 +5,7 @@ immediate-fire branch) does not exercise. This is the path the FastSyncRead
 test depends on.
 
 Bench setup expected:
-  - V203 dxl-bus-injector on the bus (USB-CDC)
+  - V203 dxl-pirate on the bus (USB-CDC)
   - FT232H (or other USB-UART) for the host side of the bus
   - Scope ch1 on the data line, ch2 on PA7 (injector debug pin)
   - Scope trigger: ch2 rising edge, Single

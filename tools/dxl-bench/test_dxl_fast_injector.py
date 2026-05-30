@@ -1,6 +1,6 @@
-"""Bench tests that lean on the dxl-bus-injector.
+"""Bench tests that lean on the dxl-pirate in its injector role.
 
-The injector gives us two capabilities the host alone can't match:
+The injector role gives us two capabilities the host alone can't match:
 
   * **Listen.** Every IDLE on the wire is timestamped (HCLK/8 = 18 MHz ticks)
     into a small SPSC ring the host drains via `DRAIN`. Sub-byte-time
@@ -13,8 +13,8 @@ The injector gives us two capabilities the host alone can't match:
     timed off request-end without an unreachable USB round-trip. Used by
     the DUT-as-Last coalesced tests.
 
-Requires injector firmware with the ARM command (see
-`tools/dxl-bus-injector/src/proto.rs`). Reflash with `cargo run --release`
+Requires dxl-pirate firmware with the ARM command (see
+`tools/dxl-pirate/src/proto.rs`). Reflash with `cargo run --release`
 from that directory after firmware changes.
 """
 
