@@ -62,6 +62,15 @@ static BYTES_TOTAL: SyncUnsafeCell<u32> = SyncUnsafeCell::new(0);
 // ISR-only; never touched from anywhere else. Plain cell.
 static LAST_NDTR: SyncUnsafeCell<u16> = SyncUnsafeCell::new(RX_BUF_LEN as u16);
 
+/// SysTick.CNTL captured on the first byte received after a `master_send` —
+/// i.e., the slave's reply wire-start. Cal model's `T_first`. Sole writer =
+/// USART3 RXNE branch; cleared by reading via `last_t_first`.
+static T_FIRST: SyncUnsafeCell<u32> = SyncUnsafeCell::new(0);
+
+pub fn last_t_first() -> u32 {
+    unsafe { ptr::read_volatile(T_FIRST.get()) }
+}
+
 pub fn init() {
     unsafe {
         RCC.apb2pcenr().modify(|w| {
@@ -145,17 +154,32 @@ pub fn set_baud(bps: u32) -> Result<(), BaudError> {
 
 #[interrupt]
 fn USART3() {
-    // Backdate by one char-time so `tick` = wire-end (IDLE fires 9 bit-times later).
-    let tick = SYSTICK
-        .cntl()
-        .read()
-        .wrapping_sub(CHAR_TIME_SYSTICKS.load(Ordering::Relaxed));
+    // Both IDLE and RXNE share this vector; dispatch by IDLE flag. STATR.RXNE
+    // reads 0 under DMAR (see reference_v006_rxne_during_dma_rx in memory),
+    // so we can't gate on it — but RXNEIE is only ever armed by the IDLE
+    // branch below, so IDLE=0 implies "this was a RXNE wake".
+    let tick_now = SYSTICK.cntl().read();
+    let statr = USART3.statr().read();
+
+    if !statr.idle() {
+        // RXNE one-shot for the slave reply's first byte. Stamp at ISR-entry
+        // (the byte already landed in the DMA buffer), then mask RXNEIE to
+        // suppress per-byte ISRs across the rest of the reply.
+        if crate::inject::EXPECT_FIRST_BYTE.swap(false, Ordering::AcqRel) {
+            unsafe { ptr::write_volatile(T_FIRST.get(), tick_now) };
+            USART3.ctlr1().modify(|w| w.set_rxneie(false));
+        }
+        crate::led::signal();
+        return;
+    }
+
+    // ── IDLE path. Backdate by one char-time so `tick` = wire-end.
+    let tick = tick_now.wrapping_sub(CHAR_TIME_SYSTICKS.load(Ordering::Relaxed));
 
     // Scope marker: PA7 high until DMA EN brackets the listener→fire chain.
     crate::debug::set();
 
-    // STATR.IDLE is cleared by read-STATR-then-read-DATAR.
-    let _ = USART3.statr().read();
+    // STATR was already read above; DATAR read clears IDLE.
     let _ = USART3.datar().read();
 
     let ndtr = DMA1.ch(2).ndtr().read().ndt();
@@ -189,6 +213,13 @@ fn USART3() {
             (*STAMPS.get())[(h as usize) & STAMP_MASK] = stamp;
         }
         STAMP_HEAD.store(h.wrapping_add(1), Ordering::Release);
+    }
+
+    // After a master_send, the IDLE handler arms RXNEIE so the very next
+    // received byte (slave reply T0) fires the RXNE branch above and stamps
+    // T_FIRST. RXNE branch clears the flag; harmless if not set.
+    if crate::inject::EXPECT_FIRST_BYTE.load(Ordering::Acquire) {
+        USART3.ctlr1().modify(|w| w.set_rxneie(true));
     }
 
     // Kick off an `arm_after_idle` fire if one is pending. Cheap when not

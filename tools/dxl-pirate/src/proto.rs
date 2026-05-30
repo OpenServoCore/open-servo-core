@@ -22,6 +22,7 @@
 //!   `TICK?`      → `TICK <u64>`           current SysTick.CNT
 //!   `LAST?`      → `LAST <u32>`           last `inject` kickoff tick (low half)
 //!   `REQ?`       → `REQ <u32>`            last master TC stamp (low half)
+//!   `FIRST?`     → `FIRST <u32>`          last slave-reply T0 stamp (low half)
 //!   `DRAIN`      → `STAMP <tick> <head>`  one entry from the listen ring, or
 //!                  `EMPTY`                if empty
 //!   `BYTES`      → `BYTES <u32>`          total RX bytes since boot
@@ -45,6 +46,7 @@ pub enum Reply {
     Tick(u64),
     Last(u32),
     Req(u32),
+    First(u32),
     Stamp { tick: u32, head: u16 },
     Empty,
     Bytes(u32),
@@ -74,6 +76,7 @@ pub fn handle_line(line: &[u8]) -> Reply {
         "TICK?" => Reply::Tick(inject::read_systick_cnt()),
         "LAST?" => Reply::Last(inject::last_fired_tick()),
         "REQ?" => Reply::Req(inject::last_master_request_end()),
+        "FIRST?" => Reply::First(listen::last_t_first()),
         "BYTES" => Reply::Bytes(listen::byte_count()),
         "HZ" => Reply::HzPerUs(inject::ticks_per_us()),
         "DRAIN" => match listen::drain_stamp() {
