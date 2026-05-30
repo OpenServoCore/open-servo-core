@@ -18,6 +18,12 @@ use crate::proto::{self, Reply};
 // `FIRE bytes=<TX_BUF_LEN*2 hex> at=<u64>` = TX_BUF_LEN*2 + 35; +slop.
 const LINE_BUF_LEN: usize = TX_BUF_LEN * 2 + 64;
 
+/// CDC bulk EP max-packet size. CdcAcmClass::new sets this on both endpoints;
+/// `class.write_packet` requires the buffer to be ≤ this size (an oversized
+/// write hangs the EP without erroring). All single-line replies fit easily;
+/// stream_reply chunks at this boundary.
+const CDC_BULK_PACKET: u16 = 64;
+
 hal::bind_interrupts!(struct Irqs {
     USB_LP_CAN1_RX0 => InterruptHandler<USBD>;
 });
@@ -51,7 +57,7 @@ pub async fn run(usbd: Peri<'static, USBD>, dp: Peri<'static, PA12>, dm: Peri<'s
         &mut control_buf,
     );
 
-    let mut class = CdcAcmClass::new(&mut builder, &mut state, 64);
+    let mut class = CdcAcmClass::new(&mut builder, &mut state, CDC_BULK_PACKET);
     let mut usb = builder.build();
 
     let usb_fut = usb.run();
@@ -157,7 +163,10 @@ async fn stream_reply<'d, T: Instance + 'd>(
     len: u32,
 ) -> Result<(), EndpointError> {
     const HEX: &[u8; 16] = b"0123456789abcdef";
-    let mut chunk: Vec<u8, 128> = Vec::new();
+    // Chunk at the EP boundary, not the Vec capacity — write_packet hangs
+    // when given more than max_packet_size. "REPLY " (7) + 2 hex per byte
+    // + trailing "\n" must all fit per packet.
+    let mut chunk: Vec<u8, { CDC_BULK_PACKET as usize }> = Vec::new();
     let _ = chunk.extend_from_slice(b"REPLY ");
     for i in 0..len {
         if chunk.len() + 2 > chunk.capacity() {
