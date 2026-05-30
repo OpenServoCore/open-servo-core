@@ -16,7 +16,7 @@
 //!       Listener backdates IDLE-ISR entry by one char-time, so this is the
 //!       spec-natural "ticks after end-of-frame" — no compensation needed.
 //!   `MASTER bytes=<hex>`
-//!       Fire `bytes` now as the bus master; USART2 TC IRQ captures wire-end
+//!       Fire `bytes` now as the bus master; USART1 TC IRQ captures wire-end
 //!       (T_request_end). Listener suppresses the IDLE stamp from our own
 //!       TX echo so the slave-side stamp ring isn't polluted.
 //!   `XFER bytes=<hex> reply_us=<u32>`
@@ -42,7 +42,7 @@
 //!                  `EMPTY`                                   ring empty
 //!   `BYTES`      → `BYTES <u32>`          total RX bytes since boot
 //!   `HZ`         → `HZ <u32>`             SysTick ticks per microsecond
-//!   `BAUD <bps>` → `OK` or `ERR baud`     retune both USART2 TX + USART3 RX
+//!   `BAUD <bps>` → `OK` or `ERR baud`     retune both USART1 TX + USART3 RX
 //!
 //! Device → host
 //!   `OK`, `ERR <reason>`, plus the per-command replies above. Newlines are
@@ -62,8 +62,16 @@ pub enum Reply {
     Last(u32),
     Req(u32),
     First(u32),
-    Stamp { tick: u32, head: u16 },
-    Round { req: u32, first: u32, last: u32, head: u16 },
+    Stamp {
+        tick: u32,
+        head: u16,
+    },
+    Round {
+        req: u32,
+        first: u32,
+        last: u32,
+        head: u16,
+    },
     Empty,
     Bytes(u32),
     HzPerUs(u32),
@@ -95,7 +103,11 @@ pub fn parse_xfer(rest: &[u8]) -> Result<XferRequest, &'static str> {
     let (Some(len), Some(reply_us)) = (len, reply_us) else {
         return Err("missing");
     };
-    Ok(XferRequest { payload, len, reply_us })
+    Ok(XferRequest {
+        payload,
+        len,
+        reply_us,
+    })
 }
 
 pub struct RxRequest {
@@ -153,9 +165,17 @@ pub fn handle_line(line: &[u8]) -> Reply {
         "HZ" => Reply::HzPerUs(inject::ticks_per_us()),
         "DRAIN" => match listen::drain_stamp() {
             Some(listen::IdleStamp::Plain { tick, head }) => Reply::Stamp { tick, head },
-            Some(listen::IdleStamp::Round { req, first, last, head }) => {
-                Reply::Round { req, first, last, head }
-            }
+            Some(listen::IdleStamp::Round {
+                req,
+                first,
+                last,
+                head,
+            }) => Reply::Round {
+                req,
+                first,
+                last,
+                head,
+            },
             None => Reply::Empty,
         },
         _ => Reply::Err("unknown"),

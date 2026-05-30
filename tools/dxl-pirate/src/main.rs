@@ -17,15 +17,18 @@ use embassy_executor::Spawner;
 
 // ── Wiring (MuseLab nanoCH32V203, V203C8T6 LQFP48)
 //
-//   PA2   USART2_TX, HDSEL          DXL bus (single-wire)
+//   PA9   USART1_TX, HDSEL          DXL bus (single-wire)
 //   PB11  USART3_RX (listen only)   DXL bus (tap)
 //   PA12  USB DP                    host
 //   PA11  USB DM                    host
 //
-// Both USART2 and USART3 are on APB1. With SYSCLK_FREQ_144MHZ_HSE APB1 runs at
+// USART1 + TIM1 sit on APB2 (DXL bus + fire-schedule timer); USART3 is on
+// APB1 (passive listener). With SYSCLK_FREQ_144MHZ_HSE both APB1/2 run at
 // 144 MHz (prescaler DIV1), so BRR = 144_000_000 / 3_000_000 = 48 for the
-// 3 Mbaud DXL Fast wire rate. HSE (8 MHz crystal) is required, not HSI: this
-// firmware doubles as the master-side cal timebase, and HSI's ±1% trim would
+// 3 Mbaud DXL Fast wire rate. The fire path is TIM4 OPM UEV → DMA1_CH7 →
+// DMA1_CH4.CFGR (USART1_TX) — no IRQ between the scheduled tick and the
+// wire edge. HSE (8 MHz crystal) is required, not HSI: this firmware
+// doubles as the master-side cal timebase, and HSI's ±1% trim would
 // systematically corrupt slave drift measurements at the ppm scale.
 
 #[embassy_executor::main(entry = "qingke_rt::entry")]

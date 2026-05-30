@@ -157,7 +157,7 @@ async fn stream_reply<'d, T: Instance + 'd>(
     len: u32,
 ) -> Result<(), EndpointError> {
     const HEX: &[u8; 16] = b"0123456789abcdef";
-    let mut chunk: Vec<u8, 64> = Vec::new();
+    let mut chunk: Vec<u8, 128> = Vec::new();
     let _ = chunk.extend_from_slice(b"REPLY ");
     for i in 0..len {
         if chunk.len() + 2 > chunk.capacity() {
@@ -180,7 +180,7 @@ async fn send_reply<'d, T: Instance + 'd>(
     class: &mut CdcAcmClass<'d, Driver<'d, T>>,
     reply: Reply,
 ) -> Result<(), EndpointError> {
-    let mut out: Vec<u8, 64> = Vec::new();
+    let mut out: Vec<u8, 128> = Vec::new();
     match reply {
         Reply::Ok => {
             let _ = out.extend_from_slice(b"OK\n");
@@ -200,7 +200,12 @@ async fn send_reply<'d, T: Instance + 'd>(
         Reply::Bytes(n) => write_u32(&mut out, b"BYTES ", n),
         Reply::HzPerUs(n) => write_u32(&mut out, b"HZ ", n),
         Reply::Stamp { tick, head } => write_stamp(&mut out, tick, head),
-        Reply::Round { req, first, last, head } => write_round(&mut out, req, first, last, head),
+        Reply::Round {
+            req,
+            first,
+            last,
+            head,
+        } => write_round(&mut out, req, first, last, head),
     }
     // Catches a future reply format that overflows the 64-byte Vec — the
     // `let _` swallows above would silently truncate otherwise.
@@ -208,7 +213,7 @@ async fn send_reply<'d, T: Instance + 'd>(
     class.write_packet(&out).await
 }
 
-fn write_stamp(out: &mut Vec<u8, 64>, tick: u32, head: u16) {
+fn write_stamp(out: &mut Vec<u8, 128>, tick: u32, head: u16) {
     let _ = out.extend_from_slice(b"STAMP ");
     push_dec_u32(out, tick);
     let _ = out.push(b' ');
@@ -216,7 +221,7 @@ fn write_stamp(out: &mut Vec<u8, 64>, tick: u32, head: u16) {
     let _ = out.push(b'\n');
 }
 
-fn write_round(out: &mut Vec<u8, 64>, req: u32, first: u32, last: u32, head: u16) {
+fn write_round(out: &mut Vec<u8, 128>, req: u32, first: u32, last: u32, head: u16) {
     let _ = out.extend_from_slice(b"ROUND ");
     push_dec_u32(out, req);
     let _ = out.push(b' ');
@@ -228,19 +233,19 @@ fn write_round(out: &mut Vec<u8, 64>, req: u32, first: u32, last: u32, head: u16
     let _ = out.push(b'\n');
 }
 
-fn write_u32(out: &mut Vec<u8, 64>, prefix: &[u8], v: u32) {
+fn write_u32(out: &mut Vec<u8, 128>, prefix: &[u8], v: u32) {
     let _ = out.extend_from_slice(prefix);
     push_dec_u32(out, v);
     let _ = out.push(b'\n');
 }
 
-fn write_u64(out: &mut Vec<u8, 64>, prefix: &[u8], v: u64) {
+fn write_u64(out: &mut Vec<u8, 128>, prefix: &[u8], v: u64) {
     let _ = out.extend_from_slice(prefix);
     push_dec_u64(out, v);
     let _ = out.push(b'\n');
 }
 
-fn push_dec_u32(out: &mut Vec<u8, 64>, mut v: u32) {
+fn push_dec_u32(out: &mut Vec<u8, 128>, mut v: u32) {
     if v == 0 {
         let _ = out.push(b'0');
         return;
@@ -255,7 +260,7 @@ fn push_dec_u32(out: &mut Vec<u8, 64>, mut v: u32) {
     let _ = out.extend_from_slice(&buf[i..]);
 }
 
-fn push_dec_u64(out: &mut Vec<u8, 64>, mut v: u64) {
+fn push_dec_u64(out: &mut Vec<u8, 128>, mut v: u64) {
     if v == 0 {
         let _ = out.push(b'0');
         return;

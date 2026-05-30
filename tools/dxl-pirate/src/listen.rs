@@ -54,7 +54,7 @@ pub enum IdleStamp {
         head: u16,
     },
     Round {
-        /// `T_request_end`: master's USART2 TC stamp.
+        /// `T_request_end`: master's USART1 TC stamp.
         req: u32,
         /// `T_first`: slave-reply T0 stamp from USART3 RXNE one-shot.
         first: u32,
@@ -276,7 +276,7 @@ fn USART3() {
     }
 
     // Kick off an `arm_after_idle` fire if one is pending. Cheap when not
-    // in use (one atomic load); when armed, schedules SysTick CMP or fires
+    // in use (one atomic load); when armed, programs TIM4 OPM or fires
     // immediately depending on the configured offset.
     crate::inject::on_listen_idle(tick);
 
