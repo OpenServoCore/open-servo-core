@@ -108,12 +108,15 @@ impl RebootPacket {
 #[derive(Copy, Clone, Debug)]
 pub struct CalibratePacket {
     pub id: u8,
+    /// Requested zero-byte payload length in the slave's Status reply.
+    /// Bounded `1..=128` by the dispatcher.
+    pub count: u16,
 }
 
 #[cfg(feature = "osc")]
 impl CalibratePacket {
-    pub const fn new(id: u8) -> Self {
-        Self { id }
+    pub const fn new(id: u8, count: u16) -> Self {
+        Self { id, count }
     }
 }
 

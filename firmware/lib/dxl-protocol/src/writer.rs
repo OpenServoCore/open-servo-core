@@ -34,7 +34,8 @@ pub fn write<W: WriteBuf>(out: &mut W, packet: &Packet<'_>) -> Result<(), WriteE
         Packet::Reboot(p) => write_packet(out, p.id, Instruction::Reboot, &mut core::iter::empty()),
         #[cfg(feature = "osc")]
         Packet::Calibrate(p) => {
-            write_packet(out, p.id, Instruction::Calibrate, &mut core::iter::empty())
+            let mut params = U16One::new(p.count).into_iter();
+            write_packet(out, p.id, Instruction::Calibrate, &mut params)
         }
         Packet::Clear(p) => write_packet(out, p.id, Instruction::Clear, &mut p.body.iter()),
         Packet::ControlTableBackup(p) => write_packet(

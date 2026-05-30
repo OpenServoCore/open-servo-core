@@ -1308,7 +1308,7 @@ fn calibrate_broadcast_torque_off_triggers_silently() {
     let mut io = FakeIo::new();
     let mut h = Dxl::new();
 
-    let req = encode(&Packet::Calibrate(CalibratePacket::new(BROADCAST_ID)));
+    let req = encode(&Packet::Calibrate(CalibratePacket::new(BROADCAST_ID, 128)));
     io.feed(&req);
     h.poll(&shared, &mut io);
 
@@ -1322,7 +1322,7 @@ fn calibrate_unicast_silently_dropped() {
     let mut io = FakeIo::new();
     let mut h = Dxl::new();
 
-    let req = encode(&Packet::Calibrate(CalibratePacket::new(0)));
+    let req = encode(&Packet::Calibrate(CalibratePacket::new(0, 128)));
     io.feed(&req);
     h.poll(&shared, &mut io);
 
@@ -1337,7 +1337,7 @@ fn calibrate_broadcast_torque_on_silent_no_trigger() {
     let mut io = FakeIo::new();
     let mut h = Dxl::new();
 
-    let req = encode(&Packet::Calibrate(CalibratePacket::new(BROADCAST_ID)));
+    let req = encode(&Packet::Calibrate(CalibratePacket::new(BROADCAST_ID, 128)));
     io.feed(&req);
     h.poll(&shared, &mut io);
 
@@ -1351,7 +1351,7 @@ fn calibrate_broadcast_skips_when_idle_anchor_missing() {
     let mut io = FakeIo::new();
     let mut h = Dxl::new();
 
-    let req = encode(&Packet::Calibrate(CalibratePacket::new(BROADCAST_ID)));
+    let req = encode(&Packet::Calibrate(CalibratePacket::new(BROADCAST_ID, 128)));
     io.feed(&req);
     // Force `request_complete` to return false by mismatching the idle anchor.
     io.bus.rx_bytes_at_idle = io.bus.rx_bytes_at_idle.wrapping_add(1);

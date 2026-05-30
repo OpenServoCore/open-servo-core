@@ -154,7 +154,14 @@ fn decode<'a>(
         }
         Reboot => need_empty(params).map(|_| Packet::Reboot(RebootPacket { id })),
         #[cfg(feature = "osc")]
-        Calibrate => need_empty(params).map(|_| Packet::Calibrate(CalibratePacket { id })),
+        Calibrate => {
+            let mut it = ByteIter::stuffed(params);
+            let count = take_u16_le(&mut it)?;
+            if it.next().is_some() {
+                return Err(DecodeError);
+            }
+            Ok(Packet::Calibrate(CalibratePacket { id, count }))
+        }
         Clear => Ok(Packet::Clear(ClearPacket {
             id,
             body: Bytes::stuffed(params),
