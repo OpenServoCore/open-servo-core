@@ -1,11 +1,25 @@
-"""DXL Fast SyncRead / BulkRead — solo + slot-position emission semantics.
+"""DXL Fast SyncRead / BulkRead — protocol shape + per-position emit.
 
-Covers: solo replies, silence when our ID isn't listed, error slots
-(zero-fill payload), and the position-conditional Status framing — slot 0
-emits header+body, middle slots emit body only, last slot emits body + the
-final CRC over the whole coalesced frame.
+Two layers, each focused on a different failure mode:
 
-The cross-slave coalesce stress lives in test_timing_fast_coalesce.py.
+  1. Solo / silent / error-slot — basic per-instruction semantics: a single
+     chip responds normally; silent when our id isn't listed, when length is
+     0 or oversize; error slot is zero-fill with the right err code.
+
+  2. Per-position wire shape — chip alone (foreign IDs in chain stay silent).
+     Validates the dispatcher emits the right bytes for each
+     `FastSlotPosition`:
+        Only   → header + body + local CRC
+        First  → header + body (no CRC; trailing Last emits the chain CRC)
+        Middle → body only
+        Last   → body + chain-CRC (placeholder when chip is solo; chip
+                 patches in flight when there is a real predecessor)
+
+Per-position coalesce *timing* (pirate fakes a cooperating predecessor and/or
+successor slot, chip's emit must land back-to-back) lives in
+test_timing_fast_coalesce.py and is gated on tasks #49/#50/#51 — pirate must
+fire on wall-clock and chip must compensate per-path before those tests can
+be authored without test-side margin.
 """
 
 from dxl_packet import (
@@ -33,7 +47,7 @@ def _solo_reply(pirate, packet, reply_us=200_000) -> bytes:
     return reply
 
 
-# ── FastSyncRead ────────────────────────────────────────────────────────────
+# ── Section 1: FastSyncRead solo / silent / error ───────────────────────────
 
 def test_fast_sync_read_only(pirate, osc_id):
     frame = _solo_reply(pirate, build_fast_sync_read(addr=0, length=2, ids=[osc_id]))
@@ -77,7 +91,7 @@ def test_fast_sync_read_out_of_range_returns_error_slot(pirate, osc_id):
     assert slots[0].data == b"\x00\x00", f"expected zero-fill, got {slots[0].data.hex()}"
 
 
-# ── FastBulkRead ────────────────────────────────────────────────────────────
+# ── Section 1: FastBulkRead solo / silent / error ───────────────────────────
 
 def test_fast_bulk_read_only(pirate, osc_id):
     frame = _solo_reply(pirate, build_fast_bulk_read([(osc_id, 0, 2)]))
@@ -113,7 +127,11 @@ def test_fast_bulk_read_out_of_range_returns_error_slot(pirate, osc_id):
     assert slots[0].data == b"\x00\x00\x00\x00", f"expected zero-fill, got {slots[0].data.hex()}"
 
 
-# ── slot-position emission ──────────────────────────────────────────────────
+# ── Section 2: per-position wire shape, chip alone ──────────────────────────
+#
+# Foreigns are absent on the bus → chip is the only emitter. The frame is
+# JUST the chip's bytes; length tells us which position prefix/suffix the
+# dispatcher emitted.
 
 def test_fast_sync_read_first_emits_header_and_body_only(pirate, osc_id, baud):
     chunk = pirate.xfer(
@@ -152,3 +170,45 @@ def test_fast_sync_read_last_emits_body_and_self_crc(pirate, osc_id, baud):
     crc = chunk[4] | (chunk[5] << 8)
     expected = _crc16(body)
     assert crc == expected, f"CRC over body alone = 0x{crc:04X}, want 0x{expected:04X}"
+
+
+def test_fast_bulk_read_first_emits_header_and_body_only(pirate, osc_id, baud):
+    chunk = pirate.xfer(
+        build_fast_bulk_read([(osc_id, 0, 2), (FOREIGN_A, 0, 2), (FOREIGN_B, 0, 2)]),
+        reply_us=_silent_us(baud, max_slot_index=2, payload_len=2),
+    )
+    assert chunk is not None and len(chunk) == 12, f"expected 12 bytes, got {chunk and chunk.hex()}"
+    assert chunk[:4] == HEADER, f"bad header: {chunk[:4].hex()}"
+    assert chunk[4] == BROADCAST_ID, f"id field should be 0xFE, got 0x{chunk[4]:02X}"
+    packet_length = chunk[5] | (chunk[6] << 8)
+    # BulkRead LEN = 3 + n_slots*2 + Σ payload = 3 + 3*2 + 3*2 = 15
+    assert packet_length == 15, f"LEN field = {packet_length}, want 15"
+    assert chunk[7] == INSTR_STATUS
+    assert chunk[8] == 0, f"err = 0x{chunk[8]:02X}"
+    assert chunk[9] == osc_id, f"slot id = {chunk[9]}, want {osc_id}"
+
+
+def test_fast_bulk_read_middle_emits_body_only(pirate, osc_id, baud):
+    chunk = pirate.xfer(
+        build_fast_bulk_read([(FOREIGN_A, 0, 2), (osc_id, 0, 2), (FOREIGN_B, 0, 2)]),
+        reply_us=_silent_us(baud, max_slot_index=2, payload_len=2),
+    )
+    assert chunk is not None and len(chunk) == 4, f"expected 4 bytes, got {chunk and chunk.hex()}"
+    assert chunk[0] == 0, f"err = 0x{chunk[0]:02X}"
+    assert chunk[1] == osc_id, f"slot id = {chunk[1]}, want {osc_id}"
+
+
+def test_fast_bulk_read_last_emits_body_and_self_crc(pirate, osc_id, baud):
+    chunk = pirate.xfer(
+        build_fast_bulk_read([(FOREIGN_A, 0, 2), (FOREIGN_B, 0, 2), (osc_id, 0, 2)]),
+        reply_us=_silent_us(baud, max_slot_index=2, payload_len=2),
+    )
+    assert chunk is not None and len(chunk) == 6, f"expected 6 bytes, got {chunk and chunk.hex()}"
+    assert chunk[0] == 0, f"err = 0x{chunk[0]:02X}"
+    assert chunk[1] == osc_id, f"slot id = {chunk[1]}, want {osc_id}"
+    body = chunk[:4]
+    crc = chunk[4] | (chunk[5] << 8)
+    expected = _crc16(body)
+    assert crc == expected, f"CRC over body alone = 0x{crc:04X}, want 0x{expected:04X}"
+
+
