@@ -93,6 +93,19 @@ pub(crate) fn reset_t_first() {
     unsafe { ptr::write_volatile(T_FIRST.get(), 0) };
 }
 
+/// Arm the USART3 RXNE one-shot outside the MASTER round-trip flow so the
+/// next received byte stamps `T_FIRST`. Used by host timing tests that want
+/// sample-clock-resolution wire-edge stamps instead of the IDLE flag's
+/// ~½ bit-time granularity (FIRE jitter measurement). Held under a CS so the
+/// flag/cell/RXNEIE writes can't be split by an in-flight USART3 ISR.
+pub fn prime_rxne() {
+    critical_section::with(|_| unsafe {
+        ptr::write_volatile(T_FIRST.get(), 0);
+        crate::inject::EXPECT_FIRST_BYTE.store(true, Ordering::Release);
+        USART3.ctlr1().modify(|w| w.set_rxneie(true));
+    });
+}
+
 pub fn init() {
     unsafe {
         RCC.apb2pcenr().modify(|w| {
