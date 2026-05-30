@@ -21,6 +21,7 @@ INSTR_SYNC_READ = 0x82
 INSTR_BULK_READ = 0x92
 INSTR_FAST_SYNC_READ = 0x8A
 INSTR_FAST_BULK_READ = 0x9A
+INSTR_CALIBRATE = 0xE0
 
 HEADER = bytes([0xFF, 0xFF, 0xFD, 0x00])
 BROADCAST_ID = 0xFE
@@ -86,6 +87,10 @@ def build_action(id: int) -> bytes:
 
 def build_reboot(id: int) -> bytes:
     return build_packet(id, INSTR_REBOOT)
+
+
+def build_calibrate(id: int, count: int) -> bytes:
+    return build_packet(id, INSTR_CALIBRATE, bytes([count & 0xFF, (count >> 8) & 0xFF]))
 
 
 def build_factory_reset(id: int, option: int = 0xFF) -> bytes:
