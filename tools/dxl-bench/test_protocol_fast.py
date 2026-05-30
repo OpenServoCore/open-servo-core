@@ -1,3 +1,13 @@
+"""DXL Fast SyncRead / BulkRead — solo + slot-position emission semantics.
+
+Covers: solo replies, silence when our ID isn't listed, error slots
+(zero-fill payload), and the position-conditional Status framing — slot 0
+emits header+body, middle slots emit body only, last slot emits body + the
+final CRC over the whole coalesced frame.
+
+The cross-slave coalesce stress lives in test_timing_fast_coalesce.py.
+"""
+
 from dxl_packet import (
     BROADCAST_ID,
     HEADER,
@@ -14,8 +24,7 @@ FOREIGN_B = 100
 
 
 def _silent_us(baud: int, max_slot_index: int, payload_len: int) -> int:
-    delay_us = (max_slot_index + 1) * slot_period_us(baud, payload_len)
-    return delay_us + 20_000
+    return (max_slot_index + 1) * slot_period_us(baud, payload_len) + 20_000
 
 
 def _solo_reply(pirate, packet, reply_us=200_000) -> bytes:
@@ -23,6 +32,8 @@ def _solo_reply(pirate, packet, reply_us=200_000) -> bytes:
     assert reply, "expected Fast Status frame"
     return reply
 
+
+# ── FastSyncRead ────────────────────────────────────────────────────────────
 
 def test_fast_sync_read_only(pirate, osc_id):
     frame = _solo_reply(pirate, build_fast_sync_read(addr=0, length=2, ids=[osc_id]))
@@ -66,6 +77,8 @@ def test_fast_sync_read_out_of_range_returns_error_slot(pirate, osc_id):
     assert slots[0].data == b"\x00\x00", f"expected zero-fill, got {slots[0].data.hex()}"
 
 
+# ── FastBulkRead ────────────────────────────────────────────────────────────
+
 def test_fast_bulk_read_only(pirate, osc_id):
     frame = _solo_reply(pirate, build_fast_bulk_read([(osc_id, 0, 2)]))
     slots = parse_fast_response(frame, slot_lengths=[2])
@@ -99,6 +112,8 @@ def test_fast_bulk_read_out_of_range_returns_error_slot(pirate, osc_id):
     assert slots[0].error == 0x04, f"expected DataRange, got 0x{slots[0].error:02X}"
     assert slots[0].data == b"\x00\x00\x00\x00", f"expected zero-fill, got {slots[0].data.hex()}"
 
+
+# ── slot-position emission ──────────────────────────────────────────────────
 
 def test_fast_sync_read_first_emits_header_and_body_only(pirate, osc_id, baud):
     chunk = pirate.xfer(

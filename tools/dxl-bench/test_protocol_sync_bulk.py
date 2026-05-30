@@ -1,4 +1,4 @@
-"""SyncRead / BulkRead — covers slot-position math and silent-when-absent."""
+"""Plain SyncRead / BulkRead — slot positioning + silence-when-not-listed."""
 
 from dxl_packet import (
     build_bulk_read,
@@ -12,8 +12,7 @@ FOREIGN_B = 100
 
 
 def _silent_us(baud: int, max_slot_index: int, payload_len: int) -> int:
-    delay_us = (max_slot_index + 1) * slot_period_us(baud, payload_len)
-    return delay_us + 20_000
+    return (max_slot_index + 1) * slot_period_us(baud, payload_len) + 20_000
 
 
 def test_sync_read_solo(pirate, osc_id):

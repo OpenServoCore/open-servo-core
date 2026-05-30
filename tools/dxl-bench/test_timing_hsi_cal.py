@@ -2,14 +2,12 @@
 
 Exercises the chip's CAL handler + master-side §7 math + apply-after-TC path
 together. Converges from the test-start `clock_trim` to a steady state where
-step=0 holds across consecutive cycles, then asserts idempotency by running
-one more cycle that must also resolve to step=0. Restores the chip's original
-trim + fine-trim afterward so the rest of the suite is unaffected.
+step=0 holds, then asserts:
+  - one more cycle still yields step=0 (idempotency),
+  - the residual_ppm sits in [0, ppm_per_step) (biased-rounding invariant).
 
 Per docs/dxl-hsi-calibration.md §7. Does not assert any particular HSITRIM
-value — the per-chip optimum depends on factory variation; the bench-historic
-"HSITRIM=20" from `tune_hsitrim` was relative to the old (pre-HSE) pirate and
-is no longer a reference.
+value — the per-chip optimum depends on factory variation.
 """
 
 import time
@@ -18,9 +16,6 @@ import pytest
 
 from cal import Calibrator
 
-# Cap on how many apply→remeasure cycles we tolerate before declaring
-# convergence broken. With biased rounding even a chip sitting near a step
-# boundary should settle within a couple of swings.
 MAX_CYCLES = 6
 
 
@@ -31,7 +26,7 @@ def calibrator(pirate, osc_id, baud):
 
 def _converge(c: Calibrator) -> tuple[int, list[tuple[int, float, int]]]:
     """Run cycles until two consecutive step==0 results. Returns
-    (final_trim, history) where history rows are (trim_before, drift_ppm, step)."""
+    (final_trim, history) where rows are (trim_before, drift_ppm, step)."""
     history: list[tuple[int, float, int]] = []
     consecutive_noop = 0
     for _ in range(MAX_CYCLES):
@@ -46,9 +41,7 @@ def _converge(c: Calibrator) -> tuple[int, list[tuple[int, float, int]]]:
                 return c.read_clock_trim(), history
         else:
             consecutive_noop = 0
-    pytest.fail(
-        f"cal did not converge within {MAX_CYCLES} cycles; history: {history}"
-    )
+    pytest.fail(f"cal did not converge within {MAX_CYCLES} cycles; history: {history}")
 
 
 def test_master_cal_converges_idempotently(calibrator):
@@ -64,16 +57,14 @@ def test_master_cal_converges_idempotently(calibrator):
             print(f"  cycle {i}: trim={t:+d}  drift={d:+6.0f} ppm  step={s:+d}")
         print(f"  converged at clock_trim={final_trim:+d}")
 
-        # Final idempotency check — one more shot, step must still be 0.
         m = c.measure(count=128)
         d = c.derive(m, current_trim=final_trim)
         print(f"  idempotency shot: drift={m.drift_ppm:+.0f} ppm  step={d.step:+d}  "
-              f"resid_ppm={d.residual_ppm:+.0f}")
+              f"resid_ppm={d.residual_ppm:+.0f}  resid_q88={d.residual_q88:+d}")
         assert d.step == 0, (
             f"non-zero step ({d.step:+d}) on idempotency check after converging "
             f"to clock_trim={final_trim:+d} (drift={m.drift_ppm:+.0f} ppm)"
         )
-        # After biased rounding, residual_ppm should be in [0, ppm_per_step).
         assert 0 <= d.residual_ppm < c.ppm_per_step, (
             f"residual_ppm {d.residual_ppm:+.0f} outside [0, {c.ppm_per_step}) — "
             "biased rounding broken?"

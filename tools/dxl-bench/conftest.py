@@ -10,6 +10,7 @@ import time
 import pytest
 import serial.tools.list_ports
 
+from cal import Calibrator
 from dxl_packet import build_ping, build_write, parse_status
 from pirate import Pirate
 
@@ -50,6 +51,22 @@ def pytest_addoption(parser):
         help="Skip V006 ping/retune at session start (for pirate-only smoke "
              "checks where the DUT is unplugged).",
     )
+    parser.addoption(
+        "--no-cal",
+        action="store_true",
+        help="Skip the boot-time HSI cal at session start. Default is to "
+             "converge clock_trim via master-side CAL and apply the matching "
+             "clock_fine_trim_us residual so every test runs against a fully "
+             "calibrated chip.",
+    )
+    parser.addoption(
+        "--trials",
+        type=int,
+        default=10,
+        help="Trial multiplier for stress-style timing tests "
+             "(e.g. test_timing_fast_coalesce). Default 10 keeps the suite "
+             "fast; --trials=500 gives ~2500 trials per (baud, INJ_LEN).",
+    )
 
 
 def _autodetect_pirate() -> str:
@@ -85,7 +102,7 @@ def _ping_at(pirate: Pirate, dxl_id: int, bps: int, attempts: int = 3) -> bytes:
     return b""
 
 
-def _ensure_chip_baud(pirate: Pirate, dxl_id: int, target_bps: int) -> None:
+def ensure_chip_baud(pirate: Pirate, dxl_id: int, target_bps: int) -> None:
     if target_bps not in BAUD_INDEX:
         pytest.fail(
             f"unsupported --baud {target_bps}; supported: {sorted(BAUD_INDEX)}",
@@ -124,6 +141,46 @@ def _ensure_chip_baud(pirate: Pirate, dxl_id: int, target_bps: int) -> None:
     time.sleep(0.05)
 
 
+def _cal_hsi(pirate: Pirate, dxl_id: int, baud: int, max_cycles: int = 6) -> tuple[int, int]:
+    """Converge `clock_trim` via master-side CAL, then apply the
+    `clock_fine_trim_us` residual measured AT the converged trim (post-trim
+    residual is what the slot dispatcher needs — pre-trim residual is stale
+    once trim shifts HSI). Returns (final_trim, final_q88).
+
+    Per docs/dxl-hsi-calibration.md: chip's structural latency is carried
+    by the compile-time `TX_LATENCY_TICKS` (=104); the runtime
+    `clock_fine_trim_us` covers only the per-chip drift residual, which
+    lands inside the 3 Mbaud coalesce window with no per-chip sweep."""
+    c = Calibrator(pirate, dxl_id=dxl_id, baud=baud)
+    c.write_clock_fine_trim_us(0)
+    time.sleep(0.05)
+    for _ in range(max_cycles):
+        trim_before = c.read_clock_trim()
+        m = c.measure(count=128)
+        d = c.derive(m, current_trim=trim_before)
+        if d.step == 0:
+            c.write_clock_fine_trim_us(d.residual_q88)
+            time.sleep(0.05)
+            return trim_before, d.residual_q88
+        c.write_clock_trim(d.new_trim)
+        time.sleep(0.05)
+    pytest.fail(
+        f"HSI cal did not converge in {max_cycles} cycles",
+        pytrace=False,
+    )
+
+
+def pytest_collection_modifyitems(config, items):
+    """Run `test_system_*` last. System tests reboot the chip (e.g.
+    tinyboot round-trip), which wipes RAM-backed control-table state
+    including `clock_trim` and `clock_fine_trim_us` — every timing test
+    that follows would then see an un-cal'd chip and fail."""
+    system, other = [], []
+    for item in items:
+        (system if item.fspath.basename.startswith("test_system_") else other).append(item)
+    items[:] = other + system
+
+
 def pytest_sessionstart(session):
     config = session.config
 
@@ -134,11 +191,19 @@ def pytest_sessionstart(session):
     pirate = Pirate(pirate_path)
     try:
         target_baud = config.getoption("--baud")
+        dxl_id = config.getoption("--id")
         if config.getoption("--no-dut"):
-            print("[bench] --no-dut: skipping V006 ping/retune", flush=True)
+            print("[bench] --no-dut: skipping V006 ping/retune + cal", flush=True)
             pirate.set_baud(target_baud)
         else:
-            _ensure_chip_baud(pirate, config.getoption("--id"), target_baud)
+            ensure_chip_baud(pirate, dxl_id, target_baud)
+            if config.getoption("--no-cal"):
+                print("[bench] --no-cal: skipping HSI cal", flush=True)
+            else:
+                final_trim, final_q88 = _cal_hsi(pirate, dxl_id, target_baud)
+                print(f"[bench] HSI cal: clock_trim={final_trim:+d}, "
+                      f"clock_fine_trim_us={final_q88:+d} "
+                      f"(={final_q88/256:+.3f} µs)", flush=True)
     finally:
         pirate.close()
 
@@ -177,3 +242,8 @@ def baud(request):
 @pytest.fixture(scope="session")
 def tinyboot_baud(request):
     return request.config.getoption("--tinyboot-baud")
+
+
+@pytest.fixture(scope="session")
+def trials(request):
+    return request.config.getoption("--trials")

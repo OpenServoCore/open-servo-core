@@ -1,4 +1,4 @@
-"""Bootloader round-trip — gates the firmware-upgrade path."""
+"""Reboot + tinyboot round-trip — gates the firmware-upgrade path."""
 
 import time
 
@@ -32,8 +32,6 @@ def _expect_status(pirate, packet, osc_id, expected_err=0):
 
 
 def test_reboot_clears_volatile_state(pirate, osc_id, baud):
-    # Reboot wipes RAM config back to defaults (incl. baud), so any non-default
-    # test baud needs the pirate switched back too before the session continues.
     _expect_status(pirate, build_write(osc_id, CONTROL_BASE_ADDR, b"\x01"), osc_id)
     s = _expect_status(pirate, build_read(osc_id, CONTROL_BASE_ADDR, 1), osc_id)
     assert s.params == b"\x01", f"setup failed, torque_enable={s.params.hex()}"
@@ -56,7 +54,7 @@ def test_reboot_clears_volatile_state(pirate, osc_id, baud):
                 build_write(osc_id, BAUD_RATE_IDX_ADDR, bytes([BAUD_INDEX[baud]])),
                 osc_id,
             )
-            time.sleep(0.05)  # let TC ISR apply pending BRR
+            time.sleep(0.05)
     finally:
         pirate.set_baud(baud)
 
@@ -79,7 +77,6 @@ def test_tinyboot_round_trip(pirate, osc_id, baud, tinyboot_baud):
         )
         assert info.capacity > 0 and info.erase_size > 0, f"bogus InfoData: {info}"
 
-        # Reset back to app: bootloader doesn't ACK; expect silence.
         pirate.xfer(build_reset_request(bootloader=False), reply_us=50_000)
         time.sleep(0.5)
 
