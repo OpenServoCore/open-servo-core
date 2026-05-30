@@ -21,14 +21,16 @@ use embassy_executor::Spawner;
 //   PA12  USB DP                    host
 //   PA11  USB DM                    host
 //
-// Both USART2 and USART3 are on APB1. With SYSCLK_FREQ_144MHZ_HSI APB1 runs at
+// Both USART2 and USART3 are on APB1. With SYSCLK_FREQ_144MHZ_HSE APB1 runs at
 // 144 MHz (prescaler DIV1), so BRR = 144_000_000 / 3_000_000 = 48 for the
-// 3 Mbaud DXL Fast wire rate.
+// 3 Mbaud DXL Fast wire rate. HSE (8 MHz crystal) is required, not HSI: this
+// firmware doubles as the master-side cal timebase, and HSI's ±1% trim would
+// systematically corrupt slave drift measurements at the ppm scale.
 
 #[embassy_executor::main(entry = "qingke_rt::entry")]
 async fn main(spawner: Spawner) {
     let p = hal::init(hal::Config {
-        rcc: hal::rcc::Config::SYSCLK_FREQ_144MHZ_HSI,
+        rcc: hal::rcc::Config::SYSCLK_FREQ_144MHZ_HSE,
         ..Default::default()
     });
 
