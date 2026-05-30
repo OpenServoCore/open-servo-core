@@ -127,6 +127,11 @@ const RX_MASK_U32: u32 = (DXL_RX_BUF_LEN - 1) as u32;
 /// is a deferred risk; `SlotTimingMiss` catches it as a counter bump.
 const SWITCH_MARGIN_US: u32 = 100;
 
+/// Silicon-fixed latency from SysTick CMP match to first bit on the wire:
+/// PFIC trap entry + `on_systick` body + `fire_now` + DMA prefetch + USART
+/// start-bit latch. Bench-calibrated per chip family via #37.
+const TX_LATENCY_TICKS: u32 = 144;
+
 /// TX_EN and DMA CH4 stay off so the bus remains in RX through any preceding
 /// snoop window; `fire_now` flips both at the slot deadline.
 #[cfg_attr(target_arch = "riscv32", unsafe(link_section = ".highcode"))]
@@ -165,7 +170,9 @@ pub fn start_plain_after(request_end_tick: u32, delay_us: u32) {
     systick::set_irq(false);
     systick::clear_match();
 
-    let needed = delay_us.saturating_mul(systick::TICKS_PER_US);
+    let needed = delay_us
+        .saturating_mul(systick::TICKS_PER_US)
+        .saturating_sub(TX_LATENCY_TICKS);
 
     if systick::ticks().wrapping_sub(request_end_tick) >= needed {
         if arm_tx() {
@@ -201,7 +208,9 @@ pub fn start_fast_after(request_end_tick: u32, fire_us: u32, snoop_from: Option<
         return;
     }
 
-    let fire_needed = fire_us.saturating_mul(systick::TICKS_PER_US);
+    let fire_needed = fire_us
+        .saturating_mul(systick::TICKS_PER_US)
+        .saturating_sub(TX_LATENCY_TICKS);
     let fire_tick = request_end_tick.wrapping_add(fire_needed);
 
     let snoop_head = match snoop_from {
@@ -218,11 +227,10 @@ pub fn start_fast_after(request_end_tick: u32, fire_us: u32, snoop_from: Option<
         None => (FastChainPhase::TxArmed, fire_tick),
         Some(_) if fire_us <= SWITCH_MARGIN_US => (FastChainPhase::TxArmed, fire_tick),
         Some(_) => {
-            let switch_us = fire_us - SWITCH_MARGIN_US;
-            let switch_ticks = switch_us.saturating_mul(systick::TICKS_PER_US);
+            let switch_margin_ticks = SWITCH_MARGIN_US.saturating_mul(systick::TICKS_PER_US);
             (
                 FastChainPhase::CatchupArmed,
-                request_end_tick.wrapping_add(switch_ticks),
+                fire_tick.wrapping_sub(switch_margin_ticks),
             )
         }
     };

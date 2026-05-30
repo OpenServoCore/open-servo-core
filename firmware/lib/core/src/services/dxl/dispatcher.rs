@@ -12,19 +12,6 @@ const MAX_WRITE: usize = 128;
 const MAX_BULK_BODY: usize = 256;
 const MAX_FAST_SLOTS: usize = 32;
 
-/// Pre-compensate slot-timed fire deadlines for the chip's PFIC trap entry +
-/// `on_systick` dispatch + `fire_now` body + DMA prefetch + start-bit latch.
-/// Without this, the wire-side start of our reply lands `FIRE_STRUCTURAL_FLOOR_US`
-/// after the predecessor's stop bit — a visible idle gap that breaks zero-gap
-/// coalesce on Fast Sync/Bulk Read.
-///
-/// CMP→wire latency on V006 V2A is ~4 µs (bench-measured against a crystal
-/// reference, HSI drift corrected). Pre-comp by 3 leaves ~1 µs nominal gap on
-/// the wire — well under the 3.33 µs byte-time jitter cap at 3 Mbaud, above
-/// the ISR-latency jitter floor that triggers overlap at FLOOR=4. Retune when
-/// chip or fire path changes.
-pub(super) const FIRE_STRUCTURAL_FLOOR_US: u32 = 3;
-
 fn error_to_status(e: Error) -> StatusError {
     match e {
         Error::AccessError => StatusError::Access,
@@ -533,13 +520,11 @@ impl<'a, B: DxlBus, D: DeviceControl> Dispatcher<'a, B, D> {
                 self.bus.send_after(ctx.rdt_us);
             }
             FastSlotPosition::Last => {
-                let fire_us = (ctx.rdt_us + bytes_to_us(p.bytes_before(info.our_slot), ctx.baud))
-                    .saturating_sub(FIRE_STRUCTURAL_FLOOR_US);
+                let fire_us = ctx.rdt_us + bytes_to_us(p.bytes_before(info.our_slot), ctx.baud);
                 self.bus.send_with_snoop_crc(fire_us, Some(parsed_end));
             }
             FastSlotPosition::First | FastSlotPosition::Middle => {
-                let fire_us = (ctx.rdt_us + bytes_to_us(p.bytes_before(info.our_slot), ctx.baud))
-                    .saturating_sub(FIRE_STRUCTURAL_FLOOR_US);
+                let fire_us = ctx.rdt_us + bytes_to_us(p.bytes_before(info.our_slot), ctx.baud);
                 self.bus.send_after(fire_us);
             }
         }
