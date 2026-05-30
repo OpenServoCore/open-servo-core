@@ -101,6 +101,15 @@ class Pirate:
     def fire(self, data: bytes, at_tick: int) -> None:
         self.expect_ok(f"FIRE bytes={_hex(data)} at={at_tick}")
 
+    def last_fired(self) -> int:
+        """Low-32 SysTick from inject's `FIRED_TICK_LO`. After a FIRE, equals
+        `at_tick & 0xFFFFFFFF` on the scheduled path or `now-on-device` if the
+        TIM4-OPM schedule was missed (immediate-fire fallback)."""
+        reply = self.command("LAST?")
+        if not reply.startswith("LAST "):
+            raise PirateError(f"LAST? → {reply!r}")
+        return int(reply.split()[1])
+
     def xfer(self, data: bytes, reply_us: int) -> bytes | None:
         """Fire `data` as master and wait up to `reply_us` for the slave's
         end-of-frame IDLE. Returns the slave's reply bytes, or None on
