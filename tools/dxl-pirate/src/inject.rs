@@ -53,10 +53,19 @@ static MASTER_T_REQUEST_END: SyncUnsafeCell<u32> = SyncUnsafeCell::new(0);
 /// and produces one IDLE we don't want polluting the slave-side stamp ring.
 pub(crate) static SUPPRESS_NEXT_IDLE_STAMP: AtomicBool = AtomicBool::new(false);
 
-/// `master_send` sets; the USART3 IDLE handler arms RXNEIE as a one-shot when
-/// it sees this flag, and the RXNE handler stamps `T_FIRST` and swap-clears
-/// it. Tracks "we're expecting a slave reply" across the IDLE→RXNE handoff.
+/// Gate for the RXNE handler's `T_FIRST` stamp. Set ONLY by the USART3
+/// IDLE-suppress branch (= master TX echo IDLE just fired). The RXNE handler
+/// swap-clears it on the next received byte. Cleared (not set) by `master_send`
+/// so a stale RXNEIE left armed by a no-reply prior trip can fire on our
+/// master TX-echo byte without misattributing it as the slave-reply T0.
 pub(crate) static EXPECT_FIRST_BYTE: AtomicBool = AtomicBool::new(false);
+
+/// The USART3 IDLE handler sets this when it consumes SUPPRESS (= master TX
+/// echo IDLE just fired). The next non-suppressed IDLE is the slave-reply
+/// wire-end, and the handler publishes a `Round` stamp instead of `Plain`,
+/// then clears this flag. `master_send` also resets it so a no-reply trip
+/// doesn't taint the next round.
+pub(crate) static EXPECT_REPLY_END_IDLE: AtomicBool = AtomicBool::new(false);
 
 #[inline]
 fn store_fired_tick(t: u32) {
@@ -213,7 +222,9 @@ pub fn master_send(payload: &[u8]) -> Result<(), ArmError> {
         load_payload(payload)?;
 
         SUPPRESS_NEXT_IDLE_STAMP.store(true, Ordering::Release);
-        EXPECT_FIRST_BYTE.store(true, Ordering::Release);
+        EXPECT_FIRST_BYTE.store(false, Ordering::Release);
+        EXPECT_REPLY_END_IDLE.store(false, Ordering::Release);
+        crate::listen::reset_t_first();
 
         // Clear TC before unmasking TCIE so a pre-existing TC=1 (set by the
         // previous master_send or reset state) can't fire the IRQ before our

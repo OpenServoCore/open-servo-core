@@ -42,16 +42,30 @@ const fn char_time_systicks(brr: u32) -> u32 {
     9 * brr / 8
 }
 
-#[derive(Copy, Clone, Default)]
-pub struct IdleStamp {
-    /// SysTick CNT low half at the moment IDLE fired (HCLK/8 ticks).
-    pub tick: u32,
-    /// DMA write head (bytes received since boot, low 16 bits).
-    pub head: u16,
+/// Plain = a bus IDLE we observed but didn't initiate. Round = the slave-reply
+/// end of a `master_send` round-trip; carries the matching `T_request_end` /
+/// `T_first` so the host gets the full cal triple atomically per DRAIN.
+#[derive(Copy, Clone)]
+pub enum IdleStamp {
+    Plain {
+        /// SysTick CNT low half at wire-end (HCLK/8 ticks).
+        tick: u32,
+        /// DMA write head (bytes received since boot, low 16 bits).
+        head: u16,
+    },
+    Round {
+        /// `T_request_end`: master's USART2 TC stamp.
+        req: u32,
+        /// `T_first`: slave-reply T0 stamp from USART3 RXNE one-shot.
+        first: u32,
+        /// `T_last`: this IDLE's wire-end stamp.
+        last: u32,
+        head: u16,
+    },
 }
 
 static STAMPS: SyncUnsafeCell<[IdleStamp; STAMP_RING_LEN]> =
-    SyncUnsafeCell::new([IdleStamp { tick: 0, head: 0 }; STAMP_RING_LEN]);
+    SyncUnsafeCell::new([IdleStamp::Plain { tick: 0, head: 0 }; STAMP_RING_LEN]);
 static STAMP_HEAD: AtomicU32 = AtomicU32::new(0);
 static STAMP_TAIL: AtomicU32 = AtomicU32::new(0);
 
@@ -69,6 +83,14 @@ static T_FIRST: SyncUnsafeCell<u32> = SyncUnsafeCell::new(0);
 
 pub fn last_t_first() -> u32 {
     unsafe { ptr::read_volatile(T_FIRST.get()) }
+}
+
+/// Called from `master_send` so a no-reply round-trip doesn't carry the
+/// prior trip's `T_first` into its ROUND entry. RXNE handler is the only
+/// other writer; master_send runs inside a critical section so this write
+/// can't race the RXNE branch.
+pub(crate) fn reset_t_first() {
+    unsafe { ptr::write_volatile(T_FIRST.get(), 0) };
 }
 
 pub fn init() {
@@ -162,12 +184,15 @@ fn USART3() {
     let statr = USART3.statr().read();
 
     if !statr.idle() {
-        // RXNE one-shot for the slave reply's first byte. Stamp at ISR-entry
-        // (the byte already landed in the DMA buffer), then mask RXNEIE to
-        // suppress per-byte ISRs across the rest of the reply.
+        // Always one-shot — mask RXNEIE unconditionally so per-byte ISRs don't
+        // pile up for the rest of the reply, and so a stale RXNEIE left armed
+        // by a no-reply prior trip self-disarms on our own TX-echo byte.
+        // EXPECT_FIRST_BYTE is set only by the IDLE-suppress branch below, so
+        // a pre-suppress RXNE (= master TX echo) finds it false and skips the
+        // stamp; the real slave-reply T0 finds it true and stamps T_FIRST.
+        USART3.ctlr1().modify(|w| w.set_rxneie(false));
         if crate::inject::EXPECT_FIRST_BYTE.swap(false, Ordering::AcqRel) {
             unsafe { ptr::write_volatile(T_FIRST.get(), tick_now) };
-            USART3.ctlr1().modify(|w| w.set_rxneie(false));
         }
         crate::led::signal();
         return;
@@ -197,14 +222,31 @@ fn USART3() {
         v
     };
 
-    // Suppress the IDLE that follows the master's own TX echo: still bookkeep
-    // head + run the inject chain, just don't publish a stamp into the ring.
+    // Three IDLE flavors, distinguished by `master_send`-set flags:
+    //   - SUPPRESS_NEXT_IDLE_STAMP: the master TX-echo IDLE; no stamp, arm
+    //     RXNEIE for the slave reply's T0, and flag the next IDLE as the
+    //     reply-end so it publishes a Round entry.
+    //   - EXPECT_REPLY_END_IDLE: the slave-reply end IDLE; push a Round
+    //     entry with (T_request_end, T_first, T_last, head).
+    //   - neither: a plain bus IDLE we didn't initiate; push a Plain entry.
     let suppress = crate::inject::SUPPRESS_NEXT_IDLE_STAMP.swap(false, Ordering::AcqRel);
-
-    if !suppress {
-        let stamp = IdleStamp {
-            tick,
-            head: head as u16,
+    if suppress {
+        crate::inject::EXPECT_REPLY_END_IDLE.store(true, Ordering::Release);
+        crate::inject::EXPECT_FIRST_BYTE.store(true, Ordering::Release);
+        USART3.ctlr1().modify(|w| w.set_rxneie(true));
+    } else {
+        let stamp = if crate::inject::EXPECT_REPLY_END_IDLE.swap(false, Ordering::AcqRel) {
+            IdleStamp::Round {
+                req: crate::inject::last_master_request_end(),
+                first: unsafe { ptr::read_volatile(T_FIRST.get()) },
+                last: tick,
+                head: head as u16,
+            }
+        } else {
+            IdleStamp::Plain {
+                tick,
+                head: head as u16,
+            }
         };
 
         let h = STAMP_HEAD.load(Ordering::Relaxed);
@@ -213,13 +255,6 @@ fn USART3() {
             (*STAMPS.get())[(h as usize) & STAMP_MASK] = stamp;
         }
         STAMP_HEAD.store(h.wrapping_add(1), Ordering::Release);
-    }
-
-    // After a master_send, the IDLE handler arms RXNEIE so the very next
-    // received byte (slave reply T0) fires the RXNE branch above and stamps
-    // T_FIRST. RXNE branch clears the flag; harmless if not set.
-    if crate::inject::EXPECT_FIRST_BYTE.load(Ordering::Acquire) {
-        USART3.ctlr1().modify(|w| w.set_rxneie(true));
     }
 
     // Kick off an `arm_after_idle` fire if one is pending. Cheap when not

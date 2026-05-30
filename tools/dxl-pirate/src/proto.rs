@@ -23,8 +23,10 @@
 //!   `LAST?`      → `LAST <u32>`           last `inject` kickoff tick (low half)
 //!   `REQ?`       → `REQ <u32>`            last master TC stamp (low half)
 //!   `FIRST?`     → `FIRST <u32>`          last slave-reply T0 stamp (low half)
-//!   `DRAIN`      → `STAMP <tick> <head>`  one entry from the listen ring, or
-//!                  `EMPTY`                if empty
+//!   `DRAIN`      → one entry from the listen ring:
+//!                  `STAMP <tick> <head>`                     plain bus IDLE
+//!                  `ROUND <req> <first> <last> <head>`       master round-trip
+//!                  `EMPTY`                                   ring empty
 //!   `BYTES`      → `BYTES <u32>`          total RX bytes since boot
 //!   `HZ`         → `HZ <u32>`             SysTick ticks per microsecond
 //!   `BAUD <bps>` → `OK` or `ERR baud`     retune both USART2 TX + USART3 RX
@@ -48,6 +50,7 @@ pub enum Reply {
     Req(u32),
     First(u32),
     Stamp { tick: u32, head: u16 },
+    Round { req: u32, first: u32, last: u32, head: u16 },
     Empty,
     Bytes(u32),
     HzPerUs(u32),
@@ -80,10 +83,10 @@ pub fn handle_line(line: &[u8]) -> Reply {
         "BYTES" => Reply::Bytes(listen::byte_count()),
         "HZ" => Reply::HzPerUs(inject::ticks_per_us()),
         "DRAIN" => match listen::drain_stamp() {
-            Some(s) => Reply::Stamp {
-                tick: s.tick,
-                head: s.head,
-            },
+            Some(listen::IdleStamp::Plain { tick, head }) => Reply::Stamp { tick, head },
+            Some(listen::IdleStamp::Round { req, first, last, head }) => {
+                Reply::Round { req, first, last, head }
+            }
             None => Reply::Empty,
         },
         _ => Reply::Err("unknown"),

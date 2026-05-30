@@ -109,6 +109,7 @@ async fn send_reply<'d, T: Instance + 'd>(
         Reply::Bytes(n) => write_u32(&mut out, b"BYTES ", n),
         Reply::HzPerUs(n) => write_u32(&mut out, b"HZ ", n),
         Reply::Stamp { tick, head } => write_stamp(&mut out, tick, head),
+        Reply::Round { req, first, last, head } => write_round(&mut out, req, first, last, head),
     }
     // Catches a future reply format that overflows the 64-byte Vec — the
     // `let _` swallows above would silently truncate otherwise.
@@ -119,6 +120,18 @@ async fn send_reply<'d, T: Instance + 'd>(
 fn write_stamp(out: &mut Vec<u8, 64>, tick: u32, head: u16) {
     let _ = out.extend_from_slice(b"STAMP ");
     push_dec_u32(out, tick);
+    let _ = out.push(b' ');
+    push_dec_u32(out, head as u32);
+    let _ = out.push(b'\n');
+}
+
+fn write_round(out: &mut Vec<u8, 64>, req: u32, first: u32, last: u32, head: u16) {
+    let _ = out.extend_from_slice(b"ROUND ");
+    push_dec_u32(out, req);
+    let _ = out.push(b' ');
+    push_dec_u32(out, first);
+    let _ = out.push(b' ');
+    push_dec_u32(out, last);
     let _ = out.push(b' ');
     push_dec_u32(out, head as u32);
     let _ = out.push(b'\n');
