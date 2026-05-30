@@ -6,6 +6,7 @@ mod debug;
 mod inject;
 mod led;
 mod listen;
+mod pfic;
 mod proto;
 mod usb_cdc;
 
@@ -39,6 +40,7 @@ async fn main(spawner: Spawner) {
     debug::init();
     inject::init();
     listen::init();
+    pfic::set_priorities();
 
     spawner.must_spawn(led::blink());
     spawner.must_spawn(usb_cdc::run(p.USBD, p.PA12, p.PA11));
