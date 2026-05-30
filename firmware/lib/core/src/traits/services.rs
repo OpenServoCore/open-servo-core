@@ -48,6 +48,14 @@ pub trait DxlBus {
     /// Queue a new Q8.8 µs sub-trim drift residual. Implementations recompute
     /// their fire-advance compensation and apply at USART1 TC. Default no-op.
     fn set_clock_fine_trim_us(&mut self, _q88_us: i16) {}
+
+    /// Publish a new Q8.8 µs `TX_PLAIN_LATENCY` for the plain reply path.
+    /// Applied immediately — the next reply uses the new value. Default no-op.
+    fn set_tx_plain_latency_us(&mut self, _q88_us: u16) {}
+
+    /// Publish a new Q8.8 µs `TX_FAST_LATENCY` for the Fast chain (last-slave)
+    /// path. Applied immediately. Default no-op.
+    fn set_tx_fast_latency_us(&mut self, _q88_us: u16) {}
 }
 
 /// Lifecycle commands the dispatcher delivers to the device (reboot today;

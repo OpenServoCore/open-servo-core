@@ -129,12 +129,12 @@ const SWITCH_MARGIN_US: u32 = 100;
 
 #[inline(always)]
 fn plain_fire_advance_ticks() -> u32 {
-    fire_advance_ticks_for(TX_PLAIN_LATENCY_TICKS)
+    fire_advance_ticks_for(TX_PLAIN_LATENCY_TICKS.load(Ordering::Relaxed))
 }
 
 #[inline(always)]
 fn fast_fire_advance_ticks() -> u32 {
-    fire_advance_ticks_for(TX_FAST_LATENCY_TICKS)
+    fire_advance_ticks_for(TX_FAST_LATENCY_TICKS.load(Ordering::Relaxed))
 }
 
 #[inline(always)]

@@ -41,6 +41,18 @@ fn touches_clock_fine_trim_us(addr: u16, len: usize) -> bool {
     (addr as u32) < field_end && (addr as u32) + (len as u32) > field_addr as u32
 }
 
+fn touches_tx_plain_latency_us(addr: u16, len: usize) -> bool {
+    let field_addr = config::addr::comms::DXL_TX_PLAIN_LATENCY_US;
+    let field_end = field_addr as u32 + 2;
+    (addr as u32) < field_end && (addr as u32) + (len as u32) > field_addr as u32
+}
+
+fn touches_tx_fast_latency_us(addr: u16, len: usize) -> bool {
+    let field_addr = config::addr::comms::DXL_TX_FAST_LATENCY_US;
+    let field_end = field_addr as u32 + 2;
+    (addr as u32) < field_end && (addr as u32) + (len as u32) > field_addr as u32
+}
+
 struct Ctx {
     our_id: u8,
     rdt_us: u32,
@@ -259,6 +271,9 @@ impl<'a, B: DxlBus, D: DeviceControl> Dispatcher<'a, B, D> {
         let rdt_changed = result.is_ok() && touches_return_delay(p.address, len);
         let clock_trim_changed = result.is_ok() && touches_clock_trim(p.address, len);
         let clock_fine_trim_changed = result.is_ok() && touches_clock_fine_trim_us(p.address, len);
+        let tx_plain_latency_changed =
+            result.is_ok() && touches_tx_plain_latency_us(p.address, len);
+        let tx_fast_latency_changed = result.is_ok() && touches_tx_fast_latency_us(p.address, len);
         self.reply_table_result(ctx, id, direct, result);
         if baud_changed {
             // reply queued, bus impl defers retune until TC.
@@ -284,6 +299,22 @@ impl<'a, B: DxlBus, D: DeviceControl> Dispatcher<'a, B, D> {
                 .config
                 .with(|c| c.comms.clock_fine_trim_us);
             self.bus.set_clock_fine_trim_us(new_q88);
+        }
+        if tx_plain_latency_changed {
+            let new_q88 = self
+                .shared
+                .table
+                .config
+                .with(|c| c.comms.dxl_tx_plain_latency_us);
+            self.bus.set_tx_plain_latency_us(new_q88);
+        }
+        if tx_fast_latency_changed {
+            let new_q88 = self
+                .shared
+                .table
+                .config
+                .with(|c| c.comms.dxl_tx_fast_latency_us);
+            self.bus.set_tx_fast_latency_us(new_q88);
         }
     }
 
