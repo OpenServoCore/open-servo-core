@@ -18,7 +18,6 @@ struct FakeBus {
     last_snoop_delay_us: Option<u32>,
     last_snoop_from: Option<Option<u32>>,
     last_request_end: Option<u32>,
-    cal_count: u32,
 }
 
 impl FakeBus {
@@ -35,7 +34,6 @@ impl FakeBus {
             last_snoop_delay_us: None,
             last_snoop_from: None,
             last_request_end: None,
-            cal_count: 0,
         }
     }
 
@@ -78,10 +76,6 @@ impl DxlBus for FakeBus {
         self.snoop_count += 1;
         self.last_snoop_delay_us = Some(delay_us);
         self.last_snoop_from = Some(snoop_from);
-    }
-
-    fn trigger_clock_cal(&mut self) {
-        self.cal_count += 1;
     }
 }
 
@@ -1287,29 +1281,26 @@ fn fast_bulk_read_return_level_none_silences_reply() {
     assert!(io.bus.tx.is_empty());
 }
 
-fn enable_torque(shared: &Shared) {
-    shared
-        .table
-        .control
-        .with_mut(|c| c.lifecycle.torque_enable = true);
-}
-
 #[test]
-fn calibrate_broadcast_torque_off_triggers_silently() {
+fn calibrate_unicast_replies_with_zero_payload() {
     let shared = Shared::new();
     let mut io = FakeIo::new();
     let mut h = Dxl::new();
 
-    let req = encode(&Packet::Calibrate(CalibratePacket::new(BROADCAST_ID, 128)));
+    let req = encode(&Packet::Calibrate(CalibratePacket::new(0, 16)));
     io.feed(&req);
     h.poll(&shared, &mut io);
 
-    assert_eq!(io.bus.cal_count, 1);
-    assert!(io.bus.tx.is_empty());
+    assert_eq!(io.bus.send_count, 1);
+    let (id, err, params) = parse_status(&io.bus.tx);
+    assert_eq!(id, 0);
+    assert_eq!(err, 0);
+    assert_eq!(params.len(), 16);
+    assert!(params.iter().all(|&b| b == 0));
 }
 
 #[test]
-fn calibrate_unicast_silently_dropped() {
+fn calibrate_unicast_count_max_replies() {
     let shared = Shared::new();
     let mut io = FakeIo::new();
     let mut h = Dxl::new();
@@ -1318,14 +1309,52 @@ fn calibrate_unicast_silently_dropped() {
     io.feed(&req);
     h.poll(&shared, &mut io);
 
-    assert_eq!(io.bus.cal_count, 0);
-    assert!(io.bus.tx.is_empty());
+    assert_eq!(io.bus.send_count, 1);
+    let tx = &io.bus.tx[..];
+    // hdr(4) + id(1) + len(2) + inst(1) + err(1) + 128 zero bytes + crc(2)
+    assert_eq!(tx.len(), 139);
+    assert_eq!(&tx[..5], &[0xFF, 0xFF, 0xFD, 0x00, 0]);
+    assert_eq!(&tx[5..7], &[132, 0]);
+    assert_eq!(tx[7], 0x55);
+    assert_eq!(tx[8], 0);
+    assert!(tx[9..137].iter().all(|&b| b == 0));
 }
 
 #[test]
-fn calibrate_broadcast_torque_on_silent_no_trigger() {
+fn calibrate_unicast_count_zero_data_range_err() {
     let shared = Shared::new();
-    enable_torque(&shared);
+    let mut io = FakeIo::new();
+    let mut h = Dxl::new();
+
+    let req = encode(&Packet::Calibrate(CalibratePacket::new(0, 0)));
+    io.feed(&req);
+    h.poll(&shared, &mut io);
+
+    assert_eq!(io.bus.send_count, 1);
+    let (_, err, params) = parse_status(&io.bus.tx);
+    assert_eq!(err, 0x04);
+    assert!(params.is_empty());
+}
+
+#[test]
+fn calibrate_unicast_count_over_max_data_range_err() {
+    let shared = Shared::new();
+    let mut io = FakeIo::new();
+    let mut h = Dxl::new();
+
+    let req = encode(&Packet::Calibrate(CalibratePacket::new(0, 129)));
+    io.feed(&req);
+    h.poll(&shared, &mut io);
+
+    assert_eq!(io.bus.send_count, 1);
+    let (_, err, params) = parse_status(&io.bus.tx);
+    assert_eq!(err, 0x04);
+    assert!(params.is_empty());
+}
+
+#[test]
+fn calibrate_broadcast_silently_dropped() {
+    let shared = Shared::new();
     let mut io = FakeIo::new();
     let mut h = Dxl::new();
 
@@ -1333,22 +1362,7 @@ fn calibrate_broadcast_torque_on_silent_no_trigger() {
     io.feed(&req);
     h.poll(&shared, &mut io);
 
-    assert_eq!(io.bus.cal_count, 0);
-    assert!(io.bus.tx.is_empty());
-}
-
-#[test]
-fn calibrate_broadcast_skips_when_idle_anchor_missing() {
-    let shared = Shared::new();
-    let mut io = FakeIo::new();
-    let mut h = Dxl::new();
-
-    let req = encode(&Packet::Calibrate(CalibratePacket::new(BROADCAST_ID, 128)));
-    io.feed(&req);
-    // Force `request_complete` to return false by mismatching the idle anchor.
-    io.bus.rx_bytes_at_idle = io.bus.rx_bytes_at_idle.wrapping_add(1);
-    h.poll(&shared, &mut io);
-
-    assert_eq!(io.bus.cal_count, 0);
+    assert_eq!(io.bus.send_count, 0);
+    assert_eq!(io.bus.after_count, 0);
     assert!(io.bus.tx.is_empty());
 }

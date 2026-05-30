@@ -11,6 +11,7 @@ const MAX_READ: usize = 128;
 const MAX_WRITE: usize = 128;
 const MAX_BULK_BODY: usize = 256;
 const MAX_FAST_SLOTS: usize = 32;
+const CAL_MAX_COUNT: usize = 128;
 
 fn error_to_status(e: Error) -> StatusError {
     match e {
@@ -307,24 +308,29 @@ impl<'a, B: DxlBus, D: DeviceControl> Dispatcher<'a, B, D> {
     }
 
     fn handle_calibrate(&mut self, ctx: &Ctx, p: &CalibratePacket) {
-        // CAL is broadcast-only by contract: the trigger writes the chip's
-        // clock-trim register, which would garble any in-flight Status reply.
-        // Unicast CAL silently drops, same shape as SyncWrite / BulkWrite.
-        if p.id != BROADCAST_ID {
+        let Some((id, true)) = ctx.addressed(p.id) else {
+            return;
+        };
+        if p.count == 0 || p.count as usize > CAL_MAX_COUNT {
+            self.send_status(
+                ctx,
+                id,
+                StatusError::DataRange,
+                &[],
+                StatusReturnLevel::None,
+                0,
+            );
             return;
         }
-        if !ctx.idle_pinned {
-            return;
-        }
-        let torque_on = self
-            .shared
-            .table
-            .control
-            .with(|c| c.lifecycle.torque_enable);
-        if torque_on {
-            return;
-        }
-        self.bus.trigger_clock_cal();
+        let zeros = [0u8; CAL_MAX_COUNT];
+        self.send_status(
+            ctx,
+            id,
+            StatusError::None,
+            &zeros[..p.count as usize],
+            StatusReturnLevel::None,
+            0,
+        );
     }
 
     fn handle_reboot(&mut self, ctx: &Ctx, p: &RebootPacket) {
