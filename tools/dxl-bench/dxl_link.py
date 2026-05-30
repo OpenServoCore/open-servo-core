@@ -5,7 +5,7 @@ Addresses are generated from `regions::telemetry::addr::link::*`.
 
 import struct
 
-from dxl_packet import build_read, build_write, parse_status, read_status_frame
+from dxl_packet import build_read, build_write, parse_status
 
 LINK_BASE = 0x023C
 LINK_FIELDS = [
@@ -24,19 +24,17 @@ LINK_FMT = f"<{len(LINK_FIELDS)}I"
 ZERO_BLOB = b"\x00" * LINK_LEN
 
 
-def read_counters(port, osc_id):
-    port.writePort(build_read(osc_id, LINK_BASE, LINK_LEN))
-    frame = read_status_frame(port.ser, timeout_s=0.2)
-    assert frame is not None, "no Status frame on counter read"
+def read_counters(pirate, osc_id):
+    frame = pirate.xfer(build_read(osc_id, LINK_BASE, LINK_LEN), reply_us=200_000)
+    assert frame, "no Status frame on counter read"
     st = parse_status(frame)
     assert st.error == 0, f"counter read error 0x{st.error:02X}"
     return dict(zip(LINK_FIELDS, struct.unpack(LINK_FMT, st.params)))
 
 
-def clear_counters(port, osc_id):
-    port.writePort(build_write(osc_id, LINK_BASE, ZERO_BLOB))
-    frame = read_status_frame(port.ser, timeout_s=0.2)
-    assert frame is not None, "no Status frame on counter clear"
+def clear_counters(pirate, osc_id):
+    frame = pirate.xfer(build_write(osc_id, LINK_BASE, ZERO_BLOB), reply_us=200_000)
+    assert frame, "no Status frame on counter clear"
     st = parse_status(frame)
     assert st.error == 0, f"counter clear error 0x{st.error:02X}"
 

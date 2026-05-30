@@ -1,7 +1,7 @@
 """Scope capture for the DMA + straggle path.
 
-Repeats the straggle chain 8 times back-to-back. Each rep advances the
-snoop ring by ~170 B (host request + INJ slot + DUT slot); after ~3 reps
+Repeats the straggle chain `REPS` times back-to-back. Each rep advances the
+V006 snoop ring by ~170 B (host request + INJ slot + DUT slot); after ~3 reps
 the ring (N=512) laps during a snoop window and DMA1_CH5 TC fires.
 
 The TC handler's ring math is gated by `unexpected_byte_count` — that
@@ -12,13 +12,8 @@ pulse during the snoop window — the on_dma1_ch5_tc body bracketed by
 dbg_high / dbg_low — in addition to the catchup-walk and fire-window
 pulses already visible in the straggle test.
 
-Sequence: clear counters, ARM scope, fire `REPS` chains, read counters,
-clear again.
-
 Invoke with `-s`:
   pytest tools/dxl-bench/test_dxl_fast_scope_dma_straggle.py -s --baud 3000000
-
-Remove this file once the scope sweep is done.
 """
 
 import time
@@ -28,7 +23,6 @@ from dxl_packet import (
     build_fast_bulk_read,
     build_fast_first_bytes,
     parse_fast_response,
-    read_status_frame,
 )
 
 INJ_ID = 50
@@ -39,19 +33,8 @@ PACKET_LENGTH = 1 + (2 + INJ_LEN) + (2 + DUT_LEN) + 2
 REPS = 8
 
 
-def _drain_all_stamps(injector):
-    out = []
-    while True:
-        reply = injector.command("DRAIN")
-        if reply == "EMPTY":
-            return out
-        assert reply.startswith("STAMP "), f"unexpected DRAIN reply: {reply!r}"
-        _, tick_s, head_s = reply.split()
-        out.append((int(tick_s), int(head_s)))
-
-
-def test_fast_bulk_dut_last_dma_straggle_scope_capture(port, osc_id, injector, baud):
-    clear_counters(port, osc_id)
+def test_fast_bulk_dut_last_dma_straggle_scope_capture(pirate, osc_id, baud):
+    clear_counters(pirate, osc_id)
 
     print("\n" + "=" * 60, flush=True)
     print(
@@ -63,10 +46,6 @@ def test_fast_bulk_dut_last_dma_straggle_scope_capture(port, osc_id, injector, b
     print("=" * 60, flush=True)
     time.sleep(5.0)
 
-    while port.ser.in_waiting:
-        port.ser.read(port.ser.in_waiting)
-    _drain_all_stamps(injector)
-
     inj_bytes = build_fast_first_bytes(
         packet_length=PACKET_LENGTH, err=0, slot_id=INJ_ID, data=INJ_DATA,
     )
@@ -76,22 +55,26 @@ def test_fast_bulk_dut_last_dma_straggle_scope_capture(port, osc_id, injector, b
     total_extra_idle = 0
     bad_inj = 0
     for i in range(REPS):
-        _drain_all_stamps(injector)
-        reply = injector.command(f"ARM bytes={inj_bytes.hex()} after_idle={250 * 18}")
-        assert reply == "OK", f"injector ARM rejected on rep {i}: {reply!r}"
-
-        port.writePort(request)
-        frame = read_status_frame(port.ser, timeout_s=0.5)
-        assert frame is not None, f"no Status frame on rep {i}"
+        pirate.drain_stamps()
+        b0 = pirate.bytes_count()
+        pirate.arm(inj_bytes, after_idle_ticks=250 * 18)
+        pirate.master(request)
+        time.sleep(0.05)
+        b1 = pirate.bytes_count()
+        total = b1 - b0
+        assert total <= 256, f"rep {i}: frame exceeds RX_BUF horizon ({total} B)"
+        all_rx = pirate.rx_range(b0, total)
+        frame = all_rx[len(request):]
+        assert len(frame) >= 11, f"rep {i}: no Status frame"
         slots = parse_fast_response(frame, slot_lengths=reply_lens)
         assert len(slots) == 2
         if slots[0].data != INJ_DATA:
             bad_inj += 1
-        stamps = _drain_all_stamps(injector)
-        if len(stamps) > 2:
-            total_extra_idle += len(stamps) - 2
+        stamps = pirate.drain_stamps()
+        if len(stamps) > 1:
+            total_extra_idle += len(stamps) - 1
         time.sleep(0.005)
 
     print(f"\n  reps={REPS}  bad_inj={bad_inj}  total_extra_idle={total_extra_idle}", flush=True)
-    print_counters("dma+straggle", read_counters(port, osc_id))
-    clear_counters(port, osc_id)
+    print_counters("dma+straggle", read_counters(pirate, osc_id))
+    clear_counters(pirate, osc_id)

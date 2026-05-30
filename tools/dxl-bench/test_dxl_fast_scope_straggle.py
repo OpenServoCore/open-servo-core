@@ -13,13 +13,8 @@ Probe 2 (dbg) should show:
   - The fire pulse from `fire_now` through `patch_crc` (post-fire straggle
     walk over ~45 bytes + CRC patch).
 
-Sequence: same as test_dxl_fast_scope.py — clear counters, ARM scope, fire,
-read counters, clear again.
-
 Invoke with `-s`:
   pytest tools/dxl-bench/test_dxl_fast_scope_straggle.py -s --baud 3000000
-
-Remove this file once the scope sweep is done.
 """
 
 import time
@@ -29,30 +24,17 @@ from dxl_packet import (
     build_fast_bulk_read,
     build_fast_first_bytes,
     parse_fast_response,
-    read_status_frame,
 )
 
 INJ_ID = 50
 INJ_LEN = 128
 DUT_LEN = 4
 INJ_DATA = b"\xAA" * INJ_LEN
-# Status overhead: instr(1) + INJ_slot(2 + INJ_LEN) + DUT_slot(2 + DUT_LEN) + crc(2).
 PACKET_LENGTH = 1 + (2 + INJ_LEN) + (2 + DUT_LEN) + 2
 
 
-def _drain_all_stamps(injector):
-    out = []
-    while True:
-        reply = injector.command("DRAIN")
-        if reply == "EMPTY":
-            return out
-        assert reply.startswith("STAMP "), f"unexpected DRAIN reply: {reply!r}"
-        _, tick_s, head_s = reply.split()
-        out.append((int(tick_s), int(head_s)))
-
-
-def test_fast_bulk_dut_last_straggle_scope_capture(port, osc_id, injector, baud):
-    clear_counters(port, osc_id)
+def test_fast_bulk_dut_last_straggle_scope_capture(pirate, osc_id, baud):
+    clear_counters(pirate, osc_id)
 
     print("\n" + "=" * 60, flush=True)
     print(
@@ -64,20 +46,26 @@ def test_fast_bulk_dut_last_straggle_scope_capture(port, osc_id, injector, baud)
     print("=" * 60, flush=True)
     time.sleep(5.0)
 
-    while port.ser.in_waiting:
-        port.ser.read(port.ser.in_waiting)
-    _drain_all_stamps(injector)
+    pirate.drain_stamps()
+    b0 = pirate.bytes_count()
 
     inj_bytes = build_fast_first_bytes(
         packet_length=PACKET_LENGTH, err=0, slot_id=INJ_ID, data=INJ_DATA,
     )
-    reply = injector.command(f"ARM bytes={inj_bytes.hex()} after_idle={250 * 18}")
-    assert reply == "OK", f"injector ARM rejected: {reply!r}"
+    req = build_fast_bulk_read([(INJ_ID, 0, INJ_LEN), (osc_id, 0, DUT_LEN)])
 
-    port.writePort(build_fast_bulk_read([(INJ_ID, 0, INJ_LEN), (osc_id, 0, DUT_LEN)]))
+    pirate.arm(inj_bytes, after_idle_ticks=250 * 18)
+    pirate.master(req)
 
-    frame = read_status_frame(port.ser, timeout_s=0.5)
-    assert frame is not None, "no coalesced Fast Status frame on the wire"
+    time.sleep(0.1)
+    b1 = pirate.bytes_count()
+    # RX_BUF is 256 B; req + inj_bytes + dut frame may exceed it. Pull in
+    # chunks so we don't reach back past the wrap horizon.
+    total = b1 - b0
+    assert total <= 256, f"frame exceeds RX_BUF horizon: {total} B"
+    all_rx = pirate.rx_range(b0, total)
+    frame = all_rx[len(req):]
+    assert len(frame) >= 11, f"no coalesced Fast Status frame: {all_rx.hex()}"
 
     slots = parse_fast_response(frame, slot_lengths=[INJ_LEN, DUT_LEN])
     assert len(slots) == 2
@@ -88,17 +76,17 @@ def test_fast_bulk_dut_last_straggle_scope_capture(port, osc_id, injector, baud)
     assert slots[1].id == osc_id and slots[1].error == 0
     assert len(slots[1].data) == DUT_LEN
 
-    stamps = _drain_all_stamps(injector)
+    stamps = pirate.drain_stamps()
     print(f"\nframe ({len(frame)} B): {frame[:32].hex()}…{frame[-16:].hex()}", flush=True)
     print(f"INJ slot data first 8: {slots[0].data[:8].hex()}  last 4: {slots[0].data[-4:].hex()}", flush=True)
     print(f"DUT slot data: {slots[1].data.hex()}", flush=True)
-    print(f"IDLE stamps observed by injector ({len(stamps)}):", flush=True)
-    for tick, head in stamps:
-        print(f"  tick={tick:10d}  head={head:5d}", flush=True)
-    if len(stamps) == 2:
-        print("  → only req-end + frame-end stamps; no intermediate IDLE (good).", flush=True)
-    elif len(stamps) > 2:
-        print(f"  → {len(stamps) - 2} extra IDLE(s) — bus went idle between slots.", flush=True)
+    print(f"IDLE stamps observed by pirate ({len(stamps)}):", flush=True)
+    for s in stamps:
+        print(f"  {s}", flush=True)
+    if len(stamps) == 1:
+        print("  → single burst stamp; INJ + DUT coalesced (good).", flush=True)
+    else:
+        print(f"  → {len(stamps) - 1} extra IDLE(s) — bus went idle between slots.", flush=True)
 
-    print_counters("straggle", read_counters(port, osc_id))
-    clear_counters(port, osc_id)
+    print_counters("straggle", read_counters(pirate, osc_id))
+    clear_counters(pirate, osc_id)

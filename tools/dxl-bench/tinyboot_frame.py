@@ -59,50 +59,34 @@ class InfoResponse:
     mode: int
 
 
-def read_info_response(ser, timeout_s: float = 0.5) -> InfoResponse:
-    saved = ser.timeout
-    ser.timeout = timeout_s
-    try:
-        prev = b""
-        for _ in range(64):
-            b = ser.read(1)
-            if len(b) != 1:
-                raise TimeoutError("no SYNC byte from bootloader")
-            window = prev + b
-            if window == SYNC:
-                break
-            prev = b
-        else:
-            raise TimeoutError("SYNC AA55 not found in window")
-
-        rest_header = ser.read(HEADER_LEN - 2)
-        if len(rest_header) != HEADER_LEN - 2:
-            raise TimeoutError("bootloader header truncated")
-        header = SYNC + rest_header
-        cmd, status = header[2], header[3]
-        length = header[8] | (header[9] << 8)
-        if cmd != CMD_INFO:
-            raise ValueError(f"bootloader reply cmd=0x{cmd:02X}, want INFO")
-        if status != STATUS_OK:
-            raise ValueError(f"bootloader reply status=0x{status:02X}, want OK")
-        if length != 12:
-            raise ValueError(f"InfoData len={length}, want 12")
-
-        data = ser.read(length)
-        crc_bytes = ser.read(2)
-        if len(data) != length or len(crc_bytes) != 2:
-            raise TimeoutError("InfoData payload truncated")
-
-        expected = crc16(header + data)
-        actual = crc_bytes[0] | (crc_bytes[1] << 8)
-        if expected != actual:
-            raise ValueError(f"bootloader CRC mismatch: got 0x{actual:04X}, want 0x{expected:04X}")
-
-        capacity = int.from_bytes(data[0:4], "little")
-        erase_size = int.from_bytes(data[4:6], "little")
-        boot_version = int.from_bytes(data[6:8], "little")
-        app_version = int.from_bytes(data[8:10], "little")
-        mode = int.from_bytes(data[10:12], "little")
-        return InfoResponse(capacity, erase_size, boot_version, app_version, mode)
-    finally:
-        ser.timeout = saved
+def parse_info_response(frame: bytes) -> InfoResponse:
+    sync_at = frame.find(SYNC)
+    if sync_at < 0:
+        raise ValueError("SYNC AA55 not found in frame")
+    frame = frame[sync_at:]
+    if len(frame) < HEADER_LEN:
+        raise ValueError(f"frame too short: {len(frame)} bytes")
+    header = frame[:HEADER_LEN]
+    cmd, status = header[2], header[3]
+    length = header[8] | (header[9] << 8)
+    if cmd != CMD_INFO:
+        raise ValueError(f"bootloader reply cmd=0x{cmd:02X}, want INFO")
+    if status != STATUS_OK:
+        raise ValueError(f"bootloader reply status=0x{status:02X}, want OK")
+    if length != 12:
+        raise ValueError(f"InfoData len={length}, want 12")
+    if len(frame) < HEADER_LEN + length + 2:
+        raise ValueError(f"frame truncated: {len(frame)} bytes")
+    data = frame[HEADER_LEN:HEADER_LEN + length]
+    crc_bytes = frame[HEADER_LEN + length:HEADER_LEN + length + 2]
+    expected = crc16(header + data)
+    actual = crc_bytes[0] | (crc_bytes[1] << 8)
+    if expected != actual:
+        raise ValueError(f"bootloader CRC mismatch: got 0x{actual:04X}, want 0x{expected:04X}")
+    return InfoResponse(
+        capacity=int.from_bytes(data[0:4], "little"),
+        erase_size=int.from_bytes(data[4:6], "little"),
+        boot_version=int.from_bytes(data[6:8], "little"),
+        app_version=int.from_bytes(data[8:10], "little"),
+        mode=int.from_bytes(data[10:12], "little"),
+    )

@@ -10,6 +10,8 @@ from typing import Iterable
 INSTR_PING = 0x01
 INSTR_READ = 0x02
 INSTR_WRITE = 0x03
+INSTR_REG_WRITE = 0x04
+INSTR_ACTION = 0x05
 INSTR_FACTORY_RESET = 0x06
 INSTR_REBOOT = 0x08
 INSTR_CLEAR = 0x10
@@ -70,6 +72,16 @@ def build_write(id: int, addr: int, data: bytes) -> bytes:
     params = bytearray([addr & 0xFF, (addr >> 8) & 0xFF])
     params.extend(data)
     return build_packet(id, INSTR_WRITE, bytes(params))
+
+
+def build_reg_write(id: int, addr: int, data: bytes) -> bytes:
+    params = bytearray([addr & 0xFF, (addr >> 8) & 0xFF])
+    params.extend(data)
+    return build_packet(id, INSTR_REG_WRITE, bytes(params))
+
+
+def build_action(id: int) -> bytes:
+    return build_packet(id, INSTR_ACTION)
 
 
 def build_reboot(id: int) -> bytes:
@@ -212,25 +224,6 @@ def parse_status(data: bytes) -> StatusPacket:
     if (crc_lo | (crc_hi << 8)) != expected:
         raise ValueError(f"CRC mismatch: got {crc_hi:02x}{crc_lo:02x}, want {expected:04x}")
     return StatusPacket((id_, err, params))
-
-
-def read_status_frame(ser, timeout_s: float = 0.1) -> bytes | None:
-    saved = ser.timeout
-    ser.timeout = timeout_s
-    try:
-        hdr = ser.read(4)
-        if len(hdr) < 4 or hdr != HEADER:
-            return None
-        head = ser.read(3)
-        if len(head) < 3:
-            return None
-        length = head[1] | (head[2] << 8)
-        rest = ser.read(length)
-        if len(rest) < length:
-            return None
-        return hdr + head + rest
-    finally:
-        ser.timeout = saved
 
 
 _CRC_TABLE = [
