@@ -19,6 +19,19 @@
 //!       Fire `bytes` now as the bus master; USART2 TC IRQ captures wire-end
 //!       (T_request_end). Listener suppresses the IDLE stamp from our own
 //!       TX echo so the slave-side stamp ring isn't polluted.
+//!   `XFER bytes=<hex> reply_us=<u32>`
+//!       MASTER + wait up to `reply_us` for the slave-reply end-of-frame IDLE.
+//!       Streams `REPLY <hex>\n` with the slave's reply bytes (extracted from
+//!       the RX DMA ring) on success, `NOREPLY\n` on timeout. Drains the stamp
+//!       ring first so a stale Round/Plain can't masquerade as this trip's
+//!       reply. Handled directly in `usb_cdc::serve` so the hex stream can
+//!       span multiple CDC bulk packets.
+//!   `RX from=<u32> len=<u16>`
+//!       Stream `REPLY <hex>\n` with `len` bytes from the RX DMA ring starting
+//!       at absolute byte-count address `from`. Caller must keep `from` within
+//!       the last `RX_BUF_LEN` of `BYTES` or the bytes will have been
+//!       overwritten. For MASTER+ARM chains where the reply isn't a single
+//!       Round trip — split tx echo and arm-emitted bytes apart by offset.
 //!   `TICK?`      → `TICK <u64>`           current SysTick.CNT
 //!   `LAST?`      → `LAST <u32>`           last `inject` kickoff tick (low half)
 //!   `REQ?`       → `REQ <u32>`            last master TC stamp (low half)
@@ -54,6 +67,62 @@ pub enum Reply {
     Empty,
     Bytes(u32),
     HzPerUs(u32),
+}
+
+pub struct XferRequest {
+    pub payload: [u8; TX_BUF_LEN],
+    pub len: usize,
+    pub reply_us: u32,
+}
+
+pub fn parse_xfer(rest: &[u8]) -> Result<XferRequest, &'static str> {
+    let Ok(rest) = str::from_utf8(rest) else {
+        return Err("utf8");
+    };
+    let mut payload = [0u8; TX_BUF_LEN];
+    let mut len: Option<usize> = None;
+    let mut reply_us: Option<u32> = None;
+    for tok in rest.trim().split_ascii_whitespace() {
+        let Some((k, v)) = tok.split_once('=') else {
+            return Err("kv");
+        };
+        match k {
+            "bytes" => len = decode_hex(v, &mut payload),
+            "reply_us" => reply_us = v.parse().ok(),
+            _ => return Err("key"),
+        }
+    }
+    let (Some(len), Some(reply_us)) = (len, reply_us) else {
+        return Err("missing");
+    };
+    Ok(XferRequest { payload, len, reply_us })
+}
+
+pub struct RxRequest {
+    pub from: u32,
+    pub len: u16,
+}
+
+pub fn parse_rx(rest: &[u8]) -> Result<RxRequest, &'static str> {
+    let Ok(rest) = str::from_utf8(rest) else {
+        return Err("utf8");
+    };
+    let mut from: Option<u32> = None;
+    let mut len: Option<u16> = None;
+    for tok in rest.trim().split_ascii_whitespace() {
+        let Some((k, v)) = tok.split_once('=') else {
+            return Err("kv");
+        };
+        match k {
+            "from" => from = v.parse().ok(),
+            "len" => len = v.parse().ok(),
+            _ => return Err("key"),
+        }
+    }
+    let (Some(from), Some(len)) = (from, len) else {
+        return Err("missing");
+    };
+    Ok(RxRequest { from, len })
 }
 
 pub fn handle_line(line: &[u8]) -> Reply {

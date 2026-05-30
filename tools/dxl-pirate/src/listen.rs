@@ -163,6 +163,13 @@ pub fn byte_count() -> u32 {
     unsafe { ptr::read_volatile(BYTES_TOTAL.get()) }
 }
 
+/// Read one byte from the circular RX DMA buffer by its absolute byte-count
+/// address. Wraps via `RX_BUF_MASK`; the caller must keep `addr` within the
+/// last `RX_BUF_LEN` of `byte_count()` or the byte will have been overwritten.
+pub fn read_byte(addr: u32) -> u8 {
+    unsafe { (*RX_BUF.get())[(addr & RX_BUF_MASK) as usize] }
+}
+
 /// Reconfigure USART3's bit rate. Bounces UE around the BRR write. Caller
 /// must quiesce the bus first.
 pub fn set_baud(bps: u32) -> Result<(), BaudError> {

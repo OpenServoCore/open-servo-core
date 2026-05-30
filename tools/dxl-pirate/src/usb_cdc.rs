@@ -4,12 +4,15 @@ use ch32_hal as hal;
 use ch32_hal::Peri;
 use ch32_hal::peripherals::{PA11, PA12, USBD};
 use ch32_hal::usbd::{Driver, Instance, InterruptHandler};
+use embassy_futures::select::{Either, select};
+use embassy_time::{Duration, Timer};
 use embassy_usb::Builder;
 use embassy_usb::class::cdc_acm::{CdcAcmClass, State};
 use embassy_usb::driver::EndpointError;
 use heapless::Vec;
 
-use crate::inject::TX_BUF_LEN;
+use crate::inject::{self, TX_BUF_LEN};
+use crate::listen;
 use crate::proto::{self, Reply};
 
 // `FIRE bytes=<TX_BUF_LEN*2 hex> at=<u64>` = TX_BUF_LEN*2 + 35; +slop.
@@ -74,8 +77,14 @@ async fn serve<'d, T: Instance + 'd>(
                 continue;
             }
             if b == b'\n' {
-                let reply = proto::handle_line(&line);
-                send_reply(class, reply).await?;
+                if let Some(rest) = line.strip_prefix(b"XFER ") {
+                    handle_xfer(class, rest).await?;
+                } else if let Some(rest) = line.strip_prefix(b"RX ") {
+                    handle_rx(class, rest).await?;
+                } else {
+                    let reply = proto::handle_line(&line);
+                    send_reply(class, reply).await?;
+                }
                 line.clear();
             } else if line.push(b).is_err() {
                 line.clear();
@@ -83,6 +92,85 @@ async fn serve<'d, T: Instance + 'd>(
             }
         }
     }
+}
+
+async fn handle_xfer<'d, T: Instance + 'd>(
+    class: &mut CdcAcmClass<'d, Driver<'d, T>>,
+    rest: &[u8],
+) -> Result<(), EndpointError> {
+    let req = match proto::parse_xfer(rest) {
+        Ok(r) => r,
+        Err(e) => return send_reply(class, Reply::Err(e)).await,
+    };
+
+    // Drain any prior IDLE stamps so a stale Round/Plain entry from the
+    // previous trip can't masquerade as this trip's reply IDLE.
+    while listen::drain_stamp().is_some() {}
+
+    let bytes_before = listen::byte_count();
+    let tx_len = req.len as u32;
+    if inject::master_send(&req.payload[..req.len]).is_err() {
+        return send_reply(class, Reply::Err("toolong")).await;
+    }
+
+    let timeout = Timer::after(Duration::from_micros(req.reply_us as u64));
+    let wait = async {
+        // Poll the ring; consume any Plain entries and stop on the first
+        // Round. 50 µs cadence is fine — a 1 Mbaud round-trip is ~300 µs and
+        // we just need ordering, not sub-tick precision.
+        loop {
+            match listen::drain_stamp() {
+                Some(listen::IdleStamp::Round { .. }) => return,
+                Some(listen::IdleStamp::Plain { .. }) => continue,
+                None => Timer::after(Duration::from_micros(50)).await,
+            }
+        }
+    };
+
+    match select(wait, timeout).await {
+        Either::First(()) => {
+            let bytes_after = listen::byte_count();
+            let reply_start = bytes_before.wrapping_add(tx_len);
+            let reply_len = bytes_after.wrapping_sub(reply_start);
+            stream_reply(class, reply_start, reply_len).await
+        }
+        Either::Second(()) => class.write_packet(b"NOREPLY\n").await,
+    }
+}
+
+async fn handle_rx<'d, T: Instance + 'd>(
+    class: &mut CdcAcmClass<'d, Driver<'d, T>>,
+    rest: &[u8],
+) -> Result<(), EndpointError> {
+    match proto::parse_rx(rest) {
+        Ok(req) => stream_reply(class, req.from, req.len as u32).await,
+        Err(e) => send_reply(class, Reply::Err(e)).await,
+    }
+}
+
+async fn stream_reply<'d, T: Instance + 'd>(
+    class: &mut CdcAcmClass<'d, Driver<'d, T>>,
+    start: u32,
+    len: u32,
+) -> Result<(), EndpointError> {
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+    let mut chunk: Vec<u8, 64> = Vec::new();
+    let _ = chunk.extend_from_slice(b"REPLY ");
+    for i in 0..len {
+        if chunk.len() + 2 > chunk.capacity() {
+            class.write_packet(&chunk).await?;
+            chunk.clear();
+        }
+        let b = listen::read_byte(start.wrapping_add(i));
+        let _ = chunk.push(HEX[(b >> 4) as usize]);
+        let _ = chunk.push(HEX[(b & 0xF) as usize]);
+    }
+    if chunk.len() + 1 > chunk.capacity() {
+        class.write_packet(&chunk).await?;
+        chunk.clear();
+    }
+    let _ = chunk.push(b'\n');
+    class.write_packet(&chunk).await
 }
 
 async fn send_reply<'d, T: Instance + 'd>(
