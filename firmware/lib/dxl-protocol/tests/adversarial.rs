@@ -312,6 +312,48 @@ fn truncated_real_frame_returns_incomplete_at_each_step() {
 }
 
 #[test]
+fn parse_one_skips_phantom_broadcast_status_header_to_avoid_wedge() {
+    // Fast First/Only chain replies use BROADCAST_ID + INSTR_STATUS with a
+    // length field covering the WHOLE multi-slot reply. When such a header
+    // shows up incomplete in the local RX (e.g. only the first slave's
+    // contribution landed), the bytes that would complete it never arrive
+    // at this offset — they're on the wire during another node's TX. The
+    // parser must resync past the phantom header rather than returning
+    // Incomplete and wedging the caller's poll loop.
+    let frame: [u8; 14] = [
+        0xFF, 0xFF, 0xFD, 0x00, // header
+        0xFE,                   // BROADCAST_ID
+        0x2B, 0x00,             // length = 43 (whole multi-slot packet)
+        0x55,                   // INSTR_STATUS
+        0x00, 50, 0xAA, 0xAA, 0xAA, 0xAA, // first slot's body
+    ];
+    assert!(matches!(
+        parse_one(&frame),
+        Err(ParseError::BadInstruction { skip: 4 }),
+    ));
+}
+
+#[test]
+fn parse_one_returns_incomplete_on_truncated_broadcast_non_status() {
+    // Regression: the phantom-header guard is specific to BROADCAST_ID +
+    // INSTR_STATUS. A real broadcast Write (or any other broadcast frame)
+    // that's just truncated mid-arrival must still return Incomplete so
+    // the caller waits for the remaining bytes instead of dropping them.
+    const BCAST_WRITE_TRUNCATED: &[u8] = &[
+        0xFF, 0xFF, 0xFD, 0x00, // header
+        0xFE,                   // BROADCAST_ID
+        0x08, 0x00,             // length = 8
+        0x03,                   // INSTR_WRITE
+        0x00, 0x00,             // address = 0
+        0xAA, 0xBB,             // partial data — missing last byte + CRC
+    ];
+    assert!(matches!(
+        parse_one(BCAST_WRITE_TRUNCATED),
+        Err(ParseError::Incomplete),
+    ));
+}
+
+#[test]
 fn random_header_id_length_does_not_lock_parser() {
     let mut rng = Rng::new(13);
     for _ in 0..500 {

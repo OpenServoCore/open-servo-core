@@ -1282,6 +1282,56 @@ fn fast_bulk_read_return_level_none_silences_reply() {
 }
 
 #[test]
+fn poll_recovers_from_stale_fast_first_slot_residue_then_replies_to_ping() {
+    // Production wedge (V006, 2-3M baud, Fast Bulk Read last-slave with ≥32B
+    // payload): a predecessor slave's Fast First slot reply (14 wire bytes —
+    // header carries length=43 for the WHOLE multi-slot packet, per the Fast
+    // First convention) lands in our RX ring. parse_one wants 7+43=50 bytes
+    // and only 14 will ever arrive at this offset (later slots are on the wire
+    // during *our* TX). Returning Incomplete here strands every future request
+    // behind these 14 bytes.
+    //
+    // This integration test feeds [stale Fast First slot residue] ++ [Ping
+    // to our id] and asserts the Ping gets dispatched. Any fix shape passes
+    // — parser-side rejection, dispatcher post-skip, ring hint, etc.
+    use dxl_protocol::{FastSlot, FastSlotBody, write_fast_slot};
+
+    let shared = Shared::new();
+    let mut io = FakeIo::new();
+    let mut h = Dxl::new();
+
+    let mut residue: Vec<u8, 32> = Vec::new();
+    write_fast_slot(
+        &mut residue,
+        &FastSlot::First {
+            packet_length: 43,
+            body: FastSlotBody {
+                error: 0,
+                id: 50,
+                data: &[0xAA, 0xAA, 0xAA, 0xAA],
+            },
+        },
+    )
+    .unwrap();
+    assert_eq!(residue.len(), 14, "Fast First slot wire shape changed?");
+
+    let ping = encode(&Packet::Ping(PingPacket::new(0)));
+
+    io.feed(&residue);
+    io.feed(&ping);
+    h.poll(&shared, &mut io);
+
+    assert_eq!(
+        io.bus.send_count, 1,
+        "Ping starved behind Fast First slot residue (parse_one Incomplete \
+         wedged the poll loop)",
+    );
+    let (id, err, _) = parse_status(&io.bus.tx);
+    assert_eq!(id, 0);
+    assert_eq!(err, 0);
+}
+
+#[test]
 fn calibrate_unicast_replies_with_zero_payload() {
     let shared = Shared::new();
     let mut io = FakeIo::new();

@@ -4,10 +4,10 @@ use crate::crc::crc16;
 #[cfg(feature = "osc")]
 use crate::packet::CalibratePacket;
 use crate::packet::{
-    ActionPacket, BulkReadPacket, BulkWritePacket, ClearPacket, ControlTableBackupPacket,
-    FactoryResetPacket, FastBulkReadPacket, FastSyncReadPacket, HEADER, MAX_LENGTH, Packet,
-    PingPacket, ReadPacket, RebootPacket, RegWritePacket, StatusPacket, SyncReadPacket,
-    SyncWritePacket, WritePacket,
+    ActionPacket, BROADCAST_ID, BulkReadPacket, BulkWritePacket, ClearPacket,
+    ControlTableBackupPacket, FactoryResetPacket, FastBulkReadPacket, FastSyncReadPacket, HEADER,
+    MAX_LENGTH, Packet, PingPacket, ReadPacket, RebootPacket, RegWritePacket, StatusPacket,
+    SyncReadPacket, SyncWritePacket, WritePacket,
 };
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
@@ -63,6 +63,17 @@ pub fn parse_one(input: &[u8]) -> Result<(Packet<'_>, usize), ParseError> {
 
     let frame_len = 7 + length;
     if frame.len() < frame_len {
+        // Fast First/Only chain headers use BROADCAST_ID + Status with a
+        // length covering the WHOLE multi-slot reply. When such a header
+        // shows up incomplete, the missing bytes never land here — they're
+        // on the wire during another node's TX. Returning Incomplete would
+        // wedge the caller's poll loop; resync past this phantom header.
+        if frame.len() >= 8
+            && id == BROADCAST_ID
+            && frame[7] == Instruction::Status.as_u8()
+        {
+            return Err(ParseError::BadInstruction { skip: HEADER.len() });
+        }
         return Err(ParseError::Incomplete);
     }
 
