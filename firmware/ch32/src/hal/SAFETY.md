@@ -65,6 +65,7 @@ preempting writer to the same register. Callers don't need their own CS.
 | `usart::clear_tc` | STATR | TC (w0c) | `dxl_fast::arm_tx` | `irq::on_usart1_tc` |
 | `dma::enable` / `dma::disable` (CH4) | DMA1.CH(4).CR | EN | `dxl_fast::fire_now` | `irq::on_usart1_tc` |
 | `dma::set_tcie` (CH5) | DMA1.CH(5).CR | TCIE | `dxl_fast::start_fast_after` | `dxl_fast::on_systick`, `dxl_fast::cancel`(via TC ISR) |
+| `dma::set_htie` (CH5) | DMA1.CH(5).CR | HTIE | `dxl_fast::start_fast_after` | `dxl_fast::on_systick`, `dxl_fast::cancel`(via TC/HT ISR) |
 | `systick::set_irq` | SYSTICK.CTLR | STIE | `dxl_fast::start_plain_after`, `start_fast_after`, `cancel` | `dxl_fast::on_systick`, `cancel`(via TC ISR) |
 
 Other helpers that touch these same registers without a CS — fine because they

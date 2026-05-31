@@ -4,14 +4,10 @@ use core::sync::atomic::Ordering;
 use ch32_metapac::USART1;
 use dxl_protocol::crc16_continue;
 
-use crate::hal::{
-    dma,
-    gpio::{self, Level},
-    systick, usart,
-};
+use crate::hal::{dma, gpio, systick, usart};
 use crate::statics::{
-    DXL_BYTE_TIME_TICKS, DXL_BYTES_PER_US_Q16, DXL_DBG_PIN, DXL_RX_BUF, DXL_RX_BUF_LEN, DXL_TX_BUF,
-    DXL_TX_EN, FIRE_ADVANCE_FINE_TICKS, SHARED, TX_FAST_LATENCY_TICKS, TX_PLAIN_LATENCY_TICKS,
+    DXL_BYTE_TIME_TICKS, DXL_BYTES_PER_US_Q16, DXL_RX_BUF, DXL_RX_BUF_LEN, DXL_TX_BUF, DXL_TX_EN,
+    FIRE_ADVANCE_FINE_TICKS, SHARED, TX_FAST_LATENCY_TICKS, TX_PLAIN_LATENCY_TICKS,
 };
 
 /// Which request end tick detection + fire path a given reply takes.
@@ -106,8 +102,9 @@ const RX_MASK_U16: u16 = (DXL_RX_BUF_LEN as u16).wrapping_sub(1);
 const RX_MASK_U32: u32 = (DXL_RX_BUF_LEN - 1) as u32;
 
 /// Gap between WaitingSwitch CMP and the fire CMP. The switch walk drains
-/// whatever bytes have accumulated since the last DMA TC; the fire ISR walks
-/// the M µs straggle and patches CRC inside the TX DMA prefetch window.
+/// whatever bytes have accumulated since the last DMA HT/TC fold; the fire
+/// ISR walks the M µs straggle and patches CRC inside the TX DMA prefetch
+/// window.
 ///
 /// Bench-measured CRC throughput on V006 is ~0.39 µs/byte (the design doc's
 /// 0.1 µs/byte estimate was optimistic — `Crc<u16>::digest` + `&[u8]` indirection
@@ -115,17 +112,19 @@ const RX_MASK_U32: u32 = (DXL_RX_BUF_LEN - 1) as u32;
 /// rate.
 ///
 /// Upper bound (Constraint B): straggle walk + patch must fit the smallest
-/// reply's TX prefetch slack. At M=100, 3 Mbaud, n=8 reply (slack 20 µs):
-/// straggle ≈ 30 B × 0.39 = 12 µs + patch ~2 µs + fire ~1 µs ≈ 15 µs total,
-/// leaving ~5 µs margin. n=4 replies (slack 6.66 µs) can't satisfy B at any
-/// usable M — Fast Last replies on this chip need ≥ 1 data byte (n ≥ 5).
+/// reply's TX prefetch slack. At M=60, 3 Mbaud, n=8 reply (slack 20 µs):
+/// straggle ≈ 18 B × 0.39 = 7 µs + patch ~2 µs + fire ~1 µs ≈ 10 µs total,
+/// leaving ~10 µs margin. n=5 replies (slack 10 µs) sit right at the limit
+/// and currently fail at 3 Mbaud (3M Last 1B verify cell ≈ 97% crc-patch-
+/// deadline-miss); production min is n ≥ 8.
 ///
-/// Lower bound (Constraint A): switch walk must fit M. Realistic snoop
-/// windows ≤ 138 B (single 128-B INJ slot) walk in ~54 µs, comfortable at
-/// M=100. Pathological case — a full N=512 ring lapse right before switch —
-/// needs 512 × 0.39 ≈ 200 µs, which neither M=150 nor M=100 satisfies. This
-/// is a deferred risk; `SlotTimingMiss` catches it as a counter bump.
-const SWITCH_MARGIN_US: u32 = 100;
+/// Lower bound (Constraint A): switch walk must fit M. With HT folding bytes
+/// at the 256-B midpoint, the catchup walk is bounded by ≤ 256 B = ~100 µs
+/// worst-case (regardless of snoop window size), and typically much less:
+/// inj=4 catchup walks ~4 B (~2 µs), inj=128 walks ~50 µs, inj=256+ relies
+/// on HT to keep the residual under ~20 µs. M=60 covers all realistic
+/// snoop windows; SlotTimingMiss catches any overshoot as a counter bump.
+const SWITCH_MARGIN_US: u32 = 60;
 
 #[inline(always)]
 fn plain_fire_advance_ticks() -> u32 {
@@ -257,7 +256,9 @@ pub fn start_fast_after(request_end_tick: u32, fire_us: u32, snoop_from: Option<
 
     if matches!(initial_phase, FastChainPhase::CatchupArmed) {
         dma::clear_tc_flag(dma::Channel::CH5);
+        dma::clear_ht_flag(dma::Channel::CH5);
         dma::set_tcie(dma::Channel::CH5, true);
+        dma::set_htie(dma::Channel::CH5, true);
     }
 
     systick::set_cmp(cmp_tick);
@@ -332,16 +333,15 @@ pub fn on_systick() {
                     report_fault(FastChainFault::SlotTimingMiss);
                 }
                 dma::set_tcie(dma::Channel::CH5, false);
+                dma::set_htie(dma::Channel::CH5, false);
                 set_phase(FastChainPhase::TxStreaming);
                 // Fire before any CRC work: DMA CH4 has only one byte of TX
                 // prefetch, so the wire-side jitter window is just the time
                 // from here to `dma::enable`. The CRC patch below races a
                 // (payload_end - 1) byte-time slack against DMA's read cursor.
-                dbg_high();
                 fire_now();
                 accumulate_snoop();
                 patch_crc();
-                dbg_low();
                 if dma::remaining(dma::Channel::CH4) <= 2 {
                     report_fault(FastChainFault::CrcPatchDeadlineMiss);
                 }
@@ -373,10 +373,19 @@ fn current_bytes_walked() -> u32 {
 }
 
 #[cfg_attr(target_arch = "riscv32", unsafe(link_section = ".highcode"))]
-pub fn on_dma1_ch5_tc() {
-    // Unconditional clear: a stuck TCIF re-asserts the IRQ on next unmask even
-    // if STATE has moved past the snoop window.
-    dma::clear_tc_flag(dma::Channel::CH5);
+pub fn on_dma1_ch5() {
+    let ht = dma::is_ht_flag(dma::Channel::CH5);
+    let tc = dma::is_tc_flag(dma::Channel::CH5);
+
+    // Unconditional clears: a stuck IFCR bit re-asserts the IRQ on next unmask
+    // even if STATE has moved past the snoop window. HT clears first so the
+    // late-IRQ "both flags pending" case still ends at write_pos=0 after TC.
+    if ht {
+        dma::clear_ht_flag(dma::Channel::CH5);
+    }
+    if tc {
+        dma::clear_tc_flag(dma::Channel::CH5);
+    }
 
     let phase_now = unsafe {
         match &*STATE.get() {
@@ -392,6 +401,20 @@ pub fn on_dma1_ch5_tc() {
         return;
     }
 
+    // TC implies the ring just wrapped; walk to end. Otherwise (HT only) walk
+    // to the midpoint. snoop_head may have already advanced past the target —
+    // skip walk and don't move head backward.
+    let target = if tc {
+        DXL_RX_BUF_LEN
+    } else {
+        DXL_RX_BUF_LEN / 2
+    };
+    let new_head = if tc {
+        0u16
+    } else {
+        (DXL_RX_BUF_LEN / 2) as u16
+    };
+
     unsafe {
         if let ReplyState::Chain {
             snoop_head,
@@ -400,14 +423,17 @@ pub fn on_dma1_ch5_tc() {
             ..
         } = &mut *STATE.get()
         {
-            let ring = &*DXL_RX_BUF.get();
             let start = *snoop_head as usize;
-            let walked = DXL_RX_BUF_LEN - start;
-            if walked > 0 {
-                *bulk_crc = crc16_continue(*bulk_crc, &ring[start..]);
+            if start < target {
+                let ring = &*DXL_RX_BUF.get();
+                let walked = target - start;
+                *bulk_crc = crc16_continue(*bulk_crc, &ring[start..target]);
                 *bytes_walked = bytes_walked.wrapping_add(walked as u32);
+                *snoop_head = new_head;
+            } else if tc {
+                // Late TC after accumulate_snoop crossed the wrap; just reset.
+                *snoop_head = 0;
             }
-            *snoop_head = 0;
         }
     }
 
@@ -422,6 +448,7 @@ pub fn cancel() {
     systick::set_irq(false);
     systick::clear_match();
     dma::set_tcie(dma::Channel::CH5, false);
+    dma::set_htie(dma::Channel::CH5, false);
     set_state(ReplyState::Idle);
 }
 
@@ -511,21 +538,6 @@ fn ring_crc(seed: u16, ring: &[u8], head: u16, write_pos: u16) -> u16 {
 fn current_rx_write_pos() -> u16 {
     let remaining = dma::remaining(dma::Channel::CH5);
     (DXL_RX_BUF_LEN as u16).wrapping_sub(remaining) & RX_MASK_U16
-}
-
-#[inline(always)]
-fn dbg_high() {
-    // SAFETY: written once at bring-up before any ISR can read.
-    if let Some(p) = unsafe { *DXL_DBG_PIN.get() } {
-        gpio::set_level(p, Level::High);
-    }
-}
-
-#[inline(always)]
-fn dbg_low() {
-    if let Some(p) = unsafe { *DXL_DBG_PIN.get() } {
-        gpio::set_level(p, Level::Low);
-    }
 }
 
 #[inline(always)]

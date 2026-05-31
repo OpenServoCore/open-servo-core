@@ -78,9 +78,34 @@ pub fn set_tcie(ch: Channel, enable: bool) {
     });
 }
 
+#[inline(always)]
+pub fn set_htie(ch: Channel, enable: bool) {
+    let n = (ch as u8 - 1) as usize;
+    critical_section::with(|_| {
+        DMA1.ch(n).cr().modify(|w| w.set_htie(enable));
+    });
+}
+
 pub fn clear_tc_flag(ch: Channel) {
     let n = (ch as u8 - 1) as usize;
     DMA1.ifcr().write(|w| w.set_tcif(n, true));
+}
+
+pub fn clear_ht_flag(ch: Channel) {
+    let n = (ch as u8 - 1) as usize;
+    DMA1.ifcr().write(|w| w.set_htif(n, true));
+}
+
+#[inline]
+pub fn is_ht_flag(ch: Channel) -> bool {
+    let n = (ch as u8 - 1) as usize;
+    DMA1.isr().read().htif(n)
+}
+
+#[inline]
+pub fn is_tc_flag(ch: Channel) -> bool {
+    let n = (ch as u8 - 1) as usize;
+    DMA1.isr().read().tcif(n)
 }
 
 #[inline]
