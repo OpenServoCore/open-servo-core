@@ -171,15 +171,13 @@ def decode_gpioc(buf: bytes) -> None:
 
 
 def decode_afio(buf: bytes) -> None:
-    # PCFR1 sits at AFIO + 0x0C on V006 (memory note ch32v006_afio_pcfr1_offset).
+    # PCFR1 sits at AFIO + 0x0C on V006. USART1_RM is a single 4-bit field at
+    # bits [9:6] (per ch32-metapac afio_v00x). The earlier {2,21,22} decode was
+    # the V003/V20x layout copied by mistake — V00x doesn't split USART1_RM.
     pcfr1 = u32_at(buf, 0x0C)
-    # USART1_RM = bit 2; USART1_RM1 = bit 21; USART1_RM2 = bit 22.
-    rm0 = (pcfr1 >> 2) & 1
-    rm1 = (pcfr1 >> 21) & 1
-    rm2 = (pcfr1 >> 22) & 1
-    remap = (rm2 << 2) | (rm1 << 1) | rm0
+    remap = (pcfr1 >> 6) & 0xF
     print(f"\n[AFIO] @ 0x{AFIO:08x}")
-    print(f"  PCFR1 = 0x{pcfr1:08x}  USART1_RM=0b{remap:03b} ({remap}) "
+    print(f"  PCFR1 = 0x{pcfr1:08x}  USART1_RM=0b{remap:04b} ({remap}) "
           f"[expect 3 for PC0/PC1 on rev_b]")
 
 
