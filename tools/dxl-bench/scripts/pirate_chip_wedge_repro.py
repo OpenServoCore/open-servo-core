@@ -10,11 +10,17 @@ Modes:
   --matrix
       Walks (baud × dut_len × position) cells in the same order as
       `pirate_chip_tune.step_verify`, with a counter-Read health probe
-      after each cell. Stops + dumps the wedge cell on first health-probe
-      failure. Best one-command repro of the verify-matrix wedge.
+      after each cell + per-cell fault-counter delta printout. Stops on
+      first health-probe failure. Best one-command repro of the
+      verify-matrix wedge.
       Assumes chip is already in wedge-prone state — typically because
       `pirate_chip_tune.py` was run first (tuning TX_FAST at 1M leaves
       the chip mistimed for chain coalesce at 2M+).
+      Narrowing knobs:
+        --matrix-repeat N       loop the matrix N times (non-det wedge).
+        --matrix-health-every N probe counters every N shots inside a
+                                cell so the wedge shot is bracketed to N
+                                instead of the full 128.
 
   --continuous
       Fires one position repeatedly. Stops on --wedge-threshold consecutive
@@ -220,17 +226,40 @@ def print_capture(label: str, request: bytes, reply: bytes) -> None:
     print(f"  [{label}] reply   ({len(reply)}B):  {reply.hex(' ')}")
 
 
+def _counter_delta(prev: dict, curr: dict) -> dict:
+    return {k: curr[k] - prev.get(k, 0) for k in curr if curr[k] != prev.get(k, 0)}
+
+
+def _fmt_counter_delta(delta: dict) -> str:
+    if not delta:
+        return ""
+    return " ".join(f"{k}+={v}" for k, v in delta.items())
+
+
 def run_matrix(
     pirate: Pirate, dxl_id: int,
     bauds: list[int], dut_lens: list[int], positions: list[str],
     n_per_cell: int, inj_len: int,
-) -> None:
-    """Walk the verify-style sweep. Stops on first cell where the
-    post-cell counter Read fails (chip silent = wedge)."""
+    health_every: int = 0,
+) -> bool:
+    """Walk the verify-style sweep. Returns True if a wedge was caught
+    (caller should stop any outer repeat loop). Per-cell counter deltas
+    are printed alongside the tally — a nonzero `crc_patch_deadline_miss`
+    or `previous_slot_timeout` in the cell that precedes the wedge is
+    the strongest narrowing clue. With `health_every > 0`, counters are
+    probed every N shots inside a cell so the wedge shot can be bracketed
+    to a window of N rather than the full 128-shot cell."""
     print(f"\n[matrix — bauds={bauds} dut_lens={dut_lens} "
-          f"positions={positions}  n={n_per_cell}/cell]",
+          f"positions={positions}  n={n_per_cell}/cell"
+          f"  health_every={health_every or 'cell-end'}]",
           flush=True)
     print(f"  {'cell':<22} {'   '.join(f'{b:>10}' for b in RESULT_BUCKETS)}  health")
+    baseline = try_read_counters(pirate, dxl_id) or {f: 0 for f in (
+        "illegal_transition", "unexpected_byte_count", "previous_slot_timeout",
+        "slot_timing_miss", "crc_patch_deadline_miss", "dma_overrun",
+        "parity_error", "framing_error", "noise_error",
+    )}
+    last_counters = baseline
     for baud in bauds:
         try:
             set_chip_baud(pirate, dxl_id, baud)
@@ -239,7 +268,7 @@ def run_matrix(
             print(f"  {baud//1_000_000}M baud:   set_chip_baud failed: {e}")
             if try_read_counters(pirate, dxl_id) is None:
                 print_wedge_banner(f"on set_chip_baud({baud})")
-                return
+                return True
             continue
         for dut_len in dut_lens:
             for pos in positions:
@@ -247,6 +276,7 @@ def run_matrix(
                 tally = {k: 0 for k in RESULT_BUCKETS}
                 first_fail: tuple[int, str, bytes, bytes] | None = None
                 aborted = None
+                wedge_shot: int | None = None
                 for shot in range(1, n_per_cell + 1):
                     try:
                         r, req, reply = run_shot(
@@ -258,12 +288,35 @@ def run_matrix(
                     tally[r] += 1
                     if r not in ("clean", "extra_idle") and first_fail is None:
                         first_fail = (shot, r, req, reply)
+                    if health_every > 0 and shot % health_every == 0:
+                        probe = try_read_counters(pirate, dxl_id)
+                        if probe is None:
+                            wedge_shot = shot
+                            break
+                        last_counters = probe
                 summary = "  ".join(f"{tally[k]:>10d}" for k in RESULT_BUCKETS)
                 if aborted:
                     print(f"  {cell:<22} {summary}  ABORT ({aborted})")
-                    return
+                    return True
+                if wedge_shot is not None:
+                    print(f"  {cell:<22} {summary}  WEDGE@shot{wedge_shot}",
+                          flush=True)
+                    if first_fail is not None:
+                        shot_i, r, req, reply = first_fail
+                        print_capture(f"first non-clean in {cell} (shot {shot_i})",
+                                      req, reply)
+                    print_wedge_banner(
+                        f"in cell {cell} between shot "
+                        f"{max(1, wedge_shot - health_every + 1)} and {wedge_shot}"
+                    )
+                    return True
                 health = try_read_counters(pirate, dxl_id)
-                tag = "ok" if health is not None else "WEDGE"
+                if health is None:
+                    tag = "WEDGE@cell-end"
+                else:
+                    delta = _counter_delta(last_counters, health)
+                    last_counters = health
+                    tag = "ok" if not delta else f"ok ({_fmt_counter_delta(delta)})"
                 print(f"  {cell:<22} {summary}  {tag}", flush=True)
                 if first_fail is not None:
                     shot_i, r, req, reply = first_fail
@@ -271,7 +324,8 @@ def run_matrix(
                                   req, reply)
                 if health is None:
                     print_wedge_banner(f"after cell {cell}")
-                    return
+                    return True
+    return False
 
 
 def main() -> None:
@@ -312,6 +366,15 @@ def main() -> None:
                     help="Comma-separated position list for --matrix.")
     ap.add_argument("--matrix-n", type=int, default=128,
                     help="Shots per --matrix cell (default 128, matches verify).")
+    ap.add_argument("--matrix-repeat", type=int, default=1,
+                    help="Run --matrix this many times in a loop, halting "
+                         "on first wedge. Default 1. Use >1 to surface "
+                         "non-deterministic wedges in a single command.")
+    ap.add_argument("--matrix-health-every", type=int, default=0,
+                    help="In --matrix mode, probe chip counters every N shots "
+                         "within a cell. 0 (default) = end-of-cell only. "
+                         "Small values (e.g. 16) bracket the wedge shot tighter "
+                         "but slow the run.")
     args = ap.parse_args()
 
     if args.baud not in BAUD_INDEX:
@@ -331,8 +394,17 @@ def main() -> None:
                 if p not in POSITIONS:
                     sys.exit(f"unsupported position {p!r}; supported: {POSITIONS}")
             print(f"pirate: {port}   chip id: {args.id}")
-            run_matrix(pirate, args.id, bauds, dut_lens, positions,
-                       args.matrix_n, args.inj_len)
+            for iteration in range(1, args.matrix_repeat + 1):
+                if args.matrix_repeat > 1:
+                    print(f"\n=== matrix iteration {iteration}/{args.matrix_repeat} ===",
+                          flush=True)
+                wedged = run_matrix(
+                    pirate, args.id, bauds, dut_lens, positions,
+                    args.matrix_n, args.inj_len,
+                    health_every=args.matrix_health_every,
+                )
+                if wedged:
+                    sys.exit(1)
             return
 
         set_chip_baud(pirate, args.id, args.baud)
