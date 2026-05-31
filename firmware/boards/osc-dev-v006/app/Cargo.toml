@@ -4,14 +4,8 @@ version = "0.1.0"
 edition.workspace = true
 
 [[bin]]
-name  = "osc-dev-v006-app-rev-a"
-path  = "src/bin/rev_a.rs"
-test  = false
-bench = false
-
-[[bin]]
-name  = "osc-dev-v006-app-rev-b"
-path  = "src/bin/rev_b.rs"
+name  = "osc-dev-v006-app"
+path  = "src/main.rs"
 test  = false
 bench = false
 
