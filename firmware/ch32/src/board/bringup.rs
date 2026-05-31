@@ -257,6 +257,11 @@ fn bring_up_dxl(d: &DxlBus, brr: u32) {
     unsafe { *DXL_TX_EN.get() = d.tx_en };
 
     usart::set_idle_irq(regs, true);
+
+    #[cfg(feature = "dxl-hw-fire")]
+    if let Some(tx_en) = d.tx_en {
+        crate::dxl_hw_fire::init(tx_en);
+    }
 }
 
 pub(super) fn seed_dbg_pin(pin: crate::hal::Pin) {

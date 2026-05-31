@@ -15,6 +15,8 @@ pub mod board;
 pub mod chip_flash;
 pub(crate) mod drop_oldest_ring;
 pub(crate) mod dxl_fast;
+#[cfg(feature = "dxl-hw-fire")]
+pub(crate) mod dxl_hw_fire;
 pub mod hal;
 pub(crate) mod idle_ring;
 pub mod irq;
