@@ -12,9 +12,10 @@ use crate::hal::{
 };
 use crate::statics::{
     DXL_BYTE_TIME_TICKS, DXL_BYTES_PER_US_Q16, DXL_DBG_PIN, DXL_RX_BUF, DXL_RX_BUF_LEN,
-    DXL_STAT_PIN, DXL_TX_BUF, DXL_TX_EN, FIRE_ADVANCE_FINE_TICKS, SHARED, TX_FAST_LATENCY_TICKS,
-    TX_PLAIN_LATENCY_TICKS,
+    DXL_STAT_PIN, DXL_TX_BUF, DXL_TX_EN, FIRE_ADVANCE_FINE_TICKS, SHARED,
 };
+#[cfg(feature = "dxl-systick-fire")]
+use crate::statics::{TX_FAST_LATENCY_TICKS, TX_PLAIN_LATENCY_TICKS};
 
 /// Which request end tick detection + fire path a given reply takes.
 #[allow(dead_code)]
@@ -160,14 +161,33 @@ const RXNE_TAIL_GUARD_BYTES: u16 = 2;
 /// short enough that a missing/dead predecessor fails open quickly.
 const RXNE_TAIL_WAIT_BYTES: u32 = 3;
 
+#[cfg(feature = "dxl-systick-fire")]
 #[inline(always)]
 fn plain_fire_advance_ticks() -> u32 {
     fire_advance_ticks_for(TX_PLAIN_LATENCY_TICKS.load(Ordering::Relaxed))
 }
 
+#[cfg(feature = "dxl-systick-fire")]
 #[inline(always)]
 fn fast_fire_advance_ticks() -> u32 {
     fire_advance_ticks_for(TX_FAST_LATENCY_TICKS.load(Ordering::Relaxed))
+}
+
+/// Under hw-fire the per-path latency atomics are gone (CT field reserved,
+/// runtime no longer tunable). The pipeline from `arm` to wire start-bit
+/// is a fixed hardware sequence — `HW_FIRE_PIPELINE_TICKS` plus the
+/// shared `clock_fine_trim_us` residual. Same signature so the systick
+/// CMP-scheduling math elsewhere stays mode-agnostic.
+#[cfg(feature = "dxl-hw-fire")]
+#[inline(always)]
+fn plain_fire_advance_ticks() -> u32 {
+    fire_advance_ticks_for(crate::dxl_hw_fire::HW_FIRE_PIPELINE_TICKS as u16)
+}
+
+#[cfg(feature = "dxl-hw-fire")]
+#[inline(always)]
+fn fast_fire_advance_ticks() -> u32 {
+    fire_advance_ticks_for(crate::dxl_hw_fire::HW_FIRE_PIPELINE_TICKS as u16)
 }
 
 #[inline(always)]

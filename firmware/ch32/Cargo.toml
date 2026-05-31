@@ -43,4 +43,4 @@ defmt        = ["dep:defmt", "osc-core/defmt"]
 # driving DMA Ch7 (TX_EN BSHR) + DMA Ch2 (USART1 CTLR3 DMAT) — see
 # docs/dxl-fast-chain-crc.md §15 for the wiring rationale.
 dxl-systick-fire = []
-dxl-hw-fire      = []
+dxl-hw-fire      = ["osc-core/dxl-hw-fire"]

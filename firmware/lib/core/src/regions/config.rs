@@ -116,11 +116,15 @@ pub struct ConfigComms {
     /// Q8.8 µs. Silicon-fixed TX latency for the plain reply path (Ping/Read,
     /// Status, Sync/Bulk slot, Fast First/Middle/Only). Seeded at boot from
     /// the chip lib's bench-tuned default; runtime writes flow to the
-    /// firmware atomic so tuning scripts converge without reflash.
+    /// firmware atomic so tuning scripts converge without reflash. Under
+    /// `dxl-hw-fire`, TIM2 OPM clocks the fire — the field becomes reserved
+    /// (writes return AccessError) at the same byte offset.
+    #[cfg_attr(feature = "dxl-hw-fire", ct_field(reserved))]
     pub dxl_tx_plain_latency_us: u16,
     /// Q8.8 µs. Same as `dxl_tx_plain_latency_us` for the Fast chain
     /// (last-slave) reply path; bench default may differ from plain because
     /// the chain path runs extra setup before fire.
+    #[cfg_attr(feature = "dxl-hw-fire", ct_field(reserved))]
     pub dxl_tx_fast_latency_us: u16,
 }
 
