@@ -52,32 +52,35 @@ fine.
 - `usart/usart_common.rs::set_baud` (set_ue toggle + BRR write) — called only
   from USART1 TC ISR (apply-after-TC).
 
-### Tier 2 — multi-context, same-bit: self-healing today, fragile
+### Tier 2 — multi-context registers, RMW guarded by internal CS
 
-These registers are written from MAIN + at least one ISR, but the writers only
-ever flip the *same bit* with opposite intent. The lost-update window is
-benign as long as no caller is added that touches a *different bit* of the
-same register from a different priority. **If you add a new modifier of one
-of these registers, you must either touch the same bit only or wrap your call
-in a critical section.**
+These registers are written from MAIN + at least one ISR. The helpers wrap
+their `.modify()` in `critical_section::with` so the RMW is atomic against any
+preempting writer to the same register. Callers don't need their own CS.
 
-| Helper | Register | Bit | MAIN writer | ISR writer |
+| Helper | Register | Bits touched today | MAIN writer | ISR writer |
 |---|---|---|---|---|
 | `usart::set_tc_irq` | CTLR1 | TCIE | `dxl_fast::arm_tx` | `irq::on_usart1_tc` |
 | `usart::set_dma_tx` | CTLR3 | DMAT | `dxl_fast::arm_tx` | `irq::on_usart1_tc` |
-| `usart::clear_tc` | STATR | TC | `dxl_fast::arm_tx` | `irq::on_usart1_tc` |
+| `usart::clear_tc` | STATR | TC (w0c) | `dxl_fast::arm_tx` | `irq::on_usart1_tc` |
 | `dma::enable` / `dma::disable` (CH4) | DMA1.CH(4).CR | EN | `dxl_fast::fire_now` | `irq::on_usart1_tc` |
 | `dma::set_tcie` (CH5) | DMA1.CH(5).CR | TCIE | `dxl_fast::start_fast_after` | `dxl_fast::on_systick`, `dxl_fast::cancel`(via TC ISR) |
 | `systick::set_irq` | SYSTICK.CTLR | STIE | `dxl_fast::start_plain_after`, `start_fast_after`, `cancel` | `dxl_fast::on_systick`, `cancel`(via TC ISR) |
 
-Notes:
-- USART CTLR1's other bit `UE` is also toggled by ISR-side `set_baud`, but the
-  toggle is `0 → 1` so the net invariant `UE == 1` survives any MAIN RMW
-  bracket. If someone makes `set_baud` callable from MAIN, this assumption
-  breaks.
-- STATR's other status bits are read-to-clear or hardware-set; an RMW that
-  preserves them across an unrelated write is therefore fine. If a future bit
-  becomes write-0-to-clear, audit `clear_tc`.
+Other helpers that touch these same registers without a CS — fine because they
+are single-context:
+
+- `usart::init`, `usart::set_dma_rx`, `usart::set_idle_irq` — bringup-only.
+- `usart::set_baud` (UE toggle on CTLR1) — called only from USART1 TC ISR; ISR
+  cannot be preempted by MAIN, and HIGH ISRs serialize. If `set_baud` ever
+  becomes MAIN-callable, it needs the same CS treatment.
+- `usart::set_rxne_irq` — defined but currently unreachable; Phase B will wire
+  it. When added, classify per the checklist below.
+
+CS cost on V006/V2A is ~5 cycles via `mstatus.MIE` (csrrci + csrw); see
+`portable-atomic-v006` memory note. Nested CS (calling these from inside an
+ISR or another CS) is a no-op — the inner `with` re-disables already-disabled
+interrupts.
 
 ### Tier 3 — must use atomic primitives, not `.modify()`
 

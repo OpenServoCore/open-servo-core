@@ -65,10 +65,11 @@ pub fn set_level(pin: Pin, level: Level) {
     }
 }
 
+// SAFETY: see hal/SAFETY.md (Tier 3). BSHR/BCR are atomic single-bit writes;
+// OUTDR RMW would race a higher-priority ISR's BSHR/BCR on another pin of the
+// same port and stomp it.
 #[inline]
 pub fn toggle(pin: Pin) {
-    // BSHR/BCR are atomic single-bit writes; OUTDR RMW would race a higher-
-    // priority ISR's BSHR/BCR on another pin of the same port and stomp it.
     let regs = pin.gpio_regs();
     let mask = 1u32 << pin.pin_number();
     if regs.indr().read().0 & mask != 0 {

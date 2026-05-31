@@ -50,20 +50,32 @@ pub fn set_count(ch: Channel, count: u16) {
     DMA1.ch(n).ndtr().write(|w| w.set_ndt(count));
 }
 
-#[inline]
+// SAFETY: see hal/SAFETY.md. CH(n).CR is per-channel, but each channel's CR
+// is written from multiple contexts (CH4: MAIN fire_now + USART1 TC ISR; CH5:
+// MAIN start_fast_after + HIGH ISRs). CS keeps EN/TCIE RMW atomic.
+// `inline(always)` keeps these calls inside dxl_fast's `.highcode` section.
+#[inline(always)]
 pub fn enable(ch: Channel) {
     let n = (ch as u8 - 1) as usize;
-    DMA1.ch(n).cr().modify(|w| w.set_en(true));
+    critical_section::with(|_| {
+        DMA1.ch(n).cr().modify(|w| w.set_en(true));
+    });
 }
 
+#[inline(always)]
 pub fn disable(ch: Channel) {
     let n = (ch as u8 - 1) as usize;
-    DMA1.ch(n).cr().modify(|w| w.set_en(false));
+    critical_section::with(|_| {
+        DMA1.ch(n).cr().modify(|w| w.set_en(false));
+    });
 }
 
+#[inline(always)]
 pub fn set_tcie(ch: Channel, enable: bool) {
     let n = (ch as u8 - 1) as usize;
-    DMA1.ch(n).cr().modify(|w| w.set_tcie(enable));
+    critical_section::with(|_| {
+        DMA1.ch(n).cr().modify(|w| w.set_tcie(enable));
+    });
 }
 
 pub fn clear_tc_flag(ch: Channel) {
