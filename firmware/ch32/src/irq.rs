@@ -39,6 +39,11 @@ pub fn on_adc_dma_tc() {
 pub fn on_usart1() {
     on_usart1_rx_errors();
     on_usart1_idle();
+    // RXNE entries happen only when dxl_fast armed the tail-tier — the
+    // handler self-gates via STATE, so IDLE/TC-only wakes pay one branch
+    // each. STATR.RXNE always reads 0 in DMA-RX mode (V006 quirk: DMA
+    // wins the clear race), so there's no flag to check here.
+    dxl_fast::on_rxne();
     on_usart1_tc();
 }
 

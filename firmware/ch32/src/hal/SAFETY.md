@@ -61,6 +61,7 @@ preempting writer to the same register. Callers don't need their own CS.
 | Helper | Register | Bits touched today | MAIN writer | ISR writer |
 |---|---|---|---|---|
 | `usart::set_tc_irq` | CTLR1 | TCIE | `dxl_fast::arm_tx` | `irq::on_usart1_tc` |
+| `usart::set_rxne_irq` | CTLR1 | RXNEIE | `dxl_fast::start_fast_after` | `dxl_fast::on_rxne`, `dxl_fast::on_systick`/`cancel`(via TC ISR) |
 | `usart::set_dma_tx` | CTLR3 | DMAT | `dxl_fast::arm_tx` | `irq::on_usart1_tc` |
 | `usart::clear_tc` | STATR | TC (w0c) | `dxl_fast::arm_tx` | `irq::on_usart1_tc` |
 | `dma::enable` / `dma::disable` (CH4) | DMA1.CH(4).CR | EN | `dxl_fast::fire_now` | `irq::on_usart1_tc` |
@@ -75,8 +76,6 @@ are single-context:
 - `usart::set_baud` (UE toggle on CTLR1) — called only from USART1 TC ISR; ISR
   cannot be preempted by MAIN, and HIGH ISRs serialize. If `set_baud` ever
   becomes MAIN-callable, it needs the same CS treatment.
-- `usart::set_rxne_irq` — defined but currently unreachable; Phase B will wire
-  it. When added, classify per the checklist below.
 
 CS cost on V006/V2A is ~5 cycles via `mstatus.MIE` (csrrci + csrw); see
 `portable-atomic-v006` memory note. Nested CS (calling these from inside an
