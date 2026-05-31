@@ -41,7 +41,9 @@ use crate::statics::DXL_TX_EN;
 /// `clock_fine_trim_us` gives a real chip+USART+pirate-RX pipeline of
 /// 202/143/127 ticks per baud. Linear fit:
 ///
-///     pipeline = HW_FIRE_PLAIN_PIPELINE_BASE_TICKS + byte_time_ticks / 4
+/// ```text
+/// pipeline = HW_FIRE_PLAIN_PIPELINE_BASE_TICKS + byte_time_ticks / 4
+/// ```
 ///
 /// where `byte_time_ticks / 4 = 2.5 bit-times` captures the USART
 /// internal start-bit pipeline + pirate RX-side latency. The base
