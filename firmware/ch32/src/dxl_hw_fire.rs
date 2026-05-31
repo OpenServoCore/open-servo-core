@@ -1,7 +1,3 @@
-// `arm`/`cancel`/`prepare_fire`/the timing consts go live in H4 (#60)
-// when dxl_fast dispatches the chain path through here.
-#![allow(dead_code)]
-
 //! TIM2 OPM hardware fire path for DXL chain-CRC (see
 //! `docs/dxl-fast-chain-crc.md` §15).
 //!

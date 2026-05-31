@@ -12,8 +12,10 @@ use crate::hal::{
 };
 use crate::statics::{
     DXL_BYTE_TIME_TICKS, DXL_BYTES_PER_US_Q16, DXL_DBG_PIN, DXL_RX_BUF, DXL_RX_BUF_LEN,
-    DXL_STAT_PIN, DXL_TX_BUF, DXL_TX_EN, FIRE_ADVANCE_FINE_TICKS, SHARED,
+    DXL_STAT_PIN, DXL_TX_BUF, FIRE_ADVANCE_FINE_TICKS, SHARED,
 };
+#[cfg(feature = "dxl-systick-fire")]
+use crate::statics::DXL_TX_EN;
 #[cfg(feature = "dxl-systick-fire")]
 use crate::statics::{TX_FAST_LATENCY_TICKS, TX_PLAIN_LATENCY_TICKS};
 
@@ -198,6 +200,7 @@ fn fire_advance_ticks_for(latency: u16) -> u32 {
 
 /// TX_EN and DMA CH4 stay off so the bus remains in RX through any preceding
 /// snoop window; `fire_now` flips both at the slot deadline.
+#[cfg(feature = "dxl-systick-fire")]
 #[cfg_attr(target_arch = "riscv32", unsafe(link_section = ".highcode"))]
 #[inline(never)]
 pub fn arm_tx() -> bool {
@@ -218,6 +221,30 @@ pub fn arm_tx() -> bool {
     true
 }
 
+/// Under hw-fire the bus-disable order flips: CH4 is pre-enabled here with
+/// DMAT=0 so the moment TIM2 OPM (DMA Ch2) flips DMAT to 1, the USART
+/// starts requesting bytes with no software in the loop. TC handler clears
+/// DMAT + disables CH4, restoring the disabled-CH4 precondition for the
+/// next arm.
+#[cfg(feature = "dxl-hw-fire")]
+#[cfg_attr(target_arch = "riscv32", unsafe(link_section = ".highcode"))]
+#[inline(never)]
+pub fn arm_tx() -> bool {
+    let len = unsafe { (*DXL_TX_BUF.get()).as_slice().len() };
+    if len == 0 {
+        return false;
+    }
+    if dma::is_enabled(dma::Channel::CH4) {
+        return false;
+    }
+    dma::set_count(dma::Channel::CH4, len as u16);
+    usart::clear_tc(USART1);
+    dma::enable(dma::Channel::CH4);
+    usart::set_tc_irq(USART1, true);
+    true
+}
+
+#[cfg(feature = "dxl-systick-fire")]
 #[cfg_attr(target_arch = "riscv32", unsafe(link_section = ".highcode"))]
 #[inline(never)]
 pub fn fire_now() {
@@ -226,6 +253,18 @@ pub fn fire_now() {
         gpio::set_level(t.pin, t.tx_level);
     }
     dma::enable(dma::Channel::CH4);
+}
+
+/// Under hw-fire, software fire = arm TIM2 OPM with the smallest CCR so it
+/// drives TX_EN HIGH and DMAT=1 from hardware, removing PFIC trap-entry
+/// jitter from the wire timing. The TIM2 internal pipeline
+/// (`HW_FIRE_PIPELINE_TICKS`) is the irreducible wire-start latency.
+#[cfg(feature = "dxl-hw-fire")]
+#[cfg_attr(target_arch = "riscv32", unsafe(link_section = ".highcode"))]
+#[inline(never)]
+pub fn fire_now() {
+    crate::dxl_hw_fire::prepare_fire();
+    crate::dxl_hw_fire::arm(1);
 }
 
 #[cfg_attr(target_arch = "riscv32", unsafe(link_section = ".highcode"))]
@@ -676,6 +715,8 @@ pub fn cancel() {
     // it's a no-op when already off, and the framing-RXNE owner doesn't
     // exist on V006 yet (Phase B work).
     usart::set_rxne_irq(USART1, false);
+    #[cfg(feature = "dxl-hw-fire")]
+    crate::dxl_hw_fire::cancel();
     set_state(ReplyState::Idle);
 }
 
