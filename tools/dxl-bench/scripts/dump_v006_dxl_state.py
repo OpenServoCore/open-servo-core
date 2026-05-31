@@ -13,6 +13,10 @@ What it dumps and decodes (rev_b pin map: PC0=DXL_TX, PC1=DXL_RX, PC2=TX_EN):
   - DMA1 CH4 (USART1_TX) + CH5 (USART1_RX) — EN, CNTR (remaining bytes)
   - GPIOC PC0/PC1/PC2 — MODE/CNF + OUTDR + INDR (so we see who's driving)
   - AFIO PCFR1 USART1 remap field (verifies pins are actually routed)
+  - Wedge probes: DXL_TX_EN.0/.1 + DXL_REBOOT_PENDING — flags corruption
+    from a dispatcher Write overrunning SHARED's end (the live hypothesis
+    for the TX_EN-stuck-HIGH wedge after 2M Writes to telemetry counters)
+  - RAM windows bracketing the probes for visual context
 
 Default flow: halt → dump → resume. Use --keep-halted for inspection.
 
@@ -38,6 +42,24 @@ AFIO = 0x40010000
 # DMA channel N base = 0x08 + (N-1)*0x14.
 DMA1_CH4 = DMA1 + 0x08 + 3 * 0x14   # USART1 TX
 DMA1_CH5 = DMA1 + 0x08 + 4 * 0x14   # USART1 RX
+
+# Wedge-hypothesis probes. LLVM splits `DXL_TX_EN: Option<TxEn>` into two
+# statics via niche encoding; DXL_TX_EN.1 sits one byte past SHARED's end,
+# so any dispatcher Write that overruns SHARED clobbers the pin that TC ISR
+# uses to drop TX_EN. Addresses come from the rev_b symbol table.
+DXL_TX_EN_0        = 0x20000C6D   # .data, 1B: Level enum (0=Low, 1=High, 2=None niche)
+DXL_REBOOT_PENDING = 0x20000EA0   # .bss,  1B: bool — set → TC ISR calls software_reset
+DXL_TX_EN_1        = 0x20000EA1   # .bss,  1B: Pin enum (port<<5 | bit; PC2 = 0x42)
+
+# rev_b bringup: tx_level=High, pin=PC2.
+REV_B_EXPECT_TX_LEVEL = 0x01
+REV_B_EXPECT_PIN      = 0x42
+
+# RAM windows that bracket the probes for visual context.
+DATA_TAIL_ADDR = 0x20000C60       # 32 B covering DXL_TX_EN.0 + CLOCK_TRIM + SHARED head
+DATA_TAIL_LEN  = 0x20
+SHARED_TAIL_ADDR = 0x20000E98     # 32 B covering SHARED end + REBOOT + DXL_TX_EN.1 + neighbors
+SHARED_TAIL_LEN  = 0x20
 
 
 def run(cmd: list[str]) -> str:
@@ -170,6 +192,49 @@ def decode_gpioc(buf: bytes) -> None:
               f"IN={in_lvl}  OUT={out_lvl}")
 
 
+def _pin_name(b: int) -> str:
+    port = (b >> 5) & 0x7
+    bit = b & 0x1F
+    return f"P{'ABCD'[port]}{bit}" if port < 4 else f"P?{bit}"
+
+
+def decode_wedge_probes(data_tail: bytes, shared_tail: bytes) -> None:
+    """Pull the three bytes that gate TC ISR's TX_EN drop out of the already-
+    fetched aligned RAM windows.
+
+    TC ISR's `gpio::set_level(t.pin, t.idle_level())` reads both DXL_TX_EN.0
+    (Level / Option discriminant) and DXL_TX_EN.1 (pin) and writes BSHR/BCR
+    for the resolved pin. If .0 niches to 2 the gpio block is skipped; if .1
+    points to a different pin, BCR fires for the wrong port — either way the
+    real PC2 stays at whatever fire_now() left it (HIGH = wedge).
+
+    Reads come from the cached windows because `wlink dump <addr> 1` returns
+    garbage on unaligned single-byte requests (the device read is 4-byte
+    aligned and wlink hands back the wrong bytes)."""
+    lvl = data_tail[DXL_TX_EN_0 - DATA_TAIL_ADDR]
+    reboot = shared_tail[DXL_REBOOT_PENDING - SHARED_TAIL_ADDR]
+    pin = shared_tail[DXL_TX_EN_1 - SHARED_TAIL_ADDR]
+
+    lvl_name = {0: "Low", 1: "High", 2: "None (niche)"}.get(lvl, "??")
+    pin_name = _pin_name(pin)
+    lvl_tag = "OK" if lvl == REV_B_EXPECT_TX_LEVEL else f"CORRUPT (expect 0x{REV_B_EXPECT_TX_LEVEL:02x} = High)"
+    pin_tag = "OK" if pin == REV_B_EXPECT_PIN else f"CORRUPT (expect 0x{REV_B_EXPECT_PIN:02x} = PC2)"
+    rb_tag = "OK" if reboot == 0 else "SET — TC ISR would software_reset"
+
+    print("\n[Wedge probes]  (rev_b: tx_level=High, pin=PC2; reboot=0)")
+    print(f"  DXL_TX_EN.0        @ 0x{DXL_TX_EN_0:08x} = 0x{lvl:02x} [{lvl_name}]   {lvl_tag}")
+    print(f"  DXL_TX_EN.1        @ 0x{DXL_TX_EN_1:08x} = 0x{pin:02x} [{pin_name}]    {pin_tag}")
+    print(f"  DXL_REBOOT_PENDING @ 0x{DXL_REBOOT_PENDING:08x} = 0x{reboot:02x}              {rb_tag}")
+
+
+def dump_ram_window(label: str, addr: int, buf: bytes) -> None:
+    print(f"\n[{label}]  0x{addr:08x}..0x{addr + len(buf):08x}")
+    for off in range(0, len(buf), 16):
+        row = buf[off:off + 16]
+        hex_part = " ".join(f"{b:02x}" for b in row)
+        print(f"  0x{addr + off:08x}: {hex_part}")
+
+
 def decode_afio(buf: bytes) -> None:
     # PCFR1 sits at AFIO + 0x0C on V006. USART1_RM is a single 4-bit field at
     # bits [9:6] (per ch32-metapac afio_v00x). The earlier {2,21,22} decode was
@@ -222,6 +287,17 @@ def main() -> None:
         decode_dma_ch("DMA1 CH5 (USART1 RX)", DMA1_CH5, wlink_dump(DMA1_CH5, 0x10))
         decode_gpioc(wlink_dump(GPIOC, 0x10))
         decode_afio(wlink_dump(AFIO, 0x10))
+        data_tail = wlink_dump(DATA_TAIL_ADDR, DATA_TAIL_LEN)
+        shared_tail = wlink_dump(SHARED_TAIL_ADDR, SHARED_TAIL_LEN)
+        decode_wedge_probes(data_tail, shared_tail)
+        dump_ram_window(
+            "DATA tail  (DXL_TX_EN.0 | CLOCK_TRIM | CLOCK_FINE_TRIM | SHARED head)",
+            DATA_TAIL_ADDR, data_tail,
+        )
+        dump_ram_window(
+            "SHARED tail  (… SHARED end | REBOOT | DXL_TX_EN.1 | RX_WRITE_POS | BAUD_PENDING)",
+            SHARED_TAIL_ADDR, shared_tail,
+        )
         print()
         print("=" * 70)
     finally:
