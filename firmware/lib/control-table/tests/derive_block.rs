@@ -81,6 +81,25 @@ fn access_attr_overrides_default_rw() {
 
 #[repr(C)]
 #[derive(Block)]
+struct WithReserved {
+    a: u8,
+    #[ct_field(reserved)]
+    rsvd: u16,
+    b: u8,
+}
+
+#[test]
+fn reserved_attr_marks_field_access_reserved_and_keeps_layout() {
+    assert_eq!(WithReserved::FIELDS.len(), 3);
+    assert_eq!(WithReserved::FIELDS[1].access, Access::Reserved);
+    assert_eq!(WithReserved::FIELDS[1].addr, offset_of!(WithReserved, rsvd) as u16);
+    assert_eq!(WithReserved::FIELDS[1].size, 2);
+    assert_eq!(WithReserved::FIELDS[0].access, Access::Rw);
+    assert_eq!(WithReserved::FIELDS[2].access, Access::Rw);
+}
+
+#[repr(C)]
+#[derive(Block)]
 struct CompLit {
     #[ct_field(le = 100u8)]
     x: u8,

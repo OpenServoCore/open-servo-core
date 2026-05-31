@@ -7,6 +7,7 @@ use syn::{Attribute, Data, DeriveInput, Expr, ExprArray, Fields, Ident, Path, Ty
 enum AccessMode {
     Ro,
     Rw,
+    Reserved,
 }
 
 #[derive(Copy, Clone)]
@@ -93,6 +94,7 @@ pub fn expand(input: &DeriveInput) -> syn::Result<TokenStream2> {
         let access = match attrs.access {
             AccessMode::Ro => quote!(::control_table::Access::Ro),
             AccessMode::Rw => quote!(::control_table::Access::Rw),
+            AccessMode::Reserved => quote!(::control_table::Access::Reserved),
         };
         let validators = build_validators(ty, &attrs)?;
 
@@ -214,6 +216,9 @@ fn parse_field_attrs(attrs: &[Attribute]) -> syn::Result<FieldAttrs> {
         attr.parse_nested_meta(|m| {
             if m.path.is_ident("skip") {
                 out.skip = true;
+                Ok(())
+            } else if m.path.is_ident("reserved") {
+                out.access = AccessMode::Reserved;
                 Ok(())
             } else if m.path.is_ident("abs") {
                 out.abs = true;

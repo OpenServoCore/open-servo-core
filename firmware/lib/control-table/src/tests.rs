@@ -317,6 +317,124 @@ fn sync_unsafe_cell_region_ptr_aliases_with_view() {
     assert_eq!(cell.with(|x| x.a), 9);
 }
 
+// [rw 0..2) | reserved 2..6) | rw 6..8) — covers reads spanning a reserved
+// hole + writes hitting the hole edge.
+const RESERVED_BLOCKS: &[BlockDesc] = &[BlockDesc {
+    addr: 0,
+    size: 8,
+    struct_offset: 0,
+    fields: &[
+        FieldDesc {
+            addr: 0,
+            size: 2,
+            struct_offset: 0,
+            access: Access::Rw,
+            validators: &[],
+        },
+        FieldDesc {
+            addr: 2,
+            size: 4,
+            struct_offset: 2,
+            access: Access::Reserved,
+            validators: &[],
+        },
+        FieldDesc {
+            addr: 6,
+            size: 2,
+            struct_offset: 6,
+            access: Access::Rw,
+            validators: &[],
+        },
+    ],
+    validators: &[],
+}];
+
+static RESERVED_REGION: RegionDesc = RegionDesc {
+    addr: 0,
+    size: REGION_SIZE,
+    blocks: RESERVED_BLOCKS,
+    validators: &[],
+};
+
+static RESERVED_REGIONS: &[&RegionDesc] = &[&RESERVED_REGION];
+
+struct ReservedRouter {
+    storage: UnsafeCell<[u8; REGION_SIZE as usize]>,
+}
+
+// SAFETY: tests are single-threaded.
+unsafe impl Sync for ReservedRouter {}
+
+impl ReservedRouter {
+    const fn new() -> Self {
+        Self {
+            storage: UnsafeCell::new([0; REGION_SIZE as usize]),
+        }
+    }
+    fn seed(&self, off: usize, bytes: &[u8]) {
+        // SAFETY: tests are single-threaded.
+        unsafe {
+            core::ptr::copy_nonoverlapping(
+                bytes.as_ptr(),
+                (self.storage.get() as *mut u8).add(off),
+                bytes.len(),
+            )
+        }
+    }
+}
+
+impl Router for ReservedRouter {
+    fn regions(&self) -> &'static [&'static RegionDesc] {
+        RESERVED_REGIONS
+    }
+    fn region_base(&self, _desc: &RegionDesc) -> Option<*mut u8> {
+        Some(self.storage.get() as *mut u8)
+    }
+}
+
+#[test]
+fn reserved_field_read_zero_fills_regardless_of_storage() {
+    let r = ReservedRouter::new();
+    r.seed(0, &[0x11, 0x22, 0xAA, 0xBB, 0xCC, 0xDD, 0x33, 0x44]);
+    let mut buf = [0xFFu8; 4];
+    r.read_bytes(2, &mut buf).unwrap();
+    assert_eq!(buf, [0, 0, 0, 0]);
+}
+
+#[test]
+fn reserved_field_write_returns_access_error_and_does_not_commit() {
+    let r = ReservedRouter::new();
+    r.seed(2, &[0x55, 0x66, 0x77, 0x88]);
+    let mut staged = StagedWrites::new();
+    let err = r.write_bytes(2, &[0xAA], &mut staged).unwrap_err();
+    assert_eq!(err, Error::AccessError);
+    assert!(staged.is_empty());
+    // Reserved reads zero-fill; storage is untouched but invisible to readers.
+    let mut buf = [0xFFu8; 4];
+    r.read_bytes(2, &mut buf).unwrap();
+    assert_eq!(buf, [0, 0, 0, 0]);
+}
+
+#[test]
+fn read_spanning_rw_reserved_rw_zero_fills_reserved_middle() {
+    let r = ReservedRouter::new();
+    r.seed(0, &[0x11, 0x22, 0xAA, 0xBB, 0xCC, 0xDD, 0x33, 0x44]);
+    let mut buf = [0xFFu8; 8];
+    r.read_bytes(0, &mut buf).unwrap();
+    assert_eq!(buf, [0x11, 0x22, 0, 0, 0, 0, 0x33, 0x44]);
+}
+
+#[test]
+fn write_straddling_reserved_field_returns_access_error() {
+    let r = ReservedRouter::new();
+    let mut staged = StagedWrites::new();
+    // Spans rw [0..2) + reserved [2..6): walk_fields hits reserved with
+    // require_rw=true → AccessError before any commit.
+    let err = r.write_bytes(0, &[1, 2, 3, 4], &mut staged).unwrap_err();
+    assert_eq!(err, Error::AccessError);
+    assert!(staged.is_empty());
+}
+
 #[test]
 fn compare_op_apply_covers_every_op() {
     assert!(CompareOp::Lt.apply(&1, &2));

@@ -37,6 +37,10 @@ pub trait HasAllowed {
 pub enum Access {
     Ro,
     Rw,
+    /// Address slot is part of the table layout but has no backing storage:
+    /// reads zero-fill, writes return `AccessError`. Lets a build-disabled
+    /// field hold its byte offset without exposing live state.
+    Reserved,
 }
 
 /// `struct_offset` is block-relative; the block's own offset is added during walks.

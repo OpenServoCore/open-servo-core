@@ -134,16 +134,17 @@ fn range_in(addr: u16, end: usize, base: u16, size: usize) -> bool {
     (addr as usize) >= base && end <= base + size
 }
 
-/// Walk fields covering `[abs_start, +len)`. Calls `on_chunk(struct_off, buf_off, chunk_len)`
-/// for each overlapping byte run (`struct_off` is region-relative). Returns `AccessError`
-/// on a gap (between blocks or inside one), or on an RO field if `require_rw`.
+/// Walk fields covering `[abs_start, +len)`. Calls `on_chunk(access, struct_off, buf_off, chunk_len)`
+/// for each overlapping byte run (`struct_off` is region-relative; `access` lets the read path
+/// zero-fill `Reserved` chunks instead of memcpy'ing storage). Returns `AccessError` on a gap
+/// (between blocks or inside one), or on a non-RW field if `require_rw`.
 /// Blocks and fields within each block must be sorted by `addr` and non-overlapping.
 fn walk_fields(
     abs_start: u16,
     len: usize,
     blocks: &[BlockDesc],
     require_rw: bool,
-    mut on_chunk: impl FnMut(usize, usize, usize),
+    mut on_chunk: impl FnMut(Access, usize, usize, usize),
 ) -> Result<(), Error> {
     let req_hi = abs_start as usize + len;
     let mut req_lo = abs_start as usize;
@@ -176,7 +177,7 @@ fn walk_fields(
             let chunk_hi = req_hi.min(f_hi);
             let chunk_len = chunk_hi - req_lo;
             let struct_off = block_struct + field.struct_offset as usize + (req_lo - f_lo);
-            on_chunk(struct_off, buf_pos, chunk_len);
+            on_chunk(field.access, struct_off, buf_pos, chunk_len);
             buf_pos += chunk_len;
             req_lo = chunk_hi;
         }
@@ -200,12 +201,19 @@ unsafe fn walk_read(
         dst.len(),
         blocks,
         false,
-        |struct_off, dst_pos, chunk_len| unsafe {
-            core::ptr::copy_nonoverlapping(
-                region_base.add(struct_off),
-                dst_ptr.add(dst_pos),
-                chunk_len,
-            );
+        |access, struct_off, dst_pos, chunk_len| unsafe {
+            match access {
+                Access::Reserved => {
+                    core::ptr::write_bytes(dst_ptr.add(dst_pos), 0, chunk_len);
+                }
+                Access::Ro | Access::Rw => {
+                    core::ptr::copy_nonoverlapping(
+                        region_base.add(struct_off),
+                        dst_ptr.add(dst_pos),
+                        chunk_len,
+                    );
+                }
+            }
         },
     )
 }
@@ -217,7 +225,7 @@ pub(crate) fn stage_write(
     blocks: &[BlockDesc],
     staged: &mut StagedWrites,
 ) -> Result<(), Error> {
-    walk_fields(abs_addr, src.len(), blocks, true, |_, _, _| {})?;
+    walk_fields(abs_addr, src.len(), blocks, true, |_, _, _, _| {})?;
     staged.push_chunk(abs_addr, src)
 }
 
@@ -230,7 +238,7 @@ unsafe fn commit_chunk(region_base: *mut u8, abs_addr: u16, data: &[u8], blocks:
         data.len(),
         blocks,
         false,
-        |struct_off, data_pos, chunk_len| unsafe {
+        |_access, struct_off, data_pos, chunk_len| unsafe {
             core::ptr::copy_nonoverlapping(
                 data_ptr.add(data_pos),
                 region_base.add(struct_off),
