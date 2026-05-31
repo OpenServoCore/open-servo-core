@@ -1,28 +1,40 @@
 """Scope-friendly reproducer for the V006 TX_EN-stuck-HIGH wedge.
 
 The chip wedges (~30% Vcc bus contention from chip's PC2 staying asserted)
-most reliably in the Fast Bulk Read last-slave pass at high baud with a
-≥32B reply payload. This tool fires that exact pattern, either as a single
-shot for scope capture or continuously to pressure-test for wedging.
-
-Single-shot pattern (same as test_timing_fast_coalesce per shot):
-  - pirate master:  FAST_BULK_READ [(INJ_ID, 0, INJ_LEN), (chip_id, 0, DUT_LEN)]
-  - pirate ARMs the INJ predecessor reply so chip's snoop walk sees real bytes
-  - chip replies as last-slave with chain CRC patched over the INJ snoop
+when its dxl_fast TC ISR fails to re-arm and drop TX_EN. The most reliable
+trigger observed is the verify matrix in `pirate_chip_tune.py` walking
+from chip-as-First at 2M (precursor cell: 1B payload silently drops some
+shots) into the cells that follow.
 
 Modes:
-  python scripts/pirate_chip_wedge_repro.py
-      Single shot at 3M baud, DUT_LEN=32. Sleeps 0.5s first so you can
-      arm the scope.
+  --matrix
+      Walks (baud × dut_len × position) cells in the same order as
+      `pirate_chip_tune.step_verify`, with a counter-Read health probe
+      after each cell. Stops + dumps the wedge cell on first health-probe
+      failure. Best one-command repro of the verify-matrix wedge.
+      Assumes chip is already in wedge-prone state — typically because
+      `pirate_chip_tune.py` was run first (tuning TX_FAST at 1M leaves
+      the chip mistimed for chain coalesce at 2M+).
 
-  python scripts/pirate_chip_wedge_repro.py --continuous
-      Keep firing back-to-back. Stops on --wedge-threshold consecutive
-      NOREPLY/other shots (true bus-stuck signature: chip stops replying
-      entirely) or --max-shots (default 10000). CRC failures are counted
-      but do NOT halt — those are corruption, not wedge. On stop, halt
-      the chip with dump_v006_dxl_state.py while the bus is wedged.
+  --continuous
+      Fires one position repeatedly. Stops on --wedge-threshold consecutive
+      NOREPLY/other shots or --max-shots (default 10000). CRC failures
+      counted but don't halt — those are corruption, not wedge.
 
-Both modes print TelemetryDxlLink counters before + after.
+  (default)
+      Single shot at --baud / --dut-len / --position. Sleeps --scope-delay-s
+      first so you can arm a scope.
+
+Position semantics (used by all modes):
+  only   plain Read; chip is the sole responder.
+  first  Fast Bulk Read [(chip), (FOREIGN_ID)] — chip fires slot 1, bus
+         IDLEs after (FOREIGN_ID never replies). Validates chip's First-slot
+         emission without a chain CRC.
+  last   Fast Bulk Read [(INJ_ID), (chip)] — pirate ARMs INJ predecessor
+         reply so chip's snoop walk + chain CRC patch fire as in production.
+
+On wedge, halt + dump regs while the bus is still wedged:
+  python scripts/dump_v006_dxl_state.py --keep-halted
 """
 
 from __future__ import annotations
@@ -38,31 +50,108 @@ from dxl_link import clear_counters, print_counters, read_counters
 from dxl_packet import (
     build_fast_bulk_read,
     build_fast_first_bytes,
+    build_read,
     parse_fast_response,
+    parse_status,
 )
 from pirate import Pirate, PirateError
-from pirate_chip_tune import BAUD_INDEX, autodetect_pirate, set_chip_baud
+from pirate_chip_tune import (
+    BAUD_INDEX,
+    FOREIGN_ID,
+    autodetect_pirate,
+    set_chip_baud,
+)
 
 INJ_ID = 50
+POSITIONS = ("only", "first", "last")
 # This script measures bus/chain-CRC health, not protocol-level correctness.
-# Any well-formed Fast Bulk Read reply (right framing, slot1 id+length match,
-# valid CRC) counts as `clean` — including replies whose error byte is non-zero
-# (e.g. AccessError 0x07 when the requested range crosses a control-table
-# gap; that's the firmware doing its job). Wedge signal = chip silent
-# (NOREPLY) or bus flood (other = >256 RX bytes/shot).
+# Any well-formed reply (right framing, expected id+length) counts as `clean`
+# — including Status replies whose error byte is non-zero (e.g. AccessError
+# 0x07 when the requested range crosses a control-table gap; that's the
+# firmware doing its job). Wedge signal = chip silent (NOREPLY) or bus
+# flood (other = >256 RX bytes/shot).
 WEDGE_BUCKETS = ("noreply", "other")
 RESULT_BUCKETS = ("clean", "extra_idle", "crc", "other", "noreply")
 
 
 def run_shot(
+    pirate: Pirate, dut_id: int, position: str, inj_len: int, dut_len: int,
+) -> tuple[str, bytes, bytes]:
+    """Returns (result, request_bytes, reply_bytes). Dispatches on position."""
+    if position == "only":
+        return _shot_only(pirate, dut_id, dut_len)
+    if position == "first":
+        return _shot_first(pirate, dut_id, dut_len)
+    if position == "last":
+        return _shot_last(pirate, dut_id, inj_len, dut_len)
+    raise ValueError(f"unknown position {position!r}")
+
+
+def _shot_only(
+    pirate: Pirate, dut_id: int, dut_len: int,
+) -> tuple[str, bytes, bytes]:
+    request = build_read(dut_id, 0, dut_len)
+    pirate.drain_stamps()
+    reply = pirate.xfer(request, reply_us=10_000)
+    if reply is None:
+        return "noreply", request, b""
+    if len(reply) < 11:
+        return "noreply", request, reply
+    try:
+        st = parse_status(reply)
+    except ValueError:
+        return "crc", request, reply
+    if st.id != dut_id:
+        return "other", request, reply
+    return "clean", request, reply
+
+
+def _shot_first(
+    pirate: Pirate, dut_id: int, dut_len: int,
+) -> tuple[str, bytes, bytes]:
+    # Fast Bulk Read with chip as slot 1, FOREIGN_ID as silent slot 2.
+    # Chip emits its First-slot bytes (HEADER + chain-length + STATUS + err
+    # + slot1_id + slot1_data) then waits for slot 2 that never fires; the
+    # chain CRC patch deadline eventually misses. We don't validate CRC
+    # here — for a wedge probe, presence of the expected First-slot byte
+    # count is sufficient.
+    request = build_fast_bulk_read(
+        [(dut_id, 0, dut_len), (FOREIGN_ID, 0, 1)]
+    )
+    pirate.drain_stamps()
+    b0 = pirate.bytes_count()
+    pirate.master(request)
+    time.sleep(0.02)
+    b1 = pirate.bytes_count()
+    total = b1 - b0
+
+    capture = min(total, 256) if total > 0 else 0
+    all_rx = pirate.rx_range(b0, capture) if capture > 0 else b""
+    reply = all_rx[len(request):] if len(all_rx) >= len(request) else b""
+
+    first_slot_bytes = 10 + dut_len  # HEADER+BCAST+len2+STATUS+err+slot_id+data
+    if total > 256:
+        pirate.drain_stamps()
+        return "other", request, reply
+    if total < len(request) + first_slot_bytes // 2:
+        pirate.drain_stamps()
+        return "noreply", request, reply
+    if len(reply) < first_slot_bytes:
+        pirate.drain_stamps()
+        return "noreply", request, reply
+    # reply[8] is the error byte (any value OK — protocol-level detail);
+    # reply[9] is the First slot's id, which must be the chip's id.
+    if reply[:4] != bytes([0xFF, 0xFF, 0xFD, 0x00]) or reply[4] != 0xFE \
+            or reply[7] != 0x55 or reply[9] != dut_id:
+        pirate.drain_stamps()
+        return "crc", request, reply
+    pirate.drain_stamps()
+    return "clean", request, reply
+
+
+def _shot_last(
     pirate: Pirate, dut_id: int, inj_len: int, dut_len: int,
 ) -> tuple[str, bytes, bytes]:
-    """Returns (result, request_bytes, reply_bytes).
-
-    reply_bytes is everything pirate observed AFTER the master's own request
-    bytes. For 'noreply' cases where total < len(request), reply_bytes is
-    empty. For 'other' (total > 256) it's a truncated view of the flood.
-    """
     inj_data = b"\xAA" * inj_len
     packet_length = 1 + (2 + inj_len) + (2 + dut_len) + 2
     inj_bytes = build_fast_first_bytes(
@@ -72,13 +161,8 @@ def run_shot(
 
     pirate.drain_stamps()
     b0 = pirate.bytes_count()
-    try:
-        pirate.arm(inj_bytes, after_idle_ticks=250 * 18)
-        pirate.master(request)
-    except PirateError:
-        # ARM/MASTER themselves don't depend on the chip; a failure here is
-        # a pirate-side issue, not a wedge. Re-raise so the loop stops.
-        raise
+    pirate.arm(inj_bytes, after_idle_ticks=250 * 18)
+    pirate.master(request)
     time.sleep(0.02)
     b1 = pirate.bytes_count()
     total = b1 - b0
@@ -108,8 +192,6 @@ def run_shot(
     if slots[1].id != dut_id or len(slots[1].data) != dut_len:
         pirate.drain_stamps()
         return "other", request, reply
-    # Frame is well-formed. error byte (zero or not) is a protocol-layer
-    # detail; the bus + chain-CRC path served a complete reply, so it's clean.
     final = "clean" if len(pirate.drain_stamps()) == 1 else "extra_idle"
     return final, request, reply
 
@@ -138,6 +220,60 @@ def print_capture(label: str, request: bytes, reply: bytes) -> None:
     print(f"  [{label}] reply   ({len(reply)}B):  {reply.hex(' ')}")
 
 
+def run_matrix(
+    pirate: Pirate, dxl_id: int,
+    bauds: list[int], dut_lens: list[int], positions: list[str],
+    n_per_cell: int, inj_len: int,
+) -> None:
+    """Walk the verify-style sweep. Stops on first cell where the
+    post-cell counter Read fails (chip silent = wedge)."""
+    print(f"\n[matrix — bauds={bauds} dut_lens={dut_lens} "
+          f"positions={positions}  n={n_per_cell}/cell]",
+          flush=True)
+    print(f"  {'cell':<22} {'   '.join(f'{b:>10}' for b in RESULT_BUCKETS)}  health")
+    for baud in bauds:
+        try:
+            set_chip_baud(pirate, dxl_id, baud)
+            pirate.wait_quiet()
+        except PirateError as e:
+            print(f"  {baud//1_000_000}M baud:   set_chip_baud failed: {e}")
+            if try_read_counters(pirate, dxl_id) is None:
+                print_wedge_banner(f"on set_chip_baud({baud})")
+                return
+            continue
+        for dut_len in dut_lens:
+            for pos in positions:
+                cell = f"{baud//1_000_000}M {pos:<5} {dut_len:>3}B"
+                tally = {k: 0 for k in RESULT_BUCKETS}
+                first_fail: tuple[int, str, bytes, bytes] | None = None
+                aborted = None
+                for shot in range(1, n_per_cell + 1):
+                    try:
+                        r, req, reply = run_shot(
+                            pirate, dxl_id, pos, inj_len, dut_len,
+                        )
+                    except PirateError as exc:
+                        aborted = f"pirate side fail shot {shot}: {exc}"
+                        break
+                    tally[r] += 1
+                    if r not in ("clean", "extra_idle") and first_fail is None:
+                        first_fail = (shot, r, req, reply)
+                summary = "  ".join(f"{tally[k]:>10d}" for k in RESULT_BUCKETS)
+                if aborted:
+                    print(f"  {cell:<22} {summary}  ABORT ({aborted})")
+                    return
+                health = try_read_counters(pirate, dxl_id)
+                tag = "ok" if health is not None else "WEDGE"
+                print(f"  {cell:<22} {summary}  {tag}", flush=True)
+                if first_fail is not None:
+                    shot_i, r, req, reply = first_fail
+                    print_capture(f"first non-clean in {cell} (shot {shot_i})",
+                                  req, reply)
+                if health is None:
+                    print_wedge_banner(f"after cell {cell}")
+                    return
+
+
 def main() -> None:
     ap = argparse.ArgumentParser(
         description=__doc__,
@@ -145,11 +281,15 @@ def main() -> None:
     )
     ap.add_argument("--port", default=None)
     ap.add_argument("--id", type=int, default=1)
-    ap.add_argument("--baud", type=int, default=3_000_000)
+    ap.add_argument("--baud", type=int, default=2_000_000,
+                    help="Baud for single-shot/continuous (default 2M).")
+    ap.add_argument("--position", choices=POSITIONS, default="first",
+                    help="Chip slot role for single-shot/continuous "
+                         "(default 'first' — the precursor wedge cell).")
     ap.add_argument("--inj-len", type=int, default=4,
-                    help="Predecessor INJ slot data length (default 4).")
-    ap.add_argument("--dut-len", type=int, default=32,
-                    help="Chip reply data length (default 32 — wedge-prone).")
+                    help="Predecessor INJ slot data length, position=last (default 4).")
+    ap.add_argument("--dut-len", type=int, default=1,
+                    help="Chip reply data length (default 1 — 2M-First-1B wedge cell).")
     ap.add_argument("--continuous", action="store_true",
                     help="Fire repeatedly until wedge or --max-shots.")
     ap.add_argument("--max-shots", type=int, default=10_000)
@@ -159,6 +299,19 @@ def main() -> None:
                     help="Pre-shot delay in single-shot mode so you can arm the scope.")
     ap.add_argument("--wedge-threshold", type=int, default=5,
                     help="Consecutive NOREPLY/other shots before declaring wedge (default 5).")
+    ap.add_argument("--matrix", action="store_true",
+                    help="Walk (baud × dut_len × position) cells (verify-style). "
+                         "Stops on first health-probe failure. Assumes chip is "
+                         "already in wedge-prone state (run pirate_chip_tune.py "
+                         "first to tune TX_FAST at 1M).")
+    ap.add_argument("--matrix-bauds", type=str, default="1000000,2000000,3000000",
+                    help="Comma-separated baud list for --matrix.")
+    ap.add_argument("--matrix-dut-lens", type=str, default="1,4,32",
+                    help="Comma-separated payload list for --matrix.")
+    ap.add_argument("--matrix-positions", type=str, default="only,first,last",
+                    help="Comma-separated position list for --matrix.")
+    ap.add_argument("--matrix-n", type=int, default=128,
+                    help="Shots per --matrix cell (default 128, matches verify).")
     args = ap.parse_args()
 
     if args.baud not in BAUD_INDEX:
@@ -167,10 +320,26 @@ def main() -> None:
     port = args.port or autodetect_pirate()
     pirate = Pirate(port)
     try:
+        if args.matrix:
+            bauds = [int(x) for x in args.matrix_bauds.split(",")]
+            for b in bauds:
+                if b not in BAUD_INDEX:
+                    sys.exit(f"unsupported matrix baud {b}; supported: {sorted(BAUD_INDEX)}")
+            dut_lens = [int(x) for x in args.matrix_dut_lens.split(",")]
+            positions = [p.strip() for p in args.matrix_positions.split(",")]
+            for p in positions:
+                if p not in POSITIONS:
+                    sys.exit(f"unsupported position {p!r}; supported: {POSITIONS}")
+            print(f"pirate: {port}   chip id: {args.id}")
+            run_matrix(pirate, args.id, bauds, dut_lens, positions,
+                       args.matrix_n, args.inj_len)
+            return
+
         set_chip_baud(pirate, args.id, args.baud)
         pirate.wait_quiet()
         print(f"pirate: {port}   chip id: {args.id}")
-        print(f"baud: {args.baud}   INJ_LEN: {args.inj_len}   DUT_LEN: {args.dut_len}")
+        print(f"baud: {args.baud}   position: {args.position}   "
+              f"INJ_LEN: {args.inj_len}   DUT_LEN: {args.dut_len}")
 
         before = read_counters(pirate, args.id)
         clear_counters(pirate, args.id)
@@ -180,7 +349,7 @@ def main() -> None:
                   flush=True)
             time.sleep(args.scope_delay_s)
             result, req, reply = run_shot(
-                pirate, args.id, args.inj_len, args.dut_len)
+                pirate, args.id, args.position, args.inj_len, args.dut_len)
             print(f"result: {result}")
             print_capture(result, req, reply)
             after = try_read_counters(pirate, args.id)
@@ -207,7 +376,7 @@ def main() -> None:
         for i in range(1, args.max_shots + 1):
             try:
                 r, req, reply = run_shot(
-                    pirate, args.id, args.inj_len, args.dut_len)
+                    pirate, args.id, args.position, args.inj_len, args.dut_len)
             except PirateError as exc:
                 print(f"\nshot {i}: pirate side failed: {exc}")
                 break
