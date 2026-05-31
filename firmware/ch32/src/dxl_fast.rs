@@ -361,17 +361,22 @@ pub fn start_fast_after(request_end_tick: u32, fire_us: u32, snoop_from: Option<
     let rxne_tail_at = decide_rxne_tail(&predict, tx_len);
     let use_rxne_tail = rxne_tail_at != u16::MAX;
 
-    // RXNE-tail covers the "small snoop, tight slack" corner where switch
-    // CMP would land before the predecessor's first byte (wire_window < M)
-    // and walk-at-fire alone overruns slack. In that case skip CatchupArmed
-    // entirely — the tail handler keeps bulk_crc current per byte and the
-    // TxArmed body only walks the GUARD-byte residue.
+    // Phase selection — three ways into TxArmed, one into CatchupArmed:
     //
-    // The "wire_window <= SWITCH_MARGIN" gate is on wire_window_us, NOT
-    // fire_us. fire_us = RDT + wire_window; switch CMP fires at
-    // fire_tick − SWITCH_MARGIN_US so it lands inside predecessor's TX
-    // only if wire_window > SWITCH_MARGIN_US. Otherwise the switch CMP
-    // fires during the RDT dead-time and walks zero bytes.
+    //   1. `use_rxne_tail` — `decide_rxne_tail` determined walk-at-fire
+    //      can't fit slack. Pre-walking happens per-byte via on_rxne up
+    //      to `rxne_tail_at`; TxArmed walks only the GUARD residue.
+    //      Covers both small-window-tight-slack (3M Last 1B) and
+    //      large-n_pred-tight-slack (128B INJ + tiny DUT) corners.
+    //
+    //   2. `wire_window_us <= SWITCH_MARGIN_US` — switch CMP at
+    //      `fire_tick − SWITCH_MARGIN_US` would land before the
+    //      predecessor's first byte and walk zero. Skip the catchup
+    //      tier; TxArmed walks everything at fire.
+    //
+    //   3. Default — wire window is long enough and walk-at-fire fits
+    //      slack; CatchupArmed body folds the bulk at `fire − margin`,
+    //      TxArmed cleans up the residue.
     let (initial_phase, cmp_tick) = match snoop_from {
         None => (FastChainPhase::TxArmed, fire_tick),
         Some(_) if use_rxne_tail => (FastChainPhase::TxArmed, fire_tick),
@@ -464,10 +469,16 @@ fn predict_chain_pure(fire_us: u32, rdt_us: u32, bytes_per_us_q16: u32) -> Chain
     }
 }
 
-/// Per chain-crc.md §14.4: arm the RXNE-tail tier iff switch can't help
-/// (wire_window < M) AND walk-at-fire alone would overrun TX prefetch slack.
-/// Returns the `bytes_walked` threshold for masking RXNEIE, or `u16::MAX`
-/// when the tier stays dormant for this reply (the common case).
+/// Arm the RXNE-tail tier iff walk-at-fire alone would overrun TX prefetch
+/// slack. Two scenarios trigger this: (a) short wire_window where the
+/// switch CMP would land before the predecessor's first byte (the original
+/// chain-crc.md §14.4 case — 3M Last 1B), and (b) long wire_window with
+/// large `n_pred` where the CatchupArmed body itself overruns
+/// `SWITCH_MARGIN_US` (e.g. 128-byte INJ at 3M: ~123 B catchup walk takes
+/// ~62 µs > 50 µs margin, pushing the patch_crc past CH4's read cursor
+/// under hw-fire). Returns the `bytes_walked` threshold for masking
+/// RXNEIE, or `u16::MAX` when walk-at-fire fits slack and no pre-walk is
+/// needed.
 #[inline]
 fn decide_rxne_tail(predict: &ChainPredict, tx_len: usize) -> u16 {
     decide_rxne_tail_pure(predict, tx_len, byte_time_ticks_now())
@@ -476,9 +487,6 @@ fn decide_rxne_tail(predict: &ChainPredict, tx_len: usize) -> u16 {
 #[inline]
 fn decide_rxne_tail_pure(predict: &ChainPredict, tx_len: usize, byte_time_ticks: u32) -> u16 {
     if predict.n_pred == 0 || tx_len < 4 {
-        return u16::MAX;
-    }
-    if predict.wire_window_us >= SWITCH_MARGIN_US {
         return u16::MAX;
     }
     if byte_time_ticks == 0 {
@@ -1098,13 +1106,30 @@ mod tests {
     }
 
     #[test]
-    fn rxne_tail_skips_when_switch_can_cover_window() {
-        // Wire window ≥ SWITCH_MARGIN_US — switch CMP lands inside the
-        // predecessor's transmission and walks bytes pre-fire, so the
-        // RXNE-tail tier shouldn't double up.
-        let predict = ChainPredict { n_pred: 22, wire_window_us: 73 };
+    fn rxne_tail_arms_for_large_n_pred_tight_slack() {
+        // Regression for the 128B-INJ + 1B-DUT failure at 3M (bench stress
+        // 2026-05-31): wire_window ≈ 460 µs (well over SWITCH_MARGIN),
+        // n_pred ≈ 138, tx_len ≈ 5. CatchupArmed body would take
+        // ~62 µs to walk pre-fire bytes — overshoots the 50 µs margin
+        // and under hw-fire the patch_crc loses the race with CH4's
+        // read cursor. RXNE-tail must arm even though wire_window is
+        // long, because the slack check fails.
+        let predict = ChainPredict { n_pred: 138, wire_window_us: 460 };
         assert_eq!(
             decide_rxne_tail_pure(&predict, 5, BYTE_TIME_TICKS_3M),
+            137,
+        );
+    }
+
+    #[test]
+    fn rxne_tail_skips_when_slack_covers_walk_at_long_window() {
+        // Wire window long enough for CatchupArmed AND slack big enough
+        // for walk-at-fire (large DUT payload). Pre-walking is wasted CPU.
+        // n_pred=22, tx_len=37 (32B DUT) → slack = 35×160 = 5600 ticks,
+        // walk = (22+1)×24 + 224 = 776 ticks. Walk fits slack → skip.
+        let predict = ChainPredict { n_pred: 22, wire_window_us: 73 };
+        assert_eq!(
+            decide_rxne_tail_pure(&predict, 37, BYTE_TIME_TICKS_3M),
             u16::MAX
         );
     }
