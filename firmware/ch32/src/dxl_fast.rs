@@ -341,14 +341,22 @@ fn predict_chain(fire_us: u32) -> ChainPredict {
     let rdt_us = unsafe {
         (&raw const (*SHARED.table.config.get()).comms.return_delay_2us).read_volatile() as u32 * 2
     };
-    let wire_window_us = fire_us.saturating_sub(rdt_us);
     let bytes_per_us_q16 = DXL_BYTES_PER_US_Q16.load(Ordering::Relaxed);
+    predict_chain_pure(fire_us, rdt_us, bytes_per_us_q16)
+}
+
+#[inline]
+fn predict_chain_pure(fire_us: u32, rdt_us: u32, bytes_per_us_q16: u32) -> ChainPredict {
+    let wire_window_us = fire_us.saturating_sub(rdt_us);
     let n_pred = if bytes_per_us_q16 == 0 {
         0
     } else {
         // Predecessor reply spans (request_end + rdt) .. (request_end + fire_us).
         // PreviousSlotTimeout fires at TxArmed (post-straggle-walk), so we
-        // compare bytes_walked against the full predecessor reply length here.
+        // compare bytes_walked against the full predecessor reply length
+        // here. Floors twice round-trip (dispatcher's bytes_to_us + this one),
+        // so the actual byte count can be up to one higher than n_pred —
+        // `decide_rxne_tail_pure` biases its walk estimate by +1 to absorb.
         ((wire_window_us.saturating_mul(bytes_per_us_q16)) >> 16).min(u16::MAX as u32) as u16
     };
     ChainPredict {
@@ -363,26 +371,37 @@ fn predict_chain(fire_us: u32) -> ChainPredict {
 /// when the tier stays dormant for this reply (the common case).
 #[inline]
 fn decide_rxne_tail(predict: &ChainPredict, tx_len: usize) -> u16 {
+    decide_rxne_tail_pure(predict, tx_len, byte_time_ticks_now())
+}
+
+#[inline]
+fn decide_rxne_tail_pure(predict: &ChainPredict, tx_len: usize, byte_time_ticks: u32) -> u16 {
     if predict.n_pred == 0 || tx_len < 4 {
         return u16::MAX;
     }
     if predict.wire_window_us >= SWITCH_MARGIN_US {
         return u16::MAX;
     }
-    let byte_time_ticks = byte_time_ticks_now();
     if byte_time_ticks == 0 {
         return u16::MAX;
     }
     let slack_ticks = (tx_len as u32 - 2).saturating_mul(byte_time_ticks);
-    let walk_at_fire_ticks = (predict.n_pred as u32)
+    // `predict.n_pred` floors twice on the dispatcher → predict round-trip
+    // (bytes_to_us floor, then µs → bytes floor), so true predecessor count
+    // is up to one byte higher. Bias the walk estimate up by one byte so the
+    // gate doesn't undershoot on tight cases like 3M Last 1B (true n_pred
+    // = 11, predicted = 10).
+    let walk_at_fire_ticks = (predict.n_pred as u32 + 1)
         .saturating_mul(CRC_WALK_TICKS_PER_BYTE)
         .saturating_add(POST_FIRE_FLOOR_TICKS)
         .saturating_add(POST_FIRE_JITTER_TICKS);
     if walk_at_fire_ticks <= slack_ticks {
         return u16::MAX;
     }
-    predict
-        .n_pred
+    // Use the same +1 bias for rxne_tail_at so on_rxne masks at the *actual*
+    // (one higher) byte count rather than the floored prediction — otherwise
+    // mask fires one byte too early and post-fire walks GUARD+1 bytes.
+    (predict.n_pred + 1)
         .saturating_sub(RXNE_TAIL_GUARD_BYTES)
         .max(1)
 }
@@ -858,10 +877,21 @@ fn report_fault(f: FastChainFault) {
 
 #[cfg(test)]
 mod tests {
-    use super::{FastChainPhase, is_legal_transition, ring_crc};
+    use super::{
+        ChainPredict, FastChainPhase, decide_rxne_tail_pure, is_legal_transition,
+        predict_chain_pure, ring_crc,
+    };
     use dxl_protocol::crc16;
 
     const RING: [u8; 8] = [0x10, 0x20, 0x30, 0x40, 0x50, 0x60, 0x70, 0x80];
+
+    // 3 Mbaud reference values used across the rxne-tail tests:
+    //   brr = 48 MHz / 3 MHz = 16; byte_time_ticks = 10 × brr = 160.
+    //   bytes_per_us_q16 = round((48 << 16) / 160) = 19661.
+    const BYTE_TIME_TICKS_3M: u32 = 160;
+    const BYTES_PER_US_Q16_3M: u32 = 19661;
+    // Default RDT used on rev_b boot (control table comms.return_delay_2us=125).
+    const RDT_US_DEFAULT: u32 = 250;
 
     #[test]
     fn empty_walk_returns_seed_unchanged() {
@@ -912,5 +942,111 @@ mod tests {
         assert!(!is_legal_transition(Snoop, TxStreaming));
         assert!(!is_legal_transition(TxArmed, Catchup));
         assert!(!is_legal_transition(CrcPatched, TxArmed));
+    }
+
+    // -- predict_chain ----------------------------------------------------
+
+    #[test]
+    fn predict_chain_3m_last_1b_floors_n_pred_by_one() {
+        // 3M, 2 slaves, Last with 1B own payload, 1B predecessor payload.
+        // Dispatcher: bytes_before(1) = FAST_SLOT0_PREFIX(10) + 1 = 11; then
+        // bytes_to_us(11, 3M) = floor(11 × 218453 / 64K) = 36; fire_us = 250 + 36.
+        // True n_pred = 11 but predict_chain floors back to 10 — the bug
+        // the +1 bias in decide_rxne_tail_pure absorbs.
+        let p = predict_chain_pure(286, RDT_US_DEFAULT, BYTES_PER_US_Q16_3M);
+        assert_eq!(p.wire_window_us, 36);
+        assert_eq!(p.n_pred, 10);
+    }
+
+    #[test]
+    fn predict_chain_zero_window_when_fire_before_rdt() {
+        // Fire scheduled inside RDT (degenerate): saturate wire_window to 0
+        // so decide_rxne_tail short-circuits to disabled.
+        let p = predict_chain_pure(100, RDT_US_DEFAULT, BYTES_PER_US_Q16_3M);
+        assert_eq!(p.wire_window_us, 0);
+        assert_eq!(p.n_pred, 0);
+    }
+
+    #[test]
+    fn predict_chain_zero_bytes_per_us_returns_zero_n_pred() {
+        // Boot state before store_baud_derived runs.
+        let p = predict_chain_pure(286, RDT_US_DEFAULT, 0);
+        assert_eq!(p.wire_window_us, 36);
+        assert_eq!(p.n_pred, 0);
+    }
+
+    // -- decide_rxne_tail -------------------------------------------------
+
+    #[test]
+    fn rxne_tail_arms_for_3m_last_1b_with_predicted_n_pred_10() {
+        // Regression: the floored n_pred = 10 must still arm RXNE-tail
+        // because the +1 bias on the walk estimate trips the slack gate.
+        // Walk = (10+1)×24 + 200 + 24 = 488 ticks; slack = (5-2)×160 = 480.
+        // rxne_tail_at = (10+1) - GUARD(2) = 9.
+        let predict = ChainPredict { n_pred: 10, wire_window_us: 36 };
+        assert_eq!(
+            decide_rxne_tail_pure(&predict, 5, BYTE_TIME_TICKS_3M),
+            9
+        );
+    }
+
+    #[test]
+    fn rxne_tail_skips_when_switch_can_cover_window() {
+        // Wire window ≥ SWITCH_MARGIN_US — switch CMP lands inside the
+        // predecessor's transmission and walks bytes pre-fire, so the
+        // RXNE-tail tier shouldn't double up.
+        let predict = ChainPredict { n_pred: 22, wire_window_us: 73 };
+        assert_eq!(
+            decide_rxne_tail_pure(&predict, 5, BYTE_TIME_TICKS_3M),
+            u16::MAX
+        );
+    }
+
+    #[test]
+    fn rxne_tail_skips_when_slack_covers_walk() {
+        // 2 sl × L=4 at 3M: tx_len=8, slack = 6×160 = 960 ticks; walk =
+        // (14+1)×24 + 224 = 584 < 960. Post-fire walk fits without the
+        // per-byte ISR cost.
+        let predict = ChainPredict { n_pred: 14, wire_window_us: 47 };
+        assert_eq!(
+            decide_rxne_tail_pure(&predict, 8, BYTE_TIME_TICKS_3M),
+            u16::MAX
+        );
+    }
+
+    #[test]
+    fn rxne_tail_skips_when_no_snoop_predicted() {
+        // No predecessors (Only-slot or boot-time call) → RXNE-tail off.
+        let predict = ChainPredict { n_pred: 0, wire_window_us: 0 };
+        assert_eq!(
+            decide_rxne_tail_pure(&predict, 5, BYTE_TIME_TICKS_3M),
+            u16::MAX
+        );
+    }
+
+    #[test]
+    fn rxne_tail_skips_when_tx_too_small_for_slack() {
+        // tx_len < 4 → slack would underflow. Skip.
+        let predict = ChainPredict { n_pred: 10, wire_window_us: 36 };
+        assert_eq!(
+            decide_rxne_tail_pure(&predict, 3, BYTE_TIME_TICKS_3M),
+            u16::MAX
+        );
+    }
+
+    #[test]
+    fn rxne_tail_skips_when_byte_time_uninitialized() {
+        // store_baud_derived hasn't run; slack would be 0. Skip safely.
+        let predict = ChainPredict { n_pred: 10, wire_window_us: 36 };
+        assert_eq!(decide_rxne_tail_pure(&predict, 5, 0), u16::MAX);
+    }
+
+    #[test]
+    fn rxne_tail_at_clamps_to_one_for_tiny_n_pred() {
+        // n_pred = 1, +1 bias = 2, − GUARD(2) = 0 → clamped to 1 so the
+        // mask check `bytes_walked >= rxne_tail_at` is always meaningful.
+        // Use tiny byte_time_ticks to force the walk-vs-slack gate to fire.
+        let predict = ChainPredict { n_pred: 1, wire_window_us: 10 };
+        assert_eq!(decide_rxne_tail_pure(&predict, 4, 100), 1);
     }
 }
