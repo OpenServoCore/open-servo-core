@@ -85,6 +85,8 @@ The chip's own time from "SysTick deadline reached" to "first bit on wire": PFIC
 
 Corrected by **two** compile-time per-chip-family constants in HCLK ticks — one per dispatcher fire path: `TX_PLAIN_LATENCY_TICKS` for the unicast reply path and `TX_FAST_LATENCY_TICKS` for the Fast Sync/Bulk chain path. The Fast path does extra work before `fire_now` (DMA TCIE off, FSM transition, snoop-CRC scaffolding) and so has a larger effective latency. A single shared knob forces one path to overshoot; the split nulls both.
 
+Both constants live on the SysTick fire path. Under the hardware-fire feature gate planned in [dxl-fast-chain-crc.md §15](dxl-fast-chain-crc.md) — `dxl-hw-fire`, TIM2 OPM driving TX_EN + DMAT via two DMA channels — these collapse to a single small `HW_FIRE_PIPELINE_TICKS` const. The DMA-arbitration → memory-write → USART-pull pipeline is fixed and sub-microsecond, with no per-path variance worth two atomics. The CT fields stay at their byte offsets under HW mode but flip to RO (read 0, write → `0x07 Access Error`); phenomena 1 and 3 below (slope and sub-trim residual) are mode-independent and apply the same way to both fire paths.
+
 ### Phenomenon 3 — sub-trim drift residual (intercept, per-chip)
 
 HSITRIM only fires whole steps (~0.25% on V006), so even a perfect cal lands within ±half a step of the true optimum — about ±0.125% residual drift. Strictly speaking this is residual slope (phenomenon 1, partly uncorrected), but once we pick a worst-case predecessor length to design for, the residual collapses to a fixed µs value at that length and behaves like additional intercept. Per-chip: every chip lands in a slightly different spot relative to the integer trim steps.

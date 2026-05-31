@@ -15,6 +15,19 @@ Companion to [dxl-rx-timing.md](dxl-rx-timing.md). Read that first — this doc 
 > slack-budget tail bytes — and re-derives the sizing constants with
 > the corrected per-byte cost. Read §1–§13 as the design's intent;
 > §14 is the implementation truth.
+>
+> **Update 2026-05-31 — and §15 if you want the next chapter.** The
+> RXNE-tail tier from §14 makes the CRC right at 3 M Last 1B, but
+> bench shows ~25-30% of shots still ship with a visible idle gap on
+> the wire — fire-arrival jitter from the SysTick PFIC trap entry,
+> not snoop saturation. §15 lays out the plan to close it: hardware-
+> driven fire via TIM2 OPM + DMA1_CH7 (CC4 → GPIOC.BSHR for TX_EN) +
+> DMA1_CH2 (UP → USART1.CTLR3 for DMAT). PFIC leaves the critical
+> path entirely; CMP-match → wire-bit drops from ~6 µs ± jitter to
+> sub-microsecond + the ½ baud-tick USART sync floor. Gated behind a
+> `dxl-hw-fire` Cargo feature so TIM2 stays free for bench/encoder
+> use under `dxl-systick-fire`. Not yet implemented — H-series tasks
+> #57-#65 in the tracker.
 
 ---
 
@@ -819,3 +832,201 @@ Net effect: 3 M Last 1B (the structural corner that motivated this
 addendum) drops from 3-4% CRC error rate to design-bounded zero. No
 regression on L ≥ 2 or on big Bulk Reads — those paths are unchanged
 because `use_rxne_tail` evaluates false.
+
+## 15. The next lever: TIM2 OPM hardware fire (2026-05-31)
+
+§14's RXNE-tail tier closed the CRC-correctness gap — 3 M Last 1B
+drops from 3-4% CRC error to design-bounded zero. But the bench verify
+matrix kept showing the same residue from a different angle: ~25-30%
+of shots ship with a visible idle gap on the wire between predecessor
+stop bit and our reply's start bit. The CRC is right, the slot fires,
+the host parses fine — but coalesce is broken because the wire wasn't
+actually zero-gap.
+
+Where's the gap coming from? Scope captures of the SysTick fire ISR
+body break the path into four phases:
+
+    dbg high  → fire_now                  ≈ 1.2 µs
+    dbg low   → (gap)                     ≈ 0.3 µs
+    stat high → accumulate_snoop + patch_crc  ≈ 3.7 µs
+    stat low  → (gap)                     ≈ 0.3 µs
+    dbg high  → wait_and_accumulate_tail  ≈ 2.0 µs
+
+Total post-fire path ≈ 7.5 µs, comfortably under the 10 µs slack at
+L=1 / 3 M (so CRC patching is fine — confirming the 0 CRC errors).
+But `fire_now` is only the *last* 1.2 µs of the pre-wire path. Ahead
+of it: PFIC trap entry (~5 µs irreducible on V006 V2A) plus a few
+hundred ns of `on_systick` body before `fire_now` starts. So
+CMP-match → first wire bit ≈ 6.4 µs ± PFIC jitter.
+
+The `TX_FAST_LATENCY_TICKS` tune subtracts that mean from the deadline,
+so on average we land on time. But the jitter is ±a microsecond or so
+(varies with what was running when CMP matched), and at 3 M that's
+±a-third-of-a-bit-time. Half the time the start bit lands a smidge
+late; half early; in the worst case we either eat into the
+predecessor's stop bit or leave an idle slot the host's IDLE flag
+latches onto and the coalesced frame splits.
+
+So extra_idle isn't a snoop saturation problem. It's a fire-arrival
+jitter problem, and PFIC entry latency is the dominant variable.
+
+### 15.1 What TIM2 OPM buys
+
+TIM2 is the only timer on the V006 with all four pieces we need:
+
+- **CNT we own.** TIM1's counter is busy with motor PWM. TIM3 has no
+  prescaler and no OPM. TIM2's free (modulo the bench/encoder
+  coexistence question in §15.3).
+- **OPM bit.** Once CC4 matches and ARR wraps, the counter stops
+  itself. No re-arm IRQ needed.
+- **Free DMA paths.** TIM2_CH4 routes to DMA1_CH7 (the alternate
+  consumer is USART2_RX, which we don't use). TIM2_UP routes to
+  DMA1_CH2 (alternates SPI1_RX / TIM1_CH1, also unused).
+- **Output compare on a free DMA channel.** CC4 generates a DMA
+  request to Ch7, and the OPM stops cleanly on UP.
+
+Two DMA channels because the fire deadline triggers two distinct
+register writes: `GPIOC.BSHR` to assert TX_EN HIGH, and
+`USART1.CTLR3` to set DMAT (kicks off the USART pulling bytes from
+the already-armed CH4 TX DMA). Each DMA channel writes one target per
+trigger, so we need two events. CC4 first, UP one or two ticks later
+— OPM stops the counter cleanly after UP fires.
+
+Layout:
+
+    arm:
+        DMA1.Ch7 pre-configured (peri=GPIOC.BSHR, src=TX_EN_HIGH_pattern, NDTR=1)
+        DMA1.Ch2 pre-configured (peri=USART1.CTLR3, src=DMAT_pattern, NDTR=1)
+        DMA1.Ch4 pre-configured for TX as today (EN=1, DMAT held off via CTLR3=0)
+        CCR4 = deadline_tick - small_N     (N = ~half a bit-time; see §15.2)
+        ARR  = deadline_tick
+        CEN=1  (counter starts, OPM=1)
+
+    hardware-clocked:
+        CC4 match → DMA1.Ch7 writes BSHR  → TX_EN goes HIGH
+        ARR wrap  → UP event              → DMA1.Ch2 writes CTLR3 → DMAT enabled
+                                         → USART pulls from Ch4
+                                         → start bit on wire ½ baud-tick later
+        OPM stops CNT, CEN clears, counter idle until next arm
+
+PFIC entry leaves the critical path. The ISR-body contribution
+leaves. Fire latency drops from ~6.4 µs ± jitter to a sub-microsecond
+fixed pipeline plus the ½ baud-tick sync mean. The latter is the
+silicon floor — even dxl-pirate's TIM1-OPM fire path on the V20x
+sees it, per `[[pirate-fire-jitter-floor]]`.
+
+### 15.2 TX_EN goes first, but only by a tick
+
+TX_EN HIGH puts our transceiver in TX mode. If it goes HIGH while
+the predecessor is still driving the wire LOW (mid-byte), we get
+**bus contention** — two push-pull CMOS drivers fighting on the
+wire, through-current spikes, garbled bits for any other listener
+on the bus. Not what we want.
+
+The safe window for asserting TX_EN HIGH early is the predecessor's
+**stop-bit window** (~1 bit-time wide, 333 ns at 3 M). Both ends
+drive HIGH during the stop bit, so no contention. Outside that
+window: contention on the early side, garbled start-bit on the late
+side.
+
+Setting `CCR4 = ARR - N` for `N ≈ half a bit-time in ticks` lands
+TX_EN's BSHR write a few hundred ns before DMAT's CTLR3 write —
+squarely inside the stop-bit safe window and just slightly before
+the start-bit edge. The OPM stop-on-UP guarantees nothing re-arms
+between fires.
+
+(There's no AF pin route from TIM2_CH4 to the current TX_EN pin PC2,
+so we can't drive TX_EN HIGH via TIM2's OC4 pin output directly. The
+DMA-write-to-BSHR path achieves the same effect without a board
+change.)
+
+### 15.3 Coexistence with future bench/encoder use
+
+A reasonable future use of TIM2 is reading a rotary encoder for
+motor-side calibration — TIM2 in encoder mode counts edges on TI1 +
+TI2 inputs, with the counter direction tracking the encoder's phase.
+The two modes (OPM fire vs encoder counter) are mutually exclusive:
+encoder mode owns CNT for edge counting and can't share with OPM's
+deadline countdown.
+
+Resolved as a build-time choice via two mutually-exclusive Cargo
+features in `firmware/ch32`:
+
+    dxl-systick-fire   (default)  TIM2 free for encoder mode; SysTick
+                                  CMP drives fire (today's path)
+    dxl-hw-fire                   TIM2 in OPM for fire; encoder mode
+                                  unavailable
+
+The arm/cancel API surface stays the same; only the body of a small
+dispatch differs by cfg. Both paths share the same FSM, state, and
+bench-validated correctness work from §14 — `dxl-hw-fire` is purely
+a fire-path optimization, not a rewrite.
+
+### 15.4 What disappears, what changes
+
+CT layout stays stable. Under `dxl-hw-fire`, the two
+`dxl_tx_{plain,fast}_latency_us` fields turn into reserved bytes
+(read returns 0, write returns DXL Status `0x07 Access Error`) at
+the same byte offsets — no longer tunable, and host tools that try
+to tune get a hard error instead of a silent no-op. A new
+`comms.fire_mode` RO byte lets the pirate tune script branch its
+flow at session start. The reserved-byte mechanic is a small new
+`#[ct_field(reserved)]` proc-macro attribute on the control-table
+derive — handy for any future "this slot only exists in dev builds"
+case too.
+
+`FIRE_ADVANCE_FINE_TICKS` and the `clock_trim` /
+`clock_fine_trim_us` CT fields stay common across both modes. They
+compensate for HSI drift in the deadline math, which is
+mode-independent — both timers (SysTick and TIM2) run on HCLK and
+drift identically with HSI.
+
+A new compile-time const `HW_FIRE_PIPELINE_TICKS` captures the small
+fixed gap from CC4 match to start-bit (DMA arbitration + memory
+write + USART pull + start-bit shift). Sub-microsecond, no per-chip
+variance worth tuning. If bench validation ever finds per-chip
+nudging matters, we promote it to an atomic without changing the CT
+schema.
+
+### 15.5 Honest accounting
+
+What this should buy (pending H-series implementation + bench, tasks
+#57-#65):
+
+- **Extra_idle floor close to zero** at 3 M Last 1B. Wire jitter
+  reduces to the ½ baud-tick start-bit sync mean (~170 ns at 3 M).
+- **PFIC budget back for the ADC pump and main loop.** The fire path
+  no longer contends for the trap-entry window — only the post-fire
+  CRC patch runs in software, and that stays well under slack
+  budget per §14.
+- **RXNE-tail tier likely no longer needed under HW.** With ~5 µs
+  of slack reclaimed, the post-fire walk can cover N_pred = 11
+  directly in most cases. Plan is to keep both tiers under SysTick
+  mode (where the tail still matters) and drop RXNE-tail under HW
+  mode (one less ISR class) — task H6 confirms with the bench.
+
+What this doesn't buy:
+
+- **The ½ baud-tick sync floor is silicon.** Can't be removed
+  without changing the USART. At 3 M that's ~170 ns mean, well
+  under the 3.33 µs jitter cap. At higher hypothetical bauds it'd
+  start to matter.
+- **TIM2 unavailable for anything else under HW mode.** Encoder
+  mode is the obvious tradeoff; the feature gate keeps the SysTick
+  path alive for dev builds that need TIM2 for something else.
+
+What this trades off:
+
+- One more DMA channel (Ch2) spoken for, plus the pre-armed Ch7.
+- TIM2 setup at bringup, then OPM per-arm.
+- A small cfg surface around the latency atomics + CT field types
+  (the new `#[ct_field(reserved)]` attribute carries most of this).
+
+The chain-CRC mechanics from §1-§14 don't change — TIM2 OPM lives
+alongside the snoop path, not on top of it. Worth re-reading §13
+("honest accounting" for the SysTick design) and noticing that this
+plan closes the one bullet that section left open: "the chip's ~5 µs
+structural floor on the SysTick-fire path is unchanged. Closing the
+floor itself needs the TIM1 OPM hardware-driven fire lever (§13
+parent, item 3)." The lever turned out to be TIM2 OPM on this chip
+(TIM1's CNT is too tied to motor PWM), but the shape is the same.
