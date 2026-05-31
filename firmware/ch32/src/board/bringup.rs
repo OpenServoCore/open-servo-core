@@ -8,7 +8,7 @@ use crate::hal::{
 };
 use crate::statics::{
     ADC_DMA_BUF, ADC_DMA_BUF_LEN, ADC_SCAN_LEN, ADC_SENSOR_COUNT, DXL_DBG_PIN, DXL_RX_BUF,
-    DXL_RX_BUF_LEN, DXL_TX_BUF, DXL_TX_EN, SHARED, TX_FAST_LATENCY_DEFAULT_Q88_US,
+    DXL_RX_BUF_LEN, DXL_STAT_PIN, DXL_TX_BUF, DXL_TX_EN, SHARED, TX_FAST_LATENCY_DEFAULT_Q88_US,
     TX_PLAIN_LATENCY_DEFAULT_Q88_US, store_baud_derived,
 };
 
@@ -37,6 +37,8 @@ pub(super) fn run(
 
     configure_pins(wiring);
     seed_dbg_pin(wiring.dbg);
+    // TEMP bench instrumentation: STAT LED repurposed as 2nd scope channel.
+    seed_stat_pin(wiring.stat_led);
     crate::log::debug!("gpio configured");
 
     bring_up_analog_chain(&wiring.current_sense);
@@ -261,6 +263,11 @@ pub(super) fn seed_dbg_pin(pin: crate::hal::Pin) {
     // SAFETY: called once at bring-up before any ISR can read; chain-CRC
     // ISRs only read.
     unsafe { *DXL_DBG_PIN.get() = Some(pin) };
+}
+
+pub(super) fn seed_stat_pin(pin: crate::hal::Pin) {
+    // SAFETY: same as seed_dbg_pin.
+    unsafe { *DXL_STAT_PIN.get() = Some(pin) };
 }
 
 fn start_center_aligned_pwm(m: &MotorConfig, psc: u16, arr: u16) {

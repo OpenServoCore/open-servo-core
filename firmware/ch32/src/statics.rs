@@ -42,6 +42,11 @@ pub static DXL_TX_EN: SyncUnsafeCell<Option<TxEn>> = SyncUnsafeCell::new(None);
 /// going through KERNEL. Seeded once at bring-up; ISR readers only.
 pub static DXL_DBG_PIN: SyncUnsafeCell<Option<Pin>> = SyncUnsafeCell::new(None);
 
+/// TEMP bench instrumentation: second scope channel for breaking down the
+/// post-fire path into sub-pulses. Repurposed from the STAT LED — the
+/// kernel-side `Ch32Dbg::pulse_tick` is no-op'd while this is live.
+pub static DXL_STAT_PIN: SyncUnsafeCell<Option<Pin>> = SyncUnsafeCell::new(None);
+
 /// Set by `Ch32Device::reboot`; USART1 TC ISR fires the soft reset after TX drains.
 pub static DXL_REBOOT_PENDING: AtomicBool = AtomicBool::new(false);
 
