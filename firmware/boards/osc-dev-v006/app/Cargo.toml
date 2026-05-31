@@ -16,7 +16,7 @@ test  = false
 bench = false
 
 [dependencies]
-osc-ch32      = { path = "../../../ch32", default-features = false, features = ["ch32v006x8x6", "rt", "dxl-systick-fire"] }
+osc-ch32      = { path = "../../../ch32", default-features = false, features = ["ch32v006x8x6", "rt"] }
 tinyboot-ch32 = { git = "https://github.com/OpenServoCore/tinyboot.git", tag = "tinyboot-ch32-v0.4.1", default-features = false, features = ["ch32v006x8x6", "system-flash"] }
 qingke        = { version = "0.7", features = ["v2", "critical-section-impl"] }
 qingke-rt     = { version = "0.7", features = ["v2", "highcode"] }
@@ -25,5 +25,7 @@ defmt         = { version = "1", optional = true }
 defmt-rtt     = { version = "1", optional = true }
 
 [features]
-default = []
-defmt   = ["dep:defmt", "dep:defmt-rtt", "osc-ch32/defmt"]
+default          = ["dxl-systick-fire"]
+defmt            = ["dep:defmt", "dep:defmt-rtt", "osc-ch32/defmt"]
+dxl-systick-fire = ["osc-ch32/dxl-systick-fire"]
+dxl-hw-fire      = ["osc-ch32/dxl-hw-fire"]
