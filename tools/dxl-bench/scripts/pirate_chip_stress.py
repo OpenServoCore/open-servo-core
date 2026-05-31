@@ -1,25 +1,23 @@
-"""Scope-friendly reproducer for the V006 TX_EN-stuck-HIGH wedge.
+"""Chip stress harness — repeated shots + health probes, scope-friendly.
 
-The chip wedges (~30% Vcc bus contention from chip's PC2 staying asserted)
-when its dxl_fast TC ISR fails to re-arm and drop TX_EN. The most reliable
-trigger observed is the verify matrix in `pirate_chip_tune.py` walking
-from chip-as-First at 2M (precursor cell: 1B payload silently drops some
-shots) into the cells that follow.
+A generic loop-on-the-chip-until-something-breaks tool. Originally written
+to repro the (now-closed) V006 TX_EN-stuck-HIGH wedge by walking the
+verify matrix; kept as durable bench infra because the shape —
+`pirate_chip_tune`-style position/baud/payload cells with per-cell or
+per-N-shot counter-Read health probes — is the right framing for any
+"does the chip drift / wedge / corrupt under sustained traffic" question.
 
 Modes:
   --matrix
       Walks (baud × dut_len × position) cells in the same order as
       `pirate_chip_tune.step_verify`, with a counter-Read health probe
       after each cell + per-cell fault-counter delta printout. Stops on
-      first health-probe failure. Best one-command repro of the
-      verify-matrix wedge.
-      Assumes chip is already in wedge-prone state — typically because
-      `pirate_chip_tune.py` was run first (tuning TX_FAST at 1M leaves
-      the chip mistimed for chain coalesce at 2M+).
+      first health-probe failure.
       Narrowing knobs:
-        --matrix-repeat N       loop the matrix N times (non-det wedge).
+        --matrix-repeat N       loop the matrix N times (for non-det
+                                failure modes).
         --matrix-health-every N probe counters every N shots inside a
-                                cell so the wedge shot is bracketed to N
+                                cell so the failing shot is bracketed to N
                                 instead of the full 128.
 
   --continuous
@@ -39,7 +37,7 @@ Position semantics (used by all modes):
   last   Fast Bulk Read [(INJ_ID), (chip)] — pirate ARMs INJ predecessor
          reply so chip's snoop walk + chain CRC patch fire as in production.
 
-On wedge, halt + dump regs while the bus is still wedged:
+On a hang, halt + dump regs while the bus state is still live:
   python scripts/dump_v006_dxl_state.py --keep-halted
 """
 
@@ -207,10 +205,12 @@ def diff_counters(before: dict, after: dict) -> dict:
 
 
 def try_read_counters(pirate: Pirate, dxl_id: int) -> dict | None:
-    """Return counters or None if the chip refuses to reply (wedge symptom)."""
+    """Return counters or None if the chip refuses to reply (wedge symptom).
+    ValueError covers `parse_status` rejecting a truncated/garbled frame —
+    treat that as wedge-ish too; a healthy chip returns a well-formed Status."""
     try:
         return read_counters(pirate, dxl_id)
-    except (AssertionError, PirateError, TimeoutError):
+    except (AssertionError, PirateError, TimeoutError, ValueError):
         return None
 
 
@@ -375,6 +375,12 @@ def main() -> None:
                          "within a cell. 0 (default) = end-of-cell only. "
                          "Small values (e.g. 16) bracket the wedge shot tighter "
                          "but slow the run.")
+    ap.add_argument("--skip-counter-preamble", action="store_true",
+                    help="In single-shot/continuous mode, skip the "
+                         "read_counters + clear_counters calls that run right "
+                         "after set_chip_baud. Use to isolate whether the "
+                         "Write to 0x023C (clear_counters) is part of the "
+                         "wedge trigger versus pure plain-Read storm.")
     args = ap.parse_args()
 
     if args.baud not in BAUD_INDEX:
@@ -413,8 +419,12 @@ def main() -> None:
         print(f"baud: {args.baud}   position: {args.position}   "
               f"INJ_LEN: {args.inj_len}   DUT_LEN: {args.dut_len}")
 
-        before = read_counters(pirate, args.id)
-        clear_counters(pirate, args.id)
+        if args.skip_counter_preamble:
+            before = None
+            print("(skipping read_counters + clear_counters preamble)")
+        else:
+            before = read_counters(pirate, args.id)
+            clear_counters(pirate, args.id)
 
         if not args.continuous:
             print(f"\n[single shot — arming scope in {args.scope_delay_s:.1f}s]",
