@@ -197,6 +197,20 @@ The two strategies sit at opposite ends of the trade-off naturally: at low baud,
 
 DXL Fast Sync/Bulk Reads coalesce all addressed slaves' replies into one Status frame on the wire, zero idle gap between slots. The last slave appends a CRC covering the **entire** coalesced frame — header, every preceding slave's bytes, and its own. The bytes we didn't generate still have to be CRC'd, which means watching the wire during the predecessor slots and folding each arriving byte into a running CRC.
 
+> **The per-byte RXNE sketch below was the original 2025 design and is
+> kept here for context.** It has since been replaced by the layered
+> snoop architecture in [dxl-fast-chain-crc.md](dxl-fast-chain-crc.md) —
+> DMA TC + HT pre-walk for the bulk, a SysTick CMP at `fire − M` for
+> the medium-residue, RXNE only for the slack-budget tail bytes when
+> they exist (§14 of chain-crc.md), walk-at-fire for the final
+> straggle. RXNE-for-snoop is OFF by default; framing remains the sole
+> RXNE owner unless slack-budget math demands the tail-tier (rare for
+> L ≥ 2 payloads). The state machine in §7.2 below has been superseded
+> too — see chain-crc.md §6 + §14.6 for the current FSM and §14.5 for
+> the timeline.
+
+(Historical sketch — for the current implementation see chain-crc.md):
+
 This snoop is independent of the framing mode from §5. It runs at every baud, including 3 Mbaud, alongside whatever framing source is publishing wire-end. They share the USART1 vector (§7.3) but their logic doesn't overlap.
 
     Wire (we're the last of three slaves):
@@ -259,6 +273,13 @@ The scheduler arms SysTick CMP to fire TX at the right moment. It's mode-agnosti
 
 The split is functional: every reply that doesn't involve snooping predecessor slots' bytes lands in `WaitingPlain`, no matter how complex the slot math is. Only the Fast last-slave path needs `WaitingFire`, because only that path has a CRC to compute over bytes it didn't generate.
 
+> **Superseded.** `WaitingFire` now expands to the
+> `Chain { phase, ... }` substate machine in chain-crc.md §6 +
+> §14.6. The "snoop CRC accumulating; RXNE-for-snoop ON" gloss is
+> only accurate when the slack-budget math in §14.4 demands the
+> tail-tier; for L ≥ 2 cases the chain accumulates via DMA TC/HT +
+> SysTick switch with no RXNE involvement.
+
 Transitions:
 
     Idle → WaitingPlain   any non-snoop reply gets scheduled
@@ -297,18 +318,23 @@ When cancel runs in `WaitingFire`, "turn RXNE-for-snoop OFF" has to go through t
 RXNEIE has two independent owners:
 
     framing-mode publisher    active iff framing FSM == Rxne
-    fast-snoop accumulator    active iff scheduler FSM == WaitingFire
+    snoop tail-pre-walk       active iff Chain { rxne_tail_at } says so
+                              (see chain-crc.md §14.4 for when this is set)
 
 These are orthogonal — any combination is possible:
 
-    | framing | scheduler     | RXNEIE | handler body runs                |
-    | ------- | ------------- | ------ | -------------------------------- |
-    | Idle    | Idle          |  off   | (IRQ disabled)                   |
-    | Idle    | WaitingPlain  |  off   | (IRQ disabled)                   |
-    | Idle    | WaitingFire   |   on   | snoop CRC only                   |
-    | Rxne    | Idle          |   on   | publish per-byte timestamp only  |
-    | Rxne    | WaitingPlain  |   on   | publish per-byte timestamp only  |
-    | Rxne    | WaitingFire   |   on   | publish + snoop CRC              |
+    | framing | snoop tail | RXNEIE | handler body runs                       |
+    | ------- | ---------- | ------ | --------------------------------------- |
+    | Idle    | off        |  off   | (IRQ disabled)                          |
+    | Idle    | on (tail)  |   on   | snoop tail-walk only                    |
+    | Rxne    | off        |   on   | publish per-byte timestamp only         |
+    | Rxne    | on (tail)  |   on   | publish + snoop tail-walk               |
+
+The snoop owner's role here is narrower than the original design — it
+only arms during the predecessor's last `tail_bytes` of a Fast Last
+reply when `start_fast_after` determined the post-fire walk alone
+wouldn't fit slack (chain-crc.md §14.4). For Fast Sync with L ≥ 2 the
+snoop owner stays off entirely; framing remains the sole RXNE owner.
 
 The hardware has one enable bit. Simple way to compose two owners onto one bit: each owner tracks its own boolean, and on every change the layer recomputes `final = framing_wants OR snoop_wants` and writes that to RXNEIE. Conceptually:
 

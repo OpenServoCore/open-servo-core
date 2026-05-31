@@ -4,6 +4,18 @@ Companion to [dxl-rx-timing.md](dxl-rx-timing.md). Read that first — this doc 
 
 **TL;DR.** When we're the last slave in a DXL Fast Sync/Bulk Read, we have to compute a CRC over bytes we didn't generate — every byte the predecessor slaves' replies put on the wire — and stitch our own bytes onto the end. We've tried two strategies and bounced off both: walking everything at fire blows past the TX DMA prefetch slack for any large snoop; firing RXNE per byte pollutes the system with hundreds of interrupts and shoves SysTick's fire deadline back by ~4 µs at 3 Mbaud. The fix is a three-handed split: DMA's Transfer-Complete IRQ on the RX channel pre-walks the CRC every time the ring wraps (so the ring no longer has to hold the whole snoop window); a SysTick CMP fires a fixed margin before the real deadline and closes whatever gap remains; the fire ISR grabs the tail and patches CRC into the TX buffer. The RX ring drops from 1024 to 512 bytes, the snoop window stops being bounded by ring size, and oversize Fast Bulk Reads stop silently corrupting the bus. The 150 µs margin is still derived from baud and slack, not magical.
 
+> **Update 2026-05-30 — read §14 first.** Bench validation found two
+> things this original write-up got wrong: per-byte CRC walk is **~0.5
+> µs/B**, not 0.1 (5× off — table-fetch reads are slower than a naive
+> cycle count), and the residue model breaks when wire_window < M in
+> zero-gap coalesce (switch fires before the predecessor's first byte).
+> The §1–§13 design below ships and works for L ≥ 2 once M shrinks to
+> 50 µs, but L=1 Last at 3 Mbaud falls through the gap. §14 adds the
+> **RXNE-tail fourth tier** — per-byte CRC pre-walk for just the
+> slack-budget tail bytes — and re-derives the sizing constants with
+> the corrected per-byte cost. Read §1–§13 as the design's intent;
+> §14 is the implementation truth.
+
 ---
 
 ## 1. Four things we're trying to get right
@@ -504,3 +516,306 @@ The DMA controller offers both Half-Transfer (HT) and Transfer-Complete (TC) int
 ## 13. One-paragraph summary
 
 > The Fast Sync/Bulk Read last slave has to compute a CRC over predecessor slots' wire bytes and stitch it onto its own reply. Walking everything at fire blows past the V006's tight TX DMA prefetch slack as soon as the snoop crosses ~70 bytes for a small reply; firing RXNE per byte costs hundreds of USART1 IRQs at 3 Mbaud and shoves SysTick's fire deadline back by ~4 µs because USART1 and SysTick share PFIC priority; the SysTick-only plan that came before this one caps the snoop window at the ring size and silently CRC-corrupts oversize Fast Bulk Reads. The fix is a three-handed split: DMA Transfer-Complete on RX (CH5, stage-gated) pre-walks the CRC every time the 512-byte ring wraps; a SysTick CMP at `fire − 150 µs` walks whatever's accumulated since the last wrap; the fire ISR grabs a ~45-byte straggle and patches CRC into the TX buffer. All three handlers sit at PFIC HIGH and serialize cleanly. The ring drops from 1024 to 512 bytes, the snoop window stops being bounded by ring size, and oversize Fast Bulk Reads just work. The 150 µs margin still derives from two constraints — switch walk fits the margin (`N ≤ 10.3 × M`, comfortable at N = 512) and straggle walk fits the smallest reply's TX prefetch slack (`M < (slack − patch) / 0.03`, so M < 188 µs). The reply-scheduler FSM gains one state (`WaitingSwitch`), the RXNE composer collapses to a single owner (framing), the previously-unused DMA1_CH5 IRQ gets a stage-gated TC handler, and the 4 µs queueing penalty disappears.
+
+## 14. Bench validation and the RXNE-tail addendum (2026-05-30)
+
+§1–§13 are the design as written. This section is the design as it
+actually shipped, after bench-instrumenting the post-fire path with a
+PC3 scope marker and measuring real per-segment timings against a
+pirate-fired Fast Sync chain. Two assumptions turned out to be off
+enough to matter, and one new failure mode showed up that the original
+design didn't anticipate.
+
+### 14.1 Per-byte CRC walk is ~5× slower than estimated
+
+§4.1's "~5 cycles/byte at 48 MHz → 0.1 µs/byte" is what you'd get if
+the table fetch hit a single-cycle SRAM port. In reality:
+
+- The default `dxl_protocol::crc16_continue` LUT lives in `.rodata` →
+  flash, which costs 1 wait state per fetch at 48 MHz on V006.
+- The walk loop has bookkeeping the cycle count missed: ring-index
+  masking, function-call overhead from `ring_crc` → `crc16_continue`,
+  per-iter branch.
+- Each iteration is ~24 cycles, not 5.
+
+Bench measured at 3 Mbaud (11-byte snoop, flash-resident LUT):
+
+    walk_cost  =  5.9 µs / 11 B  =  **0.54 µs/B**
+
+Putting the LUT in `.highcode` (RAM) shaves it to 0.50 µs/B — a 0.04
+µs/B win that's measurable but inside scope-eyeball jitter, and not
+worth the 256 B of SRAM. Use the portable flash-resident `crc16` and
+move on. (The A/B sits in `git stash` if we ever revisit for huge
+Bulk Read snoops where the 0.04 µs/B compounds.)
+
+This 5× revision rewrites everything downstream in §4 and §5:
+
+| §4.1 walk-at-fire example | doc estimate | bench reality |
+|---|---|---|
+| 26 B (5-slave Sync, 4 B payload) | 2.6 µs | 13 µs |
+| 138 B (1 pred × 128 B payload) | 13.8 µs | 69 µs |
+| 800 B (~6 pred × 128 B) | 80 µs | 400 µs |
+
+The "walk at fire" strategy was already known to lose for big snoops;
+this just makes it lose harder. More important is what it does to the
+hybrid's straggle budget — see §14.2.
+
+### 14.2 M had to shrink from 150 µs to 50 µs
+
+§5 Constraint B's straggle walk has to fit slack:
+
+    straggle_bytes = M × bytes/µs                 (M µs of new bytes)
+    walk_straggle  = straggle_bytes × 0.5 µs/B    (was 0.1, now 0.5)
+
+At 3 Mbaud with M = 150: `straggle = 45 B`, walk = **22.5 µs** —
+exceeds even the typical 20 µs slack at L = 4. The smallest reply
+slack (n = 4, no payload, 6.66 µs) was never gonna fit; under the
+corrected per-byte estimate, neither did n = 8 with L = 4.
+
+The shipped code uses **M = 50 µs**. That gives:
+
+    straggle_bytes = 15 B (at 3 Mbaud)
+    walk_straggle  = 7.5 µs
+    + fire_now (1.2) + patch_crc (1.9) + glue (0.6)
+    = post_fire_floor + walk_straggle ≈ 12.2 µs
+
+Fits slack for L ≥ 2 at 3 M (slack = (n−2) × byte_time = 13.3 µs at
+L=2 → 1.1 µs margin) and comfortable for everything bigger.
+
+Re-deriving §5's bounds with the corrected per-byte:
+
+| Constraint | original (0.1 µs/B) | corrected (0.5 µs/B) |
+|---|---|---|
+| A: switch walk ≤ M | N ≤ 10.3 × M (1545 @ M=150) | N ≤ 2 × M (100 @ M=50) ← still clears N=512 |
+| B: straggle walk + patch < slack | M < (slack − 1) / 0.03 | M < (slack − 1) / 0.15 |
+| C: N > M × bytes/µs at 3M | N > 45 @ M=150 | N > 15 @ M=50 |
+| D: TC latency_max < N × byte_time | unchanged | unchanged |
+
+At M = 50, smallest-slack (6.66 µs, no payload) just barely fits the
+B bound; at L = 1 (slack 10 µs) it sits 2.2 µs above the floor — fine
+in the mean, fragile under jitter. This is what motivates §14.3.
+
+### 14.3 The structural gap: switch fires before predecessor starts
+
+Zero-gap coalesce means our fire is essentially coincident with the
+predecessor's last byte landing on the wire. Concretely, the predecessor
+wire stream spans:
+
+    wire_window  =  N_pred × byte_time
+    fire         =  request_end + RDT + wire_window   (for Last slot, k = N-1)
+
+The switch CMP is scheduled at `fire − M`. So switch lands at:
+
+    switch  =  request_end + RDT + wire_window − M
+
+If `wire_window < M`, switch lands **before the predecessor has
+transmitted a single byte**. It walks zero bytes, transitions to
+TxArmed, all `N_pred` bytes hit the post-fire walk.
+
+For inj_len=1 + dut_len=1 Last at 3 M:
+- N_pred = `FAST_SLOT0_PREFIX(10) + 1 = 11` bytes (see
+  [reference: dxl-fast-sync-semantics] for the wire-byte formula)
+- wire_window = 11 × 3.33 = 37 µs < M = 50 µs ✓ switch is useless
+- post_fire = 1.2 + 5.5 + 1.9 + 0.6 = **9.2 µs**
+- slack at L = 1 = 10 µs → **0.8 µs margin, ~3-4% CRC error rate**
+
+The "small snoop, tight slack" corner. §13's three-handed design
+covers everything *except* this corner — the worst slot-budget : snoop
+ratio in the whole design space (any L ≤ 2 with N_pred above the
+switch-fires-usefully threshold; especially L = 1 at any baud ≥ 2 M).
+
+### 14.4 The fourth hand: RXNE for the slack-budget tail
+
+The chain-CRC doc's R3 rejected per-byte RXNE because of the trailing
+RXNE-vs-SysTick collision (slips fire by ~4 µs). The clean answer
+that recovers most of RXNE's benefit *without* re-introducing the
+collision is to use RXNE for **only the tail bytes that walk-at-fire
+can't afford to walk**, and mask 1–2 bytes early so the post-fire
+walk catches the final stragglers.
+
+This is the fourth tier on top of §4.3's three-handed split:
+
+| Tier | When it runs | Walks |
+|---|---|---|
+| TC (existing) | Every 512 B ring wrap | 512 B per fire |
+| HT (existing) | Every 256 B (gated) | 256 B per fire |
+| Switch (existing) | `fire − M` SysTick CMP, once | residue since last TC/HT |
+| **RXNE tail (new)** | per byte, last `tail_bytes` only | 1 byte per entry |
+| Walk-at-fire (existing) | TxArmed body | final 0-2 stragglers |
+
+**Sizing `tail_bytes`** — the count of bytes that need RXNE-tier
+coverage. Pre-walk eliminates the walk-at-fire residue exactly when
+the residue would exceed the slack budget:
+
+    slack_budget    =  slack − post_fire_floor       (e.g. 10 − 4.7 = 5.3 µs at L=1, 3M)
+    slack_budget_B  =  slack_budget / 0.5 µs/B       (10.6 B)
+    fire_residue_B  =  M × bytes/µs                  (15 B @ M=50, 3M)
+    tail_bytes      =  max(0, fire_residue_B − slack_budget_B + GUARD)
+
+For L = 1 at 3 M: `tail_bytes = max(0, 15 − 10.6 + 2) = 6`. Six RXNE
+entries during the last ~20 µs of the predecessor's wire window.
+Pre-walks 6 bytes, leaves ~9 bytes for the post-fire walk — wait,
+that's worse. The arithmetic above only works when switch *does* fire
+usefully. For the failing corner (`wire_window < M`), switch walks
+zero, so the relevant budget is the full `N_pred` minus what
+walk-at-fire can afford:
+
+    tail_bytes  =  max(0, N_pred − slack_budget_B + GUARD)
+
+For L = 1 at 3 M with N_pred = 11: `tail_bytes = max(0, 11 − 10.6 + 2)
+= 2`. Two RXNE entries pre-walk bytes 1-2, walk-at-fire handles
+bytes 3-11 (9 × 0.5 = 4.5 µs + floor 4.7 = 9.2 µs — wait, no
+improvement?).
+
+Let me re-derive cleanly. The goal is "make the post-fire walk small
+enough to fit slack." If we use RXNE to pre-walk `k` bytes, the
+post-fire walk is `(N_pred − k)`. Solving for k:
+
+    (N_pred − k) × 0.5 + post_fire_floor + jitter_margin  <  slack
+    k > N_pred − (slack − post_fire_floor − jitter_margin) / 0.5
+    k > N_pred − 2 × (slack − post_fire_floor − jitter_margin)
+
+For L = 1 at 3 M, N_pred = 11, slack = 10, floor = 4.7, jitter = 0.5:
+    k > 11 − 2 × (10 − 4.7 − 0.5)
+    k > 11 − 9.6 = 1.4
+    → **k = 2** suffices (round up + GUARD).
+
+Post-fire walk drops from 11 B (5.5 µs) to 9 B (4.5 µs). Total
+post-fire = 4.7 + 4.5 = 9.2 µs ... still 9.2 µs! That doesn't help.
+
+The issue: with tiny `tail_bytes`, the floor (4.7 µs) dominates and
+shrinking the walk by 1 µs isn't enough. To actually close the gap
+we need bigger k — pre-walk almost everything, leaving ≤ 2 bytes
+post-fire:
+
+    k = N_pred − GUARD     (GUARD = 2 → walk-at-fire handles last 2)
+    post_fire_walk = GUARD × 0.5 = 1 µs
+    total          = 4.7 + 1 = **5.7 µs**
+
+That's a 3.5 µs improvement, well under the 10 µs slack. The cost is
+9 RXNE entries during the predecessor's 37 µs wire window. At 3 µs
+ISR-entry each, that's 27 µs of CPU spread across the wire window —
+sustainable.
+
+**Revised sizing rule** — use RXNE-tail whenever post-fire walk-only
+violates slack:
+
+    use_rxne_tail  =  N_pred × 0.5 + post_fire_floor + jitter > slack
+    tail_bytes     =  N_pred − GUARD    when use_rxne_tail
+                      0                  otherwise
+    GUARD          =  2                 (catch last byte + 1 for jitter)
+
+For the matrix at 3 M, this resolves cleanly:
+
+| Scenario | N_pred | post-fire only | use RXNE-tail? | with RXNE-tail |
+|---|---|---|---|---|
+| 2 sl × L=1 | 11 | 10.2 µs > 10 ✗ | yes | 5.7 µs |
+| 5 sl × L=1 | 20 | 14.7 > 10 ✗ | yes | 5.7 µs |
+| 2 sl × L=4 | 14 | 11.7 < 20 ✓ | no | (unchanged) |
+| 2 sl × L=16 | 26 | 17.7 < 60 ✓ | no | (unchanged) |
+| 10 sl × L=4 | 62 | covered by switch (wire_window > M) | no | (unchanged) |
+| Bulk 1500 B, L=4 | 1500 | covered by HT/TC + switch | no | (unchanged) |
+
+RXNE-tail kicks in **only when post-fire walk alone can't meet slack
+and switch can't cover the gap** — exactly the structural corner
+§13's design left open. Comfortable cases pay zero RXNE cost.
+
+### 14.5 Timeline with RXNE-tail (3 M, 2 slaves, L = 1)
+
+    t = 0 µs       request_end (USART1 IDLE, backdated)
+    t ≈ 10 µs      dispatcher parses, calls start_fast_after.
+                     STATE = Chain{ CatchupArmed, N_pred=11,
+                                    rxne_tail_at=0,
+                                    fire_tick=request_end + 287 - latency }
+                     RXNEIE: ON (tail_bytes=9, arm immediately
+                                 since wire_window < M)
+    t = 250 µs     INJ first start-bit on wire
+    t = 253.33     INJ byte 1 stop complete → RXNE fires, walks 1 B, bytes_walked=1
+    t = 256.66     byte 2 → walk → bytes_walked=2
+       ...
+    t = 280 µs    byte 10 → walk → bytes_walked=10
+                  bytes_walked >= N_pred − GUARD(2)? 10 >= 9 ✓
+                  mask RXNEIE
+    t = 283.33     byte 11 arrives → no RXNE (masked); DMA writes ring
+    t ≈ 284 µs    SysTick fire CMP (fire_tick) → TxArmed body:
+                     fire_now (TX_EN HIGH, DMA CH4 enable)  — 1.2 µs
+                     accumulate_snoop — busy-waits NDTR for byte 11,
+                                        walks 2 B (10 + 11)        — 1.5 µs
+                     patch_crc                                      — 1.9 µs
+                     total post-fire ≈ 5 µs (was 9.2 µs)
+    t = 286.66    INJ byte 11 stop complete (during our fire ISR;
+                  NDTR drop arrives during busy-wait)
+    t ≈ 291 µs    DUT first start-bit on wire (≤ 1 byte_time gap
+                  from INJ end — within spec coalesce tolerance)
+
+Post-fire path: **9.2 µs → 5 µs**, well under 10 µs slack with
+~5 µs margin. Jitter source shifts from "variable byte count at
+fire" to "busy-wait NDTR for the late byte" — the latter is bounded
+by 1 byte_time (3.33 µs at 3 M) deterministically.
+
+### 14.6 State machine deltas
+
+`ReplyState::Chain` gains one field:
+
+    Chain { ...,
+            rxne_tail_at: u16,    — bytes_walked threshold to mask RXNEIE
+                                    (= N_pred − GUARD when use_rxne_tail,
+                                    = u16::MAX otherwise)
+          }
+
+`start_fast_after` computes `use_rxne_tail`, sets `rxne_tail_at`, and
+enables RXNEIE if `use_rxne_tail`. No new `FastChainPhase` variant —
+RXNE-tail behavior is gated by the existing `CatchupArmed` / `Snoop` /
+`Catchup` phase checks plus the `rxne_tail_at` counter.
+
+`on_usart1` gains an RXNE branch (currently runs only the IDLE / TC
+bodies):
+
+    on USART1 entry, RXNE pending:
+        if STATE = Chain { phase ∈ {CatchupArmed, Snoop, Catchup},
+                           bytes_walked, snoop_head, bulk_crc, rxne_tail_at }:
+            write_pos = current_rx_write_pos()
+            if write_pos != snoop_head:
+                bulk_crc = ring_crc(bulk_crc, ring, snoop_head, write_pos)
+                bytes_walked += (write_pos − snoop_head) & RX_MASK
+                snoop_head = write_pos
+            if bytes_walked >= rxne_tail_at:
+                set_rxne_irq(false)              # mask before SysTick collision
+
+`accumulate_snoop` (TxArmed body) needs a brief busy-wait for the
+final byte to land in the ring before walking:
+
+    fn wait_for_predecessor_end(expected: u16):
+        let deadline = systick::ticks() + BYTE_TIME_TICKS × 2
+        loop:
+            if current_rx_write_pos() − snoop_start >= expected: return Ok
+            if systick::ticks() >= deadline: return Err(PredecessorTimeout)
+
+Wait bounded by ~1 byte_time (3.33 µs at 3 M), aborts to
+`PreviousSlotTimeout` fault if no byte arrives.
+
+### 14.7 What §13's design got right, what §14 changes
+
+Kept:
+- TC + HT pre-walking for large snoops. R4 (oversize Bulk Read
+  correctness) is unchanged.
+- Switch + walk-at-fire for medium snoops where slack comfortably
+  covers the M=50 µs residue.
+- PFIC priority pinning, FSM phase model, fault taxonomy.
+
+Revised:
+- M shrunk 150 → 50 to make the residue fit slack with the corrected
+  0.5 µs/B walk cost.
+- §5's per-byte constant (0.1 → 0.5) and worked examples re-derive
+  with the new constant.
+
+Added:
+- RXNE-tail tier, gated by per-request slack budget calculation in
+  `start_fast_after`.
+- `Chain.rxne_tail_at` field + RXNE handler body.
+- `accumulate_snoop` busy-wait for predecessor tail byte.
+
+Net effect: 3 M Last 1B (the structural corner that motivated this
+addendum) drops from 3-4% CRC error rate to design-bounded zero. No
+regression on L ≥ 2 or on big Bulk Reads — those paths are unchanged
+because `use_rxne_tail` evaluates false.
