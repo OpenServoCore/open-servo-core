@@ -32,15 +32,25 @@ critical-section = { version = "1.2", features = ["std"] }
 ch32-metapac = { git = "https://github.com/ch32-rs/ch32-metapac", default-features = false, features = ["metadata"] }
 
 [features]
-default      = ["ch32v006x8x6", "dxl-systick-fire"]
+default      = ["ch32v006x8x6", "dxl-hw-fire"]
 ch32v006x8x6 = ["ch32-metapac/ch32v006x8x6"]
 rt           = ["ch32-metapac/rt"]
 defmt        = ["dep:defmt", "osc-core/defmt"]
 
-# DXL Fast reply fire path. Exactly one must be enabled. `dxl-systick-fire`
-# is the historical path: SysTick CMP IRQ trips at the slot deadline, the
-# ISR body asserts TX_EN + enables DMAT. `dxl-hw-fire` swaps in TIM2 OPM
-# driving DMA Ch7 (TX_EN BSHR) + DMA Ch2 (USART1 CTLR3 DMAT) — see
-# docs/dxl-fast-chain-crc.md §15 for the wiring rationale.
+# DXL Fast reply fire path. Exactly one must be enabled.
+#
+# `dxl-hw-fire` (PRODUCTION DEFAULT): TIM2 OPM owns the wire fire 100%.
+# CC4 → DMA Ch7 → GPIO BSHR (TX_EN HIGH); UEV → DMA Ch2 → DMA1_CH4.CFGR
+# (EN=1, kicking the USART TX). DMAT is permanent =1; CH4.EN is the gate
+# flipped by HW DMA. Zero software in the wire-fire path — only TIM2
+# arming runs in SW, and that arming jitter doesn't affect wire timing
+# because TIM2 counts to the absolute deadline. See
+# docs/dxl-fast-chain-crc.md §15 + [[v006-hw-fire-purpose]].
+#
+# `dxl-systick-fire` (DEV/BENCH ESCAPE HATCH ONLY): SysTick CMP IRQ trips
+# at the slot deadline; the ISR body asserts TX_EN + enables DMAT. Kept
+# for the case where TIM2 is needed for a motor encoder during bench
+# calibration — TIM2 OPM and encoder mode are mutually exclusive.
+# NEVER ship this configuration.
 dxl-systick-fire = []
 dxl-hw-fire      = ["osc-core/dxl-hw-fire"]

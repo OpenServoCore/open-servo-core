@@ -88,12 +88,25 @@ fn on_usart1_idle() {
     idle_ring::record(delta, request_end_tick);
 }
 
+
 fn on_usart1_tc() {
     if !usart::is_tc(USART1) {
         return;
     }
+    // Guard against spurious mid-stream TC: a per-byte TC oscillation can
+    // fire ISR before CH4 has DMA'd all bytes. Acting on it would cut the
+    // stream short. NDTR>0 means TX still in progress — clear flag, keep
+    // TCIE on, wait for real end.
+    if dma::remaining(dma::Channel::CH4) != 0 {
+        usart::clear_tc(USART1);
+        return;
+    }
     usart::set_tc_irq(USART1, false);
     usart::clear_tc(USART1);
+    // DMAT clearing only matters under systick-fire (where arm_tx
+    // re-sets it per fire). Under hw-fire DMAT is permanent =1
+    // (`dxl_hw_fire::init`); CH4.EN is the wire gate.
+    #[cfg(feature = "dxl-systick-fire")]
     usart::set_dma_tx(USART1, false);
     dma::disable(dma::Channel::CH4);
     if let Some(t) = unsafe { *DXL_TX_EN.get() } {

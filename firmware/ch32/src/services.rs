@@ -76,7 +76,14 @@ impl DxlBus for Ch32Bus {
             Some(request_end_tick) => dxl_fast::start_plain_after(request_end_tick, delay_us),
             None => {
                 if dxl_fast::arm_tx() {
+                    // No captured request_end_tick → fire ASAP. Under
+                    // systick-fire the SW fire path; under hw-fire,
+                    // arm TIM2 OPM with `now` so the minimum-viable
+                    // countdown takes the same role.
+                    #[cfg(feature = "dxl-systick-fire")]
                     dxl_fast::fire_now();
+                    #[cfg(feature = "dxl-hw-fire")]
+                    crate::dxl_hw_fire::arm_at(crate::hal::systick::ticks());
                 }
             }
         }

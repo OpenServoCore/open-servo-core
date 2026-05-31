@@ -51,8 +51,9 @@ pub fn set_count(ch: Channel, count: u16) {
 }
 
 // SAFETY: see hal/SAFETY.md. CH(n).CR is per-channel, but each channel's CR
-// is written from multiple contexts (CH4: MAIN fire_now + USART1 TC ISR; CH5:
-// MAIN start_fast_after + HIGH ISRs). CS keeps EN/TCIE RMW atomic.
+// is written from multiple contexts (CH4: MAIN fire_now [systick-fire] or
+// HW DMA1_CH2 stamp [hw-fire] + USART1 TC ISR; CH5: MAIN start_fast_after
+// + HIGH ISRs). CS keeps EN/TCIE RMW atomic.
 // `inline(always)` keeps these calls inside dxl_fast's `.highcode` section.
 #[inline(always)]
 pub fn enable(ch: Channel) {

@@ -87,7 +87,10 @@ pub enum ReplyState {
     /// Nothing armed.
     Idle,
     /// SysTick CMP armed for a non-snoop reply (Ping, Read, Sync/Bulk slot,
-    /// Fast First/Middle/Only).
+    /// Fast First/Middle/Only). Only used under `dxl-systick-fire` — under
+    /// `dxl-hw-fire` plain replies fire via TIM2 OPM directly with no
+    /// FSM state to track.
+    #[cfg_attr(feature = "dxl-hw-fire", allow(dead_code))]
     Plain,
     /// SysTick (+ optionally DMA CH5 TC) armed for a Fast last-slave reply.
     Chain {
@@ -175,21 +178,33 @@ fn fast_fire_advance_ticks() -> u32 {
     fire_advance_ticks_for(TX_FAST_LATENCY_TICKS.load(Ordering::Relaxed))
 }
 
-/// Under hw-fire the per-path latency atomics are gone (CT field reserved,
-/// runtime no longer tunable). The pipeline from `arm` to wire start-bit
-/// is a fixed hardware sequence — `HW_FIRE_PIPELINE_TICKS` plus the
-/// shared `clock_fine_trim_us` residual. Same signature so the systick
-/// CMP-scheduling math elsewhere stays mode-agnostic.
+/// Under hw-fire the per-path latency CT atomics are gone (read-as-0,
+/// write-rejected). Each path computes its own pipeline subtraction:
+/// Plain uses a base + per-baud term (silicon USART pipeline scales
+/// with bit-time + pirate RX latency); Fast uses a small constant
+/// because the Fast bench metric cancels pirate-side latency and fire
+/// must NOT shift earlier (collision with predecessor). See
+/// `dxl_hw_fire` constants for the fit rationale.
 #[cfg(feature = "dxl-hw-fire")]
 #[inline(always)]
 fn plain_fire_advance_ticks() -> u32 {
-    fire_advance_ticks_for(crate::dxl_hw_fire::HW_FIRE_PIPELINE_TICKS as u16)
+    let bt = DXL_BYTE_TIME_TICKS.load(Ordering::Relaxed);
+    let total = crate::dxl_hw_fire::HW_FIRE_PLAIN_PIPELINE_BASE_TICKS + bt / 4;
+    fire_advance_ticks_for(total.min(u16::MAX as u32) as u16)
 }
 
 #[cfg(feature = "dxl-hw-fire")]
 #[inline(always)]
 fn fast_fire_advance_ticks() -> u32 {
-    fire_advance_ticks_for(crate::dxl_hw_fire::HW_FIRE_PIPELINE_TICKS as u16)
+    // Skip FIRE_ADVANCE_FINE_TICKS for Fast: a run-to-run swing in the
+    // HSI fine_trim was shifting Fast Last fire timing INTO the
+    // predecessor's stop-bit window, causing intermittent CRC failures.
+    // Plain wants the drift compensation (RDT window is HSI-anchored);
+    // Fast's reference is the predecessor's actual wire timing, which
+    // tolerates much less subtraction variance. TODO: split into a
+    // dedicated `FAST_FIRE_FINE_TICKS` atomic when temperature-tuning
+    // arrives — symmetric to systick's per-path TX_*_LATENCY model.
+    crate::dxl_hw_fire::HW_FIRE_FAST_PIPELINE_TICKS
 }
 
 #[inline(always)]
@@ -221,11 +236,10 @@ pub fn arm_tx() -> bool {
     true
 }
 
-/// Under hw-fire the bus-disable order flips: CH4 is pre-enabled here with
-/// DMAT=0 so the moment TIM2 OPM (DMA Ch2) flips DMAT to 1, the USART
-/// starts requesting bytes with no software in the loop. TC handler clears
-/// DMAT + disables CH4, restoring the disabled-CH4 precondition for the
-/// next arm.
+/// Under hw-fire DMAT is permanent =1 (set in `dxl_hw_fire::init`) and CH4.EN
+/// is the wire gate — CH2's TIM2-UEV stamp flips it. arm_tx therefore only
+/// loads NDTR + clears TC + arms TC IRQ; the actual fire is detached from
+/// software entirely (see `dxl_hw_fire::arm_at`).
 #[cfg(feature = "dxl-hw-fire")]
 #[cfg_attr(target_arch = "riscv32", unsafe(link_section = ".highcode"))]
 #[inline(never)]
@@ -239,7 +253,6 @@ pub fn arm_tx() -> bool {
     }
     dma::set_count(dma::Channel::CH4, len as u16);
     usart::clear_tc(USART1);
-    dma::enable(dma::Channel::CH4);
     usart::set_tc_irq(USART1, true);
     true
 }
@@ -255,18 +268,15 @@ pub fn fire_now() {
     dma::enable(dma::Channel::CH4);
 }
 
-/// Under hw-fire, software fire = arm TIM2 OPM with the smallest CCR so it
-/// drives TX_EN HIGH and DMAT=1 from hardware, removing PFIC trap-entry
-/// jitter from the wire timing. The TIM2 internal pipeline
-/// (`HW_FIRE_PIPELINE_TICKS`) is the irreducible wire-start latency.
-#[cfg(feature = "dxl-hw-fire")]
-#[cfg_attr(target_arch = "riscv32", unsafe(link_section = ".highcode"))]
-#[inline(never)]
-pub fn fire_now() {
-    crate::dxl_hw_fire::prepare_fire();
-    crate::dxl_hw_fire::arm(1);
-}
+// hw-fire has no software fire entry. `dxl_hw_fire::arm_at` is the sole
+// fire-path API; degenerate "deadline already past" cases fold into a
+// minimum-viable TIM2 countdown there. This is the wire-jitter bar: any
+// SW fire site would defeat the whole point — see [[v006-hw-fire-purpose]].
 
+/// Plain (non-snoop) reply: schedule a fire at `request_end + delay_us`.
+/// Under systick-fire the deadline is owned by a SysTick CMP IRQ; under
+/// hw-fire by TIM2 OPM — no SysTick involvement, no STATE::Plain.
+#[cfg(feature = "dxl-systick-fire")]
 #[cfg_attr(target_arch = "riscv32", unsafe(link_section = ".highcode"))]
 #[inline(never)]
 pub fn start_plain_after(request_end_tick: u32, delay_us: u32) {
@@ -300,6 +310,20 @@ pub fn start_plain_after(request_end_tick: u32, delay_us: u32) {
     }
 }
 
+#[cfg(feature = "dxl-hw-fire")]
+#[cfg_attr(target_arch = "riscv32", unsafe(link_section = ".highcode"))]
+#[inline(never)]
+pub fn start_plain_after(request_end_tick: u32, delay_us: u32) {
+    let needed = delay_us
+        .saturating_mul(systick::TICKS_PER_US)
+        .saturating_sub(plain_fire_advance_ticks());
+    if !arm_tx() {
+        cancel();
+        return;
+    }
+    crate::dxl_hw_fire::arm_at(request_end_tick.wrapping_add(needed));
+}
+
 #[cfg_attr(target_arch = "riscv32", unsafe(link_section = ".highcode"))]
 #[inline(never)]
 pub fn start_fast_after(request_end_tick: u32, fire_us: u32, snoop_from: Option<u32>) {
@@ -315,6 +339,14 @@ pub fn start_fast_after(request_end_tick: u32, fire_us: u32, snoop_from: Option<
         .saturating_mul(systick::TICKS_PER_US)
         .saturating_sub(fast_fire_advance_ticks());
     let fire_tick = request_end_tick.wrapping_add(fire_needed);
+
+    // Under hw-fire the wire fire is locked in HW the instant TIM2 is
+    // armed — do it as early as possible so any SysTick CMP body that
+    // runs later (snoop walks, patch_crc) can't accidentally jitter
+    // wire timing. The on_systick TxArmed body is cfg-gated to skip
+    // `fire_now()` under hw-fire because TIM2 has already fired.
+    #[cfg(feature = "dxl-hw-fire")]
+    crate::dxl_hw_fire::arm_at(fire_tick);
 
     let snoop_head = match snoop_from {
         Some(rx_start) => (rx_start & RX_MASK_U32) as u16,
@@ -334,10 +366,18 @@ pub fn start_fast_after(request_end_tick: u32, fire_us: u32, snoop_from: Option<
     // and walk-at-fire alone overruns slack. In that case skip CatchupArmed
     // entirely — the tail handler keeps bulk_crc current per byte and the
     // TxArmed body only walks the GUARD-byte residue.
+    //
+    // The "wire_window <= SWITCH_MARGIN" gate is on wire_window_us, NOT
+    // fire_us. fire_us = RDT + wire_window; switch CMP fires at
+    // fire_tick − SWITCH_MARGIN_US so it lands inside predecessor's TX
+    // only if wire_window > SWITCH_MARGIN_US. Otherwise the switch CMP
+    // fires during the RDT dead-time and walks zero bytes.
     let (initial_phase, cmp_tick) = match snoop_from {
         None => (FastChainPhase::TxArmed, fire_tick),
         Some(_) if use_rxne_tail => (FastChainPhase::TxArmed, fire_tick),
-        Some(_) if fire_us <= SWITCH_MARGIN_US => (FastChainPhase::TxArmed, fire_tick),
+        Some(_) if predict.wire_window_us <= SWITCH_MARGIN_US => {
+            (FastChainPhase::TxArmed, fire_tick)
+        }
         Some(_) => {
             let switch_margin_ticks = SWITCH_MARGIN_US.saturating_mul(systick::TICKS_PER_US);
             (
@@ -477,7 +517,11 @@ pub fn on_systick() {
     match snapshot {
         ReplyState::Idle => {}
         ReplyState::Plain => {
+            // Only ever set under systick-fire; hw-fire schedules via
+            // TIM2 OPM and never enters STATE::Plain. Defensive arm if
+            // somehow reached under hw-fire = clear state, no fire.
             set_state(ReplyState::Idle);
+            #[cfg(feature = "dxl-systick-fire")]
             fire_now();
         }
         ReplyState::Chain {
@@ -488,13 +532,11 @@ pub fn on_systick() {
             ..
         } => match phase {
             FastChainPhase::CatchupArmed | FastChainPhase::Snoop => {
-                dbg_high();
                 set_phase(FastChainPhase::Catchup);
                 accumulate_snoop();
                 set_phase(FastChainPhase::TxArmed);
                 systick::set_cmp(fire_tick);
                 systick::set_irq(true);
-                dbg_low();
                 let now = systick::ticks();
                 if (now.wrapping_sub(fire_tick) as i32) >= 0 {
                     on_systick();
@@ -508,48 +550,48 @@ pub fn on_systick() {
                 systick::set_irq(true);
             }
             FastChainPhase::TxArmed => {
-                let now = systick::ticks();
-                let byte_time_ticks = byte_time_ticks_now();
-                if (now.wrapping_sub(fire_tick) as i32) > byte_time_ticks as i32 {
-                    report_fault(FastChainFault::SlotTimingMiss);
-                }
+                // ── CH5 ownership transfer (load-bearing). on_dma1_ch5
+                // and this body both walk the snoop ring and mutate
+                // bulk_crc/snoop_head. Mask CH5 TCIE/HTIE FIRST so the
+                // walk below is the sole writer — otherwise a CH5 IRQ
+                // queued around fire_tick can run AFTER the body
+                // returns but with stale ring-walk semantics, corrupting
+                // bulk_crc for later shots. Empirically caught: deferring
+                // these regressed 3M Last 32B from 123/128 → 91/128.
                 dma::set_tcie(dma::Channel::CH5, false);
                 dma::set_htie(dma::Channel::CH5, false);
-                // Mask RXNEIE early: if the tail handler hadn't reached the
-                // threshold by fire (e.g. fire fired one byte early), keeping
-                // it on through TxStreaming would burn ISR entries during the
-                // CRC-patch race.
-                if rxne_tail_at != u16::MAX {
-                    usart::set_rxne_irq(USART1, false);
-                }
-                set_phase(FastChainPhase::TxStreaming);
-                // Fire before any CRC work: DMA CH4 has only one byte of TX
-                // prefetch, so the wire-side jitter window is just the time
-                // from here to `dma::enable`. The CRC patch below races a
-                // (payload_end - 1) byte-time slack against DMA's read cursor.
-                // Bench breakdown of the 7 µs post-fire spike: DBG wraps
-                // fire_now, STAT wraps accumulate_snoop, DBG wraps patch_crc.
-                dbg_high();
+
+                // ── Critical path. patch_crc must land bytes [n-2, n-1]
+                // of TX_BUF before CH4's read cursor reaches them.
+                #[cfg(feature = "dxl-systick-fire")]
                 fire_now();
-                dbg_low();
-                stat_high();
                 if rxne_tail_at != u16::MAX {
-                    // RXNE pre-walked all but GUARD bytes; busy-wait the
-                    // straggle in.
                     wait_and_accumulate_tail(expected_predecessor_bytes);
                 } else {
                     accumulate_snoop();
                 }
-                stat_low();
-                dbg_high();
                 patch_crc();
-                dbg_low();
+
+                // ── Off the critical path: RXNE mask + diagnostics +
+                // FSM transitions. RXNE-tail doesn't race with the body
+                // (its own handler self-gates on rxne_tail_at threshold),
+                // and the diagnostics + phase writes are observation
+                // only.
+                if rxne_tail_at != u16::MAX {
+                    usart::set_rxne_irq(USART1, false);
+                }
                 if dma::remaining(dma::Channel::CH4) <= 2 {
                     report_fault(FastChainFault::CrcPatchDeadlineMiss);
                 }
                 if current_bytes_walked() < expected_predecessor_bytes as u32 {
                     report_fault(FastChainFault::PreviousSlotTimeout);
                 }
+                let now = systick::ticks();
+                let byte_time_ticks = byte_time_ticks_now();
+                if (now.wrapping_sub(fire_tick) as i32) > byte_time_ticks as i32 {
+                    report_fault(FastChainFault::SlotTimingMiss);
+                }
+                set_phase(FastChainPhase::TxStreaming);
                 set_phase(FastChainPhase::CrcPatched);
             }
             FastChainPhase::TxStreaming
@@ -673,7 +715,6 @@ pub fn on_rxne() {
         return;
     }
 
-    dbg_high();
     let write_pos = current_rx_write_pos();
     let mask_now = unsafe {
         if let ReplyState::Chain {
@@ -700,7 +741,6 @@ pub fn on_rxne() {
     if mask_now {
         usart::set_rxne_irq(USART1, false);
     }
-    dbg_low();
 }
 
 #[cfg_attr(target_arch = "riscv32", unsafe(link_section = ".highcode"))]
@@ -836,6 +876,9 @@ fn current_rx_write_pos() -> u16 {
     (DXL_RX_BUF_LEN as u16).wrapping_sub(remaining) & RX_MASK_U16
 }
 
+// Scope-debug helpers; left in place but currently unreferenced — flip
+// them on at the relevant call sites when bench-instrumenting.
+#[allow(dead_code)]
 #[inline(always)]
 fn dbg_high() {
     // SAFETY: written once at bring-up before any ISR can read.
@@ -844,6 +887,7 @@ fn dbg_high() {
     }
 }
 
+#[allow(dead_code)]
 #[inline(always)]
 fn dbg_low() {
     if let Some(p) = unsafe { *DXL_DBG_PIN.get() } {
@@ -851,6 +895,7 @@ fn dbg_low() {
     }
 }
 
+#[allow(dead_code)]
 #[inline(always)]
 fn stat_high() {
     // SAFETY: written once at bring-up before any ISR can read.
@@ -859,6 +904,7 @@ fn stat_high() {
     }
 }
 
+#[allow(dead_code)]
 #[inline(always)]
 fn stat_low() {
     if let Some(p) = unsafe { *DXL_STAT_PIN.get() } {
