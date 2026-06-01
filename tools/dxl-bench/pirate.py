@@ -110,6 +110,16 @@ class Pirate:
             raise PirateError(f"LAST? → {reply!r}")
         return int(reply.split()[1])
 
+    def last_fire_t_first(self) -> int:
+        """Low-32 SysTick from listen's `FIRE_T_FIRST`. RXNE stamp of the
+        first self-echo byte after a FIRE — i.e. wire-end of byte 1 as seen
+        by pirate's own USART3 listener. Returns 0 if RXNE didn't fire (e.g.
+        bus disconnected or per-byte ISR missed)."""
+        reply = self.command("FIREFIRST?")
+        if not reply.startswith("FIREFIRST "):
+            raise PirateError(f"FIREFIRST? → {reply!r}")
+        return int(reply.split()[1])
+
     def xfer(self, data: bytes, reply_us: int) -> bytes | None:
         """Fire `data` as master and wait up to `reply_us` for the slave's
         end-of-frame IDLE. Returns the slave's reply bytes, or None on

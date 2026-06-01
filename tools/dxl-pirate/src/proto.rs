@@ -36,6 +36,7 @@
 //!   `LAST?`      → `LAST <u32>`           last `inject` kickoff tick (low half)
 //!   `REQ?`       → `REQ <u32>`            last master TC stamp (low half)
 //!   `FIRST?`     → `FIRST <u32>`          last slave-reply T0 stamp (low half)
+//!   `FIREFIRST?` → `FIREFIRST <u32>`      last FIRE self-echo T0 stamp (low half)
 //!   `DRAIN`      → one entry from the listen ring:
 //!                  `STAMP <tick> <head>`                     plain bus IDLE
 //!                  `ROUND <req> <first> <last> <head>`       master round-trip
@@ -62,6 +63,7 @@ pub enum Reply {
     Last(u32),
     Req(u32),
     First(u32),
+    FireFirst(u32),
     Stamp {
         tick: u32,
         head: u16,
@@ -161,6 +163,7 @@ pub fn handle_line(line: &[u8]) -> Reply {
         "LAST?" => Reply::Last(inject::last_fired_tick()),
         "REQ?" => Reply::Req(inject::last_master_request_end()),
         "FIRST?" => Reply::First(listen::last_t_first()),
+        "FIREFIRST?" => Reply::FireFirst(listen::last_fire_t_first()),
         "BYTES" => Reply::Bytes(listen::byte_count()),
         "HZ" => Reply::HzPerUs(inject::ticks_per_us()),
         "DRAIN" => match listen::drain_stamp() {

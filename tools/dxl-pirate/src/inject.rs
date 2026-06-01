@@ -29,7 +29,7 @@ use ch32_hal::pac::dma::vals::{Dir, Size};
 use ch32_hal::pac::timer::vals::Urs;
 use ch32_hal::pac::{DMA1, GPIOA, RCC, SYSTICK, TIM4, USART1};
 use dxl_pirate::parse::brr_for;
-use portable_atomic::{AtomicBool, Ordering};
+use portable_atomic::{AtomicBool, AtomicU32, Ordering};
 use qingke_rt::interrupt;
 
 pub const TX_BUF_LEN: usize = 1024;
@@ -113,6 +113,37 @@ pub(crate) static EXPECT_FIRST_BYTE: AtomicBool = AtomicBool::new(false);
 /// taint the next round.
 pub(crate) static EXPECT_REPLY_END_IDLE: AtomicBool = AtomicBool::new(false);
 
+/// Set by `arm()` (= FIRE command). Consumed by the listener's RXNE handler
+/// on the first byte after fire — captures `FIRE_T_FIRST` for the host
+/// jitter script. Independent of the master-send `EXPECT_FIRST_BYTE` flow
+/// so FIRE and MASTER paths don't collide. Cleared by the RXNE swap.
+pub(crate) static EXPECT_FIRE_FIRST_BYTE: AtomicBool = AtomicBool::new(false);
+
+/// Per-baud fire-path latency compensation in SysTicks. Subtracted from the
+/// commanded `fire_at_tick` inside `schedule_or_fire_now` so the wire start
+/// bit lands at the commanded tick on wall-clock terms.
+///
+/// Decomposition (measured by `scripts/pirate_jitter.py`):
+///   FIRE_COMP = 11 (flat DMA chain + IRQ entry) + bit_time_systicks / 2
+///                                                 (USART start-bit BRR sync avg)
+/// The flat 11 SysTicks (~611 ns) is the TIM4 OPM CC match → DMA1_CH7 →
+/// CH4.CFGR write → CH4 fires → DR write → USART start-bit chain.
+/// The `bit_time / 2` is the half-bit average wait from the USART
+/// synchronizer aligning to the next BRR clock edge.
+///
+/// Recomputed in `set_baud`; the `fire_at_tick` stored in FIRED_TICK_LO
+/// stays the COMMANDED value (pre-comp) so host-side missed-schedule
+/// detection still works.
+static FIRE_COMP_TICKS: AtomicU32 = AtomicU32::new(0);
+
+const FIRE_COMP_FLAT_TICKS: u32 = 11;
+
+/// `brr` is USART1 BRR (HCLK ticks per bit at this baud). SysTick = HCLK/8,
+/// so bit_time_systicks = brr / 8. Half = brr / 16.
+const fn fire_comp_ticks(brr: u32) -> u32 {
+    FIRE_COMP_FLAT_TICKS + brr / 16
+}
+
 #[inline]
 fn store_fired_tick(t: u32) {
     unsafe { ptr::write_volatile(FIRED_TICK_LO.get(), t) }
@@ -183,6 +214,7 @@ pub fn init() {
         });
         USART1.brr().write(|w| w.0 = APB2_HZ / DEFAULT_BAUD);
         USART1.ctlr1().modify(|w| w.set_ue(true));
+        FIRE_COMP_TICKS.store(fire_comp_ticks(APB2_HZ / DEFAULT_BAUD), Ordering::Relaxed);
 
         // ── DMA1_CH4 = USART1_TX. metapac channels are zero-indexed: CH4 → ch(3).
         // EN stays clear at init — TIM4 fire path flips it via the DMA1_CH7
@@ -284,6 +316,11 @@ pub fn arm(payload: &[u8], fire_at_tick: u64) -> Result<(), ArmError> {
         ARMED_AFTER_IDLE.store(false, Ordering::Release);
         disarm_tim4();
         load_payload(payload)?;
+        // Arm FIRE_T_FIRST capture so the listener's RXNE handler stamps the
+        // first self-echo byte. Reset the stored value so a missed RXNE
+        // can't deliver a stale stamp from the previous fire.
+        crate::listen::reset_fire_t_first();
+        EXPECT_FIRE_FIRST_BYTE.store(true, Ordering::Release);
         schedule_or_fire_now(fire_at_tick);
         Ok(())
     })
@@ -402,6 +439,7 @@ pub fn set_baud(bps: u32) -> Result<(), BaudError> {
     USART1.ctlr1().modify(|w| w.set_ue(false));
     USART1.brr().write(|w| w.0 = brr);
     USART1.ctlr1().modify(|w| w.set_ue(true));
+    FIRE_COMP_TICKS.store(fire_comp_ticks(brr), Ordering::Relaxed);
     Ok(())
 }
 
@@ -450,8 +488,15 @@ fn fire_now() {
 /// immediately if the deadline is already past / within the arm overhead /
 /// beyond TIM4's 16-bit ARR range.
 fn schedule_or_fire_now(fire_at_tick: u64) {
+    // FIRE_COMP_TICKS subtracts the measured pipeline (TIM4 OPM CC → wire
+    // start) so the WIRE start bit lands at `fire_at_tick` on the wall clock.
+    // Stored stamp is the commanded value (pre-comp) so the host-side
+    // missed-schedule detection keeps working: scheduled path stamps
+    // `fire_at_tick`, immediate-fire path stamps `now`.
+    let comp = FIRE_COMP_TICKS.load(Ordering::Relaxed) as u64;
+    let scheduled_at = fire_at_tick.wrapping_sub(comp);
     let now = SYSTICK.cnt().read();
-    let delta = fire_at_tick.saturating_sub(now);
+    let delta = scheduled_at.saturating_sub(now);
     if delta < FIRE_NOW_THRESHOLD_TICKS || delta > TIM4_MAX_DELTA_TICKS {
         store_fired_tick(now as u32);
         crate::debug::clear();
@@ -460,7 +505,7 @@ fn schedule_or_fire_now(fire_at_tick: u64) {
     }
     // ARR latches the next time CNT == ARR (URS=1 + ARPE=0 → take effect
     // immediately on next compare). Start the timer with CEN=1; OPM clears
-    // it after the first UEV. Stamp the schedule target for host analytics.
+    // it after the first UEV.
     TIM4.atrlr().write_value(delta as u16);
     store_fired_tick(fire_at_tick as u32);
     TIM4.ctlr1().modify(|w| w.set_cen(true));

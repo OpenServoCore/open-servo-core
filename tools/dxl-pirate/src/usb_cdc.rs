@@ -206,6 +206,7 @@ async fn send_reply<'d, T: Instance + 'd>(
         Reply::Last(t) => write_u32(&mut out, b"LAST ", t),
         Reply::Req(t) => write_u32(&mut out, b"REQ ", t),
         Reply::First(t) => write_u32(&mut out, b"FIRST ", t),
+        Reply::FireFirst(t) => write_u32(&mut out, b"FIREFIRST ", t),
         Reply::Bytes(n) => write_u32(&mut out, b"BYTES ", n),
         Reply::HzPerUs(n) => write_u32(&mut out, b"HZ ", n),
         Reply::Stamp { tick, head } => write_stamp(&mut out, tick, head),

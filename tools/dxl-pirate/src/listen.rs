@@ -1,9 +1,16 @@
-//! Passive bus listener: USART3 RX (PB11) + DMA1_CH3 circular + IDLE IRQ.
+//! Passive bus listener: USART3 RX (PB11) + DMA1_CH3 circular + RXNE + IDLE.
 //! Each gap on the wire (≥ 1 byte time idle) latches a `(tick, head)` stamp
 //! into a small SPSC ring the host can drain to verify inter-slot timing.
 //!
-//! Mirrors the V006 dxl RX pattern in `firmware/ch32` but stripped to just the
-//! timestamping bits — no parser, no TX state machine.
+//! T_first / T_last are sourced from RXNE (per-byte) rather than IDLE
+//! backdating. IDLE on this USART asserts a full frame (10 bit-times) after
+//! wire-end, and any constant backdate (9 or 10 bit-times) either under- or
+//! over-shoots by a bit-time, leaving baud-scaled bias in the stamps. RXNE
+//! fires at the stop-bit sample of every received byte; capturing
+//! `SYSTICK.cntl()` first thing in the ISR pins T_first/T_last to
+//! `wire_end_of_byte + IRQ_entry_latency` (flat ~2-3 SysTicks, baud-
+//! independent). Pirate's only job is DXL + stamping so the per-byte IRQ
+//! rate is free CPU.
 
 use core::cell::SyncUnsafeCell;
 use core::ptr;
@@ -33,8 +40,11 @@ const _: () = assert!(
     "STAMP_RING_LEN must be pow2"
 );
 
-/// SysTick ticks for one USART3 char-time; ISR backdates by this so `tick`
-/// lands at wire-end (IDLE asserts 9 bit-times later).
+/// SysTick ticks for one USART3 char-time; used ONLY by `on_listen_idle` to
+/// backdate the IDLE-ISR tick when scheduling INJ fires after a bus IDLE.
+/// Stamps (T_last, Plain.tick) use `LAST_RXNE_TICK` instead — see the file
+/// header for why. Keeping IDLE-backdate here preserves prior INJ scheduling
+/// timing so chip/pirate slot alignment stays unchanged.
 static CHAR_TIME_SYSTICKS: AtomicU32 = AtomicU32::new(0);
 
 const fn char_time_systicks(brr: u32) -> u32 {
@@ -81,8 +91,25 @@ static LAST_NDTR: SyncUnsafeCell<u16> = SyncUnsafeCell::new(RX_BUF_LEN as u16);
 /// USART3 RXNE branch; cleared by reading via `last_t_first`.
 static T_FIRST: SyncUnsafeCell<u32> = SyncUnsafeCell::new(0);
 
+/// SysTick.CNTL captured on every received byte's stop-bit-sample. Used as
+/// `T_last` (wire-end of last byte) by the IDLE handler instead of IDLE-
+/// backdating, which would carry a baud-scaled bias. ISR-only writer;
+/// IDLE-branch reader.
+static LAST_RXNE_TICK: SyncUnsafeCell<u32> = SyncUnsafeCell::new(0);
+
+/// SysTick.CNTL captured on the first byte received after a `FIRE` (= `arm`)
+/// command — i.e., the pirate's own TX self-echo first byte. Lets the host
+/// measure absolute fire pipeline delay (commanded fire_at → wire first
+/// byte arrival) via the jitter script. Gated by `inject::EXPECT_FIRE_FIRST_BYTE`
+/// so per-byte RXNEs after byte 1 don't overwrite it.
+static FIRE_T_FIRST: SyncUnsafeCell<u32> = SyncUnsafeCell::new(0);
+
 pub fn last_t_first() -> u32 {
     unsafe { ptr::read_volatile(T_FIRST.get()) }
+}
+
+pub fn last_fire_t_first() -> u32 {
+    unsafe { ptr::read_volatile(FIRE_T_FIRST.get()) }
 }
 
 /// Called from `master_send` so a no-reply round-trip doesn't carry the
@@ -91,6 +118,13 @@ pub fn last_t_first() -> u32 {
 /// can't race the RXNE branch.
 pub(crate) fn reset_t_first() {
     unsafe { ptr::write_volatile(T_FIRST.get(), 0) };
+}
+
+/// Called from `arm()` before a FIRE so a re-armed slot doesn't carry the
+/// prior fire's `FIRE_T_FIRST` if RXNE misses. Same single-writer guarantee
+/// as `reset_t_first` (arm runs under critical_section).
+pub(crate) fn reset_fire_t_first() {
+    unsafe { ptr::write_volatile(FIRE_T_FIRST.get(), 0) };
 }
 
 pub fn init() {
@@ -112,7 +146,9 @@ pub fn init() {
         });
 
         // USART3 on APB1. Default 1 Mbaud to match `inject` + V006 wire rate;
-        // host can retune via `set_baud` before bringing the bus up.
+        // host can retune via `set_baud` before bringing the bus up. RXNEIE
+        // is on permanently — every received byte updates `LAST_RXNE_TICK`
+        // so IDLE can publish a baud-independent T_last.
         USART3.brr().write(|w| w.0 = APB1_HZ / DEFAULT_BAUD);
         CHAR_TIME_SYSTICKS.store(
             char_time_systicks(APB1_HZ / DEFAULT_BAUD),
@@ -126,6 +162,7 @@ pub fn init() {
             w.set_re(true);
             w.set_te(false);
             w.set_idleie(true);
+            w.set_rxneie(true);
             w.set_ue(true);
         });
 
@@ -195,29 +232,40 @@ pub fn set_baud(bps: u32) -> Result<(), BaudError> {
 #[interrupt]
 fn USART3() {
     // Both IDLE and RXNE share this vector; dispatch by IDLE flag. STATR.RXNE
-    // reads 0 under DMAR (see reference_v006_rxne_during_dma_rx in memory),
-    // so we can't gate on it — but RXNEIE is only ever armed by the IDLE
-    // branch below, so IDLE=0 implies "this was a RXNE wake".
+    // reads 0 under DMAR (see reference_v006_rxne_during_dma_rx in memory)
+    // so we can't gate on it — but every byte's RXNE wakes us here, and on
+    // IDLE the byte that triggered it has already pre-stamped LAST_RXNE_TICK
+    // (RXNE asserts at stop-bit sample; IDLE waits a full frame after that).
     let tick_now = SYSTICK.cntl().read();
     let statr = USART3.statr().read();
 
     if !statr.idle() {
-        // Always one-shot — mask RXNEIE unconditionally so per-byte ISRs don't
-        // pile up for the rest of the reply, and so a stale RXNEIE left armed
-        // by a no-reply prior trip self-disarms on our own TX-echo byte.
-        // EXPECT_FIRST_BYTE is set only by the IDLE-suppress branch below, so
-        // a pre-suppress RXNE (= master TX echo) finds it false and skips the
-        // stamp; the real slave-reply T0 finds it true and stamps T_FIRST.
-        USART3.ctlr1().modify(|w| w.set_rxneie(false));
+        // Per-byte path: stamp wire-end of this byte. Two independent gates:
+        //   EXPECT_FIRST_BYTE → T_FIRST (master_send / Round flow)
+        //   EXPECT_FIRE_FIRST_BYTE → FIRE_T_FIRST (arm/FIRE flow, for jitter
+        //     script's fire_pipeline measurement)
+        // Both swap-to-false so only the first byte after each gate's
+        // arming consumes the slot.
+        unsafe { ptr::write_volatile(LAST_RXNE_TICK.get(), tick_now) };
         if crate::inject::EXPECT_FIRST_BYTE.swap(false, Ordering::AcqRel) {
             unsafe { ptr::write_volatile(T_FIRST.get(), tick_now) };
+        }
+        if crate::inject::EXPECT_FIRE_FIRST_BYTE.swap(false, Ordering::AcqRel) {
+            unsafe { ptr::write_volatile(FIRE_T_FIRST.get(), tick_now) };
         }
         crate::led::signal();
         return;
     }
 
-    // ── IDLE path. Backdate by one char-time so `tick` = wire-end.
-    let tick = tick_now.wrapping_sub(CHAR_TIME_SYSTICKS.load(Ordering::Relaxed));
+    // ── IDLE path. Two distinct ticks needed:
+    //   `idle_tick` = IDLE-backdated tick_now — used by `on_listen_idle` for
+    //      INJ scheduling. Keeping this matches prior behavior, so the
+    //      chip/pirate slot alignment is preserved.
+    //   `tick` = LAST_RXNE_TICK — wire-end of last received byte, used for
+    //      Plain/Round stamp `last` field. Baud-independent, no IDLE-assert
+    //      bias. (See file header.)
+    let idle_tick = tick_now.wrapping_sub(CHAR_TIME_SYSTICKS.load(Ordering::Relaxed));
+    let tick = unsafe { ptr::read_volatile(LAST_RXNE_TICK.get()) };
 
     // Scope marker: PA7 high until DMA EN brackets the listener→fire chain.
     crate::debug::set();
@@ -241,9 +289,9 @@ fn USART3() {
     };
 
     // Three IDLE flavors, distinguished by `master_send`-set flags:
-    //   - SUPPRESS_NEXT_IDLE_STAMP: the master TX-echo IDLE; no stamp, arm
-    //     RXNEIE for the slave reply's T0, and flag the next IDLE as the
-    //     reply-end so it publishes a Round entry.
+    //   - SUPPRESS_NEXT_IDLE_STAMP: the master TX-echo IDLE; no stamp, flag
+    //     EXPECT_FIRST_BYTE so the next RXNE stamps T_FIRST, and mark the
+    //     next IDLE as the reply-end so it publishes a Round entry.
     //   - EXPECT_REPLY_END_IDLE: the slave-reply end IDLE; push a Round
     //     entry with (T_request_end, T_first, T_last, head).
     //   - neither: a plain bus IDLE we didn't initiate; push a Plain entry.
@@ -251,7 +299,6 @@ fn USART3() {
     if suppress {
         crate::inject::EXPECT_REPLY_END_IDLE.store(true, Ordering::Release);
         crate::inject::EXPECT_FIRST_BYTE.store(true, Ordering::Release);
-        USART3.ctlr1().modify(|w| w.set_rxneie(true));
     } else {
         let stamp = if crate::inject::EXPECT_REPLY_END_IDLE.swap(false, Ordering::AcqRel) {
             IdleStamp::Round {
@@ -277,8 +324,10 @@ fn USART3() {
 
     // Kick off an `arm_after_idle` fire if one is pending. Cheap when not
     // in use (one atomic load); when armed, programs TIM4 OPM or fires
-    // immediately depending on the configured offset.
-    crate::inject::on_listen_idle(tick);
+    // immediately depending on the configured offset. Use `idle_tick`
+    // (IDLE-backdated) NOT `tick` (RXNE-stamped) so INJ slot scheduling
+    // stays aligned with the chip's IDLE-derived request_end perception.
+    crate::inject::on_listen_idle(idle_tick);
 
     crate::led::signal();
 }

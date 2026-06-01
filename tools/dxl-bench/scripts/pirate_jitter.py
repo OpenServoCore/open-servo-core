@@ -56,17 +56,27 @@ def autodetect_pirate() -> str:
     return matches[0]
 
 
-def measure(pirate: Pirate, baud: int, size: int, n: int) -> tuple[list[int], dict[str, int]]:
-    """Returns (residuals, reject_counts). Residuals are in SysTicks (18 MHz).
+def measure(pirate: Pirate, baud: int, size: int, n: int
+            ) -> tuple[list[int], list[int], dict[str, int]]:
+    """Returns (stamp_residuals, fire_pipelines, reject_counts). All SysTicks (18 MHz).
+
+    Two parallel measurements per trial:
+      stamp_residual = LAST_RXNE_TICK - fire_at − N × byte_time
+                     = fire_pipeline + stamp_offset (combined latency, end of frame)
+      fire_pipeline  = FIRE_T_FIRST - fire_at - 1 × byte_time
+                     = fire_pipeline + rxne_offset (combined latency, start of frame)
+
+    For a self-consistent RXNE behavior, stamp_residual − fire_pipeline_proxy
+    ≈ 0 (sanity check: every byte stamps with the same offset). The two
+    medians should also be equal — they measure the same combined bias from
+    two different bytes of the same frame.
 
     Reject categories:
       - `missed`: USB stall pushed the FIRE command past `fire_at`, so
-        `schedule_or_fire_now` took the immediate-fire branch (residual is
-        host latency, not wire jitter). Detected via LAST? after FIRE — the
-        firmware stamps `fire_at` on the scheduled path and `now` on the
-        immediate path, so a mismatch is unambiguous.
-      - `bus`: stamp/byte-count check failed — extra/missing bytes from a DUT
-        echo or framing chatter. With DUT unplugged this should be 0.
+        `schedule_or_fire_now` took the immediate-fire branch.
+      - `bus`: stamp/byte-count check failed.
+      - `nofire`: FIRE_T_FIRST stayed 0 — RXNE didn't fire (likely bus
+        disconnected or first-byte RXNE pile-up).
     """
     pirate.set_baud(baud)
     time.sleep(0.05)
@@ -82,10 +92,12 @@ def measure(pirate: Pirate, baud: int, size: int, n: int) -> tuple[list[int], di
     # to assert + slop. Floor at 10 ms for USB drain.
     byte_us = 10.0e6 / baud
     wait_s = max(0.010, (2_000 + size * byte_us + 500) / 1e6)
+    byte_time_ticks = round(byte_us * pirate.hz_per_us())
 
     payload = bytes([0xAA] * size)
-    residuals: list[int] = []
-    rejects = {"missed": 0, "bus": 0}
+    stamp_residuals: list[int] = []
+    fire_pipelines: list[int] = []
+    rejects = {"missed": 0, "bus": 0, "nofire": 0}
 
     for _ in range(n):
         pirate.drain_stamps()
@@ -93,9 +105,6 @@ def measure(pirate: Pirate, baud: int, size: int, n: int) -> tuple[list[int], di
         now = pirate.tick()
         fire_at = (now + schedule_ahead) & 0xFFFFFFFFFFFFFFFF
         pirate.fire(payload, at_tick=fire_at)
-        # LAST? returns the tick stored inside schedule_or_fire_now. Scheduled
-        # path stores `fire_at`; immediate-fire stores `now-on-device`. Any
-        # mismatch = USB stall ate our schedule headroom.
         fired_at = pirate.last_fired()
         if fired_at != (fire_at & 0xFFFFFFFF):
             rejects["missed"] += 1
@@ -108,31 +117,31 @@ def measure(pirate: Pirate, baud: int, size: int, n: int) -> tuple[list[int], di
         if len(stamps) != 1 or (bytes_after - bytes_before) & 0xFFFFFFFF != size:
             rejects["bus"] += 1
             continue
-        residual = (stamps[0].tick - (fire_at & 0xFFFFFFFF)) & 0xFFFFFFFF
-        if residual > 1 << 31:
-            residual -= 1 << 32
-        residuals.append(residual)
+        fire_first = pirate.last_fire_t_first()
+        if fire_first == 0:
+            rejects["nofire"] += 1
+            continue
+        fire_at_lo = fire_at & 0xFFFFFFFF
+        stamp_r = (stamps[0].tick - fire_at_lo) & 0xFFFFFFFF
+        if stamp_r > 1 << 31:
+            stamp_r -= 1 << 32
+        stamp_r -= size * byte_time_ticks
+        stamp_residuals.append(stamp_r)
+        fire_p = (fire_first - fire_at_lo) & 0xFFFFFFFF
+        if fire_p > 1 << 31:
+            fire_p -= 1 << 32
+        fire_p -= byte_time_ticks
+        fire_pipelines.append(fire_p)
 
-    return residuals, rejects
+    return stamp_residuals, fire_pipelines, rejects
 
 
 def sigma_ticks(vals: list[int]) -> float:
     return statistics.stdev(vals) if len(vals) > 1 else 0.0
 
 
-def peak_dev(vals: list[int]) -> int:
-    """Max |v - median|. Diagnostic only — if σ and peak disagree drastically,
-    something is leaking outliers past the reject filters."""
-    if not vals:
-        return 0
-    med = statistics.median(vals)
-    return max(abs(v - med) for v in vals)
-
-
-def fmt_cell(s: float, mx: int) -> str:
-    if s == 0:
-        return "    —    "
-    return f"σ={s:5.2f}t  pk={mx:>5}t"
+def median_or_zero(vals: list[int]) -> float:
+    return float(statistics.median(vals)) if vals else 0.0
 
 
 def main() -> None:
@@ -144,62 +153,67 @@ def main() -> None:
     port = args.port or autodetect_pirate()
     print(f"pirate: {port}")
     print(f"sweep: bauds={BAUDS}  sizes={SIZES}  n={args.n} per cell")
-    print(f"reporting σ in SysTicks (1t = 55.6 ns @ 18 MHz) + µs")
+    print(f"reporting medians + σ in SysTicks (1t = 55.6 ns @ 18 MHz)")
+    print()
+    print("  fire_pipeline = median(FIRE_T_FIRST - fire_at - 1·byte_time)")
+    print("  stamp_residual = median(LAST_RXNE_TICK - fire_at - N·byte_time)")
+    print("  (delta) should be ~0 → consistent RXNE behavior across bytes")
+    print("  Both medians should equal each other AND be flat across `size` at a fixed baud.")
     print()
 
     pirate = Pirate(port)
-    sigmas: dict[tuple[int, int], float] = {}
+    medians_stamp: dict[tuple[int, int], float] = {}
+    medians_fire: dict[tuple[int, int], float] = {}
+    sigmas_fire: dict[tuple[int, int], float] = {}
     rejects: dict[tuple[int, int], dict[str, int]] = {}
-    cell_w = 18
     try:
-        hdr = "baud".rjust(8) + " |" + "".join(f"size={s:<4}".rjust(cell_w) for s in SIZES)
+        hdr = (f"{'baud':>8} {'size':>5}  "
+               f"{'fire_p (med)':>13} {'stamp_r (med)':>14} {'delta':>7}  "
+               f"{'σ_fire':>7} {'σ_stamp':>8}  {'n':>4}")
         print(hdr)
         print("-" * len(hdr))
-
         for baud in BAUDS:
-            row = f"{baud:>8} |"
-            row_sigmas: list[float] = []
             for size in SIZES:
-                vals, rej = measure(pirate, baud, size, args.n)
-                s = sigma_ticks(vals)
-                mx = peak_dev(vals)
-                sigmas[(baud, size)] = s
+                stamp_r, fire_p, rej = measure(pirate, baud, size, args.n)
+                m_s = median_or_zero(stamp_r)
+                m_f = median_or_zero(fire_p)
+                s_s = sigma_ticks(stamp_r)
+                s_f = sigma_ticks(fire_p)
+                medians_stamp[(baud, size)] = m_s
+                medians_fire[(baud, size)] = m_f
+                sigmas_fire[(baud, size)] = s_f
                 rejects[(baud, size)] = rej
-                row_sigmas.append(s)
-                row += " " + fmt_cell(s, mx).rjust(cell_w - 1)
-            avg = statistics.mean(row_sigmas)
-            row += f"   avg σ={avg:5.2f}t"
-            print(row)
+                delta = m_s - m_f
+                print(f"{baud:>8} {size:>5}  "
+                      f"{m_f:>+10.1f}t  {m_s:>+11.1f}t  {delta:>+5.1f}t  "
+                      f"{s_f:>5.2f}t  {s_s:>6.2f}t  {len(fire_p):>4}")
+            print()
 
+        # Per-baud summary: should be flat across `size`. The cleaner the
+        # silicon, the tighter the across-size spread.
         print("-" * len(hdr))
-        col_avgs = "  avg σ |"
-        for size in SIZES:
-            col_vals = [sigmas[(b, size)] for b in BAUDS]
-            col_avg = statistics.mean(col_vals)
-            col_avgs += " " + f"{col_avg:5.2f}t".rjust(cell_w - 1)
-        overall = statistics.mean(sigmas.values())
-        col_avgs += f"   all={overall:5.2f}t"
-        print(col_avgs)
+        print("Per-baud fire_pipeline median (averaged across sizes):")
+        for baud in BAUDS:
+            cells = [medians_fire[(baud, s)] for s in SIZES if medians_fire[(baud, s)] != 0]
+            if not cells:
+                continue
+            avg = statistics.mean(cells)
+            spread = max(cells) - min(cells)
+            byte_us = 10.0e6 / baud
+            comp_us = avg / 18.0
+            print(f"  {baud:>8}: avg={avg:+7.1f}t ({comp_us:+.3f}µs)  "
+                  f"spread={spread:>5.1f}t over sizes  "
+                  f"({byte_us:.2f}µs/byte)")
 
-        # Two-bucket reject matrix. `missed` = USB stall ate the 3 ms schedule
-        # headroom (immediate-fire fallback); these are host-side and expected
-        # to be small but non-zero on macOS. `bus` = framing/echo from a DUT
-        # that wasn't unplugged; should be 0.
+        total = args.n * len(BAUDS) * len(SIZES)
         total_missed = sum(r["missed"] for r in rejects.values())
         total_bus = sum(r["bus"] for r in rejects.values())
-        total = args.n * len(BAUDS) * len(SIZES)
-        if total_missed or total_bus:
+        total_nofire = sum(r["nofire"] for r in rejects.values())
+        if total_missed or total_bus or total_nofire:
             print()
             print(f"rejects: missed-schedule={total_missed}/{total} (USB stall)"
-                  f"  bus-chatter={total_bus}/{total} (unplug DUT)")
-            rrow = "baud".rjust(8) + " |" + "".join(f"  s={s:<3}m/b".rjust(12) for s in SIZES)
-            print(rrow)
-            for baud in BAUDS:
-                line = f"{baud:>8} |"
-                for size in SIZES:
-                    r = rejects[(baud, size)]
-                    line += " " + f"{r['missed']:>3}/{r['bus']:<3}".rjust(11)
-                print(line)
+                  f"  bus={total_bus}/{total} (unplug DUT)"
+                  f"  nofire={total_nofire}/{total} (RXNE missed)")
     finally:
         pirate.close()
 
