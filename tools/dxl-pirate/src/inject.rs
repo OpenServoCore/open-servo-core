@@ -136,7 +136,7 @@ pub(crate) static EXPECT_FIRE_FIRST_BYTE: AtomicBool = AtomicBool::new(false);
 /// detection still works.
 static FIRE_COMP_TICKS: AtomicU32 = AtomicU32::new(0);
 
-const FIRE_COMP_FLAT_TICKS: u32 = 11;
+const FIRE_COMP_FLAT_TICKS: u32 = 12;
 
 /// `brr` is USART1 BRR (HCLK ticks per bit at this baud). SysTick = HCLK/8,
 /// so bit_time_systicks = brr / 8. Half = brr / 16.
