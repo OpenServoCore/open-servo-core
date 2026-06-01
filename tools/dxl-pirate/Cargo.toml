@@ -53,6 +53,17 @@ static_cell      = "2"
 
 panic-halt = "1"
 
+# Local fork of embassy-executor with run_queue + state forced to the
+# critical-section variants. The stock crate auto-picks the atomics variants
+# on any `target_has_atomic = "ptr"` target, but V4B lr.w/sc.w are broken
+# (sc always succeeds) which makes the run-queue's CAS-loop silently clobber
+# ISR enqueues. Empirically required: stock embassy + set_baud CS wrap still
+# wedges at ~3k chip_tune shots (BAUD-tier crossings); with this patch the
+# bench survives the matrix + 9k+ continuous stress. See
+# [[project_dxl_pirate_mie0_wedge]].
+[patch.crates-io]
+embassy-executor = { path = "vendor/embassy-executor" }
+
 [profile.release]
 opt-level     = 3
 lto           = true

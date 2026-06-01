@@ -434,12 +434,19 @@ pub fn last_master_request_end() -> u32 {
 /// Reconfigure USART1's bit rate. Bounces UE around the BRR write so the
 /// peripheral picks up the new divisor cleanly. Caller must quiesce the bus
 /// first — changing baud mid-frame will garbage anything in flight.
+///
+/// Held under a critical section: USART1 ISR also `.modify()`s `ctlr1` to
+/// clear TCIE; without locking, this RMW races the ISR and either loses the
+/// ISR's TCIE clear (leaving TCIE stuck on) or clobbers UE state. Same
+/// pattern that caused the prior TX_EN-stuck-HIGH wedge.
 pub fn set_baud(bps: u32) -> Result<(), BaudError> {
     let brr = brr_for(APB2_HZ, bps).ok_or(BaudError::OutOfRange)?;
-    USART1.ctlr1().modify(|w| w.set_ue(false));
-    USART1.brr().write(|w| w.0 = brr);
-    USART1.ctlr1().modify(|w| w.set_ue(true));
-    FIRE_COMP_TICKS.store(fire_comp_ticks(brr), Ordering::Relaxed);
+    critical_section::with(|_| {
+        USART1.ctlr1().modify(|w| w.set_ue(false));
+        USART1.brr().write(|w| w.0 = brr);
+        USART1.ctlr1().modify(|w| w.set_ue(true));
+        FIRE_COMP_TICKS.store(fire_comp_ticks(brr), Ordering::Relaxed);
+    });
     Ok(())
 }
 

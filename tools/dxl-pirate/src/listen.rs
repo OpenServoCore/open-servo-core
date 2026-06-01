@@ -220,12 +220,19 @@ pub fn read_byte(addr: u32) -> u8 {
 
 /// Reconfigure USART3's bit rate. Bounces UE around the BRR write. Caller
 /// must quiesce the bus first.
+///
+/// Held under a critical section: USART3's RXNE+IDLE ISR remains armed and a
+/// mid-RMW preemption + ISR's DATAR read against a UE=0 USART risks latching
+/// undefined state into LAST_RXNE_TICK / the stamp ring. Mirrors the inject-
+/// side fix for the same .modify-not-atomic class of race.
 pub fn set_baud(bps: u32) -> Result<(), BaudError> {
     let brr = brr_for(APB1_HZ, bps).ok_or(BaudError::OutOfRange)?;
-    USART3.ctlr1().modify(|w| w.set_ue(false));
-    USART3.brr().write(|w| w.0 = brr);
-    USART3.ctlr1().modify(|w| w.set_ue(true));
-    CHAR_TIME_SYSTICKS.store(char_time_systicks(brr), Ordering::Relaxed);
+    critical_section::with(|_| {
+        USART3.ctlr1().modify(|w| w.set_ue(false));
+        USART3.brr().write(|w| w.0 = brr);
+        USART3.ctlr1().modify(|w| w.set_ue(true));
+        CHAR_TIME_SYSTICKS.store(char_time_systicks(brr), Ordering::Relaxed);
+    });
     Ok(())
 }
 
