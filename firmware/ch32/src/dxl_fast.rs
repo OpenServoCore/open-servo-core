@@ -166,10 +166,21 @@ const RXNE_TAIL_GUARD_BYTES: u16 = 2;
 /// short enough that a missing/dead predecessor fails open quickly.
 const RXNE_TAIL_WAIT_BYTES: u32 = 3;
 
+/// Under systick-fire, Plain advance shares the USART BRR-sync + listener
+/// IDLE-detect pipeline with hw-fire (`bt/4` ≈ 2.5 bit-times). The CT-tuned
+/// `TX_PLAIN_LATENCY_TICKS` captures the baud-independent residue (PFIC
+/// trap entry + on_systick body + fire_now + DMA chain). Without the
+/// per-baud term, a single-baud tune lands Plain at zero only at the tune
+/// baud — bench 2026-06-01 saw -1.2/-1.5 µs early at 2M/3M after tuning
+/// at 1M. Fast keeps the flat form because its bench metric cancels
+/// listener lag.
 #[cfg(feature = "dxl-systick-fire")]
 #[inline(always)]
 fn plain_fire_advance_ticks() -> u32 {
-    fire_advance_ticks_for(TX_PLAIN_LATENCY_TICKS.load(Ordering::Relaxed))
+    let base = TX_PLAIN_LATENCY_TICKS.load(Ordering::Relaxed) as u32;
+    let bt = DXL_BYTE_TIME_TICKS.load(Ordering::Relaxed);
+    let total = base.saturating_add(bt / 4);
+    fire_advance_ticks_for(total.min(u16::MAX as u32) as u16)
 }
 
 #[cfg(feature = "dxl-systick-fire")]
