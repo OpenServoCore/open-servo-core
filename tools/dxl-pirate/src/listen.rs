@@ -247,20 +247,29 @@ fn USART3() {
     let statr = USART3.statr().read();
 
     if !statr.idle() {
-        // Per-byte path: stamp wire-end of this byte. Two independent gates:
-        //   EXPECT_FIRST_BYTE → T_FIRST (master_send / Round flow)
-        //   EXPECT_FIRE_FIRST_BYTE → FIRE_T_FIRST (arm/FIRE flow, for jitter
-        //     script's fire_pipeline measurement)
-        // Both swap-to-false so only the first byte after each gate's
-        // arming consumes the slot.
+        // Per-byte path. At 3 Mbaud the budget is 333 ns/byte (~48 cycles @
+        // 144 MHz); on QingKe V4B `portable_atomic` swap-RMW falls back to a
+        // critical section (~25 cycles each) so two swap()s per byte alone
+        // saturate the ISR and choke USB. Use load+store (each a single
+        // instruction on single-core) — race-free because main arms inside
+        // critical_section, so a true→false transition is owned by this ISR.
         unsafe { ptr::write_volatile(LAST_RXNE_TICK.get(), tick_now) };
-        if crate::inject::EXPECT_FIRST_BYTE.swap(false, Ordering::AcqRel) {
+        if crate::inject::EXPECT_FIRST_BYTE.load(Ordering::Relaxed) {
             unsafe { ptr::write_volatile(T_FIRST.get(), tick_now) };
+            crate::inject::EXPECT_FIRST_BYTE.store(false, Ordering::Relaxed);
         }
-        if crate::inject::EXPECT_FIRE_FIRST_BYTE.swap(false, Ordering::AcqRel) {
+        if crate::inject::EXPECT_FIRE_FIRST_BYTE.load(Ordering::Relaxed) {
             unsafe { ptr::write_volatile(FIRE_T_FIRST.get(), tick_now) };
+            crate::inject::EXPECT_FIRE_FIRST_BYTE.store(false, Ordering::Relaxed);
         }
-        crate::led::signal();
+        // ORE can latch if DMA momentarily falls behind (DR not drained before
+        // next byte arrives). Standard recovery is STATR read + DATAR read;
+        // without it RXNE+ORE stay asserted and the ISR re-enters forever.
+        // STATR was already read above; gate the (costly) DATAR read so we
+        // only steal a byte from DMA on the error path.
+        if statr.ore() {
+            let _ = USART3.datar().read();
+        }
         return;
     }
 
