@@ -88,7 +88,6 @@ fn on_usart1_idle() {
     idle_ring::record(delta, request_end_tick);
 }
 
-
 fn on_usart1_tc() {
     if !usart::is_tc(USART1) {
         return;

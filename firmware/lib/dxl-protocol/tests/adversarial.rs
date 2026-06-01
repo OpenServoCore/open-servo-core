@@ -322,9 +322,9 @@ fn parse_one_skips_phantom_broadcast_status_header_to_avoid_wedge() {
     // Incomplete and wedging the caller's poll loop.
     let frame: [u8; 14] = [
         0xFF, 0xFF, 0xFD, 0x00, // header
-        0xFE,                   // BROADCAST_ID
-        0x2B, 0x00,             // length = 43 (whole multi-slot packet)
-        0x55,                   // INSTR_STATUS
+        0xFE, // BROADCAST_ID
+        0x2B, 0x00, // length = 43 (whole multi-slot packet)
+        0x55, // INSTR_STATUS
         0x00, 50, 0xAA, 0xAA, 0xAA, 0xAA, // first slot's body
     ];
     assert!(matches!(
@@ -341,11 +341,11 @@ fn parse_one_returns_incomplete_on_truncated_broadcast_non_status() {
     // the caller waits for the remaining bytes instead of dropping them.
     const BCAST_WRITE_TRUNCATED: &[u8] = &[
         0xFF, 0xFF, 0xFD, 0x00, // header
-        0xFE,                   // BROADCAST_ID
-        0x08, 0x00,             // length = 8
-        0x03,                   // INSTR_WRITE
-        0x00, 0x00,             // address = 0
-        0xAA, 0xBB,             // partial data — missing last byte + CRC
+        0xFE, // BROADCAST_ID
+        0x08, 0x00, // length = 8
+        0x03, // INSTR_WRITE
+        0x00, 0x00, // address = 0
+        0xAA, 0xBB, // partial data — missing last byte + CRC
     ];
     assert!(matches!(
         parse_one(BCAST_WRITE_TRUNCATED),

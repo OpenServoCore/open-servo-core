@@ -68,10 +68,7 @@ pub fn parse_one(input: &[u8]) -> Result<(Packet<'_>, usize), ParseError> {
         // shows up incomplete, the missing bytes never land here — they're
         // on the wire during another node's TX. Returning Incomplete would
         // wedge the caller's poll loop; resync past this phantom header.
-        if frame.len() >= 8
-            && id == BROADCAST_ID
-            && frame[7] == Instruction::Status.as_u8()
-        {
+        if frame.len() >= 8 && id == BROADCAST_ID && frame[7] == Instruction::Status.as_u8() {
             return Err(ParseError::BadInstruction { skip: HEADER.len() });
         }
         return Err(ParseError::Incomplete);

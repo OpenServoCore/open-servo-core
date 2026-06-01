@@ -10,12 +10,12 @@ use crate::hal::{
     gpio::{self, Level},
     systick, usart,
 };
+#[cfg(feature = "dxl-systick-fire")]
+use crate::statics::DXL_TX_EN;
 use crate::statics::{
     DXL_BYTE_TIME_TICKS, DXL_BYTES_PER_US_Q16, DXL_DBG_PIN, DXL_RX_BUF, DXL_RX_BUF_LEN,
     DXL_STAT_PIN, DXL_TX_BUF, FIRE_ADVANCE_FINE_TICKS, SHARED,
 };
-#[cfg(feature = "dxl-systick-fire")]
-use crate::statics::DXL_TX_EN;
 #[cfg(feature = "dxl-systick-fire")]
 use crate::statics::{TX_FAST_LATENCY_TICKS, TX_PLAIN_LATENCY_TICKS};
 
@@ -834,8 +834,7 @@ fn wait_and_accumulate_tail(expected: u16) {
     if byte_time == 0 {
         return;
     }
-    let deadline =
-        systick::ticks().wrapping_add(byte_time.saturating_mul(RXNE_TAIL_WAIT_BYTES));
+    let deadline = systick::ticks().wrapping_add(byte_time.saturating_mul(RXNE_TAIL_WAIT_BYTES));
     loop {
         accumulate_snoop();
         if current_bytes_walked() >= expected as u32 {
@@ -1109,11 +1108,11 @@ mod tests {
         // because the +1 bias on the walk estimate trips the slack gate.
         // Walk = (10+1)×24 + 200 + 24 = 488 ticks; slack = (5-2)×160 = 480.
         // rxne_tail_at = (10+1) - GUARD(2) = 9.
-        let predict = ChainPredict { n_pred: 10, wire_window_us: 36 };
-        assert_eq!(
-            decide_rxne_tail_pure(&predict, 5, BYTE_TIME_TICKS_3M),
-            9
-        );
+        let predict = ChainPredict {
+            n_pred: 10,
+            wire_window_us: 36,
+        };
+        assert_eq!(decide_rxne_tail_pure(&predict, 5, BYTE_TIME_TICKS_3M), 9);
     }
 
     #[test]
@@ -1125,11 +1124,11 @@ mod tests {
         // and under hw-fire the patch_crc loses the race with CH4's
         // read cursor. RXNE-tail must arm even though wire_window is
         // long, because the slack check fails.
-        let predict = ChainPredict { n_pred: 138, wire_window_us: 460 };
-        assert_eq!(
-            decide_rxne_tail_pure(&predict, 5, BYTE_TIME_TICKS_3M),
-            137,
-        );
+        let predict = ChainPredict {
+            n_pred: 138,
+            wire_window_us: 460,
+        };
+        assert_eq!(decide_rxne_tail_pure(&predict, 5, BYTE_TIME_TICKS_3M), 137,);
     }
 
     #[test]
@@ -1138,7 +1137,10 @@ mod tests {
         // for walk-at-fire (large DUT payload). Pre-walking is wasted CPU.
         // n_pred=22, tx_len=37 (32B DUT) → slack = 35×160 = 5600 ticks,
         // walk = (22+1)×24 + 224 = 776 ticks. Walk fits slack → skip.
-        let predict = ChainPredict { n_pred: 22, wire_window_us: 73 };
+        let predict = ChainPredict {
+            n_pred: 22,
+            wire_window_us: 73,
+        };
         assert_eq!(
             decide_rxne_tail_pure(&predict, 37, BYTE_TIME_TICKS_3M),
             u16::MAX
@@ -1150,7 +1152,10 @@ mod tests {
         // 2 sl × L=4 at 3M: tx_len=8, slack = 6×160 = 960 ticks; walk =
         // (14+1)×24 + 224 = 584 < 960. Post-fire walk fits without the
         // per-byte ISR cost.
-        let predict = ChainPredict { n_pred: 14, wire_window_us: 47 };
+        let predict = ChainPredict {
+            n_pred: 14,
+            wire_window_us: 47,
+        };
         assert_eq!(
             decide_rxne_tail_pure(&predict, 8, BYTE_TIME_TICKS_3M),
             u16::MAX
@@ -1160,7 +1165,10 @@ mod tests {
     #[test]
     fn rxne_tail_skips_when_no_snoop_predicted() {
         // No predecessors (Only-slot or boot-time call) → RXNE-tail off.
-        let predict = ChainPredict { n_pred: 0, wire_window_us: 0 };
+        let predict = ChainPredict {
+            n_pred: 0,
+            wire_window_us: 0,
+        };
         assert_eq!(
             decide_rxne_tail_pure(&predict, 5, BYTE_TIME_TICKS_3M),
             u16::MAX
@@ -1170,7 +1178,10 @@ mod tests {
     #[test]
     fn rxne_tail_skips_when_tx_too_small_for_slack() {
         // tx_len < 4 → slack would underflow. Skip.
-        let predict = ChainPredict { n_pred: 10, wire_window_us: 36 };
+        let predict = ChainPredict {
+            n_pred: 10,
+            wire_window_us: 36,
+        };
         assert_eq!(
             decide_rxne_tail_pure(&predict, 3, BYTE_TIME_TICKS_3M),
             u16::MAX
@@ -1180,7 +1191,10 @@ mod tests {
     #[test]
     fn rxne_tail_skips_when_byte_time_uninitialized() {
         // store_baud_derived hasn't run; slack would be 0. Skip safely.
-        let predict = ChainPredict { n_pred: 10, wire_window_us: 36 };
+        let predict = ChainPredict {
+            n_pred: 10,
+            wire_window_us: 36,
+        };
         assert_eq!(decide_rxne_tail_pure(&predict, 5, 0), u16::MAX);
     }
 
@@ -1189,7 +1203,10 @@ mod tests {
         // n_pred = 1, +1 bias = 2, − GUARD(2) = 0 → clamped to 1 so the
         // mask check `bytes_walked >= rxne_tail_at` is always meaningful.
         // Use tiny byte_time_ticks to force the walk-vs-slack gate to fire.
-        let predict = ChainPredict { n_pred: 1, wire_window_us: 10 };
+        let predict = ChainPredict {
+            n_pred: 1,
+            wire_window_us: 10,
+        };
         assert_eq!(decide_rxne_tail_pure(&predict, 4, 100), 1);
     }
 }
