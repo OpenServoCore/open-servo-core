@@ -374,6 +374,13 @@ pub fn on_listen_idle(idle_tick: u32) {
     }
     let after = load_pending_after_idle();
 
+    // OPM normally self-clears CEN on the prior UEV, but a pipelined
+    // FIRE(future)+ARM that races the IDLE here can leave TIM4 with CEN=1
+    // and ARR pointing at the stale TX_BUF schedule — DMA1_CH7 would then
+    // stamp EN=1 into our half-reconfigured CH4. Disarm so schedule_or_fire_now
+    // below starts from a known-idle TIM4.
+    disarm_tim4();
+
     // Reload DMA from ARM_TX_BUF so this fire emits the arm payload, not
     // whatever was last in TX_BUF (most often the MASTER request bytes).
     // SAFETY: USART3 IDLE ISR is the sole reader of ARM_TX_BUF/ARM_TX_LEN;
@@ -446,6 +453,16 @@ pub fn set_baud(bps: u32) -> Result<(), BaudError> {
         USART1.brr().write(|w| w.0 = brr);
         USART1.ctlr1().modify(|w| w.set_ue(true));
         FIRE_COMP_TICKS.store(fire_comp_ticks(brr), Ordering::Relaxed);
+        // chip_tune crosses baud tiers between shots; clearing all per-trip
+        // expectation flags + any pending TIM4 here prevents flags armed at
+        // the previous baud from being consumed by the new baud's stamping
+        // and the bench seeing cross-tier "extra_idle" or stale Round entries.
+        ARMED_AFTER_IDLE.store(false, Ordering::Release);
+        SUPPRESS_NEXT_IDLE_STAMP.store(false, Ordering::Release);
+        EXPECT_FIRST_BYTE.store(false, Ordering::Release);
+        EXPECT_REPLY_END_IDLE.store(false, Ordering::Release);
+        EXPECT_FIRE_FIRST_BYTE.store(false, Ordering::Release);
+        disarm_tim4();
     });
     Ok(())
 }
