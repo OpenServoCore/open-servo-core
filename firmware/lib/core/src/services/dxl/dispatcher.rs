@@ -5,7 +5,7 @@ use crate::regions::config;
 use crate::traits::{DeviceControl, DxlBus};
 use crate::{BaudRate, Error, RegionStorage, Router, Shared, StagedWrites, StatusReturnLevel};
 
-use super::slot::{bulk_slot_delay_us, bytes_to_us, slot_period_us};
+use super::slot::{bulk_slot_delay_us, bytes_to_us, bytes_to_us_q88, slot_period_us};
 
 const MAX_READ: usize = 128;
 const MAX_WRITE: usize = 128;
@@ -582,8 +582,9 @@ impl<'a, B: DxlBus, D: DeviceControl> Dispatcher<'a, B, D> {
                 self.bus.send_after(ctx.rdt_us);
             }
             FastSlotPosition::Last => {
-                let fire_us = ctx.rdt_us + bytes_to_us(p.bytes_before(info.our_slot), ctx.baud);
-                self.bus.send_with_snoop_crc(fire_us, Some(parsed_end));
+                let fire_q88_us = (ctx.rdt_us << 8)
+                    + bytes_to_us_q88(p.bytes_before(info.our_slot), ctx.baud);
+                self.bus.send_with_snoop_crc(fire_q88_us, Some(parsed_end));
             }
             FastSlotPosition::First | FastSlotPosition::Middle => {
                 let fire_us = ctx.rdt_us + bytes_to_us(p.bytes_before(info.our_slot), ctx.baud);

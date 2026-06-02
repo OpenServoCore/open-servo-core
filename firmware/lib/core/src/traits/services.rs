@@ -21,10 +21,14 @@ pub trait DxlBus {
     /// preceding `request_complete`). If no idle moment is stashed, fires
     /// immediately as graceful degradation.
     fn send_after(&mut self, delay_us: u32);
-    /// Same timing as `send_after`, plus: before TX, patch the reply's trailing
-    /// two bytes with a CRC of inter-slave bytes received from `snoop_from`
-    /// onward. `None` ⇒ Only-slot path (no predecessors to snoop).
-    fn send_with_snoop_crc(&mut self, delay_us: u32, snoop_from: Option<u32>);
+    /// Same timing semantics as `send_after`, but the delay is Q8.8 µs
+    /// (1 unit = 1/256 µs) — chain Last fire scheduling rounds wire-time off
+    /// at sub-µs precision (3M: 3.333 µs/byte) and integer-µs flooring fires
+    /// the slave ahead of the predecessor's last stop bit. Before TX, patch
+    /// the reply's trailing two bytes with a CRC of inter-slave bytes
+    /// received from `snoop_from` onward. `None` ⇒ Only-slot path (no
+    /// predecessors to snoop).
+    fn send_with_snoop_crc(&mut self, delay_q88_us: u32, snoop_from: Option<u32>);
 
     /// Request a wire-rate change. Called after the Status reply for the
     /// triggering WRITE has been queued but before it finishes transmitting —

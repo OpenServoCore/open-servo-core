@@ -36,3 +36,7 @@ default      = ["ch32v006x8x6"]
 ch32v006x8x6 = ["ch32-metapac/ch32v006x8x6"]
 rt           = ["ch32-metapac/rt"]
 defmt        = ["dep:defmt", "osc-core/defmt"]
+# Bench-only: enable scope marker pulses (DXL_DBG_PIN / DXL_STAT_PIN) inside
+# the dxl_fast hot path. Off in production — `dbg_high`/`stat_high` and their
+# `_low` partners compile to empty bodies.
+scope        = []

@@ -15,7 +15,7 @@ struct FakeBus {
     after_count: u32,
     last_after_delay_us: Option<u32>,
     snoop_count: u32,
-    last_snoop_delay_us: Option<u32>,
+    last_snoop_delay_q88_us: Option<u32>,
     last_snoop_from: Option<Option<u32>>,
     last_request_end: Option<u32>,
 }
@@ -31,7 +31,7 @@ impl FakeBus {
             after_count: 0,
             last_after_delay_us: None,
             snoop_count: 0,
-            last_snoop_delay_us: None,
+            last_snoop_delay_q88_us: None,
             last_snoop_from: None,
             last_request_end: None,
         }
@@ -72,9 +72,9 @@ impl DxlBus for FakeBus {
         self.last_after_delay_us = Some(delay_us);
     }
 
-    fn send_with_snoop_crc(&mut self, delay_us: u32, snoop_from: Option<u32>) {
+    fn send_with_snoop_crc(&mut self, delay_q88_us: u32, snoop_from: Option<u32>) {
         self.snoop_count += 1;
-        self.last_snoop_delay_us = Some(delay_us);
+        self.last_snoop_delay_q88_us = Some(delay_q88_us);
         self.last_snoop_from = Some(snoop_from);
     }
 }
@@ -952,7 +952,7 @@ fn send_with_snoop_crc_records_args() {
     let mut bus = FakeBus::new();
     bus.send_with_snoop_crc(66, Some(24));
     assert_eq!(bus.snoop_count, 1);
-    assert_eq!(bus.last_snoop_delay_us, Some(66));
+    assert_eq!(bus.last_snoop_delay_q88_us, Some(66));
     assert_eq!(bus.last_snoop_from, Some(Some(24)));
 }
 
@@ -1034,7 +1034,7 @@ fn fast_sync_read_middle_slot_emits_body_only_with_offset_delay() {
 
 #[test]
 fn fast_sync_read_last_slot_schedules_snoop_with_parsed_end() {
-    use super::slot::bytes_to_us;
+    use super::slot::bytes_to_us_q88;
     use crate::BaudRate;
     let shared = Shared::new();
     let mut io = FakeIo::new();
@@ -1049,8 +1049,8 @@ fn fast_sync_read_last_slot_schedules_snoop_with_parsed_end() {
     assert_eq!(io.bus.snoop_count, 1);
     assert_eq!(io.bus.send_count, 0);
     assert_eq!(io.bus.after_count, 0);
-    let expected_fire = bytes_to_us(p.bytes_before(1), BaudRate::B1000000);
-    assert_eq!(io.bus.last_snoop_delay_us, Some(expected_fire));
+    let expected_fire = bytes_to_us_q88(p.bytes_before(1), BaudRate::B1000000);
+    assert_eq!(io.bus.last_snoop_delay_q88_us, Some(expected_fire));
     assert_eq!(io.bus.last_snoop_from, Some(Some(parsed_end)));
 
     assert_eq!(io.bus.tx.len(), 6);
@@ -1186,7 +1186,7 @@ fn fast_bulk_read_middle_slot_uses_per_slot_lengths_for_delay() {
 
 #[test]
 fn fast_bulk_read_last_slot_schedules_snoop_with_parsed_end() {
-    use super::slot::bytes_to_us;
+    use super::slot::bytes_to_us_q88;
     use crate::BaudRate;
     let shared = Shared::new();
     let mut io = FakeIo::new();
@@ -1202,8 +1202,8 @@ fn fast_bulk_read_last_slot_schedules_snoop_with_parsed_end() {
     assert_eq!(io.bus.snoop_count, 1);
     assert_eq!(io.bus.send_count, 0);
     assert_eq!(io.bus.after_count, 0);
-    let expected_fire = bytes_to_us(p.bytes_before(1), BaudRate::B1000000);
-    assert_eq!(io.bus.last_snoop_delay_us, Some(expected_fire));
+    let expected_fire = bytes_to_us_q88(p.bytes_before(1), BaudRate::B1000000);
+    assert_eq!(io.bus.last_snoop_delay_q88_us, Some(expected_fire));
     assert_eq!(io.bus.last_snoop_from, Some(Some(parsed_end)));
 
     assert_eq!(io.bus.tx.len(), 6);

@@ -81,11 +81,11 @@ impl DxlBus for Ch32Bus {
         }
     }
 
-    fn send_with_snoop_crc(&mut self, delay_us: u32, snoop_from: Option<u32>) {
+    fn send_with_snoop_crc(&mut self, delay_q88_us: u32, snoop_from: Option<u32>) {
         let Some(request_end_tick) = self.request_end_tick.take() else {
             return;
         };
-        dxl_fast::start_fast_after(request_end_tick, delay_us, snoop_from);
+        dxl_fast::start_fast_after(request_end_tick, delay_q88_us, snoop_from);
     }
 
     fn set_baud(&mut self, rate: BaudRate) {

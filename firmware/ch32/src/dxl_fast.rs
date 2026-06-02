@@ -5,16 +5,15 @@ use ch32_metapac::USART1;
 
 use dxl_protocol::crc16_continue;
 
-use crate::hal::{
-    dma,
-    gpio::{self, Level},
-    systick, usart,
-};
+#[cfg(feature = "scope")]
+use crate::hal::gpio::Level;
+use crate::hal::{dma, gpio, systick, usart};
 use crate::statics::{
-    DXL_BYTE_TIME_TICKS, DXL_BYTES_PER_US_Q16, DXL_DBG_PIN, DXL_RX_BUF, DXL_RX_BUF_LEN,
-    DXL_STAT_PIN, DXL_TX_BUF, DXL_TX_EN, FIRE_ADVANCE_FINE_TICKS, SHARED, TX_FAST_LATENCY_TICKS,
-    TX_PLAIN_LATENCY_TICKS,
+    DXL_BYTE_TIME_TICKS, DXL_BYTES_PER_US_Q16, DXL_RX_BUF, DXL_RX_BUF_LEN, DXL_TX_BUF, DXL_TX_EN,
+    FIRE_ADVANCE_FINE_TICKS, SHARED, TX_FAST_LATENCY_TICKS, TX_PLAIN_LATENCY_TICKS,
 };
+#[cfg(feature = "scope")]
+use crate::statics::{DXL_DBG_PIN, DXL_STAT_PIN};
 
 /// Which request end tick detection + fire path a given reply takes.
 #[allow(dead_code)]
@@ -38,8 +37,8 @@ pub enum FastChainFault {
     /// Snoop walk saw a delta inconsistent with the TC wrap count.
     #[allow(dead_code)]
     UnexpectedByteCount,
-    /// At WaitingSwitch CMP, observed predecessor bytes fell short of
-    /// predicted. The Q16 reciprocal carries ±1 LSB rounding noise, so
+    /// At TxArmed (post-straggle-walk), observed predecessor bytes fell short
+    /// of predicted. The Q16 reciprocal carries ±1 LSB rounding noise, so
     /// boundary cases may trip without a real predecessor miss.
     PreviousSlotTimeout,
     /// Fire CMP ran more than one byte-time past `fire_tick`.
@@ -60,13 +59,13 @@ pub enum FastChainFault {
 #[allow(dead_code)]
 #[derive(Copy, Clone, PartialEq, Eq)]
 pub enum FastChainPhase {
-    /// Armed, WaitingSwitch CMP pending, no DMA TC wrap seen yet.
-    CatchupArmed,
-    /// At least one TC wrap has folded a full ring into `bulk_crc`.
-    Snoop,
-    /// WaitingSwitch CMP body running its catch-up walk to current NDTR.
-    Catchup,
-    /// Catch-up done; fire CMP pending.
+    /// Periodic SysTick CMP every `BYTES_PER_INTERVAL × byte_time` ticks.
+    /// Each body walks whatever's in the ring; the last tick (aligned to
+    /// `last_catchup_tick`) runs a busy-wait fold loop until
+    /// `walk_deadline`, then hands off to `TxArmed` at `fire_tick`.
+    PeriodicCatchup,
+    /// Pre-fire walk done; SysTick CMP armed at `fire_tick`. The TxArmed
+    /// body fires, runs the post-fire walk, and patches CRC.
     TxArmed,
     /// Fire CMP fired; TX shifting and straggle walk in progress.
     TxStreaming,
@@ -86,22 +85,29 @@ pub enum ReplyState {
     /// SysTick CMP armed for a non-snoop reply (Ping, Read, Sync/Bulk slot,
     /// Fast First/Middle/Only).
     Plain,
-    /// SysTick (+ optionally DMA CH5 TC) armed for a Fast last-slave reply.
+    /// SysTick CMP armed for a Fast last-slave reply with snoop.
     Chain {
         phase: FastChainPhase,
         /// SysTick value at which TX must start shifting.
         fire_tick: u32,
+        /// SysTick value at which the last periodic catchup body fires —
+        /// the *start* of a busy-wait loop that absorbs the predecessor
+        /// window. Earlier periodic ticks land at `last_catchup_tick − k ×
+        /// interval`.
+        last_catchup_tick: u32,
+        /// SysTick value at which the pre-fire walk-loop times out, leaving
+        /// the trailing GUARD bytes for the post-fire walk. Equals
+        /// `t_prior_end − t_guard`.
+        walk_deadline: u32,
         /// Ring index up to which `bulk_crc` has folded predecessor bytes.
         snoop_head: u16,
         /// Rolling CRC over predecessor bytes observed so far.
         bulk_crc: u16,
-        /// Predicted predecessor byte count; floor for `PreviousSlotTimeout`.
+        /// Total predecessor byte count — the walk-loop's exit target. In
+        /// practice the loop exits via `walk_deadline` with `n_pred − GUARD`
+        /// folded; post-fire absorbs the remaining GUARD bytes.
         expected_predecessor_bytes: u16,
         bytes_walked: u32,
-        /// `bytes_walked` threshold for masking RXNEIE in the RXNE-tail tier
-        /// (chain-crc.md §14.4). `u16::MAX` = tail tier disabled for this
-        /// reply (the common case — covered by switch + walk-at-fire alone).
-        rxne_tail_at: u16,
     },
 }
 
@@ -111,54 +117,29 @@ const _: () = assert!(DXL_RX_BUF_LEN.is_power_of_two() && DXL_RX_BUF_LEN <= u16:
 const RX_MASK_U16: u16 = (DXL_RX_BUF_LEN as u16).wrapping_sub(1);
 const RX_MASK_U32: u32 = (DXL_RX_BUF_LEN - 1) as u32;
 
-/// Gap between WaitingSwitch CMP and the fire CMP. The switch walk drains
-/// whatever bytes have accumulated since the last DMA HT/TC fold; the fire
-/// ISR walks the M µs straggle and patches CRC inside the TX DMA prefetch
-/// window.
-///
-/// Bench-measured CRC throughput on V006 is ~0.5 µs/byte (flash-resident
-/// `crc16_continue` + ring-index bookkeeping). The chain-CRC doc's original
-/// 0.1 µs/byte estimate was 5× off (see chain-crc.md §14.1).
-///
-/// **Upper bound (Constraint B):** straggle walk + patch must fit the smallest
-/// reply's TX prefetch slack. At M=50, 3 Mbaud, n=8 reply (slack 20 µs):
-/// straggle ≈ 15 B × 0.5 = 7.5 µs + patch ~2 µs + fire ~1 µs ≈ 10.5 µs
-/// total, leaving ~9.5 µs margin. Smaller replies (n ∈ {5..7}) with
-/// short wire_window fall through this path and are caught by the
-/// RXNE-tail tier (see `decide_rxne_tail` and chain-crc.md §14.4).
-///
-/// **Lower bound (Constraint A):** switch walk must fit M. With HT folding
-/// bytes at the 256-B midpoint, the catchup walk is bounded by ≤ 256 B at
-/// 0.5 µs/B = ~128 µs worst-case — switch is sized to cover only the
-/// per-iteration residue, not a full ring. Typical: inj=4 catchup walks
-/// ~4 B (~2 µs), inj=128 walks ~50 µs, inj=256+ leans on HT to keep the
-/// residual under ~20 µs.
-const SWITCH_MARGIN_US: u32 = 50;
+/// Target bytes folded per periodic catchup body. Sized so each body's CRC
+/// walk (~0.5 µs/byte) stays well under one kernel tick: 15 × 0.5 = 7.5 µs
+/// (chain-crc-time-driven.md §2.1). Per-baud interval falls out as
+/// `BYTES_PER_INTERVAL × byte_time_ticks` — natural alignment at 3M/1M/500k
+/// to the kernel's 50 µs grid.
+const BYTES_PER_INTERVAL: u32 = 15;
 
-/// Per-byte cost of the snoop CRC walk, in HCLK ticks. Bench-measured at
-/// ~0.5 µs/B on V006 (24 ticks @ 48 MHz). Used by the RXNE-tail decision
-/// in `decide_rxne_tail` to estimate the walk-at-fire residue.
-const CRC_WALK_TICKS_PER_BYTE: u32 = 24;
+/// Predecessor bytes the pre-fire walk-loop leaves on the wire for the
+/// post-fire walk. With GUARD=3 the gap between walk-loop exit and
+/// `fire_tick` is `t_guard − tx_latency` ≈ 3.9 µs at 3 M / ~24 µs at 1 M —
+/// enough for one PFIC-LOW ISR (ADC TC) to slip in without pushing fire
+/// past pirate's 1-char_time IDLE threshold.
+const GUARD_BYTES: u16 = 1;
 
-/// Post-fire path floor in ticks: fire_now (~1.2 µs) + glue + patch_crc
-/// (~1.9 µs) + busy-wait setup. ~4.2 µs total. The fixed cost the
-/// RXNE-tail decision adds to the slack-budget check.
-const POST_FIRE_FLOOR_TICKS: u32 = 200;
-
-/// Slack margin reserved for SysTick CMP jitter (PFIC trap-entry variance).
-const POST_FIRE_JITTER_TICKS: u32 = 24;
-
-/// Bytes left for the post-fire walk after RXNE-tail pre-walks the rest.
-/// 2 lets the predecessor's final byte arrive in the busy-wait window
-/// without the RXNE-vs-SysTick collision the chain-CRC doc §4.2 warned
-/// against.
-const RXNE_TAIL_GUARD_BYTES: u16 = 2;
-
-/// Upper bound on the post-fire busy-wait, in predecessor byte-times.
-/// 3 byte-times = ~10 µs at 3 Mbaud — long enough to cover the worst
-/// case (fire arrives before the last predecessor byte's stop bit) and
-/// short enough that a missing/dead predecessor fails open quickly.
-const RXNE_TAIL_WAIT_BYTES: u32 = 3;
+/// `t_catchup_entry` — catchup ISR fixed overhead: PFIC trap entry +
+/// `clear_match` + state-load + match arm + post-fold `set_cmp` / `set_irq` /
+/// past-tick check. Bench 2026-06-02 (scope, INJ=1 single-body): stat-pulse
+/// minus dbg-pulse = 2.29 µs ± 0.03 µs ≈ 110 HCLK ticks at 48 MHz.
+/// Subtracted from `last_catchup_tick` so the body's CRC fold begins at the
+/// intended wall-clock anchor instead of `anchor + entry_latency` —
+/// significant at 3 M where 110 ticks ≈ 0.7 `byte_time`. See
+/// `docs/dxl-fast-chain-crc-walkloop.md` §1.1.
+const CATCHUP_ENTRY_TICKS: u32 = 110;
 
 /// Plain advance includes a per-baud `bt/4` (≈ 2.5 bit-times) term covering
 /// the USART BRR-sync + listener IDLE-detect pipeline; the CT-tuned
@@ -256,7 +237,7 @@ pub fn start_plain_after(request_end_tick: u32, delay_us: u32) {
 
 #[cfg_attr(target_arch = "riscv32", unsafe(link_section = ".highcode"))]
 #[inline(never)]
-pub fn start_fast_after(request_end_tick: u32, fire_us: u32, snoop_from: Option<u32>) {
+pub fn start_fast_after(request_end_tick: u32, fire_q88_us: u32, snoop_from: Option<u32>) {
     systick::set_irq(false);
     systick::clear_match();
 
@@ -265,183 +246,130 @@ pub fn start_fast_after(request_end_tick: u32, fire_us: u32, snoop_from: Option<
         return;
     }
 
-    let fire_needed = fire_us
-        .saturating_mul(systick::TICKS_PER_US)
-        .saturating_sub(fast_fire_advance_ticks());
+    // Q8.8 µs × ticks/µs = Q8.8 ticks; shift to whole ticks. Resolution is
+    // 1/256 µs ≈ 4 ns — tighter than HCLK (20.8 ns), so the wire-time math
+    // no longer loses 0.3–0.7 µs to integer-µs flooring at 3M.
+    let fire_needed_ticks = ((fire_q88_us as u64 * systick::TICKS_PER_US as u64) >> 8) as u32;
+    let fire_needed = fire_needed_ticks.saturating_sub(fast_fire_advance_ticks());
     let fire_tick = request_end_tick.wrapping_add(fire_needed);
 
-    let snoop_head = match snoop_from {
-        Some(rx_start) => (rx_start & RX_MASK_U32) as u16,
-        None => 0,
+    let (snoop_head, n_pred) = match snoop_from {
+        Some(rx_start) => ((rx_start & RX_MASK_U32) as u16, predict_n_pred(fire_q88_us)),
+        None => (0, 0),
     };
 
-    let predict = match snoop_from {
-        Some(_) => predict_chain(fire_us),
-        None => ChainPredict::none(),
+    // Last catchup tick = `t_fire − min(interval, t_prior_duration) − t_guard`.
+    // It anchors the START of a busy-wait fold loop that times out at
+    // `t_prior_end − t_guard` — by which point `n_pred − GUARD` predecessor
+    // bytes have landed. The remaining GUARD bytes belong to the post-fire
+    // walk. For n_pred ≤ GUARD the walk-loop just no-ops and post-fire
+    // absorbs everything; collapse to a single CMP at fire_tick.
+    let byte_time = byte_time_ticks_now();
+    let rdt_ticks = unsafe {
+        (&raw const (*SHARED.table.config.get()).comms.return_delay_2us).read_volatile() as u32
+            * 2
+            * systick::TICKS_PER_US
     };
-    let tx_len = unsafe { (*DXL_TX_BUF.get()).as_slice().len() };
-    let rxne_tail_at = decide_rxne_tail(&predict, tx_len);
-    let use_rxne_tail = rxne_tail_at != u16::MAX;
+    let interval = catchup_interval_ticks();
+    let t_guard = byte_time.saturating_mul(GUARD_BYTES as u32);
+    let t_prior_duration = byte_time.saturating_mul(n_pred.saturating_sub(1) as u32);
+    let t_prior_start = request_end_tick
+        .wrapping_add(rdt_ticks)
+        .wrapping_add(byte_time);
+    let t_prior_end = request_end_tick
+        .wrapping_add(rdt_ticks)
+        .wrapping_add(byte_time.saturating_mul(n_pred as u32));
+    let walk_deadline = t_prior_end.wrapping_sub(t_guard);
+    let last_catchup_tick = if n_pred > GUARD_BYTES {
+        fire_tick
+            .wrapping_sub(interval.min(t_prior_duration))
+            .wrapping_sub(t_guard)
+            .wrapping_sub(CATCHUP_ENTRY_TICKS)
+    } else {
+        fire_tick
+    };
 
-    // Phase selection — three ways into TxArmed, one into CatchupArmed:
-    //
-    //   1. `use_rxne_tail` — `decide_rxne_tail` determined walk-at-fire
-    //      can't fit slack. Pre-walking happens per-byte via on_rxne up
-    //      to `rxne_tail_at`; TxArmed walks only the GUARD residue.
-    //      Covers both small-window-tight-slack (3M Last 1B) and
-    //      large-n_pred-tight-slack (128B INJ + tiny DUT) corners.
-    //
-    //   2. `wire_window_us <= SWITCH_MARGIN_US` — switch CMP at
-    //      `fire_tick − SWITCH_MARGIN_US` would land before the
-    //      predecessor's first byte and walk zero. Skip the catchup
-    //      tier; TxArmed walks everything at fire.
-    //
-    //   3. Default — wire window is long enough and walk-at-fire fits
-    //      slack; CatchupArmed body folds the bulk at `fire − margin`,
-    //      TxArmed cleans up the residue.
-    let (initial_phase, cmp_tick) = match snoop_from {
-        None => (FastChainPhase::TxArmed, fire_tick),
-        Some(_) if use_rxne_tail => (FastChainPhase::TxArmed, fire_tick),
-        Some(_) if predict.wire_window_us <= SWITCH_MARGIN_US => {
-            (FastChainPhase::TxArmed, fire_tick)
-        }
-        Some(_) => {
-            let switch_margin_ticks = SWITCH_MARGIN_US.saturating_mul(systick::TICKS_PER_US);
-            (
-                FastChainPhase::CatchupArmed,
-                fire_tick.wrapping_sub(switch_margin_ticks),
-            )
-        }
-    };
+    // Step back by `interval` from the anchor until one more step would land
+    // before `t_prior_start + interval` — i.e., the first catchup straddles
+    // wire-start. Wrapping-safe via signed offset against t_prior_start.
+    let mut delta = last_catchup_tick.wrapping_sub(t_prior_start);
+    while (delta as i32) >= interval as i32 {
+        delta = delta.wrapping_sub(interval);
+    }
+    let mut first_catchup_tick = t_prior_start.wrapping_add(delta);
+    // Floor at `now` so we don't schedule into the past.
+    let now = systick::ticks();
+    if (first_catchup_tick.wrapping_sub(now) as i32) < 0 {
+        first_catchup_tick = now;
+    }
 
     set_state(ReplyState::Chain {
-        phase: initial_phase,
+        phase: FastChainPhase::PeriodicCatchup,
         fire_tick,
+        last_catchup_tick,
+        walk_deadline,
         snoop_head,
         bulk_crc: 0,
-        expected_predecessor_bytes: predict.n_pred,
+        expected_predecessor_bytes: n_pred,
         bytes_walked: 0,
-        rxne_tail_at,
     });
 
-    if matches!(initial_phase, FastChainPhase::CatchupArmed) {
-        dma::clear_tc_flag(dma::Channel::CH5);
-        dma::clear_ht_flag(dma::Channel::CH5);
-        dma::set_tcie(dma::Channel::CH5, true);
-        dma::set_htie(dma::Channel::CH5, true);
-    }
-
-    if use_rxne_tail {
-        usart::set_rxne_irq(USART1, true);
-    }
-
-    systick::set_cmp(cmp_tick);
+    systick::set_cmp(first_catchup_tick);
     systick::set_irq(true);
-    if systick::ticks().wrapping_sub(request_end_tick) >= cmp_tick.wrapping_sub(request_end_tick) {
+    if (systick::ticks().wrapping_sub(first_catchup_tick) as i32) >= 0 {
         on_systick();
     }
 }
 
-#[derive(Copy, Clone)]
-struct ChainPredict {
-    /// Predicted predecessor wire bytes.
-    n_pred: u16,
-    /// Predicted predecessor wire transmission span (fire_us minus RDT), in µs.
-    wire_window_us: u32,
-}
-
-impl ChainPredict {
-    #[inline(always)]
-    const fn none() -> Self {
-        Self {
-            n_pred: 0,
-            wire_window_us: 0,
-        }
-    }
-}
-
+/// Predict predecessor wire bytes for the post-fire fold target and the
+/// `PreviousSlotTimeout` floor. The wire window is the *predecessor's*
+/// transmission span `fire_q88_us − rdt_q88_us`, not the SysTick scheduling
+/// window — the latter folds in the fire-advance latency and (more
+/// importantly) doesn't subtract RDT, which would balloon n_pred by ~5× at
+/// typical RDT/baud combinations.
 #[inline]
-fn predict_chain(fire_us: u32) -> ChainPredict {
+fn predict_n_pred(fire_q88_us: u32) -> u16 {
     // SAFETY: u8 access — no tearing. Boot-seeded or main-loop-written; ISR
     // context here only reads.
     let rdt_us = unsafe {
         (&raw const (*SHARED.table.config.get()).comms.return_delay_2us).read_volatile() as u32 * 2
     };
+    let rdt_q88_us = rdt_us << 8;
     let bytes_per_us_q16 = DXL_BYTES_PER_US_Q16.load(Ordering::Relaxed);
-    predict_chain_pure(fire_us, rdt_us, bytes_per_us_q16)
+    predict_n_pred_pure(fire_q88_us, rdt_q88_us, bytes_per_us_q16)
 }
 
 #[inline]
-fn predict_chain_pure(fire_us: u32, rdt_us: u32, bytes_per_us_q16: u32) -> ChainPredict {
-    let wire_window_us = fire_us.saturating_sub(rdt_us);
-    let n_pred = if bytes_per_us_q16 == 0 {
-        0
-    } else {
-        // Predecessor reply spans (request_end + rdt) .. (request_end + fire_us).
-        // PreviousSlotTimeout fires at TxArmed (post-straggle-walk), so we
-        // compare bytes_walked against the full predecessor reply length
-        // here. Floors twice round-trip (dispatcher's bytes_to_us + this one),
-        // so the actual byte count can be up to one higher than n_pred —
-        // `decide_rxne_tail_pure` biases its walk estimate by +1 to absorb.
-        ((wire_window_us.saturating_mul(bytes_per_us_q16)) >> 16).min(u16::MAX as u32) as u16
-    };
-    ChainPredict {
-        n_pred,
-        wire_window_us,
+fn predict_n_pred_pure(fire_q88_us: u32, rdt_q88_us: u32, bytes_per_us_q16: u32) -> u16 {
+    if bytes_per_us_q16 == 0 {
+        return 0;
     }
+    let wire_q88 = fire_q88_us.saturating_sub(rdt_q88_us);
+    // Q8.8 µs × Q16.16 bytes/µs = Q24.24 bytes. Round-half-up at the >>24
+    // boundary so a window that exactly straddles a byte edge doesn't trip
+    // PreviousSlotTimeout a byte short.
+    let prod = wire_q88 as u64 * bytes_per_us_q16 as u64;
+    let n = (prod + (1u64 << 23)) >> 24;
+    n.min(u16::MAX as u64) as u16
 }
 
-/// Arm the RXNE-tail tier iff walk-at-fire alone would overrun TX prefetch
-/// slack. Two scenarios trigger this: (a) short wire_window where the
-/// switch CMP would land before the predecessor's first byte (the original
-/// chain-crc.md §14.4 case — 3M Last 1B), and (b) long wire_window with
-/// large `n_pred` where the CatchupArmed body itself overruns
-/// `SWITCH_MARGIN_US` (e.g. 128-byte INJ at 3M: ~123 B catchup walk takes
-/// ~62 µs > 50 µs margin, pushing the patch_crc past CH4's read cursor).
-/// Returns the `bytes_walked` threshold for masking RXNEIE, or `u16::MAX`
-/// when walk-at-fire fits slack and no pre-walk is needed.
-#[inline]
-fn decide_rxne_tail(predict: &ChainPredict, tx_len: usize) -> u16 {
-    decide_rxne_tail_pure(predict, tx_len, byte_time_ticks_now())
-}
-
-#[inline]
-fn decide_rxne_tail_pure(predict: &ChainPredict, tx_len: usize, byte_time_ticks: u32) -> u16 {
-    if predict.n_pred == 0 || tx_len < 4 {
-        return u16::MAX;
-    }
-    if byte_time_ticks == 0 {
-        return u16::MAX;
-    }
-    let slack_ticks = (tx_len as u32 - 2).saturating_mul(byte_time_ticks);
-    // `predict.n_pred` floors twice on the dispatcher → predict round-trip
-    // (bytes_to_us floor, then µs → bytes floor), so true predecessor count
-    // is up to one byte higher. Bias the walk estimate up by one byte so the
-    // gate doesn't undershoot on tight cases like 3M Last 1B (true n_pred
-    // = 11, predicted = 10).
-    let walk_at_fire_ticks = (predict.n_pred as u32 + 1)
-        .saturating_mul(CRC_WALK_TICKS_PER_BYTE)
-        .saturating_add(POST_FIRE_FLOOR_TICKS)
-        .saturating_add(POST_FIRE_JITTER_TICKS);
-    if walk_at_fire_ticks <= slack_ticks {
-        return u16::MAX;
-    }
-    // Use the same +1 bias for rxne_tail_at so on_rxne masks at the *actual*
-    // (one higher) byte count rather than the floored prediction — otherwise
-    // mask fires one byte too early and post-fire walks GUARD+1 bytes.
-    (predict.n_pred + 1)
-        .saturating_sub(RXNE_TAIL_GUARD_BYTES)
-        .max(1)
+/// Per-baud periodic catchup interval in HCLK ticks. Sized as
+/// `BYTES_PER_INTERVAL × byte_time` so each body walks a bounded number of
+/// bytes regardless of baud (chain-crc-time-driven.md §2.1).
+#[inline(always)]
+fn catchup_interval_ticks() -> u32 {
+    BYTES_PER_INTERVAL.saturating_mul(byte_time_ticks_now())
 }
 
 #[cfg_attr(target_arch = "riscv32", unsafe(link_section = ".highcode"))]
 #[inline(never)]
 pub fn on_systick() {
+    stat_high();
     systick::clear_match();
     systick::set_irq(false);
 
-    // SAFETY: USART1 / SysTick / DMA1_CH5 share PFIC HIGH and never preempt
-    // each other; STATE access is uncontested across these handlers.
+    // SAFETY: USART1 / SysTick share PFIC HIGH and never preempt each other;
+    // STATE access is uncontested across these handlers.
     let snapshot = unsafe { *STATE.get() };
     match snapshot {
         ReplyState::Idle => {}
@@ -452,67 +380,92 @@ pub fn on_systick() {
         ReplyState::Chain {
             phase,
             fire_tick,
+            last_catchup_tick,
+            walk_deadline,
             expected_predecessor_bytes,
-            rxne_tail_at,
             ..
         } => match phase {
-            FastChainPhase::CatchupArmed | FastChainPhase::Snoop => {
-                set_phase(FastChainPhase::Catchup);
+            FastChainPhase::PeriodicCatchup => {
+                dbg_high();
                 accumulate_snoop();
+                let interval = catchup_interval_ticks();
+                let now = systick::ticks();
+                let byte_time = byte_time_ticks_now();
+                let half_byte = (byte_time / 2) as i32;
+                let is_last_catchup = (now.wrapping_sub(last_catchup_tick) as i32) >= -half_byte;
+
+                if !is_last_catchup {
+                    // Snap to the anchor if `now + interval` would overshoot.
+                    // ISR-entry drift accumulates across intermediate ticks;
+                    // anchoring the final tick keeps fire on the wall-clock.
+                    let candidate = now.wrapping_add(interval);
+                    let next_tick =
+                        if (candidate.wrapping_sub(last_catchup_tick) as i32) >= -half_byte {
+                            last_catchup_tick
+                        } else {
+                            candidate
+                        };
+                    dbg_low();
+                    systick::set_cmp(next_tick);
+                    systick::set_irq(true);
+                    stat_low();
+                    if (systick::ticks().wrapping_sub(next_tick) as i32) >= 0 {
+                        on_systick();
+                    }
+                    return;
+                }
+
+                // Last catchup. Busy-wait + fold until `n_pred` reached or
+                // `walk_deadline` (= t_prior_end − t_guard) hits. The latter
+                // is the normal exit at `bytes_walked = n_pred − GUARD`;
+                // post-fire absorbs the trailing GUARD bytes.
+                wait_and_fold_until(expected_predecessor_bytes as u32, walk_deadline);
+                dbg_low();
+
+                // Hand off to TxArmed: arm SysTick at fire_tick, return.
+                // The CPU is free to service lower-priority ISRs (ADC TC) in
+                // the `t_guard − tx_latency` gap. Re-entry latency on the
+                // fire ISR (~1.5 µs) is under one char_time, so pirate's
+                // IDLE threshold isn't tripped at any baud we ship.
                 set_phase(FastChainPhase::TxArmed);
                 systick::set_cmp(fire_tick);
                 systick::set_irq(true);
-                let now = systick::ticks();
-                if (now.wrapping_sub(fire_tick) as i32) >= 0 {
+                stat_low();
+                if (systick::ticks().wrapping_sub(fire_tick) as i32) >= 0 {
+                    // Already past fire_tick (walk ran long / fire_tick was
+                    // ahead of walk_deadline) — fire inline.
                     on_systick();
                 }
-            }
-            FastChainPhase::Catchup => {
-                // Defensive: only reached if a prior CMP body returned without
-                // rescheduling. Re-arm against the fire deadline.
-                set_phase(FastChainPhase::TxArmed);
-                systick::set_cmp(fire_tick);
-                systick::set_irq(true);
+                return;
             }
             FastChainPhase::TxArmed => {
-                // ── CH5 ownership transfer (load-bearing). on_dma1_ch5
-                // and this body both walk the snoop ring and mutate
-                // bulk_crc/snoop_head. Mask CH5 TCIE/HTIE FIRST so the
-                // walk below is the sole writer — otherwise a CH5 IRQ
-                // queued around fire_tick can run AFTER the body
-                // returns but with stale ring-walk semantics, corrupting
-                // bulk_crc for later shots. Empirically caught: deferring
-                // these regressed 3M Last 32B from 123/128 → 91/128.
-                dma::set_tcie(dma::Channel::CH5, false);
-                dma::set_htie(dma::Channel::CH5, false);
-
                 // ── Critical path. patch_crc must land bytes [n-2, n-1]
                 // of TX_BUF before CH4's read cursor reaches them.
                 fire_now();
-                if rxne_tail_at != u16::MAX {
-                    wait_and_accumulate_tail(expected_predecessor_bytes);
-                } else {
-                    accumulate_snoop();
+                dbg_high();
+                if expected_predecessor_bytes > 0 {
+                    // Post-fire walks bytes that arrive between
+                    // walk_deadline and t_prior_end. Add one byte_time of
+                    // slack past t_prior_end for DMA latch latency on the
+                    // final byte.
+                    let byte_time = byte_time_ticks_now();
+                    let post_deadline = walk_deadline
+                        .wrapping_add(byte_time.saturating_mul((GUARD_BYTES + 1) as u32));
+                    wait_and_fold_until(expected_predecessor_bytes as u32, post_deadline);
                 }
                 patch_crc();
+                dbg_low();
 
-                // ── Off the critical path: RXNE mask + diagnostics +
-                // FSM transitions. RXNE-tail doesn't race with the body
-                // (its own handler self-gates on rxne_tail_at threshold),
-                // and the diagnostics + phase writes are observation
-                // only.
-                if rxne_tail_at != u16::MAX {
-                    usart::set_rxne_irq(USART1, false);
-                }
+                // ── Off the critical path: diagnostics + FSM transitions.
                 if dma::remaining(dma::Channel::CH4) <= 2 {
                     report_fault(FastChainFault::CrcPatchDeadlineMiss);
                 }
                 if current_bytes_walked() < expected_predecessor_bytes as u32 {
                     report_fault(FastChainFault::PreviousSlotTimeout);
                 }
+                let byte_time = byte_time_ticks_now();
                 let now = systick::ticks();
-                let byte_time_ticks = byte_time_ticks_now();
-                if (now.wrapping_sub(fire_tick) as i32) > byte_time_ticks as i32 {
+                if (now.wrapping_sub(fire_tick) as i32) > byte_time as i32 {
                     report_fault(FastChainFault::SlotTimingMiss);
                 }
                 set_phase(FastChainPhase::TxStreaming);
@@ -524,6 +477,7 @@ pub fn on_systick() {
             | FastChainPhase::Fault(_) => {}
         },
     }
+    stat_low();
 }
 
 #[inline(always)]
@@ -540,141 +494,20 @@ fn current_bytes_walked() -> u32 {
     }
 }
 
+/// RXNE handler — no-op for the chain path. The time-driven design never
+/// enables RXNEIE from this module: the last periodic catchup body owns the
+/// pre-fire fold, busy-wait, fire, and stage 4. Kept as a stub so the USART1
+/// ISR dispatch in `irq.rs` can keep calling it; future framing modes
+/// (Phase B low-baud) can plug their own RXNE consumer in here.
 #[cfg_attr(target_arch = "riscv32", unsafe(link_section = ".highcode"))]
-pub fn on_dma1_ch5() {
-    let ht = dma::is_ht_flag(dma::Channel::CH5);
-    let tc = dma::is_tc_flag(dma::Channel::CH5);
-
-    // Unconditional clears: a stuck IFCR bit re-asserts the IRQ on next unmask
-    // even if STATE has moved past the snoop window. HT clears first so the
-    // late-IRQ "both flags pending" case still ends at write_pos=0 after TC.
-    if ht {
-        dma::clear_ht_flag(dma::Channel::CH5);
-    }
-    if tc {
-        dma::clear_tc_flag(dma::Channel::CH5);
-    }
-
-    let phase_now = unsafe {
-        match &*STATE.get() {
-            ReplyState::Chain { phase, .. } => Some(*phase),
-            _ => None,
-        }
-    };
-    let Some(phase_now) = phase_now else { return };
-    if !matches!(
-        phase_now,
-        FastChainPhase::CatchupArmed | FastChainPhase::Snoop | FastChainPhase::TxArmed
-    ) {
-        return;
-    }
-
-    // TC implies the ring just wrapped; walk to end. Otherwise (HT only) walk
-    // to the midpoint. snoop_head may have already advanced past the target —
-    // skip walk and don't move head backward.
-    let target = if tc {
-        DXL_RX_BUF_LEN
-    } else {
-        DXL_RX_BUF_LEN / 2
-    };
-    let new_head = if tc {
-        0u16
-    } else {
-        (DXL_RX_BUF_LEN / 2) as u16
-    };
-
-    unsafe {
-        if let ReplyState::Chain {
-            snoop_head,
-            bulk_crc,
-            bytes_walked,
-            ..
-        } = &mut *STATE.get()
-        {
-            let start = *snoop_head as usize;
-            if start < target {
-                let ring = &*DXL_RX_BUF.get();
-                let walked = target - start;
-                *bulk_crc = crc16_continue(*bulk_crc, &ring[start..target]);
-                *bytes_walked = bytes_walked.wrapping_add(walked as u32);
-                *snoop_head = new_head;
-            } else if tc {
-                // Late TC after accumulate_snoop crossed the wrap; just reset.
-                *snoop_head = 0;
-            }
-        }
-    }
-
-    if matches!(phase_now, FastChainPhase::CatchupArmed) {
-        set_phase(FastChainPhase::Snoop);
-    }
-}
-
-/// Per-byte snoop fold during the predecessor's wire window. Folds bytes
-/// arrived since the last entry into `bulk_crc`, advances `snoop_head`, and
-/// masks RXNEIE once `bytes_walked` crosses the `rxne_tail_at` threshold —
-/// post-fire walk-at-fire owns the final GUARD bytes (chain-crc.md §14.6).
-#[cfg_attr(target_arch = "riscv32", unsafe(link_section = ".highcode"))]
-pub fn on_rxne() {
-    // Cheap self-gate: most on_usart1 entries (IDLE/TC) don't care about
-    // RXNE-tail and return immediately.
-    let active = unsafe {
-        matches!(
-            &*STATE.get(),
-            ReplyState::Chain {
-                phase,
-                rxne_tail_at,
-                ..
-            } if *rxne_tail_at != u16::MAX
-                && matches!(
-                    phase,
-                    FastChainPhase::CatchupArmed
-                        | FastChainPhase::Snoop
-                        | FastChainPhase::Catchup
-                        | FastChainPhase::TxArmed
-                )
-        )
-    };
-    if !active {
-        return;
-    }
-
-    let write_pos = current_rx_write_pos();
-    let mask_now = unsafe {
-        if let ReplyState::Chain {
-            snoop_head,
-            bulk_crc,
-            bytes_walked,
-            rxne_tail_at,
-            ..
-        } = &mut *STATE.get()
-        {
-            if *snoop_head != write_pos {
-                let ring = &*DXL_RX_BUF.get();
-                let prior = *snoop_head;
-                *bulk_crc = ring_crc(*bulk_crc, ring, prior, write_pos);
-                let delta = write_pos.wrapping_sub(prior) & RX_MASK_U16;
-                *bytes_walked = bytes_walked.wrapping_add(delta as u32);
-                *snoop_head = write_pos;
-            }
-            *bytes_walked >= *rxne_tail_at as u32
-        } else {
-            false
-        }
-    };
-    if mask_now {
-        usart::set_rxne_irq(USART1, false);
-    }
-}
+pub fn on_rxne() {}
 
 #[cfg_attr(target_arch = "riscv32", unsafe(link_section = ".highcode"))]
 #[inline(never)]
 pub fn cancel() {
     systick::set_irq(false);
     systick::clear_match();
-    dma::set_tcie(dma::Channel::CH5, false);
-    dma::set_htie(dma::Channel::CH5, false);
-    // Tail-tier arm may still be live if cancel races a fire that never
+    // Tail RXNE may still be live if cancel races a fire that never
     // reached TxArmed (e.g. host abort mid-snoop). Mask unconditionally —
     // it's a no-op when already off, and the framing-RXNE owner doesn't
     // exist on V006 yet (Phase B work).
@@ -722,25 +555,15 @@ fn patch_crc() {
     }
 }
 
-/// RXNE-tail post-fire: walk what's already in the ring and busy-wait the
-/// trailing predecessor byte(s) — bounded by `RXNE_TAIL_WAIT_BYTES` so a
-/// dead/missing predecessor degrades to `PreviousSlotTimeout` instead of
-/// hanging the bus. Only called when `rxne_tail_at != u16::MAX`.
+/// Busy-wait + fold until `bytes_walked ≥ target` OR `now ≥ deadline`.
+/// Both pre-fire and post-fire walks share this primitive — they differ
+/// only in the deadline (absolute SysTick tick).
 #[cfg_attr(target_arch = "riscv32", unsafe(link_section = ".highcode"))]
 #[inline(never)]
-fn wait_and_accumulate_tail(expected: u16) {
-    accumulate_snoop();
-    if current_bytes_walked() >= expected as u32 {
-        return;
-    }
-    let byte_time = byte_time_ticks_now();
-    if byte_time == 0 {
-        return;
-    }
-    let deadline = systick::ticks().wrapping_add(byte_time.saturating_mul(RXNE_TAIL_WAIT_BYTES));
+fn wait_and_fold_until(target: u32, deadline: u32) {
     loop {
         accumulate_snoop();
-        if current_bytes_walked() >= expected as u32 {
+        if current_bytes_walked() >= target {
             return;
         }
         if (systick::ticks().wrapping_sub(deadline) as i32) >= 0 {
@@ -797,37 +620,38 @@ fn current_rx_write_pos() -> u16 {
     (DXL_RX_BUF_LEN as u16).wrapping_sub(remaining) & RX_MASK_U16
 }
 
-// Scope-debug helpers; left in place but currently unreferenced — flip
-// them on at the relevant call sites when bench-instrumenting.
-#[allow(dead_code)]
+// Scope-debug helpers — bench-only. Off by default; enable with
+// `--features scope` to emit DXL_DBG_PIN / DXL_STAT_PIN edges around the
+// catchup / RXNE / post-fire paths.
 #[inline(always)]
 fn dbg_high() {
+    #[cfg(feature = "scope")]
     // SAFETY: written once at bring-up before any ISR can read.
     if let Some(p) = unsafe { *DXL_DBG_PIN.get() } {
         gpio::set_level(p, Level::High);
     }
 }
 
-#[allow(dead_code)]
 #[inline(always)]
 fn dbg_low() {
+    #[cfg(feature = "scope")]
     if let Some(p) = unsafe { *DXL_DBG_PIN.get() } {
         gpio::set_level(p, Level::Low);
     }
 }
 
-#[allow(dead_code)]
 #[inline(always)]
 fn stat_high() {
+    #[cfg(feature = "scope")]
     // SAFETY: written once at bring-up before any ISR can read.
     if let Some(p) = unsafe { *DXL_STAT_PIN.get() } {
         gpio::set_level(p, Level::High);
     }
 }
 
-#[allow(dead_code)]
 #[inline(always)]
 fn stat_low() {
+    #[cfg(feature = "scope")]
     if let Some(p) = unsafe { *DXL_STAT_PIN.get() } {
         gpio::set_level(p, Level::Low);
     }
@@ -873,10 +697,7 @@ fn is_legal_transition(from: FastChainPhase, to: FastChainPhase) -> bool {
     }
     matches!(
         (from, to),
-        (CatchupArmed, Snoop)
-            | (CatchupArmed, Catchup)
-            | (Snoop, Catchup)
-            | (Catchup, TxArmed)
+        (PeriodicCatchup, TxArmed)
             | (TxArmed, TxStreaming)
             | (TxStreaming, CrcPatched)
             | (CrcPatched, Done)
@@ -905,20 +726,18 @@ fn report_fault(f: FastChainFault) {
 
 #[cfg(test)]
 mod tests {
-    use super::{
-        ChainPredict, FastChainPhase, decide_rxne_tail_pure, is_legal_transition,
-        predict_chain_pure, ring_crc,
-    };
+    use super::{FastChainPhase, is_legal_transition, predict_n_pred_pure, ring_crc};
     use dxl_protocol::crc16;
 
     const RING: [u8; 8] = [0x10, 0x20, 0x30, 0x40, 0x50, 0x60, 0x70, 0x80];
 
-    // 3 Mbaud reference values used across the rxne-tail tests:
-    //   brr = 48 MHz / 3 MHz = 16; byte_time_ticks = 10 × brr = 160.
-    //   bytes_per_us_q16 = round((48 << 16) / 160) = 19661.
-    const BYTE_TIME_TICKS_3M: u32 = 160;
+    // 3 Mbaud reference: bytes_per_us_q16 = round((3 << 16) / 10) = 19661.
     const BYTES_PER_US_Q16_3M: u32 = 19661;
-    // Default RDT used on rev_b boot (control table comms.return_delay_2us=125).
+    // 2 Mbaud: round((2 << 16) / 10) = 13107.
+    const BYTES_PER_US_Q16_2M: u32 = 13107;
+    // 1 Mbaud: round((1 << 16) / 10) = 6554.
+    const BYTES_PER_US_Q16_1M: u32 = 6554;
+    // Default RDT on rev_b boot (comms.return_delay_2us = 125 → 250 µs).
     const RDT_US_DEFAULT: u32 = 250;
 
     #[test]
@@ -954,10 +773,7 @@ mod tests {
     #[test]
     fn legal_transitions_form_chain() {
         use FastChainPhase::*;
-        assert!(is_legal_transition(CatchupArmed, Snoop));
-        assert!(is_legal_transition(CatchupArmed, Catchup));
-        assert!(is_legal_transition(Snoop, Catchup));
-        assert!(is_legal_transition(Catchup, TxArmed));
+        assert!(is_legal_transition(PeriodicCatchup, TxArmed));
         assert!(is_legal_transition(TxArmed, TxStreaming));
         assert!(is_legal_transition(TxStreaming, CrcPatched));
         assert!(is_legal_transition(CrcPatched, Done));
@@ -966,150 +782,85 @@ mod tests {
     #[test]
     fn illegal_transitions_rejected() {
         use FastChainPhase::*;
-        assert!(!is_legal_transition(CatchupArmed, TxArmed));
-        assert!(!is_legal_transition(Snoop, TxStreaming));
-        assert!(!is_legal_transition(TxArmed, Catchup));
+        assert!(!is_legal_transition(PeriodicCatchup, TxStreaming));
+        assert!(!is_legal_transition(TxArmed, PeriodicCatchup));
         assert!(!is_legal_transition(CrcPatched, TxArmed));
+        assert!(!is_legal_transition(Done, TxArmed));
     }
 
-    // -- predict_chain ----------------------------------------------------
+    // -- predict_n_pred_pure ----------------------------------------------
+
+    // Q8.8 µs helpers; predict_n_pred_pure now takes both args in Q8.8.
+    const fn q88(us: u32) -> u32 {
+        us << 8
+    }
+    // 11 bytes × 10/3 µs/byte = 36.667 µs → 9386 q88 (Q16.16 floored to Q8.8).
+    const Q88_3M_INJ1: u32 = (11 * BYTES_PER_US_Q16_3M_INV) >> 8;
+    // Per-baud us_per_byte_q16 mirrored from osc-core's regions::config.
+    const BYTES_PER_US_Q16_3M_INV: u32 = 218453; // (10 × 1e6 × 65536) / 3e6 floored
+    const BYTES_PER_US_Q16_2M_INV: u32 = 327680; // (10 × 1e6 × 65536) / 2e6
+    const BYTES_PER_US_Q16_1M_INV: u32 = 655360; // (10 × 1e6 × 65536) / 1e6
+    const RDT_Q88_DEFAULT: u32 = q88(RDT_US_DEFAULT);
 
     #[test]
-    fn predict_chain_3m_last_1b_floors_n_pred_by_one() {
-        // 3M, 2 slaves, Last with 1B own payload, 1B predecessor payload.
-        // Dispatcher: bytes_before(1) = FAST_SLOT0_PREFIX(10) + 1 = 11; then
-        // bytes_to_us(11, 3M) = floor(11 × 218453 / 64K) = 36; fire_us = 250 + 36.
-        // True n_pred = 11 but predict_chain floors back to 10 — the bug
-        // the +1 bias in decide_rxne_tail_pure absorbs.
-        let p = predict_chain_pure(286, RDT_US_DEFAULT, BYTES_PER_US_Q16_3M);
-        assert_eq!(p.wire_window_us, 36);
-        assert_eq!(p.n_pred, 10);
+    fn predict_n_pred_3m_inj1_last() {
+        // 3M INJ=1 Last: bytes_before(1) = FAST_SLOT0_PREFIX(10) + 1 = 11.
+        // wire_q88 = bytes_to_us_q88(11, 3M) = (11 × 218453) >> 8 = 9386.
+        assert_eq!(Q88_3M_INJ1, 9386);
+        let fire_q88 = RDT_Q88_DEFAULT + Q88_3M_INJ1;
+        assert_eq!(
+            predict_n_pred_pure(fire_q88, RDT_Q88_DEFAULT, BYTES_PER_US_Q16_3M),
+            11
+        );
     }
 
     #[test]
-    fn predict_chain_zero_window_when_fire_before_rdt() {
-        // Fire scheduled inside RDT (degenerate): saturate wire_window to 0
-        // so decide_rxne_tail short-circuits to disabled.
-        let p = predict_chain_pure(100, RDT_US_DEFAULT, BYTES_PER_US_Q16_3M);
-        assert_eq!(p.wire_window_us, 0);
-        assert_eq!(p.n_pred, 0);
+    fn predict_n_pred_3m_inj4_dut1_last() {
+        // 3M INJ=4 dut=1 Last: bytes_before = 10 + 1 + 3×(2+1) = 20.
+        // wire = 20 × 10/3 = 66.667 µs → (20 × 218453) >> 8 = 17066 q88.
+        let wire_q88 = (20 * BYTES_PER_US_Q16_3M_INV) >> 8;
+        let fire_q88 = RDT_Q88_DEFAULT + wire_q88;
+        assert_eq!(
+            predict_n_pred_pure(fire_q88, RDT_Q88_DEFAULT, BYTES_PER_US_Q16_3M),
+            20
+        );
     }
 
     #[test]
-    fn predict_chain_zero_bytes_per_us_returns_zero_n_pred() {
+    fn predict_n_pred_2m_matches_doubled_byte_time() {
+        // 2M INJ=4 dut=1 Last: wire = 100 µs (exact at 2M).
+        let wire_q88 = (20 * BYTES_PER_US_Q16_2M_INV) >> 8;
+        let fire_q88 = RDT_Q88_DEFAULT + wire_q88;
+        assert_eq!(
+            predict_n_pred_pure(fire_q88, RDT_Q88_DEFAULT, BYTES_PER_US_Q16_2M),
+            20
+        );
+    }
+
+    #[test]
+    fn predict_n_pred_1m_matches_quartered_byte_time() {
+        // 1M INJ=1 Last: wire = 110 µs (exact at 1M).
+        let wire_q88 = (11 * BYTES_PER_US_Q16_1M_INV) >> 8;
+        let fire_q88 = RDT_Q88_DEFAULT + wire_q88;
+        assert_eq!(
+            predict_n_pred_pure(fire_q88, RDT_Q88_DEFAULT, BYTES_PER_US_Q16_1M),
+            11
+        );
+    }
+
+    #[test]
+    fn predict_n_pred_zero_window_when_fire_before_rdt() {
+        // Fire scheduled inside RDT (degenerate): wire saturates to 0.
+        assert_eq!(
+            predict_n_pred_pure(q88(100), RDT_Q88_DEFAULT, BYTES_PER_US_Q16_3M),
+            0
+        );
+    }
+
+    #[test]
+    fn predict_n_pred_zero_bytes_per_us_returns_zero() {
         // Boot state before store_baud_derived runs.
-        let p = predict_chain_pure(286, RDT_US_DEFAULT, 0);
-        assert_eq!(p.wire_window_us, 36);
-        assert_eq!(p.n_pred, 0);
-    }
-
-    // -- decide_rxne_tail -------------------------------------------------
-
-    #[test]
-    fn rxne_tail_arms_for_3m_last_1b_with_predicted_n_pred_10() {
-        // Regression: the floored n_pred = 10 must still arm RXNE-tail
-        // because the +1 bias on the walk estimate trips the slack gate.
-        // Walk = (10+1)×24 + 200 + 24 = 488 ticks; slack = (5-2)×160 = 480.
-        // rxne_tail_at = (10+1) - GUARD(2) = 9.
-        let predict = ChainPredict {
-            n_pred: 10,
-            wire_window_us: 36,
-        };
-        assert_eq!(decide_rxne_tail_pure(&predict, 5, BYTE_TIME_TICKS_3M), 9);
-    }
-
-    #[test]
-    fn rxne_tail_arms_for_large_n_pred_tight_slack() {
-        // Regression for the 128B-INJ + 1B-DUT failure at 3M (bench stress
-        // 2026-05-31): wire_window ≈ 460 µs (well over SWITCH_MARGIN),
-        // n_pred ≈ 138, tx_len ≈ 5. CatchupArmed body would take
-        // ~62 µs to walk pre-fire bytes — overshoots the 50 µs margin
-        // and patch_crc loses the race with CH4's read cursor. RXNE-tail
-        // must arm even though wire_window is long, because the slack
-        // check fails.
-        let predict = ChainPredict {
-            n_pred: 138,
-            wire_window_us: 460,
-        };
-        assert_eq!(decide_rxne_tail_pure(&predict, 5, BYTE_TIME_TICKS_3M), 137,);
-    }
-
-    #[test]
-    fn rxne_tail_skips_when_slack_covers_walk_at_long_window() {
-        // Wire window long enough for CatchupArmed AND slack big enough
-        // for walk-at-fire (large DUT payload). Pre-walking is wasted CPU.
-        // n_pred=22, tx_len=37 (32B DUT) → slack = 35×160 = 5600 ticks,
-        // walk = (22+1)×24 + 224 = 776 ticks. Walk fits slack → skip.
-        let predict = ChainPredict {
-            n_pred: 22,
-            wire_window_us: 73,
-        };
-        assert_eq!(
-            decide_rxne_tail_pure(&predict, 37, BYTE_TIME_TICKS_3M),
-            u16::MAX
-        );
-    }
-
-    #[test]
-    fn rxne_tail_skips_when_slack_covers_walk() {
-        // 2 sl × L=4 at 3M: tx_len=8, slack = 6×160 = 960 ticks; walk =
-        // (14+1)×24 + 224 = 584 < 960. Post-fire walk fits without the
-        // per-byte ISR cost.
-        let predict = ChainPredict {
-            n_pred: 14,
-            wire_window_us: 47,
-        };
-        assert_eq!(
-            decide_rxne_tail_pure(&predict, 8, BYTE_TIME_TICKS_3M),
-            u16::MAX
-        );
-    }
-
-    #[test]
-    fn rxne_tail_skips_when_no_snoop_predicted() {
-        // No predecessors (Only-slot or boot-time call) → RXNE-tail off.
-        let predict = ChainPredict {
-            n_pred: 0,
-            wire_window_us: 0,
-        };
-        assert_eq!(
-            decide_rxne_tail_pure(&predict, 5, BYTE_TIME_TICKS_3M),
-            u16::MAX
-        );
-    }
-
-    #[test]
-    fn rxne_tail_skips_when_tx_too_small_for_slack() {
-        // tx_len < 4 → slack would underflow. Skip.
-        let predict = ChainPredict {
-            n_pred: 10,
-            wire_window_us: 36,
-        };
-        assert_eq!(
-            decide_rxne_tail_pure(&predict, 3, BYTE_TIME_TICKS_3M),
-            u16::MAX
-        );
-    }
-
-    #[test]
-    fn rxne_tail_skips_when_byte_time_uninitialized() {
-        // store_baud_derived hasn't run; slack would be 0. Skip safely.
-        let predict = ChainPredict {
-            n_pred: 10,
-            wire_window_us: 36,
-        };
-        assert_eq!(decide_rxne_tail_pure(&predict, 5, 0), u16::MAX);
-    }
-
-    #[test]
-    fn rxne_tail_at_clamps_to_one_for_tiny_n_pred() {
-        // n_pred = 1, +1 bias = 2, − GUARD(2) = 0 → clamped to 1 so the
-        // mask check `bytes_walked >= rxne_tail_at` is always meaningful.
-        // Use tiny byte_time_ticks to force the walk-vs-slack gate to fire.
-        let predict = ChainPredict {
-            n_pred: 1,
-            wire_window_us: 10,
-        };
-        assert_eq!(decide_rxne_tail_pure(&predict, 4, 100), 1);
+        let fire_q88 = RDT_Q88_DEFAULT + Q88_3M_INJ1;
+        assert_eq!(predict_n_pred_pure(fire_q88, RDT_Q88_DEFAULT, 0), 0);
     }
 }
