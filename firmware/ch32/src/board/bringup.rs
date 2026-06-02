@@ -8,8 +8,7 @@ use crate::hal::{
 };
 use crate::statics::{
     ADC_DMA_BUF, ADC_DMA_BUF_LEN, ADC_SCAN_LEN, ADC_SENSOR_COUNT, DXL_DBG_PIN, DXL_RX_BUF,
-    DXL_RX_BUF_LEN, DXL_STAT_PIN, DXL_TX_BUF, DXL_TX_EN, SHARED,
-    TX_FAST_LATENCY_DEFAULT_Q88_US, TX_PLAIN_LATENCY_DEFAULT_Q88_US, store_baud_derived,
+    DXL_RX_BUF_LEN, DXL_STAT_PIN, DXL_TX_BUF, DXL_TX_EN, SHARED, store_baud_derived,
 };
 
 use super::config::{
@@ -57,8 +56,6 @@ pub(super) fn run(
     SHARED.table.seed_config_defaults(defaults);
     SHARED.table.config.with_mut(|c| {
         c.comms.clock_step_ppm = rcc::CLOCK_TRIM_PPM_PER_STEP as u16;
-        c.comms.dxl_tx_plain_latency_us = TX_PLAIN_LATENCY_DEFAULT_Q88_US;
-        c.comms.dxl_tx_fast_latency_us = TX_FAST_LATENCY_DEFAULT_Q88_US;
     });
 
     bring_up_dxl(&wiring.dxl, pre.usart_brr);

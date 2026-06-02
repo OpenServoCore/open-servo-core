@@ -13,6 +13,7 @@ pub mod hal;
 pub(crate) mod idle_ring;
 pub mod irq;
 pub mod log;
+pub(crate) mod measurements;
 pub mod prelude;
 pub mod services;
 pub(crate) mod statics;

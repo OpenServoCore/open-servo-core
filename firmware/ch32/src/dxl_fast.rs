@@ -8,9 +8,12 @@ use dxl_protocol::crc16_continue;
 #[cfg(feature = "scope")]
 use crate::hal::gpio::Level;
 use crate::hal::{dma, gpio, systick, usart};
+use crate::measurements::{
+    CATCHUP_ENTRY_TICKS, FAST_ENTRY_TICKS, PFIC_ENTRY_TICKS, PLAIN_ENTRY_TICKS,
+};
 use crate::statics::{
     DXL_BYTE_TIME_TICKS, DXL_BYTES_PER_US_Q16, DXL_RX_BUF, DXL_RX_BUF_LEN, DXL_TX_BUF, DXL_TX_EN,
-    FIRE_ADVANCE_FINE_TICKS, SHARED, TX_FAST_LATENCY_TICKS, TX_PLAIN_LATENCY_TICKS,
+    FIRE_ADVANCE_FINE_TICKS, SHARED,
 };
 #[cfg(feature = "scope")]
 use crate::statics::{DXL_DBG_PIN, DXL_STAT_PIN};
@@ -131,41 +134,28 @@ const BYTES_PER_INTERVAL: u32 = 15;
 /// past pirate's 1-char_time IDLE threshold.
 const GUARD_BYTES: u16 = 1;
 
-/// `t_catchup_entry` — catchup ISR fixed overhead: PFIC trap entry +
-/// `clear_match` + state-load + match arm + post-fold `set_cmp` / `set_irq` /
-/// past-tick check. Bench 2026-06-02 (scope, INJ=1 single-body): stat-pulse
-/// minus dbg-pulse = 2.29 µs ± 0.03 µs ≈ 110 HCLK ticks at 48 MHz.
-/// Subtracted from `last_catchup_tick` so the body's CRC fold begins at the
-/// intended wall-clock anchor instead of `anchor + entry_latency` —
-/// significant at 3 M where 110 ticks ≈ 0.7 `byte_time`. See
-/// `docs/dxl-fast-chain-crc-walkloop.md` §1.1.
-const CATCHUP_ENTRY_TICKS: u32 = 110;
-
-/// Plain advance includes a per-baud `bt/4` (≈ 2.5 bit-times) term covering
-/// the USART BRR-sync + listener IDLE-detect pipeline; the CT-tuned
-/// `TX_PLAIN_LATENCY_TICKS` captures the baud-independent residue (PFIC
-/// trap entry + on_systick body + fire_now + DMA chain). Without the
-/// per-baud term, a single-baud tune lands Plain at zero only at the tune
-/// baud — bench 2026-06-01 saw -1.2/-1.5 µs early at 2M/3M after tuning
-/// at 1M. Fast keeps the flat form because its bench metric cancels
-/// listener lag.
+/// Plain advance adds a per-baud `bt/4` (≈ 2.5 bit-times) term covering the
+/// USART BRR-sync + listener IDLE-detect pipeline on top of the
+/// baud-independent [`PLAIN_ENTRY_TICKS`]. Without the per-baud term, a
+/// single-baud calibration lands Plain at zero only at the calibration
+/// baud — bench 2026-06-01 saw -1.2/-1.5 µs early at 2M/3M after tuning at
+/// 1M. Fast keeps the flat form because its bench metric cancels listener
+/// lag.
 #[inline(always)]
 fn plain_fire_advance_ticks() -> u32 {
-    let base = TX_PLAIN_LATENCY_TICKS.load(Ordering::Relaxed) as u32;
     let bt = DXL_BYTE_TIME_TICKS.load(Ordering::Relaxed);
-    let total = base.saturating_add(bt / 4);
-    fire_advance_ticks_for(total.min(u16::MAX as u32) as u16)
-}
-
-#[inline(always)]
-fn fast_fire_advance_ticks() -> u32 {
-    fire_advance_ticks_for(TX_FAST_LATENCY_TICKS.load(Ordering::Relaxed))
-}
-
-#[inline(always)]
-fn fire_advance_ticks_for(latency: u16) -> u32 {
+    let latency = PFIC_ENTRY_TICKS + PLAIN_ENTRY_TICKS + bt / 4;
     let fine = FIRE_ADVANCE_FINE_TICKS.load(Ordering::Relaxed) as i32;
     (latency as i32 + fine).clamp(0, u16::MAX as i32) as u32
+}
+
+/// Fast chain fire is anchored to predecessor wire bytes (snoop), so the
+/// per-chip HSI fine trim doesn't apply — within one slave's clock domain
+/// the chain timing is self-consistent. Plain fire still needs the trim
+/// because its anchor (`request_end`) lives in the master's clock domain.
+#[inline(always)]
+fn fast_fire_advance_ticks() -> u32 {
+    PFIC_ENTRY_TICKS + FAST_ENTRY_TICKS
 }
 
 /// TX_EN and DMA CH4 stay off so the bus remains in RX through any preceding
@@ -284,7 +274,7 @@ pub fn start_fast_after(request_end_tick: u32, fire_q88_us: u32, snoop_from: Opt
         fire_tick
             .wrapping_sub(interval.min(t_prior_duration))
             .wrapping_sub(t_guard)
-            .wrapping_sub(CATCHUP_ENTRY_TICKS)
+            .wrapping_sub(PFIC_ENTRY_TICKS + CATCHUP_ENTRY_TICKS)
     } else {
         fire_tick
     };

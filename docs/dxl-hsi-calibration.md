@@ -81,9 +81,9 @@ Corrected by the chip's hardware trim register (HSITRIM on V006), in ~0.25% step
 
 The chip's own time from "SysTick deadline reached" to "first bit on wire": PFIC trap entry + ISR body + DMA prefetch + start-bit latch. Every component is a deterministic number of HCLK cycles, so the whole intercept is a fixed value per chip family — same whether the predecessor was 4 bytes or 4000, same across every instance of the family.
 
-Corrected by **two** per-chip-family default values in HCLK ticks — one per dispatcher fire path: `TX_PLAIN_LATENCY_TICKS` for the unicast reply path and `TX_FAST_LATENCY_TICKS` for the Fast Sync/Bulk chain path. The Fast path does extra work before `fire_now` (DMA stage-1 arming, FSM transition, snoop-CRC scaffolding) and so has a larger effective latency. A single shared knob forces one path to overshoot; the split nulls both.
+Corrected by **two** per-chip-family compile-time constants in HCLK ticks — one per dispatcher fire path: `PLAIN_ENTRY_TICKS` for the unicast reply path and `FAST_ENTRY_TICKS` for the Fast Sync/Bulk chain path. The Fast path does extra work before `fire_now` (FSM transition, snoop-CRC scaffolding) and so has a larger effective latency. A single shared knob forces one path to overshoot; the split nulls both.
 
-The defaults live in `firmware/ch32/src/statics.rs` as Q8.8 µs seeds (`TX_PLAIN_LATENCY_DEFAULT_Q88_US`, `TX_FAST_LATENCY_DEFAULT_Q88_US`), converted to ticks at boot into the corresponding atomics. The host can override per-board via `Write(comms.clock_trim, …)` companions; see §11.
+Both constants live in `firmware/ch32/src/measurements.rs` alongside `CATCHUP_ENTRY_TICKS`. They are silicon-fixed per chip family; the host has no runtime override path. See `dxl-fast-chain-crc-walkloop.md` §1.1 for the scope methodology to re-measure when the affecting code path, PFIC priorities, or HCLK frequency change.
 
 ### Phenomenon 3 — sub-trim drift residual (intercept, per-chip)
 
@@ -243,7 +243,7 @@ Both land in pending atomics; both apply in the next USART1 TC interrupt (§11).
 
 The two intercept compensations from §3 have different lifecycles:
 
-1. **Structural latency**: the chip's PFIC + ISR + DMA + start-bit latency. Same for every instance of a given chip family because it's deterministic HCLK cycles. Knowable once, hardcoded as the per-path default.
+1. **Structural latency**: the chip's PFIC + ISR + DMA + start-bit latency. Same for every instance of a given chip family because it's deterministic HCLK cycles. Knowable once, hardcoded as the per-path compile-time constant.
 2. **Sub-trim drift residual**: the leftover slope from biased-rounded HSITRIM. Per-chip, recomputed at every boot, varies up to one trim step worth of µs.
 
 They also don't share a unit naturally. Structural is best expressed in HCLK ticks — it *is* a cycle count, so storing it in ticks avoids any µs↔tick conversion in the fire hot path. Drift residual is computed by the master in physical µs (the master doesn't know the slave's HCLK rate) and needs unit conversion at apply time.
@@ -251,12 +251,11 @@ They also don't share a unit naturally. Structural is best expressed in HCLK tic
 So the layout is:
 
 ```rust
-// firmware/ch32/src/statics.rs — per chip family
-pub const TX_PLAIN_LATENCY_DEFAULT_Q88_US: u16 = ...;     // unicast path floor
-pub const TX_FAST_LATENCY_DEFAULT_Q88_US:  u16 = ...;     // Fast chain path floor
+// firmware/ch32/src/measurements.rs — per chip family, silicon-fixed
+pub const PLAIN_ENTRY_TICKS: u32 = ...;                   // unicast path fire latency
+pub const FAST_ENTRY_TICKS:  u32 = ...;                   // Fast chain path fire latency
 
-pub static TX_PLAIN_LATENCY_TICKS: AtomicU16 = ...;       // runtime, seeded from default
-pub static TX_FAST_LATENCY_TICKS:  AtomicU16 = ...;
+// firmware/ch32/src/statics.rs
 pub static FIRE_ADVANCE_FINE_TICKS: AtomicI16 = AtomicI16::new(0);
 
 // firmware/lib/core control table
@@ -265,7 +264,7 @@ pub clock_step_ppm: u16,                                  // RO, ppm/step metada
 pub clock_fine_trim_us: i16,                              // RW, signed Q8.8 µs
 ```
 
-The fire site reads `TX_{PLAIN,FAST}_LATENCY_TICKS + FIRE_ADVANCE_FINE_TICKS` (clamped to ≥ 0) and subtracts the sum from the deadline.
+The fire site reads `{PLAIN,FAST}_ENTRY_TICKS + FIRE_ADVANCE_FINE_TICKS` (clamped to ≥ 0) and subtracts the sum from the deadline.
 
 **Why signed for the fine trim.** With biased rounding the value is mathematically always ≥ 0, so unsigned would technically work. But signed (i16 Q8.8 = ±128 µs range) hedges against scenarios we haven't fully nailed down: thermal drift in operation, structural over-estimation on outlier chips, bench experimentation where we want to nudge negative, future re-cal heuristics.
 

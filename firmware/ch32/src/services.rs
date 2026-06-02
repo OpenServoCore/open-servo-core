@@ -10,8 +10,7 @@ use crate::hal::{flash, pfic};
 use crate::idle_ring;
 use crate::statics::{
     DXL_BAUD_PENDING_BRR, DXL_CLOCK_FINE_TRIM_PENDING, DXL_CLOCK_TRIM_PENDING, DXL_REBOOT_PENDING,
-    DXL_RX_BUF, DXL_RX_WRITE_POS, DXL_TX_BUF, DXL_TX_BUF_LEN, store_tx_fast_latency_us,
-    store_tx_plain_latency_us,
+    DXL_RX_BUF, DXL_RX_WRITE_POS, DXL_TX_BUF, DXL_TX_BUF_LEN,
 };
 
 /// Single &mut writer: the main loop holding the `Services` struct.
@@ -99,14 +98,6 @@ impl DxlBus for Ch32Bus {
 
     fn set_clock_fine_trim_us(&mut self, q88_us: i16) {
         DXL_CLOCK_FINE_TRIM_PENDING.store(q88_us as i32, Ordering::Release);
-    }
-
-    fn set_tx_plain_latency_us(&mut self, q88_us: u16) {
-        store_tx_plain_latency_us(q88_us);
-    }
-
-    fn set_tx_fast_latency_us(&mut self, q88_us: u16) {
-        store_tx_fast_latency_us(q88_us);
     }
 }
 

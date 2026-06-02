@@ -2,10 +2,11 @@
 
 What this measures and why:
   Per-cell σ of (T_first - T_req), the pirate-stamped chip reply fire-time
-  relative to the master request_end. With both TX_PLAIN_LATENCY and
-  TX_FAST_LATENCY pinned to 0, the chip fires as early as its dispatcher
-  permits, so σ is the chip's intrinsic fire jitter on each code path —
-  not a tuning margin's residual.
+  relative to the master request_end. After HSI calibration, σ is the
+  chip's intrinsic fire jitter on each code path — independent of the
+  fixed entry-tick offsets (`PLAIN_ENTRY_TICKS` / `FAST_ENTRY_TICKS` in
+  `firmware/ch32/src/measurements.rs`), which contribute only to the
+  median, not the variance.
 
   Plain vs Fast σ at matching (baud, size) tells us whether the Fast
   dispatcher (snoop ring + chain phase + SysTick CMP arm) adds jitter
@@ -19,9 +20,7 @@ What this measures and why:
 Pipeline:
   1. set_chip_baud(tune_baud)
   2. step_hsi — converge clock_trim + clock_fine_trim_us
-  3. Zero TX_PLAIN_LATENCY_US and TX_FAST_LATENCY_US
-  4. Print all 4 tuning values
-  5. Sweep (baud × size) for both paths and print σ matrices
+  3. Sweep (baud × size) for both paths and print σ matrices
 
 Run:  python scripts/pirate_chip_jitter_matrix.py  [--n 256]
 """
@@ -45,12 +44,9 @@ from dxl_packet import (
 )
 from pirate import Pirate, Round
 from pirate_chip_tune import (
-    DXL_TX_FAST_LATENCY_US_ADDR,
-    DXL_TX_PLAIN_LATENCY_US_ADDR,
     autodetect_pirate,
     set_chip_baud,
     step_hsi,
-    write_ct_u16,
 )
 
 BAUDS = [1_000_000, 2_000_000, 3_000_000]
@@ -153,15 +149,10 @@ def main() -> None:
             print(f"\n[1+2] HSI coarse + fine @ {args.tune_baud}")
             trim, fine = step_hsi(pirate, args.id, args.tune_baud)
 
-        write_ct_u16(pirate, args.id, DXL_TX_PLAIN_LATENCY_US_ADDR, 0)
-        write_ct_u16(pirate, args.id, DXL_TX_FAST_LATENCY_US_ADDR, 0)
-        time.sleep(0.01)
-
         print(f"\nTuning state:")
         print(f"   clock_trim              = {trim:+d}")
         print(f"   clock_fine_trim_us      = {fine:+d}q88 ({fine/256:+.3f}µs)")
-        print(f"   TX_PLAIN_LATENCY        = 0 (pinned for σ-only measurement)")
-        print(f"   TX_FAST_LATENCY         = 0 (pinned for σ-only measurement)")
+        print(f"   PLAIN_ENTRY_TICKS / FAST_ENTRY_TICKS — fixed in measurements.rs")
 
         ticks_per_us = pirate.hz_per_us()
         plain_sigmas: dict[tuple[int, int], tuple[float, float, int, int]] = {}
@@ -179,9 +170,9 @@ def main() -> None:
         print()
         print(f"1 pirate tick = {1e6 / ticks_per_us / 1e6 * 1e9:.1f} ns ({ticks_per_us} MHz SysTick)")
 
-        print_matrix("Plain (TX_PLAIN_LATENCY=0) — σ of (T_first - T_req):",
+        print_matrix("Plain — σ of (T_first - T_req):",
                      plain_sigmas, ticks_per_us)
-        print_matrix("Fast (TX_FAST_LATENCY=0, single-slot) — σ of (T_first - T_req):",
+        print_matrix("Fast (single-slot) — σ of (T_first - T_req):",
                      fast_sigmas, ticks_per_us)
 
         all_lmf: list[float] = []

@@ -1,21 +1,17 @@
-"""dxl-bench: end-to-end V006 clock + TX-latency tuner & verifier.
+"""dxl-bench: V006 HSI clock calibration + verify matrix.
 
-Pipeline (each step depends on the previous):
-  1. HSI coarse       — clock_trim              (integer HSITRIM step)
-  2. HSI fine         — clock_fine_trim_us      (Q8.8 µs sub-step residual)
-  3. Plain TX latency — dxl_tx_plain_latency_us (Ping continuous offset)
-  4. Fast TX latency  — dxl_tx_fast_latency_us  (chip-as-Last 2-slot gap)
-  5. Verify matrix    — baud × payload × position, read-only PASS/FAIL
+Pipeline:
+  1. HSI coarse       — clock_trim         (integer HSITRIM step)
+  2. HSI fine         — clock_fine_trim_us (Q8.8 µs sub-step residual)
+  3. Verify matrix    — baud × payload × position, read-only PASS/FAIL
 
-Why this order:
-  Plain/Fast convert Q8.8 µs → chip ticks at the nominal 48 MHz constant,
-  so HSI drift is silently absorbed into the converged latency. Re-cal'ing
-  HSI later would invalidate them. Fast also depends on TX_PLAIN math
-  (chain slot start uses TX_PLAIN), and on HSI fine trim (chain slot is
-  byte-time wide; per-slot drift accumulates).
+Steps 1-2 mutate RAM-backed CT (survives until reboot; no flash write).
+Step 3 is read-only and walks every baud × payload × position cell.
 
-Steps 1-4 mutate RAM-backed CT (survives until reboot; no flash write).
-Step 5 is read-only and walks every baud × payload × position cell.
+TX_PLAIN/TX_FAST latencies are now compile-time constants in
+`firmware/ch32/src/measurements.rs` (`PLAIN_ENTRY_TICKS`,
+`FAST_ENTRY_TICKS`) — see `docs/dxl-fast-chain-crc-walkloop.md` §1.1 for
+the scope methodology to re-measure them. No runtime tuning needed.
 
 Usage:
   python scripts/pirate_chip_tune.py
@@ -55,8 +51,6 @@ PIRATE_PID = 0xCAFE
 # firmware/lib/core/src/regions/config.rs).
 BAUD_RATE_IDX_ADDR = 13
 RETURN_DELAY_2US_ADDR = 14
-DXL_TX_PLAIN_LATENCY_US_ADDR = 22
-DXL_TX_FAST_LATENCY_US_ADDR = 24
 
 BAUD_INDEX = {
     9600: 0, 57600: 1, 115200: 2,
@@ -67,23 +61,11 @@ BAUD_INDEX = {
 # named as slot 2 of the First-position verify so the bus IDLEs after chip
 # slot 1, giving a clean single Round stamp.
 FOREIGN_ID = 99
-# INJ slot ID for Last-position fast tuning + Last verify cells.
+# INJ slot ID for the Last verify cells (pirate fires the INJ slot via ARM).
 INJ_ID = 50
 
 VERIFY_BAUDS = [1_000_000, 2_000_000, 3_000_000]
 VERIFY_PAYLOADS = [1, 4, 32]
-
-# Multi-corner Fast tune sweep. Worst-case baud (tightest post-fire slack)
-# × DUT length spread matching verify Last cells. INJ length fixed at 4 to
-# match `_verify_one_baud`'s Last path. The tune writes the min safe_upper
-# across corners, so verify cells stress-test the joint boundary instead of
-# the per-corner one.
-DEFAULT_FAST_TUNE_CORNERS = [
-    # (baud, inj_len, dut_len)
-    (3_000_000, 4, 1),
-    (3_000_000, 4, 4),
-    (3_000_000, 4, 32),
-]
 
 
 def autodetect_pirate() -> str:
@@ -184,7 +166,7 @@ def step_hsi(pirate: Pirate, dxl_id: int, baud: int, max_cycles: int = 6
     raise PirateError(f"HSI cal did not converge in {max_cycles} cycles")
 
 
-# ── Step 3: plain TX latency ────────────────────────────────────────────────
+# ── Measurement helpers (used by the verify matrix) ────────────────────────
 
 def measure_plain_offset(pirate: Pirate, dxl_id: int, packet: bytes,
                          n: int, target_ticks: int
@@ -208,38 +190,6 @@ def measure_plain_offset(pirate: Pirate, dxl_id: int, packet: bytes,
     sigma = statistics.stdev(offsets) if len(offsets) > 1 else 0.0
     return med, sigma, len(offsets)
 
-
-def step_plain_tune(pirate: Pirate, dxl_id: int, baud: int,
-                    n: int, converge_q88: int, max_iter: int) -> int:
-    ticks_per_us = pirate.hz_per_us()
-    rdt_us = read_ct_u8(pirate, dxl_id, RETURN_DELAY_2US_ADDR) * 2
-    # 1 DXL byte = 10 bit-times. T_first stamps wire-END of first reply byte,
-    # so a perfectly-tuned chip lands at T_req + RDT + byte_time.
-    byte_time_ticks = (10 * ticks_per_us * 1_000_000) // baud
-    target = rdt_us * ticks_per_us + byte_time_ticks
-    ping = build_ping(dxl_id)
-    cur_q88 = read_ct_u16(pirate, dxl_id, DXL_TX_PLAIN_LATENCY_US_ADDR)
-    print(f"  RDT={rdt_us}µs  byte_time={byte_time_ticks}t  target={target}t  "
-          f"start TX_PLAIN={cur_q88}q88 ({cur_q88/256:.3f}µs)")
-    for it in range(1, max_iter + 1):
-        offset, sigma, n_v = measure_plain_offset(pirate, dxl_id, ping, n, target)
-        if n_v == 0:
-            raise PirateError(f"plain iter {it}: no valid samples")
-        offset_q88 = round((offset / ticks_per_us) * 256)
-        print(f"  iter {it}: n={n_v}/{n}  offset={offset:+7.2f}t "
-              f"({offset/ticks_per_us:+.3f}µs = {offset_q88:+5d}q88)  "
-              f"σ={sigma:5.2f}t  TX_PLAIN={cur_q88}q88")
-        if abs(offset_q88) <= converge_q88:
-            return cur_q88
-        cur_q88 = max(0, min(0xFFFF, cur_q88 + offset_q88))
-        write_ct_u16(pirate, dxl_id, DXL_TX_PLAIN_LATENCY_US_ADDR, cur_q88)
-        time.sleep(0.01)
-    raise PirateError(
-        f"plain tune did not converge in {max_iter} iter (last TX_PLAIN={cur_q88}q88)"
-    )
-
-
-# ── Step 4: fast TX latency ─────────────────────────────────────────────────
 
 def measure_fast_gap(pirate: Pirate, dxl_id: int, n: int, baud: int,
                      arm_offset_ticks: int, inj_len: int, dut_len: int
@@ -300,165 +250,7 @@ def measure_fast_gap(pirate: Pirate, dxl_id: int, n: int, baud: int,
     return med, sigma, len(gaps), n_crc, n_other
 
 
-def step_fast_tune(pirate: Pirate, dxl_id: int, baud: int,
-                   n: int, max_iter: int,
-                   max_crc_rate: float = 0.01,
-                   tolerance_q88: int = 16,
-                   start_q88: int = 768,
-                   probe_step_q88: int = 64,
-                   max_probe_step_q88: int = 96,
-                   inj_len: int = 4, dut_len: int = 4) -> int:
-    """Bracket search at a single corner. Returns the highest TX_FAST_LATENCY
-    (Q8.8 µs) confirmed SAFE at this (baud, inj_len, dut_len) corner. The
-    caller applies the safety margin and writes the CT field.
-
-    Why bracket-on-CRC instead of damped-Newton-on-gap: when TX_FAST is high
-    enough that chip slot 2 fires into the snoop race, ~all such shots fail
-    CRC and get filtered. The surviving Rounds' median gap is pinned to the
-    safe edge of the jitter distribution — gap median barely moves as TX_FAST
-    crosses the cliff (observed: 0.28 µs of gap shift for 0.75 µs of TX_FAST
-    bump). CRC rate IS the honest signal; gap is just a diagnostic readout.
-
-    Phase A — probe upward from `start_q88` (step doubles each SAFE iter,
-    capped at `max_probe_step_q88`) until crc_rate exceeds `max_crc_rate`.
-    Phase B — bisect the (safe, unsafe) bracket until the bracket width
-    ≤ `tolerance_q88`. Tight `max_probe_step_q88` keeps the post-A bracket
-    narrow so the final settle isn't dominated by Phase A overshoot."""
-    ticks_per_us = pirate.hz_per_us()
-    rdt_us = read_ct_u8(pirate, dxl_id, RETURN_DELAY_2US_ADDR) * 2
-    arm_offset = rdt_us * ticks_per_us
-
-    def _measure(cur):
-        write_ct_u16(pirate, dxl_id, DXL_TX_FAST_LATENCY_US_ADDR, cur)
-        time.sleep(0.01)
-        gap, sigma, n_v, n_crc, n_other = measure_fast_gap(
-            pirate, dxl_id, n, baud, arm_offset, inj_len, dut_len,
-        )
-        total = n_v + n_crc
-        crc_rate = (n_crc / total) if total > 0 else 1.0
-        gap_us = (gap / ticks_per_us) if n_v > 0 else float("nan")
-        sigma_us = sigma / ticks_per_us if n_v > 1 else 0.0
-        return crc_rate <= max_crc_rate, crc_rate, gap_us, sigma_us, n_v, n_crc
-
-    print(f"  inj_len={inj_len} dut_len={dut_len}  arm_offset={arm_offset}t "
-          f"(=RDT {rdt_us}µs)  max_crc_rate={max_crc_rate:.1%}  "
-          f"start={start_q88}q88 ({start_q88/256:.3f}µs)")
-
-    lo: int | None = None
-    hi: int | None = None
-    cur = start_q88
-    step = probe_step_q88
-    iters = 0
-
-    print(f"  Phase A — probe upward")
-    while iters < max_iter:
-        iters += 1
-        safe, crc_rate, gap_us, sigma_us, n_v, n_crc = _measure(cur)
-        verdict = "SAFE  " if safe else "UNSAFE"
-        print(f"    iter {iters}: TX_FAST={cur:5d}q88 ({cur/256:.3f}µs)  "
-              f"crc={n_crc:>3d}/{n_v + n_crc:>3d} ({crc_rate:5.1%})  "
-              f"gap={gap_us:+.3f}µs  σ={sigma_us:.3f}µs  {verdict}")
-        if safe:
-            lo = cur
-            cur = min(0xFFFF, cur + step)
-            step = min(max_probe_step_q88, step * 2)
-            if lo == 0xFFFF:
-                break
-        else:
-            hi = cur
-            break
-
-    if lo is None:
-        # First probe was already unsafe — back off until safe.
-        cur = max(0, start_q88 - probe_step_q88)
-        print(f"  start unsafe — back off below {start_q88}")
-        while cur > 0 and iters < max_iter:
-            iters += 1
-            safe, crc_rate, gap_us, sigma_us, n_v, n_crc = _measure(cur)
-            verdict = "SAFE  " if safe else "UNSAFE"
-            print(f"    iter {iters}: TX_FAST={cur:5d}q88 ({cur/256:.3f}µs)  "
-                  f"crc={n_crc:>3d}/{n_v + n_crc:>3d} ({crc_rate:5.1%})  "
-                  f"gap={gap_us:+.3f}µs  σ={sigma_us:.3f}µs  {verdict}")
-            if safe:
-                lo = cur
-                hi = start_q88
-                break
-            cur = max(0, cur - probe_step_q88)
-        if lo is None:
-            raise PirateError(
-                f"no safe TX_FAST found between 0 and {start_q88}q88 — "
-                f"chip-side framing fault?"
-            )
-
-    if hi is None:
-        print(f"  no cliff below 0xFFFF — safe_upper={lo}q88")
-        return lo
-
-    print(f"  Phase B — bisect [{lo}, {hi}]")
-    while hi - lo > tolerance_q88 and iters < max_iter:
-        iters += 1
-        mid = (lo + hi) // 2
-        safe, crc_rate, gap_us, sigma_us, n_v, n_crc = _measure(mid)
-        verdict = "SAFE  " if safe else "UNSAFE"
-        print(f"    iter {iters}: TX_FAST={mid:5d}q88 ({mid/256:.3f}µs)  "
-              f"crc={n_crc:>3d}/{n_v + n_crc:>3d} ({crc_rate:5.1%})  "
-              f"gap={gap_us:+.3f}µs  σ={sigma_us:.3f}µs  {verdict}  "
-              f"[lo={lo}, hi={hi}]")
-        if safe:
-            lo = mid
-        else:
-            hi = mid
-
-    print(f"  bracket lo={lo}q88 hi={hi}q88 → safe_upper={lo}q88 "
-          f"({lo/256:.3f}µs)")
-    return lo
-
-
-def step_fast_tune_multi(pirate: Pirate, dxl_id: int,
-                         corners: list[tuple[int, int, int]],
-                         n: int, max_iter: int,
-                         max_crc_rate: float = 0.01,
-                         tolerance_q88: int = 16,
-                         safety_margin_q88: int = 32,
-                         start_q88: int = 768,
-                         probe_step_q88: int = 64,
-                         max_probe_step_q88: int = 96,
-                         ) -> int:
-    """Tune TX_FAST_LATENCY across multiple (baud, inj_len, dut_len) corners
-    and write min(safe_upper) − safety_margin. Pins the field to the worst-
-    case slack budget so verify cells stress the joint boundary."""
-    results: list[tuple[int, int, int, int]] = []
-    for baud, inj_len, dut_len in corners:
-        print(f"\n  ── corner: {baud//1_000_000}M  inj={inj_len}  dut={dut_len}")
-        set_chip_baud(pirate, dxl_id, baud)
-        time.sleep(0.05)
-        safe_upper = step_fast_tune(
-            pirate, dxl_id, baud, n, max_iter,
-            max_crc_rate=max_crc_rate,
-            tolerance_q88=tolerance_q88,
-            start_q88=start_q88,
-            probe_step_q88=probe_step_q88,
-            max_probe_step_q88=max_probe_step_q88,
-            inj_len=inj_len, dut_len=dut_len,
-        )
-        results.append((safe_upper, baud, inj_len, dut_len))
-        print(f"  corner safe_upper={safe_upper}q88 ({safe_upper/256:.3f}µs)")
-
-    min_safe, worst_b, worst_il, worst_dl = min(results, key=lambda r: r[0])
-    final = max(0, min_safe - safety_margin_q88)
-    write_ct_u16(pirate, dxl_id, DXL_TX_FAST_LATENCY_US_ADDR, final)
-    print(f"\n  per-corner safe_upper:")
-    for safe, b, il, dl in results:
-        marker = " ← min" if safe == min_safe else ""
-        print(f"    {b//1_000_000}M  inj={il:<2d}  dut={dl:<2d}  "
-              f"safe_upper={safe}q88 ({safe/256:.3f}µs){marker}")
-    print(f"  → final TX_FAST = {final}q88 ({final/256:.3f}µs, "
-          f"margin {safety_margin_q88}q88, worst corner "
-          f"{worst_b//1_000_000}M inj={worst_il} dut={worst_dl})")
-    return final
-
-
-# ── Step 5: verify matrix ───────────────────────────────────────────────────
+# ── Verify matrix ─────────────────────────────────────────────────────────
 
 def _verify_one_baud(pirate: Pirate, dxl_id: int, baud: int, n: int
                      ) -> tuple[list[tuple], float]:
@@ -550,31 +342,12 @@ def main() -> None:
     ap.add_argument("--port", default=None)
     ap.add_argument("--id", type=int, default=1)
     ap.add_argument("--tune-baud", type=int, default=1_000_000,
-                    help="Baud for the tuning steps. Verify walks all bauds.")
-    ap.add_argument("--n", type=int, default=256,
-                    help="samples per tune iteration")
-    ap.add_argument("--converge-q88", type=int, default=20,
-                    help="tune stop threshold (Q8.8 µs)")
-    ap.add_argument("--max-iter", type=int, default=10)
+                    help="Baud for HSI calibration. Verify walks all bauds.")
     ap.add_argument("--verify-n", type=int, default=128,
                     help="samples per verify cell")
-    ap.add_argument("--fast-max-crc-rate", type=float, default=0.01,
-                    help="Bracket search treats CRC rate ≤ this as SAFE.")
-    ap.add_argument("--fast-tolerance-q88", type=int, default=16,
-                    help="Bisect stops once the (safe, unsafe) bracket is "
-                         "narrower than this (Q8.8 µs).")
-    ap.add_argument("--fast-safety-margin-q88", type=int, default=32,
-                    help="Final TX_FAST = safe_boundary − margin, for jitter "
-                         "headroom (default 32q88 = 0.125µs).")
-    ap.add_argument("--fast-start-q88", type=int, default=768,
-                    help="Probe starts here. Default 768 (=3µs, firmware "
-                         "default) so a prior crashed run leaving CT in the "
-                         "cliff zone doesn't poison iter 1.")
     ap.add_argument("--skip-hsi", action="store_true")
-    ap.add_argument("--skip-plain", action="store_true")
-    ap.add_argument("--skip-fast", action="store_true")
     ap.add_argument("--verify-only", action="store_true",
-                    help="implies --skip-hsi --skip-plain --skip-fast")
+                    help="implies --skip-hsi")
     args = ap.parse_args()
 
     if args.id in (INJ_ID, FOREIGN_ID):
@@ -587,33 +360,13 @@ def main() -> None:
     try:
         set_chip_baud(pirate, args.id, args.tune_baud)
 
-        if not args.verify_only:
-            if not args.skip_hsi:
-                print(f"\n[1+2] HSI coarse + fine @ {args.tune_baud}")
-                trim, q88 = step_hsi(pirate, args.id, args.tune_baud)
-                print(f"  → clock_trim={trim:+d}  clock_fine_trim_us={q88:+d} "
-                      f"({q88/256:+.3f}µs)")
-            if not args.skip_plain:
-                print(f"\n[3] Plain TX latency @ {args.tune_baud}")
-                v = step_plain_tune(pirate, args.id, args.tune_baud,
-                                    args.n, args.converge_q88, args.max_iter)
-                print(f"  → dxl_tx_plain_latency_us={v}q88 ({v/256:.3f}µs = "
-                      f"{(v * 48) // 256} chip ticks @48MHz)")
-            if not args.skip_fast:
-                print(f"\n[4] Fast TX latency — multi-corner sweep")
-                v = step_fast_tune_multi(
-                    pirate, args.id, DEFAULT_FAST_TUNE_CORNERS,
-                    args.n, args.max_iter,
-                    max_crc_rate=args.fast_max_crc_rate,
-                    tolerance_q88=args.fast_tolerance_q88,
-                    safety_margin_q88=args.fast_safety_margin_q88,
-                    start_q88=args.fast_start_q88,
-                )
-                print(f"  → dxl_tx_fast_latency_us={v}q88 ({v/256:.3f}µs = "
-                      f"{(v * 48) // 256} chip ticks @48MHz)")
-                set_chip_baud(pirate, args.id, args.tune_baud)
+        if not args.verify_only and not args.skip_hsi:
+            print(f"\n[1+2] HSI coarse + fine @ {args.tune_baud}")
+            trim, q88 = step_hsi(pirate, args.id, args.tune_baud)
+            print(f"  → clock_trim={trim:+d}  clock_fine_trim_us={q88:+d} "
+                  f"({q88/256:+.3f}µs)")
 
-        print(f"\n[5] Verify matrix (n={args.verify_n} per cell)")
+        print(f"\n[3] Verify matrix (n={args.verify_n} per cell)")
         ok = step_verify(pirate, args.id, args.verify_n)
         print()
         if ok:

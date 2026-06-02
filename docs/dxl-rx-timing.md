@@ -605,14 +605,14 @@ Honest accounting of where the design's structural edges land.
 - ~5 µs from SysTick CMP → first wire bit, post-highcode (V006 V2A structural floor).
 - USART1 + SysTick + DMA1_CH5 at the same High priority (no preemption between them).
 
-**Per-path fire latency** (`firmware/ch32/src/statics.rs`, ticks at 48 MHz HCLK):
+**Per-path fire latency** (`firmware/ch32/src/measurements.rs`, ticks at 48 MHz HCLK):
 
-    | path                                | const                     |
-    | ----------------------------------- | ------------------------- |
-    | plain reply (`start_plain_after`)   | `TX_PLAIN_LATENCY_TICKS`  |
-    | Fast chain (`start_fast_after`)     | `TX_FAST_LATENCY_TICKS`   |
+    | path                                | const                |
+    | ----------------------------------- | -------------------- |
+    | plain reply (`start_plain_after`)   | `PLAIN_ENTRY_TICKS`  |
+    | Fast chain (`start_fast_after`)     | `FAST_ENTRY_TICKS`   |
 
-The Fast path does extra work before `fire_now` (DMA HT/TC arming, FSM transition, snoop-CRC scaffolding) so its effective latency is larger. The split lets each path's wire-edge land at the scheduled tick — a single shared knob would force one path to overshoot. Per-chip residual on top of the family default is captured by the HSI cal flow ([dxl-hsi-calibration.md](dxl-hsi-calibration.md)).
+The Fast path does extra work before `fire_now` (FSM transition, snoop-CRC scaffolding) so its effective latency is larger. The split lets each path's wire-edge land at the scheduled tick — a single shared knob would force one path to overshoot. Per-chip residual on top of the family-fixed constant is captured by the HSI cal flow ([dxl-hsi-calibration.md](dxl-hsi-calibration.md)).
 
 **Where the ~5 µs goes:**
 

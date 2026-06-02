@@ -113,15 +113,6 @@ pub struct ConfigComms {
     /// Q8.8 µs. Does NOT trim the HSI despite the name; advances the Fast
     /// slot fire time to absorb sub-step `clock_trim` residual.
     pub clock_fine_trim_us: i16,
-    /// Q8.8 µs. Silicon-fixed TX latency for the plain reply path (Ping/Read,
-    /// Status, Sync/Bulk slot, Fast First/Middle/Only). Seeded at boot from
-    /// the chip lib's bench-tuned default; runtime writes flow to the
-    /// firmware atomic so tuning scripts converge without reflash.
-    pub dxl_tx_plain_latency_us: u16,
-    /// Q8.8 µs. Same as `dxl_tx_plain_latency_us` for the Fast chain
-    /// (last-slave) reply path; bench default may differ from plain because
-    /// the chain path runs extra setup before fire.
-    pub dxl_tx_fast_latency_us: u16,
 }
 
 #[repr(C)]

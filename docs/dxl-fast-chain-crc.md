@@ -422,6 +422,6 @@ Chain CRC correctness lives on stage 4 fitting slack. Coalesce hand-off jitter l
 - Fire ISR body before `fire_now` (post-highcode): ~1.5 µs.
 - `fire_now` itself (DMA EN write → TX_EN GPIO toggle → first start bit): ~2 µs.
 
-Plus jitter on top from "what was running when CMP matched." The HSI cal flow ([dxl-hsi-calibration.md](dxl-hsi-calibration.md)) subtracts the mean from the deadline via `TX_FAST_LATENCY_TICKS` so on average we land on time, but the jitter remains and at 3 Mbaud it's on the order of a third of a byte time.
+Plus jitter on top from "what was running when CMP matched." The fire site subtracts the chip-family-fixed `FAST_ENTRY_TICKS` (in `firmware/ch32/src/measurements.rs`) from the deadline so on average we land on time, but the jitter remains and at 3 Mbaud it's on the order of a third of a byte time.
 
 This is structural — the chain CRC design doesn't close it. The chain CRC ensures stage 4 fits slack so the CRC is correct; the fire floor governs whether the start bit lands when it should (so coalesce is clean). At lower bauds the floor sits well under the inter-slot jitter cap. At 3 Mbaud zero-gap coalesce, the floor and the cap sit at the same order of magnitude, and a visible idle gap can appear on the wire even though the CRC is correct and the host parses fine.
