@@ -70,20 +70,19 @@ pub static DXL_BYTES_PER_US_Q16: AtomicU32 = AtomicU32::new(0);
 
 /// Silicon-fixed default for `TX_PLAIN_LATENCY_TICKS`, in Q8.8 µs. Seeded
 /// into `comms.dxl_tx_plain_latency_us` at bring-up; runtime writes via
-/// that CT field re-publish the atomic without reflash. 3.0 µs = 144 ticks
-/// at the 48 MHz HCLK. Live only under `dxl-systick-fire`; the hw-fire
-/// path uses `dxl_hw_fire::HW_FIRE_PIPELINE_TICKS` instead and reserves
-/// the CT field.
-#[cfg(feature = "dxl-systick-fire")]
-pub const TX_PLAIN_LATENCY_DEFAULT_Q88_US: u16 = 3 << 8;
+/// that CT field re-publish the atomic without reflash. 836 q88 (3.27 µs,
+/// 157 ticks @48MHz) is the empirical V006 median across 5 bench runs
+/// (range ±15 q88 = ±0.06 µs, well inside verify margin). Replaces an
+/// earlier 3.0 µs placeholder; the bench tune converges in 0–1 iters now.
+pub const TX_PLAIN_LATENCY_DEFAULT_Q88_US: u16 = 836;
 
 /// Silicon-fixed default for `TX_FAST_LATENCY_TICKS`, in Q8.8 µs. Same role
-/// as the plain default for the Fast chain path; values may diverge once #52
-/// pins the per-path floor.
-#[cfg(feature = "dxl-systick-fire")]
-pub const TX_FAST_LATENCY_DEFAULT_Q88_US: u16 = 3 << 8;
+/// as the plain default for the Fast chain path. 884 q88 (3.45 µs, 165
+/// ticks @48MHz) is the empirical V006 median (range ±12 q88 = ±0.05 µs)
+/// computed with the 32 q88 safety margin baked in below the dut=4/32
+/// cliff.
+pub const TX_FAST_LATENCY_DEFAULT_Q88_US: u16 = 884;
 
-#[cfg(feature = "dxl-systick-fire")]
 const fn q88_us_to_ticks_u16(q88_us: u16) -> u16 {
     ((q88_us as u32 * crate::hal::clocks::SYSTICK_TICKS_PER_US) >> 8) as u16
 }
@@ -94,7 +93,6 @@ const fn q88_us_to_ticks_u16(q88_us: u16) -> u16 {
 /// deadlines in `start_plain_after`. Runtime-tunable via the CT field
 /// `comms.dxl_tx_plain_latency_us` (Q8.8 µs) — apply is immediate, the next
 /// reply uses the new value.
-#[cfg(feature = "dxl-systick-fire")]
 pub static TX_PLAIN_LATENCY_TICKS: AtomicU16 =
     AtomicU16::new(q88_us_to_ticks_u16(TX_PLAIN_LATENCY_DEFAULT_Q88_US));
 
@@ -102,21 +100,18 @@ pub static TX_PLAIN_LATENCY_TICKS: AtomicU16 =
 /// extra work before `fire_now` (DMA TCIE off, phase=TxStreaming, dbg pin,
 /// snoop-CRC scaffolding) so its effective latency typically diverges from
 /// plain. Runtime-tunable via `comms.dxl_tx_fast_latency_us`.
-#[cfg(feature = "dxl-systick-fire")]
 pub static TX_FAST_LATENCY_TICKS: AtomicU16 =
     AtomicU16::new(q88_us_to_ticks_u16(TX_FAST_LATENCY_DEFAULT_Q88_US));
 
 /// Q8.8 µs → ticks → atomic publish. Sole writer: main-loop dispatcher via
 /// `Ch32Bus::set_tx_plain_latency_us`. Apply is immediate; the next
 /// `start_plain_after` picks up the new value.
-#[cfg(feature = "dxl-systick-fire")]
 pub fn store_tx_plain_latency_us(q88_us: u16) {
     TX_PLAIN_LATENCY_TICKS.store(q88_us_to_ticks_u16(q88_us), Ordering::Release);
 }
 
 /// Q8.8 µs → ticks → atomic publish. Sole writer: main-loop dispatcher via
 /// `Ch32Bus::set_tx_fast_latency_us`.
-#[cfg(feature = "dxl-systick-fire")]
 pub fn store_tx_fast_latency_us(q88_us: u16) {
     TX_FAST_LATENCY_TICKS.store(q88_us_to_ticks_u16(q88_us), Ordering::Release);
 }
