@@ -102,10 +102,6 @@ fn on_usart1_tc() {
     }
     usart::set_tc_irq(USART1, false);
     usart::clear_tc(USART1);
-    // DMAT clearing only matters under systick-fire (where arm_tx
-    // re-sets it per fire). Under hw-fire DMAT is permanent =1
-    // (`dxl_hw_fire::init`); CH4.EN is the wire gate.
-    #[cfg(feature = "dxl-systick-fire")]
     usart::set_dma_tx(USART1, false);
     dma::disable(dma::Channel::CH4);
     if let Some(t) = unsafe { *DXL_TX_EN.get() } {

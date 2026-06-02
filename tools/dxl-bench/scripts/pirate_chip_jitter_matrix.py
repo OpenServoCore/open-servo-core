@@ -157,11 +157,11 @@ def main() -> None:
         write_ct_u16(pirate, args.id, DXL_TX_FAST_LATENCY_US_ADDR, 0)
         time.sleep(0.01)
 
-        print(f"\nTuning state (latencies pinned to 0 for jitter floor):")
+        print(f"\nTuning state:")
         print(f"   clock_trim              = {trim:+d}")
         print(f"   clock_fine_trim_us      = {fine:+d}q88 ({fine/256:+.3f}µs)")
-        print(f"   dxl_tx_plain_latency_us = 0q88 (0.000µs)")
-        print(f"   dxl_tx_fast_latency_us  = 0q88 (0.000µs)")
+        print(f"   TX_PLAIN_LATENCY        = 0 (pinned for σ-only measurement)")
+        print(f"   TX_FAST_LATENCY         = 0 (pinned for σ-only measurement)")
 
         ticks_per_us = pirate.hz_per_us()
         plain_sigmas: dict[tuple[int, int], tuple[float, float, int, int]] = {}

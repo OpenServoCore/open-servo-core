@@ -10,14 +10,11 @@ use crate::hal::{
     gpio::{self, Level},
     systick, usart,
 };
-#[cfg(feature = "dxl-systick-fire")]
-use crate::statics::DXL_TX_EN;
 use crate::statics::{
     DXL_BYTE_TIME_TICKS, DXL_BYTES_PER_US_Q16, DXL_DBG_PIN, DXL_RX_BUF, DXL_RX_BUF_LEN,
-    DXL_STAT_PIN, DXL_TX_BUF, FIRE_ADVANCE_FINE_TICKS, SHARED,
+    DXL_STAT_PIN, DXL_TX_BUF, DXL_TX_EN, FIRE_ADVANCE_FINE_TICKS, SHARED, TX_FAST_LATENCY_TICKS,
+    TX_PLAIN_LATENCY_TICKS,
 };
-#[cfg(feature = "dxl-systick-fire")]
-use crate::statics::{TX_FAST_LATENCY_TICKS, TX_PLAIN_LATENCY_TICKS};
 
 /// Which request end tick detection + fire path a given reply takes.
 #[allow(dead_code)]
@@ -87,10 +84,7 @@ pub enum ReplyState {
     /// Nothing armed.
     Idle,
     /// SysTick CMP armed for a non-snoop reply (Ping, Read, Sync/Bulk slot,
-    /// Fast First/Middle/Only). Only used under `dxl-systick-fire` — under
-    /// `dxl-hw-fire` plain replies fire via TIM2 OPM directly with no
-    /// FSM state to track.
-    #[cfg_attr(feature = "dxl-hw-fire", allow(dead_code))]
+    /// Fast First/Middle/Only).
     Plain,
     /// SysTick (+ optionally DMA CH5 TC) armed for a Fast last-slave reply.
     Chain {
@@ -166,15 +160,14 @@ const RXNE_TAIL_GUARD_BYTES: u16 = 2;
 /// short enough that a missing/dead predecessor fails open quickly.
 const RXNE_TAIL_WAIT_BYTES: u32 = 3;
 
-/// Under systick-fire, Plain advance shares the USART BRR-sync + listener
-/// IDLE-detect pipeline with hw-fire (`bt/4` ≈ 2.5 bit-times). The CT-tuned
+/// Plain advance includes a per-baud `bt/4` (≈ 2.5 bit-times) term covering
+/// the USART BRR-sync + listener IDLE-detect pipeline; the CT-tuned
 /// `TX_PLAIN_LATENCY_TICKS` captures the baud-independent residue (PFIC
 /// trap entry + on_systick body + fire_now + DMA chain). Without the
 /// per-baud term, a single-baud tune lands Plain at zero only at the tune
 /// baud — bench 2026-06-01 saw -1.2/-1.5 µs early at 2M/3M after tuning
 /// at 1M. Fast keeps the flat form because its bench metric cancels
 /// listener lag.
-#[cfg(feature = "dxl-systick-fire")]
 #[inline(always)]
 fn plain_fire_advance_ticks() -> u32 {
     let base = TX_PLAIN_LATENCY_TICKS.load(Ordering::Relaxed) as u32;
@@ -183,39 +176,9 @@ fn plain_fire_advance_ticks() -> u32 {
     fire_advance_ticks_for(total.min(u16::MAX as u32) as u16)
 }
 
-#[cfg(feature = "dxl-systick-fire")]
 #[inline(always)]
 fn fast_fire_advance_ticks() -> u32 {
     fire_advance_ticks_for(TX_FAST_LATENCY_TICKS.load(Ordering::Relaxed))
-}
-
-/// Under hw-fire the per-path latency CT atomics are gone (read-as-0,
-/// write-rejected). Each path computes its own pipeline subtraction:
-/// Plain uses a base + per-baud term (silicon USART pipeline scales
-/// with bit-time + pirate RX latency); Fast uses a small constant
-/// because the Fast bench metric cancels pirate-side latency and fire
-/// must NOT shift earlier (collision with predecessor). See
-/// `dxl_hw_fire` constants for the fit rationale.
-#[cfg(feature = "dxl-hw-fire")]
-#[inline(always)]
-fn plain_fire_advance_ticks() -> u32 {
-    let bt = DXL_BYTE_TIME_TICKS.load(Ordering::Relaxed);
-    let total = crate::dxl_hw_fire::HW_FIRE_PLAIN_PIPELINE_BASE_TICKS + bt / 4;
-    fire_advance_ticks_for(total.min(u16::MAX as u32) as u16)
-}
-
-#[cfg(feature = "dxl-hw-fire")]
-#[inline(always)]
-fn fast_fire_advance_ticks() -> u32 {
-    // Skip FIRE_ADVANCE_FINE_TICKS for Fast: a run-to-run swing in the
-    // HSI fine_trim was shifting Fast Last fire timing INTO the
-    // predecessor's stop-bit window, causing intermittent CRC failures.
-    // Plain wants the drift compensation (RDT window is HSI-anchored);
-    // Fast's reference is the predecessor's actual wire timing, which
-    // tolerates much less subtraction variance. TODO: split into a
-    // dedicated `FAST_FIRE_FINE_TICKS` atomic when temperature-tuning
-    // arrives — symmetric to systick's per-path TX_*_LATENCY model.
-    crate::dxl_hw_fire::HW_FIRE_FAST_PIPELINE_TICKS
 }
 
 #[inline(always)]
@@ -226,7 +189,6 @@ fn fire_advance_ticks_for(latency: u16) -> u32 {
 
 /// TX_EN and DMA CH4 stay off so the bus remains in RX through any preceding
 /// snoop window; `fire_now` flips both at the slot deadline.
-#[cfg(feature = "dxl-systick-fire")]
 #[cfg_attr(target_arch = "riscv32", unsafe(link_section = ".highcode"))]
 #[inline(never)]
 pub fn arm_tx() -> bool {
@@ -247,28 +209,6 @@ pub fn arm_tx() -> bool {
     true
 }
 
-/// Under hw-fire DMAT is permanent =1 (set in `dxl_hw_fire::init`) and CH4.EN
-/// is the wire gate — CH2's TIM2-UEV stamp flips it. arm_tx therefore only
-/// loads NDTR + clears TC + arms TC IRQ; the actual fire is detached from
-/// software entirely (see `dxl_hw_fire::arm_at`).
-#[cfg(feature = "dxl-hw-fire")]
-#[cfg_attr(target_arch = "riscv32", unsafe(link_section = ".highcode"))]
-#[inline(never)]
-pub fn arm_tx() -> bool {
-    let len = unsafe { (*DXL_TX_BUF.get()).as_slice().len() };
-    if len == 0 {
-        return false;
-    }
-    if dma::is_enabled(dma::Channel::CH4) {
-        return false;
-    }
-    dma::set_count(dma::Channel::CH4, len as u16);
-    usart::clear_tc(USART1);
-    usart::set_tc_irq(USART1, true);
-    true
-}
-
-#[cfg(feature = "dxl-systick-fire")]
 #[cfg_attr(target_arch = "riscv32", unsafe(link_section = ".highcode"))]
 #[inline(never)]
 pub fn fire_now() {
@@ -279,15 +219,8 @@ pub fn fire_now() {
     dma::enable(dma::Channel::CH4);
 }
 
-// hw-fire has no software fire entry. `dxl_hw_fire::arm_at` is the sole
-// fire-path API; degenerate "deadline already past" cases fold into a
-// minimum-viable TIM2 countdown there. This is the wire-jitter bar: any
-// SW fire site would defeat the whole point — see [[v006-hw-fire-purpose]].
-
 /// Plain (non-snoop) reply: schedule a fire at `request_end + delay_us`.
-/// Under systick-fire the deadline is owned by a SysTick CMP IRQ; under
-/// hw-fire by TIM2 OPM — no SysTick involvement, no STATE::Plain.
-#[cfg(feature = "dxl-systick-fire")]
+/// SysTick CMP owns the deadline.
 #[cfg_attr(target_arch = "riscv32", unsafe(link_section = ".highcode"))]
 #[inline(never)]
 pub fn start_plain_after(request_end_tick: u32, delay_us: u32) {
@@ -321,20 +254,6 @@ pub fn start_plain_after(request_end_tick: u32, delay_us: u32) {
     }
 }
 
-#[cfg(feature = "dxl-hw-fire")]
-#[cfg_attr(target_arch = "riscv32", unsafe(link_section = ".highcode"))]
-#[inline(never)]
-pub fn start_plain_after(request_end_tick: u32, delay_us: u32) {
-    let needed = delay_us
-        .saturating_mul(systick::TICKS_PER_US)
-        .saturating_sub(plain_fire_advance_ticks());
-    if !arm_tx() {
-        cancel();
-        return;
-    }
-    crate::dxl_hw_fire::arm_at(request_end_tick.wrapping_add(needed));
-}
-
 #[cfg_attr(target_arch = "riscv32", unsafe(link_section = ".highcode"))]
 #[inline(never)]
 pub fn start_fast_after(request_end_tick: u32, fire_us: u32, snoop_from: Option<u32>) {
@@ -350,14 +269,6 @@ pub fn start_fast_after(request_end_tick: u32, fire_us: u32, snoop_from: Option<
         .saturating_mul(systick::TICKS_PER_US)
         .saturating_sub(fast_fire_advance_ticks());
     let fire_tick = request_end_tick.wrapping_add(fire_needed);
-
-    // Under hw-fire the wire fire is locked in HW the instant TIM2 is
-    // armed — do it as early as possible so any SysTick CMP body that
-    // runs later (snoop walks, patch_crc) can't accidentally jitter
-    // wire timing. The on_systick TxArmed body is cfg-gated to skip
-    // `fire_now()` under hw-fire because TIM2 has already fired.
-    #[cfg(feature = "dxl-hw-fire")]
-    crate::dxl_hw_fire::arm_at(fire_tick);
 
     let snoop_head = match snoop_from {
         Some(rx_start) => (rx_start & RX_MASK_U32) as u16,
@@ -486,10 +397,9 @@ fn predict_chain_pure(fire_us: u32, rdt_us: u32, bytes_per_us_q16: u32) -> Chain
 /// chain-crc.md §14.4 case — 3M Last 1B), and (b) long wire_window with
 /// large `n_pred` where the CatchupArmed body itself overruns
 /// `SWITCH_MARGIN_US` (e.g. 128-byte INJ at 3M: ~123 B catchup walk takes
-/// ~62 µs > 50 µs margin, pushing the patch_crc past CH4's read cursor
-/// under hw-fire). Returns the `bytes_walked` threshold for masking
-/// RXNEIE, or `u16::MAX` when walk-at-fire fits slack and no pre-walk is
-/// needed.
+/// ~62 µs > 50 µs margin, pushing the patch_crc past CH4's read cursor).
+/// Returns the `bytes_walked` threshold for masking RXNEIE, or `u16::MAX`
+/// when walk-at-fire fits slack and no pre-walk is needed.
 #[inline]
 fn decide_rxne_tail(predict: &ChainPredict, tx_len: usize) -> u16 {
     decide_rxne_tail_pure(predict, tx_len, byte_time_ticks_now())
@@ -536,11 +446,7 @@ pub fn on_systick() {
     match snapshot {
         ReplyState::Idle => {}
         ReplyState::Plain => {
-            // Only ever set under systick-fire; hw-fire schedules via
-            // TIM2 OPM and never enters STATE::Plain. Defensive arm if
-            // somehow reached under hw-fire = clear state, no fire.
             set_state(ReplyState::Idle);
-            #[cfg(feature = "dxl-systick-fire")]
             fire_now();
         }
         ReplyState::Chain {
@@ -582,7 +488,6 @@ pub fn on_systick() {
 
                 // ── Critical path. patch_crc must land bytes [n-2, n-1]
                 // of TX_BUF before CH4's read cursor reaches them.
-                #[cfg(feature = "dxl-systick-fire")]
                 fire_now();
                 if rxne_tail_at != u16::MAX {
                     wait_and_accumulate_tail(expected_predecessor_bytes);
@@ -774,8 +679,6 @@ pub fn cancel() {
     // it's a no-op when already off, and the framing-RXNE owner doesn't
     // exist on V006 yet (Phase B work).
     usart::set_rxne_irq(USART1, false);
-    #[cfg(feature = "dxl-hw-fire")]
-    crate::dxl_hw_fire::cancel();
     set_state(ReplyState::Idle);
 }
 
@@ -1121,9 +1024,9 @@ mod tests {
         // 2026-05-31): wire_window ≈ 460 µs (well over SWITCH_MARGIN),
         // n_pred ≈ 138, tx_len ≈ 5. CatchupArmed body would take
         // ~62 µs to walk pre-fire bytes — overshoots the 50 µs margin
-        // and under hw-fire the patch_crc loses the race with CH4's
-        // read cursor. RXNE-tail must arm even though wire_window is
-        // long, because the slack check fails.
+        // and patch_crc loses the race with CH4's read cursor. RXNE-tail
+        // must arm even though wire_window is long, because the slack
+        // check fails.
         let predict = ChainPredict {
             n_pred: 138,
             wire_window_us: 460,

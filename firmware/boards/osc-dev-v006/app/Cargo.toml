@@ -19,10 +19,5 @@ defmt         = { version = "1", optional = true }
 defmt-rtt     = { version = "1", optional = true }
 
 [features]
-# Production default: TIM2 OPM hardware fire. See osc-ch32 Cargo.toml +
-# docs/dxl-fast-chain-crc.md §15. `dxl-systick-fire` is a dev/bench
-# escape hatch only — enabled when TIM2 is needed for a motor encoder.
-default          = ["dxl-hw-fire"]
-defmt            = ["dep:defmt", "dep:defmt-rtt", "osc-ch32/defmt"]
-dxl-systick-fire = ["osc-ch32/dxl-systick-fire"]
-dxl-hw-fire      = ["osc-ch32/dxl-hw-fire"]
+default = []
+defmt   = ["dep:defmt", "dep:defmt-rtt", "osc-ch32/defmt"]

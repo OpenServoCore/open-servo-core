@@ -2,12 +2,6 @@
 #![feature(sync_unsafe_cell)]
 #![allow(unexpected_cfgs)]
 
-// DXL Fast fire-path mode is mutually exclusive; pick one.
-#[cfg(all(feature = "dxl-systick-fire", feature = "dxl-hw-fire"))]
-compile_error!("`dxl-systick-fire` and `dxl-hw-fire` are mutually exclusive");
-#[cfg(not(any(feature = "dxl-systick-fire", feature = "dxl-hw-fire")))]
-compile_error!("one of `dxl-systick-fire` or `dxl-hw-fire` must be enabled");
-
 pub use osc_core::bp;
 pub use osc_core::{BaudRate, ConfigDefaults};
 
@@ -15,8 +9,6 @@ pub mod board;
 pub mod chip_flash;
 pub(crate) mod drop_oldest_ring;
 pub(crate) mod dxl_fast;
-#[cfg(feature = "dxl-hw-fire")]
-pub(crate) mod dxl_hw_fire;
 pub mod hal;
 pub(crate) mod idle_ring;
 pub mod irq;

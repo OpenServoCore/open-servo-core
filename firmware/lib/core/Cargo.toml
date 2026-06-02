@@ -23,7 +23,3 @@ dxl-protocol = { workspace = true, features = ["heapless", "osc"] }
 [features]
 default = []
 defmt   = ["dep:defmt", "control-table/defmt"]
-# Mirrors the chip-side fire-path selection so `ConfigComms` can flip the
-# TX-latency CT fields between RW and Reserved at the same byte offsets.
-# Set by the chip crate's matching feature; not meant to be enabled alone.
-dxl-hw-fire = []

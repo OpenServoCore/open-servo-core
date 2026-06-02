@@ -10,10 +10,9 @@ use crate::hal::{flash, pfic};
 use crate::idle_ring;
 use crate::statics::{
     DXL_BAUD_PENDING_BRR, DXL_CLOCK_FINE_TRIM_PENDING, DXL_CLOCK_TRIM_PENDING, DXL_REBOOT_PENDING,
-    DXL_RX_BUF, DXL_RX_WRITE_POS, DXL_TX_BUF, DXL_TX_BUF_LEN,
+    DXL_RX_BUF, DXL_RX_WRITE_POS, DXL_TX_BUF, DXL_TX_BUF_LEN, store_tx_fast_latency_us,
+    store_tx_plain_latency_us,
 };
-#[cfg(feature = "dxl-systick-fire")]
-use crate::statics::{store_tx_fast_latency_us, store_tx_plain_latency_us};
 
 /// Single &mut writer: the main loop holding the `Services` struct.
 pub struct Ch32Bus {
@@ -76,14 +75,7 @@ impl DxlBus for Ch32Bus {
             Some(request_end_tick) => dxl_fast::start_plain_after(request_end_tick, delay_us),
             None => {
                 if dxl_fast::arm_tx() {
-                    // No captured request_end_tick → fire ASAP. Under
-                    // systick-fire the SW fire path; under hw-fire,
-                    // arm TIM2 OPM with `now` so the minimum-viable
-                    // countdown takes the same role.
-                    #[cfg(feature = "dxl-systick-fire")]
                     dxl_fast::fire_now();
-                    #[cfg(feature = "dxl-hw-fire")]
-                    crate::dxl_hw_fire::arm_at(crate::hal::systick::ticks());
                 }
             }
         }
@@ -109,15 +101,10 @@ impl DxlBus for Ch32Bus {
         DXL_CLOCK_FINE_TRIM_PENDING.store(q88_us as i32, Ordering::Release);
     }
 
-    // Latency overrides only exist under SysTick fire; under `dxl-hw-fire`
-    // the CT field is reserved (writes return AccessError before reaching
-    // the bus) so the trait's default no-op stands.
-    #[cfg(feature = "dxl-systick-fire")]
     fn set_tx_plain_latency_us(&mut self, q88_us: u16) {
         store_tx_plain_latency_us(q88_us);
     }
 
-    #[cfg(feature = "dxl-systick-fire")]
     fn set_tx_fast_latency_us(&mut self, q88_us: u16) {
         store_tx_fast_latency_us(q88_us);
     }

@@ -64,7 +64,7 @@ preempting writer to the same register. Callers don't need their own CS.
 | `usart::set_rxne_irq` | CTLR1 | RXNEIE | `dxl_fast::start_fast_after` | `dxl_fast::on_rxne`, `dxl_fast::on_systick`/`cancel`(via TC ISR) |
 | `usart::set_dma_tx` | CTLR3 | DMAT | `dxl_fast::arm_tx` | `irq::on_usart1_tc` |
 | `usart::clear_tc` | STATR | TC (w0c) | `dxl_fast::arm_tx` | `irq::on_usart1_tc` |
-| `dma::enable` / `dma::disable` (CH4) | DMA1.CH(4).CR | EN | `dxl_fast::fire_now` (systick-fire) / HW DMA1_CH2 (hw-fire) | `irq::on_usart1_tc`, `dxl_hw_fire::cancel` |
+| `dma::enable` / `dma::disable` (CH4) | DMA1.CH(4).CR | EN | `dxl_fast::fire_now` | `irq::on_usart1_tc` |
 | `dma::set_tcie` (CH5) | DMA1.CH(5).CR | TCIE | `dxl_fast::start_fast_after` | `dxl_fast::on_systick`, `dxl_fast::cancel`(via TC ISR) |
 | `dma::set_htie` (CH5) | DMA1.CH(5).CR | HTIE | `dxl_fast::start_fast_after` | `dxl_fast::on_systick`, `dxl_fast::cancel`(via TC/HT ISR) |
 | `systick::set_irq` | SYSTICK.CTLR | STIE | `dxl_fast::start_plain_after`, `start_fast_after`, `cancel` | `dxl_fast::on_systick`, `cancel`(via TC ISR) |

@@ -120,25 +120,6 @@ def write_ct_u16(pirate: Pirate, dxl_id: int, addr: int, value: int) -> None:
     _xfer_ct(pirate, build_write(dxl_id, addr, struct.pack("<H", value & 0xFFFF)))
 
 
-def detect_fire_mode(pirate: Pirate, dxl_id: int) -> str:
-    """Probe DXL_TX_PLAIN_LATENCY_US: under dxl-hw-fire the field is reserved
-    (writes return AccessError 0x07, reads zero-fill). Returns 'hw' or
-    'systick'. The plain/fast tune phases mutate that field, so they're
-    inapplicable under hw-fire and the runtime tuning loop has no effect."""
-    pkt = build_write(dxl_id, DXL_TX_PLAIN_LATENCY_US_ADDR, b"\x00\x00")
-    reply = pirate.xfer(pkt, reply_us=200_000)
-    if not reply:
-        raise PirateError("no Status reply during fire-mode probe")
-    st = parse_status(reply)
-    if st.error == 0:
-        return "systick"
-    if st.error == 0x07:
-        return "hw"
-    raise PirateError(
-        f"unexpected status err 0x{st.error:02X} during fire-mode probe"
-    )
-
-
 def _ping_with_retry(pirate: Pirate, dxl_id: int,
                      retries: int = 3, delay_s: float = 0.02) -> bool:
     for _ in range(retries):
@@ -605,8 +586,6 @@ def main() -> None:
     pirate = Pirate(port)
     try:
         set_chip_baud(pirate, args.id, args.tune_baud)
-        fire_mode = detect_fire_mode(pirate, args.id)
-        print(f"fire mode: {fire_mode}")
 
         if not args.verify_only:
             if not args.skip_hsi:
@@ -614,29 +593,25 @@ def main() -> None:
                 trim, q88 = step_hsi(pirate, args.id, args.tune_baud)
                 print(f"  → clock_trim={trim:+d}  clock_fine_trim_us={q88:+d} "
                       f"({q88/256:+.3f}µs)")
-            if fire_mode == "hw":
-                print("\n[3+4] TX latency tuning skipped — TIM2 OPM fire path "
-                      "has no runtime-tunable latency atomics.")
-            else:
-                if not args.skip_plain:
-                    print(f"\n[3] Plain TX latency @ {args.tune_baud}")
-                    v = step_plain_tune(pirate, args.id, args.tune_baud,
-                                        args.n, args.converge_q88, args.max_iter)
-                    print(f"  → dxl_tx_plain_latency_us={v}q88 ({v/256:.3f}µs = "
-                          f"{(v * 48) // 256} chip ticks @48MHz)")
-                if not args.skip_fast:
-                    print(f"\n[4] Fast TX latency — multi-corner sweep")
-                    v = step_fast_tune_multi(
-                        pirate, args.id, DEFAULT_FAST_TUNE_CORNERS,
-                        args.n, args.max_iter,
-                        max_crc_rate=args.fast_max_crc_rate,
-                        tolerance_q88=args.fast_tolerance_q88,
-                        safety_margin_q88=args.fast_safety_margin_q88,
-                        start_q88=args.fast_start_q88,
-                    )
-                    print(f"  → dxl_tx_fast_latency_us={v}q88 ({v/256:.3f}µs = "
-                          f"{(v * 48) // 256} chip ticks @48MHz)")
-                    set_chip_baud(pirate, args.id, args.tune_baud)
+            if not args.skip_plain:
+                print(f"\n[3] Plain TX latency @ {args.tune_baud}")
+                v = step_plain_tune(pirate, args.id, args.tune_baud,
+                                    args.n, args.converge_q88, args.max_iter)
+                print(f"  → dxl_tx_plain_latency_us={v}q88 ({v/256:.3f}µs = "
+                      f"{(v * 48) // 256} chip ticks @48MHz)")
+            if not args.skip_fast:
+                print(f"\n[4] Fast TX latency — multi-corner sweep")
+                v = step_fast_tune_multi(
+                    pirate, args.id, DEFAULT_FAST_TUNE_CORNERS,
+                    args.n, args.max_iter,
+                    max_crc_rate=args.fast_max_crc_rate,
+                    tolerance_q88=args.fast_tolerance_q88,
+                    safety_margin_q88=args.fast_safety_margin_q88,
+                    start_q88=args.fast_start_q88,
+                )
+                print(f"  → dxl_tx_fast_latency_us={v}q88 ({v/256:.3f}µs = "
+                      f"{(v * 48) // 256} chip ticks @48MHz)")
+                set_chip_baud(pirate, args.id, args.tune_baud)
 
         print(f"\n[5] Verify matrix (n={args.verify_n} per cell)")
         ok = step_verify(pirate, args.id, args.verify_n)
