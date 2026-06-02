@@ -2,7 +2,7 @@
 
 A design note for anyone bringing up a Dynamixel 2.0 slave on the CH32V006. You don't need prior DXL or RISC-V expertise — read it top to bottom.
 
-**TL;DR.** A DXL slave has to start its reply exactly N microseconds after the host's request ends on the wire. N is configurable and can be as small as zero. The CH32V006's USART gives us two ways to detect "the request ended": a per-byte interrupt (RXNE) or a per-packet interrupt (IDLE). Neither one works across the full baud range — IDLE is too slow at low baud, RXNE costs too much at high baud. The fix is to switch between them based on baud and reply-delay, and to glue on a bag of tricks (highcode, DMA prefetch riding, SysTick CMP scheduling, priority pinning) to hit DXL 2.0's timing budgets all the way up to 3 Mbaud — which is the V006's USART ceiling. This doc walks through why, the formulas, the state machines, the ISRs, what each trick buys us, and an honest accounting of which baud/mode combinations actually pass the spec today.
+A DXL slave has to start its reply exactly N microseconds after the host's request ends on the wire. N is configurable and can be as small as zero. The CH32V006's USART gives us two ways to detect "the request ended": a per-byte interrupt (RXNE) or a per-packet interrupt (IDLE). Neither one works across the full baud range — IDLE is too slow at low baud, RXNE costs too much at high baud. The fix is to switch between them based on baud and reply-delay, and to glue on a bag of tricks (highcode, DMA prefetch riding, SysTick CMP scheduling, priority pinning) to hit DXL 2.0's timing budgets all the way up to 3 Mbaud — the V006's USART ceiling.
 
 ---
 
@@ -19,7 +19,7 @@ The answer is a per-slave setting in the control table called **Return Delay Tim
 
 Why precision matters: in Sync Read and Bulk Read, the host addresses many slaves at once and they reply back-to-back in pre-assigned time slots. A slave that's 200 µs late steps on the next slave's reply and corrupts the bus. RDT is a hard deadline.
 
-In the **Fast** Sync/Bulk variants the constraint gets even tighter: every addressed slave's reply stitches into a single coalesced Status frame with **zero idle gap** between slots. The jitter cap for inter-slave hand-off is exactly one byte time. At 3 Mbaud that's 3.33 µs. The last slave additionally writes a CRC over the entire coalesced frame — including bytes it didn't generate.
+In the **Fast** Sync/Bulk variants the constraint gets tighter still: every addressed slave's reply stitches into a single coalesced Status frame with **zero idle gap** between slots. The jitter cap for inter-slave hand-off is exactly one byte time — 3.33 µs at 3 Mbaud. The last slave additionally writes a CRC over the entire coalesced frame, including bytes it didn't generate; the design for that piece lives in [dxl-fast-chain-crc.md](dxl-fast-chain-crc.md).
 
 So the slave needs to do two things, accurately:
 
@@ -36,7 +36,7 @@ If you've used a Cortex-M0 or M4 before, the V006 will look familiar in shape bu
 
 **The core.** QingKe V2A @ 48 MHz HCLK. RISC-V instruction set, two-stage pipeline, no FPU, no atomics worth depending on (the LR.W/SC.W instructions on V4 silently execute as plain LW/SW; V2 doesn't even have the A extension). Single-cycle SRAM access. Flash has 2 wait-states above 24 MHz — a function fetched cold from flash is meaningfully slower than the same function copied into SRAM. For ISRs in the hot path, this matters; §8.1 covers the workaround.
 
-**Interrupt controller (PFIC).** Only **2 priority levels**, "High" and "Low" — you can't slot a third level between them. Nesting (one ISR preempting another) is opt-in via the INESTEN bit, and even then only "High preempts Low," never within a level. Same-priority IRQs **never preempt each other** — that's a guarantee we lean on heavily for mutual exclusion without locks.
+**Interrupt controller (PFIC).** Only **2 priority levels**, "High" and "Low" — you can't slot a third level between them. Nesting (one ISR preempting another) is opt-in via the `INESTEN` bit, and even then only "High preempts Low," never within a level. Same-priority IRQs **never preempt each other** — a guarantee we lean on heavily for mutual exclusion without locks.
 
 **DMA1.** Single transfer per request, **no FIFO, no burst, no flow-controller mode**. We use three channels:
 
@@ -58,11 +58,11 @@ All three multiplex onto **one** USART1 vector. Our handler checks each flag in 
 
 **What we _don't_ have:**
 
-- **TIM3** is the "SLTM" stripped variant — no IRQ, no prescaler, no one-pulse mode. Both V006 DMA paths it has (CH3 → DMA1_CH1, CH4 → DMA1_CH4) collide with the ADC pump and USART_TX respectively. Unusable for slot timing.
-- **TIM2** can't reach DMA1_CH4 directly, but **TIM2_CH4 → DMA1_CH7** is free (the alternate consumer is USART2_RX, which we don't use), and **TIM2_UP → DMA1_CH2** is free too. Combined with OPM, that's enough for a hardware-fire path — §13 walks through the wiring.
-- **TIM1** is in motor PWM service (CH2/CH3 are the BDC H-bridge phases on rev_b). CH1 and CH4 are technically free, but TIM1's CNT runs continuously at the PWM period and CC matches fire every cycle, not on demand. Wrong shape for one-shot slot deadlines, even before you check the DMA mux (CH4 → DMA1_CH4 / busy, CH1 → DMA1_CH2 / free-but-periodic).
+- **TIM3** is the "SLTM" stripped variant — no IRQ, no prescaler, no one-pulse mode. Both V006 DMA paths it has collide with the ADC pump or USART_TX. Unusable for slot timing.
+- **TIM2**'s CNT is free in principle, but its DMA routing (TIM2_CH4 → DMA1_CH7 and TIM2_UP → DMA1_CH2) is unused on this design. Reserved for future use (encoder counting or hardware-fire experimentation).
+- **TIM1** is in motor PWM service — CH2/CH3 are the BDC H-bridge phases. CH1 and CH4 are technically free, but TIM1's CNT runs continuously at the PWM period; CC matches fire every cycle, not on demand. Wrong shape for one-shot slot deadlines.
 
-The net is: our slot timer is **SysTick CMP**, fired from software, not a hardware-only timer path. That's the structural choice driving everything else in this doc, and the source of the ~5 µs jitter floor we measure on Fast last-slave (§13).
+The net is: our slot timer is **SysTick CMP**, fired from software, not a hardware-only timer path. That's the structural choice driving everything else in this doc, and the source of the ~5 µs fire-floor latency we see at the high end of the baud range (§13).
 
 ---
 
@@ -79,7 +79,7 @@ Fires once for each byte received. The interrupt happens **as the byte's stop bi
 
 The catch is volume: at high baud you get a lot of these. At 1 Mbaud a stream of back-to-back bytes is 100 000 IRQs per second.
 
-**V006 quirk: STATR.RXNE reads 0 inside the ISR.** When the RX DMA channel is enabled, DMA reads the data register _before_ the CPU enters the IRQ handler. The hardware flag clears as a side effect. Reading STATR.RXNE in the ISR always sees 0 — DMA wins the clear race. PFIC's pending bit latches per byte independently, so the IRQ **does** fire 1:1 per byte with zero overruns (bench-validated to 3 Mbaud). The takeaway: don't write `if statr.rxne() { ... }` — that branch never executes. Treat IRQ entry as "a byte arrived" and read the RX DMA cursor (NDTR) to know which position.
+**V006 quirk: STATR.RXNE reads 0 inside the ISR.** When the RX DMA channel is enabled, DMA reads the data register *before* the CPU enters the IRQ handler. The hardware flag clears as a side effect. Reading STATR.RXNE in the ISR always sees 0 — DMA wins the clear race. PFIC's pending bit latches per byte independently, so the IRQ does fire 1:1 per byte with zero overruns. The takeaway: don't write `if statr.rxne() { ... }` — that branch never executes. Treat IRQ entry as "a byte arrived" and read the RX DMA cursor (NDTR) to know which position.
 
 ### 3.2 IDLE — "the wire went quiet"
 
@@ -90,13 +90,13 @@ Fires once after the line has been idle for 9 bit-times. One interrupt per packe
 
 The catch is latency: the interrupt fires roughly one character time **after** the wire actually went quiet. So if you use the IRQ-entry timestamp as the wire-end, you're systematically a character-time late.
 
-We fix the _value_ by **backdating** — subtract `9 × BRR` HCLK ticks from the IRQ-entry timestamp. That's straightforward. But there's a deeper problem: even with a correct wire-end value, the slave doesn't _find out_ about wire-end until ~1 char-time after the wire went quiet. The next section is about why that matters.
+We fix the *value* by **backdating** — subtract `9 × BRR` HCLK ticks from the IRQ-entry timestamp. That's straightforward. But there's a deeper problem: even with a correct wire-end value, the slave doesn't *find out* about wire-end until ~1 char-time after the wire went quiet. The next section is about why that matters.
 
 ---
 
 ## 4. Why one char-time of delay breaks low baud
 
-Here's how the reply scheduler is structured:
+The reply scheduler is structured:
 
     1. Wait until the wire-end timestamp shows up from the framing layer.
     2. Arm SysTick CMP at: wire-end + RDT.
@@ -195,23 +195,7 @@ The two strategies sit at opposite ends of the trade-off naturally: at low baud,
 
 ### 6.3 Fast last-slave (with snoop CRC) — runs at every baud
 
-DXL Fast Sync/Bulk Reads coalesce all addressed slaves' replies into one Status frame on the wire, zero idle gap between slots. The last slave appends a CRC covering the **entire** coalesced frame — header, every preceding slave's bytes, and its own. The bytes we didn't generate still have to be CRC'd, which means watching the wire during the predecessor slots and folding each arriving byte into a running CRC.
-
-> **The per-byte RXNE sketch below was the original 2025 design and is
-> kept here for context.** It has since been replaced by the layered
-> snoop architecture in [dxl-fast-chain-crc.md](dxl-fast-chain-crc.md) —
-> DMA TC + HT pre-walk for the bulk, a SysTick CMP at `fire − M` for
-> the medium-residue, RXNE only for the slack-budget tail bytes when
-> they exist (§14 of chain-crc.md), walk-at-fire for the final
-> straggle. RXNE-for-snoop is OFF by default; framing remains the sole
-> RXNE owner unless slack-budget math demands the tail-tier (rare for
-> L ≥ 2 payloads). The state machine in §7.2 below has been superseded
-> too — see chain-crc.md §6 + §14.6 for the current FSM and §14.5 for
-> the timeline.
-
-(Historical sketch — for the current implementation see chain-crc.md):
-
-This snoop is independent of the framing mode from §5. It runs at every baud, including 3 Mbaud, alongside whatever framing source is publishing wire-end. They share the USART1 vector (§7.3) but their logic doesn't overlap.
+DXL Fast Sync/Bulk Reads coalesce all addressed slaves' replies into one Status frame with zero idle gap between slots. The last slave appends a CRC covering the entire coalesced frame — header, every preceding slave's bytes, and its own. The bytes we didn't generate still have to be CRC'd, which means watching the wire during the predecessor slots and folding each arriving byte into a running CRC.
 
     Wire (we're the last of three slaves):
         [request bytes] _ _ [slot 0 bytes][slot 1 bytes] TX[our bytes][CRC]
@@ -220,17 +204,19 @@ This snoop is independent of the framing mode from §5. It runs at every baud, i
               parse done — we know we're slot 2     SysTick CMP fires
                          |                              |
                          v                              v
-              build reply + 2-byte CRC slot     disable RXNE-for-snoop
-              pre-arm DMA CH4 (count set,       set TX_EN high, enable DMA CH4
-                EN=0)                           ← bytes start shifting out
-              turn RXNE-for-snoop ON            CRC any bytes that arrived
-              schedule CMP at:                    since the last RXNE entry
-                wire-end + RDT + slot_offset    write the CRC bytes into the
-                                                  TX buffer's trailing slot
+              build reply + 2-byte CRC slot     fire_now() (TX_EN HIGH +
+              pre-arm DMA CH4 (count set,         DMA CH4 enable)
+                EN=0)                           tail walk + CRC patch into
+              arm chain-CRC pre-fold stages       TX buffer's trailing slot
+                (see chain-crc.md)
+              schedule CMP at:
+                wire-end + RDT + slot_offset
 
-Between parse and fire, every RXNE entry runs the snoop body: read the RX DMA cursor, CRC any new bytes since the last entry, advance the cursor. By the fire moment the running CRC is up-to-date except for a tail of bytes still in flight on the wire — those get caught up inside the fire ISR before the CRC bytes are written.
+This snoop is independent of the framing mode from §5. It runs at every baud, alongside whatever framing source is publishing wire-end. They share the USART1 vector (§7.3) but their logic doesn't overlap.
 
-The order "enable TX, _then_ write CRC" looks wrong at first — you're turning on the bytes-going-out-the-wire machine before you've finished writing the bytes. The reason it works is the V006 DMA's one-byte prefetch, covered in §8.2.
+The order "enable TX, *then* write CRC" looks wrong at first — you're turning on the bytes-going-out-the-wire machine before you've finished writing the bytes. The reason it works is the V006 DMA's one-byte prefetch, covered in §8.2.
+
+Full design of the chain-CRC pre-fold stages — including when RXNE-per-byte is engaged for the predecessor tail and when it isn't — lives in [dxl-fast-chain-crc.md](dxl-fast-chain-crc.md). This doc describes how it shares USART1's RXNEIE bit with the framing layer (§7.3).
 
 ---
 
@@ -258,7 +244,7 @@ Two states. Transitions only happen when the host changes a control table field,
         else:
             return Idle
 
-When this FSM enters Rxne, the framing layer needs USART1 RXNEIE on. When it enters Idle, the framing layer no longer wants RXNE — but the hardware bit can't just be cleared, because the Fast snoop path may also want it on. See §7.3.
+When this FSM enters Rxne, the framing layer needs USART1 RXNEIE on. When it enters Idle, the framing layer no longer wants RXNE — but the hardware bit can't just be cleared, because the chain-CRC stage-3 path may also want it on. See §7.3.
 
 ### 7.2 The reply-scheduler FSM
 
@@ -266,42 +252,29 @@ The scheduler arms SysTick CMP to fire TX at the right moment. It's mode-agnosti
 
     states:
       Idle          — nothing scheduled; SysTick IRQ off; DMA CH4 disabled
-      WaitingPlain  — SysTick CMP armed for a non-snoop reply
+      Plain         — SysTick CMP armed for a non-snoop reply
                       (Ping, Read, Sync slot, Bulk slot, Fast Only/First/Middle)
-      WaitingFire   — SysTick CMP armed for a Fast LAST-slave reply
-                      (DMA CH4 pre-armed; snoop CRC accumulating; RXNE-for-snoop ON)
+      Chain         — SysTick CMP armed for a Fast LAST-slave reply
+                      (substates carry the chain-CRC pre-fold timeline;
+                       full definition in chain-crc.md §8)
 
-The split is functional: every reply that doesn't involve snooping predecessor slots' bytes lands in `WaitingPlain`, no matter how complex the slot math is. Only the Fast last-slave path needs `WaitingFire`, because only that path has a CRC to compute over bytes it didn't generate.
-
-> **Superseded.** `WaitingFire` now expands to the
-> `Chain { phase, ... }` substate machine in chain-crc.md §6 +
-> §14.6. The "snoop CRC accumulating; RXNE-for-snoop ON" gloss is
-> only accurate when the slack-budget math in §14.4 demands the
-> tail-tier; for L ≥ 2 cases the chain accumulates via DMA TC/HT +
-> SysTick switch with no RXNE involvement.
+The split is functional: every reply that doesn't involve snooping predecessor slots' bytes lands in `Plain`, no matter how complex the slot math is. Only the Fast last-slave path needs `Chain`, because only that path has a CRC to compute over bytes it didn't generate.
 
 Transitions:
 
-    Idle → WaitingPlain   any non-snoop reply gets scheduled
+    Idle → Plain          any non-snoop reply gets scheduled
                           - pre-configure DMA CH4 (count + source, EN=0)
                           - set SysTick CMP at: wire-end + reply_delay
-                          - no RXNE state change
 
-    Idle → WaitingFire    Fast last-slave reply gets scheduled
-                          - pre-configure DMA CH4 same as above
-                          - turn RXNE-for-snoop ON (§7.3)
-                          - initialize CRC accumulator at "RX cursor right now"
-                          - set SysTick CMP at: wire-end + reply_delay
+    Idle → Chain{…}       Fast last-slave reply gets scheduled
+                          - see chain-crc.md §8 for the full FSM and arm-time
+                            decisions (which pre-fold stages arm, etc.)
 
-    WaitingPlain → Idle   CMP fires:
-                          - enable TX (DMA CH4 + TX_EN high) → bytes start shifting
-                          - no other work
+    Plain → Idle          CMP fires:
+                          - fire_now() (TX_EN HIGH + DMA CH4 enable)
 
-    WaitingFire → Idle    CMP fires:
-                          - turn RXNE-for-snoop OFF
-                          - enable TX → first byte starts shifting
-                          - CRC any bytes that arrived since the last RXNE entry
-                          - write the CRC bytes into the trailing slot of TX buffer
+    Chain{…} → Idle       CMP fires the TxArmed body, walks any remaining tail,
+                          patches CRC into TX buffer's trailing slot
                           (order is load-bearing — see §8.2)
 
     Any → Idle (cancel)   triggered by:
@@ -309,32 +282,26 @@ Transitions:
                           - a new send arrives with old state still lingering
                           - the parser sees a packet we can't honor mid-flight
 
-Cancel is idempotent — running it from Idle is a no-op. Every send routine pre-cancels just in case, to avoid a stale CMP re-firing into a fresh reply's buffer. The cost is one CMP-disable write per send, which is negligible.
+Cancel is idempotent — running it from Idle is a no-op. Every send routine pre-cancels just in case, to avoid a stale CMP re-firing into a fresh reply's buffer.
 
-When cancel runs in `WaitingFire`, "turn RXNE-for-snoop OFF" has to go through the composer (§7.3), not blanket-clear the hardware bit — otherwise it would also kill framing's per-byte publish when framing is in Rxne mode.
+When cancel runs in `Chain`, the chain-CRC layer's RXNE owner has to go through the composer (§7.3), not blanket-clear the hardware bit — otherwise it would also kill framing's per-byte publish when framing is in Rxne mode.
 
 ### 7.3 Sharing the RXNE interrupt
 
 RXNEIE has two independent owners:
 
     framing-mode publisher    active iff framing FSM == Rxne
-    snoop tail-pre-walk       active iff Chain { rxne_tail_at } says so
-                              (see chain-crc.md §14.4 for when this is set)
+    chain-CRC stage 3         active iff Chain.rxne_tail_at != u16::MAX
+                              (see chain-crc.md §5 for when this is set)
 
 These are orthogonal — any combination is possible:
 
-    | framing | snoop tail | RXNEIE | handler body runs                       |
+    | framing | stage 3    | RXNEIE | handler body runs                       |
     | ------- | ---------- | ------ | --------------------------------------- |
     | Idle    | off        |  off   | (IRQ disabled)                          |
-    | Idle    | on (tail)  |   on   | snoop tail-walk only                    |
+    | Idle    | on         |   on   | snoop tail-walk only                    |
     | Rxne    | off        |   on   | publish per-byte timestamp only         |
-    | Rxne    | on (tail)  |   on   | publish + snoop tail-walk               |
-
-The snoop owner's role here is narrower than the original design — it
-only arms during the predecessor's last `tail_bytes` of a Fast Last
-reply when `start_fast_after` determined the post-fire walk alone
-wouldn't fit slack (chain-crc.md §14.4). For Fast Sync with L ≥ 2 the
-snoop owner stays off entirely; framing remains the sole RXNE owner.
+    | Rxne    | on         |   on   | publish + snoop tail-walk               |
 
 The hardware has one enable bit. Simple way to compose two owners onto one bit: each owner tracks its own boolean, and on every change the layer recomputes `final = framing_wants OR snoop_wants` and writes that to RXNEIE. Conceptually:
 
@@ -349,8 +316,8 @@ The handler runs both branches in sequence, each guarded by its own FSM check:
     on USART1 entry (when RXNE is the cause):
         if framing FSM == Rxne:
             publish (rx_cursor_now, systick_now) to the single-cell snapshot
-        if scheduler FSM == WaitingFire:
-            CRC new bytes from RX ring (head = NDTR-derived) into the accumulator
+        if scheduler FSM == Chain and rxne_tail_at != u16::MAX:
+            walk new bytes from RX ring into the chain CRC accumulator
 
 When only one branch matches, the other is a single state-check skip. When both match, both run in one IRQ entry — no extra interrupts, no double-handling.
 
@@ -360,7 +327,7 @@ The composer is touched from two contexts: the main loop (when the host writes R
 
 ## 8. The bag of tricks
 
-This is the section that earns the rest of the design its timing budget. Each trick is small on its own; together they get the V006 from "barely talks DXL at 1 Mbaud" to "passes the DXL 2.0 spec at all standard baud rates plus 2 Mbaud Fast, and brushes 3 Mbaud Fast within ~2 µs." §13 has the honest accounting.
+This is the section that earns the rest of the design its timing budget. Each trick is small on its own; together they get the V006 from "barely talks DXL at 1 Mbaud" to passing the DXL 2.0 spec across the standard baud range and into Fast mode. §13 has the structural accounting of where the design's edges sit.
 
 ### 8.1 Highcode: living in SRAM, not flash
 
@@ -374,21 +341,17 @@ What we put in `.highcode`:
 - The qingke-rt trap stubs (the assembly that decodes the IRQ vector and the wrappers around each Rust ISR). Without these in SRAM, you eat a flash hit on every IRQ entry regardless of where the body lives. Enabling the feature pulls these in automatically.
 - The PFIC vector tables (also moved automatically). `mtvec` is rewritten by `_setup_interrupts` to point into SRAM.
 
-What it cost on a real build (rev_b app): `.highcode = ~1.5 KB`, total RAM usage ~4 KB of 8 KB. Plenty of headroom.
-
-What it bought: SysTick CMP → TX_EN-high shrank from ~7 µs to ~5 µs at 3 Mbaud (~2 µs saved). Not enough on its own to hit the 3.33 µs spec, but the largest single lever we've pulled.
+The cost is RAM (~1.5 KB of the V006's 8 KB); the win is roughly 2 µs shaved off the SysTick-CMP → TX_EN-high path at 3 Mbaud — the largest single lever we've pulled for hot-path latency.
 
 ### 8.2 Riding DMA's one-byte prefetch
 
-This is the trick that lets the Fast last-slave path patch its CRC bytes into the TX buffer _after_ TX is already shifting bytes out.
+This is the trick that lets the Fast last-slave path patch its CRC bytes into the TX buffer *after* TX is already shifting bytes out.
 
 The V006 RM §14.6 says USART TX DMA reads one byte at a time from RAM into the data register (TDR) on each TXE event. TDR holds it until the shift register accepts it. There's exactly one byte of look-ahead — no FIFO, no burst, no flow controller, no prefetch buffer beyond TDR.
 
 So for TX buffer position M, DMA reads it from RAM at `(M − 1) × byte_time` after TX is enabled. If you can write byte M into the buffer before that moment, it lands correctly on the wire.
 
 How we use this: at the SysTick CMP fire moment, enable TX **first**, then compute the snoop CRC over our payload, then write the two CRC bytes into the trailing slot of the TX buffer. The fire-moment jitter cap is just the time from CMP IRQ entry to DMA EN write + TX_EN GPIO toggle — a handful of instructions. The CRC compute can take tens of microseconds and still finish before DMA needs the result.
-
-Bench validation (`tx_dma_race`, 2026-05-24) swept payload lengths 1 to 128 at 3 Mbaud, captured the wire bytes via a separate serial bridge, and confirmed every length passes — including the pathological 2-byte case where the deadline is exactly one byte time (3.33 µs).
 
 Wrap-aware CRC: the snoop window can span the RX ring boundary. The accumulator handles it in two passes when `head < snoop_pos`:
 
@@ -397,8 +360,6 @@ Wrap-aware CRC: the snoop window can span the RX ring boundary. The accumulator 
     else:
         mid = crc16_continue(seed, ring[snoop_pos..])
         crc16_continue(mid, ring[..head])
-
-Unit-tested in `dxl_fast.rs::tests::ring_crc_*`.
 
 ### 8.3 SysTick CMP — the up-count match gotcha
 
@@ -414,7 +375,7 @@ Our scheduling pattern handles it:
 
 This "set + recheck + manual-fire" loop is in every Fast path arm site (`start_plain_after`, `start_fast_after`). Without it, a slot deadline that lands microseconds past the arming moment would silently sleep for 89 seconds.
 
-Related V006 quirk: qingke-rt v2 init enables STIE and `mstatus.MIE`, but does **not** set the PFIC IENR1 bit for SysTick. Until that's set, `CNTIF` latches but the IRQ never fires. Bringup hit this. Production firmware now sets it explicitly during init.
+Related V006 quirk: qingke-rt v2 init enables STIE and `mstatus.MIE`, but does **not** set the PFIC IENR1 bit for SysTick. Until that's set, `CNTIF` latches but the IRQ never fires. Production firmware sets it explicitly during init.
 
 ### 8.4 Priority pinning: USART1 = SysTick
 
@@ -424,13 +385,9 @@ The trick: put **both USART1 and SysTick at High** and use PFIC's same-priority 
 
 > Same-priority IRQs never preempt each other.
 
-This gives mutual exclusion across the two ISRs that share state — scheduler FSM, snoop CRC accumulator, RXNEIE composer — without writing any locks. The cost is that the worse of the two ISR runtimes shows up as latency for the other; current measurements:
+This gives mutual exclusion across the two ISRs that share state — scheduler FSM, snoop CRC accumulator, RXNEIE composer — without writing any locks. DMA1_CH5 HT/TC (the chain-CRC stage-1 path) sits at the same High priority for the same reason.
 
-- `on_systick` (Fast fire ISR): ~2 µs entry-to-fire post-highcode.
-- `on_usart1_idle` (IDLE backdate + queue push): ~1.5 µs.
-- Combined back-to-back worst case: ~3.5 µs — still under one byte time at 2 Mbaud (5 µs).
-
-The ADC pump runs at Low and **can** be preempted by either DXL IRQ once INTSYSCR.INESTEN is set. ADC jitter is comfortable with that.
+The cost is that the worse of any two ISR runtimes shows up as latency for the other. The ADC pump runs at Low and **can** be preempted by either DXL IRQ once `INTSYSCR.INESTEN` is set. ADC jitter is comfortable with that.
 
 ### 8.5 The IDLE-stamp queue with cumulative counter
 
@@ -448,15 +405,15 @@ The match logic in `pop_matching(parsed_end)` walks the ring:
 
 ### 8.6 Mode-specific backdating
 
-USART IDLE fires 9 bit-times _after_ wire-end. We subtract `9 × BRR` HCLK ticks from `systick::ticks()` at IRQ entry to recover the wire-end timestamp:
+USART IDLE fires 9 bit-times *after* wire-end. We subtract `9 × BRR` HCLK ticks from `systick::ticks()` at IRQ entry to recover the wire-end timestamp:
 
     idle_tick = systick::ticks().wrapping_sub(DXL_CHAR_TIME_TICKS)
 
-This is correct only for **IDLE** framing. RXNE framing must **not** backdate — RXNE fires at the stop-bit moment, which is wire-end itself. Mixing them up shifts every Rxne-mode timestamp one char-time too early and the slave fires its reply that much too soon. Easy bug to write.
+This is correct only for **IDLE** framing. RXNE framing must **not** backdate — RXNE fires at the stop-bit moment, which is wire-end itself. Mixing them up shifts every Rxne-mode timestamp one char-time too early and the slave fires its reply that much too soon.
 
 ### 8.7 Pre-arm at parse, fire at deadline
 
-DMA CH4's `EN` bit gates whether bytes go out. Splitting "configure" from "enable" lets us do the slow work (set count, set source, clear stale TC) at parse time, and have the fire path be two writes: `DMA1.CH4.CR |= EN; GPIOx.BSHR = TX_EN_bit`. Pre-caching those two register values at arm time is a further lever we haven't pulled yet (§13).
+DMA CH4's `EN` bit gates whether bytes go out. Splitting "configure" from "enable" lets us do the slow work (set count, set source, clear stale TC) at parse time, and have the fire path be two writes: `DMA1.CH4.CR |= EN; GPIOx.BSHR = TX_EN_bit`. Pre-caching those two register values at arm time is a further lever we haven't pulled.
 
 ### 8.8 RXNE for snoop without polling the flag
 
@@ -474,6 +431,7 @@ and CRC's `ring[snoop_head..write_pos]` (with the wrap split from §8.2). If two
 | --- | --- | --- | --- |
 | High | USART1 | IDLE + RXNE + TC (all multiplexed) | `.highcode` (SRAM) |
 | High | SysTick CMP | Reply deadline → fire TX | `.highcode` (SRAM) |
+| High | DMA1_CH5 HT/TC | Chain-CRC stage-1 pre-walk (gated) | `.highcode` (SRAM) |
 | Low | DMA1_CH1 | ADC kernel pump (20 kHz) | flash (cold path) |
 
 ### 9.1 The USART1 vector
@@ -491,12 +449,12 @@ Three flags can wake it; handle each in turn.
         nothing to push — RXNE entries already published wire-end
         clear the IDLE flag so it doesn't re-fire forever
 
-**RXNE flag** (a byte arrived — we entered because at least one owner wanted RXNEIE on; §7.3):
+**RXNE flag** (a byte arrived — at least one owner wanted RXNEIE on; §7.3):
 
     if framing FSM == Rxne:
         publish (rx_cursor_now, systick::ticks()) to single-cell snapshot
-    if scheduler FSM == WaitingFire:
-        catch the snoop CRC up to the current RX DMA cursor
+    if scheduler FSM == Chain and rxne_tail_at != u16::MAX:
+        walk new bytes from RX ring into chain CRC, mask when threshold met
 
 The RXNE branches don't gate on STATR.RXNE (§3.1). Both branches' guards run on every USART1 entry; either or both can do work.
 
@@ -522,17 +480,20 @@ Single purpose: fire the reply at the slot deadline. Body is in `dxl_fast::on_sy
 
     clear CMP match flag, disable SysTick IRQ
     read scheduler FSM
-    if WaitingPlain:
+    if Plain:
         set FSM = Idle
         fire_now()    # enable TX_EN + DMA CH4
-    if WaitingFire:
-        turn RXNE-for-snoop off (composer)
-        set FSM = Idle
+    if Chain{TxArmed}:
+        set FSM = Idle (via chain phase transition; see chain-crc.md §8)
         fire_now()                  # fire first — jitter-critical
         accumulate any residual snoop bytes
         patch CRC into TX buffer's trailing slot
 
-The fire-first order in `WaitingFire` is the §8.2 trick. Bookkeeping after fire is fine because DMA hasn't reached the CRC slot yet.
+The fire-first order in `Chain{TxArmed}` is the §8.2 trick. Bookkeeping after fire is fine because DMA hasn't reached the CRC slot yet.
+
+### 9.3 The DMA1_CH5 vector
+
+Chain-CRC stage-1 walk. Body in `dxl_fast::on_dma1_ch5`. Only fires when the chain-CRC layer has armed HT_IE/TC_IE; otherwise unwired. See [dxl-fast-chain-crc.md §3](dxl-fast-chain-crc.md).
 
 ---
 
@@ -616,10 +577,10 @@ The TC recompute sees the already-updated RDT (RDT step ran first) and the fresh
 
 ## 12. The RX DMA channel
 
-DMA1_CH5 sits behind everything and captures every byte on the wire into the ring. The framing layer never touches it:
+DMA1_CH5 sits behind everything and captures every byte on the wire into the ring. The framing layer never disables it:
 
     Mode:      circular, memory-increment, never disabled
-    Size:      power-of-two ring (1024 bytes on rev_b; minimum 256)
+    Size:      power-of-two ring (512 bytes; see chain-crc.md §7 for sizing)
     Source:    USART1 data register
     Trigger:   per-byte from USART1 RXNE
 
@@ -628,55 +589,42 @@ Two reasons it's always on:
 1. **Foreign traffic doesn't crash anything.** Bytes from other protocols sharing the bus (bootloader handshakes, USB bridges, debug streams) land in the ring but never get parsed — harmless.
 2. **It's the source of position values.** Both timestamp publishers (IDLE-queue push, RXNE single-cell publish) and the snoop accumulator read NDTR to derive the ring cursor. No per-byte software bookkeeping needed.
 
+The chain-CRC layer additionally enables DMA1_CH5's HT_IE and TC_IE during Fast Last-slave snoop windows (stage 1). When the chain isn't active, those IRQs are masked and the ring just absorbs bytes silently.
+
 TX uses CH4, single-shot per reply, configured per-fire and torn down in the TC handler.
 
 ---
 
 ## 13. Where the V006 sits on the DXL 2.0 spec
 
-Honest accounting of what we hit and what we miss as of 2026-05-27.
+Honest accounting of where the design's structural edges land.
 
 **Hardware constants:**
 
 - 48 MHz HCLK, 1-cycle SRAM, 2-wait flash above 24 MHz.
-- ~5 µs from SysTick CMP → TX_EN GPIO high, post-highcode (V006 V2 structural floor).
-- USART1 + SysTick at same High priority (no preemption between them).
+- ~5 µs from SysTick CMP → first wire bit, post-highcode (V006 V2A structural floor).
+- USART1 + SysTick + DMA1_CH5 at the same High priority (no preemption between them).
 
 **Per-path fire latency** (`firmware/ch32/src/statics.rs`, ticks at 48 MHz HCLK):
 
-    | path                            | const                     | initial bootstrap |
-    | ------------------------------- | ------------------------- | ----------------- |
-    | plain reply (`start_plain_after`) | `TX_PLAIN_LATENCY_TICKS`  | 144 (~3.0 µs)     |
-    | Fast chain (`start_fast_after`)   | `TX_FAST_LATENCY_TICKS`   | 144 (~3.0 µs)     |
+    | path                                | const                     |
+    | ----------------------------------- | ------------------------- |
+    | plain reply (`start_plain_after`)   | `TX_PLAIN_LATENCY_TICKS`  |
+    | Fast chain (`start_fast_after`)     | `TX_FAST_LATENCY_TICKS`   |
 
-The Fast path does extra work before `fire_now` (DMA TCIE off, phase transition, dbg pin, snoop-CRC scaffolding) so its effective latency is larger. The split lets each path's wire-edge land at the scheduled tick — a single knob forces one path to overshoot. Per-chip values come from #52; the per-chip `clock_fine_trim_us` residual lives in a separate atomic and is summed at the fire site.
+The Fast path does extra work before `fire_now` (DMA HT/TC arming, FSM transition, snoop-CRC scaffolding) so its effective latency is larger. The split lets each path's wire-edge land at the scheduled tick — a single shared knob would force one path to overshoot. Per-chip residual on top of the family default is captured by the HSI cal flow ([dxl-hsi-calibration.md](dxl-hsi-calibration.md)).
 
-**Per-baud accounting:**
-
-    | baud  | byte time | plain DXL (RDT 250 µs) | Fast last-slave (jitter cap = 1 byte) |
-    | ----- | --------- | ---------------------- | ------------------------------------- |
-    | 9600  |  1042 µs  | RXNE framing (auto)    | (rare config; not bench-tested)       |
-    | 57600 |   174 µs  | passes                 | passes                                |
-    | 115200|    87 µs  | passes                 | passes                                |
-    | 1 M   |    10 µs  | passes                 | passes (5 µs floor < 10 µs cap)       |
-    | 2 M   |     5 µs  | passes                 | **6 µs gap, cap 5 µs — over spec**    |
-    | 3 M   |  3.33 µs  | passes                 | **5 µs gap, cap 3.33 µs — over spec** |
-
-The 2 Mbaud and 3 Mbaud Fast last-slave numbers are scope captures on rev_b with an INJ V203 as the predecessor slave. The bus _does_ go idle between slots in those cases — visible as an extra IDLE on the injector's listener — which breaks coalesce. The host parses each slot as a separate Status frame, which is wrong but recoverable; some hosts tolerate it, some don't.
-
-**Where the 5 µs goes:**
+**Where the ~5 µs goes:**
 
 - PFIC trap entry: ~1 µs (irreducible without core changes).
 - Fire ISR body (post-highcode): ~1.5 µs.
 - DMA EN write → TX_EN GPIO toggle → first start bit on the wire: ~2 µs.
 
-Total ~5 µs is the structural floor for an ISR-driven fire on V006 V2 @ 48 MHz. Highcode bought ~2 µs of that. The remaining levers, in increasing complexity:
+That's the structural floor for an ISR-driven fire on V006 V2A @ 48 MHz. Highcode (§8.1) brought it down from ~7 µs; the remaining levers are smaller.
 
-1. **Pre-cache TX_EN BSHR + DMA CR|EN values at arm time.** Makes `fire_now` two stores with no computation. ~0.3 µs.
-2. **Defer bookkeeping after `fire_now`.** Cleanup (clear FSM stage, clear RXNE snoop owner) happens before `mret` but after TX is already shifting. ~0.5 µs.
-3. **Hardware-driven fire via TIM2 OPM + two DMA channels.** Arm TIM2 in OPM with `ARR = fire_tick − HW_PIPELINE_TICKS` and `CCR4 = ARR − a-tick-or-two`. CC4 match triggers DMA1_CH7 → writes `GPIOC.BSHR` to set TX_EN HIGH (inside the predecessor's stop-bit safe window, where both ends drive HIGH and there's no bus contention). The next-tick ARR-wrap fires UP → triggers DMA1_CH2 → writes `USART1.CTLR3` to set DMAT, kicking off the USART pulling bytes from the pre-armed CH4 TX DMA. OPM stops the counter on UP so there's no re-arm race with the next fire. PFIC trap entry leaves the critical path entirely — fire latency drops from ~6 µs (CMP-match → wire bit) to sub-microsecond plus the ½ baud-tick USART start-bit sync floor (the silicon-irreducible piece even the pirate's TIM1-OPM fire sees on its V20x). Realistic shot at <1 µs on V006 V2. The catch is TIM2 then can't double as a bench-time encoder counter, which is its only other plausible role on this board — so the impl is gated behind a `dxl-hw-fire` Cargo feature and the SysTick path stays as the dev-time fallback. Detailed wiring in [dxl-fast-chain-crc.md §15](dxl-fast-chain-crc.md).
+**Implications across the baud range.** Plain DXL replies (the `Plain` scheduler path) have an RDT-µs budget for fire, comfortably absorbing the 5 µs floor at every spec-supported baud. Fast Sync/Bulk replies in the non-Last slots (First, Middle, Only) use the same `Plain` path against the master's request IDLE — they work at all bauds because there's no inter-slot jitter cap on those positions.
 
-Until lever 3 lands, the V006 cap for Fast Sync/Bulk Read **as last slave** is effectively 1 Mbaud. Slot 0, middle, and Only positions all use plain `WaitingPlain` scheduling timed against the master's request IDLE — those work at all baud rates because there's no inter-slot jitter cap.
+The Fast **Last** slot is the constrained case: its inter-slot jitter cap is one byte time. At 1 Mbaud (10 µs byte time) the 5 µs floor is well under cap. At 3 Mbaud (3.33 µs byte time) the floor sits at the same order as the cap, and a portion of shots show a visible idle gap on the wire even though the CRC remains correct (see [dxl-fast-chain-crc.md §12](dxl-fast-chain-crc.md)). The chain-CRC machinery in `chain-crc.md` ensures the CRC stays correct across this regime; closing the wire-side coalesce gap at the highest bauds requires getting PFIC trap entry out of the fire critical path, which the SysTick-driven design doesn't address.
 
 ---
 
@@ -720,4 +668,4 @@ The TC handler runs `scheduler::cancel`, which disables SysTick CMP IRQ. If a CM
 
 ## 15. One-paragraph summary
 
-> At high baud the USART's IDLE flag publishes wire-end fast enough to meet RDT; at low baud it shows up too late and we fall back to per-byte RXNE timestamps. A small decision rule, `char_time_us + pipeline_margin_us > rdt_us`, picks between them based on the host-configured baud and RDT. The framing FSM only changes when the host changes baud (recompute at TC, after the reply drains) or RDT (recompute immediately). The reply scheduler is a separate FSM (Idle / WaitingPlain / WaitingFire) that arms SysTick CMP for the fire moment; WaitingFire is reserved for Fast last-slave replies with their snoop CRC over predecessor slots' bytes. Both FSMs share the RXNE interrupt via an OR-composer because each can independently want it on. The V006 specifics — flash wait-states, two PFIC priority levels, DMA single-byte prefetch, SysTick up-count match semantics — drive the rest of the design: highcode for ISR bodies, fire-before-CRC-patch for Fast last-slave, set-and-recheck for SysTick CMP, equal-priority pinning of USART1 and SysTick for lockless mutual exclusion. The whole stack passes DXL 2.0 spec through 2 Mbaud plain DXL and 1 Mbaud Fast; 2 Mbaud and 3 Mbaud Fast last-slave miss the inter-slave jitter cap by 1–2 µs (CRC stays correct thanks to the chain-CRC + RXNE-tail tier from chain-crc.md §14, but the wire shows visible idle gap ~25-30% of shots because the SysTick fire path has ~5 µs of PFIC entry jitter we can't tune out), and the lever to close it (hardware-driven fire via TIM2 OPM + DMA1_CH7/CH2) is documented in chain-crc.md §15 but not yet implemented.
+> At high baud the USART's IDLE flag publishes wire-end fast enough to meet RDT; at low baud it shows up too late and we fall back to per-byte RXNE timestamps. A small decision rule, `char_time_us + pipeline_margin_us > rdt_us`, picks between them based on the host-configured baud and RDT. The framing FSM only changes when the host changes baud (recompute at TC, after the reply drains) or RDT (recompute immediately). The reply scheduler is a separate FSM (Idle / Plain / Chain) that arms SysTick CMP for the fire moment; Chain expands into the chain-CRC substate machine for Fast Last-slave replies (full design in chain-crc.md). Framing's RXNE publisher and chain-CRC stage 3 share USART1's RXNEIE bit via an OR-composer because each can independently want it on. The V006 specifics — flash wait-states, two PFIC priority levels, DMA single-byte prefetch, SysTick up-count match semantics — drive the rest of the design: highcode for ISR bodies, fire-before-CRC-patch for Fast last-slave, set-and-recheck for SysTick CMP, equal-priority pinning of USART1, SysTick, and DMA1_CH5 for lockless mutual exclusion. The SysTick-driven fire path has a ~5 µs structural floor on V006 V2A which sits comfortably under the inter-slot jitter cap up to ~1 Mbaud and approaches it at the top of the baud range.
