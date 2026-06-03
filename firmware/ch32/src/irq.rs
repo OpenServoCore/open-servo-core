@@ -111,6 +111,16 @@ fn on_usart1_tc() {
     let buf = unsafe { &mut *DXL_TX_BUF.get() };
     buf.clear();
     dxl::cancel();
+    apply_pending_after_tc();
+}
+
+/// Drain queued config writes (baud / clock_trim / fine_trim / reboot) after
+/// the reply has fully drained the wire. Runs at the tail of `on_usart1_tc`
+/// — off the wire-fire jitter path, so individual handlers can take their
+/// time. Each slot is consume-on-swap so a back-to-back reply that re-queues
+/// the same knob doesn't apply twice.
+#[inline(always)]
+fn apply_pending_after_tc() {
     let pending_brr = DXL_BAUD_PENDING_BRR.swap(0, Ordering::AcqRel);
     if pending_brr != 0 {
         usart::set_baud(USART1, pending_brr);
