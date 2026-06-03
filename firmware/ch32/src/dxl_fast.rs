@@ -11,12 +11,12 @@ use crate::hal::{dma, gpio, systick, usart};
 use crate::measurements::{
     CATCHUP_ENTRY_TICKS, FAST_ENTRY_TICKS, PFIC_ENTRY_TICKS, PLAIN_ENTRY_TICKS,
 };
+#[cfg(feature = "scope")]
+use crate::statics::DXL_DBG_PIN;
 use crate::statics::{
     DXL_BYTE_TIME_TICKS, DXL_BYTES_PER_US_Q16, DXL_RX_BUF, DXL_RX_BUF_LEN, DXL_TX_BUF, DXL_TX_EN,
     FIRE_ADVANCE_FINE_TICKS, SHARED,
 };
-#[cfg(feature = "scope")]
-use crate::statics::{DXL_DBG_PIN, DXL_STAT_PIN};
 
 /// Which request end tick detection + fire path a given reply takes.
 #[allow(dead_code)]
@@ -116,31 +116,55 @@ pub enum ReplyState {
 
 static STATE: SyncUnsafeCell<ReplyState> = SyncUnsafeCell::new(ReplyState::Idle);
 
+/// Per-state dispatch handler called from `on_systick`. Recomputed on every
+/// state/phase transition so the SysTick ISR pays one indirect call instead
+/// of a data-dependent match chain.
+type DispatchFn = fn();
+
+static DISPATCH: SyncUnsafeCell<DispatchFn> = SyncUnsafeCell::new(body_noop);
+
+#[inline(always)]
+fn dispatch_for(s: &ReplyState) -> DispatchFn {
+    match s {
+        ReplyState::Idle => body_noop,
+        ReplyState::Plain => body_plain_fire,
+        ReplyState::Chain {
+            phase: FastChainPhase::PeriodicCatchup,
+            ..
+        } => body_chain_catchup,
+        ReplyState::Chain {
+            phase: FastChainPhase::TxArmed,
+            ..
+        } => body_chain_fast_fire,
+        ReplyState::Chain { .. } => body_noop,
+    }
+}
+
 const _: () = assert!(DXL_RX_BUF_LEN.is_power_of_two() && DXL_RX_BUF_LEN <= u16::MAX as usize + 1);
 const RX_MASK_U16: u16 = (DXL_RX_BUF_LEN as u16).wrapping_sub(1);
 const RX_MASK_U32: u32 = (DXL_RX_BUF_LEN - 1) as u32;
 
 /// Target bytes folded per periodic catchup body. Sized so each body's CRC
-/// walk (~0.5 µs/byte) stays well under one kernel tick: 15 × 0.5 = 7.5 µs
-/// (chain-crc-time-driven.md §2.1). Per-baud interval falls out as
-/// `BYTES_PER_INTERVAL × byte_time_ticks` — natural alignment at 3M/1M/500k
-/// to the kernel's 50 µs grid.
+/// walk (~0.5 µs/byte) stays well under one kernel tick: 15 × 0.5 = 7.5 µs.
+/// Per-baud interval falls out as `BYTES_PER_INTERVAL × byte_time_ticks`.
 const BYTES_PER_INTERVAL: u32 = 15;
 
 /// Predecessor bytes the pre-fire walk-loop leaves on the wire for the
-/// post-fire walk. With GUARD=3 the gap between walk-loop exit and
-/// `fire_tick` is `t_guard − tx_latency` ≈ 3.9 µs at 3 M / ~24 µs at 1 M —
-/// enough for one PFIC-LOW ISR (ADC TC) to slip in without pushing fire
-/// past pirate's 1-char_time IDLE threshold.
-const GUARD_BYTES: u16 = 1;
+/// post-fire walk. Floor of 2 keeps `t_guard > t_fast_entry` at every
+/// supported baud, so `walk_deadline` always precedes `fire_tick` — the
+/// `TxArmed` handoff yields cleanly and never needs an inline re-entry
+/// (see body_chain_catchup post-fold handoff). At 3M the resulting gap is
+/// `2 × byte_time − t_fast_entry` ≈ 3.25 µs, enough for one PFIC-LOW ISR
+/// (ADC TC) to slip in without pushing fire past pirate's 1-char_time
+/// IDLE threshold.
+const GUARD_BYTES: u16 = 2;
+const _: () = assert!(GUARD_BYTES >= 2, "GUARD_BYTES < 2 puts 3M in recursive-fire mode");
 
-/// Plain advance adds a per-baud `bt/4` (≈ 2.5 bit-times) term covering the
-/// USART BRR-sync + listener IDLE-detect pipeline on top of the
-/// baud-independent [`PLAIN_ENTRY_TICKS`]. Without the per-baud term, a
-/// single-baud calibration lands Plain at zero only at the calibration
-/// baud — bench 2026-06-01 saw -1.2/-1.5 µs early at 2M/3M after tuning at
-/// 1M. Fast keeps the flat form because its bench metric cancels listener
-/// lag.
+/// Plain advance adds a per-baud `bt/4` (≈ 2.5 bit-times) term covering
+/// the USART BRR-sync + listener IDLE-detect pipeline on top of the
+/// baud-independent [`PLAIN_ENTRY_TICKS`]. Without it, a single-baud
+/// calibration only lands Plain at zero on the calibration baud. Fast
+/// keeps the flat form because its bench metric cancels listener lag.
 #[inline(always)]
 fn plain_fire_advance_ticks() -> u32 {
     let bt = DXL_BYTE_TIME_TICKS.load(Ordering::Relaxed);
@@ -149,13 +173,25 @@ fn plain_fire_advance_ticks() -> u32 {
     (latency as i32 + fine).clamp(0, u16::MAX as i32) as u32
 }
 
-/// Fast chain fire is anchored to predecessor wire bytes (snoop), so the
-/// per-chip HSI fine trim doesn't apply — within one slave's clock domain
-/// the chain timing is self-consistent. Plain fire still needs the trim
-/// because its anchor (`request_end`) lives in the master's clock domain.
+/// Fast chain fire shares the `FIRE_ADVANCE_FINE_TICKS` knob with plain so
+/// host-side calibration dials both paths together. Per-path independence
+/// would only matter if their residuals diverge.
 #[inline(always)]
 fn fast_fire_advance_ticks() -> u32 {
-    PFIC_ENTRY_TICKS + FAST_ENTRY_TICKS
+    let latency = PFIC_ENTRY_TICKS + FAST_ENTRY_TICKS;
+    let fine = FIRE_ADVANCE_FINE_TICKS.load(Ordering::Relaxed) as i32;
+    (latency as i32 + fine).clamp(0, u16::MAX as i32) as u32
+}
+
+/// Catchup anchor backdate: same shared fine-trim knob, so the last-catchup
+/// body lands on the same wall-clock offset as fire. Without this, a non-zero
+/// fine trim shifts fire without shifting the busy-wait fold loop, breaking
+/// the `walk_deadline = t_prior_end − t_guard` invariant.
+#[inline(always)]
+fn catchup_backdate_ticks() -> u32 {
+    let base = PFIC_ENTRY_TICKS + CATCHUP_ENTRY_TICKS;
+    let fine = FIRE_ADVANCE_FINE_TICKS.load(Ordering::Relaxed) as i32;
+    (base as i32 + fine).clamp(0, u16::MAX as i32) as u32
 }
 
 /// TX_EN and DMA CH4 stay off so the bus remains in RX through any preceding
@@ -188,6 +224,18 @@ pub fn fire_now() {
         gpio::set_level(t.pin, t.tx_level);
     }
     dma::enable(dma::Channel::CH4);
+}
+
+/// Scope trigger pulse on `DXL_DBG_PIN`. Moved between sites as the bench
+/// experiment requires. Compile-time no-op without `--features scope`.
+#[inline(always)]
+fn dbg_pulse() {
+    #[cfg(feature = "scope")]
+    // SAFETY: written once at bring-up before any ISR can read.
+    if let Some(p) = unsafe { *DXL_DBG_PIN.get() } {
+        gpio::set_level(p, Level::High);
+        gpio::set_level(p, Level::Low);
+    }
 }
 
 /// Plain (non-snoop) reply: schedule a fire at `request_end + delay_us`.
@@ -236,9 +284,9 @@ pub fn start_fast_after(request_end_tick: u32, fire_q88_us: u32, snoop_from: Opt
         return;
     }
 
-    // Q8.8 µs × ticks/µs = Q8.8 ticks; shift to whole ticks. Resolution is
-    // 1/256 µs ≈ 4 ns — tighter than HCLK (20.8 ns), so the wire-time math
-    // no longer loses 0.3–0.7 µs to integer-µs flooring at 3M.
+    // Q8.8 µs × ticks/µs = Q8.8 ticks; shift to whole ticks. The 1/256 µs
+    // (≈ 4 ns) resolution is tighter than HCLK, so wire-time math doesn't
+    // lose sub-tick precision to integer-µs flooring at high baud.
     let fire_needed_ticks = ((fire_q88_us as u64 * systick::TICKS_PER_US as u64) >> 8) as u32;
     let fire_needed = fire_needed_ticks.saturating_sub(fast_fire_advance_ticks());
     let fire_tick = request_end_tick.wrapping_add(fire_needed);
@@ -248,12 +296,10 @@ pub fn start_fast_after(request_end_tick: u32, fire_q88_us: u32, snoop_from: Opt
         None => (0, 0),
     };
 
-    // Last catchup tick = `t_fire − min(interval, t_prior_duration) − t_guard`.
-    // It anchors the START of a busy-wait fold loop that times out at
-    // `t_prior_end − t_guard` — by which point `n_pred − GUARD` predecessor
-    // bytes have landed. The remaining GUARD bytes belong to the post-fire
-    // walk. For n_pred ≤ GUARD the walk-loop just no-ops and post-fire
-    // absorbs everything; collapse to a single CMP at fire_tick.
+    // Anchor the START of the pre-fire busy-wait fold loop. The loop times
+    // out at `t_prior_end − t_guard`; the trailing GUARD bytes belong to
+    // the post-fire walk. For n_pred ≤ GUARD the walk-loop no-ops and
+    // post-fire absorbs everything, so collapse to a single CMP at fire_tick.
     let byte_time = byte_time_ticks_now();
     let rdt_ticks = unsafe {
         (&raw const (*SHARED.table.config.get()).comms.return_delay_2us).read_volatile() as u32
@@ -274,7 +320,7 @@ pub fn start_fast_after(request_end_tick: u32, fire_q88_us: u32, snoop_from: Opt
         fire_tick
             .wrapping_sub(interval.min(t_prior_duration))
             .wrapping_sub(t_guard)
-            .wrapping_sub(PFIC_ENTRY_TICKS + CATCHUP_ENTRY_TICKS)
+            .wrapping_sub(catchup_backdate_ticks())
     } else {
         fire_tick
     };
@@ -313,10 +359,8 @@ pub fn start_fast_after(request_end_tick: u32, fire_q88_us: u32, snoop_from: Opt
 
 /// Predict predecessor wire bytes for the post-fire fold target and the
 /// `PreviousSlotTimeout` floor. The wire window is the *predecessor's*
-/// transmission span `fire_q88_us − rdt_q88_us`, not the SysTick scheduling
-/// window — the latter folds in the fire-advance latency and (more
-/// importantly) doesn't subtract RDT, which would balloon n_pred by ~5× at
-/// typical RDT/baud combinations.
+/// transmission span `fire_q88_us − rdt_q88_us` — not the SysTick scheduling
+/// window, which would balloon n_pred by ~5× since it doesn't subtract RDT.
 #[inline]
 fn predict_n_pred(fire_q88_us: u32) -> u16 {
     // SAFETY: u8 access — no tearing. Boot-seeded or main-loop-written; ISR
@@ -343,131 +387,147 @@ fn predict_n_pred_pure(fire_q88_us: u32, rdt_q88_us: u32, bytes_per_us_q16: u32)
     n.min(u16::MAX as u64) as u16
 }
 
-/// Per-baud periodic catchup interval in HCLK ticks. Sized as
-/// `BYTES_PER_INTERVAL × byte_time` so each body walks a bounded number of
-/// bytes regardless of baud (chain-crc-time-driven.md §2.1).
+/// Per-baud periodic catchup interval in HCLK ticks. Each body walks
+/// `BYTES_PER_INTERVAL` worth of wire bytes regardless of baud.
 #[inline(always)]
 fn catchup_interval_ticks() -> u32 {
     BYTES_PER_INTERVAL.saturating_mul(byte_time_ticks_now())
 }
 
+/// SysTick ISR entry. Path-uniform: load the cached dispatch fn and call it.
 #[cfg_attr(target_arch = "riscv32", unsafe(link_section = ".highcode"))]
 #[inline(never)]
 pub fn on_systick() {
-    stat_high();
     systick::clear_match();
     systick::set_irq(false);
-
     // SAFETY: USART1 / SysTick share PFIC HIGH and never preempt each other;
-    // STATE access is uncontested across these handlers.
-    let snapshot = unsafe { *STATE.get() };
-    match snapshot {
-        ReplyState::Idle => {}
-        ReplyState::Plain => {
-            set_state(ReplyState::Idle);
-            fire_now();
+    // DISPATCH access is uncontested across these handlers.
+    let dispatch = unsafe { *DISPATCH.get() };
+    dispatch();
+}
+
+#[cfg_attr(target_arch = "riscv32", unsafe(link_section = ".highcode"))]
+#[inline(never)]
+#[unsafe(no_mangle)]
+fn body_noop() {}
+
+#[cfg_attr(target_arch = "riscv32", unsafe(link_section = ".highcode"))]
+#[inline(never)]
+#[unsafe(no_mangle)]
+fn body_plain_fire() {
+    fire_now();
+    set_state(ReplyState::Idle);
+}
+
+#[cfg_attr(target_arch = "riscv32", unsafe(link_section = ".highcode"))]
+#[inline(never)]
+#[unsafe(no_mangle)]
+fn body_chain_catchup() {
+    accumulate_snoop();
+    // SAFETY: see on_systick. Dispatch == body_chain_catchup implies Chain
+    // with PeriodicCatchup phase; fall through to no-op otherwise.
+    let (fire_tick, last_catchup_tick, walk_deadline, n_pred) = unsafe {
+        match *STATE.get() {
+            ReplyState::Chain {
+                fire_tick,
+                last_catchup_tick,
+                walk_deadline,
+                expected_predecessor_bytes,
+                ..
+            } => (
+                fire_tick,
+                last_catchup_tick,
+                walk_deadline,
+                expected_predecessor_bytes,
+            ),
+            _ => return,
         }
-        ReplyState::Chain {
-            phase,
-            fire_tick,
-            last_catchup_tick,
-            walk_deadline,
-            expected_predecessor_bytes,
-            ..
-        } => match phase {
-            FastChainPhase::PeriodicCatchup => {
-                dbg_high();
-                accumulate_snoop();
-                let interval = catchup_interval_ticks();
-                let now = systick::ticks();
-                let byte_time = byte_time_ticks_now();
-                let half_byte = (byte_time / 2) as i32;
-                let is_last_catchup = (now.wrapping_sub(last_catchup_tick) as i32) >= -half_byte;
+    };
 
-                if !is_last_catchup {
-                    // Snap to the anchor if `now + interval` would overshoot.
-                    // ISR-entry drift accumulates across intermediate ticks;
-                    // anchoring the final tick keeps fire on the wall-clock.
-                    let candidate = now.wrapping_add(interval);
-                    let next_tick =
-                        if (candidate.wrapping_sub(last_catchup_tick) as i32) >= -half_byte {
-                            last_catchup_tick
-                        } else {
-                            candidate
-                        };
-                    dbg_low();
-                    systick::set_cmp(next_tick);
-                    systick::set_irq(true);
-                    stat_low();
-                    if (systick::ticks().wrapping_sub(next_tick) as i32) >= 0 {
-                        on_systick();
-                    }
-                    return;
-                }
+    let interval = catchup_interval_ticks();
+    let now = systick::ticks();
+    let byte_time = byte_time_ticks_now();
+    let half_byte = (byte_time / 2) as i32;
+    let is_last_catchup = (now.wrapping_sub(last_catchup_tick) as i32) >= -half_byte;
 
-                // Last catchup. Busy-wait + fold until `n_pred` reached or
-                // `walk_deadline` (= t_prior_end − t_guard) hits. The latter
-                // is the normal exit at `bytes_walked = n_pred − GUARD`;
-                // post-fire absorbs the trailing GUARD bytes.
-                wait_and_fold_until(expected_predecessor_bytes as u32, walk_deadline);
-                dbg_low();
-
-                // Hand off to TxArmed: arm SysTick at fire_tick, return.
-                // The CPU is free to service lower-priority ISRs (ADC TC) in
-                // the `t_guard − tx_latency` gap. Re-entry latency on the
-                // fire ISR (~1.5 µs) is under one char_time, so pirate's
-                // IDLE threshold isn't tripped at any baud we ship.
-                set_phase(FastChainPhase::TxArmed);
-                systick::set_cmp(fire_tick);
-                systick::set_irq(true);
-                stat_low();
-                if (systick::ticks().wrapping_sub(fire_tick) as i32) >= 0 {
-                    // Already past fire_tick (walk ran long / fire_tick was
-                    // ahead of walk_deadline) — fire inline.
-                    on_systick();
-                }
-                return;
-            }
-            FastChainPhase::TxArmed => {
-                // ── Critical path. patch_crc must land bytes [n-2, n-1]
-                // of TX_BUF before CH4's read cursor reaches them.
-                fire_now();
-                dbg_high();
-                if expected_predecessor_bytes > 0 {
-                    // Post-fire walks bytes that arrive between
-                    // walk_deadline and t_prior_end. Add one byte_time of
-                    // slack past t_prior_end for DMA latch latency on the
-                    // final byte.
-                    let byte_time = byte_time_ticks_now();
-                    let post_deadline = walk_deadline
-                        .wrapping_add(byte_time.saturating_mul((GUARD_BYTES + 1) as u32));
-                    wait_and_fold_until(expected_predecessor_bytes as u32, post_deadline);
-                }
-                patch_crc();
-                dbg_low();
-
-                // ── Off the critical path: diagnostics + FSM transitions.
-                if dma::remaining(dma::Channel::CH4) <= 2 {
-                    report_fault(FastChainFault::CrcPatchDeadlineMiss);
-                }
-                if current_bytes_walked() < expected_predecessor_bytes as u32 {
-                    report_fault(FastChainFault::PreviousSlotTimeout);
-                }
-                let byte_time = byte_time_ticks_now();
-                let now = systick::ticks();
-                if (now.wrapping_sub(fire_tick) as i32) > byte_time as i32 {
-                    report_fault(FastChainFault::SlotTimingMiss);
-                }
-                set_phase(FastChainPhase::TxStreaming);
-                set_phase(FastChainPhase::CrcPatched);
-            }
-            FastChainPhase::TxStreaming
-            | FastChainPhase::CrcPatched
-            | FastChainPhase::Done
-            | FastChainPhase::Fault(_) => {}
-        },
+    if !is_last_catchup {
+        // Snap to the anchor if `now + interval` would overshoot. ISR-entry
+        // drift accumulates across intermediate ticks; anchoring the final
+        // tick keeps fire on the wall-clock.
+        let candidate = now.wrapping_add(interval);
+        let next_tick = if (candidate.wrapping_sub(last_catchup_tick) as i32) >= -half_byte {
+            last_catchup_tick
+        } else {
+            candidate
+        };
+        systick::set_cmp(next_tick);
+        systick::set_irq(true);
+        if (systick::ticks().wrapping_sub(next_tick) as i32) >= 0 {
+            on_systick();
+        }
+        return;
     }
-    stat_low();
+
+    // Last catchup. Busy-wait + fold until `n_pred` reached or
+    // `walk_deadline` hits. The deadline exit is normal
+    // (`bytes_walked = n_pred − GUARD`); post-fire absorbs the trailing
+    // GUARD bytes.
+    wait_and_fold_until(n_pred as u32, walk_deadline);
+    dbg_pulse();
+
+    // Hand off to TxArmed: arm SysTick at fire_tick, return. The
+    // `GUARD_BYTES ≥ 2` invariant guarantees `walk_deadline < fire_tick`,
+    // so the CPU yields cleanly and no past-tick re-entry is needed here.
+    set_phase(FastChainPhase::TxArmed);
+    systick::set_cmp(fire_tick);
+    systick::set_irq(true);
+}
+
+#[cfg_attr(target_arch = "riscv32", unsafe(link_section = ".highcode"))]
+#[inline(never)]
+#[unsafe(no_mangle)]
+fn body_chain_fast_fire() {
+    // ── Critical path. patch_crc must land bytes [n-2, n-1] of TX_BUF before
+    // CH4's read cursor reaches them.
+    fire_now();
+    // SAFETY: see on_systick. Dispatch == body_chain_fast_fire implies Chain
+    // with TxArmed phase; fall through to no-op otherwise.
+    let (fire_tick, walk_deadline, n_pred) = unsafe {
+        match *STATE.get() {
+            ReplyState::Chain {
+                fire_tick,
+                walk_deadline,
+                expected_predecessor_bytes,
+                ..
+            } => (fire_tick, walk_deadline, expected_predecessor_bytes),
+            _ => return,
+        }
+    };
+    if n_pred > 0 {
+        // Post-fire walks bytes that arrive between walk_deadline and
+        // t_prior_end. Add one byte_time of slack past t_prior_end for DMA
+        // latch latency on the final byte.
+        let byte_time = byte_time_ticks_now();
+        let post_deadline =
+            walk_deadline.wrapping_add(byte_time.saturating_mul((GUARD_BYTES + 1) as u32));
+        wait_and_fold_until(n_pred as u32, post_deadline);
+    }
+    patch_crc();
+
+    // ── Off the critical path: diagnostics + FSM transitions.
+    if dma::remaining(dma::Channel::CH4) <= 2 {
+        report_fault(FastChainFault::CrcPatchDeadlineMiss);
+    }
+    if current_bytes_walked() < n_pred as u32 {
+        report_fault(FastChainFault::PreviousSlotTimeout);
+    }
+    let byte_time = byte_time_ticks_now();
+    let now = systick::ticks();
+    if (now.wrapping_sub(fire_tick) as i32) > byte_time as i32 {
+        report_fault(FastChainFault::SlotTimingMiss);
+    }
+    set_phase(FastChainPhase::TxStreaming);
+    set_phase(FastChainPhase::CrcPatched);
 }
 
 #[inline(always)]
@@ -484,11 +544,9 @@ fn current_bytes_walked() -> u32 {
     }
 }
 
-/// RXNE handler — no-op for the chain path. The time-driven design never
-/// enables RXNEIE from this module: the last periodic catchup body owns the
-/// pre-fire fold, busy-wait, fire, and stage 4. Kept as a stub so the USART1
-/// ISR dispatch in `irq.rs` can keep calling it; future framing modes
-/// (Phase B low-baud) can plug their own RXNE consumer in here.
+/// RXNE handler stub. The chain path never enables RXNEIE; the periodic
+/// catchup body owns all snoop work. Kept callable so `irq.rs`'s USART1
+/// dispatch doesn't fork on framing mode.
 #[cfg_attr(target_arch = "riscv32", unsafe(link_section = ".highcode"))]
 pub fn on_rxne() {}
 
@@ -498,9 +556,7 @@ pub fn cancel() {
     systick::set_irq(false);
     systick::clear_match();
     // Tail RXNE may still be live if cancel races a fire that never
-    // reached TxArmed (e.g. host abort mid-snoop). Mask unconditionally —
-    // it's a no-op when already off, and the framing-RXNE owner doesn't
-    // exist on V006 yet (Phase B work).
+    // reached TxArmed. Mask unconditionally — no-op when already off.
     usart::set_rxne_irq(USART1, false);
     set_state(ReplyState::Idle);
 }
@@ -610,56 +666,21 @@ fn current_rx_write_pos() -> u16 {
     (DXL_RX_BUF_LEN as u16).wrapping_sub(remaining) & RX_MASK_U16
 }
 
-// Scope-debug helpers — bench-only. Off by default; enable with
-// `--features scope` to emit DXL_DBG_PIN / DXL_STAT_PIN edges around the
-// catchup / RXNE / post-fire paths.
-#[inline(always)]
-fn dbg_high() {
-    #[cfg(feature = "scope")]
-    // SAFETY: written once at bring-up before any ISR can read.
-    if let Some(p) = unsafe { *DXL_DBG_PIN.get() } {
-        gpio::set_level(p, Level::High);
-    }
-}
-
-#[inline(always)]
-fn dbg_low() {
-    #[cfg(feature = "scope")]
-    if let Some(p) = unsafe { *DXL_DBG_PIN.get() } {
-        gpio::set_level(p, Level::Low);
-    }
-}
-
-#[inline(always)]
-fn stat_high() {
-    #[cfg(feature = "scope")]
-    // SAFETY: written once at bring-up before any ISR can read.
-    if let Some(p) = unsafe { *DXL_STAT_PIN.get() } {
-        gpio::set_level(p, Level::High);
-    }
-}
-
-#[inline(always)]
-fn stat_low() {
-    #[cfg(feature = "scope")]
-    if let Some(p) = unsafe { *DXL_STAT_PIN.get() } {
-        gpio::set_level(p, Level::Low);
-    }
-}
-
 #[inline(always)]
 fn set_state(new: ReplyState) {
-    // SAFETY: see on_systick.
-    unsafe { *STATE.get() = new };
+    let dispatch = dispatch_for(&new);
+    // SAFETY: see on_systick. Both stores are uncontested under PFIC HIGH.
+    unsafe {
+        *STATE.get() = new;
+        *DISPATCH.get() = dispatch;
+    }
 }
 
 #[cfg_attr(target_arch = "riscv32", unsafe(link_section = ".highcode"))]
 #[inline(never)]
 fn set_phase(new: FastChainPhase) {
-    // SAFETY: see on_systick. The borrow on STATE is released before the
-    // error path runs, since cancel() re-enters STATE. Calls outside Chain
-    // are silent no-ops, not faults — set_phase chains after `cancel()` need
-    // to be safe to re-enter without double-faulting.
+    // SAFETY: see on_systick. Calls outside Chain are silent no-ops so
+    // set_phase chains after cancel() don't double-fault on re-entry.
     let illegal = unsafe {
         match &mut *STATE.get() {
             ReplyState::Chain { phase, .. } => {
@@ -676,7 +697,10 @@ fn set_phase(new: FastChainPhase) {
     if illegal {
         report_fault(FastChainFault::IllegalTransition);
         cancel();
+        return;
     }
+    // Refresh dispatch from the now-updated state. No-op when state isn't Chain.
+    unsafe { *DISPATCH.get() = dispatch_for(&*STATE.get()) };
 }
 
 #[inline]
