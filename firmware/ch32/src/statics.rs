@@ -37,15 +37,9 @@ pub static DXL_TX_BUF: SyncUnsafeCell<Vec<u8, DXL_TX_BUF_LEN>> = SyncUnsafeCell:
 /// Written once during `bring_up_dxl` before USART1 IRQ is unmasked; read-only thereafter.
 pub static DXL_TX_EN: SyncUnsafeCell<Option<TxEn>> = SyncUnsafeCell::new(None);
 
-/// Scope debug pin — bench instrumentation for the chain-CRC ISRs. Yanked
-/// out of `kernel.io.dbg` so the dxl_fast hot path can reach it without
-/// going through KERNEL. Seeded once at bring-up; ISR readers only.
+/// Scope debug pin — bench instrumentation for the chain-CRC ISRs. Seeded
+/// once at bring-up; ISR readers only.
 pub static DXL_DBG_PIN: SyncUnsafeCell<Option<Pin>> = SyncUnsafeCell::new(None);
-
-/// TEMP bench instrumentation: second scope channel for breaking down the
-/// post-fire path into sub-pulses. Repurposed from the STAT LED — the
-/// kernel-side `Ch32Dbg::pulse_tick` is no-op'd while this is live.
-pub static DXL_STAT_PIN: SyncUnsafeCell<Option<Pin>> = SyncUnsafeCell::new(None);
 
 /// Set by `Ch32Device::reboot`; USART1 TC ISR fires the soft reset after TX drains.
 pub static DXL_REBOOT_PENDING: AtomicBool = AtomicBool::new(false);

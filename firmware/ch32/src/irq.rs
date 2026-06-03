@@ -32,7 +32,6 @@ pub fn on_adc_dma_tc() {
         #[cfg(feature = "defmt")]
         crate::telemetry::record_frame(&frame);
         kernel.on_tick(frame, &SHARED);
-        kernel.io.dbg.pulse_tick();
     }
 }
 

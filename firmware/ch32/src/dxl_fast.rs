@@ -18,28 +18,12 @@ use crate::statics::{
     FIRE_ADVANCE_FINE_TICKS, SHARED,
 };
 
-/// Which request end tick detection + fire path a given reply takes.
-#[allow(dead_code)]
-#[derive(Copy, Clone, PartialEq, Eq)]
-pub enum DxlTimingStrategy {
-    /// Per-byte RXNE publishes the request end tick; used when IDLE lags RDT
-    /// (low baud).
-    LengthCounted,
-    /// Single IDLE IRQ, backdated by one char-time; used at high baud.
-    IdleBackdated,
-    /// Fast Sync/Bulk last-slave — snoop predecessor bytes for chain CRC.
-    ChainedFastStatus,
-}
-
 /// Errors the chain CRC path can flag; each variant maps 1:1 to a persistent
 /// counter in `TelemetryDxlLink`.
 #[derive(Copy, Clone, PartialEq, Eq)]
 pub enum FastChainFault {
     /// `set_phase` rejected a transition not in the legal table — FSM bug.
     IllegalTransition,
-    /// Snoop walk saw a delta inconsistent with the TC wrap count.
-    #[allow(dead_code)]
-    UnexpectedByteCount,
     /// At TxArmed (post-straggle-walk), observed predecessor bytes fell short
     /// of predicted. The Q16 reciprocal carries ±1 LSB rounding noise, so
     /// boundary cases may trip without a real predecessor miss.
@@ -76,8 +60,6 @@ pub enum FastChainPhase {
     CrcPatched,
     /// USART TC drained the reply; bus released.
     Done,
-    /// Reply aborted; the matching counter has been incremented.
-    Fault(FastChainFault),
 }
 
 /// Scheduler state for the next reply this slave will send.
@@ -706,9 +688,6 @@ fn set_phase(new: FastChainPhase) {
 #[inline]
 fn is_legal_transition(from: FastChainPhase, to: FastChainPhase) -> bool {
     use FastChainPhase::*;
-    if matches!(to, Fault(_)) {
-        return true;
-    }
     matches!(
         (from, to),
         (PeriodicCatchup, TxArmed)
@@ -725,7 +704,6 @@ fn report_fault(f: FastChainFault) {
         let link = &raw mut (*SHARED.table.telemetry.get()).link;
         let counter: *mut u32 = match f {
             FastChainFault::IllegalTransition => &raw mut (*link).illegal_transition,
-            FastChainFault::UnexpectedByteCount => &raw mut (*link).unexpected_byte_count,
             FastChainFault::PreviousSlotTimeout => &raw mut (*link).previous_slot_timeout,
             FastChainFault::SlotTimingMiss => &raw mut (*link).slot_timing_miss,
             FastChainFault::CrcPatchDeadlineMiss => &raw mut (*link).crc_patch_deadline_miss,

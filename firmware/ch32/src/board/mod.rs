@@ -144,26 +144,9 @@ impl MotorTrait for Ch32Motor {
     }
 }
 
-/// Status LED — chip-side debug; not part of `KernelIo`. Scope pin moved to
-/// `DXL_DBG_PIN` for chain-CRC ISR instrumentation.
-pub struct Ch32Dbg {
-    #[allow(dead_code)]
-    stat_led: Pin,
-}
-
-impl Ch32Dbg {
-    /// Toggled once per kernel tick from the ADC DMA TC handler.
-    // TEMP bench instrumentation: STAT LED repurposed as 2nd scope channel
-    // via DXL_STAT_PIN; restore `gpio::toggle(self.stat_led)` to bring back
-    // the kernel-tick heartbeat.
-    #[inline]
-    pub fn pulse_tick(&self) {}
-}
-
 pub struct Ch32KernelIo {
     pub sensors: Ch32Sensors,
     pub motor: Ch32Motor,
-    pub dbg: Ch32Dbg,
 }
 
 impl Ch32KernelIo {
@@ -182,7 +165,6 @@ impl Ch32KernelIo {
             pre.scales.shunt_q32,
         );
 
-        let stat_led = wiring.stat_led;
         let in1 = wiring.motor.in1;
         let in2 = wiring.motor.in2;
         let drv_en = wiring.motor.drv_en;
@@ -206,7 +188,6 @@ impl Ch32KernelIo {
                 drv_en,
                 pwm_arr: pre.pwm_arr,
             },
-            dbg: Ch32Dbg { stat_led },
         }
     }
 }
