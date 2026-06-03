@@ -8,7 +8,7 @@ use dxl_protocol::crc16_continue;
 #[cfg(feature = "scope")]
 use crate::hal::gpio::Level;
 use crate::hal::{dma, gpio, systick, usart};
-use crate::measurements::{
+use crate::dxl_calibration::{
     CATCHUP_ENTRY_TICKS, FAST_ENTRY_TICKS, PFIC_ENTRY_TICKS, PLAIN_ENTRY_TICKS,
 };
 #[cfg(feature = "scope")]

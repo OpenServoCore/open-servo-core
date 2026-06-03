@@ -70,7 +70,7 @@ pub static DXL_BYTES_PER_US_Q16: AtomicU32 = AtomicU32::new(0);
 
 /// Per-chip clock_fine_trim residual converted to HCLK ticks, summed at the
 /// fire site with the per-path entry-tick constant from
-/// [`crate::measurements`]. Updated from USART1 TC after a Write touches
+/// [`crate::dxl_calibration`]. Updated from USART1 TC after a Write touches
 /// `comms.clock_fine_trim_us`. Signed: a negative Q8.8 nudges fire later by
 /// partially cancelling the per-path constant.
 pub static FIRE_ADVANCE_FINE_TICKS: AtomicI16 = AtomicI16::new(0);
