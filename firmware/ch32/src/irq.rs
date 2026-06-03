@@ -2,16 +2,16 @@ use ch32_metapac::{DMA1, USART1};
 use core::sync::atomic::Ordering;
 use osc_core::{FrameInputs, KernelIo, Sensors};
 
-use crate::dxl_fast;
+use crate::dxl;
+use crate::dxl::statics::{
+    CLOCK_FINE_TRIM_NO_PENDING, CLOCK_TRIM_NO_PENDING, DXL_BAUD_PENDING_BRR, DXL_CHAR_TIME_TICKS,
+    DXL_CLOCK_FINE_TRIM_PENDING, DXL_CLOCK_TRIM_PENDING, DXL_REBOOT_PENDING, DXL_RX_BUF_LEN,
+    DXL_RX_WRITE_POS, DXL_TX_BUF, DXL_TX_EN, recompute_fire_advance_fine_ticks, store_baud_derived,
+};
 use crate::hal::rcc;
 use crate::hal::{dma, gpio, pfic, systick, usart};
 use crate::idle_ring;
-use crate::statics::{
-    CLOCK_FINE_TRIM_NO_PENDING, CLOCK_TRIM_NO_PENDING, DXL_BAUD_PENDING_BRR, DXL_CHAR_TIME_TICKS,
-    DXL_CLOCK_FINE_TRIM_PENDING, DXL_CLOCK_TRIM_PENDING, DXL_REBOOT_PENDING, DXL_RX_BUF_LEN,
-    DXL_RX_WRITE_POS, DXL_TX_BUF, DXL_TX_EN, KERNEL, SHARED, recompute_fire_advance_fine_ticks,
-    store_baud_derived,
-};
+use crate::statics::{KERNEL, SHARED};
 
 /// ADC DMA TC handler body — wire into the vector table via [`crate::install_isrs!`].
 pub fn on_adc_dma_tc() {
@@ -38,11 +38,11 @@ pub fn on_adc_dma_tc() {
 pub fn on_usart1() {
     on_usart1_rx_errors();
     on_usart1_idle();
-    // RXNE entries happen only when dxl_fast armed the tail-tier — the
+    // RXNE entries happen only when dxl armed the tail-tier — the
     // handler self-gates via STATE, so IDLE/TC-only wakes pay one branch
     // each. STATR.RXNE always reads 0 in DMA-RX mode (V006 quirk: DMA
     // wins the clear race), so there's no flag to check here.
-    dxl_fast::on_rxne();
+    dxl::on_rxne();
     on_usart1_tc();
 }
 
@@ -52,16 +52,16 @@ fn on_usart1_rx_errors() {
         return;
     }
     if errs.ore {
-        dxl_fast::report_dma_overrun();
+        dxl::report_dma_overrun();
     }
     if errs.pe {
-        dxl_fast::report_parity_error();
+        dxl::report_parity_error();
     }
     if errs.fe {
-        dxl_fast::report_framing_error();
+        dxl::report_framing_error();
     }
     if errs.ne {
-        dxl_fast::report_noise_error();
+        dxl::report_noise_error();
     }
     // SR-then-DR clear is the only V006 path. Called only from on_usart1
     // entry — post-IDLE or post-TC, both packet boundaries — so DMA has
@@ -110,7 +110,7 @@ fn on_usart1_tc() {
     // writer touches DXL_TX_BUF — no concurrent access.
     let buf = unsafe { &mut *DXL_TX_BUF.get() };
     buf.clear();
-    dxl_fast::cancel();
+    dxl::cancel();
     let pending_brr = DXL_BAUD_PENDING_BRR.swap(0, Ordering::AcqRel);
     if pending_brr != 0 {
         usart::set_baud(USART1, pending_brr);
@@ -132,7 +132,7 @@ fn on_usart1_tc() {
 
 #[inline(always)]
 pub fn on_systick_match() {
-    dxl_fast::on_systick();
+    dxl::on_systick();
 }
 
 /// Wires osc-ch32 ISR bodies into the vector table. Caller must depend on `qingke-rt`.

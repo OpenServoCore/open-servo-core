@@ -6,9 +6,11 @@ use crate::hal::{
     gpio::{self, Level, PinMode},
     opa, rcc, timer, usart,
 };
+use crate::dxl::statics::{
+    DXL_DBG_PIN, DXL_RX_BUF, DXL_RX_BUF_LEN, DXL_TX_BUF, DXL_TX_EN, store_baud_derived,
+};
 use crate::statics::{
-    ADC_DMA_BUF, ADC_DMA_BUF_LEN, ADC_SCAN_LEN, ADC_SENSOR_COUNT, DXL_DBG_PIN, DXL_RX_BUF,
-    DXL_RX_BUF_LEN, DXL_TX_BUF, DXL_TX_EN, SHARED, store_baud_derived,
+    ADC_DMA_BUF, ADC_DMA_BUF_LEN, ADC_SCAN_LEN, ADC_SENSOR_COUNT, SHARED,
 };
 
 use super::config::{

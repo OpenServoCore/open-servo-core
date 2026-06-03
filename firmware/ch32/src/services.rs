@@ -3,15 +3,15 @@ use core::sync::atomic::Ordering;
 use heapless::Vec;
 use osc_core::{BaudRate, BootMode, DeviceControl, DxlBus, RxSnapshot, ServicesIo};
 
-use crate::dxl_fast;
+use crate::dxl;
+use crate::dxl::statics::{
+    DXL_BAUD_PENDING_BRR, DXL_CLOCK_FINE_TRIM_PENDING, DXL_CLOCK_TRIM_PENDING, DXL_REBOOT_PENDING,
+    DXL_RX_BUF, DXL_RX_WRITE_POS, DXL_TX_BUF, DXL_TX_BUF_LEN,
+};
 use crate::hal::clocks::PCLK_HZ;
 use crate::hal::usart;
 use crate::hal::{flash, pfic};
 use crate::idle_ring;
-use crate::statics::{
-    DXL_BAUD_PENDING_BRR, DXL_CLOCK_FINE_TRIM_PENDING, DXL_CLOCK_TRIM_PENDING, DXL_REBOOT_PENDING,
-    DXL_RX_BUF, DXL_RX_WRITE_POS, DXL_TX_BUF, DXL_TX_BUF_LEN,
-};
 
 /// Single &mut writer: the main loop holding the `Services` struct.
 pub struct Ch32Bus {
@@ -69,12 +69,12 @@ impl DxlBus for Ch32Bus {
         // Flush any stale slot setup: an unfired SysTick CMP from a prior
         // Sync/Fast op would otherwise re-fire DMA and patch CRC over this
         // reply's buffer.
-        dxl_fast::cancel();
+        dxl::cancel();
         match self.request_end_tick.take() {
-            Some(request_end_tick) => dxl_fast::start_plain_after(request_end_tick, delay_us),
+            Some(request_end_tick) => dxl::start_plain_after(request_end_tick, delay_us),
             None => {
-                if dxl_fast::arm_tx() {
-                    dxl_fast::fire_now();
+                if dxl::arm_tx() {
+                    dxl::fire_now();
                 }
             }
         }
@@ -84,7 +84,7 @@ impl DxlBus for Ch32Bus {
         let Some(request_end_tick) = self.request_end_tick.take() else {
             return;
         };
-        dxl_fast::start_fast_after(request_end_tick, delay_q88_us, snoop_from);
+        dxl::start_fast_after(request_end_tick, delay_q88_us, snoop_from);
     }
 
     fn set_baud(&mut self, rate: BaudRate) {
