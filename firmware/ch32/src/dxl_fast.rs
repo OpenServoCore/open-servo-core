@@ -43,7 +43,6 @@ pub enum FastChainFault {
 }
 
 /// Where in the chain reply timeline we currently sit.
-#[allow(dead_code)]
 #[derive(Copy, Clone, PartialEq, Eq)]
 pub enum FastChainPhase {
     /// Periodic SysTick CMP every `BYTES_PER_INTERVAL × byte_time` ticks.
@@ -54,12 +53,6 @@ pub enum FastChainPhase {
     /// Pre-fire walk done; SysTick CMP armed at `fire_tick`. The TxArmed
     /// body fires, runs the post-fire walk, and patches CRC.
     TxArmed,
-    /// Fire CMP fired; TX shifting and straggle walk in progress.
-    TxStreaming,
-    /// Trailing CRC bytes patched into the TX buffer.
-    CrcPatched,
-    /// USART TC drained the reply; bus released.
-    Done,
 }
 
 /// Scheduler state for the next reply this slave will send.
@@ -118,7 +111,6 @@ fn dispatch_for(s: &ReplyState) -> DispatchFn {
             phase: FastChainPhase::TxArmed,
             ..
         } => body_chain_fast_fire,
-        ReplyState::Chain { .. } => body_noop,
     }
 }
 
@@ -508,8 +500,6 @@ fn body_chain_fast_fire() {
     if (now.wrapping_sub(fire_tick) as i32) > byte_time as i32 {
         report_fault(FastChainFault::SlotTimingMiss);
     }
-    set_phase(FastChainPhase::TxStreaming);
-    set_phase(FastChainPhase::CrcPatched);
 }
 
 #[inline(always)]
@@ -688,13 +678,7 @@ fn set_phase(new: FastChainPhase) {
 #[inline]
 fn is_legal_transition(from: FastChainPhase, to: FastChainPhase) -> bool {
     use FastChainPhase::*;
-    matches!(
-        (from, to),
-        (PeriodicCatchup, TxArmed)
-            | (TxArmed, TxStreaming)
-            | (TxStreaming, CrcPatched)
-            | (CrcPatched, Done)
-    )
+    matches!((from, to), (PeriodicCatchup, TxArmed))
 }
 
 #[cfg_attr(target_arch = "riscv32", unsafe(link_section = ".highcode"))]
@@ -766,18 +750,14 @@ mod tests {
     fn legal_transitions_form_chain() {
         use FastChainPhase::*;
         assert!(is_legal_transition(PeriodicCatchup, TxArmed));
-        assert!(is_legal_transition(TxArmed, TxStreaming));
-        assert!(is_legal_transition(TxStreaming, CrcPatched));
-        assert!(is_legal_transition(CrcPatched, Done));
     }
 
     #[test]
     fn illegal_transitions_rejected() {
         use FastChainPhase::*;
-        assert!(!is_legal_transition(PeriodicCatchup, TxStreaming));
         assert!(!is_legal_transition(TxArmed, PeriodicCatchup));
-        assert!(!is_legal_transition(CrcPatched, TxArmed));
-        assert!(!is_legal_transition(Done, TxArmed));
+        assert!(!is_legal_transition(PeriodicCatchup, PeriodicCatchup));
+        assert!(!is_legal_transition(TxArmed, TxArmed));
     }
 
     // -- predict_n_pred_pure ----------------------------------------------
