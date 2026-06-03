@@ -2,7 +2,7 @@ use dxl_protocol::prelude::*;
 use dxl_protocol::{FastSlot, FastSlotBody, write_fast_slot};
 
 use crate::regions::config;
-use crate::traits::{DeviceControl, DxlBus};
+use crate::traits::{DxlBus, ServiceEvents, Event};
 use crate::{BaudRate, Error, RegionStorage, Router, Shared, StagedWrites, StatusReturnLevel};
 
 use super::slot::{bulk_slot_delay_us, bytes_to_us, bytes_to_us_q88, slot_period_us};
@@ -23,11 +23,6 @@ fn error_to_status(e: Error) -> StatusError {
 fn touches_baud(addr: u16, len: usize) -> bool {
     let baud_addr = config::addr::comms::BAUD_RATE_IDX;
     addr <= baud_addr && (addr as u32) + (len as u32) > baud_addr as u32
-}
-
-fn touches_return_delay(addr: u16, len: usize) -> bool {
-    let rdt_addr = config::addr::comms::RETURN_DELAY_2US;
-    addr <= rdt_addr && (addr as u32) + (len as u32) > rdt_addr as u32
 }
 
 fn touches_clock_trim(addr: u16, len: usize) -> bool {
@@ -63,24 +58,24 @@ impl Ctx {
     }
 }
 
-pub(super) struct Dispatcher<'a, B: DxlBus, D: DeviceControl> {
+pub(super) struct Dispatcher<'a, B: DxlBus, E: ServiceEvents> {
     shared: &'a Shared,
     bus: &'a mut B,
-    device: &'a mut D,
+    events: &'a mut E,
     staged: &'a mut StagedWrites,
 }
 
-impl<'a, B: DxlBus, D: DeviceControl> Dispatcher<'a, B, D> {
+impl<'a, B: DxlBus, E: ServiceEvents> Dispatcher<'a, B, E> {
     pub(super) fn new(
         shared: &'a Shared,
         bus: &'a mut B,
-        device: &'a mut D,
+        events: &'a mut E,
         staged: &'a mut StagedWrites,
     ) -> Self {
         Self {
             shared,
             bus,
-            device,
+            events,
             staged,
         }
     }
@@ -256,26 +251,17 @@ impl<'a, B: DxlBus, D: DeviceControl> Dispatcher<'a, B, D> {
             .table
             .write_bytes(p.address, &buf[..len], self.staged);
         let baud_changed = result.is_ok() && touches_baud(p.address, len);
-        let rdt_changed = result.is_ok() && touches_return_delay(p.address, len);
         let clock_trim_changed = result.is_ok() && touches_clock_trim(p.address, len);
         let clock_fine_trim_changed = result.is_ok() && touches_clock_fine_trim_us(p.address, len);
         self.reply_table_result(ctx, id, direct, result);
         if baud_changed {
-            // reply queued, bus impl defers retune until TC.
+            // reply queued, events impl defers retune until TC.
             let new_rate = self.shared.table.config.with(|c| c.comms.baud_rate_idx);
-            self.bus.set_baud(new_rate);
-        }
-        if rdt_changed {
-            let new_rdt_us = self
-                .shared
-                .table
-                .config
-                .with(|c| c.comms.return_delay_2us as u32 * 2);
-            self.bus.set_return_delay(new_rdt_us);
+            self.events.send(Event::SetDxlBaud(new_rate));
         }
         if clock_trim_changed {
             let new_trim = self.shared.table.config.with(|c| c.comms.clock_trim);
-            self.bus.set_clock_trim(new_trim);
+            self.events.send(Event::SetClockTrim(new_trim));
         }
         if clock_fine_trim_changed {
             let new_q88 = self
@@ -283,7 +269,7 @@ impl<'a, B: DxlBus, D: DeviceControl> Dispatcher<'a, B, D> {
                 .table
                 .config
                 .with(|c| c.comms.clock_fine_trim_us);
-            self.bus.set_clock_fine_trim_us(new_q88);
+            self.events.send(Event::SetClockFineTrimUs(new_q88));
         }
     }
 
@@ -366,7 +352,7 @@ impl<'a, B: DxlBus, D: DeviceControl> Dispatcher<'a, B, D> {
         if direct {
             self.send_status(ctx, id, StatusError::None, &[], StatusReturnLevel::All, 0);
         }
-        self.device.reboot(mode);
+        self.events.send(Event::Reboot(mode));
     }
 
     fn handle_clear(&mut self, ctx: &Ctx, p: &ClearPacket<'_>) {

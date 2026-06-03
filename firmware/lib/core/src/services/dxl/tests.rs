@@ -1,7 +1,7 @@
 use dxl_protocol::prelude::*;
 use heapless::Vec;
 
-use crate::traits::{DeviceControl, DxlBus, ServicesIo};
+use crate::traits::{DxlBus, ServiceEvents, Event, ServicesIo};
 use crate::{BootMode, RegionStorage, RxSnapshot, Shared, StatusReturnLevel};
 
 use super::Dxl;
@@ -79,12 +79,12 @@ impl DxlBus for FakeBus {
     }
 }
 
-struct FakeDevice {
+struct FakeEvents {
     reboot_count: u32,
     last_reboot_mode: Option<BootMode>,
 }
 
-impl FakeDevice {
+impl FakeEvents {
     fn new() -> Self {
         Self {
             reboot_count: 0,
@@ -93,23 +93,28 @@ impl FakeDevice {
     }
 }
 
-impl DeviceControl for FakeDevice {
-    fn reboot(&mut self, mode: BootMode) {
-        self.reboot_count += 1;
-        self.last_reboot_mode = Some(mode);
+impl ServiceEvents for FakeEvents {
+    fn send(&mut self, event: Event) {
+        match event {
+            Event::Reboot(mode) => {
+                self.reboot_count += 1;
+                self.last_reboot_mode = Some(mode);
+            }
+            Event::SetDxlBaud(_) | Event::SetClockTrim(_) | Event::SetClockFineTrimUs(_) => {}
+        }
     }
 }
 
 struct FakeIo {
     bus: FakeBus,
-    device: FakeDevice,
+    events: FakeEvents,
 }
 
 impl FakeIo {
     fn new() -> Self {
         Self {
             bus: FakeBus::new(),
-            device: FakeDevice::new(),
+            events: FakeEvents::new(),
         }
     }
 
@@ -120,10 +125,10 @@ impl FakeIo {
 
 impl ServicesIo for FakeIo {
     type Bus = FakeBus;
-    type Device = FakeDevice;
+    type Events = FakeEvents;
 
-    fn parts(&mut self) -> (&mut FakeBus, &mut FakeDevice) {
-        (&mut self.bus, &mut self.device)
+    fn parts(&mut self) -> (&mut FakeBus, &mut FakeEvents) {
+        (&mut self.bus, &mut self.events)
     }
 }
 
@@ -482,8 +487,8 @@ fn reboot_to_our_id_acks_and_calls_device_reboot() {
     assert_eq!(id, 0);
     assert_eq!(err, 0);
     assert!(params.is_empty());
-    assert_eq!(io.device.reboot_count, 1);
-    assert_eq!(io.device.last_reboot_mode, Some(BootMode::App));
+    assert_eq!(io.events.reboot_count, 1);
+    assert_eq!(io.events.last_reboot_mode, Some(BootMode::App));
 }
 
 #[test]
@@ -498,8 +503,8 @@ fn reboot_to_broadcast_fires_device_reboot_without_ack() {
 
     assert_eq!(io.bus.send_count, 0);
     assert!(io.bus.tx.is_empty());
-    assert_eq!(io.device.reboot_count, 1);
-    assert_eq!(io.device.last_reboot_mode, Some(BootMode::App));
+    assert_eq!(io.events.reboot_count, 1);
+    assert_eq!(io.events.last_reboot_mode, Some(BootMode::App));
 }
 
 #[test]
@@ -514,8 +519,8 @@ fn reboot_to_other_id_silent_and_no_request() {
 
     assert_eq!(io.bus.send_count, 0);
     assert!(io.bus.tx.is_empty());
-    assert_eq!(io.device.reboot_count, 0);
-    assert_eq!(io.device.last_reboot_mode, None);
+    assert_eq!(io.events.reboot_count, 0);
+    assert_eq!(io.events.last_reboot_mode, None);
 }
 
 #[test]
@@ -537,8 +542,8 @@ fn reboot_honors_staged_boot_mode() {
     io.feed(&req);
     h.poll(&shared, &mut io);
 
-    assert_eq!(io.device.reboot_count, 1);
-    assert_eq!(io.device.last_reboot_mode, Some(BootMode::Bootloader));
+    assert_eq!(io.events.reboot_count, 1);
+    assert_eq!(io.events.last_reboot_mode, Some(BootMode::Bootloader));
 }
 
 fn set_level(shared: &Shared, level: StatusReturnLevel) {
@@ -671,8 +676,8 @@ fn return_level_none_silences_reboot_ack_but_reboot_still_fires() {
 
     assert_eq!(io.bus.send_count, 0);
     assert!(io.bus.tx.is_empty());
-    assert_eq!(io.device.reboot_count, 1);
-    assert_eq!(io.device.last_reboot_mode, Some(BootMode::App));
+    assert_eq!(io.events.reboot_count, 1);
+    assert_eq!(io.events.last_reboot_mode, Some(BootMode::App));
 }
 
 #[test]

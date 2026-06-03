@@ -1,7 +1,7 @@
 use core::sync::atomic::Ordering;
 
 use heapless::Vec;
-use osc_core::{BaudRate, BootMode, DeviceControl, DxlBus, RxSnapshot, ServicesIo};
+use osc_core::{BootMode, DxlBus, ServiceEvents, Event, RxSnapshot, ServicesIo};
 
 use crate::dxl;
 use crate::dxl::statics::{
@@ -86,58 +86,60 @@ impl DxlBus for Ch32Bus {
         };
         dxl::start_fast_after(request_end_tick, delay_q88_us, snoop_from);
     }
-
-    fn set_baud(&mut self, rate: BaudRate) {
-        let brr = usart::brr(PCLK_HZ, rate.as_hz());
-        DXL_BAUD_PENDING_BRR.store(brr, Ordering::Release);
-    }
-
-    fn set_clock_trim(&mut self, delta: i8) {
-        DXL_CLOCK_TRIM_PENDING.store(delta as i16, Ordering::Release);
-    }
-
-    fn set_clock_fine_trim_us(&mut self, q88_us: i16) {
-        DXL_CLOCK_FINE_TRIM_PENDING.store(q88_us as i32, Ordering::Release);
-    }
 }
 
-pub struct Ch32Device;
+pub struct Ch32Events;
 
-impl Ch32Device {
+impl Ch32Events {
     pub const fn new() -> Self {
         Self
     }
 }
 
-impl Default for Ch32Device {
+impl Default for Ch32Events {
     fn default() -> Self {
         Self::new()
     }
 }
 
-impl DeviceControl for Ch32Device {
-    fn reboot(&mut self, mode: BootMode) {
-        flash::set_boot_mode(matches!(mode, BootMode::Bootloader));
-        DXL_REBOOT_PENDING.store(true, Ordering::Release);
-        // SAFETY: read-only check of TX buf occupancy; ISR may push past us
-        // but never shrinks. Worst case: deferred reset, then TC fires it.
-        let tx_empty = unsafe { (*DXL_TX_BUF.get()).is_empty() };
-        if tx_empty {
-            pfic::software_reset();
+impl ServiceEvents for Ch32Events {
+    fn send(&mut self, event: Event) {
+        match event {
+            Event::SetDxlBaud(rate) => {
+                let brr = usart::brr(PCLK_HZ, rate.as_hz());
+                DXL_BAUD_PENDING_BRR.store(brr, Ordering::Release);
+            }
+            Event::SetClockTrim(delta) => {
+                DXL_CLOCK_TRIM_PENDING.store(delta as i16, Ordering::Release);
+            }
+            Event::SetClockFineTrimUs(q88_us) => {
+                DXL_CLOCK_FINE_TRIM_PENDING.store(q88_us as i32, Ordering::Release);
+            }
+            Event::Reboot(mode) => {
+                flash::set_boot_mode(matches!(mode, BootMode::Bootloader));
+                DXL_REBOOT_PENDING.store(true, Ordering::Release);
+                // SAFETY: read-only check of TX buf occupancy; ISR may push
+                // past us but never shrinks. Worst case: deferred reset, TC
+                // fires it.
+                let tx_empty = unsafe { (*DXL_TX_BUF.get()).is_empty() };
+                if tx_empty {
+                    pfic::software_reset();
+                }
+            }
         }
     }
 }
 
 pub struct Ch32ServicesIo {
     pub bus: Ch32Bus,
-    pub device: Ch32Device,
+    pub events: Ch32Events,
 }
 
 impl Ch32ServicesIo {
     pub const fn new() -> Self {
         Self {
             bus: Ch32Bus::new(),
-            device: Ch32Device::new(),
+            events: Ch32Events::new(),
         }
     }
 }
@@ -150,9 +152,9 @@ impl Default for Ch32ServicesIo {
 
 impl ServicesIo for Ch32ServicesIo {
     type Bus = Ch32Bus;
-    type Device = Ch32Device;
+    type Events = Ch32Events;
 
-    fn parts(&mut self) -> (&mut Ch32Bus, &mut Ch32Device) {
-        (&mut self.bus, &mut self.device)
+    fn parts(&mut self) -> (&mut Ch32Bus, &mut Ch32Events) {
+        (&mut self.bus, &mut self.events)
     }
 }

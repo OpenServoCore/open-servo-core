@@ -29,43 +29,38 @@ pub trait DxlBus {
     /// received from `snoop_from` onward. `None` ⇒ Only-slot path (no
     /// predecessors to snoop).
     fn send_with_snoop_crc(&mut self, delay_q88_us: u32, snoop_from: Option<u32>);
-
-    /// Request a wire-rate change. Called after the Status reply for the
-    /// triggering WRITE has been queued but before it finishes transmitting —
-    /// implementations MUST defer the actual UART retune until TX completes,
-    /// otherwise the host can't decode the reply. Default no-op.
-    fn set_baud(&mut self, _rate: BaudRate) {}
-
-    /// Notify the bus that RETURN_DELAY_TIME has changed. Framing-mode pickers
-    /// (`Plain` vs `Snoop` on Phase B) recompute their deadlines off RDT, so
-    /// the recompute has to happen the moment the host writes the field —
-    /// waiting until the next request leaves one transaction running on stale
-    /// timing. Default no-op.
-    fn set_return_delay(&mut self, _rdt_us: u32) {}
-
-    /// Queue a new HSI trim delta. Implementations MUST defer the actual
-    /// register write until USART1 TC drains the in-flight Status reply,
-    /// since retuning HSI shifts the BRR divider mid-byte. Default no-op so
-    /// chips without an HSI trim lever ignore it silently.
-    fn set_clock_trim(&mut self, _delta: i8) {}
-
-    /// Queue a new Q8.8 µs sub-trim drift residual. Implementations recompute
-    /// their fire-advance compensation and apply at USART1 TC. Default no-op.
-    fn set_clock_fine_trim_us(&mut self, _q88_us: i16) {}
 }
 
-/// Lifecycle commands the dispatcher delivers to the device (reboot today;
-/// factory_reset / control_table_backup / clear when those handlers land).
-pub trait DeviceControl {
+/// Fire-and-forget notifications the dispatcher delivers when control-table
+/// writes or lifecycle instructions land. Chip impls match exhaustively —
+/// unsupported variants get an explicit no-op arm, not a silent default.
+pub enum Event {
+    /// Wire-rate change. Queued after the Status reply for the triggering
+    /// WRITE is buffered but before TX completes — impls MUST defer the UART
+    /// retune until TC, otherwise the host can't decode the reply.
+    SetDxlBaud(BaudRate),
+    /// New HSI trim delta. Impls MUST defer the register write until USART TC
+    /// drains the in-flight Status reply, since retuning HSI shifts the BRR
+    /// divider mid-byte.
+    SetClockTrim(i8),
+    /// New Q8.8 µs sub-trim drift residual. Impls recompute fire-advance
+    /// compensation and apply at USART TC.
+    SetClockFineTrimUs(i16),
     /// Reboot, honored after any in-flight TX drains.
-    fn reboot(&mut self, mode: BootMode);
+    Reboot(BootMode),
+}
+
+/// Sink for `Event` notifications. Single dispatch keeps the trait surface
+/// thin — extending the protocol means adding a variant, not a method.
+pub trait ServiceEvents {
+    fn send(&mut self, event: Event);
 }
 
 /// The chip-side bundle of capabilities the services layer needs. Splits into
-/// disjoint sub-trait borrows so the dispatcher can hold bus + device at once.
+/// disjoint sub-trait borrows so the dispatcher can hold bus + events at once.
 pub trait ServicesIo {
     type Bus: DxlBus;
-    type Device: DeviceControl;
+    type Events: ServiceEvents;
 
-    fn parts(&mut self) -> (&mut Self::Bus, &mut Self::Device);
+    fn parts(&mut self) -> (&mut Self::Bus, &mut Self::Events);
 }

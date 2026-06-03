@@ -21,11 +21,11 @@ impl Dxl {
     }
 
     pub fn poll<I: ServicesIo>(&mut self, shared: &Shared, io: &mut I) {
-        let (bus, device) = io.parts();
+        let (bus, events) = io.parts();
         let snap = bus.received();
         self.reader.ingest(snap.ring(), snap.write_pos());
 
-        let mut d = Dispatcher::new(shared, bus, device, &mut self.staged);
+        let mut d = Dispatcher::new(shared, bus, events, &mut self.staged);
         loop {
             match parse_one(self.reader.peek()) {
                 Ok((packet, used)) => {
