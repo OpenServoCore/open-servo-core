@@ -72,7 +72,10 @@ const fn parse_usize(s: &str) -> usize {
     let mut i = 0;
     while i < bytes.len() {
         let b = bytes[i];
-        assert!(b >= b'0' && b <= b'9', "OSC_MAX_* must be a decimal integer");
+        assert!(
+            b >= b'0' && b <= b'9',
+            "OSC_MAX_* must be a decimal integer"
+        );
         n = n * 10 + (b - b'0') as usize;
         i += 1;
     }

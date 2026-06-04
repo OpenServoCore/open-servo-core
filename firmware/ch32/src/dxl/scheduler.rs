@@ -26,7 +26,10 @@ const BYTES_PER_INTERVAL: u32 = 15;
 /// (ADC TC) to slip in without pushing fire past pirate's 1-char_time
 /// IDLE threshold.
 pub(super) const GUARD_BYTES: u16 = 2;
-const _: () = assert!(GUARD_BYTES >= 2, "GUARD_BYTES < 2 puts 3M in recursive-fire mode");
+const _: () = assert!(
+    GUARD_BYTES >= 2,
+    "GUARD_BYTES < 2 puts 3M in recursive-fire mode"
+);
 
 /// Plain advance adds a per-baud `bt/4` (≈ 2.5 bit-times) term covering
 /// the USART BRR-sync + listener IDLE-detect pipeline on top of the

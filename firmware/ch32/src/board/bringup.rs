@@ -1,17 +1,15 @@
 use ch32_metapac::{ADC, adc::vals::Extsel, dma::vals::Dir};
 use osc_core::{ConfigDefaults, RegionStorage};
 
+use crate::dxl::statics::{
+    DXL_DBG_PIN, DXL_RX_BUF, DXL_RX_BUF_LEN, DXL_TX_BUF, DXL_TX_EN, store_baud_derived,
+};
 use crate::hal::{
     adc, afio, delay_ms, dma,
     gpio::{self, Level, PinMode},
     opa, rcc, timer, usart,
 };
-use crate::dxl::statics::{
-    DXL_DBG_PIN, DXL_RX_BUF, DXL_RX_BUF_LEN, DXL_TX_BUF, DXL_TX_EN, store_baud_derived,
-};
-use crate::statics::{
-    ADC_DMA_BUF, ADC_DMA_BUF_LEN, ADC_SCAN_LEN, ADC_SENSOR_COUNT, SHARED,
-};
+use crate::statics::{ADC_DMA_BUF, ADC_DMA_BUF_LEN, ADC_SCAN_LEN, ADC_SENSOR_COUNT, SHARED};
 
 use super::config::{
     AdcPins, BoardWiring, CurrentSenseConfig, Duplex, DxlBus, MotorConfig, Precomputed,

@@ -76,7 +76,8 @@ pub(crate) static DXL_CLOCK_TRIM_PENDING: AtomicI16 = AtomicI16::new(CLOCK_TRIM_
 /// Pending Q8.8 µs sub-trim residual queued by a `comms.clock_fine_trim_us`
 /// Write. `i32::MIN` (outside i16's native range) is the no-pending sentinel.
 pub(crate) const CLOCK_FINE_TRIM_NO_PENDING: i32 = i32::MIN;
-pub(crate) static DXL_CLOCK_FINE_TRIM_PENDING: AtomicI32 = AtomicI32::new(CLOCK_FINE_TRIM_NO_PENDING);
+pub(crate) static DXL_CLOCK_FINE_TRIM_PENDING: AtomicI32 =
+    AtomicI32::new(CLOCK_FINE_TRIM_NO_PENDING);
 
 /// Q8.8 µs → ticks → atomic publish. Fire site sums with the per-path
 /// `TX_{PLAIN,FAST}_LATENCY_TICKS` and clamps the total to ≥ 0 there.
