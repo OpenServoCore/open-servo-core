@@ -1,6 +1,6 @@
 use crc::{CRC_16_UMTS, Crc};
 
-use crate::crc::CrcUmts;
+use super::crc::CrcUmts;
 
 const ENGINE: Crc<u16> = Crc::<u16>::new(&CRC_16_UMTS);
 

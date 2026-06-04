@@ -1,9 +1,9 @@
-use crate::Instruction;
-use crate::buf::WriteBuf;
-use crate::crc::CrcUmts;
-use crate::fast::{FastPosition, write_fast};
-use crate::status_error::StatusError;
-use crate::writer::{WriteError, write_packet};
+use crate::wire::{CrcUmts, WriteBuf, WriteError};
+
+use super::fast::{FastPosition, write_fast};
+use super::instruction::Instruction;
+use super::status_error::StatusError;
+use super::writer::write_packet;
 
 /// Typed slave-side reply. One variant per logical response shape; the chip's
 /// `Bus::send` matches on this to pick wire layout and fire mechanism.

@@ -1,15 +1,6 @@
-use crate::Instruction;
-use crate::bytes::Bytes;
-use crate::crc::CrcUmts;
-use crate::frame::RawFrame;
-#[cfg(feature = "osc")]
-use crate::packet::CalibratePacket;
-use crate::packet::{
-    ActionPacket, BROADCAST_ID, BulkReadPacket, BulkWritePacket, ClearPacket,
-    ControlTableBackupPacket, FactoryResetPacket, FastBulkReadPacket, FastSyncReadPacket, HEADER,
-    MAX_LENGTH, Packet, PingPacket, ReadPacket, RebootPacket, RegWritePacket, StatusPacket,
-    SyncReadPacket, SyncWritePacket, WritePacket,
-};
+use super::bytes::Bytes;
+use super::crc::CrcUmts;
+use super::frame::{BROADCAST_ID, HEADER, MAX_LENGTH, RawFrame};
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub enum ParseError {
@@ -19,6 +10,11 @@ pub enum ParseError {
     BadInstruction { skip: usize },
     BadLength { skip: usize },
 }
+
+/// Status instruction byte. Hardcoded here so the wire parser can detect
+/// Fast chain headers (broadcast + Status with multi-slot length) without
+/// depending on the typed `Instruction` enum.
+const STATUS_INSTRUCTION_BYTE: u8 = 0x55;
 
 /// Virtual ring view over `head` then `tail`. Non-wrapped callers pass
 /// `tail = &[]` and get linear-input semantics with no per-byte overhead
@@ -112,24 +108,13 @@ fn longest_header_prefix_suffix(ring: &RingView<'_>, n: usize) -> usize {
     0
 }
 
-/// On error variants other than `Incomplete`, `skip` is the number of virtual
-/// bytes the caller should drop before retrying.
-pub(crate) fn parse_one<'a, CRC: CrcUmts>(
-    head: &'a [u8],
-    tail: &'a [u8],
-) -> Result<(Packet<'a>, usize), ParseError> {
-    let (raw, consumed) = parse_raw::<CRC>(head, tail)?;
-    let packet = decode(raw).map_err(|e| match e {
-        DecodeError::UnknownInstruction => ParseError::BadInstruction { skip: consumed },
-        DecodeError::BadParams => ParseError::BadLength { skip: consumed },
-    })?;
-    Ok((packet, consumed))
-}
-
 /// Wire-layer parse: locate the frame, validate length and CRC, and return a
 /// `RawFrame` with the params slice + raw instruction byte. Does NOT resolve
 /// the instruction byte to the `Instruction` enum or decode the params.
-pub(crate) fn parse_raw<'a, CRC: CrcUmts>(
+///
+/// On error variants other than `Incomplete`, `skip` is the number of virtual
+/// bytes the caller should drop before retrying.
+pub fn parse_raw<'a, CRC: CrcUmts>(
     head: &'a [u8],
     tail: &'a [u8],
 ) -> Result<(RawFrame<'a>, usize), ParseError> {
@@ -172,7 +157,7 @@ pub(crate) fn parse_raw<'a, CRC: CrcUmts>(
         // on the wire during another node's TX. Resync past this phantom.
         if total - header_off >= 8
             && id == BROADCAST_ID
-            && ring.get(header_off + 7) == Some(Instruction::Status.as_u8())
+            && ring.get(header_off + 7) == Some(STATUS_INSTRUCTION_BYTE)
         {
             return Err(ParseError::BadInstruction { skip: HEADER.len() });
         }
@@ -202,137 +187,4 @@ pub(crate) fn parse_raw<'a, CRC: CrcUmts>(
         },
         frame_start + frame_len,
     ))
-}
-
-#[derive(Copy, Clone, Debug)]
-enum DecodeError {
-    UnknownInstruction,
-    BadParams,
-}
-
-fn decode(raw: RawFrame<'_>) -> Result<Packet<'_>, DecodeError> {
-    let instruction =
-        Instruction::from_u8(raw.instruction).ok_or(DecodeError::UnknownInstruction)?;
-    decode_typed(instruction, raw.id, raw.params)
-}
-
-fn decode_typed<'a>(
-    instruction: Instruction,
-    id: u8,
-    params: Bytes<'a>,
-) -> Result<Packet<'a>, DecodeError> {
-    use Instruction::*;
-    match instruction {
-        Ping => need_empty(&params).map(|_| Packet::Ping(PingPacket { id })),
-        Read => {
-            let mut it = params.iter();
-            let address = take_u16_le(&mut it)?;
-            let length = take_u16_le(&mut it)?;
-            if it.next().is_some() {
-                return Err(DecodeError::BadParams);
-            }
-            Ok(Packet::Read(ReadPacket {
-                id,
-                address,
-                length,
-            }))
-        }
-        Write => {
-            let mut it = params.iter();
-            let address = take_u16_le(&mut it)?;
-            Ok(Packet::Write(WritePacket {
-                id,
-                address,
-                data: it.rest_bytes(),
-            }))
-        }
-        RegWrite => {
-            let mut it = params.iter();
-            let address = take_u16_le(&mut it)?;
-            Ok(Packet::RegWrite(RegWritePacket {
-                id,
-                address,
-                data: it.rest_bytes(),
-            }))
-        }
-        Action => need_empty(&params).map(|_| Packet::Action(ActionPacket { id })),
-        FactoryReset => {
-            let mut it = params.iter();
-            let mode = it.next().ok_or(DecodeError::BadParams)?;
-            if it.next().is_some() {
-                return Err(DecodeError::BadParams);
-            }
-            Ok(Packet::FactoryReset(FactoryResetPacket { id, mode }))
-        }
-        Reboot => need_empty(&params).map(|_| Packet::Reboot(RebootPacket { id })),
-        #[cfg(feature = "osc")]
-        Calibrate => {
-            let mut it = params.iter();
-            let count = take_u16_le(&mut it)?;
-            if it.next().is_some() {
-                return Err(DecodeError::BadParams);
-            }
-            Ok(Packet::Calibrate(CalibratePacket { id, count }))
-        }
-        Clear => Ok(Packet::Clear(ClearPacket { id, body: params })),
-        ControlTableBackup => Ok(Packet::ControlTableBackup(ControlTableBackupPacket {
-            id,
-            body: params,
-        })),
-        Status => {
-            let mut it = params.iter();
-            let error = it.next().ok_or(DecodeError::BadParams)?;
-            Ok(Packet::Status(StatusPacket {
-                id,
-                error,
-                params: it.rest_bytes(),
-            }))
-        }
-        SyncRead => {
-            let mut it = params.iter();
-            let address = take_u16_le(&mut it)?;
-            let length = take_u16_le(&mut it)?;
-            Ok(Packet::SyncRead(SyncReadPacket {
-                address,
-                length,
-                ids: it.rest_bytes(),
-            }))
-        }
-        SyncWrite => {
-            let mut it = params.iter();
-            let address = take_u16_le(&mut it)?;
-            let length = take_u16_le(&mut it)?;
-            Ok(Packet::SyncWrite(SyncWritePacket {
-                address,
-                length,
-                body: it.rest_bytes(),
-            }))
-        }
-        FastSyncRead => {
-            let mut it = params.iter();
-            let address = take_u16_le(&mut it)?;
-            let length = take_u16_le(&mut it)?;
-            Ok(Packet::FastSyncRead(FastSyncReadPacket {
-                address,
-                length,
-                ids: it.rest_bytes(),
-            }))
-        }
-        BulkRead => Ok(Packet::BulkRead(BulkReadPacket { body: params })),
-        BulkWrite => Ok(Packet::BulkWrite(BulkWritePacket { body: params })),
-        FastBulkRead => Ok(Packet::FastBulkRead(FastBulkReadPacket { body: params })),
-    }
-}
-
-fn need_empty(b: &Bytes<'_>) -> Result<(), DecodeError> {
-    if b.iter().next().is_some() {
-        return Err(DecodeError::BadParams);
-    }
-    Ok(())
-}
-
-fn take_u16_le<I: Iterator<Item = u8>>(it: &mut I) -> Result<u16, DecodeError> {
-    let lo = it.next().ok_or(DecodeError::BadParams)?;
-    let hi = it.next().ok_or(DecodeError::BadParams)?;
-    Ok(u16::from_le_bytes([lo, hi]))
 }

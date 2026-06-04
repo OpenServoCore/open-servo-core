@@ -1,19 +1,14 @@
-pub use crate::buf::WriteBuf;
-pub use crate::bytes::Bytes;
-pub use crate::codec::Codec;
-pub use crate::crc::CrcUmts;
-#[cfg(feature = "software-crc")]
-pub use crate::crc_software::SoftwareCrcUmts;
-pub use crate::fast::{FastPosition, FastReadPacket, FastReadVariant, FastSlotInfo};
+pub use crate::Codec;
 #[cfg(feature = "osc")]
-pub use crate::packet::CalibratePacket;
-pub use crate::packet::{
-    ActionPacket, BROADCAST_ID, BulkReadPacket, BulkWritePacket, ClearPacket,
-    ControlTableBackupPacket, FactoryResetPacket, FastBulkReadPacket, FastSyncReadPacket, HEADER,
-    MAX_LENGTH, Packet, PingPacket, ReadPacket, RebootPacket, RegWritePacket, StatusPacket,
-    SyncReadPacket, SyncWritePacket, WritePacket,
+pub use crate::typed::CalibratePacket;
+pub use crate::typed::{
+    ActionPacket, BulkReadPacket, BulkWritePacket, ClearPacket, ControlTableBackupPacket,
+    FactoryResetPacket, FastBulkReadPacket, FastPosition, FastReadPacket, FastReadVariant,
+    FastSlotInfo, FastSyncReadPacket, Packet, PingPacket, ReadPacket, RebootPacket, RegWritePacket,
+    StatusError, StatusPacket, StatusReply, SyncReadPacket, SyncWritePacket, WritePacket,
 };
-pub use crate::parser::ParseError;
-pub use crate::reply::StatusReply;
-pub use crate::status_error::StatusError;
-pub use crate::writer::WriteError;
+#[cfg(feature = "software-crc")]
+pub use crate::wire::SoftwareCrcUmts;
+pub use crate::wire::{
+    BROADCAST_ID, Bytes, CrcUmts, HEADER, MAX_LENGTH, ParseError, WriteBuf, WriteError,
+};

@@ -1,5 +1,6 @@
-use crate::bytes::ByteIter;
-use crate::packet::{BulkReadPacket, CRC_BYTES, RESPONSE_HEADER_BYTES, SyncReadPacket};
+use crate::wire::{ByteIter, CRC_BYTES, RESPONSE_HEADER_BYTES};
+
+use super::packet::{BulkReadPacket, SyncReadPacket};
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub struct BulkSlot {
@@ -98,7 +99,7 @@ impl<'a> SyncReadPacket<'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::bytes::Bytes;
+    use crate::wire::Bytes;
 
     fn bulk(body: &[u8]) -> BulkReadPacket<'_> {
         BulkReadPacket {

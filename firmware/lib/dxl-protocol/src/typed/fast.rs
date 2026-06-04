@@ -1,21 +1,11 @@
-use crate::Instruction;
-use crate::buf::WriteBuf;
-use crate::bytes::ByteIter;
-use crate::crc::CrcUmts;
-use crate::packet::{
-    BROADCAST_ID, FastBulkReadPacket, FastSyncReadPacket, HEADER, RESPONSE_HEADER_BYTES,
+use crate::wire::{
+    BROADCAST_ID, ByteIter, CrcUmts, FAST_RESPONSE_SLOT_BYTES, FAST_RESPONSE_SLOT0_BYTES, HEADER,
+    WriteBuf, WriteError,
 };
-use crate::status_error::StatusError;
-use crate::writer::WriteError;
 
-/// Bytes before slot 0's payload in a Fast response chain:
-/// `RESPONSE_HEADER_BYTES + slave_id(1)` — slot 0 reuses the response
-/// header's ERROR byte, then adds the slave ID ahead of its data.
-pub const FAST_RESPONSE_SLOT0_BYTES: usize = RESPONSE_HEADER_BYTES + 1;
-
-/// Bytes before slot `k > 0`'s payload in a Fast response chain:
-/// `ERROR(1) + slave_id(1)`.
-pub const FAST_RESPONSE_SLOT_BYTES: usize = 2;
+use super::instruction::Instruction;
+use super::packet::{FastBulkReadPacket, FastSyncReadPacket};
+use super::status_error::StatusError;
 
 /// Position of our slot in the coalesced Fast Status chain. Variants that
 /// emit the chain header carry the chain's DXL `Length` field; the rest don't
@@ -275,7 +265,7 @@ fn write_fast_body<W: WriteBuf, I: Iterator<Item = u8>>(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::bytes::Bytes;
+    use crate::wire::Bytes;
 
     fn sync(address: u16, length: u16, ids: &[u8]) -> FastSyncReadPacket<'_> {
         FastSyncReadPacket {

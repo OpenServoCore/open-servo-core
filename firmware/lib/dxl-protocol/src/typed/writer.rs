@@ -1,13 +1,7 @@
-use crate::Instruction;
-use crate::buf::WriteBuf;
-use crate::crc::CrcUmts;
-use crate::packet::{HEADER, Packet};
+use crate::wire::{CrcUmts, HEADER, WriteBuf, WriteError};
 
-#[derive(Copy, Clone, Debug, PartialEq, Eq)]
-pub enum WriteError {
-    Overflow,
-    Invalid,
-}
+use super::instruction::Instruction;
+use super::packet::Packet;
 
 pub(crate) fn write<W: WriteBuf, CRC: CrcUmts>(
     out: &mut W,
@@ -92,7 +86,7 @@ pub(crate) fn write<W: WriteBuf, CRC: CrcUmts>(
     }
 }
 
-const BROADCAST: u8 = crate::packet::BROADCAST_ID;
+const BROADCAST: u8 = crate::wire::BROADCAST_ID;
 
 /// id != 0xFF, instruction != 0xFD required so the unstuffed header..instruction
 /// prefix can't itself complete a stuffing trigger.

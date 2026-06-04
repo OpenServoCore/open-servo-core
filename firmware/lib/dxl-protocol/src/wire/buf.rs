@@ -2,7 +2,11 @@
 //! `alloc::vec::Vec` opt-in via the `heapless` / `alloc` features; without
 //! either, downstream provides its own impl (e.g. a DMA `&mut [u8]` + cursor).
 
-use crate::writer::WriteError;
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub enum WriteError {
+    Overflow,
+    Invalid,
+}
 
 pub trait WriteBuf {
     fn push(&mut self, b: u8) -> Result<(), WriteError>;
