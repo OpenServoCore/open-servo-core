@@ -1,6 +1,7 @@
 use crate::Instruction;
 use crate::bytes::Bytes;
 use crate::crc::CrcUmts;
+use crate::frame::RawFrame;
 #[cfg(feature = "osc")]
 use crate::packet::CalibratePacket;
 use crate::packet::{
@@ -117,6 +118,21 @@ pub(crate) fn parse_one<'a, CRC: CrcUmts>(
     head: &'a [u8],
     tail: &'a [u8],
 ) -> Result<(Packet<'a>, usize), ParseError> {
+    let (raw, consumed) = parse_raw::<CRC>(head, tail)?;
+    let packet = decode(raw).map_err(|e| match e {
+        DecodeError::UnknownInstruction => ParseError::BadInstruction { skip: consumed },
+        DecodeError::BadParams => ParseError::BadLength { skip: consumed },
+    })?;
+    Ok((packet, consumed))
+}
+
+/// Wire-layer parse: locate the frame, validate length and CRC, and return a
+/// `RawFrame` with the params slice + raw instruction byte. Does NOT resolve
+/// the instruction byte to the `Instruction` enum or decode the params.
+pub(crate) fn parse_raw<'a, CRC: CrcUmts>(
+    head: &'a [u8],
+    tail: &'a [u8],
+) -> Result<(RawFrame<'a>, usize), ParseError> {
     let ring = RingView { head, tail };
 
     let header_off = match ring.find_header() {
@@ -173,31 +189,34 @@ pub(crate) fn parse_one<'a, CRC: CrcUmts>(
         return Err(ParseError::BadCrc { skip: HEADER.len() });
     }
 
-    let instr_byte = ring.get(frame_start + 7).unwrap();
-    let instruction = match Instruction::from_u8(instr_byte) {
-        Some(i) => i,
-        None => {
-            return Err(ParseError::BadInstruction {
-                skip: frame_start + frame_len,
-            });
-        }
-    };
-
+    let instruction = ring.get(frame_start + 7).unwrap();
     let params_start = frame_start + 8;
     let params_end = crc_pos;
     let params = ring.slice_stuffed(params_start, params_end);
 
-    let packet = decode(instruction, id, params).map_err(|_| ParseError::BadLength {
-        skip: frame_start + frame_len,
-    })?;
-
-    Ok((packet, frame_start + frame_len))
+    Ok((
+        RawFrame {
+            id,
+            instruction,
+            params,
+        },
+        frame_start + frame_len,
+    ))
 }
 
 #[derive(Copy, Clone, Debug)]
-struct DecodeError;
+enum DecodeError {
+    UnknownInstruction,
+    BadParams,
+}
 
-fn decode<'a>(
+fn decode(raw: RawFrame<'_>) -> Result<Packet<'_>, DecodeError> {
+    let instruction =
+        Instruction::from_u8(raw.instruction).ok_or(DecodeError::UnknownInstruction)?;
+    decode_typed(instruction, raw.id, raw.params)
+}
+
+fn decode_typed<'a>(
     instruction: Instruction,
     id: u8,
     params: Bytes<'a>,
@@ -210,7 +229,7 @@ fn decode<'a>(
             let address = take_u16_le(&mut it)?;
             let length = take_u16_le(&mut it)?;
             if it.next().is_some() {
-                return Err(DecodeError);
+                return Err(DecodeError::BadParams);
             }
             Ok(Packet::Read(ReadPacket {
                 id,
@@ -239,9 +258,9 @@ fn decode<'a>(
         Action => need_empty(&params).map(|_| Packet::Action(ActionPacket { id })),
         FactoryReset => {
             let mut it = params.iter();
-            let mode = it.next().ok_or(DecodeError)?;
+            let mode = it.next().ok_or(DecodeError::BadParams)?;
             if it.next().is_some() {
-                return Err(DecodeError);
+                return Err(DecodeError::BadParams);
             }
             Ok(Packet::FactoryReset(FactoryResetPacket { id, mode }))
         }
@@ -251,7 +270,7 @@ fn decode<'a>(
             let mut it = params.iter();
             let count = take_u16_le(&mut it)?;
             if it.next().is_some() {
-                return Err(DecodeError);
+                return Err(DecodeError::BadParams);
             }
             Ok(Packet::Calibrate(CalibratePacket { id, count }))
         }
@@ -262,7 +281,7 @@ fn decode<'a>(
         })),
         Status => {
             let mut it = params.iter();
-            let error = it.next().ok_or(DecodeError)?;
+            let error = it.next().ok_or(DecodeError::BadParams)?;
             Ok(Packet::Status(StatusPacket {
                 id,
                 error,
@@ -307,13 +326,13 @@ fn decode<'a>(
 
 fn need_empty(b: &Bytes<'_>) -> Result<(), DecodeError> {
     if b.iter().next().is_some() {
-        return Err(DecodeError);
+        return Err(DecodeError::BadParams);
     }
     Ok(())
 }
 
 fn take_u16_le<I: Iterator<Item = u8>>(it: &mut I) -> Result<u16, DecodeError> {
-    let lo = it.next().ok_or(DecodeError)?;
-    let hi = it.next().ok_or(DecodeError)?;
+    let lo = it.next().ok_or(DecodeError::BadParams)?;
+    let hi = it.next().ok_or(DecodeError::BadParams)?;
     Ok(u16::from_le_bytes([lo, hi]))
 }

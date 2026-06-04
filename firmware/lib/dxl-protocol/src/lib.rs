@@ -8,6 +8,7 @@ mod crc;
 #[cfg(feature = "software-crc")]
 mod crc_software;
 mod fast;
+mod frame;
 mod instruction;
 mod packet;
 mod parser;
@@ -28,6 +29,7 @@ pub use fast::{
     FAST_RESPONSE_SLOT_BYTES, FAST_RESPONSE_SLOT0_BYTES, FastBulkTupleIter, FastPosition,
     FastReadPacket, FastReadVariant, FastSlotInfo,
 };
+pub use frame::RawFrame;
 pub use instruction::Instruction;
 #[cfg(feature = "osc")]
 pub use packet::CalibratePacket;
