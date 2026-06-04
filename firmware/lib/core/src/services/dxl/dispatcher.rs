@@ -117,35 +117,23 @@ impl<'a, B: DxlBus, E: ServiceEvents> Dispatcher<'a, B, E> {
         }
     }
 
-    fn send_reply(
-        &mut self,
-        ctx: &Ctx,
-        reply: StatusReply<'_>,
-        min_level: StatusReturnLevel,
-        schedule: Schedule,
-    ) {
-        if ctx.level < min_level {
+    fn reply_unsupported(&mut self, ctx: &Ctx, target: u8) {
+        if ctx.level < StatusReturnLevel::All {
             return;
         }
-        self.bus.send(reply, schedule);
-    }
-
-    fn reply_unsupported(&mut self, ctx: &Ctx, target: u8) {
         if let Some((id, true)) = ctx.addressed(target) {
-            self.send_reply(
-                ctx,
+            self.bus.send(
                 StatusReply::Error {
                     id,
                     error: StatusError::Instruction,
                 },
-                StatusReturnLevel::All,
                 ctx.direct_schedule(),
             );
         }
     }
 
     fn reply_table_result(&mut self, ctx: &Ctx, id: u8, direct: bool, result: Result<(), Error>) {
-        if !direct {
+        if !direct || ctx.level < StatusReturnLevel::All {
             return;
         }
         let reply = match result {
@@ -155,7 +143,7 @@ impl<'a, B: DxlBus, E: ServiceEvents> Dispatcher<'a, B, E> {
                 error: error_to_status(e),
             },
         };
-        self.send_reply(ctx, reply, StatusReturnLevel::All, ctx.direct_schedule());
+        self.bus.send(reply, ctx.direct_schedule());
     }
 
     fn handle_ping(&mut self, ctx: &Ctx, p: &PingPacket) {
@@ -163,14 +151,12 @@ impl<'a, B: DxlBus, E: ServiceEvents> Dispatcher<'a, B, E> {
             return;
         };
         let identity = self.shared.table.config.with(|c| c.identity);
-        self.send_reply(
-            ctx,
+        self.bus.send(
             StatusReply::Ping {
                 id,
                 model: identity.model_number,
                 firmware: identity.firmware_version as u8,
             },
-            StatusReturnLevel::None,
             ctx.direct_schedule(),
         );
     }
@@ -184,13 +170,11 @@ impl<'a, B: DxlBus, E: ServiceEvents> Dispatcher<'a, B, E> {
         };
         let len = p.length as usize;
         if len == 0 || len > MAX_CONTROL_RW {
-            self.send_reply(
-                ctx,
+            self.bus.send(
                 StatusReply::Error {
                     id,
                     error: StatusError::DataRange,
                 },
-                StatusReturnLevel::Read,
                 ctx.direct_schedule(),
             );
             return;
@@ -206,7 +190,7 @@ impl<'a, B: DxlBus, E: ServiceEvents> Dispatcher<'a, B, E> {
                 error: error_to_status(e),
             },
         };
-        self.send_reply(ctx, reply, StatusReturnLevel::Read, ctx.direct_schedule());
+        self.bus.send(reply, ctx.direct_schedule());
     }
 
     fn handle_write(&mut self, ctx: &Ctx, p: &WritePacket<'_>) {
@@ -218,14 +202,12 @@ impl<'a, B: DxlBus, E: ServiceEvents> Dispatcher<'a, B, E> {
         let len = match p.data.copy_to_slice(&mut buf) {
             Ok(n) => n,
             Err(_) => {
-                if direct {
-                    self.send_reply(
-                        ctx,
+                if direct && ctx.level >= StatusReturnLevel::All {
+                    self.bus.send(
                         StatusReply::Error {
                             id,
                             error: StatusError::DataRange,
                         },
-                        StatusReturnLevel::All,
                         ctx.direct_schedule(),
                     );
                 }
@@ -271,14 +253,12 @@ impl<'a, B: DxlBus, E: ServiceEvents> Dispatcher<'a, B, E> {
         let len = match p.data.copy_to_slice(&mut buf) {
             Ok(n) => n,
             Err(_) => {
-                if direct {
-                    self.send_reply(
-                        ctx,
+                if direct && ctx.level >= StatusReturnLevel::All {
+                    self.bus.send(
                         StatusReply::Error {
                             id,
                             error: StatusError::DataRange,
                         },
-                        StatusReturnLevel::All,
                         ctx.direct_schedule(),
                     );
                 }
@@ -292,7 +272,7 @@ impl<'a, B: DxlBus, E: ServiceEvents> Dispatcher<'a, B, E> {
             .stage_bytes(p.address, &buf[..len], self.staged);
         // RegWrite ack uses StatusReply::RegWrite on success path; share the
         // table-result helper by translating after the call.
-        if !direct {
+        if !direct || ctx.level < StatusReturnLevel::All {
             return;
         }
         let reply = match result {
@@ -302,7 +282,7 @@ impl<'a, B: DxlBus, E: ServiceEvents> Dispatcher<'a, B, E> {
                 error: error_to_status(e),
             },
         };
-        self.send_reply(ctx, reply, StatusReturnLevel::All, ctx.direct_schedule());
+        self.bus.send(reply, ctx.direct_schedule());
     }
 
     fn handle_action(&mut self, ctx: &Ctx, p: &ActionPacket) {
@@ -310,13 +290,9 @@ impl<'a, B: DxlBus, E: ServiceEvents> Dispatcher<'a, B, E> {
             return;
         };
         self.shared.table.commit_staged(self.staged);
-        if direct {
-            self.send_reply(
-                ctx,
-                StatusReply::Action { id },
-                StatusReturnLevel::All,
-                ctx.direct_schedule(),
-            );
+        if direct && ctx.level >= StatusReturnLevel::All {
+            self.bus
+                .send(StatusReply::Action { id }, ctx.direct_schedule());
         }
     }
 
@@ -330,24 +306,20 @@ impl<'a, B: DxlBus, E: ServiceEvents> Dispatcher<'a, B, E> {
             return;
         };
         if p.count == 0 || p.count as usize > MAX_CONTROL_RW {
-            self.send_reply(
-                ctx,
+            self.bus.send(
                 StatusReply::Error {
                     id,
                     error: StatusError::DataRange,
                 },
-                StatusReturnLevel::None,
                 ctx.direct_schedule(),
             );
             return;
         }
-        self.send_reply(
-            ctx,
+        self.bus.send(
             StatusReply::Calibrate {
                 id,
                 zeros_count: p.count,
             },
-            StatusReturnLevel::None,
             ctx.direct_schedule(),
         );
     }
@@ -357,13 +329,9 @@ impl<'a, B: DxlBus, E: ServiceEvents> Dispatcher<'a, B, E> {
             return;
         };
         let mode = self.shared.table.control.with(|c| c.system.boot_mode);
-        if direct {
-            self.send_reply(
-                ctx,
-                StatusReply::Reboot { id },
-                StatusReturnLevel::All,
-                ctx.direct_schedule(),
-            );
+        if direct && ctx.level >= StatusReturnLevel::All {
+            self.bus
+                .send(StatusReply::Reboot { id }, ctx.direct_schedule());
         }
         self.events.send(Event::Reboot(mode));
     }
@@ -393,13 +361,11 @@ impl<'a, B: DxlBus, E: ServiceEvents> Dispatcher<'a, B, E> {
 
         let len = p.length as usize;
         if len == 0 || len > MAX_CONTROL_RW {
-            self.send_reply(
-                ctx,
+            self.bus.send(
                 StatusReply::Error {
                     id: ctx.our_id,
                     error: StatusError::DataRange,
                 },
-                StatusReturnLevel::Read,
                 schedule,
             );
             return;
@@ -416,7 +382,7 @@ impl<'a, B: DxlBus, E: ServiceEvents> Dispatcher<'a, B, E> {
                 error: error_to_status(e),
             },
         };
-        self.send_reply(ctx, reply, StatusReturnLevel::Read, schedule);
+        self.bus.send(reply, schedule);
     }
 
     fn handle_sync_write(&mut self, _ctx: &Ctx, _p: &SyncWritePacket<'_>) {
@@ -438,13 +404,11 @@ impl<'a, B: DxlBus, E: ServiceEvents> Dispatcher<'a, B, E> {
 
         let len = info.length as usize;
         if len == 0 || len > MAX_CONTROL_RW {
-            self.send_reply(
-                ctx,
+            self.bus.send(
                 StatusReply::Error {
                     id: ctx.our_id,
                     error: StatusError::DataRange,
                 },
-                StatusReturnLevel::Read,
                 schedule,
             );
             return;
@@ -461,7 +425,7 @@ impl<'a, B: DxlBus, E: ServiceEvents> Dispatcher<'a, B, E> {
                 error: error_to_status(e),
             },
         };
-        self.send_reply(ctx, reply, StatusReturnLevel::Read, schedule);
+        self.bus.send(reply, schedule);
     }
 
     fn handle_bulk_write(&mut self, _ctx: &Ctx, _p: &BulkWritePacket<'_>) {
@@ -507,6 +471,6 @@ impl<'a, B: DxlBus, E: ServiceEvents> Dispatcher<'a, B, E> {
                 length: info.length,
             },
         };
-        self.send_reply(ctx, reply, StatusReturnLevel::Read, schedule);
+        self.bus.send(reply, schedule);
     }
 }
