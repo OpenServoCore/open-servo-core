@@ -65,15 +65,6 @@ pub(crate) fn write<W: WriteBuf, CRC: CrcUmts, X: Extension>(
                 params: core::iter::empty::<u8>(),
             },
         ),
-        #[cfg(feature = "osc")]
-        Packet::Calibrate(p) => write_raw::<W, _, CRC>(
-            out,
-            RawFrame {
-                id: p.id,
-                instruction: Instruction::Calibrate.as_u8(),
-                params: U16One::new(p.count),
-            },
-        ),
         Packet::Clear(p) => write_raw::<W, _, CRC>(
             out,
             RawFrame {

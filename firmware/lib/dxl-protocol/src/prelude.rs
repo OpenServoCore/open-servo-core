@@ -1,6 +1,4 @@
 pub use crate::Codec;
-#[cfg(feature = "osc")]
-pub use crate::typed::CalibratePacket;
 pub use crate::typed::{
     ActionPacket, BulkReadPacket, BulkWritePacket, ClearPacket, ControlTableBackupPacket,
     Extension, FactoryResetPacket, FastBulkReadPacket, FastPosition, FastReadPacket,

@@ -6,6 +6,7 @@ use crate::traits::{DxlBus, Event, Schedule, ServiceEvents};
 use crate::{Error, RegionStorage, Router, Shared, StagedWrites, StatusReturnLevel};
 
 use super::limits::{MAX_CONTROL_RW, MAX_SLAVE_COUNT};
+use super::osc::{CalibratePacket, OscExt, OscReplyVariant, OscVariant};
 
 fn error_to_status(e: Error) -> StatusError {
     match e {
@@ -62,7 +63,7 @@ impl<'a, B: DxlBus, E: ServiceEvents> Dispatcher<'a, B, E> {
         }
     }
 
-    pub(super) fn dispatch(&mut self, packet: Packet<'_>) {
+    pub(super) fn dispatch(&mut self, packet: Packet<'_, OscExt>) {
         let ctx = self.snapshot_ctx();
         match &packet {
             Packet::Ping(p) => self.handle_ping(&ctx, p),
@@ -80,11 +81,9 @@ impl<'a, B: DxlBus, E: ServiceEvents> Dispatcher<'a, B, E> {
             Packet::BulkWrite(p) => self.handle_bulk_write(&ctx, p),
             Packet::FastSyncRead(p) => self.handle_fast_read(&ctx, p),
             Packet::FastBulkRead(p) => self.handle_fast_read(&ctx, p),
-            Packet::Calibrate(p) => self.handle_calibrate(&ctx, p),
+            Packet::Ext(OscVariant::Calibrate(p)) => self.handle_calibrate(&ctx, p),
             // Inbound Status frames originate from another device on the bus; drop.
             Packet::Status(_) => {}
-            // Pure DXL build (`NoExt`) — uninhabited.
-            Packet::Ext(v) => match *v {},
         }
     }
 
@@ -289,10 +288,10 @@ impl<'a, B: DxlBus, E: ServiceEvents> Dispatcher<'a, B, E> {
             return;
         }
         self.bus.send(
-            StatusReply::Calibrate {
+            StatusReply::Ext(OscReplyVariant::Calibrate {
                 id,
                 zeros_count: p.count,
-            },
+            }),
             ctx.direct_schedule(),
         );
     }

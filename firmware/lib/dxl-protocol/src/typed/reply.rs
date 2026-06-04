@@ -36,12 +36,6 @@ pub enum StatusReply<'a, R: ReplyExt = NoReplyExt> {
         id: u8,
         data: &'a [u8],
     },
-    /// Chip emits `zeros_count` zero bytes — no caller-side scratch needed.
-    Calibrate {
-        id: u8,
-        zeros_count: u16,
-    },
-
     // ── Fast Read success (Sync/Bulk wire-identical) ──
     FastSyncRead {
         position: FastPosition,
@@ -105,12 +99,6 @@ pub(crate) fn write_status_reply<W: WriteBuf, CRC: CrcUmts, R: ReplyExt>(
         | StatusReply::BulkRead { id, data } => {
             write_status_frame::<W, _, CRC>(out, id, StatusError::None, data.iter().copied())
         }
-        StatusReply::Calibrate { id, zeros_count } => write_status_frame::<W, _, CRC>(
-            out,
-            id,
-            StatusError::None,
-            core::iter::repeat_n(0u8, zeros_count as usize),
-        ),
         StatusReply::Write { id }
         | StatusReply::RegWrite { id }
         | StatusReply::Action { id }

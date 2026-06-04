@@ -2,8 +2,6 @@ use crate::wire::{Bytes, RawFrame};
 
 use super::extension::Extension;
 use super::instruction::Instruction;
-#[cfg(feature = "osc")]
-use super::packet::CalibratePacket;
 use super::packet::{
     ActionPacket, BulkReadPacket, BulkWritePacket, ClearPacket, ControlTableBackupPacket,
     FactoryResetPacket, FastBulkReadPacket, FastSyncReadPacket, Packet, PingPacket, ReadPacket,
@@ -74,15 +72,6 @@ fn decode_typed<'a, X: Extension>(
             Ok(Packet::FactoryReset(FactoryResetPacket { id, mode }))
         }
         Reboot => need_empty(&params).map(|_| Packet::Reboot(RebootPacket { id })),
-        #[cfg(feature = "osc")]
-        Calibrate => {
-            let mut it = params.iter();
-            let count = take_u16_le(&mut it)?;
-            if it.next().is_some() {
-                return Err(DecodeError::BadParams);
-            }
-            Ok(Packet::Calibrate(CalibratePacket { id, count }))
-        }
         Clear => Ok(Packet::Clear(ClearPacket { id, body: params })),
         ControlTableBackup => Ok(Packet::ControlTableBackup(ControlTableBackupPacket {
             id,

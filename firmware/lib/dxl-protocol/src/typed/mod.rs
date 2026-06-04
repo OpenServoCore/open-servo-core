@@ -18,8 +18,6 @@ pub use decoder::{DecodeError, decode};
 pub use extension::{Extension, NoExt};
 pub use fast::{FastBulkTupleIter, FastPosition, FastReadPacket, FastReadVariant, FastSlotInfo};
 pub use instruction::Instruction;
-#[cfg(feature = "osc")]
-pub use packet::CalibratePacket;
 pub use packet::{
     ActionPacket, BulkReadPacket, BulkWritePacket, ClearPacket, ControlTableBackupPacket,
     FactoryResetPacket, FastBulkReadPacket, FastSyncReadPacket, Packet, PingPacket, ReadPacket,

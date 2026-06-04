@@ -1,7 +1,7 @@
 use core::sync::atomic::Ordering;
 
 use dxl_protocol::prelude::*;
-use osc_core::{BootMode, DxlBus, Event, Schedule, ServiceEvents, ServicesIo};
+use osc_core::{BootMode, DxlBus, Event, OscExt, OscReplyExt, Schedule, ServiceEvents, ServicesIo};
 
 use crate::dxl;
 use crate::dxl::Ch32DxlCrc;
@@ -15,7 +15,7 @@ use crate::hal::usart;
 use crate::hal::{dma, flash, pfic};
 use crate::idle_anchor::{self, IdleAnchor};
 
-type Wire = Codec<Ch32DxlCrc>;
+type Wire = Codec<Ch32DxlCrc, OscExt, OscReplyExt>;
 
 /// Single &mut writer: the main loop holding the `Services` struct.
 pub struct Ch32Bus {
@@ -100,7 +100,7 @@ impl Default for Ch32Bus {
 }
 
 impl DxlBus for Ch32Bus {
-    fn poll(&mut self) -> Option<Packet<'static>> {
+    fn poll(&mut self) -> Option<Packet<'static, OscExt>> {
         let (mut head, mut tail) = self.extract_window()?;
         // Walk forward — dispatch the frame ending exactly at the wire-end;
         // earlier frames are pre-IDLE traffic the master has moved on from,
@@ -129,7 +129,7 @@ impl DxlBus for Ch32Bus {
         }
     }
 
-    fn send(&mut self, reply: StatusReply<'_>, schedule: Schedule) {
+    fn send(&mut self, reply: StatusReply<'_, OscReplyExt>, schedule: Schedule) {
         // Defense-in-depth: if DMA wrapped past the parsed range during
         // dispatch, the request data we just acted on may have been garbage.
         // Abort the reply and surface the fault — master will see the timeout

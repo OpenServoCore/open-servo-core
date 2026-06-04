@@ -1,5 +1,6 @@
 use dxl_protocol::prelude::{Packet, StatusReply};
 
+use crate::services::dxl::{OscExt, OscReplyExt};
 use crate::{BaudRate, BootMode};
 
 /// Wire scheduling info for a single outbound reply. The chip translates
@@ -29,14 +30,15 @@ pub struct Schedule {
 pub trait DxlBus {
     /// Latest IDLE-anchored request, or `None` if no fresh anchor since the
     /// previous `poll`. The returned `Packet`'s borrowed bytes live in chip
-    /// storage that stays valid until the next `poll` overwrites it.
-    fn poll(&mut self) -> Option<Packet<'static>>;
+    /// storage that stays valid until the next `poll` overwrites it. OSC
+    /// vendor verbs surface as `Packet::Ext(OscVariant::..)`.
+    fn poll(&mut self) -> Option<Packet<'static, OscExt>>;
 
     /// Compose the reply on the chip's TX buffer and schedule it. The chip
     /// owns all wire-timing math: it consumes `Schedule` to compute the fire
     /// delay (RDT + per-byte translation), and inspects `reply`'s variant to
     /// pick plain vs Fast Last (snooped chain-CRC patch) fire path.
-    fn send(&mut self, reply: StatusReply<'_>, schedule: Schedule);
+    fn send(&mut self, reply: StatusReply<'_, OscReplyExt>, schedule: Schedule);
 }
 
 /// Fire-and-forget notifications the dispatcher delivers when control-table

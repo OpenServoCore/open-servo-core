@@ -6,6 +6,7 @@ use crate::traits::{DxlBus, Event, Schedule, ServiceEvents, ServicesIo};
 use crate::{BootMode, RegionStorage, Shared, StatusReturnLevel};
 
 use super::Dxl;
+use super::osc::{CalibratePacket, OscExt, OscReplyExt, OscVariant};
 
 /// Test-only `CrcUmts`. Production builds get the chip's impl directly; core
 /// itself never references a concrete CRC engine after the trait flip.
@@ -21,7 +22,7 @@ impl CrcUmts for TestDxlCrc {
     }
 }
 
-type Wire = Codec<TestDxlCrc>;
+type Wire = Codec<TestDxlCrc, OscExt, OscReplyExt>;
 
 /// Compact summary of a `StatusReply` variant — the reply itself borrows from
 /// dispatcher-stack storage, so tests inspect the kind here instead of cloning.
@@ -35,7 +36,7 @@ enum ReplyKind {
     FastError(FastPosition, u16),
 }
 
-fn summarize(reply: &StatusReply<'_>) -> ReplyKind {
+fn summarize(reply: &StatusReply<'_, OscReplyExt>) -> ReplyKind {
     match *reply {
         StatusReply::FastSyncRead { position, .. } | StatusReply::FastBulkRead { position, .. } => {
             ReplyKind::Fast(position)
@@ -84,7 +85,7 @@ impl FakeBus {
 }
 
 impl DxlBus for FakeBus {
-    fn poll(&mut self) -> Option<Packet<'static>> {
+    fn poll(&mut self) -> Option<Packet<'static, OscExt>> {
         if !self.burst_fresh {
             return None;
         }
@@ -118,7 +119,7 @@ impl DxlBus for FakeBus {
         None
     }
 
-    fn send(&mut self, reply: StatusReply<'_>, schedule: Schedule) {
+    fn send(&mut self, reply: StatusReply<'_, OscReplyExt>, schedule: Schedule) {
         self.tx.clear();
         Wire::write_status_reply(&mut self.tx, &reply).unwrap();
         self.send_count += 1;
@@ -180,7 +181,7 @@ impl ServicesIo for FakeIo {
     }
 }
 
-fn encode(packet: &Packet<'_>) -> Vec<u8, 64> {
+fn encode(packet: &Packet<'_, OscExt>) -> Vec<u8, 64> {
     let mut buf: Vec<u8, 64> = Vec::new();
     Wire::write(&mut buf, packet).unwrap();
     buf
@@ -1340,7 +1341,9 @@ fn calibrate_unicast_replies_with_zero_payload() {
     let mut io = FakeIo::new();
     let mut h = Dxl::new();
 
-    let req = encode(&Packet::Calibrate(CalibratePacket::new(0, 16)));
+    let req = encode(&Packet::Ext(OscVariant::Calibrate(CalibratePacket::new(
+        0, 16,
+    ))));
     io.feed(&req);
     h.poll(&shared, &mut io);
 
@@ -1358,7 +1361,9 @@ fn calibrate_unicast_count_max_replies() {
     let mut io = FakeIo::new();
     let mut h = Dxl::new();
 
-    let req = encode(&Packet::Calibrate(CalibratePacket::new(0, 128)));
+    let req = encode(&Packet::Ext(OscVariant::Calibrate(CalibratePacket::new(
+        0, 128,
+    ))));
     io.feed(&req);
     h.poll(&shared, &mut io);
 
@@ -1379,7 +1384,9 @@ fn calibrate_unicast_count_zero_data_range_err() {
     let mut io = FakeIo::new();
     let mut h = Dxl::new();
 
-    let req = encode(&Packet::Calibrate(CalibratePacket::new(0, 0)));
+    let req = encode(&Packet::Ext(OscVariant::Calibrate(CalibratePacket::new(
+        0, 0,
+    ))));
     io.feed(&req);
     h.poll(&shared, &mut io);
 
@@ -1395,7 +1402,9 @@ fn calibrate_unicast_count_over_max_data_range_err() {
     let mut io = FakeIo::new();
     let mut h = Dxl::new();
 
-    let req = encode(&Packet::Calibrate(CalibratePacket::new(0, 129)));
+    let req = encode(&Packet::Ext(OscVariant::Calibrate(CalibratePacket::new(
+        0, 129,
+    ))));
     io.feed(&req);
     h.poll(&shared, &mut io);
 
@@ -1411,7 +1420,10 @@ fn calibrate_broadcast_silently_dropped() {
     let mut io = FakeIo::new();
     let mut h = Dxl::new();
 
-    let req = encode(&Packet::Calibrate(CalibratePacket::new(BROADCAST_ID, 128)));
+    let req = encode(&Packet::Ext(OscVariant::Calibrate(CalibratePacket::new(
+        BROADCAST_ID,
+        128,
+    ))));
     io.feed(&req);
     h.poll(&shared, &mut io);
 

@@ -7,8 +7,6 @@ pub mod wire;
 pub mod prelude;
 
 pub use codec::Codec;
-#[cfg(feature = "osc")]
-pub use typed::CalibratePacket;
 pub use typed::{
     ActionPacket, BulkReadPacket, BulkReadSlotIter, BulkSlot, BulkSlotInfo, BulkWritePacket,
     ClearPacket, ControlTableBackupPacket, DecodeError, Extension, FactoryResetPacket,

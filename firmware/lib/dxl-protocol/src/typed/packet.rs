@@ -106,23 +106,6 @@ impl RebootPacket {
     }
 }
 
-/// OpenServoCore extension — see [`crate::Instruction::Calibrate`].
-#[cfg(feature = "osc")]
-#[derive(Copy, Clone, Debug)]
-pub struct CalibratePacket {
-    pub id: u8,
-    /// Requested zero-byte payload length in the slave's Status reply.
-    /// Bounded `1..=128` by the dispatcher.
-    pub count: u16,
-}
-
-#[cfg(feature = "osc")]
-impl CalibratePacket {
-    pub const fn new(id: u8, count: u16) -> Self {
-        Self { id, count }
-    }
-}
-
 #[derive(Copy, Clone, Debug)]
 pub struct ClearPacket<'a> {
     pub id: u8,
@@ -281,7 +264,5 @@ pub enum Packet<'a, X: Extension = NoExt> {
     BulkWrite(BulkWritePacket<'a>),
     FastSyncRead(FastSyncReadPacket<'a>),
     FastBulkRead(FastBulkReadPacket<'a>),
-    #[cfg(feature = "osc")]
-    Calibrate(CalibratePacket),
     Ext(X::Variant<'a>),
 }
