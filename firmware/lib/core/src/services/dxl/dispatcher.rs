@@ -77,7 +77,7 @@ impl<'a, B: DxlBus, E: ServiceEvents> Dispatcher<'a, B, E> {
         }
     }
 
-    pub(super) fn dispatch(&mut self, packet: Packet<'_>, request_end_bytes: u32) {
+    pub(super) fn dispatch(&mut self, packet: Packet<'_>) {
         let ctx = self.snapshot_ctx();
         match &packet {
             Packet::Ping(p) => self.handle_ping(&ctx, p),
@@ -93,8 +93,8 @@ impl<'a, B: DxlBus, E: ServiceEvents> Dispatcher<'a, B, E> {
             Packet::SyncWrite(p) => self.handle_sync_write(&ctx, p),
             Packet::BulkRead(p) => self.handle_bulk_read(&ctx, p),
             Packet::BulkWrite(p) => self.handle_bulk_write(&ctx, p),
-            Packet::FastSyncRead(p) => self.handle_fast_read(&ctx, p, request_end_bytes),
-            Packet::FastBulkRead(p) => self.handle_fast_read(&ctx, p, request_end_bytes),
+            Packet::FastSyncRead(p) => self.handle_fast_read(&ctx, p),
+            Packet::FastBulkRead(p) => self.handle_fast_read(&ctx, p),
             Packet::Calibrate(p) => self.handle_calibrate(&ctx, p),
             // Inbound Status frames originate from another device on the bus; drop.
             Packet::Status(_) => {}
@@ -471,7 +471,7 @@ impl<'a, B: DxlBus, E: ServiceEvents> Dispatcher<'a, B, E> {
         // TODO: scan (id, address, length, data) tuples; apply our chunk silently.
     }
 
-    fn handle_fast_read<P: FastReadPacket>(&mut self, ctx: &Ctx, p: &P, request_end_bytes: u32) {
+    fn handle_fast_read<P: FastReadPacket>(&mut self, ctx: &Ctx, p: &P) {
         if ctx.level < StatusReturnLevel::Read {
             return;
         }
@@ -524,8 +524,7 @@ impl<'a, B: DxlBus, E: ServiceEvents> Dispatcher<'a, B, E> {
             FastSlotPosition::Last => {
                 let fire_q88_us = (ctx.rdt_us << 8)
                     + bytes_to_us_q88(p.bytes_before(info.our_slot), ctx.baud);
-                self.bus
-                    .send_with_snoop_crc(fire_q88_us, Some(request_end_bytes));
+                self.bus.send_with_snoop_crc(fire_q88_us, true);
             }
             FastSlotPosition::First | FastSlotPosition::Middle => {
                 let fire_us = ctx.rdt_us + bytes_to_us(p.bytes_before(info.our_slot), ctx.baud);

@@ -2,66 +2,59 @@ use dxl_protocol::prelude::*;
 use heapless::Vec;
 
 use crate::traits::{DxlBus, Event, ServiceEvents, ServicesIo};
-use crate::{BootMode, RegionStorage, RxSnapshot, Shared, StatusReturnLevel};
+use crate::{BootMode, RegionStorage, Shared, StatusReturnLevel};
 
 use super::Dxl;
 
 struct FakeBus {
-    rx_ring: [u8; 256],
-    rx_write_pos: u16,
-    pending_write_pos: Option<u16>,
+    burst: Vec<u8, 256>,
+    burst_fresh: bool,
     tx: Vec<u8, 256>,
     send_count: u32,
     after_count: u32,
     last_after_delay_us: Option<u32>,
     snoop_count: u32,
     last_snoop_delay_q88_us: Option<u32>,
-    last_snoop_from: Option<Option<u32>>,
+    last_snoop_arg: Option<bool>,
 }
 
 impl FakeBus {
     fn new() -> Self {
         Self {
-            rx_ring: [0; 256],
-            rx_write_pos: 0,
-            pending_write_pos: None,
+            burst: Vec::new(),
+            burst_fresh: false,
             tx: Vec::new(),
             send_count: 0,
             after_count: 0,
             last_after_delay_us: None,
             snoop_count: 0,
             last_snoop_delay_q88_us: None,
-            last_snoop_from: None,
+            last_snoop_arg: None,
         }
     }
 
-    /// Ingest bytes and publish a fresh IDLE anchor at the new wire-end.
+    /// Stash bytes as the next IDLE-anchored burst — `rx_poll` returns them
+    /// once, then `None` until the next `feed`.
     fn feed(&mut self, bytes: &[u8]) {
-        self.feed_raw(bytes);
-        self.pending_write_pos = Some(self.rx_write_pos);
+        self.burst.clear();
+        self.burst.extend_from_slice(bytes).unwrap();
+        self.burst_fresh = true;
     }
 
-    /// Ingest bytes without publishing an IDLE anchor — simulates the
-    /// bus-collision / no-idle-gap case.
-    fn feed_no_idle(&mut self, bytes: &[u8]) {
-        self.feed_raw(bytes);
-    }
-
-    fn feed_raw(&mut self, bytes: &[u8]) {
-        for &b in bytes {
-            let idx = (self.rx_write_pos as usize) % self.rx_ring.len();
-            self.rx_ring[idx] = b;
-            self.rx_write_pos = self.rx_write_pos.wrapping_add(1) % (self.rx_ring.len() as u16);
-        }
-    }
+    /// No-op stand-in for the bus-collision / no-IDLE-gap case: bytes drop,
+    /// `rx_poll` returns `None`, the parser never runs.
+    fn feed_no_idle(&mut self, _bytes: &[u8]) {}
 }
 
 impl DxlBus for FakeBus {
     type TxBuffer = Vec<u8, 256>;
 
-    fn rx_poll(&mut self) -> Option<RxSnapshot<'_>> {
-        let wp = self.pending_write_pos.take()?;
-        Some(RxSnapshot::new(&self.rx_ring, wp))
+    fn rx_poll(&mut self) -> Option<(&[u8], &[u8])> {
+        if !self.burst_fresh {
+            return None;
+        }
+        self.burst_fresh = false;
+        Some((&self.burst[..], &[]))
     }
 
     fn tx_buffer(&mut self) -> &mut Self::TxBuffer {
@@ -77,10 +70,10 @@ impl DxlBus for FakeBus {
         self.last_after_delay_us = Some(delay_us);
     }
 
-    fn send_with_snoop_crc(&mut self, delay_q88_us: u32, snoop_from: Option<u32>) {
+    fn send_with_snoop_crc(&mut self, delay_q88_us: u32, snoop: bool) {
         self.snoop_count += 1;
         self.last_snoop_delay_q88_us = Some(delay_q88_us);
-        self.last_snoop_from = Some(snoop_from);
+        self.last_snoop_arg = Some(snoop);
     }
 }
 
@@ -957,10 +950,10 @@ fn send_after_nonzero_schedules_without_firing() {
 #[test]
 fn send_with_snoop_crc_records_args() {
     let mut bus = FakeBus::new();
-    bus.send_with_snoop_crc(66, Some(24));
+    bus.send_with_snoop_crc(66, true);
     assert_eq!(bus.snoop_count, 1);
     assert_eq!(bus.last_snoop_delay_q88_us, Some(66));
-    assert_eq!(bus.last_snoop_from, Some(Some(24)));
+    assert_eq!(bus.last_snoop_arg, Some(true));
 }
 
 #[test]
@@ -1040,7 +1033,7 @@ fn fast_sync_read_middle_slot_emits_body_only_with_offset_delay() {
 }
 
 #[test]
-fn fast_sync_read_last_slot_schedules_snoop_with_parsed_end() {
+fn fast_sync_read_last_slot_schedules_snoop() {
     use super::slot::bytes_to_us_q88;
     use crate::BaudRate;
     let shared = Shared::new();
@@ -1049,7 +1042,6 @@ fn fast_sync_read_last_slot_schedules_snoop_with_parsed_end() {
 
     let p = FastSyncReadPacket::new(0, 2, &[9, 0]);
     let req = encode(&Packet::FastSyncRead(p));
-    let parsed_end = req.len() as u32;
     io.feed(&req);
     h.poll(&shared, &mut io);
 
@@ -1058,7 +1050,7 @@ fn fast_sync_read_last_slot_schedules_snoop_with_parsed_end() {
     assert_eq!(io.bus.after_count, 0);
     let expected_fire = bytes_to_us_q88(p.bytes_before(1), BaudRate::B1000000);
     assert_eq!(io.bus.last_snoop_delay_q88_us, Some(expected_fire));
-    assert_eq!(io.bus.last_snoop_from, Some(Some(parsed_end)));
+    assert_eq!(io.bus.last_snoop_arg, Some(true));
 
     assert_eq!(io.bus.tx.len(), 6);
     assert_eq!(&io.bus.tx[..4], &[0, 0, 0, 0]);
@@ -1191,7 +1183,7 @@ fn fast_bulk_read_middle_slot_uses_per_slot_lengths_for_delay() {
 }
 
 #[test]
-fn fast_bulk_read_last_slot_schedules_snoop_with_parsed_end() {
+fn fast_bulk_read_last_slot_schedules_snoop() {
     use super::slot::bytes_to_us_q88;
     use crate::BaudRate;
     let shared = Shared::new();
@@ -1201,7 +1193,6 @@ fn fast_bulk_read_last_slot_schedules_snoop_with_parsed_end() {
     let body = [9, 0, 0, 4, 0, 0, 0, 0, 2, 0];
     let p = FastBulkReadPacket::new(&body);
     let req = encode(&Packet::FastBulkRead(p));
-    let parsed_end = req.len() as u32;
     io.feed(&req);
     h.poll(&shared, &mut io);
 
@@ -1210,7 +1201,7 @@ fn fast_bulk_read_last_slot_schedules_snoop_with_parsed_end() {
     assert_eq!(io.bus.after_count, 0);
     let expected_fire = bytes_to_us_q88(p.bytes_before(1), BaudRate::B1000000);
     assert_eq!(io.bus.last_snoop_delay_q88_us, Some(expected_fire));
-    assert_eq!(io.bus.last_snoop_from, Some(Some(parsed_end)));
+    assert_eq!(io.bus.last_snoop_arg, Some(true));
 
     assert_eq!(io.bus.tx.len(), 6);
     assert_eq!(&io.bus.tx[..4], &[0, 0, 0, 0]);

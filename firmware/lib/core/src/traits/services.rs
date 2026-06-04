@@ -1,6 +1,6 @@
 use dxl_protocol::prelude::WriteBuf;
 
-use crate::{BaudRate, BootMode, RxSnapshot};
+use crate::{BaudRate, BootMode};
 
 /// Bus surface the DXL services layer reads, writes, and schedules through.
 /// Every dispatched packet runs under an IDLE-anchored window; the chip
@@ -8,11 +8,12 @@ use crate::{BaudRate, BootMode, RxSnapshot};
 pub trait DxlBus {
     type TxBuffer: WriteBuf;
 
-    /// Snapshot of the RX ring up to the latest IDLE-anchored wire-end,
-    /// returned exactly once per IDLE event (`None` until the next fires).
-    /// The chip also stashes the matching wire-end tick internally for the
-    /// next `send_*` to consume.
-    fn rx_poll(&mut self) -> Option<RxSnapshot<'_>>;
+    /// New RX bytes since the previous `rx_poll`, sliced to the latest
+    /// IDLE-anchored wire-end. `(head, tail)` — `tail` is empty unless the
+    /// burst wrapped the ring. Returns `None` until the next IDLE fires.
+    /// The chip also stashes the matching wire-end tick + byte cursor for
+    /// the next `send_*` to consume.
+    fn rx_poll(&mut self) -> Option<(&[u8], &[u8])>;
 
     fn tx_buffer(&mut self) -> &mut Self::TxBuffer;
 
@@ -20,10 +21,10 @@ pub trait DxlBus {
     fn send_after(&mut self, delay_us: u32);
     /// Q8.8-µs delay variant — chain Last fire scheduling rounds wire-time at
     /// sub-µs precision (3M: 3.333 µs/byte) and integer-µs flooring would
-    /// fire ahead of the predecessor's last stop bit. Before TX, patch the
-    /// reply's trailing two bytes with a CRC of inter-slave bytes received
-    /// from `snoop_from` onward. `None` ⇒ Only-slot path (no predecessors).
-    fn send_with_snoop_crc(&mut self, delay_q88_us: u32, snoop_from: Option<u32>);
+    /// fire ahead of the predecessor's last stop bit. When `snoop` is true,
+    /// the chip patches the reply's trailing CRC over inter-slave bytes
+    /// received past its stored wire-end cursor.
+    fn send_with_snoop_crc(&mut self, delay_q88_us: u32, snoop: bool);
 }
 
 /// Fire-and-forget notifications the dispatcher delivers when control-table

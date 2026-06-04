@@ -1,7 +1,7 @@
 use core::sync::atomic::Ordering;
 
 use heapless::Vec;
-use osc_core::{BootMode, DxlBus, Event, RxSnapshot, ServiceEvents, ServicesIo};
+use osc_core::{BootMode, DxlBus, Event, ServiceEvents, ServicesIo};
 
 use crate::dxl;
 use crate::dxl::statics::{
@@ -15,8 +15,9 @@ use crate::idle_anchor::{self, IdleAnchor};
 
 /// Single &mut writer: the main loop holding the `Services` struct.
 pub struct Ch32Bus {
-    /// Latest IDLE anchor consumed by `rx_poll`; `tick` feeds the following
-    /// `send_*` call.
+    /// Latest IDLE anchor consumed by `rx_poll`. `tick` feeds the following
+    /// `send_*` call; `bytes` carries the cumulative wire-end cursor used
+    /// for both the next slice-range diff and the snoop-from origin.
     anchor: IdleAnchor,
 }
 
@@ -37,17 +38,35 @@ impl Default for Ch32Bus {
 impl DxlBus for Ch32Bus {
     type TxBuffer = Vec<u8, DXL_TX_BUF_LEN>;
 
-    fn rx_poll(&mut self) -> Option<RxSnapshot<'_>> {
+    fn rx_poll(&mut self) -> Option<(&[u8], &[u8])> {
         let fresh = idle_anchor::snapshot();
         if fresh.seq == self.anchor.seq {
             return None;
         }
+        let prev_bytes = self.anchor.bytes;
         self.anchor = fresh;
+
         // SAFETY: DMA writes DXL_RX_BUF circularly; we only read indices
         // below the IDLE-published wire-end position.
         let ring = unsafe { &*DXL_RX_BUF.get() };
-        let write_pos = (fresh.bytes & RX_MASK_U32) as u16;
-        Some(RxSnapshot::new(ring, write_pos))
+        let cap = ring.len();
+
+        // Clamp to ring capacity: a length > cap means earlier bursts were
+        // overwritten before we polled — present the most recent `cap`
+        // bytes and let the parser resync.
+        let length = (fresh.bytes.wrapping_sub(prev_bytes) as usize).min(cap);
+        if length == 0 {
+            return None;
+        }
+
+        let end = (fresh.bytes & RX_MASK_U32) as usize;
+        let start = (end + cap - length) % cap;
+        if start + length <= cap {
+            Some((&ring[start..start + length], &[]))
+        } else {
+            let head_len = cap - start;
+            Some((&ring[start..], &ring[..length - head_len]))
+        }
     }
 
     fn tx_buffer(&mut self) -> &mut Self::TxBuffer {
@@ -64,7 +83,8 @@ impl DxlBus for Ch32Bus {
         dxl::start_plain_after(self.anchor.tick, delay_us);
     }
 
-    fn send_with_snoop_crc(&mut self, delay_q88_us: u32, snoop_from: Option<u32>) {
+    fn send_with_snoop_crc(&mut self, delay_q88_us: u32, snoop: bool) {
+        let snoop_from = snoop.then_some(self.anchor.bytes);
         dxl::start_fast_after(self.anchor.tick, delay_q88_us, snoop_from);
     }
 }

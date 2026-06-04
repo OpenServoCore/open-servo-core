@@ -6,7 +6,6 @@ pub mod kernel;
 pub mod log;
 pub mod page;
 pub mod regions;
-pub mod ring_reader;
 pub mod sample_frame;
 pub mod services;
 pub mod shared;
@@ -25,7 +24,6 @@ pub use regions::{
     StatusReturnLevel, TelemetryConverted, TelemetryFault, TelemetryIntermediaries, TelemetryRaw,
     TelemetryRegs,
 };
-pub use ring_reader::{RingReader, RxSnapshot};
 pub use sample_frame::{FrameInputs, RawSamples, SampleFrame};
 pub use services::Services;
 pub use services::dxl::Dxl;

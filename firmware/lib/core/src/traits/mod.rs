@@ -14,6 +14,5 @@ pub use services::{DxlBus, Event, ServiceEvents, ServicesIo};
 // Boundary types defined elsewhere that callers of the traits need in scope.
 pub use crate::regions::BootMode;
 pub use crate::regions::config::ConfigDefaults;
-pub use crate::ring_reader::RxSnapshot;
 pub use crate::sample_frame::{FrameInputs, RawSamples, SampleFrame};
 pub use dxl_protocol::WriteBuf;
