@@ -41,9 +41,6 @@ struct Ctx {
     rdt_us: u32,
     level: StatusReturnLevel,
     baud: BaudRate,
-    /// `false` when no trailing-idle anchor was resolved; slot-timed replies
-    /// MUST skip, direct unicasts proceed via the bus's immediate-fire fallback.
-    idle_pinned: bool,
 }
 
 impl Ctx {
@@ -80,8 +77,8 @@ impl<'a, B: DxlBus, E: ServiceEvents> Dispatcher<'a, B, E> {
         }
     }
 
-    pub(super) fn dispatch(&mut self, packet: Packet<'_>, parsed_end: u32) {
-        let ctx = self.snapshot_ctx(parsed_end);
+    pub(super) fn dispatch(&mut self, packet: Packet<'_>, request_end_bytes: u32) {
+        let ctx = self.snapshot_ctx();
         match &packet {
             Packet::Ping(p) => self.handle_ping(&ctx, p),
             Packet::Read(p) => self.handle_read(&ctx, p),
@@ -96,15 +93,15 @@ impl<'a, B: DxlBus, E: ServiceEvents> Dispatcher<'a, B, E> {
             Packet::SyncWrite(p) => self.handle_sync_write(&ctx, p),
             Packet::BulkRead(p) => self.handle_bulk_read(&ctx, p),
             Packet::BulkWrite(p) => self.handle_bulk_write(&ctx, p),
-            Packet::FastSyncRead(p) => self.handle_fast_read(&ctx, p, parsed_end),
-            Packet::FastBulkRead(p) => self.handle_fast_read(&ctx, p, parsed_end),
+            Packet::FastSyncRead(p) => self.handle_fast_read(&ctx, p, request_end_bytes),
+            Packet::FastBulkRead(p) => self.handle_fast_read(&ctx, p, request_end_bytes),
             Packet::Calibrate(p) => self.handle_calibrate(&ctx, p),
             // Inbound Status frames originate from another device on the bus; drop.
             Packet::Status(_) => {}
         }
     }
 
-    fn snapshot_ctx(&mut self, parsed_end: u32) -> Ctx {
+    fn snapshot_ctx(&self) -> Ctx {
         let (our_id, rdt_us, level, baud) = self.shared.table.config.with(|c| {
             (
                 c.comms.id,
@@ -113,13 +110,11 @@ impl<'a, B: DxlBus, E: ServiceEvents> Dispatcher<'a, B, E> {
                 c.comms.baud_rate_idx,
             )
         });
-        let idle_pinned = self.bus.request_complete(parsed_end);
         Ctx {
             our_id,
             rdt_us,
             level,
             baud,
-            idle_pinned,
         }
     }
 
@@ -148,7 +143,7 @@ impl<'a, B: DxlBus, E: ServiceEvents> Dispatcher<'a, B, E> {
         if ctx.level < min_level {
             return;
         }
-        let buf = self.bus.reply_buffer();
+        let buf = self.bus.tx_buffer();
         buf.truncate(0);
         let packet = Packet::Status(StatusPacket::new(id, error.as_u8(), params));
         if write(buf, &packet).is_err() {
@@ -372,9 +367,6 @@ impl<'a, B: DxlBus, E: ServiceEvents> Dispatcher<'a, B, E> {
         let Some(slot) = p.ids.iter().position(|id| id == ctx.our_id) else {
             return;
         };
-        if !ctx.idle_pinned {
-            return;
-        }
 
         let extra = (slot as u32) * slot_period_us(ctx.baud, p.length);
 
@@ -439,10 +431,6 @@ impl<'a, B: DxlBus, E: ServiceEvents> Dispatcher<'a, B, E> {
             return;
         };
 
-        if !ctx.idle_pinned {
-            return;
-        }
-
         let extra = bulk_slot_delay_us(body, ctx.our_id, ctx.baud).unwrap_or(0);
 
         let len = length as usize;
@@ -483,7 +471,7 @@ impl<'a, B: DxlBus, E: ServiceEvents> Dispatcher<'a, B, E> {
         // TODO: scan (id, address, length, data) tuples; apply our chunk silently.
     }
 
-    fn handle_fast_read<P: FastReadPacket>(&mut self, ctx: &Ctx, p: &P, parsed_end: u32) {
+    fn handle_fast_read<P: FastReadPacket>(&mut self, ctx: &Ctx, p: &P, request_end_bytes: u32) {
         if ctx.level < StatusReturnLevel::Read {
             return;
         }
@@ -492,9 +480,6 @@ impl<'a, B: DxlBus, E: ServiceEvents> Dispatcher<'a, B, E> {
         };
         let len = info.length as usize;
         if len == 0 || len > MAX_READ {
-            return;
-        }
-        if !ctx.idle_pinned {
             return;
         }
 
@@ -525,7 +510,7 @@ impl<'a, B: DxlBus, E: ServiceEvents> Dispatcher<'a, B, E> {
             FastSlotPosition::Middle => FastSlot::Middle(body),
             FastSlotPosition::Last => FastSlot::Last(body),
         };
-        let tx_buf = self.bus.reply_buffer();
+        let tx_buf = self.bus.tx_buffer();
         tx_buf.truncate(0);
         if write_fast_slot(tx_buf, &slot).is_err() {
             tx_buf.truncate(0);
@@ -539,7 +524,8 @@ impl<'a, B: DxlBus, E: ServiceEvents> Dispatcher<'a, B, E> {
             FastSlotPosition::Last => {
                 let fire_q88_us = (ctx.rdt_us << 8)
                     + bytes_to_us_q88(p.bytes_before(info.our_slot), ctx.baud);
-                self.bus.send_with_snoop_crc(fire_q88_us, Some(parsed_end));
+                self.bus
+                    .send_with_snoop_crc(fire_q88_us, Some(request_end_bytes));
             }
             FastSlotPosition::First | FastSlotPosition::Middle => {
                 let fire_us = ctx.rdt_us + bytes_to_us(p.bytes_before(info.our_slot), ctx.baud);

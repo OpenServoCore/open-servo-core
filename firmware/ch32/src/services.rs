@@ -1,30 +1,29 @@
 use core::sync::atomic::Ordering;
 
 use heapless::Vec;
-use osc_core::{BootMode, DxlBus, ServiceEvents, Event, RxSnapshot, ServicesIo};
+use osc_core::{BootMode, DxlBus, Event, RxSnapshot, ServiceEvents, ServicesIo};
 
 use crate::dxl;
 use crate::dxl::statics::{
     DXL_BAUD_PENDING_BRR, DXL_CLOCK_FINE_TRIM_PENDING, DXL_CLOCK_TRIM_PENDING, DXL_REBOOT_PENDING,
-    DXL_RX_BUF, DXL_RX_WRITE_POS, DXL_TX_BUF, DXL_TX_BUF_LEN,
+    DXL_RX_BUF, DXL_TX_BUF, DXL_TX_BUF_LEN, RX_MASK_U32,
 };
 use crate::hal::clocks::PCLK_HZ;
 use crate::hal::usart;
 use crate::hal::{flash, pfic};
-use crate::idle_ring;
+use crate::idle_anchor::{self, IdleAnchor};
 
 /// Single &mut writer: the main loop holding the `Services` struct.
 pub struct Ch32Bus {
-    /// SysTick at the request's stop-bit completion, stashed by
-    /// `request_complete` and consumed by the next `send_after*` to schedule
-    /// the deadline.
-    request_end_tick: Option<u32>,
+    /// Latest IDLE anchor consumed by `rx_poll`; `tick` feeds the following
+    /// `send_*` call.
+    anchor: IdleAnchor,
 }
 
 impl Ch32Bus {
     pub const fn new() -> Self {
         Self {
-            request_end_tick: None,
+            anchor: IdleAnchor::empty(),
         }
     }
 }
@@ -36,33 +35,25 @@ impl Default for Ch32Bus {
 }
 
 impl DxlBus for Ch32Bus {
-    type ReplyBuffer = Vec<u8, DXL_TX_BUF_LEN>;
+    type TxBuffer = Vec<u8, DXL_TX_BUF_LEN>;
 
-    fn received(&self) -> RxSnapshot<'_> {
-        let write_pos = DXL_RX_WRITE_POS.load(Ordering::Acquire);
+    fn rx_poll(&mut self) -> Option<RxSnapshot<'_>> {
+        let fresh = idle_anchor::snapshot();
+        if fresh.seq == self.anchor.seq {
+            return None;
+        }
+        self.anchor = fresh;
         // SAFETY: DMA writes DXL_RX_BUF circularly; we only read indices
-        // below the IDLE-published write_pos.
+        // below the IDLE-published wire-end position.
         let ring = unsafe { &*DXL_RX_BUF.get() };
-        RxSnapshot::new(ring, write_pos)
+        let write_pos = (fresh.bytes & RX_MASK_U32) as u16;
+        Some(RxSnapshot::new(ring, write_pos))
     }
 
-    fn reply_buffer(&mut self) -> &mut Self::ReplyBuffer {
+    fn tx_buffer(&mut self) -> &mut Self::TxBuffer {
         // SAFETY: &mut self proves sole-writer; USART1 TC ISR only clears
         // after a send cycle this struct initiated.
         unsafe { &mut *DXL_TX_BUF.get() }
-    }
-
-    fn request_complete(&mut self, request_end: u32) -> bool {
-        match idle_ring::pop_matching(request_end) {
-            Some(tick) => {
-                self.request_end_tick = Some(tick);
-                true
-            }
-            None => {
-                self.request_end_tick = None;
-                false
-            }
-        }
     }
 
     fn send_after(&mut self, delay_us: u32) {
@@ -70,21 +61,11 @@ impl DxlBus for Ch32Bus {
         // Sync/Fast op would otherwise re-fire DMA and patch CRC over this
         // reply's buffer.
         dxl::cancel();
-        match self.request_end_tick.take() {
-            Some(request_end_tick) => dxl::start_plain_after(request_end_tick, delay_us),
-            None => {
-                if dxl::arm_tx() {
-                    dxl::fire_now();
-                }
-            }
-        }
+        dxl::start_plain_after(self.anchor.tick, delay_us);
     }
 
     fn send_with_snoop_crc(&mut self, delay_q88_us: u32, snoop_from: Option<u32>) {
-        let Some(request_end_tick) = self.request_end_tick.take() else {
-            return;
-        };
-        dxl::start_fast_after(request_end_tick, delay_q88_us, snoop_from);
+        dxl::start_fast_after(self.anchor.tick, delay_q88_us, snoop_from);
     }
 }
 

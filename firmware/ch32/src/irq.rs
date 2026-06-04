@@ -10,7 +10,7 @@ use crate::dxl::statics::{
 };
 use crate::hal::rcc;
 use crate::hal::{dma, gpio, pfic, systick, usart};
-use crate::idle_ring;
+use crate::idle_anchor;
 use crate::statics::{KERNEL, SHARED};
 
 /// ADC DMA TC handler body — wire into the vector table via [`crate::install_isrs!`].
@@ -84,7 +84,7 @@ fn on_usart1_idle() {
     let mask = (DXL_RX_BUF_LEN as u16).wrapping_sub(1);
     let delta = write_pos.wrapping_sub(prev) & mask;
     DXL_RX_WRITE_POS.store(write_pos, Ordering::Release);
-    idle_ring::record(delta, request_end_tick);
+    idle_anchor::record(delta, request_end_tick);
 }
 
 fn on_usart1_tc() {

@@ -2,32 +2,27 @@ use dxl_protocol::prelude::WriteBuf;
 
 use crate::{BaudRate, BootMode, RxSnapshot};
 
-/// What the DXL service layer reads from / writes to the bus, plus the
-/// minimal scheduling primitives slot-timed replies need.
+/// Bus surface the DXL services layer reads, writes, and schedules through.
+/// Every dispatched packet runs under an IDLE-anchored window; the chip
+/// tracks the wire-end timestamp internally so `send_*` delays land on it.
 pub trait DxlBus {
-    type ReplyBuffer: WriteBuf;
+    type TxBuffer: WriteBuf;
 
-    fn received(&self) -> RxSnapshot<'_>;
-    fn reply_buffer(&mut self) -> &mut Self::ReplyBuffer;
+    /// Snapshot of the RX ring up to the latest IDLE-anchored wire-end,
+    /// returned exactly once per IDLE event (`None` until the next fires).
+    /// The chip also stashes the matching wire-end tick internally for the
+    /// next `send_*` to consume.
+    fn rx_poll(&mut self) -> Option<RxSnapshot<'_>>;
 
-    /// True once the bus has been idle past `request_end` (the request finished
-    /// arriving). Stashes the resolved idle moment internally so any following
-    /// `send_after*` in this dispatch fires at the right deadline. Slot-timed
-    /// callers (Sync/Bulk/Fast Read) MUST skip on `false`; direct unicasts
-    /// MAY proceed and accept the degraded immediate fire.
-    fn request_complete(&mut self, request_end: u32) -> bool;
+    fn tx_buffer(&mut self) -> &mut Self::TxBuffer;
 
-    /// `delay_us` measured from the request's trailing idle (stashed by the
-    /// preceding `request_complete`). If no idle moment is stashed, fires
-    /// immediately as graceful degradation.
+    /// Schedule a plain Status reply at `wire_end + delay_us`.
     fn send_after(&mut self, delay_us: u32);
-    /// Same timing semantics as `send_after`, but the delay is Q8.8 µs
-    /// (1 unit = 1/256 µs) — chain Last fire scheduling rounds wire-time off
-    /// at sub-µs precision (3M: 3.333 µs/byte) and integer-µs flooring fires
-    /// the slave ahead of the predecessor's last stop bit. Before TX, patch
-    /// the reply's trailing two bytes with a CRC of inter-slave bytes
-    /// received from `snoop_from` onward. `None` ⇒ Only-slot path (no
-    /// predecessors to snoop).
+    /// Q8.8-µs delay variant — chain Last fire scheduling rounds wire-time at
+    /// sub-µs precision (3M: 3.333 µs/byte) and integer-µs flooring would
+    /// fire ahead of the predecessor's last stop bit. Before TX, patch the
+    /// reply's trailing two bytes with a CRC of inter-slave bytes received
+    /// from `snoop_from` onward. `None` ⇒ Only-slot path (no predecessors).
     fn send_with_snoop_crc(&mut self, delay_q88_us: u32, snoop_from: Option<u32>);
 }
 

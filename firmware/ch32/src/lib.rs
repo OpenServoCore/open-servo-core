@@ -7,10 +7,9 @@ pub use osc_core::{BaudRate, ConfigDefaults};
 
 pub mod board;
 pub mod chip_flash;
-pub(crate) mod drop_oldest_ring;
 pub(crate) mod dxl;
 pub mod hal;
-pub(crate) mod idle_ring;
+pub(crate) mod idle_anchor;
 pub mod irq;
 pub mod log;
 pub mod prelude;

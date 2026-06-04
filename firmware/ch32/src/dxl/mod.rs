@@ -15,7 +15,7 @@ pub(crate) mod scheduler;
 pub(crate) mod state;
 pub(crate) mod statics;
 
-pub use isr::{arm_tx, fire_now, on_rxne, on_systick};
+pub use isr::{on_rxne, on_systick};
 pub use scheduler::{start_fast_after, start_plain_after};
 pub use state::{
     cancel, report_dma_overrun, report_framing_error, report_noise_error, report_parity_error,

@@ -22,26 +22,42 @@ impl Dxl {
 
     pub fn poll<I: ServicesIo>(&mut self, shared: &Shared, io: &mut I) {
         let (bus, events) = io.parts();
-        let snap = bus.received();
+        let Some(snap) = bus.rx_poll() else {
+            return;
+        };
         self.reader.ingest(snap.ring(), snap.write_pos());
 
-        let mut d = Dispatcher::new(shared, bus, events, &mut self.staged);
-        loop {
-            match parse_one(self.reader.peek()) {
+        let window = self.reader.peek().len();
+        if window == 0 {
+            return;
+        }
+        let request_end_bytes = self.reader.consumed_total().wrapping_add(window as u32);
+
+        // Only the frame ending exactly at the anchor gets dispatched —
+        // earlier frames in the window are pre-IDLE traffic the master has
+        // moved on from. Cursor advances past the whole window regardless.
+        let mut offset = 0;
+        while offset < window {
+            match parse_one(&self.reader.peek()[offset..]) {
                 Ok((packet, used)) => {
-                    let parsed_end = self.reader.consumed_total().wrapping_add(used as u32);
-                    d.dispatch(packet, parsed_end);
-                    self.reader.consume(used);
+                    if offset + used == window {
+                        let mut d = Dispatcher::new(shared, bus, events, &mut self.staged);
+                        d.dispatch(packet, request_end_bytes);
+                        break;
+                    }
+                    offset += used;
                 }
                 Err(ParseError::Incomplete) => break,
                 Err(ParseError::Resync { skip })
                 | Err(ParseError::BadCrc { skip })
                 | Err(ParseError::BadInstruction { skip })
                 | Err(ParseError::BadLength { skip }) => {
-                    self.reader.consume(skip);
+                    offset = (offset + skip).min(window);
                 }
             }
         }
+
+        self.reader.consume(window);
     }
 }
 

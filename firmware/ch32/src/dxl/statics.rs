@@ -11,12 +11,13 @@ pub(crate) const DXL_RX_BUF_LEN: usize = 512;
 const _: () = assert!(DXL_RX_BUF_LEN.is_power_of_two() && DXL_RX_BUF_LEN <= u16::MAX as usize + 1);
 
 pub(super) const RX_MASK_U16: u16 = (DXL_RX_BUF_LEN as u16).wrapping_sub(1);
-pub(super) const RX_MASK_U32: u32 = (DXL_RX_BUF_LEN - 1) as u32;
+pub(crate) const RX_MASK_U32: u32 = (DXL_RX_BUF_LEN - 1) as u32;
 
 pub(crate) static DXL_RX_BUF: SyncUnsafeCell<[u8; DXL_RX_BUF_LEN]> =
     SyncUnsafeCell::new([0; DXL_RX_BUF_LEN]);
 
-/// USART1 IDLE handler stores the DMA write index; `Ch32Bus::received` reads it.
+/// USART1 IDLE handler's previous DMA write index; used to compute the byte
+/// delta between consecutive IDLE events. ISR-local state.
 pub(crate) static DXL_RX_WRITE_POS: AtomicU16 = AtomicU16::new(0);
 
 pub(crate) const DXL_TX_BUF_LEN: usize = 256;

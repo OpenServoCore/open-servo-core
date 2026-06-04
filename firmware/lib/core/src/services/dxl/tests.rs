@@ -1,7 +1,7 @@
 use dxl_protocol::prelude::*;
 use heapless::Vec;
 
-use crate::traits::{DxlBus, ServiceEvents, Event, ServicesIo};
+use crate::traits::{DxlBus, Event, ServiceEvents, ServicesIo};
 use crate::{BootMode, RegionStorage, RxSnapshot, Shared, StatusReturnLevel};
 
 use super::Dxl;
@@ -9,7 +9,7 @@ use super::Dxl;
 struct FakeBus {
     rx_ring: [u8; 256],
     rx_write_pos: u16,
-    rx_bytes_at_idle: u32,
+    pending_write_pos: Option<u16>,
     tx: Vec<u8, 256>,
     send_count: u32,
     after_count: u32,
@@ -17,7 +17,6 @@ struct FakeBus {
     snoop_count: u32,
     last_snoop_delay_q88_us: Option<u32>,
     last_snoop_from: Option<Option<u32>>,
-    last_request_end: Option<u32>,
 }
 
 impl FakeBus {
@@ -25,7 +24,7 @@ impl FakeBus {
         Self {
             rx_ring: [0; 256],
             rx_write_pos: 0,
-            rx_bytes_at_idle: 0,
+            pending_write_pos: None,
             tx: Vec::new(),
             send_count: 0,
             after_count: 0,
@@ -33,34 +32,40 @@ impl FakeBus {
             snoop_count: 0,
             last_snoop_delay_q88_us: None,
             last_snoop_from: None,
-            last_request_end: None,
         }
     }
 
+    /// Ingest bytes and publish a fresh IDLE anchor at the new wire-end.
     fn feed(&mut self, bytes: &[u8]) {
+        self.feed_raw(bytes);
+        self.pending_write_pos = Some(self.rx_write_pos);
+    }
+
+    /// Ingest bytes without publishing an IDLE anchor — simulates the
+    /// bus-collision / no-idle-gap case.
+    fn feed_no_idle(&mut self, bytes: &[u8]) {
+        self.feed_raw(bytes);
+    }
+
+    fn feed_raw(&mut self, bytes: &[u8]) {
         for &b in bytes {
             let idx = (self.rx_write_pos as usize) % self.rx_ring.len();
             self.rx_ring[idx] = b;
             self.rx_write_pos = self.rx_write_pos.wrapping_add(1) % (self.rx_ring.len() as u16);
         }
-        self.rx_bytes_at_idle = self.rx_bytes_at_idle.wrapping_add(bytes.len() as u32);
     }
 }
 
 impl DxlBus for FakeBus {
-    type ReplyBuffer = Vec<u8, 256>;
+    type TxBuffer = Vec<u8, 256>;
 
-    fn received(&self) -> RxSnapshot<'_> {
-        RxSnapshot::new(&self.rx_ring, self.rx_write_pos)
+    fn rx_poll(&mut self) -> Option<RxSnapshot<'_>> {
+        let wp = self.pending_write_pos.take()?;
+        Some(RxSnapshot::new(&self.rx_ring, wp))
     }
 
-    fn reply_buffer(&mut self) -> &mut Self::ReplyBuffer {
+    fn tx_buffer(&mut self) -> &mut Self::TxBuffer {
         &mut self.tx
-    }
-
-    fn request_complete(&mut self, request_end: u32) -> bool {
-        self.last_request_end = Some(request_end);
-        self.rx_bytes_at_idle == request_end
     }
 
     fn send_after(&mut self, delay_us: u32) {
@@ -767,15 +772,13 @@ fn sync_read_silent_when_our_id_absent() {
 }
 
 #[test]
-fn sync_read_skips_when_request_incomplete() {
+fn sync_read_skips_when_no_idle_anchor() {
     let shared = Shared::new();
     let mut io = FakeIo::new();
     let mut h = Dxl::new();
 
     let req = encode(&Packet::SyncRead(SyncReadPacket::new(0, 2, &[0])));
-    io.feed(&req);
-    // Force request_complete to return false by advancing the idle counter past parsed_end.
-    io.bus.rx_bytes_at_idle = io.bus.rx_bytes_at_idle.wrapping_add(1);
+    io.bus.feed_no_idle(&req);
     h.poll(&shared, &mut io);
 
     assert_eq!(io.bus.send_count, 0);
@@ -869,15 +872,14 @@ fn bulk_read_silent_when_our_id_absent() {
 }
 
 #[test]
-fn bulk_read_skips_when_request_incomplete() {
+fn bulk_read_skips_when_no_idle_anchor() {
     let shared = Shared::new();
     let mut io = FakeIo::new();
     let mut h = Dxl::new();
 
     let body = [0, 0, 0, 2, 0];
     let req = encode(&Packet::BulkRead(BulkReadPacket::new(&body)));
-    io.feed(&req);
-    io.bus.rx_bytes_at_idle = io.bus.rx_bytes_at_idle.wrapping_add(1);
+    io.bus.feed_no_idle(&req);
     h.poll(&shared, &mut io);
 
     assert_eq!(io.bus.send_count, 0);
@@ -1084,14 +1086,13 @@ fn fast_sync_read_silent_when_our_id_absent() {
 }
 
 #[test]
-fn fast_sync_read_skips_when_request_incomplete() {
+fn fast_sync_read_skips_when_no_idle_anchor() {
     let shared = Shared::new();
     let mut io = FakeIo::new();
     let mut h = Dxl::new();
 
     let req = encode(&Packet::FastSyncRead(FastSyncReadPacket::new(0, 2, &[0])));
-    io.feed(&req);
-    io.bus.rx_bytes_at_idle = io.bus.rx_bytes_at_idle.wrapping_add(1);
+    io.bus.feed_no_idle(&req);
     h.poll(&shared, &mut io);
 
     assert_eq!(io.bus.send_count, 0);
@@ -1251,15 +1252,14 @@ fn fast_bulk_read_silent_when_our_id_absent() {
 }
 
 #[test]
-fn fast_bulk_read_skips_when_request_incomplete() {
+fn fast_bulk_read_skips_when_no_idle_anchor() {
     let shared = Shared::new();
     let mut io = FakeIo::new();
     let mut h = Dxl::new();
 
     let body = [0, 0, 0, 2, 0];
     let req = encode(&Packet::FastBulkRead(FastBulkReadPacket::new(&body)));
-    io.feed(&req);
-    io.bus.rx_bytes_at_idle = io.bus.rx_bytes_at_idle.wrapping_add(1);
+    io.bus.feed_no_idle(&req);
     h.poll(&shared, &mut io);
 
     assert_eq!(io.bus.send_count, 0);
