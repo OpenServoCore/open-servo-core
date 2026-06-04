@@ -5,6 +5,7 @@ use crate::crc::CrcUmts;
 use crate::packet::{
     BROADCAST_ID, FastBulkReadPacket, FastSyncReadPacket, HEADER, RESPONSE_HEADER_BYTES,
 };
+use crate::status_error::StatusError;
 use crate::writer::WriteError;
 
 /// Bytes before slot 0's payload in a Fast response chain:
@@ -16,31 +17,28 @@ pub const FAST_RESPONSE_SLOT0_BYTES: usize = RESPONSE_HEADER_BYTES + 1;
 /// `ERROR(1) + slave_id(1)`.
 pub const FAST_RESPONSE_SLOT_BYTES: usize = 2;
 
-pub struct FastSlotBody<'a> {
-    pub error: u8,
-    pub id: u8,
-    pub data: &'a [u8],
-}
-
-pub enum FastSlot<'a> {
-    First {
-        packet_length: u16,
-        body: FastSlotBody<'a>,
-    },
-    Middle(FastSlotBody<'a>),
-    Last(FastSlotBody<'a>),
-    Only {
-        packet_length: u16,
-        body: FastSlotBody<'a>,
-    },
-}
-
+/// Position of our slot in the coalesced Fast Status chain. Variants that
+/// emit the chain header carry the chain's DXL `Length` field; the rest don't
+/// need it.
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
-pub enum FastSlotPosition {
-    Only,
-    First,
+pub enum FastPosition {
+    /// Single-slot chain — emits full header and locally-computed CRC.
+    Only { packet_length: u16 },
+    /// First of N — emits header + body, no CRC (successors continue the chain).
+    First { packet_length: u16 },
+    /// Body only.
     Middle,
+    /// Body + CRC placeholder (chip patches the placeholder at fire time).
     Last,
+}
+
+/// Which Fast Read request kind a `FastReadPacket` represents — lets the
+/// dispatcher pick `StatusReply::FastSyncRead` vs `FastBulkRead` from a
+/// generic `P: FastReadPacket`.
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub enum FastReadVariant {
+    Sync,
+    Bulk,
 }
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
@@ -49,7 +47,8 @@ pub struct FastSlotInfo {
     pub n_slots: usize,
     pub address: u16,
     pub length: u16,
-    /// DXL `Length` field for the coalesced Status frame.
+    /// DXL `Length` field for the coalesced Status frame; only used by
+    /// `Only` / `First` slots that emit the header.
     pub packet_length: u16,
     /// Cumulative response bytes emitted before our slot's payload in the
     /// coalesced Fast Status chain.
@@ -59,22 +58,29 @@ pub struct FastSlotInfo {
 /// Shared shape so the dispatcher can drive Fast Sync and Fast Bulk Reads
 /// through the same code path.
 pub trait FastReadPacket {
+    const VARIANT: FastReadVariant;
     /// `None` when `id` isn't present or slot count exceeds `max_slots`.
     fn find_slot(&self, id: u8, max_slots: usize) -> Option<FastSlotInfo>;
 }
 
 impl FastSlotInfo {
-    pub const fn position(&self) -> FastSlotPosition {
+    pub const fn position(&self) -> FastPosition {
         match (self.our_slot, self.n_slots) {
-            (0, 1) => FastSlotPosition::Only,
-            (0, _) => FastSlotPosition::First,
-            (k, n) if k + 1 == n => FastSlotPosition::Last,
-            _ => FastSlotPosition::Middle,
+            (0, 1) => FastPosition::Only {
+                packet_length: self.packet_length,
+            },
+            (0, _) => FastPosition::First {
+                packet_length: self.packet_length,
+            },
+            (k, n) if k + 1 == n => FastPosition::Last,
+            _ => FastPosition::Middle,
         }
     }
 }
 
 impl<'a> FastReadPacket for FastSyncReadPacket<'a> {
+    const VARIANT: FastReadVariant = FastReadVariant::Sync;
+
     fn find_slot(&self, id: u8, max_slots: usize) -> Option<FastSlotInfo> {
         let mut our_slot = None;
         let mut n_slots = 0usize;
@@ -110,6 +116,8 @@ impl<'a> FastReadPacket for FastSyncReadPacket<'a> {
 }
 
 impl<'a> FastReadPacket for FastBulkReadPacket<'a> {
+    const VARIANT: FastReadVariant = FastReadVariant::Bulk;
+
     fn find_slot(&self, id: u8, max_slots: usize) -> Option<FastSlotInfo> {
         let mut found: Option<(usize, u16, u16, u32)> = None;
         let mut n_slots = 0usize;
@@ -183,12 +191,18 @@ impl<'a> Iterator for FastBulkTupleIter<'a> {
 /// master sees a CRC mismatch (intentional — surfaces the failure).
 const CRC_PLACEHOLDER: [u8; 2] = [0xAA, 0xBB];
 
-pub(crate) fn write_fast_slot<W: WriteBuf, CRC: CrcUmts>(
+/// Serialize one Fast Status chain slot. The payload is NOT byte-stuffed —
+/// Fast Read decoding is positional (slot indices), not trigger-driven, so
+/// stuffing would break deterministic chain layout.
+pub(crate) fn write_fast<W: WriteBuf, I: Iterator<Item = u8>, CRC: CrcUmts>(
     out: &mut W,
-    slot: &FastSlot<'_>,
+    position: FastPosition,
+    id: u8,
+    error: StatusError,
+    payload: &mut I,
 ) -> Result<(), WriteError> {
     let start = out.len();
-    match write_fast_slot_inner::<W, CRC>(out, slot) {
+    match write_fast_inner::<W, _, CRC>(out, position, id, error, payload) {
         Ok(()) => Ok(()),
         Err(e) => {
             out.truncate(start);
@@ -197,44 +211,41 @@ pub(crate) fn write_fast_slot<W: WriteBuf, CRC: CrcUmts>(
     }
 }
 
-fn write_fast_slot_inner<W: WriteBuf, CRC: CrcUmts>(
+fn write_fast_inner<W: WriteBuf, I: Iterator<Item = u8>, CRC: CrcUmts>(
     out: &mut W,
-    slot: &FastSlot<'_>,
+    position: FastPosition,
+    id: u8,
+    error: StatusError,
+    payload: &mut I,
 ) -> Result<(), WriteError> {
-    match slot {
-        FastSlot::First {
-            packet_length,
-            body,
-        } => {
-            write_header(out, *packet_length)?;
-            write_body(out, body)?;
-        }
-        FastSlot::Middle(body) => {
-            write_body(out, body)?;
-        }
-        FastSlot::Last(body) => {
-            write_body(out, body)?;
-            reserve_crc(out)?;
-        }
-        FastSlot::Only {
-            packet_length,
-            body,
-        } => {
+    match position {
+        FastPosition::Only { packet_length } => {
             let frame_start = out.len();
-            write_header(out, *packet_length)?;
-            write_body(out, body)?;
-            // No predecessors on the bus → CRC is purely local; no snoop and
-            // no fire-time patch required (unlike Last). Compute it here so
-            // the wire bytes are correct the instant we hit the DMA.
+            write_fast_header(out, packet_length)?;
+            write_fast_body(out, id, error, payload)?;
+            // No predecessors → CRC is purely local; compute over the bytes
+            // we just emitted and append.
             let crc = CRC::accumulate(0, &out.as_slice()[frame_start..]);
             out.push(crc as u8)?;
             out.push((crc >> 8) as u8)?;
+        }
+        FastPosition::First { packet_length } => {
+            write_fast_header(out, packet_length)?;
+            write_fast_body(out, id, error, payload)?;
+        }
+        FastPosition::Middle => {
+            write_fast_body(out, id, error, payload)?;
+        }
+        FastPosition::Last => {
+            write_fast_body(out, id, error, payload)?;
+            out.push(CRC_PLACEHOLDER[0])?;
+            out.push(CRC_PLACEHOLDER[1])?;
         }
     }
     Ok(())
 }
 
-fn write_header<W: WriteBuf>(out: &mut W, length: u16) -> Result<(), WriteError> {
+fn write_fast_header<W: WriteBuf>(out: &mut W, length: u16) -> Result<(), WriteError> {
     out.push(HEADER[0])?;
     out.push(HEADER[1])?;
     out.push(HEADER[2])?;
@@ -247,18 +258,17 @@ fn write_header<W: WriteBuf>(out: &mut W, length: u16) -> Result<(), WriteError>
     Ok(())
 }
 
-fn write_body<W: WriteBuf>(out: &mut W, body: &FastSlotBody<'_>) -> Result<(), WriteError> {
-    out.push(body.error)?;
-    out.push(body.id)?;
-    for &b in body.data {
+fn write_fast_body<W: WriteBuf, I: Iterator<Item = u8>>(
+    out: &mut W,
+    id: u8,
+    error: StatusError,
+    payload: &mut I,
+) -> Result<(), WriteError> {
+    out.push(error.as_u8())?;
+    out.push(id)?;
+    for b in payload.by_ref() {
         out.push(b)?;
     }
-    Ok(())
-}
-
-fn reserve_crc<W: WriteBuf>(out: &mut W) -> Result<(), WriteError> {
-    out.push(CRC_PLACEHOLDER[0])?;
-    out.push(CRC_PLACEHOLDER[1])?;
     Ok(())
 }
 
@@ -288,28 +298,28 @@ mod tests {
             n_slots: 1,
             address: 0,
             length: 0,
-            packet_length: 0,
+            packet_length: 7,
             bytes_before: 0,
         };
-        assert_eq!(only.position(), FastSlotPosition::Only);
+        assert_eq!(only.position(), FastPosition::Only { packet_length: 7 });
         let first = FastSlotInfo {
             our_slot: 0,
             n_slots: 3,
             ..only
         };
-        assert_eq!(first.position(), FastSlotPosition::First);
+        assert_eq!(first.position(), FastPosition::First { packet_length: 7 });
         let middle = FastSlotInfo {
             our_slot: 1,
             n_slots: 3,
             ..only
         };
-        assert_eq!(middle.position(), FastSlotPosition::Middle);
+        assert_eq!(middle.position(), FastPosition::Middle);
         let last = FastSlotInfo {
             our_slot: 2,
             n_slots: 3,
             ..only
         };
-        assert_eq!(last.position(), FastSlotPosition::Last);
+        assert_eq!(last.position(), FastPosition::Last);
     }
 
     #[test]

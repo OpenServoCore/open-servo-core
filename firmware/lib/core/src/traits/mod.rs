@@ -9,10 +9,9 @@ mod kernel;
 mod services;
 
 pub use kernel::{Capabilities, DecayMode, KernelIo, Motor, MotorCmd, Sensors};
-pub use services::{DxlBus, Event, ServiceEvents, ServicesIo};
+pub use services::{DxlBus, Event, Schedule, ServiceEvents, ServicesIo};
 
 // Boundary types defined elsewhere that callers of the traits need in scope.
 pub use crate::regions::BootMode;
 pub use crate::regions::config::ConfigDefaults;
 pub use crate::sample_frame::{FrameInputs, RawSamples, SampleFrame};
-pub use dxl_protocol::WriteBuf;

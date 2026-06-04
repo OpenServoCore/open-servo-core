@@ -60,6 +60,13 @@ pub(crate) static DXL_BYTE_TIME_TICKS: AtomicU32 = AtomicU32::new(0);
 /// (RV32EC + zmmul has no hardware divide).
 pub(crate) static DXL_BYTES_PER_US_Q16: AtomicU32 = AtomicU32::new(0);
 
+/// `byte_time_us × (1 << 16)` — inverse companion to [`DXL_BYTES_PER_US_Q16`].
+/// `Ch32Bus::send` consumes this to translate Schedule's structural byte
+/// offset into wall-clock µs without dividing on the hot path. Tracks the
+/// rate currently on the wire (lags a pending BAUD write until USART TC
+/// drains the in-flight reply).
+pub(crate) static DXL_US_PER_BYTE_Q16: AtomicU32 = AtomicU32::new(0);
+
 /// Per-chip clock_fine_trim residual converted to HCLK ticks, summed at the
 /// fire site with the per-path entry-tick constant from
 /// [`crate::dxl::calibration`]. Updated from USART1 TC after a Write touches
@@ -100,4 +107,8 @@ pub(crate) fn store_baud_derived(brr: u32) {
         .checked_div(byte_time_ticks)
         .unwrap_or(0);
     DXL_BYTES_PER_US_Q16.store(bytes_per_us_q16, Ordering::Relaxed);
+    // Inverse — for Schedule's bytes → µs translation in Ch32Bus::send.
+    let us_per_byte_q16 =
+        ((byte_time_ticks << 16) + systick::TICKS_PER_US / 2) / systick::TICKS_PER_US;
+    DXL_US_PER_BYTE_Q16.store(us_per_byte_q16, Ordering::Relaxed);
 }

@@ -99,7 +99,7 @@ const BROADCAST: u8 = crate::packet::BROADCAST_ID;
 ///
 /// On failure (including partial Overflow), `out` is truncated back to entry length
 /// — callers using a DMA TX buffer can rely on prior frames staying intact.
-fn write_packet<W: WriteBuf, I: Iterator<Item = u8>, CRC: CrcUmts>(
+pub(crate) fn write_packet<W: WriteBuf, I: Iterator<Item = u8>, CRC: CrcUmts>(
     out: &mut W,
     id: u8,
     instruction: Instruction,

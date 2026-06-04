@@ -1,37 +1,42 @@
-use dxl_protocol::prelude::{CrcUmts, WriteBuf};
+use dxl_protocol::prelude::{Packet, StatusReply};
 
 use crate::{BaudRate, BootMode};
 
+/// Wire scheduling info for a single outbound reply. The chip translates
+/// these protocol-structural fields into wall-clock delays via its own
+/// cached `byte_time` (which is the rate currently on the wire — after a
+/// BAUD write, this still reflects the old rate until USART TC drains the
+/// reply and the deferred retune lands).
+#[derive(Copy, Clone, Debug)]
+pub struct Schedule {
+    /// Return Delay Time in µs (from `comms.return_delay_2us × 2`).
+    pub rdt_us: u32,
+    /// Structural wire-byte offset of this reply on the wire relative to the
+    /// master's request end. Zero for direct replies; nonzero for Sync/Bulk
+    /// slot N and Fast First/Middle/Last.
+    pub bytes_before: u32,
+    /// Position in the slot train (0-indexed). 0 for direct replies. Chip
+    /// uses this to compose its inter-slot margin policy for plain Status
+    /// trains (Sync Read / Bulk Read). Ignored for Fast variants.
+    pub slot_index: u16,
+}
+
 /// Bus surface the DXL services layer reads, writes, and schedules through.
-/// Every dispatched packet runs under an IDLE-anchored window; the chip
-/// tracks the wire-end timestamp internally so `send_*` delays land on it.
+/// `poll` returns the single dispatchable packet ending at the latest
+/// IDLE-anchored wire-end; `send` consumes the chip's typed reply and the
+/// scheduling info to compose, fire, and (where applicable) snoop-patch the
+/// outbound frame.
 pub trait DxlBus {
-    type TxBuffer: WriteBuf;
-    /// CRC engine the protocol layer uses to validate inbound frames and seal
-    /// outbound ones. Chips supply software or hardware; the trait body has
-    /// no state, so type-only dispatch is enough.
-    type Crc: CrcUmts;
+    /// Latest IDLE-anchored request, or `None` if no fresh anchor since the
+    /// previous `poll`. The returned `Packet`'s borrowed bytes live in chip
+    /// storage that stays valid until the next `poll` overwrites it.
+    fn poll(&mut self) -> Option<Packet<'static>>;
 
-    /// New RX bytes since the previous `rx_poll`, stitched into a contiguous
-    /// slice anchored at the latest IDLE-published wire-end. Backed by chip
-    /// storage that stays valid until the next `rx_poll` overwrites it,
-    /// which is what lets the caller keep the slice across `send_*` calls.
-    /// Returns `None` until the next IDLE fires, or if the window is larger
-    /// than the chip's stitch capacity (which means the burst is too big to
-    /// be a valid DXL frame anyway). The chip also stashes the matching
-    /// wire-end tick + byte cursor for the next `send_*` to consume.
-    fn rx_poll(&mut self) -> Option<&'static [u8]>;
-
-    fn tx_buffer(&mut self) -> &mut Self::TxBuffer;
-
-    /// Schedule a plain Status reply at `wire_end + delay_us`.
-    fn send_after(&mut self, delay_us: u32);
-    /// Q8.8-µs delay variant — chain Last fire scheduling rounds wire-time at
-    /// sub-µs precision (3M: 3.333 µs/byte) and integer-µs flooring would
-    /// fire ahead of the predecessor's last stop bit. When `snoop` is true,
-    /// the chip patches the reply's trailing CRC over inter-slave bytes
-    /// received past its stored wire-end cursor.
-    fn send_with_snoop_crc(&mut self, delay_q88_us: u32, snoop: bool);
+    /// Compose the reply on the chip's TX buffer and schedule it. The chip
+    /// owns all wire-timing math: it consumes `Schedule` to compute the fire
+    /// delay (RDT + per-byte translation), and inspects `reply`'s variant to
+    /// pick plain vs Fast Last (snooped chain-CRC patch) fire path.
+    fn send(&mut self, reply: StatusReply<'_>, schedule: Schedule);
 }
 
 /// Fire-and-forget notifications the dispatcher delivers when control-table

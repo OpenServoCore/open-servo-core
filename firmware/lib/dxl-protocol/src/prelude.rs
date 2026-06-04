@@ -4,7 +4,7 @@ pub use crate::codec::Codec;
 pub use crate::crc::CrcUmts;
 #[cfg(feature = "software-crc")]
 pub use crate::crc_software::SoftwareCrcUmts;
-pub use crate::fast::{FastReadPacket, FastSlotInfo, FastSlotPosition};
+pub use crate::fast::{FastPosition, FastReadPacket, FastReadVariant, FastSlotInfo};
 #[cfg(feature = "osc")]
 pub use crate::packet::CalibratePacket;
 pub use crate::packet::{
@@ -14,5 +14,6 @@ pub use crate::packet::{
     SyncReadPacket, SyncWritePacket, WritePacket,
 };
 pub use crate::parser::ParseError;
+pub use crate::reply::StatusReply;
 pub use crate::status_error::StatusError;
 pub use crate::writer::WriteError;

@@ -2,13 +2,13 @@ use crc::{CRC_16_UMTS, Crc};
 use dxl_protocol::prelude::*;
 use heapless::Vec;
 
-use crate::traits::{DxlBus, Event, ServiceEvents, ServicesIo};
+use crate::traits::{DxlBus, Event, Schedule, ServiceEvents, ServicesIo};
 use crate::{BootMode, RegionStorage, Shared, StatusReturnLevel};
 
 use super::Dxl;
 
-/// Test-only `CrcUmts`. Production builds get the chip's impl via
-/// `B::Crc` — core itself never references a concrete CRC engine.
+/// Test-only `CrcUmts`. Production builds get the chip's impl directly; core
+/// itself never references a concrete CRC engine after the trait flip.
 struct TestDxlCrc;
 
 const TEST_CRC_ENGINE: Crc<u16> = Crc::<u16>::new(&CRC_16_UMTS);
@@ -23,16 +23,39 @@ impl CrcUmts for TestDxlCrc {
 
 type Wire = Codec<TestDxlCrc>;
 
+/// Compact summary of a `StatusReply` variant — the reply itself borrows from
+/// dispatcher-stack storage, so tests inspect the kind here instead of cloning.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+enum ReplyKind {
+    /// Any Status-family reply (Ping/Read/SyncRead/BulkRead/Write/Ack/Error/etc.)
+    Plain,
+    /// FastSyncRead or FastBulkRead success — position carries packet_length.
+    Fast(FastPosition),
+    /// FastError — position + the chip-emitted zero-byte length.
+    FastError(FastPosition, u16),
+}
+
+fn summarize(reply: &StatusReply<'_>) -> ReplyKind {
+    match *reply {
+        StatusReply::FastSyncRead { position, .. } | StatusReply::FastBulkRead { position, .. } => {
+            ReplyKind::Fast(position)
+        }
+        StatusReply::FastError {
+            position, length, ..
+        } => ReplyKind::FastError(position, length),
+        _ => ReplyKind::Plain,
+    }
+}
+
 struct FakeBus {
     burst: Vec<u8, 256>,
     burst_fresh: bool,
+    /// Wire bytes produced by the last `send` call — overwritten each send.
     tx: Vec<u8, 256>,
+    /// Total `send` calls observed; tests assert silence with `send_count == 0`.
     send_count: u32,
-    after_count: u32,
-    last_after_delay_us: Option<u32>,
-    snoop_count: u32,
-    last_snoop_delay_q88_us: Option<u32>,
-    last_snoop_arg: Option<bool>,
+    last_schedule: Option<Schedule>,
+    last_kind: Option<ReplyKind>,
 }
 
 impl FakeBus {
@@ -42,16 +65,13 @@ impl FakeBus {
             burst_fresh: false,
             tx: Vec::new(),
             send_count: 0,
-            after_count: 0,
-            last_after_delay_us: None,
-            snoop_count: 0,
-            last_snoop_delay_q88_us: None,
-            last_snoop_arg: None,
+            last_schedule: None,
+            last_kind: None,
         }
     }
 
-    /// Stash bytes as the next IDLE-anchored burst — `rx_poll` returns them
-    /// once, then `None` until the next `feed`.
+    /// Stash bytes as the next IDLE-anchored burst — `poll` returns the wire-
+    /// end frame once, then `None` until the next `feed`.
     fn feed(&mut self, bytes: &[u8]) {
         self.burst.clear();
         self.burst.extend_from_slice(bytes).unwrap();
@@ -59,43 +79,51 @@ impl FakeBus {
     }
 
     /// No-op stand-in for the bus-collision / no-IDLE-gap case: bytes drop,
-    /// `rx_poll` returns `None`, the parser never runs.
+    /// `poll` returns `None`, the parser never runs.
     fn feed_no_idle(&mut self, _bytes: &[u8]) {}
 }
 
 impl DxlBus for FakeBus {
-    type TxBuffer = Vec<u8, 256>;
-    type Crc = TestDxlCrc;
-
-    fn rx_poll(&mut self) -> Option<&'static [u8]> {
+    fn poll(&mut self) -> Option<Packet<'static>> {
         if !self.burst_fresh {
             return None;
         }
         self.burst_fresh = false;
         let s: &[u8] = &self.burst[..];
-        // SAFETY: each test holds FakeBus for the full duration of `poll`,
-        // so the burst backing storage outlives the returned slice. The
-        // production contract ("valid until next rx_poll") is respected.
-        Some(unsafe { core::slice::from_raw_parts(s.as_ptr(), s.len()) })
-    }
-
-    fn tx_buffer(&mut self) -> &mut Self::TxBuffer {
-        &mut self.tx
-    }
-
-    fn send_after(&mut self, delay_us: u32) {
-        if delay_us == 0 {
-            self.send_count += 1;
-            return;
+        // SAFETY: each test holds FakeBus for the full poll() call, so the
+        // burst storage outlives the returned slice. Production contract
+        // ("Packet bytes valid until next poll") is respected here too.
+        let window: &'static [u8] = unsafe { core::slice::from_raw_parts(s.as_ptr(), s.len()) };
+        // Mirror chip-side walk: parse forward, dispatch the frame ending
+        // exactly at the wire-end; earlier frames advance the cursor.
+        let n = window.len();
+        let mut offset = 0;
+        while offset < n {
+            match Wire::parse_one(&window[offset..]) {
+                Ok((pkt, used)) => {
+                    if offset + used == n {
+                        return Some(pkt);
+                    }
+                    offset += used;
+                }
+                Err(ParseError::Incomplete) => return None,
+                Err(ParseError::Resync { skip })
+                | Err(ParseError::BadCrc { skip })
+                | Err(ParseError::BadInstruction { skip })
+                | Err(ParseError::BadLength { skip }) => {
+                    offset = (offset + skip).min(n);
+                }
+            }
         }
-        self.after_count += 1;
-        self.last_after_delay_us = Some(delay_us);
+        None
     }
 
-    fn send_with_snoop_crc(&mut self, delay_q88_us: u32, snoop: bool) {
-        self.snoop_count += 1;
-        self.last_snoop_delay_q88_us = Some(delay_q88_us);
-        self.last_snoop_arg = Some(snoop);
+    fn send(&mut self, reply: StatusReply<'_>, schedule: Schedule) {
+        self.tx.clear();
+        Wire::write_status_reply(&mut self.tx, &reply).unwrap();
+        self.send_count += 1;
+        self.last_schedule = Some(schedule);
+        self.last_kind = Some(summarize(&reply));
     }
 }
 
@@ -188,6 +216,7 @@ fn ping_to_our_id_replies() {
     assert_eq!(id, 0);
     assert_eq!(err, 0);
     assert_eq!(&params[..], &[0, 0, 0]);
+    assert_eq!(io.bus.last_kind, Some(ReplyKind::Plain));
 }
 
 #[test]
@@ -371,7 +400,6 @@ fn reg_write_then_action_commits_to_live_table() {
     assert_eq!(err, StatusError::None.as_u8());
     assert!(!shared.table.control.with(|c| c.lifecycle.torque_enable));
 
-    io.bus.tx.clear();
     let req = encode(&Packet::Action(ActionPacket::new(0)));
     io.feed(&req);
     h.poll(&shared, &mut io);
@@ -410,7 +438,6 @@ fn reg_write_invalid_value_rejected_at_stage_time() {
     let (_, err, _) = parse_status(&io.bus.tx);
     assert_eq!(err, StatusError::DataRange.as_u8());
 
-    io.bus.tx.clear();
     let req = encode(&Packet::Action(ActionPacket::new(0)));
     io.feed(&req);
     h.poll(&shared, &mut io);
@@ -435,7 +462,6 @@ fn sync_write_clears_pending_reg_write_staging() {
     io.feed(&req);
     h.poll(&shared, &mut io);
 
-    io.bus.tx.clear();
     let req = encode(&Packet::Write(WritePacket::new(
         0,
         CONTROL_BASE_ADDR + 1,
@@ -448,7 +474,6 @@ fn sync_write_clears_pending_reg_write_staging() {
         Mode::PositionPid,
     );
 
-    io.bus.tx.clear();
     let req = encode(&Packet::Action(ActionPacket::new(0)));
     io.feed(&req);
     h.poll(&shared, &mut io);
@@ -734,7 +759,7 @@ fn return_level_read_replies_to_read_errors() {
 }
 
 #[test]
-fn sync_read_in_slot_zero_replies_immediately() {
+fn sync_read_in_slot_zero_replies_with_zero_offset() {
     let shared = Shared::new();
     let mut io = FakeIo::new();
     let mut h = Dxl::new();
@@ -743,9 +768,10 @@ fn sync_read_in_slot_zero_replies_immediately() {
     io.feed(&req);
     h.poll(&shared, &mut io);
 
-    // slot 0 → delay 0 → FakeBus short-circuits to send.
     assert_eq!(io.bus.send_count, 1);
-    assert_eq!(io.bus.after_count, 0);
+    let s = io.bus.last_schedule.unwrap();
+    assert_eq!(s.bytes_before, 0);
+    assert_eq!(s.slot_index, 0);
     let (id, err, params) = parse_status(&io.bus.tx);
     assert_eq!(id, 0);
     assert_eq!(err, 0);
@@ -753,9 +779,7 @@ fn sync_read_in_slot_zero_replies_immediately() {
 }
 
 #[test]
-fn sync_read_in_later_slot_schedules_with_slot_delay() {
-    use super::slot::{SLOT_MARGIN, bytes_to_us};
-    use crate::BaudRate;
+fn sync_read_in_later_slot_carries_bytes_before_and_slot_index() {
     let shared = Shared::new();
     let mut io = FakeIo::new();
     let mut h = Dxl::new();
@@ -765,13 +789,11 @@ fn sync_read_in_later_slot_schedules_with_slot_delay() {
     io.feed(&req);
     h.poll(&shared, &mut io);
 
-    assert_eq!(io.bus.send_count, 0);
-    assert_eq!(io.bus.after_count, 1);
+    assert_eq!(io.bus.send_count, 1);
+    let s = io.bus.last_schedule.unwrap();
     // bytes_before = 2 × (RESPONSE_HEADER_BYTES(9) + 2 + CRC_BYTES(2)) = 26
-    // total bytes = 26 + 2 × SLOT_MARGIN = 26 + 8 = 34
-    let bytes = 2 * (9 + 2 + 2) + 2 * SLOT_MARGIN;
-    let expected = bytes_to_us(bytes, BaudRate::B1000000);
-    assert_eq!(io.bus.last_after_delay_us, Some(expected));
+    assert_eq!(s.bytes_before, 26);
+    assert_eq!(s.slot_index, 2);
 }
 
 #[test]
@@ -785,7 +807,6 @@ fn sync_read_silent_when_our_id_absent() {
     h.poll(&shared, &mut io);
 
     assert_eq!(io.bus.send_count, 0);
-    assert_eq!(io.bus.after_count, 0);
     assert!(io.bus.tx.is_empty());
 }
 
@@ -800,7 +821,6 @@ fn sync_read_skips_when_no_idle_anchor() {
     h.poll(&shared, &mut io);
 
     assert_eq!(io.bus.send_count, 0);
-    assert_eq!(io.bus.after_count, 0);
     assert!(io.bus.tx.is_empty());
 }
 
@@ -831,12 +851,11 @@ fn sync_read_return_level_none_silences_reply() {
     h.poll(&shared, &mut io);
 
     assert_eq!(io.bus.send_count, 0);
-    assert_eq!(io.bus.after_count, 0);
     assert!(io.bus.tx.is_empty());
 }
 
 #[test]
-fn bulk_read_in_slot_zero_replies_immediately() {
+fn bulk_read_in_slot_zero_replies_with_zero_offset() {
     let shared = Shared::new();
     let mut io = FakeIo::new();
     let mut h = Dxl::new();
@@ -847,7 +866,9 @@ fn bulk_read_in_slot_zero_replies_immediately() {
     h.poll(&shared, &mut io);
 
     assert_eq!(io.bus.send_count, 1);
-    assert_eq!(io.bus.after_count, 0);
+    let s = io.bus.last_schedule.unwrap();
+    assert_eq!(s.bytes_before, 0);
+    assert_eq!(s.slot_index, 0);
     let (id, err, params) = parse_status(&io.bus.tx);
     assert_eq!(id, 0);
     assert_eq!(err, 0);
@@ -855,9 +876,7 @@ fn bulk_read_in_slot_zero_replies_immediately() {
 }
 
 #[test]
-fn bulk_read_in_later_slot_sums_preceding_slot_periods() {
-    use super::slot::{SLOT_MARGIN, bytes_to_us};
-    use crate::BaudRate;
+fn bulk_read_in_later_slot_sums_preceding_slot_widths() {
     let shared = Shared::new();
     let mut io = FakeIo::new();
     let mut h = Dxl::new();
@@ -868,12 +887,11 @@ fn bulk_read_in_later_slot_sums_preceding_slot_periods() {
     io.feed(&req);
     h.poll(&shared, &mut io);
 
-    assert_eq!(io.bus.send_count, 0);
-    assert_eq!(io.bus.after_count, 1);
-    // bytes_before = (9+4+2) + (9+8+2) = 34; margin = 2 × SLOT_MARGIN = 8.
-    let bytes = (9 + 4 + 2) + (9 + 8 + 2) + 2 * SLOT_MARGIN;
-    let expected = bytes_to_us(bytes, BaudRate::B1000000);
-    assert_eq!(io.bus.last_after_delay_us, Some(expected));
+    assert_eq!(io.bus.send_count, 1);
+    let s = io.bus.last_schedule.unwrap();
+    // bytes_before = (9+4+2) + (9+8+2) = 34
+    assert_eq!(s.bytes_before, 34);
+    assert_eq!(s.slot_index, 2);
 }
 
 #[test]
@@ -888,7 +906,6 @@ fn bulk_read_silent_when_our_id_absent() {
     h.poll(&shared, &mut io);
 
     assert_eq!(io.bus.send_count, 0);
-    assert_eq!(io.bus.after_count, 0);
     assert!(io.bus.tx.is_empty());
 }
 
@@ -904,7 +921,6 @@ fn bulk_read_skips_when_no_idle_anchor() {
     h.poll(&shared, &mut io);
 
     assert_eq!(io.bus.send_count, 0);
-    assert_eq!(io.bus.after_count, 0);
     assert!(io.bus.tx.is_empty());
 }
 
@@ -953,39 +969,11 @@ fn bulk_read_return_level_none_silences_reply() {
     h.poll(&shared, &mut io);
 
     assert_eq!(io.bus.send_count, 0);
-    assert_eq!(io.bus.after_count, 0);
     assert!(io.bus.tx.is_empty());
 }
 
 #[test]
-fn send_after_zero_short_circuits_to_send() {
-    let mut bus = FakeBus::new();
-    bus.send_after(0);
-    assert_eq!(bus.send_count, 1);
-    assert_eq!(bus.after_count, 0);
-    assert_eq!(bus.last_after_delay_us, None);
-}
-
-#[test]
-fn send_after_nonzero_schedules_without_firing() {
-    let mut bus = FakeBus::new();
-    bus.send_after(150);
-    assert_eq!(bus.send_count, 0);
-    assert_eq!(bus.after_count, 1);
-    assert_eq!(bus.last_after_delay_us, Some(150));
-}
-
-#[test]
-fn send_with_snoop_crc_records_args() {
-    let mut bus = FakeBus::new();
-    bus.send_with_snoop_crc(66, true);
-    assert_eq!(bus.snoop_count, 1);
-    assert_eq!(bus.last_snoop_delay_q88_us, Some(66));
-    assert_eq!(bus.last_snoop_arg, Some(true));
-}
-
-#[test]
-fn fast_sync_read_only_slot_emits_only_via_send_with_computed_crc() {
+fn fast_sync_read_only_slot_emits_full_frame_with_local_crc() {
     let shared = Shared::new();
     let mut io = FakeIo::new();
     let mut h = Dxl::new();
@@ -994,11 +982,13 @@ fn fast_sync_read_only_slot_emits_only_via_send_with_computed_crc() {
     io.feed(&req);
     h.poll(&shared, &mut io);
 
-    // Only-slot computes CRC locally and fires through plain send — no
-    // snoop, no slot-timed delay.
     assert_eq!(io.bus.send_count, 1);
-    assert_eq!(io.bus.snoop_count, 0);
-    assert_eq!(io.bus.after_count, 0);
+    let pkt_len = match io.bus.last_kind {
+        Some(ReplyKind::Fast(FastPosition::Only { packet_length })) => packet_length,
+        other => panic!("expected Fast(Only{{..}}), got {other:?}"),
+    };
+    // LEN = 3 + 1*(2+2) = 7 for 1-slot, 2-byte payload.
+    assert_eq!(pkt_len, 7);
 
     assert_eq!(io.bus.tx.len(), 14);
     assert_eq!(&io.bus.tx[..5], &[0xFF, 0xFF, 0xFD, 0x00, 0xFE]);
@@ -1012,7 +1002,7 @@ fn fast_sync_read_only_slot_emits_only_via_send_with_computed_crc() {
 }
 
 #[test]
-fn fast_sync_read_first_slot_emits_header_no_crc_via_send() {
+fn fast_sync_read_first_slot_emits_header_then_body_no_crc() {
     let shared = Shared::new();
     let mut io = FakeIo::new();
     let mut h = Dxl::new();
@@ -1025,10 +1015,13 @@ fn fast_sync_read_first_slot_emits_header_no_crc_via_send() {
     io.feed(&req);
     h.poll(&shared, &mut io);
 
-    // slot 0 → delay 0 → FakeBus short-circuits to send.
     assert_eq!(io.bus.send_count, 1);
-    assert_eq!(io.bus.after_count, 0);
-    assert_eq!(io.bus.snoop_count, 0);
+    let pkt_len = match io.bus.last_kind {
+        Some(ReplyKind::Fast(FastPosition::First { packet_length })) => packet_length,
+        other => panic!("expected Fast(First{{..}}), got {other:?}"),
+    };
+    assert_eq!(pkt_len, 11);
+    assert_eq!(io.bus.last_schedule.unwrap().bytes_before, 0);
 
     assert_eq!(io.bus.tx.len(), 12);
     assert_eq!(&io.bus.tx[..5], &[0xFF, 0xFF, 0xFD, 0x00, 0xFE]);
@@ -1038,9 +1031,7 @@ fn fast_sync_read_first_slot_emits_header_no_crc_via_send() {
 }
 
 #[test]
-fn fast_sync_read_middle_slot_emits_body_only_with_offset_delay() {
-    use super::slot::bytes_to_us;
-    use crate::BaudRate;
+fn fast_sync_read_middle_slot_emits_body_only_with_bytes_before() {
     let shared = Shared::new();
     let mut io = FakeIo::new();
     let mut h = Dxl::new();
@@ -1050,20 +1041,23 @@ fn fast_sync_read_middle_slot_emits_body_only_with_offset_delay() {
     io.feed(&req);
     h.poll(&shared, &mut io);
 
-    assert_eq!(io.bus.after_count, 1);
-    assert_eq!(io.bus.send_count, 0);
-    assert_eq!(io.bus.snoop_count, 0);
-    let expected = bytes_to_us(p.find_slot(0, 32).unwrap().bytes_before, BaudRate::B1000000);
-    assert_eq!(io.bus.last_after_delay_us, Some(expected));
+    assert_eq!(io.bus.send_count, 1);
+    assert_eq!(
+        io.bus.last_kind,
+        Some(ReplyKind::Fast(FastPosition::Middle))
+    );
+    // Slot 1: FAST_RESPONSE_SLOT0_BYTES(10) + payload(2) = 12 bytes before.
+    assert_eq!(
+        io.bus.last_schedule.unwrap().bytes_before,
+        p.find_slot(0, 32).unwrap().bytes_before
+    );
 
     assert_eq!(io.bus.tx.len(), 4);
     assert_eq!(&io.bus.tx[..], &[0, 0, 0, 0]);
 }
 
 #[test]
-fn fast_sync_read_last_slot_schedules_snoop() {
-    use super::slot::bytes_to_us_q88;
-    use crate::BaudRate;
+fn fast_sync_read_last_slot_reserves_crc_placeholder() {
     let shared = Shared::new();
     let mut io = FakeIo::new();
     let mut h = Dxl::new();
@@ -1073,12 +1067,12 @@ fn fast_sync_read_last_slot_schedules_snoop() {
     io.feed(&req);
     h.poll(&shared, &mut io);
 
-    assert_eq!(io.bus.snoop_count, 1);
-    assert_eq!(io.bus.send_count, 0);
-    assert_eq!(io.bus.after_count, 0);
-    let expected_fire = bytes_to_us_q88(p.find_slot(0, 32).unwrap().bytes_before, BaudRate::B1000000);
-    assert_eq!(io.bus.last_snoop_delay_q88_us, Some(expected_fire));
-    assert_eq!(io.bus.last_snoop_arg, Some(true));
+    assert_eq!(io.bus.send_count, 1);
+    assert_eq!(io.bus.last_kind, Some(ReplyKind::Fast(FastPosition::Last)));
+    assert_eq!(
+        io.bus.last_schedule.unwrap().bytes_before,
+        p.find_slot(0, 32).unwrap().bytes_before
+    );
 
     assert_eq!(io.bus.tx.len(), 6);
     assert_eq!(&io.bus.tx[..4], &[0, 0, 0, 0]);
@@ -1100,8 +1094,6 @@ fn fast_sync_read_silent_when_our_id_absent() {
     h.poll(&shared, &mut io);
 
     assert_eq!(io.bus.send_count, 0);
-    assert_eq!(io.bus.after_count, 0);
-    assert_eq!(io.bus.snoop_count, 0);
     assert!(io.bus.tx.is_empty());
 }
 
@@ -1116,8 +1108,6 @@ fn fast_sync_read_skips_when_no_idle_anchor() {
     h.poll(&shared, &mut io);
 
     assert_eq!(io.bus.send_count, 0);
-    assert_eq!(io.bus.after_count, 0);
-    assert_eq!(io.bus.snoop_count, 0);
     assert!(io.bus.tx.is_empty());
 }
 
@@ -1133,13 +1123,11 @@ fn fast_sync_read_return_level_none_silences_reply() {
     h.poll(&shared, &mut io);
 
     assert_eq!(io.bus.send_count, 0);
-    assert_eq!(io.bus.after_count, 0);
-    assert_eq!(io.bus.snoop_count, 0);
     assert!(io.bus.tx.is_empty());
 }
 
 #[test]
-fn fast_bulk_read_only_slot_emits_only_via_send_with_computed_crc() {
+fn fast_bulk_read_only_slot_emits_full_frame_with_local_crc() {
     let shared = Shared::new();
     let mut io = FakeIo::new();
     let mut h = Dxl::new();
@@ -1150,8 +1138,11 @@ fn fast_bulk_read_only_slot_emits_only_via_send_with_computed_crc() {
     h.poll(&shared, &mut io);
 
     assert_eq!(io.bus.send_count, 1);
-    assert_eq!(io.bus.snoop_count, 0);
-    assert_eq!(io.bus.after_count, 0);
+    let pkt_len = match io.bus.last_kind {
+        Some(ReplyKind::Fast(FastPosition::Only { packet_length })) => packet_length,
+        other => panic!("expected Fast(Only{{..}}), got {other:?}"),
+    };
+    assert_eq!(pkt_len, 7);
 
     assert_eq!(io.bus.tx.len(), 14);
     assert_eq!(&io.bus.tx[..5], &[0xFF, 0xFF, 0xFD, 0x00, 0xFE]);
@@ -1165,7 +1156,7 @@ fn fast_bulk_read_only_slot_emits_only_via_send_with_computed_crc() {
 }
 
 #[test]
-fn fast_bulk_read_first_slot_emits_header_no_crc_via_send() {
+fn fast_bulk_read_first_slot_emits_header_then_body() {
     let shared = Shared::new();
     let mut io = FakeIo::new();
     let mut h = Dxl::new();
@@ -1176,8 +1167,11 @@ fn fast_bulk_read_first_slot_emits_header_no_crc_via_send() {
     h.poll(&shared, &mut io);
 
     assert_eq!(io.bus.send_count, 1);
-    assert_eq!(io.bus.after_count, 0);
-    assert_eq!(io.bus.snoop_count, 0);
+    let pkt_len = match io.bus.last_kind {
+        Some(ReplyKind::Fast(FastPosition::First { packet_length })) => packet_length,
+        other => panic!("expected Fast(First{{..}}), got {other:?}"),
+    };
+    assert_eq!(pkt_len, 13);
 
     assert_eq!(io.bus.tx.len(), 12);
     assert_eq!(&io.bus.tx[..5], &[0xFF, 0xFF, 0xFD, 0x00, 0xFE]);
@@ -1187,9 +1181,7 @@ fn fast_bulk_read_first_slot_emits_header_no_crc_via_send() {
 }
 
 #[test]
-fn fast_bulk_read_middle_slot_uses_per_slot_lengths_for_delay() {
-    use super::slot::bytes_to_us;
-    use crate::BaudRate;
+fn fast_bulk_read_middle_slot_carries_bytes_before() {
     let shared = Shared::new();
     let mut io = FakeIo::new();
     let mut h = Dxl::new();
@@ -1200,20 +1192,19 @@ fn fast_bulk_read_middle_slot_uses_per_slot_lengths_for_delay() {
     io.feed(&req);
     h.poll(&shared, &mut io);
 
-    assert_eq!(io.bus.after_count, 1);
-    assert_eq!(io.bus.send_count, 0);
-    assert_eq!(io.bus.snoop_count, 0);
-    let expected = bytes_to_us(p.find_slot(0, 32).unwrap().bytes_before, BaudRate::B1000000);
-    assert_eq!(io.bus.last_after_delay_us, Some(expected));
-
-    assert_eq!(io.bus.tx.len(), 4);
-    assert_eq!(&io.bus.tx[..], &[0, 0, 0, 0]);
+    assert_eq!(io.bus.send_count, 1);
+    assert_eq!(
+        io.bus.last_kind,
+        Some(ReplyKind::Fast(FastPosition::Middle))
+    );
+    assert_eq!(
+        io.bus.last_schedule.unwrap().bytes_before,
+        p.find_slot(0, 32).unwrap().bytes_before
+    );
 }
 
 #[test]
-fn fast_bulk_read_last_slot_schedules_snoop() {
-    use super::slot::bytes_to_us_q88;
-    use crate::BaudRate;
+fn fast_bulk_read_last_slot_reserves_crc_placeholder() {
     let shared = Shared::new();
     let mut io = FakeIo::new();
     let mut h = Dxl::new();
@@ -1224,12 +1215,12 @@ fn fast_bulk_read_last_slot_schedules_snoop() {
     io.feed(&req);
     h.poll(&shared, &mut io);
 
-    assert_eq!(io.bus.snoop_count, 1);
-    assert_eq!(io.bus.send_count, 0);
-    assert_eq!(io.bus.after_count, 0);
-    let expected_fire = bytes_to_us_q88(p.find_slot(0, 32).unwrap().bytes_before, BaudRate::B1000000);
-    assert_eq!(io.bus.last_snoop_delay_q88_us, Some(expected_fire));
-    assert_eq!(io.bus.last_snoop_arg, Some(true));
+    assert_eq!(io.bus.send_count, 1);
+    assert_eq!(io.bus.last_kind, Some(ReplyKind::Fast(FastPosition::Last)));
+    assert_eq!(
+        io.bus.last_schedule.unwrap().bytes_before,
+        p.find_slot(0, 32).unwrap().bytes_before
+    );
 
     assert_eq!(io.bus.tx.len(), 6);
     assert_eq!(&io.bus.tx[..4], &[0, 0, 0, 0]);
@@ -1247,7 +1238,8 @@ fn fast_bulk_read_uses_our_tuples_address_not_a_preceding_slots() {
     io.feed(&req);
     h.poll(&shared, &mut io);
 
-    assert_eq!(io.bus.snoop_count, 1);
+    assert_eq!(io.bus.send_count, 1);
+    assert_eq!(io.bus.last_kind, Some(ReplyKind::Fast(FastPosition::Last)));
     assert_eq!(io.bus.tx.len(), 6);
     assert_eq!(&io.bus.tx[..4], &[0, 0, 0, 0]);
     assert_eq!(&io.bus.tx[4..], &[0xAA, 0xBB]);
@@ -1265,8 +1257,6 @@ fn fast_bulk_read_silent_when_our_id_absent() {
     h.poll(&shared, &mut io);
 
     assert_eq!(io.bus.send_count, 0);
-    assert_eq!(io.bus.after_count, 0);
-    assert_eq!(io.bus.snoop_count, 0);
     assert!(io.bus.tx.is_empty());
 }
 
@@ -1282,8 +1272,6 @@ fn fast_bulk_read_skips_when_no_idle_anchor() {
     h.poll(&shared, &mut io);
 
     assert_eq!(io.bus.send_count, 0);
-    assert_eq!(io.bus.after_count, 0);
-    assert_eq!(io.bus.snoop_count, 0);
     assert!(io.bus.tx.is_empty());
 }
 
@@ -1300,8 +1288,6 @@ fn fast_bulk_read_return_level_none_silences_reply() {
     h.poll(&shared, &mut io);
 
     assert_eq!(io.bus.send_count, 0);
-    assert_eq!(io.bus.after_count, 0);
-    assert_eq!(io.bus.snoop_count, 0);
     assert!(io.bus.tx.is_empty());
 }
 
@@ -1309,31 +1295,24 @@ fn fast_bulk_read_return_level_none_silences_reply() {
 fn poll_recovers_from_stale_fast_first_slot_residue_then_replies_to_ping() {
     // Production wedge (V006, 2-3M baud, Fast Bulk Read last-slave with ≥32B
     // payload): a predecessor slave's Fast First slot reply (14 wire bytes —
-    // header carries length=43 for the WHOLE multi-slot packet, per the Fast
-    // First convention) lands in our RX ring. parse_one wants 7+43=50 bytes
-    // and only 14 will ever arrive at this offset (later slots are on the wire
-    // during *our* TX). Returning Incomplete here strands every future request
-    // behind these 14 bytes.
+    // header carries length=43 for the WHOLE multi-slot packet) lands in our
+    // RX ring. parse_one wants 7+43=50 bytes and only 14 will ever arrive at
+    // this offset (later slots are on the wire during *our* TX). Returning
+    // Incomplete here strands every future request behind these 14 bytes.
     //
-    // This integration test feeds [stale Fast First slot residue] ++ [Ping
-    // to our id] and asserts the Ping gets dispatched. Any fix shape passes
-    // — parser-side rejection, dispatcher post-skip, ring hint, etc.
-    use dxl_protocol::{FastSlot, FastSlotBody};
-
+    // This integration test feeds the stale residue and then the Ping; the
+    // dispatcher must recover and dispatch the Ping.
     let shared = Shared::new();
     let mut io = FakeIo::new();
     let mut h = Dxl::new();
 
     let mut residue: Vec<u8, 32> = Vec::new();
-    Wire::write_fast_slot(
+    Wire::write_status_reply(
         &mut residue,
-        &FastSlot::First {
-            packet_length: 43,
-            body: FastSlotBody {
-                error: 0,
-                id: 50,
-                data: &[0xAA, 0xAA, 0xAA, 0xAA],
-            },
+        &StatusReply::FastSyncRead {
+            position: FastPosition::First { packet_length: 43 },
+            id: 50,
+            data: &[0xAA, 0xAA, 0xAA, 0xAA],
         },
     )
     .unwrap();
@@ -1437,6 +1416,34 @@ fn calibrate_broadcast_silently_dropped() {
     h.poll(&shared, &mut io);
 
     assert_eq!(io.bus.send_count, 0);
-    assert_eq!(io.bus.after_count, 0);
     assert!(io.bus.tx.is_empty());
+}
+
+#[test]
+fn fast_sync_read_error_emits_zero_payload_with_error_byte() {
+    // FastError path: control-table read fails → chip emits length zero
+    // bytes for the data field rather than reading garbage off a stale buf.
+    let shared = Shared::new();
+    let mut io = FakeIo::new();
+    let mut h = Dxl::new();
+
+    // Address 0xFFFE is out of range → Err(DataRange) from read_bytes.
+    let req = encode(&Packet::FastSyncRead(FastSyncReadPacket::new(
+        0xFFFE,
+        2,
+        &[0],
+    )));
+    io.feed(&req);
+    h.poll(&shared, &mut io);
+
+    assert_eq!(io.bus.send_count, 1);
+    assert!(matches!(
+        io.bus.last_kind,
+        Some(ReplyKind::FastError(FastPosition::Only { .. }, 2))
+    ));
+    // Wire bytes: HEADER(4) + 0xFE + LEN(2) + 0x55 + error + id + 2 zeros + CRC(2)
+    assert_eq!(io.bus.tx.len(), 14);
+    assert_eq!(io.bus.tx[8], StatusError::DataRange.as_u8());
+    assert_eq!(io.bus.tx[9], 0); // our id
+    assert_eq!(&io.bus.tx[10..12], &[0, 0]); // length zero bytes
 }

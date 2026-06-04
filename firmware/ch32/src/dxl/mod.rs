@@ -17,6 +17,7 @@ pub(crate) mod isr;
 pub(crate) mod scheduler;
 pub(crate) mod state;
 pub(crate) mod statics;
+pub(crate) mod timing;
 
 pub use crc::Ch32DxlCrc;
 pub use isr::{on_rxne, on_systick};

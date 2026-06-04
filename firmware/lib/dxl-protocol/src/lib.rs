@@ -11,6 +11,7 @@ mod fast;
 mod instruction;
 mod packet;
 mod parser;
+mod reply;
 mod status_error;
 mod writer;
 
@@ -24,8 +25,8 @@ pub use crc::CrcUmts;
 #[cfg(feature = "software-crc")]
 pub use crc_software::SoftwareCrcUmts;
 pub use fast::{
-    FAST_RESPONSE_SLOT_BYTES, FAST_RESPONSE_SLOT0_BYTES, FastBulkTupleIter, FastReadPacket,
-    FastSlot, FastSlotBody, FastSlotInfo, FastSlotPosition,
+    FAST_RESPONSE_SLOT_BYTES, FAST_RESPONSE_SLOT0_BYTES, FastBulkTupleIter, FastPosition,
+    FastReadPacket, FastReadVariant, FastSlotInfo,
 };
 pub use instruction::Instruction;
 #[cfg(feature = "osc")]
@@ -38,5 +39,6 @@ pub use packet::{
     StatusPacket, SyncReadPacket, SyncWritePacket, WritePacket,
 };
 pub use parser::ParseError;
+pub use reply::StatusReply;
 pub use status_error::StatusError;
 pub use writer::WriteError;
