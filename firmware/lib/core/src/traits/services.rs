@@ -8,12 +8,15 @@ use crate::{BaudRate, BootMode};
 pub trait DxlBus {
     type TxBuffer: WriteBuf;
 
-    /// New RX bytes since the previous `rx_poll`, sliced to the latest
-    /// IDLE-anchored wire-end. `(head, tail)` — `tail` is empty unless the
-    /// burst wrapped the ring. Returns `None` until the next IDLE fires.
-    /// The chip also stashes the matching wire-end tick + byte cursor for
-    /// the next `send_*` to consume.
-    fn rx_poll(&mut self) -> Option<(&[u8], &[u8])>;
+    /// New RX bytes since the previous `rx_poll`, stitched into a contiguous
+    /// slice anchored at the latest IDLE-published wire-end. Backed by chip
+    /// storage that stays valid until the next `rx_poll` overwrites it,
+    /// which is what lets the caller keep the slice across `send_*` calls.
+    /// Returns `None` until the next IDLE fires, or if the window is larger
+    /// than the chip's stitch capacity (which means the burst is too big to
+    /// be a valid DXL frame anyway). The chip also stashes the matching
+    /// wire-end tick + byte cursor for the next `send_*` to consume.
+    fn rx_poll(&mut self) -> Option<&'static [u8]>;
 
     fn tx_buffer(&mut self) -> &mut Self::TxBuffer;
 

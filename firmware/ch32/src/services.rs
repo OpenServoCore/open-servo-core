@@ -6,7 +6,7 @@ use osc_core::{BootMode, DxlBus, Event, ServiceEvents, ServicesIo};
 use crate::dxl;
 use crate::dxl::statics::{
     DXL_BAUD_PENDING_BRR, DXL_CLOCK_FINE_TRIM_PENDING, DXL_CLOCK_TRIM_PENDING, DXL_REBOOT_PENDING,
-    DXL_RX_BUF, DXL_TX_BUF, DXL_TX_BUF_LEN, RX_MASK_U32,
+    DXL_RX_BUF, DXL_RX_SCRATCH, DXL_TX_BUF, DXL_TX_BUF_LEN, RX_MASK_U32,
 };
 use crate::hal::clocks::PCLK_HZ;
 use crate::hal::usart;
@@ -38,7 +38,7 @@ impl Default for Ch32Bus {
 impl DxlBus for Ch32Bus {
     type TxBuffer = Vec<u8, DXL_TX_BUF_LEN>;
 
-    fn rx_poll(&mut self) -> Option<(&[u8], &[u8])> {
+    fn rx_poll(&mut self) -> Option<&'static [u8]> {
         let fresh = idle_anchor::snapshot();
         if fresh.seq == self.anchor.seq {
             return None;
@@ -59,14 +59,27 @@ impl DxlBus for Ch32Bus {
             return None;
         }
 
+        // SAFETY: sole writer; the services layer drops the previous slice
+        // before re-polling, so overwriting the scratch here is safe.
+        let scratch = unsafe { &mut *DXL_RX_SCRATCH.get() };
+        if length > scratch.capacity() {
+            return None;
+        }
+        scratch.clear();
+
         let end = (fresh.bytes & RX_MASK_U32) as usize;
         let start = (end + cap - length) % cap;
         if start + length <= cap {
-            Some((&ring[start..start + length], &[]))
+            scratch.extend_from_slice(&ring[start..start + length]).ok()?;
         } else {
             let head_len = cap - start;
-            Some((&ring[start..], &ring[..length - head_len]))
+            scratch.extend_from_slice(&ring[start..]).ok()?;
+            scratch.extend_from_slice(&ring[..length - head_len]).ok()?;
         }
+
+        // SAFETY: DXL_RX_SCRATCH is 'static; the slice stays valid until the
+        // next rx_poll overwrites it.
+        Some(unsafe { core::slice::from_raw_parts(scratch.as_ptr(), scratch.len()) })
     }
 
     fn tx_buffer(&mut self) -> &mut Self::TxBuffer {

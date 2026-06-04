@@ -49,12 +49,16 @@ impl FakeBus {
 impl DxlBus for FakeBus {
     type TxBuffer = Vec<u8, 256>;
 
-    fn rx_poll(&mut self) -> Option<(&[u8], &[u8])> {
+    fn rx_poll(&mut self) -> Option<&'static [u8]> {
         if !self.burst_fresh {
             return None;
         }
         self.burst_fresh = false;
-        Some((&self.burst[..], &[]))
+        let s: &[u8] = &self.burst[..];
+        // SAFETY: each test holds FakeBus for the full duration of `poll`,
+        // so the burst backing storage outlives the returned slice. The
+        // production contract ("valid until next rx_poll") is respected.
+        Some(unsafe { core::slice::from_raw_parts(s.as_ptr(), s.len()) })
     }
 
     fn tx_buffer(&mut self) -> &mut Self::TxBuffer {

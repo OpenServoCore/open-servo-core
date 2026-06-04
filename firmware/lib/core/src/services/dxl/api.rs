@@ -1,42 +1,30 @@
 use dxl_protocol::prelude::{ParseError, parse_one};
-use heapless::Vec;
 
 use crate::traits::{DxlBus, ServiceEvents, ServicesIo};
 use crate::{Shared, StagedWrites};
 
 use super::dispatcher::Dispatcher;
-use super::limits::DXL_REQUEST_MAX_BYTES;
 
 pub struct Dxl {
-    stitch: Vec<u8, DXL_REQUEST_MAX_BYTES>,
     staged: StagedWrites,
 }
 
 impl Dxl {
     pub const fn new() -> Self {
         Self {
-            stitch: Vec::new(),
             staged: StagedWrites::new(),
         }
     }
 
     pub fn poll<I: ServicesIo>(&mut self, shared: &Shared, io: &mut I) {
         let (bus, events) = io.parts();
-        {
-            let Some((head, tail)) = bus.rx_poll() else {
-                return;
-            };
-            if head.len() + tail.len() > DXL_REQUEST_MAX_BYTES {
-                return;
-            }
-            self.stitch.clear();
-            let _ = self.stitch.extend_from_slice(head);
-            let _ = self.stitch.extend_from_slice(tail);
-        }
-        if self.stitch.is_empty() {
+        let Some(window) = bus.rx_poll() else {
+            return;
+        };
+        if window.is_empty() {
             return;
         }
-        dispatch_window(&self.stitch, shared, bus, events, &mut self.staged);
+        dispatch_window(window, shared, bus, events, &mut self.staged);
     }
 }
 
