@@ -1,7 +1,9 @@
 use proc_macro2::TokenStream as TokenStream2;
 use quote::quote;
+use syn::punctuated::Punctuated;
 use syn::spanned::Spanned;
-use syn::{Attribute, Data, DeriveInput, Expr, ExprArray, Fields, Ident, Path, Type};
+use syn::token::PathSep;
+use syn::{Attribute, Data, DeriveInput, Expr, ExprArray, Fields, Ident, Path, PathSegment, Type};
 
 #[derive(Copy, Clone)]
 enum AccessMode {
@@ -40,6 +42,7 @@ struct FieldAttrs {
     custom: Vec<Path>,
     compares: Vec<(CmpOp, Expr)>,
     abs: bool,
+    hook: Option<Path>,
 }
 
 impl Default for FieldAttrs {
@@ -51,8 +54,21 @@ impl Default for FieldAttrs {
             custom: Vec::new(),
             compares: Vec::new(),
             abs: false,
+            hook: None,
         }
     }
+}
+
+struct BlockAttrs {
+    validators: Vec<TokenStream2>,
+    hooks_trait: Option<Path>,
+}
+
+struct HookBinding<'a> {
+    field_ident: &'a Ident,
+    field_ty: &'a Type,
+    trait_path: Path,
+    method_ident: Ident,
 }
 
 pub fn expand(input: &DeriveInput) -> syn::Result<TokenStream2> {
@@ -74,16 +90,28 @@ pub fn expand(input: &DeriveInput) -> syn::Result<TokenStream2> {
         ));
     };
 
-    let block_validators = parse_block_validators(&input.attrs)?;
+    let block_attrs = parse_block_attrs(&input.attrs)?;
+    let block_validators = &block_attrs.validators;
 
     let mut field_inits: Vec<TokenStream2> = Vec::new();
     let mut kept_idents: Vec<&Ident> = Vec::new();
     let mut kept_upper: Vec<Ident> = Vec::new();
     let mut new_inits: Vec<TokenStream2> = Vec::new();
+    let mut hook_bindings: Vec<HookBinding> = Vec::new();
     for field in &fields.named {
         let name = field.ident.as_ref().unwrap();
         let ty = &field.ty;
         let attrs = parse_field_attrs(&field.attrs)?;
+
+        if let Some(hook_path) = &attrs.hook {
+            let resolved = resolve_hook_path(hook_path, block_attrs.hooks_trait.as_ref())?;
+            hook_bindings.push(HookBinding {
+                field_ident: name,
+                field_ty: ty,
+                trait_path: resolved.0,
+                method_ident: resolved.1,
+            });
+        }
 
         let init = default_init_for_type(ty);
         new_inits.push(quote!(#name: #init));
@@ -116,6 +144,7 @@ pub fn expand(input: &DeriveInput) -> syn::Result<TokenStream2> {
 
     let count = field_inits.len();
     let meta_macro = Ident::new(&meta_macro_name(struct_ty), struct_ty.span());
+    let hooks_emit = build_hooks_emit(struct_ty, &hook_bindings);
 
     Ok(quote! {
         impl #struct_ty {
@@ -136,6 +165,8 @@ pub fn expand(input: &DeriveInput) -> syn::Result<TokenStream2> {
             }
         }
 
+        #hooks_emit
+
         #[doc(hidden)]
         #[macro_export]
         macro_rules! #meta_macro {
@@ -147,6 +178,103 @@ pub fn expand(input: &DeriveInput) -> syn::Result<TokenStream2> {
             };
         }
     })
+}
+
+fn build_hooks_emit(struct_ty: &Ident, bindings: &[HookBinding<'_>]) -> TokenStream2 {
+    let unique_traits = unique_trait_paths(bindings);
+    let body: Vec<TokenStream2> = bindings
+        .iter()
+        .map(|b| {
+            let field_ident = b.field_ident;
+            let field_ty = b.field_ty;
+            let trait_path = &b.trait_path;
+            let method_ident = &b.method_ident;
+            quote! {
+                {
+                    let __f_lo = block_base as u32
+                        + ::core::mem::offset_of!(#struct_ty, #field_ident) as u32;
+                    let __f_hi = __f_lo + ::core::mem::size_of::<#field_ty>() as u32;
+                    let __w_lo = abs_addr as u32;
+                    let __w_hi = __w_lo + len as u32;
+                    if __w_lo < __f_hi && __f_lo < __w_hi {
+                        <H as #trait_path>::#method_ident(hooks, self.#field_ident);
+                    }
+                }
+            }
+        })
+        .collect();
+
+    let where_clause = if unique_traits.is_empty() {
+        quote!()
+    } else {
+        quote!(where H: #(#unique_traits)+*)
+    };
+
+    let dispatch_args = if bindings.is_empty() {
+        quote!(_abs_addr: u16, _len: u16, _block_base: u16, _hooks: &mut H)
+    } else {
+        quote!(abs_addr: u16, len: u16, block_base: u16, hooks: &mut H)
+    };
+
+    quote! {
+        impl #struct_ty {
+            pub fn dispatch_events<H>(
+                &self,
+                #dispatch_args,
+            ) #where_clause {
+                #(#body)*
+            }
+        }
+    }
+}
+
+fn unique_trait_paths<'a>(bindings: &'a [HookBinding<'_>]) -> Vec<&'a Path> {
+    let mut out: Vec<&Path> = Vec::new();
+    for b in bindings {
+        if !out.iter().any(|p| path_eq(p, &b.trait_path)) {
+            out.push(&b.trait_path);
+        }
+    }
+    out
+}
+
+fn path_eq(a: &Path, b: &Path) -> bool {
+    use quote::ToTokens;
+    a.to_token_stream().to_string() == b.to_token_stream().to_string()
+}
+
+/// Splits `Trait::method` into (Trait, method). If `hook` is a single ident
+/// and the block declared `#[ct_block(hooks = ...)]`, that trait is used as
+/// the prefix.
+fn resolve_hook_path(hook: &Path, block_trait: Option<&Path>) -> syn::Result<(Path, Ident)> {
+    let total = hook.segments.len();
+    if total >= 2 {
+        let mut trait_path = Path {
+            leading_colon: hook.leading_colon,
+            segments: Punctuated::<PathSegment, PathSep>::new(),
+        };
+        for (i, seg) in hook.segments.iter().enumerate() {
+            if i == total - 1 {
+                break;
+            }
+            trait_path.segments.push(seg.clone());
+        }
+        let method_ident = hook.segments.last().unwrap().ident.clone();
+        Ok((trait_path, method_ident))
+    } else {
+        let method_ident = hook
+            .segments
+            .last()
+            .map(|s| s.ident.clone())
+            .ok_or_else(|| syn::Error::new(hook.span(), "empty hook path"))?;
+        let trait_path = block_trait.ok_or_else(|| {
+            syn::Error::new(
+                hook.span(),
+                "single-ident `hook = name` requires `#[ct_block(hooks = TraitPath)]` on the block",
+            )
+        })?;
+        Ok((trait_path.clone(), method_ident))
+    }
 }
 
 fn check_repr(attrs: &[Attribute], struct_span: proc_macro2::Span) -> syn::Result<()> {
@@ -185,8 +313,11 @@ fn check_repr(attrs: &[Attribute], struct_span: proc_macro2::Span) -> syn::Resul
     Ok(())
 }
 
-fn parse_block_validators(attrs: &[Attribute]) -> syn::Result<Vec<TokenStream2>> {
-    let mut out = Vec::new();
+fn parse_block_attrs(attrs: &[Attribute]) -> syn::Result<BlockAttrs> {
+    let mut out = BlockAttrs {
+        validators: Vec::new(),
+        hooks_trait: None,
+    };
     for attr in attrs {
         if !attr.path().is_ident("ct_block") {
             continue;
@@ -196,11 +327,16 @@ fn parse_block_validators(attrs: &[Attribute]) -> syn::Result<Vec<TokenStream2>>
                 let value = m.value()?;
                 let array: ExprArray = value.parse()?;
                 for elem in array.elems {
-                    out.push(quote!(#elem));
+                    out.validators.push(quote!(#elem));
                 }
                 Ok(())
+            } else if m.path.is_ident("hooks") {
+                out.hooks_trait = Some(m.value()?.parse()?);
+                Ok(())
             } else {
-                Err(m.error("unknown ct_block key (expected `validators = [...]`)"))
+                Err(m.error(
+                    "unknown ct_block key (expected `validators = [...]` or `hooks = TraitPath`)",
+                ))
             }
         })?;
     }
@@ -244,6 +380,10 @@ fn parse_field_attrs(attrs: &[Attribute]) -> syn::Result<FieldAttrs> {
             } else if m.path.is_ident("custom") {
                 let val = m.value()?;
                 out.custom.push(val.parse()?);
+                Ok(())
+            } else if m.path.is_ident("hook") {
+                let val = m.value()?;
+                out.hook = Some(val.parse()?);
                 Ok(())
             } else if let Some(op) = cmp_op_for_path(&m.path) {
                 let val = m.value()?;

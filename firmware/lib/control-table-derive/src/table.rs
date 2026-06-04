@@ -9,6 +9,7 @@ use syn::{
 #[derive(Default)]
 struct TableAttrs {
     max_sram: Option<Expr>,
+    hooks: Option<Path>,
 }
 
 struct RegionField<'a> {
@@ -104,6 +105,38 @@ pub fn expand(input: &DeriveInput) -> syn::Result<TokenStream2> {
         }
     });
 
+    let region_dispatch_calls: Vec<TokenStream2> = region_fields
+        .iter()
+        .map(|rf| {
+            let ident = rf.ident;
+            let inner_ty = rf.inner_ty;
+            quote! {
+                {
+                    let __r_lo = <#inner_ty>::DESC.addr as u32;
+                    let __r_hi = __r_lo + <#inner_ty>::DESC.size as u32;
+                    let __w_lo = abs_addr as u32;
+                    let __w_hi = __w_lo + len as u32;
+                    if __w_lo >= __r_lo && __w_hi <= __r_hi {
+                        ::control_table::RegionStorage::with(&self.#ident, |__r| {
+                            __r.dispatch_events(abs_addr, len, hooks);
+                        });
+                        return;
+                    }
+                }
+            }
+        })
+        .collect();
+
+    let hooks_where = match &table_attrs.hooks {
+        Some(path) => quote!(where H: #path),
+        None => quote!(),
+    };
+    let dispatch_args = if region_dispatch_calls.is_empty() {
+        quote!(_abs_addr: u16, _len: u16, _hooks: &mut H)
+    } else {
+        quote!(abs_addr: u16, len: u16, hooks: &mut H)
+    };
+
     Ok(quote! {
         impl #table_ty {
             pub const REGIONS: &'static [&'static ::control_table::RegionDesc] =
@@ -128,6 +161,15 @@ pub fn expand(input: &DeriveInput) -> syn::Result<TokenStream2> {
             ) -> ::core::option::Option<*mut u8> {
                 #(#region_base_arms)*
                 ::core::option::Option::None
+            }
+        }
+
+        impl #table_ty {
+            pub fn dispatch_events<H>(
+                &self,
+                #dispatch_args,
+            ) #hooks_where {
+                #(#region_dispatch_calls)*
             }
         }
 
@@ -207,8 +249,11 @@ fn parse_table_attrs(attrs: &[Attribute]) -> syn::Result<TableAttrs> {
             if m.path.is_ident("max_sram") {
                 out.max_sram = Some(m.value()?.parse()?);
                 Ok(())
+            } else if m.path.is_ident("hooks") {
+                out.hooks = Some(m.value()?.parse()?);
+                Ok(())
             } else {
-                Err(m.error("unknown ct_table key (expected max_sram)"))
+                Err(m.error("unknown ct_table key (expected `max_sram` or `hooks`)"))
             }
         })?;
     }

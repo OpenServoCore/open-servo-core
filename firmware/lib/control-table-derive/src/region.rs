@@ -1,13 +1,14 @@
 use proc_macro2::TokenStream as TokenStream2;
 use quote::{format_ident, quote};
 use syn::spanned::Spanned;
-use syn::{Attribute, Data, DeriveInput, Expr, ExprArray, Fields, Ident, Type, TypePath};
+use syn::{Attribute, Data, DeriveInput, Expr, ExprArray, Fields, Ident, Path, Type, TypePath};
 
 #[derive(Default)]
 struct RegionAttrs {
     addr: Option<Expr>,
     size: Option<Expr>,
     validators: Vec<Expr>,
+    hooks: Option<Path>,
 }
 
 pub fn expand(input: &DeriveInput) -> syn::Result<TokenStream2> {
@@ -42,6 +43,7 @@ pub fn expand(input: &DeriveInput) -> syn::Result<TokenStream2> {
         )
     })?;
     let validators = region_attrs.validators;
+    let hooks_bound = region_attrs.hooks;
 
     let impl_mod = format_ident!("__region_impl_{region_ty}");
 
@@ -49,6 +51,7 @@ pub fn expand(input: &DeriveInput) -> syn::Result<TokenStream2> {
     let mut block_descs: Vec<TokenStream2> = Vec::new();
     let mut addr_mods: Vec<TokenStream2> = Vec::new();
     let mut new_inits: Vec<TokenStream2> = Vec::new();
+    let mut block_dispatch_calls: Vec<TokenStream2> = Vec::new();
 
     for field in &fields.named {
         let field_name = field.ident.as_ref().unwrap();
@@ -64,6 +67,10 @@ pub fn expand(input: &DeriveInput) -> syn::Result<TokenStream2> {
         let rebased_const = format_ident!("REBASED_{}", field_name.to_string().to_uppercase());
         let base_expr =
             quote!((#addr as u16 + ::core::mem::offset_of!(#region_ty, #field_name) as u16));
+
+        block_dispatch_calls.push(quote! {
+            self.#field_name.dispatch_events(abs_addr, len, #base_expr, hooks);
+        });
 
         rebased_consts.push(quote! {
             pub(super) const #rebased_const:
@@ -105,6 +112,26 @@ pub fn expand(input: &DeriveInput) -> syn::Result<TokenStream2> {
         });
     }
 
+    let where_clause = match &hooks_bound {
+        Some(path) => quote!(where H: #path),
+        None => quote!(),
+    };
+    let dispatch_args = if block_dispatch_calls.is_empty() {
+        quote!(_abs_addr: u16, _len: u16, _hooks: &mut H)
+    } else {
+        quote!(abs_addr: u16, len: u16, hooks: &mut H)
+    };
+    let hooks_emit = quote! {
+        impl #region_ty {
+            pub fn dispatch_events<H>(
+                &self,
+                #dispatch_args,
+            ) #where_clause {
+                #(#block_dispatch_calls)*
+            }
+        }
+    };
+
     Ok(quote! {
         #[doc(hidden)]
         mod #impl_mod {
@@ -130,6 +157,8 @@ pub fn expand(input: &DeriveInput) -> syn::Result<TokenStream2> {
         }
 
         impl ::control_table::Region for #region_ty {}
+
+        #hooks_emit
 
         pub mod addr {
             #(#addr_mods)*
@@ -216,8 +245,11 @@ fn parse_region_attrs(attrs: &[Attribute]) -> syn::Result<RegionAttrs> {
                     out.validators.push(elem);
                 }
                 Ok(())
+            } else if m.path.is_ident("hooks") {
+                out.hooks = Some(m.value()?.parse()?);
+                Ok(())
             } else {
-                Err(m.error("unknown ct_region key (expected addr|size|validators)"))
+                Err(m.error("unknown ct_region key (expected addr|size|validators|hooks)"))
             }
         })?;
     }
