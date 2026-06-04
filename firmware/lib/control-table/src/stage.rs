@@ -1,10 +1,38 @@
 use crate::desc::Error;
 use crate::route::{Router, router_read_bytes};
 
-/// Sized to fit one max-length DXL Write (matches `dxl::MAX_WRITE`); multiple
-/// RegWrites share this budget before Action commits.
-pub const STAGE_DATA_CAP: usize = 128;
-pub const STAGE_ENTRY_CAP: usize = 16;
+/// Total staging buffer for pending RegWrite data, in bytes. Must be at
+/// least `MAX_CONTROL_RW` from the DXL services layer (asserted in
+/// `osc_core::services::dxl::limits`). Override with `OSC_STAGE_DATA_CAP`.
+/// Multiple RegWrites share this budget before Action commits.
+pub const STAGE_DATA_CAP: usize = env_usize(option_env!("OSC_STAGE_DATA_CAP"), 128);
+
+/// Max number of pending RegWrite entries before Action commits. Override
+/// with `OSC_STAGE_ENTRY_CAP`.
+pub const STAGE_ENTRY_CAP: usize = env_usize(option_env!("OSC_STAGE_ENTRY_CAP"), 16);
+
+const fn env_usize(value: Option<&'static str>, default: usize) -> usize {
+    match value {
+        Some(s) => parse_usize(s),
+        None => default,
+    }
+}
+
+const fn parse_usize(s: &str) -> usize {
+    let bytes = s.as_bytes();
+    let mut n: usize = 0;
+    let mut i = 0;
+    while i < bytes.len() {
+        let b = bytes[i];
+        assert!(
+            b >= b'0' && b <= b'9',
+            "OSC_STAGE_* must be a decimal integer",
+        );
+        n = n * 10 + (b - b'0') as usize;
+        i += 1;
+    }
+    n
+}
 
 #[derive(Copy, Clone)]
 pub(crate) struct StagedEntry {

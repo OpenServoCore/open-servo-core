@@ -5,14 +5,10 @@ use crate::traits::{DxlBus, ServiceEvents, ServicesIo};
 use crate::{Shared, StagedWrites};
 
 use super::dispatcher::Dispatcher;
-
-/// Covers realistic incoming traffic: a maxed-out 128 B Write (140 B frame)
-/// or a ~36-slave BulkRead (~190 B). Larger BulkReads silently drop and the
-/// master retries — saves 64 B over a 256 B cap.
-const DXL_STITCH_LEN: usize = 192;
+use super::limits::DXL_REQUEST_MAX_BYTES;
 
 pub struct Dxl {
-    stitch: Vec<u8, DXL_STITCH_LEN>,
+    stitch: Vec<u8, DXL_REQUEST_MAX_BYTES>,
     staged: StagedWrites,
 }
 
@@ -30,7 +26,7 @@ impl Dxl {
             let Some((head, tail)) = bus.rx_poll() else {
                 return;
             };
-            if head.len() + tail.len() > DXL_STITCH_LEN {
+            if head.len() + tail.len() > DXL_REQUEST_MAX_BYTES {
                 return;
             }
             self.stitch.clear();

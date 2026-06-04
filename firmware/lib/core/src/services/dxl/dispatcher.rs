@@ -1,17 +1,12 @@
 use dxl_protocol::prelude::*;
-use dxl_protocol::{FastSlot, FastSlotBody, write_fast_slot};
+use dxl_protocol::{BULK_REQUEST_SLOT_BYTES, FastSlot, FastSlotBody, write_fast_slot};
 
 use crate::regions::config;
-use crate::traits::{DxlBus, ServiceEvents, Event};
+use crate::traits::{DxlBus, Event, ServiceEvents};
 use crate::{BaudRate, Error, RegionStorage, Router, Shared, StagedWrites, StatusReturnLevel};
 
+use super::limits::{MAX_CONTROL_RW, MAX_SLAVE_COUNT};
 use super::slot::{bulk_slot_delay_us, bytes_to_us, bytes_to_us_q88, slot_period_us};
-
-const MAX_READ: usize = 128;
-const MAX_WRITE: usize = 128;
-const MAX_BULK_BODY: usize = 256;
-const MAX_FAST_SLOTS: usize = 32;
-const CAL_MAX_COUNT: usize = 128;
 
 fn error_to_status(e: Error) -> StatusError {
     match e {
@@ -189,7 +184,7 @@ impl<'a, B: DxlBus, E: ServiceEvents> Dispatcher<'a, B, E> {
             return;
         };
         let len = p.length as usize;
-        if len == 0 || len > MAX_READ {
+        if len == 0 || len > MAX_CONTROL_RW {
             self.send_status(
                 ctx,
                 id,
@@ -200,7 +195,7 @@ impl<'a, B: DxlBus, E: ServiceEvents> Dispatcher<'a, B, E> {
             );
             return;
         }
-        let mut buf = [0u8; MAX_READ];
+        let mut buf = [0u8; MAX_CONTROL_RW];
         match self.shared.table.read_bytes(p.address, &mut buf[..len]) {
             Ok(()) => self.send_status(
                 ctx,
@@ -221,7 +216,7 @@ impl<'a, B: DxlBus, E: ServiceEvents> Dispatcher<'a, B, E> {
             return;
         };
 
-        let mut buf = [0u8; MAX_WRITE];
+        let mut buf = [0u8; MAX_CONTROL_RW];
         let len = match p.data.copy_into(&mut buf) {
             Ok(n) => n,
             Err(_) => {
@@ -273,7 +268,7 @@ impl<'a, B: DxlBus, E: ServiceEvents> Dispatcher<'a, B, E> {
             return;
         };
 
-        let mut buf = [0u8; MAX_WRITE];
+        let mut buf = [0u8; MAX_CONTROL_RW];
         let len = match p.data.copy_into(&mut buf) {
             Ok(n) => n,
             Err(_) => {
@@ -317,7 +312,7 @@ impl<'a, B: DxlBus, E: ServiceEvents> Dispatcher<'a, B, E> {
         let Some((id, true)) = ctx.addressed(p.id) else {
             return;
         };
-        if p.count == 0 || p.count as usize > CAL_MAX_COUNT {
+        if p.count == 0 || p.count as usize > MAX_CONTROL_RW {
             self.send_status(
                 ctx,
                 id,
@@ -328,7 +323,7 @@ impl<'a, B: DxlBus, E: ServiceEvents> Dispatcher<'a, B, E> {
             );
             return;
         }
-        let zeros = [0u8; CAL_MAX_COUNT];
+        let zeros = [0u8; MAX_CONTROL_RW];
         self.send_status(
             ctx,
             id,
@@ -371,7 +366,7 @@ impl<'a, B: DxlBus, E: ServiceEvents> Dispatcher<'a, B, E> {
         let extra = (slot as u32) * slot_period_us(ctx.baud, p.length);
 
         let len = p.length as usize;
-        if len == 0 || len > MAX_READ {
+        if len == 0 || len > MAX_CONTROL_RW {
             self.send_status(
                 ctx,
                 ctx.our_id,
@@ -383,7 +378,7 @@ impl<'a, B: DxlBus, E: ServiceEvents> Dispatcher<'a, B, E> {
             return;
         }
 
-        let mut buf = [0u8; MAX_READ];
+        let mut buf = [0u8; MAX_CONTROL_RW];
         match self.shared.table.read_bytes(p.address, &mut buf[..len]) {
             Ok(()) => self.send_status(
                 ctx,
@@ -412,7 +407,7 @@ impl<'a, B: DxlBus, E: ServiceEvents> Dispatcher<'a, B, E> {
         if ctx.level < StatusReturnLevel::Read {
             return;
         }
-        let mut body = [0u8; MAX_BULK_BODY];
+        let mut body = [0u8; (MAX_SLAVE_COUNT * BULK_REQUEST_SLOT_BYTES)];
         let Ok(n) = p.body.copy_into(&mut body) else {
             return;
         };
@@ -434,7 +429,7 @@ impl<'a, B: DxlBus, E: ServiceEvents> Dispatcher<'a, B, E> {
         let extra = bulk_slot_delay_us(body, ctx.our_id, ctx.baud).unwrap_or(0);
 
         let len = length as usize;
-        if len == 0 || len > MAX_READ {
+        if len == 0 || len > MAX_CONTROL_RW {
             self.send_status(
                 ctx,
                 ctx.our_id,
@@ -446,7 +441,7 @@ impl<'a, B: DxlBus, E: ServiceEvents> Dispatcher<'a, B, E> {
             return;
         }
 
-        let mut buf = [0u8; MAX_READ];
+        let mut buf = [0u8; MAX_CONTROL_RW];
         match self.shared.table.read_bytes(address, &mut buf[..len]) {
             Ok(()) => self.send_status(
                 ctx,
@@ -475,16 +470,16 @@ impl<'a, B: DxlBus, E: ServiceEvents> Dispatcher<'a, B, E> {
         if ctx.level < StatusReturnLevel::Read {
             return;
         }
-        let Some(info) = p.find_slot(ctx.our_id, MAX_FAST_SLOTS) else {
+        let Some(info) = p.find_slot(ctx.our_id, MAX_SLAVE_COUNT) else {
             return;
         };
         let len = info.length as usize;
-        if len == 0 || len > MAX_READ {
+        if len == 0 || len > MAX_CONTROL_RW {
             return;
         }
 
         // Zero-fill on error keeps slot length-correct; error byte signals it.
-        let mut buf = [0u8; MAX_READ];
+        let mut buf = [0u8; MAX_CONTROL_RW];
         let error = match self.shared.table.read_bytes(info.address, &mut buf[..len]) {
             Ok(()) => StatusError::None,
             Err(e) => {

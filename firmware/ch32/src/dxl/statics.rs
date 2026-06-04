@@ -1,6 +1,7 @@
 use core::cell::SyncUnsafeCell;
 use core::sync::atomic::Ordering;
 use heapless::Vec;
+use osc_core::services::dxl::limits::DXL_TX_MAX_BYTES;
 use portable_atomic::{AtomicBool, AtomicI16, AtomicI32, AtomicU16, AtomicU32};
 
 use crate::board::TxEn;
@@ -20,7 +21,7 @@ pub(crate) static DXL_RX_BUF: SyncUnsafeCell<[u8; DXL_RX_BUF_LEN]> =
 /// delta between consecutive IDLE events. ISR-local state.
 pub(crate) static DXL_RX_WRITE_POS: AtomicU16 = AtomicU16::new(0);
 
-pub(crate) const DXL_TX_BUF_LEN: usize = 256;
+pub(crate) const DXL_TX_BUF_LEN: usize = DXL_TX_MAX_BYTES;
 
 pub(crate) static DXL_TX_BUF: SyncUnsafeCell<Vec<u8, DXL_TX_BUF_LEN>> =
     SyncUnsafeCell::new(Vec::new());
