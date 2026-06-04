@@ -1,4 +1,4 @@
-use crate::bytes::Bytes;
+use crate::bytes::{Bytes, Overflow};
 
 pub const HEADER: [u8; 4] = [0xFF, 0xFF, 0xFD, 0x00];
 pub const BROADCAST_ID: u8 = 0xFE;
@@ -68,6 +68,10 @@ impl<'a> WritePacket<'a> {
             data: Bytes::Raw(data),
         }
     }
+
+    pub fn copy_data_to_slice(&self, dst: &mut [u8]) -> Result<usize, Overflow> {
+        self.data.copy_to_slice(dst)
+    }
 }
 
 #[derive(Copy, Clone, Debug)]
@@ -84,6 +88,10 @@ impl<'a> RegWritePacket<'a> {
             address,
             data: Bytes::Raw(data),
         }
+    }
+
+    pub fn copy_data_to_slice(&self, dst: &mut [u8]) -> Result<usize, Overflow> {
+        self.data.copy_to_slice(dst)
     }
 }
 

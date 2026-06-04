@@ -56,10 +56,11 @@ pub struct FastSlotInfo {
 /// Shared shape so the dispatcher can drive Fast Sync and Fast Bulk Reads
 /// through the same code path.
 pub trait FastReadPacket {
-    /// `None` when our id isn't present or slot count exceeds `max_slots`.
-    fn find_slot(&self, our_id: u8, max_slots: usize) -> Option<FastSlotInfo>;
-    /// Cumulative response bytes emitted before `slot`'s payload. `slot == 0` → 0.
-    fn bytes_before(&self, slot: usize) -> u32;
+    /// `None` when `id` isn't present or slot count exceeds `max_slots`.
+    fn find_slot(&self, id: u8, max_slots: usize) -> Option<FastSlotInfo>;
+    /// Cumulative response bytes emitted before `id`'s payload in the
+    /// coalesced Fast Status chain. `None` if `id` is not in the request.
+    fn bytes_before(&self, id: u8) -> Option<u32>;
 }
 
 impl FastSlotInfo {
@@ -74,14 +75,14 @@ impl FastSlotInfo {
 }
 
 impl<'a> FastReadPacket for FastSyncReadPacket<'a> {
-    fn find_slot(&self, our_id: u8, max_slots: usize) -> Option<FastSlotInfo> {
+    fn find_slot(&self, id: u8, max_slots: usize) -> Option<FastSlotInfo> {
         let mut our_slot = None;
         let mut n_slots = 0usize;
-        for (i, id) in self.ids.iter().enumerate() {
+        for (i, slot_id) in self.ids.iter().enumerate() {
             if i >= max_slots {
                 return None;
             }
-            if id == our_id && our_slot.is_none() {
+            if slot_id == id && our_slot.is_none() {
                 our_slot = Some(i);
             }
             n_slots = i + 1;
@@ -98,27 +99,30 @@ impl<'a> FastReadPacket for FastSyncReadPacket<'a> {
         })
     }
 
-    fn bytes_before(&self, slot: usize) -> u32 {
+    fn bytes_before(&self, id: u8) -> Option<u32> {
+        let slot = self.ids.iter().position(|b| b == id)? as u32;
         if slot == 0 {
-            return 0;
+            return Some(0);
         }
         let payload = self.length as u32;
-        FAST_RESPONSE_SLOT0_BYTES as u32
-            + payload
-            + (slot as u32 - 1) * (FAST_RESPONSE_SLOT_BYTES as u32 + payload)
+        Some(
+            FAST_RESPONSE_SLOT0_BYTES as u32
+                + payload
+                + (slot - 1) * (FAST_RESPONSE_SLOT_BYTES as u32 + payload),
+        )
     }
 }
 
 impl<'a> FastReadPacket for FastBulkReadPacket<'a> {
-    fn find_slot(&self, our_id: u8, max_slots: usize) -> Option<FastSlotInfo> {
+    fn find_slot(&self, id: u8, max_slots: usize) -> Option<FastSlotInfo> {
         let mut found = None;
         let mut n_slots = 0usize;
         let mut total_payload = 0u32;
-        for (i, (id, address, length)) in self.tuples().enumerate() {
+        for (i, (slot_id, address, length)) in self.tuples().enumerate() {
             if i >= max_slots {
                 return None;
             }
-            if id == our_id && found.is_none() {
+            if slot_id == id && found.is_none() {
                 found = Some((i, address, length));
             }
             total_payload = total_payload.saturating_add(length as u32);
@@ -136,12 +140,12 @@ impl<'a> FastReadPacket for FastBulkReadPacket<'a> {
         })
     }
 
-    fn bytes_before(&self, slot: usize) -> u32 {
-        if slot == 0 {
-            return 0;
-        }
+    fn bytes_before(&self, id: u8) -> Option<u32> {
         let mut bytes = 0u32;
-        for (i, (_, _, length)) in self.tuples().take(slot).enumerate() {
+        for (i, (slot_id, _, length)) in self.tuples().enumerate() {
+            if slot_id == id {
+                return Some(bytes);
+            }
             let prefix = if i == 0 {
                 FAST_RESPONSE_SLOT0_BYTES as u32
             } else {
@@ -149,7 +153,7 @@ impl<'a> FastReadPacket for FastBulkReadPacket<'a> {
             };
             bytes = bytes.saturating_add(prefix).saturating_add(length as u32);
         }
-        bytes
+        None
     }
 }
 
@@ -344,11 +348,16 @@ mod tests {
     #[test]
     fn sync_bytes_before_uniform_payload() {
         let p = sync(0, 4, &[1, 2, 3]);
-        assert_eq!(p.bytes_before(0), 0);
+        assert_eq!(p.bytes_before(1), Some(0));
         // slot 1: FAST_RESPONSE_SLOT0_BYTES(10) + 4 = 14
-        assert_eq!(p.bytes_before(1), 14);
+        assert_eq!(p.bytes_before(2), Some(14));
         // slot 2: 14 + FAST_RESPONSE_SLOT_BYTES(2) + 4 = 20
-        assert_eq!(p.bytes_before(2), 20);
+        assert_eq!(p.bytes_before(3), Some(20));
+    }
+
+    #[test]
+    fn sync_bytes_before_missing_id_returns_none() {
+        assert!(sync(0, 4, &[1, 2, 3]).bytes_before(9).is_none());
     }
 
     #[test]
@@ -388,14 +397,20 @@ mod tests {
 
     #[test]
     fn bulk_bytes_before_sums_varied_lengths() {
-        // slot 0: len=4, slot 1: len=8, slot 2: len=2.
+        // slot 0 id=1 len=4, slot 1 id=2 len=8, slot 2 id=3 len=2.
         let body = [1, 0, 0, 4, 0, 2, 0, 0, 8, 0, 3, 0, 0, 2, 0];
         let p = bulk(&body);
-        assert_eq!(p.bytes_before(0), 0);
+        assert_eq!(p.bytes_before(1), Some(0));
         // FAST_RESPONSE_SLOT0_BYTES(10) + 4 = 14
-        assert_eq!(p.bytes_before(1), 14);
+        assert_eq!(p.bytes_before(2), Some(14));
         // 14 + FAST_RESPONSE_SLOT_BYTES(2) + 8 = 24
-        assert_eq!(p.bytes_before(2), 24);
+        assert_eq!(p.bytes_before(3), Some(24));
+    }
+
+    #[test]
+    fn bulk_bytes_before_missing_id_returns_none() {
+        let body = [1, 0, 0, 4, 0];
+        assert!(bulk(&body).bytes_before(9).is_none());
     }
 
     #[test]
@@ -404,8 +419,8 @@ mod tests {
         let bulk_body = [1, 0, 0, 4, 0, 2, 0, 0, 4, 0, 3, 0, 0, 4, 0];
         let b = bulk(&bulk_body);
         let s = sync(0, 4, &[1, 2, 3]);
-        for k in 0..3 {
-            assert_eq!(b.bytes_before(k), s.bytes_before(k));
+        for id in [1u8, 2, 3] {
+            assert_eq!(b.bytes_before(id), s.bytes_before(id));
         }
     }
 }

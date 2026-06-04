@@ -796,7 +796,7 @@ fn stuffing_round_trip_for_every_body_carrying_variant() {
             "{name}: length mismatch"
         );
         let mut buf = [0u8; 32];
-        let copied = recovered.copy_into(&mut buf).expect("copy_into");
+        let copied = recovered.copy_to_slice(&mut buf).expect("copy_to_slice");
         assert_eq!(
             &buf[..copied],
             logical,

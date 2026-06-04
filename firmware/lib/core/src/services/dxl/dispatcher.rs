@@ -217,7 +217,7 @@ impl<'a, B: DxlBus, E: ServiceEvents> Dispatcher<'a, B, E> {
         };
 
         let mut buf = [0u8; MAX_CONTROL_RW];
-        let len = match p.data.copy_into(&mut buf) {
+        let len = match p.data.copy_to_slice(&mut buf) {
             Ok(n) => n,
             Err(_) => {
                 if direct {
@@ -269,7 +269,7 @@ impl<'a, B: DxlBus, E: ServiceEvents> Dispatcher<'a, B, E> {
         };
 
         let mut buf = [0u8; MAX_CONTROL_RW];
-        let len = match p.data.copy_into(&mut buf) {
+        let len = match p.data.copy_to_slice(&mut buf) {
             Ok(n) => n,
             Err(_) => {
                 if direct {
@@ -408,7 +408,7 @@ impl<'a, B: DxlBus, E: ServiceEvents> Dispatcher<'a, B, E> {
             return;
         }
         let mut body = [0u8; (MAX_SLAVE_COUNT * BULK_REQUEST_SLOT_BYTES)];
-        let Ok(n) = p.body.copy_into(&mut body) else {
+        let Ok(n) = p.body.copy_to_slice(&mut body) else {
             return;
         };
         let body = &body[..n];
@@ -517,12 +517,14 @@ impl<'a, B: DxlBus, E: ServiceEvents> Dispatcher<'a, B, E> {
                 self.bus.send_after(ctx.rdt_us);
             }
             FastSlotPosition::Last => {
-                let fire_q88_us =
-                    (ctx.rdt_us << 8) + bytes_to_us_q88(p.bytes_before(info.our_slot), ctx.baud);
+                // find_slot just confirmed our id is present; bytes_before is Some.
+                let offset = p.bytes_before(ctx.our_id).unwrap_or(0);
+                let fire_q88_us = (ctx.rdt_us << 8) + bytes_to_us_q88(offset, ctx.baud);
                 self.bus.send_with_snoop_crc(fire_q88_us, true);
             }
             FastSlotPosition::First | FastSlotPosition::Middle => {
-                let fire_us = ctx.rdt_us + bytes_to_us(p.bytes_before(info.our_slot), ctx.baud);
+                let offset = p.bytes_before(ctx.our_id).unwrap_or(0);
+                let fire_us = ctx.rdt_us + bytes_to_us(offset, ctx.baud);
                 self.bus.send_after(fire_us);
             }
         }

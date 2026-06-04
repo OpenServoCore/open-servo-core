@@ -1,6 +1,7 @@
 #![no_std]
 
 mod buf;
+mod bulk;
 mod bytes;
 mod codec;
 mod crc;
@@ -16,6 +17,7 @@ mod writer;
 pub mod prelude;
 
 pub use buf::WriteBuf;
+pub use bulk::{BulkReadSlotIter, BulkSlot};
 pub use bytes::{ByteIter, Bytes, Overflow};
 pub use codec::Codec;
 pub use crc::CrcUmts;

@@ -1047,7 +1047,7 @@ fn fast_sync_read_middle_slot_emits_body_only_with_offset_delay() {
     assert_eq!(io.bus.after_count, 1);
     assert_eq!(io.bus.send_count, 0);
     assert_eq!(io.bus.snoop_count, 0);
-    let expected = bytes_to_us(p.bytes_before(1), BaudRate::B1000000);
+    let expected = bytes_to_us(p.bytes_before(0).unwrap(), BaudRate::B1000000);
     assert_eq!(io.bus.last_after_delay_us, Some(expected));
 
     assert_eq!(io.bus.tx.len(), 4);
@@ -1070,7 +1070,7 @@ fn fast_sync_read_last_slot_schedules_snoop() {
     assert_eq!(io.bus.snoop_count, 1);
     assert_eq!(io.bus.send_count, 0);
     assert_eq!(io.bus.after_count, 0);
-    let expected_fire = bytes_to_us_q88(p.bytes_before(1), BaudRate::B1000000);
+    let expected_fire = bytes_to_us_q88(p.bytes_before(0).unwrap(), BaudRate::B1000000);
     assert_eq!(io.bus.last_snoop_delay_q88_us, Some(expected_fire));
     assert_eq!(io.bus.last_snoop_arg, Some(true));
 
@@ -1197,7 +1197,7 @@ fn fast_bulk_read_middle_slot_uses_per_slot_lengths_for_delay() {
     assert_eq!(io.bus.after_count, 1);
     assert_eq!(io.bus.send_count, 0);
     assert_eq!(io.bus.snoop_count, 0);
-    let expected = bytes_to_us(p.bytes_before(1), BaudRate::B1000000);
+    let expected = bytes_to_us(p.bytes_before(0).unwrap(), BaudRate::B1000000);
     assert_eq!(io.bus.last_after_delay_us, Some(expected));
 
     assert_eq!(io.bus.tx.len(), 4);
@@ -1221,7 +1221,7 @@ fn fast_bulk_read_last_slot_schedules_snoop() {
     assert_eq!(io.bus.snoop_count, 1);
     assert_eq!(io.bus.send_count, 0);
     assert_eq!(io.bus.after_count, 0);
-    let expected_fire = bytes_to_us_q88(p.bytes_before(1), BaudRate::B1000000);
+    let expected_fire = bytes_to_us_q88(p.bytes_before(0).unwrap(), BaudRate::B1000000);
     assert_eq!(io.bus.last_snoop_delay_q88_us, Some(expected_fire));
     assert_eq!(io.bus.last_snoop_arg, Some(true));
 

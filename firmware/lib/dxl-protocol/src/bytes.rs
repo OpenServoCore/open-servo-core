@@ -33,7 +33,7 @@ impl<'a> Bytes<'a> {
         }
     }
 
-    pub fn copy_into(&self, dst: &mut [u8]) -> Result<usize, Overflow> {
+    pub fn copy_to_slice(&self, dst: &mut [u8]) -> Result<usize, Overflow> {
         let mut n = 0;
         for b in self.iter() {
             if n >= dst.len() {

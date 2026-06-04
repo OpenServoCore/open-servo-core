@@ -214,7 +214,7 @@ fn parse_write() {
             assert_eq!(p.id, 1);
             assert_eq!(p.address, 116);
             let mut buf = [0u8; 16];
-            let n = p.data.copy_into(&mut buf).unwrap();
+            let n = p.data.copy_to_slice(&mut buf).unwrap();
             assert_eq!(&buf[..n], &[0x00, 0x02, 0x00, 0x00]);
         }
         other => panic!("not Write: {:?}", other),
@@ -332,7 +332,7 @@ fn write_status_round_trip() {
             assert_eq!(p.id, 1);
             assert_eq!(p.error, 0);
             let mut buf = [0u8; 16];
-            let n = p.params.copy_into(&mut buf).unwrap();
+            let n = p.params.copy_to_slice(&mut buf).unwrap();
             assert_eq!(&buf[..n], &params);
         }
         other => panic!("not Status: {:?}", other),
@@ -364,7 +364,7 @@ fn stuffing_round_trip() {
             assert_eq!(p.address, 0x0040);
             assert_eq!(p.data.unstuffed_len(), data.len());
             let mut buf = [0u8; 32];
-            let n = p.data.copy_into(&mut buf).unwrap();
+            let n = p.data.copy_to_slice(&mut buf).unwrap();
             assert_eq!(&buf[..n], &data);
         }
         other => panic!("not Write: {:?}", other),
@@ -390,7 +390,7 @@ fn stuffing_at_field_boundary() {
         Packet::Write(p) => {
             assert_eq!(p.address, 0xFFFF);
             let mut buf = [0u8; 16];
-            let n = p.data.copy_into(&mut buf).unwrap();
+            let n = p.data.copy_to_slice(&mut buf).unwrap();
             assert_eq!(&buf[..n], &data);
         }
         _ => panic!("not Write"),
@@ -523,7 +523,7 @@ fn round_trip_data(data: &[u8]) -> heapless::Vec<u8, 256> {
         Packet::Write(p) => {
             assert_eq!(p.address, 0x0010);
             let mut buf = [0u8; 256];
-            let n = p.data.copy_into(&mut buf).unwrap();
+            let n = p.data.copy_to_slice(&mut buf).unwrap();
             let mut got: heapless::Vec<u8, 256> = Vec::new();
             got.extend_from_slice(&buf[..n]).unwrap();
             assert_eq!(p.data.unstuffed_len(), data.len());
@@ -608,7 +608,7 @@ fn stuff_trigger_spanning_address_boundary() {
     assert_eq!(p.address, 0xFFFF);
     assert_eq!(p.data.unstuffed_len(), data.len());
     let mut buf = [0u8; 8];
-    let n = p.data.copy_into(&mut buf).unwrap();
+    let n = p.data.copy_to_slice(&mut buf).unwrap();
     assert_eq!(&buf[..n], &data);
 }
 
@@ -630,7 +630,7 @@ fn stuff_trigger_spanning_address_then_more_in_data() {
         panic!();
     };
     let mut buf = [0u8; 16];
-    let n = p.data.copy_into(&mut buf).unwrap();
+    let n = p.data.copy_to_slice(&mut buf).unwrap();
     assert_eq!(&buf[..n], &data);
 }
 
@@ -703,7 +703,7 @@ fn stuff_status_with_trigger_in_params() {
     };
     assert_eq!(p.error, 0);
     let mut buf = [0u8; 16];
-    let n = p.params.copy_into(&mut buf).unwrap();
+    let n = p.params.copy_to_slice(&mut buf).unwrap();
     assert_eq!(&buf[..n], &params);
 }
 
@@ -750,6 +750,6 @@ fn stuff_long_payload_with_many_triggers() {
     };
     assert_eq!(p.data.unstuffed_len(), data.len());
     let mut buf = [0u8; 64];
-    let n = p.data.copy_into(&mut buf).unwrap();
+    let n = p.data.copy_to_slice(&mut buf).unwrap();
     assert_eq!(&buf[..n], &data[..]);
 }
