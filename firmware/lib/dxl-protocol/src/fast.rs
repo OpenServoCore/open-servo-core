@@ -2,13 +2,19 @@ use crate::Instruction;
 use crate::buf::WriteBuf;
 use crate::bytes::ByteIter;
 use crate::crc::crc16;
-use crate::packet::{BROADCAST_ID, FastBulkReadPacket, FastSyncReadPacket, HEADER};
+use crate::packet::{
+    BROADCAST_ID, FastBulkReadPacket, FastSyncReadPacket, HEADER, RESPONSE_HEADER_BYTES,
+};
 use crate::writer::WriteError;
 
-/// Slot 0 emits coalesced-header(8) + ERR + ID before its payload.
-pub const FAST_SLOT0_PREFIX: u32 = 10;
-/// Slots k≥1 emit ERR + ID before their payload.
-pub const FAST_SLOT_PREFIX: u32 = 2;
+/// Bytes before slot 0's payload in a Fast response chain:
+/// `RESPONSE_HEADER_BYTES + slave_id(1)` — slot 0 reuses the response
+/// header's ERROR byte, then adds the slave ID ahead of its data.
+pub const FAST_RESPONSE_SLOT0_BYTES: usize = RESPONSE_HEADER_BYTES + 1;
+
+/// Bytes before slot `k > 0`'s payload in a Fast response chain:
+/// `ERROR(1) + slave_id(1)`.
+pub const FAST_RESPONSE_SLOT_BYTES: usize = 2;
 
 pub struct FastSlotBody<'a> {
     pub error: u8,
@@ -97,7 +103,9 @@ impl<'a> FastReadPacket for FastSyncReadPacket<'a> {
             return 0;
         }
         let payload = self.length as u32;
-        FAST_SLOT0_PREFIX + payload + (slot as u32 - 1) * (FAST_SLOT_PREFIX + payload)
+        FAST_RESPONSE_SLOT0_BYTES as u32
+            + payload
+            + (slot as u32 - 1) * (FAST_RESPONSE_SLOT_BYTES as u32 + payload)
     }
 }
 
@@ -135,9 +143,9 @@ impl<'a> FastReadPacket for FastBulkReadPacket<'a> {
         let mut bytes = 0u32;
         for (i, (_, _, length)) in self.tuples().take(slot).enumerate() {
             let prefix = if i == 0 {
-                FAST_SLOT0_PREFIX
+                FAST_RESPONSE_SLOT0_BYTES as u32
             } else {
-                FAST_SLOT_PREFIX
+                FAST_RESPONSE_SLOT_BYTES as u32
             };
             bytes = bytes.saturating_add(prefix).saturating_add(length as u32);
         }
@@ -331,9 +339,9 @@ mod tests {
     fn sync_bytes_before_uniform_payload() {
         let p = sync(0, 4, &[1, 2, 3]);
         assert_eq!(p.bytes_before(0), 0);
-        // slot 1: FAST_SLOT0_PREFIX(10) + 4 = 14
+        // slot 1: FAST_RESPONSE_SLOT0_BYTES(10) + 4 = 14
         assert_eq!(p.bytes_before(1), 14);
-        // slot 2: 14 + FAST_SLOT_PREFIX(2) + 4 = 20
+        // slot 2: 14 + FAST_RESPONSE_SLOT_BYTES(2) + 4 = 20
         assert_eq!(p.bytes_before(2), 20);
     }
 
@@ -378,9 +386,9 @@ mod tests {
         let body = [1, 0, 0, 4, 0, 2, 0, 0, 8, 0, 3, 0, 0, 2, 0];
         let p = bulk(&body);
         assert_eq!(p.bytes_before(0), 0);
-        // FAST_SLOT0_PREFIX(10) + 4 = 14
+        // FAST_RESPONSE_SLOT0_BYTES(10) + 4 = 14
         assert_eq!(p.bytes_before(1), 14);
-        // 14 + FAST_SLOT_PREFIX(2) + 8 = 24
+        // 14 + FAST_RESPONSE_SLOT_BYTES(2) + 8 = 24
         assert_eq!(p.bytes_before(2), 24);
     }
 

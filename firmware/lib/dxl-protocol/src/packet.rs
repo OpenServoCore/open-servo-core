@@ -7,6 +7,24 @@ pub const BROADCAST_ID: u8 = 0xFE;
 /// phantom header in random traffic; real frames stay well under this.
 pub const MAX_LENGTH: usize = 1024;
 
+/// Bytes before the parameter region of any request packet:
+/// `HEADER(4) + ID(1) + LENGTH(2) + INSTRUCTION(1)`.
+pub const REQUEST_HEADER_BYTES: usize = 8;
+
+/// Bytes before the parameter region of any Status response packet:
+/// `HEADER(4) + ID(1) + LENGTH(2) + INSTRUCTION(1) + ERROR(1)`.
+pub const RESPONSE_HEADER_BYTES: usize = 9;
+
+/// Trailing CRC bytes on every framed packet.
+pub const CRC_BYTES: usize = 2;
+
+/// Per-slave entry width in SyncRead / FastSyncRead request bodies: just `id`.
+pub const SYNC_REQUEST_SLOT_BYTES: usize = 1;
+
+/// Per-slave entry width in BulkRead / FastBulkRead request bodies:
+/// `id(1) + addr_le16(2) + len_le16(2)`.
+pub const BULK_REQUEST_SLOT_BYTES: usize = 5;
+
 #[derive(Copy, Clone, Debug)]
 pub struct PingPacket {
     pub id: u8,

@@ -245,7 +245,7 @@ mod tests {
 
     #[test]
     fn predict_n_pred_3m_inj1_last() {
-        // 3M INJ=1 Last: bytes_before(1) = FAST_SLOT0_PREFIX(10) + 1 = 11.
+        // 3M INJ=1 Last: bytes_before(1) = FAST_RESPONSE_SLOT0_BYTES(10) + 1 = 11.
         // wire_q88 = bytes_to_us_q88(11, 3M) = (11 × 218453) >> 8 = 9386.
         assert_eq!(Q88_3M_INJ1, 9386);
         let fire_q88 = RDT_Q88_DEFAULT + Q88_3M_INJ1;
