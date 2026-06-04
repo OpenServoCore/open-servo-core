@@ -2,7 +2,10 @@
 
 mod buf;
 mod bytes;
+mod codec;
 mod crc;
+#[cfg(feature = "software-crc")]
+mod crc_software;
 mod fast;
 mod instruction;
 mod packet;
@@ -14,10 +17,13 @@ pub mod prelude;
 
 pub use buf::WriteBuf;
 pub use bytes::{ByteIter, Bytes, Overflow};
-pub use crc::{crc16, crc16_continue};
+pub use codec::Codec;
+pub use crc::CrcUmts;
+#[cfg(feature = "software-crc")]
+pub use crc_software::SoftwareCrcUmts;
 pub use fast::{
-    FAST_RESPONSE_SLOT0_BYTES, FAST_RESPONSE_SLOT_BYTES, FastBulkTupleIter, FastReadPacket,
-    FastSlot, FastSlotBody, FastSlotInfo, FastSlotPosition, write_fast_slot,
+    FAST_RESPONSE_SLOT_BYTES, FAST_RESPONSE_SLOT0_BYTES, FastBulkTupleIter, FastReadPacket,
+    FastSlot, FastSlotBody, FastSlotInfo, FastSlotPosition,
 };
 pub use instruction::Instruction;
 #[cfg(feature = "osc")]
@@ -29,6 +35,6 @@ pub use packet::{
     RESPONSE_HEADER_BYTES, ReadPacket, RebootPacket, RegWritePacket, SYNC_REQUEST_SLOT_BYTES,
     StatusPacket, SyncReadPacket, SyncWritePacket, WritePacket,
 };
-pub use parser::{ParseError, parse_one};
+pub use parser::ParseError;
 pub use status_error::StatusError;
-pub use writer::{WriteError, write};
+pub use writer::WriteError;

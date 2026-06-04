@@ -1,7 +1,7 @@
 use crate::Instruction;
 use crate::buf::WriteBuf;
 use crate::bytes::ByteIter;
-use crate::crc::crc16;
+use crate::crc::CrcUmts;
 use crate::packet::{
     BROADCAST_ID, FastBulkReadPacket, FastSyncReadPacket, HEADER, RESPONSE_HEADER_BYTES,
 };
@@ -189,9 +189,12 @@ impl<'a> Iterator for FastBulkTupleIter<'a> {
 /// master sees a CRC mismatch (intentional — surfaces the failure).
 const CRC_PLACEHOLDER: [u8; 2] = [0xAA, 0xBB];
 
-pub fn write_fast_slot<W: WriteBuf>(out: &mut W, slot: &FastSlot<'_>) -> Result<(), WriteError> {
+pub(crate) fn write_fast_slot<W: WriteBuf, CRC: CrcUmts>(
+    out: &mut W,
+    slot: &FastSlot<'_>,
+) -> Result<(), WriteError> {
     let start = out.len();
-    match write_fast_slot_inner(out, slot) {
+    match write_fast_slot_inner::<W, CRC>(out, slot) {
         Ok(()) => Ok(()),
         Err(e) => {
             out.truncate(start);
@@ -200,7 +203,10 @@ pub fn write_fast_slot<W: WriteBuf>(out: &mut W, slot: &FastSlot<'_>) -> Result<
     }
 }
 
-fn write_fast_slot_inner<W: WriteBuf>(out: &mut W, slot: &FastSlot<'_>) -> Result<(), WriteError> {
+fn write_fast_slot_inner<W: WriteBuf, CRC: CrcUmts>(
+    out: &mut W,
+    slot: &FastSlot<'_>,
+) -> Result<(), WriteError> {
     match slot {
         FastSlot::First {
             packet_length,
@@ -226,7 +232,7 @@ fn write_fast_slot_inner<W: WriteBuf>(out: &mut W, slot: &FastSlot<'_>) -> Resul
             // No predecessors on the bus → CRC is purely local; no snoop and
             // no fire-time patch required (unlike Last). Compute it here so
             // the wire bytes are correct the instant we hit the DMA.
-            let crc = crc16(&out.as_slice()[frame_start..]);
+            let crc = CRC::accumulate(0, &out.as_slice()[frame_start..]);
             out.push(crc as u8)?;
             out.push((crc >> 8) as u8)?;
         }

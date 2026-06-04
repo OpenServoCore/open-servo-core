@@ -2,14 +2,17 @@ use core::sync::atomic::Ordering;
 
 use ch32_metapac::USART1;
 
-use dxl_protocol::crc16_continue;
+use dxl_protocol::CrcUmts;
 
+use super::Ch32DxlCrc;
 #[cfg(feature = "scope")]
 use crate::hal::gpio::Level;
 use crate::hal::{dma, gpio, systick, usart};
 
 use super::scheduler::{GUARD_BYTES, catchup_interval_ticks};
-use super::state::{DISPATCH, FastChainFault, FastChainPhase, ReplyState, STATE, report_fault, set_phase};
+use super::state::{
+    DISPATCH, FastChainFault, FastChainPhase, ReplyState, STATE, report_fault, set_phase,
+};
 #[cfg(feature = "scope")]
 use super::statics::DXL_DBG_PIN;
 use super::statics::{
@@ -226,7 +229,7 @@ fn patch_crc() {
             ReplyState::Chain { bulk_crc, .. } => bulk_crc,
             _ => 0,
         };
-        let crc = crc16_continue(seed, &buf[..payload_end]);
+        let crc = Ch32DxlCrc::accumulate(seed, &buf[..payload_end]);
         let bytes = crc.to_le_bytes();
         let slice = buf.as_mut_slice();
         slice[n - 2] = bytes[0];
@@ -286,10 +289,10 @@ fn ring_crc(seed: u16, ring: &[u8], head: u16, write_pos: u16) -> u16 {
     let start = head as usize;
     let end = write_pos as usize;
     if start < end {
-        crc16_continue(seed, &ring[start..end])
+        Ch32DxlCrc::accumulate(seed, &ring[start..end])
     } else {
-        let mid = crc16_continue(seed, &ring[start..]);
-        crc16_continue(mid, &ring[..end])
+        let mid = Ch32DxlCrc::accumulate(seed, &ring[start..]);
+        Ch32DxlCrc::accumulate(mid, &ring[..end])
     }
 }
 
@@ -301,8 +304,9 @@ fn current_rx_write_pos() -> u16 {
 
 #[cfg(test)]
 mod tests {
+    use super::Ch32DxlCrc;
     use super::ring_crc;
-    use dxl_protocol::crc16;
+    use dxl_protocol::CrcUmts;
 
     const RING: [u8; 8] = [0x10, 0x20, 0x30, 0x40, 0x50, 0x60, 0x70, 0x80];
 
@@ -314,12 +318,18 @@ mod tests {
 
     #[test]
     fn non_wrap_walk_matches_contiguous_crc() {
-        assert_eq!(ring_crc(0, &RING, 2, 5), crc16(&[0x30, 0x40, 0x50]));
+        assert_eq!(
+            ring_crc(0, &RING, 2, 5),
+            Ch32DxlCrc::accumulate(0, &[0x30, 0x40, 0x50])
+        );
     }
 
     #[test]
     fn wrap_walk_stitches_tail_and_head() {
-        assert_eq!(ring_crc(0, &RING, 6, 2), crc16(&[0x70, 0x80, 0x10, 0x20]));
+        assert_eq!(
+            ring_crc(0, &RING, 6, 2),
+            Ch32DxlCrc::accumulate(0, &[0x70, 0x80, 0x10, 0x20])
+        );
     }
 
     #[test]

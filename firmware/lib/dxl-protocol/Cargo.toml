@@ -9,13 +9,19 @@ crc.workspace = true
 heapless      = { workspace = true, optional = true }
 
 [dev-dependencies]
-dxl-protocol = { path = ".", features = ["heapless", "osc"] }
+dxl-protocol = { path = ".", features = ["heapless", "osc", "software-crc"] }
 
 [features]
-default  = []
-heapless = ["dep:heapless"]
-alloc    = []
+default      = []
+heapless     = ["dep:heapless"]
+alloc        = []
 # OpenServoCore extensions. Reserves the 0xE0..0xEF vendor-extension block
 # (currently: CAL = 0xE0). Off-by-default keeps this crate a clean DXL 2.0
 # implementation; turn on inside the osc-core stack.
-osc      = []
+osc          = []
+# Reference software impl of `CrcUmts` (CRC-16/UMTS). Off by default so chips
+# bring their own (hardware-CRC peripheral, table-driven, etc.) — the chip is
+# the authority on how a frame's CRC is computed. Enabled here only for
+# dxl-protocol's own tests; downstream test crates that want a stock impl can
+# turn it on too.
+software-crc = []

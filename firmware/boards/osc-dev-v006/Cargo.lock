@@ -337,6 +337,7 @@ name = "osc-ch32"
 version = "0.0.0"
 dependencies = [
  "ch32-metapac",
+ "crc",
  "critical-section",
  "defmt",
  "dxl-protocol",

@@ -1,5 +1,5 @@
 use dxl_protocol::prelude::*;
-use dxl_protocol::{BULK_REQUEST_SLOT_BYTES, FastSlot, FastSlotBody, write_fast_slot};
+use dxl_protocol::{BULK_REQUEST_SLOT_BYTES, FastSlot, FastSlotBody};
 
 use crate::regions::config;
 use crate::traits::{DxlBus, Event, ServiceEvents};
@@ -141,7 +141,7 @@ impl<'a, B: DxlBus, E: ServiceEvents> Dispatcher<'a, B, E> {
         let buf = self.bus.tx_buffer();
         buf.truncate(0);
         let packet = Packet::Status(StatusPacket::new(id, error.as_u8(), params));
-        if write(buf, &packet).is_err() {
+        if Codec::<B::Crc>::write(buf, &packet).is_err() {
             buf.truncate(0);
             return;
         }
@@ -507,7 +507,7 @@ impl<'a, B: DxlBus, E: ServiceEvents> Dispatcher<'a, B, E> {
         };
         let tx_buf = self.bus.tx_buffer();
         tx_buf.truncate(0);
-        if write_fast_slot(tx_buf, &slot).is_err() {
+        if Codec::<B::Crc>::write_fast_slot(tx_buf, &slot).is_err() {
             tx_buf.truncate(0);
             return;
         }
@@ -517,8 +517,8 @@ impl<'a, B: DxlBus, E: ServiceEvents> Dispatcher<'a, B, E> {
                 self.bus.send_after(ctx.rdt_us);
             }
             FastSlotPosition::Last => {
-                let fire_q88_us = (ctx.rdt_us << 8)
-                    + bytes_to_us_q88(p.bytes_before(info.our_slot), ctx.baud);
+                let fire_q88_us =
+                    (ctx.rdt_us << 8) + bytes_to_us_q88(p.bytes_before(info.our_slot), ctx.baud);
                 self.bus.send_with_snoop_crc(fire_q88_us, true);
             }
             FastSlotPosition::First | FastSlotPosition::Middle => {

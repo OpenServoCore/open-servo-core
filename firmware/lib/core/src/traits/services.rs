@@ -1,4 +1,4 @@
-use dxl_protocol::prelude::WriteBuf;
+use dxl_protocol::prelude::{CrcUmts, WriteBuf};
 
 use crate::{BaudRate, BootMode};
 
@@ -7,6 +7,10 @@ use crate::{BaudRate, BootMode};
 /// tracks the wire-end timestamp internally so `send_*` delays land on it.
 pub trait DxlBus {
     type TxBuffer: WriteBuf;
+    /// CRC engine the protocol layer uses to validate inbound frames and seal
+    /// outbound ones. Chips supply software or hardware; the trait body has
+    /// no state, so type-only dispatch is enough.
+    type Crc: CrcUmts;
 
     /// New RX bytes since the previous `rx_poll`, stitched into a contiguous
     /// slice anchored at the latest IDLE-published wire-end. Backed by chip

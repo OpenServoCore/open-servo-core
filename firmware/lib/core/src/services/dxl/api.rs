@@ -1,4 +1,4 @@
-use dxl_protocol::prelude::{ParseError, parse_one};
+use dxl_protocol::prelude::{Codec, ParseError};
 
 use crate::traits::{DxlBus, ServiceEvents, ServicesIo};
 use crate::{Shared, StagedWrites};
@@ -24,7 +24,7 @@ impl Dxl {
         if window.is_empty() {
             return;
         }
-        dispatch_window(window, shared, bus, events, &mut self.staged);
+        dispatch_window::<I::Bus, I::Events>(window, shared, bus, events, &mut self.staged);
     }
 }
 
@@ -47,7 +47,7 @@ fn dispatch_window<B: DxlBus, E: ServiceEvents>(
     let n = window.len();
     let mut offset = 0;
     while offset < n {
-        match parse_one(&window[offset..]) {
+        match Codec::<B::Crc>::parse_one(&window[offset..]) {
             Ok((packet, used)) => {
                 if offset + used == n {
                     let mut d = Dispatcher::new(shared, bus, events, staged);

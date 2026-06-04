@@ -4,6 +4,8 @@
 use dxl_protocol::prelude::*;
 use heapless::Vec as HVec;
 
+type Wire = Codec<SoftwareCrcUmts>;
+
 // xorshift64*.
 struct Rng(u64);
 impl Rng {
@@ -46,7 +48,7 @@ fn drain_stream(bytes: &[u8], chunk_size: usize) -> usize {
             bytes.len()
         );
 
-        match parse_one(&buf) {
+        match Wire::parse_one(&buf) {
             Ok((_pkt, n)) => {
                 accepts += 1;
                 assert!(n >= 10, "min DXL frame is 10 bytes, got {n}");
@@ -179,7 +181,7 @@ fn real_frames_with_random_garbage_between_recover_all() {
             stream.push(rng.next_byte() & 0x7F);
         }
         let mut frame: HVec<u8, 32> = HVec::new();
-        write(
+        Wire::write(
             &mut frame,
             &Packet::Ping(PingPacket {
                 id: ((i % 253) + 1) as u8,
@@ -206,7 +208,7 @@ fn real_frames_byte_at_a_time_recover_all() {
             stream.push(rng.next_byte() & 0x7F);
         }
         let mut frame: HVec<u8, 32> = HVec::new();
-        write(
+        Wire::write(
             &mut frame,
             &Packet::Ping(PingPacket {
                 id: ((i % 253) + 1) as u8,
@@ -228,7 +230,7 @@ fn real_frames_with_partial_corrupt_frames_recover_clean_ones() {
 
     for i in 0..valid {
         let mut frame: HVec<u8, 32> = HVec::new();
-        write(
+        Wire::write(
             &mut frame,
             &Packet::Ping(PingPacket {
                 id: ((i % 253) + 1) as u8,
@@ -239,7 +241,7 @@ fn real_frames_with_partial_corrupt_frames_recover_clean_ones() {
     }
     for i in 0..corrupt {
         let mut frame: HVec<u8, 32> = HVec::new();
-        write(
+        Wire::write(
             &mut frame,
             &Packet::Ping(PingPacket {
                 id: ((i % 253) + 1) as u8,
@@ -263,7 +265,7 @@ fn parse_one_progress_invariant_random_short_inputs() {
         let len = (rng.next_u64() % 64) as usize;
         let mut buf = vec![0u8; len];
         rng.fill(&mut buf);
-        match parse_one(&buf) {
+        match Wire::parse_one(&buf) {
             Ok((_, n)) => assert!(n >= 10),
             Err(ParseError::Incomplete) => {}
             Err(ParseError::Resync { skip })
@@ -283,7 +285,7 @@ fn parse_one_progress_invariant_long_random_inputs() {
         let len = (rng.next_u64() % (MAX_LENGTH as u64 * 2 + 64)) as usize;
         let mut buf = vec![0u8; len];
         rng.fill(&mut buf);
-        match parse_one(&buf) {
+        match Wire::parse_one(&buf) {
             Ok((_, n)) => assert!(n >= 10 && n <= buf.len()),
             Err(ParseError::Incomplete) => {}
             Err(ParseError::Resync { skip })
@@ -300,13 +302,13 @@ fn parse_one_progress_invariant_long_random_inputs() {
 fn truncated_real_frame_returns_incomplete_at_each_step() {
     const PING: &[u8] = &[0xFF, 0xFF, 0xFD, 0x00, 0x01, 0x03, 0x00, 0x01, 0x19, 0x4E];
     for n in 0..PING.len() {
-        let r = parse_one(&PING[..n]);
+        let r = Wire::parse_one(&PING[..n]);
         assert!(
             matches!(r, Err(ParseError::Incomplete)),
             "truncation to {n} bytes: got {r:?}"
         );
     }
-    let (pkt, n) = parse_one(PING).unwrap();
+    let (pkt, n) = Wire::parse_one(PING).unwrap();
     assert_eq!(n, PING.len());
     assert!(matches!(pkt, Packet::Ping(PingPacket { id: 1 })));
 }
@@ -328,7 +330,7 @@ fn parse_one_skips_phantom_broadcast_status_header_to_avoid_wedge() {
         0x00, 50, 0xAA, 0xAA, 0xAA, 0xAA, // first slot's body
     ];
     assert!(matches!(
-        parse_one(&frame),
+        Wire::parse_one(&frame),
         Err(ParseError::BadInstruction { skip: 4 }),
     ));
 }
@@ -348,7 +350,7 @@ fn parse_one_returns_incomplete_on_truncated_broadcast_non_status() {
         0xAA, 0xBB, // partial data — missing last byte + CRC
     ];
     assert!(matches!(
-        parse_one(BCAST_WRITE_TRUNCATED),
+        Wire::parse_one(BCAST_WRITE_TRUNCATED),
         Err(ParseError::Incomplete),
     ));
 }
@@ -375,7 +377,7 @@ fn maxlen_phantom_header_returns_definite_error() {
         buf[0..4].copy_from_slice(&HEADER);
         buf[5] = (MAX_LENGTH & 0xFF) as u8;
         buf[6] = ((MAX_LENGTH >> 8) & 0xFF) as u8;
-        if let Err(ParseError::Incomplete) = parse_one(&buf) {
+        if let Err(ParseError::Incomplete) = Wire::parse_one(&buf) {
             panic!("should not be Incomplete with full frame");
         }
     }
@@ -385,7 +387,7 @@ fn maxlen_phantom_header_returns_definite_error() {
 fn over_maxlen_header_short_circuits() {
     // Length > MAX_LENGTH must trigger BadLength immediately, not wait for ~64KB.
     let bad = [0xFFu8, 0xFF, 0xFD, 0x00, 0x01, 0xFF, 0xFF, 0x01];
-    match parse_one(&bad) {
+    match Wire::parse_one(&bad) {
         Err(ParseError::BadLength { skip }) => assert_eq!(skip, 4),
         other => panic!("expected BadLength, got {other:?}"),
     }
@@ -394,14 +396,14 @@ fn over_maxlen_header_short_circuits() {
 #[test]
 fn writer_id_0xff_rejected() {
     let mut out: HVec<u8, 32> = HVec::new();
-    let err = write(&mut out, &Packet::Ping(PingPacket { id: 0xFF })).unwrap_err();
+    let err = Wire::write(&mut out, &Packet::Ping(PingPacket { id: 0xFF })).unwrap_err();
     assert_eq!(err, dxl_protocol::WriteError::Invalid);
 }
 
 #[test]
 fn writer_overflow_reported_and_rolled_back() {
     let mut tiny: HVec<u8, 5> = HVec::new();
-    let err = write(&mut tiny, &Packet::Ping(PingPacket { id: 1 })).unwrap_err();
+    let err = Wire::write(&mut tiny, &Packet::Ping(PingPacket { id: 1 })).unwrap_err();
     assert_eq!(err, dxl_protocol::WriteError::Overflow);
     assert!(
         tiny.is_empty(),
@@ -414,12 +416,12 @@ fn writer_overflow_reported_and_rolled_back() {
 fn writer_overflow_preserves_prior_frames() {
     // DMA TX buffer holds a frame; second write overflows — first must survive.
     let mut buf: HVec<u8, 16> = HVec::new();
-    write(&mut buf, &Packet::Ping(PingPacket { id: 1 })).unwrap();
+    Wire::write(&mut buf, &Packet::Ping(PingPacket { id: 1 })).unwrap();
     let snapshot: HVec<u8, 16> = buf.clone();
     let pre_len = buf.len();
 
     let big = [0u8; 32];
-    let err = write(
+    let err = Wire::write(
         &mut buf,
         &Packet::Status(StatusPacket {
             id: 1,
@@ -432,7 +434,7 @@ fn writer_overflow_preserves_prior_frames() {
     assert_eq!(buf.len(), pre_len, "buffer length changed on overflow");
     assert_eq!(&buf[..], &snapshot[..], "prior frame corrupted on overflow");
 
-    let (pkt, n) = parse_one(&buf).unwrap();
+    let (pkt, n) = Wire::parse_one(&buf).unwrap();
     assert_eq!(n, buf.len());
     assert!(matches!(pkt, Packet::Ping(PingPacket { id: 1 })));
 }
@@ -440,10 +442,10 @@ fn writer_overflow_preserves_prior_frames() {
 #[test]
 fn writer_invalid_id_does_not_touch_buffer() {
     let mut buf: HVec<u8, 32> = HVec::new();
-    write(&mut buf, &Packet::Ping(PingPacket { id: 1 })).unwrap();
+    Wire::write(&mut buf, &Packet::Ping(PingPacket { id: 1 })).unwrap();
     let snapshot: HVec<u8, 32> = buf.clone();
 
-    let err = write(&mut buf, &Packet::Ping(PingPacket { id: 0xFF })).unwrap_err();
+    let err = Wire::write(&mut buf, &Packet::Ping(PingPacket { id: 0xFF })).unwrap_err();
     assert_eq!(err, dxl_protocol::WriteError::Invalid);
     assert_eq!(&buf[..], &snapshot[..]);
 }
@@ -451,7 +453,7 @@ fn writer_invalid_id_does_not_touch_buffer() {
 #[test]
 fn no_header_skips_all_when_no_partial_prefix() {
     let buf = [0xAA, 0xBB, 0xCC, 0xDD];
-    match parse_one(&buf) {
+    match Wire::parse_one(&buf) {
         Err(ParseError::Resync { skip }) => assert_eq!(skip, 4),
         other => panic!("expected Resync(4), got {other:?}"),
     }
@@ -460,7 +462,7 @@ fn no_header_skips_all_when_no_partial_prefix() {
 #[test]
 fn no_header_keeps_trailing_single_ff() {
     let buf = [0xAA, 0xBB, 0xCC, 0xFF];
-    match parse_one(&buf) {
+    match Wire::parse_one(&buf) {
         Err(ParseError::Resync { skip }) => assert_eq!(skip, 3),
         other => panic!("expected Resync(3), got {other:?}"),
     }
@@ -469,7 +471,7 @@ fn no_header_keeps_trailing_single_ff() {
 #[test]
 fn no_header_keeps_trailing_ff_ff() {
     let buf = [0xAA, 0xBB, 0xFF, 0xFF];
-    match parse_one(&buf) {
+    match Wire::parse_one(&buf) {
         Err(ParseError::Resync { skip }) => assert_eq!(skip, 2),
         other => panic!("expected Resync(2), got {other:?}"),
     }
@@ -478,7 +480,7 @@ fn no_header_keeps_trailing_ff_ff() {
 #[test]
 fn no_header_keeps_trailing_ff_ff_fd() {
     let buf = [0xAA, 0xFF, 0xFF, 0xFD];
-    match parse_one(&buf) {
+    match Wire::parse_one(&buf) {
         Err(ParseError::Resync { skip }) => assert_eq!(skip, 1),
         other => panic!("expected Resync(1), got {other:?}"),
     }
@@ -488,7 +490,7 @@ fn no_header_keeps_trailing_ff_ff_fd() {
 fn short_input_with_no_partial_prefix_skips_immediately() {
     // No HEADER prefix → Resync(3), not Incomplete (those bytes can never extend into header).
     let buf = [0xAA, 0xBB, 0xCC];
-    match parse_one(&buf) {
+    match Wire::parse_one(&buf) {
         Err(ParseError::Resync { skip }) => assert_eq!(skip, 3),
         other => panic!("expected Resync(3), got {other:?}"),
     }
@@ -498,7 +500,7 @@ fn short_input_with_no_partial_prefix_skips_immediately() {
 fn short_input_with_partial_prefix_returns_incomplete() {
     for partial in [&[0xFFu8][..], &[0xFF, 0xFF][..], &[0xFF, 0xFF, 0xFD][..]] {
         assert!(
-            matches!(parse_one(partial), Err(ParseError::Incomplete)),
+            matches!(Wire::parse_one(partial), Err(ParseError::Incomplete)),
             "partial = {partial:02X?}"
         );
     }
@@ -567,11 +569,11 @@ fn round_trip_every_instruction() {
 
     for case in cases {
         let mut wire1: HVec<u8, 128> = HVec::new();
-        write(&mut wire1, case).unwrap();
-        let (pkt, n) = parse_one(&wire1).expect("parse failed");
+        Wire::write(&mut wire1, case).unwrap();
+        let (pkt, n) = Wire::parse_one(&wire1).expect("parse failed");
         assert_eq!(n, wire1.len());
         let mut wire2: HVec<u8, 128> = HVec::new();
-        write(&mut wire2, &pkt).unwrap();
+        Wire::write(&mut wire2, &pkt).unwrap();
         assert_eq!(&wire1[..], &wire2[..], "wire mismatch on {case:?}");
     }
 }
@@ -672,11 +674,11 @@ fn round_trip_random_fields_across_variants() {
         };
 
         let mut wire1: HVec<u8, 256> = HVec::new();
-        write(&mut wire1, &pkt).expect("write");
-        let (parsed, n) = parse_one(&wire1).expect("parse");
+        Wire::write(&mut wire1, &pkt).expect("write");
+        let (parsed, n) = Wire::parse_one(&wire1).expect("parse");
         assert_eq!(n, wire1.len());
         let mut wire2: HVec<u8, 256> = HVec::new();
-        write(&mut wire2, &parsed).expect("re-write");
+        Wire::write(&mut wire2, &parsed).expect("re-write");
         assert_eq!(
             &wire1[..],
             &wire2[..],
@@ -760,7 +762,7 @@ fn stuffing_round_trip_for_every_body_carrying_variant() {
 
     for (name, pkt) in cases {
         let mut wire: HVec<u8, 64> = HVec::new();
-        write(&mut wire, pkt).unwrap_or_else(|e| panic!("{name}: write failed: {e:?}"));
+        Wire::write(&mut wire, pkt).unwrap_or_else(|e| panic!("{name}: write failed: {e:?}"));
 
         // ≥2 extra FDs expected (one per trigger).
         let payload = &wire[8..wire.len() - 2];
@@ -772,7 +774,7 @@ fn stuffing_round_trip_for_every_body_carrying_variant() {
         );
 
         let (parsed, n) =
-            parse_one(&wire).unwrap_or_else(|e| panic!("{name}: parse failed: {e:?}"));
+            Wire::parse_one(&wire).unwrap_or_else(|e| panic!("{name}: parse failed: {e:?}"));
         assert_eq!(n, wire.len(), "{name}: short parse");
 
         let recovered = match parsed {

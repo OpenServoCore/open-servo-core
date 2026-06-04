@@ -1,6 +1,6 @@
 use crate::Instruction;
 use crate::buf::WriteBuf;
-use crate::crc::crc16;
+use crate::crc::CrcUmts;
 use crate::packet::{HEADER, Packet};
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
@@ -9,36 +9,47 @@ pub enum WriteError {
     Invalid,
 }
 
-pub fn write<W: WriteBuf>(out: &mut W, packet: &Packet<'_>) -> Result<(), WriteError> {
+pub(crate) fn write<W: WriteBuf, CRC: CrcUmts>(
+    out: &mut W,
+    packet: &Packet<'_>,
+) -> Result<(), WriteError> {
     match packet {
-        Packet::Ping(p) => write_packet(out, p.id, Instruction::Ping, &mut core::iter::empty()),
+        Packet::Ping(p) => {
+            write_packet::<W, _, CRC>(out, p.id, Instruction::Ping, &mut core::iter::empty())
+        }
         Packet::Read(p) => {
             let mut params = U16Pair::new(p.address, p.length).into_iter();
-            write_packet(out, p.id, Instruction::Read, &mut params)
+            write_packet::<W, _, CRC>(out, p.id, Instruction::Read, &mut params)
         }
         Packet::Write(p) => {
             let mut params = U16One::new(p.address).into_iter().chain(p.data.iter());
-            write_packet(out, p.id, Instruction::Write, &mut params)
+            write_packet::<W, _, CRC>(out, p.id, Instruction::Write, &mut params)
         }
         Packet::RegWrite(p) => {
             let mut params = U16One::new(p.address).into_iter().chain(p.data.iter());
-            write_packet(out, p.id, Instruction::RegWrite, &mut params)
+            write_packet::<W, _, CRC>(out, p.id, Instruction::RegWrite, &mut params)
         }
-        Packet::Action(p) => write_packet(out, p.id, Instruction::Action, &mut core::iter::empty()),
-        Packet::FactoryReset(p) => write_packet(
+        Packet::Action(p) => {
+            write_packet::<W, _, CRC>(out, p.id, Instruction::Action, &mut core::iter::empty())
+        }
+        Packet::FactoryReset(p) => write_packet::<W, _, CRC>(
             out,
             p.id,
             Instruction::FactoryReset,
             &mut core::iter::once(p.mode),
         ),
-        Packet::Reboot(p) => write_packet(out, p.id, Instruction::Reboot, &mut core::iter::empty()),
+        Packet::Reboot(p) => {
+            write_packet::<W, _, CRC>(out, p.id, Instruction::Reboot, &mut core::iter::empty())
+        }
         #[cfg(feature = "osc")]
         Packet::Calibrate(p) => {
             let mut params = U16One::new(p.count).into_iter();
-            write_packet(out, p.id, Instruction::Calibrate, &mut params)
+            write_packet::<W, _, CRC>(out, p.id, Instruction::Calibrate, &mut params)
         }
-        Packet::Clear(p) => write_packet(out, p.id, Instruction::Clear, &mut p.body.iter()),
-        Packet::ControlTableBackup(p) => write_packet(
+        Packet::Clear(p) => {
+            write_packet::<W, _, CRC>(out, p.id, Instruction::Clear, &mut p.body.iter())
+        }
+        Packet::ControlTableBackup(p) => write_packet::<W, _, CRC>(
             out,
             p.id,
             Instruction::ControlTableBackup,
@@ -46,33 +57,33 @@ pub fn write<W: WriteBuf>(out: &mut W, packet: &Packet<'_>) -> Result<(), WriteE
         ),
         Packet::Status(p) => {
             let mut params = core::iter::once(p.error).chain(p.params.iter());
-            write_packet(out, p.id, Instruction::Status, &mut params)
+            write_packet::<W, _, CRC>(out, p.id, Instruction::Status, &mut params)
         }
         Packet::SyncRead(p) => {
             let mut params = U16Pair::new(p.address, p.length)
                 .into_iter()
                 .chain(p.ids.iter());
-            write_packet(out, BROADCAST, Instruction::SyncRead, &mut params)
+            write_packet::<W, _, CRC>(out, BROADCAST, Instruction::SyncRead, &mut params)
         }
         Packet::SyncWrite(p) => {
             let mut params = U16Pair::new(p.address, p.length)
                 .into_iter()
                 .chain(p.body.iter());
-            write_packet(out, BROADCAST, Instruction::SyncWrite, &mut params)
+            write_packet::<W, _, CRC>(out, BROADCAST, Instruction::SyncWrite, &mut params)
         }
         Packet::FastSyncRead(p) => {
             let mut params = U16Pair::new(p.address, p.length)
                 .into_iter()
                 .chain(p.ids.iter());
-            write_packet(out, BROADCAST, Instruction::FastSyncRead, &mut params)
+            write_packet::<W, _, CRC>(out, BROADCAST, Instruction::FastSyncRead, &mut params)
         }
         Packet::BulkRead(p) => {
-            write_packet(out, BROADCAST, Instruction::BulkRead, &mut p.body.iter())
+            write_packet::<W, _, CRC>(out, BROADCAST, Instruction::BulkRead, &mut p.body.iter())
         }
         Packet::BulkWrite(p) => {
-            write_packet(out, BROADCAST, Instruction::BulkWrite, &mut p.body.iter())
+            write_packet::<W, _, CRC>(out, BROADCAST, Instruction::BulkWrite, &mut p.body.iter())
         }
-        Packet::FastBulkRead(p) => write_packet(
+        Packet::FastBulkRead(p) => write_packet::<W, _, CRC>(
             out,
             BROADCAST,
             Instruction::FastBulkRead,
@@ -88,7 +99,7 @@ const BROADCAST: u8 = crate::packet::BROADCAST_ID;
 ///
 /// On failure (including partial Overflow), `out` is truncated back to entry length
 /// — callers using a DMA TX buffer can rely on prior frames staying intact.
-fn write_packet<W: WriteBuf, I: Iterator<Item = u8>>(
+fn write_packet<W: WriteBuf, I: Iterator<Item = u8>, CRC: CrcUmts>(
     out: &mut W,
     id: u8,
     instruction: Instruction,
@@ -98,7 +109,7 @@ fn write_packet<W: WriteBuf, I: Iterator<Item = u8>>(
         return Err(WriteError::Invalid);
     }
     let start = out.len();
-    match write_packet_body(out, start, id, instruction, params) {
+    match write_packet_body::<W, _, CRC>(out, start, id, instruction, params) {
         Ok(()) => Ok(()),
         Err(e) => {
             out.truncate(start);
@@ -107,7 +118,7 @@ fn write_packet<W: WriteBuf, I: Iterator<Item = u8>>(
     }
 }
 
-fn write_packet_body<W: WriteBuf, I: Iterator<Item = u8>>(
+fn write_packet_body<W: WriteBuf, I: Iterator<Item = u8>, CRC: CrcUmts>(
     out: &mut W,
     start: usize,
     id: u8,
@@ -141,7 +152,7 @@ fn write_packet_body<W: WriteBuf, I: Iterator<Item = u8>>(
     out.set(len_pos, len_bytes[0]);
     out.set(len_pos + 1, len_bytes[1]);
 
-    let crc = crc16(&out.as_slice()[start..]);
+    let crc = CRC::accumulate(0, &out.as_slice()[start..]);
     let crc_bytes = crc.to_le_bytes();
     out.push(crc_bytes[0])?;
     out.push(crc_bytes[1])?;

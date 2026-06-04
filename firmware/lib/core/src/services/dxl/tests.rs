@@ -1,3 +1,4 @@
+use crc::{CRC_16_UMTS, Crc};
 use dxl_protocol::prelude::*;
 use heapless::Vec;
 
@@ -5,6 +6,22 @@ use crate::traits::{DxlBus, Event, ServiceEvents, ServicesIo};
 use crate::{BootMode, RegionStorage, Shared, StatusReturnLevel};
 
 use super::Dxl;
+
+/// Test-only `CrcUmts`. Production builds get the chip's impl via
+/// `B::Crc` — core itself never references a concrete CRC engine.
+struct TestDxlCrc;
+
+const TEST_CRC_ENGINE: Crc<u16> = Crc::<u16>::new(&CRC_16_UMTS);
+
+impl CrcUmts for TestDxlCrc {
+    fn accumulate(seed: u16, bytes: &[u8]) -> u16 {
+        let mut digest = TEST_CRC_ENGINE.digest_with_initial(seed);
+        digest.update(bytes);
+        digest.finalize()
+    }
+}
+
+type Wire = Codec<TestDxlCrc>;
 
 struct FakeBus {
     burst: Vec<u8, 256>,
@@ -48,6 +65,7 @@ impl FakeBus {
 
 impl DxlBus for FakeBus {
     type TxBuffer = Vec<u8, 256>;
+    type Crc = TestDxlCrc;
 
     fn rx_poll(&mut self) -> Option<&'static [u8]> {
         if !self.burst_fresh {
@@ -136,12 +154,12 @@ impl ServicesIo for FakeIo {
 
 fn encode(packet: &Packet<'_>) -> Vec<u8, 64> {
     let mut buf: Vec<u8, 64> = Vec::new();
-    write(&mut buf, packet).unwrap();
+    Wire::write(&mut buf, packet).unwrap();
     buf
 }
 
 fn parse_status(bytes: &[u8]) -> (u8, u8, Vec<u8, 64>) {
-    let (pkt, used) = parse_one(bytes).unwrap();
+    let (pkt, used) = Wire::parse_one(bytes).unwrap();
     assert_eq!(used, bytes.len());
     match pkt {
         Packet::Status(p) => {
@@ -983,7 +1001,7 @@ fn fast_sync_read_only_slot_emits_only_via_send_with_computed_crc() {
     assert_eq!(io.bus.tx[8], 0);
     assert_eq!(io.bus.tx[9], 0);
     assert_eq!(&io.bus.tx[10..12], &[0, 0]);
-    let expected_crc = dxl_protocol::crc16(&io.bus.tx[..12]).to_le_bytes();
+    let expected_crc = TestDxlCrc::accumulate(0, &io.bus.tx[..12]).to_le_bytes();
     assert_eq!(&io.bus.tx[12..14], &expected_crc);
 }
 
@@ -1136,7 +1154,7 @@ fn fast_bulk_read_only_slot_emits_only_via_send_with_computed_crc() {
     assert_eq!(io.bus.tx[8], 0);
     assert_eq!(io.bus.tx[9], 0);
     assert_eq!(&io.bus.tx[10..12], &[0, 0]);
-    let expected_crc = dxl_protocol::crc16(&io.bus.tx[..12]).to_le_bytes();
+    let expected_crc = TestDxlCrc::accumulate(0, &io.bus.tx[..12]).to_le_bytes();
     assert_eq!(&io.bus.tx[12..14], &expected_crc);
 }
 
@@ -1294,14 +1312,14 @@ fn poll_recovers_from_stale_fast_first_slot_residue_then_replies_to_ping() {
     // This integration test feeds [stale Fast First slot residue] ++ [Ping
     // to our id] and asserts the Ping gets dispatched. Any fix shape passes
     // — parser-side rejection, dispatcher post-skip, ring hint, etc.
-    use dxl_protocol::{FastSlot, FastSlotBody, write_fast_slot};
+    use dxl_protocol::{FastSlot, FastSlotBody};
 
     let shared = Shared::new();
     let mut io = FakeIo::new();
     let mut h = Dxl::new();
 
     let mut residue: Vec<u8, 32> = Vec::new();
-    write_fast_slot(
+    Wire::write_fast_slot(
         &mut residue,
         &FastSlot::First {
             packet_length: 43,

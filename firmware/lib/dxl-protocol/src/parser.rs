@@ -1,6 +1,6 @@
 use crate::Instruction;
 use crate::bytes::{ByteIter, Bytes};
-use crate::crc::crc16;
+use crate::crc::CrcUmts;
 #[cfg(feature = "osc")]
 use crate::packet::CalibratePacket;
 use crate::packet::{
@@ -21,7 +21,7 @@ pub enum ParseError {
 
 /// On error variants other than `Incomplete`, `skip` is the number of bytes
 /// the caller should drop before retrying.
-pub fn parse_one(input: &[u8]) -> Result<(Packet<'_>, usize), ParseError> {
+pub(crate) fn parse_one<CRC: CrcUmts>(input: &[u8]) -> Result<(Packet<'_>, usize), ParseError> {
     let header_off = match find_header(input) {
         Some(0) => 0,
         Some(n) => return Err(ParseError::Resync { skip: n }),
@@ -75,7 +75,7 @@ pub fn parse_one(input: &[u8]) -> Result<(Packet<'_>, usize), ParseError> {
     }
 
     let crc_pos = frame_len - 2;
-    let computed = crc16(&frame[..crc_pos]);
+    let computed = CRC::accumulate(0, &frame[..crc_pos]);
     let received = u16::from_le_bytes([frame[crc_pos], frame[crc_pos + 1]]);
     if computed != received {
         // Could be a corrupted real frame *or* a phantom header — drop past

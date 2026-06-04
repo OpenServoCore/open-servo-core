@@ -4,6 +4,7 @@ use heapless::Vec;
 use osc_core::{BootMode, DxlBus, Event, ServiceEvents, ServicesIo};
 
 use crate::dxl;
+use crate::dxl::Ch32DxlCrc;
 use crate::dxl::statics::{
     DXL_BAUD_PENDING_BRR, DXL_CLOCK_FINE_TRIM_PENDING, DXL_CLOCK_TRIM_PENDING, DXL_REBOOT_PENDING,
     DXL_RX_BUF, DXL_RX_SCRATCH, DXL_TX_BUF, DXL_TX_BUF_LEN, RX_MASK_U32,
@@ -37,6 +38,7 @@ impl Default for Ch32Bus {
 
 impl DxlBus for Ch32Bus {
     type TxBuffer = Vec<u8, DXL_TX_BUF_LEN>;
+    type Crc = Ch32DxlCrc;
 
     fn rx_poll(&mut self) -> Option<&'static [u8]> {
         let fresh = idle_anchor::snapshot();
@@ -70,7 +72,9 @@ impl DxlBus for Ch32Bus {
         let end = (fresh.bytes & RX_MASK_U32) as usize;
         let start = (end + cap - length) % cap;
         if start + length <= cap {
-            scratch.extend_from_slice(&ring[start..start + length]).ok()?;
+            scratch
+                .extend_from_slice(&ring[start..start + length])
+                .ok()?;
         } else {
             let head_len = cap - start;
             scratch.extend_from_slice(&ring[start..]).ok()?;

@@ -1,5 +1,9 @@
 pub use crate::buf::WriteBuf;
 pub use crate::bytes::Bytes;
+pub use crate::codec::Codec;
+pub use crate::crc::CrcUmts;
+#[cfg(feature = "software-crc")]
+pub use crate::crc_software::SoftwareCrcUmts;
 pub use crate::fast::{FastReadPacket, FastSlotInfo, FastSlotPosition};
 #[cfg(feature = "osc")]
 pub use crate::packet::CalibratePacket;
@@ -9,6 +13,6 @@ pub use crate::packet::{
     MAX_LENGTH, Packet, PingPacket, ReadPacket, RebootPacket, RegWritePacket, StatusPacket,
     SyncReadPacket, SyncWritePacket, WritePacket,
 };
-pub use crate::parser::{ParseError, parse_one};
+pub use crate::parser::ParseError;
 pub use crate::status_error::StatusError;
-pub use crate::writer::{WriteError, write};
+pub use crate::writer::WriteError;

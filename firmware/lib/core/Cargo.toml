@@ -18,6 +18,7 @@ dxl-protocol            = { workspace = true, features = ["osc"] }
 control-table.workspace = true
 
 [dev-dependencies]
+crc          = { workspace = true }
 dxl-protocol = { workspace = true, features = ["heapless", "osc"] }
 
 [features]

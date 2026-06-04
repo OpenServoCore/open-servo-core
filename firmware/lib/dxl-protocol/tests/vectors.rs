@@ -1,6 +1,8 @@
 use dxl_protocol::prelude::*;
-use dxl_protocol::{FastSlot, FastSlotBody, Instruction, crc16, crc16_continue, write_fast_slot};
+use dxl_protocol::{FastSlot, FastSlotBody, Instruction};
 use heapless::Vec;
+
+type Wire = Codec<SoftwareCrcUmts>;
 
 const PING_ID1: &[u8] = &[0xFF, 0xFF, 0xFD, 0x00, 0x01, 0x03, 0x00, 0x01, 0x19, 0x4E];
 
@@ -26,7 +28,7 @@ fn crc_matches_known_frames() {
         let body = &frame[..frame.len() - 2];
         let expected = u16::from_le_bytes([frame[frame.len() - 2], frame[frame.len() - 1]]);
         assert_eq!(
-            crc16(body),
+            SoftwareCrcUmts::accumulate(0, body),
             expected,
             "CRC mismatch on frame: {:02X?}",
             frame
@@ -35,14 +37,20 @@ fn crc_matches_known_frames() {
 }
 
 #[test]
-fn crc16_continue_matches_one_shot() {
+fn crc_accumulate_seed_matches_one_shot() {
     let data: &[u8] = &[
         0xFF, 0xFF, 0xFD, 0x00, 0x01, 0x07, 0x00, 0x02, 0x84, 0x00, 0x04, 0x00, 0x10, 0x11, 0x12,
         0x13,
     ];
+    let full = SoftwareCrcUmts::accumulate(0, data);
     for split in 0..=data.len() {
         let (a, b) = data.split_at(split);
-        assert_eq!(crc16_continue(crc16(a), b), crc16(data), "split at {split}");
+        let seed = SoftwareCrcUmts::accumulate(0, a);
+        assert_eq!(
+            SoftwareCrcUmts::accumulate(seed, b),
+            full,
+            "split at {split}"
+        );
     }
 }
 
@@ -73,7 +81,7 @@ fn body_7() -> FastSlotBody<'static> {
 #[test]
 fn write_fast_slot_first_emits_header_then_body() {
     let mut out: Vec<u8, 32> = Vec::new();
-    write_fast_slot(
+    Wire::write_fast_slot(
         &mut out,
         &FastSlot::First {
             packet_length: 0x0015,
@@ -92,14 +100,14 @@ fn write_fast_slot_first_emits_header_then_body() {
 #[test]
 fn write_fast_slot_middle_emits_body_only() {
     let mut out: Vec<u8, 32> = Vec::new();
-    write_fast_slot(&mut out, &FastSlot::Middle(body_6())).unwrap();
+    Wire::write_fast_slot(&mut out, &FastSlot::Middle(body_6())).unwrap();
     assert_eq!(out.as_slice(), &[0x00, 0x06, 0x02, 0x00, 0x00, 0x00]);
 }
 
 #[test]
 fn write_fast_slot_last_reserves_crc_placeholder() {
     let mut out: Vec<u8, 32> = Vec::new();
-    write_fast_slot(&mut out, &FastSlot::Last(body_7())).unwrap();
+    Wire::write_fast_slot(&mut out, &FastSlot::Last(body_7())).unwrap();
     assert_eq!(
         out.as_slice(),
         &[0x00, 0x07, 0x03, 0x00, 0x00, 0x00, 0xAA, 0xBB]
@@ -109,7 +117,7 @@ fn write_fast_slot_last_reserves_crc_placeholder() {
 #[test]
 fn write_fast_slot_only_emits_header_body_and_computed_crc() {
     let mut out: Vec<u8, 32> = Vec::new();
-    write_fast_slot(
+    Wire::write_fast_slot(
         &mut out,
         &FastSlot::Only {
             packet_length: 0x0009,
@@ -120,7 +128,7 @@ fn write_fast_slot_only_emits_header_body_and_computed_crc() {
     let header_and_body = [
         0xFF, 0xFF, 0xFD, 0x00, 0xFE, 0x09, 0x00, 0x55, 0x00, 0x05, 0x01, 0x00, 0x00, 0x00,
     ];
-    let crc = crc16(&header_and_body).to_le_bytes();
+    let crc = SoftwareCrcUmts::accumulate(0, &header_and_body).to_le_bytes();
     let mut expected = [0u8; 16];
     expected[..14].copy_from_slice(&header_and_body);
     expected[14..].copy_from_slice(&crc);
@@ -130,7 +138,7 @@ fn write_fast_slot_only_emits_header_body_and_computed_crc() {
 #[test]
 fn write_fast_slot_three_slave_chain_assembles_to_valid_status_frame() {
     let mut out: Vec<u8, 64> = Vec::new();
-    write_fast_slot(
+    Wire::write_fast_slot(
         &mut out,
         &FastSlot::First {
             packet_length: 0x0015,
@@ -138,14 +146,14 @@ fn write_fast_slot_three_slave_chain_assembles_to_valid_status_frame() {
         },
     )
     .unwrap();
-    write_fast_slot(&mut out, &FastSlot::Middle(body_6())).unwrap();
-    write_fast_slot(&mut out, &FastSlot::Last(body_7())).unwrap();
+    Wire::write_fast_slot(&mut out, &FastSlot::Middle(body_6())).unwrap();
+    Wire::write_fast_slot(&mut out, &FastSlot::Last(body_7())).unwrap();
 
     assert_eq!(out.len(), 28);
     assert_eq!(out.as_slice()[26..28], [0xAA, 0xBB]);
 
     let crc_offset = out.len() - 2;
-    let crc = crc16(&out.as_slice()[..crc_offset]);
+    let crc = SoftwareCrcUmts::accumulate(0, &out.as_slice()[..crc_offset]);
     let bytes = crc.to_le_bytes();
     out[crc_offset] = bytes[0];
     out[crc_offset + 1] = bytes[1];
@@ -153,7 +161,7 @@ fn write_fast_slot_three_slave_chain_assembles_to_valid_status_frame() {
     let length_field = u16::from_le_bytes([out[5], out[6]]);
     assert_eq!(length_field as usize, 1 + 3 * 6 + 2);
     assert_eq!(
-        crc16(&out.as_slice()[..crc_offset]),
+        SoftwareCrcUmts::accumulate(0, &out.as_slice()[..crc_offset]),
         u16::from_le_bytes([out[crc_offset], out[crc_offset + 1]])
     );
 }
@@ -161,7 +169,7 @@ fn write_fast_slot_three_slave_chain_assembles_to_valid_status_frame() {
 #[test]
 fn write_fast_slot_overflow_truncates() {
     let mut out: Vec<u8, 8> = Vec::new();
-    let err = write_fast_slot(
+    let err = Wire::write_fast_slot(
         &mut out,
         &FastSlot::First {
             packet_length: 0x0015,
@@ -175,7 +183,7 @@ fn write_fast_slot_overflow_truncates() {
 
 #[test]
 fn parse_ping() {
-    let (pkt, n) = parse_one(PING_ID1).unwrap();
+    let (pkt, n) = Wire::parse_one(PING_ID1).unwrap();
     assert_eq!(n, PING_ID1.len());
     match pkt {
         Packet::Ping(p) => assert_eq!(p.id, 1),
@@ -185,7 +193,7 @@ fn parse_ping() {
 
 #[test]
 fn parse_read() {
-    let (pkt, n) = parse_one(READ_ID1_ADDR132_LEN4).unwrap();
+    let (pkt, n) = Wire::parse_one(READ_ID1_ADDR132_LEN4).unwrap();
     assert_eq!(n, READ_ID1_ADDR132_LEN4.len());
     match pkt {
         Packet::Read(p) => {
@@ -199,7 +207,7 @@ fn parse_read() {
 
 #[test]
 fn parse_write() {
-    let (pkt, n) = parse_one(WRITE_ID1_GOAL512).unwrap();
+    let (pkt, n) = Wire::parse_one(WRITE_ID1_GOAL512).unwrap();
     assert_eq!(n, WRITE_ID1_GOAL512.len());
     match pkt {
         Packet::Write(p) => {
@@ -215,21 +223,21 @@ fn parse_write() {
 
 #[test]
 fn parse_reboot() {
-    let (pkt, _) = parse_one(REBOOT_ID1).unwrap();
+    let (pkt, _) = Wire::parse_one(REBOOT_ID1).unwrap();
     assert!(matches!(pkt, Packet::Reboot(RebootPacket { id: 1 })));
 }
 
 #[test]
 fn write_ping_matches_reference() {
     let mut out: Vec<u8, 32> = Vec::new();
-    write(&mut out, &Packet::Ping(PingPacket { id: 1 })).unwrap();
+    Wire::write(&mut out, &Packet::Ping(PingPacket { id: 1 })).unwrap();
     assert_eq!(&out[..], PING_ID1);
 }
 
 #[test]
 fn write_read_matches_reference() {
     let mut out: Vec<u8, 32> = Vec::new();
-    write(
+    Wire::write(
         &mut out,
         &Packet::Read(ReadPacket {
             id: 1,
@@ -245,7 +253,7 @@ fn write_read_matches_reference() {
 fn write_write_matches_reference() {
     let data = [0x00u8, 0x02, 0x00, 0x00];
     let mut out: Vec<u8, 32> = Vec::new();
-    write(
+    Wire::write(
         &mut out,
         &Packet::Write(WritePacket {
             id: 1,
@@ -260,7 +268,7 @@ fn write_write_matches_reference() {
 #[test]
 fn write_reboot_matches_reference() {
     let mut out: Vec<u8, 32> = Vec::new();
-    write(&mut out, &Packet::Reboot(RebootPacket { id: 1 })).unwrap();
+    Wire::write(&mut out, &Packet::Reboot(RebootPacket { id: 1 })).unwrap();
     assert_eq!(&out[..], REBOOT_ID1);
 }
 
@@ -268,12 +276,12 @@ fn write_reboot_matches_reference() {
 #[test]
 fn calibrate_round_trip() {
     let mut out: Vec<u8, 32> = Vec::new();
-    write(
+    Wire::write(
         &mut out,
         &Packet::Calibrate(CalibratePacket { id: 1, count: 128 }),
     )
     .unwrap();
-    let (pkt, n) = parse_one(&out).unwrap();
+    let (pkt, n) = Wire::parse_one(&out).unwrap();
     assert_eq!(n, out.len());
     assert!(matches!(
         pkt,
@@ -285,7 +293,7 @@ fn calibrate_round_trip() {
 #[test]
 fn parse_calibrate_broadcast() {
     let mut out: Vec<u8, 32> = Vec::new();
-    write(
+    Wire::write(
         &mut out,
         &Packet::Calibrate(CalibratePacket {
             id: BROADCAST_ID,
@@ -293,7 +301,7 @@ fn parse_calibrate_broadcast() {
         }),
     )
     .unwrap();
-    let (pkt, _) = parse_one(&out).unwrap();
+    let (pkt, _) = Wire::parse_one(&out).unwrap();
     assert!(matches!(
         pkt,
         Packet::Calibrate(CalibratePacket {
@@ -307,7 +315,7 @@ fn parse_calibrate_broadcast() {
 fn write_status_round_trip() {
     let params = [0x06u8, 0x04, 0x26];
     let mut out: Vec<u8, 64> = Vec::new();
-    write(
+    Wire::write(
         &mut out,
         &Packet::Status(StatusPacket {
             id: 1,
@@ -317,7 +325,7 @@ fn write_status_round_trip() {
     )
     .unwrap();
 
-    let (pkt, n) = parse_one(&out).unwrap();
+    let (pkt, n) = Wire::parse_one(&out).unwrap();
     assert_eq!(n, out.len());
     match pkt {
         Packet::Status(p) => {
@@ -335,7 +343,7 @@ fn write_status_round_trip() {
 fn stuffing_round_trip() {
     let data = [0xFFu8, 0xFF, 0xFD, 0x42, 0xFF, 0xFF, 0xFD, 0xFD, 0x55];
     let mut out: Vec<u8, 64> = Vec::new();
-    write(
+    Wire::write(
         &mut out,
         &Packet::Write(WritePacket {
             id: 1,
@@ -348,7 +356,7 @@ fn stuffing_round_trip() {
     let raw_count = out.iter().filter(|&&b| b == 0xFD).count();
     assert!(raw_count >= 4, "expected stuffed bytes: {:02X?}", out);
 
-    let (pkt, n) = parse_one(&out).unwrap();
+    let (pkt, n) = Wire::parse_one(&out).unwrap();
     assert_eq!(n, out.len());
     match pkt {
         Packet::Write(p) => {
@@ -367,7 +375,7 @@ fn stuffing_round_trip() {
 fn stuffing_at_field_boundary() {
     let data = [0xFDu8, 0x11, 0x22];
     let mut out: Vec<u8, 64> = Vec::new();
-    write(
+    Wire::write(
         &mut out,
         &Packet::Write(WritePacket {
             id: 1,
@@ -377,7 +385,7 @@ fn stuffing_at_field_boundary() {
     )
     .unwrap();
 
-    let (pkt, _) = parse_one(&out).unwrap();
+    let (pkt, _) = Wire::parse_one(&out).unwrap();
     match pkt {
         Packet::Write(p) => {
             assert_eq!(p.address, 0xFFFF);
@@ -395,12 +403,12 @@ fn resync_skips_leading_garbage() {
     buf.extend_from_slice(&[0x00, 0x11, 0x22]).unwrap();
     buf.extend_from_slice(PING_ID1).unwrap();
 
-    match parse_one(&buf) {
+    match Wire::parse_one(&buf) {
         Err(ParseError::Resync { skip: 3 }) => {}
         other => panic!("expected Resync(3), got {:?}", other),
     }
 
-    let (pkt, n) = parse_one(&buf[3..]).unwrap();
+    let (pkt, n) = Wire::parse_one(&buf[3..]).unwrap();
     assert_eq!(n, PING_ID1.len());
     assert!(matches!(pkt, Packet::Ping(PingPacket { id: 1 })));
 }
@@ -408,9 +416,15 @@ fn resync_skips_leading_garbage() {
 #[test]
 fn incomplete_returns_err() {
     let partial = &PING_ID1[..6];
-    assert!(matches!(parse_one(partial), Err(ParseError::Incomplete)));
+    assert!(matches!(
+        Wire::parse_one(partial),
+        Err(ParseError::Incomplete)
+    ));
     let partial = &PING_ID1[..7];
-    assert!(matches!(parse_one(partial), Err(ParseError::Incomplete)));
+    assert!(matches!(
+        Wire::parse_one(partial),
+        Err(ParseError::Incomplete)
+    ));
 }
 
 #[test]
@@ -419,7 +433,7 @@ fn bad_crc_is_reported() {
     bad.extend_from_slice(PING_ID1).unwrap();
     let last = bad.len() - 1;
     bad[last] ^= 0xFF;
-    match parse_one(&bad) {
+    match Wire::parse_one(&bad) {
         Err(ParseError::BadCrc { skip }) => assert_eq!(skip, 4),
         other => panic!("expected BadCrc, got {:?}", other),
     }
@@ -430,7 +444,7 @@ fn oversized_length_is_rejected() {
     // length 0xFFFF > MAX_LENGTH.
     let bad = [0xFFu8, 0xFF, 0xFD, 0x00, 0x01, 0xFF, 0xFF, 0x01];
     assert!((MAX_LENGTH as u32) < 0xFFFF);
-    match parse_one(&bad) {
+    match Wire::parse_one(&bad) {
         Err(ParseError::BadLength { skip }) => assert_eq!(skip, 4),
         other => panic!("expected BadLength, got {:?}", other),
     }
@@ -440,7 +454,7 @@ fn oversized_length_is_rejected() {
 fn undersized_length_is_rejected() {
     // length 2 < min 3 (instruction + crc).
     let bad = [0xFFu8, 0xFF, 0xFD, 0x00, 0x01, 0x02, 0x00, 0x01];
-    match parse_one(&bad) {
+    match Wire::parse_one(&bad) {
         Err(ParseError::BadLength { skip }) => assert_eq!(skip, 4),
         other => panic!("expected BadLength, got {:?}", other),
     }
@@ -454,18 +468,18 @@ fn false_header_with_huge_length_does_not_wedge() {
         .unwrap();
     buf.extend_from_slice(PING_ID1).unwrap();
 
-    let skip = match parse_one(&buf) {
+    let skip = match Wire::parse_one(&buf) {
         Err(ParseError::BadLength { skip }) => skip,
         other => panic!("expected BadLength, got {:?}", other),
     };
     assert_eq!(skip, 4);
 
     let rest = &buf[skip..];
-    let resync = match parse_one(rest) {
+    let resync = match Wire::parse_one(rest) {
         Err(ParseError::Resync { skip }) => skip,
         other => panic!("expected Resync, got {:?}", other),
     };
-    let (pkt, n) = parse_one(&rest[resync..]).unwrap();
+    let (pkt, n) = Wire::parse_one(&rest[resync..]).unwrap();
     assert_eq!(n, PING_ID1.len());
     assert!(matches!(pkt, Packet::Ping(PingPacket { id: 1 })));
 }
@@ -476,9 +490,9 @@ fn bad_instruction_is_reported() {
     frame
         .extend_from_slice(&[0xFF, 0xFF, 0xFD, 0x00, 0x01, 0x03, 0x00, 0x77])
         .unwrap();
-    let crc = crc16(&frame);
+    let crc = SoftwareCrcUmts::accumulate(0, &frame);
     frame.extend_from_slice(&crc.to_le_bytes()).unwrap();
-    match parse_one(&frame) {
+    match Wire::parse_one(&frame) {
         Err(ParseError::BadInstruction { skip }) => assert_eq!(skip, frame.len()),
         other => panic!("expected BadInstruction, got {:?}", other),
     }
@@ -494,7 +508,7 @@ fn instruction_byte_constants() {
 
 fn round_trip_data(data: &[u8]) -> heapless::Vec<u8, 256> {
     let mut out: Vec<u8, 256> = Vec::new();
-    write(
+    Wire::write(
         &mut out,
         &Packet::Write(WritePacket {
             id: 1,
@@ -503,7 +517,7 @@ fn round_trip_data(data: &[u8]) -> heapless::Vec<u8, 256> {
         }),
     )
     .unwrap();
-    let (pkt, n) = parse_one(&out).unwrap();
+    let (pkt, n) = Wire::parse_one(&out).unwrap();
     assert_eq!(n, out.len());
     match pkt {
         Packet::Write(p) => {
@@ -578,7 +592,7 @@ fn stuff_two_adjacent_triggers() {
 fn stuff_trigger_spanning_address_boundary() {
     let mut out: Vec<u8, 64> = Vec::new();
     let data = [0xFDu8, 0x11, 0x22];
-    write(
+    Wire::write(
         &mut out,
         &Packet::Write(WritePacket {
             id: 1,
@@ -587,7 +601,7 @@ fn stuff_trigger_spanning_address_boundary() {
         }),
     )
     .unwrap();
-    let (pkt, _) = parse_one(&out).unwrap();
+    let (pkt, _) = Wire::parse_one(&out).unwrap();
     let Packet::Write(p) = pkt else {
         panic!("not Write");
     };
@@ -602,7 +616,7 @@ fn stuff_trigger_spanning_address_boundary() {
 fn stuff_trigger_spanning_address_then_more_in_data() {
     let data = [0xFDu8, 0x42, 0xFF, 0xFF, 0xFD, 0x55, 0x66];
     let mut out: Vec<u8, 64> = Vec::new();
-    write(
+    Wire::write(
         &mut out,
         &Packet::Write(WritePacket {
             id: 1,
@@ -611,7 +625,7 @@ fn stuff_trigger_spanning_address_then_more_in_data() {
         }),
     )
     .unwrap();
-    let (pkt, _) = parse_one(&out).unwrap();
+    let (pkt, _) = Wire::parse_one(&out).unwrap();
     let Packet::Write(p) = pkt else {
         panic!();
     };
@@ -624,7 +638,7 @@ fn stuff_trigger_spanning_address_then_more_in_data() {
 fn stuff_unstuffed_len_matches_iter_count() {
     let data = [0xFFu8, 0xFF, 0xFD, 0x00, 0xFF, 0xFF, 0xFD, 0xFD];
     let mut out: Vec<u8, 64> = Vec::new();
-    write(
+    Wire::write(
         &mut out,
         &Packet::Write(WritePacket {
             id: 1,
@@ -633,7 +647,7 @@ fn stuff_unstuffed_len_matches_iter_count() {
         }),
     )
     .unwrap();
-    let (pkt, _) = parse_one(&out).unwrap();
+    let (pkt, _) = Wire::parse_one(&out).unwrap();
     let Packet::Write(p) = pkt else {
         panic!();
     };
@@ -653,7 +667,7 @@ fn stuff_raw_passthrough_does_not_unstuff() {
 #[test]
 fn stuff_empty_payload() {
     let mut out: Vec<u8, 32> = Vec::new();
-    write(
+    Wire::write(
         &mut out,
         &Packet::Write(WritePacket {
             id: 1,
@@ -662,7 +676,7 @@ fn stuff_empty_payload() {
         }),
     )
     .unwrap();
-    let (pkt, _) = parse_one(&out).unwrap();
+    let (pkt, _) = Wire::parse_one(&out).unwrap();
     let Packet::Write(p) = pkt else {
         panic!();
     };
@@ -674,7 +688,7 @@ fn stuff_empty_payload() {
 fn stuff_status_with_trigger_in_params() {
     let params = [0xFFu8, 0xFF, 0xFD, 0x00, 0x42];
     let mut out: Vec<u8, 64> = Vec::new();
-    write(
+    Wire::write(
         &mut out,
         &Packet::Status(StatusPacket {
             id: 1,
@@ -683,7 +697,7 @@ fn stuff_status_with_trigger_in_params() {
         }),
     )
     .unwrap();
-    let (pkt, _) = parse_one(&out).unwrap();
+    let (pkt, _) = Wire::parse_one(&out).unwrap();
     let Packet::Status(p) = pkt else {
         panic!();
     };
@@ -697,7 +711,7 @@ fn stuff_status_with_trigger_in_params() {
 fn stuff_forwarding_round_trip() {
     let original_data = [0xFFu8, 0xFF, 0xFD, 0x42, 0xAA];
     let mut wire1: Vec<u8, 64> = Vec::new();
-    write(
+    Wire::write(
         &mut wire1,
         &Packet::Write(WritePacket {
             id: 1,
@@ -707,9 +721,9 @@ fn stuff_forwarding_round_trip() {
     )
     .unwrap();
 
-    let (pkt, _) = parse_one(&wire1).unwrap();
+    let (pkt, _) = Wire::parse_one(&wire1).unwrap();
     let mut wire2: Vec<u8, 64> = Vec::new();
-    write(&mut wire2, &pkt).unwrap();
+    Wire::write(&mut wire2, &pkt).unwrap();
     assert_eq!(&wire1[..], &wire2[..]);
 }
 
@@ -721,7 +735,7 @@ fn stuff_long_payload_with_many_triggers() {
             .unwrap();
     }
     let mut out: Vec<u8, 128> = Vec::new();
-    write(
+    Wire::write(
         &mut out,
         &Packet::Write(WritePacket {
             id: 1,
@@ -730,7 +744,7 @@ fn stuff_long_payload_with_many_triggers() {
         }),
     )
     .unwrap();
-    let (pkt, _) = parse_one(&out).unwrap();
+    let (pkt, _) = Wire::parse_one(&out).unwrap();
     let Packet::Write(p) = pkt else {
         panic!();
     };
