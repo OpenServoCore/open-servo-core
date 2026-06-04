@@ -17,6 +17,7 @@ use core::cell::SyncUnsafeCell;
 pub mod calib;
 pub mod config;
 pub mod control;
+pub(crate) mod hooks;
 pub mod locks;
 pub mod telemetry;
 
@@ -46,7 +47,7 @@ pub const CALIB_BASE_ADDR: u16 = 0x0900;
 
 #[repr(C)]
 #[derive(Table)]
-#[ct_table(max_sram = 1024)]
+#[ct_table(max_sram = 1024, hooks = crate::regions::hooks::ControlTableHookEvents)]
 pub struct ControlTable {
     #[ct_region]
     pub config: SyncUnsafeCell<ConfigRegs>,

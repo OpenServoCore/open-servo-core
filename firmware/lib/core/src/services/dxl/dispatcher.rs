@@ -1,7 +1,7 @@
 use dxl_protocol::FastReadVariant;
 use dxl_protocol::prelude::*;
 
-use crate::regions::config;
+use crate::regions::hooks::ControlTableHooks;
 use crate::traits::{DxlBus, Event, Schedule, ServiceEvents};
 use crate::{Error, RegionStorage, Router, Shared, StagedWrites, StatusReturnLevel};
 
@@ -12,22 +12,6 @@ fn error_to_status(e: Error) -> StatusError {
         Error::AccessError => StatusError::Access,
         _ => StatusError::DataRange,
     }
-}
-
-fn touches_baud(addr: u16, len: usize) -> bool {
-    let baud_addr = config::addr::comms::BAUD_RATE_IDX;
-    addr <= baud_addr && (addr as u32) + (len as u32) > baud_addr as u32
-}
-
-fn touches_clock_trim(addr: u16, len: usize) -> bool {
-    let field_addr = config::addr::comms::CLOCK_TRIM;
-    addr <= field_addr && (addr as u32) + (len as u32) > field_addr as u32
-}
-
-fn touches_clock_fine_trim_us(addr: u16, len: usize) -> bool {
-    let field_addr = config::addr::comms::CLOCK_FINE_TRIM_US;
-    let field_end = field_addr as u32 + 2;
-    (addr as u32) < field_end && (addr as u32) + (len as u32) > field_addr as u32
 }
 
 struct Ctx {
@@ -221,26 +205,13 @@ impl<'a, B: DxlBus, E: ServiceEvents> Dispatcher<'a, B, E> {
             .shared
             .table
             .write_bytes(p.address, &buf[..len], self.staged);
-        let baud_changed = result.is_ok() && touches_baud(p.address, len);
-        let clock_trim_changed = result.is_ok() && touches_clock_trim(p.address, len);
-        let clock_fine_trim_changed = result.is_ok() && touches_clock_fine_trim_us(p.address, len);
+        let ok = result.is_ok();
         self.reply_table_result(ctx, id, direct, result);
-        if baud_changed {
-            // reply queued, events impl defers retune until TC.
-            let new_rate = self.shared.table.config.with(|c| c.comms.baud_rate_idx);
-            self.events.send(Event::SetDxlBaud(new_rate));
-        }
-        if clock_trim_changed {
-            let new_trim = self.shared.table.config.with(|c| c.comms.clock_trim);
-            self.events.send(Event::SetClockTrim(new_trim));
-        }
-        if clock_fine_trim_changed {
-            let new_q88 = self
-                .shared
+        if ok {
+            let mut hooks = ControlTableHooks::new(self.events);
+            self.shared
                 .table
-                .config
-                .with(|c| c.comms.clock_fine_trim_us);
-            self.events.send(Event::SetClockFineTrimUs(new_q88));
+                .dispatch_events(p.address, len as u16, &mut hooks);
         }
     }
 

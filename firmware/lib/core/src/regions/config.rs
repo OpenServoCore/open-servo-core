@@ -97,14 +97,17 @@ pub struct ConfigIdentity {
 /// Writes gated on torque (FAULT_CFG_LOCK).
 #[repr(C)]
 #[derive(Copy, Clone, Block)]
+#[ct_block(hooks = crate::regions::hooks::ControlTableHookEvents)]
 pub struct ConfigComms {
     #[ct_field(le = 252u8)]
     pub id: u8,
+    #[ct_field(hook = on_baud_rate_idx_write)]
     pub baud_rate_idx: BaudRate,
     pub return_delay_2us: u8,
     pub status_return_level: StatusReturnLevel,
     /// Signed delta from the chip's factory clock-trim default. Applied at
     /// the next USART1 TC so the change never lands mid-byte.
+    #[ct_field(hook = on_clock_trim_write)]
     pub clock_trim: i8,
     #[ct_field(skip)]
     pub _rsvd_align: u8,
@@ -112,6 +115,7 @@ pub struct ConfigComms {
     pub clock_step_ppm: u16,
     /// Q8.8 µs. Does NOT trim the HSI despite the name; advances the Fast
     /// slot fire time to absorb sub-step `clock_trim` residual.
+    #[ct_field(hook = on_clock_fine_trim_us_write)]
     pub clock_fine_trim_us: i16,
 }
 
@@ -193,6 +197,7 @@ pub struct ConfigControlPosition {
     addr = crate::regions::CONFIG_BASE_ADDR,
     size = crate::regions::CONFIG_REGION_SIZE,
     validators = [locks::torque_locked],
+    hooks = crate::regions::hooks::ControlTableHookEvents,
 )]
 pub struct ConfigRegs {
     pub identity: ConfigIdentity,
