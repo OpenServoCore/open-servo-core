@@ -11,11 +11,11 @@ pub use codec::Codec;
 pub use typed::CalibratePacket;
 pub use typed::{
     ActionPacket, BulkReadPacket, BulkReadSlotIter, BulkSlot, BulkSlotInfo, BulkWritePacket,
-    ClearPacket, ControlTableBackupPacket, DecodeError, FactoryResetPacket, FastBulkReadPacket,
-    FastBulkTupleIter, FastPosition, FastReadPacket, FastReadVariant, FastSlotInfo,
-    FastSyncReadPacket, Instruction, Packet, PingPacket, ReadPacket, RebootPacket, RegWritePacket,
-    StatusError, StatusPacket, StatusReply, SyncReadPacket, SyncSlotInfo, SyncWritePacket,
-    WritePacket, decode,
+    ClearPacket, ControlTableBackupPacket, DecodeError, Extension, FactoryResetPacket,
+    FastBulkReadPacket, FastBulkTupleIter, FastPosition, FastReadPacket, FastReadVariant,
+    FastSlotInfo, FastSyncReadPacket, Instruction, NoExt, NoReplyExt, Packet, PingPacket,
+    ReadPacket, RebootPacket, RegWritePacket, ReplyExt, StatusError, StatusPacket, StatusReply,
+    SyncReadPacket, SyncSlotInfo, SyncWritePacket, WritePacket, decode,
 };
 #[cfg(feature = "software-crc")]
 pub use wire::SoftwareCrcUmts;

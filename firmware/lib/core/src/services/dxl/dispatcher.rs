@@ -83,6 +83,8 @@ impl<'a, B: DxlBus, E: ServiceEvents> Dispatcher<'a, B, E> {
             Packet::Calibrate(p) => self.handle_calibrate(&ctx, p),
             // Inbound Status frames originate from another device on the bus; drop.
             Packet::Status(_) => {}
+            // Pure DXL build (`NoExt`) — uninhabited.
+            Packet::Ext(v) => match *v {},
         }
     }
 

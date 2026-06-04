@@ -3,9 +3,10 @@ pub use crate::Codec;
 pub use crate::typed::CalibratePacket;
 pub use crate::typed::{
     ActionPacket, BulkReadPacket, BulkWritePacket, ClearPacket, ControlTableBackupPacket,
-    FactoryResetPacket, FastBulkReadPacket, FastPosition, FastReadPacket, FastReadVariant,
-    FastSlotInfo, FastSyncReadPacket, Packet, PingPacket, ReadPacket, RebootPacket, RegWritePacket,
-    StatusError, StatusPacket, StatusReply, SyncReadPacket, SyncWritePacket, WritePacket,
+    Extension, FactoryResetPacket, FastBulkReadPacket, FastPosition, FastReadPacket,
+    FastReadVariant, FastSlotInfo, FastSyncReadPacket, NoExt, NoReplyExt, Packet, PingPacket,
+    ReadPacket, RebootPacket, RegWritePacket, ReplyExt, StatusError, StatusPacket, StatusReply,
+    SyncReadPacket, SyncWritePacket, WritePacket,
 };
 #[cfg(feature = "software-crc")]
 pub use crate::wire::SoftwareCrcUmts;

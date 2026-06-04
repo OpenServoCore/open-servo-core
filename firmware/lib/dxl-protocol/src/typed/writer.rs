@@ -1,11 +1,12 @@
 use crate::wire::{BROADCAST_ID, CrcUmts, RawFrame, WriteBuf, WriteError, write_raw};
 
+use super::extension::Extension;
 use super::instruction::Instruction;
 use super::packet::Packet;
 
-pub(crate) fn write<W: WriteBuf, CRC: CrcUmts>(
+pub(crate) fn write<W: WriteBuf, CRC: CrcUmts, X: Extension>(
     out: &mut W,
-    packet: &Packet<'_>,
+    packet: &Packet<'_, X>,
 ) -> Result<(), WriteError> {
     match packet {
         Packet::Ping(p) => write_raw::<W, _, CRC>(
@@ -145,6 +146,7 @@ pub(crate) fn write<W: WriteBuf, CRC: CrcUmts>(
                 params: p.body,
             },
         ),
+        Packet::Ext(v) => X::write::<W, CRC>(v, out),
     }
 }
 

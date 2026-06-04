@@ -2,6 +2,7 @@ use crate::wire::{CrcUmts, RawFrame, WriteBuf, WriteError, write_raw};
 
 use super::fast::{FastPosition, write_fast};
 use super::instruction::Instruction;
+use super::reply_ext::{NoReplyExt, ReplyExt};
 use super::status_error::StatusError;
 
 /// Typed slave-side reply. One variant per logical response shape; the chip's
@@ -11,8 +12,12 @@ use super::status_error::StatusError;
 /// for caller-side intent. Likewise FastSyncRead / FastBulkRead are wire-
 /// identical; `FastError` collapses both error paths since the chip-emitted
 /// zero payload is the same either way.
+///
+/// The optional `R` parameter plugs in a vendor reply extension (see
+/// [`ReplyExt`]); pure-DXL callers leave it at the [`NoReplyExt`] default,
+/// which makes [`StatusReply::Ext`] statically uninhabited.
 #[derive(Copy, Clone, Debug)]
-pub enum StatusReply<'a> {
+pub enum StatusReply<'a, R: ReplyExt = NoReplyExt> {
     // ── Data-bearing replies (Status-family wire shape) ──
     Ping {
         id: u8,
@@ -77,11 +82,13 @@ pub enum StatusReply<'a> {
         id: u8,
         error: StatusError,
     },
+
+    Ext(R::Variant<'a>),
 }
 
-pub(crate) fn write_status_reply<W: WriteBuf, CRC: CrcUmts>(
+pub(crate) fn write_status_reply<W: WriteBuf, CRC: CrcUmts, R: ReplyExt>(
     out: &mut W,
-    reply: &StatusReply<'_>,
+    reply: &StatusReply<'_, R>,
 ) -> Result<(), WriteError> {
     match *reply {
         StatusReply::Ping {
@@ -133,6 +140,7 @@ pub(crate) fn write_status_reply<W: WriteBuf, CRC: CrcUmts>(
             error,
             &mut core::iter::repeat_n(0u8, length as usize),
         ),
+        StatusReply::Ext(ref v) => R::write::<W, CRC>(v, out),
     }
 }
 
