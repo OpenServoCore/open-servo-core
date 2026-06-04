@@ -9,6 +9,7 @@ mod crc;
 mod crc_software;
 mod frame;
 mod parser;
+mod writer;
 
 pub use buf::{WriteBuf, WriteError};
 pub use bytes::{ByteIter, Bytes, Overflow};
@@ -21,3 +22,4 @@ pub use frame::{
     RawFrame, SYNC_REQUEST_SLOT_BYTES,
 };
 pub use parser::{ParseError, parse_raw};
+pub use writer::write_raw;

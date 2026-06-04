@@ -1,9 +1,8 @@
-use crate::wire::{CrcUmts, WriteBuf, WriteError};
+use crate::wire::{CrcUmts, WriteBuf, WriteError, write_raw};
 
 use super::fast::{FastPosition, write_fast};
 use super::instruction::Instruction;
 use super::status_error::StatusError;
-use super::writer::write_packet;
 
 /// Typed slave-side reply. One variant per logical response shape; the chip's
 /// `Bus::send` matches on this to pick wire layout and fire mechanism.
@@ -144,5 +143,5 @@ fn write_status_frame<W: WriteBuf, I: Iterator<Item = u8>, CRC: CrcUmts>(
     payload: I,
 ) -> Result<(), WriteError> {
     let mut params = core::iter::once(error.as_u8()).chain(payload);
-    write_packet::<W, _, CRC>(out, id, Instruction::Status, &mut params)
+    write_raw::<W, _, CRC>(out, id, Instruction::Status.as_u8(), &mut params)
 }

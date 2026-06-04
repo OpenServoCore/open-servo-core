@@ -1,4 +1,4 @@
-use crate::wire::{CrcUmts, HEADER, WriteBuf, WriteError};
+use crate::wire::{BROADCAST_ID, CrcUmts, WriteBuf, WriteError, write_raw};
 
 use super::instruction::Instruction;
 use super::packet::Packet;
@@ -8,150 +8,112 @@ pub(crate) fn write<W: WriteBuf, CRC: CrcUmts>(
     packet: &Packet<'_>,
 ) -> Result<(), WriteError> {
     match packet {
-        Packet::Ping(p) => {
-            write_packet::<W, _, CRC>(out, p.id, Instruction::Ping, &mut core::iter::empty())
-        }
+        Packet::Ping(p) => write_raw::<W, _, CRC>(
+            out,
+            p.id,
+            Instruction::Ping.as_u8(),
+            &mut core::iter::empty(),
+        ),
         Packet::Read(p) => {
             let mut params = U16Pair::new(p.address, p.length).into_iter();
-            write_packet::<W, _, CRC>(out, p.id, Instruction::Read, &mut params)
+            write_raw::<W, _, CRC>(out, p.id, Instruction::Read.as_u8(), &mut params)
         }
         Packet::Write(p) => {
             let mut params = U16One::new(p.address).into_iter().chain(p.data.iter());
-            write_packet::<W, _, CRC>(out, p.id, Instruction::Write, &mut params)
+            write_raw::<W, _, CRC>(out, p.id, Instruction::Write.as_u8(), &mut params)
         }
         Packet::RegWrite(p) => {
             let mut params = U16One::new(p.address).into_iter().chain(p.data.iter());
-            write_packet::<W, _, CRC>(out, p.id, Instruction::RegWrite, &mut params)
+            write_raw::<W, _, CRC>(out, p.id, Instruction::RegWrite.as_u8(), &mut params)
         }
-        Packet::Action(p) => {
-            write_packet::<W, _, CRC>(out, p.id, Instruction::Action, &mut core::iter::empty())
-        }
-        Packet::FactoryReset(p) => write_packet::<W, _, CRC>(
+        Packet::Action(p) => write_raw::<W, _, CRC>(
             out,
             p.id,
-            Instruction::FactoryReset,
+            Instruction::Action.as_u8(),
+            &mut core::iter::empty(),
+        ),
+        Packet::FactoryReset(p) => write_raw::<W, _, CRC>(
+            out,
+            p.id,
+            Instruction::FactoryReset.as_u8(),
             &mut core::iter::once(p.mode),
         ),
-        Packet::Reboot(p) => {
-            write_packet::<W, _, CRC>(out, p.id, Instruction::Reboot, &mut core::iter::empty())
-        }
+        Packet::Reboot(p) => write_raw::<W, _, CRC>(
+            out,
+            p.id,
+            Instruction::Reboot.as_u8(),
+            &mut core::iter::empty(),
+        ),
         #[cfg(feature = "osc")]
         Packet::Calibrate(p) => {
             let mut params = U16One::new(p.count).into_iter();
-            write_packet::<W, _, CRC>(out, p.id, Instruction::Calibrate, &mut params)
+            write_raw::<W, _, CRC>(out, p.id, Instruction::Calibrate.as_u8(), &mut params)
         }
         Packet::Clear(p) => {
-            write_packet::<W, _, CRC>(out, p.id, Instruction::Clear, &mut p.body.iter())
+            write_raw::<W, _, CRC>(out, p.id, Instruction::Clear.as_u8(), &mut p.body.iter())
         }
-        Packet::ControlTableBackup(p) => write_packet::<W, _, CRC>(
+        Packet::ControlTableBackup(p) => write_raw::<W, _, CRC>(
             out,
             p.id,
-            Instruction::ControlTableBackup,
+            Instruction::ControlTableBackup.as_u8(),
             &mut p.body.iter(),
         ),
         Packet::Status(p) => {
             let mut params = core::iter::once(p.error).chain(p.params.iter());
-            write_packet::<W, _, CRC>(out, p.id, Instruction::Status, &mut params)
+            write_raw::<W, _, CRC>(out, p.id, Instruction::Status.as_u8(), &mut params)
         }
         Packet::SyncRead(p) => {
             let mut params = U16Pair::new(p.address, p.length)
                 .into_iter()
                 .chain(p.ids.iter());
-            write_packet::<W, _, CRC>(out, BROADCAST, Instruction::SyncRead, &mut params)
+            write_raw::<W, _, CRC>(
+                out,
+                BROADCAST_ID,
+                Instruction::SyncRead.as_u8(),
+                &mut params,
+            )
         }
         Packet::SyncWrite(p) => {
             let mut params = U16Pair::new(p.address, p.length)
                 .into_iter()
                 .chain(p.body.iter());
-            write_packet::<W, _, CRC>(out, BROADCAST, Instruction::SyncWrite, &mut params)
+            write_raw::<W, _, CRC>(
+                out,
+                BROADCAST_ID,
+                Instruction::SyncWrite.as_u8(),
+                &mut params,
+            )
         }
         Packet::FastSyncRead(p) => {
             let mut params = U16Pair::new(p.address, p.length)
                 .into_iter()
                 .chain(p.ids.iter());
-            write_packet::<W, _, CRC>(out, BROADCAST, Instruction::FastSyncRead, &mut params)
+            write_raw::<W, _, CRC>(
+                out,
+                BROADCAST_ID,
+                Instruction::FastSyncRead.as_u8(),
+                &mut params,
+            )
         }
-        Packet::BulkRead(p) => {
-            write_packet::<W, _, CRC>(out, BROADCAST, Instruction::BulkRead, &mut p.body.iter())
-        }
-        Packet::BulkWrite(p) => {
-            write_packet::<W, _, CRC>(out, BROADCAST, Instruction::BulkWrite, &mut p.body.iter())
-        }
-        Packet::FastBulkRead(p) => write_packet::<W, _, CRC>(
+        Packet::BulkRead(p) => write_raw::<W, _, CRC>(
             out,
-            BROADCAST,
-            Instruction::FastBulkRead,
+            BROADCAST_ID,
+            Instruction::BulkRead.as_u8(),
+            &mut p.body.iter(),
+        ),
+        Packet::BulkWrite(p) => write_raw::<W, _, CRC>(
+            out,
+            BROADCAST_ID,
+            Instruction::BulkWrite.as_u8(),
+            &mut p.body.iter(),
+        ),
+        Packet::FastBulkRead(p) => write_raw::<W, _, CRC>(
+            out,
+            BROADCAST_ID,
+            Instruction::FastBulkRead.as_u8(),
             &mut p.body.iter(),
         ),
     }
-}
-
-const BROADCAST: u8 = crate::wire::BROADCAST_ID;
-
-/// id != 0xFF, instruction != 0xFD required so the unstuffed header..instruction
-/// prefix can't itself complete a stuffing trigger.
-///
-/// On failure (including partial Overflow), `out` is truncated back to entry length
-/// — callers using a DMA TX buffer can rely on prior frames staying intact.
-pub(crate) fn write_packet<W: WriteBuf, I: Iterator<Item = u8>, CRC: CrcUmts>(
-    out: &mut W,
-    id: u8,
-    instruction: Instruction,
-    params: &mut I,
-) -> Result<(), WriteError> {
-    if id == 0xFF {
-        return Err(WriteError::Invalid);
-    }
-    let start = out.len();
-    match write_packet_body::<W, _, CRC>(out, start, id, instruction, params) {
-        Ok(()) => Ok(()),
-        Err(e) => {
-            out.truncate(start);
-            Err(e)
-        }
-    }
-}
-
-fn write_packet_body<W: WriteBuf, I: Iterator<Item = u8>, CRC: CrcUmts>(
-    out: &mut W,
-    start: usize,
-    id: u8,
-    instruction: Instruction,
-    params: &mut I,
-) -> Result<(), WriteError> {
-    out.push(HEADER[0])?;
-    out.push(HEADER[1])?;
-    out.push(HEADER[2])?;
-    out.push(HEADER[3])?;
-    out.push(id)?;
-    let len_pos = out.len();
-    out.push(0)?;
-    out.push(0)?;
-    out.push(instruction.as_u8())?;
-
-    let mut last2: [u8; 2] = [0, instruction.as_u8()];
-    for b in params.by_ref() {
-        out.push(b)?;
-        if last2[0] == 0xFF && last2[1] == 0xFF && b == 0xFD {
-            out.push(0xFD)?;
-            last2 = [0xFD, 0xFD];
-        } else {
-            last2 = [last2[1], b];
-        }
-    }
-
-    let stuffed_params_len = out.len() - (len_pos + 2 + 1);
-    let length_value = (1 + stuffed_params_len + 2) as u16;
-    let len_bytes = length_value.to_le_bytes();
-    out.set(len_pos, len_bytes[0]);
-    out.set(len_pos + 1, len_bytes[1]);
-
-    let crc = CRC::accumulate(0, &out.as_slice()[start..]);
-    let crc_bytes = crc.to_le_bytes();
-    out.push(crc_bytes[0])?;
-    out.push(crc_bytes[1])?;
-
-    Ok(())
 }
 
 #[derive(Copy, Clone)]
