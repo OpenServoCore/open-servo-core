@@ -7,12 +7,12 @@ use crate::dxl;
 use crate::dxl::Ch32DxlCrc;
 use crate::dxl::statics::{
     DXL_BAUD_PENDING_BRR, DXL_CLOCK_FINE_TRIM_PENDING, DXL_CLOCK_TRIM_PENDING, DXL_REBOOT_PENDING,
-    DXL_RX_BUF, DXL_RX_SCRATCH, DXL_TX_BUF, RX_MASK_U32,
+    DXL_RX_BUF, DXL_RX_BUF_LEN, DXL_TX_BUF, RX_MASK_U32,
 };
 use crate::dxl::timing::{SLOT_MARGIN, bytes_to_us, bytes_to_us_q88};
 use crate::hal::clocks::PCLK_HZ;
 use crate::hal::usart;
-use crate::hal::{flash, pfic};
+use crate::hal::{dma, flash, pfic};
 use crate::idle_anchor::{self, IdleAnchor};
 
 type Wire = Codec<Ch32DxlCrc>;
@@ -20,22 +20,28 @@ type Wire = Codec<Ch32DxlCrc>;
 /// Single &mut writer: the main loop holding the `Services` struct.
 pub struct Ch32Bus {
     /// Latest IDLE anchor consumed by `poll`. `tick` feeds the following
-    /// `send` call; `bytes` carries the cumulative wire-end cursor used
-    /// for both the next slice-range diff and the snoop-from origin.
+    /// `send` call; `bytes` carries the cumulative wire-end cursor.
     anchor: IdleAnchor,
+    /// Wire-byte length of the window `poll` last returned. `send` compares
+    /// this against current DMA position to detect a ring overrun while
+    /// dispatch was in flight (the parsed slices live in the ring; if DMA
+    /// wrapped past the parsed range before the reply was scheduled, the
+    /// slices contain garbage and the reply must be aborted).
+    parsed_length: usize,
 }
 
 impl Ch32Bus {
     pub const fn new() -> Self {
         Self {
             anchor: IdleAnchor::empty(),
+            parsed_length: 0,
         }
     }
 
-    /// Stitch the latest IDLE-anchored RX window into [`DXL_RX_SCRATCH`] and
-    /// return a 'static slice over it. Returns `None` when no fresh anchor or
-    /// the burst is too big to be a valid DXL frame.
-    fn stitch_window(&mut self) -> Option<&'static [u8]> {
+    /// Compute the (head, tail) slices for the latest IDLE-anchored RX
+    /// window directly over the ring. Returns `None` when no fresh anchor
+    /// or the burst is too big to be a valid DXL frame.
+    fn extract_window(&mut self) -> Option<(&'static [u8], &'static [u8])> {
         let fresh = idle_anchor::snapshot();
         if fresh.seq == self.anchor.seq {
             return None;
@@ -43,42 +49,47 @@ impl Ch32Bus {
         let prev_bytes = self.anchor.bytes;
         self.anchor = fresh;
 
-        // SAFETY: DMA writes DXL_RX_BUF circularly; we only read indices
-        // below the IDLE-published wire-end position.
-        let ring = unsafe { &*DXL_RX_BUF.get() };
+        // SAFETY: read-only access to a static ring; DMA writes circularly,
+        // but we only read indices below the IDLE-published wire-end.
+        let ring: &'static [u8] =
+            unsafe { core::slice::from_raw_parts((*DXL_RX_BUF.get()).as_ptr(), DXL_RX_BUF_LEN) };
         let cap = ring.len();
 
-        // Clamp to ring capacity: a length > cap means earlier bursts were
+        // Clamp to ring capacity: length > cap means earlier bursts were
         // overwritten before we polled — present the most recent `cap`
         // bytes and let the parser resync.
         let length = (fresh.bytes.wrapping_sub(prev_bytes) as usize).min(cap);
         if length == 0 {
             return None;
         }
-
-        // SAFETY: sole writer; the services layer drops the previous slice
-        // before re-polling, so overwriting the scratch here is safe.
-        let scratch = unsafe { &mut *DXL_RX_SCRATCH.get() };
-        if length > scratch.capacity() {
-            return None;
-        }
-        scratch.clear();
+        self.parsed_length = length;
 
         let end = (fresh.bytes & RX_MASK_U32) as usize;
         let start = (end + cap - length) % cap;
         if start + length <= cap {
-            scratch
-                .extend_from_slice(&ring[start..start + length])
-                .ok()?;
+            Some((&ring[start..start + length], &[]))
         } else {
             let head_len = cap - start;
-            scratch.extend_from_slice(&ring[start..]).ok()?;
-            scratch.extend_from_slice(&ring[..length - head_len]).ok()?;
+            Some((&ring[start..], &ring[..length - head_len]))
         }
+    }
 
-        // SAFETY: DXL_RX_SCRATCH is 'static; the slice stays valid until the
-        // next poll overwrites it.
-        Some(unsafe { core::slice::from_raw_parts(scratch.as_ptr(), scratch.len()) })
+    /// True if DMA has advanced enough since the IDLE anchor that it has
+    /// wrapped past the start of the parsed range, meaning any borrowed
+    /// slices into that range now point at fresh wire bytes (garbage from
+    /// the dispatcher's perspective).
+    fn parsed_window_overrun(&self) -> bool {
+        let cap = DXL_RX_BUF_LEN;
+        if self.parsed_length == 0 {
+            return false;
+        }
+        // Bytes DMA has written into the ring since IDLE captured wire-end.
+        // CH5 NDTR counts down; (cap - remaining) is the write index modulo cap.
+        let remaining = dma::remaining(dma::Channel::CH5) as usize;
+        let current_idx = (cap - remaining) & (cap - 1);
+        let wire_end_idx = (self.anchor.bytes & RX_MASK_U32) as usize;
+        let new_bytes = (current_idx + cap - wire_end_idx) % cap;
+        new_bytes >= cap - self.parsed_length
     }
 }
 
@@ -90,33 +101,44 @@ impl Default for Ch32Bus {
 
 impl DxlBus for Ch32Bus {
     fn poll(&mut self) -> Option<Packet<'static>> {
-        let window = self.stitch_window()?;
+        let (mut head, mut tail) = self.extract_window()?;
         // Walk forward — dispatch the frame ending exactly at the wire-end;
         // earlier frames are pre-IDLE traffic the master has moved on from,
         // parsed only to advance the cursor and dropped.
-        let n = window.len();
-        let mut offset = 0;
-        while offset < n {
-            match Wire::parse_one(&window[offset..]) {
+        loop {
+            let total = head.len() + tail.len();
+            if total == 0 {
+                return None;
+            }
+            match Wire::parse_one(head, tail) {
                 Ok((packet, used)) => {
-                    if offset + used == n {
+                    if used == total {
                         return Some(packet);
                     }
-                    offset += used;
+                    (head, tail) = advance(head, tail, used);
                 }
                 Err(ParseError::Incomplete) => return None,
                 Err(ParseError::Resync { skip })
                 | Err(ParseError::BadCrc { skip })
                 | Err(ParseError::BadInstruction { skip })
                 | Err(ParseError::BadLength { skip }) => {
-                    offset = (offset + skip).min(n);
+                    let skip = skip.min(total);
+                    (head, tail) = advance(head, tail, skip);
                 }
             }
         }
-        None
     }
 
     fn send(&mut self, reply: StatusReply<'_>, schedule: Schedule) {
+        // Defense-in-depth: if DMA wrapped past the parsed range during
+        // dispatch, the request data we just acted on may have been garbage.
+        // Abort the reply and surface the fault — master will see the timeout
+        // and the link's dma_overrun counter increment.
+        if self.parsed_window_overrun() {
+            dxl::report_dma_overrun();
+            return;
+        }
+
         // SAFETY: &mut self proves sole-writer; USART1 TC ISR only clears
         // after a send cycle this struct initiated.
         let buf = unsafe { &mut *DXL_TX_BUF.get() };
@@ -126,10 +148,6 @@ impl DxlBus for Ch32Bus {
             return;
         }
 
-        // Pick fire mechanism from the reply variant. Fast Last patches the
-        // chain CRC at fire-time via snoop; Fast Only computes the CRC
-        // locally and fires as a plain Status frame; everything else fires
-        // plain at `wire_end + rdt + bytes_to_us(bytes_before + margin)`.
         match reply {
             StatusReply::FastSyncRead { position, .. }
             | StatusReply::FastBulkRead { position, .. }
@@ -168,6 +186,16 @@ impl Ch32Bus {
                 dxl::start_fast_after(self.anchor.tick, fire_q88_us, Some(self.anchor.bytes));
             }
         }
+    }
+}
+
+/// Advance a (head, tail) ring window past `by` virtual bytes. Once `head`
+/// is fully consumed, the unconsumed tail becomes the new head with no tail.
+fn advance<'a>(head: &'a [u8], tail: &'a [u8], by: usize) -> (&'a [u8], &'a [u8]) {
+    if by >= head.len() {
+        (&tail[by - head.len()..], &[])
+    } else {
+        (&head[by..], tail)
     }
 }
 

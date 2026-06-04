@@ -1,7 +1,7 @@
 use core::cell::SyncUnsafeCell;
 use core::sync::atomic::Ordering;
 use heapless::Vec;
-use osc_core::services::dxl::limits::{DXL_REQUEST_MAX_BYTES, DXL_TX_MAX_BYTES};
+use osc_core::services::dxl::limits::DXL_TX_MAX_BYTES;
 use portable_atomic::{AtomicBool, AtomicI16, AtomicI32, AtomicU16, AtomicU32};
 
 use crate::board::TxEn;
@@ -24,12 +24,6 @@ pub(crate) static DXL_RX_WRITE_POS: AtomicU16 = AtomicU16::new(0);
 pub(crate) const DXL_TX_BUF_LEN: usize = DXL_TX_MAX_BYTES;
 
 pub(crate) static DXL_TX_BUF: SyncUnsafeCell<Vec<u8, DXL_TX_BUF_LEN>> =
-    SyncUnsafeCell::new(Vec::new());
-
-/// Stitch scratch for IDLE-anchored RX windows. `Ch32Bus::rx_poll` copies the
-/// ring's head+tail into here so the services layer sees a contiguous slice
-/// it can keep across subsequent `send_*` calls.
-pub(crate) static DXL_RX_SCRATCH: SyncUnsafeCell<Vec<u8, DXL_REQUEST_MAX_BYTES>> =
     SyncUnsafeCell::new(Vec::new());
 
 /// Written once during `bring_up_dxl` before USART1 IRQ is unmasked; read-only thereafter.

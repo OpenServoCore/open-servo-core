@@ -19,10 +19,7 @@
 //! `dxl_protocol`.
 
 use control_table::STAGE_DATA_CAP;
-use dxl_protocol::{
-    BULK_REQUEST_SLOT_BYTES, CRC_BYTES, FAST_RESPONSE_SLOT0_BYTES, REQUEST_HEADER_BYTES,
-    RESPONSE_HEADER_BYTES,
-};
+use dxl_protocol::{CRC_BYTES, FAST_RESPONSE_SLOT0_BYTES, RESPONSE_HEADER_BYTES};
 
 /// Worst-case slave count we participate in for Sync/Bulk/Fast coordinated
 /// operations. Override with `OSC_MAX_SLAVE_COUNT`.
@@ -31,15 +28,6 @@ pub const MAX_SLAVE_COUNT: usize = env_usize(option_env!("OSC_MAX_SLAVE_COUNT"),
 /// Largest control-table byte range a single Read or Write can address.
 /// Override with `OSC_MAX_CONTROL_RW`.
 pub const MAX_CONTROL_RW: usize = env_usize(option_env!("OSC_MAX_CONTROL_RW"), 128);
-
-/// Largest incoming frame we can parse: the bigger of a maxed-out Write
-/// (`addr + data`) and a maxed-out BulkRead/FastBulkRead body (`N × tuple`).
-pub const DXL_REQUEST_MAX_BYTES: usize = REQUEST_HEADER_BYTES
-    + CRC_BYTES
-    + const_max(
-        2 + MAX_CONTROL_RW,
-        MAX_SLAVE_COUNT * BULK_REQUEST_SLOT_BYTES,
-    );
 
 /// Largest outbound reply we'll buffer. Status reply and Fast Only reply
 /// both end with a CRC; Fast Only is one byte longer because it carries a

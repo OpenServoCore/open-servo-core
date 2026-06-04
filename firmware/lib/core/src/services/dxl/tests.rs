@@ -99,7 +99,7 @@ impl DxlBus for FakeBus {
         let n = window.len();
         let mut offset = 0;
         while offset < n {
-            match Wire::parse_one(&window[offset..]) {
+            match Wire::parse_one(&window[offset..], &[]) {
                 Ok((pkt, used)) => {
                     if offset + used == n {
                         return Some(pkt);
@@ -187,7 +187,7 @@ fn encode(packet: &Packet<'_>) -> Vec<u8, 64> {
 }
 
 fn parse_status(bytes: &[u8]) -> (u8, u8, Vec<u8, 64>) {
-    let (pkt, used) = Wire::parse_one(bytes).unwrap();
+    let (pkt, used) = Wire::parse_one(bytes, &[]).unwrap();
     assert_eq!(used, bytes.len());
     match pkt {
         Packet::Status(p) => {

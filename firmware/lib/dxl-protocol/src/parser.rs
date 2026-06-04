@@ -1,5 +1,5 @@
 use crate::Instruction;
-use crate::bytes::{ByteIter, Bytes};
+use crate::bytes::Bytes;
 use crate::crc::CrcUmts;
 #[cfg(feature = "osc")]
 use crate::packet::CalibratePacket;
@@ -19,26 +19,111 @@ pub enum ParseError {
     BadLength { skip: usize },
 }
 
-/// On error variants other than `Incomplete`, `skip` is the number of bytes
-/// the caller should drop before retrying.
-pub(crate) fn parse_one<CRC: CrcUmts>(input: &[u8]) -> Result<(Packet<'_>, usize), ParseError> {
-    let header_off = match find_header(input) {
-        Some(0) => 0,
-        Some(n) => return Err(ParseError::Resync { skip: n }),
-        None => {
-            // Keep longest suffix that's a proper HEADER prefix — only those
-            // bytes could still complete a valid header. HEADER has no internal
-            // repetition, so candidates are 3, 2, 1, 0 bytes.
-            let keep = if input.ends_with(&HEADER[..3]) {
-                3
-            } else if input.ends_with(&HEADER[..2]) {
-                2
-            } else if input.ends_with(&HEADER[..1]) {
-                1
-            } else {
-                0
-            };
-            let skip = input.len() - keep;
+/// Virtual ring view over `head` then `tail`. Non-wrapped callers pass
+/// `tail = &[]` and get linear-input semantics with no per-byte overhead
+/// on `get()` since the index branch predicts well.
+#[derive(Copy, Clone)]
+struct RingView<'a> {
+    head: &'a [u8],
+    tail: &'a [u8],
+}
+
+impl<'a> RingView<'a> {
+    fn len(&self) -> usize {
+        self.head.len() + self.tail.len()
+    }
+
+    fn get(&self, i: usize) -> Option<u8> {
+        let h = self.head.len();
+        if i < h {
+            Some(self.head[i])
+        } else {
+            self.tail.get(i - h).copied()
+        }
+    }
+
+    /// Virtual subrange `[start, end)` carved as a stuffed `Bytes` (the
+    /// consumer iterator will unstuff). Picks the contiguous form
+    /// (`tail = &[]`) when the range stays on one side of the wrap, the
+    /// split form when it straddles. Top-level params start with empty prefix.
+    fn slice_stuffed(&self, start: usize, end: usize) -> Bytes<'a> {
+        let h = self.head.len();
+        if end <= h {
+            Bytes::stuffed(&self.head[start..end])
+        } else if start >= h {
+            Bytes::stuffed(&self.tail[start - h..end - h])
+        } else {
+            Bytes::stuffed_split(&self.head[start..], &self.tail[..end - h])
+        }
+    }
+
+    /// CRC over the virtual range, chaining seed across the wrap.
+    fn crc<CRC: CrcUmts>(&self, start: usize, end: usize) -> u16 {
+        let h = self.head.len();
+        if end <= h {
+            CRC::accumulate(0, &self.head[start..end])
+        } else if start >= h {
+            CRC::accumulate(0, &self.tail[start - h..end - h])
+        } else {
+            let seed = CRC::accumulate(0, &self.head[start..]);
+            CRC::accumulate(seed, &self.tail[..end - h])
+        }
+    }
+
+    /// Find the first occurrence of `HEADER` starting at virtual offset 0,
+    /// or the longest trailing prefix-of-`HEADER` suffix length if none
+    /// found. Returns `Ok(start)` on match, `Err(suffix_keep)` otherwise.
+    fn find_header(&self) -> Result<usize, usize> {
+        let n = self.len();
+        if n < 4 {
+            return Err(n.min(longest_header_prefix_suffix(self, n)));
+        }
+        let mut i = 0;
+        while i + 4 <= n {
+            if self.get(i) == Some(HEADER[0])
+                && self.get(i + 1) == Some(HEADER[1])
+                && self.get(i + 2) == Some(HEADER[2])
+                && self.get(i + 3) == Some(HEADER[3])
+            {
+                return Ok(i);
+            }
+            i += 1;
+        }
+        Err(longest_header_prefix_suffix(self, n))
+    }
+}
+
+/// Length of the longest suffix of `ring[..n]` that is a proper prefix of
+/// `HEADER`. Candidates are 3, 2, 1, 0 because `HEADER` has no internal
+/// repetition.
+fn longest_header_prefix_suffix(ring: &RingView<'_>, n: usize) -> usize {
+    for k in (1..=3.min(n)).rev() {
+        let start = n - k;
+        let matched = HEADER
+            .iter()
+            .take(k)
+            .enumerate()
+            .all(|(j, h)| ring.get(start + j) == Some(*h));
+        if matched {
+            return k;
+        }
+    }
+    0
+}
+
+/// On error variants other than `Incomplete`, `skip` is the number of virtual
+/// bytes the caller should drop before retrying.
+pub(crate) fn parse_one<'a, CRC: CrcUmts>(
+    head: &'a [u8],
+    tail: &'a [u8],
+) -> Result<(Packet<'a>, usize), ParseError> {
+    let ring = RingView { head, tail };
+
+    let header_off = match ring.find_header() {
+        Ok(0) => 0,
+        Ok(n) => return Err(ParseError::Resync { skip: n }),
+        Err(keep) => {
+            let skip = ring.len() - keep;
             if skip == 0 {
                 return Err(ParseError::Incomplete);
             }
@@ -46,14 +131,16 @@ pub(crate) fn parse_one<CRC: CrcUmts>(input: &[u8]) -> Result<(Packet<'_>, usize
         }
     };
 
-    let frame = &input[header_off..];
-
-    if frame.len() < 7 {
+    let total = ring.len();
+    if total - header_off < 7 {
         return Err(ParseError::Incomplete);
     }
 
-    let id = frame[4];
-    let length = u16::from_le_bytes([frame[5], frame[6]]) as usize;
+    let id = ring.get(header_off + 4).unwrap();
+    let length = u16::from_le_bytes([
+        ring.get(header_off + 5).unwrap(),
+        ring.get(header_off + 6).unwrap(),
+    ]) as usize;
 
     // Bad length: don't trust this header. Step past 4 bytes rather than
     // honoring its claimed size, so a phantom can't mask a real frame after.
@@ -62,51 +149,49 @@ pub(crate) fn parse_one<CRC: CrcUmts>(input: &[u8]) -> Result<(Packet<'_>, usize
     }
 
     let frame_len = 7 + length;
-    if frame.len() < frame_len {
+    if total - header_off < frame_len {
         // Fast First/Only chain headers use BROADCAST_ID + Status with a
         // length covering the WHOLE multi-slot reply. When such a header
         // shows up incomplete, the missing bytes never land here — they're
-        // on the wire during another node's TX. Returning Incomplete would
-        // wedge the caller's poll loop; resync past this phantom header.
-        if frame.len() >= 8 && id == BROADCAST_ID && frame[7] == Instruction::Status.as_u8() {
+        // on the wire during another node's TX. Resync past this phantom.
+        if total - header_off >= 8
+            && id == BROADCAST_ID
+            && ring.get(header_off + 7) == Some(Instruction::Status.as_u8())
+        {
             return Err(ParseError::BadInstruction { skip: HEADER.len() });
         }
         return Err(ParseError::Incomplete);
     }
 
-    let crc_pos = frame_len - 2;
-    let computed = CRC::accumulate(0, &frame[..crc_pos]);
-    let received = u16::from_le_bytes([frame[crc_pos], frame[crc_pos + 1]]);
+    let frame_start = header_off;
+    let crc_pos = frame_start + frame_len - 2;
+    let computed = ring.crc::<CRC>(frame_start, crc_pos);
+    let received = u16::from_le_bytes([ring.get(crc_pos).unwrap(), ring.get(crc_pos + 1).unwrap()]);
     if computed != received {
         // Could be a corrupted real frame *or* a phantom header — drop past
         // the header and let resync find the next one.
         return Err(ParseError::BadCrc { skip: HEADER.len() });
     }
 
-    let instruction = match Instruction::from_u8(frame[7]) {
+    let instr_byte = ring.get(frame_start + 7).unwrap();
+    let instruction = match Instruction::from_u8(instr_byte) {
         Some(i) => i,
-        None => return Err(ParseError::BadInstruction { skip: frame_len }),
-    };
-    let params_stuffed = &frame[8..crc_pos];
-
-    let packet = decode(instruction, id, params_stuffed)
-        .map_err(|_| ParseError::BadLength { skip: frame_len })?;
-
-    Ok((packet, frame_len))
-}
-
-fn find_header(input: &[u8]) -> Option<usize> {
-    if input.len() < 4 {
-        return None;
-    }
-    let mut i = 0;
-    while i + 4 <= input.len() {
-        if input[i..i + 4] == HEADER {
-            return Some(i);
+        None => {
+            return Err(ParseError::BadInstruction {
+                skip: frame_start + frame_len,
+            });
         }
-        i += 1;
-    }
-    None
+    };
+
+    let params_start = frame_start + 8;
+    let params_end = crc_pos;
+    let params = ring.slice_stuffed(params_start, params_end);
+
+    let packet = decode(instruction, id, params).map_err(|_| ParseError::BadLength {
+        skip: frame_start + frame_len,
+    })?;
+
+    Ok((packet, frame_start + frame_len))
 }
 
 #[derive(Copy, Clone, Debug)]
@@ -115,13 +200,13 @@ struct DecodeError;
 fn decode<'a>(
     instruction: Instruction,
     id: u8,
-    params: &'a [u8],
+    params: Bytes<'a>,
 ) -> Result<Packet<'a>, DecodeError> {
     use Instruction::*;
     match instruction {
-        Ping => need_empty(params).map(|_| Packet::Ping(PingPacket { id })),
+        Ping => need_empty(&params).map(|_| Packet::Ping(PingPacket { id })),
         Read => {
-            let mut it = ByteIter::stuffed(params);
+            let mut it = params.iter();
             let address = take_u16_le(&mut it)?;
             let length = take_u16_le(&mut it)?;
             if it.next().is_some() {
@@ -134,7 +219,7 @@ fn decode<'a>(
             }))
         }
         Write => {
-            let mut it = ByteIter::stuffed(params);
+            let mut it = params.iter();
             let address = take_u16_le(&mut it)?;
             Ok(Packet::Write(WritePacket {
                 id,
@@ -143,7 +228,7 @@ fn decode<'a>(
             }))
         }
         RegWrite => {
-            let mut it = ByteIter::stuffed(params);
+            let mut it = params.iter();
             let address = take_u16_le(&mut it)?;
             Ok(Packet::RegWrite(RegWritePacket {
                 id,
@@ -151,35 +236,32 @@ fn decode<'a>(
                 data: it.rest_bytes(),
             }))
         }
-        Action => need_empty(params).map(|_| Packet::Action(ActionPacket { id })),
+        Action => need_empty(&params).map(|_| Packet::Action(ActionPacket { id })),
         FactoryReset => {
-            let mut it = ByteIter::stuffed(params);
+            let mut it = params.iter();
             let mode = it.next().ok_or(DecodeError)?;
             if it.next().is_some() {
                 return Err(DecodeError);
             }
             Ok(Packet::FactoryReset(FactoryResetPacket { id, mode }))
         }
-        Reboot => need_empty(params).map(|_| Packet::Reboot(RebootPacket { id })),
+        Reboot => need_empty(&params).map(|_| Packet::Reboot(RebootPacket { id })),
         #[cfg(feature = "osc")]
         Calibrate => {
-            let mut it = ByteIter::stuffed(params);
+            let mut it = params.iter();
             let count = take_u16_le(&mut it)?;
             if it.next().is_some() {
                 return Err(DecodeError);
             }
             Ok(Packet::Calibrate(CalibratePacket { id, count }))
         }
-        Clear => Ok(Packet::Clear(ClearPacket {
-            id,
-            body: Bytes::stuffed(params),
-        })),
+        Clear => Ok(Packet::Clear(ClearPacket { id, body: params })),
         ControlTableBackup => Ok(Packet::ControlTableBackup(ControlTableBackupPacket {
             id,
-            body: Bytes::stuffed(params),
+            body: params,
         })),
         Status => {
-            let mut it = ByteIter::stuffed(params);
+            let mut it = params.iter();
             let error = it.next().ok_or(DecodeError)?;
             Ok(Packet::Status(StatusPacket {
                 id,
@@ -188,7 +270,7 @@ fn decode<'a>(
             }))
         }
         SyncRead => {
-            let mut it = ByteIter::stuffed(params);
+            let mut it = params.iter();
             let address = take_u16_le(&mut it)?;
             let length = take_u16_le(&mut it)?;
             Ok(Packet::SyncRead(SyncReadPacket {
@@ -198,7 +280,7 @@ fn decode<'a>(
             }))
         }
         SyncWrite => {
-            let mut it = ByteIter::stuffed(params);
+            let mut it = params.iter();
             let address = take_u16_le(&mut it)?;
             let length = take_u16_le(&mut it)?;
             Ok(Packet::SyncWrite(SyncWritePacket {
@@ -208,7 +290,7 @@ fn decode<'a>(
             }))
         }
         FastSyncRead => {
-            let mut it = ByteIter::stuffed(params);
+            let mut it = params.iter();
             let address = take_u16_le(&mut it)?;
             let length = take_u16_le(&mut it)?;
             Ok(Packet::FastSyncRead(FastSyncReadPacket {
@@ -217,20 +299,14 @@ fn decode<'a>(
                 ids: it.rest_bytes(),
             }))
         }
-        BulkRead => Ok(Packet::BulkRead(BulkReadPacket {
-            body: Bytes::stuffed(params),
-        })),
-        BulkWrite => Ok(Packet::BulkWrite(BulkWritePacket {
-            body: Bytes::stuffed(params),
-        })),
-        FastBulkRead => Ok(Packet::FastBulkRead(FastBulkReadPacket {
-            body: Bytes::stuffed(params),
-        })),
+        BulkRead => Ok(Packet::BulkRead(BulkReadPacket { body: params })),
+        BulkWrite => Ok(Packet::BulkWrite(BulkWritePacket { body: params })),
+        FastBulkRead => Ok(Packet::FastBulkRead(FastBulkReadPacket { body: params })),
     }
 }
 
-fn need_empty(s: &[u8]) -> Result<(), DecodeError> {
-    if !s.is_empty() {
+fn need_empty(b: &Bytes<'_>) -> Result<(), DecodeError> {
+    if b.iter().next().is_some() {
         return Err(DecodeError);
     }
     Ok(())

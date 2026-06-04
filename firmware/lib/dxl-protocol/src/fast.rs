@@ -281,13 +281,13 @@ mod tests {
         FastSyncReadPacket {
             address,
             length,
-            ids: Bytes::Raw(ids),
+            ids: Bytes::raw(ids),
         }
     }
 
     fn bulk(body: &[u8]) -> FastBulkReadPacket<'_> {
         FastBulkReadPacket {
-            body: Bytes::Raw(body),
+            body: Bytes::raw(body),
         }
     }
 

@@ -227,7 +227,7 @@ fn write_fast_error_emits_zero_payload_with_error_byte() {
 
 #[test]
 fn parse_ping() {
-    let (pkt, n) = Wire::parse_one(PING_ID1).unwrap();
+    let (pkt, n) = Wire::parse_one(PING_ID1, &[]).unwrap();
     assert_eq!(n, PING_ID1.len());
     match pkt {
         Packet::Ping(p) => assert_eq!(p.id, 1),
@@ -236,8 +236,55 @@ fn parse_ping() {
 }
 
 #[test]
+fn parse_one_ring_split_at_every_byte_boundary() {
+    // Walk the split between head/tail through every byte position of each
+    // reference frame and confirm parse_one decodes identically to the
+    // contiguous form. Covers headers spanning the cut, length-byte cuts,
+    // mid-payload cuts, and CRC cuts.
+    for frame in [
+        PING_ID1,
+        READ_ID1_ADDR132_LEN4,
+        WRITE_ID1_GOAL512,
+        REBOOT_ID1,
+    ] {
+        let (contig_pkt, contig_n) = Wire::parse_one(frame, &[]).unwrap();
+        assert_eq!(contig_n, frame.len());
+        let contig_discriminant = core::mem::discriminant(&contig_pkt);
+
+        for split in 0..=frame.len() {
+            let (head, tail) = frame.split_at(split);
+            let (pkt, n) = Wire::parse_one(head, tail)
+                .unwrap_or_else(|e| panic!("split={split} frame={frame:02X?}: {e:?}"));
+            assert_eq!(n, frame.len(), "split={split} consumed wrong byte count");
+            assert_eq!(
+                core::mem::discriminant(&pkt),
+                contig_discriminant,
+                "split={split} produced a different packet variant",
+            );
+        }
+    }
+}
+
+#[test]
+fn parse_one_ring_split_recovers_resync_skip() {
+    // Frame preceded by 6 bytes of garbage with the split landing inside
+    // the garbage — parser should resync past it and dispatch the frame.
+    let prefix = [0xAAu8, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF];
+    let mut combined: Vec<u8, 32> = Vec::new();
+    combined.extend_from_slice(&prefix).unwrap();
+    combined.extend_from_slice(PING_ID1).unwrap();
+
+    // Split inside the garbage prefix.
+    let (head, tail) = combined.as_slice().split_at(3);
+    match Wire::parse_one(head, tail) {
+        Err(ParseError::Resync { skip }) => assert_eq!(skip, prefix.len()),
+        other => panic!("expected Resync skip=6, got {other:?}"),
+    }
+}
+
+#[test]
 fn parse_read() {
-    let (pkt, n) = Wire::parse_one(READ_ID1_ADDR132_LEN4).unwrap();
+    let (pkt, n) = Wire::parse_one(READ_ID1_ADDR132_LEN4, &[]).unwrap();
     assert_eq!(n, READ_ID1_ADDR132_LEN4.len());
     match pkt {
         Packet::Read(p) => {
@@ -251,7 +298,7 @@ fn parse_read() {
 
 #[test]
 fn parse_write() {
-    let (pkt, n) = Wire::parse_one(WRITE_ID1_GOAL512).unwrap();
+    let (pkt, n) = Wire::parse_one(WRITE_ID1_GOAL512, &[]).unwrap();
     assert_eq!(n, WRITE_ID1_GOAL512.len());
     match pkt {
         Packet::Write(p) => {
@@ -267,7 +314,7 @@ fn parse_write() {
 
 #[test]
 fn parse_reboot() {
-    let (pkt, _) = Wire::parse_one(REBOOT_ID1).unwrap();
+    let (pkt, _) = Wire::parse_one(REBOOT_ID1, &[]).unwrap();
     assert!(matches!(pkt, Packet::Reboot(RebootPacket { id: 1 })));
 }
 
@@ -302,7 +349,7 @@ fn write_write_matches_reference() {
         &Packet::Write(WritePacket {
             id: 1,
             address: 116,
-            data: Bytes::Raw(&data),
+            data: Bytes::raw(&data),
         }),
     )
     .unwrap();
@@ -325,7 +372,7 @@ fn calibrate_round_trip() {
         &Packet::Calibrate(CalibratePacket { id: 1, count: 128 }),
     )
     .unwrap();
-    let (pkt, n) = Wire::parse_one(&out).unwrap();
+    let (pkt, n) = Wire::parse_one(&out, &[]).unwrap();
     assert_eq!(n, out.len());
     assert!(matches!(
         pkt,
@@ -345,7 +392,7 @@ fn parse_calibrate_broadcast() {
         }),
     )
     .unwrap();
-    let (pkt, _) = Wire::parse_one(&out).unwrap();
+    let (pkt, _) = Wire::parse_one(&out, &[]).unwrap();
     assert!(matches!(
         pkt,
         Packet::Calibrate(CalibratePacket {
@@ -364,12 +411,12 @@ fn write_status_round_trip() {
         &Packet::Status(StatusPacket {
             id: 1,
             error: 0,
-            params: Bytes::Raw(&params),
+            params: Bytes::raw(&params),
         }),
     )
     .unwrap();
 
-    let (pkt, n) = Wire::parse_one(&out).unwrap();
+    let (pkt, n) = Wire::parse_one(&out, &[]).unwrap();
     assert_eq!(n, out.len());
     match pkt {
         Packet::Status(p) => {
@@ -392,7 +439,7 @@ fn stuffing_round_trip() {
         &Packet::Write(WritePacket {
             id: 1,
             address: 0x0040,
-            data: Bytes::Raw(&data),
+            data: Bytes::raw(&data),
         }),
     )
     .unwrap();
@@ -400,7 +447,7 @@ fn stuffing_round_trip() {
     let raw_count = out.iter().filter(|&&b| b == 0xFD).count();
     assert!(raw_count >= 4, "expected stuffed bytes: {:02X?}", out);
 
-    let (pkt, n) = Wire::parse_one(&out).unwrap();
+    let (pkt, n) = Wire::parse_one(&out, &[]).unwrap();
     assert_eq!(n, out.len());
     match pkt {
         Packet::Write(p) => {
@@ -424,12 +471,12 @@ fn stuffing_at_field_boundary() {
         &Packet::Write(WritePacket {
             id: 1,
             address: 0xFFFF,
-            data: Bytes::Raw(&data),
+            data: Bytes::raw(&data),
         }),
     )
     .unwrap();
 
-    let (pkt, _) = Wire::parse_one(&out).unwrap();
+    let (pkt, _) = Wire::parse_one(&out, &[]).unwrap();
     match pkt {
         Packet::Write(p) => {
             assert_eq!(p.address, 0xFFFF);
@@ -447,12 +494,12 @@ fn resync_skips_leading_garbage() {
     buf.extend_from_slice(&[0x00, 0x11, 0x22]).unwrap();
     buf.extend_from_slice(PING_ID1).unwrap();
 
-    match Wire::parse_one(&buf) {
+    match Wire::parse_one(&buf, &[]) {
         Err(ParseError::Resync { skip: 3 }) => {}
         other => panic!("expected Resync(3), got {:?}", other),
     }
 
-    let (pkt, n) = Wire::parse_one(&buf[3..]).unwrap();
+    let (pkt, n) = Wire::parse_one(&buf[3..], &[]).unwrap();
     assert_eq!(n, PING_ID1.len());
     assert!(matches!(pkt, Packet::Ping(PingPacket { id: 1 })));
 }
@@ -461,12 +508,12 @@ fn resync_skips_leading_garbage() {
 fn incomplete_returns_err() {
     let partial = &PING_ID1[..6];
     assert!(matches!(
-        Wire::parse_one(partial),
+        Wire::parse_one(partial, &[]),
         Err(ParseError::Incomplete)
     ));
     let partial = &PING_ID1[..7];
     assert!(matches!(
-        Wire::parse_one(partial),
+        Wire::parse_one(partial, &[]),
         Err(ParseError::Incomplete)
     ));
 }
@@ -477,7 +524,7 @@ fn bad_crc_is_reported() {
     bad.extend_from_slice(PING_ID1).unwrap();
     let last = bad.len() - 1;
     bad[last] ^= 0xFF;
-    match Wire::parse_one(&bad) {
+    match Wire::parse_one(&bad, &[]) {
         Err(ParseError::BadCrc { skip }) => assert_eq!(skip, 4),
         other => panic!("expected BadCrc, got {:?}", other),
     }
@@ -488,7 +535,7 @@ fn oversized_length_is_rejected() {
     // length 0xFFFF > MAX_LENGTH.
     let bad = [0xFFu8, 0xFF, 0xFD, 0x00, 0x01, 0xFF, 0xFF, 0x01];
     assert!((MAX_LENGTH as u32) < 0xFFFF);
-    match Wire::parse_one(&bad) {
+    match Wire::parse_one(&bad, &[]) {
         Err(ParseError::BadLength { skip }) => assert_eq!(skip, 4),
         other => panic!("expected BadLength, got {:?}", other),
     }
@@ -498,7 +545,7 @@ fn oversized_length_is_rejected() {
 fn undersized_length_is_rejected() {
     // length 2 < min 3 (instruction + crc).
     let bad = [0xFFu8, 0xFF, 0xFD, 0x00, 0x01, 0x02, 0x00, 0x01];
-    match Wire::parse_one(&bad) {
+    match Wire::parse_one(&bad, &[]) {
         Err(ParseError::BadLength { skip }) => assert_eq!(skip, 4),
         other => panic!("expected BadLength, got {:?}", other),
     }
@@ -512,18 +559,18 @@ fn false_header_with_huge_length_does_not_wedge() {
         .unwrap();
     buf.extend_from_slice(PING_ID1).unwrap();
 
-    let skip = match Wire::parse_one(&buf) {
+    let skip = match Wire::parse_one(&buf, &[]) {
         Err(ParseError::BadLength { skip }) => skip,
         other => panic!("expected BadLength, got {:?}", other),
     };
     assert_eq!(skip, 4);
 
     let rest = &buf[skip..];
-    let resync = match Wire::parse_one(rest) {
+    let resync = match Wire::parse_one(rest, &[]) {
         Err(ParseError::Resync { skip }) => skip,
         other => panic!("expected Resync, got {:?}", other),
     };
-    let (pkt, n) = Wire::parse_one(&rest[resync..]).unwrap();
+    let (pkt, n) = Wire::parse_one(&rest[resync..], &[]).unwrap();
     assert_eq!(n, PING_ID1.len());
     assert!(matches!(pkt, Packet::Ping(PingPacket { id: 1 })));
 }
@@ -536,7 +583,7 @@ fn bad_instruction_is_reported() {
         .unwrap();
     let crc = SoftwareCrcUmts::accumulate(0, &frame);
     frame.extend_from_slice(&crc.to_le_bytes()).unwrap();
-    match Wire::parse_one(&frame) {
+    match Wire::parse_one(&frame, &[]) {
         Err(ParseError::BadInstruction { skip }) => assert_eq!(skip, frame.len()),
         other => panic!("expected BadInstruction, got {:?}", other),
     }
@@ -557,11 +604,11 @@ fn round_trip_data(data: &[u8]) -> heapless::Vec<u8, 256> {
         &Packet::Write(WritePacket {
             id: 1,
             address: 0x0010,
-            data: Bytes::Raw(data),
+            data: Bytes::raw(data),
         }),
     )
     .unwrap();
-    let (pkt, n) = Wire::parse_one(&out).unwrap();
+    let (pkt, n) = Wire::parse_one(&out, &[]).unwrap();
     assert_eq!(n, out.len());
     match pkt {
         Packet::Write(p) => {
@@ -641,11 +688,11 @@ fn stuff_trigger_spanning_address_boundary() {
         &Packet::Write(WritePacket {
             id: 1,
             address: 0xFFFF,
-            data: Bytes::Raw(&data),
+            data: Bytes::raw(&data),
         }),
     )
     .unwrap();
-    let (pkt, _) = Wire::parse_one(&out).unwrap();
+    let (pkt, _) = Wire::parse_one(&out, &[]).unwrap();
     let Packet::Write(p) = pkt else {
         panic!("not Write");
     };
@@ -665,11 +712,11 @@ fn stuff_trigger_spanning_address_then_more_in_data() {
         &Packet::Write(WritePacket {
             id: 1,
             address: 0xFFFF,
-            data: Bytes::Raw(&data),
+            data: Bytes::raw(&data),
         }),
     )
     .unwrap();
-    let (pkt, _) = Wire::parse_one(&out).unwrap();
+    let (pkt, _) = Wire::parse_one(&out, &[]).unwrap();
     let Packet::Write(p) = pkt else {
         panic!();
     };
@@ -687,11 +734,11 @@ fn stuff_unstuffed_len_matches_iter_count() {
         &Packet::Write(WritePacket {
             id: 1,
             address: 0x0010,
-            data: Bytes::Raw(&data),
+            data: Bytes::raw(&data),
         }),
     )
     .unwrap();
-    let (pkt, _) = Wire::parse_one(&out).unwrap();
+    let (pkt, _) = Wire::parse_one(&out, &[]).unwrap();
     let Packet::Write(p) = pkt else {
         panic!();
     };
@@ -702,7 +749,7 @@ fn stuff_unstuffed_len_matches_iter_count() {
 #[test]
 fn stuff_raw_passthrough_does_not_unstuff() {
     let raw = [0xFFu8, 0xFF, 0xFD, 0xFD, 0xAA];
-    let bytes = Bytes::Raw(&raw);
+    let bytes = Bytes::raw(&raw);
     let collected: heapless::Vec<u8, 16> = bytes.iter().collect();
     assert_eq!(&collected[..], &raw);
     assert_eq!(bytes.unstuffed_len(), raw.len());
@@ -716,11 +763,11 @@ fn stuff_empty_payload() {
         &Packet::Write(WritePacket {
             id: 1,
             address: 0x0010,
-            data: Bytes::Raw(&[]),
+            data: Bytes::raw(&[]),
         }),
     )
     .unwrap();
-    let (pkt, _) = Wire::parse_one(&out).unwrap();
+    let (pkt, _) = Wire::parse_one(&out, &[]).unwrap();
     let Packet::Write(p) = pkt else {
         panic!();
     };
@@ -737,11 +784,11 @@ fn stuff_status_with_trigger_in_params() {
         &Packet::Status(StatusPacket {
             id: 1,
             error: 0,
-            params: Bytes::Raw(&params),
+            params: Bytes::raw(&params),
         }),
     )
     .unwrap();
-    let (pkt, _) = Wire::parse_one(&out).unwrap();
+    let (pkt, _) = Wire::parse_one(&out, &[]).unwrap();
     let Packet::Status(p) = pkt else {
         panic!();
     };
@@ -760,12 +807,12 @@ fn stuff_forwarding_round_trip() {
         &Packet::Write(WritePacket {
             id: 1,
             address: 0x0010,
-            data: Bytes::Raw(&original_data),
+            data: Bytes::raw(&original_data),
         }),
     )
     .unwrap();
 
-    let (pkt, _) = Wire::parse_one(&wire1).unwrap();
+    let (pkt, _) = Wire::parse_one(&wire1, &[]).unwrap();
     let mut wire2: Vec<u8, 64> = Vec::new();
     Wire::write(&mut wire2, &pkt).unwrap();
     assert_eq!(&wire1[..], &wire2[..]);
@@ -784,11 +831,11 @@ fn stuff_long_payload_with_many_triggers() {
         &Packet::Write(WritePacket {
             id: 1,
             address: 0x0010,
-            data: Bytes::Raw(&data),
+            data: Bytes::raw(&data),
         }),
     )
     .unwrap();
-    let (pkt, _) = Wire::parse_one(&out).unwrap();
+    let (pkt, _) = Wire::parse_one(&out, &[]).unwrap();
     let Packet::Write(p) = pkt else {
         panic!();
     };
