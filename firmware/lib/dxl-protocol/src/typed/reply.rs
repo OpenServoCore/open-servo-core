@@ -1,4 +1,4 @@
-use crate::wire::{CrcUmts, WriteBuf, WriteError, write_raw};
+use crate::wire::{CrcUmts, RawFrame, WriteBuf, WriteError, write_raw};
 
 use super::fast::{FastPosition, write_fast};
 use super::instruction::Instruction;
@@ -136,12 +136,18 @@ pub(crate) fn write_status_reply<W: WriteBuf, CRC: CrcUmts>(
     }
 }
 
-fn write_status_frame<W: WriteBuf, I: Iterator<Item = u8>, CRC: CrcUmts>(
+fn write_status_frame<W: WriteBuf, I: IntoIterator<Item = u8>, CRC: CrcUmts>(
     out: &mut W,
     id: u8,
     error: StatusError,
     payload: I,
 ) -> Result<(), WriteError> {
-    let mut params = core::iter::once(error.as_u8()).chain(payload);
-    write_raw::<W, _, CRC>(out, id, Instruction::Status.as_u8(), &mut params)
+    write_raw::<W, _, CRC>(
+        out,
+        RawFrame {
+            id,
+            instruction: Instruction::Status.as_u8(),
+            params: core::iter::once(error.as_u8()).chain(payload),
+        },
+    )
 }

@@ -9,6 +9,7 @@ mod crc;
 mod crc_software;
 mod frame;
 mod parser;
+mod rx_view;
 mod writer;
 
 pub use buf::{WriteBuf, WriteError};
@@ -22,4 +23,5 @@ pub use frame::{
     RawFrame, SYNC_REQUEST_SLOT_BYTES,
 };
 pub use parser::{ParseError, parse_raw};
+pub use rx_view::RxView;
 pub use writer::write_raw;

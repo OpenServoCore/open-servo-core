@@ -1,23 +1,23 @@
 use super::buf::{WriteBuf, WriteError};
 use super::crc::CrcUmts;
-use super::frame::HEADER;
+use super::frame::{HEADER, RawFrame};
 
-/// id != 0xFF, instruction != 0xFD required so the unstuffed header..instruction
-/// prefix can't itself complete a stuffing trigger.
+/// `frame.id != 0xFF` and `frame.instruction != 0xFD` required so the
+/// unstuffed header..instruction prefix can't itself complete a stuffing
+/// trigger.
 ///
-/// On failure (including partial Overflow), `out` is truncated back to entry length
-/// — callers using a DMA TX buffer can rely on prior frames staying intact.
-pub fn write_raw<W: WriteBuf, I: Iterator<Item = u8>, CRC: CrcUmts>(
+/// On failure (including partial Overflow), `out` is truncated back to entry
+/// length — callers using a DMA TX buffer can rely on prior frames staying
+/// intact.
+pub fn write_raw<W: WriteBuf, I: IntoIterator<Item = u8>, CRC: CrcUmts>(
     out: &mut W,
-    id: u8,
-    instruction: u8,
-    params: &mut I,
+    frame: RawFrame<I>,
 ) -> Result<(), WriteError> {
-    if id == 0xFF {
+    if frame.id == 0xFF {
         return Err(WriteError::Invalid);
     }
     let start = out.len();
-    match write_raw_body::<W, _, CRC>(out, start, id, instruction, params) {
+    match write_raw_body::<W, _, CRC>(out, start, frame) {
         Ok(()) => Ok(()),
         Err(e) => {
             out.truncate(start);
@@ -26,25 +26,23 @@ pub fn write_raw<W: WriteBuf, I: Iterator<Item = u8>, CRC: CrcUmts>(
     }
 }
 
-fn write_raw_body<W: WriteBuf, I: Iterator<Item = u8>, CRC: CrcUmts>(
+fn write_raw_body<W: WriteBuf, I: IntoIterator<Item = u8>, CRC: CrcUmts>(
     out: &mut W,
     start: usize,
-    id: u8,
-    instruction: u8,
-    params: &mut I,
+    frame: RawFrame<I>,
 ) -> Result<(), WriteError> {
     out.push(HEADER[0])?;
     out.push(HEADER[1])?;
     out.push(HEADER[2])?;
     out.push(HEADER[3])?;
-    out.push(id)?;
+    out.push(frame.id)?;
     let len_pos = out.len();
     out.push(0)?;
     out.push(0)?;
-    out.push(instruction)?;
+    out.push(frame.instruction)?;
 
-    let mut last2: [u8; 2] = [0, instruction];
-    for b in params.by_ref() {
+    let mut last2: [u8; 2] = [0, frame.instruction];
+    for b in frame.params {
         out.push(b)?;
         if last2[0] == 0xFF && last2[1] == 0xFF && b == 0xFD {
             out.push(0xFD)?;

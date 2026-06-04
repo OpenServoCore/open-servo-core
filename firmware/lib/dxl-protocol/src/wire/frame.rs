@@ -1,5 +1,3 @@
-use super::bytes::Bytes;
-
 pub const HEADER: [u8; 4] = [0xFF, 0xFF, 0xFD, 0x00];
 pub const BROADCAST_ID: u8 = 0xFE;
 
@@ -38,9 +36,13 @@ pub const FAST_RESPONSE_SLOT_BYTES: usize = 2;
 /// CRC are accounted for, but the instruction byte has not been resolved to
 /// the `Instruction` enum and `params` has not been interpreted. Use this as
 /// the boundary between wire parsing and typed decode.
+///
+/// `P` is the parameter byte source: the parser produces
+/// `RawFrame<Bytes<'a>>`; [`write_raw`](super::write_raw) accepts any
+/// `RawFrame<I>` where `I: IntoIterator<Item = u8>`.
 #[derive(Copy, Clone, Debug)]
-pub struct RawFrame<'a> {
+pub struct RawFrame<P> {
     pub id: u8,
     pub instruction: u8,
-    pub params: Bytes<'a>,
+    pub params: P,
 }

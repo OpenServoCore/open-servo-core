@@ -22,6 +22,6 @@ pub use wire::SoftwareCrcUmts;
 pub use wire::{
     BROADCAST_ID, BULK_REQUEST_SLOT_BYTES, ByteIter, Bytes, CRC_BYTES, CrcUmts,
     FAST_RESPONSE_SLOT_BYTES, FAST_RESPONSE_SLOT0_BYTES, HEADER, MAX_LENGTH, Overflow, ParseError,
-    REQUEST_HEADER_BYTES, RESPONSE_HEADER_BYTES, RawFrame, SYNC_REQUEST_SLOT_BYTES, WriteBuf,
-    WriteError, parse_raw,
+    REQUEST_HEADER_BYTES, RESPONSE_HEADER_BYTES, RawFrame, RxView, SYNC_REQUEST_SLOT_BYTES,
+    WriteBuf, WriteError, parse_raw, write_raw,
 };

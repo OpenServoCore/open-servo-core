@@ -1,7 +1,7 @@
 use core::marker::PhantomData;
 
 use crate::typed::{self, DecodeError, Packet, StatusReply};
-use crate::wire::{self, CrcUmts, ParseError, WriteBuf, WriteError};
+use crate::wire::{self, CrcUmts, ParseError, RxView, WriteBuf, WriteError};
 
 /// Typed namespace for the protocol's parse/write entry points. Bind it once
 /// per crate (`type Codec = dxl_protocol::Codec<SoftwareCrcUmts>;`) and the
@@ -16,7 +16,7 @@ impl<CRC: CrcUmts> Codec<CRC> {
         head: &'a [u8],
         tail: &'a [u8],
     ) -> Result<(Packet<'a>, usize), ParseError> {
-        let (raw, consumed) = wire::parse_raw::<CRC>(head, tail)?;
+        let (raw, consumed) = wire::parse_raw::<CRC>(RxView::ring(head, tail))?;
         let packet = typed::decode(raw).map_err(|e| match e {
             DecodeError::UnknownInstruction => ParseError::BadInstruction { skip: consumed },
             DecodeError::BadParams => ParseError::BadLength { skip: consumed },

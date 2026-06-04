@@ -15,7 +15,7 @@ pub enum DecodeError {
     BadParams,
 }
 
-pub fn decode(raw: RawFrame<'_>) -> Result<Packet<'_>, DecodeError> {
+pub fn decode<'a>(raw: RawFrame<Bytes<'a>>) -> Result<Packet<'a>, DecodeError> {
     let instruction =
         Instruction::from_u8(raw.instruction).ok_or(DecodeError::UnknownInstruction)?;
     decode_typed(instruction, raw.id, raw.params)

@@ -82,6 +82,14 @@ impl<'a> Bytes<'a> {
     }
 }
 
+impl<'a> IntoIterator for Bytes<'a> {
+    type Item = u8;
+    type IntoIter = ByteIter<'a>;
+    fn into_iter(self) -> ByteIter<'a> {
+        self.iter()
+    }
+}
+
 /// Iterator over Bytes — walks `head` then `tail`, applying `0xFF 0xFF 0xFD 0xFD`
 /// → `0xFF 0xFF 0xFD` unstuffing when `stuffed` is set. The 3-byte `last3`
 /// window threads across the head/tail boundary so triggers split by the cut

@@ -1,4 +1,4 @@
-use crate::wire::{BROADCAST_ID, CrcUmts, WriteBuf, WriteError, write_raw};
+use crate::wire::{BROADCAST_ID, CrcUmts, RawFrame, WriteBuf, WriteError, write_raw};
 
 use super::instruction::Instruction;
 use super::packet::Packet;
@@ -10,108 +10,140 @@ pub(crate) fn write<W: WriteBuf, CRC: CrcUmts>(
     match packet {
         Packet::Ping(p) => write_raw::<W, _, CRC>(
             out,
-            p.id,
-            Instruction::Ping.as_u8(),
-            &mut core::iter::empty(),
+            RawFrame {
+                id: p.id,
+                instruction: Instruction::Ping.as_u8(),
+                params: core::iter::empty::<u8>(),
+            },
         ),
-        Packet::Read(p) => {
-            let mut params = U16Pair::new(p.address, p.length).into_iter();
-            write_raw::<W, _, CRC>(out, p.id, Instruction::Read.as_u8(), &mut params)
-        }
-        Packet::Write(p) => {
-            let mut params = U16One::new(p.address).into_iter().chain(p.data.iter());
-            write_raw::<W, _, CRC>(out, p.id, Instruction::Write.as_u8(), &mut params)
-        }
-        Packet::RegWrite(p) => {
-            let mut params = U16One::new(p.address).into_iter().chain(p.data.iter());
-            write_raw::<W, _, CRC>(out, p.id, Instruction::RegWrite.as_u8(), &mut params)
-        }
+        Packet::Read(p) => write_raw::<W, _, CRC>(
+            out,
+            RawFrame {
+                id: p.id,
+                instruction: Instruction::Read.as_u8(),
+                params: U16Pair::new(p.address, p.length),
+            },
+        ),
+        Packet::Write(p) => write_raw::<W, _, CRC>(
+            out,
+            RawFrame {
+                id: p.id,
+                instruction: Instruction::Write.as_u8(),
+                params: U16One::new(p.address).into_iter().chain(p.data),
+            },
+        ),
+        Packet::RegWrite(p) => write_raw::<W, _, CRC>(
+            out,
+            RawFrame {
+                id: p.id,
+                instruction: Instruction::RegWrite.as_u8(),
+                params: U16One::new(p.address).into_iter().chain(p.data),
+            },
+        ),
         Packet::Action(p) => write_raw::<W, _, CRC>(
             out,
-            p.id,
-            Instruction::Action.as_u8(),
-            &mut core::iter::empty(),
+            RawFrame {
+                id: p.id,
+                instruction: Instruction::Action.as_u8(),
+                params: core::iter::empty::<u8>(),
+            },
         ),
         Packet::FactoryReset(p) => write_raw::<W, _, CRC>(
             out,
-            p.id,
-            Instruction::FactoryReset.as_u8(),
-            &mut core::iter::once(p.mode),
+            RawFrame {
+                id: p.id,
+                instruction: Instruction::FactoryReset.as_u8(),
+                params: core::iter::once(p.mode),
+            },
         ),
         Packet::Reboot(p) => write_raw::<W, _, CRC>(
             out,
-            p.id,
-            Instruction::Reboot.as_u8(),
-            &mut core::iter::empty(),
+            RawFrame {
+                id: p.id,
+                instruction: Instruction::Reboot.as_u8(),
+                params: core::iter::empty::<u8>(),
+            },
         ),
         #[cfg(feature = "osc")]
-        Packet::Calibrate(p) => {
-            let mut params = U16One::new(p.count).into_iter();
-            write_raw::<W, _, CRC>(out, p.id, Instruction::Calibrate.as_u8(), &mut params)
-        }
-        Packet::Clear(p) => {
-            write_raw::<W, _, CRC>(out, p.id, Instruction::Clear.as_u8(), &mut p.body.iter())
-        }
+        Packet::Calibrate(p) => write_raw::<W, _, CRC>(
+            out,
+            RawFrame {
+                id: p.id,
+                instruction: Instruction::Calibrate.as_u8(),
+                params: U16One::new(p.count),
+            },
+        ),
+        Packet::Clear(p) => write_raw::<W, _, CRC>(
+            out,
+            RawFrame {
+                id: p.id,
+                instruction: Instruction::Clear.as_u8(),
+                params: p.body,
+            },
+        ),
         Packet::ControlTableBackup(p) => write_raw::<W, _, CRC>(
             out,
-            p.id,
-            Instruction::ControlTableBackup.as_u8(),
-            &mut p.body.iter(),
+            RawFrame {
+                id: p.id,
+                instruction: Instruction::ControlTableBackup.as_u8(),
+                params: p.body,
+            },
         ),
-        Packet::Status(p) => {
-            let mut params = core::iter::once(p.error).chain(p.params.iter());
-            write_raw::<W, _, CRC>(out, p.id, Instruction::Status.as_u8(), &mut params)
-        }
-        Packet::SyncRead(p) => {
-            let mut params = U16Pair::new(p.address, p.length)
-                .into_iter()
-                .chain(p.ids.iter());
-            write_raw::<W, _, CRC>(
-                out,
-                BROADCAST_ID,
-                Instruction::SyncRead.as_u8(),
-                &mut params,
-            )
-        }
-        Packet::SyncWrite(p) => {
-            let mut params = U16Pair::new(p.address, p.length)
-                .into_iter()
-                .chain(p.body.iter());
-            write_raw::<W, _, CRC>(
-                out,
-                BROADCAST_ID,
-                Instruction::SyncWrite.as_u8(),
-                &mut params,
-            )
-        }
-        Packet::FastSyncRead(p) => {
-            let mut params = U16Pair::new(p.address, p.length)
-                .into_iter()
-                .chain(p.ids.iter());
-            write_raw::<W, _, CRC>(
-                out,
-                BROADCAST_ID,
-                Instruction::FastSyncRead.as_u8(),
-                &mut params,
-            )
-        }
+        Packet::Status(p) => write_raw::<W, _, CRC>(
+            out,
+            RawFrame {
+                id: p.id,
+                instruction: Instruction::Status.as_u8(),
+                params: core::iter::once(p.error).chain(p.params),
+            },
+        ),
+        Packet::SyncRead(p) => write_raw::<W, _, CRC>(
+            out,
+            RawFrame {
+                id: BROADCAST_ID,
+                instruction: Instruction::SyncRead.as_u8(),
+                params: U16Pair::new(p.address, p.length).into_iter().chain(p.ids),
+            },
+        ),
+        Packet::SyncWrite(p) => write_raw::<W, _, CRC>(
+            out,
+            RawFrame {
+                id: BROADCAST_ID,
+                instruction: Instruction::SyncWrite.as_u8(),
+                params: U16Pair::new(p.address, p.length).into_iter().chain(p.body),
+            },
+        ),
+        Packet::FastSyncRead(p) => write_raw::<W, _, CRC>(
+            out,
+            RawFrame {
+                id: BROADCAST_ID,
+                instruction: Instruction::FastSyncRead.as_u8(),
+                params: U16Pair::new(p.address, p.length).into_iter().chain(p.ids),
+            },
+        ),
         Packet::BulkRead(p) => write_raw::<W, _, CRC>(
             out,
-            BROADCAST_ID,
-            Instruction::BulkRead.as_u8(),
-            &mut p.body.iter(),
+            RawFrame {
+                id: BROADCAST_ID,
+                instruction: Instruction::BulkRead.as_u8(),
+                params: p.body,
+            },
         ),
         Packet::BulkWrite(p) => write_raw::<W, _, CRC>(
             out,
-            BROADCAST_ID,
-            Instruction::BulkWrite.as_u8(),
-            &mut p.body.iter(),
+            RawFrame {
+                id: BROADCAST_ID,
+                instruction: Instruction::BulkWrite.as_u8(),
+                params: p.body,
+            },
         ),
         Packet::FastBulkRead(p) => write_raw::<W, _, CRC>(
             out,
-            BROADCAST_ID,
-            Instruction::FastBulkRead.as_u8(),
-            &mut p.body.iter(),
+            RawFrame {
+                id: BROADCAST_ID,
+                instruction: Instruction::FastBulkRead.as_u8(),
+                params: p.body,
+            },
         ),
     }
 }
