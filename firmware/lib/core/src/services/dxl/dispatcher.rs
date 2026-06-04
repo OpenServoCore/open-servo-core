@@ -1,12 +1,12 @@
 use dxl_protocol::prelude::*;
-use dxl_protocol::{BULK_REQUEST_SLOT_BYTES, FastSlot, FastSlotBody};
+use dxl_protocol::{FastSlot, FastSlotBody};
 
 use crate::regions::config;
 use crate::traits::{DxlBus, Event, ServiceEvents};
 use crate::{BaudRate, Error, RegionStorage, Router, Shared, StagedWrites, StatusReturnLevel};
 
 use super::limits::{MAX_CONTROL_RW, MAX_SLAVE_COUNT};
-use super::slot::{bulk_slot_delay_us, bytes_to_us, bytes_to_us_q88, slot_period_us};
+use super::slot::{SLOT_MARGIN, bytes_to_us, bytes_to_us_q88};
 
 fn error_to_status(e: Error) -> StatusError {
     match e {
@@ -359,11 +359,14 @@ impl<'a, B: DxlBus, E: ServiceEvents> Dispatcher<'a, B, E> {
         if ctx.level < StatusReturnLevel::Read {
             return;
         }
-        let Some(slot) = p.ids.iter().position(|id| id == ctx.our_id) else {
+        let Some(info) = p.find_slot(ctx.our_id) else {
             return;
         };
 
-        let extra = (slot as u32) * slot_period_us(ctx.baud, p.length);
+        let extra = bytes_to_us(
+            info.bytes_before + (info.index as u32) * SLOT_MARGIN,
+            ctx.baud,
+        );
 
         let len = p.length as usize;
         if len == 0 || len > MAX_CONTROL_RW {
@@ -407,26 +410,15 @@ impl<'a, B: DxlBus, E: ServiceEvents> Dispatcher<'a, B, E> {
         if ctx.level < StatusReturnLevel::Read {
             return;
         }
-        let mut body = [0u8; (MAX_SLAVE_COUNT * BULK_REQUEST_SLOT_BYTES)];
-        let Ok(n) = p.body.copy_to_slice(&mut body) else {
+        let Some(info) = p.find_slot(ctx.our_id) else {
             return;
         };
-        let body = &body[..n];
-
-        let mut found = None;
-        for tup in body.chunks_exact(5) {
-            if tup[0] == ctx.our_id {
-                let address = u16::from_le_bytes([tup[1], tup[2]]);
-                let length = u16::from_le_bytes([tup[3], tup[4]]);
-                found = Some((address, length));
-                break;
-            }
-        }
-        let Some((address, length)) = found else {
-            return;
-        };
-
-        let extra = bulk_slot_delay_us(body, ctx.our_id, ctx.baud).unwrap_or(0);
+        let address = info.address;
+        let length = info.length;
+        let extra = bytes_to_us(
+            info.bytes_before + (info.index as u32) * SLOT_MARGIN,
+            ctx.baud,
+        );
 
         let len = length as usize;
         if len == 0 || len > MAX_CONTROL_RW {
@@ -517,14 +509,12 @@ impl<'a, B: DxlBus, E: ServiceEvents> Dispatcher<'a, B, E> {
                 self.bus.send_after(ctx.rdt_us);
             }
             FastSlotPosition::Last => {
-                // find_slot just confirmed our id is present; bytes_before is Some.
-                let offset = p.bytes_before(ctx.our_id).unwrap_or(0);
-                let fire_q88_us = (ctx.rdt_us << 8) + bytes_to_us_q88(offset, ctx.baud);
+                let fire_q88_us =
+                    (ctx.rdt_us << 8) + bytes_to_us_q88(info.bytes_before, ctx.baud);
                 self.bus.send_with_snoop_crc(fire_q88_us, true);
             }
             FastSlotPosition::First | FastSlotPosition::Middle => {
-                let offset = p.bytes_before(ctx.our_id).unwrap_or(0);
-                let fire_us = ctx.rdt_us + bytes_to_us(offset, ctx.baud);
+                let fire_us = ctx.rdt_us + bytes_to_us(info.bytes_before, ctx.baud);
                 self.bus.send_after(fire_us);
             }
         }

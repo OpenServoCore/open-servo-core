@@ -17,7 +17,7 @@ mod writer;
 pub mod prelude;
 
 pub use buf::WriteBuf;
-pub use bulk::{BulkReadSlotIter, BulkSlot};
+pub use bulk::{BulkReadSlotIter, BulkSlot, BulkSlotInfo, SyncSlotInfo};
 pub use bytes::{ByteIter, Bytes, Overflow};
 pub use codec::Codec;
 pub use crc::CrcUmts;

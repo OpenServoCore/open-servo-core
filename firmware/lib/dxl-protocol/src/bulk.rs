@@ -8,6 +8,25 @@ pub struct BulkSlot {
     pub length: u16,
 }
 
+/// `BulkReadPacket::find_slot` result. `bytes_before` is the cumulative wire
+/// length of all Status frames before this slot's reply in the response train
+/// (`Σ over preceding slots (RESPONSE_HEADER_BYTES + slot.length + CRC_BYTES)`).
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub struct BulkSlotInfo {
+    pub index: usize,
+    pub id: u8,
+    pub address: u16,
+    pub length: u16,
+    pub bytes_before: u32,
+}
+
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub struct SyncSlotInfo {
+    pub index: usize,
+    /// `index × (RESPONSE_HEADER_BYTES + length + CRC_BYTES)`.
+    pub bytes_before: u32,
+}
+
 #[derive(Clone)]
 pub struct BulkReadSlotIter<'a> {
     inner: ByteIter<'a>,
@@ -38,23 +57,23 @@ impl<'a> BulkReadPacket<'a> {
         }
     }
 
-    /// `(slot_index, slot)` for `id`, or `None`.
-    pub fn find_slot(&self, id: u8) -> Option<(usize, BulkSlot)> {
-        self.slots().enumerate().find(|(_, s)| s.id == id)
-    }
-
-    /// Response-stream bytes emitted before `id`'s frame:
-    /// `Σ over preceding slots (RESPONSE_HEADER_BYTES + slot.length + CRC_BYTES)`.
-    /// `None` if `id` is not in the request.
-    pub fn bytes_before(&self, id: u8) -> Option<u32> {
-        let mut bytes = 0u32;
-        for s in self.slots() {
-            if s.id == id {
-                return Some(bytes);
+    /// Walk slots once; for the first slot matching `id`, return its position,
+    /// fields, and the cumulative response-stream offset before it.
+    pub fn find_slot(&self, id: u8) -> Option<BulkSlotInfo> {
+        let mut bytes_before = 0u32;
+        for (index, slot) in self.slots().enumerate() {
+            if slot.id == id {
+                return Some(BulkSlotInfo {
+                    index,
+                    id: slot.id,
+                    address: slot.address,
+                    length: slot.length,
+                    bytes_before,
+                });
             }
-            bytes = bytes
+            bytes_before = bytes_before
                 .saturating_add(RESPONSE_HEADER_BYTES as u32)
-                .saturating_add(s.length as u32)
+                .saturating_add(slot.length as u32)
                 .saturating_add(CRC_BYTES as u32);
         }
         None
@@ -62,25 +81,17 @@ impl<'a> BulkReadPacket<'a> {
 }
 
 impl<'a> SyncReadPacket<'a> {
-    /// Index of `id` in the id list, or `None`.
-    pub fn slot_index(&self, id: u8) -> Option<usize> {
-        self.ids.iter().position(|b| b == id)
-    }
-
-    /// Total ids in the request (unstuffed).
-    pub fn slot_count(&self) -> usize {
-        self.ids.unstuffed_len()
-    }
-
-    /// Response-stream bytes emitted before `id`'s frame:
-    /// `slot_index × (RESPONSE_HEADER_BYTES + length + CRC_BYTES)`.
-    /// `None` if `id` is not in the request.
-    pub fn bytes_before(&self, id: u8) -> Option<u32> {
-        let slot = self.slot_index(id)?;
+    /// `index` and the cumulative response-stream offset for `id`'s reply slot.
+    pub fn find_slot(&self, id: u8) -> Option<SyncSlotInfo> {
+        let index = self.ids.iter().position(|b| b == id)?;
         let per_slot = (RESPONSE_HEADER_BYTES as u32)
             .saturating_add(self.length as u32)
             .saturating_add(CRC_BYTES as u32);
-        Some(per_slot.saturating_mul(slot as u32))
+        let bytes_before = per_slot.saturating_mul(index as u32);
+        Some(SyncSlotInfo {
+            index,
+            bytes_before,
+        })
     }
 }
 
@@ -127,18 +138,24 @@ mod tests {
     }
 
     #[test]
-    fn bulk_find_slot_returns_index_and_slot() {
+    fn bulk_find_slot_returns_info_with_bytes_before() {
+        // slot 0 id=9 len=4, slot 1 id=0 len=2.
         let body = [9, 0xFE, 0xFE, 4, 0, 0, 0x12, 0, 2, 0];
-        let (idx, slot) = bulk(&body).find_slot(0).expect("our id present");
-        assert_eq!(idx, 1);
-        assert_eq!(
-            slot,
-            BulkSlot {
-                id: 0,
-                address: 0x12,
-                length: 2
-            }
-        );
+        let info = bulk(&body).find_slot(0).expect("id present");
+        assert_eq!(info.index, 1);
+        assert_eq!(info.id, 0);
+        assert_eq!(info.address, 0x12);
+        assert_eq!(info.length, 2);
+        // RESPONSE_HEADER_BYTES(9) + 4 + CRC_BYTES(2) = 15
+        assert_eq!(info.bytes_before, 15);
+    }
+
+    #[test]
+    fn bulk_find_slot_first_slot_has_zero_bytes_before() {
+        let body = [5, 0, 0, 4, 0, 7, 0, 0, 4, 0];
+        let info = bulk(&body).find_slot(5).expect("id present");
+        assert_eq!(info.index, 0);
+        assert_eq!(info.bytes_before, 0);
     }
 
     #[test]
@@ -148,50 +165,35 @@ mod tests {
     }
 
     #[test]
-    fn bulk_bytes_before_sums_response_frames() {
+    fn bulk_find_slot_sums_varied_response_lengths() {
         // slot 0 id=1 len=4, slot 1 id=2 len=8, slot 2 id=3 len=2.
         let body = [1, 0, 0, 4, 0, 2, 0, 0, 8, 0, 3, 0, 0, 2, 0];
         let p = bulk(&body);
-        assert_eq!(p.bytes_before(1), Some(0));
+        assert_eq!(p.find_slot(1).unwrap().bytes_before, 0);
         // RESPONSE_HEADER_BYTES(9) + 4 + CRC_BYTES(2) = 15
-        assert_eq!(p.bytes_before(2), Some(15));
+        assert_eq!(p.find_slot(2).unwrap().bytes_before, 15);
         // 15 + 9 + 8 + 2 = 34
-        assert_eq!(p.bytes_before(3), Some(34));
+        assert_eq!(p.find_slot(3).unwrap().bytes_before, 34);
     }
 
     #[test]
-    fn bulk_bytes_before_missing_id_returns_none() {
-        let body = [1, 0, 0, 4, 0];
-        assert!(bulk(&body).bytes_before(9).is_none());
-    }
-
-    #[test]
-    fn sync_slot_index_finds_id() {
-        assert_eq!(sync(0, 2, &[9, 7, 0]).slot_index(7), Some(1));
-    }
-
-    #[test]
-    fn sync_slot_index_missing_returns_none() {
-        assert!(sync(0, 1, &[1, 2, 3]).slot_index(9).is_none());
-    }
-
-    #[test]
-    fn sync_slot_count_counts_ids() {
-        assert_eq!(sync(0, 1, &[1, 2, 3]).slot_count(), 3);
-    }
-
-    #[test]
-    fn sync_bytes_before_uniform_payload() {
+    fn sync_find_slot_returns_index_and_bytes_before() {
         let p = sync(0, 4, &[10, 20, 30]);
-        assert_eq!(p.bytes_before(10), Some(0));
-        // slot 1: 1 × (RESPONSE_HEADER_BYTES(9) + 4 + CRC_BYTES(2)) = 15
-        assert_eq!(p.bytes_before(20), Some(15));
-        // slot 2: 2 × 15 = 30
-        assert_eq!(p.bytes_before(30), Some(30));
+        let info = p.find_slot(20).expect("id present");
+        assert_eq!(info.index, 1);
+        // 1 × (RESPONSE_HEADER_BYTES(9) + 4 + CRC_BYTES(2)) = 15
+        assert_eq!(info.bytes_before, 15);
     }
 
     #[test]
-    fn sync_bytes_before_missing_id_returns_none() {
-        assert!(sync(0, 4, &[1, 2, 3]).bytes_before(9).is_none());
+    fn sync_find_slot_first_slot_has_zero_bytes_before() {
+        let info = sync(0, 4, &[10, 20, 30]).find_slot(10).expect("id present");
+        assert_eq!(info.index, 0);
+        assert_eq!(info.bytes_before, 0);
+    }
+
+    #[test]
+    fn sync_find_slot_missing_id_returns_none() {
+        assert!(sync(0, 4, &[1, 2, 3]).find_slot(9).is_none());
     }
 }

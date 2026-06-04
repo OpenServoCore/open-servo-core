@@ -754,7 +754,7 @@ fn sync_read_in_slot_zero_replies_immediately() {
 
 #[test]
 fn sync_read_in_later_slot_schedules_with_slot_delay() {
-    use super::slot::slot_period_us;
+    use super::slot::{SLOT_MARGIN, bytes_to_us};
     use crate::BaudRate;
     let shared = Shared::new();
     let mut io = FakeIo::new();
@@ -767,7 +767,10 @@ fn sync_read_in_later_slot_schedules_with_slot_delay() {
 
     assert_eq!(io.bus.send_count, 0);
     assert_eq!(io.bus.after_count, 1);
-    let expected = 2 * slot_period_us(BaudRate::B1000000, 2);
+    // bytes_before = 2 × (RESPONSE_HEADER_BYTES(9) + 2 + CRC_BYTES(2)) = 26
+    // total bytes = 26 + 2 × SLOT_MARGIN = 26 + 8 = 34
+    let bytes = 2 * (9 + 2 + 2) + 2 * SLOT_MARGIN;
+    let expected = bytes_to_us(bytes, BaudRate::B1000000);
     assert_eq!(io.bus.last_after_delay_us, Some(expected));
 }
 
@@ -853,12 +856,13 @@ fn bulk_read_in_slot_zero_replies_immediately() {
 
 #[test]
 fn bulk_read_in_later_slot_sums_preceding_slot_periods() {
-    use super::slot::slot_period_us;
+    use super::slot::{SLOT_MARGIN, bytes_to_us};
     use crate::BaudRate;
     let shared = Shared::new();
     let mut io = FakeIo::new();
     let mut h = Dxl::new();
 
+    // slot 0 id=9 len=4, slot 1 id=7 len=8, slot 2 id=0 len=2.
     let body = [9, 0, 0, 4, 0, 7, 0, 0, 8, 0, 0, 0, 0, 2, 0];
     let req = encode(&Packet::BulkRead(BulkReadPacket::new(&body)));
     io.feed(&req);
@@ -866,7 +870,9 @@ fn bulk_read_in_later_slot_sums_preceding_slot_periods() {
 
     assert_eq!(io.bus.send_count, 0);
     assert_eq!(io.bus.after_count, 1);
-    let expected = slot_period_us(BaudRate::B1000000, 4) + slot_period_us(BaudRate::B1000000, 8);
+    // bytes_before = (9+4+2) + (9+8+2) = 34; margin = 2 × SLOT_MARGIN = 8.
+    let bytes = (9 + 4 + 2) + (9 + 8 + 2) + 2 * SLOT_MARGIN;
+    let expected = bytes_to_us(bytes, BaudRate::B1000000);
     assert_eq!(io.bus.last_after_delay_us, Some(expected));
 }
 
@@ -1047,7 +1053,7 @@ fn fast_sync_read_middle_slot_emits_body_only_with_offset_delay() {
     assert_eq!(io.bus.after_count, 1);
     assert_eq!(io.bus.send_count, 0);
     assert_eq!(io.bus.snoop_count, 0);
-    let expected = bytes_to_us(p.bytes_before(0).unwrap(), BaudRate::B1000000);
+    let expected = bytes_to_us(p.find_slot(0, 32).unwrap().bytes_before, BaudRate::B1000000);
     assert_eq!(io.bus.last_after_delay_us, Some(expected));
 
     assert_eq!(io.bus.tx.len(), 4);
@@ -1070,7 +1076,7 @@ fn fast_sync_read_last_slot_schedules_snoop() {
     assert_eq!(io.bus.snoop_count, 1);
     assert_eq!(io.bus.send_count, 0);
     assert_eq!(io.bus.after_count, 0);
-    let expected_fire = bytes_to_us_q88(p.bytes_before(0).unwrap(), BaudRate::B1000000);
+    let expected_fire = bytes_to_us_q88(p.find_slot(0, 32).unwrap().bytes_before, BaudRate::B1000000);
     assert_eq!(io.bus.last_snoop_delay_q88_us, Some(expected_fire));
     assert_eq!(io.bus.last_snoop_arg, Some(true));
 
@@ -1197,7 +1203,7 @@ fn fast_bulk_read_middle_slot_uses_per_slot_lengths_for_delay() {
     assert_eq!(io.bus.after_count, 1);
     assert_eq!(io.bus.send_count, 0);
     assert_eq!(io.bus.snoop_count, 0);
-    let expected = bytes_to_us(p.bytes_before(0).unwrap(), BaudRate::B1000000);
+    let expected = bytes_to_us(p.find_slot(0, 32).unwrap().bytes_before, BaudRate::B1000000);
     assert_eq!(io.bus.last_after_delay_us, Some(expected));
 
     assert_eq!(io.bus.tx.len(), 4);
@@ -1221,7 +1227,7 @@ fn fast_bulk_read_last_slot_schedules_snoop() {
     assert_eq!(io.bus.snoop_count, 1);
     assert_eq!(io.bus.send_count, 0);
     assert_eq!(io.bus.after_count, 0);
-    let expected_fire = bytes_to_us_q88(p.bytes_before(0).unwrap(), BaudRate::B1000000);
+    let expected_fire = bytes_to_us_q88(p.find_slot(0, 32).unwrap().bytes_before, BaudRate::B1000000);
     assert_eq!(io.bus.last_snoop_delay_q88_us, Some(expected_fire));
     assert_eq!(io.bus.last_snoop_arg, Some(true));
 
