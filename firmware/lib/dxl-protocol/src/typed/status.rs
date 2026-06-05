@@ -1,4 +1,4 @@
-use crate::wire::{CrcUmts, RawFrame, WriteBuf, WriteError, write_raw};
+use crate::wire::{Bytes, CrcUmts, RawFrame, WriteBuf, WriteError, write_raw};
 
 use super::fast_decoder::{FastBulkReadStatus, FastSyncReadStatus};
 use super::instruction::Instruction;
@@ -15,19 +15,19 @@ pub struct PingStatus {
 #[derive(Copy, Clone, Debug)]
 pub struct ReadStatus<'a> {
     pub id: u8,
-    pub data: &'a [u8],
+    pub data: Bytes<'a>,
 }
 
 #[derive(Copy, Clone, Debug)]
 pub struct SyncReadStatus<'a> {
     pub id: u8,
-    pub data: &'a [u8],
+    pub data: Bytes<'a>,
 }
 
 #[derive(Copy, Clone, Debug)]
 pub struct BulkReadStatus<'a> {
     pub id: u8,
-    pub data: &'a [u8],
+    pub data: Bytes<'a>,
 }
 
 #[derive(Copy, Clone, Debug)]
@@ -104,7 +104,7 @@ pub(crate) fn write_status<W: WriteBuf, CRC: CrcUmts, S: StatusExt>(
         Status::Read(ReadStatus { id, data })
         | Status::SyncRead(SyncReadStatus { id, data })
         | Status::BulkRead(BulkReadStatus { id, data }) => {
-            write_status_frame::<W, _, CRC>(out, id, StatusError::None, data.iter().copied())
+            write_status_frame::<W, _, CRC>(out, id, StatusError::None, data)
         }
         Status::Write(WriteStatus { id })
         | Status::RegWrite(RegWriteStatus { id })

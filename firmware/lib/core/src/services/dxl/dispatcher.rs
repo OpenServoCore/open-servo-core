@@ -167,7 +167,7 @@ impl<'a, B: DxlBus, E: ServiceEvents> Dispatcher<'a, B, E> {
         let reply = match self.shared.table.read_bytes(p.address, &mut buf[..len]) {
             Ok(()) => Status::Read(ReadStatus {
                 id,
-                data: &buf[..len],
+                data: Bytes::unstuffed(&buf[..len]),
             }),
             Err(e) => Status::Error(ErrorStatus {
                 id,
@@ -346,7 +346,7 @@ impl<'a, B: DxlBus, E: ServiceEvents> Dispatcher<'a, B, E> {
         let reply = match self.shared.table.read_bytes(p.address, &mut buf[..len]) {
             Ok(()) => Status::SyncRead(SyncReadStatus {
                 id: ctx.our_id,
-                data: &buf[..len],
+                data: Bytes::unstuffed(&buf[..len]),
             }),
             Err(e) => Status::Error(ErrorStatus {
                 id: ctx.our_id,
@@ -389,7 +389,7 @@ impl<'a, B: DxlBus, E: ServiceEvents> Dispatcher<'a, B, E> {
         let reply = match self.shared.table.read_bytes(info.address, &mut buf[..len]) {
             Ok(()) => Status::BulkRead(BulkReadStatus {
                 id: ctx.our_id,
-                data: &buf[..len],
+                data: Bytes::unstuffed(&buf[..len]),
             }),
             Err(e) => Status::Error(ErrorStatus {
                 id: ctx.our_id,

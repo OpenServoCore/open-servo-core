@@ -79,15 +79,15 @@ fn decode_success<'a, S: StatusExt>(
         }
         Instruction::Read => Ok(Status::Read(ReadStatus {
             id,
-            data: contiguous_params(&raw)?,
+            data: raw.params,
         })),
         Instruction::SyncRead => Ok(Status::SyncRead(SyncReadStatus {
             id,
-            data: contiguous_params(&raw)?,
+            data: raw.params,
         })),
         Instruction::BulkRead => Ok(Status::BulkRead(BulkReadStatus {
             id,
-            data: contiguous_params(&raw)?,
+            data: raw.params,
         })),
         Instruction::Write => empty_params(&raw).map(|_| Status::Write(WriteStatus { id })),
         Instruction::RegWrite => {
@@ -106,25 +106,6 @@ fn empty_params(raw: &RawStatus<'_>) -> Result<(), DecodeError> {
         return Err(DecodeError::BadParams);
     }
     Ok(())
-}
-
-/// `Read`-family responses store their data as a `&[u8]` for ergonomic
-/// indexing. If the payload spans a ring boundary (split Bytes) we fall back
-/// to `BadParams` since `&[u8]` can't represent two segments; callers that
-/// need ring-split support should hold the `RawStatus` and iterate it
-/// directly. (This restriction goes away when commit 8 unifies the field
-/// type to `Bytes<'a>`.)
-fn contiguous_params<'a>(raw: &RawStatus<'a>) -> Result<&'a [u8], DecodeError> {
-    use crate::wire::Bytes;
-    match raw.params {
-        Bytes::Unstuffed { head, tail } if tail.is_empty() => Ok(head),
-        Bytes::Stuffed {
-            head,
-            tail,
-            prefix: _,
-        } if tail.is_empty() => Ok(head),
-        _ => Err(DecodeError::BadParams),
-    }
 }
 
 #[cfg(test)]
@@ -197,7 +178,8 @@ mod tests {
         match s {
             Status::Read(r) => {
                 assert_eq!(r.id, 7);
-                assert_eq!(r.data, &data);
+                let collected: heapless::Vec<u8, 8> = r.data.iter().collect();
+                assert_eq!(&collected[..], &data);
             }
             other => panic!("not Read: {other:?}"),
         }
