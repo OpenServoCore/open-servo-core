@@ -1,31 +1,55 @@
+/// DXL 2.0 instruction byte. `Ext(b)` carries any byte outside the standard
+/// set — construct via [`Self::from_u8`], which routes unknown bytes there;
+/// pattern-match `Ext(b)` to dispatch to an [`InstructionExt`](super::InstructionExt)
+/// or [`StatusExt`](super::StatusExt) extension.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
-#[repr(u8)]
 pub enum Instruction {
-    Ping = 0x01,
-    Read = 0x02,
-    Write = 0x03,
-    RegWrite = 0x04,
-    Action = 0x05,
-    FactoryReset = 0x06,
-    Reboot = 0x08,
-    Clear = 0x10,
-    ControlTableBackup = 0x20,
-    Status = 0x55,
-    SyncRead = 0x82,
-    SyncWrite = 0x83,
-    FastSyncRead = 0x8A,
-    BulkRead = 0x92,
-    BulkWrite = 0x93,
-    FastBulkRead = 0x9A,
+    Ping,
+    Read,
+    Write,
+    RegWrite,
+    Action,
+    FactoryReset,
+    Reboot,
+    Clear,
+    ControlTableBackup,
+    Status,
+    SyncRead,
+    SyncWrite,
+    FastSyncRead,
+    BulkRead,
+    BulkWrite,
+    FastBulkRead,
+    Ext(u8),
 }
 
 impl Instruction {
     pub const fn as_u8(self) -> u8 {
-        self as u8
+        match self {
+            Self::Ping => 0x01,
+            Self::Read => 0x02,
+            Self::Write => 0x03,
+            Self::RegWrite => 0x04,
+            Self::Action => 0x05,
+            Self::FactoryReset => 0x06,
+            Self::Reboot => 0x08,
+            Self::Clear => 0x10,
+            Self::ControlTableBackup => 0x20,
+            Self::Status => 0x55,
+            Self::SyncRead => 0x82,
+            Self::SyncWrite => 0x83,
+            Self::FastSyncRead => 0x8A,
+            Self::BulkRead => 0x92,
+            Self::BulkWrite => 0x93,
+            Self::FastBulkRead => 0x9A,
+            Self::Ext(b) => b,
+        }
     }
 
-    pub const fn from_u8(b: u8) -> Option<Self> {
-        Some(match b {
+    /// Total: standard bytes map to their named variant; everything else
+    /// becomes [`Self::Ext`] for extension dispatch.
+    pub const fn from_u8(b: u8) -> Self {
+        match b {
             0x01 => Self::Ping,
             0x02 => Self::Read,
             0x03 => Self::Write,
@@ -42,7 +66,7 @@ impl Instruction {
             0x92 => Self::BulkRead,
             0x93 => Self::BulkWrite,
             0x9A => Self::FastBulkRead,
-            _ => return None,
-        })
+            _ => Self::Ext(b),
+        }
     }
 }

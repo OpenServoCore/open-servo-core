@@ -20,9 +20,10 @@ pub enum DecodeError {
 pub fn decode<'a, X: InstructionExt>(
     raw: RawFrame<Bytes<'a>>,
 ) -> Result<Packet<'a, X>, DecodeError> {
-    let instruction =
-        Instruction::from_u8(raw.instruction).ok_or(DecodeError::UnknownInstruction)?;
-    decode_typed::<X>(instruction, raw.id, raw.params)
+    match Instruction::from_u8(raw.instruction) {
+        Instruction::Ext(_) => Err(DecodeError::UnknownInstruction),
+        instruction => decode_typed::<X>(instruction, raw.id, raw.params),
+    }
 }
 
 fn decode_typed<'a, X: InstructionExt>(
@@ -121,6 +122,7 @@ fn decode_typed<'a, X: InstructionExt>(
         BulkRead => Ok(Packet::BulkRead(BulkReadPacket { body: params })),
         BulkWrite => Ok(Packet::BulkWrite(BulkWritePacket { body: params })),
         FastBulkRead => Ok(Packet::FastBulkRead(FastBulkReadPacket { body: params })),
+        Ext(_) => Err(DecodeError::UnknownInstruction),
     }
 }
 

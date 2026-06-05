@@ -14,8 +14,8 @@ use super::status_error::StatusError;
 use super::status_ext::StatusExt;
 
 /// Decode a Status-instruction frame into a typed [`Status`], given the
-/// instruction byte of the request that preceded it (callers track this from
-/// their own request log).
+/// instruction of the request that preceded it (callers track this from
+/// their own request log; build it with [`Instruction::from_u8`]).
 ///
 /// - Native single-slot instructions (Ping/Read/Write/RegWrite/Action/Reboot/
 ///   SyncRead/BulkRead) decode to their typed variants. A nonzero error byte
@@ -23,12 +23,20 @@ use super::status_ext::StatusExt;
 /// - Native Fast Sync/Bulk Read responses decode to [`Status::FastSyncRead`] /
 ///   [`Status::FastBulkRead`] — call the variant's `slots()` to walk per-slot
 ///   data.
-/// - Extension instructions dispatch to [`StatusExt::decode`].
-/// - Unknown instructions return [`DecodeError::UnknownInstruction`].
+/// - [`Instruction::Ext`] routes to [`StatusExt::decode`]; `None` from the
+///   extension surfaces as [`DecodeError::UnknownInstruction`].
 pub fn decode_status<'a, S: StatusExt>(
     instr: Instruction,
     raw: RawStatus<'a>,
 ) -> Result<Status<'a, S>, DecodeError> {
+    if let Instruction::Ext(b) = instr {
+        return match S::decode(b, raw) {
+            Some(Ok(v)) => Ok(Status::Ext(v)),
+            Some(Err(e)) => Err(e),
+            None => Err(DecodeError::UnknownInstruction),
+        };
+    }
+
     // Slot 0's error byte is the frame error byte (per spec). Fast Sync/Bulk
     // Read responses defer error handling to the per-slot view, so we keep
     // raw bytes for those and route here.
@@ -195,5 +203,71 @@ mod tests {
             }
             other => panic!("not FastSyncRead: {other:?}"),
         }
+    }
+
+    #[derive(Copy, Clone, Debug)]
+    enum ExtVariant<'a> {
+        Calibrate { id: u8, axis: u8, payload: &'a [u8] },
+    }
+
+    #[derive(Copy, Clone, Debug)]
+    struct OscExt;
+    impl StatusExt for OscExt {
+        type Variant<'a> = ExtVariant<'a>;
+        fn decode<'a>(
+            instr: u8,
+            raw: RawStatus<'a>,
+        ) -> Option<Result<Self::Variant<'a>, DecodeError>> {
+            if instr != 0xE0 {
+                return None;
+            }
+            let mut it = raw.params.iter();
+            let axis = match it.next() {
+                Some(b) => b,
+                None => return Some(Err(DecodeError::BadParams)),
+            };
+            // Rest of the bytes — for this test we just snapshot len.
+            let _ = it.count();
+            Some(Ok(ExtVariant::Calibrate {
+                id: raw.id,
+                axis,
+                payload: &[],
+            }))
+        }
+        fn write<'a, W: crate::wire::WriteBuf, CRC: crate::wire::CrcUmts>(
+            _: &Self::Variant<'a>,
+            _: &mut W,
+        ) -> Result<(), crate::wire::WriteError> {
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn ext_instruction_dispatches_to_status_ext_decode() {
+        let raw = RawStatus {
+            id: 9,
+            error: 0,
+            params: Bytes::unstuffed(&[0x02, 0xFF]),
+        };
+        let s = decode_status::<OscExt>(Instruction::from_u8(0xE0), raw).unwrap();
+        match s {
+            Status::Ext(ExtVariant::Calibrate { id, axis, .. }) => {
+                assert_eq!(id, 9);
+                assert_eq!(axis, 0x02);
+            }
+            other => panic!("not Ext::Calibrate: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn ext_instruction_unclaimed_surfaces_unknown_instruction() {
+        let raw = RawStatus {
+            id: 1,
+            error: 0,
+            params: Bytes::unstuffed(&[]),
+        };
+        // 0xE1 isn't in OscExt's claimed set; ext returns None → UnknownInstruction.
+        let err = decode_status::<OscExt>(Instruction::from_u8(0xE1), raw).unwrap_err();
+        assert!(matches!(err, DecodeError::UnknownInstruction));
     }
 }
