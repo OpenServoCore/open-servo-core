@@ -1,6 +1,26 @@
-use crate::wire::{ByteIter, CRC_BYTES, RESPONSE_HEADER_BYTES};
+use crate::wire::{ByteIter, Bytes, CRC_BYTES, RESPONSE_HEADER_BYTES};
 
 use super::packet::{BulkReadPacket, SyncReadPacket};
+use super::status_error::StatusError;
+
+/// Wire-faithful piece of a Fast Sync / Fast Bulk Read response: one slave's
+/// `(id, error, data)` block. The same shape appears in two contexts:
+///
+/// - **Slave TX** (single slot): the chip emits one `Slot` via
+///   [`write_slot`](crate::write_slot) tagged with its [`SlotPosition`] in the
+///   coalesced response.
+/// - **Master RX** (multi-slot): `FastSyncReadStatus::slots` and
+///   `FastBulkReadStatus::slots` walk the parsed coalesced frame and yield a
+///   `Slot` per slave.
+///
+/// `data` is the payload Bytes — unstuffed by spec (Fast Read decoding is
+/// positional, not trigger-driven).
+#[derive(Copy, Clone, Debug)]
+pub struct Slot<'a> {
+    pub id: u8,
+    pub error: StatusError,
+    pub data: Bytes<'a>,
+}
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub struct BulkSlot {

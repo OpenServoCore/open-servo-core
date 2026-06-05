@@ -1,6 +1,9 @@
 use core::marker::PhantomData;
 
-use crate::typed::{self, DecodeError, InstructionExt, NoInstructionExt, NoStatusExt, Packet, Status, StatusExt};
+use crate::typed::{
+    self, DecodeError, InstructionExt, NoInstructionExt, NoStatusExt, Packet, Slot, SlotPosition,
+    Status, StatusExt,
+};
 use crate::wire::{self, CrcUmts, ParseError, RxView, WriteBuf, WriteError};
 
 /// Typed namespace for the protocol's parse/write entry points. Bind it once
@@ -43,7 +46,15 @@ impl<CRC: CrcUmts, X: InstructionExt, R: StatusExt> Codec<CRC, X, R> {
         typed::write::<W, CRC, X>(out, packet)
     }
 
-    pub fn write_status<W: WriteBuf>(out: &mut W, reply: &Status<'_, R>) -> Result<(), WriteError> {
-        typed::write_status::<W, CRC, R>(out, reply)
+    pub fn write_status<W: WriteBuf>(out: &mut W, status: &Status<'_, R>) -> Result<(), WriteError> {
+        typed::write_status::<W, CRC, R>(out, status)
+    }
+
+    pub fn write_slot<W: WriteBuf>(
+        out: &mut W,
+        slot: &Slot<'_>,
+        position: SlotPosition,
+    ) -> Result<(), WriteError> {
+        typed::write_slot::<W, CRC>(out, slot, position)
     }
 }

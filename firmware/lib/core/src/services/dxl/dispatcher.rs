@@ -1,4 +1,3 @@
-use dxl_protocol::FastReadVariant;
 use dxl_protocol::prelude::*;
 
 use crate::regions::hooks::ControlTableHooks;
@@ -422,27 +421,26 @@ impl<'a, B: DxlBus, E: ServiceEvents> Dispatcher<'a, B, E> {
             slot_index: info.our_slot as u16,
         };
 
+        // Fast Read failure path: emit `length` zero bytes so the response
+        // stays positionally aligned; the error byte carries the code.
+        // Re-zero the buf since `read_bytes` may have partially modified it.
         let mut buf = [0u8; MAX_CONTROL_RW];
-        let reply = match self.shared.table.read_bytes(info.address, &mut buf[..len]) {
-            Ok(()) => match P::VARIANT {
-                FastReadVariant::Sync => Status::FastSyncRead(FastSyncReadStatus {
-                    position,
-                    id: ctx.our_id,
-                    data: &buf[..len],
-                }),
-                FastReadVariant::Bulk => Status::FastBulkRead(FastBulkReadStatus {
-                    position,
-                    id: ctx.our_id,
-                    data: &buf[..len],
-                }),
-            },
-            Err(e) => Status::FastError(FastErrorStatus {
-                position,
-                id: ctx.our_id,
-                error: error_to_status(e),
-                length: info.length,
-            }),
+        let (error, data_len) = match self.shared.table.read_bytes(info.address, &mut buf[..len]) {
+            Ok(()) => (StatusError::None, len),
+            Err(e) => {
+                for b in &mut buf[..len] {
+                    *b = 0;
+                }
+                (error_to_status(e), len)
+            }
         };
-        self.bus.send(reply, schedule);
+        // Sync vs Bulk produce identical wire bytes on the slave; the master
+        // disambiguates by remembering which request it sent.
+        let slot = Slot {
+            id: ctx.our_id,
+            error,
+            data: Bytes::unstuffed(&buf[..data_len]),
+        };
+        self.bus.send_slot(slot, position, schedule);
     }
 }

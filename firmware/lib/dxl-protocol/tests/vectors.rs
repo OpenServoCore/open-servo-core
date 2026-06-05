@@ -58,18 +58,23 @@ const BODY_5: &[u8] = &[0x01, 0x00, 0x00, 0x00];
 const BODY_6: &[u8] = &[0x02, 0x00, 0x00, 0x00];
 const BODY_7: &[u8] = &[0x03, 0x00, 0x00, 0x00];
 
+fn slot(id: u8, error: StatusError, data: &[u8]) -> Slot<'_> {
+    Slot {
+        id,
+        error,
+        data: Bytes::unstuffed(data),
+    }
+}
+
 #[test]
-fn write_fast_slot_first_emits_header_then_body() {
+fn write_slot_first_emits_header_then_body() {
     let mut out: Vec<u8, 32> = Vec::new();
-    Wire::write_status(
+    Wire::write_slot(
         &mut out,
-        &Status::FastSyncRead(FastSyncReadStatus {
-            position: FastPosition::First {
-                packet_length: 0x0015,
-            },
-            id: 5,
-            data: BODY_5,
-        }),
+        &slot(5, StatusError::None, BODY_5),
+        SlotPosition::First {
+            packet_length: 0x0015,
+        },
     )
     .unwrap();
     assert_eq!(
@@ -81,30 +86,24 @@ fn write_fast_slot_first_emits_header_then_body() {
 }
 
 #[test]
-fn write_fast_slot_middle_emits_body_only() {
+fn write_slot_middle_emits_body_only() {
     let mut out: Vec<u8, 32> = Vec::new();
-    Wire::write_status(
+    Wire::write_slot(
         &mut out,
-        &Status::FastSyncRead(FastSyncReadStatus {
-            position: FastPosition::Middle,
-            id: 6,
-            data: BODY_6,
-        }),
+        &slot(6, StatusError::None, BODY_6),
+        SlotPosition::Middle,
     )
     .unwrap();
     assert_eq!(out.as_slice(), &[0x00, 0x06, 0x02, 0x00, 0x00, 0x00]);
 }
 
 #[test]
-fn write_fast_slot_last_reserves_crc_placeholder() {
+fn write_slot_last_reserves_crc_placeholder() {
     let mut out: Vec<u8, 32> = Vec::new();
-    Wire::write_status(
+    Wire::write_slot(
         &mut out,
-        &Status::FastSyncRead(FastSyncReadStatus {
-            position: FastPosition::Last,
-            id: 7,
-            data: BODY_7,
-        }),
+        &slot(7, StatusError::None, BODY_7),
+        SlotPosition::Last,
     )
     .unwrap();
     assert_eq!(
@@ -114,17 +113,14 @@ fn write_fast_slot_last_reserves_crc_placeholder() {
 }
 
 #[test]
-fn write_fast_slot_only_emits_header_body_and_computed_crc() {
+fn write_slot_only_emits_header_body_and_computed_crc() {
     let mut out: Vec<u8, 32> = Vec::new();
-    Wire::write_status(
+    Wire::write_slot(
         &mut out,
-        &Status::FastSyncRead(FastSyncReadStatus {
-            position: FastPosition::Only {
-                packet_length: 0x0009,
-            },
-            id: 5,
-            data: BODY_5,
-        }),
+        &slot(5, StatusError::None, BODY_5),
+        SlotPosition::Only {
+            packet_length: 0x0009,
+        },
     )
     .unwrap();
     let header_and_body = [
@@ -138,35 +134,26 @@ fn write_fast_slot_only_emits_header_body_and_computed_crc() {
 }
 
 #[test]
-fn write_fast_slot_three_slave_chain_assembles_to_valid_status_frame() {
+fn write_slot_three_slave_response_assembles_to_valid_status_frame() {
     let mut out: Vec<u8, 64> = Vec::new();
-    Wire::write_status(
+    Wire::write_slot(
         &mut out,
-        &Status::FastSyncRead(FastSyncReadStatus {
-            position: FastPosition::First {
-                packet_length: 0x0015,
-            },
-            id: 5,
-            data: BODY_5,
-        }),
+        &slot(5, StatusError::None, BODY_5),
+        SlotPosition::First {
+            packet_length: 0x0015,
+        },
     )
     .unwrap();
-    Wire::write_status(
+    Wire::write_slot(
         &mut out,
-        &Status::FastSyncRead(FastSyncReadStatus {
-            position: FastPosition::Middle,
-            id: 6,
-            data: BODY_6,
-        }),
+        &slot(6, StatusError::None, BODY_6),
+        SlotPosition::Middle,
     )
     .unwrap();
-    Wire::write_status(
+    Wire::write_slot(
         &mut out,
-        &Status::FastSyncRead(FastSyncReadStatus {
-            position: FastPosition::Last,
-            id: 7,
-            data: BODY_7,
-        }),
+        &slot(7, StatusError::None, BODY_7),
+        SlotPosition::Last,
     )
     .unwrap();
 
@@ -188,17 +175,14 @@ fn write_fast_slot_three_slave_chain_assembles_to_valid_status_frame() {
 }
 
 #[test]
-fn write_fast_slot_overflow_truncates() {
+fn write_slot_overflow_truncates() {
     let mut out: Vec<u8, 8> = Vec::new();
-    let err = Wire::write_status(
+    let err = Wire::write_slot(
         &mut out,
-        &Status::FastSyncRead(FastSyncReadStatus {
-            position: FastPosition::First {
-                packet_length: 0x0015,
-            },
-            id: 5,
-            data: BODY_5,
-        }),
+        &slot(5, StatusError::None, BODY_5),
+        SlotPosition::First {
+            packet_length: 0x0015,
+        },
     )
     .unwrap_err();
     assert_eq!(err, WriteError::Overflow);
@@ -206,19 +190,18 @@ fn write_fast_slot_overflow_truncates() {
 }
 
 #[test]
-fn write_fast_error_emits_zero_payload_with_error_byte() {
+fn write_slot_error_emits_caller_supplied_payload_with_error_byte() {
+    // Spec: a Fast Read failure emits `length` zero bytes for the data field
+    // so the response stays positionally aligned. The slave is expected to
+    // pass a zero-buffer slice as the slot's `data`.
+    let zero = [0u8; 4];
     let mut out: Vec<u8, 32> = Vec::new();
-    Wire::write_status(
+    Wire::write_slot(
         &mut out,
-        &Status::FastError(FastErrorStatus {
-            position: FastPosition::Middle,
-            id: 7,
-            error: StatusError::DataRange,
-            length: 4,
-        }),
+        &slot(7, StatusError::DataRange, &zero),
+        SlotPosition::Middle,
     )
     .unwrap();
-    // Middle body shape: error, id, then 4 zero bytes of payload.
     assert_eq!(
         out.as_slice(),
         &[StatusError::DataRange.as_u8(), 0x07, 0, 0, 0, 0]

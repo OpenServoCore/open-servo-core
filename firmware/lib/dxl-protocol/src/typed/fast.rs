@@ -5,16 +5,16 @@ use crate::wire::{
 
 use super::instruction::Instruction;
 use super::packet::{FastBulkReadPacket, FastSyncReadPacket};
-use super::status_error::StatusError;
+use super::slot::Slot;
 
-/// Position of our slot in the coalesced Fast Status chain. Variants that
-/// emit the chain header carry the chain's DXL `Length` field; the rest don't
-/// need it.
+/// Position of our slot in the coalesced Fast Status response. Variants that
+/// emit the response header carry the DXL `Length` field for the whole
+/// multi-slot frame; the rest don't need it.
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
-pub enum FastPosition {
-    /// Single-slot chain — emits full header and locally-computed CRC.
+pub enum SlotPosition {
+    /// Single-slot response — emits full header and locally-computed CRC.
     Only { packet_length: u16 },
-    /// First of N — emits header + body, no CRC (successors continue the chain).
+    /// First of N — emits header + body, no CRC (successors continue).
     First { packet_length: u16 },
     /// Body only.
     Middle,
@@ -23,8 +23,7 @@ pub enum FastPosition {
 }
 
 /// Which Fast Read request kind a `FastReadPacket` represents — lets the
-/// dispatcher pick `Status::FastSyncRead` vs `FastBulkRead` from a
-/// generic `P: FastReadPacket`.
+/// dispatcher pick the right typed status from a generic `P: FastReadPacket`.
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub enum FastReadVariant {
     Sync,
@@ -41,7 +40,7 @@ pub struct FastSlotInfo {
     /// `Only` / `First` slots that emit the header.
     pub packet_length: u16,
     /// Cumulative response bytes emitted before our slot's payload in the
-    /// coalesced Fast Status chain.
+    /// coalesced Fast Status response.
     pub bytes_before: u32,
 }
 
@@ -54,16 +53,16 @@ pub trait FastReadPacket {
 }
 
 impl FastSlotInfo {
-    pub const fn position(&self) -> FastPosition {
+    pub const fn position(&self) -> SlotPosition {
         match (self.our_slot, self.n_slots) {
-            (0, 1) => FastPosition::Only {
+            (0, 1) => SlotPosition::Only {
                 packet_length: self.packet_length,
             },
-            (0, _) => FastPosition::First {
+            (0, _) => SlotPosition::First {
                 packet_length: self.packet_length,
             },
-            (k, n) if k + 1 == n => FastPosition::Last,
-            _ => FastPosition::Middle,
+            (k, n) if k + 1 == n => SlotPosition::Last,
+            _ => SlotPosition::Middle,
         }
     }
 }
@@ -181,18 +180,16 @@ impl<'a> Iterator for FastBulkTupleIter<'a> {
 /// master sees a CRC mismatch (intentional — surfaces the failure).
 const CRC_PLACEHOLDER: [u8; 2] = [0xAA, 0xBB];
 
-/// Serialize one Fast Status chain slot. The payload is NOT byte-stuffed —
-/// Fast Read decoding is positional (slot indices), not trigger-driven, so
-/// stuffing would break deterministic chain layout.
-pub(crate) fn write_fast<W: WriteBuf, I: Iterator<Item = u8>, CRC: CrcUmts>(
+/// Serialize one Fast Status slot — one slave's piece of a coalesced response.
+/// The payload is NOT byte-stuffed: Fast Read decoding is positional (slot
+/// indices), not trigger-driven, so stuffing would break deterministic layout.
+pub fn write_slot<W: WriteBuf, CRC: CrcUmts>(
     out: &mut W,
-    position: FastPosition,
-    id: u8,
-    error: StatusError,
-    payload: &mut I,
+    slot: &Slot<'_>,
+    position: SlotPosition,
 ) -> Result<(), WriteError> {
     let start = out.len();
-    match write_fast_inner::<W, _, CRC>(out, position, id, error, payload) {
+    match write_slot_inner::<W, CRC>(out, slot, position) {
         Ok(()) => Ok(()),
         Err(e) => {
             out.truncate(start);
@@ -201,33 +198,31 @@ pub(crate) fn write_fast<W: WriteBuf, I: Iterator<Item = u8>, CRC: CrcUmts>(
     }
 }
 
-fn write_fast_inner<W: WriteBuf, I: Iterator<Item = u8>, CRC: CrcUmts>(
+fn write_slot_inner<W: WriteBuf, CRC: CrcUmts>(
     out: &mut W,
-    position: FastPosition,
-    id: u8,
-    error: StatusError,
-    payload: &mut I,
+    slot: &Slot<'_>,
+    position: SlotPosition,
 ) -> Result<(), WriteError> {
     match position {
-        FastPosition::Only { packet_length } => {
+        SlotPosition::Only { packet_length } => {
             let frame_start = out.len();
-            write_fast_header(out, packet_length)?;
-            write_fast_body(out, id, error, payload)?;
+            write_slot_header(out, packet_length)?;
+            write_slot_body(out, slot)?;
             // No predecessors → CRC is purely local; compute over the bytes
             // we just emitted and append.
             let crc = CRC::accumulate(0, &out.as_slice()[frame_start..]);
             out.push(crc as u8)?;
             out.push((crc >> 8) as u8)?;
         }
-        FastPosition::First { packet_length } => {
-            write_fast_header(out, packet_length)?;
-            write_fast_body(out, id, error, payload)?;
+        SlotPosition::First { packet_length } => {
+            write_slot_header(out, packet_length)?;
+            write_slot_body(out, slot)?;
         }
-        FastPosition::Middle => {
-            write_fast_body(out, id, error, payload)?;
+        SlotPosition::Middle => {
+            write_slot_body(out, slot)?;
         }
-        FastPosition::Last => {
-            write_fast_body(out, id, error, payload)?;
+        SlotPosition::Last => {
+            write_slot_body(out, slot)?;
             out.push(CRC_PLACEHOLDER[0])?;
             out.push(CRC_PLACEHOLDER[1])?;
         }
@@ -235,7 +230,7 @@ fn write_fast_inner<W: WriteBuf, I: Iterator<Item = u8>, CRC: CrcUmts>(
     Ok(())
 }
 
-fn write_fast_header<W: WriteBuf>(out: &mut W, length: u16) -> Result<(), WriteError> {
+fn write_slot_header<W: WriteBuf>(out: &mut W, length: u16) -> Result<(), WriteError> {
     out.push(HEADER[0])?;
     out.push(HEADER[1])?;
     out.push(HEADER[2])?;
@@ -248,15 +243,10 @@ fn write_fast_header<W: WriteBuf>(out: &mut W, length: u16) -> Result<(), WriteE
     Ok(())
 }
 
-fn write_fast_body<W: WriteBuf, I: Iterator<Item = u8>>(
-    out: &mut W,
-    id: u8,
-    error: StatusError,
-    payload: &mut I,
-) -> Result<(), WriteError> {
-    out.push(error.as_u8())?;
-    out.push(id)?;
-    for b in payload.by_ref() {
+fn write_slot_body<W: WriteBuf>(out: &mut W, slot: &Slot<'_>) -> Result<(), WriteError> {
+    out.push(slot.error.as_u8())?;
+    out.push(slot.id)?;
+    for b in slot.data.iter() {
         out.push(b)?;
     }
     Ok(())
@@ -291,25 +281,25 @@ mod tests {
             packet_length: 7,
             bytes_before: 0,
         };
-        assert_eq!(only.position(), FastPosition::Only { packet_length: 7 });
+        assert_eq!(only.position(), SlotPosition::Only { packet_length: 7 });
         let first = FastSlotInfo {
             our_slot: 0,
             n_slots: 3,
             ..only
         };
-        assert_eq!(first.position(), FastPosition::First { packet_length: 7 });
+        assert_eq!(first.position(), SlotPosition::First { packet_length: 7 });
         let middle = FastSlotInfo {
             our_slot: 1,
             n_slots: 3,
             ..only
         };
-        assert_eq!(middle.position(), FastPosition::Middle);
+        assert_eq!(middle.position(), SlotPosition::Middle);
         let last = FastSlotInfo {
             our_slot: 2,
             n_slots: 3,
             ..only
         };
-        assert_eq!(last.position(), FastPosition::Last);
+        assert_eq!(last.position(), SlotPosition::Last);
     }
 
     #[test]

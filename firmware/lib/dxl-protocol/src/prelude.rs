@@ -1,12 +1,12 @@
 pub use crate::Codec;
 pub use crate::typed::{
     ActionPacket, ActionStatus, BulkReadPacket, BulkReadStatus, BulkWritePacket, ClearPacket,
-    ControlTableBackupPacket, ErrorStatus, InstructionExt, FactoryResetPacket, FastBulkReadPacket,
-    FastBulkReadStatus, FastErrorStatus, FastPosition, FastReadPacket, FastReadVariant, FastSlotInfo,
-    FastSyncReadPacket, FastSyncReadStatus, NoInstructionExt, NoStatusExt, Packet, PingPacket, PingStatus,
-    RawStatus, ReadPacket, ReadStatus, RebootPacket, RebootStatus, RegWritePacket, RegWriteStatus,
-    Status, StatusExt, StatusError, SyncReadPacket, SyncReadStatus, SyncWritePacket, WritePacket,
-    WriteStatus,
+    ControlTableBackupPacket, ErrorStatus, FactoryResetPacket, FastBulkReadPacket, FastReadPacket,
+    FastReadVariant, FastSlotInfo, FastSyncReadPacket, InstructionExt, NoInstructionExt,
+    NoStatusExt, Packet, PingPacket, PingStatus, RawStatus, ReadPacket, ReadStatus, RebootPacket,
+    RebootStatus, RegWritePacket, RegWriteStatus, Slot, SlotPosition, Status, StatusError,
+    StatusExt, SyncReadPacket, SyncReadStatus, SyncWritePacket, WritePacket, WriteStatus,
+    write_slot,
 };
 #[cfg(feature = "software-crc")]
 pub use crate::wire::SoftwareCrcUmts;

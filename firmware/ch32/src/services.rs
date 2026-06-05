@@ -129,7 +129,7 @@ impl DxlBus for Ch32Bus {
         }
     }
 
-    fn send(&mut self, reply: Status<'_, OscReplyExt>, schedule: Schedule) {
+    fn send(&mut self, status: Status<'_, OscReplyExt>, schedule: Schedule) {
         // Defense-in-depth: if DMA wrapped past the parsed range during
         // dispatch, the request data we just acted on may have been garbage.
         // Abort the reply and surface the fault — master will see the timeout
@@ -143,19 +143,28 @@ impl DxlBus for Ch32Bus {
         // after a send cycle this struct initiated.
         let buf = unsafe { &mut *DXL_TX_BUF.get() };
         buf.truncate(0);
-        if Wire::write_status(buf, &reply).is_err() {
+        if Wire::write_status(buf, &status).is_err() {
             buf.truncate(0);
             return;
         }
+        self.fire_plain(schedule);
+    }
 
-        match reply {
-            Status::FastSyncRead(FastSyncReadStatus { position, .. })
-            | Status::FastBulkRead(FastBulkReadStatus { position, .. })
-            | Status::FastError(FastErrorStatus { position, .. }) => {
-                self.fire_fast(position, schedule);
-            }
-            _ => self.fire_plain(schedule),
+    fn send_slot(&mut self, slot: Slot<'_>, position: SlotPosition, schedule: Schedule) {
+        if self.parsed_window_overrun() {
+            dxl::report_dma_overrun();
+            return;
         }
+
+        // SAFETY: &mut self proves sole-writer; USART1 TC ISR only clears
+        // after a send cycle this struct initiated.
+        let buf = unsafe { &mut *DXL_TX_BUF.get() };
+        buf.truncate(0);
+        if Wire::write_slot(buf, &slot, position).is_err() {
+            buf.truncate(0);
+            return;
+        }
+        self.fire_fast(position, schedule);
     }
 }
 
@@ -170,18 +179,18 @@ impl Ch32Bus {
         dxl::start_plain_after(self.anchor.tick, delay_us);
     }
 
-    fn fire_fast(&mut self, position: FastPosition, schedule: Schedule) {
+    fn fire_fast(&mut self, position: SlotPosition, schedule: Schedule) {
         match position {
-            FastPosition::Only { .. } => {
+            SlotPosition::Only { .. } => {
                 dxl::cancel();
                 dxl::start_plain_after(self.anchor.tick, schedule.rdt_us);
             }
-            FastPosition::First { .. } | FastPosition::Middle => {
+            SlotPosition::First { .. } | SlotPosition::Middle => {
                 dxl::cancel();
                 let delay_us = schedule.rdt_us + bytes_to_us(schedule.bytes_before);
                 dxl::start_plain_after(self.anchor.tick, delay_us);
             }
-            FastPosition::Last => {
+            SlotPosition::Last => {
                 let fire_q88_us = (schedule.rdt_us << 8) + bytes_to_us_q88(schedule.bytes_before);
                 dxl::start_fast_after(self.anchor.tick, fire_q88_us, Some(self.anchor.bytes));
             }

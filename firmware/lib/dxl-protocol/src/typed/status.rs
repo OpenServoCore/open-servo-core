@@ -1,6 +1,5 @@
 use crate::wire::{CrcUmts, RawFrame, WriteBuf, WriteError, write_raw};
 
-use super::fast::{FastPosition, write_fast};
 use super::instruction::Instruction;
 use super::status_ext::{NoStatusExt, StatusExt};
 use super::status_error::StatusError;
@@ -31,30 +30,6 @@ pub struct BulkReadStatus<'a> {
 }
 
 #[derive(Copy, Clone, Debug)]
-pub struct FastSyncReadStatus<'a> {
-    pub position: FastPosition,
-    pub id: u8,
-    pub data: &'a [u8],
-}
-
-#[derive(Copy, Clone, Debug)]
-pub struct FastBulkReadStatus<'a> {
-    pub position: FastPosition,
-    pub id: u8,
-    pub data: &'a [u8],
-}
-
-/// Fast Read failure — chip emits `length` zero bytes for the data field so
-/// the chain stays length-aligned; the error byte carries the code.
-#[derive(Copy, Clone, Debug)]
-pub struct FastErrorStatus {
-    pub position: FastPosition,
-    pub id: u8,
-    pub error: StatusError,
-    pub length: u16,
-}
-
-#[derive(Copy, Clone, Debug)]
 pub struct WriteStatus {
     pub id: u8,
 }
@@ -80,41 +55,37 @@ pub struct ErrorStatus {
     pub error: StatusError,
 }
 
-/// Typed slave-side reply. One variant per logical response shape; the chip's
-/// `Bus::send` matches on this to pick wire layout and fire mechanism.
+/// Typed view of a Status-instruction frame. One variant per logical response
+/// shape; pairs with a known request instruction so the master can decode the
+/// raw status payload, and the slave can construct typed replies.
 ///
 /// Sync Read / Bulk Read / Read share wire bytes — separate variants are kept
-/// for caller-side intent. Likewise FastSyncRead / FastBulkRead are wire-
-/// identical; `FastError` collapses both error paths since the chip-emitted
-/// zero payload is the same either way.
+/// for caller-side intent. Fast Sync / Fast Bulk Read responses are NOT
+/// represented here: those are coalesced multi-slot frames, emitted by the
+/// slave one [`Slot`](crate::Slot) at a time via [`write_slot`](crate::write_slot),
+/// and decoded by the master via `decode_status` returning a Fast*Status that
+/// exposes a `slots()` iterator.
 ///
-/// The optional `R` parameter plugs in a vendor reply extension (see
+/// The optional `S` parameter plugs in a vendor status extension (see
 /// [`StatusExt`]); pure-DXL callers leave it at the [`NoStatusExt`] default,
 /// which makes [`Status::Ext`] statically uninhabited.
 #[derive(Copy, Clone, Debug)]
-pub enum Status<'a, R: StatusExt = NoStatusExt> {
-    // ── Data-bearing replies (Status-family wire shape) ──
+pub enum Status<'a, S: StatusExt = NoStatusExt> {
     Ping(PingStatus),
     Read(ReadStatus<'a>),
     SyncRead(SyncReadStatus<'a>),
     BulkRead(BulkReadStatus<'a>),
-    // ── Fast Read success (Sync/Bulk wire-identical) ──
-    FastSyncRead(FastSyncReadStatus<'a>),
-    FastBulkRead(FastBulkReadStatus<'a>),
-    FastError(FastErrorStatus),
-    // ── Empty-payload acks (Status-family) ──
     Write(WriteStatus),
     RegWrite(RegWriteStatus),
     Action(ActionStatus),
     Reboot(RebootStatus),
-    // ── Empty-payload error reply (Status-family) ──
     Error(ErrorStatus),
-    Ext(R::Variant<'a>),
+    Ext(S::Variant<'a>),
 }
 
-pub(crate) fn write_status<W: WriteBuf, CRC: CrcUmts, R: StatusExt>(
+pub(crate) fn write_status<W: WriteBuf, CRC: CrcUmts, S: StatusExt>(
     out: &mut W,
-    status: &Status<'_, R>,
+    status: &Status<'_, S>,
 ) -> Result<(), WriteError> {
     match *status {
         Status::Ping(PingStatus {
@@ -140,27 +111,7 @@ pub(crate) fn write_status<W: WriteBuf, CRC: CrcUmts, R: StatusExt>(
         Status::Error(ErrorStatus { id, error }) => {
             write_status_frame::<W, _, CRC>(out, id, error, core::iter::empty())
         }
-        Status::FastSyncRead(FastSyncReadStatus { position, id, data })
-        | Status::FastBulkRead(FastBulkReadStatus { position, id, data }) => write_fast::<W, _, CRC>(
-            out,
-            position,
-            id,
-            StatusError::None,
-            &mut data.iter().copied(),
-        ),
-        Status::FastError(FastErrorStatus {
-            position,
-            id,
-            error,
-            length,
-        }) => write_fast::<W, _, CRC>(
-            out,
-            position,
-            id,
-            error,
-            &mut core::iter::repeat_n(0u8, length as usize),
-        ),
-        Status::Ext(ref v) => R::write::<W, CRC>(v, out),
+        Status::Ext(ref v) => S::write::<W, CRC>(v, out),
     }
 }
 

@@ -1,34 +1,36 @@
-//! Typed layer: per-instruction `Packet` structs, `Status` shapes, and
-//! decode/encode functions. Builds on `crate::wire::RawFrame` for parsing and
-//! on `crate::wire::WriteBuf` for emission.
+//! Typed layer: per-instruction `Packet` structs, `Status` shapes, the
+//! `Slot` wire-piece, and decode/encode functions. Builds on `crate::wire`
+//! for parsing primitives and emission.
 
 mod decoder;
-mod instruction_ext;
 mod fast;
 mod instruction;
+mod instruction_ext;
 mod packet;
-mod status;
-mod status_ext;
 mod slot;
+mod status;
 mod status_error;
+mod status_ext;
 mod writer;
 
 pub use decoder::{DecodeError, decode};
-pub use instruction_ext::{InstructionExt, NoInstructionExt};
-pub use fast::{FastBulkTupleIter, FastPosition, FastReadPacket, FastReadVariant, FastSlotInfo};
+pub use fast::{
+    FastBulkTupleIter, FastReadPacket, FastReadVariant, FastSlotInfo, SlotPosition, write_slot,
+};
 pub use instruction::Instruction;
+pub use instruction_ext::{InstructionExt, NoInstructionExt};
 pub use packet::{
     ActionPacket, BulkReadPacket, BulkWritePacket, ClearPacket, ControlTableBackupPacket,
     FactoryResetPacket, FastBulkReadPacket, FastSyncReadPacket, Packet, PingPacket, RawStatus,
     ReadPacket, RebootPacket, RegWritePacket, SyncReadPacket, SyncWritePacket, WritePacket,
 };
+pub use slot::{BulkReadSlotIter, BulkSlot, BulkSlotInfo, Slot, SyncSlotInfo};
 pub use status::{
-    ActionStatus, BulkReadStatus, ErrorStatus, FastBulkReadStatus, FastErrorStatus, FastSyncReadStatus,
-    PingStatus, ReadStatus, RebootStatus, RegWriteStatus, Status, SyncReadStatus, WriteStatus,
+    ActionStatus, BulkReadStatus, ErrorStatus, PingStatus, ReadStatus, RebootStatus,
+    RegWriteStatus, Status, SyncReadStatus, WriteStatus,
 };
-pub use status_ext::{NoStatusExt, StatusExt};
-pub use slot::{BulkReadSlotIter, BulkSlot, BulkSlotInfo, SyncSlotInfo};
 pub use status_error::StatusError;
+pub use status_ext::{NoStatusExt, StatusExt};
 
 pub(crate) use status::write_status;
 pub(crate) use writer::write;

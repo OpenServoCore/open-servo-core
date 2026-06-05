@@ -1,4 +1,4 @@
-use dxl_protocol::prelude::{Packet, Status};
+use dxl_protocol::prelude::{Packet, Slot, SlotPosition, Status};
 
 use crate::services::dxl::{OscExt, OscReplyExt};
 use crate::{BaudRate, BootMode};
@@ -24,9 +24,10 @@ pub struct Schedule {
 
 /// Bus surface the DXL services layer reads, writes, and schedules through.
 /// `poll` returns the single dispatchable packet ending at the latest
-/// IDLE-anchored wire-end; `send` consumes the chip's typed reply and the
-/// scheduling info to compose, fire, and (where applicable) snoop-patch the
-/// outbound frame.
+/// IDLE-anchored wire-end. `send` emits one of the non-fast typed Status
+/// shapes (full standalone status frame). `send_slot` emits one piece of a
+/// Fast Sync/Bulk Read coalesced response and patches the chain CRC when the
+/// slot is the last in the response.
 pub trait DxlBus {
     /// Latest IDLE-anchored request, or `None` if no fresh anchor since the
     /// previous `poll`. The returned `Packet`'s borrowed bytes live in chip
@@ -34,11 +35,16 @@ pub trait DxlBus {
     /// vendor verbs surface as `Packet::Ext(OscVariant::..)`.
     fn poll(&mut self) -> Option<Packet<'static, OscExt>>;
 
-    /// Compose the reply on the chip's TX buffer and schedule it. The chip
-    /// owns all wire-timing math: it consumes `Schedule` to compute the fire
-    /// delay (RDT + per-byte translation), and inspects `reply`'s variant to
-    /// pick plain vs Fast Last (snooped chain-CRC patch) fire path.
-    fn send(&mut self, reply: Status<'_, OscReplyExt>, schedule: Schedule);
+    /// Compose a standalone Status reply on the chip's TX buffer and schedule
+    /// it. The chip owns all wire-timing math: it consumes `Schedule` to
+    /// compute the fire delay (RDT + per-byte translation).
+    fn send(&mut self, status: Status<'_, OscReplyExt>, schedule: Schedule);
+
+    /// Compose one Fast Sync/Bulk Read slot on the chip's TX buffer and
+    /// schedule it. `position` selects header / body / CRC framing:
+    /// `Only` and `Last` emit (or reserve) the response CRC; `First` and
+    /// `Middle` don't (successors continue the response).
+    fn send_slot(&mut self, slot: Slot<'_>, position: SlotPosition, schedule: Schedule);
 }
 
 /// Fire-and-forget notifications the dispatcher delivers when control-table

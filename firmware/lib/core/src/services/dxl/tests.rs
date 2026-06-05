@@ -24,27 +24,17 @@ impl CrcUmts for TestDxlCrc {
 
 type Wire = Codec<TestDxlCrc, OscExt, OscReplyExt>;
 
-/// Compact summary of a `Status` variant — the reply itself borrows from
-/// dispatcher-stack storage, so tests inspect the kind here instead of cloning.
+/// Compact summary of the last `send` / `send_slot` call — the inputs
+/// themselves borrow from dispatcher-stack storage, so tests inspect the kind
+/// here instead of cloning.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 enum ReplyKind {
     /// Any Status-family reply (Ping/Read/SyncRead/BulkRead/Write/Ack/Error/etc.)
     Plain,
-    /// FastSyncRead or FastBulkRead success — position carries packet_length.
-    Fast(FastPosition),
-    /// FastError — position + the chip-emitted zero-byte length.
-    FastError(FastPosition, u16),
-}
-
-fn summarize(reply: &Status<'_, OscReplyExt>) -> ReplyKind {
-    match *reply {
-        Status::FastSyncRead(FastSyncReadStatus { position, .. })
-        | Status::FastBulkRead(FastBulkReadStatus { position, .. }) => ReplyKind::Fast(position),
-        Status::FastError(FastErrorStatus {
-            position, length, ..
-        }) => ReplyKind::FastError(position, length),
-        _ => ReplyKind::Plain,
-    }
+    /// Fast Sync/Bulk Read slot — position carries packet_length when relevant.
+    Fast(SlotPosition),
+    /// Fast Read failure slot — position + the zero-payload byte count.
+    FastError(SlotPosition, u16),
 }
 
 struct FakeBus {
@@ -118,12 +108,25 @@ impl DxlBus for FakeBus {
         None
     }
 
-    fn send(&mut self, reply: Status<'_, OscReplyExt>, schedule: Schedule) {
+    fn send(&mut self, status: Status<'_, OscReplyExt>, schedule: Schedule) {
         self.tx.clear();
-        Wire::write_status(&mut self.tx, &reply).unwrap();
+        Wire::write_status(&mut self.tx, &status).unwrap();
         self.send_count += 1;
         self.last_schedule = Some(schedule);
-        self.last_kind = Some(summarize(&reply));
+        self.last_kind = Some(ReplyKind::Plain);
+    }
+
+    fn send_slot(&mut self, slot: Slot<'_>, position: SlotPosition, schedule: Schedule) {
+        self.tx.clear();
+        Wire::write_slot(&mut self.tx, &slot, position).unwrap();
+        self.send_count += 1;
+        self.last_schedule = Some(schedule);
+        let length = slot.data.unstuffed_len() as u16;
+        self.last_kind = Some(if slot.error == StatusError::None {
+            ReplyKind::Fast(position)
+        } else {
+            ReplyKind::FastError(position, length)
+        });
     }
 }
 
@@ -984,7 +987,7 @@ fn fast_sync_read_only_slot_emits_full_frame_with_local_crc() {
 
     assert_eq!(io.bus.send_count, 1);
     let pkt_len = match io.bus.last_kind {
-        Some(ReplyKind::Fast(FastPosition::Only { packet_length })) => packet_length,
+        Some(ReplyKind::Fast(SlotPosition::Only { packet_length })) => packet_length,
         other => panic!("expected Fast(Only{{..}}), got {other:?}"),
     };
     // LEN = 3 + 1*(2+2) = 7 for 1-slot, 2-byte payload.
@@ -1017,7 +1020,7 @@ fn fast_sync_read_first_slot_emits_header_then_body_no_crc() {
 
     assert_eq!(io.bus.send_count, 1);
     let pkt_len = match io.bus.last_kind {
-        Some(ReplyKind::Fast(FastPosition::First { packet_length })) => packet_length,
+        Some(ReplyKind::Fast(SlotPosition::First { packet_length })) => packet_length,
         other => panic!("expected Fast(First{{..}}), got {other:?}"),
     };
     assert_eq!(pkt_len, 11);
@@ -1044,7 +1047,7 @@ fn fast_sync_read_middle_slot_emits_body_only_with_bytes_before() {
     assert_eq!(io.bus.send_count, 1);
     assert_eq!(
         io.bus.last_kind,
-        Some(ReplyKind::Fast(FastPosition::Middle))
+        Some(ReplyKind::Fast(SlotPosition::Middle))
     );
     // Slot 1: FAST_RESPONSE_SLOT0_BYTES(10) + payload(2) = 12 bytes before.
     assert_eq!(
@@ -1068,7 +1071,7 @@ fn fast_sync_read_last_slot_reserves_crc_placeholder() {
     h.poll(&shared, &mut io);
 
     assert_eq!(io.bus.send_count, 1);
-    assert_eq!(io.bus.last_kind, Some(ReplyKind::Fast(FastPosition::Last)));
+    assert_eq!(io.bus.last_kind, Some(ReplyKind::Fast(SlotPosition::Last)));
     assert_eq!(
         io.bus.last_schedule.unwrap().bytes_before,
         p.find_slot(0, 32).unwrap().bytes_before
@@ -1139,7 +1142,7 @@ fn fast_bulk_read_only_slot_emits_full_frame_with_local_crc() {
 
     assert_eq!(io.bus.send_count, 1);
     let pkt_len = match io.bus.last_kind {
-        Some(ReplyKind::Fast(FastPosition::Only { packet_length })) => packet_length,
+        Some(ReplyKind::Fast(SlotPosition::Only { packet_length })) => packet_length,
         other => panic!("expected Fast(Only{{..}}), got {other:?}"),
     };
     assert_eq!(pkt_len, 7);
@@ -1168,7 +1171,7 @@ fn fast_bulk_read_first_slot_emits_header_then_body() {
 
     assert_eq!(io.bus.send_count, 1);
     let pkt_len = match io.bus.last_kind {
-        Some(ReplyKind::Fast(FastPosition::First { packet_length })) => packet_length,
+        Some(ReplyKind::Fast(SlotPosition::First { packet_length })) => packet_length,
         other => panic!("expected Fast(First{{..}}), got {other:?}"),
     };
     assert_eq!(pkt_len, 13);
@@ -1195,7 +1198,7 @@ fn fast_bulk_read_middle_slot_carries_bytes_before() {
     assert_eq!(io.bus.send_count, 1);
     assert_eq!(
         io.bus.last_kind,
-        Some(ReplyKind::Fast(FastPosition::Middle))
+        Some(ReplyKind::Fast(SlotPosition::Middle))
     );
     assert_eq!(
         io.bus.last_schedule.unwrap().bytes_before,
@@ -1216,7 +1219,7 @@ fn fast_bulk_read_last_slot_reserves_crc_placeholder() {
     h.poll(&shared, &mut io);
 
     assert_eq!(io.bus.send_count, 1);
-    assert_eq!(io.bus.last_kind, Some(ReplyKind::Fast(FastPosition::Last)));
+    assert_eq!(io.bus.last_kind, Some(ReplyKind::Fast(SlotPosition::Last)));
     assert_eq!(
         io.bus.last_schedule.unwrap().bytes_before,
         p.find_slot(0, 32).unwrap().bytes_before
@@ -1239,7 +1242,7 @@ fn fast_bulk_read_uses_our_tuples_address_not_a_preceding_slots() {
     h.poll(&shared, &mut io);
 
     assert_eq!(io.bus.send_count, 1);
-    assert_eq!(io.bus.last_kind, Some(ReplyKind::Fast(FastPosition::Last)));
+    assert_eq!(io.bus.last_kind, Some(ReplyKind::Fast(SlotPosition::Last)));
     assert_eq!(io.bus.tx.len(), 6);
     assert_eq!(&io.bus.tx[..4], &[0, 0, 0, 0]);
     assert_eq!(&io.bus.tx[4..], &[0xAA, 0xBB]);
@@ -1307,13 +1310,14 @@ fn poll_recovers_from_stale_fast_first_slot_residue_then_replies_to_ping() {
     let mut h = Dxl::new();
 
     let mut residue: Vec<u8, 32> = Vec::new();
-    Wire::write_status(
+    Wire::write_slot(
         &mut residue,
-        &Status::FastSyncRead(FastSyncReadStatus {
-            position: FastPosition::First { packet_length: 43 },
+        &Slot {
             id: 50,
-            data: &[0xAA, 0xAA, 0xAA, 0xAA],
-        }),
+            error: StatusError::None,
+            data: Bytes::unstuffed(&[0xAA, 0xAA, 0xAA, 0xAA]),
+        },
+        SlotPosition::First { packet_length: 43 },
     )
     .unwrap();
     assert_eq!(residue.len(), 14, "Fast First slot wire shape changed?");
@@ -1450,7 +1454,7 @@ fn fast_sync_read_error_emits_zero_payload_with_error_byte() {
     assert_eq!(io.bus.send_count, 1);
     assert!(matches!(
         io.bus.last_kind,
-        Some(ReplyKind::FastError(FastPosition::Only { .. }, 2))
+        Some(ReplyKind::FastError(SlotPosition::Only { .. }, 2))
     ));
     // Wire bytes: HEADER(4) + 0xFE + LEN(2) + 0x55 + error + id + 2 zeros + CRC(2)
     assert_eq!(io.bus.tx.len(), 14);
