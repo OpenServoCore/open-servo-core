@@ -2,7 +2,7 @@
 //! decode/encode functions. Builds on `crate::wire::RawFrame` for parsing and
 //! on `crate::wire::WriteBuf` for emission.
 
-mod bulk;
+mod slot;
 mod decoder;
 mod extension;
 mod fast;
@@ -13,7 +13,7 @@ mod reply_ext;
 mod status_error;
 mod writer;
 
-pub use bulk::{BulkReadSlotIter, BulkSlot, BulkSlotInfo, SyncSlotInfo};
+pub use slot::{BulkReadSlotIter, BulkSlot, BulkSlotInfo, SyncSlotInfo};
 pub use decoder::{DecodeError, decode};
 pub use extension::{Extension, NoExt};
 pub use fast::{FastBulkTupleIter, FastPosition, FastReadPacket, FastReadVariant, FastSlotInfo};
