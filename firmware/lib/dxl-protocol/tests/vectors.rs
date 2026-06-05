@@ -1,8 +1,26 @@
-use dxl_protocol::Instruction;
-use dxl_protocol::prelude::*;
+use dxl_protocol::*;
 use heapless::Vec;
 
-type Wire = Codec<SoftwareCrcUmts>;
+/// Local convenience: bind CRC + extension generics so call sites stay short.
+struct Wire;
+impl Wire {
+    fn parse_one<'a>(
+        head: &'a [u8],
+        tail: &'a [u8],
+    ) -> Result<(Packet<'a, NoInstructionExt>, usize), ParseError> {
+        parse_packet::<SoftwareCrcUmts, NoInstructionExt>(RxView::ring(head, tail))
+    }
+    fn write<W: WriteBuf>(out: &mut W, p: &Packet<'_, NoInstructionExt>) -> Result<(), WriteError> {
+        write_packet::<W, SoftwareCrcUmts, NoInstructionExt>(out, p)
+    }
+    fn write_slot<W: WriteBuf>(
+        out: &mut W,
+        s: &Slot<'_>,
+        pos: SlotPosition,
+    ) -> Result<(), WriteError> {
+        dxl_protocol::write_slot::<W, SoftwareCrcUmts>(out, s, pos)
+    }
+}
 
 const PING_ID1: &[u8] = &[0xFF, 0xFF, 0xFD, 0x00, 0x01, 0x03, 0x00, 0x01, 0x19, 0x4E];
 

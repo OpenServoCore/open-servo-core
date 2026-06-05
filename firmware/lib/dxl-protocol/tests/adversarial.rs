@@ -1,10 +1,22 @@
 //! Parser robustness: no panics, no wedge, rejects foreign protocols, recovers
 //! real frames embedded in noise. Tests use `std`; parser/writer are `no_std`.
 
-use dxl_protocol::prelude::*;
+use dxl_protocol::*;
 use heapless::Vec as HVec;
 
-type Wire = Codec<SoftwareCrcUmts>;
+/// Local convenience: bind CRC + extension generics.
+struct Wire;
+impl Wire {
+    fn parse_one<'a>(
+        head: &'a [u8],
+        tail: &'a [u8],
+    ) -> Result<(Packet<'a, NoInstructionExt>, usize), ParseError> {
+        parse_packet::<SoftwareCrcUmts, NoInstructionExt>(RxView::ring(head, tail))
+    }
+    fn write<W: WriteBuf>(out: &mut W, p: &Packet<'_, NoInstructionExt>) -> Result<(), WriteError> {
+        write_packet::<W, SoftwareCrcUmts, NoInstructionExt>(out, p)
+    }
+}
 
 // xorshift64*.
 struct Rng(u64);

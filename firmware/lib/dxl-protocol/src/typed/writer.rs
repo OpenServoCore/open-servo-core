@@ -4,7 +4,7 @@ use super::instruction_ext::InstructionExt;
 use super::instruction::Instruction;
 use super::packet::Packet;
 
-pub(crate) fn write<W: WriteBuf, CRC: CrcUmts, X: InstructionExt>(
+pub fn write_packet<W: WriteBuf, CRC: CrcUmts, X: InstructionExt>(
     out: &mut W,
     packet: &Packet<'_, X>,
 ) -> Result<(), WriteError> {

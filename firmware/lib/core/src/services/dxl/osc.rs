@@ -4,17 +4,19 @@
 //! `CAL = 0xE0`) — far from Robotis's allocated clusters so a future protocol
 //! revision can't quietly collide.
 //!
-//! Plugs into [`dxl_protocol::Codec`] via the [`InstructionExt`] / [`StatusExt`]
-//! traits: bind `Codec<CRC, OscExt, OscReplyExt>` and the standard
-//! `Packet`/`Status` enums grow `Ext` arms carrying [`OscVariant`] /
-//! [`OscReplyVariant`].
+//! Plugs into the protocol via the [`InstructionExt`] / [`StatusExt`] traits:
+//! bind the chip's [`DxlWire`](../../../osc_ch32/dxl/wire/struct.DxlWire.html)
+//! alias over `<OscExt, OscReplyExt>` and the standard `Packet`/`Status` enums
+//! grow `Ext` arms carrying [`OscVariant`] / [`OscReplyVariant`].
 
-use dxl_protocol::prelude::{InstructionExt, StatusExt};
-use dxl_protocol::wire::{Bytes, CrcUmts, RawFrame, WriteBuf, WriteError, write_raw};
-use dxl_protocol::{DecodeError, Instruction, RawStatus, StatusError};
+use dxl_protocol::{
+    Bytes, CrcUmts, DecodeError, Instruction, InstructionExt, RawFrame, RawStatus, StatusError,
+    StatusExt, WriteBuf, WriteError, write_raw,
+};
 
-/// Marker for the OSC request extension; bind it as the `X` parameter of
-/// [`dxl_protocol::Codec`].
+/// Marker for the OSC request extension; bind as the `I` parameter of
+/// [`parse_packet`](dxl_protocol::parse_packet) /
+/// [`write_packet`](dxl_protocol::write_packet).
 #[derive(Copy, Clone, Debug)]
 pub struct OscExt;
 
@@ -77,8 +79,9 @@ fn decode_calibrate(raw: RawFrame<Bytes<'_>>) -> Result<OscVariant, DecodeError>
     }))
 }
 
-/// Marker for the OSC reply extension; bind it as the `R` parameter of
-/// [`dxl_protocol::Codec`].
+/// Marker for the OSC reply extension; bind as the `S` parameter of
+/// [`decode_status`](dxl_protocol::decode_status) /
+/// [`write_status`](dxl_protocol::write_status).
 #[derive(Copy, Clone, Debug)]
 pub struct OscReplyExt;
 

@@ -30,11 +30,9 @@ pub use packet::{
 pub use slot::{BulkReadSlotIter, BulkSlot, BulkSlotInfo, Slot, SyncSlotInfo};
 pub use status::{
     ActionStatus, BulkReadStatus, ErrorStatus, PingStatus, ReadStatus, RebootStatus,
-    RegWriteStatus, Status, SyncReadStatus, WriteStatus,
+    RegWriteStatus, Status, SyncReadStatus, WriteStatus, write_status,
 };
 pub use status_decoder::decode_status;
 pub use status_error::StatusError;
 pub use status_ext::{NoStatusExt, StatusExt};
-
-pub(crate) use status::write_status;
-pub(crate) use writer::write;
+pub use writer::write_packet;

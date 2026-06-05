@@ -87,7 +87,7 @@ pub enum Status<'a, S: StatusExt = NoStatusExt> {
     Ext(S::Variant<'a>),
 }
 
-pub(crate) fn write_status<W: WriteBuf, CRC: CrcUmts, S: StatusExt>(
+pub fn write_status<W: WriteBuf, CRC: CrcUmts, S: StatusExt>(
     out: &mut W,
     status: &Status<'_, S>,
 ) -> Result<(), WriteError> {

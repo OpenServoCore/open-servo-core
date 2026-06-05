@@ -1,10 +1,10 @@
 use core::sync::atomic::Ordering;
 
-use dxl_protocol::prelude::*;
+use dxl_protocol::{Packet, ParseError, RxView, Slot, SlotPosition, Status};
 use osc_core::{BootMode, DxlBus, Event, OscExt, OscReplyExt, Schedule, ServiceEvents, ServicesIo};
 
 use crate::dxl;
-use crate::dxl::Ch32DxlCrc;
+use crate::dxl::DxlWire;
 use crate::dxl::statics::{
     DXL_BAUD_PENDING_BRR, DXL_CLOCK_FINE_TRIM_PENDING, DXL_CLOCK_TRIM_PENDING, DXL_REBOOT_PENDING,
     DXL_RX_BUF, DXL_RX_BUF_LEN, DXL_TX_BUF, RX_MASK_U32,
@@ -14,8 +14,6 @@ use crate::hal::clocks::PCLK_HZ;
 use crate::hal::usart;
 use crate::hal::{dma, flash, pfic};
 use crate::idle_anchor::{self, IdleAnchor};
-
-type Wire = Codec<Ch32DxlCrc, OscExt, OscReplyExt>;
 
 /// Single &mut writer: the main loop holding the `Services` struct.
 pub struct Ch32Bus {
@@ -110,7 +108,7 @@ impl DxlBus for Ch32Bus {
             if total == 0 {
                 return None;
             }
-            match Wire::parse_one(head, tail) {
+            match DxlWire::parse_packet(RxView::ring(head, tail)) {
                 Ok((packet, used)) => {
                     if used == total {
                         return Some(packet);
@@ -143,7 +141,7 @@ impl DxlBus for Ch32Bus {
         // after a send cycle this struct initiated.
         let buf = unsafe { &mut *DXL_TX_BUF.get() };
         buf.truncate(0);
-        if Wire::write_status(buf, &status).is_err() {
+        if DxlWire::write_status(buf, &status).is_err() {
             buf.truncate(0);
             return;
         }
@@ -160,7 +158,7 @@ impl DxlBus for Ch32Bus {
         // after a send cycle this struct initiated.
         let buf = unsafe { &mut *DXL_TX_BUF.get() };
         buf.truncate(0);
-        if Wire::write_slot(buf, &slot, position).is_err() {
+        if DxlWire::write_slot(buf, &slot, position).is_err() {
             buf.truncate(0);
             return;
         }

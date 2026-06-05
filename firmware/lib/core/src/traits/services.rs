@@ -1,4 +1,4 @@
-use dxl_protocol::prelude::{Packet, Slot, SlotPosition, Status};
+use dxl_protocol::{Packet, Slot, SlotPosition, Status};
 
 use crate::services::dxl::{OscExt, OscReplyExt};
 use crate::{BaudRate, BootMode};

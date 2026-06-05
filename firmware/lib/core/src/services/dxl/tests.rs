@@ -1,5 +1,5 @@
 use crc::{CRC_16_UMTS, Crc};
-use dxl_protocol::prelude::*;
+use dxl_protocol::*;
 use heapless::Vec;
 
 use crate::traits::{DxlBus, Event, Schedule, ServiceEvents, ServicesIo};
@@ -22,7 +22,32 @@ impl CrcUmts for TestDxlCrc {
     }
 }
 
-type Wire = Codec<TestDxlCrc, OscExt, OscReplyExt>;
+/// Local convenience: bind CRC + extensions so test call sites stay short.
+struct Wire;
+impl Wire {
+    fn parse_one<'a>(
+        head: &'a [u8],
+        tail: &'a [u8],
+    ) -> Result<(Packet<'a, OscExt>, usize), ParseError> {
+        dxl_protocol::parse_packet::<TestDxlCrc, OscExt>(RxView::ring(head, tail))
+    }
+    fn write<W: WriteBuf>(out: &mut W, p: &Packet<'_, OscExt>) -> Result<(), WriteError> {
+        dxl_protocol::write_packet::<W, TestDxlCrc, OscExt>(out, p)
+    }
+    fn write_status<W: WriteBuf>(
+        out: &mut W,
+        s: &Status<'_, OscReplyExt>,
+    ) -> Result<(), WriteError> {
+        dxl_protocol::write_status::<W, TestDxlCrc, OscReplyExt>(out, s)
+    }
+    fn write_slot<W: WriteBuf>(
+        out: &mut W,
+        s: &Slot<'_>,
+        pos: SlotPosition,
+    ) -> Result<(), WriteError> {
+        dxl_protocol::write_slot::<W, TestDxlCrc>(out, s, pos)
+    }
+}
 
 /// Compact summary of the last `send` / `send_slot` call — the inputs
 /// themselves borrow from dispatcher-stack storage, so tests inspect the kind

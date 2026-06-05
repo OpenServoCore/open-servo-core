@@ -1,4 +1,4 @@
-use dxl_protocol::prelude::*;
+use dxl_protocol::*;
 
 use crate::regions::hooks::ControlTableHooks;
 use crate::traits::{DxlBus, Event, Schedule, ServiceEvents};
