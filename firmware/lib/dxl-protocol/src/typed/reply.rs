@@ -5,6 +5,81 @@ use super::instruction::Instruction;
 use super::reply_ext::{NoReplyExt, ReplyExt};
 use super::status_error::StatusError;
 
+#[derive(Copy, Clone, Debug)]
+pub struct PingReply {
+    pub id: u8,
+    pub model: u16,
+    pub firmware: u8,
+}
+
+#[derive(Copy, Clone, Debug)]
+pub struct ReadReply<'a> {
+    pub id: u8,
+    pub data: &'a [u8],
+}
+
+#[derive(Copy, Clone, Debug)]
+pub struct SyncReadReply<'a> {
+    pub id: u8,
+    pub data: &'a [u8],
+}
+
+#[derive(Copy, Clone, Debug)]
+pub struct BulkReadReply<'a> {
+    pub id: u8,
+    pub data: &'a [u8],
+}
+
+#[derive(Copy, Clone, Debug)]
+pub struct FastSyncReadReply<'a> {
+    pub position: FastPosition,
+    pub id: u8,
+    pub data: &'a [u8],
+}
+
+#[derive(Copy, Clone, Debug)]
+pub struct FastBulkReadReply<'a> {
+    pub position: FastPosition,
+    pub id: u8,
+    pub data: &'a [u8],
+}
+
+/// Fast Read failure — chip emits `length` zero bytes for the data field so
+/// the chain stays length-aligned; the error byte carries the code.
+#[derive(Copy, Clone, Debug)]
+pub struct FastErrorReply {
+    pub position: FastPosition,
+    pub id: u8,
+    pub error: StatusError,
+    pub length: u16,
+}
+
+#[derive(Copy, Clone, Debug)]
+pub struct WriteReply {
+    pub id: u8,
+}
+
+#[derive(Copy, Clone, Debug)]
+pub struct RegWriteReply {
+    pub id: u8,
+}
+
+#[derive(Copy, Clone, Debug)]
+pub struct ActionReply {
+    pub id: u8,
+}
+
+#[derive(Copy, Clone, Debug)]
+pub struct RebootReply {
+    pub id: u8,
+}
+
+#[derive(Copy, Clone, Debug)]
+pub struct ErrorReply {
+    pub id: u8,
+    pub error: StatusError,
+}
+
 /// Typed slave-side reply. One variant per logical response shape; the chip's
 /// `Bus::send` matches on this to pick wire layout and fire mechanism.
 ///
@@ -19,64 +94,21 @@ use super::status_error::StatusError;
 #[derive(Copy, Clone, Debug)]
 pub enum Reply<'a, R: ReplyExt = NoReplyExt> {
     // ── Data-bearing replies (Status-family wire shape) ──
-    Ping {
-        id: u8,
-        model: u16,
-        firmware: u8,
-    },
-    Read {
-        id: u8,
-        data: &'a [u8],
-    },
-    SyncRead {
-        id: u8,
-        data: &'a [u8],
-    },
-    BulkRead {
-        id: u8,
-        data: &'a [u8],
-    },
+    Ping(PingReply),
+    Read(ReadReply<'a>),
+    SyncRead(SyncReadReply<'a>),
+    BulkRead(BulkReadReply<'a>),
     // ── Fast Read success (Sync/Bulk wire-identical) ──
-    FastSyncRead {
-        position: FastPosition,
-        id: u8,
-        data: &'a [u8],
-    },
-    FastBulkRead {
-        position: FastPosition,
-        id: u8,
-        data: &'a [u8],
-    },
-
-    /// Fast Read failure — chip emits `length` zero bytes for the data field
-    /// so chain stays length-aligned; the error byte carries the code.
-    FastError {
-        position: FastPosition,
-        id: u8,
-        error: StatusError,
-        length: u16,
-    },
-
+    FastSyncRead(FastSyncReadReply<'a>),
+    FastBulkRead(FastBulkReadReply<'a>),
+    FastError(FastErrorReply),
     // ── Empty-payload acks (Status-family) ──
-    Write {
-        id: u8,
-    },
-    RegWrite {
-        id: u8,
-    },
-    Action {
-        id: u8,
-    },
-    Reboot {
-        id: u8,
-    },
-
+    Write(WriteReply),
+    RegWrite(RegWriteReply),
+    Action(ActionReply),
+    Reboot(RebootReply),
     // ── Empty-payload error reply (Status-family) ──
-    Error {
-        id: u8,
-        error: StatusError,
-    },
-
+    Error(ErrorReply),
     Ext(R::Variant<'a>),
 }
 
@@ -85,42 +117,43 @@ pub(crate) fn write_reply<W: WriteBuf, CRC: CrcUmts, R: ReplyExt>(
     reply: &Reply<'_, R>,
 ) -> Result<(), WriteError> {
     match *reply {
-        Reply::Ping {
+        Reply::Ping(PingReply {
             id,
             model,
             firmware,
-        } => {
+        }) => {
             let m = model.to_le_bytes();
             let payload = [m[0], m[1], firmware];
             write_status_frame::<W, _, CRC>(out, id, StatusError::None, payload.iter().copied())
         }
-        Reply::Read { id, data } | Reply::SyncRead { id, data } | Reply::BulkRead { id, data } => {
+        Reply::Read(ReadReply { id, data })
+        | Reply::SyncRead(SyncReadReply { id, data })
+        | Reply::BulkRead(BulkReadReply { id, data }) => {
             write_status_frame::<W, _, CRC>(out, id, StatusError::None, data.iter().copied())
         }
-        Reply::Write { id }
-        | Reply::RegWrite { id }
-        | Reply::Action { id }
-        | Reply::Reboot { id } => {
+        Reply::Write(WriteReply { id })
+        | Reply::RegWrite(RegWriteReply { id })
+        | Reply::Action(ActionReply { id })
+        | Reply::Reboot(RebootReply { id }) => {
             write_status_frame::<W, _, CRC>(out, id, StatusError::None, core::iter::empty())
         }
-        Reply::Error { id, error } => {
+        Reply::Error(ErrorReply { id, error }) => {
             write_status_frame::<W, _, CRC>(out, id, error, core::iter::empty())
         }
-        Reply::FastSyncRead { position, id, data } | Reply::FastBulkRead { position, id, data } => {
-            write_fast::<W, _, CRC>(
-                out,
-                position,
-                id,
-                StatusError::None,
-                &mut data.iter().copied(),
-            )
-        }
-        Reply::FastError {
+        Reply::FastSyncRead(FastSyncReadReply { position, id, data })
+        | Reply::FastBulkRead(FastBulkReadReply { position, id, data }) => write_fast::<W, _, CRC>(
+            out,
+            position,
+            id,
+            StatusError::None,
+            &mut data.iter().copied(),
+        ),
+        Reply::FastError(FastErrorReply {
             position,
             id,
             error,
             length,
-        } => write_fast::<W, _, CRC>(
+        }) => write_fast::<W, _, CRC>(
             out,
             position,
             id,

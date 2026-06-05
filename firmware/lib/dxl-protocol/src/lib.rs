@@ -8,12 +8,14 @@ pub mod prelude;
 
 pub use codec::Codec;
 pub use typed::{
-    ActionPacket, BulkReadPacket, BulkReadSlotIter, BulkSlot, BulkSlotInfo, BulkWritePacket,
-    ClearPacket, ControlTableBackupPacket, DecodeError, Extension, FactoryResetPacket,
-    FastBulkReadPacket, FastBulkTupleIter, FastPosition, FastReadPacket, FastReadVariant,
-    FastSlotInfo, FastSyncReadPacket, Instruction, NoExt, NoReplyExt, Packet, PingPacket,
-    RawStatus, ReadPacket, RebootPacket, RegWritePacket, Reply, ReplyExt, StatusError,
-    SyncReadPacket, SyncSlotInfo, SyncWritePacket, WritePacket, decode,
+    ActionPacket, ActionReply, BulkReadPacket, BulkReadReply, BulkReadSlotIter, BulkSlot,
+    BulkSlotInfo, BulkWritePacket, ClearPacket, ControlTableBackupPacket, DecodeError, ErrorReply,
+    Extension, FactoryResetPacket, FastBulkReadPacket, FastBulkReadReply, FastBulkTupleIter,
+    FastErrorReply, FastPosition, FastReadPacket, FastReadVariant, FastSlotInfo,
+    FastSyncReadPacket, FastSyncReadReply, Instruction, NoExt, NoReplyExt, Packet, PingPacket,
+    PingReply, RawStatus, ReadPacket, ReadReply, RebootPacket, RebootReply, RegWritePacket,
+    RegWriteReply, Reply, ReplyExt, StatusError, SyncReadPacket, SyncReadReply, SyncSlotInfo,
+    SyncWritePacket, WritePacket, WriteReply, decode,
 };
 #[cfg(feature = "software-crc")]
 pub use wire::SoftwareCrcUmts;

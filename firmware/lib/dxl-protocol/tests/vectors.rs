@@ -63,13 +63,13 @@ fn write_fast_slot_first_emits_header_then_body() {
     let mut out: Vec<u8, 32> = Vec::new();
     Wire::write_reply(
         &mut out,
-        &Reply::FastSyncRead {
+        &Reply::FastSyncRead(FastSyncReadReply {
             position: FastPosition::First {
                 packet_length: 0x0015,
             },
             id: 5,
             data: BODY_5,
-        },
+        }),
     )
     .unwrap();
     assert_eq!(
@@ -85,11 +85,11 @@ fn write_fast_slot_middle_emits_body_only() {
     let mut out: Vec<u8, 32> = Vec::new();
     Wire::write_reply(
         &mut out,
-        &Reply::FastSyncRead {
+        &Reply::FastSyncRead(FastSyncReadReply {
             position: FastPosition::Middle,
             id: 6,
             data: BODY_6,
-        },
+        }),
     )
     .unwrap();
     assert_eq!(out.as_slice(), &[0x00, 0x06, 0x02, 0x00, 0x00, 0x00]);
@@ -100,11 +100,11 @@ fn write_fast_slot_last_reserves_crc_placeholder() {
     let mut out: Vec<u8, 32> = Vec::new();
     Wire::write_reply(
         &mut out,
-        &Reply::FastSyncRead {
+        &Reply::FastSyncRead(FastSyncReadReply {
             position: FastPosition::Last,
             id: 7,
             data: BODY_7,
-        },
+        }),
     )
     .unwrap();
     assert_eq!(
@@ -118,13 +118,13 @@ fn write_fast_slot_only_emits_header_body_and_computed_crc() {
     let mut out: Vec<u8, 32> = Vec::new();
     Wire::write_reply(
         &mut out,
-        &Reply::FastSyncRead {
+        &Reply::FastSyncRead(FastSyncReadReply {
             position: FastPosition::Only {
                 packet_length: 0x0009,
             },
             id: 5,
             data: BODY_5,
-        },
+        }),
     )
     .unwrap();
     let header_and_body = [
@@ -142,31 +142,31 @@ fn write_fast_slot_three_slave_chain_assembles_to_valid_status_frame() {
     let mut out: Vec<u8, 64> = Vec::new();
     Wire::write_reply(
         &mut out,
-        &Reply::FastSyncRead {
+        &Reply::FastSyncRead(FastSyncReadReply {
             position: FastPosition::First {
                 packet_length: 0x0015,
             },
             id: 5,
             data: BODY_5,
-        },
+        }),
     )
     .unwrap();
     Wire::write_reply(
         &mut out,
-        &Reply::FastSyncRead {
+        &Reply::FastSyncRead(FastSyncReadReply {
             position: FastPosition::Middle,
             id: 6,
             data: BODY_6,
-        },
+        }),
     )
     .unwrap();
     Wire::write_reply(
         &mut out,
-        &Reply::FastSyncRead {
+        &Reply::FastSyncRead(FastSyncReadReply {
             position: FastPosition::Last,
             id: 7,
             data: BODY_7,
-        },
+        }),
     )
     .unwrap();
 
@@ -192,13 +192,13 @@ fn write_fast_slot_overflow_truncates() {
     let mut out: Vec<u8, 8> = Vec::new();
     let err = Wire::write_reply(
         &mut out,
-        &Reply::FastSyncRead {
+        &Reply::FastSyncRead(FastSyncReadReply {
             position: FastPosition::First {
                 packet_length: 0x0015,
             },
             id: 5,
             data: BODY_5,
-        },
+        }),
     )
     .unwrap_err();
     assert_eq!(err, WriteError::Overflow);
@@ -210,12 +210,12 @@ fn write_fast_error_emits_zero_payload_with_error_byte() {
     let mut out: Vec<u8, 32> = Vec::new();
     Wire::write_reply(
         &mut out,
-        &Reply::FastError {
+        &Reply::FastError(FastErrorReply {
             position: FastPosition::Middle,
             id: 7,
             error: StatusError::DataRange,
             length: 4,
-        },
+        }),
     )
     .unwrap();
     // Middle body shape: error, id, then 4 zero bytes of payload.

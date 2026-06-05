@@ -108,10 +108,10 @@ impl<'a, B: DxlBus, E: ServiceEvents> Dispatcher<'a, B, E> {
         }
         if let Some((id, true)) = ctx.addressed(target) {
             self.bus.send(
-                Reply::Error {
+                Reply::Error(ErrorReply {
                     id,
                     error: StatusError::Instruction,
-                },
+                }),
                 ctx.direct_schedule(),
             );
         }
@@ -122,11 +122,11 @@ impl<'a, B: DxlBus, E: ServiceEvents> Dispatcher<'a, B, E> {
             return;
         }
         let reply = match result {
-            Ok(()) => Reply::Write { id },
-            Err(e) => Reply::Error {
+            Ok(()) => Reply::Write(WriteReply { id }),
+            Err(e) => Reply::Error(ErrorReply {
                 id,
                 error: error_to_status(e),
-            },
+            }),
         };
         self.bus.send(reply, ctx.direct_schedule());
     }
@@ -137,11 +137,11 @@ impl<'a, B: DxlBus, E: ServiceEvents> Dispatcher<'a, B, E> {
         };
         let identity = self.shared.table.config.with(|c| c.identity);
         self.bus.send(
-            Reply::Ping {
+            Reply::Ping(PingReply {
                 id,
                 model: identity.model_number,
                 firmware: identity.firmware_version as u8,
-            },
+            }),
             ctx.direct_schedule(),
         );
     }
@@ -156,24 +156,24 @@ impl<'a, B: DxlBus, E: ServiceEvents> Dispatcher<'a, B, E> {
         let len = p.length as usize;
         if len == 0 || len > MAX_CONTROL_RW {
             self.bus.send(
-                Reply::Error {
+                Reply::Error(ErrorReply {
                     id,
                     error: StatusError::DataRange,
-                },
+                }),
                 ctx.direct_schedule(),
             );
             return;
         }
         let mut buf = [0u8; MAX_CONTROL_RW];
         let reply = match self.shared.table.read_bytes(p.address, &mut buf[..len]) {
-            Ok(()) => Reply::Read {
+            Ok(()) => Reply::Read(ReadReply {
                 id,
                 data: &buf[..len],
-            },
-            Err(e) => Reply::Error {
+            }),
+            Err(e) => Reply::Error(ErrorReply {
                 id,
                 error: error_to_status(e),
-            },
+            }),
         };
         self.bus.send(reply, ctx.direct_schedule());
     }
@@ -189,10 +189,10 @@ impl<'a, B: DxlBus, E: ServiceEvents> Dispatcher<'a, B, E> {
             Err(_) => {
                 if direct && ctx.level >= StatusReturnLevel::All {
                     self.bus.send(
-                        Reply::Error {
+                        Reply::Error(ErrorReply {
                             id,
                             error: StatusError::DataRange,
-                        },
+                        }),
                         ctx.direct_schedule(),
                     );
                 }
@@ -227,10 +227,10 @@ impl<'a, B: DxlBus, E: ServiceEvents> Dispatcher<'a, B, E> {
             Err(_) => {
                 if direct && ctx.level >= StatusReturnLevel::All {
                     self.bus.send(
-                        Reply::Error {
+                        Reply::Error(ErrorReply {
                             id,
                             error: StatusError::DataRange,
-                        },
+                        }),
                         ctx.direct_schedule(),
                     );
                 }
@@ -248,11 +248,11 @@ impl<'a, B: DxlBus, E: ServiceEvents> Dispatcher<'a, B, E> {
             return;
         }
         let reply = match result {
-            Ok(()) => Reply::RegWrite { id },
-            Err(e) => Reply::Error {
+            Ok(()) => Reply::RegWrite(RegWriteReply { id }),
+            Err(e) => Reply::Error(ErrorReply {
                 id,
                 error: error_to_status(e),
-            },
+            }),
         };
         self.bus.send(reply, ctx.direct_schedule());
     }
@@ -263,7 +263,8 @@ impl<'a, B: DxlBus, E: ServiceEvents> Dispatcher<'a, B, E> {
         };
         self.shared.table.commit_staged(self.staged);
         if direct && ctx.level >= StatusReturnLevel::All {
-            self.bus.send(Reply::Action { id }, ctx.direct_schedule());
+            self.bus
+                .send(Reply::Action(ActionReply { id }), ctx.direct_schedule());
         }
     }
 
@@ -278,10 +279,10 @@ impl<'a, B: DxlBus, E: ServiceEvents> Dispatcher<'a, B, E> {
         };
         if p.count == 0 || p.count as usize > MAX_CONTROL_RW {
             self.bus.send(
-                Reply::Error {
+                Reply::Error(ErrorReply {
                     id,
                     error: StatusError::DataRange,
-                },
+                }),
                 ctx.direct_schedule(),
             );
             return;
@@ -301,7 +302,8 @@ impl<'a, B: DxlBus, E: ServiceEvents> Dispatcher<'a, B, E> {
         };
         let mode = self.shared.table.control.with(|c| c.system.boot_mode);
         if direct && ctx.level >= StatusReturnLevel::All {
-            self.bus.send(Reply::Reboot { id }, ctx.direct_schedule());
+            self.bus
+                .send(Reply::Reboot(RebootReply { id }), ctx.direct_schedule());
         }
         self.events.send(Event::Reboot(mode));
     }
@@ -332,10 +334,10 @@ impl<'a, B: DxlBus, E: ServiceEvents> Dispatcher<'a, B, E> {
         let len = p.length as usize;
         if len == 0 || len > MAX_CONTROL_RW {
             self.bus.send(
-                Reply::Error {
+                Reply::Error(ErrorReply {
                     id: ctx.our_id,
                     error: StatusError::DataRange,
-                },
+                }),
                 schedule,
             );
             return;
@@ -343,14 +345,14 @@ impl<'a, B: DxlBus, E: ServiceEvents> Dispatcher<'a, B, E> {
 
         let mut buf = [0u8; MAX_CONTROL_RW];
         let reply = match self.shared.table.read_bytes(p.address, &mut buf[..len]) {
-            Ok(()) => Reply::SyncRead {
+            Ok(()) => Reply::SyncRead(SyncReadReply {
                 id: ctx.our_id,
                 data: &buf[..len],
-            },
-            Err(e) => Reply::Error {
+            }),
+            Err(e) => Reply::Error(ErrorReply {
                 id: ctx.our_id,
                 error: error_to_status(e),
-            },
+            }),
         };
         self.bus.send(reply, schedule);
     }
@@ -375,10 +377,10 @@ impl<'a, B: DxlBus, E: ServiceEvents> Dispatcher<'a, B, E> {
         let len = info.length as usize;
         if len == 0 || len > MAX_CONTROL_RW {
             self.bus.send(
-                Reply::Error {
+                Reply::Error(ErrorReply {
                     id: ctx.our_id,
                     error: StatusError::DataRange,
-                },
+                }),
                 schedule,
             );
             return;
@@ -386,14 +388,14 @@ impl<'a, B: DxlBus, E: ServiceEvents> Dispatcher<'a, B, E> {
 
         let mut buf = [0u8; MAX_CONTROL_RW];
         let reply = match self.shared.table.read_bytes(info.address, &mut buf[..len]) {
-            Ok(()) => Reply::BulkRead {
+            Ok(()) => Reply::BulkRead(BulkReadReply {
                 id: ctx.our_id,
                 data: &buf[..len],
-            },
-            Err(e) => Reply::Error {
+            }),
+            Err(e) => Reply::Error(ErrorReply {
                 id: ctx.our_id,
                 error: error_to_status(e),
-            },
+            }),
         };
         self.bus.send(reply, schedule);
     }
@@ -423,23 +425,23 @@ impl<'a, B: DxlBus, E: ServiceEvents> Dispatcher<'a, B, E> {
         let mut buf = [0u8; MAX_CONTROL_RW];
         let reply = match self.shared.table.read_bytes(info.address, &mut buf[..len]) {
             Ok(()) => match P::VARIANT {
-                FastReadVariant::Sync => Reply::FastSyncRead {
+                FastReadVariant::Sync => Reply::FastSyncRead(FastSyncReadReply {
                     position,
                     id: ctx.our_id,
                     data: &buf[..len],
-                },
-                FastReadVariant::Bulk => Reply::FastBulkRead {
+                }),
+                FastReadVariant::Bulk => Reply::FastBulkRead(FastBulkReadReply {
                     position,
                     id: ctx.our_id,
                     data: &buf[..len],
-                },
+                }),
             },
-            Err(e) => Reply::FastError {
+            Err(e) => Reply::FastError(FastErrorReply {
                 position,
                 id: ctx.our_id,
                 error: error_to_status(e),
                 length: info.length,
-            },
+            }),
         };
         self.bus.send(reply, schedule);
     }

@@ -2,7 +2,6 @@
 //! decode/encode functions. Builds on `crate::wire::RawFrame` for parsing and
 //! on `crate::wire::WriteBuf` for emission.
 
-mod slot;
 mod decoder;
 mod extension;
 mod fast;
@@ -10,10 +9,10 @@ mod instruction;
 mod packet;
 mod reply;
 mod reply_ext;
+mod slot;
 mod status_error;
 mod writer;
 
-pub use slot::{BulkReadSlotIter, BulkSlot, BulkSlotInfo, SyncSlotInfo};
 pub use decoder::{DecodeError, decode};
 pub use extension::{Extension, NoExt};
 pub use fast::{FastBulkTupleIter, FastPosition, FastReadPacket, FastReadVariant, FastSlotInfo};
@@ -23,8 +22,12 @@ pub use packet::{
     FactoryResetPacket, FastBulkReadPacket, FastSyncReadPacket, Packet, PingPacket, RawStatus,
     ReadPacket, RebootPacket, RegWritePacket, SyncReadPacket, SyncWritePacket, WritePacket,
 };
-pub use reply::Reply;
+pub use reply::{
+    ActionReply, BulkReadReply, ErrorReply, FastBulkReadReply, FastErrorReply, FastSyncReadReply,
+    PingReply, ReadReply, RebootReply, RegWriteReply, Reply, SyncReadReply, WriteReply,
+};
 pub use reply_ext::{NoReplyExt, ReplyExt};
+pub use slot::{BulkReadSlotIter, BulkSlot, BulkSlotInfo, SyncSlotInfo};
 pub use status_error::StatusError;
 
 pub(crate) use reply::write_reply;

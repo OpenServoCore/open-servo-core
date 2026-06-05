@@ -149,9 +149,9 @@ impl DxlBus for Ch32Bus {
         }
 
         match reply {
-            Reply::FastSyncRead { position, .. }
-            | Reply::FastBulkRead { position, .. }
-            | Reply::FastError { position, .. } => {
+            Reply::FastSyncRead(FastSyncReadReply { position, .. })
+            | Reply::FastBulkRead(FastBulkReadReply { position, .. })
+            | Reply::FastError(FastErrorReply { position, .. }) => {
                 self.fire_fast(position, schedule);
             }
             _ => self.fire_plain(schedule),

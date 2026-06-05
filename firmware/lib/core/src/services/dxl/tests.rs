@@ -38,12 +38,11 @@ enum ReplyKind {
 
 fn summarize(reply: &Reply<'_, OscReplyExt>) -> ReplyKind {
     match *reply {
-        Reply::FastSyncRead { position, .. } | Reply::FastBulkRead { position, .. } => {
-            ReplyKind::Fast(position)
-        }
-        Reply::FastError {
+        Reply::FastSyncRead(FastSyncReadReply { position, .. })
+        | Reply::FastBulkRead(FastBulkReadReply { position, .. }) => ReplyKind::Fast(position),
+        Reply::FastError(FastErrorReply {
             position, length, ..
-        } => ReplyKind::FastError(position, length),
+        }) => ReplyKind::FastError(position, length),
         _ => ReplyKind::Plain,
     }
 }
@@ -1310,11 +1309,11 @@ fn poll_recovers_from_stale_fast_first_slot_residue_then_replies_to_ping() {
     let mut residue: Vec<u8, 32> = Vec::new();
     Wire::write_reply(
         &mut residue,
-        &Reply::FastSyncRead {
+        &Reply::FastSyncRead(FastSyncReadReply {
             position: FastPosition::First { packet_length: 43 },
             id: 50,
             data: &[0xAA, 0xAA, 0xAA, 0xAA],
-        },
+        }),
     )
     .unwrap();
     assert_eq!(residue.len(), 14, "Fast First slot wire shape changed?");
