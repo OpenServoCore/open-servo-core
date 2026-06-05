@@ -29,6 +29,7 @@ pub struct Stuffer<I> {
 impl<I> Stuffer<I> {
     /// Construct a stuffer over `inner` with no preceding context — use for
     /// payloads whose first byte starts a fresh stream.
+    #[cfg(test)]
     pub fn new(inner: I) -> Self {
         Self {
             inner,
@@ -78,6 +79,7 @@ pub struct Unstuffer<I> {
 }
 
 impl<I> Unstuffer<I> {
+    #[cfg(test)]
     pub fn new(inner: I) -> Self {
         Self {
             inner,

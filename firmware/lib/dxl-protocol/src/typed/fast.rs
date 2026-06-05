@@ -1,11 +1,7 @@
-use crate::wire::{
-    BROADCAST_ID, CrcUmts, FAST_RESPONSE_SLOT_BYTES, FAST_RESPONSE_SLOT0_BYTES, HEADER, WriteBuf,
-    WriteError,
-};
+use crate::wire::{FAST_RESPONSE_SLOT_BYTES, FAST_RESPONSE_SLOT0_BYTES};
 
-use super::instruction::Instruction;
+use super::bulk::BulkReadSlotIter;
 use super::packet::{FastBulkReadPacket, FastSyncReadPacket};
-use super::slot::{BulkReadSlotIter, Slot};
 
 /// Position of our slot in the coalesced Fast Status response. Variants that
 /// emit the response header carry the DXL `Length` field for the whole
@@ -112,12 +108,12 @@ impl<'a> FastReadPacket for FastBulkReadPacket<'a> {
         let mut n_slots = 0usize;
         let mut total_payload = 0u32;
         let mut bytes_before = 0u32;
-        for (i, slot) in self.slots().enumerate() {
+        for (i, entry) in self.slots().enumerate() {
             if i >= max_slots {
                 return None;
             }
-            if slot.id == id && found.is_none() {
-                found = Some((i, slot.address, slot.length, bytes_before));
+            if entry.id == id && found.is_none() {
+                found = Some((i, entry.address, entry.length, bytes_before));
             }
             let prefix = if i == 0 {
                 FAST_RESPONSE_SLOT0_BYTES as u32
@@ -126,8 +122,8 @@ impl<'a> FastReadPacket for FastBulkReadPacket<'a> {
             };
             bytes_before = bytes_before
                 .saturating_add(prefix)
-                .saturating_add(slot.length as u32);
-            total_payload = total_payload.saturating_add(slot.length as u32);
+                .saturating_add(entry.length as u32);
+            total_payload = total_payload.saturating_add(entry.length as u32);
             n_slots = i + 1;
         }
         let (our_slot, address, length, bytes_before) = found?;
@@ -145,7 +141,7 @@ impl<'a> FastReadPacket for FastBulkReadPacket<'a> {
 }
 
 impl<'a> FastBulkReadPacket<'a> {
-    /// Decoded `(id, address, length)` slots from the body — same wire shape
+    /// Decoded `(id, address, length)` entries from the body — same wire shape
     /// as [`BulkReadPacket::slots`](crate::BulkReadPacket::slots); trailing
     /// partial tuples dropped.
     pub fn slots(&self) -> BulkReadSlotIter<'a> {
@@ -153,87 +149,10 @@ impl<'a> FastBulkReadPacket<'a> {
     }
 }
 
-/// CRC slot placeholder. Fire ISR overwrites in-flight during the DMA
-/// pre-fetch race; on race loss these bytes appear on the wire and the
-/// master sees a CRC mismatch (intentional — surfaces the failure).
-const CRC_PLACEHOLDER: [u8; 2] = [0xAA, 0xBB];
-
-/// Serialize one Fast Status slot — one slave's piece of a coalesced response.
-/// The payload is NOT byte-stuffed: Fast Read decoding is positional (slot
-/// indices), not trigger-driven, so stuffing would break deterministic layout.
-pub fn write_slot<W: WriteBuf, CRC: CrcUmts>(
-    out: &mut W,
-    slot: &Slot<'_>,
-    position: SlotPosition,
-) -> Result<(), WriteError> {
-    let start = out.len();
-    match write_slot_inner::<W, CRC>(out, slot, position) {
-        Ok(()) => Ok(()),
-        Err(e) => {
-            out.truncate(start);
-            Err(e)
-        }
-    }
-}
-
-fn write_slot_inner<W: WriteBuf, CRC: CrcUmts>(
-    out: &mut W,
-    slot: &Slot<'_>,
-    position: SlotPosition,
-) -> Result<(), WriteError> {
-    match position {
-        SlotPosition::Only { packet_length } => {
-            let frame_start = out.len();
-            write_slot_header(out, packet_length)?;
-            write_slot_body(out, slot)?;
-            // No predecessors → CRC is purely local; compute over the bytes
-            // we just emitted and append.
-            let crc = CRC::accumulate(0, &out.as_slice()[frame_start..]);
-            out.push(crc as u8)?;
-            out.push((crc >> 8) as u8)?;
-        }
-        SlotPosition::First { packet_length } => {
-            write_slot_header(out, packet_length)?;
-            write_slot_body(out, slot)?;
-        }
-        SlotPosition::Middle => {
-            write_slot_body(out, slot)?;
-        }
-        SlotPosition::Last => {
-            write_slot_body(out, slot)?;
-            out.push(CRC_PLACEHOLDER[0])?;
-            out.push(CRC_PLACEHOLDER[1])?;
-        }
-    }
-    Ok(())
-}
-
-fn write_slot_header<W: WriteBuf>(out: &mut W, length: u16) -> Result<(), WriteError> {
-    out.push(HEADER[0])?;
-    out.push(HEADER[1])?;
-    out.push(HEADER[2])?;
-    out.push(HEADER[3])?;
-    out.push(BROADCAST_ID)?;
-    let lb = length.to_le_bytes();
-    out.push(lb[0])?;
-    out.push(lb[1])?;
-    out.push(Instruction::Status.as_u8())?;
-    Ok(())
-}
-
-fn write_slot_body<W: WriteBuf>(out: &mut W, slot: &Slot<'_>) -> Result<(), WriteError> {
-    out.push(slot.error)?;
-    out.push(slot.id)?;
-    for b in slot.data.iter() {
-        out.push(b)?;
-    }
-    Ok(())
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::BulkSlot;
+    use crate::BulkEntry;
     use crate::wire::Bytes;
 
     fn sync(address: u16, length: u16, ids: &[u8]) -> FastSyncReadPacket<'_> {
@@ -323,12 +242,12 @@ mod tests {
         assert_eq!(
             &v[..],
             &[
-                BulkSlot {
+                BulkEntry {
                     id: 1,
                     address: 0x10,
                     length: 4
                 },
-                BulkSlot {
+                BulkEntry {
                     id: 2,
                     address: 0x20,
                     length: 8
@@ -339,8 +258,6 @@ mod tests {
 
     #[test]
     fn bulk_find_slot_returns_per_tuple_address_and_length() {
-        // slot 0: id=9 addr=0xFEFE len=4 (bogus, but our_slot resolves separately)
-        // slot 1: id=0 addr=0x12 len=2
         let body = [9, 0xFE, 0xFE, 4, 0, 0, 0x12, 0, 2, 0];
         let info = bulk(&body).find_slot(0, 32).expect("our id present");
         assert_eq!(info.our_slot, 1);
@@ -366,7 +283,6 @@ mod tests {
 
     #[test]
     fn bulk_find_slot_populates_bytes_before_for_varied_lengths() {
-        // slot 0 id=1 len=4, slot 1 id=2 len=8, slot 2 id=3 len=2.
         let body = [1, 0, 0, 4, 0, 2, 0, 0, 8, 0, 3, 0, 0, 2, 0];
         let p = bulk(&body);
         assert_eq!(p.find_slot(1, 32).unwrap().bytes_before, 0);
@@ -378,7 +294,6 @@ mod tests {
 
     #[test]
     fn bulk_find_slot_bytes_before_matches_sync_when_uniform() {
-        // Uniform 4-byte payloads across 3 slots — bulk must agree with sync.
         let bulk_body = [1, 0, 0, 4, 0, 2, 0, 0, 4, 0, 3, 0, 0, 4, 0];
         let b = bulk(&bulk_body);
         let s = sync(0, 4, &[1, 2, 3]);

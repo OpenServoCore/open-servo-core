@@ -10,8 +10,8 @@
 //! grow `Ext` arms carrying [`OscVariant`] / [`OscReplyVariant`].
 
 use dxl_protocol::{
-    Bytes, CrcUmts, DecodeError, Instruction, InstructionExt, RawFrame, RawStatus, StatusError,
-    StatusExt, WriteBuf, WriteError, write_raw,
+    Bytes, CrcUmts, DecodeError, Instruction, InstructionExt, RawStatus, StatusError, StatusExt,
+    WriteBuf, WriteError, write_ext,
 };
 
 /// Marker for the OSC request extension; bind as the `I` parameter of
@@ -45,36 +45,31 @@ const CALIBRATE_INSTRUCTION: u8 = 0xE0;
 impl InstructionExt for OscExt {
     type Variant<'a> = OscVariant;
 
-    fn decode<'a>(raw: RawFrame<Bytes<'a>>) -> Option<Result<OscVariant, DecodeError>> {
-        match raw.instruction {
-            CALIBRATE_INSTRUCTION => Some(decode_calibrate(raw)),
+    fn decode<'a>(instr: u8, id: u8, params: Bytes<'a>) -> Option<Result<OscVariant, DecodeError>> {
+        match instr {
+            CALIBRATE_INSTRUCTION => Some(decode_calibrate(id, params)),
             _ => None,
         }
     }
 
     fn write<'a, W: WriteBuf, CRC: CrcUmts>(v: &OscVariant, out: &mut W) -> Result<(), WriteError> {
         match *v {
-            OscVariant::Calibrate(p) => write_raw::<W, _, CRC>(
-                out,
-                RawFrame {
-                    id: p.id,
-                    instruction: CALIBRATE_INSTRUCTION,
-                    params: p.count.to_le_bytes(),
-                },
-            ),
+            OscVariant::Calibrate(p) => {
+                write_ext::<W, CRC, _>(out, p.id, CALIBRATE_INSTRUCTION, p.count.to_le_bytes())
+            }
         }
     }
 }
 
-fn decode_calibrate(raw: RawFrame<Bytes<'_>>) -> Result<OscVariant, DecodeError> {
-    let mut it = raw.params.iter();
+fn decode_calibrate(id: u8, params: Bytes<'_>) -> Result<OscVariant, DecodeError> {
+    let mut it = params.iter();
     let lo = it.next().ok_or(DecodeError::BadParams)?;
     let hi = it.next().ok_or(DecodeError::BadParams)?;
     if it.next().is_some() {
         return Err(DecodeError::BadParams);
     }
     Ok(OscVariant::Calibrate(CalibratePacket {
-        id: raw.id,
+        id,
         count: u16::from_le_bytes([lo, hi]),
     }))
 }
@@ -108,14 +103,12 @@ impl StatusExt for OscReplyExt {
         out: &mut W,
     ) -> Result<(), WriteError> {
         match *v {
-            OscReplyVariant::Calibrate { id, zeros_count } => write_raw::<W, _, CRC>(
+            OscReplyVariant::Calibrate { id, zeros_count } => write_ext::<W, CRC, _>(
                 out,
-                RawFrame {
-                    id,
-                    instruction: Instruction::Status.as_u8(),
-                    params: core::iter::once(StatusError::None.as_u8())
-                        .chain(core::iter::repeat_n(0u8, zeros_count as usize)),
-                },
+                id,
+                Instruction::Status.as_u8(),
+                core::iter::once(StatusError::None.as_u8())
+                    .chain(core::iter::repeat_n(0u8, zeros_count as usize)),
             ),
         }
     }

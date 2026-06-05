@@ -2,37 +2,35 @@
 //! `Slot` wire-piece, and decode/encode functions. Builds on `crate::wire`
 //! for parsing primitives and emission.
 
-mod decoder;
+mod bulk;
+mod ext;
 mod fast;
-mod fast_decoder;
 mod instruction;
-mod instruction_ext;
 mod packet;
-mod slot;
+mod packet_decoder;
+mod packet_encoder;
 mod status;
 mod status_decoder;
+mod status_encoder;
 mod status_error;
-mod status_ext;
-mod writer;
 
-pub use decoder::{DecodeError, decode};
-pub use fast::{FastReadPacket, FastReadVariant, FastSlotInfo, SlotPosition, write_slot};
-pub use fast_decoder::{
-    FastBulkReadStatus, FastBulkSlotIter, FastSyncReadStatus, FastSyncSlotIter,
-};
+pub use bulk::{BulkEntry, BulkReadSlotIter, BulkSlotInfo, SyncSlotInfo};
+pub use ext::{InstructionExt, NoInstructionExt, NoStatusExt, StatusExt};
+pub use fast::{FastReadPacket, FastReadVariant, FastSlotInfo, SlotPosition};
 pub use instruction::Instruction;
-pub use instruction_ext::{InstructionExt, NoInstructionExt};
 pub use packet::{
     ActionPacket, BulkReadPacket, BulkWritePacket, ClearPacket, ControlTableBackupPacket,
     FactoryResetPacket, FastBulkReadPacket, FastSyncReadPacket, Packet, PingPacket, RawStatus,
     ReadPacket, RebootPacket, RegWritePacket, SyncReadPacket, SyncWritePacket, WritePacket,
 };
-pub use slot::{BulkReadSlotIter, BulkSlot, BulkSlotInfo, Slot, SyncSlotInfo};
+pub use packet_decoder::DecodeError;
+pub(crate) use packet_decoder::decode;
+pub use packet_encoder::{write_ext, write_packet};
 pub use status::{
-    ActionStatus, BulkReadStatus, ErrorStatus, PingStatus, ReadStatus, RebootStatus,
-    RegWriteStatus, Status, SyncReadStatus, WriteStatus, write_status,
+    ActionStatus, BulkReadStatus, ErrorStatus, FastBulkReadStatus, FastBulkSlotIter,
+    FastSyncReadStatus, FastSyncSlotIter, PingStatus, ReadStatus, RebootStatus, RegWriteStatus,
+    Slot, Status, SyncReadStatus, WriteStatus,
 };
 pub use status_decoder::decode_status;
+pub use status_encoder::{write_slot, write_status};
 pub use status_error::StatusError;
-pub use status_ext::{NoStatusExt, StatusExt};
-pub use writer::write_packet;

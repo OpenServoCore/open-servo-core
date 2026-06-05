@@ -7,6 +7,8 @@
 //! - [`write_packet`] — [`Packet`] → wire bytes (full standalone frame)
 //! - [`write_status`] — typed [`Status`] → wire bytes (slave convenience)
 //! - [`write_slot`] — Fast Sync/Bulk Read slot + [`SlotPosition`] → wire bytes
+//! - [`write_ext`] — escape hatch for [`InstructionExt`] / [`StatusExt`]
+//!   implementations to emit a wire frame with a custom instruction byte
 //!
 //! Extension hooks: implement [`InstructionExt`] to add custom request
 //! instructions; implement [`StatusExt`] to add custom typed status flavors.
@@ -15,23 +17,23 @@ mod typed;
 mod wire;
 
 pub use typed::{
-    ActionPacket, ActionStatus, BulkReadPacket, BulkReadSlotIter, BulkReadStatus, BulkSlot,
+    ActionPacket, ActionStatus, BulkEntry, BulkReadPacket, BulkReadSlotIter, BulkReadStatus,
     BulkSlotInfo, BulkWritePacket, ClearPacket, ControlTableBackupPacket, DecodeError, ErrorStatus,
     FactoryResetPacket, FastBulkReadPacket, FastBulkReadStatus, FastBulkSlotIter, FastReadPacket,
     FastReadVariant, FastSlotInfo, FastSyncReadPacket, FastSyncReadStatus, FastSyncSlotIter,
     Instruction, InstructionExt, NoInstructionExt, NoStatusExt, Packet, PingPacket, PingStatus,
     RawStatus, ReadPacket, ReadStatus, RebootPacket, RebootStatus, RegWritePacket, RegWriteStatus,
     Slot, SlotPosition, Status, StatusError, StatusExt, SyncReadPacket, SyncReadStatus,
-    SyncSlotInfo, SyncWritePacket, WritePacket, WriteStatus, decode_status, write_packet,
-    write_slot, write_status,
+    SyncSlotInfo, SyncWritePacket, WritePacket, WriteStatus, decode_status, write_ext,
+    write_packet, write_slot, write_status,
 };
 #[cfg(feature = "software-crc")]
 pub use wire::SoftwareCrcUmts;
 pub use wire::{
     BROADCAST_ID, BULK_REQUEST_SLOT_BYTES, ByteIter, Bytes, CRC_BYTES, CrcUmts,
     FAST_RESPONSE_SLOT_BYTES, FAST_RESPONSE_SLOT0_BYTES, HEADER, MAX_LENGTH, Overflow, ParseError,
-    REQUEST_HEADER_BYTES, RESPONSE_HEADER_BYTES, RawFrame, RxView, SYNC_REQUEST_SLOT_BYTES,
-    Stuffer, Unstuffer, WriteBuf, WriteError, write_raw,
+    REQUEST_HEADER_BYTES, RESPONSE_HEADER_BYTES, RxView, SYNC_REQUEST_SLOT_BYTES, WriteBuf,
+    WriteError,
 };
 
 /// Parse the first DXL frame in the byte view (which may straddle a ring
@@ -45,13 +47,15 @@ pub fn parse_packet<'a, CRC: CrcUmts, I: InstructionExt>(
     view: RxView<'a>,
 ) -> Result<(Packet<'a, I>, usize), ParseError> {
     let (raw, consumed) = wire::parse_raw::<CRC>(view)?;
-    match typed::decode::<I>(raw) {
+    match typed::decode::<I>(raw.instruction, raw.id, raw.params) {
         Ok(packet) => Ok((packet, consumed)),
-        Err(DecodeError::UnknownInstruction) => match I::decode(raw) {
-            Some(Ok(v)) => Ok((Packet::Ext(v), consumed)),
-            Some(Err(_)) => Err(ParseError::BadLength { skip: consumed }),
-            None => Err(ParseError::BadInstruction { skip: consumed }),
-        },
+        Err(DecodeError::UnknownInstruction) => {
+            match I::decode(raw.instruction, raw.id, raw.params) {
+                Some(Ok(v)) => Ok((Packet::Ext(v), consumed)),
+                Some(Err(_)) => Err(ParseError::BadLength { skip: consumed }),
+                None => Err(ParseError::BadInstruction { skip: consumed }),
+            }
+        }
         Err(DecodeError::BadParams) => Err(ParseError::BadLength { skip: consumed }),
     }
 }

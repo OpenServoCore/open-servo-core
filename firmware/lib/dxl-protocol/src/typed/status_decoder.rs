@@ -2,16 +2,15 @@
 //! [`parse_packet`](crate::parse_packet) as `Packet::Status`) plus the
 //! preceding request instruction into a typed [`Status`].
 
-use super::decoder::DecodeError;
-use super::fast_decoder::{FastBulkReadStatus, FastSyncReadStatus};
+use super::ext::StatusExt;
 use super::instruction::Instruction;
 use super::packet::RawStatus;
+use super::packet_decoder::DecodeError;
 use super::status::{
-    ActionStatus, BulkReadStatus, ErrorStatus, PingStatus, ReadStatus, RebootStatus,
-    RegWriteStatus, Status, SyncReadStatus, WriteStatus,
+    ActionStatus, BulkReadStatus, ErrorStatus, FastBulkReadStatus, FastSyncReadStatus, PingStatus,
+    ReadStatus, RebootStatus, RegWriteStatus, Status, SyncReadStatus, WriteStatus,
 };
 use super::status_error::StatusError;
-use super::status_ext::StatusExt;
 
 /// Decode a Status-instruction frame into a typed [`Status`], given the
 /// instruction of the request that preceded it (callers track this from
@@ -206,6 +205,7 @@ mod tests {
     }
 
     #[derive(Copy, Clone, Debug)]
+    #[allow(dead_code)]
     enum ExtVariant<'a> {
         Calibrate { id: u8, axis: u8, payload: &'a [u8] },
     }

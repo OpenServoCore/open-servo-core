@@ -1,36 +1,16 @@
+//! Bulk/Sync Read request-body helpers: the per-slave entries in
+//! `BulkReadPacket::body` / `FastBulkReadPacket::body` and the `find_slot`
+//! lookups slaves use to locate their slot in the upcoming response train.
+
 use crate::wire::{ByteIter, Bytes, CRC_BYTES, RESPONSE_HEADER_BYTES};
 
 use super::packet::{BulkReadPacket, SyncReadPacket};
 
-/// Wire-faithful piece of a Fast Sync / Fast Bulk Read response: one slave's
-/// `(id, error, data)` block. The same shape appears in two contexts:
-///
-/// - **Slave TX** (single slot): the chip emits one `Slot` via
-///   [`write_slot`](crate::write_slot) tagged with its [`SlotPosition`] in the
-///   coalesced response.
-/// - **Master RX** (multi-slot): `FastSyncReadStatus::slots` and
-///   `FastBulkReadStatus::slots` walk the parsed coalesced frame and yield a
-///   `Slot` per slave.
-///
-/// `error` is the raw wire byte — slaves pass [`StatusError::as_u8`]; masters
-/// can interpret via [`StatusError::from_u8`]. Wire-faithful (no enum coercion
-/// at decode means unknown vendor error codes don't crash the iterator).
-///
-/// `data` is the payload `Bytes` — unstuffed by spec (Fast Read decoding is
-/// positional, not trigger-driven).
-///
-/// [`StatusError`]: super::status_error::StatusError
-/// [`StatusError::as_u8`]: super::status_error::StatusError::as_u8
-/// [`StatusError::from_u8`]: super::status_error::StatusError::from_u8
-#[derive(Copy, Clone, Debug)]
-pub struct Slot<'a> {
-    pub id: u8,
-    pub error: u8,
-    pub data: Bytes<'a>,
-}
-
+/// One slave's entry in a Bulk Read / Fast Bulk Read request body: `id`,
+/// register `address`, and read `length`. Five wire bytes total
+/// (`id + addr_le16 + len_le16`).
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
-pub struct BulkSlot {
+pub struct BulkEntry {
     pub id: u8,
     pub address: u16,
     pub length: u16,
@@ -71,7 +51,7 @@ impl<'a> BulkReadSlotIter<'a> {
 }
 
 impl<'a> Iterator for BulkReadSlotIter<'a> {
-    type Item = BulkSlot;
+    type Item = BulkEntry;
 
     fn next(&mut self) -> Option<Self::Item> {
         let id = self.inner.next()?;
@@ -79,7 +59,7 @@ impl<'a> Iterator for BulkReadSlotIter<'a> {
         let a_hi = self.inner.next()?;
         let l_lo = self.inner.next()?;
         let l_hi = self.inner.next()?;
-        Some(BulkSlot {
+        Some(BulkEntry {
             id,
             address: u16::from_le_bytes([a_lo, a_hi]),
             length: u16::from_le_bytes([l_lo, l_hi]),
@@ -88,28 +68,28 @@ impl<'a> Iterator for BulkReadSlotIter<'a> {
 }
 
 impl<'a> BulkReadPacket<'a> {
-    /// Decoded `(id, address, length)` slots; trailing partial tuples dropped.
+    /// Decoded `(id, address, length)` entries; trailing partial tuples dropped.
     pub fn slots(&self) -> BulkReadSlotIter<'a> {
         BulkReadSlotIter::new(self.body)
     }
 
-    /// Walk slots once; for the first slot matching `id`, return its position,
+    /// Walk entries once; for the first matching `id`, return its position,
     /// fields, and the cumulative response-stream offset before it.
     pub fn find_slot(&self, id: u8) -> Option<BulkSlotInfo> {
         let mut bytes_before = 0u32;
-        for (index, slot) in self.slots().enumerate() {
-            if slot.id == id {
+        for (index, entry) in self.slots().enumerate() {
+            if entry.id == id {
                 return Some(BulkSlotInfo {
                     index,
-                    id: slot.id,
-                    address: slot.address,
-                    length: slot.length,
+                    id: entry.id,
+                    address: entry.address,
+                    length: entry.length,
                     bytes_before,
                 });
             }
             bytes_before = bytes_before
                 .saturating_add(RESPONSE_HEADER_BYTES as u32)
-                .saturating_add(slot.length as u32)
+                .saturating_add(entry.length as u32)
                 .saturating_add(CRC_BYTES as u32);
         }
         None
@@ -134,7 +114,6 @@ impl<'a> SyncReadPacket<'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::wire::Bytes;
 
     fn bulk(body: &[u8]) -> BulkReadPacket<'_> {
         BulkReadPacket {
@@ -157,7 +136,7 @@ mod tests {
         assert_eq!(v.len(), 2);
         assert_eq!(
             v[0],
-            BulkSlot {
+            BulkEntry {
                 id: 1,
                 address: 0x10,
                 length: 4
@@ -165,7 +144,7 @@ mod tests {
         );
         assert_eq!(
             v[1],
-            BulkSlot {
+            BulkEntry {
                 id: 2,
                 address: 0x20,
                 length: 8
@@ -175,7 +154,6 @@ mod tests {
 
     #[test]
     fn bulk_find_slot_returns_info_with_bytes_before() {
-        // slot 0 id=9 len=4, slot 1 id=0 len=2.
         let body = [9, 0xFE, 0xFE, 4, 0, 0, 0x12, 0, 2, 0];
         let info = bulk(&body).find_slot(0).expect("id present");
         assert_eq!(info.index, 1);
@@ -202,7 +180,6 @@ mod tests {
 
     #[test]
     fn bulk_find_slot_sums_varied_response_lengths() {
-        // slot 0 id=1 len=4, slot 1 id=2 len=8, slot 2 id=3 len=2.
         let body = [1, 0, 0, 4, 0, 2, 0, 0, 8, 0, 3, 0, 0, 2, 0];
         let p = bulk(&body);
         assert_eq!(p.find_slot(1).unwrap().bytes_before, 0);

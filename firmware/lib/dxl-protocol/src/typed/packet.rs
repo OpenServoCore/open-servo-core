@@ -1,6 +1,6 @@
 use crate::wire::{Bytes, Overflow};
 
-use super::instruction_ext::{InstructionExt, NoInstructionExt};
+use super::ext::{InstructionExt, NoInstructionExt};
 
 #[derive(Copy, Clone, Debug)]
 pub struct PingPacket {

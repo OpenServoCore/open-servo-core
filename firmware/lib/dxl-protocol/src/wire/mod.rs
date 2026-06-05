@@ -18,12 +18,13 @@ pub use bytes::{ByteIter, Bytes, Overflow};
 pub use crc::CrcUmts;
 #[cfg(feature = "software-crc")]
 pub use crc_software::SoftwareCrcUmts;
+pub(crate) use frame::RawFrame;
 pub use frame::{
     BROADCAST_ID, BULK_REQUEST_SLOT_BYTES, CRC_BYTES, FAST_RESPONSE_SLOT_BYTES,
     FAST_RESPONSE_SLOT0_BYTES, HEADER, MAX_LENGTH, REQUEST_HEADER_BYTES, RESPONSE_HEADER_BYTES,
-    RawFrame, SYNC_REQUEST_SLOT_BYTES,
+    SYNC_REQUEST_SLOT_BYTES,
 };
-pub use parser::{ParseError, parse_raw};
+pub use parser::ParseError;
+pub(crate) use parser::parse_raw;
 pub use rx_view::RxView;
-pub use stuffing::{Stuffer, Unstuffer};
-pub use writer::write_raw;
+pub(crate) use writer::write_raw;

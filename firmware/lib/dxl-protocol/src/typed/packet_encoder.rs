@@ -1,8 +1,28 @@
 use crate::wire::{BROADCAST_ID, CrcUmts, RawFrame, WriteBuf, WriteError, write_raw};
 
+use super::ext::InstructionExt;
 use super::instruction::Instruction;
-use super::instruction_ext::InstructionExt;
 use super::packet::Packet;
+
+/// Wire-frame escape hatch for [`InstructionExt`] / [`StatusExt`](super::ext::StatusExt)
+/// implementations: serialize one frame with `id` + `instruction` + an iterator
+/// of (logical, pre-stuffing) parameter bytes. The framing, byte-stuffing, and
+/// CRC are added by this function.
+pub fn write_ext<W: WriteBuf, CRC: CrcUmts, I: IntoIterator<Item = u8>>(
+    out: &mut W,
+    id: u8,
+    instruction: u8,
+    params: I,
+) -> Result<(), WriteError> {
+    write_raw::<W, _, CRC>(
+        out,
+        RawFrame {
+            id,
+            instruction,
+            params,
+        },
+    )
+}
 
 pub fn write_packet<W: WriteBuf, CRC: CrcUmts, X: InstructionExt>(
     out: &mut W,
