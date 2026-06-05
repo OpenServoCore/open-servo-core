@@ -10,6 +10,7 @@ mod crc_software;
 mod frame;
 mod parser;
 mod rx_view;
+mod stuffing;
 mod writer;
 
 pub use buf::{WriteBuf, WriteError};
@@ -24,4 +25,5 @@ pub use frame::{
 };
 pub use parser::{ParseError, parse_raw};
 pub use rx_view::RxView;
+pub use stuffing::{Stuffer, Unstuffer};
 pub use writer::write_raw;

@@ -90,57 +90,95 @@ impl<'a> IntoIterator for Bytes<'a> {
     }
 }
 
-/// Iterator over Bytes — walks `head` then `tail`, applying `0xFF 0xFF 0xFD 0xFD`
-/// → `0xFF 0xFF 0xFD` unstuffing when `stuffed` is set. The 3-byte `last3`
-/// window threads across the head/tail boundary so triggers split by the cut
-/// still unstuff correctly.
+use super::stuffing::Unstuffer;
+
+/// Walks `head` then `tail` virtual indices, yielding wire bytes. Used as the
+/// inner iterator of [`ByteIter`]; for stuffed bytes it's wrapped in
+/// [`Unstuffer`].
 #[derive(Copy, Clone, Debug)]
-pub struct ByteIter<'a> {
+struct RawWalker<'a> {
     head: &'a [u8],
     tail: &'a [u8],
     /// Virtual index across `head` then `tail` (0..head.len()+tail.len()).
     i: usize,
-    last3: [u8; 3],
-    stuffed: bool,
+}
+
+impl<'a> RawWalker<'a> {
+    fn new(head: &'a [u8], tail: &'a [u8]) -> Self {
+        Self { head, tail, i: 0 }
+    }
+}
+
+impl<'a> Iterator for RawWalker<'a> {
+    type Item = u8;
+
+    fn next(&mut self) -> Option<u8> {
+        let h = self.head.len();
+        if self.i < h {
+            let b = self.head[self.i];
+            self.i += 1;
+            return Some(b);
+        }
+        let ti = self.i - h;
+        if ti < self.tail.len() {
+            let b = self.tail[ti];
+            self.i += 1;
+            return Some(b);
+        }
+        None
+    }
+}
+
+/// Iterator over [`Bytes`] — yields logical bytes regardless of whether the
+/// underlying storage is stuffed wire bytes or unstuffed caller-owned bytes.
+#[derive(Copy, Clone, Debug)]
+pub struct ByteIter<'a> {
+    inner: ByteIterInner<'a>,
+}
+
+#[derive(Copy, Clone, Debug)]
+enum ByteIterInner<'a> {
+    Unstuffed(RawWalker<'a>),
+    Stuffed(Unstuffer<RawWalker<'a>>),
 }
 
 impl<'a> ByteIter<'a> {
     pub(crate) fn raw(head: &'a [u8], tail: &'a [u8]) -> Self {
         Self {
-            head,
-            tail,
-            i: 0,
-            last3: [0; 3],
-            stuffed: false,
+            inner: ByteIterInner::Unstuffed(RawWalker::new(head, tail)),
         }
     }
 
     pub(crate) fn with_prefix(head: &'a [u8], tail: &'a [u8], prefix: [u8; 3]) -> Self {
         Self {
-            head,
-            tail,
-            i: 0,
-            last3: prefix,
-            stuffed: true,
+            inner: ByteIterInner::Stuffed(Unstuffer::with_prefix(
+                RawWalker::new(head, tail),
+                prefix,
+            )),
         }
     }
 
     /// Snapshot the unconsumed remainder as a stuffed `Bytes`, threading
     /// `last3` forward so a successor iterator picks up trigger detection
-    /// mid-stream.
+    /// mid-stream. Callers consume this only on iterators derived from
+    /// `Bytes::Stuffed`; unstuffed-source remainders carry empty prefix.
     pub(crate) fn rest_bytes(&self) -> Bytes<'a> {
-        let h = self.head.len();
-        if self.i >= h {
+        let (walker, prefix) = match &self.inner {
+            ByteIterInner::Unstuffed(w) => (w, [0u8; 3]),
+            ByteIterInner::Stuffed(u) => (u.inner(), u.last3()),
+        };
+        let h = walker.head.len();
+        if walker.i >= h {
             Bytes::Stuffed {
-                head: &self.tail[self.i - h..],
+                head: &walker.tail[walker.i - h..],
                 tail: &[],
-                prefix: self.last3,
+                prefix,
             }
         } else {
             Bytes::Stuffed {
-                head: &self.head[self.i..],
-                tail: self.tail,
-                prefix: self.last3,
+                head: &walker.head[walker.i..],
+                tail: walker.tail,
+                prefix,
             }
         }
     }
@@ -150,25 +188,9 @@ impl<'a> Iterator for ByteIter<'a> {
     type Item = u8;
 
     fn next(&mut self) -> Option<u8> {
-        let h = self.head.len();
-        let total = h + self.tail.len();
-        loop {
-            if self.i >= total {
-                return None;
-            }
-            let b = if self.i < h {
-                self.head[self.i]
-            } else {
-                self.tail[self.i - h]
-            };
-            self.i += 1;
-            if self.stuffed && b == 0xFD && self.last3 == [0xFF, 0xFF, 0xFD] {
-                // Advance past trigger so a logical FD right after isn't re-suppressed.
-                self.last3 = [self.last3[1], self.last3[2], 0xFD];
-                continue;
-            }
-            self.last3 = [self.last3[1], self.last3[2], b];
-            return Some(b);
+        match &mut self.inner {
+            ByteIterInner::Unstuffed(w) => w.next(),
+            ByteIterInner::Stuffed(u) => u.next(),
         }
     }
 }

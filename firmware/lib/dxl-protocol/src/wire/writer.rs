@@ -1,6 +1,7 @@
 use super::buf::{WriteBuf, WriteError};
 use super::crc::CrcUmts;
 use super::frame::{HEADER, RawFrame};
+use super::stuffing::Stuffer;
 
 /// `frame.id != 0xFF` and `frame.instruction != 0xFD` required so the
 /// unstuffed header..instruction prefix can't itself complete a stuffing
@@ -41,15 +42,11 @@ fn write_raw_body<W: WriteBuf, I: IntoIterator<Item = u8>, CRC: CrcUmts>(
     out.push(0)?;
     out.push(frame.instruction)?;
 
-    let mut last2: [u8; 2] = [0, frame.instruction];
-    for b in frame.params {
+    // Seed Stuffer with the instruction byte as last2[1] so a trigger that
+    // spans the instr→params boundary still emits the stuffing FD.
+    let stuffer = Stuffer::with_prefix(frame.params.into_iter(), [0, frame.instruction]);
+    for b in stuffer {
         out.push(b)?;
-        if last2[0] == 0xFF && last2[1] == 0xFF && b == 0xFD {
-            out.push(0xFD)?;
-            last2 = [0xFD, 0xFD];
-        } else {
-            last2 = [last2[1], b];
-        }
     }
 
     let stuffed_params_len = out.len() - (len_pos + 2 + 1);
