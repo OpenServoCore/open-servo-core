@@ -122,7 +122,7 @@ impl DxlBus for FakeBus {
         self.send_count += 1;
         self.last_schedule = Some(schedule);
         let length = slot.data.unstuffed_len() as u16;
-        self.last_kind = Some(if slot.error == StatusError::None {
+        self.last_kind = Some(if slot.error == StatusError::None.as_u8() {
             ReplyKind::Fast(position)
         } else {
             ReplyKind::FastError(position, length)
@@ -1314,7 +1314,7 @@ fn poll_recovers_from_stale_fast_first_slot_residue_then_replies_to_ping() {
         &mut residue,
         &Slot {
             id: 50,
-            error: StatusError::None,
+            error: StatusError::None.as_u8(),
             data: Bytes::unstuffed(&[0xAA, 0xAA, 0xAA, 0xAA]),
         },
         SlotPosition::First { packet_length: 43 },

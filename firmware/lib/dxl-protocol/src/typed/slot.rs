@@ -1,7 +1,6 @@
 use crate::wire::{ByteIter, Bytes, CRC_BYTES, RESPONSE_HEADER_BYTES};
 
 use super::packet::{BulkReadPacket, SyncReadPacket};
-use super::status_error::StatusError;
 
 /// Wire-faithful piece of a Fast Sync / Fast Bulk Read response: one slave's
 /// `(id, error, data)` block. The same shape appears in two contexts:
@@ -13,12 +12,20 @@ use super::status_error::StatusError;
 ///   `FastBulkReadStatus::slots` walk the parsed coalesced frame and yield a
 ///   `Slot` per slave.
 ///
-/// `data` is the payload Bytes — unstuffed by spec (Fast Read decoding is
+/// `error` is the raw wire byte — slaves pass [`StatusError::as_u8`]; masters
+/// can interpret via [`StatusError::from_u8`]. Wire-faithful (no enum coercion
+/// at decode means unknown vendor error codes don't crash the iterator).
+///
+/// `data` is the payload `Bytes` — unstuffed by spec (Fast Read decoding is
 /// positional, not trigger-driven).
+///
+/// [`StatusError`]: super::status_error::StatusError
+/// [`StatusError::as_u8`]: super::status_error::StatusError::as_u8
+/// [`StatusError::from_u8`]: super::status_error::StatusError::from_u8
 #[derive(Copy, Clone, Debug)]
 pub struct Slot<'a> {
     pub id: u8,
-    pub error: StatusError,
+    pub error: u8,
     pub data: Bytes<'a>,
 }
 

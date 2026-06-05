@@ -11,7 +11,7 @@
 
 use dxl_protocol::prelude::{InstructionExt, StatusExt};
 use dxl_protocol::wire::{Bytes, CrcUmts, RawFrame, WriteBuf, WriteError, write_raw};
-use dxl_protocol::{DecodeError, Instruction, StatusError};
+use dxl_protocol::{DecodeError, Instruction, RawStatus, StatusError};
 
 /// Marker for the OSC request extension; bind it as the `X` parameter of
 /// [`dxl_protocol::Codec`].
@@ -92,6 +92,16 @@ pub enum OscReplyVariant {
 
 impl StatusExt for OscReplyExt {
     type Variant<'a> = OscReplyVariant;
+
+    fn decode<'a>(
+        _instr: u8,
+        _raw: RawStatus<'a>,
+    ) -> Option<Result<OscReplyVariant, DecodeError>> {
+        // OSC currently has no typed master-side status flavor — a Calibrate
+        // response is an empty Status that decode_status surfaces via the
+        // native success path. Add an arm here when a typed flavor lands.
+        None
+    }
 
     fn write<'a, W: WriteBuf, CRC: CrcUmts>(
         v: &OscReplyVariant,

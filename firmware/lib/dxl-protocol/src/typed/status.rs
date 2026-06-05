@@ -1,5 +1,6 @@
 use crate::wire::{CrcUmts, RawFrame, WriteBuf, WriteError, write_raw};
 
+use super::fast_decoder::{FastBulkReadStatus, FastSyncReadStatus};
 use super::instruction::Instruction;
 use super::status_ext::{NoStatusExt, StatusExt};
 use super::status_error::StatusError;
@@ -56,15 +57,16 @@ pub struct ErrorStatus {
 }
 
 /// Typed view of a Status-instruction frame. One variant per logical response
-/// shape; pairs with a known request instruction so the master can decode the
-/// raw status payload, and the slave can construct typed replies.
+/// shape; pairs with the request instruction the master sent so the master can
+/// typed-decode the raw status payload, and the slave can typed-construct
+/// replies (single-slot variants only — Fast slots emit via
+/// [`write_slot`](crate::write_slot)).
 ///
-/// Sync Read / Bulk Read / Read share wire bytes — separate variants are kept
-/// for caller-side intent. Fast Sync / Fast Bulk Read responses are NOT
-/// represented here: those are coalesced multi-slot frames, emitted by the
-/// slave one [`Slot`](crate::Slot) at a time via [`write_slot`](crate::write_slot),
-/// and decoded by the master via `decode_status` returning a Fast*Status that
-/// exposes a `slots()` iterator.
+/// `Read` / `SyncRead` / `BulkRead` share wire bytes — separate variants are
+/// kept for caller-side intent. `FastSyncRead` / `FastBulkRead` are
+/// **master-side only**: a coalesced multi-slot response, decoded via
+/// [`decode_status`](crate::decode_status), and walked via the variant's
+/// `slots()` iterator. Slaves never construct these — they emit `Slot` pieces.
 ///
 /// The optional `S` parameter plugs in a vendor status extension (see
 /// [`StatusExt`]); pure-DXL callers leave it at the [`NoStatusExt`] default,
@@ -80,6 +82,8 @@ pub enum Status<'a, S: StatusExt = NoStatusExt> {
     Action(ActionStatus),
     Reboot(RebootStatus),
     Error(ErrorStatus),
+    FastSyncRead(FastSyncReadStatus<'a>),
+    FastBulkRead(FastBulkReadStatus<'a>),
     Ext(S::Variant<'a>),
 }
 
@@ -111,6 +115,8 @@ pub(crate) fn write_status<W: WriteBuf, CRC: CrcUmts, S: StatusExt>(
         Status::Error(ErrorStatus { id, error }) => {
             write_status_frame::<W, _, CRC>(out, id, error, core::iter::empty())
         }
+        // Master-side decode outputs — slaves emit Fast slots via `write_slot`.
+        Status::FastSyncRead(_) | Status::FastBulkRead(_) => Err(WriteError::Invalid),
         Status::Ext(ref v) => S::write::<W, CRC>(v, out),
     }
 }

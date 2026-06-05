@@ -438,7 +438,7 @@ impl<'a, B: DxlBus, E: ServiceEvents> Dispatcher<'a, B, E> {
         // disambiguates by remembering which request it sent.
         let slot = Slot {
             id: ctx.our_id,
-            error,
+            error: error.as_u8(),
             data: Bytes::unstuffed(&buf[..data_len]),
         };
         self.bus.send_slot(slot, position, schedule);

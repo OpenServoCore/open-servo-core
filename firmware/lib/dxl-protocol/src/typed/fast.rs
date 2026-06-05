@@ -244,7 +244,7 @@ fn write_slot_header<W: WriteBuf>(out: &mut W, length: u16) -> Result<(), WriteE
 }
 
 fn write_slot_body<W: WriteBuf>(out: &mut W, slot: &Slot<'_>) -> Result<(), WriteError> {
-    out.push(slot.error.as_u8())?;
+    out.push(slot.error)?;
     out.push(slot.id)?;
     for b in slot.data.iter() {
         out.push(b)?;

@@ -10,12 +10,13 @@ pub use codec::Codec;
 pub use typed::{
     ActionPacket, ActionStatus, BulkReadPacket, BulkReadSlotIter, BulkReadStatus, BulkSlot,
     BulkSlotInfo, BulkWritePacket, ClearPacket, ControlTableBackupPacket, DecodeError, ErrorStatus,
-    FactoryResetPacket, FastBulkReadPacket, FastBulkTupleIter, FastReadPacket, FastReadVariant,
-    FastSlotInfo, FastSyncReadPacket, Instruction, InstructionExt, NoInstructionExt, NoStatusExt,
-    Packet, PingPacket, PingStatus, RawStatus, ReadPacket, ReadStatus, RebootPacket, RebootStatus,
+    FactoryResetPacket, FastBulkReadPacket, FastBulkReadStatus, FastBulkSlotIter, FastBulkTupleIter,
+    FastReadPacket, FastReadVariant, FastSlotInfo, FastSyncReadPacket, FastSyncReadStatus,
+    FastSyncSlotIter, Instruction, InstructionExt, NoInstructionExt, NoStatusExt, Packet,
+    PingPacket, PingStatus, RawStatus, ReadPacket, ReadStatus, RebootPacket, RebootStatus,
     RegWritePacket, RegWriteStatus, Slot, SlotPosition, Status, StatusError, StatusExt,
     SyncReadPacket, SyncReadStatus, SyncSlotInfo, SyncWritePacket, WritePacket, WriteStatus,
-    decode, write_slot,
+    decode, decode_status, write_slot,
 };
 #[cfg(feature = "software-crc")]
 pub use wire::SoftwareCrcUmts;

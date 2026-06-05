@@ -61,7 +61,7 @@ const BODY_7: &[u8] = &[0x03, 0x00, 0x00, 0x00];
 fn slot(id: u8, error: StatusError, data: &[u8]) -> Slot<'_> {
     Slot {
         id,
-        error,
+        error: error.as_u8(),
         data: Bytes::unstuffed(data),
     }
 }

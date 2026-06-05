@@ -85,6 +85,17 @@ impl<'a> Bytes<'a> {
         }
         Ok(n)
     }
+
+    /// Re-tag the same underlying head/tail bytes as `Unstuffed`, bypassing
+    /// any stuffing transform on iteration. Used for wire payloads the spec
+    /// says were never stuffed (e.g. Fast Read responses, which decode
+    /// positionally).
+    pub fn as_unstuffed(&self) -> Self {
+        match *self {
+            Bytes::Stuffed { head, tail, .. } => Bytes::Unstuffed { head, tail },
+            Bytes::Unstuffed { head, tail } => Bytes::Unstuffed { head, tail },
+        }
+    }
 }
 
 impl<'a> IntoIterator for Bytes<'a> {
