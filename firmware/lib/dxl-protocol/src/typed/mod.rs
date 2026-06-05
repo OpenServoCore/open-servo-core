@@ -19,7 +19,9 @@ pub use decoder::{DecodeError, decode};
 pub use fast::{
     FastBulkTupleIter, FastReadPacket, FastReadVariant, FastSlotInfo, SlotPosition, write_slot,
 };
-pub use fast_decoder::{FastBulkReadStatus, FastBulkSlotIter, FastSyncReadStatus, FastSyncSlotIter};
+pub use fast_decoder::{
+    FastBulkReadStatus, FastBulkSlotIter, FastSyncReadStatus, FastSyncSlotIter,
+};
 pub use instruction::Instruction;
 pub use instruction_ext::{InstructionExt, NoInstructionExt};
 pub use packet::{

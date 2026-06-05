@@ -152,10 +152,7 @@ mod tests {
     #[test]
     fn stuffer_inserts_fd_when_trigger_is_terminal() {
         // Trigger at end still gets the stuffing byte appended.
-        assert_eq!(
-            &stuff(&[0xFF, 0xFF, 0xFD])[..],
-            &[0xFF, 0xFF, 0xFD, 0xFD]
-        );
+        assert_eq!(&stuff(&[0xFF, 0xFF, 0xFD])[..], &[0xFF, 0xFF, 0xFD, 0xFD]);
     }
 
     #[test]
@@ -188,10 +185,7 @@ mod tests {
 
     #[test]
     fn unstuffer_strips_terminal_stuffing_byte() {
-        assert_eq!(
-            &unstuff(&[0xFF, 0xFF, 0xFD, 0xFD])[..],
-            &[0xFF, 0xFF, 0xFD]
-        );
+        assert_eq!(&unstuff(&[0xFF, 0xFF, 0xFD, 0xFD])[..], &[0xFF, 0xFF, 0xFD]);
     }
 
     #[test]

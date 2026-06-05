@@ -96,10 +96,7 @@ pub enum OscReplyVariant {
 impl StatusExt for OscReplyExt {
     type Variant<'a> = OscReplyVariant;
 
-    fn decode<'a>(
-        _instr: u8,
-        _raw: RawStatus<'a>,
-    ) -> Option<Result<OscReplyVariant, DecodeError>> {
+    fn decode<'a>(_instr: u8, _raw: RawStatus<'a>) -> Option<Result<OscReplyVariant, DecodeError>> {
         // OSC currently has no typed master-side status flavor — a Calibrate
         // response is an empty Status that decode_status surfaces via the
         // native success path. Add an arm here when a typed flavor lands.

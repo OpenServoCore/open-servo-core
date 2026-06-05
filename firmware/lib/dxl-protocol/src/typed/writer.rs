@@ -1,7 +1,7 @@
 use crate::wire::{BROADCAST_ID, CrcUmts, RawFrame, WriteBuf, WriteError, write_raw};
 
-use super::instruction_ext::InstructionExt;
 use super::instruction::Instruction;
+use super::instruction_ext::InstructionExt;
 use super::packet::Packet;
 
 pub fn write_packet<W: WriteBuf, CRC: CrcUmts, X: InstructionExt>(

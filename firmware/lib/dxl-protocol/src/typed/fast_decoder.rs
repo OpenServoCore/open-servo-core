@@ -67,7 +67,10 @@ impl<'a> FastBulkReadStatus<'a> {
     /// Iterate per-slave `Slot { id, error, data }` blocks, taking each slot's
     /// data width from `lengths`. Stops when either the payload runs out or
     /// `lengths` does.
-    pub fn slots<L: IntoIterator<Item = u16>>(&self, lengths: L) -> FastBulkSlotIter<'a, L::IntoIter> {
+    pub fn slots<L: IntoIterator<Item = u16>>(
+        &self,
+        lengths: L,
+    ) -> FastBulkSlotIter<'a, L::IntoIter> {
         FastBulkSlotIter {
             cursor: PayloadCursor::new(self.payload.as_unstuffed()),
             lengths: lengths.into_iter(),

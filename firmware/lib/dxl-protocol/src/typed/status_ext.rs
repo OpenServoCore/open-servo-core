@@ -29,10 +29,7 @@ pub trait StatusExt {
     ///   [`DecodeError::UnknownInstruction`].
     /// - `Some(Ok(v))` — parsed successfully.
     /// - `Some(Err(_))` — instruction is mine but params are malformed.
-    fn decode<'a>(
-        instr: u8,
-        raw: RawStatus<'a>,
-    ) -> Option<Result<Self::Variant<'a>, DecodeError>>;
+    fn decode<'a>(instr: u8, raw: RawStatus<'a>) -> Option<Result<Self::Variant<'a>, DecodeError>>;
 
     fn write<'a, W: WriteBuf, CRC: CrcUmts>(
         v: &Self::Variant<'a>,

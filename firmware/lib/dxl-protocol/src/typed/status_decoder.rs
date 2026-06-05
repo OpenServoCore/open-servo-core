@@ -10,8 +10,8 @@ use super::status::{
     ActionStatus, BulkReadStatus, ErrorStatus, PingStatus, ReadStatus, RebootStatus,
     RegWriteStatus, Status, SyncReadStatus, WriteStatus,
 };
-use super::status_ext::StatusExt;
 use super::status_error::StatusError;
+use super::status_ext::StatusExt;
 
 /// Decode a Status-instruction frame into a typed [`Status`], given the
 /// instruction byte of the request that preceded it (callers track this from
@@ -46,10 +46,7 @@ pub fn decode_status<'a, S: StatusExt>(
     decode_success(instr, raw)
 }
 
-fn decode_fast<'a, S: StatusExt>(
-    instr: Instruction,
-    raw: RawStatus<'a>,
-) -> Option<Status<'a, S>> {
+fn decode_fast<'a, S: StatusExt>(instr: Instruction, raw: RawStatus<'a>) -> Option<Status<'a, S>> {
     match instr {
         Instruction::FastSyncRead => Some(Status::FastSyncRead(FastSyncReadStatus::from_raw(raw))),
         Instruction::FastBulkRead => Some(Status::FastBulkRead(FastBulkReadStatus::from_raw(raw))),
@@ -117,10 +114,7 @@ mod tests {
     struct NoExt;
     impl StatusExt for NoExt {
         type Variant<'a> = core::convert::Infallible;
-        fn decode<'a>(
-            _: u8,
-            _: RawStatus<'a>,
-        ) -> Option<Result<Self::Variant<'a>, DecodeError>> {
+        fn decode<'a>(_: u8, _: RawStatus<'a>) -> Option<Result<Self::Variant<'a>, DecodeError>> {
             None
         }
         fn write<'a, W: crate::wire::WriteBuf, CRC: crate::wire::CrcUmts>(

@@ -2,8 +2,8 @@ use crate::wire::{Bytes, CrcUmts, RawFrame, WriteBuf, WriteError, write_raw};
 
 use super::fast_decoder::{FastBulkReadStatus, FastSyncReadStatus};
 use super::instruction::Instruction;
-use super::status_ext::{NoStatusExt, StatusExt};
 use super::status_error::StatusError;
+use super::status_ext::{NoStatusExt, StatusExt};
 
 #[derive(Copy, Clone, Debug)]
 pub struct PingStatus {
