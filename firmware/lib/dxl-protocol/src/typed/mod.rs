@@ -1,4 +1,4 @@
-//! Typed layer: per-instruction `Packet` structs, `StatusReply` shapes, and
+//! Typed layer: per-instruction `Packet` structs, `Reply` shapes, and
 //! decode/encode functions. Builds on `crate::wire::RawFrame` for parsing and
 //! on `crate::wire::WriteBuf` for emission.
 
@@ -23,9 +23,9 @@ pub use packet::{
     FactoryResetPacket, FastBulkReadPacket, FastSyncReadPacket, Packet, PingPacket, ReadPacket,
     RebootPacket, RegWritePacket, StatusPacket, SyncReadPacket, SyncWritePacket, WritePacket,
 };
-pub use reply::StatusReply;
+pub use reply::Reply;
 pub use reply_ext::{NoReplyExt, ReplyExt};
 pub use status_error::StatusError;
 
-pub(crate) use reply::write_status_reply;
+pub(crate) use reply::write_reply;
 pub(crate) use writer::write;

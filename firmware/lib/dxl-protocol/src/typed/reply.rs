@@ -15,9 +15,9 @@ use super::status_error::StatusError;
 ///
 /// The optional `R` parameter plugs in a vendor reply extension (see
 /// [`ReplyExt`]); pure-DXL callers leave it at the [`NoReplyExt`] default,
-/// which makes [`StatusReply::Ext`] statically uninhabited.
+/// which makes [`Reply::Ext`] statically uninhabited.
 #[derive(Copy, Clone, Debug)]
-pub enum StatusReply<'a, R: ReplyExt = NoReplyExt> {
+pub enum Reply<'a, R: ReplyExt = NoReplyExt> {
     // ── Data-bearing replies (Status-family wire shape) ──
     Ping {
         id: u8,
@@ -80,12 +80,12 @@ pub enum StatusReply<'a, R: ReplyExt = NoReplyExt> {
     Ext(R::Variant<'a>),
 }
 
-pub(crate) fn write_status_reply<W: WriteBuf, CRC: CrcUmts, R: ReplyExt>(
+pub(crate) fn write_reply<W: WriteBuf, CRC: CrcUmts, R: ReplyExt>(
     out: &mut W,
-    reply: &StatusReply<'_, R>,
+    reply: &Reply<'_, R>,
 ) -> Result<(), WriteError> {
     match *reply {
-        StatusReply::Ping {
+        Reply::Ping {
             id,
             model,
             firmware,
@@ -94,29 +94,28 @@ pub(crate) fn write_status_reply<W: WriteBuf, CRC: CrcUmts, R: ReplyExt>(
             let payload = [m[0], m[1], firmware];
             write_status_frame::<W, _, CRC>(out, id, StatusError::None, payload.iter().copied())
         }
-        StatusReply::Read { id, data }
-        | StatusReply::SyncRead { id, data }
-        | StatusReply::BulkRead { id, data } => {
+        Reply::Read { id, data } | Reply::SyncRead { id, data } | Reply::BulkRead { id, data } => {
             write_status_frame::<W, _, CRC>(out, id, StatusError::None, data.iter().copied())
         }
-        StatusReply::Write { id }
-        | StatusReply::RegWrite { id }
-        | StatusReply::Action { id }
-        | StatusReply::Reboot { id } => {
+        Reply::Write { id }
+        | Reply::RegWrite { id }
+        | Reply::Action { id }
+        | Reply::Reboot { id } => {
             write_status_frame::<W, _, CRC>(out, id, StatusError::None, core::iter::empty())
         }
-        StatusReply::Error { id, error } => {
+        Reply::Error { id, error } => {
             write_status_frame::<W, _, CRC>(out, id, error, core::iter::empty())
         }
-        StatusReply::FastSyncRead { position, id, data }
-        | StatusReply::FastBulkRead { position, id, data } => write_fast::<W, _, CRC>(
-            out,
-            position,
-            id,
-            StatusError::None,
-            &mut data.iter().copied(),
-        ),
-        StatusReply::FastError {
+        Reply::FastSyncRead { position, id, data } | Reply::FastBulkRead { position, id, data } => {
+            write_fast::<W, _, CRC>(
+                out,
+                position,
+                id,
+                StatusError::None,
+                &mut data.iter().copied(),
+            )
+        }
+        Reply::FastError {
             position,
             id,
             error,
@@ -128,7 +127,7 @@ pub(crate) fn write_status_reply<W: WriteBuf, CRC: CrcUmts, R: ReplyExt>(
             error,
             &mut core::iter::repeat_n(0u8, length as usize),
         ),
-        StatusReply::Ext(ref v) => R::write::<W, CRC>(v, out),
+        Reply::Ext(ref v) => R::write::<W, CRC>(v, out),
     }
 }
 

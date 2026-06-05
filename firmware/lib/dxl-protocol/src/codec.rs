@@ -1,8 +1,6 @@
 use core::marker::PhantomData;
 
-use crate::typed::{
-    self, DecodeError, Extension, NoExt, NoReplyExt, Packet, ReplyExt, StatusReply,
-};
+use crate::typed::{self, DecodeError, Extension, NoExt, NoReplyExt, Packet, Reply, ReplyExt};
 use crate::wire::{self, CrcUmts, ParseError, RxView, WriteBuf, WriteError};
 
 /// Typed namespace for the protocol's parse/write entry points. Bind it once
@@ -40,15 +38,12 @@ impl<CRC: CrcUmts, X: Extension, R: ReplyExt> Codec<CRC, X, R> {
 
     /// Encode any `Packet` to wire bytes. Primarily used by test fixtures to
     /// construct inbound frames; production code on the slave side emits
-    /// replies via `write_status_reply` instead.
+    /// replies via `write_reply` instead.
     pub fn write<W: WriteBuf>(out: &mut W, packet: &Packet<'_, X>) -> Result<(), WriteError> {
         typed::write::<W, CRC, X>(out, packet)
     }
 
-    pub fn write_status_reply<W: WriteBuf>(
-        out: &mut W,
-        reply: &StatusReply<'_, R>,
-    ) -> Result<(), WriteError> {
-        typed::write_status_reply::<W, CRC, R>(out, reply)
+    pub fn write_reply<W: WriteBuf>(out: &mut W, reply: &Reply<'_, R>) -> Result<(), WriteError> {
+        typed::write_reply::<W, CRC, R>(out, reply)
     }
 }

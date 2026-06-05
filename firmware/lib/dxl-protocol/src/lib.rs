@@ -12,7 +12,7 @@ pub use typed::{
     ClearPacket, ControlTableBackupPacket, DecodeError, Extension, FactoryResetPacket,
     FastBulkReadPacket, FastBulkTupleIter, FastPosition, FastReadPacket, FastReadVariant,
     FastSlotInfo, FastSyncReadPacket, Instruction, NoExt, NoReplyExt, Packet, PingPacket,
-    ReadPacket, RebootPacket, RegWritePacket, ReplyExt, StatusError, StatusPacket, StatusReply,
+    ReadPacket, RebootPacket, RegWritePacket, Reply, ReplyExt, StatusError, StatusPacket,
     SyncReadPacket, SyncSlotInfo, SyncWritePacket, WritePacket, decode,
 };
 #[cfg(feature = "software-crc")]

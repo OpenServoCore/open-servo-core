@@ -1,4 +1,4 @@
-use dxl_protocol::prelude::{Packet, StatusReply};
+use dxl_protocol::prelude::{Packet, Reply};
 
 use crate::services::dxl::{OscExt, OscReplyExt};
 use crate::{BaudRate, BootMode};
@@ -38,7 +38,7 @@ pub trait DxlBus {
     /// owns all wire-timing math: it consumes `Schedule` to compute the fire
     /// delay (RDT + per-byte translation), and inspects `reply`'s variant to
     /// pick plain vs Fast Last (snooped chain-CRC patch) fire path.
-    fn send(&mut self, reply: StatusReply<'_, OscReplyExt>, schedule: Schedule);
+    fn send(&mut self, reply: Reply<'_, OscReplyExt>, schedule: Schedule);
 }
 
 /// Fire-and-forget notifications the dispatcher delivers when control-table

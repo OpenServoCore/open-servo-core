@@ -23,7 +23,7 @@ pub enum FastPosition {
 }
 
 /// Which Fast Read request kind a `FastReadPacket` represents — lets the
-/// dispatcher pick `StatusReply::FastSyncRead` vs `FastBulkRead` from a
+/// dispatcher pick `Reply::FastSyncRead` vs `FastBulkRead` from a
 /// generic `P: FastReadPacket`.
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub enum FastReadVariant {

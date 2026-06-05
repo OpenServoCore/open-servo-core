@@ -3,7 +3,7 @@ pub use crate::typed::{
     ActionPacket, BulkReadPacket, BulkWritePacket, ClearPacket, ControlTableBackupPacket,
     Extension, FactoryResetPacket, FastBulkReadPacket, FastPosition, FastReadPacket,
     FastReadVariant, FastSlotInfo, FastSyncReadPacket, NoExt, NoReplyExt, Packet, PingPacket,
-    ReadPacket, RebootPacket, RegWritePacket, ReplyExt, StatusError, StatusPacket, StatusReply,
+    ReadPacket, RebootPacket, RegWritePacket, Reply, ReplyExt, StatusError, StatusPacket,
     SyncReadPacket, SyncWritePacket, WritePacket,
 };
 #[cfg(feature = "software-crc")]

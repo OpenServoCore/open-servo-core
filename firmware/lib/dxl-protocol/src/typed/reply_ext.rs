@@ -1,13 +1,13 @@
 use crate::wire::{CrcUmts, WriteBuf, WriteError};
 
-/// Vendor-extension trait for `StatusReply` — mirror of [`Extension`] on the
+/// Vendor-extension trait for `Reply` — mirror of [`Extension`] on the
 /// reply side. Lets a downstream crate add custom slave→master reply shapes
 /// (e.g. an OSC calibration ack) without modifying `dxl-protocol`.
 ///
 /// The crate defines a unit struct marker, implements [`ReplyExt`] on it
 /// with its `Variant<'_>` enum, and binds [`Codec`](crate::Codec) over that
-/// marker — `Codec::write_status_reply` then dispatches
-/// [`StatusReply::Ext`](crate::typed::StatusReply::Ext) through
+/// marker — `Codec::write_reply` then dispatches
+/// [`Reply::Ext`](crate::typed::Reply::Ext) through
 /// [`ReplyExt::write`].
 ///
 /// [`Extension`]: crate::typed::Extension
@@ -21,7 +21,7 @@ pub trait ReplyExt {
 }
 
 /// Default reply extension — no custom replies. `Variant<'a> = Infallible`
-/// makes `StatusReply::Ext` statically uninhabited for pure-DXL builds.
+/// makes `Reply::Ext` statically uninhabited for pure-DXL builds.
 #[derive(Copy, Clone, Debug)]
 pub struct NoReplyExt;
 

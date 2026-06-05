@@ -6,7 +6,7 @@
 //!
 //! Plugs into [`dxl_protocol::Codec`] via the [`Extension`] / [`ReplyExt`]
 //! traits: bind `Codec<CRC, OscExt, OscReplyExt>` and the standard
-//! `Packet`/`StatusReply` enums grow `Ext` arms carrying [`OscVariant`] /
+//! `Packet`/`Reply` enums grow `Ext` arms carrying [`OscVariant`] /
 //! [`OscReplyVariant`].
 
 use dxl_protocol::prelude::{Extension, ReplyExt};
@@ -82,7 +82,7 @@ fn decode_calibrate(raw: RawFrame<Bytes<'_>>) -> Result<OscVariant, DecodeError>
 #[derive(Copy, Clone, Debug)]
 pub struct OscReplyExt;
 
-/// OSC reply shapes. The chip emits these via `bus.send(StatusReply::Ext(..))`.
+/// OSC reply shapes. The chip emits these via `bus.send(Reply::Ext(..))`.
 #[derive(Copy, Clone, Debug)]
 pub enum OscReplyVariant {
     /// Status frame with `zeros_count` zero data bytes — no caller-side

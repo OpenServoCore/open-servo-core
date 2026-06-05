@@ -129,7 +129,7 @@ impl DxlBus for Ch32Bus {
         }
     }
 
-    fn send(&mut self, reply: StatusReply<'_, OscReplyExt>, schedule: Schedule) {
+    fn send(&mut self, reply: Reply<'_, OscReplyExt>, schedule: Schedule) {
         // Defense-in-depth: if DMA wrapped past the parsed range during
         // dispatch, the request data we just acted on may have been garbage.
         // Abort the reply and surface the fault — master will see the timeout
@@ -143,15 +143,15 @@ impl DxlBus for Ch32Bus {
         // after a send cycle this struct initiated.
         let buf = unsafe { &mut *DXL_TX_BUF.get() };
         buf.truncate(0);
-        if Wire::write_status_reply(buf, &reply).is_err() {
+        if Wire::write_reply(buf, &reply).is_err() {
             buf.truncate(0);
             return;
         }
 
         match reply {
-            StatusReply::FastSyncRead { position, .. }
-            | StatusReply::FastBulkRead { position, .. }
-            | StatusReply::FastError { position, .. } => {
+            Reply::FastSyncRead { position, .. }
+            | Reply::FastBulkRead { position, .. }
+            | Reply::FastError { position, .. } => {
                 self.fire_fast(position, schedule);
             }
             _ => self.fire_plain(schedule),
