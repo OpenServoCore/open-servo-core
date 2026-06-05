@@ -20,8 +20,8 @@ pub use fast::{FastBulkTupleIter, FastPosition, FastReadPacket, FastReadVariant,
 pub use instruction::Instruction;
 pub use packet::{
     ActionPacket, BulkReadPacket, BulkWritePacket, ClearPacket, ControlTableBackupPacket,
-    FactoryResetPacket, FastBulkReadPacket, FastSyncReadPacket, Packet, PingPacket, ReadPacket,
-    RebootPacket, RegWritePacket, StatusPacket, SyncReadPacket, SyncWritePacket, WritePacket,
+    FactoryResetPacket, FastBulkReadPacket, FastSyncReadPacket, Packet, PingPacket, RawStatus,
+    ReadPacket, RebootPacket, RegWritePacket, SyncReadPacket, SyncWritePacket, WritePacket,
 };
 pub use reply::Reply;
 pub use reply_ext::{NoReplyExt, ReplyExt};

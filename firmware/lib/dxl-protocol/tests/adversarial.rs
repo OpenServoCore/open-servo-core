@@ -423,7 +423,7 @@ fn writer_overflow_preserves_prior_frames() {
     let big = [0u8; 32];
     let err = Wire::write(
         &mut buf,
-        &Packet::Status(StatusPacket {
+        &Packet::Status(RawStatus {
             id: 1,
             error: 0,
             params: Bytes::raw(&big),
@@ -536,7 +536,7 @@ fn round_trip_every_instruction() {
             id: 1,
             body: Bytes::raw(&[0xAA, 0xBB]),
         }),
-        Packet::Status(StatusPacket {
+        Packet::Status(RawStatus {
             id: 1,
             error: 0,
             params: Bytes::raw(&[0xDE, 0xAD]),
@@ -642,7 +642,7 @@ fn round_trip_random_fields_across_variants() {
                 id,
                 body: Bytes::raw(&body),
             }),
-            9 => Packet::Status(StatusPacket {
+            9 => Packet::Status(RawStatus {
                 id,
                 error,
                 params: Bytes::raw(&body),
@@ -726,7 +726,7 @@ fn stuffing_round_trip_for_every_body_carrying_variant() {
         ),
         (
             "Status",
-            Packet::Status(StatusPacket {
+            Packet::Status(RawStatus {
                 id: 1,
                 error: 0,
                 params: Bytes::raw(logical),

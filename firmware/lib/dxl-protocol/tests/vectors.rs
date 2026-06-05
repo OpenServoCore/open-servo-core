@@ -369,7 +369,7 @@ fn write_status_round_trip() {
     let mut out: Vec<u8, 64> = Vec::new();
     Wire::write(
         &mut out,
-        &Packet::Status(StatusPacket {
+        &Packet::Status(RawStatus {
             id: 1,
             error: 0,
             params: Bytes::raw(&params),
@@ -742,7 +742,7 @@ fn stuff_status_with_trigger_in_params() {
     let mut out: Vec<u8, 64> = Vec::new();
     Wire::write(
         &mut out,
-        &Packet::Status(StatusPacket {
+        &Packet::Status(RawStatus {
             id: 1,
             error: 0,
             params: Bytes::raw(&params),

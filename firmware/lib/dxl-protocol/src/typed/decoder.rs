@@ -4,8 +4,8 @@ use super::extension::Extension;
 use super::instruction::Instruction;
 use super::packet::{
     ActionPacket, BulkReadPacket, BulkWritePacket, ClearPacket, ControlTableBackupPacket,
-    FactoryResetPacket, FastBulkReadPacket, FastSyncReadPacket, Packet, PingPacket, ReadPacket,
-    RebootPacket, RegWritePacket, StatusPacket, SyncReadPacket, SyncWritePacket, WritePacket,
+    FactoryResetPacket, FastBulkReadPacket, FastSyncReadPacket, Packet, PingPacket, RawStatus,
+    ReadPacket, RebootPacket, RegWritePacket, SyncReadPacket, SyncWritePacket, WritePacket,
 };
 
 #[derive(Copy, Clone, Debug)]
@@ -80,7 +80,7 @@ fn decode_typed<'a, X: Extension>(
         Status => {
             let mut it = params.iter();
             let error = it.next().ok_or(DecodeError::BadParams)?;
-            Ok(Packet::Status(StatusPacket {
+            Ok(Packet::Status(RawStatus {
                 id,
                 error,
                 params: it.rest_bytes(),

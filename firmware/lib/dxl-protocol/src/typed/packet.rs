@@ -137,13 +137,13 @@ impl<'a> ControlTableBackupPacket<'a> {
 }
 
 #[derive(Copy, Clone, Debug)]
-pub struct StatusPacket<'a> {
+pub struct RawStatus<'a> {
     pub id: u8,
     pub error: u8,
     pub params: Bytes<'a>,
 }
 
-impl<'a> StatusPacket<'a> {
+impl<'a> RawStatus<'a> {
     pub const fn new(id: u8, error: u8, params: &'a [u8]) -> Self {
         Self {
             id,
@@ -257,7 +257,7 @@ pub enum Packet<'a, X: Extension = NoExt> {
     Reboot(RebootPacket),
     Clear(ClearPacket<'a>),
     ControlTableBackup(ControlTableBackupPacket<'a>),
-    Status(StatusPacket<'a>),
+    Status(RawStatus<'a>),
     SyncRead(SyncReadPacket<'a>),
     SyncWrite(SyncWritePacket<'a>),
     BulkRead(BulkReadPacket<'a>),
