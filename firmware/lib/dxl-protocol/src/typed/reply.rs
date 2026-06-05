@@ -2,7 +2,7 @@ use crate::wire::{CrcUmts, RawFrame, WriteBuf, WriteError, write_raw};
 
 use super::fast::{FastPosition, write_fast};
 use super::instruction::Instruction;
-use super::reply_ext::{NoReplyExt, ReplyExt};
+use super::status_ext::{NoStatusExt, StatusExt};
 use super::status_error::StatusError;
 
 #[derive(Copy, Clone, Debug)]
@@ -89,10 +89,10 @@ pub struct ErrorReply {
 /// zero payload is the same either way.
 ///
 /// The optional `R` parameter plugs in a vendor reply extension (see
-/// [`ReplyExt`]); pure-DXL callers leave it at the [`NoReplyExt`] default,
+/// [`StatusExt`]); pure-DXL callers leave it at the [`NoStatusExt`] default,
 /// which makes [`Reply::Ext`] statically uninhabited.
 #[derive(Copy, Clone, Debug)]
-pub enum Reply<'a, R: ReplyExt = NoReplyExt> {
+pub enum Reply<'a, R: StatusExt = NoStatusExt> {
     // ── Data-bearing replies (Status-family wire shape) ──
     Ping(PingReply),
     Read(ReadReply<'a>),
@@ -112,7 +112,7 @@ pub enum Reply<'a, R: ReplyExt = NoReplyExt> {
     Ext(R::Variant<'a>),
 }
 
-pub(crate) fn write_reply<W: WriteBuf, CRC: CrcUmts, R: ReplyExt>(
+pub(crate) fn write_reply<W: WriteBuf, CRC: CrcUmts, R: StatusExt>(
     out: &mut W,
     reply: &Reply<'_, R>,
 ) -> Result<(), WriteError> {

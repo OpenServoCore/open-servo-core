@@ -4,12 +4,12 @@
 //! `CAL = 0xE0`) — far from Robotis's allocated clusters so a future protocol
 //! revision can't quietly collide.
 //!
-//! Plugs into [`dxl_protocol::Codec`] via the [`InstructionExt`] / [`ReplyExt`]
+//! Plugs into [`dxl_protocol::Codec`] via the [`InstructionExt`] / [`StatusExt`]
 //! traits: bind `Codec<CRC, OscExt, OscReplyExt>` and the standard
 //! `Packet`/`Reply` enums grow `Ext` arms carrying [`OscVariant`] /
 //! [`OscReplyVariant`].
 
-use dxl_protocol::prelude::{InstructionExt, ReplyExt};
+use dxl_protocol::prelude::{InstructionExt, StatusExt};
 use dxl_protocol::wire::{Bytes, CrcUmts, RawFrame, WriteBuf, WriteError, write_raw};
 use dxl_protocol::{DecodeError, Instruction, StatusError};
 
@@ -90,7 +90,7 @@ pub enum OscReplyVariant {
     Calibrate { id: u8, zeros_count: u16 },
 }
 
-impl ReplyExt for OscReplyExt {
+impl StatusExt for OscReplyExt {
     type Variant<'a> = OscReplyVariant;
 
     fn write<'a, W: WriteBuf, CRC: CrcUmts>(

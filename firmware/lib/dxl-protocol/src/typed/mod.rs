@@ -8,7 +8,7 @@ mod fast;
 mod instruction;
 mod packet;
 mod reply;
-mod reply_ext;
+mod status_ext;
 mod slot;
 mod status_error;
 mod writer;
@@ -26,7 +26,7 @@ pub use reply::{
     ActionReply, BulkReadReply, ErrorReply, FastBulkReadReply, FastErrorReply, FastSyncReadReply,
     PingReply, ReadReply, RebootReply, RegWriteReply, Reply, SyncReadReply, WriteReply,
 };
-pub use reply_ext::{NoReplyExt, ReplyExt};
+pub use status_ext::{NoStatusExt, StatusExt};
 pub use slot::{BulkReadSlotIter, BulkSlot, BulkSlotInfo, SyncSlotInfo};
 pub use status_error::StatusError;
 

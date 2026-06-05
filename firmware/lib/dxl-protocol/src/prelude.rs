@@ -3,9 +3,9 @@ pub use crate::typed::{
     ActionPacket, ActionReply, BulkReadPacket, BulkReadReply, BulkWritePacket, ClearPacket,
     ControlTableBackupPacket, ErrorReply, InstructionExt, FactoryResetPacket, FastBulkReadPacket,
     FastBulkReadReply, FastErrorReply, FastPosition, FastReadPacket, FastReadVariant, FastSlotInfo,
-    FastSyncReadPacket, FastSyncReadReply, NoInstructionExt, NoReplyExt, Packet, PingPacket, PingReply,
+    FastSyncReadPacket, FastSyncReadReply, NoInstructionExt, NoStatusExt, Packet, PingPacket, PingReply,
     RawStatus, ReadPacket, ReadReply, RebootPacket, RebootReply, RegWritePacket, RegWriteReply,
-    Reply, ReplyExt, StatusError, SyncReadPacket, SyncReadReply, SyncWritePacket, WritePacket,
+    Reply, StatusExt, StatusError, SyncReadPacket, SyncReadReply, SyncWritePacket, WritePacket,
     WriteReply,
 };
 #[cfg(feature = "software-crc")]

@@ -12,9 +12,9 @@ pub use typed::{
     BulkSlotInfo, BulkWritePacket, ClearPacket, ControlTableBackupPacket, DecodeError, ErrorReply,
     InstructionExt, FactoryResetPacket, FastBulkReadPacket, FastBulkReadReply, FastBulkTupleIter,
     FastErrorReply, FastPosition, FastReadPacket, FastReadVariant, FastSlotInfo,
-    FastSyncReadPacket, FastSyncReadReply, Instruction, NoInstructionExt, NoReplyExt, Packet, PingPacket,
+    FastSyncReadPacket, FastSyncReadReply, Instruction, NoInstructionExt, NoStatusExt, Packet, PingPacket,
     PingReply, RawStatus, ReadPacket, ReadReply, RebootPacket, RebootReply, RegWritePacket,
-    RegWriteReply, Reply, ReplyExt, StatusError, SyncReadPacket, SyncReadReply, SyncSlotInfo,
+    RegWriteReply, Reply, StatusExt, StatusError, SyncReadPacket, SyncReadReply, SyncSlotInfo,
     SyncWritePacket, WritePacket, WriteReply, decode,
 };
 #[cfg(feature = "software-crc")]

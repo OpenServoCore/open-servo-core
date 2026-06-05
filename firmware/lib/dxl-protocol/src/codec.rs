@@ -1,6 +1,6 @@
 use core::marker::PhantomData;
 
-use crate::typed::{self, DecodeError, InstructionExt, NoInstructionExt, NoReplyExt, Packet, Reply, ReplyExt};
+use crate::typed::{self, DecodeError, InstructionExt, NoInstructionExt, NoStatusExt, Packet, Reply, StatusExt};
 use crate::wire::{self, CrcUmts, ParseError, RxView, WriteBuf, WriteError};
 
 /// Typed namespace for the protocol's parse/write entry points. Bind it once
@@ -8,11 +8,11 @@ use crate::wire::{self, CrcUmts, ParseError, RxView, WriteBuf, WriteError};
 /// `CRC` parameter disappears from every call site.
 ///
 /// `X` plugs in a request-side vendor extension (see [`InstructionExt`]); `R`
-/// plugs in a reply-side extension (see [`ReplyExt`]). Both default to the
+/// plugs in a reply-side extension (see [`StatusExt`]). Both default to the
 /// no-extension sentinels, so pure-DXL bindings stay `Codec<CRC>`.
-pub struct Codec<CRC, X = NoInstructionExt, R = NoReplyExt>(PhantomData<(CRC, X, R)>);
+pub struct Codec<CRC, X = NoInstructionExt, R = NoStatusExt>(PhantomData<(CRC, X, R)>);
 
-impl<CRC: CrcUmts, X: InstructionExt, R: ReplyExt> Codec<CRC, X, R> {
+impl<CRC: CrcUmts, X: InstructionExt, R: StatusExt> Codec<CRC, X, R> {
     /// Parse the first DXL frame in `head` then `tail`, treated as one
     /// logically contiguous byte sequence (so a ring-buffer wrap can be
     /// passed without copying). Non-ring callers pass `tail = &[]`.
