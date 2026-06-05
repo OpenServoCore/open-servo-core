@@ -3,7 +3,7 @@
 //! on `crate::wire::WriteBuf` for emission.
 
 mod decoder;
-mod extension;
+mod instruction_ext;
 mod fast;
 mod instruction;
 mod packet;
@@ -14,7 +14,7 @@ mod status_error;
 mod writer;
 
 pub use decoder::{DecodeError, decode};
-pub use extension::{Extension, NoExt};
+pub use instruction_ext::{InstructionExt, NoInstructionExt};
 pub use fast::{FastBulkTupleIter, FastPosition, FastReadPacket, FastReadVariant, FastSlotInfo};
 pub use instruction::Instruction;
 pub use packet::{

@@ -1,6 +1,6 @@
 use crate::wire::{Bytes, RawFrame};
 
-use super::extension::Extension;
+use super::instruction_ext::InstructionExt;
 use super::instruction::Instruction;
 use super::packet::{
     ActionPacket, BulkReadPacket, BulkWritePacket, ClearPacket, ControlTableBackupPacket,
@@ -16,14 +16,14 @@ pub enum DecodeError {
 
 /// Decode the standard-DXL portion of a raw frame. Returns
 /// `UnknownInstruction` for bytes outside the standard set — callers binding
-/// an [`Extension`] catch that error and try the extension's decoder.
-pub fn decode<'a, X: Extension>(raw: RawFrame<Bytes<'a>>) -> Result<Packet<'a, X>, DecodeError> {
+/// an [`InstructionExt`] catch that error and try the extension's decoder.
+pub fn decode<'a, X: InstructionExt>(raw: RawFrame<Bytes<'a>>) -> Result<Packet<'a, X>, DecodeError> {
     let instruction =
         Instruction::from_u8(raw.instruction).ok_or(DecodeError::UnknownInstruction)?;
     decode_typed::<X>(instruction, raw.id, raw.params)
 }
 
-fn decode_typed<'a, X: Extension>(
+fn decode_typed<'a, X: InstructionExt>(
     instruction: Instruction,
     id: u8,
     params: Bytes<'a>,

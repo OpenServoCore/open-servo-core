@@ -4,12 +4,12 @@
 //! `CAL = 0xE0`) — far from Robotis's allocated clusters so a future protocol
 //! revision can't quietly collide.
 //!
-//! Plugs into [`dxl_protocol::Codec`] via the [`Extension`] / [`ReplyExt`]
+//! Plugs into [`dxl_protocol::Codec`] via the [`InstructionExt`] / [`ReplyExt`]
 //! traits: bind `Codec<CRC, OscExt, OscReplyExt>` and the standard
 //! `Packet`/`Reply` enums grow `Ext` arms carrying [`OscVariant`] /
 //! [`OscReplyVariant`].
 
-use dxl_protocol::prelude::{Extension, ReplyExt};
+use dxl_protocol::prelude::{InstructionExt, ReplyExt};
 use dxl_protocol::wire::{Bytes, CrcUmts, RawFrame, WriteBuf, WriteError, write_raw};
 use dxl_protocol::{DecodeError, Instruction, StatusError};
 
@@ -40,7 +40,7 @@ impl CalibratePacket {
 
 const CALIBRATE_INSTRUCTION: u8 = 0xE0;
 
-impl Extension for OscExt {
+impl InstructionExt for OscExt {
     type Variant<'a> = OscVariant;
 
     fn decode<'a>(raw: RawFrame<Bytes<'a>>) -> Option<Result<OscVariant, DecodeError>> {

@@ -1,10 +1,10 @@
 use crate::wire::{BROADCAST_ID, CrcUmts, RawFrame, WriteBuf, WriteError, write_raw};
 
-use super::extension::Extension;
+use super::instruction_ext::InstructionExt;
 use super::instruction::Instruction;
 use super::packet::Packet;
 
-pub(crate) fn write<W: WriteBuf, CRC: CrcUmts, X: Extension>(
+pub(crate) fn write<W: WriteBuf, CRC: CrcUmts, X: InstructionExt>(
     out: &mut W,
     packet: &Packet<'_, X>,
 ) -> Result<(), WriteError> {

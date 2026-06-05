@@ -4,16 +4,16 @@ use super::DecodeError;
 
 /// Vendor-extension trait that lets a downstream crate add custom DXL
 /// instructions without modifying `dxl-protocol`. The crate defines a unit
-/// struct (the "marker"), implements [`Extension`] on it to register a
+/// struct (the "marker"), implements [`InstructionExt`] on it to register a
 /// `Variant<'_>` enum of its verbs, and binds [`Codec`](crate::Codec) over
 /// that marker — `Codec::parse_one` then returns
 /// [`Packet::Ext`](crate::typed::Packet::Ext) for any instruction byte that
 /// `decode` claims, and `Codec::write` dispatches `Packet::Ext` back through
-/// [`Extension::write`].
+/// [`InstructionExt::write`].
 ///
 /// Reserve instruction bytes in the vendor block (`0xE0..0xEF`) to avoid
 /// colliding with future Robotis revisions.
-pub trait Extension {
+pub trait InstructionExt {
     /// Enum of custom verbs. Borrows from the raw frame at lifetime `'a`,
     /// the same way standard `Packet` variants do.
     type Variant<'a>: Copy + 'a;
@@ -42,9 +42,9 @@ pub trait Extension {
 /// to write a match arm for it (use `Packet::Ext(v) => match v {}` if the
 /// compiler requires the arm to be listed for exhaustiveness).
 #[derive(Copy, Clone, Debug)]
-pub struct NoExt;
+pub struct NoInstructionExt;
 
-impl Extension for NoExt {
+impl InstructionExt for NoInstructionExt {
     type Variant<'a> = core::convert::Infallible;
 
     fn decode<'a>(_: RawFrame<Bytes<'a>>) -> Option<Result<Self::Variant<'a>, DecodeError>> {

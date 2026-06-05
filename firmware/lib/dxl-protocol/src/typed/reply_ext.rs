@@ -1,6 +1,6 @@
 use crate::wire::{CrcUmts, WriteBuf, WriteError};
 
-/// Vendor-extension trait for `Reply` — mirror of [`Extension`] on the
+/// Vendor-extension trait for `Reply` — mirror of [`InstructionExt`] on the
 /// reply side. Lets a downstream crate add custom slave→master reply shapes
 /// (e.g. an OSC calibration ack) without modifying `dxl-protocol`.
 ///
@@ -10,7 +10,7 @@ use crate::wire::{CrcUmts, WriteBuf, WriteError};
 /// [`Reply::Ext`](crate::typed::Reply::Ext) through
 /// [`ReplyExt::write`].
 ///
-/// [`Extension`]: crate::typed::Extension
+/// [`InstructionExt`]: crate::typed::InstructionExt
 pub trait ReplyExt {
     type Variant<'a>: Copy + 'a;
 

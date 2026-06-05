@@ -10,9 +10,9 @@ pub use codec::Codec;
 pub use typed::{
     ActionPacket, ActionReply, BulkReadPacket, BulkReadReply, BulkReadSlotIter, BulkSlot,
     BulkSlotInfo, BulkWritePacket, ClearPacket, ControlTableBackupPacket, DecodeError, ErrorReply,
-    Extension, FactoryResetPacket, FastBulkReadPacket, FastBulkReadReply, FastBulkTupleIter,
+    InstructionExt, FactoryResetPacket, FastBulkReadPacket, FastBulkReadReply, FastBulkTupleIter,
     FastErrorReply, FastPosition, FastReadPacket, FastReadVariant, FastSlotInfo,
-    FastSyncReadPacket, FastSyncReadReply, Instruction, NoExt, NoReplyExt, Packet, PingPacket,
+    FastSyncReadPacket, FastSyncReadReply, Instruction, NoInstructionExt, NoReplyExt, Packet, PingPacket,
     PingReply, RawStatus, ReadPacket, ReadReply, RebootPacket, RebootReply, RegWritePacket,
     RegWriteReply, Reply, ReplyExt, StatusError, SyncReadPacket, SyncReadReply, SyncSlotInfo,
     SyncWritePacket, WritePacket, WriteReply, decode,

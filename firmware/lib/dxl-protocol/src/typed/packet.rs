@@ -1,6 +1,6 @@
 use crate::wire::{Bytes, Overflow};
 
-use super::extension::{Extension, NoExt};
+use super::instruction_ext::{InstructionExt, NoInstructionExt};
 
 #[derive(Copy, Clone, Debug)]
 pub struct PingPacket {
@@ -244,10 +244,10 @@ impl<'a> FastBulkReadPacket<'a> {
 }
 
 /// Decoded DXL frame. The optional `X` parameter plugs in a vendor extension
-/// (see [`Extension`]); pure-DXL callers leave it at the [`NoExt`] default,
+/// (see [`InstructionExt`]); pure-DXL callers leave it at the [`NoInstructionExt`] default,
 /// which makes [`Packet::Ext`] statically uninhabited (`Infallible`).
 #[derive(Copy, Clone, Debug)]
-pub enum Packet<'a, X: Extension = NoExt> {
+pub enum Packet<'a, X: InstructionExt = NoInstructionExt> {
     Ping(PingPacket),
     Read(ReadPacket),
     Write(WritePacket<'a>),
