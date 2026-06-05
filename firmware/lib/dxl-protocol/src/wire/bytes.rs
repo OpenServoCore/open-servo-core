@@ -96,6 +96,75 @@ impl<'a> Bytes<'a> {
             Bytes::Unstuffed { head, tail } => Bytes::Unstuffed { head, tail },
         }
     }
+
+    /// Pop one logical byte from the front and return `(byte, rest)`. Returns
+    /// `None` if empty, or if `self` is [`Bytes::Stuffed`] — call
+    /// [`Self::as_unstuffed`] first when you know the payload is unstuffed
+    /// (e.g. Fast Read responses), or iterate via [`Self::iter`] otherwise.
+    pub fn split_first(self) -> Option<(u8, Bytes<'a>)> {
+        let Bytes::Unstuffed { head, tail } = self else {
+            return None;
+        };
+        if let Some((&b, rest)) = head.split_first() {
+            return Some((b, Bytes::Unstuffed { head: rest, tail }));
+        }
+        let (&b, rest) = tail.split_first()?;
+        Some((
+            b,
+            Bytes::Unstuffed {
+                head: &[],
+                tail: rest,
+            },
+        ))
+    }
+
+    /// Split into a `n`-byte prefix and the remainder, preserving the head/
+    /// tail split when the cut straddles it. Returns `None` if fewer than `n`
+    /// bytes are available, or if `self` is [`Bytes::Stuffed`] (same caveat
+    /// as [`Self::split_first`]).
+    pub fn split_at(self, n: usize) -> Option<(Bytes<'a>, Bytes<'a>)> {
+        let Bytes::Unstuffed { head, tail } = self else {
+            return None;
+        };
+        if head.len() + tail.len() < n {
+            return None;
+        }
+        if n <= head.len() {
+            let (taken, rest) = head.split_at(n);
+            return Some((
+                Bytes::Unstuffed {
+                    head: taken,
+                    tail: &[],
+                },
+                Bytes::Unstuffed { head: rest, tail },
+            ));
+        }
+        if head.is_empty() {
+            let (taken, rest) = tail.split_at(n);
+            return Some((
+                Bytes::Unstuffed {
+                    head: taken,
+                    tail: &[],
+                },
+                Bytes::Unstuffed {
+                    head: &[],
+                    tail: rest,
+                },
+            ));
+        }
+        let tail_take = n - head.len();
+        let (taken_tail, tail_rest) = tail.split_at(tail_take);
+        Some((
+            Bytes::Unstuffed {
+                head,
+                tail: taken_tail,
+            },
+            Bytes::Unstuffed {
+                head: &[],
+                tail: tail_rest,
+            },
+        ))
+    }
 }
 
 impl<'a> IntoIterator for Bytes<'a> {
@@ -208,5 +277,75 @@ impl<'a> Iterator for ByteIter<'a> {
             ByteIterInner::Unstuffed(w) => w.next(),
             ByteIterInner::Stuffed(u) => u.next(),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn collect(b: Bytes<'_>) -> heapless::Vec<u8, 16> {
+        b.iter().collect()
+    }
+
+    #[test]
+    fn split_first_pops_head_byte() {
+        let b = Bytes::unstuffed(&[10, 20, 30]);
+        let (first, rest) = b.split_first().unwrap();
+        assert_eq!(first, 10);
+        assert_eq!(&collect(rest)[..], &[20, 30]);
+    }
+
+    #[test]
+    fn split_first_crosses_into_tail_when_head_empty() {
+        let b = Bytes::unstuffed_split(&[], &[40, 50]);
+        let (first, rest) = b.split_first().unwrap();
+        assert_eq!(first, 40);
+        assert_eq!(&collect(rest)[..], &[50]);
+    }
+
+    #[test]
+    fn split_first_returns_none_when_empty() {
+        assert!(Bytes::unstuffed(&[]).split_first().is_none());
+    }
+
+    #[test]
+    fn split_first_returns_none_for_stuffed() {
+        // split_first is unstuffed-only — caller must as_unstuffed first.
+        assert!(Bytes::stuffed(&[1, 2, 3]).split_first().is_none());
+    }
+
+    #[test]
+    fn split_at_within_head_keeps_tail_attached() {
+        let b = Bytes::unstuffed_split(&[1, 2, 3, 4], &[5, 6]);
+        let (left, right) = b.split_at(2).unwrap();
+        assert_eq!(&collect(left)[..], &[1, 2]);
+        assert_eq!(&collect(right)[..], &[3, 4, 5, 6]);
+    }
+
+    #[test]
+    fn split_at_straddles_head_tail_boundary() {
+        let b = Bytes::unstuffed_split(&[1, 2, 3], &[4, 5, 6]);
+        let (left, right) = b.split_at(4).unwrap();
+        assert_eq!(&collect(left)[..], &[1, 2, 3, 4]);
+        assert_eq!(&collect(right)[..], &[5, 6]);
+    }
+
+    #[test]
+    fn split_at_with_empty_head_takes_from_tail() {
+        let b = Bytes::unstuffed_split(&[], &[1, 2, 3, 4]);
+        let (left, right) = b.split_at(2).unwrap();
+        assert_eq!(&collect(left)[..], &[1, 2]);
+        assert_eq!(&collect(right)[..], &[3, 4]);
+    }
+
+    #[test]
+    fn split_at_returns_none_when_short() {
+        assert!(Bytes::unstuffed(&[1, 2, 3]).split_at(4).is_none());
+    }
+
+    #[test]
+    fn split_at_returns_none_for_stuffed() {
+        assert!(Bytes::stuffed(&[1, 2, 3, 4]).split_at(2).is_none());
     }
 }

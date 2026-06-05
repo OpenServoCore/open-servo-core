@@ -39,7 +39,7 @@ impl<'a> FastSyncReadStatus<'a> {
     /// just past the last slot).
     pub fn slots(&self, slot_length: u16) -> FastSyncSlotIter<'a> {
         FastSyncSlotIter {
-            cursor: PayloadCursor::new(self.payload.as_unstuffed()),
+            cursor: self.payload.as_unstuffed(),
             slot_length: slot_length as usize,
             slot0_error: self.error,
             slot_index: 0,
@@ -72,7 +72,7 @@ impl<'a> FastBulkReadStatus<'a> {
         lengths: L,
     ) -> FastBulkSlotIter<'a, L::IntoIter> {
         FastBulkSlotIter {
-            cursor: PayloadCursor::new(self.payload.as_unstuffed()),
+            cursor: self.payload.as_unstuffed(),
             lengths: lengths.into_iter(),
             slot0_error: self.error,
             slot_index: 0,
@@ -83,7 +83,7 @@ impl<'a> FastBulkReadStatus<'a> {
 /// Per-slot iterator for [`FastSyncReadStatus::slots`].
 #[derive(Copy, Clone, Debug)]
 pub struct FastSyncSlotIter<'a> {
-    cursor: PayloadCursor<'a>,
+    cursor: Bytes<'a>,
     slot_length: usize,
     slot0_error: u8,
     slot_index: usize,
@@ -104,7 +104,7 @@ impl<'a> Iterator for FastSyncSlotIter<'a> {
 
 /// Per-slot iterator for [`FastBulkReadStatus::slots`].
 pub struct FastBulkSlotIter<'a, L: Iterator<Item = u16>> {
-    cursor: PayloadCursor<'a>,
+    cursor: Bytes<'a>,
     lengths: L,
     slot0_error: u8,
     slot_index: usize,
@@ -125,7 +125,7 @@ impl<'a, L: Iterator<Item = u16>> Iterator for FastBulkSlotIter<'a, L> {
 }
 
 fn next_slot<'a>(
-    cursor: &mut PayloadCursor<'a>,
+    cursor: &mut Bytes<'a>,
     slot_length: usize,
     slot0_error: u8,
     slot_index: &mut usize,
@@ -133,81 +133,20 @@ fn next_slot<'a>(
     let (id, error) = if *slot_index == 0 {
         // Slot 0's error byte was hoisted to the frame's error field; payload
         // starts with the slot's id.
-        let id = cursor.take_byte()?;
+        let (id, rest) = cursor.split_first()?;
+        *cursor = rest;
         (id, slot0_error)
     } else {
-        let error = cursor.take_byte()?;
-        let id = cursor.take_byte()?;
+        let (error, rest) = cursor.split_first()?;
+        *cursor = rest;
+        let (id, rest) = cursor.split_first()?;
+        *cursor = rest;
         (id, error)
     };
-    let data = cursor.take(slot_length)?;
+    let (data, rest) = cursor.split_at(slot_length)?;
+    *cursor = rest;
     *slot_index += 1;
     Some(Slot { id, error, data })
-}
-
-/// Walks a logical `(head, tail)` byte view, slicing out sub-`Bytes` ranges
-/// without ever copying. The returned `Bytes` may itself span both head and
-/// tail when a slot's data range straddles the cut.
-#[derive(Copy, Clone, Debug)]
-struct PayloadCursor<'a> {
-    head: &'a [u8],
-    tail: &'a [u8],
-}
-
-impl<'a> PayloadCursor<'a> {
-    fn new(bytes: Bytes<'a>) -> Self {
-        // `bytes` is expected to be Unstuffed here (caller re-tagged) — but
-        // we accept Stuffed too by reading its head/tail directly (the
-        // stuffing transform is bypassed since we walk bytes literally).
-        match bytes {
-            Bytes::Unstuffed { head, tail } => Self { head, tail },
-            Bytes::Stuffed { head, tail, .. } => Self { head, tail },
-        }
-    }
-
-    fn take_byte(&mut self) -> Option<u8> {
-        if let Some((&b, rest)) = self.head.split_first() {
-            self.head = rest;
-            return Some(b);
-        }
-        if let Some((&b, rest)) = self.tail.split_first() {
-            self.tail = rest;
-            return Some(b);
-        }
-        None
-    }
-
-    fn take(&mut self, n: usize) -> Option<Bytes<'a>> {
-        if self.head.len() + self.tail.len() < n {
-            return None;
-        }
-        if n <= self.head.len() {
-            let (taken, rest) = self.head.split_at(n);
-            self.head = rest;
-            return Some(Bytes::Unstuffed {
-                head: taken,
-                tail: &[],
-            });
-        }
-        // Range straddles the head/tail boundary: yield a split Bytes.
-        if self.head.is_empty() {
-            let (taken, rest) = self.tail.split_at(n);
-            self.tail = rest;
-            return Some(Bytes::Unstuffed {
-                head: taken,
-                tail: &[],
-            });
-        }
-        let head_take = self.head;
-        let tail_remaining = n - head_take.len();
-        let (tail_take, tail_rest) = self.tail.split_at(tail_remaining);
-        self.head = &[];
-        self.tail = tail_rest;
-        Some(Bytes::Unstuffed {
-            head: head_take,
-            tail: tail_take,
-        })
-    }
 }
 
 #[cfg(test)]
