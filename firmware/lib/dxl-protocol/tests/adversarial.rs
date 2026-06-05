@@ -426,7 +426,7 @@ fn writer_overflow_preserves_prior_frames() {
         &Packet::Status(RawStatus {
             id: 1,
             error: 0,
-            params: Bytes::raw(&big),
+            params: Bytes::unstuffed(&big),
         }),
     )
     .unwrap_err();
@@ -518,52 +518,52 @@ fn round_trip_every_instruction() {
         Packet::Write(WritePacket {
             id: 1,
             address: 116,
-            data: Bytes::raw(&[0, 2, 0, 0]),
+            data: Bytes::unstuffed(&[0, 2, 0, 0]),
         }),
         Packet::RegWrite(RegWritePacket {
             id: 1,
             address: 100,
-            data: Bytes::raw(&[0xAA]),
+            data: Bytes::unstuffed(&[0xAA]),
         }),
         Packet::Action(ActionPacket { id: 1 }),
         Packet::FactoryReset(FactoryResetPacket { id: 1, mode: 0xFF }),
         Packet::Reboot(RebootPacket { id: 1 }),
         Packet::Clear(ClearPacket {
             id: 1,
-            body: Bytes::raw(&[0x01, 0x02, 0x03]),
+            body: Bytes::unstuffed(&[0x01, 0x02, 0x03]),
         }),
         Packet::ControlTableBackup(ControlTableBackupPacket {
             id: 1,
-            body: Bytes::raw(&[0xAA, 0xBB]),
+            body: Bytes::unstuffed(&[0xAA, 0xBB]),
         }),
         Packet::Status(RawStatus {
             id: 1,
             error: 0,
-            params: Bytes::raw(&[0xDE, 0xAD]),
+            params: Bytes::unstuffed(&[0xDE, 0xAD]),
         }),
         Packet::SyncRead(SyncReadPacket {
             address: 132,
             length: 4,
-            ids: Bytes::raw(&[1, 2, 3]),
+            ids: Bytes::unstuffed(&[1, 2, 3]),
         }),
         Packet::SyncWrite(SyncWritePacket {
             address: 116,
             length: 4,
-            body: Bytes::raw(&[1, 0, 1, 0, 0]),
+            body: Bytes::unstuffed(&[1, 0, 1, 0, 0]),
         }),
         Packet::FastSyncRead(FastSyncReadPacket {
             address: 132,
             length: 4,
-            ids: Bytes::raw(&[1, 2]),
+            ids: Bytes::unstuffed(&[1, 2]),
         }),
         Packet::BulkRead(BulkReadPacket {
-            body: Bytes::raw(&[1, 2]),
+            body: Bytes::unstuffed(&[1, 2]),
         }),
         Packet::BulkWrite(BulkWritePacket {
-            body: Bytes::raw(&[1, 2, 3]),
+            body: Bytes::unstuffed(&[1, 2, 3]),
         }),
         Packet::FastBulkRead(FastBulkReadPacket {
-            body: Bytes::raw(&[1, 2]),
+            body: Bytes::unstuffed(&[1, 2]),
         }),
     ];
 
@@ -624,52 +624,52 @@ fn round_trip_random_fields_across_variants() {
             2 => Packet::Write(WritePacket {
                 id,
                 address: addr,
-                data: Bytes::raw(&body),
+                data: Bytes::unstuffed(&body),
             }),
             3 => Packet::RegWrite(RegWritePacket {
                 id,
                 address: addr,
-                data: Bytes::raw(&body),
+                data: Bytes::unstuffed(&body),
             }),
             4 => Packet::Action(ActionPacket { id }),
             5 => Packet::FactoryReset(FactoryResetPacket { id, mode }),
             6 => Packet::Reboot(RebootPacket { id }),
             7 => Packet::Clear(ClearPacket {
                 id,
-                body: Bytes::raw(&body),
+                body: Bytes::unstuffed(&body),
             }),
             8 => Packet::ControlTableBackup(ControlTableBackupPacket {
                 id,
-                body: Bytes::raw(&body),
+                body: Bytes::unstuffed(&body),
             }),
             9 => Packet::Status(RawStatus {
                 id,
                 error,
-                params: Bytes::raw(&body),
+                params: Bytes::unstuffed(&body),
             }),
             10 => Packet::SyncRead(SyncReadPacket {
                 address: addr,
                 length,
-                ids: Bytes::raw(&ids),
+                ids: Bytes::unstuffed(&ids),
             }),
             11 => Packet::SyncWrite(SyncWritePacket {
                 address: addr,
                 length,
-                body: Bytes::raw(&body),
+                body: Bytes::unstuffed(&body),
             }),
             12 => Packet::FastSyncRead(FastSyncReadPacket {
                 address: addr,
                 length,
-                ids: Bytes::raw(&ids),
+                ids: Bytes::unstuffed(&ids),
             }),
             13 => Packet::BulkRead(BulkReadPacket {
-                body: Bytes::raw(&body),
+                body: Bytes::unstuffed(&body),
             }),
             14 => Packet::BulkWrite(BulkWritePacket {
-                body: Bytes::raw(&body),
+                body: Bytes::unstuffed(&body),
             }),
             _ => Packet::FastBulkRead(FastBulkReadPacket {
-                body: Bytes::raw(&body),
+                body: Bytes::unstuffed(&body),
             }),
         };
 
@@ -689,7 +689,7 @@ fn round_trip_random_fields_across_variants() {
 
 #[test]
 fn stuffing_round_trip_for_every_body_carrying_variant() {
-    // Threads a stuffing trigger through each variant — catches a `Bytes::raw`
+    // Threads a stuffing trigger through each variant — catches a `Bytes::unstuffed`
     // regression that the fixed-fixture round-trip test would miss.
     let logical: &[u8] = &[0xFF, 0xFF, 0xFD, 0x42, 0xFF, 0xFF, 0xFD, 0xAA];
 
@@ -699,7 +699,7 @@ fn stuffing_round_trip_for_every_body_carrying_variant() {
             Packet::Write(WritePacket {
                 id: 1,
                 address: 0x0010,
-                data: Bytes::raw(logical),
+                data: Bytes::unstuffed(logical),
             }),
         ),
         (
@@ -707,21 +707,21 @@ fn stuffing_round_trip_for_every_body_carrying_variant() {
             Packet::RegWrite(RegWritePacket {
                 id: 1,
                 address: 0x0010,
-                data: Bytes::raw(logical),
+                data: Bytes::unstuffed(logical),
             }),
         ),
         (
             "Clear",
             Packet::Clear(ClearPacket {
                 id: 1,
-                body: Bytes::raw(logical),
+                body: Bytes::unstuffed(logical),
             }),
         ),
         (
             "ControlTableBackup",
             Packet::ControlTableBackup(ControlTableBackupPacket {
                 id: 1,
-                body: Bytes::raw(logical),
+                body: Bytes::unstuffed(logical),
             }),
         ),
         (
@@ -729,7 +729,7 @@ fn stuffing_round_trip_for_every_body_carrying_variant() {
             Packet::Status(RawStatus {
                 id: 1,
                 error: 0,
-                params: Bytes::raw(logical),
+                params: Bytes::unstuffed(logical),
             }),
         ),
         (
@@ -737,25 +737,25 @@ fn stuffing_round_trip_for_every_body_carrying_variant() {
             Packet::SyncWrite(SyncWritePacket {
                 address: 0x0010,
                 length: 4,
-                body: Bytes::raw(logical),
+                body: Bytes::unstuffed(logical),
             }),
         ),
         (
             "BulkRead",
             Packet::BulkRead(BulkReadPacket {
-                body: Bytes::raw(logical),
+                body: Bytes::unstuffed(logical),
             }),
         ),
         (
             "BulkWrite",
             Packet::BulkWrite(BulkWritePacket {
-                body: Bytes::raw(logical),
+                body: Bytes::unstuffed(logical),
             }),
         ),
         (
             "FastBulkRead",
             Packet::FastBulkRead(FastBulkReadPacket {
-                body: Bytes::raw(logical),
+                body: Bytes::unstuffed(logical),
             }),
         ),
     ];

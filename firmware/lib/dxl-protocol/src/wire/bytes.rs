@@ -2,6 +2,11 @@
 /// frame parsed straight out of a ring buffer can span the wrap without being
 /// copied first. Non-wrapped callers pass `tail = &[]`.
 ///
+/// `Stuffed` bytes are wire-form: iterating yields the logical bytes after
+/// removing every stuffing `0xFD` that follows a `0xFF 0xFF 0xFD` triple.
+/// `Unstuffed` bytes are caller-owned in logical form: iteration yields them
+/// verbatim. The Stuffed/Unstuffed tag is what the iterator dispatches on.
+///
 /// `Stuffed::prefix` is the three logical bytes preceding `head` so an
 /// iterator handed a tail-slice can detect a trigger that spanned the cut.
 /// Top-level params use `[0; 3]` — instruction 0xFD is undefined so no valid
@@ -13,7 +18,7 @@ pub enum Bytes<'a> {
         tail: &'a [u8],
         prefix: [u8; 3],
     },
-    Raw {
+    Unstuffed {
         head: &'a [u8],
         tail: &'a [u8],
     },
@@ -41,30 +46,30 @@ impl<'a> Bytes<'a> {
         }
     }
 
-    /// Raw (unstuffed) bytes contained in a single contiguous slice — the
-    /// usual case for caller-owned buffers passed into `new(..., data)`.
-    pub const fn raw(slice: &'a [u8]) -> Self {
-        Bytes::Raw {
+    /// Unstuffed bytes contained in a single contiguous slice — the usual case
+    /// for caller-owned buffers passed into `new(..., data)`.
+    pub const fn unstuffed(slice: &'a [u8]) -> Self {
+        Bytes::Unstuffed {
             head: slice,
             tail: &[],
         }
     }
 
-    /// Raw bytes split across two slices.
-    pub const fn raw_split(head: &'a [u8], tail: &'a [u8]) -> Self {
-        Bytes::Raw { head, tail }
+    /// Unstuffed bytes split across two slices.
+    pub const fn unstuffed_split(head: &'a [u8], tail: &'a [u8]) -> Self {
+        Bytes::Unstuffed { head, tail }
     }
 
     pub fn iter(&self) -> ByteIter<'a> {
         match *self {
             Bytes::Stuffed { head, tail, prefix } => ByteIter::with_prefix(head, tail, prefix),
-            Bytes::Raw { head, tail } => ByteIter::raw(head, tail),
+            Bytes::Unstuffed { head, tail } => ByteIter::unstuffed(head, tail),
         }
     }
 
     pub fn unstuffed_len(&self) -> usize {
         match *self {
-            Bytes::Raw { head, tail } => head.len() + tail.len(),
+            Bytes::Unstuffed { head, tail } => head.len() + tail.len(),
             Bytes::Stuffed { .. } => self.iter().count(),
         }
     }
@@ -143,7 +148,7 @@ enum ByteIterInner<'a> {
 }
 
 impl<'a> ByteIter<'a> {
-    pub(crate) fn raw(head: &'a [u8], tail: &'a [u8]) -> Self {
+    pub(crate) fn unstuffed(head: &'a [u8], tail: &'a [u8]) -> Self {
         Self {
             inner: ByteIterInner::Unstuffed(RawWalker::new(head, tail)),
         }

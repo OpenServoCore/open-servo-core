@@ -349,7 +349,7 @@ fn write_write_matches_reference() {
         &Packet::Write(WritePacket {
             id: 1,
             address: 116,
-            data: Bytes::raw(&data),
+            data: Bytes::unstuffed(&data),
         }),
     )
     .unwrap();
@@ -372,7 +372,7 @@ fn write_status_round_trip() {
         &Packet::Status(RawStatus {
             id: 1,
             error: 0,
-            params: Bytes::raw(&params),
+            params: Bytes::unstuffed(&params),
         }),
     )
     .unwrap();
@@ -400,7 +400,7 @@ fn stuffing_round_trip() {
         &Packet::Write(WritePacket {
             id: 1,
             address: 0x0040,
-            data: Bytes::raw(&data),
+            data: Bytes::unstuffed(&data),
         }),
     )
     .unwrap();
@@ -432,7 +432,7 @@ fn stuffing_at_field_boundary() {
         &Packet::Write(WritePacket {
             id: 1,
             address: 0xFFFF,
-            data: Bytes::raw(&data),
+            data: Bytes::unstuffed(&data),
         }),
     )
     .unwrap();
@@ -565,7 +565,7 @@ fn round_trip_data(data: &[u8]) -> heapless::Vec<u8, 256> {
         &Packet::Write(WritePacket {
             id: 1,
             address: 0x0010,
-            data: Bytes::raw(data),
+            data: Bytes::unstuffed(data),
         }),
     )
     .unwrap();
@@ -649,7 +649,7 @@ fn stuff_trigger_spanning_address_boundary() {
         &Packet::Write(WritePacket {
             id: 1,
             address: 0xFFFF,
-            data: Bytes::raw(&data),
+            data: Bytes::unstuffed(&data),
         }),
     )
     .unwrap();
@@ -673,7 +673,7 @@ fn stuff_trigger_spanning_address_then_more_in_data() {
         &Packet::Write(WritePacket {
             id: 1,
             address: 0xFFFF,
-            data: Bytes::raw(&data),
+            data: Bytes::unstuffed(&data),
         }),
     )
     .unwrap();
@@ -695,7 +695,7 @@ fn stuff_unstuffed_len_matches_iter_count() {
         &Packet::Write(WritePacket {
             id: 1,
             address: 0x0010,
-            data: Bytes::raw(&data),
+            data: Bytes::unstuffed(&data),
         }),
     )
     .unwrap();
@@ -710,7 +710,7 @@ fn stuff_unstuffed_len_matches_iter_count() {
 #[test]
 fn stuff_raw_passthrough_does_not_unstuff() {
     let raw = [0xFFu8, 0xFF, 0xFD, 0xFD, 0xAA];
-    let bytes = Bytes::raw(&raw);
+    let bytes = Bytes::unstuffed(&raw);
     let collected: heapless::Vec<u8, 16> = bytes.iter().collect();
     assert_eq!(&collected[..], &raw);
     assert_eq!(bytes.unstuffed_len(), raw.len());
@@ -724,7 +724,7 @@ fn stuff_empty_payload() {
         &Packet::Write(WritePacket {
             id: 1,
             address: 0x0010,
-            data: Bytes::raw(&[]),
+            data: Bytes::unstuffed(&[]),
         }),
     )
     .unwrap();
@@ -745,7 +745,7 @@ fn stuff_status_with_trigger_in_params() {
         &Packet::Status(RawStatus {
             id: 1,
             error: 0,
-            params: Bytes::raw(&params),
+            params: Bytes::unstuffed(&params),
         }),
     )
     .unwrap();
@@ -768,7 +768,7 @@ fn stuff_forwarding_round_trip() {
         &Packet::Write(WritePacket {
             id: 1,
             address: 0x0010,
-            data: Bytes::raw(&original_data),
+            data: Bytes::unstuffed(&original_data),
         }),
     )
     .unwrap();
@@ -792,7 +792,7 @@ fn stuff_long_payload_with_many_triggers() {
         &Packet::Write(WritePacket {
             id: 1,
             address: 0x0010,
-            data: Bytes::raw(&data),
+            data: Bytes::unstuffed(&data),
         }),
     )
     .unwrap();

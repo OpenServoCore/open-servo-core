@@ -103,7 +103,7 @@ mod tests {
 
     fn bulk(body: &[u8]) -> BulkReadPacket<'_> {
         BulkReadPacket {
-            body: Bytes::raw(body),
+            body: Bytes::unstuffed(body),
         }
     }
 
@@ -111,7 +111,7 @@ mod tests {
         SyncReadPacket {
             address,
             length,
-            ids: Bytes::raw(ids),
+            ids: Bytes::unstuffed(ids),
         }
     }
 

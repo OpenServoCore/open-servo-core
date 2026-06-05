@@ -42,7 +42,7 @@ impl<'a> WritePacket<'a> {
         Self {
             id,
             address,
-            data: Bytes::raw(data),
+            data: Bytes::unstuffed(data),
         }
     }
 
@@ -63,7 +63,7 @@ impl<'a> RegWritePacket<'a> {
         Self {
             id,
             address,
-            data: Bytes::raw(data),
+            data: Bytes::unstuffed(data),
         }
     }
 
@@ -116,7 +116,7 @@ impl<'a> ClearPacket<'a> {
     pub const fn new(id: u8, body: &'a [u8]) -> Self {
         Self {
             id,
-            body: Bytes::raw(body),
+            body: Bytes::unstuffed(body),
         }
     }
 }
@@ -131,7 +131,7 @@ impl<'a> ControlTableBackupPacket<'a> {
     pub const fn new(id: u8, body: &'a [u8]) -> Self {
         Self {
             id,
-            body: Bytes::raw(body),
+            body: Bytes::unstuffed(body),
         }
     }
 }
@@ -148,7 +148,7 @@ impl<'a> RawStatus<'a> {
         Self {
             id,
             error,
-            params: Bytes::raw(params),
+            params: Bytes::unstuffed(params),
         }
     }
 }
@@ -165,7 +165,7 @@ impl<'a> SyncReadPacket<'a> {
         Self {
             address,
             length,
-            ids: Bytes::raw(ids),
+            ids: Bytes::unstuffed(ids),
         }
     }
 }
@@ -182,7 +182,7 @@ impl<'a> SyncWritePacket<'a> {
         Self {
             address,
             length,
-            body: Bytes::raw(body),
+            body: Bytes::unstuffed(body),
         }
     }
 }
@@ -195,7 +195,7 @@ pub struct BulkReadPacket<'a> {
 impl<'a> BulkReadPacket<'a> {
     pub const fn new(body: &'a [u8]) -> Self {
         Self {
-            body: Bytes::raw(body),
+            body: Bytes::unstuffed(body),
         }
     }
 }
@@ -208,7 +208,7 @@ pub struct BulkWritePacket<'a> {
 impl<'a> BulkWritePacket<'a> {
     pub const fn new(body: &'a [u8]) -> Self {
         Self {
-            body: Bytes::raw(body),
+            body: Bytes::unstuffed(body),
         }
     }
 }
@@ -225,7 +225,7 @@ impl<'a> FastSyncReadPacket<'a> {
         Self {
             address,
             length,
-            ids: Bytes::raw(ids),
+            ids: Bytes::unstuffed(ids),
         }
     }
 }
@@ -238,7 +238,7 @@ pub struct FastBulkReadPacket<'a> {
 impl<'a> FastBulkReadPacket<'a> {
     pub const fn new(body: &'a [u8]) -> Self {
         Self {
-            body: Bytes::raw(body),
+            body: Bytes::unstuffed(body),
         }
     }
 }
