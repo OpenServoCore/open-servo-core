@@ -108,7 +108,7 @@ impl<'a, B: DxlBus, E: ServiceEvents> Dispatcher<'a, B, E> {
         }
         if let Some((id, true)) = ctx.addressed(target) {
             self.bus.send(
-                Reply::Error(ErrorReply {
+                Status::Error(ErrorStatus {
                     id,
                     error: StatusError::Instruction,
                 }),
@@ -122,8 +122,8 @@ impl<'a, B: DxlBus, E: ServiceEvents> Dispatcher<'a, B, E> {
             return;
         }
         let reply = match result {
-            Ok(()) => Reply::Write(WriteReply { id }),
-            Err(e) => Reply::Error(ErrorReply {
+            Ok(()) => Status::Write(WriteStatus { id }),
+            Err(e) => Status::Error(ErrorStatus {
                 id,
                 error: error_to_status(e),
             }),
@@ -137,7 +137,7 @@ impl<'a, B: DxlBus, E: ServiceEvents> Dispatcher<'a, B, E> {
         };
         let identity = self.shared.table.config.with(|c| c.identity);
         self.bus.send(
-            Reply::Ping(PingReply {
+            Status::Ping(PingStatus {
                 id,
                 model: identity.model_number,
                 firmware: identity.firmware_version as u8,
@@ -156,7 +156,7 @@ impl<'a, B: DxlBus, E: ServiceEvents> Dispatcher<'a, B, E> {
         let len = p.length as usize;
         if len == 0 || len > MAX_CONTROL_RW {
             self.bus.send(
-                Reply::Error(ErrorReply {
+                Status::Error(ErrorStatus {
                     id,
                     error: StatusError::DataRange,
                 }),
@@ -166,11 +166,11 @@ impl<'a, B: DxlBus, E: ServiceEvents> Dispatcher<'a, B, E> {
         }
         let mut buf = [0u8; MAX_CONTROL_RW];
         let reply = match self.shared.table.read_bytes(p.address, &mut buf[..len]) {
-            Ok(()) => Reply::Read(ReadReply {
+            Ok(()) => Status::Read(ReadStatus {
                 id,
                 data: &buf[..len],
             }),
-            Err(e) => Reply::Error(ErrorReply {
+            Err(e) => Status::Error(ErrorStatus {
                 id,
                 error: error_to_status(e),
             }),
@@ -189,7 +189,7 @@ impl<'a, B: DxlBus, E: ServiceEvents> Dispatcher<'a, B, E> {
             Err(_) => {
                 if direct && ctx.level >= StatusReturnLevel::All {
                     self.bus.send(
-                        Reply::Error(ErrorReply {
+                        Status::Error(ErrorStatus {
                             id,
                             error: StatusError::DataRange,
                         }),
@@ -227,7 +227,7 @@ impl<'a, B: DxlBus, E: ServiceEvents> Dispatcher<'a, B, E> {
             Err(_) => {
                 if direct && ctx.level >= StatusReturnLevel::All {
                     self.bus.send(
-                        Reply::Error(ErrorReply {
+                        Status::Error(ErrorStatus {
                             id,
                             error: StatusError::DataRange,
                         }),
@@ -242,14 +242,14 @@ impl<'a, B: DxlBus, E: ServiceEvents> Dispatcher<'a, B, E> {
             .shared
             .table
             .stage_bytes(p.address, &buf[..len], self.staged);
-        // RegWrite ack uses Reply::RegWrite on success path; share the
+        // RegWrite ack uses Status::RegWrite on success path; share the
         // table-result helper by translating after the call.
         if !direct || ctx.level < StatusReturnLevel::All {
             return;
         }
         let reply = match result {
-            Ok(()) => Reply::RegWrite(RegWriteReply { id }),
-            Err(e) => Reply::Error(ErrorReply {
+            Ok(()) => Status::RegWrite(RegWriteStatus { id }),
+            Err(e) => Status::Error(ErrorStatus {
                 id,
                 error: error_to_status(e),
             }),
@@ -264,7 +264,7 @@ impl<'a, B: DxlBus, E: ServiceEvents> Dispatcher<'a, B, E> {
         self.shared.table.commit_staged(self.staged);
         if direct && ctx.level >= StatusReturnLevel::All {
             self.bus
-                .send(Reply::Action(ActionReply { id }), ctx.direct_schedule());
+                .send(Status::Action(ActionStatus { id }), ctx.direct_schedule());
         }
     }
 
@@ -279,7 +279,7 @@ impl<'a, B: DxlBus, E: ServiceEvents> Dispatcher<'a, B, E> {
         };
         if p.count == 0 || p.count as usize > MAX_CONTROL_RW {
             self.bus.send(
-                Reply::Error(ErrorReply {
+                Status::Error(ErrorStatus {
                     id,
                     error: StatusError::DataRange,
                 }),
@@ -288,7 +288,7 @@ impl<'a, B: DxlBus, E: ServiceEvents> Dispatcher<'a, B, E> {
             return;
         }
         self.bus.send(
-            Reply::Ext(OscReplyVariant::Calibrate {
+            Status::Ext(OscReplyVariant::Calibrate {
                 id,
                 zeros_count: p.count,
             }),
@@ -303,7 +303,7 @@ impl<'a, B: DxlBus, E: ServiceEvents> Dispatcher<'a, B, E> {
         let mode = self.shared.table.control.with(|c| c.system.boot_mode);
         if direct && ctx.level >= StatusReturnLevel::All {
             self.bus
-                .send(Reply::Reboot(RebootReply { id }), ctx.direct_schedule());
+                .send(Status::Reboot(RebootStatus { id }), ctx.direct_schedule());
         }
         self.events.send(Event::Reboot(mode));
     }
@@ -334,7 +334,7 @@ impl<'a, B: DxlBus, E: ServiceEvents> Dispatcher<'a, B, E> {
         let len = p.length as usize;
         if len == 0 || len > MAX_CONTROL_RW {
             self.bus.send(
-                Reply::Error(ErrorReply {
+                Status::Error(ErrorStatus {
                     id: ctx.our_id,
                     error: StatusError::DataRange,
                 }),
@@ -345,11 +345,11 @@ impl<'a, B: DxlBus, E: ServiceEvents> Dispatcher<'a, B, E> {
 
         let mut buf = [0u8; MAX_CONTROL_RW];
         let reply = match self.shared.table.read_bytes(p.address, &mut buf[..len]) {
-            Ok(()) => Reply::SyncRead(SyncReadReply {
+            Ok(()) => Status::SyncRead(SyncReadStatus {
                 id: ctx.our_id,
                 data: &buf[..len],
             }),
-            Err(e) => Reply::Error(ErrorReply {
+            Err(e) => Status::Error(ErrorStatus {
                 id: ctx.our_id,
                 error: error_to_status(e),
             }),
@@ -377,7 +377,7 @@ impl<'a, B: DxlBus, E: ServiceEvents> Dispatcher<'a, B, E> {
         let len = info.length as usize;
         if len == 0 || len > MAX_CONTROL_RW {
             self.bus.send(
-                Reply::Error(ErrorReply {
+                Status::Error(ErrorStatus {
                     id: ctx.our_id,
                     error: StatusError::DataRange,
                 }),
@@ -388,11 +388,11 @@ impl<'a, B: DxlBus, E: ServiceEvents> Dispatcher<'a, B, E> {
 
         let mut buf = [0u8; MAX_CONTROL_RW];
         let reply = match self.shared.table.read_bytes(info.address, &mut buf[..len]) {
-            Ok(()) => Reply::BulkRead(BulkReadReply {
+            Ok(()) => Status::BulkRead(BulkReadStatus {
                 id: ctx.our_id,
                 data: &buf[..len],
             }),
-            Err(e) => Reply::Error(ErrorReply {
+            Err(e) => Status::Error(ErrorStatus {
                 id: ctx.our_id,
                 error: error_to_status(e),
             }),
@@ -425,18 +425,18 @@ impl<'a, B: DxlBus, E: ServiceEvents> Dispatcher<'a, B, E> {
         let mut buf = [0u8; MAX_CONTROL_RW];
         let reply = match self.shared.table.read_bytes(info.address, &mut buf[..len]) {
             Ok(()) => match P::VARIANT {
-                FastReadVariant::Sync => Reply::FastSyncRead(FastSyncReadReply {
+                FastReadVariant::Sync => Status::FastSyncRead(FastSyncReadStatus {
                     position,
                     id: ctx.our_id,
                     data: &buf[..len],
                 }),
-                FastReadVariant::Bulk => Reply::FastBulkRead(FastBulkReadReply {
+                FastReadVariant::Bulk => Status::FastBulkRead(FastBulkReadStatus {
                     position,
                     id: ctx.our_id,
                     data: &buf[..len],
                 }),
             },
-            Err(e) => Reply::FastError(FastErrorReply {
+            Err(e) => Status::FastError(FastErrorStatus {
                 position,
                 id: ctx.our_id,
                 error: error_to_status(e),

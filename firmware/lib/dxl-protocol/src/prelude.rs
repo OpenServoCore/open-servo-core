@@ -1,12 +1,12 @@
 pub use crate::Codec;
 pub use crate::typed::{
-    ActionPacket, ActionReply, BulkReadPacket, BulkReadReply, BulkWritePacket, ClearPacket,
-    ControlTableBackupPacket, ErrorReply, InstructionExt, FactoryResetPacket, FastBulkReadPacket,
-    FastBulkReadReply, FastErrorReply, FastPosition, FastReadPacket, FastReadVariant, FastSlotInfo,
-    FastSyncReadPacket, FastSyncReadReply, NoInstructionExt, NoStatusExt, Packet, PingPacket, PingReply,
-    RawStatus, ReadPacket, ReadReply, RebootPacket, RebootReply, RegWritePacket, RegWriteReply,
-    Reply, StatusExt, StatusError, SyncReadPacket, SyncReadReply, SyncWritePacket, WritePacket,
-    WriteReply,
+    ActionPacket, ActionStatus, BulkReadPacket, BulkReadStatus, BulkWritePacket, ClearPacket,
+    ControlTableBackupPacket, ErrorStatus, InstructionExt, FactoryResetPacket, FastBulkReadPacket,
+    FastBulkReadStatus, FastErrorStatus, FastPosition, FastReadPacket, FastReadVariant, FastSlotInfo,
+    FastSyncReadPacket, FastSyncReadStatus, NoInstructionExt, NoStatusExt, Packet, PingPacket, PingStatus,
+    RawStatus, ReadPacket, ReadStatus, RebootPacket, RebootStatus, RegWritePacket, RegWriteStatus,
+    Status, StatusExt, StatusError, SyncReadPacket, SyncReadStatus, SyncWritePacket, WritePacket,
+    WriteStatus,
 };
 #[cfg(feature = "software-crc")]
 pub use crate::wire::SoftwareCrcUmts;

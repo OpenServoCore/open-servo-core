@@ -8,14 +8,14 @@ pub mod prelude;
 
 pub use codec::Codec;
 pub use typed::{
-    ActionPacket, ActionReply, BulkReadPacket, BulkReadReply, BulkReadSlotIter, BulkSlot,
-    BulkSlotInfo, BulkWritePacket, ClearPacket, ControlTableBackupPacket, DecodeError, ErrorReply,
-    InstructionExt, FactoryResetPacket, FastBulkReadPacket, FastBulkReadReply, FastBulkTupleIter,
-    FastErrorReply, FastPosition, FastReadPacket, FastReadVariant, FastSlotInfo,
-    FastSyncReadPacket, FastSyncReadReply, Instruction, NoInstructionExt, NoStatusExt, Packet, PingPacket,
-    PingReply, RawStatus, ReadPacket, ReadReply, RebootPacket, RebootReply, RegWritePacket,
-    RegWriteReply, Reply, StatusExt, StatusError, SyncReadPacket, SyncReadReply, SyncSlotInfo,
-    SyncWritePacket, WritePacket, WriteReply, decode,
+    ActionPacket, ActionStatus, BulkReadPacket, BulkReadStatus, BulkReadSlotIter, BulkSlot,
+    BulkSlotInfo, BulkWritePacket, ClearPacket, ControlTableBackupPacket, DecodeError, ErrorStatus,
+    InstructionExt, FactoryResetPacket, FastBulkReadPacket, FastBulkReadStatus, FastBulkTupleIter,
+    FastErrorStatus, FastPosition, FastReadPacket, FastReadVariant, FastSlotInfo,
+    FastSyncReadPacket, FastSyncReadStatus, Instruction, NoInstructionExt, NoStatusExt, Packet, PingPacket,
+    PingStatus, RawStatus, ReadPacket, ReadStatus, RebootPacket, RebootStatus, RegWritePacket,
+    RegWriteStatus, Status, StatusExt, StatusError, SyncReadPacket, SyncReadStatus, SyncSlotInfo,
+    SyncWritePacket, WritePacket, WriteStatus, decode,
 };
 #[cfg(feature = "software-crc")]
 pub use wire::SoftwareCrcUmts;

@@ -24,7 +24,7 @@ impl CrcUmts for TestDxlCrc {
 
 type Wire = Codec<TestDxlCrc, OscExt, OscReplyExt>;
 
-/// Compact summary of a `Reply` variant — the reply itself borrows from
+/// Compact summary of a `Status` variant — the reply itself borrows from
 /// dispatcher-stack storage, so tests inspect the kind here instead of cloning.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 enum ReplyKind {
@@ -36,11 +36,11 @@ enum ReplyKind {
     FastError(FastPosition, u16),
 }
 
-fn summarize(reply: &Reply<'_, OscReplyExt>) -> ReplyKind {
+fn summarize(reply: &Status<'_, OscReplyExt>) -> ReplyKind {
     match *reply {
-        Reply::FastSyncRead(FastSyncReadReply { position, .. })
-        | Reply::FastBulkRead(FastBulkReadReply { position, .. }) => ReplyKind::Fast(position),
-        Reply::FastError(FastErrorReply {
+        Status::FastSyncRead(FastSyncReadStatus { position, .. })
+        | Status::FastBulkRead(FastBulkReadStatus { position, .. }) => ReplyKind::Fast(position),
+        Status::FastError(FastErrorStatus {
             position, length, ..
         }) => ReplyKind::FastError(position, length),
         _ => ReplyKind::Plain,
@@ -118,9 +118,9 @@ impl DxlBus for FakeBus {
         None
     }
 
-    fn send(&mut self, reply: Reply<'_, OscReplyExt>, schedule: Schedule) {
+    fn send(&mut self, reply: Status<'_, OscReplyExt>, schedule: Schedule) {
         self.tx.clear();
-        Wire::write_reply(&mut self.tx, &reply).unwrap();
+        Wire::write_status(&mut self.tx, &reply).unwrap();
         self.send_count += 1;
         self.last_schedule = Some(schedule);
         self.last_kind = Some(summarize(&reply));
@@ -1307,9 +1307,9 @@ fn poll_recovers_from_stale_fast_first_slot_residue_then_replies_to_ping() {
     let mut h = Dxl::new();
 
     let mut residue: Vec<u8, 32> = Vec::new();
-    Wire::write_reply(
+    Wire::write_status(
         &mut residue,
-        &Reply::FastSyncRead(FastSyncReadReply {
+        &Status::FastSyncRead(FastSyncReadStatus {
             position: FastPosition::First { packet_length: 43 },
             id: 50,
             data: &[0xAA, 0xAA, 0xAA, 0xAA],

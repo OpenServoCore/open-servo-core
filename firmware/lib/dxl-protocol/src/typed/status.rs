@@ -6,39 +6,39 @@ use super::status_ext::{NoStatusExt, StatusExt};
 use super::status_error::StatusError;
 
 #[derive(Copy, Clone, Debug)]
-pub struct PingReply {
+pub struct PingStatus {
     pub id: u8,
     pub model: u16,
     pub firmware: u8,
 }
 
 #[derive(Copy, Clone, Debug)]
-pub struct ReadReply<'a> {
+pub struct ReadStatus<'a> {
     pub id: u8,
     pub data: &'a [u8],
 }
 
 #[derive(Copy, Clone, Debug)]
-pub struct SyncReadReply<'a> {
+pub struct SyncReadStatus<'a> {
     pub id: u8,
     pub data: &'a [u8],
 }
 
 #[derive(Copy, Clone, Debug)]
-pub struct BulkReadReply<'a> {
+pub struct BulkReadStatus<'a> {
     pub id: u8,
     pub data: &'a [u8],
 }
 
 #[derive(Copy, Clone, Debug)]
-pub struct FastSyncReadReply<'a> {
+pub struct FastSyncReadStatus<'a> {
     pub position: FastPosition,
     pub id: u8,
     pub data: &'a [u8],
 }
 
 #[derive(Copy, Clone, Debug)]
-pub struct FastBulkReadReply<'a> {
+pub struct FastBulkReadStatus<'a> {
     pub position: FastPosition,
     pub id: u8,
     pub data: &'a [u8],
@@ -47,7 +47,7 @@ pub struct FastBulkReadReply<'a> {
 /// Fast Read failure — chip emits `length` zero bytes for the data field so
 /// the chain stays length-aligned; the error byte carries the code.
 #[derive(Copy, Clone, Debug)]
-pub struct FastErrorReply {
+pub struct FastErrorStatus {
     pub position: FastPosition,
     pub id: u8,
     pub error: StatusError,
@@ -55,27 +55,27 @@ pub struct FastErrorReply {
 }
 
 #[derive(Copy, Clone, Debug)]
-pub struct WriteReply {
+pub struct WriteStatus {
     pub id: u8,
 }
 
 #[derive(Copy, Clone, Debug)]
-pub struct RegWriteReply {
+pub struct RegWriteStatus {
     pub id: u8,
 }
 
 #[derive(Copy, Clone, Debug)]
-pub struct ActionReply {
+pub struct ActionStatus {
     pub id: u8,
 }
 
 #[derive(Copy, Clone, Debug)]
-pub struct RebootReply {
+pub struct RebootStatus {
     pub id: u8,
 }
 
 #[derive(Copy, Clone, Debug)]
-pub struct ErrorReply {
+pub struct ErrorStatus {
     pub id: u8,
     pub error: StatusError,
 }
@@ -90,34 +90,34 @@ pub struct ErrorReply {
 ///
 /// The optional `R` parameter plugs in a vendor reply extension (see
 /// [`StatusExt`]); pure-DXL callers leave it at the [`NoStatusExt`] default,
-/// which makes [`Reply::Ext`] statically uninhabited.
+/// which makes [`Status::Ext`] statically uninhabited.
 #[derive(Copy, Clone, Debug)]
-pub enum Reply<'a, R: StatusExt = NoStatusExt> {
+pub enum Status<'a, R: StatusExt = NoStatusExt> {
     // ── Data-bearing replies (Status-family wire shape) ──
-    Ping(PingReply),
-    Read(ReadReply<'a>),
-    SyncRead(SyncReadReply<'a>),
-    BulkRead(BulkReadReply<'a>),
+    Ping(PingStatus),
+    Read(ReadStatus<'a>),
+    SyncRead(SyncReadStatus<'a>),
+    BulkRead(BulkReadStatus<'a>),
     // ── Fast Read success (Sync/Bulk wire-identical) ──
-    FastSyncRead(FastSyncReadReply<'a>),
-    FastBulkRead(FastBulkReadReply<'a>),
-    FastError(FastErrorReply),
+    FastSyncRead(FastSyncReadStatus<'a>),
+    FastBulkRead(FastBulkReadStatus<'a>),
+    FastError(FastErrorStatus),
     // ── Empty-payload acks (Status-family) ──
-    Write(WriteReply),
-    RegWrite(RegWriteReply),
-    Action(ActionReply),
-    Reboot(RebootReply),
+    Write(WriteStatus),
+    RegWrite(RegWriteStatus),
+    Action(ActionStatus),
+    Reboot(RebootStatus),
     // ── Empty-payload error reply (Status-family) ──
-    Error(ErrorReply),
+    Error(ErrorStatus),
     Ext(R::Variant<'a>),
 }
 
-pub(crate) fn write_reply<W: WriteBuf, CRC: CrcUmts, R: StatusExt>(
+pub(crate) fn write_status<W: WriteBuf, CRC: CrcUmts, R: StatusExt>(
     out: &mut W,
-    reply: &Reply<'_, R>,
+    status: &Status<'_, R>,
 ) -> Result<(), WriteError> {
-    match *reply {
-        Reply::Ping(PingReply {
+    match *status {
+        Status::Ping(PingStatus {
             id,
             model,
             firmware,
@@ -126,29 +126,29 @@ pub(crate) fn write_reply<W: WriteBuf, CRC: CrcUmts, R: StatusExt>(
             let payload = [m[0], m[1], firmware];
             write_status_frame::<W, _, CRC>(out, id, StatusError::None, payload.iter().copied())
         }
-        Reply::Read(ReadReply { id, data })
-        | Reply::SyncRead(SyncReadReply { id, data })
-        | Reply::BulkRead(BulkReadReply { id, data }) => {
+        Status::Read(ReadStatus { id, data })
+        | Status::SyncRead(SyncReadStatus { id, data })
+        | Status::BulkRead(BulkReadStatus { id, data }) => {
             write_status_frame::<W, _, CRC>(out, id, StatusError::None, data.iter().copied())
         }
-        Reply::Write(WriteReply { id })
-        | Reply::RegWrite(RegWriteReply { id })
-        | Reply::Action(ActionReply { id })
-        | Reply::Reboot(RebootReply { id }) => {
+        Status::Write(WriteStatus { id })
+        | Status::RegWrite(RegWriteStatus { id })
+        | Status::Action(ActionStatus { id })
+        | Status::Reboot(RebootStatus { id }) => {
             write_status_frame::<W, _, CRC>(out, id, StatusError::None, core::iter::empty())
         }
-        Reply::Error(ErrorReply { id, error }) => {
+        Status::Error(ErrorStatus { id, error }) => {
             write_status_frame::<W, _, CRC>(out, id, error, core::iter::empty())
         }
-        Reply::FastSyncRead(FastSyncReadReply { position, id, data })
-        | Reply::FastBulkRead(FastBulkReadReply { position, id, data }) => write_fast::<W, _, CRC>(
+        Status::FastSyncRead(FastSyncReadStatus { position, id, data })
+        | Status::FastBulkRead(FastBulkReadStatus { position, id, data }) => write_fast::<W, _, CRC>(
             out,
             position,
             id,
             StatusError::None,
             &mut data.iter().copied(),
         ),
-        Reply::FastError(FastErrorReply {
+        Status::FastError(FastErrorStatus {
             position,
             id,
             error,
@@ -160,7 +160,7 @@ pub(crate) fn write_reply<W: WriteBuf, CRC: CrcUmts, R: StatusExt>(
             error,
             &mut core::iter::repeat_n(0u8, length as usize),
         ),
-        Reply::Ext(ref v) => R::write::<W, CRC>(v, out),
+        Status::Ext(ref v) => R::write::<W, CRC>(v, out),
     }
 }
 
