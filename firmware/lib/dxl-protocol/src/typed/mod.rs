@@ -16,9 +16,7 @@ mod status_ext;
 mod writer;
 
 pub use decoder::{DecodeError, decode};
-pub use fast::{
-    FastBulkTupleIter, FastReadPacket, FastReadVariant, FastSlotInfo, SlotPosition, write_slot,
-};
+pub use fast::{FastReadPacket, FastReadVariant, FastSlotInfo, SlotPosition, write_slot};
 pub use fast_decoder::{
     FastBulkReadStatus, FastBulkSlotIter, FastSyncReadStatus, FastSyncSlotIter,
 };

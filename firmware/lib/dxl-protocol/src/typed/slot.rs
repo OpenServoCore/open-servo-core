@@ -55,9 +55,19 @@ pub struct SyncSlotInfo {
     pub bytes_before: u32,
 }
 
+/// Walks a body of 5-byte `id + addr_le16 + len_le16` entries, dropping any
+/// trailing partial tuple. The same wire shape appears in both
+/// [`BulkReadPacket`] requests and [`FastBulkReadPacket`](super::packet::FastBulkReadPacket)
+/// requests; both packets' `slots()` return this iterator.
 #[derive(Clone)]
 pub struct BulkReadSlotIter<'a> {
     inner: ByteIter<'a>,
+}
+
+impl<'a> BulkReadSlotIter<'a> {
+    pub(crate) fn new(body: Bytes<'a>) -> Self {
+        Self { inner: body.iter() }
+    }
 }
 
 impl<'a> Iterator for BulkReadSlotIter<'a> {
@@ -80,9 +90,7 @@ impl<'a> Iterator for BulkReadSlotIter<'a> {
 impl<'a> BulkReadPacket<'a> {
     /// Decoded `(id, address, length)` slots; trailing partial tuples dropped.
     pub fn slots(&self) -> BulkReadSlotIter<'a> {
-        BulkReadSlotIter {
-            inner: self.body.iter(),
-        }
+        BulkReadSlotIter::new(self.body)
     }
 
     /// Walk slots once; for the first slot matching `id`, return its position,

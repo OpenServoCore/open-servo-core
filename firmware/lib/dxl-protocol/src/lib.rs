@@ -17,13 +17,13 @@ mod wire;
 pub use typed::{
     ActionPacket, ActionStatus, BulkReadPacket, BulkReadSlotIter, BulkReadStatus, BulkSlot,
     BulkSlotInfo, BulkWritePacket, ClearPacket, ControlTableBackupPacket, DecodeError, ErrorStatus,
-    FactoryResetPacket, FastBulkReadPacket, FastBulkReadStatus, FastBulkSlotIter,
-    FastBulkTupleIter, FastReadPacket, FastReadVariant, FastSlotInfo, FastSyncReadPacket,
-    FastSyncReadStatus, FastSyncSlotIter, Instruction, InstructionExt, NoInstructionExt,
-    NoStatusExt, Packet, PingPacket, PingStatus, RawStatus, ReadPacket, ReadStatus, RebootPacket,
-    RebootStatus, RegWritePacket, RegWriteStatus, Slot, SlotPosition, Status, StatusError,
-    StatusExt, SyncReadPacket, SyncReadStatus, SyncSlotInfo, SyncWritePacket, WritePacket,
-    WriteStatus, decode_status, write_packet, write_slot, write_status,
+    FactoryResetPacket, FastBulkReadPacket, FastBulkReadStatus, FastBulkSlotIter, FastReadPacket,
+    FastReadVariant, FastSlotInfo, FastSyncReadPacket, FastSyncReadStatus, FastSyncSlotIter,
+    Instruction, InstructionExt, NoInstructionExt, NoStatusExt, Packet, PingPacket, PingStatus,
+    RawStatus, ReadPacket, ReadStatus, RebootPacket, RebootStatus, RegWritePacket, RegWriteStatus,
+    Slot, SlotPosition, Status, StatusError, StatusExt, SyncReadPacket, SyncReadStatus,
+    SyncSlotInfo, SyncWritePacket, WritePacket, WriteStatus, decode_status, write_packet,
+    write_slot, write_status,
 };
 #[cfg(feature = "software-crc")]
 pub use wire::SoftwareCrcUmts;

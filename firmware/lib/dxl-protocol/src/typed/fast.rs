@@ -1,11 +1,11 @@
 use crate::wire::{
-    BROADCAST_ID, ByteIter, CrcUmts, FAST_RESPONSE_SLOT_BYTES, FAST_RESPONSE_SLOT0_BYTES, HEADER,
-    WriteBuf, WriteError,
+    BROADCAST_ID, CrcUmts, FAST_RESPONSE_SLOT_BYTES, FAST_RESPONSE_SLOT0_BYTES, HEADER, WriteBuf,
+    WriteError,
 };
 
 use super::instruction::Instruction;
 use super::packet::{FastBulkReadPacket, FastSyncReadPacket};
-use super::slot::Slot;
+use super::slot::{BulkReadSlotIter, Slot};
 
 /// Position of our slot in the coalesced Fast Status response. Variants that
 /// emit the response header carry the DXL `Length` field for the whole
@@ -112,12 +112,12 @@ impl<'a> FastReadPacket for FastBulkReadPacket<'a> {
         let mut n_slots = 0usize;
         let mut total_payload = 0u32;
         let mut bytes_before = 0u32;
-        for (i, (slot_id, address, length)) in self.tuples().enumerate() {
+        for (i, slot) in self.slots().enumerate() {
             if i >= max_slots {
                 return None;
             }
-            if slot_id == id && found.is_none() {
-                found = Some((i, address, length, bytes_before));
+            if slot.id == id && found.is_none() {
+                found = Some((i, slot.address, slot.length, bytes_before));
             }
             let prefix = if i == 0 {
                 FAST_RESPONSE_SLOT0_BYTES as u32
@@ -126,8 +126,8 @@ impl<'a> FastReadPacket for FastBulkReadPacket<'a> {
             };
             bytes_before = bytes_before
                 .saturating_add(prefix)
-                .saturating_add(length as u32);
-            total_payload = total_payload.saturating_add(length as u32);
+                .saturating_add(slot.length as u32);
+            total_payload = total_payload.saturating_add(slot.length as u32);
             n_slots = i + 1;
         }
         let (our_slot, address, length, bytes_before) = found?;
@@ -145,33 +145,11 @@ impl<'a> FastReadPacket for FastBulkReadPacket<'a> {
 }
 
 impl<'a> FastBulkReadPacket<'a> {
-    /// `(id, address, length)` triples from the body; trailing partials dropped.
-    pub fn tuples(&self) -> FastBulkTupleIter<'a> {
-        FastBulkTupleIter {
-            inner: self.body.iter(),
-        }
-    }
-}
-
-#[derive(Clone)]
-pub struct FastBulkTupleIter<'a> {
-    inner: ByteIter<'a>,
-}
-
-impl<'a> Iterator for FastBulkTupleIter<'a> {
-    type Item = (u8, u16, u16);
-
-    fn next(&mut self) -> Option<Self::Item> {
-        let id = self.inner.next()?;
-        let a_lo = self.inner.next()?;
-        let a_hi = self.inner.next()?;
-        let l_lo = self.inner.next()?;
-        let l_hi = self.inner.next()?;
-        Some((
-            id,
-            u16::from_le_bytes([a_lo, a_hi]),
-            u16::from_le_bytes([l_lo, l_hi]),
-        ))
+    /// Decoded `(id, address, length)` slots from the body — same wire shape
+    /// as [`BulkReadPacket::slots`](crate::BulkReadPacket::slots); trailing
+    /// partial tuples dropped.
+    pub fn slots(&self) -> BulkReadSlotIter<'a> {
+        BulkReadSlotIter::new(self.body)
     }
 }
 
@@ -255,6 +233,7 @@ fn write_slot_body<W: WriteBuf>(out: &mut W, slot: &Slot<'_>) -> Result<(), Writ
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::BulkSlot;
     use crate::wire::Bytes;
 
     fn sync(address: u16, length: u16, ids: &[u8]) -> FastSyncReadPacket<'_> {
@@ -337,11 +316,25 @@ mod tests {
     }
 
     #[test]
-    fn bulk_tuples_iterates_complete_triples_only() {
+    fn bulk_slots_iterates_complete_triples_only() {
         // Two complete tuples, then 3 stray bytes that get dropped.
         let body = [1, 0x10, 0, 4, 0, 2, 0x20, 0, 8, 0, 9, 9, 9];
-        let v: heapless::Vec<_, 8> = bulk(&body).tuples().collect();
-        assert_eq!(&v[..], &[(1, 0x10, 4), (2, 0x20, 8)]);
+        let v: heapless::Vec<_, 8> = bulk(&body).slots().collect();
+        assert_eq!(
+            &v[..],
+            &[
+                BulkSlot {
+                    id: 1,
+                    address: 0x10,
+                    length: 4
+                },
+                BulkSlot {
+                    id: 2,
+                    address: 0x20,
+                    length: 8
+                },
+            ]
+        );
     }
 
     #[test]
