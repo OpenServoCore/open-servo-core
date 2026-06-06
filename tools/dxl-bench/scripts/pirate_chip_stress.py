@@ -280,6 +280,12 @@ def run_matrix(
                 print_wedge_banner(f"on set_chip_baud({baud})")
                 return True
             continue
+        # Re-baseline counters: set_chip_baud's warmup ping absorbs the
+        # baud-switch glitch but the chip's FE/NE bumps are already in the
+        # counters. Snapshot here so the first cell's delta starts post-switch.
+        rebaseline = try_read_counters(pirate, dxl_id)
+        if rebaseline is not None:
+            last_counters = rebaseline
         # Per-baud timing constants.
         byte_time_ticks = (10 * ticks_per_us * 1_000_000) // baud
         byte_time_us = byte_time_ticks / ticks_per_us

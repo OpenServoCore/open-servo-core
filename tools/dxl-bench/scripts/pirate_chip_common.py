@@ -109,6 +109,12 @@ def set_chip_baud(pirate: Pirate, dxl_id: int, target_bps: int) -> None:
     time.sleep(0.05)
     pirate.set_baud(target_bps)
     time.sleep(0.05)
+    # USB-CDC baud reconfig can glitch the pirate's TX line; the chip's
+    # USART frames the glitch as a phantom byte and bumps FE/NE. A throwaway
+    # ping forces a real frame so the next caller's health snapshot starts
+    # clean.
+    if not _ping_with_retry(pirate, dxl_id):
+        raise PirateError(f"chip not responding after baud switch to {target_bps}")
 
 
 # ── HSI cal ─────────────────────────────────────────────────────────────────
