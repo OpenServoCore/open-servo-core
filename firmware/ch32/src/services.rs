@@ -1,13 +1,16 @@
 use core::sync::atomic::Ordering;
 
 use dxl_protocol::{Packet, ParseError, RxView, Slot, SlotPosition, Status};
-use osc_core::{BootMode, DxlBus, Event, OscExt, OscReplyExt, Schedule, ServiceEvents, ServicesIo};
+use osc_core::{
+    BootMode, CalSnapshot, DxlBus, Event, OscExt, OscReplyExt, Schedule, ServiceEvents, ServicesIo,
+};
 
 use crate::dxl;
 use crate::dxl::DxlWire;
 use crate::dxl::statics::{
-    DXL_BAUD_PENDING_BRR, DXL_CLOCK_FINE_TRIM_PENDING, DXL_CLOCK_TRIM_PENDING, DXL_REBOOT_PENDING,
-    DXL_RX_BUF, DXL_RX_BUF_LEN, DXL_TX_BUF, RX_MASK_U32,
+    DXL_BAUD_PENDING_BRR, DXL_BYTE_TIME_TICKS, DXL_CLOCK_FINE_TRIM_PENDING, DXL_CLOCK_TRIM_PENDING,
+    DXL_REBOOT_PENDING, DXL_RX_BUF, DXL_RX_BUF_LEN, DXL_RX_FIRST_TICK, DXL_RX_FIRST_VALID,
+    DXL_TX_BUF, RX_MASK_U32,
 };
 use crate::dxl::timing::{SLOT_MARGIN, bytes_to_us, bytes_to_us_q88};
 use crate::hal::clocks::PCLK_HZ;
@@ -163,6 +166,22 @@ impl DxlBus for Ch32Bus {
             return;
         }
         self.fire_fast(position, schedule);
+    }
+
+    fn cal_snapshot(&mut self) -> Option<CalSnapshot> {
+        // Consume the flag: `on_rxne` sets it on each packet's first byte, and
+        // we want a stale prior-packet first_tick to surface as `None` for
+        // any later CALIB whose first byte missed the capture (e.g. RXNEIE
+        // off through a chain reply).
+        if !DXL_RX_FIRST_VALID.swap(false, Ordering::AcqRel) {
+            return None;
+        }
+        let first_tick = DXL_RX_FIRST_TICK.load(Ordering::Acquire);
+        let observed_ticks = self.anchor.tick.wrapping_sub(first_tick);
+        Some(CalSnapshot {
+            observed_ticks,
+            byte_time_ticks: DXL_BYTE_TIME_TICKS.load(Ordering::Relaxed),
+        })
     }
 }
 

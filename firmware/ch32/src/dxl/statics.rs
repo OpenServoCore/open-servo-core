@@ -21,6 +21,20 @@ pub(crate) static DXL_RX_BUF: SyncUnsafeCell<[u8; DXL_RX_BUF_LEN]> =
 /// delta between consecutive IDLE events. ISR-local state.
 pub(crate) static DXL_RX_WRITE_POS: AtomicU16 = AtomicU16::new(0);
 
+/// SysTick capture of the first RXNE for the in-flight RX packet. Paired with
+/// [`DXL_RX_FIRST_VALID`] as the dispatcher-visible "first byte stamp"; the
+/// CALIB handler subtracts this from the IDLE-backdated wire-end tick to
+/// derive the wire receive duration. Loaded once `VALID` is set.
+pub(crate) static DXL_RX_FIRST_TICK: AtomicU32 = AtomicU32::new(0);
+
+/// Set true by [`crate::dxl::on_rxne`] when it latches a packet's first
+/// byte; swapped to false by the dispatcher's `cal_snapshot` on consume.
+/// A stale-true here on a CALIB whose first byte missed the capture (e.g.
+/// chain reply held RXNEIE off) is harmless — `on_rxne` overwrites
+/// `DXL_RX_FIRST_TICK` whenever it actually fires, so the next CALIB only
+/// sees a fresh tick or a false flag.
+pub(crate) static DXL_RX_FIRST_VALID: AtomicBool = AtomicBool::new(false);
+
 pub(crate) const DXL_TX_BUF_LEN: usize = DXL_TX_MAX_BYTES;
 
 pub(crate) static DXL_TX_BUF: SyncUnsafeCell<Vec<u8, DXL_TX_BUF_LEN>> =
@@ -32,6 +46,11 @@ pub(crate) static DXL_TX_EN: SyncUnsafeCell<Option<TxEn>> = SyncUnsafeCell::new(
 /// Scope debug pin — bench instrumentation for the chain-CRC ISRs. Seeded
 /// once at bring-up; ISR readers only.
 pub(crate) static DXL_DBG_PIN: SyncUnsafeCell<Option<Pin>> = SyncUnsafeCell::new(None);
+
+/// Slave-TX counter, incremented once per USART1 TC (real end of frame, not
+/// the spurious mid-stream TC oscillation). Drives the STAT LED activity
+/// blink; readers (main loop) sample the delta vs their last seen value.
+pub(crate) static DXL_TX_COUNT: AtomicU32 = AtomicU32::new(0);
 
 /// Set by `Ch32Device::reboot`; USART1 TC ISR fires the soft reset after TX drains.
 pub(crate) static DXL_REBOOT_PENDING: AtomicBool = AtomicBool::new(false);

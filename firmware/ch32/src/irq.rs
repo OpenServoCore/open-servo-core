@@ -6,7 +6,8 @@ use crate::dxl;
 use crate::dxl::statics::{
     CLOCK_FINE_TRIM_NO_PENDING, CLOCK_TRIM_NO_PENDING, DXL_BAUD_PENDING_BRR, DXL_CHAR_TIME_TICKS,
     DXL_CLOCK_FINE_TRIM_PENDING, DXL_CLOCK_TRIM_PENDING, DXL_REBOOT_PENDING, DXL_RX_BUF_LEN,
-    DXL_RX_WRITE_POS, DXL_TX_BUF, DXL_TX_EN, recompute_fire_advance_fine_ticks, store_baud_derived,
+    DXL_RX_WRITE_POS, DXL_TX_BUF, DXL_TX_COUNT, DXL_TX_EN, recompute_fire_advance_fine_ticks,
+    store_baud_derived,
 };
 use crate::hal::rcc;
 use crate::hal::{dma, gpio, pfic, systick, usart};
@@ -37,12 +38,13 @@ pub fn on_adc_dma_tc() {
 
 pub fn on_usart1() {
     on_usart1_rx_errors();
-    on_usart1_idle();
-    // RXNE entries happen only when dxl armed the tail-tier — the
-    // handler self-gates via STATE, so IDLE/TC-only wakes pay one branch
-    // each. STATR.RXNE always reads 0 in DMA-RX mode (V006 quirk: DMA
-    // wins the clear race), so there's no flag to check here.
+    // on_rxne BEFORE idle/tc: STATR.RXNE always reads 0 in DMA-RX mode
+    // (V006 quirk: DMA wins the clear race), so dxl::on_rxne self-gates
+    // on RXNEIE state instead. If idle/tc ran first they'd re-arm RXNEIE
+    // and on_rxne would fire spuriously inside the same ISR entry,
+    // latching first_tick to the IDLE-handler exit moment.
     dxl::on_rxne();
+    on_usart1_idle();
     on_usart1_tc();
 }
 
@@ -85,6 +87,10 @@ fn on_usart1_idle() {
     let delta = write_pos.wrapping_sub(prev) & mask;
     DXL_RX_WRITE_POS.store(write_pos, Ordering::Release);
     idle_anchor::record(delta, request_end_tick);
+    // Unmask RXNEIE so the next packet's first byte hits `on_rxne`. Don't
+    // touch DXL_RX_FIRST_VALID here — `on_rxne` for this packet already
+    // latched it true; the dispatcher's `cal_snapshot` consumes it via swap.
+    usart::set_rxne_irq(USART1, true);
 }
 
 fn on_usart1_tc() {
@@ -111,6 +117,11 @@ fn on_usart1_tc() {
     let buf = unsafe { &mut *DXL_TX_BUF.get() };
     buf.clear();
     dxl::cancel();
+    DXL_TX_COUNT.fetch_add(1, Ordering::Relaxed);
+    // dxl::cancel masks RXNEIE (chain-mode safety); re-arm so the next
+    // inbound packet's first byte still hits `on_rxne`. The IDLE re-arm
+    // already covers the no-reply path; this covers the reply-then-RX path.
+    usart::set_rxne_irq(USART1, true);
     apply_pending_after_tc();
 }
 

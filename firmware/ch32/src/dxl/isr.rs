@@ -16,7 +16,8 @@ use super::state::{
 #[cfg(feature = "scope")]
 use super::statics::DXL_DBG_PIN;
 use super::statics::{
-    DXL_BYTE_TIME_TICKS, DXL_RX_BUF, DXL_RX_BUF_LEN, DXL_TX_BUF, DXL_TX_EN, RX_MASK_U16,
+    DXL_BYTE_TIME_TICKS, DXL_RX_BUF, DXL_RX_BUF_LEN, DXL_RX_FIRST_TICK, DXL_RX_FIRST_VALID,
+    DXL_TX_BUF, DXL_TX_EN, RX_MASK_U16,
 };
 
 /// TX_EN and DMA CH4 stay off so the bus remains in RX through any preceding
@@ -211,11 +212,22 @@ fn current_bytes_walked() -> u32 {
     }
 }
 
-/// RXNE handler stub. The chain path never enables RXNEIE; the periodic
-/// catchup body owns all snoop work. Kept callable so `irq.rs`'s USART1
-/// dispatch doesn't fork on framing mode.
+/// First-byte timestamp latch. Bring-up + IDLE re-arm leave RXNEIE on; the
+/// first RXNE after each packet boundary lands here, captures SysTick into
+/// [`DXL_RX_FIRST_TICK`] for the CALIB dispatcher's wire-duration math, and
+/// self-disarms RXNEIE so the per-packet ISR cost is one entry. Chain mode
+/// runs RXNEIE-off (driven by SysTick snoop bodies); the periodic catchup
+/// body still owns all chain snoop work.
 #[cfg_attr(target_arch = "riscv32", unsafe(link_section = ".highcode"))]
-pub fn on_rxne() {}
+pub fn on_rxne() {
+    if !usart::is_rxne_irq_enabled(USART1) {
+        return;
+    }
+    let tick = systick::ticks();
+    DXL_RX_FIRST_TICK.store(tick, Ordering::Release);
+    DXL_RX_FIRST_VALID.store(true, Ordering::Release);
+    usart::set_rxne_irq(USART1, false);
+}
 
 #[cfg_attr(target_arch = "riscv32", unsafe(link_section = ".highcode"))]
 #[inline(never)]
