@@ -18,7 +18,9 @@ INSTR_CLEAR = 0x10
 INSTR_CONTROL_TABLE_BACKUP = 0x20
 INSTR_STATUS = 0x55
 INSTR_SYNC_READ = 0x82
+INSTR_SYNC_WRITE = 0x83
 INSTR_BULK_READ = 0x92
+INSTR_BULK_WRITE = 0x93
 INSTR_FAST_SYNC_READ = 0x8A
 INSTR_FAST_BULK_READ = 0x9A
 INSTR_CALIBRATE = 0xE0
@@ -130,6 +132,35 @@ def build_bulk_read(tuples: Iterable[tuple[int, int, int]]) -> bytes:
             length & 0xFF, (length >> 8) & 0xFF,
         ])
     return build_packet(BROADCAST_ID, INSTR_BULK_READ, bytes(params))
+
+
+def build_sync_write(
+    addr: int, length: int, items: Iterable[tuple[int, bytes]]
+) -> bytes:
+    """items: iterable of (id, data) — each data must be exactly `length` bytes."""
+    params = bytearray(
+        [addr & 0xFF, (addr >> 8) & 0xFF, length & 0xFF, (length >> 8) & 0xFF]
+    )
+    for (sid, data) in items:
+        if len(data) != length:
+            raise ValueError(f"sync write data for id {sid} must be {length} bytes")
+        params.append(sid)
+        params.extend(data)
+    return build_packet(BROADCAST_ID, INSTR_SYNC_WRITE, bytes(params))
+
+
+def build_bulk_write(items: Iterable[tuple[int, int, bytes]]) -> bytes:
+    """items: iterable of (id, address, data) — each slot's length is len(data)."""
+    params = bytearray()
+    for (sid, addr, data) in items:
+        length = len(data)
+        params.extend([
+            sid,
+            addr & 0xFF, (addr >> 8) & 0xFF,
+            length & 0xFF, (length >> 8) & 0xFF,
+        ])
+        params.extend(data)
+    return build_packet(BROADCAST_ID, INSTR_BULK_WRITE, bytes(params))
 
 
 def build_fast_sync_read(addr: int, length: int, ids: Iterable[int]) -> bytes:
