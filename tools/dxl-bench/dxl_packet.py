@@ -90,7 +90,12 @@ def build_reboot(id: int) -> bytes:
 
 
 def build_calibrate(id: int, count: int) -> bytes:
-    return build_packet(id, INSTR_CALIBRATE, bytes([count & 0xFF, (count >> 8) & 0xFF]))
+    """CALIB request: master streams `count` zero filler bytes after the
+    count field. Slave times its own RX between T_first (first RXNE) and
+    T_last (IDLE-backdated end of last byte) and replies with the measurement.
+    Wire payload = count(2 LE) + count zeros; total frame = 12 + count bytes."""
+    payload = bytes([count & 0xFF, (count >> 8) & 0xFF]) + bytes(count)
+    return build_packet(id, INSTR_CALIBRATE, payload)
 
 
 def build_factory_reset(id: int, option: int = 0xFF) -> bytes:

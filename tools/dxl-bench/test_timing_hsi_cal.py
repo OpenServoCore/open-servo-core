@@ -4,7 +4,7 @@ Exercises the chip's CAL handler + master-side §7 math + apply-after-TC path
 together. Converges from the test-start `clock_trim` to a steady state where
 step=0 holds, then asserts:
   - one more cycle still yields step=0 (idempotency),
-  - the residual_ppm sits in [0, ppm_per_step) (biased-rounding invariant).
+  - |residual_ppm| ≤ ppm_per_step/2 (symmetric round-to-nearest invariant).
 
 Per docs/dxl-hsi-calibration.md §7. Does not assert any particular HSITRIM
 value — the per-chip optimum depends on factory variation.
@@ -65,9 +65,10 @@ def test_master_cal_converges_idempotently(calibrator):
             f"non-zero step ({d.step:+d}) on idempotency check after converging "
             f"to clock_trim={final_trim:+d} (drift={m.drift_ppm:+.0f} ppm)"
         )
-        assert 0 <= d.residual_ppm < c.ppm_per_step, (
-            f"residual_ppm {d.residual_ppm:+.0f} outside [0, {c.ppm_per_step}) — "
-            "biased rounding broken?"
+        half = c.ppm_per_step / 2
+        assert abs(d.residual_ppm) <= half, (
+            f"|residual_ppm| {d.residual_ppm:+.0f} > {half:.0f} — "
+            "symmetric round-to-nearest broken?"
         )
     finally:
         c.write_clock_trim(initial_trim)

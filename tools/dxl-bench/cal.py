@@ -1,4 +1,11 @@
-"""Master-side HSI calibration for the V006, per docs/dxl-hsi-calibration.md.
+"""Slave-side HSI calibration for the V006, per docs/dxl-hsi-calibration.md.
+
+The wire scheme is inverted from the original master-stamps variant: the
+master streams `count` zero filler bytes, the slave times its own RX between
+T_first (first RXNE) and T_last (IDLE-backdated end of last byte), and the
+reply carries the (observed_ticks, nominal_ticks) pair so the host can derive
+drift without any master-side timestamping. The pirate is just a passthrough
+UART for this step (no Round-stamp dependence).
 
 The math is §7: from a single CAL round-trip the host derives a discrete
 HSITRIM step (biased toward "slow") and the sub-step µs residual (Q8.8) that
@@ -22,41 +29,23 @@ CLOCK_STEP_PPM_ADDR = 18         # u16 RO
 CLOCK_FINE_TRIM_US_ADDR = 20     # i16 Q8.8 RW
 
 
-# Status frame fixed overhead bytes around the count-zero payload:
-# header(4) + id(1) + len(2) + instr(1) + err(1) + crc(2) = 11.
-STATUS_OVERHEAD_BYTES = 11
-
-
 @dataclass(frozen=True)
 class CalMeasurement:
-    """Per-shot CAL outcome — what the master observed on the wire."""
+    """Per-shot CAL outcome — slave-reported observed vs nominal tick counts
+    for the master's just-sent CALIB payload. `applied_*` are what the slave
+    already queued; both zero until the chip-side trim algorithm lands."""
     count: int
     baud: int
-    ticks_per_us: int
-    req_tick: int
-    first_tick: int
-    last_tick: int
-
-    @property
-    def frame_bytes(self) -> int:
-        # T_first is end-of-first-reply-byte, T_last is end-of-last-reply-byte;
-        # the measurement spans the entire Status frame, not just the zero payload.
-        return self.count + STATUS_OVERHEAD_BYTES
-
-    @property
-    def observed_us(self) -> float:
-        delta = (self.last_tick - self.first_tick) & 0xFFFFFFFF
-        return delta / self.ticks_per_us
-
-    @property
-    def nominal_us(self) -> float:
-        # (M − 1) byte intervals between end-of-byte-1 and end-of-byte-M at 8N1.
-        return (self.frame_bytes - 1) * 10 / self.baud * 1_000_000
+    observed_ticks: int
+    nominal_ticks: int
+    applied_trim_delta: int
+    applied_fine_trim_us: int
 
     @property
     def drift_ppm(self) -> float:
-        n = self.nominal_us
-        return (self.observed_us - n) / n * 1_000_000
+        # Identical denominators in chip ticks: ratio is unit-less.
+        # Positive drift ⇒ HSI fast (more chip ticks per wire byte than nominal).
+        return (self.observed_ticks - self.nominal_ticks) / self.nominal_ticks * 1_000_000
 
 
 @dataclass(frozen=True)
@@ -65,8 +54,8 @@ class CalDerived:
     drift_ppm: float
     ppm_per_step: int
     step: int                # signed; clock_trim += step
-    residual_ppm: float      # always ≤ 0 after biased rounding
-    residual_us: float       # always ≥ 0; what intercept compensation owes
+    residual_ppm: float      # symmetric around 0 in [-ppm_per_step/2, +ppm_per_step/2]
+    residual_us: float       # signed; intercept advances on +, retards on −
     new_trim: int            # clamped clock_trim after applying `step`
     residual_q88: int        # i16 Q8.8 for clock_fine_trim_us
 
@@ -81,19 +70,24 @@ class CalDerived:
         trim_max: int = 15,
     ) -> "CalDerived":
         # Sign convention: higher HSITRIM = faster HSI (per chip RM and
-        # [[ch32v006-hsitrim-direction]]). drift_ppm > 0 means slow → step > 0
-        # raises HSITRIM. §7.2 biased rounding: floor(drift/ppm_per_step)
-        # always leaves residual ≥ 0 (chip stays on the slow side after trim)
-        # so the fire-advance intercept (only advances, can't retard) absorbs it.
-        import math
+        # [[ch32v006-hsitrim-direction]]). drift_ppm > 0 means observed >
+        # nominal, i.e. the chip's SysTick counted more ticks per fixed
+        # wire-time → chip is fast → trim must drop. Hence step is the
+        # *negative* of drift_ppm / ppm_per_step. Symmetric round-to-nearest
+        # so the fine-trim residual stays bounded; the chip's signed Q8.8
+        # FIRE_ADVANCE_FINE_TICKS absorbs the leftover with either sign.
         drift_ppm = m.drift_ppm
-        step = math.floor(drift_ppm / ppm_per_step)
-        residual_ppm = drift_ppm - step * ppm_per_step
+        step = -round(drift_ppm / ppm_per_step)
+        residual_ppm = drift_ppm + step * ppm_per_step
         new_trim = max(trim_min, min(trim_max, current_trim + step))
         # §7.3: drift residual contribution to fire floor, in µs at b_op.
-        # residual_ppm ≥ 0 → residual_us ≥ 0 → intercept advances fire.
+        # Sign: residual_ppm > 0 means chip HSI is fast → its `rdt_us * 48`
+        # schedule undershoots wall-clock → already fires early → need
+        # *negative* fine to push fire later. Chip semantics
+        # ([[ch32-fire-advance-fine-ticks]]): + advances, − retards. So
+        # the residual_us we ship has the *opposite* sign of residual_ppm.
         byte_time_us = 10 / baud_op * 1_000_000
-        residual_us = residual_ppm / 1_000_000 * n_target * byte_time_us
+        residual_us = -residual_ppm / 1_000_000 * n_target * byte_time_us
         residual_q88 = max(-32768, min(32767, round(residual_us * 256)))
         return CalDerived(
             drift_ppm=drift_ppm,
@@ -114,7 +108,6 @@ class Calibrator:
         self.baud = baud
         self.n_target = n_target
         self.baud_op = baud_op
-        self.ticks_per_us = pirate.hz_per_us()
         self._ppm_per_step = None
 
     @property
@@ -167,27 +160,30 @@ class Calibrator:
     # ── CAL round-trip ─────────────────────────────────────────────────────
 
     def measure(self, count: int = 128) -> CalMeasurement:
-        """One CAL trip: returns the (req, first, last) HSE timestamps. Also
-        validates the reply payload is `count` zero bytes."""
+        """One CAL trip: master streams `count` filler bytes, slave times its
+        own RX, reply carries (observed, nominal) chip-tick counts plus the
+        already-applied trim deltas. Pirate is just the UART here."""
         assert 1 <= count <= 128, f"count {count} out of [1, 128]"
-        self.pirate.drain_stamps()
+        # Reply payload is 11 bytes (observed u32 + nominal u32 + trim i8 +
+        # fine i16) regardless of count; the request payload grows with count,
+        # so cap reply timeout independent of it.
         reply = self.pirate.xfer(build_calibrate(self.id, count), reply_us=500_000)
         assert reply, "no Status frame on CAL"
         st = parse_status(reply)
         assert st.error == 0, f"CAL err 0x{st.error:02X}"
-        assert len(st.params) == count, f"expected {count} reply bytes, got {len(st.params)}"
-        assert all(b == 0 for b in st.params), f"non-zero reply byte: {st.params.hex()}"
-        stamps = self.pirate.drain_stamps()
-        rounds = [s for s in stamps if hasattr(s, "req")]
-        assert len(rounds) == 1, f"expected 1 Round stamp, got {len(stamps)}: {stamps}"
-        r = rounds[0]
+        assert len(st.params) == 11, (
+            f"expected 11-byte measurement payload, got {len(st.params)}: {st.params.hex()}"
+        )
+        observed, nominal, applied_trim, applied_fine = struct.unpack(
+            "<IIbh", st.params,
+        )
         return CalMeasurement(
             count=count,
             baud=self.baud,
-            ticks_per_us=self.ticks_per_us,
-            req_tick=r.req,
-            first_tick=r.first,
-            last_tick=r.last,
+            observed_ticks=observed,
+            nominal_ticks=nominal,
+            applied_trim_delta=applied_trim,
+            applied_fine_trim_us=applied_fine,
         )
 
     def derive(self, m: CalMeasurement, current_trim: int | None = None) -> CalDerived:
