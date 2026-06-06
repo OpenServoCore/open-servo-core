@@ -248,6 +248,7 @@ def run_matrix(
     n_per_cell: int, inj_len: int,
     health_every: int = 0,
     shot_wait_s: float = 0.001,
+    inter_shot_s: float = 0.0,
 ) -> bool:
     """Walk the verify-style sweep. Returns True if a wedge was caught
     (caller should stop any outer repeat loop). Per-cell counter deltas
@@ -335,6 +336,8 @@ def run_matrix(
                             wedge_shot = shot
                             break
                         last_counters = probe
+                    if inter_shot_s > 0:
+                        time.sleep(inter_shot_s)
                 summary = "  ".join(f"{tally[k]:>10d}" for k in RESULT_BUCKETS)
                 if offsets:
                     med_us = statistics.median(offsets) / ticks_per_us
@@ -399,7 +402,8 @@ def main() -> None:
                     help="Fire repeatedly until wedge or --max-shots.")
     ap.add_argument("--max-shots", type=int, default=10_000)
     ap.add_argument("--inter-shot-ms", type=float, default=0.0,
-                    help="Sleep between shots in continuous mode (0 = back-to-back).")
+                    help="Sleep between shots in continuous and matrix modes "
+                         "(0 = back-to-back).")
     ap.add_argument("--shot-wait-ms", type=float, default=1.0,
                     help="Post-MASTER wait in first/last shots (ms; default 1). "
                          "Sets the per-shot duration: the script fires MASTER, "
@@ -494,6 +498,7 @@ def main() -> None:
                     args.matrix_n, args.inj_len,
                     health_every=args.matrix_health_every,
                     shot_wait_s=args.shot_wait_ms / 1000.0,
+                    inter_shot_s=args.inter_shot_ms / 1000.0,
                 )
                 if wedged:
                     sys.exit(1)
