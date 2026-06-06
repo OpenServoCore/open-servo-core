@@ -270,7 +270,9 @@ def run_matrix(
     )}
     last_counters = baseline
     ticks_per_us = pirate.hz_per_us()
-    for baud in bauds:
+    for baud_idx, baud in enumerate(bauds):
+        if baud_idx > 0:
+            print()
         try:
             set_chip_baud(pirate, dxl_id, baud)
             pirate.wait_quiet()
