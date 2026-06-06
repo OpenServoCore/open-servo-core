@@ -398,8 +398,28 @@ impl<'a, B: DxlBus, E: ServiceEvents> Dispatcher<'a, B, E> {
         self.bus.send(reply, schedule);
     }
 
-    fn handle_sync_write(&mut self, _ctx: &Ctx, _p: &SyncWritePacket<'_>) {
-        // TODO: scan (id, length-byte chunk) pairs, apply our chunk silently.
+    fn handle_sync_write(&mut self, ctx: &Ctx, p: &SyncWritePacket<'_>) {
+        let len = p.length as usize;
+        if len == 0 || len > MAX_CONTROL_RW {
+            return;
+        }
+        let mut buf = [0u8; MAX_CONTROL_RW];
+        let Some(copied) = p.find_slot_data(ctx.our_id, &mut buf[..len]) else {
+            return;
+        };
+        // Mirrors `handle_write`: Sync Write wipes any pending RegWrite staging.
+        self.staged.clear();
+        if self
+            .shared
+            .table
+            .write_bytes(p.address, &buf[..copied], self.staged)
+            .is_ok()
+        {
+            let mut hooks = ControlTableHooks::new(self.events);
+            self.shared
+                .table
+                .dispatch_events(p.address, copied as u16, &mut hooks);
+        }
     }
 
     fn handle_bulk_read(&mut self, ctx: &Ctx, p: &BulkReadPacket<'_>) {
@@ -441,8 +461,26 @@ impl<'a, B: DxlBus, E: ServiceEvents> Dispatcher<'a, B, E> {
         self.bus.send(reply, schedule);
     }
 
-    fn handle_bulk_write(&mut self, _ctx: &Ctx, _p: &BulkWritePacket<'_>) {
-        // TODO: scan (id, address, length, data) tuples; apply our chunk silently.
+    fn handle_bulk_write(&mut self, ctx: &Ctx, p: &BulkWritePacket<'_>) {
+        let mut buf = [0u8; MAX_CONTROL_RW];
+        let Some((hdr, copied)) = p.find_slot_data(ctx.our_id, &mut buf) else {
+            return;
+        };
+        if copied == 0 || copied > MAX_CONTROL_RW {
+            return;
+        }
+        self.staged.clear();
+        if self
+            .shared
+            .table
+            .write_bytes(hdr.address, &buf[..copied], self.staged)
+            .is_ok()
+        {
+            let mut hooks = ControlTableHooks::new(self.events);
+            self.shared
+                .table
+                .dispatch_events(hdr.address, copied as u16, &mut hooks);
+        }
     }
 
     fn handle_fast_read<P: FastReadPacket>(&mut self, ctx: &Ctx, p: &P) {

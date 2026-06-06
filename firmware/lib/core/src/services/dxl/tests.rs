@@ -1558,3 +1558,150 @@ fn fast_sync_read_error_emits_zero_payload_with_error_byte() {
     assert_eq!(io.bus.tx[9], 0); // our id
     assert_eq!(&io.bus.tx[10..12], &[0, 0]); // length zero bytes
 }
+
+#[test]
+fn sync_write_to_our_id_mutates_and_silent() {
+    use crate::regions::CONTROL_BASE_ADDR;
+    let shared = Shared::new();
+    let mut io = FakeIo::new();
+    let mut h = Dxl::new();
+
+    // Two slots: id=7 (not us), id=0 (us). length=1, both write 0x01 to torque_enable.
+    let body = [7, 0x00, 0, 0x01];
+    let req = encode(&Packet::SyncWrite(SyncWritePacket::new(
+        CONTROL_BASE_ADDR,
+        1,
+        &body,
+    )));
+    io.feed(&req);
+    h.poll(&shared, &mut io);
+
+    assert_eq!(io.bus.send_count, 0);
+    assert!(shared.table.control.with(|c| c.lifecycle.torque_enable));
+}
+
+#[test]
+fn sync_write_to_other_ids_only_does_not_mutate() {
+    use crate::regions::CONTROL_BASE_ADDR;
+    let shared = Shared::new();
+    let mut io = FakeIo::new();
+    let mut h = Dxl::new();
+
+    let body = [7, 0x01, 17, 0x01];
+    let req = encode(&Packet::SyncWrite(SyncWritePacket::new(
+        CONTROL_BASE_ADDR,
+        1,
+        &body,
+    )));
+    io.feed(&req);
+    h.poll(&shared, &mut io);
+
+    assert_eq!(io.bus.send_count, 0);
+    assert!(!shared.table.control.with(|c| c.lifecycle.torque_enable));
+}
+
+#[test]
+fn sync_write_clears_pending_reg_write_staging_too() {
+    use crate::regions::CONTROL_BASE_ADDR;
+    use crate::regions::control::Mode;
+    let shared = Shared::new();
+    let mut io = FakeIo::new();
+    let mut h = Dxl::new();
+
+    let req = encode(&Packet::RegWrite(RegWritePacket::new(
+        0,
+        CONTROL_BASE_ADDR,
+        &[1],
+    )));
+    io.feed(&req);
+    h.poll(&shared, &mut io);
+
+    // Sync Write to mode register — should wipe the RegWrite staging.
+    let body = [0, Mode::PositionPid as u8];
+    let req = encode(&Packet::SyncWrite(SyncWritePacket::new(
+        CONTROL_BASE_ADDR + 1,
+        1,
+        &body,
+    )));
+    io.feed(&req);
+    h.poll(&shared, &mut io);
+    assert_eq!(
+        shared.table.control.with(|c| c.lifecycle.mode),
+        Mode::PositionPid,
+    );
+
+    let req = encode(&Packet::Action(ActionPacket::new(0)));
+    io.feed(&req);
+    h.poll(&shared, &mut io);
+    let (_, err, _) = parse_status(&io.bus.tx);
+    assert_eq!(err, StatusError::None.as_u8());
+    assert!(!shared.table.control.with(|c| c.lifecycle.torque_enable));
+}
+
+#[test]
+fn bulk_write_to_our_id_mutates_and_silent() {
+    use crate::regions::CONTROL_BASE_ADDR;
+    let shared = Shared::new();
+    let mut io = FakeIo::new();
+    let mut h = Dxl::new();
+
+    // id=0, address=CONTROL_BASE_ADDR (torque_enable), length=1, data=[1].
+    let addr_lo = (CONTROL_BASE_ADDR & 0xFF) as u8;
+    let addr_hi = (CONTROL_BASE_ADDR >> 8) as u8;
+    let body = [0, addr_lo, addr_hi, 1, 0, 1];
+    let req = encode(&Packet::BulkWrite(BulkWritePacket::new(&body)));
+    io.feed(&req);
+    h.poll(&shared, &mut io);
+
+    assert_eq!(io.bus.send_count, 0);
+    assert!(shared.table.control.with(|c| c.lifecycle.torque_enable));
+}
+
+#[test]
+fn bulk_write_to_other_id_silent_and_does_not_mutate() {
+    use crate::regions::CONTROL_BASE_ADDR;
+    let shared = Shared::new();
+    let mut io = FakeIo::new();
+    let mut h = Dxl::new();
+
+    let addr_lo = (CONTROL_BASE_ADDR & 0xFF) as u8;
+    let addr_hi = (CONTROL_BASE_ADDR >> 8) as u8;
+    let body = [17, addr_lo, addr_hi, 1, 0, 1];
+    let req = encode(&Packet::BulkWrite(BulkWritePacket::new(&body)));
+    io.feed(&req);
+    h.poll(&shared, &mut io);
+
+    assert_eq!(io.bus.send_count, 0);
+    assert!(!shared.table.control.with(|c| c.lifecycle.torque_enable));
+}
+
+#[test]
+fn bulk_write_uses_our_tuples_address_not_a_preceding_slots() {
+    use crate::regions::CONTROL_BASE_ADDR;
+    use crate::regions::control::Mode;
+    let shared = Shared::new();
+    let mut io = FakeIo::new();
+    let mut h = Dxl::new();
+
+    // Slot for id=7 (foreign) targets torque_enable; our slot (id=0) targets
+    // the mode register one byte later. Verify we honor our own address.
+    let other_lo = (CONTROL_BASE_ADDR & 0xFF) as u8;
+    let other_hi = (CONTROL_BASE_ADDR >> 8) as u8;
+    let mode_addr = CONTROL_BASE_ADDR + 1;
+    let our_lo = (mode_addr & 0xFF) as u8;
+    let our_hi = (mode_addr >> 8) as u8;
+    let body = [
+        7, other_lo, other_hi, 1, 0, 1, //
+        0, our_lo, our_hi, 1, 0, Mode::PositionPid as u8,
+    ];
+    let req = encode(&Packet::BulkWrite(BulkWritePacket::new(&body)));
+    io.feed(&req);
+    h.poll(&shared, &mut io);
+
+    assert_eq!(io.bus.send_count, 0);
+    assert!(!shared.table.control.with(|c| c.lifecycle.torque_enable));
+    assert_eq!(
+        shared.table.control.with(|c| c.lifecycle.mode),
+        Mode::PositionPid,
+    );
+}
