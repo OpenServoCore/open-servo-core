@@ -14,7 +14,10 @@ mod status_decoder;
 mod status_encoder;
 mod status_error;
 
-pub use bulk::{BulkEntry, BulkReadSlotIter, BulkSlotInfo, SyncSlotInfo};
+pub use bulk::{
+    BulkEntry, BulkReadSlotIter, BulkSlotInfo, BulkWriteEntry, BulkWriteSlotIter, SyncSlotInfo,
+    SyncWriteEntry, SyncWriteSlotIter,
+};
 pub use ext::{InstructionExt, NoInstructionExt, NoStatusExt, StatusExt};
 pub use fast::{FastReadPacket, FastReadVariant, FastSlotInfo, SlotPosition};
 pub use instruction::Instruction;

@@ -18,13 +18,14 @@ mod wire;
 
 pub use typed::{
     ActionPacket, ActionStatus, BulkEntry, BulkReadPacket, BulkReadSlotIter, BulkReadStatus,
-    BulkSlotInfo, BulkWritePacket, ClearPacket, ControlTableBackupPacket, DecodeError, ErrorStatus,
-    FactoryResetPacket, FastBulkReadPacket, FastBulkReadStatus, FastBulkSlotIter, FastReadPacket,
-    FastReadVariant, FastSlotInfo, FastSyncReadPacket, FastSyncReadStatus, FastSyncSlotIter,
-    Instruction, InstructionExt, NoInstructionExt, NoStatusExt, Packet, PingPacket, PingStatus,
-    RawStatus, ReadPacket, ReadStatus, RebootPacket, RebootStatus, RegWritePacket, RegWriteStatus,
-    Slot, SlotPosition, Status, StatusError, StatusExt, SyncReadPacket, SyncReadStatus,
-    SyncSlotInfo, SyncWritePacket, WritePacket, WriteStatus, decode_status, write_ext,
+    BulkSlotInfo, BulkWriteEntry, BulkWritePacket, BulkWriteSlotIter, ClearPacket,
+    ControlTableBackupPacket, DecodeError, ErrorStatus, FactoryResetPacket, FastBulkReadPacket,
+    FastBulkReadStatus, FastBulkSlotIter, FastReadPacket, FastReadVariant, FastSlotInfo,
+    FastSyncReadPacket, FastSyncReadStatus, FastSyncSlotIter, Instruction, InstructionExt,
+    NoInstructionExt, NoStatusExt, Packet, PingPacket, PingStatus, RawStatus, ReadPacket,
+    ReadStatus, RebootPacket, RebootStatus, RegWritePacket, RegWriteStatus, Slot, SlotPosition,
+    Status, StatusError, StatusExt, SyncReadPacket, SyncReadStatus, SyncSlotInfo, SyncWriteEntry,
+    SyncWritePacket, SyncWriteSlotIter, WritePacket, WriteStatus, decode_status, write_ext,
     write_packet, write_slot, write_status,
 };
 #[cfg(feature = "software-crc")]
