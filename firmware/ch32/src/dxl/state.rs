@@ -113,8 +113,11 @@ pub(super) fn set_state(new: ReplyState) {
     }
 }
 
-#[cfg_attr(target_arch = "riscv32", unsafe(link_section = ".highcode"))]
-#[inline(never)]
+// Inlined into `body_chain_catchup` (its only caller) — body lands in
+// `.highcode` via that caller. Runs on the catchup→TxArmed handoff
+// path, so the CALL/RET removal trims a few cycles before the
+// `set_cmp(fire_tick)` that arms the actual fire.
+#[inline(always)]
 pub(super) fn set_phase(new: FastChainPhase) {
     // SAFETY: see on_systick. Calls outside Chain are silent no-ops so
     // set_phase chains after cancel() don't double-fault on re-entry.

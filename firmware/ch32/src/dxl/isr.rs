@@ -232,8 +232,11 @@ pub fn on_rxne() {
     usart::set_rxne_irq(USART1, false);
 }
 
-#[cfg_attr(target_arch = "riscv32", unsafe(link_section = ".highcode"))]
-#[inline(never)]
+// Inlined into `body_chain_fast_fire` (its only caller); the body lands
+// in `.highcode` via that caller, so no explicit section is needed. The
+// CALL/RET savings shift the first STORE to `TX_BUF[n-2]` earlier by
+// ~10 cycles, widening the DMA-fetch race window the patch must win.
+#[inline(always)]
 fn patch_crc() {
     // SAFETY: see on_systick. Sole writer to DXL_TX_BUF in ISR context.
     unsafe {
@@ -255,8 +258,11 @@ fn patch_crc() {
 /// Busy-wait + fold until `bytes_walked ≥ target` OR `now ≥ deadline`.
 /// Both pre-fire and post-fire walks share this primitive — they differ
 /// only in the deadline (absolute SysTick tick).
-#[cfg_attr(target_arch = "riscv32", unsafe(link_section = ".highcode"))]
-#[inline(never)]
+// Inlined into both caller bodies (`body_chain_catchup`,
+// `body_chain_fast_fire`) — both are in `.highcode`, so the duplicated
+// loop bodies stay in RAM. Saves one CALL/RET per shot and lets the
+// compiler hoist the inner `accumulate_snoop`/deadline math.
+#[inline(always)]
 fn wait_and_fold_until(target: u32, deadline: u32) {
     loop {
         accumulate_snoop();
@@ -269,8 +275,11 @@ fn wait_and_fold_until(target: u32, deadline: u32) {
     }
 }
 
-#[cfg_attr(target_arch = "riscv32", unsafe(link_section = ".highcode"))]
-#[inline(never)]
+// Called from the `wait_and_fold_until` busy-loop; CALL/RET on every
+// iteration would dominate the poll cadence. Inlining lands the body
+// in each caller's `.highcode` frame and lets the compiler keep
+// `*STATE` field references in registers across iterations.
+#[inline(always)]
 fn accumulate_snoop() {
     let write_pos = current_rx_write_pos();
     // SAFETY: see on_systick.
@@ -295,8 +304,10 @@ fn accumulate_snoop() {
     }
 }
 
-#[cfg_attr(target_arch = "riscv32", unsafe(link_section = ".highcode"))]
-#[inline(never)]
+// Folded into `accumulate_snoop` (its only caller) so the slice
+// arithmetic + CRC table walk land directly in the snoop hot path,
+// inheriting `.highcode` from the surrounding inline chain.
+#[inline(always)]
 fn ring_crc(seed: u16, ring: &[u8], head: u16, write_pos: u16) -> u16 {
     if head == write_pos {
         return seed;
