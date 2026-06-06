@@ -116,8 +116,11 @@ fn configure_pins(w: &BoardWiring) {
     let in2 = w.motor.in2_pin();
     let opa_pos_pin = w.current_sense.opa.input.pos().pin();
 
+    // STAT LED defaults solid ON to signal "chip alive"; main loop blinks it
+    // on slave-TX activity via `crate::stat_led::poll`.
     gpio::configure(w.stat_led, PinMode::OUTPUT_PUSH_PULL);
-    gpio::set_level(w.stat_led, Level::Low);
+    gpio::set_level(w.stat_led, Level::High);
+    crate::stat_led::install(w.stat_led);
 
     gpio::configure(w.dbg, PinMode::OUTPUT_PUSH_PULL);
     gpio::set_level(w.dbg, Level::Low);
