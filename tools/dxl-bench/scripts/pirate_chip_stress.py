@@ -247,7 +247,7 @@ def run_matrix(
     bauds: list[int], dut_lens: list[int], positions: list[str],
     n_per_cell: int, inj_len: int,
     health_every: int = 0,
-    shot_wait_s: float = 0.02,
+    shot_wait_s: float = 0.001,
 ) -> bool:
     """Walk the verify-style sweep. Returns True if a wedge was caught
     (caller should stop any outer repeat loop). Per-cell counter deltas
@@ -398,13 +398,13 @@ def main() -> None:
     ap.add_argument("--max-shots", type=int, default=10_000)
     ap.add_argument("--inter-shot-ms", type=float, default=0.0,
                     help="Sleep between shots in continuous mode (0 = back-to-back).")
-    ap.add_argument("--shot-wait-ms", type=float, default=20.0,
-                    help="Post-MASTER wait in first/last shots (ms; default 20). "
+    ap.add_argument("--shot-wait-ms", type=float, default=1.0,
+                    help="Post-MASTER wait in first/last shots (ms; default 1). "
                          "Sets the per-shot duration: the script fires MASTER, "
                          "sleeps this long, then captures RX bytes + stamps. "
-                         "Lower values pace the loop tighter (~1 ms/shot); "
-                         "higher values spread shots out. Only affects "
-                         "first/last — only uses XFER.")
+                         "1 ms covers worst-case reply (~600 µs at 1M baud for "
+                         "49 B + RDT + dispatch); raise to spread shots out. "
+                         "Only affects first/last — only uses XFER.")
     ap.add_argument("--scope-delay-s", type=float, default=0.5,
                     help="Pre-shot delay in single-shot mode so you can arm the scope.")
     ap.add_argument("--wedge-threshold", type=int, default=5,
