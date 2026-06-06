@@ -56,6 +56,16 @@ pub(super) fn run(
         c.comms.clock_step_ppm = rcc::CLOCK_TRIM_PPM_PER_STEP as u16;
     });
 
+    // Override `ConfigDefaults::dxl_id` with a UID-derived ID so a freshly
+    // flashed chip plugged into an existing bus doesn't collide on the
+    // default. EEPROM persistence (when landed) layers on top — it loads
+    // *after* this and wins if a stored ID is present.
+    let id = derive_dxl_id_from_uid();
+    crate::log::info!("seed comms.id={} from UID", id);
+    SHARED.table.config.with_mut(|c| {
+        c.comms.id = id;
+    });
+
     bring_up_dxl(&wiring.dxl, pre.usart_brr);
     crate::log::debug!("dxl usart + dma rx armed");
 
@@ -68,6 +78,30 @@ pub(super) fn run(
     );
 
     BringupResult { shunt_bias_raw }
+}
+
+/// XOR-fold the 12-byte chip UID (`ESIG_UNIID1..3` at 0x1FFFF7E8/EC/F0, per
+/// RM §19.2) into a single byte, then map to a valid DXL ID in [1, 252] —
+/// avoids 0xFD (reserved), 0xFE (broadcast), 0xFF (invalid). Lets identical
+/// firmware images on a shared bus seed unique IDs without persistence;
+/// EEPROM-stored IDs (when landed) override this in a later boot phase.
+fn derive_dxl_id_from_uid() -> u8 {
+    const ESIG_UNIID_BASE: *const u32 = 0x1FFFF7E8 as *const u32;
+    // SAFETY: ESIG block is ROM-mapped, always present, 4-byte aligned.
+    let words = unsafe {
+        [
+            core::ptr::read_volatile(ESIG_UNIID_BASE),
+            core::ptr::read_volatile(ESIG_UNIID_BASE.add(1)),
+            core::ptr::read_volatile(ESIG_UNIID_BASE.add(2)),
+        ]
+    };
+    let mut fold: u8 = 0;
+    for w in words {
+        for shift in (0..32).step_by(8) {
+            fold ^= (w >> shift) as u8;
+        }
+    }
+    1u8 + (fold % 252)
 }
 
 // Order must mirror the scan tail in `configure_adc_dma_scan`.
