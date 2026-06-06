@@ -22,6 +22,19 @@ pub struct Schedule {
     pub slot_index: u16,
 }
 
+/// Snapshot the chip-side timing layer hands the CALIB dispatcher to derive
+/// HSI drift from the just-received cal request. `observed_ticks` is the
+/// wire duration between the request's first received byte (T_first) and
+/// its IDLE-backdated wire-end (T_last); `byte_time_ticks` is the slave's
+/// current per-byte tick count at the wire baud. Returned `None` when the
+/// first-byte tick wasn't captured for this packet (e.g. RXNE was masked
+/// during chain mode) — dispatcher treats this as a measurement failure.
+#[derive(Copy, Clone, Debug)]
+pub struct CalSnapshot {
+    pub observed_ticks: u32,
+    pub byte_time_ticks: u32,
+}
+
 /// Bus surface the DXL services layer reads, writes, and schedules through.
 /// `poll` returns the single dispatchable packet ending at the latest
 /// IDLE-anchored wire-end. `send` emits one of the non-fast typed Status
@@ -45,6 +58,11 @@ pub trait DxlBus {
     /// `Only` and `Last` emit (or reserve) the response CRC; `First` and
     /// `Middle` don't (successors continue the response).
     fn send_slot(&mut self, slot: Slot<'_>, position: SlotPosition, schedule: Schedule);
+
+    /// Snapshot the wire-timing state captured during RX of the just-polled
+    /// CALIB request. Called from the dispatcher's CALIB path; impls without
+    /// a first-byte capture mechanism return `None`.
+    fn cal_snapshot(&mut self) -> Option<CalSnapshot>;
 }
 
 /// Fire-and-forget notifications the dispatcher delivers when control-table

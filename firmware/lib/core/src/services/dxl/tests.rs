@@ -2,7 +2,7 @@ use crc::{CRC_16_UMTS, Crc};
 use dxl_protocol::*;
 use heapless::Vec;
 
-use crate::traits::{DxlBus, Event, Schedule, ServiceEvents, ServicesIo};
+use crate::traits::{CalSnapshot, DxlBus, Event, Schedule, ServiceEvents, ServicesIo};
 use crate::{BootMode, RegionStorage, Shared, StatusReturnLevel};
 
 use super::Dxl;
@@ -71,6 +71,9 @@ struct FakeBus {
     send_count: u32,
     last_schedule: Option<Schedule>,
     last_kind: Option<ReplyKind>,
+    /// Stub return for `cal_snapshot`. Tests installing a non-default value
+    /// drive the dispatcher's CALIB measurement path.
+    cal_snapshot_stub: Option<CalSnapshot>,
 }
 
 impl FakeBus {
@@ -82,6 +85,7 @@ impl FakeBus {
             send_count: 0,
             last_schedule: None,
             last_kind: None,
+            cal_snapshot_stub: None,
         }
     }
 
@@ -152,6 +156,10 @@ impl DxlBus for FakeBus {
         } else {
             ReplyKind::FastError(position, length)
         });
+    }
+
+    fn cal_snapshot(&mut self) -> Option<CalSnapshot> {
+        self.cal_snapshot_stub
     }
 }
 
@@ -1389,6 +1397,12 @@ fn calibrate_unicast_replies_with_measurement_payload() {
     let shared = Shared::new();
     let mut io = FakeIo::new();
     let mut h = Dxl::new();
+    // 1 Mbps wire: byte_time at 48 MHz HCLK ≈ 480 ticks.
+    io.bus.cal_snapshot_stub = Some(CalSnapshot {
+        observed_ticks: 13_440, // (12 + 16 - 1) × 480 = 12_960 nominal; stub
+        // slightly above to model a fast slave.
+        byte_time_ticks: 480,
+    });
 
     let req = encode(&Packet::Ext(OscVariant::Calibrate(CalibratePacket::new(
         0, 16,
@@ -1400,10 +1414,14 @@ fn calibrate_unicast_replies_with_measurement_payload() {
     let (id, err, params) = parse_status(&io.bus.tx);
     assert_eq!(id, 0);
     assert_eq!(err, 0);
-    // observed(4) + nominal(4) + trim(1) + fine(2). Pre-algorithm dispatcher
-    // returns zeros; commit 2 wires the chip-side snapshot through.
+    // observed(4) + nominal(4) + trim(1) + fine(2).
     assert_eq!(params.len(), 11);
-    assert!(params.iter().all(|&b| b == 0));
+    let observed = u32::from_le_bytes([params[0], params[1], params[2], params[3]]);
+    let nominal = u32::from_le_bytes([params[4], params[5], params[6], params[7]]);
+    assert_eq!(observed, 13_440);
+    assert_eq!(nominal, 27 * 480); // (12 + 16 - 1) × byte_time_ticks
+    assert_eq!(params[8] as i8, 0); // trim algorithm lands in a follow-up commit
+    assert_eq!(i16::from_le_bytes([params[9], params[10]]), 0);
 }
 
 #[test]
@@ -1411,6 +1429,10 @@ fn calibrate_unicast_count_max_payload_accepted() {
     let shared = Shared::new();
     let mut io = FakeIo::new();
     let mut h = Dxl::new();
+    io.bus.cal_snapshot_stub = Some(CalSnapshot {
+        observed_ticks: 0,
+        byte_time_ticks: 480,
+    });
 
     let req = encode(&Packet::Ext(OscVariant::Calibrate(CalibratePacket::new(
         0, 128,
@@ -1428,7 +1450,31 @@ fn calibrate_unicast_count_max_payload_accepted() {
     assert_eq!(&tx[5..7], &[15, 0]); // length = inst + err + 11 + crc(2) = 15
     assert_eq!(tx[7], 0x55);
     assert_eq!(tx[8], 0);
-    assert!(tx[9..20].iter().all(|&b| b == 0));
+    let observed = u32::from_le_bytes([tx[9], tx[10], tx[11], tx[12]]);
+    let nominal = u32::from_le_bytes([tx[13], tx[14], tx[15], tx[16]]);
+    assert_eq!(observed, 0);
+    assert_eq!(nominal, 139 * 480); // (12 + 128 - 1) × byte_time_ticks
+}
+
+#[test]
+fn calibrate_without_snapshot_replies_data_range_error() {
+    // Chip-side first-byte tick wasn't captured (e.g. RXNE masked during a
+    // chain or pre-arm boot window); dispatcher must surface the failure.
+    let shared = Shared::new();
+    let mut io = FakeIo::new();
+    let mut h = Dxl::new();
+    assert!(io.bus.cal_snapshot_stub.is_none());
+
+    let req = encode(&Packet::Ext(OscVariant::Calibrate(CalibratePacket::new(
+        0, 16,
+    ))));
+    io.feed(&req);
+    h.poll(&shared, &mut io);
+
+    assert_eq!(io.bus.send_count, 1);
+    let (_, err, params) = parse_status(&io.bus.tx);
+    assert_eq!(err, StatusError::DataRange.as_u8());
+    assert!(params.is_empty());
 }
 
 #[test]

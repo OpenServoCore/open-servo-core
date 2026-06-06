@@ -31,6 +31,6 @@ pub use services::dxl::{
 };
 pub use shared::Shared;
 pub use traits::{
-    Capabilities, DecayMode, DxlBus, Event, KernelIo, Motor, MotorCmd, Schedule, Sensors,
-    ServiceEvents, ServicesIo,
+    CalSnapshot, Capabilities, DecayMode, DxlBus, Event, KernelIo, Motor, MotorCmd, Schedule,
+    Sensors, ServiceEvents, ServicesIo,
 };

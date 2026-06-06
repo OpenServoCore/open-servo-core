@@ -9,7 +9,7 @@ mod kernel;
 mod services;
 
 pub use kernel::{Capabilities, DecayMode, KernelIo, Motor, MotorCmd, Sensors};
-pub use services::{DxlBus, Event, Schedule, ServiceEvents, ServicesIo};
+pub use services::{CalSnapshot, DxlBus, Event, Schedule, ServiceEvents, ServicesIo};
 
 // Boundary types defined elsewhere that callers of the traits need in scope.
 pub use crate::regions::BootMode;
