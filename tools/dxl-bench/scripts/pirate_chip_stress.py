@@ -1,18 +1,16 @@
 """Chip stress harness — repeated shots + health probes, scope-friendly.
 
-A generic loop-on-the-chip-until-something-breaks tool. Originally written
-to repro the (now-closed) V006 TX_EN-stuck-HIGH wedge by walking the
-verify matrix; kept as durable bench infra because the shape —
-`pirate_chip_tune`-style position/baud/payload cells with per-cell or
-per-N-shot counter-Read health probes — is the right framing for any
-"does the chip drift / wedge / corrupt under sustained traffic" question.
+A generic loop-on-the-chip-until-something-breaks tool. Walks (baud ×
+dut_len × position) cells with per-cell timing stats, fault-counter
+deltas, and optional counter-Read health probes; or hammers a single
+cell continuously until a wedge is detected.
 
 Modes:
   --matrix
-      Walks (baud × dut_len × position) cells in the same order as
-      `pirate_chip_tune.step_verify`, with a counter-Read health probe
-      after each cell + per-cell fault-counter delta printout. Stops on
-      first health-probe failure.
+      Walks (baud × dut_len × position) cells, with per-cell timing
+      (median/σ vs target, PASS/FAIL against ±byte_time threshold) and
+      a counter-Read health probe after each cell. Stops on first
+      health-probe failure.
       Narrowing knobs:
         --matrix-repeat N       loop the matrix N times (for non-det
                                 failure modes).
@@ -44,6 +42,7 @@ On a hang, halt + dump regs while the bus state is still live:
 from __future__ import annotations
 
 import argparse
+import statistics
 import sys
 import time
 from pathlib import Path
@@ -58,12 +57,15 @@ from dxl_packet import (
     parse_fast_response,
     parse_status,
 )
-from pirate import Pirate, PirateError
-from pirate_chip_tune import (
+from pirate import Pirate, PirateError, Round
+from pirate_chip_common import (
     BAUD_INDEX,
     FOREIGN_ID,
+    RETURN_DELAY_2US_ADDR,
     autodetect_pirate,
+    read_ct_u8,
     set_chip_baud,
+    step_hsi,
 )
 
 INJ_ID = 50
@@ -80,39 +82,46 @@ RESULT_BUCKETS = ("clean", "extra_idle", "crc", "other", "noreply")
 
 def run_shot(
     pirate: Pirate, dut_id: int, position: str, inj_len: int, dut_len: int,
-) -> tuple[str, bytes, bytes]:
-    """Returns (result, request_bytes, reply_bytes). Dispatches on position."""
+    shot_wait_s: float = 0.02,
+) -> tuple[str, bytes, bytes, Round | None]:
+    """Returns (result, request, reply, round). `round` is the lone Round
+    stamp emitted by this shot if the pirate captured one (None otherwise —
+    e.g. NOREPLY). Dispatches on position. `shot_wait_s` is the post-MASTER
+    wait used by first/last (only uses XFER's own reply-wait); shorter values
+    pace the loop more like verify, longer ones spread shots out."""
     if position == "only":
         return _shot_only(pirate, dut_id, dut_len)
     if position == "first":
-        return _shot_first(pirate, dut_id, dut_len)
+        return _shot_first(pirate, dut_id, dut_len, shot_wait_s)
     if position == "last":
-        return _shot_last(pirate, dut_id, inj_len, dut_len)
+        return _shot_last(pirate, dut_id, inj_len, dut_len, shot_wait_s)
     raise ValueError(f"unknown position {position!r}")
 
 
 def _shot_only(
     pirate: Pirate, dut_id: int, dut_len: int,
-) -> tuple[str, bytes, bytes]:
+) -> tuple[str, bytes, bytes, Round | None]:
     request = build_read(dut_id, 0, dut_len)
     pirate.drain_stamps()
     reply = pirate.xfer(request, reply_us=10_000)
+    stamps = pirate.drain_stamps()
+    round_stamp = next((s for s in stamps if isinstance(s, Round)), None)
     if reply is None:
-        return "noreply", request, b""
+        return "noreply", request, b"", round_stamp
     if len(reply) < 11:
-        return "noreply", request, reply
+        return "noreply", request, reply, round_stamp
     try:
         st = parse_status(reply)
     except ValueError:
-        return "crc", request, reply
+        return "crc", request, reply, round_stamp
     if st.id != dut_id:
-        return "other", request, reply
-    return "clean", request, reply
+        return "other", request, reply, round_stamp
+    return "clean", request, reply, round_stamp
 
 
 def _shot_first(
-    pirate: Pirate, dut_id: int, dut_len: int,
-) -> tuple[str, bytes, bytes]:
+    pirate: Pirate, dut_id: int, dut_len: int, shot_wait_s: float = 0.02,
+) -> tuple[str, bytes, bytes, Round | None]:
     # Fast Bulk Read with chip as slot 1, FOREIGN_ID as silent slot 2.
     # Chip emits its First-slot bytes (HEADER + chain-length + STATUS + err
     # + slot1_id + slot1_data) then waits for slot 2 that never fires; the
@@ -125,7 +134,7 @@ def _shot_first(
     pirate.drain_stamps()
     b0 = pirate.bytes_count()
     pirate.master(request)
-    time.sleep(0.02)
+    time.sleep(shot_wait_s)
     b1 = pirate.bytes_count()
     total = b1 - b0
 
@@ -133,29 +142,28 @@ def _shot_first(
     all_rx = pirate.rx_range(b0, capture) if capture > 0 else b""
     reply = all_rx[len(request):] if len(all_rx) >= len(request) else b""
 
+    stamps = pirate.drain_stamps()
+    round_stamp = next((s for s in stamps if isinstance(s, Round)), None)
+
     first_slot_bytes = 10 + dut_len  # HEADER+BCAST+len2+STATUS+err+slot_id+data
     if total > 256:
-        pirate.drain_stamps()
-        return "other", request, reply
+        return "other", request, reply, round_stamp
     if total < len(request) + first_slot_bytes // 2:
-        pirate.drain_stamps()
-        return "noreply", request, reply
+        return "noreply", request, reply, round_stamp
     if len(reply) < first_slot_bytes:
-        pirate.drain_stamps()
-        return "noreply", request, reply
+        return "noreply", request, reply, round_stamp
     # reply[8] is the error byte (any value OK — protocol-level detail);
     # reply[9] is the First slot's id, which must be the chip's id.
     if reply[:4] != bytes([0xFF, 0xFF, 0xFD, 0x00]) or reply[4] != 0xFE \
             or reply[7] != 0x55 or reply[9] != dut_id:
-        pirate.drain_stamps()
-        return "crc", request, reply
-    pirate.drain_stamps()
-    return "clean", request, reply
+        return "crc", request, reply, round_stamp
+    return "clean", request, reply, round_stamp
 
 
 def _shot_last(
     pirate: Pirate, dut_id: int, inj_len: int, dut_len: int,
-) -> tuple[str, bytes, bytes]:
+    shot_wait_s: float = 0.02,
+) -> tuple[str, bytes, bytes, Round | None]:
     inj_data = b"\xAA" * inj_len
     packet_length = 1 + (2 + inj_len) + (2 + dut_len) + 2
     inj_bytes = build_fast_first_bytes(
@@ -167,7 +175,7 @@ def _shot_last(
     b0 = pirate.bytes_count()
     pirate.arm(inj_bytes, after_idle_ticks=250 * 18)
     pirate.master(request)
-    time.sleep(0.02)
+    time.sleep(shot_wait_s)
     b1 = pirate.bytes_count()
     total = b1 - b0
 
@@ -175,29 +183,27 @@ def _shot_last(
     all_rx = pirate.rx_range(b0, capture) if capture > 0 else b""
     reply = all_rx[len(request):] if len(all_rx) >= len(request) else b""
 
+    stamps = pirate.drain_stamps()
+    round_stamp = next((s for s in stamps if isinstance(s, Round)), None)
+    extra_idle = len(stamps) != 1
+
     expected_min_reply_bytes = 11 + inj_len + 2 + dut_len  # Status header + slots
     if total < len(request) + expected_min_reply_bytes // 2:
-        pirate.drain_stamps()
-        return "noreply", request, reply
+        return "noreply", request, reply, round_stamp
     if total > 256:
-        pirate.drain_stamps()
-        return "other", request, reply
+        return "other", request, reply, round_stamp
     if len(reply) < 11:
-        pirate.drain_stamps()
-        return "noreply", request, reply
+        return "noreply", request, reply, round_stamp
     try:
         slots = parse_fast_response(reply, slot_lengths=[inj_len, dut_len])
     except ValueError:
-        pirate.drain_stamps()
-        return "crc", request, reply
+        return "crc", request, reply, round_stamp
     if len(slots) != 2 or slots[0].id != INJ_ID or slots[0].data != inj_data:
-        pirate.drain_stamps()
-        return "crc", request, reply
+        return "crc", request, reply, round_stamp
     if slots[1].id != dut_id or len(slots[1].data) != dut_len:
-        pirate.drain_stamps()
-        return "other", request, reply
-    final = "clean" if len(pirate.drain_stamps()) == 1 else "extra_idle"
-    return final, request, reply
+        return "other", request, reply, round_stamp
+    final = "clean" if not extra_idle else "extra_idle"
+    return final, request, reply, round_stamp
 
 
 def diff_counters(before: dict, after: dict) -> dict:
@@ -241,6 +247,7 @@ def run_matrix(
     bauds: list[int], dut_lens: list[int], positions: list[str],
     n_per_cell: int, inj_len: int,
     health_every: int = 0,
+    shot_wait_s: float = 0.02,
 ) -> bool:
     """Walk the verify-style sweep. Returns True if a wedge was caught
     (caller should stop any outer repeat loop). Per-cell counter deltas
@@ -253,13 +260,16 @@ def run_matrix(
           f"positions={positions}  n={n_per_cell}/cell"
           f"  health_every={health_every or 'cell-end'}]",
           flush=True)
-    print(f"  {'cell':<22} {'   '.join(f'{b:>10}' for b in RESULT_BUCKETS)}  health")
+    bucket_hdr = "   ".join(f"{b:>10}" for b in RESULT_BUCKETS)
+    print(f"  {'cell':<22} {bucket_hdr}  "
+          f"{'med µs':>8} {'σ µs':>6} {'thresh':>8} verdict  health")
     baseline = try_read_counters(pirate, dxl_id) or {f: 0 for f in (
         "illegal_transition", "unexpected_byte_count", "previous_slot_timeout",
         "slot_timing_miss", "crc_patch_deadline_miss", "dma_overrun",
         "parity_error", "framing_error", "noise_error",
     )}
     last_counters = baseline
+    ticks_per_us = pirate.hz_per_us()
     for baud in bauds:
         try:
             set_chip_baud(pirate, dxl_id, baud)
@@ -270,17 +280,34 @@ def run_matrix(
                 print_wedge_banner(f"on set_chip_baud({baud})")
                 return True
             continue
+        # Per-baud timing constants.
+        byte_time_ticks = (10 * ticks_per_us * 1_000_000) // baud
+        byte_time_us = byte_time_ticks / ticks_per_us
+        rdt_us = read_ct_u8(pirate, dxl_id, RETURN_DELAY_2US_ADDR) * 2
         for dut_len in dut_lens:
             for pos in positions:
                 cell = f"{baud//1_000_000}M {pos:<5} {dut_len:>3}B"
+                # Per-cell offset target + threshold (matches verify):
+                # only/first → (first−req) vs rdt+1·byte_time; ±½ byte_time.
+                # last        → (last−first) vs chain span;   ±1 byte_time.
+                if pos == "last":
+                    packet_length = 1 + (2 + inj_len) + (2 + dut_len) + 2
+                    reply_bytes = 7 + packet_length
+                    target_ticks = (reply_bytes - 1) * byte_time_ticks
+                    thresh_us = byte_time_us
+                else:
+                    target_ticks = rdt_us * ticks_per_us + byte_time_ticks
+                    thresh_us = byte_time_us / 2
                 tally = {k: 0 for k in RESULT_BUCKETS}
                 first_fail: tuple[int, str, bytes, bytes] | None = None
                 aborted = None
                 wedge_shot: int | None = None
+                offsets: list[int] = []
                 for shot in range(1, n_per_cell + 1):
                     try:
-                        r, req, reply = run_shot(
+                        r, req, reply, round_stamp = run_shot(
                             pirate, dxl_id, pos, inj_len, dut_len,
+                            shot_wait_s=shot_wait_s,
                         )
                     except PirateError as exc:
                         aborted = f"pirate side fail shot {shot}: {exc}"
@@ -288,6 +315,12 @@ def run_matrix(
                     tally[r] += 1
                     if r not in ("clean", "extra_idle") and first_fail is None:
                         first_fail = (shot, r, req, reply)
+                    if r == "clean" and round_stamp is not None:
+                        if pos == "last":
+                            raw = (round_stamp.last - round_stamp.first) & 0xFFFFFFFF
+                        else:
+                            raw = (round_stamp.first - round_stamp.req) & 0xFFFFFFFF
+                        offsets.append(raw - target_ticks)
                     if health_every > 0 and shot % health_every == 0:
                         probe = try_read_counters(pirate, dxl_id)
                         if probe is None:
@@ -295,11 +328,21 @@ def run_matrix(
                             break
                         last_counters = probe
                 summary = "  ".join(f"{tally[k]:>10d}" for k in RESULT_BUCKETS)
+                if offsets:
+                    med_us = statistics.median(offsets) / ticks_per_us
+                    sigma_us = (statistics.stdev(offsets) / ticks_per_us
+                                if len(offsets) > 1 else 0.0)
+                    verdict = "PASS" if abs(med_us) < thresh_us else "FAIL"
+                    timing = (f"{med_us:+8.3f} {sigma_us:6.3f} "
+                              f"±{thresh_us:6.3f} {verdict:>4}")
+                else:
+                    timing = (f"{'n/a':>8} {'n/a':>6} "
+                              f"±{thresh_us:6.3f} {'--':>4}")
                 if aborted:
-                    print(f"  {cell:<22} {summary}  ABORT ({aborted})")
+                    print(f"  {cell:<22} {summary}  {timing}  ABORT ({aborted})")
                     return True
                 if wedge_shot is not None:
-                    print(f"  {cell:<22} {summary}  WEDGE@shot{wedge_shot}",
+                    print(f"  {cell:<22} {summary}  {timing}  WEDGE@shot{wedge_shot}",
                           flush=True)
                     if first_fail is not None:
                         shot_i, r, req, reply = first_fail
@@ -317,7 +360,7 @@ def run_matrix(
                     delta = _counter_delta(last_counters, health)
                     last_counters = health
                     tag = "ok" if not delta else f"ok ({_fmt_counter_delta(delta)})"
-                print(f"  {cell:<22} {summary}  {tag}", flush=True)
+                print(f"  {cell:<22} {summary}  {timing}  {tag}", flush=True)
                 if first_fail is not None:
                     shot_i, r, req, reply = first_fail
                     print_capture(f"first non-clean in {cell} (shot {shot_i})",
@@ -349,15 +392,22 @@ def main() -> None:
     ap.add_argument("--max-shots", type=int, default=10_000)
     ap.add_argument("--inter-shot-ms", type=float, default=0.0,
                     help="Sleep between shots in continuous mode (0 = back-to-back).")
+    ap.add_argument("--shot-wait-ms", type=float, default=20.0,
+                    help="Post-MASTER wait in first/last shots (ms; default 20). "
+                         "Sets the per-shot duration: the script fires MASTER, "
+                         "sleeps this long, then captures RX bytes + stamps. "
+                         "Lower values pace the loop tighter (~1 ms/shot); "
+                         "higher values spread shots out. Only affects "
+                         "first/last — only uses XFER.")
     ap.add_argument("--scope-delay-s", type=float, default=0.5,
                     help="Pre-shot delay in single-shot mode so you can arm the scope.")
     ap.add_argument("--wedge-threshold", type=int, default=5,
                     help="Consecutive NOREPLY/other shots before declaring wedge (default 5).")
     ap.add_argument("--matrix", action="store_true",
-                    help="Walk (baud × dut_len × position) cells (verify-style). "
-                         "Stops on first health-probe failure. Assumes chip is "
-                         "already in wedge-prone state (run pirate_chip_tune.py "
-                         "first to tune TX_FAST at 1M).")
+                    help="Walk (baud × dut_len × position) cells. Stops on "
+                         "first health-probe failure. By default tunes HSI "
+                         "before the sweep — pass --skip-tune to use the "
+                         "chip's current trim/fine state.")
     ap.add_argument("--matrix-bauds", type=str, default="1000000,2000000,3000000",
                     help="Comma-separated baud list for --matrix.")
     ap.add_argument("--matrix-dut-lens", type=str, default="1,4,32",
@@ -381,14 +431,41 @@ def main() -> None:
                          "after set_chip_baud. Use to isolate whether the "
                          "Write to 0x023C (clear_counters) is part of the "
                          "wedge trigger versus pure plain-Read storm.")
+    ap.add_argument("--tune-baud", type=int, default=1_000_000,
+                    help="Baud at which to run HSI cal before the stress run "
+                         "(default 1M — where fresh chips boot). Chip is "
+                         "switched back to --baud after cal completes.")
+    ap.add_argument("--skip-tune", action="store_true",
+                    help="Skip the HSI auto-tune. Use when you want the chip "
+                         "at its current trim/fine state.")
     args = ap.parse_args()
 
     if args.baud not in BAUD_INDEX:
         sys.exit(f"unsupported --baud {args.baud}; supported: {sorted(BAUD_INDEX)}")
+    if args.tune_baud not in BAUD_INDEX:
+        sys.exit(f"unsupported --tune-baud {args.tune_baud}; "
+                 f"supported: {sorted(BAUD_INDEX)}")
 
     port = args.port or autodetect_pirate()
     pirate = Pirate(port)
     try:
+        print(f"pirate: {port}   chip id: {args.id}")
+        if not args.skip_tune:
+            # Cal at --tune-baud (1M default — where fresh chips boot),
+            # then leave the chip's trim/fine state in place. The
+            # mode-specific branches below re-set the chip baud to
+            # --baud (or walk it, in --matrix). Trim/fine survive the
+            # baud switch (RAM-backed CT, no flash write).
+            print(f"\n[tune — HSI cal @ {args.tune_baud}]")
+            try:
+                set_chip_baud(pirate, args.id, args.tune_baud)
+                pirate.wait_quiet()
+                trim, q88 = step_hsi(pirate, args.id, args.tune_baud)
+                print(f"  → clock_trim={trim:+d}  clock_fine_trim_us={q88:+d} "
+                      f"({q88/256:+.3f}µs)")
+            except PirateError as e:
+                sys.exit(f"  HSI cal failed: {e}")
+
         if args.matrix:
             bauds = [int(x) for x in args.matrix_bauds.split(",")]
             for b in bauds:
@@ -408,6 +485,7 @@ def main() -> None:
                     pirate, args.id, bauds, dut_lens, positions,
                     args.matrix_n, args.inj_len,
                     health_every=args.matrix_health_every,
+                    shot_wait_s=args.shot_wait_ms / 1000.0,
                 )
                 if wedged:
                     sys.exit(1)
@@ -430,8 +508,9 @@ def main() -> None:
             print(f"\n[single shot — arming scope in {args.scope_delay_s:.1f}s]",
                   flush=True)
             time.sleep(args.scope_delay_s)
-            result, req, reply = run_shot(
-                pirate, args.id, args.position, args.inj_len, args.dut_len)
+            result, req, reply, _ = run_shot(
+                pirate, args.id, args.position, args.inj_len, args.dut_len,
+                shot_wait_s=args.shot_wait_ms / 1000.0)
             print(f"result: {result}")
             print_capture(result, req, reply)
             after = try_read_counters(pirate, args.id)
@@ -451,24 +530,61 @@ def main() -> None:
               f"stop on {args.wedge_threshold} consecutive NOREPLY/other "
               f"(CRC alone does not stop)]",
               flush=True)
+
+        # Timing target (same semantics as the matrix-mode cells).
+        # only/first: offset = (first - req) - (rdt + 1 byte_time); threshold
+        # is ±½ byte_time.
+        # last:       offset = (last - first) - (reply_bytes - 1) byte_times;
+        # threshold is one byte_time (looser; verify uses this for the same
+        # survivor-biased reason).
+        ticks_per_us = pirate.hz_per_us()
+        byte_time_ticks = (10 * ticks_per_us * 1_000_000) // args.baud
+        byte_time_us = byte_time_ticks / ticks_per_us
+        rdt_us = read_ct_u8(pirate, args.id, RETURN_DELAY_2US_ADDR) * 2
+        if args.position == "last":
+            packet_length = 1 + (2 + args.inj_len) + (2 + args.dut_len) + 2
+            reply_bytes = 7 + packet_length
+            target_ticks = (reply_bytes - 1) * byte_time_ticks
+            thresh_us = byte_time_us
+        else:
+            target_ticks = rdt_us * ticks_per_us + byte_time_ticks
+            thresh_us = byte_time_us / 2
+
         tally = {k: 0 for k in RESULT_BUCKETS}
         consecutive_wedge = 0
         wedge_shot = None
         first_capture: dict[str, tuple[int, bytes, bytes]] = {}
+        offsets: list[int] = []
         for i in range(1, args.max_shots + 1):
             try:
-                r, req, reply = run_shot(
-                    pirate, args.id, args.position, args.inj_len, args.dut_len)
+                r, req, reply, round_stamp = run_shot(
+                    pirate, args.id, args.position, args.inj_len, args.dut_len,
+                    shot_wait_s=args.shot_wait_ms / 1000.0)
             except PirateError as exc:
                 print(f"\nshot {i}: pirate side failed: {exc}")
                 break
             tally[r] += 1
             if r not in first_capture:
                 first_capture[r] = (i, req, reply)
+            if r == "clean" and round_stamp is not None:
+                if args.position == "last":
+                    raw = (round_stamp.last - round_stamp.first) & 0xFFFFFFFF
+                else:
+                    raw = (round_stamp.first - round_stamp.req) & 0xFFFFFFFF
+                offsets.append(raw - target_ticks)
             consecutive_wedge = consecutive_wedge + 1 if r in WEDGE_BUCKETS else 0
             if consecutive_wedge >= args.wedge_threshold or i % 100 == 0:
                 summary = "  ".join(f"{k}={tally[k]}" for k in RESULT_BUCKETS)
-                print(f"  shot {i:>5d}: {r:<10s}  {summary}  "
+                if offsets:
+                    med_us = statistics.median(offsets) / ticks_per_us
+                    sigma_us = (statistics.stdev(offsets) / ticks_per_us
+                                if len(offsets) > 1 else 0.0)
+                    verdict = "PASS" if abs(med_us) < thresh_us else "FAIL"
+                    timing = (f"med={med_us:+.3f}µs σ={sigma_us:.3f} "
+                              f"thresh=±{thresh_us:.3f}µs {verdict}")
+                else:
+                    timing = f"med=  n/a    σ=  n/a  thresh=±{thresh_us:.3f}µs  --"
+                print(f"  shot {i:>5d}: {r:<10s}  {summary}  {timing}  "
                       f"(consec_wedge={consecutive_wedge})", flush=True)
             if consecutive_wedge >= args.wedge_threshold:
                 wedge_shot = i
