@@ -13,7 +13,7 @@ pub(super) const PFIC_ENTRY_TICKS: u32 = 26;
 /// `start_fast_after` so the busy-wait fold loop begins on the intended
 /// wall-clock anchor rather than after entry latency. Significant at 3M
 /// where the combined entry latency approaches one byte_time.
-pub(super) const CATCHUP_ENTRY_TICKS: u32 = 154;
+pub(super) const CATCHUP_ENTRY_TICKS: u32 = 165;
 
 /// Plain reply body work: `fire_now` (TX_EN flip + DMA CH4 enable) plus
 /// the USART start-bit latch. Baud-independent — the per-baud `bt/4` term
@@ -24,4 +24,4 @@ pub(super) const PLAIN_ENTRY_TICKS: u32 = 154;
 /// Fast chain `TxArmed` body work: same fire path as plain, plus the
 /// `set_phase` + state-load overhead the catchup-to-`TxArmed` handoff adds
 /// before `fire_now`.
-pub(super) const FAST_ENTRY_TICKS: u32 = 154;
+pub(super) const FAST_ENTRY_TICKS: u32 = 165;
