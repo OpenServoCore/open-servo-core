@@ -8,6 +8,12 @@
 //! bind the chip's [`DxlWire`](../../../osc_ch32/dxl/wire/struct.DxlWire.html)
 //! alias over `<OscExt, OscReplyExt>` and the standard `Packet`/`Status` enums
 //! grow `Ext` arms carrying [`OscVariant`] / [`OscReplyVariant`].
+//!
+//! `CAL` is a slave-side timed receive: master streams `count` filler bytes,
+//! slave times its own RX between T_first (first byte) and T_last (IDLE-
+//! backdated end of last byte), computes drift vs the nominal at the current
+//! baud, queues HSI trim updates, and returns the measurement in a single
+//! Status reply. No master-side timestamping required.
 
 use dxl_protocol::{
     Bytes, CrcUmts, DecodeError, Instruction, InstructionExt, RawStatus, StatusError, StatusExt,
@@ -29,8 +35,10 @@ pub enum OscVariant {
 #[derive(Copy, Clone, Debug)]
 pub struct CalibratePacket {
     pub id: u8,
-    /// Requested zero-byte payload length in the slave's Status reply.
-    /// Bounded `1..=128` by the dispatcher.
+    /// Number of filler bytes the master streams after the `count` field —
+    /// the slave times its own RX of this payload to derive HSI drift.
+    /// Bounded `1..=MAX_CONTROL_RW` by the dispatcher. Filler content is
+    /// irrelevant for timing; the writer emits zeros.
     pub count: u16,
 }
 
@@ -54,9 +62,15 @@ impl InstructionExt for OscExt {
 
     fn write<'a, W: WriteBuf, CRC: CrcUmts>(v: &OscVariant, out: &mut W) -> Result<(), WriteError> {
         match *v {
-            OscVariant::Calibrate(p) => {
-                write_ext::<W, CRC, _>(out, p.id, CALIBRATE_INSTRUCTION, p.count.to_le_bytes())
-            }
+            OscVariant::Calibrate(p) => write_ext::<W, CRC, _>(
+                out,
+                p.id,
+                CALIBRATE_INSTRUCTION,
+                p.count
+                    .to_le_bytes()
+                    .into_iter()
+                    .chain(core::iter::repeat_n(0u8, p.count as usize)),
+            ),
         }
     }
 }
@@ -65,13 +79,12 @@ fn decode_calibrate(id: u8, params: Bytes<'_>) -> Result<OscVariant, DecodeError
     let mut it = params.iter();
     let lo = it.next().ok_or(DecodeError::BadParams)?;
     let hi = it.next().ok_or(DecodeError::BadParams)?;
-    if it.next().is_some() {
+    let count = u16::from_le_bytes([lo, hi]);
+    let payload_len = it.count();
+    if payload_len != count as usize {
         return Err(DecodeError::BadParams);
     }
-    Ok(OscVariant::Calibrate(CalibratePacket {
-        id,
-        count: u16::from_le_bytes([lo, hi]),
-    }))
+    Ok(OscVariant::Calibrate(CalibratePacket { id, count }))
 }
 
 /// Marker for the OSC reply extension; bind as the `S` parameter of
@@ -80,21 +93,37 @@ fn decode_calibrate(id: u8, params: Bytes<'_>) -> Result<OscVariant, DecodeError
 #[derive(Copy, Clone, Debug)]
 pub struct OscReplyExt;
 
+/// Slave-measured calibration result. Wire layout (LE) following the Status
+/// error byte: `observed_ticks(4) | nominal_ticks(4) | applied_trim_delta(1)
+/// | applied_fine_trim_us(2)` — 11 bytes total.
+#[derive(Copy, Clone, Debug)]
+pub struct CalibrateStatus {
+    pub id: u8,
+    /// SysTick ticks between T_first and T_last as measured by the slave.
+    /// `µs = observed_ticks / ticks_per_us`.
+    pub observed_ticks: u32,
+    /// `(count − 1) × byte_time_ticks` at the slave's operating baud — the
+    /// expected wire duration with zero clock drift.
+    pub nominal_ticks: u32,
+    /// HSI coarse-trim delta queued by this cal (signed). Zero when the
+    /// algorithm chose not to step coarse trim.
+    pub applied_trim_delta: i8,
+    /// Absolute Q8.8 µs fine-trim residual written to the control table.
+    pub applied_fine_trim_us: i16,
+}
+
 /// OSC reply shapes. The chip emits these via `bus.send(Status::Ext(..))`.
 #[derive(Copy, Clone, Debug)]
 pub enum OscReplyVariant {
-    /// Status frame with `zeros_count` zero data bytes — no caller-side
-    /// scratch needed; the writer streams the zeros directly.
-    Calibrate { id: u8, zeros_count: u16 },
+    Calibrate(CalibrateStatus),
 }
 
 impl StatusExt for OscReplyExt {
     type Variant<'a> = OscReplyVariant;
 
     fn decode<'a>(_instr: u8, _raw: RawStatus<'a>) -> Option<Result<OscReplyVariant, DecodeError>> {
-        // OSC currently has no typed master-side status flavor — a Calibrate
-        // response is an empty Status that decode_status surfaces via the
-        // native success path. Add an arm here when a typed flavor lands.
+        // Master-side typed decode lands when a Rust master needs it; PC bench
+        // parses the 11 payload bytes directly off the raw Status frame.
         None
     }
 
@@ -103,13 +132,21 @@ impl StatusExt for OscReplyExt {
         out: &mut W,
     ) -> Result<(), WriteError> {
         match *v {
-            OscReplyVariant::Calibrate { id, zeros_count } => write_ext::<W, CRC, _>(
-                out,
-                id,
-                Instruction::Status.as_u8(),
-                core::iter::once(StatusError::None.as_u8())
-                    .chain(core::iter::repeat_n(0u8, zeros_count as usize)),
-            ),
+            OscReplyVariant::Calibrate(s) => {
+                let observed = s.observed_ticks.to_le_bytes();
+                let nominal = s.nominal_ticks.to_le_bytes();
+                let fine = s.applied_fine_trim_us.to_le_bytes();
+                write_ext::<W, CRC, _>(
+                    out,
+                    s.id,
+                    Instruction::Status.as_u8(),
+                    core::iter::once(StatusError::None.as_u8())
+                        .chain(observed)
+                        .chain(nominal)
+                        .chain(core::iter::once(s.applied_trim_delta as u8))
+                        .chain(fine),
+                )
+            }
         }
     }
 }

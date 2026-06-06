@@ -5,7 +5,7 @@ use crate::traits::{DxlBus, Event, Schedule, ServiceEvents};
 use crate::{Error, RegionStorage, Router, Shared, StagedWrites, StatusReturnLevel};
 
 use super::limits::{MAX_CONTROL_RW, MAX_SLAVE_COUNT};
-use super::osc::{CalibratePacket, OscExt, OscReplyVariant, OscVariant};
+use super::osc::{CalibratePacket, CalibrateStatus, OscExt, OscReplyVariant, OscVariant};
 
 fn error_to_status(e: Error) -> StatusError {
     match e {
@@ -131,17 +131,33 @@ impl<'a, B: DxlBus, E: ServiceEvents> Dispatcher<'a, B, E> {
     }
 
     fn handle_ping(&mut self, ctx: &Ctx, p: &PingPacket) {
-        let Some((id, _)) = ctx.addressed(p.id) else {
+        let Some((id, direct)) = ctx.addressed(p.id) else {
             return;
         };
         let identity = self.shared.table.config.with(|c| c.identity);
+        // DXL 2.0 broadcast Ping convention: each slave fires its reply in an
+        // ID-indexed time slot so multiple chips don't collide on the wire.
+        // Slot width = one Ping Status frame (header(9) + model_lo + model_hi
+        // + firmware + crc(2) = 14 B); the chip layers SLOT_MARGIN per slot
+        // on top via `slot_index`.
+        let schedule = if direct {
+            ctx.direct_schedule()
+        } else {
+            const PING_STATUS_FRAME_BYTES: u32 =
+                RESPONSE_HEADER_BYTES as u32 + 3 + CRC_BYTES as u32;
+            Schedule {
+                rdt_us: ctx.rdt_us,
+                bytes_before: (id as u32) * PING_STATUS_FRAME_BYTES,
+                slot_index: id as u16,
+            }
+        };
         self.bus.send(
             Status::Ping(PingStatus {
                 id,
                 model: identity.model_number,
                 firmware: identity.firmware_version as u8,
             }),
-            ctx.direct_schedule(),
+            schedule,
         );
     }
 
@@ -286,11 +302,16 @@ impl<'a, B: DxlBus, E: ServiceEvents> Dispatcher<'a, B, E> {
             );
             return;
         }
+        // Measurement + trim algorithm land in a follow-up commit; for now
+        // the wire shape is correct and the slave reports "no drift".
         self.bus.send(
-            Status::Ext(OscReplyVariant::Calibrate {
+            Status::Ext(OscReplyVariant::Calibrate(CalibrateStatus {
                 id,
-                zeros_count: p.count,
-            }),
+                observed_ticks: 0,
+                nominal_ticks: 0,
+                applied_trim_delta: 0,
+                applied_fine_trim_us: 0,
+            })),
             ctx.direct_schedule(),
         );
     }

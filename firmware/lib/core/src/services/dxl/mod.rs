@@ -7,4 +7,6 @@ mod osc;
 mod tests;
 
 pub use api::Dxl;
-pub use osc::{CalibratePacket, OscExt, OscReplyExt, OscReplyVariant, OscVariant};
+pub use osc::{
+    CalibratePacket, CalibrateStatus, OscExt, OscReplyExt, OscReplyVariant, OscVariant,
+};

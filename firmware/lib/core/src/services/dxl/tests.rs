@@ -208,8 +208,8 @@ impl ServicesIo for FakeIo {
     }
 }
 
-fn encode(packet: &Packet<'_, OscExt>) -> Vec<u8, 64> {
-    let mut buf: Vec<u8, 64> = Vec::new();
+fn encode(packet: &Packet<'_, OscExt>) -> Vec<u8, 256> {
+    let mut buf: Vec<u8, 256> = Vec::new();
     Wire::write(&mut buf, packet).unwrap();
     buf
 }
@@ -261,6 +261,27 @@ fn ping_to_broadcast_replies() {
     let (id, err, _) = parse_status(&io.bus.tx);
     assert_eq!(id, 0);
     assert_eq!(err, 0);
+}
+
+#[test]
+fn ping_to_broadcast_uses_id_indexed_slot() {
+    // Spec convention: each slave fires its broadcast-Ping reply in an ID-
+    // indexed time slot (slot width ≥ one Ping Status frame = 14 B). With
+    // our_id = 7, the schedule must reflect 7 × 14 = 98 bytes_before and
+    // slot_index = 7 so the chip's per-slot margin applies.
+    let shared = Shared::new();
+    shared.table.config.with_mut(|c| c.comms.id = 7);
+    let mut io = FakeIo::new();
+    let mut h = Dxl::new();
+
+    let req = encode(&Packet::Ping(PingPacket::new(BROADCAST_ID)));
+    io.feed(&req);
+    h.poll(&shared, &mut io);
+
+    assert_eq!(io.bus.send_count, 1);
+    let s = io.bus.last_schedule.unwrap();
+    assert_eq!(s.bytes_before, 7 * 14);
+    assert_eq!(s.slot_index, 7);
 }
 
 #[test]
@@ -1364,7 +1385,7 @@ fn poll_recovers_from_stale_fast_first_slot_residue_then_replies_to_ping() {
 }
 
 #[test]
-fn calibrate_unicast_replies_with_zero_payload() {
+fn calibrate_unicast_replies_with_measurement_payload() {
     let shared = Shared::new();
     let mut io = FakeIo::new();
     let mut h = Dxl::new();
@@ -1379,12 +1400,14 @@ fn calibrate_unicast_replies_with_zero_payload() {
     let (id, err, params) = parse_status(&io.bus.tx);
     assert_eq!(id, 0);
     assert_eq!(err, 0);
-    assert_eq!(params.len(), 16);
+    // observed(4) + nominal(4) + trim(1) + fine(2). Pre-algorithm dispatcher
+    // returns zeros; commit 2 wires the chip-side snapshot through.
+    assert_eq!(params.len(), 11);
     assert!(params.iter().all(|&b| b == 0));
 }
 
 #[test]
-fn calibrate_unicast_count_max_replies() {
+fn calibrate_unicast_count_max_payload_accepted() {
     let shared = Shared::new();
     let mut io = FakeIo::new();
     let mut h = Dxl::new();
@@ -1392,18 +1415,20 @@ fn calibrate_unicast_count_max_replies() {
     let req = encode(&Packet::Ext(OscVariant::Calibrate(CalibratePacket::new(
         0, 128,
     ))));
+    // hdr(4) + id(1) + len(2) + inst(1) + count(2) + 128 filler + crc(2) = 140
+    assert_eq!(req.len(), 140);
     io.feed(&req);
     h.poll(&shared, &mut io);
 
     assert_eq!(io.bus.send_count, 1);
     let tx = &io.bus.tx[..];
-    // hdr(4) + id(1) + len(2) + inst(1) + err(1) + 128 zero bytes + crc(2)
-    assert_eq!(tx.len(), 139);
+    // hdr(4) + id(1) + len(2) + inst(1=Status) + err(1) + measurement(11) + crc(2) = 22
+    assert_eq!(tx.len(), 22);
     assert_eq!(&tx[..5], &[0xFF, 0xFF, 0xFD, 0x00, 0]);
-    assert_eq!(&tx[5..7], &[132, 0]);
+    assert_eq!(&tx[5..7], &[15, 0]); // length = inst + err + 11 + crc(2) = 15
     assert_eq!(tx[7], 0x55);
     assert_eq!(tx[8], 0);
-    assert!(tx[9..137].iter().all(|&b| b == 0));
+    assert!(tx[9..20].iter().all(|&b| b == 0));
 }
 
 #[test]
