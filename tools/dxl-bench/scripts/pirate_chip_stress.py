@@ -295,17 +295,17 @@ def run_matrix(
         for dut_len in dut_lens:
             for pos in positions:
                 cell = f"{baud//1_000_000}M {pos:<5} {dut_len:>3}B"
-                # Per-cell offset target + threshold (matches verify):
-                # only/first → (first−req) vs rdt+1·byte_time; ±½ byte_time.
-                # last        → (last−first) vs chain span;   ±1 byte_time.
+                # ±½ byte_time across all positions: drift beyond half a bit
+                # period crosses the master's RX bit-sample noise margin.
+                # only/first → (first−req) vs rdt+1·byte_time.
+                # last        → (last−first) vs chain span (reply_bytes−1).
                 if pos == "last":
                     packet_length = 1 + (2 + inj_len) + (2 + dut_len) + 2
                     reply_bytes = 7 + packet_length
                     target_ticks = (reply_bytes - 1) * byte_time_ticks
-                    thresh_us = byte_time_us
                 else:
                     target_ticks = rdt_us * ticks_per_us + byte_time_ticks
-                    thresh_us = byte_time_us / 2
+                thresh_us = byte_time_us / 2
                 tally = {k: 0 for k in RESULT_BUCKETS}
                 first_fail: tuple[int, str, bytes, bytes] | None = None
                 aborted = None
@@ -539,12 +539,10 @@ def main() -> None:
               f"(CRC alone does not stop)]",
               flush=True)
 
-        # Timing target (same semantics as the matrix-mode cells).
-        # only/first: offset = (first - req) - (rdt + 1 byte_time); threshold
-        # is ±½ byte_time.
-        # last:       offset = (last - first) - (reply_bytes - 1) byte_times;
-        # threshold is one byte_time (looser; verify uses this for the same
-        # survivor-biased reason).
+        # Timing target (same semantics as the matrix-mode cells; ±½
+        # byte_time across all positions).
+        # only/first: offset = (first - req) - (rdt + 1 byte_time).
+        # last:       offset = (last - first) - (reply_bytes - 1) byte_times.
         ticks_per_us = pirate.hz_per_us()
         byte_time_ticks = (10 * ticks_per_us * 1_000_000) // args.baud
         byte_time_us = byte_time_ticks / ticks_per_us
@@ -553,10 +551,9 @@ def main() -> None:
             packet_length = 1 + (2 + args.inj_len) + (2 + args.dut_len) + 2
             reply_bytes = 7 + packet_length
             target_ticks = (reply_bytes - 1) * byte_time_ticks
-            thresh_us = byte_time_us
         else:
             target_ticks = rdt_us * ticks_per_us + byte_time_ticks
-            thresh_us = byte_time_us / 2
+        thresh_us = byte_time_us / 2
 
         tally = {k: 0 for k in RESULT_BUCKETS}
         consecutive_wedge = 0
