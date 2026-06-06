@@ -22,17 +22,19 @@ pub struct Schedule {
     pub slot_index: u16,
 }
 
-/// Snapshot the chip-side timing layer hands the CALIB dispatcher to derive
-/// HSI drift from the just-received cal request. `observed_ticks` is the
-/// wire duration between the request's first received byte (T_first) and
-/// its IDLE-backdated wire-end (T_last); `byte_time_ticks` is the slave's
-/// current per-byte tick count at the wire baud. Returned `None` when the
-/// first-byte tick wasn't captured for this packet (e.g. RXNE was masked
-/// during chain mode) — dispatcher treats this as a measurement failure.
+/// Chip-side drift-filter state surfaced for the CALIB Status reply.
+/// `observed_ticks` / `nominal_ticks` describe the most recently snooped
+/// packet (the CALIB request itself, when the request triggered the
+/// snapshot via the normal `poll` path); `applied_*` carry the most recent
+/// batched apply queued by the chip's filter. Returned `None` when the
+/// chip-side filter hasn't observed any packet yet — dispatcher treats this
+/// as a measurement failure.
 #[derive(Copy, Clone, Debug)]
 pub struct CalSnapshot {
     pub observed_ticks: u32,
-    pub byte_time_ticks: u32,
+    pub nominal_ticks: u32,
+    pub applied_trim_delta: i8,
+    pub applied_fine_trim_us: i16,
 }
 
 /// Bus surface the DXL services layer reads, writes, and schedules through.

@@ -1,3 +1,4 @@
+use ch32_metapac::RCC;
 use core::sync::atomic::Ordering;
 
 use dxl_protocol::{Packet, ParseError, RxView, Slot, SlotPosition, Status};
@@ -7,13 +8,16 @@ use osc_core::{
 
 use crate::dxl;
 use crate::dxl::DxlWire;
+use crate::dxl::cal::Cal;
 use crate::dxl::statics::{
-    DXL_BAUD_PENDING_BRR, DXL_BYTE_TIME_TICKS, DXL_CLOCK_FINE_TRIM_PENDING, DXL_CLOCK_TRIM_PENDING,
-    DXL_REBOOT_PENDING, DXL_RX_BUF, DXL_RX_BUF_LEN, DXL_RX_FIRST_TICK, DXL_RX_FIRST_VALID,
-    DXL_TX_BUF, RX_MASK_U32,
+    CLOCK_FINE_TRIM_NO_PENDING, CLOCK_TRIM_NO_PENDING, DXL_BAUD_PENDING_BRR, DXL_BYTE_TIME_TICKS,
+    DXL_CLOCK_FINE_TRIM_PENDING, DXL_CLOCK_TRIM_PENDING, DXL_REBOOT_PENDING, DXL_RX_BUF,
+    DXL_RX_BUF_LEN, DXL_RX_FIRST_TICK, DXL_RX_FIRST_VALID, DXL_TX_BUF, RX_MASK_U32,
 };
 use crate::dxl::timing::{SLOT_MARGIN, bytes_to_us, bytes_to_us_q88};
 use crate::hal::clocks::PCLK_HZ;
+use crate::hal::rcc::{CLOCK_TRIM_DELTA_MAX, CLOCK_TRIM_DELTA_MIN, CLOCK_TRIM_PPM_PER_STEP};
+use crate::hal::systick::TICKS_PER_US;
 use crate::hal::usart;
 use crate::hal::{dma, flash, pfic};
 use crate::idle_anchor::{self, IdleAnchor};
@@ -29,6 +33,9 @@ pub struct Ch32Bus {
     /// wrapped past the parsed range before the reply was scheduled, the
     /// slices contain garbage and the reply must be aborted).
     parsed_length: usize,
+    /// HSI drift filter. `poll` feeds it every non-Status packet; the
+    /// CALIB handler reads its snapshot for the Status reply.
+    cal: Cal,
 }
 
 impl Ch32Bus {
@@ -36,6 +43,7 @@ impl Ch32Bus {
         Self {
             anchor: IdleAnchor::empty(),
             parsed_length: 0,
+            cal: Cal::new(CLOCK_TRIM_PPM_PER_STEP, TICKS_PER_US),
         }
     }
 
@@ -114,6 +122,7 @@ impl DxlBus for Ch32Bus {
             match DxlWire::parse_packet(RxView::ring(head, tail)) {
                 Ok((packet, used)) => {
                     if used == total {
+                        self.snoop_drift(&packet);
                         return Some(packet);
                     }
                     (head, tail) = advance(head, tail, used);
@@ -169,23 +178,66 @@ impl DxlBus for Ch32Bus {
     }
 
     fn cal_snapshot(&mut self) -> Option<CalSnapshot> {
-        // Consume the flag: `on_rxne` sets it on each packet's first byte, and
-        // we want a stale prior-packet first_tick to surface as `None` for
-        // any later CALIB whose first byte missed the capture (e.g. RXNEIE
-        // off through a chain reply).
-        if !DXL_RX_FIRST_VALID.swap(false, Ordering::AcqRel) {
-            return None;
-        }
-        let first_tick = DXL_RX_FIRST_TICK.load(Ordering::Acquire);
-        let observed_ticks = self.anchor.tick.wrapping_sub(first_tick);
+        let s = self.cal.snapshot()?;
         Some(CalSnapshot {
-            observed_ticks,
-            byte_time_ticks: DXL_BYTE_TIME_TICKS.load(Ordering::Relaxed),
+            observed_ticks: s.observed_ticks,
+            nominal_ticks: s.nominal_ticks,
+            applied_trim_delta: s.applied_trim_delta,
+            applied_fine_trim_us: s.applied_fine_trim_us,
         })
     }
 }
 
 impl Ch32Bus {
+    /// Feed the chip-side drift filter with this packet's wire timing.
+    /// Skips Status frames (other slaves' replies) so only master-originated
+    /// traffic — which rides the HSE-clocked master — drives the loop. Also
+    /// skips when `on_rxne` didn't capture a first-byte tick for this packet
+    /// (chain mode masks RXNEIE, etc.).
+    fn snoop_drift(&mut self, packet: &Packet<'static, OscExt>) {
+        if matches!(packet, Packet::Status(_)) {
+            return;
+        }
+        if !DXL_RX_FIRST_VALID.swap(false, Ordering::AcqRel) {
+            return;
+        }
+        let first_tick = DXL_RX_FIRST_TICK.load(Ordering::Acquire);
+        let observed = self.anchor.tick.wrapping_sub(first_tick);
+        let byte_time = DXL_BYTE_TIME_TICKS.load(Ordering::Relaxed);
+        let Some(apply) = self
+            .cal
+            .observe(observed, self.parsed_length as u32, byte_time)
+        else {
+            return;
+        };
+        if apply.trim_step != 0 {
+            // Read current HSITRIM register, decode back to signed delta, add
+            // the filter's step, clamp, and queue. If a prior queue hasn't yet
+            // applied (TC hasn't fired since the last `apply_pending_after_tc`
+            // drained), prefer it as the base — RCC still reflects pre-queue.
+            let pending = DXL_CLOCK_TRIM_PENDING.load(Ordering::Acquire);
+            let base_delta = if pending != CLOCK_TRIM_NO_PENDING {
+                pending as i32
+            } else {
+                // HSITRIM is centered on `HSITRIM_DEFAULT` (16) per `apply_clock_trim_delta`.
+                (RCC.ctlr().read().hsitrim() as i32) - 16
+            };
+            let new_delta = (base_delta + apply.trim_step as i32)
+                .clamp(CLOCK_TRIM_DELTA_MIN as i32, CLOCK_TRIM_DELTA_MAX as i32)
+                as i16;
+            DXL_CLOCK_TRIM_PENDING.store(new_delta, Ordering::Release);
+        }
+        // Fine residual is absolute — no need to consult prior state.
+        let fine_pending = if apply.fine_us_q88 as i32 == CLOCK_FINE_TRIM_NO_PENDING {
+            // i16 can't actually reach i32::MIN, but keep the no-pending
+            // sentinel sacred just in case the encoding ever widens.
+            (CLOCK_FINE_TRIM_NO_PENDING + 1) as i32
+        } else {
+            apply.fine_us_q88 as i32
+        };
+        DXL_CLOCK_FINE_TRIM_PENDING.store(fine_pending, Ordering::Release);
+    }
+
     fn fire_plain(&mut self, schedule: Schedule) {
         // Flush any stale slot setup: an unfired SysTick CMP from a prior
         // Sync/Fast op would otherwise re-fire DMA and patch CRC over this

@@ -7,10 +7,6 @@ use crate::{Error, RegionStorage, Router, Shared, StagedWrites, StatusReturnLeve
 use super::limits::{MAX_CONTROL_RW, MAX_SLAVE_COUNT};
 use super::osc::{CalibratePacket, CalibrateStatus, OscExt, OscReplyVariant, OscVariant};
 
-/// Bytes in a CALIB request frame outside the filler payload: header(4) +
-/// id(1) + length(2) + instruction(1) + count_field(2) + crc(2).
-const CALIBRATE_FRAME_OVERHEAD_BYTES: u32 = 12;
-
 fn error_to_status(e: Error) -> StatusError {
     match e {
         Error::AccessError => StatusError::Access,
@@ -316,22 +312,17 @@ impl<'a, B: DxlBus, E: ServiceEvents> Dispatcher<'a, B, E> {
             );
             return;
         };
-        // Wire byte count between T_first (first RXNE) and T_last (IDLE-
-        // backdated end-of-stop of last byte): full CALIB frame minus one.
-        // CALIB frame = hdr(4) + id(1) + len(2) + instr(1) + count_field(2)
-        // + count_filler + crc(2) = 12 + count bytes. Filler is zero-content
-        // by writer convention so byte-stuffing doesn't inflate the wire.
-        let total_wire_bytes = CALIBRATE_FRAME_OVERHEAD_BYTES + p.count as u32;
-        let nominal_ticks = total_wire_bytes.saturating_sub(1) * snap.byte_time_ticks;
-        // Trim algorithm lands in a follow-up commit; for now the slave
-        // reports the measurement and applies nothing.
+        // Chip owns the drift filter — its `cal_snapshot` reports both the
+        // most recent observation (this CALIB request's wire-timing, in the
+        // common path) and the most recent batched apply. Dispatcher just
+        // forwards the structured reply.
         self.bus.send(
             Status::Ext(OscReplyVariant::Calibrate(CalibrateStatus {
                 id,
                 observed_ticks: snap.observed_ticks,
-                nominal_ticks,
-                applied_trim_delta: 0,
-                applied_fine_trim_us: 0,
+                nominal_ticks: snap.nominal_ticks,
+                applied_trim_delta: snap.applied_trim_delta,
+                applied_fine_trim_us: snap.applied_fine_trim_us,
             })),
             ctx.direct_schedule(),
         );

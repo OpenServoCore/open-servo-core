@@ -11,6 +11,7 @@
 //! - [`isr`]: SysTick + USART1 RXNE bodies, `arm_tx`/`fire_now`/`patch_crc`,
 //!   the snoop accumulator, and `ring_crc`.
 
+pub(crate) mod cal;
 pub(crate) mod calibration;
 pub(crate) mod crc;
 pub(crate) mod isr;

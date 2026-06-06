@@ -1398,10 +1398,14 @@ fn calibrate_unicast_replies_with_measurement_payload() {
     let mut io = FakeIo::new();
     let mut h = Dxl::new();
     // 1 Mbps wire: byte_time at 48 MHz HCLK ≈ 480 ticks.
+    // Chip pre-computed nominal_ticks and the most-recent batched apply;
+    // dispatcher just forwards. Observed slightly above nominal models a
+    // fast slave.
     io.bus.cal_snapshot_stub = Some(CalSnapshot {
-        observed_ticks: 13_440, // (12 + 16 - 1) × 480 = 12_960 nominal; stub
-        // slightly above to model a fast slave.
-        byte_time_ticks: 480,
+        observed_ticks: 13_440,
+        nominal_ticks: 27 * 480, // (12 + 16 - 1) × byte_time_ticks
+        applied_trim_delta: -1,
+        applied_fine_trim_us: 256, // +1.0 µs in Q8.8
     });
 
     let req = encode(&Packet::Ext(OscVariant::Calibrate(CalibratePacket::new(
@@ -1419,9 +1423,9 @@ fn calibrate_unicast_replies_with_measurement_payload() {
     let observed = u32::from_le_bytes([params[0], params[1], params[2], params[3]]);
     let nominal = u32::from_le_bytes([params[4], params[5], params[6], params[7]]);
     assert_eq!(observed, 13_440);
-    assert_eq!(nominal, 27 * 480); // (12 + 16 - 1) × byte_time_ticks
-    assert_eq!(params[8] as i8, 0); // trim algorithm lands in a follow-up commit
-    assert_eq!(i16::from_le_bytes([params[9], params[10]]), 0);
+    assert_eq!(nominal, 27 * 480);
+    assert_eq!(params[8] as i8, -1);
+    assert_eq!(i16::from_le_bytes([params[9], params[10]]), 256);
 }
 
 #[test]
@@ -1431,7 +1435,9 @@ fn calibrate_unicast_count_max_payload_accepted() {
     let mut h = Dxl::new();
     io.bus.cal_snapshot_stub = Some(CalSnapshot {
         observed_ticks: 0,
-        byte_time_ticks: 480,
+        nominal_ticks: 139 * 480, // (12 + 128 - 1) × byte_time_ticks
+        applied_trim_delta: 0,
+        applied_fine_trim_us: 0,
     });
 
     let req = encode(&Packet::Ext(OscVariant::Calibrate(CalibratePacket::new(
@@ -1453,7 +1459,7 @@ fn calibrate_unicast_count_max_payload_accepted() {
     let observed = u32::from_le_bytes([tx[9], tx[10], tx[11], tx[12]]);
     let nominal = u32::from_le_bytes([tx[13], tx[14], tx[15], tx[16]]);
     assert_eq!(observed, 0);
-    assert_eq!(nominal, 139 * 480); // (12 + 128 - 1) × byte_time_ticks
+    assert_eq!(nominal, 139 * 480);
 }
 
 #[test]
