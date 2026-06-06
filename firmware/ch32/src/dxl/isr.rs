@@ -160,6 +160,10 @@ pub(super) fn body_chain_fast_fire() {
     // ── Critical path. patch_crc must land bytes [n-2, n-1] of TX_BUF before
     // CH4's read cursor reaches them.
     fire_now();
+    // Sample entry tick immediately post-fire so the slot_timing_miss check
+    // reflects CMP→fire latency rather than the predecessor walk's natural
+    // n_pred·byte_time duration.
+    let entry_now = systick::ticks();
     // SAFETY: see on_systick. Dispatch == body_chain_fast_fire implies Chain
     // with TxArmed phase; fall through to no-op otherwise.
     let (fire_tick, walk_deadline, n_pred) = unsafe {
@@ -192,8 +196,7 @@ pub(super) fn body_chain_fast_fire() {
         report_fault(FastChainFault::PreviousSlotTimeout);
     }
     let byte_time = byte_time_ticks_now();
-    let now = systick::ticks();
-    if (now.wrapping_sub(fire_tick) as i32) > byte_time as i32 {
+    if (entry_now.wrapping_sub(fire_tick) as i32) > byte_time as i32 {
         report_fault(FastChainFault::SlotTimingMiss);
     }
 }
