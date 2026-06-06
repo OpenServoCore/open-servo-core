@@ -252,6 +252,9 @@ fn bring_up_dxl(d: &DxlBus, brr: u32) {
     unsafe { *DXL_TX_EN.get() = d.tx_en };
 
     usart::set_idle_irq(regs, true);
+    // RXNEIE is "first byte after IDLE" capture for the CALIB cal path;
+    // `dxl::on_rxne` self-disarms on the first entry, IDLE re-arms.
+    usart::set_rxne_irq(regs, true);
 }
 
 pub(super) fn seed_dbg_pin(pin: crate::hal::Pin) {
