@@ -214,16 +214,6 @@ impl Ch32Bus {
         let nominal = (self.parsed_length as u32)
             .saturating_sub(1)
             .saturating_mul(byte_time);
-        // Drop wraps (= first_tick > anchor.tick, caused by an RS485 release
-        // glitch firing EXTI right around IDLE) and small/large outliers that
-        // can't be legitimate wire timing. The chip-side cal filter would
-        // reject these anyway; cutting them here keeps the snoop log clean
-        // for bench tooling.
-        if (observed as i32) < (nominal as i32) / 2
-            || observed > nominal.saturating_mul(3) / 2
-        {
-            return;
-        }
         let observed_corr = observed.wrapping_sub(snoop_bias_ticks(byte_time, char_time));
         let err = observed_corr as i32 - nominal as i32;
         let ppm = ((err as i64) * 1_000_000)
