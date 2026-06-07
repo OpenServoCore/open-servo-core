@@ -336,7 +336,7 @@ That's the whole algorithm:
             BC[byte_idx] = t
             byte_idx += 1
 
-The window is `[9 × bit_time, 11 × bit_time]`. Tolerance comes from the bit-time uncertainty itself — at 3 Mbaud, bit_time = 16 ticks; the window is `[144, 176]` ticks from the previous anchor. HSI drift within a packet (~853 µs at 3 Mbaud, 256-byte packet) is sub-tick; no drift correction needed within a packet.
+The window is `[9 × bit_time_spec, 11 × bit_time_spec]` where `bit_time_spec = HCLK / baud` — the slave's computed bit-time. At 3 Mbaud, `bit_time_spec = 16` ticks; the window is `[144, 176]` ticks from the previous anchor. The algorithm re-anchors `anchor = t` on every successful match, so drift between slave HSI and master HSE doesn't compound across the packet — only the static window tolerance matters. §10.7 covers the drift budget and the BC-ring-based feedback loop that closes it.
 
 ### 10.2 Why this is robust
 
@@ -477,6 +477,61 @@ Same "fire first, walk after" pattern as today. The residual is tiny because las
 
 Mitigation in the CC1 ISR: after masking HT/TC, *clear pending* on DMA1_CH7 (`PFIC.IPRR.CH7 = 1`). This drops any latched-but-not-yet-serviced classifier IRQ. The catchup ISR has already done the classifier's job inline, so dropping the pending bit is correct — no work is lost.
 
+### 10.7 HSI drift and the bit_time assumption
+
+The slave's HCLK comes from HSI (internal RC), the master's baud comes from HSE (crystal). The classifier's window math uses `bit_time_spec = HCLK_slave / baud` — what the slave *thinks* a bit-time is — but the actual on-wire bit length is set by the master. If slave HSI runs at fraction `(1 + D)` of master's reference, slave ticks per master bit = `bit_time_spec × (1 + D)`, and the inter-byte spacing measured into the TS ring is `10 × bit_time_spec × (1 + D)`.
+
+**Static tolerance: the window survives ±10% drift.** Two failure modes:
+
+- **Upper-window failure** (next start lands past `11 × bit_time_spec`, treated as gap → spurious re-anchor): triggers when `10·(1+D) > 11`, i.e., `D > 10%`.
+- **Lower-window failure** (last data-edge at master bit 7 bleeds up into the start window): triggers when `8·(1+D) > 9`, i.e., `D > 12.5%`.
+
+V006 HSI typical excursion at 25 °C post-factory-cal is ≤ 0.5%; full -40..125 °C without trim ~3%. After cold-start trim and periodic re-tune, drift sits well under 1%. The window has ~10× margin over realistic worst-case drift — **the spec-bit_time math is correct as-is, no within-packet correction needed.**
+
+**Per-byte error accumulation: zero.** §10.1's `anchor = t` (not `anchor += 10·bit_time`) means each window is re-centered on the actually-measured previous start. A packet's worth of drift errors don't compound: the last byte's window has the same tolerance as the first.
+
+#### 10.7.1 BC ring as the drift signal
+
+The same BC entries that drive the parser and fire scheduler give us a direct drift measurement. For any back-to-back byte pair (matched window, no gap re-anchor):
+
+    observed_bit_time_ticks = (BC[i+1] - BC[i]) / 10
+    drift_ppm = (observed - bit_time_spec) / bit_time_spec × 1e6
+
+Inter-byte interval at 3M ≈ 160 ticks; capture noise σ ≈ 1 LSB per BC entry. Over 50 back-to-back pairs in a single packet, drift estimate σ ≈ √2 / 160 / √50 ≈ 1250 ppm — borderline useful per-packet. Averaging across ~10 packets (a few seconds of normal traffic) tightens to ~400 ppm; over a minute, sub-100 ppm.
+
+Filtering rules to keep the signal clean:
+- Only count pairs where the window match was "tight" (no re-anchor in between), so we know we measured a true 10-bit interval, not a gap.
+- Discard pairs that span a TS overrun (anchor invalidated).
+- Use the same baud as the master is currently using — pause measurement during baud-change windows.
+
+Replaces today's IDLE-based drift inference (see [[no-idle-timing]]): IDLE-derived rate measurement folded a full char-time of latency into every sample. BC-ring measurement is per-byte and timing-source-clean.
+
+#### 10.7.2 Feedback into HSITRIM
+
+V006's HSI tuning is `RCC_CTLR.HSITRIM[4:0]` — 5 bits centered at 16, ~2500 ppm per step (60 kHz/step at 24 MHz nominal, per RM §3.3.2). One step shifts the classifier window by:
+
+    bit_time shift   = 16 ticks × 0.0025 = 0.04 ticks/bit
+    window edge shift = 0.4 ticks at the 11·bit edge
+
+Negligible against the ±10% (16-tick) window. So we can freely retune HSITRIM at packet boundaries without risking classifier desync.
+
+Coarse trim aims drift inside ±1250 ppm (half a step). The existing `DXL_CLOCK_TRIM_PENDING` write at `apply_pending_after_tc` (`irq.rs:203`) already plumbs this — the change is just the input signal: BC-averaged drift estimate replaces today's IDLE-derived one.
+
+Sub-step residual goes to the existing software fine-trim: `DXL_CLOCK_FINE_TRIM_PENDING` → `recompute_fire_advance_fine_ticks` (`statics.rs`). In the new design, fine-trim adjusts the `BC[last_byte] + 10·bit_time + RDT_ticks` math by `residual_ppm × elapsed_ticks_since_last_BC` — a few-tick correction over the wire-end-to-fire window. Same machinery, BC-sourced input.
+
+#### 10.7.3 Optional: adaptive bit_time within a packet
+
+If glitch margin under drift turns out to be tight (it shouldn't, but for completeness), the classifier can run an in-packet low-pass on observed bit-times:
+
+    on every successful window match:
+        observed = t - anchor
+        bit_time_est = α × (observed / 10) + (1 - α) × bit_time_est
+        # use bit_time_est for the next window
+
+With α = 1/8 the estimator converges in ~5-6 bytes. After convergence the window re-centers on the *actual* drifted bit-time, giving extra glitch margin in both directions.
+
+Cost: a couple of cycles per match, plus a per-packet seed-from-spec at the first byte of each packet (re-armed at IDLE / `cancel`). Not load-bearing for v1 — skip and revisit if the spike shows borderline behavior at extreme drift or temperature.
+
 ---
 
 ## 11. Alternative: LUT walker with resync detector (secondary, more flawed)
@@ -581,9 +636,10 @@ Each step is a self-contained commit per the project's "one reviewable unit" rul
 - **Chain-CRC fold cost.** §10.6 estimates ~10 cyc/byte for CRC16 update. If the implementation lands closer to 20 cyc/byte, peak CPU during Chain RX climbs from ~54% to ~60%. Still well under the 75% spike target.
 - **Classifier-pending-at-catchup-entry race.** §10.6 proposes "mask + clear pending" at first CC1 entry to defeat a classifier IRQ that latched right before catchup fired. Confirm the clear-pending write to `PFIC.IPRR.CH7` actually drops the latched IRQ on V006 (not just future ones).
 - **`walk_deadline_margin` sizing.** The busy-wait exit in the last catchup leaves GUARD bytes for post-fire. Today's value (in `dxl_fast`) was tuned for SysTick scheduling; re-measure under TIM2 scheduling.
+- **HSI drift convergence.** §10.7.1's BC-averaged drift estimator needs N packets for a usable estimate. Measure σ on bench at the target traffic mix to set the smoothing window. Decide whether §10.7.3's in-packet adaptive bit_time is worth the cycles (probably not, given 10% static window margin).
 
 ---
 
 ## 15. One-paragraph summary
 
-> We move every DXL transport timing decision off USART IDLE and onto TIM2 input capture. PC1's dual remap feeds USART1_RX and TIM2_CH4 IC simultaneously; CH4 captures every falling edge into a 128-entry TS ring via DMA1_CH7. In Plain mode a `.highcode` window-classifier ISR runs at TS HT/TC, walking TS into a per-RX-index BC ring with a `[9·bit, 11·bit]` start-bit window test — constructive, self-healing within one byte, robust to glitches and overruns. RX (64 B) and BC (128 B) stay small because a stateful parser drains up to `min(rx_write, bc_write)` at the tail of every classifier walk; IDLE backstops small packets but only as a signal, never as a timing source. **No tick value comes from IDLE anymore** — wire-end is `BC[last_byte] + 10·bit_time`, per-byte precise at every baud. The framing-mode FSM, IDLE-stamp queue, RXNE snapshot, and `9 × BRR` backdate constant all delete. In Fast Last-slave Chain mode, the classifier ISR is disabled at first-catchup entry and the entire RX-side workload — classifier walk + parser drain + chain-CRC fold — runs in a periodic TIM2_CH1 catchup ISR at 17-byte intervals, the same scheduling pattern as today's SysTick-driven `body_chain_catchup`. The last interval busy-waits walk_deadline before exit; post-fire walks the GUARD residual and patches CRC into the TX buffer via DMA prefetch slack. TX fires from TIM2_CH3 compare → CC3IE IRQ → tiny ISR writing `USART1.CTLR1 \|= TE`, with CCR3 biased earlier by a measured `FIRE_BIAS_TICKS` so the wire bit lands on time. PC2 toggles in hardware on TIM2_CH2 compare to gate the bus driver before the TE write. Fire floor drops from ~5 µs to ~2.5 µs, comfortably under the 3.33 µs Fast-Last cap at 3 Mbaud. ADC stays on its existing DMA1_CH1 pump — the only new DMA channel is CH7 for TS. Priority layout matches today's: DXL-side IRQs at High, ADC at Low; the Chain catchup's protection against same-priority delay is structural (classifier disabled mid-Chain, last catchup scheduled before fire). CCR2/CCR3 wrap with TIM2's 16-bit CNT (period 1.365 ms at PSC=0); the §5.4 set-and-recheck pattern catches "fire armed in the past" cases. A LUT-walker alternative for byte timing (read RX[i], advance TS cursor by `edge_count[RX[i]]`) is documented in §11 and rejected for the silent-desync risk. Total sustained-RX CPU at 3M peak is ~55% (Plain) or ~54% (Chain, all-in-one catchup); during TX it's ~0% because the bus is being driven and no edges arrive. TS sizing is a CPU/memory knob (§8.4): default 128 entries / 17-byte interval, or 64 entries / 12-byte interval if SRAM tightens.
+> We move every DXL transport timing decision off USART IDLE and onto TIM2 input capture. PC1's dual remap feeds USART1_RX and TIM2_CH4 IC simultaneously; CH4 captures every falling edge into a 128-entry TS ring via DMA1_CH7. In Plain mode a `.highcode` window-classifier ISR runs at TS HT/TC, walking TS into a per-RX-index BC ring with a `[9·bit, 11·bit]` start-bit window test — constructive, self-healing within one byte, robust to glitches and overruns. The window uses `bit_time_spec = HCLK / baud` and re-anchors on every match, so HSI-vs-master drift doesn't compound across the packet; static window margin tolerates ±10% drift, ~10× the realistic HSI excursion (§10.7). The BC ring also doubles as the drift signal — inter-byte intervals averaged across packets give ppm-precise HSI drift, feeding the existing coarse `HSITRIM` step and software fine-trim residual. RX (64 B) and BC (128 B) stay small because a stateful parser drains up to `min(rx_write, bc_write)` at the tail of every classifier walk; IDLE backstops small packets but only as a signal, never as a timing source. **No tick value comes from IDLE anymore** — wire-end is `BC[last_byte] + 10·bit_time`, per-byte precise at every baud. The framing-mode FSM, IDLE-stamp queue, RXNE snapshot, and `9 × BRR` backdate constant all delete. In Fast Last-slave Chain mode, the classifier ISR is disabled at first-catchup entry and the entire RX-side workload — classifier walk + parser drain + chain-CRC fold — runs in a periodic TIM2_CH1 catchup ISR at 17-byte intervals, the same scheduling pattern as today's SysTick-driven `body_chain_catchup`. The last interval busy-waits walk_deadline before exit; post-fire walks the GUARD residual and patches CRC into the TX buffer via DMA prefetch slack. TX fires from TIM2_CH3 compare → CC3IE IRQ → tiny ISR writing `USART1.CTLR1 \|= TE`, with CCR3 biased earlier by a measured `FIRE_BIAS_TICKS` so the wire bit lands on time. PC2 toggles in hardware on TIM2_CH2 compare to gate the bus driver before the TE write. Fire floor drops from ~5 µs to ~2.5 µs, comfortably under the 3.33 µs Fast-Last cap at 3 Mbaud. ADC stays on its existing DMA1_CH1 pump — the only new DMA channel is CH7 for TS. Priority layout matches today's: DXL-side IRQs at High, ADC at Low; the Chain catchup's protection against same-priority delay is structural (classifier disabled mid-Chain, last catchup scheduled before fire). CCR2/CCR3 wrap with TIM2's 16-bit CNT (period 1.365 ms at PSC=0); the §5.4 set-and-recheck pattern catches "fire armed in the past" cases. A LUT-walker alternative for byte timing (read RX[i], advance TS cursor by `edge_count[RX[i]]`) is documented in §11 and rejected for the silent-desync risk. Total sustained-RX CPU at 3M peak is ~55% (Plain) or ~54% (Chain, all-in-one catchup); during TX it's ~0% because the bus is being driven and no edges arrive. TS sizing is a CPU/memory knob (§8.4): default 128 entries / 17-byte interval, or 64 entries / 12-byte interval if SRAM tightens.
