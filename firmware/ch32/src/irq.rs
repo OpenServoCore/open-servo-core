@@ -77,6 +77,17 @@ fn on_usart1_rx_errors() {
     if errs.ne {
         dxl::report_noise_error();
     }
+    // Per-fire log so a bench `snoop:` trace can align rx errors with
+    // bad first-tick samples; clear_rx_errors below also clears IDLE
+    // (SR-then-DR side effect), so if this fires at IDLE time the
+    // anchor for that packet is silently skipped.
+    crate::log::info!(
+        "rxerr: ore={} pe={} fe={} ne={}",
+        errs.ore,
+        errs.pe,
+        errs.fe,
+        errs.ne,
+    );
     // SR-then-DR clear is the only V006 path. Called only from on_usart1
     // entry — post-IDLE or post-TC, both packet boundaries — so DMA has
     // already drained DR and the extra DR read can't steal a pending byte.
