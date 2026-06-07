@@ -45,8 +45,6 @@ pub fn __run(cfg: BoardConfig, pre: Precomputed) -> ! {
         let services = unsafe { (*statics::SERVICES.get()).assume_init_mut() };
         services.poll(&statics::SHARED);
         stat_led::poll();
-        #[cfg(feature = "defmt")]
-        telemetry::pump();
         riscv::asm::wfi();
     }
 }

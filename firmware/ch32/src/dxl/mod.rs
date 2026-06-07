@@ -8,7 +8,7 @@
 //! - [`state`]: FSM types, `STATE`/`DISPATCH`, phase guards, fault counters.
 //! - [`scheduler`]: `start_plain_after`/`start_fast_after` arm path plus
 //!   `predict_n_pred`, advance-tick math, and the per-baud catchup interval.
-//! - [`isr`]: SysTick + USART1 RXNE bodies, `arm_tx`/`fire_now`/`patch_crc`,
+//! - [`isr`]: SysTick body, `arm_tx`/`fire_now`/`patch_crc`,
 //!   the snoop accumulator, and `ring_crc`.
 
 pub(crate) mod cal;
@@ -22,7 +22,7 @@ pub(crate) mod timing;
 pub(crate) mod wire;
 
 pub use crc::Ch32DxlCrc;
-pub use isr::{on_rxne, on_systick};
+pub use isr::on_systick;
 pub use scheduler::{start_fast_after, start_plain_after};
 pub use state::{
     cancel, report_dma_overrun, report_framing_error, report_noise_error, report_parity_error,

@@ -7,6 +7,7 @@ pub mod adc;
 pub mod afio;
 pub mod clocks;
 pub mod dma;
+pub mod exti;
 pub mod flash;
 pub mod gpio;
 pub mod opa;

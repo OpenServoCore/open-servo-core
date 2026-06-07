@@ -2,10 +2,10 @@ use ch32_metapac::{ADC, adc::vals::Extsel, dma::vals::Dir};
 use osc_core::{ConfigDefaults, RegionStorage};
 
 use crate::dxl::statics::{
-    DXL_DBG_PIN, DXL_RX_BUF, DXL_RX_BUF_LEN, DXL_TX_BUF, DXL_TX_EN, store_baud_derived,
+    DXL_DBG_PIN, DXL_RX_BUF, DXL_RX_BUF_LEN, DXL_RX_PIN, DXL_TX_BUF, DXL_TX_EN, store_baud_derived,
 };
 use crate::hal::{
-    adc, afio, delay_ms, dma,
+    adc, afio, delay_ms, dma, exti,
     gpio::{self, Level, PinMode},
     opa, rcc, timer, usart,
 };
@@ -285,13 +285,19 @@ fn bring_up_dxl(d: &DxlBus, brr: u32) {
         0,
     );
 
-    // Sole writer; IRQ-only reader unmasks below.
+    // Sole writers; IRQ-only readers unmask below.
     unsafe { *DXL_TX_EN.get() = d.tx_en };
+    let rx_pin = d.usart.rx_pin();
+    unsafe { *DXL_RX_PIN.get() = Some(rx_pin) };
 
     usart::set_idle_irq(regs, true);
-    // RXNEIE is "first byte after IDLE" capture for the CALIB cal path;
-    // `dxl::on_rxne` self-disarms on the first entry, IDLE re-arms.
-    usart::set_rxne_irq(regs, true);
+    // EXTI on the RX pin's falling-edge captures the first byte's start bit
+    // for the CALIB cal path (instead of RXNE-after-DMA, which races with
+    // V006's DMA-RDR drain at IDLE). on_exti_dxl_rx self-disarms on the
+    // first entry; IDLE / TC handlers re-arm.
+    exti::configure_falling_edge(rx_pin);
+    exti::clear_pending(rx_pin);
+    exti::set_irq(rx_pin, true);
 }
 
 pub(super) fn seed_dbg_pin(pin: crate::hal::Pin) {

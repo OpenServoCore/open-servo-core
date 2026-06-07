@@ -8,11 +8,11 @@ use osc_core::{
 
 use crate::dxl;
 use crate::dxl::DxlWire;
-use crate::dxl::cal::Cal;
+use crate::dxl::cal::{Cal, snoop_bias_ticks};
 use crate::dxl::statics::{
     CLOCK_FINE_TRIM_NO_PENDING, CLOCK_TRIM_NO_PENDING, DXL_BAUD_PENDING_BRR, DXL_BYTE_TIME_TICKS,
-    DXL_CLOCK_FINE_TRIM_PENDING, DXL_CLOCK_TRIM_PENDING, DXL_REBOOT_PENDING, DXL_RX_BUF,
-    DXL_RX_BUF_LEN, DXL_RX_FIRST_TICK, DXL_RX_FIRST_VALID, DXL_TX_BUF, RX_MASK_U32,
+    DXL_CHAR_TIME_TICKS, DXL_CLOCK_FINE_TRIM_PENDING, DXL_CLOCK_TRIM_PENDING, DXL_REBOOT_PENDING,
+    DXL_RX_BUF, DXL_RX_BUF_LEN, DXL_RX_FIRST_TICK, DXL_RX_FIRST_VALID, DXL_TX_BUF, RX_MASK_U32,
 };
 use crate::dxl::timing::{SLOT_MARGIN, bytes_to_us, bytes_to_us_q88};
 use crate::hal::clocks::PCLK_HZ;
@@ -192,8 +192,10 @@ impl Ch32Bus {
     /// Feed the chip-side drift filter with this packet's wire timing.
     /// Skips Status frames (other slaves' replies) so only master-originated
     /// traffic — which rides the HSE-clocked master — drives the loop. Also
-    /// skips when `on_rxne` didn't capture a first-byte tick for this packet
-    /// (chain mode masks RXNEIE, etc.).
+    /// skips when the EXTI first-byte stamp didn't capture for this packet
+    /// (chain mode disarms it, etc.). Observation runs unconditionally so
+    /// `cal_snapshot` always has fresh data for the master-driven CAL reply;
+    /// the snoop-driven *apply* into the pending atomics is `dyn_cal`-gated.
     fn snoop_drift(&mut self, packet: &Packet<'static, OscExt>) {
         if matches!(packet, Packet::Status(_)) {
             return;
@@ -204,38 +206,68 @@ impl Ch32Bus {
         let first_tick = DXL_RX_FIRST_TICK.load(Ordering::Acquire);
         let observed = self.anchor.tick.wrapping_sub(first_tick);
         let byte_time = DXL_BYTE_TIME_TICKS.load(Ordering::Relaxed);
+        let char_time = DXL_CHAR_TIME_TICKS.load(Ordering::Relaxed);
+        let observed_corr = observed.wrapping_sub(snoop_bias_ticks(byte_time, char_time));
+        let nominal = (self.parsed_length as u32)
+            .saturating_sub(1)
+            .saturating_mul(byte_time);
+        let err = observed_corr as i32 - nominal as i32;
+        let ppm = ((err as i64) * 1_000_000)
+            .checked_div(nominal as i64)
+            .unwrap_or(0) as i32;
+        crate::log::info!(
+            "snoop: len={} first={} anchor={} obs={} obs_corr={} nom={} err={} ppm={}",
+            self.parsed_length as u32,
+            first_tick,
+            self.anchor.tick,
+            observed,
+            observed_corr,
+            nominal,
+            err,
+            ppm,
+        );
         let Some(apply) = self
             .cal
-            .observe(observed, self.parsed_length as u32, byte_time)
+            .observe(observed_corr, self.parsed_length as u32, byte_time)
         else {
             return;
         };
-        if apply.trim_step != 0 {
-            // Read current HSITRIM register, decode back to signed delta, add
-            // the filter's step, clamp, and queue. If a prior queue hasn't yet
-            // applied (TC hasn't fired since the last `apply_pending_after_tc`
-            // drained), prefer it as the base — RCC still reflects pre-queue.
-            let pending = DXL_CLOCK_TRIM_PENDING.load(Ordering::Acquire);
-            let base_delta = if pending != CLOCK_TRIM_NO_PENDING {
-                pending as i32
+        crate::log::info!(
+            "apply: trim_step={} fine_q88={}",
+            apply.trim_step,
+            apply.fine_us_q88,
+        );
+        #[cfg(feature = "dyn_cal")]
+        {
+            if apply.trim_step != 0 {
+                // Read current HSITRIM register, decode back to signed delta, add
+                // the filter's step, clamp, and queue. If a prior queue hasn't yet
+                // applied (TC hasn't fired since the last `apply_pending_after_tc`
+                // drained), prefer it as the base — RCC still reflects pre-queue.
+                let pending = DXL_CLOCK_TRIM_PENDING.load(Ordering::Acquire);
+                let base_delta = if pending != CLOCK_TRIM_NO_PENDING {
+                    pending as i32
+                } else {
+                    // HSITRIM is centered on `HSITRIM_DEFAULT` (16) per `apply_clock_trim_delta`.
+                    (RCC.ctlr().read().hsitrim() as i32) - 16
+                };
+                let new_delta = (base_delta + apply.trim_step as i32)
+                    .clamp(CLOCK_TRIM_DELTA_MIN as i32, CLOCK_TRIM_DELTA_MAX as i32)
+                    as i16;
+                DXL_CLOCK_TRIM_PENDING.store(new_delta, Ordering::Release);
+            }
+            // Fine residual is absolute — no need to consult prior state.
+            let fine_pending = if apply.fine_us_q88 as i32 == CLOCK_FINE_TRIM_NO_PENDING {
+                // i16 can't actually reach i32::MIN, but keep the no-pending
+                // sentinel sacred just in case the encoding ever widens.
+                (CLOCK_FINE_TRIM_NO_PENDING + 1) as i32
             } else {
-                // HSITRIM is centered on `HSITRIM_DEFAULT` (16) per `apply_clock_trim_delta`.
-                (RCC.ctlr().read().hsitrim() as i32) - 16
+                apply.fine_us_q88 as i32
             };
-            let new_delta = (base_delta + apply.trim_step as i32)
-                .clamp(CLOCK_TRIM_DELTA_MIN as i32, CLOCK_TRIM_DELTA_MAX as i32)
-                as i16;
-            DXL_CLOCK_TRIM_PENDING.store(new_delta, Ordering::Release);
+            DXL_CLOCK_FINE_TRIM_PENDING.store(fine_pending, Ordering::Release);
         }
-        // Fine residual is absolute — no need to consult prior state.
-        let fine_pending = if apply.fine_us_q88 as i32 == CLOCK_FINE_TRIM_NO_PENDING {
-            // i16 can't actually reach i32::MIN, but keep the no-pending
-            // sentinel sacred just in case the encoding ever widens.
-            (CLOCK_FINE_TRIM_NO_PENDING + 1) as i32
-        } else {
-            apply.fine_us_q88 as i32
-        };
-        DXL_CLOCK_FINE_TRIM_PENDING.store(fine_pending, Ordering::Release);
+        #[cfg(not(feature = "dyn_cal"))]
+        let _ = apply;
     }
 
     fn fire_plain(&mut self, schedule: Schedule) {

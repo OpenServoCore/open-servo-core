@@ -1,9 +1,9 @@
 use core::cell::SyncUnsafeCell;
 
-use ch32_metapac::USART1;
-
-use crate::hal::{systick, usart};
+use crate::hal::{exti, systick};
 use crate::statics::SHARED;
+
+use super::statics::DXL_RX_PIN;
 
 use super::isr::{body_chain_catchup, body_chain_fast_fire, body_noop, body_plain_fire};
 
@@ -154,9 +154,12 @@ fn is_legal_transition(from: FastChainPhase, to: FastChainPhase) -> bool {
 pub fn cancel() {
     systick::set_irq(false);
     systick::clear_match();
-    // Tail RXNE may still be live if cancel races a fire that never
+    // Tail EXTI may still be armed if cancel races a fire that never
     // reached TxArmed. Mask unconditionally — no-op when already off.
-    usart::set_rxne_irq(USART1, false);
+    // SAFETY: bring-up writes DXL_RX_PIN before any caller of cancel().
+    if let Some(p) = unsafe { *DXL_RX_PIN.get() } {
+        exti::set_irq(p, false);
+    }
     set_state(ReplyState::Idle);
 }
 

@@ -1,10 +1,11 @@
 //! Slave-side HSI drift filter.
 //!
 //! Snoops `(observed_ticks, wire_bytes, byte_time_ticks)` of every non-Status
-//! master packet, batches `BATCH_K` samples into a single i32 division for
-//! the ppm sample, drives an EMA in ppm-space (no division), and queues a
-//! coarse-trim step at ±½-step hysteresis plus a Q8.8 µs fine residual on
-//! every batch close.
+//! master packet, batches `BATCH_K` samples into one ppm sample, and at every
+//! batch close emits a coarse trim step (±½-step deadband, round-to-nearest)
+//! plus a Q8.8 µs fine residual. Math mirrors `cal.py` directly — closed loop
+//! is via the chip itself: any applied trim changes HSI rate, which the next
+//! batch's `sample_ppm` reflects natively. No internal smoothing.
 //!
 //! Per-packet hot path is pure additions + one outlier-clip comparison; no
 //! division until `BATCH_K` samples have accumulated. Caller glue
@@ -14,19 +15,25 @@
 /// 1 kHz master traffic the batch period is ~8 ms.
 const BATCH_K: u8 = 8;
 
-/// EMA shift: α = 1 / (1 << ALPHA_SHIFT) per batch. With BATCH_K=8 and
-/// shift=5, the time constant is ~32 batches ≈ 256 samples (~250 ms at
-/// 1 kHz traffic) — well above thermal-drift bandwidth.
-const ALPHA_SHIFT: u32 = 5;
-
 /// Wire-byte horizon for fine-trim residual translation: matches the
 /// master-side `Calibrator(n_target=128)` default so explicit CAL and
 /// dynamic snoop produce consistent `clock_fine_trim_us` semantics.
 const N_TARGET: u32 = 128;
 
+/// Tick offset to subtract from `(anchor.tick − DXL_RX_FIRST_TICK)` before
+/// the cal filter sees it. Two contributors:
+///   1. [`SNOOP_ENTRY_DELTA_TICKS`] — handler-prologue differential.
+///   2. `byte_time − char_time` (= brr) — `on_usart1_idle` backdates by
+///      `brr × 9` (end-of-stop-bit); the drift math wants the end-of-data
+///      anchor one more bit-time earlier.
+#[inline]
+pub fn snoop_bias_ticks(byte_time_ticks: u32, char_time_ticks: u32) -> u32 {
+    super::calibration::SNOOP_ENTRY_DELTA_TICKS + byte_time_ticks.saturating_sub(char_time_ticks)
+}
+
 /// Output of one batched apply step. `trim_step` is a signed step the caller
 /// adds to the current HSITRIM delta (clamping is the caller's job); zero
-/// means the EMA stayed inside the ±½-step deadband and only fine changed.
+/// means the batch landed inside the ±½-step deadband and only fine changed.
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub struct CalApply {
     pub trim_step: i8,
@@ -52,9 +59,6 @@ pub struct Cal {
     nominal_ticks_sum: u32,
     samples: u8,
 
-    ema_ppm: i32,
-    baseline_ppm: i32,
-
     has_observation: bool,
     last_observed_ticks: u32,
     last_nominal_ticks: u32,
@@ -70,8 +74,6 @@ impl Cal {
             err_ticks_sum: 0,
             nominal_ticks_sum: 0,
             samples: 0,
-            ema_ppm: 0,
-            baseline_ppm: 0,
             has_observation: false,
             last_observed_ticks: 0,
             last_nominal_ticks: 0,
@@ -124,32 +126,28 @@ impl Cal {
         self.nominal_ticks_sum = 0;
         self.samples = 0;
 
-        // EMA in ppm space — pure shift, no division.
-        let diff = sample_ppm.wrapping_sub(self.ema_ppm);
-        self.ema_ppm = self.ema_ppm.wrapping_add(diff >> ALPHA_SHIFT);
-
-        // ±½-step deadband around `baseline_ppm` (the EMA at the last coarse
-        // apply). Keeps HSITRIM from hunting on noise.
-        let d_ppm = self.ema_ppm.wrapping_sub(self.baseline_ppm);
+        // Mirror `cal.py` directly: step = -round(sample_ppm / ppm_per_step),
+        // residual = sample_ppm - rounded × ppm_per_step. No baseline tracking
+        // — the chip closes its own loop: applied trim changes HSI rate, and
+        // the next batch's `sample_ppm` reflects the new residual natively.
+        //
+        // Sign: sample_ppm > 0 means chip ticks ran fast against the wire →
+        // HSI is fast → HSITRIM must DROP.
+        let ppm_per_step = self.ppm_per_step as i32;
         let half_step = (self.ppm_per_step / 2) as i32;
-        let trim_step = if d_ppm.unsigned_abs() >= half_step as u32 {
-            let step = d_ppm / self.ppm_per_step as i32;
-            self.baseline_ppm = self
-                .baseline_ppm
-                .wrapping_add(step.wrapping_mul(self.ppm_per_step as i32));
-            step.clamp(i8::MIN as i32, i8::MAX as i32) as i8
+        let rounded = if sample_ppm >= 0 {
+            (sample_ppm + half_step) / ppm_per_step
         } else {
-            0
+            (sample_ppm - half_step) / ppm_per_step
         };
+        let trim_step = (-rounded).clamp(i8::MIN as i32, i8::MAX as i32) as i8;
+        let residual_ppm = sample_ppm.wrapping_sub(rounded.wrapping_mul(ppm_per_step));
 
         // Fine residual: -(residual_ppm × N_TARGET × byte_time_us) in Q8.8.
-        // Sign matches `clock_fine_trim_us`: + advances fire, − retards. The
-        // master-side `cal.py` derivation is the reference; we mirror it in
-        // fixed point.
+        // Sign matches `clock_fine_trim_us`: + advances fire, − retards.
         //
         // q88 = -residual_ppm × N_TARGET × byte_time_ticks × 256
         //         / (ticks_per_us × 1_000_000)
-        let residual_ppm = self.ema_ppm.wrapping_sub(self.baseline_ppm);
         let num = -(residual_ppm as i64)
             * (N_TARGET as i64)
             * (byte_time_ticks as i64)
@@ -222,18 +220,21 @@ mod tests {
     #[test]
     fn sustained_drift_converges_and_steps_trim() {
         let mut c = Cal::new(PPM_PER_STEP, TICKS_PER_US);
-        let drift = 22_500_i32; // +5 steps worth
-        let obs = drift_observed(drift);
+        let true_drift = 22_500_i32; // +5 steps worth → chip fast → trim drops 5
         let mut applied_steps: i32 = 0;
+        // Closed-loop sim: each applied step shifts HSI by ppm_per_step, which
+        // shows up in the next batch's measurement. Mirrors real hardware
+        // (no internal baseline tracking — the chip itself closes the loop).
         for _ in 0..500 {
+            let measured = true_drift + applied_steps * PPM_PER_STEP as i32;
+            let obs = drift_observed(measured);
             if let Some(a) = c.observe(obs, WIRE_BYTES, BYTE_TIME_TICKS) {
                 applied_steps += a.trim_step as i32;
             }
         }
-        // Should have stepped trim within ±1 of expected 5 steps (round-to-nearest).
-        assert!(
-            (4..=6).contains(&applied_steps),
-            "expected ~5 step applies, got {applied_steps}"
+        assert_eq!(
+            applied_steps, -5,
+            "expected exactly -5 net steps with closed-loop feedback"
         );
     }
 

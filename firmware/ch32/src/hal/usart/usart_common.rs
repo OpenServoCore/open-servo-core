@@ -118,23 +118,6 @@ pub fn is_tc(r: Regs) -> bool {
     r.statr().read().tc()
 }
 
-// SAFETY: see hal/SAFETY.md. CTLR1 is written from MAIN (start_fast_after,
-// when arming the RXNE-tail tier) and from the USART1 ISR (the tail-mask in
-// dxl_fast::on_rxne, and set_tc_irq via on_usart1_tc). CS keeps the RMW
-// coherent across those writers.
-// `inline(always)` keeps the call inside dxl_fast's `.highcode` section.
-#[inline(always)]
-pub fn set_rxne_irq(r: Regs, enable: bool) {
-    critical_section::with(|_| {
-        r.ctlr1().modify(|w| w.set_rxneie(enable));
-    });
-}
-
-#[inline]
-pub fn is_rxne_irq_enabled(r: Regs) -> bool {
-    r.ctlr1().read().rxneie()
-}
-
 #[inline]
 pub fn is_rxne(r: Regs) -> bool {
     r.statr().read().rxne()

@@ -33,7 +33,7 @@ critical-section = { version = "1.2", features = ["std"] }
 ch32-metapac = { git = "https://github.com/ch32-rs/ch32-metapac", default-features = false, features = ["metadata"] }
 
 [features]
-default      = ["ch32v006x8x6"]
+default      = ["ch32v006x8x6", "dyn_cal"]
 ch32v006x8x6 = ["ch32-metapac/ch32v006x8x6"]
 rt           = ["ch32-metapac/rt"]
 defmt        = ["dep:defmt", "osc-core/defmt"]
@@ -41,3 +41,8 @@ defmt        = ["dep:defmt", "osc-core/defmt"]
 # the dxl_fast hot path. Off in production — `dbg_high`/`stat_high` and their
 # `_low` partners compile to empty bodies.
 scope        = []
+# Snoop-driven HSI re-trim. Off → chip still observes/logs drift via
+# `snoop_drift` but never writes back to DXL_CLOCK_TRIM_PENDING /
+# DXL_CLOCK_FINE_TRIM_PENDING; clock_trim and clock_fine_trim_us stay
+# under master-driven CAL control only.
+dyn_cal      = []

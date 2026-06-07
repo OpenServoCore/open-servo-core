@@ -25,3 +25,10 @@ pub(super) const PLAIN_ENTRY_TICKS: u32 = 154;
 /// `set_phase` + state-load overhead the catchup-to-`TxArmed` handoff adds
 /// before `fire_now`.
 pub(super) const FAST_ENTRY_TICKS: u32 = 165;
+
+/// EXTI-vs-IDLE handler-prologue differential on the snoop measurement
+/// path: `on_usart1_idle` reads `systick::ticks()` after more setup than
+/// `on_exti` does before its own stamp, so this constant absorbs the gap.
+/// Baud-independent HCLK ticks. Re-tune empirically after any reshape of
+/// the EXTI or IDLE prologue.
+pub(super) const SNOOP_ENTRY_DELTA_TICKS: u32 = 35;

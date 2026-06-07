@@ -21,19 +21,23 @@ pub(crate) static DXL_RX_BUF: SyncUnsafeCell<[u8; DXL_RX_BUF_LEN]> =
 /// delta between consecutive IDLE events. ISR-local state.
 pub(crate) static DXL_RX_WRITE_POS: AtomicU16 = AtomicU16::new(0);
 
-/// SysTick capture of the first RXNE for the in-flight RX packet. Paired with
-/// [`DXL_RX_FIRST_VALID`] as the dispatcher-visible "first byte stamp"; the
-/// CALIB handler subtracts this from the IDLE-backdated wire-end tick to
-/// derive the wire receive duration. Loaded once `VALID` is set.
+/// SysTick capture of the first byte's start-bit falling edge for the
+/// in-flight RX packet, latched by the EXTI handler on the DXL RX pin.
+/// Paired with [`DXL_RX_FIRST_VALID`] as the dispatcher-visible "first byte
+/// stamp"; the CALIB handler subtracts this from the IDLE-backdated wire-end
+/// tick to derive the wire receive duration. Loaded once `VALID` is set.
 pub(crate) static DXL_RX_FIRST_TICK: AtomicU32 = AtomicU32::new(0);
 
-/// Set true by [`crate::dxl::on_rxne`] when it latches a packet's first
-/// byte; swapped to false by the dispatcher's `cal_snapshot` on consume.
-/// A stale-true here on a CALIB whose first byte missed the capture (e.g.
-/// chain reply held RXNEIE off) is harmless — `on_rxne` overwrites
-/// `DXL_RX_FIRST_TICK` whenever it actually fires, so the next CALIB only
-/// sees a fresh tick or a false flag.
+/// Set true by [`crate::irq::on_exti_dxl_rx`] when it latches a packet's
+/// first byte's start-bit edge; swapped to false by the dispatcher's
+/// `cal_snapshot` on consume. A stale-true here is harmless — the EXTI
+/// handler overwrites `DXL_RX_FIRST_TICK` whenever it fires, so the next
+/// CALIB only sees a fresh tick or a false flag.
 pub(crate) static DXL_RX_FIRST_VALID: AtomicBool = AtomicBool::new(false);
+
+/// DXL RX pin, written once at bring-up so the EXTI handler can clear/disarm
+/// the same line that bring-up armed. Read-only thereafter.
+pub(crate) static DXL_RX_PIN: SyncUnsafeCell<Option<Pin>> = SyncUnsafeCell::new(None);
 
 pub(crate) const DXL_TX_BUF_LEN: usize = DXL_TX_MAX_BYTES;
 

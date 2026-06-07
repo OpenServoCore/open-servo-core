@@ -6,11 +6,11 @@ use crate::dxl;
 use crate::dxl::statics::{
     CLOCK_FINE_TRIM_NO_PENDING, CLOCK_TRIM_NO_PENDING, DXL_BAUD_PENDING_BRR, DXL_CHAR_TIME_TICKS,
     DXL_CLOCK_FINE_TRIM_PENDING, DXL_CLOCK_TRIM_PENDING, DXL_REBOOT_PENDING, DXL_RX_BUF_LEN,
-    DXL_RX_WRITE_POS, DXL_TX_BUF, DXL_TX_COUNT, DXL_TX_EN, recompute_fire_advance_fine_ticks,
-    store_baud_derived,
+    DXL_RX_FIRST_TICK, DXL_RX_FIRST_VALID, DXL_RX_PIN, DXL_RX_WRITE_POS, DXL_TX_BUF, DXL_TX_COUNT,
+    DXL_TX_EN, recompute_fire_advance_fine_ticks, store_baud_derived,
 };
 use crate::hal::rcc;
-use crate::hal::{dma, gpio, pfic, systick, usart};
+use crate::hal::{dma, exti, gpio, pfic, systick, usart};
 use crate::idle_anchor;
 use crate::statics::{KERNEL, SHARED};
 
@@ -38,14 +38,26 @@ pub fn on_adc_dma_tc() {
 
 pub fn on_usart1() {
     on_usart1_rx_errors();
-    // on_rxne BEFORE idle/tc: STATR.RXNE always reads 0 in DMA-RX mode
-    // (V006 quirk: DMA wins the clear race), so dxl::on_rxne self-gates
-    // on RXNEIE state instead. If idle/tc ran first they'd re-arm RXNEIE
-    // and on_rxne would fire spuriously inside the same ISR entry,
-    // latching first_tick to the IDLE-handler exit moment.
-    dxl::on_rxne();
     on_usart1_idle();
     on_usart1_tc();
+}
+
+/// EXTI7_0 handler body — covers lines 0..7 on V006's shared vector. Only
+/// the DXL RX pin's line is armed; check pending + stamp + disarm.
+pub fn on_exti() {
+    // SAFETY: bring-up sets `DXL_RX_PIN` before unmasking PFIC EXTI7_0.
+    let pin = match unsafe { *DXL_RX_PIN.get() } {
+        Some(p) => p,
+        None => return,
+    };
+    if !exti::is_pending(pin) {
+        return;
+    }
+    let tick = systick::ticks();
+    DXL_RX_FIRST_TICK.store(tick, Ordering::Release);
+    DXL_RX_FIRST_VALID.store(true, Ordering::Release);
+    exti::set_irq(pin, false);
+    exti::clear_pending(pin);
 }
 
 fn on_usart1_rx_errors() {
@@ -87,10 +99,16 @@ fn on_usart1_idle() {
     let delta = write_pos.wrapping_sub(prev) & mask;
     DXL_RX_WRITE_POS.store(write_pos, Ordering::Release);
     idle_anchor::record(delta, request_end_tick);
-    // Unmask RXNEIE so the next packet's first byte hits `on_rxne`. Don't
-    // touch DXL_RX_FIRST_VALID here — `on_rxne` for this packet already
-    // latched it true; the dispatcher's `cal_snapshot` consumes it via swap.
-    usart::set_rxne_irq(USART1, true);
+    // Re-arm EXTI on the RX pin so the next packet's first-byte falling
+    // edge stamps DXL_RX_FIRST_TICK. Clear pending before unmask: the
+    // just-completed packet's stream of byte-start edges latched the
+    // pending bit while the mask was off; an unmask without clear would
+    // fire IRQ immediately and stamp on the wrong moment.
+    // SAFETY: see on_exti.
+    if let Some(p) = unsafe { *DXL_RX_PIN.get() } {
+        exti::clear_pending(p);
+        exti::set_irq(p, true);
+    }
 }
 
 fn on_usart1_tc() {
@@ -118,10 +136,14 @@ fn on_usart1_tc() {
     buf.clear();
     dxl::cancel();
     DXL_TX_COUNT.fetch_add(1, Ordering::Relaxed);
-    // dxl::cancel masks RXNEIE (chain-mode safety); re-arm so the next
-    // inbound packet's first byte still hits `on_rxne`. The IDLE re-arm
-    // already covers the no-reply path; this covers the reply-then-RX path.
-    usart::set_rxne_irq(USART1, true);
+    // dxl::cancel masks the EXTI stamp line (chain-mode safety); re-arm so
+    // the next inbound packet's first-byte edge still stamps. IDLE re-arm
+    // covers the no-reply path; this covers the reply-then-RX path.
+    // SAFETY: see on_exti.
+    if let Some(p) = unsafe { *DXL_RX_PIN.get() } {
+        exti::clear_pending(p);
+        exti::set_irq(p, true);
+    }
     apply_pending_after_tc();
 }
 
@@ -168,6 +190,11 @@ macro_rules! install_isrs {
         #[::qingke_rt::interrupt]
         fn USART1() {
             $crate::irq::on_usart1();
+        }
+
+        #[::qingke_rt::interrupt]
+        fn EXTI7_0() {
+            $crate::irq::on_exti();
         }
 
         #[::qingke_rt::interrupt(core)]
