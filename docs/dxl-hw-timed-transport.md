@@ -10,16 +10,19 @@ The cost is that TIM2 is now the DXL transport's timer, and is no longer availab
 
 ## 1. Why move off SysTick
 
-Two structural problems with the current design.
+Three structural problems with the current design.
 
 **Problem 1 — TX fire has a 5 µs PFIC floor.** Every fire today goes: SysTick CMP match → PFIC trap entry (~1 µs) → highcode ISR body (~1.5 µs) → DMA EN + TX_EN GPIO toggle (~2 µs) → first wire bit. At 3 Mbaud, one byte is 3.33 µs. The 5 µs floor is the inter-slot jitter cap. Every Fast-Last reply at the top of the baud range sees a visible idle gap before its slot. The CRC stays correct (the chain-CRC machinery handles that), but the wire-side coalesce isn't.
 
-**Problem 2 — RX wire-end is estimated, not measured.** IDLE fires one char-time after wire-end and we backdate by `9 × BRR`. RXNE fires at the stop bit and we read the cursor. Both work, but neither gives us per-byte timestamps. At 3 Mbaud the snoop tail walk loses sub-byte resolution, and at low baud the IDLE delay forces the framing FSM to fall back to per-byte RXNE just to meet RDT — burning IRQs at exactly the speeds where we have the most CPU per byte to spare.
+**Problem 2 — every timing decision goes through IDLE.** Today's wire-end derivation is `systick::ticks() - 9 × BRR` at IDLE-handler entry. IDLE fires one char-time *after* wire-end, so we backdate. At high baud this works; at low baud the publish latency exceeds RDT and the framing FSM has to switch to per-byte RXNE timestamps (rx-timing doc §4–5), burning ~100 K IRQs/sec at 1 Mbaud just to keep timing source-of-truth. The whole IDLE-vs-RXNE FSM, the framing decision rule, the pipeline_margin tuning knob — all of it exists because IDLE is the only timing source the current design has. This is fragile and not extensible.
 
-The hardware-timed design fixes both at once:
+**Problem 3 — RX timestamps are per-packet, not per-byte.** Snoop tail walks, chain-CRC stage-3, slot timing — all want to know "when did *this specific byte* arrive?" Today they get "when did the packet end" and infer. At 3 Mbaud the sub-byte resolution loss matters.
 
-- TX fire becomes a timer compare event with a DMA-driven register write. PFIC isn't involved in the fire moment at all.
-- RX timestamps come from TIM2 input capture on the RX pin's falling edges, DMA'd into a ring without ISR cost.
+The hardware-timed design fixes all three at once:
+
+- TX fire becomes a TIM2 compare event with a leaner software ISR (§5). PFIC entry stays in the path but the ISR shrinks and the trigger source isn't shared with anything else.
+- **Every byte gets its own wire-arrival timestamp** via TIM2 input capture on the RX pin's falling edges, written to a BC (byte-time) ring at HT/TC of the IC DMA. IDLE becomes a *signal* (drain the parser, packet is done), never a *timing source*. The framing FSM disappears with it.
+- All timing consumers — wire-end, fire-tick, slot deadline, snoop tick — look up `BC[i] + 10·bit_time` directly. No backdate constants, no char-time math, no IDLE-vs-RXNE branch.
 
 The expensive part — turning edge timestamps into byte timestamps — runs in software at HT/TC of the IC DMA, off the wire-edge critical path.
 
@@ -213,64 +216,84 @@ Decisions on TIM2 configuration:
 
 ## 8. Memory rings
 
-Three rings, three lifetimes.
+Three rings, three lifetimes. All three sized to 64 entries — see §8.4 for the sizing argument.
 
-### 8.1 RX ring (unchanged)
+### 8.1 RX ring
 
-512 bytes, circular, DMA1_CH5 from USART1.DR. Byte data only. No change from today.
+64 bytes, circular, DMA1_CH5 from USART1.DR. Byte data only. *Shrinks* from today's 512 B because the parser drains at every classifier walk instead of waiting for IDLE (§10.4) — ring size decouples from max packet size.
 
 ### 8.2 TS ring (new)
 
-128 entries × 16-bit = 256 B. Circular, DMA1_CH7 from TIM2.CCR4. Captures the TIM2 CNT value at every falling edge on PC1.
+64 entries × 16-bit = 128 B. Circular, DMA1_CH7 from TIM2.CCR4. Captures the TIM2 CNT value at every falling edge on PC1.
 
-Why 128 entries:
+HT fires at 32 entries written, TC at 64. At the 3 Mbaud peak edge rate (1.5 M edges/s on a 0x55-heavy stream), HT fires every ~21 µs. The classifier processes 32 entries in ~256 cycles ≈ 5.3 µs — 4× margin against the cadence.
 
-- At 3 Mbaud, worst-case edge rate is 5 edges per byte × 300 KB/s = 1.5 M edges/s.
-- HT fires at 64 entries written, TC at 128. At 1.5 M edges/s, that's HT every ~43 µs.
-- The classifier (§10) runs in ~60 cycles per edge → 64 edges = ~3840 cycles = 80 µs at 48 MHz.
-- Net: classifier keeps up with the worst case with margin.
+The worst case for *RX overrun* is actually the opposite end: 1 edge/byte streams (all 0xFF) where 32 edges = 32 bytes. Classifier HT lags RX by exactly half a ring; RX_LEN ≥ TS_LEN keeps RX from wrapping before the parser drains it. RX_LEN = TS_LEN = 64 satisfies this with exactly-zero margin, which is fine because the parser drains synchronously at classifier-end.
 
-If the classifier falls behind (e.g., a higher-priority IRQ steals the slot), TS overflow is detected by comparing NDTR's progression against the consumer's last drained index. We count it as a fault and reset the classifier's anchor at the next IDLE. Wire-CRC still validates the packet — a missed BC entry isn't a wire-level error, it's a degraded telemetry signal.
+If the classifier falls behind anyway (higher-priority IRQ steals the slot for longer than expected), TS overflow is detected by comparing NDTR against the consumer's last drained index. We count it as a fault and reset the classifier's anchor at the next IDLE. Wire-CRC still validates the packet — a missed BC entry isn't a wire-level error, it's a degraded timing signal.
 
 ### 8.3 BC ring (new)
 
-`BC_LEN` entries × 32-bit = 4 × `BC_LEN` bytes. `BC_LEN` is sized to match the RX ring (so byte index `i` in RX maps to byte time `BC[i]`). At RX_LEN = 512, BC = 2 KB. That's a third of SRAM; we may shrink BC entries to 16 bits + a wrap counter if SRAM gets tight.
+64 entries × 16-bit = 128 B (with a separate 32-bit cumulative-byte counter for wrap disambiguation, same pattern as today's IDLE-stamp ring). Sized to match the RX ring so byte index `i` in RX maps to byte time `BC[i mod 64]`.
 
 Each entry: `BC[i] = TIM2 CNT at the start bit of byte i in the RX ring`. Consumers read it by RX index, no walk required.
 
-The classifier writes BC entries. The consumer (chain CRC, fire scheduler, snoop log) reads them by index. Both happen under the same High priority — no locking needed.
+The classifier writes BC entries. Consumers (parser/dispatcher for wire-end derivation, chain CRC stage-3, snoop log) read by index. All happen under the same High priority — no locking needed.
+
+### 8.4 Why 64
+
+Sized against two constraints:
+
+- **RX overrun:** worst case is 1 edge/byte. Classifier HT fires at TS_LEN/2 edges = TS_LEN/2 bytes received. RX_LEN ≥ TS_LEN avoids overrun. Pick RX_LEN = TS_LEN.
+- **Parser keep-up:** classifier cadence is `(TS_LEN/2) / edge_rate`. Parser drains up to TS_LEN/2 bytes per walk and must finish before the next walk. At 1 edge/byte and TS_LEN=64: 32 bytes × ~50 cycles = 33 µs of parser work in a 107 µs cadence — 3× margin.
+
+TS_LEN = 64 is the sweet spot. 128 wastes 320 B for negligible safety gain; 32 is feasible but tightens the parser-vs-cadence margin to ~3× at the 1-edge/byte corner, and a USART1 TC handler running `apply_pending` mid-walk could eat that. 64 leaves comfortable headroom for the spike to discover unexpected costs.
+
+Total ring memory: 64 + 128 + 128 = 320 B, down from today's 512 B RX-only.
 
 ---
 
 ## 9. ISRs and priorities
 
-Same two priority levels (V006 PFIC has nothing more). Reshuffled responsibilities:
+Same two priority levels (V006 PFIC has nothing more). The rule: **only TIM2's fire family at High; everything else at Low.**
 
 | Priority | IRQ | Body | Where |
 | --- | --- | --- | --- |
-| High | DMA1_CH7 HT/TC | TS ring classifier walk → BC ring updates | `.highcode` |
-| High | USART1 | IDLE + RXNE + TC, framing/telemetry only (no fire) | `.highcode` |
-| High | DMA1_CH5 HT/TC | Chain CRC stage-1 (unchanged) | `.highcode` |
-| High | TIM2 (CC3IE) | Fire TX: `USART1.CTLR1 \|= TE` + DMA CH4 enable | `.highcode` |
+| High | TIM2 (CC1IE) | Pre-fire catchup (Chain only): disable classifier, drain RX + fold CRC up to NDTR | `.highcode` |
+| High | TIM2 (CC3IE) | Fire TX: `USART1.CTLR1 \|= TE` + DMA CH4 enable + post-fire CRC residual + patch | `.highcode` |
+| Low | USART1 | IDLE (parser kick — *parsing happens here*) + TC (release bus) + RX errors | `.highcode` |
+| Low | DMA1_CH7 HT/TC | Classifier walk (TS → BC) + parser drain (folds CRC if Chain active) | `.highcode` |
 | Low | DMA1_CH1 | ADC kernel pump (unchanged) | flash |
+
+Two ISRs at High — both purely fire-the-reply work, no parsing, no CRC walks past the small pre-fire residual. With `INTSYSCR.INESTEN` set, the High band preempts the Low band unconditionally, so the wire-fire moment is never delayed by classifier, parser, IDLE-handler, or ADC work.
+
+**USART1 IDLE at Low because IDLE *parses*.** The IDLE handler's job is "drain the parser up to whatever min(rx, bc) shows" — that walk costs real cycles (~62 cycles/byte × up to 32 bytes = ~33 µs at the 1-edge/byte worst case). Putting it at High would let it preempt the classifier (also Low) — fine — but would also block any subsequent Low work indefinitely while parsing. More importantly, parsing-at-High has no upside: nothing waits on the parser's result with a hard deadline. Wire-end is already in BC by the time IDLE fires; fire arming for the *next* reply happens in main-loop context anyway. Run parsing where the cycles can be absorbed.
+
+**TC at Low** is fine for the same reason. TC releases the bus and applies pending baud/RDT — neither is time-critical relative to the wire. The bus is already idle by the time TC fires.
+
+**DMA1_CH5 HT/TC interrupts are no longer enabled.** The old chain-CRC stage-1 ISR (which walked RX bytes into the snoop CRC at DMA half/full events) is structurally replaced by the parser drain folding bytes at classifier-end (§10.5), plus the pre-fire catchup mopping up the trailing window (§10.6). The CH5 channel itself still runs — it's USART1's circular byte-DMA pump — but no IRQ is wired to it. The RXNEIE composer from `dxl-rx-timing.md` §7.3 also disappears: framing has no RXNE owner anymore, and chain CRC doesn't need one.
+
+**Bringup gotcha — default priority is High, not Low.** Per RM §6.5.2.21, each IRQ's `PFIC_IPRIORx` field uses bit 7 as the preempt-priority bit (bit 6 is sub-priority within the group; bits 5:0 are reserved). At reset every IPRIOR is 0 → bit 7 = 0 → **every IRQ defaults to High preempt**. The Low band only exists for IRQs whose IPRIOR bit 7 we explicitly set to 1. Bringup must walk every Low-band IRQ (USART1, DMA1_CH7, DMA1_CH1) and write bit 7. Anything missed silently lands at High and competes with the fire IRQ. The whole priority rule is also a no-op unless `INTSYSCR.INESTEN = 1` (reset value 0 disables preemption entirely) — bringup must flip that bit too.
 
 **The fire moves from SysTick to TIM2 but stays in software.** TIM2_CH3 CC3IF latches on compare match; the TIM2 IRQ runs a single-purpose body that writes `USART1.CTLR1 \|= TE` and enables DMA CH4. PFIC entry stays in the path; CCR3 is biased earlier by `FIRE_BIAS_TICKS` so the wire bit lands on time (§5.1).
 
 **TX_EN is hardware-driven.** CCR2 → PC2 via OC mode — no ISR involvement, edge lands at the exact compare tick.
 
-**The classifier sits at top priority** by default. Its job is to keep BC entries fresh enough that any consumer's `BC[i]` lookup gets a stable answer before the consumer needs it. At HT/TC rates of ~23 kHz (3 Mbaud worst case), the classifier interrupts serialize cleanly with other High IRQs via same-priority no-preemption (existing trick from §8.4 of the rx-timing doc).
+**Everything-at-Low-except-fire** is the structural fix for the fire-jitter problem. Any wire-side parser/classifier/CRC work at High would force TIM2 CC3 to wait behind it, pushing the 2.5 µs fire floor up to whatever that work cost. With the rule "only TIM2 CC1/CC3 at High," fire is guaranteed to preempt whatever else was running. The floor stays at 2.5 µs at peak load.
 
-The trade: classifier-at-High means a classifier-mid-walk can delay the fire IRQ by up to its runtime (~10 µs worst case at 3M peak burst), pushing the 2.5 µs fire floor up correspondingly when contention happens. Worst-case contention is rare — classifier HT/TC fires at ~23 kHz at peak, fire happens once per reply, and the windows have to coincide. We accept this and instrument it; if it becomes a problem we revisit classifier-at-Low (see §14 open questions).
+The Low band serializes among itself (USART1, classifier, ADC) via same-priority no-preempt. That's fine — none of them have wire-edge deadlines.
+
+**Pre-fire catchup on TIM2_CH1** (Chain replies only) belongs to the fire family — see §10.6.
 
 **SysTick CMP is unused for DXL.** Free for telemetry or other tasks.
 
-**USART1's role shrinks.** It still handles:
+**USART1's role shrinks dramatically.** It still handles:
 
-- IDLE for packet-boundary detection (parsing trigger),
+- IDLE as a parser-kick signal (drain RX up to current frontier, packet is done) — *no timing value is derived from it*; wire-end comes from BC,
 - TC for "reply finished, release the bus" (drops TX_EN via timer CCMR2 force-inactive + clears DMA CH4 + applies pending baud/RDT),
 - RX errors for telemetry.
 
-It no longer drives fire timing or backdates wire-end. The framing FSM and IDLE/RXNE split disappear; per-byte timestamps come from BC for every byte, regardless of baud.
+The framing FSM (IDLE vs RXNE), the `decide(brr, rdt)` rule, the `pipeline_margin_us` tuning knob, the `DXL_CHAR_TIME_TICKS` backdate constant, the IDLE-stamp queue, and the RXNE single-cell snapshot all **go away**. Every byte gets a per-byte timestamp from BC, regardless of baud — there's no high-vs-low-baud strategy split because there's no estimation involved at any baud.
 
 ---
 
@@ -314,13 +337,101 @@ The classifier is **constructive**: it builds byte boundaries from edge times, n
 
 ### 10.3 CPU cost
 
-Per HT/TC the classifier walks up to 64 TS entries. Per entry: 1 load (TS), 2 comparisons (window low, window high), 1 store (BC), 1 anchor update. ~8 cycles per entry × 64 = ~512 cycles per HT/TC = ~10.7 µs at 48 MHz.
+Per HT/TC the classifier walks up to 32 TS entries (TS_LEN/2). Per entry: 1 load (TS), 2 comparisons (window low, window high), 1 store (BC), 1 anchor update. ~8 cycles per entry × 32 = ~256 cycles per walk = ~5.3 µs at 48 MHz.
 
-At 3 Mbaud worst-case edge rate (1.5 M edges/s), HT/TC fire at ~23 kHz. Classifier consumes 23 kHz × 10.7 µs = ~25% CPU during peak burst. Bursts are bounded by packet length (256 bytes max DXL = ~853 µs @ 3M = one HT/TC pair). Steady-state CPU is much lower; bus duty cycle in real workloads is well under 50%.
+At 3 Mbaud worst-case edge rate (1.5 M edges/s), HT/TC fire at ~47 kHz. Classifier consumes 47 kHz × 5.3 µs = ~25% CPU during peak burst.
+
+Per-walk CPU summary at sustained 3M traffic (worst case, real traffic is bursty):
+
+| Component | Per walk | Cadence (5 edges/byte) | Cadence (1 edge/byte) | CPU % |
+| --- | --- | --- | --- | --- |
+| Classifier walk | 5.3 µs | 21.3 µs | 107 µs | ~25% (cadence-bound) |
+| Parser drain (~50 cyc/byte) | 3 µs (6 B) — 33 µs (32 B) | — | — | ~30% (byte-bound) |
+| **Total during sustained RX** | | | | **~55%** |
+| **During TX** (no edges) | 0 | n/a | n/a | **~0%** |
+
+The TX-phase CPU is what makes the design pay off — the chip can spend its budget on motor control during TX while the bus is busy with our reply.
 
 ### 10.4 Where it lives
 
 `firmware/ch32/src/rx_classifier.rs` (new). Body in `.highcode`. Two entry points: `on_ts_ht()` walks indices `0..TS_LEN/2`; `on_ts_tc()` walks `TS_LEN/2..TS_LEN`. State is a single `Anchor { tick: u32, byte_idx: u16 }` updated in-place. Reset on USART1 IDLE (packet boundary): anchor invalid until the next TS entry, which is the next packet's first start bit.
+
+### 10.5 Coordinating with the parser
+
+The classifier produces BC entries at TS HT/TC; USART1's RX DMA produces RX bytes at each stop bit. The two streams have different cadences:
+
+- **`RX[i]`** lands in memory ~10 bit-times after byte i's start edge (the byte-shift time plus DMA latency) — fast and immediate.
+- **`BC[i]`** lands in memory when the classifier walks the TS entry for byte i's start edge, which happens at the next TS HT/TC. In the worst case BC[i] lags RX[i] by up to half a TS ring's worth of edges.
+
+**The parser's invariant:** consume bytes only up to `min(rx_write_pos, bc_write_pos)`. Past that point, RX data may exist without a corresponding BC tick — partial state from the parser's perspective.
+
+This makes the parser stateful: an RX HT/TC (or classifier HT/TC) that lands mid-packet drains up to the BC frontier, parser yields with in-progress header/length/payload state preserved, and resumes on the next event. The state to keep is small:
+
+    parsed_idx: u16         # bytes consumed so far (cumulative, with wrap counter)
+    decode_state: ...       # header / length / payload / CRC stage
+    expected_end: Option<u16>  # set once header.length is decoded
+
+**Trigger sites:** two are sufficient.
+
+- **Classifier HT/TC (DMA1_CH7).** The natural drain point — the classifier just walked TS → BC, so we drain RX up to the new BC frontier in the tail of the same ISR. Cadence is tied to TS_LEN by design.
+- **USART1 IDLE.** Backstop for small packets that don't fill enough of TS to trip classifier HT. A 14-byte all-0xFF reply generates only 14 edges (below TS_LEN/2 = 32), so the classifier never fires on its own. IDLE catches it. **IDLE is a *signal* here, not a timing source** — it tells the parser "drain, packet done," and the wire-end tick still comes from `BC[last_byte] + 10·bit_time`, never from an IDLE-derived backdate.
+
+No RX HT/TC parser trigger, no SysTick parser trigger, no decimated counter. RX HT/TC stays disabled for parser purposes; the chain-CRC stage-1 snoop walk is a separate consumer that may keep its own RX HT/TC enable.
+
+**Wire-end derivation** at request_complete:
+
+    wire_end_tick = BC[parsed_end_idx - 1] + 10 × bit_time
+    fire_tick     = (wire_end_tick + RDT_ticks - FIRE_BIAS) & 0xFFFF
+    TIM2.CCR3     = fire_tick
+    # ... + set-and-recheck guard from §5.4
+
+No backdate constant. No char-time math. The whole framing-mode FSM from `dxl-rx-timing.md` §7 evaporates.
+
+**Chain-CRC fold integration.** During Fast Last-slave Chain mode, the parser drain *also* folds each byte into the running chain-CRC accumulator. Per-byte cost rises from ~50 cycles to ~62 cycles (the CRC16 update is ~10 cycles). The periodic SysTick catchup ISR from today's design is **gone** — its work happens inline in the parser drain at classifier cadence.
+
+A `snoop_head: u16` cursor marks "start of chain-CRC region" — bytes before `snoop_head` are parser-only (master's request bytes); bytes after are parser + CRC fold (predecessors' replies). The scheduler sets `snoop_head` when transitioning to Chain phase, just as it sets the snoop window today.
+
+### 10.6 Pre-fire catchup (Chain replies only)
+
+Classifier cadence is variable — at 1 edge/byte and TS_LEN=64, HT fires every ~107 µs, so up to 32 RX bytes can sit un-folded between walks. If fire lands in that gap, the post-fire CRC work could push past the DMA prefetch slack window for the CRC patch.
+
+To bound this, Chain replies arm a **pre-fire catchup** on TIM2_CH1:
+
+    CCR1 = fire_tick - PRE_FIRE_OFFSET            # ~30 µs before fire
+    CCR2 = fire_tick - T_setup                    # TX_EN
+    CCR3 = fire_tick - FIRE_BIAS                  # fire trigger
+    enable CC1IE + CC3IE
+
+At CC1 (pre-fire catchup ISR, High priority):
+
+    1. mask DMA1_CH7 HT/TC interrupts (disable classifier)
+    2. run final classifier walk inline up to TS NDTR
+    3. parser drain + chain-CRC fold up to min(rx_write, bc_write)
+    4. exit; CCR3 ISR will handle the residual
+
+PRE_FIRE_OFFSET is sized so step 2-3 finish before CCR3 even on a worst-case 32-byte backlog: classifier walk ≤ 5.3 µs + parser drain ≤ 33 µs + CRC fold ≤ 7 µs = ~45 µs upper bound. PRE_FIRE_OFFSET = 50 µs (2400 ticks) leaves margin.
+
+**Why disable the classifier AND keep everything else at Low?** Two independent things to defend against:
+
+- *Disable*: prevents a fresh classifier HT/TC in the [CC1, CC3] window from re-entering after catchup has handed off. Without it, a stray walk would re-fire after catchup exits but before CC3, and even though it's at Low, the fact that catchup ran first means it'd run *immediately* after catchup exits (no other High work pending) — eating cycles right when we want PFIC quiet.
+- *Low for everything else*: if the catchup ISR happens to be very short (1-2 bytes worth of work because the classifier walked just before CC1), it exits quickly. A classifier IRQ that latched at Low before CC1 entry will run after catchup exits. Classifier-at-Low means CC3 (still pending in High band) preempts it cleanly. If classifier were at High alongside the fire IRQs, CC3 would wait behind the full ~5.3 µs classifier walk — exactly the failure mode the whole priority layout is designed to prevent.
+
+At CC3 (fire ISR, same High priority):
+
+    1. write USART1.CTLR1 |= TE        ← jitter-critical
+    2. enable DMA CH4 (TX ring)
+    3. drain residual: bytes that arrived in [CC1, CC3] window (≤ ~15 bytes at 3M)
+    4. fold residual into chain-CRC
+    5. patch CRC into TX buffer trailing slot (rides DMA prefetch — §8.2 of rx-timing doc)
+
+The "fire first, walk after" pattern is intact — wire fire is the jitter-critical step; CRC patch rides DMA's one-byte prefetch (chain-CRC doc §8.2).
+
+At USART1 TC (reply complete):
+
+    1. unmask DMA1_CH7 HT/TC interrupts (re-enable classifier)
+    2. ...usual TC handling (release bus, apply pending baud/RDT, etc.)
+
+**Plain replies** skip CC1 entirely — no chain CRC, no pre-fire work. Just CCR2 + CCR3 arming. The Chain-vs-Plain split lives in the existing ReplyState FSM; CC1 arming is conditional.
 
 ---
 
@@ -388,8 +499,10 @@ What changes in the existing firmware:
 | `dxl/state.rs` | `ReplyState { Idle, Plain, Chain { … } }` w/ FSM + dispatch table | Same shape; fire dispatch moves to a TIM2 IRQ but the FSM stays |
 | `dxl/isr.rs` | `body_plain_fire`, `body_chain_catchup`, `body_chain_fast_fire` | Same bodies, called from TIM2 IRQ instead of SysTick; leaner because no STATE/DISPATCH indirection on the TIM2 hot path |
 | `irq.rs` | `on_systick_match` dispatches via `STATE`/`DISPATCH` | `on_systick_match` unused (free for telemetry); new `on_tim2` handler does the fire |
-| `irq.rs` | `on_usart1_idle` backdates and stamps `IdleAnchor` | Still publishes packet boundary; BC ring is now the per-byte source |
-| `rx_classifier.rs` | n/a | New: HT/TC walker for TS → BC |
+| `irq.rs` | `on_usart1_idle` backdates and stamps `IdleAnchor` | `on_usart1_idle` kicks the parser; no tick math, no backdate constant |
+| `rx_classifier.rs` | n/a | New: HT/TC walker for TS → BC, calls parser at walk-tail |
+| `dxl/parser.rs` (or wherever the DXL decoder lives) | parses on main-loop poll from a 512 B ring | stateful decoder draining 64 B ring at every classifier walk; resumable mid-packet |
+| `framing.rs` (today's IDLE-stamp queue + RXNE snapshot + framing FSM) | ~hundreds of LoC | **deleted** — no consumers after BC arrives |
 | `board/bringup.rs` | TIM2 unconfigured | TIM2 init: free-running, CH4 IC, CH2 OC (hardware TX_EN), CH3 OC (fire IRQ), DMA CH7 |
 | `idle_anchor.rs` | EXTI snoop instrumentation (9 atomics) | All EXTI snoop fields removed; framing relies on BC, not snoop |
 
@@ -401,12 +514,15 @@ The EXTI-pin instrumentation built on `firmware/dxl-2.0-transport` (the current 
 
 Recommended order — each step independently verifiable on the dev board.
 
+0. **PFIC priority bringup.** Write `INTSYSCR.INESTEN = 1`, then walk every Low-band IRQ (USART1, DMA1_CH7, DMA1_CH1) and set bit 7 of its `PFIC_IPRIORx` byte. Add a debug-build assertion that reads back IPRIOR for each and panics if not Low. This is a one-line bug if missed and silently makes the whole priority story not work.
 1. **PC1 dual-tap.** Configure AFIO for USART1_RX + TIM2_CH4 simultaneously. Verify USART RX still framed correctly (no regression) and TIM2 CCR4 captures on every PC1 falling edge. Use a scope probe on PC1 + a bench-side print of captured CCR4 values to compare.
-2. **TS ring + classifier.** Wire DMA1_CH7 to CCR4 → TS ring (circular). Implement `rx_classifier.rs`. At low baud (e.g. 115200) compare classifier-produced BC against IDLE-backdated tick for the same packet. Should agree to within 1 tick per byte. Then ramp baud to 1M, 3M.
-3. **Software TX fire via TIM2_CH3 IRQ.** Wire CC3IE; implement the leaner ISR body (TE write + DMA CH4 enable). Measure mean CCR3-match → first-wire-bit latency, store as `FIRE_BIAS_TICKS`. Target: < 3 µs floor at 3M. Verify the §5.4 set-and-recheck path by forcing a small-RDT case (RDT=0 at low baud) that exercises the manual-fire branch.
+2. **TS ring + classifier + stateful parser.** Wire DMA1_CH7 to CCR4 → 64-entry TS ring (circular). Implement `rx_classifier.rs` (HT/TC walker → BC). Shrink RX ring to 64 B. Convert the DXL parser to stateful drain-up-to-`min(rx,bc)`. Drive the parser from classifier-end + IDLE only (no RX HT/TC, no SysTick, no decimated counter). Verify at 115200, 1M, 3M that all packets are decoded correctly and BC entries land within ±1 tick of where the wire said they should.
+3. **Software TX fire via TIM2_CH3 IRQ.** Wire CC3IE at High; implement the leaner ISR body (TE write + DMA CH4 enable). Measure mean CCR3-match → first-wire-bit latency, store as `FIRE_BIAS_TICKS`. Target: < 3 µs floor at 3M. Verify the §5.4 set-and-recheck path by forcing a small-RDT case (RDT=0 at low baud) that exercises the manual-fire branch.
 4. **TX_EN via TIM2_CH2.** Wire CH2 → PC2 in OC mode (set-active-on-match). Verify TX_EN rises before CCR3's fire by `T_setup - FIRE_BIAS` ticks and falls correctly at TC.
-5. **Integration: Fast Last-slave at 3 Mbaud.** Validate inter-slot coalesce gap — target: under one byte time. This is the test the SysTick design fails.
-6. **Strip the old fire path.** Once §5 passes, remove SysTick-CMP scheduling, IDLE-stamp queue's wire-end role (keep IDLE for packet boundary only), framing-mode FSM, RXNEIE composer, EXTI snoop instrumentation.
+5. **Chain-CRC fold integrated into parser drain.** Move chain-CRC fold into the parser's per-byte loop (gated by `chain_crc_active` flag set when ReplyState enters Chain). Drop the old periodic-catchup SysTick scheduling and the DMA1_CH5 stage-1 ISR. Validate at 3M that snoop CRC matches the wire for all-foreign Fast Sync Read traffic.
+6. **Pre-fire catchup on TIM2_CH1.** Wire CC1IE at High; ISR disables DMA1_CH7 HT/TC (classifier mask), runs classifier inline to NDTR, drains parser + chain-CRC up to `min(rx, bc)`. Re-enable classifier at USART1 TC. Measure: pre-fire catchup runtime never exceeds PRE_FIRE_OFFSET; CRC patch lands before DMA prefetch reaches it.
+7. **Integration: Fast Last-slave at 3 Mbaud.** Validate inter-slot coalesce gap — target: under one byte time. This is the test the SysTick design fails.
+8. **Strip the old timing paths.** Once §7 passes, remove SysTick-CMP scheduling, IDLE-stamp queue, RXNE single-cell snapshot, framing-mode FSM, RXNEIE composer, `DXL_CHAR_TIME_TICKS` backdate constant, DMA1_CH5 chain-CRC stage-1 ISR, and EXTI snoop instrumentation. Anything that computes a tick from IDLE goes.
 
 Each step is a self-contained commit per the project's "one reviewable unit" rule.
 
@@ -417,11 +533,12 @@ Each step is a self-contained commit per the project's "one reviewable unit" rul
 - **AFIO dual-remap stability.** F1 documentation is explicit about peripheral-side input dual-tap working; V006 RM is less so. Step 1 confirms by direct measurement.
 - **Capture filter setting.** Cap filter `(fCK_INT/8, N=8)` is a starting guess. May need to relax it if real bus glitches are wider than expected, or tighten it if too many spurious edges reach TS.
 - **Fire-floor measurement.** Measure CCR3-match → first-wire-bit at 3M on bench. Estimate is ~2.5 µs; confirm and lock `FIRE_BIAS_TICKS`.
-- **Classifier priority placement.** Default plan keeps classifier at High alongside USART1 / chain-CRC / TIM2 fire IRQs — same-priority serialization keeps state coherent but a classifier-mid-walk can push the fire floor up by up to ~10 µs. Alternative: move classifier to Low so the fire IRQ preempts it; classifier may then fall behind during USART1/chain-CRC bursts. Decide once we have measurements of how often the contention windows actually overlap.
-- **BC entry width.** 32-bit BC entries cost 2 KB at RX_LEN=512. 16-bit entries with a wrap-counter cost 1 KB but add bookkeeping. Decide after BC consumers are written and we know the access pattern.
+- **PRE_FIRE_OFFSET sizing.** §10.6 estimates 50 µs upper bound. Measure actual catchup runtime worst case (32-byte backlog + chain-CRC fold) and tune. Shrinking saves CPU in the catchup ISR but enlarges the post-fire residual window.
+- **Chain-CRC fold cost.** §10.5 estimates ~12 cyc/byte added on top of the parser's ~50 cyc/byte. If the CRC16 implementation lands closer to 20 cyc/byte, peak CPU during Chain RX climbs from ~68% to ~75%. Acceptable but worth measuring.
+- **DMA1_CH7 IRQ priority registers.** V006 PFIC programs priority per IRQ index — confirm DMA1_CH7's index lands in a config we can flip to Low independently of DMA1_CH1 (ADC, also Low), and that USART1 at Low doesn't sit between them in any way that matters.
 
 ---
 
 ## 15. One-paragraph summary
 
-> We move the DXL transport's wire-edge events into TIM2. PC1's dual remap feeds USART1_RX and TIM2_CH4 IC simultaneously; CH4 captures every falling edge into a 256-byte TS ring via DMA1_CH7. A `.highcode` window-classifier ISR runs at TS HT/TC, walking TS into a per-RX-index BC ring with a `[9·bit, 11·bit]` start-bit window test — constructive, self-healing within one byte, robust to glitches and overruns. TX fires from TIM2_CH3 compare → CC3IE IRQ → tiny ISR writing `USART1.CTLR1 \|= TE`, with CCR3 biased earlier by a measured `FIRE_BIAS_TICKS` so the wire bit lands on time. PC2 toggles in hardware on TIM2_CH2 compare to gate the bus driver before the TE write. The fire floor drops from ~5 µs (SysTick CMP + dispatched ISR + reg writes) to ~2.5 µs (TIM2 CC + single-purpose ISR + leaner reg writes), comfortably under the 3.33 µs Fast-Last cap at 3 Mbaud. ADC stays on its existing DMA1_CH1 pump — the only new DMA channel is CH7 for TS. CCR2/CCR3 wrap with TIM2's 16-bit CNT (period 1.365 ms at PSC=0); the §5.4 set-and-recheck pattern catches the case where an arm lands "in the past" and falls back to running the same fire body inline to avoid sleeping a full wrap. A LUT-walker alternative for byte timing (read RX[i], advance TS cursor by `edge_count[RX[i]]`) is documented in §11 and rejected for the silent-desync risk: the window classifier's ~25% peak-burst CPU is the price we pay for not silently corrupting BC entries when the bus glitches.
+> We move every DXL transport timing decision off USART IDLE and onto TIM2 input capture. PC1's dual remap feeds USART1_RX and TIM2_CH4 IC simultaneously; CH4 captures every falling edge into a 64-entry TS ring via DMA1_CH7. A `.highcode` window-classifier ISR runs at TS HT/TC, walking TS into a per-RX-index BC ring with a `[9·bit, 11·bit]` start-bit window test — constructive, self-healing within one byte, robust to glitches and overruns. RX, TS, and BC rings are all 64 entries (~320 B total, down from 512 B), kept small by a stateful parser that drains up to `min(rx_write, bc_write)` at the tail of every classifier walk; IDLE backstops small packets but only as a signal, never as a timing source. **No tick value comes from IDLE anymore** — wire-end is `BC[last_byte] + 10·bit_time`, per-byte precise at every baud. The framing-mode FSM, IDLE-stamp queue, RXNE snapshot, and `9 × BRR` backdate constant all delete. TX fires from TIM2_CH3 compare → CC3IE IRQ → tiny ISR writing `USART1.CTLR1 \|= TE`, with CCR3 biased earlier by a measured `FIRE_BIAS_TICKS` so the wire bit lands on time. PC2 toggles in hardware on TIM2_CH2 compare to gate the bus driver before the TE write. Fire floor drops from ~5 µs to ~2.5 µs, comfortably under the 3.33 µs Fast-Last cap at 3 Mbaud. ADC stays on its existing DMA1_CH1 pump — the only new DMA channel is CH7 for TS. CCR2/CCR3 wrap with TIM2's 16-bit CNT (period 1.365 ms at PSC=0); the §5.4 set-and-recheck pattern catches the case where an arm lands "in the past" and falls back to running the same fire body inline to avoid sleeping a full wrap. The chain-CRC catchup ISR (today's periodic SysTick CMP) is **gone** — chain-CRC fold runs inline in the parser drain at classifier-end, and a TIM2_CH1 pre-fire catchup ~50 µs before fire brings everything current before the wire commit; the post-fire residual rides DMA prefetch slack as today. Priority layout is dead simple: **only TIM2 CC1 and CC3 at High**, everything else (USART1, classifier, ADC, parser drain) at Low. The classifier's ~5 µs walk can never delay the fire IRQ because High preempts Low unconditionally. A LUT-walker alternative for byte timing (read RX[i], advance TS cursor by `edge_count[RX[i]]`) is documented in §11 and rejected for the silent-desync risk. Total sustained-RX CPU at 3M peak is ~55% (Plain) or ~68% (Chain, with the chain-CRC fold riding parser drain); during TX it's ~0% because the bus is being driven and no edges arrive.
