@@ -28,12 +28,24 @@ pub(crate) static DXL_RX_WRITE_POS: AtomicU16 = AtomicU16::new(0);
 /// tick to derive the wire receive duration. Loaded once `VALID` is set.
 pub(crate) static DXL_RX_FIRST_TICK: AtomicU32 = AtomicU32::new(0);
 
-/// Set true by [`crate::irq::on_exti_dxl_rx`] when it latches a packet's
+/// Set true by [`crate::irq::on_exti`] when it latches a packet's
 /// first byte's start-bit edge; swapped to false by the dispatcher's
-/// `cal_snapshot` on consume. A stale-true here is harmless — the EXTI
-/// handler overwrites `DXL_RX_FIRST_TICK` whenever it fires, so the next
-/// CALIB only sees a fresh tick or a false flag.
+/// `cal_snapshot` on consume. Gating FIRST_TICK by !VALID makes the
+/// stamp truly first-byte (rather than last) so [`DXL_RX_EXTI_FIRES`]
+/// can disambiguate "fired once at the right edge" from "fired
+/// multiple times" when the bench shows late stamps.
 pub(crate) static DXL_RX_FIRST_VALID: AtomicBool = AtomicBool::new(false);
+
+/// Per-cycle EXTI fire count, swapped to 0 by the IDLE handler when it
+/// snapshots into [`crate::idle_anchor`]. Bench-side instrumentation
+/// for the snoop-bias characterization — `> 1` means a glitch retriggered
+/// EXTI inside one master packet.
+pub(crate) static DXL_RX_EXTI_FIRES: AtomicU32 = AtomicU32::new(0);
+
+/// Last EXTI fire's SysTick, written on every on_exti entry. Paired with
+/// [`DXL_RX_FIRST_TICK`] (which is now truly the first fire); when the
+/// two diverge it pinpoints a glitch's edge time.
+pub(crate) static DXL_RX_LAST_TICK: AtomicU32 = AtomicU32::new(0);
 
 /// DXL RX pin, written once at bring-up so the EXTI handler can clear/disarm
 /// the same line that bring-up armed. Read-only thereafter.

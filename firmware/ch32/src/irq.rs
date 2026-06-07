@@ -6,8 +6,9 @@ use crate::dxl;
 use crate::dxl::statics::{
     CLOCK_FINE_TRIM_NO_PENDING, CLOCK_TRIM_NO_PENDING, DXL_BAUD_PENDING_BRR, DXL_CHAR_TIME_TICKS,
     DXL_CLOCK_FINE_TRIM_PENDING, DXL_CLOCK_TRIM_PENDING, DXL_REBOOT_PENDING, DXL_RX_BUF_LEN,
-    DXL_RX_FIRST_TICK, DXL_RX_FIRST_VALID, DXL_RX_PIN, DXL_RX_WRITE_POS, DXL_TX_BUF, DXL_TX_COUNT,
-    DXL_TX_EN, recompute_fire_advance_fine_ticks, store_baud_derived,
+    DXL_RX_EXTI_FIRES, DXL_RX_FIRST_TICK, DXL_RX_FIRST_VALID, DXL_RX_LAST_TICK, DXL_RX_PIN,
+    DXL_RX_WRITE_POS, DXL_TX_BUF, DXL_TX_COUNT, DXL_TX_EN, recompute_fire_advance_fine_ticks,
+    store_baud_derived,
 };
 use crate::hal::rcc;
 use crate::hal::{dma, exti, gpio, pfic, systick, usart};
@@ -54,8 +55,15 @@ pub fn on_exti() {
         return;
     }
     let tick = systick::ticks();
-    DXL_RX_FIRST_TICK.store(tick, Ordering::Release);
-    DXL_RX_FIRST_VALID.store(true, Ordering::Release);
+    // Truly-first-byte stamp: only the first on_exti since the IDLE
+    // handler cleared VALID writes FIRST_TICK. LAST_TICK + FIRES expose
+    // any extra fires (glitch retriggers) for the bench snoop log.
+    if !DXL_RX_FIRST_VALID.load(Ordering::Acquire) {
+        DXL_RX_FIRST_TICK.store(tick, Ordering::Release);
+        DXL_RX_FIRST_VALID.store(true, Ordering::Release);
+    }
+    DXL_RX_LAST_TICK.store(tick, Ordering::Release);
+    DXL_RX_EXTI_FIRES.fetch_add(1, Ordering::AcqRel);
     exti::set_irq(pin, false);
     exti::clear_pending(pin);
 }
@@ -115,7 +123,16 @@ fn on_usart1_idle() {
     // FIRST_TICK store; the snoop snapshot here is frozen against that.
     let first_valid = DXL_RX_FIRST_VALID.swap(false, Ordering::AcqRel);
     let first_tick = DXL_RX_FIRST_TICK.load(Ordering::Acquire);
-    idle_anchor::record(delta, request_end_tick, first_tick, first_valid);
+    let last_tick = DXL_RX_LAST_TICK.load(Ordering::Acquire);
+    let exti_fires = DXL_RX_EXTI_FIRES.swap(0, Ordering::AcqRel);
+    idle_anchor::record(
+        delta,
+        request_end_tick,
+        first_tick,
+        first_valid,
+        last_tick,
+        exti_fires,
+    );
     // Re-arm EXTI on the RX pin so the next packet's first-byte falling
     // edge stamps DXL_RX_FIRST_TICK. Clear pending before unmask: the
     // just-completed packet's stream of byte-start edges latched the

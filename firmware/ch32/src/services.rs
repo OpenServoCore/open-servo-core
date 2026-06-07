@@ -220,9 +220,11 @@ impl Ch32Bus {
             .checked_div(nominal as i64)
             .unwrap_or(0) as i32;
         crate::log::info!(
-            "snoop: len={} first={} anchor={} obs={} obs_corr={} nom={} err={} ppm={}",
+            "snoop: len={} first={} last={} fires={} anchor={} obs={} obs_corr={} nom={} err={} ppm={}",
             self.parsed_length as u32,
             first_tick,
+            self.anchor.last_tick,
+            self.anchor.exti_fires,
             self.anchor.tick,
             observed,
             observed_corr,
