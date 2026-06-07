@@ -11,6 +11,12 @@ pub struct IdleAnchor {
     pub seq: u32,
     pub bytes: u32,
     pub tick: u32,
+    /// Packet first-byte tick captured at IDLE-handler entry. Frozen here
+    /// so a later EXTI fire from the *next* packet can't overwrite the
+    /// snoop view; the writer pairs it with `first_valid` inside the same
+    /// seqlock so the snapshot is atomic.
+    pub first_tick: u32,
+    pub first_valid: bool,
 }
 
 impl IdleAnchor {
@@ -19,6 +25,8 @@ impl IdleAnchor {
             seq: 0,
             bytes: 0,
             tick: 0,
+            first_tick: 0,
+            first_valid: false,
         }
     }
 }
@@ -26,11 +34,16 @@ impl IdleAnchor {
 static SEQ: AtomicU32 = AtomicU32::new(0);
 static BYTES: AtomicU32 = AtomicU32::new(0);
 static TICK: AtomicU32 = AtomicU32::new(0);
+static FIRST_TICK: AtomicU32 = AtomicU32::new(0);
+static FIRST_VALID: AtomicU32 = AtomicU32::new(0);
 static CUMULATIVE_BYTES: AtomicU32 = AtomicU32::new(0);
 
 /// `delta_bytes` is DMA bytes since the previous IDLE; `tick` is the backdated
-/// wire-end SysTick.
-pub fn record(delta_bytes: u16, tick: u32) {
+/// wire-end SysTick. `first_tick` / `first_valid` are the IDLE-handler-side
+/// snapshot of [`crate::dxl::statics::DXL_RX_FIRST_TICK`] /
+/// [`crate::dxl::statics::DXL_RX_FIRST_VALID`] — freeze them here so a
+/// later-packet EXTI fire can't poison the snoop measurement.
+pub fn record(delta_bytes: u16, tick: u32, first_tick: u32, first_valid: bool) {
     let new_bytes = CUMULATIVE_BYTES
         .load(Ordering::Relaxed)
         .wrapping_add(delta_bytes as u32);
@@ -40,6 +53,8 @@ pub fn record(delta_bytes: u16, tick: u32) {
     SEQ.store(seq.wrapping_add(1), Ordering::Release);
     BYTES.store(new_bytes, Ordering::Relaxed);
     TICK.store(tick, Ordering::Relaxed);
+    FIRST_TICK.store(first_tick, Ordering::Relaxed);
+    FIRST_VALID.store(first_valid as u32, Ordering::Relaxed);
     SEQ.store(seq.wrapping_add(2), Ordering::Release);
 }
 
@@ -53,12 +68,16 @@ pub fn snapshot() -> IdleAnchor {
         }
         let bytes = BYTES.load(Ordering::Relaxed);
         let tick = TICK.load(Ordering::Relaxed);
+        let first_tick = FIRST_TICK.load(Ordering::Relaxed);
+        let first_valid = FIRST_VALID.load(Ordering::Relaxed) != 0;
         let seq2 = SEQ.load(Ordering::Acquire);
         if seq1 == seq2 {
             return IdleAnchor {
                 seq: seq1,
                 bytes,
                 tick,
+                first_tick,
+                first_valid,
             };
         }
     }

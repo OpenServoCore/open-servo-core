@@ -98,7 +98,13 @@ fn on_usart1_idle() {
     let mask = (DXL_RX_BUF_LEN as u16).wrapping_sub(1);
     let delta = write_pos.wrapping_sub(prev) & mask;
     DXL_RX_WRITE_POS.store(write_pos, Ordering::Release);
-    idle_anchor::record(delta, request_end_tick);
+    // Consume + snapshot the EXTI-stamped first-byte tick into the anchor
+    // before re-arming. Reading FIRST_VALID via swap clears it: any later
+    // EXTI fire (for the *next* packet) sets it back to true on its own
+    // FIRST_TICK store; the snoop snapshot here is frozen against that.
+    let first_valid = DXL_RX_FIRST_VALID.swap(false, Ordering::AcqRel);
+    let first_tick = DXL_RX_FIRST_TICK.load(Ordering::Acquire);
+    idle_anchor::record(delta, request_end_tick, first_tick, first_valid);
     // Re-arm EXTI on the RX pin so the next packet's first-byte falling
     // edge stamps DXL_RX_FIRST_TICK. Clear pending before unmask: the
     // just-completed packet's stream of byte-start edges latched the

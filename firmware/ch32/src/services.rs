@@ -12,7 +12,7 @@ use crate::dxl::cal::{Cal, snoop_bias_ticks};
 use crate::dxl::statics::{
     CLOCK_FINE_TRIM_NO_PENDING, CLOCK_TRIM_NO_PENDING, DXL_BAUD_PENDING_BRR, DXL_BYTE_TIME_TICKS,
     DXL_CHAR_TIME_TICKS, DXL_CLOCK_FINE_TRIM_PENDING, DXL_CLOCK_TRIM_PENDING, DXL_REBOOT_PENDING,
-    DXL_RX_BUF, DXL_RX_BUF_LEN, DXL_RX_FIRST_TICK, DXL_RX_FIRST_VALID, DXL_TX_BUF, RX_MASK_U32,
+    DXL_RX_BUF, DXL_RX_BUF_LEN, DXL_TX_BUF, RX_MASK_U32,
 };
 use crate::dxl::timing::{SLOT_MARGIN, bytes_to_us, bytes_to_us_q88};
 use crate::hal::clocks::PCLK_HZ;
@@ -200,10 +200,14 @@ impl Ch32Bus {
         if matches!(packet, Packet::Status(_)) {
             return;
         }
-        if !DXL_RX_FIRST_VALID.swap(false, Ordering::AcqRel) {
+        // IDLE handler snapshots FIRST_TICK / FIRST_VALID into the anchor
+        // atomically with its other fields. Reading from the snapshot here
+        // (instead of from the live atomics) means a subsequent EXTI fire
+        // for the *next* packet can't poison this packet's measurement.
+        if !self.anchor.first_valid {
             return;
         }
-        let first_tick = DXL_RX_FIRST_TICK.load(Ordering::Acquire);
+        let first_tick = self.anchor.first_tick;
         let observed = self.anchor.tick.wrapping_sub(first_tick);
         let byte_time = DXL_BYTE_TIME_TICKS.load(Ordering::Relaxed);
         let char_time = DXL_CHAR_TIME_TICKS.load(Ordering::Relaxed);
