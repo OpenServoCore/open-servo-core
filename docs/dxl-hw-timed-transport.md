@@ -127,13 +127,18 @@ Jitter (variance around the mean) comes from the same place it does today: same-
 
 ### 5.2 Timer-fired TX_EN
 
-PC2 is TIM2_CH2's alternate-function output. We use channel 2 in **output-compare toggle** mode, configure CCR2 to fire at the same tick as CCR3 (or a few ticks earlier if we need TX_EN setup time before the start bit), and let the timer drive the pin directly.
+PC2 is TIM2_CH2's alternate-function output. The OC mode sequence is an explicit state machine, not toggle mode — toggle flips on every match without a defined start state, which would invert TX_EN if we miscount edges across a fire-cancel.
 
-    TIM2 CNT == CCR2 → TIM2_CH2 output toggles → PC2 flips → bus driver turns on.
+| Phase | OC2M setting | PC2 state |
+| --- | --- | --- |
+| Idle (no reply armed) | Force inactive (`OC2M = 100`) | Idle level (low for active-high TX_EN) |
+| Arm time (parser scheduled reply) | Write CCR2, then set Active-on-match (`OC2M = 001`) | Still idle until match |
+| CCR2 match (T_setup before fire) | unchanged | Active level (TX_EN asserted) |
+| USART1 TC (reply done) | Force inactive (`OC2M = 100`) | Back to idle level |
 
-No GPIO write from software. No ISR. The pin transitions on a hardware tick.
+    TIM2 CNT == CCR2 → CH2 transitions to active level → PC2 rises → bus driver turns on.
 
-We can also pre-load the TX_EN polarity into CCER's CC2P bit at init time so the toggle direction is correct, and use a "force inactive" register write (CCMR2's OC2M) to reset PC2 after TX completes (the USART TC ISR can still drive that — it's not jitter-critical, only fire is).
+No GPIO write from software at fire time. No ISR in the wire-edge path. The transition lands on a hardware tick. The Force-inactive write at TC is not jitter-critical (the reply is already done shifting), so the TC ISR handles it. CCER's CC2P bit sets polarity at init.
 
 ### 5.3 Composing CCR2 and CCR3
 
@@ -209,7 +214,7 @@ Decisions on TIM2 configuration:
 - **No slave-mode trigger.** SMS = 0b000. Free-running.
 - **CC1S / CC2S / CC3S / CC4S** chosen per channel: CH4 = input capture (CC4S = 01), CH2 / CH3 = output compare (CC2S/CC3S = 00).
 - **Prescaler.** PSC = 0 — CNT counts at HCLK / 1 = 48 MHz. One tick = 20.83 ns. ARR = 0xFFFF, period ≈ 1.365 ms. The IC side wants the fine resolution: at 3 Mbaud, bit_time = 333 ns = 16 ticks; the classifier's `[9·bit, 11·bit]` window = `[144, 176]` ticks. Higher prescalers cut the bit_time to 8 or fewer ticks, eating the tolerance budget. TS-ring consumers handle wrap via a cumulative byte counter (same trick as today's IDLE-stamp ring). TX-fire arming handles wrap via the set-and-recheck pattern (§5.4).
-- **Capture filter on CH4** (ICF bits in CCMR2). Reject narrow glitches before they reach the TS ring. Conservative setting: `fSAMPLING = fCK_INT/8, N=8` for stable sampling. The chain CRC layer treats glitch-induced spurious edges as packet faults already; cutting them at the capture filter is cheap insurance.
+- **Capture filter on CH4** (ICF bits in CCMR2). Reject narrow glitches before they reach the TS ring. **Filter width must be shorter than one bit-time at the operating baud** — at 3M (`bit_time = 333 ns`), the naive setting `fSAMPLING = fCK_INT/8, N=8` (minimum pulse width ≈ 1.33 µs) would reject the start bit of a 0xFF byte as a glitch. Use `fSAMPLING = fCK_INT/2, N=2` (≈ 83 ns) at 3M; at low baud the filter can be heavier for noise immunity. Filter setting is computed alongside BRR and applied via the §9 TC budget path (precomputed at parse time, register write at TC tail). The chain CRC layer treats glitch-induced spurious edges as packet faults already; cutting them at the capture filter is cheap insurance.
 - **Polarity on CH4** (CC4P): falling edge only. Rising edges are start-bit ends — we want the start-bit *begin*, which is the 1→0 transition.
 
 ---
@@ -291,9 +296,15 @@ All wire-side IRQs at High serialize cleanly via same-priority no-preemption (ex
 
 **TX_EN is hardware-driven.** CCR2 → PC2 via OC mode — no ISR involvement, edge lands at the exact compare tick.
 
-**Everything-at-Low-except-fire** is the structural fix for the fire-jitter problem. Any wire-side parser/classifier/CRC work at High would force TIM2 CC3 to wait behind it, pushing the 2.5 µs fire floor up to whatever that work cost. With the rule "only TIM2 CC1/CC3 at High," fire is guaranteed to preempt whatever else was running. The floor stays at 2.5 µs at peak load.
+**Why all DXL-side IRQs share High priority.** Three invariants depend on same-priority serialization:
 
-The Low band serializes among itself (USART1, classifier, ADC) via same-priority no-preempt. That's fine — none of them have wire-edge deadlines.
+1. **Catchup-finishes-before-fire.** CC1 and CC3 at the same priority means CC3 cannot start until CC1's ISR returns. The `last_catchup_tick = fire_tick − FIRE_BIAS − margin` schedule then guarantees the chain-CRC fold completes before TX shifts. If CC3 preempted CC1, the fold loop's state would suspend mid-iteration and the patch trailer's CRC would be wrong.
+2. **TC release before master's next start bit.** TX_EN drop in the TC ISR must land before any next request's start edge to avoid bus driver contention. TC at High keeps that latency bounded.
+3. **Catchup interval cadence.** §10.6 budgets ~54% CPU per interval; CC1 at High keeps ADC and other Low work from eating into the headroom.
+
+The intuitive alternatives — "TX at High, RX at Low" or "CC3 alone at High" — break all three: CC3 would preempt CC1 mid-fold; TC at Low would queue behind ADC/classifier under fast back-to-back master traffic; CC1 at Low could miss its cadence under load. The remaining concern — TC tail of reply N−1 delaying CC3 of reply N when master's RDT is tight — is addressed at root by the TC tail budget below, not by priority shuffling.
+
+**TC tail budget.** `apply_pending_after_tc` mutates clock/baud and must run after our reply's wire activity ends, so it can't move earlier. But the *computation* of new values (fine-trim recompute, BRR precompute, capture filter setting per §7) moves to **parse time**: the parser already sees the register write that requested the change, so it stores the *computed* result. TC tail then does only the cheap atomic register writes — bounded under 1 µs. With TC tail under one byte-time at the highest expected baud (<2 µs is comfortable), the worst-case "next CC3 latches mid-TC-tail" delay vanishes for any realistic RDT. Out of normal operating envelope (master RDT_min approaching TC tail duration), residual contention surfaces as fire-late telemetry — documented risk, not engineered solution.
 
 **Pre-fire catchup on TIM2_CH1** (Chain replies only) belongs to the fire family — see §10.6.
 
@@ -338,11 +349,17 @@ That's the whole algorithm:
 
 The window is `[9 × bit_time_spec, 11 × bit_time_spec]` where `bit_time_spec = HCLK / baud` — the slave's computed bit-time. At 3 Mbaud, `bit_time_spec = 16` ticks; the window is `[144, 176]` ticks from the previous anchor. The algorithm re-anchors `anchor = t` on every successful match, so drift between slave HSI and master HSE doesn't compound across the packet — only the static window tolerance matters. §10.7 covers the drift budget and the BC-ring-based feedback loop that closes it.
 
+**First-edge seeding and header-grid alignment.** At classifier reset (boot, IDLE, post-cancel), `anchor` is invalid; the next TS entry seeds it. This is structurally indistinguishable from the case where a pre-packet glitch (driver settle, EMI) produces an edge before the real start bit — `BC[0]` would commit to the glitch tick and every subsequent BC index would shift by one in RX-space.
+
+The classifier doesn't try to disambiguate. It commits BC entries naively. **Alignment is the parser's job**: a DXL 2.0 packet always begins with the fixed header `FF FF FD 00`, so `BC[j..j+3]` (where `j` is the parser's hypothesis for the BC index of `RX[0]`) must form a strict 10·bit_time grid. The parser probes `j = bc_frontier − packet_len`, validates that `BC[j+1] − BC[j]`, `BC[j+2] − BC[j+1]`, `BC[j+3] − BC[j+2]` all equal `10·bit_time_spec` within ±1 tick. If the grid fails, slip `j` by ±1 and retry. After 2–3 slip retries with no match, declare BC degraded for this packet and fall back to packet-boundary timing for fire scheduling.
+
+This keeps the classifier free of protocol awareness and the parser free of timing arithmetic until alignment is established. The two paths reconcile at one well-defined point per packet.
+
 ### 10.2 Why this is robust
 
 - **Glitch in the middle of a byte:** a spurious falling edge between `anchor + 0` and `anchor + 9 × bit_time` is rejected by the window test. No state corruption.
 - **Glitch in the inter-byte gap that happens to fit the window:** the next *real* start bit will land outside the window (because the real byte is offset by the glitch's arrival time). The classifier re-anchors on the next entry that fits a window from the *new* anchor — self-heals within 1 byte.
-- **Missed edge (TS overrun):** anchor stays stuck at the last valid entry; the next entry will be too late for the window and trigger re-anchor as "gap." We mark BC entries from the overrun point as invalid (sentinel value); consumers fall back to packet-boundary stamps for those bytes. Detectable and bounded.
+- **Missed edge (TS overrun):** the number of dropped edges is unknown, so `anchor` cannot be a valid predictor of the next start bit. Detect at HT/TC via NDTR-vs-consumer comparison; invalidate `anchor` and mark BC entries from the overrun point as sentinel-invalid. The next TS entry seeds a fresh anchor via the same first-edge path as packet start (§10.1), and the parser detects degradation when `bc_count_in_packet < rx_count_in_packet` — falling back to packet-boundary stamps for the remainder of this packet. Next IDLE refreshes everything. Detectable and bounded.
 - **Spec-baud mismatch:** the window is computed from `bit_time = HCLK / baud`. If the host writes a baud the slave isn't running at, every entry falls outside every window — the whole packet's BC marks as invalid. Telemetry visible.
 
 The classifier is **constructive**: it builds byte boundaries from edge times, not from byte content. The RX ring's data and the BC ring's times are derived from the same wire events but via independent paths. A byte data error doesn't poison BC; a BC error doesn't poison byte data.
@@ -389,6 +406,10 @@ This makes the parser stateful: an RX HT/TC (or classifier HT/TC) that lands mid
 - **USART1 IDLE.** Backstop for small packets that don't fill enough of TS to trip classifier HT. A 14-byte all-0xFF reply generates only 14 edges (below TS_LEN/2 = 32), so the classifier never fires on its own. IDLE catches it. **IDLE is a *signal* here, not a timing source** — it tells the parser "drain, packet done," and the wire-end tick still comes from `BC[last_byte] + 10·bit_time`, never from an IDLE-derived backdate.
 
 No RX HT/TC parser trigger, no SysTick parser trigger, no decimated counter. RX HT/TC stays disabled for parser purposes; the chain-CRC stage-1 snoop walk is a separate consumer that may keep its own RX HT/TC enable.
+
+**Packet boundaries are a parser concept, not a classifier concept.** DXL 2.0 doesn't require an inter-packet idle gap. If the master sends back-to-back requests without silence between them, USART1 IDLE never fires at the seam and the classifier's `anchor` is never reset — `byte_idx` keeps counting across the boundary. RX DMA likewise writes continuously, no boundary signal.
+
+The parser is the only thing that knows packets exist. On detecting `FF FF FD 00` at the current header position, it stamps `packet_start_rx_idx` and `packet_start_bc_idx` into its own state. All BC consumers that want "byte k of *this* packet" walk forward from `packet_start_bc_idx + k`, never assuming "BC[0] is byte 0 of the current packet." Drift estimation (§10.7.1) naturally folds the seam pair (last byte of packet N → first byte of packet N+1, separated by exactly 10·bit_time) into its running average as a bonus tight-window sample.
 
 **Wire-end derivation** at request_complete:
 
@@ -443,6 +464,8 @@ The Chain catchup ISR runs at fixed-byte intervals on TIM2_CH1, owning **all** R
         CCR1 += interval_ticks             # re-arm for next interval
 
 The pattern mirrors today's `PeriodicCatchup → busy-wait → TxArmed` handoff (`dxl/state.rs`). The new piece is just steps 2-3 inside each ISR — the classifier walk and parser drain that were happening in DMA1_CH7 HT/TC are now folded in.
+
+**CCR1 wrap guard.** The `CCR1 += interval_ticks` re-arm is subject to the same 16-bit wrap hazard as CCR3 (§5.4). If catchup ISR runs late (preempted by a slow same-priority handler), `CCR1 + interval_ticks` can fall behind `CNT` after modular subtraction — the next match wraps a full 1.365 ms before firing. Same set-and-recheck applies: after writing CCR1, compare `(CCR1 − CNT) & 0xFFFF` against `MAX_REASONABLE_REMAINING` (sized against the largest legal inter-byte gap, not just `interval_ticks`). If exceeded, manually invoke the catchup body now — synchronous walk + parse + fold over whatever's in TS — and re-arm CCR1 forward from the new CNT.
 
 **Per-interval cost at 3M** (default 17-byte interval, mid-range edge density):
 
@@ -630,13 +653,20 @@ Each step is a self-contained commit per the project's "one reviewable unit" rul
 ## 14. Open questions for the spike
 
 - **AFIO dual-remap stability.** F1 documentation is explicit about peripheral-side input dual-tap working; V006 RM is less so. Step 1 confirms by direct measurement.
-- **Capture filter setting.** Cap filter `(fCK_INT/8, N=8)` is a starting guess. May need to relax it if real bus glitches are wider than expected, or tighten it if too many spurious edges reach TS.
+- **Capture filter setting per baud (§7).** Filter width must be < 1 bit-time at the operating baud; default `(fCK_INT/2, N=2)` for 3M. Compute alongside BRR; relax (heavier filter) at lower baud if bench shows noise immunity needs it.
 - **Fire-floor measurement.** Measure CCR3-match → first-wire-bit at 3M on bench. Estimate is ~2.5 µs; confirm and lock `FIRE_BIAS_TICKS`.
 - **TS sizing + interval (§8.4 Option A vs B).** Default plan is 17-byte interval / TS_LEN=128. Option B (12-byte interval / TS_LEN=64) saves 128 B of SRAM at ~1% extra CPU. Decide based on memory pressure measured during integration.
 - **Chain-CRC fold cost.** §10.6 estimates ~10 cyc/byte for CRC16 update. If the implementation lands closer to 20 cyc/byte, peak CPU during Chain RX climbs from ~54% to ~60%. Still well under the 75% spike target.
 - **Classifier-pending-at-catchup-entry race.** §10.6 proposes "mask + clear pending" at first CC1 entry to defeat a classifier IRQ that latched right before catchup fired. Confirm the clear-pending write to `PFIC.IPRR.CH7` actually drops the latched IRQ on V006 (not just future ones).
 - **`walk_deadline_margin` sizing.** The busy-wait exit in the last catchup leaves GUARD bytes for post-fire. Today's value (in `dxl_fast`) was tuned for SysTick scheduling; re-measure under TIM2 scheduling.
 - **HSI drift convergence.** §10.7.1's BC-averaged drift estimator needs N packets for a usable estimate. Measure σ on bench at the target traffic mix to set the smoothing window. Decide whether §10.7.3's in-packet adaptive bit_time is worth the cycles (probably not, given 10% static window margin).
+- **First-byte BC seed under pre-packet glitches (§10.1).** Naive classifier + parser header-grid handles the common case. Verify on bench with EMI injection that 2–3 slip retries are enough in practice; if not, add tentative-anchor confirmation in the classifier.
+- **TX_EN OC2M transitions (§5.2).** Bench-verify the Active-on-match + Force-inactive sequence produces clean rising/falling edges without spurious toggles at init, fire-cancel, and TC.
+- **CC3IF latch on rearm at current CNT (§5.4).** Write CCR3 = current CNT on bench and observe whether CC3IF latches immediately, on next tick, or only after a wrap. Drives the size of `MAX_REASONABLE_REMAINING`.
+- **TC tail budget (§9).** Profile worst-case `apply_pending_after_tc` runtime after the parse-time precompute lands. Verify it stays under one byte-time at the highest expected baud.
+- **Low-baud wrap span (§5.4).** At 9600 baud, `10·bit_time ≈ 50000` ticks — close to the 16-bit wrap. Size `MAX_REASONABLE_REMAINING` against the largest legal inter-byte gap, not just RDT.
+- **TIM2 ↔ SysTick clock bridging.** Capture a fixed offset once at boot for telemetry events that span both clocks. Define the convention in `idle_anchor`-style telemetry surfaces.
+- **AFIO-then-DMA bringup order (§13 step 1).** AFIO remap must complete before DMA1_CH7 arms, or the first TS entries are garbage on transient pad state.
 
 ---
 
