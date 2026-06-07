@@ -204,6 +204,8 @@ Only one new DMA channel comes into play: CH7 for the TS ring. The other channel
 
 This is the lightest-touch DMA allocation the redesign supports. Heavier alternatives (TIM2_CH3 → DMA1_CH1 hardware-DMA fire, with ADC moved to SysTick-polled or TIM3-chained sampling) would shave another ~1-2 µs off the fire floor but at the cost of migrating ADC. The 2.5 µs floor from the software-fire path is already under the 3.33 µs Fast-Last cap at 3 Mbaud, so the heavier rework isn't load-bearing for the redesign's goals.
 
+**TS channel priority.** Set `DMA_CFGR7.PL = 0b11` (Highest); ADC (CH1) and the USART channels stay at default. DMA arbitration is per-transfer and atomic — each ~80-ns peripheral-read + memory-write completes before the arbitrator picks the next request, so priority decides the *queued-request* race, not the in-flight transfer. When both TS and ADC have pending requests, TS wins; when TS arrives mid-ADC-transfer it waits ≤80 ns. ADC's sample-and-hold instant is anchored to TIM1 TRGO and is *not* jittered by DMA contention — only the latency from sample-complete to memory-write moves by ≤80 ns, which is invisible to a 40 kHz × 8-channel control loop (~3% of the inter-sample period, on a value that's already buffered in ADC_RDATAR). At 3 Mbaud worst case (1.5 M edges/sec) TS sees at most one 80-ns ADC contention per edge, well under the 32-tick (667 ns) intra-byte minimum — no edges lost. The bringup spike confirmed zero overcaptures at 3 M without the ADC pump running; a follow-up regression with ADC active is in §13 step 2.
+
 ---
 
 ## 7. Putting the timer in slave/master mode (or not)
