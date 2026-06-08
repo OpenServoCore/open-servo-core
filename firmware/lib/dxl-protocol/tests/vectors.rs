@@ -1,25 +1,26 @@
-//! Reference vector decoding through the streaming Decoder, plus the
-//! slot-writer's positional spec. Writer-side helpers still consume the
-//! legacy Packet shapes; the parser path exercises the new Decoder +
-//! overlay Packet.
+//! Reference vector encoding and decoding through the streaming Decoder
+//! and the new emitter API.
 
 use dxl_protocol::decoder::{Decoder, ResyncKind, Step};
-use dxl_protocol::packet as overlay;
-use dxl_protocol::*;
+use dxl_protocol::packet::{self as overlay, ErrorCode, Slot, StatusError};
+use dxl_protocol::{
+    CrcUmts, InstructionEmitter, PACKET_LEN_GUARD, SlotEmitter, SoftwareCrcUmts, StatusEmitter,
+    WriteBuf, WriteError, instruction::Instruction,
+};
 use heapless::Vec;
 
 type Crc = SoftwareCrcUmts;
 
-fn write_legacy<W: WriteBuf>(out: &mut W, p: &Packet<'_, NoInstructionExt>) -> Result<(), WriteError> {
-    write_packet::<W, Crc, NoInstructionExt>(out, p)
-}
-
-fn write_legacy_slot<W: WriteBuf>(
-    out: &mut W,
-    s: &Slot<'_>,
-    pos: SlotPosition,
-) -> Result<(), WriteError> {
-    write_slot::<W, Crc>(out, s, pos)
+fn encode<F>(f: F) -> Vec<u8, 256>
+where
+    F: FnOnce(&mut InstructionEmitter<'_, Vec<u8, 256>, Crc>) -> Result<(), WriteError>,
+{
+    let mut out: Vec<u8, 256> = Vec::new();
+    {
+        let mut w = InstructionEmitter::<_, Crc>::new(&mut out);
+        f(&mut w).expect("encode failed");
+    }
+    out
 }
 
 fn feed_full<'a, const M: usize>(dec: &'a mut Decoder<M, Crc>, wire: &[u8]) -> overlay::Packet<'a> {
@@ -29,6 +30,10 @@ fn feed_full<'a, const M: usize>(dec: &'a mut Decoder<M, Crc>, wire: &[u8]) -> o
         Step::Packet(p) => p,
         other => panic!("expected Packet, got {other:?}"),
     }
+}
+
+fn slot<'a>(id: u8, error: StatusError, data: &'a [u8]) -> Slot<'a> {
+    Slot { id, error, data }
 }
 
 const PING_ID1: &[u8] = &[0xFF, 0xFF, 0xFD, 0x00, 0x01, 0x03, 0x00, 0x01, 0x19, 0x4E];
@@ -84,25 +89,12 @@ const BODY_5: &[u8] = &[0x01, 0x00, 0x00, 0x00];
 const BODY_6: &[u8] = &[0x02, 0x00, 0x00, 0x00];
 const BODY_7: &[u8] = &[0x03, 0x00, 0x00, 0x00];
 
-fn slot(id: u8, error: StatusError, data: &[u8]) -> Slot<'_> {
-    Slot {
-        id,
-        error: error.as_u8(),
-        data: Bytes::unstuffed(data),
-    }
-}
-
 #[test]
 fn write_slot_first_emits_header_then_body() {
     let mut out: Vec<u8, 32> = Vec::new();
-    write_legacy_slot(
-        &mut out,
-        &slot(5, StatusError::None, BODY_5),
-        SlotPosition::First {
-            packet_length: 0x0015,
-        },
-    )
-    .unwrap();
+    SlotEmitter::<_, Crc>::new(&mut out)
+        .first(&slot(5, StatusError::OK, BODY_5), 0x0015)
+        .unwrap();
     assert_eq!(
         out.as_slice(),
         &[
@@ -114,24 +106,18 @@ fn write_slot_first_emits_header_then_body() {
 #[test]
 fn write_slot_middle_emits_body_only() {
     let mut out: Vec<u8, 32> = Vec::new();
-    write_legacy_slot(
-        &mut out,
-        &slot(6, StatusError::None, BODY_6),
-        SlotPosition::Middle,
-    )
-    .unwrap();
+    SlotEmitter::<_, Crc>::new(&mut out)
+        .middle(&slot(6, StatusError::OK, BODY_6))
+        .unwrap();
     assert_eq!(out.as_slice(), &[0x00, 0x06, 0x02, 0x00, 0x00, 0x00]);
 }
 
 #[test]
 fn write_slot_last_reserves_crc_placeholder() {
     let mut out: Vec<u8, 32> = Vec::new();
-    write_legacy_slot(
-        &mut out,
-        &slot(7, StatusError::None, BODY_7),
-        SlotPosition::Last { crc: 0 },
-    )
-    .unwrap();
+    SlotEmitter::<_, Crc>::new(&mut out)
+        .last(&slot(7, StatusError::OK, BODY_7), 0xBBAA)
+        .unwrap();
     assert_eq!(
         out.as_slice(),
         &[0x00, 0x07, 0x03, 0x00, 0x00, 0x00, 0xAA, 0xBB]
@@ -141,14 +127,9 @@ fn write_slot_last_reserves_crc_placeholder() {
 #[test]
 fn write_slot_only_emits_header_body_and_computed_crc() {
     let mut out: Vec<u8, 32> = Vec::new();
-    write_legacy_slot(
-        &mut out,
-        &slot(5, StatusError::None, BODY_5),
-        SlotPosition::Only {
-            packet_length: 0x0009,
-        },
-    )
-    .unwrap();
+    SlotEmitter::<_, Crc>::new(&mut out)
+        .only(&slot(5, StatusError::OK, BODY_5), 0x0009)
+        .unwrap();
     let header_and_body = [
         0xFF, 0xFF, 0xFD, 0x00, 0xFE, 0x09, 0x00, 0x55, 0x00, 0x05, 0x01, 0x00, 0x00, 0x00,
     ];
@@ -162,26 +143,12 @@ fn write_slot_only_emits_header_body_and_computed_crc() {
 #[test]
 fn write_slot_three_slave_response_assembles_to_valid_status_frame() {
     let mut out: Vec<u8, 64> = Vec::new();
-    write_legacy_slot(
-        &mut out,
-        &slot(5, StatusError::None, BODY_5),
-        SlotPosition::First {
-            packet_length: 0x0015,
-        },
-    )
-    .unwrap();
-    write_legacy_slot(
-        &mut out,
-        &slot(6, StatusError::None, BODY_6),
-        SlotPosition::Middle,
-    )
-    .unwrap();
-    write_legacy_slot(
-        &mut out,
-        &slot(7, StatusError::None, BODY_7),
-        SlotPosition::Last { crc: 0 },
-    )
-    .unwrap();
+    {
+        let mut w = SlotEmitter::<_, Crc>::new(&mut out);
+        w.first(&slot(5, StatusError::OK, BODY_5), 0x0015).unwrap();
+        w.middle(&slot(6, StatusError::OK, BODY_6)).unwrap();
+        w.last(&slot(7, StatusError::OK, BODY_7), 0xBBAA).unwrap();
+    }
 
     assert_eq!(out.len(), 28);
     assert_eq!(out.as_slice()[26..28], [0xAA, 0xBB]);
@@ -203,14 +170,9 @@ fn write_slot_three_slave_response_assembles_to_valid_status_frame() {
 #[test]
 fn write_slot_overflow_truncates() {
     let mut out: Vec<u8, 8> = Vec::new();
-    let err = write_legacy_slot(
-        &mut out,
-        &slot(5, StatusError::None, BODY_5),
-        SlotPosition::First {
-            packet_length: 0x0015,
-        },
-    )
-    .unwrap_err();
+    let err = SlotEmitter::<_, Crc>::new(&mut out)
+        .first(&slot(5, StatusError::OK, BODY_5), 0x0015)
+        .unwrap_err();
     assert_eq!(err, WriteError::Overflow);
     assert!(out.is_empty());
 }
@@ -219,15 +181,19 @@ fn write_slot_overflow_truncates() {
 fn write_slot_error_emits_caller_supplied_payload_with_error_byte() {
     let zero = [0u8; 4];
     let mut out: Vec<u8, 32> = Vec::new();
-    write_legacy_slot(
-        &mut out,
-        &slot(7, StatusError::DataRange, &zero),
-        SlotPosition::Middle,
-    )
-    .unwrap();
+    SlotEmitter::<_, Crc>::new(&mut out)
+        .middle(&slot(7, StatusError::code(ErrorCode::DataRange), &zero))
+        .unwrap();
     assert_eq!(
         out.as_slice(),
-        &[StatusError::DataRange.as_u8(), 0x07, 0, 0, 0, 0]
+        &[
+            StatusError::code(ErrorCode::DataRange).as_byte(),
+            0x07,
+            0,
+            0,
+            0,
+            0,
+        ]
     );
 }
 
@@ -242,8 +208,6 @@ fn parse_ping() {
 
 #[test]
 fn parse_byte_at_a_time_matches_one_shot() {
-    // Walk each reference frame through the Decoder one byte at a time
-    // and confirm the same variant pops out at the last byte.
     for frame in [
         PING_ID1,
         READ_ID1_ADDR132_LEN4,
@@ -330,46 +294,25 @@ fn parse_reboot() {
 
 #[test]
 fn write_ping_matches_reference() {
-    let mut out: Vec<u8, 32> = Vec::new();
-    write_legacy(&mut out, &Packet::Ping(PingPacket { id: 1 })).unwrap();
+    let out = encode(|w| w.ping(1));
     assert_eq!(&out[..], PING_ID1);
 }
 
 #[test]
 fn write_read_matches_reference() {
-    let mut out: Vec<u8, 32> = Vec::new();
-    write_legacy(
-        &mut out,
-        &Packet::Read(ReadPacket {
-            id: 1,
-            address: 132,
-            length: 4,
-        }),
-    )
-    .unwrap();
+    let out = encode(|w| w.read(1, 132, 4));
     assert_eq!(&out[..], READ_ID1_ADDR132_LEN4);
 }
 
 #[test]
 fn write_write_matches_reference() {
-    let data = [0x00u8, 0x02, 0x00, 0x00];
-    let mut out: Vec<u8, 32> = Vec::new();
-    write_legacy(
-        &mut out,
-        &Packet::Write(WritePacket {
-            id: 1,
-            address: 116,
-            data: Bytes::unstuffed(&data),
-        }),
-    )
-    .unwrap();
+    let out = encode(|w| w.write(1, 116, &[0x00, 0x02, 0x00, 0x00]));
     assert_eq!(&out[..], WRITE_ID1_GOAL512);
 }
 
 #[test]
 fn write_reboot_matches_reference() {
-    let mut out: Vec<u8, 32> = Vec::new();
-    write_legacy(&mut out, &Packet::Reboot(RebootPacket { id: 1 })).unwrap();
+    let out = encode(|w| w.reboot(1));
     assert_eq!(&out[..], REBOOT_ID1);
 }
 
@@ -377,15 +320,9 @@ fn write_reboot_matches_reference() {
 fn write_status_round_trip() {
     let params = [0x06u8, 0x04, 0x26];
     let mut out: Vec<u8, 64> = Vec::new();
-    write_legacy(
-        &mut out,
-        &Packet::Status(RawStatus {
-            id: 1,
-            error: 0,
-            params: Bytes::unstuffed(&params),
-        }),
-    )
-    .unwrap();
+    StatusEmitter::<_, Crc>::new(&mut out)
+        .ext(1, StatusError::OK, &params)
+        .unwrap();
 
     let mut dec: Decoder<64, Crc> = Decoder::new();
     match feed_full(&mut dec, &out) {
@@ -401,16 +338,7 @@ fn write_status_round_trip() {
 #[test]
 fn stuffing_round_trip() {
     let data = [0xFFu8, 0xFF, 0xFD, 0x42, 0xFF, 0xFF, 0xFD, 0xFD, 0x55];
-    let mut out: Vec<u8, 64> = Vec::new();
-    write_legacy(
-        &mut out,
-        &Packet::Write(WritePacket {
-            id: 1,
-            address: 0x0040,
-            data: Bytes::unstuffed(&data),
-        }),
-    )
-    .unwrap();
+    let out = encode(|w| w.write(1, 0x0040, &data));
 
     let fds = out.iter().filter(|&&b| b == 0xFD).count();
     assert!(fds >= 4, "expected stuffed bytes: {:02X?}", out);
@@ -429,16 +357,7 @@ fn stuffing_round_trip() {
 #[test]
 fn stuffing_at_field_boundary() {
     let data = [0xFDu8, 0x11, 0x22];
-    let mut out: Vec<u8, 64> = Vec::new();
-    write_legacy(
-        &mut out,
-        &Packet::Write(WritePacket {
-            id: 1,
-            address: 0xFFFF,
-            data: Bytes::unstuffed(&data),
-        }),
-    )
-    .unwrap();
+    let out = encode(|w| w.write(1, 0xFFFF, &data));
     let mut dec: Decoder<64, Crc> = Decoder::new();
     match feed_full(&mut dec, &out) {
         overlay::Packet::Write(p) => {
@@ -476,7 +395,6 @@ fn bad_crc_resyncs() {
 
 #[test]
 fn oversized_length_is_rejected() {
-    // length 0xFFFF > PACKET_LEN_GUARD.
     let bad = [0xFFu8, 0xFF, 0xFD, 0x00, 0x01, 0xFF, 0xFF, 0x01];
     assert!((PACKET_LEN_GUARD as u32) < 0xFFFF);
     let mut dec: Decoder<32, Crc> = Decoder::new();
@@ -487,7 +405,6 @@ fn oversized_length_is_rejected() {
 
 #[test]
 fn undersized_length_is_rejected() {
-    // length 2 < min 3 (instruction + crc).
     let bad = [0xFFu8, 0xFF, 0xFD, 0x00, 0x01, 0x02, 0x00, 0x01];
     let mut dec: Decoder<32, Crc> = Decoder::new();
     let (step, n) = dec.feed(&bad);
@@ -497,9 +414,6 @@ fn undersized_length_is_rejected() {
 
 #[test]
 fn false_header_with_huge_length_does_not_wedge() {
-    // Phantom with length=0xFFFF surfaces BadLength on the byte that
-    // completes the length field; the decoder is reset and a follow-up
-    // valid frame parses on the next feed.
     let mut buf: Vec<u8, 64> = Vec::new();
     buf.extend_from_slice(&[0xFF, 0xFF, 0xFD, 0x00, 0x42, 0xFF, 0xFF, 0x99])
         .unwrap();
@@ -517,8 +431,6 @@ fn false_header_with_huge_length_does_not_wedge() {
 
 #[test]
 fn unknown_instruction_routes_to_raw() {
-    // CRC-valid frame with an instruction byte the library doesn't know
-    // about — chip extensions dispatch off Packet::Raw rather than failing.
     let mut frame: Vec<u8, 32> = Vec::new();
     frame
         .extend_from_slice(&[0xFF, 0xFF, 0xFD, 0x00, 0x01, 0x03, 0x00, 0x77])
@@ -550,17 +462,7 @@ fn fds_in_payload_region(frame: &[u8]) -> usize {
 }
 
 fn write_with_data(data: &[u8]) -> Vec<u8, 256> {
-    let mut out: Vec<u8, 256> = Vec::new();
-    write_legacy(
-        &mut out,
-        &Packet::Write(WritePacket {
-            id: 1,
-            address: 0x0010,
-            data: Bytes::unstuffed(data),
-        }),
-    )
-    .unwrap();
-    out
+    encode(|w| w.write(1, 0x0010, data))
 }
 
 fn assert_write_decodes_to(wire: &[u8], expected_data: &[u8]) {
@@ -632,17 +534,8 @@ fn stuff_two_adjacent_triggers() {
 
 #[test]
 fn stuff_trigger_spanning_address_boundary() {
-    let mut out: Vec<u8, 64> = Vec::new();
     let data = [0xFDu8, 0x11, 0x22];
-    write_legacy(
-        &mut out,
-        &Packet::Write(WritePacket {
-            id: 1,
-            address: 0xFFFF,
-            data: Bytes::unstuffed(&data),
-        }),
-    )
-    .unwrap();
+    let out = encode(|w| w.write(1, 0xFFFF, &data));
     let mut dec: Decoder<64, Crc> = Decoder::new();
     match feed_full(&mut dec, &out) {
         overlay::Packet::Write(p) => {
@@ -656,16 +549,7 @@ fn stuff_trigger_spanning_address_boundary() {
 #[test]
 fn stuff_trigger_spanning_address_then_more_in_data() {
     let data = [0xFDu8, 0x42, 0xFF, 0xFF, 0xFD, 0x55, 0x66];
-    let mut out: Vec<u8, 64> = Vec::new();
-    write_legacy(
-        &mut out,
-        &Packet::Write(WritePacket {
-            id: 1,
-            address: 0xFFFF,
-            data: Bytes::unstuffed(&data),
-        }),
-    )
-    .unwrap();
+    let out = encode(|w| w.write(1, 0xFFFF, &data));
     let mut dec: Decoder<64, Crc> = Decoder::new();
     match feed_full(&mut dec, &out) {
         overlay::Packet::Write(p) => assert_eq!(p.data, &data),
@@ -675,16 +559,7 @@ fn stuff_trigger_spanning_address_then_more_in_data() {
 
 #[test]
 fn stuff_empty_payload() {
-    let mut out: Vec<u8, 32> = Vec::new();
-    write_legacy(
-        &mut out,
-        &Packet::Write(WritePacket {
-            id: 1,
-            address: 0x0010,
-            data: Bytes::unstuffed(&[]),
-        }),
-    )
-    .unwrap();
+    let out = encode(|w| w.write(1, 0x0010, &[]));
     let mut dec: Decoder<32, Crc> = Decoder::new();
     match feed_full(&mut dec, &out) {
         overlay::Packet::Write(p) => assert_eq!(p.data, &[] as &[u8]),
@@ -696,15 +571,9 @@ fn stuff_empty_payload() {
 fn stuff_status_with_trigger_in_params() {
     let params = [0xFFu8, 0xFF, 0xFD, 0x00, 0x42];
     let mut out: Vec<u8, 64> = Vec::new();
-    write_legacy(
-        &mut out,
-        &Packet::Status(RawStatus {
-            id: 1,
-            error: 0,
-            params: Bytes::unstuffed(&params),
-        }),
-    )
-    .unwrap();
+    StatusEmitter::<_, Crc>::new(&mut out)
+        .ext(1, StatusError::OK, &params)
+        .unwrap();
     let mut dec: Decoder<64, Crc> = Decoder::new();
     match feed_full(&mut dec, &out) {
         overlay::Packet::Status(p) => {
@@ -717,21 +586,12 @@ fn stuff_status_with_trigger_in_params() {
 
 #[test]
 fn stuff_long_payload_with_many_triggers() {
-    let mut data: heapless::Vec<u8, 64> = Vec::new();
+    let mut data: Vec<u8, 64> = Vec::new();
     for _ in 0..6 {
         data.extend_from_slice(&[0xFF, 0xFF, 0xFD, 0x42, 0x55])
             .unwrap();
     }
-    let mut out: Vec<u8, 128> = Vec::new();
-    write_legacy(
-        &mut out,
-        &Packet::Write(WritePacket {
-            id: 1,
-            address: 0x0010,
-            data: Bytes::unstuffed(&data),
-        }),
-    )
-    .unwrap();
+    let out = encode(|w| w.write(1, 0x0010, &data));
     let mut dec: Decoder<128, Crc> = Decoder::new();
     match feed_full(&mut dec, &out) {
         overlay::Packet::Write(p) => assert_eq!(p.data, &data[..]),

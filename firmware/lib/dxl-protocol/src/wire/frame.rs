@@ -46,18 +46,3 @@ pub const FAST_RESPONSE_SLOT0_BYTES: usize = RESPONSE_HEADER_BYTES + 1;
 /// Bytes before slot `k > 0`'s payload in a Fast response chain:
 /// `ERROR(1) + slave_id(1)`.
 pub const FAST_RESPONSE_SLOT_BYTES: usize = 2;
-
-/// Wire-layer view of a single validated DXL frame: header, ID, length, and
-/// CRC are accounted for, but the instruction byte has not been resolved to
-/// the `Instruction` enum and `params` has not been interpreted. Use this as
-/// the boundary between wire parsing and typed decode.
-///
-/// `P` is the parameter byte source: the parser produces
-/// `RawFrame<Bytes<'a>>`; [`write_raw`](super::write_raw) accepts any
-/// `RawFrame<I>` where `I: IntoIterator<Item = u8>`.
-#[derive(Copy, Clone, Debug)]
-pub struct RawFrame<P> {
-    pub id: u8,
-    pub instruction: u8,
-    pub params: P,
-}

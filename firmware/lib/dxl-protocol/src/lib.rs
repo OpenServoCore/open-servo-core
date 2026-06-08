@@ -1,69 +1,27 @@
 #![no_std]
-//! DXL 2.0 wire-format codec — master and slave share the same primitives.
+//! DXL 2.0 wire-format codec.
 //!
-//! Top-level entry points:
-//! - [`parse_packet`] — bytes → typed [`Packet`]
-//! - [`decode_status`] — request instruction + [`RawStatus`] → typed [`Status`]
-//! - [`write_packet`] — [`Packet`] → wire bytes (full standalone frame)
-//! - [`write_status`] — typed [`Status`] → wire bytes (slave convenience)
-//! - [`write_slot`] — Fast Sync/Bulk Read slot + [`SlotPosition`] → wire bytes
-//! - [`write_ext`] — escape hatch for [`InstructionExt`] / [`StatusExt`]
-//!   implementations to emit a wire frame with a custom instruction byte
+//! Decode: feed wire bytes to a [`Decoder`](decoder::Decoder); it emits typed
+//! [`Packet`](packet::Packet) variants that overlay the decoder's internal
+//! buffer (zero-copy, alignment-1 `#[repr(C)]` structs).
 //!
-//! Extension hooks: implement [`InstructionExt`] to add custom request
-//! instructions; implement [`StatusExt`] to add custom typed status flavors.
+//! Encode: [`InstructionEmitter`] for request frames, [`StatusEmitter`] for
+//! Status replies, [`SlotEmitter`] for Fast Sync/Bulk Read coalesced reply
+//! slots.
 
 pub mod decoder;
 mod emitter;
 pub mod instruction;
 pub mod packet;
-mod typed;
 mod wire;
 
 pub use emitter::{InstructionEmitter, SlotEmitter, StatusEmitter};
 pub use instruction::InstructionByte;
-
-pub use typed::{
-    ActionPacket, ActionStatus, BulkEntry, BulkReadPacket, BulkReadSlotIter, BulkReadStatus,
-    BulkSlotInfo, BulkWriteEntry, BulkWritePacket, BulkWriteSlotIter, ClearPacket,
-    ControlTableBackupPacket, DecodeError, ErrorStatus, FactoryResetPacket, FastBulkReadPacket,
-    FastBulkReadStatus, FastBulkSlotIter, FastReadPacket, FastReadVariant, FastSlotInfo,
-    FastSyncReadPacket, FastSyncReadStatus, FastSyncSlotIter, Instruction, InstructionExt,
-    NoInstructionExt, NoStatusExt, Packet, PingPacket, PingStatus, RawStatus, ReadPacket,
-    ReadStatus, RebootPacket, RebootStatus, RegWritePacket, RegWriteStatus, Slot, SlotPosition,
-    Status, StatusError, StatusExt, SyncReadPacket, SyncReadStatus, SyncSlotInfo, SyncWriteEntry,
-    SyncWritePacket, SyncWriteSlotIter, WritePacket, WriteStatus, decode_status, write_ext,
-    write_packet, write_slot, write_status,
-};
+pub use packet::SlotPosition;
 #[cfg(feature = "software-crc")]
 pub use wire::SoftwareCrcUmts;
 pub use wire::{
-    BROADCAST_ID, BULK_REQUEST_SLOT_BYTES, ByteIter, Bytes, CRC_BYTES, CrcUmts,
-    FAST_RESPONSE_SLOT_BYTES, FAST_RESPONSE_SLOT0_BYTES, HEADER, PACKET_LEN_GUARD, Overflow, ParseError,
-    REQUEST_HEADER_BYTES, RESPONSE_HEADER_BYTES, RxView, SYNC_REQUEST_SLOT_BYTES, WriteBuf,
-    WriteError,
+    BROADCAST_ID, BULK_REQUEST_SLOT_BYTES, CRC_BYTES, CrcUmts, FAST_RESPONSE_SLOT_BYTES,
+    FAST_RESPONSE_SLOT0_BYTES, HEADER, PACKET_LEN_GUARD, REQUEST_HEADER_BYTES,
+    RESPONSE_HEADER_BYTES, SYNC_REQUEST_SLOT_BYTES, WriteBuf, WriteError,
 };
-
-/// Parse the first DXL frame in the byte view (which may straddle a ring
-/// buffer wrap via [`RxView::ring`]). Returns the typed [`Packet`] plus the
-/// number of virtual bytes consumed from the view.
-///
-/// Instruction bytes outside the standard set are routed to
-/// [`InstructionExt::decode`]: `None` from the extension surfaces as
-/// [`ParseError::BadInstruction`]; `Some(Err)` as [`ParseError::BadLength`].
-pub fn parse_packet<'a, CRC: CrcUmts, I: InstructionExt>(
-    view: RxView<'a>,
-) -> Result<(Packet<'a, I>, usize), ParseError> {
-    let (raw, consumed) = wire::parse_raw::<CRC>(view)?;
-    match typed::decode::<I>(raw.instruction, raw.id, raw.params) {
-        Ok(packet) => Ok((packet, consumed)),
-        Err(DecodeError::UnknownInstruction) => {
-            match I::decode(raw.instruction, raw.id, raw.params) {
-                Some(Ok(v)) => Ok((Packet::Ext(v), consumed)),
-                Some(Err(_)) => Err(ParseError::BadLength { skip: consumed }),
-                None => Err(ParseError::BadInstruction { skip: consumed }),
-            }
-        }
-        Err(DecodeError::BadParams) => Err(ParseError::BadLength { skip: consumed }),
-    }
-}

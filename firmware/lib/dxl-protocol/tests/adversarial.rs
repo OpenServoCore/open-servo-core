@@ -2,22 +2,18 @@
 //! protocols, recovers real frames embedded in noise.
 
 use dxl_protocol::decoder::{Decoder, ResyncKind, Step};
-use dxl_protocol::packet as overlay;
-use dxl_protocol::*;
+use dxl_protocol::packet::{self as overlay, BulkReadEntry, ErrorCode, StatusError, U16Le};
+use dxl_protocol::{
+    HEADER, InstructionEmitter, PACKET_LEN_GUARD, SoftwareCrcUmts, StatusEmitter, WriteBuf,
+    WriteError,
+};
 use heapless::Vec as HVec;
 
 type Crc = SoftwareCrcUmts;
 
-/// Encode a legacy Packet to wire bytes. The streaming parser is what
-/// changed; the writer still produces the same wire format from the
-/// existing typed Packet shapes.
-fn write_legacy<W: WriteBuf>(out: &mut W, p: &Packet<'_, NoInstructionExt>) -> Result<(), WriteError> {
-    write_packet::<W, Crc, NoInstructionExt>(out, p)
-}
-
 fn write_ping(id: u8) -> HVec<u8, 32> {
     let mut v: HVec<u8, 32> = HVec::new();
-    write_legacy(&mut v, &Packet::Ping(PingPacket { id })).unwrap();
+    InstructionEmitter::<_, Crc>::new(&mut v).ping(id).unwrap();
     v
 }
 
@@ -78,6 +74,18 @@ fn drain_stream(bytes: &[u8], chunk_size: usize) -> usize {
     accepts
 }
 
+fn feed_full<'a, const M: usize>(
+    dec: &'a mut Decoder<M, Crc>,
+    wire: &[u8],
+) -> overlay::Packet<'a> {
+    let (step, n) = dec.feed(wire);
+    assert_eq!(n, wire.len(), "decoder didn't consume the full frame");
+    match step {
+        Step::Packet(p) => p,
+        other => panic!("expected Packet, got {other:?}"),
+    }
+}
+
 #[test]
 fn random_byte_stream_does_not_panic_or_wedge() {
     let mut rng = Rng::new(0xDEADBEEFu64);
@@ -85,8 +93,6 @@ fn random_byte_stream_does_not_panic_or_wedge() {
     rng.fill(&mut bytes);
 
     let accepts = drain_stream(&bytes, 64);
-    // CRC-16 false-accept rate ~2^-16 conditioned on header+length+instruction;
-    // expectation across 1MB is far below 1.
     assert!(
         accepts < 5,
         "unexpected false accepts in random data: {accepts}"
@@ -157,7 +163,6 @@ fn modbus_rtu_like_traffic_no_false_accept() {
 
 #[test]
 fn ascii_text_traffic_no_false_accept() {
-    // ASCII can't contain 0xFF/0xFD.
     let chunk = b"GET /index.html HTTP/1.1\r\nHost: example.com\r\n\r\n";
     let mut stream: Vec<u8> = Vec::new();
     for _ in 0..1000 {
@@ -174,7 +179,6 @@ fn real_frames_with_random_garbage_between_recover_all() {
     for i in 0..real_count {
         let garbage_len = (rng.next_u64() % 96) as usize;
         for _ in 0..garbage_len {
-            // mask high bit so garbage can't synthesize valid frames
             stream.push(rng.next_byte() & 0x7F);
         }
         let frame = write_ping(((i % 253) + 1) as u8);
@@ -252,15 +256,9 @@ fn header_byte_at_a_time() {
     // the wire_n boundary checks inside step_header.
     let frame = {
         let mut v: HVec<u8, 32> = HVec::new();
-        write_legacy(
-            &mut v,
-            &Packet::Read(ReadPacket {
-                id: 7,
-                address: 0x0084,
-                length: 4,
-            }),
-        )
-        .unwrap();
+        InstructionEmitter::<_, Crc>::new(&mut v)
+            .read(7, 0x0084, 4)
+            .unwrap();
         v
     };
     let mut dec: Decoder<64, Crc> = Decoder::new();
@@ -296,8 +294,6 @@ fn random_header_id_length_does_not_lock_parser() {
 
 #[test]
 fn maxlen_phantom_header_terminates() {
-    // Length-field exactly at the guard cap: parser must reach a decision
-    // (Packet / Resync) before the stream ends, not block.
     let mut rng = Rng::new(1234);
     for _ in 0..50 {
         let mut buf = vec![0u8; 7 + PACKET_LEN_GUARD];
@@ -305,15 +301,12 @@ fn maxlen_phantom_header_terminates() {
         buf[0..4].copy_from_slice(&HEADER);
         buf[5] = (PACKET_LEN_GUARD & 0xFF) as u8;
         buf[6] = ((PACKET_LEN_GUARD >> 8) & 0xFF) as u8;
-        // drain_stream's max_iter / termination check is the real assertion.
         let _ = drain_stream(&buf, PACKET_LEN_GUARD + 16);
     }
 }
 
 #[test]
 fn over_maxlen_header_short_circuits() {
-    // Length > PACKET_LEN_GUARD must trigger BadLength on the byte that
-    // completes the length field — not wait for ~64 KB of payload.
     let bad = [0xFFu8, 0xFF, 0xFD, 0x00, 0x01, 0xFF, 0xFF, 0x01];
     let mut dec: Decoder<32, Crc> = Decoder::new();
     let (step, n) = dec.feed(&bad);
@@ -324,15 +317,19 @@ fn over_maxlen_header_short_circuits() {
 #[test]
 fn writer_id_0xff_rejected() {
     let mut out: HVec<u8, 32> = HVec::new();
-    let err = write_legacy(&mut out, &Packet::Ping(PingPacket { id: 0xFF })).unwrap_err();
-    assert_eq!(err, dxl_protocol::WriteError::Invalid);
+    let err = InstructionEmitter::<_, Crc>::new(&mut out)
+        .ping(0xFF)
+        .unwrap_err();
+    assert_eq!(err, WriteError::Invalid);
 }
 
 #[test]
 fn writer_overflow_reported_and_rolled_back() {
     let mut tiny: HVec<u8, 5> = HVec::new();
-    let err = write_legacy(&mut tiny, &Packet::Ping(PingPacket { id: 1 })).unwrap_err();
-    assert_eq!(err, dxl_protocol::WriteError::Overflow);
+    let err = InstructionEmitter::<_, Crc>::new(&mut tiny)
+        .ping(1)
+        .unwrap_err();
+    assert_eq!(err, WriteError::Overflow);
     assert!(
         tiny.is_empty(),
         "buffer should be rolled back on overflow, has {} bytes",
@@ -345,21 +342,15 @@ fn writer_overflow_preserves_prior_frames() {
     // DMA TX buffer holds a frame; second write overflows — first must survive
     // and re-decode cleanly through the new Decoder.
     let mut buf: HVec<u8, 16> = HVec::new();
-    write_legacy(&mut buf, &Packet::Ping(PingPacket { id: 1 })).unwrap();
+    InstructionEmitter::<_, Crc>::new(&mut buf).ping(1).unwrap();
     let snapshot: HVec<u8, 16> = buf.clone();
     let pre_len = buf.len();
 
     let big = [0u8; 32];
-    let err = write_legacy(
-        &mut buf,
-        &Packet::Status(RawStatus {
-            id: 1,
-            error: 0,
-            params: Bytes::unstuffed(&big),
-        }),
-    )
-    .unwrap_err();
-    assert_eq!(err, dxl_protocol::WriteError::Overflow);
+    let err = StatusEmitter::<_, Crc>::new(&mut buf)
+        .ext(1, StatusError::OK, &big)
+        .unwrap_err();
+    assert_eq!(err, WriteError::Overflow);
     assert_eq!(buf.len(), pre_len, "buffer length changed on overflow");
     assert_eq!(&buf[..], &snapshot[..], "prior frame corrupted on overflow");
 
@@ -375,18 +366,18 @@ fn writer_overflow_preserves_prior_frames() {
 #[test]
 fn writer_invalid_id_does_not_touch_buffer() {
     let mut buf: HVec<u8, 32> = HVec::new();
-    write_legacy(&mut buf, &Packet::Ping(PingPacket { id: 1 })).unwrap();
+    InstructionEmitter::<_, Crc>::new(&mut buf).ping(1).unwrap();
     let snapshot: HVec<u8, 32> = buf.clone();
 
-    let err = write_legacy(&mut buf, &Packet::Ping(PingPacket { id: 0xFF })).unwrap_err();
-    assert_eq!(err, dxl_protocol::WriteError::Invalid);
+    let err = InstructionEmitter::<_, Crc>::new(&mut buf)
+        .ping(0xFF)
+        .unwrap_err();
+    assert_eq!(err, WriteError::Invalid);
     assert_eq!(&buf[..], &snapshot[..]);
 }
 
 #[test]
 fn pure_noise_followed_by_frame_recovers_frame() {
-    // Noise without `FF` triggers stays in Sync silently; a valid frame
-    // appended after surfaces as Step::Packet.
     let mut buf: Vec<u8> = vec![0xAA, 0xBB, 0xCC, 0xDD, 0xEE];
     buf.extend_from_slice(&write_ping(1));
     let mut dec: Decoder<32, Crc> = Decoder::new();
@@ -411,153 +402,175 @@ fn partial_header_prefix_yields_needmore() {
     }
 }
 
-/// Verify the decoded overlay variant matches the legacy `Packet` it was
-/// encoded from. Field-by-field, no wire round-trip — the decoded slice
-/// borrows into the Decoder, so we can't easily re-encode after the
-/// feed call returns.
-fn assert_overlay_matches(decoded: &overlay::Packet<'_>, legacy: &Packet<'_, NoInstructionExt>) {
-    match (decoded, legacy) {
-        (overlay::Packet::Ping(d), Packet::Ping(l)) => {
-            assert_eq!(d.header.id, l.id);
-        }
-        (overlay::Packet::Read(d), Packet::Read(l)) => {
-            assert_eq!(d.header.id, l.id);
-            assert_eq!(d.addr.get(), l.address);
-            assert_eq!(d.length.get(), l.length);
-        }
-        (overlay::Packet::Write(d), Packet::Write(l)) => {
-            assert_eq!(d.header.header.id, l.id);
-            assert_eq!(d.header.addr.get(), l.address);
-            assert_bytes_eq(d.data, l.data);
-        }
-        (overlay::Packet::RegWrite(d), Packet::RegWrite(l)) => {
-            assert_eq!(d.header.header.id, l.id);
-            assert_eq!(d.header.addr.get(), l.address);
-            assert_bytes_eq(d.data, l.data);
-        }
-        (overlay::Packet::Action(d), Packet::Action(l)) => assert_eq!(d.header.id, l.id),
-        (overlay::Packet::Reboot(d), Packet::Reboot(l)) => assert_eq!(d.header.id, l.id),
-        (overlay::Packet::FactoryReset(d), Packet::FactoryReset(l)) => {
-            assert_eq!(d.header.id, l.id);
-            assert_eq!(d.mode, l.mode);
-        }
-        (overlay::Packet::Status(d), Packet::Status(l)) => {
-            assert_eq!(d.header.header.id, l.id);
-            assert_eq!(d.error().as_byte(), l.error);
-            assert_bytes_eq(d.params, l.params);
-        }
-        (overlay::Packet::SyncRead(d), Packet::SyncRead(l)) => {
-            assert_eq!(d.header.addr.get(), l.address);
-            assert_eq!(d.header.length.get(), l.length);
-            assert_bytes_eq(d.ids, l.ids);
-        }
-        (overlay::Packet::SyncWrite(d), Packet::SyncWrite(l)) => {
-            assert_eq!(d.header.addr.get(), l.address);
-            assert_eq!(d.header.length.get(), l.length);
-            assert_bytes_eq(d.body, l.body);
-        }
-        (overlay::Packet::FastSyncRead(d), Packet::FastSyncRead(l)) => {
-            assert_eq!(d.header.addr.get(), l.address);
-            assert_eq!(d.header.length.get(), l.length);
-            assert_bytes_eq(d.ids, l.ids);
-        }
-        (overlay::Packet::BulkWrite(d), Packet::BulkWrite(l)) => {
-            assert_bytes_eq(d.body, l.body);
-        }
-        // BulkRead/FastBulkRead overlays expose typed entries (5-byte
-        // stride); trailing partial bytes in the legacy body are dropped
-        // when the cast lands at a non-aligned length.
-        (overlay::Packet::BulkRead(d), Packet::BulkRead(l)) => {
-            let stride = core::mem::size_of::<overlay::BulkReadEntry>();
-            assert_eq!(d.entries.len(), l.body.unstuffed_len() / stride);
-        }
-        (overlay::Packet::FastBulkRead(d), Packet::FastBulkRead(l)) => {
-            let stride = core::mem::size_of::<overlay::BulkReadEntry>();
-            assert_eq!(d.entries.len(), l.body.unstuffed_len() / stride);
-        }
-        (d, l) => panic!("variant mismatch: decoded={d:?} legacy={l:?}"),
-    }
-}
+// ─── Round-trip every instruction shape. Each case carries a closure that
+//     emits the request shape onto the wire and a closure that verifies the
+//     decoded overlay matches. Keeping the verification right next to the
+//     emit makes the cases self-contained — no shared match table that has
+//     to enumerate every variant.
 
-fn assert_bytes_eq(decoded: &[u8], legacy: Bytes<'_>) {
-    assert_eq!(decoded.len(), legacy.unstuffed_len());
-    let mut buf = [0u8; 256];
-    let n = legacy.copy_to_slice(&mut buf).expect("copy_to_slice");
-    assert_eq!(decoded, &buf[..n]);
-}
-
-fn feed_full<'a, const M: usize>(
-    dec: &'a mut Decoder<M, Crc>,
-    wire: &[u8],
-) -> overlay::Packet<'a> {
-    let (step, n) = dec.feed(wire);
-    assert_eq!(n, wire.len(), "decoder didn't consume the full frame");
-    match step {
-        Step::Packet(p) => p,
-        other => panic!("expected Packet, got {other:?}"),
+fn round_trip<E, V>(label: &str, emit: E, verify: V)
+where
+    E: FnOnce(&mut InstructionEmitter<'_, HVec<u8, 256>, Crc>) -> Result<(), WriteError>,
+    V: FnOnce(overlay::Packet<'_>),
+{
+    let mut wire: HVec<u8, 256> = HVec::new();
+    {
+        let mut w = InstructionEmitter::<_, Crc>::new(&mut wire);
+        emit(&mut w).unwrap_or_else(|e| panic!("{label}: emit failed: {e:?}"));
     }
+    let mut dec: Decoder<512, Crc> = Decoder::new();
+    let decoded = feed_full(&mut dec, &wire);
+    verify(decoded);
 }
 
 #[test]
 fn round_trip_every_instruction() {
-    let cases: &[Packet<'static>] = &[
-        Packet::Ping(PingPacket { id: 1 }),
-        Packet::Read(ReadPacket {
-            id: 1,
-            address: 132,
-            length: 4,
-        }),
-        Packet::Write(WritePacket {
-            id: 1,
-            address: 116,
-            data: Bytes::unstuffed(&[0, 2, 0, 0]),
-        }),
-        Packet::RegWrite(RegWritePacket {
-            id: 1,
-            address: 100,
-            data: Bytes::unstuffed(&[0xAA]),
-        }),
-        Packet::Action(ActionPacket { id: 1 }),
-        Packet::FactoryReset(FactoryResetPacket { id: 1, mode: 0xFF }),
-        Packet::Reboot(RebootPacket { id: 1 }),
-        Packet::Status(RawStatus {
-            id: 1,
-            error: 0,
-            params: Bytes::unstuffed(&[0xDE, 0xAD]),
-        }),
-        Packet::SyncRead(SyncReadPacket {
-            address: 132,
-            length: 4,
-            ids: Bytes::unstuffed(&[1, 2, 3]),
-        }),
-        Packet::SyncWrite(SyncWritePacket {
-            address: 116,
-            length: 4,
-            body: Bytes::unstuffed(&[1, 0, 1, 0, 0]),
-        }),
-        Packet::FastSyncRead(FastSyncReadPacket {
-            address: 132,
-            length: 4,
-            ids: Bytes::unstuffed(&[1, 2]),
-        }),
-        Packet::BulkRead(BulkReadPacket {
-            body: Bytes::unstuffed(&[1, 0x84, 0x00, 0x04, 0x00]),
-        }),
-        Packet::BulkWrite(BulkWritePacket {
-            body: Bytes::unstuffed(&[1, 2, 3]),
-        }),
-        Packet::FastBulkRead(FastBulkReadPacket {
-            body: Bytes::unstuffed(&[1, 0x84, 0x00, 0x04, 0x00]),
-        }),
-    ];
-
-    for case in cases {
-        let mut wire: HVec<u8, 128> = HVec::new();
-        write_legacy(&mut wire, case).unwrap();
-        let mut dec: Decoder<256, Crc> = Decoder::new();
-        let decoded = feed_full(&mut dec, &wire);
-        assert_overlay_matches(&decoded, case);
-    }
+    round_trip(
+        "Ping",
+        |w| w.ping(1),
+        |p| match p {
+            overlay::Packet::Ping(d) => assert_eq!(d.header.id, 1),
+            other => panic!("expected Ping, got {other:?}"),
+        },
+    );
+    round_trip(
+        "Read",
+        |w| w.read(1, 132, 4),
+        |p| match p {
+            overlay::Packet::Read(d) => {
+                assert_eq!(d.header.id, 1);
+                assert_eq!(d.addr.get(), 132);
+                assert_eq!(d.length.get(), 4);
+            }
+            other => panic!("expected Read, got {other:?}"),
+        },
+    );
+    round_trip(
+        "Write",
+        |w| w.write(1, 116, &[0, 2, 0, 0]),
+        |p| match p {
+            overlay::Packet::Write(d) => {
+                assert_eq!(d.header.header.id, 1);
+                assert_eq!(d.header.addr.get(), 116);
+                assert_eq!(d.data, &[0, 2, 0, 0]);
+            }
+            other => panic!("expected Write, got {other:?}"),
+        },
+    );
+    round_trip(
+        "RegWrite",
+        |w| w.reg_write(1, 100, &[0xAA]),
+        |p| match p {
+            overlay::Packet::RegWrite(d) => {
+                assert_eq!(d.header.header.id, 1);
+                assert_eq!(d.header.addr.get(), 100);
+                assert_eq!(d.data, &[0xAA]);
+            }
+            other => panic!("expected RegWrite, got {other:?}"),
+        },
+    );
+    round_trip(
+        "Action",
+        |w| w.action(1),
+        |p| match p {
+            overlay::Packet::Action(d) => assert_eq!(d.header.id, 1),
+            other => panic!("expected Action, got {other:?}"),
+        },
+    );
+    round_trip(
+        "FactoryReset",
+        |w| w.factory_reset(1, 0xFF),
+        |p| match p {
+            overlay::Packet::FactoryReset(d) => {
+                assert_eq!(d.header.id, 1);
+                assert_eq!(d.mode, 0xFF);
+            }
+            other => panic!("expected FactoryReset, got {other:?}"),
+        },
+    );
+    round_trip(
+        "Reboot",
+        |w| w.reboot(1),
+        |p| match p {
+            overlay::Packet::Reboot(d) => assert_eq!(d.header.id, 1),
+            other => panic!("expected Reboot, got {other:?}"),
+        },
+    );
+    round_trip(
+        "SyncRead",
+        |w| w.sync_read(132, 4, &[1, 2, 3]),
+        |p| match p {
+            overlay::Packet::SyncRead(d) => {
+                assert_eq!(d.header.addr.get(), 132);
+                assert_eq!(d.header.length.get(), 4);
+                assert_eq!(d.ids, &[1, 2, 3]);
+            }
+            other => panic!("expected SyncRead, got {other:?}"),
+        },
+    );
+    round_trip(
+        "SyncWrite",
+        |w| w.sync_write(116, 4, &[1, 0, 1, 0, 0]),
+        |p| match p {
+            overlay::Packet::SyncWrite(d) => {
+                assert_eq!(d.header.addr.get(), 116);
+                assert_eq!(d.header.length.get(), 4);
+                assert_eq!(d.body, &[1, 0, 1, 0, 0]);
+            }
+            other => panic!("expected SyncWrite, got {other:?}"),
+        },
+    );
+    round_trip(
+        "FastSyncRead",
+        |w| w.fast_sync_read(132, 4, &[1, 2]),
+        |p| match p {
+            overlay::Packet::FastSyncRead(d) => {
+                assert_eq!(d.header.addr.get(), 132);
+                assert_eq!(d.header.length.get(), 4);
+                assert_eq!(d.ids, &[1, 2]);
+            }
+            other => panic!("expected FastSyncRead, got {other:?}"),
+        },
+    );
+    let bulk_entries = [BulkReadEntry {
+        id: 1,
+        addr: U16Le::from_u16(0x0084),
+        length: U16Le::from_u16(4),
+    }];
+    round_trip(
+        "BulkRead",
+        |w| w.bulk_read(&bulk_entries),
+        |p| match p {
+            overlay::Packet::BulkRead(d) => {
+                assert_eq!(d.entries.len(), 1);
+                assert_eq!(d.entries[0].id, 1);
+                assert_eq!(d.entries[0].addr.get(), 0x0084);
+                assert_eq!(d.entries[0].length.get(), 4);
+            }
+            other => panic!("expected BulkRead, got {other:?}"),
+        },
+    );
+    round_trip(
+        "BulkWrite",
+        |w| w.bulk_write(&[1, 2, 3]),
+        |p| match p {
+            overlay::Packet::BulkWrite(d) => assert_eq!(d.body, &[1, 2, 3]),
+            other => panic!("expected BulkWrite, got {other:?}"),
+        },
+    );
+    round_trip(
+        "FastBulkRead",
+        |w| w.fast_bulk_read(&bulk_entries),
+        |p| match p {
+            overlay::Packet::FastBulkRead(d) => {
+                assert_eq!(d.entries.len(), 1);
+                assert_eq!(d.entries[0].id, 1);
+                assert_eq!(d.entries[0].addr.get(), 0x0084);
+                assert_eq!(d.entries[0].length.get(), 4);
+            }
+            other => panic!("expected FastBulkRead, got {other:?}"),
+        },
+    );
 }
 
 #[test]
@@ -569,10 +582,7 @@ fn round_trip_random_fields_across_variants() {
         let mut body: HVec<u8, 96> = HVec::new();
         let mut ids: HVec<u8, 32> = HVec::new();
 
-        // Variant kinds covered by the new typed Packet enum (legacy chip
-        // extensions like Clear/ControlTableBackup route to Packet::Raw and
-        // are exercised separately).
-        let kind = rng.next_byte() % 14;
+        let kind = rng.next_byte() % 13;
         let id = match rng.next_byte() {
             0xFF => 1,
             b => b,
@@ -595,62 +605,38 @@ fn round_trip_random_fields_across_variants() {
             ids.push(rng.next_byte() % 254).unwrap();
         }
 
-        let pkt = match kind {
-            0 => Packet::Ping(PingPacket { id }),
-            1 => Packet::Read(ReadPacket {
-                id,
-                address: addr,
-                length,
-            }),
-            2 => Packet::Write(WritePacket {
-                id,
-                address: addr,
-                data: Bytes::unstuffed(&body),
-            }),
-            3 => Packet::RegWrite(RegWritePacket {
-                id,
-                address: addr,
-                data: Bytes::unstuffed(&body),
-            }),
-            4 => Packet::Action(ActionPacket { id }),
-            5 => Packet::FactoryReset(FactoryResetPacket { id, mode }),
-            6 => Packet::Reboot(RebootPacket { id }),
-            7 => Packet::Status(RawStatus {
-                id,
-                error,
-                params: Bytes::unstuffed(&body),
-            }),
-            8 => Packet::SyncRead(SyncReadPacket {
-                address: addr,
-                length,
-                ids: Bytes::unstuffed(&ids),
-            }),
-            9 => Packet::SyncWrite(SyncWritePacket {
-                address: addr,
-                length,
-                body: Bytes::unstuffed(&body),
-            }),
-            10 => Packet::FastSyncRead(FastSyncReadPacket {
-                address: addr,
-                length,
-                ids: Bytes::unstuffed(&ids),
-            }),
-            11 => Packet::BulkRead(BulkReadPacket {
-                body: Bytes::unstuffed(&body),
-            }),
-            12 => Packet::BulkWrite(BulkWritePacket {
-                body: Bytes::unstuffed(&body),
-            }),
-            _ => Packet::FastBulkRead(FastBulkReadPacket {
-                body: Bytes::unstuffed(&body),
-            }),
-        };
-
         let mut wire: HVec<u8, 256> = HVec::new();
-        write_legacy(&mut wire, &pkt).expect("write");
+        {
+            let mut w = InstructionEmitter::<_, Crc>::new(&mut wire);
+            match kind {
+                0 => w.ping(id).unwrap(),
+                1 => w.read(id, addr, length).unwrap(),
+                2 => w.write(id, addr, &body).unwrap(),
+                3 => w.reg_write(id, addr, &body).unwrap(),
+                4 => w.action(id).unwrap(),
+                5 => w.factory_reset(id, mode).unwrap(),
+                6 => w.reboot(id).unwrap(),
+                7 => {
+                    drop(w);
+                    StatusEmitter::<_, Crc>::new(&mut wire)
+                        .ext(id, StatusError::from_byte(error), &body)
+                        .unwrap();
+                }
+                8 => w.sync_read(addr, length, &ids).unwrap(),
+                9 => w.sync_write(addr, length, &body).unwrap(),
+                10 => w.fast_sync_read(addr, length, &ids).unwrap(),
+                11 => w.bulk_write(&body).unwrap(),
+                _ => w.ext(id, 0x77, &body).unwrap(),
+            }
+        }
+
         let mut dec: Decoder<512, Crc> = Decoder::new();
-        let decoded = feed_full(&mut dec, &wire);
-        assert_overlay_matches(&decoded, &pkt);
+        let (step, n) = dec.feed(&wire);
+        assert_eq!(n, wire.len(), "kind {kind}: didn't consume full frame");
+        assert!(
+            matches!(step, Step::Packet(_)),
+            "kind {kind}: expected Packet, got {step:?}"
+        );
     }
 }
 
@@ -658,50 +644,37 @@ fn round_trip_random_fields_across_variants() {
 fn stuffing_round_trip_for_every_body_carrying_variant() {
     let logical: &[u8] = &[0xFF, 0xFF, 0xFD, 0x42, 0xFF, 0xFF, 0xFD, 0xAA];
 
-    let cases: &[(&str, Packet<'_>)] = &[
-        (
-            "Write",
-            Packet::Write(WritePacket {
-                id: 1,
-                address: 0x0010,
-                data: Bytes::unstuffed(logical),
-            }),
-        ),
-        (
-            "RegWrite",
-            Packet::RegWrite(RegWritePacket {
-                id: 1,
-                address: 0x0010,
-                data: Bytes::unstuffed(logical),
-            }),
-        ),
-        (
-            "Status",
-            Packet::Status(RawStatus {
-                id: 1,
-                error: 0,
-                params: Bytes::unstuffed(logical),
-            }),
-        ),
-        (
-            "SyncWrite",
-            Packet::SyncWrite(SyncWritePacket {
-                address: 0x0010,
-                length: 4,
-                body: Bytes::unstuffed(logical),
-            }),
-        ),
-        (
-            "BulkWrite",
-            Packet::BulkWrite(BulkWritePacket {
-                body: Bytes::unstuffed(logical),
-            }),
-        ),
+    let cases: &[(&str, fn(&mut HVec<u8, 64>, &[u8]))] = &[
+        ("Write", |out, data| {
+            InstructionEmitter::<_, Crc>::new(out)
+                .write(1, 0x0010, data)
+                .unwrap()
+        }),
+        ("RegWrite", |out, data| {
+            InstructionEmitter::<_, Crc>::new(out)
+                .reg_write(1, 0x0010, data)
+                .unwrap()
+        }),
+        ("Status", |out, data| {
+            StatusEmitter::<_, Crc>::new(out)
+                .ext(1, StatusError::OK, data)
+                .unwrap()
+        }),
+        ("SyncWrite", |out, data| {
+            InstructionEmitter::<_, Crc>::new(out)
+                .sync_write(0x0010, 4, data)
+                .unwrap()
+        }),
+        ("BulkWrite", |out, data| {
+            InstructionEmitter::<_, Crc>::new(out)
+                .bulk_write(data)
+                .unwrap()
+        }),
     ];
 
-    for (name, pkt) in cases {
+    for (name, emit) in cases {
         let mut wire: HVec<u8, 64> = HVec::new();
-        write_legacy(&mut wire, pkt).unwrap_or_else(|e| panic!("{name}: write failed: {e:?}"));
+        emit(&mut wire, logical);
 
         // ≥2 extra FDs expected (one per trigger).
         let payload = &wire[8..wire.len() - 2];
@@ -723,5 +696,24 @@ fn stuffing_round_trip_for_every_body_carrying_variant() {
             other => panic!("{name}: parsed into unexpected variant {other:?}"),
         };
         assert_eq!(recovered, logical, "{name}: payload mismatch after unstuffing");
+    }
+}
+
+// Status with error code is encoded via StatusEmitter::ext with a non-OK
+// code; covers the StatusError byte propagation through the round trip.
+#[test]
+fn status_with_error_code_round_trips() {
+    let mut wire: HVec<u8, 32> = HVec::new();
+    StatusEmitter::<_, Crc>::new(&mut wire)
+        .ext(1, StatusError::code(ErrorCode::DataRange), &[])
+        .unwrap();
+    let mut dec: Decoder<64, Crc> = Decoder::new();
+    match feed_full(&mut dec, &wire) {
+        overlay::Packet::Status(p) => {
+            assert_eq!(p.header.header.id, 1);
+            assert_eq!(p.error(), StatusError::code(ErrorCode::DataRange));
+            assert!(p.params.is_empty());
+        }
+        other => panic!("expected Status, got {other:?}"),
     }
 }

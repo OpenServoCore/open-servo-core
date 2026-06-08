@@ -622,10 +622,29 @@ impl<'a> StatusPacket<'a> {
 // (decoding a captured response) — these are protocol-shape conveniences,
 // not chip policy.
 
-use crate::{
-    CRC_BYTES, FAST_RESPONSE_SLOT_BYTES, FAST_RESPONSE_SLOT0_BYTES, RESPONSE_HEADER_BYTES,
-    SlotPosition,
-};
+use crate::{CRC_BYTES, FAST_RESPONSE_SLOT_BYTES, FAST_RESPONSE_SLOT0_BYTES, RESPONSE_HEADER_BYTES};
+
+/// Position of our slot in the coalesced Fast Status response. Variants that
+/// emit the response header carry the DXL `Length` field for the whole
+/// multi-slot frame; `Last` carries the chain CRC.
+///
+/// Chain producers (slaves emitting `Last` in a multi-slave coalesced reply)
+/// don't know the running CRC at frame-build time — it depends on the wire
+/// bytes of every prior slave. They emit a placeholder value here and let
+/// the chip's fire-time ISR overwrite the trailing two bytes with the real
+/// CRC. Callers that *do* know the CRC at build time (single-slot tests,
+/// replay tools, sniffers) pass the real value.
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub enum SlotPosition {
+    /// Single-slot response — emits full header and locally-computed CRC.
+    Only { packet_length: u16 },
+    /// First of N — emits header + body, no CRC (successors continue).
+    First { packet_length: u16 },
+    /// Body only.
+    Middle,
+    /// Body + caller-supplied CRC bytes.
+    Last { crc: u16 },
+}
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub struct SyncSlotInfo {

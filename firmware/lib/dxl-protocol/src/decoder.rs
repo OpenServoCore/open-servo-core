@@ -361,7 +361,8 @@ impl<const M: usize, CRC: CrcUmts> Default for Decoder<M, CRC> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::wire::{RawFrame, SoftwareCrcUmts, write_raw};
+    use crate::InstructionEmitter;
+    use crate::wire::SoftwareCrcUmts;
     use heapless::Vec;
 
     type Crc = SoftwareCrcUmts;
@@ -369,15 +370,9 @@ mod tests {
 
     fn encode(id: u8, instruction: Instruction, params: &[u8]) -> Buf {
         let mut out = Buf::new();
-        write_raw::<_, _, Crc>(
-            &mut out,
-            RawFrame {
-                id,
-                instruction: instruction.as_u8(),
-                params: params.iter().copied(),
-            },
-        )
-        .unwrap();
+        InstructionEmitter::<_, Crc>::new(&mut out)
+            .ext(id, instruction.as_u8(), params)
+            .unwrap();
         out
     }
 
