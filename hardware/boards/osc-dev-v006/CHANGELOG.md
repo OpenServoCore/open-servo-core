@@ -8,7 +8,7 @@ To get files at a specific revision, check out the corresponding tag (e.g. `git 
 
 ## Rev B — 2026-04-28
 
-**Status:** Routed, awaiting fab. Merged in [PR #10](https://github.com/OpenServoCore/open-servo-core/pull/10).
+**Status:** Validated. Merged in [PR #10](https://github.com/OpenServoCore/open-servo-core/pull/10). In-rev patch: `SB1` bootstrap solder bridge added for the shared `nRST` / `OPN2` pin. Version label unchanged — published files include the patch.
 
 ### Fixed (from Rev A)
 
@@ -25,6 +25,7 @@ To get files at a specific revision, check out the corresponding tag (e.g. `git 
 - **Traditional PWM servo header** (driven from IN1) for servo identification and measurement.
 - **VSNS net** — VSYS measured directly instead of derived from VSNA / VSNB.
 - **WCH-LinkE connector**: 5 V pin (replacing the unused RST pin) gated by an SS54 for safety.
+- **`SB1` bootstrap solder bridge** (in-rev patch) — `nRST` and `OPN2` share a pin; the bridge breaks the path during `nRST -> GPIO` option-byte programming, then closes for normal current-sense operation. See [Fabrication](README.md#fabrication).
 
 ### Changed
 

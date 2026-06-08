@@ -15,13 +15,13 @@ The thesis is the price point: at mass-production volume, an OSC swap board shou
 
 ## Status
 
-🚧 **In active development. Nothing here is shippable yet.** The firmware is being rewritten, the dev board is routed and awaiting fab, and the swap board is designed but not spun.
+**In active development. Nothing here is shippable yet.** The firmware is being rewritten, the dev board is validated and integrating with firmware, and the swap board is designed but not spun.
 
-- 🟡 **OSC Dev CH32** (`osc-dev-v006`) — routed, docs ready, awaiting fab.
-- 🔭 **OSC SG90 CH32** (`sg90-prod-ch32v006`) — designed, not spun. Waiting on firmware v2 to be testable against.
-- ⚠️ **Firmware v1** (`firmware-old/`) — legacy. First pass was vibe-coded and got poor Reddit feedback. Kept as historical reference; **not a target for new work**.
-- 🟡 **Firmware v2** (rewrite) — in progress.
-- ✅ **tinyboot** (OSC bootloader) — v0.4.0 shipped. Lives at [`OpenServoCore/tinyboot`](https://github.com/OpenServoCore/tinyboot).
+- **OSC Dev CH32** (`osc-dev-v006`) — Rev B validated. Firmware integration ongoing.
+- **OSC SG90 CH32** (`sg90-prod-ch32v006`) — designed, not spun. Waiting on firmware v2 to be testable against.
+- **Firmware v1** (`firmware-old/`) — legacy. First pass was vibe-coded and got poor Reddit feedback. Kept as historical reference; **not a target for new work**.
+- **Firmware v2** (rewrite) — in progress.
+- **tinyboot** (OSC bootloader) — v0.4.0 shipped. Lives at [`OpenServoCore/tinyboot`](https://github.com/OpenServoCore/tinyboot).
 
 ## Repo map
 
@@ -57,7 +57,7 @@ OSC standardizes on the **CH32V006** — 48 MHz RISC-V, 62 KB flash, 8 KB RAM. C
 
 Each board has its own README with full schematics, pinouts, jumper behaviour, and bringup notes:
 
-- **[OSC Dev CH32](hardware/boards/osc-dev-v006/README.md)** — accepts any gutted hobby servo, USB-C / 1S-2S LiPo / WCH-LinkE power, full edge test-point fanout. Routed, awaiting fab.
+- **[OSC Dev CH32](hardware/boards/osc-dev-v006/README.md)** — accepts any gutted hobby servo, USB-C / 1S-2S LiPo / WCH-LinkE power, full edge test-point fanout. Rev B validated.
 - **[OSC SG90 CH32](hardware/boards/sg90-prod-ch32v006/README.md)** — compact swap board, 10×12.5 mm, double-sided. Designed; not yet spun.
 
 ## Firmware
@@ -86,7 +86,7 @@ Full spin + bring-up writeup: [CH32V006 dev board first spin](https://aaronqian.
 
 ### Rev B
 
-In fabrication, awaiting validation. This section will be updated once bring-up validates — including the [`osc-dev-v006`](hardware/boards/osc-dev-v006/README.md) **Fabrication** section with a step-by-step PCBWay ordering walkthrough and a community-project link for one-click reorders.
+Five PCBA boards delivered, May 2026. Validated. PCBWay's pre-fab manufacturability review flagged nothing, and build/assembly quality was again clean. A small bug found in the sponsored boards (shared `nRST` / `OPN2` pin) didn't warrant another validation round — patched in-rev with a solder bridge. The published files include the patch.
 
 ## License
 
