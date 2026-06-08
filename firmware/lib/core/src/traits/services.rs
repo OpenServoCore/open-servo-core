@@ -1,6 +1,7 @@
-use dxl_protocol::{CrcUmts, Slot, SlotPosition, Status};
+use dxl_protocol::SlotPosition;
+use dxl_protocol::packet::{Slot, Status};
+use dxl_protocol::CrcUmts;
 
-use crate::services::dxl::OscReplyExt;
 use crate::{BaudRate, BootMode};
 
 /// Wire scheduling info for a single outbound reply. The chip translates
@@ -62,7 +63,7 @@ pub trait DxlBus {
     /// Compose a standalone Status reply on the chip's TX buffer and schedule
     /// it. The chip owns all wire-timing math: it consumes `Schedule` to
     /// compute the fire delay (RDT + per-byte translation).
-    fn send(&mut self, status: Status<'_, OscReplyExt>, schedule: Schedule);
+    fn send(&mut self, status: Status<'_>, schedule: Schedule);
 
     /// Compose one Fast Sync/Bulk Read slot on the chip's TX buffer and
     /// schedule it. `position` selects header / body / CRC framing:

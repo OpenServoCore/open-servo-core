@@ -26,9 +26,7 @@ pub use regions::{
 };
 pub use sample_frame::{FrameInputs, RawSamples, SampleFrame};
 pub use services::Services;
-pub use services::dxl::{
-    CalibratePacket, CalibrateStatus, Dxl, OscExt, OscReplyExt, OscReplyVariant, OscVariant,
-};
+pub use services::dxl::{CalibratePacket, CalibrateStatus, Dxl, OscExt, OscVariant};
 pub use shared::Shared;
 pub use traits::{
     CalSnapshot, Capabilities, DecayMode, DxlBus, Event, KernelIo, Motor, MotorCmd, Schedule,

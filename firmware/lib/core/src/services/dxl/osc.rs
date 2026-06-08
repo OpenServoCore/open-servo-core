@@ -4,10 +4,11 @@
 //! `CAL = 0xE0`) — far from Robotis's allocated clusters so a future protocol
 //! revision can't quietly collide.
 //!
-//! Plugs into the protocol via the [`InstructionExt`] / [`StatusExt`] traits:
-//! bind the chip's [`DxlWire`](../../../osc_ch32/dxl/wire/struct.DxlWire.html)
-//! alias over `<OscExt, OscReplyExt>` and the standard `Packet`/`Status` enums
-//! grow `Ext` arms carrying [`OscVariant`] / [`OscReplyVariant`].
+//! Plugs into the new streaming parser via `Packet::Raw`: the chip-side
+//! dispatcher calls [`decode_raw`] on the raw byte slice to resolve OSC
+//! verbs. The reply path uses the unified `Status<'a>` enum's `Raw` variant
+//! — the dispatcher composes payload bytes via [`calibrate_status_bytes`]
+//! and emits via `bus.send(Status::Raw { id, error, payload })`.
 //!
 //! `CAL` is a slave-side timed receive: master streams `count` filler bytes,
 //! slave times its own RX between T_first (first byte) and T_last (IDLE-
@@ -16,18 +17,15 @@
 //! Status reply. No master-side timestamping required.
 
 use dxl_protocol::packet::RawPacket;
-use dxl_protocol::{
-    Bytes, CrcUmts, DecodeError, Instruction, InstructionExt, RawStatus, StatusError, StatusExt,
-    WriteBuf, WriteError, write_ext,
-};
+use dxl_protocol::{Bytes, CrcUmts, DecodeError, InstructionExt, WriteBuf, WriteError, write_ext};
 
-/// Marker for the OSC request extension; bind as the `I` parameter of
-/// [`parse_packet`](dxl_protocol::parse_packet) /
-/// [`write_packet`](dxl_protocol::write_packet).
+/// Marker for the OSC request extension, kept so tests can still encode a
+/// Calibrate request via the legacy `Packet<'_, OscExt>` + `write_packet`
+/// path. Production dispatch goes through `Packet::Raw` → [`decode_raw`].
+/// Removed alongside the rest of the legacy typed layer in #134.
 #[derive(Copy, Clone, Debug)]
 pub struct OscExt;
 
-/// OSC request verbs decoded from the wire.
 #[derive(Copy, Clone, Debug)]
 pub enum OscVariant {
     Calibrate(CalibratePacket),
@@ -49,7 +47,7 @@ impl CalibratePacket {
     }
 }
 
-const CALIBRATE_INSTRUCTION: u8 = 0xE0;
+pub const CALIBRATE_INSTRUCTION: u8 = 0xE0;
 
 impl InstructionExt for OscExt {
     type Variant<'a> = OscVariant;
@@ -88,10 +86,8 @@ fn decode_calibrate(id: u8, params: Bytes<'_>) -> Result<OscVariant, DecodeError
     Ok(OscVariant::Calibrate(CalibratePacket { id, count }))
 }
 
-/// Streaming-decoder counterpart to the [`InstructionExt`] decode path.
-/// `Packet::Raw` carries unrecognized-instruction frames after the new
-/// parser routes them; the dispatcher calls this to resolve OSC verbs from
-/// the raw byte slice. Returns `None` for instruction bytes we don't own.
+/// Streaming-decoder dispatch for OSC verbs carried as `Packet::Raw`.
+/// Returns `None` for instruction bytes we don't own.
 pub fn decode_raw(raw: &RawPacket<'_>) -> Option<OscVariant> {
     let id = raw.header.header.id;
     match raw.header.header.instruction.as_byte() {
@@ -108,12 +104,6 @@ pub fn decode_raw(raw: &RawPacket<'_>) -> Option<OscVariant> {
         _ => None,
     }
 }
-
-/// Marker for the OSC reply extension; bind as the `S` parameter of
-/// [`decode_status`](dxl_protocol::decode_status) /
-/// [`write_status`](dxl_protocol::write_status).
-#[derive(Copy, Clone, Debug)]
-pub struct OscReplyExt;
 
 /// Slave-measured calibration result. Wire layout (LE) following the Status
 /// error byte: `observed_ticks(4) | nominal_ticks(4) | applied_trim_delta(1)
@@ -134,41 +124,24 @@ pub struct CalibrateStatus {
     pub applied_fine_trim_us: i16,
 }
 
-/// OSC reply shapes. The chip emits these via `bus.send(Status::Ext(..))`.
-#[derive(Copy, Clone, Debug)]
-pub enum OscReplyVariant {
-    Calibrate(CalibrateStatus),
-}
-
-impl StatusExt for OscReplyExt {
-    type Variant<'a> = OscReplyVariant;
-
-    fn decode<'a>(_instr: u8, _raw: RawStatus<'a>) -> Option<Result<OscReplyVariant, DecodeError>> {
-        // Master-side typed decode lands when a Rust master needs it; PC bench
-        // parses the 11 payload bytes directly off the raw Status frame.
-        None
-    }
-
-    fn write<'a, W: WriteBuf, CRC: CrcUmts>(
-        v: &OscReplyVariant,
-        out: &mut W,
-    ) -> Result<(), WriteError> {
-        match *v {
-            OscReplyVariant::Calibrate(s) => {
-                let observed = s.observed_ticks.to_le_bytes();
-                let nominal = s.nominal_ticks.to_le_bytes();
-                let fine = s.applied_fine_trim_us.to_le_bytes();
-                write_ext::<W, CRC, _>(
-                    out,
-                    s.id,
-                    Instruction::Status.as_u8(),
-                    core::iter::once(StatusError::None.as_u8())
-                        .chain(observed)
-                        .chain(nominal)
-                        .chain(core::iter::once(s.applied_trim_delta as u8))
-                        .chain(fine),
-                )
-            }
-        }
-    }
+/// Pack a [`CalibrateStatus`] into its 11-byte wire payload (the bytes that
+/// follow the Status error byte). Dispatcher emits the result via
+/// `Status::Raw { payload: &calibrate_status_bytes(&s) }`.
+pub fn calibrate_status_bytes(s: &CalibrateStatus) -> [u8; 11] {
+    let observed = s.observed_ticks.to_le_bytes();
+    let nominal = s.nominal_ticks.to_le_bytes();
+    let fine = s.applied_fine_trim_us.to_le_bytes();
+    [
+        observed[0],
+        observed[1],
+        observed[2],
+        observed[3],
+        nominal[0],
+        nominal[1],
+        nominal[2],
+        nominal[3],
+        s.applied_trim_delta as u8,
+        fine[0],
+        fine[1],
+    ]
 }

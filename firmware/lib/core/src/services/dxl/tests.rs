@@ -1,12 +1,15 @@
 use crc::{CRC_16_UMTS, Crc};
 use dxl_protocol::*;
+use dxl_protocol::packet::{
+    Slot as NewSlot, Status as NewStatus, StatusError as NewStatusError,
+};
 use heapless::Vec;
 
 use crate::traits::{CalSnapshot, DxlBus, Event, Schedule, ServiceEvents, ServicesIo};
 use crate::{BootMode, RegionStorage, Shared, StatusReturnLevel};
 
 use super::Dxl;
-use super::osc::{CalibratePacket, OscExt, OscReplyExt, OscVariant};
+use super::osc::{CalibratePacket, OscExt, OscVariant};
 
 /// Test-only `CrcUmts`. Production builds get the chip's impl directly; core
 /// itself never references a concrete CRC engine after the trait flip.
@@ -22,7 +25,11 @@ impl CrcUmts for TestDxlCrc {
     }
 }
 
-/// Local convenience: bind CRC + extensions so test call sites stay short.
+/// Test glue against the legacy `Packet<'_, OscExt>` request encoder + the
+/// legacy `parse_packet` decoder. Both keep working until #134 retires the
+/// legacy typed layer; tests use them to (1) construct request wire bytes
+/// to feed the bus, and (2) read back the wire bytes the bus emitted via
+/// the new `StatusEmitter`/`SlotEmitter`.
 struct Wire;
 impl Wire {
     fn parse_one<'a>(
@@ -33,19 +40,6 @@ impl Wire {
     }
     fn write<W: WriteBuf>(out: &mut W, p: &Packet<'_, OscExt>) -> Result<(), WriteError> {
         dxl_protocol::write_packet::<W, TestDxlCrc, OscExt>(out, p)
-    }
-    fn write_status<W: WriteBuf>(
-        out: &mut W,
-        s: &Status<'_, OscReplyExt>,
-    ) -> Result<(), WriteError> {
-        dxl_protocol::write_status::<W, TestDxlCrc, OscReplyExt>(out, s)
-    }
-    fn write_slot<W: WriteBuf>(
-        out: &mut W,
-        s: &Slot<'_>,
-        pos: SlotPosition,
-    ) -> Result<(), WriteError> {
-        dxl_protocol::write_slot::<W, TestDxlCrc>(out, s, pos)
     }
 }
 
@@ -115,21 +109,25 @@ impl DxlBus for FakeBus {
 
     fn snoop(&mut self) {}
 
-    fn send(&mut self, status: Status<'_, OscReplyExt>, schedule: Schedule) {
+    fn send(&mut self, status: NewStatus<'_>, schedule: Schedule) {
         self.tx.clear();
-        Wire::write_status(&mut self.tx, &status).unwrap();
+        StatusEmitter::<_, TestDxlCrc>::new(&mut self.tx)
+            .emit(status)
+            .unwrap();
         self.send_count += 1;
         self.last_schedule = Some(schedule);
         self.last_kind = Some(ReplyKind::Plain);
     }
 
-    fn send_slot(&mut self, slot: Slot<'_>, position: SlotPosition, schedule: Schedule) {
+    fn send_slot(&mut self, slot: NewSlot<'_>, position: SlotPosition, schedule: Schedule) {
         self.tx.clear();
-        Wire::write_slot(&mut self.tx, &slot, position).unwrap();
+        SlotEmitter::<_, TestDxlCrc>::new(&mut self.tx)
+            .emit(&slot, position)
+            .unwrap();
         self.send_count += 1;
         self.last_schedule = Some(schedule);
-        let length = slot.data.unstuffed_len() as u16;
-        self.last_kind = Some(if slot.error == StatusError::None.as_u8() {
+        let length = slot.data.len() as u16;
+        self.last_kind = Some(if slot.error == NewStatusError::OK {
             ReplyKind::Fast(position)
         } else {
             ReplyKind::FastError(position, length)
@@ -1103,15 +1101,18 @@ fn fast_sync_read_last_slot_reserves_crc_placeholder() {
     h.poll(&shared, &mut io);
 
     assert_eq!(io.bus.send_count, 1);
-    assert_eq!(io.bus.last_kind, Some(ReplyKind::Fast(SlotPosition::Last)));
+    assert_eq!(io.bus.last_kind, Some(ReplyKind::Fast(SlotPosition::Last { crc: 0 })));
     assert_eq!(
         io.bus.last_schedule.unwrap().bytes_before,
         p.find_slot(0, 32).unwrap().bytes_before
     );
 
+    // Trailing 2 bytes are the reserved chain-CRC slot. The chip's
+    // `patch_crc` ISR overwrites them at fire time; FakeBus mirrors the
+    // chip by emitting a zero sentinel here.
     assert_eq!(io.bus.tx.len(), 6);
     assert_eq!(&io.bus.tx[..4], &[0, 0, 0, 0]);
-    assert_eq!(&io.bus.tx[4..], &[0xAA, 0xBB]);
+    assert_eq!(&io.bus.tx[4..], &[0, 0]);
 }
 
 #[test]
@@ -1251,15 +1252,18 @@ fn fast_bulk_read_last_slot_reserves_crc_placeholder() {
     h.poll(&shared, &mut io);
 
     assert_eq!(io.bus.send_count, 1);
-    assert_eq!(io.bus.last_kind, Some(ReplyKind::Fast(SlotPosition::Last)));
+    assert_eq!(io.bus.last_kind, Some(ReplyKind::Fast(SlotPosition::Last { crc: 0 })));
     assert_eq!(
         io.bus.last_schedule.unwrap().bytes_before,
         p.find_slot(0, 32).unwrap().bytes_before
     );
 
+    // Trailing 2 bytes are the reserved chain-CRC slot. The chip's
+    // `patch_crc` ISR overwrites them at fire time; FakeBus mirrors the
+    // chip by emitting a zero sentinel here.
     assert_eq!(io.bus.tx.len(), 6);
     assert_eq!(&io.bus.tx[..4], &[0, 0, 0, 0]);
-    assert_eq!(&io.bus.tx[4..], &[0xAA, 0xBB]);
+    assert_eq!(&io.bus.tx[4..], &[0, 0]);
 }
 
 #[test]
@@ -1274,10 +1278,10 @@ fn fast_bulk_read_uses_our_tuples_address_not_a_preceding_slots() {
     h.poll(&shared, &mut io);
 
     assert_eq!(io.bus.send_count, 1);
-    assert_eq!(io.bus.last_kind, Some(ReplyKind::Fast(SlotPosition::Last)));
+    assert_eq!(io.bus.last_kind, Some(ReplyKind::Fast(SlotPosition::Last { crc: 0 })));
     assert_eq!(io.bus.tx.len(), 6);
     assert_eq!(&io.bus.tx[..4], &[0, 0, 0, 0]);
-    assert_eq!(&io.bus.tx[4..], &[0xAA, 0xBB]);
+    assert_eq!(&io.bus.tx[4..], &[0, 0]);
 }
 
 #[test]
@@ -1342,16 +1346,16 @@ fn poll_recovers_from_stale_fast_first_slot_residue_then_replies_to_ping() {
     let mut h = Dxl::new();
 
     let mut residue: Vec<u8, 32> = Vec::new();
-    Wire::write_slot(
-        &mut residue,
-        &Slot {
-            id: 50,
-            error: StatusError::None.as_u8(),
-            data: Bytes::unstuffed(&[0xAA, 0xAA, 0xAA, 0xAA]),
-        },
-        SlotPosition::First { packet_length: 43 },
-    )
-    .unwrap();
+    SlotEmitter::<_, TestDxlCrc>::new(&mut residue)
+        .first(
+            &NewSlot {
+                id: 50,
+                error: NewStatusError::OK,
+                data: &[0xAA, 0xAA, 0xAA, 0xAA],
+            },
+            43,
+        )
+        .unwrap();
     assert_eq!(residue.len(), 14, "Fast First slot wire shape changed?");
 
     let ping = encode(&Packet::Ping(PingPacket::new(0)));

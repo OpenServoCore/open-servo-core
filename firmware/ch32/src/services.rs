@@ -1,13 +1,14 @@
 use ch32_metapac::RCC;
 use core::sync::atomic::Ordering;
 
-use dxl_protocol::{Slot, SlotPosition, Status};
+use dxl_protocol::SlotPosition;
+use dxl_protocol::packet::{Slot, Status};
+use dxl_protocol::{SlotEmitter, StatusEmitter};
 use osc_core::{
-    BootMode, CalSnapshot, DxlBus, Event, OscReplyExt, Schedule, ServiceEvents, ServicesIo,
+    BootMode, CalSnapshot, DxlBus, Event, Schedule, ServiceEvents, ServicesIo,
 };
 
 use crate::dxl;
-use crate::dxl::DxlWire;
 use crate::dxl::cal::{Cal, snoop_bias_ticks};
 use crate::dxl::statics::{
     CLOCK_FINE_TRIM_NO_PENDING, CLOCK_TRIM_NO_PENDING, DXL_BAUD_PENDING_BRR, DXL_BYTE_TIME_TICKS,
@@ -194,7 +195,7 @@ impl DxlBus for Ch32Bus {
         let _ = apply;
     }
 
-    fn send(&mut self, status: Status<'_, OscReplyExt>, schedule: Schedule) {
+    fn send(&mut self, status: Status<'_>, schedule: Schedule) {
         // Defense-in-depth: if DMA wrapped past the parsed range during
         // dispatch, the request data we just acted on may have been garbage.
         // Abort the reply and surface the fault — master will see the timeout
@@ -208,7 +209,7 @@ impl DxlBus for Ch32Bus {
         // after a send cycle this struct initiated.
         let buf = unsafe { &mut *DXL_TX_BUF.get() };
         buf.truncate(0);
-        if DxlWire::write_status(buf, &status).is_err() {
+        if StatusEmitter::<_, dxl::Ch32DxlCrc>::new(buf).emit(status).is_err() {
             buf.truncate(0);
             return;
         }
@@ -225,7 +226,14 @@ impl DxlBus for Ch32Bus {
         // after a send cycle this struct initiated.
         let buf = unsafe { &mut *DXL_TX_BUF.get() };
         buf.truncate(0);
-        if DxlWire::write_slot(buf, &slot, position).is_err() {
+        // `position` carries the CRC sentinel as `SlotPosition::Last { crc: 0 }`
+        // (populated by `FastSlotInfo::position()`); the chip's `patch_crc`
+        // ISR overwrites the trailing 2 bytes with the real chain CRC at
+        // fire time.
+        if SlotEmitter::<_, dxl::Ch32DxlCrc>::new(buf)
+            .emit(&slot, position)
+            .is_err()
+        {
             buf.truncate(0);
             return;
         }
