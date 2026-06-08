@@ -1,9 +1,9 @@
 use ch32_metapac::RCC;
 use core::sync::atomic::Ordering;
 
-use dxl_protocol::{Packet, ParseError, RxView, Slot, SlotPosition, Status};
+use dxl_protocol::{Slot, SlotPosition, Status};
 use osc_core::{
-    BootMode, CalSnapshot, DxlBus, Event, OscExt, OscReplyExt, Schedule, ServiceEvents, ServicesIo,
+    BootMode, CalSnapshot, DxlBus, Event, OscReplyExt, Schedule, ServiceEvents, ServicesIo,
 };
 
 use crate::dxl;
@@ -24,16 +24,18 @@ use crate::idle_anchor::{self, IdleAnchor};
 
 /// Single &mut writer: the main loop holding the `Services` struct.
 pub struct Ch32Bus {
-    /// Latest IDLE anchor consumed by `poll`. `tick` feeds the following
-    /// `send` call; `bytes` carries the cumulative wire-end cursor.
+    /// Latest IDLE anchor consumed by `rx_window`. `tick` feeds the
+    /// following `send` call; `bytes` carries the cumulative wire-end
+    /// cursor.
     anchor: IdleAnchor,
-    /// Wire-byte length of the window `poll` last returned. `send` compares
-    /// this against current DMA position to detect a ring overrun while
-    /// dispatch was in flight (the parsed slices live in the ring; if DMA
-    /// wrapped past the parsed range before the reply was scheduled, the
-    /// slices contain garbage and the reply must be aborted).
+    /// Wire-byte length of the window `rx_window` last returned. `send`
+    /// compares this against current DMA position to detect a ring
+    /// overrun while dispatch was in flight (the parsed slices live in the
+    /// ring; if DMA wrapped past the parsed range before the reply was
+    /// scheduled, the slices contain garbage and the reply must be
+    /// aborted).
     parsed_length: usize,
-    /// HSI drift filter. `poll` feeds it every non-Status packet; the
+    /// HSI drift filter. `snoop` feeds it on every non-Status packet; the
     /// CALIB handler reads its snapshot for the Status reply.
     cal: Cal,
 }
@@ -109,99 +111,15 @@ impl Default for Ch32Bus {
 }
 
 impl DxlBus for Ch32Bus {
-    fn poll(&mut self) -> Option<Packet<'static, OscExt>> {
-        let (mut head, mut tail) = self.extract_window()?;
-        // Walk forward — dispatch the frame ending exactly at the wire-end;
-        // earlier frames are pre-IDLE traffic the master has moved on from,
-        // parsed only to advance the cursor and dropped.
-        loop {
-            let total = head.len() + tail.len();
-            if total == 0 {
-                return None;
-            }
-            match DxlWire::parse_packet(RxView::ring(head, tail)) {
-                Ok((packet, used)) => {
-                    if used == total {
-                        self.snoop_drift(&packet);
-                        return Some(packet);
-                    }
-                    (head, tail) = advance(head, tail, used);
-                }
-                Err(ParseError::Incomplete) => return None,
-                Err(ParseError::Resync { skip })
-                | Err(ParseError::BadCrc { skip })
-                | Err(ParseError::BadInstruction { skip })
-                | Err(ParseError::BadLength { skip }) => {
-                    let skip = skip.min(total);
-                    (head, tail) = advance(head, tail, skip);
-                }
-            }
-        }
+    type Crc = dxl::Ch32DxlCrc;
+
+    fn rx_window(&mut self) -> Option<(&[u8], &[u8])> {
+        self.extract_window()
     }
 
-    fn send(&mut self, status: Status<'_, OscReplyExt>, schedule: Schedule) {
-        // Defense-in-depth: if DMA wrapped past the parsed range during
-        // dispatch, the request data we just acted on may have been garbage.
-        // Abort the reply and surface the fault — master will see the timeout
-        // and the link's dma_overrun counter increment.
-        if self.parsed_window_overrun() {
-            dxl::report_dma_overrun();
-            return;
-        }
-
-        // SAFETY: &mut self proves sole-writer; USART1 TC ISR only clears
-        // after a send cycle this struct initiated.
-        let buf = unsafe { &mut *DXL_TX_BUF.get() };
-        buf.truncate(0);
-        if DxlWire::write_status(buf, &status).is_err() {
-            buf.truncate(0);
-            return;
-        }
-        self.fire_plain(schedule);
-    }
-
-    fn send_slot(&mut self, slot: Slot<'_>, position: SlotPosition, schedule: Schedule) {
-        if self.parsed_window_overrun() {
-            dxl::report_dma_overrun();
-            return;
-        }
-
-        // SAFETY: &mut self proves sole-writer; USART1 TC ISR only clears
-        // after a send cycle this struct initiated.
-        let buf = unsafe { &mut *DXL_TX_BUF.get() };
-        buf.truncate(0);
-        if DxlWire::write_slot(buf, &slot, position).is_err() {
-            buf.truncate(0);
-            return;
-        }
-        self.fire_fast(position, schedule);
-    }
-
-    fn cal_snapshot(&mut self) -> Option<CalSnapshot> {
-        let s = self.cal.snapshot()?;
-        Some(CalSnapshot {
-            observed_ticks: s.observed_ticks,
-            nominal_ticks: s.nominal_ticks,
-            applied_trim_delta: s.applied_trim_delta,
-            applied_fine_trim_us: s.applied_fine_trim_us,
-        })
-    }
-}
-
-impl Ch32Bus {
-    /// Feed the chip-side drift filter with this packet's wire timing.
-    /// Skips Status frames (other slaves' replies) so only master-originated
-    /// traffic — which rides the HSE-clocked master — drives the loop. Also
-    /// skips when the EXTI first-byte stamp didn't capture for this packet
-    /// (chain mode disarms it, etc.). Observation runs unconditionally so
-    /// `cal_snapshot` always has fresh data for the master-driven CAL reply;
-    /// the snoop-driven *apply* into the pending atomics is `dyn_cal`-gated.
-    fn snoop_drift(&mut self, packet: &Packet<'static, OscExt>) {
-        if matches!(packet, Packet::Status(_)) {
-            return;
-        }
+    fn snoop(&mut self) {
         // IDLE handler snapshots FIRST_TICK / FIRST_VALID into the anchor
-        // atomically with its other fields. Reading from the snapshot here
+        // atomically with its other fields. Reading from the snapshot
         // (instead of from the live atomics) means a subsequent EXTI fire
         // for the *next* packet can't poison this packet's measurement.
         if !self.anchor.first_valid {
@@ -276,6 +194,56 @@ impl Ch32Bus {
         let _ = apply;
     }
 
+    fn send(&mut self, status: Status<'_, OscReplyExt>, schedule: Schedule) {
+        // Defense-in-depth: if DMA wrapped past the parsed range during
+        // dispatch, the request data we just acted on may have been garbage.
+        // Abort the reply and surface the fault — master will see the timeout
+        // and the link's dma_overrun counter increment.
+        if self.parsed_window_overrun() {
+            dxl::report_dma_overrun();
+            return;
+        }
+
+        // SAFETY: &mut self proves sole-writer; USART1 TC ISR only clears
+        // after a send cycle this struct initiated.
+        let buf = unsafe { &mut *DXL_TX_BUF.get() };
+        buf.truncate(0);
+        if DxlWire::write_status(buf, &status).is_err() {
+            buf.truncate(0);
+            return;
+        }
+        self.fire_plain(schedule);
+    }
+
+    fn send_slot(&mut self, slot: Slot<'_>, position: SlotPosition, schedule: Schedule) {
+        if self.parsed_window_overrun() {
+            dxl::report_dma_overrun();
+            return;
+        }
+
+        // SAFETY: &mut self proves sole-writer; USART1 TC ISR only clears
+        // after a send cycle this struct initiated.
+        let buf = unsafe { &mut *DXL_TX_BUF.get() };
+        buf.truncate(0);
+        if DxlWire::write_slot(buf, &slot, position).is_err() {
+            buf.truncate(0);
+            return;
+        }
+        self.fire_fast(position, schedule);
+    }
+
+    fn cal_snapshot(&mut self) -> Option<CalSnapshot> {
+        let s = self.cal.snapshot()?;
+        Some(CalSnapshot {
+            observed_ticks: s.observed_ticks,
+            nominal_ticks: s.nominal_ticks,
+            applied_trim_delta: s.applied_trim_delta,
+            applied_fine_trim_us: s.applied_fine_trim_us,
+        })
+    }
+}
+
+impl Ch32Bus {
     fn fire_plain(&mut self, schedule: Schedule) {
         // Flush any stale slot setup: an unfired SysTick CMP from a prior
         // Sync/Fast op would otherwise re-fire DMA and patch CRC over this
@@ -302,16 +270,6 @@ impl Ch32Bus {
                 dxl::start_fast_after(self.anchor.tick, fire_q88_us, Some(self.anchor.bytes));
             }
         }
-    }
-}
-
-/// Advance a (head, tail) ring window past `by` virtual bytes. Once `head`
-/// is fully consumed, the unconsumed tail becomes the new head with no tail.
-fn advance<'a>(head: &'a [u8], tail: &'a [u8], by: usize) -> (&'a [u8], &'a [u8]) {
-    if by >= head.len() {
-        (&tail[by - head.len()..], &[])
-    } else {
-        (&head[by..], tail)
     }
 }
 

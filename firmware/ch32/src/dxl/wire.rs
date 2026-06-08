@@ -2,7 +2,7 @@
 //! OSC extension markers so call sites stay short — replaces the `Codec`
 //! convenience that lived in `dxl-protocol` itself.
 
-use dxl_protocol::{Packet, ParseError, RxView, Slot, SlotPosition, Status, WriteBuf, WriteError};
+use dxl_protocol::{Packet, Slot, SlotPosition, Status, WriteBuf, WriteError};
 use osc_core::{OscExt, OscReplyExt};
 
 use super::Ch32DxlCrc;
@@ -13,10 +13,6 @@ use super::Ch32DxlCrc;
 pub struct DxlWire;
 
 impl DxlWire {
-    pub fn parse_packet<'a>(view: RxView<'a>) -> Result<(Packet<'a, OscExt>, usize), ParseError> {
-        dxl_protocol::parse_packet::<Ch32DxlCrc, OscExt>(view)
-    }
-
     #[allow(dead_code)] // master-mode use; not exercised by slave path yet
     pub fn write_packet<W: WriteBuf>(
         out: &mut W,

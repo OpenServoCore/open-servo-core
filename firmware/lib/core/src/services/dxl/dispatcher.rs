@@ -1,3 +1,11 @@
+use dxl_protocol::packet::{
+    ActionPacket, FactoryResetPacket, FastSlotInfo, Packet, PingPacket, RawPacket, ReadPacket,
+    RebootPacket, WritePacket,
+};
+use dxl_protocol::packet::{
+    BulkReadPacket, BulkWritePacket, FastBulkReadPacket, FastSyncReadPacket, SyncReadPacket,
+    SyncWritePacket,
+};
 use dxl_protocol::*;
 
 use crate::regions::hooks::ControlTableHooks;
@@ -5,7 +13,9 @@ use crate::traits::{DxlBus, Event, Schedule, ServiceEvents};
 use crate::{Error, RegionStorage, Router, Shared, StagedWrites, StatusReturnLevel};
 
 use super::limits::{MAX_CONTROL_RW, MAX_SLAVE_COUNT};
-use super::osc::{CalibratePacket, CalibrateStatus, OscExt, OscReplyVariant, OscVariant};
+use super::osc::{
+    CalibratePacket, CalibrateStatus, OscReplyVariant, OscVariant, decode_raw,
+};
 
 fn error_to_status(e: Error) -> StatusError {
     match e {
@@ -62,27 +72,25 @@ impl<'a, B: DxlBus, E: ServiceEvents> Dispatcher<'a, B, E> {
         }
     }
 
-    pub(super) fn dispatch(&mut self, packet: Packet<'_, OscExt>) {
+    pub(super) fn dispatch(&mut self, packet: Packet<'_>) {
         let ctx = self.snapshot_ctx();
-        match &packet {
+        match packet {
             Packet::Ping(p) => self.handle_ping(&ctx, p),
             Packet::Read(p) => self.handle_read(&ctx, p),
-            Packet::Write(p) => self.handle_write(&ctx, p),
-            Packet::RegWrite(p) => self.handle_reg_write(&ctx, p),
+            Packet::Write(p) => self.handle_write(&ctx, &p),
+            Packet::RegWrite(p) => self.handle_reg_write(&ctx, &p),
             Packet::Action(p) => self.handle_action(&ctx, p),
             Packet::FactoryReset(p) => self.handle_factory_reset(&ctx, p),
             Packet::Reboot(p) => self.handle_reboot(&ctx, p),
-            Packet::Clear(p) => self.handle_clear(&ctx, p),
-            Packet::ControlTableBackup(p) => self.handle_control_table_backup(&ctx, p),
-            Packet::SyncRead(p) => self.handle_sync_read(&ctx, p),
-            Packet::SyncWrite(p) => self.handle_sync_write(&ctx, p),
-            Packet::BulkRead(p) => self.handle_bulk_read(&ctx, p),
-            Packet::BulkWrite(p) => self.handle_bulk_write(&ctx, p),
-            Packet::FastSyncRead(p) => self.handle_fast_read(&ctx, p),
-            Packet::FastBulkRead(p) => self.handle_fast_read(&ctx, p),
-            Packet::Ext(OscVariant::Calibrate(p)) => self.handle_calibrate(&ctx, p),
+            Packet::SyncRead(p) => self.handle_sync_read(&ctx, &p),
+            Packet::SyncWrite(p) => self.handle_sync_write(&ctx, &p),
+            Packet::BulkRead(p) => self.handle_bulk_read(&ctx, &p),
+            Packet::BulkWrite(p) => self.handle_bulk_write(&ctx, &p),
+            Packet::FastSyncRead(p) => self.handle_fast_sync_read(&ctx, &p),
+            Packet::FastBulkRead(p) => self.handle_fast_bulk_read(&ctx, &p),
             // Inbound Status frames originate from another device on the bus; drop.
             Packet::Status(_) => {}
+            Packet::Raw(r) => self.handle_raw(&ctx, &r),
         }
     }
 
@@ -131,7 +139,7 @@ impl<'a, B: DxlBus, E: ServiceEvents> Dispatcher<'a, B, E> {
     }
 
     fn handle_ping(&mut self, ctx: &Ctx, p: &PingPacket) {
-        let Some((id, direct)) = ctx.addressed(p.id) else {
+        let Some((id, direct)) = ctx.addressed(p.header.id) else {
             return;
         };
         let identity = self.shared.table.config.with(|c| c.identity);
@@ -165,10 +173,10 @@ impl<'a, B: DxlBus, E: ServiceEvents> Dispatcher<'a, B, E> {
         if ctx.level < StatusReturnLevel::Read {
             return;
         }
-        let Some((id, true)) = ctx.addressed(p.id) else {
+        let Some((id, true)) = ctx.addressed(p.header.id) else {
             return;
         };
-        let len = p.length as usize;
+        let len = p.length.get() as usize;
         if len == 0 || len > MAX_CONTROL_RW {
             self.bus.send(
                 Status::Error(ErrorStatus {
@@ -180,7 +188,7 @@ impl<'a, B: DxlBus, E: ServiceEvents> Dispatcher<'a, B, E> {
             return;
         }
         let mut buf = [0u8; MAX_CONTROL_RW];
-        let reply = match self.shared.table.read_bytes(p.address, &mut buf[..len]) {
+        let reply = match self.shared.table.read_bytes(p.addr.get(), &mut buf[..len]) {
             Ok(()) => Status::Read(ReadStatus {
                 id,
                 data: Bytes::unstuffed(&buf[..len]),
@@ -194,69 +202,69 @@ impl<'a, B: DxlBus, E: ServiceEvents> Dispatcher<'a, B, E> {
     }
 
     fn handle_write(&mut self, ctx: &Ctx, p: &WritePacket<'_>) {
-        let Some((id, direct)) = ctx.addressed(p.id) else {
+        let id_byte = p.header.header.id;
+        let Some((id, direct)) = ctx.addressed(id_byte) else {
             return;
         };
 
         let mut buf = [0u8; MAX_CONTROL_RW];
-        let len = match p.data.copy_to_slice(&mut buf) {
-            Ok(n) => n,
-            Err(_) => {
-                if direct && ctx.level >= StatusReturnLevel::All {
-                    self.bus.send(
-                        Status::Error(ErrorStatus {
-                            id,
-                            error: StatusError::DataRange,
-                        }),
-                        ctx.direct_schedule(),
-                    );
-                }
-                return;
+        let len = p.data.len();
+        if len > MAX_CONTROL_RW {
+            if direct && ctx.level >= StatusReturnLevel::All {
+                self.bus.send(
+                    Status::Error(ErrorStatus {
+                        id,
+                        error: StatusError::DataRange,
+                    }),
+                    ctx.direct_schedule(),
+                );
             }
-        };
+            return;
+        }
+        buf[..len].copy_from_slice(p.data);
 
         // Sync Write wipes pending RegWrite staging per DXL convention.
         self.staged.clear();
         let result = self
             .shared
             .table
-            .write_bytes(p.address, &buf[..len], self.staged);
+            .write_bytes(p.header.addr.get(), &buf[..len], self.staged);
         let ok = result.is_ok();
         self.reply_table_result(ctx, id, direct, result);
         if ok {
             let mut hooks = ControlTableHooks::new(self.events);
             self.shared
                 .table
-                .dispatch_events(p.address, len as u16, &mut hooks);
+                .dispatch_events(p.header.addr.get(), len as u16, &mut hooks);
         }
     }
 
-    fn handle_reg_write(&mut self, ctx: &Ctx, p: &RegWritePacket<'_>) {
-        let Some((id, direct)) = ctx.addressed(p.id) else {
+    fn handle_reg_write(&mut self, ctx: &Ctx, p: &WritePacket<'_>) {
+        let id_byte = p.header.header.id;
+        let Some((id, direct)) = ctx.addressed(id_byte) else {
             return;
         };
 
         let mut buf = [0u8; MAX_CONTROL_RW];
-        let len = match p.data.copy_to_slice(&mut buf) {
-            Ok(n) => n,
-            Err(_) => {
-                if direct && ctx.level >= StatusReturnLevel::All {
-                    self.bus.send(
-                        Status::Error(ErrorStatus {
-                            id,
-                            error: StatusError::DataRange,
-                        }),
-                        ctx.direct_schedule(),
-                    );
-                }
-                return;
+        let len = p.data.len();
+        if len > MAX_CONTROL_RW {
+            if direct && ctx.level >= StatusReturnLevel::All {
+                self.bus.send(
+                    Status::Error(ErrorStatus {
+                        id,
+                        error: StatusError::DataRange,
+                    }),
+                    ctx.direct_schedule(),
+                );
             }
-        };
+            return;
+        }
+        buf[..len].copy_from_slice(p.data);
 
         let result = self
             .shared
             .table
-            .stage_bytes(p.address, &buf[..len], self.staged);
+            .stage_bytes(p.header.addr.get(), &buf[..len], self.staged);
         // RegWrite ack uses Status::RegWrite on success path; share the
         // table-result helper by translating after the call.
         if !direct || ctx.level < StatusReturnLevel::All {
@@ -273,7 +281,7 @@ impl<'a, B: DxlBus, E: ServiceEvents> Dispatcher<'a, B, E> {
     }
 
     fn handle_action(&mut self, ctx: &Ctx, p: &ActionPacket) {
-        let Some((id, direct)) = ctx.addressed(p.id) else {
+        let Some((id, direct)) = ctx.addressed(p.header.id) else {
             return;
         };
         self.shared.table.commit_staged(self.staged);
@@ -285,7 +293,7 @@ impl<'a, B: DxlBus, E: ServiceEvents> Dispatcher<'a, B, E> {
 
     fn handle_factory_reset(&mut self, ctx: &Ctx, p: &FactoryResetPacket) {
         // TODO: erase CALIB region via Flash trait, then device.reboot().
-        self.reply_unsupported(ctx, p.id);
+        self.reply_unsupported(ctx, p.header.id);
     }
 
     fn handle_calibrate(&mut self, ctx: &Ctx, p: &CalibratePacket) {
@@ -329,7 +337,7 @@ impl<'a, B: DxlBus, E: ServiceEvents> Dispatcher<'a, B, E> {
     }
 
     fn handle_reboot(&mut self, ctx: &Ctx, p: &RebootPacket) {
-        let Some((id, direct)) = ctx.addressed(p.id) else {
+        let Some((id, direct)) = ctx.addressed(p.header.id) else {
             return;
         };
         let mode = self.shared.table.control.with(|c| c.system.boot_mode);
@@ -340,14 +348,16 @@ impl<'a, B: DxlBus, E: ServiceEvents> Dispatcher<'a, B, E> {
         self.events.send(Event::Reboot(mode));
     }
 
-    fn handle_clear(&mut self, ctx: &Ctx, p: &ClearPacket<'_>) {
-        // TODO: verify CLR\0 key, then ask kernel to zero multi-turn revolution count.
-        self.reply_unsupported(ctx, p.id);
-    }
-
-    fn handle_control_table_backup(&mut self, ctx: &Ctx, p: &ControlTableBackupPacket<'_>) {
-        // TODO: verify CTRL key, then serialize CONFIG to a flash slot via Flash trait.
-        self.reply_unsupported(ctx, p.id);
+    fn handle_raw(&mut self, ctx: &Ctx, r: &RawPacket<'_>) {
+        if let Some(variant) = decode_raw(r) {
+            match variant {
+                OscVariant::Calibrate(p) => self.handle_calibrate(ctx, &p),
+            }
+            return;
+        }
+        // Unknown standard instructions (Clear 0x10, CTBackup 0x20) and any
+        // truly unknown byte: ack as unsupported when addressed directly.
+        self.reply_unsupported(ctx, r.header.header.id);
     }
 
     fn handle_sync_read(&mut self, ctx: &Ctx, p: &SyncReadPacket<'_>) {
@@ -363,7 +373,7 @@ impl<'a, B: DxlBus, E: ServiceEvents> Dispatcher<'a, B, E> {
             slot_index: info.index as u16,
         };
 
-        let len = p.length as usize;
+        let len = p.header.length.get() as usize;
         if len == 0 || len > MAX_CONTROL_RW {
             self.bus.send(
                 Status::Error(ErrorStatus {
@@ -376,7 +386,11 @@ impl<'a, B: DxlBus, E: ServiceEvents> Dispatcher<'a, B, E> {
         }
 
         let mut buf = [0u8; MAX_CONTROL_RW];
-        let reply = match self.shared.table.read_bytes(p.address, &mut buf[..len]) {
+        let reply = match self
+            .shared
+            .table
+            .read_bytes(p.header.addr.get(), &mut buf[..len])
+        {
             Ok(()) => Status::SyncRead(SyncReadStatus {
                 id: ctx.our_id,
                 data: Bytes::unstuffed(&buf[..len]),
@@ -390,26 +404,30 @@ impl<'a, B: DxlBus, E: ServiceEvents> Dispatcher<'a, B, E> {
     }
 
     fn handle_sync_write(&mut self, ctx: &Ctx, p: &SyncWritePacket<'_>) {
-        let len = p.length as usize;
+        let len = p.header.length.get() as usize;
         if len == 0 || len > MAX_CONTROL_RW {
             return;
         }
-        let mut buf = [0u8; MAX_CONTROL_RW];
-        let Some(copied) = p.find_slot_data(ctx.our_id, &mut buf[..len]) else {
+        let Some(entry) = p.find_entry(ctx.our_id) else {
             return;
         };
+        if entry.data.len() < len {
+            return;
+        }
+        let mut buf = [0u8; MAX_CONTROL_RW];
+        buf[..len].copy_from_slice(&entry.data[..len]);
         // Mirrors `handle_write`: Sync Write wipes any pending RegWrite staging.
         self.staged.clear();
         if self
             .shared
             .table
-            .write_bytes(p.address, &buf[..copied], self.staged)
+            .write_bytes(p.header.addr.get(), &buf[..len], self.staged)
             .is_ok()
         {
             let mut hooks = ControlTableHooks::new(self.events);
             self.shared
                 .table
-                .dispatch_events(p.address, copied as u16, &mut hooks);
+                .dispatch_events(p.header.addr.get(), len as u16, &mut hooks);
         }
     }
 
@@ -453,34 +471,47 @@ impl<'a, B: DxlBus, E: ServiceEvents> Dispatcher<'a, B, E> {
     }
 
     fn handle_bulk_write(&mut self, ctx: &Ctx, p: &BulkWritePacket<'_>) {
-        let mut buf = [0u8; MAX_CONTROL_RW];
-        let Some((hdr, copied)) = p.find_slot_data(ctx.our_id, &mut buf) else {
+        let Some(entry) = p.find_entry(ctx.our_id) else {
             return;
         };
-        if copied == 0 || copied > MAX_CONTROL_RW {
+        let len = entry.data.len();
+        if len == 0 || len > MAX_CONTROL_RW {
             return;
         }
+        let mut buf = [0u8; MAX_CONTROL_RW];
+        buf[..len].copy_from_slice(entry.data);
         self.staged.clear();
         if self
             .shared
             .table
-            .write_bytes(hdr.address, &buf[..copied], self.staged)
+            .write_bytes(entry.addr, &buf[..len], self.staged)
             .is_ok()
         {
             let mut hooks = ControlTableHooks::new(self.events);
             self.shared
                 .table
-                .dispatch_events(hdr.address, copied as u16, &mut hooks);
+                .dispatch_events(entry.addr, len as u16, &mut hooks);
         }
     }
 
-    fn handle_fast_read<P: FastReadPacket>(&mut self, ctx: &Ctx, p: &P) {
-        if ctx.level < StatusReturnLevel::Read {
-            return;
-        }
+    fn handle_fast_sync_read(&mut self, ctx: &Ctx, p: &FastSyncReadPacket<'_>) {
         let Some(info) = p.find_slot(ctx.our_id, MAX_SLAVE_COUNT) else {
             return;
         };
+        self.fast_read_reply(ctx, info);
+    }
+
+    fn handle_fast_bulk_read(&mut self, ctx: &Ctx, p: &FastBulkReadPacket<'_>) {
+        let Some(info) = p.find_slot(ctx.our_id, MAX_SLAVE_COUNT) else {
+            return;
+        };
+        self.fast_read_reply(ctx, info);
+    }
+
+    fn fast_read_reply(&mut self, ctx: &Ctx, info: FastSlotInfo) {
+        if ctx.level < StatusReturnLevel::Read {
+            return;
+        }
         let len = info.length as usize;
         if len == 0 || len > MAX_CONTROL_RW {
             return;
@@ -515,3 +546,4 @@ impl<'a, B: DxlBus, E: ServiceEvents> Dispatcher<'a, B, E> {
         self.bus.send_slot(slot, position, schedule);
     }
 }
+

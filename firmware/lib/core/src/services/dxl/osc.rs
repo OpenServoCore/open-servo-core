@@ -15,6 +15,7 @@
 //! baud, queues HSI trim updates, and returns the measurement in a single
 //! Status reply. No master-side timestamping required.
 
+use dxl_protocol::packet::RawPacket;
 use dxl_protocol::{
     Bytes, CrcUmts, DecodeError, Instruction, InstructionExt, RawStatus, StatusError, StatusExt,
     WriteBuf, WriteError, write_ext,
@@ -85,6 +86,27 @@ fn decode_calibrate(id: u8, params: Bytes<'_>) -> Result<OscVariant, DecodeError
         return Err(DecodeError::BadParams);
     }
     Ok(OscVariant::Calibrate(CalibratePacket { id, count }))
+}
+
+/// Streaming-decoder counterpart to the [`InstructionExt`] decode path.
+/// `Packet::Raw` carries unrecognized-instruction frames after the new
+/// parser routes them; the dispatcher calls this to resolve OSC verbs from
+/// the raw byte slice. Returns `None` for instruction bytes we don't own.
+pub fn decode_raw(raw: &RawPacket<'_>) -> Option<OscVariant> {
+    let id = raw.header.header.id;
+    match raw.header.header.instruction {
+        CALIBRATE_INSTRUCTION => {
+            if raw.params.len() < 2 {
+                return None;
+            }
+            let count = u16::from_le_bytes([raw.params[0], raw.params[1]]);
+            if raw.params.len() - 2 != count as usize {
+                return None;
+            }
+            Some(OscVariant::Calibrate(CalibratePacket { id, count }))
+        }
+        _ => None,
+    }
 }
 
 /// Marker for the OSC reply extension; bind as the `S` parameter of

@@ -1,6 +1,6 @@
-use dxl_protocol::{Packet, Slot, SlotPosition, Status};
+use dxl_protocol::{CrcUmts, Slot, SlotPosition, Status};
 
-use crate::services::dxl::{OscExt, OscReplyExt};
+use crate::services::dxl::OscReplyExt;
 use crate::{BaudRate, BootMode};
 
 /// Wire scheduling info for a single outbound reply. The chip translates
@@ -38,17 +38,26 @@ pub struct CalSnapshot {
 }
 
 /// Bus surface the DXL services layer reads, writes, and schedules through.
-/// `poll` returns the single dispatchable packet ending at the latest
-/// IDLE-anchored wire-end. `send` emits one of the non-fast typed Status
-/// shapes (full standalone status frame). `send_slot` emits one piece of a
-/// Fast Sync/Bulk Read coalesced response and patches the chain CRC when the
-/// slot is the last in the response.
+/// `rx_window` exposes the latest IDLE-anchored byte window as 1-2
+/// contiguous slices the kernel-side `Dxl` feeds through a streaming
+/// [`Decoder`](dxl_protocol::decoder::Decoder); `send` emits one of the
+/// non-fast typed Status shapes (full standalone status frame).
+/// `send_slot` emits one piece of a Fast Sync/Bulk Read coalesced response
+/// and patches the chain CRC when the slot is the last in the response.
 pub trait DxlBus {
-    /// Latest IDLE-anchored request, or `None` if no fresh anchor since the
-    /// previous `poll`. The returned `Packet`'s borrowed bytes live in chip
-    /// storage that stays valid until the next `poll` overwrites it. OSC
-    /// vendor verbs surface as `Packet::Ext(OscVariant::..)`.
-    fn poll(&mut self) -> Option<Packet<'static, OscExt>>;
+    /// CRC engine implementation used to validate inbound frames.
+    type Crc: CrcUmts;
+
+    /// Latest IDLE-anchored RX window as a `(head, tail)` slice pair (the
+    /// tail is non-empty only when the burst wraps the ring). Returns
+    /// `None` when no fresh window has arrived since the previous call.
+    /// The returned slices stay valid until the next `rx_window` call.
+    fn rx_window(&mut self) -> Option<(&[u8], &[u8])>;
+
+    /// Snoop hook called by `Dxl::poll` exactly once per successfully
+    /// decoded non-Status packet. Chip impls use it to drive any
+    /// per-packet calibration state machine (e.g. HSI drift filter).
+    fn snoop(&mut self);
 
     /// Compose a standalone Status reply on the chip's TX buffer and schedule
     /// it. The chip owns all wire-timing math: it consumes `Schedule` to

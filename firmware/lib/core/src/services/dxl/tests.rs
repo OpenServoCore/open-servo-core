@@ -103,39 +103,17 @@ impl FakeBus {
 }
 
 impl DxlBus for FakeBus {
-    fn poll(&mut self) -> Option<Packet<'static, OscExt>> {
+    type Crc = TestDxlCrc;
+
+    fn rx_window(&mut self) -> Option<(&[u8], &[u8])> {
         if !self.burst_fresh {
             return None;
         }
         self.burst_fresh = false;
-        let s: &[u8] = &self.burst[..];
-        // SAFETY: each test holds FakeBus for the full poll() call, so the
-        // burst storage outlives the returned slice. Production contract
-        // ("Packet bytes valid until next poll") is respected here too.
-        let window: &'static [u8] = unsafe { core::slice::from_raw_parts(s.as_ptr(), s.len()) };
-        // Mirror chip-side walk: parse forward, dispatch the frame ending
-        // exactly at the wire-end; earlier frames advance the cursor.
-        let n = window.len();
-        let mut offset = 0;
-        while offset < n {
-            match Wire::parse_one(&window[offset..], &[]) {
-                Ok((pkt, used)) => {
-                    if offset + used == n {
-                        return Some(pkt);
-                    }
-                    offset += used;
-                }
-                Err(ParseError::Incomplete) => return None,
-                Err(ParseError::Resync { skip })
-                | Err(ParseError::BadCrc { skip })
-                | Err(ParseError::BadInstruction { skip })
-                | Err(ParseError::BadLength { skip }) => {
-                    offset = (offset + skip).min(n);
-                }
-            }
-        }
-        None
+        Some((&self.burst[..], &[]))
     }
+
+    fn snoop(&mut self) {}
 
     fn send(&mut self, status: Status<'_, OscReplyExt>, schedule: Schedule) {
         self.tx.clear();
