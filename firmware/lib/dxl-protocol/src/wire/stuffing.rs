@@ -5,13 +5,15 @@
 //! so a header-scan can't match a fake header mid-frame. Decoding strips that
 //! extra `0xFD` back out.
 //!
-//! [`Stuffer`] converts a logical-byte stream to wire form (inserts `0xFD`
-//! after every `0xFF 0xFF 0xFD` triple). [`Unstuffer`] does the reverse —
-//! strips the `0xFD` after every triple.
+//! [`Stuffer`] converts a logical-byte stream to wire form (inserts
+//! [`STUFFING_BYTE`] after every [`STUFFING_TRIGGER`] triple). [`Unstuffer`]
+//! does the reverse — strips the inserted byte after every triple.
 //!
 //! Both are zero-copy iterator adapters with a small sliding window of state.
 //! Fast Read payloads skip stuffing entirely (positional decode); these
 //! adapters are not used on that path.
+
+use super::frame::{STUFFING_BYTE, STUFFING_TRIGGER};
 
 /// Inserts the stuffing byte (`0xFD`) after every `0xFF 0xFF 0xFD` triple in
 /// the underlying logical byte stream.
@@ -59,8 +61,8 @@ impl<I: Iterator<Item = u8>> Iterator for Stuffer<I> {
             return Some(b);
         }
         let b = self.inner.next()?;
-        if self.last2[0] == 0xFF && self.last2[1] == 0xFF && b == 0xFD {
-            self.pending = Some(0xFD);
+        if [self.last2[0], self.last2[1], b] == STUFFING_TRIGGER {
+            self.pending = Some(STUFFING_BYTE);
         }
         self.last2 = [self.last2[1], b];
         Some(b)
@@ -113,9 +115,9 @@ impl<I: Iterator<Item = u8>> Iterator for Unstuffer<I> {
     fn next(&mut self) -> Option<u8> {
         loop {
             let b = self.inner.next()?;
-            if b == 0xFD && self.last3 == [0xFF, 0xFF, 0xFD] {
+            if b == STUFFING_BYTE && self.last3 == STUFFING_TRIGGER {
                 // Advance past the trigger so a logical FD right after isn't re-suppressed.
-                self.last3 = [self.last3[1], self.last3[2], 0xFD];
+                self.last3 = [self.last3[1], self.last3[2], STUFFING_BYTE];
                 continue;
             }
             self.last3 = [self.last3[1], self.last3[2], b];

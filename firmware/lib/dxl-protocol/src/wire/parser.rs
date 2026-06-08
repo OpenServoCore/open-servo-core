@@ -1,6 +1,6 @@
 use super::bytes::Bytes;
 use super::crc::CrcUmts;
-use super::frame::{BROADCAST_ID, HEADER, MAX_LENGTH, RawFrame};
+use super::frame::{BROADCAST_ID, HEADER, PACKET_LEN_GUARD, PACKET_LEN_MIN, RawFrame};
 use super::rx_view::RxView;
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
@@ -51,7 +51,7 @@ pub fn parse_raw<'a, CRC: CrcUmts>(
 
     // Bad length: don't trust this header. Step past 4 bytes rather than
     // honoring its claimed size, so a phantom can't mask a real frame after.
-    if !(3..=MAX_LENGTH).contains(&length) {
+    if !(PACKET_LEN_MIN..=PACKET_LEN_GUARD).contains(&length) {
         return Err(ParseError::BadLength { skip: HEADER.len() });
     }
 

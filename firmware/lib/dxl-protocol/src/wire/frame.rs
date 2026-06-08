@@ -1,9 +1,24 @@
 pub const HEADER: [u8; 4] = [0xFF, 0xFF, 0xFD, 0x00];
 pub const BROADCAST_ID: u8 = 0xFE;
 
-/// Cap on the wire `Length` field. Bounds how long the parser waits on a
-/// phantom header in random traffic; real frames stay well under this.
-pub const MAX_LENGTH: usize = 1024;
+/// Three-byte logical pattern (HEADER[0..3]) that triggers byte stuffing —
+/// the encoder inserts `STUFFING_BYTE` after every occurrence in the
+/// payload so a fake header can't appear mid-frame.
+pub const STUFFING_TRIGGER: [u8; 3] = [HEADER[0], HEADER[1], HEADER[2]];
+
+/// Escape byte inserted after every `STUFFING_TRIGGER` on the wire and
+/// stripped back out by the decoder.
+pub const STUFFING_BYTE: u8 = 0xFD;
+
+/// Minimum value of the wire `Length` field: `INSTRUCTION(1) + CRC(2)`.
+/// A `Length` below this can't describe a real frame.
+pub const PACKET_LEN_MIN: usize = 1 + CRC_BYTES;
+
+/// Sanity cap on the wire `Length` field — purely a parser guard, not a
+/// buffer size (callers size their accumulators independently). Bounds how
+/// long the parser stays committed to a phantom header in random traffic;
+/// real frames stay well under this.
+pub const PACKET_LEN_GUARD: usize = 1024;
 
 /// Bytes before the parameter region of any request packet:
 /// `HEADER(4) + ID(1) + LENGTH(2) + INSTRUCTION(1)`.

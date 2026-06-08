@@ -13,6 +13,7 @@
 //! Extension hooks: implement [`InstructionExt`] to add custom request
 //! instructions; implement [`StatusExt`] to add custom typed status flavors.
 
+mod decoder;
 mod instruction;
 mod packet;
 mod typed;
@@ -34,7 +35,7 @@ pub use typed::{
 pub use wire::SoftwareCrcUmts;
 pub use wire::{
     BROADCAST_ID, BULK_REQUEST_SLOT_BYTES, ByteIter, Bytes, CRC_BYTES, CrcUmts,
-    FAST_RESPONSE_SLOT_BYTES, FAST_RESPONSE_SLOT0_BYTES, HEADER, MAX_LENGTH, Overflow, ParseError,
+    FAST_RESPONSE_SLOT_BYTES, FAST_RESPONSE_SLOT0_BYTES, HEADER, PACKET_LEN_GUARD, Overflow, ParseError,
     REQUEST_HEADER_BYTES, RESPONSE_HEADER_BYTES, RxView, SYNC_REQUEST_SLOT_BYTES, WriteBuf,
     WriteError,
 };

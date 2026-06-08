@@ -494,9 +494,9 @@ fn bad_crc_is_reported() {
 
 #[test]
 fn oversized_length_is_rejected() {
-    // length 0xFFFF > MAX_LENGTH.
+    // length 0xFFFF > PACKET_LEN_GUARD.
     let bad = [0xFFu8, 0xFF, 0xFD, 0x00, 0x01, 0xFF, 0xFF, 0x01];
-    assert!((MAX_LENGTH as u32) < 0xFFFF);
+    assert!((PACKET_LEN_GUARD as u32) < 0xFFFF);
     match Wire::parse_one(&bad, &[]) {
         Err(ParseError::BadLength { skip }) => assert_eq!(skip, 4),
         other => panic!("expected BadLength, got {:?}", other),

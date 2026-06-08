@@ -294,7 +294,7 @@ fn parse_one_progress_invariant_random_short_inputs() {
 fn parse_one_progress_invariant_long_random_inputs() {
     let mut rng = Rng::new(0xC0FFEE2);
     for _ in 0..2000 {
-        let len = (rng.next_u64() % (MAX_LENGTH as u64 * 2 + 64)) as usize;
+        let len = (rng.next_u64() % (PACKET_LEN_GUARD as u64 * 2 + 64)) as usize;
         let mut buf = vec![0u8; len];
         rng.fill(&mut buf);
         match Wire::parse_one(&buf, &[]) {
@@ -381,14 +381,14 @@ fn random_header_id_length_does_not_lock_parser() {
 
 #[test]
 fn maxlen_phantom_header_returns_definite_error() {
-    // 7+MAX_LENGTH bytes with header and length=MAX_LENGTH: enough to verify CRC, reject.
+    // 7+PACKET_LEN_GUARD bytes with header and length=PACKET_LEN_GUARD: enough to verify CRC, reject.
     let mut rng = Rng::new(1234);
     for _ in 0..200 {
-        let mut buf = vec![0u8; 7 + MAX_LENGTH];
+        let mut buf = vec![0u8; 7 + PACKET_LEN_GUARD];
         rng.fill(&mut buf);
         buf[0..4].copy_from_slice(&HEADER);
-        buf[5] = (MAX_LENGTH & 0xFF) as u8;
-        buf[6] = ((MAX_LENGTH >> 8) & 0xFF) as u8;
+        buf[5] = (PACKET_LEN_GUARD & 0xFF) as u8;
+        buf[6] = ((PACKET_LEN_GUARD >> 8) & 0xFF) as u8;
         if let Err(ParseError::Incomplete) = Wire::parse_one(&buf, &[]) {
             panic!("should not be Incomplete with full frame");
         }
@@ -397,7 +397,7 @@ fn maxlen_phantom_header_returns_definite_error() {
 
 #[test]
 fn over_maxlen_header_short_circuits() {
-    // Length > MAX_LENGTH must trigger BadLength immediately, not wait for ~64KB.
+    // Length > PACKET_LEN_GUARD must trigger BadLength immediately, not wait for ~64KB.
     let bad = [0xFFu8, 0xFF, 0xFD, 0x00, 0x01, 0xFF, 0xFF, 0x01];
     match Wire::parse_one(&bad, &[]) {
         Err(ParseError::BadLength { skip }) => assert_eq!(skip, 4),
