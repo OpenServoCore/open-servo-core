@@ -213,7 +213,7 @@ impl<'a, W: WriteBuf, CRC: CrcUmts> InstructionEmitter<'a, W, CRC> {
                 r.params,
             ),
             Packet::Status(s) => {
-                let err = [s.header.error];
+                let err = [s.header.error.as_byte()];
                 emit_frame(
                     self.out,
                     &mut self.crc,

@@ -9,7 +9,7 @@ use super::header::{Header, U16Le};
 #[derive(Copy, Clone, Debug)]
 pub struct StatusHeader {
     pub header: Header,
-    pub error: u8,
+    pub error: StatusError,
 }
 
 #[derive(Copy, Clone, Debug)]
@@ -295,7 +295,7 @@ pub enum Status<'a> {
 impl<'a> StatusPacket<'a> {
     #[inline]
     pub fn error(&self) -> StatusError {
-        StatusError::from_byte(self.header.error)
+        self.header.error
     }
 
     pub fn interpret(self, req: RequestKind) -> Status<'a> {

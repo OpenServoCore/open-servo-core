@@ -1,16 +1,16 @@
-use crc::{CRC_16_UMTS, Crc};
+use crc::{Crc, CRC_16_UMTS};
 use dxl_protocol::decoder::{Decoder, Step};
 use dxl_protocol::packet::{BulkReadEntry, ErrorCode, Packet, Slot, Status, StatusError};
 use dxl_protocol::{
-    BROADCAST_ID, CrcUmts, InstructionEmitter, SlotEmitter, SlotPosition, StatusEmitter, WriteError,
+    CrcUmts, InstructionEmitter, SlotEmitter, SlotPosition, StatusEmitter, WriteError, BROADCAST_ID,
 };
 use heapless::Vec;
 
 use crate::traits::{CalSnapshot, DxlBus, Event, Schedule, ServiceEvents, ServicesIo};
 use crate::{BootMode, RegionStorage, Shared, StatusReturnLevel};
 
-use super::Dxl;
 use super::osc::CALIBRATE_INSTRUCTION;
+use super::Dxl;
 
 /// Test-only `CrcUmts`. Production builds get the chip's impl directly; core
 /// itself never references a concrete CRC engine after the trait flip.
@@ -191,9 +191,7 @@ impl ServicesIo for FakeIo {
 
 fn encode<F>(f: F) -> Vec<u8, 256>
 where
-    F: FnOnce(
-        &mut InstructionEmitter<'_, Vec<u8, 256>, TestDxlCrc>,
-    ) -> Result<(), WriteError>,
+    F: FnOnce(&mut InstructionEmitter<'_, Vec<u8, 256>, TestDxlCrc>) -> Result<(), WriteError>,
 {
     let mut buf: Vec<u8, 256> = Vec::new();
     f(&mut InstructionEmitter::<_, TestDxlCrc>::new(&mut buf)).unwrap();
@@ -214,9 +212,7 @@ fn encode_calibrate(id: u8, count: u16) -> Vec<u8, 256> {
 /// under any alignment.
 fn bulk_entries(body: &[u8]) -> &[BulkReadEntry] {
     assert!(body.len() % 5 == 0);
-    unsafe {
-        core::slice::from_raw_parts(body.as_ptr() as *const BulkReadEntry, body.len() / 5)
-    }
+    unsafe { core::slice::from_raw_parts(body.as_ptr() as *const BulkReadEntry, body.len() / 5) }
 }
 
 fn parse_status(bytes: &[u8]) -> (u8, u8, Vec<u8, 64>) {
@@ -226,7 +222,7 @@ fn parse_status(bytes: &[u8]) -> (u8, u8, Vec<u8, 64>) {
     match step {
         Step::Packet(Packet::Status(p)) => {
             let id = p.header.header.id;
-            let err = p.header.error;
+            let err = p.header.error.as_byte();
             let mut out: Vec<u8, 64> = Vec::new();
             out.extend_from_slice(p.params).unwrap();
             (id, err, out)
@@ -234,7 +230,6 @@ fn parse_status(bytes: &[u8]) -> (u8, u8, Vec<u8, 64>) {
         _ => panic!("not a status packet"),
     }
 }
-
 
 #[test]
 fn ping_to_our_id_replies() {
@@ -405,11 +400,7 @@ fn write_to_other_id_silent_and_does_not_mutate() {
     let mut io = FakeIo::new();
     let mut h = Dxl::new();
 
-    let req = encode(|w| w.write(
-        17,
-        CONTROL_BASE_ADDR,
-        &[1],
-    ));
+    let req = encode(|w| w.write(17, CONTROL_BASE_ADDR, &[1]));
     io.feed(&req);
     h.poll(&shared, &mut io);
 
@@ -425,11 +416,7 @@ fn broadcast_write_applies_but_silent() {
     let mut io = FakeIo::new();
     let mut h = Dxl::new();
 
-    let req = encode(|w| w.write(
-        BROADCAST_ID,
-        CONTROL_BASE_ADDR,
-        &[1],
-    ));
+    let req = encode(|w| w.write(BROADCAST_ID, CONTROL_BASE_ADDR, &[1]));
     io.feed(&req);
     h.poll(&shared, &mut io);
 
@@ -445,11 +432,7 @@ fn reg_write_then_action_commits_to_live_table() {
     let mut io = FakeIo::new();
     let mut h = Dxl::new();
 
-    let req = encode(|w| w.reg_write(
-        0,
-        CONTROL_BASE_ADDR,
-        &[1],
-    ));
+    let req = encode(|w| w.reg_write(0, CONTROL_BASE_ADDR, &[1]));
     io.feed(&req);
     h.poll(&shared, &mut io);
     let (_, err, _) = parse_status(&io.bus.tx);
@@ -484,11 +467,7 @@ fn reg_write_invalid_value_rejected_at_stage_time() {
     let mut io = FakeIo::new();
     let mut h = Dxl::new();
 
-    let req = encode(|w| w.reg_write(
-        0,
-        CONTROL_BASE_ADDR,
-        &[2],
-    ));
+    let req = encode(|w| w.reg_write(0, CONTROL_BASE_ADDR, &[2]));
     io.feed(&req);
     h.poll(&shared, &mut io);
     let (_, err, _) = parse_status(&io.bus.tx);
@@ -504,25 +483,17 @@ fn reg_write_invalid_value_rejected_at_stage_time() {
 
 #[test]
 fn sync_write_clears_pending_reg_write_staging() {
-    use crate::regions::CONTROL_BASE_ADDR;
     use crate::regions::control::Mode;
+    use crate::regions::CONTROL_BASE_ADDR;
     let shared = Shared::new();
     let mut io = FakeIo::new();
     let mut h = Dxl::new();
 
-    let req = encode(|w| w.reg_write(
-        0,
-        CONTROL_BASE_ADDR,
-        &[1],
-    ));
+    let req = encode(|w| w.reg_write(0, CONTROL_BASE_ADDR, &[1]));
     io.feed(&req);
     h.poll(&shared, &mut io);
 
-    let req = encode(|w| w.write(
-        0,
-        CONTROL_BASE_ADDR + 1,
-        &[1],
-    ));
+    let req = encode(|w| w.write(0, CONTROL_BASE_ADDR + 1, &[1]));
     io.feed(&req);
     h.poll(&shared, &mut io);
     assert_eq!(
@@ -545,11 +516,7 @@ fn broadcast_reg_write_and_action_silent_but_commits() {
     let mut io = FakeIo::new();
     let mut h = Dxl::new();
 
-    let req = encode(|w| w.reg_write(
-        BROADCAST_ID,
-        CONTROL_BASE_ADDR,
-        &[1],
-    ));
+    let req = encode(|w| w.reg_write(BROADCAST_ID, CONTROL_BASE_ADDR, &[1]));
     io.feed(&req);
     h.poll(&shared, &mut io);
     assert_eq!(io.bus.send_count, 0);
@@ -631,11 +598,7 @@ fn reboot_honors_staged_boot_mode() {
     let mut io = FakeIo::new();
     let mut h = Dxl::new();
 
-    let req = encode(|w| w.write(
-        0,
-        BOOT_MODE,
-        &[BootMode::Bootloader as u8],
-    ));
+    let req = encode(|w| w.write(0, BOOT_MODE, &[BootMode::Bootloader as u8]));
     io.feed(&req);
     h.poll(&shared, &mut io);
 
@@ -748,11 +711,7 @@ fn return_level_none_silences_action_ack() {
     let mut io = FakeIo::new();
     let mut h = Dxl::new();
 
-    let req = encode(|w| w.reg_write(
-        0,
-        CONTROL_BASE_ADDR,
-        &[1],
-    ));
+    let req = encode(|w| w.reg_write(0, CONTROL_BASE_ADDR, &[1]));
     io.feed(&req);
     h.poll(&shared, &mut io);
 
@@ -1067,11 +1026,7 @@ fn fast_sync_read_first_slot_emits_header_then_body_no_crc() {
     let mut io = FakeIo::new();
     let mut h = Dxl::new();
 
-    let req = encode(|w| w.fast_sync_read(
-        0,
-        2,
-        &[0, 7],
-    ));
+    let req = encode(|w| w.fast_sync_read(0, 2, &[0, 7]));
     io.feed(&req);
     h.poll(&shared, &mut io);
 
@@ -1136,7 +1091,10 @@ fn fast_sync_read_last_slot_reserves_crc_placeholder() {
     h.poll(&shared, &mut io);
 
     assert_eq!(io.bus.send_count, 1);
-    assert_eq!(io.bus.last_kind, Some(ReplyKind::Fast(SlotPosition::Last { crc: 0 })));
+    assert_eq!(
+        io.bus.last_kind,
+        Some(ReplyKind::Fast(SlotPosition::Last { crc: 0 }))
+    );
     assert_eq!(
         io.bus.last_schedule.unwrap().bytes_before,
         __expected_bytes_before
@@ -1156,11 +1114,7 @@ fn fast_sync_read_silent_when_our_id_absent() {
     let mut io = FakeIo::new();
     let mut h = Dxl::new();
 
-    let req = encode(|w| w.fast_sync_read(
-        0,
-        2,
-        &[5, 7, 9],
-    ));
+    let req = encode(|w| w.fast_sync_read(0, 2, &[5, 7, 9]));
     io.feed(&req);
     h.poll(&shared, &mut io);
 
@@ -1299,7 +1253,10 @@ fn fast_bulk_read_last_slot_reserves_crc_placeholder() {
     h.poll(&shared, &mut io);
 
     assert_eq!(io.bus.send_count, 1);
-    assert_eq!(io.bus.last_kind, Some(ReplyKind::Fast(SlotPosition::Last { crc: 0 })));
+    assert_eq!(
+        io.bus.last_kind,
+        Some(ReplyKind::Fast(SlotPosition::Last { crc: 0 }))
+    );
     assert_eq!(
         io.bus.last_schedule.unwrap().bytes_before,
         __expected_bytes_before
@@ -1325,7 +1282,10 @@ fn fast_bulk_read_uses_our_tuples_address_not_a_preceding_slots() {
     h.poll(&shared, &mut io);
 
     assert_eq!(io.bus.send_count, 1);
-    assert_eq!(io.bus.last_kind, Some(ReplyKind::Fast(SlotPosition::Last { crc: 0 })));
+    assert_eq!(
+        io.bus.last_kind,
+        Some(ReplyKind::Fast(SlotPosition::Last { crc: 0 }))
+    );
     assert_eq!(io.bus.tx.len(), 6);
     assert_eq!(&io.bus.tx[..4], &[0, 0, 0, 0]);
     assert_eq!(&io.bus.tx[4..], &[0, 0]);
@@ -1437,9 +1397,7 @@ fn calibrate_unicast_replies_with_measurement_payload() {
         applied_fine_trim_us: 256, // +1.0 µs in Q8.8
     });
 
-    let req = encode_calibrate(
-        0, 16,
-    );
+    let req = encode_calibrate(0, 16);
     io.feed(&req);
     h.poll(&shared, &mut io);
 
@@ -1469,9 +1427,7 @@ fn calibrate_unicast_count_max_payload_accepted() {
         applied_fine_trim_us: 0,
     });
 
-    let req = encode_calibrate(
-        0, 128,
-    );
+    let req = encode_calibrate(0, 128);
     // hdr(4) + id(1) + len(2) + inst(1) + count(2) + 128 filler + crc(2) = 140
     assert_eq!(req.len(), 140);
     io.feed(&req);
@@ -1500,9 +1456,7 @@ fn calibrate_without_snapshot_replies_data_range_error() {
     let mut h = Dxl::new();
     assert!(io.bus.cal_snapshot_stub.is_none());
 
-    let req = encode_calibrate(
-        0, 16,
-    );
+    let req = encode_calibrate(0, 16);
     io.feed(&req);
     h.poll(&shared, &mut io);
 
@@ -1518,9 +1472,7 @@ fn calibrate_unicast_count_zero_data_range_err() {
     let mut io = FakeIo::new();
     let mut h = Dxl::new();
 
-    let req = encode_calibrate(
-        0, 0,
-    );
+    let req = encode_calibrate(0, 0);
     io.feed(&req);
     h.poll(&shared, &mut io);
 
@@ -1536,9 +1488,7 @@ fn calibrate_unicast_count_over_max_data_range_err() {
     let mut io = FakeIo::new();
     let mut h = Dxl::new();
 
-    let req = encode_calibrate(
-        0, 129,
-    );
+    let req = encode_calibrate(0, 129);
     io.feed(&req);
     h.poll(&shared, &mut io);
 
@@ -1554,10 +1504,7 @@ fn calibrate_broadcast_silently_dropped() {
     let mut io = FakeIo::new();
     let mut h = Dxl::new();
 
-    let req = encode_calibrate(
-        BROADCAST_ID,
-        128,
-    );
+    let req = encode_calibrate(BROADCAST_ID, 128);
     io.feed(&req);
     h.poll(&shared, &mut io);
 
@@ -1574,11 +1521,7 @@ fn fast_sync_read_error_emits_zero_payload_with_error_byte() {
     let mut h = Dxl::new();
 
     // Address 0xFFFE is out of range → Err(DataRange) from read_bytes.
-    let req = encode(|w| w.fast_sync_read(
-        0xFFFE,
-        2,
-        &[0],
-    ));
+    let req = encode(|w| w.fast_sync_read(0xFFFE, 2, &[0]));
     io.feed(&req);
     h.poll(&shared, &mut io);
 
@@ -1589,7 +1532,10 @@ fn fast_sync_read_error_emits_zero_payload_with_error_byte() {
     ));
     // Wire bytes: HEADER(4) + 0xFE + LEN(2) + 0x55 + error + id + 2 zeros + CRC(2)
     assert_eq!(io.bus.tx.len(), 14);
-    assert_eq!(io.bus.tx[8], StatusError::code(ErrorCode::DataRange).as_byte());
+    assert_eq!(
+        io.bus.tx[8],
+        StatusError::code(ErrorCode::DataRange).as_byte()
+    );
     assert_eq!(io.bus.tx[9], 0); // our id
     assert_eq!(&io.bus.tx[10..12], &[0, 0]); // length zero bytes
 }
@@ -1603,11 +1549,7 @@ fn sync_write_to_our_id_mutates_and_silent() {
 
     // Two slots: id=7 (not us), id=0 (us). length=1, both write 0x01 to torque_enable.
     let body = [7, 0x00, 0, 0x01];
-    let req = encode(|w| w.sync_write(
-        CONTROL_BASE_ADDR,
-        1,
-        &body,
-    ));
+    let req = encode(|w| w.sync_write(CONTROL_BASE_ADDR, 1, &body));
     io.feed(&req);
     h.poll(&shared, &mut io);
 
@@ -1623,11 +1565,7 @@ fn sync_write_to_other_ids_only_does_not_mutate() {
     let mut h = Dxl::new();
 
     let body = [7, 0x01, 17, 0x01];
-    let req = encode(|w| w.sync_write(
-        CONTROL_BASE_ADDR,
-        1,
-        &body,
-    ));
+    let req = encode(|w| w.sync_write(CONTROL_BASE_ADDR, 1, &body));
     io.feed(&req);
     h.poll(&shared, &mut io);
 
@@ -1637,27 +1575,19 @@ fn sync_write_to_other_ids_only_does_not_mutate() {
 
 #[test]
 fn sync_write_clears_pending_reg_write_staging_too() {
-    use crate::regions::CONTROL_BASE_ADDR;
     use crate::regions::control::Mode;
+    use crate::regions::CONTROL_BASE_ADDR;
     let shared = Shared::new();
     let mut io = FakeIo::new();
     let mut h = Dxl::new();
 
-    let req = encode(|w| w.reg_write(
-        0,
-        CONTROL_BASE_ADDR,
-        &[1],
-    ));
+    let req = encode(|w| w.reg_write(0, CONTROL_BASE_ADDR, &[1]));
     io.feed(&req);
     h.poll(&shared, &mut io);
 
     // Sync Write to mode register — should wipe the RegWrite staging.
     let body = [0, Mode::PositionPid as u8];
-    let req = encode(|w| w.sync_write(
-        CONTROL_BASE_ADDR + 1,
-        1,
-        &body,
-    ));
+    let req = encode(|w| w.sync_write(CONTROL_BASE_ADDR + 1, 1, &body));
     io.feed(&req);
     h.poll(&shared, &mut io);
     assert_eq!(
@@ -1712,8 +1642,8 @@ fn bulk_write_to_other_id_silent_and_does_not_mutate() {
 
 #[test]
 fn bulk_write_uses_our_tuples_address_not_a_preceding_slots() {
-    use crate::regions::CONTROL_BASE_ADDR;
     use crate::regions::control::Mode;
+    use crate::regions::CONTROL_BASE_ADDR;
     let shared = Shared::new();
     let mut io = FakeIo::new();
     let mut h = Dxl::new();
@@ -1726,8 +1656,18 @@ fn bulk_write_uses_our_tuples_address_not_a_preceding_slots() {
     let our_lo = (mode_addr & 0xFF) as u8;
     let our_hi = (mode_addr >> 8) as u8;
     let body = [
-        7, other_lo, other_hi, 1, 0, 1, //
-        0, our_lo, our_hi, 1, 0, Mode::PositionPid as u8,
+        7,
+        other_lo,
+        other_hi,
+        1,
+        0,
+        1, //
+        0,
+        our_lo,
+        our_hi,
+        1,
+        0,
+        Mode::PositionPid as u8,
     ];
     let req = encode(|w| w.bulk_write(&body));
     io.feed(&req);
