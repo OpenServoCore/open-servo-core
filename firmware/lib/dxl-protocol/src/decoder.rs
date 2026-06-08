@@ -140,7 +140,14 @@ impl<const M: usize, CRC: CrcUmts> Decoder<M, CRC> {
             Stage::Header => self.step_header(b),
             Stage::Payload => self.step_payload(b),
             Stage::Crc => self.step_crc(b),
-            Stage::Done => unreachable!(),
+            // `feed()` resets on entry when `stage == Done`, so this arm is
+            // unreachable via the public API. Stay self-healing rather than
+            // panic — embedded callers driving motors must not halt on a
+            // private-invariant slip.
+            Stage::Done => {
+                self.reset();
+                self.step_sync(b)
+            }
         }
     }
 
