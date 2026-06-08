@@ -21,12 +21,12 @@
 
 #![allow(dead_code)]
 
+use crate::SlotPosition;
+use crate::buf::{WriteBuf, WriteError};
+use crate::constants::{BROADCAST_ID, HEADER, STUFFING_BYTE, STUFFING_TRIGGER};
+use crate::crc::CrcUmts;
 use crate::instruction::Instruction;
 use crate::packet::{BulkReadEntry, Packet, Slot, Status, StatusError};
-use crate::wire::{
-    BROADCAST_ID, CrcUmts, HEADER, STUFFING_BYTE, STUFFING_TRIGGER, WriteBuf, WriteError,
-};
-use crate::SlotPosition;
 
 // ─────────────────────────── InstructionEmitter ───────────────────────────
 
@@ -529,9 +529,9 @@ fn bulk_entries_as_bytes(entries: &[BulkReadEntry]) -> &[u8] {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::crc_software::SoftwareCrcUmts;
     use crate::decoder::{Decoder, Step};
     use crate::packet::{Packet, RequestKind, Status, U16Le};
-    use crate::wire::SoftwareCrcUmts;
     use heapless::Vec;
 
     type Crc = SoftwareCrcUmts;
