@@ -229,8 +229,9 @@ fn patch_crc() {
             ReplyState::Chain { bulk_crc, .. } => bulk_crc,
             _ => 0,
         };
-        let crc = Ch32DxlCrc::accumulate(seed, &buf[..payload_end]);
-        let bytes = crc.to_le_bytes();
+        let mut crc = Ch32DxlCrc::new_with_state(seed);
+        crc.update(&buf[..payload_end]);
+        let bytes = crc.finalize().to_le_bytes();
         let slice = buf.as_mut_slice();
         slice[n - 2] = bytes[0];
         slice[n - 1] = bytes[1];
@@ -278,7 +279,9 @@ fn accumulate_snoop() {
             }
             let ring = &*DXL_RX_BUF.get();
             let prior = *snoop_head;
-            *bulk_crc = ring_crc(*bulk_crc, ring, prior, write_pos);
+            let mut crc = Ch32DxlCrc::new_with_state(*bulk_crc);
+            ring_crc(&mut crc, ring, prior, write_pos);
+            *bulk_crc = crc.finalize();
             let delta = write_pos.wrapping_sub(prior) & RX_MASK_U16;
             *bytes_walked = bytes_walked.wrapping_add(delta as u32);
             *snoop_head = write_pos;
@@ -290,17 +293,17 @@ fn accumulate_snoop() {
 // arithmetic + CRC table walk land directly in the snoop hot path,
 // inheriting `.highcode` from the surrounding inline chain.
 #[inline(always)]
-fn ring_crc(seed: u16, ring: &[u8], head: u16, write_pos: u16) -> u16 {
+fn ring_crc(crc: &mut Ch32DxlCrc, ring: &[u8], head: u16, write_pos: u16) {
     if head == write_pos {
-        return seed;
+        return;
     }
     let start = head as usize;
     let end = write_pos as usize;
     if start < end {
-        Ch32DxlCrc::accumulate(seed, &ring[start..end])
+        crc.update(&ring[start..end]);
     } else {
-        let mid = Ch32DxlCrc::accumulate(seed, &ring[start..]);
-        Ch32DxlCrc::accumulate(mid, &ring[..end])
+        crc.update(&ring[start..]);
+        crc.update(&ring[..end]);
     }
 }
 
@@ -318,39 +321,45 @@ mod tests {
 
     const RING: [u8; 8] = [0x10, 0x20, 0x30, 0x40, 0x50, 0x60, 0x70, 0x80];
 
+    fn walk(seed: u16, ring: &[u8], head: u16, write_pos: u16) -> u16 {
+        let mut crc = Ch32DxlCrc::new_with_state(seed);
+        ring_crc(&mut crc, ring, head, write_pos);
+        crc.finalize()
+    }
+
+    fn oneshot(bytes: &[u8]) -> u16 {
+        let mut crc = Ch32DxlCrc::new();
+        crc.update(bytes);
+        crc.finalize()
+    }
+
     #[test]
     fn empty_walk_returns_seed_unchanged() {
-        assert_eq!(ring_crc(0x1234, &RING, 3, 3), 0x1234);
-        assert_eq!(ring_crc(0, &RING, 0, 0), 0);
+        assert_eq!(walk(0x1234, &RING, 3, 3), 0x1234);
+        assert_eq!(walk(0, &RING, 0, 0), 0);
     }
 
     #[test]
     fn non_wrap_walk_matches_contiguous_crc() {
-        assert_eq!(
-            ring_crc(0, &RING, 2, 5),
-            Ch32DxlCrc::accumulate(0, &[0x30, 0x40, 0x50])
-        );
+        assert_eq!(walk(0, &RING, 2, 5), oneshot(&[0x30, 0x40, 0x50]));
     }
 
     #[test]
     fn wrap_walk_stitches_tail_and_head() {
-        assert_eq!(
-            ring_crc(0, &RING, 6, 2),
-            Ch32DxlCrc::accumulate(0, &[0x70, 0x80, 0x10, 0x20])
-        );
+        assert_eq!(walk(0, &RING, 6, 2), oneshot(&[0x70, 0x80, 0x10, 0x20]));
     }
 
     #[test]
     fn seed_chaining_matches_single_pass() {
-        let mid = ring_crc(0, &RING, 1, 4);
-        let chained = ring_crc(mid, &RING, 4, 7);
-        assert_eq!(chained, ring_crc(0, &RING, 1, 7));
+        let mid = walk(0, &RING, 1, 4);
+        let chained = walk(mid, &RING, 4, 7);
+        assert_eq!(chained, walk(0, &RING, 1, 7));
     }
 
     #[test]
     fn seed_chaining_survives_wrap_boundary() {
-        let pre = ring_crc(0, &RING, 5, 0);
-        let post = ring_crc(pre, &RING, 0, 3);
-        assert_eq!(post, ring_crc(0, &RING, 5, 3));
+        let pre = walk(0, &RING, 5, 0);
+        let post = walk(pre, &RING, 0, 3);
+        assert_eq!(post, walk(0, &RING, 5, 3));
     }
 }

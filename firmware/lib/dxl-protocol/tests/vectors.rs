@@ -11,6 +11,12 @@ use heapless::Vec;
 
 type Crc = SoftwareCrcUmts;
 
+fn crc_oneshot(seed: u16, bytes: &[u8]) -> u16 {
+    let mut c = SoftwareCrcUmts::new_with_state(seed);
+    c.update(bytes);
+    c.finalize()
+}
+
 fn encode<F>(f: F) -> Vec<u8, 256>
 where
     F: FnOnce(&mut InstructionEmitter<'_, Vec<u8, 256>, Crc>) -> Result<(), WriteError>,
@@ -59,7 +65,7 @@ fn crc_matches_known_frames() {
         let body = &frame[..frame.len() - 2];
         let expected = u16::from_le_bytes([frame[frame.len() - 2], frame[frame.len() - 1]]);
         assert_eq!(
-            SoftwareCrcUmts::accumulate(0, body),
+            crc_oneshot(0, body),
             expected,
             "CRC mismatch on frame: {:02X?}",
             frame
@@ -73,12 +79,12 @@ fn crc_accumulate_seed_matches_one_shot() {
         0xFF, 0xFF, 0xFD, 0x00, 0x01, 0x07, 0x00, 0x02, 0x84, 0x00, 0x04, 0x00, 0x10, 0x11, 0x12,
         0x13,
     ];
-    let full = SoftwareCrcUmts::accumulate(0, data);
+    let full = crc_oneshot(0, data);
     for split in 0..=data.len() {
         let (a, b) = data.split_at(split);
-        let seed = SoftwareCrcUmts::accumulate(0, a);
+        let seed = crc_oneshot(0, a);
         assert_eq!(
-            SoftwareCrcUmts::accumulate(seed, b),
+            crc_oneshot(seed, b),
             full,
             "split at {split}"
         );
@@ -133,7 +139,7 @@ fn write_slot_only_emits_header_body_and_computed_crc() {
     let header_and_body = [
         0xFF, 0xFF, 0xFD, 0x00, 0xFE, 0x09, 0x00, 0x55, 0x00, 0x05, 0x01, 0x00, 0x00, 0x00,
     ];
-    let crc = SoftwareCrcUmts::accumulate(0, &header_and_body).to_le_bytes();
+    let crc = crc_oneshot(0, &header_and_body).to_le_bytes();
     let mut expected = [0u8; 16];
     expected[..14].copy_from_slice(&header_and_body);
     expected[14..].copy_from_slice(&crc);
@@ -154,7 +160,7 @@ fn write_slot_three_slave_response_assembles_to_valid_status_frame() {
     assert_eq!(out.as_slice()[26..28], [0xAA, 0xBB]);
 
     let crc_offset = out.len() - 2;
-    let crc = SoftwareCrcUmts::accumulate(0, &out.as_slice()[..crc_offset]);
+    let crc = crc_oneshot(0, &out.as_slice()[..crc_offset]);
     let bytes = crc.to_le_bytes();
     out[crc_offset] = bytes[0];
     out[crc_offset + 1] = bytes[1];
@@ -162,7 +168,7 @@ fn write_slot_three_slave_response_assembles_to_valid_status_frame() {
     let length_field = u16::from_le_bytes([out[5], out[6]]);
     assert_eq!(length_field as usize, 1 + 3 * 6 + 2);
     assert_eq!(
-        SoftwareCrcUmts::accumulate(0, &out.as_slice()[..crc_offset]),
+        crc_oneshot(0, &out.as_slice()[..crc_offset]),
         u16::from_le_bytes([out[crc_offset], out[crc_offset + 1]])
     );
 }
@@ -435,7 +441,7 @@ fn unknown_instruction_routes_to_raw() {
     frame
         .extend_from_slice(&[0xFF, 0xFF, 0xFD, 0x00, 0x01, 0x03, 0x00, 0x77])
         .unwrap();
-    let crc = SoftwareCrcUmts::accumulate(0, &frame);
+    let crc = crc_oneshot(0, &frame);
     frame.extend_from_slice(&crc.to_le_bytes()).unwrap();
     let mut dec: Decoder<32, Crc> = Decoder::new();
     match feed_full(&mut dec, &frame) {

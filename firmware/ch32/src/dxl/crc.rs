@@ -8,13 +8,42 @@ use dxl_protocol::CrcUmts;
 /// peripheral-driven impl on chips that have one).
 const ENGINE: Crc<u16> = Crc::<u16>::new(&CRC_16_UMTS);
 
-pub struct Ch32DxlCrc;
+#[derive(Copy, Clone, Debug)]
+pub struct Ch32DxlCrc {
+    state: u16,
+}
+
+impl Ch32DxlCrc {
+    /// Construct an engine seeded with an arbitrary intermediate state —
+    /// for resuming a chain CRC across discontiguous ring-walk slices that
+    /// share a single running value.
+    pub fn new_with_state(state: u16) -> Self {
+        Self { state }
+    }
+}
 
 impl CrcUmts for Ch32DxlCrc {
-    #[inline]
-    fn accumulate(seed: u16, bytes: &[u8]) -> u16 {
-        let mut digest = ENGINE.digest_with_initial(seed);
+    fn new() -> Self {
+        Self { state: 0 }
+    }
+
+    fn update(&mut self, bytes: &[u8]) {
+        let mut digest = ENGINE.digest_with_initial(self.state);
         digest.update(bytes);
-        digest.finalize()
+        self.state = digest.finalize();
+    }
+
+    fn finalize(&self) -> u16 {
+        self.state
+    }
+
+    fn reset(&mut self) {
+        self.state = 0;
+    }
+}
+
+impl Default for Ch32DxlCrc {
+    fn default() -> Self {
+        Self::new()
     }
 }

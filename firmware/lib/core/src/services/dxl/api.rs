@@ -18,7 +18,7 @@ pub struct Dxl<C: CrcUmts> {
 }
 
 impl<C: CrcUmts> Dxl<C> {
-    pub const fn new() -> Self {
+    pub fn new() -> Self {
         Self {
             staged: StagedWrites::new(),
             decoder: Decoder::new(),

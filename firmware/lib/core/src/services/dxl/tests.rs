@@ -14,15 +14,29 @@ use super::osc::CALIBRATE_INSTRUCTION;
 
 /// Test-only `CrcUmts`. Production builds get the chip's impl directly; core
 /// itself never references a concrete CRC engine after the trait flip.
-struct TestDxlCrc;
+struct TestDxlCrc {
+    state: u16,
+}
 
 const TEST_CRC_ENGINE: Crc<u16> = Crc::<u16>::new(&CRC_16_UMTS);
 
 impl CrcUmts for TestDxlCrc {
-    fn accumulate(seed: u16, bytes: &[u8]) -> u16 {
-        let mut digest = TEST_CRC_ENGINE.digest_with_initial(seed);
+    fn new() -> Self {
+        Self { state: 0 }
+    }
+
+    fn update(&mut self, bytes: &[u8]) {
+        let mut digest = TEST_CRC_ENGINE.digest_with_initial(self.state);
         digest.update(bytes);
-        digest.finalize()
+        self.state = digest.finalize();
+    }
+
+    fn finalize(&self) -> u16 {
+        self.state
+    }
+
+    fn reset(&mut self) {
+        self.state = 0;
     }
 }
 
@@ -1039,7 +1053,11 @@ fn fast_sync_read_only_slot_emits_full_frame_with_local_crc() {
     assert_eq!(io.bus.tx[8], 0);
     assert_eq!(io.bus.tx[9], 0);
     assert_eq!(&io.bus.tx[10..12], &[0, 0]);
-    let expected_crc = TestDxlCrc::accumulate(0, &io.bus.tx[..12]).to_le_bytes();
+    let expected_crc = {
+        let mut c = TestDxlCrc::new();
+        c.update(&io.bus.tx[..12]);
+        c.finalize().to_le_bytes()
+    };
     assert_eq!(&io.bus.tx[12..14], &expected_crc);
 }
 
@@ -1204,7 +1222,11 @@ fn fast_bulk_read_only_slot_emits_full_frame_with_local_crc() {
     assert_eq!(io.bus.tx[8], 0);
     assert_eq!(io.bus.tx[9], 0);
     assert_eq!(&io.bus.tx[10..12], &[0, 0]);
-    let expected_crc = TestDxlCrc::accumulate(0, &io.bus.tx[..12]).to_le_bytes();
+    let expected_crc = {
+        let mut c = TestDxlCrc::new();
+        c.update(&io.bus.tx[..12]);
+        c.finalize().to_le_bytes()
+    };
     assert_eq!(&io.bus.tx[12..14], &expected_crc);
 }
 

@@ -13,7 +13,6 @@
 
 #![allow(dead_code)]
 
-use core::marker::PhantomData;
 use core::mem::{MaybeUninit, offset_of, size_of};
 
 use crate::instruction::Instruction;
@@ -61,26 +60,24 @@ pub struct Decoder<const M: usize, CRC: CrcUmts> {
     wire_n: u16,
     expected_wire_total: u16,
     sync_matched: u8,
-    crc_running: u16,
+    crc: CRC,
     received_crc: [u8; 2],
     unstuff_last3: [u8; 3],
     stage: Stage,
-    _crc: PhantomData<fn() -> CRC>,
 }
 
 impl<const M: usize, CRC: CrcUmts> Decoder<M, CRC> {
-    pub const fn new() -> Self {
+    pub fn new() -> Self {
         Self {
             buf: [MaybeUninit::<u8>::uninit(); M],
             logical_n: 0,
             wire_n: 0,
             expected_wire_total: 0,
             sync_matched: 0,
-            crc_running: 0,
+            crc: CRC::new(),
             received_crc: [0; 2],
             unstuff_last3: [0; 3],
             stage: Stage::Sync,
-            _crc: PhantomData,
         }
     }
 
@@ -89,7 +86,7 @@ impl<const M: usize, CRC: CrcUmts> Decoder<M, CRC> {
         self.wire_n = 0;
         self.expected_wire_total = 0;
         self.sync_matched = 0;
-        self.crc_running = 0;
+        self.crc.reset();
         self.received_crc = [0; 2];
         self.unstuff_last3 = [0; 3];
         self.stage = Stage::Sync;
@@ -163,7 +160,7 @@ impl<const M: usize, CRC: CrcUmts> Decoder<M, CRC> {
             let new_m = m + 1;
             self.sync_matched = new_m as u8;
             if new_m == HEADER.len() {
-                self.crc_running = CRC::accumulate(0, &HEADER);
+                self.crc.update(&HEADER);
                 self.wire_n = HEADER.len() as u16;
                 self.stage = Stage::Header;
             }
@@ -190,7 +187,7 @@ impl<const M: usize, CRC: CrcUmts> Decoder<M, CRC> {
     fn step_header(&mut self, b: u8) -> StepResult {
         let pos = self.wire_n as usize;
         self.write_byte(pos, b);
-        self.crc_running = CRC::accumulate(self.crc_running, &[b]);
+        self.crc.update(&[b]);
         self.wire_n += 1;
 
         if self.wire_n as usize == HDR_INSTR_OFFSET {
@@ -223,7 +220,7 @@ impl<const M: usize, CRC: CrcUmts> Decoder<M, CRC> {
     }
 
     fn step_payload(&mut self, b: u8) -> StepResult {
-        self.crc_running = CRC::accumulate(self.crc_running, &[b]);
+        self.crc.update(&[b]);
         self.wire_n += 1;
 
         let trigger = self.unstuff_last3 == STUFFING_TRIGGER && b == STUFFING_BYTE;
@@ -252,7 +249,7 @@ impl<const M: usize, CRC: CrcUmts> Decoder<M, CRC> {
         self.wire_n += 1;
         if self.wire_n == self.expected_wire_total {
             let received = u16::from_le_bytes(self.received_crc);
-            if self.crc_running != received {
+            if self.crc.finalize() != received {
                 self.reset();
                 return StepResult::Resync(ResyncKind::BadCrc);
             }

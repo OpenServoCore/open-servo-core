@@ -10,7 +10,7 @@ pub struct Services<I: ServicesIo> {
 }
 
 impl<I: ServicesIo> Services<I> {
-    pub const fn new(io: I) -> Self {
+    pub fn new(io: I) -> Self {
         Self {
             io,
             dxl: Dxl::new(),

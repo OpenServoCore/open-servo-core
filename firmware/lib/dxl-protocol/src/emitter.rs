@@ -21,8 +21,6 @@
 
 #![allow(dead_code)]
 
-use core::marker::PhantomData;
-
 use crate::instruction::Instruction;
 use crate::packet::{BulkReadEntry, Packet, Slot, Status, StatusError};
 use crate::wire::{
@@ -34,48 +32,49 @@ use crate::SlotPosition;
 
 pub struct InstructionEmitter<'a, W: WriteBuf, CRC: CrcUmts> {
     out: &'a mut W,
-    _crc: PhantomData<fn() -> CRC>,
+    crc: CRC,
 }
 
 impl<'a, W: WriteBuf, CRC: CrcUmts> InstructionEmitter<'a, W, CRC> {
     pub fn new(out: &'a mut W) -> Self {
         Self {
             out,
-            _crc: PhantomData,
+            crc: CRC::new(),
         }
     }
 
     pub fn ping(&mut self, id: u8) -> Result<(), WriteError> {
-        emit_frame::<_, CRC>(self.out, id, Instruction::Ping.as_u8(), &[])
+        emit_frame(self.out, &mut self.crc, id, Instruction::Ping.as_u8(), &[])
     }
 
     pub fn read(&mut self, id: u8, addr: u16, length: u16) -> Result<(), WriteError> {
         let a = addr.to_le_bytes();
         let l = length.to_le_bytes();
-        emit_frame::<_, CRC>(self.out, id, Instruction::Read.as_u8(), &[&a, &l])
+        emit_frame(self.out, &mut self.crc, id, Instruction::Read.as_u8(), &[&a, &l])
     }
 
     pub fn write(&mut self, id: u8, addr: u16, data: &[u8]) -> Result<(), WriteError> {
         let a = addr.to_le_bytes();
-        emit_frame::<_, CRC>(self.out, id, Instruction::Write.as_u8(), &[&a, data])
+        emit_frame(self.out, &mut self.crc, id, Instruction::Write.as_u8(), &[&a, data])
     }
 
     pub fn reg_write(&mut self, id: u8, addr: u16, data: &[u8]) -> Result<(), WriteError> {
         let a = addr.to_le_bytes();
-        emit_frame::<_, CRC>(self.out, id, Instruction::RegWrite.as_u8(), &[&a, data])
+        emit_frame(self.out, &mut self.crc, id, Instruction::RegWrite.as_u8(), &[&a, data])
     }
 
     pub fn action(&mut self, id: u8) -> Result<(), WriteError> {
-        emit_frame::<_, CRC>(self.out, id, Instruction::Action.as_u8(), &[])
+        emit_frame(self.out, &mut self.crc, id, Instruction::Action.as_u8(), &[])
     }
 
     pub fn reboot(&mut self, id: u8) -> Result<(), WriteError> {
-        emit_frame::<_, CRC>(self.out, id, Instruction::Reboot.as_u8(), &[])
+        emit_frame(self.out, &mut self.crc, id, Instruction::Reboot.as_u8(), &[])
     }
 
     pub fn factory_reset(&mut self, id: u8, mode: u8) -> Result<(), WriteError> {
-        emit_frame::<_, CRC>(
+        emit_frame(
             self.out,
+            &mut self.crc,
             id,
             Instruction::FactoryReset.as_u8(),
             &[&[mode]],
@@ -83,12 +82,13 @@ impl<'a, W: WriteBuf, CRC: CrcUmts> InstructionEmitter<'a, W, CRC> {
     }
 
     pub fn clear(&mut self, id: u8, body: &[u8]) -> Result<(), WriteError> {
-        emit_frame::<_, CRC>(self.out, id, Instruction::Clear.as_u8(), &[body])
+        emit_frame(self.out, &mut self.crc, id, Instruction::Clear.as_u8(), &[body])
     }
 
     pub fn control_table_backup(&mut self, id: u8, body: &[u8]) -> Result<(), WriteError> {
-        emit_frame::<_, CRC>(
+        emit_frame(
             self.out,
+            &mut self.crc,
             id,
             Instruction::ControlTableBackup.as_u8(),
             &[body],
@@ -98,8 +98,9 @@ impl<'a, W: WriteBuf, CRC: CrcUmts> InstructionEmitter<'a, W, CRC> {
     pub fn sync_read(&mut self, addr: u16, length: u16, ids: &[u8]) -> Result<(), WriteError> {
         let a = addr.to_le_bytes();
         let l = length.to_le_bytes();
-        emit_frame::<_, CRC>(
+        emit_frame(
             self.out,
+            &mut self.crc,
             BROADCAST_ID,
             Instruction::SyncRead.as_u8(),
             &[&a, &l, ids],
@@ -109,8 +110,9 @@ impl<'a, W: WriteBuf, CRC: CrcUmts> InstructionEmitter<'a, W, CRC> {
     pub fn sync_write(&mut self, addr: u16, length: u16, body: &[u8]) -> Result<(), WriteError> {
         let a = addr.to_le_bytes();
         let l = length.to_le_bytes();
-        emit_frame::<_, CRC>(
+        emit_frame(
             self.out,
+            &mut self.crc,
             BROADCAST_ID,
             Instruction::SyncWrite.as_u8(),
             &[&a, &l, body],
@@ -118,8 +120,9 @@ impl<'a, W: WriteBuf, CRC: CrcUmts> InstructionEmitter<'a, W, CRC> {
     }
 
     pub fn bulk_read(&mut self, entries: &[BulkReadEntry]) -> Result<(), WriteError> {
-        emit_frame::<_, CRC>(
+        emit_frame(
             self.out,
+            &mut self.crc,
             BROADCAST_ID,
             Instruction::BulkRead.as_u8(),
             &[bulk_entries_as_bytes(entries)],
@@ -127,8 +130,9 @@ impl<'a, W: WriteBuf, CRC: CrcUmts> InstructionEmitter<'a, W, CRC> {
     }
 
     pub fn bulk_write(&mut self, body: &[u8]) -> Result<(), WriteError> {
-        emit_frame::<_, CRC>(
+        emit_frame(
             self.out,
+            &mut self.crc,
             BROADCAST_ID,
             Instruction::BulkWrite.as_u8(),
             &[body],
@@ -143,8 +147,9 @@ impl<'a, W: WriteBuf, CRC: CrcUmts> InstructionEmitter<'a, W, CRC> {
     ) -> Result<(), WriteError> {
         let a = addr.to_le_bytes();
         let l = length.to_le_bytes();
-        emit_frame::<_, CRC>(
+        emit_frame(
             self.out,
+            &mut self.crc,
             BROADCAST_ID,
             Instruction::FastSyncRead.as_u8(),
             &[&a, &l, ids],
@@ -152,8 +157,9 @@ impl<'a, W: WriteBuf, CRC: CrcUmts> InstructionEmitter<'a, W, CRC> {
     }
 
     pub fn fast_bulk_read(&mut self, entries: &[BulkReadEntry]) -> Result<(), WriteError> {
-        emit_frame::<_, CRC>(
+        emit_frame(
             self.out,
+            &mut self.crc,
             BROADCAST_ID,
             Instruction::FastBulkRead.as_u8(),
             &[bulk_entries_as_bytes(entries)],
@@ -164,7 +170,7 @@ impl<'a, W: WriteBuf, CRC: CrcUmts> InstructionEmitter<'a, W, CRC> {
     /// instruction byte. Chip-side extensions (e.g. OSC `Calibrate`) reach
     /// the wire through this.
     pub fn ext(&mut self, id: u8, instruction: u8, params: &[u8]) -> Result<(), WriteError> {
-        emit_frame::<_, CRC>(self.out, id, instruction, &[params])
+        emit_frame(self.out, &mut self.crc, id, instruction, &[params])
     }
 
     /// Emit any packet — dispatches on the unified [`Packet`] enum the
@@ -204,8 +210,9 @@ impl<'a, W: WriteBuf, CRC: CrcUmts> InstructionEmitter<'a, W, CRC> {
             ),
             Packet::Status(s) => {
                 let err = [s.header.error];
-                emit_frame::<_, CRC>(
+                emit_frame(
                     self.out,
+                    &mut self.crc,
                     s.header.header.id,
                     Instruction::Status.as_u8(),
                     &[&err, s.params],
@@ -219,14 +226,14 @@ impl<'a, W: WriteBuf, CRC: CrcUmts> InstructionEmitter<'a, W, CRC> {
 
 pub struct StatusEmitter<'a, W: WriteBuf, CRC: CrcUmts> {
     out: &'a mut W,
-    _crc: PhantomData<fn() -> CRC>,
+    crc: CRC,
 }
 
 impl<'a, W: WriteBuf, CRC: CrcUmts> StatusEmitter<'a, W, CRC> {
     pub fn new(out: &'a mut W) -> Self {
         Self {
             out,
-            _crc: PhantomData,
+            crc: CRC::new(),
         }
     }
 
@@ -244,8 +251,9 @@ impl<'a, W: WriteBuf, CRC: CrcUmts> StatusEmitter<'a, W, CRC> {
         let m = model.to_le_bytes();
         let err = [error.as_byte()];
         let fw = [fw_version];
-        emit_frame::<_, CRC>(
+        emit_frame(
             self.out,
+            &mut self.crc,
             id,
             Instruction::Status.as_u8(),
             &[&err, &m, &fw],
@@ -284,8 +292,9 @@ impl<'a, W: WriteBuf, CRC: CrcUmts> StatusEmitter<'a, W, CRC> {
 
     fn frame(&mut self, id: u8, error: StatusError, payload: &[u8]) -> Result<(), WriteError> {
         let err = [error.as_byte()];
-        emit_frame::<_, CRC>(
+        emit_frame(
             self.out,
+            &mut self.crc,
             id,
             Instruction::Status.as_u8(),
             &[&err, payload],
@@ -297,14 +306,14 @@ impl<'a, W: WriteBuf, CRC: CrcUmts> StatusEmitter<'a, W, CRC> {
 
 pub struct SlotEmitter<'a, W: WriteBuf, CRC: CrcUmts> {
     out: &'a mut W,
-    _crc: PhantomData<fn() -> CRC>,
+    crc: CRC,
 }
 
 impl<'a, W: WriteBuf, CRC: CrcUmts> SlotEmitter<'a, W, CRC> {
     pub fn new(out: &'a mut W) -> Self {
         Self {
             out,
-            _crc: PhantomData,
+            crc: CRC::new(),
         }
     }
 
@@ -329,7 +338,9 @@ impl<'a, W: WriteBuf, CRC: CrcUmts> SlotEmitter<'a, W, CRC> {
     ) -> Result<(), WriteError> {
         emit_slot_header(self.out, packet_length)?;
         emit_slot_body(self.out, slot)?;
-        let crc = CRC::accumulate(0, &self.out.as_slice()[start..]);
+        self.crc.reset();
+        self.crc.update(&self.out.as_slice()[start..]);
+        let crc = self.crc.finalize();
         self.out.push(crc as u8)?;
         self.out.push((crc >> 8) as u8)?;
         Ok(())
@@ -411,6 +422,7 @@ impl<'a, W: WriteBuf, CRC: CrcUmts> SlotEmitter<'a, W, CRC> {
 /// `out` is truncated back to its entry length so prior frames stay intact.
 fn emit_frame<W: WriteBuf, CRC: CrcUmts>(
     out: &mut W,
+    crc: &mut CRC,
     id: u8,
     instruction: u8,
     params: &[&[u8]],
@@ -421,7 +433,7 @@ fn emit_frame<W: WriteBuf, CRC: CrcUmts>(
         return Err(WriteError::Invalid);
     }
     let start = out.len();
-    match emit_frame_inner::<W, CRC>(out, start, id, instruction, params) {
+    match emit_frame_inner(out, crc, start, id, instruction, params) {
         Ok(()) => Ok(()),
         Err(e) => {
             out.truncate(start);
@@ -432,6 +444,7 @@ fn emit_frame<W: WriteBuf, CRC: CrcUmts>(
 
 fn emit_frame_inner<W: WriteBuf, CRC: CrcUmts>(
     out: &mut W,
+    crc: &mut CRC,
     start: usize,
     id: u8,
     instruction: u8,
@@ -468,8 +481,9 @@ fn emit_frame_inner<W: WriteBuf, CRC: CrcUmts>(
     out.set(len_pos, len_bytes[0]);
     out.set(len_pos + 1, len_bytes[1]);
 
-    let crc = CRC::accumulate(0, &out.as_slice()[start..]);
-    let crc_bytes = crc.to_le_bytes();
+    crc.reset();
+    crc.update(&out.as_slice()[start..]);
+    let crc_bytes = crc.finalize().to_le_bytes();
     out.push(crc_bytes[0])?;
     out.push(crc_bytes[1])?;
 
