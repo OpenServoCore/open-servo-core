@@ -209,6 +209,8 @@ Fabricated and assembled by [PCBWay](https://www.pcbway.com/) (5× PCBA, sponsor
 
 **Easiest way to fab one:** install the **PCBWay plug-in for KiCad** from KiCad's Plugin and Content Manager. Open this project, run the plug-in — the design files upload to PCBWay for ordering in one click.
 
+**No KiCad?** Order directly from the [PCBWay community project](https://www.pcbway.com/project/shareproject/OSC_Dev_V006_Rev_B_OpenServoCore_Development_Board_CH32V006_0f6621d7.html) — one click loads the validated Gerbers, BOM, and assembly options into the cart.
+
 **First-boot procedure** (one-time, for any fresh board):
 
 The MCU's `nRST` and `OPN2` share a pin. Fresh chips default to `nRST` function, which holds the MCU in reset because `OPN2` sits near GND through the current-sense path. The `SB1` solder bridge breaks the link during this step:

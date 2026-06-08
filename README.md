@@ -88,6 +88,8 @@ Full spin + bring-up writeup: [CH32V006 dev board first spin](https://aaronqian.
 
 Five PCBA boards delivered, May 2026. Validated. PCBWay's pre-fab manufacturability review flagged nothing, and build/assembly quality was again clean. A small bug found in the sponsored boards (shared `nRST` / `OPN2` pin) didn't warrant another validation round — patched in-rev with a solder bridge. The published files include the patch.
 
+Reference design available as a [PCBWay community project](https://www.pcbway.com/project/shareproject/OSC_Dev_V006_Rev_B_OpenServoCore_Development_Board_CH32V006_0f6621d7.html) for one-click ordering.
+
 ## License
 
 OSC is fully open. No dual licensing, no commercial gates.
