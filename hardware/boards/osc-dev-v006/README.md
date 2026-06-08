@@ -199,6 +199,22 @@ Use a **WCH-LinkE** with the 2×3 J4 header. The link uses the CH32V006's 1-wire
 
 ## Fabrication
 
-Rev. A — fabricated and assembled by [PCBWay](https://www.pcbway.com/) (5× PCBA, sponsored, Mar 2026). Build quality clean; every bring-up issue traced to my own schematic, not fab. Full story: [Rev A bring-up writeup](https://aaronqian.com/projects/open-servo-core/logs/2026-04-03-ch32v006-dev-board-first-spin/).
+### Rev. A
 
-Rev. B — in fabrication, awaiting validation. This section will be updated once bring-up validates — step-by-step PCBWay ordering walkthrough using the design files in this directory, plus a direct link to the Rev. B PCBWay community project for one-click ordering with the validated BOM and assembly options.
+Fabricated and assembled by [PCBWay](https://www.pcbway.com/) (5× PCBA, sponsored, Mar 2026). Build quality clean; every bring-up issue traced to my own schematic, not fab. Full story: [Rev A bring-up writeup](https://aaronqian.com/projects/open-servo-core/logs/2026-04-03-ch32v006-dev-board-first-spin/).
+
+### Rev. B
+
+Fabricated and assembled by [PCBWay](https://www.pcbway.com/) (5× PCBA, sponsored, May 2026). Validated. Quality clean; PCBWay's pre-fab manufacturability review flagged nothing.
+
+**Easiest way to fab one:** install the **PCBWay plug-in for KiCad** from KiCad's Plugin and Content Manager. Open this project, run the plug-in — the design files upload to PCBWay for ordering in one click.
+
+**First-boot procedure** (one-time, for any fresh board):
+
+The MCU's `nRST` and `OPN2` share a pin. Fresh chips default to `nRST` function, which holds the MCU in reset because `OPN2` sits near GND through the current-sense path. The `SB1` solder bridge breaks the link during this step:
+
+1. Confirm `SB1` is open (no solder bridging the pads).
+2. Program the USER option byte via the WCH-LinkE at **J4** to set `nRST -> GPIO`.
+3. Close `SB1` with a small solder blob.
+
+After this, the board runs as designed.
