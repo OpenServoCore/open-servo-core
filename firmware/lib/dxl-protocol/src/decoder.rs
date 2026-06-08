@@ -481,7 +481,7 @@ mod tests {
         match step {
             Step::Packet(Packet::Status(s)) => {
                 assert_eq!(s.header.header.id, 0x05);
-                assert_eq!(s.error(), 0x00);
+                assert_eq!(s.error(), StatusError::OK);
                 assert_eq!(s.params, &[0xAA, 0xBB]);
             }
             other => panic!("expected Status, got {other:?}"),
@@ -765,9 +765,11 @@ mod tests {
             Step::Packet(Packet::Status(s)) => {
                 let interpreted = s.interpret(RequestKind::Ping);
                 match interpreted {
-                    Status::Ping(p) => {
-                        assert_eq!(p.model.get(), 0x0203);
-                        assert_eq!(p.fw_version, 0x10);
+                    Status::Ping { id, error, status } => {
+                        assert_eq!(id, 0x01);
+                        assert_eq!(error, StatusError::OK);
+                        assert_eq!(status.model.get(), 0x0203);
+                        assert_eq!(status.fw_version, 0x10);
                     }
                     other => panic!("expected Ping status, got {other:?}"),
                 }

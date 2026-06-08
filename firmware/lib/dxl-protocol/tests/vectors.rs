@@ -391,7 +391,7 @@ fn write_status_round_trip() {
     match feed_full(&mut dec, &out) {
         overlay::Packet::Status(p) => {
             assert_eq!(p.header.header.id, 1);
-            assert_eq!(p.error(), 0);
+            assert_eq!(p.error().as_byte(), 0);
             assert_eq!(p.params, &params);
         }
         other => panic!("not Status: {other:?}"),
@@ -708,7 +708,7 @@ fn stuff_status_with_trigger_in_params() {
     let mut dec: Decoder<64, Crc> = Decoder::new();
     match feed_full(&mut dec, &out) {
         overlay::Packet::Status(p) => {
-            assert_eq!(p.error(), 0);
+            assert_eq!(p.error().as_byte(), 0);
             assert_eq!(p.params, &params);
         }
         other => panic!("not Status: {other:?}"),

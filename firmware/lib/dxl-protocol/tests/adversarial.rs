@@ -443,7 +443,7 @@ fn assert_overlay_matches(decoded: &overlay::Packet<'_>, legacy: &Packet<'_, NoI
         }
         (overlay::Packet::Status(d), Packet::Status(l)) => {
             assert_eq!(d.header.header.id, l.id);
-            assert_eq!(d.error(), l.error);
+            assert_eq!(d.error().as_byte(), l.error);
             assert_bytes_eq(d.params, l.params);
         }
         (overlay::Packet::SyncRead(d), Packet::SyncRead(l)) => {
