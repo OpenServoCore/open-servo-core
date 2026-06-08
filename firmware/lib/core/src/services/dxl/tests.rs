@@ -1,7 +1,8 @@
 use crc::{CRC_16_UMTS, Crc};
-use dxl_protocol::*;
-use dxl_protocol::packet::{
-    Slot as NewSlot, Status as NewStatus, StatusError as NewStatusError,
+use dxl_protocol::decoder::{Decoder, Step};
+use dxl_protocol::packet::{BulkReadEntry, ErrorCode, Packet, Slot, Status, StatusError};
+use dxl_protocol::{
+    BROADCAST_ID, CrcUmts, InstructionEmitter, SlotEmitter, SlotPosition, StatusEmitter, WriteError,
 };
 use heapless::Vec;
 
@@ -9,7 +10,7 @@ use crate::traits::{CalSnapshot, DxlBus, Event, Schedule, ServiceEvents, Service
 use crate::{BootMode, RegionStorage, Shared, StatusReturnLevel};
 
 use super::Dxl;
-use super::osc::{CalibratePacket, OscExt, OscVariant};
+use super::osc::CALIBRATE_INSTRUCTION;
 
 /// Test-only `CrcUmts`. Production builds get the chip's impl directly; core
 /// itself never references a concrete CRC engine after the trait flip.
@@ -22,24 +23,6 @@ impl CrcUmts for TestDxlCrc {
         let mut digest = TEST_CRC_ENGINE.digest_with_initial(seed);
         digest.update(bytes);
         digest.finalize()
-    }
-}
-
-/// Test glue against the legacy `Packet<'_, OscExt>` request encoder + the
-/// legacy `parse_packet` decoder. Both keep working until #134 retires the
-/// legacy typed layer; tests use them to (1) construct request wire bytes
-/// to feed the bus, and (2) read back the wire bytes the bus emitted via
-/// the new `StatusEmitter`/`SlotEmitter`.
-struct Wire;
-impl Wire {
-    fn parse_one<'a>(
-        head: &'a [u8],
-        tail: &'a [u8],
-    ) -> Result<(Packet<'a, OscExt>, usize), ParseError> {
-        dxl_protocol::parse_packet::<TestDxlCrc, OscExt>(RxView::ring(head, tail))
-    }
-    fn write<W: WriteBuf>(out: &mut W, p: &Packet<'_, OscExt>) -> Result<(), WriteError> {
-        dxl_protocol::write_packet::<W, TestDxlCrc, OscExt>(out, p)
     }
 }
 
@@ -109,7 +92,7 @@ impl DxlBus for FakeBus {
 
     fn snoop(&mut self) {}
 
-    fn send(&mut self, status: NewStatus<'_>, schedule: Schedule) {
+    fn send(&mut self, status: Status<'_>, schedule: Schedule) {
         self.tx.clear();
         StatusEmitter::<_, TestDxlCrc>::new(&mut self.tx)
             .emit(status)
@@ -119,7 +102,7 @@ impl DxlBus for FakeBus {
         self.last_kind = Some(ReplyKind::Plain);
     }
 
-    fn send_slot(&mut self, slot: NewSlot<'_>, position: SlotPosition, schedule: Schedule) {
+    fn send_slot(&mut self, slot: Slot<'_>, position: SlotPosition, schedule: Schedule) {
         self.tx.clear();
         SlotEmitter::<_, TestDxlCrc>::new(&mut self.tx)
             .emit(&slot, position)
@@ -127,7 +110,7 @@ impl DxlBus for FakeBus {
         self.send_count += 1;
         self.last_schedule = Some(schedule);
         let length = slot.data.len() as u16;
-        self.last_kind = Some(if slot.error == NewStatusError::OK {
+        self.last_kind = Some(if slot.error == StatusError::OK {
             ReplyKind::Fast(position)
         } else {
             ReplyKind::FastError(position, length)
@@ -192,26 +175,52 @@ impl ServicesIo for FakeIo {
     }
 }
 
-fn encode(packet: &Packet<'_, OscExt>) -> Vec<u8, 256> {
+fn encode<F>(f: F) -> Vec<u8, 256>
+where
+    F: FnOnce(
+        &mut InstructionEmitter<'_, Vec<u8, 256>, TestDxlCrc>,
+    ) -> Result<(), WriteError>,
+{
     let mut buf: Vec<u8, 256> = Vec::new();
-    Wire::write(&mut buf, packet).unwrap();
+    f(&mut InstructionEmitter::<_, TestDxlCrc>::new(&mut buf)).unwrap();
     buf
 }
 
+fn encode_calibrate(id: u8, count: u16) -> Vec<u8, 256> {
+    let mut params: Vec<u8, 256> = Vec::new();
+    params.extend_from_slice(&count.to_le_bytes()).unwrap();
+    for _ in 0..count {
+        params.push(0).unwrap();
+    }
+    encode(|w| w.ext(id, CALIBRATE_INSTRUCTION, &params))
+}
+
+/// Cast a 5-byte-stride byte buffer to a typed `[BulkReadEntry]` slice.
+/// `BulkReadEntry` is `#[repr(C)]` with align 1 (`U16Le` fields) — sound
+/// under any alignment.
+fn bulk_entries(body: &[u8]) -> &[BulkReadEntry] {
+    assert!(body.len() % 5 == 0);
+    unsafe {
+        core::slice::from_raw_parts(body.as_ptr() as *const BulkReadEntry, body.len() / 5)
+    }
+}
+
 fn parse_status(bytes: &[u8]) -> (u8, u8, Vec<u8, 64>) {
-    let (pkt, used) = Wire::parse_one(bytes, &[]).unwrap();
+    let mut dec: Decoder<256, TestDxlCrc> = Decoder::new();
+    let (step, used) = dec.feed(bytes);
     assert_eq!(used, bytes.len());
-    match pkt {
-        Packet::Status(p) => {
+    match step {
+        Step::Packet(Packet::Status(p)) => {
+            let id = p.header.header.id;
+            let err = p.header.error;
             let mut out: Vec<u8, 64> = Vec::new();
-            for b in p.params.iter() {
-                out.push(b).unwrap();
-            }
-            (p.id, p.error, out)
+            out.extend_from_slice(p.params).unwrap();
+            (id, err, out)
         }
         _ => panic!("not a status packet"),
     }
 }
+
 
 #[test]
 fn ping_to_our_id_replies() {
@@ -219,7 +228,7 @@ fn ping_to_our_id_replies() {
     let mut io = FakeIo::new();
     let mut h = Dxl::new();
 
-    let req = encode(&Packet::Ping(PingPacket::new(0)));
+    let req = encode(|w| w.ping(0));
     io.feed(&req);
     h.poll(&shared, &mut io);
 
@@ -237,7 +246,7 @@ fn ping_to_broadcast_replies() {
     let mut io = FakeIo::new();
     let mut h = Dxl::new();
 
-    let req = encode(&Packet::Ping(PingPacket::new(BROADCAST_ID)));
+    let req = encode(|w| w.ping(BROADCAST_ID));
     io.feed(&req);
     h.poll(&shared, &mut io);
 
@@ -258,7 +267,7 @@ fn ping_to_broadcast_uses_id_indexed_slot() {
     let mut io = FakeIo::new();
     let mut h = Dxl::new();
 
-    let req = encode(&Packet::Ping(PingPacket::new(BROADCAST_ID)));
+    let req = encode(|w| w.ping(BROADCAST_ID));
     io.feed(&req);
     h.poll(&shared, &mut io);
 
@@ -274,7 +283,7 @@ fn ping_to_other_id_silent() {
     let mut io = FakeIo::new();
     let mut h = Dxl::new();
 
-    let req = encode(&Packet::Ping(PingPacket::new(17)));
+    let req = encode(|w| w.ping(17));
     io.feed(&req);
     h.poll(&shared, &mut io);
 
@@ -288,7 +297,7 @@ fn read_model_number_returns_two_bytes() {
     let mut io = FakeIo::new();
     let mut h = Dxl::new();
 
-    let req = encode(&Packet::Read(ReadPacket::new(0, 0, 2)));
+    let req = encode(|w| w.read(0, 0, 2));
     io.feed(&req);
     h.poll(&shared, &mut io);
 
@@ -304,12 +313,12 @@ fn read_zero_length_rejects_with_data_range() {
     let mut io = FakeIo::new();
     let mut h = Dxl::new();
 
-    let req = encode(&Packet::Read(ReadPacket::new(0, 0, 0)));
+    let req = encode(|w| w.read(0, 0, 0));
     io.feed(&req);
     h.poll(&shared, &mut io);
 
     let (_, err, _) = parse_status(&io.bus.tx);
-    assert_eq!(err, StatusError::DataRange.as_u8());
+    assert_eq!(err, StatusError::code(ErrorCode::DataRange).as_byte());
 }
 
 #[test]
@@ -318,12 +327,12 @@ fn unsupported_instruction_replies_instruction_error() {
     let mut io = FakeIo::new();
     let mut h = Dxl::new();
 
-    let req = encode(&Packet::FactoryReset(FactoryResetPacket::new(0, 0xFF)));
+    let req = encode(|w| w.factory_reset(0, 0xFF));
     io.feed(&req);
     h.poll(&shared, &mut io);
 
     let (_, err, _) = parse_status(&io.bus.tx);
-    assert_eq!(err, StatusError::Instruction.as_u8());
+    assert_eq!(err, StatusError::code(ErrorCode::Instruction).as_byte());
 }
 
 #[test]
@@ -333,7 +342,7 @@ fn write_to_rw_address_succeeds_and_mutates() {
     let mut io = FakeIo::new();
     let mut h = Dxl::new();
 
-    let req = encode(&Packet::Write(WritePacket::new(0, CONTROL_BASE_ADDR, &[1])));
+    let req = encode(|w| w.write(0, CONTROL_BASE_ADDR, &[1]));
     io.feed(&req);
     h.poll(&shared, &mut io);
 
@@ -351,12 +360,12 @@ fn write_to_ro_address_replies_access_error() {
     let mut io = FakeIo::new();
     let mut h = Dxl::new();
 
-    let req = encode(&Packet::Write(WritePacket::new(0, 0, &[0xAA, 0xBB])));
+    let req = encode(|w| w.write(0, 0, &[0xAA, 0xBB]));
     io.feed(&req);
     h.poll(&shared, &mut io);
 
     let (_, err, _) = parse_status(&io.bus.tx);
-    assert_eq!(err, StatusError::Access.as_u8());
+    assert_eq!(err, StatusError::code(ErrorCode::Access).as_byte());
     let identity = shared.table.config.with(|c| c.identity);
     assert_eq!(identity.model_number, 0);
 }
@@ -367,12 +376,12 @@ fn write_to_unmapped_address_replies_data_range_error() {
     let mut io = FakeIo::new();
     let mut h = Dxl::new();
 
-    let req = encode(&Packet::Write(WritePacket::new(0, 0xFFFE, &[0x01])));
+    let req = encode(|w| w.write(0, 0xFFFE, &[0x01]));
     io.feed(&req);
     h.poll(&shared, &mut io);
 
     let (_, err, _) = parse_status(&io.bus.tx);
-    assert_eq!(err, StatusError::DataRange.as_u8());
+    assert_eq!(err, StatusError::code(ErrorCode::DataRange).as_byte());
 }
 
 #[test]
@@ -382,11 +391,11 @@ fn write_to_other_id_silent_and_does_not_mutate() {
     let mut io = FakeIo::new();
     let mut h = Dxl::new();
 
-    let req = encode(&Packet::Write(WritePacket::new(
+    let req = encode(|w| w.write(
         17,
         CONTROL_BASE_ADDR,
         &[1],
-    )));
+    ));
     io.feed(&req);
     h.poll(&shared, &mut io);
 
@@ -402,11 +411,11 @@ fn broadcast_write_applies_but_silent() {
     let mut io = FakeIo::new();
     let mut h = Dxl::new();
 
-    let req = encode(&Packet::Write(WritePacket::new(
+    let req = encode(|w| w.write(
         BROADCAST_ID,
         CONTROL_BASE_ADDR,
         &[1],
-    )));
+    ));
     io.feed(&req);
     h.poll(&shared, &mut io);
 
@@ -422,22 +431,22 @@ fn reg_write_then_action_commits_to_live_table() {
     let mut io = FakeIo::new();
     let mut h = Dxl::new();
 
-    let req = encode(&Packet::RegWrite(RegWritePacket::new(
+    let req = encode(|w| w.reg_write(
         0,
         CONTROL_BASE_ADDR,
         &[1],
-    )));
+    ));
     io.feed(&req);
     h.poll(&shared, &mut io);
     let (_, err, _) = parse_status(&io.bus.tx);
-    assert_eq!(err, StatusError::None.as_u8());
+    assert_eq!(err, 0);
     assert!(!shared.table.control.with(|c| c.lifecycle.torque_enable));
 
-    let req = encode(&Packet::Action(ActionPacket::new(0)));
+    let req = encode(|w| w.action(0));
     io.feed(&req);
     h.poll(&shared, &mut io);
     let (_, err, _) = parse_status(&io.bus.tx);
-    assert_eq!(err, StatusError::None.as_u8());
+    assert_eq!(err, 0);
     assert!(shared.table.control.with(|c| c.lifecycle.torque_enable));
 }
 
@@ -447,11 +456,11 @@ fn reg_write_to_ro_address_replies_access_error_immediately() {
     let mut io = FakeIo::new();
     let mut h = Dxl::new();
 
-    let req = encode(&Packet::RegWrite(RegWritePacket::new(0, 0, &[0xAA, 0xBB])));
+    let req = encode(|w| w.reg_write(0, 0, &[0xAA, 0xBB]));
     io.feed(&req);
     h.poll(&shared, &mut io);
     let (_, err, _) = parse_status(&io.bus.tx);
-    assert_eq!(err, StatusError::Access.as_u8());
+    assert_eq!(err, StatusError::code(ErrorCode::Access).as_byte());
 }
 
 #[test]
@@ -461,21 +470,21 @@ fn reg_write_invalid_value_rejected_at_stage_time() {
     let mut io = FakeIo::new();
     let mut h = Dxl::new();
 
-    let req = encode(&Packet::RegWrite(RegWritePacket::new(
+    let req = encode(|w| w.reg_write(
         0,
         CONTROL_BASE_ADDR,
         &[2],
-    )));
+    ));
     io.feed(&req);
     h.poll(&shared, &mut io);
     let (_, err, _) = parse_status(&io.bus.tx);
-    assert_eq!(err, StatusError::DataRange.as_u8());
+    assert_eq!(err, StatusError::code(ErrorCode::DataRange).as_byte());
 
-    let req = encode(&Packet::Action(ActionPacket::new(0)));
+    let req = encode(|w| w.action(0));
     io.feed(&req);
     h.poll(&shared, &mut io);
     let (_, err, _) = parse_status(&io.bus.tx);
-    assert_eq!(err, StatusError::None.as_u8());
+    assert_eq!(err, 0);
     assert!(!shared.table.control.with(|c| c.lifecycle.torque_enable));
 }
 
@@ -487,19 +496,19 @@ fn sync_write_clears_pending_reg_write_staging() {
     let mut io = FakeIo::new();
     let mut h = Dxl::new();
 
-    let req = encode(&Packet::RegWrite(RegWritePacket::new(
+    let req = encode(|w| w.reg_write(
         0,
         CONTROL_BASE_ADDR,
         &[1],
-    )));
+    ));
     io.feed(&req);
     h.poll(&shared, &mut io);
 
-    let req = encode(&Packet::Write(WritePacket::new(
+    let req = encode(|w| w.write(
         0,
         CONTROL_BASE_ADDR + 1,
         &[1],
-    )));
+    ));
     io.feed(&req);
     h.poll(&shared, &mut io);
     assert_eq!(
@@ -507,11 +516,11 @@ fn sync_write_clears_pending_reg_write_staging() {
         Mode::PositionPid,
     );
 
-    let req = encode(&Packet::Action(ActionPacket::new(0)));
+    let req = encode(|w| w.action(0));
     io.feed(&req);
     h.poll(&shared, &mut io);
     let (_, err, _) = parse_status(&io.bus.tx);
-    assert_eq!(err, StatusError::None.as_u8());
+    assert_eq!(err, 0);
     assert!(!shared.table.control.with(|c| c.lifecycle.torque_enable));
 }
 
@@ -522,16 +531,16 @@ fn broadcast_reg_write_and_action_silent_but_commits() {
     let mut io = FakeIo::new();
     let mut h = Dxl::new();
 
-    let req = encode(&Packet::RegWrite(RegWritePacket::new(
+    let req = encode(|w| w.reg_write(
         BROADCAST_ID,
         CONTROL_BASE_ADDR,
         &[1],
-    )));
+    ));
     io.feed(&req);
     h.poll(&shared, &mut io);
     assert_eq!(io.bus.send_count, 0);
 
-    let req = encode(&Packet::Action(ActionPacket::new(BROADCAST_ID)));
+    let req = encode(|w| w.action(BROADCAST_ID));
     io.feed(&req);
     h.poll(&shared, &mut io);
     assert_eq!(io.bus.send_count, 0);
@@ -544,11 +553,11 @@ fn action_with_empty_staging_replies_ok() {
     let mut io = FakeIo::new();
     let mut h = Dxl::new();
 
-    let req = encode(&Packet::Action(ActionPacket::new(0)));
+    let req = encode(|w| w.action(0));
     io.feed(&req);
     h.poll(&shared, &mut io);
     let (_, err, _) = parse_status(&io.bus.tx);
-    assert_eq!(err, StatusError::None.as_u8());
+    assert_eq!(err, 0);
 }
 
 #[test]
@@ -557,7 +566,7 @@ fn reboot_to_our_id_acks_and_calls_device_reboot() {
     let mut io = FakeIo::new();
     let mut h = Dxl::new();
 
-    let req = encode(&Packet::Reboot(RebootPacket::new(0)));
+    let req = encode(|w| w.reboot(0));
     io.feed(&req);
     h.poll(&shared, &mut io);
 
@@ -575,7 +584,7 @@ fn reboot_to_broadcast_fires_device_reboot_without_ack() {
     let mut io = FakeIo::new();
     let mut h = Dxl::new();
 
-    let req = encode(&Packet::Reboot(RebootPacket::new(BROADCAST_ID)));
+    let req = encode(|w| w.reboot(BROADCAST_ID));
     io.feed(&req);
     h.poll(&shared, &mut io);
 
@@ -591,7 +600,7 @@ fn reboot_to_other_id_silent_and_no_request() {
     let mut io = FakeIo::new();
     let mut h = Dxl::new();
 
-    let req = encode(&Packet::Reboot(RebootPacket::new(17)));
+    let req = encode(|w| w.reboot(17));
     io.feed(&req);
     h.poll(&shared, &mut io);
 
@@ -608,15 +617,15 @@ fn reboot_honors_staged_boot_mode() {
     let mut io = FakeIo::new();
     let mut h = Dxl::new();
 
-    let req = encode(&Packet::Write(WritePacket::new(
+    let req = encode(|w| w.write(
         0,
         BOOT_MODE,
         &[BootMode::Bootloader as u8],
-    )));
+    ));
     io.feed(&req);
     h.poll(&shared, &mut io);
 
-    let req = encode(&Packet::Reboot(RebootPacket::new(0)));
+    let req = encode(|w| w.reboot(0));
     io.feed(&req);
     h.poll(&shared, &mut io);
 
@@ -639,14 +648,14 @@ fn return_level_none_silences_write_ack_but_ping_replies() {
     let mut io = FakeIo::new();
     let mut h = Dxl::new();
 
-    let req = encode(&Packet::Write(WritePacket::new(0, CONTROL_BASE_ADDR, &[1])));
+    let req = encode(|w| w.write(0, CONTROL_BASE_ADDR, &[1]));
     io.feed(&req);
     h.poll(&shared, &mut io);
     assert_eq!(io.bus.send_count, 0);
     assert!(io.bus.tx.is_empty());
     assert!(shared.table.control.with(|c| c.lifecycle.torque_enable));
 
-    let req = encode(&Packet::Ping(PingPacket::new(0)));
+    let req = encode(|w| w.ping(0));
     io.feed(&req);
     h.poll(&shared, &mut io);
     assert_eq!(io.bus.send_count, 1);
@@ -661,7 +670,7 @@ fn return_level_none_silences_read_reply() {
     let mut io = FakeIo::new();
     let mut h = Dxl::new();
 
-    let req = encode(&Packet::Read(ReadPacket::new(0, 0, 2)));
+    let req = encode(|w| w.read(0, 0, 2));
     io.feed(&req);
     h.poll(&shared, &mut io);
     assert_eq!(io.bus.send_count, 0);
@@ -676,12 +685,12 @@ fn return_level_read_silences_write_ack_but_read_replies() {
     let mut io = FakeIo::new();
     let mut h = Dxl::new();
 
-    let req = encode(&Packet::Write(WritePacket::new(0, CONTROL_BASE_ADDR, &[1])));
+    let req = encode(|w| w.write(0, CONTROL_BASE_ADDR, &[1]));
     io.feed(&req);
     h.poll(&shared, &mut io);
     assert_eq!(io.bus.send_count, 0);
 
-    let req = encode(&Packet::Read(ReadPacket::new(0, 0, 2)));
+    let req = encode(|w| w.read(0, 0, 2));
     io.feed(&req);
     h.poll(&shared, &mut io);
     assert_eq!(io.bus.send_count, 1);
@@ -696,7 +705,7 @@ fn return_level_none_silences_write_error_reply() {
     let mut io = FakeIo::new();
     let mut h = Dxl::new();
 
-    let req = encode(&Packet::Write(WritePacket::new(0, 0, &[0xAA, 0xBB])));
+    let req = encode(|w| w.write(0, 0, &[0xAA, 0xBB]));
     io.feed(&req);
     h.poll(&shared, &mut io);
     assert_eq!(io.bus.send_count, 0);
@@ -710,7 +719,7 @@ fn return_level_none_silences_unsupported_instruction_error() {
     let mut io = FakeIo::new();
     let mut h = Dxl::new();
 
-    let req = encode(&Packet::FactoryReset(FactoryResetPacket::new(0, 0xFF)));
+    let req = encode(|w| w.factory_reset(0, 0xFF));
     io.feed(&req);
     h.poll(&shared, &mut io);
     assert_eq!(io.bus.send_count, 0);
@@ -725,15 +734,15 @@ fn return_level_none_silences_action_ack() {
     let mut io = FakeIo::new();
     let mut h = Dxl::new();
 
-    let req = encode(&Packet::RegWrite(RegWritePacket::new(
+    let req = encode(|w| w.reg_write(
         0,
         CONTROL_BASE_ADDR,
         &[1],
-    )));
+    ));
     io.feed(&req);
     h.poll(&shared, &mut io);
 
-    let req = encode(&Packet::Action(ActionPacket::new(0)));
+    let req = encode(|w| w.action(0));
     io.feed(&req);
     h.poll(&shared, &mut io);
 
@@ -748,7 +757,7 @@ fn return_level_none_silences_reboot_ack_but_reboot_still_fires() {
     let mut io = FakeIo::new();
     let mut h = Dxl::new();
 
-    let req = encode(&Packet::Reboot(RebootPacket::new(0)));
+    let req = encode(|w| w.reboot(0));
     io.feed(&req);
     h.poll(&shared, &mut io);
 
@@ -765,7 +774,7 @@ fn return_level_none_still_replies_to_ping() {
     let mut io = FakeIo::new();
     let mut h = Dxl::new();
 
-    let req = encode(&Packet::Ping(PingPacket::new(0)));
+    let req = encode(|w| w.ping(0));
     io.feed(&req);
     h.poll(&shared, &mut io);
 
@@ -783,12 +792,12 @@ fn return_level_read_replies_to_read_errors() {
     let mut io = FakeIo::new();
     let mut h = Dxl::new();
 
-    let req = encode(&Packet::Read(ReadPacket::new(0, 0xFFFE, 1)));
+    let req = encode(|w| w.read(0, 0xFFFE, 1));
     io.feed(&req);
     h.poll(&shared, &mut io);
 
     let (_, err, _) = parse_status(&io.bus.tx);
-    assert_eq!(err, StatusError::DataRange.as_u8());
+    assert_eq!(err, StatusError::code(ErrorCode::DataRange).as_byte());
 }
 
 #[test]
@@ -797,7 +806,7 @@ fn sync_read_in_slot_zero_replies_with_zero_offset() {
     let mut io = FakeIo::new();
     let mut h = Dxl::new();
 
-    let req = encode(&Packet::SyncRead(SyncReadPacket::new(0, 2, &[0])));
+    let req = encode(|w| w.sync_read(0, 2, &[0]));
     io.feed(&req);
     h.poll(&shared, &mut io);
 
@@ -818,7 +827,7 @@ fn sync_read_in_later_slot_carries_bytes_before_and_slot_index() {
     let mut h = Dxl::new();
 
     // ids = [9, 7, 0] → our slot index = 2.
-    let req = encode(&Packet::SyncRead(SyncReadPacket::new(0, 2, &[9, 7, 0])));
+    let req = encode(|w| w.sync_read(0, 2, &[9, 7, 0]));
     io.feed(&req);
     h.poll(&shared, &mut io);
 
@@ -835,7 +844,7 @@ fn sync_read_silent_when_our_id_absent() {
     let mut io = FakeIo::new();
     let mut h = Dxl::new();
 
-    let req = encode(&Packet::SyncRead(SyncReadPacket::new(0, 2, &[5, 7, 9])));
+    let req = encode(|w| w.sync_read(0, 2, &[5, 7, 9]));
     io.feed(&req);
     h.poll(&shared, &mut io);
 
@@ -849,7 +858,7 @@ fn sync_read_skips_when_no_idle_anchor() {
     let mut io = FakeIo::new();
     let mut h = Dxl::new();
 
-    let req = encode(&Packet::SyncRead(SyncReadPacket::new(0, 2, &[0])));
+    let req = encode(|w| w.sync_read(0, 2, &[0]));
     io.bus.feed_no_idle(&req);
     h.poll(&shared, &mut io);
 
@@ -863,13 +872,13 @@ fn sync_read_data_range_error_still_replies_in_slot() {
     let mut io = FakeIo::new();
     let mut h = Dxl::new();
 
-    let req = encode(&Packet::SyncRead(SyncReadPacket::new(0xFFFE, 1, &[0])));
+    let req = encode(|w| w.sync_read(0xFFFE, 1, &[0]));
     io.feed(&req);
     h.poll(&shared, &mut io);
 
     assert_eq!(io.bus.send_count, 1);
     let (_, err, _) = parse_status(&io.bus.tx);
-    assert_eq!(err, StatusError::DataRange.as_u8());
+    assert_eq!(err, StatusError::code(ErrorCode::DataRange).as_byte());
 }
 
 #[test]
@@ -879,7 +888,7 @@ fn sync_read_return_level_none_silences_reply() {
     let mut io = FakeIo::new();
     let mut h = Dxl::new();
 
-    let req = encode(&Packet::SyncRead(SyncReadPacket::new(0, 2, &[0])));
+    let req = encode(|w| w.sync_read(0, 2, &[0]));
     io.feed(&req);
     h.poll(&shared, &mut io);
 
@@ -894,7 +903,7 @@ fn bulk_read_in_slot_zero_replies_with_zero_offset() {
     let mut h = Dxl::new();
 
     let body = [0, 0, 0, 2, 0];
-    let req = encode(&Packet::BulkRead(BulkReadPacket::new(&body)));
+    let req = encode(|w| w.bulk_read(bulk_entries(&body)));
     io.feed(&req);
     h.poll(&shared, &mut io);
 
@@ -916,7 +925,7 @@ fn bulk_read_in_later_slot_sums_preceding_slot_widths() {
 
     // slot 0 id=9 len=4, slot 1 id=7 len=8, slot 2 id=0 len=2.
     let body = [9, 0, 0, 4, 0, 7, 0, 0, 8, 0, 0, 0, 0, 2, 0];
-    let req = encode(&Packet::BulkRead(BulkReadPacket::new(&body)));
+    let req = encode(|w| w.bulk_read(bulk_entries(&body)));
     io.feed(&req);
     h.poll(&shared, &mut io);
 
@@ -934,7 +943,7 @@ fn bulk_read_silent_when_our_id_absent() {
     let mut h = Dxl::new();
 
     let body = [5, 0, 0, 2, 0, 7, 0, 0, 2, 0];
-    let req = encode(&Packet::BulkRead(BulkReadPacket::new(&body)));
+    let req = encode(|w| w.bulk_read(bulk_entries(&body)));
     io.feed(&req);
     h.poll(&shared, &mut io);
 
@@ -949,7 +958,7 @@ fn bulk_read_skips_when_no_idle_anchor() {
     let mut h = Dxl::new();
 
     let body = [0, 0, 0, 2, 0];
-    let req = encode(&Packet::BulkRead(BulkReadPacket::new(&body)));
+    let req = encode(|w| w.bulk_read(bulk_entries(&body)));
     io.bus.feed_no_idle(&req);
     h.poll(&shared, &mut io);
 
@@ -964,7 +973,7 @@ fn bulk_read_uses_our_tuples_address_not_a_preceding_slots() {
     let mut h = Dxl::new();
 
     let body = [9, 0xFE, 0xFF, 4, 0, 0, 0, 0, 2, 0];
-    let req = encode(&Packet::BulkRead(BulkReadPacket::new(&body)));
+    let req = encode(|w| w.bulk_read(bulk_entries(&body)));
     io.feed(&req);
     h.poll(&shared, &mut io);
 
@@ -980,13 +989,13 @@ fn bulk_read_data_range_error_still_replies_in_slot() {
     let mut h = Dxl::new();
 
     let body = [0, 0xFE, 0xFF, 1, 0];
-    let req = encode(&Packet::BulkRead(BulkReadPacket::new(&body)));
+    let req = encode(|w| w.bulk_read(bulk_entries(&body)));
     io.feed(&req);
     h.poll(&shared, &mut io);
 
     assert_eq!(io.bus.send_count, 1);
     let (_, err, _) = parse_status(&io.bus.tx);
-    assert_eq!(err, StatusError::DataRange.as_u8());
+    assert_eq!(err, StatusError::code(ErrorCode::DataRange).as_byte());
 }
 
 #[test]
@@ -997,7 +1006,7 @@ fn bulk_read_return_level_none_silences_reply() {
     let mut h = Dxl::new();
 
     let body = [0, 0, 0, 2, 0];
-    let req = encode(&Packet::BulkRead(BulkReadPacket::new(&body)));
+    let req = encode(|w| w.bulk_read(bulk_entries(&body)));
     io.feed(&req);
     h.poll(&shared, &mut io);
 
@@ -1011,7 +1020,7 @@ fn fast_sync_read_only_slot_emits_full_frame_with_local_crc() {
     let mut io = FakeIo::new();
     let mut h = Dxl::new();
 
-    let req = encode(&Packet::FastSyncRead(FastSyncReadPacket::new(0, 2, &[0])));
+    let req = encode(|w| w.fast_sync_read(0, 2, &[0]));
     io.feed(&req);
     h.poll(&shared, &mut io);
 
@@ -1040,11 +1049,11 @@ fn fast_sync_read_first_slot_emits_header_then_body_no_crc() {
     let mut io = FakeIo::new();
     let mut h = Dxl::new();
 
-    let req = encode(&Packet::FastSyncRead(FastSyncReadPacket::new(
+    let req = encode(|w| w.fast_sync_read(
         0,
         2,
         &[0, 7],
-    )));
+    ));
     io.feed(&req);
     h.poll(&shared, &mut io);
 
@@ -1069,8 +1078,12 @@ fn fast_sync_read_middle_slot_emits_body_only_with_bytes_before() {
     let mut io = FakeIo::new();
     let mut h = Dxl::new();
 
-    let p = FastSyncReadPacket::new(0, 2, &[9, 0, 7]);
-    let req = encode(&Packet::FastSyncRead(p));
+    let req = encode(|w| w.fast_sync_read(0, 2, &[9, 0, 7]));
+    let mut __dec: Decoder<256, TestDxlCrc> = Decoder::new();
+    let __expected_bytes_before = match __dec.feed(&req).0 {
+        Step::Packet(Packet::FastSyncRead(p)) => p.find_slot(0, 32).unwrap().bytes_before,
+        _ => panic!("expected FastSyncRead"),
+    };
     io.feed(&req);
     h.poll(&shared, &mut io);
 
@@ -1082,7 +1095,7 @@ fn fast_sync_read_middle_slot_emits_body_only_with_bytes_before() {
     // Slot 1: FAST_RESPONSE_SLOT0_BYTES(10) + payload(2) = 12 bytes before.
     assert_eq!(
         io.bus.last_schedule.unwrap().bytes_before,
-        p.find_slot(0, 32).unwrap().bytes_before
+        __expected_bytes_before
     );
 
     assert_eq!(io.bus.tx.len(), 4);
@@ -1095,8 +1108,12 @@ fn fast_sync_read_last_slot_reserves_crc_placeholder() {
     let mut io = FakeIo::new();
     let mut h = Dxl::new();
 
-    let p = FastSyncReadPacket::new(0, 2, &[9, 0]);
-    let req = encode(&Packet::FastSyncRead(p));
+    let req = encode(|w| w.fast_sync_read(0, 2, &[9, 0]));
+    let mut __dec: Decoder<256, TestDxlCrc> = Decoder::new();
+    let __expected_bytes_before = match __dec.feed(&req).0 {
+        Step::Packet(Packet::FastSyncRead(p)) => p.find_slot(0, 32).unwrap().bytes_before,
+        _ => panic!("expected FastSyncRead"),
+    };
     io.feed(&req);
     h.poll(&shared, &mut io);
 
@@ -1104,7 +1121,7 @@ fn fast_sync_read_last_slot_reserves_crc_placeholder() {
     assert_eq!(io.bus.last_kind, Some(ReplyKind::Fast(SlotPosition::Last { crc: 0 })));
     assert_eq!(
         io.bus.last_schedule.unwrap().bytes_before,
-        p.find_slot(0, 32).unwrap().bytes_before
+        __expected_bytes_before
     );
 
     // Trailing 2 bytes are the reserved chain-CRC slot. The chip's
@@ -1121,11 +1138,11 @@ fn fast_sync_read_silent_when_our_id_absent() {
     let mut io = FakeIo::new();
     let mut h = Dxl::new();
 
-    let req = encode(&Packet::FastSyncRead(FastSyncReadPacket::new(
+    let req = encode(|w| w.fast_sync_read(
         0,
         2,
         &[5, 7, 9],
-    )));
+    ));
     io.feed(&req);
     h.poll(&shared, &mut io);
 
@@ -1139,7 +1156,7 @@ fn fast_sync_read_skips_when_no_idle_anchor() {
     let mut io = FakeIo::new();
     let mut h = Dxl::new();
 
-    let req = encode(&Packet::FastSyncRead(FastSyncReadPacket::new(0, 2, &[0])));
+    let req = encode(|w| w.fast_sync_read(0, 2, &[0]));
     io.bus.feed_no_idle(&req);
     h.poll(&shared, &mut io);
 
@@ -1154,7 +1171,7 @@ fn fast_sync_read_return_level_none_silences_reply() {
     let mut io = FakeIo::new();
     let mut h = Dxl::new();
 
-    let req = encode(&Packet::FastSyncRead(FastSyncReadPacket::new(0, 2, &[0])));
+    let req = encode(|w| w.fast_sync_read(0, 2, &[0]));
     io.feed(&req);
     h.poll(&shared, &mut io);
 
@@ -1169,7 +1186,7 @@ fn fast_bulk_read_only_slot_emits_full_frame_with_local_crc() {
     let mut h = Dxl::new();
 
     let body = [0, 0, 0, 2, 0];
-    let req = encode(&Packet::FastBulkRead(FastBulkReadPacket::new(&body)));
+    let req = encode(|w| w.fast_bulk_read(bulk_entries(&body)));
     io.feed(&req);
     h.poll(&shared, &mut io);
 
@@ -1198,7 +1215,7 @@ fn fast_bulk_read_first_slot_emits_header_then_body() {
     let mut h = Dxl::new();
 
     let body = [0, 0, 0, 2, 0, 7, 0, 0, 4, 0];
-    let req = encode(&Packet::FastBulkRead(FastBulkReadPacket::new(&body)));
+    let req = encode(|w| w.fast_bulk_read(bulk_entries(&body)));
     io.feed(&req);
     h.poll(&shared, &mut io);
 
@@ -1223,8 +1240,12 @@ fn fast_bulk_read_middle_slot_carries_bytes_before() {
     let mut h = Dxl::new();
 
     let body = [9, 0, 0, 4, 0, 0, 0, 0, 2, 0, 7, 0, 0, 8, 0];
-    let p = FastBulkReadPacket::new(&body);
-    let req = encode(&Packet::FastBulkRead(p));
+    let req = encode(|w| w.fast_bulk_read(bulk_entries(&body)));
+    let mut __dec: Decoder<256, TestDxlCrc> = Decoder::new();
+    let __expected_bytes_before = match __dec.feed(&req).0 {
+        Step::Packet(Packet::FastBulkRead(p)) => p.find_slot(0, 32).unwrap().bytes_before,
+        _ => panic!("expected FastBulkRead"),
+    };
     io.feed(&req);
     h.poll(&shared, &mut io);
 
@@ -1235,7 +1256,7 @@ fn fast_bulk_read_middle_slot_carries_bytes_before() {
     );
     assert_eq!(
         io.bus.last_schedule.unwrap().bytes_before,
-        p.find_slot(0, 32).unwrap().bytes_before
+        __expected_bytes_before
     );
 }
 
@@ -1246,8 +1267,12 @@ fn fast_bulk_read_last_slot_reserves_crc_placeholder() {
     let mut h = Dxl::new();
 
     let body = [9, 0, 0, 4, 0, 0, 0, 0, 2, 0];
-    let p = FastBulkReadPacket::new(&body);
-    let req = encode(&Packet::FastBulkRead(p));
+    let req = encode(|w| w.fast_bulk_read(bulk_entries(&body)));
+    let mut __dec: Decoder<256, TestDxlCrc> = Decoder::new();
+    let __expected_bytes_before = match __dec.feed(&req).0 {
+        Step::Packet(Packet::FastBulkRead(p)) => p.find_slot(0, 32).unwrap().bytes_before,
+        _ => panic!("expected FastBulkRead"),
+    };
     io.feed(&req);
     h.poll(&shared, &mut io);
 
@@ -1255,7 +1280,7 @@ fn fast_bulk_read_last_slot_reserves_crc_placeholder() {
     assert_eq!(io.bus.last_kind, Some(ReplyKind::Fast(SlotPosition::Last { crc: 0 })));
     assert_eq!(
         io.bus.last_schedule.unwrap().bytes_before,
-        p.find_slot(0, 32).unwrap().bytes_before
+        __expected_bytes_before
     );
 
     // Trailing 2 bytes are the reserved chain-CRC slot. The chip's
@@ -1273,7 +1298,7 @@ fn fast_bulk_read_uses_our_tuples_address_not_a_preceding_slots() {
     let mut h = Dxl::new();
 
     let body = [9, 0xFE, 0xFF, 4, 0, 0, 0, 0, 2, 0];
-    let req = encode(&Packet::FastBulkRead(FastBulkReadPacket::new(&body)));
+    let req = encode(|w| w.fast_bulk_read(bulk_entries(&body)));
     io.feed(&req);
     h.poll(&shared, &mut io);
 
@@ -1291,7 +1316,7 @@ fn fast_bulk_read_silent_when_our_id_absent() {
     let mut h = Dxl::new();
 
     let body = [5, 0, 0, 2, 0, 7, 0, 0, 2, 0];
-    let req = encode(&Packet::FastBulkRead(FastBulkReadPacket::new(&body)));
+    let req = encode(|w| w.fast_bulk_read(bulk_entries(&body)));
     io.feed(&req);
     h.poll(&shared, &mut io);
 
@@ -1306,7 +1331,7 @@ fn fast_bulk_read_skips_when_no_idle_anchor() {
     let mut h = Dxl::new();
 
     let body = [0, 0, 0, 2, 0];
-    let req = encode(&Packet::FastBulkRead(FastBulkReadPacket::new(&body)));
+    let req = encode(|w| w.fast_bulk_read(bulk_entries(&body)));
     io.bus.feed_no_idle(&req);
     h.poll(&shared, &mut io);
 
@@ -1322,7 +1347,7 @@ fn fast_bulk_read_return_level_none_silences_reply() {
     let mut h = Dxl::new();
 
     let body = [0, 0, 0, 2, 0];
-    let req = encode(&Packet::FastBulkRead(FastBulkReadPacket::new(&body)));
+    let req = encode(|w| w.fast_bulk_read(bulk_entries(&body)));
     io.feed(&req);
     h.poll(&shared, &mut io);
 
@@ -1348,9 +1373,9 @@ fn poll_recovers_from_stale_fast_first_slot_residue_then_replies_to_ping() {
     let mut residue: Vec<u8, 32> = Vec::new();
     SlotEmitter::<_, TestDxlCrc>::new(&mut residue)
         .first(
-            &NewSlot {
+            &Slot {
                 id: 50,
-                error: NewStatusError::OK,
+                error: StatusError::OK,
                 data: &[0xAA, 0xAA, 0xAA, 0xAA],
             },
             43,
@@ -1358,7 +1383,7 @@ fn poll_recovers_from_stale_fast_first_slot_residue_then_replies_to_ping() {
         .unwrap();
     assert_eq!(residue.len(), 14, "Fast First slot wire shape changed?");
 
-    let ping = encode(&Packet::Ping(PingPacket::new(0)));
+    let ping = encode(|w| w.ping(0));
 
     io.feed(&residue);
     io.feed(&ping);
@@ -1390,9 +1415,9 @@ fn calibrate_unicast_replies_with_measurement_payload() {
         applied_fine_trim_us: 256, // +1.0 µs in Q8.8
     });
 
-    let req = encode(&Packet::Ext(OscVariant::Calibrate(CalibratePacket::new(
+    let req = encode_calibrate(
         0, 16,
-    ))));
+    );
     io.feed(&req);
     h.poll(&shared, &mut io);
 
@@ -1422,9 +1447,9 @@ fn calibrate_unicast_count_max_payload_accepted() {
         applied_fine_trim_us: 0,
     });
 
-    let req = encode(&Packet::Ext(OscVariant::Calibrate(CalibratePacket::new(
+    let req = encode_calibrate(
         0, 128,
-    ))));
+    );
     // hdr(4) + id(1) + len(2) + inst(1) + count(2) + 128 filler + crc(2) = 140
     assert_eq!(req.len(), 140);
     io.feed(&req);
@@ -1453,15 +1478,15 @@ fn calibrate_without_snapshot_replies_data_range_error() {
     let mut h = Dxl::new();
     assert!(io.bus.cal_snapshot_stub.is_none());
 
-    let req = encode(&Packet::Ext(OscVariant::Calibrate(CalibratePacket::new(
+    let req = encode_calibrate(
         0, 16,
-    ))));
+    );
     io.feed(&req);
     h.poll(&shared, &mut io);
 
     assert_eq!(io.bus.send_count, 1);
     let (_, err, params) = parse_status(&io.bus.tx);
-    assert_eq!(err, StatusError::DataRange.as_u8());
+    assert_eq!(err, StatusError::code(ErrorCode::DataRange).as_byte());
     assert!(params.is_empty());
 }
 
@@ -1471,9 +1496,9 @@ fn calibrate_unicast_count_zero_data_range_err() {
     let mut io = FakeIo::new();
     let mut h = Dxl::new();
 
-    let req = encode(&Packet::Ext(OscVariant::Calibrate(CalibratePacket::new(
+    let req = encode_calibrate(
         0, 0,
-    ))));
+    );
     io.feed(&req);
     h.poll(&shared, &mut io);
 
@@ -1489,9 +1514,9 @@ fn calibrate_unicast_count_over_max_data_range_err() {
     let mut io = FakeIo::new();
     let mut h = Dxl::new();
 
-    let req = encode(&Packet::Ext(OscVariant::Calibrate(CalibratePacket::new(
+    let req = encode_calibrate(
         0, 129,
-    ))));
+    );
     io.feed(&req);
     h.poll(&shared, &mut io);
 
@@ -1507,10 +1532,10 @@ fn calibrate_broadcast_silently_dropped() {
     let mut io = FakeIo::new();
     let mut h = Dxl::new();
 
-    let req = encode(&Packet::Ext(OscVariant::Calibrate(CalibratePacket::new(
+    let req = encode_calibrate(
         BROADCAST_ID,
         128,
-    ))));
+    );
     io.feed(&req);
     h.poll(&shared, &mut io);
 
@@ -1527,11 +1552,11 @@ fn fast_sync_read_error_emits_zero_payload_with_error_byte() {
     let mut h = Dxl::new();
 
     // Address 0xFFFE is out of range → Err(DataRange) from read_bytes.
-    let req = encode(&Packet::FastSyncRead(FastSyncReadPacket::new(
+    let req = encode(|w| w.fast_sync_read(
         0xFFFE,
         2,
         &[0],
-    )));
+    ));
     io.feed(&req);
     h.poll(&shared, &mut io);
 
@@ -1542,7 +1567,7 @@ fn fast_sync_read_error_emits_zero_payload_with_error_byte() {
     ));
     // Wire bytes: HEADER(4) + 0xFE + LEN(2) + 0x55 + error + id + 2 zeros + CRC(2)
     assert_eq!(io.bus.tx.len(), 14);
-    assert_eq!(io.bus.tx[8], StatusError::DataRange.as_u8());
+    assert_eq!(io.bus.tx[8], StatusError::code(ErrorCode::DataRange).as_byte());
     assert_eq!(io.bus.tx[9], 0); // our id
     assert_eq!(&io.bus.tx[10..12], &[0, 0]); // length zero bytes
 }
@@ -1556,11 +1581,11 @@ fn sync_write_to_our_id_mutates_and_silent() {
 
     // Two slots: id=7 (not us), id=0 (us). length=1, both write 0x01 to torque_enable.
     let body = [7, 0x00, 0, 0x01];
-    let req = encode(&Packet::SyncWrite(SyncWritePacket::new(
+    let req = encode(|w| w.sync_write(
         CONTROL_BASE_ADDR,
         1,
         &body,
-    )));
+    ));
     io.feed(&req);
     h.poll(&shared, &mut io);
 
@@ -1576,11 +1601,11 @@ fn sync_write_to_other_ids_only_does_not_mutate() {
     let mut h = Dxl::new();
 
     let body = [7, 0x01, 17, 0x01];
-    let req = encode(&Packet::SyncWrite(SyncWritePacket::new(
+    let req = encode(|w| w.sync_write(
         CONTROL_BASE_ADDR,
         1,
         &body,
-    )));
+    ));
     io.feed(&req);
     h.poll(&shared, &mut io);
 
@@ -1596,21 +1621,21 @@ fn sync_write_clears_pending_reg_write_staging_too() {
     let mut io = FakeIo::new();
     let mut h = Dxl::new();
 
-    let req = encode(&Packet::RegWrite(RegWritePacket::new(
+    let req = encode(|w| w.reg_write(
         0,
         CONTROL_BASE_ADDR,
         &[1],
-    )));
+    ));
     io.feed(&req);
     h.poll(&shared, &mut io);
 
     // Sync Write to mode register — should wipe the RegWrite staging.
     let body = [0, Mode::PositionPid as u8];
-    let req = encode(&Packet::SyncWrite(SyncWritePacket::new(
+    let req = encode(|w| w.sync_write(
         CONTROL_BASE_ADDR + 1,
         1,
         &body,
-    )));
+    ));
     io.feed(&req);
     h.poll(&shared, &mut io);
     assert_eq!(
@@ -1618,11 +1643,11 @@ fn sync_write_clears_pending_reg_write_staging_too() {
         Mode::PositionPid,
     );
 
-    let req = encode(&Packet::Action(ActionPacket::new(0)));
+    let req = encode(|w| w.action(0));
     io.feed(&req);
     h.poll(&shared, &mut io);
     let (_, err, _) = parse_status(&io.bus.tx);
-    assert_eq!(err, StatusError::None.as_u8());
+    assert_eq!(err, 0);
     assert!(!shared.table.control.with(|c| c.lifecycle.torque_enable));
 }
 
@@ -1637,7 +1662,7 @@ fn bulk_write_to_our_id_mutates_and_silent() {
     let addr_lo = (CONTROL_BASE_ADDR & 0xFF) as u8;
     let addr_hi = (CONTROL_BASE_ADDR >> 8) as u8;
     let body = [0, addr_lo, addr_hi, 1, 0, 1];
-    let req = encode(&Packet::BulkWrite(BulkWritePacket::new(&body)));
+    let req = encode(|w| w.bulk_write(&body));
     io.feed(&req);
     h.poll(&shared, &mut io);
 
@@ -1655,7 +1680,7 @@ fn bulk_write_to_other_id_silent_and_does_not_mutate() {
     let addr_lo = (CONTROL_BASE_ADDR & 0xFF) as u8;
     let addr_hi = (CONTROL_BASE_ADDR >> 8) as u8;
     let body = [17, addr_lo, addr_hi, 1, 0, 1];
-    let req = encode(&Packet::BulkWrite(BulkWritePacket::new(&body)));
+    let req = encode(|w| w.bulk_write(&body));
     io.feed(&req);
     h.poll(&shared, &mut io);
 
@@ -1682,7 +1707,7 @@ fn bulk_write_uses_our_tuples_address_not_a_preceding_slots() {
         7, other_lo, other_hi, 1, 0, 1, //
         0, our_lo, our_hi, 1, 0, Mode::PositionPid as u8,
     ];
-    let req = encode(&Packet::BulkWrite(BulkWritePacket::new(&body)));
+    let req = encode(|w| w.bulk_write(&body));
     io.feed(&req);
     h.poll(&shared, &mut io);
 

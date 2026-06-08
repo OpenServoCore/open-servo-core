@@ -4,7 +4,7 @@
 //! `CAL = 0xE0`) — far from Robotis's allocated clusters so a future protocol
 //! revision can't quietly collide.
 //!
-//! Plugs into the new streaming parser via `Packet::Raw`: the chip-side
+//! Plugs into the streaming parser via `Packet::Raw`: the chip-side
 //! dispatcher calls [`decode_raw`] on the raw byte slice to resolve OSC
 //! verbs. The reply path uses the unified `Status<'a>` enum's `Raw` variant
 //! — the dispatcher composes payload bytes via [`calibrate_status_bytes`]
@@ -17,14 +17,6 @@
 //! Status reply. No master-side timestamping required.
 
 use dxl_protocol::packet::RawPacket;
-use dxl_protocol::{Bytes, CrcUmts, DecodeError, InstructionExt, WriteBuf, WriteError, write_ext};
-
-/// Marker for the OSC request extension, kept so tests can still encode a
-/// Calibrate request via the legacy `Packet<'_, OscExt>` + `write_packet`
-/// path. Production dispatch goes through `Packet::Raw` → [`decode_raw`].
-/// Removed alongside the rest of the legacy typed layer in #134.
-#[derive(Copy, Clone, Debug)]
-pub struct OscExt;
 
 #[derive(Copy, Clone, Debug)]
 pub enum OscVariant {
@@ -48,43 +40,6 @@ impl CalibratePacket {
 }
 
 pub const CALIBRATE_INSTRUCTION: u8 = 0xE0;
-
-impl InstructionExt for OscExt {
-    type Variant<'a> = OscVariant;
-
-    fn decode<'a>(instr: u8, id: u8, params: Bytes<'a>) -> Option<Result<OscVariant, DecodeError>> {
-        match instr {
-            CALIBRATE_INSTRUCTION => Some(decode_calibrate(id, params)),
-            _ => None,
-        }
-    }
-
-    fn write<'a, W: WriteBuf, CRC: CrcUmts>(v: &OscVariant, out: &mut W) -> Result<(), WriteError> {
-        match *v {
-            OscVariant::Calibrate(p) => write_ext::<W, CRC, _>(
-                out,
-                p.id,
-                CALIBRATE_INSTRUCTION,
-                p.count
-                    .to_le_bytes()
-                    .into_iter()
-                    .chain(core::iter::repeat_n(0u8, p.count as usize)),
-            ),
-        }
-    }
-}
-
-fn decode_calibrate(id: u8, params: Bytes<'_>) -> Result<OscVariant, DecodeError> {
-    let mut it = params.iter();
-    let lo = it.next().ok_or(DecodeError::BadParams)?;
-    let hi = it.next().ok_or(DecodeError::BadParams)?;
-    let count = u16::from_le_bytes([lo, hi]);
-    let payload_len = it.count();
-    if payload_len != count as usize {
-        return Err(DecodeError::BadParams);
-    }
-    Ok(OscVariant::Calibrate(CalibratePacket { id, count }))
-}
 
 /// Streaming-decoder dispatch for OSC verbs carried as `Packet::Raw`.
 /// Returns `None` for instruction bytes we don't own.
