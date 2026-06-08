@@ -16,7 +16,7 @@
 use core::marker::PhantomData;
 use core::mem::{MaybeUninit, offset_of, size_of};
 
-use crate::instruction::*;
+use crate::instruction::Instruction;
 use crate::packet::*;
 use crate::wire::{
     CRC_BYTES, CrcUmts, HEADER, PACKET_LEN_GUARD, PACKET_LEN_MIN, STUFFING_BYTE, STUFFING_TRIGGER,
@@ -277,59 +277,59 @@ impl<const M: usize, CRC: CrcUmts> Decoder<M, CRC> {
         // always aligned. Variable-length tail slices stay within the
         // initialized region by construction.
         unsafe {
-            match instr {
-                INSTR_PING if pl == 0 => Packet::Ping(&*(base as *const PingPacket)),
-                INSTR_READ if pl == 4 => Packet::Read(&*(base as *const ReadPacket)),
-                INSTR_WRITE if pl >= 2 => Packet::Write(WritePacket {
+            match Instruction::from_u8(instr) {
+                Instruction::Ping if pl == 0 => Packet::Ping(&*(base as *const PingPacket)),
+                Instruction::Read if pl == 4 => Packet::Read(&*(base as *const ReadPacket)),
+                Instruction::Write if pl >= 2 => Packet::Write(WritePacket {
                     header: &*(base as *const WriteHeader),
                     data: core::slice::from_raw_parts(base.add(size_of::<WriteHeader>()), pl - 2),
                 }),
-                INSTR_REG_WRITE if pl >= 2 => Packet::RegWrite(WritePacket {
+                Instruction::RegWrite if pl >= 2 => Packet::RegWrite(WritePacket {
                     header: &*(base as *const WriteHeader),
                     data: core::slice::from_raw_parts(base.add(size_of::<WriteHeader>()), pl - 2),
                 }),
-                INSTR_ACTION if pl == 0 => Packet::Action(&*(base as *const ActionPacket)),
-                INSTR_REBOOT if pl == 0 => Packet::Reboot(&*(base as *const RebootPacket)),
-                INSTR_FACTORY_RESET if pl == 1 => {
+                Instruction::Action if pl == 0 => Packet::Action(&*(base as *const ActionPacket)),
+                Instruction::Reboot if pl == 0 => Packet::Reboot(&*(base as *const RebootPacket)),
+                Instruction::FactoryReset if pl == 1 => {
                     Packet::FactoryReset(&*(base as *const FactoryResetPacket))
                 }
-                INSTR_STATUS if pl >= 1 => Packet::Status(StatusPacket {
+                Instruction::Status if pl >= 1 => Packet::Status(StatusPacket {
                     header: &*(base as *const StatusHeader),
                     params: core::slice::from_raw_parts(
                         base.add(size_of::<StatusHeader>()),
                         pl - 1,
                     ),
                 }),
-                INSTR_SYNC_READ if pl >= 4 => Packet::SyncRead(SyncReadPacket {
+                Instruction::SyncRead if pl >= 4 => Packet::SyncRead(SyncReadPacket {
                     header: &*(base as *const SyncReadHeader),
                     ids: core::slice::from_raw_parts(base.add(size_of::<SyncReadHeader>()), pl - 4),
                 }),
-                INSTR_SYNC_WRITE if pl >= 4 => Packet::SyncWrite(SyncWritePacket {
+                Instruction::SyncWrite if pl >= 4 => Packet::SyncWrite(SyncWritePacket {
                     header: &*(base as *const SyncWriteHeader),
                     body: core::slice::from_raw_parts(
                         base.add(size_of::<SyncWriteHeader>()),
                         pl - 4,
                     ),
                 }),
-                INSTR_BULK_READ => Packet::BulkRead(BulkReadPacket {
+                Instruction::BulkRead => Packet::BulkRead(BulkReadPacket {
                     header: &*(base as *const BulkReadHeader),
                     entries: core::slice::from_raw_parts(
                         base.add(size_of::<BulkReadHeader>()) as *const BulkReadEntry,
                         pl / size_of::<BulkReadEntry>(),
                     ),
                 }),
-                INSTR_BULK_WRITE => Packet::BulkWrite(BulkWritePacket {
+                Instruction::BulkWrite => Packet::BulkWrite(BulkWritePacket {
                     header: &*(base as *const BulkWriteHeader),
                     body: core::slice::from_raw_parts(base.add(size_of::<BulkWriteHeader>()), pl),
                 }),
-                INSTR_FAST_SYNC_READ if pl >= 4 => Packet::FastSyncRead(FastSyncReadPacket {
+                Instruction::FastSyncRead if pl >= 4 => Packet::FastSyncRead(FastSyncReadPacket {
                     header: &*(base as *const FastSyncReadHeader),
                     ids: core::slice::from_raw_parts(
                         base.add(size_of::<FastSyncReadHeader>()),
                         pl - 4,
                     ),
                 }),
-                INSTR_FAST_BULK_READ => Packet::FastBulkRead(FastBulkReadPacket {
+                Instruction::FastBulkRead => Packet::FastBulkRead(FastBulkReadPacket {
                     header: &*(base as *const FastBulkReadHeader),
                     entries: core::slice::from_raw_parts(
                         base.add(size_of::<FastBulkReadHeader>()) as *const BulkReadEntry,
@@ -360,13 +360,13 @@ mod tests {
     type Crc = SoftwareCrcUmts;
     type Buf = Vec<u8, 256>;
 
-    fn encode(id: u8, instruction: u8, params: &[u8]) -> Buf {
+    fn encode(id: u8, instruction: Instruction, params: &[u8]) -> Buf {
         let mut out = Buf::new();
         write_raw::<_, _, Crc>(
             &mut out,
             RawFrame {
                 id,
-                instruction,
+                instruction: instruction.as_u8(),
                 params: params.iter().copied(),
             },
         )
@@ -376,14 +376,14 @@ mod tests {
 
     #[test]
     fn ping_single_chunk() {
-        let frame = encode(0x01, INSTR_PING, &[]);
+        let frame = encode(0x01, Instruction::Ping, &[]);
         let mut dec: Decoder<32, Crc> = Decoder::new();
         let (step, n) = dec.feed(&frame);
         assert_eq!(n, frame.len());
         match step {
             Step::Packet(Packet::Ping(p)) => {
                 assert_eq!(p.header.id, 0x01);
-                assert_eq!(p.header.instruction, INSTR_PING);
+                assert_eq!(p.header.instruction.kind(), Instruction::Ping);
                 assert_eq!(p.header.sync, [0xFF, 0xFF, 0xFD, 0x00]);
                 assert_eq!(p.header.len.get(), 3);
             }
@@ -393,7 +393,7 @@ mod tests {
 
     #[test]
     fn ping_byte_at_a_time() {
-        let frame = encode(0x07, INSTR_PING, &[]);
+        let frame = encode(0x07, Instruction::Ping, &[]);
         let mut dec: Decoder<32, Crc> = Decoder::new();
         let last = frame.len() - 1;
         for (i, &b) in frame.iter().enumerate().take(last) {
@@ -414,7 +414,7 @@ mod tests {
 
     #[test]
     fn header_two_byte_chunks() {
-        let frame = encode(0x02, INSTR_READ, &[0x84, 0x00, 0x04, 0x00]);
+        let frame = encode(0x02, Instruction::Read, &[0x84, 0x00, 0x04, 0x00]);
         let mut dec: Decoder<32, Crc> = Decoder::new();
         let n_chunks = frame.len().div_ceil(2);
         let mut completed = false;
@@ -438,7 +438,7 @@ mod tests {
     #[test]
     fn write_with_data() {
         let payload = [0x84, 0x00, 0xAA, 0xBB, 0xCC, 0xDD];
-        let frame = encode(0x03, INSTR_WRITE, &payload);
+        let frame = encode(0x03, Instruction::Write, &payload);
         let mut dec: Decoder<64, Crc> = Decoder::new();
         let (step, _) = dec.feed(&frame);
         match step {
@@ -456,7 +456,7 @@ mod tests {
         // Logical payload contains the FF FF FD trigger; the writer
         // inserts a stuffing FD that the decoder must strip.
         let payload = [0x84, 0x00, 0xFF, 0xFF, 0xFD, 0x42];
-        let frame = encode(0x04, INSTR_WRITE, &payload);
+        let frame = encode(0x04, Instruction::Write, &payload);
         // Frame should contain the stuffing byte on the wire.
         assert!(
             frame.windows(4).any(|w| w == [0xFF, 0xFF, 0xFD, 0xFD]),
@@ -475,7 +475,7 @@ mod tests {
 
     #[test]
     fn status_response_dispatch() {
-        let frame = encode(0x05, INSTR_STATUS, &[0x00, 0xAA, 0xBB]);
+        let frame = encode(0x05, Instruction::Status, &[0x00, 0xAA, 0xBB]);
         let mut dec: Decoder<32, Crc> = Decoder::new();
         let (step, _) = dec.feed(&frame);
         match step {
@@ -490,7 +490,7 @@ mod tests {
 
     #[test]
     fn factory_reset_dispatch() {
-        let frame = encode(0x06, INSTR_FACTORY_RESET, &[0xFF]);
+        let frame = encode(0x06, Instruction::FactoryReset, &[0xFF]);
         let mut dec: Decoder<32, Crc> = Decoder::new();
         let (step, _) = dec.feed(&frame);
         match step {
@@ -501,13 +501,13 @@ mod tests {
 
     #[test]
     fn action_and_reboot() {
-        for (instr, name) in [(INSTR_ACTION, "Action"), (INSTR_REBOOT, "Reboot")] {
+        for (instr, name) in [(Instruction::Action, "Action"), (Instruction::Reboot, "Reboot")] {
             let frame = encode(0x08, instr, &[]);
             let mut dec: Decoder<32, Crc> = Decoder::new();
             let (step, _) = dec.feed(&frame);
             match step {
-                Step::Packet(Packet::Action(_)) if instr == INSTR_ACTION => {}
-                Step::Packet(Packet::Reboot(_)) if instr == INSTR_REBOOT => {}
+                Step::Packet(Packet::Action(_)) if instr == Instruction::Action => {}
+                Step::Packet(Packet::Reboot(_)) if instr == Instruction::Reboot => {}
                 other => panic!("expected {name}, got {other:?}"),
             }
         }
@@ -517,7 +517,7 @@ mod tests {
     fn sync_read_dispatch() {
         let frame = encode(
             0xFE,
-            INSTR_SYNC_READ,
+            Instruction::SyncRead,
             &[0x84, 0x00, 0x04, 0x00, 0x01, 0x02, 0x03],
         );
         let mut dec: Decoder<64, Crc> = Decoder::new();
@@ -536,7 +536,7 @@ mod tests {
     fn sync_write_entries() {
         // addr=0x0080, length=2 → each entry is id(1) + 2 data bytes.
         let payload = [0x80, 0x00, 0x02, 0x00, 0x01, 0xAA, 0xBB, 0x02, 0xCC, 0xDD];
-        let frame = encode(0xFE, INSTR_SYNC_WRITE, &payload);
+        let frame = encode(0xFE, Instruction::SyncWrite, &payload);
         let mut dec: Decoder<64, Crc> = Decoder::new();
         let (step, _) = dec.feed(&frame);
         match step {
@@ -556,7 +556,7 @@ mod tests {
     fn bulk_read_dispatch() {
         // Two entries of (id, addr_le, len_le) = 5 bytes each.
         let payload = [0x01, 0x84, 0x00, 0x04, 0x00, 0x02, 0x90, 0x00, 0x02, 0x00];
-        let frame = encode(0xFE, INSTR_BULK_READ, &payload);
+        let frame = encode(0xFE, Instruction::BulkRead, &payload);
         let mut dec: Decoder<64, Crc> = Decoder::new();
         let (step, _) = dec.feed(&frame);
         match step {
@@ -579,7 +579,7 @@ mod tests {
         let payload = [
             0x01, 0x84, 0x00, 0x02, 0x00, 0xAA, 0xBB, 0x02, 0x90, 0x00, 0x01, 0x00, 0xCC,
         ];
-        let frame = encode(0xFE, INSTR_BULK_WRITE, &payload);
+        let frame = encode(0xFE, Instruction::BulkWrite, &payload);
         let mut dec: Decoder<64, Crc> = Decoder::new();
         let (step, _) = dec.feed(&frame);
         match step {
@@ -601,7 +601,7 @@ mod tests {
     fn fast_sync_read_dispatch() {
         let frame = encode(
             0xFE,
-            INSTR_FAST_SYNC_READ,
+            Instruction::FastSyncRead,
             &[0x84, 0x00, 0x04, 0x00, 0x01, 0x02],
         );
         let mut dec: Decoder<64, Crc> = Decoder::new();
@@ -619,7 +619,7 @@ mod tests {
     #[test]
     fn fast_bulk_read_dispatch() {
         let payload = [0x01, 0x84, 0x00, 0x04, 0x00, 0x02, 0x90, 0x00, 0x02, 0x00];
-        let frame = encode(0xFE, INSTR_FAST_BULK_READ, &payload);
+        let frame = encode(0xFE, Instruction::FastBulkRead, &payload);
         let mut dec: Decoder<64, Crc> = Decoder::new();
         let (step, _) = dec.feed(&frame);
         match step {
@@ -634,12 +634,12 @@ mod tests {
 
     #[test]
     fn raw_for_unknown_instruction() {
-        let frame = encode(0x09, 0x7F, &[0xDE, 0xAD]);
+        let frame = encode(0x09, Instruction::Ext(0x7F), &[0xDE, 0xAD]);
         let mut dec: Decoder<32, Crc> = Decoder::new();
         let (step, _) = dec.feed(&frame);
         match step {
             Step::Packet(Packet::Raw(r)) => {
-                assert_eq!(r.header.header.instruction, 0x7F);
+                assert_eq!(r.header.header.instruction.kind(), Instruction::Ext(0x7F));
                 assert_eq!(r.params, &[0xDE, 0xAD]);
             }
             other => panic!("expected Raw, got {other:?}"),
@@ -648,7 +648,7 @@ mod tests {
 
     #[test]
     fn bad_crc_resyncs() {
-        let mut frame = encode(0x01, INSTR_PING, &[]);
+        let mut frame = encode(0x01, Instruction::Ping, &[]);
         // Corrupt the last CRC byte.
         let last = frame.len() - 1;
         frame[last] ^= 0xFF;
@@ -657,7 +657,7 @@ mod tests {
         assert_eq!(n, frame.len());
         assert!(matches!(step, Step::Resync(ResyncKind::BadCrc)));
         // After Resync the decoder is reset and a follow-up valid frame parses.
-        let good = encode(0x02, INSTR_PING, &[]);
+        let good = encode(0x02, Instruction::Ping, &[]);
         let (step2, _) = dec.feed(&good);
         assert!(matches!(step2, Step::Packet(Packet::Ping(p)) if p.header.id == 0x02));
     }
@@ -676,7 +676,7 @@ mod tests {
     fn overflow_resyncs_when_frame_exceeds_buffer() {
         // length = 100; M=16 — way too small.
         let len = 100u16.to_le_bytes();
-        let bytes = [0xFF, 0xFF, 0xFD, 0x00, 0x01, len[0], len[1], INSTR_PING];
+        let bytes = [0xFF, 0xFF, 0xFD, 0x00, 0x01, len[0], len[1], Instruction::Ping.as_u8()];
         let mut dec: Decoder<16, Crc> = Decoder::new();
         let (step, n) = dec.feed(&bytes);
         assert_eq!(n, 7);
@@ -687,7 +687,7 @@ mod tests {
     fn payload_overflow_resyncs() {
         // A real frame whose unstuffed length exceeds M's logical room.
         // M=12 covers 8 header + 4 params; encode a 5-byte param.
-        let frame = encode(0x01, INSTR_WRITE, &[0x84, 0x00, 0xAA, 0xBB, 0xCC]);
+        let frame = encode(0x01, Instruction::Write, &[0x84, 0x00, 0xAA, 0xBB, 0xCC]);
         let mut dec: Decoder<12, Crc> = Decoder::new();
         let (step, _) = dec.feed(&frame);
         assert!(matches!(step, Step::Resync(ResyncKind::Overflow)));
@@ -695,8 +695,8 @@ mod tests {
 
     #[test]
     fn back_to_back_frames_across_feeds() {
-        let f1 = encode(0x01, INSTR_PING, &[]);
-        let f2 = encode(0x02, INSTR_PING, &[]);
+        let f1 = encode(0x01, Instruction::Ping, &[]);
+        let f2 = encode(0x02, Instruction::Ping, &[]);
         let mut cat: Vec<u8, 64> = Vec::new();
         cat.extend_from_slice(&f1).unwrap();
         cat.extend_from_slice(&f2).unwrap();
@@ -719,7 +719,7 @@ mod tests {
         let mut bytes: Vec<u8, 64> = Vec::new();
         bytes.extend_from_slice(&[0xFF, 0xFF]).unwrap();
         bytes
-            .extend_from_slice(&encode(0x01, INSTR_PING, &[]))
+            .extend_from_slice(&encode(0x01, Instruction::Ping, &[]))
             .unwrap();
         let mut dec: Decoder<32, Crc> = Decoder::new();
         let (step, _) = dec.feed(&bytes);
@@ -733,7 +733,7 @@ mod tests {
             .extend_from_slice(&[0x00, 0x12, 0xFF, 0x34, 0xFF, 0xFD])
             .unwrap();
         bytes
-            .extend_from_slice(&encode(0x09, INSTR_PING, &[]))
+            .extend_from_slice(&encode(0x09, Instruction::Ping, &[]))
             .unwrap();
         let mut dec: Decoder<32, Crc> = Decoder::new();
         let (step, _) = dec.feed(&bytes);
@@ -742,7 +742,7 @@ mod tests {
 
     #[test]
     fn reset_clears_in_progress_state() {
-        let frame = encode(0x01, INSTR_PING, &[]);
+        let frame = encode(0x01, Instruction::Ping, &[]);
         let mut dec: Decoder<32, Crc> = Decoder::new();
         // Feed only half the frame.
         let half = frame.len() / 2;
@@ -758,7 +758,7 @@ mod tests {
     #[test]
     fn status_interpret_ping_response() {
         // Slave's reply to PING: error=0, model=0x0203, fw_version=0x10.
-        let frame = encode(0x01, INSTR_STATUS, &[0x00, 0x03, 0x02, 0x10]);
+        let frame = encode(0x01, Instruction::Status, &[0x00, 0x03, 0x02, 0x10]);
         let mut dec: Decoder<32, Crc> = Decoder::new();
         let (step, _) = dec.feed(&frame);
         match step {

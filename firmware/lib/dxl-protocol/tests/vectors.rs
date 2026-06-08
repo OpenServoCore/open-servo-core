@@ -529,7 +529,7 @@ fn unknown_instruction_routes_to_raw() {
     match feed_full(&mut dec, &frame) {
         overlay::Packet::Raw(r) => {
             assert_eq!(r.header.header.id, 1);
-            assert_eq!(r.header.header.instruction, 0x77);
+            assert_eq!(r.header.header.instruction.kind(), Instruction::Ext(0x77));
             assert_eq!(r.params, &[] as &[u8]);
         }
         other => panic!("expected Raw, got {other:?}"),

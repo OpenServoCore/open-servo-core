@@ -1,7 +1,7 @@
 use crate::wire::{BROADCAST_ID, CrcUmts, RawFrame, WriteBuf, WriteError, write_raw};
 
 use super::ext::InstructionExt;
-use super::instruction::Instruction;
+use crate::instruction::Instruction;
 use super::packet::Packet;
 
 /// Wire-frame escape hatch for [`InstructionExt`] / [`StatusExt`](super::ext::StatusExt)

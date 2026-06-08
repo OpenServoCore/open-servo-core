@@ -3,7 +3,7 @@
 //! preceding request instruction into a typed [`Status`].
 
 use super::ext::StatusExt;
-use super::instruction::Instruction;
+use crate::instruction::Instruction;
 use super::packet::RawStatus;
 use super::packet_decoder::DecodeError;
 use super::status::{

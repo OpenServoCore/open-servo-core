@@ -5,6 +5,8 @@
 
 #![allow(dead_code)]
 
+use crate::instruction::InstructionByte;
+
 /// Byte-aligned little-endian u16. Two `u8` fields keep alignment at 1 so
 /// every overlay struct that contains one stays alignment-1 and casts
 /// soundly from any byte offset.
@@ -41,7 +43,7 @@ pub struct Header {
     pub sync: [u8; 4],
     pub id: u8,
     pub len: U16Le,
-    pub instruction: u8,
+    pub instruction: InstructionByte,
 }
 
 #[repr(C)]
@@ -816,7 +818,7 @@ pub enum Packet<'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::instruction::*;
+    use crate::instruction::Instruction;
     use core::mem::{align_of, offset_of, size_of};
 
     // ─── alignment: every overlay struct must be align 1 so the decoder
@@ -956,7 +958,7 @@ mod tests {
             0xFF, 0xFF, 0xFD, 0x00, // sync
             0x07, // id
             0x07, 0x00,       // len = 7
-            INSTR_READ, // instruction
+            Instruction::Read.as_u8(), // instruction
             0x84, 0x00, // addr = 0x0084
             0x04, 0x00, // length = 4
         ];
@@ -964,7 +966,7 @@ mod tests {
         assert_eq!(p.header.sync, [0xFF, 0xFF, 0xFD, 0x00]);
         assert_eq!(p.header.id, 0x07);
         assert_eq!(p.header.len.get(), 7);
-        assert_eq!(p.header.instruction, INSTR_READ);
+        assert_eq!(p.header.instruction.kind(), Instruction::Read);
         assert_eq!(p.addr.get(), 0x0084);
         assert_eq!(p.length.get(), 4);
     }
@@ -1007,7 +1009,7 @@ mod tests {
             0xFE,
             0x0C,
             0x00,
-            INSTR_SYNC_WRITE,
+            Instruction::SyncWrite.as_u8(),
             0x50,
             0x00,
             0x03,
@@ -1042,7 +1044,7 @@ mod tests {
             0xFE,
             0x0C,
             0x00,
-            INSTR_SYNC_WRITE,
+            Instruction::SyncWrite.as_u8(),
             0x50,
             0x00,
             0x03,
@@ -1076,7 +1078,7 @@ mod tests {
             0xFE,
             0x11,
             0x00,
-            INSTR_BULK_WRITE, //
+            Instruction::BulkWrite.as_u8(), //
             1,
             0x50,
             0x00,
@@ -1118,7 +1120,7 @@ mod tests {
             0xFE,
             0x07,
             0x00,
-            INSTR_BULK_WRITE, //
+            Instruction::BulkWrite.as_u8(), //
             3,
             0x00,
             0x01,
@@ -1213,7 +1215,7 @@ mod tests {
             0x01,
             0x06,
             0x00,
-            INSTR_STATUS,
+            Instruction::Status.as_u8(),
             0x00, //
             0xFC,
             0x03,
@@ -1242,7 +1244,7 @@ mod tests {
             0x01,
             0x04,
             0x00,
-            INSTR_STATUS,
+            Instruction::Status.as_u8(),
             0x00,
             0xFC,
         ];
@@ -1260,7 +1262,7 @@ mod tests {
             0x01,
             0x07,
             0x00,
-            INSTR_STATUS,
+            Instruction::Status.as_u8(),
             0x00, //
             0x01,
             0x02,
@@ -1286,7 +1288,7 @@ mod tests {
 
     #[test]
     fn interpret_write_family_is_empty() {
-        let buf: [u8; 9] = [0xFF, 0xFF, 0xFD, 0x00, 0x01, 0x04, 0x00, INSTR_STATUS, 0x00];
+        let buf: [u8; 9] = [0xFF, 0xFF, 0xFD, 0x00, 0x01, 0x04, 0x00, Instruction::Status.as_u8(), 0x00];
         let s = make_status(&buf);
         for req in [
             RequestKind::Write,
@@ -1314,7 +1316,7 @@ mod tests {
             0x01,
             0x08,
             0x00,
-            INSTR_STATUS,
+            Instruction::Status.as_u8(),
             0x07, //
             10,
             0xAA,
@@ -1379,7 +1381,7 @@ mod tests {
     fn sync_read_find_slot_locates_id_and_offset() {
         // length=4, ids=[1,2,3]
         let buf: [u8; 12 + 3] = [
-            0xFF, 0xFF, 0xFD, 0x00, 0xFE, 0x09, 0x00, INSTR_SYNC_READ, //
+            0xFF, 0xFF, 0xFD, 0x00, 0xFE, 0x09, 0x00, Instruction::SyncRead.as_u8(), //
             0x50, 0x00, 0x04, 0x00, //
             1, 2, 3,
         ];
@@ -1394,7 +1396,7 @@ mod tests {
     #[test]
     fn bulk_read_find_slot_carries_per_entry_addr_and_length() {
         let buf: [u8; 8 + 10] = [
-            0xFF, 0xFF, 0xFD, 0x00, 0xFE, 0x0D, 0x00, INSTR_BULK_READ, //
+            0xFF, 0xFF, 0xFD, 0x00, 0xFE, 0x0D, 0x00, Instruction::BulkRead.as_u8(), //
             1, 0x10, 0x00, 0x04, 0x00, // id=1 addr=0x0010 len=4
             2, 0x20, 0x00, 0x08, 0x00, // id=2 addr=0x0020 len=8
         ];
@@ -1417,7 +1419,7 @@ mod tests {
     fn fast_sync_find_slot_populates_packet_length_and_offset() {
         // length=2, ids=[9,7,0]
         let buf: [u8; 12 + 3] = [
-            0xFF, 0xFF, 0xFD, 0x00, 0xFE, 0x09, 0x00, INSTR_FAST_SYNC_READ, //
+            0xFF, 0xFF, 0xFD, 0x00, 0xFE, 0x09, 0x00, Instruction::FastSyncRead.as_u8(), //
             0x10, 0x00, 0x02, 0x00, //
             9, 7, 0,
         ];
@@ -1436,7 +1438,7 @@ mod tests {
     fn fast_bulk_find_slot_handles_varying_lengths() {
         // entries: (1,0,4), (2,0,8), (3,0,2)
         let buf: [u8; 8 + 15] = [
-            0xFF, 0xFF, 0xFD, 0x00, 0xFE, 0x12, 0x00, INSTR_FAST_BULK_READ, //
+            0xFF, 0xFF, 0xFD, 0x00, 0xFE, 0x12, 0x00, Instruction::FastBulkRead.as_u8(), //
             1, 0, 0, 4, 0, //
             2, 0, 0, 8, 0, //
             3, 0, 0, 2, 0,
@@ -1470,7 +1472,7 @@ mod tests {
     #[test]
     fn sync_write_find_entry_returns_target() {
         let buf: [u8; 12 + 8] = [
-            0xFF, 0xFF, 0xFD, 0x00, 0xFE, 0x0C, 0x00, INSTR_SYNC_WRITE, //
+            0xFF, 0xFF, 0xFD, 0x00, 0xFE, 0x0C, 0x00, Instruction::SyncWrite.as_u8(), //
             0x50, 0x00, 0x03, 0x00, //
             1, 10, 11, 12, //
             2, 20, 21, 22,
@@ -1485,7 +1487,7 @@ mod tests {
     #[test]
     fn bulk_write_find_entry_returns_target_with_addr() {
         let buf: [u8; 8 + 17] = [
-            0xFF, 0xFF, 0xFD, 0x00, 0xFE, 0x11, 0x00, INSTR_BULK_WRITE, //
+            0xFF, 0xFF, 0xFD, 0x00, 0xFE, 0x11, 0x00, Instruction::BulkWrite.as_u8(), //
             1, 0x50, 0x00, 0x03, 0x00, 0xAA, 0xBB, 0xCC, //
             2, 0x54, 0x02, 0x04, 0x00, 0x10, 0x20, 0x30, 0x40,
         ];
@@ -1506,7 +1508,7 @@ mod tests {
             0x01,
             0x08,
             0x00,
-            INSTR_STATUS,
+            Instruction::Status.as_u8(),
             0x07, //
             10,
             0xAA,

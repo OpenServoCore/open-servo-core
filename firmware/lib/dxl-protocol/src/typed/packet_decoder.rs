@@ -1,7 +1,7 @@
 use crate::wire::Bytes;
 
 use super::ext::InstructionExt;
-use super::instruction::Instruction;
+use crate::instruction::Instruction;
 use super::packet::{
     ActionPacket, BulkReadPacket, BulkWritePacket, ClearPacket, ControlTableBackupPacket,
     FactoryResetPacket, FastBulkReadPacket, FastSyncReadPacket, Packet, PingPacket, RawStatus,

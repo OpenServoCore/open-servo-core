@@ -5,7 +5,6 @@
 mod bulk;
 mod ext;
 mod fast;
-mod instruction;
 mod packet;
 mod packet_decoder;
 mod packet_encoder;
@@ -18,9 +17,9 @@ pub use bulk::{
     BulkEntry, BulkReadSlotIter, BulkSlotInfo, BulkWriteEntry, BulkWriteSlotIter, SyncSlotInfo,
     SyncWriteEntry, SyncWriteSlotIter,
 };
+pub use crate::instruction::Instruction;
 pub use ext::{InstructionExt, NoInstructionExt, NoStatusExt, StatusExt};
 pub use fast::{FastReadPacket, FastReadVariant, FastSlotInfo, SlotPosition};
-pub use instruction::Instruction;
 pub use packet::{
     ActionPacket, BulkReadPacket, BulkWritePacket, ClearPacket, ControlTableBackupPacket,
     FactoryResetPacket, FastBulkReadPacket, FastSyncReadPacket, Packet, PingPacket, RawStatus,

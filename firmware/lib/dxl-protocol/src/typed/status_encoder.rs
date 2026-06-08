@@ -2,7 +2,7 @@ use crate::wire::{BROADCAST_ID, CrcUmts, HEADER, RawFrame, WriteBuf, WriteError,
 
 use super::ext::StatusExt;
 use super::fast::SlotPosition;
-use super::instruction::Instruction;
+use crate::instruction::Instruction;
 use super::status::{
     ActionStatus, BulkReadStatus, ErrorStatus, PingStatus, ReadStatus, RebootStatus,
     RegWriteStatus, Slot, Status, SyncReadStatus, WriteStatus,

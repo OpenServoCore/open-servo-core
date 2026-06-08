@@ -94,7 +94,7 @@ fn decode_calibrate(id: u8, params: Bytes<'_>) -> Result<OscVariant, DecodeError
 /// the raw byte slice. Returns `None` for instruction bytes we don't own.
 pub fn decode_raw(raw: &RawPacket<'_>) -> Option<OscVariant> {
     let id = raw.header.header.id;
-    match raw.header.header.instruction {
+    match raw.header.header.instruction.as_byte() {
         CALIBRATE_INSTRUCTION => {
             if raw.params.len() < 2 {
                 return None;
