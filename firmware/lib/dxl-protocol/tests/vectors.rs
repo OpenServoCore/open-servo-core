@@ -22,8 +22,8 @@ fn write_legacy_slot<W: WriteBuf>(
     write_slot::<W, Crc>(out, s, pos)
 }
 
-fn feed_full<'a, const M: usize>(dec: &'a mut Decoder<M>, wire: &[u8]) -> overlay::Packet<'a> {
-    let (step, n) = dec.feed::<Crc>(wire);
+fn feed_full<'a, const M: usize>(dec: &'a mut Decoder<M, Crc>, wire: &[u8]) -> overlay::Packet<'a> {
+    let (step, n) = dec.feed(wire);
     assert_eq!(n, wire.len(), "decoder didn't consume the full frame");
     match step {
         Step::Packet(p) => p,
@@ -233,7 +233,7 @@ fn write_slot_error_emits_caller_supplied_payload_with_error_byte() {
 
 #[test]
 fn parse_ping() {
-    let mut dec: Decoder<32> = Decoder::new();
+    let mut dec: Decoder<32, Crc> = Decoder::new();
     match feed_full(&mut dec, PING_ID1) {
         overlay::Packet::Ping(p) => assert_eq!(p.header.id, 1),
         other => panic!("not Ping: {other:?}"),
@@ -250,21 +250,21 @@ fn parse_byte_at_a_time_matches_one_shot() {
         WRITE_ID1_GOAL512,
         REBOOT_ID1,
     ] {
-        let mut one_shot_dec: Decoder<64> = Decoder::new();
+        let mut one_shot_dec: Decoder<64, Crc> = Decoder::new();
         let one_shot = feed_full(&mut one_shot_dec, frame);
         let one_shot_disc = core::mem::discriminant(&one_shot);
 
-        let mut dec: Decoder<64> = Decoder::new();
+        let mut dec: Decoder<64, Crc> = Decoder::new();
         let last = frame.len() - 1;
         for (i, &b) in frame.iter().enumerate().take(last) {
-            let (step, n) = dec.feed::<Crc>(&[b]);
+            let (step, n) = dec.feed(&[b]);
             assert_eq!(n, 1);
             assert!(
                 matches!(step, Step::NeedMore),
                 "frame {frame:02X?} byte {i}: {step:?}"
             );
         }
-        let (step, n) = dec.feed::<Crc>(&[frame[last]]);
+        let (step, n) = dec.feed(&[frame[last]]);
         assert_eq!(n, 1);
         match step {
             Step::Packet(p) => {
@@ -286,7 +286,7 @@ fn parse_garbage_then_frame_recovers_frame() {
     combined.extend_from_slice(&prefix).unwrap();
     combined.extend_from_slice(PING_ID1).unwrap();
 
-    let mut dec: Decoder<32> = Decoder::new();
+    let mut dec: Decoder<32, Crc> = Decoder::new();
     match feed_full(&mut dec, &combined) {
         overlay::Packet::Ping(p) => assert_eq!(p.header.id, 1),
         other => panic!("expected Ping, got {other:?}"),
@@ -295,7 +295,7 @@ fn parse_garbage_then_frame_recovers_frame() {
 
 #[test]
 fn parse_read() {
-    let mut dec: Decoder<32> = Decoder::new();
+    let mut dec: Decoder<32, Crc> = Decoder::new();
     match feed_full(&mut dec, READ_ID1_ADDR132_LEN4) {
         overlay::Packet::Read(p) => {
             assert_eq!(p.header.id, 1);
@@ -308,7 +308,7 @@ fn parse_read() {
 
 #[test]
 fn parse_write() {
-    let mut dec: Decoder<32> = Decoder::new();
+    let mut dec: Decoder<32, Crc> = Decoder::new();
     match feed_full(&mut dec, WRITE_ID1_GOAL512) {
         overlay::Packet::Write(p) => {
             assert_eq!(p.header.header.id, 1);
@@ -321,7 +321,7 @@ fn parse_write() {
 
 #[test]
 fn parse_reboot() {
-    let mut dec: Decoder<32> = Decoder::new();
+    let mut dec: Decoder<32, Crc> = Decoder::new();
     assert!(matches!(
         feed_full(&mut dec, REBOOT_ID1),
         overlay::Packet::Reboot(p) if p.header.id == 1
@@ -387,7 +387,7 @@ fn write_status_round_trip() {
     )
     .unwrap();
 
-    let mut dec: Decoder<64> = Decoder::new();
+    let mut dec: Decoder<64, Crc> = Decoder::new();
     match feed_full(&mut dec, &out) {
         overlay::Packet::Status(p) => {
             assert_eq!(p.header.header.id, 1);
@@ -415,7 +415,7 @@ fn stuffing_round_trip() {
     let fds = out.iter().filter(|&&b| b == 0xFD).count();
     assert!(fds >= 4, "expected stuffed bytes: {:02X?}", out);
 
-    let mut dec: Decoder<64> = Decoder::new();
+    let mut dec: Decoder<64, Crc> = Decoder::new();
     match feed_full(&mut dec, &out) {
         overlay::Packet::Write(p) => {
             assert_eq!(p.header.header.id, 1);
@@ -439,7 +439,7 @@ fn stuffing_at_field_boundary() {
         }),
     )
     .unwrap();
-    let mut dec: Decoder<64> = Decoder::new();
+    let mut dec: Decoder<64, Crc> = Decoder::new();
     match feed_full(&mut dec, &out) {
         overlay::Packet::Write(p) => {
             assert_eq!(p.header.addr.get(), 0xFFFF);
@@ -453,8 +453,8 @@ fn stuffing_at_field_boundary() {
 fn incomplete_yields_needmore() {
     for n in [4usize, 6, 7] {
         let partial = &PING_ID1[..n];
-        let mut dec: Decoder<32> = Decoder::new();
-        let (step, consumed) = dec.feed::<Crc>(partial);
+        let mut dec: Decoder<32, Crc> = Decoder::new();
+        let (step, consumed) = dec.feed(partial);
         assert_eq!(consumed, n);
         assert!(
             matches!(step, Step::NeedMore),
@@ -469,8 +469,8 @@ fn bad_crc_resyncs() {
     bad.extend_from_slice(PING_ID1).unwrap();
     let last = bad.len() - 1;
     bad[last] ^= 0xFF;
-    let mut dec: Decoder<32> = Decoder::new();
-    let (step, _) = dec.feed::<Crc>(&bad);
+    let mut dec: Decoder<32, Crc> = Decoder::new();
+    let (step, _) = dec.feed(&bad);
     assert!(matches!(step, Step::Resync(ResyncKind::BadCrc)));
 }
 
@@ -479,8 +479,8 @@ fn oversized_length_is_rejected() {
     // length 0xFFFF > PACKET_LEN_GUARD.
     let bad = [0xFFu8, 0xFF, 0xFD, 0x00, 0x01, 0xFF, 0xFF, 0x01];
     assert!((PACKET_LEN_GUARD as u32) < 0xFFFF);
-    let mut dec: Decoder<32> = Decoder::new();
-    let (step, n) = dec.feed::<Crc>(&bad);
+    let mut dec: Decoder<32, Crc> = Decoder::new();
+    let (step, n) = dec.feed(&bad);
     assert_eq!(n, 7);
     assert!(matches!(step, Step::Resync(ResyncKind::BadLength)));
 }
@@ -489,8 +489,8 @@ fn oversized_length_is_rejected() {
 fn undersized_length_is_rejected() {
     // length 2 < min 3 (instruction + crc).
     let bad = [0xFFu8, 0xFF, 0xFD, 0x00, 0x01, 0x02, 0x00, 0x01];
-    let mut dec: Decoder<32> = Decoder::new();
-    let (step, n) = dec.feed::<Crc>(&bad);
+    let mut dec: Decoder<32, Crc> = Decoder::new();
+    let (step, n) = dec.feed(&bad);
     assert_eq!(n, 7);
     assert!(matches!(step, Step::Resync(ResyncKind::BadLength)));
 }
@@ -505,12 +505,12 @@ fn false_header_with_huge_length_does_not_wedge() {
         .unwrap();
     buf.extend_from_slice(PING_ID1).unwrap();
 
-    let mut dec: Decoder<64> = Decoder::new();
-    let (step, n) = dec.feed::<Crc>(&buf);
+    let mut dec: Decoder<64, Crc> = Decoder::new();
+    let (step, n) = dec.feed(&buf);
     assert!(matches!(step, Step::Resync(ResyncKind::BadLength)));
     assert!(n < buf.len());
 
-    let (step2, n2) = dec.feed::<Crc>(&buf[n..]);
+    let (step2, n2) = dec.feed(&buf[n..]);
     assert!(matches!(step2, Step::Packet(overlay::Packet::Ping(p)) if p.header.id == 1));
     assert!(n2 <= buf.len() - n);
 }
@@ -525,7 +525,7 @@ fn unknown_instruction_routes_to_raw() {
         .unwrap();
     let crc = SoftwareCrcUmts::accumulate(0, &frame);
     frame.extend_from_slice(&crc.to_le_bytes()).unwrap();
-    let mut dec: Decoder<32> = Decoder::new();
+    let mut dec: Decoder<32, Crc> = Decoder::new();
     match feed_full(&mut dec, &frame) {
         overlay::Packet::Raw(r) => {
             assert_eq!(r.header.header.id, 1);
@@ -564,7 +564,7 @@ fn write_with_data(data: &[u8]) -> Vec<u8, 256> {
 }
 
 fn assert_write_decodes_to(wire: &[u8], expected_data: &[u8]) {
-    let mut dec: Decoder<256> = Decoder::new();
+    let mut dec: Decoder<256, Crc> = Decoder::new();
     match feed_full(&mut dec, wire) {
         overlay::Packet::Write(p) => {
             assert_eq!(p.header.addr.get(), 0x0010);
@@ -643,7 +643,7 @@ fn stuff_trigger_spanning_address_boundary() {
         }),
     )
     .unwrap();
-    let mut dec: Decoder<64> = Decoder::new();
+    let mut dec: Decoder<64, Crc> = Decoder::new();
     match feed_full(&mut dec, &out) {
         overlay::Packet::Write(p) => {
             assert_eq!(p.header.addr.get(), 0xFFFF);
@@ -666,7 +666,7 @@ fn stuff_trigger_spanning_address_then_more_in_data() {
         }),
     )
     .unwrap();
-    let mut dec: Decoder<64> = Decoder::new();
+    let mut dec: Decoder<64, Crc> = Decoder::new();
     match feed_full(&mut dec, &out) {
         overlay::Packet::Write(p) => assert_eq!(p.data, &data),
         other => panic!("not Write: {other:?}"),
@@ -685,7 +685,7 @@ fn stuff_empty_payload() {
         }),
     )
     .unwrap();
-    let mut dec: Decoder<32> = Decoder::new();
+    let mut dec: Decoder<32, Crc> = Decoder::new();
     match feed_full(&mut dec, &out) {
         overlay::Packet::Write(p) => assert_eq!(p.data, &[] as &[u8]),
         other => panic!("not Write: {other:?}"),
@@ -705,7 +705,7 @@ fn stuff_status_with_trigger_in_params() {
         }),
     )
     .unwrap();
-    let mut dec: Decoder<64> = Decoder::new();
+    let mut dec: Decoder<64, Crc> = Decoder::new();
     match feed_full(&mut dec, &out) {
         overlay::Packet::Status(p) => {
             assert_eq!(p.error(), 0);
@@ -732,7 +732,7 @@ fn stuff_long_payload_with_many_triggers() {
         }),
     )
     .unwrap();
-    let mut dec: Decoder<128> = Decoder::new();
+    let mut dec: Decoder<128, Crc> = Decoder::new();
     match feed_full(&mut dec, &out) {
         overlay::Packet::Write(p) => assert_eq!(p.data, &data[..]),
         other => panic!("not Write: {other:?}"),

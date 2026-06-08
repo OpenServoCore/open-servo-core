@@ -1,3 +1,4 @@
+use dxl_protocol::CrcUmts;
 use dxl_protocol::decoder::{Decoder, Step};
 use dxl_protocol::packet::Packet;
 
@@ -11,12 +12,12 @@ use super::dispatcher::Dispatcher;
 /// payload + a margin); decoupled from any chip RX-ring size.
 const DXL_DECODER_CAP: usize = 256;
 
-pub struct Dxl {
+pub struct Dxl<C: CrcUmts> {
     staged: StagedWrites,
-    decoder: Decoder<DXL_DECODER_CAP>,
+    decoder: Decoder<DXL_DECODER_CAP, C>,
 }
 
-impl Dxl {
+impl<C: CrcUmts> Dxl<C> {
     pub const fn new() -> Self {
         Self {
             staged: StagedWrites::new(),
@@ -24,11 +25,15 @@ impl Dxl {
         }
     }
 
-    pub fn poll<I: ServicesIo>(&mut self, shared: &Shared, io: &mut I) {
+    pub fn poll<I>(&mut self, shared: &Shared, io: &mut I)
+    where
+        I: ServicesIo,
+        I::Bus: DxlBus<Crc = C>,
+    {
         let (bus, events) = io.parts();
         let got = match bus.rx_window() {
             None => return,
-            Some((head, tail)) => self.feed_window::<I::Bus>(head, tail),
+            Some((head, tail)) => self.feed_window(head, tail),
         };
         if !got {
             return;
@@ -43,16 +48,16 @@ impl Dxl {
         d.dispatch(pkt);
     }
 
-    fn feed_window<B: DxlBus>(&mut self, head: &[u8], tail: &[u8]) -> bool {
+    fn feed_window(&mut self, head: &[u8], tail: &[u8]) -> bool {
         self.decoder.reset();
         if !head.is_empty() {
-            let (step, _) = self.decoder.feed::<B::Crc>(head);
+            let (step, _) = self.decoder.feed(head);
             if matches!(step, Step::Packet(_)) {
                 return true;
             }
         }
         if !tail.is_empty() {
-            let (step, _) = self.decoder.feed::<B::Crc>(tail);
+            let (step, _) = self.decoder.feed(tail);
             if matches!(step, Step::Packet(_)) {
                 return true;
             }
@@ -61,7 +66,7 @@ impl Dxl {
     }
 }
 
-impl Default for Dxl {
+impl<C: CrcUmts> Default for Dxl<C> {
     fn default() -> Self {
         Self::new()
     }

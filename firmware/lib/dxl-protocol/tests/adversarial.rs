@@ -50,7 +50,7 @@ impl Rng {
 /// consumes at least one byte) and termination.
 fn drain_stream(bytes: &[u8], chunk_size: usize) -> usize {
     assert!(chunk_size >= 1);
-    let mut dec: Decoder<2048> = Decoder::new();
+    let mut dec: Decoder<2048, Crc> = Decoder::new();
     let mut idx = 0usize;
     let mut accepts = 0usize;
     let mut iter = 0usize;
@@ -65,7 +65,7 @@ fn drain_stream(bytes: &[u8], chunk_size: usize) -> usize {
         );
         let end = (idx + chunk_size).min(bytes.len());
         let chunk = &bytes[idx..end];
-        let (step, n) = dec.feed::<Crc>(chunk);
+        let (step, n) = dec.feed(chunk);
         assert!(n >= 1, "feed must consume at least one byte from a non-empty chunk");
         assert!(n <= chunk.len(), "feed cannot consume past chunk end");
         idx += n;
@@ -229,16 +229,16 @@ fn real_frames_with_partial_corrupt_frames_recover_clean_ones() {
 fn truncated_real_frame_returns_needmore_at_each_step() {
     const PING: &[u8] = &[0xFF, 0xFF, 0xFD, 0x00, 0x01, 0x03, 0x00, 0x01, 0x19, 0x4E];
     for n in 0..PING.len() {
-        let mut dec: Decoder<32> = Decoder::new();
-        let (step, consumed) = dec.feed::<Crc>(&PING[..n]);
+        let mut dec: Decoder<32, Crc> = Decoder::new();
+        let (step, consumed) = dec.feed(&PING[..n]);
         assert_eq!(consumed, n);
         assert!(
             matches!(step, Step::NeedMore),
             "truncation to {n} bytes: got {step:?}"
         );
     }
-    let mut dec: Decoder<32> = Decoder::new();
-    let (step, consumed) = dec.feed::<Crc>(PING);
+    let mut dec: Decoder<32, Crc> = Decoder::new();
+    let (step, consumed) = dec.feed(PING);
     assert_eq!(consumed, PING.len());
     match step {
         Step::Packet(overlay::Packet::Ping(p)) => assert_eq!(p.header.id, 1),
@@ -263,14 +263,14 @@ fn header_byte_at_a_time() {
         .unwrap();
         v
     };
-    let mut dec: Decoder<64> = Decoder::new();
+    let mut dec: Decoder<64, Crc> = Decoder::new();
     let last = frame.len() - 1;
     for (i, &b) in frame.iter().enumerate().take(last) {
-        let (step, n) = dec.feed::<Crc>(&[b]);
+        let (step, n) = dec.feed(&[b]);
         assert_eq!(n, 1);
         assert!(matches!(step, Step::NeedMore), "byte {i}: {step:?}");
     }
-    let (step, n) = dec.feed::<Crc>(&[frame[last]]);
+    let (step, n) = dec.feed(&[frame[last]]);
     assert_eq!(n, 1);
     match step {
         Step::Packet(overlay::Packet::Read(p)) => {
@@ -315,8 +315,8 @@ fn over_maxlen_header_short_circuits() {
     // Length > PACKET_LEN_GUARD must trigger BadLength on the byte that
     // completes the length field — not wait for ~64 KB of payload.
     let bad = [0xFFu8, 0xFF, 0xFD, 0x00, 0x01, 0xFF, 0xFF, 0x01];
-    let mut dec: Decoder<32> = Decoder::new();
-    let (step, n) = dec.feed::<Crc>(&bad);
+    let mut dec: Decoder<32, Crc> = Decoder::new();
+    let (step, n) = dec.feed(&bad);
     assert_eq!(n, 7);
     assert!(matches!(step, Step::Resync(ResyncKind::BadLength)));
 }
@@ -363,8 +363,8 @@ fn writer_overflow_preserves_prior_frames() {
     assert_eq!(buf.len(), pre_len, "buffer length changed on overflow");
     assert_eq!(&buf[..], &snapshot[..], "prior frame corrupted on overflow");
 
-    let mut dec: Decoder<64> = Decoder::new();
-    let (step, n) = dec.feed::<Crc>(&buf);
+    let mut dec: Decoder<64, Crc> = Decoder::new();
+    let (step, n) = dec.feed(&buf);
     assert_eq!(n, buf.len());
     match step {
         Step::Packet(overlay::Packet::Ping(p)) => assert_eq!(p.header.id, 1),
@@ -389,8 +389,8 @@ fn pure_noise_followed_by_frame_recovers_frame() {
     // appended after surfaces as Step::Packet.
     let mut buf: Vec<u8> = vec![0xAA, 0xBB, 0xCC, 0xDD, 0xEE];
     buf.extend_from_slice(&write_ping(1));
-    let mut dec: Decoder<32> = Decoder::new();
-    let (step, n) = dec.feed::<Crc>(&buf);
+    let mut dec: Decoder<32, Crc> = Decoder::new();
+    let (step, n) = dec.feed(&buf);
     assert_eq!(n, buf.len());
     match step {
         Step::Packet(overlay::Packet::Ping(p)) => assert_eq!(p.header.id, 1),
@@ -401,8 +401,8 @@ fn pure_noise_followed_by_frame_recovers_frame() {
 #[test]
 fn partial_header_prefix_yields_needmore() {
     for partial in [&[0xFFu8][..], &[0xFF, 0xFF][..], &[0xFF, 0xFF, 0xFD][..]] {
-        let mut dec: Decoder<32> = Decoder::new();
-        let (step, n) = dec.feed::<Crc>(partial);
+        let mut dec: Decoder<32, Crc> = Decoder::new();
+        let (step, n) = dec.feed(partial);
         assert_eq!(n, partial.len());
         assert!(
             matches!(step, Step::NeedMore),
@@ -487,10 +487,10 @@ fn assert_bytes_eq(decoded: &[u8], legacy: Bytes<'_>) {
 }
 
 fn feed_full<'a, const M: usize>(
-    dec: &'a mut Decoder<M>,
+    dec: &'a mut Decoder<M, Crc>,
     wire: &[u8],
 ) -> overlay::Packet<'a> {
-    let (step, n) = dec.feed::<Crc>(wire);
+    let (step, n) = dec.feed(wire);
     assert_eq!(n, wire.len(), "decoder didn't consume the full frame");
     match step {
         Step::Packet(p) => p,
@@ -554,7 +554,7 @@ fn round_trip_every_instruction() {
     for case in cases {
         let mut wire: HVec<u8, 128> = HVec::new();
         write_legacy(&mut wire, case).unwrap();
-        let mut dec: Decoder<256> = Decoder::new();
+        let mut dec: Decoder<256, Crc> = Decoder::new();
         let decoded = feed_full(&mut dec, &wire);
         assert_overlay_matches(&decoded, case);
     }
@@ -648,7 +648,7 @@ fn round_trip_random_fields_across_variants() {
 
         let mut wire: HVec<u8, 256> = HVec::new();
         write_legacy(&mut wire, &pkt).expect("write");
-        let mut dec: Decoder<512> = Decoder::new();
+        let mut dec: Decoder<512, Crc> = Decoder::new();
         let decoded = feed_full(&mut dec, &wire);
         assert_overlay_matches(&decoded, &pkt);
     }
@@ -712,7 +712,7 @@ fn stuffing_round_trip_for_every_body_carrying_variant() {
             "{name}: expected stuffing on wire, got {wire_fds} 0xFD bytes for {logical_fds} logical"
         );
 
-        let mut dec: Decoder<128> = Decoder::new();
+        let mut dec: Decoder<128, Crc> = Decoder::new();
         let decoded = feed_full(&mut dec, &wire);
         let recovered: &[u8] = match decoded {
             overlay::Packet::Write(p) => p.data,

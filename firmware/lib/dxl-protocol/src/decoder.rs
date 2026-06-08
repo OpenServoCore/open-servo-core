@@ -13,6 +13,7 @@
 
 #![allow(dead_code)]
 
+use core::marker::PhantomData;
 use core::mem::{MaybeUninit, offset_of, size_of};
 
 use crate::instruction::*;
@@ -54,7 +55,7 @@ enum StepResult {
     Resync(ResyncKind),
 }
 
-pub struct Decoder<const M: usize> {
+pub struct Decoder<const M: usize, CRC: CrcUmts> {
     buf: [MaybeUninit<u8>; M],
     logical_n: u16,
     wire_n: u16,
@@ -64,9 +65,10 @@ pub struct Decoder<const M: usize> {
     received_crc: [u8; 2],
     unstuff_last3: [u8; 3],
     stage: Stage,
+    _crc: PhantomData<fn() -> CRC>,
 }
 
-impl<const M: usize> Decoder<M> {
+impl<const M: usize, CRC: CrcUmts> Decoder<M, CRC> {
     pub const fn new() -> Self {
         Self {
             buf: [MaybeUninit::<u8>::uninit(); M],
@@ -78,6 +80,7 @@ impl<const M: usize> Decoder<M> {
             received_crc: [0; 2],
             unstuff_last3: [0; 3],
             stage: Stage::Sync,
+            _crc: PhantomData,
         }
     }
 
@@ -92,14 +95,14 @@ impl<const M: usize> Decoder<M> {
         self.stage = Stage::Sync;
     }
 
-    pub fn feed<'s, CRC: CrcUmts>(&'s mut self, chunk: &[u8]) -> (Step<'s>, usize) {
+    pub fn feed<'s>(&'s mut self, chunk: &[u8]) -> (Step<'s>, usize) {
         if self.stage == Stage::Done {
             self.reset();
         }
         let mut consumed = 0;
         for &b in chunk {
             consumed += 1;
-            match self.step::<CRC>(b) {
+            match self.step(b) {
                 StepResult::Continue => {}
                 StepResult::PacketReady => return (Step::Packet(self.dispatch()), consumed),
                 StepResult::Resync(k) => return (Step::Resync(k), consumed),
@@ -131,17 +134,17 @@ impl<const M: usize> Decoder<M> {
         }
     }
 
-    fn step<CRC: CrcUmts>(&mut self, b: u8) -> StepResult {
+    fn step(&mut self, b: u8) -> StepResult {
         match self.stage {
-            Stage::Sync => self.step_sync::<CRC>(b),
-            Stage::Header => self.step_header::<CRC>(b),
-            Stage::Payload => self.step_payload::<CRC>(b),
+            Stage::Sync => self.step_sync(b),
+            Stage::Header => self.step_header(b),
+            Stage::Payload => self.step_payload(b),
             Stage::Crc => self.step_crc(b),
             Stage::Done => unreachable!(),
         }
     }
 
-    fn step_sync<CRC: CrcUmts>(&mut self, b: u8) -> StepResult {
+    fn step_sync(&mut self, b: u8) -> StepResult {
         // KMP-style backoff for HEADER = FF FF FD 00 (failure function:
         // f[1]=0, f[2]=1, f[3]=0). On mismatch, fall back to the longest
         // proper prefix of HEADER that's still a suffix of the bytes
@@ -177,7 +180,7 @@ impl<const M: usize> Decoder<M> {
         StepResult::Continue
     }
 
-    fn step_header<CRC: CrcUmts>(&mut self, b: u8) -> StepResult {
+    fn step_header(&mut self, b: u8) -> StepResult {
         let pos = self.wire_n as usize;
         self.write_byte(pos, b);
         self.crc_running = CRC::accumulate(self.crc_running, &[b]);
@@ -212,7 +215,7 @@ impl<const M: usize> Decoder<M> {
         StepResult::Continue
     }
 
-    fn step_payload<CRC: CrcUmts>(&mut self, b: u8) -> StepResult {
+    fn step_payload(&mut self, b: u8) -> StepResult {
         self.crc_running = CRC::accumulate(self.crc_running, &[b]);
         self.wire_n += 1;
 
@@ -342,7 +345,7 @@ impl<const M: usize> Decoder<M> {
     }
 }
 
-impl<const M: usize> Default for Decoder<M> {
+impl<const M: usize, CRC: CrcUmts> Default for Decoder<M, CRC> {
     fn default() -> Self {
         Self::new()
     }
@@ -374,8 +377,8 @@ mod tests {
     #[test]
     fn ping_single_chunk() {
         let frame = encode(0x01, INSTR_PING, &[]);
-        let mut dec: Decoder<32> = Decoder::new();
-        let (step, n) = dec.feed::<Crc>(&frame);
+        let mut dec: Decoder<32, Crc> = Decoder::new();
+        let (step, n) = dec.feed(&frame);
         assert_eq!(n, frame.len());
         match step {
             Step::Packet(Packet::Ping(p)) => {
@@ -391,17 +394,17 @@ mod tests {
     #[test]
     fn ping_byte_at_a_time() {
         let frame = encode(0x07, INSTR_PING, &[]);
-        let mut dec: Decoder<32> = Decoder::new();
+        let mut dec: Decoder<32, Crc> = Decoder::new();
         let last = frame.len() - 1;
         for (i, &b) in frame.iter().enumerate().take(last) {
-            let (step, n) = dec.feed::<Crc>(&[b]);
+            let (step, n) = dec.feed(&[b]);
             assert_eq!(n, 1);
             assert!(
                 matches!(step, Step::NeedMore),
                 "early termination at byte {i}"
             );
         }
-        let (step, n) = dec.feed::<Crc>(&[frame[last]]);
+        let (step, n) = dec.feed(&[frame[last]]);
         assert_eq!(n, 1);
         match step {
             Step::Packet(Packet::Ping(p)) => assert_eq!(p.header.id, 0x07),
@@ -412,11 +415,11 @@ mod tests {
     #[test]
     fn header_two_byte_chunks() {
         let frame = encode(0x02, INSTR_READ, &[0x84, 0x00, 0x04, 0x00]);
-        let mut dec: Decoder<32> = Decoder::new();
+        let mut dec: Decoder<32, Crc> = Decoder::new();
         let n_chunks = frame.len().div_ceil(2);
         let mut completed = false;
         for (i, c) in frame.chunks(2).enumerate() {
-            let (step, n) = dec.feed::<Crc>(c);
+            let (step, n) = dec.feed(c);
             assert_eq!(n, c.len());
             match step {
                 Step::NeedMore => assert!(i + 1 < n_chunks),
@@ -436,8 +439,8 @@ mod tests {
     fn write_with_data() {
         let payload = [0x84, 0x00, 0xAA, 0xBB, 0xCC, 0xDD];
         let frame = encode(0x03, INSTR_WRITE, &payload);
-        let mut dec: Decoder<64> = Decoder::new();
-        let (step, _) = dec.feed::<Crc>(&frame);
+        let mut dec: Decoder<64, Crc> = Decoder::new();
+        let (step, _) = dec.feed(&frame);
         match step {
             Step::Packet(Packet::Write(w)) => {
                 assert_eq!(w.header.header.id, 0x03);
@@ -459,8 +462,8 @@ mod tests {
             frame.windows(4).any(|w| w == [0xFF, 0xFF, 0xFD, 0xFD]),
             "expected stuffing byte in wire frame, got {frame:02X?}",
         );
-        let mut dec: Decoder<64> = Decoder::new();
-        let (step, n) = dec.feed::<Crc>(&frame);
+        let mut dec: Decoder<64, Crc> = Decoder::new();
+        let (step, n) = dec.feed(&frame);
         assert_eq!(n, frame.len());
         match step {
             Step::Packet(Packet::Write(w)) => {
@@ -473,8 +476,8 @@ mod tests {
     #[test]
     fn status_response_dispatch() {
         let frame = encode(0x05, INSTR_STATUS, &[0x00, 0xAA, 0xBB]);
-        let mut dec: Decoder<32> = Decoder::new();
-        let (step, _) = dec.feed::<Crc>(&frame);
+        let mut dec: Decoder<32, Crc> = Decoder::new();
+        let (step, _) = dec.feed(&frame);
         match step {
             Step::Packet(Packet::Status(s)) => {
                 assert_eq!(s.header.header.id, 0x05);
@@ -488,8 +491,8 @@ mod tests {
     #[test]
     fn factory_reset_dispatch() {
         let frame = encode(0x06, INSTR_FACTORY_RESET, &[0xFF]);
-        let mut dec: Decoder<32> = Decoder::new();
-        let (step, _) = dec.feed::<Crc>(&frame);
+        let mut dec: Decoder<32, Crc> = Decoder::new();
+        let (step, _) = dec.feed(&frame);
         match step {
             Step::Packet(Packet::FactoryReset(p)) => assert_eq!(p.mode, 0xFF),
             other => panic!("expected FactoryReset, got {other:?}"),
@@ -500,8 +503,8 @@ mod tests {
     fn action_and_reboot() {
         for (instr, name) in [(INSTR_ACTION, "Action"), (INSTR_REBOOT, "Reboot")] {
             let frame = encode(0x08, instr, &[]);
-            let mut dec: Decoder<32> = Decoder::new();
-            let (step, _) = dec.feed::<Crc>(&frame);
+            let mut dec: Decoder<32, Crc> = Decoder::new();
+            let (step, _) = dec.feed(&frame);
             match step {
                 Step::Packet(Packet::Action(_)) if instr == INSTR_ACTION => {}
                 Step::Packet(Packet::Reboot(_)) if instr == INSTR_REBOOT => {}
@@ -517,8 +520,8 @@ mod tests {
             INSTR_SYNC_READ,
             &[0x84, 0x00, 0x04, 0x00, 0x01, 0x02, 0x03],
         );
-        let mut dec: Decoder<64> = Decoder::new();
-        let (step, _) = dec.feed::<Crc>(&frame);
+        let mut dec: Decoder<64, Crc> = Decoder::new();
+        let (step, _) = dec.feed(&frame);
         match step {
             Step::Packet(Packet::SyncRead(sr)) => {
                 assert_eq!(sr.header.addr.get(), 0x0084);
@@ -534,8 +537,8 @@ mod tests {
         // addr=0x0080, length=2 → each entry is id(1) + 2 data bytes.
         let payload = [0x80, 0x00, 0x02, 0x00, 0x01, 0xAA, 0xBB, 0x02, 0xCC, 0xDD];
         let frame = encode(0xFE, INSTR_SYNC_WRITE, &payload);
-        let mut dec: Decoder<64> = Decoder::new();
-        let (step, _) = dec.feed::<Crc>(&frame);
+        let mut dec: Decoder<64, Crc> = Decoder::new();
+        let (step, _) = dec.feed(&frame);
         match step {
             Step::Packet(Packet::SyncWrite(sw)) => {
                 let entries: Vec<_, 4> = sw.entries().collect();
@@ -554,8 +557,8 @@ mod tests {
         // Two entries of (id, addr_le, len_le) = 5 bytes each.
         let payload = [0x01, 0x84, 0x00, 0x04, 0x00, 0x02, 0x90, 0x00, 0x02, 0x00];
         let frame = encode(0xFE, INSTR_BULK_READ, &payload);
-        let mut dec: Decoder<64> = Decoder::new();
-        let (step, _) = dec.feed::<Crc>(&frame);
+        let mut dec: Decoder<64, Crc> = Decoder::new();
+        let (step, _) = dec.feed(&frame);
         match step {
             Step::Packet(Packet::BulkRead(br)) => {
                 assert_eq!(br.entries.len(), 2);
@@ -577,8 +580,8 @@ mod tests {
             0x01, 0x84, 0x00, 0x02, 0x00, 0xAA, 0xBB, 0x02, 0x90, 0x00, 0x01, 0x00, 0xCC,
         ];
         let frame = encode(0xFE, INSTR_BULK_WRITE, &payload);
-        let mut dec: Decoder<64> = Decoder::new();
-        let (step, _) = dec.feed::<Crc>(&frame);
+        let mut dec: Decoder<64, Crc> = Decoder::new();
+        let (step, _) = dec.feed(&frame);
         match step {
             Step::Packet(Packet::BulkWrite(bw)) => {
                 let entries: Vec<_, 4> = bw.entries().collect();
@@ -601,8 +604,8 @@ mod tests {
             INSTR_FAST_SYNC_READ,
             &[0x84, 0x00, 0x04, 0x00, 0x01, 0x02],
         );
-        let mut dec: Decoder<64> = Decoder::new();
-        let (step, _) = dec.feed::<Crc>(&frame);
+        let mut dec: Decoder<64, Crc> = Decoder::new();
+        let (step, _) = dec.feed(&frame);
         match step {
             Step::Packet(Packet::FastSyncRead(p)) => {
                 assert_eq!(p.header.addr.get(), 0x0084);
@@ -617,8 +620,8 @@ mod tests {
     fn fast_bulk_read_dispatch() {
         let payload = [0x01, 0x84, 0x00, 0x04, 0x00, 0x02, 0x90, 0x00, 0x02, 0x00];
         let frame = encode(0xFE, INSTR_FAST_BULK_READ, &payload);
-        let mut dec: Decoder<64> = Decoder::new();
-        let (step, _) = dec.feed::<Crc>(&frame);
+        let mut dec: Decoder<64, Crc> = Decoder::new();
+        let (step, _) = dec.feed(&frame);
         match step {
             Step::Packet(Packet::FastBulkRead(p)) => {
                 assert_eq!(p.entries.len(), 2);
@@ -632,8 +635,8 @@ mod tests {
     #[test]
     fn raw_for_unknown_instruction() {
         let frame = encode(0x09, 0x7F, &[0xDE, 0xAD]);
-        let mut dec: Decoder<32> = Decoder::new();
-        let (step, _) = dec.feed::<Crc>(&frame);
+        let mut dec: Decoder<32, Crc> = Decoder::new();
+        let (step, _) = dec.feed(&frame);
         match step {
             Step::Packet(Packet::Raw(r)) => {
                 assert_eq!(r.header.header.instruction, 0x7F);
@@ -649,13 +652,13 @@ mod tests {
         // Corrupt the last CRC byte.
         let last = frame.len() - 1;
         frame[last] ^= 0xFF;
-        let mut dec: Decoder<32> = Decoder::new();
-        let (step, n) = dec.feed::<Crc>(&frame);
+        let mut dec: Decoder<32, Crc> = Decoder::new();
+        let (step, n) = dec.feed(&frame);
         assert_eq!(n, frame.len());
         assert!(matches!(step, Step::Resync(ResyncKind::BadCrc)));
         // After Resync the decoder is reset and a follow-up valid frame parses.
         let good = encode(0x02, INSTR_PING, &[]);
-        let (step2, _) = dec.feed::<Crc>(&good);
+        let (step2, _) = dec.feed(&good);
         assert!(matches!(step2, Step::Packet(Packet::Ping(p)) if p.header.id == 0x02));
     }
 
@@ -663,8 +666,8 @@ mod tests {
     fn bad_length_resyncs() {
         // Length = 1 (below the 3 minimum).
         let bytes = [0xFF, 0xFF, 0xFD, 0x00, 0x01, 0x01, 0x00];
-        let mut dec: Decoder<32> = Decoder::new();
-        let (step, n) = dec.feed::<Crc>(&bytes);
+        let mut dec: Decoder<32, Crc> = Decoder::new();
+        let (step, n) = dec.feed(&bytes);
         assert_eq!(n, 7);
         assert!(matches!(step, Step::Resync(ResyncKind::BadLength)));
     }
@@ -674,8 +677,8 @@ mod tests {
         // length = 100; M=16 — way too small.
         let len = 100u16.to_le_bytes();
         let bytes = [0xFF, 0xFF, 0xFD, 0x00, 0x01, len[0], len[1], INSTR_PING];
-        let mut dec: Decoder<16> = Decoder::new();
-        let (step, n) = dec.feed::<Crc>(&bytes);
+        let mut dec: Decoder<16, Crc> = Decoder::new();
+        let (step, n) = dec.feed(&bytes);
         assert_eq!(n, 7);
         assert!(matches!(step, Step::Resync(ResyncKind::Overflow)));
     }
@@ -685,8 +688,8 @@ mod tests {
         // A real frame whose unstuffed length exceeds M's logical room.
         // M=12 covers 8 header + 4 params; encode a 5-byte param.
         let frame = encode(0x01, INSTR_WRITE, &[0x84, 0x00, 0xAA, 0xBB, 0xCC]);
-        let mut dec: Decoder<12> = Decoder::new();
-        let (step, _) = dec.feed::<Crc>(&frame);
+        let mut dec: Decoder<12, Crc> = Decoder::new();
+        let (step, _) = dec.feed(&frame);
         assert!(matches!(step, Step::Resync(ResyncKind::Overflow)));
     }
 
@@ -698,12 +701,12 @@ mod tests {
         cat.extend_from_slice(&f1).unwrap();
         cat.extend_from_slice(&f2).unwrap();
 
-        let mut dec: Decoder<32> = Decoder::new();
-        let (s1, n1) = dec.feed::<Crc>(&cat);
+        let mut dec: Decoder<32, Crc> = Decoder::new();
+        let (s1, n1) = dec.feed(&cat);
         assert_eq!(n1, f1.len());
         assert!(matches!(s1, Step::Packet(Packet::Ping(p)) if p.header.id == 0x01));
 
-        let (s2, n2) = dec.feed::<Crc>(&cat[n1..]);
+        let (s2, n2) = dec.feed(&cat[n1..]);
         assert_eq!(n2, f2.len());
         assert!(matches!(s2, Step::Packet(Packet::Ping(p)) if p.header.id == 0x02));
     }
@@ -718,8 +721,8 @@ mod tests {
         bytes
             .extend_from_slice(&encode(0x01, INSTR_PING, &[]))
             .unwrap();
-        let mut dec: Decoder<32> = Decoder::new();
-        let (step, _) = dec.feed::<Crc>(&bytes);
+        let mut dec: Decoder<32, Crc> = Decoder::new();
+        let (step, _) = dec.feed(&bytes);
         assert!(matches!(step, Step::Packet(Packet::Ping(p)) if p.header.id == 0x01));
     }
 
@@ -732,22 +735,22 @@ mod tests {
         bytes
             .extend_from_slice(&encode(0x09, INSTR_PING, &[]))
             .unwrap();
-        let mut dec: Decoder<32> = Decoder::new();
-        let (step, _) = dec.feed::<Crc>(&bytes);
+        let mut dec: Decoder<32, Crc> = Decoder::new();
+        let (step, _) = dec.feed(&bytes);
         assert!(matches!(step, Step::Packet(Packet::Ping(p)) if p.header.id == 0x09));
     }
 
     #[test]
     fn reset_clears_in_progress_state() {
         let frame = encode(0x01, INSTR_PING, &[]);
-        let mut dec: Decoder<32> = Decoder::new();
+        let mut dec: Decoder<32, Crc> = Decoder::new();
         // Feed only half the frame.
         let half = frame.len() / 2;
-        let (step, _) = dec.feed::<Crc>(&frame[..half]);
+        let (step, _) = dec.feed(&frame[..half]);
         assert!(matches!(step, Step::NeedMore));
         dec.reset();
         // Now feed a full frame; should parse cleanly.
-        let (step2, n) = dec.feed::<Crc>(&frame);
+        let (step2, n) = dec.feed(&frame);
         assert_eq!(n, frame.len());
         assert!(matches!(step2, Step::Packet(Packet::Ping(_))));
     }
@@ -756,8 +759,8 @@ mod tests {
     fn status_interpret_ping_response() {
         // Slave's reply to PING: error=0, model=0x0203, fw_version=0x10.
         let frame = encode(0x01, INSTR_STATUS, &[0x00, 0x03, 0x02, 0x10]);
-        let mut dec: Decoder<32> = Decoder::new();
-        let (step, _) = dec.feed::<Crc>(&frame);
+        let mut dec: Decoder<32, Crc> = Decoder::new();
+        let (step, _) = dec.feed(&frame);
         match step {
             Step::Packet(Packet::Status(s)) => {
                 let interpreted = s.interpret(RequestKind::Ping);
