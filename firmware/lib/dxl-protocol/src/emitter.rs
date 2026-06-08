@@ -25,8 +25,7 @@ use crate::SlotPosition;
 use crate::buf::{WriteBuf, WriteError};
 use crate::constants::{BROADCAST_ID, HEADER, STUFFING_BYTE, STUFFING_TRIGGER};
 use crate::crc::CrcUmts;
-use crate::instruction::Instruction;
-use crate::packet::{BulkReadEntry, Packet, Slot, Status, StatusError};
+use crate::packet::{BulkReadEntry, Instruction, Packet, Slot, Status, StatusError};
 
 // ─────────────────────────── InstructionEmitter ───────────────────────────
 

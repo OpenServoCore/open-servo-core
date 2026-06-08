@@ -16,7 +16,6 @@ mod crc;
 mod crc_software;
 pub mod decoder;
 mod emitter;
-pub mod instruction;
 pub mod packet;
 
 pub use buf::{WriteBuf, WriteError};
@@ -29,5 +28,4 @@ pub use crc::CrcUmts;
 #[cfg(feature = "software-crc")]
 pub use crc_software::SoftwareCrcUmts;
 pub use emitter::{InstructionEmitter, SlotEmitter, StatusEmitter};
-pub use instruction::InstructionByte;
-pub use packet::SlotPosition;
+pub use packet::{Instruction, InstructionByte, SlotPosition};

@@ -4,8 +4,8 @@
 use dxl_protocol::decoder::{Decoder, ResyncKind, Step};
 use dxl_protocol::packet::{self as overlay, ErrorCode, Slot, StatusError};
 use dxl_protocol::{
-    CrcUmts, InstructionEmitter, PACKET_LEN_GUARD, SlotEmitter, SoftwareCrcUmts, StatusEmitter,
-    WriteBuf, WriteError, instruction::Instruction,
+    CrcUmts, Instruction, InstructionEmitter, PACKET_LEN_GUARD, SlotEmitter, SoftwareCrcUmts,
+    StatusEmitter, WriteBuf, WriteError,
 };
 use heapless::Vec;
 

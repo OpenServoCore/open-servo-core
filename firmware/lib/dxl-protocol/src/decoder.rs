@@ -19,7 +19,6 @@ use crate::constants::{
     CRC_BYTES, HEADER, PACKET_LEN_GUARD, PACKET_LEN_MIN, STUFFING_BYTE, STUFFING_TRIGGER,
 };
 use crate::crc::CrcUmts;
-use crate::instruction::Instruction;
 use crate::packet::*;
 
 const HDR_LEN_OFFSET: usize = offset_of!(Header, len);
