@@ -1,15 +1,7 @@
-//! Streaming DXL 2.0 packet decoder.
-//!
-//! Fed wire bytes one chunk at a time; emits one of:
-//!   - [`Step::NeedMore`] — more bytes required
-//!   - [`Step::Packet`]   — a typed [`Packet`] borrowing the decoder's buffer
-//!   - [`Step::Resync`]   — frame failed validation (length, CRC, overflow)
-//!
-//! The decoder owns its accumulator; emitted [`Packet`] variants overlay
-//! the (post-unstuff) buffer for the duration of the [`feed`] call. The
-//! caller advances by the returned byte count and re-enters with the
-//! next chunk; multi-packet input is handled across calls, not within a
-//! single call.
+//! Streaming DXL 2.0 packet decoder. Fed wire bytes chunk-by-chunk; emits
+//! [`Step::NeedMore`], [`Step::Packet`] (overlay borrowed from the
+//! decoder's post-unstuff accumulator), or [`Step::Resync`]. Multi-packet
+//! input is handled across calls, not within a single call.
 
 #![allow(dead_code)]
 
@@ -137,10 +129,9 @@ impl<const M: usize, CRC: CrcUmts> Decoder<M, CRC> {
             Stage::Header => self.step_header(b),
             Stage::Payload => self.step_payload(b),
             Stage::Crc => self.step_crc(b),
-            // `feed()` resets on entry when `stage == Done`, so this arm is
-            // unreachable via the public API. Stay self-healing rather than
-            // panic — embedded callers driving motors must not halt on a
-            // private-invariant slip.
+            // Unreachable via the public API (feed resets on Done). Stay
+            // self-healing -- embedded callers driving motors must not halt
+            // on a private-invariant slip.
             Stage::Done => {
                 self.reset();
                 self.step_sync(b)
@@ -150,10 +141,8 @@ impl<const M: usize, CRC: CrcUmts> Decoder<M, CRC> {
 
     fn step_sync(&mut self, b: u8) -> StepResult {
         // KMP-style backoff for HEADER = FF FF FD 00 (failure function:
-        // f[1]=0, f[2]=1, f[3]=0). On mismatch, fall back to the longest
-        // proper prefix of HEADER that's still a suffix of the bytes
-        // seen, so a `FF FF FF FD 00` run still locks onto the embedded
-        // header.
+        // f[1]=0, f[2]=1, f[3]=0). Lets `FF FF FF FD 00` lock onto the
+        // embedded header at offset 1.
         let m = self.sync_matched as usize;
         if b == HEADER[m] {
             self.write_byte(m, b);
@@ -199,7 +188,6 @@ impl<const M: usize, CRC: CrcUmts> Decoder<M, CRC> {
                 self.reset();
                 return StepResult::Resync(ResyncKind::BadLength);
             }
-            // Bytes preceding the Length-counted region: HEADER + id + len_field.
             let expected = HDR_INSTR_OFFSET + len;
             if expected > M {
                 self.reset();
@@ -259,11 +247,9 @@ impl<const M: usize, CRC: CrcUmts> Decoder<M, CRC> {
         StepResult::Continue
     }
 
-    /// Re-emit the packet from the decoder's accumulator without consuming
-    /// or advancing state. Sound only after `feed` returned `Step::Packet`
-    /// on this decoder; the underlying buffer is initialized for
-    /// `logical_n` bytes by construction at that point. Lets callers reborrow
-    /// the packet immutably after `feed`'s mutable borrow has been released.
+    /// Re-emit the last packet without advancing state. Sound only after
+    /// `feed` returned `Step::Packet` on this decoder. Lets callers reborrow
+    /// immutably once `feed`'s mutable borrow is released.
     pub fn dispatch_packet<'s>(&'s self) -> Packet<'s> {
         self.dispatch()
     }
@@ -452,11 +438,10 @@ mod tests {
 
     #[test]
     fn stuffing_escape_inside_payload() {
-        // Logical payload contains the FF FF FD trigger; the writer
-        // inserts a stuffing FD that the decoder must strip.
+        // Payload contains the FF FF FD trigger; writer inserts a stuffing
+        // FD that the decoder strips.
         let payload = [0x84, 0x00, 0xFF, 0xFF, 0xFD, 0x42];
         let frame = encode(0x04, Instruction::Write, &payload);
-        // Frame should contain the stuffing byte on the wire.
         assert!(
             frame.windows(4).any(|w| w == [0xFF, 0xFF, 0xFD, 0xFD]),
             "expected stuffing byte in wire frame, got {frame:02X?}",
@@ -500,7 +485,10 @@ mod tests {
 
     #[test]
     fn action_and_reboot() {
-        for (instr, name) in [(Instruction::Action, "Action"), (Instruction::Reboot, "Reboot")] {
+        for (instr, name) in [
+            (Instruction::Action, "Action"),
+            (Instruction::Reboot, "Reboot"),
+        ] {
             let frame = encode(0x08, instr, &[]);
             let mut dec: Decoder<32, Crc> = Decoder::new();
             let (step, _) = dec.feed(&frame);
@@ -533,7 +521,7 @@ mod tests {
 
     #[test]
     fn sync_write_entries() {
-        // addr=0x0080, length=2 → each entry is id(1) + 2 data bytes.
+        // addr=0x0080, length=2 -> entry = id(1) + 2 data bytes.
         let payload = [0x80, 0x00, 0x02, 0x00, 0x01, 0xAA, 0xBB, 0x02, 0xCC, 0xDD];
         let frame = encode(0xFE, Instruction::SyncWrite, &payload);
         let mut dec: Decoder<64, Crc> = Decoder::new();
@@ -648,14 +636,13 @@ mod tests {
     #[test]
     fn bad_crc_resyncs() {
         let mut frame = encode(0x01, Instruction::Ping, &[]);
-        // Corrupt the last CRC byte.
         let last = frame.len() - 1;
         frame[last] ^= 0xFF;
         let mut dec: Decoder<32, Crc> = Decoder::new();
         let (step, n) = dec.feed(&frame);
         assert_eq!(n, frame.len());
         assert!(matches!(step, Step::Resync(ResyncKind::BadCrc)));
-        // After Resync the decoder is reset and a follow-up valid frame parses.
+        // Resync auto-resets -- a follow-up valid frame parses.
         let good = encode(0x02, Instruction::Ping, &[]);
         let (step2, _) = dec.feed(&good);
         assert!(matches!(step2, Step::Packet(Packet::Ping(p)) if p.header.id == 0x02));
@@ -663,7 +650,7 @@ mod tests {
 
     #[test]
     fn bad_length_resyncs() {
-        // Length = 1 (below the 3 minimum).
+        // Length = 1, below PACKET_LEN_MIN = 3.
         let bytes = [0xFF, 0xFF, 0xFD, 0x00, 0x01, 0x01, 0x00];
         let mut dec: Decoder<32, Crc> = Decoder::new();
         let (step, n) = dec.feed(&bytes);
@@ -673,9 +660,18 @@ mod tests {
 
     #[test]
     fn overflow_resyncs_when_frame_exceeds_buffer() {
-        // length = 100; M=16 — way too small.
+        // length = 100 > M = 16.
         let len = 100u16.to_le_bytes();
-        let bytes = [0xFF, 0xFF, 0xFD, 0x00, 0x01, len[0], len[1], Instruction::Ping.as_u8()];
+        let bytes = [
+            0xFF,
+            0xFF,
+            0xFD,
+            0x00,
+            0x01,
+            len[0],
+            len[1],
+            Instruction::Ping.as_u8(),
+        ];
         let mut dec: Decoder<16, Crc> = Decoder::new();
         let (step, n) = dec.feed(&bytes);
         assert_eq!(n, 7);
@@ -684,8 +680,7 @@ mod tests {
 
     #[test]
     fn payload_overflow_resyncs() {
-        // A real frame whose unstuffed length exceeds M's logical room.
-        // M=12 covers 8 header + 4 params; encode a 5-byte param.
+        // M=12 covers 8 header + 4 params; the 5-byte param overflows.
         let frame = encode(0x01, Instruction::Write, &[0x84, 0x00, 0xAA, 0xBB, 0xCC]);
         let mut dec: Decoder<12, Crc> = Decoder::new();
         let (step, _) = dec.feed(&frame);
@@ -712,9 +707,8 @@ mod tests {
 
     #[test]
     fn sync_finds_embedded_header_after_extra_ff() {
-        // Prefix the frame with `FF FF` so the decoder's sync sees
-        // `FF FF FF FD 00 ...` — the KMP-style backoff must lock onto the
-        // embedded header starting at offset 1.
+        // Prefix `FF FF` -> sync sees `FF FF FF FD 00 ...`; KMP backoff
+        // must lock onto the embedded header at offset 1.
         let mut bytes: Vec<u8, 64> = Vec::new();
         bytes.extend_from_slice(&[0xFF, 0xFF]).unwrap();
         bytes
@@ -743,12 +737,10 @@ mod tests {
     fn reset_clears_in_progress_state() {
         let frame = encode(0x01, Instruction::Ping, &[]);
         let mut dec: Decoder<32, Crc> = Decoder::new();
-        // Feed only half the frame.
         let half = frame.len() / 2;
         let (step, _) = dec.feed(&frame[..half]);
         assert!(matches!(step, Step::NeedMore));
         dec.reset();
-        // Now feed a full frame; should parse cleanly.
         let (step2, n) = dec.feed(&frame);
         assert_eq!(n, frame.len());
         assert!(matches!(step2, Step::Packet(Packet::Ping(_))));
@@ -756,7 +748,7 @@ mod tests {
 
     #[test]
     fn status_interpret_ping_response() {
-        // Slave's reply to PING: error=0, model=0x0203, fw_version=0x10.
+        // error=0, model=0x0203, fw_version=0x10.
         let frame = encode(0x01, Instruction::Status, &[0x00, 0x03, 0x02, 0x10]);
         let mut dec: Decoder<32, Crc> = Decoder::new();
         let (step, _) = dec.feed(&frame);

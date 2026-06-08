@@ -62,7 +62,10 @@ fn drain_stream(bytes: &[u8], chunk_size: usize) -> usize {
         let end = (idx + chunk_size).min(bytes.len());
         let chunk = &bytes[idx..end];
         let (step, n) = dec.feed(chunk);
-        assert!(n >= 1, "feed must consume at least one byte from a non-empty chunk");
+        assert!(
+            n >= 1,
+            "feed must consume at least one byte from a non-empty chunk"
+        );
         assert!(n <= chunk.len(), "feed cannot consume past chunk end");
         idx += n;
         match step {
@@ -74,10 +77,7 @@ fn drain_stream(bytes: &[u8], chunk_size: usize) -> usize {
     accepts
 }
 
-fn feed_full<'a, const M: usize>(
-    dec: &'a mut Decoder<M, Crc>,
-    wire: &[u8],
-) -> overlay::Packet<'a> {
+fn feed_full<'a, const M: usize>(dec: &'a mut Decoder<M, Crc>, wire: &[u8]) -> overlay::Packet<'a> {
     let (step, n) = dec.feed(wire);
     assert_eq!(n, wire.len(), "decoder didn't consume the full frame");
     match step {
@@ -339,7 +339,7 @@ fn writer_overflow_reported_and_rolled_back() {
 
 #[test]
 fn writer_overflow_preserves_prior_frames() {
-    // DMA TX buffer holds a frame; second write overflows — first must survive
+    // DMA TX buffer holds a frame; second write overflows -- first must survive
     // and re-decode cleanly through the new Decoder.
     let mut buf: HVec<u8, 16> = HVec::new();
     InstructionEmitter::<_, Crc>::new(&mut buf).ping(1).unwrap();
@@ -402,10 +402,10 @@ fn partial_header_prefix_yields_needmore() {
     }
 }
 
-// ─── Round-trip every instruction shape. Each case carries a closure that
+// --- Round-trip every instruction shape. Each case carries a closure that
 //     emits the request shape onto the wire and a closure that verifies the
 //     decoded overlay matches. Keeping the verification right next to the
-//     emit makes the cases self-contained — no shared match table that has
+//     emit makes the cases self-contained -- no shared match table that has
 //     to enumerate every variant.
 
 fn round_trip<E, V>(label: &str, emit: E, verify: V)
@@ -676,7 +676,7 @@ fn stuffing_round_trip_for_every_body_carrying_variant() {
         let mut wire: HVec<u8, 64> = HVec::new();
         emit(&mut wire, logical);
 
-        // ≥2 extra FDs expected (one per trigger).
+        // >=2 extra FDs expected (one per trigger).
         let payload = &wire[8..wire.len() - 2];
         let logical_fds = logical.iter().filter(|&&b| b == 0xFD).count();
         let wire_fds = payload.iter().filter(|&&b| b == 0xFD).count();
@@ -695,7 +695,10 @@ fn stuffing_round_trip_for_every_body_carrying_variant() {
             overlay::Packet::BulkWrite(p) => p.body,
             other => panic!("{name}: parsed into unexpected variant {other:?}"),
         };
-        assert_eq!(recovered, logical, "{name}: payload mismatch after unstuffing");
+        assert_eq!(
+            recovered, logical,
+            "{name}: payload mismatch after unstuffing"
+        );
     }
 }
 

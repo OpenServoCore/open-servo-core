@@ -1,5 +1,5 @@
-//! Status reply types — overlay header, error byte, request-context dispatch,
-//! and per-instruction reply payload overlays.
+//! Status reply types: header overlay, error byte, request-context
+//! dispatch, and per-instruction payload overlays.
 
 #![allow(dead_code)]
 
@@ -18,12 +18,10 @@ pub struct StatusPacket<'a> {
     pub params: &'a [u8],
 }
 
-// ───── status error byte ─────
+// ----- status error byte -----
 
 /// DXL 2.0 Status error byte. Bit 7 = sticky hardware Alert; bits 0..=6 =
-/// error code (only `0..=7` are spec-defined). `#[repr(transparent)]` over
-/// `u8` keeps wire layout identical and lets it sit inside `#[repr(C)]`
-/// overlay structs.
+/// error code (only `0..=7` spec-defined).
 #[repr(transparent)]
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub struct StatusError(pub u8);
@@ -49,7 +47,6 @@ impl StatusError {
         Self(alert_bit | code as u8)
     }
 
-    /// Shorthand for `new(false, code)`.
     #[inline]
     pub const fn code(code: ErrorCode) -> Self {
         Self(code as u8)
@@ -65,7 +62,7 @@ impl StatusError {
         self.0 & Self::CODE_MASK
     }
 
-    /// Typed view of bits 0..=6; `None` for reserved/unknown values.
+    /// Typed view of bits 0..=6; `None` for unspec'd values.
     #[inline]
     pub const fn kind(self) -> Option<ErrorCode> {
         ErrorCode::from_u8(self.raw_code())
@@ -107,7 +104,7 @@ impl ErrorCode {
     }
 }
 
-// ───── status payload overlays ─────
+// ----- status payload overlays -----
 
 #[repr(C)]
 #[derive(Copy, Clone, Debug)]
@@ -231,7 +228,7 @@ fn next_slot<'a>(
     Some(Slot { id, error, data })
 }
 
-// ───── status-context dispatch ─────
+// ----- status-context dispatch -----
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub enum RequestKind {
@@ -250,50 +247,44 @@ pub enum RequestKind {
     FastBulkRead,
 }
 
-/// Unified Status — same shape for parser output (`StatusPacket::interpret`)
-/// and writer input (encode side). `id` and `error` are baked into each
-/// variant so the encoder can construct a Status without a parent
-/// `StatusHeader` to borrow from.
+/// Unified Status -- same shape for parser output (`StatusPacket::interpret`)
+/// and writer input. `id`/`error` are baked into each variant so the
+/// encoder doesn't need a parent `StatusHeader` to borrow from.
 #[derive(Copy, Clone, Debug)]
 pub enum Status<'a> {
-    /// Write-style ack — no payload. Used for Write/RegWrite/Action/
-    /// Reboot/FactoryReset/SyncWrite/BulkWrite replies; also the
-    /// short-payload-Ping fallback. `error == StatusError::OK` on success.
+    /// Write-style ack -- no payload. Covers Write/RegWrite/Action/Reboot/
+    /// FactoryReset/SyncWrite/BulkWrite replies and the short-payload-Ping
+    /// fallback.
     Empty { id: u8, error: StatusError },
 
-    /// Ping reply — 3-byte fixed-shape payload. Owned (not borrowed) so
-    /// the same variant covers encode and decode.
     Ping {
         id: u8,
         error: StatusError,
         status: PingStatus,
     },
 
-    /// Read/SyncRead/BulkRead reply — opaque register bytes.
+    /// Read/SyncRead/BulkRead reply -- opaque register bytes.
     Read {
         id: u8,
         error: StatusError,
         data: &'a [u8],
     },
 
-    /// Fast Sync Read coalesced reply (master-side decode). `status` holds
-    /// slot 0's error byte and the multi-slot payload; iterate via
-    /// `status.slots(slot_length)`. Writer rejects this variant — fast
-    /// replies are emitted one slot at a time via `Writer::write_slot`.
+    /// Fast Sync Read coalesced reply (master-side decode). Iterate slots
+    /// via `status.slots(slot_length)`. Writer rejects this variant -- fast
+    /// replies are emitted one slot at a time via `SlotEmitter`.
     FastSyncRead {
         id: u8,
         status: FastSyncReadStatus<'a>,
     },
 
-    /// Fast Bulk Read counterpart.
     FastBulkRead {
         id: u8,
         status: FastBulkReadStatus<'a>,
     },
 
-    /// Encode-only escape hatch — arbitrary Status frame with chip-defined
-    /// payload bytes (e.g. OSC `Calibrate` reply). `interpret()` never
-    /// produces this variant.
+    /// Encode-only escape hatch -- arbitrary chip-defined payload (e.g. OSC
+    /// `Calibrate` reply). `interpret()` never produces this variant.
     Raw {
         id: u8,
         error: StatusError,
@@ -397,8 +388,18 @@ mod tests {
     #[test]
     fn interpret_ping_decodes_overlay() {
         let buf: [u8; 9 + 3] = [
-            0xFF, 0xFF, 0xFD, 0x00, 0x01, 0x06, 0x00, Instruction::Status.as_u8(), 0x00, //
-            0xFC, 0x03, 0x2A, // model=1020, fw=0x2A
+            0xFF,
+            0xFF,
+            0xFD,
+            0x00,
+            0x01,
+            0x06,
+            0x00,
+            Instruction::Status.as_u8(),
+            0x00, //
+            0xFC,
+            0x03,
+            0x2A, // model=1020, fw=0x2A
         ];
         let s = make_status(&buf);
         assert_eq!(s.error(), StatusError::OK);
@@ -416,7 +417,16 @@ mod tests {
     #[test]
     fn interpret_ping_short_payload_falls_back_to_empty() {
         let buf: [u8; 9 + 1] = [
-            0xFF, 0xFF, 0xFD, 0x00, 0x01, 0x04, 0x00, Instruction::Status.as_u8(), 0x00, 0xFC,
+            0xFF,
+            0xFF,
+            0xFD,
+            0x00,
+            0x01,
+            0x04,
+            0x00,
+            Instruction::Status.as_u8(),
+            0x00,
+            0xFC,
         ];
         let s = make_status(&buf);
         assert!(matches!(
@@ -428,8 +438,19 @@ mod tests {
     #[test]
     fn interpret_read_wraps_payload_slice() {
         let buf: [u8; 9 + 4] = [
-            0xFF, 0xFF, 0xFD, 0x00, 0x01, 0x07, 0x00, Instruction::Status.as_u8(), 0x00, //
-            0x01, 0x02, 0x03, 0x04,
+            0xFF,
+            0xFF,
+            0xFD,
+            0x00,
+            0x01,
+            0x07,
+            0x00,
+            Instruction::Status.as_u8(),
+            0x00, //
+            0x01,
+            0x02,
+            0x03,
+            0x04,
         ];
         let s = make_status(&buf);
         for req in [
@@ -451,7 +472,15 @@ mod tests {
     #[test]
     fn interpret_write_family_is_empty() {
         let buf: [u8; 9] = [
-            0xFF, 0xFF, 0xFD, 0x00, 0x01, 0x04, 0x00, Instruction::Status.as_u8(), 0x00,
+            0xFF,
+            0xFF,
+            0xFD,
+            0x00,
+            0x01,
+            0x04,
+            0x00,
+            Instruction::Status.as_u8(),
+            0x00,
         ];
         let s = make_status(&buf);
         for req in [
@@ -473,8 +502,20 @@ mod tests {
     #[test]
     fn interpret_fast_sync_carries_error_and_payload() {
         let buf: [u8; 9 + 5] = [
-            0xFF, 0xFF, 0xFD, 0x00, 0x01, 0x08, 0x00, Instruction::Status.as_u8(), 0x07, //
-            10, 0xAA, 0xBB, 0xCC, 0xDD,
+            0xFF,
+            0xFF,
+            0xFD,
+            0x00,
+            0x01,
+            0x08,
+            0x00,
+            Instruction::Status.as_u8(),
+            0x07, //
+            10,
+            0xAA,
+            0xBB,
+            0xCC,
+            0xDD,
         ];
         let s = make_status(&buf);
         match s.interpret(RequestKind::FastSyncRead) {
@@ -490,8 +531,20 @@ mod tests {
     #[test]
     fn interpret_fast_bulk_carries_error_and_payload() {
         let buf: [u8; 9 + 5] = [
-            0xFF, 0xFF, 0xFD, 0x00, 0x01, 0x08, 0x00, Instruction::Status.as_u8(), 0x07, //
-            10, 0xAA, 0xBB, 0xCC, 0xDD,
+            0xFF,
+            0xFF,
+            0xFD,
+            0x00,
+            0x01,
+            0x08,
+            0x00,
+            Instruction::Status.as_u8(),
+            0x07, //
+            10,
+            0xAA,
+            0xBB,
+            0xCC,
+            0xDD,
         ];
         let s = make_status(&buf);
         match s.interpret(RequestKind::FastBulkRead) {

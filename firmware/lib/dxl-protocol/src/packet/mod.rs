@@ -1,7 +1,6 @@
-//! Streaming-parser overlay types. Each `#[repr(C)]` struct mirrors the
-//! on-the-wire (unstuffed) byte layout exactly, with alignment 1 — so the
-//! decoder can cast a `&[u8]` accumulator into any of these structs at any
-//! offset.
+//! Overlay types. Every `#[repr(C)]` struct mirrors the on-the-wire
+//! (unstuffed) layout at alignment 1, so the decoder can cast a `&[u8]`
+//! accumulator into any of them at any offset.
 
 mod entries;
 mod header;
@@ -16,9 +15,9 @@ pub use header::{Header, U16Le};
 pub use instruction::{
     ActionPacket, BulkReadHeader, BulkReadPacket, BulkWriteHeader, BulkWritePacket,
     FactoryResetPacket, FastBulkReadHeader, FastBulkReadPacket, FastSyncReadHeader,
-    FastSyncReadPacket, Instruction, InstructionByte, PingPacket, RawHeader, RawPacket,
-    ReadPacket, RebootPacket, SyncReadHeader, SyncReadPacket, SyncWriteHeader, SyncWritePacket,
-    WriteHeader, WritePacket,
+    FastSyncReadPacket, Instruction, InstructionByte, PingPacket, RawHeader, RawPacket, ReadPacket,
+    RebootPacket, SyncReadHeader, SyncReadPacket, SyncWriteHeader, SyncWritePacket, WriteHeader,
+    WritePacket,
 };
 pub use slot::{BulkSlotInfo, FastSlotInfo, SlotPosition, SyncSlotInfo};
 pub use status::{

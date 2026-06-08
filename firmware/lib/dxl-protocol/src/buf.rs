@@ -1,6 +1,6 @@
-//! Callers provide the output buffer. Blanket impls for `heapless::Vec` and
-//! `alloc::vec::Vec` opt-in via the `heapless` / `alloc` features; without
-//! either, downstream provides its own impl (e.g. a DMA `&mut [u8]` + cursor).
+//! Output buffer trait. Blanket impls for `heapless::Vec` / `alloc::vec::Vec`
+//! are feature-gated; without either, callers bring their own (e.g. DMA
+//! `&mut [u8]` + cursor).
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub enum WriteError {

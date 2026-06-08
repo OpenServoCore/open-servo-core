@@ -1,4 +1,4 @@
-//! Status reply emitter (slave → master).
+//! Status reply emitter (slave -> master).
 
 #![allow(dead_code)]
 
@@ -48,19 +48,19 @@ impl<'a, W: WriteBuf, CRC: CrcUmts> StatusEmitter<'a, W, CRC> {
         self.frame(id, error, data)
     }
 
-    /// Vendor-extension escape hatch: emit a Status reply with a
-    /// chip-defined payload (e.g. OSC `Calibrate` reply).
+    /// Vendor-extension escape hatch - Status reply with a chip-defined
+    /// payload (e.g. OSC `Calibrate` reply).
     pub fn ext(&mut self, id: u8, error: StatusError, payload: &[u8]) -> Result<(), WriteError> {
         self.frame(id, error, payload)
     }
 
-    /// Emit any status — dispatches on the unified [`Status`] enum.
+    /// Dispatch on the unified [`Status`] enum.
     ///
-    /// Fast Sync/Bulk Read variants emit a single Status frame whose
-    /// payload is the coalesced multi-slot data (the same byte shape a
-    /// master decodes). Slaves participating in a chain reply emit slot
-    /// by slot via [`super::SlotEmitter`] instead; this convenience path
-    /// is for relays, sniffers, or single-slave-with-all-data masters.
+    /// Fast Sync/Bulk Read variants emit one Status frame carrying the
+    /// coalesced multi-slot payload (the byte shape a master decodes).
+    /// Slaves participating in a chain reply use [`super::SlotEmitter`]
+    /// instead; this path is for relays, sniffers, or single-slave-with-
+    /// all-data masters.
     pub fn emit(&mut self, status: Status<'_>) -> Result<(), WriteError> {
         match status {
             Status::Empty { id, error } => self.empty(id, error),
@@ -119,7 +119,9 @@ mod tests {
     fn status_empty_carries_error_byte() {
         let mut buf = Buf::new();
         let err = StatusError::from_byte(0x83);
-        StatusEmitter::<_, Crc>::new(&mut buf).empty(0x02, err).unwrap();
+        StatusEmitter::<_, Crc>::new(&mut buf)
+            .empty(0x02, err)
+            .unwrap();
         let mut dec: Decoder<32, Crc> = Decoder::new();
         match dec.feed(&buf).0 {
             Step::Packet(Packet::Status(s)) => {

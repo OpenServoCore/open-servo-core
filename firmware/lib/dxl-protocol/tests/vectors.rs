@@ -83,11 +83,7 @@ fn crc_accumulate_seed_matches_one_shot() {
     for split in 0..=data.len() {
         let (a, b) = data.split_at(split);
         let seed = crc_oneshot(0, a);
-        assert_eq!(
-            crc_oneshot(seed, b),
-            full,
-            "split at {split}"
-        );
+        assert_eq!(crc_oneshot(seed, b), full, "split at {split}");
     }
 }
 
@@ -381,10 +377,7 @@ fn incomplete_yields_needmore() {
         let mut dec: Decoder<32, Crc> = Decoder::new();
         let (step, consumed) = dec.feed(partial);
         assert_eq!(consumed, n);
-        assert!(
-            matches!(step, Step::NeedMore),
-            "partial len {n}: {step:?}"
-        );
+        assert!(matches!(step, Step::NeedMore), "partial len {n}: {step:?}");
     }
 }
 

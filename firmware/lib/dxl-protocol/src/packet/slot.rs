@@ -1,13 +1,12 @@
-//! Wire-position math for multi-slot Sync/Bulk Read requests: given an `id`,
-//! find which slot in the wire layout it occupies and how many response bytes
-//! precede it in the coalesced reply. Math is identical whether the caller
-//! is the addressed slave (composing its own slot) or a master/sniffer
-//! (decoding a captured response).
+//! Wire-position math for multi-slot Sync/Bulk Read requests: given an id,
+//! find its slot index and the number of response bytes that precede it in
+//! the coalesced reply. Identical math for slave (composing) and
+//! master/sniffer (decoding).
 
 #![allow(dead_code)]
 
 use crate::constants::{
-    CRC_BYTES, FAST_RESPONSE_SLOT0_BYTES, FAST_RESPONSE_SLOT_BYTES, RESPONSE_HEADER_BYTES,
+    CRC_BYTES, FAST_RESPONSE_SLOT_BYTES, FAST_RESPONSE_SLOT0_BYTES, RESPONSE_HEADER_BYTES,
 };
 
 use super::entries::{BulkWriteEntry, SyncWriteEntry};
@@ -16,21 +15,19 @@ use super::instruction::{
     SyncWritePacket,
 };
 
-/// Position of our slot in the coalesced Fast Status response. Variants that
-/// emit the response header carry the DXL `Length` field for the whole
-/// multi-slot frame; `Last` carries the chain CRC.
+/// Position of our slot in the coalesced Fast Status response. Header-
+/// emitting variants carry the DXL `Length` of the whole multi-slot frame;
+/// `Last` carries the chain CRC.
 ///
-/// Chain producers (slaves emitting `Last` in a multi-slave coalesced reply)
-/// don't know the running CRC at frame-build time — it depends on the wire
-/// bytes of every prior slave. They emit a placeholder value here and let
-/// the chip's fire-time ISR overwrite the trailing two bytes with the real
-/// CRC. Callers that *do* know the CRC at build time (single-slot tests,
-/// replay tools, sniffers) pass the real value.
+/// Chain producers don't know the running CRC at build time (it depends on
+/// every prior slave's wire bytes), so they pass a placeholder and let the
+/// fire-time ISR overwrite the trailing two bytes. Callers that *do* know
+/// the CRC (single-slot tests, replay tools, sniffers) pass the real value.
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub enum SlotPosition {
-    /// Single-slot response — emits full header and locally-computed CRC.
+    /// Single-slot response -- emits full header and locally-computed CRC.
     Only { packet_length: u16 },
-    /// First of N — emits header + body, no CRC (successors continue).
+    /// First of N -- emits header + body, no CRC (successors continue).
     First { packet_length: u16 },
     /// Body only.
     Middle,
@@ -114,10 +111,9 @@ impl<'a> BulkReadPacket<'a> {
 }
 
 impl<'a> FastSyncReadPacket<'a> {
-    /// `max_slots` bounds how many ids the walk inspects; callers with a
-    /// fixed slot budget pass it in so a malformed request can't unbalance
-    /// downstream loops. Returns `None` if our id isn't in the list or the
-    /// list exceeds `max_slots`.
+    /// `max_slots` bounds the walk so a malformed request can't unbalance
+    /// downstream loops. Returns `None` if `id` isn't present or the list
+    /// exceeds `max_slots`.
     pub fn find_slot(&self, id: u8, max_slots: usize) -> Option<FastSlotInfo> {
         let length = self.header.length.get();
         let mut our_slot = None;
@@ -153,7 +149,7 @@ impl<'a> FastSyncReadPacket<'a> {
 }
 
 impl<'a> FastBulkReadPacket<'a> {
-    /// `max_slots` bounds how many entries the walk inspects.
+    /// `max_slots` bounds the entry walk; see [`FastSyncReadPacket::find_slot`].
     pub fn find_slot(&self, id: u8, max_slots: usize) -> Option<FastSlotInfo> {
         let mut found: Option<(usize, u16, u16, u32)> = None;
         let mut n_slots = 0usize;
@@ -192,14 +188,12 @@ impl<'a> FastBulkReadPacket<'a> {
 }
 
 impl<'a> SyncWritePacket<'a> {
-    /// Returns the typed entry for `id`, or `None` if not present.
     pub fn find_entry(&self, id: u8) -> Option<SyncWriteEntry<'a>> {
         self.entries().find(|e| e.id == id)
     }
 }
 
 impl<'a> BulkWritePacket<'a> {
-    /// Returns the typed entry for `id`, or `None` if not present.
     pub fn find_entry(&self, id: u8) -> Option<BulkWriteEntry<'a>> {
         self.entries().find(|e| e.id == id)
     }
@@ -273,9 +267,21 @@ mod tests {
     #[test]
     fn sync_read_find_slot_locates_id_and_offset() {
         let buf: [u8; 12 + 3] = [
-            0xFF, 0xFF, 0xFD, 0x00, 0xFE, 0x09, 0x00, Instruction::SyncRead.as_u8(), //
-            0x50, 0x00, 0x04, 0x00, //
-            1, 2, 3,
+            0xFF,
+            0xFF,
+            0xFD,
+            0x00,
+            0xFE,
+            0x09,
+            0x00,
+            Instruction::SyncRead.as_u8(), //
+            0x50,
+            0x00,
+            0x04,
+            0x00, //
+            1,
+            2,
+            3,
         ];
         let p = make_sync_read(&buf);
         assert_eq!(
@@ -306,9 +312,24 @@ mod tests {
     #[test]
     fn bulk_read_find_slot_carries_per_entry_addr_and_length() {
         let buf: [u8; 8 + 10] = [
-            0xFF, 0xFF, 0xFD, 0x00, 0xFE, 0x0D, 0x00, Instruction::BulkRead.as_u8(), //
-            1, 0x10, 0x00, 0x04, 0x00, // id=1 addr=0x0010 len=4
-            2, 0x20, 0x00, 0x08, 0x00, // id=2 addr=0x0020 len=8
+            0xFF,
+            0xFF,
+            0xFD,
+            0x00,
+            0xFE,
+            0x0D,
+            0x00,
+            Instruction::BulkRead.as_u8(), //
+            1,
+            0x10,
+            0x00,
+            0x04,
+            0x00, // id=1 addr=0x0010 len=4
+            2,
+            0x20,
+            0x00,
+            0x08,
+            0x00, // id=2 addr=0x0020 len=8
         ];
         let p = make_bulk_read(&buf, 2);
         let i0 = p.find_slot(1).unwrap();
@@ -328,9 +349,21 @@ mod tests {
     #[test]
     fn fast_sync_find_slot_populates_packet_length_and_offset() {
         let buf: [u8; 12 + 3] = [
-            0xFF, 0xFF, 0xFD, 0x00, 0xFE, 0x09, 0x00, Instruction::FastSyncRead.as_u8(), //
-            0x10, 0x00, 0x02, 0x00, //
-            9, 7, 0,
+            0xFF,
+            0xFF,
+            0xFD,
+            0x00,
+            0xFE,
+            0x09,
+            0x00,
+            Instruction::FastSyncRead.as_u8(), //
+            0x10,
+            0x00,
+            0x02,
+            0x00, //
+            9,
+            7,
+            0,
         ];
         let p = make_fast_sync_read(&buf);
         let info = p.find_slot(0, 32).unwrap();
@@ -346,10 +379,29 @@ mod tests {
     #[test]
     fn fast_bulk_find_slot_handles_varying_lengths() {
         let buf: [u8; 8 + 15] = [
-            0xFF, 0xFF, 0xFD, 0x00, 0xFE, 0x12, 0x00, Instruction::FastBulkRead.as_u8(), //
-            1, 0, 0, 4, 0, //
-            2, 0, 0, 8, 0, //
-            3, 0, 0, 2, 0,
+            0xFF,
+            0xFF,
+            0xFD,
+            0x00,
+            0xFE,
+            0x12,
+            0x00,
+            Instruction::FastBulkRead.as_u8(), //
+            1,
+            0,
+            0,
+            4,
+            0, //
+            2,
+            0,
+            0,
+            8,
+            0, //
+            3,
+            0,
+            0,
+            2,
+            0,
         ];
         let p = make_fast_bulk_read(&buf, 3);
         assert_eq!(p.find_slot(1, 32).unwrap().bytes_before, 0);
@@ -383,10 +435,26 @@ mod tests {
     #[test]
     fn sync_write_find_entry_returns_target() {
         let buf: [u8; 12 + 8] = [
-            0xFF, 0xFF, 0xFD, 0x00, 0xFE, 0x0C, 0x00, Instruction::SyncWrite.as_u8(), //
-            0x50, 0x00, 0x03, 0x00, //
-            1, 10, 11, 12, //
-            2, 20, 21, 22,
+            0xFF,
+            0xFF,
+            0xFD,
+            0x00,
+            0xFE,
+            0x0C,
+            0x00,
+            Instruction::SyncWrite.as_u8(), //
+            0x50,
+            0x00,
+            0x03,
+            0x00, //
+            1,
+            10,
+            11,
+            12, //
+            2,
+            20,
+            21,
+            22,
         ];
         let p = make_sync_write(&buf);
         let e = p.find_entry(2).unwrap();
@@ -398,9 +466,31 @@ mod tests {
     #[test]
     fn bulk_write_find_entry_returns_target_with_addr() {
         let buf: [u8; 8 + 17] = [
-            0xFF, 0xFF, 0xFD, 0x00, 0xFE, 0x11, 0x00, Instruction::BulkWrite.as_u8(), //
-            1, 0x50, 0x00, 0x03, 0x00, 0xAA, 0xBB, 0xCC, //
-            2, 0x54, 0x02, 0x04, 0x00, 0x10, 0x20, 0x30, 0x40,
+            0xFF,
+            0xFF,
+            0xFD,
+            0x00,
+            0xFE,
+            0x11,
+            0x00,
+            Instruction::BulkWrite.as_u8(), //
+            1,
+            0x50,
+            0x00,
+            0x03,
+            0x00,
+            0xAA,
+            0xBB,
+            0xCC, //
+            2,
+            0x54,
+            0x02,
+            0x04,
+            0x00,
+            0x10,
+            0x20,
+            0x30,
+            0x40,
         ];
         let p = make_bulk_write(&buf);
         let e = p.find_entry(2).unwrap();

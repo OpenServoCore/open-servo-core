@@ -1,10 +1,9 @@
-//! Frame header overlay — present at offset 0 of every DXL 2.0 packet.
+//! Frame header overlay -- at offset 0 of every DXL 2.0 packet.
 
 use super::instruction::InstructionByte;
 
-/// Byte-aligned little-endian u16. Two `u8` fields keep alignment at 1 so
-/// every overlay struct that contains one stays alignment-1 and casts
-/// soundly from any byte offset.
+/// Little-endian u16 as two `u8` fields -- alignment 1, so containing
+/// overlay structs cast soundly from any byte offset.
 #[repr(C)]
 #[derive(Copy, Clone, Debug)]
 pub struct U16Le {

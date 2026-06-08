@@ -1,23 +1,15 @@
-//! Frame emitters. Three structs cover the three frame shapes a master or
-//! slave emits onto a DXL 2.0 bus:
+//! Frame emitters for the three DXL 2.0 frame shapes:
 //!
-//! - [`InstructionEmitter`] — request frames from a master.
-//! - [`StatusEmitter`]      — Status reply frames from a slave.
-//! - [`SlotEmitter`]        — one slave's slice of a Fast Sync/Bulk Read
-//!                           coalesced reply chain.
+//! - [`InstructionEmitter`] -- master -> slave request frames
+//! - [`StatusEmitter`]      -- slave -> master Status reply frames
+//! - [`SlotEmitter`]        -- one slave's slice of a coalesced Fast
+//!                           Sync/Bulk Read reply chain
 //!
-//! Each emitter borrows the caller's TX buffer for its lifetime and emits
-//! one frame per method call. The CRC type parameter is bound at
-//! construction so call sites don't repeat the generic.
-//!
-//! Two ergonomics: each emitter exposes both a per-variant fluent API
-//! (`.ping(...)`, `.empty(...)`, `.first(...)`, etc.) for callers building
-//! from primitives, and a single `.emit(...)` that consumes the unified
-//! decoder enum (`Packet<'_>` / `Status<'_>` / `Slot<'_>` + `SlotPosition`)
-//! for round-trip / forwarding use cases. The unified `emit()` handles
-//! every variant of its input enum — there are no "decode-only" variants
-//! that the emitter refuses; wire-byte production is always well-defined
-//! from the payload bytes the variant carries.
+//! Each emitter borrows the caller's TX buffer and emits one frame per
+//! method call. Each exposes a per-variant fluent API plus a unified
+//! `.emit(...)` that round-trips the matching decoder enum
+//! (`Packet<'_>` / `Status<'_>` / `Slot<'_>` + `SlotPosition`). The
+//! unified path handles every variant -- no decode-only refusals.
 
 #![allow(dead_code)]
 
@@ -34,12 +26,11 @@ use crate::constants::{BROADCAST_ID, HEADER, STUFFING_BYTE, STUFFING_TRIGGER};
 use crate::crc::CrcUmts;
 use crate::packet::{BulkReadEntry, Instruction, Slot};
 
-/// Emit one standalone DXL 2.0 frame: header + id + length + instruction +
-/// stuffed params + CRC. `params` is a slice of chunks concatenated in order
-/// to form the logical (pre-stuffing) parameter region; byte stuffing of the
-/// `0xFF 0xFF 0xFD` trigger is applied inline as bytes are pushed. The CRC
-/// runs over the wire bytes (header through stuffed params). On failure
-/// `out` is truncated back to its entry length so prior frames stay intact.
+/// Emit one DXL 2.0 frame: header + id + length + instruction + stuffed
+/// params + CRC. `params` chunks form the logical parameter region; the
+/// `0xFF 0xFF 0xFD` trigger is stuffed inline. CRC runs over the wire bytes
+/// (header through stuffed params). On failure `out` is truncated back to
+/// its entry length so prior frames stay intact.
 pub(super) fn emit_frame<W: WriteBuf, CRC: CrcUmts>(
     out: &mut W,
     crc: &mut CRC,
@@ -81,7 +72,7 @@ fn emit_frame_inner<W: WriteBuf, CRC: CrcUmts>(
     out.push(instruction)?;
 
     // Seed the sliding window with the instruction byte so a trigger that
-    // straddles the instr→params boundary still emits the stuffing FD.
+    // straddles the instr->params boundary still emits the stuffing FD.
     let mut last2 = [0u8, instruction];
     for chunk in params {
         for &b in *chunk {

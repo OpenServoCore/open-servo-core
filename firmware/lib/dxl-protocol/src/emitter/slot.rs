@@ -1,5 +1,4 @@
-//! Slot emitter — one slave's slice of a Fast Sync/Bulk Read coalesced
-//! reply chain.
+//! One slave's slice of a Fast Sync/Bulk Read coalesced reply chain.
 
 #![allow(dead_code)]
 
@@ -23,8 +22,7 @@ impl<'a, W: WriteBuf, CRC: CrcUmts> SlotEmitter<'a, W, CRC> {
         }
     }
 
-    /// Single-slot reply: full Status header + slot body + locally-
-    /// computed CRC over the bytes just emitted.
+    /// Single-slot reply: Status header + slot body + locally-computed CRC.
     pub fn only(&mut self, slot: &Slot<'_>, packet_length: u16) -> Result<(), WriteError> {
         let start = self.out.len();
         match self.only_inner(slot, packet_length, start) {
@@ -52,8 +50,7 @@ impl<'a, W: WriteBuf, CRC: CrcUmts> SlotEmitter<'a, W, CRC> {
         Ok(())
     }
 
-    /// First of N slots: full Status header + slot body, no CRC
-    /// (successors continue).
+    /// First of N: Status header + slot body, no CRC (successors continue).
     pub fn first(&mut self, slot: &Slot<'_>, packet_length: u16) -> Result<(), WriteError> {
         let start = self.out.len();
         match self.first_inner(slot, packet_length) {
@@ -71,7 +68,7 @@ impl<'a, W: WriteBuf, CRC: CrcUmts> SlotEmitter<'a, W, CRC> {
         Ok(())
     }
 
-    /// Middle slot in an N-slot chain: slot body only.
+    /// Body only.
     pub fn middle(&mut self, slot: &Slot<'_>) -> Result<(), WriteError> {
         let start = self.out.len();
         match emit_slot_body(self.out, slot) {
@@ -83,11 +80,10 @@ impl<'a, W: WriteBuf, CRC: CrcUmts> SlotEmitter<'a, W, CRC> {
         }
     }
 
-    /// Last slot in an N-slot chain: slot body + caller-supplied CRC bytes.
-    /// Chain producers accumulate the running CRC across prior slaves' wire
-    /// bytes (which only exist at slot-fire time), so chip-side callers pass
-    /// a sentinel here at build time and patch the trailing two bytes with
-    /// the real CRC at fire time.
+    /// Body + caller-supplied CRC bytes. Chain producers don't know the
+    /// running CRC at build time (prior slaves' wire bytes only exist at
+    /// fire time), so chip-side callers pass a sentinel and patch the
+    /// trailing two bytes at fire time.
     pub fn last(&mut self, slot: &Slot<'_>, crc: u16) -> Result<(), WriteError> {
         let start = self.out.len();
         match self.last_inner(slot, crc) {
@@ -106,8 +102,8 @@ impl<'a, W: WriteBuf, CRC: CrcUmts> SlotEmitter<'a, W, CRC> {
         Ok(())
     }
 
-    /// Emit one slot — dispatches on [`SlotPosition`]. All variants are
-    /// reachable; no programmer-error route.
+    /// Dispatch on [`SlotPosition`]. Every variant is reachable; no
+    /// programmer-error route.
     pub fn emit(&mut self, slot: &Slot<'_>, position: SlotPosition) -> Result<(), WriteError> {
         match position {
             SlotPosition::Only { packet_length } => self.only(slot, packet_length),
@@ -183,13 +179,28 @@ mod tests {
         w.last(&s2, crc).unwrap();
 
         let expected = [
-            0xFF, 0xFF, 0xFD, 0x00, // sync
-            BROADCAST_ID, 0x0F, 0x00, // len = 15
+            0xFF,
+            0xFF,
+            0xFD,
+            0x00, // sync
+            BROADCAST_ID,
+            0x0F,
+            0x00,                        // len = 15
             Instruction::Status.as_u8(), // 0x55
-            0x00, 1, 0xAA, 0xBB, // slot 0: err, id, data
-            0x05, 2, 0xCC, 0xDD, // slot 1
-            0x00, 3, 0xEE, 0xFF, // slot 2
-            0xAA, 0xBB, // crc (caller-supplied)
+            0x00,
+            1,
+            0xAA,
+            0xBB, // slot 0: err, id, data
+            0x05,
+            2,
+            0xCC,
+            0xDD, // slot 1
+            0x00,
+            3,
+            0xEE,
+            0xFF, // slot 2
+            0xAA,
+            0xBB, // crc (caller-supplied)
         ];
         assert_eq!(&buf[..], &expected[..]);
     }
@@ -227,7 +238,8 @@ mod tests {
         let crc = u16::from_le_bytes([0xAA, 0xBB]);
 
         let mut e = SlotEmitter::<_, Crc>::new(&mut emitted_via_emit);
-        e.emit(&s0, SlotPosition::First { packet_length: 15 }).unwrap();
+        e.emit(&s0, SlotPosition::First { packet_length: 15 })
+            .unwrap();
         e.emit(&s1, SlotPosition::Middle).unwrap();
         e.emit(&s2, SlotPosition::Last { crc }).unwrap();
 

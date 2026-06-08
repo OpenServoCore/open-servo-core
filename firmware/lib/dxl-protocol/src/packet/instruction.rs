@@ -1,17 +1,12 @@
-//! DXL 2.0 instruction byte + per-instruction request packet overlays.
-//!
-//! Each `#[repr(C)]` struct mirrors the on-the-wire (unstuffed) byte layout
-//! exactly, with alignment 1 — so the decoder can cast a `&[u8]` accumulator
-//! into any of these structs at any offset.
+//! Instruction byte + per-instruction request packet overlays.
 
 #![allow(dead_code)]
 
 use super::entries::{BulkReadEntry, BulkWriteEntries, SyncWriteEntries};
 use super::header::{Header, U16Le};
 
-/// DXL 2.0 instruction byte. `Ext(b)` carries any byte outside the standard
-/// set — construct via [`Self::from_u8`], which routes unknown bytes there;
-/// pattern-match `Ext(b)` to dispatch to a chip-specific extension handler.
+/// DXL 2.0 instruction byte. `Ext(b)` carries any non-standard byte --
+/// pattern-match on it to dispatch chip-specific extensions.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub enum Instruction {
     Ping,
@@ -56,8 +51,6 @@ impl Instruction {
         }
     }
 
-    /// Total: standard bytes map to their named variant; everything else
-    /// becomes [`Self::Ext`] for extension dispatch.
     pub const fn from_u8(b: u8) -> Self {
         match b {
             0x01 => Self::Ping,
@@ -81,9 +74,8 @@ impl Instruction {
     }
 }
 
-/// 1-byte wire-overlay wrapper for the instruction field. Round-trips any
-/// byte; vendor/extension bytes surface via [`Instruction::Ext`] from
-/// [`kind`](Self::kind).
+/// 1-byte wire overlay for the instruction field. Round-trips any byte;
+/// non-standard bytes surface as [`Instruction::Ext`] via [`kind`](Self::kind).
 #[repr(transparent)]
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub struct InstructionByte(pub u8);
@@ -103,7 +95,7 @@ impl InstructionByte {
     }
 }
 
-// ───── fixed-shape request overlays ─────
+// ----- fixed-shape request overlays -----
 
 #[repr(C)]
 #[derive(Copy, Clone, Debug)]
@@ -193,7 +185,7 @@ pub struct RawHeader {
     pub header: Header,
 }
 
-// ───── variable-length request wrappers ─────
+// ----- variable-length request wrappers -----
 
 #[derive(Copy, Clone, Debug)]
 pub struct WritePacket<'a> {
@@ -337,12 +329,18 @@ mod tests {
     #[test]
     fn read_packet_overlay() {
         let bytes = [
-            0xFF, 0xFF, 0xFD, 0x00, // sync
+            0xFF,
+            0xFF,
+            0xFD,
+            0x00, // sync
             0x07, // id
-            0x07, 0x00, // len = 7
+            0x07,
+            0x00,                      // len = 7
             Instruction::Read.as_u8(), // instruction
-            0x84, 0x00, // addr = 0x0084
-            0x04, 0x00, // length = 4
+            0x84,
+            0x00, // addr = 0x0084
+            0x04,
+            0x00, // length = 4
         ];
         let p: &ReadPacket = unsafe { &*(bytes.as_ptr() as *const ReadPacket) };
         assert_eq!(p.header.sync, [0xFF, 0xFF, 0xFD, 0x00]);
@@ -364,11 +362,26 @@ mod tests {
     #[test]
     fn sync_write_entries_walks_full_entries() {
         let buf: [u8; 12 + 8] = [
-            0xFF, 0xFF, 0xFD, 0x00, 0xFE, 0x0C, 0x00,
+            0xFF,
+            0xFF,
+            0xFD,
+            0x00,
+            0xFE,
+            0x0C,
+            0x00,
             Instruction::SyncWrite.as_u8(),
-            0x50, 0x00, 0x03, 0x00,
-            1, 10, 11, 12, //
-            2, 20, 21, 22,
+            0x50,
+            0x00,
+            0x03,
+            0x00,
+            1,
+            10,
+            11,
+            12, //
+            2,
+            20,
+            21,
+            22,
         ];
         let p = make_sync_write(&buf);
         let mut it = p.entries();
@@ -384,11 +397,24 @@ mod tests {
     #[test]
     fn sync_write_entries_drops_trailing_partial() {
         let buf: [u8; 12 + 6] = [
-            0xFF, 0xFF, 0xFD, 0x00, 0xFE, 0x0C, 0x00,
+            0xFF,
+            0xFF,
+            0xFD,
+            0x00,
+            0xFE,
+            0x0C,
+            0x00,
             Instruction::SyncWrite.as_u8(),
-            0x50, 0x00, 0x03, 0x00,
-            1, 10, 11, 12, //
-            2, 20, // truncated
+            0x50,
+            0x00,
+            0x03,
+            0x00,
+            1,
+            10,
+            11,
+            12, //
+            2,
+            20, // truncated
         ];
         let p = make_sync_write(&buf);
         assert_eq!(p.entries().count(), 1);
@@ -405,10 +431,31 @@ mod tests {
     #[test]
     fn bulk_write_entries_walks_varying_lengths() {
         let buf: [u8; 8 + 17] = [
-            0xFF, 0xFF, 0xFD, 0x00, 0xFE, 0x11, 0x00,
+            0xFF,
+            0xFF,
+            0xFD,
+            0x00,
+            0xFE,
+            0x11,
+            0x00,
             Instruction::BulkWrite.as_u8(), //
-            1, 0x50, 0x00, 0x03, 0x00, 0xAA, 0xBB, 0xCC, //
-            2, 0x54, 0x02, 0x04, 0x00, 0x10, 0x20, 0x30, 0x40,
+            1,
+            0x50,
+            0x00,
+            0x03,
+            0x00,
+            0xAA,
+            0xBB,
+            0xCC, //
+            2,
+            0x54,
+            0x02,
+            0x04,
+            0x00,
+            0x10,
+            0x20,
+            0x30,
+            0x40,
         ];
         let p = make_bulk_write(&buf);
         let mut it = p.entries();
@@ -426,9 +473,21 @@ mod tests {
     #[test]
     fn bulk_write_entries_drops_truncated_data() {
         let buf: [u8; 8 + 7] = [
-            0xFF, 0xFF, 0xFD, 0x00, 0xFE, 0x07, 0x00,
+            0xFF,
+            0xFF,
+            0xFD,
+            0x00,
+            0xFE,
+            0x07,
+            0x00,
             Instruction::BulkWrite.as_u8(), //
-            3, 0x00, 0x01, 0x04, 0x00, 0xAA, 0xBB, // claims 4, has 2
+            3,
+            0x00,
+            0x01,
+            0x04,
+            0x00,
+            0xAA,
+            0xBB, // claims 4, has 2
         ];
         let p = make_bulk_write(&buf);
         assert!(p.entries().next().is_none());

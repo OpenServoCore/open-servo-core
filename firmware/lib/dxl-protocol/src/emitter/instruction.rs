@@ -1,4 +1,4 @@
-//! Request frame emitter (master → slave).
+//! Request frame emitter (master -> slave).
 
 #![allow(dead_code)]
 
@@ -154,12 +154,7 @@ impl<'a, W: WriteBuf, CRC: CrcUmts> InstructionEmitter<'a, W, CRC> {
         )
     }
 
-    pub fn fast_sync_read(
-        &mut self,
-        addr: u16,
-        length: u16,
-        ids: &[u8],
-    ) -> Result<(), WriteError> {
+    pub fn fast_sync_read(&mut self, addr: u16, length: u16, ids: &[u8]) -> Result<(), WriteError> {
         let a = addr.to_le_bytes();
         let l = length.to_le_bytes();
         emit_frame(
@@ -181,22 +176,16 @@ impl<'a, W: WriteBuf, CRC: CrcUmts> InstructionEmitter<'a, W, CRC> {
         )
     }
 
-    /// Vendor-extension escape hatch: emit a frame with an arbitrary
-    /// instruction byte. Chip-side extensions (e.g. OSC `Calibrate`) reach
-    /// the wire through this.
+    /// Vendor-extension escape hatch -- emit a frame with an arbitrary
+    /// instruction byte (e.g. OSC `Calibrate`).
     pub fn ext(&mut self, id: u8, instruction: u8, params: &[u8]) -> Result<(), WriteError> {
         emit_frame(self.out, &mut self.crc, id, instruction, &[params])
     }
 
-    /// Emit any packet — dispatches on the unified [`Packet`] enum the
-    /// decoder produces. The intended round-trip path for sniffers,
-    /// bridges, and replay tools that hand a decoded `Packet<'_>` straight
-    /// through to a fresh wire frame.
-    ///
-    /// Handles every variant including [`Packet::Status`]; the wire bytes
-    /// for a Status frame are well-defined from `s.header.error + s.params`
-    /// regardless of which emitter routes them. (For typed slave-side
-    /// reply construction, [`super::StatusEmitter`] is more ergonomic.)
+    /// Round-trip a decoded [`Packet`] back to wire bytes -- for sniffers,
+    /// bridges, and replay tools. Handles every variant including
+    /// [`Packet::Status`]; for slave-side typed Status construction,
+    /// [`super::StatusEmitter`] is more ergonomic.
     pub fn emit(&mut self, packet: &Packet<'_>) -> Result<(), WriteError> {
         match *packet {
             Packet::Ping(p) => self.ping(p.header.id),
@@ -252,7 +241,9 @@ mod tests {
     #[test]
     fn instr_ping() {
         let mut buf = Buf::new();
-        InstructionEmitter::<_, Crc>::new(&mut buf).ping(0x01).unwrap();
+        InstructionEmitter::<_, Crc>::new(&mut buf)
+            .ping(0x01)
+            .unwrap();
         let mut dec: Decoder<32, Crc> = Decoder::new();
         let (step, n) = dec.feed(&buf);
         assert_eq!(n, buf.len());
@@ -583,7 +574,9 @@ mod tests {
         };
 
         let mut b = Buf::new();
-        InstructionEmitter::<_, Crc>::new(&mut b).emit(&pkt).unwrap();
+        InstructionEmitter::<_, Crc>::new(&mut b)
+            .emit(&pkt)
+            .unwrap();
         assert_eq!(&a[..], &b[..]);
     }
 
@@ -602,7 +595,9 @@ mod tests {
         };
 
         let mut b = Buf::new();
-        InstructionEmitter::<_, Crc>::new(&mut b).emit(&pkt).unwrap();
+        InstructionEmitter::<_, Crc>::new(&mut b)
+            .emit(&pkt)
+            .unwrap();
         assert_eq!(&a[..], &b[..]);
     }
 
@@ -621,15 +616,14 @@ mod tests {
         };
 
         let mut b = Buf::new();
-        InstructionEmitter::<_, Crc>::new(&mut b).emit(&pkt).unwrap();
+        InstructionEmitter::<_, Crc>::new(&mut b)
+            .emit(&pkt)
+            .unwrap();
         assert_eq!(&a[..], &b[..]);
     }
 
     #[test]
     fn instruction_emit_forwards_status_packet() {
-        // Relay/sniffer path: a decoded Status packet re-emitted through
-        // InstructionEmitter produces the same wire bytes. Convenience for
-        // direction-agnostic forwarding code.
         let mut a = Buf::new();
         StatusEmitter::<_, Crc>::new(&mut a)
             .read(0x07, StatusError::OK, &[0x10, 0x20, 0x30])
@@ -640,7 +634,9 @@ mod tests {
             other => panic!("expected Packet, got {other:?}"),
         };
         let mut b = Buf::new();
-        InstructionEmitter::<_, Crc>::new(&mut b).emit(&pkt).unwrap();
+        InstructionEmitter::<_, Crc>::new(&mut b)
+            .emit(&pkt)
+            .unwrap();
         assert_eq!(&a[..], &b[..]);
     }
 }

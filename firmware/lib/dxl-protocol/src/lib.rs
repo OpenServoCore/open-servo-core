@@ -1,13 +1,10 @@
 #![no_std]
 //! DXL 2.0 wire-format codec.
 //!
-//! Decode: feed wire bytes to a [`Decoder`](decoder::Decoder); it emits typed
-//! [`Packet`](packet::Packet) variants that overlay the decoder's internal
-//! buffer (zero-copy, alignment-1 `#[repr(C)]` structs).
-//!
-//! Encode: [`InstructionEmitter`] for request frames, [`StatusEmitter`] for
-//! Status replies, [`SlotEmitter`] for Fast Sync/Bulk Read coalesced reply
-//! slots.
+//! [`Decoder`](decoder::Decoder) emits typed [`Packet`](packet::Packet)
+//! variants that overlay its internal buffer (zero-copy, alignment-1
+//! `#[repr(C)]` structs). [`InstructionEmitter`], [`StatusEmitter`], and
+//! [`SlotEmitter`] cover the three frame shapes.
 
 mod buf;
 mod constants;
@@ -20,8 +17,8 @@ pub mod packet;
 
 pub use buf::{WriteBuf, WriteError};
 pub use constants::{
-    BROADCAST_ID, BULK_REQUEST_SLOT_BYTES, CRC_BYTES, FAST_RESPONSE_SLOT0_BYTES,
-    FAST_RESPONSE_SLOT_BYTES, HEADER, PACKET_LEN_GUARD, REQUEST_HEADER_BYTES,
+    BROADCAST_ID, BULK_REQUEST_SLOT_BYTES, CRC_BYTES, FAST_RESPONSE_SLOT_BYTES,
+    FAST_RESPONSE_SLOT0_BYTES, HEADER, PACKET_LEN_GUARD, REQUEST_HEADER_BYTES,
     RESPONSE_HEADER_BYTES, SYNC_REQUEST_SLOT_BYTES,
 };
 pub use crc::CrcUmts;
