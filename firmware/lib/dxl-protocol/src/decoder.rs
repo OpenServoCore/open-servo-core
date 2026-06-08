@@ -252,6 +252,15 @@ impl<const M: usize> Decoder<M> {
         StepResult::Continue
     }
 
+    /// Re-emit the packet from the decoder's accumulator without consuming
+    /// or advancing state. Sound only after `feed` returned `Step::Packet`
+    /// on this decoder; the underlying buffer is initialized for
+    /// `logical_n` bytes by construction at that point. Lets callers reborrow
+    /// the packet immutably after `feed`'s mutable borrow has been released.
+    pub fn dispatch_packet<'s>(&'s self) -> Packet<'s> {
+        self.dispatch()
+    }
+
     fn dispatch<'s>(&'s self) -> Packet<'s> {
         let base = self.buf.as_ptr() as *const u8;
         let instr = self.read_byte(HDR_INSTR_OFFSET);

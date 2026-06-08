@@ -13,9 +13,9 @@
 //! Extension hooks: implement [`InstructionExt`] to add custom request
 //! instructions; implement [`StatusExt`] to add custom typed status flavors.
 
-mod decoder;
+pub mod decoder;
 mod instruction;
-mod packet;
+pub mod packet;
 mod typed;
 mod wire;
 

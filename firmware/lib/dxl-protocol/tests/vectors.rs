@@ -1,24 +1,33 @@
+//! Reference vector decoding through the streaming Decoder, plus the
+//! slot-writer's positional spec. Writer-side helpers still consume the
+//! legacy Packet shapes; the parser path exercises the new Decoder +
+//! overlay Packet.
+
+use dxl_protocol::decoder::{Decoder, ResyncKind, Step};
+use dxl_protocol::packet as overlay;
 use dxl_protocol::*;
 use heapless::Vec;
 
-/// Local convenience: bind CRC + extension generics so call sites stay short.
-struct Wire;
-impl Wire {
-    fn parse_one<'a>(
-        head: &'a [u8],
-        tail: &'a [u8],
-    ) -> Result<(Packet<'a, NoInstructionExt>, usize), ParseError> {
-        parse_packet::<SoftwareCrcUmts, NoInstructionExt>(RxView::ring(head, tail))
-    }
-    fn write<W: WriteBuf>(out: &mut W, p: &Packet<'_, NoInstructionExt>) -> Result<(), WriteError> {
-        write_packet::<W, SoftwareCrcUmts, NoInstructionExt>(out, p)
-    }
-    fn write_slot<W: WriteBuf>(
-        out: &mut W,
-        s: &Slot<'_>,
-        pos: SlotPosition,
-    ) -> Result<(), WriteError> {
-        dxl_protocol::write_slot::<W, SoftwareCrcUmts>(out, s, pos)
+type Crc = SoftwareCrcUmts;
+
+fn write_legacy<W: WriteBuf>(out: &mut W, p: &Packet<'_, NoInstructionExt>) -> Result<(), WriteError> {
+    write_packet::<W, Crc, NoInstructionExt>(out, p)
+}
+
+fn write_legacy_slot<W: WriteBuf>(
+    out: &mut W,
+    s: &Slot<'_>,
+    pos: SlotPosition,
+) -> Result<(), WriteError> {
+    write_slot::<W, Crc>(out, s, pos)
+}
+
+fn feed_full<'a, const M: usize>(dec: &'a mut Decoder<M>, wire: &[u8]) -> overlay::Packet<'a> {
+    let (step, n) = dec.feed::<Crc>(wire);
+    assert_eq!(n, wire.len(), "decoder didn't consume the full frame");
+    match step {
+        Step::Packet(p) => p,
+        other => panic!("expected Packet, got {other:?}"),
     }
 }
 
@@ -28,7 +37,6 @@ const READ_ID1_ADDR132_LEN4: &[u8] = &[
     0xFF, 0xFF, 0xFD, 0x00, 0x01, 0x07, 0x00, 0x02, 0x84, 0x00, 0x04, 0x00, 0x1D, 0x15,
 ];
 
-// Write 512 to Goal Position (addr 116, 4 B) on ID 1.
 const WRITE_ID1_GOAL512: &[u8] = &[
     0xFF, 0xFF, 0xFD, 0x00, 0x01, 0x09, 0x00, 0x03, 0x74, 0x00, 0x00, 0x02, 0x00, 0x00, 0xCA, 0x89,
 ];
@@ -87,7 +95,7 @@ fn slot(id: u8, error: StatusError, data: &[u8]) -> Slot<'_> {
 #[test]
 fn write_slot_first_emits_header_then_body() {
     let mut out: Vec<u8, 32> = Vec::new();
-    Wire::write_slot(
+    write_legacy_slot(
         &mut out,
         &slot(5, StatusError::None, BODY_5),
         SlotPosition::First {
@@ -106,7 +114,7 @@ fn write_slot_first_emits_header_then_body() {
 #[test]
 fn write_slot_middle_emits_body_only() {
     let mut out: Vec<u8, 32> = Vec::new();
-    Wire::write_slot(
+    write_legacy_slot(
         &mut out,
         &slot(6, StatusError::None, BODY_6),
         SlotPosition::Middle,
@@ -118,7 +126,7 @@ fn write_slot_middle_emits_body_only() {
 #[test]
 fn write_slot_last_reserves_crc_placeholder() {
     let mut out: Vec<u8, 32> = Vec::new();
-    Wire::write_slot(
+    write_legacy_slot(
         &mut out,
         &slot(7, StatusError::None, BODY_7),
         SlotPosition::Last,
@@ -133,7 +141,7 @@ fn write_slot_last_reserves_crc_placeholder() {
 #[test]
 fn write_slot_only_emits_header_body_and_computed_crc() {
     let mut out: Vec<u8, 32> = Vec::new();
-    Wire::write_slot(
+    write_legacy_slot(
         &mut out,
         &slot(5, StatusError::None, BODY_5),
         SlotPosition::Only {
@@ -154,7 +162,7 @@ fn write_slot_only_emits_header_body_and_computed_crc() {
 #[test]
 fn write_slot_three_slave_response_assembles_to_valid_status_frame() {
     let mut out: Vec<u8, 64> = Vec::new();
-    Wire::write_slot(
+    write_legacy_slot(
         &mut out,
         &slot(5, StatusError::None, BODY_5),
         SlotPosition::First {
@@ -162,13 +170,13 @@ fn write_slot_three_slave_response_assembles_to_valid_status_frame() {
         },
     )
     .unwrap();
-    Wire::write_slot(
+    write_legacy_slot(
         &mut out,
         &slot(6, StatusError::None, BODY_6),
         SlotPosition::Middle,
     )
     .unwrap();
-    Wire::write_slot(
+    write_legacy_slot(
         &mut out,
         &slot(7, StatusError::None, BODY_7),
         SlotPosition::Last,
@@ -195,7 +203,7 @@ fn write_slot_three_slave_response_assembles_to_valid_status_frame() {
 #[test]
 fn write_slot_overflow_truncates() {
     let mut out: Vec<u8, 8> = Vec::new();
-    let err = Wire::write_slot(
+    let err = write_legacy_slot(
         &mut out,
         &slot(5, StatusError::None, BODY_5),
         SlotPosition::First {
@@ -209,12 +217,9 @@ fn write_slot_overflow_truncates() {
 
 #[test]
 fn write_slot_error_emits_caller_supplied_payload_with_error_byte() {
-    // Spec: a Fast Read failure emits `length` zero bytes for the data field
-    // so the response stays positionally aligned. The slave is expected to
-    // pass a zero-buffer slice as the slot's `data`.
     let zero = [0u8; 4];
     let mut out: Vec<u8, 32> = Vec::new();
-    Wire::write_slot(
+    write_legacy_slot(
         &mut out,
         &slot(7, StatusError::DataRange, &zero),
         SlotPosition::Middle,
@@ -228,108 +233,112 @@ fn write_slot_error_emits_caller_supplied_payload_with_error_byte() {
 
 #[test]
 fn parse_ping() {
-    let (pkt, n) = Wire::parse_one(PING_ID1, &[]).unwrap();
-    assert_eq!(n, PING_ID1.len());
-    match pkt {
-        Packet::Ping(p) => assert_eq!(p.id, 1),
-        other => panic!("not Ping: {:?}", other),
+    let mut dec: Decoder<32> = Decoder::new();
+    match feed_full(&mut dec, PING_ID1) {
+        overlay::Packet::Ping(p) => assert_eq!(p.header.id, 1),
+        other => panic!("not Ping: {other:?}"),
     }
 }
 
 #[test]
-fn parse_one_ring_split_at_every_byte_boundary() {
-    // Walk the split between head/tail through every byte position of each
-    // reference frame and confirm parse_one decodes identically to the
-    // contiguous form. Covers headers spanning the cut, length-byte cuts,
-    // mid-payload cuts, and CRC cuts.
+fn parse_byte_at_a_time_matches_one_shot() {
+    // Walk each reference frame through the Decoder one byte at a time
+    // and confirm the same variant pops out at the last byte.
     for frame in [
         PING_ID1,
         READ_ID1_ADDR132_LEN4,
         WRITE_ID1_GOAL512,
         REBOOT_ID1,
     ] {
-        let (contig_pkt, contig_n) = Wire::parse_one(frame, &[]).unwrap();
-        assert_eq!(contig_n, frame.len());
-        let contig_discriminant = core::mem::discriminant(&contig_pkt);
+        let mut one_shot_dec: Decoder<64> = Decoder::new();
+        let one_shot = feed_full(&mut one_shot_dec, frame);
+        let one_shot_disc = core::mem::discriminant(&one_shot);
 
-        for split in 0..=frame.len() {
-            let (head, tail) = frame.split_at(split);
-            let (pkt, n) = Wire::parse_one(head, tail)
-                .unwrap_or_else(|e| panic!("split={split} frame={frame:02X?}: {e:?}"));
-            assert_eq!(n, frame.len(), "split={split} consumed wrong byte count");
-            assert_eq!(
-                core::mem::discriminant(&pkt),
-                contig_discriminant,
-                "split={split} produced a different packet variant",
+        let mut dec: Decoder<64> = Decoder::new();
+        let last = frame.len() - 1;
+        for (i, &b) in frame.iter().enumerate().take(last) {
+            let (step, n) = dec.feed::<Crc>(&[b]);
+            assert_eq!(n, 1);
+            assert!(
+                matches!(step, Step::NeedMore),
+                "frame {frame:02X?} byte {i}: {step:?}"
             );
+        }
+        let (step, n) = dec.feed::<Crc>(&[frame[last]]);
+        assert_eq!(n, 1);
+        match step {
+            Step::Packet(p) => {
+                assert_eq!(
+                    core::mem::discriminant(&p),
+                    one_shot_disc,
+                    "frame {frame:02X?}: byte-stream produced a different variant",
+                );
+            }
+            other => panic!("frame {frame:02X?}: expected Packet at last byte, got {other:?}"),
         }
     }
 }
 
 #[test]
-fn parse_one_ring_split_recovers_resync_skip() {
-    // Frame preceded by 6 bytes of garbage with the split landing inside
-    // the garbage — parser should resync past it and dispatch the frame.
+fn parse_garbage_then_frame_recovers_frame() {
     let prefix = [0xAAu8, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF];
     let mut combined: Vec<u8, 32> = Vec::new();
     combined.extend_from_slice(&prefix).unwrap();
     combined.extend_from_slice(PING_ID1).unwrap();
 
-    // Split inside the garbage prefix.
-    let (head, tail) = combined.as_slice().split_at(3);
-    match Wire::parse_one(head, tail) {
-        Err(ParseError::Resync { skip }) => assert_eq!(skip, prefix.len()),
-        other => panic!("expected Resync skip=6, got {other:?}"),
+    let mut dec: Decoder<32> = Decoder::new();
+    match feed_full(&mut dec, &combined) {
+        overlay::Packet::Ping(p) => assert_eq!(p.header.id, 1),
+        other => panic!("expected Ping, got {other:?}"),
     }
 }
 
 #[test]
 fn parse_read() {
-    let (pkt, n) = Wire::parse_one(READ_ID1_ADDR132_LEN4, &[]).unwrap();
-    assert_eq!(n, READ_ID1_ADDR132_LEN4.len());
-    match pkt {
-        Packet::Read(p) => {
-            assert_eq!(p.id, 1);
-            assert_eq!(p.address, 132);
-            assert_eq!(p.length, 4);
+    let mut dec: Decoder<32> = Decoder::new();
+    match feed_full(&mut dec, READ_ID1_ADDR132_LEN4) {
+        overlay::Packet::Read(p) => {
+            assert_eq!(p.header.id, 1);
+            assert_eq!(p.addr.get(), 132);
+            assert_eq!(p.length.get(), 4);
         }
-        other => panic!("not Read: {:?}", other),
+        other => panic!("not Read: {other:?}"),
     }
 }
 
 #[test]
 fn parse_write() {
-    let (pkt, n) = Wire::parse_one(WRITE_ID1_GOAL512, &[]).unwrap();
-    assert_eq!(n, WRITE_ID1_GOAL512.len());
-    match pkt {
-        Packet::Write(p) => {
-            assert_eq!(p.id, 1);
-            assert_eq!(p.address, 116);
-            let mut buf = [0u8; 16];
-            let n = p.data.copy_to_slice(&mut buf).unwrap();
-            assert_eq!(&buf[..n], &[0x00, 0x02, 0x00, 0x00]);
+    let mut dec: Decoder<32> = Decoder::new();
+    match feed_full(&mut dec, WRITE_ID1_GOAL512) {
+        overlay::Packet::Write(p) => {
+            assert_eq!(p.header.header.id, 1);
+            assert_eq!(p.header.addr.get(), 116);
+            assert_eq!(p.data, &[0x00, 0x02, 0x00, 0x00]);
         }
-        other => panic!("not Write: {:?}", other),
+        other => panic!("not Write: {other:?}"),
     }
 }
 
 #[test]
 fn parse_reboot() {
-    let (pkt, _) = Wire::parse_one(REBOOT_ID1, &[]).unwrap();
-    assert!(matches!(pkt, Packet::Reboot(RebootPacket { id: 1 })));
+    let mut dec: Decoder<32> = Decoder::new();
+    assert!(matches!(
+        feed_full(&mut dec, REBOOT_ID1),
+        overlay::Packet::Reboot(p) if p.header.id == 1
+    ));
 }
 
 #[test]
 fn write_ping_matches_reference() {
     let mut out: Vec<u8, 32> = Vec::new();
-    Wire::write(&mut out, &Packet::Ping(PingPacket { id: 1 })).unwrap();
+    write_legacy(&mut out, &Packet::Ping(PingPacket { id: 1 })).unwrap();
     assert_eq!(&out[..], PING_ID1);
 }
 
 #[test]
 fn write_read_matches_reference() {
     let mut out: Vec<u8, 32> = Vec::new();
-    Wire::write(
+    write_legacy(
         &mut out,
         &Packet::Read(ReadPacket {
             id: 1,
@@ -345,7 +354,7 @@ fn write_read_matches_reference() {
 fn write_write_matches_reference() {
     let data = [0x00u8, 0x02, 0x00, 0x00];
     let mut out: Vec<u8, 32> = Vec::new();
-    Wire::write(
+    write_legacy(
         &mut out,
         &Packet::Write(WritePacket {
             id: 1,
@@ -360,7 +369,7 @@ fn write_write_matches_reference() {
 #[test]
 fn write_reboot_matches_reference() {
     let mut out: Vec<u8, 32> = Vec::new();
-    Wire::write(&mut out, &Packet::Reboot(RebootPacket { id: 1 })).unwrap();
+    write_legacy(&mut out, &Packet::Reboot(RebootPacket { id: 1 })).unwrap();
     assert_eq!(&out[..], REBOOT_ID1);
 }
 
@@ -368,7 +377,7 @@ fn write_reboot_matches_reference() {
 fn write_status_round_trip() {
     let params = [0x06u8, 0x04, 0x26];
     let mut out: Vec<u8, 64> = Vec::new();
-    Wire::write(
+    write_legacy(
         &mut out,
         &Packet::Status(RawStatus {
             id: 1,
@@ -378,17 +387,14 @@ fn write_status_round_trip() {
     )
     .unwrap();
 
-    let (pkt, n) = Wire::parse_one(&out, &[]).unwrap();
-    assert_eq!(n, out.len());
-    match pkt {
-        Packet::Status(p) => {
-            assert_eq!(p.id, 1);
-            assert_eq!(p.error, 0);
-            let mut buf = [0u8; 16];
-            let n = p.params.copy_to_slice(&mut buf).unwrap();
-            assert_eq!(&buf[..n], &params);
+    let mut dec: Decoder<64> = Decoder::new();
+    match feed_full(&mut dec, &out) {
+        overlay::Packet::Status(p) => {
+            assert_eq!(p.header.header.id, 1);
+            assert_eq!(p.error(), 0);
+            assert_eq!(p.params, &params);
         }
-        other => panic!("not Status: {:?}", other),
+        other => panic!("not Status: {other:?}"),
     }
 }
 
@@ -396,7 +402,7 @@ fn write_status_round_trip() {
 fn stuffing_round_trip() {
     let data = [0xFFu8, 0xFF, 0xFD, 0x42, 0xFF, 0xFF, 0xFD, 0xFD, 0x55];
     let mut out: Vec<u8, 64> = Vec::new();
-    Wire::write(
+    write_legacy(
         &mut out,
         &Packet::Write(WritePacket {
             id: 1,
@@ -406,21 +412,17 @@ fn stuffing_round_trip() {
     )
     .unwrap();
 
-    let raw_count = out.iter().filter(|&&b| b == 0xFD).count();
-    assert!(raw_count >= 4, "expected stuffed bytes: {:02X?}", out);
+    let fds = out.iter().filter(|&&b| b == 0xFD).count();
+    assert!(fds >= 4, "expected stuffed bytes: {:02X?}", out);
 
-    let (pkt, n) = Wire::parse_one(&out, &[]).unwrap();
-    assert_eq!(n, out.len());
-    match pkt {
-        Packet::Write(p) => {
-            assert_eq!(p.id, 1);
-            assert_eq!(p.address, 0x0040);
-            assert_eq!(p.data.unstuffed_len(), data.len());
-            let mut buf = [0u8; 32];
-            let n = p.data.copy_to_slice(&mut buf).unwrap();
-            assert_eq!(&buf[..n], &data);
+    let mut dec: Decoder<64> = Decoder::new();
+    match feed_full(&mut dec, &out) {
+        overlay::Packet::Write(p) => {
+            assert_eq!(p.header.header.id, 1);
+            assert_eq!(p.header.addr.get(), 0x0040);
+            assert_eq!(p.data, &data);
         }
-        other => panic!("not Write: {:?}", other),
+        other => panic!("not Write: {other:?}"),
     }
 }
 
@@ -428,7 +430,7 @@ fn stuffing_round_trip() {
 fn stuffing_at_field_boundary() {
     let data = [0xFDu8, 0x11, 0x22];
     let mut out: Vec<u8, 64> = Vec::new();
-    Wire::write(
+    write_legacy(
         &mut out,
         &Packet::Write(WritePacket {
             id: 1,
@@ -437,59 +439,39 @@ fn stuffing_at_field_boundary() {
         }),
     )
     .unwrap();
-
-    let (pkt, _) = Wire::parse_one(&out, &[]).unwrap();
-    match pkt {
-        Packet::Write(p) => {
-            assert_eq!(p.address, 0xFFFF);
-            let mut buf = [0u8; 16];
-            let n = p.data.copy_to_slice(&mut buf).unwrap();
-            assert_eq!(&buf[..n], &data);
+    let mut dec: Decoder<64> = Decoder::new();
+    match feed_full(&mut dec, &out) {
+        overlay::Packet::Write(p) => {
+            assert_eq!(p.header.addr.get(), 0xFFFF);
+            assert_eq!(p.data, &data);
         }
-        _ => panic!("not Write"),
+        other => panic!("not Write: {other:?}"),
     }
 }
 
 #[test]
-fn resync_skips_leading_garbage() {
-    let mut buf: Vec<u8, 64> = Vec::new();
-    buf.extend_from_slice(&[0x00, 0x11, 0x22]).unwrap();
-    buf.extend_from_slice(PING_ID1).unwrap();
-
-    match Wire::parse_one(&buf, &[]) {
-        Err(ParseError::Resync { skip: 3 }) => {}
-        other => panic!("expected Resync(3), got {:?}", other),
+fn incomplete_yields_needmore() {
+    for n in [4usize, 6, 7] {
+        let partial = &PING_ID1[..n];
+        let mut dec: Decoder<32> = Decoder::new();
+        let (step, consumed) = dec.feed::<Crc>(partial);
+        assert_eq!(consumed, n);
+        assert!(
+            matches!(step, Step::NeedMore),
+            "partial len {n}: {step:?}"
+        );
     }
-
-    let (pkt, n) = Wire::parse_one(&buf[3..], &[]).unwrap();
-    assert_eq!(n, PING_ID1.len());
-    assert!(matches!(pkt, Packet::Ping(PingPacket { id: 1 })));
 }
 
 #[test]
-fn incomplete_returns_err() {
-    let partial = &PING_ID1[..6];
-    assert!(matches!(
-        Wire::parse_one(partial, &[]),
-        Err(ParseError::Incomplete)
-    ));
-    let partial = &PING_ID1[..7];
-    assert!(matches!(
-        Wire::parse_one(partial, &[]),
-        Err(ParseError::Incomplete)
-    ));
-}
-
-#[test]
-fn bad_crc_is_reported() {
+fn bad_crc_resyncs() {
     let mut bad: Vec<u8, 32> = Vec::new();
     bad.extend_from_slice(PING_ID1).unwrap();
     let last = bad.len() - 1;
     bad[last] ^= 0xFF;
-    match Wire::parse_one(&bad, &[]) {
-        Err(ParseError::BadCrc { skip }) => assert_eq!(skip, 4),
-        other => panic!("expected BadCrc, got {:?}", other),
-    }
+    let mut dec: Decoder<32> = Decoder::new();
+    let (step, _) = dec.feed::<Crc>(&bad);
+    assert!(matches!(step, Step::Resync(ResyncKind::BadCrc)));
 }
 
 #[test]
@@ -497,57 +479,60 @@ fn oversized_length_is_rejected() {
     // length 0xFFFF > PACKET_LEN_GUARD.
     let bad = [0xFFu8, 0xFF, 0xFD, 0x00, 0x01, 0xFF, 0xFF, 0x01];
     assert!((PACKET_LEN_GUARD as u32) < 0xFFFF);
-    match Wire::parse_one(&bad, &[]) {
-        Err(ParseError::BadLength { skip }) => assert_eq!(skip, 4),
-        other => panic!("expected BadLength, got {:?}", other),
-    }
+    let mut dec: Decoder<32> = Decoder::new();
+    let (step, n) = dec.feed::<Crc>(&bad);
+    assert_eq!(n, 7);
+    assert!(matches!(step, Step::Resync(ResyncKind::BadLength)));
 }
 
 #[test]
 fn undersized_length_is_rejected() {
     // length 2 < min 3 (instruction + crc).
     let bad = [0xFFu8, 0xFF, 0xFD, 0x00, 0x01, 0x02, 0x00, 0x01];
-    match Wire::parse_one(&bad, &[]) {
-        Err(ParseError::BadLength { skip }) => assert_eq!(skip, 4),
-        other => panic!("expected BadLength, got {:?}", other),
-    }
+    let mut dec: Decoder<32> = Decoder::new();
+    let (step, n) = dec.feed::<Crc>(&bad);
+    assert_eq!(n, 7);
+    assert!(matches!(step, Step::Resync(ResyncKind::BadLength)));
 }
 
 #[test]
 fn false_header_with_huge_length_does_not_wedge() {
-    // Phantom header with length=0xFFFF: without cap, parser would wait for ~64 KB.
+    // Phantom with length=0xFFFF surfaces BadLength on the byte that
+    // completes the length field; the decoder is reset and a follow-up
+    // valid frame parses on the next feed.
     let mut buf: Vec<u8, 64> = Vec::new();
     buf.extend_from_slice(&[0xFF, 0xFF, 0xFD, 0x00, 0x42, 0xFF, 0xFF, 0x99])
         .unwrap();
     buf.extend_from_slice(PING_ID1).unwrap();
 
-    let skip = match Wire::parse_one(&buf, &[]) {
-        Err(ParseError::BadLength { skip }) => skip,
-        other => panic!("expected BadLength, got {:?}", other),
-    };
-    assert_eq!(skip, 4);
+    let mut dec: Decoder<64> = Decoder::new();
+    let (step, n) = dec.feed::<Crc>(&buf);
+    assert!(matches!(step, Step::Resync(ResyncKind::BadLength)));
+    assert!(n < buf.len());
 
-    let rest = &buf[skip..];
-    let resync = match Wire::parse_one(rest, &[]) {
-        Err(ParseError::Resync { skip }) => skip,
-        other => panic!("expected Resync, got {:?}", other),
-    };
-    let (pkt, n) = Wire::parse_one(&rest[resync..], &[]).unwrap();
-    assert_eq!(n, PING_ID1.len());
-    assert!(matches!(pkt, Packet::Ping(PingPacket { id: 1 })));
+    let (step2, n2) = dec.feed::<Crc>(&buf[n..]);
+    assert!(matches!(step2, Step::Packet(overlay::Packet::Ping(p)) if p.header.id == 1));
+    assert!(n2 <= buf.len() - n);
 }
 
 #[test]
-fn bad_instruction_is_reported() {
+fn unknown_instruction_routes_to_raw() {
+    // CRC-valid frame with an instruction byte the library doesn't know
+    // about — chip extensions dispatch off Packet::Raw rather than failing.
     let mut frame: Vec<u8, 32> = Vec::new();
     frame
         .extend_from_slice(&[0xFF, 0xFF, 0xFD, 0x00, 0x01, 0x03, 0x00, 0x77])
         .unwrap();
     let crc = SoftwareCrcUmts::accumulate(0, &frame);
     frame.extend_from_slice(&crc.to_le_bytes()).unwrap();
-    match Wire::parse_one(&frame, &[]) {
-        Err(ParseError::BadInstruction { skip }) => assert_eq!(skip, frame.len()),
-        other => panic!("expected BadInstruction, got {:?}", other),
+    let mut dec: Decoder<32> = Decoder::new();
+    match feed_full(&mut dec, &frame) {
+        overlay::Packet::Raw(r) => {
+            assert_eq!(r.header.header.id, 1);
+            assert_eq!(r.header.header.instruction, 0x77);
+            assert_eq!(r.params, &[] as &[u8]);
+        }
+        other => panic!("expected Raw, got {other:?}"),
     }
 }
 
@@ -559,9 +544,14 @@ fn instruction_byte_constants() {
     assert_eq!(Instruction::FastBulkRead.as_u8(), 0x9A);
 }
 
-fn round_trip_data(data: &[u8]) -> heapless::Vec<u8, 256> {
+fn fds_in_payload_region(frame: &[u8]) -> usize {
+    let payload = &frame[8..frame.len() - 2];
+    payload.iter().filter(|&&b| b == 0xFD).count()
+}
+
+fn write_with_data(data: &[u8]) -> Vec<u8, 256> {
     let mut out: Vec<u8, 256> = Vec::new();
-    Wire::write(
+    write_legacy(
         &mut out,
         &Packet::Write(WritePacket {
             id: 1,
@@ -570,40 +560,34 @@ fn round_trip_data(data: &[u8]) -> heapless::Vec<u8, 256> {
         }),
     )
     .unwrap();
-    let (pkt, n) = Wire::parse_one(&out, &[]).unwrap();
-    assert_eq!(n, out.len());
-    match pkt {
-        Packet::Write(p) => {
-            assert_eq!(p.address, 0x0010);
-            let mut buf = [0u8; 256];
-            let n = p.data.copy_to_slice(&mut buf).unwrap();
-            let mut got: heapless::Vec<u8, 256> = Vec::new();
-            got.extend_from_slice(&buf[..n]).unwrap();
-            assert_eq!(p.data.unstuffed_len(), data.len());
-            assert_eq!(&got[..], data);
-            out
-        }
-        _ => panic!("not Write"),
-    }
+    out
 }
 
-fn fds_in_payload_region(frame: &[u8]) -> usize {
-    let payload = &frame[8..frame.len() - 2];
-    payload.iter().filter(|&&b| b == 0xFD).count()
+fn assert_write_decodes_to(wire: &[u8], expected_data: &[u8]) {
+    let mut dec: Decoder<256> = Decoder::new();
+    match feed_full(&mut dec, wire) {
+        overlay::Packet::Write(p) => {
+            assert_eq!(p.header.addr.get(), 0x0010);
+            assert_eq!(p.data, expected_data);
+        }
+        other => panic!("not Write: {other:?}"),
+    }
 }
 
 #[test]
 fn stuff_no_trigger() {
     let data = [0x01u8, 0x02, 0x03, 0x04];
-    let frame = round_trip_data(&data);
+    let frame = write_with_data(&data);
     assert_eq!(fds_in_payload_region(&frame), 0);
+    assert_write_decodes_to(&frame, &data);
 }
 
 #[test]
 fn stuff_single_trigger_inserts_one_byte() {
     let data = [0xFFu8, 0xFF, 0xFD, 0x00];
-    let frame = round_trip_data(&data);
+    let frame = write_with_data(&data);
     assert_eq!(fds_in_payload_region(&frame), 2);
+    assert_write_decodes_to(&frame, &data);
 }
 
 #[test]
@@ -611,41 +595,46 @@ fn stuff_multiple_triggers() {
     let data = [
         0xFFu8, 0xFF, 0xFD, 0x01, 0x02, 0xFF, 0xFF, 0xFD, 0x03, 0xAA, 0xFF, 0xFF, 0xFD,
     ];
-    let frame = round_trip_data(&data);
+    let frame = write_with_data(&data);
     let logical_fds = data.iter().filter(|&&b| b == 0xFD).count();
     assert_eq!(fds_in_payload_region(&frame), logical_fds + 3);
+    assert_write_decodes_to(&frame, &data);
 }
 
 #[test]
 fn stuff_trigger_at_payload_start() {
     let data = [0xFFu8, 0xFF, 0xFD, 0xAA, 0xBB];
-    let _ = round_trip_data(&data);
+    let frame = write_with_data(&data);
+    assert_write_decodes_to(&frame, &data);
 }
 
 #[test]
 fn stuff_trigger_at_payload_end() {
     let data = [0xAAu8, 0xBB, 0xFF, 0xFF, 0xFD];
-    let frame = round_trip_data(&data);
+    let frame = write_with_data(&data);
     assert_eq!(fds_in_payload_region(&frame), 2);
+    assert_write_decodes_to(&frame, &data);
 }
 
 #[test]
 fn stuff_logical_fd_after_trigger() {
     let data = [0xFFu8, 0xFF, 0xFD, 0xFD, 0x55];
-    let _ = round_trip_data(&data);
+    let frame = write_with_data(&data);
+    assert_write_decodes_to(&frame, &data);
 }
 
 #[test]
 fn stuff_two_adjacent_triggers() {
     let data = [0xFFu8, 0xFF, 0xFD, 0xFF, 0xFF, 0xFD, 0xAA];
-    let _ = round_trip_data(&data);
+    let frame = write_with_data(&data);
+    assert_write_decodes_to(&frame, &data);
 }
 
 #[test]
 fn stuff_trigger_spanning_address_boundary() {
     let mut out: Vec<u8, 64> = Vec::new();
     let data = [0xFDu8, 0x11, 0x22];
-    Wire::write(
+    write_legacy(
         &mut out,
         &Packet::Write(WritePacket {
             id: 1,
@@ -654,22 +643,21 @@ fn stuff_trigger_spanning_address_boundary() {
         }),
     )
     .unwrap();
-    let (pkt, _) = Wire::parse_one(&out, &[]).unwrap();
-    let Packet::Write(p) = pkt else {
-        panic!("not Write");
-    };
-    assert_eq!(p.address, 0xFFFF);
-    assert_eq!(p.data.unstuffed_len(), data.len());
-    let mut buf = [0u8; 8];
-    let n = p.data.copy_to_slice(&mut buf).unwrap();
-    assert_eq!(&buf[..n], &data);
+    let mut dec: Decoder<64> = Decoder::new();
+    match feed_full(&mut dec, &out) {
+        overlay::Packet::Write(p) => {
+            assert_eq!(p.header.addr.get(), 0xFFFF);
+            assert_eq!(p.data, &data);
+        }
+        other => panic!("not Write: {other:?}"),
+    }
 }
 
 #[test]
 fn stuff_trigger_spanning_address_then_more_in_data() {
     let data = [0xFDu8, 0x42, 0xFF, 0xFF, 0xFD, 0x55, 0x66];
     let mut out: Vec<u8, 64> = Vec::new();
-    Wire::write(
+    write_legacy(
         &mut out,
         &Packet::Write(WritePacket {
             id: 1,
@@ -678,49 +666,17 @@ fn stuff_trigger_spanning_address_then_more_in_data() {
         }),
     )
     .unwrap();
-    let (pkt, _) = Wire::parse_one(&out, &[]).unwrap();
-    let Packet::Write(p) = pkt else {
-        panic!();
-    };
-    let mut buf = [0u8; 16];
-    let n = p.data.copy_to_slice(&mut buf).unwrap();
-    assert_eq!(&buf[..n], &data);
-}
-
-#[test]
-fn stuff_unstuffed_len_matches_iter_count() {
-    let data = [0xFFu8, 0xFF, 0xFD, 0x00, 0xFF, 0xFF, 0xFD, 0xFD];
-    let mut out: Vec<u8, 64> = Vec::new();
-    Wire::write(
-        &mut out,
-        &Packet::Write(WritePacket {
-            id: 1,
-            address: 0x0010,
-            data: Bytes::unstuffed(&data),
-        }),
-    )
-    .unwrap();
-    let (pkt, _) = Wire::parse_one(&out, &[]).unwrap();
-    let Packet::Write(p) = pkt else {
-        panic!();
-    };
-    assert_eq!(p.data.unstuffed_len(), data.len());
-    assert_eq!(p.data.iter().count(), data.len());
-}
-
-#[test]
-fn stuff_raw_passthrough_does_not_unstuff() {
-    let raw = [0xFFu8, 0xFF, 0xFD, 0xFD, 0xAA];
-    let bytes = Bytes::unstuffed(&raw);
-    let collected: heapless::Vec<u8, 16> = bytes.iter().collect();
-    assert_eq!(&collected[..], &raw);
-    assert_eq!(bytes.unstuffed_len(), raw.len());
+    let mut dec: Decoder<64> = Decoder::new();
+    match feed_full(&mut dec, &out) {
+        overlay::Packet::Write(p) => assert_eq!(p.data, &data),
+        other => panic!("not Write: {other:?}"),
+    }
 }
 
 #[test]
 fn stuff_empty_payload() {
     let mut out: Vec<u8, 32> = Vec::new();
-    Wire::write(
+    write_legacy(
         &mut out,
         &Packet::Write(WritePacket {
             id: 1,
@@ -729,19 +685,18 @@ fn stuff_empty_payload() {
         }),
     )
     .unwrap();
-    let (pkt, _) = Wire::parse_one(&out, &[]).unwrap();
-    let Packet::Write(p) = pkt else {
-        panic!();
-    };
-    assert_eq!(p.data.unstuffed_len(), 0);
-    assert_eq!(p.data.iter().next(), None);
+    let mut dec: Decoder<32> = Decoder::new();
+    match feed_full(&mut dec, &out) {
+        overlay::Packet::Write(p) => assert_eq!(p.data, &[] as &[u8]),
+        other => panic!("not Write: {other:?}"),
+    }
 }
 
 #[test]
 fn stuff_status_with_trigger_in_params() {
     let params = [0xFFu8, 0xFF, 0xFD, 0x00, 0x42];
     let mut out: Vec<u8, 64> = Vec::new();
-    Wire::write(
+    write_legacy(
         &mut out,
         &Packet::Status(RawStatus {
             id: 1,
@@ -750,34 +705,14 @@ fn stuff_status_with_trigger_in_params() {
         }),
     )
     .unwrap();
-    let (pkt, _) = Wire::parse_one(&out, &[]).unwrap();
-    let Packet::Status(p) = pkt else {
-        panic!();
-    };
-    assert_eq!(p.error, 0);
-    let mut buf = [0u8; 16];
-    let n = p.params.copy_to_slice(&mut buf).unwrap();
-    assert_eq!(&buf[..n], &params);
-}
-
-#[test]
-fn stuff_forwarding_round_trip() {
-    let original_data = [0xFFu8, 0xFF, 0xFD, 0x42, 0xAA];
-    let mut wire1: Vec<u8, 64> = Vec::new();
-    Wire::write(
-        &mut wire1,
-        &Packet::Write(WritePacket {
-            id: 1,
-            address: 0x0010,
-            data: Bytes::unstuffed(&original_data),
-        }),
-    )
-    .unwrap();
-
-    let (pkt, _) = Wire::parse_one(&wire1, &[]).unwrap();
-    let mut wire2: Vec<u8, 64> = Vec::new();
-    Wire::write(&mut wire2, &pkt).unwrap();
-    assert_eq!(&wire1[..], &wire2[..]);
+    let mut dec: Decoder<64> = Decoder::new();
+    match feed_full(&mut dec, &out) {
+        overlay::Packet::Status(p) => {
+            assert_eq!(p.error(), 0);
+            assert_eq!(p.params, &params);
+        }
+        other => panic!("not Status: {other:?}"),
+    }
 }
 
 #[test]
@@ -788,7 +723,7 @@ fn stuff_long_payload_with_many_triggers() {
             .unwrap();
     }
     let mut out: Vec<u8, 128> = Vec::new();
-    Wire::write(
+    write_legacy(
         &mut out,
         &Packet::Write(WritePacket {
             id: 1,
@@ -797,12 +732,9 @@ fn stuff_long_payload_with_many_triggers() {
         }),
     )
     .unwrap();
-    let (pkt, _) = Wire::parse_one(&out, &[]).unwrap();
-    let Packet::Write(p) = pkt else {
-        panic!();
-    };
-    assert_eq!(p.data.unstuffed_len(), data.len());
-    let mut buf = [0u8; 64];
-    let n = p.data.copy_to_slice(&mut buf).unwrap();
-    assert_eq!(&buf[..n], &data[..]);
+    let mut dec: Decoder<128> = Decoder::new();
+    match feed_full(&mut dec, &out) {
+        overlay::Packet::Write(p) => assert_eq!(p.data, &data[..]),
+        other => panic!("not Write: {other:?}"),
+    }
 }
