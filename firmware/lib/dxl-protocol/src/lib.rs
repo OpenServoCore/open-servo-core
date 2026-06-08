@@ -13,6 +13,8 @@
 //! Extension hooks: implement [`InstructionExt`] to add custom request
 //! instructions; implement [`StatusExt`] to add custom typed status flavors.
 
+mod instruction;
+mod packet;
 mod typed;
 mod wire;
 
