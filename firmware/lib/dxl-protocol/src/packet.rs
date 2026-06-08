@@ -592,22 +592,34 @@ impl<'a> StatusPacket<'a> {
                     // fields. Length checked above; `self.params` is
                     // initialized for its full length.
                     let p = unsafe { *(self.params.as_ptr() as *const PingStatus) };
-                    Status::Ping { id, error, status: p }
+                    Status::Ping {
+                        id,
+                        error,
+                        status: p,
+                    }
                 }
             }
 
-            RequestKind::Read | RequestKind::SyncRead | RequestKind::BulkRead => {
-                Status::Read { id, error, data: self.params }
-            }
+            RequestKind::Read | RequestKind::SyncRead | RequestKind::BulkRead => Status::Read {
+                id,
+                error,
+                data: self.params,
+            },
 
             RequestKind::FastSyncRead => Status::FastSyncRead {
                 id,
-                status: FastSyncReadStatus { error, payload: self.params },
+                status: FastSyncReadStatus {
+                    error,
+                    payload: self.params,
+                },
             },
 
             RequestKind::FastBulkRead => Status::FastBulkRead {
                 id,
-                status: FastBulkReadStatus { error, payload: self.params },
+                status: FastBulkReadStatus {
+                    error,
+                    payload: self.params,
+                },
             },
         }
     }
@@ -622,7 +634,9 @@ impl<'a> StatusPacket<'a> {
 // (decoding a captured response) — these are protocol-shape conveniences,
 // not chip policy.
 
-use crate::{CRC_BYTES, FAST_RESPONSE_SLOT_BYTES, FAST_RESPONSE_SLOT0_BYTES, RESPONSE_HEADER_BYTES};
+use crate::{
+    CRC_BYTES, FAST_RESPONSE_SLOT_BYTES, FAST_RESPONSE_SLOT0_BYTES, RESPONSE_HEADER_BYTES,
+};
 
 /// Position of our slot in the coalesced Fast Status response. Variants that
 /// emit the response header carry the DXL `Length` field for the whole
@@ -974,12 +988,18 @@ mod tests {
     #[test]
     fn read_packet_overlay() {
         let bytes = [
-            0xFF, 0xFF, 0xFD, 0x00, // sync
+            0xFF,
+            0xFF,
+            0xFD,
+            0x00, // sync
             0x07, // id
-            0x07, 0x00,       // len = 7
+            0x07,
+            0x00,                      // len = 7
             Instruction::Read.as_u8(), // instruction
-            0x84, 0x00, // addr = 0x0084
-            0x04, 0x00, // length = 4
+            0x84,
+            0x00, // addr = 0x0084
+            0x04,
+            0x00, // length = 4
         ];
         let p: &ReadPacket = unsafe { &*(bytes.as_ptr() as *const ReadPacket) };
         assert_eq!(p.header.sync, [0xFF, 0xFF, 0xFD, 0x00]);
@@ -1171,11 +1191,19 @@ mod tests {
         assert_eq!(collected.len(), 3);
         assert_eq!(
             collected[0],
-            (10, StatusError::from_byte(0x01), &[0xA0, 0xA1, 0xA2, 0xA3][..])
+            (
+                10,
+                StatusError::from_byte(0x01),
+                &[0xA0, 0xA1, 0xA2, 0xA3][..]
+            )
         );
         assert_eq!(
             collected[1],
-            (20, StatusError::from_byte(0x02), &[0xB0, 0xB1, 0xB2, 0xB3][..])
+            (
+                20,
+                StatusError::from_byte(0x02),
+                &[0xB0, 0xB1, 0xB2, 0xB3][..]
+            )
         );
         assert_eq!(
             collected[2],
@@ -1268,7 +1296,10 @@ mod tests {
             0xFC,
         ];
         let s = make_status(&buf);
-        assert!(matches!(s.interpret(RequestKind::Ping), Status::Empty { .. }));
+        assert!(matches!(
+            s.interpret(RequestKind::Ping),
+            Status::Empty { .. }
+        ));
     }
 
     #[test]
@@ -1307,7 +1338,17 @@ mod tests {
 
     #[test]
     fn interpret_write_family_is_empty() {
-        let buf: [u8; 9] = [0xFF, 0xFF, 0xFD, 0x00, 0x01, 0x04, 0x00, Instruction::Status.as_u8(), 0x00];
+        let buf: [u8; 9] = [
+            0xFF,
+            0xFF,
+            0xFD,
+            0x00,
+            0x01,
+            0x04,
+            0x00,
+            Instruction::Status.as_u8(),
+            0x00,
+        ];
         let s = make_status(&buf);
         for req in [
             RequestKind::Write,
@@ -1376,8 +1417,7 @@ mod tests {
     }
 
     fn make_fast_sync_read(buf: &[u8]) -> FastSyncReadPacket<'_> {
-        let header: &FastSyncReadHeader =
-            unsafe { &*(buf.as_ptr() as *const FastSyncReadHeader) };
+        let header: &FastSyncReadHeader = unsafe { &*(buf.as_ptr() as *const FastSyncReadHeader) };
         FastSyncReadPacket {
             header,
             ids: &buf[size_of::<FastSyncReadHeader>()..],
@@ -1385,8 +1425,7 @@ mod tests {
     }
 
     fn make_fast_bulk_read(buf: &[u8], n_entries: usize) -> FastBulkReadPacket<'_> {
-        let header: &FastBulkReadHeader =
-            unsafe { &*(buf.as_ptr() as *const FastBulkReadHeader) };
+        let header: &FastBulkReadHeader = unsafe { &*(buf.as_ptr() as *const FastBulkReadHeader) };
         let entries: &[BulkReadEntry] = unsafe {
             core::slice::from_raw_parts(
                 buf.as_ptr().add(size_of::<FastBulkReadHeader>()) as *const BulkReadEntry,
@@ -1400,24 +1439,69 @@ mod tests {
     fn sync_read_find_slot_locates_id_and_offset() {
         // length=4, ids=[1,2,3]
         let buf: [u8; 12 + 3] = [
-            0xFF, 0xFF, 0xFD, 0x00, 0xFE, 0x09, 0x00, Instruction::SyncRead.as_u8(), //
-            0x50, 0x00, 0x04, 0x00, //
-            1, 2, 3,
+            0xFF,
+            0xFF,
+            0xFD,
+            0x00,
+            0xFE,
+            0x09,
+            0x00,
+            Instruction::SyncRead.as_u8(), //
+            0x50,
+            0x00,
+            0x04,
+            0x00, //
+            1,
+            2,
+            3,
         ];
         let p = make_sync_read(&buf);
-        assert_eq!(p.find_slot(1).unwrap(), SyncSlotInfo { index: 0, bytes_before: 0 });
+        assert_eq!(
+            p.find_slot(1).unwrap(),
+            SyncSlotInfo {
+                index: 0,
+                bytes_before: 0
+            }
+        );
         // per-slot = header(9) + length(4) + crc(2) = 15
-        assert_eq!(p.find_slot(2).unwrap(), SyncSlotInfo { index: 1, bytes_before: 15 });
-        assert_eq!(p.find_slot(3).unwrap(), SyncSlotInfo { index: 2, bytes_before: 30 });
+        assert_eq!(
+            p.find_slot(2).unwrap(),
+            SyncSlotInfo {
+                index: 1,
+                bytes_before: 15
+            }
+        );
+        assert_eq!(
+            p.find_slot(3).unwrap(),
+            SyncSlotInfo {
+                index: 2,
+                bytes_before: 30
+            }
+        );
         assert!(p.find_slot(9).is_none());
     }
 
     #[test]
     fn bulk_read_find_slot_carries_per_entry_addr_and_length() {
         let buf: [u8; 8 + 10] = [
-            0xFF, 0xFF, 0xFD, 0x00, 0xFE, 0x0D, 0x00, Instruction::BulkRead.as_u8(), //
-            1, 0x10, 0x00, 0x04, 0x00, // id=1 addr=0x0010 len=4
-            2, 0x20, 0x00, 0x08, 0x00, // id=2 addr=0x0020 len=8
+            0xFF,
+            0xFF,
+            0xFD,
+            0x00,
+            0xFE,
+            0x0D,
+            0x00,
+            Instruction::BulkRead.as_u8(), //
+            1,
+            0x10,
+            0x00,
+            0x04,
+            0x00, // id=1 addr=0x0010 len=4
+            2,
+            0x20,
+            0x00,
+            0x08,
+            0x00, // id=2 addr=0x0020 len=8
         ];
         let p = make_bulk_read(&buf, 2);
         let i0 = p.find_slot(1).unwrap();
@@ -1438,9 +1522,21 @@ mod tests {
     fn fast_sync_find_slot_populates_packet_length_and_offset() {
         // length=2, ids=[9,7,0]
         let buf: [u8; 12 + 3] = [
-            0xFF, 0xFF, 0xFD, 0x00, 0xFE, 0x09, 0x00, Instruction::FastSyncRead.as_u8(), //
-            0x10, 0x00, 0x02, 0x00, //
-            9, 7, 0,
+            0xFF,
+            0xFF,
+            0xFD,
+            0x00,
+            0xFE,
+            0x09,
+            0x00,
+            Instruction::FastSyncRead.as_u8(), //
+            0x10,
+            0x00,
+            0x02,
+            0x00, //
+            9,
+            7,
+            0,
         ];
         let p = make_fast_sync_read(&buf);
         let info = p.find_slot(0, 32).unwrap();
@@ -1457,10 +1553,29 @@ mod tests {
     fn fast_bulk_find_slot_handles_varying_lengths() {
         // entries: (1,0,4), (2,0,8), (3,0,2)
         let buf: [u8; 8 + 15] = [
-            0xFF, 0xFF, 0xFD, 0x00, 0xFE, 0x12, 0x00, Instruction::FastBulkRead.as_u8(), //
-            1, 0, 0, 4, 0, //
-            2, 0, 0, 8, 0, //
-            3, 0, 0, 2, 0,
+            0xFF,
+            0xFF,
+            0xFD,
+            0x00,
+            0xFE,
+            0x12,
+            0x00,
+            Instruction::FastBulkRead.as_u8(), //
+            1,
+            0,
+            0,
+            4,
+            0, //
+            2,
+            0,
+            0,
+            8,
+            0, //
+            3,
+            0,
+            0,
+            2,
+            0,
         ];
         let p = make_fast_bulk_read(&buf, 3);
         assert_eq!(p.find_slot(1, 32).unwrap().bytes_before, 0);
@@ -1483,7 +1598,10 @@ mod tests {
             bytes_before: 0,
         };
         assert_eq!(mk(0, 1).position(), SlotPosition::Only { packet_length: 7 });
-        assert_eq!(mk(0, 3).position(), SlotPosition::First { packet_length: 7 });
+        assert_eq!(
+            mk(0, 3).position(),
+            SlotPosition::First { packet_length: 7 }
+        );
         assert_eq!(mk(1, 3).position(), SlotPosition::Middle);
         assert_eq!(mk(2, 3).position(), SlotPosition::Last { crc: 0 });
     }
@@ -1491,10 +1609,26 @@ mod tests {
     #[test]
     fn sync_write_find_entry_returns_target() {
         let buf: [u8; 12 + 8] = [
-            0xFF, 0xFF, 0xFD, 0x00, 0xFE, 0x0C, 0x00, Instruction::SyncWrite.as_u8(), //
-            0x50, 0x00, 0x03, 0x00, //
-            1, 10, 11, 12, //
-            2, 20, 21, 22,
+            0xFF,
+            0xFF,
+            0xFD,
+            0x00,
+            0xFE,
+            0x0C,
+            0x00,
+            Instruction::SyncWrite.as_u8(), //
+            0x50,
+            0x00,
+            0x03,
+            0x00, //
+            1,
+            10,
+            11,
+            12, //
+            2,
+            20,
+            21,
+            22,
         ];
         let p = make_sync_write(&buf);
         let e = p.find_entry(2).unwrap();
@@ -1506,9 +1640,31 @@ mod tests {
     #[test]
     fn bulk_write_find_entry_returns_target_with_addr() {
         let buf: [u8; 8 + 17] = [
-            0xFF, 0xFF, 0xFD, 0x00, 0xFE, 0x11, 0x00, Instruction::BulkWrite.as_u8(), //
-            1, 0x50, 0x00, 0x03, 0x00, 0xAA, 0xBB, 0xCC, //
-            2, 0x54, 0x02, 0x04, 0x00, 0x10, 0x20, 0x30, 0x40,
+            0xFF,
+            0xFF,
+            0xFD,
+            0x00,
+            0xFE,
+            0x11,
+            0x00,
+            Instruction::BulkWrite.as_u8(), //
+            1,
+            0x50,
+            0x00,
+            0x03,
+            0x00,
+            0xAA,
+            0xBB,
+            0xCC, //
+            2,
+            0x54,
+            0x02,
+            0x04,
+            0x00,
+            0x10,
+            0x20,
+            0x30,
+            0x40,
         ];
         let p = make_bulk_write(&buf);
         let e = p.find_entry(2).unwrap();
