@@ -148,10 +148,7 @@ impl Cal {
         //
         // q88 = -residual_ppm × N_TARGET × byte_time_ticks × 256
         //         / (ticks_per_us × 1_000_000)
-        let num = -(residual_ppm as i64)
-            * (N_TARGET as i64)
-            * (byte_time_ticks as i64)
-            * 256;
+        let num = -(residual_ppm as i64) * (N_TARGET as i64) * (byte_time_ticks as i64) * 256;
         let den = (self.ticks_per_us as i64) * 1_000_000;
         let fine_us_q88 = (num / den).clamp(i16::MIN as i64, i16::MAX as i64) as i16;
 
@@ -256,7 +253,10 @@ mod tests {
         assert_eq!(applied, 0, "coarse should stay quiet inside deadband");
         // Fine still tracks: residual_ppm ≈ 1500 → -1500 × 128 × 10 µs / 1e6
         // = -1.92 µs ≈ -492 in Q8.8 (sign retards fire to slow effective rate).
-        assert!(nonzero_fine, "fine residual should track the inside-deadband drift");
+        assert!(
+            nonzero_fine,
+            "fine residual should track the inside-deadband drift"
+        );
     }
 
     #[test]
@@ -274,7 +274,10 @@ mod tests {
         }
         // 7 valid samples in batch; one more good sample closes it.
         let apply = c.observe(NOMINAL, WIRE_BYTES, BYTE_TIME_TICKS);
-        assert!(apply.is_some(), "outlier-clipped sample should not consume batch slot");
+        assert!(
+            apply.is_some(),
+            "outlier-clipped sample should not consume batch slot"
+        );
         let a = apply.unwrap();
         // Zero drift in valid samples → no coarse step, fine = 0.
         assert_eq!(a.trim_step, 0);

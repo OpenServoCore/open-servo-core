@@ -16,7 +16,7 @@
 //! baud, queues HSI trim updates, and returns the measurement in a single
 //! Status reply. No master-side timestamping required.
 
-use dxl_protocol::packet::RawPacket;
+use dxl_protocol::packet::{Id, RawPacket};
 
 #[derive(Copy, Clone, Debug)]
 pub enum OscVariant {
@@ -25,7 +25,7 @@ pub enum OscVariant {
 
 #[derive(Copy, Clone, Debug)]
 pub struct CalibratePacket {
-    pub id: u8,
+    pub id: Id,
     /// Number of filler bytes the master streams after the `count` field —
     /// the slave times its own RX of this payload to derive HSI drift.
     /// Bounded `1..=MAX_CONTROL_RW` by the dispatcher. Filler content is
@@ -34,7 +34,7 @@ pub struct CalibratePacket {
 }
 
 impl CalibratePacket {
-    pub const fn new(id: u8, count: u16) -> Self {
+    pub const fn new(id: Id, count: u16) -> Self {
         Self { id, count }
     }
 }
@@ -65,7 +65,7 @@ pub fn decode_raw(raw: &RawPacket<'_>) -> Option<OscVariant> {
 /// | applied_fine_trim_us(2)` — 11 bytes total.
 #[derive(Copy, Clone, Debug)]
 pub struct CalibrateStatus {
-    pub id: u8,
+    pub id: Id,
     /// SysTick ticks between T_first and T_last as measured by the slave.
     /// `µs = observed_ticks / ticks_per_us`.
     pub observed_ticks: u32,

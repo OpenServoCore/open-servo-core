@@ -10,6 +10,7 @@ use crate::constants::{
 };
 
 use super::entries::{BulkWriteEntry, SyncWriteEntry};
+use super::header::Id;
 use super::instruction::{
     BulkReadPacket, BulkWritePacket, FastBulkReadPacket, FastSyncReadPacket, SyncReadPacket,
     SyncWritePacket,
@@ -75,8 +76,9 @@ impl FastSlotInfo {
 }
 
 impl<'a> SyncReadPacket<'a> {
-    pub fn find_slot(&self, id: u8) -> Option<SyncSlotInfo> {
-        let index = self.ids.iter().position(|b| *b == id)?;
+    pub fn find_slot(&self, id: Id) -> Option<SyncSlotInfo> {
+        let target = id.as_byte();
+        let index = self.ids.iter().position(|b| *b == target)?;
         let length = self.header.length.get();
         let per_slot = (RESPONSE_HEADER_BYTES as u32)
             .saturating_add(length as u32)
@@ -89,7 +91,7 @@ impl<'a> SyncReadPacket<'a> {
 }
 
 impl<'a> BulkReadPacket<'a> {
-    pub fn find_slot(&self, id: u8) -> Option<BulkSlotInfo> {
+    pub fn find_slot(&self, id: Id) -> Option<BulkSlotInfo> {
         let mut bytes_before = 0u32;
         for (index, entry) in self.entries.iter().enumerate() {
             let length = entry.length.get();
@@ -114,7 +116,8 @@ impl<'a> FastSyncReadPacket<'a> {
     /// `max_slots` bounds the walk so a malformed request can't unbalance
     /// downstream loops. Returns `None` if `id` isn't present or the list
     /// exceeds `max_slots`.
-    pub fn find_slot(&self, id: u8, max_slots: usize) -> Option<FastSlotInfo> {
+    pub fn find_slot(&self, id: Id, max_slots: usize) -> Option<FastSlotInfo> {
+        let target = id.as_byte();
         let length = self.header.length.get();
         let mut our_slot = None;
         let mut n_slots = 0usize;
@@ -122,7 +125,7 @@ impl<'a> FastSyncReadPacket<'a> {
             if i >= max_slots {
                 return None;
             }
-            if slot_id == id && our_slot.is_none() {
+            if slot_id == target && our_slot.is_none() {
                 our_slot = Some(i);
             }
             n_slots = i + 1;
@@ -150,7 +153,7 @@ impl<'a> FastSyncReadPacket<'a> {
 
 impl<'a> FastBulkReadPacket<'a> {
     /// `max_slots` bounds the entry walk; see [`FastSyncReadPacket::find_slot`].
-    pub fn find_slot(&self, id: u8, max_slots: usize) -> Option<FastSlotInfo> {
+    pub fn find_slot(&self, id: Id, max_slots: usize) -> Option<FastSlotInfo> {
         let mut found: Option<(usize, u16, u16, u32)> = None;
         let mut n_slots = 0usize;
         let mut total_payload = 0u32;
@@ -188,13 +191,13 @@ impl<'a> FastBulkReadPacket<'a> {
 }
 
 impl<'a> SyncWritePacket<'a> {
-    pub fn find_entry(&self, id: u8) -> Option<SyncWriteEntry<'a>> {
+    pub fn find_entry(&self, id: Id) -> Option<SyncWriteEntry<'a>> {
         self.entries().find(|e| e.id == id)
     }
 }
 
 impl<'a> BulkWritePacket<'a> {
-    pub fn find_entry(&self, id: u8) -> Option<BulkWriteEntry<'a>> {
+    pub fn find_entry(&self, id: Id) -> Option<BulkWriteEntry<'a>> {
         self.entries().find(|e| e.id == id)
     }
 }
@@ -285,7 +288,7 @@ mod tests {
         ];
         let p = make_sync_read(&buf);
         assert_eq!(
-            p.find_slot(1).unwrap(),
+            p.find_slot(Id::new(1)).unwrap(),
             SyncSlotInfo {
                 index: 0,
                 bytes_before: 0
@@ -293,20 +296,20 @@ mod tests {
         );
         // per-slot = header(9) + length(4) + crc(2) = 15
         assert_eq!(
-            p.find_slot(2).unwrap(),
+            p.find_slot(Id::new(2)).unwrap(),
             SyncSlotInfo {
                 index: 1,
                 bytes_before: 15
             }
         );
         assert_eq!(
-            p.find_slot(3).unwrap(),
+            p.find_slot(Id::new(3)).unwrap(),
             SyncSlotInfo {
                 index: 2,
                 bytes_before: 30
             }
         );
-        assert!(p.find_slot(9).is_none());
+        assert!(p.find_slot(Id::new(9)).is_none());
     }
 
     #[test]
@@ -332,18 +335,18 @@ mod tests {
             0x00, // id=2 addr=0x0020 len=8
         ];
         let p = make_bulk_read(&buf, 2);
-        let i0 = p.find_slot(1).unwrap();
+        let i0 = p.find_slot(Id::new(1)).unwrap();
         assert_eq!(i0.index, 0);
         assert_eq!(i0.address, 0x0010);
         assert_eq!(i0.length, 4);
         assert_eq!(i0.bytes_before, 0);
-        let i1 = p.find_slot(2).unwrap();
+        let i1 = p.find_slot(Id::new(2)).unwrap();
         assert_eq!(i1.index, 1);
         assert_eq!(i1.address, 0x0020);
         assert_eq!(i1.length, 8);
         // header(9) + 4 + crc(2) = 15
         assert_eq!(i1.bytes_before, 15);
-        assert!(p.find_slot(9).is_none());
+        assert!(p.find_slot(Id::new(9)).is_none());
     }
 
     #[test]
@@ -366,14 +369,14 @@ mod tests {
             0,
         ];
         let p = make_fast_sync_read(&buf);
-        let info = p.find_slot(0, 32).unwrap();
+        let info = p.find_slot(Id::new(0), 32).unwrap();
         assert_eq!(info.our_slot, 2);
         assert_eq!(info.n_slots, 3);
         assert_eq!(info.address, 0x10);
         assert_eq!(info.length, 2);
         // LEN = 3 + 3*(2+2) = 15
         assert_eq!(info.packet_length, 15);
-        assert!(make_fast_sync_read(&buf).find_slot(0, 2).is_none());
+        assert!(make_fast_sync_read(&buf).find_slot(Id::new(0), 2).is_none());
     }
 
     #[test]
@@ -404,13 +407,13 @@ mod tests {
             0,
         ];
         let p = make_fast_bulk_read(&buf, 3);
-        assert_eq!(p.find_slot(1, 32).unwrap().bytes_before, 0);
+        assert_eq!(p.find_slot(Id::new(1), 32).unwrap().bytes_before, 0);
         // FAST_RESPONSE_SLOT0_BYTES(10) + 4 = 14
-        assert_eq!(p.find_slot(2, 32).unwrap().bytes_before, 14);
+        assert_eq!(p.find_slot(Id::new(2), 32).unwrap().bytes_before, 14);
         // 14 + FAST_RESPONSE_SLOT_BYTES(2) + 8 = 24
-        assert_eq!(p.find_slot(3, 32).unwrap().bytes_before, 24);
+        assert_eq!(p.find_slot(Id::new(3), 32).unwrap().bytes_before, 24);
         // LEN = 3 + 3*2 + (4+8+2) = 23
-        assert_eq!(p.find_slot(1, 32).unwrap().packet_length, 23);
+        assert_eq!(p.find_slot(Id::new(1), 32).unwrap().packet_length, 23);
     }
 
     #[test]
@@ -457,10 +460,10 @@ mod tests {
             22,
         ];
         let p = make_sync_write(&buf);
-        let e = p.find_entry(2).unwrap();
-        assert_eq!(e.id, 2);
+        let e = p.find_entry(Id::new(2)).unwrap();
+        assert_eq!(e.id, Id::new(2));
         assert_eq!(e.data, &[20, 21, 22]);
-        assert!(p.find_entry(9).is_none());
+        assert!(p.find_entry(Id::new(9)).is_none());
     }
 
     #[test]
@@ -493,9 +496,9 @@ mod tests {
             0x40,
         ];
         let p = make_bulk_write(&buf);
-        let e = p.find_entry(2).unwrap();
+        let e = p.find_entry(Id::new(2)).unwrap();
         assert_eq!(e.addr, 0x0254);
         assert_eq!(e.data, &[0x10, 0x20, 0x30, 0x40]);
-        assert!(p.find_entry(9).is_none());
+        assert!(p.find_entry(Id::new(9)).is_none());
     }
 }

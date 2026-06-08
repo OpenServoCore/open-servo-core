@@ -11,7 +11,7 @@ mod status;
 pub use entries::{
     BulkReadEntry, BulkWriteEntries, BulkWriteEntry, SyncWriteEntries, SyncWriteEntry,
 };
-pub use header::{Header, U16Le};
+pub use header::{Header, Id, U16Le};
 pub use instruction::{
     ActionPacket, BulkReadHeader, BulkReadPacket, BulkWriteHeader, BulkWritePacket,
     FactoryResetPacket, FastBulkReadHeader, FastBulkReadPacket, FastSyncReadHeader,

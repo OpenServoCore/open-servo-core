@@ -249,6 +249,7 @@ pub struct RawPacket<'a> {
 
 #[cfg(test)]
 mod tests {
+    use super::super::header::Id;
     use super::*;
     use core::mem::{align_of, offset_of, size_of};
 
@@ -344,7 +345,7 @@ mod tests {
         ];
         let p: &ReadPacket = unsafe { &*(bytes.as_ptr() as *const ReadPacket) };
         assert_eq!(p.header.sync, [0xFF, 0xFF, 0xFD, 0x00]);
-        assert_eq!(p.header.id, 0x07);
+        assert_eq!(p.header.id, Id::new(0x07));
         assert_eq!(p.header.len.get(), 7);
         assert_eq!(p.header.instruction.kind(), Instruction::Read);
         assert_eq!(p.addr.get(), 0x0084);
@@ -386,10 +387,10 @@ mod tests {
         let p = make_sync_write(&buf);
         let mut it = p.entries();
         let e0 = it.next().unwrap();
-        assert_eq!(e0.id, 1);
+        assert_eq!(e0.id, Id::new(1));
         assert_eq!(e0.data, &[10, 11, 12]);
         let e1 = it.next().unwrap();
-        assert_eq!(e1.id, 2);
+        assert_eq!(e1.id, Id::new(2));
         assert_eq!(e1.data, &[20, 21, 22]);
         assert!(it.next().is_none());
     }
@@ -460,11 +461,11 @@ mod tests {
         let p = make_bulk_write(&buf);
         let mut it = p.entries();
         let e0 = it.next().unwrap();
-        assert_eq!(e0.id, 1);
+        assert_eq!(e0.id, Id::new(1));
         assert_eq!(e0.addr, 0x0050);
         assert_eq!(e0.data, &[0xAA, 0xBB, 0xCC]);
         let e1 = it.next().unwrap();
-        assert_eq!(e1.id, 2);
+        assert_eq!(e1.id, Id::new(2));
         assert_eq!(e1.addr, 0x0254);
         assert_eq!(e1.data, &[0x10, 0x20, 0x30, 0x40]);
         assert!(it.next().is_none());

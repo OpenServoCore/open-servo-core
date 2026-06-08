@@ -354,7 +354,7 @@ mod tests {
     fn encode(id: u8, instruction: Instruction, params: &[u8]) -> Buf {
         let mut out = Buf::new();
         InstructionEmitter::<_, Crc>::new(&mut out)
-            .ext(id, instruction.as_u8(), params)
+            .ext(Id::new(id), instruction.as_u8(), params)
             .unwrap();
         out
     }
@@ -367,7 +367,7 @@ mod tests {
         assert_eq!(n, frame.len());
         match step {
             Step::Packet(Packet::Ping(p)) => {
-                assert_eq!(p.header.id, 0x01);
+                assert_eq!(p.header.id, Id::new(0x01));
                 assert_eq!(p.header.instruction.kind(), Instruction::Ping);
                 assert_eq!(p.header.sync, [0xFF, 0xFF, 0xFD, 0x00]);
                 assert_eq!(p.header.len.get(), 3);
@@ -392,7 +392,7 @@ mod tests {
         let (step, n) = dec.feed(&[frame[last]]);
         assert_eq!(n, 1);
         match step {
-            Step::Packet(Packet::Ping(p)) => assert_eq!(p.header.id, 0x07),
+            Step::Packet(Packet::Ping(p)) => assert_eq!(p.header.id, Id::new(0x07)),
             other => panic!("expected Ping, got {other:?}"),
         }
     }
@@ -410,7 +410,7 @@ mod tests {
                 Step::NeedMore => assert!(i + 1 < n_chunks),
                 Step::Packet(Packet::Read(p)) => {
                     completed = true;
-                    assert_eq!(p.header.id, 0x02);
+                    assert_eq!(p.header.id, Id::new(0x02));
                     assert_eq!(p.addr.get(), 0x0084);
                     assert_eq!(p.length.get(), 0x0004);
                 }
@@ -428,7 +428,7 @@ mod tests {
         let (step, _) = dec.feed(&frame);
         match step {
             Step::Packet(Packet::Write(w)) => {
-                assert_eq!(w.header.header.id, 0x03);
+                assert_eq!(w.header.header.id, Id::new(0x03));
                 assert_eq!(w.header.addr.get(), 0x0084);
                 assert_eq!(w.data, &[0xAA, 0xBB, 0xCC, 0xDD]);
             }
@@ -464,7 +464,7 @@ mod tests {
         let (step, _) = dec.feed(&frame);
         match step {
             Step::Packet(Packet::Status(s)) => {
-                assert_eq!(s.header.header.id, 0x05);
+                assert_eq!(s.header.header.id, Id::new(0x05));
                 assert_eq!(s.error(), StatusError::OK);
                 assert_eq!(s.params, &[0xAA, 0xBB]);
             }
@@ -530,9 +530,9 @@ mod tests {
             Step::Packet(Packet::SyncWrite(sw)) => {
                 let entries: Vec<_, 4> = sw.entries().collect();
                 assert_eq!(entries.len(), 2);
-                assert_eq!(entries[0].id, 0x01);
+                assert_eq!(entries[0].id, Id::new(0x01));
                 assert_eq!(entries[0].data, &[0xAA, 0xBB]);
-                assert_eq!(entries[1].id, 0x02);
+                assert_eq!(entries[1].id, Id::new(0x02));
                 assert_eq!(entries[1].data, &[0xCC, 0xDD]);
             }
             other => panic!("expected SyncWrite, got {other:?}"),
@@ -549,10 +549,10 @@ mod tests {
         match step {
             Step::Packet(Packet::BulkRead(br)) => {
                 assert_eq!(br.entries.len(), 2);
-                assert_eq!(br.entries[0].id, 0x01);
+                assert_eq!(br.entries[0].id, Id::new(0x01));
                 assert_eq!(br.entries[0].addr.get(), 0x0084);
                 assert_eq!(br.entries[0].length.get(), 0x0004);
-                assert_eq!(br.entries[1].id, 0x02);
+                assert_eq!(br.entries[1].id, Id::new(0x02));
                 assert_eq!(br.entries[1].addr.get(), 0x0090);
                 assert_eq!(br.entries[1].length.get(), 0x0002);
             }
@@ -573,10 +573,10 @@ mod tests {
             Step::Packet(Packet::BulkWrite(bw)) => {
                 let entries: Vec<_, 4> = bw.entries().collect();
                 assert_eq!(entries.len(), 2);
-                assert_eq!(entries[0].id, 0x01);
+                assert_eq!(entries[0].id, Id::new(0x01));
                 assert_eq!(entries[0].addr, 0x0084);
                 assert_eq!(entries[0].data, &[0xAA, 0xBB]);
-                assert_eq!(entries[1].id, 0x02);
+                assert_eq!(entries[1].id, Id::new(0x02));
                 assert_eq!(entries[1].addr, 0x0090);
                 assert_eq!(entries[1].data, &[0xCC]);
             }
@@ -612,8 +612,8 @@ mod tests {
         match step {
             Step::Packet(Packet::FastBulkRead(p)) => {
                 assert_eq!(p.entries.len(), 2);
-                assert_eq!(p.entries[0].id, 0x01);
-                assert_eq!(p.entries[1].id, 0x02);
+                assert_eq!(p.entries[0].id, Id::new(0x01));
+                assert_eq!(p.entries[1].id, Id::new(0x02));
             }
             other => panic!("expected FastBulkRead, got {other:?}"),
         }
@@ -645,7 +645,7 @@ mod tests {
         // Resync auto-resets -- a follow-up valid frame parses.
         let good = encode(0x02, Instruction::Ping, &[]);
         let (step2, _) = dec.feed(&good);
-        assert!(matches!(step2, Step::Packet(Packet::Ping(p)) if p.header.id == 0x02));
+        assert!(matches!(step2, Step::Packet(Packet::Ping(p)) if p.header.id == Id::new(0x02)));
     }
 
     #[test]
@@ -698,11 +698,11 @@ mod tests {
         let mut dec: Decoder<32, Crc> = Decoder::new();
         let (s1, n1) = dec.feed(&cat);
         assert_eq!(n1, f1.len());
-        assert!(matches!(s1, Step::Packet(Packet::Ping(p)) if p.header.id == 0x01));
+        assert!(matches!(s1, Step::Packet(Packet::Ping(p)) if p.header.id == Id::new(0x01)));
 
         let (s2, n2) = dec.feed(&cat[n1..]);
         assert_eq!(n2, f2.len());
-        assert!(matches!(s2, Step::Packet(Packet::Ping(p)) if p.header.id == 0x02));
+        assert!(matches!(s2, Step::Packet(Packet::Ping(p)) if p.header.id == Id::new(0x02)));
     }
 
     #[test]
@@ -716,7 +716,7 @@ mod tests {
             .unwrap();
         let mut dec: Decoder<32, Crc> = Decoder::new();
         let (step, _) = dec.feed(&bytes);
-        assert!(matches!(step, Step::Packet(Packet::Ping(p)) if p.header.id == 0x01));
+        assert!(matches!(step, Step::Packet(Packet::Ping(p)) if p.header.id == Id::new(0x01)));
     }
 
     #[test]
@@ -730,7 +730,7 @@ mod tests {
             .unwrap();
         let mut dec: Decoder<32, Crc> = Decoder::new();
         let (step, _) = dec.feed(&bytes);
-        assert!(matches!(step, Step::Packet(Packet::Ping(p)) if p.header.id == 0x09));
+        assert!(matches!(step, Step::Packet(Packet::Ping(p)) if p.header.id == Id::new(0x09)));
     }
 
     #[test]
@@ -757,7 +757,7 @@ mod tests {
                 let interpreted = s.interpret(RequestKind::Ping);
                 match interpreted {
                     Status::Ping { id, error, status } => {
-                        assert_eq!(id, 0x01);
+                        assert_eq!(id, Id::new(0x01));
                         assert_eq!(error, StatusError::OK);
                         assert_eq!(status.model.get(), 0x0203);
                         assert_eq!(status.fw_version, 0x10);

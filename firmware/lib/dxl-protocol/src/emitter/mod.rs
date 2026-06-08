@@ -22,9 +22,9 @@ pub use slot::SlotEmitter;
 pub use status::StatusEmitter;
 
 use crate::buf::{WriteBuf, WriteError};
-use crate::constants::{BROADCAST_ID, HEADER, STUFFING_BYTE, STUFFING_TRIGGER};
+use crate::constants::{HEADER, STUFFING_BYTE, STUFFING_TRIGGER};
 use crate::crc::CrcUmts;
-use crate::packet::{BulkReadEntry, Instruction, Slot};
+use crate::packet::{BulkReadEntry, Id, Instruction, Slot};
 
 /// Emit one DXL 2.0 frame: header + id + length + instruction + stuffed
 /// params + CRC. `params` chunks form the logical parameter region; the
@@ -34,13 +34,13 @@ use crate::packet::{BulkReadEntry, Instruction, Slot};
 pub(super) fn emit_frame<W: WriteBuf, CRC: CrcUmts>(
     out: &mut W,
     crc: &mut CRC,
-    id: u8,
+    id: Id,
     instruction: u8,
     params: &[&[u8]],
 ) -> Result<(), WriteError> {
     // `id == 0xFF` would let the unstuffed header..instruction prefix itself
     // complete a stuffing trigger, breaking framing.
-    if id == 0xFF {
+    if id.as_byte() == 0xFF {
         return Err(WriteError::Invalid);
     }
     let start = out.len();
@@ -57,7 +57,7 @@ fn emit_frame_inner<W: WriteBuf, CRC: CrcUmts>(
     out: &mut W,
     crc: &mut CRC,
     start: usize,
-    id: u8,
+    id: Id,
     instruction: u8,
     params: &[&[u8]],
 ) -> Result<(), WriteError> {
@@ -65,7 +65,7 @@ fn emit_frame_inner<W: WriteBuf, CRC: CrcUmts>(
     out.push(HEADER[1])?;
     out.push(HEADER[2])?;
     out.push(HEADER[3])?;
-    out.push(id)?;
+    out.push(id.as_byte())?;
     let len_pos = out.len();
     out.push(0)?;
     out.push(0)?;
@@ -106,7 +106,7 @@ pub(super) fn emit_slot_header<W: WriteBuf>(out: &mut W, length: u16) -> Result<
     out.push(HEADER[1])?;
     out.push(HEADER[2])?;
     out.push(HEADER[3])?;
-    out.push(BROADCAST_ID)?;
+    out.push(Id::BROADCAST.as_byte())?;
     let lb = length.to_le_bytes();
     out.push(lb[0])?;
     out.push(lb[1])?;
@@ -116,7 +116,7 @@ pub(super) fn emit_slot_header<W: WriteBuf>(out: &mut W, length: u16) -> Result<
 
 pub(super) fn emit_slot_body<W: WriteBuf>(out: &mut W, slot: &Slot<'_>) -> Result<(), WriteError> {
     out.push(slot.error.as_byte())?;
-    out.push(slot.id)?;
+    out.push(slot.id.as_byte())?;
     for &b in slot.data.iter() {
         out.push(b)?;
     }

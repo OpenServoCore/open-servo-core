@@ -3,9 +3,8 @@
 #![allow(dead_code)]
 
 use crate::buf::{WriteBuf, WriteError};
-use crate::constants::BROADCAST_ID;
 use crate::crc::CrcUmts;
-use crate::packet::{BulkReadEntry, Instruction, Packet};
+use crate::packet::{BulkReadEntry, Id, Instruction, Packet};
 
 use super::{bulk_entries_as_bytes, emit_frame};
 
@@ -22,11 +21,11 @@ impl<'a, W: WriteBuf, CRC: CrcUmts> InstructionEmitter<'a, W, CRC> {
         }
     }
 
-    pub fn ping(&mut self, id: u8) -> Result<(), WriteError> {
+    pub fn ping(&mut self, id: Id) -> Result<(), WriteError> {
         emit_frame(self.out, &mut self.crc, id, Instruction::Ping.as_u8(), &[])
     }
 
-    pub fn read(&mut self, id: u8, addr: u16, length: u16) -> Result<(), WriteError> {
+    pub fn read(&mut self, id: Id, addr: u16, length: u16) -> Result<(), WriteError> {
         let a = addr.to_le_bytes();
         let l = length.to_le_bytes();
         emit_frame(
@@ -38,7 +37,7 @@ impl<'a, W: WriteBuf, CRC: CrcUmts> InstructionEmitter<'a, W, CRC> {
         )
     }
 
-    pub fn write(&mut self, id: u8, addr: u16, data: &[u8]) -> Result<(), WriteError> {
+    pub fn write(&mut self, id: Id, addr: u16, data: &[u8]) -> Result<(), WriteError> {
         let a = addr.to_le_bytes();
         emit_frame(
             self.out,
@@ -49,7 +48,7 @@ impl<'a, W: WriteBuf, CRC: CrcUmts> InstructionEmitter<'a, W, CRC> {
         )
     }
 
-    pub fn reg_write(&mut self, id: u8, addr: u16, data: &[u8]) -> Result<(), WriteError> {
+    pub fn reg_write(&mut self, id: Id, addr: u16, data: &[u8]) -> Result<(), WriteError> {
         let a = addr.to_le_bytes();
         emit_frame(
             self.out,
@@ -60,7 +59,7 @@ impl<'a, W: WriteBuf, CRC: CrcUmts> InstructionEmitter<'a, W, CRC> {
         )
     }
 
-    pub fn action(&mut self, id: u8) -> Result<(), WriteError> {
+    pub fn action(&mut self, id: Id) -> Result<(), WriteError> {
         emit_frame(
             self.out,
             &mut self.crc,
@@ -70,7 +69,7 @@ impl<'a, W: WriteBuf, CRC: CrcUmts> InstructionEmitter<'a, W, CRC> {
         )
     }
 
-    pub fn reboot(&mut self, id: u8) -> Result<(), WriteError> {
+    pub fn reboot(&mut self, id: Id) -> Result<(), WriteError> {
         emit_frame(
             self.out,
             &mut self.crc,
@@ -80,7 +79,7 @@ impl<'a, W: WriteBuf, CRC: CrcUmts> InstructionEmitter<'a, W, CRC> {
         )
     }
 
-    pub fn factory_reset(&mut self, id: u8, mode: u8) -> Result<(), WriteError> {
+    pub fn factory_reset(&mut self, id: Id, mode: u8) -> Result<(), WriteError> {
         emit_frame(
             self.out,
             &mut self.crc,
@@ -90,7 +89,7 @@ impl<'a, W: WriteBuf, CRC: CrcUmts> InstructionEmitter<'a, W, CRC> {
         )
     }
 
-    pub fn clear(&mut self, id: u8, body: &[u8]) -> Result<(), WriteError> {
+    pub fn clear(&mut self, id: Id, body: &[u8]) -> Result<(), WriteError> {
         emit_frame(
             self.out,
             &mut self.crc,
@@ -100,7 +99,7 @@ impl<'a, W: WriteBuf, CRC: CrcUmts> InstructionEmitter<'a, W, CRC> {
         )
     }
 
-    pub fn control_table_backup(&mut self, id: u8, body: &[u8]) -> Result<(), WriteError> {
+    pub fn control_table_backup(&mut self, id: Id, body: &[u8]) -> Result<(), WriteError> {
         emit_frame(
             self.out,
             &mut self.crc,
@@ -116,7 +115,7 @@ impl<'a, W: WriteBuf, CRC: CrcUmts> InstructionEmitter<'a, W, CRC> {
         emit_frame(
             self.out,
             &mut self.crc,
-            BROADCAST_ID,
+            Id::BROADCAST,
             Instruction::SyncRead.as_u8(),
             &[&a, &l, ids],
         )
@@ -128,7 +127,7 @@ impl<'a, W: WriteBuf, CRC: CrcUmts> InstructionEmitter<'a, W, CRC> {
         emit_frame(
             self.out,
             &mut self.crc,
-            BROADCAST_ID,
+            Id::BROADCAST,
             Instruction::SyncWrite.as_u8(),
             &[&a, &l, body],
         )
@@ -138,7 +137,7 @@ impl<'a, W: WriteBuf, CRC: CrcUmts> InstructionEmitter<'a, W, CRC> {
         emit_frame(
             self.out,
             &mut self.crc,
-            BROADCAST_ID,
+            Id::BROADCAST,
             Instruction::BulkRead.as_u8(),
             &[bulk_entries_as_bytes(entries)],
         )
@@ -148,7 +147,7 @@ impl<'a, W: WriteBuf, CRC: CrcUmts> InstructionEmitter<'a, W, CRC> {
         emit_frame(
             self.out,
             &mut self.crc,
-            BROADCAST_ID,
+            Id::BROADCAST,
             Instruction::BulkWrite.as_u8(),
             &[body],
         )
@@ -160,7 +159,7 @@ impl<'a, W: WriteBuf, CRC: CrcUmts> InstructionEmitter<'a, W, CRC> {
         emit_frame(
             self.out,
             &mut self.crc,
-            BROADCAST_ID,
+            Id::BROADCAST,
             Instruction::FastSyncRead.as_u8(),
             &[&a, &l, ids],
         )
@@ -170,7 +169,7 @@ impl<'a, W: WriteBuf, CRC: CrcUmts> InstructionEmitter<'a, W, CRC> {
         emit_frame(
             self.out,
             &mut self.crc,
-            BROADCAST_ID,
+            Id::BROADCAST,
             Instruction::FastBulkRead.as_u8(),
             &[bulk_entries_as_bytes(entries)],
         )
@@ -178,7 +177,7 @@ impl<'a, W: WriteBuf, CRC: CrcUmts> InstructionEmitter<'a, W, CRC> {
 
     /// Vendor-extension escape hatch -- emit a frame with an arbitrary
     /// instruction byte (e.g. OSC `Calibrate`).
-    pub fn ext(&mut self, id: u8, instruction: u8, params: &[u8]) -> Result<(), WriteError> {
+    pub fn ext(&mut self, id: Id, instruction: u8, params: &[u8]) -> Result<(), WriteError> {
         emit_frame(self.out, &mut self.crc, id, instruction, &[params])
     }
 
@@ -242,14 +241,14 @@ mod tests {
     fn instr_ping() {
         let mut buf = Buf::new();
         InstructionEmitter::<_, Crc>::new(&mut buf)
-            .ping(0x01)
+            .ping(Id::new(0x01))
             .unwrap();
         let mut dec: Decoder<32, Crc> = Decoder::new();
         let (step, n) = dec.feed(&buf);
         assert_eq!(n, buf.len());
         match step {
             Step::Packet(Packet::Ping(p)) => {
-                assert_eq!(p.header.id, 0x01);
+                assert_eq!(p.header.id, Id::new(0x01));
                 assert_eq!(p.header.instruction.kind(), Instruction::Ping);
             }
             other => panic!("expected Ping, got {other:?}"),
@@ -260,12 +259,12 @@ mod tests {
     fn instr_read() {
         let mut buf = Buf::new();
         InstructionEmitter::<_, Crc>::new(&mut buf)
-            .read(0x02, 0x0084, 4)
+            .read(Id::new(0x02), 0x0084, 4)
             .unwrap();
         let mut dec: Decoder<32, Crc> = Decoder::new();
         match dec.feed(&buf).0 {
             Step::Packet(Packet::Read(p)) => {
-                assert_eq!(p.header.id, 0x02);
+                assert_eq!(p.header.id, Id::new(0x02));
                 assert_eq!(p.addr.get(), 0x0084);
                 assert_eq!(p.length.get(), 4);
             }
@@ -278,12 +277,12 @@ mod tests {
         let mut buf = Buf::new();
         let data = [0xAA, 0xBB, 0xCC, 0xDD];
         InstructionEmitter::<_, Crc>::new(&mut buf)
-            .write(0x03, 0x0084, &data)
+            .write(Id::new(0x03), 0x0084, &data)
             .unwrap();
         let mut dec: Decoder<64, Crc> = Decoder::new();
         match dec.feed(&buf).0 {
             Step::Packet(Packet::Write(w)) => {
-                assert_eq!(w.header.header.id, 0x03);
+                assert_eq!(w.header.header.id, Id::new(0x03));
                 assert_eq!(w.header.addr.get(), 0x0084);
                 assert_eq!(w.data, &data);
             }
@@ -296,12 +295,12 @@ mod tests {
         let mut buf = Buf::new();
         let data = [0x10, 0x20];
         InstructionEmitter::<_, Crc>::new(&mut buf)
-            .reg_write(0x04, 0x0030, &data)
+            .reg_write(Id::new(0x04), 0x0030, &data)
             .unwrap();
         let mut dec: Decoder<32, Crc> = Decoder::new();
         match dec.feed(&buf).0 {
             Step::Packet(Packet::RegWrite(w)) => {
-                assert_eq!(w.header.header.id, 0x04);
+                assert_eq!(w.header.header.id, Id::new(0x04));
                 assert_eq!(w.header.addr.get(), 0x0030);
                 assert_eq!(w.data, &data);
             }
@@ -313,11 +312,11 @@ mod tests {
     fn instr_action() {
         let mut buf = Buf::new();
         InstructionEmitter::<_, Crc>::new(&mut buf)
-            .action(0x05)
+            .action(Id::new(0x05))
             .unwrap();
         let mut dec: Decoder<32, Crc> = Decoder::new();
         match dec.feed(&buf).0 {
-            Step::Packet(Packet::Action(p)) => assert_eq!(p.header.id, 0x05),
+            Step::Packet(Packet::Action(p)) => assert_eq!(p.header.id, Id::new(0x05)),
             other => panic!("expected Action, got {other:?}"),
         }
     }
@@ -326,11 +325,11 @@ mod tests {
     fn instr_reboot() {
         let mut buf = Buf::new();
         InstructionEmitter::<_, Crc>::new(&mut buf)
-            .reboot(0x06)
+            .reboot(Id::new(0x06))
             .unwrap();
         let mut dec: Decoder<32, Crc> = Decoder::new();
         match dec.feed(&buf).0 {
-            Step::Packet(Packet::Reboot(p)) => assert_eq!(p.header.id, 0x06),
+            Step::Packet(Packet::Reboot(p)) => assert_eq!(p.header.id, Id::new(0x06)),
             other => panic!("expected Reboot, got {other:?}"),
         }
     }
@@ -339,12 +338,12 @@ mod tests {
     fn instr_factory_reset() {
         let mut buf = Buf::new();
         InstructionEmitter::<_, Crc>::new(&mut buf)
-            .factory_reset(0x07, 0x02)
+            .factory_reset(Id::new(0x07), 0x02)
             .unwrap();
         let mut dec: Decoder<32, Crc> = Decoder::new();
         match dec.feed(&buf).0 {
             Step::Packet(Packet::FactoryReset(p)) => {
-                assert_eq!(p.header.id, 0x07);
+                assert_eq!(p.header.id, Id::new(0x07));
                 assert_eq!(p.mode, 0x02);
             }
             other => panic!("expected FactoryReset, got {other:?}"),
@@ -356,12 +355,12 @@ mod tests {
         let mut buf = Buf::new();
         let body = [0x01, 0x44, 0x58, 0x4C, 0x22];
         InstructionEmitter::<_, Crc>::new(&mut buf)
-            .clear(0x08, &body)
+            .clear(Id::new(0x08), &body)
             .unwrap();
         let mut dec: Decoder<32, Crc> = Decoder::new();
         match dec.feed(&buf).0 {
             Step::Packet(Packet::Raw(r)) => {
-                assert_eq!(r.header.header.id, 0x08);
+                assert_eq!(r.header.header.id, Id::new(0x08));
                 assert_eq!(r.header.header.instruction.kind(), Instruction::Clear);
                 assert_eq!(r.params, &body);
             }
@@ -374,12 +373,12 @@ mod tests {
         let mut buf = Buf::new();
         let body = [0xAA, 0xBB];
         InstructionEmitter::<_, Crc>::new(&mut buf)
-            .control_table_backup(0x09, &body)
+            .control_table_backup(Id::new(0x09), &body)
             .unwrap();
         let mut dec: Decoder<32, Crc> = Decoder::new();
         match dec.feed(&buf).0 {
             Step::Packet(Packet::Raw(r)) => {
-                assert_eq!(r.header.header.id, 0x09);
+                assert_eq!(r.header.header.id, Id::new(0x09));
                 assert_eq!(
                     r.header.header.instruction.kind(),
                     Instruction::ControlTableBackup
@@ -400,7 +399,7 @@ mod tests {
         let mut dec: Decoder<64, Crc> = Decoder::new();
         match dec.feed(&buf).0 {
             Step::Packet(Packet::SyncRead(p)) => {
-                assert_eq!(p.header.header.id, BROADCAST_ID);
+                assert_eq!(p.header.header.id, Id::BROADCAST);
                 assert_eq!(p.header.addr.get(), 0x0084);
                 assert_eq!(p.header.length.get(), 4);
                 assert_eq!(p.ids, &ids);
@@ -419,14 +418,14 @@ mod tests {
         let mut dec: Decoder<64, Crc> = Decoder::new();
         match dec.feed(&buf).0 {
             Step::Packet(Packet::SyncWrite(p)) => {
-                assert_eq!(p.header.header.id, BROADCAST_ID);
+                assert_eq!(p.header.header.id, Id::BROADCAST);
                 assert_eq!(p.header.addr.get(), 0x0080);
                 assert_eq!(p.header.length.get(), 2);
                 let entries: Vec<_, 4> = p.entries().collect();
                 assert_eq!(entries.len(), 2);
-                assert_eq!(entries[0].id, 0x01);
+                assert_eq!(entries[0].id, Id::new(0x01));
                 assert_eq!(entries[0].data, &[0xAA, 0xBB]);
-                assert_eq!(entries[1].id, 0x02);
+                assert_eq!(entries[1].id, Id::new(0x02));
                 assert_eq!(entries[1].data, &[0xCC, 0xDD]);
             }
             other => panic!("expected SyncWrite, got {other:?}"),
@@ -438,12 +437,12 @@ mod tests {
         let mut buf = Buf::new();
         let entries = [
             BulkReadEntry {
-                id: 1,
+                id: Id::new(1),
                 addr: U16Le::from_u16(0x0084),
                 length: U16Le::from_u16(4),
             },
             BulkReadEntry {
-                id: 2,
+                id: Id::new(2),
                 addr: U16Le::from_u16(0x0090),
                 length: U16Le::from_u16(2),
             },
@@ -454,12 +453,12 @@ mod tests {
         let mut dec: Decoder<64, Crc> = Decoder::new();
         match dec.feed(&buf).0 {
             Step::Packet(Packet::BulkRead(p)) => {
-                assert_eq!(p.header.header.id, BROADCAST_ID);
+                assert_eq!(p.header.header.id, Id::BROADCAST);
                 assert_eq!(p.entries.len(), 2);
-                assert_eq!(p.entries[0].id, 1);
+                assert_eq!(p.entries[0].id, Id::new(1));
                 assert_eq!(p.entries[0].addr.get(), 0x0084);
                 assert_eq!(p.entries[0].length.get(), 4);
-                assert_eq!(p.entries[1].id, 2);
+                assert_eq!(p.entries[1].id, Id::new(2));
                 assert_eq!(p.entries[1].addr.get(), 0x0090);
                 assert_eq!(p.entries[1].length.get(), 2);
             }
@@ -479,13 +478,13 @@ mod tests {
         let mut dec: Decoder<64, Crc> = Decoder::new();
         match dec.feed(&buf).0 {
             Step::Packet(Packet::BulkWrite(p)) => {
-                assert_eq!(p.header.header.id, BROADCAST_ID);
+                assert_eq!(p.header.header.id, Id::BROADCAST);
                 let entries: Vec<_, 4> = p.entries().collect();
                 assert_eq!(entries.len(), 2);
-                assert_eq!(entries[0].id, 0x01);
+                assert_eq!(entries[0].id, Id::new(0x01));
                 assert_eq!(entries[0].addr, 0x0084);
                 assert_eq!(entries[0].data, &[0xAA, 0xBB]);
-                assert_eq!(entries[1].id, 0x02);
+                assert_eq!(entries[1].id, Id::new(0x02));
                 assert_eq!(entries[1].addr, 0x0090);
                 assert_eq!(entries[1].data, &[0xCC]);
             }
@@ -503,7 +502,7 @@ mod tests {
         let mut dec: Decoder<64, Crc> = Decoder::new();
         match dec.feed(&buf).0 {
             Step::Packet(Packet::FastSyncRead(p)) => {
-                assert_eq!(p.header.header.id, BROADCAST_ID);
+                assert_eq!(p.header.header.id, Id::BROADCAST);
                 assert_eq!(p.header.addr.get(), 0x0084);
                 assert_eq!(p.header.length.get(), 4);
                 assert_eq!(p.ids, &ids);
@@ -517,12 +516,12 @@ mod tests {
         let mut buf = Buf::new();
         let entries = [
             BulkReadEntry {
-                id: 1,
+                id: Id::new(1),
                 addr: U16Le::from_u16(0x0084),
                 length: U16Le::from_u16(4),
             },
             BulkReadEntry {
-                id: 2,
+                id: Id::new(2),
                 addr: U16Le::from_u16(0x0090),
                 length: U16Le::from_u16(2),
             },
@@ -533,10 +532,10 @@ mod tests {
         let mut dec: Decoder<64, Crc> = Decoder::new();
         match dec.feed(&buf).0 {
             Step::Packet(Packet::FastBulkRead(p)) => {
-                assert_eq!(p.header.header.id, BROADCAST_ID);
+                assert_eq!(p.header.header.id, Id::BROADCAST);
                 assert_eq!(p.entries.len(), 2);
-                assert_eq!(p.entries[0].id, 1);
-                assert_eq!(p.entries[1].id, 2);
+                assert_eq!(p.entries[0].id, Id::new(1));
+                assert_eq!(p.entries[1].id, Id::new(2));
             }
             other => panic!("expected FastBulkRead, got {other:?}"),
         }
@@ -547,12 +546,12 @@ mod tests {
         let mut buf = Buf::new();
         let params = [0xDE, 0xAD, 0xBE, 0xEF];
         InstructionEmitter::<_, Crc>::new(&mut buf)
-            .ext(0x0A, 0xE0, &params)
+            .ext(Id::new(0x0A), 0xE0, &params)
             .unwrap();
         let mut dec: Decoder<32, Crc> = Decoder::new();
         match dec.feed(&buf).0 {
             Step::Packet(Packet::Raw(r)) => {
-                assert_eq!(r.header.header.id, 0x0A);
+                assert_eq!(r.header.header.id, Id::new(0x0A));
                 assert_eq!(r.header.header.instruction.kind(), Instruction::Ext(0xE0));
                 assert_eq!(r.params, &params);
             }
@@ -564,7 +563,7 @@ mod tests {
     fn instruction_emit_round_trips_read_through_decoder() {
         let mut a = Buf::new();
         InstructionEmitter::<_, Crc>::new(&mut a)
-            .read(0x02, 0x0084, 4)
+            .read(Id::new(0x02), 0x0084, 4)
             .unwrap();
 
         let mut dec: Decoder<32, Crc> = Decoder::new();
@@ -585,7 +584,7 @@ mod tests {
         let mut a = Buf::new();
         let data = [0xAA, 0xBB, 0xCC, 0xDD];
         InstructionEmitter::<_, Crc>::new(&mut a)
-            .write(0x03, 0x0084, &data)
+            .write(Id::new(0x03), 0x0084, &data)
             .unwrap();
 
         let mut dec: Decoder<64, Crc> = Decoder::new();
@@ -606,7 +605,7 @@ mod tests {
         let mut a = Buf::new();
         let params = [0xDE, 0xAD, 0xBE, 0xEF];
         InstructionEmitter::<_, Crc>::new(&mut a)
-            .ext(0x0A, 0xE0, &params)
+            .ext(Id::new(0x0A), 0xE0, &params)
             .unwrap();
 
         let mut dec: Decoder<32, Crc> = Decoder::new();
@@ -626,7 +625,7 @@ mod tests {
     fn instruction_emit_forwards_status_packet() {
         let mut a = Buf::new();
         StatusEmitter::<_, Crc>::new(&mut a)
-            .read(0x07, StatusError::OK, &[0x10, 0x20, 0x30])
+            .read(Id::new(0x07), StatusError::OK, &[0x10, 0x20, 0x30])
             .unwrap();
         let mut dec: Decoder<32, Crc> = Decoder::new();
         let pkt = match dec.feed(&a).0 {

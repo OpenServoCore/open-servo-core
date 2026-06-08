@@ -1,16 +1,18 @@
-use crc::{Crc, CRC_16_UMTS};
+use crc::{CRC_16_UMTS, Crc};
 use dxl_protocol::decoder::{Decoder, Step};
-use dxl_protocol::packet::{BulkReadEntry, ErrorCode, Packet, Slot, Status, StatusError};
+use dxl_protocol::packet::{BulkReadEntry, ErrorCode, Id, Packet, Slot, Status, StatusError};
 use dxl_protocol::{
-    CrcUmts, InstructionEmitter, SlotEmitter, SlotPosition, StatusEmitter, WriteError, BROADCAST_ID,
+    CrcUmts, InstructionEmitter, SlotEmitter, SlotPosition, StatusEmitter, WriteError,
 };
+
+const BROADCAST_ID: Id = Id::BROADCAST;
 use heapless::Vec;
 
 use crate::traits::{CalSnapshot, DxlBus, Event, Schedule, ServiceEvents, ServicesIo};
 use crate::{BootMode, RegionStorage, Shared, StatusReturnLevel};
 
-use super::osc::CALIBRATE_INSTRUCTION;
 use super::Dxl;
+use super::osc::CALIBRATE_INSTRUCTION;
 
 /// Test-only `CrcUmts`. Production builds get the chip's impl directly; core
 /// itself never references a concrete CRC engine after the trait flip.
@@ -204,7 +206,7 @@ fn encode_calibrate(id: u8, count: u16) -> Vec<u8, 256> {
     for _ in 0..count {
         params.push(0).unwrap();
     }
-    encode(|w| w.ext(id, CALIBRATE_INSTRUCTION, &params))
+    encode(|w| w.ext(Id::new(id), CALIBRATE_INSTRUCTION, &params))
 }
 
 /// Cast a 5-byte-stride byte buffer to a typed `[BulkReadEntry]` slice.
@@ -221,7 +223,7 @@ fn parse_status(bytes: &[u8]) -> (u8, u8, Vec<u8, 64>) {
     assert_eq!(used, bytes.len());
     match step {
         Step::Packet(Packet::Status(p)) => {
-            let id = p.header.header.id;
+            let id = p.header.header.id.as_byte();
             let err = p.header.error.as_byte();
             let mut out: Vec<u8, 64> = Vec::new();
             out.extend_from_slice(p.params).unwrap();
@@ -237,7 +239,7 @@ fn ping_to_our_id_replies() {
     let mut io = FakeIo::new();
     let mut h = Dxl::new();
 
-    let req = encode(|w| w.ping(0));
+    let req = encode(|w| w.ping(Id::new(0)));
     io.feed(&req);
     h.poll(&shared, &mut io);
 
@@ -292,7 +294,7 @@ fn ping_to_other_id_silent() {
     let mut io = FakeIo::new();
     let mut h = Dxl::new();
 
-    let req = encode(|w| w.ping(17));
+    let req = encode(|w| w.ping(Id::new(17)));
     io.feed(&req);
     h.poll(&shared, &mut io);
 
@@ -306,7 +308,7 @@ fn read_model_number_returns_two_bytes() {
     let mut io = FakeIo::new();
     let mut h = Dxl::new();
 
-    let req = encode(|w| w.read(0, 0, 2));
+    let req = encode(|w| w.read(Id::new(0), 0, 2));
     io.feed(&req);
     h.poll(&shared, &mut io);
 
@@ -322,7 +324,7 @@ fn read_zero_length_rejects_with_data_range() {
     let mut io = FakeIo::new();
     let mut h = Dxl::new();
 
-    let req = encode(|w| w.read(0, 0, 0));
+    let req = encode(|w| w.read(Id::new(0), 0, 0));
     io.feed(&req);
     h.poll(&shared, &mut io);
 
@@ -336,7 +338,7 @@ fn unsupported_instruction_replies_instruction_error() {
     let mut io = FakeIo::new();
     let mut h = Dxl::new();
 
-    let req = encode(|w| w.factory_reset(0, 0xFF));
+    let req = encode(|w| w.factory_reset(Id::new(0), 0xFF));
     io.feed(&req);
     h.poll(&shared, &mut io);
 
@@ -351,7 +353,7 @@ fn write_to_rw_address_succeeds_and_mutates() {
     let mut io = FakeIo::new();
     let mut h = Dxl::new();
 
-    let req = encode(|w| w.write(0, CONTROL_BASE_ADDR, &[1]));
+    let req = encode(|w| w.write(Id::new(0), CONTROL_BASE_ADDR, &[1]));
     io.feed(&req);
     h.poll(&shared, &mut io);
 
@@ -369,7 +371,7 @@ fn write_to_ro_address_replies_access_error() {
     let mut io = FakeIo::new();
     let mut h = Dxl::new();
 
-    let req = encode(|w| w.write(0, 0, &[0xAA, 0xBB]));
+    let req = encode(|w| w.write(Id::new(0), 0, &[0xAA, 0xBB]));
     io.feed(&req);
     h.poll(&shared, &mut io);
 
@@ -385,7 +387,7 @@ fn write_to_unmapped_address_replies_data_range_error() {
     let mut io = FakeIo::new();
     let mut h = Dxl::new();
 
-    let req = encode(|w| w.write(0, 0xFFFE, &[0x01]));
+    let req = encode(|w| w.write(Id::new(0), 0xFFFE, &[0x01]));
     io.feed(&req);
     h.poll(&shared, &mut io);
 
@@ -400,7 +402,7 @@ fn write_to_other_id_silent_and_does_not_mutate() {
     let mut io = FakeIo::new();
     let mut h = Dxl::new();
 
-    let req = encode(|w| w.write(17, CONTROL_BASE_ADDR, &[1]));
+    let req = encode(|w| w.write(Id::new(17), CONTROL_BASE_ADDR, &[1]));
     io.feed(&req);
     h.poll(&shared, &mut io);
 
@@ -432,14 +434,14 @@ fn reg_write_then_action_commits_to_live_table() {
     let mut io = FakeIo::new();
     let mut h = Dxl::new();
 
-    let req = encode(|w| w.reg_write(0, CONTROL_BASE_ADDR, &[1]));
+    let req = encode(|w| w.reg_write(Id::new(0), CONTROL_BASE_ADDR, &[1]));
     io.feed(&req);
     h.poll(&shared, &mut io);
     let (_, err, _) = parse_status(&io.bus.tx);
     assert_eq!(err, 0);
     assert!(!shared.table.control.with(|c| c.lifecycle.torque_enable));
 
-    let req = encode(|w| w.action(0));
+    let req = encode(|w| w.action(Id::new(0)));
     io.feed(&req);
     h.poll(&shared, &mut io);
     let (_, err, _) = parse_status(&io.bus.tx);
@@ -453,7 +455,7 @@ fn reg_write_to_ro_address_replies_access_error_immediately() {
     let mut io = FakeIo::new();
     let mut h = Dxl::new();
 
-    let req = encode(|w| w.reg_write(0, 0, &[0xAA, 0xBB]));
+    let req = encode(|w| w.reg_write(Id::new(0), 0, &[0xAA, 0xBB]));
     io.feed(&req);
     h.poll(&shared, &mut io);
     let (_, err, _) = parse_status(&io.bus.tx);
@@ -467,13 +469,13 @@ fn reg_write_invalid_value_rejected_at_stage_time() {
     let mut io = FakeIo::new();
     let mut h = Dxl::new();
 
-    let req = encode(|w| w.reg_write(0, CONTROL_BASE_ADDR, &[2]));
+    let req = encode(|w| w.reg_write(Id::new(0), CONTROL_BASE_ADDR, &[2]));
     io.feed(&req);
     h.poll(&shared, &mut io);
     let (_, err, _) = parse_status(&io.bus.tx);
     assert_eq!(err, StatusError::code(ErrorCode::DataRange).as_byte());
 
-    let req = encode(|w| w.action(0));
+    let req = encode(|w| w.action(Id::new(0)));
     io.feed(&req);
     h.poll(&shared, &mut io);
     let (_, err, _) = parse_status(&io.bus.tx);
@@ -483,17 +485,17 @@ fn reg_write_invalid_value_rejected_at_stage_time() {
 
 #[test]
 fn sync_write_clears_pending_reg_write_staging() {
-    use crate::regions::control::Mode;
     use crate::regions::CONTROL_BASE_ADDR;
+    use crate::regions::control::Mode;
     let shared = Shared::new();
     let mut io = FakeIo::new();
     let mut h = Dxl::new();
 
-    let req = encode(|w| w.reg_write(0, CONTROL_BASE_ADDR, &[1]));
+    let req = encode(|w| w.reg_write(Id::new(0), CONTROL_BASE_ADDR, &[1]));
     io.feed(&req);
     h.poll(&shared, &mut io);
 
-    let req = encode(|w| w.write(0, CONTROL_BASE_ADDR + 1, &[1]));
+    let req = encode(|w| w.write(Id::new(0), CONTROL_BASE_ADDR + 1, &[1]));
     io.feed(&req);
     h.poll(&shared, &mut io);
     assert_eq!(
@@ -501,7 +503,7 @@ fn sync_write_clears_pending_reg_write_staging() {
         Mode::PositionPid,
     );
 
-    let req = encode(|w| w.action(0));
+    let req = encode(|w| w.action(Id::new(0)));
     io.feed(&req);
     h.poll(&shared, &mut io);
     let (_, err, _) = parse_status(&io.bus.tx);
@@ -534,7 +536,7 @@ fn action_with_empty_staging_replies_ok() {
     let mut io = FakeIo::new();
     let mut h = Dxl::new();
 
-    let req = encode(|w| w.action(0));
+    let req = encode(|w| w.action(Id::new(0)));
     io.feed(&req);
     h.poll(&shared, &mut io);
     let (_, err, _) = parse_status(&io.bus.tx);
@@ -547,7 +549,7 @@ fn reboot_to_our_id_acks_and_calls_device_reboot() {
     let mut io = FakeIo::new();
     let mut h = Dxl::new();
 
-    let req = encode(|w| w.reboot(0));
+    let req = encode(|w| w.reboot(Id::new(0)));
     io.feed(&req);
     h.poll(&shared, &mut io);
 
@@ -581,7 +583,7 @@ fn reboot_to_other_id_silent_and_no_request() {
     let mut io = FakeIo::new();
     let mut h = Dxl::new();
 
-    let req = encode(|w| w.reboot(17));
+    let req = encode(|w| w.reboot(Id::new(17)));
     io.feed(&req);
     h.poll(&shared, &mut io);
 
@@ -598,11 +600,11 @@ fn reboot_honors_staged_boot_mode() {
     let mut io = FakeIo::new();
     let mut h = Dxl::new();
 
-    let req = encode(|w| w.write(0, BOOT_MODE, &[BootMode::Bootloader as u8]));
+    let req = encode(|w| w.write(Id::new(0), BOOT_MODE, &[BootMode::Bootloader as u8]));
     io.feed(&req);
     h.poll(&shared, &mut io);
 
-    let req = encode(|w| w.reboot(0));
+    let req = encode(|w| w.reboot(Id::new(0)));
     io.feed(&req);
     h.poll(&shared, &mut io);
 
@@ -625,14 +627,14 @@ fn return_level_none_silences_write_ack_but_ping_replies() {
     let mut io = FakeIo::new();
     let mut h = Dxl::new();
 
-    let req = encode(|w| w.write(0, CONTROL_BASE_ADDR, &[1]));
+    let req = encode(|w| w.write(Id::new(0), CONTROL_BASE_ADDR, &[1]));
     io.feed(&req);
     h.poll(&shared, &mut io);
     assert_eq!(io.bus.send_count, 0);
     assert!(io.bus.tx.is_empty());
     assert!(shared.table.control.with(|c| c.lifecycle.torque_enable));
 
-    let req = encode(|w| w.ping(0));
+    let req = encode(|w| w.ping(Id::new(0)));
     io.feed(&req);
     h.poll(&shared, &mut io);
     assert_eq!(io.bus.send_count, 1);
@@ -647,7 +649,7 @@ fn return_level_none_silences_read_reply() {
     let mut io = FakeIo::new();
     let mut h = Dxl::new();
 
-    let req = encode(|w| w.read(0, 0, 2));
+    let req = encode(|w| w.read(Id::new(0), 0, 2));
     io.feed(&req);
     h.poll(&shared, &mut io);
     assert_eq!(io.bus.send_count, 0);
@@ -662,12 +664,12 @@ fn return_level_read_silences_write_ack_but_read_replies() {
     let mut io = FakeIo::new();
     let mut h = Dxl::new();
 
-    let req = encode(|w| w.write(0, CONTROL_BASE_ADDR, &[1]));
+    let req = encode(|w| w.write(Id::new(0), CONTROL_BASE_ADDR, &[1]));
     io.feed(&req);
     h.poll(&shared, &mut io);
     assert_eq!(io.bus.send_count, 0);
 
-    let req = encode(|w| w.read(0, 0, 2));
+    let req = encode(|w| w.read(Id::new(0), 0, 2));
     io.feed(&req);
     h.poll(&shared, &mut io);
     assert_eq!(io.bus.send_count, 1);
@@ -682,7 +684,7 @@ fn return_level_none_silences_write_error_reply() {
     let mut io = FakeIo::new();
     let mut h = Dxl::new();
 
-    let req = encode(|w| w.write(0, 0, &[0xAA, 0xBB]));
+    let req = encode(|w| w.write(Id::new(0), 0, &[0xAA, 0xBB]));
     io.feed(&req);
     h.poll(&shared, &mut io);
     assert_eq!(io.bus.send_count, 0);
@@ -696,7 +698,7 @@ fn return_level_none_silences_unsupported_instruction_error() {
     let mut io = FakeIo::new();
     let mut h = Dxl::new();
 
-    let req = encode(|w| w.factory_reset(0, 0xFF));
+    let req = encode(|w| w.factory_reset(Id::new(0), 0xFF));
     io.feed(&req);
     h.poll(&shared, &mut io);
     assert_eq!(io.bus.send_count, 0);
@@ -711,11 +713,11 @@ fn return_level_none_silences_action_ack() {
     let mut io = FakeIo::new();
     let mut h = Dxl::new();
 
-    let req = encode(|w| w.reg_write(0, CONTROL_BASE_ADDR, &[1]));
+    let req = encode(|w| w.reg_write(Id::new(0), CONTROL_BASE_ADDR, &[1]));
     io.feed(&req);
     h.poll(&shared, &mut io);
 
-    let req = encode(|w| w.action(0));
+    let req = encode(|w| w.action(Id::new(0)));
     io.feed(&req);
     h.poll(&shared, &mut io);
 
@@ -730,7 +732,7 @@ fn return_level_none_silences_reboot_ack_but_reboot_still_fires() {
     let mut io = FakeIo::new();
     let mut h = Dxl::new();
 
-    let req = encode(|w| w.reboot(0));
+    let req = encode(|w| w.reboot(Id::new(0)));
     io.feed(&req);
     h.poll(&shared, &mut io);
 
@@ -747,7 +749,7 @@ fn return_level_none_still_replies_to_ping() {
     let mut io = FakeIo::new();
     let mut h = Dxl::new();
 
-    let req = encode(|w| w.ping(0));
+    let req = encode(|w| w.ping(Id::new(0)));
     io.feed(&req);
     h.poll(&shared, &mut io);
 
@@ -765,7 +767,7 @@ fn return_level_read_replies_to_read_errors() {
     let mut io = FakeIo::new();
     let mut h = Dxl::new();
 
-    let req = encode(|w| w.read(0, 0xFFFE, 1));
+    let req = encode(|w| w.read(Id::new(0), 0xFFFE, 1));
     io.feed(&req);
     h.poll(&shared, &mut io);
 
@@ -1054,7 +1056,7 @@ fn fast_sync_read_middle_slot_emits_body_only_with_bytes_before() {
     let req = encode(|w| w.fast_sync_read(0, 2, &[9, 0, 7]));
     let mut __dec: Decoder<256, TestDxlCrc> = Decoder::new();
     let __expected_bytes_before = match __dec.feed(&req).0 {
-        Step::Packet(Packet::FastSyncRead(p)) => p.find_slot(0, 32).unwrap().bytes_before,
+        Step::Packet(Packet::FastSyncRead(p)) => p.find_slot(Id::new(0), 32).unwrap().bytes_before,
         _ => panic!("expected FastSyncRead"),
     };
     io.feed(&req);
@@ -1084,7 +1086,7 @@ fn fast_sync_read_last_slot_reserves_crc_placeholder() {
     let req = encode(|w| w.fast_sync_read(0, 2, &[9, 0]));
     let mut __dec: Decoder<256, TestDxlCrc> = Decoder::new();
     let __expected_bytes_before = match __dec.feed(&req).0 {
-        Step::Packet(Packet::FastSyncRead(p)) => p.find_slot(0, 32).unwrap().bytes_before,
+        Step::Packet(Packet::FastSyncRead(p)) => p.find_slot(Id::new(0), 32).unwrap().bytes_before,
         _ => panic!("expected FastSyncRead"),
     };
     io.feed(&req);
@@ -1219,7 +1221,7 @@ fn fast_bulk_read_middle_slot_carries_bytes_before() {
     let req = encode(|w| w.fast_bulk_read(bulk_entries(&body)));
     let mut __dec: Decoder<256, TestDxlCrc> = Decoder::new();
     let __expected_bytes_before = match __dec.feed(&req).0 {
-        Step::Packet(Packet::FastBulkRead(p)) => p.find_slot(0, 32).unwrap().bytes_before,
+        Step::Packet(Packet::FastBulkRead(p)) => p.find_slot(Id::new(0), 32).unwrap().bytes_before,
         _ => panic!("expected FastBulkRead"),
     };
     io.feed(&req);
@@ -1246,7 +1248,7 @@ fn fast_bulk_read_last_slot_reserves_crc_placeholder() {
     let req = encode(|w| w.fast_bulk_read(bulk_entries(&body)));
     let mut __dec: Decoder<256, TestDxlCrc> = Decoder::new();
     let __expected_bytes_before = match __dec.feed(&req).0 {
-        Step::Packet(Packet::FastBulkRead(p)) => p.find_slot(0, 32).unwrap().bytes_before,
+        Step::Packet(Packet::FastBulkRead(p)) => p.find_slot(Id::new(0), 32).unwrap().bytes_before,
         _ => panic!("expected FastBulkRead"),
     };
     io.feed(&req);
@@ -1356,7 +1358,7 @@ fn poll_recovers_from_stale_fast_first_slot_residue_then_replies_to_ping() {
     SlotEmitter::<_, TestDxlCrc>::new(&mut residue)
         .first(
             &Slot {
-                id: 50,
+                id: Id::new(50),
                 error: StatusError::OK,
                 data: &[0xAA, 0xAA, 0xAA, 0xAA],
             },
@@ -1365,7 +1367,7 @@ fn poll_recovers_from_stale_fast_first_slot_residue_then_replies_to_ping() {
         .unwrap();
     assert_eq!(residue.len(), 14, "Fast First slot wire shape changed?");
 
-    let ping = encode(|w| w.ping(0));
+    let ping = encode(|w| w.ping(Id::new(0)));
 
     io.feed(&residue);
     io.feed(&ping);
@@ -1504,7 +1506,7 @@ fn calibrate_broadcast_silently_dropped() {
     let mut io = FakeIo::new();
     let mut h = Dxl::new();
 
-    let req = encode_calibrate(BROADCAST_ID, 128);
+    let req = encode_calibrate(BROADCAST_ID.as_byte(), 128);
     io.feed(&req);
     h.poll(&shared, &mut io);
 
@@ -1575,13 +1577,13 @@ fn sync_write_to_other_ids_only_does_not_mutate() {
 
 #[test]
 fn sync_write_clears_pending_reg_write_staging_too() {
-    use crate::regions::control::Mode;
     use crate::regions::CONTROL_BASE_ADDR;
+    use crate::regions::control::Mode;
     let shared = Shared::new();
     let mut io = FakeIo::new();
     let mut h = Dxl::new();
 
-    let req = encode(|w| w.reg_write(0, CONTROL_BASE_ADDR, &[1]));
+    let req = encode(|w| w.reg_write(Id::new(0), CONTROL_BASE_ADDR, &[1]));
     io.feed(&req);
     h.poll(&shared, &mut io);
 
@@ -1595,7 +1597,7 @@ fn sync_write_clears_pending_reg_write_staging_too() {
         Mode::PositionPid,
     );
 
-    let req = encode(|w| w.action(0));
+    let req = encode(|w| w.action(Id::new(0)));
     io.feed(&req);
     h.poll(&shared, &mut io);
     let (_, err, _) = parse_status(&io.bus.tx);
@@ -1642,8 +1644,8 @@ fn bulk_write_to_other_id_silent_and_does_not_mutate() {
 
 #[test]
 fn bulk_write_uses_our_tuples_address_not_a_preceding_slots() {
-    use crate::regions::control::Mode;
     use crate::regions::CONTROL_BASE_ADDR;
+    use crate::regions::control::Mode;
     let shared = Shared::new();
     let mut io = FakeIo::new();
     let mut h = Dxl::new();

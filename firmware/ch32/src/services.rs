@@ -4,9 +4,7 @@ use core::sync::atomic::Ordering;
 use dxl_protocol::SlotPosition;
 use dxl_protocol::packet::{Slot, Status};
 use dxl_protocol::{SlotEmitter, StatusEmitter};
-use osc_core::{
-    BootMode, CalSnapshot, DxlBus, Event, Schedule, ServiceEvents, ServicesIo,
-};
+use osc_core::{BootMode, CalSnapshot, DxlBus, Event, Schedule, ServiceEvents, ServicesIo};
 
 use crate::dxl;
 use crate::dxl::cal::{Cal, snoop_bias_ticks};
@@ -209,7 +207,10 @@ impl DxlBus for Ch32Bus {
         // after a send cycle this struct initiated.
         let buf = unsafe { &mut *DXL_TX_BUF.get() };
         buf.truncate(0);
-        if StatusEmitter::<_, dxl::Ch32DxlCrc>::new(buf).emit(status).is_err() {
+        if StatusEmitter::<_, dxl::Ch32DxlCrc>::new(buf)
+            .emit(status)
+            .is_err()
+        {
             buf.truncate(0);
             return;
         }

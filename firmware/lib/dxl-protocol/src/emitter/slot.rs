@@ -117,10 +117,9 @@ impl<'a, W: WriteBuf, CRC: CrcUmts> SlotEmitter<'a, W, CRC> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::constants::BROADCAST_ID;
     use crate::crc_software::SoftwareCrcUmts;
     use crate::decoder::{Decoder, Step};
-    use crate::packet::{Instruction, Packet, RequestKind, Status, StatusError};
+    use crate::packet::{Id, Instruction, Packet, RequestKind, Status, StatusError};
     use heapless::Vec;
 
     type Crc = SoftwareCrcUmts;
@@ -130,7 +129,7 @@ mod tests {
     fn slot_only_round_trips() {
         let mut buf = Buf::new();
         let slot = Slot {
-            id: 7,
+            id: Id::new(7),
             error: StatusError::OK,
             data: &[0xAA, 0xBB, 0xCC, 0xDD],
         };
@@ -139,14 +138,14 @@ mod tests {
         let mut dec: Decoder<32, Crc> = Decoder::new();
         match dec.feed(&buf).0 {
             Step::Packet(Packet::Status(s)) => {
-                assert_eq!(s.header.header.id, BROADCAST_ID);
+                assert_eq!(s.header.header.id, Id::BROADCAST);
                 assert_eq!(s.error(), StatusError::OK);
                 let slots: Vec<_, 4> = match s.interpret(RequestKind::FastSyncRead) {
                     Status::FastSyncRead { status, .. } => status.slots(4).collect(),
                     other => panic!("expected FastSyncRead, got {other:?}"),
                 };
                 assert_eq!(slots.len(), 1);
-                assert_eq!(slots[0].id, 7);
+                assert_eq!(slots[0].id, Id::new(7));
                 assert_eq!(slots[0].error, StatusError::OK);
                 assert_eq!(slots[0].data, &[0xAA, 0xBB, 0xCC, 0xDD]);
             }
@@ -158,17 +157,17 @@ mod tests {
     fn slot_chain_emits_expected_bytes() {
         let mut buf = Buf::new();
         let s0 = Slot {
-            id: 1,
+            id: Id::new(1),
             error: StatusError::OK,
             data: &[0xAA, 0xBB],
         };
         let s1 = Slot {
-            id: 2,
+            id: Id::new(2),
             error: StatusError::from_byte(0x05),
             data: &[0xCC, 0xDD],
         };
         let s2 = Slot {
-            id: 3,
+            id: Id::new(3),
             error: StatusError::OK,
             data: &[0xEE, 0xFF],
         };
@@ -183,7 +182,7 @@ mod tests {
             0xFF,
             0xFD,
             0x00, // sync
-            BROADCAST_ID,
+            Id::BROADCAST.as_byte(),
             0x0F,
             0x00,                        // len = 15
             Instruction::Status.as_u8(), // 0x55
@@ -209,7 +208,7 @@ mod tests {
     fn slot_middle_emits_body_only() {
         let mut buf = Buf::new();
         let slot = Slot {
-            id: 5,
+            id: Id::new(5),
             error: StatusError::from_byte(0x07),
             data: &[0x10, 0x20],
         };
@@ -221,17 +220,17 @@ mod tests {
     fn slot_emit_dispatches_each_position() {
         let mut emitted_via_emit = Buf::new();
         let s0 = Slot {
-            id: 1,
+            id: Id::new(1),
             error: StatusError::OK,
             data: &[0xAA, 0xBB],
         };
         let s1 = Slot {
-            id: 2,
+            id: Id::new(2),
             error: StatusError::from_byte(0x05),
             data: &[0xCC, 0xDD],
         };
         let s2 = Slot {
-            id: 3,
+            id: Id::new(3),
             error: StatusError::OK,
             data: &[0xEE, 0xFF],
         };
@@ -256,7 +255,7 @@ mod tests {
     fn slot_emit_only_round_trips_single_slot() {
         let mut buf = Buf::new();
         let slot = Slot {
-            id: 7,
+            id: Id::new(7),
             error: StatusError::OK,
             data: &[0xAA, 0xBB, 0xCC, 0xDD],
         };

@@ -2,7 +2,7 @@
 //! protocols, recovers real frames embedded in noise.
 
 use dxl_protocol::decoder::{Decoder, ResyncKind, Step};
-use dxl_protocol::packet::{self as overlay, BulkReadEntry, ErrorCode, StatusError, U16Le};
+use dxl_protocol::packet::{self as overlay, BulkReadEntry, ErrorCode, Id, StatusError, U16Le};
 use dxl_protocol::{
     HEADER, InstructionEmitter, PACKET_LEN_GUARD, SoftwareCrcUmts, StatusEmitter, WriteBuf,
     WriteError,
@@ -13,7 +13,9 @@ type Crc = SoftwareCrcUmts;
 
 fn write_ping(id: u8) -> HVec<u8, 32> {
     let mut v: HVec<u8, 32> = HVec::new();
-    InstructionEmitter::<_, Crc>::new(&mut v).ping(id).unwrap();
+    InstructionEmitter::<_, Crc>::new(&mut v)
+        .ping(Id::new(id))
+        .unwrap();
     v
 }
 
@@ -245,7 +247,7 @@ fn truncated_real_frame_returns_needmore_at_each_step() {
     let (step, consumed) = dec.feed(PING);
     assert_eq!(consumed, PING.len());
     match step {
-        Step::Packet(overlay::Packet::Ping(p)) => assert_eq!(p.header.id, 1),
+        Step::Packet(overlay::Packet::Ping(p)) => assert_eq!(p.header.id, Id::new(1)),
         other => panic!("expected Ping, got {other:?}"),
     }
 }
@@ -257,7 +259,7 @@ fn header_byte_at_a_time() {
     let frame = {
         let mut v: HVec<u8, 32> = HVec::new();
         InstructionEmitter::<_, Crc>::new(&mut v)
-            .read(7, 0x0084, 4)
+            .read(Id::new(7), 0x0084, 4)
             .unwrap();
         v
     };
@@ -272,7 +274,7 @@ fn header_byte_at_a_time() {
     assert_eq!(n, 1);
     match step {
         Step::Packet(overlay::Packet::Read(p)) => {
-            assert_eq!(p.header.id, 7);
+            assert_eq!(p.header.id, Id::new(7));
             assert_eq!(p.addr.get(), 0x0084);
             assert_eq!(p.length.get(), 4);
         }
@@ -318,7 +320,7 @@ fn over_maxlen_header_short_circuits() {
 fn writer_id_0xff_rejected() {
     let mut out: HVec<u8, 32> = HVec::new();
     let err = InstructionEmitter::<_, Crc>::new(&mut out)
-        .ping(0xFF)
+        .ping(Id::new(0xFF))
         .unwrap_err();
     assert_eq!(err, WriteError::Invalid);
 }
@@ -327,7 +329,7 @@ fn writer_id_0xff_rejected() {
 fn writer_overflow_reported_and_rolled_back() {
     let mut tiny: HVec<u8, 5> = HVec::new();
     let err = InstructionEmitter::<_, Crc>::new(&mut tiny)
-        .ping(1)
+        .ping(Id::new(1))
         .unwrap_err();
     assert_eq!(err, WriteError::Overflow);
     assert!(
@@ -342,13 +344,15 @@ fn writer_overflow_preserves_prior_frames() {
     // DMA TX buffer holds a frame; second write overflows -- first must survive
     // and re-decode cleanly through the new Decoder.
     let mut buf: HVec<u8, 16> = HVec::new();
-    InstructionEmitter::<_, Crc>::new(&mut buf).ping(1).unwrap();
+    InstructionEmitter::<_, Crc>::new(&mut buf)
+        .ping(Id::new(1))
+        .unwrap();
     let snapshot: HVec<u8, 16> = buf.clone();
     let pre_len = buf.len();
 
     let big = [0u8; 32];
     let err = StatusEmitter::<_, Crc>::new(&mut buf)
-        .ext(1, StatusError::OK, &big)
+        .ext(Id::new(1), StatusError::OK, &big)
         .unwrap_err();
     assert_eq!(err, WriteError::Overflow);
     assert_eq!(buf.len(), pre_len, "buffer length changed on overflow");
@@ -358,7 +362,7 @@ fn writer_overflow_preserves_prior_frames() {
     let (step, n) = dec.feed(&buf);
     assert_eq!(n, buf.len());
     match step {
-        Step::Packet(overlay::Packet::Ping(p)) => assert_eq!(p.header.id, 1),
+        Step::Packet(overlay::Packet::Ping(p)) => assert_eq!(p.header.id, Id::new(1)),
         other => panic!("expected Ping, got {other:?}"),
     }
 }
@@ -366,11 +370,13 @@ fn writer_overflow_preserves_prior_frames() {
 #[test]
 fn writer_invalid_id_does_not_touch_buffer() {
     let mut buf: HVec<u8, 32> = HVec::new();
-    InstructionEmitter::<_, Crc>::new(&mut buf).ping(1).unwrap();
+    InstructionEmitter::<_, Crc>::new(&mut buf)
+        .ping(Id::new(1))
+        .unwrap();
     let snapshot: HVec<u8, 32> = buf.clone();
 
     let err = InstructionEmitter::<_, Crc>::new(&mut buf)
-        .ping(0xFF)
+        .ping(Id::new(0xFF))
         .unwrap_err();
     assert_eq!(err, WriteError::Invalid);
     assert_eq!(&buf[..], &snapshot[..]);
@@ -384,7 +390,7 @@ fn pure_noise_followed_by_frame_recovers_frame() {
     let (step, n) = dec.feed(&buf);
     assert_eq!(n, buf.len());
     match step {
-        Step::Packet(overlay::Packet::Ping(p)) => assert_eq!(p.header.id, 1),
+        Step::Packet(overlay::Packet::Ping(p)) => assert_eq!(p.header.id, Id::new(1)),
         other => panic!("expected Ping, got {other:?}"),
     }
 }
@@ -427,18 +433,18 @@ where
 fn round_trip_every_instruction() {
     round_trip(
         "Ping",
-        |w| w.ping(1),
+        |w| w.ping(Id::new(1)),
         |p| match p {
-            overlay::Packet::Ping(d) => assert_eq!(d.header.id, 1),
+            overlay::Packet::Ping(d) => assert_eq!(d.header.id, Id::new(1)),
             other => panic!("expected Ping, got {other:?}"),
         },
     );
     round_trip(
         "Read",
-        |w| w.read(1, 132, 4),
+        |w| w.read(Id::new(1), 132, 4),
         |p| match p {
             overlay::Packet::Read(d) => {
-                assert_eq!(d.header.id, 1);
+                assert_eq!(d.header.id, Id::new(1));
                 assert_eq!(d.addr.get(), 132);
                 assert_eq!(d.length.get(), 4);
             }
@@ -447,10 +453,10 @@ fn round_trip_every_instruction() {
     );
     round_trip(
         "Write",
-        |w| w.write(1, 116, &[0, 2, 0, 0]),
+        |w| w.write(Id::new(1), 116, &[0, 2, 0, 0]),
         |p| match p {
             overlay::Packet::Write(d) => {
-                assert_eq!(d.header.header.id, 1);
+                assert_eq!(d.header.header.id, Id::new(1));
                 assert_eq!(d.header.addr.get(), 116);
                 assert_eq!(d.data, &[0, 2, 0, 0]);
             }
@@ -459,10 +465,10 @@ fn round_trip_every_instruction() {
     );
     round_trip(
         "RegWrite",
-        |w| w.reg_write(1, 100, &[0xAA]),
+        |w| w.reg_write(Id::new(1), 100, &[0xAA]),
         |p| match p {
             overlay::Packet::RegWrite(d) => {
-                assert_eq!(d.header.header.id, 1);
+                assert_eq!(d.header.header.id, Id::new(1));
                 assert_eq!(d.header.addr.get(), 100);
                 assert_eq!(d.data, &[0xAA]);
             }
@@ -471,18 +477,18 @@ fn round_trip_every_instruction() {
     );
     round_trip(
         "Action",
-        |w| w.action(1),
+        |w| w.action(Id::new(1)),
         |p| match p {
-            overlay::Packet::Action(d) => assert_eq!(d.header.id, 1),
+            overlay::Packet::Action(d) => assert_eq!(d.header.id, Id::new(1)),
             other => panic!("expected Action, got {other:?}"),
         },
     );
     round_trip(
         "FactoryReset",
-        |w| w.factory_reset(1, 0xFF),
+        |w| w.factory_reset(Id::new(1), 0xFF),
         |p| match p {
             overlay::Packet::FactoryReset(d) => {
-                assert_eq!(d.header.id, 1);
+                assert_eq!(d.header.id, Id::new(1));
                 assert_eq!(d.mode, 0xFF);
             }
             other => panic!("expected FactoryReset, got {other:?}"),
@@ -490,9 +496,9 @@ fn round_trip_every_instruction() {
     );
     round_trip(
         "Reboot",
-        |w| w.reboot(1),
+        |w| w.reboot(Id::new(1)),
         |p| match p {
-            overlay::Packet::Reboot(d) => assert_eq!(d.header.id, 1),
+            overlay::Packet::Reboot(d) => assert_eq!(d.header.id, Id::new(1)),
             other => panic!("expected Reboot, got {other:?}"),
         },
     );
@@ -533,7 +539,7 @@ fn round_trip_every_instruction() {
         },
     );
     let bulk_entries = [BulkReadEntry {
-        id: 1,
+        id: Id::new(1),
         addr: U16Le::from_u16(0x0084),
         length: U16Le::from_u16(4),
     }];
@@ -543,7 +549,7 @@ fn round_trip_every_instruction() {
         |p| match p {
             overlay::Packet::BulkRead(d) => {
                 assert_eq!(d.entries.len(), 1);
-                assert_eq!(d.entries[0].id, 1);
+                assert_eq!(d.entries[0].id, Id::new(1));
                 assert_eq!(d.entries[0].addr.get(), 0x0084);
                 assert_eq!(d.entries[0].length.get(), 4);
             }
@@ -564,7 +570,7 @@ fn round_trip_every_instruction() {
         |p| match p {
             overlay::Packet::FastBulkRead(d) => {
                 assert_eq!(d.entries.len(), 1);
-                assert_eq!(d.entries[0].id, 1);
+                assert_eq!(d.entries[0].id, Id::new(1));
                 assert_eq!(d.entries[0].addr.get(), 0x0084);
                 assert_eq!(d.entries[0].length.get(), 4);
             }
@@ -583,10 +589,10 @@ fn round_trip_random_fields_across_variants() {
         let mut ids: HVec<u8, 32> = HVec::new();
 
         let kind = rng.next_byte() % 13;
-        let id = match rng.next_byte() {
+        let id = Id::new(match rng.next_byte() {
             0xFF => 1,
             b => b,
-        };
+        });
         let addr = (rng.next_u64() & 0xFFFF) as u16;
         let length = (rng.next_u64() & 0xFFFF) as u16;
         let mode = rng.next_byte();
@@ -647,17 +653,17 @@ fn stuffing_round_trip_for_every_body_carrying_variant() {
     let cases: &[(&str, fn(&mut HVec<u8, 64>, &[u8]))] = &[
         ("Write", |out, data| {
             InstructionEmitter::<_, Crc>::new(out)
-                .write(1, 0x0010, data)
+                .write(Id::new(1), 0x0010, data)
                 .unwrap()
         }),
         ("RegWrite", |out, data| {
             InstructionEmitter::<_, Crc>::new(out)
-                .reg_write(1, 0x0010, data)
+                .reg_write(Id::new(1), 0x0010, data)
                 .unwrap()
         }),
         ("Status", |out, data| {
             StatusEmitter::<_, Crc>::new(out)
-                .ext(1, StatusError::OK, data)
+                .ext(Id::new(1), StatusError::OK, data)
                 .unwrap()
         }),
         ("SyncWrite", |out, data| {
@@ -708,12 +714,12 @@ fn stuffing_round_trip_for_every_body_carrying_variant() {
 fn status_with_error_code_round_trips() {
     let mut wire: HVec<u8, 32> = HVec::new();
     StatusEmitter::<_, Crc>::new(&mut wire)
-        .ext(1, StatusError::code(ErrorCode::DataRange), &[])
+        .ext(Id::new(1), StatusError::code(ErrorCode::DataRange), &[])
         .unwrap();
     let mut dec: Decoder<64, Crc> = Decoder::new();
     match feed_full(&mut dec, &wire) {
         overlay::Packet::Status(p) => {
-            assert_eq!(p.header.header.id, 1);
+            assert_eq!(p.header.header.id, Id::new(1));
             assert_eq!(p.error(), StatusError::code(ErrorCode::DataRange));
             assert!(p.params.is_empty());
         }

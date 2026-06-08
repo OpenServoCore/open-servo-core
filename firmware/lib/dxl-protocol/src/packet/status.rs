@@ -3,7 +3,7 @@
 
 #![allow(dead_code)]
 
-use super::header::{Header, U16Le};
+use super::header::{Header, Id, U16Le};
 
 #[repr(C)]
 #[derive(Copy, Clone, Debug)]
@@ -152,7 +152,7 @@ impl<'a> FastBulkReadStatus<'a> {
 
 #[derive(Copy, Clone, Debug)]
 pub struct Slot<'a> {
-    pub id: u8,
+    pub id: Id,
     pub error: StatusError,
     pub data: &'a [u8],
 }
@@ -209,13 +209,13 @@ fn next_slot<'a>(
         }
         let (id, rest) = cursor.split_first()?;
         *cursor = rest;
-        (*id, slot0_error)
+        (Id::new(*id), slot0_error)
     } else {
         if cursor.len() < 2 {
             return None;
         }
         let error = StatusError::from_byte(cursor[0]);
-        let id = cursor[1];
+        let id = Id::new(cursor[1]);
         *cursor = &cursor[2..];
         (id, error)
     };
@@ -255,17 +255,17 @@ pub enum Status<'a> {
     /// Write-style ack -- no payload. Covers Write/RegWrite/Action/Reboot/
     /// FactoryReset/SyncWrite/BulkWrite replies and the short-payload-Ping
     /// fallback.
-    Empty { id: u8, error: StatusError },
+    Empty { id: Id, error: StatusError },
 
     Ping {
-        id: u8,
+        id: Id,
         error: StatusError,
         status: PingStatus,
     },
 
     /// Read/SyncRead/BulkRead reply -- opaque register bytes.
     Read {
-        id: u8,
+        id: Id,
         error: StatusError,
         data: &'a [u8],
     },
@@ -274,19 +274,19 @@ pub enum Status<'a> {
     /// via `status.slots(slot_length)`. Writer rejects this variant -- fast
     /// replies are emitted one slot at a time via `SlotEmitter`.
     FastSyncRead {
-        id: u8,
+        id: Id,
         status: FastSyncReadStatus<'a>,
     },
 
     FastBulkRead {
-        id: u8,
+        id: Id,
         status: FastBulkReadStatus<'a>,
     },
 
     /// Encode-only escape hatch -- arbitrary chip-defined payload (e.g. OSC
     /// `Calibrate` reply). `interpret()` never produces this variant.
     Raw {
-        id: u8,
+        id: Id,
         error: StatusError,
         payload: &'a [u8],
     },
@@ -405,7 +405,7 @@ mod tests {
         assert_eq!(s.error(), StatusError::OK);
         match s.interpret(RequestKind::Ping) {
             Status::Ping { id, error, status } => {
-                assert_eq!(id, 0x01);
+                assert_eq!(id, Id::new(0x01));
                 assert_eq!(error, StatusError::OK);
                 assert_eq!(status.model.get(), 1020);
                 assert_eq!(status.fw_version, 0x2A);
@@ -460,7 +460,7 @@ mod tests {
         ] {
             match s.interpret(req) {
                 Status::Read { id, error, data } => {
-                    assert_eq!(id, 0x01);
+                    assert_eq!(id, Id::new(0x01));
                     assert_eq!(error, StatusError::OK);
                     assert_eq!(data, &[0x01, 0x02, 0x03, 0x04]);
                 }
@@ -520,7 +520,7 @@ mod tests {
         let s = make_status(&buf);
         match s.interpret(RequestKind::FastSyncRead) {
             Status::FastSyncRead { id, status } => {
-                assert_eq!(id, 0x01);
+                assert_eq!(id, Id::new(0x01));
                 assert_eq!(status.error, StatusError::code(ErrorCode::Access));
                 assert_eq!(status.payload, &[10, 0xAA, 0xBB, 0xCC, 0xDD]);
             }
@@ -549,7 +549,7 @@ mod tests {
         let s = make_status(&buf);
         match s.interpret(RequestKind::FastBulkRead) {
             Status::FastBulkRead { id, status } => {
-                assert_eq!(id, 0x01);
+                assert_eq!(id, Id::new(0x01));
                 assert_eq!(status.error, StatusError::code(ErrorCode::Access));
                 assert_eq!(status.payload, &[10, 0xAA, 0xBB, 0xCC, 0xDD]);
             }
@@ -568,13 +568,13 @@ mod tests {
             error: StatusError::from_byte(0x01),
             payload: &payload,
         };
-        let collected: heapless::Vec<(u8, StatusError, &[u8]), 4> =
+        let collected: heapless::Vec<(Id, StatusError, &[u8]), 4> =
             s.slots(4).map(|sl| (sl.id, sl.error, sl.data)).collect();
         assert_eq!(collected.len(), 3);
         assert_eq!(
             collected[0],
             (
-                10,
+                Id::new(10),
                 StatusError::from_byte(0x01),
                 &[0xA0, 0xA1, 0xA2, 0xA3][..]
             )
@@ -582,14 +582,14 @@ mod tests {
         assert_eq!(
             collected[1],
             (
-                20,
+                Id::new(20),
                 StatusError::from_byte(0x02),
                 &[0xB0, 0xB1, 0xB2, 0xB3][..]
             )
         );
         assert_eq!(
             collected[2],
-            (30, StatusError::OK, &[0xC0, 0xC1, 0xC2, 0xC3][..])
+            (Id::new(30), StatusError::OK, &[0xC0, 0xC1, 0xC2, 0xC3][..])
         );
     }
 
@@ -614,13 +614,13 @@ mod tests {
             error: StatusError::from_byte(0x05),
             payload: &payload,
         };
-        let collected: heapless::Vec<(u8, StatusError, usize), 4> = s
+        let collected: heapless::Vec<(Id, StatusError, usize), 4> = s
             .slots([4u16, 2, 6].iter().copied())
             .map(|sl| (sl.id, sl.error, sl.data.len()))
             .collect();
         assert_eq!(collected.len(), 3);
-        assert_eq!(collected[0], (10, StatusError::from_byte(0x05), 4));
-        assert_eq!(collected[1], (20, StatusError::from_byte(0x02), 2));
-        assert_eq!(collected[2], (30, StatusError::OK, 6));
+        assert_eq!(collected[0], (Id::new(10), StatusError::from_byte(0x05), 4));
+        assert_eq!(collected[1], (Id::new(20), StatusError::from_byte(0x02), 2));
+        assert_eq!(collected[2], (Id::new(30), StatusError::OK, 6));
     }
 }

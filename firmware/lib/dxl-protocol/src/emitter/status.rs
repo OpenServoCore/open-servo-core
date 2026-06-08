@@ -4,7 +4,7 @@
 
 use crate::buf::{WriteBuf, WriteError};
 use crate::crc::CrcUmts;
-use crate::packet::{Instruction, Status, StatusError};
+use crate::packet::{Id, Instruction, Status, StatusError};
 
 use super::emit_frame;
 
@@ -21,13 +21,13 @@ impl<'a, W: WriteBuf, CRC: CrcUmts> StatusEmitter<'a, W, CRC> {
         }
     }
 
-    pub fn empty(&mut self, id: u8, error: StatusError) -> Result<(), WriteError> {
+    pub fn empty(&mut self, id: Id, error: StatusError) -> Result<(), WriteError> {
         self.frame(id, error, &[])
     }
 
     pub fn ping(
         &mut self,
-        id: u8,
+        id: Id,
         error: StatusError,
         model: u16,
         fw_version: u8,
@@ -44,13 +44,13 @@ impl<'a, W: WriteBuf, CRC: CrcUmts> StatusEmitter<'a, W, CRC> {
         )
     }
 
-    pub fn read(&mut self, id: u8, error: StatusError, data: &[u8]) -> Result<(), WriteError> {
+    pub fn read(&mut self, id: Id, error: StatusError, data: &[u8]) -> Result<(), WriteError> {
         self.frame(id, error, data)
     }
 
     /// Vendor-extension escape hatch - Status reply with a chip-defined
     /// payload (e.g. OSC `Calibrate` reply).
-    pub fn ext(&mut self, id: u8, error: StatusError, payload: &[u8]) -> Result<(), WriteError> {
+    pub fn ext(&mut self, id: Id, error: StatusError, payload: &[u8]) -> Result<(), WriteError> {
         self.frame(id, error, payload)
     }
 
@@ -74,7 +74,7 @@ impl<'a, W: WriteBuf, CRC: CrcUmts> StatusEmitter<'a, W, CRC> {
         }
     }
 
-    fn frame(&mut self, id: u8, error: StatusError, payload: &[u8]) -> Result<(), WriteError> {
+    fn frame(&mut self, id: Id, error: StatusError, payload: &[u8]) -> Result<(), WriteError> {
         let err = [error.as_byte()];
         emit_frame(
             self.out,
@@ -89,7 +89,6 @@ impl<'a, W: WriteBuf, CRC: CrcUmts> StatusEmitter<'a, W, CRC> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::constants::BROADCAST_ID;
     use crate::crc_software::SoftwareCrcUmts;
     use crate::decoder::{Decoder, Step};
     use crate::packet::{FastSyncReadStatus, Packet, PingStatus, RequestKind, U16Le};
@@ -102,12 +101,12 @@ mod tests {
     fn status_empty_round_trips() {
         let mut buf = Buf::new();
         StatusEmitter::<_, Crc>::new(&mut buf)
-            .empty(0x01, StatusError::OK)
+            .empty(Id::new(0x01), StatusError::OK)
             .unwrap();
         let mut dec: Decoder<32, Crc> = Decoder::new();
         match dec.feed(&buf).0 {
             Step::Packet(Packet::Status(s)) => {
-                assert_eq!(s.header.header.id, 0x01);
+                assert_eq!(s.header.header.id, Id::new(0x01));
                 assert_eq!(s.error(), StatusError::OK);
                 assert_eq!(s.params, &[]);
             }
@@ -120,12 +119,12 @@ mod tests {
         let mut buf = Buf::new();
         let err = StatusError::from_byte(0x83);
         StatusEmitter::<_, Crc>::new(&mut buf)
-            .empty(0x02, err)
+            .empty(Id::new(0x02), err)
             .unwrap();
         let mut dec: Decoder<32, Crc> = Decoder::new();
         match dec.feed(&buf).0 {
             Step::Packet(Packet::Status(s)) => {
-                assert_eq!(s.header.header.id, 0x02);
+                assert_eq!(s.header.header.id, Id::new(0x02));
                 assert_eq!(s.error(), err);
             }
             other => panic!("expected Status, got {other:?}"),
@@ -136,13 +135,13 @@ mod tests {
     fn status_ping_round_trips_through_interpret() {
         let mut buf = Buf::new();
         StatusEmitter::<_, Crc>::new(&mut buf)
-            .ping(0x03, StatusError::OK, 0x0203, 0x10)
+            .ping(Id::new(0x03), StatusError::OK, 0x0203, 0x10)
             .unwrap();
         let mut dec: Decoder<32, Crc> = Decoder::new();
         match dec.feed(&buf).0 {
             Step::Packet(Packet::Status(s)) => match s.interpret(RequestKind::Ping) {
                 Status::Ping { id, error, status } => {
-                    assert_eq!(id, 0x03);
+                    assert_eq!(id, Id::new(0x03));
                     assert_eq!(error, StatusError::OK);
                     assert_eq!(status.model.get(), 0x0203);
                     assert_eq!(status.fw_version, 0x10);
@@ -158,13 +157,13 @@ mod tests {
         let mut buf = Buf::new();
         let data = [0x10, 0x20, 0x30, 0x40];
         StatusEmitter::<_, Crc>::new(&mut buf)
-            .read(0x04, StatusError::OK, &data)
+            .read(Id::new(0x04), StatusError::OK, &data)
             .unwrap();
         let mut dec: Decoder<32, Crc> = Decoder::new();
         match dec.feed(&buf).0 {
             Step::Packet(Packet::Status(s)) => match s.interpret(RequestKind::Read) {
                 Status::Read { id, error, data: d } => {
-                    assert_eq!(id, 0x04);
+                    assert_eq!(id, Id::new(0x04));
                     assert_eq!(error, StatusError::OK);
                     assert_eq!(d, &data);
                 }
@@ -179,12 +178,12 @@ mod tests {
         let mut buf = Buf::new();
         let payload = [0xCA, 0xFE, 0xBA, 0xBE];
         StatusEmitter::<_, Crc>::new(&mut buf)
-            .ext(0x05, StatusError::OK, &payload)
+            .ext(Id::new(0x05), StatusError::OK, &payload)
             .unwrap();
         let mut dec: Decoder<32, Crc> = Decoder::new();
         match dec.feed(&buf).0 {
             Step::Packet(Packet::Status(s)) => {
-                assert_eq!(s.header.header.id, 0x05);
+                assert_eq!(s.header.header.id, Id::new(0x05));
                 assert_eq!(s.error(), StatusError::OK);
                 assert_eq!(s.params, &payload);
             }
@@ -198,14 +197,14 @@ mod tests {
         let err = StatusError::from_byte(0x83);
         StatusEmitter::<_, Crc>::new(&mut buf)
             .emit(Status::Empty {
-                id: 0x05,
+                id: Id::new(0x05),
                 error: err,
             })
             .unwrap();
         let mut dec: Decoder<32, Crc> = Decoder::new();
         match dec.feed(&buf).0 {
             Step::Packet(Packet::Status(s)) => {
-                assert_eq!(s.header.header.id, 0x05);
+                assert_eq!(s.header.header.id, Id::new(0x05));
                 assert_eq!(s.error(), err);
                 assert_eq!(s.params, &[]);
             }
@@ -218,7 +217,7 @@ mod tests {
         let mut buf = Buf::new();
         StatusEmitter::<_, Crc>::new(&mut buf)
             .emit(Status::Ping {
-                id: 0x07,
+                id: Id::new(0x07),
                 error: StatusError::OK,
                 status: PingStatus {
                     model: U16Le::from_u16(0x1234),
@@ -230,7 +229,7 @@ mod tests {
         match dec.feed(&buf).0 {
             Step::Packet(Packet::Status(s)) => match s.interpret(RequestKind::Ping) {
                 Status::Ping { id, error, status } => {
-                    assert_eq!(id, 0x07);
+                    assert_eq!(id, Id::new(0x07));
                     assert_eq!(error, StatusError::OK);
                     assert_eq!(status.model.get(), 0x1234);
                     assert_eq!(status.fw_version, 0x42);
@@ -247,7 +246,7 @@ mod tests {
         let data = [0x10, 0x20, 0x30, 0x40];
         StatusEmitter::<_, Crc>::new(&mut buf)
             .emit(Status::Read {
-                id: 0x09,
+                id: Id::new(0x09),
                 error: StatusError::OK,
                 data: &data,
             })
@@ -256,7 +255,7 @@ mod tests {
         match dec.feed(&buf).0 {
             Step::Packet(Packet::Status(s)) => match s.interpret(RequestKind::Read) {
                 Status::Read { id, data: d, .. } => {
-                    assert_eq!(id, 0x09);
+                    assert_eq!(id, Id::new(0x09));
                     assert_eq!(d, &data);
                 }
                 other => panic!("expected Status::Read, got {other:?}"),
@@ -271,7 +270,7 @@ mod tests {
         let payload = [0xCA, 0xFE, 0xBA, 0xBE];
         StatusEmitter::<_, Crc>::new(&mut buf)
             .emit(Status::Raw {
-                id: 0x0B,
+                id: Id::new(0x0B),
                 error: StatusError::OK,
                 payload: &payload,
             })
@@ -279,7 +278,7 @@ mod tests {
         let mut dec: Decoder<32, Crc> = Decoder::new();
         match dec.feed(&buf).0 {
             Step::Packet(Packet::Status(s)) => {
-                assert_eq!(s.header.header.id, 0x0B);
+                assert_eq!(s.header.header.id, Id::new(0x0B));
                 assert_eq!(s.params, &payload);
             }
             other => panic!("expected Status, got {other:?}"),
@@ -292,7 +291,7 @@ mod tests {
         let payload = [10, 0xAA, 0xBB, 0x00, 20, 0xCC, 0xDD];
         StatusEmitter::<_, Crc>::new(&mut buf)
             .emit(Status::FastSyncRead {
-                id: BROADCAST_ID,
+                id: Id::BROADCAST,
                 status: FastSyncReadStatus {
                     error: StatusError::OK,
                     payload: &payload,
@@ -302,7 +301,7 @@ mod tests {
         let mut dec: Decoder<64, Crc> = Decoder::new();
         match dec.feed(&buf).0 {
             Step::Packet(Packet::Status(s)) => {
-                assert_eq!(s.header.header.id, BROADCAST_ID);
+                assert_eq!(s.header.header.id, Id::BROADCAST);
                 assert_eq!(s.error(), StatusError::OK);
                 assert_eq!(s.params, &payload);
             }

@@ -10,9 +10,9 @@ use core::cell::SyncUnsafeCell;
 use core::sync::atomic::Ordering;
 
 use crate::dxl::statics::DXL_TX_COUNT;
+use crate::hal::Pin;
 use crate::hal::gpio::{self, Level};
 use crate::hal::systick::{self, TICKS_PER_US};
-use crate::hal::Pin;
 
 /// 50 ms between samples — ~10 Hz blink during sustained TX, comfortable for
 /// the eye and well above typical DXL polling rates so single-shot replies

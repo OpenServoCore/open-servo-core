@@ -1,9 +1,10 @@
 use dxl_protocol::packet::{
-    ActionPacket, BulkReadPacket, BulkWritePacket, ErrorCode, FactoryResetPacket, FastBulkReadPacket,
-    FastSlotInfo, FastSyncReadPacket, Packet, PingPacket, PingStatus, RawPacket, ReadPacket,
-    RebootPacket, Slot, Status, StatusError, SyncReadPacket, SyncWritePacket, U16Le, WritePacket,
+    ActionPacket, BulkReadPacket, BulkWritePacket, ErrorCode, FactoryResetPacket,
+    FastBulkReadPacket, FastSlotInfo, FastSyncReadPacket, Id, Packet, PingPacket, PingStatus,
+    RawPacket, ReadPacket, RebootPacket, Slot, Status, StatusError, SyncReadPacket,
+    SyncWritePacket, U16Le, WritePacket,
 };
-use dxl_protocol::{BROADCAST_ID, CRC_BYTES, RESPONSE_HEADER_BYTES};
+use dxl_protocol::{CRC_BYTES, RESPONSE_HEADER_BYTES};
 
 use crate::regions::hooks::ControlTableHooks;
 use crate::traits::{DxlBus, Event, Schedule, ServiceEvents};
@@ -22,16 +23,16 @@ fn error_to_status(e: Error) -> StatusError {
 }
 
 struct Ctx {
-    our_id: u8,
+    our_id: Id,
     rdt_us: u32,
     level: StatusReturnLevel,
 }
 
 impl Ctx {
-    fn addressed(&self, target: u8) -> Option<(u8, bool)> {
+    fn addressed(&self, target: Id) -> Option<(Id, bool)> {
         if target == self.our_id {
             Some((self.our_id, true))
-        } else if target == BROADCAST_ID {
+        } else if target.is_broadcast() {
             Some((self.our_id, false))
         } else {
             None
@@ -100,13 +101,13 @@ impl<'a, B: DxlBus, E: ServiceEvents> Dispatcher<'a, B, E> {
             )
         });
         Ctx {
-            our_id,
+            our_id: Id::new(our_id),
             rdt_us,
             level,
         }
     }
 
-    fn reply_unsupported(&mut self, ctx: &Ctx, target: u8) {
+    fn reply_unsupported(&mut self, ctx: &Ctx, target: Id) {
         if ctx.level < StatusReturnLevel::All {
             return;
         }
@@ -121,7 +122,7 @@ impl<'a, B: DxlBus, E: ServiceEvents> Dispatcher<'a, B, E> {
         }
     }
 
-    fn reply_table_result(&mut self, ctx: &Ctx, id: u8, direct: bool, result: Result<(), Error>) {
+    fn reply_table_result(&mut self, ctx: &Ctx, id: Id, direct: bool, result: Result<(), Error>) {
         if !direct || ctx.level < StatusReturnLevel::All {
             return;
         }
@@ -155,8 +156,8 @@ impl<'a, B: DxlBus, E: ServiceEvents> Dispatcher<'a, B, E> {
                 RESPONSE_HEADER_BYTES as u32 + 3 + CRC_BYTES as u32;
             Schedule {
                 rdt_us: ctx.rdt_us,
-                bytes_before: (id as u32) * PING_STATUS_FRAME_BYTES,
-                slot_index: id as u16,
+                bytes_before: (id.as_byte() as u32) * PING_STATUS_FRAME_BYTES,
+                slot_index: id.as_byte() as u16,
             }
         };
         self.bus.send(
@@ -568,4 +569,3 @@ impl<'a, B: DxlBus, E: ServiceEvents> Dispatcher<'a, B, E> {
         self.bus.send_slot(slot, position, schedule);
     }
 }
-

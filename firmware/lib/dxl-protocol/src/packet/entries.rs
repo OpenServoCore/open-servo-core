@@ -2,20 +2,20 @@
 
 #![allow(dead_code)]
 
-use super::header::U16Le;
+use super::header::{Id, U16Le};
 
 /// Fixed-stride entry in BulkRead / FastBulkRead request bodies.
 #[repr(C)]
 #[derive(Copy, Clone, Debug)]
 pub struct BulkReadEntry {
-    pub id: u8,
+    pub id: Id,
     pub addr: U16Le,
     pub length: U16Le,
 }
 
 #[derive(Copy, Clone, Debug)]
 pub struct SyncWriteEntry<'a> {
-    pub id: u8,
+    pub id: Id,
     pub data: &'a [u8],
 }
 
@@ -41,7 +41,7 @@ impl<'a> Iterator for SyncWriteEntries<'a> {
         let (head, rest) = self.cursor.split_at(stride);
         self.cursor = rest;
         Some(SyncWriteEntry {
-            id: head[0],
+            id: Id::new(head[0]),
             data: &head[1..],
         })
     }
@@ -49,7 +49,7 @@ impl<'a> Iterator for SyncWriteEntries<'a> {
 
 #[derive(Copy, Clone, Debug)]
 pub struct BulkWriteEntry<'a> {
-    pub id: u8,
+    pub id: Id,
     pub addr: u16,
     pub data: &'a [u8],
 }
@@ -71,7 +71,7 @@ impl<'a> Iterator for BulkWriteEntries<'a> {
         if self.cursor.len() < 5 {
             return None;
         }
-        let id = self.cursor[0];
+        let id = Id::new(self.cursor[0]);
         let addr = u16::from_le_bytes([self.cursor[1], self.cursor[2]]);
         let length = u16::from_le_bytes([self.cursor[3], self.cursor[4]]) as usize;
         let total = 5 + length;
@@ -110,10 +110,10 @@ mod tests {
         ];
         let entries: &[BulkReadEntry] =
             unsafe { core::slice::from_raw_parts(body.as_ptr() as *const BulkReadEntry, 2) };
-        assert_eq!(entries[0].id, 1);
+        assert_eq!(entries[0].id, Id::new(1));
         assert_eq!(entries[0].addr.get(), 0x0010);
         assert_eq!(entries[0].length.get(), 4);
-        assert_eq!(entries[1].id, 2);
+        assert_eq!(entries[1].id, Id::new(2));
         assert_eq!(entries[1].addr.get(), 0x0020);
         assert_eq!(entries[1].length.get(), 8);
     }

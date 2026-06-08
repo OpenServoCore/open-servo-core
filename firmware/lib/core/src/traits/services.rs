@@ -1,6 +1,6 @@
+use dxl_protocol::CrcUmts;
 use dxl_protocol::SlotPosition;
 use dxl_protocol::packet::{Slot, Status};
-use dxl_protocol::CrcUmts;
 
 use crate::{BaudRate, BootMode};
 
