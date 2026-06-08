@@ -5,7 +5,14 @@ use super::packet::{FastBulkReadPacket, FastSyncReadPacket};
 
 /// Position of our slot in the coalesced Fast Status response. Variants that
 /// emit the response header carry the DXL `Length` field for the whole
-/// multi-slot frame; the rest don't need it.
+/// multi-slot frame; `Last` carries the chain CRC.
+///
+/// Chain producers (slaves emitting `Last` in a multi-slave coalesced reply)
+/// don't know the running CRC at frame-build time — it depends on the wire
+/// bytes of every prior slave. They emit a placeholder value here and let
+/// the chip's fire-time ISR overwrite the trailing two bytes with the real
+/// CRC. Callers that *do* know the CRC at build time (single-slot tests,
+/// replay tools, sniffers) pass the real value.
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub enum SlotPosition {
     /// Single-slot response — emits full header and locally-computed CRC.
@@ -14,8 +21,8 @@ pub enum SlotPosition {
     First { packet_length: u16 },
     /// Body only.
     Middle,
-    /// Body + CRC placeholder (chip patches the placeholder at fire time).
-    Last,
+    /// Body + caller-supplied CRC bytes.
+    Last { crc: u16 },
 }
 
 /// Which Fast Read request kind a `FastReadPacket` represents — lets the
@@ -57,7 +64,7 @@ impl FastSlotInfo {
             (0, _) => SlotPosition::First {
                 packet_length: self.packet_length,
             },
-            (k, n) if k + 1 == n => SlotPosition::Last,
+            (k, n) if k + 1 == n => SlotPosition::Last { crc: 0 },
             _ => SlotPosition::Middle,
         }
     }
@@ -197,7 +204,7 @@ mod tests {
             n_slots: 3,
             ..only
         };
-        assert_eq!(last.position(), SlotPosition::Last);
+        assert_eq!(last.position(), SlotPosition::Last { crc: 0 });
     }
 
     #[test]

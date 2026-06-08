@@ -1,33 +1,43 @@
-//! Frame writers. Three structs cover the three frame shapes a master or
+//! Frame emitters. Three structs cover the three frame shapes a master or
 //! slave emits onto a DXL 2.0 bus:
 //!
-//! - [`InstructionWriter`] — request frames from a master.
-//! - [`StatusWriter`]      — Status reply frames from a slave.
-//! - [`SlotWriter`]        — one slave's slice of a Fast Sync/Bulk Read
+//! - [`InstructionEmitter`] — request frames from a master.
+//! - [`StatusEmitter`]      — Status reply frames from a slave.
+//! - [`SlotEmitter`]        — one slave's slice of a Fast Sync/Bulk Read
 //!                           coalesced reply chain.
 //!
-//! Each writer borrows the caller's TX buffer for its lifetime and emits
+//! Each emitter borrows the caller's TX buffer for its lifetime and emits
 //! one frame per method call. The CRC type parameter is bound at
 //! construction so call sites don't repeat the generic.
+//!
+//! Two ergonomics: each emitter exposes both a per-variant fluent API
+//! (`.ping(...)`, `.empty(...)`, `.first(...)`, etc.) for callers building
+//! from primitives, and a single `.emit(...)` that consumes the unified
+//! decoder enum (`Packet<'_>` / `Status<'_>` / `Slot<'_>` + `SlotPosition`)
+//! for round-trip / forwarding use cases. The unified `emit()` handles
+//! every variant of its input enum — there are no "decode-only" variants
+//! that the emitter refuses; wire-byte production is always well-defined
+//! from the payload bytes the variant carries.
 
 #![allow(dead_code)]
 
 use core::marker::PhantomData;
 
 use crate::instruction::Instruction;
-use crate::packet::{BulkReadEntry, Slot, StatusError};
+use crate::packet::{BulkReadEntry, Packet, Slot, Status, StatusError};
 use crate::wire::{
     BROADCAST_ID, CrcUmts, HEADER, STUFFING_BYTE, STUFFING_TRIGGER, WriteBuf, WriteError,
 };
+use crate::SlotPosition;
 
-// ─────────────────────────── InstructionWriter ───────────────────────────
+// ─────────────────────────── InstructionEmitter ───────────────────────────
 
-pub struct InstructionWriter<'a, W: WriteBuf, CRC: CrcUmts> {
+pub struct InstructionEmitter<'a, W: WriteBuf, CRC: CrcUmts> {
     out: &'a mut W,
     _crc: PhantomData<fn() -> CRC>,
 }
 
-impl<'a, W: WriteBuf, CRC: CrcUmts> InstructionWriter<'a, W, CRC> {
+impl<'a, W: WriteBuf, CRC: CrcUmts> InstructionEmitter<'a, W, CRC> {
     pub fn new(out: &'a mut W) -> Self {
         Self {
             out,
@@ -156,16 +166,63 @@ impl<'a, W: WriteBuf, CRC: CrcUmts> InstructionWriter<'a, W, CRC> {
     pub fn ext(&mut self, id: u8, instruction: u8, params: &[u8]) -> Result<(), WriteError> {
         emit_frame::<_, CRC>(self.out, id, instruction, &[params])
     }
+
+    /// Emit any packet — dispatches on the unified [`Packet`] enum the
+    /// decoder produces. The intended round-trip path for sniffers,
+    /// bridges, and replay tools that hand a decoded `Packet<'_>` straight
+    /// through to a fresh wire frame.
+    ///
+    /// Handles every variant including [`Packet::Status`]; the wire bytes
+    /// for a Status frame are well-defined from `s.header.error + s.params`
+    /// regardless of which emitter routes them. (For typed slave-side
+    /// reply construction, [`StatusEmitter`] is more ergonomic.)
+    pub fn emit(&mut self, packet: &Packet<'_>) -> Result<(), WriteError> {
+        match *packet {
+            Packet::Ping(p) => self.ping(p.header.id),
+            Packet::Read(p) => self.read(p.header.id, p.addr.get(), p.length.get()),
+            Packet::Write(p) => self.write(p.header.header.id, p.header.addr.get(), p.data),
+            Packet::RegWrite(p) => self.reg_write(p.header.header.id, p.header.addr.get(), p.data),
+            Packet::Action(p) => self.action(p.header.id),
+            Packet::Reboot(p) => self.reboot(p.header.id),
+            Packet::FactoryReset(p) => self.factory_reset(p.header.id, p.mode),
+            Packet::SyncRead(p) => {
+                self.sync_read(p.header.addr.get(), p.header.length.get(), p.ids)
+            }
+            Packet::SyncWrite(p) => {
+                self.sync_write(p.header.addr.get(), p.header.length.get(), p.body)
+            }
+            Packet::BulkRead(p) => self.bulk_read(p.entries),
+            Packet::BulkWrite(p) => self.bulk_write(p.body),
+            Packet::FastSyncRead(p) => {
+                self.fast_sync_read(p.header.addr.get(), p.header.length.get(), p.ids)
+            }
+            Packet::FastBulkRead(p) => self.fast_bulk_read(p.entries),
+            Packet::Raw(r) => self.ext(
+                r.header.header.id,
+                r.header.header.instruction.as_byte(),
+                r.params,
+            ),
+            Packet::Status(s) => {
+                let err = [s.header.error];
+                emit_frame::<_, CRC>(
+                    self.out,
+                    s.header.header.id,
+                    Instruction::Status.as_u8(),
+                    &[&err, s.params],
+                )
+            }
+        }
+    }
 }
 
-// ────────────────────────────── StatusWriter ──────────────────────────────
+// ────────────────────────────── StatusEmitter ──────────────────────────────
 
-pub struct StatusWriter<'a, W: WriteBuf, CRC: CrcUmts> {
+pub struct StatusEmitter<'a, W: WriteBuf, CRC: CrcUmts> {
     out: &'a mut W,
     _crc: PhantomData<fn() -> CRC>,
 }
 
-impl<'a, W: WriteBuf, CRC: CrcUmts> StatusWriter<'a, W, CRC> {
+impl<'a, W: WriteBuf, CRC: CrcUmts> StatusEmitter<'a, W, CRC> {
     pub fn new(out: &'a mut W) -> Self {
         Self {
             out,
@@ -205,6 +262,26 @@ impl<'a, W: WriteBuf, CRC: CrcUmts> StatusWriter<'a, W, CRC> {
         self.frame(id, error, payload)
     }
 
+    /// Emit any status — dispatches on the unified [`Status`] enum.
+    ///
+    /// Fast Sync/Bulk Read variants emit a single Status frame whose
+    /// payload is the coalesced multi-slot data (the same byte shape a
+    /// master decodes). Slaves participating in a chain reply emit slot
+    /// by slot via [`SlotEmitter`] instead; this convenience path is for
+    /// relays, sniffers, or single-slave-with-all-data masters.
+    pub fn emit(&mut self, status: Status<'_>) -> Result<(), WriteError> {
+        match status {
+            Status::Empty { id, error } => self.empty(id, error),
+            Status::Ping { id, error, status } => {
+                self.ping(id, error, status.model.get(), status.fw_version)
+            }
+            Status::Read { id, error, data } => self.read(id, error, data),
+            Status::Raw { id, error, payload } => self.ext(id, error, payload),
+            Status::FastSyncRead { id, status } => self.frame(id, status.error, status.payload),
+            Status::FastBulkRead { id, status } => self.frame(id, status.error, status.payload),
+        }
+    }
+
     fn frame(&mut self, id: u8, error: StatusError, payload: &[u8]) -> Result<(), WriteError> {
         let err = [error.as_byte()];
         emit_frame::<_, CRC>(
@@ -216,14 +293,14 @@ impl<'a, W: WriteBuf, CRC: CrcUmts> StatusWriter<'a, W, CRC> {
     }
 }
 
-// ─────────────────────────────── SlotWriter ───────────────────────────────
+// ─────────────────────────────── SlotEmitter ───────────────────────────────
 
-pub struct SlotWriter<'a, W: WriteBuf, CRC: CrcUmts> {
+pub struct SlotEmitter<'a, W: WriteBuf, CRC: CrcUmts> {
     out: &'a mut W,
     _crc: PhantomData<fn() -> CRC>,
 }
 
-impl<'a, W: WriteBuf, CRC: CrcUmts> SlotWriter<'a, W, CRC> {
+impl<'a, W: WriteBuf, CRC: CrcUmts> SlotEmitter<'a, W, CRC> {
     pub fn new(out: &'a mut W) -> Self {
         Self {
             out,
@@ -310,6 +387,17 @@ impl<'a, W: WriteBuf, CRC: CrcUmts> SlotWriter<'a, W, CRC> {
         self.out.push(crc as u8)?;
         self.out.push((crc >> 8) as u8)?;
         Ok(())
+    }
+
+    /// Emit one slot — dispatches on [`SlotPosition`]. All variants are
+    /// reachable; no programmer-error route.
+    pub fn emit(&mut self, slot: &Slot<'_>, position: SlotPosition) -> Result<(), WriteError> {
+        match position {
+            SlotPosition::Only { packet_length } => self.only(slot, packet_length),
+            SlotPosition::First { packet_length } => self.first(slot, packet_length),
+            SlotPosition::Middle => self.middle(slot),
+            SlotPosition::Last { crc } => self.last(slot, crc),
+        }
     }
 }
 
@@ -435,12 +523,12 @@ mod tests {
     type Crc = SoftwareCrcUmts;
     type Buf = Vec<u8, 256>;
 
-    // ── InstructionWriter ──
+    // ── InstructionEmitter ──
 
     #[test]
     fn instr_ping() {
         let mut buf = Buf::new();
-        InstructionWriter::<_, Crc>::new(&mut buf).ping(0x01).unwrap();
+        InstructionEmitter::<_, Crc>::new(&mut buf).ping(0x01).unwrap();
         let mut dec: Decoder<32, Crc> = Decoder::new();
         let (step, n) = dec.feed(&buf);
         assert_eq!(n, buf.len());
@@ -456,7 +544,7 @@ mod tests {
     #[test]
     fn instr_read() {
         let mut buf = Buf::new();
-        InstructionWriter::<_, Crc>::new(&mut buf)
+        InstructionEmitter::<_, Crc>::new(&mut buf)
             .read(0x02, 0x0084, 4)
             .unwrap();
         let mut dec: Decoder<32, Crc> = Decoder::new();
@@ -474,7 +562,7 @@ mod tests {
     fn instr_write_with_data() {
         let mut buf = Buf::new();
         let data = [0xAA, 0xBB, 0xCC, 0xDD];
-        InstructionWriter::<_, Crc>::new(&mut buf)
+        InstructionEmitter::<_, Crc>::new(&mut buf)
             .write(0x03, 0x0084, &data)
             .unwrap();
         let mut dec: Decoder<64, Crc> = Decoder::new();
@@ -492,7 +580,7 @@ mod tests {
     fn instr_reg_write() {
         let mut buf = Buf::new();
         let data = [0x10, 0x20];
-        InstructionWriter::<_, Crc>::new(&mut buf)
+        InstructionEmitter::<_, Crc>::new(&mut buf)
             .reg_write(0x04, 0x0030, &data)
             .unwrap();
         let mut dec: Decoder<32, Crc> = Decoder::new();
@@ -509,7 +597,7 @@ mod tests {
     #[test]
     fn instr_action() {
         let mut buf = Buf::new();
-        InstructionWriter::<_, Crc>::new(&mut buf)
+        InstructionEmitter::<_, Crc>::new(&mut buf)
             .action(0x05)
             .unwrap();
         let mut dec: Decoder<32, Crc> = Decoder::new();
@@ -522,7 +610,7 @@ mod tests {
     #[test]
     fn instr_reboot() {
         let mut buf = Buf::new();
-        InstructionWriter::<_, Crc>::new(&mut buf)
+        InstructionEmitter::<_, Crc>::new(&mut buf)
             .reboot(0x06)
             .unwrap();
         let mut dec: Decoder<32, Crc> = Decoder::new();
@@ -535,7 +623,7 @@ mod tests {
     #[test]
     fn instr_factory_reset() {
         let mut buf = Buf::new();
-        InstructionWriter::<_, Crc>::new(&mut buf)
+        InstructionEmitter::<_, Crc>::new(&mut buf)
             .factory_reset(0x07, 0x02)
             .unwrap();
         let mut dec: Decoder<32, Crc> = Decoder::new();
@@ -552,7 +640,7 @@ mod tests {
     fn instr_clear_dispatches_as_raw() {
         let mut buf = Buf::new();
         let body = [0x01, 0x44, 0x58, 0x4C, 0x22];
-        InstructionWriter::<_, Crc>::new(&mut buf)
+        InstructionEmitter::<_, Crc>::new(&mut buf)
             .clear(0x08, &body)
             .unwrap();
         let mut dec: Decoder<32, Crc> = Decoder::new();
@@ -570,7 +658,7 @@ mod tests {
     fn instr_control_table_backup_dispatches_as_raw() {
         let mut buf = Buf::new();
         let body = [0xAA, 0xBB];
-        InstructionWriter::<_, Crc>::new(&mut buf)
+        InstructionEmitter::<_, Crc>::new(&mut buf)
             .control_table_backup(0x09, &body)
             .unwrap();
         let mut dec: Decoder<32, Crc> = Decoder::new();
@@ -591,7 +679,7 @@ mod tests {
     fn instr_sync_read() {
         let mut buf = Buf::new();
         let ids = [0x01, 0x02, 0x03];
-        InstructionWriter::<_, Crc>::new(&mut buf)
+        InstructionEmitter::<_, Crc>::new(&mut buf)
             .sync_read(0x0084, 4, &ids)
             .unwrap();
         let mut dec: Decoder<64, Crc> = Decoder::new();
@@ -611,7 +699,7 @@ mod tests {
         let mut buf = Buf::new();
         // addr=0x80, length=2; two entries [id, d0, d1].
         let body = [0x01, 0xAA, 0xBB, 0x02, 0xCC, 0xDD];
-        InstructionWriter::<_, Crc>::new(&mut buf)
+        InstructionEmitter::<_, Crc>::new(&mut buf)
             .sync_write(0x0080, 2, &body)
             .unwrap();
         let mut dec: Decoder<64, Crc> = Decoder::new();
@@ -646,7 +734,7 @@ mod tests {
                 length: U16Le::from_u16(2),
             },
         ];
-        InstructionWriter::<_, Crc>::new(&mut buf)
+        InstructionEmitter::<_, Crc>::new(&mut buf)
             .bulk_read(&entries)
             .unwrap();
         let mut dec: Decoder<64, Crc> = Decoder::new();
@@ -672,7 +760,7 @@ mod tests {
         let body = [
             0x01, 0x84, 0x00, 0x02, 0x00, 0xAA, 0xBB, 0x02, 0x90, 0x00, 0x01, 0x00, 0xCC,
         ];
-        InstructionWriter::<_, Crc>::new(&mut buf)
+        InstructionEmitter::<_, Crc>::new(&mut buf)
             .bulk_write(&body)
             .unwrap();
         let mut dec: Decoder<64, Crc> = Decoder::new();
@@ -696,7 +784,7 @@ mod tests {
     fn instr_fast_sync_read() {
         let mut buf = Buf::new();
         let ids = [0x01, 0x02];
-        InstructionWriter::<_, Crc>::new(&mut buf)
+        InstructionEmitter::<_, Crc>::new(&mut buf)
             .fast_sync_read(0x0084, 4, &ids)
             .unwrap();
         let mut dec: Decoder<64, Crc> = Decoder::new();
@@ -726,7 +814,7 @@ mod tests {
                 length: U16Le::from_u16(2),
             },
         ];
-        InstructionWriter::<_, Crc>::new(&mut buf)
+        InstructionEmitter::<_, Crc>::new(&mut buf)
             .fast_bulk_read(&entries)
             .unwrap();
         let mut dec: Decoder<64, Crc> = Decoder::new();
@@ -745,7 +833,7 @@ mod tests {
     fn instr_ext_dispatches_as_raw() {
         let mut buf = Buf::new();
         let params = [0xDE, 0xAD, 0xBE, 0xEF];
-        InstructionWriter::<_, Crc>::new(&mut buf)
+        InstructionEmitter::<_, Crc>::new(&mut buf)
             .ext(0x0A, 0xE0, &params)
             .unwrap();
         let mut dec: Decoder<32, Crc> = Decoder::new();
@@ -759,12 +847,12 @@ mod tests {
         }
     }
 
-    // ── StatusWriter ──
+    // ── StatusEmitter ──
 
     #[test]
     fn status_empty_round_trips() {
         let mut buf = Buf::new();
-        StatusWriter::<_, Crc>::new(&mut buf)
+        StatusEmitter::<_, Crc>::new(&mut buf)
             .empty(0x01, StatusError::OK)
             .unwrap();
         let mut dec: Decoder<32, Crc> = Decoder::new();
@@ -782,7 +870,7 @@ mod tests {
     fn status_empty_carries_error_byte() {
         let mut buf = Buf::new();
         let err = StatusError::from_byte(0x83);
-        StatusWriter::<_, Crc>::new(&mut buf).empty(0x02, err).unwrap();
+        StatusEmitter::<_, Crc>::new(&mut buf).empty(0x02, err).unwrap();
         let mut dec: Decoder<32, Crc> = Decoder::new();
         match dec.feed(&buf).0 {
             Step::Packet(Packet::Status(s)) => {
@@ -796,7 +884,7 @@ mod tests {
     #[test]
     fn status_ping_round_trips_through_interpret() {
         let mut buf = Buf::new();
-        StatusWriter::<_, Crc>::new(&mut buf)
+        StatusEmitter::<_, Crc>::new(&mut buf)
             .ping(0x03, StatusError::OK, 0x0203, 0x10)
             .unwrap();
         let mut dec: Decoder<32, Crc> = Decoder::new();
@@ -818,7 +906,7 @@ mod tests {
     fn status_read_round_trips() {
         let mut buf = Buf::new();
         let data = [0x10, 0x20, 0x30, 0x40];
-        StatusWriter::<_, Crc>::new(&mut buf)
+        StatusEmitter::<_, Crc>::new(&mut buf)
             .read(0x04, StatusError::OK, &data)
             .unwrap();
         let mut dec: Decoder<32, Crc> = Decoder::new();
@@ -839,7 +927,7 @@ mod tests {
     fn status_ext_round_trips() {
         let mut buf = Buf::new();
         let payload = [0xCA, 0xFE, 0xBA, 0xBE];
-        StatusWriter::<_, Crc>::new(&mut buf)
+        StatusEmitter::<_, Crc>::new(&mut buf)
             .ext(0x05, StatusError::OK, &payload)
             .unwrap();
         let mut dec: Decoder<32, Crc> = Decoder::new();
@@ -853,7 +941,7 @@ mod tests {
         }
     }
 
-    // ── SlotWriter ──
+    // ── SlotEmitter ──
 
     #[test]
     fn slot_only_round_trips() {
@@ -865,7 +953,7 @@ mod tests {
             error: StatusError::OK,
             data: &[0xAA, 0xBB, 0xCC, 0xDD],
         };
-        SlotWriter::<_, Crc>::new(&mut buf).only(&slot, 9).unwrap();
+        SlotEmitter::<_, Crc>::new(&mut buf).only(&slot, 9).unwrap();
 
         let mut dec: Decoder<32, Crc> = Decoder::new();
         match dec.feed(&buf).0 {
@@ -905,7 +993,7 @@ mod tests {
             data: &[0xEE, 0xFF],
         };
         let crc = u16::from_le_bytes([0xAA, 0xBB]);
-        let mut w = SlotWriter::<_, Crc>::new(&mut buf);
+        let mut w = SlotEmitter::<_, Crc>::new(&mut buf);
         w.first(&s0, 15).unwrap();
         w.middle(&s1).unwrap();
         w.last(&s2, crc).unwrap();
@@ -945,7 +1033,260 @@ mod tests {
             error: StatusError::from_byte(0x07),
             data: &[0x10, 0x20],
         };
-        SlotWriter::<_, Crc>::new(&mut buf).middle(&slot).unwrap();
+        SlotEmitter::<_, Crc>::new(&mut buf).middle(&slot).unwrap();
         assert_eq!(&buf[..], &[0x07, 0x05, 0x10, 0x20]);
+    }
+
+    // ── unified emit() round-trips ──
+
+    #[test]
+    fn instruction_emit_round_trips_read_through_decoder() {
+        // Encode via per-variant API, decode, re-emit via emit(&Packet),
+        // and confirm the two encodings are byte-identical.
+        let mut a = Buf::new();
+        InstructionEmitter::<_, Crc>::new(&mut a)
+            .read(0x02, 0x0084, 4)
+            .unwrap();
+
+        let mut dec: Decoder<32, Crc> = Decoder::new();
+        let pkt = match dec.feed(&a).0 {
+            Step::Packet(p) => p,
+            other => panic!("expected Packet, got {other:?}"),
+        };
+
+        let mut b = Buf::new();
+        InstructionEmitter::<_, Crc>::new(&mut b).emit(&pkt).unwrap();
+        assert_eq!(&a[..], &b[..]);
+    }
+
+    #[test]
+    fn instruction_emit_round_trips_write_with_data() {
+        let mut a = Buf::new();
+        let data = [0xAA, 0xBB, 0xCC, 0xDD];
+        InstructionEmitter::<_, Crc>::new(&mut a)
+            .write(0x03, 0x0084, &data)
+            .unwrap();
+
+        let mut dec: Decoder<64, Crc> = Decoder::new();
+        let pkt = match dec.feed(&a).0 {
+            Step::Packet(p) => p,
+            other => panic!("expected Packet, got {other:?}"),
+        };
+
+        let mut b = Buf::new();
+        InstructionEmitter::<_, Crc>::new(&mut b).emit(&pkt).unwrap();
+        assert_eq!(&a[..], &b[..]);
+    }
+
+    #[test]
+    fn instruction_emit_round_trips_raw_extension() {
+        // Unknown instruction byte decodes as Packet::Raw; emit re-routes
+        // through `.ext()` and produces the same wire bytes.
+        let mut a = Buf::new();
+        let params = [0xDE, 0xAD, 0xBE, 0xEF];
+        InstructionEmitter::<_, Crc>::new(&mut a)
+            .ext(0x0A, 0xE0, &params)
+            .unwrap();
+
+        let mut dec: Decoder<32, Crc> = Decoder::new();
+        let pkt = match dec.feed(&a).0 {
+            Step::Packet(p) => p,
+            other => panic!("expected Packet, got {other:?}"),
+        };
+
+        let mut b = Buf::new();
+        InstructionEmitter::<_, Crc>::new(&mut b).emit(&pkt).unwrap();
+        assert_eq!(&a[..], &b[..]);
+    }
+
+    #[test]
+    fn instruction_emit_forwards_status_packet() {
+        // Relay/sniffer path: a decoded Status packet re-emitted through
+        // InstructionEmitter produces the same wire bytes. Convenience for
+        // direction-agnostic forwarding code.
+        let mut a = Buf::new();
+        StatusEmitter::<_, Crc>::new(&mut a)
+            .read(0x07, StatusError::OK, &[0x10, 0x20, 0x30])
+            .unwrap();
+        let mut dec: Decoder<32, Crc> = Decoder::new();
+        let pkt = match dec.feed(&a).0 {
+            Step::Packet(p) => p,
+            other => panic!("expected Packet, got {other:?}"),
+        };
+        let mut b = Buf::new();
+        InstructionEmitter::<_, Crc>::new(&mut b).emit(&pkt).unwrap();
+        assert_eq!(&a[..], &b[..]);
+    }
+
+    #[test]
+    fn status_emit_empty_round_trips() {
+        let mut buf = Buf::new();
+        let err = StatusError::from_byte(0x83);
+        StatusEmitter::<_, Crc>::new(&mut buf)
+            .emit(Status::Empty { id: 0x05, error: err })
+            .unwrap();
+        let mut dec: Decoder<32, Crc> = Decoder::new();
+        match dec.feed(&buf).0 {
+            Step::Packet(Packet::Status(s)) => {
+                assert_eq!(s.header.header.id, 0x05);
+                assert_eq!(s.error(), err);
+                assert_eq!(s.params, &[]);
+            }
+            other => panic!("expected Status, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn status_emit_ping_round_trips_through_interpret() {
+        use crate::packet::PingStatus;
+        let mut buf = Buf::new();
+        StatusEmitter::<_, Crc>::new(&mut buf)
+            .emit(Status::Ping {
+                id: 0x07,
+                error: StatusError::OK,
+                status: PingStatus {
+                    model: U16Le::from_u16(0x1234),
+                    fw_version: 0x42,
+                },
+            })
+            .unwrap();
+        let mut dec: Decoder<32, Crc> = Decoder::new();
+        match dec.feed(&buf).0 {
+            Step::Packet(Packet::Status(s)) => match s.interpret(RequestKind::Ping) {
+                Status::Ping { id, error, status } => {
+                    assert_eq!(id, 0x07);
+                    assert_eq!(error, StatusError::OK);
+                    assert_eq!(status.model.get(), 0x1234);
+                    assert_eq!(status.fw_version, 0x42);
+                }
+                other => panic!("expected Status::Ping, got {other:?}"),
+            },
+            other => panic!("expected Status, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn status_emit_read_round_trips() {
+        let mut buf = Buf::new();
+        let data = [0x10, 0x20, 0x30, 0x40];
+        StatusEmitter::<_, Crc>::new(&mut buf)
+            .emit(Status::Read {
+                id: 0x09,
+                error: StatusError::OK,
+                data: &data,
+            })
+            .unwrap();
+        let mut dec: Decoder<32, Crc> = Decoder::new();
+        match dec.feed(&buf).0 {
+            Step::Packet(Packet::Status(s)) => match s.interpret(RequestKind::Read) {
+                Status::Read { id, data: d, .. } => {
+                    assert_eq!(id, 0x09);
+                    assert_eq!(d, &data);
+                }
+                other => panic!("expected Status::Read, got {other:?}"),
+            },
+            other => panic!("expected Status, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn status_emit_raw_round_trips() {
+        let mut buf = Buf::new();
+        let payload = [0xCA, 0xFE, 0xBA, 0xBE];
+        StatusEmitter::<_, Crc>::new(&mut buf)
+            .emit(Status::Raw {
+                id: 0x0B,
+                error: StatusError::OK,
+                payload: &payload,
+            })
+            .unwrap();
+        let mut dec: Decoder<32, Crc> = Decoder::new();
+        match dec.feed(&buf).0 {
+            Step::Packet(Packet::Status(s)) => {
+                assert_eq!(s.header.header.id, 0x0B);
+                assert_eq!(s.params, &payload);
+            }
+            other => panic!("expected Status, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn status_emit_fast_sync_read_emits_coalesced_payload() {
+        // Fast*Read decode variants re-emit as a single Status frame whose
+        // payload is the coalesced multi-slot data. Wire bytes round-trip:
+        // a master that decoded a Fast Sync reply can re-emit it via
+        // StatusEmitter::emit and the bytes match.
+        use crate::packet::FastSyncReadStatus;
+        let mut buf = Buf::new();
+        let payload = [10, 0xAA, 0xBB, 0x00, 20, 0xCC, 0xDD];
+        StatusEmitter::<_, Crc>::new(&mut buf)
+            .emit(Status::FastSyncRead {
+                id: BROADCAST_ID,
+                status: FastSyncReadStatus {
+                    error: StatusError::OK,
+                    payload: &payload,
+                },
+            })
+            .unwrap();
+        let mut dec: Decoder<64, Crc> = Decoder::new();
+        match dec.feed(&buf).0 {
+            Step::Packet(Packet::Status(s)) => {
+                assert_eq!(s.header.header.id, BROADCAST_ID);
+                assert_eq!(s.error(), StatusError::OK);
+                assert_eq!(s.params, &payload);
+            }
+            other => panic!("expected Status, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn slot_emit_dispatches_each_position() {
+        // Build a 3-slot chain via emit(SlotPosition) and confirm wire bytes
+        // match the per-variant API call sequence.
+        let mut emitted_via_emit = Buf::new();
+        let s0 = Slot {
+            id: 1,
+            error: StatusError::OK,
+            data: &[0xAA, 0xBB],
+        };
+        let s1 = Slot {
+            id: 2,
+            error: StatusError::from_byte(0x05),
+            data: &[0xCC, 0xDD],
+        };
+        let s2 = Slot {
+            id: 3,
+            error: StatusError::OK,
+            data: &[0xEE, 0xFF],
+        };
+        let crc = u16::from_le_bytes([0xAA, 0xBB]);
+
+        let mut e = SlotEmitter::<_, Crc>::new(&mut emitted_via_emit);
+        e.emit(&s0, SlotPosition::First { packet_length: 15 }).unwrap();
+        e.emit(&s1, SlotPosition::Middle).unwrap();
+        e.emit(&s2, SlotPosition::Last { crc }).unwrap();
+
+        let mut expected = Buf::new();
+        let mut w = SlotEmitter::<_, Crc>::new(&mut expected);
+        w.first(&s0, 15).unwrap();
+        w.middle(&s1).unwrap();
+        w.last(&s2, crc).unwrap();
+
+        assert_eq!(&emitted_via_emit[..], &expected[..]);
+    }
+
+    #[test]
+    fn slot_emit_only_round_trips_single_slot() {
+        let mut buf = Buf::new();
+        let slot = Slot {
+            id: 7,
+            error: StatusError::OK,
+            data: &[0xAA, 0xBB, 0xCC, 0xDD],
+        };
+        SlotEmitter::<_, Crc>::new(&mut buf)
+            .emit(&slot, SlotPosition::Only { packet_length: 9 })
+            .unwrap();
+        let mut dec: Decoder<32, Crc> = Decoder::new();
+        assert!(matches!(dec.feed(&buf).0, Step::Packet(Packet::Status(_))));
     }
 }

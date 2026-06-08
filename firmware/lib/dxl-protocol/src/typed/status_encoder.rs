@@ -105,7 +105,9 @@ fn write_slot_inner<W: WriteBuf, CRC: CrcUmts>(
         SlotPosition::Middle => {
             write_slot_body(out, slot)?;
         }
-        SlotPosition::Last => {
+        SlotPosition::Last { crc: _ } => {
+            // Legacy code path keeps the original placeholder behavior; the
+            // new `SlotWriter::write_slot` honors the caller-supplied CRC.
             write_slot_body(out, slot)?;
             out.push(CRC_PLACEHOLDER[0])?;
             out.push(CRC_PLACEHOLDER[1])?;

@@ -660,7 +660,7 @@ impl FastSlotInfo {
             (0, _) => SlotPosition::First {
                 packet_length: self.packet_length,
             },
-            (k, n) if k + 1 == n => SlotPosition::Last,
+            (k, n) if k + 1 == n => SlotPosition::Last { crc: 0 },
             _ => SlotPosition::Middle,
         }
     }
@@ -1466,7 +1466,7 @@ mod tests {
         assert_eq!(mk(0, 1).position(), SlotPosition::Only { packet_length: 7 });
         assert_eq!(mk(0, 3).position(), SlotPosition::First { packet_length: 7 });
         assert_eq!(mk(1, 3).position(), SlotPosition::Middle);
-        assert_eq!(mk(2, 3).position(), SlotPosition::Last);
+        assert_eq!(mk(2, 3).position(), SlotPosition::Last { crc: 0 });
     }
 
     #[test]

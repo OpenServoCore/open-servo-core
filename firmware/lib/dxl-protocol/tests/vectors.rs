@@ -129,7 +129,7 @@ fn write_slot_last_reserves_crc_placeholder() {
     write_legacy_slot(
         &mut out,
         &slot(7, StatusError::None, BODY_7),
-        SlotPosition::Last,
+        SlotPosition::Last { crc: 0 },
     )
     .unwrap();
     assert_eq!(
@@ -179,7 +179,7 @@ fn write_slot_three_slave_response_assembles_to_valid_status_frame() {
     write_legacy_slot(
         &mut out,
         &slot(7, StatusError::None, BODY_7),
-        SlotPosition::Last,
+        SlotPosition::Last { crc: 0 },
     )
     .unwrap();
 

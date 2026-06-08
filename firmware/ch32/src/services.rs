@@ -265,7 +265,7 @@ impl Ch32Bus {
                 let delay_us = schedule.rdt_us + bytes_to_us(schedule.bytes_before);
                 dxl::start_plain_after(self.anchor.tick, delay_us);
             }
-            SlotPosition::Last => {
+            SlotPosition::Last { crc: _ } => {
                 let fire_q88_us = (schedule.rdt_us << 8) + bytes_to_us_q88(schedule.bytes_before);
                 dxl::start_fast_after(self.anchor.tick, fire_q88_us, Some(self.anchor.bytes));
             }

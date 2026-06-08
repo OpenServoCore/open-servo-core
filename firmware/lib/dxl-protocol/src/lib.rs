@@ -14,14 +14,14 @@
 //! instructions; implement [`StatusExt`] to add custom typed status flavors.
 
 pub mod decoder;
+mod emitter;
 pub mod instruction;
 pub mod packet;
 mod typed;
 mod wire;
-mod writer;
 
+pub use emitter::{InstructionEmitter, SlotEmitter, StatusEmitter};
 pub use instruction::InstructionByte;
-pub use writer::{InstructionWriter, SlotWriter, StatusWriter};
 
 pub use typed::{
     ActionPacket, ActionStatus, BulkEntry, BulkReadPacket, BulkReadSlotIter, BulkReadStatus,
