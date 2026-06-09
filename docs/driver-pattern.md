@@ -45,77 +45,60 @@ Each file is independently legible. No file requires understanding the others to
 
 ---
 
-## 3. The driver contract
+## 3. The driver convention
 
-Every driver follows the same naming convention: `process` for hardware events, `handle` for software commands, accessors for stable observations. Signatures scale with what the driver actually carries — absent type families collapse out of the signature rather than appearing as synthetic `Nothing` variants or `()` payloads.
+A driver is a Rust type that owns hardware state. Its public surface is pure methods — no `handle(Command)` indirection, no per-driver `Event`/`Effect` enums. Operations are named for what they do; signatures carry only the inputs and outputs they actually need.
 
-For events:
+The convention is in *naming and role separation*, not in shape:
 
-| Event | Effect | `process` signature |
-| --- | --- | --- |
-| ✓ | ✓ | `process(Event) -> Option<Effect>` |
-| ✓ | — | `process(Event)` |
-| — | — | (no `process` method) |
+- **Hardware events**: methods prefixed `on_*` (e.g. `on_uart_idle`, `on_timer_match`). They mutate state and may return an outcome value when something downstream needs to act on the transition. They never return `Result` — a hardware event already happened and can't be refused.
+- **Software commands**: methods named for the operation (`arm`, `stage_baud`, `set`). They mutate state. They return `Result<T, E>` *when the operation has a runtime failure mode* a caller might reasonably encounter and handle. Programmer-error invariants (call-order violations, double-install) become `debug_assert!`s, not `Error` variants.
+- **Accessors**: methods named for what they expose (`window`, `last_tick`, `is_armed`). `&self` (or `&mut self` when truly necessary), returning primitives or small typed values. No transition coupling.
 
-For commands:
+The driver is always fully valid after `new(...)`. Uninit state — the time between static allocation and the first install — is encoded *at the static cell*, not inside the type:
 
-| Command | Effect | Error | `handle` signature |
-| --- | --- | --- | --- |
-| ✓ | ✓ | ✓ | `handle(Cmd) -> Result<Option<Effect>, Error>` |
-| ✓ | ✓ | — | `handle(Cmd) -> Option<Effect>` |
-| ✓ | — | ✓ | `handle(Cmd) -> Result<(), Error>` |
-| ✓ | — | — | `handle(Cmd)` |
-| — | — | — | (no `handle` method) |
+```rust
+static TOP: SyncUnsafeCell<Option<Top>> = SyncUnsafeCell::new(None);
+```
 
-Accessors take `&self` (or `&mut self` when truly necessary), return primitives or small typed values, and never carry effects or errors.
-
-The contract is *naming and role separation*, not the presence of all four type families. Don't add an Event, Command, Effect, or Error type unless the driver actually has one — KISS, let absent types collapse. Programmer-error invariants ("you must call Install before SetLevel") become `debug_assert!`s, not Error variants. Error types are reserved for runtime conditions a caller might reasonably encounter and want to handle.
+Two questions, two layers. The cell answers "is this hardware installed?"; the methods on the driver answer "what does it do?", and assume the answer to the first is yes. §7 covers the access discipline.
 
 Three categories, three reasons to call into a driver. Keep them distinct.
 
 ### 3.1 Events vs commands
 
-The distinction is *direction*, not *content*:
+The distinction is *direction*, not shape:
 
-- **Event** — something the hardware made happen. ISR-originated. Already true by the time the driver hears about it. Returns an effect describing what to do next (often `Nothing`).
-- **Command** — something software wants. Main-loop or service-originated. May be rejected if it conflicts with current state. Returns a result so callers know whether to retry or report the rejection.
+- **Event** — something the hardware made happen. ISR-originated. Already true by the time the method runs. The method records the new state and may return an outcome for the composite/ISR to route elsewhere. Methods are named `on_*`.
+- **Command** — something software wants. Main-loop or service-originated. May be rejected if it conflicts with current state; in that case the method returns `Result::Err`. Methods are named descriptively.
 
-The same conceptual transition may be expressible as either an event or a command depending on origin. "Start transmitting" from a hardware-trigger compare match is an event; "start transmitting" from main-loop intent is a command. Naming them differently is intentional: the driver's response will often differ (the event has *already started* the transmission and the driver records that; the command needs to verify state permits it before committing).
+The same conceptual transition may originate from either direction. "Start transmitting" from a hardware compare-match is an event; "start transmitting" from main-loop intent is a command. The driver's response often differs (the event has *already started* the transmission and the driver records that; the command needs to verify state permits it before committing). Naming them differently keeps the distinction visible at every call site.
 
 ### 3.2 Accessors
 
 Accessors are restricted to **stable observations** — values that don't depend on a pending transition. Examples that qualify:
 
-- A configuration scalar published by an earlier `handle()` call.
+- A configuration scalar published by an earlier command.
 - A monotonic counter incremented by an event.
 - A bool capturing a long-lived state ("is the bus armed?").
 
-Examples that *don't* qualify (and should be returned as effects from `process()` instead):
+Examples that *don't* qualify (return them from the relevant event method instead):
 
 - "The most recent decoded packet" — that's a transition output.
 - "What happened during the last IRQ" — also a transition output.
-- "Internal byte buffer" — that's leaking implementation; prefer command-style enqueue or named operations.
+- "Internal byte buffer" — that's leaking implementation; prefer a command-style enqueue method or a named operation.
 
-If the urge to add an accessor comes up, ask whether the value is being *polled* (stable observation, fine) or *consumed* (transition output, return it from an effect).
+If the urge to add an accessor comes up, ask whether the value is being *polled* (stable observation, fine) or *consumed* (transition output, return it from the event method).
 
-### 3.3 Effects
+### 3.3 Return values across drivers
 
-`Effect` is a small enum specific to each driver. Methods return `Option<Effect>` — `Some(variant)` when work happened, `None` for the no-op case. Drivers with no effects to emit omit the type entirely:
-
-```rust
-pub enum SomeDriverEffect {
-    SomethingHappened { /* primitives describing what */ },
-    SomethingElse { /* … */ },
-}
-```
-
-Effects carry **primitives**, not driver-internal types. If two drivers need to exchange a value that's conceptually a struct, the struct gets flattened into primitive fields in the effect and reconstructed (or just consumed field-by-field) at the receiver. This is the encapsulation rule that keeps drivers independent: a downstream driver should never need to import an upstream driver's types.
+When a method's return value flows into another driver — particularly within a composite — it carries **primitives**, not driver-internal types. If two drivers need to exchange a value that's conceptually a struct, the struct gets flattened into primitive fields at the source and reconstructed (or consumed field-by-field) at the receiver. This is the encapsulation rule that keeps drivers independent: a downstream driver should never need to import an upstream driver's types.
 
 ---
 
 ## 4. Composite drivers
 
-Drivers compose recursively. A top-level driver may contain sub-drivers as fields; its `process()` body routes events to those sub-drivers and composes their effects:
+Drivers compose recursively. A top-level driver may contain sub-drivers as fields; its method bodies route events to those sub-drivers and compose their return values:
 
 ```rust
 pub struct Top {
@@ -125,38 +108,27 @@ pub struct Top {
 }
 
 impl Top {
-    pub fn process(&mut self, event: TopEvent) {
-        match event {
-            TopEvent::ExternalTrigger => {
-                // Decompose into the sub-driver event(s) this trigger affects.
-                if let Some(SubAEffect::DataReady { value }) =
-                    self.sub_a.process(SubAEvent::Triggered)
-                {
-                    // Route a's effect into b as an event.
-                    self.sub_b.process(SubBEvent::AcceptData { value });
-                }
-            }
-            // …
+    pub fn on_external_trigger(&mut self) {
+        // Decompose into the sub-driver event(s) this trigger affects.
+        if let Some(value) = self.sub_a.on_triggered() {
+            // Route a's outcome into b as an event.
+            self.sub_b.on_data(value);
         }
     }
 
-    pub fn handle(&mut self, cmd: TopCommand) -> Result<(), TopError> {
-        match cmd {
-            TopCommand::DoWork(payload) =>
-                self.sub_b.handle(SubBCommand::Work(payload)).map_err(TopError::SubB),
-            // …
-        }
+    pub fn do_work(&mut self, payload: Payload) -> Result<(), TopError> {
+        self.sub_b.work(payload).map_err(TopError::SubB)
     }
 }
 ```
 
-The composite follows the same convention as its sub-drivers — `process` for events, `handle` for commands, accessors for observations — but its bodies route between children rather than mutating leaf state. Each method's signature still collapses by what it actually carries: `Top` above emits no outward effect and so `process` returns `()`, while `handle` propagates sub-driver errors and so returns `Result<(), TopError>`.
+The composite follows the same convention as its sub-drivers — `on_*` for hardware events, descriptive names for commands, accessors for observations — but its bodies route between children rather than mutating leaf state.
 
 ### 4.1 The composition rule
 
 > **Sub-drivers are only reachable through their parent.** Sibling sub-drivers do not call each other directly. The parent owns the routing.
 
-This is the rule that keeps the soup out. Without it, two sub-drivers acquire a hidden coupling that doesn't show up in either of their public surfaces; with it, all coupling is visible in the parent's `process()` body.
+This is the rule that keeps the soup out. Without it, two sub-drivers acquire a hidden coupling that doesn't show up in either of their public surfaces; with it, all coupling is visible in the parent's method bodies.
 
 ### 4.2 The no-peer-to-peer rule for top-level drivers
 
@@ -172,7 +144,7 @@ drivers/
     sensors.rs      was top-level, now sub-driver
 ```
 
-The composite's `process()` is where the coordination lives. From the outside, `Control` exposes the same `process / handle / accessor` surface as any other driver.
+The composite's method bodies are where the coordination lives. From the outside, `Control` exposes the same pure-method surface as any other driver.
 
 This rule has teeth: if you find yourself wanting driver-to-driver calls, the architecture is telling you that two concerns belong together. Either compose them, or move the orchestration up to the protocol layer (see §5).
 
@@ -194,11 +166,10 @@ pub struct SomeBusAdapter;
 
 impl SomeBus for SomeBusAdapter {
     fn send(&mut self, payload: Payload, schedule: Schedule) {
-        let driver = unsafe { Top::get() };
-        let _ = driver.handle(TopCommand::Send {
-            writer: |buf| serialize(payload, buf),
+        let _ = unsafe { Top::get() }.send(
+            |buf| serialize(payload, buf),
             schedule,
-        });
+        );
     }
 
     fn read_window(&mut self) -> Option<&[u8]> {
@@ -210,7 +181,7 @@ impl SomeBus for SomeBusAdapter {
 That's the whole service. Each method:
 
 1. Acquires access to the driver.
-2. Translates protocol-level arguments to driver `handle` commands or accessor calls.
+2. Translates protocol-level arguments to driver method calls.
 3. Translates the driver result back to the protocol-level return type.
 
 ### 5.1 The 1:1 rule
@@ -257,9 +228,9 @@ pub fn on_some_peripheral() {
     let status = peripheral_status();
     let driver = unsafe { Top::get() };
 
-    if status.condition_a() { driver.process(TopEvent::ConditionA); }
-    if status.condition_b() { driver.process(TopEvent::ConditionB); }
-    if status.condition_c() { driver.process(TopEvent::ConditionC(status.detail())); }
+    if status.condition_a() { driver.on_condition_a(); }
+    if status.condition_b() { driver.on_condition_b(); }
+    if status.condition_c() { driver.on_condition_c(status.detail()); }
 }
 ```
 
@@ -272,7 +243,7 @@ It is **not** the place to:
 - Make routing decisions between drivers.
 - Hold its own state across invocations.
 
-If an ISR is doing more than the dispatcher shape above, the work probably belongs inside the driver's `process()` body. If routing complexity is creeping into the ISR (e.g., "if driver A's process returns X, then call driver B"), it belongs in a composite driver's `process()` body, not in the ISR.
+If an ISR is doing more than the dispatcher shape above, the work probably belongs inside the relevant `on_*` method on the driver. If routing complexity is creeping into the ISR (e.g., "if driver A's method returns X, then call driver B"), it belongs in the composite driver's `on_*` method, not in the ISR.
 
 ### 6.1 Single-source IRQs
 
@@ -280,7 +251,7 @@ When an IRQ has a single logical source (a dedicated timer compare match, a dedi
 
 ```rust
 pub fn on_dedicated_timer() {
-    unsafe { Top::get() }.process(TopEvent::Deadline);
+    unsafe { Top::get() }.on_deadline();
 }
 ```
 
@@ -290,32 +261,45 @@ In hot-path cases where the dispatcher's overhead matters, the ISR can call the 
 
 ## 7. Static instances and access discipline
 
-Each top-level driver gets a single static instance, typically in a `SyncUnsafeCell`:
+Each top-level driver gets a single static cell holding `Option<Driver>` so the static can be valid before bringup runs. `Driver::new(...)` is total — it always returns a fully-initialized driver — and uninit state lives only at the cell:
 
 ```rust
-static TOP: SyncUnsafeCell<Top> = SyncUnsafeCell::new(Top::new());
+static TOP: SyncUnsafeCell<Option<Top>> = SyncUnsafeCell::new(None);
 
 impl Top {
-    /// SAFETY: caller holds the access discipline (see below).
+    /// SAFETY: bringup-only, pre-IRQ; sole writer. Must be called exactly once.
+    pub unsafe fn install(/* construction args */) {
+        let cell = unsafe { &mut *TOP.get() };
+        debug_assert!(cell.is_none(), "Top: already installed");
+        *cell = Some(Top::new(/* args */));
+    }
+
+    /// SAFETY: bringup installs Top before any ISR runs; access follows the
+    /// driver's IRQ-priority contract documented at the call site.
     #[inline(always)]
     pub unsafe fn get() -> &'static mut Self {
-        unsafe { &mut *TOP.get() }
+        let cell = unsafe { &mut *TOP.get() };
+        debug_assert!(cell.is_some(), "Top: accessed before install");
+        // SAFETY: bringup ensures Some before any ISR fires.
+        unsafe { cell.as_mut().unwrap_unchecked() }
     }
 }
 ```
 
-The access discipline depends on the runtime model. For a no-RTOS firmware where ISRs share a single priority level and don't preempt each other (or use cooperative scheduling), the discipline is:
+The two-layer Option keeps the driver type itself honest: `Top::new(...)` never returns a half-constructed object. The "is it installed?" question is asked once per access, at the accessor, `debug_assert`-checked in dev / `unwrap_unchecked` in release (sound because bringup must run before any IRQ).
+
+The access discipline beyond install depends on the runtime model. For a no-RTOS firmware where ISRs share a single priority level and don't preempt each other (or use cooperative scheduling), the discipline is:
 
 - **From an ISR at the shared priority**: `Top::get()` is safe because no other code at the same priority can preempt.
 - **From the main loop**: `Top::get()` is safe only after disabling the relevant ISRs around the access, OR if the access only touches state the ISRs never mutate (read-only accessors are usually safe without IRQ masking; mutating commands typically need a masked critical section).
 
-This isn't free of footguns — every `unsafe { Top::get() }` site is making a contract claim. The discipline is:
+Every `unsafe { Top::get() }` site is making a contract claim. The discipline is:
 
 1. State the contract once, in the type's `SAFETY:` doc comment.
 2. Site-level comments only when the call site deviates from the default discipline.
 3. Restrict all mutation to driver methods (no raw field access from outside).
 
-If the project uses RTIC, an async executor, or another framework that provides safer ownership patterns, those should be preferred. The `SyncUnsafeCell` + `unsafe fn get()` pattern is the floor — it works without runtime support but requires discipline.
+If the project uses RTIC, an async executor, or another framework that provides safer ownership patterns, those should be preferred. The `SyncUnsafeCell<Option<Driver>>` + `unsafe fn install`/`unsafe fn get` pattern is the floor — it works without runtime support but requires discipline.
 
 ### 7.1 Cross-cell coordination
 
@@ -355,48 +339,49 @@ drivers/
     clock.rs     BusClock — rate constants, pending re-tune values
 ```
 
-Each sub-driver has `process / handle / accessors`. The composite (`Bus`) has them too, but its body routes:
+Each sub-driver exposes pure methods. The composite (`Bus`) has them too, but its bodies route between children rather than mutating leaf state:
 
 ```rust
 impl Bus {
-    pub fn process(&mut self, event: BusEvent) {
-        match event {
-            BusEvent::UartIdle => {
-                if let Some(RxEffect::PacketBoundary { wire_end_tick }) =
-                    self.rx.process(RxEvent::UartIdle)
-                {
-                    // Wire-end is the input to TX's fire scheduling.
-                    self.tx.process(TxEvent::WireEnd { tick: wire_end_tick });
-                }
-            }
-            BusEvent::TimerMatch => {
-                self.tx.process(TxEvent::FireDeadline);
-            }
-            BusEvent::UartTcCompleted => {
-                if matches!(self.tx.process(TxEvent::TcCompleted), Some(TxEffect::Released)) {
-                    self.clock.process(ClockEvent::ApplyPending);
-                }
-            }
-            BusEvent::UartRxError(flags) => {
-                self.rx.process(RxEvent::Error(flags));
-            }
+    pub fn on_uart_idle(&mut self) {
+        if let Some(wire_end_tick) = self.rx.on_uart_idle() {
+            // Wire-end is the input to TX's fire scheduling.
+            self.tx.on_wire_end(wire_end_tick);
         }
     }
 
-    pub fn handle(&mut self, cmd: BusCommand) -> Result<(), BusError> {
-        match cmd {
-            BusCommand::ArmReply { writer, schedule } =>
-                self.tx.handle(TxCommand::Arm { writer, schedule }).map_err(BusError::Tx),
-            BusCommand::StageBaud(rate) =>
-                self.clock.handle(ClockCommand::StageBaud(rate)).map_err(BusError::Clock),
+    pub fn on_timer_match(&mut self) {
+        self.tx.on_fire_deadline();
+    }
+
+    pub fn on_uart_tc_completed(&mut self) {
+        if self.tx.on_tc_completed().released() {
+            self.clock.apply_pending();
         }
     }
 
-    pub fn rx_window(&self) -> Option<&[u8]> { self.rx.window() }
+    pub fn on_uart_rx_error(&mut self, flags: RxErrorFlags) {
+        self.rx.on_error(flags);
+    }
+
+    pub fn arm_reply<F>(&mut self, writer: F, schedule: Schedule) -> Result<(), BusError>
+    where
+        F: FnOnce(&mut [u8]) -> usize,
+    {
+        self.tx.arm(writer, schedule).map_err(BusError::Tx)
+    }
+
+    pub fn stage_baud(&mut self, rate: BaudRate) -> Result<(), BusError> {
+        self.clock.stage_baud(rate).map_err(BusError::Clock)
+    }
+
+    pub fn rx_window(&self) -> Option<&[u8]> {
+        self.rx.window()
+    }
 }
 ```
 
-The wire diagram is in one file. Reading `Bus::process()` tells you every cross-component interaction in the system. Sub-drivers stay independent and unaware of each other.
+The wire diagram is one file's worth of method bodies. Reading the `Bus` impl tells you every cross-component interaction in the system. Sub-drivers stay independent and unaware of each other.
 
 ### 8.2 Mapping to ISRs
 
@@ -404,14 +389,15 @@ The wire diagram is in one file. Reading `Bus::process()` tells you every cross-
 // irq.rs
 pub fn on_uart() {
     let status = uart_status();
+    // SAFETY: see Bus::get.
     let bus = unsafe { Bus::get() };
-    if status.has_rx_error() { bus.process(BusEvent::UartRxError(status.rx_flags())); }
-    if status.idle()         { bus.process(BusEvent::UartIdle); }
-    if status.tc()           { bus.process(BusEvent::UartTcCompleted); }
+    if status.has_rx_error() { bus.on_uart_rx_error(status.rx_flags()); }
+    if status.idle()         { bus.on_uart_idle(); }
+    if status.tc()           { bus.on_uart_tc_completed(); }
 }
 
 pub fn on_timer_compare() {
-    unsafe { Bus::get() }.process(BusEvent::TimerMatch);
+    unsafe { Bus::get() }.on_timer_match();
 }
 ```
 
@@ -429,10 +415,10 @@ impl ProtocolBus for BusAdapter {
     }
 
     fn send(&mut self, packet: Packet<'_>, schedule: Schedule) {
-        let _ = unsafe { Bus::get() }.handle(BusCommand::ArmReply {
-            writer: |buf| serialize(packet, buf),
+        let _ = unsafe { Bus::get() }.arm_reply(
+            |buf| serialize(packet, buf),
             schedule,
-        });
+        );
     }
 }
 ```
@@ -445,8 +431,8 @@ The protocol layer's dispatcher consumes `ProtocolBus`, knowing nothing about UA
 
 This convention is a synthesis of established patterns rather than a novel design. The components map roughly as:
 
-- **Command Query Responsibility Segregation (CQRS).** The `handle` (commands mutate, may emit) / accessor (queries read) split. Long established in distributed systems and DDD.
-- **Domain events.** `process(Event)` is the *intake* of domain events; `Effect` is the *output*. Mealy-machine outputs from event-sourced systems map directly.
+- **Command Query Responsibility Segregation (CQRS).** The mutating-command / read-only-query split. Commands here are pure methods rather than reified message objects, but the read/write separation is the same. Long established in distributed systems and DDD.
+- **Domain events.** `on_*` methods are the *intake* of domain events; their return values are the *output*. Mealy-machine outputs from event-sourced systems map directly.
 - **Hexagonal architecture / Ports and Adapters.** Drivers are the domain core; services are adapters to outer protocol traits. Cockburn's framing applied at the module level instead of the application level.
 - **DDD aggregates.** A composite driver is an aggregate root; sub-drivers are entities reachable only through the aggregate. The "no sibling access" rule is the aggregate-boundary rule.
 - **Active Object** (Samek, *Practical Statecharts in C/C++*). The most embedded-specific analog: each active object is a state machine with an event queue, composed hierarchically, with no direct peer access. Used heavily in safety-critical embedded.
@@ -472,14 +458,13 @@ If a single reference best captures the embedded version of this pattern: Miro S
 
 - The firmware is small enough that a single struct with methods would do. A blinker, a thermostat, a one-peripheral data logger — the ceremony costs more than it saves.
 - The project uses a framework (RTIC, Embassy with async, Zephyr) that provides better ownership and scheduling primitives. Use those instead. The pattern is the floor for "no framework available"; frameworks raise the floor.
-- The hot path is so tight that even the dispatch overhead of `Top::process(Event::X)` matters. (For most ISR work this isn't true — the dispatch is a tail call. But cycle-budget-bound ISRs may need to inline directly into sub-drivers, breaking the composite-routing rule as a deliberate optimization.)
+- The hot path is so tight that even the dispatch overhead of `Top::on_event_x()` matters. (For most ISR work this isn't true — the dispatch is a tail call. But cycle-budget-bound ISRs may need to inline directly into sub-drivers, breaking the composite-routing rule as a deliberate optimization.)
 - The protocol layer is trivial or absent. The service-as-adapter benefit only pays off when there's a chip-agnostic protocol on the other side. Without one, services are bureaucracy.
 
 ### 10.3 Trade-offs to accept
 
-- **More files, more types.** Each driver may carry `Event`, `Command`, `Effect`, and `Error` types; trivial drivers omit the ones they don't need (§3), so the floor is just `Command` + a `handle()` method. For a small project even that floor may be bookkeeping that doesn't pay back.
-- **Translation boilerplate.** Effects flow as primitives between drivers, which means flattening structs at one boundary and rebuilding (or consuming field-by-field) at the next. Most of this is a few lines per transition.
-- **Discipline-by-convention, not by compiler.** The contract is a convention. Rust can't enforce "no sibling sub-driver access" or "services are 1:1 with top-level drivers." A doc-comment per module stating the convention plus code review is the enforcement mechanism. A team that doesn't read the convention will erode it; one that does will find the pattern self-reinforcing.
+- **Translation boilerplate.** Return values flow as primitives between drivers, which means flattening structs at one boundary and rebuilding (or consuming field-by-field) at the next. Most of this is a few lines per transition.
+- **Discipline-by-convention, not by compiler.** The contract is a naming convention. Rust can't enforce "no sibling sub-driver access," "services are 1:1 with top-level drivers," or "use `on_*` for hardware events." A doc-comment per module stating the convention plus code review is the enforcement mechanism. A team that doesn't read the convention will erode it; one that does will find the pattern self-reinforcing.
 
 ---
 
@@ -487,7 +472,7 @@ If a single reference best captures the embedded version of this pattern: Miro S
 
 Five rules:
 
-1. **Drivers own hardware state.** Expose `process(Event)` / `handle(Command)` / stable accessors. Nothing else is public.
+1. **Drivers own hardware state.** Expose pure methods: `on_*` for hardware events, descriptive names for commands, accessors for stable observations. Programmer-error invariants are `debug_assert!`s; runtime failures return `Result`.
 2. **Composite drivers route between sub-drivers.** Sub-drivers are reachable only through the parent.
 3. **Top-level drivers do not communicate with each other.** If two would need to, compose them into a higher driver.
 4. **Services adapt protocol traits to drivers.** Each service binds to exactly one top-level driver. Services are thin.
@@ -496,7 +481,7 @@ Five rules:
 Three roles:
 
 - ISR vector binding: hardware demux only.
-- Driver: hierarchical FSM with strict contract.
+- Driver: hierarchical type with a pure-method API and cell-level `Option<Driver>` storage.
 - Service: protocol-trait adapter.
 
-The result is firmware where reading any one file gives you a complete picture of one concern, where the wire diagram between concerns is concentrated in composite-driver `process()` bodies, and where the protocol layer remains unaware of any specific peripheral.
+The result is firmware where reading any one file gives you a complete picture of one concern, where the wire diagram between concerns is concentrated in composite-driver method bodies, and where the protocol layer remains unaware of any specific peripheral.
