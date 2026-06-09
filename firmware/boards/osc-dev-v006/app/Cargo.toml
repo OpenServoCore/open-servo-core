@@ -21,5 +21,5 @@ defmt-rtt     = { version = "1", optional = true }
 [features]
 default = ["dyn_cal"]
 defmt   = ["dep:defmt", "dep:defmt-rtt", "osc-ch32/defmt"]
-scope   = ["osc-ch32/scope"]
+bench   = ["osc-ch32/bench"]
 dyn_cal = ["osc-ch32/dyn_cal"]

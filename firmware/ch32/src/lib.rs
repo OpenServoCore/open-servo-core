@@ -5,6 +5,7 @@
 pub use osc_core::bp;
 pub use osc_core::{BaudRate, ConfigDefaults};
 
+pub(crate) mod bench;
 pub mod board;
 pub mod chip_flash;
 pub(crate) mod drivers;

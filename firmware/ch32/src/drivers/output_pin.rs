@@ -3,7 +3,7 @@
 //! Two static instances live alongside the type:
 //!
 //! - [`OutputPin::dbg`] — bench scope-marker pin; pulsed from DXL hot path
-//!   under `--features scope` via [`dbg_pulse`].
+//!   under `--features bench` via [`crate::bench::dbg_pulse`].
 //! - [`OutputPin::stat_led`] — front-panel activity LED; the blink policy
 //!   that decides when to switch lives in [`crate::stat_led`].
 //!
@@ -34,7 +34,7 @@ impl OutputPin {
 
     /// High then Low, back-to-back. Intended for scope markers with a Low
     /// resting state; callers with inverted polarity should `set` explicitly.
-    /// Only used under `--features scope` today; kept always-available so the
+    /// Only used under `--features bench` today; kept always-available so the
     /// API doesn't change with the feature.
     #[inline(always)]
     #[allow(dead_code)]
@@ -59,7 +59,7 @@ impl OutputPin {
     /// SAFETY: bringup installs DBG before any ISR runs; runtime access is
     /// from DXL-side ISRs at PFIC HIGH or main-loop with those IRQs masked.
     ///
-    /// Only used under `--features scope`; kept always-available so the API
+    /// Only used under `--features bench`; kept always-available so the API
     /// doesn't change with the feature.
     #[inline(always)]
     #[allow(dead_code)]
@@ -88,17 +88,5 @@ impl OutputPin {
         debug_assert!(cell.is_some(), "OutputPin::stat_led() before install");
         // SAFETY: bringup ensures Some before main loop runs.
         unsafe { cell.as_mut().unwrap_unchecked() }
-    }
-}
-
-/// Bench scope-marker pulse on the DBG instance. Body compiles to nothing
-/// without `--features scope`; call sites stay unconditional so production
-/// builds compile the marker away with no source edits.
-#[inline(always)]
-pub fn dbg_pulse() {
-    #[cfg(feature = "scope")]
-    // SAFETY: see `OutputPin::dbg` — ISR-at-PFIC-HIGH access.
-    unsafe {
-        OutputPin::dbg().pulse();
     }
 }

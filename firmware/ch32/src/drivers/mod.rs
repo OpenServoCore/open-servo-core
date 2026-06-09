@@ -1,7 +1,5 @@
 pub mod output_pin;
 
-pub use output_pin::dbg_pulse;
-
 use crate::board::BoardWiring;
 use crate::hal::gpio::Level;
 
