@@ -47,23 +47,29 @@ Each file is independently legible. No file requires understanding the others to
 
 ## 3. The driver contract
 
-Every driver exposes the same surface:
+Every driver follows the same naming convention: `process` for hardware events, `handle` for software commands, accessors for stable observations. Signatures scale with what the driver actually carries — absent type families collapse out of the signature rather than appearing as synthetic `Nothing` variants or `()` payloads.
 
-```rust
-impl SomeDriver {
-    /// Hardware event arrived. Cannot be refused (it already happened).
-    /// May produce an effect that callers route elsewhere.
-    pub fn process(&mut self, event: Event) -> Effect;
+For events:
 
-    /// Software intent arrived. Can be rejected if the driver is in a
-    /// state that doesn't permit the requested transition.
-    pub fn handle(&mut self, command: Command) -> Result<Effect, Error>;
+| Event | Effect | `process` signature |
+| --- | --- | --- |
+| ✓ | ✓ | `process(Event) -> Option<Effect>` |
+| ✓ | — | `process(Event)` |
+| — | — | (no `process` method) |
 
-    /// Stable-state observation. No transition coupling; safe to call
-    /// any time. Returns primitives or small typed values.
-    pub fn <accessor>(&self) -> T;
-}
-```
+For commands:
+
+| Command | Effect | Error | `handle` signature |
+| --- | --- | --- | --- |
+| ✓ | ✓ | ✓ | `handle(Cmd) -> Result<Option<Effect>, Error>` |
+| ✓ | ✓ | — | `handle(Cmd) -> Option<Effect>` |
+| ✓ | — | ✓ | `handle(Cmd) -> Result<(), Error>` |
+| ✓ | — | — | `handle(Cmd)` |
+| — | — | — | (no `handle` method) |
+
+Accessors take `&self` (or `&mut self` when truly necessary), return primitives or small typed values, and never carry effects or errors.
+
+The contract is *naming and role separation*, not the presence of all four type families. Don't add an Event, Command, Effect, or Error type unless the driver actually has one — KISS, let absent types collapse. Programmer-error invariants ("you must call Install before SetLevel") become `debug_assert!`s, not Error variants. Error types are reserved for runtime conditions a caller might reasonably encounter and want to handle.
 
 Three categories, three reasons to call into a driver. Keep them distinct.
 
@@ -94,13 +100,12 @@ If the urge to add an accessor comes up, ask whether the value is being *polled*
 
 ### 3.3 Effects
 
-`Effect` is a small enum specific to each driver, always with a `Nothing` variant for the no-op case:
+`Effect` is a small enum specific to each driver. Methods return `Option<Effect>` — `Some(variant)` when work happened, `None` for the no-op case. Drivers with no effects to emit omit the type entirely:
 
 ```rust
 pub enum SomeDriverEffect {
-    Nothing,
     SomethingHappened { /* primitives describing what */ },
-    // …
+    SomethingElse { /* … */ },
 }
 ```
 
@@ -120,34 +125,32 @@ pub struct Top {
 }
 
 impl Top {
-    pub fn process(&mut self, event: TopEvent) -> TopEffect {
+    pub fn process(&mut self, event: TopEvent) {
         match event {
             TopEvent::ExternalTrigger => {
                 // Decompose into the sub-driver event(s) this trigger affects.
-                let a_eff = self.sub_a.process(SubAEvent::Triggered);
-                if let SubAEffect::DataReady { value } = a_eff {
+                if let Some(SubAEffect::DataReady { value }) =
+                    self.sub_a.process(SubAEvent::Triggered)
+                {
                     // Route a's effect into b as an event.
                     self.sub_b.process(SubBEvent::AcceptData { value });
                 }
-                TopEffect::Nothing
             }
             // …
         }
     }
 
-    pub fn handle(&mut self, cmd: TopCommand) -> Result<TopEffect, TopError> {
+    pub fn handle(&mut self, cmd: TopCommand) -> Result<(), TopError> {
         match cmd {
             TopCommand::DoWork(payload) =>
-                self.sub_b.handle(SubBCommand::Work(payload))
-                    .map(|_| TopEffect::Nothing)
-                    .map_err(TopError::SubB),
+                self.sub_b.handle(SubBCommand::Work(payload)).map_err(TopError::SubB),
             // …
         }
     }
 }
 ```
 
-The top-level driver has the same `process` / `handle` / `accessor` surface as the sub-drivers. The contract is fractal: at every level you see the same shape. The only thing that distinguishes a composite driver from a leaf one is that its body routes between children rather than mutating leaf state.
+The composite follows the same convention as its sub-drivers — `process` for events, `handle` for commands, accessors for observations — but its bodies route between children rather than mutating leaf state. Each method's signature still collapses by what it actually carries: `Top` above emits no outward effect and so `process` returns `()`, while `handle` propagates sub-driver errors and so returns `Result<(), TopError>`.
 
 ### 4.1 The composition rule
 
@@ -356,44 +359,36 @@ Each sub-driver has `process / handle / accessors`. The composite (`Bus`) has th
 
 ```rust
 impl Bus {
-    pub fn process(&mut self, event: BusEvent) -> BusEffect {
+    pub fn process(&mut self, event: BusEvent) {
         match event {
             BusEvent::UartIdle => {
-                if let RxEffect::PacketBoundary { wire_end_tick } =
+                if let Some(RxEffect::PacketBoundary { wire_end_tick }) =
                     self.rx.process(RxEvent::UartIdle)
                 {
                     // Wire-end is the input to TX's fire scheduling.
                     self.tx.process(TxEvent::WireEnd { tick: wire_end_tick });
                 }
-                BusEffect::Nothing
             }
             BusEvent::TimerMatch => {
                 self.tx.process(TxEvent::FireDeadline);
-                BusEffect::Nothing
             }
             BusEvent::UartTcCompleted => {
-                if matches!(self.tx.process(TxEvent::TcCompleted), TxEffect::Released) {
+                if matches!(self.tx.process(TxEvent::TcCompleted), Some(TxEffect::Released)) {
                     self.clock.process(ClockEvent::ApplyPending);
                 }
-                BusEffect::Nothing
             }
             BusEvent::UartRxError(flags) => {
                 self.rx.process(RxEvent::Error(flags));
-                BusEffect::Nothing
             }
         }
     }
 
-    pub fn handle(&mut self, cmd: BusCommand) -> Result<BusEffect, BusError> {
+    pub fn handle(&mut self, cmd: BusCommand) -> Result<(), BusError> {
         match cmd {
             BusCommand::ArmReply { writer, schedule } =>
-                self.tx.handle(TxCommand::Arm { writer, schedule })
-                    .map(|_| BusEffect::Nothing)
-                    .map_err(BusError::Tx),
+                self.tx.handle(TxCommand::Arm { writer, schedule }).map_err(BusError::Tx),
             BusCommand::StageBaud(rate) =>
-                self.clock.handle(ClockCommand::StageBaud(rate))
-                    .map(|_| BusEffect::Nothing)
-                    .map_err(BusError::Clock),
+                self.clock.handle(ClockCommand::StageBaud(rate)).map_err(BusError::Clock),
         }
     }
 
@@ -482,7 +477,7 @@ If a single reference best captures the embedded version of this pattern: Miro S
 
 ### 10.3 Trade-offs to accept
 
-- **More files, more types.** Each driver has its `Event`, `Command`, `Effect`, `Error` enums and its `process` / `handle` / accessor methods. For a small project, this is bookkeeping that doesn't pay back.
+- **More files, more types.** Each driver may carry `Event`, `Command`, `Effect`, and `Error` types; trivial drivers omit the ones they don't need (§3), so the floor is just `Command` + a `handle()` method. For a small project even that floor may be bookkeeping that doesn't pay back.
 - **Translation boilerplate.** Effects flow as primitives between drivers, which means flattening structs at one boundary and rebuilding (or consuming field-by-field) at the next. Most of this is a few lines per transition.
 - **Discipline-by-convention, not by compiler.** The contract is a convention. Rust can't enforce "no sibling sub-driver access" or "services are 1:1 with top-level drivers." A doc-comment per module stating the convention plus code review is the enforcement mechanism. A team that doesn't read the convention will erode it; one that does will find the pattern self-reinforcing.
 
