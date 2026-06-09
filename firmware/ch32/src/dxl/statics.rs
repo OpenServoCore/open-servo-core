@@ -59,10 +59,6 @@ pub(crate) static DXL_TX_BUF: SyncUnsafeCell<Vec<u8, DXL_TX_BUF_LEN>> =
 /// Written once during `bring_up_dxl` before USART1 IRQ is unmasked; read-only thereafter.
 pub(crate) static DXL_TX_EN: SyncUnsafeCell<Option<TxEn>> = SyncUnsafeCell::new(None);
 
-/// Scope debug pin — bench instrumentation for the chain-CRC ISRs. Seeded
-/// once at bring-up; ISR readers only.
-pub(crate) static DXL_DBG_PIN: SyncUnsafeCell<Option<Pin>> = SyncUnsafeCell::new(None);
-
 /// Slave-TX counter, incremented once per USART1 TC (real end of frame, not
 /// the spurious mid-stream TC oscillation). Drives the STAT LED activity
 /// blink; readers (main loop) sample the delta vs their last seen value.

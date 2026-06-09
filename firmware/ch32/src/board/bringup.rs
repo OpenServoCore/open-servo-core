@@ -2,7 +2,7 @@ use ch32_metapac::{ADC, adc::vals::Extsel, dma::vals::Dir};
 use osc_core::{ConfigDefaults, RegionStorage};
 
 use crate::dxl::statics::{
-    DXL_DBG_PIN, DXL_RX_BUF, DXL_RX_BUF_LEN, DXL_RX_PIN, DXL_TX_BUF, DXL_TX_EN, store_baud_derived,
+    DXL_RX_BUF, DXL_RX_BUF_LEN, DXL_RX_PIN, DXL_TX_BUF, DXL_TX_EN, store_baud_derived,
 };
 use crate::hal::{
     adc, afio, delay_ms, dma, exti,
@@ -35,7 +35,8 @@ pub(super) fn run(
     );
 
     configure_pins(wiring);
-    seed_dbg_pin(wiring.dbg);
+    // SAFETY: bringup-only, pre-IRQ; sole writer.
+    unsafe { crate::drivers::install_drivers(wiring) };
     crate::log::debug!("gpio configured");
 
     bring_up_analog_chain(&wiring.current_sense);
@@ -149,15 +150,6 @@ fn configure_pins(w: &BoardWiring) {
     let in1 = w.motor.in1_pin();
     let in2 = w.motor.in2_pin();
     let opa_pos_pin = w.current_sense.opa.input.pos().pin();
-
-    // STAT LED defaults solid ON to signal "chip alive"; main loop blinks it
-    // on slave-TX activity via `crate::stat_led::poll`.
-    gpio::configure(w.stat_led, PinMode::OUTPUT_PUSH_PULL);
-    gpio::set_level(w.stat_led, Level::High);
-    crate::stat_led::install(w.stat_led);
-
-    gpio::configure(w.dbg, PinMode::OUTPUT_PUSH_PULL);
-    gpio::set_level(w.dbg, Level::Low);
 
     // drv_en LOW = driver disabled (MotorCmd::Disabled boot state).
     gpio::configure(w.motor.drv_en, PinMode::OUTPUT_PUSH_PULL);
@@ -298,12 +290,6 @@ fn bring_up_dxl(d: &DxlBus, brr: u32) {
     exti::configure_falling_edge(rx_pin);
     exti::clear_pending(rx_pin);
     exti::set_irq(rx_pin, true);
-}
-
-pub(super) fn seed_dbg_pin(pin: crate::hal::Pin) {
-    // SAFETY: called once at bring-up before any ISR can read; chain-CRC
-    // ISRs only read.
-    unsafe { *DXL_DBG_PIN.get() = Some(pin) };
 }
 
 fn start_center_aligned_pwm(m: &MotorConfig, psc: u16, arr: u16) {

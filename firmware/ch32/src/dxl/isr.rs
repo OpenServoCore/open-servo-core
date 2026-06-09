@@ -5,16 +5,13 @@ use ch32_metapac::USART1;
 use dxl_protocol::CrcUmts;
 
 use super::Ch32DxlCrc;
-#[cfg(feature = "scope")]
-use crate::hal::gpio::Level;
+use crate::drivers::dbg_pulse;
 use crate::hal::{dma, gpio, systick, usart};
 
 use super::scheduler::{GUARD_BYTES, catchup_interval_ticks};
 use super::state::{
     DISPATCH, FastChainFault, FastChainPhase, ReplyState, STATE, report_fault, set_phase,
 };
-#[cfg(feature = "scope")]
-use super::statics::DXL_DBG_PIN;
 use super::statics::{
     DXL_BYTE_TIME_TICKS, DXL_RX_BUF, DXL_RX_BUF_LEN, DXL_TX_BUF, DXL_TX_EN, RX_MASK_U16,
 };
@@ -49,18 +46,6 @@ pub fn fire_now() {
         gpio::set_level(t.pin, t.tx_level);
     }
     dma::enable(dma::Channel::CH4);
-}
-
-/// Scope trigger pulse on `DXL_DBG_PIN`. Moved between sites as the bench
-/// experiment requires. Compile-time no-op without `--features scope`.
-#[inline(always)]
-fn dbg_pulse() {
-    #[cfg(feature = "scope")]
-    // SAFETY: written once at bring-up before any ISR can read.
-    if let Some(p) = unsafe { *DXL_DBG_PIN.get() } {
-        gpio::set_level(p, Level::High);
-        gpio::set_level(p, Level::Low);
-    }
 }
 
 /// SysTick ISR entry. Path-uniform: load the cached dispatch fn and call it.

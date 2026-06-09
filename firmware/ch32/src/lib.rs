@@ -7,6 +7,7 @@ pub use osc_core::{BaudRate, ConfigDefaults};
 
 pub mod board;
 pub mod chip_flash;
+pub(crate) mod drivers;
 pub(crate) mod dxl;
 pub mod hal;
 pub(crate) mod idle_anchor;
