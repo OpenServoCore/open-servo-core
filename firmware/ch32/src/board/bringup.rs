@@ -1,6 +1,8 @@
 use ch32_metapac::{ADC, adc::vals::Extsel, dma::vals::Dir};
 use osc_core::{ConfigDefaults, RegionStorage};
 
+use crate::drivers::Drivers;
+use crate::drivers::dxl::rx::EDGE_BUF_LEN;
 use crate::dxl::statics::{
     DXL_RX_BUF, DXL_RX_BUF_LEN, DXL_RX_PIN, DXL_TX_BUF, DXL_TX_EN, store_baud_derived,
 };
@@ -138,6 +140,7 @@ fn enable_clocks_and_remaps(w: &BoardWiring) {
         rcc::enable_gpio(t.pin.port_index());
     }
     rcc::enable_tim1();
+    rcc::enable_tim2();
     rcc::enable_adc1();
     rcc::enable_dma1();
     rcc::enable_usart1();
@@ -217,6 +220,7 @@ fn configure_adc_dma_scan(sensors: &AdcPins, opa_out_sample_time: adc::SampleTim
         pinc: false,
         minc: true,
         size: dma::Size::BITS16,
+        htie: false,
         tcie: true,
         pl: dma::Pl::LOW,
     };
@@ -238,17 +242,19 @@ fn bring_up_dxl(d: &DxlBus, brr: u32) {
     usart::init(regs, brr, half_duplex);
     store_baud_derived(brr);
 
-    // CH5 (RX snoop) outranks CH4 (TX) so DMA1 arbitration never starves the
-    // chain-CRC snoop during TxStreaming, when both channels are servicing
-    // USART1 at byte-rate.
+    // ADC (CH1) + USART RX/TX channels stay at LOW per
+    // `docs/dxl-hw-timed-transport.md` §6, so ET (CH7) is the only DMA
+    // channel at VERYHIGH — guaranteeing IC capture writes win arbitration
+    // against the byte-rate USART RX snoop.
     let dma_cfg = dma::Config {
         dir: Dir::FROMPERIPHERAL,
         circ: true,
         pinc: false,
         minc: true,
         size: dma::Size::BITS8,
+        htie: false,
         tcie: false,
-        pl: dma::Pl::VERYHIGH,
+        pl: dma::Pl::LOW,
     };
     dma::configure(
         dma::Channel::CH5,
@@ -266,8 +272,9 @@ fn bring_up_dxl(d: &DxlBus, brr: u32) {
         pinc: false,
         minc: true,
         size: dma::Size::BITS8,
+        htie: false,
         tcie: false,
-        pl: dma::Pl::HIGH,
+        pl: dma::Pl::LOW,
     };
     let tx_src = unsafe { (*DXL_TX_BUF.get()).as_ptr() } as u32;
     dma::configure(
@@ -291,6 +298,40 @@ fn bring_up_dxl(d: &DxlBus, brr: u32) {
     exti::configure_falling_edge(rx_pin);
     exti::clear_pending(rx_pin);
     exti::set_irq(rx_pin, true);
+
+    bring_up_edge_ts_capture();
+}
+
+/// TIM2_CH4 input capture on the RX pin (falling edge) feeds DMA1_CH7 into
+/// the `DxlRx` driver's edges buffer. The HT/TC ISR walks newly-captured
+/// edges through the window classifier; IDLE drains the tail when a packet
+/// doesn't fill a half. PL=VeryHigh is the only such channel (ADC + USART
+/// RX/TX all sit at LOW per doc §6) so CC4 stores can't be delayed.
+fn bring_up_edge_ts_capture() {
+    timer::init_tim2_ch4_ic_capture();
+
+    let edge_ts_cfg = dma::Config {
+        dir: Dir::FROMPERIPHERAL,
+        circ: true,
+        pinc: false,
+        minc: true,
+        size: dma::Size::BITS16,
+        htie: true,
+        tcie: true,
+        pl: dma::Pl::VERYHIGH,
+    };
+    // SAFETY: `Drivers::install` ran in `run()` before `bring_up_dxl`; the
+    // returned address points into the driver's registry cell and stays
+    // valid for the lifetime of the program.
+    let edges_addr = unsafe { Drivers::dxl_rx() }.edges_addr();
+    dma::configure(
+        dma::Channel::CH7,
+        &edge_ts_cfg,
+        timer::tim2_ch4_capture_addr(),
+        edges_addr,
+        EDGE_BUF_LEN as u16,
+    );
+    dma::enable(dma::Channel::CH7);
 }
 
 fn start_center_aligned_pwm(m: &MotorConfig, psc: u16, arr: u16) {

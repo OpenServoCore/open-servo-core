@@ -38,3 +38,19 @@ pub trait ClockTrim {
     const STEP_HZ: u32;
     fn apply_delta(&mut self, delta: i8);
 }
+
+/// HT/TC interrupt flags for a single DMA channel.
+#[derive(Copy, Clone, Default, PartialEq, Eq, Debug)]
+pub struct DmaFlags {
+    pub ht: bool,
+    pub tc: bool,
+}
+
+/// One DMA channel's ISR-side surface: read+ack the HT/TC flags and read
+/// the remaining-transfer count (NDTR). Drivers that consume a DMA-fed
+/// ring borrow one of these through their type parameter; the production
+/// adapter binds to a specific channel.
+pub trait DmaRing {
+    fn read_and_ack(&mut self) -> DmaFlags;
+    fn remaining(&self) -> u16;
+}

@@ -2,6 +2,7 @@ use ch32_metapac::{DMA1, USART1};
 use core::sync::atomic::Ordering;
 use osc_core::{FrameInputs, KernelIo, Sensors};
 
+use crate::drivers::Drivers;
 use crate::dxl;
 use crate::dxl::statics::{
     CLOCK_FINE_TRIM_NO_PENDING, CLOCK_TRIM_NO_PENDING, DXL_BAUD_PENDING_BRR, DXL_CHAR_TIME_TICKS,
@@ -41,6 +42,19 @@ pub fn on_usart1() {
     on_usart1_rx_errors();
     on_usart1_idle();
     on_usart1_tc();
+}
+
+/// DMA1_CH7 HT/TC handler — dispatches into `DxlRx`, which drains its own
+/// adapter, computes the head, and walks newly-captured edges through the
+/// window classifier. `ticks_per_bit` is sourced from `DxlClock` (the
+/// canonical wire-rate owner).
+///
+/// SAFETY: both drivers are installed before this vector is unmasked, and
+/// DMA1_CH7 shares PFIC HIGH with USART1 so no concurrent `&mut` into
+/// either driver is possible.
+pub fn on_dma1_ch7() {
+    let ticks_per_bit = unsafe { Drivers::dxl_clock() }.ticks_per_bit();
+    unsafe { Drivers::dxl_rx() }.on_dma_event(ticks_per_bit);
 }
 
 /// EXTI7_0 handler body — covers lines 0..7 on V006's shared vector. Only
@@ -143,6 +157,13 @@ fn on_usart1_idle() {
         exti::clear_pending(p);
         exti::set_irq(p, true);
     }
+    // Backstop the DxlRx classifier: for packets shorter than half the ET
+    // ring, the HT/TC ISR never fires, so IDLE is the only chance to walk
+    // those edges. `on_idle` drains the tail and invalidates the anchor so
+    // the next packet's first edge re-seeds.
+    // SAFETY: see on_dma1_ch7.
+    let ticks_per_bit = unsafe { Drivers::dxl_clock() }.ticks_per_bit();
+    unsafe { Drivers::dxl_rx() }.on_idle(ticks_per_bit);
 }
 
 fn on_usart1_tc() {
@@ -229,6 +250,11 @@ macro_rules! install_isrs {
         #[::qingke_rt::interrupt]
         fn EXTI7_0() {
             $crate::irq::on_exti();
+        }
+
+        #[::qingke_rt::interrupt]
+        fn DMA1_CHANNEL7() {
+            $crate::irq::on_dma1_ch7();
         }
 
         #[::qingke_rt::interrupt(core)]

@@ -1,5 +1,5 @@
-use ch32_metapac::TIM1;
-use ch32_metapac::timer::vals::{Cms, Mms, Ocm};
+use ch32_metapac::timer::vals::{CcmrInputCcs, Cms, FilterValue, Mms, Ocm};
+use ch32_metapac::{TIM1, TIM2};
 
 use crate::hal::clocks::TIM_CLK_HZ;
 
@@ -78,6 +78,34 @@ pub fn enable_main_output() {
 
 pub fn start() {
     TIM1.ctlr1().modify(|w| w.set_cen(true));
+}
+
+/// Free-run TIM2 @ HCLK (ARR=0xFFFF, PSC=0) with CH4 as a falling-edge
+/// input capture, no filter, no input prescaler. Each capture latches the
+/// 16-bit TIM2 count into CCR4 and fires a DMA1_CH7 request (CCDE.CC4).
+/// Caller wires PC1 to TIM2 via the AFIO remap; this just programs the
+/// timer.
+pub fn init_tim2_ch4_ic_capture() {
+    TIM2.psc().write_value(0);
+    TIM2.atrlr().write_value(0xFFFF);
+    TIM2.chctlr_input(1).modify(|w| {
+        w.set_ccs(1, CcmrInputCcs::TI4);
+        w.set_icpsc(1, 0);
+        w.set_icf(1, FilterValue::NOFILTER);
+    });
+    TIM2.ccer().modify(|w| {
+        w.set_ccp(3, true);
+        w.set_cce(3, true);
+    });
+    TIM2.dmaintenr().modify(|w| w.set_ccde(3, true));
+    TIM2.ctlr1().modify(|w| w.set_cen(true));
+}
+
+/// Peripheral address of TIM2.CCR4 for the DMA1_CH7 PAR. CCR4 is the 16-bit
+/// capture register — `chcvr(3)` is metapac's zero-based accessor.
+#[inline]
+pub fn tim2_ch4_capture_addr() -> u32 {
+    TIM2.chcvr(3).as_ptr() as u32
 }
 
 #[cfg(test)]

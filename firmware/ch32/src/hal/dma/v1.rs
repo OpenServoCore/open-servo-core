@@ -22,6 +22,7 @@ pub struct Config {
     pub minc: bool,
     /// Applied to both peripheral and memory sides.
     pub size: Size,
+    pub htie: bool,
     pub tcie: bool,
     pub pl: Pl,
 }
@@ -39,6 +40,7 @@ pub fn configure(ch: Channel, cfg: &Config, paddr: u32, maddr: u32, count: u16) 
         w.set_minc(cfg.minc);
         w.set_psize(cfg.size);
         w.set_msize(cfg.size);
+        w.set_htie(cfg.htie);
         w.set_tcie(cfg.tcie);
         w.set_pl(cfg.pl);
     });

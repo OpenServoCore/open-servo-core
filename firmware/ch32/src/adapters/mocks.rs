@@ -5,7 +5,7 @@
 extern crate std;
 use std::vec::Vec;
 
-use crate::drivers::traits::{ClockTrim, DigitalOut, Monotonic, UsartBaud};
+use crate::drivers::traits::{ClockTrim, DigitalOut, DmaFlags, DmaRing, Monotonic, UsartBaud};
 use crate::types::Level;
 
 #[derive(Default)]
@@ -60,5 +60,28 @@ impl ClockTrim for FakeClockTrim {
 
     fn apply_delta(&mut self, delta: i8) {
         self.log.push(delta);
+    }
+}
+
+/// Configurable HT/TC flags + remaining count. Tests stage the next ISR
+/// view by writing the fields; the read+ack call returns the staged flags
+/// and pushes them into `ack_log` so the test can assert the sequence.
+#[derive(Default)]
+pub struct FakeDmaRing {
+    pub next_flags: DmaFlags,
+    pub remaining: u16,
+    pub ack_log: Vec<DmaFlags>,
+}
+
+impl DmaRing for FakeDmaRing {
+    fn read_and_ack(&mut self) -> DmaFlags {
+        let flags = self.next_flags;
+        self.ack_log.push(flags);
+        self.next_flags = DmaFlags::default();
+        flags
+    }
+
+    fn remaining(&self) -> u16 {
+        self.remaining
     }
 }

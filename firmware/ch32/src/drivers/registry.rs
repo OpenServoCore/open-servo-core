@@ -17,6 +17,7 @@ use crate::ConfigDefaults;
 use crate::adapters;
 use crate::board::BoardWiring;
 use crate::drivers::dxl::clock::DxlClock;
+use crate::drivers::dxl::rx::DxlRx;
 use crate::drivers::led::Led;
 use crate::types::Level;
 
@@ -24,12 +25,14 @@ struct Cells {
     dbg: SyncUnsafeCell<Option<adapters::gpio::Output>>,
     stat_led: SyncUnsafeCell<Option<Led>>,
     dxl_clock: SyncUnsafeCell<Option<DxlClock>>,
+    dxl_rx: SyncUnsafeCell<Option<DxlRx>>,
 }
 
 static CELLS: Cells = Cells {
     dbg: SyncUnsafeCell::new(None),
     stat_led: SyncUnsafeCell::new(None),
     dxl_clock: SyncUnsafeCell::new(None),
+    dxl_rx: SyncUnsafeCell::new(None),
 };
 
 pub struct Drivers;
@@ -58,6 +61,11 @@ impl Drivers {
             adapters::usart::Usart1,
             adapters::rcc::HsiTrim,
         ));
+
+        // SAFETY: see fn doc.
+        let dxl_rx = unsafe { &mut *CELLS.dxl_rx.get() };
+        debug_assert!(dxl_rx.is_none(), "Drivers: dxl_rx already installed");
+        *dxl_rx = Some(DxlRx::new(adapters::dma::Ch7));
     }
 
     /// SAFETY: bringup installs `dbg` before any ISR runs; runtime access is
@@ -94,6 +102,20 @@ impl Drivers {
         // SAFETY: see fn doc.
         let cell = unsafe { &mut *CELLS.dxl_clock.get() };
         debug_assert!(cell.is_some(), "Drivers::dxl_clock() before install");
+        // SAFETY: bringup ensures Some before any IRQ fires.
+        unsafe { cell.as_mut().unwrap_unchecked() }
+    }
+
+    /// SAFETY: bringup installs `dxl_rx` before any IRQ runs; runtime access
+    /// is from DMA1_CH7 HT/TC and USART1 IDLE ISRs (both PFIC HIGH, so
+    /// same-priority serialization keeps the classifier's interior state
+    /// race-free).
+    #[inline(always)]
+    #[allow(dead_code)]
+    pub unsafe fn dxl_rx() -> &'static mut DxlRx {
+        // SAFETY: see fn doc.
+        let cell = unsafe { &mut *CELLS.dxl_rx.get() };
+        debug_assert!(cell.is_some(), "Drivers::dxl_rx() before install");
         // SAFETY: bringup ensures Some before any IRQ fires.
         unsafe { cell.as_mut().unwrap_unchecked() }
     }

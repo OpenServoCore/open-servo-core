@@ -43,10 +43,16 @@ pub fn install_irqs() {
     // USART1 so the stamp can't be preempted by a kernel-tick body and
     // can't preempt IDLE/TC mid-handler.
     pfic::set_priority(pfic::Interrupt::EXTI7_0, pfic::Priority::High);
+    // DMA1_CH7 carries TIM2_CH4 edge timestamps; the HT/TC ISR walks them
+    // through the DxlRx classifier and IDLE drains the tail. Share HIGH
+    // with USART1 so on_dma1_ch7 and on_usart1_idle serialize (same prio →
+    // no preemption) — classifier state is mutated from both paths.
+    pfic::set_priority(pfic::Interrupt::DMA1_CHANNEL7, pfic::Priority::High);
     pfic::set_priority(pfic::Interrupt::DMA1_CHANNEL1, pfic::Priority::Low);
     pfic::set_systick_priority(pfic::Priority::High);
     pfic::enable(pfic::Interrupt::USART1);
     pfic::enable(pfic::Interrupt::EXTI7_0);
+    pfic::enable(pfic::Interrupt::DMA1_CHANNEL7);
     pfic::enable(pfic::Interrupt::DMA1_CHANNEL1);
     pfic::enable_systick();
     crate::log::info!("ISRs live");
