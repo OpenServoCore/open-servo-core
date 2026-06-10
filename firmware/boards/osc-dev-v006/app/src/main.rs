@@ -55,7 +55,7 @@ fn main() -> ! {
                 rx_pull: gpio::Pull::None,
                 tx_en: Some(TxEn {
                     pin: Pin::PC2,
-                    tx_level: gpio::Level::High,
+                    tx_level: Level::High,
                 }),
             },
         },

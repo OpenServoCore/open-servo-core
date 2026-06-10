@@ -5,6 +5,7 @@
 pub use osc_core::bp;
 pub use osc_core::{BaudRate, ConfigDefaults};
 
+pub(crate) mod adapters;
 pub(crate) mod bench;
 pub mod board;
 pub mod chip_flash;
@@ -19,6 +20,7 @@ pub mod services;
 pub(crate) mod statics;
 #[cfg(feature = "defmt")]
 pub mod telemetry;
+pub mod types;
 
 use board::{BoardConfig, Ch32KernelIo, Precomputed};
 
@@ -46,8 +48,8 @@ pub fn __run(cfg: BoardConfig, pre: Precomputed) -> ! {
         let services = unsafe { (*statics::SERVICES.get()).assume_init_mut() };
         services.poll(&statics::SHARED);
         dxl::tx_activity::poll();
-        // SAFETY: StatLed installed in bringup; main-loop sole accessor.
-        unsafe { drivers::stat_led::StatLed::get() }.poll();
+        // SAFETY: stat_led installed in bringup; main-loop sole accessor.
+        unsafe { drivers::Drivers::stat_led() }.poll();
         riscv::asm::wfi();
     }
 }

@@ -4,15 +4,21 @@
 //! unconditional in hot paths and compile to nothing in production builds.
 
 #[cfg(feature = "bench")]
-use crate::drivers::output_pin::OutputPin;
+use crate::drivers::Drivers;
+#[cfg(feature = "bench")]
+use crate::drivers::traits::DigitalOut;
+#[cfg(feature = "bench")]
+use crate::types::Level;
 
 /// Scope-marker pulse on the DBG instance. Compile-time no-op without
 /// `--features bench`.
 #[inline(always)]
 pub fn dbg_pulse() {
     #[cfg(feature = "bench")]
-    // SAFETY: see `OutputPin::dbg` — ISR-at-PFIC-HIGH access.
+    // SAFETY: see `Drivers::dbg` — ISR-at-PFIC-HIGH access.
     unsafe {
-        OutputPin::dbg().pulse();
+        let dbg = Drivers::dbg();
+        dbg.set(Level::High);
+        dbg.set(Level::Low);
     }
 }

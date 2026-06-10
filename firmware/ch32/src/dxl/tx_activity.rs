@@ -1,6 +1,6 @@
-//! TX-activity indicator policy — drives the [`StatLed`] driver based on
-//! observed slave-TX activity. Sampled at a slow cadence so the resulting
-//! blink is visible to a human.
+//! TX-activity indicator policy — drives the stat LED based on observed
+//! servo-TX activity. Sampled at a slow cadence so the resulting blink is
+//! visible to a human.
 //!
 //! Policy, not a driver: composes the chip-side TX counter with the LED's
 //! pattern API. Will fold into the future `DxlTx` driver once that lands.
@@ -8,7 +8,8 @@
 use core::cell::SyncUnsafeCell;
 use core::sync::atomic::Ordering;
 
-use crate::drivers::stat_led::{Pattern, StatLed};
+use crate::drivers::Drivers;
+use crate::drivers::led::Pattern;
 use crate::dxl::statics::DXL_TX_COUNT;
 use crate::hal::systick::{self, TICKS_PER_US};
 
@@ -52,6 +53,6 @@ pub(crate) fn poll() {
     } else {
         Pattern::SolidOn
     };
-    // SAFETY: StatLed is main-loop accessor; see `StatLed::get`.
-    unsafe { StatLed::get() }.set_pattern(pattern);
+    // SAFETY: stat_led is main-loop accessor; see `Drivers::stat_led`.
+    unsafe { Drivers::stat_led() }.set_pattern(pattern);
 }

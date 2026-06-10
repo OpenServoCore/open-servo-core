@@ -1,8 +1,7 @@
 use osc_core::ConfigDefaults;
 
-use crate::hal::{
-    Pin, Tim1Mapping, Tim2Mapping, UsartMapping, adc, gpio::Level, gpio::Pull, opa, timer,
-};
+use crate::hal::{Pin, Tim1Mapping, Tim2Mapping, UsartMapping, adc, gpio::Pull, opa, timer};
+use crate::types::Level;
 
 #[derive(Copy, Clone)]
 pub enum Duplex {

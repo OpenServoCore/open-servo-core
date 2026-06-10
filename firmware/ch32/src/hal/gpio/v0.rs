@@ -1,16 +1,11 @@
 use super::super::Pin;
+use crate::types::Level;
 
 #[derive(Copy, Clone)]
 pub enum Pull {
     None,
     Up,
     Down,
-}
-
-#[derive(Copy, Clone, PartialEq)]
-pub enum Level {
-    Low,
-    High,
 }
 
 /// Packed: bits 3:0 = CFGLR nibble (MODE low, CNF high), bits 7/6 = ODR high/low.

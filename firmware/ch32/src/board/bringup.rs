@@ -6,10 +6,11 @@ use crate::dxl::statics::{
 };
 use crate::hal::{
     adc, afio, delay_ms, dma, exti,
-    gpio::{self, Level, PinMode},
+    gpio::{self, PinMode},
     opa, rcc, timer, usart,
 };
 use crate::statics::{ADC_DMA_BUF, ADC_DMA_BUF_LEN, ADC_SCAN_LEN, ADC_SENSOR_COUNT, SHARED};
+use crate::types::Level;
 
 use super::config::{
     AdcPins, BoardWiring, CurrentSenseConfig, Duplex, DxlBus, MotorConfig, Precomputed,
@@ -36,7 +37,7 @@ pub(super) fn run(
 
     configure_pins(wiring);
     // SAFETY: bringup-only, pre-IRQ; sole writer.
-    unsafe { crate::drivers::install_drivers(wiring, defaults) };
+    unsafe { crate::drivers::Drivers::install(wiring, defaults) };
     crate::log::debug!("gpio configured");
 
     bring_up_analog_chain(&wiring.current_sense);

@@ -11,25 +11,17 @@
 //!   running average crosses ~½ step; one step ≈ 0.4 ticks at the 11·bit
 //!   classifier-window edge, easily inside the ±10% tolerance.
 
-use core::cell::SyncUnsafeCell;
-
-use ch32_metapac::USART1;
-
 use crate::BaudRate;
+use crate::adapters;
+use crate::drivers::traits::{ClockTrim, UsartBaud};
 use crate::dxl::timing;
-use crate::hal::clocks::{HSI_HZ, HSI_TRIM_STEP_HZ};
-use crate::hal::rcc;
-use crate::hal::usart;
 
-/// Relative frequency shift per HSITRIM step, in Q20 (1 unit = 1/2^20).
-/// Power-of-2 scale (instead of ppm) so the threshold compute is a pure shift.
-const TRIM_PER_STEP_Q20: u32 = ((HSI_TRIM_STEP_HZ as u64 * (1 << 20)) / HSI_HZ as u64) as u32;
-/// Step iff average drift exceeds half a step — below it, the actuator would
-/// overshoot and the post-step error would be worse than the pre-step error.
-const DRIFT_THRESHOLD_Q20: u32 = TRIM_PER_STEP_Q20 / 2;
 const DRIFT_MIN_SAMPLES: u16 = 32;
 
-pub struct DxlClock {
+pub struct DxlClock<U: UsartBaud = adapters::usart::Usart1, T: ClockTrim = adapters::rcc::HsiTrim> {
+    usart: U,
+    trim: T,
+
     baud: BaudRate,
     ticks_per_bit: u16,
 
@@ -47,19 +39,38 @@ pub struct DxlClock {
     pending_trim_delta: Option<i8>,
 }
 
-impl DxlClock {
-    pub fn new(baud: BaudRate) -> Self {
+impl<U: UsartBaud, T: ClockTrim> DxlClock<U, T> {
+    /// Relative frequency shift per trim step, in Q20 (1 unit = 1/2^20).
+    /// Power-of-2 scale (instead of ppm) so the threshold compute is a pure
+    /// shift. Folded to a literal at monomorphization time.
+    const TRIM_PER_STEP_Q20: u32 = ((T::STEP_HZ as u64 * (1 << 20)) / T::HZ as u64) as u32;
+    /// Step iff average drift exceeds half a step — below it, the actuator
+    /// would overshoot and the post-step error would be worse than pre-step.
+    const DRIFT_THRESHOLD_Q20: u32 = Self::TRIM_PER_STEP_Q20 / 2;
+
+    pub fn new(baud: BaudRate, usart: U, trim: T) -> Self {
         let ticks_per_bit = timing::brr(baud) as u16;
         Self {
+            usart,
+            trim,
             baud,
             ticks_per_bit,
             trim_delta: 0,
             pending_baud: None,
             pending_trim_delta: None,
             drift_sum_q8: 0,
-            drift_threshold_q8: drift_threshold_q8(ticks_per_bit),
+            drift_threshold_q8: Self::drift_threshold_q8(ticks_per_bit),
             drift_samples: 0,
         }
+    }
+
+    /// `|drift_sum_q8|` value that flags a worth-stepping batch. Derives from
+    /// the half-step rule expressed in Q8 ticks: the `× 256` (Q8 scale) and
+    /// the `/ 2^20` (Q20 → ratio) collapse to a single `>> 12`.
+    const fn drift_threshold_q8(ticks_per_bit: u16) -> u32 {
+        let prod =
+            Self::DRIFT_THRESHOLD_Q20 as u64 * ticks_per_bit as u64 * DRIFT_MIN_SAMPLES as u64;
+        (prod >> 12) as u32
     }
 
     #[allow(dead_code)]
@@ -74,14 +85,14 @@ impl DxlClock {
         let mut reset_integrator = false;
         if let Some(baud) = self.pending_baud.take() {
             let brr = timing::brr(baud);
-            usart::set_baud(USART1, brr);
+            self.usart.set_baud(brr);
             self.baud = baud;
             self.ticks_per_bit = brr as u16;
-            self.drift_threshold_q8 = drift_threshold_q8(self.ticks_per_bit);
+            self.drift_threshold_q8 = Self::drift_threshold_q8(self.ticks_per_bit);
             reset_integrator = true;
         }
         if let Some(delta) = self.pending_trim_delta.take() {
-            rcc::apply_clock_trim_delta(delta);
+            self.trim.apply_delta(delta);
             self.trim_delta = delta;
             reset_integrator = true;
         }
@@ -103,10 +114,8 @@ impl DxlClock {
         if self.drift_sum_q8.unsigned_abs() >= self.drift_threshold_q8 {
             // Servo fast → observed ticks/bit short → HSITRIM must drop.
             let step: i8 = if self.drift_sum_q8 > 0 { -1 } else { 1 };
-            let new_delta = (self.trim_delta as i32 + step as i32).clamp(
-                rcc::CLOCK_TRIM_DELTA_MIN as i32,
-                rcc::CLOCK_TRIM_DELTA_MAX as i32,
-            ) as i8;
+            let new_delta = (self.trim_delta as i32 + step as i32)
+                .clamp(T::DELTA_MIN as i32, T::DELTA_MAX as i32) as i8;
             if new_delta != self.trim_delta {
                 self.pending_trim_delta = Some(new_delta);
             }
@@ -122,71 +131,44 @@ impl DxlClock {
     }
 }
 
-/// `|drift_sum_q8|` value that flags a worth-stepping batch. Derives from the
-/// half-step rule (`DRIFT_THRESHOLD_Q20`) expressed in Q8 ticks: the `× 256`
-/// (Q8 scale) and the `/ 2^20` (Q20 → ratio) collapse to a single `>> 12`.
-fn drift_threshold_q8(ticks_per_bit: u16) -> u32 {
-    let prod = DRIFT_THRESHOLD_Q20 as u64 * ticks_per_bit as u64 * DRIFT_MIN_SAMPLES as u64;
-    (prod >> 12) as u32
-}
-
-static CLOCK: SyncUnsafeCell<Option<DxlClock>> = SyncUnsafeCell::new(None);
-
-impl DxlClock {
-    /// SAFETY: bringup-only, pre-IRQ; sole writer. Must be called exactly once.
-    pub unsafe fn install(baud: BaudRate) {
-        // SAFETY: see fn doc.
-        let cell = unsafe { &mut *CLOCK.get() };
-        debug_assert!(cell.is_none(), "DxlClock: already installed");
-        *cell = Some(DxlClock::new(baud));
-    }
-
-    /// SAFETY: bringup installs DxlClock before any IRQ runs; runtime access
-    /// is from DXL-side ISRs at PFIC HIGH (same-priority serialization).
-    #[inline(always)]
-    #[allow(dead_code)]
-    pub unsafe fn get() -> &'static mut Self {
-        // SAFETY: see fn doc.
-        let cell = unsafe { &mut *CLOCK.get() };
-        debug_assert!(cell.is_some(), "DxlClock: accessed before install");
-        // SAFETY: bringup ensures Some before any IRQ fires.
-        unsafe { cell.as_mut().unwrap_unchecked() }
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::adapters::mocks::{FakeClockTrim, FakeUsartBaud};
 
     // 9600 baud → BRR 5000 — high spec gives ample headroom for sub-tick
     // drift math without bumping against the i32 range or the deadband.
     const TEST_BAUD: BaudRate = BaudRate::B9600;
     const SPEC: u16 = 5000;
 
+    fn clock(baud: BaudRate) -> DxlClock<FakeUsartBaud, FakeClockTrim> {
+        DxlClock::new(baud, FakeUsartBaud::default(), FakeClockTrim::default())
+    }
+
     #[test]
     fn new_computes_ticks_per_bit_from_brr() {
-        assert_eq!(DxlClock::new(BaudRate::B3000000).ticks_per_bit, 16);
-        assert_eq!(DxlClock::new(BaudRate::B1000000).ticks_per_bit, 48);
-        assert_eq!(DxlClock::new(BaudRate::B9600).ticks_per_bit, 5000);
+        assert_eq!(clock(BaudRate::B3000000).ticks_per_bit, 16);
+        assert_eq!(clock(BaudRate::B1000000).ticks_per_bit, 48);
+        assert_eq!(clock(BaudRate::B9600).ticks_per_bit, 5000);
     }
 
     #[test]
     fn stage_baud_records_change() {
-        let mut c = DxlClock::new(TEST_BAUD);
+        let mut c = clock(TEST_BAUD);
         c.stage_baud(BaudRate::B3000000);
         assert_eq!(c.pending_baud, Some(BaudRate::B3000000));
     }
 
     #[test]
     fn stage_baud_is_noop_for_same_baud() {
-        let mut c = DxlClock::new(TEST_BAUD);
+        let mut c = clock(TEST_BAUD);
         c.stage_baud(TEST_BAUD);
         assert_eq!(c.pending_baud, None);
     }
 
     #[test]
     fn single_sample_does_not_stage_trim() {
-        let mut c = DxlClock::new(TEST_BAUD);
+        let mut c = clock(TEST_BAUD);
         c.on_drift_sample(SPEC + 100);
         assert_eq!(c.pending_trim_delta, None);
         assert_eq!(c.drift_samples, 1);
@@ -194,7 +176,7 @@ mod tests {
 
     #[test]
     fn batch_at_zero_drift_does_not_stage_trim() {
-        let mut c = DxlClock::new(TEST_BAUD);
+        let mut c = clock(TEST_BAUD);
         for _ in 0..DRIFT_MIN_SAMPLES {
             c.on_drift_sample(SPEC);
         }
@@ -204,7 +186,7 @@ mod tests {
     #[test]
     fn batch_within_deadband_does_not_stage_trim() {
         // delta=3 per sample → ~600 ppm, well under the ~1250 ppm half-step.
-        let mut c = DxlClock::new(TEST_BAUD);
+        let mut c = clock(TEST_BAUD);
         for _ in 0..DRIFT_MIN_SAMPLES {
             c.on_drift_sample(SPEC + 3);
         }
@@ -214,7 +196,7 @@ mod tests {
     #[test]
     fn sustained_positive_drift_stages_trim_down() {
         // delta=10 per sample → ~2000 ppm → above threshold; servo runs fast.
-        let mut c = DxlClock::new(TEST_BAUD);
+        let mut c = clock(TEST_BAUD);
         for _ in 0..DRIFT_MIN_SAMPLES {
             c.on_drift_sample(SPEC + 10);
         }
@@ -223,7 +205,7 @@ mod tests {
 
     #[test]
     fn sustained_negative_drift_stages_trim_up() {
-        let mut c = DxlClock::new(TEST_BAUD);
+        let mut c = clock(TEST_BAUD);
         for _ in 0..DRIFT_MIN_SAMPLES {
             c.on_drift_sample(SPEC - 10);
         }
@@ -232,7 +214,7 @@ mod tests {
 
     #[test]
     fn integrator_resets_after_batch_close() {
-        let mut c = DxlClock::new(TEST_BAUD);
+        let mut c = clock(TEST_BAUD);
         for _ in 0..DRIFT_MIN_SAMPLES {
             c.on_drift_sample(SPEC + 10);
         }
@@ -242,8 +224,8 @@ mod tests {
 
     #[test]
     fn clamp_holds_trim_at_upper_bound() {
-        let mut c = DxlClock::new(TEST_BAUD);
-        c.trim_delta = rcc::CLOCK_TRIM_DELTA_MAX;
+        let mut c = clock(TEST_BAUD);
+        c.trim_delta = FakeClockTrim::DELTA_MAX;
         for _ in 0..DRIFT_MIN_SAMPLES {
             c.on_drift_sample(SPEC - 100); // would step trim up
         }
@@ -253,8 +235,39 @@ mod tests {
 
     #[test]
     fn drift_threshold_q8_matches_formula() {
-        assert_eq!(drift_threshold_q8(16), 163);
-        assert_eq!(drift_threshold_q8(48), 491);
-        assert_eq!(drift_threshold_q8(5000), 51171);
+        type C = DxlClock<FakeUsartBaud, FakeClockTrim>;
+        assert_eq!(C::drift_threshold_q8(16), 163);
+        assert_eq!(C::drift_threshold_q8(48), 491);
+        assert_eq!(C::drift_threshold_q8(5000), 51171);
+    }
+
+    #[test]
+    fn on_tx_complete_applies_staged_baud_to_usart() {
+        let mut c = clock(TEST_BAUD);
+        c.stage_baud(BaudRate::B3000000);
+        c.on_tx_complete();
+        assert_eq!(c.usart.log, [timing::brr(BaudRate::B3000000)]);
+        assert_eq!(c.baud, BaudRate::B3000000);
+        assert_eq!(c.ticks_per_bit, 16);
+    }
+
+    #[test]
+    fn on_tx_complete_applies_staged_trim_to_rcc() {
+        let mut c = clock(TEST_BAUD);
+        for _ in 0..DRIFT_MIN_SAMPLES {
+            c.on_drift_sample(SPEC + 10);
+        }
+        // Sustained positive drift staged trim_delta = -1; commit it now.
+        c.on_tx_complete();
+        assert_eq!(c.trim.log, [-1]);
+        assert_eq!(c.trim_delta, -1);
+    }
+
+    #[test]
+    fn on_tx_complete_is_noop_with_nothing_pending() {
+        let mut c = clock(TEST_BAUD);
+        c.on_tx_complete();
+        assert!(c.usart.log.is_empty());
+        assert!(c.trim.log.is_empty());
     }
 }

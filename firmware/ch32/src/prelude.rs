@@ -3,4 +3,5 @@ pub use crate::board::{
     MotorConfig, NtcCal, TxEn,
 };
 pub use crate::hal::{Pin, Tim1Mapping, Tim2Mapping, UsartMapping, adc, gpio, opa, timer};
+pub use crate::types::Level;
 pub use crate::{BaudRate, ConfigDefaults};

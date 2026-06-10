@@ -14,12 +14,9 @@ use osc_core::{
     Sensors as SensorsTrait,
 };
 
-use crate::hal::{
-    Pin,
-    gpio::{self, Level},
-    timer,
-};
+use crate::hal::{Pin, gpio, timer};
 use crate::statics::read_sample_tick;
+use crate::types::Level;
 
 use bringup::BringupResult;
 use convert::{
