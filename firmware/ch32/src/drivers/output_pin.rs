@@ -1,15 +1,17 @@
 //! Generic output-pin driver — owns a single push-pull GPIO output.
 //!
-//! Two static instances live alongside the type:
+//! One static instance lives alongside the type:
 //!
 //! - [`OutputPin::dbg`] — bench scope-marker pin; pulsed from DXL hot path
 //!   under `--features bench` via [`crate::bench::dbg_pulse`].
-//! - [`OutputPin::stat_led`] — front-panel activity LED; the blink policy
-//!   that decides when to switch lives in [`crate::stat_led`].
+//!
+//! Composite drivers (e.g. [`crate::drivers::stat_led::StatLed`]) own
+//! their `OutputPin` as a field instead of going through a static
+//! accessor — that's the §4 composition rule applied at the smallest scale.
 //!
 //! Pure-method API per `docs/driver-pattern.md` §3. `OutputPin::new(...)`
-//! always returns a fully-initialized driver; uninit state lives at the
-//! static cell as `SyncUnsafeCell<Option<OutputPin>>`.
+//! always returns a fully-initialized driver; uninit state for the standalone
+//! statics lives at the cell as `SyncUnsafeCell<Option<OutputPin>>`.
 
 use core::cell::SyncUnsafeCell;
 
@@ -45,7 +47,6 @@ impl OutputPin {
 }
 
 static DBG: SyncUnsafeCell<Option<OutputPin>> = SyncUnsafeCell::new(None);
-static STAT_LED: SyncUnsafeCell<Option<OutputPin>> = SyncUnsafeCell::new(None);
 
 impl OutputPin {
     /// SAFETY: bringup-only, pre-IRQ; sole writer. Must be called exactly once.
@@ -68,25 +69,6 @@ impl OutputPin {
         let cell = unsafe { &mut *DBG.get() };
         debug_assert!(cell.is_some(), "OutputPin::dbg() before install");
         // SAFETY: bringup ensures Some before any ISR fires.
-        unsafe { cell.as_mut().unwrap_unchecked() }
-    }
-
-    /// SAFETY: bringup-only, pre-IRQ; sole writer. Must be called exactly once.
-    pub unsafe fn install_stat_led(pin: Pin, initial: Level) {
-        // SAFETY: see fn doc.
-        let cell = unsafe { &mut *STAT_LED.get() };
-        debug_assert!(cell.is_none(), "OutputPin::STAT_LED already installed");
-        *cell = Some(OutputPin::new(pin, initial));
-    }
-
-    /// SAFETY: bringup installs STAT_LED before main loop starts; runtime
-    /// access is from `stat_led::poll` on the main loop only.
-    #[inline(always)]
-    pub unsafe fn stat_led() -> &'static mut Self {
-        // SAFETY: see fn doc.
-        let cell = unsafe { &mut *STAT_LED.get() };
-        debug_assert!(cell.is_some(), "OutputPin::stat_led() before install");
-        // SAFETY: bringup ensures Some before main loop runs.
         unsafe { cell.as_mut().unwrap_unchecked() }
     }
 }

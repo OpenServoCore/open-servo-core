@@ -16,7 +16,6 @@ pub mod irq;
 pub mod log;
 pub mod prelude;
 pub mod services;
-pub(crate) mod stat_led;
 pub(crate) mod statics;
 #[cfg(feature = "defmt")]
 pub mod telemetry;
@@ -46,7 +45,9 @@ pub fn __run(cfg: BoardConfig, pre: Precomputed) -> ! {
         // SAFETY: SERVICES initialized in `install`; no ISR aliases it.
         let services = unsafe { (*statics::SERVICES.get()).assume_init_mut() };
         services.poll(&statics::SHARED);
-        stat_led::poll();
+        dxl::tx_activity::poll();
+        // SAFETY: StatLed installed in bringup; main-loop sole accessor.
+        unsafe { drivers::stat_led::StatLed::get() }.poll();
         riscv::asm::wfi();
     }
 }

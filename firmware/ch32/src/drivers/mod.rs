@@ -1,4 +1,5 @@
 pub mod output_pin;
+pub mod stat_led;
 
 use crate::board::BoardWiring;
 use crate::hal::gpio::Level;
@@ -9,9 +10,7 @@ use crate::hal::gpio::Level;
 ///
 /// SAFETY: must be called once during bringup, before any IRQ is unmasked.
 pub unsafe fn install_drivers(w: &BoardWiring) {
-    // STAT LED defaults solid ON to signal "chip alive"; main loop blinks it
-    // on slave-TX activity via `crate::stat_led::poll`.
     // SAFETY: per fn contract; caller holds pre-IRQ sole-writer discipline.
-    unsafe { output_pin::OutputPin::install_stat_led(w.stat_led, Level::High) };
+    unsafe { stat_led::StatLed::install(w.stat_led) };
     unsafe { output_pin::OutputPin::install_dbg(w.dbg, Level::Low) };
 }
