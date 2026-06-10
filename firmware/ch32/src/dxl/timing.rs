@@ -4,7 +4,27 @@
 
 use core::sync::atomic::Ordering;
 
+use crate::BaudRate;
+use crate::hal::clocks::PCLK_HZ;
+
 use super::statics::DXL_US_PER_BYTE_Q16;
+
+/// USART_BRR divider for each DXL baud at our fixed PCLK. Matched per arm
+/// with `const { }` so the divide folds to a literal — RV32EC has no
+/// hardware divide.
+pub(crate) const fn brr(baud: BaudRate) -> u32 {
+    const fn compute(baud_hz: u32) -> u32 {
+        (PCLK_HZ + baud_hz / 2) / baud_hz
+    }
+    match baud {
+        BaudRate::B9600 => const { compute(BaudRate::B9600.as_hz()) },
+        BaudRate::B57600 => const { compute(BaudRate::B57600.as_hz()) },
+        BaudRate::B115200 => const { compute(BaudRate::B115200.as_hz()) },
+        BaudRate::B1000000 => const { compute(BaudRate::B1000000.as_hz()) },
+        BaudRate::B2000000 => const { compute(BaudRate::B2000000.as_hz()) },
+        BaudRate::B3000000 => const { compute(BaudRate::B3000000.as_hz()) },
+    }
+}
 
 /// Bytes of inter-slot bus turnaround / worst-case stuffing margin added on
 /// top of each Status frame in a Sync/Bulk reply train. Vendor convention;

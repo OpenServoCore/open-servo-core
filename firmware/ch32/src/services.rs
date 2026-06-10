@@ -13,11 +13,9 @@ use crate::dxl::statics::{
     DXL_CHAR_TIME_TICKS, DXL_CLOCK_FINE_TRIM_PENDING, DXL_CLOCK_TRIM_PENDING, DXL_REBOOT_PENDING,
     DXL_RX_BUF, DXL_RX_BUF_LEN, DXL_TX_BUF, RX_MASK_U32,
 };
-use crate::dxl::timing::{SLOT_MARGIN, bytes_to_us, bytes_to_us_q88};
-use crate::hal::clocks::PCLK_HZ;
+use crate::dxl::timing::{SLOT_MARGIN, brr, bytes_to_us, bytes_to_us_q88};
 use crate::hal::rcc::{CLOCK_TRIM_DELTA_MAX, CLOCK_TRIM_DELTA_MIN, CLOCK_TRIM_PPM_PER_STEP};
 use crate::hal::systick::TICKS_PER_US;
-use crate::hal::usart;
 use crate::hal::{dma, flash, pfic};
 use crate::idle_anchor::{self, IdleAnchor};
 
@@ -300,8 +298,7 @@ impl ServiceEvents for Ch32Events {
     fn send(&mut self, event: Event) {
         match event {
             Event::SetDxlBaud(rate) => {
-                let brr = usart::brr(PCLK_HZ, rate.as_hz());
-                DXL_BAUD_PENDING_BRR.store(brr, Ordering::Release);
+                DXL_BAUD_PENDING_BRR.store(brr(rate), Ordering::Release);
             }
             Event::SetClockTrim(delta) => {
                 DXL_CLOCK_TRIM_PENDING.store(delta as i16, Ordering::Release);

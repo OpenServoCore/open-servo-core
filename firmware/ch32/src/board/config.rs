@@ -217,10 +217,7 @@ impl Precomputed {
             scales: super::convert::Scales::new(&cfg.calibration, gain_factor),
             pwm_psc,
             pwm_arr,
-            usart_brr: crate::hal::usart::brr(
-                crate::hal::clocks::PCLK_HZ,
-                cfg.defaults.dxl_baud.as_hz(),
-            ),
+            usart_brr: crate::dxl::timing::brr(cfg.defaults.dxl_baud),
         }
     }
 }

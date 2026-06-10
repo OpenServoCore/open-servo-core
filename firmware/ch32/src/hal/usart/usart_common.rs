@@ -1,10 +1,5 @@
 pub use ch32_metapac::usart::Usart as Regs;
 
-/// `const` so callers can fold at compile time and skip __udivsi3.
-pub const fn brr(pclk: u32, baud_hz: u32) -> u32 {
-    (pclk + baud_hz / 2) / baud_hz
-}
-
 #[inline(always)]
 pub fn init(r: Regs, brr: u32, half_duplex: bool) {
     r.ctlr1().modify(|w| {
