@@ -12,6 +12,7 @@ Most embedded firmware starts the same way: each peripheral gets a struct or a h
 - State machines whose transitions are scattered across ISRs and main-loop code.
 - Cross-peripheral coordination (timer X drives DMA Y based on UART Z's state).
 - A protocol layer above the peripherals that needs to issue commands and read status.
+- A testing ceiling: integration tests cover what fits on the bench, but the FSM and policy logic inside drivers can't be exercised in isolation because every method touches registers directly.
 
 The symptoms look like:
 
@@ -20,28 +21,46 @@ The symptoms look like:
 - ISRs that take several screens to read, alternating between hardware register polls, state machine transitions, and statics manipulation.
 - Multiple implicit state machines encoded as the *combination* of several boolean flags and counter values, with no single place that names the states or transitions.
 - A protocol-level adapter ("this peripheral is a USB CDC", "this UART implements a custom protocol") that ends up holding peripheral state instead of just adapting it.
+- Driver logic that can only be exercised by running the firmware end-to-end. A subtle FSM bug requires a hardware repro, a logic analyzer, and an afternoon — not a one-line unit test.
 
 The pattern below is one way to keep the structure under control as the firmware grows past the "couple of peripherals" complexity ceiling.
 
 ---
 
-## 2. Three roles, three files
+## 2. The four-layer chip lib
 
-The pattern splits the firmware into three distinct kinds of code, each living in its own location and having one reason to change:
+The chip-specific firmware crate splits into four layers. Each layer has one reason to change, and dependencies run strictly downward.
 
-| Role | Lives in | Responsibility | Stateful? |
+| Layer | Lives in | Responsibility | Varies with |
 | --- | --- | --- | --- |
-| **Hardware demux** | The IRQ vector binding file | Read interrupt-source flags; classify into logical events | No |
-| **Driver** | `drivers/<name>/` | Own hardware state; expose a strict contract for events / commands / observations | Yes |
-| **Service** | `services/<name>.rs` | Adapt between a protocol-side trait and a driver's contract | No (or trivially so) |
+| **Service** | `services/<name>.rs` | Adapt a protocol-side trait (defined in a chip-agnostic core) to driver method calls | The protocol stack above |
+| **Driver** | `drivers/<name>/` | Own hardware state; expose a pure-method API; generic over its interface dependencies | Features and FSM logic |
+| **Adapter** | `adapters/<name>.rs` | Implement driver-defined interfaces over HAL primitives (or record calls for tests) | Rarely; ripples from chip-variant changes |
+| **HAL** | `hal/<name>.rs` | Register access; chip-specific resource identifiers (pin enums, peripheral handles, configuration structs) | Chip variant (cfg-gated) |
 
-Reading order to understand a system built this way:
+The dependency direction is strictly downward: services depend on drivers, drivers depend on interfaces they themselves define, adapters implement those interfaces and consume HAL, HAL talks to the silicon. **Nothing skips a layer.** A driver never imports HAL types or calls HAL functions directly; a service never reaches past its bound driver.
 
-1. Open the IRQ vector binding file. It tells you which hardware sources route to which drivers.
-2. Open the driver. It tells you what state the device has and how it transitions.
-3. Open the service. It tells you how the protocol stack above plugs into the device.
+A small additional file sits *outside* the stack: the **IRQ vector binding**. It's a thin dispatcher — reads an interrupt-source flag, classifies into a logical event, and calls a driver method. It is structurally part of the driver-access surface, not a layer of its own. §8 covers it in detail.
 
-Each file is independently legible. No file requires understanding the others to read.
+### 2.1 Why the layers exist
+
+Each layer corresponds to a thing that varies independently:
+
+- **Chip variant** changes ripple into HAL. Adapters may need light `cfg` gating if the underlying HAL types change names, but driver interfaces and driver logic stay pinned.
+- **Protocol changes** ripple into services. Everything below stays pinned.
+- **Feature and FSM work** ripples into drivers. Adapters and HAL stay pinned.
+- **Test substitution** ripples into adapters only. Drivers are generic over their interfaces, so a test substitutes a fake adapter without touching production code.
+
+If a single change requires editing two layers at once, the layering is leaking. The typical culprit is a chip-specific type appearing in a driver method signature — the fix is to define a domain type at the driver layer (or hoist a shared primitive to a sibling location) so the interface carries no HAL types.
+
+### 2.2 Reading order
+
+To understand a system built this way, read top-down for orchestration or bottom-up for hardware:
+
+- **Top-down**: service → top-level driver → composite routing → sub-drivers → interfaces → adapters. This tells the story of "what the protocol asked for and how it became register writes."
+- **Bottom-up**: HAL → adapters → interfaces → driver methods → composite routing → service. This tells the story of "this register exists; what consumes it?"
+
+Each file is independently legible. The IRQ vector binding file is read after the driver — it tells you which hardware sources route to which driver methods.
 
 ---
 
@@ -51,7 +70,7 @@ A driver is a Rust type that owns hardware state. Its public surface is pure met
 
 The convention is in *naming and role separation*, not in shape:
 
-- **Hardware events**: methods prefixed `on_*` (e.g. `on_uart_idle`, `on_timer_match`). They mutate state and may return an outcome value when something downstream needs to act on the transition. They never return `Result` — a hardware event already happened and can't be refused.
+- **Hardware events**: methods prefixed `on_*` (e.g. `on_idle`, `on_deadline`). They mutate state and may return an outcome value when something downstream needs to act on the transition. They never return `Result` — a hardware event already happened and can't be refused.
 - **Software commands**: methods named for the operation (`arm`, `stage_baud`, `set`). They mutate state. They return `Result<T, E>` *when the operation has a runtime failure mode* a caller might reasonably encounter and handle. Programmer-error invariants (call-order violations, double-install) become `debug_assert!`s, not `Error` variants.
 - **Accessors**: methods named for what they expose (`window`, `last_tick`, `is_armed`). `&self` (or `&mut self` when truly necessary), returning primitives or small typed values. No transition coupling.
 
@@ -61,7 +80,7 @@ The driver is always fully valid after `new(...)`. Uninit state — the time bet
 static TOP: SyncUnsafeCell<Option<Top>> = SyncUnsafeCell::new(None);
 ```
 
-Two questions, two layers. The cell answers "is this hardware installed?"; the methods on the driver answer "what does it do?", and assume the answer to the first is yes. §7 covers the access discipline.
+Two questions, two layers. The cell answers "is this hardware installed?"; the methods on the driver answer "what does it do?", and assume the answer to the first is yes. §9 covers the access discipline.
 
 Three categories, three reasons to call into a driver. Keep them distinct.
 
@@ -70,6 +89,9 @@ Three categories, three reasons to call into a driver. Keep them distinct.
 The distinction is *direction*, not shape:
 
 - **Event** — something the hardware made happen. ISR-originated. Already true by the time the method runs. The method records the new state and may return an outcome for the composite/ISR to route elsewhere. Methods are named `on_*`.
+
+  The `on_*` name describes the *logical event*, not the *peripheral that delivered it*. `on_tx_complete` is a logical event ("the transmission finished"); `on_uart_tc` names the peripheral flag that signaled it. The same logical event may be delivered by a different mechanism on another chip variant — e.g. a timer compare-match instead of a USART status bit — and the driver's method should not change name when that happens. Naming events by the peripheral leaks chip variation into the driver's API.
+
 - **Command** — something software wants. Main-loop or service-originated. May be rejected if it conflicts with current state; in that case the method returns `Result::Err`. Methods are named descriptively.
 
 The same conceptual transition may originate from either direction. "Start transmitting" from a hardware compare-match is an event; "start transmitting" from main-loop intent is a command. The driver's response often differs (the event has *already started* the transmission and the driver records that; the command needs to verify state permits it before committing). Naming them differently keeps the distinction visible at every call site.
@@ -146,11 +168,137 @@ drivers/
 
 The composite's method bodies are where the coordination lives. From the outside, `Control` exposes the same pure-method surface as any other driver.
 
-This rule has teeth: if you find yourself wanting driver-to-driver calls, the architecture is telling you that two concerns belong together. Either compose them, or move the orchestration up to the protocol layer (see §5).
+This rule has teeth: if you find yourself wanting driver-to-driver calls, the architecture is telling you that two concerns belong together. Either compose them, or move the orchestration up to the protocol layer (see §7).
 
 ---
 
-## 5. Services
+## 5. Interfaces and adapters
+
+A driver doesn't talk to hardware directly. It talks to one or more **interfaces** — Rust traits that describe what the driver needs done — and is generic over the concrete type that implements each interface. The interfaces are defined alongside the drivers; the implementations (called **adapters**) live one layer below.
+
+### 5.1 Drivers own their interfaces
+
+The interface is a contract *written by the consumer*. It expresses what the driver wants done — set this output low, give me the current tick count, apply this trim step to the clock — not what the peripheral exposes. This direction matters:
+
+- **Driver-shaped methods, not peripheral-shaped.** An interface to "set a digital output" reads `fn set(&mut self, level: Level)`. The implementor is already bound to one specific output; the driver issues a command. Compare to a peripheral-shaped equivalent `fn set_level(pin: Pin, level: Level)` where the driver has to thread a pin identifier on every call and import a chip-specific `Pin` type just to compile. The driver-shaped form lets the driver stay free of chip types entirely.
+- **Narrow per-driver granularity.** Each interface declares only what one driver actually calls. A clock driver's "apply trim" interface doesn't expose the rest of the clock-controller registers. Reading the trait bounds on a driver tells you exactly what hardware operations it depends on.
+- **Domain types at the interface boundary.** A `Level` enum (high/low) is a domain concept — it has meaning at the driver layer and above. It lives with the interface that uses it, not with the HAL. The HAL itself can take primitives (a `bool`) and the adapter does the one-line translation.
+
+The reverse direction — HAL exposes traits, drivers consume them — is the conventional layered-HAL design. It works, but the trait surface ends up shaped by what the HAL chose to offer rather than by what the driver needs, which tends to produce wider traits than the consumer actually uses.
+
+### 5.2 Adapters implement interfaces over HAL or fakes
+
+Each interface has at least two implementations:
+
+- **Production adapter.** A small struct that holds whatever per-instance state is needed (typically a chip-side resource identifier) and dispatches each interface method into HAL functions. Lives in `adapters/`. The struct is often zero-sized when the interface targets a singleton peripheral, so the production driver pays no size or speed cost for the indirection — monomorphization plus `#[inline]` collapses the dispatch to a direct HAL call.
+- **Fake adapter.** A test-only implementation that records calls into a log instead of touching hardware. Used by host-side unit tests. Lives alongside the production adapters, gated `cfg(test)`.
+
+Both satisfy the same interface, so they're interchangeable from the driver's perspective. Production code constructs the driver with the real adapter; tests construct it with the fake.
+
+### 5.3 Naming
+
+By convention:
+
+- **Interface** — a capability-flavored name (`DigitalOut`, `TimeSource`, `ClockTrim`). Reads as something the driver wants done.
+- **Production adapter** — names the specific resource it adapts (e.g. `gpio::Output`, `serial::Baud`, `clock::Trim`). The module path establishes "this is the register-backed implementation"; the struct name describes what specific resource it is.
+- **Fake adapter** — `Fake` prefix (`FakeDigitalOut`, `FakeBaud`, `FakeTrim`). Tells the reader at a glance that this is the test implementation.
+
+The pairing is intentional: production adapter names answer "which hardware?", fake names answer "which interface?".
+
+### 5.4 Composition under interfaces
+
+When a composite driver owns multiple sub-drivers, each sub-driver is generic over its own interfaces. The composite is generic over the union:
+
+```rust
+pub struct Top<I1, I2, I3>
+where I1: InterfaceA, I2: InterfaceB, I3: InterfaceC,
+{
+    sub_a: SubA<I1>,
+    sub_b: SubB<I2, I3>,
+}
+
+pub type ProdTop = Top<ProdA, ProdB, ProdC>;
+```
+
+The `pub type` alias keeps production call sites short — they say `ProdTop`, not the generic form. Tests instantiate `Top<FakeA, FakeB, FakeC>` directly.
+
+When the generic-parameter list grows past about four, a **super-interface** collapses them. The composite takes a single type parameter that's bound to satisfy every leaf interface:
+
+```rust
+pub trait Chip: InterfaceA + InterfaceB + InterfaceC {}
+impl<T> Chip for T where T: InterfaceA + InterfaceB + InterfaceC {}
+
+pub struct Top<C: Chip> {
+    sub_a: SubA<C>,
+    sub_b: SubB<C, C>,
+}
+```
+
+Leaves stay narrowly typed (so reading the leaf still shows exactly what hardware it depends on); the composite trades documentation-via-bounds for ergonomic call sites. Introduce the super-interface only when the parameter list actually hurts — it's an optimization, not the default shape.
+
+---
+
+## 6. Unit testing via adapter swap
+
+The interface/adapter split exists primarily for one reason: **driver logic is unit-testable on the host without an MCU, without a simulator, and without writing integration-style harnesses.** Tests construct a driver with fake adapters, drive it through a scenario, and assert on the recorded calls and the driver's resulting state.
+
+### 6.1 What this looks like
+
+A leaf-driver test:
+
+```rust
+#[test]
+fn arming_drives_output_low_then_high() {
+    let fake = FakeDigitalOut::default();
+    let mut driver = SomeDriver::new(fake);
+    driver.arm();
+    assert_eq!(driver.adapter().ops(), &[Op::Set(Level::Low), Op::Set(Level::High)]);
+}
+```
+
+The fake records every method call in order. The test asserts on the call sequence, the call arguments, or the resulting state of the driver — whichever the driver under test is responsible for.
+
+For composite drivers, a single fake-host struct hands out per-resource fake adapters that share an underlying log. The composite test constructs one host, asks it for each sub-driver's fake, and inspects the combined log:
+
+```rust
+#[test]
+fn workflow_dispatches_to_both_sub_drivers() {
+    let host = FakeHost::default();
+    let mut top = Top::new(
+        host.interface_a(),
+        host.interface_b(),
+    );
+    top.do_workflow();
+    assert_eq!(host.log(), &[expected_op_1, expected_op_2, expected_op_3]);
+}
+```
+
+The host pattern keeps test ergonomics manageable even when a composite consumes several interfaces — there's still one fake to construct, one log to inspect.
+
+### 6.2 What's testable at the driver layer
+
+Most of what drivers actually do:
+
+- **State machine transitions.** Every `on_*` method moves the driver through its FSM; tests cover the transition graph and its edges.
+- **Command rejection.** Methods that return `Result::Err` when state forbids them; tests assert the rejection under each disallowed state.
+- **Integrators, filters, schedulers.** Driver-owned math (drift correction, scheduling deadlines, retry counters, hysteresis) is pure given a fake for the time source.
+- **Composition routing.** A composite's `on_*` methods dispatch to children; tests verify the routing with fakes that record receipt.
+
+### 6.3 What's not testable at the driver layer
+
+- **Actual peripheral behavior.** Register-write side effects, hardware-bounded timing, electrical signaling. These need integration tests on real hardware.
+- **Adapter correctness.** The production adapter's translation from interface call to HAL function. Tested at the adapter layer (small surface, mostly mechanical) or by running the firmware on hardware.
+- **ISR-priority races.** Any concurrency between ISRs sharing a driver. Out of scope for host tests; needs hardware or a model checker.
+
+The split is intentional. Driver-layer host tests catch the bugs that show up in FSM and policy logic — by far the largest class of bugs in firmware of this shape. Hardware-shaped bugs are caught by hardware-shaped tests; the host-test layer isn't trying to replace them.
+
+### 6.4 Fakes are adapters too
+
+Fake adapters live in the same `adapters/` layer as production adapters, gated `cfg(test)`. They satisfy the same interfaces. From the driver's perspective there's no distinction; from the layering's perspective, **the adapter layer is the testability seam by design**. The fakes aren't a separate "mock layer" bolted on — they're a second flavor of adapter, parallel to the production one. That's why the interface/adapter split is in the architecture rather than added as an afterthought when tests get hard to write.
+
+---
+
+## 7. Services
 
 Services are **adapters** between protocol-side traits (defined in a chip-agnostic core) and driver methods. They are thin:
 
@@ -184,13 +332,15 @@ That's the whole service. Each method:
 2. Translates protocol-level arguments to driver method calls.
 3. Translates the driver result back to the protocol-level return type.
 
-### 5.1 The 1:1 rule
+(The "adapter" name here predates the interface/adapter terminology of §5 and refers to the same general pattern — adapting between two type universes — applied at the top of the stack. The two adapter roles don't conflict: §5 adapters bridge driver interfaces to HAL; services bridge protocol traits to driver methods.)
+
+### 7.1 The 1:1 rule
 
 > **Each service binds to exactly one top-level driver.**
 
 If a service needs to call methods on two different top-level drivers to fulfill its trait, that's the no-peer-to-peer rule (§4.2) telling you to compose those drivers into a higher one. The 1:1 rule keeps services trivial: every method has exactly one driver to delegate to.
 
-### 5.2 Why services aren't drivers
+### 7.2 Why services aren't drivers
 
 The temptation to skip the service layer and have drivers implement the protocol traits directly is real. The reason not to:
 
@@ -200,7 +350,7 @@ The temptation to skip the service layer and have drivers implement the protocol
 
 The service layer is the *anti-corruption layer* between two type universes. It's thin because the only thing it does is type translation; the work is in the driver, the policy is in the protocol stack. Both ends stay clean.
 
-### 5.3 Cross-domain orchestration
+### 7.3 Cross-domain orchestration
 
 > **Orchestration that spans multiple devices lives at the protocol layer (or main loop), not in any driver.**
 
@@ -218,7 +368,7 @@ This is the same rule as §4.2 stated from the other direction: drivers don't re
 
 ---
 
-## 6. Hardware demultiplexing
+## 8. Hardware demultiplexing
 
 The IRQ vector binding file is structurally minimal: each ISR is a small dispatcher that reads the hardware status register, classifies into logical events, and calls into one or more drivers.
 
@@ -245,7 +395,7 @@ It is **not** the place to:
 
 If an ISR is doing more than the dispatcher shape above, the work probably belongs inside the relevant `on_*` method on the driver. If routing complexity is creeping into the ISR (e.g., "if driver A's method returns X, then call driver B"), it belongs in the composite driver's `on_*` method, not in the ISR.
 
-### 6.1 Single-source IRQs
+### 8.1 Single-source IRQs
 
 When an IRQ has a single logical source (a dedicated timer compare match, a dedicated DMA channel), the ISR collapses to one line:
 
@@ -259,7 +409,7 @@ In hot-path cases where the dispatcher's overhead matters, the ISR can call the 
 
 ---
 
-## 7. Static instances and access discipline
+## 9. Static instances and access discipline
 
 Each top-level driver gets a single static cell holding `Option<Driver>` so the static can be valid before bringup runs. `Driver::new(...)` is total — it always returns a fully-initialized driver — and uninit state lives only at the cell:
 
@@ -301,7 +451,7 @@ Every `unsafe { Top::get() }` site is making a contract claim. The discipline is
 
 If the project uses RTIC, an async executor, or another framework that provides safer ownership patterns, those should be preferred. The `SyncUnsafeCell<Option<Driver>>` + `unsafe fn install`/`unsafe fn get` pattern is the floor — it works without runtime support but requires discipline.
 
-### 7.1 Cross-cell coordination
+### 9.1 Cross-cell coordination
 
 Most coordination happens through the composite-driver routing in §4. The remaining cases are where two genuinely independent top-level drivers need to exchange a value — and per §4.2, that should be rare. When it does happen, the channel is one of:
 
@@ -312,7 +462,7 @@ These cross-cell channels are exceptional. If you find yourself adding more than
 
 ---
 
-## 8. Worked example — abstract UART bridge
+## 10. Worked example — abstract UART bridge
 
 Hypothetical: a chip implements a serial protocol over a UART, with a half-duplex direction-control GPIO, hardware-timed transmit triggering from a timer, and clock-drift calibration based on observed receive timing.
 
@@ -326,7 +476,7 @@ The protocol concerns (in a chip-agnostic core):
 - Decode incoming packets, dispatch to handlers, emit replies.
 - Decide when to persist configuration changes.
 
-### 8.1 Mapping to drivers
+### 10.1 Mapping to drivers
 
 The hardware concerns compose into one top-level driver because they share the UART's timing model:
 
@@ -383,7 +533,7 @@ impl Bus {
 
 The wire diagram is one file's worth of method bodies. Reading the `Bus` impl tells you every cross-component interaction in the system. Sub-drivers stay independent and unaware of each other.
 
-### 8.2 Mapping to ISRs
+### 10.2 Mapping to ISRs
 
 ```rust
 // irq.rs
@@ -403,7 +553,7 @@ pub fn on_timer_compare() {
 
 Two ISRs. Combined: about a dozen lines. Each does one thing and reads as one thing.
 
-### 8.3 Mapping to a service
+### 10.3 Mapping to a service
 
 ```rust
 // services/bus.rs
@@ -427,16 +577,16 @@ The protocol layer's dispatcher consumes `ProtocolBus`, knowing nothing about UA
 
 ---
 
-## 9. Related patterns and origins
+## 11. Related patterns and origins
 
 This convention is a synthesis of established patterns rather than a novel design. The components map roughly as:
 
 - **Command Query Responsibility Segregation (CQRS).** The mutating-command / read-only-query split. Commands here are pure methods rather than reified message objects, but the read/write separation is the same. Long established in distributed systems and DDD.
 - **Domain events.** `on_*` methods are the *intake* of domain events; their return values are the *output*. Mealy-machine outputs from event-sourced systems map directly.
-- **Hexagonal architecture / Ports and Adapters.** Drivers are the domain core; services are adapters to outer protocol traits. Cockburn's framing applied at the module level instead of the application level.
+- **Hexagonal architecture / Ports and Adapters.** Drivers are the domain core; the interface/adapter split in §5 is a direct application of Cockburn's ports-and-adapters at the module level. The "interface" in this doc corresponds to a "port" in hexagonal vocabulary; "adapter" is the same term in both. Services play the analogous role one layer up, adapting protocol traits to driver methods.
 - **DDD aggregates.** A composite driver is an aggregate root; sub-drivers are entities reachable only through the aggregate. The "no sibling access" rule is the aggregate-boundary rule.
 - **Active Object** (Samek, *Practical Statecharts in C/C++*). The most embedded-specific analog: each active object is a state machine with an event queue, composed hierarchically, with no direct peer access. Used heavily in safety-critical embedded.
-- **Layered HAL.** The drivers-on-top-of-HAL stack is standard embedded layering; the strict service-as-adapter step on top of drivers is what this pattern adds.
+- **Four-layer chip stack.** The services / drivers / adapters / HAL split is more structured than the typical drivers-on-top-of-HAL embedded layering. The adapter layer is the explicit dependency-inversion seam: drivers depend on interfaces they themselves define, not on HAL, which is what makes driver logic testable without hardware.
 
 In actor-based frameworks (Erlang/OTP, Akka, Drogue Device), the same shape appears with asynchronous message passing instead of synchronous method calls. The shape is the same; the runtime is different. This pattern is the *synchronous* application of actor-style discipline, which fits firmware where the cost of queues and an executor outweighs their decoupling benefit.
 
@@ -444,44 +594,53 @@ If a single reference best captures the embedded version of this pattern: Miro S
 
 ---
 
-## 10. When this pattern fits, and when it doesn't
+## 12. When this pattern fits, and when it doesn't
 
-### 10.1 Use it when
+### 12.1 Use it when
 
 - The firmware has three or more peripherals that interact non-trivially.
 - A protocol stack lives above the peripherals and needs to remain chip-agnostic.
 - Multiple ISRs share state and the coordination is already painful or about to become so.
 - The codebase has a multi-year lifetime — discipline upfront amortizes well.
+- You want driver logic covered by host-side unit tests rather than relying solely on hardware integration tests.
 - The team will grow, or onboarding new contributors is a concern. The pattern is unusually self-documenting because reading any one file gives a complete picture of one concern.
 
-### 10.2 Don't use it when
+### 12.2 Don't use it when
 
 - The firmware is small enough that a single struct with methods would do. A blinker, a thermostat, a one-peripheral data logger — the ceremony costs more than it saves.
 - The project uses a framework (RTIC, Embassy with async, Zephyr) that provides better ownership and scheduling primitives. Use those instead. The pattern is the floor for "no framework available"; frameworks raise the floor.
 - The hot path is so tight that even the dispatch overhead of `Top::on_event_x()` matters. (For most ISR work this isn't true — the dispatch is a tail call. But cycle-budget-bound ISRs may need to inline directly into sub-drivers, breaking the composite-routing rule as a deliberate optimization.)
 - The protocol layer is trivial or absent. The service-as-adapter benefit only pays off when there's a chip-agnostic protocol on the other side. Without one, services are bureaucracy.
 
-### 10.3 Trade-offs to accept
+### 12.3 Trade-offs to accept
 
 - **Translation boilerplate.** Return values flow as primitives between drivers, which means flattening structs at one boundary and rebuilding (or consuming field-by-field) at the next. Most of this is a few lines per transition.
 - **Discipline-by-convention, not by compiler.** The contract is a naming convention. Rust can't enforce "no sibling sub-driver access," "services are 1:1 with top-level drivers," or "use `on_*` for hardware events." A doc-comment per module stating the convention plus code review is the enforcement mechanism. A team that doesn't read the convention will erode it; one that does will find the pattern self-reinforcing.
+- **Generic-parameter propagation.** Drivers carry one type parameter per interface they consume; composites carry the union. A `pub type` alias hides the verbosity at production call sites, but compile errors and IDE hovers show the long form. The cost is paid in compile-time verbosity, not runtime: production adapters are typically zero-sized, so monomorphization plus `#[inline]` makes the adapter dispatch identical to a direct HAL call.
+- **One more layer of files.** The adapter layer adds one file per peripheral concept (plus the fake adapter alongside). The cost is fixed — adapters don't grow per driver — and it buys the testability seam, but it's a real addition to the file tree.
 
 ---
 
-## 11. Summary
+## 13. Summary
 
-Five rules:
+Six rules:
 
-1. **Drivers own hardware state.** Expose pure methods: `on_*` for hardware events, descriptive names for commands, accessors for stable observations. Programmer-error invariants are `debug_assert!`s; runtime failures return `Result`.
+1. **Drivers own hardware state.** Expose pure methods: `on_*` for hardware events (named for the logical event, not the peripheral that delivered it), descriptive names for commands, accessors for stable observations. Programmer-error invariants are `debug_assert!`s; runtime failures return `Result`.
 2. **Composite drivers route between sub-drivers.** Sub-drivers are reachable only through the parent.
 3. **Top-level drivers do not communicate with each other.** If two would need to, compose them into a higher driver.
 4. **Services adapt protocol traits to drivers.** Each service binds to exactly one top-level driver. Services are thin.
 5. **Cross-domain orchestration lives at the protocol layer**, never in drivers.
+6. **Drivers are generic over driver-defined interfaces; adapters implement them.** Production adapters wrap HAL calls; fake adapters record calls for tests. Driver logic is unit-testable on the host without hardware.
 
-Three roles:
+Four layers, top to bottom:
 
-- ISR vector binding: hardware demux only.
-- Driver: hierarchical type with a pure-method API and cell-level `Option<Driver>` storage.
-- Service: protocol-trait adapter.
+- **Services** — adapt protocol traits to driver method calls.
+- **Drivers** — hierarchical types with pure-method APIs, generic over their interfaces, with cell-level `Option<Driver>` storage.
+- **Adapters** — implement driver interfaces over HAL primitives (production) or recording stubs (test).
+- **HAL** — register access and chip-specific resource identifiers, cfg-gated per chip variant.
 
-The result is firmware where reading any one file gives you a complete picture of one concern, where the wire diagram between concerns is concentrated in composite-driver method bodies, and where the protocol layer remains unaware of any specific peripheral.
+Plus one orthogonal file:
+
+- **IRQ vector binding** — hardware demux that routes interrupt sources to driver methods.
+
+The result is firmware where reading any one file gives you a complete picture of one concern, the wire diagram between concerns lives in composite-driver method bodies, the protocol layer stays unaware of any specific peripheral, and driver logic is exercisable by host-side unit tests.
