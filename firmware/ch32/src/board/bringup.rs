@@ -36,7 +36,7 @@ pub(super) fn run(
 
     configure_pins(wiring);
     // SAFETY: bringup-only, pre-IRQ; sole writer.
-    unsafe { crate::drivers::install_drivers(wiring) };
+    unsafe { crate::drivers::install_drivers(wiring, defaults) };
     crate::log::debug!("gpio configured");
 
     bring_up_analog_chain(&wiring.current_sense);
