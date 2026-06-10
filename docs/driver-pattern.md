@@ -40,7 +40,11 @@ The chip-specific firmware crate splits into four layers. Each layer has one rea
 
 The dependency direction is strictly downward: services depend on drivers, drivers depend on interfaces they themselves define, adapters implement those interfaces and consume HAL, HAL talks to the silicon. **Nothing skips a layer.** A driver never imports HAL types or calls HAL functions directly; a service never reaches past its bound driver.
 
-A small additional file sits *outside* the stack: the **IRQ vector binding**. It's a thin dispatcher — reads an interrupt-source flag, classifies into a logical event, and calls a driver method. It is structurally part of the driver-access surface, not a layer of its own. §8 covers it in detail.
+Two small files sit *outside* the stack:
+- The **driver registry** — a facade that owns the static storage for installed driver *instances* and exposes typed accessors. Driver types themselves carry no statics. §9 covers it in detail.
+- The **IRQ vector binding** — a thin dispatcher that reads an interrupt-source flag, classifies into a logical event, and calls a driver method through the registry. §8 covers it in detail.
+
+Both are part of the driver-access surface, not layers of their own.
 
 ### 2.1 Why the layers exist
 
@@ -74,13 +78,7 @@ The convention is in *naming and role separation*, not in shape:
 - **Software commands**: methods named for the operation (`arm`, `stage_baud`, `set`). They mutate state. They return `Result<T, E>` *when the operation has a runtime failure mode* a caller might reasonably encounter and handle. Programmer-error invariants (call-order violations, double-install) become `debug_assert!`s, not `Error` variants.
 - **Accessors**: methods named for what they expose (`window`, `last_tick`, `is_armed`). `&self` (or `&mut self` when truly necessary), returning primitives or small typed values. No transition coupling.
 
-The driver is always fully valid after `new(...)`. Uninit state — the time between static allocation and the first install — is encoded *at the static cell*, not inside the type:
-
-```rust
-static TOP: SyncUnsafeCell<Option<Top>> = SyncUnsafeCell::new(None);
-```
-
-Two questions, two layers. The cell answers "is this hardware installed?"; the methods on the driver answer "what does it do?", and assume the answer to the first is yes. §9 covers the access discipline.
+The driver is always fully valid after `new(...)`. The driver type itself carries no static storage and exposes no `install` / `get` methods — singleton lifecycle is delegated to a separate registry (§9). Tests construct drivers directly with fake adapters; the registry exists only to give production code a place to park installed instances.
 
 Three categories, three reasons to call into a driver. Keep them distinct.
 
@@ -314,14 +312,14 @@ pub struct SomeBusAdapter;
 
 impl SomeBus for SomeBusAdapter {
     fn send(&mut self, payload: Payload, schedule: Schedule) {
-        let _ = unsafe { Top::get() }.send(
+        let _ = unsafe { Drivers::top() }.send(
             |buf| serialize(payload, buf),
             schedule,
         );
     }
 
     fn read_window(&mut self) -> Option<&[u8]> {
-        unsafe { Top::get() }.read_window()
+        unsafe { Drivers::top() }.read_window()
     }
 }
 ```
@@ -376,7 +374,7 @@ The IRQ vector binding file is structurally minimal: each ISR is a small dispatc
 // irq.rs — vector binding
 pub fn on_some_peripheral() {
     let status = peripheral_status();
-    let driver = unsafe { Top::get() };
+    let driver = unsafe { Drivers::top() };
 
     if status.condition_a() { driver.on_condition_a(); }
     if status.condition_b() { driver.on_condition_b(); }
@@ -401,7 +399,7 @@ When an IRQ has a single logical source (a dedicated timer compare match, a dedi
 
 ```rust
 pub fn on_dedicated_timer() {
-    unsafe { Top::get() }.on_deadline();
+    unsafe { Drivers::top() }.on_deadline();
 }
 ```
 
@@ -409,56 +407,85 @@ In hot-path cases where the dispatcher's overhead matters, the ISR can call the 
 
 ---
 
-## 9. Static instances and access discipline
+## 9. The driver registry
 
-Each top-level driver gets a single static cell holding `Option<Driver>` so the static can be valid before bringup runs. `Driver::new(...)` is total — it always returns a fully-initialized driver — and uninit state lives only at the cell:
+Driver types are pure: they own state, expose methods, and know nothing about being singletons. Production firmware still needs a place to hold installed driver *instances* and a way to reach them from ISRs and main-loop code. That place is the **registry** — a single facade type that owns one static cell per instance and exposes typed accessors.
 
 ```rust
-static TOP: SyncUnsafeCell<Option<Top>> = SyncUnsafeCell::new(None);
+use core::cell::SyncUnsafeCell;
 
-impl Top {
+struct Cells {
+    top: SyncUnsafeCell<Option<Top>>,
+    aux: SyncUnsafeCell<Option<Aux>>,
+}
+
+static CELLS: Cells = Cells {
+    top: SyncUnsafeCell::new(None),
+    aux: SyncUnsafeCell::new(None),
+};
+
+pub struct Drivers;
+
+impl Drivers {
     /// SAFETY: bringup-only, pre-IRQ; sole writer. Must be called exactly once.
     pub unsafe fn install(/* construction args */) {
-        let cell = unsafe { &mut *TOP.get() };
-        debug_assert!(cell.is_none(), "Top: already installed");
-        *cell = Some(Top::new(/* args */));
+        // SAFETY: see fn doc.
+        let top = unsafe { &mut *CELLS.top.get() };
+        debug_assert!(top.is_none(), "Drivers: top already installed");
+        *top = Some(Top::new(/* args */));
+
+        // SAFETY: see fn doc.
+        let aux = unsafe { &mut *CELLS.aux.get() };
+        debug_assert!(aux.is_none(), "Drivers: aux already installed");
+        *aux = Some(Aux::new(/* args */));
     }
 
-    /// SAFETY: bringup installs Top before any ISR runs; access follows the
-    /// driver's IRQ-priority contract documented at the call site.
+    /// SAFETY: bringup installs `top` before any ISR runs; access follows
+    /// the driver's IRQ-priority contract documented at the call site.
     #[inline(always)]
-    pub unsafe fn get() -> &'static mut Self {
-        let cell = unsafe { &mut *TOP.get() };
-        debug_assert!(cell.is_some(), "Top: accessed before install");
+    pub unsafe fn top() -> &'static mut Top {
+        // SAFETY: see fn doc.
+        let cell = unsafe { &mut *CELLS.top.get() };
+        debug_assert!(cell.is_some(), "Drivers::top() before install");
         // SAFETY: bringup ensures Some before any ISR fires.
         unsafe { cell.as_mut().unwrap_unchecked() }
     }
+
+    // ...one accessor per instance.
 }
 ```
 
-The two-layer Option keeps the driver type itself honest: `Top::new(...)` never returns a half-constructed object. The "is it installed?" question is asked once per access, at the accessor, `debug_assert`-checked in dev / `unwrap_unchecked` in release (sound because bringup must run before any IRQ).
+The shape has three properties worth naming:
 
-The access discipline beyond install depends on the runtime model. For a no-RTOS firmware where ISRs share a single priority level and don't preempt each other (or use cooperative scheduling), the discipline is:
+- **Driver types are decoupled from singleton lifecycle.** A driver named for its *mechanism* — a generic LED controller, a generic counter — can be instantiated as many times as the firmware needs. Adding a second instance is one cell + one accessor; the driver type doesn't change. (Before this split, drivers that hosted their own static cell tended to absorb their usage into the type name — "status LED" instead of "LED" — because the type *was* the singleton.)
+- **Each instance has its own cell, not a shared `&mut Drivers`.** This preserves borrow independence: an ISR mutating one driver and the main loop mutating another don't pass through a shared mutable reference to the registry, so there's no aliasing UB even at the conceptual level. The registry struct itself is a ZST; the cells are the storage.
+- **Tests bypass the registry entirely.** Unit tests construct driver types directly with fake adapters — no `install`, no `get`, no `unsafe`. The registry is a production-only artifact for singleton management; the testability seam from §5–§6 is unaffected by it.
 
-- **From an ISR at the shared priority**: `Top::get()` is safe because no other code at the same priority can preempt.
-- **From the main loop**: `Top::get()` is safe only after disabling the relevant ISRs around the access, OR if the access only touches state the ISRs never mutate (read-only accessors are usually safe without IRQ masking; mutating commands typically need a masked critical section).
+The two-layer `Option<Driver>` inside each cell keeps the driver type itself honest: `Driver::new(...)` never returns a half-constructed object. The "is it installed?" question is asked once per access, at the registry accessor, `debug_assert`-checked in dev / `unwrap_unchecked` in release (sound because bringup must run before any IRQ).
 
-Every `unsafe { Top::get() }` site is making a contract claim. The discipline is:
+### 9.1 Access discipline
 
-1. State the contract once, in the type's `SAFETY:` doc comment.
+The discipline beyond install depends on the runtime model. For a no-RTOS firmware where ISRs share a single priority level and don't preempt each other (or use cooperative scheduling), the rules are:
+
+- **From an ISR at the shared priority**: `Drivers::foo()` is safe because no other code at the same priority can preempt.
+- **From the main loop**: `Drivers::foo()` is safe only after disabling the relevant ISRs around the access, OR if the access only touches state the ISRs never mutate (read-only accessors are usually safe without IRQ masking; mutating commands typically need a masked critical section).
+
+Every `unsafe { Drivers::foo() }` site is making a contract claim. The discipline is:
+
+1. State the contract once, in the accessor's `SAFETY:` doc comment.
 2. Site-level comments only when the call site deviates from the default discipline.
 3. Restrict all mutation to driver methods (no raw field access from outside).
 
-If the project uses RTIC, an async executor, or another framework that provides safer ownership patterns, those should be preferred. The `SyncUnsafeCell<Option<Driver>>` + `unsafe fn install`/`unsafe fn get` pattern is the floor — it works without runtime support but requires discipline.
+If the project uses RTIC, an async executor, or another framework that provides safer ownership patterns, those should be preferred. The registry + `SyncUnsafeCell<Option<Driver>>` cells is the floor — it works without runtime support but requires discipline.
 
-### 9.1 Cross-cell coordination
+### 9.2 Cross-cell coordination
 
 Most coordination happens through the composite-driver routing in §4. The remaining cases are where two genuinely independent top-level drivers need to exchange a value — and per §4.2, that should be rare. When it does happen, the channel is one of:
 
 - An atomic flag/counter, when the value is a scalar.
 - A small lock-free queue or `SyncUnsafeCell<Option<T>>` with seqlock semantics, when the value is a struct.
 
-These cross-cell channels are exceptional. If you find yourself adding more than one or two, the architecture is telling you to reconsider whether the two drivers should be composed.
+These cross-cell channels live alongside the registry's instance cells but aren't *of* it — the registry holds driver instances, not communication channels. If you find yourself adding more than one or two channels, the architecture is telling you to reconsider whether the two drivers should be composed.
 
 ---
 
@@ -539,15 +566,15 @@ The wire diagram is one file's worth of method bodies. Reading the `Bus` impl te
 // irq.rs
 pub fn on_uart() {
     let status = uart_status();
-    // SAFETY: see Bus::get.
-    let bus = unsafe { Bus::get() };
+    // SAFETY: see Drivers::bus.
+    let bus = unsafe { Drivers::bus() };
     if status.has_rx_error() { bus.on_uart_rx_error(status.rx_flags()); }
     if status.idle()         { bus.on_uart_idle(); }
     if status.tc()           { bus.on_uart_tc_completed(); }
 }
 
 pub fn on_timer_compare() {
-    unsafe { Bus::get() }.on_timer_match();
+    unsafe { Drivers::bus() }.on_timer_match();
 }
 ```
 
@@ -561,11 +588,11 @@ pub struct BusAdapter;
 
 impl ProtocolBus for BusAdapter {
     fn rx_window(&mut self) -> Option<&[u8]> {
-        unsafe { Bus::get() }.rx_window()
+        unsafe { Drivers::bus() }.rx_window()
     }
 
     fn send(&mut self, packet: Packet<'_>, schedule: Schedule) {
-        let _ = unsafe { Bus::get() }.arm_reply(
+        let _ = unsafe { Drivers::bus() }.arm_reply(
             |buf| serialize(packet, buf),
             schedule,
         );
@@ -635,12 +662,13 @@ Six rules:
 Four layers, top to bottom:
 
 - **Services** — adapt protocol traits to driver method calls.
-- **Drivers** — hierarchical types with pure-method APIs, generic over their interfaces, with cell-level `Option<Driver>` storage.
+- **Drivers** — hierarchical pure types with pure-method APIs, generic over their interfaces. No statics, no `install` / `get` on the type.
 - **Adapters** — implement driver interfaces over HAL primitives (production) or recording stubs (test).
 - **HAL** — register access and chip-specific resource identifiers, cfg-gated per chip variant.
 
-Plus one orthogonal file:
+Plus two orthogonal facades:
 
-- **IRQ vector binding** — hardware demux that routes interrupt sources to driver methods.
+- **Driver registry** (§9) — owns one static cell per driver *instance* and exposes typed accessors. The only place that knows which type plays which singleton role.
+- **IRQ vector binding** — hardware demux that routes interrupt sources to driver methods via the registry.
 
 The result is firmware where reading any one file gives you a complete picture of one concern, the wire diagram between concerns lives in composite-driver method bodies, the protocol layer stays unaware of any specific peripheral, and driver logic is exercisable by host-side unit tests.
