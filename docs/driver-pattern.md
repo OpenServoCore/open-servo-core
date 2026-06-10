@@ -35,25 +35,26 @@ The chip-specific firmware crate splits into four layers. Each layer has one rea
 | --- | --- | --- | --- |
 | **Service** | `services/<name>.rs` | Adapt a protocol-side trait (defined in a chip-agnostic core) to driver method calls | The protocol stack above |
 | **Driver** | `drivers/<name>/` | Own hardware state; expose a pure-method API; generic over its interface dependencies | Features and FSM logic |
-| **Adapter** | `adapters/<name>.rs` | Implement driver-defined interfaces over HAL primitives (or record calls for tests) | Rarely; ripples from chip-variant changes |
-| **HAL** | `hal/<name>.rs` | Register access; chip-specific resource identifiers (pin enums, peripheral handles, configuration structs) | Chip variant (cfg-gated) |
+| **Provider** | `provider/<role>.rs` (or `<role>/v<variant>.rs`) | Implement driver-defined interfaces over HAL primitives (production) or record calls (tests); own per-peripheral init including clock-gate enable | Role-to-peripheral allocation; chip variant (cfg-gated per project) |
+| **HAL** | `hal/<peripheral>.rs` (or `<peripheral>/v<ip>.rs`) | Register access; peripheral primitives; chip-specific resource identifiers (pin enums, peripheral handles, configuration structs) | Peripheral IP version (multiple chips may share; cfg-gated when they diverge) |
 
-The dependency direction is strictly downward: services depend on drivers, drivers depend on interfaces they themselves define, adapters implement those interfaces and consume HAL, HAL talks to the silicon. **Nothing skips a layer.** A driver never imports HAL types or calls HAL functions directly; a service never reaches past its bound driver.
+The dependency direction is strictly downward: services depend on drivers, drivers depend on interfaces they themselves define, providers implement those interfaces and consume HAL, HAL talks to the silicon. **Nothing skips a layer.** A driver never imports HAL types or calls HAL functions directly; a service never reaches past its bound driver.
 
-Two small files sit *outside* the stack:
-- The **driver registry** — a facade that owns the static storage for installed driver *instances* and exposes typed accessors. Driver types themselves carry no statics. §9 covers it in detail.
-- The **IRQ vector binding** — a thin dispatcher that reads an interrupt-source flag, classifies into a logical event, and calls a driver method through the registry. §8 covers it in detail.
+Three small facades sit *outside* the stack:
+- The **driver registry** — owns static storage for installed driver *instances* and exposes typed accessors. Driver types themselves carry no statics. §9.1 covers it.
+- The **provider facade** — orchestrates hardware setup and deferred IRQ enable. Bringup goes through this single entry point. §9.2 covers it.
+- The **IRQ vector binding** — a thin dispatcher that reads an interrupt-source flag, classifies into a logical event, and calls a driver method through the registry. §8 covers it.
 
-Both are part of the driver-access surface, not layers of their own.
+None are layers of their own — they're orchestration surfaces over the four-layer stack.
 
 ### 2.1 Why the layers exist
 
 Each layer corresponds to a thing that varies independently:
 
-- **Chip variant** changes ripple into HAL. Adapters may need light `cfg` gating if the underlying HAL types change names, but driver interfaces and driver logic stay pinned.
+- **Chip variant** changes ripple into the provider's variant-specific files (peripheral choice differs per chip) and may ripple into HAL when peripheral IP version differs. Driver interfaces and driver logic stay pinned across chip variants — that's the point of the provider seam (§5.6).
 - **Protocol changes** ripple into services. Everything below stays pinned.
-- **Feature and FSM work** ripples into drivers. Adapters and HAL stay pinned.
-- **Test substitution** ripples into adapters only. Drivers are generic over their interfaces, so a test substitutes a fake adapter without touching production code.
+- **Feature and FSM work** ripples into drivers. Providers and HAL stay pinned.
+- **Test substitution** ripples into providers only. Drivers are generic over their interfaces, so a test substitutes a fake provider without touching production code.
 
 If a single change requires editing two layers at once, the layering is leaking. The typical culprit is a chip-specific type appearing in a driver method signature — the fix is to define a domain type at the driver layer (or hoist a shared primitive to a sibling location) so the interface carries no HAL types.
 
@@ -61,10 +62,18 @@ If a single change requires editing two layers at once, the layering is leaking.
 
 To understand a system built this way, read top-down for orchestration or bottom-up for hardware:
 
-- **Top-down**: service → top-level driver → composite routing → sub-drivers → interfaces → adapters. This tells the story of "what the protocol asked for and how it became register writes."
-- **Bottom-up**: HAL → adapters → interfaces → driver methods → composite routing → service. This tells the story of "this register exists; what consumes it?"
+- **Top-down**: service → top-level driver → composite routing → sub-drivers → interfaces → providers. This tells the story of "what the protocol asked for and how it became register writes."
+- **Bottom-up**: HAL → providers → interfaces → driver methods → composite routing → service. This tells the story of "this register exists; what consumes it?"
 
 Each file is independently legible. The IRQ vector binding file is read after the driver — it tells you which hardware sources route to which driver methods.
+
+### 2.3 Chip-agnostic drivers by construction
+
+The four-layer split has a stronger consequence than "driver code stays pinned across chip variants" — **drivers are by construction unaware of any specific chip.** Their imports name only their own trait surface (e.g., `drivers/traits.rs`) and Rust core; chip-specific types never appear in a driver method signature, field, or body. A second chip is a second provider set; the entire `drivers/` tree compiles unchanged.
+
+The unit-test seam (§6) is the in-tree proof: `Driver<Fake>` and `Driver<Real>` are the same driver code with different providers — same as `Driver<ChipA>` and `Driver<ChipB>` would be. The property generalizes from "swap a fake for a real provider" to "swap chip A's provider set for chip B's."
+
+In hexagonal-architecture terms (§11), drivers are the **domain core** and providers are the bottom adapter ring. The convention makes drivers portable across chips for the same reason hexagonal makes the domain core portable across infrastructure — it's the same property applied to the chip-portability axis. In practice this means a mature multi-chip codebase can lift the entire `drivers/` tree into a chip-agnostic core crate alongside the protocol stack, leaving only `provider/`, `hal/`, and bringup in each chip-specific firmware crate.
 
 ---
 
@@ -78,7 +87,7 @@ The convention is in *naming and role separation*, not in shape:
 - **Software commands**: methods named for the operation (`arm`, `stage_baud`, `set`). They mutate state. They return `Result<T, E>` *when the operation has a runtime failure mode* a caller might reasonably encounter and handle. Programmer-error invariants (call-order violations, double-install) become `debug_assert!`s, not `Error` variants.
 - **Accessors**: methods named for what they expose (`window`, `last_tick`, `is_armed`). `&self` (or `&mut self` when truly necessary), returning primitives or small typed values. No transition coupling.
 
-The driver is always fully valid after `new(...)`. The driver type itself carries no static storage and exposes no `install` / `get` methods — singleton lifecycle is delegated to a separate registry (§9). Tests construct drivers directly with fake adapters; the registry exists only to give production code a place to park installed instances.
+The driver is always fully valid after `new(...)`. The driver type itself carries no static storage and exposes no `install` / `get` methods — singleton lifecycle is delegated to a separate registry (§9.1). Tests construct drivers directly with fake providers; the registry exists only to give production code a place to park installed instances.
 
 Three categories, three reasons to call into a driver. Keep them distinct.
 
@@ -170,9 +179,9 @@ This rule has teeth: if you find yourself wanting driver-to-driver calls, the ar
 
 ---
 
-## 5. Interfaces and adapters
+## 5. Interfaces and providers
 
-A driver doesn't talk to hardware directly. It talks to one or more **interfaces** — Rust traits that describe what the driver needs done — and is generic over the concrete type that implements each interface. The interfaces are defined alongside the drivers; the implementations (called **adapters**) live one layer below.
+A driver doesn't talk to hardware directly. It talks to one or more **interfaces** — Rust traits that describe what the driver needs done — and is generic over the concrete type that implements each interface. The interfaces are defined alongside the drivers; the implementations (called **providers**) live one layer below.
 
 ### 5.1 Drivers own their interfaces
 
@@ -180,28 +189,52 @@ The interface is a contract *written by the consumer*. It expresses what the dri
 
 - **Driver-shaped methods, not peripheral-shaped.** An interface to "set a digital output" reads `fn set(&mut self, level: Level)`. The implementor is already bound to one specific output; the driver issues a command. Compare to a peripheral-shaped equivalent `fn set_level(pin: Pin, level: Level)` where the driver has to thread a pin identifier on every call and import a chip-specific `Pin` type just to compile. The driver-shaped form lets the driver stay free of chip types entirely.
 - **Narrow per-driver granularity.** Each interface declares only what one driver actually calls. A clock driver's "apply trim" interface doesn't expose the rest of the clock-controller registers. Reading the trait bounds on a driver tells you exactly what hardware operations it depends on.
-- **Domain types at the interface boundary.** A `Level` enum (high/low) is a domain concept — it has meaning at the driver layer and above. It lives with the interface that uses it, not with the HAL. The HAL itself can take primitives (a `bool`) and the adapter does the one-line translation.
+- **Domain types at the interface boundary.** A `Level` enum (high/low) is a domain concept — it has meaning at the driver layer and above. It lives with the interface that uses it, not with the HAL. The HAL itself can take primitives (a `bool`) and the provider does the one-line translation.
 
 The reverse direction — HAL exposes traits, drivers consume them — is the conventional layered-HAL design. It works, but the trait surface ends up shaped by what the HAL chose to offer rather than by what the driver needs, which tends to produce wider traits than the consumer actually uses.
 
-### 5.2 Adapters implement interfaces over HAL or fakes
+### 5.2 Providers implement interfaces over HAL or fakes
 
-Each interface has at least two implementations:
+The provider is the layer where the choice of *which peripheral plays this role* lives, plus the bridge from the driver's trait surface to HAL primitives. Each interface has at least two implementations:
 
-- **Production adapter.** A small struct that holds whatever per-instance state is needed (typically a chip-side resource identifier) and dispatches each interface method into HAL functions. Lives in `adapters/`. The struct is often zero-sized when the interface targets a singleton peripheral, so the production driver pays no size or speed cost for the indirection — monomorphization plus `#[inline]` collapses the dispatch to a direct HAL call.
-- **Fake adapter.** A test-only implementation that records calls into a log instead of touching hardware. Used by host-side unit tests. Lives alongside the production adapters, gated `cfg(test)`.
+- **Production provider.** A small struct that holds whatever per-instance state is needed (often zero-sized for singleton peripherals) and dispatches each interface method into HAL functions. Lives in `provider/`. Its thinness is the point, not redundancy — the production driver pays no size or speed cost (monomorphization plus `#[inline]` collapses the dispatch to a direct HAL call), and the file is the unambiguous home for the "we picked this peripheral for this role" decision.
+- **Fake provider.** A test-only implementation that records calls into a log instead of touching hardware. Used by host-side unit tests. Lives alongside the production provider, gated `cfg(test)`.
 
-Both satisfy the same interface, so they're interchangeable from the driver's perspective. Production code constructs the driver with the real adapter; tests construct it with the fake.
+Both satisfy the same interface, so they're interchangeable from the driver's perspective. Production code constructs the driver with the real provider; tests construct it with the fake.
 
 ### 5.3 Naming
 
-By convention:
+The provider layer is **role-shaped**: file names and type names both reflect the trait role, not the peripheral. This is the convention's single most useful tell — a directory listing of `provider/` reads as the catalog of driver-trait roles the firmware fulfills.
 
-- **Interface** — a capability-flavored name (`DigitalOut`, `TimeSource`, `ClockTrim`). Reads as something the driver wants done.
-- **Production adapter** — names the specific resource it adapts (e.g. `gpio::Output`, `serial::Baud`, `clock::Trim`). The module path establishes "this is the register-backed implementation"; the struct name describes what specific resource it is.
-- **Fake adapter** — `Fake` prefix (`FakeDigitalOut`, `FakeBaud`, `FakeTrim`). Tells the reader at a glance that this is the test implementation.
+- **Interface (trait)** — a capability-flavored name (`Monotonic`, `DigitalOut`, `DmaRing`, `UsartBaud`, `ClockTrim`). Reads as something the driver wants done. Defined in the drivers tree (e.g., `drivers/traits.rs`).
+- **Provider module file** — `snake_case` of the trait name: `provider/monotonic.rs`, `provider/dma_ring.rs`. One file per role.
+- **Provider type** — `PascalCase` of the trait name, same word: `pub struct Monotonic;` inside `provider/monotonic.rs`. The fully-qualified path reads as a sentence: `provider::monotonic::Monotonic` says *"the Monotonic provider."* The peripheral choice (SysTick, TIM6, …) is the file's *content*, not its name.
+- **Fake** — `pub struct Fake;` in the same file under `#[cfg(test)]`. Resolved by path: `provider::monotonic::Fake` parses as *"the test fake for the Monotonic role."*
 
-The pairing is intentional: production adapter names answer "which hardware?", fake names answer "which interface?".
+The trait and the provider type share a name, so the provider file imports the trait by fully-qualified path in the `impl` line rather than via `use`:
+
+```rust
+// provider/monotonic.rs
+pub struct Monotonic;
+
+impl Monotonic {
+    pub fn init() { /* claim and configure the peripheral */ }
+}
+
+impl crate::drivers::traits::Monotonic for Monotonic {
+    const TICKS_PER_US: u32 = /* ... */;
+    fn ticks(&self) -> u32 { /* HAL call */ }
+}
+
+#[cfg(test)]
+pub struct Fake { /* recorded calls */ }
+#[cfg(test)]
+impl crate::drivers::traits::Monotonic for Fake { /* ... */ }
+```
+
+The verbosity stays in this one line per provider file; every other call site reads `provider::monotonic::Monotonic` or imports the trait normally.
+
+HAL is the orthogonal axis: HAL files are peripheral-IP-shaped (`hal/systick.rs`, `hal/timer/v3.rs`, `hal/usart/v1.rs`). A provider file imports HAL primitives by peripheral and calls them — the role-to-peripheral mapping lives in the provider, the peripheral primitives live in HAL.
 
 ### 5.4 Composition under interfaces
 
@@ -234,11 +267,61 @@ pub struct Top<C: Chip> {
 
 Leaves stay narrowly typed (so reading the leaf still shows exactly what hardware it depends on); the composite trades documentation-via-bounds for ergonomic call sites. Introduce the super-interface only when the parameter list actually hurts — it's an optimization, not the default shape.
 
+### 5.5 Provider categories and init responsibility
+
+Providers come in two flavors:
+
+- **Driver providers** implement a driver-trait and are consumed by generic drivers. Examples: `provider::monotonic::Monotonic`, `provider::dma_ring::DmaRing`. The driver holds one as a type parameter and calls trait methods.
+- **System providers** are init-only bundles called once from the orchestrator. They expose no trait and are not consumed by drivers — they configure chip-wide preconditions on which everything else depends. Examples: `provider::clocks::Clocks` (clock tree setup), `provider::pins::Pins` (pin modes per board wiring), `provider::interrupts::Interrupts` (interrupt-controller base config).
+
+Both follow the same role-shaped naming convention (file = role, type = role).
+
+**Init responsibility.** A driver provider owns *everything* required to make its claimed peripheral usable: the **peripheral clock-gate enable** (RCC ENR bit, or the chip's equivalent), peripheral mode/baud/IRQ-config writes, and any one-shot register setup. System providers own chip-wide preconditions (clock tree, pin modes, interrupt-controller base).
+
+The cohesion rule:
+
+> The provider that decides "I'm using peripheral X for this role" is the one that enables X's clock gate and configures X.
+
+This keeps the peripheral allocation decision and its setup code in the same file. Multi-chip swap (§5.6) is then one file: the replacement provider enables whichever peripheral *it* picks. Conversely, no init scattered across bringup or other files reaches into a peripheral that "belongs" to a provider.
+
+IRQ enable is the one exception — it's deferred to a separate facade phase so handlers are installed before vectors can fire. See §9.2 for the contract.
+
+### 5.6 Multi-chip variants
+
+When a codebase supports more than one chip variant, the provider layer is the chip-variant boundary. Driver code stays variant-agnostic — its trait bounds don't change — and the provider type stays role-named at the import surface (`provider::monotonic::Monotonic`). Concrete chip-specific implementations hide inside.
+
+The convention extends to a sub-module per role:
+
+```
+provider/
+  monotonic.rs            ← variant dispatcher (or monotonic/mod.rs)
+  monotonic/
+    v00x.rs               ← variant A impl
+    v30x.rs               ← variant B impl
+```
+
+The dispatcher cfg-routes the re-export:
+
+```rust
+// provider/monotonic.rs
+#[cfg(feature = "chip-v00x")] mod v00x;
+#[cfg(feature = "chip-v00x")] pub use v00x::Monotonic;
+
+#[cfg(feature = "chip-v30x")] mod v30x;
+#[cfg(feature = "chip-v30x")] pub use v30x::Monotonic;
+```
+
+Gate on whatever chip feature flags the project already uses (typically the same flags exposed by the chip-support crate). A single-chip project uses the flat form (`provider/monotonic.rs`); a multi-chip project sub-modules. **Drivers, the registry, and the `Provider` facade are unchanged either way** — the variant axis lives entirely inside each role module.
+
+Two chips with the same IP for a peripheral can share a HAL file (`hal/timer/v3.rs`) but still differ at the provider — e.g., one chip picks SysTick for `Monotonic`, the other picks a timer. The provider encodes the choice; HAL provides the IP-shaped primitives.
+
+System providers follow the same sub-module pattern when their setup is chip-specific (`provider/clocks/v00x.rs`, `provider/clocks/v30x.rs`). Clock tree, pin alternates, and interrupt-controller base config typically vary more across chips than driver-trait providers do, so multi-chip projects often see system providers sub-moduled first.
+
 ---
 
-## 6. Unit testing via adapter swap
+## 6. Unit testing via provider swap
 
-The interface/adapter split exists primarily for one reason: **driver logic is unit-testable on the host without an MCU, without a simulator, and without writing integration-style harnesses.** Tests construct a driver with fake adapters, drive it through a scenario, and assert on the recorded calls and the driver's resulting state.
+The interface/provider split exists primarily for one reason: **driver logic is unit-testable on the host without an MCU, without a simulator, and without writing integration-style harnesses.** Tests construct a driver with fake providers, drive it through a scenario, and assert on the recorded calls and the driver's resulting state.
 
 ### 6.1 What this looks like
 
@@ -250,13 +333,13 @@ fn arming_drives_output_low_then_high() {
     let fake = FakeDigitalOut::default();
     let mut driver = SomeDriver::new(fake);
     driver.arm();
-    assert_eq!(driver.adapter().ops(), &[Op::Set(Level::Low), Op::Set(Level::High)]);
+    assert_eq!(driver.provider().ops(), &[Op::Set(Level::Low), Op::Set(Level::High)]);
 }
 ```
 
 The fake records every method call in order. The test asserts on the call sequence, the call arguments, or the resulting state of the driver — whichever the driver under test is responsible for.
 
-For composite drivers, a single fake-host struct hands out per-resource fake adapters that share an underlying log. The composite test constructs one host, asks it for each sub-driver's fake, and inspects the combined log:
+For composite drivers, a single fake-host struct hands out per-resource fake providers that share an underlying log. The composite test constructs one host, asks it for each sub-driver's fake, and inspects the combined log:
 
 ```rust
 #[test]
@@ -285,14 +368,14 @@ Most of what drivers actually do:
 ### 6.3 What's not testable at the driver layer
 
 - **Actual peripheral behavior.** Register-write side effects, hardware-bounded timing, electrical signaling. These need integration tests on real hardware.
-- **Adapter correctness.** The production adapter's translation from interface call to HAL function. Tested at the adapter layer (small surface, mostly mechanical) or by running the firmware on hardware.
+- **Provider correctness.** The production provider's translation from interface call to HAL function. Tested at the provider layer (small surface, mostly mechanical) or by running the firmware on hardware.
 - **ISR-priority races.** Any concurrency between ISRs sharing a driver. Out of scope for host tests; needs hardware or a model checker.
 
 The split is intentional. Driver-layer host tests catch the bugs that show up in FSM and policy logic — by far the largest class of bugs in firmware of this shape. Hardware-shaped bugs are caught by hardware-shaped tests; the host-test layer isn't trying to replace them.
 
-### 6.4 Fakes are adapters too
+### 6.4 Fakes are providers too
 
-Fake adapters live in the same `adapters/` layer as production adapters, gated `cfg(test)`. They satisfy the same interfaces. From the driver's perspective there's no distinction; from the layering's perspective, **the adapter layer is the testability seam by design**. The fakes aren't a separate "mock layer" bolted on — they're a second flavor of adapter, parallel to the production one. That's why the interface/adapter split is in the architecture rather than added as an afterthought when tests get hard to write.
+Fake providers live in the same `provider/` layer as production providers, gated `cfg(test)`. They satisfy the same interfaces. From the driver's perspective there's no distinction; from the layering's perspective, **the provider layer is the testability seam by design**. The fakes aren't a separate "mock layer" bolted on — they're a second flavor of provider, parallel to the production one. That's why the interface/provider split is in the architecture rather than added as an afterthought when tests get hard to write.
 
 ---
 
@@ -330,7 +413,7 @@ That's the whole service. Each method:
 2. Translates protocol-level arguments to driver method calls.
 3. Translates the driver result back to the protocol-level return type.
 
-(The "adapter" name here predates the interface/adapter terminology of §5 and refers to the same general pattern — adapting between two type universes — applied at the top of the stack. The two adapter roles don't conflict: §5 adapters bridge driver interfaces to HAL; services bridge protocol traits to driver methods.)
+(Services and providers both adapt between two type universes — that's the family resemblance with hexagonal-architecture adapters. The two roles don't conflict: §5 **providers** bridge driver interfaces to HAL; **services** here bridge protocol traits to driver methods. The struct name `SomeBusAdapter` is convention for service implementations; it's a name choice, not a layer identifier.)
 
 ### 7.1 The 1:1 rule
 
@@ -407,7 +490,11 @@ In hot-path cases where the dispatcher's overhead matters, the ISR can call the 
 
 ---
 
-## 9. The driver registry
+## 9. Registries and facades
+
+Driver types are pure (no statics) and provider types are decision-free at the import site (peripheral choice is hidden inside the file). Production firmware still needs two pieces of orchestration: a place to hold installed driver *instances* and reach them from ISRs (§9.1, the **driver registry**), and a single entry point for hardware setup + deferred IRQ enable (§9.4, the **provider facade**). §9.5 states the HAL access rule that keeps both layers honest.
+
+### 9.1 The driver registry
 
 Driver types are pure: they own state, expose methods, and know nothing about being singletons. Production firmware still needs a place to hold installed driver *instances* and a way to reach them from ISRs and main-loop code. That place is the **registry** — a single facade type that owns one static cell per instance and exposes typed accessors.
 
@@ -459,11 +546,11 @@ The shape has three properties worth naming:
 
 - **Driver types are decoupled from singleton lifecycle.** A driver named for its *mechanism* — a generic LED controller, a generic counter — can be instantiated as many times as the firmware needs. Adding a second instance is one cell + one accessor; the driver type doesn't change. (Before this split, drivers that hosted their own static cell tended to absorb their usage into the type name — "status LED" instead of "LED" — because the type *was* the singleton.)
 - **Each instance has its own cell, not a shared `&mut Drivers`.** This preserves borrow independence: an ISR mutating one driver and the main loop mutating another don't pass through a shared mutable reference to the registry, so there's no aliasing UB even at the conceptual level. The registry struct itself is a ZST; the cells are the storage.
-- **Tests bypass the registry entirely.** Unit tests construct driver types directly with fake adapters — no `install`, no `get`, no `unsafe`. The registry is a production-only artifact for singleton management; the testability seam from §5–§6 is unaffected by it.
+- **Tests bypass the registry entirely.** Unit tests construct driver types directly with fake providers — no `install`, no `get`, no `unsafe`. The registry is a production-only artifact for singleton management; the testability seam from §5–§6 is unaffected by it.
 
 The two-layer `Option<Driver>` inside each cell keeps the driver type itself honest: `Driver::new(...)` never returns a half-constructed object. The "is it installed?" question is asked once per access, at the registry accessor, `debug_assert`-checked in dev / `unwrap_unchecked` in release (sound because bringup must run before any IRQ).
 
-### 9.1 Access discipline
+### 9.2 Access discipline
 
 The discipline beyond install depends on the runtime model. For a no-RTOS firmware where ISRs share a single priority level and don't preempt each other (or use cooperative scheduling), the rules are:
 
@@ -478,7 +565,7 @@ Every `unsafe { Drivers::foo() }` site is making a contract claim. The disciplin
 
 If the project uses RTIC, an async executor, or another framework that provides safer ownership patterns, those should be preferred. The registry + `SyncUnsafeCell<Option<Driver>>` cells is the floor — it works without runtime support but requires discipline.
 
-### 9.2 Cross-cell coordination
+### 9.3 Cross-cell coordination
 
 Most coordination happens through the composite-driver routing in §4. The remaining cases are where two genuinely independent top-level drivers need to exchange a value — and per §4.2, that should be rare. When it does happen, the channel is one of:
 
@@ -486,6 +573,73 @@ Most coordination happens through the composite-driver routing in §4. The remai
 - A small lock-free queue or `SyncUnsafeCell<Option<T>>` with seqlock semantics, when the value is a struct.
 
 These cross-cell channels live alongside the registry's instance cells but aren't *of* it — the registry holds driver instances, not communication channels. If you find yourself adding more than one or two channels, the architecture is telling you to reconsider whether the two drivers should be composed.
+
+### 9.4 The provider facade
+
+The provider facade mirrors the driver registry, but for *hardware setup* rather than *runtime access*. Bringup goes through a single entry point that orchestrates every provider's init in a fixed order, then runs `Drivers::install` to populate cells, then enables IRQs last.
+
+```rust
+pub struct Provider;
+
+impl Provider {
+    /// SAFETY: bringup-only, called exactly once before Drivers::install.
+    /// Sets up hardware; does NOT enable IRQs.
+    pub unsafe fn init(/* wiring, defaults */) {
+        // System providers — chip-wide preconditions
+        clocks::Clocks::init();
+        pins::Pins::init(/* wiring */);
+        interrupts::Interrupts::init();
+
+        // Driver providers — peripheral clock-gate enable + mode/config writes
+        monotonic::Monotonic::init();
+        dma_ring::DmaRing::init();
+        usart_baud::UsartBaud::init(/* baud */);
+        clock_trim::ClockTrim::init();
+        // Multi-instance providers (e.g., digital_out per pin) are constructed
+        // inside Drivers::install, not here.
+    }
+
+    /// SAFETY: call AFTER Drivers::install. Cells must be populated before
+    /// any vector unmasks.
+    pub unsafe fn enable_irqs() {
+        dma_ring::DmaRing::enable_irq();
+        usart_baud::UsartBaud::enable_irq();
+        // …one call per provider that fires an IRQ
+    }
+}
+```
+
+Bringup collapses to three lines with a structural contract:
+
+```rust
+pub unsafe fn bringup(/* wiring, defaults */) {
+    Provider::init(/* … */);          // hardware powered + configured
+    Drivers::install(/* … */);        // handlers ready
+    Provider::enable_irqs();          // IRQs hot
+}
+```
+
+The contract: *hardware powered + configured → handlers ready → IRQs hot.* Hard to get the order wrong.
+
+Three intentional asymmetries vs the driver registry:
+
+- **No cells, no storage.** Provider types are zero-sized; nothing to store. `Provider` is a pure namespace + init entry point.
+- **No accessors.** `Drivers::install` reaches directly into provider types (e.g., `provider::monotonic::Monotonic`) to construct driver instances. Routing those through `Provider::monotonic()` would just rename the same unit struct.
+- **`init` vs `install` verb.** `install` implies storage (cells); `init` implies setup. Layer names stay symmetric (`Provider` ↔ `Drivers`); method verbs differ because the work differs.
+
+**Init-order discipline.** System providers run first (clock tree must exist before any peripheral is configured; pin modes must be set before any peripheral that drives those pins comes up). Driver providers follow. Each driver provider's `::init()` performs the clock-gate enable + peripheral configuration writes; IRQs stay masked. After `Drivers::install` populates cells, `Provider::enable_irqs` unmasks vectors.
+
+### 9.5 HAL access rule
+
+`hal::*` imports are confined to the `provider/` layer. Drivers consume only their declared trait interfaces; services consume only their bound driver; bringup goes through `Provider` and `Drivers`. The rule is mechanically checkable: a `use crate::hal::` outside `provider/*` is a layering violation.
+
+This is what closes the loop on testability and chip-portability:
+
+- **Drivers stay generic** over their trait bounds, so unit tests substitute `Fake` providers without touching driver code.
+- **Chip variants land in providers** (§5.6), not scattered through driver bodies or bringup. A new chip swaps provider implementations; everything above is unchanged.
+- **Bringup carries no chip knowledge.** Its body names which providers exist and the order they init in — not which registers they touch.
+
+One exception worth naming explicitly: **ISR vector bodies** (§8) dispatch through `Drivers::*` to driver methods, and the driver methods reach hardware through their trait interfaces (i.e., through providers). The ISR file itself does not import `hal::*`. If an ISR body needs to clear a hardware flag, the trait surface should expose a method for it — the provider implements it; the ISR remains a thin dispatcher.
 
 ---
 
@@ -560,7 +714,35 @@ impl Bus {
 
 The wire diagram is one file's worth of method bodies. Reading the `Bus` impl tells you every cross-component interaction in the system. Sub-drivers stay independent and unaware of each other.
 
-### 10.2 Mapping to ISRs
+### 10.2 Mapping to providers
+
+Each driver-trait the `Bus` sub-drivers consume has a provider file under `provider/`:
+
+```
+provider/
+  monotonic.rs      Monotonic    — tick source for fire scheduling
+  usart_baud.rs     UsartBaud    — claims the UART and sets baud
+  dma_ring.rs       DmaRing      — claims a DMA channel for the RX byte ring
+  digital_out.rs    DigitalOut   — drives the TX-direction GPIO (multi-instance)
+  clock_trim.rs     ClockTrim    — applies clock-rate trim steps
+  clocks.rs         Clocks       — (system) clock tree
+  pins.rs           Pins         — (system) pin modes per board wiring
+  interrupts.rs     Interrupts   — (system) IRQ controller base
+```
+
+The orchestrator collapses bringup to three lines:
+
+```rust
+pub unsafe fn bringup(wiring: &Wiring, defaults: &Defaults) {
+    Provider::init(wiring, defaults);   // hardware powered + configured
+    Drivers::install(wiring, defaults); // handlers ready
+    Provider::enable_irqs();            // IRQs hot
+}
+```
+
+If the example were ported to a second chip variant where the UART is on a different peripheral block, only `provider/usart_baud.rs` (and possibly its `vNNx.rs` sub-files per §5.6) changes. `drivers/bus/*` is untouched.
+
+### 10.3 Mapping to ISRs
 
 ```rust
 // irq.rs
@@ -580,7 +762,7 @@ pub fn on_timer_compare() {
 
 Two ISRs. Combined: about a dozen lines. Each does one thing and reads as one thing.
 
-### 10.3 Mapping to a service
+### 10.4 Mapping to a service
 
 ```rust
 // services/bus.rs
@@ -600,7 +782,7 @@ impl ProtocolBus for BusAdapter {
 }
 ```
 
-The protocol layer's dispatcher consumes `ProtocolBus`, knowing nothing about UARTs, timers, or GPIOs. The adapter is purely type translation. If the same protocol runs on a different chip with different peripherals, only the service and driver change — the protocol stack is identical.
+The protocol layer's dispatcher consumes `ProtocolBus`, knowing nothing about UARTs, timers, or GPIOs. The service is purely type translation. If the same protocol runs on a different chip with different peripherals, only the providers (and possibly the driver, if the hardware concerns diverge enough) change — the protocol stack is identical.
 
 ---
 
@@ -610,10 +792,10 @@ This convention is a synthesis of established patterns rather than a novel desig
 
 - **Command Query Responsibility Segregation (CQRS).** The mutating-command / read-only-query split. Commands here are pure methods rather than reified message objects, but the read/write separation is the same. Long established in distributed systems and DDD.
 - **Domain events.** `on_*` methods are the *intake* of domain events; their return values are the *output*. Mealy-machine outputs from event-sourced systems map directly.
-- **Hexagonal architecture / Ports and Adapters.** Drivers are the domain core; the interface/adapter split in §5 is a direct application of Cockburn's ports-and-adapters at the module level. The "interface" in this doc corresponds to a "port" in hexagonal vocabulary; "adapter" is the same term in both. Services play the analogous role one layer up, adapting protocol traits to driver methods.
+- **Hexagonal architecture / Ports and Adapters.** Drivers are the domain core; the interface/provider split in §5 is a direct application of Cockburn's ports-and-adapters at the module level. The "interface" in this doc corresponds to a "port" in hexagonal vocabulary; what hexagonal calls an "adapter" this doc calls a **provider** — the rename emphasizes the role-shaped naming convention (the file lives at the role's name, the type lives at the role's name) and avoids the term collision with services. Services play the analogous role one layer up, adapting protocol traits to driver methods.
 - **DDD aggregates.** A composite driver is an aggregate root; sub-drivers are entities reachable only through the aggregate. The "no sibling access" rule is the aggregate-boundary rule.
 - **Active Object** (Samek, *Practical Statecharts in C/C++*). The most embedded-specific analog: each active object is a state machine with an event queue, composed hierarchically, with no direct peer access. Used heavily in safety-critical embedded.
-- **Four-layer chip stack.** The services / drivers / adapters / HAL split is more structured than the typical drivers-on-top-of-HAL embedded layering. The adapter layer is the explicit dependency-inversion seam: drivers depend on interfaces they themselves define, not on HAL, which is what makes driver logic testable without hardware.
+- **Four-layer chip stack.** The services / drivers / providers / HAL split is more structured than the typical drivers-on-top-of-HAL embedded layering. The provider layer is the explicit dependency-inversion seam: drivers depend on interfaces they themselves define, not on HAL, which is what makes driver logic testable without hardware *and* what makes drivers chip-agnostic by construction (chip choice lives in providers, not drivers).
 
 In actor-based frameworks (Erlang/OTP, Akka, Drogue Device), the same shape appears with asynchronous message passing instead of synchronous method calls. The shape is the same; the runtime is different. This pattern is the *synchronous* application of actor-style discipline, which fits firmware where the cost of queues and an executor outweighs their decoupling benefit.
 
@@ -643,8 +825,8 @@ If a single reference best captures the embedded version of this pattern: Miro S
 
 - **Translation boilerplate.** Return values flow as primitives between drivers, which means flattening structs at one boundary and rebuilding (or consuming field-by-field) at the next. Most of this is a few lines per transition.
 - **Discipline-by-convention, not by compiler.** The contract is a naming convention. Rust can't enforce "no sibling sub-driver access," "services are 1:1 with top-level drivers," or "use `on_*` for hardware events." A doc-comment per module stating the convention plus code review is the enforcement mechanism. A team that doesn't read the convention will erode it; one that does will find the pattern self-reinforcing.
-- **Generic-parameter propagation.** Drivers carry one type parameter per interface they consume; composites carry the union. A `pub type` alias hides the verbosity at production call sites, but compile errors and IDE hovers show the long form. The cost is paid in compile-time verbosity, not runtime: production adapters are typically zero-sized, so monomorphization plus `#[inline]` makes the adapter dispatch identical to a direct HAL call.
-- **One more layer of files.** The adapter layer adds one file per peripheral concept (plus the fake adapter alongside). The cost is fixed — adapters don't grow per driver — and it buys the testability seam, but it's a real addition to the file tree.
+- **Generic-parameter propagation.** Drivers carry one type parameter per interface they consume; composites carry the union. A `pub type` alias hides the verbosity at production call sites, but compile errors and IDE hovers show the long form. The cost is paid in compile-time verbosity, not runtime: production providers are typically zero-sized, so monomorphization plus `#[inline]` makes the provider dispatch identical to a direct HAL call.
+- **One more layer of files.** The provider layer adds one file per driver-trait role (plus the fake alongside, cfg(test) in the same file). The cost is fixed — providers don't grow per driver — and it buys the testability seam, but it's a real addition to the file tree.
 
 ---
 
@@ -657,18 +839,19 @@ Six rules:
 3. **Top-level drivers do not communicate with each other.** If two would need to, compose them into a higher driver.
 4. **Services adapt protocol traits to drivers.** Each service binds to exactly one top-level driver. Services are thin.
 5. **Cross-domain orchestration lives at the protocol layer**, never in drivers.
-6. **Drivers are generic over driver-defined interfaces; adapters implement them.** Production adapters wrap HAL calls; fake adapters record calls for tests. Driver logic is unit-testable on the host without hardware.
+6. **Drivers are generic over driver-defined interfaces; providers implement them.** Production providers wrap HAL calls; fake providers record calls for tests. Driver logic is unit-testable on the host without hardware, and drivers are chip-agnostic by construction (chip choice lives in providers).
 
 Four layers, top to bottom:
 
 - **Services** — adapt protocol traits to driver method calls.
-- **Drivers** — hierarchical pure types with pure-method APIs, generic over their interfaces. No statics, no `install` / `get` on the type.
-- **Adapters** — implement driver interfaces over HAL primitives (production) or recording stubs (test).
-- **HAL** — register access and chip-specific resource identifiers, cfg-gated per chip variant.
+- **Drivers** — hierarchical pure types with pure-method APIs, generic over their interfaces. No statics, no `install` / `get` on the type. Chip-agnostic.
+- **Providers** — implement driver interfaces over HAL primitives (production) or recording stubs (test); role-shaped file and type names; own per-peripheral init including clock-gate enable.
+- **HAL** — peripheral-IP-shaped register access and resource identifiers, cfg-gated when IP version differs across chips.
 
-Plus two orthogonal facades:
+Plus three orthogonal facades:
 
-- **Driver registry** (§9) — owns one static cell per driver *instance* and exposes typed accessors. The only place that knows which type plays which singleton role.
+- **Driver registry** (§9.1) — owns one static cell per driver *instance* and exposes typed accessors. The only place that knows which type plays which singleton role.
+- **Provider facade** (§9.4) — single entry point for hardware setup (`Provider::init`) and deferred IRQ enable (`Provider::enable_irqs`). Bringup is three lines: `Provider::init → Drivers::install → Provider::enable_irqs`.
 - **IRQ vector binding** — hardware demux that routes interrupt sources to driver methods via the registry.
 
-The result is firmware where reading any one file gives you a complete picture of one concern, the wire diagram between concerns lives in composite-driver method bodies, the protocol layer stays unaware of any specific peripheral, and driver logic is exercisable by host-side unit tests.
+The result is firmware where reading any one file gives you a complete picture of one concern, the wire diagram between concerns lives in composite-driver method bodies, the protocol layer stays unaware of any specific peripheral, drivers are unaware of any specific chip, and driver logic is exercisable by host-side unit tests.
