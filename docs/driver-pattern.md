@@ -73,7 +73,82 @@ The four-layer split has a stronger consequence than "driver code stays pinned a
 
 The unit-test seam (§6) is the in-tree proof: `Driver<Fake>` and `Driver<Real>` are the same driver code with different providers — same as `Driver<ChipA>` and `Driver<ChipB>` would be. The property generalizes from "swap a fake for a real provider" to "swap chip A's provider set for chip B's."
 
-In hexagonal-architecture terms (§11), drivers are the **domain core** and providers are the bottom adapter ring. The convention makes drivers portable across chips for the same reason hexagonal makes the domain core portable across infrastructure — it's the same property applied to the chip-portability axis. In practice this means a mature multi-chip codebase can lift the entire `drivers/` tree into a chip-agnostic core crate alongside the protocol stack, leaving only `provider/`, `hal/`, and bringup in each chip-specific firmware crate.
+In hexagonal-architecture terms (§11), drivers are the **domain core** and providers are the bottom adapter ring. The convention makes drivers portable across chips for the same reason hexagonal makes the domain core portable across infrastructure — it's the same property applied to the chip-portability axis. In practice this means a mature multi-chip codebase can lift the entire `drivers/` tree into a chip-agnostic core crate alongside the protocol stack, leaving only `provider/`, `hal/`, and bringup in each chip-specific firmware crate. §2.4 describes that crate-level packaging.
+
+### 2.4 Packaging across crates
+
+The four-layer split is a module convention inside a single firmware crate, and that's enough for small projects. For projects with multi-chip support, long-term-support guarantees, or quality goals that benefit from machine-enforced layering, the same four layers map cleanly across crates — and the chip-family crate takes on a sharpened role: it becomes an **orchestration crate**.
+
+```
+<project>-core            ← domain types, protocol stack, control loops — chip-agnostic
+<project>-drivers         ← driver state machines + driver-trait surface — chip-agnostic
+                            depends on <project>-core for domain types
+<chip-family>             ← ORCHESTRATION CRATE
+                            composes hal + providers + services + drivers (instantiated)
+                            + ISRs + bringup into a running system
+                            depends on <project>-core, <project>-drivers, <chip-family>-metapac
+                            chip-variant feature flags forward to <chip-family>-metapac
+firmware/<board>          ← binary entry point
+                            holds the BoardWiring const + main()
+                            depends on <chip-family>, pins one chip-variant feature flag
+```
+
+Two crate-level properties fall out:
+
+- **The driver crate is a pure library.** `<project>-drivers` defines driver types and their trait surfaces — nothing else. No registry, no concrete instances, no bringup. Drivers stay generic over their trait bounds; the crate has no HAL dependency to import. Chip-agnosticity becomes a `cargo build` invariant.
+- **The chip-family crate is the orchestration crate.** It holds *everything* that composes the system: HAL primitives, trait impls (providers), trait impls for core (services), the driver registry (`Drivers` struct holding concrete instances like `DxlRx<DmaRing07>`), the bringup sequence, and the ISR vector binding. §2.5 covers its internal layout.
+
+The consumer-owned-interface rule (§5.1) carries across crate boundaries: **driver traits live in `<project>-drivers`, not in `<chip-family>`.** Providers in `<chip-family>` import the trait from `<project>-drivers` and implement it over local HAL primitives. This is cross-crate dependency-inversion — the lower-level crate depends on the higher-level crate's interface.
+
+The driver registry stays chip-side rather than in `<project>-drivers`. Its fields are concrete chip-side instantiations (`dxl_rx: DxlRx<DmaRing07>`, `dxl_clock: DxlClock<Tim2Mono>`); putting the registry in the driver crate would either force a circular dependency (driver crate names chip-side types) or force generic-parameter explosion (every accessor signature carries the full provider set). Letting the orchestration crate own its registry is honest: each chip family has its own bag of concrete driver instances, and that bag belongs with the chip.
+
+A second chip family is a new sibling orchestration crate with the same shape — its own HAL, its own providers, its own registry, its own bringup. `<project>-drivers` and `<project>-core` are unchanged. Board binaries select chip family by depending on the corresponding orchestration crate.
+
+The trade-off:
+
+- **Single-crate firmware** — all four layers as modules in one crate. Less ceremony. Chip-agnosticity is a code-review convention.
+- **Multi-crate firmware** — chip-agnosticity is a build-time invariant; the driver crate physically cannot import HAL. Multi-chip support, layered review automation, and long-term-support boundaries all become structural. Recommended when project longevity or quality discipline matters.
+
+The split is mechanical once the role-shaped provider convention is in place. The cost is paid in extra crate scaffolding (Cargo.toml, lib.rs entries); the value is the build-time enforcement of the architectural property the convention is designed to provide.
+
+### 2.5 Internal layout of the orchestration crate
+
+Within the chip-family orchestration crate, files organize into five top-level modules. The split mirrors the conceptual layer model but adds explicit homes for things the layer model leaves implicit (declarative config, orchestration glue):
+
+| Module | Shape | Contents | Reads from |
+| --- | --- | --- | --- |
+| `hal/` | Foundation | Peripheral IP primitives (register dance); chip-family type enums (`Pin`, `UsartRemap`, `TimerChannel`, `DmaChannel`) — values may be chip-variant-routed | — |
+| `cfg/` | Declarative | Board-wiring schema struct (`BoardWiring { dxl_uart_rx_pin: Pin, ... }`) — types only, no concrete values | `hal/` types |
+| `providers/` | Impl (driver-facing) | Role-shaped impls of `<project>-drivers` traits | `hal/`, `cfg/` |
+| `services/` | Impl (core-facing) | Impls of `<project>-core` traits | `runtime::registry` |
+| `runtime/` | Orchestration | `registry.rs` (Drivers struct + facade), `init.rs` (bringup sequence), `isr.rs` (handler bodies + `install_isrs!` macro) | All of the above |
+
+Dependency flow (within the crate):
+
+```
+hal ──┐
+cfg ──┴── providers ──┐
+                       ├── runtime::registry ── runtime::init
+                       │                         runtime::isr
+                       │
+                       └── services
+```
+
+The split rests on three observations:
+
+- **Two shapes, cleanly separated.** Providers and services are *impls* — consumer-owned-interface fulfillment, just for different consumer crates (drivers and core respectively). Registry / init / isr are *orchestrators* — they hold, sequence, or dispatch concrete instances. The shapes don't mix in one file: a provider file impls a trait for any consumer; an ISR file names a specific driver to dispatch to.
+- **Wiring schema is chip-family-shaped; wiring values are board-shaped.** The `BoardWiring` struct definition lives in `cfg/` because its fields are typed with chip-family enums (`Pin`, `UsartRemap`, …) — the schema varies by chip variant. The concrete values (which physical pin? which UART? which timer channel?) live in the board binary as a `pub const WIRING: BoardWiring`. The runtime entry point takes `&'static BoardWiring` as a parameter; nothing in the chip-family crate hardcodes pin choices.
+- **ISRs are peripheral-driver bindings, not role-shaped.** A handler names a specific peripheral *and* a specific driver — that pairing is a one-off binding, not a reusable role. So ISRs live in `runtime/isr.rs` (alongside `install_isrs!`) rather than in provider files. A provider file impls `DmaRing` for any consumer; the ISR file names "DMA1_CH7 dispatches to `DxlRx` specifically."
+
+**Chip-variant routing** uses the same cfg-routing pattern at three layers:
+
+```
+hal/types.rs              -- cfg-routed enum bodies per package (V006P8U6, V006E8U6, V307VCT6 …)
+cfg/board_wiring.rs       -- cfg-routed schema (different chips support different fields)
+providers/<role>.rs       -- cfg-routed impl (different chips need different register writes)
+```
+
+A single-variant project uses flat files (`hal/types.rs`, `cfg/board_wiring.rs`, `providers/monotonic.rs`). When a second variant lands, each splits into a sub-directory (`hal/types/{mod,v006p8u6,v307vct6}.rs`, etc.) with cfg-routed re-exports. The pattern is the same at all three layers — one mental model handles every chip-variant axis.
 
 ---
 
@@ -316,6 +391,10 @@ Gate on whatever chip feature flags the project already uses (typically the same
 Two chips with the same IP for a peripheral can share a HAL file (`hal/timer/v3.rs`) but still differ at the provider — e.g., one chip picks SysTick for `Monotonic`, the other picks a timer. The provider encodes the choice; HAL provides the IP-shaped primitives.
 
 System providers follow the same sub-module pattern when their setup is chip-specific (`provider/clocks/v00x.rs`, `provider/clocks/v30x.rs`). Clock tree, pin alternates, and interrupt-controller base config typically vary more across chips than driver-trait providers do, so multi-chip projects often see system providers sub-moduled first.
+
+The variant-routing pattern extends beyond providers: `hal/types.rs` (chip-family enum bodies) and `cfg/board_wiring.rs` (board-wiring schema fields) follow the same cfg-routing convention. §2.5 covers the pattern across all three layers.
+
+When variant counts grow large enough that the per-chip-family cfg gates become unwieldy — or when chips diverge enough that providers don't usefully share a file — the next step is to split chip families into separate crates. §2.4 describes that packaging.
 
 ---
 
@@ -629,17 +708,23 @@ Three intentional asymmetries vs the driver registry:
 
 **Init-order discipline.** System providers run first (clock tree must exist before any peripheral is configured; pin modes must be set before any peripheral that drives those pins comes up). Driver providers follow. Each driver provider's `::init()` performs the clock-gate enable + peripheral configuration writes; IRQs stay masked. After `Drivers::install` populates cells, `Provider::enable_irqs` unmasks vectors.
 
-### 9.5 HAL access rule
+### 9.5 Chip-agnosticity boundary
 
-`hal::*` imports are confined to the `provider/` layer. Drivers consume only their declared trait interfaces; services consume only their bound driver; bringup goes through `Provider` and `Drivers`. The rule is mechanically checkable: a `use crate::hal::` outside `provider/*` is a layering violation.
+Drivers stay chip-agnostic because they have no path to chip-specific types. The enforcement model differs by packaging:
 
-This is what closes the loop on testability and chip-portability:
+**Single-crate firmware.** Chip-agnosticity is a code-review convention: `hal::*` imports are confined to the `provider/` layer; a `use crate::hal::` outside `provider/*` is a layering violation. The rule is mechanically grep-able and amenable to lint enforcement, but its weight rests on review discipline.
+
+**Multi-crate firmware (recommended for long-lived projects).** Chip-agnosticity is a `cargo build` invariant. The driver crate (`<project>-drivers`) has no dependency on the chip-family crate, so it physically cannot import HAL. Within the chip-family orchestration crate, HAL is just an internal module — providers, runtime, and ISR bodies all consume it as needed. There is no within-crate HAL access rule; the boundary that matters is the crate edge.
+
+The multi-crate form is preferred where chip-agnosticity actually matters because the invariant is structural rather than social. Review still catches local quality issues (provider ergonomics, leaky type signatures), but the foundational property — drivers cannot see HAL — holds without anyone having to check.
+
+Three downstream properties hold under either form:
 
 - **Drivers stay generic** over their trait bounds, so unit tests substitute `Fake` providers without touching driver code.
-- **Chip variants land in providers** (§5.6), not scattered through driver bodies or bringup. A new chip swaps provider implementations; everything above is unchanged.
-- **Bringup carries no chip knowledge.** Its body names which providers exist and the order they init in — not which registers they touch.
+- **Chip variants land in providers** (§5.6), in `cfg/` (board-wiring schema), and in `hal/types.rs` (chip-family enums) — not in driver bodies. §2.5 covers the variant-routing pattern across all three layers.
+- **Bringup carries no chip knowledge of its own.** Its body names which providers exist and the order they init in — not which registers they touch.
 
-One exception worth naming explicitly: **ISR vector bodies** (§8) dispatch through `Drivers::*` to driver methods, and the driver methods reach hardware through their trait interfaces (i.e., through providers). The ISR file itself does not import `hal::*`. If an ISR body needs to clear a hardware flag, the trait surface should expose a method for it — the provider implements it; the ISR remains a thin dispatcher.
+**ISR vector bodies** (§8) dispatch through `Drivers::*` to driver methods. In the multi-crate form, ISR bodies live in `runtime/isr.rs` inside the orchestration crate and import HAL directly to ack hardware flags (read NDTR, clear HT/TC, sample EXTI pin) — unrestricted within the orchestration crate. In the single-crate form, ISR HAL access is typically routed through a provider method to keep the within-crate rule local. The ISR's job — dispatch to a driver — is the same either way; only the ack code's home differs.
 
 ---
 
@@ -855,3 +940,5 @@ Plus three orthogonal facades:
 - **IRQ vector binding** — hardware demux that routes interrupt sources to driver methods via the registry.
 
 The result is firmware where reading any one file gives you a complete picture of one concern, the wire diagram between concerns lives in composite-driver method bodies, the protocol layer stays unaware of any specific peripheral, drivers are unaware of any specific chip, and driver logic is exercisable by host-side unit tests.
+
+For projects with multi-chip support or quality goals that benefit from build-time enforcement of layering, the chip-family crate becomes an **orchestration crate** (§2.4) that composes HAL, providers, services, the driver registry, ISRs, and bringup into a running system. Driver state machines and their trait surface live in a pure library crate; chip-agnosticity becomes a `cargo build` invariant rather than a code-review convention. §2.5 covers the orchestration crate's internal module layout.
