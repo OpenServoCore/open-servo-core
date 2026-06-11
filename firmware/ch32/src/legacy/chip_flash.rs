@@ -1,3 +1,5 @@
+#![allow(dead_code)]
+
 use embedded_storage::nor_flash::{
     ErrorType, NorFlash, NorFlashError, NorFlashErrorKind, ReadNorFlash,
 };

@@ -7,7 +7,6 @@ pub use osc_core::{BaudRate, ConfigDefaults};
 
 pub(crate) mod bench;
 pub mod cfg;
-pub mod chip_flash;
 pub mod control;
 pub mod hal;
 pub(crate) mod legacy;
