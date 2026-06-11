@@ -2,12 +2,12 @@ use core::sync::atomic::Ordering;
 
 use osc_core::{BootMode, Event, ServiceEvents};
 
-use crate::dxl::statics::{
+use crate::hal::{flash, pfic};
+use crate::legacy::dxl::statics::{
     DXL_BAUD_PENDING_BRR, DXL_CLOCK_FINE_TRIM_PENDING, DXL_CLOCK_TRIM_PENDING, DXL_REBOOT_PENDING,
     DXL_TX_BUF,
 };
-use crate::dxl::timing::brr;
-use crate::hal::{flash, pfic};
+use crate::legacy::dxl::timing::brr;
 
 pub struct Ch32Events;
 

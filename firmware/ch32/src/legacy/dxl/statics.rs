@@ -37,7 +37,7 @@ pub(crate) static DXL_RX_FIRST_TICK: AtomicU32 = AtomicU32::new(0);
 pub(crate) static DXL_RX_FIRST_VALID: AtomicBool = AtomicBool::new(false);
 
 /// Per-cycle EXTI fire count, swapped to 0 by the IDLE handler when it
-/// snapshots into [`crate::idle_anchor`]. Bench-side instrumentation
+/// snapshots into [`crate::legacy::idle_anchor`]. Bench-side instrumentation
 /// for the snoop-bias characterization — `> 1` means a glitch retriggered
 /// EXTI inside one master packet.
 pub(crate) static DXL_RX_EXTI_FIRES: AtomicU32 = AtomicU32::new(0);
@@ -94,7 +94,7 @@ pub(crate) static DXL_US_PER_BYTE_Q16: AtomicU32 = AtomicU32::new(0);
 
 /// Per-chip clock_fine_trim residual converted to HCLK ticks, summed at the
 /// fire site with the per-path entry-tick constant from
-/// [`crate::dxl::calibration`]. Updated from USART1 TC after a Write touches
+/// [`super::calibration`]. Updated from USART1 TC after a Write touches
 /// `comms.clock_fine_trim_us`. Signed: a negative Q8.8 nudges fire later by
 /// partially cancelling the per-path constant.
 pub(crate) static FIRE_ADVANCE_FINE_TICKS: AtomicI16 = AtomicI16::new(0);

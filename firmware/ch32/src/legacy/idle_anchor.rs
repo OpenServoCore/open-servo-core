@@ -50,8 +50,8 @@ static CUMULATIVE_BYTES: AtomicU32 = AtomicU32::new(0);
 
 /// `delta_bytes` is DMA bytes since the previous IDLE; `tick` is the backdated
 /// wire-end SysTick. `first_tick` / `first_valid` are the IDLE-handler-side
-/// snapshot of [`crate::dxl::statics::DXL_RX_FIRST_TICK`] /
-/// [`crate::dxl::statics::DXL_RX_FIRST_VALID`] — freeze them here so a
+/// snapshot of [`crate::legacy::dxl::statics::DXL_RX_FIRST_TICK`] /
+/// [`crate::legacy::dxl::statics::DXL_RX_FIRST_VALID`] — freeze them here so a
 /// later-packet EXTI fire can't poison the snoop measurement. `last_tick` /
 /// `exti_fires` snapshot the per-cycle glitch counters for the bench log.
 pub fn record(

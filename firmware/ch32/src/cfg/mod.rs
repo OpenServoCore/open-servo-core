@@ -35,7 +35,7 @@ impl Precomputed {
             scales: Scales::new(&cfg.calibration, gain_factor),
             pwm_psc,
             pwm_arr,
-            usart_brr: crate::dxl::timing::brr(cfg.defaults.dxl_baud),
+            usart_brr: crate::legacy::dxl::timing::brr(cfg.defaults.dxl_baud),
         }
     }
 }

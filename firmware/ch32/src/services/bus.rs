@@ -6,17 +6,17 @@ use dxl_protocol::packet::{Slot, Status};
 use dxl_protocol::{SlotEmitter, StatusEmitter};
 use osc_core::{CalSnapshot, DxlBus, Schedule};
 
-use crate::dxl;
-use crate::dxl::cal::{Cal, snoop_bias_ticks};
-use crate::dxl::statics::{
+use crate::hal::dma;
+use crate::hal::rcc::{CLOCK_TRIM_DELTA_MAX, CLOCK_TRIM_DELTA_MIN, CLOCK_TRIM_PPM_PER_STEP};
+use crate::hal::systick::TICKS_PER_US;
+use crate::legacy::dxl;
+use crate::legacy::dxl::cal::{Cal, snoop_bias_ticks};
+use crate::legacy::dxl::statics::{
     CLOCK_FINE_TRIM_NO_PENDING, CLOCK_TRIM_NO_PENDING, DXL_BYTE_TIME_TICKS, DXL_CHAR_TIME_TICKS,
     DXL_CLOCK_FINE_TRIM_PENDING, DXL_CLOCK_TRIM_PENDING, DXL_RX_BUF, DXL_RX_BUF_LEN, DXL_TX_BUF,
     RX_MASK_U32,
 };
-use crate::dxl::timing::{SLOT_MARGIN, bytes_to_us, bytes_to_us_q88};
-use crate::hal::dma;
-use crate::hal::rcc::{CLOCK_TRIM_DELTA_MAX, CLOCK_TRIM_DELTA_MIN, CLOCK_TRIM_PPM_PER_STEP};
-use crate::hal::systick::TICKS_PER_US;
+use crate::legacy::dxl::timing::{SLOT_MARGIN, bytes_to_us, bytes_to_us_q88};
 use crate::legacy::idle_anchor::{self, IdleAnchor};
 
 /// Single &mut writer: the main loop holding the `Services` struct.

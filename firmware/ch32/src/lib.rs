@@ -9,7 +9,6 @@ pub(crate) mod bench;
 pub mod cfg;
 pub mod chip_flash;
 pub mod control;
-pub(crate) mod dxl;
 pub mod hal;
 pub(crate) mod legacy;
 pub mod log;

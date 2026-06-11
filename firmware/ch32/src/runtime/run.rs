@@ -28,7 +28,7 @@ pub fn __run(cfg: BoardConfig, pre: Precomputed) -> ! {
         // SAFETY: SERVICES initialized in `install`; no ISR aliases it.
         let services = unsafe { (*crate::statics::SERVICES.get()).assume_init_mut() };
         services.poll(&crate::statics::SHARED);
-        crate::dxl::tx_activity::poll();
+        crate::legacy::dxl::tx_activity::poll();
         // SAFETY: stat_led installed in bringup; main-loop sole accessor.
         unsafe { crate::runtime::Drivers::stat_led() }.poll();
         riscv::asm::wfi();

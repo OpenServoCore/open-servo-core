@@ -10,7 +10,7 @@ use core::sync::atomic::Ordering;
 
 use osc_drivers::led::Pattern;
 
-use crate::dxl::statics::DXL_TX_COUNT;
+use super::statics::DXL_TX_COUNT;
 use crate::hal::systick::{self, TICKS_PER_US};
 use crate::runtime::Drivers;
 

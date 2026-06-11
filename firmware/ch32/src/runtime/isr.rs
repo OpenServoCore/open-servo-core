@@ -2,16 +2,16 @@ use ch32_metapac::{DMA1, USART1};
 use core::sync::atomic::Ordering;
 use osc_core::{ControlIo, ConversionVariables, Sensors};
 
-use crate::dxl;
-use crate::dxl::statics::{
+use crate::hal::rcc;
+use crate::hal::{dma, exti, gpio, pfic, systick, usart};
+use crate::legacy::dxl;
+use crate::legacy::dxl::statics::{
     CLOCK_FINE_TRIM_NO_PENDING, CLOCK_TRIM_NO_PENDING, DXL_BAUD_PENDING_BRR, DXL_CHAR_TIME_TICKS,
     DXL_CLOCK_FINE_TRIM_PENDING, DXL_CLOCK_TRIM_PENDING, DXL_REBOOT_PENDING, DXL_RX_BUF_LEN,
     DXL_RX_EXTI_FIRES, DXL_RX_FIRST_TICK, DXL_RX_FIRST_VALID, DXL_RX_LAST_TICK, DXL_RX_PIN,
     DXL_RX_WRITE_POS, DXL_TX_BUF, DXL_TX_COUNT, DXL_TX_EN, recompute_fire_advance_fine_ticks,
     store_baud_derived,
 };
-use crate::hal::rcc;
-use crate::hal::{dma, exti, gpio, pfic, systick, usart};
 use crate::legacy::idle_anchor;
 use crate::runtime::Drivers;
 use crate::statics::{KERNEL, SHARED};
