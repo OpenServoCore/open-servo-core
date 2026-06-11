@@ -5,4 +5,8 @@ edition.workspace = true
 license.workspace = true
 
 [dependencies]
-osc-core.workspace = true
+osc-core.workspace     = true
+dxl-protocol.workspace = true
+
+[dev-dependencies]
+dxl-protocol = { workspace = true, features = ["software-crc"] }

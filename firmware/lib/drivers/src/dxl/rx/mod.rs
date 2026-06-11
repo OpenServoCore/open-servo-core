@@ -6,6 +6,10 @@
 //! The driver depends on a [`DmaRing`] adapter for HT/TC flag drain and
 //! NDTR readback; the production adapter binds to DMA1_CH7. Tests swap in
 //! [`crate::mocks::FakeDmaRing`] and stage flags + remaining directly.
+//!
+//! The two ring depths are const-generic so a chip/board can pick its
+//! own memory budget without touching driver code; per doc §8.4 the V006
+//! defaults to `EDGE_BUF_LEN = 128` and `BT_BUF_LEN = 64`.
 
 mod classifier;
 
@@ -14,16 +18,8 @@ use core::cell::SyncUnsafeCell;
 use crate::traits::DmaRing;
 use classifier::Classifier;
 
-/// Edge-timestamp ring depth (doc §8.4 default). Power-of-two for cheap
-/// mask indexing; HT fires at the halfway point so the classifier never
-/// has to chase a write head that's lapped its read cursor under sustained
-/// 3M traffic.
-pub const EDGE_BUF_LEN: usize = 128;
-
-const _: () = assert!(EDGE_BUF_LEN.is_power_of_two() && EDGE_BUF_LEN <= u16::MAX as usize + 1);
-
-pub struct DxlRx<R: DmaRing> {
-    classifier: Classifier,
+pub struct DxlRx<R: DmaRing, const EDGE_BUF_LEN: usize, const BT_BUF_LEN: usize> {
+    classifier: Classifier<BT_BUF_LEN>,
     /// DMA1_CH7's destination buffer. `SyncUnsafeCell` because the DMA
     /// engine writes it concurrently with the classifier's reads — both
     /// reads happen at PFIC HIGH (no preemption from another consumer)
@@ -33,8 +29,20 @@ pub struct DxlRx<R: DmaRing> {
     ring: R,
 }
 
-impl<R: DmaRing> DxlRx<R> {
+impl<R: DmaRing, const EDGE_BUF_LEN: usize, const BT_BUF_LEN: usize>
+    DxlRx<R, EDGE_BUF_LEN, BT_BUF_LEN>
+{
+    /// Compile-time guard. HT fires at the halfway point, so the ring
+    /// must be power-of-two for mask indexing to track NDTR cleanly; bound
+    /// at u16 so head/tail arithmetic stays in the timer's native width.
+    const _CHECK_EDGE_BUF_LEN: () = assert!(
+        EDGE_BUF_LEN.is_power_of_two() && EDGE_BUF_LEN <= u16::MAX as usize + 1,
+        "EDGE_BUF_LEN must be a power of two in (0, 1<<16]",
+    );
+
     pub const fn new(ring: R) -> Self {
+        // Force the const assertion to fire at instantiation.
+        let _: () = Self::_CHECK_EDGE_BUF_LEN;
         Self {
             classifier: Classifier::new(),
             edges: SyncUnsafeCell::new([0; EDGE_BUF_LEN]),
@@ -91,7 +99,9 @@ impl<R: DmaRing> DxlRx<R> {
 }
 
 #[cfg(test)]
-impl DxlRx<crate::mocks::FakeDmaRing> {
+impl<const EDGE_BUF_LEN: usize, const BT_BUF_LEN: usize>
+    DxlRx<crate::mocks::FakeDmaRing, EDGE_BUF_LEN, BT_BUF_LEN>
+{
     /// Stage `vals` into the edges buffer as if DMA wrote them and set
     /// `remaining` so `head == vals.len()`. Shared by leaf and composite tests.
     pub(crate) fn stage_edges_for_test(&mut self, vals: &[u16]) {
@@ -115,11 +125,16 @@ mod tests {
     use crate::mocks::FakeDmaRing;
     use crate::traits::DmaFlags;
 
+    /// Test-side ring sizing — matches V006 defaults per doc §8.3 / §8.4.
+    const EDGE_BUF_LEN: usize = 128;
+    const BT_BUF_LEN: usize = 64;
+    type Rx = DxlRx<FakeDmaRing, EDGE_BUF_LEN, BT_BUF_LEN>;
+
     // 3 Mbaud at HCLK 48 MHz → ticks_per_bit = 16.
     const TPB_3M: u16 = 16;
     const BYTE_TICKS_3M: u16 = 160;
 
-    fn rx() -> DxlRx<FakeDmaRing> {
+    fn rx() -> Rx {
         DxlRx::new(FakeDmaRing::default())
     }
 

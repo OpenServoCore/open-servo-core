@@ -1,7 +1,7 @@
+use super::registry::DXL_EDGE_BUF_LEN;
 use ch32_metapac::{ADC, adc::vals::Extsel, dma::vals::Dir};
 use osc_core::{ConfigDefaults, RegionStorage};
 use osc_drivers::Level;
-use osc_drivers::dxl::rx::EDGE_BUF_LEN;
 
 use crate::hal::{
     adc, afio, delay_ms, dma, exti,
@@ -334,7 +334,7 @@ fn bring_up_edge_ts_capture() {
         &edge_ts_cfg,
         timer::tim2_ch4_capture_addr(),
         edges_addr,
-        EDGE_BUF_LEN as u16,
+        DXL_EDGE_BUF_LEN as u16,
     );
     dma::enable(dma::Channel::CH7);
 }

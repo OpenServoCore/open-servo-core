@@ -21,15 +21,7 @@
 const WINDOW_LO_MUL: u16 = 9;
 const WINDOW_HI_MUL: u16 = 11;
 
-/// Power-of-two BT ring depth — sized to outlast a worst-case DXL packet
-/// (260 B max, but the snoop path only reads the most recent ~50 entries
-/// before being drained at IDLE).
-pub const BYTE_TS_BUF_LEN: usize = 64;
-const BYTE_TS_MASK: u16 = (BYTE_TS_BUF_LEN as u16) - 1;
-
-const _: () = assert!(BYTE_TS_BUF_LEN.is_power_of_two() && BYTE_TS_BUF_LEN > 0);
-
-pub struct Classifier {
+pub struct Classifier<const BT_BUF_LEN: usize> {
     /// Last edge timestamp that anchored a byte start, if any. New edges
     /// are classified by `t - anchor` (u16 wrap). `None` after a fresh
     /// `Classifier::new` or `reset_anchor` — the next edge re-seeds.
@@ -40,7 +32,7 @@ pub struct Classifier {
     /// entries.
     edges_read_idx: u16,
 
-    byte_ts_buf: [u16; BYTE_TS_BUF_LEN],
+    byte_ts_buf: [u16; BT_BUF_LEN],
     /// Sequence number of the next BT slot to write. Monotonically
     /// increasing across u16; consumers read by sequence number and
     /// [`Classifier::byte_ts_at`] masks down to a ring slot.
@@ -53,13 +45,25 @@ pub struct Classifier {
     gaps: u16,
 }
 
-impl Classifier {
+impl<const BT_BUF_LEN: usize> Classifier<BT_BUF_LEN> {
+    /// Compile-time guard. `byte_ts_at`'s ring-window math and the
+    /// `BT_MASK` derivation both assume power-of-two; bound at u16 so the
+    /// mask fits the timer's native CNT width.
+    const _CHECK_BT_BUF_LEN: () = assert!(
+        BT_BUF_LEN.is_power_of_two() && BT_BUF_LEN > 0 && BT_BUF_LEN <= u16::MAX as usize + 1,
+        "BT_BUF_LEN must be a power of two in (0, 1<<16]",
+    );
+
+    const BT_MASK: u16 = (BT_BUF_LEN as u16).wrapping_sub(1);
+
     #[allow(dead_code)]
     pub const fn new() -> Self {
+        // Force the const assertion to fire at instantiation.
+        let _: () = Self::_CHECK_BT_BUF_LEN;
         Self {
             anchor: None,
             edges_read_idx: 0,
-            byte_ts_buf: [0; BYTE_TS_BUF_LEN],
+            byte_ts_buf: [0; BT_BUF_LEN],
             byte_ts_head: 0,
             seeds: 0,
             hits: 0,
@@ -100,7 +104,7 @@ impl Classifier {
             match anchor {
                 None => {
                     anchor = Some(t);
-                    byte_ts_buf[(byte_ts_head & BYTE_TS_MASK) as usize] = t;
+                    byte_ts_buf[(byte_ts_head & Self::BT_MASK) as usize] = t;
                     byte_ts_head = byte_ts_head.wrapping_add(1);
                     seeds = seeds.wrapping_add(1);
                 }
@@ -110,12 +114,12 @@ impl Classifier {
                         skips = skips.wrapping_add(1);
                     } else if ticks_since_anchor <= win_hi_ticks {
                         anchor = Some(t);
-                        byte_ts_buf[(byte_ts_head & BYTE_TS_MASK) as usize] = t;
+                        byte_ts_buf[(byte_ts_head & Self::BT_MASK) as usize] = t;
                         byte_ts_head = byte_ts_head.wrapping_add(1);
                         hits = hits.wrapping_add(1);
                     } else {
                         anchor = Some(t);
-                        byte_ts_buf[(byte_ts_head & BYTE_TS_MASK) as usize] = t;
+                        byte_ts_buf[(byte_ts_head & Self::BT_MASK) as usize] = t;
                         byte_ts_head = byte_ts_head.wrapping_add(1);
                         gaps = gaps.wrapping_add(1);
                     }
@@ -148,10 +152,10 @@ impl Classifier {
     #[allow(dead_code)]
     pub fn byte_ts_at(&self, seq: u16) -> Option<u16> {
         let ahead_of_seq = self.byte_ts_head.wrapping_sub(seq);
-        if ahead_of_seq == 0 || ahead_of_seq > BYTE_TS_BUF_LEN as u16 {
+        if ahead_of_seq == 0 || ahead_of_seq > BT_BUF_LEN as u16 {
             None
         } else {
-            Some(self.byte_ts_buf[(seq & BYTE_TS_MASK) as usize])
+            Some(self.byte_ts_buf[(seq & Self::BT_MASK) as usize])
         }
     }
 
@@ -165,8 +169,11 @@ impl Classifier {
 
 #[cfg(test)]
 mod tests {
-    use super::{BYTE_TS_BUF_LEN, Classifier};
+    use super::Classifier;
 
+    /// Power-of-two BT ring depth for these tests — matches the V006
+    /// production sizing per doc §8.3 (BT must equal RX_BUF_LEN = 64).
+    const BT_BUF_LEN: usize = 64;
     // 3 Mbaud at HCLK 48 MHz → BRR = 16 → window = [144, 176] ticks.
     const TPB_3M: u16 = 16;
     // 1 Mbaud at HCLK 48 MHz → BRR = 48 → window = [432, 528] ticks.
@@ -174,7 +181,7 @@ mod tests {
     /// One byte-time at 3 Mbaud.
     const BYTE_TICKS_3M: u16 = 160;
 
-    fn make() -> Classifier {
+    fn make() -> Classifier<BT_BUF_LEN> {
         Classifier::new()
     }
 
@@ -308,7 +315,7 @@ mod tests {
     #[test]
     fn byte_ts_at_returns_none_past_ring_window() {
         let mut c = make();
-        c.byte_ts_head = (BYTE_TS_BUF_LEN as u16).wrapping_add(5);
+        c.byte_ts_head = (BT_BUF_LEN as u16).wrapping_add(5);
         // Entries [5, BUF_LEN+5) are in-window; [0, 5) have been overwritten.
         assert_eq!(c.byte_ts_at(0), None);
         assert_eq!(c.byte_ts_at(4), None);

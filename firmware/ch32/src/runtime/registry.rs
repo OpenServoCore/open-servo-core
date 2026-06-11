@@ -25,12 +25,26 @@ use crate::providers;
 
 /// Concrete instantiations for this chip. The driver types stay generic
 /// in `osc-drivers`; this is the single spot that binds them to specific
-/// providers.
+/// providers and storage sizes. See the `DxlBus` doc for what each const
+/// generic means; values track `docs/dxl-hw-timed-transport.md`.
 type StatLed = Led<providers::digital_out::DigitalOut, providers::monotonic::Monotonic>;
+/// Streaming-decoder accumulator size — `osc-core`'s dispatcher uses this
+/// value for its sibling decoder (`services::dxl::api::DXL_DECODER_CAP`).
+/// Keep them in sync.
+pub(crate) const DXL_DECODER_CAP: usize = 256;
+/// DMA1_CH5 RX-byte ring depth (doc §8.1) — also the BT-ring depth inside
+/// `DxlRx` (doc §8.3 requires them to match).
+pub(crate) const DXL_RX_BUF_LEN: usize = 64;
+/// DMA1_CH7 edge-timestamp ring depth — option A in doc §8.4.
+pub(crate) const DXL_EDGE_BUF_LEN: usize = 128;
 type DxlBusCh = DxlBus<
     providers::usart_baud::UsartBaud,
     providers::clock_trim::ClockTrim,
     providers::dma_ring::DmaRing,
+    providers::dxl_crc::DxlCrc,
+    DXL_DECODER_CAP,
+    DXL_RX_BUF_LEN,
+    DXL_EDGE_BUF_LEN,
 >;
 
 struct Cells {
@@ -77,6 +91,8 @@ impl Drivers {
                 providers::usart_baud::UsartBaud,
                 providers::clock_trim::ClockTrim,
             ),
+            defaults.dxl_id,
+            (defaults.dxl_return_delay_2us as u32) * 2,
         ));
     }
 
