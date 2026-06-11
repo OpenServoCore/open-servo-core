@@ -47,10 +47,12 @@ impl<R: DmaRing, const EDGE_BUF_LEN: usize, const BT_BUF_LEN: usize>
     /// hands this to `dma::configure(CH7, ...)`; the driver instance lives
     /// in the registry's `SyncUnsafeCell<Option<Rx>>` so the address is
     /// fixed for the lifetime of the program once `install` returns.
-    /// `DmaBuffer` is `#[repr(transparent)]`, so the cell's address equals
-    /// the underlying array's first-byte address.
+    /// `DmaBuffer::as_ptr` returns the address of the first storage slot —
+    /// the struct's outer address is offset by the `write_seq` field.
     pub fn edges_addr(&self) -> u32 {
-        self.edges.get() as u32
+        // SAFETY: address-of read; no value materialized. Sound even while
+        // DMA is writing the storage concurrently.
+        unsafe { (*self.edges.get()).as_ptr() as u32 }
     }
 
     /// Called when new RX falling-edge timestamps may be available. Drains

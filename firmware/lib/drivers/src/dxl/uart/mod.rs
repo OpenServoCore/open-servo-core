@@ -231,9 +231,13 @@ impl<
     /// Stable peripheral-memory address for DMA1_CH5's destination buffer.
     /// Bringup hands this to `dma::configure(CH5, ...)` so the USART byte
     /// stream lands directly in driver-owned storage (replaces the legacy
-    /// `DXL_RX_BUF` static).
+    /// `DXL_RX_BUF` static). `DmaBuffer::as_ptr` returns the address of
+    /// the first storage slot — the struct's outer address is offset by
+    /// the `write_seq` field.
     pub fn rx_buf_addr(&self) -> u32 {
-        self.rx_buf.get() as u32
+        // SAFETY: address-of read; no value materialized. Sound even while
+        // DMA is writing the storage concurrently.
+        unsafe { (*self.rx_buf.get()).as_ptr() as u32 }
     }
 }
 
