@@ -7,7 +7,7 @@ pub use board_wiring::{
 
 use osc_core::ConfigDefaults;
 
-use crate::board::convert::Scales;
+use crate::convert::Scales;
 
 #[derive(Copy, Clone)]
 pub struct BoardConfig {

@@ -1,5 +1,3 @@
-pub(crate) mod convert;
-
 use osc_core::{
     DecayMode, FrameInputs, KernelIo, Motor as MotorTrait, MotorCmd, RawSamples, SampleFrame,
     Sensors as SensorsTrait,
@@ -7,16 +5,15 @@ use osc_core::{
 use osc_drivers::Level;
 
 use crate::cfg::{BoardConfig, Calibration, Precomputed};
-use crate::hal::{Pin, gpio, timer};
-use crate::runtime::init::BringupResult;
-use crate::statics::read_sample_tick;
-
-use convert::{
+use crate::convert::{
     SCAN_IDX_NTC, SCAN_IDX_POS, SCAN_IDX_SHUNT_POST, SCAN_IDX_VCAL, SCAN_IDX_VMOTOR_A,
     SCAN_IDX_VMOTOR_B, SCAN_PEAK_OFFSET, SCAN_TROUGH_OFFSET, Scales, VcalLpf, divider_to_mv,
     effort_to_ticks, ntc_to_centi_celsius, pos_to_microrads, scan_slot, shunt_to_milliamps,
     vmotor_diff_mv,
 };
+use crate::hal::{Pin, gpio, timer};
+use crate::runtime::init::BringupResult;
+use crate::statics::read_sample_tick;
 
 pub struct Ch32Sensors {
     calibration: Calibration,
