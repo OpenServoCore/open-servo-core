@@ -10,9 +10,9 @@ use core::sync::atomic::Ordering;
 
 use osc_drivers::led::Pattern;
 
-use crate::runtime::Drivers;
 use crate::dxl::statics::DXL_TX_COUNT;
 use crate::hal::systick::{self, TICKS_PER_US};
+use crate::runtime::Drivers;
 
 /// 50 ms between samples — ~10 Hz blink while active, comfortable for the
 /// eye and well above typical DXL polling rates so single-shot replies still

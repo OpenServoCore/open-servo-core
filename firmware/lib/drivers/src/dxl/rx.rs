@@ -64,8 +64,7 @@ impl<R: DmaRing> DxlRx<R> {
         // writer) and read here from a PFIC-HIGH ISR; no other code path
         // takes a `&mut` into it.
         let edges = unsafe { &*self.edges.get() };
-        self.classifier
-            .on_edge_advance(edges, head, ticks_per_bit);
+        self.classifier.on_edge_advance(edges, head, ticks_per_bit);
     }
 
     /// USART1 IDLE backstop. Walks any tail edges the HT/TC ISR hasn't
@@ -76,8 +75,7 @@ impl<R: DmaRing> DxlRx<R> {
         let head = (EDGE_BUF_LEN as u16).wrapping_sub(self.ring.remaining());
         // SAFETY: see `on_dma_event`.
         let edges = unsafe { &*self.edges.get() };
-        self.classifier
-            .on_edge_advance(edges, head, ticks_per_bit);
+        self.classifier.on_edge_advance(edges, head, ticks_per_bit);
         self.classifier.reset_anchor();
     }
 
@@ -130,7 +128,10 @@ mod tests {
     fn on_dma_event_with_ht_drives_classifier() {
         let mut d = rx();
         stage_edges(&mut d, &[1000, 1000 + BYTE_TICKS_3M]);
-        d.ring.next_flags = DmaFlags { ht: true, tc: false };
+        d.ring.next_flags = DmaFlags {
+            ht: true,
+            tc: false,
+        };
         d.on_dma_event(TPB_3M);
         assert_eq!(d.byte_ts_head(), 2);
         assert_eq!(d.byte_ts_at(0), Some(1000));
@@ -141,7 +142,10 @@ mod tests {
     fn on_dma_event_with_tc_drives_classifier() {
         let mut d = rx();
         stage_edges(&mut d, &[2000]);
-        d.ring.next_flags = DmaFlags { ht: false, tc: true };
+        d.ring.next_flags = DmaFlags {
+            ht: false,
+            tc: true,
+        };
         d.on_dma_event(TPB_3M);
         assert_eq!(d.byte_ts_head(), 1);
     }
@@ -151,7 +155,10 @@ mod tests {
         let mut d = rx();
         // First burst: seed an anchor.
         stage_edges(&mut d, &[5000]);
-        d.ring.next_flags = DmaFlags { ht: true, tc: false };
+        d.ring.next_flags = DmaFlags {
+            ht: true,
+            tc: false,
+        };
         d.on_dma_event(TPB_3M);
         assert_eq!(d.byte_ts_head(), 1);
 
@@ -162,7 +169,10 @@ mod tests {
         // Stage a single edge far from the prior anchor — would be a GAP
         // if anchor were still 5000.
         stage_edges(&mut d, &[5000, 59_000]);
-        d.ring.next_flags = DmaFlags { ht: true, tc: false };
+        d.ring.next_flags = DmaFlags {
+            ht: true,
+            tc: false,
+        };
         d.on_dma_event(TPB_3M);
         assert_eq!(d.byte_ts_head(), 2);
         assert_eq!(d.byte_ts_at(1), Some(59_000));

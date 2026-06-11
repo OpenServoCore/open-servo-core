@@ -128,6 +128,9 @@ pub(super) fn bulk_entries_as_bytes(entries: &[BulkReadEntry]) -> &[u8] {
     // fields (u8, U16Le, U16Le) = exactly 5 bytes, no padding. The byte
     // view of the slice is sound.
     unsafe {
-        core::slice::from_raw_parts(entries.as_ptr() as *const u8, core::mem::size_of_val(entries))
+        core::slice::from_raw_parts(
+            entries.as_ptr() as *const u8,
+            core::mem::size_of_val(entries),
+        )
     }
 }

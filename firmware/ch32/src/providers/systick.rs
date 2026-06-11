@@ -1,7 +1,7 @@
 //! SysTick provider — provides `Monotonic` from the HCLK-driven SysTick counter.
 
-use osc_drivers::traits::Monotonic;
 use crate::hal::systick;
+use osc_drivers::traits::Monotonic;
 
 pub struct SysTick;
 
