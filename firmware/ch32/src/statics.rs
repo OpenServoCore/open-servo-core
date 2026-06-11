@@ -2,7 +2,7 @@ use core::cell::SyncUnsafeCell;
 use core::mem::MaybeUninit;
 use osc_core::{Kernel, Services, Shared};
 
-use crate::board::Ch32ControlIo;
+use crate::control::Ch32ControlIo;
 use crate::hal::pfic;
 use crate::services::Ch32ServicesIo;
 

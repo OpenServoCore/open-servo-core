@@ -2,8 +2,8 @@
 //! the `BoardConfig` literal at compile time, calls into bringup, installs
 //! the kernel + IRQs, and enters the main loop.
 
-use crate::board::Ch32ControlIo;
 use crate::cfg::{BoardConfig, Precomputed};
+use crate::control::Ch32ControlIo;
 
 /// Const-asserts pin-uniqueness on the `BoardConfig` literal, then runs.
 #[macro_export]

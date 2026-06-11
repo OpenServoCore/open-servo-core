@@ -6,10 +6,9 @@ pub use osc_core::bp;
 pub use osc_core::{BaudRate, ConfigDefaults};
 
 pub(crate) mod bench;
-pub mod board;
 pub mod cfg;
 pub mod chip_flash;
-pub(crate) mod convert;
+pub mod control;
 pub(crate) mod dxl;
 pub mod hal;
 pub(crate) mod idle_anchor;
