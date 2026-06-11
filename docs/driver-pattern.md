@@ -533,7 +533,7 @@ This is the same rule as §4.2 stated from the other direction: drivers don't re
 The IRQ vector binding file is structurally minimal: each ISR is a small dispatcher that reads the hardware status register, classifies into logical events, and calls into one or more drivers.
 
 ```rust
-// irq.rs — vector binding
+// runtime/isr.rs — vector binding
 pub fn on_some_peripheral() {
     let status = peripheral_status();
     let driver = unsafe { Drivers::top() };
@@ -830,7 +830,7 @@ If the example were ported to a second chip variant where the UART is on a diffe
 ### 10.3 Mapping to ISRs
 
 ```rust
-// irq.rs
+// runtime/isr.rs
 pub fn on_uart() {
     let status = uart_status();
     // SAFETY: see Drivers::bus.

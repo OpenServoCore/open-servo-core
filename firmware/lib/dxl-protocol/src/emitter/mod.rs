@@ -3,7 +3,7 @@
 //! - [`InstructionEmitter`] -- master -> slave request frames
 //! - [`StatusEmitter`]      -- slave -> master Status reply frames
 //! - [`SlotEmitter`]        -- one slave's slice of a coalesced Fast
-//!                           Sync/Bulk Read reply chain
+//!   Sync/Bulk Read reply chain
 //!
 //! Each emitter borrows the caller's TX buffer and emits one frame per
 //! method call. Each exposes a per-variant fluent API plus a unified
@@ -128,9 +128,6 @@ pub(super) fn bulk_entries_as_bytes(entries: &[BulkReadEntry]) -> &[u8] {
     // fields (u8, U16Le, U16Le) = exactly 5 bytes, no padding. The byte
     // view of the slice is sound.
     unsafe {
-        core::slice::from_raw_parts(
-            entries.as_ptr() as *const u8,
-            entries.len() * core::mem::size_of::<BulkReadEntry>(),
-        )
+        core::slice::from_raw_parts(entries.as_ptr() as *const u8, core::mem::size_of_val(entries))
     }
 }

@@ -52,7 +52,7 @@ impl Id {
     #[inline]
     pub const fn try_servo(b: u8) -> Option<Self> {
         match b {
-            0xFD | 0xFE | 0xFF => None,
+            0xFD..=0xFF => None,
             _ => Some(Self(b)),
         }
     }

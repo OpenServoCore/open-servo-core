@@ -45,6 +45,10 @@ static CELLS: Cells = Cells {
 
 pub struct Drivers;
 
+// `SAFETY:` prose in each fn's doc comment is the project convention; the
+// markdown-`# Safety`-section form clippy expects would add a one-off style
+// island here. Keep the convention; allow the lint.
+#[allow(clippy::missing_safety_doc)]
 impl Drivers {
     /// SAFETY: bringup-only, pre-IRQ; sole writer. Must be called exactly once.
     pub unsafe fn install(w: &BoardWiring, defaults: &ConfigDefaults) {
