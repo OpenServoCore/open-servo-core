@@ -1,7 +1,7 @@
 use core::sync::atomic::Ordering;
 
+use super::super::statics::SHARED;
 use crate::hal::systick;
-use crate::statics::SHARED;
 
 use super::calibration::{
     CATCHUP_ENTRY_TICKS, FAST_ENTRY_TICKS, PFIC_ENTRY_TICKS, PLAIN_ENTRY_TICKS,

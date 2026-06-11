@@ -1,7 +1,7 @@
 use core::cell::SyncUnsafeCell;
 
+use super::super::statics::SHARED;
 use crate::hal::{exti, systick};
-use crate::statics::SHARED;
 
 use super::statics::DXL_RX_PIN;
 

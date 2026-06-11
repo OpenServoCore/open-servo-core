@@ -11,8 +11,10 @@ use crate::hal::{
 use crate::legacy::dxl::statics::{
     DXL_RX_BUF, DXL_RX_BUF_LEN, DXL_RX_PIN, DXL_TX_BUF, DXL_TX_EN, store_baud_derived,
 };
+use crate::legacy::statics::{
+    ADC_DMA_BUF, ADC_DMA_BUF_LEN, ADC_SCAN_LEN, ADC_SENSOR_COUNT, SHARED,
+};
 use crate::runtime::Drivers;
-use crate::statics::{ADC_DMA_BUF, ADC_DMA_BUF_LEN, ADC_SCAN_LEN, ADC_SENSOR_COUNT, SHARED};
 
 use crate::cfg::{
     AdcPins, BoardWiring, CurrentSenseConfig, Duplex, DxlBus, MotorConfig, Precomputed,

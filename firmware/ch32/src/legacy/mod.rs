@@ -4,3 +4,4 @@
 
 pub(crate) mod dxl;
 pub(crate) mod idle_anchor;
+pub(crate) mod statics;

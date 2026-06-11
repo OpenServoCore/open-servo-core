@@ -3,7 +3,7 @@
 //! scan lands at offset 0 and the peak scan lands at `ADC_SCAN_LEN`. Slot
 //! indices within a scan reflect the configured RSQR sequence.
 
-use crate::statics::{ADC_DMA_BUF, ADC_SCAN_LEN};
+use crate::legacy::statics::{ADC_DMA_BUF, ADC_SCAN_LEN};
 
 pub(super) const SCAN_PEAK_OFFSET: usize = ADC_SCAN_LEN;
 pub(super) const SCAN_TROUGH_OFFSET: usize = 0;

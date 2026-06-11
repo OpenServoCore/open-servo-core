@@ -7,7 +7,7 @@ use core::cell::SyncUnsafeCell;
 
 use osc_core::Sample;
 
-use crate::statics::read_sample_tick;
+use crate::legacy::statics::read_sample_tick;
 
 static TELEMETRY_SAMPLE: SyncUnsafeCell<Option<Sample>> = SyncUnsafeCell::new(None);
 static LAST_PRINT_TICK: SyncUnsafeCell<u32> = SyncUnsafeCell::new(0);

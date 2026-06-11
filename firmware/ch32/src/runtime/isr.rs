@@ -13,8 +13,8 @@ use crate::legacy::dxl::statics::{
     store_baud_derived,
 };
 use crate::legacy::idle_anchor;
+use crate::legacy::statics::{KERNEL, SHARED};
 use crate::runtime::Drivers;
-use crate::statics::{KERNEL, SHARED};
 
 /// ADC DMA TC handler body — wire into the vector table via [`crate::install_isrs!`].
 pub fn on_adc_dma_tc() {
