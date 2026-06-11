@@ -6,7 +6,7 @@ pub mod kernel;
 pub mod log;
 pub mod page;
 pub mod regions;
-pub mod sample_frame;
+pub mod sample;
 pub mod services;
 pub mod shared;
 pub mod traits;
@@ -24,7 +24,7 @@ pub use regions::{
     StatusReturnLevel, TelemetryConverted, TelemetryFault, TelemetryIntermediaries, TelemetryRaw,
     TelemetryRegs,
 };
-pub use sample_frame::{FrameInputs, RawSamples, SampleFrame};
+pub use sample::{ConversionVariables, RawSamples, Sample};
 pub use services::Services;
 pub use services::dxl::{CalibratePacket, CalibrateStatus, Dxl, OscVariant};
 pub use shared::Shared;

@@ -1,6 +1,6 @@
 use ch32_metapac::{DMA1, USART1};
 use core::sync::atomic::Ordering;
-use osc_core::{FrameInputs, KernelIo, Sensors};
+use osc_core::{ConversionVariables, KernelIo, Sensors};
 
 use crate::dxl;
 use crate::dxl::statics::{
@@ -27,14 +27,14 @@ pub fn on_adc_dma_tc() {
 
         // SAFETY: PFIC unmasks DMA1_CHANNEL1 only after install_kernel writes KERNEL.
         let kernel = (*KERNEL.get()).assume_init_mut();
-        let inputs = FrameInputs::snapshot(&SHARED);
-        let frame = {
+        let vars = ConversionVariables::snapshot(&SHARED);
+        let sample = {
             let (sensors, _motor) = kernel.io.parts();
-            sensors.sample(&inputs)
+            sensors.sample(&vars)
         };
         #[cfg(feature = "defmt")]
-        crate::telemetry::record_frame(&frame);
-        kernel.on_tick(frame, &SHARED);
+        crate::telemetry::record_sample(&sample);
+        kernel.on_tick(sample, &SHARED);
     }
 }
 

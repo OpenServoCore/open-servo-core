@@ -2,16 +2,17 @@ use osc_units::{CentiCelsius, Microrads, Milliamps, Millivolts};
 
 use crate::Shared;
 
-/// Snapshot taken at the top of the DMA TC ISR so the board never holds a
-/// cross-domain reference into the `ControlTable`.
+/// Per-frame snapshot of the live config slice the sample-conversion math
+/// needs. Lifted from `ControlTable` regions (`pos_limits`, `calibration`)
+/// via raw-pointer reads so the conversion never holds a `&` into the table.
 #[derive(Copy, Clone, Debug)]
-pub struct FrameInputs {
+pub struct ConversionVariables {
     pub pos_min_phys_urad: i32,
     pub pos_max_phys_urad: i32,
     pub vdd_mv: u16,
 }
 
-impl FrameInputs {
+impl ConversionVariables {
     pub fn snapshot(shared: &Shared) -> Self {
         // SAFETY: per-field raw-pointer copy, no `&` into ConfigRegs/ConfigPosLimits.
         unsafe {
@@ -26,7 +27,7 @@ impl FrameInputs {
 }
 
 #[derive(Copy, Clone, Debug)]
-pub struct SampleFrame {
+pub struct Sample {
     pub tick: u32,
     pub pos: Microrads,
     pub current: Milliamps,
@@ -68,9 +69,9 @@ mod tests {
         };
         shared.table.seed_config_defaults(&defaults);
 
-        let inputs = FrameInputs::snapshot(&shared);
-        assert_eq!(inputs.pos_min_phys_urad, -1_500_000);
-        assert_eq!(inputs.pos_max_phys_urad, 1_500_000);
-        assert_eq!(inputs.vdd_mv, 3275);
+        let vars = ConversionVariables::snapshot(&shared);
+        assert_eq!(vars.pos_min_phys_urad, -1_500_000);
+        assert_eq!(vars.pos_max_phys_urad, 1_500_000);
+        assert_eq!(vars.vdd_mv, 3275);
     }
 }

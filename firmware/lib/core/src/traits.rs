@@ -14,4 +14,4 @@ pub use services::{CalSnapshot, DxlBus, Event, Schedule, ServiceEvents, Services
 // Boundary types defined elsewhere that callers of the traits need in scope.
 pub use crate::regions::BootMode;
 pub use crate::regions::config::ConfigDefaults;
-pub use crate::sample_frame::{FrameInputs, RawSamples, SampleFrame};
+pub use crate::sample::{ConversionVariables, RawSamples, Sample};

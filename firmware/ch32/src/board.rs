@@ -1,5 +1,5 @@
 use osc_core::{
-    DecayMode, FrameInputs, KernelIo, Motor as MotorTrait, MotorCmd, RawSamples, SampleFrame,
+    ConversionVariables, DecayMode, KernelIo, Motor as MotorTrait, MotorCmd, RawSamples, Sample,
     Sensors as SensorsTrait,
 };
 use osc_drivers::Level;
@@ -24,7 +24,7 @@ pub struct Ch32Sensors {
 
 impl SensorsTrait for Ch32Sensors {
     /// Called from DMA1 TC ISR. Peak drives current; trough is diagnostic.
-    fn sample(&mut self, inputs: &FrameInputs) -> SampleFrame {
+    fn sample(&mut self, vars: &ConversionVariables) -> Sample {
         let raw_shunt_post_trough = scan_slot(SCAN_TROUGH_OFFSET, SCAN_IDX_SHUNT_POST);
         let raw_vmotor_a_trough = scan_slot(SCAN_TROUGH_OFFSET, SCAN_IDX_VMOTOR_A);
         let raw_vmotor_b_trough = scan_slot(SCAN_TROUGH_OFFSET, SCAN_IDX_VMOTOR_B);
@@ -38,7 +38,7 @@ impl SensorsTrait for Ch32Sensors {
         let raw_vbus = 0u16;
 
         let filtered_vcal = self.vcal_lpf.update(raw_vcal);
-        let vdd_mv = inputs.vdd_mv as u32;
+        let vdd_mv = vars.vdd_mv as u32;
 
         let post_peak = shunt_to_milliamps(
             raw_shunt_post_peak,
@@ -53,9 +53,9 @@ impl SensorsTrait for Ch32Sensors {
             self.scales.shunt_q32,
         );
 
-        SampleFrame {
+        Sample {
             tick: read_sample_tick(),
-            pos: pos_to_microrads(raw_pos, inputs.pos_min_phys_urad, inputs.pos_max_phys_urad),
+            pos: pos_to_microrads(raw_pos, vars.pos_min_phys_urad, vars.pos_max_phys_urad),
             current: post_peak,
             current_post_trough: post_trough,
             temp: ntc_to_centi_celsius(raw_ntc, &self.calibration.ntc),
