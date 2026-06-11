@@ -1,14 +1,15 @@
-//! RCC providers — bind `ClockTrim` to the HSI trim register.
+//! Clock-trim provider — binds `ClockTrim` to the HSI trim register.
+
+use osc_drivers::traits;
 
 use crate::hal::clocks::{HSI_HZ, HSI_TRIM_STEP_HZ};
 use crate::hal::rcc;
-use osc_drivers::traits::ClockTrim;
 
 /// Production binding to HSITRIM. Delta is added on top of the factory
 /// default trim.
-pub struct HsiTrim;
+pub struct ClockTrim;
 
-impl ClockTrim for HsiTrim {
+impl traits::ClockTrim for ClockTrim {
     const DELTA_MIN: i8 = rcc::CLOCK_TRIM_DELTA_MIN;
     const DELTA_MAX: i8 = rcc::CLOCK_TRIM_DELTA_MAX;
     const HZ: u32 = HSI_HZ;

@@ -1,15 +1,15 @@
-//! USART providers — bind `UsartBaud` to specific USART instances.
+//! USART-baud provider — binds `UsartBaud` to a specific USART instance.
 
 use ch32_metapac::USART1 as USART1_REGS;
-use osc_drivers::traits::UsartBaud;
+use osc_drivers::traits;
 
 use crate::hal::clocks::PCLK_HZ;
 use crate::hal::usart;
 
 /// Production binding to USART1's BRR register.
-pub struct Usart1;
+pub struct UsartBaud;
 
-impl UsartBaud for Usart1 {
+impl traits::UsartBaud for UsartBaud {
     const CLOCK_HZ: u32 = PCLK_HZ;
 
     #[inline(always)]

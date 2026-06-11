@@ -25,12 +25,12 @@ use crate::providers;
 /// Concrete instantiations for this chip. The driver types stay generic
 /// in `osc-drivers`; this is the single spot that binds them to specific
 /// providers.
-type StatLed = Led<providers::gpio::Output, providers::systick::SysTick>;
-type DxlClockCh = DxlClock<providers::usart::Usart1, providers::rcc::HsiTrim>;
-type DxlRxCh = DxlRx<providers::dma::Ch7>;
+type StatLed = Led<providers::digital_out::DigitalOut, providers::monotonic::Monotonic>;
+type DxlClockCh = DxlClock<providers::usart_baud::UsartBaud, providers::clock_trim::ClockTrim>;
+type DxlRxCh = DxlRx<providers::dma_ring::DmaRing>;
 
 struct Cells {
-    dbg: SyncUnsafeCell<Option<providers::gpio::Output>>,
+    dbg: SyncUnsafeCell<Option<providers::digital_out::DigitalOut>>,
     stat_led: SyncUnsafeCell<Option<StatLed>>,
     dxl_clock: SyncUnsafeCell<Option<DxlClockCh>>,
     dxl_rx: SyncUnsafeCell<Option<DxlRxCh>>,
@@ -55,14 +55,14 @@ impl Drivers {
         // SAFETY: see fn doc.
         let dbg = unsafe { &mut *CELLS.dbg.get() };
         debug_assert!(dbg.is_none(), "Drivers: dbg already installed");
-        *dbg = Some(providers::gpio::Output::new(w.dbg, Level::Low));
+        *dbg = Some(providers::digital_out::DigitalOut::new(w.dbg, Level::Low));
 
         // SAFETY: see fn doc.
         let stat_led = unsafe { &mut *CELLS.stat_led.get() };
         debug_assert!(stat_led.is_none(), "Drivers: stat_led already installed");
         *stat_led = Some(Led::new(
-            providers::gpio::Output::new(w.stat_led, Level::High),
-            providers::systick::SysTick,
+            providers::digital_out::DigitalOut::new(w.stat_led, Level::High),
+            providers::monotonic::Monotonic,
         ));
 
         // SAFETY: see fn doc.
@@ -70,14 +70,14 @@ impl Drivers {
         debug_assert!(dxl_clock.is_none(), "Drivers: dxl_clock already installed");
         *dxl_clock = Some(DxlClock::new(
             defaults.dxl_baud,
-            providers::usart::Usart1,
-            providers::rcc::HsiTrim,
+            providers::usart_baud::UsartBaud,
+            providers::clock_trim::ClockTrim,
         ));
 
         // SAFETY: see fn doc.
         let dxl_rx = unsafe { &mut *CELLS.dxl_rx.get() };
         debug_assert!(dxl_rx.is_none(), "Drivers: dxl_rx already installed");
-        *dxl_rx = Some(DxlRx::new(providers::dma::Ch7));
+        *dxl_rx = Some(DxlRx::new(providers::dma_ring::DmaRing));
     }
 
     /// SAFETY: bringup installs `dbg` before any ISR runs; runtime access is
@@ -87,7 +87,7 @@ impl Drivers {
     /// doesn't change with the feature.
     #[inline(always)]
     #[allow(dead_code)]
-    pub unsafe fn dbg() -> &'static mut providers::gpio::Output {
+    pub unsafe fn dbg() -> &'static mut providers::digital_out::DigitalOut {
         // SAFETY: see fn doc.
         let cell = unsafe { &mut *CELLS.dbg.get() };
         debug_assert!(cell.is_some(), "Drivers::dbg() before install");
