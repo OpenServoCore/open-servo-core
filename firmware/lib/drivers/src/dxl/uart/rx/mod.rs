@@ -16,6 +16,7 @@ mod classifier;
 use core::cell::SyncUnsafeCell;
 
 use crate::traits::DmaRing;
+use crate::util::DmaBuffer;
 use classifier::Classifier;
 
 pub struct Rx<R: DmaRing, const EDGE_BUF_LEN: usize, const BT_BUF_LEN: usize> {
@@ -24,28 +25,20 @@ pub struct Rx<R: DmaRing, const EDGE_BUF_LEN: usize, const BT_BUF_LEN: usize> {
     /// engine writes it concurrently with the classifier's reads — both
     /// reads happen at PFIC HIGH (no preemption from another consumer)
     /// and the producer is hardware, so plain `&` references inside
-    /// classifier walks are sound.
-    edges: SyncUnsafeCell<[u16; EDGE_BUF_LEN]>,
+    /// classifier walks are sound. `DmaBuffer` enforces pow-2 sizing at
+    /// construction so the chip-side NDTR head math (`EDGE_BUF_LEN -
+    /// NDTR`) maps cleanly to a ring position.
+    edges: SyncUnsafeCell<DmaBuffer<u16, EDGE_BUF_LEN>>,
     ring: R,
 }
 
 impl<R: DmaRing, const EDGE_BUF_LEN: usize, const BT_BUF_LEN: usize>
     Rx<R, EDGE_BUF_LEN, BT_BUF_LEN>
 {
-    /// Compile-time guard. HT fires at the halfway point, so the ring
-    /// must be power-of-two for mask indexing to track NDTR cleanly; bound
-    /// at u16 so head/tail arithmetic stays in the timer's native width.
-    const _CHECK_EDGE_BUF_LEN: () = assert!(
-        EDGE_BUF_LEN.is_power_of_two() && EDGE_BUF_LEN <= u16::MAX as usize + 1,
-        "EDGE_BUF_LEN must be a power of two in (0, 1<<16]",
-    );
-
     pub const fn new(ring: R) -> Self {
-        // Force the const assertion to fire at instantiation.
-        let _: () = Self::_CHECK_EDGE_BUF_LEN;
         Self {
             classifier: Classifier::new(),
-            edges: SyncUnsafeCell::new([0; EDGE_BUF_LEN]),
+            edges: SyncUnsafeCell::new(DmaBuffer::new(0)),
             ring,
         }
     }
@@ -54,6 +47,8 @@ impl<R: DmaRing, const EDGE_BUF_LEN: usize, const BT_BUF_LEN: usize>
     /// hands this to `dma::configure(CH7, ...)`; the driver instance lives
     /// in the registry's `SyncUnsafeCell<Option<Rx>>` so the address is
     /// fixed for the lifetime of the program once `install` returns.
+    /// `DmaBuffer` is `#[repr(transparent)]`, so the cell's address equals
+    /// the underlying array's first-byte address.
     pub fn edges_addr(&self) -> u32 {
         self.edges.get() as u32
     }
@@ -107,9 +102,7 @@ impl<const EDGE_BUF_LEN: usize, const BT_BUF_LEN: usize>
     pub(crate) fn stage_edges_for_test(&mut self, vals: &[u16]) {
         // SAFETY: test-only access to the SyncUnsafeCell; no DMA in tests.
         let buf = unsafe { &mut *self.edges.get() };
-        for (i, &v) in vals.iter().enumerate() {
-            buf[i] = v;
-        }
+        buf.stage(0, vals);
         self.ring.remaining = (EDGE_BUF_LEN - vals.len()) as u16;
     }
 

@@ -18,6 +18,8 @@
 //! enough that a missed byte boundary (delta ≈ 20·bit_time) lands clean in
 //! the GAP bin instead of being mis-classified as HIT.
 
+use crate::util::DmaBuffer;
+
 const WINDOW_LO_MUL: u16 = 9;
 const WINDOW_HI_MUL: u16 = 11;
 
@@ -46,15 +48,13 @@ pub struct Classifier<const BT_BUF_LEN: usize> {
 }
 
 impl<const BT_BUF_LEN: usize> Classifier<BT_BUF_LEN> {
-    /// Compile-time guard. `byte_ts_at`'s ring-window math and the
-    /// `BT_MASK` derivation both assume power-of-two; bound at u16 so the
-    /// mask fits the timer's native CNT width.
+    /// Compile-time guard. `byte_ts_at`'s ring-window math assumes
+    /// power-of-two so `% BT_BUF_LEN` collapses to AND; bound at u16 so
+    /// the slot index fits the timer's native CNT width.
     const _CHECK_BT_BUF_LEN: () = assert!(
         BT_BUF_LEN.is_power_of_two() && BT_BUF_LEN > 0 && BT_BUF_LEN <= u16::MAX as usize + 1,
         "BT_BUF_LEN must be a power of two in (0, 1<<16]",
     );
-
-    const BT_MASK: u16 = (BT_BUF_LEN as u16).wrapping_sub(1);
 
     #[allow(dead_code)]
     pub const fn new() -> Self {
@@ -72,21 +72,23 @@ impl<const BT_BUF_LEN: usize> Classifier<BT_BUF_LEN> {
         }
     }
 
-    /// Process the edge ring from the last-walked index up to
-    /// `edges_head` (mod `edges.len()`), pushing BT entries for
+    /// Process the edge ring from the last-walked index up to `edges_head`
+    /// (a ring position in `[0, EDGE_BUF_LEN)`), pushing BT entries for
     /// SEED/HIT/GAP edges and dropping SKIPs. Advances the read cursor to
     /// `edges_head` on exit.
     ///
     /// `ticks_per_bit` is the spec UART bit time in TIM2 ticks; callers
     /// read it from [`crate::dxl::uart::clock::Clock`] so a baud change
     /// widens/narrows the window in lockstep.
-    pub fn on_edge_advance(&mut self, edges: &[u16], edges_head: u16, ticks_per_bit: u16) {
-        debug_assert!(edges.len().is_power_of_two() && edges.len() <= u16::MAX as usize + 1);
-        let edges_mask = (edges.len() as u16).wrapping_sub(1);
+    pub fn on_edge_advance<const EDGE_BUF_LEN: usize>(
+        &mut self,
+        edges: &DmaBuffer<u16, EDGE_BUF_LEN>,
+        edges_head: u16,
+        ticks_per_bit: u16,
+    ) {
         let win_lo_ticks = ticks_per_bit.wrapping_mul(WINDOW_LO_MUL);
         let win_hi_ticks = ticks_per_bit.wrapping_mul(WINDOW_HI_MUL);
-        let edges_head = edges_head & edges_mask;
-        let mut idx = self.edges_read_idx & edges_mask;
+        let mut idx = self.edges_read_idx;
         if idx == edges_head {
             return;
         }
@@ -100,11 +102,11 @@ impl<const BT_BUF_LEN: usize> Classifier<BT_BUF_LEN> {
         let byte_ts_buf = &mut self.byte_ts_buf;
 
         while idx != edges_head {
-            let t = edges[idx as usize];
+            let t = *edges.at(idx);
             match anchor {
                 None => {
                     anchor = Some(t);
-                    byte_ts_buf[(byte_ts_head & Self::BT_MASK) as usize] = t;
+                    byte_ts_buf[(byte_ts_head as usize) % BT_BUF_LEN] = t;
                     byte_ts_head = byte_ts_head.wrapping_add(1);
                     seeds = seeds.wrapping_add(1);
                 }
@@ -114,18 +116,18 @@ impl<const BT_BUF_LEN: usize> Classifier<BT_BUF_LEN> {
                         skips = skips.wrapping_add(1);
                     } else if ticks_since_anchor <= win_hi_ticks {
                         anchor = Some(t);
-                        byte_ts_buf[(byte_ts_head & Self::BT_MASK) as usize] = t;
+                        byte_ts_buf[(byte_ts_head as usize) % BT_BUF_LEN] = t;
                         byte_ts_head = byte_ts_head.wrapping_add(1);
                         hits = hits.wrapping_add(1);
                     } else {
                         anchor = Some(t);
-                        byte_ts_buf[(byte_ts_head & Self::BT_MASK) as usize] = t;
+                        byte_ts_buf[(byte_ts_head as usize) % BT_BUF_LEN] = t;
                         byte_ts_head = byte_ts_head.wrapping_add(1);
                         gaps = gaps.wrapping_add(1);
                     }
                 }
             }
-            idx = (idx + 1) & edges_mask;
+            idx = idx.wrapping_add(1) % EDGE_BUF_LEN as u16;
         }
 
         self.anchor = anchor;
@@ -155,7 +157,7 @@ impl<const BT_BUF_LEN: usize> Classifier<BT_BUF_LEN> {
         if ahead_of_seq == 0 || ahead_of_seq > BT_BUF_LEN as u16 {
             None
         } else {
-            Some(self.byte_ts_buf[(seq & Self::BT_MASK) as usize])
+            Some(self.byte_ts_buf[(seq as usize) % BT_BUF_LEN])
         }
     }
 
@@ -170,6 +172,7 @@ impl<const BT_BUF_LEN: usize> Classifier<BT_BUF_LEN> {
 #[cfg(test)]
 mod tests {
     use super::Classifier;
+    use crate::util::DmaBuffer;
 
     /// Power-of-two BT ring depth for these tests — matches the V006
     /// production sizing per doc §8.3 (BT must equal RX_BUF_LEN = 64).
@@ -185,10 +188,17 @@ mod tests {
         Classifier::new()
     }
 
+    /// Stage edge timestamps into a fresh 8-slot DmaBuffer.
+    fn edges8(vals: &[u16]) -> DmaBuffer<u16, 8> {
+        let mut b = DmaBuffer::new(0);
+        b.stage(0, vals);
+        b
+    }
+
     #[test]
     fn seeds_on_first_entry() {
         let mut c = make();
-        let edges = [1000_u16, 0, 0, 0, 0, 0, 0, 0];
+        let edges = edges8(&[1000]);
         c.on_edge_advance(&edges, 1, TPB_3M);
         assert_eq!(c.seeds, 1);
         assert_eq!(c.hits, 0);
@@ -204,7 +214,7 @@ mod tests {
         let mut c = make();
         // Start at 1000, then four intra-byte edges spaced 32 ticks
         // (0xAA at 3M has falling edges every 2 bit-times = 32 ticks).
-        let edges = [1000_u16, 1032, 1064, 1096, 1128, 0, 0, 0];
+        let edges = edges8(&[1000, 1032, 1064, 1096, 1128]);
         c.on_edge_advance(&edges, 5, TPB_3M);
         assert_eq!(c.seeds, 1);
         assert_eq!(c.hits, 0);
@@ -216,7 +226,7 @@ mod tests {
     #[test]
     fn hits_at_byte_boundary() {
         let mut c = make();
-        let edges = [1000_u16, 1000 + BYTE_TICKS_3M, 0, 0, 0, 0, 0, 0];
+        let edges = edges8(&[1000, 1000 + BYTE_TICKS_3M]);
         c.on_edge_advance(&edges, 2, TPB_3M);
         assert_eq!(c.seeds, 1);
         assert_eq!(c.hits, 1);
@@ -229,7 +239,7 @@ mod tests {
     fn re_anchors_on_gap() {
         let mut c = make();
         // ticks_since_anchor = 200 > 11·16 = 176 → GAP.
-        let edges = [1000_u16, 1200, 0, 0, 0, 0, 0, 0];
+        let edges = edges8(&[1000, 1200]);
         c.on_edge_advance(&edges, 2, TPB_3M);
         assert_eq!(c.seeds, 1);
         assert_eq!(c.gaps, 1);
@@ -240,12 +250,12 @@ mod tests {
     #[test]
     fn reset_anchor_invalidates() {
         let mut c = make();
-        let edges = [1000_u16, 0, 0, 0, 0, 0, 0, 0];
+        let edges = edges8(&[1000]);
         c.on_edge_advance(&edges, 1, TPB_3M);
         assert!(c.anchor.is_some());
         c.reset_anchor();
         assert!(c.anchor.is_none());
-        let edges2 = [1000_u16, 9000, 0, 0, 0, 0, 0, 0];
+        let edges2 = edges8(&[1000, 9000]);
         c.on_edge_advance(&edges2, 2, TPB_3M);
         // Second entry re-seeds (no anchor to compare against), not a GAP.
         assert_eq!(c.seeds, 2);
@@ -257,7 +267,7 @@ mod tests {
     fn respects_ticks_per_bit_arg() {
         // ticks_since_anchor = 160: HIT at 3M (window 144..176),
         // SKIP at 1M (window 432..528).
-        let edges = [1000_u16, 1160, 0, 0, 0, 0, 0, 0];
+        let edges = edges8(&[1000, 1160]);
 
         let mut c_3m = make();
         c_3m.on_edge_advance(&edges, 2, TPB_3M);
@@ -278,14 +288,16 @@ mod tests {
         const N_BYTES: usize = 16;
         const EDGES_PER_BYTE: usize = 4;
         const TOTAL: usize = N_BYTES * EDGES_PER_BYTE;
-        let mut edges = [0_u16; 128];
+        let mut edges: DmaBuffer<u16, 128> = DmaBuffer::new(0);
         let intra = [0_u16, 32, 64, 96];
+        let mut staged = [0_u16; TOTAL];
         for byte_i in 0..N_BYTES {
             let t0 = 1000_u16.wrapping_add((byte_i as u16).wrapping_mul(BYTE_TICKS_3M));
             for j in 0..EDGES_PER_BYTE {
-                edges[byte_i * EDGES_PER_BYTE + j] = t0.wrapping_add(intra[j]);
+                staged[byte_i * EDGES_PER_BYTE + j] = t0.wrapping_add(intra[j]);
             }
         }
+        edges.stage(0, &staged);
 
         let mut c = make();
         c.on_edge_advance(&edges, TOTAL as u16, TPB_3M);
@@ -305,7 +317,7 @@ mod tests {
     #[test]
     fn byte_ts_at_returns_none_past_head() {
         let mut c = make();
-        let edges = [1000_u16, 0, 0, 0, 0, 0, 0, 0];
+        let edges = edges8(&[1000]);
         c.on_edge_advance(&edges, 1, TPB_3M);
         assert_eq!(c.byte_ts_at(0), Some(1000));
         assert_eq!(c.byte_ts_at(1), None);

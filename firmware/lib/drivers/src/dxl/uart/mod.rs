@@ -18,6 +18,7 @@ use dxl_protocol::{BROADCAST_ID, CrcUmts, InstructionPacket};
 use osc_core::{BaudRate, BootMode};
 
 use crate::traits::{ClockTrim, DmaRing, UsartBaud};
+use crate::util::DmaBuffer;
 use clock::Clock;
 use rx::Rx;
 
@@ -57,10 +58,11 @@ pub struct DxlUart<
     /// DMA1_CH5 destination for received bytes. `SyncUnsafeCell` because
     /// USART1's DMA writes it concurrently with the parser's reads — both
     /// reads happen at PFIC HIGH (no preemption from another consumer)
-    /// and the producer is hardware.
-    rx_buf: SyncUnsafeCell<[u8; RX_BUF_LEN]>,
+    /// and the producer is hardware. `DmaBuffer` enforces pow-2 sizing so
+    /// `% RX_BUF_LEN` collapses to AND.
+    rx_buf: SyncUnsafeCell<DmaBuffer<u8, RX_BUF_LEN>>,
     /// Sequence number of the next RX byte to drain into the decoder. Wraps
-    /// at u16; the ring slot is `parsed_idx & (RX_BUF_LEN - 1)` (doc §10.5).
+    /// at u16; the ring slot is `parsed_idx % RX_BUF_LEN` (doc §10.5).
     parsed_idx: u16,
     /// Monotonic count of Instruction packets the decoder emitted —
     /// regardless of target ID — across this driver's lifetime. The drift
@@ -87,29 +89,17 @@ impl<
     const EDGE_BUF_LEN: usize,
 > DxlUart<U, T, R, CRC, DECODER_CAP, RX_BUF_LEN, EDGE_BUF_LEN>
 {
-    /// Compile-time guard. `poll`'s ring-slot derivation (`parsed_idx &
-    /// RX_MASK`) and the chip-side DMA1_CH5 NDTR head math both rely on
-    /// power-of-two depth; bound at u16 so the cursor fits the timer/DMA
-    /// native width.
-    const _CHECK_RX_BUF_LEN: () = assert!(
-        RX_BUF_LEN.is_power_of_two() && RX_BUF_LEN > 0 && RX_BUF_LEN <= u16::MAX as usize + 1,
-        "RX_BUF_LEN must be a power of two in (0, 1<<16]",
-    );
-
-    const RX_MASK: u16 = (RX_BUF_LEN as u16).wrapping_sub(1);
-
     pub fn new(
         rx: Rx<R, EDGE_BUF_LEN, RX_BUF_LEN>,
         clock: Clock<U, T>,
         id: u8,
         rdt_us: u32,
     ) -> Self {
-        let _: () = Self::_CHECK_RX_BUF_LEN;
         Self {
             rx,
             clock,
             decoder: Decoder::new(),
-            rx_buf: SyncUnsafeCell::new([0; RX_BUF_LEN]),
+            rx_buf: SyncUnsafeCell::new(DmaBuffer::new(0)),
             parsed_idx: 0,
             instruction_count: 0,
             id,
@@ -152,7 +142,7 @@ impl<
             // SAFETY: rx_buf is written only by DMA1_CH5 (hardware writer)
             // and read here from the same PFIC priority level as the DMA
             // HT/TC ISR, so no other consumer can `&mut` it concurrently.
-            let byte = unsafe { (*self.rx_buf.get())[(self.parsed_idx & Self::RX_MASK) as usize] };
+            let byte = unsafe { *(*self.rx_buf.get()).at(self.parsed_idx) };
             self.parsed_idx = self.parsed_idx.wrapping_add(1);
             let (step, _) = self.decoder.feed(&[byte]);
             match step {
@@ -262,9 +252,7 @@ impl<
     /// the ring. Mirrors the chip-side DMA1_CH5 writer for host tests.
     pub(crate) fn stage_rx_bytes_for_test(&mut self, at: u16, bytes: &[u8]) {
         let buf = unsafe { &mut *self.rx_buf.get() };
-        for (i, &b) in bytes.iter().enumerate() {
-            buf[((at.wrapping_add(i as u16)) & Self::RX_MASK) as usize] = b;
-        }
+        buf.stage(at, bytes);
     }
 
     /// Pre-position the parser cursor (wrap-test seed). Production has no
