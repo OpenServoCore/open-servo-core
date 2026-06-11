@@ -44,7 +44,7 @@ pub fn install_irqs() {
     // can't preempt IDLE/TC mid-handler.
     pfic::set_priority(pfic::Interrupt::EXTI7_0, pfic::Priority::High);
     // DMA1_CH7 carries TIM2_CH4 edge timestamps; the HT/TC ISR walks them
-    // through the DxlRx classifier and IDLE drains the tail. Share HIGH
+    // through the RX classifier and IDLE drains the tail. Share HIGH
     // with USART1 so on_dma1_ch7 and on_usart1_idle serialize (same prio →
     // no preemption) — classifier state is mutated from both paths.
     pfic::set_priority(pfic::Interrupt::DMA1_CHANNEL7, pfic::Priority::High);

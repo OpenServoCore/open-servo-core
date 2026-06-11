@@ -17,7 +17,7 @@ use crate::legacy::statics::{
 use crate::runtime::Drivers;
 
 use crate::cfg::{
-    AdcPins, BoardWiring, CurrentSenseConfig, Duplex, DxlBus, MotorConfig, Precomputed,
+    AdcPins, BoardWiring, CurrentSenseConfig, Duplex, DxlUart, MotorConfig, Precomputed,
 };
 
 const OPA_SETTLE_MS: u32 = 1;
@@ -180,7 +180,7 @@ fn configure_pins(w: &BoardWiring) {
     configure_dxl_pins(&w.dxl);
 }
 
-fn configure_dxl_pins(d: &DxlBus) {
+fn configure_dxl_pins(d: &DxlUart) {
     gpio::configure(d.usart.tx_pin(), PinMode::AF_PUSH_PULL);
     if matches!(d.duplex, Duplex::Full) {
         gpio::configure(d.usart.rx_pin(), PinMode::input_pull(d.rx_pull));
@@ -241,7 +241,7 @@ fn configure_adc_dma_scan(sensors: &AdcPins, opa_out_sample_time: adc::SampleTim
     dma::enable(dma::Channel::CH1);
 }
 
-fn bring_up_dxl(d: &DxlBus, brr: u32) {
+fn bring_up_dxl(d: &DxlUart, brr: u32) {
     let regs = d.usart.regs();
     let half_duplex = matches!(d.duplex, Duplex::Half);
     usart::init(regs, brr, half_duplex);
@@ -308,7 +308,7 @@ fn bring_up_dxl(d: &DxlBus, brr: u32) {
 }
 
 /// TIM2_CH4 input capture on the RX pin (falling edge) feeds DMA1_CH7 into
-/// the `DxlRx` driver's edges buffer. The HT/TC ISR walks newly-captured
+/// the RX driver's edges buffer. The HT/TC ISR walks newly-captured
 /// edges through the window classifier; IDLE drains the tail when a packet
 /// doesn't fill a half. PL=VeryHigh is the only such channel (ADC + USART
 /// RX/TX all sit at LOW per doc §6) so CC4 stores can't be delayed.
@@ -328,7 +328,7 @@ fn bring_up_edge_ts_capture() {
     // SAFETY: `Drivers::install` ran in `run()` before `bring_up_dxl`; the
     // returned address points into the driver's registry cell and stays
     // valid for the lifetime of the program.
-    let edges_addr = unsafe { Drivers::dxl_bus() }.edges_addr();
+    let edges_addr = unsafe { Drivers::dxl_uart() }.edges_addr();
     dma::configure(
         dma::Channel::CH7,
         &edge_ts_cfg,

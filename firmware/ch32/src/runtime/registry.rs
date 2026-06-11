@@ -8,15 +8,15 @@
 //!
 //! Each instance has its own [`SyncUnsafeCell`], so simultaneous mutable
 //! access to two different instances (e.g. main loop touching `stat_led`
-//! while a DXL ISR touches `dxl_clock`) doesn't pass through a shared
+//! while a DXL ISR touches `dxl_uart`) doesn't pass through a shared
 //! `&mut Drivers` — no aliasing UB.
 
 use core::cell::SyncUnsafeCell;
 
 use osc_drivers::Level;
-use osc_drivers::dxl::DxlBus;
-use osc_drivers::dxl::clock::DxlClock;
-use osc_drivers::dxl::rx::DxlRx;
+use osc_drivers::dxl::uart::DxlUart;
+use osc_drivers::dxl::uart::clock::Clock;
+use osc_drivers::dxl::uart::rx::Rx;
 use osc_drivers::led::Led;
 
 use crate::ConfigDefaults;
@@ -25,7 +25,7 @@ use crate::providers;
 
 /// Concrete instantiations for this chip. The driver types stay generic
 /// in `osc-drivers`; this is the single spot that binds them to specific
-/// providers and storage sizes. See the `DxlBus` doc for what each const
+/// providers and storage sizes. See the `DxlUart` doc for what each const
 /// generic means; values track `docs/dxl-hw-timed-transport.md`.
 type StatLed = Led<providers::digital_out::DigitalOut, providers::monotonic::Monotonic>;
 /// Streaming-decoder accumulator size — `osc-core`'s dispatcher uses this
@@ -33,11 +33,11 @@ type StatLed = Led<providers::digital_out::DigitalOut, providers::monotonic::Mon
 /// Keep them in sync.
 pub(crate) const DXL_DECODER_CAP: usize = 256;
 /// DMA1_CH5 RX-byte ring depth (doc §8.1) — also the BT-ring depth inside
-/// `DxlRx` (doc §8.3 requires them to match).
+/// the RX sub-driver (doc §8.3 requires them to match).
 pub(crate) const DXL_RX_BUF_LEN: usize = 64;
 /// DMA1_CH7 edge-timestamp ring depth — option A in doc §8.4.
 pub(crate) const DXL_EDGE_BUF_LEN: usize = 128;
-type DxlBusCh = DxlBus<
+type DxlUartCh = DxlUart<
     providers::usart_baud::UsartBaud,
     providers::clock_trim::ClockTrim,
     providers::dma_ring::DmaRing,
@@ -50,13 +50,13 @@ type DxlBusCh = DxlBus<
 struct Cells {
     dbg: SyncUnsafeCell<Option<providers::digital_out::DigitalOut>>,
     stat_led: SyncUnsafeCell<Option<StatLed>>,
-    dxl_bus: SyncUnsafeCell<Option<DxlBusCh>>,
+    dxl_uart: SyncUnsafeCell<Option<DxlUartCh>>,
 }
 
 static CELLS: Cells = Cells {
     dbg: SyncUnsafeCell::new(None),
     stat_led: SyncUnsafeCell::new(None),
-    dxl_bus: SyncUnsafeCell::new(None),
+    dxl_uart: SyncUnsafeCell::new(None),
 };
 
 pub struct Drivers;
@@ -82,11 +82,11 @@ impl Drivers {
         ));
 
         // SAFETY: see fn doc.
-        let dxl_bus = unsafe { &mut *CELLS.dxl_bus.get() };
-        debug_assert!(dxl_bus.is_none(), "Drivers: dxl_bus already installed");
-        *dxl_bus = Some(DxlBus::new(
-            DxlRx::new(providers::dma_ring::DmaRing),
-            DxlClock::new(
+        let dxl_uart = unsafe { &mut *CELLS.dxl_uart.get() };
+        debug_assert!(dxl_uart.is_none(), "Drivers: dxl_uart already installed");
+        *dxl_uart = Some(DxlUart::new(
+            Rx::new(providers::dma_ring::DmaRing),
+            Clock::new(
                 defaults.dxl_baud,
                 providers::usart_baud::UsartBaud,
                 providers::clock_trim::ClockTrim,
@@ -122,16 +122,16 @@ impl Drivers {
         unsafe { cell.as_mut().unwrap_unchecked() }
     }
 
-    /// SAFETY: bringup installs `dxl_bus` before any IRQ runs; runtime access
-    /// is from DMA1_CH7 HT/TC and USART1 IDLE ISRs (both PFIC HIGH, so
-    /// same-priority serialization keeps the composite's interior state
-    /// race-free).
+    /// SAFETY: bringup installs `dxl_uart` before any IRQ runs; runtime
+    /// access is from DMA1_CH7 HT/TC and USART1 IDLE ISRs (both PFIC
+    /// HIGH, so same-priority serialization keeps the composite's interior
+    /// state race-free).
     #[inline(always)]
     #[allow(dead_code)]
-    pub unsafe fn dxl_bus() -> &'static mut DxlBusCh {
+    pub unsafe fn dxl_uart() -> &'static mut DxlUartCh {
         // SAFETY: see fn doc.
-        let cell = unsafe { &mut *CELLS.dxl_bus.get() };
-        debug_assert!(cell.is_some(), "Drivers::dxl_bus() before install");
+        let cell = unsafe { &mut *CELLS.dxl_uart.get() };
+        debug_assert!(cell.is_some(), "Drivers::dxl_uart() before install");
         // SAFETY: bringup ensures Some before any IRQ fires.
         unsafe { cell.as_mut().unwrap_unchecked() }
     }

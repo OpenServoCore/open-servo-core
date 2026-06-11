@@ -1,7 +1,7 @@
 pub mod board_wiring;
 
 pub use board_wiring::{
-    AdcPins, BoardWiring, Calibration, CurrentSenseConfig, Divider, Duplex, DxlBus, MotorConfig,
+    AdcPins, BoardWiring, Calibration, CurrentSenseConfig, Divider, Duplex, DxlUart, MotorConfig,
     NtcCal, TxEn,
 };
 

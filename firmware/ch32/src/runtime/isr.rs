@@ -44,15 +44,15 @@ pub fn on_usart1() {
     on_usart1_tc();
 }
 
-/// DMA1_CH7 HT/TC handler — dispatches into `DxlBus`, which routes the
+/// DMA1_CH7 HT/TC handler — dispatches into `DxlUart`, which routes the
 /// `ticks_per_bit` lookup from its `clock` sub-driver into the RX
 /// classifier walk.
 ///
-/// SAFETY: bus is installed before this vector is unmasked, and DMA1_CH7
-/// shares PFIC HIGH with USART1 so no concurrent `&mut` into the bus is
-/// possible.
+/// SAFETY: driver is installed before this vector is unmasked, and
+/// DMA1_CH7 shares PFIC HIGH with USART1 so no concurrent `&mut` into the
+/// driver is possible.
 pub fn on_dma1_ch7() {
-    unsafe { Drivers::dxl_bus() }.on_rx_edge_advance();
+    unsafe { Drivers::dxl_uart() }.on_rx_edge_advance();
 }
 
 /// EXTI7_0 handler body — covers lines 0..7 on V006's shared vector. Only
@@ -155,12 +155,12 @@ fn on_usart1_idle() {
         exti::clear_pending(p);
         exti::set_irq(p, true);
     }
-    // Backstop the DxlRx classifier: for packets shorter than half the ET
+    // Backstop the RX classifier: for packets shorter than half the ET
     // ring, the HT/TC ISR never fires, so IDLE is the only chance to walk
     // those edges. `on_rx_idle` drains the tail and invalidates the anchor
     // so the next packet's first edge re-seeds.
     // SAFETY: see on_dma1_ch7.
-    unsafe { Drivers::dxl_bus() }.on_rx_idle();
+    unsafe { Drivers::dxl_uart() }.on_rx_idle();
 }
 
 fn on_usart1_tc() {

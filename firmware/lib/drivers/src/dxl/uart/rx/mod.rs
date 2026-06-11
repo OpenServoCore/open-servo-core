@@ -18,7 +18,7 @@ use core::cell::SyncUnsafeCell;
 use crate::traits::DmaRing;
 use classifier::Classifier;
 
-pub struct DxlRx<R: DmaRing, const EDGE_BUF_LEN: usize, const BT_BUF_LEN: usize> {
+pub struct Rx<R: DmaRing, const EDGE_BUF_LEN: usize, const BT_BUF_LEN: usize> {
     classifier: Classifier<BT_BUF_LEN>,
     /// DMA1_CH7's destination buffer. `SyncUnsafeCell` because the DMA
     /// engine writes it concurrently with the classifier's reads — both
@@ -30,7 +30,7 @@ pub struct DxlRx<R: DmaRing, const EDGE_BUF_LEN: usize, const BT_BUF_LEN: usize>
 }
 
 impl<R: DmaRing, const EDGE_BUF_LEN: usize, const BT_BUF_LEN: usize>
-    DxlRx<R, EDGE_BUF_LEN, BT_BUF_LEN>
+    Rx<R, EDGE_BUF_LEN, BT_BUF_LEN>
 {
     /// Compile-time guard. HT fires at the halfway point, so the ring
     /// must be power-of-two for mask indexing to track NDTR cleanly; bound
@@ -52,7 +52,7 @@ impl<R: DmaRing, const EDGE_BUF_LEN: usize, const BT_BUF_LEN: usize>
 
     /// Stable peripheral-memory address for the DMA destination. Bringup
     /// hands this to `dma::configure(CH7, ...)`; the driver instance lives
-    /// in the registry's `SyncUnsafeCell<Option<DxlRx>>` so the address is
+    /// in the registry's `SyncUnsafeCell<Option<Rx>>` so the address is
     /// fixed for the lifetime of the program once `install` returns.
     pub fn edges_addr(&self) -> u32 {
         self.edges.get() as u32
@@ -100,7 +100,7 @@ impl<R: DmaRing, const EDGE_BUF_LEN: usize, const BT_BUF_LEN: usize>
 
 #[cfg(test)]
 impl<const EDGE_BUF_LEN: usize, const BT_BUF_LEN: usize>
-    DxlRx<crate::mocks::FakeDmaRing, EDGE_BUF_LEN, BT_BUF_LEN>
+    Rx<crate::mocks::FakeDmaRing, EDGE_BUF_LEN, BT_BUF_LEN>
 {
     /// Stage `vals` into the edges buffer as if DMA wrote them and set
     /// `remaining` so `head == vals.len()`. Shared by leaf and composite tests.
@@ -128,14 +128,14 @@ mod tests {
     /// Test-side ring sizing — matches V006 defaults per doc §8.3 / §8.4.
     const EDGE_BUF_LEN: usize = 128;
     const BT_BUF_LEN: usize = 64;
-    type Rx = DxlRx<FakeDmaRing, EDGE_BUF_LEN, BT_BUF_LEN>;
+    type TestRx = Rx<FakeDmaRing, EDGE_BUF_LEN, BT_BUF_LEN>;
 
     // 3 Mbaud at HCLK 48 MHz → ticks_per_bit = 16.
     const TPB_3M: u16 = 16;
     const BYTE_TICKS_3M: u16 = 160;
 
-    fn rx() -> Rx {
-        DxlRx::new(FakeDmaRing::default())
+    fn rx() -> TestRx {
+        Rx::new(FakeDmaRing::default())
     }
 
     #[test]

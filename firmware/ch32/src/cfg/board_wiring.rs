@@ -29,7 +29,7 @@ impl TxEn {
 }
 
 #[derive(Copy, Clone)]
-pub struct DxlBus {
+pub struct DxlUart {
     pub usart: UsartMapping,
     pub duplex: Duplex,
     pub rx_pull: Pull,
@@ -115,7 +115,7 @@ pub struct BoardWiring {
     pub motor: MotorConfig,
     pub current_sense: CurrentSenseConfig,
     pub sensors: AdcPins,
-    pub dxl: DxlBus,
+    pub dxl: DxlUart,
 }
 
 impl BoardWiring {

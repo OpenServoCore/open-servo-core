@@ -49,7 +49,7 @@ fn main() -> ! {
                     adc::Input::new(adc::Channel::IN6, adc::SampleTime::CYCLES9),
                 ),
             },
-            dxl: DxlBus {
+            dxl: DxlUart {
                 usart: UsartMapping::Usart1Remap3,
                 duplex: Duplex::Full,
                 rx_pull: gpio::Pull::None,

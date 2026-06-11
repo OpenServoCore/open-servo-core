@@ -5,9 +5,9 @@
 //!
 //! Two inputs determine the value, both committed at `on_tx_complete` (USART
 //! can't change BRR mid-frame):
-//! - Baud, staged by control-table writes via [`DxlClock::stage_baud`].
+//! - Baud, staged by control-table writes via [`Clock::stage_baud`].
 //! - HSITRIM step, derived from drift samples via
-//!   [`DxlClock::on_drift_sample`]. The integrator stages a ±1 step when the
+//!   [`Clock::on_drift_sample`]. The integrator stages a ±1 step when the
 //!   running average crosses ~½ step; one step ≈ 0.4 ticks at the 11·bit
 //!   classifier-window edge, easily inside the ±10% tolerance.
 
@@ -23,7 +23,7 @@ pub(crate) const fn brr_for(clock_hz: u32, baud_hz: u32) -> u32 {
     (clock_hz + baud_hz / 2) / baud_hz
 }
 
-pub struct DxlClock<U: UsartBaud, T: ClockTrim> {
+pub struct Clock<U: UsartBaud, T: ClockTrim> {
     usart: U,
     trim: T,
 
@@ -44,7 +44,7 @@ pub struct DxlClock<U: UsartBaud, T: ClockTrim> {
     pending_trim_delta: Option<i8>,
 }
 
-impl<U: UsartBaud, T: ClockTrim> DxlClock<U, T> {
+impl<U: UsartBaud, T: ClockTrim> Clock<U, T> {
     /// Relative frequency shift per trim step, in Q20 (1 unit = 1/2^20).
     /// Power-of-2 scale (instead of ppm) so the threshold compute is a pure
     /// shift. Folded to a literal at monomorphization time.
@@ -161,8 +161,8 @@ mod tests {
     const TEST_BAUD: BaudRate = BaudRate::B9600;
     const SPEC: u16 = 5000;
 
-    fn clock(baud: BaudRate) -> DxlClock<FakeUsartBaud, FakeClockTrim> {
-        DxlClock::new(baud, FakeUsartBaud::default(), FakeClockTrim::default())
+    fn clock(baud: BaudRate) -> Clock<FakeUsartBaud, FakeClockTrim> {
+        Clock::new(baud, FakeUsartBaud::default(), FakeClockTrim::default())
     }
 
     #[test]
@@ -255,7 +255,7 @@ mod tests {
 
     #[test]
     fn drift_threshold_q8_matches_formula() {
-        type C = DxlClock<FakeUsartBaud, FakeClockTrim>;
+        type C = Clock<FakeUsartBaud, FakeClockTrim>;
         assert_eq!(C::drift_threshold_q8(16), 163);
         assert_eq!(C::drift_threshold_q8(48), 491);
         assert_eq!(C::drift_threshold_q8(5000), 51171);
