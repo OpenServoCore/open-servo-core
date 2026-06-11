@@ -6,7 +6,9 @@
 extern crate std;
 use std::vec::Vec;
 
-use crate::traits::{ClockTrim, DigitalOut, DmaFlags, DmaRing, Monotonic, UsartBaud};
+use crate::traits::{
+    ClockTrim, DigitalOut, DmaFlags, DmaRing, DxlTxScheduler, Monotonic, UsartBaud,
+};
 use crate::types::Level;
 
 #[derive(Default)]
@@ -88,5 +90,47 @@ impl DmaRing for FakeDmaRing {
 
     fn remaining(&self) -> u16 {
         self.remaining
+    }
+}
+
+/// One entry per `DxlTxScheduler` call; tests assert the recorded sequence
+/// against expected fire arming.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub enum ScheduleOp {
+    Schedule {
+        wire_end_tick: u16,
+        delay_us: u32,
+    },
+    ScheduleLastSlot {
+        wire_end_tick: u16,
+        delay_q88_us: u32,
+        anchor_bytes: u32,
+    },
+    Cancel,
+}
+
+#[derive(Default)]
+pub struct FakeDxlTxScheduler {
+    pub log: Vec<ScheduleOp>,
+}
+
+impl DxlTxScheduler for FakeDxlTxScheduler {
+    fn schedule(&mut self, wire_end_tick: u16, delay_us: u32) {
+        self.log.push(ScheduleOp::Schedule {
+            wire_end_tick,
+            delay_us,
+        });
+    }
+
+    fn schedule_last_slot(&mut self, wire_end_tick: u16, delay_q88_us: u32, anchor_bytes: u32) {
+        self.log.push(ScheduleOp::ScheduleLastSlot {
+            wire_end_tick,
+            delay_q88_us,
+            anchor_bytes,
+        });
+    }
+
+    fn cancel(&mut self) {
+        self.log.push(ScheduleOp::Cancel);
     }
 }
