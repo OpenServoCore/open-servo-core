@@ -213,7 +213,7 @@ fn encode_calibrate(id: u8, count: u16) -> Vec<u8, 256> {
 /// `BulkReadEntry` is `#[repr(C)]` with align 1 (`U16Le` fields) — sound
 /// under any alignment.
 fn bulk_entries(body: &[u8]) -> &[BulkReadEntry] {
-    assert!(body.len() % 5 == 0);
+    assert!(body.len().is_multiple_of(5));
     unsafe { core::slice::from_raw_parts(body.as_ptr() as *const BulkReadEntry, body.len() / 5) }
 }
 

@@ -623,7 +623,10 @@ fn round_trip_random_fields_across_variants() {
                 5 => w.factory_reset(id, mode).unwrap(),
                 6 => w.reboot(id).unwrap(),
                 7 => {
-                    drop(w);
+                    // Move-discard `w` so its `&mut wire` borrow ends before
+                    // StatusEmitter takes its own. `drop(w)` would do the
+                    // same but trips clippy::drop_non_drop.
+                    let _ = w;
                     StatusEmitter::<_, Crc>::new(&mut wire)
                         .ext(id, StatusError::from_byte(error), &body)
                         .unwrap();
@@ -650,7 +653,8 @@ fn round_trip_random_fields_across_variants() {
 fn stuffing_round_trip_for_every_body_carrying_variant() {
     let logical: &[u8] = &[0xFF, 0xFF, 0xFD, 0x42, 0xFF, 0xFF, 0xFD, 0xAA];
 
-    let cases: &[(&str, fn(&mut HVec<u8, 64>, &[u8]))] = &[
+    type Case = (&'static str, fn(&mut HVec<u8, 64>, &[u8]));
+    let cases: &[Case] = &[
         ("Write", |out, data| {
             InstructionEmitter::<_, Crc>::new(out)
                 .write(Id::new(1), 0x0010, data)
