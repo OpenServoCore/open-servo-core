@@ -33,7 +33,7 @@ pub fn on_adc_dma_tc() {
             sensors.sample(&vars)
         };
         #[cfg(feature = "defmt")]
-        crate::telemetry::record_sample(&sample);
+        crate::legacy::telemetry::record_sample(&sample);
         kernel.on_tick(sample, &SHARED);
     }
 }

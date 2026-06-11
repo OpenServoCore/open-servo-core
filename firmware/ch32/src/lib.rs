@@ -16,5 +16,3 @@ pub mod prelude;
 pub(crate) mod providers;
 pub mod runtime;
 pub mod services;
-#[cfg(feature = "defmt")]
-pub mod telemetry;

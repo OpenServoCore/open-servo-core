@@ -5,3 +5,5 @@
 pub(crate) mod dxl;
 pub(crate) mod idle_anchor;
 pub(crate) mod statics;
+#[cfg(feature = "defmt")]
+pub(crate) mod telemetry;
