@@ -43,3 +43,97 @@ pub enum Packet<'a> {
     FastBulkRead(FastBulkReadPacket<'a>),
     Raw(RawPacket<'a>),
 }
+
+/// Host-originated frames. Mirror of [`Packet`] minus `Status`, used at
+/// service boundaries that explicitly only handle requests (the DXL bus
+/// dispatcher surfaces these via `poll()`; observed peer Status frames feed
+/// the driver-internal drift signal and stay out of this surface).
+#[derive(Copy, Clone, Debug)]
+pub enum InstructionPacket<'a> {
+    Ping(&'a PingPacket),
+    Read(&'a ReadPacket),
+    Write(WritePacket<'a>),
+    RegWrite(WritePacket<'a>),
+    Action(&'a ActionPacket),
+    Reboot(&'a RebootPacket),
+    FactoryReset(&'a FactoryResetPacket),
+    SyncRead(SyncReadPacket<'a>),
+    SyncWrite(SyncWritePacket<'a>),
+    BulkRead(BulkReadPacket<'a>),
+    BulkWrite(BulkWritePacket<'a>),
+    FastSyncRead(FastSyncReadPacket<'a>),
+    FastBulkRead(FastBulkReadPacket<'a>),
+    Raw(RawPacket<'a>),
+}
+
+impl<'a> Packet<'a> {
+    /// Project a decoded frame onto the host-originated subset. Returns
+    /// `None` for `Status` so the caller's match never needs an
+    /// unreachable arm.
+    pub fn into_instruction_packet(self) -> Option<InstructionPacket<'a>> {
+        match self {
+            Packet::Ping(p) => Some(InstructionPacket::Ping(p)),
+            Packet::Read(p) => Some(InstructionPacket::Read(p)),
+            Packet::Write(p) => Some(InstructionPacket::Write(p)),
+            Packet::RegWrite(p) => Some(InstructionPacket::RegWrite(p)),
+            Packet::Action(p) => Some(InstructionPacket::Action(p)),
+            Packet::Reboot(p) => Some(InstructionPacket::Reboot(p)),
+            Packet::FactoryReset(p) => Some(InstructionPacket::FactoryReset(p)),
+            Packet::Status(_) => None,
+            Packet::SyncRead(p) => Some(InstructionPacket::SyncRead(p)),
+            Packet::SyncWrite(p) => Some(InstructionPacket::SyncWrite(p)),
+            Packet::BulkRead(p) => Some(InstructionPacket::BulkRead(p)),
+            Packet::BulkWrite(p) => Some(InstructionPacket::BulkWrite(p)),
+            Packet::FastSyncRead(p) => Some(InstructionPacket::FastSyncRead(p)),
+            Packet::FastBulkRead(p) => Some(InstructionPacket::FastBulkRead(p)),
+            Packet::Raw(p) => Some(InstructionPacket::Raw(p)),
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::InstructionEmitter;
+    use crate::crc_software::SoftwareCrcUmts;
+    use crate::decoder::{Decoder, Step};
+    use heapless::Vec;
+
+    type Crc = SoftwareCrcUmts;
+
+    fn decode<'a, const M: usize>(
+        buf: &'a [u8],
+        dec: &'a mut Decoder<M, Crc>,
+    ) -> Option<Packet<'a>> {
+        match dec.feed(buf).0 {
+            Step::Packet(p) => Some(p),
+            _ => None,
+        }
+    }
+
+    #[test]
+    fn status_projects_to_none() {
+        let mut out: Vec<u8, 32> = Vec::new();
+        InstructionEmitter::<_, Crc>::new(&mut out)
+            .ext(Id::new(0x05), Instruction::Status.as_u8(), &[0x00, 0xAA])
+            .unwrap();
+        let mut dec: Decoder<32, Crc> = Decoder::new();
+        let pkt = decode(&out, &mut dec).expect("decode");
+        assert!(matches!(pkt, Packet::Status(_)));
+        assert!(pkt.into_instruction_packet().is_none());
+    }
+
+    #[test]
+    fn ping_projects_to_instruction_ping() {
+        let mut out: Vec<u8, 32> = Vec::new();
+        InstructionEmitter::<_, Crc>::new(&mut out)
+            .ext(Id::new(0x01), Instruction::Ping.as_u8(), &[])
+            .unwrap();
+        let mut dec: Decoder<32, Crc> = Decoder::new();
+        let pkt = decode(&out, &mut dec).expect("decode");
+        match pkt.into_instruction_packet() {
+            Some(InstructionPacket::Ping(p)) => assert_eq!(p.header.id, Id::new(0x01)),
+            other => panic!("expected Ping, got {other:?}"),
+        }
+    }
+}

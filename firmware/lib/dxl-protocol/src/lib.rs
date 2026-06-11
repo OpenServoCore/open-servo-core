@@ -25,4 +25,4 @@ pub use crc::CrcUmts;
 #[cfg(feature = "software-crc")]
 pub use crc_software::SoftwareCrcUmts;
 pub use emitter::{InstructionEmitter, SlotEmitter, StatusEmitter};
-pub use packet::{Id, Instruction, InstructionByte, SlotPosition};
+pub use packet::{Id, Instruction, InstructionByte, InstructionPacket, Packet, SlotPosition};
