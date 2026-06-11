@@ -1,19 +1,20 @@
+//! DXL CRC-16/UMTS provider. V006 has no CRC peripheral, so the impl is
+//! software — `crc` crate's table-driven engine over the DXL polynomial.
+//! A chip with a hardware CRC unit would swap this file with a peripheral-
+//! driven implementation; the trait surface (`dxl_protocol::CrcUmts`) is
+//! the same.
+
 use crc::{CRC_16_UMTS, Crc};
 use dxl_protocol::CrcUmts;
 
-/// CH32V006 has no CRC peripheral, so this is software — `crc` crate's
-/// table-driven impl over the DXL polynomial. Same wire algorithm as
-/// `dxl_protocol::SoftwareCrcUmts`; lives here because the chip is the
-/// authority on how its frames' CRCs get computed (would be swapped for a
-/// peripheral-driven impl on chips that have one).
 const ENGINE: Crc<u16> = Crc::<u16>::new(&CRC_16_UMTS);
 
 #[derive(Copy, Clone, Debug)]
-pub struct Ch32DxlCrc {
+pub struct DxlCrc {
     state: u16,
 }
 
-impl Ch32DxlCrc {
+impl DxlCrc {
     /// Construct an engine seeded with an arbitrary intermediate state —
     /// for resuming a chain CRC across discontiguous ring-walk slices that
     /// share a single running value.
@@ -22,7 +23,7 @@ impl Ch32DxlCrc {
     }
 }
 
-impl CrcUmts for Ch32DxlCrc {
+impl CrcUmts for DxlCrc {
     fn new() -> Self {
         Self { state: 0 }
     }
@@ -42,7 +43,7 @@ impl CrcUmts for Ch32DxlCrc {
     }
 }
 
-impl Default for Ch32DxlCrc {
+impl Default for DxlCrc {
     fn default() -> Self {
         Self::new()
     }

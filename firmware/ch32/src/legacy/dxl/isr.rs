@@ -5,8 +5,8 @@ use ch32_metapac::USART1;
 use dxl_protocol::CrcUmts;
 
 use super::super::bench::dbg_pulse;
-use super::Ch32DxlCrc;
 use crate::hal::{dma, gpio, systick, usart};
+use crate::providers::dxl_crc::DxlCrc;
 
 use super::scheduler::{GUARD_BYTES, catchup_interval_ticks};
 use super::state::{
@@ -214,7 +214,7 @@ fn patch_crc() {
             ReplyState::Chain { bulk_crc, .. } => bulk_crc,
             _ => 0,
         };
-        let mut crc = Ch32DxlCrc::new_with_state(seed);
+        let mut crc = DxlCrc::new_with_state(seed);
         crc.update(&buf[..payload_end]);
         let bytes = crc.finalize().to_le_bytes();
         let slice = buf.as_mut_slice();
@@ -264,7 +264,7 @@ fn accumulate_snoop() {
             }
             let ring = &*DXL_RX_BUF.get();
             let prior = *snoop_head;
-            let mut crc = Ch32DxlCrc::new_with_state(*bulk_crc);
+            let mut crc = DxlCrc::new_with_state(*bulk_crc);
             ring_crc(&mut crc, ring, prior, write_pos);
             *bulk_crc = crc.finalize();
             let delta = write_pos.wrapping_sub(prior) & RX_MASK_U16;
@@ -278,7 +278,7 @@ fn accumulate_snoop() {
 // arithmetic + CRC table walk land directly in the snoop hot path,
 // inheriting `.highcode` from the surrounding inline chain.
 #[inline(always)]
-fn ring_crc(crc: &mut Ch32DxlCrc, ring: &[u8], head: u16, write_pos: u16) {
+fn ring_crc(crc: &mut DxlCrc, ring: &[u8], head: u16, write_pos: u16) {
     if head == write_pos {
         return;
     }
@@ -300,20 +300,20 @@ fn current_rx_write_pos() -> u16 {
 
 #[cfg(test)]
 mod tests {
-    use super::Ch32DxlCrc;
     use super::ring_crc;
+    use crate::providers::dxl_crc::DxlCrc;
     use dxl_protocol::CrcUmts;
 
     const RING: [u8; 8] = [0x10, 0x20, 0x30, 0x40, 0x50, 0x60, 0x70, 0x80];
 
     fn walk(seed: u16, ring: &[u8], head: u16, write_pos: u16) -> u16 {
-        let mut crc = Ch32DxlCrc::new_with_state(seed);
+        let mut crc = DxlCrc::new_with_state(seed);
         ring_crc(&mut crc, ring, head, write_pos);
         crc.finalize()
     }
 
     fn oneshot(bytes: &[u8]) -> u16 {
-        let mut crc = Ch32DxlCrc::new();
+        let mut crc = DxlCrc::new();
         crc.update(bytes);
         crc.finalize()
     }

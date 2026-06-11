@@ -18,6 +18,7 @@ use crate::legacy::dxl::statics::{
 };
 use crate::legacy::dxl::timing::{SLOT_MARGIN, bytes_to_us, bytes_to_us_q88};
 use crate::legacy::idle_anchor::{self, IdleAnchor};
+use crate::providers::dxl_crc::DxlCrc;
 
 /// Single &mut writer: the main loop holding the `Services` struct.
 pub struct Ch32Bus {
@@ -108,7 +109,7 @@ impl Default for Ch32Bus {
 }
 
 impl DxlBus for Ch32Bus {
-    type Crc = dxl::Ch32DxlCrc;
+    type Crc = DxlCrc;
 
     fn rx_window(&mut self) -> Option<(&[u8], &[u8])> {
         self.extract_window()
@@ -205,10 +206,7 @@ impl DxlBus for Ch32Bus {
         // after a send cycle this struct initiated.
         let buf = unsafe { &mut *DXL_TX_BUF.get() };
         buf.truncate(0);
-        if StatusEmitter::<_, dxl::Ch32DxlCrc>::new(buf)
-            .emit(status)
-            .is_err()
-        {
+        if StatusEmitter::<_, DxlCrc>::new(buf).emit(status).is_err() {
             buf.truncate(0);
             return;
         }
@@ -229,7 +227,7 @@ impl DxlBus for Ch32Bus {
         // (populated by `FastSlotInfo::position()`); the chip's `patch_crc`
         // ISR overwrites the trailing 2 bytes with the real chain CRC at
         // fire time.
-        if SlotEmitter::<_, dxl::Ch32DxlCrc>::new(buf)
+        if SlotEmitter::<_, DxlCrc>::new(buf)
             .emit(&slot, position)
             .is_err()
         {
