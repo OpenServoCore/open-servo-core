@@ -11,7 +11,7 @@ pub mod chip_flash;
 pub mod control;
 pub(crate) mod dxl;
 pub mod hal;
-pub(crate) mod idle_anchor;
+pub(crate) mod legacy;
 pub mod log;
 pub mod prelude;
 pub(crate) mod providers;

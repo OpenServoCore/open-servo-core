@@ -17,7 +17,7 @@ use crate::dxl::timing::{SLOT_MARGIN, bytes_to_us, bytes_to_us_q88};
 use crate::hal::dma;
 use crate::hal::rcc::{CLOCK_TRIM_DELTA_MAX, CLOCK_TRIM_DELTA_MIN, CLOCK_TRIM_PPM_PER_STEP};
 use crate::hal::systick::TICKS_PER_US;
-use crate::idle_anchor::{self, IdleAnchor};
+use crate::legacy::idle_anchor::{self, IdleAnchor};
 
 /// Single &mut writer: the main loop holding the `Services` struct.
 pub struct Ch32Bus {

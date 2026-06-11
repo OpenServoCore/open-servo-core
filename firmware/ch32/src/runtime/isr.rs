@@ -12,7 +12,7 @@ use crate::dxl::statics::{
 };
 use crate::hal::rcc;
 use crate::hal::{dma, exti, gpio, pfic, systick, usart};
-use crate::idle_anchor;
+use crate::legacy::idle_anchor;
 use crate::runtime::Drivers;
 use crate::statics::{KERNEL, SHARED};
 
