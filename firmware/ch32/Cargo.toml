@@ -14,6 +14,7 @@ dxl-protocol     = { path = "../lib/dxl-protocol", features = ["heapless"] }
 embedded-storage = "0.3"
 heapless         = "0.9"
 osc-core         = { path = "../lib/core" }
+osc-drivers      = { path = "../lib/drivers" }
 osc-units        = { path = "../lib/units" }
 portable-atomic  = { version = "1", default-features = false }
 riscv            = "0.12"

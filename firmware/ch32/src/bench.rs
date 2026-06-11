@@ -4,11 +4,12 @@
 //! unconditional in hot paths and compile to nothing in production builds.
 
 #[cfg(feature = "bench")]
-use crate::drivers::Drivers;
+use osc_drivers::Level;
 #[cfg(feature = "bench")]
-use crate::drivers::traits::DigitalOut;
+use osc_drivers::traits::DigitalOut;
+
 #[cfg(feature = "bench")]
-use crate::types::Level;
+use crate::runtime::Drivers;
 
 /// Scope-marker pulse on the DBG instance. Compile-time no-op without
 /// `--features bench`.

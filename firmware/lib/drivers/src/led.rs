@@ -5,8 +5,7 @@
 //! changes; the main loop calls [`Led::poll`] every iteration to advance
 //! the pin level by elapsed time.
 
-use crate::adapters;
-use crate::drivers::traits::{DigitalOut, Monotonic};
+use crate::traits::{DigitalOut, Monotonic};
 use crate::types::Level;
 
 /// What the LED should be doing.
@@ -21,10 +20,7 @@ pub enum Pattern {
     },
 }
 
-pub struct Led<
-    P: DigitalOut = adapters::gpio::Output,
-    M: Monotonic = adapters::systick::SysTick,
-> {
+pub struct Led<P: DigitalOut, M: Monotonic> {
     pin: P,
     clock: M,
     pattern: Pattern,
@@ -80,7 +76,7 @@ impl<P: DigitalOut, M: Monotonic> Led<P, M> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::adapters::mocks::{FakeDigitalOut, FakeMonotonic};
+    use crate::mocks::{FakeDigitalOut, FakeMonotonic};
 
     // FakeMonotonic uses 1 tick = 1 µs, so test arithmetic stays in µs.
 

@@ -8,8 +8,9 @@
 use core::cell::SyncUnsafeCell;
 use core::sync::atomic::Ordering;
 
-use crate::drivers::Drivers;
-use crate::drivers::led::Pattern;
+use osc_drivers::led::Pattern;
+
+use crate::runtime::Drivers;
 use crate::dxl::statics::DXL_TX_COUNT;
 use crate::hal::systick::{self, TICKS_PER_US};
 

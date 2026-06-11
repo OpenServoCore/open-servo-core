@@ -74,8 +74,8 @@ impl Classifier {
     /// `edges_head` on exit.
     ///
     /// `ticks_per_bit` is the spec UART bit time in TIM2 ticks; callers
-    /// read it from [`crate::drivers::dxl::clock::DxlClock`] so a baud
-    /// change widens/narrows the window in lockstep.
+    /// read it from [`crate::dxl::clock::DxlClock`] so a baud change
+    /// widens/narrows the window in lockstep.
     pub fn on_edge_advance(&mut self, edges: &[u16], edges_head: u16, ticks_per_bit: u16) {
         debug_assert!(edges.len().is_power_of_two() && edges.len() <= u16::MAX as usize + 1);
         let edges_mask = (edges.len() as u16).wrapping_sub(1);

@@ -13,19 +13,27 @@
 
 use core::cell::SyncUnsafeCell;
 
+use osc_drivers::Level;
+use osc_drivers::dxl::clock::DxlClock;
+use osc_drivers::dxl::rx::DxlRx;
+use osc_drivers::led::Led;
+
 use crate::ConfigDefaults;
 use crate::adapters;
 use crate::board::BoardWiring;
-use crate::drivers::dxl::clock::DxlClock;
-use crate::drivers::dxl::rx::DxlRx;
-use crate::drivers::led::Led;
-use crate::types::Level;
+
+/// Concrete instantiations for this chip. The driver types stay generic
+/// in `osc-drivers`; this is the single spot that binds them to specific
+/// adapters.
+type StatLed = Led<adapters::gpio::Output, adapters::systick::SysTick>;
+type DxlClockCh = DxlClock<adapters::usart::Usart1, adapters::rcc::HsiTrim>;
+type DxlRxCh = DxlRx<adapters::dma::Ch7>;
 
 struct Cells {
     dbg: SyncUnsafeCell<Option<adapters::gpio::Output>>,
-    stat_led: SyncUnsafeCell<Option<Led>>,
-    dxl_clock: SyncUnsafeCell<Option<DxlClock>>,
-    dxl_rx: SyncUnsafeCell<Option<DxlRx>>,
+    stat_led: SyncUnsafeCell<Option<StatLed>>,
+    dxl_clock: SyncUnsafeCell<Option<DxlClockCh>>,
+    dxl_rx: SyncUnsafeCell<Option<DxlRxCh>>,
 }
 
 static CELLS: Cells = Cells {
@@ -86,7 +94,7 @@ impl Drivers {
     /// SAFETY: bringup installs `stat_led` before main loop runs; runtime
     /// access is from main-loop callers only.
     #[inline(always)]
-    pub unsafe fn stat_led() -> &'static mut Led {
+    pub unsafe fn stat_led() -> &'static mut StatLed {
         // SAFETY: see fn doc.
         let cell = unsafe { &mut *CELLS.stat_led.get() };
         debug_assert!(cell.is_some(), "Drivers::stat_led() before install");
@@ -98,7 +106,7 @@ impl Drivers {
     /// access is from DXL-side ISRs at PFIC HIGH (same-priority serialization).
     #[inline(always)]
     #[allow(dead_code)]
-    pub unsafe fn dxl_clock() -> &'static mut DxlClock {
+    pub unsafe fn dxl_clock() -> &'static mut DxlClockCh {
         // SAFETY: see fn doc.
         let cell = unsafe { &mut *CELLS.dxl_clock.get() };
         debug_assert!(cell.is_some(), "Drivers::dxl_clock() before install");
@@ -112,7 +120,7 @@ impl Drivers {
     /// race-free).
     #[inline(always)]
     #[allow(dead_code)]
-    pub unsafe fn dxl_rx() -> &'static mut DxlRx {
+    pub unsafe fn dxl_rx() -> &'static mut DxlRxCh {
         // SAFETY: see fn doc.
         let cell = unsafe { &mut *CELLS.dxl_rx.get() };
         debug_assert!(cell.is_some(), "Drivers::dxl_rx() before install");

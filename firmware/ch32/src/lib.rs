@@ -9,18 +9,17 @@ pub(crate) mod adapters;
 pub(crate) mod bench;
 pub mod board;
 pub mod chip_flash;
-pub(crate) mod drivers;
 pub(crate) mod dxl;
 pub mod hal;
 pub(crate) mod idle_anchor;
 pub mod irq;
 pub mod log;
 pub mod prelude;
+pub(crate) mod runtime;
 pub mod services;
 pub(crate) mod statics;
 #[cfg(feature = "defmt")]
 pub mod telemetry;
-pub mod types;
 
 use board::{BoardConfig, Ch32KernelIo, Precomputed};
 
@@ -49,7 +48,7 @@ pub fn __run(cfg: BoardConfig, pre: Precomputed) -> ! {
         services.poll(&statics::SHARED);
         dxl::tx_activity::poll();
         // SAFETY: stat_led installed in bringup; main-loop sole accessor.
-        unsafe { drivers::Drivers::stat_led() }.poll();
+        unsafe { runtime::Drivers::stat_led() }.poll();
         riscv::asm::wfi();
     }
 }

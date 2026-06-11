@@ -1,6 +1,6 @@
 //! DMA adapters — bind `DmaRing` to specific DMA channels.
 
-use crate::drivers::traits::{DmaFlags, DmaRing};
+use osc_drivers::traits::{DmaFlags, DmaRing};
 use crate::hal::dma;
 
 /// Production binding to DMA1_CH7 (TIM2_CH4 input-capture → ET ring).

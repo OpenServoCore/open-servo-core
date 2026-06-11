@@ -1,5 +1,6 @@
+use osc_drivers::Level;
+
 use super::super::Pin;
-use crate::types::Level;
 
 #[derive(Copy, Clone)]
 pub enum Pull {

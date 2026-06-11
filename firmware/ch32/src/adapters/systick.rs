@@ -1,6 +1,6 @@
 //! SysTick adapter — provides `Monotonic` from the HCLK-driven SysTick counter.
 
-use crate::drivers::traits::Monotonic;
+use osc_drivers::traits::Monotonic;
 use crate::hal::systick;
 
 pub struct SysTick;

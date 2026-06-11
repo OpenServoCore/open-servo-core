@@ -344,6 +344,7 @@ dependencies = [
  "embedded-storage",
  "heapless",
  "osc-core",
+ "osc-drivers",
  "osc-units",
  "portable-atomic",
  "riscv 0.12.1",
@@ -385,6 +386,13 @@ dependencies = [
  "panic-halt",
  "tinyboot-ch32",
  "tinyboot-ch32-rt",
+]
+
+[[package]]
+name = "osc-drivers"
+version = "0.0.0"
+dependencies = [
+ "osc-core",
 ]
 
 [[package]]

@@ -1,11 +1,12 @@
-//! Recording adapters for unit tests. Each fake implements a driver
-//! interface and logs the calls it received; the test asserts against the
-//! log. Host-side only (`cfg(test)`), so `Vec` is available.
+//! Recording mocks for driver unit tests. Each fake implements one of the
+//! driver-owned interfaces and logs the calls it received; tests assert
+//! against the log. Host-side only (`cfg(test)`), so `Vec` is available
+//! via the explicit `extern crate std`.
 
 extern crate std;
 use std::vec::Vec;
 
-use crate::drivers::traits::{ClockTrim, DigitalOut, DmaFlags, DmaRing, Monotonic, UsartBaud};
+use crate::traits::{ClockTrim, DigitalOut, DmaFlags, DmaRing, Monotonic, UsartBaud};
 use crate::types::Level;
 
 #[derive(Default)]
@@ -40,6 +41,10 @@ pub struct FakeUsartBaud {
 }
 
 impl UsartBaud for FakeUsartBaud {
+    // Same as the production V006 binding (PCLK = HCLK = 48 MHz) so test
+    // BRR math matches the chip-side reference table.
+    const CLOCK_HZ: u32 = 48_000_000;
+
     fn set_baud(&mut self, brr: u32) {
         self.log.push(brr);
     }

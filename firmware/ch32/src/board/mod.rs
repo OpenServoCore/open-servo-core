@@ -13,10 +13,10 @@ use osc_core::{
     DecayMode, FrameInputs, KernelIo, Motor as MotorTrait, MotorCmd, RawSamples, SampleFrame,
     Sensors as SensorsTrait,
 };
+use osc_drivers::Level;
 
 use crate::hal::{Pin, gpio, timer};
 use crate::statics::read_sample_tick;
-use crate::types::Level;
 
 use bringup::BringupResult;
 use convert::{

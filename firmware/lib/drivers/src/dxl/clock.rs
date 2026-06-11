@@ -11,14 +11,19 @@
 //!   running average crosses ~½ step; one step ≈ 0.4 ticks at the 11·bit
 //!   classifier-window edge, easily inside the ±10% tolerance.
 
-use crate::BaudRate;
-use crate::adapters;
-use crate::drivers::traits::{ClockTrim, UsartBaud};
-use crate::dxl::timing;
+use osc_core::BaudRate;
+
+use crate::traits::{ClockTrim, UsartBaud};
 
 const DRIFT_MIN_SAMPLES: u16 = 32;
 
-pub struct DxlClock<U: UsartBaud = adapters::usart::Usart1, T: ClockTrim = adapters::rcc::HsiTrim> {
+/// Round-to-nearest BRR divisor for a baud, given the USART's clock rate.
+/// Folds to a literal whenever both arguments are const at the call site.
+pub(crate) const fn brr_for(clock_hz: u32, baud_hz: u32) -> u32 {
+    (clock_hz + baud_hz / 2) / baud_hz
+}
+
+pub struct DxlClock<U: UsartBaud, T: ClockTrim> {
     usart: U,
     trim: T,
 
@@ -48,8 +53,23 @@ impl<U: UsartBaud, T: ClockTrim> DxlClock<U, T> {
     /// would overshoot and the post-step error would be worse than pre-step.
     const DRIFT_THRESHOLD_Q20: u32 = Self::TRIM_PER_STEP_Q20 / 2;
 
+    /// BRR divisor for the given baud at this USART's clock rate. Each arm
+    /// folds to a literal at monomorphization — no runtime divide (matters
+    /// on RV32EC, which has no hardware `div`).
+    #[inline]
+    fn brr(baud: BaudRate) -> u32 {
+        match baud {
+            BaudRate::B9600 => const { brr_for(U::CLOCK_HZ, BaudRate::B9600.as_hz()) },
+            BaudRate::B57600 => const { brr_for(U::CLOCK_HZ, BaudRate::B57600.as_hz()) },
+            BaudRate::B115200 => const { brr_for(U::CLOCK_HZ, BaudRate::B115200.as_hz()) },
+            BaudRate::B1000000 => const { brr_for(U::CLOCK_HZ, BaudRate::B1000000.as_hz()) },
+            BaudRate::B2000000 => const { brr_for(U::CLOCK_HZ, BaudRate::B2000000.as_hz()) },
+            BaudRate::B3000000 => const { brr_for(U::CLOCK_HZ, BaudRate::B3000000.as_hz()) },
+        }
+    }
+
     pub fn new(baud: BaudRate, usart: U, trim: T) -> Self {
-        let ticks_per_bit = timing::brr(baud) as u16;
+        let ticks_per_bit = Self::brr(baud) as u16;
         Self {
             usart,
             trim,
@@ -84,7 +104,7 @@ impl<U: UsartBaud, T: ClockTrim> DxlClock<U, T> {
     pub fn on_tx_complete(&mut self) {
         let mut reset_integrator = false;
         if let Some(baud) = self.pending_baud.take() {
-            let brr = timing::brr(baud);
+            let brr = Self::brr(baud);
             self.usart.set_baud(brr);
             self.baud = baud;
             self.ticks_per_bit = brr as u16;
@@ -134,7 +154,7 @@ impl<U: UsartBaud, T: ClockTrim> DxlClock<U, T> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::adapters::mocks::{FakeClockTrim, FakeUsartBaud};
+    use crate::mocks::{FakeClockTrim, FakeUsartBaud};
 
     // 9600 baud → BRR 5000 — high spec gives ample headroom for sub-tick
     // drift math without bumping against the i32 range or the deadband.
@@ -246,7 +266,8 @@ mod tests {
         let mut c = clock(TEST_BAUD);
         c.stage_baud(BaudRate::B3000000);
         c.on_tx_complete();
-        assert_eq!(c.usart.log, [timing::brr(BaudRate::B3000000)]);
+        let expected_brr = brr_for(FakeUsartBaud::CLOCK_HZ, BaudRate::B3000000.as_hz());
+        assert_eq!(c.usart.log, [expected_brr]);
         assert_eq!(c.baud, BaudRate::B3000000);
         assert_eq!(c.ticks_per_bit, 16);
     }

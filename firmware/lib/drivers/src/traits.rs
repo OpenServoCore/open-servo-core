@@ -1,6 +1,6 @@
 //! Driver-owned interfaces. Drivers declare what they need from their
-//! environment; adapters in `crate::adapters` implement these over real HAL
-//! peripherals (production) or recording mocks (tests).
+//! environment; chip-side adapters implement these over real HAL peripherals
+//! (production) or recording mocks (tests).
 
 use crate::types::Level;
 
@@ -18,10 +18,13 @@ pub trait Monotonic {
     fn ticks(&self) -> u32;
 }
 
-/// Single-channel USART baud-rate control. Drivers compute BRR off-line
-/// (chip-specific math) and hand the value here; the adapter writes it to
-/// the correct USART instance.
+/// Single-channel USART baud-rate control. `CLOCK_HZ` is the rate that
+/// drives the BRR divisor (PCLK on most chips); drivers compute BRR off
+/// of it and hand the result here. The adapter writes it to the correct
+/// USART instance.
 pub trait UsartBaud {
+    /// Frequency, in Hz, of the clock that feeds the USART's BRR divisor.
+    const CLOCK_HZ: u32;
     fn set_baud(&mut self, brr: u32);
 }
 

@@ -5,15 +5,13 @@
 //!
 //! The driver depends on a [`DmaRing`] adapter for HT/TC flag drain and
 //! NDTR readback; the production adapter binds to DMA1_CH7. Tests swap in
-//! [`crate::adapters::mocks::FakeDmaRing`] and stage flags + remaining
-//! directly.
+//! [`crate::mocks::FakeDmaRing`] and stage flags + remaining directly.
 
 mod classifier;
 
 use core::cell::SyncUnsafeCell;
 
-use crate::adapters;
-use crate::drivers::traits::DmaRing;
+use crate::traits::DmaRing;
 use classifier::Classifier;
 
 /// Edge-timestamp ring depth (doc §8.4 default). Power-of-two for cheap
@@ -24,7 +22,7 @@ pub const EDGE_BUF_LEN: usize = 128;
 
 const _: () = assert!(EDGE_BUF_LEN.is_power_of_two() && EDGE_BUF_LEN <= u16::MAX as usize + 1);
 
-pub struct DxlRx<R: DmaRing = adapters::dma::Ch7> {
+pub struct DxlRx<R: DmaRing> {
     classifier: Classifier,
     /// DMA1_CH7's destination buffer. `SyncUnsafeCell` because the DMA
     /// engine writes it concurrently with the classifier's reads — both
@@ -97,8 +95,8 @@ impl<R: DmaRing> DxlRx<R> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::adapters::mocks::FakeDmaRing;
-    use crate::drivers::traits::DmaFlags;
+    use crate::mocks::FakeDmaRing;
+    use crate::traits::DmaFlags;
 
     // 3 Mbaud at HCLK 48 MHz → ticks_per_bit = 16.
     const TPB_3M: u16 = 16;
