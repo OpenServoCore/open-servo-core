@@ -66,6 +66,29 @@ pub enum InstructionPacket<'a> {
     Raw(RawPacket<'a>),
 }
 
+impl<'a> InstructionPacket<'a> {
+    /// Target ID byte. Lets the bus driver decide "is this addressed to us
+    /// or BROADCAST" without re-walking every variant at the call site.
+    pub fn id(&self) -> Id {
+        match self {
+            InstructionPacket::Ping(p) => p.header.id,
+            InstructionPacket::Read(p) => p.header.id,
+            InstructionPacket::Write(p) => p.header.header.id,
+            InstructionPacket::RegWrite(p) => p.header.header.id,
+            InstructionPacket::Action(p) => p.header.id,
+            InstructionPacket::Reboot(p) => p.header.id,
+            InstructionPacket::FactoryReset(p) => p.header.id,
+            InstructionPacket::SyncRead(p) => p.header.header.id,
+            InstructionPacket::SyncWrite(p) => p.header.header.id,
+            InstructionPacket::BulkRead(p) => p.header.header.id,
+            InstructionPacket::BulkWrite(p) => p.header.header.id,
+            InstructionPacket::FastSyncRead(p) => p.header.header.id,
+            InstructionPacket::FastBulkRead(p) => p.header.header.id,
+            InstructionPacket::Raw(p) => p.header.header.id,
+        }
+    }
+}
+
 impl<'a> Packet<'a> {
     /// Project a decoded frame onto the host-originated subset. Returns
     /// `None` for `Status` so the caller's match never needs an

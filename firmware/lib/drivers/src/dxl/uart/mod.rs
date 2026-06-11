@@ -13,8 +13,8 @@ pub mod rx;
 
 use core::cell::SyncUnsafeCell;
 
-use dxl_protocol::CrcUmts;
-use dxl_protocol::decoder::Decoder;
+use dxl_protocol::decoder::{Decoder, Step};
+use dxl_protocol::{BROADCAST_ID, CrcUmts, InstructionPacket};
 use osc_core::{BaudRate, BootMode};
 
 use crate::traits::{ClockTrim, DmaRing, UsartBaud};
@@ -53,16 +53,21 @@ pub struct DxlUart<
     rx: Rx<R, EDGE_BUF_LEN, RX_BUF_LEN>,
     clock: Clock<U, T>,
 
-    // Lights up in the upcoming `poll()` landing; declared now so the type
-    // parameter `CRC` is anchored and the chip-side registry can pin
-    // `providers::dxl_crc::DxlCrc` once for the whole codec migration.
-    #[allow(dead_code)]
     decoder: Decoder<DECODER_CAP, CRC>,
     /// DMA1_CH5 destination for received bytes. `SyncUnsafeCell` because
     /// USART1's DMA writes it concurrently with the parser's reads — both
     /// reads happen at PFIC HIGH (no preemption from another consumer)
     /// and the producer is hardware.
     rx_buf: SyncUnsafeCell<[u8; RX_BUF_LEN]>,
+    /// Sequence number of the next RX byte to drain into the decoder. Wraps
+    /// at u16; the ring slot is `parsed_idx & (RX_BUF_LEN - 1)` (doc §10.5).
+    parsed_idx: u16,
+    /// Monotonic count of Instruction packets the decoder emitted —
+    /// regardless of target ID — across this driver's lifetime. The drift
+    /// signal ([[drift_sampling_instruction_only]]) ticks on every
+    /// Instruction so foreign-target instructions still calibrate, while
+    /// Status frames (which use the peer's HSI) never contribute.
+    instruction_count: u32,
 
     id: u8,
     rdt_us: u32,
@@ -82,17 +87,31 @@ impl<
     const EDGE_BUF_LEN: usize,
 > DxlUart<U, T, R, CRC, DECODER_CAP, RX_BUF_LEN, EDGE_BUF_LEN>
 {
+    /// Compile-time guard. `poll`'s ring-slot derivation (`parsed_idx &
+    /// RX_MASK`) and the chip-side DMA1_CH5 NDTR head math both rely on
+    /// power-of-two depth; bound at u16 so the cursor fits the timer/DMA
+    /// native width.
+    const _CHECK_RX_BUF_LEN: () = assert!(
+        RX_BUF_LEN.is_power_of_two() && RX_BUF_LEN > 0 && RX_BUF_LEN <= u16::MAX as usize + 1,
+        "RX_BUF_LEN must be a power of two in (0, 1<<16]",
+    );
+
+    const RX_MASK: u16 = (RX_BUF_LEN as u16).wrapping_sub(1);
+
     pub fn new(
         rx: Rx<R, EDGE_BUF_LEN, RX_BUF_LEN>,
         clock: Clock<U, T>,
         id: u8,
         rdt_us: u32,
     ) -> Self {
+        let _: () = Self::_CHECK_RX_BUF_LEN;
         Self {
             rx,
             clock,
             decoder: Decoder::new(),
             rx_buf: SyncUnsafeCell::new([0; RX_BUF_LEN]),
+            parsed_idx: 0,
+            instruction_count: 0,
             id,
             rdt_us,
             pending_id: None,
@@ -113,6 +132,61 @@ impl<
     pub fn on_rx_idle(&mut self) {
         let ticks_per_bit = self.clock.ticks_per_bit();
         self.rx.on_idle(ticks_per_bit);
+    }
+
+    /// Drain `rx_buf[parsed_idx..drain_to)` through the streaming decoder
+    /// and surface the first Instruction packet addressed to us (or
+    /// BROADCAST). Status frames are dropped silently (Instruction-only
+    /// surface per [[standard_dxl_terminology]]); Instructions for foreign
+    /// IDs are also dropped, but every emitted Instruction still bumps
+    /// `instruction_count()` so the drift signal stays clean.
+    ///
+    /// `drain_to` is the caller-supplied RX-byte frontier (chip-side DMA
+    /// head, masked with the BT frontier per doc §10.5 so the parser never
+    /// reads past either ring's published cursor). On `Step::NeedMore` the
+    /// parser yields with its in-progress packet state intact and resumes
+    /// from the same `parsed_idx` on the next call.
+    pub fn poll(&mut self, drain_to: u16) -> Option<InstructionPacket<'_>> {
+        let mut matched = false;
+        while self.parsed_idx != drain_to {
+            // SAFETY: rx_buf is written only by DMA1_CH5 (hardware writer)
+            // and read here from the same PFIC priority level as the DMA
+            // HT/TC ISR, so no other consumer can `&mut` it concurrently.
+            let byte = unsafe { (*self.rx_buf.get())[(self.parsed_idx & Self::RX_MASK) as usize] };
+            self.parsed_idx = self.parsed_idx.wrapping_add(1);
+            let (step, _) = self.decoder.feed(&[byte]);
+            match step {
+                Step::NeedMore | Step::Resync(_) => continue,
+                Step::Packet(pkt) => {
+                    let ip = match pkt.into_instruction_packet() {
+                        Some(ip) => ip,
+                        None => continue,
+                    };
+                    self.instruction_count = self.instruction_count.wrapping_add(1);
+                    let id = ip.id().as_byte();
+                    if id == self.id || id == BROADCAST_ID {
+                        matched = true;
+                        break;
+                    }
+                }
+            }
+        }
+        // Re-derive the surfaced packet through the immutable
+        // `dispatch_packet` path so its lifetime flows to the return
+        // without holding a mid-loop `&mut self.decoder` borrow (the
+        // direct path trips the borrow-checker's loop-back analysis).
+        // The decoder stays in `Done` until the next `feed`, so the
+        // overlay is still valid here.
+        matched
+            .then(|| self.decoder.dispatch_packet().into_instruction_packet())
+            .flatten()
+    }
+
+    /// Monotonic count of Instruction packets seen on the wire. Used by the
+    /// drift estimator as its tick source; only foreign Status frames are
+    /// excluded, so this advances on every Instruction the bus decodes.
+    pub fn instruction_count(&self) -> u32 {
+        self.instruction_count
     }
 
     /// USART1 TC fired — the reply has fully drained the wire. Drain
@@ -174,11 +248,40 @@ impl<
 }
 
 #[cfg(test)]
+impl<
+    U: UsartBaud,
+    T: ClockTrim,
+    R: DmaRing,
+    CRC: CrcUmts,
+    const DECODER_CAP: usize,
+    const RX_BUF_LEN: usize,
+    const EDGE_BUF_LEN: usize,
+> DxlUart<U, T, R, CRC, DECODER_CAP, RX_BUF_LEN, EDGE_BUF_LEN>
+{
+    /// Stage `bytes` into `rx_buf` starting at sequence index `at`, wrapping
+    /// the ring. Mirrors the chip-side DMA1_CH5 writer for host tests.
+    pub(crate) fn stage_rx_bytes_for_test(&mut self, at: u16, bytes: &[u8]) {
+        let buf = unsafe { &mut *self.rx_buf.get() };
+        for (i, &b) in bytes.iter().enumerate() {
+            buf[((at.wrapping_add(i as u16)) & Self::RX_MASK) as usize] = b;
+        }
+    }
+
+    /// Pre-position the parser cursor (wrap-test seed). Production has no
+    /// reason to set this directly — it's monotonic from `new()` onwards.
+    pub(crate) fn set_parsed_idx_for_test(&mut self, idx: u16) {
+        self.parsed_idx = idx;
+    }
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use crate::mocks::{FakeClockTrim, FakeDmaRing, FakeUsartBaud};
     use crate::traits::DmaFlags;
-    use dxl_protocol::SoftwareCrcUmts;
+    use dxl_protocol::packet::Id;
+    use dxl_protocol::{InstructionEmitter, SoftwareCrcUmts, StatusEmitter};
+    use heapless::Vec;
     use osc_core::BaudRate;
 
     /// Test-side storage sizing — matches V006 defaults per doc §§8.1, 8.3,
@@ -332,5 +435,173 @@ mod tests {
         let b = bus.rx_buf_addr();
         assert_eq!(a, b);
         assert_ne!(a, 0);
+    }
+
+    /// Emit a Ping addressed to `id`.
+    fn wire_ping(id: u8) -> Vec<u8, 32> {
+        let mut out: Vec<u8, 32> = Vec::new();
+        InstructionEmitter::<_, SoftwareCrcUmts>::new(&mut out)
+            .ping(Id::new(id))
+            .unwrap();
+        out
+    }
+
+    /// Emit a Status reply from `id` (the kind we never want to surface).
+    fn wire_status(id: u8) -> Vec<u8, 32> {
+        let mut out: Vec<u8, 32> = Vec::new();
+        StatusEmitter::<_, SoftwareCrcUmts>::new(&mut out)
+            .empty(Id::new(id), dxl_protocol::packet::StatusError::OK)
+            .unwrap();
+        out
+    }
+
+    /// Sync Read targets BROADCAST on the wire — exercises the
+    /// id-as-BROADCAST branch with a richer (non-Ping) packet shape.
+    fn wire_sync_read(addr: u16, length: u16, ids: &[u8]) -> Vec<u8, 32> {
+        let mut out: Vec<u8, 32> = Vec::new();
+        InstructionEmitter::<_, SoftwareCrcUmts>::new(&mut out)
+            .sync_read(addr, length, ids)
+            .unwrap();
+        out
+    }
+
+    /// Stage `bytes` at offset 0 and poll up to their end. Returns the
+    /// surfaced ID byte (or None).
+    fn poll_after(bus: &mut TestBus, bytes: &[u8]) -> Option<u8> {
+        bus.stage_rx_bytes_for_test(0, bytes);
+        bus.poll(bytes.len() as u16).map(|ip| ip.id().as_byte())
+    }
+
+    #[test]
+    fn poll_returns_none_when_no_new_bytes() {
+        let mut bus = make_bus();
+        assert!(bus.poll(0).is_none());
+        // Idempotent — calling again still drains nothing.
+        assert!(bus.poll(0).is_none());
+    }
+
+    #[test]
+    fn poll_surfaces_instruction_addressed_to_us() {
+        let mut bus = make_bus();
+        let pkt = wire_ping(TEST_ID);
+        assert_eq!(poll_after(&mut bus, &pkt), Some(TEST_ID));
+        assert_eq!(bus.instruction_count(), 1);
+    }
+
+    #[test]
+    fn poll_drops_instruction_for_other_id() {
+        let mut bus = make_bus();
+        let pkt = wire_ping(0x42);
+        assert_eq!(poll_after(&mut bus, &pkt), None);
+        // Still counted — foreign Instructions feed the drift signal.
+        assert_eq!(bus.instruction_count(), 1);
+    }
+
+    #[test]
+    fn poll_surfaces_broadcast_instruction() {
+        let mut bus = make_bus();
+        // SyncRead targets BROADCAST on the wire — exact id == 0xFE.
+        let pkt = wire_sync_read(0x84, 4, &[0x01, 0x02, 0x03]);
+        bus.stage_rx_bytes_for_test(0, &pkt);
+        match bus.poll(pkt.len() as u16) {
+            Some(InstructionPacket::SyncRead(_)) => {}
+            other => panic!("expected SyncRead, got {other:?}"),
+        }
+        assert_eq!(bus.instruction_count(), 1);
+    }
+
+    #[test]
+    fn poll_drops_status_silently() {
+        let mut bus = make_bus();
+        let pkt = wire_status(TEST_ID);
+        assert_eq!(poll_after(&mut bus, &pkt), None);
+        // Status frames never tick the drift signal — peer HSI is its own
+        // clock domain (see [[drift_sampling_instruction_only]]).
+        assert_eq!(bus.instruction_count(), 0);
+    }
+
+    #[test]
+    fn poll_recovers_from_bad_crc() {
+        let mut bus = make_bus();
+        let mut bad = wire_ping(TEST_ID);
+        // Corrupt the second-to-last byte — flips one CRC byte.
+        let crc_lo_pos = bad.len() - 2;
+        bad[crc_lo_pos] ^= 0xFF;
+        let good = wire_ping(TEST_ID);
+
+        // Stage the bad packet at offset 0, then the good one right after.
+        let mut combined: Vec<u8, 32> = Vec::new();
+        combined.extend_from_slice(&bad).unwrap();
+        combined.extend_from_slice(&good).unwrap();
+        bus.stage_rx_bytes_for_test(0, &combined);
+
+        // First poll: decoder Resyncs on the bad CRC, then decodes the
+        // good packet and surfaces it.
+        let surfaced = bus.poll(combined.len() as u16);
+        assert!(
+            surfaced.is_some(),
+            "good packet should surface after resync"
+        );
+        // Only the good packet counts — Resync drops the bad one before
+        // it ever becomes a Packet step.
+        assert_eq!(bus.instruction_count(), 1);
+    }
+
+    #[test]
+    fn poll_handles_ring_wrap() {
+        let mut bus = make_bus();
+        let pkt = wire_ping(TEST_ID);
+        // Position the packet so it straddles the ring boundary.
+        let start = (RX_BUF_LEN as u16).wrapping_sub(4);
+        bus.set_parsed_idx_for_test(start);
+        bus.stage_rx_bytes_for_test(start, &pkt);
+
+        let drain_to = start.wrapping_add(pkt.len() as u16);
+        match bus.poll(drain_to) {
+            Some(InstructionPacket::Ping(p)) => assert_eq!(p.header.id.as_byte(), TEST_ID),
+            other => panic!("expected Ping across wrap, got {other:?}"),
+        }
+        assert_eq!(bus.instruction_count(), 1);
+    }
+
+    #[test]
+    fn poll_partial_packet_resumes_on_next_call() {
+        let mut bus = make_bus();
+        let pkt = wire_ping(TEST_ID);
+        bus.stage_rx_bytes_for_test(0, &pkt);
+
+        // Feed everything except the last byte — decoder is mid-CRC.
+        let split = (pkt.len() - 1) as u16;
+        assert!(bus.poll(split).is_none());
+        assert_eq!(bus.instruction_count(), 0);
+
+        // Feed the final byte — packet now completes and surfaces.
+        match bus.poll(pkt.len() as u16) {
+            Some(InstructionPacket::Ping(p)) => assert_eq!(p.header.id.as_byte(), TEST_ID),
+            other => panic!("expected Ping after resume, got {other:?}"),
+        }
+        assert_eq!(bus.instruction_count(), 1);
+    }
+
+    #[test]
+    fn instruction_count_advances_on_every_instruction_regardless_of_id() {
+        let mut bus = make_bus();
+        let ours = wire_ping(TEST_ID);
+        let theirs = wire_ping(0x42);
+        let status = wire_status(0x42);
+
+        let mut combined: Vec<u8, 64> = Vec::new();
+        combined.extend_from_slice(&ours).unwrap();
+        combined.extend_from_slice(&theirs).unwrap();
+        combined.extend_from_slice(&status).unwrap();
+        bus.stage_rx_bytes_for_test(0, &combined);
+
+        // First call surfaces ours; decoder pauses at packet boundary.
+        let surfaced = bus.poll(combined.len() as u16);
+        assert!(matches!(surfaced, Some(InstructionPacket::Ping(_))));
+
+        // Drain the rest — foreign Ping bumps the counter, Status doesn't.
+        assert!(bus.poll(combined.len() as u16).is_none());
+        assert_eq!(bus.instruction_count(), 2);
     }
 }

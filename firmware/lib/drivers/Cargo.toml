@@ -9,4 +9,5 @@ osc-core.workspace     = true
 dxl-protocol.workspace = true
 
 [dev-dependencies]
-dxl-protocol = { workspace = true, features = ["software-crc"] }
+dxl-protocol = { workspace = true, features = ["heapless", "software-crc"] }
+heapless.workspace = true
