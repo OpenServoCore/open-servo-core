@@ -13,9 +13,9 @@ pub trait Motor {
     fn write(&mut self, cmd: MotorCmd);
 }
 
-/// Bag of chip-side capabilities the kernel needs. Splits into disjoint
-/// sub-trait borrows so the kernel can hold both at once.
-pub trait KernelIo {
+/// Bag of chip-side capabilities the control loop needs. Splits into
+/// disjoint sub-trait borrows so the kernel can hold both at once.
+pub trait ControlIo {
     type Sensors: Sensors;
     type Motor: Motor;
 

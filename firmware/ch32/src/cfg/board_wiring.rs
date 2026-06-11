@@ -105,7 +105,7 @@ pub struct Calibration {
     pub ntc: NtcCal,
 }
 
-/// Schematic-fixed wiring; consumed during `Ch32KernelIo::new` and not retained.
+/// Schematic-fixed wiring; consumed during `Ch32ControlIo::new` and not retained.
 #[derive(Copy, Clone)]
 pub struct BoardWiring {
     pub stat_led: Pin,

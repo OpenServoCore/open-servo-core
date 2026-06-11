@@ -1,6 +1,6 @@
 use ch32_metapac::{DMA1, USART1};
 use core::sync::atomic::Ordering;
-use osc_core::{ConversionVariables, KernelIo, Sensors};
+use osc_core::{ControlIo, ConversionVariables, Sensors};
 
 use crate::dxl;
 use crate::dxl::statics::{

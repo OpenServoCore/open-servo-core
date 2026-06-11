@@ -1,14 +1,14 @@
 //! One-stop surface for chip implementers.
 //!
 //! The chip-side board crate implements these traits to plug into the kernel
-//! control loop (`KernelIo`/`Sensors`/`Motor`) and the DXL services layer
+//! control loop (`ControlIo`/`Sensors`/`Motor`) and the DXL services layer
 //! (`ServicesIo`/`DxlBus`/`ServiceEvents`). Associated boundary types are
 //! re-exported here so `use osc_core::traits::*` covers the full contract.
 
-mod kernel;
+mod control;
 mod services;
 
-pub use kernel::{Capabilities, DecayMode, KernelIo, Motor, MotorCmd, Sensors};
+pub use control::{Capabilities, ControlIo, DecayMode, Motor, MotorCmd, Sensors};
 pub use services::{CalSnapshot, DxlBus, Event, Schedule, ServiceEvents, ServicesIo};
 
 // Boundary types defined elsewhere that callers of the traits need in scope.

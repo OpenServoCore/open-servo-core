@@ -2,7 +2,7 @@
 //! the `BoardConfig` literal at compile time, calls into bringup, installs
 //! the kernel + IRQs, and enters the main loop.
 
-use crate::board::Ch32KernelIo;
+use crate::board::Ch32ControlIo;
 use crate::cfg::{BoardConfig, Precomputed};
 
 /// Const-asserts pin-uniqueness on the `BoardConfig` literal, then runs.
@@ -21,7 +21,7 @@ macro_rules! run {
 
 #[doc(hidden)]
 pub fn __run(cfg: BoardConfig, pre: Precomputed) -> ! {
-    let io = Ch32KernelIo::new(cfg, pre);
+    let io = Ch32ControlIo::new(cfg, pre);
     crate::statics::install(io);
     crate::statics::install_irqs();
     loop {

@@ -1,5 +1,5 @@
 use osc_core::{
-    ConversionVariables, DecayMode, KernelIo, Motor as MotorTrait, MotorCmd, RawSamples, Sample,
+    ControlIo, ConversionVariables, DecayMode, Motor as MotorTrait, MotorCmd, RawSamples, Sample,
     Sensors as SensorsTrait,
 };
 use osc_drivers::Level;
@@ -130,14 +130,14 @@ impl MotorTrait for Ch32Motor {
     }
 }
 
-pub struct Ch32KernelIo {
+pub struct Ch32ControlIo {
     pub sensors: Ch32Sensors,
     pub motor: Ch32Motor,
 }
 
-impl Ch32KernelIo {
+impl Ch32ControlIo {
     pub fn new(cfg: BoardConfig, pre: Precomputed) -> Self {
-        crate::log::info!("Ch32KernelIo::new: start");
+        crate::log::info!("Ch32ControlIo::new: start");
         let BoardConfig {
             wiring,
             calibration,
@@ -157,7 +157,7 @@ impl Ch32KernelIo {
 
         let BringupResult { shunt_bias_raw } = crate::runtime::bringup(&wiring, &defaults, &pre);
 
-        crate::log::info!("Ch32KernelIo::new: complete");
+        crate::log::info!("Ch32ControlIo::new: complete");
         Self {
             sensors: Ch32Sensors {
                 calibration,
@@ -175,7 +175,7 @@ impl Ch32KernelIo {
     }
 }
 
-impl KernelIo for Ch32KernelIo {
+impl ControlIo for Ch32ControlIo {
     type Sensors = Ch32Sensors;
     type Motor = Ch32Motor;
 

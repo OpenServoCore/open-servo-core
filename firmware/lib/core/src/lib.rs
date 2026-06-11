@@ -29,6 +29,6 @@ pub use services::Services;
 pub use services::dxl::{CalibratePacket, CalibrateStatus, Dxl, OscVariant};
 pub use shared::Shared;
 pub use traits::{
-    CalSnapshot, Capabilities, DecayMode, DxlBus, Event, KernelIo, Motor, MotorCmd, Schedule,
+    CalSnapshot, Capabilities, ControlIo, DecayMode, DxlBus, Event, Motor, MotorCmd, Schedule,
     Sensors, ServiceEvents, ServicesIo,
 };

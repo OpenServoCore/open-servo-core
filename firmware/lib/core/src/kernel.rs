@@ -1,8 +1,8 @@
-use crate::traits::KernelIo;
+use crate::traits::ControlIo;
 use crate::{Sample, Shared};
 
 /// Runs in the PWM ISR; one `on_tick` per period.
-pub struct Kernel<I: KernelIo> {
+pub struct Kernel<I: ControlIo> {
     pub io: I,
     pub state: KernelState,
     pub stream_decimation_counter: u8,
@@ -15,7 +15,7 @@ pub struct KernelState {
     pub pid_prev_error: i32,
 }
 
-impl<I: KernelIo> Kernel<I> {
+impl<I: ControlIo> Kernel<I> {
     pub fn new(io: I) -> Self {
         Self {
             io,

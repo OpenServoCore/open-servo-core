@@ -2,7 +2,7 @@ use core::cell::SyncUnsafeCell;
 use core::mem::MaybeUninit;
 use osc_core::{Kernel, Services, Shared};
 
-use crate::board::Ch32KernelIo;
+use crate::board::Ch32ControlIo;
 use crate::hal::pfic;
 use crate::services::Ch32ServicesIo;
 
@@ -22,14 +22,14 @@ pub static ADC_DMA_BUF: SyncUnsafeCell<[u16; ADC_DMA_BUF_LEN]> =
 pub static SHARED: Shared = Shared::new();
 
 /// Initialised by `install`; DMA TC IRQ is PFIC-masked until then.
-pub(crate) static KERNEL: SyncUnsafeCell<MaybeUninit<Kernel<Ch32KernelIo>>> =
+pub(crate) static KERNEL: SyncUnsafeCell<MaybeUninit<Kernel<Ch32ControlIo>>> =
     SyncUnsafeCell::new(MaybeUninit::uninit());
 
 /// Initialised by `install`; sole `&mut` writer is the main loop.
 pub(crate) static SERVICES: SyncUnsafeCell<MaybeUninit<Services<Ch32ServicesIo>>> =
     SyncUnsafeCell::new(MaybeUninit::uninit());
 
-pub fn install(io: Ch32KernelIo) {
+pub fn install(io: Ch32ControlIo) {
     unsafe {
         (*KERNEL.get()).write(Kernel::new(io));
         (*SERVICES.get()).write(Services::new(Ch32ServicesIo::new()));
