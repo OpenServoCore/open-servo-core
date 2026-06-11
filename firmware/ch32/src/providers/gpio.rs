@@ -1,4 +1,4 @@
-//! GPIO adapters — bind driver interfaces to a specific `Pin` and forward
+//! GPIO providers — bind driver interfaces to a specific `Pin` and forward
 //! to `hal::gpio` register access.
 
 use osc_drivers::Level;

@@ -1,4 +1,4 @@
-//! SysTick adapter — provides `Monotonic` from the HCLK-driven SysTick counter.
+//! SysTick provider — provides `Monotonic` from the HCLK-driven SysTick counter.
 
 use osc_drivers::traits::Monotonic;
 use crate::hal::systick;

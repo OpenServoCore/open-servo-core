@@ -1,4 +1,4 @@
-//! RCC adapters — bind `ClockTrim` to the HSI trim register.
+//! RCC providers — bind `ClockTrim` to the HSI trim register.
 
 use osc_drivers::traits::ClockTrim;
 use crate::hal::clocks::{HSI_HZ, HSI_TRIM_STEP_HZ};

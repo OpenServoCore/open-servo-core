@@ -4,7 +4,7 @@ use heapless::Vec;
 use osc_core::services::dxl::limits::DXL_TX_MAX_BYTES;
 use portable_atomic::{AtomicBool, AtomicI16, AtomicI32, AtomicU16, AtomicU32};
 
-use crate::board::TxEn;
+use crate::cfg::board_wiring::TxEn;
 use crate::hal::{Pin, systick};
 
 pub(crate) const DXL_RX_BUF_LEN: usize = 512;

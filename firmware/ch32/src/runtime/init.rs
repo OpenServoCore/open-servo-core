@@ -14,18 +14,16 @@ use crate::hal::{
 };
 use crate::statics::{ADC_DMA_BUF, ADC_DMA_BUF_LEN, ADC_SCAN_LEN, ADC_SENSOR_COUNT, SHARED};
 
-use super::config::{
-    AdcPins, BoardWiring, CurrentSenseConfig, Duplex, DxlBus, MotorConfig, Precomputed,
-};
+use crate::cfg::{AdcPins, BoardWiring, CurrentSenseConfig, Duplex, DxlBus, MotorConfig, Precomputed};
 
 const OPA_SETTLE_MS: u32 = 1;
 const VCAL_SAMPLE_TIME: adc::SampleTime = adc::SampleTime::CYCLES9;
 
-pub(super) struct BringupResult {
-    pub(super) shunt_bias_raw: u16,
+pub struct BringupResult {
+    pub shunt_bias_raw: u16,
 }
 
-pub(super) fn run(
+pub fn bringup(
     wiring: &BoardWiring,
     defaults: &ConfigDefaults,
     pre: &Precomputed,
@@ -80,6 +78,9 @@ pub(super) fn run(
         pre.pwm_psc,
         pre.pwm_arr,
     );
+
+    #[cfg(feature = "defmt")]
+    super::diag::dump_init_regs();
 
     BringupResult { shunt_bias_raw }
 }

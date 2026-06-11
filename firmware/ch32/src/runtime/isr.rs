@@ -45,7 +45,7 @@ pub fn on_usart1() {
 }
 
 /// DMA1_CH7 HT/TC handler — dispatches into `DxlRx`, which drains its own
-/// adapter, computes the head, and walks newly-captured edges through the
+/// provider, computes the head, and walks newly-captured edges through the
 /// window classifier. `ticks_per_bit` is sourced from `DxlClock` (the
 /// canonical wire-rate owner).
 ///
@@ -239,27 +239,27 @@ macro_rules! install_isrs {
     () => {
         #[::qingke_rt::interrupt]
         fn DMA1_CHANNEL1() {
-            $crate::irq::on_adc_dma_tc();
+            $crate::runtime::isr::on_adc_dma_tc();
         }
 
         #[::qingke_rt::interrupt]
         fn USART1() {
-            $crate::irq::on_usart1();
+            $crate::runtime::isr::on_usart1();
         }
 
         #[::qingke_rt::interrupt]
         fn EXTI7_0() {
-            $crate::irq::on_exti();
+            $crate::runtime::isr::on_exti();
         }
 
         #[::qingke_rt::interrupt]
         fn DMA1_CHANNEL7() {
-            $crate::irq::on_dma1_ch7();
+            $crate::runtime::isr::on_dma1_ch7();
         }
 
         #[::qingke_rt::interrupt(core)]
         fn SysTick() {
-            $crate::irq::on_systick_match();
+            $crate::runtime::isr::on_systick_match();
         }
     };
 }

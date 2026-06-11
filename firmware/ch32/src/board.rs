@@ -1,13 +1,4 @@
-mod bringup;
-mod config;
-mod convert;
-#[cfg(feature = "defmt")]
-mod diag;
-
-pub use config::{
-    AdcPins, BoardConfig, BoardWiring, Calibration, CurrentSenseConfig, Divider, Duplex, DxlBus,
-    MotorConfig, NtcCal, Precomputed, TxEn,
-};
+pub(crate) mod convert;
 
 use osc_core::{
     DecayMode, FrameInputs, KernelIo, Motor as MotorTrait, MotorCmd, RawSamples, SampleFrame,
@@ -15,10 +6,11 @@ use osc_core::{
 };
 use osc_drivers::Level;
 
+use crate::cfg::{BoardConfig, Calibration, Precomputed};
 use crate::hal::{Pin, gpio, timer};
+use crate::runtime::init::BringupResult;
 use crate::statics::read_sample_tick;
 
-use bringup::BringupResult;
 use convert::{
     SCAN_IDX_NTC, SCAN_IDX_POS, SCAN_IDX_SHUNT_POST, SCAN_IDX_VCAL, SCAN_IDX_VMOTOR_A,
     SCAN_IDX_VMOTOR_B, SCAN_PEAK_OFFSET, SCAN_TROUGH_OFFSET, Scales, VcalLpf, divider_to_mv,
@@ -166,10 +158,7 @@ impl Ch32KernelIo {
         let in2 = wiring.motor.in2;
         let drv_en = wiring.motor.drv_en;
 
-        let BringupResult { shunt_bias_raw } = bringup::run(&wiring, &defaults, &pre);
-
-        #[cfg(feature = "defmt")]
-        diag::dump_init_regs();
+        let BringupResult { shunt_bias_raw } = crate::runtime::bringup(&wiring, &defaults, &pre);
 
         crate::log::info!("Ch32KernelIo::new: complete");
         Self {

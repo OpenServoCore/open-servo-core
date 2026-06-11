@@ -1,6 +1,6 @@
 pub use osc_drivers::Level;
 
-pub use crate::board::{
+pub use crate::cfg::{
     AdcPins, BoardConfig, BoardWiring, Calibration, CurrentSenseConfig, Divider, Duplex, DxlBus,
     MotorConfig, NtcCal, TxEn,
 };

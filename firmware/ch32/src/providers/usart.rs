@@ -1,4 +1,4 @@
-//! USART adapters — bind `UsartBaud` to specific USART instances.
+//! USART providers — bind `UsartBaud` to specific USART instances.
 
 use ch32_metapac::USART1 as USART1_REGS;
 use osc_drivers::traits::UsartBaud;

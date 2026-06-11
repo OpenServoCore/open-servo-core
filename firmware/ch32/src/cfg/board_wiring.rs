@@ -1,4 +1,7 @@
-use osc_core::ConfigDefaults;
+//! Chip-family-shaped wiring schema. Field types reference the V006 family's
+//! pin / mapping / channel enums; concrete values (which pin, which mapping)
+//! are bound by the board binary's `WIRING` const.
+
 use osc_drivers::Level;
 
 use crate::hal::{Pin, Tim1Mapping, Tim2Mapping, UsartMapping, adc, gpio::Pull, opa, timer};
@@ -186,37 +189,6 @@ impl BoardWiring {
                 j += 1;
             }
             i += 1;
-        }
-    }
-}
-
-#[derive(Copy, Clone)]
-pub struct BoardConfig {
-    pub wiring: BoardWiring,
-    pub calibration: Calibration,
-    pub defaults: ConfigDefaults,
-}
-
-/// Boot-time-derived values that the `run!` macro folds at compile time so the
-/// linker can drop __udivdi3 / __udivsi3 / __umodsi3 entirely.
-#[derive(Copy, Clone)]
-pub struct Precomputed {
-    pub scales: super::convert::Scales,
-    pub pwm_psc: u16,
-    pub pwm_arr: u16,
-    pub usart_brr: u32,
-}
-
-impl Precomputed {
-    pub const fn compute(cfg: &BoardConfig) -> Self {
-        let (pwm_psc, pwm_arr) =
-            crate::hal::timer::pwm_dividers_from_hz(cfg.wiring.motor.pwm_freq_hz);
-        let gain_factor = cfg.wiring.current_sense.opa.gain.factor();
-        Self {
-            scales: super::convert::Scales::new(&cfg.calibration, gain_factor),
-            pwm_psc,
-            pwm_arr,
-            usart_brr: crate::dxl::timing::brr(cfg.defaults.dxl_baud),
         }
     }
 }

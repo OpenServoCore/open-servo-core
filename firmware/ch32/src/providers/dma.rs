@@ -1,4 +1,4 @@
-//! DMA adapters — bind `DmaRing` to specific DMA channels.
+//! DMA providers — bind `DmaRing` to specific DMA channels.
 
 use osc_drivers::traits::{DmaFlags, DmaRing};
 use crate::hal::dma;

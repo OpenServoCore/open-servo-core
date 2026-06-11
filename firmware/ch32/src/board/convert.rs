@@ -2,7 +2,7 @@ use osc_units::{CentiCelsius, Microrads, Milliamps, Millivolts};
 
 use crate::statics::{ADC_DMA_BUF, ADC_SCAN_LEN};
 
-use super::config::{Calibration, Divider, NtcCal};
+use crate::cfg::board_wiring::{Calibration, Divider, NtcCal};
 
 const ADC_MAX_RAW: u32 = 4095;
 
@@ -16,7 +16,7 @@ pub struct Scales {
 }
 
 impl Scales {
-    pub(super) const fn new(cal: &Calibration, gain_factor: u16) -> Self {
+    pub(crate) const fn new(cal: &Calibration, gain_factor: u16) -> Self {
         Self {
             vbus_q32: divider_q32(&cal.vbus_divider),
             vmotor_q32: divider_q32(&cal.vmotor_divider),
