@@ -44,17 +44,15 @@ pub fn on_usart1() {
     on_usart1_tc();
 }
 
-/// DMA1_CH7 HT/TC handler — dispatches into `DxlRx`, which drains its own
-/// provider, computes the head, and walks newly-captured edges through the
-/// window classifier. `ticks_per_bit` is sourced from `DxlClock` (the
-/// canonical wire-rate owner).
+/// DMA1_CH7 HT/TC handler — dispatches into `DxlBus`, which routes the
+/// `ticks_per_bit` lookup from its `clock` sub-driver into the RX
+/// classifier walk.
 ///
-/// SAFETY: both drivers are installed before this vector is unmasked, and
-/// DMA1_CH7 shares PFIC HIGH with USART1 so no concurrent `&mut` into
-/// either driver is possible.
+/// SAFETY: bus is installed before this vector is unmasked, and DMA1_CH7
+/// shares PFIC HIGH with USART1 so no concurrent `&mut` into the bus is
+/// possible.
 pub fn on_dma1_ch7() {
-    let ticks_per_bit = unsafe { Drivers::dxl_clock() }.ticks_per_bit();
-    unsafe { Drivers::dxl_rx() }.on_dma_event(ticks_per_bit);
+    unsafe { Drivers::dxl_bus() }.on_rx_edge_advance();
 }
 
 /// EXTI7_0 handler body — covers lines 0..7 on V006's shared vector. Only
@@ -159,11 +157,10 @@ fn on_usart1_idle() {
     }
     // Backstop the DxlRx classifier: for packets shorter than half the ET
     // ring, the HT/TC ISR never fires, so IDLE is the only chance to walk
-    // those edges. `on_idle` drains the tail and invalidates the anchor so
-    // the next packet's first edge re-seeds.
+    // those edges. `on_rx_idle` drains the tail and invalidates the anchor
+    // so the next packet's first edge re-seeds.
     // SAFETY: see on_dma1_ch7.
-    let ticks_per_bit = unsafe { Drivers::dxl_clock() }.ticks_per_bit();
-    unsafe { Drivers::dxl_rx() }.on_idle(ticks_per_bit);
+    unsafe { Drivers::dxl_bus() }.on_rx_idle();
 }
 
 fn on_usart1_tc() {

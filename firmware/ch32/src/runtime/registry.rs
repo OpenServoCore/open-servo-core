@@ -14,6 +14,7 @@
 use core::cell::SyncUnsafeCell;
 
 use osc_drivers::Level;
+use osc_drivers::dxl::DxlBus;
 use osc_drivers::dxl::clock::DxlClock;
 use osc_drivers::dxl::rx::DxlRx;
 use osc_drivers::led::Led;
@@ -26,21 +27,22 @@ use crate::providers;
 /// in `osc-drivers`; this is the single spot that binds them to specific
 /// providers.
 type StatLed = Led<providers::digital_out::DigitalOut, providers::monotonic::Monotonic>;
-type DxlClockCh = DxlClock<providers::usart_baud::UsartBaud, providers::clock_trim::ClockTrim>;
-type DxlRxCh = DxlRx<providers::dma_ring::DmaRing>;
+type DxlBusCh = DxlBus<
+    providers::usart_baud::UsartBaud,
+    providers::clock_trim::ClockTrim,
+    providers::dma_ring::DmaRing,
+>;
 
 struct Cells {
     dbg: SyncUnsafeCell<Option<providers::digital_out::DigitalOut>>,
     stat_led: SyncUnsafeCell<Option<StatLed>>,
-    dxl_clock: SyncUnsafeCell<Option<DxlClockCh>>,
-    dxl_rx: SyncUnsafeCell<Option<DxlRxCh>>,
+    dxl_bus: SyncUnsafeCell<Option<DxlBusCh>>,
 }
 
 static CELLS: Cells = Cells {
     dbg: SyncUnsafeCell::new(None),
     stat_led: SyncUnsafeCell::new(None),
-    dxl_clock: SyncUnsafeCell::new(None),
-    dxl_rx: SyncUnsafeCell::new(None),
+    dxl_bus: SyncUnsafeCell::new(None),
 };
 
 pub struct Drivers;
@@ -66,18 +68,16 @@ impl Drivers {
         ));
 
         // SAFETY: see fn doc.
-        let dxl_clock = unsafe { &mut *CELLS.dxl_clock.get() };
-        debug_assert!(dxl_clock.is_none(), "Drivers: dxl_clock already installed");
-        *dxl_clock = Some(DxlClock::new(
-            defaults.dxl_baud,
-            providers::usart_baud::UsartBaud,
-            providers::clock_trim::ClockTrim,
+        let dxl_bus = unsafe { &mut *CELLS.dxl_bus.get() };
+        debug_assert!(dxl_bus.is_none(), "Drivers: dxl_bus already installed");
+        *dxl_bus = Some(DxlBus::new(
+            DxlRx::new(providers::dma_ring::DmaRing),
+            DxlClock::new(
+                defaults.dxl_baud,
+                providers::usart_baud::UsartBaud,
+                providers::clock_trim::ClockTrim,
+            ),
         ));
-
-        // SAFETY: see fn doc.
-        let dxl_rx = unsafe { &mut *CELLS.dxl_rx.get() };
-        debug_assert!(dxl_rx.is_none(), "Drivers: dxl_rx already installed");
-        *dxl_rx = Some(DxlRx::new(providers::dma_ring::DmaRing));
     }
 
     /// SAFETY: bringup installs `dbg` before any ISR runs; runtime access is
@@ -106,28 +106,16 @@ impl Drivers {
         unsafe { cell.as_mut().unwrap_unchecked() }
     }
 
-    /// SAFETY: bringup installs `dxl_clock` before any IRQ runs; runtime
-    /// access is from DXL-side ISRs at PFIC HIGH (same-priority serialization).
-    #[inline(always)]
-    #[allow(dead_code)]
-    pub unsafe fn dxl_clock() -> &'static mut DxlClockCh {
-        // SAFETY: see fn doc.
-        let cell = unsafe { &mut *CELLS.dxl_clock.get() };
-        debug_assert!(cell.is_some(), "Drivers::dxl_clock() before install");
-        // SAFETY: bringup ensures Some before any IRQ fires.
-        unsafe { cell.as_mut().unwrap_unchecked() }
-    }
-
-    /// SAFETY: bringup installs `dxl_rx` before any IRQ runs; runtime access
+    /// SAFETY: bringup installs `dxl_bus` before any IRQ runs; runtime access
     /// is from DMA1_CH7 HT/TC and USART1 IDLE ISRs (both PFIC HIGH, so
-    /// same-priority serialization keeps the classifier's interior state
+    /// same-priority serialization keeps the composite's interior state
     /// race-free).
     #[inline(always)]
     #[allow(dead_code)]
-    pub unsafe fn dxl_rx() -> &'static mut DxlRxCh {
+    pub unsafe fn dxl_bus() -> &'static mut DxlBusCh {
         // SAFETY: see fn doc.
-        let cell = unsafe { &mut *CELLS.dxl_rx.get() };
-        debug_assert!(cell.is_some(), "Drivers::dxl_rx() before install");
+        let cell = unsafe { &mut *CELLS.dxl_bus.get() };
+        debug_assert!(cell.is_some(), "Drivers::dxl_bus() before install");
         // SAFETY: bringup ensures Some before any IRQ fires.
         unsafe { cell.as_mut().unwrap_unchecked() }
     }

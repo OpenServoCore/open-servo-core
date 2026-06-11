@@ -50,11 +50,11 @@ impl<R: DmaRing> DxlRx<R> {
         self.edges.get() as u32
     }
 
-    /// DMA1_CH7 HT/TC handler. Drains flags through the adapter, computes
-    /// the write head from NDTR, walks newly-captured edges through the
-    /// classifier. No-op if neither flag is set (defends against spurious
-    /// vector entry).
-    pub fn on_dma_event(&mut self, ticks_per_bit: u16) {
+    /// Called when new RX falling-edge timestamps may be available. Drains
+    /// HT/TC flags through the adapter, computes the write head from NDTR,
+    /// walks newly-captured edges through the classifier. No-op if neither
+    /// flag is set (defends against spurious vector entry).
+    pub fn on_edge_advance(&mut self, ticks_per_bit: u16) {
         let flags = self.ring.read_and_ack();
         if !flags.ht && !flags.tc {
             return;
@@ -91,6 +91,25 @@ impl<R: DmaRing> DxlRx<R> {
 }
 
 #[cfg(test)]
+impl DxlRx<crate::mocks::FakeDmaRing> {
+    /// Stage `vals` into the edges buffer as if DMA wrote them and set
+    /// `remaining` so `head == vals.len()`. Shared by leaf and composite tests.
+    pub(crate) fn stage_edges_for_test(&mut self, vals: &[u16]) {
+        // SAFETY: test-only access to the SyncUnsafeCell; no DMA in tests.
+        let buf = unsafe { &mut *self.edges.get() };
+        for (i, &v) in vals.iter().enumerate() {
+            buf[i] = v;
+        }
+        self.ring.remaining = (EDGE_BUF_LEN - vals.len()) as u16;
+    }
+
+    /// Arm the fake ring's next HT/TC flag response.
+    pub(crate) fn arm_next_flags_for_test(&mut self, flags: crate::traits::DmaFlags) {
+        self.ring.next_flags = flags;
+    }
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use crate::mocks::FakeDmaRing;
@@ -104,49 +123,38 @@ mod tests {
         DxlRx::new(FakeDmaRing::default())
     }
 
-    /// Stage `edges[..n]` into the driver's buffer as if DMA had written
-    /// them, and set `remaining` so `head == n`.
-    fn stage_edges(d: &mut DxlRx<FakeDmaRing>, vals: &[u16]) {
-        // SAFETY: test-only access to the SyncUnsafeCell; no DMA in tests.
-        let buf = unsafe { &mut *d.edges.get() };
-        for (i, &v) in vals.iter().enumerate() {
-            buf[i] = v;
-        }
-        d.ring.remaining = (EDGE_BUF_LEN - vals.len()) as u16;
-    }
-
     #[test]
-    fn on_dma_event_no_flags_is_noop() {
+    fn on_edge_advance_no_flags_is_noop() {
         let mut d = rx();
-        stage_edges(&mut d, &[1000]);
-        d.on_dma_event(TPB_3M);
+        d.stage_edges_for_test(&[1000]);
+        d.on_edge_advance(TPB_3M);
         assert_eq!(d.byte_ts_head(), 0);
         assert_eq!(d.ring.ack_log, [DmaFlags::default()]);
     }
 
     #[test]
-    fn on_dma_event_with_ht_drives_classifier() {
+    fn on_edge_advance_with_ht_drives_classifier() {
         let mut d = rx();
-        stage_edges(&mut d, &[1000, 1000 + BYTE_TICKS_3M]);
-        d.ring.next_flags = DmaFlags {
+        d.stage_edges_for_test(&[1000, 1000 + BYTE_TICKS_3M]);
+        d.arm_next_flags_for_test(DmaFlags {
             ht: true,
             tc: false,
-        };
-        d.on_dma_event(TPB_3M);
+        });
+        d.on_edge_advance(TPB_3M);
         assert_eq!(d.byte_ts_head(), 2);
         assert_eq!(d.byte_ts_at(0), Some(1000));
         assert_eq!(d.byte_ts_at(1), Some(1000 + BYTE_TICKS_3M));
     }
 
     #[test]
-    fn on_dma_event_with_tc_drives_classifier() {
+    fn on_edge_advance_with_tc_drives_classifier() {
         let mut d = rx();
-        stage_edges(&mut d, &[2000]);
-        d.ring.next_flags = DmaFlags {
+        d.stage_edges_for_test(&[2000]);
+        d.arm_next_flags_for_test(DmaFlags {
             ht: false,
             tc: true,
-        };
-        d.on_dma_event(TPB_3M);
+        });
+        d.on_edge_advance(TPB_3M);
         assert_eq!(d.byte_ts_head(), 1);
     }
 
@@ -154,12 +162,12 @@ mod tests {
     fn on_idle_resets_anchor() {
         let mut d = rx();
         // First burst: seed an anchor.
-        stage_edges(&mut d, &[5000]);
-        d.ring.next_flags = DmaFlags {
+        d.stage_edges_for_test(&[5000]);
+        d.arm_next_flags_for_test(DmaFlags {
             ht: true,
             tc: false,
-        };
-        d.on_dma_event(TPB_3M);
+        });
+        d.on_edge_advance(TPB_3M);
         assert_eq!(d.byte_ts_head(), 1);
 
         // IDLE drains nothing new (same head), but invalidates the anchor.
@@ -168,12 +176,12 @@ mod tests {
         // After reset, the next edge re-seeds rather than gap-classifying.
         // Stage a single edge far from the prior anchor — would be a GAP
         // if anchor were still 5000.
-        stage_edges(&mut d, &[5000, 59_000]);
-        d.ring.next_flags = DmaFlags {
+        d.stage_edges_for_test(&[5000, 59_000]);
+        d.arm_next_flags_for_test(DmaFlags {
             ht: true,
             tc: false,
-        };
-        d.on_dma_event(TPB_3M);
+        });
+        d.on_edge_advance(TPB_3M);
         assert_eq!(d.byte_ts_head(), 2);
         assert_eq!(d.byte_ts_at(1), Some(59_000));
     }
