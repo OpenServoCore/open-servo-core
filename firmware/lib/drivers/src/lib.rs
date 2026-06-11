@@ -5,6 +5,7 @@ pub mod dxl;
 pub mod led;
 pub mod traits;
 pub mod types;
+pub mod util;
 
 #[cfg(test)]
 pub mod mocks;
