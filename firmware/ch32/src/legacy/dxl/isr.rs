@@ -4,8 +4,8 @@ use ch32_metapac::USART1;
 
 use dxl_protocol::CrcUmts;
 
+use super::super::bench::dbg_pulse;
 use super::Ch32DxlCrc;
-use crate::bench::dbg_pulse;
 use crate::hal::{dma, gpio, systick, usart};
 
 use super::scheduler::{GUARD_BYTES, catchup_interval_ticks};

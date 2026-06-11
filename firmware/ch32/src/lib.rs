@@ -5,7 +5,6 @@
 pub use osc_core::bp;
 pub use osc_core::{BaudRate, ConfigDefaults};
 
-pub(crate) mod bench;
 pub mod cfg;
 pub mod control;
 pub mod hal;
