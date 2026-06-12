@@ -88,7 +88,10 @@ impl<R: DmaRing, const EDGE_BUF_LEN: usize, const BT_BUF_LEN: usize>
         self.classifier.reset_anchor();
     }
 
-    #[allow(dead_code)]
+    /// Look up the start-bit tick of byte `seq`. `None` if `seq` is past
+    /// the BT head (not yet classified) or has lapped out of the ring
+    /// window. The DXL composite calls this (via `Codec`) to derive
+    /// `wire_end_tick = BT[last_byte] + 10·tpb` for fire scheduling.
     pub fn byte_ts_at(&self, seq: Seq<u16, BT_BUF_LEN>) -> Option<u16> {
         self.classifier.byte_ts_at(seq)
     }

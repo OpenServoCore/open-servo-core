@@ -86,6 +86,18 @@ impl<T, const N: usize> Seq<T, N> {
             _phantom: PhantomData,
         }
     }
+
+    /// The seq immediately before `self`. Used to derive the last byte's
+    /// seq from a one-past-last `end` — e.g. wire-end tick math in the
+    /// DXL composite reads `BT[token.end.predecessor()]`. Narrow
+    /// "step back one" op preserves opacity: callers can't walk by
+    /// arbitrary offsets without going through [`Self::iter`].
+    pub fn predecessor(self) -> Self {
+        Self {
+            raw: self.raw.wrapping_sub(1),
+            _phantom: PhantomData,
+        }
+    }
 }
 
 #[cfg(test)]
@@ -650,6 +662,18 @@ mod tests {
         assert_eq!(iter.next().map(|s| s.test_raw()), Some(0));
         assert_eq!(iter.next().map(|s| s.test_raw()), Some(1));
         assert_eq!(iter.next(), None);
+    }
+
+    #[test]
+    fn seq_predecessor_steps_back_one() {
+        let s: Seq<u8, 64> = Seq::test_from_raw(5);
+        assert_eq!(s.predecessor().test_raw(), 4);
+    }
+
+    #[test]
+    fn seq_predecessor_wraps_at_zero() {
+        let s: Seq<u8, 64> = Seq::test_from_raw(0);
+        assert_eq!(s.predecessor().test_raw(), u16::MAX);
     }
 
     #[test]

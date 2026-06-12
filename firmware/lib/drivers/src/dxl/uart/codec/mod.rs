@@ -16,8 +16,10 @@ pub mod rx;
 use core::cell::SyncUnsafeCell;
 
 use dxl_protocol::decoder::{Decoder, Step};
-use dxl_protocol::packet::Status;
-use dxl_protocol::{CrcUmts, InstructionPacket, StatusEmitter, WriteError};
+use dxl_protocol::packet::{Slot, Status};
+use dxl_protocol::{
+    CrcUmts, InstructionPacket, SlotEmitter, SlotPosition, StatusEmitter, WriteError,
+};
 
 use crate::traits::DmaRing;
 use crate::util::{HwRing, Seq};
@@ -242,6 +244,26 @@ impl<
     pub fn send_status(&mut self, status: Status<'_>) -> Result<(), WriteError> {
         self.tx_buf.clear();
         StatusEmitter::<_, CRC>::new(&mut self.tx_buf).emit(status)
+    }
+
+    /// Encode one Fast slot reply into the TX buffer. Same buffer-clear
+    /// and emitter shape as [`Self::send_status`]; [`SlotEmitter::emit`]
+    /// dispatches on `position` (Only/First/Middle/Last) and writes the
+    /// header, payload, and (locally-computed or caller-supplied) CRC.
+    pub fn send_slot(&mut self, slot: &Slot<'_>, position: SlotPosition) -> Result<(), WriteError> {
+        self.tx_buf.clear();
+        SlotEmitter::<_, CRC>::new(&mut self.tx_buf).emit(slot, position)
+    }
+
+    /// Look up the start-bit tick of the byte at `seq`. The DXL composite
+    /// pairs this with `Clock::ticks_per_bit()` to derive
+    /// `wire_end_tick = BT[token.end.predecessor()] + 10·tpb` for fire
+    /// scheduling. Returns `None` if `seq` is past the BT head or has
+    /// lapped out of the ring window.
+    pub fn byte_ts_at(&self, seq: Seq<u8, RX_BUF_LEN>) -> Option<u16> {
+        // RX and BT share a seq space per doc §8.3 — `.into()` retags
+        // the type, raw is preserved.
+        self.rx.byte_ts_at(seq.into())
     }
 
     /// Stable peripheral-memory address for DMA1_CH4's source buffer.
@@ -543,5 +565,90 @@ mod tests {
         let b = c.tx_buf_addr();
         assert_eq!(a, b);
         assert_ne!(a, 0);
+    }
+
+    #[test]
+    fn send_slot_only_writes_header_plus_body_plus_crc() {
+        let mut c = make();
+        let payload = [0x11_u8, 0x22, 0x33];
+        let slot = Slot {
+            id: Id::new(TEST_ID),
+            error: StatusError::OK,
+            data: &payload,
+        };
+        // packet_length = 3 (cmd+err+reserved) + 3 (payload) + 2 (CRC) = 8.
+        c.send_slot(&slot, SlotPosition::Only { packet_length: 8 })
+            .expect("encode fits");
+
+        // SAFETY: see `send_status_writes_wire_bytes_into_tx_buf`.
+        let actual = unsafe {
+            core::slice::from_raw_parts(c.tx_buf_addr() as *const u8, c.tx_len() as usize)
+        };
+        // Wire-layout sanity: DXL 2.0 header begins `FF FF FD 00`.
+        assert_eq!(&actual[0..4], &[0xFF, 0xFF, 0xFD, 0x00]);
+
+        // Round-trip via a reference SlotEmitter so byte-for-byte equality
+        // covers length / cmd / err / reserved / payload / CRC.
+        let mut expected: Vec<u8, TX_BUF_LEN> = Vec::new();
+        SlotEmitter::<_, SoftwareCrcUmts>::new(&mut expected)
+            .emit(&slot, SlotPosition::Only { packet_length: 8 })
+            .unwrap();
+        assert_eq!(actual, expected.as_slice());
+    }
+
+    #[test]
+    fn send_slot_last_writes_caller_supplied_crc() {
+        let mut c = make();
+        let payload = [0xAA_u8, 0xBB];
+        let slot = Slot {
+            id: Id::new(TEST_ID),
+            error: StatusError::OK,
+            data: &payload,
+        };
+        // SlotPosition::Last writes ID + error + payload + caller CRC.
+        c.send_slot(&slot, SlotPosition::Last { crc: 0xDEAD })
+            .expect("encode fits");
+
+        let len = c.tx_len() as usize;
+        // SAFETY: see `send_status_writes_wire_bytes_into_tx_buf`.
+        let actual = unsafe { core::slice::from_raw_parts(c.tx_buf_addr() as *const u8, len) };
+        // Trailing two bytes are the caller-supplied CRC, little-endian.
+        assert_eq!(&actual[len - 2..], &[0xAD, 0xDE]);
+    }
+
+    #[test]
+    fn byte_ts_at_returns_published_entry() {
+        let mut c = make();
+        let edges: [u16; 3] = [1000, 1160, 1320];
+        c.stage_edges_for_test(&edges);
+        c.arm_next_flags_for_test(crate::traits::DmaFlags {
+            ht: true,
+            tc: false,
+        });
+        c.on_edge_advance(16);
+        assert_eq!(c.byte_ts_head().test_raw(), 3);
+
+        let s0: Seq<u8, RX_BUF_LEN> = Seq::test_from_raw(0);
+        let s1: Seq<u8, RX_BUF_LEN> = Seq::test_from_raw(1);
+        let s2: Seq<u8, RX_BUF_LEN> = Seq::test_from_raw(2);
+        assert_eq!(c.byte_ts_at(s0), Some(1000));
+        assert_eq!(c.byte_ts_at(s1), Some(1160));
+        assert_eq!(c.byte_ts_at(s2), Some(1320));
+    }
+
+    #[test]
+    fn byte_ts_at_returns_none_past_head() {
+        let mut c = make();
+        c.stage_edges_for_test(&[1000, 1160]);
+        c.arm_next_flags_for_test(crate::traits::DmaFlags {
+            ht: true,
+            tc: false,
+        });
+        c.on_edge_advance(16);
+        assert_eq!(c.byte_ts_head().test_raw(), 2);
+
+        // Seq 2 is at the head — not yet written.
+        let past: Seq<u8, RX_BUF_LEN> = Seq::test_from_raw(2);
+        assert_eq!(c.byte_ts_at(past), None);
     }
 }
