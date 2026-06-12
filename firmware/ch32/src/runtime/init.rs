@@ -1,15 +1,12 @@
-use super::registry::DXL_EDGE_BUF_LEN;
+use super::registry::{DXL_EDGE_BUF_LEN, DXL_RX_BUF_LEN};
 use ch32_metapac::{ADC, adc::vals::Extsel, dma::vals::Dir};
 use osc_core::{ConfigDefaults, RegionStorage};
 use osc_drivers::Level;
 
 use crate::hal::{
-    adc, afio, delay_ms, dma, exti,
+    adc, afio, delay_ms, dma,
     gpio::{self, PinMode},
     opa, rcc, timer, usart,
-};
-use crate::legacy::dxl::statics::{
-    DXL_RX_BUF_LEN, DXL_RX_PIN, DXL_TX_BUF, DXL_TX_EN, store_baud_derived,
 };
 use crate::legacy::statics::{
     ADC_DMA_BUF, ADC_DMA_BUF_LEN, ADC_SCAN_LEN, ADC_SENSOR_COUNT, SHARED,
@@ -245,7 +242,6 @@ fn bring_up_dxl(d: &DxlUart, brr: u32) {
     let regs = d.usart.regs();
     let half_duplex = matches!(d.duplex, Duplex::Half);
     usart::init(regs, brr, half_duplex);
-    store_baud_derived(brr);
 
     // ADC (CH1) + USART RX/TX channels stay at LOW per
     // `docs/dxl-hw-timed-transport.md` §6, so ET (CH7) is the only DMA
@@ -261,12 +257,6 @@ fn bring_up_dxl(d: &DxlUart, brr: u32) {
         tcie: false,
         pl: dma::Pl::LOW,
     };
-    // DMA1_CH5 destination is the driver's `rx_buf`, not the legacy
-    // `DXL_RX_BUF` static. `Drivers::install` already ran above so the
-    // cell is populated; legacy services::bus still reads its DXL_RX_BUF
-    // (now stale) but the wire byte stream lands in driver storage from
-    // here on. M2 (#33) rewires the services layer through Drivers::dxl_uart
-    // and the legacy static goes away with the rest of legacy::dxl.
     // SAFETY: see `bring_up_edge_ts_capture`.
     let rx_addr = unsafe { Drivers::dxl_uart() }.rx_buf_addr() as u32;
     dma::configure(
@@ -279,6 +269,11 @@ fn bring_up_dxl(d: &DxlUart, brr: u32) {
     dma::enable(dma::Channel::CH5);
     usart::set_dma_rx(regs, true);
 
+    // DMA1_CH4 source is the driver's TX buffer — M2 (#33) replaces the
+    // legacy DXL_TX_BUF static. The channel stays armed but disabled;
+    // `DxlTxScheduler` (M3 #5) will enable it per-fire alongside the
+    // hardware TX_EN on TIM2_CH2. Until M3, the channel never enables and
+    // wire TX is silent by design.
     let tx_cfg = dma::Config {
         dir: Dir::FROMMEMORY,
         circ: false,
@@ -289,7 +284,7 @@ fn bring_up_dxl(d: &DxlUart, brr: u32) {
         tcie: false,
         pl: dma::Pl::LOW,
     };
-    let tx_src = unsafe { (*DXL_TX_BUF.get()).as_ptr() } as u32;
+    let tx_src = unsafe { Drivers::dxl_uart() }.tx_buf_addr() as u32;
     dma::configure(
         dma::Channel::CH4,
         &tx_cfg,
@@ -298,19 +293,7 @@ fn bring_up_dxl(d: &DxlUart, brr: u32) {
         0,
     );
 
-    // Sole writers; IRQ-only readers unmask below.
-    unsafe { *DXL_TX_EN.get() = d.tx_en };
-    let rx_pin = d.usart.rx_pin();
-    unsafe { *DXL_RX_PIN.get() = Some(rx_pin) };
-
     usart::set_idle_irq(regs, true);
-    // EXTI on the RX pin's falling-edge captures the first byte's start bit
-    // for the CALIB cal path (instead of RXNE-after-DMA, which races with
-    // V006's DMA-RDR drain at IDLE). on_exti_dxl_rx self-disarms on the
-    // first entry; IDLE / TC handlers re-arm.
-    exti::configure_falling_edge(rx_pin);
-    exti::clear_pending(rx_pin);
-    exti::set_irq(rx_pin, true);
 
     bring_up_edge_ts_capture();
 }

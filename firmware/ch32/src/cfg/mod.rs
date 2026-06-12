@@ -5,9 +5,10 @@ pub use board_wiring::{
     NtcCal, TxEn,
 };
 
-use osc_core::ConfigDefaults;
+use osc_core::{BaudRate, ConfigDefaults};
 
 use crate::control::Scales;
+use crate::hal::clocks::PCLK_HZ;
 
 #[derive(Copy, Clone)]
 pub struct BoardConfig {
@@ -35,7 +36,26 @@ impl Precomputed {
             scales: Scales::new(&cfg.calibration, gain_factor),
             pwm_psc,
             pwm_arr,
-            usart_brr: crate::legacy::dxl::timing::brr(cfg.defaults.dxl_baud),
+            usart_brr: usart_brr(cfg.defaults.dxl_baud),
         }
+    }
+}
+
+/// Round-to-nearest USART_BRR divisor at our fixed PCLK for the chip's six
+/// supported DXL bauds. Each arm folds to a literal — RV32EC has no
+/// hardware divide. Driver-side `Clock::brr` mirrors this for runtime baud
+/// changes; the two stay parallel because the driver and the chip see the
+/// same PCLK through `UsartBaud::CLOCK_HZ`.
+const fn usart_brr(baud: BaudRate) -> u32 {
+    const fn compute(baud_hz: u32) -> u32 {
+        (PCLK_HZ + baud_hz / 2) / baud_hz
+    }
+    match baud {
+        BaudRate::B9600 => const { compute(BaudRate::B9600.as_hz()) },
+        BaudRate::B57600 => const { compute(BaudRate::B57600.as_hz()) },
+        BaudRate::B115200 => const { compute(BaudRate::B115200.as_hz()) },
+        BaudRate::B1000000 => const { compute(BaudRate::B1000000.as_hz()) },
+        BaudRate::B2000000 => const { compute(BaudRate::B2000000.as_hz()) },
+        BaudRate::B3000000 => const { compute(BaudRate::B3000000.as_hz()) },
     }
 }

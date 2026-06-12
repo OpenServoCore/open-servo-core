@@ -19,7 +19,6 @@ defmt         = { version = "1", optional = true }
 defmt-rtt     = { version = "1", optional = true }
 
 [features]
-default = ["dyn_cal"]
+default = []
 defmt   = ["dep:defmt", "dep:defmt-rtt", "osc-ch32/defmt"]
 bench   = ["osc-ch32/bench"]
-dyn_cal = ["osc-ch32/dyn_cal"]
