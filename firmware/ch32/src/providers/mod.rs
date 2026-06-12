@@ -6,5 +6,6 @@ pub mod clock_trim;
 pub mod digital_out;
 pub mod dma_ring;
 pub mod dxl_crc;
+pub mod dxl_tx_scheduler;
 pub mod monotonic;
 pub mod usart_baud;

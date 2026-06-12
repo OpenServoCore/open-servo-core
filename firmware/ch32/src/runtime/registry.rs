@@ -45,6 +45,7 @@ type DxlUartCh = DxlUart<
     providers::usart_baud::UsartBaud,
     providers::clock_trim::ClockTrim,
     providers::dma_ring::DmaRing,
+    providers::dxl_tx_scheduler::DxlTxScheduler,
     providers::dxl_crc::DxlCrc,
     DXL_DECODER_CAP,
     DXL_RX_BUF_LEN,
@@ -96,6 +97,7 @@ impl Drivers {
                 providers::usart_baud::UsartBaud,
                 providers::clock_trim::ClockTrim,
             ),
+            providers::dxl_tx_scheduler::DxlTxScheduler,
             defaults.dxl_id,
             (defaults.dxl_return_delay_2us as u32) * 2,
         ));

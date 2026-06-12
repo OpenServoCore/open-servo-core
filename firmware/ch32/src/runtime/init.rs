@@ -9,7 +9,7 @@ use crate::hal::{
     opa, rcc, timer, usart,
 };
 use crate::legacy::dxl::statics::{
-    DXL_RX_BUF, DXL_RX_BUF_LEN, DXL_RX_PIN, DXL_TX_BUF, DXL_TX_EN, store_baud_derived,
+    DXL_RX_BUF_LEN, DXL_RX_PIN, DXL_TX_BUF, DXL_TX_EN, store_baud_derived,
 };
 use crate::legacy::statics::{
     ADC_DMA_BUF, ADC_DMA_BUF_LEN, ADC_SCAN_LEN, ADC_SENSOR_COUNT, SHARED,
@@ -261,11 +261,19 @@ fn bring_up_dxl(d: &DxlUart, brr: u32) {
         tcie: false,
         pl: dma::Pl::LOW,
     };
+    // DMA1_CH5 destination is the driver's `rx_buf`, not the legacy
+    // `DXL_RX_BUF` static. `Drivers::install` already ran above so the
+    // cell is populated; legacy services::bus still reads its DXL_RX_BUF
+    // (now stale) but the wire byte stream lands in driver storage from
+    // here on. M2 (#33) rewires the services layer through Drivers::dxl_uart
+    // and the legacy static goes away with the rest of legacy::dxl.
+    // SAFETY: see `bring_up_edge_ts_capture`.
+    let rx_addr = unsafe { Drivers::dxl_uart() }.rx_buf_addr() as u32;
     dma::configure(
         dma::Channel::CH5,
         &dma_cfg,
         usart::data_addr(regs),
-        DXL_RX_BUF.get() as u32,
+        rx_addr,
         DXL_RX_BUF_LEN as u16,
     );
     dma::enable(dma::Channel::CH5);
