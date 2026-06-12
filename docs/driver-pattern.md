@@ -465,26 +465,25 @@ Services are **adapters** between protocol-side traits (defined in a chip-agnost
 ```rust
 // Protocol-side trait, defined in the chip-agnostic core:
 pub trait SomeBus {
-    fn send(&mut self, payload: Payload, schedule: Schedule);
-    fn read_window(&mut self) -> Option<&[u8]>;
+    fn send(&mut self, payload: Payload);
+    fn poll(&mut self) -> Option<Request<'_>>;
 }
 
 // Chip-specific service:
 pub struct SomeBusAdapter;
 
 impl SomeBus for SomeBusAdapter {
-    fn send(&mut self, payload: Payload, schedule: Schedule) {
-        let _ = unsafe { Drivers::top() }.send(
-            |buf| serialize(payload, buf),
-            schedule,
-        );
+    fn send(&mut self, payload: Payload) {
+        let _ = unsafe { Drivers::top() }.send(|buf| serialize(payload, buf));
     }
 
-    fn read_window(&mut self) -> Option<&[u8]> {
-        unsafe { Drivers::top() }.read_window()
+    fn poll(&mut self) -> Option<Request<'_>> {
+        unsafe { Drivers::top() }.poll()
     }
 }
 ```
+
+(`send` carries data, not scheduling — see §7.4. The driver derives wire timing from the request it polled. `poll` returns decoded protocol-domain values, not raw bytes — anything wire-shaped stays in the driver.)
 
 That's the whole service. Each method:
 
@@ -525,6 +524,16 @@ self.bus.send(Status::Empty { /* ack */ }, schedule);
 Three service calls. None of the underlying drivers know the other exists. The orchestration knowledge — "this address means persist and also signal" — is protocol-level, so it lives at the protocol layer.
 
 This is the same rule as §4.2 stated from the other direction: drivers don't reach across; the layer that knows about both concerns is responsible for the coordination.
+
+### 7.4 Data-centric trait surfaces
+
+Service traits should be **data-centric** — methods carry *what* to do, not *how to position it on the wire*. Scheduling, slot positioning, retry timing, framing details, and any other "where/when on the wire" concern belongs inside the driver whenever the driver has the cached request state to derive it.
+
+The driver already holds the request that drives the response (the polled token, the parsed command, the wire-end tick). Extending that cache to derive positioning is natural and keeps the service trait protocol-shape pure. The dispatcher then reads as straight protocol logic — every method call is "reply with this Status" or "reply with this slot," and nothing about timing or framing leaks into the protocol layer.
+
+A trait method *should* take a scheduling parameter when the protocol genuinely lets the consumer decide — a retry policy chosen by the caller, a deadline that originates above the driver, a deferred-send queue the protocol layer manages. When the protocol determines the schedule from the *received request* — slot positioning, response delay, chain-CRC anchor — the driver derives it from cached state and the trait stays clean.
+
+Symptom of the wrong split: a `Schedule` struct (or analogous record of "where on the wire") threaded through every send method. If the driver can compute that struct from state it already keeps for other reasons, the parameter is leaking driver knowledge into the service interface.
 
 ---
 
@@ -780,11 +789,15 @@ impl Bus {
         self.rx.on_error(flags);
     }
 
-    pub fn arm_reply<F>(&mut self, writer: F, schedule: Schedule) -> Result<(), BusError>
+    pub fn send_reply<F>(&mut self, writer: F) -> Result<(), BusError>
     where
         F: FnOnce(&mut [u8]) -> usize,
     {
-        self.tx.arm(writer, schedule).map_err(BusError::Tx)
+        // The Bus already cached the request that produced this reply
+        // (`self.rx.last_request()`), so it derives wire-end tick + slot
+        // offset + chain-CRC anchor internally. The caller hands data; the
+        // bus places it. See §7.4 for the underlying principle.
+        self.tx.arm(writer).map_err(BusError::Tx)
     }
 
     pub fn stage_baud(&mut self, rate: BaudRate) -> Result<(), BusError> {
@@ -922,7 +935,7 @@ Six rules:
 1. **Drivers own hardware state.** Expose pure methods: `on_*` for hardware events (named for the logical event, not the peripheral that delivered it), descriptive names for commands, accessors for stable observations. Programmer-error invariants are `debug_assert!`s; runtime failures return `Result`.
 2. **Composite drivers route between sub-drivers.** Sub-drivers are reachable only through the parent.
 3. **Top-level drivers do not communicate with each other.** If two would need to, compose them into a higher driver.
-4. **Services adapt protocol traits to drivers.** Each service binds to exactly one top-level driver. Services are thin.
+4. **Services adapt protocol traits to drivers.** Each service binds to exactly one top-level driver. Services are thin, and their trait surfaces stay **data-centric** (§7.4) — driver-derivable scheduling and wire-positioning info stays inside the driver.
 5. **Cross-domain orchestration lives at the protocol layer**, never in drivers.
 6. **Drivers are generic over driver-defined interfaces; providers implement them.** Production providers wrap HAL calls; fake providers record calls for tests. Driver logic is unit-testable on the host without hardware, and drivers are chip-agnostic by construction (chip choice lives in providers).
 
