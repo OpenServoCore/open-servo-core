@@ -152,6 +152,17 @@ impl<U: UsartBaud, T: ClockTrim> Clock<U, T> {
 }
 
 #[cfg(test)]
+impl<U: UsartBaud, T: ClockTrim> Clock<U, T> {
+    /// Total drift samples accepted since the last batch close. Lets
+    /// cross-module tests (e.g. [`super::super::DxlUart`]'s drift-feed
+    /// path) verify that samples actually reached the integrator without
+    /// having to drive a full `DRIFT_MIN_SAMPLES` batch.
+    pub(crate) fn drift_samples(&self) -> u16 {
+        self.drift_samples
+    }
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use crate::mocks::{FakeClockTrim, FakeUsartBaud};

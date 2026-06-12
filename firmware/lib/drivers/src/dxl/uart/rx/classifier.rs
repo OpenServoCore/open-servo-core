@@ -163,7 +163,7 @@ mod tests {
     }
 
     fn bt_at<const N: usize>(c: &Classifier<N>, raw: u16) -> Option<u16> {
-        c.byte_ts_at(Seq::from_raw(raw))
+        c.byte_ts_at(Seq::test_from_raw(raw))
     }
 
     #[test]
@@ -175,7 +175,7 @@ mod tests {
         assert_eq!(c.hits, 0);
         assert_eq!(c.skips, 0);
         assert_eq!(c.gaps, 0);
-        assert_eq!(c.byte_ts_head().raw(), 1);
+        assert_eq!(c.byte_ts_head().test_raw(), 1);
         assert_eq!(c.anchor, Some(1000));
         assert_eq!(bt_at(&c, 0), Some(1000));
     }
@@ -191,7 +191,7 @@ mod tests {
         assert_eq!(c.hits, 0);
         assert_eq!(c.skips, 4);
         assert_eq!(c.gaps, 0);
-        assert_eq!(c.byte_ts_head().raw(), 1);
+        assert_eq!(c.byte_ts_head().test_raw(), 1);
     }
 
     #[test]
@@ -202,7 +202,7 @@ mod tests {
         assert_eq!(c.seeds, 1);
         assert_eq!(c.hits, 1);
         assert_eq!(c.gaps, 0);
-        assert_eq!(c.byte_ts_head().raw(), 2);
+        assert_eq!(c.byte_ts_head().test_raw(), 2);
         assert_eq!(bt_at(&c, 1), Some(1000 + BYTE_TICKS_3M));
     }
 
@@ -287,7 +287,7 @@ mod tests {
         assert_eq!(c.hits, 15);
         assert_eq!(c.skips, 48);
         assert_eq!(c.gaps, 0);
-        assert_eq!(c.byte_ts_head().raw(), 16);
+        assert_eq!(c.byte_ts_head().test_raw(), 16);
 
         // BT entries land at byte starts; spacing == one byte-time.
         let bt0 = bt_at(&c, 0).unwrap();

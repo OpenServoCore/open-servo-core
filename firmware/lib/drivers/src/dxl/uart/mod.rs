@@ -18,7 +18,7 @@ use dxl_protocol::{BROADCAST_ID, CrcUmts, InstructionPacket};
 use osc_core::{BaudRate, BootMode};
 
 use crate::traits::{ClockTrim, DmaRing, UsartBaud};
-use crate::util::HwRing;
+use crate::util::{HwRing, Seq};
 use clock::Clock;
 use rx::Rx;
 
@@ -68,6 +68,17 @@ pub struct DxlUart<
     /// Instruction so foreign-target instructions still calibrate, while
     /// Status frames (which use the peer's HSI) never contribute.
     instruction_count: u32,
+    /// RX seq of the first byte of the in-progress decoder packet. `None`
+    /// whenever the decoder is between packets (fresh boot, post-Packet,
+    /// post-Resync); lazy-set to the pre-advance read seq on the next byte
+    /// poll() consumes. Paired with the post-Packet read seq it bounds the
+    /// BT range we feed [`Clock::on_drift_sample`]. Doc §8.3: RX and BT
+    /// share seq space, so the same range indexes both.
+    ///
+    /// Carries `Option` rather than a sentinel because [`Seq`]'s raw u16
+    /// wraps over the full value range — every potential sentinel is a
+    /// live cursor for one byte every 65536 RX bytes (~175 ms at 3 M).
+    packet_start_rx_seq: Option<Seq<u8, RX_BUF_LEN>>,
 
     id: u8,
     rdt_us: u32,
@@ -99,6 +110,7 @@ impl<
             decoder: Decoder::new(),
             rx_buf: SyncUnsafeCell::new(HwRing::new(0)),
             instruction_count: 0,
+            packet_start_rx_seq: None,
             id,
             rdt_us,
             pending_id: None,
@@ -138,7 +150,8 @@ impl<
     /// frames are dropped silently (Instruction-only surface per
     /// [[standard_dxl_terminology]]); Instructions for foreign IDs are
     /// also dropped, but every emitted Instruction still bumps
-    /// `instruction_count()` so the drift signal stays clean.
+    /// `instruction_count()` and feeds the drift integrator so the signal
+    /// stays clean — see [[drift_sampling_instruction_only]].
     ///
     /// Walks up to the producer head published by [`Self::on_rx_dma_advance`].
     /// On `Step::NeedMore` the parser yields with its in-progress packet
@@ -149,17 +162,38 @@ impl<
         let rx_buf = unsafe { &mut *self.rx_buf.get() };
         let mut reader = rx_buf.reader();
         while let Some(&byte) = reader.peek() {
+            // Lazy-seed packet_start on the first byte of each new packet
+            // hypothesis. After Resync / Packet the field is cleared back
+            // to None; the next byte we consume here is, by definition,
+            // the first byte of whatever the decoder will parse next.
+            let pre_advance = reader.read_seq();
+            self.packet_start_rx_seq.get_or_insert(pre_advance);
             reader.advance(1);
             let (step, _) = self.decoder.feed(&[byte]);
             match step {
-                Step::NeedMore | Step::Resync(_) => continue,
+                Step::NeedMore => continue,
+                Step::Resync(_) => {
+                    // Decoder dropped the in-progress prefix; clear so the
+                    // next byte re-seeds.
+                    self.packet_start_rx_seq = None;
+                    continue;
+                }
                 Step::Packet(pkt) => {
-                    let ip = match pkt.into_instruction_packet() {
-                        Some(ip) => ip,
+                    let end_seq = reader.read_seq();
+                    // Always Some here — get_or_insert at loop top seeded
+                    // it this iteration (or kept an earlier seed). Take to
+                    // clear so the next iteration starts a fresh hypothesis.
+                    let start_seq = self.packet_start_rx_seq.take().unwrap_or(end_seq);
+
+                    let id = match pkt.into_instruction_packet() {
+                        Some(ip) => ip.id().as_byte(),
+                        // Status frames don't feed drift (peer HSI is its
+                        // own clock domain — [[drift_sampling_instruction_only]])
+                        // and don't surface; just advance past the frame.
                         None => continue,
                     };
                     self.instruction_count = self.instruction_count.wrapping_add(1);
-                    let id = ip.id().as_byte();
+                    Self::feed_drift(&self.rx, &mut self.clock, start_seq, end_seq);
                     if id == self.id || id == BROADCAST_ID {
                         matched = true;
                         break;
@@ -176,6 +210,43 @@ impl<
         matched
             .then(|| self.decoder.dispatch_packet().into_instruction_packet())
             .flatten()
+    }
+
+    /// Walk consecutive BT pairs across the just-decoded packet's RX range
+    /// and feed each `(BT[i+1] − BT[i]) / 10` to the clock's drift
+    /// integrator. Doc §10.7.1: only inter-byte gaps that fall in the
+    /// classifier's HIT window `[9·tpb, 11·tpb]` measure a true 10-bit
+    /// interval; GAP-class deltas would inject a re-anchor distance and
+    /// poison the average, so they're filtered here.
+    ///
+    /// Takes individual field borrows (not `&mut self`) so the caller —
+    /// inside poll()'s `rx_buf.reader()` scope — keeps the field-disjoint
+    /// borrow tree the decoder.feed() call already relies on.
+    fn feed_drift(
+        rx: &Rx<R, EDGE_BUF_LEN, RX_BUF_LEN>,
+        clock: &mut Clock<U, T>,
+        start: Seq<u8, RX_BUF_LEN>,
+        end: Seq<u8, RX_BUF_LEN>,
+    ) {
+        let tpb = clock.ticks_per_bit();
+        let lo = tpb.wrapping_mul(9);
+        let hi = tpb.wrapping_mul(11);
+
+        let mut seqs = Seq::iter(start, end);
+        let Some(s0) = seqs.next() else { return };
+        let Some(mut prev) = rx.byte_ts_at(s0.into()) else {
+            return;
+        };
+        for s in seqs {
+            let Some(curr) = rx.byte_ts_at(s.into()) else {
+                break;
+            };
+            let delta = curr.wrapping_sub(prev);
+            if delta >= lo && delta <= hi {
+                clock.on_drift_sample(delta / 10);
+            }
+            prev = curr;
+        }
     }
 
     /// Monotonic count of Instruction packets seen on the wire. Used by the
@@ -293,6 +364,8 @@ mod tests {
 
     const TEST_ID: u8 = 0x07;
     const TEST_RDT_US: u32 = 250;
+    /// One byte-time at 3 Mbaud (10·tpb).
+    const BYTE_TICKS_3M: u16 = 160;
 
     type TestRx = Rx<FakeDmaRing, EDGE_BUF_LEN, RX_BUF_LEN>;
     type TestBus = DxlUart<
@@ -341,7 +414,7 @@ mod tests {
 
         bus.on_rx_edge_advance();
 
-        assert_eq!(bus.byte_ts_head().raw(), 2);
+        assert_eq!(bus.byte_ts_head().test_raw(), 2);
     }
 
     #[test]
@@ -363,7 +436,7 @@ mod tests {
         bus.on_rx_edge_advance();
 
         // SEED at 1000, then SKIP (intra-byte) — head stays at 1.
-        assert_eq!(bus.byte_ts_head().raw(), 1);
+        assert_eq!(bus.byte_ts_head().test_raw(), 1);
     }
 
     #[test]
@@ -375,7 +448,7 @@ mod tests {
 
         bus.on_rx_idle();
 
-        assert_eq!(bus.byte_ts_head().raw(), 1);
+        assert_eq!(bus.byte_ts_head().test_raw(), 1);
     }
 
     #[test]
@@ -582,6 +655,124 @@ mod tests {
             other => panic!("expected Ping after resume, got {other:?}"),
         }
         assert_eq!(bus.instruction_count(), 1);
+    }
+
+    /// Stage a stream of `n_bytes` edges spaced `step` ticks apart and run
+    /// the classifier so BT[0..n_bytes] is populated before the test polls.
+    /// Used by the drift-sample tests to drive realistic BT pairs without
+    /// faking the classifier output directly.
+    fn bus_with_staged_bt(n_bytes: usize, step: u16) -> TestBus {
+        let mut edges: Vec<u16, 32> = Vec::new();
+        for i in 0..n_bytes as u16 {
+            edges
+                .push(1000_u16.wrapping_add(i.wrapping_mul(step)))
+                .unwrap();
+        }
+        let rx = make_rx(
+            &edges,
+            DmaFlags {
+                ht: true,
+                tc: false,
+            },
+        );
+        let mut bus = make_bus_with(rx, BaudRate::B3000000);
+        bus.on_rx_edge_advance();
+        assert_eq!(bus.byte_ts_head().test_raw(), n_bytes as u16);
+        bus
+    }
+
+    #[test]
+    fn poll_feeds_one_drift_sample_per_bt_pair_on_instruction() {
+        let ping = wire_ping(TEST_ID);
+        let mut bus = bus_with_staged_bt(ping.len(), BYTE_TICKS_3M);
+        bus.stage_rx_bytes_for_test(0, &ping);
+
+        let surfaced = bus.poll();
+        assert!(matches!(surfaced, Some(InstructionPacket::Ping(_))));
+
+        // 10-byte packet → 9 in-window BT pairs → 9 samples to the integrator.
+        assert_eq!(bus.clock.drift_samples(), (ping.len() - 1) as u16);
+    }
+
+    #[test]
+    fn poll_feeds_drift_for_foreign_instruction() {
+        // Foreign-ID Instruction doesn't surface but still calibrates the
+        // clock — host has HSE, drift signal is valid for every Instruction.
+        let ping = wire_ping(0x42);
+        let mut bus = bus_with_staged_bt(ping.len(), BYTE_TICKS_3M);
+        bus.stage_rx_bytes_for_test(0, &ping);
+
+        assert!(bus.poll().is_none());
+        assert_eq!(bus.clock.drift_samples(), (ping.len() - 1) as u16);
+    }
+
+    #[test]
+    fn poll_does_not_feed_drift_for_status() {
+        // Status frame uses the peer's HSI — sampling its BT pairs would
+        // calibrate against another HSI ([[drift_sampling_instruction_only]]).
+        let status = wire_status(TEST_ID);
+        let mut bus = bus_with_staged_bt(status.len(), BYTE_TICKS_3M);
+        bus.stage_rx_bytes_for_test(0, &status);
+
+        assert!(bus.poll().is_none());
+        assert_eq!(bus.clock.drift_samples(), 0);
+    }
+
+    #[test]
+    fn poll_filters_out_of_window_bt_pairs() {
+        // Edges spaced 200 ticks > 11·tpb=176 at 3M → GAP class. BT entries
+        // still land (re-anchor), but the drift walk filters their pair
+        // deltas as not measuring a true 10-bit interval per doc §10.7.1.
+        let ping = wire_ping(TEST_ID);
+        let mut bus = bus_with_staged_bt(ping.len(), 200);
+        bus.stage_rx_bytes_for_test(0, &ping);
+
+        assert!(bus.poll().is_some());
+        assert_eq!(bus.clock.drift_samples(), 0);
+    }
+
+    #[test]
+    fn poll_drift_walk_anchors_at_first_consumed_byte_not_zero() {
+        // Reader pre-positioned past the start of the BT ring. Packet
+        // begins at RX seq 5, not 0. The drift walk must anchor on the
+        // first byte poll() actually consumes — otherwise it would walk
+        // BT[0..end] and either misattribute samples (if BT[0..5] are
+        // stale-but-in-window) or silently early-return.
+        let ping = wire_ping(TEST_ID);
+        // Stage enough edges to populate BT[0..15] — covers both the
+        // pre-cursor slots and the packet's range.
+        let mut bus = bus_with_staged_bt(5 + ping.len(), BYTE_TICKS_3M);
+
+        bus.set_rx_read_seq_for_test(5);
+        bus.stage_rx_bytes_for_test(5, &ping);
+
+        assert!(bus.poll().is_some());
+        // Exactly (ping.len() - 1) samples, not 5 + (ping.len() - 1).
+        assert_eq!(bus.clock.drift_samples(), (ping.len() - 1) as u16);
+    }
+
+    #[test]
+    fn poll_drift_walk_resumes_across_resync() {
+        // A corrupt frame followed by a clean one: Resync moves the BT
+        // range cursor past the bad bytes so the clean frame's BT pairs
+        // (and only those) feed the integrator.
+        let mut bad = wire_ping(TEST_ID);
+        let crc_lo = bad.len() - 2;
+        bad[crc_lo] ^= 0xFF;
+        let good = wire_ping(TEST_ID);
+
+        let total_bytes = bad.len() + good.len();
+        let mut bus = bus_with_staged_bt(total_bytes, BYTE_TICKS_3M);
+
+        let mut combined: Vec<u8, 32> = Vec::new();
+        combined.extend_from_slice(&bad).unwrap();
+        combined.extend_from_slice(&good).unwrap();
+        bus.stage_rx_bytes_for_test(0, &combined);
+
+        assert!(bus.poll().is_some());
+        // Only the good frame's pairs feed; the bad frame's bytes were
+        // dropped through Resync, so its BT range never enters the walk.
+        assert_eq!(bus.clock.drift_samples(), (good.len() - 1) as u16);
     }
 
     #[test]

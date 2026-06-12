@@ -141,7 +141,7 @@ mod tests {
         let mut d = rx();
         d.stage_edges_for_test(&[1000]);
         d.on_edge_advance(TPB_3M);
-        assert_eq!(d.byte_ts_head().raw(), 0);
+        assert_eq!(d.byte_ts_head().test_raw(), 0);
         assert_eq!(d.ring.ack_log, [DmaFlags::default()]);
     }
 
@@ -154,9 +154,12 @@ mod tests {
             tc: false,
         });
         d.on_edge_advance(TPB_3M);
-        assert_eq!(d.byte_ts_head().raw(), 2);
-        assert_eq!(d.byte_ts_at(Seq::from_raw(0)), Some(1000));
-        assert_eq!(d.byte_ts_at(Seq::from_raw(1)), Some(1000 + BYTE_TICKS_3M));
+        assert_eq!(d.byte_ts_head().test_raw(), 2);
+        assert_eq!(d.byte_ts_at(Seq::test_from_raw(0)), Some(1000));
+        assert_eq!(
+            d.byte_ts_at(Seq::test_from_raw(1)),
+            Some(1000 + BYTE_TICKS_3M)
+        );
     }
 
     #[test]
@@ -168,7 +171,7 @@ mod tests {
             tc: true,
         });
         d.on_edge_advance(TPB_3M);
-        assert_eq!(d.byte_ts_head().raw(), 1);
+        assert_eq!(d.byte_ts_head().test_raw(), 1);
     }
 
     #[test]
@@ -181,7 +184,7 @@ mod tests {
             tc: false,
         });
         d.on_edge_advance(TPB_3M);
-        assert_eq!(d.byte_ts_head().raw(), 1);
+        assert_eq!(d.byte_ts_head().test_raw(), 1);
 
         // IDLE drains nothing new (same head), but invalidates the anchor.
         d.on_idle(TPB_3M);
@@ -193,7 +196,7 @@ mod tests {
             tc: false,
         });
         d.on_edge_advance(TPB_3M);
-        assert_eq!(d.byte_ts_head().raw(), 2);
-        assert_eq!(d.byte_ts_at(Seq::from_raw(1)), Some(59_000));
+        assert_eq!(d.byte_ts_head().test_raw(), 2);
+        assert_eq!(d.byte_ts_at(Seq::test_from_raw(1)), Some(59_000));
     }
 }

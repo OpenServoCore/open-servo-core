@@ -60,7 +60,11 @@ impl Producer for Sw {}
 
 /// Opaque monotonic sequence identity for a ring element. `Seq<T, N>` is
 /// bound to its ring's element type and size; external code holds it as
-/// a token (no arithmetic) and hands it back to [`Ring::at`].
+/// a token (compare, hand to [`Ring::at`], iterate via [`Seq::iter`])
+/// with no arithmetic surface — production builds physically cannot read
+/// or fabricate the raw `u16`. The `raw` field is reachable only inside
+/// this module's own helpers and through a `#[cfg(test)]`-gated escape
+/// hatch.
 ///
 /// Hardware-coupled seq spaces (doc §8.3) can convert via `From` —
 /// value-preserving, just retags the type.
@@ -70,22 +74,76 @@ pub struct Seq<T, const N: usize> {
 }
 
 impl<T, const N: usize> Seq<T, N> {
-    /// Construct from a raw `u16`. `pub(crate)` so only this module's
-    /// rings and explicit `From` impls mint seqs — external code holds
-    /// what it gets, doesn't fabricate.
-    pub(crate) const fn from_raw(raw: u16) -> Self {
+    /// Iterate the half-open seq range `[start, end)`. Each step yields a
+    /// fresh [`Seq`] — the cursor is owned by the iterator, so Seq stays
+    /// opaque at the call site (no `incr` / arithmetic exposed). Wraps in
+    /// u16 like the rest of seq arithmetic: a range where `end` is behind
+    /// `start` walks across the wrap boundary.
+    pub fn iter(start: Self, end: Self) -> SeqIter<T, N> {
+        SeqIter {
+            cur: start.raw,
+            end: end.raw,
+            _phantom: PhantomData,
+        }
+    }
+}
+
+#[cfg(test)]
+impl<T, const N: usize> Seq<T, N> {
+    // Test-only escape hatches. Named `test_*` so every call site
+    // advertises that it's a test helper — a production caller would
+    // stand out at code review. **Do not add a non-`cfg(test)` `raw`
+    // / `from_raw` to this type.** Opacity is load-bearing: external
+    // code holds seqs as tokens (compare, iterate via [`Seq::iter`],
+    // hand to [`Ring::at`]) without seeing the underlying u16. If you
+    // catch yourself wanting raw access in production code, you want
+    // a new opaque operation on Seq or Ring instead.
+
+    /// Construct a seq from a known raw value. Test-only — see the
+    /// impl-block note above.
+    pub(crate) const fn test_from_raw(raw: u16) -> Self {
         Self {
             raw,
             _phantom: PhantomData,
         }
     }
 
-    /// Unwrap to the raw `u16`. Diagnostic and cross-component
-    /// comparison only — math on the value belongs in [`Ring`].
-    pub const fn raw(&self) -> u16 {
+    /// Inspect the raw `u16` for assertions. Test-only — see the
+    /// impl-block note above.
+    pub(crate) const fn test_raw(&self) -> u16 {
         self.raw
     }
 }
+
+/// Iterator over a half-open [`Seq`] range. Constructed by [`Seq::iter`].
+pub struct SeqIter<T, const N: usize> {
+    cur: u16,
+    end: u16,
+    _phantom: PhantomData<fn() -> T>,
+}
+
+impl<T, const N: usize> Iterator for SeqIter<T, N> {
+    type Item = Seq<T, N>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        if self.cur == self.end {
+            return None;
+        }
+        let s = Seq {
+            raw: self.cur,
+            _phantom: PhantomData,
+        };
+        self.cur = self.cur.wrapping_add(1);
+        Some(s)
+    }
+
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        let remaining = self.end.wrapping_sub(self.cur) as usize;
+        (remaining, Some(remaining))
+    }
+}
+
+impl<T, const N: usize> ExactSizeIterator for SeqIter<T, N> {}
 
 impl<T, const N: usize> Clone for Seq<T, N> {
     fn clone(&self) -> Self {
@@ -113,7 +171,10 @@ impl<T, const N: usize> core::fmt::Debug for Seq<T, N> {
 /// retags the type; the raw value is preserved.
 impl<const RX: usize, const BT: usize> From<Seq<u8, RX>> for Seq<u16, BT> {
     fn from(s: Seq<u8, RX>) -> Self {
-        Seq::from_raw(s.raw)
+        Seq {
+            raw: s.raw,
+            _phantom: PhantomData,
+        }
     }
 }
 
@@ -165,12 +226,18 @@ impl<P: Producer, T: Copy, const N: usize> Ring<P, T, N> {
 
     /// Consumer's read head as an opaque [`Seq`].
     pub fn read_seq(&self) -> Seq<T, N> {
-        Seq::from_raw(self.read_seq)
+        Seq {
+            raw: self.read_seq,
+            _phantom: PhantomData,
+        }
     }
 
     /// Producer's published head as an opaque [`Seq`].
     pub fn write_seq(&self) -> Seq<T, N> {
-        Seq::from_raw(self.write_seq)
+        Seq {
+            raw: self.write_seq,
+            _phantom: PhantomData,
+        }
     }
 
     /// Monotonic count of lap events observed by [`Reader::peek`] /
@@ -256,6 +323,16 @@ impl<'a, P: Producer, T: Copy, const N: usize> Reader<'a, P, T, N> {
         if ahead as usize > N { 0 } else { ahead }
     }
 
+    /// Current cursor as an opaque [`Seq`]. Mirrors [`Ring::read_seq`] so
+    /// walking consumers can stamp packet boundaries against the live
+    /// cursor without releasing the reader borrow.
+    pub fn read_seq(&self) -> Seq<T, N> {
+        Seq {
+            raw: self.ring.read_seq,
+            _phantom: PhantomData,
+        }
+    }
+
     /// Element at the cursor; `None` when caught up. Auto-resyncs on
     /// lap (jumps `read_seq` to `write_seq - N`, bumps `lap_count`),
     /// then returns the oldest still-valid slot.
@@ -338,14 +415,14 @@ mod tests {
         let mut b: HwBuf = HwRing::new(0);
         // Producer at slot 0 → publish slot 5 (remaining=3): delta 5.
         b.on_publish(3);
-        assert_eq!(b.write_seq().raw(), 5);
+        assert_eq!(b.write_seq().test_raw(), 5);
         // Producer at slot 5 → publish slot 2 (wrapped, remaining=6):
         // delta = (2+8-5)%8 = 5.
         b.on_publish(6);
-        assert_eq!(b.write_seq().raw(), 10);
+        assert_eq!(b.write_seq().test_raw(), 10);
         // Re-publishing the same remaining is a no-op delta.
         b.on_publish(6);
-        assert_eq!(b.write_seq().raw(), 10);
+        assert_eq!(b.write_seq().test_raw(), 10);
     }
 
     #[test]
@@ -355,15 +432,15 @@ mod tests {
         // ring slot = 65533 % 8 = 5. Roll past slot 5 to slot 1
         // (remaining = 7) → delta 4. u16::MAX - 2 + 4 wraps to 1.
         b.on_publish(7);
-        assert_eq!(b.write_seq().raw(), 1);
+        assert_eq!(b.write_seq().test_raw(), 1);
     }
 
     #[test]
     fn fresh_ring_has_zero_avail_and_lap_count() {
         let mut b: HwBuf = HwRing::new(0);
         assert_eq!(b.lap_count(), 0);
-        assert_eq!(b.read_seq().raw(), 0);
-        assert_eq!(b.write_seq().raw(), 0);
+        assert_eq!(b.read_seq().test_raw(), 0);
+        assert_eq!(b.write_seq().test_raw(), 0);
         assert_eq!(b.reader().avail(), 0);
     }
 
@@ -445,7 +522,7 @@ mod tests {
             r.advance(3);
             assert_eq!(r.avail(), 5);
         }
-        assert_eq!(b.read_seq().raw(), 3);
+        assert_eq!(b.read_seq().test_raw(), 3);
     }
 
     #[test]
@@ -458,7 +535,7 @@ mod tests {
             r.advance(4); // (u16::MAX - 1) + 4 wraps to 2
             assert_eq!(r.avail(), 0);
         }
-        assert_eq!(b.read_seq().raw(), 2);
+        assert_eq!(b.read_seq().test_raw(), 2);
     }
 
     #[test]
@@ -473,7 +550,7 @@ mod tests {
         // First peek detects lap, jumps read_seq to write_seq - N = 2,
         // returns the slot at seq 2 (storage pos 2 = value 3).
         assert_eq!(r.peek(), Some(&3));
-        assert_eq!(b.read_seq().raw(), 2);
+        assert_eq!(b.read_seq().test_raw(), 2);
         assert_eq!(b.lap_count(), 1);
         // Subsequent peeks at the same point don't re-trigger lap.
         let mut r = b.reader();
@@ -486,9 +563,9 @@ mod tests {
         let mut b: HwBuf = HwRing::new(0);
         b.stage(0, &[10, 20, 30, 40, 50, 60, 70, 80]);
         b.set_write_seq_for_test(8);
-        assert_eq!(b.at(Seq::from_raw(0)), Some(&10));
-        assert_eq!(b.at(Seq::from_raw(3)), Some(&40));
-        assert_eq!(b.at(Seq::from_raw(7)), Some(&80));
+        assert_eq!(b.at(Seq::test_from_raw(0)), Some(&10));
+        assert_eq!(b.at(Seq::test_from_raw(3)), Some(&40));
+        assert_eq!(b.at(Seq::test_from_raw(7)), Some(&80));
     }
 
     #[test]
@@ -496,19 +573,19 @@ mod tests {
         let mut b: HwBuf = HwRing::new(0);
         b.stage(0, &[10, 20, 30, 40, 50, 60, 70, 80]);
         b.set_write_seq_for_test(3);
-        assert_eq!(b.at(Seq::from_raw(2)), Some(&30));
-        assert_eq!(b.at(Seq::from_raw(3)), None);
-        assert_eq!(b.at(Seq::from_raw(5)), None);
+        assert_eq!(b.at(Seq::test_from_raw(2)), Some(&30));
+        assert_eq!(b.at(Seq::test_from_raw(3)), None);
+        assert_eq!(b.at(Seq::test_from_raw(5)), None);
     }
 
     #[test]
     fn at_returns_none_for_lapped_seq() {
         let mut b: HwBuf = HwRing::new(0);
         b.set_write_seq_for_test(20); // window is seqs [12, 20)
-        assert_eq!(b.at(Seq::from_raw(11)), None);
-        assert!(b.at(Seq::from_raw(12)).is_some());
-        assert!(b.at(Seq::from_raw(19)).is_some());
-        assert_eq!(b.at(Seq::from_raw(20)), None);
+        assert_eq!(b.at(Seq::test_from_raw(11)), None);
+        assert!(b.at(Seq::test_from_raw(12)).is_some());
+        assert!(b.at(Seq::test_from_raw(19)).is_some());
+        assert_eq!(b.at(Seq::test_from_raw(20)), None);
     }
 
     #[test]
@@ -520,10 +597,10 @@ mod tests {
             w.push(22);
             w.push(33);
         }
-        assert_eq!(b.write_seq().raw(), 3);
-        assert_eq!(b.at(Seq::from_raw(0)), Some(&11));
-        assert_eq!(b.at(Seq::from_raw(1)), Some(&22));
-        assert_eq!(b.at(Seq::from_raw(2)), Some(&33));
+        assert_eq!(b.write_seq().test_raw(), 3);
+        assert_eq!(b.at(Seq::test_from_raw(0)), Some(&11));
+        assert_eq!(b.at(Seq::test_from_raw(1)), Some(&22));
+        assert_eq!(b.at(Seq::test_from_raw(2)), Some(&33));
     }
 
     #[test]
@@ -536,19 +613,52 @@ mod tests {
             }
         }
         // write_seq advanced to 12; ring window [4, 12).
-        assert_eq!(b.write_seq().raw(), 12);
-        assert_eq!(b.at(Seq::from_raw(3)), None); // lapped out
-        assert_eq!(b.at(Seq::from_raw(4)), Some(&4));
-        assert_eq!(b.at(Seq::from_raw(11)), Some(&11));
+        assert_eq!(b.write_seq().test_raw(), 12);
+        assert_eq!(b.at(Seq::test_from_raw(3)), None); // lapped out
+        assert_eq!(b.at(Seq::test_from_raw(4)), Some(&4));
+        assert_eq!(b.at(Seq::test_from_raw(11)), Some(&11));
+    }
+
+    #[test]
+    fn seq_iter_yields_each_seq_in_order() {
+        let start: Seq<u8, 8> = Seq::test_from_raw(3);
+        let end: Seq<u8, 8> = Seq::test_from_raw(7);
+        let mut iter = Seq::iter(start, end);
+        assert_eq!(iter.next().map(|s| s.test_raw()), Some(3));
+        assert_eq!(iter.next().map(|s| s.test_raw()), Some(4));
+        assert_eq!(iter.next().map(|s| s.test_raw()), Some(5));
+        assert_eq!(iter.next().map(|s| s.test_raw()), Some(6));
+        assert_eq!(iter.next().map(|s| s.test_raw()), None);
+    }
+
+    #[test]
+    fn seq_iter_empty_when_start_equals_end() {
+        let s: Seq<u8, 8> = Seq::test_from_raw(5);
+        let mut iter = Seq::iter(s, s);
+        assert_eq!(iter.size_hint(), (0, Some(0)));
+        assert_eq!(iter.next(), None);
+    }
+
+    #[test]
+    fn seq_iter_walks_across_u16_wrap() {
+        let start: Seq<u8, 8> = Seq::test_from_raw(u16::MAX - 1);
+        let end: Seq<u8, 8> = Seq::test_from_raw(2);
+        let mut iter = Seq::iter(start, end);
+        assert_eq!(iter.size_hint(), (4, Some(4)));
+        assert_eq!(iter.next().map(|s| s.test_raw()), Some(u16::MAX - 1));
+        assert_eq!(iter.next().map(|s| s.test_raw()), Some(u16::MAX));
+        assert_eq!(iter.next().map(|s| s.test_raw()), Some(0));
+        assert_eq!(iter.next().map(|s| s.test_raw()), Some(1));
+        assert_eq!(iter.next(), None);
     }
 
     #[test]
     fn seq_from_impl_retags_shared_space() {
         // rx_buf <u8, RX> and byte_ts <u16, BT> share a seq space per
         // doc §8.3; conversion preserves raw and just retags.
-        let s: Seq<u8, 64> = Seq::from_raw(42);
+        let s: Seq<u8, 64> = Seq::test_from_raw(42);
         let t: Seq<u16, 64> = s.into();
-        assert_eq!(t.raw(), 42);
+        assert_eq!(t.test_raw(), 42);
     }
 
     #[test]
