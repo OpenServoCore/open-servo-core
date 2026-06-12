@@ -393,6 +393,7 @@ name = "osc-drivers"
 version = "0.0.0"
 dependencies = [
  "dxl-protocol",
+ "heapless",
  "osc-core",
 ]
 

@@ -327,8 +327,9 @@ fn bring_up_edge_ts_capture() {
     };
     // SAFETY: `Drivers::install` ran in `run()` before `bring_up_dxl`; the
     // returned address points into the driver's registry cell and stays
-    // valid for the lifetime of the program.
-    let edges_addr = unsafe { Drivers::dxl_uart() }.edges_addr();
+    // valid for the lifetime of the program. The driver yields `usize`
+    // (chip-agnostic); we narrow to the V006 DMA-MAR width here.
+    let edges_addr = unsafe { Drivers::dxl_uart() }.edges_addr() as u32;
     dma::configure(
         dma::Channel::CH7,
         &edge_ts_cfg,

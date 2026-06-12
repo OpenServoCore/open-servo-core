@@ -1,7 +1,6 @@
 use core::cell::SyncUnsafeCell;
 use core::sync::atomic::Ordering;
 use heapless::Vec;
-use osc_core::services::dxl::limits::DXL_TX_MAX_BYTES;
 use portable_atomic::{AtomicBool, AtomicI16, AtomicI32, AtomicU16, AtomicU32};
 
 use crate::cfg::board_wiring::TxEn;
@@ -51,7 +50,13 @@ pub(crate) static DXL_RX_LAST_TICK: AtomicU32 = AtomicU32::new(0);
 /// the same line that bring-up armed. Read-only thereafter.
 pub(crate) static DXL_RX_PIN: SyncUnsafeCell<Option<Pin>> = SyncUnsafeCell::new(None);
 
-pub(crate) const DXL_TX_BUF_LEN: usize = DXL_TX_MAX_BYTES;
+/// Legacy TX buffer. Shrunk to a 1-byte stub during the M1 transition —
+/// the driver-owned `Codec::tx_buf` is the real TX storage now (see
+/// `runtime::registry::DXL_TX_BUF_LEN`). Symbol kept alive so legacy
+/// references in `services/bus.rs`, `legacy::dxl::isr`, etc. still
+/// compile; legacy fires won't function until M2 rewires Ch32Bus, but
+/// "no bench until full refactor" is the operating policy.
+pub(crate) const DXL_TX_BUF_LEN: usize = 1;
 
 pub(crate) static DXL_TX_BUF: SyncUnsafeCell<Vec<u8, DXL_TX_BUF_LEN>> =
     SyncUnsafeCell::new(Vec::new());

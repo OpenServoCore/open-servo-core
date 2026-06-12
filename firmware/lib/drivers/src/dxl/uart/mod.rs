@@ -41,6 +41,10 @@ use codec::Codec;
 ///   and the composite enforces that coupling by construction.
 /// - `EDGE_BUF_LEN`: DMA1_CH7 edge-timestamp ring depth (typically 128 /
 ///   option A in doc §8.4; 64 / option B trades CPU for memory).
+/// - `TX_BUF_LEN`: DMA1_CH4 source-buffer depth sized to
+///   `osc_core::services::dxl::limits::DXL_TX_MAX_BYTES` (140 with the
+///   default control-RW). Held by `Codec` so encoder methods write into
+///   driver-owned storage instead of a chip-side static.
 pub struct DxlUart<
     U: UsartBaud,
     T: ClockTrim,
@@ -49,8 +53,9 @@ pub struct DxlUart<
     const DECODER_CAP: usize,
     const RX_BUF_LEN: usize,
     const EDGE_BUF_LEN: usize,
+    const TX_BUF_LEN: usize,
 > {
-    codec: Codec<R, CRC, DECODER_CAP, RX_BUF_LEN, EDGE_BUF_LEN>,
+    codec: Codec<R, CRC, DECODER_CAP, RX_BUF_LEN, EDGE_BUF_LEN, TX_BUF_LEN>,
     clock: Clock<U, T>,
 
     id: u8,
@@ -69,10 +74,11 @@ impl<
     const DECODER_CAP: usize,
     const RX_BUF_LEN: usize,
     const EDGE_BUF_LEN: usize,
-> DxlUart<U, T, R, CRC, DECODER_CAP, RX_BUF_LEN, EDGE_BUF_LEN>
+    const TX_BUF_LEN: usize,
+> DxlUart<U, T, R, CRC, DECODER_CAP, RX_BUF_LEN, EDGE_BUF_LEN, TX_BUF_LEN>
 {
     pub fn new(
-        codec: Codec<R, CRC, DECODER_CAP, RX_BUF_LEN, EDGE_BUF_LEN>,
+        codec: Codec<R, CRC, DECODER_CAP, RX_BUF_LEN, EDGE_BUF_LEN, TX_BUF_LEN>,
         clock: Clock<U, T>,
         id: u8,
         rdt_us: u32,
@@ -187,12 +193,12 @@ impl<
     }
 
     /// Stable peripheral-memory address for DMA1_CH7's destination buffer.
-    pub fn edges_addr(&self) -> u32 {
+    pub fn edges_addr(&self) -> usize {
         self.codec.edges_addr()
     }
 
     /// Stable peripheral-memory address for DMA1_CH5's destination buffer.
-    pub fn rx_buf_addr(&self) -> u32 {
+    pub fn rx_buf_addr(&self) -> usize {
         self.codec.rx_buf_addr()
     }
 }
@@ -214,13 +220,15 @@ mod tests {
     const DECODER_CAP: usize = 256;
     const RX_BUF_LEN: usize = 64;
     const EDGE_BUF_LEN: usize = 128;
+    const TX_BUF_LEN: usize = 140;
 
     const TEST_ID: u8 = 0x07;
     const TEST_RDT_US: u32 = 250;
     /// One byte-time at 3 Mbaud (10·tpb).
     const BYTE_TICKS_3M: u16 = 160;
 
-    type TestCodec = Codec<FakeDmaRing, SoftwareCrcUmts, DECODER_CAP, RX_BUF_LEN, EDGE_BUF_LEN>;
+    type TestCodec =
+        Codec<FakeDmaRing, SoftwareCrcUmts, DECODER_CAP, RX_BUF_LEN, EDGE_BUF_LEN, TX_BUF_LEN>;
     type TestBus = DxlUart<
         FakeUsartBaud,
         FakeClockTrim,
@@ -229,6 +237,7 @@ mod tests {
         DECODER_CAP,
         RX_BUF_LEN,
         EDGE_BUF_LEN,
+        TX_BUF_LEN,
     >;
 
     fn make_codec_with_edges(vals: &[u16], flags: DmaFlags) -> TestCodec {

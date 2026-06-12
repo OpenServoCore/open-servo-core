@@ -16,7 +16,8 @@ pub mod rx;
 use core::cell::SyncUnsafeCell;
 
 use dxl_protocol::decoder::{Decoder, Step};
-use dxl_protocol::{CrcUmts, InstructionPacket};
+use dxl_protocol::packet::Status;
+use dxl_protocol::{CrcUmts, InstructionPacket, StatusEmitter, WriteError};
 
 use crate::traits::DmaRing;
 use crate::util::{HwRing, Seq};
@@ -41,6 +42,7 @@ pub struct Codec<
     const DECODER_CAP: usize,
     const RX_BUF_LEN: usize,
     const EDGE_BUF_LEN: usize,
+    const TX_BUF_LEN: usize,
 > {
     rx: Rx<R, EDGE_BUF_LEN, RX_BUF_LEN>,
     decoder: Decoder<DECODER_CAP, CRC>,
@@ -51,6 +53,14 @@ pub struct Codec<
     /// `% RX_BUF_LEN` collapses to AND, and the chip-side ISR publishes
     /// the producer head via [`HwRing::on_publish`] from NDTR.
     rx_buf: SyncUnsafeCell<HwRing<u8, RX_BUF_LEN>>,
+    /// DMA1_CH4 source for transmitted bytes. Single-shot DMA per fire:
+    /// the encoder methods ([`Codec::send_status`], future
+    /// [`Codec::send_slot`]) fill it from offset 0; bringup hands
+    /// [`Codec::tx_buf_addr`] to `dma::configure(CH4, ...)` once.
+    /// Producer (codec encoder) and consumer (DMA shift-out) phases are
+    /// exclusive — the composite holds the only `&mut Codec` and stops
+    /// writing once it routes to the scheduler — so no `SyncUnsafeCell`.
+    tx_buf: heapless::Vec<u8, TX_BUF_LEN>,
     /// Monotonic count of Instruction packets the decoder emitted —
     /// regardless of target ID — across this codec's lifetime. The drift
     /// signal ([[drift_sampling_instruction_only]]) ticks on every
@@ -75,13 +85,15 @@ impl<
     const DECODER_CAP: usize,
     const RX_BUF_LEN: usize,
     const EDGE_BUF_LEN: usize,
-> Codec<R, CRC, DECODER_CAP, RX_BUF_LEN, EDGE_BUF_LEN>
+    const TX_BUF_LEN: usize,
+> Codec<R, CRC, DECODER_CAP, RX_BUF_LEN, EDGE_BUF_LEN, TX_BUF_LEN>
 {
     pub fn new(ring: R) -> Self {
         Self {
             rx: Rx::new(ring),
             decoder: Decoder::new(),
             rx_buf: SyncUnsafeCell::new(HwRing::new(0)),
+            tx_buf: heapless::Vec::new(),
             instruction_count: 0,
             packet_start_rx_seq: None,
         }
@@ -207,7 +219,7 @@ impl<
 
     /// Stable peripheral-memory address for DMA1_CH7's destination buffer.
     /// Bringup hands this to `dma::configure(CH7, ...)`.
-    pub fn edges_addr(&self) -> u32 {
+    pub fn edges_addr(&self) -> usize {
         self.rx.edges_addr()
     }
 
@@ -216,10 +228,33 @@ impl<
     /// stream lands directly in driver-owned storage. [`HwRing::as_ptr`]
     /// returns the address of the first storage slot — the struct's outer
     /// address is offset by the bookkeeping fields.
-    pub fn rx_buf_addr(&self) -> u32 {
+    pub fn rx_buf_addr(&self) -> usize {
         // SAFETY: address-of read; no value materialized. Sound even while
         // DMA is writing the storage concurrently.
-        unsafe { (*self.rx_buf.get()).as_ptr() as u32 }
+        unsafe { (*self.rx_buf.get()).as_ptr() as usize }
+    }
+
+    /// Encode a Status reply into the TX buffer. Clears any previous
+    /// contents first, then drives [`StatusEmitter`] over `tx_buf` —
+    /// `Vec::push` propagates `WriteError::Overflow` if the encoded form
+    /// exceeds `TX_BUF_LEN`. The composite reads [`Self::tx_len`] after
+    /// for the DMA transfer count.
+    pub fn send_status(&mut self, status: Status<'_>) -> Result<(), WriteError> {
+        self.tx_buf.clear();
+        StatusEmitter::<_, CRC>::new(&mut self.tx_buf).emit(status)
+    }
+
+    /// Stable peripheral-memory address for DMA1_CH4's source buffer.
+    /// Bringup hands this to `dma::configure(CH4, ...)` once; per-fire
+    /// arm reads [`Self::tx_len`] for the transfer count.
+    pub fn tx_buf_addr(&self) -> usize {
+        self.tx_buf.as_ptr() as usize
+    }
+
+    /// Length in bytes of the most-recent encoded packet — the DMA1_CH4
+    /// transfer count for the next fire. Zero until the first send.
+    pub fn tx_len(&self) -> u16 {
+        self.tx_buf.len() as u16
     }
 }
 
@@ -230,7 +265,8 @@ impl<
     const DECODER_CAP: usize,
     const RX_BUF_LEN: usize,
     const EDGE_BUF_LEN: usize,
-> Codec<R, CRC, DECODER_CAP, RX_BUF_LEN, EDGE_BUF_LEN>
+    const TX_BUF_LEN: usize,
+> Codec<R, CRC, DECODER_CAP, RX_BUF_LEN, EDGE_BUF_LEN, TX_BUF_LEN>
 {
     /// Stage `bytes` into `rx_buf` starting at sequence `at` and publish
     /// the producer head to `at + bytes.len()`. Mirrors the chip-side
@@ -252,8 +288,13 @@ impl<
 }
 
 #[cfg(test)]
-impl<const EDGE_BUF_LEN: usize, const RX_BUF_LEN: usize, CRC: CrcUmts, const DECODER_CAP: usize>
-    Codec<crate::mocks::FakeDmaRing, CRC, DECODER_CAP, RX_BUF_LEN, EDGE_BUF_LEN>
+impl<
+    const EDGE_BUF_LEN: usize,
+    const RX_BUF_LEN: usize,
+    CRC: CrcUmts,
+    const DECODER_CAP: usize,
+    const TX_BUF_LEN: usize,
+> Codec<crate::mocks::FakeDmaRing, CRC, DECODER_CAP, RX_BUF_LEN, EDGE_BUF_LEN, TX_BUF_LEN>
 {
     /// Drive the inner `Rx`'s edge buffer staging + flag-arming through
     /// the codec. Lets composite tests prepare the BT ring without
@@ -271,16 +312,20 @@ impl<const EDGE_BUF_LEN: usize, const RX_BUF_LEN: usize, CRC: CrcUmts, const DEC
 mod tests {
     use super::*;
     use crate::mocks::FakeDmaRing;
-    use dxl_protocol::packet::Id;
+    use dxl_protocol::packet::{Id, StatusError};
     use dxl_protocol::{InstructionEmitter, SoftwareCrcUmts, StatusEmitter};
     use heapless::Vec;
 
     const DECODER_CAP: usize = 256;
     const RX_BUF_LEN: usize = 64;
     const EDGE_BUF_LEN: usize = 128;
+    /// `DXL_TX_MAX_BYTES` per `osc-core::services::dxl::limits` — chip-side
+    /// registry uses the same value.
+    const TX_BUF_LEN: usize = 140;
     const TEST_ID: u8 = 0x07;
 
-    type TestCodec = Codec<FakeDmaRing, SoftwareCrcUmts, DECODER_CAP, RX_BUF_LEN, EDGE_BUF_LEN>;
+    type TestCodec =
+        Codec<FakeDmaRing, SoftwareCrcUmts, DECODER_CAP, RX_BUF_LEN, EDGE_BUF_LEN, TX_BUF_LEN>;
 
     fn make() -> TestCodec {
         Codec::new(FakeDmaRing::default())
@@ -425,5 +470,78 @@ mod tests {
         let pairs: heapless::Vec<(u16, u16), 8> = c.byte_pairs(start, end).collect();
         // Only one valid pair from BT[0..2].
         assert_eq!(pairs.as_slice(), &[(1000, 1160)]);
+    }
+
+    #[test]
+    fn send_status_writes_wire_bytes_into_tx_buf() {
+        let mut c = make();
+        c.send_status(Status::Empty {
+            id: Id::new(TEST_ID),
+            error: StatusError::OK,
+        })
+        .expect("encode fits");
+
+        // Round-trip the encoded bytes through the same emitter via a
+        // reference Vec — the codec's tx_buf must match byte-for-byte.
+        let mut expected: Vec<u8, TX_BUF_LEN> = Vec::new();
+        StatusEmitter::<_, SoftwareCrcUmts>::new(&mut expected)
+            .empty(Id::new(TEST_ID), StatusError::OK)
+            .unwrap();
+        assert!(c.tx_len() > 0);
+        assert_eq!(c.tx_len() as usize, expected.len());
+        // SAFETY: tx_buf_addr exposes the buffer's storage; len bytes are
+        // initialized per `tx_len`. Read-only slice for assertion. `usize`
+        // is the pointer width on both production (RV32) and host (x86_64)
+        // — no truncation.
+        let actual = unsafe {
+            core::slice::from_raw_parts(c.tx_buf_addr() as *const u8, c.tx_len() as usize)
+        };
+        assert_eq!(actual, expected.as_slice());
+    }
+
+    #[test]
+    fn send_status_overwrites_previous_contents() {
+        let mut c = make();
+        // First emit a wider payload (Ping reply) to push the head past
+        // what a subsequent Empty would write.
+        c.send_status(Status::Ping {
+            id: Id::new(TEST_ID),
+            error: StatusError::OK,
+            status: dxl_protocol::packet::PingStatus {
+                model: dxl_protocol::packet::U16Le::from_u16(0x0123),
+                fw_version: 0x45,
+            },
+        })
+        .unwrap();
+        let first_len = c.tx_len();
+        assert!(first_len > 0);
+
+        c.send_status(Status::Empty {
+            id: Id::new(TEST_ID),
+            error: StatusError::OK,
+        })
+        .unwrap();
+        let second_len = c.tx_len();
+
+        // Empty Status is smaller than Ping Status — second write must
+        // shorten tx_len, proving the buffer was cleared (not appended).
+        assert!(second_len < first_len);
+
+        // Bytes at offset 0 are the new packet's header, not leftover
+        // tail of the previous one.
+        // SAFETY: see `send_status_writes_wire_bytes_into_tx_buf`.
+        let actual = unsafe {
+            core::slice::from_raw_parts(c.tx_buf_addr() as *const u8, second_len as usize)
+        };
+        assert_eq!(&actual[0..4], &[0xFF, 0xFF, 0xFD, 0x00]);
+    }
+
+    #[test]
+    fn tx_buf_addr_is_stable() {
+        let c = make();
+        let a = c.tx_buf_addr();
+        let b = c.tx_buf_addr();
+        assert_eq!(a, b);
+        assert_ne!(a, 0);
     }
 }

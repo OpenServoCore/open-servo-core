@@ -37,6 +37,10 @@ pub(crate) const DXL_DECODER_CAP: usize = 256;
 pub(crate) const DXL_RX_BUF_LEN: usize = 64;
 /// DMA1_CH7 edge-timestamp ring depth — option A in doc §8.4.
 pub(crate) const DXL_EDGE_BUF_LEN: usize = 128;
+/// DMA1_CH4 TX-source buffer depth — mirrors
+/// `osc_core::services::dxl::limits::DXL_TX_MAX_BYTES` so the driver-owned
+/// buffer can hold any Status / Slot reply the dispatcher emits.
+pub(crate) const DXL_TX_BUF_LEN: usize = osc_core::services::dxl::limits::DXL_TX_MAX_BYTES;
 type DxlUartCh = DxlUart<
     providers::usart_baud::UsartBaud,
     providers::clock_trim::ClockTrim,
@@ -45,6 +49,7 @@ type DxlUartCh = DxlUart<
     DXL_DECODER_CAP,
     DXL_RX_BUF_LEN,
     DXL_EDGE_BUF_LEN,
+    DXL_TX_BUF_LEN,
 >;
 
 struct Cells {

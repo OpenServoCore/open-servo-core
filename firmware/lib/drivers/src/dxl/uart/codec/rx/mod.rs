@@ -49,10 +49,12 @@ impl<R: DmaRing, const EDGE_BUF_LEN: usize, const BT_BUF_LEN: usize>
     /// fixed for the lifetime of the program once `install` returns.
     /// [`HwRing::as_ptr`] returns the address of the first storage slot —
     /// the struct's outer address is offset by the bookkeeping fields.
-    pub fn edges_addr(&self) -> u32 {
+    /// Returned as `usize` (chip-agnostic); the chip-side provider casts
+    /// to its DMA-MAR register width at the call site.
+    pub fn edges_addr(&self) -> usize {
         // SAFETY: address-of read; no value materialized. Sound even while
         // DMA is writing the storage concurrently.
-        unsafe { (*self.edges.get()).as_ptr() as u32 }
+        unsafe { (*self.edges.get()).as_ptr() as usize }
     }
 
     /// Called when new RX falling-edge timestamps may be available. Drains
