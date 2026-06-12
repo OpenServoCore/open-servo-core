@@ -199,23 +199,17 @@ impl<P: Producer, T: Copy, const N: usize> Ring<P, T, N> {
 }
 
 impl<T: Copy, const N: usize> HwRing<T, N> {
-    /// Publish the producer's head from a ring position in `[0, N)`
-    /// (typically `N - NDTR` for a DMA channel). Computes the monotonic
-    /// seq delta against the previously published head and advances
-    /// `write_seq`. Assumes the producer hasn't lapped since the last
-    /// publish — true when the ring is sized to the worst-case burst
-    /// per ISR period.
-    pub fn on_publish(&mut self, ring_pos: u16) {
+    /// Publish the producer's head from a DMA channel's NDTR readback
+    /// (`remaining` slots left before the channel wraps). Computes the
+    /// ring position as `LEN - remaining`, then the monotonic seq delta
+    /// against the previously published head, and advances `write_seq`.
+    /// Assumes the producer hasn't lapped since the last publish — true
+    /// when the ring is sized to the worst-case burst per ISR period.
+    pub fn on_publish(&mut self, remaining: u16) {
+        let ring_pos = Self::LEN.wrapping_sub(remaining) as usize;
         let prev_pos = (self.write_seq as usize) % N;
-        let delta = ((ring_pos as usize) + N - prev_pos) % N;
+        let delta = (ring_pos + N - prev_pos) % N;
         self.write_seq = self.write_seq.wrapping_add(delta as u16);
-    }
-
-    /// Publish from a DMA channel's NDTR readback (`remaining` slots left
-    /// before the channel wraps). Computes the ring position as
-    /// `LEN - remaining` and forwards to [`Self::on_publish`].
-    pub fn on_publish_remaining(&mut self, remaining: u16) {
-        self.on_publish(Self::LEN.wrapping_sub(remaining));
     }
 }
 
@@ -340,15 +334,17 @@ mod tests {
 
     #[test]
     fn on_publish_advances_write_seq_monotonically() {
+        // N=8; on_publish takes `remaining` slots. ring_pos = N - remaining.
         let mut b: HwBuf = HwRing::new(0);
-        // Producer at slot 0 → publish slot 5: delta 5.
-        b.on_publish(5);
+        // Producer at slot 0 → publish slot 5 (remaining=3): delta 5.
+        b.on_publish(3);
         assert_eq!(b.write_seq().raw(), 5);
-        // Producer at slot 5 → publish slot 2 (wrapped): delta = (2+8-5)%8 = 5.
-        b.on_publish(2);
+        // Producer at slot 5 → publish slot 2 (wrapped, remaining=6):
+        // delta = (2+8-5)%8 = 5.
+        b.on_publish(6);
         assert_eq!(b.write_seq().raw(), 10);
-        // Re-publishing the same position is a no-op delta.
-        b.on_publish(2);
+        // Re-publishing the same remaining is a no-op delta.
+        b.on_publish(6);
         assert_eq!(b.write_seq().raw(), 10);
     }
 
@@ -356,9 +352,9 @@ mod tests {
     fn on_publish_keeps_seq_monotonic_across_u16_wrap() {
         let mut b: HwBuf = HwRing::new(0);
         b.set_write_seq_for_test(u16::MAX - 2);
-        // ring slot = 65533 % 8 = 5. Roll past slot 5 to slot 1 → delta 4.
-        b.on_publish(1);
-        // u16::MAX - 2 + 4 wraps to 1.
+        // ring slot = 65533 % 8 = 5. Roll past slot 5 to slot 1
+        // (remaining = 7) → delta 4. u16::MAX - 2 + 4 wraps to 1.
+        b.on_publish(7);
         assert_eq!(b.write_seq().raw(), 1);
     }
 

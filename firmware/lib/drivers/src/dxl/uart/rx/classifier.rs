@@ -156,7 +156,9 @@ mod tests {
     fn edges8(vals: &[u16]) -> HwRing<u16, 8> {
         let mut b: HwRing<u16, 8> = HwRing::new(0);
         b.stage(0, vals);
-        b.on_publish(vals.len() as u16);
+        // Publish with NDTR-style remaining: head at slot vals.len() ↔
+        // remaining = LEN - vals.len().
+        b.on_publish(HwRing::<u16, 8>::LEN - vals.len() as u16);
         b
     }
 
@@ -221,7 +223,7 @@ mod tests {
         let mut c = make();
         let mut edges: HwRing<u16, 8> = HwRing::new(0);
         edges.stage(0, &[1000]);
-        edges.on_publish(1);
+        edges.on_publish(HwRing::<u16, 8>::LEN - 1); // head at slot 1
         c.on_edge_advance(&mut edges, TPB_3M);
         assert!(c.anchor.is_some());
 
@@ -232,7 +234,7 @@ mod tests {
         // is at seq 1 from the first call; the second call sees only the
         // new edge.
         edges.stage(1, &[9000]);
-        edges.on_publish(2);
+        edges.on_publish(HwRing::<u16, 8>::LEN - 2); // head at slot 2
         c.on_edge_advance(&mut edges, TPB_3M);
         // After reset, the next edge re-seeds (no anchor) rather than
         // gap-classifying against the old 1000-anchor.
@@ -276,7 +278,7 @@ mod tests {
             }
         }
         edges.stage(0, &staged);
-        edges.on_publish(TOTAL as u16);
+        edges.on_publish(HwRing::<u16, 128>::LEN - TOTAL as u16);
 
         let mut c = make();
         c.on_edge_advance(&mut edges, TPB_3M);

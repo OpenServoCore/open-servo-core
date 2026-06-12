@@ -121,15 +121,16 @@ impl<
         self.rx.on_idle(ticks_per_bit);
     }
 
-    /// USART1 RX DMA published a new ring position (from NDTR readback).
-    /// Advances the `rx_buf` producer head monotonically so [`Self::poll`]
-    /// sees newly-DMA'd bytes.
-    pub fn on_rx_dma_advance(&mut self, ring_pos: u16) {
+    /// USART1 RX DMA published progress — `remaining` is the channel's
+    /// NDTR readback (slots left before wrap). Advances the `rx_buf`
+    /// producer head monotonically so [`Self::poll`] sees newly-DMA'd
+    /// bytes.
+    pub fn on_rx_dma_advance(&mut self, remaining: u16) {
         // SAFETY: rx_buf is written only by DMA1_CH5 (hardware writer)
         // and read here from the same PFIC priority level as the DMA
         // HT/TC ISR, so no other consumer can `&mut` it concurrently.
         let rx_buf = unsafe { &mut *self.rx_buf.get() };
-        rx_buf.on_publish(ring_pos);
+        rx_buf.on_publish(remaining);
     }
 
     /// Drain bytes from `rx_buf` through the streaming decoder and surface

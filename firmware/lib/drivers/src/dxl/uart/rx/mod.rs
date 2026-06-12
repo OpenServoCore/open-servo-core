@@ -69,7 +69,7 @@ impl<R: DmaRing, const EDGE_BUF_LEN: usize, const BT_BUF_LEN: usize>
         // writer) and read here from a PFIC-HIGH ISR; no other code path
         // takes a `&mut` into it.
         let edges = unsafe { &mut *self.edges.get() };
-        edges.on_publish_remaining(remaining);
+        edges.on_publish(remaining);
         self.classifier.on_edge_advance(edges, ticks_per_bit);
     }
 
@@ -81,7 +81,7 @@ impl<R: DmaRing, const EDGE_BUF_LEN: usize, const BT_BUF_LEN: usize>
         let remaining = self.ring.remaining();
         // SAFETY: see `on_edge_advance`.
         let edges = unsafe { &mut *self.edges.get() };
-        edges.on_publish_remaining(remaining);
+        edges.on_publish(remaining);
         self.classifier.on_edge_advance(edges, ticks_per_bit);
         self.classifier.reset_anchor();
     }
