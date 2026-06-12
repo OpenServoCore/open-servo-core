@@ -122,10 +122,24 @@ impl<U: UsartBaud, T: ClockTrim> Clock<U, T> {
         }
     }
 
+    /// Inter-byte BT delta from the codec. Doc §10.7.1: only deltas in
+    /// `[9·tpb, 11·tpb]` measure a real 10-bit byte-time; GAP-class deltas
+    /// would inject re-anchor distance and poison the running average, so
+    /// they're filtered here rather than in the composite. Per
+    /// driver-pattern §4 the HIT window belongs with the driver that owns
+    /// `ticks_per_bit` — this one — not with the routing.
     #[allow(dead_code)]
-    pub fn on_drift_sample(&mut self, observed_ticks_per_bit: u16) {
-        let delta = observed_ticks_per_bit as i32 - self.ticks_per_bit as i32;
-        self.drift_sum_q8 = self.drift_sum_q8.saturating_add(delta << 8);
+    pub fn on_byte_pair(&mut self, prev_ts: u16, curr_ts: u16) {
+        let byte_ticks = curr_ts.wrapping_sub(prev_ts);
+        let lo = self.ticks_per_bit.wrapping_mul(9);
+        let hi = self.ticks_per_bit.wrapping_mul(11);
+        if byte_ticks < lo || byte_ticks > hi {
+            return;
+        }
+
+        let observed_tpb = (byte_ticks / 10) as i32;
+        let drift = observed_tpb - self.ticks_per_bit as i32;
+        self.drift_sum_q8 = self.drift_sum_q8.saturating_add(drift << 8);
         self.drift_samples += 1;
         if self.drift_samples < DRIFT_MIN_SAMPLES {
             return;
@@ -176,6 +190,14 @@ mod tests {
         Clock::new(baud, FakeUsartBaud::default(), FakeClockTrim::default())
     }
 
+    /// Feed one byte-time observation expressed as ticks-per-bit via
+    /// `on_byte_pair`. `prev = 0`, `curr = observed_tpb * 10` lands a delta
+    /// in the `[9·spec, 11·spec]` HIT window for `observed_tpb ≈ spec`, so
+    /// the integrator sees the same input the production codec produces.
+    fn feed(c: &mut Clock<FakeUsartBaud, FakeClockTrim>, observed_tpb: u16) {
+        c.on_byte_pair(0, observed_tpb * 10);
+    }
+
     #[test]
     fn new_computes_ticks_per_bit_from_brr() {
         assert_eq!(clock(BaudRate::B3000000).ticks_per_bit, 16);
@@ -200,7 +222,7 @@ mod tests {
     #[test]
     fn single_sample_does_not_stage_trim() {
         let mut c = clock(TEST_BAUD);
-        c.on_drift_sample(SPEC + 100);
+        feed(&mut c, SPEC + 100);
         assert_eq!(c.pending_trim_delta, None);
         assert_eq!(c.drift_samples, 1);
     }
@@ -209,7 +231,7 @@ mod tests {
     fn batch_at_zero_drift_does_not_stage_trim() {
         let mut c = clock(TEST_BAUD);
         for _ in 0..DRIFT_MIN_SAMPLES {
-            c.on_drift_sample(SPEC);
+            feed(&mut c, SPEC);
         }
         assert_eq!(c.pending_trim_delta, None);
     }
@@ -219,7 +241,7 @@ mod tests {
         // delta=3 per sample → ~600 ppm, well under the ~1250 ppm half-step.
         let mut c = clock(TEST_BAUD);
         for _ in 0..DRIFT_MIN_SAMPLES {
-            c.on_drift_sample(SPEC + 3);
+            feed(&mut c, SPEC + 3);
         }
         assert_eq!(c.pending_trim_delta, None);
     }
@@ -229,7 +251,7 @@ mod tests {
         // delta=10 per sample → ~2000 ppm → above threshold; servo runs fast.
         let mut c = clock(TEST_BAUD);
         for _ in 0..DRIFT_MIN_SAMPLES {
-            c.on_drift_sample(SPEC + 10);
+            feed(&mut c, SPEC + 10);
         }
         assert_eq!(c.pending_trim_delta, Some(-1));
     }
@@ -238,7 +260,7 @@ mod tests {
     fn sustained_negative_drift_stages_trim_up() {
         let mut c = clock(TEST_BAUD);
         for _ in 0..DRIFT_MIN_SAMPLES {
-            c.on_drift_sample(SPEC - 10);
+            feed(&mut c, SPEC - 10);
         }
         assert_eq!(c.pending_trim_delta, Some(1));
     }
@@ -247,7 +269,7 @@ mod tests {
     fn integrator_resets_after_batch_close() {
         let mut c = clock(TEST_BAUD);
         for _ in 0..DRIFT_MIN_SAMPLES {
-            c.on_drift_sample(SPEC + 10);
+            feed(&mut c, SPEC + 10);
         }
         assert_eq!(c.drift_sum_q8, 0);
         assert_eq!(c.drift_samples, 0);
@@ -258,10 +280,30 @@ mod tests {
         let mut c = clock(TEST_BAUD);
         c.trim_delta = FakeClockTrim::DELTA_MAX;
         for _ in 0..DRIFT_MIN_SAMPLES {
-            c.on_drift_sample(SPEC - 100); // would step trim up
+            feed(&mut c, SPEC - 100); // would step trim up
         }
         // At MAX already → clamp keeps new == current → no stage.
         assert_eq!(c.pending_trim_delta, None);
+    }
+
+    #[test]
+    fn out_of_window_byte_pair_is_dropped() {
+        // delta > 11·tpb → GAP class (e.g. inter-packet gap). The integrator
+        // must not see it — the BT pair walk inside `Codec::poll_one`
+        // doesn't pre-filter; that's this method's job.
+        let mut c = clock(TEST_BAUD);
+        // 12·SPEC = 60_000 → above hi=55_000.
+        c.on_byte_pair(0, 60_000);
+        assert_eq!(c.drift_samples, 0);
+    }
+
+    #[test]
+    fn under_window_byte_pair_is_dropped() {
+        // delta < 9·tpb → SKIP class (intra-byte edge). Same drop.
+        let mut c = clock(TEST_BAUD);
+        // 8·SPEC = 40_000 → below lo=45_000.
+        c.on_byte_pair(0, 40_000);
+        assert_eq!(c.drift_samples, 0);
     }
 
     #[test]
@@ -287,7 +329,7 @@ mod tests {
     fn on_tx_complete_applies_staged_trim_to_rcc() {
         let mut c = clock(TEST_BAUD);
         for _ in 0..DRIFT_MIN_SAMPLES {
-            c.on_drift_sample(SPEC + 10);
+            feed(&mut c, SPEC + 10);
         }
         // Sustained positive drift staged trim_delta = -1; commit it now.
         c.on_tx_complete();

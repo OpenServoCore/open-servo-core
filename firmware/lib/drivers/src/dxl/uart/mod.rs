@@ -213,11 +213,9 @@ impl<
     }
 
     /// Walk consecutive BT pairs across the just-decoded packet's RX range
-    /// and feed each `(BT[i+1] − BT[i]) / 10` to the clock's drift
-    /// integrator. Doc §10.7.1: only inter-byte gaps that fall in the
-    /// classifier's HIT window `[9·tpb, 11·tpb]` measure a true 10-bit
-    /// interval; GAP-class deltas would inject a re-anchor distance and
-    /// poison the average, so they're filtered here.
+    /// and hand each `(prev_ts, curr_ts)` to [`Clock::on_byte_pair`]. The
+    /// HIT-window filter and the `delta / 10` per-bit derivation live in
+    /// clock (see [[driver-pattern §4]] — `ticks_per_bit` owns the math).
     ///
     /// Takes individual field borrows (not `&mut self`) so the caller —
     /// inside poll()'s `rx_buf.reader()` scope — keeps the field-disjoint
@@ -228,10 +226,6 @@ impl<
         start: Seq<u8, RX_BUF_LEN>,
         end: Seq<u8, RX_BUF_LEN>,
     ) {
-        let tpb = clock.ticks_per_bit();
-        let lo = tpb.wrapping_mul(9);
-        let hi = tpb.wrapping_mul(11);
-
         let mut seqs = Seq::iter(start, end);
         let Some(s0) = seqs.next() else { return };
         let Some(mut prev) = rx.byte_ts_at(s0.into()) else {
@@ -241,10 +235,7 @@ impl<
             let Some(curr) = rx.byte_ts_at(s.into()) else {
                 break;
             };
-            let delta = curr.wrapping_sub(prev);
-            if delta >= lo && delta <= hi {
-                clock.on_drift_sample(delta / 10);
-            }
+            clock.on_byte_pair(prev, curr);
             prev = curr;
         }
     }
