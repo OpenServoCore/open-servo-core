@@ -10,6 +10,7 @@ pub mod control;
 pub mod hal;
 pub(crate) mod legacy;
 pub mod log;
+pub(crate) mod measurements;
 pub mod prelude;
 pub(crate) mod providers;
 pub mod runtime;

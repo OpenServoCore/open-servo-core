@@ -108,6 +108,95 @@ pub fn tim2_ch4_capture_addr() -> u32 {
     TIM2.chcvr(3).as_ptr() as u32
 }
 
+/// CH2 + CH3 as output-compare on top of the already-running TIM2 free-run.
+/// CH2 lives on PC2 (TX_EN, hardware-driven on CC2 match) under the
+/// board's Remap2; CH3 has no pin output — only its CC3IF interrupt fires
+/// the wire-driver activate sequence. Caller hands the TX_EN polarity from
+/// the board wiring so CCMR1/CCER reflect it.
+///
+/// Both channels start with idle settings (OC2M=Force-inactive, OC3M=Frozen,
+/// CC3IE off). The provider arms each fire by writing CCRs and flipping
+/// OC2M to Active-on-match + enabling CC3IE.
+pub fn init_tim2_tx_oc_channels(tx_active_high: bool) {
+    TIM2.chctlr_output(0).modify(|w| {
+        w.set_ccs(1, ch32_metapac::timer::vals::CcmrOutputCcs::OUTPUT);
+        w.set_ocm(1, Ocm::FORCEINACTIVE);
+        w.set_ocpe(1, false);
+    });
+    TIM2.chctlr_output(1).modify(|w| {
+        w.set_ccs(0, ch32_metapac::timer::vals::CcmrOutputCcs::OUTPUT);
+        w.set_ocm(0, Ocm::FROZEN);
+        w.set_ocpe(0, false);
+    });
+    TIM2.ccer().modify(|w| {
+        w.set_cce(1, true);
+        w.set_ccp(1, !tx_active_high);
+        w.set_cce(2, false);
+    });
+    TIM2.dmaintenr().modify(|w| w.set_ccie(2, false));
+    TIM2.intfr().write(|w| {
+        w.0 = !(1u32 << 3);
+    });
+}
+
+#[inline]
+pub fn set_tim2_ccr2(value: u16) {
+    TIM2.chcvr(1).write_value(value);
+}
+
+#[inline]
+pub fn set_tim2_ccr3(value: u16) {
+    TIM2.chcvr(2).write_value(value);
+}
+
+/// `OC2M = Active-on-match`: PC2 rises at the next CC2 compare match. Wire-edge
+/// landing is hardware-timed — no ISR in the path.
+#[inline]
+pub fn tim2_ch2_active_on_match() {
+    TIM2.chctlr_output(0)
+        .modify(|w| w.set_ocm(1, Ocm::ACTIVEONMATCH));
+}
+
+/// `OC2M = Force-inactive`: PC2 drops immediately. Used to release TX_EN at
+/// TC and on `cancel`.
+#[inline]
+pub fn tim2_ch2_force_inactive() {
+    TIM2.chctlr_output(0)
+        .modify(|w| w.set_ocm(1, Ocm::FORCEINACTIVE));
+}
+
+/// `OC2M = Force-active`: PC2 rises immediately. Used by the set-and-recheck
+/// manual-fire path when CCR2 has already wrapped past CNT.
+#[inline]
+pub fn tim2_ch2_force_active() {
+    TIM2.chctlr_output(0)
+        .modify(|w| w.set_ocm(1, Ocm::FORCEACTIVE));
+}
+
+#[inline]
+pub fn enable_tim2_cc3_irq(enable: bool) {
+    TIM2.dmaintenr().modify(|w| w.set_ccie(2, enable));
+}
+
+/// CC3IF is rc_w0 — write 0 to clear, 1 to leave alone. CC2IF (bit 2) gets
+/// preserved alongside other flags via the `!0u32 & !mask` pattern.
+#[inline]
+pub fn clear_tim2_cc3_flag() {
+    TIM2.intfr().write(|w| {
+        w.0 = !(1u32 << 3);
+    });
+}
+
+#[inline]
+pub fn tim2_cc3_pending() -> bool {
+    TIM2.intfr().read().ccif(2)
+}
+
+#[inline]
+pub fn tim2_cnt() -> u16 {
+    TIM2.cnt().read()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -14,7 +14,7 @@ use crate::legacy::statics::{
 use crate::runtime::Drivers;
 
 use crate::cfg::{
-    AdcPins, BoardWiring, CurrentSenseConfig, Duplex, DxlUart, MotorConfig, Precomputed,
+    AdcPins, BoardWiring, CurrentSenseConfig, Duplex, DxlUart, MotorConfig, Precomputed, TxEn,
 };
 
 const OPA_SETTLE_MS: u32 = 1;
@@ -36,6 +36,11 @@ pub fn bringup(
         defaults.clock_trim
     );
 
+    // Must run before `configure_pins`: TIM2 OC2M=Force-inactive sets the
+    // idle level on PC2's CC2 output, so the moment AF mode latches the pin
+    // sees the inactive level instead of an indeterminate window. CC3 has no
+    // pin output — initialized here so the IRQ stays masked at boot.
+    bring_up_tim2_oc(&wiring.dxl);
     configure_pins(wiring);
     // SAFETY: bringup-only, pre-IRQ; sole writer.
     unsafe { Drivers::install(wiring, defaults) };
@@ -183,9 +188,23 @@ fn configure_dxl_pins(d: &DxlUart) {
         gpio::configure(d.usart.rx_pin(), PinMode::input_pull(d.rx_pull));
     }
     if let Some(ref t) = d.tx_en {
-        gpio::configure(t.pin, PinMode::OUTPUT_PUSH_PULL);
-        gpio::set_level(t.pin, t.idle_level());
+        gpio::configure(t.pin, PinMode::AF_PUSH_PULL);
     }
+}
+
+fn bring_up_tim2_oc(d: &DxlUart) {
+    let tx_active_high = match d.tx_en {
+        Some(TxEn {
+            tx_level: Level::High,
+            ..
+        }) => true,
+        Some(TxEn {
+            tx_level: Level::Low,
+            ..
+        }) => false,
+        None => true,
+    };
+    timer::init_tim2_tx_oc_channels(tx_active_high);
 }
 
 fn bring_up_analog_chain(cs: &CurrentSenseConfig) {

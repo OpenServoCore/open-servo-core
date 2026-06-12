@@ -19,7 +19,7 @@ fn main() -> ! {
             // STAT on PC7 = TIM1_CH4 (Remap7); TODO drive via TIM1 instead of GPIO.
             stat_led: Pin::PC7,
             dbg: Pin::PC3,
-            tim2_remap: Tim2Mapping::Remap0,
+            tim2_remap: Tim2Mapping::Remap2,
             motor: MotorConfig {
                 tim1: Tim1Mapping::Remap7,
                 in1: timer::Channel::CH3,
