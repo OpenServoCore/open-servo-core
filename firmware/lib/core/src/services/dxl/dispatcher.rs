@@ -11,9 +11,6 @@ use crate::traits::{DxlBus, Event, Schedule, ServiceEvents};
 use crate::{Error, RegionStorage, Router, Shared, StagedWrites, StatusReturnLevel};
 
 use super::limits::{MAX_CONTROL_RW, MAX_SLAVE_COUNT};
-use super::osc::{
-    CalibratePacket, CalibrateStatus, OscVariant, calibrate_status_bytes, decode_raw,
-};
 
 fn error_to_status(e: Error) -> StatusError {
     match e {
@@ -307,51 +304,6 @@ impl<'a, B: DxlBus, E: ServiceEvents> Dispatcher<'a, B, E> {
         self.reply_unsupported(ctx, p.header.id);
     }
 
-    fn handle_calibrate(&mut self, ctx: &Ctx, p: &CalibratePacket) {
-        let Some((id, true)) = ctx.addressed(p.id) else {
-            return;
-        };
-        if p.count == 0 || p.count as usize > MAX_CONTROL_RW {
-            self.bus.send(
-                Status::Empty {
-                    id,
-                    error: StatusError::code(ErrorCode::DataRange),
-                },
-                ctx.direct_schedule(),
-            );
-            return;
-        }
-        let Some(snap) = self.bus.cal_snapshot() else {
-            self.bus.send(
-                Status::Empty {
-                    id,
-                    error: StatusError::code(ErrorCode::DataRange),
-                },
-                ctx.direct_schedule(),
-            );
-            return;
-        };
-        // Chip owns the drift filter — its `cal_snapshot` reports both the
-        // most recent observation (this CALIB request's wire-timing, in the
-        // common path) and the most recent batched apply. Dispatcher packs
-        // the 11-byte measurement payload and emits it as Status::Raw.
-        let payload = calibrate_status_bytes(&CalibrateStatus {
-            id,
-            observed_ticks: snap.observed_ticks,
-            nominal_ticks: snap.nominal_ticks,
-            applied_trim_delta: snap.applied_trim_delta,
-            applied_fine_trim_us: snap.applied_fine_trim_us,
-        });
-        self.bus.send(
-            Status::Raw {
-                id,
-                error: StatusError::OK,
-                payload: &payload,
-            },
-            ctx.direct_schedule(),
-        );
-    }
-
     fn handle_reboot(&mut self, ctx: &Ctx, p: &RebootPacket) {
         let Some((id, direct)) = ctx.addressed(p.header.id) else {
             return;
@@ -370,12 +322,6 @@ impl<'a, B: DxlBus, E: ServiceEvents> Dispatcher<'a, B, E> {
     }
 
     fn handle_raw(&mut self, ctx: &Ctx, r: &RawPacket<'_>) {
-        if let Some(variant) = decode_raw(r) {
-            match variant {
-                OscVariant::Calibrate(p) => self.handle_calibrate(ctx, &p),
-            }
-            return;
-        }
         // Unknown standard instructions (Clear 0x10, CTBackup 0x20) and any
         // truly unknown byte: ack as unsupported when addressed directly.
         self.reply_unsupported(ctx, r.header.header.id);

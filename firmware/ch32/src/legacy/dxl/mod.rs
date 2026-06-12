@@ -13,7 +13,6 @@
 //! it's a role-shaped provider per driver-pattern §5.3, not a legacy
 //! transport concern.
 
-pub(crate) mod cal;
 pub(crate) mod calibration;
 pub(crate) mod isr;
 pub(crate) mod scheduler;

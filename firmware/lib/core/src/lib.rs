@@ -26,7 +26,7 @@ pub use regions::{
 };
 pub use sample::{ConversionVariables, RawSamples, Sample};
 pub use services::Services;
-pub use services::dxl::{CalibratePacket, CalibrateStatus, Dxl, OscVariant};
+pub use services::dxl::Dxl;
 pub use shared::Shared;
 pub use traits::{
     CalSnapshot, Capabilities, ControlIo, DecayMode, DxlBus, Event, Motor, MotorCmd, Schedule,

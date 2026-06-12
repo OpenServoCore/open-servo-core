@@ -12,7 +12,6 @@ use crate::traits::{CalSnapshot, DxlBus, Event, Schedule, ServiceEvents, Service
 use crate::{BootMode, RegionStorage, Shared, StatusReturnLevel};
 
 use super::Dxl;
-use super::osc::CALIBRATE_INSTRUCTION;
 
 /// Test-only `CrcUmts`. Production builds get the chip's impl directly; core
 /// itself never references a concrete CRC engine after the trait flip.
@@ -64,9 +63,6 @@ struct FakeBus {
     send_count: u32,
     last_schedule: Option<Schedule>,
     last_kind: Option<ReplyKind>,
-    /// Stub return for `cal_snapshot`. Tests installing a non-default value
-    /// drive the dispatcher's CALIB measurement path.
-    cal_snapshot_stub: Option<CalSnapshot>,
 }
 
 impl FakeBus {
@@ -78,7 +74,6 @@ impl FakeBus {
             send_count: 0,
             last_schedule: None,
             last_kind: None,
-            cal_snapshot_stub: None,
         }
     }
 
@@ -134,7 +129,7 @@ impl DxlBus for FakeBus {
     }
 
     fn cal_snapshot(&mut self) -> Option<CalSnapshot> {
-        self.cal_snapshot_stub
+        None
     }
 }
 
@@ -198,15 +193,6 @@ where
     let mut buf: Vec<u8, 256> = Vec::new();
     f(&mut InstructionEmitter::<_, TestDxlCrc>::new(&mut buf)).unwrap();
     buf
-}
-
-fn encode_calibrate(id: u8, count: u16) -> Vec<u8, 256> {
-    let mut params: Vec<u8, 256> = Vec::new();
-    params.extend_from_slice(&count.to_le_bytes()).unwrap();
-    for _ in 0..count {
-        params.push(0).unwrap();
-    }
-    encode(|w| w.ext(Id::new(id), CALIBRATE_INSTRUCTION, &params))
 }
 
 /// Cast a 5-byte-stride byte buffer to a typed `[BulkReadEntry]` slice.
@@ -1381,137 +1367,6 @@ fn poll_recovers_from_stale_fast_first_slot_residue_then_replies_to_ping() {
     let (id, err, _) = parse_status(&io.bus.tx);
     assert_eq!(id, 0);
     assert_eq!(err, 0);
-}
-
-#[test]
-fn calibrate_unicast_replies_with_measurement_payload() {
-    let shared = Shared::new();
-    let mut io = FakeIo::new();
-    let mut h = Dxl::new();
-    // 1 Mbps wire: byte_time at 48 MHz HCLK ≈ 480 ticks.
-    // Chip pre-computed nominal_ticks and the most-recent batched apply;
-    // dispatcher just forwards. Observed slightly above nominal models a
-    // fast slave.
-    io.bus.cal_snapshot_stub = Some(CalSnapshot {
-        observed_ticks: 13_440,
-        nominal_ticks: 27 * 480, // (12 + 16 - 1) × byte_time_ticks
-        applied_trim_delta: -1,
-        applied_fine_trim_us: 256, // +1.0 µs in Q8.8
-    });
-
-    let req = encode_calibrate(0, 16);
-    io.feed(&req);
-    h.poll(&shared, &mut io);
-
-    assert_eq!(io.bus.send_count, 1);
-    let (id, err, params) = parse_status(&io.bus.tx);
-    assert_eq!(id, 0);
-    assert_eq!(err, 0);
-    // observed(4) + nominal(4) + trim(1) + fine(2).
-    assert_eq!(params.len(), 11);
-    let observed = u32::from_le_bytes([params[0], params[1], params[2], params[3]]);
-    let nominal = u32::from_le_bytes([params[4], params[5], params[6], params[7]]);
-    assert_eq!(observed, 13_440);
-    assert_eq!(nominal, 27 * 480);
-    assert_eq!(params[8] as i8, -1);
-    assert_eq!(i16::from_le_bytes([params[9], params[10]]), 256);
-}
-
-#[test]
-fn calibrate_unicast_count_max_payload_accepted() {
-    let shared = Shared::new();
-    let mut io = FakeIo::new();
-    let mut h = Dxl::new();
-    io.bus.cal_snapshot_stub = Some(CalSnapshot {
-        observed_ticks: 0,
-        nominal_ticks: 139 * 480, // (12 + 128 - 1) × byte_time_ticks
-        applied_trim_delta: 0,
-        applied_fine_trim_us: 0,
-    });
-
-    let req = encode_calibrate(0, 128);
-    // hdr(4) + id(1) + len(2) + inst(1) + count(2) + 128 filler + crc(2) = 140
-    assert_eq!(req.len(), 140);
-    io.feed(&req);
-    h.poll(&shared, &mut io);
-
-    assert_eq!(io.bus.send_count, 1);
-    let tx = &io.bus.tx[..];
-    // hdr(4) + id(1) + len(2) + inst(1=Status) + err(1) + measurement(11) + crc(2) = 22
-    assert_eq!(tx.len(), 22);
-    assert_eq!(&tx[..5], &[0xFF, 0xFF, 0xFD, 0x00, 0]);
-    assert_eq!(&tx[5..7], &[15, 0]); // length = inst + err + 11 + crc(2) = 15
-    assert_eq!(tx[7], 0x55);
-    assert_eq!(tx[8], 0);
-    let observed = u32::from_le_bytes([tx[9], tx[10], tx[11], tx[12]]);
-    let nominal = u32::from_le_bytes([tx[13], tx[14], tx[15], tx[16]]);
-    assert_eq!(observed, 0);
-    assert_eq!(nominal, 139 * 480);
-}
-
-#[test]
-fn calibrate_without_snapshot_replies_data_range_error() {
-    // Chip-side first-byte tick wasn't captured (e.g. RXNE masked during a
-    // chain or pre-arm boot window); dispatcher must surface the failure.
-    let shared = Shared::new();
-    let mut io = FakeIo::new();
-    let mut h = Dxl::new();
-    assert!(io.bus.cal_snapshot_stub.is_none());
-
-    let req = encode_calibrate(0, 16);
-    io.feed(&req);
-    h.poll(&shared, &mut io);
-
-    assert_eq!(io.bus.send_count, 1);
-    let (_, err, params) = parse_status(&io.bus.tx);
-    assert_eq!(err, StatusError::code(ErrorCode::DataRange).as_byte());
-    assert!(params.is_empty());
-}
-
-#[test]
-fn calibrate_unicast_count_zero_data_range_err() {
-    let shared = Shared::new();
-    let mut io = FakeIo::new();
-    let mut h = Dxl::new();
-
-    let req = encode_calibrate(0, 0);
-    io.feed(&req);
-    h.poll(&shared, &mut io);
-
-    assert_eq!(io.bus.send_count, 1);
-    let (_, err, params) = parse_status(&io.bus.tx);
-    assert_eq!(err, 0x04);
-    assert!(params.is_empty());
-}
-
-#[test]
-fn calibrate_unicast_count_over_max_data_range_err() {
-    let shared = Shared::new();
-    let mut io = FakeIo::new();
-    let mut h = Dxl::new();
-
-    let req = encode_calibrate(0, 129);
-    io.feed(&req);
-    h.poll(&shared, &mut io);
-
-    assert_eq!(io.bus.send_count, 1);
-    let (_, err, params) = parse_status(&io.bus.tx);
-    assert_eq!(err, 0x04);
-    assert!(params.is_empty());
-}
-
-#[test]
-fn calibrate_broadcast_silently_dropped() {
-    let shared = Shared::new();
-    let mut io = FakeIo::new();
-    let mut h = Dxl::new();
-
-    let req = encode_calibrate(BROADCAST_ID.as_byte(), 128);
-    io.feed(&req);
-    h.poll(&shared, &mut io);
-
-    assert_eq!(io.bus.send_count, 0);
-    assert!(io.bus.tx.is_empty());
 }
 
 #[test]
