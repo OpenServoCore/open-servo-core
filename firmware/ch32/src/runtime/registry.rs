@@ -16,7 +16,7 @@ use core::cell::SyncUnsafeCell;
 use osc_drivers::Level;
 use osc_drivers::dxl::uart::DxlUart;
 use osc_drivers::dxl::uart::clock::Clock;
-use osc_drivers::dxl::uart::rx::Rx;
+use osc_drivers::dxl::uart::codec::Codec;
 use osc_drivers::led::Led;
 
 use crate::ConfigDefaults;
@@ -85,7 +85,7 @@ impl Drivers {
         let dxl_uart = unsafe { &mut *CELLS.dxl_uart.get() };
         debug_assert!(dxl_uart.is_none(), "Drivers: dxl_uart already installed");
         *dxl_uart = Some(DxlUart::new(
-            Rx::new(providers::dma_ring::DmaRing),
+            Codec::new(providers::dma_ring::DmaRing),
             Clock::new(
                 defaults.dxl_baud,
                 providers::usart_baud::UsartBaud,

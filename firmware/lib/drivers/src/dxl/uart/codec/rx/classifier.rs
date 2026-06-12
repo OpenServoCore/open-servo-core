@@ -130,6 +130,29 @@ impl<const BT_BUF_LEN: usize> Classifier<BT_BUF_LEN> {
     pub fn byte_ts_head(&self) -> Seq<u16, BT_BUF_LEN> {
         self.byte_ts.write_seq()
     }
+
+    /// Iterate consecutive `(prev, curr)` BT pairs across `[start, end)` in
+    /// the BT seq space. Walks this classifier's own ring; the composite
+    /// supplies the range (typically the just-decoded packet's span) and
+    /// routes each pair to a consumer (e.g. drift integrator) via the
+    /// returned iterator. Iteration stops at any seq whose BT entry has
+    /// lapped out — once one lookup misses, downstream pairs would skip
+    /// bytes and stop being "consecutive."
+    #[allow(dead_code)]
+    pub fn byte_pairs(
+        &self,
+        start: Seq<u16, BT_BUF_LEN>,
+        end: Seq<u16, BT_BUF_LEN>,
+    ) -> impl Iterator<Item = (u16, u16)> + '_ {
+        let mut prev: Option<u16> = None;
+        Seq::iter(start, end)
+            .map_while(|s| self.byte_ts_at(s))
+            .filter_map(move |curr| {
+                let pair = prev.map(|p| (p, curr));
+                prev = Some(curr);
+                pair
+            })
+    }
 }
 
 #[cfg(test)]

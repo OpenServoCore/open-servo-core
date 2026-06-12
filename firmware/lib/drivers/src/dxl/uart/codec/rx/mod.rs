@@ -95,6 +95,18 @@ impl<R: DmaRing, const EDGE_BUF_LEN: usize, const BT_BUF_LEN: usize>
     pub fn byte_ts_head(&self) -> Seq<u16, BT_BUF_LEN> {
         self.classifier.byte_ts_head()
     }
+
+    /// Forward to [`Classifier::byte_pairs`] — iterate consecutive
+    /// `(prev, curr)` BT pairs across the seq range. Composite calls this
+    /// (via `Codec`) to feed `Clock::on_byte_pair` for each in-window pair.
+    #[allow(dead_code)]
+    pub fn byte_pairs(
+        &self,
+        start: Seq<u16, BT_BUF_LEN>,
+        end: Seq<u16, BT_BUF_LEN>,
+    ) -> impl Iterator<Item = (u16, u16)> + '_ {
+        self.classifier.byte_pairs(start, end)
+    }
 }
 
 #[cfg(test)]

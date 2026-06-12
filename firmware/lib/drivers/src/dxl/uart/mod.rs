@@ -1,26 +1,24 @@
-//! DXL-over-UART transport. Composes the RX timing path and the bit-rate
-//! clock so the chip-side ISR layer only ever reaches through `DxlUart` —
-//! cross-sub-driver routing (e.g. RX classifier needs `ticks_per_bit` from
-//! the clock) lives in the composite per driver-pattern §4.2.
+//! DXL-over-UART transport. Composite over the codec (bytes ↔ packets)
+//! and the clock (tick math + drift integration). The chip-side ISR layer
+//! only ever reaches through `DxlUart`; cross-sub-driver routing (e.g.
+//! the BT-pair walk that feeds drift samples from codec into clock) lives
+//! in this file per driver-pattern §4 + §10.1.
 //!
-//! Generic over its leaf providers AND its three storage sizes
-//! ([`DxlUart`] doc). `firmware/ch32/src/runtime/registry.rs` binds each
-//! to its V006 value. Future sub-drivers (`Tx`, `ChainCatchup`) land as
-//! additional fields.
+//! Generic over its leaf providers AND its three storage sizes — see the
+//! [`DxlUart`] doc. `firmware/ch32/src/runtime/registry.rs` binds each to
+//! its V006 value. Future sub-drivers (`Tx`, `ChainCatchup`) land as
+//! additional fields on this composite (TX work also extends `Codec`).
 
 pub mod clock;
-pub mod rx;
+pub mod codec;
 
-use core::cell::SyncUnsafeCell;
-
-use dxl_protocol::decoder::{Decoder, Step};
 use dxl_protocol::{BROADCAST_ID, CrcUmts, InstructionPacket};
 use osc_core::{BaudRate, BootMode};
 
 use crate::traits::{ClockTrim, DmaRing, UsartBaud};
-use crate::util::{HwRing, Seq};
+use crate::util::Seq;
 use clock::Clock;
-use rx::Rx;
+use codec::Codec;
 
 /// The DXL bus composite. The type parameters together describe everything
 /// this driver wants the chip side to supply — what peripherals to drive
@@ -29,7 +27,8 @@ use rx::Rx;
 ///
 /// - `U`: USART baud-rate setter (sub-driver `Clock`).
 /// - `T`: HSI / HSE trim setter (sub-driver `Clock`).
-/// - `R`: DMA-ring ISR surface for DMA1_CH7 (sub-driver `Rx`).
+/// - `R`: DMA-ring ISR surface for DMA1_CH7 (carried by `Codec` through
+///   its inner `Rx`).
 /// - `CRC`: CRC-16/UMTS engine — software impl on V006, peripheral impl
 ///   on a chip that has one (see `providers::dxl_crc`).
 /// - `DECODER_CAP`: streaming-decoder accumulator size. Sized to hold the
@@ -37,7 +36,7 @@ use rx::Rx;
 ///   covers max-RW + header + margin); decoupled from the on-wire RX byte
 ///   ring because the parser drains continuously per doc §8.1.
 /// - `RX_BUF_LEN`: DMA1_CH5 byte-ring depth (typically 64 per doc §8.1).
-///   Also drives the BT ring depth inside `Rx` — doc §8.3 requires
+///   Also drives the BT ring depth inside `Codec` — doc §8.3 requires
 ///   they match so byte index `i` in RX maps to `BT[i mod RX_BUF_LEN]`,
 ///   and the composite enforces that coupling by construction.
 /// - `EDGE_BUF_LEN`: DMA1_CH7 edge-timestamp ring depth (typically 128 /
@@ -51,34 +50,8 @@ pub struct DxlUart<
     const RX_BUF_LEN: usize,
     const EDGE_BUF_LEN: usize,
 > {
-    rx: Rx<R, EDGE_BUF_LEN, RX_BUF_LEN>,
+    codec: Codec<R, CRC, DECODER_CAP, RX_BUF_LEN, EDGE_BUF_LEN>,
     clock: Clock<U, T>,
-
-    decoder: Decoder<DECODER_CAP, CRC>,
-    /// DMA1_CH5 destination for received bytes. `SyncUnsafeCell` because
-    /// USART1's DMA writes it concurrently with the parser's reads — both
-    /// reads happen at PFIC HIGH (no preemption from another consumer)
-    /// and the producer is hardware. [`HwRing`] enforces pow-2 sizing so
-    /// `% RX_BUF_LEN` collapses to AND, and the chip-side ISR publishes
-    /// the producer head via [`HwRing::on_publish`] from NDTR.
-    rx_buf: SyncUnsafeCell<HwRing<u8, RX_BUF_LEN>>,
-    /// Monotonic count of Instruction packets the decoder emitted —
-    /// regardless of target ID — across this driver's lifetime. The drift
-    /// signal ([[drift_sampling_instruction_only]]) ticks on every
-    /// Instruction so foreign-target instructions still calibrate, while
-    /// Status frames (which use the peer's HSI) never contribute.
-    instruction_count: u32,
-    /// RX seq of the first byte of the in-progress decoder packet. `None`
-    /// whenever the decoder is between packets (fresh boot, post-Packet,
-    /// post-Resync); lazy-set to the pre-advance read seq on the next byte
-    /// poll() consumes. Paired with the post-Packet read seq it bounds the
-    /// BT range we feed [`Clock::on_drift_sample`]. Doc §8.3: RX and BT
-    /// share seq space, so the same range indexes both.
-    ///
-    /// Carries `Option` rather than a sentinel because [`Seq`]'s raw u16
-    /// wraps over the full value range — every potential sentinel is a
-    /// live cursor for one byte every 65536 RX bytes (~175 ms at 3 M).
-    packet_start_rx_seq: Option<Seq<u8, RX_BUF_LEN>>,
 
     id: u8,
     rdt_us: u32,
@@ -99,18 +72,14 @@ impl<
 > DxlUart<U, T, R, CRC, DECODER_CAP, RX_BUF_LEN, EDGE_BUF_LEN>
 {
     pub fn new(
-        rx: Rx<R, EDGE_BUF_LEN, RX_BUF_LEN>,
+        codec: Codec<R, CRC, DECODER_CAP, RX_BUF_LEN, EDGE_BUF_LEN>,
         clock: Clock<U, T>,
         id: u8,
         rdt_us: u32,
     ) -> Self {
         Self {
-            rx,
+            codec,
             clock,
-            decoder: Decoder::new(),
-            rx_buf: SyncUnsafeCell::new(HwRing::new(0)),
-            instruction_count: 0,
-            packet_start_rx_seq: None,
             id,
             rdt_us,
             pending_id: None,
@@ -120,131 +89,58 @@ impl<
     }
 
     /// New RX falling-edge timestamps may be available — pull the current
-    /// `ticks_per_bit` from the clock and forward to the RX classifier.
+    /// `ticks_per_bit` from the clock and forward to the codec's RX
+    /// classifier.
     pub fn on_rx_edge_advance(&mut self) {
         let ticks_per_bit = self.clock.ticks_per_bit();
-        self.rx.on_edge_advance(ticks_per_bit);
+        self.codec.on_edge_advance(ticks_per_bit);
     }
 
-    /// RX wire went idle — drain any tail edges the classifier hasn't seen
-    /// yet, then reset the anchor so the next burst re-seeds.
+    /// RX wire went idle — drain tail edges and reset the classifier
+    /// anchor for the next burst.
     pub fn on_rx_idle(&mut self) {
         let ticks_per_bit = self.clock.ticks_per_bit();
-        self.rx.on_idle(ticks_per_bit);
+        self.codec.on_idle(ticks_per_bit);
     }
 
     /// USART1 RX DMA published progress — `remaining` is the channel's
-    /// NDTR readback (slots left before wrap). Advances the `rx_buf`
-    /// producer head monotonically so [`Self::poll`] sees newly-DMA'd
-    /// bytes.
+    /// NDTR readback.
     pub fn on_rx_dma_advance(&mut self, remaining: u16) {
-        // SAFETY: rx_buf is written only by DMA1_CH5 (hardware writer)
-        // and read here from the same PFIC priority level as the DMA
-        // HT/TC ISR, so no other consumer can `&mut` it concurrently.
-        let rx_buf = unsafe { &mut *self.rx_buf.get() };
-        rx_buf.on_publish(remaining);
+        self.codec.on_rx_dma_advance(remaining);
     }
 
-    /// Drain bytes from `rx_buf` through the streaming decoder and surface
-    /// the first Instruction packet addressed to us (or BROADCAST). Status
-    /// frames are dropped silently (Instruction-only surface per
-    /// [[standard_dxl_terminology]]); Instructions for foreign IDs are
-    /// also dropped, but every emitted Instruction still bumps
-    /// `instruction_count()` and feeds the drift integrator so the signal
-    /// stays clean — see [[drift_sampling_instruction_only]].
+    /// Drain the codec until an Instruction addressed to us (or BROADCAST)
+    /// surfaces; route each parsed Instruction's BT pair walk into the
+    /// clock's drift integrator. Foreign Instructions feed drift but
+    /// don't surface; Status frames feed neither.
     ///
-    /// Walks up to the producer head published by [`Self::on_rx_dma_advance`].
-    /// On `Step::NeedMore` the parser yields with its in-progress packet
-    /// state intact and resumes on the next call.
+    /// Composite-owned routing per driver-pattern §4 + §10.1 — the wire
+    /// diagram lives in this file's method bodies, codec exposes the
+    /// `byte_pairs` accessor over its own BT ring, clock exposes
+    /// `on_byte_pair` which does the HIT-window check + delta/10 +
+    /// drift integration.
     pub fn poll(&mut self) -> Option<InstructionPacket<'_>> {
-        let mut matched = false;
-        // SAFETY: see `on_rx_dma_advance`.
-        let rx_buf = unsafe { &mut *self.rx_buf.get() };
-        let mut reader = rx_buf.reader();
-        while let Some(&byte) = reader.peek() {
-            // Lazy-seed packet_start on the first byte of each new packet
-            // hypothesis. After Resync / Packet the field is cleared back
-            // to None; the next byte we consume here is, by definition,
-            // the first byte of whatever the decoder will parse next.
-            let pre_advance = reader.read_seq();
-            self.packet_start_rx_seq.get_or_insert(pre_advance);
-            reader.advance(1);
-            let (step, _) = self.decoder.feed(&[byte]);
-            match step {
-                Step::NeedMore => continue,
-                Step::Resync(_) => {
-                    // Decoder dropped the in-progress prefix; clear so the
-                    // next byte re-seeds.
-                    self.packet_start_rx_seq = None;
-                    continue;
-                }
-                Step::Packet(pkt) => {
-                    let end_seq = reader.read_seq();
-                    // Always Some here — get_or_insert at loop top seeded
-                    // it this iteration (or kept an earlier seed). Take to
-                    // clear so the next iteration starts a fresh hypothesis.
-                    let start_seq = self.packet_start_rx_seq.take().unwrap_or(end_seq);
-
-                    let id = match pkt.into_instruction_packet() {
-                        Some(ip) => ip.id().as_byte(),
-                        // Status frames don't feed drift (peer HSI is its
-                        // own clock domain — [[drift_sampling_instruction_only]])
-                        // and don't surface; just advance past the frame.
-                        None => continue,
-                    };
-                    self.instruction_count = self.instruction_count.wrapping_add(1);
-                    Self::feed_drift(&self.rx, &mut self.clock, start_seq, end_seq);
-                    if id == self.id || id == BROADCAST_ID {
-                        matched = true;
-                        break;
-                    }
-                }
+        let id = self.id;
+        let codec = &mut self.codec;
+        let clock = &mut self.clock;
+        loop {
+            let token = codec.poll_one()?;
+            for (prev, curr) in codec.byte_pairs(token.start, token.end) {
+                clock.on_byte_pair(prev, curr);
             }
-        }
-        // Re-derive the surfaced packet through the immutable
-        // `dispatch_packet` path so its lifetime flows to the return
-        // without holding a mid-loop `&mut self.decoder` borrow (the
-        // direct path trips the borrow-checker's loop-back analysis).
-        // The decoder stays in `Done` until the next `feed`, so the
-        // overlay is still valid here.
-        matched
-            .then(|| self.decoder.dispatch_packet().into_instruction_packet())
-            .flatten()
-    }
-
-    /// Walk consecutive BT pairs across the just-decoded packet's RX range
-    /// and hand each `(prev_ts, curr_ts)` to [`Clock::on_byte_pair`]. The
-    /// HIT-window filter and the `delta / 10` per-bit derivation live in
-    /// clock (see [[driver-pattern §4]] — `ticks_per_bit` owns the math).
-    ///
-    /// Takes individual field borrows (not `&mut self`) so the caller —
-    /// inside poll()'s `rx_buf.reader()` scope — keeps the field-disjoint
-    /// borrow tree the decoder.feed() call already relies on.
-    fn feed_drift(
-        rx: &Rx<R, EDGE_BUF_LEN, RX_BUF_LEN>,
-        clock: &mut Clock<U, T>,
-        start: Seq<u8, RX_BUF_LEN>,
-        end: Seq<u8, RX_BUF_LEN>,
-    ) {
-        let mut seqs = Seq::iter(start, end);
-        let Some(s0) = seqs.next() else { return };
-        let Some(mut prev) = rx.byte_ts_at(s0.into()) else {
-            return;
-        };
-        for s in seqs {
-            let Some(curr) = rx.byte_ts_at(s.into()) else {
-                break;
-            };
-            clock.on_byte_pair(prev, curr);
-            prev = curr;
+            if token.id == id || token.id == BROADCAST_ID {
+                return codec.dispatch();
+            }
+            // Foreign Instruction — drift fed above, drop the token and
+            // continue polling.
         }
     }
 
-    /// Monotonic count of Instruction packets seen on the wire. Used by the
-    /// drift estimator as its tick source; only foreign Status frames are
-    /// excluded, so this advances on every Instruction the bus decodes.
+    /// Monotonic count of Instruction packets seen on the wire — own and
+    /// foreign IDs included; Status frames excluded. Drift estimator's
+    /// tick source.
     pub fn instruction_count(&self) -> u32 {
-        self.instruction_count
+        self.codec.instruction_count()
     }
 
     /// USART1 TC fired — the reply has fully drained the wire. Drain
@@ -286,59 +182,25 @@ impl<
     /// Sequence number of the next BT slot to write — one past the last
     /// published BT entry.
     #[allow(dead_code)]
-    pub fn byte_ts_head(&self) -> crate::util::Seq<u16, RX_BUF_LEN> {
-        self.rx.byte_ts_head()
+    pub fn byte_ts_head(&self) -> Seq<u16, RX_BUF_LEN> {
+        self.codec.byte_ts_head()
     }
 
     /// Stable peripheral-memory address for DMA1_CH7's destination buffer.
-    /// Bringup hands this to `dma::configure(CH7, ...)`.
     pub fn edges_addr(&self) -> u32 {
-        self.rx.edges_addr()
+        self.codec.edges_addr()
     }
 
     /// Stable peripheral-memory address for DMA1_CH5's destination buffer.
-    /// Bringup hands this to `dma::configure(CH5, ...)` so the USART byte
-    /// stream lands directly in driver-owned storage. [`HwRing::as_ptr`]
-    /// returns the address of the first storage slot — the struct's outer
-    /// address is offset by the bookkeeping fields.
     pub fn rx_buf_addr(&self) -> u32 {
-        // SAFETY: address-of read; no value materialized. Sound even while
-        // DMA is writing the storage concurrently.
-        unsafe { (*self.rx_buf.get()).as_ptr() as u32 }
-    }
-}
-
-#[cfg(test)]
-impl<
-    U: UsartBaud,
-    T: ClockTrim,
-    R: DmaRing,
-    CRC: CrcUmts,
-    const DECODER_CAP: usize,
-    const RX_BUF_LEN: usize,
-    const EDGE_BUF_LEN: usize,
-> DxlUart<U, T, R, CRC, DECODER_CAP, RX_BUF_LEN, EDGE_BUF_LEN>
-{
-    /// Stage `bytes` into `rx_buf` starting at sequence `at` and publish
-    /// the producer head to `at + bytes.len()`. Mirrors the chip-side
-    /// DMA1_CH5 writer for host tests.
-    pub(crate) fn stage_rx_bytes_for_test(&mut self, at: u16, bytes: &[u8]) {
-        let buf = unsafe { &mut *self.rx_buf.get() };
-        buf.stage(at, bytes);
-        buf.set_write_seq_for_test(at.wrapping_add(bytes.len() as u16));
-    }
-
-    /// Pre-position the parser cursor (wrap-test seed). Production has no
-    /// reason to set this directly — it's monotonic from `new()` onwards.
-    pub(crate) fn set_rx_read_seq_for_test(&mut self, seq: u16) {
-        let buf = unsafe { &mut *self.rx_buf.get() };
-        buf.set_read_seq_for_test(seq);
+        self.codec.rx_buf_addr()
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::dxl::uart::codec::rx::Rx;
     use crate::mocks::{FakeClockTrim, FakeDmaRing, FakeUsartBaud};
     use crate::traits::DmaFlags;
     use dxl_protocol::packet::Id;
@@ -358,7 +220,7 @@ mod tests {
     /// One byte-time at 3 Mbaud (10·tpb).
     const BYTE_TICKS_3M: u16 = 160;
 
-    type TestRx = Rx<FakeDmaRing, EDGE_BUF_LEN, RX_BUF_LEN>;
+    type TestCodec = Codec<FakeDmaRing, SoftwareCrcUmts, DECODER_CAP, RX_BUF_LEN, EDGE_BUF_LEN>;
     type TestBus = DxlUart<
         FakeUsartBaud,
         FakeClockTrim,
@@ -369,23 +231,23 @@ mod tests {
         EDGE_BUF_LEN,
     >;
 
-    fn make_rx(vals: &[u16], flags: DmaFlags) -> TestRx {
-        let mut rx = Rx::new(FakeDmaRing::default());
-        rx.stage_edges_for_test(vals);
-        rx.arm_next_flags_for_test(flags);
-        rx
+    fn make_codec_with_edges(vals: &[u16], flags: DmaFlags) -> TestCodec {
+        let mut c: TestCodec = Codec::new(FakeDmaRing::default());
+        c.stage_edges_for_test(vals);
+        c.arm_next_flags_for_test(flags);
+        c
     }
 
     fn make_clock(baud: BaudRate) -> Clock<FakeUsartBaud, FakeClockTrim> {
         Clock::new(baud, FakeUsartBaud::default(), FakeClockTrim::default())
     }
 
-    fn make_bus_with(rx: TestRx, baud: BaudRate) -> TestBus {
-        DxlUart::new(rx, make_clock(baud), TEST_ID, TEST_RDT_US)
+    fn make_bus_with(codec: TestCodec, baud: BaudRate) -> TestBus {
+        DxlUart::new(codec, make_clock(baud), TEST_ID, TEST_RDT_US)
     }
 
     fn make_bus() -> TestBus {
-        make_bus_with(Rx::new(FakeDmaRing::default()), BaudRate::B3000000)
+        make_bus_with(Codec::new(FakeDmaRing::default()), BaudRate::B3000000)
     }
 
     #[test]
@@ -394,14 +256,14 @@ mod tests {
         // If the composite forwarded a wrong tpb (e.g. 48 from a 1M clock),
         // the same delta would fall outside [9·48, 11·48] and classify as
         // SKIP — byte_ts_head would stay at 1 instead of advancing to 2.
-        let rx = make_rx(
+        let codec = make_codec_with_edges(
             &[1000, 1160],
             DmaFlags {
                 ht: true,
                 tc: false,
             },
         );
-        let mut bus = make_bus_with(rx, BaudRate::B3000000);
+        let mut bus = make_bus_with(codec, BaudRate::B3000000);
 
         bus.on_rx_edge_advance();
 
@@ -415,14 +277,14 @@ mod tests {
         // 480-tick delta would classify as GAP+re-anchor but still advance
         // — so we assert the HIT/SKIP boundary instead: two edges 160 apart
         // are HIT at 3M, SKIP at 1M.
-        let rx = make_rx(
+        let codec = make_codec_with_edges(
             &[1000, 1160],
             DmaFlags {
                 ht: true,
                 tc: false,
             },
         );
-        let mut bus = make_bus_with(rx, BaudRate::B1000000);
+        let mut bus = make_bus_with(codec, BaudRate::B1000000);
 
         bus.on_rx_edge_advance();
 
@@ -434,8 +296,8 @@ mod tests {
     fn on_rx_idle_walks_tail_edges() {
         // IDLE backstop walks edges the HT/TC ISR hasn't drained (small
         // packets that never trip HT). Single tail edge → SEED.
-        let rx = make_rx(&[500], DmaFlags::default());
-        let mut bus = make_bus_with(rx, BaudRate::B3000000);
+        let codec = make_codec_with_edges(&[500], DmaFlags::default());
+        let mut bus = make_bus_with(codec, BaudRate::B3000000);
 
         bus.on_rx_idle();
 
@@ -532,7 +394,7 @@ mod tests {
     /// Stage `bytes` at offset 0 (auto-publishing write head) and poll.
     /// Returns the surfaced ID byte (or None).
     fn poll_after(bus: &mut TestBus, bytes: &[u8]) -> Option<u8> {
-        bus.stage_rx_bytes_for_test(0, bytes);
+        bus.codec.stage_rx_bytes_for_test(0, bytes);
         bus.poll().map(|ip| ip.id().as_byte())
     }
 
@@ -564,9 +426,8 @@ mod tests {
     #[test]
     fn poll_surfaces_broadcast_instruction() {
         let mut bus = make_bus();
-        // SyncRead targets BROADCAST on the wire — exact id == 0xFE.
         let pkt = wire_sync_read(0x84, 4, &[0x01, 0x02, 0x03]);
-        bus.stage_rx_bytes_for_test(0, &pkt);
+        bus.codec.stage_rx_bytes_for_test(0, &pkt);
         match bus.poll() {
             Some(InstructionPacket::SyncRead(_)) => {}
             other => panic!("expected SyncRead, got {other:?}"),
@@ -597,7 +458,7 @@ mod tests {
         let mut combined: Vec<u8, 32> = Vec::new();
         combined.extend_from_slice(&bad).unwrap();
         combined.extend_from_slice(&good).unwrap();
-        bus.stage_rx_bytes_for_test(0, &combined);
+        bus.codec.stage_rx_bytes_for_test(0, &combined);
 
         // First poll: decoder Resyncs on the bad CRC, then decodes the
         // good packet and surfaces it.
@@ -606,8 +467,6 @@ mod tests {
             surfaced.is_some(),
             "good packet should surface after resync"
         );
-        // Only the good packet counts — Resync drops the bad one before
-        // it ever becomes a Packet step.
         assert_eq!(bus.instruction_count(), 1);
     }
 
@@ -617,8 +476,8 @@ mod tests {
         let pkt = wire_ping(TEST_ID);
         // Position the packet so it straddles the ring boundary.
         let start = (RX_BUF_LEN as u16).wrapping_sub(4);
-        bus.set_rx_read_seq_for_test(start);
-        bus.stage_rx_bytes_for_test(start, &pkt);
+        bus.codec.set_rx_read_seq_for_test(start);
+        bus.codec.stage_rx_bytes_for_test(start, &pkt);
 
         match bus.poll() {
             Some(InstructionPacket::Ping(p)) => assert_eq!(p.header.id.as_byte(), TEST_ID),
@@ -634,13 +493,14 @@ mod tests {
 
         // Stage everything except the last byte — decoder is mid-CRC.
         let split = pkt.len() - 1;
-        bus.stage_rx_bytes_for_test(0, &pkt[..split]);
+        bus.codec.stage_rx_bytes_for_test(0, &pkt[..split]);
         assert!(bus.poll().is_none());
         assert_eq!(bus.instruction_count(), 0);
 
         // Stage the final byte (extending the producer head) — packet now
         // completes and surfaces.
-        bus.stage_rx_bytes_for_test(split as u16, &pkt[split..]);
+        bus.codec
+            .stage_rx_bytes_for_test(split as u16, &pkt[split..]);
         match bus.poll() {
             Some(InstructionPacket::Ping(p)) => assert_eq!(p.header.id.as_byte(), TEST_ID),
             other => panic!("expected Ping after resume, got {other:?}"),
@@ -659,14 +519,14 @@ mod tests {
                 .push(1000_u16.wrapping_add(i.wrapping_mul(step)))
                 .unwrap();
         }
-        let rx = make_rx(
+        let codec = make_codec_with_edges(
             &edges,
             DmaFlags {
                 ht: true,
                 tc: false,
             },
         );
-        let mut bus = make_bus_with(rx, BaudRate::B3000000);
+        let mut bus = make_bus_with(codec, BaudRate::B3000000);
         bus.on_rx_edge_advance();
         assert_eq!(bus.byte_ts_head().test_raw(), n_bytes as u16);
         bus
@@ -676,7 +536,7 @@ mod tests {
     fn poll_feeds_one_drift_sample_per_bt_pair_on_instruction() {
         let ping = wire_ping(TEST_ID);
         let mut bus = bus_with_staged_bt(ping.len(), BYTE_TICKS_3M);
-        bus.stage_rx_bytes_for_test(0, &ping);
+        bus.codec.stage_rx_bytes_for_test(0, &ping);
 
         let surfaced = bus.poll();
         assert!(matches!(surfaced, Some(InstructionPacket::Ping(_))));
@@ -691,7 +551,7 @@ mod tests {
         // clock — host has HSE, drift signal is valid for every Instruction.
         let ping = wire_ping(0x42);
         let mut bus = bus_with_staged_bt(ping.len(), BYTE_TICKS_3M);
-        bus.stage_rx_bytes_for_test(0, &ping);
+        bus.codec.stage_rx_bytes_for_test(0, &ping);
 
         assert!(bus.poll().is_none());
         assert_eq!(bus.clock.drift_samples(), (ping.len() - 1) as u16);
@@ -703,7 +563,7 @@ mod tests {
         // calibrate against another HSI ([[drift_sampling_instruction_only]]).
         let status = wire_status(TEST_ID);
         let mut bus = bus_with_staged_bt(status.len(), BYTE_TICKS_3M);
-        bus.stage_rx_bytes_for_test(0, &status);
+        bus.codec.stage_rx_bytes_for_test(0, &status);
 
         assert!(bus.poll().is_none());
         assert_eq!(bus.clock.drift_samples(), 0);
@@ -712,11 +572,11 @@ mod tests {
     #[test]
     fn poll_filters_out_of_window_bt_pairs() {
         // Edges spaced 200 ticks > 11·tpb=176 at 3M → GAP class. BT entries
-        // still land (re-anchor), but the drift walk filters their pair
-        // deltas as not measuring a true 10-bit interval per doc §10.7.1.
+        // still land (re-anchor), but clock.on_byte_pair's HIT-window check
+        // filters their pair deltas — `Clock` owns the window math now.
         let ping = wire_ping(TEST_ID);
         let mut bus = bus_with_staged_bt(ping.len(), 200);
-        bus.stage_rx_bytes_for_test(0, &ping);
+        bus.codec.stage_rx_bytes_for_test(0, &ping);
 
         assert!(bus.poll().is_some());
         assert_eq!(bus.clock.drift_samples(), 0);
@@ -730,12 +590,12 @@ mod tests {
         // BT[0..end] and either misattribute samples (if BT[0..5] are
         // stale-but-in-window) or silently early-return.
         let ping = wire_ping(TEST_ID);
-        // Stage enough edges to populate BT[0..15] — covers both the
-        // pre-cursor slots and the packet's range.
+        // Stage enough edges to populate BT[0..5 + ping.len()] — covers
+        // both the pre-cursor slots and the packet's range.
         let mut bus = bus_with_staged_bt(5 + ping.len(), BYTE_TICKS_3M);
 
-        bus.set_rx_read_seq_for_test(5);
-        bus.stage_rx_bytes_for_test(5, &ping);
+        bus.codec.set_rx_read_seq_for_test(5);
+        bus.codec.stage_rx_bytes_for_test(5, &ping);
 
         assert!(bus.poll().is_some());
         // Exactly (ping.len() - 1) samples, not 5 + (ping.len() - 1).
@@ -758,7 +618,7 @@ mod tests {
         let mut combined: Vec<u8, 32> = Vec::new();
         combined.extend_from_slice(&bad).unwrap();
         combined.extend_from_slice(&good).unwrap();
-        bus.stage_rx_bytes_for_test(0, &combined);
+        bus.codec.stage_rx_bytes_for_test(0, &combined);
 
         assert!(bus.poll().is_some());
         // Only the good frame's pairs feed; the bad frame's bytes were
@@ -777,7 +637,7 @@ mod tests {
         combined.extend_from_slice(&ours).unwrap();
         combined.extend_from_slice(&theirs).unwrap();
         combined.extend_from_slice(&status).unwrap();
-        bus.stage_rx_bytes_for_test(0, &combined);
+        bus.codec.stage_rx_bytes_for_test(0, &combined);
 
         // First call surfaces ours; decoder pauses at packet boundary.
         let surfaced = bus.poll();
@@ -786,5 +646,13 @@ mod tests {
         // Drain the rest — foreign Ping bumps the counter, Status doesn't.
         assert!(bus.poll().is_none());
         assert_eq!(bus.instruction_count(), 2);
+    }
+
+    /// Sanity: `Rx` is still reachable through the codec module path for
+    /// any chip-side wiring that wants direct access. The composite never
+    /// reaches around the codec; this just pins the visibility contract.
+    #[allow(dead_code)]
+    fn _rx_path_stays_pub() {
+        let _: Option<Rx<FakeDmaRing, EDGE_BUF_LEN, RX_BUF_LEN>> = None;
     }
 }
