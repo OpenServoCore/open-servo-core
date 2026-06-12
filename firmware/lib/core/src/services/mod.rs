@@ -1,23 +1,23 @@
 pub mod dxl;
 
 use crate::Shared;
-use crate::traits::{DxlBus, ServicesIo};
+use crate::traits::DxlBus;
 use dxl::Dxl;
 
-pub struct Services<I: ServicesIo> {
-    pub io: I,
-    pub dxl: Dxl<<I::Bus as DxlBus>::Crc>,
+pub struct Services<B: DxlBus> {
+    pub bus: B,
+    pub dxl: Dxl,
 }
 
-impl<I: ServicesIo> Services<I> {
-    pub fn new(io: I) -> Self {
+impl<B: DxlBus> Services<B> {
+    pub fn new(bus: B) -> Self {
         Self {
-            io,
+            bus,
             dxl: Dxl::new(),
         }
     }
 
     pub fn poll(&mut self, shared: &Shared) {
-        self.dxl.poll(shared, &mut self.io);
+        self.dxl.poll(shared, &mut self.bus);
     }
 }

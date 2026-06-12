@@ -1,112 +1,69 @@
-use dxl_protocol::CrcUmts;
-use dxl_protocol::SlotPosition;
 use dxl_protocol::packet::{Slot, Status};
+use dxl_protocol::{InstructionPacket, WriteError};
 
 use crate::{BaudRate, BootMode};
 
-/// Wire scheduling info for a single outbound reply. The chip translates
-/// these protocol-structural fields into wall-clock delays via its own
-/// cached `byte_time` (which is the rate currently on the wire — after a
-/// BAUD write, this still reflects the old rate until USART TC drains the
-/// reply and the deferred retune lands).
-#[derive(Copy, Clone, Debug)]
-pub struct Schedule {
-    /// Return Delay Time in µs (from `comms.return_delay_2us × 2`).
-    pub rdt_us: u32,
-    /// Structural wire-byte offset of this reply on the wire relative to the
-    /// master's request end. Zero for direct replies; nonzero for Sync/Bulk
-    /// slot N and Fast First/Middle/Last.
-    pub bytes_before: u32,
-    /// Position in the slot train (0-indexed). 0 for direct replies. Chip
-    /// uses this to compose its inter-slot margin policy for plain Status
-    /// trains (Sync Read / Bulk Read). Ignored for Fast variants.
-    pub slot_index: u16,
+/// Dispatcher-facing reply surface: encode a Status / encode a Fast slot /
+/// cancel an in-flight fire / stage a deferred config change. Per
+/// driver-pattern §7.4 these methods are **data-centric** — they carry only
+/// "what to do," never "where on the wire to position it." Slot positioning,
+/// RDT, chain-CRC anchoring, wire-end timing all live inside the bus impl,
+/// derived from the request the bus just handed the dispatcher.
+///
+/// Reply trait is separate from [`DxlBus`] so the dispatcher (and
+/// [`ControlTableHooks`]) can be generic over `DxlReply` alone — it never
+/// re-polls mid-dispatch. The chip-side `DxlBus` impl spawns a `&mut dyn
+/// DxlReply` through the closure handed to [`DxlBus::poll`]; the chip's
+/// `DxlBus` type itself does *not* impl `DxlReply` because reply state lives
+/// in driver internals reachable only through the disjoint split-borrow that
+/// `poll` orchestrates.
+pub trait DxlReply {
+    /// Encode a standalone Status reply and arm its fire. Bus folds RDT +
+    /// slot offset (broadcast Ping / Sync/Bulk Read slot N) from its cached
+    /// request state; the dispatcher passes only the reply data.
+    fn send_status(&mut self, status: Status<'_>) -> Result<(), WriteError>;
+
+    /// Encode one Fast Sync/Bulk Read slot reply and arm its fire. Slot
+    /// position (Only/First/Middle/Last) and chain-CRC anchor come from the
+    /// bus's cached request state; Last engages the chain-CRC fold
+    /// scheduler arm.
+    fn send_slot(&mut self, slot: &Slot<'_>) -> Result<(), WriteError>;
+
+    /// Stage a deferred ID change — applies after the next TX completes.
+    fn stage_id(&mut self, id: u8);
+
+    /// Stage a deferred baud-rate change. Applied at the next USART TC so
+    /// the in-flight reply finishes at the old baud.
+    fn stage_baud(&mut self, baud: BaudRate);
+
+    /// Stage a deferred Return Delay Time change in µs.
+    fn stage_rdt(&mut self, us: u32);
+
+    /// Stage a deferred reboot, honored after any in-flight TX drains.
+    fn stage_reboot(&mut self, mode: BootMode);
 }
 
-/// Chip-side drift-filter state surfaced for the CALIB Status reply.
-/// `observed_ticks` / `nominal_ticks` describe the most recently snooped
-/// packet (the CALIB request itself, when the request triggered the
-/// snapshot via the normal `poll` path); `applied_*` carry the most recent
-/// batched apply queued by the chip's filter. Returned `None` when the
-/// chip-side filter hasn't observed any packet yet — dispatcher treats this
-/// as a measurement failure.
-#[derive(Copy, Clone, Debug)]
-pub struct CalSnapshot {
-    pub observed_ticks: u32,
-    pub nominal_ticks: u32,
-    pub applied_trim_delta: i8,
-    pub applied_fine_trim_us: i16,
-}
-
-/// Bus surface the DXL services layer reads, writes, and schedules through.
-/// `rx_window` exposes the latest IDLE-anchored byte window as 1-2
-/// contiguous slices the kernel-side `Dxl` feeds through a streaming
-/// [`Decoder`](dxl_protocol::decoder::Decoder); `send` emits one of the
-/// non-fast typed Status shapes (full standalone status frame).
-/// `send_slot` emits one piece of a Fast Sync/Bulk Read coalesced response
-/// and patches the chain CRC when the slot is the last in the response.
+/// Bus surface the DXL services layer drives. Closure-based `poll` to break
+/// the otherwise-fatal borrow conflict between the parsed
+/// [`InstructionPacket`] (borrowed from bus-internal RX storage) and the
+/// `&mut` access the dispatcher needs for send / stage calls on the bus.
+/// The implementor splits its internal state into disjoint RX and TX halves
+/// and hands both into the closure simultaneously — see
+/// [`docs/driver-pattern.md §7.4`](../../../../../docs/driver-pattern.md)
+/// for the data-centric principle.
+///
+/// The parser lives entirely in the driver per [`docs/dxl-hw-timed-transport.md §10.5`](../../../../../docs/dxl-hw-timed-transport.md);
+/// the trait carries no CRC type parameter because services never touch the
+/// decoder. Staging methods (`stage_*`) and `cancel` only exist on
+/// [`DxlReply`] — the bus type itself is poll-only.
 pub trait DxlBus {
-    /// CRC engine implementation used to validate inbound frames.
-    type Crc: CrcUmts;
-
-    /// Latest IDLE-anchored RX window as a `(head, tail)` slice pair (the
-    /// tail is non-empty only when the burst wraps the ring). Returns
-    /// `None` when no fresh window has arrived since the previous call.
-    /// The returned slices stay valid until the next `rx_window` call.
-    fn rx_window(&mut self) -> Option<(&[u8], &[u8])>;
-
-    /// Snoop hook called by `Dxl::poll` exactly once per successfully
-    /// decoded non-Status packet. Chip impls use it to drive any
-    /// per-packet calibration state machine (e.g. HSI drift filter).
-    fn snoop(&mut self);
-
-    /// Compose a standalone Status reply on the chip's TX buffer and schedule
-    /// it. The chip owns all wire-timing math: it consumes `Schedule` to
-    /// compute the fire delay (RDT + per-byte translation).
-    fn send(&mut self, status: Status<'_>, schedule: Schedule);
-
-    /// Compose one Fast Sync/Bulk Read slot on the chip's TX buffer and
-    /// schedule it. `position` selects header / body / CRC framing:
-    /// `Only` and `Last` emit (or reserve) the response CRC; `First` and
-    /// `Middle` don't (successors continue the response).
-    fn send_slot(&mut self, slot: Slot<'_>, position: SlotPosition, schedule: Schedule);
-
-    /// Snapshot the wire-timing state captured during RX of the just-polled
-    /// CALIB request. Called from the dispatcher's CALIB path; impls without
-    /// a first-byte capture mechanism return `None`.
-    fn cal_snapshot(&mut self) -> Option<CalSnapshot>;
-}
-
-/// Fire-and-forget notifications the dispatcher delivers when control-table
-/// writes or lifecycle instructions land. Chip impls match exhaustively —
-/// unsupported variants get an explicit no-op arm, not a silent default.
-pub enum Event {
-    /// Wire-rate change. Queued after the Status reply for the triggering
-    /// WRITE is buffered but before TX completes — impls MUST defer the UART
-    /// retune until TC, otherwise the host can't decode the reply.
-    SetDxlBaud(BaudRate),
-    /// New HSI trim delta. Impls MUST defer the register write until USART TC
-    /// drains the in-flight Status reply, since retuning HSI shifts the BRR
-    /// divider mid-byte.
-    SetClockTrim(i8),
-    /// New Q8.8 µs sub-trim drift residual. Impls recompute fire-advance
-    /// compensation and apply at USART TC.
-    SetClockFineTrimUs(i16),
-    /// Reboot, honored after any in-flight TX drains.
-    Reboot(BootMode),
-}
-
-/// Sink for `Event` notifications. Single dispatch keeps the trait surface
-/// thin — extending the protocol means adding a variant, not a method.
-pub trait ServiceEvents {
-    fn send(&mut self, event: Event);
-}
-
-/// The chip-side bundle of capabilities the services layer needs. Splits into
-/// disjoint sub-trait borrows so the dispatcher can hold bus + events at once.
-pub trait ServicesIo {
-    type Bus: DxlBus;
-    type Events: ServiceEvents;
-
-    fn parts(&mut self) -> (&mut Self::Bus, &mut Self::Events);
+    /// Drain bus state until a request addressed to us (or BROADCAST)
+    /// surfaces; if so, invoke `f` with the parsed packet and a reply
+    /// handle. Foreign-ID requests and Status frames are consumed silently
+    /// (they may feed bus-internal calibration state but never reach the
+    /// closure). `f` is called at most once per `poll` call — implementors
+    /// must NOT loop back into the closure after a return.
+    fn poll<F>(&mut self, f: F)
+    where
+        F: for<'a> FnOnce(InstructionPacket<'a>, &mut dyn DxlReply);
 }

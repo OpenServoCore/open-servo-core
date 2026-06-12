@@ -4,7 +4,7 @@ use osc_core::{Kernel, Services, Shared};
 
 use crate::control::Ch32ControlIo;
 use crate::hal::pfic;
-use crate::services::Ch32ServicesIo;
+use crate::services::Ch32Bus;
 
 /// In `AdcPins` field order: pos, ntc, vbus, vmotor.0, vmotor.1.
 pub const ADC_SENSOR_COUNT: usize = 5;
@@ -26,13 +26,13 @@ pub(crate) static KERNEL: SyncUnsafeCell<MaybeUninit<Kernel<Ch32ControlIo>>> =
     SyncUnsafeCell::new(MaybeUninit::uninit());
 
 /// Initialised by `install`; sole `&mut` writer is the main loop.
-pub(crate) static SERVICES: SyncUnsafeCell<MaybeUninit<Services<Ch32ServicesIo>>> =
+pub(crate) static SERVICES: SyncUnsafeCell<MaybeUninit<Services<Ch32Bus>>> =
     SyncUnsafeCell::new(MaybeUninit::uninit());
 
 pub fn install(io: Ch32ControlIo) {
     unsafe {
         (*KERNEL.get()).write(Kernel::new(io));
-        (*SERVICES.get()).write(Services::new(Ch32ServicesIo::new()));
+        (*SERVICES.get()).write(Services::new(Ch32Bus::new()));
     }
     crate::log::info!("kernel + services installed");
 }

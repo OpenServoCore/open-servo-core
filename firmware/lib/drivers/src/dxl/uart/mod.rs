@@ -12,14 +12,241 @@
 pub mod clock;
 pub mod codec;
 
-use dxl_protocol::packet::{Slot, Status};
-use dxl_protocol::{BROADCAST_ID, CrcUmts, InstructionPacket, SlotPosition, WriteError};
-use osc_core::{BaudRate, BootMode};
+use dxl_protocol::packet::{Id, Slot, Status};
+use dxl_protocol::{
+    BROADCAST_ID, CRC_BYTES, CrcUmts, InstructionPacket, RESPONSE_HEADER_BYTES, SlotPosition,
+    WriteError,
+};
+use osc_core::{BaudRate, BootMode, DxlReply};
 
 use crate::traits::{ClockTrim, DmaRing, DxlTxScheduler, UsartBaud};
 use crate::util::Seq;
 use clock::Clock;
-use codec::{Codec, InstructionToken};
+use codec::{Codec, CodecTx};
+
+/// Wire bytes of a single Ping Status reply — `RESPONSE_HEADER_BYTES`
+/// (header(4) + id + len(2) + inst + err = 9) + 3 payload bytes
+/// (model_lo + model_hi + firmware) + CRC_BYTES (2). Multi-slave broadcast
+/// Ping convention positions slave N's reply at `N × PING_STATUS_FRAME_BYTES`
+/// wire bytes past wire-end so the slaves don't collide.
+const PING_STATUS_FRAME_BYTES: u32 = RESPONSE_HEADER_BYTES as u32 + 3 + CRC_BYTES as u32;
+
+/// Spec cap on Sync/Bulk Read slot count. DXL 2.0 carries IDs in a single
+/// byte; 0xFD/0xFE/0xFF are reserved, leaving 252 addressable. Used as the
+/// `max_slots` bound on `find_slot` for Fast variants — protects against
+/// malformed requests that would otherwise unbounded the slot walk.
+const MAX_FAST_SLOTS: usize = 252;
+
+/// What the driver needs to position a reply on the wire. Computed once at
+/// `poll()` from the surfaced packet + `self.id`; consumed by `send_status`
+/// / `send_slot`. Per driver-pattern §7.4 — the dispatcher passes data; the
+/// driver derives wire shape from its cached request state.
+#[derive(Copy, Clone, Debug, Default)]
+struct ReplyContext {
+    /// Wire-end tick = `BT[last_byte_seq] + 10·tpb`, captured eagerly at
+    /// `poll()` so the send path doesn't need RX access (the in-flight
+    /// packet borrow on `CodecRx` would otherwise block the BT lookup).
+    /// `None` if BT hadn't caught up by poll surface — send drops silently.
+    wire_end_tick: Option<u16>,
+    /// Wire-byte offset from request wire-end to this reply's fire moment.
+    /// Zero for direct unicast; non-zero for broadcast Ping and
+    /// Sync/Bulk/Fast Read slot N.
+    slot_offset_bytes: u32,
+    /// Fast Sync/Bulk Read slot position. `None` for non-Fast paths;
+    /// `Some(Last { .. })` triggers the chain-CRC fold scheduler arm.
+    fast_slot_position: Option<SlotPosition>,
+    /// Wire-byte cursor at request wire-end, for the Fast Last chain-CRC
+    /// fold's predecessor walk start (doc §10.6). Captured from
+    /// `Codec::wire_byte_cursor` at poll surface.
+    anchor_bytes: u32,
+}
+
+fn slot_offset_for(packet: &InstructionPacket<'_>, id: u8) -> u32 {
+    match packet {
+        InstructionPacket::Ping(p) if p.header.id.as_byte() == BROADCAST_ID => {
+            (id as u32) * PING_STATUS_FRAME_BYTES
+        }
+        InstructionPacket::SyncRead(p) => {
+            p.find_slot(Id::new(id)).map_or(0, |info| info.bytes_before)
+        }
+        InstructionPacket::BulkRead(p) => {
+            p.find_slot(Id::new(id)).map_or(0, |info| info.bytes_before)
+        }
+        InstructionPacket::FastSyncRead(p) => p
+            .find_slot(Id::new(id), MAX_FAST_SLOTS)
+            .map_or(0, |info| info.bytes_before),
+        InstructionPacket::FastBulkRead(p) => p
+            .find_slot(Id::new(id), MAX_FAST_SLOTS)
+            .map_or(0, |info| info.bytes_before),
+        _ => 0,
+    }
+}
+
+fn fast_slot_position(packet: &InstructionPacket<'_>, id: u8) -> Option<SlotPosition> {
+    match packet {
+        InstructionPacket::FastSyncRead(p) => p
+            .find_slot(Id::new(id), MAX_FAST_SLOTS)
+            .map(|i| i.position()),
+        InstructionPacket::FastBulkRead(p) => p
+            .find_slot(Id::new(id), MAX_FAST_SLOTS)
+            .map(|i| i.position()),
+        _ => None,
+    }
+}
+
+/// A reply handle borrowed from disjoint pieces of [`DxlUart`] — the codec
+/// TX half + scheduler + clock + the small set of pending-state fields. The
+/// parent's closure-based [`DxlUart::poll`] hands the dispatcher one of
+/// these alongside the parsed packet (which borrows the codec RX half), so
+/// the dispatcher can call `send_status` / `send_slot` / `stage_*` /
+/// `cancel` without a borrow conflict against the packet.
+///
+/// Implements [`osc_core::DxlReply`] — the chip-side `Ch32Bus::poll` forwards
+/// the handle straight to the user closure as `&mut dyn DxlReply`. The
+/// inherent methods stay so driver-crate tests (which don't import the trait)
+/// can drive the handle directly.
+pub struct ReplyHandle<
+    'a,
+    U: UsartBaud,
+    T: ClockTrim,
+    S: DxlTxScheduler,
+    CRC: CrcUmts,
+    const TX_BUF_LEN: usize,
+> {
+    tx: &'a mut CodecTx<CRC, TX_BUF_LEN>,
+    scheduler: &'a mut S,
+    clock: &'a mut Clock<U, T>,
+    last_reply_ctx: &'a mut Option<ReplyContext>,
+    pending_id: &'a mut Option<u8>,
+    pending_rdt_us: &'a mut Option<u32>,
+    pending_reboot: &'a mut Option<BootMode>,
+    /// Snapshot of the parent's `id` field at poll surface. Used by
+    /// `stage_id` for the no-op-on-unchanged comparison; the actual
+    /// `id` field on the parent isn't mutated until `on_tx_complete`,
+    /// so this snapshot stays consistent for the lifetime of the
+    /// reply handle.
+    id: u8,
+    /// Snapshot of the parent's `rdt_us` field — same reasoning as `id`.
+    rdt_us: u32,
+}
+
+impl<U: UsartBaud, T: ClockTrim, S: DxlTxScheduler, CRC: CrcUmts, const TX_BUF_LEN: usize>
+    ReplyHandle<'_, U, T, S, CRC, TX_BUF_LEN>
+{
+    /// Encode a Status reply into the codec's TX buffer and arm a fire.
+    /// Fire timing folds RDT + slot offset (broadcast Ping / Sync / Bulk
+    /// Read slot N) from the [`ReplyContext`] cached at `poll()`. If no
+    /// context is staged (foreign Instruction filtered upstream) or the
+    /// wire-end tick wasn't ready, the encode still succeeds but no fire
+    /// is armed — the bytes simply won't ship. Context is taken on use so
+    /// a double-send without a fresh `poll()` no-ops on the scheduler.
+    pub fn send_status(&mut self, status: Status<'_>) -> Result<(), WriteError> {
+        self.tx.send_status(status)?;
+        let Some(ctx) = self.last_reply_ctx.take() else {
+            return Ok(());
+        };
+        let Some(wire_end_tick) = ctx.wire_end_tick else {
+            return Ok(());
+        };
+        let delay_us = self.rdt_us + self.clock.bytes_to_us(ctx.slot_offset_bytes);
+        self.scheduler.schedule(wire_end_tick, delay_us);
+        Ok(())
+    }
+
+    /// Encode one Fast Sync/Bulk Read slot reply and arm its fire. Slot
+    /// position (Only/First/Middle/Last) comes from the cached
+    /// [`ReplyContext`]; Last engages the chain-CRC fold scheduler with the
+    /// cursor captured at request wire-end. RDT µs becomes Q8.8 µs at the
+    /// boundary (`<< 8`) so the trait surface stays integer-µs.
+    pub fn send_slot(&mut self, slot: &Slot<'_>) -> Result<(), WriteError> {
+        let Some(ctx) = self.last_reply_ctx.take() else {
+            return Ok(());
+        };
+        let Some(position) = ctx.fast_slot_position else {
+            // No Fast slot in the cached context — caller routed wrong;
+            // drop silently (dispatcher bug, not driver concern).
+            return Ok(());
+        };
+        self.tx.send_slot(slot, position)?;
+        let Some(wire_end_tick) = ctx.wire_end_tick else {
+            return Ok(());
+        };
+        match position {
+            SlotPosition::Last { .. } => {
+                let delay_q88 =
+                    (self.rdt_us << 8) + self.clock.bytes_to_us_q88(ctx.slot_offset_bytes);
+                self.scheduler
+                    .schedule_last_slot(wire_end_tick, delay_q88, ctx.anchor_bytes);
+            }
+            _ => {
+                let delay_us = self.rdt_us + self.clock.bytes_to_us(ctx.slot_offset_bytes);
+                self.scheduler.schedule(wire_end_tick, delay_us);
+            }
+        }
+        Ok(())
+    }
+
+    /// Drop any armed fire and clear the staged request state so the next
+    /// reply must come through a fresh `poll()`.
+    pub fn cancel(&mut self) {
+        self.scheduler.cancel();
+        *self.last_reply_ctx = None;
+    }
+
+    /// Stage a deferred ID change — applies at the next `on_tx_complete`.
+    pub fn stage_id(&mut self, id: u8) {
+        if id != self.id {
+            *self.pending_id = Some(id);
+        }
+    }
+
+    /// Stage a deferred baud-rate change. Forwarded to `Clock`; applied
+    /// at its `on_tx_complete` (driven by the parent's `on_tx_complete`).
+    pub fn stage_baud(&mut self, baud: BaudRate) {
+        self.clock.stage_baud(baud);
+    }
+
+    /// Stage a deferred Return Delay Time change in µs — applies at the
+    /// next `on_tx_complete`.
+    pub fn stage_rdt(&mut self, us: u32) {
+        if us != self.rdt_us {
+            *self.pending_rdt_us = Some(us);
+        }
+    }
+
+    /// Stage a deferred reboot, honored after any in-flight TX drains.
+    pub fn stage_reboot(&mut self, mode: BootMode) {
+        *self.pending_reboot = Some(mode);
+    }
+}
+
+impl<U: UsartBaud, T: ClockTrim, S: DxlTxScheduler, CRC: CrcUmts, const TX_BUF_LEN: usize> DxlReply
+    for ReplyHandle<'_, U, T, S, CRC, TX_BUF_LEN>
+{
+    fn send_status(&mut self, status: Status<'_>) -> Result<(), WriteError> {
+        ReplyHandle::send_status(self, status)
+    }
+
+    fn send_slot(&mut self, slot: &Slot<'_>) -> Result<(), WriteError> {
+        ReplyHandle::send_slot(self, slot)
+    }
+
+    fn stage_id(&mut self, id: u8) {
+        ReplyHandle::stage_id(self, id)
+    }
+
+    fn stage_baud(&mut self, baud: BaudRate) {
+        ReplyHandle::stage_baud(self, baud)
+    }
+
+    fn stage_rdt(&mut self, us: u32) {
+        ReplyHandle::stage_rdt(self, us)
+    }
+
+    fn stage_reboot(&mut self, mode: BootMode) {
+        ReplyHandle::stage_reboot(self, mode)
+    }
+}
 
 /// The DXL bus composite. The type parameters together describe everything
 /// this driver wants the chip side to supply — what peripherals to drive
@@ -67,13 +294,12 @@ pub struct DxlUart<
     id: u8,
     rdt_us: u32,
 
-    /// Wire location of the most recently surfaced own-or-broadcast
-    /// Instruction. Set on `poll()`'s surfacing return; consumed by
-    /// `send_status`/`send_slot` to look up `BT[token.end.predecessor()]`
-    /// for fire-time derivation. Cleared on `cancel()` and after a
-    /// successful schedule. `None` means "no request currently in flight"
-    /// — the send methods drop silently in that case.
-    last_token: Option<InstructionToken<RX_BUF_LEN>>,
+    /// Wire-positioning info derived from the most recently surfaced
+    /// packet — wire-end tick, slot offset, Fast slot position, chain-CRC
+    /// anchor. Computed at poll surface and consumed by `ReplyHandle`'s
+    /// send methods. Per driver-pattern §7.4 — driver-derivable wire shape
+    /// stays in the driver, not on the trait surface.
+    last_reply_ctx: Option<ReplyContext>,
 
     pending_id: Option<u8>,
     pending_rdt_us: Option<u32>,
@@ -105,7 +331,7 @@ impl<
             scheduler,
             id,
             rdt_us,
-            last_token: None,
+            last_reply_ctx: None,
             pending_id: None,
             pending_rdt_us: None,
             pending_reboot: None,
@@ -135,32 +361,74 @@ impl<
 
     /// Drain the codec until an Instruction addressed to us (or BROADCAST)
     /// surfaces; route each parsed Instruction's BT pair walk into the
-    /// clock's drift integrator. Foreign Instructions feed drift but
-    /// don't surface; Status frames feed neither.
+    /// clock's drift integrator, derive the reply context from the parsed
+    /// packet, and hand `(packet, &mut ReplyHandle)` to the dispatcher
+    /// closure. Foreign Instructions feed drift but don't reach the
+    /// closure; Status frames feed neither.
     ///
-    /// Composite-owned routing per driver-pattern §4 + §10.1 — the wire
-    /// diagram lives in this file's method bodies, codec exposes the
-    /// `byte_pairs` accessor over its own BT ring, clock exposes
-    /// `on_byte_pair` which does the HIT-window check + delta/10 +
-    /// drift integration. On the surfacing path the just-parsed token is
-    /// latched into `last_token` so the next `send_*` can derive
-    /// `wire_end_tick = BT[token.end.predecessor()] + 10·tpb` without
-    /// re-walking the ring.
-    pub fn poll(&mut self) -> Option<InstructionPacket<'_>> {
+    /// The closure-based shape exists to break the otherwise-fatal borrow
+    /// conflict between `InstructionPacket<'_>` (borrowed from the codec's
+    /// RX half) and the `&mut` access the send path needs on the codec's
+    /// TX half. The codec's [`Codec::split_mut`] returns the two halves as
+    /// disjoint mutable references, so the closure sees both at once.
+    pub fn poll<F>(&mut self, f: F)
+    where
+        F: for<'a> FnOnce(InstructionPacket<'a>, &mut ReplyHandle<'_, U, T, S, CRC, TX_BUF_LEN>),
+    {
         let id = self.id;
-        let codec = &mut self.codec;
-        let clock = &mut self.clock;
+        let rdt_us = self.rdt_us;
+        let Self {
+            codec,
+            clock,
+            scheduler,
+            last_reply_ctx,
+            pending_id,
+            pending_rdt_us,
+            pending_reboot,
+            ..
+        } = self;
+        let (rx, tx) = codec.split_mut();
         loop {
-            let token = codec.poll_one()?;
-            for (prev, curr) in codec.byte_pairs(token.start, token.end) {
+            let Some(token) = rx.poll_one() else { return };
+            for (prev, curr) in rx.byte_pairs(token.start, token.end) {
                 clock.on_byte_pair(prev, curr);
             }
-            if token.id == id || token.id == BROADCAST_ID {
-                self.last_token = Some(token);
-                return codec.dispatch();
+            if token.id != id && token.id != BROADCAST_ID {
+                // Foreign Instruction — drift fed above, drop and continue.
+                continue;
             }
-            // Foreign Instruction — drift fed above, drop the token and
-            // continue polling.
+            let cursor = rx.wire_byte_cursor();
+            // Eager wire-end tick: BT[last_byte_seq] + 10·tpb. Captured now
+            // so the send path doesn't need to re-acquire `&rx` (the parsed
+            // packet's shared borrow on `rx` would block that). `None` is
+            // fine — send drops silently.
+            let wire_end_tick = rx
+                .byte_ts_at(token.end.predecessor())
+                .map(|ts| ts.wrapping_add(clock.ticks_per_bit().wrapping_mul(10)));
+            // dispatch() takes `&self` so the packet's borrow on `rx` is
+            // shared — compatible with the (already-captured) BT lookup
+            // and the disjoint `&mut tx` the reply handle holds.
+            let Some(packet) = rx.dispatch() else { return };
+            let ctx = ReplyContext {
+                wire_end_tick,
+                slot_offset_bytes: slot_offset_for(&packet, id),
+                fast_slot_position: fast_slot_position(&packet, id),
+                anchor_bytes: cursor,
+            };
+            *last_reply_ctx = Some(ctx);
+            let mut reply = ReplyHandle {
+                tx,
+                scheduler,
+                clock,
+                last_reply_ctx,
+                pending_id,
+                pending_rdt_us,
+                pending_reboot,
+                id,
+                rdt_us,
+            };
+            f(packet, &mut reply);
+            return;
         }
     }
 
@@ -187,88 +455,6 @@ impl<
         self.pending_reboot.take()
     }
 
-    pub fn stage_id(&mut self, id: u8) {
-        if id != self.id {
-            self.pending_id = Some(id);
-        }
-    }
-
-    pub fn stage_baud(&mut self, baud: BaudRate) {
-        self.clock.stage_baud(baud);
-    }
-
-    pub fn stage_rdt(&mut self, us: u32) {
-        if us != self.rdt_us {
-            self.pending_rdt_us = Some(us);
-        }
-    }
-
-    pub fn stage_reboot(&mut self, mode: BootMode) {
-        self.pending_reboot = Some(mode);
-    }
-
-    /// Encode a Status reply into the codec's TX buffer and arm a fire at
-    /// `wire_end_tick + RDT`. The wire-end tick is derived from the most
-    /// recently surfaced request (`last_token`); if no token is staged
-    /// (caller never polled, or `cancel()` ran since), the encode still
-    /// succeeds but no fire is armed — the staged TX bytes simply won't
-    /// ship. Token is consumed on take so the next send needs a fresh
-    /// `poll()`.
-    pub fn send_status(&mut self, status: Status<'_>) -> Result<(), WriteError> {
-        self.codec.send_status(status)?;
-        if let Some(wire_end_tick) = self.wire_end_tick() {
-            self.scheduler.schedule(wire_end_tick, self.rdt_us);
-        }
-        Ok(())
-    }
-
-    /// Encode one Fast slot reply and arm its fire. Only/First/Middle
-    /// route through `schedule(wire_end_tick + RDT)`; Last routes through
-    /// `schedule_last_slot(wire_end_tick, RDT_q88, anchor_bytes)` so the
-    /// provider can seed the chain-CRC predecessor fold alongside arming
-    /// the fire. `anchor_bytes` is the predecessor-byte count the post-fire
-    /// walk must cover — ignored for non-Last positions. RDT µs becomes
-    /// Q8.8 µs at the boundary (`<< 8`) so the trait surface stays in the
-    /// integer-µs vocabulary the rest of the driver speaks.
-    pub fn send_slot(
-        &mut self,
-        slot: &Slot<'_>,
-        position: SlotPosition,
-        anchor_bytes: u32,
-    ) -> Result<(), WriteError> {
-        self.codec.send_slot(slot, position)?;
-        if let Some(wire_end_tick) = self.wire_end_tick() {
-            match position {
-                SlotPosition::Last { .. } => {
-                    self.scheduler
-                        .schedule_last_slot(wire_end_tick, self.rdt_us << 8, anchor_bytes)
-                }
-                _ => self.scheduler.schedule(wire_end_tick, self.rdt_us),
-            }
-        }
-        Ok(())
-    }
-
-    /// Drop any armed fire and clear the staged token so the next request
-    /// must come through `poll()` before another `send_*` can fire.
-    pub fn cancel(&mut self) {
-        self.scheduler.cancel();
-        self.last_token = None;
-    }
-
-    /// Take the staged token and derive its wire-end tick:
-    /// `BT[token.end.predecessor()] + 10·ticks_per_bit`. Returns `None`
-    /// when no token is staged or the BT entry for the last byte has
-    /// already lapped out of the ring window. Mutating because the token
-    /// is consumed on a successful read.
-    fn wire_end_tick(&mut self) -> Option<u16> {
-        let token = self.last_token.take()?;
-        let last_byte_seq = token.end.predecessor();
-        let ts = self.codec.byte_ts_at(last_byte_seq)?;
-        let tpb = self.clock.ticks_per_bit();
-        Some(ts.wrapping_add(tpb.wrapping_mul(10)))
-    }
-
     /// Sequence number of the next BT slot to write — one past the last
     /// published BT entry.
     #[allow(dead_code)]
@@ -284,6 +470,11 @@ impl<
     /// Stable peripheral-memory address for DMA1_CH5's destination buffer.
     pub fn rx_buf_addr(&self) -> usize {
         self.codec.rx_buf_addr()
+    }
+
+    /// Stable peripheral-memory address for DMA1_CH4's source buffer.
+    pub fn tx_buf_addr(&self) -> usize {
+        self.codec.tx_buf_addr()
     }
 }
 
@@ -349,12 +540,45 @@ mod tests {
         make_bus_with(Codec::new(FakeDmaRing::default()), BaudRate::B3000000)
     }
 
+    /// Variant of [`TestBus::poll`] that captures the surfaced packet's
+    /// outer enum tag (Ping / SyncRead / Status / …) for tests that don't
+    /// also exercise a send path. Tests that DO send use a closure that
+    /// records via assertions inline.
+    #[derive(Default, Debug, PartialEq, Eq)]
+    enum Surfaced {
+        #[default]
+        None,
+        Ping,
+        SyncRead,
+        FastSyncRead,
+    }
+
+    fn poll_into(bus: &mut TestBus) -> Surfaced {
+        let mut out = Surfaced::None;
+        bus.poll(|pkt, _reply| {
+            out = match pkt {
+                InstructionPacket::Ping(_) => Surfaced::Ping,
+                InstructionPacket::SyncRead(_) => Surfaced::SyncRead,
+                InstructionPacket::FastSyncRead(_) => Surfaced::FastSyncRead,
+                _ => Surfaced::None,
+            };
+        });
+        out
+    }
+
+    /// Stage `bytes` at offset 0 (auto-publishing write head) and poll.
+    /// Returns whether anything surfaced.
+    fn poll_after(bus: &mut TestBus, bytes: &[u8]) -> bool {
+        bus.codec.stage_rx_bytes_for_test(0, bytes);
+        let mut surfaced = false;
+        bus.poll(|_pkt, _reply| {
+            surfaced = true;
+        });
+        surfaced
+    }
+
     #[test]
     fn on_rx_edge_advance_pulls_tpb_from_clock_at_3m() {
-        // At 3M tpb=16 → byte=160 ticks; the 160-tick delta is a window HIT.
-        // If the composite forwarded a wrong tpb (e.g. 48 from a 1M clock),
-        // the same delta would fall outside [9·48, 11·48] and classify as
-        // SKIP — byte_ts_head would stay at 1 instead of advancing to 2.
         let codec = make_codec_with_edges(
             &[1000, 1160],
             DmaFlags {
@@ -371,11 +595,6 @@ mod tests {
 
     #[test]
     fn on_rx_edge_advance_pulls_tpb_from_clock_at_1m() {
-        // Mirror of the 3M case: at tpb=48 the byte-time is 480 ticks. Two
-        // edges 480 apart land as a HIT; if tpb were misrouted to 16, the
-        // 480-tick delta would classify as GAP+re-anchor but still advance
-        // — so we assert the HIT/SKIP boundary instead: two edges 160 apart
-        // are HIT at 3M, SKIP at 1M.
         let codec = make_codec_with_edges(
             &[1000, 1160],
             DmaFlags {
@@ -393,8 +612,6 @@ mod tests {
 
     #[test]
     fn on_rx_idle_walks_tail_edges() {
-        // IDLE backstop walks edges the HT/TC ISR hasn't drained (small
-        // packets that never trip HT). Single tail edge → SEED.
         let codec = make_codec_with_edges(&[500], DmaFlags::default());
         let mut bus = make_bus_with(codec, BaudRate::B3000000);
 
@@ -405,8 +622,9 @@ mod tests {
 
     #[test]
     fn stage_id_defers_until_tx_complete() {
-        let mut bus = make_bus();
-        bus.stage_id(0x42);
+        let ping = wire_ping(TEST_ID);
+        let (mut bus, _) = bus_armed_with(&ping);
+        bus.poll(|_, reply| reply.stage_id(0x42));
         assert_eq!(bus.id, TEST_ID);
         let reboot = bus.on_tx_complete();
         assert_eq!(bus.id, 0x42);
@@ -415,15 +633,17 @@ mod tests {
 
     #[test]
     fn stage_id_noop_when_unchanged() {
-        let mut bus = make_bus();
-        bus.stage_id(TEST_ID);
+        let ping = wire_ping(TEST_ID);
+        let (mut bus, _) = bus_armed_with(&ping);
+        bus.poll(|_, reply| reply.stage_id(TEST_ID));
         assert!(bus.pending_id.is_none());
     }
 
     #[test]
     fn stage_rdt_defers_until_tx_complete() {
-        let mut bus = make_bus();
-        bus.stage_rdt(500);
+        let ping = wire_ping(TEST_ID);
+        let (mut bus, _) = bus_armed_with(&ping);
+        bus.poll(|_, reply| reply.stage_rdt(500));
         assert_eq!(bus.rdt_us, TEST_RDT_US);
         bus.on_tx_complete();
         assert_eq!(bus.rdt_us, 500);
@@ -431,10 +651,9 @@ mod tests {
 
     #[test]
     fn stage_baud_forwards_to_clock() {
-        // Cross-driver staging: the bus forwards to the clock sub-driver,
-        // which applies the BRR at its own on_tx_complete (called by bus).
-        let mut bus = make_bus();
-        bus.stage_baud(BaudRate::B1000000);
+        let ping = wire_ping(TEST_ID);
+        let (mut bus, _) = bus_armed_with(&ping);
+        bus.poll(|_, reply| reply.stage_baud(BaudRate::B1000000));
         // Still at 3M until the apply.
         assert_eq!(bus.clock.ticks_per_bit(), 16);
         bus.on_tx_complete();
@@ -443,9 +662,9 @@ mod tests {
 
     #[test]
     fn stage_reboot_surfaces_through_on_tx_complete() {
-        let mut bus = make_bus();
-        bus.stage_reboot(BootMode::Bootloader);
-        // Latched but not yet observed.
+        let ping = wire_ping(TEST_ID);
+        let (mut bus, _) = bus_armed_with(&ping);
+        bus.poll(|_, reply| reply.stage_reboot(BootMode::Bootloader));
         assert!(bus.pending_reboot.is_some());
         let mode = bus.on_tx_complete();
         assert_eq!(mode, Some(BootMode::Bootloader));
@@ -490,26 +709,29 @@ mod tests {
         out
     }
 
-    /// Stage `bytes` at offset 0 (auto-publishing write head) and poll.
-    /// Returns the surfaced ID byte (or None).
-    fn poll_after(bus: &mut TestBus, bytes: &[u8]) -> Option<u8> {
-        bus.codec.stage_rx_bytes_for_test(0, bytes);
-        bus.poll().map(|ip| ip.id().as_byte())
+    /// Fast Sync Read — same broadcast addressing as Sync Read but the
+    /// reply path goes through `send_slot` per the FastSlotInfo position.
+    fn wire_fast_sync_read(addr: u16, length: u16, ids: &[u8]) -> Vec<u8, 64> {
+        let mut out: Vec<u8, 64> = Vec::new();
+        InstructionEmitter::<_, SoftwareCrcUmts>::new(&mut out)
+            .fast_sync_read(addr, length, ids)
+            .unwrap();
+        out
     }
 
     #[test]
     fn poll_returns_none_when_no_new_bytes() {
         let mut bus = make_bus();
-        assert!(bus.poll().is_none());
+        assert_eq!(poll_into(&mut bus), Surfaced::None);
         // Idempotent — calling again still drains nothing.
-        assert!(bus.poll().is_none());
+        assert_eq!(poll_into(&mut bus), Surfaced::None);
     }
 
     #[test]
     fn poll_surfaces_instruction_addressed_to_us() {
         let mut bus = make_bus();
         let pkt = wire_ping(TEST_ID);
-        assert_eq!(poll_after(&mut bus, &pkt), Some(TEST_ID));
+        assert!(poll_after(&mut bus, &pkt));
         assert_eq!(bus.instruction_count(), 1);
     }
 
@@ -517,7 +739,7 @@ mod tests {
     fn poll_drops_instruction_for_other_id() {
         let mut bus = make_bus();
         let pkt = wire_ping(0x42);
-        assert_eq!(poll_after(&mut bus, &pkt), None);
+        assert!(!poll_after(&mut bus, &pkt));
         // Still counted — foreign Instructions feed the drift signal.
         assert_eq!(bus.instruction_count(), 1);
     }
@@ -527,10 +749,7 @@ mod tests {
         let mut bus = make_bus();
         let pkt = wire_sync_read(0x84, 4, &[0x01, 0x02, 0x03]);
         bus.codec.stage_rx_bytes_for_test(0, &pkt);
-        match bus.poll() {
-            Some(InstructionPacket::SyncRead(_)) => {}
-            other => panic!("expected SyncRead, got {other:?}"),
-        }
+        assert_eq!(poll_into(&mut bus), Surfaced::SyncRead);
         assert_eq!(bus.instruction_count(), 1);
     }
 
@@ -538,7 +757,7 @@ mod tests {
     fn poll_drops_status_silently() {
         let mut bus = make_bus();
         let pkt = wire_status(TEST_ID);
-        assert_eq!(poll_after(&mut bus, &pkt), None);
+        assert!(!poll_after(&mut bus, &pkt));
         // Status frames never tick the drift signal — peer HSI is its own
         // clock domain (see [[drift_sampling_instruction_only]]).
         assert_eq!(bus.instruction_count(), 0);
@@ -548,24 +767,17 @@ mod tests {
     fn poll_recovers_from_bad_crc() {
         let mut bus = make_bus();
         let mut bad = wire_ping(TEST_ID);
-        // Corrupt the second-to-last byte — flips one CRC byte.
         let crc_lo_pos = bad.len() - 2;
         bad[crc_lo_pos] ^= 0xFF;
         let good = wire_ping(TEST_ID);
 
-        // Stage the bad packet at offset 0, then the good one right after.
         let mut combined: Vec<u8, 32> = Vec::new();
         combined.extend_from_slice(&bad).unwrap();
         combined.extend_from_slice(&good).unwrap();
         bus.codec.stage_rx_bytes_for_test(0, &combined);
 
-        // First poll: decoder Resyncs on the bad CRC, then decodes the
-        // good packet and surfaces it.
-        let surfaced = bus.poll();
-        assert!(
-            surfaced.is_some(),
-            "good packet should surface after resync"
-        );
+        let surfaced = poll_into(&mut bus);
+        assert_eq!(surfaced, Surfaced::Ping);
         assert_eq!(bus.instruction_count(), 1);
     }
 
@@ -578,10 +790,7 @@ mod tests {
         bus.codec.set_rx_read_seq_for_test(start);
         bus.codec.stage_rx_bytes_for_test(start, &pkt);
 
-        match bus.poll() {
-            Some(InstructionPacket::Ping(p)) => assert_eq!(p.header.id.as_byte(), TEST_ID),
-            other => panic!("expected Ping across wrap, got {other:?}"),
-        }
+        assert_eq!(poll_into(&mut bus), Surfaced::Ping);
         assert_eq!(bus.instruction_count(), 1);
     }
 
@@ -593,24 +802,19 @@ mod tests {
         // Stage everything except the last byte — decoder is mid-CRC.
         let split = pkt.len() - 1;
         bus.codec.stage_rx_bytes_for_test(0, &pkt[..split]);
-        assert!(bus.poll().is_none());
+        assert_eq!(poll_into(&mut bus), Surfaced::None);
         assert_eq!(bus.instruction_count(), 0);
 
         // Stage the final byte (extending the producer head) — packet now
         // completes and surfaces.
         bus.codec
             .stage_rx_bytes_for_test(split as u16, &pkt[split..]);
-        match bus.poll() {
-            Some(InstructionPacket::Ping(p)) => assert_eq!(p.header.id.as_byte(), TEST_ID),
-            other => panic!("expected Ping after resume, got {other:?}"),
-        }
+        assert_eq!(poll_into(&mut bus), Surfaced::Ping);
         assert_eq!(bus.instruction_count(), 1);
     }
 
     /// Stage a stream of `n_bytes` edges spaced `step` ticks apart and run
     /// the classifier so BT[0..n_bytes] is populated before the test polls.
-    /// Used by the drift-sample tests to drive realistic BT pairs without
-    /// faking the classifier output directly.
     fn bus_with_staged_bt(n_bytes: usize, step: u16) -> TestBus {
         let mut edges: Vec<u16, 32> = Vec::new();
         for i in 0..n_bytes as u16 {
@@ -637,8 +841,7 @@ mod tests {
         let mut bus = bus_with_staged_bt(ping.len(), BYTE_TICKS_3M);
         bus.codec.stage_rx_bytes_for_test(0, &ping);
 
-        let surfaced = bus.poll();
-        assert!(matches!(surfaced, Some(InstructionPacket::Ping(_))));
+        assert_eq!(poll_into(&mut bus), Surfaced::Ping);
 
         // 10-byte packet → 9 in-window BT pairs → 9 samples to the integrator.
         assert_eq!(bus.clock.drift_samples(), (ping.len() - 1) as u16);
@@ -646,66 +849,49 @@ mod tests {
 
     #[test]
     fn poll_feeds_drift_for_foreign_instruction() {
-        // Foreign-ID Instruction doesn't surface but still calibrates the
-        // clock — host has HSE, drift signal is valid for every Instruction.
         let ping = wire_ping(0x42);
         let mut bus = bus_with_staged_bt(ping.len(), BYTE_TICKS_3M);
         bus.codec.stage_rx_bytes_for_test(0, &ping);
 
-        assert!(bus.poll().is_none());
+        assert_eq!(poll_into(&mut bus), Surfaced::None);
         assert_eq!(bus.clock.drift_samples(), (ping.len() - 1) as u16);
     }
 
     #[test]
     fn poll_does_not_feed_drift_for_status() {
-        // Status frame uses the peer's HSI — sampling its BT pairs would
-        // calibrate against another HSI ([[drift_sampling_instruction_only]]).
         let status = wire_status(TEST_ID);
         let mut bus = bus_with_staged_bt(status.len(), BYTE_TICKS_3M);
         bus.codec.stage_rx_bytes_for_test(0, &status);
 
-        assert!(bus.poll().is_none());
+        assert_eq!(poll_into(&mut bus), Surfaced::None);
         assert_eq!(bus.clock.drift_samples(), 0);
     }
 
     #[test]
     fn poll_filters_out_of_window_bt_pairs() {
-        // Edges spaced 200 ticks > 11·tpb=176 at 3M → GAP class. BT entries
-        // still land (re-anchor), but clock.on_byte_pair's HIT-window check
-        // filters their pair deltas — `Clock` owns the window math now.
         let ping = wire_ping(TEST_ID);
         let mut bus = bus_with_staged_bt(ping.len(), 200);
         bus.codec.stage_rx_bytes_for_test(0, &ping);
 
-        assert!(bus.poll().is_some());
+        assert_eq!(poll_into(&mut bus), Surfaced::Ping);
         assert_eq!(bus.clock.drift_samples(), 0);
     }
 
     #[test]
     fn poll_drift_walk_anchors_at_first_consumed_byte_not_zero() {
-        // Reader pre-positioned past the start of the BT ring. Packet
-        // begins at RX seq 5, not 0. The drift walk must anchor on the
-        // first byte poll() actually consumes — otherwise it would walk
-        // BT[0..end] and either misattribute samples (if BT[0..5] are
-        // stale-but-in-window) or silently early-return.
         let ping = wire_ping(TEST_ID);
-        // Stage enough edges to populate BT[0..5 + ping.len()] — covers
-        // both the pre-cursor slots and the packet's range.
         let mut bus = bus_with_staged_bt(5 + ping.len(), BYTE_TICKS_3M);
 
         bus.codec.set_rx_read_seq_for_test(5);
         bus.codec.stage_rx_bytes_for_test(5, &ping);
 
-        assert!(bus.poll().is_some());
+        assert_eq!(poll_into(&mut bus), Surfaced::Ping);
         // Exactly (ping.len() - 1) samples, not 5 + (ping.len() - 1).
         assert_eq!(bus.clock.drift_samples(), (ping.len() - 1) as u16);
     }
 
     #[test]
     fn poll_drift_walk_resumes_across_resync() {
-        // A corrupt frame followed by a clean one: Resync moves the BT
-        // range cursor past the bad bytes so the clean frame's BT pairs
-        // (and only those) feed the integrator.
         let mut bad = wire_ping(TEST_ID);
         let crc_lo = bad.len() - 2;
         bad[crc_lo] ^= 0xFF;
@@ -719,7 +905,7 @@ mod tests {
         combined.extend_from_slice(&good).unwrap();
         bus.codec.stage_rx_bytes_for_test(0, &combined);
 
-        assert!(bus.poll().is_some());
+        assert_eq!(poll_into(&mut bus), Surfaced::Ping);
         // Only the good frame's pairs feed; the bad frame's bytes were
         // dropped through Resync, so its BT range never enters the walk.
         assert_eq!(bus.clock.drift_samples(), (good.len() - 1) as u16);
@@ -739,11 +925,10 @@ mod tests {
         bus.codec.stage_rx_bytes_for_test(0, &combined);
 
         // First call surfaces ours; decoder pauses at packet boundary.
-        let surfaced = bus.poll();
-        assert!(matches!(surfaced, Some(InstructionPacket::Ping(_))));
+        assert_eq!(poll_into(&mut bus), Surfaced::Ping);
 
         // Drain the rest — foreign Ping bumps the counter, Status doesn't.
-        assert!(bus.poll().is_none());
+        assert_eq!(poll_into(&mut bus), Surfaced::None);
         assert_eq!(bus.instruction_count(), 2);
     }
 
@@ -776,9 +961,7 @@ mod tests {
     fn send_status_after_poll_arms_schedule_at_wire_end_plus_rdt() {
         let ping = wire_ping(TEST_ID);
         let (mut bus, wire_end_tick) = bus_armed_with(&ping);
-        assert!(bus.poll().is_some());
-
-        bus.send_status(empty_status()).expect("encode fits");
+        bus.poll(|_, reply| reply.send_status(empty_status()).expect("encode fits"));
 
         assert_eq!(
             bus.scheduler.log.as_slice(),
@@ -791,29 +974,31 @@ mod tests {
 
     #[test]
     fn send_status_drops_silently_when_no_token() {
-        let mut bus = make_bus();
-        // No prior poll() → no token. Encode still succeeds; scheduler stays
-        // untouched so the staged TX bytes simply never ship.
-        bus.send_status(empty_status()).expect("encode fits");
+        // Foreign-ID Instruction → poll closure doesn't fire → scheduler
+        // stays untouched.
+        let ping = wire_ping(0x42);
+        let (mut bus, _) = bus_armed_with(&ping);
+        bus.poll(|_, reply| reply.send_status(empty_status()).expect("encode fits"));
         assert!(bus.scheduler.log.is_empty());
     }
 
     #[test]
     fn send_slot_only_routes_to_schedule() {
-        let ping = wire_ping(TEST_ID);
-        let (mut bus, wire_end_tick) = bus_armed_with(&ping);
-        assert!(bus.poll().is_some());
+        // Fast Sync Read with our_id as the sole slot → SlotPosition::Only.
+        let req = wire_fast_sync_read(0, 2, &[TEST_ID]);
+        let (mut bus, wire_end_tick) = bus_armed_with(&req);
 
-        let payload = [0x11_u8, 0x22, 0x33];
-        let slot = Slot {
-            id: Id::new(TEST_ID),
-            error: StatusError::OK,
-            data: &payload,
-        };
-        // anchor_bytes ignored for non-Last; pass a sentinel to prove it.
-        bus.send_slot(&slot, SlotPosition::Only { packet_length: 8 }, 0xDEAD_BEEF)
-            .expect("encode fits");
+        let payload = [0x11_u8, 0x22];
+        bus.poll(|_, reply| {
+            let slot = Slot {
+                id: Id::new(TEST_ID),
+                error: StatusError::OK,
+                data: &payload,
+            };
+            reply.send_slot(&slot).expect("encode fits");
+        });
 
+        // our_slot=0 of n_slots=1 → bytes_before=0 → delay = RDT.
         assert_eq!(
             bus.scheduler.log.as_slice(),
             &[ScheduleOp::Schedule {
@@ -825,69 +1010,131 @@ mod tests {
 
     #[test]
     fn send_slot_last_routes_to_schedule_last_slot() {
-        let ping = wire_ping(TEST_ID);
-        let (mut bus, wire_end_tick) = bus_armed_with(&ping);
-        assert!(bus.poll().is_some());
+        // Fast Sync Read with two slaves where we're the last → Last position.
+        let req = wire_fast_sync_read(0, 2, &[0x42, TEST_ID]);
+        let (mut bus, wire_end_tick) = bus_armed_with(&req);
 
         let payload = [0xAA_u8, 0xBB];
-        let slot = Slot {
-            id: Id::new(TEST_ID),
-            error: StatusError::OK,
-            data: &payload,
-        };
-        const ANCHOR_BYTES: u32 = 12;
-        bus.send_slot(&slot, SlotPosition::Last { crc: 0xDEAD }, ANCHOR_BYTES)
-            .expect("encode fits");
+        let expected_delay_q88 = (TEST_RDT_US << 8) + bus.clock.bytes_to_us_q88(12);
+        bus.poll(|_, reply| {
+            let slot = Slot {
+                id: Id::new(TEST_ID),
+                error: StatusError::OK,
+                data: &payload,
+            };
+            reply.send_slot(&slot).expect("encode fits");
+        });
 
-        // Q8.8 µs conversion lives in the composite — trait surface expects
-        // q88 for the Last path.
+        let entry = bus.scheduler.log.as_slice().first().expect("one fire");
+        match entry {
+            ScheduleOp::ScheduleLastSlot {
+                wire_end_tick: w,
+                delay_q88_us,
+                anchor_bytes,
+            } => {
+                assert_eq!(*w, wire_end_tick);
+                assert_eq!(*delay_q88_us, expected_delay_q88);
+                // Anchor is the codec's wire-byte cursor at request consume —
+                // nonzero (the request was parsed), exact value depends on
+                // the staged bytes' length; just assert it's > 0.
+                assert!(*anchor_bytes > 0);
+            }
+            other => panic!("expected ScheduleLastSlot, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn send_slot_without_fast_context_drops_silently() {
+        // Polled a Ping → no Fast slot position cached. send_slot must
+        // silently no-op (dispatcher bug, not driver concern).
+        let ping = wire_ping(TEST_ID);
+        let (mut bus, _) = bus_armed_with(&ping);
+
+        let payload = [0x00_u8];
+        bus.poll(|_, reply| {
+            let slot = Slot {
+                id: Id::new(TEST_ID),
+                error: StatusError::OK,
+                data: &payload,
+            };
+            reply.send_slot(&slot).expect("encode fits");
+        });
+        assert!(bus.scheduler.log.is_empty());
+    }
+
+    #[test]
+    fn cancel_clears_context_and_forwards() {
+        let ping = wire_ping(TEST_ID);
+        let (mut bus, _) = bus_armed_with(&ping);
+        bus.poll(|_, reply| reply.cancel());
+        assert_eq!(bus.scheduler.log.as_slice(), &[ScheduleOp::Cancel]);
+        assert!(bus.last_reply_ctx.is_none());
+    }
+
+    #[test]
+    fn send_status_consumes_ctx_so_double_send_is_silent() {
+        let ping = wire_ping(TEST_ID);
+        let (mut bus, _) = bus_armed_with(&ping);
+        bus.poll(|_, reply| {
+            reply.send_status(empty_status()).expect("encode fits");
+            // Second send within the same poll consumes nothing (ctx was
+            // taken on the first); scheduler log shows just one entry.
+            reply.send_status(empty_status()).expect("encode fits");
+        });
+        assert_eq!(bus.scheduler.log.len(), 1);
+    }
+
+    #[test]
+    fn foreign_instruction_does_not_run_closure() {
+        // poll() filters foreign-ID instructions; closure never fires →
+        // scheduler stays untouched.
+        let ping = wire_ping(0x42);
+        let (mut bus, _) = bus_armed_with(&ping);
+        let mut ran = false;
+        bus.poll(|_, _| ran = true);
+        assert!(!ran);
+        assert!(bus.scheduler.log.is_empty());
+    }
+
+    #[test]
+    fn broadcast_ping_stashes_id_indexed_slot_offset() {
+        // DXL 2.0 convention: each slave answers a broadcast Ping at offset
+        // `id × PING_STATUS_FRAME_BYTES` so replies don't collide. Driver
+        // computes this internally from the cached packet at poll time.
+        let req = wire_ping(BROADCAST_ID);
+        let (mut bus, wire_end_tick) = bus_armed_with(&req);
+
+        let expected_offset_us = bus
+            .clock
+            .bytes_to_us(TEST_ID as u32 * PING_STATUS_FRAME_BYTES);
+        bus.poll(|_, reply| reply.send_status(empty_status()).expect("encode fits"));
+
         assert_eq!(
             bus.scheduler.log.as_slice(),
-            &[ScheduleOp::ScheduleLastSlot {
+            &[ScheduleOp::Schedule {
                 wire_end_tick,
-                delay_q88_us: TEST_RDT_US << 8,
-                anchor_bytes: ANCHOR_BYTES,
+                delay_us: TEST_RDT_US + expected_offset_us,
             }]
         );
     }
 
     #[test]
-    fn cancel_clears_token_and_forwards() {
-        let ping = wire_ping(TEST_ID);
-        let (mut bus, _) = bus_armed_with(&ping);
-        assert!(bus.poll().is_some());
-        assert!(bus.last_token.is_some());
+    fn sync_read_stashes_bytes_before_for_later_slot() {
+        // our_id (TEST_ID=0x07) at slot index 2 — `bytes_before` = 2 × per_slot.
+        let req = wire_sync_read(0, 2, &[0x09, 0x05, TEST_ID]);
+        let (mut bus, wire_end_tick) = bus_armed_with(&req);
 
-        bus.cancel();
-        assert_eq!(bus.scheduler.log.as_slice(), &[ScheduleOp::Cancel]);
-        assert!(bus.last_token.is_none());
+        // per_slot = RESPONSE_HEADER_BYTES(9) + length(2) + CRC(2) = 13;
+        // bytes_before = 2 × 13 = 26.
+        let expected_offset_us = bus.clock.bytes_to_us(26);
+        bus.poll(|_, reply| reply.send_status(empty_status()).expect("encode fits"));
 
-        // Subsequent send_* with no fresh poll is a no-op on the scheduler.
-        bus.send_status(empty_status()).expect("encode fits");
-        assert_eq!(bus.scheduler.log.as_slice(), &[ScheduleOp::Cancel]);
-    }
-
-    #[test]
-    fn send_status_consumes_token_so_double_send_is_silent() {
-        let ping = wire_ping(TEST_ID);
-        let (mut bus, _) = bus_armed_with(&ping);
-        assert!(bus.poll().is_some());
-
-        bus.send_status(empty_status()).expect("encode fits");
-        // Second send without a fresh poll() doesn't fire — token was taken.
-        bus.send_status(empty_status()).expect("encode fits");
-        assert_eq!(bus.scheduler.log.len(), 1);
-    }
-
-    #[test]
-    fn foreign_instruction_does_not_stage_token() {
-        // poll() filters foreign-ID instructions; no token latched → no
-        // fire even though the caller calls send_status.
-        let ping = wire_ping(0x42);
-        let (mut bus, _) = bus_armed_with(&ping);
-        assert!(bus.poll().is_none());
-
-        bus.send_status(empty_status()).expect("encode fits");
-        assert!(bus.scheduler.log.is_empty());
+        assert_eq!(
+            bus.scheduler.log.as_slice(),
+            &[ScheduleOp::Schedule {
+                wire_end_tick,
+                delay_us: TEST_RDT_US + expected_offset_us,
+            }]
+        );
     }
 }

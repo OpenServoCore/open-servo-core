@@ -163,6 +163,22 @@ impl<U: UsartBaud, T: ClockTrim> Clock<U, T> {
     pub fn ticks_per_bit(&self) -> u16 {
         self.ticks_per_bit
     }
+
+    /// Integer-µs duration of `bytes` wire bytes at the current baud.
+    /// Used by the composite's slot-offset math: `delay = rdt + bytes_to_us(offset)`.
+    #[allow(dead_code)]
+    pub fn bytes_to_us(&self, bytes: u32) -> u32 {
+        let ticks = (bytes as u64) * (self.ticks_per_bit as u64) * 10;
+        (ticks * 1_000_000 / U::CLOCK_HZ as u64) as u32
+    }
+
+    /// Q8.8 µs duration of `bytes` wire bytes. Used by the Fast Last fire
+    /// path where sub-µs precision matters at 3 Mbaud.
+    #[allow(dead_code)]
+    pub fn bytes_to_us_q88(&self, bytes: u32) -> u32 {
+        let ticks = (bytes as u64) * (self.ticks_per_bit as u64) * 10;
+        (ticks * (1_000_000 * 256) / U::CLOCK_HZ as u64) as u32
+    }
 }
 
 #[cfg(test)]
@@ -343,5 +359,29 @@ mod tests {
         c.on_tx_complete();
         assert!(c.usart.log.is_empty());
         assert!(c.trim.log.is_empty());
+    }
+
+    #[test]
+    fn bytes_to_us_at_1m_is_ten_us_per_byte() {
+        let c = clock(BaudRate::B1000000);
+        assert_eq!(c.bytes_to_us(1), 10);
+        assert_eq!(c.bytes_to_us(5), 50);
+    }
+
+    #[test]
+    fn bytes_to_us_at_3m_truncates_to_three_us_per_byte() {
+        // 10 bits / 3 Mbaud = 3.33 µs/byte → 3 µs integer.
+        let c = clock(BaudRate::B3000000);
+        assert_eq!(c.bytes_to_us(1), 3);
+        assert_eq!(c.bytes_to_us(3), 10); // 9.99 µs → 9? actually (3*16*10*1e6/48e6)=10
+    }
+
+    #[test]
+    fn bytes_to_us_q88_at_3m_preserves_sub_us_resolution() {
+        // (1 * 16 * 10 * 256_000_000 / 48_000_000) = 853 (Q8.8) ≈ 3.33 µs.
+        // Linear in bytes — no truncation accumulates across multipliers.
+        let c = clock(BaudRate::B3000000);
+        assert_eq!(c.bytes_to_us_q88(1), 853);
+        assert_eq!(c.bytes_to_us_q88(3), 2560);
     }
 }

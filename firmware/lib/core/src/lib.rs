@@ -28,7 +28,4 @@ pub use sample::{ConversionVariables, RawSamples, Sample};
 pub use services::Services;
 pub use services::dxl::Dxl;
 pub use shared::Shared;
-pub use traits::{
-    CalSnapshot, Capabilities, ControlIo, DecayMode, DxlBus, Event, Motor, MotorCmd, Schedule,
-    Sensors, ServiceEvents, ServicesIo,
-};
+pub use traits::{Capabilities, ControlIo, DecayMode, DxlBus, DxlReply, Motor, MotorCmd, Sensors};

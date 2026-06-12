@@ -22,7 +22,6 @@ pub(crate) mod timing;
 pub(crate) mod tx_activity;
 
 pub use isr::on_systick;
-pub use scheduler::{start_fast_after, start_plain_after};
 pub use state::{
     cancel, report_dma_overrun, report_framing_error, report_noise_error, report_parity_error,
 };

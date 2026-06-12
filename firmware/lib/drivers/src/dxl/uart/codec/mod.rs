@@ -1,19 +1,24 @@
-//! Bytes ↔ packets. Owns the RX edge-ts ring + classifier (`Rx`), the
-//! streaming decoder, the RX byte ring (DMA1_CH5 destination), and the
-//! in-progress packet's start-of-RX-seq cursor. Surfaces an
+//! Bytes ↔ packets. Composite over two field-projection halves — `CodecRx`
+//! (decoder + RX byte ring + classifier + drift bookkeeping) and `CodecTx`
+//! (encoder + TX byte ring) — joined under `Codec`. The split lets the
+//! parent driver's closure-based `poll<F>` hand a parsed packet (borrowed
+//! from `CodecRx`) and a reply handle (borrowed from `CodecTx`) to the
+//! dispatcher closure simultaneously without a borrow conflict; outside
+//! that hot path, `Codec`'s forwarder methods keep the simpler call sites
+//! shape-unchanged.
+//!
+//! `Codec::poll_one` (delegating to `CodecRx`) surfaces an
 //! [`InstructionToken`] (a `Copy` description of the wire location) per
 //! decoded Instruction so the composite can walk BT pairs via
-//! [`Codec::byte_pairs`] and apply its id-filter without holding the
-//! `&mut Codec` borrow that a returned `InstructionPacket<'_>` would imply.
-//! The packet itself materializes on demand through [`Codec::dispatch`].
-//!
-//! TX work (task #5: `send_status` / `send_slot`, encoder) lands here
-//! alongside the decoder as additional fields/methods — the codec is the
-//! single home for byte-ring storage on both directions.
+//! [`Codec::byte_pairs`] and apply its id-filter without holding a `&mut`
+//! borrow that a returned `InstructionPacket<'_>` would imply. The packet
+//! itself materializes on demand through [`Codec::dispatch`] (shared
+//! borrow) so it can coexist with a disjoint `&mut CodecTx`.
 
 pub mod rx;
 
 use core::cell::SyncUnsafeCell;
+use core::marker::PhantomData;
 
 use dxl_protocol::decoder::{Decoder, Step};
 use dxl_protocol::packet::{Slot, Status};
@@ -38,13 +43,16 @@ pub struct InstructionToken<const RX_BUF_LEN: usize> {
     pub end: Seq<u8, RX_BUF_LEN>,
 }
 
-pub struct Codec<
+/// RX half — decoder, RX byte ring, classifier, drift bookkeeping. Splits
+/// off from [`CodecTx`] under [`Codec`] so the parent driver's closure-based
+/// `poll<F>` can hand a packet borrowed from this half and a reply handle
+/// borrowed from the TX half to the dispatcher at the same time.
+pub struct CodecRx<
     R: DmaRing,
     CRC: CrcUmts,
     const DECODER_CAP: usize,
     const RX_BUF_LEN: usize,
     const EDGE_BUF_LEN: usize,
-    const TX_BUF_LEN: usize,
 > {
     rx: Rx<R, EDGE_BUF_LEN, RX_BUF_LEN>,
     decoder: Decoder<DECODER_CAP, CRC>,
@@ -55,20 +63,19 @@ pub struct Codec<
     /// `% RX_BUF_LEN` collapses to AND, and the chip-side ISR publishes
     /// the producer head via [`HwRing::on_publish`] from NDTR.
     rx_buf: SyncUnsafeCell<HwRing<u8, RX_BUF_LEN>>,
-    /// DMA1_CH4 source for transmitted bytes. Single-shot DMA per fire:
-    /// the encoder methods ([`Codec::send_status`], future
-    /// [`Codec::send_slot`]) fill it from offset 0; bringup hands
-    /// [`Codec::tx_buf_addr`] to `dma::configure(CH4, ...)` once.
-    /// Producer (codec encoder) and consumer (DMA shift-out) phases are
-    /// exclusive — the composite holds the only `&mut Codec` and stops
-    /// writing once it routes to the scheduler — so no `SyncUnsafeCell`.
-    tx_buf: heapless::Vec<u8, TX_BUF_LEN>,
     /// Monotonic count of Instruction packets the decoder emitted —
     /// regardless of target ID — across this codec's lifetime. The drift
     /// signal ([[drift_sampling_instruction_only]]) ticks on every
     /// Instruction so foreign-target instructions still calibrate, while
     /// Status frames never contribute (peer HSI is its own clock domain).
     instruction_count: u32,
+    /// Monotonic count of wire bytes consumed by `poll_one` across this
+    /// codec's lifetime. Bumped once per `reader.advance(1)` so it tracks
+    /// every byte the parser saw — including resync'd prefixes. Composite
+    /// reads it at poll-time as the chain-CRC fold cursor for Fast Last
+    /// replies (doc §10.6 — "snoop_head = rx_write_pos at parse-complete").
+    /// 32 bits ≈ 23.8 days at 3M sustained — wrap is non-physical.
+    wire_bytes_consumed: u32,
     /// RX seq of the first byte of the in-progress decoder packet. `None`
     /// whenever the decoder is between packets (fresh boot, post-Packet,
     /// post-Resync); lazy-set to the pre-advance read seq on the next byte
@@ -87,16 +94,15 @@ impl<
     const DECODER_CAP: usize,
     const RX_BUF_LEN: usize,
     const EDGE_BUF_LEN: usize,
-    const TX_BUF_LEN: usize,
-> Codec<R, CRC, DECODER_CAP, RX_BUF_LEN, EDGE_BUF_LEN, TX_BUF_LEN>
+> CodecRx<R, CRC, DECODER_CAP, RX_BUF_LEN, EDGE_BUF_LEN>
 {
-    pub fn new(ring: R) -> Self {
+    fn new(ring: R) -> Self {
         Self {
             rx: Rx::new(ring),
             decoder: Decoder::new(),
             rx_buf: SyncUnsafeCell::new(HwRing::new(0)),
-            tx_buf: heapless::Vec::new(),
             instruction_count: 0,
+            wire_bytes_consumed: 0,
             packet_start_rx_seq: None,
         }
     }
@@ -149,6 +155,7 @@ impl<
             let pre_advance = reader.read_seq();
             self.packet_start_rx_seq.get_or_insert(pre_advance);
             reader.advance(1);
+            self.wire_bytes_consumed = self.wire_bytes_consumed.wrapping_add(1);
             let (step, _) = self.decoder.feed(&[byte]);
             match step {
                 Step::NeedMore => continue,
@@ -186,9 +193,10 @@ impl<
     /// Re-derive the most recent decoded packet through the decoder's
     /// immutable `dispatch_packet` path. The decoder stays in `Done`
     /// between `feed()` calls, so the overlay is still valid for as long
-    /// as no new `poll_one` runs. Composite calls this only when
-    /// `poll_one`'s token id matched its own id (or BROADCAST).
-    pub fn dispatch(&mut self) -> Option<InstructionPacket<'_>> {
+    /// as no new `poll_one` runs. Shared `&self` so the parent's closure
+    /// can hold the packet (which borrows the decoder's buffer through
+    /// `&self`) alongside a `&mut CodecTx` reply handle.
+    pub fn dispatch(&self) -> Option<InstructionPacket<'_>> {
         self.decoder.dispatch_packet().into_instruction_packet()
     }
 
@@ -211,6 +219,13 @@ impl<
     /// Status frames don't.
     pub fn instruction_count(&self) -> u32 {
         self.instruction_count
+    }
+
+    /// Cumulative wire-byte cursor (parser-consumed) for chain-CRC fold
+    /// anchoring. Composite captures this at poll surface as the Fast Last
+    /// scheduler's `anchor_bytes` input — see doc §10.6.
+    pub fn wire_byte_cursor(&self) -> u32 {
+        self.wire_bytes_consumed
     }
 
     /// Sequence number of the next BT slot to write — one past the last
@@ -236,6 +251,42 @@ impl<
         unsafe { (*self.rx_buf.get()).as_ptr() as usize }
     }
 
+    /// Look up the start-bit tick of the byte at `seq`. The DXL composite
+    /// pairs this with `Clock::ticks_per_bit()` to derive
+    /// `wire_end_tick = BT[token.end.predecessor()] + 10·tpb` for fire
+    /// scheduling. Returns `None` if `seq` is past the BT head or has
+    /// lapped out of the ring window.
+    pub fn byte_ts_at(&self, seq: Seq<u8, RX_BUF_LEN>) -> Option<u16> {
+        // RX and BT share a seq space per doc §8.3 — `.into()` retags
+        // the type, raw is preserved.
+        self.rx.byte_ts_at(seq.into())
+    }
+}
+
+/// TX half — encoder + TX byte ring. Splits off from [`CodecRx`] under
+/// [`Codec`] so the parent driver's closure-based `poll<F>` can hand the
+/// dispatcher's reply handle a `&mut CodecTx` alongside a packet that
+/// borrows the disjoint RX half.
+pub struct CodecTx<CRC: CrcUmts, const TX_BUF_LEN: usize> {
+    /// DMA1_CH4 source for transmitted bytes. Single-shot DMA per fire:
+    /// the encoder methods ([`Self::send_status`], [`Self::send_slot`])
+    /// fill it from offset 0; bringup hands [`Self::tx_buf_addr`] to
+    /// `dma::configure(CH4, ...)` once. Producer (encoder) and consumer
+    /// (DMA shift-out) phases are exclusive — the composite holds the only
+    /// `&mut CodecTx` and stops writing once it routes to the scheduler —
+    /// so no `SyncUnsafeCell`.
+    tx_buf: heapless::Vec<u8, TX_BUF_LEN>,
+    _crc: PhantomData<CRC>,
+}
+
+impl<CRC: CrcUmts, const TX_BUF_LEN: usize> CodecTx<CRC, TX_BUF_LEN> {
+    fn new() -> Self {
+        Self {
+            tx_buf: heapless::Vec::new(),
+            _crc: PhantomData,
+        }
+    }
+
     /// Encode a Status reply into the TX buffer. Clears any previous
     /// contents first, then drives [`StatusEmitter`] over `tx_buf` —
     /// `Vec::push` propagates `WriteError::Overflow` if the encoded form
@@ -255,17 +306,6 @@ impl<
         SlotEmitter::<_, CRC>::new(&mut self.tx_buf).emit(slot, position)
     }
 
-    /// Look up the start-bit tick of the byte at `seq`. The DXL composite
-    /// pairs this with `Clock::ticks_per_bit()` to derive
-    /// `wire_end_tick = BT[token.end.predecessor()] + 10·tpb` for fire
-    /// scheduling. Returns `None` if `seq` is past the BT head or has
-    /// lapped out of the ring window.
-    pub fn byte_ts_at(&self, seq: Seq<u8, RX_BUF_LEN>) -> Option<u16> {
-        // RX and BT share a seq space per doc §8.3 — `.into()` retags
-        // the type, raw is preserved.
-        self.rx.byte_ts_at(seq.into())
-    }
-
     /// Stable peripheral-memory address for DMA1_CH4's source buffer.
     /// Bringup hands this to `dma::configure(CH4, ...)` once; per-fire
     /// arm reads [`Self::tx_len`] for the transfer count.
@@ -280,7 +320,18 @@ impl<
     }
 }
 
-#[cfg(test)]
+pub struct Codec<
+    R: DmaRing,
+    CRC: CrcUmts,
+    const DECODER_CAP: usize,
+    const RX_BUF_LEN: usize,
+    const EDGE_BUF_LEN: usize,
+    const TX_BUF_LEN: usize,
+> {
+    pub(super) rx: CodecRx<R, CRC, DECODER_CAP, RX_BUF_LEN, EDGE_BUF_LEN>,
+    pub(super) tx: CodecTx<CRC, TX_BUF_LEN>,
+}
+
 impl<
     R: DmaRing,
     CRC: CrcUmts,
@@ -289,6 +340,107 @@ impl<
     const EDGE_BUF_LEN: usize,
     const TX_BUF_LEN: usize,
 > Codec<R, CRC, DECODER_CAP, RX_BUF_LEN, EDGE_BUF_LEN, TX_BUF_LEN>
+{
+    pub fn new(ring: R) -> Self {
+        Self {
+            rx: CodecRx::new(ring),
+            tx: CodecTx::new(),
+        }
+    }
+
+    /// Disjoint mutable borrow of the RX and TX halves. The parent driver's
+    /// closure-based `poll<F>` uses this to hand a packet (borrowed via
+    /// `CodecRx::dispatch`, which takes `&self`) and a `&mut CodecTx` reply
+    /// handle to the dispatcher at the same time.
+    pub fn split_mut(
+        &mut self,
+    ) -> (
+        &mut CodecRx<R, CRC, DECODER_CAP, RX_BUF_LEN, EDGE_BUF_LEN>,
+        &mut CodecTx<CRC, TX_BUF_LEN>,
+    ) {
+        (&mut self.rx, &mut self.tx)
+    }
+
+    // ----- Forwarders. Keep sequential single-half call sites compact
+    // without forcing every caller to disambiguate `.rx` / `.tx`. -----
+
+    pub fn on_edge_advance(&mut self, ticks_per_bit: u16) {
+        self.rx.on_edge_advance(ticks_per_bit);
+    }
+
+    pub fn on_idle(&mut self, ticks_per_bit: u16) {
+        self.rx.on_idle(ticks_per_bit);
+    }
+
+    pub fn on_rx_dma_advance(&mut self, remaining: u16) {
+        self.rx.on_rx_dma_advance(remaining);
+    }
+
+    pub fn poll_one(&mut self) -> Option<InstructionToken<RX_BUF_LEN>> {
+        self.rx.poll_one()
+    }
+
+    pub fn dispatch(&self) -> Option<InstructionPacket<'_>> {
+        self.rx.dispatch()
+    }
+
+    pub fn byte_pairs(
+        &self,
+        start: Seq<u8, RX_BUF_LEN>,
+        end: Seq<u8, RX_BUF_LEN>,
+    ) -> impl Iterator<Item = (u16, u16)> + '_ {
+        self.rx.byte_pairs(start, end)
+    }
+
+    pub fn instruction_count(&self) -> u32 {
+        self.rx.instruction_count()
+    }
+
+    pub fn wire_byte_cursor(&self) -> u32 {
+        self.rx.wire_byte_cursor()
+    }
+
+    pub fn byte_ts_head(&self) -> Seq<u16, RX_BUF_LEN> {
+        self.rx.byte_ts_head()
+    }
+
+    pub fn edges_addr(&self) -> usize {
+        self.rx.edges_addr()
+    }
+
+    pub fn rx_buf_addr(&self) -> usize {
+        self.rx.rx_buf_addr()
+    }
+
+    pub fn byte_ts_at(&self, seq: Seq<u8, RX_BUF_LEN>) -> Option<u16> {
+        self.rx.byte_ts_at(seq)
+    }
+
+    pub fn send_status(&mut self, status: Status<'_>) -> Result<(), WriteError> {
+        self.tx.send_status(status)
+    }
+
+    pub fn send_slot(&mut self, slot: &Slot<'_>, position: SlotPosition) -> Result<(), WriteError> {
+        self.tx.send_slot(slot, position)
+    }
+
+    pub fn tx_buf_addr(&self) -> usize {
+        self.tx.tx_buf_addr()
+    }
+
+    pub fn tx_len(&self) -> u16 {
+        self.tx.tx_len()
+    }
+}
+
+#[cfg(test)]
+impl<
+    R: DmaRing,
+    CRC: CrcUmts,
+    const DECODER_CAP: usize,
+    const RX_BUF_LEN: usize,
+    const EDGE_BUF_LEN: usize,
+> CodecRx<R, CRC, DECODER_CAP, RX_BUF_LEN, EDGE_BUF_LEN>
 {
     /// Stage `bytes` into `rx_buf` starting at sequence `at` and publish
     /// the producer head to `at + bytes.len()`. Mirrors the chip-side
@@ -306,6 +458,38 @@ impl<
         // SAFETY: test-only access; no DMA in tests.
         let buf = unsafe { &mut *self.rx_buf.get() };
         buf.set_read_seq_for_test(seq);
+    }
+}
+
+#[cfg(test)]
+impl<
+    R: DmaRing,
+    CRC: CrcUmts,
+    const DECODER_CAP: usize,
+    const RX_BUF_LEN: usize,
+    const EDGE_BUF_LEN: usize,
+    const TX_BUF_LEN: usize,
+> Codec<R, CRC, DECODER_CAP, RX_BUF_LEN, EDGE_BUF_LEN, TX_BUF_LEN>
+{
+    pub(crate) fn stage_rx_bytes_for_test(&mut self, at: u16, bytes: &[u8]) {
+        self.rx.stage_rx_bytes_for_test(at, bytes);
+    }
+
+    pub(crate) fn set_rx_read_seq_for_test(&mut self, seq: u16) {
+        self.rx.set_rx_read_seq_for_test(seq);
+    }
+}
+
+#[cfg(test)]
+impl<const EDGE_BUF_LEN: usize, const RX_BUF_LEN: usize, CRC: CrcUmts, const DECODER_CAP: usize>
+    CodecRx<crate::mocks::FakeDmaRing, CRC, DECODER_CAP, RX_BUF_LEN, EDGE_BUF_LEN>
+{
+    pub(crate) fn stage_edges_for_test(&mut self, vals: &[u16]) {
+        self.rx.stage_edges_for_test(vals);
+    }
+
+    pub(crate) fn arm_next_flags_for_test(&mut self, flags: crate::traits::DmaFlags) {
+        self.rx.arm_next_flags_for_test(flags);
     }
 }
 

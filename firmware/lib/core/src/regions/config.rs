@@ -99,10 +99,11 @@ pub struct ConfigIdentity {
 #[derive(Copy, Clone, Block)]
 #[ct_block(hooks = crate::regions::hooks::ControlTableHookEvents)]
 pub struct ConfigComms {
-    #[ct_field(le = 252u8)]
+    #[ct_field(le = 252u8, hook = on_id_write)]
     pub id: u8,
     #[ct_field(hook = on_baud_rate_idx_write)]
     pub baud_rate_idx: BaudRate,
+    #[ct_field(hook = on_return_delay_2us_write)]
     pub return_delay_2us: u8,
     pub status_return_level: StatusReturnLevel,
     /// Signed delta from the chip's factory clock-trim default. Applied at

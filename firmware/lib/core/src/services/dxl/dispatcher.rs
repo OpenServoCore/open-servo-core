@@ -1,13 +1,13 @@
+use dxl_protocol::InstructionPacket;
 use dxl_protocol::packet::{
     ActionPacket, BulkReadPacket, BulkWritePacket, ErrorCode, FactoryResetPacket,
-    FastBulkReadPacket, FastSlotInfo, FastSyncReadPacket, Id, Packet, PingPacket, PingStatus,
-    RawPacket, ReadPacket, RebootPacket, Slot, Status, StatusError, SyncReadPacket,
-    SyncWritePacket, U16Le, WritePacket,
+    FastBulkReadPacket, FastSlotInfo, FastSyncReadPacket, Id, PingPacket, PingStatus, RawPacket,
+    ReadPacket, RebootPacket, Slot, Status, StatusError, SyncReadPacket, SyncWritePacket, U16Le,
+    WritePacket,
 };
-use dxl_protocol::{CRC_BYTES, RESPONSE_HEADER_BYTES};
 
 use crate::regions::hooks::ControlTableHooks;
-use crate::traits::{DxlBus, Event, Schedule, ServiceEvents};
+use crate::traits::DxlReply;
 use crate::{Error, RegionStorage, Router, Shared, StagedWrites, StatusReturnLevel};
 
 use super::limits::{MAX_CONTROL_RW, MAX_SLAVE_COUNT};
@@ -21,7 +21,6 @@ fn error_to_status(e: Error) -> StatusError {
 
 struct Ctx {
     our_id: Id,
-    rdt_us: u32,
     level: StatusReturnLevel,
 }
 
@@ -35,73 +34,64 @@ impl Ctx {
             None
         }
     }
-
-    fn direct_schedule(&self) -> Schedule {
-        Schedule {
-            rdt_us: self.rdt_us,
-            bytes_before: 0,
-            slot_index: 0,
-        }
-    }
 }
 
-pub(super) struct Dispatcher<'a, B: DxlBus, E: ServiceEvents> {
+pub(super) struct Dispatcher<'a, R: DxlReply + ?Sized> {
     shared: &'a Shared,
-    bus: &'a mut B,
-    events: &'a mut E,
+    reply: &'a mut R,
     staged: &'a mut StagedWrites,
 }
 
-impl<'a, B: DxlBus, E: ServiceEvents> Dispatcher<'a, B, E> {
-    pub(super) fn new(
-        shared: &'a Shared,
-        bus: &'a mut B,
-        events: &'a mut E,
-        staged: &'a mut StagedWrites,
-    ) -> Self {
+impl<'a, R: DxlReply + ?Sized> Dispatcher<'a, R> {
+    pub(super) fn new(shared: &'a Shared, reply: &'a mut R, staged: &'a mut StagedWrites) -> Self {
         Self {
             shared,
-            bus,
-            events,
+            reply,
             staged,
         }
     }
 
-    pub(super) fn dispatch(&mut self, packet: Packet<'_>) {
+    pub(super) fn dispatch(&mut self, packet: InstructionPacket<'_>) {
         let ctx = self.snapshot_ctx();
         match packet {
-            Packet::Ping(p) => self.handle_ping(&ctx, p),
-            Packet::Read(p) => self.handle_read(&ctx, p),
-            Packet::Write(p) => self.handle_write(&ctx, &p),
-            Packet::RegWrite(p) => self.handle_reg_write(&ctx, &p),
-            Packet::Action(p) => self.handle_action(&ctx, p),
-            Packet::FactoryReset(p) => self.handle_factory_reset(&ctx, p),
-            Packet::Reboot(p) => self.handle_reboot(&ctx, p),
-            Packet::SyncRead(p) => self.handle_sync_read(&ctx, &p),
-            Packet::SyncWrite(p) => self.handle_sync_write(&ctx, &p),
-            Packet::BulkRead(p) => self.handle_bulk_read(&ctx, &p),
-            Packet::BulkWrite(p) => self.handle_bulk_write(&ctx, &p),
-            Packet::FastSyncRead(p) => self.handle_fast_sync_read(&ctx, &p),
-            Packet::FastBulkRead(p) => self.handle_fast_bulk_read(&ctx, &p),
-            // Inbound Status frames originate from another device on the bus; drop.
-            Packet::Status(_) => {}
-            Packet::Raw(r) => self.handle_raw(&ctx, &r),
+            InstructionPacket::Ping(p) => self.handle_ping(&ctx, p),
+            InstructionPacket::Read(p) => self.handle_read(&ctx, p),
+            InstructionPacket::Write(p) => self.handle_write(&ctx, &p),
+            InstructionPacket::RegWrite(p) => self.handle_reg_write(&ctx, &p),
+            InstructionPacket::Action(p) => self.handle_action(&ctx, p),
+            InstructionPacket::FactoryReset(p) => self.handle_factory_reset(&ctx, p),
+            InstructionPacket::Reboot(p) => self.handle_reboot(&ctx, p),
+            InstructionPacket::SyncRead(p) => self.handle_sync_read(&ctx, &p),
+            InstructionPacket::SyncWrite(p) => self.handle_sync_write(&ctx, &p),
+            InstructionPacket::BulkRead(p) => self.handle_bulk_read(&ctx, &p),
+            InstructionPacket::BulkWrite(p) => self.handle_bulk_write(&ctx, &p),
+            InstructionPacket::FastSyncRead(p) => self.handle_fast_sync_read(&ctx, &p),
+            InstructionPacket::FastBulkRead(p) => self.handle_fast_bulk_read(&ctx, &p),
+            InstructionPacket::Raw(r) => self.handle_raw(&ctx, &r),
         }
     }
 
     fn snapshot_ctx(&self) -> Ctx {
-        let (our_id, rdt_us, level) = self.shared.table.config.with(|c| {
-            (
-                c.comms.id,
-                c.comms.return_delay_2us as u32 * 2,
-                c.comms.status_return_level,
-            )
-        });
+        let (our_id, level) = self
+            .shared
+            .table
+            .config
+            .with(|c| (c.comms.id, c.comms.status_return_level));
         Ctx {
             our_id: Id::new(our_id),
-            rdt_us,
             level,
         }
+    }
+
+    fn send_status(&mut self, status: Status<'_>) {
+        // Encoder overflow on a Status reply is a programmer error (the
+        // driver's TX buffer is sized to fit every reply variant); swallow
+        // here and let bench telemetry surface the case during integration.
+        let _ = self.reply.send_status(status);
+    }
+
+    fn send_slot(&mut self, slot: &Slot<'_>) {
+        let _ = self.reply.send_slot(slot);
     }
 
     fn reply_unsupported(&mut self, ctx: &Ctx, target: Id) {
@@ -109,13 +99,10 @@ impl<'a, B: DxlBus, E: ServiceEvents> Dispatcher<'a, B, E> {
             return;
         }
         if let Some((id, true)) = ctx.addressed(target) {
-            self.bus.send(
-                Status::Empty {
-                    id,
-                    error: StatusError::code(ErrorCode::Instruction),
-                },
-                ctx.direct_schedule(),
-            );
+            self.send_status(Status::Empty {
+                id,
+                error: StatusError::code(ErrorCode::Instruction),
+            });
         }
     }
 
@@ -133,41 +120,22 @@ impl<'a, B: DxlBus, E: ServiceEvents> Dispatcher<'a, B, E> {
                 error: error_to_status(e),
             },
         };
-        self.bus.send(reply, ctx.direct_schedule());
+        self.send_status(reply);
     }
 
     fn handle_ping(&mut self, ctx: &Ctx, p: &PingPacket) {
-        let Some((id, direct)) = ctx.addressed(p.header.id) else {
+        let Some((id, _direct)) = ctx.addressed(p.header.id) else {
             return;
         };
         let identity = self.shared.table.config.with(|c| c.identity);
-        // DXL 2.0 broadcast Ping convention: each slave fires its reply in an
-        // ID-indexed time slot so multiple chips don't collide on the wire.
-        // Slot width = one Ping Status frame (header(9) + model_lo + model_hi
-        // + firmware + crc(2) = 14 B); the chip layers SLOT_MARGIN per slot
-        // on top via `slot_index`.
-        let schedule = if direct {
-            ctx.direct_schedule()
-        } else {
-            const PING_STATUS_FRAME_BYTES: u32 =
-                RESPONSE_HEADER_BYTES as u32 + 3 + CRC_BYTES as u32;
-            Schedule {
-                rdt_us: ctx.rdt_us,
-                bytes_before: (id.as_byte() as u32) * PING_STATUS_FRAME_BYTES,
-                slot_index: id.as_byte() as u16,
-            }
-        };
-        self.bus.send(
-            Status::Ping {
-                id,
-                error: StatusError::OK,
-                status: PingStatus {
-                    model: U16Le::from_u16(identity.model_number),
-                    fw_version: identity.firmware_version as u8,
-                },
+        self.send_status(Status::Ping {
+            id,
+            error: StatusError::OK,
+            status: PingStatus {
+                model: U16Le::from_u16(identity.model_number),
+                fw_version: identity.firmware_version as u8,
             },
-            schedule,
-        );
+        });
     }
 
     fn handle_read(&mut self, ctx: &Ctx, p: &ReadPacket) {
@@ -179,13 +147,10 @@ impl<'a, B: DxlBus, E: ServiceEvents> Dispatcher<'a, B, E> {
         };
         let len = p.length.get() as usize;
         if len == 0 || len > MAX_CONTROL_RW {
-            self.bus.send(
-                Status::Empty {
-                    id,
-                    error: StatusError::code(ErrorCode::DataRange),
-                },
-                ctx.direct_schedule(),
-            );
+            self.send_status(Status::Empty {
+                id,
+                error: StatusError::code(ErrorCode::DataRange),
+            });
             return;
         }
         let mut buf = [0u8; MAX_CONTROL_RW];
@@ -200,7 +165,7 @@ impl<'a, B: DxlBus, E: ServiceEvents> Dispatcher<'a, B, E> {
                 error: error_to_status(e),
             },
         };
-        self.bus.send(reply, ctx.direct_schedule());
+        self.send_status(reply);
     }
 
     fn handle_write(&mut self, ctx: &Ctx, p: &WritePacket<'_>) {
@@ -213,13 +178,10 @@ impl<'a, B: DxlBus, E: ServiceEvents> Dispatcher<'a, B, E> {
         let len = p.data.len();
         if len > MAX_CONTROL_RW {
             if direct && ctx.level >= StatusReturnLevel::All {
-                self.bus.send(
-                    Status::Empty {
-                        id,
-                        error: StatusError::code(ErrorCode::DataRange),
-                    },
-                    ctx.direct_schedule(),
-                );
+                self.send_status(Status::Empty {
+                    id,
+                    error: StatusError::code(ErrorCode::DataRange),
+                });
             }
             return;
         }
@@ -234,7 +196,7 @@ impl<'a, B: DxlBus, E: ServiceEvents> Dispatcher<'a, B, E> {
         let ok = result.is_ok();
         self.reply_table_result(ctx, id, direct, result);
         if ok {
-            let mut hooks = ControlTableHooks::new(self.events);
+            let mut hooks = ControlTableHooks::new(self.reply);
             self.shared
                 .table
                 .dispatch_events(p.header.addr.get(), len as u16, &mut hooks);
@@ -251,13 +213,10 @@ impl<'a, B: DxlBus, E: ServiceEvents> Dispatcher<'a, B, E> {
         let len = p.data.len();
         if len > MAX_CONTROL_RW {
             if direct && ctx.level >= StatusReturnLevel::All {
-                self.bus.send(
-                    Status::Empty {
-                        id,
-                        error: StatusError::code(ErrorCode::DataRange),
-                    },
-                    ctx.direct_schedule(),
-                );
+                self.send_status(Status::Empty {
+                    id,
+                    error: StatusError::code(ErrorCode::DataRange),
+                });
             }
             return;
         }
@@ -280,7 +239,7 @@ impl<'a, B: DxlBus, E: ServiceEvents> Dispatcher<'a, B, E> {
                 error: error_to_status(e),
             },
         };
-        self.bus.send(reply, ctx.direct_schedule());
+        self.send_status(reply);
     }
 
     fn handle_action(&mut self, ctx: &Ctx, p: &ActionPacket) {
@@ -289,13 +248,10 @@ impl<'a, B: DxlBus, E: ServiceEvents> Dispatcher<'a, B, E> {
         };
         self.shared.table.commit_staged(self.staged);
         if direct && ctx.level >= StatusReturnLevel::All {
-            self.bus.send(
-                Status::Empty {
-                    id,
-                    error: StatusError::OK,
-                },
-                ctx.direct_schedule(),
-            );
+            self.send_status(Status::Empty {
+                id,
+                error: StatusError::OK,
+            });
         }
     }
 
@@ -310,15 +266,12 @@ impl<'a, B: DxlBus, E: ServiceEvents> Dispatcher<'a, B, E> {
         };
         let mode = self.shared.table.control.with(|c| c.system.boot_mode);
         if direct && ctx.level >= StatusReturnLevel::All {
-            self.bus.send(
-                Status::Empty {
-                    id,
-                    error: StatusError::OK,
-                },
-                ctx.direct_schedule(),
-            );
+            self.send_status(Status::Empty {
+                id,
+                error: StatusError::OK,
+            });
         }
-        self.events.send(Event::Reboot(mode));
+        self.reply.stage_reboot(mode);
     }
 
     fn handle_raw(&mut self, ctx: &Ctx, r: &RawPacket<'_>) {
@@ -331,24 +284,16 @@ impl<'a, B: DxlBus, E: ServiceEvents> Dispatcher<'a, B, E> {
         if ctx.level < StatusReturnLevel::Read {
             return;
         }
-        let Some(info) = p.find_slot(ctx.our_id) else {
+        let Some(_info) = p.find_slot(ctx.our_id) else {
             return;
-        };
-        let schedule = Schedule {
-            rdt_us: ctx.rdt_us,
-            bytes_before: info.bytes_before,
-            slot_index: info.index as u16,
         };
 
         let len = p.header.length.get() as usize;
         if len == 0 || len > MAX_CONTROL_RW {
-            self.bus.send(
-                Status::Empty {
-                    id: ctx.our_id,
-                    error: StatusError::code(ErrorCode::DataRange),
-                },
-                schedule,
-            );
+            self.send_status(Status::Empty {
+                id: ctx.our_id,
+                error: StatusError::code(ErrorCode::DataRange),
+            });
             return;
         }
 
@@ -368,7 +313,7 @@ impl<'a, B: DxlBus, E: ServiceEvents> Dispatcher<'a, B, E> {
                 error: error_to_status(e),
             },
         };
-        self.bus.send(reply, schedule);
+        self.send_status(reply);
     }
 
     fn handle_sync_write(&mut self, ctx: &Ctx, p: &SyncWritePacket<'_>) {
@@ -392,7 +337,7 @@ impl<'a, B: DxlBus, E: ServiceEvents> Dispatcher<'a, B, E> {
             .write_bytes(p.header.addr.get(), &buf[..len], self.staged)
             .is_ok()
         {
-            let mut hooks = ControlTableHooks::new(self.events);
+            let mut hooks = ControlTableHooks::new(self.reply);
             self.shared
                 .table
                 .dispatch_events(p.header.addr.get(), len as u16, &mut hooks);
@@ -406,21 +351,13 @@ impl<'a, B: DxlBus, E: ServiceEvents> Dispatcher<'a, B, E> {
         let Some(info) = p.find_slot(ctx.our_id) else {
             return;
         };
-        let schedule = Schedule {
-            rdt_us: ctx.rdt_us,
-            bytes_before: info.bytes_before,
-            slot_index: info.index as u16,
-        };
 
         let len = info.length as usize;
         if len == 0 || len > MAX_CONTROL_RW {
-            self.bus.send(
-                Status::Empty {
-                    id: ctx.our_id,
-                    error: StatusError::code(ErrorCode::DataRange),
-                },
-                schedule,
-            );
+            self.send_status(Status::Empty {
+                id: ctx.our_id,
+                error: StatusError::code(ErrorCode::DataRange),
+            });
             return;
         }
 
@@ -436,7 +373,7 @@ impl<'a, B: DxlBus, E: ServiceEvents> Dispatcher<'a, B, E> {
                 error: error_to_status(e),
             },
         };
-        self.bus.send(reply, schedule);
+        self.send_status(reply);
     }
 
     fn handle_bulk_write(&mut self, ctx: &Ctx, p: &BulkWritePacket<'_>) {
@@ -456,7 +393,7 @@ impl<'a, B: DxlBus, E: ServiceEvents> Dispatcher<'a, B, E> {
             .write_bytes(entry.addr, &buf[..len], self.staged)
             .is_ok()
         {
-            let mut hooks = ControlTableHooks::new(self.events);
+            let mut hooks = ControlTableHooks::new(self.reply);
             self.shared
                 .table
                 .dispatch_events(entry.addr, len as u16, &mut hooks);
@@ -485,16 +422,8 @@ impl<'a, B: DxlBus, E: ServiceEvents> Dispatcher<'a, B, E> {
         if len == 0 || len > MAX_CONTROL_RW {
             return;
         }
-        let position = info.position();
-        let schedule = Schedule {
-            rdt_us: ctx.rdt_us,
-            bytes_before: info.bytes_before,
-            slot_index: info.our_slot as u16,
-        };
-
         // Fast Read failure path: emit `length` zero bytes so the response
         // stays positionally aligned; the error byte carries the code.
-        // Re-zero the buf since `read_bytes` may have partially modified it.
         let mut buf = [0u8; MAX_CONTROL_RW];
         let (error, data_len) = match self.shared.table.read_bytes(info.address, &mut buf[..len]) {
             Ok(()) => (StatusError::OK, len),
@@ -512,6 +441,6 @@ impl<'a, B: DxlBus, E: ServiceEvents> Dispatcher<'a, B, E> {
             error,
             data: &buf[..data_len],
         };
-        self.bus.send_slot(slot, position, schedule);
+        self.send_slot(&slot);
     }
 }
