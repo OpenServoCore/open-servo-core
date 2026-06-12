@@ -1,7 +1,7 @@
 //! Hardware-timed DXL receive path. Owns the edge-timestamp ring (DMA1_CH7
 //! destination) and the window classifier that turns the captured falling
-//! edges into per-byte timestamps (BT). Consumers read `byte_ts(idx)` for
-//! fire / snoop / drift decisions in lieu of IDLE backdates.
+//! edges into per-byte timestamps (BT). Consumers read `byte_ts_at(seq)`
+//! for fire / snoop / drift decisions in lieu of IDLE backdates.
 //!
 //! The driver depends on a [`DmaRing`] adapter for HT/TC flag drain and
 //! NDTR readback; the production adapter binds to DMA1_CH7. Tests swap in
@@ -16,7 +16,7 @@ mod classifier;
 use core::cell::SyncUnsafeCell;
 
 use crate::traits::DmaRing;
-use crate::util::DmaBuffer;
+use crate::util::{HwRing, Seq};
 use classifier::Classifier;
 
 pub struct Rx<R: DmaRing, const EDGE_BUF_LEN: usize, const BT_BUF_LEN: usize> {
@@ -25,10 +25,10 @@ pub struct Rx<R: DmaRing, const EDGE_BUF_LEN: usize, const BT_BUF_LEN: usize> {
     /// engine writes it concurrently with the classifier's reads — both
     /// reads happen at PFIC HIGH (no preemption from another consumer)
     /// and the producer is hardware, so plain `&` references inside
-    /// classifier walks are sound. `DmaBuffer` enforces pow-2 sizing at
+    /// classifier walks are sound. [`HwRing`] enforces pow-2 sizing at
     /// construction so the chip-side NDTR head math (`EDGE_BUF_LEN -
     /// NDTR`) maps cleanly to a ring position.
-    edges: SyncUnsafeCell<DmaBuffer<u16, EDGE_BUF_LEN>>,
+    edges: SyncUnsafeCell<HwRing<u16, EDGE_BUF_LEN>>,
     ring: R,
 }
 
@@ -38,7 +38,7 @@ impl<R: DmaRing, const EDGE_BUF_LEN: usize, const BT_BUF_LEN: usize>
     pub const fn new(ring: R) -> Self {
         Self {
             classifier: Classifier::new(),
-            edges: SyncUnsafeCell::new(DmaBuffer::new(0)),
+            edges: SyncUnsafeCell::new(HwRing::new(0)),
             ring,
         }
     }
@@ -47,8 +47,8 @@ impl<R: DmaRing, const EDGE_BUF_LEN: usize, const BT_BUF_LEN: usize>
     /// hands this to `dma::configure(CH7, ...)`; the driver instance lives
     /// in the registry's `SyncUnsafeCell<Option<Rx>>` so the address is
     /// fixed for the lifetime of the program once `install` returns.
-    /// `DmaBuffer::as_ptr` returns the address of the first storage slot —
-    /// the struct's outer address is offset by the `write_seq` field.
+    /// [`HwRing::as_ptr`] returns the address of the first storage slot —
+    /// the struct's outer address is offset by the bookkeeping fields.
     pub fn edges_addr(&self) -> u32 {
         // SAFETY: address-of read; no value materialized. Sound even while
         // DMA is writing the storage concurrently.
@@ -56,20 +56,21 @@ impl<R: DmaRing, const EDGE_BUF_LEN: usize, const BT_BUF_LEN: usize>
     }
 
     /// Called when new RX falling-edge timestamps may be available. Drains
-    /// HT/TC flags through the adapter, computes the write head from NDTR,
-    /// walks newly-captured edges through the classifier. No-op if neither
-    /// flag is set (defends against spurious vector entry).
+    /// HT/TC flags through the adapter, publishes the write head from
+    /// NDTR, walks newly-captured edges through the classifier. No-op if
+    /// neither flag is set (defends against spurious vector entry).
     pub fn on_edge_advance(&mut self, ticks_per_bit: u16) {
         let flags = self.ring.read_and_ack();
         if !flags.ht && !flags.tc {
             return;
         }
-        let head = (EDGE_BUF_LEN as u16).wrapping_sub(self.ring.remaining());
+        let remaining = self.ring.remaining();
         // SAFETY: the edges buffer is mutated only by DMA1_CH7 (hardware
         // writer) and read here from a PFIC-HIGH ISR; no other code path
         // takes a `&mut` into it.
-        let edges = unsafe { &*self.edges.get() };
-        self.classifier.on_edge_advance(edges, head, ticks_per_bit);
+        let edges = unsafe { &mut *self.edges.get() };
+        edges.on_publish_remaining(remaining);
+        self.classifier.on_edge_advance(edges, ticks_per_bit);
     }
 
     /// USART1 IDLE backstop. Walks any tail edges the HT/TC ISR hasn't
@@ -77,20 +78,21 @@ impl<R: DmaRing, const EDGE_BUF_LEN: usize, const BT_BUF_LEN: usize>
     /// HT), then invalidates the anchor so the next packet's first edge
     /// re-seeds.
     pub fn on_idle(&mut self, ticks_per_bit: u16) {
-        let head = (EDGE_BUF_LEN as u16).wrapping_sub(self.ring.remaining());
-        // SAFETY: see `on_dma_event`.
-        let edges = unsafe { &*self.edges.get() };
-        self.classifier.on_edge_advance(edges, head, ticks_per_bit);
+        let remaining = self.ring.remaining();
+        // SAFETY: see `on_edge_advance`.
+        let edges = unsafe { &mut *self.edges.get() };
+        edges.on_publish_remaining(remaining);
+        self.classifier.on_edge_advance(edges, ticks_per_bit);
         self.classifier.reset_anchor();
     }
 
     #[allow(dead_code)]
-    pub fn byte_ts_at(&self, seq: u16) -> Option<u16> {
+    pub fn byte_ts_at(&self, seq: Seq<u16, BT_BUF_LEN>) -> Option<u16> {
         self.classifier.byte_ts_at(seq)
     }
 
     #[allow(dead_code)]
-    pub fn byte_ts_head(&self) -> u16 {
+    pub fn byte_ts_head(&self) -> Seq<u16, BT_BUF_LEN> {
         self.classifier.byte_ts_head()
     }
 }
@@ -105,7 +107,7 @@ impl<const EDGE_BUF_LEN: usize, const BT_BUF_LEN: usize>
         // SAFETY: test-only access to the SyncUnsafeCell; no DMA in tests.
         let buf = unsafe { &mut *self.edges.get() };
         buf.stage(0, vals);
-        self.ring.remaining = (EDGE_BUF_LEN - vals.len()) as u16;
+        self.ring.remaining = HwRing::<u16, EDGE_BUF_LEN>::LEN - vals.len() as u16;
     }
 
     /// Arm the fake ring's next HT/TC flag response.
@@ -119,6 +121,7 @@ mod tests {
     use super::*;
     use crate::mocks::FakeDmaRing;
     use crate::traits::DmaFlags;
+    use crate::util::Seq;
 
     /// Test-side ring sizing — matches V006 defaults per doc §8.3 / §8.4.
     const EDGE_BUF_LEN: usize = 128;
@@ -138,7 +141,7 @@ mod tests {
         let mut d = rx();
         d.stage_edges_for_test(&[1000]);
         d.on_edge_advance(TPB_3M);
-        assert_eq!(d.byte_ts_head(), 0);
+        assert_eq!(d.byte_ts_head().raw(), 0);
         assert_eq!(d.ring.ack_log, [DmaFlags::default()]);
     }
 
@@ -151,9 +154,9 @@ mod tests {
             tc: false,
         });
         d.on_edge_advance(TPB_3M);
-        assert_eq!(d.byte_ts_head(), 2);
-        assert_eq!(d.byte_ts_at(0), Some(1000));
-        assert_eq!(d.byte_ts_at(1), Some(1000 + BYTE_TICKS_3M));
+        assert_eq!(d.byte_ts_head().raw(), 2);
+        assert_eq!(d.byte_ts_at(Seq::from_raw(0)), Some(1000));
+        assert_eq!(d.byte_ts_at(Seq::from_raw(1)), Some(1000 + BYTE_TICKS_3M));
     }
 
     #[test]
@@ -165,7 +168,7 @@ mod tests {
             tc: true,
         });
         d.on_edge_advance(TPB_3M);
-        assert_eq!(d.byte_ts_head(), 1);
+        assert_eq!(d.byte_ts_head().raw(), 1);
     }
 
     #[test]
@@ -178,21 +181,19 @@ mod tests {
             tc: false,
         });
         d.on_edge_advance(TPB_3M);
-        assert_eq!(d.byte_ts_head(), 1);
+        assert_eq!(d.byte_ts_head().raw(), 1);
 
         // IDLE drains nothing new (same head), but invalidates the anchor.
         d.on_idle(TPB_3M);
 
         // After reset, the next edge re-seeds rather than gap-classifying.
-        // Stage a single edge far from the prior anchor — would be a GAP
-        // if anchor were still 5000.
         d.stage_edges_for_test(&[5000, 59_000]);
         d.arm_next_flags_for_test(DmaFlags {
             ht: true,
             tc: false,
         });
         d.on_edge_advance(TPB_3M);
-        assert_eq!(d.byte_ts_head(), 2);
-        assert_eq!(d.byte_ts_at(1), Some(59_000));
+        assert_eq!(d.byte_ts_head().raw(), 2);
+        assert_eq!(d.byte_ts_at(Seq::from_raw(1)), Some(59_000));
     }
 }
