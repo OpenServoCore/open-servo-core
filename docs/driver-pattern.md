@@ -252,6 +252,50 @@ The composite's method bodies are where the coordination lives. From the outside
 
 This rule has teeth: if you find yourself wanting driver-to-driver calls, the architecture is telling you that two concerns belong together. Either compose them, or move the orchestration up to the protocol layer (see §7).
 
+### 4.3 Sub-composites for disjoint borrows
+
+§7.4's data-centric trait surface relies on the driver caching the request that drives the reply. When the cached request borrows one part of the driver's state and the reply path mutates another, the naive single-struct form runs into Rust's borrow checker: returning `Item<'a>` from a method holds `&mut self` for as long as the item is held, and the reply call can't reborrow.
+
+A **sub-composite** resolves this. Its structural job is to expose disjoint mutable halves:
+
+```rust
+pub struct Inner {
+    a: HalfA,
+    b: HalfB,
+}
+
+impl Inner {
+    /// Disjoint borrow — both halves usable at once.
+    pub fn split_mut(&mut self) -> (&mut HalfA, &mut HalfB) {
+        (&mut self.a, &mut self.b)
+    }
+
+    // Forwarders for sequential single-half call sites.
+    pub fn observe(&mut self) -> Option<Token> { self.a.observe() }
+    pub fn act(&mut self, payload: Payload) -> Result<(), Error> { self.b.act(payload) }
+}
+```
+
+The parent's hot path is closure-based — `split_mut` at the seam hands both halves to the dispatcher at once:
+
+```rust
+impl Top {
+    pub fn poll<F>(&mut self, f: F)
+    where
+        F: for<'a> FnOnce(Item<'a>, &mut Handle<'_, /* ... */>),
+    {
+        let (a, b) = self.inner.split_mut();
+        // ...derive context from a-side state...
+        let item = a.materialize();
+        f(item, &mut Handle::new(b, /* ... */));
+    }
+}
+```
+
+This is a different pattern from the coordinating composite the rest of §4 describes. A coordinating composite owns routing between sub-drivers in its method bodies (the §4 opening's `Top::on_external_trigger → sub_a.on_triggered → sub_b.on_data`). A borrow-splitting sub-composite owns no routing — the dispatcher closure does. `split_mut` is the reason the type exists; forwarder methods are there so non-hot call sites stay compact.
+
+Reach for it when §7.4's cached context and reply path naturally split into two halves of state. Don't reach for it when the borrow conflict can be reshaped away — returning owned data instead of a borrow, or restructuring the trait method, often eliminates the need. Over-applying gives sub-composites that don't earn their weight.
+
 ---
 
 ## 5. Interfaces and providers
@@ -534,6 +578,8 @@ The driver already holds the request that drives the response (the polled token,
 A trait method *should* take a scheduling parameter when the protocol genuinely lets the consumer decide — a retry policy chosen by the caller, a deadline that originates above the driver, a deferred-send queue the protocol layer manages. When the protocol determines the schedule from the *received request* — slot positioning, response delay, chain-CRC anchor — the driver derives it from cached state and the trait stays clean.
 
 Symptom of the wrong split: a `Schedule` struct (or analogous record of "where on the wire") threaded through every send method. If the driver can compute that struct from state it already keeps for other reasons, the parameter is leaking driver knowledge into the service interface.
+
+When the cached request and reply path touch disjoint parts of driver state, §4.3 covers the implementation seam.
 
 ---
 
