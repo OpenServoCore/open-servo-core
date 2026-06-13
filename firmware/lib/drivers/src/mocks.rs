@@ -6,6 +6,8 @@
 extern crate std;
 use std::vec::Vec;
 
+use osc_core::BaudRate;
+
 use crate::traits::{
     ClockTrim, DigitalOut, DmaFlags, DmaRing, DxlTxScheduler, Monotonic, SendKind, UsartBaud,
 };
@@ -39,16 +41,16 @@ impl Monotonic for FakeMonotonic {
 
 #[derive(Default)]
 pub struct FakeUsartBaud {
-    pub log: Vec<u32>,
+    pub log: Vec<BaudRate>,
 }
 
 impl UsartBaud for FakeUsartBaud {
-    // Same as the production V006 binding (PCLK = HCLK = 48 MHz) so test
-    // BRR math matches the chip-side reference table.
+    // Same as the production V006 binding (PCLK = HCLK = 48 MHz) so driver
+    // ticks_per_bit math matches the chip-side reference table.
     const CLOCK_HZ: u32 = 48_000_000;
 
-    fn set_baud(&mut self, brr: u32) {
-        self.log.push(brr);
+    fn apply_baud(&mut self, baud: BaudRate) {
+        self.log.push(baud);
     }
 }
 

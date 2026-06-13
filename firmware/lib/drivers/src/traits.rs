@@ -2,6 +2,8 @@
 //! environment; chip-side adapters implement these over real HAL peripherals
 //! (production) or recording mocks (tests).
 
+use osc_core::BaudRate;
+
 use crate::types::Level;
 
 /// Drive a single digital output. Owned by the adapter; the driver holds
@@ -18,14 +20,16 @@ pub trait Monotonic {
     fn ticks(&self) -> u32;
 }
 
-/// Single-channel USART baud-rate control. `CLOCK_HZ` is the rate that
-/// drives the BRR divisor (PCLK on most chips); drivers compute BRR off
-/// of it and hand the result here. The adapter writes it to the correct
-/// USART instance.
+/// Single-channel USART baud-rate control. The driver hands a domain-typed
+/// `BaudRate`; the chip-side adapter owns the BRR math and any other
+/// baud-dependent chip state (e.g., RX edge-capture filter on chips with
+/// one) and applies them atomically. `CLOCK_HZ` is the clock that feeds
+/// the USART's BRR divisor, which on the chip families this trait is
+/// targeted at also ticks the monotonic the driver consumes — the driver
+/// uses it for `ticks_per_bit` derivation and ticks↔µs conversion.
 pub trait UsartBaud {
-    /// Frequency, in Hz, of the clock that feeds the USART's BRR divisor.
     const CLOCK_HZ: u32;
-    fn set_baud(&mut self, brr: u32);
+    fn apply_baud(&mut self, baud: BaudRate);
 }
 
 /// Trim a clock by integer steps. Constants describe the physics of the

@@ -17,9 +17,12 @@ use crate::traits::{ClockTrim, UsartBaud};
 
 const DRIFT_MIN_SAMPLES: u16 = 32;
 
-/// Round-to-nearest BRR divisor for a baud, given the USART's clock rate.
-/// Folds to a literal whenever both arguments are const at the call site.
-pub(crate) const fn brr_for(clock_hz: u32, baud_hz: u32) -> u32 {
+/// Round-to-nearest rate divisor — `ticks_per_bit` for a baud at the
+/// driver's reference clock. Folds to a literal whenever both arguments
+/// are const at the call site. Numerically identical to a USART BRR
+/// divisor on chips where the BRR clock equals the monotonic tick clock,
+/// but the chip-side provider owns its own BRR math now.
+pub(crate) const fn divisor_for(clock_hz: u32, baud_hz: u32) -> u32 {
     (clock_hz + baud_hz / 2) / baud_hz
 }
 
@@ -53,23 +56,31 @@ impl<U: UsartBaud, T: ClockTrim> Clock<U, T> {
     /// would overshoot and the post-step error would be worse than pre-step.
     const DRIFT_THRESHOLD_Q20: u32 = Self::TRIM_PER_STEP_Q20 / 2;
 
-    /// BRR divisor for the given baud at this USART's clock rate. Each arm
-    /// folds to a literal at monomorphization — no runtime divide (matters
-    /// on RV32EC, which has no hardware `div`).
+    /// `ticks_per_bit` at the given baud and the reference clock rate. Each
+    /// arm folds to a literal at monomorphization — no runtime divide
+    /// (matters on RV32EC, which has no hardware `div`).
     #[inline]
-    fn brr(baud: BaudRate) -> u32 {
+    fn ticks_per_bit_at(baud: BaudRate) -> u16 {
         match baud {
-            BaudRate::B9600 => const { brr_for(U::CLOCK_HZ, BaudRate::B9600.as_hz()) },
-            BaudRate::B57600 => const { brr_for(U::CLOCK_HZ, BaudRate::B57600.as_hz()) },
-            BaudRate::B115200 => const { brr_for(U::CLOCK_HZ, BaudRate::B115200.as_hz()) },
-            BaudRate::B1000000 => const { brr_for(U::CLOCK_HZ, BaudRate::B1000000.as_hz()) },
-            BaudRate::B2000000 => const { brr_for(U::CLOCK_HZ, BaudRate::B2000000.as_hz()) },
-            BaudRate::B3000000 => const { brr_for(U::CLOCK_HZ, BaudRate::B3000000.as_hz()) },
+            BaudRate::B9600 => const { divisor_for(U::CLOCK_HZ, BaudRate::B9600.as_hz()) as u16 },
+            BaudRate::B57600 => const { divisor_for(U::CLOCK_HZ, BaudRate::B57600.as_hz()) as u16 },
+            BaudRate::B115200 => {
+                const { divisor_for(U::CLOCK_HZ, BaudRate::B115200.as_hz()) as u16 }
+            }
+            BaudRate::B1000000 => {
+                const { divisor_for(U::CLOCK_HZ, BaudRate::B1000000.as_hz()) as u16 }
+            }
+            BaudRate::B2000000 => {
+                const { divisor_for(U::CLOCK_HZ, BaudRate::B2000000.as_hz()) as u16 }
+            }
+            BaudRate::B3000000 => {
+                const { divisor_for(U::CLOCK_HZ, BaudRate::B3000000.as_hz()) as u16 }
+            }
         }
     }
 
     pub fn new(baud: BaudRate, usart: U, trim: T) -> Self {
-        let ticks_per_bit = Self::brr(baud) as u16;
+        let ticks_per_bit = Self::ticks_per_bit_at(baud);
         Self {
             usart,
             trim,
@@ -104,10 +115,9 @@ impl<U: UsartBaud, T: ClockTrim> Clock<U, T> {
     pub fn on_tx_complete(&mut self) {
         let mut reset_integrator = false;
         if let Some(baud) = self.pending_baud.take() {
-            let brr = Self::brr(baud);
-            self.usart.set_baud(brr);
+            self.usart.apply_baud(baud);
             self.baud = baud;
-            self.ticks_per_bit = brr as u16;
+            self.ticks_per_bit = Self::ticks_per_bit_at(baud);
             self.drift_threshold_q8 = Self::drift_threshold_q8(self.ticks_per_bit);
             reset_integrator = true;
         }
@@ -335,8 +345,7 @@ mod tests {
         let mut c = clock(TEST_BAUD);
         c.stage_baud(BaudRate::B3000000);
         c.on_tx_complete();
-        let expected_brr = brr_for(FakeUsartBaud::CLOCK_HZ, BaudRate::B3000000.as_hz());
-        assert_eq!(c.usart.log, [expected_brr]);
+        assert_eq!(c.usart.log, [BaudRate::B3000000]);
         assert_eq!(c.baud, BaudRate::B3000000);
         assert_eq!(c.ticks_per_bit, 16);
     }

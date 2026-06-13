@@ -1,5 +1,5 @@
 use super::registry::{DXL_EDGE_BUF_LEN, DXL_RX_BUF_LEN};
-use ch32_metapac::{ADC, adc::vals::Extsel, dma::vals::Dir};
+use ch32_metapac::{ADC, adc::vals::Extsel, dma::vals::Dir, timer::vals::FilterValue};
 use osc_core::{ConfigDefaults, RegionStorage};
 use osc_drivers::Level;
 
@@ -11,6 +11,7 @@ use crate::hal::{
 use crate::legacy::statics::{
     ADC_DMA_BUF, ADC_DMA_BUF_LEN, ADC_SCAN_LEN, ADC_SENSOR_COUNT, SHARED,
 };
+use crate::providers::usart_baud;
 use crate::runtime::Drivers;
 
 use crate::cfg::{
@@ -74,7 +75,11 @@ pub fn bringup(
         c.comms.id = id;
     });
 
-    bring_up_dxl(&wiring.dxl, pre.usart_brr);
+    bring_up_dxl(
+        &wiring.dxl,
+        pre.usart_brr,
+        usart_baud::filter_for(defaults.dxl_baud),
+    );
     crate::log::debug!("dxl usart + dma rx armed");
 
     start_center_aligned_pwm(&wiring.motor, pre.pwm_psc, pre.pwm_arr);
@@ -257,7 +262,7 @@ fn configure_adc_dma_scan(sensors: &AdcPins, opa_out_sample_time: adc::SampleTim
     dma::enable(dma::Channel::CH1);
 }
 
-fn bring_up_dxl(d: &DxlUart, brr: u32) {
+fn bring_up_dxl(d: &DxlUart, brr: u32, boot_filter: FilterValue) {
     let regs = d.usart.regs();
     let half_duplex = matches!(d.duplex, Duplex::Half);
     usart::init(regs, brr, half_duplex);
@@ -314,7 +319,7 @@ fn bring_up_dxl(d: &DxlUart, brr: u32) {
 
     usart::set_idle_irq(regs, true);
 
-    bring_up_edge_ts_capture();
+    bring_up_edge_ts_capture(boot_filter);
 }
 
 /// TIM2_CH4 input capture on the RX pin (falling edge) feeds DMA1_CH7 into
@@ -322,8 +327,8 @@ fn bring_up_dxl(d: &DxlUart, brr: u32) {
 /// edges through the window classifier; IDLE drains the tail when a packet
 /// doesn't fill a half. PL=VeryHigh is the only such channel (ADC + USART
 /// RX/TX all sit at LOW per doc §6) so CC4 stores can't be delayed.
-fn bring_up_edge_ts_capture() {
-    timer::init_tim2_ch4_ic_capture();
+fn bring_up_edge_ts_capture(boot_filter: FilterValue) {
+    timer::init_tim2_ch4_ic_capture(boot_filter);
 
     let edge_ts_cfg = dma::Config {
         dir: Dir::FROMPERIPHERAL,

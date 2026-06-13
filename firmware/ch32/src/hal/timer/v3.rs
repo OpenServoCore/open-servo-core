@@ -1,4 +1,4 @@
-use ch32_metapac::timer::vals::{CcmrInputCcs, Cms, FilterValue, Mms, Ocm};
+use ch32_metapac::timer::vals::{CcmrInputCcs, Ckd, Cms, FilterValue, Mms, Ocm};
 use ch32_metapac::{TIM1, TIM2};
 
 use crate::hal::clocks::TIM_CLK_HZ;
@@ -81,17 +81,22 @@ pub fn start() {
 }
 
 /// Free-run TIM2 @ HCLK (ARR=0xFFFF, PSC=0) with CH4 as a falling-edge
-/// input capture, no filter, no input prescaler. Each capture latches the
-/// 16-bit TIM2 count into CCR4 and fires a DMA1_CH7 request (CCDE.CC4).
-/// Caller wires PC1 to TIM2 via the AFIO remap; this just programs the
-/// timer.
-pub fn init_tim2_ch4_ic_capture() {
+/// input capture, no input prescaler, baud-derived input filter. Each
+/// capture latches the 16-bit TIM2 count into CCR4 and fires a DMA1_CH7
+/// request (CCDE.CC4). Caller wires PC1 to TIM2 via the AFIO remap and
+/// picks `boot_filter` for the baud at boot; this just programs the timer.
+///
+/// CKD=0 pins `fDTS = fck_int = HCLK = 48 MHz`. RM default is already 0,
+/// but the IC4F picker math (`docs/dxl-hw-timed-transport.md` §8.1) is
+/// only valid under that assumption — defensive coupling.
+pub fn init_tim2_ch4_ic_capture(boot_filter: FilterValue) {
     TIM2.psc().write_value(0);
     TIM2.atrlr().write_value(0xFFFF);
+    TIM2.ctlr1().modify(|w| w.set_ckd(Ckd::DIV_1));
     TIM2.chctlr_input(1).modify(|w| {
         w.set_ccs(1, CcmrInputCcs::TI4);
         w.set_icpsc(1, 0);
-        w.set_icf(1, FilterValue::NOFILTER);
+        w.set_icf(1, boot_filter);
     });
     TIM2.ccer().modify(|w| {
         w.set_ccp(3, true);
@@ -99,6 +104,13 @@ pub fn init_tim2_ch4_ic_capture() {
     });
     TIM2.dmaintenr().modify(|w| w.set_ccde(3, true));
     TIM2.ctlr1().modify(|w| w.set_cen(true));
+}
+
+/// Update the CH4 input-capture filter (IC4F) — the runtime mutation path
+/// invoked by the USART baud provider at `apply_baud`.
+#[inline]
+pub fn set_tim2_ch4_icf(value: FilterValue) {
+    TIM2.chctlr_input(1).modify(|w| w.set_icf(1, value));
 }
 
 /// Peripheral address of TIM2.CCR4 for the DMA1_CH7 PAR. CCR4 is the 16-bit
