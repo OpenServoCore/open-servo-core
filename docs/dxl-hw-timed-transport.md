@@ -1,6 +1,6 @@
 # DXL 2.0 Hardware-Timed Transport on the CH32V006
 
-A design note for the next-generation DXL transport on the V006. Read [dxl-rx-timing.md](dxl-rx-timing.md) first if you haven't — this doc replaces the ISR-driven fire path it describes with a hardware-timed one, and adds per-byte RX timestamping built on TIM2 input capture. The pieces that didn't change (USART1 framing, half-duplex muxing, chain CRC, baud/RDT decision rule) still apply.
+A design note for the next-generation DXL transport on the V006. Read [dxl-rx-timing.md](dxl-rx-timing.md) first if you haven't — this doc replaces the ISR-driven fire path it describes with a hardware-timed one, and adds per-byte RX timestamping built on TIM2 input capture. [dxl-sync-bulk-slot-timing.md](dxl-sync-bulk-slot-timing.md) covers the wire-level Sync/Bulk Read slot model that scopes "fire-tick" in the first place. The pieces that didn't change (USART1 framing, half-duplex muxing, chain CRC, baud/RDT decision rule) still apply.
 
 The headline change: every fire and every received-byte timestamp move into TIM2. SysTick stops driving wire-edge events. The ~5 µs PFIC-entry floor on TX fire goes away. RX timestamps become per-byte instead of per-packet, which closes the door on a whole class of low-baud / Fast-Last edge cases that today rely on backdating estimates.
 
@@ -287,9 +287,9 @@ Same two priority levels (V006 PFIC has nothing more). DXL-related IRQs stay at 
 | Priority | IRQ | Body | Where |
 | --- | --- | --- | --- |
 | High | USART1 | IDLE (parser kick) + TC (release bus) + RX errors | `.highcode` |
-| High | DMA1_CH7 HT/TC | Classifier walk (ET → BT) + parser drain — *Plain mode only; disabled during Chain* | `.highcode` |
-| High | TIM2 (CC1IE) | Chain catchup (Chain only): classifier + parser drain + CRC fold over 17-byte interval | `.highcode` |
-| High | TIM2 (CC3IE) | Fire TX: `USART1.CTLR1 \|= TE` + DMA CH4 enable + post-fire CRC residual + patch | `.highcode` |
+| High | DMA1_CH7 HT/TC | Classifier walk (ET → BT) + parser drain. Folds chain CRC inline when armed. *Paused during Chain at ≥ 1M only* (§10.6.4) | `.highcode` |
+| High | TIM2 (CC1IE) | Chain catchup (Chain at ≥ 1M only): classifier + parser drain + CRC fold over 15-byte interval, plus post-fire fold anchor | `.highcode` |
+| High | TIM2 (CC3IE) | Fire TX: `dma::enable(CH4)`. Lean body — no chain-CRC work (M3 design, preserved through M6) | `.highcode` |
 | Low | DMA1_CH1 | ADC kernel pump (unchanged) | flash |
 
 All wire-side IRQs at High serialize cleanly via same-priority no-preemption (existing trick from `dxl-rx-timing.md` §8.4). The structural protection for the Fast-Last fire deadline isn't priority — it's **scheduling**:
@@ -307,7 +307,7 @@ All wire-side IRQs at High serialize cleanly via same-priority no-preemption (ex
 
 **Why all DXL-side IRQs share High priority.** Three invariants depend on same-priority serialization:
 
-1. **Catchup-finishes-before-fire.** CC1 and CC3 at the same priority means CC3 cannot start until CC1's ISR returns. The `last_catchup_tick = fire_tick − FIRE_BIAS − margin` schedule then guarantees the chain-CRC fold completes before TX shifts. If CC3 preempted CC1, the fold loop's state would suspend mid-iteration and the patch trailer's CRC would be wrong.
+1. **Catchup-and-fire serialize through the same vector.** CC1 and CC3 share TIM2's IRQ vector. The dispatcher checks CC1IF first, then CC3IF — both in one vector entry. If CC1's body is running when CC3IF latches (which is the normal case at 3M GUARD=1 — site 1 spins past `fire_deadline_tick`, see §10.6.2 / `dxl-fast-chain-crc-walkloop.md` §4 recursive-fire mode), CC3 doesn't preempt; the dispatcher's second `if` catches CC3IF on CC1's exit. Wire-bit jitter at 3M is ~3 µs late vs `fire_deadline_tick`, under one char_time, within pirate's IDLE tolerance. Dispatcher order is load-bearing: CC1 before CC3.
 2. **TC release before master's next start bit.** TX_EN drop in the TC ISR must land before any next request's start edge to avoid bus driver contention. TC at High keeps that latency bounded.
 3. **Catchup interval cadence.** §10.6 budgets ~54% CPU per interval; CC1 at High keeps ADC and other Low work from eating into the headroom.
 
@@ -433,81 +433,124 @@ No backdate constant. No char-time math. The whole framing-mode FSM from `dxl-rx
 
 **Chain-mode trigger sites:** the Chain catchup ISR (§10.6) replaces both. At first catchup entry, classifier HT/TC interrupts are masked; from then until USART1 TC, the catchup ISR owns the full classifier + parser + CRC fold cadence at fixed 17-byte intervals (matching today's well-tuned schedule). IDLE doesn't run during a Chain reply window (no inter-slot wire idle in Fast Sync/Bulk by design).
 
-### 10.6 Chain catchup ISR (Fast Last-slave replies)
+### 10.6 Chain CRC fold (Fast Last-slave replies)
 
-The Chain catchup ISR runs at fixed-byte intervals on TIM2_CH1, owning **all** RX-side work during the predecessor reception window. This is structurally the same scheduling pattern as today's SysTick-driven `body_chain_catchup`, just moved to TIM2 CC1 and extended to do classifier + parser work alongside the chain-CRC fold.
+Chain CRC accumulates the predecessor's reply bytes into a running CRC, which we use to patch the trailing CRC slot of our own reply so the wire bytes form one continuous chain-CRC stream. The mechanism factors into **state + trigger**:
 
-**Arm time** (Chain reply scheduled):
+- **State** is composite-side (`DxlUart::chain_crc`): `armed`, `bulk_crc`, `snoop_head`, `bytes_walked`, `expected_n_pred`. One method, `fold(byte, parsed_idx, &mut tx)`, called once per RX byte from `DxlRx::drain_parser`. No-op when not armed. When `bytes_walked >= expected_n_pred`, fold finalizes the CRC over our own reply bytes, calls `tx.patch_crc`, and sets `armed = false` — idempotent across redundant trigger sites.
+- **Trigger** picks which ISR(s) drive `drain_parser` (and therefore `fold`) during the predecessor window. **The trigger varies with baud.**
 
-    snoop_head     = rx_write_pos at parse-complete  # bytes before this are master's request
-    chain_crc      = seed
-    last_catchup_tick = fire_tick - FIRE_BIAS - walk_deadline_margin
-    intervals_before_last = ceil((last_catchup_tick - now) / interval_ticks)
-    CCR1 = last_catchup_tick - intervals_before_last × interval_ticks
-    CCR2 = fire_tick
-    CCR3 = fire_tick - FIRE_BIAS
-    enable CC1IE + CC3IE
+#### 10.6.1 Baud-dispatched trigger paths
 
-`interval_ticks` = 17 × bit_time × 10 ≈ 56.7 µs at 3M (default) or 12 × ... ≈ 40 µs (tight option, §8.4).
-
-**At every CC1 IRQ (Chain catchup):**
-
-    if first_catchup:
-        mask DMA1_CH7 HT/TC                # classifier ISR off for the rest of Chain
-    walk classifier inline:
-        for each new ET entry up to NDTR:
-            apply window check, update anchor
-            if start-bit edge: write BT[byte_idx]; byte_idx += 1
-    parser drain:
-        while parsed_idx < min(rx_write, bt_write):
-            byte = RX[parsed_idx]
-            advance parser state machine
-            if parsed_idx >= snoop_head:
-                chain_crc = crc16_update(chain_crc, byte)
-            parsed_idx += 1
-    if this was last interval:
-        busy-wait until last_catchup_tick (== walk_deadline) reached
-        # leaves trailing GUARD bytes for the post-fire walk
-        return
-    else:
-        CCR1 += interval_ticks             # re-arm for next interval
-
-The pattern mirrors today's `PeriodicCatchup → busy-wait → TxArmed` handoff (`dxl/state.rs`). The new piece is just steps 2-3 inside each ISR — the classifier walk and parser drain that were happening in DMA1_CH7 HT/TC are now folded in.
-
-**CCR1 wrap guard.** The `CCR1 += interval_ticks` re-arm is subject to the same 16-bit wrap hazard as CCR3 (§5.4). If catchup ISR runs late (preempted by a slow same-priority handler), `CCR1 + interval_ticks` can fall behind `CNT` after modular subtraction — the next match wraps a full 1.365 ms before firing. Same set-and-recheck applies: after writing CCR1, compare `(CCR1 − CNT) & 0xFFFF` against `MAX_REASONABLE_REMAINING` (sized against the largest legal inter-byte gap, not just `interval_ticks`). If exceeded, manually invoke the catchup body now — synchronous walk + parse + fold over whatever's in ET — and re-arm CCR1 forward from the new CNT.
-
-**Per-interval cost at 3M** (default 17-byte interval, mid-range edge density):
-
-| Work | Cycles | µs |
+| Baud | Trigger sites during chain window | Finalize lands at |
 | --- | --- | --- |
-| Classifier walk (~51 edges) | ~408 | 8.5 |
-| Parser drain (17 bytes × 50 cyc) | 850 | 17.7 |
-| CRC fold (17 bytes × ~10 cyc) | 170 | 3.5 |
-| ISR entry/exit + bookkeeping | ~50 | 1.0 |
-| **Total per interval** | **~1480** | **~30.7 µs** |
+| ≥ 1M | TIM2 CC1 catchup body (grid walks + busy-wait + post-fire anchor). DMA1_CH7 HT/TC paused. | Post-fire CC1 body, ≈ t_prior_end + POST_FIRE_FOLD_OFFSET (~1 µs). |
+| < 1M | DMA1_CH7 HT/TC (when it fires) + USART1 IDLE. Nothing paused. | USART1 IDLE body, ≈ t_prior_end + 1 byte_time. |
 
-Against a 56.7 µs cadence that's ~54% CPU during the Chain reception window — about the same as the Plain-mode (classifier + parser drain) cost during sustained RX. The work hasn't grown; it's just localized into one ISR cadence.
+The threshold is 1M because three constraints converge:
+- **Ring-fill vs predecessor length.** At ≥ 1M the predecessor often doesn't fill the ET ring enough to trigger HT (3M n_pred=14 lands 14 ring entries; HT fires at ~32). CC1 grid walks become necessary to drain on a tighter cadence.
+- **u16 fit on TIM2.** `interval_ticks = 15 × byte_time` stays comfortably below half u16 only at ≥ 1M. Below that the CC1 grid math runs out of register width before low-baud is even useful.
+- **IDLE-as-finalize budget.** At < 1M USART1 IDLE fires comfortably before fire_deadline (IDLE detection ≈ 1 byte_time after the predecessor's last byte; fire_deadline is at least rdt + slot_offset_bytes ≫ idle_window away). At ≥ 1M, with close coalesce, fire_deadline can land before IDLE fires — finalize MUST happen at post-fire CC1 instead of IDLE.
 
-**At CC3 (fire ISR):**
+#### 10.6.2 High-baud path (≥ 1M, TIM2_CH1)
 
-    1. write USART1.CTLR1 |= TE        ← jitter-critical
-    2. enable DMA CH4 (TX ring)
-    3. drain residual: classify + parse + fold CRC for the GUARD bytes
-       that arrived after last_catchup_tick (~2-5 bytes at 3M)
-    4. patch CRC into TX buffer trailing slot (rides DMA prefetch — §8.2 of rx-timing doc)
+The Chain catchup runs at fixed-byte intervals on TIM2_CH1, owning **all** RX-side work during the predecessor reception window. Structurally the same scheduling pattern as the canonical SysTick-driven walk-loop + split-fire design (b03dd355 / `docs/dxl-fast-chain-crc-walkloop.md`), moved to TIM2 CC1.
 
-Same "fire first, walk after" pattern as today. The residual is tiny because last_catchup_tick was the busy-wait exit — `walk_deadline_margin` is sized so only GUARD bytes can arrive in the [last_catchup_tick, fire_tick] window.
+**Arm time** (Chain reply scheduled, baud ≥ 1M):
+
+    chain_crc.arm(snoop_head = parsed_idx_now, expected_n_pred)
+    pause DMA1_CH7 HT/TC                                # §10.6.4 classifier merge
+    walk_deadline       = t_prior_end - GUARD × byte_time
+    last_catchup_tick   = fire_deadline_tick - min(interval, t_prior_duration) - GUARD × byte_time
+    current_fold_anchor = step_back(last_catchup_tick, interval, t_prior_start)
+    post_fire_fold_anchor = t_prior_end + POST_FIRE_FOLD_OFFSET_TICKS
+    CCR1 = current_fold_anchor - CATCHUP_ENTRY_TICKS    # every CMP back-dated, not just last
+    # CCR2 + CCR3 already armed by DxlTxScheduler (§5.3); CC1 added here.
+
+`interval_ticks = BYTES_PER_INTERVAL × byte_time`, with `BYTES_PER_INTERVAL = 15` (carries from b03dd355).
+
+Every grid CMP is back-dated by `CATCHUP_ENTRY_TICKS` so the body's fold-start lands on the formula's wall-clock anchor instead of `anchor + ISR_entry_latency`. The legacy implementation back-dated only the last anchor; intermediates re-armed via `now + interval` and drifted by `PFIC_ENTRY + body_work` per body. Tracking `current_fold_anchor` in state and advancing by fixed `+ interval` keeps the grid rigid regardless of any one body's overhead. See `dxl-fast-chain-crc-walkloop.md` §1.1 for the entry-latency derivation.
+
+**At every CC1 IRQ (intermediate):**
+
+    walker():
+        rx.walk_classifier()                 # ET → BT, advance anchor
+        rx.drain_parser(|byte, idx| chain_crc.fold(byte, idx, &mut tx))
+    current_fold_anchor += interval_ticks    # grid advance, drift-free
+    CCR1 = current_fold_anchor - CATCHUP_ENTRY_TICKS
+
+**At the last CC1 IRQ (anchor = last_catchup_tick):**
+
+    walker()
+    loop:                                    # site 1 busy-wait
+        walker()
+        if chain_crc.bytes_walked >= expected_n_pred - GUARD: break
+        if now >= walk_deadline: break
+    CCR1 = post_fire_fold_anchor - CATCHUP_ENTRY_TICKS  # re-arm for post-fire fold
+
+The busy-wait is uncontested — DMA1_CH7 HT/TC is masked (§10.6.4), so CC1 is the sole High consumer in the chain window. At 3M GUARD=1 the loop exits via `walk_deadline` (recursive-fire mode — `walk_deadline > fire_deadline_tick` by ~2.8 µs at GUARD=1; see `dxl-fast-chain-crc-walkloop.md` §4). CC3IF latches during the spin; the TIM2 vector's dispatcher catches it on CC1's exit and runs the fire body. Wire-bit jitter at 3M is ~3 µs late vs `fire_deadline_tick`, within pirate's < 1 char_time tolerance.
+
+**At CC3 (fire body — unchanged from M3, lean):**
+
+    enable DMA CH4
+
+No chain-CRC work on the fire path. The deterministic wire-fire property survives.
+
+**At the post-fire CC1 IRQ (anchor = post_fire_fold_anchor):**
+
+    walker()                                 # GUARD byte is in NDTR by now
+    # fold's finalize branch fires inside drain_parser when
+    # bytes_walked hits expected_n_pred → patch_crc → armed = false
+    self.scheduler.cancel()                  # CC1IE off
+
+Replaces the legacy CC3 in-body post-fire spin (site 2). CC3 stays minimal; CC1's third firing folds the residual. `POST_FIRE_FOLD_OFFSET_TICKS` is sized to cover (a) NDTR latch latency for the GUARD byte's stop bit, and (b) CC3 body's `dma::enable` return path so CC1 doesn't pend while CC3 is still running.
 
 **At USART1 TC (reply complete):**
 
-    1. unmask DMA1_CH7 HT/TC               # re-enable classifier ISR
-    2. ...usual TC handling (release bus, apply pending baud/RDT, etc.)
+    chain_crc.disarm()                       # idempotent — fold already disarmed
+    chain_catchup.cancel()                   # idempotent — post-fire already cancelled
+    rx.resume_edge_advance_irq()             # un-pause DMA1_CH7 HT/TC
 
-**Plain replies** skip CC1 entirely — no chain CRC, no Chain catchup work. Classifier HT/TC stays armed; parser drains at classifier-end as in §10.5. CC1 arming is conditional on `ReplyState::Chain` at parse time.
+#### 10.6.3 Low-baud path (< 1M, HT/TC + IDLE inline)
 
-**Defense against the "tiny catchup misses classifier disable" case.** The user-observed edge: if classifier HT/TC happens to latch right before CC1 fires (because classifier was about to walk on its own cadence), the catchup ISR's `mask` write happens *after* the latch — classifier IRQ is still pending and will run after catchup exits. Without further protection, classifier walks again immediately, eating cycles in the [CC1, CC3] window.
+`chain_crc.arm(snoop_head, expected_n_pred)` runs as usual; **chain_catchup is NOT armed** and DMA1_CH7 HT/TC stays **un-paused**. The existing classifier path now folds CRC as a side-pass:
 
-Mitigation in the CC1 ISR: after masking HT/TC, *clear pending* on DMA1_CH7 (`PFIC.IPRR.CH7 = 1`). This drops any latched-but-not-yet-serviced classifier IRQ. The catchup ISR has already done the classifier's job inline, so dropping the pending bit is correct — no work is lost.
+    DMA1_CH7 HT/TC → on_rx_edge_advance → rx.drain_parser(|byte, idx| chain_crc.fold(...))
+    USART1 IDLE    → on_rx_idle         → rx.drain_parser(|byte, idx| chain_crc.fold(...))
+
+At < 1M the predecessor wire window is long enough (500k n_pred=14: 280 µs of wire time) that `n_pred` × ~0.5 µs CRC update = ~7 µs of inline fold work in the IDLE body — trivial. HT/TC may or may not fire depending on whether the predecessor fills the ring half; either way, the fold completes inside IDLE.
+
+No new ISR, no timer, no busy-wait, no grid math, no §10.6.4 classifier merge. The trigger is the existing RX path; the fold callback is the same `chain_crc.fold` as the high-baud path.
+
+#### 10.6.4 Classifier+parser merge (high-baud only)
+
+At ≥ 1M the high-baud CC1 path masks DMA1_CH7 HT/TC at first-catchup entry. From then until USART1 TC, classifier doesn't compete for the High slot — CC1 is the sole HIGH consumer. This is what makes the site 1 busy-wait deterministic: deadline budget at the last anchor is uncontested.
+
+**Defense against the "tiny catchup misses classifier disable" case.** If classifier HT/TC happens to latch right before CC1 fires (because classifier was about to walk on its own cadence), the catchup body's pause write happens *after* the latch — classifier IRQ is still pending and would run after CC1 exits. Mitigation in the pause path: after masking HT/TC, also clear pending on DMA1_CH7 (`PFIC.IPRR.CH7 = 1`). CC1's first body has already done the classifier's job inline, so dropping the pending bit is correct — no work is lost.
+
+At < 1M this isn't a concern because no pause happens — HT/TC fires whenever and the fold runs in either trigger.
+
+#### 10.6.5 CCR1 wrap guard
+
+`CCR1 += interval_ticks` re-arm is subject to the same 16-bit wrap hazard as CCR3 (§5.4). If CC1 ISR runs late (preempted by a slow same-priority handler — DMA1_CH7 in the pause window before the mask write, or USART1 IDLE landing concurrent), `CCR1 + interval_ticks` can fall behind `CNT` after modular subtraction — the next match wraps a full 1.365 ms before firing. Set-and-recheck applies: after writing CCR1, compare `(CCR1 − CNT) & 0xFFFF` against the wrap-guard threshold. If exceeded, manually invoke the catchup body now — walk + drain over whatever's in ET — and re-arm CCR1 forward from the new CNT.
+
+#### 10.6.6 Per-interval cost at 3M
+
+Default 15-byte interval, mid-range edge density:
+
+| Work | Cycles | µs |
+| --- | --- | --- |
+| Classifier walk (~45 edges) | ~360 | 7.5 |
+| Parser drain (15 bytes × 50 cyc) | 750 | 15.6 |
+| CRC fold (15 bytes × ~10 cyc) | 150 | 3.1 |
+| ISR entry/exit + bookkeeping | ~50 | 1.0 |
+| **Total per interval** | **~1310** | **~27.3 µs** |
+
+Against a 50 µs cadence (15 × 3.33 µs) that's ~54% CPU during the Chain reception window — same order as the Plain-mode (classifier + parser drain) cost during sustained RX. The work hasn't grown; it's just relocated into the CC1 cadence at high baud, or into HT/TC + IDLE at low baud.
+
+#### 10.6.7 Plain replies
+
+Plain replies skip both the chain_crc arm AND the CC1 catchup. Classifier HT/TC stays armed; parser drains at classifier-end as in §10.5. CC1 arming is conditional on `SlotPosition::Last` at send_slot time; `chain_crc.fold` is a no-op when not armed, so the HT/TC + IDLE callbacks remain safe to invoke unconditionally.
 
 ### 10.7 HSI drift and the bit_time assumption
 
