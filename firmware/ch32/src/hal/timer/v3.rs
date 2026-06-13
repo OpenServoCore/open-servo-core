@@ -188,11 +188,6 @@ pub fn clear_tim2_cc3_flag() {
 }
 
 #[inline]
-pub fn tim2_cc3_pending() -> bool {
-    TIM2.intfr().read().ccif(2)
-}
-
-#[inline]
 pub fn tim2_cnt() -> u16 {
     TIM2.cnt().read()
 }

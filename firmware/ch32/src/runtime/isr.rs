@@ -92,21 +92,28 @@ fn on_usart1_tc() {
         usart::clear_tc(USART1);
         return;
     }
-    usart::set_tc_irq(USART1, false);
     usart::clear_tc(USART1);
-    usart::set_dma_tx(USART1, false);
-    dma::disable(dma::Channel::CH4);
     // SAFETY: see `on_dma1_ch7`.
     let pending_reboot = unsafe { Drivers::dxl_uart() }.on_tx_complete();
     if let Some(mode) = pending_reboot {
         flash::set_boot_mode(matches!(mode, BootMode::Bootloader));
         pfic::software_reset();
     }
-    // M2 (#33) → M3 (#5) regression by design: wire TX never fires under the
-    // stubbed DxlTxScheduler, so this TC handler runs only on spurious flag
-    // assertion. Staged-config application (baud / RDT / id) and the broadcast
-    // Reboot path will start working again once M3 wires CC3 fire + CC2
-    // hardware TX_EN.
+}
+
+/// TIM2 CC3 compare-match — TX-start deadline reached. Routes into the
+/// driver's `on_tx_start`, which delegates to the scheduler provider to
+/// activate the wire driver.
+///
+/// Hot path: no pending-flag check (CC3IE is the only IRQ enabled on TIM2
+/// — nothing else can fire this vector) and no flag clear (the scheduler
+/// provider masks CC3IE in `handle_start`; CC3IF stays set but harmless,
+/// and the next `schedule()` clears it before re-arming CC3IE).
+///
+/// SAFETY: see `on_dma1_ch7` — TIM2 shares PFIC HIGH with USART1 / DMA1_CH7
+/// so no concurrent `&mut` into the driver is possible.
+pub fn on_tim2_cc3() {
+    unsafe { Drivers::dxl_uart() }.on_tx_start();
 }
 
 /// Wires osc-ch32 ISR bodies into the vector table. Caller must depend on `qingke-rt`.
@@ -126,6 +133,11 @@ macro_rules! install_isrs {
         #[::qingke_rt::interrupt]
         fn DMA1_CHANNEL7() {
             $crate::runtime::isr::on_dma1_ch7();
+        }
+
+        #[::qingke_rt::interrupt]
+        fn TIM2() {
+            $crate::runtime::isr::on_tim2_cc3();
         }
     };
 }

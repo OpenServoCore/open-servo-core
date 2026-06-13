@@ -7,7 +7,7 @@ extern crate std;
 use std::vec::Vec;
 
 use crate::traits::{
-    ClockTrim, DigitalOut, DmaFlags, DmaRing, DxlTxScheduler, Monotonic, UsartBaud,
+    ClockTrim, DigitalOut, DmaFlags, DmaRing, DxlTxScheduler, Monotonic, SendKind, UsartBaud,
 };
 use crate::types::Level;
 
@@ -94,19 +94,17 @@ impl DmaRing for FakeDmaRing {
 }
 
 /// One entry per `DxlTxScheduler` call; tests assert the recorded sequence
-/// against expected fire arming.
+/// against expected TX scheduling.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub enum ScheduleOp {
     Schedule {
-        wire_end_tick: u16,
-        delay_us: u32,
-    },
-    ScheduleLastSlot {
-        wire_end_tick: u16,
-        delay_q88_us: u32,
-        anchor_bytes: u32,
+        deadline_tick: u16,
+        byte_count: u16,
+        kind: SendKind,
     },
     Cancel,
+    HandleStart,
+    HandleTxComplete,
 }
 
 #[derive(Default)]
@@ -115,22 +113,27 @@ pub struct FakeDxlTxScheduler {
 }
 
 impl DxlTxScheduler for FakeDxlTxScheduler {
-    fn schedule(&mut self, wire_end_tick: u16, delay_us: u32) {
-        self.log.push(ScheduleOp::Schedule {
-            wire_end_tick,
-            delay_us,
-        });
-    }
+    // Same value as the production V006 binding (HCLK = 48 MHz) so driver
+    // tests' deadline_tick math lands on the same numbers the chip sees.
+    const TICKS_PER_US: u16 = 48;
 
-    fn schedule_last_slot(&mut self, wire_end_tick: u16, delay_q88_us: u32, anchor_bytes: u32) {
-        self.log.push(ScheduleOp::ScheduleLastSlot {
-            wire_end_tick,
-            delay_q88_us,
-            anchor_bytes,
+    fn schedule(&mut self, deadline_tick: u16, byte_count: u16, kind: SendKind) {
+        self.log.push(ScheduleOp::Schedule {
+            deadline_tick,
+            byte_count,
+            kind,
         });
     }
 
     fn cancel(&mut self) {
         self.log.push(ScheduleOp::Cancel);
+    }
+
+    fn handle_start(&mut self) {
+        self.log.push(ScheduleOp::HandleStart);
+    }
+
+    fn handle_tx_complete(&mut self) {
+        self.log.push(ScheduleOp::HandleTxComplete);
     }
 }

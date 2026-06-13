@@ -44,9 +44,13 @@ pub fn install_irqs() {
     // with USART1 so on_dma1_ch7 and on_usart1_idle serialize (same prio →
     // no preemption) — classifier state is mutated from both paths.
     pfic::set_priority(pfic::Interrupt::DMA1_CHANNEL7, pfic::Priority::High);
+    // TIM2 CC3 IRQ kicks the wire-driver activate sequence; shares HIGH with
+    // USART1 + DMA1_CH7 so the DXL transport's three IRQ sources serialize.
+    pfic::set_priority(pfic::Interrupt::TIM2, pfic::Priority::High);
     pfic::set_priority(pfic::Interrupt::DMA1_CHANNEL1, pfic::Priority::Low);
     pfic::enable(pfic::Interrupt::USART1);
     pfic::enable(pfic::Interrupt::DMA1_CHANNEL7);
+    pfic::enable(pfic::Interrupt::TIM2);
     pfic::enable(pfic::Interrupt::DMA1_CHANNEL1);
     crate::log::info!("ISRs live");
 }

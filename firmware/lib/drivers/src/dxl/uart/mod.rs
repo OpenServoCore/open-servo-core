@@ -19,7 +19,7 @@ use dxl_protocol::{
 };
 use osc_core::{BaudRate, BootMode, DxlReply};
 
-use crate::traits::{ClockTrim, DmaRing, DxlTxScheduler, UsartBaud};
+use crate::traits::{ClockTrim, DmaRing, DxlTxScheduler, SendKind, UsartBaud};
 use crate::util::Seq;
 use clock::Clock;
 use codec::{Codec, CodecTx};
@@ -53,12 +53,9 @@ struct ReplyContext {
     /// Sync/Bulk/Fast Read slot N.
     slot_offset_bytes: u32,
     /// Fast Sync/Bulk Read slot position. `None` for non-Fast paths;
-    /// `Some(Last { .. })` triggers the chain-CRC fold scheduler arm.
+    /// `Some(Last { .. })` flags the schedule with [`SendKind::FastLast`]
+    /// so the chain-CRC catchup sub-driver (M6, `#6`) can pick it up.
     fast_slot_position: Option<SlotPosition>,
-    /// Wire-byte cursor at request wire-end, for the Fast Last chain-CRC
-    /// fold's predecessor walk start (doc §10.6). Captured from
-    /// `Codec::wire_byte_cursor` at poll surface.
-    anchor_bytes: u32,
 }
 
 fn slot_offset_for(packet: &InstructionPacket<'_>, id: u8) -> u32 {
@@ -133,15 +130,18 @@ pub struct ReplyHandle<
 impl<U: UsartBaud, T: ClockTrim, S: DxlTxScheduler, CRC: CrcUmts, const TX_BUF_LEN: usize>
     ReplyHandle<'_, U, T, S, CRC, TX_BUF_LEN>
 {
-    /// Encode a Status reply into the codec's TX buffer and arm a fire.
-    /// Fire timing folds RDT + slot offset (broadcast Ping / Sync / Bulk
-    /// Read slot N) from the [`ReplyContext`] cached at `poll()`. If no
-    /// context is staged (foreign Instruction filtered upstream) or the
-    /// wire-end tick wasn't ready, the encode still succeeds but no fire
-    /// is armed — the bytes simply won't ship. Context is taken on use so
-    /// a double-send without a fresh `poll()` no-ops on the scheduler.
+    /// Encode a Status reply into the codec's TX buffer and schedule its
+    /// wire start. Fold RDT + slot offset (broadcast Ping / Sync / Bulk
+    /// Read slot N) from the [`ReplyContext`] cached at `poll()`, convert
+    /// the µs delay to scheduler ticks via `S::TICKS_PER_US`, and hand the
+    /// pre-computed `deadline_tick` to the provider. If no context is
+    /// staged (foreign Instruction filtered upstream) or the wire-end tick
+    /// wasn't ready, the encode still succeeds but no schedule is armed —
+    /// the bytes simply won't ship. Context is taken on use so a
+    /// double-send without a fresh `poll()` no-ops on the scheduler.
     pub fn send_status(&mut self, status: Status<'_>) -> Result<(), WriteError> {
         self.tx.send_status(status)?;
+        let byte_count = self.tx.tx_len();
         let Some(ctx) = self.last_reply_ctx.take() else {
             return Ok(());
         };
@@ -149,15 +149,19 @@ impl<U: UsartBaud, T: ClockTrim, S: DxlTxScheduler, CRC: CrcUmts, const TX_BUF_L
             return Ok(());
         };
         let delay_us = self.rdt_us + self.clock.bytes_to_us(ctx.slot_offset_bytes);
-        self.scheduler.schedule(wire_end_tick, delay_us);
+        let delay_ticks = delay_us.wrapping_mul(S::TICKS_PER_US as u32);
+        let deadline_tick = wire_end_tick.wrapping_add(delay_ticks as u16);
+        self.scheduler
+            .schedule(deadline_tick, byte_count, SendKind::Plain);
         Ok(())
     }
 
-    /// Encode one Fast Sync/Bulk Read slot reply and arm its fire. Slot
-    /// position (Only/First/Middle/Last) comes from the cached
-    /// [`ReplyContext`]; Last engages the chain-CRC fold scheduler with the
-    /// cursor captured at request wire-end. RDT µs becomes Q8.8 µs at the
-    /// boundary (`<< 8`) so the trait surface stays integer-µs.
+    /// Encode one Fast Sync/Bulk Read slot reply and schedule its wire
+    /// start. Slot position (Only/First/Middle/Last) comes from the cached
+    /// [`ReplyContext`]; Last tags the schedule with [`SendKind::FastLast`]
+    /// so the provider knows to coordinate with chain-CRC catchup (M6,
+    /// `#6`). Q8.8 µs precision flows through to the tick math so the
+    /// inter-slot gap (~3.33 µs at 3 Mbaud) is sub-µs-aligned.
     pub fn send_slot(&mut self, slot: &Slot<'_>) -> Result<(), WriteError> {
         let Some(ctx) = self.last_reply_ctx.take() else {
             return Ok(());
@@ -168,25 +172,33 @@ impl<U: UsartBaud, T: ClockTrim, S: DxlTxScheduler, CRC: CrcUmts, const TX_BUF_L
             return Ok(());
         };
         self.tx.send_slot(slot, position)?;
+        let byte_count = self.tx.tx_len();
         let Some(wire_end_tick) = ctx.wire_end_tick else {
             return Ok(());
         };
-        match position {
+        let (delay_ticks, kind) = match position {
             SlotPosition::Last { .. } => {
+                // Q8.8 µs × ticks/µs = Q8.8 ticks; >> 8 lands on integer ticks.
                 let delay_q88 =
                     (self.rdt_us << 8) + self.clock.bytes_to_us_q88(ctx.slot_offset_bytes);
-                self.scheduler
-                    .schedule_last_slot(wire_end_tick, delay_q88, ctx.anchor_bytes);
+                let ticks = (delay_q88.wrapping_mul(S::TICKS_PER_US as u32)) >> 8;
+                (ticks, SendKind::FastLast)
             }
             _ => {
                 let delay_us = self.rdt_us + self.clock.bytes_to_us(ctx.slot_offset_bytes);
-                self.scheduler.schedule(wire_end_tick, delay_us);
+                let ticks = delay_us.wrapping_mul(S::TICKS_PER_US as u32);
+                (ticks, SendKind::Plain)
             }
-        }
+        };
+        let deadline_tick = wire_end_tick.wrapping_add(delay_ticks as u16);
+        self.scheduler.schedule(deadline_tick, byte_count, kind);
+        // Chain-CRC predecessor fold lives on DxlChainCatchup (M6, #6),
+        // which reads its own anchor from the codec at TX-start time —
+        // nothing crosses the scheduler boundary here.
         Ok(())
     }
 
-    /// Drop any armed fire and clear the staged request state so the next
+    /// Drop any scheduled TX and clear the staged request state so the next
     /// reply must come through a fresh `poll()`.
     pub fn cancel(&mut self) {
         self.scheduler.cancel();
@@ -257,9 +269,9 @@ impl<U: UsartBaud, T: ClockTrim, S: DxlTxScheduler, CRC: CrcUmts, const TX_BUF_L
 /// - `T`: HSI / HSE trim setter (sub-driver `Clock`).
 /// - `R`: DMA-ring ISR surface for DMA1_CH7 (carried by `Codec` through
 ///   its inner `Rx`).
-/// - `S`: TX fire scheduler — given a wire-end tick from BT and a
-///   protocol-prescribed delay, arms the chip's fire-time hardware
-///   (today: legacy SysTick wrapper; M3 #5: TIM2_CH3 OC + TIM2_CH2 OC).
+/// - `S`: TX-start scheduler — given a pre-computed deadline tick (driver
+///   does the µs→tick math via `S::TICKS_PER_US`), arms the chip's
+///   TX-start hardware (M3 #5: TIM2_CH3 OC fire + TIM2_CH2 OC TX_EN).
 /// - `CRC`: CRC-16/UMTS engine — software impl on V006, peripheral impl
 ///   on a chip that has one (see `providers::dxl_crc`).
 /// - `DECODER_CAP`: streaming-decoder accumulator size. Sized to hold the
@@ -397,7 +409,6 @@ impl<
                 // Foreign Instruction — drift fed above, drop and continue.
                 continue;
             }
-            let cursor = rx.wire_byte_cursor();
             // Eager wire-end tick: BT[last_byte_seq] + 10·tpb. Captured now
             // so the send path doesn't need to re-acquire `&rx` (the parsed
             // packet's shared borrow on `rx` would block that). `None` is
@@ -413,7 +424,6 @@ impl<
                 wire_end_tick,
                 slot_offset_bytes: slot_offset_for(&packet, id),
                 fast_slot_position: fast_slot_position(&packet, id),
-                anchor_bytes: cursor,
             };
             *last_reply_ctx = Some(ctx);
             let mut reply = ReplyHandle {
@@ -439,12 +449,23 @@ impl<
         self.codec.instruction_count()
     }
 
-    /// USART1 TC fired — the reply has fully drained the wire. Drain
-    /// staged config writes (id / baud / trim / rdt) and surface any
+    /// The TX-start tick has arrived (chip-side CC3 IRQ) — route to the
+    /// scheduler so it activates the wire driver (USART TE on, TX DMA on).
+    /// Logical event name per [[driver_events_logical_naming]]; the chip
+    /// ISR's peripheral-shaped name (`on_tim2_cc3`) lives in `runtime/isr.rs`.
+    pub fn on_tx_start(&mut self) {
+        self.scheduler.handle_start();
+    }
+
+    /// USART1 TC fired — the reply has fully drained the wire. Release
+    /// the wire driver *first* (drop TX_EN, mask TC IRQ, disable DMA) so
+    /// stale TX_EN doesn't sit on the bus while pending config mutates;
+    /// then drain staged writes (id / baud / trim / rdt) and surface any
     /// pending reboot to the chip-side ISR. Reboot is returned (rather
     /// than self-applied) because the chip controls how the reset
     /// actually happens; the driver only knows it was asked.
     pub fn on_tx_complete(&mut self) -> Option<BootMode> {
+        self.scheduler.handle_tx_complete();
         if let Some(id) = self.pending_id.take() {
             self.id = id;
         }
@@ -957,17 +978,26 @@ mod tests {
         }
     }
 
+    /// Wire-end tick + delay_us → expected deadline_tick at V006's
+    /// TICKS_PER_US=48 (matching the mock's const).
+    fn expected_deadline(wire_end_tick: u16, delay_us: u32) -> u16 {
+        wire_end_tick.wrapping_add(delay_us.wrapping_mul(48) as u16)
+    }
+
     #[test]
-    fn send_status_after_poll_arms_schedule_at_wire_end_plus_rdt() {
+    fn send_status_after_poll_schedules_at_wire_end_plus_rdt() {
         let ping = wire_ping(TEST_ID);
         let (mut bus, wire_end_tick) = bus_armed_with(&ping);
         bus.poll(|_, reply| reply.send_status(empty_status()).expect("encode fits"));
 
+        let byte_count = bus.codec.tx_len();
+        assert!(byte_count > 0);
         assert_eq!(
             bus.scheduler.log.as_slice(),
             &[ScheduleOp::Schedule {
-                wire_end_tick,
-                delay_us: TEST_RDT_US,
+                deadline_tick: expected_deadline(wire_end_tick, TEST_RDT_US),
+                byte_count,
+                kind: SendKind::Plain,
             }]
         );
     }
@@ -983,7 +1013,7 @@ mod tests {
     }
 
     #[test]
-    fn send_slot_only_routes_to_schedule() {
+    fn send_slot_only_schedules_plain() {
         // Fast Sync Read with our_id as the sole slot → SlotPosition::Only.
         let req = wire_fast_sync_read(0, 2, &[TEST_ID]);
         let (mut bus, wire_end_tick) = bus_armed_with(&req);
@@ -998,24 +1028,32 @@ mod tests {
             reply.send_slot(&slot).expect("encode fits");
         });
 
-        // our_slot=0 of n_slots=1 → bytes_before=0 → delay = RDT.
+        // our_slot=0 of n_slots=1 → bytes_before=0 → delay = RDT, kind=Plain.
+        let byte_count = bus.codec.tx_len();
+        assert!(byte_count > 0);
         assert_eq!(
             bus.scheduler.log.as_slice(),
             &[ScheduleOp::Schedule {
-                wire_end_tick,
-                delay_us: TEST_RDT_US,
+                deadline_tick: expected_deadline(wire_end_tick, TEST_RDT_US),
+                byte_count,
+                kind: SendKind::Plain,
             }]
         );
     }
 
     #[test]
-    fn send_slot_last_routes_to_schedule_last_slot() {
+    fn send_slot_last_schedules_fast_last() {
         // Fast Sync Read with two slaves where we're the last → Last position.
         let req = wire_fast_sync_read(0, 2, &[0x42, TEST_ID]);
         let (mut bus, wire_end_tick) = bus_armed_with(&req);
 
         let payload = [0xAA_u8, 0xBB];
+        // delay_q88 = (RDT << 8) + bytes_to_us_q88(12 bytes_before); ticks =
+        // (delay_q88 × TICKS_PER_US) >> 8.
         let expected_delay_q88 = (TEST_RDT_US << 8) + bus.clock.bytes_to_us_q88(12);
+        let expected_ticks = (expected_delay_q88.wrapping_mul(48)) >> 8;
+        let expected = wire_end_tick.wrapping_add(expected_ticks as u16);
+
         bus.poll(|_, reply| {
             let slot = Slot {
                 id: Id::new(TEST_ID),
@@ -1025,22 +1063,16 @@ mod tests {
             reply.send_slot(&slot).expect("encode fits");
         });
 
-        let entry = bus.scheduler.log.as_slice().first().expect("one fire");
-        match entry {
-            ScheduleOp::ScheduleLastSlot {
-                wire_end_tick: w,
-                delay_q88_us,
-                anchor_bytes,
-            } => {
-                assert_eq!(*w, wire_end_tick);
-                assert_eq!(*delay_q88_us, expected_delay_q88);
-                // Anchor is the codec's wire-byte cursor at request consume —
-                // nonzero (the request was parsed), exact value depends on
-                // the staged bytes' length; just assert it's > 0.
-                assert!(*anchor_bytes > 0);
-            }
-            other => panic!("expected ScheduleLastSlot, got {other:?}"),
-        }
+        let byte_count = bus.codec.tx_len();
+        assert!(byte_count > 0);
+        assert_eq!(
+            bus.scheduler.log.as_slice(),
+            &[ScheduleOp::Schedule {
+                deadline_tick: expected,
+                byte_count,
+                kind: SendKind::FastLast,
+            }]
+        );
     }
 
     #[test]
@@ -1097,7 +1129,7 @@ mod tests {
     }
 
     #[test]
-    fn broadcast_ping_stashes_id_indexed_slot_offset() {
+    fn broadcast_ping_folds_id_indexed_slot_offset() {
         // DXL 2.0 convention: each slave answers a broadcast Ping at offset
         // `id × PING_STATUS_FRAME_BYTES` so replies don't collide. Driver
         // computes this internally from the cached packet at poll time.
@@ -1109,17 +1141,20 @@ mod tests {
             .bytes_to_us(TEST_ID as u32 * PING_STATUS_FRAME_BYTES);
         bus.poll(|_, reply| reply.send_status(empty_status()).expect("encode fits"));
 
+        let byte_count = bus.codec.tx_len();
+        assert!(byte_count > 0);
         assert_eq!(
             bus.scheduler.log.as_slice(),
             &[ScheduleOp::Schedule {
-                wire_end_tick,
-                delay_us: TEST_RDT_US + expected_offset_us,
+                deadline_tick: expected_deadline(wire_end_tick, TEST_RDT_US + expected_offset_us),
+                byte_count,
+                kind: SendKind::Plain,
             }]
         );
     }
 
     #[test]
-    fn sync_read_stashes_bytes_before_for_later_slot() {
+    fn sync_read_folds_bytes_before_for_later_slot() {
         // our_id (TEST_ID=0x07) at slot index 2 — `bytes_before` = 2 × per_slot.
         let req = wire_sync_read(0, 2, &[0x09, 0x05, TEST_ID]);
         let (mut bus, wire_end_tick) = bus_armed_with(&req);
@@ -1129,12 +1164,52 @@ mod tests {
         let expected_offset_us = bus.clock.bytes_to_us(26);
         bus.poll(|_, reply| reply.send_status(empty_status()).expect("encode fits"));
 
+        let byte_count = bus.codec.tx_len();
+        assert!(byte_count > 0);
         assert_eq!(
             bus.scheduler.log.as_slice(),
             &[ScheduleOp::Schedule {
-                wire_end_tick,
-                delay_us: TEST_RDT_US + expected_offset_us,
+                deadline_tick: expected_deadline(wire_end_tick, TEST_RDT_US + expected_offset_us),
+                byte_count,
+                kind: SendKind::Plain,
             }]
         );
+    }
+
+    #[test]
+    fn on_tx_start_routes_to_handle_start() {
+        let mut bus = make_bus();
+        bus.on_tx_start();
+        assert_eq!(bus.scheduler.log.as_slice(), &[ScheduleOp::HandleStart]);
+    }
+
+    #[test]
+    fn on_tx_complete_releases_wire_before_draining_pending_config() {
+        let ping = wire_ping(TEST_ID);
+        let (mut bus, _) = bus_armed_with(&ping);
+        // Stage a pending id + rdt + reboot via a successful poll.
+        bus.poll(|_, reply| {
+            reply.stage_id(0x42);
+            reply.stage_rdt(500);
+            reply.stage_reboot(BootMode::Bootloader);
+            reply.send_status(empty_status()).expect("encode fits");
+        });
+        // Clear the Schedule entry from the poll so the assertion below is
+        // tight on the on_tx_complete-side log.
+        bus.scheduler.log.clear();
+
+        assert_eq!(bus.id, TEST_ID);
+        assert_eq!(bus.rdt_us, TEST_RDT_US);
+
+        let pending_reboot = bus.on_tx_complete();
+
+        // Release runs first; pending config is then applied.
+        assert_eq!(
+            bus.scheduler.log.as_slice(),
+            &[ScheduleOp::HandleTxComplete]
+        );
+        assert_eq!(bus.id, 0x42);
+        assert_eq!(bus.rdt_us, 500);
+        assert_eq!(pending_reboot, Some(BootMode::Bootloader));
     }
 }

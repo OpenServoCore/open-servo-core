@@ -58,32 +58,51 @@ pub trait DmaRing {
     fn remaining(&self) -> u16;
 }
 
-/// Arm a TX fire at a protocol-prescribed wire deadline. The driver passes
-/// pure intent — the wire-end tick of the last RX byte plus a delay — and
-/// the provider applies all chip-specific compensations (PFIC + ISR-entry
-/// latency, fine-trim residual, wrap guard, the TX_EN OC setup, etc.)
-/// inside its own body. The trait surface stays free of chip-side knobs.
-///
-/// `wire_end_tick` is the BT-ring tick (free-running timer, 16-bit) at the
-/// last bit of the last received byte; `delay_us` (or `delay_q88_us` for
-/// chain participation) is what the protocol prescribes from there —
-/// typically `RDT` for a Status reply or `RDT + slot_offset` for a Fast
-/// slot. Q8.8 µs gives sub-µs resolution at 3 Mbaud where the inter-slot
-/// gap is ~3.33 µs.
+/// What kind of TX this is — passes through `schedule` so the provider can
+/// apply variant-specific bias if needed. Carrying the tag means future
+/// bench-tuning doesn't reshape the trait if Fast-Last turns out to need a
+/// different setup margin from Plain (e.g. catchup-completion slack).
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub enum SendKind {
+    /// Plain Status reply or Fast Sync/Bulk Read non-Last slot — no chain
+    /// participation.
+    Plain,
+    /// Fast Sync/Bulk Read Last slot — chain-CRC tail folder runs alongside.
+    FastLast,
+}
+
+/// Schedule a TX at a protocol-prescribed wire deadline. The driver computes
+/// the deadline in scheduler ticks (using `TICKS_PER_US` to convert µs ↔
+/// ticks); the provider applies chip-specific bias compensation (PFIC +
+/// ISR-entry latency, TX_EN OC setup, wrap guard) inside its own body. The
+/// trait surface stays free of chip-side knobs.
 pub trait DxlTxScheduler {
-    /// Single-shot fire at `wire_end_tick + delay_us`. Used for Status
-    /// replies and Fast non-Last slots — anything that doesn't fold into
-    /// the chain CRC.
-    fn schedule(&mut self, wire_end_tick: u16, delay_us: u32);
+    /// Tick rate of the chip-side TX-start timer, ticks per µs. Driver uses
+    /// this to convert protocol delay (µs / Q8.8 µs) to `deadline_tick`
+    /// before calling `schedule`.
+    const TICKS_PER_US: u16;
 
-    /// Fast Last-slot fire — initiates chain-CRC participation. The
-    /// provider sets up the predecessor-byte fold (`anchor_bytes` ≈ wire
-    /// bytes the post-fire walk must cover) alongside arming the fire
-    /// itself; `delay_q88_us` is the slot's wire offset from
-    /// `wire_end_tick` carrying Q8.8 µs precision for sub-µs alignment.
-    fn schedule_last_slot(&mut self, wire_end_tick: u16, delay_q88_us: u32, anchor_bytes: u32);
+    /// Schedule a wire TX at `deadline_tick`. Provider applies its own
+    /// bias / TX_EN setup compensation internally — this method's contract
+    /// is "the first wire bit of `byte_count` bytes lands at approximately
+    /// `deadline_tick`." Idempotent on re-schedule (overwrites any prior
+    /// schedule). `kind` lets the provider apply variant-specific bias.
+    ///
+    /// `byte_count` is the size of the encoded packet sitting in the
+    /// driver-owned TX buffer (codec's `tx_len`); the provider hands it to
+    /// the chip-side DMA channel as the transfer count.
+    fn schedule(&mut self, deadline_tick: u16, byte_count: u16, kind: SendKind);
 
-    /// Drop any armed fire and return the bus to idle. Idempotent — safe
-    /// to call when nothing is armed.
+    /// Drop any pending TX and return the bus to idle. Idempotent.
     fn cancel(&mut self);
+
+    /// Driver's `on_tx_start` calls this to activate the wire driver — turn
+    /// USART transmit on, kick the TX DMA channel. TX_EN is already up via
+    /// hardware OC; this finishes the handoff.
+    fn handle_start(&mut self);
+
+    /// Driver's `on_tx_complete` calls this to release the wire driver —
+    /// drop TX_EN, disable USART TX direction + TC IRQ, disable TX DMA.
+    /// Driver body then drains pending config + surfaces any pending reboot.
+    fn handle_tx_complete(&mut self);
 }
