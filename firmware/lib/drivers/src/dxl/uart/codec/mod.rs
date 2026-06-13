@@ -266,9 +266,9 @@ impl<
 
     /// Look up the start-bit tick of the byte at `seq`. The DXL composite
     /// pairs this with `Clock::ticks_per_bit()` to derive
-    /// `wire_end_tick = BT[token.end.predecessor()] + 10·tpb` for fire
-    /// scheduling. Returns `None` if `seq` is past the BT head or has
-    /// lapped out of the ring window.
+    /// `packet_end_tick = BT[token.end.predecessor()] + 10·tpb` for
+    /// TX-start scheduling. Returns `None` if `seq` is past the BT head
+    /// or has lapped out of the ring window.
     pub fn byte_ts_at(&self, seq: Seq<u8, RX_BUF_LEN>) -> Option<u16> {
         // RX and BT share a seq space per doc §8.3 — `.into()` retags
         // the type, raw is preserved.

@@ -43,11 +43,11 @@ const MAX_FAST_SLOTS: usize = 252;
 /// driver derives wire shape from its cached request state.
 #[derive(Copy, Clone, Debug, Default)]
 struct ReplyContext {
-    /// Wire-end tick = `BT[last_byte_seq] + 10·tpb`, captured eagerly at
+    /// Packet-end tick = `BT[last_byte_seq] + 10·tpb`, captured eagerly at
     /// `poll()` so the send path doesn't need RX access (the in-flight
     /// packet borrow on `CodecRx` would otherwise block the BT lookup).
     /// `None` if BT hadn't caught up by poll surface — send drops silently.
-    wire_end_tick: Option<u16>,
+    packet_end_tick: Option<u16>,
     /// Wire-byte offset from request wire-end to this reply's fire moment.
     /// Zero for direct unicast; non-zero for broadcast Ping and
     /// Sync/Bulk/Fast Read slot N.
@@ -145,12 +145,12 @@ impl<U: UsartBaud, T: ClockTrim, S: TxScheduler, CRC: CrcUmts, const TX_BUF_LEN:
         let Some(ctx) = self.last_reply_ctx.take() else {
             return Ok(());
         };
-        let Some(wire_end_tick) = ctx.wire_end_tick else {
+        let Some(packet_end_tick) = ctx.packet_end_tick else {
             return Ok(());
         };
         let delay_us = self.rdt_us + self.clock.bytes_to_us(ctx.slot_offset_bytes);
         let delay_ticks = delay_us.wrapping_mul(S::TICKS_PER_US as u32);
-        let deadline_tick = wire_end_tick.wrapping_add(delay_ticks as u16);
+        let deadline_tick = packet_end_tick.wrapping_add(delay_ticks as u16);
         self.scheduler
             .schedule(deadline_tick, byte_count, SendKind::Plain);
         Ok(())
@@ -173,7 +173,7 @@ impl<U: UsartBaud, T: ClockTrim, S: TxScheduler, CRC: CrcUmts, const TX_BUF_LEN:
         };
         self.tx.send_slot(slot, position)?;
         let byte_count = self.tx.tx_len();
-        let Some(wire_end_tick) = ctx.wire_end_tick else {
+        let Some(packet_end_tick) = ctx.packet_end_tick else {
             return Ok(());
         };
         let (delay_ticks, kind) = match position {
@@ -190,7 +190,7 @@ impl<U: UsartBaud, T: ClockTrim, S: TxScheduler, CRC: CrcUmts, const TX_BUF_LEN:
                 (ticks, SendKind::Plain)
             }
         };
-        let deadline_tick = wire_end_tick.wrapping_add(delay_ticks as u16);
+        let deadline_tick = packet_end_tick.wrapping_add(delay_ticks as u16);
         self.scheduler.schedule(deadline_tick, byte_count, kind);
         // Chain-CRC predecessor fold lives on DxlChainCatchup (M6, #6),
         // which reads its own anchor from the codec at TX-start time —
@@ -411,11 +411,11 @@ impl<
                 // Foreign Instruction — drift fed above, drop and continue.
                 continue;
             }
-            // Eager wire-end tick: BT[last_byte_seq] + 10·tpb. Captured now
-            // so the send path doesn't need to re-acquire `&rx` (the parsed
-            // packet's shared borrow on `rx` would block that). `None` is
-            // fine — send drops silently.
-            let wire_end_tick = rx
+            // Eager packet-end tick: BT[last_byte_seq] + 10·tpb. Captured
+            // now so the send path doesn't need to re-acquire `&rx` (the
+            // parsed packet's shared borrow on `rx` would block that).
+            // `None` is fine — send drops silently.
+            let packet_end_tick = rx
                 .byte_ts_at(token.end.predecessor())
                 .map(|ts| ts.wrapping_add(clock.ticks_per_bit().wrapping_mul(10)));
             // dispatch() takes `&self` so the packet's borrow on `rx` is
@@ -423,7 +423,7 @@ impl<
             // and the disjoint `&mut tx` the reply handle holds.
             let Some(packet) = rx.dispatch() else { return };
             let ctx = ReplyContext {
-                wire_end_tick,
+                packet_end_tick,
                 slot_offset_bytes: slot_offset_for(&packet, id),
                 fast_slot_position: fast_slot_position(&packet, id),
             };
@@ -956,21 +956,21 @@ mod tests {
     }
 
     // ------------------------------------------------------------------
-    // TX fire scheduling
+    // TX scheduling
     // ------------------------------------------------------------------
 
-    /// Construct a bus pre-loaded with `pkt`'s BT entries (so `wire_end_tick`
+    /// Construct a bus pre-loaded with `pkt`'s BT entries (so `packet_end_tick`
     /// has a real ts to look up) and the bytes themselves staged into the
     /// codec, ready for one `poll()`. Returns the bus and the expected
-    /// wire-end tick the scheduler should see — `BT[pkt.len()-1] + 10·tpb`.
+    /// packet-end tick the scheduler should see — `BT[pkt.len()-1] + 10·tpb`.
     fn bus_armed_with(pkt: &[u8]) -> (TestBus, u16) {
         let mut bus = bus_with_staged_bt(pkt.len(), BYTE_TICKS_3M);
         bus.codec.stage_rx_bytes_for_test(0, pkt);
         // tpb=16 @ 3M; first edge in `bus_with_staged_bt` is 1000 and they
         // step by BYTE_TICKS_3M, so BT[pkt.len()-1] == 1000 + (pkt.len()-1)·160.
         let last_bt = 1000_u16.wrapping_add(((pkt.len() as u16) - 1).wrapping_mul(BYTE_TICKS_3M));
-        let wire_end_tick = last_bt.wrapping_add(16_u16.wrapping_mul(10));
-        (bus, wire_end_tick)
+        let packet_end_tick = last_bt.wrapping_add(16_u16.wrapping_mul(10));
+        (bus, packet_end_tick)
     }
 
     fn empty_status() -> dxl_protocol::packet::Status<'static> {
@@ -980,16 +980,16 @@ mod tests {
         }
     }
 
-    /// Wire-end tick + delay_us → expected deadline_tick at V006's
+    /// Packet-end tick + delay_us → expected deadline_tick at V006's
     /// TICKS_PER_US=48 (matching the mock's const).
-    fn expected_deadline(wire_end_tick: u16, delay_us: u32) -> u16 {
-        wire_end_tick.wrapping_add(delay_us.wrapping_mul(48) as u16)
+    fn expected_deadline(packet_end_tick: u16, delay_us: u32) -> u16 {
+        packet_end_tick.wrapping_add(delay_us.wrapping_mul(48) as u16)
     }
 
     #[test]
-    fn send_status_after_poll_schedules_at_wire_end_plus_rdt() {
+    fn send_status_after_poll_schedules_at_packet_end_plus_rdt() {
         let ping = wire_ping(TEST_ID);
-        let (mut bus, wire_end_tick) = bus_armed_with(&ping);
+        let (mut bus, packet_end_tick) = bus_armed_with(&ping);
         bus.poll(|_, reply| reply.send_status(empty_status()).expect("encode fits"));
 
         let byte_count = bus.codec.tx_len();
@@ -997,7 +997,7 @@ mod tests {
         assert_eq!(
             bus.scheduler.log.as_slice(),
             &[ScheduleOp::Schedule {
-                deadline_tick: expected_deadline(wire_end_tick, TEST_RDT_US),
+                deadline_tick: expected_deadline(packet_end_tick, TEST_RDT_US),
                 byte_count,
                 kind: SendKind::Plain,
             }]
@@ -1018,7 +1018,7 @@ mod tests {
     fn send_slot_only_schedules_plain() {
         // Fast Sync Read with our_id as the sole slot → SlotPosition::Only.
         let req = wire_fast_sync_read(0, 2, &[TEST_ID]);
-        let (mut bus, wire_end_tick) = bus_armed_with(&req);
+        let (mut bus, packet_end_tick) = bus_armed_with(&req);
 
         let payload = [0x11_u8, 0x22];
         bus.poll(|_, reply| {
@@ -1036,7 +1036,7 @@ mod tests {
         assert_eq!(
             bus.scheduler.log.as_slice(),
             &[ScheduleOp::Schedule {
-                deadline_tick: expected_deadline(wire_end_tick, TEST_RDT_US),
+                deadline_tick: expected_deadline(packet_end_tick, TEST_RDT_US),
                 byte_count,
                 kind: SendKind::Plain,
             }]
@@ -1047,14 +1047,14 @@ mod tests {
     fn send_slot_last_schedules_fast_last() {
         // Fast Sync Read with two slaves where we're the last → Last position.
         let req = wire_fast_sync_read(0, 2, &[0x42, TEST_ID]);
-        let (mut bus, wire_end_tick) = bus_armed_with(&req);
+        let (mut bus, packet_end_tick) = bus_armed_with(&req);
 
         let payload = [0xAA_u8, 0xBB];
         // delay_q88 = (RDT << 8) + bytes_to_us_q88(12 bytes_before); ticks =
         // (delay_q88 × TICKS_PER_US) >> 8.
         let expected_delay_q88 = (TEST_RDT_US << 8) + bus.clock.bytes_to_us_q88(12);
         let expected_ticks = (expected_delay_q88.wrapping_mul(48)) >> 8;
-        let expected = wire_end_tick.wrapping_add(expected_ticks as u16);
+        let expected = packet_end_tick.wrapping_add(expected_ticks as u16);
 
         bus.poll(|_, reply| {
             let slot = Slot {
@@ -1136,7 +1136,7 @@ mod tests {
         // `id × PING_STATUS_FRAME_BYTES` so replies don't collide. Driver
         // computes this internally from the cached packet at poll time.
         let req = wire_ping(BROADCAST_ID);
-        let (mut bus, wire_end_tick) = bus_armed_with(&req);
+        let (mut bus, packet_end_tick) = bus_armed_with(&req);
 
         let expected_offset_us = bus
             .clock
@@ -1148,7 +1148,7 @@ mod tests {
         assert_eq!(
             bus.scheduler.log.as_slice(),
             &[ScheduleOp::Schedule {
-                deadline_tick: expected_deadline(wire_end_tick, TEST_RDT_US + expected_offset_us),
+                deadline_tick: expected_deadline(packet_end_tick, TEST_RDT_US + expected_offset_us),
                 byte_count,
                 kind: SendKind::Plain,
             }]
@@ -1159,7 +1159,7 @@ mod tests {
     fn sync_read_folds_bytes_before_for_later_slot() {
         // our_id (TEST_ID=0x07) at slot index 2 — `bytes_before` = 2 × per_slot.
         let req = wire_sync_read(0, 2, &[0x09, 0x05, TEST_ID]);
-        let (mut bus, wire_end_tick) = bus_armed_with(&req);
+        let (mut bus, packet_end_tick) = bus_armed_with(&req);
 
         // per_slot = RESPONSE_HEADER_BYTES(9) + length(2) + CRC(2) = 13;
         // bytes_before = 2 × 13 = 26.
@@ -1171,7 +1171,7 @@ mod tests {
         assert_eq!(
             bus.scheduler.log.as_slice(),
             &[ScheduleOp::Schedule {
-                deadline_tick: expected_deadline(wire_end_tick, TEST_RDT_US + expected_offset_us),
+                deadline_tick: expected_deadline(packet_end_tick, TEST_RDT_US + expected_offset_us),
                 byte_count,
                 kind: SendKind::Plain,
             }]
