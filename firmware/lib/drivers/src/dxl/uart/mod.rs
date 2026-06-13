@@ -19,7 +19,7 @@ use dxl_protocol::{
 };
 use osc_core::{BaudRate, BootMode, DxlReply};
 
-use crate::traits::dxl::{ClockTrim, DmaRing, SendKind, TxScheduler, UsartBaud};
+use crate::traits::dxl::{ClockTrim, EdgeDma, SendKind, TxScheduler, UsartBaud};
 use crate::util::Seq;
 use clock::Clock;
 use codec::{Codec, CodecTx};
@@ -291,7 +291,7 @@ impl<U: UsartBaud, T: ClockTrim, S: TxScheduler, CRC: CrcUmts, const TX_BUF_LEN:
 pub struct DxlUart<
     U: UsartBaud,
     T: ClockTrim,
-    R: DmaRing,
+    R: EdgeDma,
     S: TxScheduler,
     CRC: CrcUmts,
     const DECODER_CAP: usize,
@@ -321,7 +321,7 @@ pub struct DxlUart<
 impl<
     U: UsartBaud,
     T: ClockTrim,
-    R: DmaRing,
+    R: EdgeDma,
     S: TxScheduler,
     CRC: CrcUmts,
     const DECODER_CAP: usize,
@@ -401,7 +401,9 @@ impl<
         } = self;
         let (rx, tx) = codec.split_mut();
         loop {
-            let Some(token) = rx.poll_one() else { return };
+            let Some(token) = rx.poll_one(|_, _| {}) else {
+                return;
+            };
             for (prev, curr) in rx.byte_pairs(token.start, token.end) {
                 clock.on_byte_pair(prev, curr);
             }
@@ -502,7 +504,7 @@ impl<
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::mocks::{FakeClockTrim, FakeDmaRing, FakeTxScheduler, FakeUsartBaud, ScheduleOp};
+    use crate::mocks::{FakeClockTrim, FakeEdgeDma, FakeTxScheduler, FakeUsartBaud, ScheduleOp};
     use crate::traits::dxl::DmaFlags;
     use dxl_protocol::packet::{Id, StatusError};
     use dxl_protocol::{InstructionEmitter, SoftwareCrcUmts, StatusEmitter};
@@ -523,11 +525,11 @@ mod tests {
     const BYTE_TICKS_3M: u16 = 160;
 
     type TestCodec =
-        Codec<FakeDmaRing, SoftwareCrcUmts, DECODER_CAP, RX_BUF_LEN, EDGE_BUF_LEN, TX_BUF_LEN>;
+        Codec<FakeEdgeDma, SoftwareCrcUmts, DECODER_CAP, RX_BUF_LEN, EDGE_BUF_LEN, TX_BUF_LEN>;
     type TestBus = DxlUart<
         FakeUsartBaud,
         FakeClockTrim,
-        FakeDmaRing,
+        FakeEdgeDma,
         FakeTxScheduler,
         SoftwareCrcUmts,
         DECODER_CAP,
@@ -537,7 +539,7 @@ mod tests {
     >;
 
     fn make_codec_with_edges(vals: &[u16], flags: DmaFlags) -> TestCodec {
-        let mut c: TestCodec = Codec::new(FakeDmaRing::default());
+        let mut c: TestCodec = Codec::new(FakeEdgeDma::default());
         c.stage_edges_for_test(vals);
         c.arm_next_flags_for_test(flags);
         c
@@ -558,7 +560,7 @@ mod tests {
     }
 
     fn make_bus() -> TestBus {
-        make_bus_with(Codec::new(FakeDmaRing::default()), BaudRate::B3000000)
+        make_bus_with(Codec::new(FakeEdgeDma::default()), BaudRate::B3000000)
     }
 
     /// Variant of [`TestBus::poll`] that captures the surfaced packet's

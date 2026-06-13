@@ -26,7 +26,7 @@ use dxl_protocol::{
     CrcUmts, InstructionPacket, SlotEmitter, SlotPosition, StatusEmitter, WriteError,
 };
 
-use crate::traits::dxl::DmaRing;
+use crate::traits::dxl::EdgeDma;
 use crate::util::{HwRing, Seq};
 use rx::Rx;
 
@@ -48,7 +48,7 @@ pub struct InstructionToken<const RX_BUF_LEN: usize> {
 /// `poll<F>` can hand a packet borrowed from this half and a reply handle
 /// borrowed from the TX half to the dispatcher at the same time.
 pub struct CodecRx<
-    R: DmaRing,
+    R: EdgeDma,
     CRC: CrcUmts,
     const DECODER_CAP: usize,
     const RX_BUF_LEN: usize,
@@ -89,7 +89,7 @@ pub struct CodecRx<
 }
 
 impl<
-    R: DmaRing,
+    R: EdgeDma,
     CRC: CrcUmts,
     const DECODER_CAP: usize,
     const RX_BUF_LEN: usize,
@@ -143,7 +143,18 @@ impl<
     /// `Copy` — its borrow on `&mut self` ends at the call's statement
     /// boundary, so the composite is free to call [`Self::byte_pairs`] and
     /// (conditionally) [`Self::dispatch`] after.
-    pub fn poll_one(&mut self) -> Option<InstructionToken<RX_BUF_LEN>> {
+    ///
+    /// `on_byte` is invoked once for every wire byte consumed (including
+    /// resync'd prefixes and Status-frame bytes the parser drops); it
+    /// receives the byte value and the pre-advance value of
+    /// [`Self::wire_byte_cursor`]. The first byte consumed after
+    /// `FastLastCrc::arm(snoop_head, _)` sees `parsed_idx == snoop_head`,
+    /// so the fold's `parsed_idx < snoop_head` guard evaluates false and
+    /// that byte is included. Callers without a fold pass `|_, _| {}`.
+    pub fn poll_one<F: FnMut(u8, u32)>(
+        &mut self,
+        mut on_byte: F,
+    ) -> Option<InstructionToken<RX_BUF_LEN>> {
         // SAFETY: see `on_rx_dma_advance`.
         let rx_buf = unsafe { &mut *self.rx_buf.get() };
         let mut reader = rx_buf.reader();
@@ -154,7 +165,9 @@ impl<
             // first byte of whatever the decoder will parse next.
             let pre_advance = reader.read_seq();
             self.packet_start_rx_seq.get_or_insert(pre_advance);
+            let cursor = self.wire_bytes_consumed;
             reader.advance(1);
+            on_byte(byte, cursor);
             self.wire_bytes_consumed = self.wire_bytes_consumed.wrapping_add(1);
             let (step, _) = self.decoder.feed(&[byte]);
             match step {
@@ -318,10 +331,37 @@ impl<CRC: CrcUmts, const TX_BUF_LEN: usize> CodecTx<CRC, TX_BUF_LEN> {
     pub fn tx_len(&self) -> u16 {
         self.tx_buf.len() as u16
     }
+
+    /// Overwrite the trailing 2 bytes of the encoded TX buffer with `crc`
+    /// in little-endian. The Fast Last chain-CRC fold path calls this once
+    /// the predecessor wire bytes have been folded and our own reply bytes
+    /// are mixed in: the encoder emitted a placeholder CRC at
+    /// `send_slot(Last)` time and this patches it before DMA1_CH4's read
+    /// cursor reaches the trailing slot (doc §10.6). No-op when `tx_buf`
+    /// hasn't been encoded yet (length < 2).
+    pub fn patch_crc(&mut self, crc: u16) {
+        let n = self.tx_buf.len();
+        if n < 2 {
+            return;
+        }
+        self.tx_buf[n - 2] = (crc & 0xFF) as u8;
+        self.tx_buf[n - 1] = (crc >> 8) as u8;
+    }
+
+    /// Slice of our own reply bytes excluding the trailing 2-byte CRC
+    /// slot — the bytes the Fast Last fold mixes into the chain CRC
+    /// before patching. Empty when no reply has been encoded yet.
+    pub fn own_reply_bytes(&self) -> &[u8] {
+        let n = self.tx_buf.len();
+        if n < 2 {
+            return &[];
+        }
+        &self.tx_buf[..n - 2]
+    }
 }
 
 pub struct Codec<
-    R: DmaRing,
+    R: EdgeDma,
     CRC: CrcUmts,
     const DECODER_CAP: usize,
     const RX_BUF_LEN: usize,
@@ -333,7 +373,7 @@ pub struct Codec<
 }
 
 impl<
-    R: DmaRing,
+    R: EdgeDma,
     CRC: CrcUmts,
     const DECODER_CAP: usize,
     const RX_BUF_LEN: usize,
@@ -376,8 +416,11 @@ impl<
         self.rx.on_rx_dma_advance(remaining);
     }
 
-    pub fn poll_one(&mut self) -> Option<InstructionToken<RX_BUF_LEN>> {
-        self.rx.poll_one()
+    pub fn poll_one<F: FnMut(u8, u32)>(
+        &mut self,
+        on_byte: F,
+    ) -> Option<InstructionToken<RX_BUF_LEN>> {
+        self.rx.poll_one(on_byte)
     }
 
     pub fn dispatch(&self) -> Option<InstructionPacket<'_>> {
@@ -431,11 +474,19 @@ impl<
     pub fn tx_len(&self) -> u16 {
         self.tx.tx_len()
     }
+
+    pub fn patch_crc(&mut self, crc: u16) {
+        self.tx.patch_crc(crc);
+    }
+
+    pub fn own_reply_bytes(&self) -> &[u8] {
+        self.tx.own_reply_bytes()
+    }
 }
 
 #[cfg(test)]
 impl<
-    R: DmaRing,
+    R: EdgeDma,
     CRC: CrcUmts,
     const DECODER_CAP: usize,
     const RX_BUF_LEN: usize,
@@ -463,7 +514,7 @@ impl<
 
 #[cfg(test)]
 impl<
-    R: DmaRing,
+    R: EdgeDma,
     CRC: CrcUmts,
     const DECODER_CAP: usize,
     const RX_BUF_LEN: usize,
@@ -482,7 +533,7 @@ impl<
 
 #[cfg(test)]
 impl<const EDGE_BUF_LEN: usize, const RX_BUF_LEN: usize, CRC: CrcUmts, const DECODER_CAP: usize>
-    CodecRx<crate::mocks::FakeDmaRing, CRC, DECODER_CAP, RX_BUF_LEN, EDGE_BUF_LEN>
+    CodecRx<crate::mocks::FakeEdgeDma, CRC, DECODER_CAP, RX_BUF_LEN, EDGE_BUF_LEN>
 {
     pub(crate) fn stage_edges_for_test(&mut self, vals: &[u16]) {
         self.rx.stage_edges_for_test(vals);
@@ -500,7 +551,7 @@ impl<
     CRC: CrcUmts,
     const DECODER_CAP: usize,
     const TX_BUF_LEN: usize,
-> Codec<crate::mocks::FakeDmaRing, CRC, DECODER_CAP, RX_BUF_LEN, EDGE_BUF_LEN, TX_BUF_LEN>
+> Codec<crate::mocks::FakeEdgeDma, CRC, DECODER_CAP, RX_BUF_LEN, EDGE_BUF_LEN, TX_BUF_LEN>
 {
     /// Drive the inner `Rx`'s edge buffer staging + flag-arming through
     /// the codec. Lets composite tests prepare the BT ring without
@@ -517,7 +568,7 @@ impl<
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::mocks::FakeDmaRing;
+    use crate::mocks::FakeEdgeDma;
     use dxl_protocol::packet::{Id, StatusError};
     use dxl_protocol::{InstructionEmitter, SoftwareCrcUmts, StatusEmitter};
     use heapless::Vec;
@@ -531,10 +582,10 @@ mod tests {
     const TEST_ID: u8 = 0x07;
 
     type TestCodec =
-        Codec<FakeDmaRing, SoftwareCrcUmts, DECODER_CAP, RX_BUF_LEN, EDGE_BUF_LEN, TX_BUF_LEN>;
+        Codec<FakeEdgeDma, SoftwareCrcUmts, DECODER_CAP, RX_BUF_LEN, EDGE_BUF_LEN, TX_BUF_LEN>;
 
     fn make() -> TestCodec {
-        Codec::new(FakeDmaRing::default())
+        Codec::new(FakeEdgeDma::default())
     }
 
     fn wire_ping(id: u8) -> Vec<u8, 32> {
@@ -556,7 +607,7 @@ mod tests {
     #[test]
     fn poll_one_returns_none_when_no_new_bytes() {
         let mut c = make();
-        assert!(c.poll_one().is_none());
+        assert!(c.poll_one(|_, _| {}).is_none());
     }
 
     #[test]
@@ -570,13 +621,13 @@ mod tests {
         c.stage_rx_bytes_for_test(0, &combined);
 
         // First Instruction — own id.
-        let t1 = c.poll_one().expect("first instruction");
+        let t1 = c.poll_one(|_, _| {}).expect("first instruction");
         assert_eq!(t1.id, TEST_ID);
         // Second Instruction — foreign id; codec doesn't filter.
-        let t2 = c.poll_one().expect("second instruction");
+        let t2 = c.poll_one(|_, _| {}).expect("second instruction");
         assert_eq!(t2.id, 0x42);
         // Nothing else queued.
-        assert!(c.poll_one().is_none());
+        assert!(c.poll_one(|_, _| {}).is_none());
         assert_eq!(c.instruction_count(), 2);
     }
 
@@ -586,7 +637,7 @@ mod tests {
         let status = wire_status(TEST_ID);
         c.stage_rx_bytes_for_test(0, &status);
 
-        assert!(c.poll_one().is_none());
+        assert!(c.poll_one(|_, _| {}).is_none());
         // Status doesn't count — peer HSI is its own clock domain.
         assert_eq!(c.instruction_count(), 0);
     }
@@ -604,7 +655,9 @@ mod tests {
         combined.extend_from_slice(&good).unwrap();
         c.stage_rx_bytes_for_test(0, &combined);
 
-        let token = c.poll_one().expect("good instruction after resync");
+        let token = c
+            .poll_one(|_, _| {})
+            .expect("good instruction after resync");
         assert_eq!(token.id, TEST_ID);
         // The token's start must be inside the GOOD frame's RX range, not
         // anchored at the bad frame's start — Resync cleared the cursor.
@@ -626,7 +679,7 @@ mod tests {
         let ping = wire_ping(TEST_ID);
         c.stage_rx_bytes_for_test(0, &ping);
 
-        let token = c.poll_one().expect("instruction");
+        let token = c.poll_one(|_, _| {}).expect("instruction");
         assert_eq!(token.id, TEST_ID);
         match c.dispatch() {
             Some(InstructionPacket::Ping(p)) => assert_eq!(p.header.id.as_byte(), TEST_ID),
@@ -834,5 +887,102 @@ mod tests {
         // Seq 2 is at the head — not yet written.
         let past: Seq<u8, RX_BUF_LEN> = Seq::test_from_raw(2);
         assert_eq!(c.byte_ts_at(past), None);
+    }
+
+    #[test]
+    fn poll_one_invokes_callback_once_per_consumed_byte() {
+        let mut c = make();
+        let ping = wire_ping(TEST_ID);
+        c.stage_rx_bytes_for_test(0, &ping);
+
+        let mut log: Vec<(u8, u32), 32> = Vec::new();
+        let token = c
+            .poll_one(|b, i| log.push((b, i)).unwrap())
+            .expect("instruction");
+        assert_eq!(token.id, TEST_ID);
+        // One entry per encoded byte; cursor monotonic from 0; bytes match.
+        assert_eq!(log.len(), ping.len());
+        for (i, (b, idx)) in log.iter().enumerate() {
+            assert_eq!(*b, ping[i]);
+            assert_eq!(*idx, i as u32);
+        }
+    }
+
+    #[test]
+    fn poll_one_callback_does_not_replay_resync_consumed_bytes() {
+        let mut c = make();
+        let mut bad = wire_ping(TEST_ID);
+        let crc_lo = bad.len() - 2;
+        bad[crc_lo] ^= 0xFF;
+        let good = wire_ping(TEST_ID);
+        let mut combined: Vec<u8, 64> = Vec::new();
+        combined.extend_from_slice(&bad).unwrap();
+        combined.extend_from_slice(&good).unwrap();
+        c.stage_rx_bytes_for_test(0, &combined);
+
+        let mut log: Vec<(u8, u32), 64> = Vec::new();
+        let token = c
+            .poll_one(|b, i| log.push((b, i)).unwrap())
+            .expect("good instruction after resync");
+        assert_eq!(token.id, TEST_ID);
+        // Every wire byte was seen exactly once with a monotonic cursor.
+        assert_eq!(log.len(), combined.len());
+        for (i, (b, idx)) in log.iter().enumerate() {
+            assert_eq!(*b, combined[i]);
+            assert_eq!(*idx, i as u32);
+        }
+    }
+
+    #[test]
+    fn patch_crc_overwrites_last_two_bytes_le() {
+        let mut c = make();
+        let payload = [0x11_u8, 0x22, 0x33];
+        let slot = Slot {
+            id: Id::new(TEST_ID),
+            error: StatusError::OK,
+            data: &payload,
+        };
+        c.send_slot(&slot, SlotPosition::Last { crc: 0x0000 })
+            .expect("encode fits");
+
+        let len = c.tx_len() as usize;
+        c.patch_crc(0xBEEF);
+        // SAFETY: see `send_status_writes_wire_bytes_into_tx_buf`.
+        let actual = unsafe { core::slice::from_raw_parts(c.tx_buf_addr() as *const u8, len) };
+        assert_eq!(&actual[len - 2..], &[0xEF, 0xBE]);
+    }
+
+    #[test]
+    fn patch_crc_noop_when_tx_buf_empty() {
+        let mut c = make();
+        assert_eq!(c.tx_len(), 0);
+        c.patch_crc(0xDEAD);
+        assert_eq!(c.tx_len(), 0);
+    }
+
+    #[test]
+    fn own_reply_bytes_excludes_trailing_crc_slot() {
+        let mut c = make();
+        let payload = [0xAA_u8, 0xBB];
+        let slot = Slot {
+            id: Id::new(TEST_ID),
+            error: StatusError::OK,
+            data: &payload,
+        };
+        c.send_slot(&slot, SlotPosition::Last { crc: 0xDEAD })
+            .expect("encode fits");
+
+        let len = c.tx_len() as usize;
+        let bytes = c.own_reply_bytes();
+        assert_eq!(bytes.len(), len - 2);
+        // SAFETY: see `send_status_writes_wire_bytes_into_tx_buf`.
+        let actual = unsafe { core::slice::from_raw_parts(c.tx_buf_addr() as *const u8, len) };
+        assert_eq!(bytes, &actual[..len - 2]);
+    }
+
+    #[test]
+    fn own_reply_bytes_empty_when_tx_buf_empty() {
+        let c = make();
+        assert!(c.own_reply_bytes().is_empty());
     }
 }

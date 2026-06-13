@@ -3,9 +3,9 @@
 //! edges into per-byte timestamps (BT). Consumers read `byte_ts_at(seq)`
 //! for fire / snoop / drift decisions in lieu of IDLE backdates.
 //!
-//! The driver depends on a [`DmaRing`] adapter for HT/TC flag drain and
+//! The driver depends on a [`EdgeDma`] adapter for HT/TC flag drain and
 //! NDTR readback; the production adapter binds to DMA1_CH7. Tests swap in
-//! [`crate::mocks::FakeDmaRing`] and stage flags + remaining directly.
+//! [`crate::mocks::FakeEdgeDma`] and stage flags + remaining directly.
 //!
 //! The two ring depths are const-generic so a chip/board can pick its
 //! own memory budget without touching driver code; per doc §8.4 the V006
@@ -15,11 +15,11 @@ mod classifier;
 
 use core::cell::SyncUnsafeCell;
 
-use crate::traits::dxl::DmaRing;
+use crate::traits::dxl::EdgeDma;
 use crate::util::{HwRing, Seq};
 use classifier::Classifier;
 
-pub struct Rx<R: DmaRing, const EDGE_BUF_LEN: usize, const BT_BUF_LEN: usize> {
+pub struct Rx<R: EdgeDma, const EDGE_BUF_LEN: usize, const BT_BUF_LEN: usize> {
     classifier: Classifier<BT_BUF_LEN>,
     /// DMA1_CH7's destination buffer. `SyncUnsafeCell` because the DMA
     /// engine writes it concurrently with the classifier's reads — both
@@ -32,7 +32,7 @@ pub struct Rx<R: DmaRing, const EDGE_BUF_LEN: usize, const BT_BUF_LEN: usize> {
     ring: R,
 }
 
-impl<R: DmaRing, const EDGE_BUF_LEN: usize, const BT_BUF_LEN: usize>
+impl<R: EdgeDma, const EDGE_BUF_LEN: usize, const BT_BUF_LEN: usize>
     Rx<R, EDGE_BUF_LEN, BT_BUF_LEN>
 {
     pub const fn new(ring: R) -> Self {
@@ -116,7 +116,7 @@ impl<R: DmaRing, const EDGE_BUF_LEN: usize, const BT_BUF_LEN: usize>
 
 #[cfg(test)]
 impl<const EDGE_BUF_LEN: usize, const BT_BUF_LEN: usize>
-    Rx<crate::mocks::FakeDmaRing, EDGE_BUF_LEN, BT_BUF_LEN>
+    Rx<crate::mocks::FakeEdgeDma, EDGE_BUF_LEN, BT_BUF_LEN>
 {
     /// Stage `vals` into the edges buffer as if DMA wrote them and set
     /// `remaining` so `head == vals.len()`. Shared by leaf and composite tests.
@@ -136,21 +136,21 @@ impl<const EDGE_BUF_LEN: usize, const BT_BUF_LEN: usize>
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::mocks::FakeDmaRing;
+    use crate::mocks::FakeEdgeDma;
     use crate::traits::dxl::DmaFlags;
     use crate::util::Seq;
 
     /// Test-side ring sizing — matches V006 defaults per doc §8.3 / §8.4.
     const EDGE_BUF_LEN: usize = 128;
     const BT_BUF_LEN: usize = 64;
-    type TestRx = Rx<FakeDmaRing, EDGE_BUF_LEN, BT_BUF_LEN>;
+    type TestRx = Rx<FakeEdgeDma, EDGE_BUF_LEN, BT_BUF_LEN>;
 
     // 3 Mbaud at HCLK 48 MHz → ticks_per_bit = 16.
     const TPB_3M: u16 = 16;
     const BYTE_TICKS_3M: u16 = 160;
 
     fn rx() -> TestRx {
-        Rx::new(FakeDmaRing::default())
+        Rx::new(FakeEdgeDma::default())
     }
 
     #[test]

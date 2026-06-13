@@ -44,7 +44,7 @@ pub(crate) const DXL_TX_BUF_LEN: usize = osc_core::services::dxl::limits::DXL_TX
 type DxlUartCh = DxlUart<
     providers::usart_baud::UsartBaud,
     providers::clock_trim::ClockTrim,
-    providers::dma_ring::DmaRing,
+    providers::edge_dma::EdgeDma,
     providers::dxl_tx_scheduler::DxlTxScheduler,
     providers::dxl_crc::DxlCrc,
     DXL_DECODER_CAP,
@@ -91,7 +91,7 @@ impl Drivers {
         let dxl_uart = unsafe { &mut *CELLS.dxl_uart.get() };
         debug_assert!(dxl_uart.is_none(), "Drivers: dxl_uart already installed");
         *dxl_uart = Some(DxlUart::new(
-            Codec::new(providers::dma_ring::DmaRing),
+            Codec::new(providers::edge_dma::EdgeDma),
             Clock::new(
                 defaults.dxl_baud,
                 providers::usart_baud::UsartBaud,
