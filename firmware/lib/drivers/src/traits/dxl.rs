@@ -114,3 +114,71 @@ pub trait TxScheduler {
     /// Driver body then drains pending config + surfaces any pending reboot.
     fn handle_tx_complete(&mut self);
 }
+
+/// Read the live tick value of the scheduler-domain timer (V006: TIM2 CNT).
+///
+/// Shared seam for any sub-driver that polls the same clock the TX/Fast
+/// Last schedulers compare CMPs against — today FastLast's wrap-guard and
+/// final-anchor busy-wait. Provider is typically a ZST reading the chip's
+/// CNT register in a single instruction. The 16-bit width is load-bearing:
+/// wrap-guard math operates in modular u16 space (`wrapping_sub`, `as i16`
+/// sign-flip), and the chip's underlying counter is 16-bit anyway.
+///
+/// Edge-ring timestamps (DMA1_CH7 destination) come from TIM2_CH4 IC
+/// captures landed by DMA — software doesn't read CNT on that path — so
+/// "scheduler" accurately scopes the consumers.
+pub trait SchedulerTick {
+    fn tick(&self) -> u16;
+}
+
+/// CC grid scheduler for the high-baud Fast Last CRC fold pipeline.
+///
+/// Drives the periodic walks that classify edges, drain the parser, and
+/// fold predecessor wire bytes into the running CRC during a Fast Sync /
+/// Bulk Read predecessor window. The driver computes wall-clock anchors
+/// (one per `BYTES_PER_INTERVAL`-byte step from `t_prior_start` to
+/// `final_anchor_tick`) and back-dates EVERY anchor by
+/// `FAST_LAST_ENTRY_TICKS` before handing the CMP to the provider — per
+/// [[catchup_grid_backdate]] the grid stays rigid even when one body's
+/// ISR-entry latency jitters.
+///
+/// The provider implements `schedule` / `cancel` over its chip-side CC
+/// peripheral (V006: TIM2_CH1 OC). Current-tick reads come through a
+/// separate [`SchedulerTick`] provider so this trait stays single-purpose
+/// — the scheduler provider doesn't grow a second dependency on the
+/// timer's CNT register.
+pub trait FastLastScheduler {
+    /// CC-match → body fold-start latency, in scheduler ticks. Driver
+    /// subtracts this from every grid anchor before handing the CMP to
+    /// `schedule` so the body's actual fold-start lands on the formula's
+    /// intended wall-clock anchor.
+    const FAST_LAST_ENTRY_TICKS: u16;
+
+    /// Periodic-walk grid step, in predecessor wire bytes. Each fold body
+    /// folds up to `BYTES_PER_INTERVAL` bytes of newly-classified residue
+    /// before re-arming the next CMP one grid step ahead.
+    const BYTES_PER_INTERVAL: u16;
+
+    /// Pre-start fold residue cap, in predecessor wire bytes. The
+    /// final-anchor busy-wait exits at `walk_deadline_tick = t_prior_end −
+    /// GUARD_BYTES × byte_ticks`, leaving up to `GUARD_BYTES` predecessor
+    /// bytes for the TX-start body's tail to fold inline. At 3M GUARD=1
+    /// keeps `patch_crc` ahead of CH4's DMA-prefetch on byte[n − 2].
+    const GUARD_BYTES: u16;
+
+    /// Set-and-recheck threshold for the wrap-into-past guard inside `start`.
+    /// Largest legitimate `(cmp − tick) & 0xFFFF` value at schedule time;
+    /// anything above means modular subtraction wrapped backward (CMP is in
+    /// the past) — driver flips `is_overdue` so the composite can run one
+    /// synchronous walker pass instead of waiting for a CMP that already
+    /// fired. Mirrors [`TxScheduler`]'s wrap guard.
+    const SCHEDULE_WRAP_GUARD_TICKS: u16;
+
+    /// Arm a CC match at `tick`. Driver has already back-dated by
+    /// `FAST_LAST_ENTRY_TICKS`. Idempotent on re-schedule (overwrites any
+    /// prior CMP).
+    fn schedule(&mut self, tick: u16);
+
+    /// Drop any pending CC and return to idle. Idempotent.
+    fn cancel(&mut self);
+}

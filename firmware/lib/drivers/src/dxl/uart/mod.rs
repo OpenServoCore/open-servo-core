@@ -11,6 +11,7 @@
 
 pub mod clock;
 pub mod codec;
+pub mod fast_last;
 
 use dxl_protocol::packet::{Id, Slot, Status};
 use dxl_protocol::{

@@ -4,11 +4,15 @@
 //! via the explicit `extern crate std`.
 
 extern crate std;
+use core::cell::Cell;
 use std::vec::Vec;
 
 use osc_core::BaudRate;
 
-use crate::traits::dxl::{ClockTrim, DmaFlags, EdgeDma, SendKind, TxScheduler, UsartBaud};
+use crate::traits::dxl::{
+    ClockTrim, DmaFlags, EdgeDma, FastLastScheduler, SchedulerTick, SendKind, TxScheduler,
+    UsartBaud,
+};
 use crate::traits::{DigitalOut, Monotonic};
 use crate::types::Level;
 
@@ -163,6 +167,51 @@ impl TxScheduler for FakeTxScheduler {
 
     fn handle_tx_complete(&mut self) {
         self.log.push(ScheduleOp::HandleTxComplete);
+    }
+}
+
+/// One entry per `FastLastScheduler` call; tests assert the recorded
+/// sequence against expected CC scheduling.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub enum FastLastSchedulerOp {
+    Schedule { tick: u16 },
+    Cancel,
+}
+
+#[derive(Default)]
+pub struct FakeFastLastScheduler {
+    pub log: Vec<FastLastSchedulerOp>,
+}
+
+impl FastLastScheduler for FakeFastLastScheduler {
+    // Values match the V006 measurements.rs defaults from Plan 2 C.4 so
+    // driver-side grid math lines up with the chip-side reference once
+    // Commit C lands.
+    const FAST_LAST_ENTRY_TICKS: u16 = 110;
+    const BYTES_PER_INTERVAL: u16 = 15;
+    const GUARD_BYTES: u16 = 1;
+    const SCHEDULE_WRAP_GUARD_TICKS: u16 = 0x8000;
+
+    fn schedule(&mut self, tick: u16) {
+        self.log.push(FastLastSchedulerOp::Schedule { tick });
+    }
+
+    fn cancel(&mut self) {
+        self.log.push(FastLastSchedulerOp::Cancel);
+    }
+}
+
+/// Settable tick provider for [`SchedulerTick`]. Tests write `now`; the
+/// trait method reads through interior mutability so the fake stays
+/// `&self`-compatible with production's register-read impl.
+#[derive(Default)]
+pub struct FakeSchedulerTick {
+    pub now: Cell<u16>,
+}
+
+impl SchedulerTick for FakeSchedulerTick {
+    fn tick(&self) -> u16 {
+        self.now.get()
     }
 }
 
