@@ -94,9 +94,11 @@ This is the BT ring: byte-time, sized to match RX, indexed parallel.
     TIM2 CNT counts up free-running.
     fire_tick is written to CCR3, biased by the MIN PFIC + ISR + USART pipeline latency.
     When CNT == CCR3, CC3IF latches → TIM2 IRQ fires.
-    Tiny .highcode ISR: enable DMA CH4 (TE is set permanently at init — see §5.3).
+    .highcode ISR: enable DMA CH4 (TE is set permanently at init — see §5.3).
+    For Plain replies the body ends there. For Fast Last replies it tails
+    with the post-fire residue fold + trailing-CRC `patch_crc` — see §10.6.
 
-The fire trigger moves off SysTick onto a TIM2 compare event, but the actual register write stays in software. The single-purpose ISR (just enabling DMA CH4) doesn't dispatch through STATE/DISPATCH indirection, so the body lands at ~0.3 µs MIN. Total fire floor: ~0.7 µs PFIC + ~0.3 µs body ≈ 1 µs MIN, comfortably under the 3.33 µs Fast-Last inter-slot cap at 3 Mbaud. Not as good as a hardware-DMA fire (~100 ns) but enough to close the gap, and ADC stays on its existing DMA pump.
+The fire trigger moves off SysTick onto a TIM2 compare event, but the actual register write stays in software. The fire-side critical action — `dma::enable(CH4)` — runs first, so wire-bit landing is unaffected by anything after it. For Plain replies the ISR has nothing else to do; body lands at ~0.3 µs MIN. Total fire floor: ~0.7 µs PFIC + ~0.3 µs body ≈ 1 µs MIN, comfortably under the 3.33 µs Fast-Last inter-slot cap at 3 Mbaud. Fast Last replies extend the body's tail (busy-wait for residue + fold + patch) but the wire bit has already left; tail timing is bounded by DMA1_CH4's prefetch slack on `tx_buf[len-2..len]`, not the wire fire. Not as good as a hardware-DMA fire (~100 ns) but enough to close the gap, and ADC stays on its existing DMA pump.
 
 **Bias compensation.** Measure CCR3-match → first-wire-bit latency on hardware and store its **1st-percentile lower bound** as `FIRE_BIAS_TICKS`. CCR3 is then armed at `fire_tick − FIRE_BIAS_TICKS`. MIN calibration (not mean) guarantees the wire bit always lands at or after `fire_tick`: PFIC variance and USART bit-clock alignment only push it later. The tradeoff is ~15 ticks (~312 ns at 3M) of mean lateness on the wire in exchange for a one-sided bound that lets §5.3 drop T_setup compensation entirely.
 
@@ -224,8 +226,8 @@ Same two priority levels (V006 PFIC has nothing more). DXL-related IRQs stay at 
 | --- | --- | --- | --- |
 | High | USART1 | IDLE (parser kick) + TC (release bus) + RX errors | `.highcode` |
 | High | DMA1_CH7 HT/TC | Classifier walk (ET → BT) + parser drain. Folds Fast Last CRC inline when armed. *Paused during Fast Last at ≥ 1M only* (§10.6.4) | `.highcode` |
-| High | TIM2 (CC1IE) | Fast Last scheduler (at ≥ 1M only): classifier + parser drain + CRC fold over 15-byte interval, plus post-fire fold anchor | `.highcode` |
-| High | TIM2 (CC3IE) | Fire TX: enable DMA CH4. Lean body — no Fast Last CRC work on the fire path | `.highcode` |
+| High | TIM2 (CC1IE) | Fast Last scheduler (at ≥ 1M only): classifier + parser drain + CRC fold over 15-byte interval. Last fold body cancels CC1 after the busy-wait; CC3 owns post-fire residue. | `.highcode` |
+| High | TIM2 (CC3IE) | Fire TX: enable DMA CH4 (FIRST action — wire bit lands here for all reply kinds). For Plain replies, body ends there. For Fast Last, tail extends with residue fold + `patch_crc`. | `.highcode` |
 | Low | DMA1_CH1 | ADC kernel pump (unchanged) | flash |
 
 All wire-side IRQs at High serialize cleanly via same-priority no-preemption. The structural protection for the Fast-Last fire deadline isn't priority — it's **scheduling**:
@@ -247,7 +249,7 @@ The intuitive alternatives ("TX at High, RX at Low"; "CC3 alone at High") break 
 
 **USART1's role shrinks.** IDLE as a parser-kick signal (no timing value derived from it), TC for "reply done, release the bus" + apply pending, RX errors for telemetry. The framing FSM, `decide(brr, rdt)` rule, `pipeline_margin_us` knob, char-time backdate constant, IDLE-stamp queue, and RXNE snapshot all **go away** — every byte gets a per-byte timestamp from BT, no high-vs-low-baud strategy split.
 
-**SysTick CMP is unused for DXL.** Free for telemetry. **TX_EN is hardware-driven** on CCR2 → PC2 via OC mode (§5.2). **Fire** is software on CCR3 → CC3IE → lean ISR enabling DMA CH4 (§5.1).
+**SysTick CMP is unused for DXL.** Free for telemetry. **TX_EN is hardware-driven** on CCR2 → PC2 via OC mode (§5.2). **Fire** is software on CCR3 → CC3IE → ISR (§5.1). The fire ISR is M3-lean for Plain replies (`dma::enable(CH4)` then return). For Fast Last replies the body extends post-fire to fold the GUARD-byte residue and `patch_crc` the trailing CRC slot inline, matching legacy `b03dd355::on_systick::TxArmed` — see §10.6.2. The wire-bit timing is unchanged (fire is always the first action); only the body's tail differs by reply kind.
 
 ---
 
@@ -359,13 +361,13 @@ Fast Last CRC accumulates the predecessor's reply bytes into a running CRC, then
 
 | Baud | Trigger sites during Fast Last window | Finalize lands at |
 | --- | --- | --- |
-| ≥ 1M | TIM2 CC1 fold body (grid walks + busy-wait + post-fire anchor). DMA1_CH7 HT/TC paused. | Post-fire CC1 body, ≈ t_prior_end + GUARD_LATCH_TICKS (~1 µs). |
+| ≥ 1M | TIM2 CC1 grid walks + last-anchor busy-wait. DMA1_CH7 HT/TC paused. CC3 fire body tail folds GUARD residue + patches. | CC3 fire body, ≈ fire_deadline_tick + ~5 µs (walker + finalize + patch). |
 | < 1M | DMA1_CH7 HT/TC (when it fires) + USART1 IDLE. Nothing paused. | USART1 IDLE body, ≈ t_prior_end + 1 byte_time. |
 
 The threshold is 1M because three constraints converge:
 - **Ring-fill vs predecessor length.** At ≥ 1M the predecessor often doesn't fill the ET ring enough to trigger HT (3M n_pred=14 lands 14 ring entries; HT fires at ~32). CC1 grid walks become necessary to drain on a tighter cadence.
 - **u16 fit on TIM2.** `interval_ticks = 15 × byte_time` stays comfortably below half u16 only at ≥ 1M. Below that the CC1 grid math runs out of register width before low-baud is even useful.
-- **IDLE-as-finalize budget.** At < 1M USART1 IDLE fires comfortably before fire_deadline (IDLE detection ≈ 1 byte_time after the predecessor's last byte; fire_deadline is at least rdt + slot_offset_bytes ≫ idle_window away). At ≥ 1M, with close coalesce, fire_deadline can land before IDLE fires — finalize MUST happen at post-fire CC1 instead of IDLE.
+- **IDLE-as-finalize budget.** At < 1M USART1 IDLE fires comfortably before fire_deadline (IDLE detection ≈ 1 byte_time after the predecessor's last byte; fire_deadline is at least rdt + slot_offset_bytes ≫ idle_window away). At ≥ 1M, with close coalesce, fire_deadline can land before IDLE fires — finalize MUST happen in the CC3 fire body's tail (matching legacy `b03dd355::TxArmed`) instead of IDLE.
 
 #### 10.6.2 High-baud path (≥ 1M, TIM2_CH1)
 
@@ -376,10 +378,10 @@ The Fast Last scheduler runs at fixed-byte intervals on TIM2_CH1, owning **all**
     arm Fast Last CRC state with (snoop_head = parsed_idx_now, expected_n_pred)
     pause DMA1_CH7 HT/TC                                # §10.6.4 classifier merge
     walk_deadline         = t_prior_end - GUARD × byte_time
-    last_catchup_tick     = fire_deadline_tick - min(interval, t_prior_duration) - GUARD × byte_time
-    current_fold_anchor   = step_back(last_catchup_tick, interval, t_prior_start)
-    post_fire_fold_anchor = t_prior_end + GUARD_LATCH_TICKS
-    CCR1 = current_fold_anchor - FAST_LAST_ENTRY_TICKS    # every CMP back-dated, not just last
+    last_anchor_tick      = fire_deadline_tick - min(interval, t_prior_duration) - GUARD × byte_time
+    current_fold_anchor   = step_back(last_anchor_tick, interval, t_prior_start)
+    patch_deadline_tick   = fire_deadline_tick + (tx_len - 2) × byte_time
+    CCR1 = current_fold_anchor - FAST_LAST_ENTRY_TICKS  # every CMP back-dated, not just last
     # CCR2 + CCR3 already armed by the TX scheduler (§5.3); CC1 added here.
 
 `interval_ticks = 15 × byte_time`. Every grid CMP is back-dated by `FAST_LAST_ENTRY_TICKS` so the body's fold-start lands on the formula's wall-clock anchor instead of `anchor + ISR_entry_latency`. Tracking `current_fold_anchor` in state and advancing by fixed `+ interval` keeps the grid rigid regardless of per-body overhead.
@@ -392,36 +394,35 @@ The Fast Last scheduler runs at fixed-byte intervals on TIM2_CH1, owning **all**
     current_fold_anchor += interval_ticks    # grid advance, drift-free
     CCR1 = current_fold_anchor - FAST_LAST_ENTRY_TICKS
 
-**At the last CC1 IRQ (anchor = last_catchup_tick):**
+**At the last CC1 IRQ (anchor = last_anchor_tick):**
 
     walker()
     loop:                                    # site 1 busy-wait
         walker()
         if bytes_walked >= expected_n_pred - GUARD: break
         if now >= walk_deadline: break
-    CCR1 = post_fire_fold_anchor - FAST_LAST_ENTRY_TICKS  # re-arm for post-fire fold
+    cancel CC1                               # no post-fire CC1 — CC3 owns residue
 
 The busy-wait is uncontested — DMA1_CH7 HT/TC is masked (§10.6.4), so CC1 is the sole High consumer in the Fast Last window. At 3M GUARD=1 the loop exits via `walk_deadline` (recursive-fire mode; see [dxl-fast-chain-crc-walkloop.md](dxl-fast-chain-crc-walkloop.md) §4). CC3IF latches during the spin; the TIM2 dispatcher catches it on CC1's exit and runs the fire body. Wire-bit jitter at 3M is ~3 µs late vs `fire_deadline_tick`, within < 1 char_time.
 
-**At CC3 (fire body — lean):**
+**At CC3 (fire body):**
 
-    enable DMA CH4
+    dma::enable(CH4)                         # FIRST action — wire bit lands here
+    if fast_last_crc.armed:
+        loop:                                # post-fire residue fold
+            walker()                         # GUARD byte landed in NDTR via CH5
+            if !fast_last_crc.armed: break   # fold's finalize ran → patch_crc landed
+            if now >= patch_deadline_tick: break   # bail; trailing CRC stays at placeholder
+        fast_last.cancel                     # idempotent — already done at last CC1
 
-No Fast Last CRC work on the fire path. The deterministic wire-fire property survives.
+The post-fire residue fold lives in CC3's body — matches legacy `b03dd355::on_systick::TxArmed` (which busy-waited GUARD bytes via `wait_and_fold_until`, then `patch_crc`, all inline after `fire_now`). `patch_crc` must land in `tx_buf[len-2..len]` before DMA1_CH4's read cursor reaches them; CH4 reads byte[N-2] at ≈ `fire + (tx_len-2) × byte_time` (~40 µs at 3M for a 14-byte reply), and the post-fire tail body takes ~5 µs — slack of ~10 byte_times. Legacy reported any patch landing with `dma::remaining(CH4) ≤ 2` as `CrcPatchDeadlineMiss`; same shape here, telemetry deferred to Plan 2 follow-ups.
 
-**At the post-fire CC1 IRQ (anchor = post_fire_fold_anchor):**
-
-    walker()                                 # GUARD byte is in NDTR by now
-    # fold's finalize branch fires inside the parser drain when
-    # bytes_walked hits expected_n_pred → patch CRC → disarm
-    cancel CC1                               # CC1IE off
-
-Splitting the residual fold to CC1's third firing keeps CC3 minimal. `GUARD_LATCH_TICKS` covers (a) NDTR latch latency for the GUARD byte's stop bit, and (b) CC3 body's return path so CC1 doesn't pend while CC3 is still running.
+**Why CC3 and not a separate post-fire CC1 anchor.** An earlier draft of this design split the post-fire fold onto a dedicated CC1 anchor at `t_prior_end + GUARD_LATCH_TICKS` to keep CC3 minimal. That split is wrong — the inter-vector transition (CC3 body return + TIM2 vector re-entry + CC1 ENTRY_TICKS) burns enough of the ~5 µs typical post-fire budget that any wrap-guard slip drives `patch_crc` past CH4's read of `tx_buf[len-2]`. Co-locating fire and residue in CC3 keeps the patch deadline bounded by `tx_len × byte_time`, not by inter-vector overhead.
 
 **At USART1 TC (reply complete):**
 
     disarm Fast Last CRC state               # idempotent — fold already disarmed
-    cancel Fast Last scheduler               # idempotent — post-fire already cancelled
+    cancel Fast Last scheduler               # idempotent — already cancelled at last CC1
     un-pause DMA1_CH7 HT/TC
 
 #### 10.6.3 Low-baud path (< 1M, HT/TC + IDLE inline)
