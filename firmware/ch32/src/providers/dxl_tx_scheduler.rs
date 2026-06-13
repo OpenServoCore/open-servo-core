@@ -7,7 +7,7 @@
 //! we never encroach on the previous slot's RDT.
 
 use ch32_metapac::USART1 as USART1_REGS;
-use osc_drivers::traits::{DxlTxScheduler as DxlTxSchedulerTrait, SendKind};
+use osc_drivers::traits::dxl::{SendKind, TxScheduler as TxSchedulerTrait};
 
 use crate::hal::clocks::HCLK_HZ;
 use crate::hal::{dma, timer, usart};
@@ -15,7 +15,7 @@ use crate::measurements::{SCHEDULE_WRAP_GUARD_TICKS, TX_START_ENTRY_TICKS};
 
 pub struct DxlTxScheduler;
 
-impl DxlTxSchedulerTrait for DxlTxScheduler {
+impl TxSchedulerTrait for DxlTxScheduler {
     const TICKS_PER_US: u16 = (HCLK_HZ / 1_000_000) as u16;
 
     fn schedule(&mut self, deadline_tick: u16, byte_count: u16, _kind: SendKind) {

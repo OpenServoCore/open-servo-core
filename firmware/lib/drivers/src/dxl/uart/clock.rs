@@ -13,7 +13,7 @@
 
 use osc_core::BaudRate;
 
-use crate::traits::{ClockTrim, UsartBaud};
+use crate::traits::dxl::{ClockTrim, UsartBaud};
 
 const DRIFT_MIN_SAMPLES: u16 = 32;
 

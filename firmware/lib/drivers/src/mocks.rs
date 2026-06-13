@@ -8,9 +8,8 @@ use std::vec::Vec;
 
 use osc_core::BaudRate;
 
-use crate::traits::{
-    ClockTrim, DigitalOut, DmaFlags, DmaRing, DxlTxScheduler, Monotonic, SendKind, UsartBaud,
-};
+use crate::traits::dxl::{ClockTrim, DmaFlags, DmaRing, SendKind, TxScheduler, UsartBaud};
+use crate::traits::{DigitalOut, Monotonic};
 use crate::types::Level;
 
 #[derive(Default)]
@@ -95,7 +94,7 @@ impl DmaRing for FakeDmaRing {
     }
 }
 
-/// One entry per `DxlTxScheduler` call; tests assert the recorded sequence
+/// One entry per `TxScheduler` call; tests assert the recorded sequence
 /// against expected TX scheduling.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub enum ScheduleOp {
@@ -110,11 +109,11 @@ pub enum ScheduleOp {
 }
 
 #[derive(Default)]
-pub struct FakeDxlTxScheduler {
+pub struct FakeTxScheduler {
     pub log: Vec<ScheduleOp>,
 }
 
-impl DxlTxScheduler for FakeDxlTxScheduler {
+impl TxScheduler for FakeTxScheduler {
     // Same value as the production V006 binding (HCLK = 48 MHz) so driver
     // tests' deadline_tick math lands on the same numbers the chip sees.
     const TICKS_PER_US: u16 = 48;

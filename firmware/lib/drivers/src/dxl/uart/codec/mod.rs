@@ -26,7 +26,7 @@ use dxl_protocol::{
     CrcUmts, InstructionPacket, SlotEmitter, SlotPosition, StatusEmitter, WriteError,
 };
 
-use crate::traits::DmaRing;
+use crate::traits::dxl::DmaRing;
 use crate::util::{HwRing, Seq};
 use rx::Rx;
 
@@ -488,7 +488,7 @@ impl<const EDGE_BUF_LEN: usize, const RX_BUF_LEN: usize, CRC: CrcUmts, const DEC
         self.rx.stage_edges_for_test(vals);
     }
 
-    pub(crate) fn arm_next_flags_for_test(&mut self, flags: crate::traits::DmaFlags) {
+    pub(crate) fn arm_next_flags_for_test(&mut self, flags: crate::traits::dxl::DmaFlags) {
         self.rx.arm_next_flags_for_test(flags);
     }
 }
@@ -509,7 +509,7 @@ impl<
         self.rx.stage_edges_for_test(vals);
     }
 
-    pub(crate) fn arm_next_flags_for_test(&mut self, flags: crate::traits::DmaFlags) {
+    pub(crate) fn arm_next_flags_for_test(&mut self, flags: crate::traits::dxl::DmaFlags) {
         self.rx.arm_next_flags_for_test(flags);
     }
 }
@@ -641,7 +641,7 @@ mod tests {
         // per byte), publish them so the classifier emits 4 BT entries.
         let edges: [u16; 4] = [1000, 1160, 1320, 1480];
         c.stage_edges_for_test(&edges);
-        c.arm_next_flags_for_test(crate::traits::DmaFlags {
+        c.arm_next_flags_for_test(crate::traits::dxl::DmaFlags {
             ht: true,
             tc: false,
         });
@@ -665,7 +665,7 @@ mod tests {
         // and producing a "consecutive" pair that isn't.
         let edges: [u16; 2] = [1000, 1160];
         c.stage_edges_for_test(&edges);
-        c.arm_next_flags_for_test(crate::traits::DmaFlags {
+        c.arm_next_flags_for_test(crate::traits::dxl::DmaFlags {
             ht: true,
             tc: false,
         });
@@ -805,7 +805,7 @@ mod tests {
         let mut c = make();
         let edges: [u16; 3] = [1000, 1160, 1320];
         c.stage_edges_for_test(&edges);
-        c.arm_next_flags_for_test(crate::traits::DmaFlags {
+        c.arm_next_flags_for_test(crate::traits::dxl::DmaFlags {
             ht: true,
             tc: false,
         });
@@ -824,7 +824,7 @@ mod tests {
     fn byte_ts_at_returns_none_past_head() {
         let mut c = make();
         c.stage_edges_for_test(&[1000, 1160]);
-        c.arm_next_flags_for_test(crate::traits::DmaFlags {
+        c.arm_next_flags_for_test(crate::traits::dxl::DmaFlags {
             ht: true,
             tc: false,
         });

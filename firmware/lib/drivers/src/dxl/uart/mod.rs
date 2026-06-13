@@ -19,7 +19,7 @@ use dxl_protocol::{
 };
 use osc_core::{BaudRate, BootMode, DxlReply};
 
-use crate::traits::{ClockTrim, DmaRing, DxlTxScheduler, SendKind, UsartBaud};
+use crate::traits::dxl::{ClockTrim, DmaRing, SendKind, TxScheduler, UsartBaud};
 use crate::util::Seq;
 use clock::Clock;
 use codec::{Codec, CodecTx};
@@ -106,7 +106,7 @@ pub struct ReplyHandle<
     'a,
     U: UsartBaud,
     T: ClockTrim,
-    S: DxlTxScheduler,
+    S: TxScheduler,
     CRC: CrcUmts,
     const TX_BUF_LEN: usize,
 > {
@@ -127,7 +127,7 @@ pub struct ReplyHandle<
     rdt_us: u32,
 }
 
-impl<U: UsartBaud, T: ClockTrim, S: DxlTxScheduler, CRC: CrcUmts, const TX_BUF_LEN: usize>
+impl<U: UsartBaud, T: ClockTrim, S: TxScheduler, CRC: CrcUmts, const TX_BUF_LEN: usize>
     ReplyHandle<'_, U, T, S, CRC, TX_BUF_LEN>
 {
     /// Encode a Status reply into the codec's TX buffer and schedule its
@@ -232,7 +232,7 @@ impl<U: UsartBaud, T: ClockTrim, S: DxlTxScheduler, CRC: CrcUmts, const TX_BUF_L
     }
 }
 
-impl<U: UsartBaud, T: ClockTrim, S: DxlTxScheduler, CRC: CrcUmts, const TX_BUF_LEN: usize> DxlReply
+impl<U: UsartBaud, T: ClockTrim, S: TxScheduler, CRC: CrcUmts, const TX_BUF_LEN: usize> DxlReply
     for ReplyHandle<'_, U, T, S, CRC, TX_BUF_LEN>
 {
     fn send_status(&mut self, status: Status<'_>) -> Result<(), WriteError> {
@@ -292,7 +292,7 @@ pub struct DxlUart<
     U: UsartBaud,
     T: ClockTrim,
     R: DmaRing,
-    S: DxlTxScheduler,
+    S: TxScheduler,
     CRC: CrcUmts,
     const DECODER_CAP: usize,
     const RX_BUF_LEN: usize,
@@ -322,7 +322,7 @@ impl<
     U: UsartBaud,
     T: ClockTrim,
     R: DmaRing,
-    S: DxlTxScheduler,
+    S: TxScheduler,
     CRC: CrcUmts,
     const DECODER_CAP: usize,
     const RX_BUF_LEN: usize,
@@ -502,8 +502,8 @@ impl<
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::mocks::{FakeClockTrim, FakeDmaRing, FakeDxlTxScheduler, FakeUsartBaud, ScheduleOp};
-    use crate::traits::DmaFlags;
+    use crate::mocks::{FakeClockTrim, FakeDmaRing, FakeTxScheduler, FakeUsartBaud, ScheduleOp};
+    use crate::traits::dxl::DmaFlags;
     use dxl_protocol::packet::{Id, StatusError};
     use dxl_protocol::{InstructionEmitter, SoftwareCrcUmts, StatusEmitter};
     use heapless::Vec;
@@ -528,7 +528,7 @@ mod tests {
         FakeUsartBaud,
         FakeClockTrim,
         FakeDmaRing,
-        FakeDxlTxScheduler,
+        FakeTxScheduler,
         SoftwareCrcUmts,
         DECODER_CAP,
         RX_BUF_LEN,
@@ -551,7 +551,7 @@ mod tests {
         DxlUart::new(
             codec,
             make_clock(baud),
-            FakeDxlTxScheduler::default(),
+            FakeTxScheduler::default(),
             TEST_ID,
             TEST_RDT_US,
         )

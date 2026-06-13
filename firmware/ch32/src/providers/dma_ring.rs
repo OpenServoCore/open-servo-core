@@ -1,13 +1,13 @@
 //! DMA-ring provider — binds `DmaRing` to a specific DMA channel.
 
-use osc_drivers::traits::{self, DmaFlags};
+use osc_drivers::traits::dxl::{self, DmaFlags};
 
 use crate::hal::dma;
 
 /// Production binding to DMA1_CH7 (TIM2_CH4 input-capture → ET ring).
 pub struct DmaRing;
 
-impl traits::DmaRing for DmaRing {
+impl dxl::DmaRing for DmaRing {
     #[inline(always)]
     fn read_and_ack(&mut self) -> DmaFlags {
         let ht = dma::is_ht_flag(dma::Channel::CH7);

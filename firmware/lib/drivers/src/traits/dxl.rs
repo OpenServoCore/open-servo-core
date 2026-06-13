@@ -1,24 +1,8 @@
-//! Driver-owned interfaces. Drivers declare what they need from their
-//! environment; chip-side adapters implement these over real HAL peripherals
-//! (production) or recording mocks (tests).
+//! DXL-over-UART transport interfaces. Owned by the DXL driver; chip-side
+//! providers implement these over real peripherals (production) or
+//! recording mocks (tests).
 
 use osc_core::BaudRate;
-
-use crate::types::Level;
-
-/// Drive a single digital output. Owned by the adapter; the driver holds
-/// one `P: DigitalOut` and calls `set` to change the wire state.
-pub trait DigitalOut {
-    fn set(&mut self, level: Level);
-}
-
-/// Free-running monotonic tick counter, used by drivers that schedule by
-/// elapsed time. `TICKS_PER_US` describes the rate so the driver can
-/// convert µs ↔ ticks without importing chip constants.
-pub trait Monotonic {
-    const TICKS_PER_US: u32;
-    fn ticks(&self) -> u32;
-}
 
 /// Single-channel USART baud-rate control. The driver hands a domain-typed
 /// `BaudRate`; the chip-side adapter owns the BRR math and any other
@@ -80,7 +64,7 @@ pub enum SendKind {
 /// ticks); the provider applies chip-specific bias compensation (PFIC +
 /// ISR-entry latency, TX_EN OC setup, wrap guard) inside its own body. The
 /// trait surface stays free of chip-side knobs.
-pub trait DxlTxScheduler {
+pub trait TxScheduler {
     /// Tick rate of the chip-side TX-start timer, ticks per µs. Driver uses
     /// this to convert protocol delay (µs / Q8.8 µs) to `deadline_tick`
     /// before calling `schedule`.

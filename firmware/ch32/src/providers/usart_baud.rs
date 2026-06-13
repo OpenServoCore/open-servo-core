@@ -6,7 +6,7 @@
 use ch32_metapac::USART1 as USART1_REGS;
 use ch32_metapac::timer::vals::FilterValue;
 use osc_core::BaudRate;
-use osc_drivers::traits;
+use osc_drivers::traits::dxl;
 
 use crate::hal::clocks::PCLK_HZ;
 use crate::hal::{timer, usart};
@@ -14,7 +14,7 @@ use crate::hal::{timer, usart};
 /// Production binding to USART1's BRR register and TIM2_CH4's IC4F field.
 pub struct UsartBaud;
 
-impl traits::UsartBaud for UsartBaud {
+impl dxl::UsartBaud for UsartBaud {
     const CLOCK_HZ: u32 = PCLK_HZ;
 
     #[inline(always)]

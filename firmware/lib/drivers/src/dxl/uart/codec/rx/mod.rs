@@ -15,7 +15,7 @@ mod classifier;
 
 use core::cell::SyncUnsafeCell;
 
-use crate::traits::DmaRing;
+use crate::traits::dxl::DmaRing;
 use crate::util::{HwRing, Seq};
 use classifier::Classifier;
 
@@ -128,7 +128,7 @@ impl<const EDGE_BUF_LEN: usize, const BT_BUF_LEN: usize>
     }
 
     /// Arm the fake ring's next HT/TC flag response.
-    pub(crate) fn arm_next_flags_for_test(&mut self, flags: crate::traits::DmaFlags) {
+    pub(crate) fn arm_next_flags_for_test(&mut self, flags: crate::traits::dxl::DmaFlags) {
         self.ring.next_flags = flags;
     }
 }
@@ -137,7 +137,7 @@ impl<const EDGE_BUF_LEN: usize, const BT_BUF_LEN: usize>
 mod tests {
     use super::*;
     use crate::mocks::FakeDmaRing;
-    use crate::traits::DmaFlags;
+    use crate::traits::dxl::DmaFlags;
     use crate::util::Seq;
 
     /// Test-side ring sizing — matches V006 defaults per doc §8.3 / §8.4.
