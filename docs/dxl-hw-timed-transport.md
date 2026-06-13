@@ -108,20 +108,20 @@ This is the BT ring: byte-time ring, sized to match RX, indexed parallel.
 Today the fire path is: SysTick CMP → IRQ → highcode ISR dispatches through STATE/DISPATCH → write `DMA1.CH4.CR |= EN` and `GPIOx.BSHR = TX_EN_bit`. In the new design:
 
     TIM2 CNT counts up free-running.
-    fire_tick is written to CCR3, biased by mean PFIC + ISR latency.
+    fire_tick is written to CCR3, biased by the MIN PFIC + ISR + USART pipeline latency (§5.3).
     When CNT == CCR3, CC3IF latches → TIM2 IRQ fires.
-    Tiny .highcode ISR: USART1.CTLR1 |= TE; enable DMA CH4.
+    Tiny .highcode ISR: enable DMA CH4 (TE is set permanently at init — see §5.3).
 
-The fire trigger moves off SysTick onto a TIM2 compare event, but the actual register write stays in software — like the SysTick design, but with a different IRQ source and a leaner ISR body. The single-purpose ISR (just "start TX now") doesn't have to dispatch through the STATE/DISPATCH indirection that today's `on_systick` does, so the body shrinks from ~1.5 µs to ~0.5 µs.
+The fire trigger moves off SysTick onto a TIM2 compare event, but the actual register write stays in software — like the SysTick design, but with a different IRQ source and a leaner ISR body. The single-purpose ISR (just `dma::enable(CH4)`) doesn't have to dispatch through the STATE/DISPATCH indirection that today's `on_systick` does, so the body shrinks from ~1.5 µs to ~0.3 µs MIN.
 
 Floor accounting:
 
-    Today (SysTick CMP):    ~1 µs PFIC entry + ~1.5 µs dispatched body + ~2 µs reg writes  ≈ 5 µs
-    New (TIM2_CH3 IRQ):     ~1 µs PFIC entry + ~0.5 µs single-purpose body + ~1 µs reg writes ≈ 2.5 µs
+    Today (SysTick CMP, mean):   ~1 µs PFIC + ~1.5 µs dispatched body + ~2 µs reg writes        ≈ 5 µs
+    New (TIM2_CH3 IRQ, MIN):     ~0.7 µs PFIC + qingke_rt + ~0.15 µs dma::enable + ~0.15 µs AHB/DR ≈ 1 µs
 
-The 2.5 µs floor sits comfortably under the 3.33 µs Fast-Last inter-slot cap at 3 Mbaud. Not as good as a hardware-DMA fire (which would have been ~100 ns) but enough to close the gap that today's design can't, and it keeps ADC on its existing DMA pump.
+The ~1 µs MIN floor sits comfortably under the 3.33 µs Fast-Last inter-slot cap at 3 Mbaud. Not as good as a hardware-DMA fire (which would have been ~100 ns) but enough to close the gap that today's design can't, and it keeps ADC on its existing DMA pump.
 
-Bias compensation matches the existing approach: measure mean PFIC + ISR latency once on hardware, store it as a `FIRE_BIAS_TICKS` constant, and arm `CCR3 = fire_tick - FIRE_BIAS_TICKS` so the wire-bit lands at the intended `fire_tick`. Same shape as today's `PLAIN_ENTRY_TICKS` / `FAST_ENTRY_TICKS` in `measurements.rs`, just measured against TIM2 instead of SysTick.
+Bias compensation: measure CCR3-match → first-wire-bit latency on hardware and store its **1st-percentile lower bound** as `FIRE_BIAS_TICKS` (`firmware/ch32/src/measurements.rs`). CCR3 is then armed at `fire_tick − FIRE_BIAS_TICKS`. MIN calibration (not mean) guarantees the wire bit always lands at or after `fire_tick`: PFIC variance and USART bit-clock alignment only push it later. The tradeoff is ~15 ticks (~312 ns at 3M) of mean lateness on the wire — 9% of the 3.33 µs Fast-Last inter-slot cap — in exchange for a one-sided bound that lets §5.3 drop T_setup compensation entirely. The shape mirrors today's `PLAIN_ENTRY_TICKS` / `FAST_ENTRY_TICKS` constants, just MIN-calibrated against TIM2 instead of mean-calibrated against SysTick.
 
 Jitter (variance around the mean) comes from the same place it does today: same-priority IRQs already running when CC3IF latches (USART1 IDLE/TC, DMA1_CH5 chain CRC stage-1). Those handlers don't typically run at fire-time — USART1 IDLE has finished by `wire_end + RDT`, USART1 TC hasn't fired yet for the reply we're about to start. The fire IRQ's worst-case contention is the classifier (§9 question — High or Low priority).
 
@@ -133,7 +133,7 @@ PC2 is TIM2_CH2's alternate-function output. The OC mode sequence is an explicit
 | --- | --- | --- |
 | Idle (no reply armed) | Force inactive (`OC2M = 100`) | Idle level (low for active-high TX_EN) |
 | Arm time (parser scheduled reply) | Write CCR2, then set Active-on-match (`OC2M = 001`) | Still idle until match |
-| CCR2 match (T_setup before fire) | unchanged | Active level (TX_EN asserted) |
+| CCR2 match (== fire_tick) | unchanged | Active level (TX_EN asserted, ~2 ticks later by OC pad lag) |
 | USART1 TC (reply done) | Force inactive (`OC2M = 100`) | Back to idle level |
 
     TIM2 CNT == CCR2 → CH2 transitions to active level → PC2 rises → bus driver turns on.
@@ -144,17 +144,24 @@ No GPIO write from software at fire time. No ISR in the wire-edge path. The tran
 
 The two channels have different roles:
 
-- **CCR2 drives PC2 directly via hardware OC** — TX_EN rises at exactly the timer tick, no software in the path, jitter = timer resolution (~20 ns).
-- **CCR3 raises CC3IF to trigger the fire ISR** — TE write lands ~2.5 µs after CCR3, biased by the floor constant so the *wire bit* lines up with the intended `fire_tick`.
+- **CCR2 drives PC2 directly via hardware OC** — TX_EN asserts on hardware match. The pad lags CCR2 by ~2 ticks (CCxIF latch + OC mux + pad synchronizer); the external bus buffer (`SN74LVC2G241` tPZH ≤4.7 ns at 3.3 V) adds <1 tick on top.
+- **CCR3 raises CC3IF to trigger the fire ISR** — the inlined `handle_start` enables DMA CH4 `FIRE_BIAS_TICKS` after CCR3 match (§5.1). Bias is sized to the *minimum* observed path, not the mean.
 
 Composition:
 
-    CCR3 = fire_tick - FIRE_BIAS_TICKS
-    CCR2 = fire_tick - T_setup_ticks         # T_setup > FIRE_BIAS_TICKS
+    CCR3 = fire_tick - FIRE_BIAS_TICKS       # ~46 ticks ≈ 960 ns at 3M
+    CCR2 = fire_tick                          # no offset
 
-T_setup needs to be larger than FIRE_BIAS_TICKS so PC2 rises before the TE write (otherwise the start bit goes out into a high-impedance bus). Concretely: FIRE_BIAS ≈ 2.5 µs = ~120 ticks; T_setup ≈ 3-4 µs = ~150-200 ticks. The TX_EN edge ends up ~1-2 µs ahead of the first wire bit — plenty for bus driver settle.
+No T_setup offset on CCR2. The ~2-tick OC pad latency means PC2 rises ~40 ns after `fire_tick`. Against the 333 ns bit-time at 3M, the buffer enables during the leading ~12% of the start bit; the bus pull-up (R17 = 10 kΩ on the schematic) holds DATA high during the brief hi-Z window; the receiver samples at mid-bit and reads the driven LOW. Invisible on the wire.
 
-Both compare events arm at parse time. CCR2's edge happens precisely (hardware); CCR3's edge has the same precision but the ISR-derived register write inherits PFIC entry jitter. Net wire-edge jitter is determined by the CCR3 path — significantly smaller than today because the ISR body is leaner and the fire trigger is no longer scheduled by the same SysTick used for other things.
+**Why no T_setup compensation?** Two reasons:
+
+1. **MIN-calibrated `FIRE_BIAS_TICKS` guarantees the wire bit never appears before `fire_tick`** — jitter only ever pushes it later (§5.1). There's no "wire bit early, TX_EN late" race to protect against.
+2. **Shifting CCR2 earlier risks bus contention** with the previous slave still releasing TX_EN. Firing TX_EN late by ≤2 ticks (~40 ns) nibbles at the start bit's leading edge — invisible at any baud we support. Firing TX_EN early can collide with a foreign driver. The asymmetric cost makes "late not early" the safe direction.
+
+**TE is set permanently at USART init.** The half-duplex (HDSEL) USART tristates its own TX driver between shifts, and the external `SN74LVC2G241` gates the bus via TX_EN regardless of TE state. So leaving TE on doesn't drive the bus when idle — only when DMA writes to TDR. Per-fire the ISR only calls `dma::enable(CH4)`; see `firmware/ch32/src/providers/dxl_tx_scheduler.rs::handle_start`.
+
+Both compare events arm at parse time. CCR2's edge is deterministic (hardware, ~20 ns timer resolution + ~2-tick pad lag). CCR3's edge has the same precision but the ISR-derived DMA-enable inherits PFIC + USART pipeline jitter. With MIN calibration the jitter is one-sided late — net wire-edge timing is `fire_tick + [0, ~30 ticks]` at 3M.
 
 ### 5.4 Wrap handling and the set-and-recheck pattern
 
@@ -173,19 +180,19 @@ Set-and-recheck at arm time guards against it:
 
     ccr3_tick = (wire_end + rdt_ticks - FIRE_BIAS_TICKS) & 0xFFFF
     TIM2.CCR3 = ccr3_tick
-    TIM2.CCR2 = (wire_end + rdt_ticks - T_setup_ticks) & 0xFFFF
+    TIM2.CCR2 = (wire_end + rdt_ticks) & 0xFFFF
     enable CC3IE
 
     cnt_now   = TIM2.CNT
     remaining = (ccr3_tick - cnt_now) & 0xFFFF
     if remaining > MAX_REASONABLE_REMAINING:
         # we missed — fire by software now (same body as the ISR)
-        pc2_high()
-        USART1.CTLR1 |= TE
+        tim2_ch2_force_active()        # drive PC2 high via CCMR2
+        dma::enable(CH4)               # TE already on; DMA pumps first byte
 
 `MAX_REASONABLE_REMAINING` is the largest legitimate fire-in-the-future we expect (RDT_max + slot_offset_max + a few µs slack). Anything past it means the modular subtraction wrapped backwards — i.e., we're "in the past."
 
-The recheck only needs to look at CCR3. CCR2 = CCR3 - (T_setup - FIRE_BIAS) is implicitly in the future whenever CCR3 is in the future by at least that delta. The manual-fire branch runs the same body as the CC3 ISR — drive PC2 high, then write TE.
+The recheck only needs to look at CCR3. CCR3 is `FIRE_BIAS_TICKS` earlier than CCR2 in tick value (CCR2 = CCR3 + FIRE_BIAS); if CCR3 isn't in the past, CCR2 — which sits later by exactly that delta — isn't either. The manual-fire branch runs the same body as the CC3 ISR (drive PC2 high, enable DMA CH4).
 
 ---
 
@@ -437,7 +444,7 @@ The Chain catchup ISR runs at fixed-byte intervals on TIM2_CH1, owning **all** R
     last_catchup_tick = fire_tick - FIRE_BIAS - walk_deadline_margin
     intervals_before_last = ceil((last_catchup_tick - now) / interval_ticks)
     CCR1 = last_catchup_tick - intervals_before_last × interval_ticks
-    CCR2 = fire_tick - T_setup
+    CCR2 = fire_tick
     CCR3 = fire_tick - FIRE_BIAS
     enable CC1IE + CC3IE
 
@@ -642,7 +649,7 @@ Recommended order — each step independently verifiable on the dev board.
 1. **PC1 dual-tap.** Configure AFIO for USART1_RX + TIM2_CH4 simultaneously. Verify USART RX still framed correctly (no regression) and TIM2 CCR4 captures on every PC1 falling edge. Use a scope probe on PC1 + a bench-side print of captured CCR4 values to compare.
 2. **ET ring + classifier + stateful parser.** Wire DMA1_CH7 to CCR4 → 64-entry ET ring (circular). Implement `rx_classifier.rs` (HT/TC walker → BT). Shrink RX ring to 64 B. Convert the DXL parser to stateful drain-up-to-`min(rx,bt)`. Drive the parser from classifier-end + IDLE only (no RX HT/TC, no SysTick, no decimated counter). Verify at 115200, 1M, 3M that all packets are decoded correctly and BT entries land within ±1 tick of where the wire said they should.
 3. **Software TX fire via TIM2_CH3 IRQ.** Wire CC3IE at High; implement the leaner ISR body (TE write + DMA CH4 enable). Measure mean CCR3-match → first-wire-bit latency, store as `FIRE_BIAS_TICKS`. Target: < 3 µs floor at 3M. Verify the §5.4 set-and-recheck path by forcing a small-RDT case (RDT=0 at low baud) that exercises the manual-fire branch.
-4. **TX_EN via TIM2_CH2.** Wire CH2 → PC2 in OC mode (set-active-on-match). Verify TX_EN rises before CCR3's fire by `T_setup - FIRE_BIAS` ticks and falls correctly at TC.
+4. **TX_EN via TIM2_CH2.** Wire CH2 → PC2 in OC mode (set-active-on-match). With `CCR2 = fire_tick` (no offset), verify TX_EN rises ~2 ticks after `fire_tick` on a scope (hardware OC pad lag) and falls correctly at TC.
 5. **Chain catchup on TIM2_CH1.** Move today's SysTick-driven `body_chain_catchup` to TIM2 CC1 at 17-byte intervals (default; or 12-byte if going for §8.4 Option B). At first CC1 entry: mask DMA1_CH7 HT/TC + clear its pending bit. Each CC1 walks classifier → parser → CRC fold inline. Last interval busy-waits walk_deadline. Re-enable DMA1_CH7 HT/TC at USART1 TC. Drop the old SysTick scheduling and the DMA1_CH5 stage-1 ISR. Validate at 3M that snoop CRC matches the wire for all-foreign Fast Sync Read traffic.
 6. **Catchup ISR cost measurement.** Profile real-world worst-case classifier-walk + parser-drain + CRC-fold runtime per interval. Confirm ≤ 75% of interval cadence at 3M (leaves headroom for USART1 errors, TIM2 fire, ADC preempt). If margin is tight, switch from 17-byte to 12-byte interval and shrink EDGE_TS_BUF_LEN to 64 (§8.4 Option B).
 7. **Integration: Fast Last-slave at 3 Mbaud.** Validate inter-slot coalesce gap — target: under one byte time. This is the test the SysTick design fails.
@@ -656,7 +663,7 @@ Each step is a self-contained commit per the project's "one reviewable unit" rul
 
 - **AFIO dual-remap stability.** F1 documentation is explicit about peripheral-side input dual-tap working; V006 RM is less so. Step 1 confirms by direct measurement.
 - **Capture filter setting per baud (§7).** Filter width must be < 1 bit-time at the operating baud; default `(fCK_INT/2, N=2)` for 3M. Compute alongside BRR; relax (heavier filter) at lower baud if bench shows noise immunity needs it.
-- **Fire-floor measurement.** Measure CCR3-match → first-wire-bit at 3M on bench. Estimate is ~2.5 µs; confirm and lock `FIRE_BIAS_TICKS`.
+- **Fire-floor MIN measurement.** Measure CCR3-match → first-wire-bit at 3M on bench across many fires. Lock `FIRE_BIAS_TICKS` to the **1st-percentile lower bound** (not the mean) so the wire bit always lands at or after `fire_tick` — see §5.1 / §5.3. Placeholder estimate is ~46 ticks (~960 ns); confirm on hardware.
 - **ET sizing + interval (§8.4 Option A vs B).** Default plan is 17-byte interval / EDGE_TS_BUF_LEN=128. Option B (12-byte interval / EDGE_TS_BUF_LEN=64) saves 128 B of SRAM at ~1% extra CPU. Decide based on memory pressure measured during integration.
 - **Chain-CRC fold cost.** §10.6 estimates ~10 cyc/byte for CRC16 update. If the implementation lands closer to 20 cyc/byte, peak CPU during Chain RX climbs from ~54% to ~60%. Still well under the 75% spike target.
 - **Classifier-pending-at-catchup-entry race.** §10.6 proposes "mask + clear pending" at first CC1 entry to defeat a classifier IRQ that latched right before catchup fired. Confirm the clear-pending write to `PFIC.IPRR.CH7` actually drops the latched IRQ on V006 (not just future ones).
