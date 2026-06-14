@@ -3,7 +3,20 @@
 //! scan lands at offset 0 and the peak scan lands at `ADC_SCAN_LEN`. Slot
 //! indices within a scan reflect the configured RSQR sequence.
 
-use crate::legacy::statics::{ADC_DMA_BUF, ADC_SCAN_LEN};
+use core::cell::SyncUnsafeCell;
+
+/// In `AdcPins` field order: pos, ntc, vbus, vmotor.0, vmotor.1.
+pub(crate) const ADC_SENSOR_COUNT: usize = 5;
+
+/// Scan = `[IN9/OpaOut, IN7/PD4/pos, IN2/PC4/ntc,
+///          IN5/PD5/vmA, IN6/PD6/vmB, IN10/Vcal]`. IN1 (PA1/vbus) excluded.
+pub(crate) const ADC_SCAN_LEN: usize = 6;
+
+/// Two scans per PWM period (peak + trough under center-aligned PWM, RCR=0).
+pub(crate) const ADC_DMA_BUF_LEN: usize = ADC_SCAN_LEN * 2;
+
+pub(crate) static ADC_DMA_BUF: SyncUnsafeCell<[u16; ADC_DMA_BUF_LEN]> =
+    SyncUnsafeCell::new([0; ADC_DMA_BUF_LEN]);
 
 pub(super) const SCAN_PEAK_OFFSET: usize = ADC_SCAN_LEN;
 pub(super) const SCAN_TROUGH_OFFSET: usize = 0;

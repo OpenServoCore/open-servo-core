@@ -8,7 +8,6 @@ pub use osc_core::{BaudRate, ConfigDefaults};
 pub mod cfg;
 pub mod control;
 pub mod hal;
-pub(crate) mod legacy;
 pub mod log;
 pub(crate) mod measurements;
 pub mod prelude;

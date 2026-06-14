@@ -22,12 +22,12 @@ macro_rules! run {
 #[doc(hidden)]
 pub fn __run(cfg: BoardConfig, pre: Precomputed) -> ! {
     let io = Ch32ControlIo::new(cfg, pre);
-    crate::legacy::statics::install(io);
-    crate::legacy::statics::install_irqs();
+    crate::runtime::statics::install(io);
+    crate::runtime::isr::install_irqs();
     loop {
         // SAFETY: SERVICES initialized in `install`; no ISR aliases it.
-        let services = unsafe { (*crate::legacy::statics::SERVICES.get()).assume_init_mut() };
-        services.poll(&crate::legacy::statics::SHARED);
+        let services = unsafe { (*crate::runtime::statics::SERVICES.get()).assume_init_mut() };
+        services.poll(&crate::runtime::statics::SHARED);
         // SAFETY: stat_led installed in bringup; main-loop sole accessor.
         unsafe { crate::runtime::Drivers::stat_led() }.poll();
         // M2 (#33) → M5+ regression: the stat LED's TX-activity blink moved

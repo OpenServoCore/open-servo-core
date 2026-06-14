@@ -3,16 +3,15 @@ use ch32_metapac::{ADC, adc::vals::Extsel, dma::vals::Dir, timer::vals::FilterVa
 use osc_core::{ConfigDefaults, RegionStorage};
 use osc_drivers::Level;
 
+use crate::control::sensors::scan::{ADC_DMA_BUF, ADC_DMA_BUF_LEN, ADC_SCAN_LEN, ADC_SENSOR_COUNT};
 use crate::hal::{
     adc, afio, delay_ms, dma,
     gpio::{self, PinMode},
     opa, rcc, systick, timer, usart,
 };
-use crate::legacy::statics::{
-    ADC_DMA_BUF, ADC_DMA_BUF_LEN, ADC_SCAN_LEN, ADC_SENSOR_COUNT, SHARED,
-};
 use crate::providers::usart_baud;
 use crate::runtime::Drivers;
+use crate::runtime::statics::SHARED;
 
 use crate::cfg::{
     AdcPins, BoardWiring, CurrentSenseConfig, Duplex, DxlUart, MotorConfig, Precomputed, TxEn,

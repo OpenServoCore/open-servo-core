@@ -7,14 +7,14 @@
 
 mod convert;
 mod lpf;
-mod scan;
+pub(crate) mod scan;
 
 pub use convert::Scales;
 
 use osc_core::{ConversionVariables, RawSamples, Sample, Sensors as SensorsTrait};
 
 use crate::cfg::Calibration;
-use crate::legacy::statics::read_sample_tick;
+use crate::runtime::statics::read_sample_tick;
 
 use convert::{
     divider_to_mv, ntc_to_centi_celsius, pos_to_microrads, shunt_to_milliamps, vmotor_diff_mv,
