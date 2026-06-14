@@ -9,11 +9,31 @@ use std::vec::Vec;
 
 use osc_core::BaudRate;
 
+use dxl_protocol::SoftwareCrcUmts;
+
 use crate::traits::dxl::{
-    ClockTrim, DmaFlags, EdgeDma, FastLastScheduler, SendKind, TxScheduler, UsartBaud,
+    ClockTrim, DmaFlags, EdgeDma, FastLastScheduler, Providers, SendKind, TxScheduler, UsartBaud,
 };
 use crate::traits::{DigitalOut, Monotonic};
 use crate::types::Level;
+
+/// Driver-side `Providers` impl for tests — bundles every fake provider into
+/// the single super-trait the [`DxlUart`] composite consumes. Tests
+/// instantiate `DxlUart<TestProviders, …>` directly; the fakes' recording
+/// state is reached through the composite's accessors / debug `pub` fields
+/// (e.g. `bus.scheduler.log`, `bus.fast_last.scheduler().log`).
+///
+/// [`DxlUart`]: crate::dxl::uart::DxlUart
+pub struct TestProviders;
+
+impl Providers for TestProviders {
+    type UsartBaud = FakeUsartBaud;
+    type ClockTrim = FakeClockTrim;
+    type EdgeDma = FakeEdgeDma;
+    type TxScheduler = FakeTxScheduler;
+    type FastLastScheduler = FakeFastLastScheduler;
+    type Crc = SoftwareCrcUmts;
+}
 
 #[derive(Default)]
 pub struct FakeDigitalOut {

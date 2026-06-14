@@ -2,7 +2,34 @@
 //! providers implement these over real peripherals (production) or
 //! recording mocks (tests).
 
+use dxl_protocol::CrcUmts;
 use osc_core::BaudRate;
+
+/// Role-shaped bundle of every chip-side leaf interface
+/// [`crate::dxl::uart::DxlUart`] consumes. One associated type per leaf
+/// trait below so the composite's signature collapses from six type
+/// parameters to one while each sub-driver
+/// ([`Clock`], [`Codec`], [`FastLast`], [`FastLastCrc`]) stays narrowly
+/// typed and still documents exactly what hardware it depends on. Per
+/// driver-pattern §5.4.
+///
+/// Chip-side providers don't implement this trait directly — they
+/// implement each leaf trait on their own zero-sized type, and the
+/// chip-family crate's `runtime::registry` bundles them into a single
+/// `Providers` impl that maps each associated type to the matching ZST.
+///
+/// [`Clock`]: crate::dxl::uart::clock::Clock
+/// [`Codec`]: crate::dxl::uart::codec::Codec
+/// [`FastLast`]: crate::dxl::uart::fast_last::FastLast
+/// [`FastLastCrc`]: crate::dxl::uart::fast_last_crc::FastLastCrc
+pub trait Providers {
+    type UsartBaud: UsartBaud;
+    type ClockTrim: ClockTrim;
+    type EdgeDma: EdgeDma;
+    type TxScheduler: TxScheduler;
+    type FastLastScheduler: FastLastScheduler;
+    type Crc: CrcUmts;
+}
 
 /// Single-channel USART baud-rate control. The driver hands a domain-typed
 /// `BaudRate`; the chip-side adapter owns the BRR math and any other

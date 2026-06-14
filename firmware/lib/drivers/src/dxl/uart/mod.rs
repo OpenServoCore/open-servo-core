@@ -16,12 +16,11 @@ pub mod fast_last_crc;
 
 use dxl_protocol::packet::{Id, Slot, Status};
 use dxl_protocol::{
-    BROADCAST_ID, CRC_BYTES, CrcUmts, InstructionPacket, RESPONSE_HEADER_BYTES, SlotPosition,
-    WriteError,
+    BROADCAST_ID, CRC_BYTES, InstructionPacket, RESPONSE_HEADER_BYTES, SlotPosition, WriteError,
 };
 use osc_core::{BaudRate, BootMode, DxlReply};
 
-use crate::traits::dxl::{ClockTrim, EdgeDma, FastLastScheduler, SendKind, TxScheduler, UsartBaud};
+use crate::traits::dxl::{Providers, SendKind, TxScheduler};
 use crate::util::Seq;
 use clock::Clock;
 use codec::{Codec, CodecTx};
@@ -116,20 +115,12 @@ fn fast_slot_position(packet: &InstructionPacket<'_>, id: u8) -> Option<SlotPosi
 /// the handle straight to the user closure as `&mut dyn DxlReply`. The
 /// inherent methods stay so driver-crate tests (which don't import the trait)
 /// can drive the handle directly.
-pub struct ReplyHandle<
-    'a,
-    U: UsartBaud,
-    T: ClockTrim,
-    S: TxScheduler,
-    FL: FastLastScheduler,
-    CRC: CrcUmts,
-    const TX_BUF_LEN: usize,
-> {
-    tx: &'a mut CodecTx<CRC, TX_BUF_LEN>,
-    scheduler: &'a mut S,
-    fast_last: &'a mut FastLast<FL>,
-    fast_last_crc: &'a mut FastLastCrc<CRC>,
-    clock: &'a mut Clock<U, T>,
+pub struct ReplyHandle<'a, P: Providers, const TX_BUF_LEN: usize> {
+    tx: &'a mut CodecTx<P::Crc, TX_BUF_LEN>,
+    scheduler: &'a mut P::TxScheduler,
+    fast_last: &'a mut FastLast<P::FastLastScheduler>,
+    fast_last_crc: &'a mut FastLastCrc<P::Crc>,
+    clock: &'a mut Clock<P::UsartBaud, P::ClockTrim>,
     last_reply_ctx: &'a mut Option<ReplyContext>,
     pending_id: &'a mut Option<u8>,
     pending_rdt_us: &'a mut Option<u32>,
@@ -144,20 +135,12 @@ pub struct ReplyHandle<
     rdt_us: u32,
 }
 
-impl<
-    U: UsartBaud,
-    T: ClockTrim,
-    S: TxScheduler,
-    FL: FastLastScheduler,
-    CRC: CrcUmts,
-    const TX_BUF_LEN: usize,
-> ReplyHandle<'_, U, T, S, FL, CRC, TX_BUF_LEN>
-{
+impl<P: Providers, const TX_BUF_LEN: usize> ReplyHandle<'_, P, TX_BUF_LEN> {
     /// Encode a Status reply into the codec's TX buffer and schedule its
     /// wire start. Fold RDT + slot offset (broadcast Ping / Sync / Bulk
     /// Read slot N) from the [`ReplyContext`] cached at `poll()`, convert
-    /// the µs delay to scheduler ticks via `S::TICKS_PER_US`, and hand the
-    /// pre-computed `deadline_tick` to the provider. If no context is
+    /// the µs delay to scheduler ticks via `TxScheduler::TICKS_PER_US`, and
+    /// hand the pre-computed `deadline_tick` to the provider. If no context is
     /// staged (foreign Instruction filtered upstream) or the wire-end tick
     /// wasn't ready, the encode still succeeds but no schedule is armed —
     /// the bytes simply won't ship. Context is taken on use so a
@@ -172,7 +155,8 @@ impl<
             return Ok(());
         };
         let delay_us = self.rdt_us + self.clock.bytes_to_us(ctx.slot_offset_bytes);
-        let delay_ticks = delay_us.wrapping_mul(S::TICKS_PER_US as u32);
+        let delay_ticks =
+            delay_us.wrapping_mul(<P::TxScheduler as TxScheduler>::TICKS_PER_US as u32);
         let deadline_tick = packet_end_tick.wrapping_add(delay_ticks as u16);
         self.scheduler
             .schedule(deadline_tick, byte_count, SendKind::Plain);
@@ -204,12 +188,15 @@ impl<
                 // Q8.8 µs × ticks/µs = Q8.8 ticks; >> 8 lands on integer ticks.
                 let delay_q88 =
                     (self.rdt_us << 8) + self.clock.bytes_to_us_q88(ctx.slot_offset_bytes);
-                let ticks = (delay_q88.wrapping_mul(S::TICKS_PER_US as u32)) >> 8;
+                let ticks = (delay_q88
+                    .wrapping_mul(<P::TxScheduler as TxScheduler>::TICKS_PER_US as u32))
+                    >> 8;
                 (ticks, SendKind::FastLast)
             }
             _ => {
                 let delay_us = self.rdt_us + self.clock.bytes_to_us(ctx.slot_offset_bytes);
-                let ticks = delay_us.wrapping_mul(S::TICKS_PER_US as u32);
+                let ticks =
+                    delay_us.wrapping_mul(<P::TxScheduler as TxScheduler>::TICKS_PER_US as u32);
                 (ticks, SendKind::Plain)
             }
         };
@@ -224,7 +211,10 @@ impl<
             // RDT in scheduler ticks (FastLast trait surfaces u32 offsets,
             // but FastLastSchedule's fields stay u16-shaped per doc §10.6
             // — typical RDT ≤ 24k ticks, well under u16).
-            let rdt_ticks = (self.rdt_us.wrapping_mul(S::TICKS_PER_US as u32) & 0xFFFF) as u16;
+            let rdt_ticks = (self
+                .rdt_us
+                .wrapping_mul(<P::TxScheduler as TxScheduler>::TICKS_PER_US as u32)
+                & 0xFFFF) as u16;
             self.fast_last.start(FastLastSchedule {
                 packet_end_tick,
                 rdt_ticks,
@@ -271,15 +261,7 @@ impl<
     }
 }
 
-impl<
-    U: UsartBaud,
-    T: ClockTrim,
-    S: TxScheduler,
-    FL: FastLastScheduler,
-    CRC: CrcUmts,
-    const TX_BUF_LEN: usize,
-> DxlReply for ReplyHandle<'_, U, T, S, FL, CRC, TX_BUF_LEN>
-{
+impl<P: Providers, const TX_BUF_LEN: usize> DxlReply for ReplyHandle<'_, P, TX_BUF_LEN> {
     fn send_status(&mut self, status: Status<'_>) -> Result<(), WriteError> {
         ReplyHandle::send_status(self, status)
     }
@@ -305,20 +287,9 @@ impl<
     }
 }
 
-/// The DXL bus composite. The type parameters together describe everything
-/// this driver wants the chip side to supply — what peripherals to drive
-/// it with, what CRC to use, and how much memory each of its three rings
-/// gets:
+/// The DXL bus composite. `P` bundles the chip-side leaf interfaces this
+/// driver pulls — see [`Providers`]. The const generics are storage sizes:
 ///
-/// - `U`: USART baud-rate setter (sub-driver `Clock`).
-/// - `T`: HSI / HSE trim setter (sub-driver `Clock`).
-/// - `R`: DMA-ring ISR surface for DMA1_CH7 (carried by `Codec` through
-///   its inner `Rx`).
-/// - `S`: TX-start scheduler — given a pre-computed deadline tick (driver
-///   does the µs→tick math via `S::TICKS_PER_US`), arms the chip's
-///   TX-start hardware (M3 #5: TIM2_CH3 OC fire + TIM2_CH2 OC TX_EN).
-/// - `CRC`: CRC-16/UMTS engine — software impl on V006, peripheral impl
-///   on a chip that has one (see `providers::dxl_crc`).
 /// - `DECODER_CAP`: streaming-decoder accumulator size. Sized to hold the
 ///   longest unstuffed frame the dispatcher will encounter (typically 256
 ///   covers max-RW + header + margin); decoupled from the on-wire RX byte
@@ -334,28 +305,23 @@ impl<
 ///   default control-RW). Held by `Codec` so encoder methods write into
 ///   driver-owned storage instead of a chip-side static.
 pub struct DxlUart<
-    U: UsartBaud,
-    T: ClockTrim,
-    R: EdgeDma,
-    S: TxScheduler,
-    FL: FastLastScheduler,
-    CRC: CrcUmts,
+    P: Providers,
     const DECODER_CAP: usize,
     const RX_BUF_LEN: usize,
     const EDGE_BUF_LEN: usize,
     const TX_BUF_LEN: usize,
 > {
-    codec: Codec<R, CRC, DECODER_CAP, RX_BUF_LEN, EDGE_BUF_LEN, TX_BUF_LEN>,
-    clock: Clock<U, T>,
-    scheduler: S,
+    codec: Codec<P::EdgeDma, P::Crc, DECODER_CAP, RX_BUF_LEN, EDGE_BUF_LEN, TX_BUF_LEN>,
+    clock: Clock<P::UsartBaud, P::ClockTrim>,
+    scheduler: P::TxScheduler,
     /// Periodic-walk grid scheduler for Fast Sync / Bulk Read Last replies.
     /// Driver-pattern §4 sub-driver: armed at `send_slot(Last)` via
     /// `ReplyHandle`; `on_systick_match` drives one body per CMP.
-    fast_last: FastLast<FL>,
+    fast_last: FastLast<P::FastLastScheduler>,
     /// Chain-CRC fold engine. Per-byte hook is wired into the codec's
     /// `poll_one` callback during the SysTick walker; finalize patches our
     /// own trailing CRC slot before DMA1_CH4 reads it.
-    fast_last_crc: FastLastCrc<CRC>,
+    fast_last_crc: FastLastCrc<P::Crc>,
 
     id: u8,
     rdt_us: u32,
@@ -373,23 +339,18 @@ pub struct DxlUart<
 }
 
 impl<
-    U: UsartBaud,
-    T: ClockTrim,
-    R: EdgeDma,
-    S: TxScheduler,
-    FL: FastLastScheduler,
-    CRC: CrcUmts,
+    P: Providers,
     const DECODER_CAP: usize,
     const RX_BUF_LEN: usize,
     const EDGE_BUF_LEN: usize,
     const TX_BUF_LEN: usize,
-> DxlUart<U, T, R, S, FL, CRC, DECODER_CAP, RX_BUF_LEN, EDGE_BUF_LEN, TX_BUF_LEN>
+> DxlUart<P, DECODER_CAP, RX_BUF_LEN, EDGE_BUF_LEN, TX_BUF_LEN>
 {
     pub fn new(
-        codec: Codec<R, CRC, DECODER_CAP, RX_BUF_LEN, EDGE_BUF_LEN, TX_BUF_LEN>,
-        clock: Clock<U, T>,
-        scheduler: S,
-        fast_last: FastLast<FL>,
+        codec: Codec<P::EdgeDma, P::Crc, DECODER_CAP, RX_BUF_LEN, EDGE_BUF_LEN, TX_BUF_LEN>,
+        clock: Clock<P::UsartBaud, P::ClockTrim>,
+        scheduler: P::TxScheduler,
+        fast_last: FastLast<P::FastLastScheduler>,
         id: u8,
         rdt_us: u32,
     ) -> Self {
@@ -443,10 +404,7 @@ impl<
     /// disjoint mutable references, so the closure sees both at once.
     pub fn poll<F>(&mut self, f: F)
     where
-        F: for<'a> FnOnce(
-            InstructionPacket<'a>,
-            &mut ReplyHandle<'_, U, T, S, FL, CRC, TX_BUF_LEN>,
-        ),
+        F: for<'a> FnOnce(InstructionPacket<'a>, &mut ReplyHandle<'_, P, TX_BUF_LEN>),
     {
         let id = self.id;
         let rdt_us = self.rdt_us;
@@ -653,7 +611,7 @@ mod tests {
     use super::*;
     use crate::mocks::{
         FakeClockTrim, FakeEdgeDma, FakeFastLastScheduler, FakeTxScheduler, FakeUsartBaud,
-        FastLastSchedulerOp, ScheduleOp,
+        FastLastSchedulerOp, ScheduleOp, TestProviders,
     };
     use crate::traits::dxl::DmaFlags;
     use dxl_protocol::packet::{Id, StatusError};
@@ -676,18 +634,7 @@ mod tests {
 
     type TestCodec =
         Codec<FakeEdgeDma, SoftwareCrcUmts, DECODER_CAP, RX_BUF_LEN, EDGE_BUF_LEN, TX_BUF_LEN>;
-    type TestBus = DxlUart<
-        FakeUsartBaud,
-        FakeClockTrim,
-        FakeEdgeDma,
-        FakeTxScheduler,
-        FakeFastLastScheduler,
-        SoftwareCrcUmts,
-        DECODER_CAP,
-        RX_BUF_LEN,
-        EDGE_BUF_LEN,
-        TX_BUF_LEN,
-    >;
+    type TestBus = DxlUart<TestProviders, DECODER_CAP, RX_BUF_LEN, EDGE_BUF_LEN, TX_BUF_LEN>;
 
     fn make_codec_with_edges(vals: &[u16], flags: DmaFlags) -> TestCodec {
         let mut c: TestCodec = Codec::new(FakeEdgeDma::default());

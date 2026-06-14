@@ -19,6 +19,7 @@ use osc_drivers::dxl::uart::clock::Clock;
 use osc_drivers::dxl::uart::codec::Codec;
 use osc_drivers::dxl::uart::fast_last::FastLast;
 use osc_drivers::led::Led;
+use osc_drivers::traits::dxl::Providers;
 
 use crate::ConfigDefaults;
 use crate::cfg::board_wiring::BoardWiring;
@@ -36,6 +37,22 @@ use crate::providers::usart_baud::UsartBaud;
 /// providers and storage sizes. See the `DxlUart` doc for what each const
 /// generic means; values track `docs/dxl-hw-timed-transport.md`.
 type StatLed = Led<DigitalOut, Monotonic>;
+
+/// Bundle of every chip-side provider the `DxlUart` composite consumes.
+/// Maps each `Providers` associated type to its zero-sized provider impl
+/// (one per `providers/<role>.rs` file) so the composite collapses to a
+/// single `Providers`-bound type parameter per driver-pattern §5.4.
+pub struct DxlUartProviders;
+
+impl Providers for DxlUartProviders {
+    type UsartBaud = UsartBaud;
+    type ClockTrim = ClockTrim;
+    type EdgeDma = EdgeDma;
+    type TxScheduler = DxlTxScheduler;
+    type FastLastScheduler = FastLastScheduler;
+    type Crc = DxlCrc;
+}
+
 /// Streaming-decoder accumulator size — `osc-core`'s dispatcher uses this
 /// value for its sibling decoder (`services::dxl::api::DXL_DECODER_CAP`).
 /// Keep them in sync.
@@ -49,18 +66,8 @@ pub(crate) const DXL_EDGE_BUF_LEN: usize = 128;
 /// `osc_core::services::dxl::limits::DXL_TX_MAX_BYTES` so the driver-owned
 /// buffer can hold any Status / Slot reply the dispatcher emits.
 pub(crate) const DXL_TX_BUF_LEN: usize = osc_core::services::dxl::limits::DXL_TX_MAX_BYTES;
-type DxlUartCh = DxlUart<
-    UsartBaud,
-    ClockTrim,
-    EdgeDma,
-    DxlTxScheduler,
-    FastLastScheduler,
-    DxlCrc,
-    DXL_DECODER_CAP,
-    DXL_RX_BUF_LEN,
-    DXL_EDGE_BUF_LEN,
-    DXL_TX_BUF_LEN,
->;
+type DxlUartCh =
+    DxlUart<DxlUartProviders, DXL_DECODER_CAP, DXL_RX_BUF_LEN, DXL_EDGE_BUF_LEN, DXL_TX_BUF_LEN>;
 
 struct Cells {
     dbg: SyncUnsafeCell<Option<DigitalOut>>,
