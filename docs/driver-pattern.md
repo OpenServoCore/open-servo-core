@@ -372,19 +372,28 @@ pub type ProdTop = Top<ProdA, ProdB, ProdC>;
 
 The `pub type` alias keeps production call sites short — they say `ProdTop`, not the generic form. Tests instantiate `Top<FakeA, FakeB, FakeC>` directly.
 
-When the generic-parameter list grows past about four, a **super-interface** collapses them. The composite takes a single type parameter that's bound to satisfy every leaf interface:
+When the generic-parameter list grows past about four, a **super-interface** collapses them. The composite takes a single type parameter and reaches each leaf through an associated type:
 
 ```rust
-pub trait Chip: InterfaceA + InterfaceB + InterfaceC {}
-impl<T> Chip for T where T: InterfaceA + InterfaceB + InterfaceC {}
+pub trait Providers {
+    type RoleA: InterfaceA;
+    type RoleB: InterfaceB;
+    type RoleC: InterfaceC;
+}
 
-pub struct Top<C: Chip> {
-    sub_a: SubA<C>,
-    sub_b: SubB<C, C>,
+pub struct Top<P: Providers> {
+    sub_a: SubA<P::RoleA>,
+    sub_b: SubB<P::RoleB, P::RoleC>,
 }
 ```
 
+Chip-side wiring is a single `impl Providers for ChipProviders { type RoleA = …; … }` block; the chip family keeps one ZST per role (§2.5 — one `providers/<role>.rs` file per leaf interface) and the super-interface impl just names them. Tests follow the same shape: one `TestProviders` ZST whose impl maps each associated type to its recording fake.
+
+The role-shaped name (`Providers`, `Deps`, `Backend` — whatever fits the project's vocabulary) is preferred over hardware-shaped names like `Chip`. The trait describes what the chip side provides to the driver, not the chip itself; tests substitute it without any chip in sight.
+
 Leaves stay narrowly typed (so reading the leaf still shows exactly what hardware it depends on); the composite trades documentation-via-bounds for ergonomic call sites. Introduce the super-interface only when the parameter list actually hurts — it's an optimization, not the default shape.
+
+Blanket-impl shape (`trait Chip: InterfaceA + InterfaceB {} + impl<T> Chip for T where T: InterfaceA + InterfaceB`) is an alternative but conflicts with §2.5's per-role provider files: it forces every leaf impl onto a single shared ZST. Prefer associated types unless the chip family genuinely has one ZST per peripheral group.
 
 ### 5.5 Provider categories and init responsibility
 
