@@ -115,38 +115,26 @@ pub trait TxScheduler {
     fn handle_tx_complete(&mut self);
 }
 
-/// Read the live tick value of the scheduler-domain timer (V006: TIM2 CNT).
-///
-/// Shared seam for any sub-driver that polls the same clock the TX/Fast
-/// Last schedulers compare CMPs against — today FastLast's wrap-guard and
-/// final-anchor busy-wait. Provider is typically a ZST reading the chip's
-/// CNT register in a single instruction. The 16-bit width is load-bearing:
-/// wrap-guard math operates in modular u16 space (`wrapping_sub`, `as i16`
-/// sign-flip), and the chip's underlying counter is 16-bit anyway.
-///
-/// Edge-ring timestamps (DMA1_CH7 destination) come from TIM2_CH4 IC
-/// captures landed by DMA — software doesn't read CNT on that path — so
-/// "scheduler" accurately scopes the consumers.
-pub trait SchedulerTick {
-    fn tick(&self) -> u16;
-}
-
-/// CC grid scheduler for the high-baud Fast Last CRC fold pipeline.
+/// Long-horizon CMP scheduler for the Fast Last CRC fold pipeline.
 ///
 /// Drives the periodic walks that classify edges, drain the parser, and
 /// fold predecessor wire bytes into the running CRC during a Fast Sync /
 /// Bulk Read predecessor window. The driver computes wall-clock anchors
 /// (one per `BYTES_PER_INTERVAL`-byte step from `t_prior_start` to
 /// `final_anchor_tick`) and back-dates EVERY anchor by
-/// `FAST_LAST_ENTRY_TICKS` before handing the CMP to the provider — per
-/// [[catchup_grid_backdate]] the grid stays rigid even when one body's
-/// ISR-entry latency jitters.
+/// `FAST_LAST_ENTRY_TICKS` before handing the CMP to the provider — the
+/// grid stays rigid even when one body's ISR-entry latency jitters.
 ///
-/// The provider implements `schedule` / `cancel` over its chip-side CC
-/// peripheral (V006: TIM2_CH1 OC). Current-tick reads come through a
-/// separate [`SchedulerTick`] provider so this trait stays single-purpose
-/// — the scheduler provider doesn't grow a second dependency on the
-/// timer's CNT register.
+/// Ticks are HCLK-domain `u32`. On V006 the provider binds to a SysTick
+/// CMP rather than a TIM2 CC channel: TIM2's shared prescaler is pinned
+/// at PSC=0 for the IC side's 16-tick resolution at 3M, so its 16-bit CNT
+/// wraps every 1.365 ms — the Fast Last grid step at low baud (`15 ×
+/// byte_ticks`) can exceed that and the fire deadline can be many wraps
+/// out. SysTick is 32-bit at HCLK with ~89.5 s horizon, separate IRQ
+/// vector from TIM2, and the ~5 µs PFIC-entry jitter is dwarfed by the
+/// fold body cost — fine for catchup, which doesn't sit on the TX-fire
+/// path. The composite translates parser-derived TIM2 u16 ticks into
+/// scheduler u32 at arm time using a boot-captured offset.
 pub trait FastLastScheduler {
     /// CC-match → body fold-start latency, in scheduler ticks. Driver
     /// subtracts this from every grid anchor before handing the CMP to
@@ -166,19 +154,11 @@ pub trait FastLastScheduler {
     /// keeps `patch_crc` ahead of CH4's DMA-prefetch on byte[n − 2].
     const GUARD_BYTES: u16;
 
-    /// Set-and-recheck threshold for the wrap-into-past guard inside `start`.
-    /// Largest legitimate `(cmp − tick) & 0xFFFF` value at schedule time;
-    /// anything above means modular subtraction wrapped backward (CMP is in
-    /// the past) — driver flips `is_overdue` so the composite can run one
-    /// synchronous walker pass instead of waiting for a CMP that already
-    /// fired. Mirrors [`TxScheduler`]'s wrap guard.
-    const SCHEDULE_WRAP_GUARD_TICKS: u16;
-
-    /// Arm a CC match at `tick`. Driver has already back-dated by
+    /// Arm a CMP match at `tick`. Driver has already back-dated by
     /// `FAST_LAST_ENTRY_TICKS`. Idempotent on re-schedule (overwrites any
     /// prior CMP).
-    fn schedule(&mut self, tick: u16);
+    fn schedule(&mut self, tick: u32);
 
-    /// Drop any pending CC and return to idle. Idempotent.
+    /// Drop any pending CMP and return to idle. Idempotent.
     fn cancel(&mut self);
 }
