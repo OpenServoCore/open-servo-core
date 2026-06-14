@@ -1,7 +1,7 @@
 use ch32_metapac::{DMA1, USART1};
 use osc_core::{BootMode, ControlIo, ConversionVariables, Sensors};
 
-use crate::hal::{dma, flash, pfic, usart};
+use crate::hal::{dma, flash, pfic, systick, usart};
 use crate::legacy::statics::{KERNEL, SHARED};
 use crate::runtime::Drivers;
 
@@ -116,6 +116,18 @@ pub fn on_tim2_cc3() {
     unsafe { Drivers::dxl_uart() }.on_tx_start();
 }
 
+/// SysTick CMP-match — a Fast Last periodic-walk fold body is due. Routes
+/// into the driver's `on_fold_step`. CNTIF must be cleared at entry: the
+/// final body returns without re-arming, and a stale-but-latched CNTIF
+/// would re-fire the IRQ the moment we return.
+///
+/// SAFETY: see `on_dma1_ch7` — SysTick shares PFIC HIGH with USART1 /
+/// DMA1_CH7 / TIM2 so no concurrent `&mut` into the driver is possible.
+pub fn on_systick() {
+    systick::clear_match();
+    unsafe { Drivers::dxl_uart() }.on_fold_step();
+}
+
 /// Wires osc-ch32 ISR bodies into the vector table. Caller must depend on `qingke-rt`.
 #[macro_export]
 macro_rules! install_isrs {
@@ -138,6 +150,11 @@ macro_rules! install_isrs {
         #[::qingke_rt::interrupt]
         fn TIM2() {
             $crate::runtime::isr::on_tim2_cc3();
+        }
+
+        #[::qingke_rt::interrupt]
+        fn SysTick() {
+            $crate::runtime::isr::on_systick();
         }
     };
 }

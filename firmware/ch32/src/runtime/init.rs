@@ -6,7 +6,7 @@ use osc_drivers::Level;
 use crate::hal::{
     adc, afio, delay_ms, dma,
     gpio::{self, PinMode},
-    opa, rcc, timer, usart,
+    opa, rcc, systick, timer, usart,
 };
 use crate::legacy::statics::{
     ADC_DMA_BUF, ADC_DMA_BUF_LEN, ADC_SCAN_LEN, ADC_SENSOR_COUNT, SHARED,
@@ -49,6 +49,13 @@ pub fn bringup(
 
     bring_up_analog_chain(&wiring.current_sense);
     crate::log::debug!("opa settled");
+
+    // SysTick drives `Monotonic` (LED blinker) and the Fast Last CMP
+    // scheduler. Initialize *after* `bring_up_analog_chain` because
+    // `delay_ms` reinitializes SYSTICK on every call; doing it here puts
+    // SysTick in a known state (CMP=u32::MAX, CNT=0, STE=on, STIE=off)
+    // independent of any further `delay_ms` use.
+    systick::init();
 
     let shunt_bias_raw = wiring.current_sense.opa.bias.quiescent_raw();
     configure_adc_dma_scan(&wiring.sensors, wiring.current_sense.adc_sample_time);

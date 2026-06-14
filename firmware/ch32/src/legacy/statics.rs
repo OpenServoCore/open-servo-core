@@ -47,10 +47,14 @@ pub fn install_irqs() {
     // TIM2 CC3 IRQ kicks the wire-driver activate sequence; shares HIGH with
     // USART1 + DMA1_CH7 so the DXL transport's three IRQ sources serialize.
     pfic::set_priority(pfic::Interrupt::TIM2, pfic::Priority::High);
+    // SysTick CMP fires the Fast Last periodic-walk fold body; shares HIGH
+    // with USART1 / DMA1_CH7 / TIM2 so all four DXL ISR sources serialize.
+    pfic::set_systick_priority(pfic::Priority::High);
     pfic::set_priority(pfic::Interrupt::DMA1_CHANNEL1, pfic::Priority::Low);
     pfic::enable(pfic::Interrupt::USART1);
     pfic::enable(pfic::Interrupt::DMA1_CHANNEL7);
     pfic::enable(pfic::Interrupt::TIM2);
+    pfic::enable_systick();
     pfic::enable(pfic::Interrupt::DMA1_CHANNEL1);
     crate::log::info!("ISRs live");
 }
