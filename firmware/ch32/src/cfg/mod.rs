@@ -1,8 +1,8 @@
 pub mod board_wiring;
 
 pub use board_wiring::{
-    AdcPins, BoardWiring, Calibration, CurrentSenseConfig, Divider, Duplex, DxlUart, MotorConfig,
-    NtcCal, TxEn,
+    AdcPins, BoardWiring, Calibration, CurrentSenseConfig, Divider, DxlUart, MotorConfig, NtcCal,
+    TxEn,
 };
 
 use osc_core::ConfigDefaults;

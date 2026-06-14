@@ -14,7 +14,7 @@ use crate::runtime::Drivers;
 use crate::runtime::statics::SHARED;
 
 use crate::cfg::{
-    AdcPins, BoardWiring, CurrentSenseConfig, Duplex, DxlUart, MotorConfig, Precomputed, TxEn,
+    AdcPins, BoardWiring, CurrentSenseConfig, DxlUart, MotorConfig, Precomputed, TxEn,
 };
 
 const OPA_SETTLE_MS: u32 = 1;
@@ -195,9 +195,7 @@ fn configure_pins(w: &BoardWiring) {
 
 fn configure_dxl_pins(d: &DxlUart) {
     gpio::configure(d.usart.tx_pin(), PinMode::AF_PUSH_PULL);
-    if matches!(d.duplex, Duplex::Full) {
-        gpio::configure(d.usart.rx_pin(), PinMode::input_pull(d.rx_pull));
-    }
+    gpio::configure(d.usart.rx_pin(), PinMode::input_pull(d.rx_pull));
     if let Some(ref t) = d.tx_en {
         gpio::configure(t.pin, PinMode::AF_PUSH_PULL);
     }
@@ -270,8 +268,7 @@ fn configure_adc_dma_scan(sensors: &AdcPins, opa_out_sample_time: adc::SampleTim
 
 fn bring_up_dxl(d: &DxlUart, brr: u32, boot_filter: FilterValue) {
     let regs = d.usart.regs();
-    let half_duplex = matches!(d.duplex, Duplex::Half);
-    usart::init(regs, brr, half_duplex);
+    usart::init(regs, brr);
 
     // ADC (CH1) + USART RX/TX channels stay at LOW per
     // `docs/dxl-hw-timed-transport.md` §6, so ET (CH7) is the only DMA

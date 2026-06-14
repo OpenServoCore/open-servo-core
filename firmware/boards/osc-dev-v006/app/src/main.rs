@@ -51,7 +51,6 @@ fn main() -> ! {
             },
             dxl: DxlUart {
                 usart: UsartMapping::Usart1Remap3,
-                duplex: Duplex::Full,
                 rx_pull: gpio::Pull::None,
                 tx_en: Some(TxEn {
                     pin: Pin::PC2,

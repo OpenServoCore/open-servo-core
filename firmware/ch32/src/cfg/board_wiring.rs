@@ -7,12 +7,6 @@ use osc_drivers::Level;
 use crate::hal::{Pin, Tim1Mapping, Tim2Mapping, UsartMapping, adc, gpio::Pull, opa, timer};
 
 #[derive(Copy, Clone)]
-pub enum Duplex {
-    Full,
-    Half,
-}
-
-#[derive(Copy, Clone)]
 pub struct TxEn {
     pub pin: Pin,
     /// Level driven to enable TX; inverse drives RX.
@@ -31,7 +25,6 @@ impl TxEn {
 #[derive(Copy, Clone)]
 pub struct DxlUart {
     pub usart: UsartMapping,
-    pub duplex: Duplex,
     pub rx_pull: Pull,
     pub tx_en: Option<TxEn>,
 }
@@ -140,10 +133,7 @@ impl BoardWiring {
             self.sensors.vmotor.0.channel.pin(),
             self.sensors.vmotor.1.channel.pin(),
             Some(self.dxl.usart.tx_pin()),
-            match self.dxl.duplex {
-                Duplex::Full => Some(self.dxl.usart.rx_pin()),
-                Duplex::Half => None,
-            },
+            Some(self.dxl.usart.rx_pin()),
             match self.dxl.tx_en {
                 Some(t) => Some(t.pin),
                 None => None,

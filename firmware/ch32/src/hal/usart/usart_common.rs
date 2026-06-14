@@ -1,15 +1,11 @@
 pub use ch32_metapac::usart::Usart as Regs;
 
 #[inline(always)]
-pub fn init(r: Regs, brr: u32, half_duplex: bool) {
+pub fn init(r: Regs, brr: u32) {
     r.ctlr1().modify(|w| {
         w.set_te(true);
         w.set_re(true);
     });
-
-    if half_duplex {
-        r.ctlr3().modify(|w| w.set_hdsel(true));
-    }
 
     r.brr().write_value(ch32_metapac::usart::regs::Brr(brr));
 
