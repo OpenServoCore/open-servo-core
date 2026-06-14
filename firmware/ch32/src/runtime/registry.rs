@@ -93,13 +93,13 @@ impl Drivers {
         // SAFETY: see fn doc.
         let dbg = unsafe { &mut *CELLS.dbg.get() };
         debug_assert!(dbg.is_none(), "Drivers: dbg already installed");
-        *dbg = Some(DigitalOut::new(w.dbg, Level::Low));
+        *dbg = Some(DigitalOut::new(w.dbg.pin(), Level::Low));
 
         // SAFETY: see fn doc.
         let stat_led = unsafe { &mut *CELLS.stat_led.get() };
         debug_assert!(stat_led.is_none(), "Drivers: stat_led already installed");
         *stat_led = Some(Led::new(
-            DigitalOut::new(w.stat_led, Level::High),
+            DigitalOut::new(crate::cfg::chip::STAT_LED_PIN, Level::High),
             Monotonic,
         ));
 

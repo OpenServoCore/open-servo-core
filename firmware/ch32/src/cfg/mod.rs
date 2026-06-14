@@ -1,9 +1,10 @@
 pub mod board_wiring;
+pub mod chip;
 
 pub use board_wiring::{
-    AdcPins, BoardWiring, Calibration, CurrentSenseConfig, Divider, DxlUart, MotorConfig, NtcCal,
-    TxEn,
+    AdcPins, BoardWiring, Calibration, CurrentSenseConfig, Divider, DrvEn, NtcCal,
 };
+pub use chip::{AnalogChannel, DigitalPin};
 
 use osc_core::ConfigDefaults;
 
@@ -29,9 +30,8 @@ pub struct Precomputed {
 
 impl Precomputed {
     pub const fn compute(cfg: &BoardConfig) -> Self {
-        let (pwm_psc, pwm_arr) =
-            crate::hal::timer::pwm_dividers_from_hz(cfg.wiring.motor.pwm_freq_hz);
-        let gain_factor = cfg.wiring.current_sense.opa.gain.factor();
+        let (pwm_psc, pwm_arr) = crate::hal::timer::pwm_dividers_from_hz(chip::MOTOR_PWM_FREQ_HZ);
+        let gain_factor = cfg.wiring.current_sense.gain.factor();
         Self {
             scales: Scales::new(&cfg.calibration, gain_factor),
             pwm_psc,

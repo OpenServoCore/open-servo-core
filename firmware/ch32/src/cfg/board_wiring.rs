@@ -1,21 +1,23 @@
-//! Chip-family-shaped wiring schema. Field types reference the V006 family's
-//! pin / mapping / channel enums; concrete values (which pin, which mapping)
-//! are bound by the board binary's `WIRING` const.
+//! Board-tunable wiring. Schematic-fixed pieces (USART/TIM2/TIM1 remaps,
+//! OPA inputs, TX_EN, STAT, PWM frequency, ADC sample time) live in
+//! [`super::chip`]; anything tunable per board (within the analog/digital
+//! pin buckets the chip + this board's free-pin set allow) lives here.
 
 use osc_drivers::Level;
 
-use crate::hal::{Pin, Tim1Mapping, Tim2Mapping, UsartMapping, adc, gpio::Pull, opa, timer};
+use crate::cfg::chip::{AnalogChannel, DigitalPin};
+use crate::hal::opa;
 
 #[derive(Copy, Clone)]
-pub struct TxEn {
-    pub pin: Pin,
-    /// Level driven to enable TX; inverse drives RX.
-    pub tx_level: Level,
+pub struct DrvEn {
+    pub pin: DigitalPin,
+    /// Level driven to enable the H-bridge driver IC.
+    pub active: Level,
 }
 
-impl TxEn {
-    pub const fn idle_level(&self) -> Level {
-        match self.tx_level {
+impl DrvEn {
+    pub const fn inactive(&self) -> Level {
+        match self.active {
             Level::High => Level::Low,
             Level::Low => Level::High,
         }
@@ -23,53 +25,17 @@ impl TxEn {
 }
 
 #[derive(Copy, Clone)]
-pub struct DxlUart {
-    pub usart: UsartMapping,
-    pub rx_pull: Pull,
-    pub tx_en: Option<TxEn>,
-}
-
-#[derive(Copy, Clone)]
-pub struct MotorConfig {
-    pub tim1: Tim1Mapping,
-    pub in1: timer::Channel,
-    pub in2: timer::Channel,
-    pub drv_en: Pin,
-    pub pwm_freq_hz: u32,
-    pub polarity: timer::Polarity,
-}
-
-impl MotorConfig {
-    pub const fn in1_pin(&self) -> Pin {
-        tim1_channel_pin(self.tim1, self.in1)
-    }
-
-    pub const fn in2_pin(&self) -> Pin {
-        tim1_channel_pin(self.tim1, self.in2)
-    }
-}
-
-const fn tim1_channel_pin(m: Tim1Mapping, c: timer::Channel) -> Pin {
-    match c {
-        timer::Channel::CH1 => m.ch1_pin(),
-        timer::Channel::CH2 => m.ch2_pin(),
-        timer::Channel::CH3 => m.ch3_pin(),
-        timer::Channel::CH4 => m.ch4_pin(),
-    }
-}
-
-#[derive(Copy, Clone)]
 pub struct CurrentSenseConfig {
-    pub opa: opa::Config,
-    pub adc_sample_time: adc::SampleTime,
+    pub gain: opa::Gain,
+    pub bias: opa::Bias,
 }
 
 #[derive(Copy, Clone)]
 pub struct AdcPins {
-    pub pos: adc::Input,
-    pub ntc: adc::Input,
-    pub vbus: adc::Input,
-    pub vmotor: (adc::Input, adc::Input),
+    pub pos: AnalogChannel,
+    pub ntc: AnalogChannel,
+    pub vbus: AnalogChannel,
+    pub vmotor: (AnalogChannel, AnalogChannel),
 }
 
 /// `V_adc = V_in · bot_ohm / (top_ohm + bot_ohm)`.
@@ -98,83 +64,44 @@ pub struct Calibration {
     pub ntc: NtcCal,
 }
 
-/// Schematic-fixed wiring; consumed during `Ch32ControlIo::new` and not retained.
+/// Board-tunable wiring; consumed during `Ch32ControlIo::new` and not retained.
 #[derive(Copy, Clone)]
 pub struct BoardWiring {
-    pub stat_led: Pin,
     /// Scope/probe pad; toggled once per DMA-TC ISR.
-    pub dbg: Pin,
-    pub tim2_remap: Tim2Mapping,
-    pub motor: MotorConfig,
+    pub dbg: DigitalPin,
+    pub drv_en: DrvEn,
     pub current_sense: CurrentSenseConfig,
     pub sensors: AdcPins,
-    pub dxl: DxlUart,
 }
 
 impl BoardWiring {
     /// Compile-time call site: `const _: () = WIRING.assert_valid();`
     pub const fn assert_valid(&self) {
-        self.assert_no_pin_conflicts();
-        self.assert_sensors_valid();
+        self.assert_scratch_distinct();
+        self.assert_sensors_distinct();
     }
 
-    const fn assert_no_pin_conflicts(&self) {
-        let pins: [Option<Pin>; 15] = [
-            Some(self.stat_led),
-            Some(self.dbg),
-            Some(self.motor.in1_pin()),
-            Some(self.motor.in2_pin()),
-            Some(self.motor.drv_en),
-            Some(self.current_sense.opa.input.pos().pin()),
-            self.current_sense.opa.input.neg_pin(),
-            self.sensors.pos.channel.pin(),
-            self.sensors.ntc.channel.pin(),
-            self.sensors.vbus.channel.pin(),
-            self.sensors.vmotor.0.channel.pin(),
-            self.sensors.vmotor.1.channel.pin(),
-            Some(self.dxl.usart.tx_pin()),
-            Some(self.dxl.usart.rx_pin()),
-            match self.dxl.tx_en {
-                Some(t) => Some(t.pin),
-                None => None,
-            },
-        ];
-        let n = pins.len();
-        let mut i = 0;
-        while i < n {
-            let mut j = i + 1;
-            while j < n {
-                let clash = match (pins[i], pins[j]) {
-                    (Some(a), Some(b)) => (a as u8) == (b as u8),
-                    _ => false,
-                };
-                if clash {
-                    panic!("BoardWiring: duplicate pin assignment");
-                }
-                j += 1;
-            }
-            i += 1;
+    const fn assert_scratch_distinct(&self) {
+        if (self.dbg as u8) == (self.drv_en.pin as u8) {
+            panic!("BoardWiring: dbg and drv_en.pin must not share a DigitalPin");
         }
     }
 
-    const fn assert_sensors_valid(&self) {
-        let chs: [adc::Channel; 5] = [
-            self.sensors.pos.channel,
-            self.sensors.ntc.channel,
-            self.sensors.vbus.channel,
-            self.sensors.vmotor.0.channel,
-            self.sensors.vmotor.1.channel,
+    const fn assert_sensors_distinct(&self) {
+        let chs: [AnalogChannel; 5] = [
+            self.sensors.pos,
+            self.sensors.ntc,
+            self.sensors.vbus,
+            self.sensors.vmotor.0,
+            self.sensors.vmotor.1,
         ];
         let n = chs.len();
         let mut i = 0;
         while i < n {
-            if chs[i].pin().is_none() {
-                panic!("BoardWiring: sensor uses internal ADC channel");
-            }
             let mut j = i + 1;
             while j < n {
                 if (chs[i] as u8) == (chs[j] as u8) {
-                    panic!("BoardWiring: duplicate sensor ADC channel");
+                    panic!("BoardWiring: duplicate sensor AnalogChannel");
                 }
                 j += 1;
             }

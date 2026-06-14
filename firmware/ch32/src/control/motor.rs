@@ -13,15 +13,29 @@ pub struct Ch32Motor {
     in1: timer::Channel,
     in2: timer::Channel,
     drv_en: Pin,
+    drv_en_active: Level,
+    drv_en_inactive: Level,
     pwm_arr: u16,
 }
 
 impl Ch32Motor {
-    pub const fn new(in1: timer::Channel, in2: timer::Channel, drv_en: Pin, pwm_arr: u16) -> Self {
+    pub const fn new(
+        in1: timer::Channel,
+        in2: timer::Channel,
+        drv_en: Pin,
+        drv_en_active: Level,
+        pwm_arr: u16,
+    ) -> Self {
+        let drv_en_inactive = match drv_en_active {
+            Level::High => Level::Low,
+            Level::Low => Level::High,
+        };
         Self {
             in1,
             in2,
             drv_en,
+            drv_en_active,
+            drv_en_inactive,
             pwm_arr,
         }
     }
@@ -32,22 +46,22 @@ impl MotorTrait for Ch32Motor {
         const STATIC_HIGH: u16 = u16::MAX;
         match cmd {
             MotorCmd::Disabled => {
-                gpio::set_level(self.drv_en, Level::Low);
+                gpio::set_level(self.drv_en, self.drv_en_inactive);
                 timer::set_duty(self.in1, 0);
                 timer::set_duty(self.in2, 0);
             }
             MotorCmd::Coast => {
-                gpio::set_level(self.drv_en, Level::High);
+                gpio::set_level(self.drv_en, self.drv_en_active);
                 timer::set_duty(self.in1, 0);
                 timer::set_duty(self.in2, 0);
             }
             MotorCmd::Brake => {
-                gpio::set_level(self.drv_en, Level::High);
+                gpio::set_level(self.drv_en, self.drv_en_active);
                 timer::set_duty(self.in1, STATIC_HIGH);
                 timer::set_duty(self.in2, STATIC_HIGH);
             }
             MotorCmd::Drive { duty, decay } => {
-                gpio::set_level(self.drv_en, Level::High);
+                gpio::set_level(self.drv_en, self.drv_en_active);
                 let ticks = effort_to_ticks(duty.0.unsigned_abs(), self.pwm_arr);
                 if ticks == 0 {
                     // Slow decay at zero ticks would lock both legs HIGH = BRAKE; coast instead.

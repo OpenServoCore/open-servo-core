@@ -11,7 +11,7 @@ pub use sensors::{Ch32Sensors, Scales};
 
 use osc_core::ControlIo;
 
-use crate::cfg::{BoardConfig, Precomputed};
+use crate::cfg::{BoardConfig, Precomputed, chip};
 use crate::runtime::init::BringupResult;
 
 pub struct Ch32ControlIo {
@@ -35,16 +35,21 @@ impl Ch32ControlIo {
             pre.scales.shunt_q32,
         );
 
-        let in1 = wiring.motor.in1;
-        let in2 = wiring.motor.in2;
-        let drv_en = wiring.motor.drv_en;
+        let drv_en_pin = wiring.drv_en.pin.pin();
+        let drv_en_active = wiring.drv_en.active;
 
         let BringupResult { shunt_bias_raw } = crate::runtime::bringup(&wiring, &defaults, &pre);
 
         crate::log::info!("Ch32ControlIo::new: complete");
         Self {
             sensors: Ch32Sensors::new(calibration, shunt_bias_raw, pre.scales),
-            motor: Ch32Motor::new(in1, in2, drv_en, pre.pwm_arr),
+            motor: Ch32Motor::new(
+                chip::MOTOR_IN1_CH,
+                chip::MOTOR_IN2_CH,
+                drv_en_pin,
+                drv_en_active,
+                pre.pwm_arr,
+            ),
         }
     }
 }

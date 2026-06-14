@@ -16,46 +16,20 @@ fn main() -> ! {
     osc_ch32::log::info!("osc-dev-v006: boot");
     osc_ch32::run!(BoardConfig {
         wiring: BoardWiring {
-            // STAT on PC7 = TIM1_CH4 (Remap7); TODO drive via TIM1 instead of GPIO.
-            stat_led: Pin::PC7,
-            dbg: Pin::PC3,
-            tim2_remap: Tim2Mapping::Remap2,
-            motor: MotorConfig {
-                tim1: Tim1Mapping::Remap7,
-                in1: timer::Channel::CH3,
-                in2: timer::Channel::CH2,
-                drv_en: Pin::PD0,
-                pwm_freq_hz: 20_000,
-                polarity: timer::Polarity::ActiveHigh,
+            dbg: DigitalPin::PC3,
+            drv_en: DrvEn {
+                pin: DigitalPin::PD0,
+                active: Level::High,
             },
             current_sense: CurrentSenseConfig {
-                opa: opa::Config {
-                    input: opa::InputMode::Differential {
-                        pos: opa::PositiveInput::PA2,
-                        neg: opa::NegativeInput::PA4,
-                    },
-                    gain: opa::Gain::X32,
-                    bias: opa::Bias::MidRail,
-                    output: opa::Output::Internal,
-                },
-                adc_sample_time: adc::SampleTime::CYCLES9,
+                gain: opa::Gain::X32,
+                bias: opa::Bias::MidRail,
             },
             sensors: AdcPins {
-                pos: adc::Input::new(adc::Channel::IN3, adc::SampleTime::CYCLES9),
-                ntc: adc::Input::new(adc::Channel::IN2, adc::SampleTime::CYCLES9),
-                vbus: adc::Input::new(adc::Channel::IN1, adc::SampleTime::CYCLES9),
-                vmotor: (
-                    adc::Input::new(adc::Channel::IN5, adc::SampleTime::CYCLES9),
-                    adc::Input::new(adc::Channel::IN6, adc::SampleTime::CYCLES9),
-                ),
-            },
-            dxl: DxlUart {
-                usart: UsartMapping::Usart1Remap3,
-                rx_pull: gpio::Pull::None,
-                tx_en: Some(TxEn {
-                    pin: Pin::PC2,
-                    tx_level: Level::High,
-                }),
+                pos: AnalogChannel::A3,
+                ntc: AnalogChannel::A2,
+                vbus: AnalogChannel::A1,
+                vmotor: (AnalogChannel::A5, AnalogChannel::A6),
             },
         },
         calibration: Calibration {

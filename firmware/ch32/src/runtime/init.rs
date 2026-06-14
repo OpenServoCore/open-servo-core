@@ -13,9 +13,7 @@ use crate::providers::usart_baud;
 use crate::runtime::Drivers;
 use crate::runtime::statics::SHARED;
 
-use crate::cfg::{
-    AdcPins, BoardWiring, CurrentSenseConfig, DxlUart, MotorConfig, Precomputed, TxEn,
-};
+use crate::cfg::{AdcPins, AnalogChannel, BoardWiring, CurrentSenseConfig, Precomputed, chip};
 
 const OPA_SETTLE_MS: u32 = 1;
 const VCAL_SAMPLE_TIME: adc::SampleTime = adc::SampleTime::CYCLES9;
@@ -40,7 +38,7 @@ pub fn bringup(
     // idle level on PC2's CC2 output, so the moment AF mode latches the pin
     // sees the inactive level instead of an indeterminate window. CC3 has no
     // pin output — initialized here so the IRQ stays masked at boot.
-    bring_up_tim2_oc(&wiring.dxl);
+    bring_up_tim2_oc();
     configure_pins(wiring);
     // SAFETY: bringup-only, pre-IRQ; sole writer.
     unsafe { Drivers::install(wiring, defaults) };
@@ -56,8 +54,8 @@ pub fn bringup(
     // independent of any further `delay_ms` use.
     systick::init();
 
-    let shunt_bias_raw = wiring.current_sense.opa.bias.quiescent_raw();
-    configure_adc_dma_scan(&wiring.sensors, wiring.current_sense.adc_sample_time);
+    let shunt_bias_raw = wiring.current_sense.bias.quiescent_raw();
+    configure_adc_dma_scan(&wiring.sensors);
     crate::log::debug!(
         "adc/dma scan armed: scan_len={} buf_len={} shunt_bias_raw={}",
         ADC_SCAN_LEN,
@@ -81,17 +79,13 @@ pub fn bringup(
         c.comms.id = id;
     });
 
-    bring_up_dxl(
-        &wiring.dxl,
-        pre.usart_brr,
-        usart_baud::filter_for(defaults.dxl_baud),
-    );
+    bring_up_dxl(pre.usart_brr, usart_baud::filter_for(defaults.dxl_baud));
     crate::log::debug!("dxl usart + dma rx armed");
 
-    start_center_aligned_pwm(&wiring.motor, pre.pwm_psc, pre.pwm_arr);
+    start_center_aligned_pwm(pre.pwm_psc, pre.pwm_arr);
     crate::log::debug!(
         "pwm running ({} Hz, psc={}, arr={})",
-        wiring.motor.pwm_freq_hz,
+        chip::MOTOR_PWM_FREQ_HZ,
         pre.pwm_psc,
         pre.pwm_arr,
     );
@@ -127,115 +121,104 @@ fn derive_dxl_id_from_uid() -> u8 {
 }
 
 // Order must mirror the scan tail in `configure_adc_dma_scan`.
-fn sensor_inputs(s: &AdcPins) -> [adc::Input; ADC_SENSOR_COUNT] {
+fn sensor_channels(s: &AdcPins) -> [AnalogChannel; ADC_SENSOR_COUNT] {
     [s.pos, s.ntc, s.vbus, s.vmotor.0, s.vmotor.1]
 }
 
 fn enable_clocks_and_remaps(w: &BoardWiring) {
-    let in1 = w.motor.in1_pin();
-    let in2 = w.motor.in2_pin();
-    let opa_pos_pin = w.current_sense.opa.input.pos().pin();
+    let opa_pos_pin = chip::CURRENT_SENSE_OPA_INPUT.pos().pin();
 
     rcc::init_pll();
     rcc::enable_afio();
-    rcc::enable_gpio(w.stat_led.port_index());
-    rcc::enable_gpio(w.dbg.port_index());
-    rcc::enable_gpio(in1.port_index());
-    rcc::enable_gpio(in2.port_index());
-    rcc::enable_gpio(w.motor.drv_en.port_index());
+    rcc::enable_gpio(chip::STAT_LED_PIN.port_index());
+    rcc::enable_gpio(w.dbg.pin().port_index());
+    rcc::enable_gpio(chip::MOTOR_IN1_PIN.port_index());
+    rcc::enable_gpio(chip::MOTOR_IN2_PIN.port_index());
+    rcc::enable_gpio(w.drv_en.pin.pin().port_index());
     rcc::enable_gpio(opa_pos_pin.port_index());
-    if let Some(neg_pin) = w.current_sense.opa.input.neg_pin() {
+    if let Some(neg_pin) = chip::CURRENT_SENSE_OPA_INPUT.neg_pin() {
         rcc::enable_gpio(neg_pin.port_index());
     }
-    for input in sensor_inputs(&w.sensors) {
-        if let Some(pin) = input.channel.pin() {
-            rcc::enable_gpio(pin.port_index());
-        }
+    for ch in sensor_channels(&w.sensors) {
+        rcc::enable_gpio(ch.pin().port_index());
     }
-    rcc::enable_gpio(w.dxl.usart.tx_pin().port_index());
-    rcc::enable_gpio(w.dxl.usart.rx_pin().port_index());
-    if let Some(ref t) = w.dxl.tx_en {
-        rcc::enable_gpio(t.pin.port_index());
-    }
+    rcc::enable_gpio(chip::DXL_USART_MAPPING.tx_pin().port_index());
+    rcc::enable_gpio(chip::DXL_USART_MAPPING.rx_pin().port_index());
+    rcc::enable_gpio(chip::DXL_TX_EN_PIN.port_index());
     rcc::enable_tim1();
     rcc::enable_tim2();
     rcc::enable_adc1();
     rcc::enable_dma1();
     rcc::enable_usart1();
 
-    afio::set_tim_remap(1, w.motor.tim1.remap_value());
-    afio::set_tim_remap(2, w.tim2_remap.remap_value());
-    afio::set_usart_remap(w.dxl.usart.peripheral_index(), w.dxl.usart.remap_value());
+    afio::set_tim_remap(1, chip::MOTOR_TIM1_MAPPING.remap_value());
+    afio::set_tim_remap(2, chip::DXL_TIM2_MAPPING.remap_value());
+    afio::set_usart_remap(
+        chip::DXL_USART_MAPPING.peripheral_index(),
+        chip::DXL_USART_MAPPING.remap_value(),
+    );
 }
 
 fn configure_pins(w: &BoardWiring) {
-    let in1 = w.motor.in1_pin();
-    let in2 = w.motor.in2_pin();
-    let opa_pos_pin = w.current_sense.opa.input.pos().pin();
+    let drv_en_pin = w.drv_en.pin.pin();
+    // Boot to the inactive level (driver disabled) before flipping to output.
+    gpio::configure(drv_en_pin, PinMode::OUTPUT_PUSH_PULL);
+    gpio::set_level(drv_en_pin, w.drv_en.inactive());
 
-    // drv_en LOW = driver disabled (MotorCmd::Disabled boot state).
-    gpio::configure(w.motor.drv_en, PinMode::OUTPUT_PUSH_PULL);
-    gpio::set_level(w.motor.drv_en, Level::Low);
+    gpio::configure(chip::MOTOR_IN1_PIN, PinMode::AF_PUSH_PULL);
+    gpio::configure(chip::MOTOR_IN2_PIN, PinMode::AF_PUSH_PULL);
 
-    gpio::configure(in1, PinMode::AF_PUSH_PULL);
-    gpio::configure(in2, PinMode::AF_PUSH_PULL);
-
+    let opa_pos_pin = chip::CURRENT_SENSE_OPA_INPUT.pos().pin();
     gpio::configure(opa_pos_pin, PinMode::ANALOG);
-    if let Some(neg_pin) = w.current_sense.opa.input.neg_pin() {
+    if let Some(neg_pin) = chip::CURRENT_SENSE_OPA_INPUT.neg_pin() {
         gpio::configure(neg_pin, PinMode::ANALOG);
     }
-    for input in sensor_inputs(&w.sensors) {
-        if let Some(pin) = input.channel.pin() {
-            gpio::configure(pin, PinMode::ANALOG);
-        }
+    for ch in sensor_channels(&w.sensors) {
+        gpio::configure(ch.pin(), PinMode::ANALOG);
     }
 
-    configure_dxl_pins(&w.dxl);
+    configure_dxl_pins();
 }
 
-fn configure_dxl_pins(d: &DxlUart) {
-    gpio::configure(d.usart.tx_pin(), PinMode::AF_PUSH_PULL);
-    gpio::configure(d.usart.rx_pin(), PinMode::input_pull(d.rx_pull));
-    if let Some(ref t) = d.tx_en {
-        gpio::configure(t.pin, PinMode::AF_PUSH_PULL);
-    }
+fn configure_dxl_pins() {
+    gpio::configure(chip::DXL_USART_MAPPING.tx_pin(), PinMode::AF_PUSH_PULL);
+    gpio::configure(
+        chip::DXL_USART_MAPPING.rx_pin(),
+        PinMode::input_pull(chip::DXL_RX_PULL),
+    );
+    gpio::configure(chip::DXL_TX_EN_PIN, PinMode::AF_PUSH_PULL);
 }
 
-fn bring_up_tim2_oc(d: &DxlUart) {
-    let tx_active_high = match d.tx_en {
-        Some(TxEn {
-            tx_level: Level::High,
-            ..
-        }) => true,
-        Some(TxEn {
-            tx_level: Level::Low,
-            ..
-        }) => false,
-        None => true,
-    };
+fn bring_up_tim2_oc() {
+    let tx_active_high = matches!(chip::DXL_TX_EN_LEVEL, Level::High);
     timer::init_tim2_tx_oc_channels(tx_active_high);
 }
 
 fn bring_up_analog_chain(cs: &CurrentSenseConfig) {
-    opa::init(&cs.opa);
+    opa::init(&opa::Config {
+        input: chip::CURRENT_SENSE_OPA_INPUT,
+        gain: cs.gain,
+        bias: cs.bias,
+        output: chip::CURRENT_SENSE_OPA_OUTPUT,
+    });
     delay_ms(OPA_SETTLE_MS);
 }
 
-fn configure_adc_dma_scan(sensors: &AdcPins, opa_out_sample_time: adc::SampleTime) {
-    adc::set_sample_time(adc::Channel::OpaOut, opa_out_sample_time);
-    adc::set_sample_time(sensors.pos.channel, sensors.pos.sample_time);
-    adc::set_sample_time(sensors.ntc.channel, sensors.ntc.sample_time);
-    adc::set_sample_time(sensors.vmotor.0.channel, sensors.vmotor.0.sample_time);
-    adc::set_sample_time(sensors.vmotor.1.channel, sensors.vmotor.1.sample_time);
+fn configure_adc_dma_scan(sensors: &AdcPins) {
+    adc::set_sample_time(adc::Channel::OpaOut, chip::ADC_SAMPLE_TIME);
+    adc::set_sample_time(sensors.pos.channel(), chip::ADC_SAMPLE_TIME);
+    adc::set_sample_time(sensors.ntc.channel(), chip::ADC_SAMPLE_TIME);
+    adc::set_sample_time(sensors.vmotor.0.channel(), chip::ADC_SAMPLE_TIME);
+    adc::set_sample_time(sensors.vmotor.1.channel(), chip::ADC_SAMPLE_TIME);
     adc::set_sample_time(adc::Channel::Vcal, VCAL_SAMPLE_TIME);
     adc::set_low_power(false);
 
     let seq = [
         adc::Channel::OpaOut,
-        sensors.pos.channel,
-        sensors.ntc.channel,
-        sensors.vmotor.0.channel,
-        sensors.vmotor.1.channel,
+        sensors.pos.channel(),
+        sensors.ntc.channel(),
+        sensors.vmotor.0.channel(),
+        sensors.vmotor.1.channel(),
         adc::Channel::Vcal,
     ];
     adc::set_sequence(&seq);
@@ -266,8 +249,8 @@ fn configure_adc_dma_scan(sensors: &AdcPins, opa_out_sample_time: adc::SampleTim
     dma::enable(dma::Channel::CH1);
 }
 
-fn bring_up_dxl(d: &DxlUart, brr: u32, boot_filter: FilterValue) {
-    let regs = d.usart.regs();
+fn bring_up_dxl(brr: u32, boot_filter: FilterValue) {
+    let regs = chip::DXL_USART_MAPPING.regs();
     usart::init(regs, brr);
 
     // ADC (CH1) + USART RX/TX channels stay at LOW per
@@ -358,12 +341,14 @@ fn bring_up_edge_ts_capture(boot_filter: FilterValue) {
     dma::enable(dma::Channel::CH7);
 }
 
-fn start_center_aligned_pwm(m: &MotorConfig, psc: u16, arr: u16) {
+fn start_center_aligned_pwm(psc: u16, arr: u16) {
     timer::init_center_aligned_pwm(psc, arr);
-    timer::configure_pwm_channel(m.in1, m.polarity);
-    timer::configure_pwm_channel(m.in2, m.polarity);
-    timer::set_duty(m.in1, 0);
-    timer::set_duty(m.in2, 0);
+    // Start both channels active-high; the control loop owns CCP per-cycle
+    // from the first tick for direction / decay-mode control.
+    timer::configure_pwm_channel(chip::MOTOR_IN1_CH, timer::Polarity::ActiveHigh);
+    timer::configure_pwm_channel(chip::MOTOR_IN2_CH, timer::Polarity::ActiveHigh);
+    timer::set_duty(chip::MOTOR_IN1_CH, 0);
+    timer::set_duty(chip::MOTOR_IN2_CH, 0);
     timer::set_repetition(0);
     timer::set_trgo_update();
     timer::enable_main_output();
