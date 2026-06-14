@@ -21,4 +21,3 @@ defmt-rtt     = { version = "1", optional = true }
 [features]
 default = []
 defmt   = ["dep:defmt", "dep:defmt-rtt", "osc-ch32/defmt"]
-bench   = ["osc-ch32/bench"]

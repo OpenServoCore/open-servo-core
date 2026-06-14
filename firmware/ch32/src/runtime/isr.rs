@@ -21,8 +21,6 @@ pub fn on_adc_dma_tc() {
             let (sensors, _motor) = kernel.io.parts();
             sensors.sample(&vars)
         };
-        #[cfg(feature = "defmt")]
-        crate::legacy::telemetry::record_sample(&sample);
         kernel.on_tick(sample, &SHARED);
     }
 }

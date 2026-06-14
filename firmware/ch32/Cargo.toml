@@ -11,7 +11,6 @@ license = "MIT OR Apache-2.0"
 ch32-metapac     = { git = "https://github.com/ch32-rs/ch32-metapac", default-features = false, features = ["pac"] }
 crc              = { version = "3", default-features = false }
 dxl-protocol     = { path = "../lib/dxl-protocol", features = ["heapless"] }
-embedded-storage = "0.3"
 heapless         = "0.9"
 osc-core         = { path = "../lib/core" }
 osc-drivers      = { path = "../lib/drivers" }
@@ -38,7 +37,3 @@ default      = ["ch32v006x8x6"]
 ch32v006x8x6 = ["ch32-metapac/ch32v006x8x6"]
 rt           = ["ch32-metapac/rt"]
 defmt        = ["dep:defmt", "osc-core/defmt"]
-# Bench-only: enable hot-path instrumentation (scope marker pulses, etc.)
-# in `crate::bench`. Off in production — the helpers compile to empty bodies
-# so call sites stay unconditional.
-bench        = []
