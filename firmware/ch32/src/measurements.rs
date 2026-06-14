@@ -41,9 +41,6 @@ pub const TX_START_ENTRY_TICKS: u16 = 46;
 /// 32 k ticks (~667 µs). Measured: TBD (bench).
 pub const SCHEDULE_WRAP_GUARD_TICKS: u16 = 0x8000;
 
-// Wired into the FastLast composite by Plan 2 Commit D; pure scaffolding
-// until then. allow(dead_code) drops with the next landing.
-#[allow(dead_code)]
 mod fast_last {
     /// SysTick CMP-match → catchup-body fold-start latency, in HCLK ticks.
     /// Driver subtracts this from every grid anchor offset before handing

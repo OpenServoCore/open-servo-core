@@ -131,20 +131,23 @@ impl<S: FastLastScheduler> FastLast<S> {
     /// Drive one grid body. Composite calls this from its SysTick demux
     /// when our CMP fires.
     ///
-    /// - `walker` runs the classifier + parser-drain + per-byte fold for
-    ///   whatever bytes have landed since the last body. Called at least
-    ///   once per invocation.
-    /// - `bytes_walked` returns the composite-side count of predecessor
-    ///   bytes folded so far. The busy-wait exits when this reaches
-    ///   `predecessor_bytes − GUARD`.
-    pub fn on_step<W, B>(&mut self, mut walker: W, mut bytes_walked: B)
+    /// `walker` runs the classifier + parser-drain + per-byte fold for
+    /// whatever bytes have landed since the last body, and returns the
+    /// composite-side cumulative count of predecessor bytes folded so far.
+    /// Called at least once per invocation. The final-anchor busy-wait
+    /// exits when the returned count reaches `predecessor_bytes − GUARD`.
+    ///
+    /// Single closure (not `(walker, bytes_walked)`) so the composite can
+    /// capture `&mut codec` + `&mut fast_last_crc` once for both the walk
+    /// and the read — splitting them would force interior mutability on
+    /// the count.
+    pub fn on_step<W>(&mut self, mut walker: W)
     where
-        W: FnMut(),
-        B: FnMut() -> u32,
+        W: FnMut() -> u32,
     {
         match self.phase {
             FastLastPhase::PeriodicWalk => {
-                walker();
+                let bytes_walked = walker();
                 if self.next_anchor_offset == self.final_anchor_offset {
                     // Final anchor — busy-wait. Uncontested at high baud
                     // because the composite paused DMA1_CH7 HT/TC at start
@@ -155,13 +158,14 @@ impl<S: FastLastScheduler> FastLast<S> {
                     // body's tail fold.
                     let target =
                         (self.predecessor_bytes as u32).saturating_sub(S::GUARD_BYTES as u32);
-                    loop {
-                        walker();
-                        if bytes_walked() >= target {
-                            break;
-                        }
-                        if self.scheduler.deadline_passed() {
-                            break;
+                    if bytes_walked < target {
+                        loop {
+                            if walker() >= target {
+                                break;
+                            }
+                            if self.scheduler.deadline_passed() {
+                                break;
+                            }
                         }
                     }
                     self.phase = FastLastPhase::Idle;
@@ -193,6 +197,15 @@ impl<S: FastLastScheduler> FastLast<S> {
 
     pub fn phase(&self) -> FastLastPhase {
         self.phase
+    }
+}
+
+#[cfg(test)]
+impl<S: FastLastScheduler> FastLast<S> {
+    /// Shared borrow of the underlying scheduler — composite tests reach
+    /// through here to assert the recorded ops on the mock scheduler.
+    pub fn scheduler(&self) -> &S {
+        &self.scheduler
     }
 }
 
@@ -283,8 +296,8 @@ mod tests {
         assert_eq!(d.next_anchor_offset, 12640);
         assert_eq!(d.final_anchor_offset, 17440);
 
-        d.on_step(|| {}, || 0);
-        d.on_step(|| {}, || 0);
+        d.on_step(|| 0);
+        d.on_step(|| 0);
 
         assert_eq!(
             d.scheduler.log.as_slice(),
@@ -324,13 +337,11 @@ mod tests {
 
         let walker_calls = Cell::new(0u32);
         let bytes = Cell::new(0u32);
-        d.on_step(
-            || {
-                walker_calls.set(walker_calls.get() + 1);
-                bytes.set(bytes.get() + 1);
-            },
-            || bytes.get(),
-        );
+        d.on_step(|| {
+            walker_calls.set(walker_calls.get() + 1);
+            bytes.set(bytes.get() + 1);
+            bytes.get()
+        });
 
         assert_eq!(walker_calls.get(), 4);
         assert_eq!(d.phase(), FastLastPhase::Idle);
@@ -353,10 +364,10 @@ mod tests {
         d.scheduler.deadline_passed_value.set(true);
 
         let walker_calls = Cell::new(0u32);
-        d.on_step(
-            || walker_calls.set(walker_calls.get() + 1),
-            || 0_u32, // bytes never arrive
-        );
+        d.on_step(|| {
+            walker_calls.set(walker_calls.get() + 1);
+            0_u32 // bytes never arrive
+        });
 
         // Pre-loop walker + one inside the loop before the deadline branch
         // catches: 2 calls.
@@ -374,7 +385,10 @@ mod tests {
             predecessor_bytes: 2,
         });
         let bytes = Cell::new(0u32);
-        d.on_step(|| bytes.set(bytes.get() + 1), || bytes.get());
+        d.on_step(|| {
+            bytes.set(bytes.get() + 1);
+            bytes.get()
+        });
 
         assert_eq!(d.phase(), FastLastPhase::Idle);
         assert!(!d.is_active());

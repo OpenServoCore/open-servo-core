@@ -19,9 +19,6 @@ use crate::measurements::{
     FAST_LAST_BYTES_PER_INTERVAL, FAST_LAST_ENTRY_TICKS, FAST_LAST_GUARD_BYTES,
 };
 
-// Wired into the registry by Plan 2 Commit D alongside the SysTick vector
-// + composite glue; pure scaffolding until then.
-#[allow(dead_code)]
 #[derive(Default)]
 pub struct FastLastScheduler {
     packet_end_lifted: u32,

@@ -112,6 +112,21 @@ impl<R: EdgeDma, const EDGE_BUF_LEN: usize, const BT_BUF_LEN: usize>
     ) -> impl Iterator<Item = (u16, u16)> + '_ {
         self.classifier.byte_pairs(start, end)
     }
+
+    /// Mask the edge-DMA channel's HT/TC IRQ + clear any latched flag.
+    /// Composite calls this from `on_systick_match` at first Fast Last
+    /// catchup entry so the classifier ISR doesn't preempt the catchup
+    /// body during the predecessor window (doc §10.6.3). Idempotent.
+    pub fn pause_edges(&mut self) {
+        self.ring.pause();
+    }
+
+    /// Re-enable the edge-DMA channel's HT/TC IRQ. Composite calls this
+    /// from `on_tx_complete` after the Fast Last reply finishes. Cheap
+    /// no-op for Plain replies (pause was never called). Idempotent.
+    pub fn resume_edges(&mut self) {
+        self.ring.resume();
+    }
 }
 
 #[cfg(test)]

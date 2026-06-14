@@ -12,6 +12,7 @@
 pub mod clock;
 pub mod codec;
 pub mod fast_last;
+pub mod fast_last_crc;
 
 use dxl_protocol::packet::{Id, Slot, Status};
 use dxl_protocol::{
@@ -20,10 +21,12 @@ use dxl_protocol::{
 };
 use osc_core::{BaudRate, BootMode, DxlReply};
 
-use crate::traits::dxl::{ClockTrim, EdgeDma, SendKind, TxScheduler, UsartBaud};
+use crate::traits::dxl::{ClockTrim, EdgeDma, FastLastScheduler, SendKind, TxScheduler, UsartBaud};
 use crate::util::Seq;
 use clock::Clock;
 use codec::{Codec, CodecTx};
+use fast_last::{FastLast, FastLastSchedule};
+use fast_last_crc::FastLastCrc;
 
 /// Wire bytes of a single Ping Status reply — `RESPONSE_HEADER_BYTES`
 /// (header(4) + id + len(2) + inst + err = 9) + 3 payload bytes
@@ -51,12 +54,22 @@ struct ReplyContext {
     packet_end_tick: Option<u16>,
     /// Wire-byte offset from request wire-end to this reply's fire moment.
     /// Zero for direct unicast; non-zero for broadcast Ping and
-    /// Sync/Bulk/Fast Read slot N.
+    /// Sync/Bulk/Fast Read slot N. For Fast Last replies this also equals
+    /// `predecessor_bytes` — the count of predecessor wire bytes the
+    /// chain-CRC fold pipeline must absorb before patching our trailing
+    /// CRC slot.
     slot_offset_bytes: u32,
     /// Fast Sync/Bulk Read slot position. `None` for non-Fast paths;
-    /// `Some(Last { .. })` flags the schedule with [`SendKind::FastLast`]
-    /// so the chain-CRC catchup sub-driver (M6, `#6`) can pick it up.
+    /// `Some(Last { .. })` arms the Fast Last CRC fold pipeline so our
+    /// own trailing CRC slot gets patched with the chain CRC covering
+    /// predecessor + own bytes before DMA1_CH4 reads it.
     fast_slot_position: Option<SlotPosition>,
+    /// Parser wire-byte cursor at parse-complete. Forwarded into
+    /// [`FastLastCrc::start`] as its `start_cursor` — the first
+    /// predecessor reply byte arrives at exactly this cursor, so the
+    /// fold's `cursor < start_cursor` guard skips everything up to (but
+    /// not including) the first predecessor byte.
+    fold_start_cursor: u32,
 }
 
 fn slot_offset_for(packet: &InstructionPacket<'_>, id: u8) -> u32 {
@@ -108,11 +121,14 @@ pub struct ReplyHandle<
     U: UsartBaud,
     T: ClockTrim,
     S: TxScheduler,
+    FL: FastLastScheduler,
     CRC: CrcUmts,
     const TX_BUF_LEN: usize,
 > {
     tx: &'a mut CodecTx<CRC, TX_BUF_LEN>,
     scheduler: &'a mut S,
+    fast_last: &'a mut FastLast<FL>,
+    fast_last_crc: &'a mut FastLastCrc<CRC>,
     clock: &'a mut Clock<U, T>,
     last_reply_ctx: &'a mut Option<ReplyContext>,
     pending_id: &'a mut Option<u8>,
@@ -128,8 +144,14 @@ pub struct ReplyHandle<
     rdt_us: u32,
 }
 
-impl<U: UsartBaud, T: ClockTrim, S: TxScheduler, CRC: CrcUmts, const TX_BUF_LEN: usize>
-    ReplyHandle<'_, U, T, S, CRC, TX_BUF_LEN>
+impl<
+    U: UsartBaud,
+    T: ClockTrim,
+    S: TxScheduler,
+    FL: FastLastScheduler,
+    CRC: CrcUmts,
+    const TX_BUF_LEN: usize,
+> ReplyHandle<'_, U, T, S, FL, CRC, TX_BUF_LEN>
 {
     /// Encode a Status reply into the codec's TX buffer and schedule its
     /// wire start. Fold RDT + slot offset (broadcast Ping / Sync / Bulk
@@ -193,9 +215,25 @@ impl<U: UsartBaud, T: ClockTrim, S: TxScheduler, CRC: CrcUmts, const TX_BUF_LEN:
         };
         let deadline_tick = packet_end_tick.wrapping_add(delay_ticks as u16);
         self.scheduler.schedule(deadline_tick, byte_count, kind);
-        // Chain-CRC predecessor fold lives on DxlChainCatchup (M6, #6),
-        // which reads its own anchor from the codec at TX-start time —
-        // nothing crosses the scheduler boundary here.
+        // Fast Last: arm the periodic-walk grid + chain-CRC fold engine.
+        // `slot_offset_bytes` on Last == `bytes_before` == predecessor wire
+        // bytes (excluding our own reply); the fold absorbs that count
+        // before patching our trailing placeholder CRC slot.
+        if matches!(position, SlotPosition::Last { .. }) {
+            let byte_ticks = self.clock.ticks_per_bit().wrapping_mul(10);
+            // RDT in scheduler ticks (FastLast trait surfaces u32 offsets,
+            // but FastLastSchedule's fields stay u16-shaped per doc §10.6
+            // — typical RDT ≤ 24k ticks, well under u16).
+            let rdt_ticks = (self.rdt_us.wrapping_mul(S::TICKS_PER_US as u32) & 0xFFFF) as u16;
+            self.fast_last.start(FastLastSchedule {
+                packet_end_tick,
+                rdt_ticks,
+                byte_ticks,
+                predecessor_bytes: ctx.slot_offset_bytes as u16,
+            });
+            self.fast_last_crc
+                .start(ctx.fold_start_cursor, ctx.slot_offset_bytes);
+        }
         Ok(())
     }
 
@@ -233,8 +271,14 @@ impl<U: UsartBaud, T: ClockTrim, S: TxScheduler, CRC: CrcUmts, const TX_BUF_LEN:
     }
 }
 
-impl<U: UsartBaud, T: ClockTrim, S: TxScheduler, CRC: CrcUmts, const TX_BUF_LEN: usize> DxlReply
-    for ReplyHandle<'_, U, T, S, CRC, TX_BUF_LEN>
+impl<
+    U: UsartBaud,
+    T: ClockTrim,
+    S: TxScheduler,
+    FL: FastLastScheduler,
+    CRC: CrcUmts,
+    const TX_BUF_LEN: usize,
+> DxlReply for ReplyHandle<'_, U, T, S, FL, CRC, TX_BUF_LEN>
 {
     fn send_status(&mut self, status: Status<'_>) -> Result<(), WriteError> {
         ReplyHandle::send_status(self, status)
@@ -294,6 +338,7 @@ pub struct DxlUart<
     T: ClockTrim,
     R: EdgeDma,
     S: TxScheduler,
+    FL: FastLastScheduler,
     CRC: CrcUmts,
     const DECODER_CAP: usize,
     const RX_BUF_LEN: usize,
@@ -303,6 +348,14 @@ pub struct DxlUart<
     codec: Codec<R, CRC, DECODER_CAP, RX_BUF_LEN, EDGE_BUF_LEN, TX_BUF_LEN>,
     clock: Clock<U, T>,
     scheduler: S,
+    /// Periodic-walk grid scheduler for Fast Sync / Bulk Read Last replies.
+    /// Driver-pattern §4 sub-driver: armed at `send_slot(Last)` via
+    /// `ReplyHandle`; `on_systick_match` drives one body per CMP.
+    fast_last: FastLast<FL>,
+    /// Chain-CRC fold engine. Per-byte hook is wired into the codec's
+    /// `poll_one` callback during the SysTick walker; finalize patches our
+    /// own trailing CRC slot before DMA1_CH4 reads it.
+    fast_last_crc: FastLastCrc<CRC>,
 
     id: u8,
     rdt_us: u32,
@@ -324,17 +377,19 @@ impl<
     T: ClockTrim,
     R: EdgeDma,
     S: TxScheduler,
+    FL: FastLastScheduler,
     CRC: CrcUmts,
     const DECODER_CAP: usize,
     const RX_BUF_LEN: usize,
     const EDGE_BUF_LEN: usize,
     const TX_BUF_LEN: usize,
-> DxlUart<U, T, R, S, CRC, DECODER_CAP, RX_BUF_LEN, EDGE_BUF_LEN, TX_BUF_LEN>
+> DxlUart<U, T, R, S, FL, CRC, DECODER_CAP, RX_BUF_LEN, EDGE_BUF_LEN, TX_BUF_LEN>
 {
     pub fn new(
         codec: Codec<R, CRC, DECODER_CAP, RX_BUF_LEN, EDGE_BUF_LEN, TX_BUF_LEN>,
         clock: Clock<U, T>,
         scheduler: S,
+        fast_last: FastLast<FL>,
         id: u8,
         rdt_us: u32,
     ) -> Self {
@@ -342,6 +397,8 @@ impl<
             codec,
             clock,
             scheduler,
+            fast_last,
+            fast_last_crc: FastLastCrc::new(),
             id,
             rdt_us,
             last_reply_ctx: None,
@@ -386,7 +443,10 @@ impl<
     /// disjoint mutable references, so the closure sees both at once.
     pub fn poll<F>(&mut self, f: F)
     where
-        F: for<'a> FnOnce(InstructionPacket<'a>, &mut ReplyHandle<'_, U, T, S, CRC, TX_BUF_LEN>),
+        F: for<'a> FnOnce(
+            InstructionPacket<'a>,
+            &mut ReplyHandle<'_, U, T, S, FL, CRC, TX_BUF_LEN>,
+        ),
     {
         let id = self.id;
         let rdt_us = self.rdt_us;
@@ -394,6 +454,8 @@ impl<
             codec,
             clock,
             scheduler,
+            fast_last,
+            fast_last_crc,
             last_reply_ctx,
             pending_id,
             pending_rdt_us,
@@ -419,6 +481,11 @@ impl<
             let packet_end_tick = rx
                 .byte_ts_at(token.end.predecessor())
                 .map(|ts| ts.wrapping_add(clock.ticks_per_bit().wrapping_mul(10)));
+            // Fold start cursor = parser wire-byte cursor at parse
+            // surface. The first predecessor reply byte arrives at this
+            // cursor; the fold's `cursor < start_cursor` guard skips the
+            // host's request bytes.
+            let fold_start_cursor = rx.wire_byte_cursor();
             // dispatch() takes `&self` so the packet's borrow on `rx` is
             // shared — compatible with the (already-captured) BT lookup
             // and the disjoint `&mut tx` the reply handle holds.
@@ -427,11 +494,14 @@ impl<
                 packet_end_tick,
                 slot_offset_bytes: slot_offset_for(&packet, id),
                 fast_slot_position: fast_slot_position(&packet, id),
+                fold_start_cursor,
             };
             *last_reply_ctx = Some(ctx);
             let mut reply = ReplyHandle {
                 tx,
                 scheduler,
+                fast_last,
+                fast_last_crc,
                 clock,
                 last_reply_ctx,
                 pending_id,
@@ -453,22 +523,98 @@ impl<
     }
 
     /// The TX-start tick has arrived (chip-side CC3 IRQ) — route to the
-    /// scheduler so it activates the wire driver (USART TE on, TX DMA on).
-    /// Logical event name per [[driver_events_logical_naming]]; the chip
-    /// ISR's peripheral-shaped name (`on_tim2_cc3`) lives in `runtime/isr.rs`.
+    /// scheduler so it activates the wire driver (USART TE on, TX DMA on),
+    /// then run the Fast Last post-fire residue fold when active: spin
+    /// the walker until the fold engine finalize-patches our trailing
+    /// CRC slot or the iteration cap fires. Logical event name per
+    /// [[driver_events_logical_naming]]; the chip ISR's peripheral-shaped
+    /// name (`on_tim2_cc3`) lives in `runtime/isr.rs`.
     pub fn on_tx_start(&mut self) {
         self.scheduler.handle_start();
+        if !self.fast_last_crc.is_active() {
+            return;
+        }
+        // TODO(#41): this body is too fat for CC3. Doc §10.6.2 budgets
+        // ~(tx_len − 2) × byte_ticks (~46 µs for a 14-byte reply at 3M)
+        // between CH4 enable and CH4's read of `tx_buf[len − 2]`; running
+        // the full classifier walk (ET → BT) + parser drain on that
+        // critical path risks busting `patch_deadline_tick` at higher
+        // baud / longer replies. The minimum-correct body folds the
+        // GUARD-byte residue (NDTR-derived raw bytes — no classifier,
+        // no parser) into the running CRC and patches; nothing else. The
+        // iteration cap below is a temporary floor — the real deadline
+        // lives at `patch_deadline_tick`, which needs a TIM2 CNT lift
+        // the composite doesn't own here yet. **Won't pass spec as-is.**
+        const POST_FIRE_ITER_CAP: u32 = 32;
+        let tpb = self.clock.ticks_per_bit();
+        let Self {
+            codec,
+            fast_last_crc,
+            ..
+        } = self;
+        let (rx, tx) = codec.split_mut();
+        for _ in 0..POST_FIRE_ITER_CAP {
+            rx.on_edge_advance(tpb);
+            while rx
+                .poll_one(|byte, cursor| fast_last_crc.on_byte(byte, cursor, tx))
+                .is_some()
+            {}
+            if !fast_last_crc.is_active() {
+                break;
+            }
+        }
+        // FastLast scheduler is already cancelled at the last SysTick CMP
+        // body (`on_fold_step`); the wire-side TX continues regardless of
+        // whether the fold finalized.
+    }
+
+    /// One Fast Last periodic-walk fold body is due. The composite's
+    /// SysTick demux calls this; the chip ISR's peripheral-shaped name
+    /// (`on_systick`) lives in `runtime/isr.rs`. First entry pauses
+    /// DMA1_CH7 HT/TC so the classifier ISR can't preempt the body
+    /// during the predecessor window (doc §10.6.3); subsequent entries
+    /// no-op the pause (idempotent). The walker runs classifier-walk and
+    /// parser-drain with the chain-CRC fold hook inline; FastLast's FSM
+    /// decides whether this is an intermediate body (advance grid then
+    /// re-arm) or the final body (busy-wait until folded-bytes target
+    /// hits or the walk_deadline passes).
+    pub fn on_fold_step(&mut self) {
+        let tpb = self.clock.ticks_per_bit();
+        let Self {
+            codec,
+            fast_last,
+            fast_last_crc,
+            ..
+        } = self;
+        let (rx, tx) = codec.split_mut();
+        // Pause is idempotent — single test-and-clear inside `pause` keeps
+        // this cheap on intermediate entries.
+        rx.pause_edges();
+        fast_last.on_step(|| {
+            rx.on_edge_advance(tpb);
+            while rx
+                .poll_one(|byte, cursor| fast_last_crc.on_byte(byte, cursor, tx))
+                .is_some()
+            {}
+            fast_last_crc.bytes_folded()
+        });
     }
 
     /// USART1 TC fired — the reply has fully drained the wire. Release
     /// the wire driver *first* (drop TX_EN, mask TC IRQ, disable DMA) so
     /// stale TX_EN doesn't sit on the bus while pending config mutates;
     /// then drain staged writes (id / baud / trim / rdt) and surface any
-    /// pending reboot to the chip-side ISR. Reboot is returned (rather
-    /// than self-applied) because the chip controls how the reset
-    /// actually happens; the driver only knows it was asked.
+    /// pending reboot to the chip-side ISR. Also disarms the Fast Last
+    /// state (idempotent — both already disarmed naturally on the
+    /// successful path) and re-enables DMA1_CH7 HT/TC (no-op for Plain
+    /// replies that never paused). Reboot is returned (rather than
+    /// self-applied) because the chip controls how the reset actually
+    /// happens; the driver only knows it was asked.
     pub fn on_tx_complete(&mut self) -> Option<BootMode> {
         self.scheduler.handle_tx_complete();
+        self.fast_last.cancel();
+        self.fast_last_crc.cancel();
+        self.codec.resume_edges();
         if let Some(id) = self.pending_id.take() {
             self.id = id;
         }
@@ -505,7 +651,10 @@ impl<
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::mocks::{FakeClockTrim, FakeEdgeDma, FakeTxScheduler, FakeUsartBaud, ScheduleOp};
+    use crate::mocks::{
+        FakeClockTrim, FakeEdgeDma, FakeFastLastScheduler, FakeTxScheduler, FakeUsartBaud,
+        FastLastSchedulerOp, ScheduleOp,
+    };
     use crate::traits::dxl::DmaFlags;
     use dxl_protocol::packet::{Id, StatusError};
     use dxl_protocol::{InstructionEmitter, SoftwareCrcUmts, StatusEmitter};
@@ -532,6 +681,7 @@ mod tests {
         FakeClockTrim,
         FakeEdgeDma,
         FakeTxScheduler,
+        FakeFastLastScheduler,
         SoftwareCrcUmts,
         DECODER_CAP,
         RX_BUF_LEN,
@@ -555,6 +705,7 @@ mod tests {
             codec,
             make_clock(baud),
             FakeTxScheduler::default(),
+            FastLast::new(FakeFastLastScheduler::default()),
             TEST_ID,
             TEST_RDT_US,
         )
@@ -1076,6 +1227,49 @@ mod tests {
                 kind: SendKind::FastLast,
             }]
         );
+        // Fast Last also arms the catchup scheduler: set_deadline stages
+        // the busy-wait exit, then schedule arms the first CMP. We don't
+        // pin the exact deadline / offset values (they depend on cached
+        // `clock` math); just confirm the wiring fired and is in order.
+        let fl_log = bus.fast_last.scheduler().log.as_slice();
+        assert!(matches!(
+            fl_log,
+            [
+                FastLastSchedulerOp::SetDeadline { .. },
+                FastLastSchedulerOp::Schedule { .. },
+            ]
+        ));
+        assert!(bus.fast_last_crc.is_active());
+        assert!(bus.fast_last.is_active());
+    }
+
+    #[test]
+    fn on_tx_complete_cancels_fast_last_state() {
+        // Fast Last arm via the same broadcast Fast Sync Read used above.
+        let req = wire_fast_sync_read(0, 2, &[0x42, TEST_ID]);
+        let (mut bus, _) = bus_armed_with(&req);
+        let payload = [0xAA_u8, 0xBB];
+        bus.poll(|_, reply| {
+            let slot = Slot {
+                id: Id::new(TEST_ID),
+                error: StatusError::OK,
+                data: &payload,
+            };
+            reply.send_slot(&slot).expect("encode fits");
+        });
+        assert!(bus.fast_last.is_active());
+        assert!(bus.fast_last_crc.is_active());
+
+        let _ = bus.on_tx_complete();
+
+        assert!(!bus.fast_last.is_active());
+        assert!(!bus.fast_last_crc.is_active());
+        // Cancel landed on the FastLast scheduler last (after SetDeadline + Schedule
+        // from start, plus the on_tx_complete cancel).
+        assert!(matches!(
+            bus.fast_last.scheduler().log.last(),
+            Some(FastLastSchedulerOp::Cancel)
+        ));
     }
 
     #[test]

@@ -274,6 +274,16 @@ impl<
         // the type, raw is preserved.
         self.rx.byte_ts_at(seq.into())
     }
+
+    /// Forward to [`rx::Rx::pause_edges`].
+    pub fn pause_edges(&mut self) {
+        self.rx.pause_edges();
+    }
+
+    /// Forward to [`rx::Rx::resume_edges`].
+    pub fn resume_edges(&mut self) {
+        self.rx.resume_edges();
+    }
 }
 
 /// TX half — encoder + TX byte ring. Splits off from [`CodecRx`] under
@@ -481,6 +491,14 @@ impl<
 
     pub fn own_reply_bytes(&self) -> &[u8] {
         self.tx.own_reply_bytes()
+    }
+
+    pub fn pause_edges(&mut self) {
+        self.rx.pause_edges();
+    }
+
+    pub fn resume_edges(&mut self) {
+        self.rx.resume_edges();
     }
 }
 
