@@ -4,6 +4,7 @@
 //! via the explicit `extern crate std`.
 
 extern crate std;
+use core::cell::Cell;
 use std::vec::Vec;
 
 use osc_core::BaudRate;
@@ -169,27 +170,49 @@ impl TxScheduler for FakeTxScheduler {
 }
 
 /// One entry per `FastLastScheduler` call; tests assert the recorded
-/// sequence against expected CMP scheduling.
+/// sequence against expected scheduler operations.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub enum FastLastSchedulerOp {
-    Schedule { tick: u32 },
+    SetDeadline {
+        packet_end_tick: u16,
+        deadline_ticks: u32,
+    },
+    Schedule {
+        offset_ticks: u32,
+    },
     Cancel,
 }
 
+/// `deadline_passed` reads via interior mutability so the trait method
+/// stays `&self`-compatible with production's register-read impl. Tests
+/// write `deadline_passed_value.set(true)` to drive the busy-wait exit.
 #[derive(Default)]
 pub struct FakeFastLastScheduler {
     pub log: Vec<FastLastSchedulerOp>,
+    pub deadline_passed_value: Cell<bool>,
 }
 
 impl FastLastScheduler for FakeFastLastScheduler {
     // Values match the V006 measurements.rs defaults so driver-side grid
     // math lines up with the chip-side reference.
-    const FAST_LAST_ENTRY_TICKS: u16 = 110;
+    const FAST_LAST_ENTRY_TICKS: u16 = 240;
     const BYTES_PER_INTERVAL: u16 = 15;
     const GUARD_BYTES: u16 = 1;
 
-    fn schedule(&mut self, tick: u32) {
-        self.log.push(FastLastSchedulerOp::Schedule { tick });
+    fn set_deadline(&mut self, packet_end_tick: u16, deadline_ticks: u32) {
+        self.log.push(FastLastSchedulerOp::SetDeadline {
+            packet_end_tick,
+            deadline_ticks,
+        });
+    }
+
+    fn schedule(&mut self, offset_ticks: u32) {
+        self.log
+            .push(FastLastSchedulerOp::Schedule { offset_ticks });
+    }
+
+    fn deadline_passed(&self) -> bool {
+        self.deadline_passed_value.get()
     }
 
     fn cancel(&mut self) {

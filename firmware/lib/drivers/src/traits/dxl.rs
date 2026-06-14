@@ -119,25 +119,28 @@ pub trait TxScheduler {
 ///
 /// Drives the periodic walks that classify edges, drain the parser, and
 /// fold predecessor wire bytes into the running CRC during a Fast Sync /
-/// Bulk Read predecessor window. The driver computes wall-clock anchors
-/// (one per `BYTES_PER_INTERVAL`-byte step from `t_prior_start` to
-/// `final_anchor_tick`) and back-dates EVERY anchor by
-/// `FAST_LAST_ENTRY_TICKS` before handing the CMP to the provider — the
-/// grid stays rigid even when one body's ISR-entry latency jitters.
+/// Bulk Read predecessor window.
 ///
-/// Ticks are HCLK-domain `u32`. On V006 the provider binds to a SysTick
-/// CMP rather than a TIM2 CC channel: TIM2's shared prescaler is pinned
-/// at PSC=0 for the IC side's 16-tick resolution at 3M, so its 16-bit CNT
-/// wraps every 1.365 ms — the Fast Last grid step at low baud (`15 ×
-/// byte_ticks`) can exceed that and the fire deadline can be many wraps
-/// out. SysTick is 32-bit at HCLK with ~89.5 s horizon, separate IRQ
-/// vector from TIM2, and the ~5 µs PFIC-entry jitter is dwarfed by the
-/// fold body cost — fine for catchup, which doesn't sit on the TX-fire
-/// path. The composite translates parser-derived TIM2 u16 ticks into
-/// scheduler u32 at arm time using a boot-captured offset.
+/// The driver works entirely in `(packet_end_tick: u16, offset_ticks: u32)`
+/// pairs — a wire-clock anchor plus protocol-derived offsets. The
+/// chip-side provider lifts `packet_end_tick` into its own scheduling
+/// tick domain once per Fast Last reply (via `set_deadline`) and treats
+/// all subsequent `schedule()` / `deadline_passed()` calls as offsets
+/// from that anchor. The driver never sees a scheduler-domain tick.
+///
+/// On V006 the chip-side provider binds to a SysTick CMP rather than a
+/// TIM2 CC channel: TIM2's shared prescaler is pinned at PSC=0 for the IC
+/// side's 16-tick resolution at 3M, so its 16-bit CNT wraps every
+/// 1.365 ms — the Fast Last grid step at low baud (`15 × byte_ticks`) can
+/// exceed that and the fire deadline can be many wraps out. SysTick is
+/// 32-bit at HCLK with ~89.5 s horizon, separate IRQ vector from TIM2,
+/// and the ~5 µs PFIC-entry jitter is dwarfed by the fold body cost.
+/// The lift uses the boot-captured TIM2 ↔ SysTick offset (see
+/// `docs/dxl-hw-timed-transport.md` §12); both clocks tick at HCLK so the
+/// offset is fixed.
 pub trait FastLastScheduler {
-    /// CC-match → body fold-start latency, in scheduler ticks. Driver
-    /// subtracts this from every grid anchor before handing the CMP to
+    /// CMP-match → body fold-start latency, in scheduler ticks. Driver
+    /// subtracts this from every grid anchor offset before handing it to
     /// `schedule` so the body's actual fold-start lands on the formula's
     /// intended wall-clock anchor.
     const FAST_LAST_ENTRY_TICKS: u16;
@@ -147,17 +150,33 @@ pub trait FastLastScheduler {
     /// before re-arming the next CMP one grid step ahead.
     const BYTES_PER_INTERVAL: u16;
 
-    /// Pre-start fold residue cap, in predecessor wire bytes. The
-    /// final-anchor busy-wait exits at `walk_deadline_tick = t_prior_end −
-    /// GUARD_BYTES × byte_ticks`, leaving up to `GUARD_BYTES` predecessor
-    /// bytes for the TX-start body's tail to fold inline. At 3M GUARD=1
-    /// keeps `patch_crc` ahead of CH4's DMA-prefetch on byte[n − 2].
+    /// Pre-start fold residue cap, in predecessor wire bytes. The final
+    /// busy-wait exits at `deadline = t_prior_end − GUARD_BYTES × byte_ticks`,
+    /// leaving up to `GUARD_BYTES` predecessor bytes for the TX-start
+    /// body's tail to fold inline. At 3M GUARD=1 keeps `patch_crc` ahead
+    /// of CH4's DMA-prefetch on byte[n − 2].
     const GUARD_BYTES: u16;
 
-    /// Arm a CMP match at `tick`. Driver has already back-dated by
-    /// `FAST_LAST_ENTRY_TICKS`. Idempotent on re-schedule (overwrites any
-    /// prior CMP).
-    fn schedule(&mut self, tick: u32);
+    /// Cache the parser-derived `packet_end_tick` (wire-clock value where
+    /// the host's request ended) and the busy-wait exit deadline as a tick
+    /// offset from it. The provider lifts `packet_end_tick` into its own
+    /// scheduling-tick domain once, here, and caches both the lifted
+    /// anchor and the lifted deadline. Subsequent `schedule()` /
+    /// `deadline_passed()` calls reference the cached anchor.
+    fn set_deadline(&mut self, packet_end_tick: u16, deadline_ticks: u32);
+
+    /// Arm the next CMP at `packet_end + offset_ticks` (caller has already
+    /// back-dated by `FAST_LAST_ENTRY_TICKS`). Idempotent on re-arm.
+    ///
+    /// A CMP target that lands in the past — possible at low RDT + small
+    /// predecessor counts where back-dating by ENTRY underflows — fires
+    /// the IRQ ASAP; the body's first run lands ENTRY ticks late but the
+    /// grid step advances cleanly from there.
+    fn schedule(&mut self, offset_ticks: u32);
+
+    /// True once the wall clock has passed the deadline staged via
+    /// `set_deadline`. Polled by the final-step busy-wait.
+    fn deadline_passed(&self) -> bool;
 
     /// Drop any pending CMP and return to idle. Idempotent.
     fn cancel(&mut self);

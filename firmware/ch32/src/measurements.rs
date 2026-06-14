@@ -40,3 +40,34 @@ pub const TX_START_ENTRY_TICKS: u16 = 46;
 /// wrapped backward (we scheduled in the past). Estimated conservative:
 /// 32 k ticks (~667 µs). Measured: TBD (bench).
 pub const SCHEDULE_WRAP_GUARD_TICKS: u16 = 0x8000;
+
+// Wired into the FastLast composite by Plan 2 Commit D; pure scaffolding
+// until then. allow(dead_code) drops with the next landing.
+#[allow(dead_code)]
+mod fast_last {
+    /// SysTick CMP-match → catchup-body fold-start latency, in HCLK ticks.
+    /// Driver subtracts this from every grid anchor offset before handing
+    /// the CMP target to the scheduler so the body's actual fold-start
+    /// lands on the formula's intended wall-clock anchor.
+    ///
+    /// SysTick PFIC entry (~5 µs) is larger than TIM2's CC vector entry
+    /// (~1 µs) because the SysTick vector doesn't get qingke's fast-vector
+    /// optimization. Per `docs/dxl-hw-timed-transport.md` §10.6 (open
+    /// questions): estimate ~240 ticks (~5 µs at HCLK = 48 MHz); confirm
+    /// under bench load.
+    pub const FAST_LAST_ENTRY_TICKS: u16 = 240;
+
+    /// Periodic-walk grid step, in predecessor wire bytes. Each fold body
+    /// folds up to this many bytes of newly-classified residue before
+    /// re-arming the next CMP one grid step ahead. See doc §10.6.2.
+    pub const FAST_LAST_BYTES_PER_INTERVAL: u16 = 15;
+
+    /// Pre-start fold residue cap, in predecessor wire bytes. The final
+    /// busy-wait exits at `t_prior_end − GUARD × byte_ticks`, leaving up
+    /// to this many predecessor bytes for the TX-start body's tail to
+    /// fold inline. At 3M GUARD=1 keeps `patch_crc` ahead of CH4's
+    /// DMA-prefetch on byte[n − 2]. See doc §10.6.2 and
+    /// `[[crc_patch_deadline_miss_semantics]]`.
+    pub const FAST_LAST_GUARD_BYTES: u16 = 1;
+}
+pub use fast_last::{FAST_LAST_BYTES_PER_INTERVAL, FAST_LAST_ENTRY_TICKS, FAST_LAST_GUARD_BYTES};
