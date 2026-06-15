@@ -112,17 +112,12 @@ impl<'a, W: WriteBuf, CRC: CrcUmts> SlotEncoder<'a, W, CRC> {
 }
 
 #[cfg(test)]
-extern crate alloc;
-
-#[cfg(test)]
 mod tests {
     use super::*;
-    use crate::crc::SoftwareCrcUmts;
-    use crate::streaming::{Event, HeaderEvent, Parser};
+    use crate::test_util::{Crc, assert_crc_good, parse, status_header};
     use crate::types::{Id, Instruction, StatusError};
     use heapless::Vec;
 
-    type Crc = SoftwareCrcUmts;
     type Buf = Vec<u8, 256>;
 
     #[test]
@@ -135,18 +130,11 @@ mod tests {
         };
         SlotEncoder::<_, Crc>::new(&mut buf).only(&slot, 9).unwrap();
 
-        let mut p: Parser<Crc> = Parser::new();
-        let evs: alloc::vec::Vec<Event> = p.feed(&buf).collect();
-        let h = evs
-            .iter()
-            .find_map(|e| match e {
-                Event::Header(HeaderEvent::Status(h)) => Some(*h),
-                _ => None,
-            })
-            .expect("status header");
+        let evs = parse(&buf);
+        let h = status_header(&evs);
         assert_eq!(h.id, Id::BROADCAST);
         assert_eq!(h.error, StatusError::OK);
-        assert!(evs.iter().any(|e| matches!(e, Event::Crc)));
+        assert_crc_good(&evs);
     }
 
     #[test]
@@ -258,12 +246,8 @@ mod tests {
         SlotEncoder::<_, Crc>::new(&mut buf)
             .emit(&slot, SlotPosition::Only { packet_length: 9 })
             .unwrap();
-        let mut p: Parser<Crc> = Parser::new();
-        let evs: alloc::vec::Vec<Event> = p.feed(&buf).collect();
-        assert!(
-            evs.iter()
-                .any(|e| matches!(e, Event::Header(HeaderEvent::Status(_))))
-        );
-        assert!(evs.iter().any(|e| matches!(e, Event::Crc)));
+        let evs = parse(&buf);
+        let _ = status_header(&evs);
+        assert_crc_good(&evs);
     }
 }

@@ -12,6 +12,9 @@ pub mod streaming;
 pub mod types;
 pub mod wire;
 
+#[cfg(test)]
+mod test_util;
+
 pub use buf::{WriteBuf, WriteError};
 pub use crc::CrcUmts;
 #[cfg(feature = "software-crc")]

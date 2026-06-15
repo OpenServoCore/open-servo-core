@@ -85,54 +85,13 @@ impl<'a, W: WriteBuf, CRC: CrcUmts> StatusEncoder<'a, W, CRC> {
 }
 
 #[cfg(test)]
-extern crate alloc;
-
-#[cfg(test)]
 mod tests {
     use super::*;
-    use crate::crc::SoftwareCrcUmts;
-    use crate::streaming::{
-        Event, HeaderEvent, Parser, PayloadEvent, StatusHeader as SH, StatusPayload,
-    };
+    use crate::test_util::{Crc, assert_crc_good, parse, read_data, status_header};
     use crate::types::PingStatus;
-    use alloc::vec::Vec as AVec;
     use heapless::Vec;
 
-    type Crc = SoftwareCrcUmts;
     type Buf = Vec<u8, 256>;
-
-    fn parse(wire: &[u8]) -> AVec<Event> {
-        let mut p: Parser<Crc> = Parser::new();
-        p.feed(wire).collect()
-    }
-
-    fn status_header(events: &[Event]) -> SH {
-        events
-            .iter()
-            .find_map(|e| match e {
-                Event::Header(HeaderEvent::Status(h)) => Some(*h),
-                _ => None,
-            })
-            .expect("expected status header event")
-    }
-
-    fn read_data(wire: &[u8], events: &[Event]) -> AVec<u8> {
-        let mut out = AVec::new();
-        for ev in events {
-            if let Event::Payload(PayloadEvent::Status(StatusPayload::ReadDataChunk {
-                offset,
-                length,
-            })) = ev
-            {
-                out.extend_from_slice(&wire[*offset as usize..(*offset + *length) as usize]);
-            }
-        }
-        out
-    }
-
-    fn assert_crc_good(events: &[Event]) {
-        assert!(events.iter().any(|e| matches!(e, Event::Crc)));
-    }
 
     #[test]
     fn status_empty_round_trips() {

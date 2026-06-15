@@ -202,78 +202,15 @@ extern crate alloc;
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::crc::SoftwareCrcUmts;
     use crate::streaming::InstructionHeader as PH;
-    use crate::streaming::{Event, HeaderEvent, InstructionPayload, Parser, PayloadEvent};
+    use crate::test_util::{
+        Crc, assert_crc_good, bulk_slots, instruction_header as instr_header, parse, sync_slots,
+        write_chunks,
+    };
     use alloc::vec;
-    use alloc::vec::Vec as AVec;
     use heapless::Vec;
 
-    type Crc = SoftwareCrcUmts;
     type Buf = Vec<u8, 256>;
-
-    fn parse(wire: &[u8]) -> AVec<Event> {
-        let mut p: Parser<Crc> = Parser::new();
-        p.feed(wire).collect()
-    }
-
-    fn instr_header(events: &[Event]) -> PH {
-        events
-            .iter()
-            .find_map(|e| match e {
-                Event::Header(HeaderEvent::Instruction(h)) => Some(*h),
-                _ => None,
-            })
-            .expect("expected instruction header event")
-    }
-
-    fn write_chunks(events: &[Event]) -> AVec<(u16, u16)> {
-        events
-            .iter()
-            .filter_map(|e| match e {
-                Event::Payload(PayloadEvent::Instruction(InstructionPayload::WriteDataChunk {
-                    offset,
-                    length,
-                })) => Some((*offset, *length)),
-                _ => None,
-            })
-            .collect()
-    }
-
-    fn sync_slots(events: &[Event]) -> AVec<(Id, u8)> {
-        events
-            .iter()
-            .filter_map(|e| match e {
-                Event::Payload(PayloadEvent::Instruction(InstructionPayload::SyncSlot {
-                    id,
-                    index,
-                })) => Some((*id, *index)),
-                _ => None,
-            })
-            .collect()
-    }
-
-    fn bulk_slots(events: &[Event]) -> AVec<(Id, u8, u16, u16)> {
-        events
-            .iter()
-            .filter_map(|e| match e {
-                Event::Payload(PayloadEvent::Instruction(InstructionPayload::BulkSlot {
-                    id,
-                    index,
-                    address,
-                    length,
-                })) => Some((*id, *index, *address, *length)),
-                _ => None,
-            })
-            .collect()
-    }
-
-    fn assert_crc_good(events: &[Event]) {
-        assert!(
-            events.iter().any(|e| matches!(e, Event::Crc)),
-            "no Crc verdict in events: {events:?}"
-        );
-    }
 
     #[test]
     fn instr_ping() {
