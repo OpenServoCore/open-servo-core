@@ -84,6 +84,15 @@ impl Instruction {
             _ => 0,
         }
     }
+
+    /// Fixed bytes between the instruction byte and the body: params, plus
+    /// `Status`'s error byte.
+    pub const fn header_extra_bytes(self) -> usize {
+        match self {
+            Self::Status => 1,
+            _ => self.fixed_param_bytes(),
+        }
+    }
 }
 
 /// 1-byte wire overlay for the instruction field. Round-trips any byte;

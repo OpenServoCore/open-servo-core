@@ -1,10 +1,14 @@
 //! Header decode stage: id, length, instruction, optional error byte, and
 //! per-variant param bytes.
 
+use crate::constants::{HEADER, PACKET_LEN_MIN, REQUEST_HEADER_BYTES};
 use crate::crc::CrcUmts;
 use crate::packet::{Id, Instruction, StatusError};
 
 use crate::streaming::event::{HeaderEvent, InstructionHeader, StatusHeader};
+
+/// Header bytes after the sync preamble: `ID(1) + LENGTH(2) + INSTRUCTION(1)`.
+const POST_SYNC_HEADER_BYTES: usize = REQUEST_HEADER_BYTES - HEADER.len();
 
 pub(crate) struct HeaderStage {
     cursor: u8,
@@ -54,12 +58,13 @@ impl HeaderStage {
     }
 
     fn total_bytes(&self) -> usize {
-        let kind = Instruction::from_u8(self.instr);
-        if matches!(kind, Instruction::Status) {
-            5
-        } else {
-            4 + kind.fixed_param_bytes()
-        }
+        POST_SYNC_HEADER_BYTES + Instruction::from_u8(self.instr).header_extra_bytes()
+    }
+
+    /// Body bytes after this header (excludes the trailing 2-byte CRC).
+    pub(crate) fn body_len(&self) -> u16 {
+        let extra = Instruction::from_u8(self.instr).header_extra_bytes() as u16;
+        self.length.saturating_sub(PACKET_LEN_MIN as u16 + extra)
     }
 
     fn emit(&self) -> HeaderEvent {
@@ -220,6 +225,28 @@ mod tests {
                 assert_eq!(length, 2);
             }
             other => panic!("expected Raw, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn body_len_excludes_fixed_header_and_crc() {
+        let cases: &[(Instruction, u16, u16)] = &[
+            (Instruction::Ping, 0x0003, 0),     // 1 instr + 2 crc, no body
+            (Instruction::Read, 0x0007, 0),     // 1 instr + 4 params + 2 crc
+            (Instruction::Write, 0x0009, 4),    // 1 instr + 2 addr + 4 body + 2 crc
+            (Instruction::Clear, 0x0008, 5),    // 1 instr + 5 body + 2 crc
+            (Instruction::Status, 0x0008, 4),   // 1 instr + 1 err + 4 body + 2 crc
+            (Instruction::BulkRead, 0x0008, 5), // 1 instr + 5 body + 2 crc
+        ];
+        for &(kind, wire_len, expected) in cases {
+            let mut h = HeaderStage::new();
+            h.instr = kind.as_u8();
+            h.length = wire_len;
+            assert_eq!(
+                h.body_len(),
+                expected,
+                "kind={kind:?} wire_len={wire_len:#x}"
+            );
         }
     }
 
