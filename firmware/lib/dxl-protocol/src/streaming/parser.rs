@@ -1,53 +1,33 @@
-//! Streaming parser scalar state and [`EventStream`] iterator.
+//! Streaming parser orchestrator and [`EventStream`] iterator.
 
-use crate::constants::HEADER;
 use crate::crc::CrcUmts;
-use crate::packet::Id;
 
 use super::Event;
+use super::stage::{HeaderStage, SyncStage};
 
-#[derive(Copy, Clone, Debug, PartialEq, Eq)]
-enum State {
-    Sync,
-    Header,
+enum Phase {
+    Sync(SyncStage),
+    Header(HeaderStage),
     Payload,
     Crc,
     Done,
 }
 
 pub struct Parser<CRC: CrcUmts> {
-    state: State,
-    sync_matched: u8,
-    cursor: u16,
-    header_id: Id,
-    header_length: u16,
-    header_instr: u8,
-    header_error: u8,
+    phase: Phase,
     crc: CRC,
 }
 
 impl<CRC: CrcUmts> Parser<CRC> {
     pub fn new() -> Self {
         Self {
-            state: State::Sync,
-            sync_matched: 0,
-            cursor: 0,
-            header_id: Id::new(0),
-            header_length: 0,
-            header_instr: 0,
-            header_error: 0,
+            phase: Phase::Sync(SyncStage::new()),
             crc: CRC::new(),
         }
     }
 
     pub fn reset(&mut self) {
-        self.state = State::Sync;
-        self.sync_matched = 0;
-        self.cursor = 0;
-        self.header_id = Id::new(0);
-        self.header_length = 0;
-        self.header_instr = 0;
-        self.header_error = 0;
+        self.phase = Phase::Sync(SyncStage::new());
         self.crc.reset();
     }
 
@@ -59,27 +39,20 @@ impl<CRC: CrcUmts> Parser<CRC> {
         }
     }
 
-    // KMP backoff for FF FF FD 00 (f[1]=0, f[2]=1, f[3]=0) -- locks
-    // `FF FF FF FD 00` onto the embedded header at offset 1.
-    fn step_sync(&mut self, b: u8) -> Option<Event> {
-        let m = self.sync_matched as usize;
-        if b == HEADER[m] {
-            let new_m = m + 1;
-            if new_m == HEADER.len() {
-                self.crc.update(&HEADER);
-                self.sync_matched = 0;
-                self.state = State::Header;
-                return Some(Event::Sync);
+    fn step(&mut self, b: u8) -> Option<Event> {
+        match &mut self.phase {
+            Phase::Sync(s) => {
+                s.feed(b, &mut self.crc)?;
+                self.phase = Phase::Header(HeaderStage::new());
+                Some(Event::Sync)
             }
-            self.sync_matched = new_m as u8;
-        } else {
-            match m {
-                2 if b == HEADER[0] => {}
-                3 if b == HEADER[0] => self.sync_matched = 1,
-                _ => self.sync_matched = if b == HEADER[0] { 1 } else { 0 },
+            Phase::Header(s) => {
+                let ev = s.feed(b, &mut self.crc)?;
+                self.phase = Phase::Payload;
+                Some(Event::Header(ev))
             }
+            Phase::Payload | Phase::Crc | Phase::Done => None,
         }
-        None
     }
 }
 
@@ -96,7 +69,6 @@ pub struct EventStream<'p, CRC: CrcUmts> {
 }
 
 impl<'p, CRC: CrcUmts> EventStream<'p, CRC> {
-    /// Bytes consumed from the input slice so far.
     pub fn consumed(&self) -> usize {
         self.offset
     }
@@ -107,15 +79,13 @@ impl<'p, CRC: CrcUmts> Iterator for EventStream<'p, CRC> {
 
     fn next(&mut self) -> Option<Event> {
         while self.offset < self.bytes.len() {
-            match self.parser.state {
-                State::Sync => {
-                    let b = self.bytes[self.offset];
-                    self.offset += 1;
-                    if let Some(ev) = self.parser.step_sync(b) {
-                        return Some(ev);
-                    }
-                }
-                _ => return None,
+            if matches!(self.parser.phase, Phase::Payload | Phase::Crc | Phase::Done) {
+                return None;
+            }
+            let b = self.bytes[self.offset];
+            self.offset += 1;
+            if let Some(ev) = self.parser.step(b) {
+                return Some(ev);
             }
         }
         None
@@ -126,8 +96,20 @@ impl<'p, CRC: CrcUmts> Iterator for EventStream<'p, CRC> {
 mod tests {
     use super::*;
     use crate::crc_software::SoftwareCrcUmts;
+    use crate::packet::Instruction;
+    use crate::streaming::event::HeaderEvent;
 
     type Crc = SoftwareCrcUmts;
+
+    fn in_sync<C: CrcUmts>(p: &Parser<C>) -> bool {
+        matches!(p.phase, Phase::Sync(_))
+    }
+    fn in_header<C: CrcUmts>(p: &Parser<C>) -> bool {
+        matches!(p.phase, Phase::Header(_))
+    }
+    fn in_payload<C: CrcUmts>(p: &Parser<C>) -> bool {
+        matches!(p.phase, Phase::Payload)
+    }
 
     #[test]
     fn empty_input_emits_nothing() {
@@ -138,41 +120,40 @@ mod tests {
     }
 
     #[test]
-    fn sync_emitted_on_exact_preamble() {
+    fn sync_completion_emits_event_and_advances_to_header() {
         let mut p: Parser<Crc> = Parser::new();
         let mut events = p.feed(&[0xFF, 0xFF, 0xFD, 0x00]);
         assert!(matches!(events.next(), Some(Event::Sync)));
         assert_eq!(events.consumed(), 4);
         assert!(events.next().is_none());
+        assert!(in_header(&p));
     }
 
     #[test]
-    fn sync_emitted_after_noise() {
+    fn header_completion_emits_event_and_advances_to_payload() {
+        let bytes = [
+            0xFF,
+            0xFF,
+            0xFD,
+            0x00,
+            0x07,
+            0x03,
+            0x00,
+            Instruction::Ping.as_u8(),
+        ];
         let mut p: Parser<Crc> = Parser::new();
-        let bytes = [0x00, 0x12, 0xFF, 0x34, 0xFF, 0xFD, 0xFF, 0xFF, 0xFD, 0x00];
         let mut events = p.feed(&bytes);
         assert!(matches!(events.next(), Some(Event::Sync)));
+        assert!(matches!(
+            events.next(),
+            Some(Event::Header(HeaderEvent::Instruction(_)))
+        ));
         assert_eq!(events.consumed(), bytes.len());
+        assert!(in_payload(&p));
     }
 
     #[test]
-    fn sync_finds_embedded_after_extra_ff() {
-        let mut p: Parser<Crc> = Parser::new();
-        let mut events = p.feed(&[0xFF, 0xFF, 0xFF, 0xFD, 0x00]);
-        assert!(matches!(events.next(), Some(Event::Sync)));
-        assert_eq!(events.consumed(), 5);
-    }
-
-    #[test]
-    fn sync_falls_back_on_ff_after_fd() {
-        let mut p: Parser<Crc> = Parser::new();
-        let mut events = p.feed(&[0xFF, 0xFF, 0xFD, 0xFF, 0xFF, 0xFD, 0x00]);
-        assert!(matches!(events.next(), Some(Event::Sync)));
-        assert_eq!(events.consumed(), 7);
-    }
-
-    #[test]
-    fn sync_partial_then_more() {
+    fn chunked_input_resumes_across_feed_calls() {
         let mut p: Parser<Crc> = Parser::new();
         {
             let mut e1 = p.feed(&[0xFF, 0xFF]);
@@ -185,32 +166,32 @@ mod tests {
     }
 
     #[test]
-    fn sync_resets_with_reset() {
+    fn payload_phase_emits_no_events() {
+        let bytes = [
+            0xFF,
+            0xFF,
+            0xFD,
+            0x00,
+            0x07,
+            0x03,
+            0x00,
+            Instruction::Ping.as_u8(),
+        ];
         let mut p: Parser<Crc> = Parser::new();
-        let _ = p.feed(&[0xFF, 0xFF]).next();
-        p.reset();
-        let mut events = p.feed(&[0xFD, 0x00]);
+        let _ = p.feed(&bytes).count();
+        assert!(in_payload(&p));
+
+        let mut events = p.feed(&[0xAA, 0xBB, 0xCC]);
         assert!(events.next().is_none());
+        assert_eq!(events.consumed(), 0);
     }
 
     #[test]
-    fn sync_transitions_to_header_and_seeds_crc() {
+    fn reset_returns_to_sync_phase() {
         let mut p: Parser<Crc> = Parser::new();
-        let _ = p.feed(&[0xFF, 0xFF, 0xFD, 0x00]).next();
-        assert!(matches!(p.state, State::Header));
-        assert_eq!(p.sync_matched, 0);
-
-        let mut expected = Crc::new();
-        expected.update(&HEADER);
-        assert_eq!(p.crc.finalize(), expected.finalize());
-    }
-
-    #[test]
-    fn reset_clears_state() {
-        let mut p: Parser<Crc> = Parser::new();
-        let _ = p.feed(&[0xFF, 0xFF]);
+        let _ = p.feed(&[0xFF, 0xFF, 0xFD, 0x00]).count();
+        assert!(in_header(&p));
         p.reset();
-        assert!(matches!(p.state, State::Sync));
-        assert_eq!(p.cursor, 0);
+        assert!(in_sync(&p));
     }
 }

@@ -72,6 +72,18 @@ impl Instruction {
             _ => Self::Ext(b),
         }
     }
+
+    /// Param bytes after the instruction byte. `Status` handles its error
+    /// byte separately and is not counted here.
+    pub const fn fixed_param_bytes(self) -> usize {
+        use Instruction::*;
+        match self {
+            Read | RegWrite | SyncRead | SyncWrite | FastSyncRead => 4,
+            Write => 2,
+            FactoryReset => 1,
+            _ => 0,
+        }
+    }
 }
 
 /// 1-byte wire overlay for the instruction field. Round-trips any byte;

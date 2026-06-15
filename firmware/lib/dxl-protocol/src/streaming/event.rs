@@ -7,7 +7,7 @@
 //! input. Sum of chunk lengths in a region equals the prior header's
 //! `length`.
 
-use crate::packet::{Id, StatusError};
+use crate::packet::{Id, Instruction, StatusError};
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub enum Event {
@@ -108,6 +108,75 @@ pub enum InstructionHeader {
         instr: u8,
         length: u16,
     },
+}
+
+impl InstructionHeader {
+    /// `params` holds up to 4 bytes after the instruction byte (unused slots
+    /// zero). Status is invalid here -- callers route it via
+    /// [`HeaderEvent::Status`].
+    pub fn from_wire(kind: Instruction, id: Id, wire_len: u16, params: &[u8; 4]) -> Self {
+        let addr = u16::from_le_bytes([params[0], params[1]]);
+        let plen = u16::from_le_bytes([params[2], params[3]]);
+        let write_body = wire_len.saturating_sub(5);
+        let opaque_body = wire_len.saturating_sub(3);
+        use Instruction as I;
+        match kind {
+            I::Ping => Self::Ping { id },
+            I::Read => Self::Read {
+                id,
+                address: addr,
+                length: plen,
+            },
+            I::Write => Self::Write {
+                id,
+                address: addr,
+                length: write_body,
+            },
+            I::RegWrite => Self::RegWrite {
+                id,
+                address: addr,
+                length: write_body,
+            },
+            I::Action => Self::Action { id },
+            I::Reboot => Self::Reboot { id },
+            I::FactoryReset => Self::FactoryReset {
+                id,
+                mode: params[0],
+            },
+            I::Clear => Self::Clear {
+                id,
+                length: opaque_body,
+            },
+            I::ControlTableBackup => Self::ControlTableBackup {
+                id,
+                length: opaque_body,
+            },
+            I::SyncRead => Self::SyncRead {
+                id,
+                address: addr,
+                length: plen,
+            },
+            I::SyncWrite => Self::SyncWrite {
+                id,
+                address: addr,
+                length: plen,
+            },
+            I::BulkRead => Self::BulkRead { id },
+            I::BulkWrite => Self::BulkWrite { id },
+            I::FastSyncRead => Self::FastSyncRead {
+                id,
+                address: addr,
+                length: plen,
+            },
+            I::FastBulkRead => Self::FastBulkRead { id },
+            I::Ext(b) => Self::Raw {
+                id,
+                instr: b,
+                length: opaque_body,
+            },
+            I::Status => unreachable!("Status routes via HeaderEvent::Status"),
+        }
+    }
 }
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]

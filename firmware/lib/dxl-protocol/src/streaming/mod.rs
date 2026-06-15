@@ -10,6 +10,7 @@
 
 mod event;
 mod parser;
+mod stage;
 
 pub use event::{
     CrcResult, Event, HeaderEvent, InstructionHeader, InstructionPayload, PayloadEvent, ResyncKind,
