@@ -61,3 +61,90 @@ impl WriteBuf for alloc::vec::Vec<u8> {
         alloc::vec::Vec::as_slice(self)
     }
 }
+
+#[cfg(all(test, feature = "heapless"))]
+mod heapless_tests {
+    use super::*;
+    use heapless::Vec;
+
+    #[test]
+    fn fresh_buffer_is_empty() {
+        let buf: Vec<u8, 4> = Vec::new();
+        assert!(WriteBuf::is_empty(&buf));
+        assert_eq!(WriteBuf::len(&buf), 0);
+        assert_eq!(WriteBuf::as_slice(&buf), &[]);
+    }
+
+    #[test]
+    fn push_appends_and_tracks_length() {
+        let mut buf: Vec<u8, 4> = Vec::new();
+        WriteBuf::push(&mut buf, 0xAA).unwrap();
+        WriteBuf::push(&mut buf, 0xBB).unwrap();
+        assert_eq!(WriteBuf::as_slice(&buf), &[0xAA, 0xBB]);
+        assert_eq!(WriteBuf::len(&buf), 2);
+    }
+
+    #[test]
+    fn push_past_capacity_returns_overflow_and_leaves_buffer_intact() {
+        let mut buf: Vec<u8, 2> = Vec::new();
+        WriteBuf::push(&mut buf, 1).unwrap();
+        WriteBuf::push(&mut buf, 2).unwrap();
+        assert_eq!(WriteBuf::push(&mut buf, 3), Err(WriteError::Overflow));
+        assert_eq!(WriteBuf::as_slice(&buf), &[1, 2]);
+    }
+
+    #[test]
+    fn truncate_shrinks_to_requested_length() {
+        let mut buf: Vec<u8, 8> = Vec::new();
+        for b in 1..=5 {
+            WriteBuf::push(&mut buf, b).unwrap();
+        }
+        WriteBuf::truncate(&mut buf, 3);
+        assert_eq!(WriteBuf::as_slice(&buf), &[1, 2, 3]);
+    }
+
+    #[test]
+    fn truncate_beyond_length_is_a_no_op() {
+        let mut buf: Vec<u8, 8> = Vec::new();
+        WriteBuf::push(&mut buf, 0xAA).unwrap();
+        WriteBuf::truncate(&mut buf, 99);
+        assert_eq!(WriteBuf::as_slice(&buf), &[0xAA]);
+    }
+
+    #[test]
+    fn set_overwrites_in_place_without_changing_length() {
+        let mut buf: Vec<u8, 4> = Vec::new();
+        WriteBuf::push(&mut buf, 0x10).unwrap();
+        WriteBuf::push(&mut buf, 0x20).unwrap();
+        WriteBuf::push(&mut buf, 0x30).unwrap();
+        WriteBuf::set(&mut buf, 1, 0xFF);
+        assert_eq!(WriteBuf::as_slice(&buf), &[0x10, 0xFF, 0x30]);
+        assert_eq!(WriteBuf::len(&buf), 3);
+    }
+}
+
+#[cfg(all(test, feature = "alloc"))]
+mod alloc_tests {
+    use super::*;
+    use alloc::vec::Vec;
+
+    #[test]
+    fn push_is_infallible() {
+        let mut buf: Vec<u8> = Vec::new();
+        for b in 0..100u8 {
+            assert!(WriteBuf::push(&mut buf, b).is_ok());
+        }
+        assert_eq!(WriteBuf::len(&buf), 100);
+    }
+
+    #[test]
+    fn truncate_and_set_track_trait_semantics() {
+        let mut buf: Vec<u8> = Vec::new();
+        for b in 1..=5 {
+            WriteBuf::push(&mut buf, b).unwrap();
+        }
+        WriteBuf::set(&mut buf, 0, 0xAA);
+        WriteBuf::truncate(&mut buf, 2);
+        assert_eq!(WriteBuf::as_slice(&buf), &[0xAA, 2]);
+    }
+}
