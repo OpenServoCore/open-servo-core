@@ -145,4 +145,12 @@ mod tests {
         assert_eq!(Instruction::Read.header_extra_bytes(), 4);
         assert_eq!(Instruction::Ping.header_extra_bytes(), 0);
     }
+
+    #[test]
+    fn as_u8_matches_spec_constants() {
+        assert_eq!(Instruction::Ping.as_u8(), 0x01);
+        assert_eq!(Instruction::Status.as_u8(), 0x55);
+        assert_eq!(Instruction::SyncWrite.as_u8(), 0x83);
+        assert_eq!(Instruction::FastBulkRead.as_u8(), 0x9A);
+    }
 }

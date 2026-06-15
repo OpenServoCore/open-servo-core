@@ -180,33 +180,24 @@ mod tests {
         matches!(p.phase, Phase::Crc(_))
     }
 
-    /// Wire-correct Write packet with trailing CRC.
-    fn write_packet(id: u8, addr: u16, body: &[u8]) -> Vec<u8> {
-        let wire_len = (1 + 2 + body.len() + 2) as u16;
-        let mut buf = vec![0xFF, 0xFF, 0xFD, 0x00, id];
-        buf.extend_from_slice(&wire_len.to_le_bytes());
-        buf.push(Instruction::Write.as_u8());
-        buf.extend_from_slice(&addr.to_le_bytes());
-        buf.extend_from_slice(body);
-        let mut c = Crc::new();
-        c.update(&buf);
-        let crc = c.finalize();
-        buf.push(crc as u8);
-        buf.push((crc >> 8) as u8);
-        buf
+    fn ping_packet(id: u8) -> Vec<u8> {
+        chained_packet(id, Instruction::Ping, &[])
     }
 
-    fn ping_packet(id: u8) -> Vec<u8> {
-        let mut buf = vec![
-            0xFF,
-            0xFF,
-            0xFD,
-            0x00,
-            id,
-            0x03,
-            0x00,
-            Instruction::Ping.as_u8(),
-        ];
+    fn write_packet(id: u8, addr: u16, body: &[u8]) -> Vec<u8> {
+        let mut params = Vec::with_capacity(2 + body.len());
+        params.extend_from_slice(&addr.to_le_bytes());
+        params.extend_from_slice(body);
+        chained_packet(id, Instruction::Write, &params)
+    }
+
+    /// Wire-correct packet with caller-supplied params.
+    fn chained_packet(id: u8, instr: Instruction, params: &[u8]) -> Vec<u8> {
+        let wire_len = (1 + params.len() + 2) as u16;
+        let mut buf = vec![0xFF, 0xFF, 0xFD, 0x00, id];
+        buf.extend_from_slice(&wire_len.to_le_bytes());
+        buf.push(instr.as_u8());
+        buf.extend_from_slice(params);
         let mut c = Crc::new();
         c.update(&buf);
         let crc = c.finalize();
@@ -384,21 +375,6 @@ mod tests {
         let body_end = header_end + 2;
         let _ = p.feed(&bytes[header_end..body_end]).count();
         assert!(in_crc(&p));
-    }
-
-    /// Wire-correct packet with caller-supplied params.
-    fn chained_packet(id: u8, instr: Instruction, params: &[u8]) -> Vec<u8> {
-        let wire_len = (1 + params.len() + 2) as u16;
-        let mut buf = vec![0xFF, 0xFF, 0xFD, 0x00, id];
-        buf.extend_from_slice(&wire_len.to_le_bytes());
-        buf.push(instr.as_u8());
-        buf.extend_from_slice(params);
-        let mut c = Crc::new();
-        c.update(&buf);
-        let crc = c.finalize();
-        buf.push(crc as u8);
-        buf.push((crc >> 8) as u8);
-        buf
     }
 
     fn sync_read_like(instr: Instruction) -> Vec<Event> {

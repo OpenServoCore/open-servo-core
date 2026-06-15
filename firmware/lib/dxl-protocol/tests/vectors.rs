@@ -9,7 +9,7 @@ use common::{
 };
 use dxl_protocol::streaming::{Event, InstructionHeader};
 use dxl_protocol::types::{ErrorCode, Id, Slot, StatusError};
-use dxl_protocol::{Instruction, InstructionEncoder, SlotEncoder, StatusEncoder, WriteError};
+use dxl_protocol::{InstructionEncoder, SlotEncoder, StatusEncoder, WriteError};
 use heapless::Vec as HVec;
 
 fn encode<F>(f: F) -> HVec<u8, 256>
@@ -338,14 +338,6 @@ fn unknown_instruction_routes_to_raw() {
         other => panic!("expected Raw, got {other:?}"),
     }
     assert!(evs.iter().any(|e| matches!(e, Event::Crc)));
-}
-
-#[test]
-fn instruction_byte_constants() {
-    assert_eq!(Instruction::Ping.as_u8(), 0x01);
-    assert_eq!(Instruction::Status.as_u8(), 0x55);
-    assert_eq!(Instruction::SyncWrite.as_u8(), 0x83);
-    assert_eq!(Instruction::FastBulkRead.as_u8(), 0x9A);
 }
 
 fn fds_in_payload_region(frame: &[u8]) -> usize {
