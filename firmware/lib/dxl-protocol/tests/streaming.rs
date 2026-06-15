@@ -2,80 +2,15 @@
 //! chunking, recovery gestures, and adversarial input. The in-source unit
 //! tests stay focused on per-stage transitions.
 
+mod common;
+
+use common::{Crc, Rng, ping_packet, status_packet, write_packet};
 use dxl_protocol::streaming::{
     Event, HeaderEvent, InstructionHeader, InstructionPayload, Parser, PayloadEvent, ResyncKind,
     StatusPayload,
 };
-use dxl_protocol::types::{Id, Instruction, StatusError};
+use dxl_protocol::types::{Id, StatusError};
 use dxl_protocol::wire::HEADER;
-use dxl_protocol::{CrcUmts, SoftwareCrcUmts};
-
-type Crc = SoftwareCrcUmts;
-
-/// xorshift64*.
-struct Rng(u64);
-
-impl Rng {
-    fn new(seed: u64) -> Self {
-        Self(seed.max(1))
-    }
-    fn next_u64(&mut self) -> u64 {
-        let mut x = self.0;
-        x ^= x << 13;
-        x ^= x >> 7;
-        x ^= x << 17;
-        self.0 = x;
-        x.wrapping_mul(0x2545_F491_4F6C_DD1D)
-    }
-    fn next_byte(&mut self) -> u8 {
-        self.next_u64() as u8
-    }
-}
-
-fn append_crc(buf: &mut Vec<u8>) {
-    let mut c = Crc::new();
-    c.update(buf);
-    let crc = c.finalize();
-    buf.push(crc as u8);
-    buf.push((crc >> 8) as u8);
-}
-
-fn ping_packet(id: u8) -> Vec<u8> {
-    let mut buf = vec![
-        0xFF,
-        0xFF,
-        0xFD,
-        0x00,
-        id,
-        0x03,
-        0x00,
-        Instruction::Ping.as_u8(),
-    ];
-    append_crc(&mut buf);
-    buf
-}
-
-fn write_packet(id: u8, addr: u16, body: &[u8]) -> Vec<u8> {
-    let wire_len = (1 + 2 + body.len() + 2) as u16;
-    let mut buf = vec![0xFF, 0xFF, 0xFD, 0x00, id];
-    buf.extend_from_slice(&wire_len.to_le_bytes());
-    buf.push(Instruction::Write.as_u8());
-    buf.extend_from_slice(&addr.to_le_bytes());
-    buf.extend_from_slice(body);
-    append_crc(&mut buf);
-    buf
-}
-
-fn status_packet(id: u8, error: u8, body: &[u8]) -> Vec<u8> {
-    let wire_len = (1 + 1 + body.len() + 2) as u16;
-    let mut buf = vec![0xFF, 0xFF, 0xFD, 0x00, id];
-    buf.extend_from_slice(&wire_len.to_le_bytes());
-    buf.push(Instruction::Status.as_u8());
-    buf.push(error);
-    buf.extend_from_slice(body);
-    append_crc(&mut buf);
-    buf
-}
 
 /// Fixed-chunk drain that asserts forward progress and termination, so
 /// adversarial inputs surface as panics here rather than test hangs.

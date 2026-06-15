@@ -1,23 +1,16 @@
 //! Reference vector encoding and parsing through the streaming Parser
 //! and the codec encoder API.
 
-use dxl_protocol::streaming::{
-    Event, HeaderEvent, InstructionHeader, InstructionPayload, Parser, PayloadEvent,
+mod common;
+
+use common::{
+    Crc, crc_oneshot, instruction_header, parse_events, status_data_unstuffed, status_header,
+    write_data_unstuffed,
 };
+use dxl_protocol::streaming::{Event, InstructionHeader};
 use dxl_protocol::types::{ErrorCode, Id, Slot, StatusError};
-use dxl_protocol::{
-    CrcUmts, Instruction, InstructionEncoder, SlotEncoder, SoftwareCrcUmts, StatusEncoder,
-    WriteError,
-};
+use dxl_protocol::{Instruction, InstructionEncoder, SlotEncoder, StatusEncoder, WriteError};
 use heapless::Vec as HVec;
-
-type Crc = SoftwareCrcUmts;
-
-fn crc_oneshot(seed: u16, bytes: &[u8]) -> u16 {
-    let mut c = SoftwareCrcUmts::new_with_state(seed);
-    c.update(bytes);
-    c.finalize()
-}
 
 fn encode<F>(f: F) -> HVec<u8, 256>
 where
@@ -29,90 +22,6 @@ where
         f(&mut w).expect("encode failed");
     }
     out
-}
-
-fn parse_events(wire: &[u8]) -> Vec<Event> {
-    let mut p: Parser<Crc> = Parser::new();
-    p.feed(wire).collect()
-}
-
-fn instruction_header(events: &[Event]) -> InstructionHeader {
-    events
-        .iter()
-        .find_map(|e| match e {
-            Event::Header(HeaderEvent::Instruction(h)) => Some(*h),
-            _ => None,
-        })
-        .expect("expected instruction header event")
-}
-
-fn status_header(events: &[Event]) -> dxl_protocol::streaming::StatusHeader {
-    events
-        .iter()
-        .find_map(|e| match e {
-            Event::Header(HeaderEvent::Status(h)) => Some(*h),
-            _ => None,
-        })
-        .expect("expected status header event")
-}
-
-/// Strip DXL 2.0 stuffing from `wire[start..end]`. Pre-warm the 3-byte
-/// sliding window with the 3 wire bytes immediately before `start` — the
-/// encoder's trigger straddles the address→body boundary when addr ends
-/// in `FF FF` and the first body byte is `FD`, so the unstuff state at
-/// chunk start depends on what came before.
-fn unstuff_wire(wire: &[u8], start: usize, end: usize) -> Vec<u8> {
-    let mut last3 = [0u8; 3];
-    if start >= 3 {
-        last3.copy_from_slice(&wire[start - 3..start]);
-    }
-    let mut out = Vec::with_capacity(end - start);
-    for &b in &wire[start..end] {
-        if last3 == [0xFF, 0xFF, 0xFD] && b == 0xFD {
-            last3 = [last3[1], last3[2], b];
-            continue;
-        }
-        out.push(b);
-        last3 = [last3[1], last3[2], b];
-    }
-    out
-}
-
-fn write_data_unstuffed(wire: &[u8], events: &[Event]) -> Vec<u8> {
-    let chunks: Vec<(u16, u16)> = events
-        .iter()
-        .filter_map(|e| match e {
-            Event::Payload(PayloadEvent::Instruction(InstructionPayload::WriteDataChunk {
-                offset,
-                length,
-            })) => Some((*offset, *length)),
-            _ => None,
-        })
-        .collect();
-    if chunks.is_empty() {
-        return Vec::new();
-    }
-    let start = chunks[0].0 as usize;
-    let end = chunks.last().map(|(o, l)| (o + l) as usize).unwrap();
-    unstuff_wire(wire, start, end)
-}
-
-fn status_data_unstuffed(wire: &[u8], events: &[Event]) -> Vec<u8> {
-    let chunks: Vec<(u16, u16)> = events
-        .iter()
-        .filter_map(|e| match e {
-            Event::Payload(PayloadEvent::Status(
-                dxl_protocol::streaming::StatusPayload::ReadDataChunk { offset, length },
-            )) => Some((*offset, *length)),
-            _ => None,
-        })
-        .collect();
-    if chunks.is_empty() {
-        return Vec::new();
-    }
-    let start = chunks[0].0 as usize;
-    let end = chunks.last().map(|(o, l)| (o + l) as usize).unwrap();
-    unstuff_wire(wire, start, end)
 }
 
 fn slot(id: u8, error: StatusError, data: &[u8]) -> Slot<'_> {
