@@ -1,8 +1,8 @@
 use crc::{CRC_16_UMTS, Crc};
-use dxl_protocol::decoder::{Decoder, Step};
+use dxl_protocol::codec::{Decoder, Step};
 use dxl_protocol::packet::{BulkReadEntry, ErrorCode, Id, Packet, Slot, Status, StatusError};
 use dxl_protocol::{
-    CrcUmts, InstructionEmitter, InstructionPacket, SlotEmitter, StatusEmitter, WriteError,
+    CrcUmts, InstructionEncoder, InstructionPacket, SlotEncoder, StatusEncoder, WriteError,
 };
 use heapless::Vec;
 
@@ -133,7 +133,7 @@ impl DxlBus for FakeBus {
 impl DxlReply for FakeBus {
     fn send_status(&mut self, status: Status<'_>) -> Result<(), WriteError> {
         self.tx.clear();
-        StatusEmitter::<_, TestDxlCrc>::new(&mut self.tx).emit(status)?;
+        StatusEncoder::<_, TestDxlCrc>::new(&mut self.tx).emit(status)?;
         self.send_count += 1;
         self.last_kind = Some(ReplyKind::Plain);
         Ok(())
@@ -145,7 +145,7 @@ impl DxlReply for FakeBus {
         // encoded payload.
         self.tx.clear();
         let len = (3 + slot.data.len() + 2) as u16;
-        SlotEmitter::<_, TestDxlCrc>::new(&mut self.tx).emit(
+        SlotEncoder::<_, TestDxlCrc>::new(&mut self.tx).emit(
             slot,
             dxl_protocol::SlotPosition::Only { packet_length: len },
         )?;
@@ -174,10 +174,10 @@ impl DxlReply for FakeBus {
 
 fn encode<F>(f: F) -> Vec<u8, 256>
 where
-    F: FnOnce(&mut InstructionEmitter<'_, Vec<u8, 256>, TestDxlCrc>) -> Result<(), WriteError>,
+    F: FnOnce(&mut InstructionEncoder<'_, Vec<u8, 256>, TestDxlCrc>) -> Result<(), WriteError>,
 {
     let mut buf: Vec<u8, 256> = Vec::new();
-    f(&mut InstructionEmitter::<_, TestDxlCrc>::new(&mut buf)).unwrap();
+    f(&mut InstructionEncoder::<_, TestDxlCrc>::new(&mut buf)).unwrap();
     buf
 }
 

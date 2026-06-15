@@ -1,11 +1,11 @@
-//! Frame emitters for the three DXL 2.0 frame shapes:
+//! Frame encoders for the three DXL 2.0 frame shapes:
 //!
-//! - [`InstructionEmitter`] -- master -> slave request frames
-//! - [`StatusEmitter`]      -- slave -> master Status reply frames
-//! - [`SlotEmitter`]        -- one slave's slice of a coalesced Fast
+//! - [`InstructionEncoder`] -- master -> slave request frames
+//! - [`StatusEncoder`]      -- slave -> master Status reply frames
+//! - [`SlotEncoder`]        -- one slave's slice of a coalesced Fast
 //!   Sync/Bulk Read reply chain
 //!
-//! Each emitter borrows the caller's TX buffer and emits one frame per
+//! Each encoder borrows the caller's TX buffer and emits one frame per
 //! method call. Each exposes a per-variant fluent API plus a unified
 //! `.emit(...)` that round-trips the matching decoder enum
 //! (`Packet<'_>` / `Status<'_>` / `Slot<'_>` + `SlotPosition`). The
@@ -17,9 +17,9 @@ mod instruction;
 mod slot;
 mod status;
 
-pub use instruction::InstructionEmitter;
-pub use slot::SlotEmitter;
-pub use status::StatusEmitter;
+pub use instruction::InstructionEncoder;
+pub use slot::SlotEncoder;
+pub use status::StatusEncoder;
 
 use crate::buf::{WriteBuf, WriteError};
 use crate::constants::{HEADER, STUFFING_BYTE, STUFFING_TRIGGER};

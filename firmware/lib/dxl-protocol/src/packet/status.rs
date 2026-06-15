@@ -272,7 +272,7 @@ pub enum Status<'a> {
 
     /// Fast Sync Read coalesced reply (master-side decode). Iterate slots
     /// via `status.slots(slot_length)`. Writer rejects this variant -- fast
-    /// replies are emitted one slot at a time via `SlotEmitter`.
+    /// replies are emitted one slot at a time via `SlotEncoder`.
     FastSyncRead {
         id: Id,
         status: FastSyncReadStatus<'a>,

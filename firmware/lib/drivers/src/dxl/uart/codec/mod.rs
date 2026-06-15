@@ -20,10 +20,10 @@ pub mod rx;
 use core::cell::SyncUnsafeCell;
 use core::marker::PhantomData;
 
-use dxl_protocol::decoder::{Decoder, Step};
+use dxl_protocol::codec::{Decoder, Step};
 use dxl_protocol::packet::{Slot, Status};
 use dxl_protocol::{
-    CrcUmts, InstructionPacket, SlotEmitter, SlotPosition, StatusEmitter, WriteError,
+    CrcUmts, InstructionPacket, SlotEncoder, SlotPosition, StatusEncoder, WriteError,
 };
 
 use crate::traits::dxl::EdgeDma;
@@ -311,22 +311,22 @@ impl<CRC: CrcUmts, const TX_BUF_LEN: usize> CodecTx<CRC, TX_BUF_LEN> {
     }
 
     /// Encode a Status reply into the TX buffer. Clears any previous
-    /// contents first, then drives [`StatusEmitter`] over `tx_buf` —
+    /// contents first, then drives [`StatusEncoder`] over `tx_buf` —
     /// `Vec::push` propagates `WriteError::Overflow` if the encoded form
     /// exceeds `TX_BUF_LEN`. The composite reads [`Self::tx_len`] after
     /// for the DMA transfer count.
     pub fn send_status(&mut self, status: Status<'_>) -> Result<(), WriteError> {
         self.tx_buf.clear();
-        StatusEmitter::<_, CRC>::new(&mut self.tx_buf).emit(status)
+        StatusEncoder::<_, CRC>::new(&mut self.tx_buf).emit(status)
     }
 
     /// Encode one Fast slot reply into the TX buffer. Same buffer-clear
-    /// and emitter shape as [`Self::send_status`]; [`SlotEmitter::emit`]
+    /// and emitter shape as [`Self::send_status`]; [`SlotEncoder::emit`]
     /// dispatches on `position` (Only/First/Middle/Last) and writes the
     /// header, payload, and (locally-computed or caller-supplied) CRC.
     pub fn send_slot(&mut self, slot: &Slot<'_>, position: SlotPosition) -> Result<(), WriteError> {
         self.tx_buf.clear();
-        SlotEmitter::<_, CRC>::new(&mut self.tx_buf).emit(slot, position)
+        SlotEncoder::<_, CRC>::new(&mut self.tx_buf).emit(slot, position)
     }
 
     /// Stable peripheral-memory address for DMA1_CH4's source buffer.
@@ -588,7 +588,7 @@ mod tests {
     use super::*;
     use crate::mocks::FakeEdgeDma;
     use dxl_protocol::packet::{Id, StatusError};
-    use dxl_protocol::{InstructionEmitter, SoftwareCrcUmts, StatusEmitter};
+    use dxl_protocol::{InstructionEncoder, SoftwareCrcUmts, StatusEncoder};
     use heapless::Vec;
 
     const DECODER_CAP: usize = 256;
@@ -608,7 +608,7 @@ mod tests {
 
     fn wire_ping(id: u8) -> Vec<u8, 32> {
         let mut out: Vec<u8, 32> = Vec::new();
-        InstructionEmitter::<_, SoftwareCrcUmts>::new(&mut out)
+        InstructionEncoder::<_, SoftwareCrcUmts>::new(&mut out)
             .ping(Id::new(id))
             .unwrap();
         out
@@ -616,7 +616,7 @@ mod tests {
 
     fn wire_status(id: u8) -> Vec<u8, 32> {
         let mut out: Vec<u8, 32> = Vec::new();
-        StatusEmitter::<_, SoftwareCrcUmts>::new(&mut out)
+        StatusEncoder::<_, SoftwareCrcUmts>::new(&mut out)
             .empty(Id::new(id), dxl_protocol::packet::StatusError::OK)
             .unwrap();
         out
@@ -761,7 +761,7 @@ mod tests {
         // Round-trip the encoded bytes through the same emitter via a
         // reference Vec — the codec's tx_buf must match byte-for-byte.
         let mut expected: Vec<u8, TX_BUF_LEN> = Vec::new();
-        StatusEmitter::<_, SoftwareCrcUmts>::new(&mut expected)
+        StatusEncoder::<_, SoftwareCrcUmts>::new(&mut expected)
             .empty(Id::new(TEST_ID), StatusError::OK)
             .unwrap();
         assert!(c.tx_len() > 0);
@@ -842,10 +842,10 @@ mod tests {
         // Wire-layout sanity: DXL 2.0 header begins `FF FF FD 00`.
         assert_eq!(&actual[0..4], &[0xFF, 0xFF, 0xFD, 0x00]);
 
-        // Round-trip via a reference SlotEmitter so byte-for-byte equality
+        // Round-trip via a reference SlotEncoder so byte-for-byte equality
         // covers length / cmd / err / reserved / payload / CRC.
         let mut expected: Vec<u8, TX_BUF_LEN> = Vec::new();
-        SlotEmitter::<_, SoftwareCrcUmts>::new(&mut expected)
+        SlotEncoder::<_, SoftwareCrcUmts>::new(&mut expected)
             .emit(&slot, SlotPosition::Only { packet_length: 8 })
             .unwrap();
         assert_eq!(actual, expected.as_slice());

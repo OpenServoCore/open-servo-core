@@ -1,4 +1,4 @@
-//! Status reply emitter (slave -> master).
+//! Status reply encoder (slave -> master).
 
 #![allow(dead_code)]
 
@@ -8,12 +8,12 @@ use crate::packet::{Id, Instruction, Status, StatusError};
 
 use super::emit_frame;
 
-pub struct StatusEmitter<'a, W: WriteBuf, CRC: CrcUmts> {
+pub struct StatusEncoder<'a, W: WriteBuf, CRC: CrcUmts> {
     out: &'a mut W,
     crc: CRC,
 }
 
-impl<'a, W: WriteBuf, CRC: CrcUmts> StatusEmitter<'a, W, CRC> {
+impl<'a, W: WriteBuf, CRC: CrcUmts> StatusEncoder<'a, W, CRC> {
     pub fn new(out: &'a mut W) -> Self {
         Self {
             out,
@@ -58,7 +58,7 @@ impl<'a, W: WriteBuf, CRC: CrcUmts> StatusEmitter<'a, W, CRC> {
     ///
     /// Fast Sync/Bulk Read variants emit one Status frame carrying the
     /// coalesced multi-slot payload (the byte shape a master decodes).
-    /// Slaves participating in a chain reply use [`super::SlotEmitter`]
+    /// Slaves participating in a chain reply use [`super::SlotEncoder`]
     /// instead; this path is for relays, sniffers, or single-slave-with-
     /// all-data masters.
     pub fn emit(&mut self, status: Status<'_>) -> Result<(), WriteError> {
@@ -89,8 +89,8 @@ impl<'a, W: WriteBuf, CRC: CrcUmts> StatusEmitter<'a, W, CRC> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::codec::decoder::{Decoder, Step};
     use crate::crc_software::SoftwareCrcUmts;
-    use crate::decoder::{Decoder, Step};
     use crate::packet::{FastSyncReadStatus, Packet, PingStatus, RequestKind, U16Le};
     use heapless::Vec;
 
@@ -100,7 +100,7 @@ mod tests {
     #[test]
     fn status_empty_round_trips() {
         let mut buf = Buf::new();
-        StatusEmitter::<_, Crc>::new(&mut buf)
+        StatusEncoder::<_, Crc>::new(&mut buf)
             .empty(Id::new(0x01), StatusError::OK)
             .unwrap();
         let mut dec: Decoder<32, Crc> = Decoder::new();
@@ -118,7 +118,7 @@ mod tests {
     fn status_empty_carries_error_byte() {
         let mut buf = Buf::new();
         let err = StatusError::from_byte(0x83);
-        StatusEmitter::<_, Crc>::new(&mut buf)
+        StatusEncoder::<_, Crc>::new(&mut buf)
             .empty(Id::new(0x02), err)
             .unwrap();
         let mut dec: Decoder<32, Crc> = Decoder::new();
@@ -134,7 +134,7 @@ mod tests {
     #[test]
     fn status_ping_round_trips_through_interpret() {
         let mut buf = Buf::new();
-        StatusEmitter::<_, Crc>::new(&mut buf)
+        StatusEncoder::<_, Crc>::new(&mut buf)
             .ping(Id::new(0x03), StatusError::OK, 0x0203, 0x10)
             .unwrap();
         let mut dec: Decoder<32, Crc> = Decoder::new();
@@ -156,7 +156,7 @@ mod tests {
     fn status_read_round_trips() {
         let mut buf = Buf::new();
         let data = [0x10, 0x20, 0x30, 0x40];
-        StatusEmitter::<_, Crc>::new(&mut buf)
+        StatusEncoder::<_, Crc>::new(&mut buf)
             .read(Id::new(0x04), StatusError::OK, &data)
             .unwrap();
         let mut dec: Decoder<32, Crc> = Decoder::new();
@@ -177,7 +177,7 @@ mod tests {
     fn status_ext_round_trips() {
         let mut buf = Buf::new();
         let payload = [0xCA, 0xFE, 0xBA, 0xBE];
-        StatusEmitter::<_, Crc>::new(&mut buf)
+        StatusEncoder::<_, Crc>::new(&mut buf)
             .ext(Id::new(0x05), StatusError::OK, &payload)
             .unwrap();
         let mut dec: Decoder<32, Crc> = Decoder::new();
@@ -195,7 +195,7 @@ mod tests {
     fn status_emit_empty_round_trips() {
         let mut buf = Buf::new();
         let err = StatusError::from_byte(0x83);
-        StatusEmitter::<_, Crc>::new(&mut buf)
+        StatusEncoder::<_, Crc>::new(&mut buf)
             .emit(Status::Empty {
                 id: Id::new(0x05),
                 error: err,
@@ -215,7 +215,7 @@ mod tests {
     #[test]
     fn status_emit_ping_round_trips_through_interpret() {
         let mut buf = Buf::new();
-        StatusEmitter::<_, Crc>::new(&mut buf)
+        StatusEncoder::<_, Crc>::new(&mut buf)
             .emit(Status::Ping {
                 id: Id::new(0x07),
                 error: StatusError::OK,
@@ -244,7 +244,7 @@ mod tests {
     fn status_emit_read_round_trips() {
         let mut buf = Buf::new();
         let data = [0x10, 0x20, 0x30, 0x40];
-        StatusEmitter::<_, Crc>::new(&mut buf)
+        StatusEncoder::<_, Crc>::new(&mut buf)
             .emit(Status::Read {
                 id: Id::new(0x09),
                 error: StatusError::OK,
@@ -268,7 +268,7 @@ mod tests {
     fn status_emit_raw_round_trips() {
         let mut buf = Buf::new();
         let payload = [0xCA, 0xFE, 0xBA, 0xBE];
-        StatusEmitter::<_, Crc>::new(&mut buf)
+        StatusEncoder::<_, Crc>::new(&mut buf)
             .emit(Status::Raw {
                 id: Id::new(0x0B),
                 error: StatusError::OK,
@@ -289,7 +289,7 @@ mod tests {
     fn status_emit_fast_sync_read_emits_coalesced_payload() {
         let mut buf = Buf::new();
         let payload = [10, 0xAA, 0xBB, 0x00, 20, 0xCC, 0xDD];
-        StatusEmitter::<_, Crc>::new(&mut buf)
+        StatusEncoder::<_, Crc>::new(&mut buf)
             .emit(Status::FastSyncRead {
                 id: Id::BROADCAST,
                 status: FastSyncReadStatus {

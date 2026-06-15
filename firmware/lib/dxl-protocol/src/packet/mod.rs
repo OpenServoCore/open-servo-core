@@ -117,9 +117,9 @@ impl<'a> Packet<'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::InstructionEmitter;
+    use crate::InstructionEncoder;
+    use crate::codec::decoder::{Decoder, Step};
     use crate::crc_software::SoftwareCrcUmts;
-    use crate::decoder::{Decoder, Step};
     use heapless::Vec;
 
     type Crc = SoftwareCrcUmts;
@@ -137,7 +137,7 @@ mod tests {
     #[test]
     fn status_projects_to_none() {
         let mut out: Vec<u8, 32> = Vec::new();
-        InstructionEmitter::<_, Crc>::new(&mut out)
+        InstructionEncoder::<_, Crc>::new(&mut out)
             .ext(Id::new(0x05), Instruction::Status.as_u8(), &[0x00, 0xAA])
             .unwrap();
         let mut dec: Decoder<32, Crc> = Decoder::new();
@@ -149,7 +149,7 @@ mod tests {
     #[test]
     fn ping_projects_to_instruction_ping() {
         let mut out: Vec<u8, 32> = Vec::new();
-        InstructionEmitter::<_, Crc>::new(&mut out)
+        InstructionEncoder::<_, Crc>::new(&mut out)
             .ext(Id::new(0x01), Instruction::Ping.as_u8(), &[])
             .unwrap();
         let mut dec: Decoder<32, Crc> = Decoder::new();

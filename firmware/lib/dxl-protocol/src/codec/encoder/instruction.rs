@@ -1,4 +1,4 @@
-//! Request frame emitter (master -> slave).
+//! Request frame encoder (master -> slave).
 
 #![allow(dead_code)]
 
@@ -8,12 +8,12 @@ use crate::packet::{BulkReadEntry, Id, Instruction, Packet};
 
 use super::{bulk_entries_as_bytes, emit_frame};
 
-pub struct InstructionEmitter<'a, W: WriteBuf, CRC: CrcUmts> {
+pub struct InstructionEncoder<'a, W: WriteBuf, CRC: CrcUmts> {
     out: &'a mut W,
     crc: CRC,
 }
 
-impl<'a, W: WriteBuf, CRC: CrcUmts> InstructionEmitter<'a, W, CRC> {
+impl<'a, W: WriteBuf, CRC: CrcUmts> InstructionEncoder<'a, W, CRC> {
     pub fn new(out: &'a mut W) -> Self {
         Self {
             out,
@@ -184,7 +184,7 @@ impl<'a, W: WriteBuf, CRC: CrcUmts> InstructionEmitter<'a, W, CRC> {
     /// Round-trip a decoded [`Packet`] back to wire bytes -- for sniffers,
     /// bridges, and replay tools. Handles every variant including
     /// [`Packet::Status`]; for slave-side typed Status construction,
-    /// [`super::StatusEmitter`] is more ergonomic.
+    /// [`super::StatusEncoder`] is more ergonomic.
     pub fn emit(&mut self, packet: &Packet<'_>) -> Result<(), WriteError> {
         match *packet {
             Packet::Ping(p) => self.ping(p.header.id),
@@ -228,9 +228,9 @@ impl<'a, W: WriteBuf, CRC: CrcUmts> InstructionEmitter<'a, W, CRC> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::codec::decoder::{Decoder, Step};
+    use crate::codec::encoder::StatusEncoder;
     use crate::crc_software::SoftwareCrcUmts;
-    use crate::decoder::{Decoder, Step};
-    use crate::emitter::StatusEmitter;
     use crate::packet::{Packet, StatusError, U16Le};
     use heapless::Vec;
 
@@ -240,7 +240,7 @@ mod tests {
     #[test]
     fn instr_ping() {
         let mut buf = Buf::new();
-        InstructionEmitter::<_, Crc>::new(&mut buf)
+        InstructionEncoder::<_, Crc>::new(&mut buf)
             .ping(Id::new(0x01))
             .unwrap();
         let mut dec: Decoder<32, Crc> = Decoder::new();
@@ -258,7 +258,7 @@ mod tests {
     #[test]
     fn instr_read() {
         let mut buf = Buf::new();
-        InstructionEmitter::<_, Crc>::new(&mut buf)
+        InstructionEncoder::<_, Crc>::new(&mut buf)
             .read(Id::new(0x02), 0x0084, 4)
             .unwrap();
         let mut dec: Decoder<32, Crc> = Decoder::new();
@@ -276,7 +276,7 @@ mod tests {
     fn instr_write_with_data() {
         let mut buf = Buf::new();
         let data = [0xAA, 0xBB, 0xCC, 0xDD];
-        InstructionEmitter::<_, Crc>::new(&mut buf)
+        InstructionEncoder::<_, Crc>::new(&mut buf)
             .write(Id::new(0x03), 0x0084, &data)
             .unwrap();
         let mut dec: Decoder<64, Crc> = Decoder::new();
@@ -294,7 +294,7 @@ mod tests {
     fn instr_reg_write() {
         let mut buf = Buf::new();
         let data = [0x10, 0x20];
-        InstructionEmitter::<_, Crc>::new(&mut buf)
+        InstructionEncoder::<_, Crc>::new(&mut buf)
             .reg_write(Id::new(0x04), 0x0030, &data)
             .unwrap();
         let mut dec: Decoder<32, Crc> = Decoder::new();
@@ -311,7 +311,7 @@ mod tests {
     #[test]
     fn instr_action() {
         let mut buf = Buf::new();
-        InstructionEmitter::<_, Crc>::new(&mut buf)
+        InstructionEncoder::<_, Crc>::new(&mut buf)
             .action(Id::new(0x05))
             .unwrap();
         let mut dec: Decoder<32, Crc> = Decoder::new();
@@ -324,7 +324,7 @@ mod tests {
     #[test]
     fn instr_reboot() {
         let mut buf = Buf::new();
-        InstructionEmitter::<_, Crc>::new(&mut buf)
+        InstructionEncoder::<_, Crc>::new(&mut buf)
             .reboot(Id::new(0x06))
             .unwrap();
         let mut dec: Decoder<32, Crc> = Decoder::new();
@@ -337,7 +337,7 @@ mod tests {
     #[test]
     fn instr_factory_reset() {
         let mut buf = Buf::new();
-        InstructionEmitter::<_, Crc>::new(&mut buf)
+        InstructionEncoder::<_, Crc>::new(&mut buf)
             .factory_reset(Id::new(0x07), 0x02)
             .unwrap();
         let mut dec: Decoder<32, Crc> = Decoder::new();
@@ -354,7 +354,7 @@ mod tests {
     fn instr_clear_dispatches_as_raw() {
         let mut buf = Buf::new();
         let body = [0x01, 0x44, 0x58, 0x4C, 0x22];
-        InstructionEmitter::<_, Crc>::new(&mut buf)
+        InstructionEncoder::<_, Crc>::new(&mut buf)
             .clear(Id::new(0x08), &body)
             .unwrap();
         let mut dec: Decoder<32, Crc> = Decoder::new();
@@ -372,7 +372,7 @@ mod tests {
     fn instr_control_table_backup_dispatches_as_raw() {
         let mut buf = Buf::new();
         let body = [0xAA, 0xBB];
-        InstructionEmitter::<_, Crc>::new(&mut buf)
+        InstructionEncoder::<_, Crc>::new(&mut buf)
             .control_table_backup(Id::new(0x09), &body)
             .unwrap();
         let mut dec: Decoder<32, Crc> = Decoder::new();
@@ -393,7 +393,7 @@ mod tests {
     fn instr_sync_read() {
         let mut buf = Buf::new();
         let ids = [0x01, 0x02, 0x03];
-        InstructionEmitter::<_, Crc>::new(&mut buf)
+        InstructionEncoder::<_, Crc>::new(&mut buf)
             .sync_read(0x0084, 4, &ids)
             .unwrap();
         let mut dec: Decoder<64, Crc> = Decoder::new();
@@ -412,7 +412,7 @@ mod tests {
     fn instr_sync_write() {
         let mut buf = Buf::new();
         let body = [0x01, 0xAA, 0xBB, 0x02, 0xCC, 0xDD];
-        InstructionEmitter::<_, Crc>::new(&mut buf)
+        InstructionEncoder::<_, Crc>::new(&mut buf)
             .sync_write(0x0080, 2, &body)
             .unwrap();
         let mut dec: Decoder<64, Crc> = Decoder::new();
@@ -447,7 +447,7 @@ mod tests {
                 length: U16Le::from_u16(2),
             },
         ];
-        InstructionEmitter::<_, Crc>::new(&mut buf)
+        InstructionEncoder::<_, Crc>::new(&mut buf)
             .bulk_read(&entries)
             .unwrap();
         let mut dec: Decoder<64, Crc> = Decoder::new();
@@ -472,7 +472,7 @@ mod tests {
         let body = [
             0x01, 0x84, 0x00, 0x02, 0x00, 0xAA, 0xBB, 0x02, 0x90, 0x00, 0x01, 0x00, 0xCC,
         ];
-        InstructionEmitter::<_, Crc>::new(&mut buf)
+        InstructionEncoder::<_, Crc>::new(&mut buf)
             .bulk_write(&body)
             .unwrap();
         let mut dec: Decoder<64, Crc> = Decoder::new();
@@ -496,7 +496,7 @@ mod tests {
     fn instr_fast_sync_read() {
         let mut buf = Buf::new();
         let ids = [0x01, 0x02];
-        InstructionEmitter::<_, Crc>::new(&mut buf)
+        InstructionEncoder::<_, Crc>::new(&mut buf)
             .fast_sync_read(0x0084, 4, &ids)
             .unwrap();
         let mut dec: Decoder<64, Crc> = Decoder::new();
@@ -526,7 +526,7 @@ mod tests {
                 length: U16Le::from_u16(2),
             },
         ];
-        InstructionEmitter::<_, Crc>::new(&mut buf)
+        InstructionEncoder::<_, Crc>::new(&mut buf)
             .fast_bulk_read(&entries)
             .unwrap();
         let mut dec: Decoder<64, Crc> = Decoder::new();
@@ -545,7 +545,7 @@ mod tests {
     fn instr_ext_dispatches_as_raw() {
         let mut buf = Buf::new();
         let params = [0xDE, 0xAD, 0xBE, 0xEF];
-        InstructionEmitter::<_, Crc>::new(&mut buf)
+        InstructionEncoder::<_, Crc>::new(&mut buf)
             .ext(Id::new(0x0A), 0xE0, &params)
             .unwrap();
         let mut dec: Decoder<32, Crc> = Decoder::new();
@@ -562,7 +562,7 @@ mod tests {
     #[test]
     fn instruction_emit_round_trips_read_through_decoder() {
         let mut a = Buf::new();
-        InstructionEmitter::<_, Crc>::new(&mut a)
+        InstructionEncoder::<_, Crc>::new(&mut a)
             .read(Id::new(0x02), 0x0084, 4)
             .unwrap();
 
@@ -573,7 +573,7 @@ mod tests {
         };
 
         let mut b = Buf::new();
-        InstructionEmitter::<_, Crc>::new(&mut b)
+        InstructionEncoder::<_, Crc>::new(&mut b)
             .emit(&pkt)
             .unwrap();
         assert_eq!(&a[..], &b[..]);
@@ -583,7 +583,7 @@ mod tests {
     fn instruction_emit_round_trips_write_with_data() {
         let mut a = Buf::new();
         let data = [0xAA, 0xBB, 0xCC, 0xDD];
-        InstructionEmitter::<_, Crc>::new(&mut a)
+        InstructionEncoder::<_, Crc>::new(&mut a)
             .write(Id::new(0x03), 0x0084, &data)
             .unwrap();
 
@@ -594,7 +594,7 @@ mod tests {
         };
 
         let mut b = Buf::new();
-        InstructionEmitter::<_, Crc>::new(&mut b)
+        InstructionEncoder::<_, Crc>::new(&mut b)
             .emit(&pkt)
             .unwrap();
         assert_eq!(&a[..], &b[..]);
@@ -604,7 +604,7 @@ mod tests {
     fn instruction_emit_round_trips_raw_extension() {
         let mut a = Buf::new();
         let params = [0xDE, 0xAD, 0xBE, 0xEF];
-        InstructionEmitter::<_, Crc>::new(&mut a)
+        InstructionEncoder::<_, Crc>::new(&mut a)
             .ext(Id::new(0x0A), 0xE0, &params)
             .unwrap();
 
@@ -615,7 +615,7 @@ mod tests {
         };
 
         let mut b = Buf::new();
-        InstructionEmitter::<_, Crc>::new(&mut b)
+        InstructionEncoder::<_, Crc>::new(&mut b)
             .emit(&pkt)
             .unwrap();
         assert_eq!(&a[..], &b[..]);
@@ -624,7 +624,7 @@ mod tests {
     #[test]
     fn instruction_emit_forwards_status_packet() {
         let mut a = Buf::new();
-        StatusEmitter::<_, Crc>::new(&mut a)
+        StatusEncoder::<_, Crc>::new(&mut a)
             .read(Id::new(0x07), StatusError::OK, &[0x10, 0x20, 0x30])
             .unwrap();
         let mut dec: Decoder<32, Crc> = Decoder::new();
@@ -633,7 +633,7 @@ mod tests {
             other => panic!("expected Packet, got {other:?}"),
         };
         let mut b = Buf::new();
-        InstructionEmitter::<_, Crc>::new(&mut b)
+        InstructionEncoder::<_, Crc>::new(&mut b)
             .emit(&pkt)
             .unwrap();
         assert_eq!(&a[..], &b[..]);

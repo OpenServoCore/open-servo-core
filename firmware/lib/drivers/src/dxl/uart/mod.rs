@@ -615,7 +615,7 @@ mod tests {
     };
     use crate::traits::dxl::DmaFlags;
     use dxl_protocol::packet::{Id, StatusError};
-    use dxl_protocol::{InstructionEmitter, SoftwareCrcUmts, StatusEmitter};
+    use dxl_protocol::{InstructionEncoder, SoftwareCrcUmts, StatusEncoder};
     use heapless::Vec;
     use osc_core::BaudRate;
 
@@ -806,7 +806,7 @@ mod tests {
     /// Emit a Ping addressed to `id`.
     fn wire_ping(id: u8) -> Vec<u8, 32> {
         let mut out: Vec<u8, 32> = Vec::new();
-        InstructionEmitter::<_, SoftwareCrcUmts>::new(&mut out)
+        InstructionEncoder::<_, SoftwareCrcUmts>::new(&mut out)
             .ping(Id::new(id))
             .unwrap();
         out
@@ -815,7 +815,7 @@ mod tests {
     /// Emit a Status reply from `id` (the kind we never want to surface).
     fn wire_status(id: u8) -> Vec<u8, 32> {
         let mut out: Vec<u8, 32> = Vec::new();
-        StatusEmitter::<_, SoftwareCrcUmts>::new(&mut out)
+        StatusEncoder::<_, SoftwareCrcUmts>::new(&mut out)
             .empty(Id::new(id), dxl_protocol::packet::StatusError::OK)
             .unwrap();
         out
@@ -825,7 +825,7 @@ mod tests {
     /// id-as-BROADCAST branch with a richer (non-Ping) packet shape.
     fn wire_sync_read(addr: u16, length: u16, ids: &[u8]) -> Vec<u8, 32> {
         let mut out: Vec<u8, 32> = Vec::new();
-        InstructionEmitter::<_, SoftwareCrcUmts>::new(&mut out)
+        InstructionEncoder::<_, SoftwareCrcUmts>::new(&mut out)
             .sync_read(addr, length, ids)
             .unwrap();
         out
@@ -835,7 +835,7 @@ mod tests {
     /// reply path goes through `send_slot` per the FastSlotInfo position.
     fn wire_fast_sync_read(addr: u16, length: u16, ids: &[u8]) -> Vec<u8, 64> {
         let mut out: Vec<u8, 64> = Vec::new();
-        InstructionEmitter::<_, SoftwareCrcUmts>::new(&mut out)
+        InstructionEncoder::<_, SoftwareCrcUmts>::new(&mut out)
             .fast_sync_read(addr, length, ids)
             .unwrap();
         out

@@ -1,10 +1,10 @@
 //! Streaming Decoder robustness: no panics, no wedge, rejects foreign
 //! protocols, recovers real frames embedded in noise.
 
-use dxl_protocol::decoder::{Decoder, ResyncKind, Step};
+use dxl_protocol::codec::{Decoder, ResyncKind, Step};
 use dxl_protocol::packet::{self as overlay, BulkReadEntry, ErrorCode, Id, StatusError, U16Le};
 use dxl_protocol::{
-    HEADER, InstructionEmitter, PACKET_LEN_GUARD, SoftwareCrcUmts, StatusEmitter, WriteBuf,
+    HEADER, InstructionEncoder, PACKET_LEN_GUARD, SoftwareCrcUmts, StatusEncoder, WriteBuf,
     WriteError,
 };
 use heapless::Vec as HVec;
@@ -13,7 +13,7 @@ type Crc = SoftwareCrcUmts;
 
 fn write_ping(id: u8) -> HVec<u8, 32> {
     let mut v: HVec<u8, 32> = HVec::new();
-    InstructionEmitter::<_, Crc>::new(&mut v)
+    InstructionEncoder::<_, Crc>::new(&mut v)
         .ping(Id::new(id))
         .unwrap();
     v
@@ -258,7 +258,7 @@ fn header_byte_at_a_time() {
     // the wire_n boundary checks inside step_header.
     let frame = {
         let mut v: HVec<u8, 32> = HVec::new();
-        InstructionEmitter::<_, Crc>::new(&mut v)
+        InstructionEncoder::<_, Crc>::new(&mut v)
             .read(Id::new(7), 0x0084, 4)
             .unwrap();
         v
@@ -319,7 +319,7 @@ fn over_maxlen_header_short_circuits() {
 #[test]
 fn writer_id_0xff_rejected() {
     let mut out: HVec<u8, 32> = HVec::new();
-    let err = InstructionEmitter::<_, Crc>::new(&mut out)
+    let err = InstructionEncoder::<_, Crc>::new(&mut out)
         .ping(Id::new(0xFF))
         .unwrap_err();
     assert_eq!(err, WriteError::Invalid);
@@ -328,7 +328,7 @@ fn writer_id_0xff_rejected() {
 #[test]
 fn writer_overflow_reported_and_rolled_back() {
     let mut tiny: HVec<u8, 5> = HVec::new();
-    let err = InstructionEmitter::<_, Crc>::new(&mut tiny)
+    let err = InstructionEncoder::<_, Crc>::new(&mut tiny)
         .ping(Id::new(1))
         .unwrap_err();
     assert_eq!(err, WriteError::Overflow);
@@ -344,14 +344,14 @@ fn writer_overflow_preserves_prior_frames() {
     // DMA TX buffer holds a frame; second write overflows -- first must survive
     // and re-decode cleanly through the new Decoder.
     let mut buf: HVec<u8, 16> = HVec::new();
-    InstructionEmitter::<_, Crc>::new(&mut buf)
+    InstructionEncoder::<_, Crc>::new(&mut buf)
         .ping(Id::new(1))
         .unwrap();
     let snapshot: HVec<u8, 16> = buf.clone();
     let pre_len = buf.len();
 
     let big = [0u8; 32];
-    let err = StatusEmitter::<_, Crc>::new(&mut buf)
+    let err = StatusEncoder::<_, Crc>::new(&mut buf)
         .ext(Id::new(1), StatusError::OK, &big)
         .unwrap_err();
     assert_eq!(err, WriteError::Overflow);
@@ -370,12 +370,12 @@ fn writer_overflow_preserves_prior_frames() {
 #[test]
 fn writer_invalid_id_does_not_touch_buffer() {
     let mut buf: HVec<u8, 32> = HVec::new();
-    InstructionEmitter::<_, Crc>::new(&mut buf)
+    InstructionEncoder::<_, Crc>::new(&mut buf)
         .ping(Id::new(1))
         .unwrap();
     let snapshot: HVec<u8, 32> = buf.clone();
 
-    let err = InstructionEmitter::<_, Crc>::new(&mut buf)
+    let err = InstructionEncoder::<_, Crc>::new(&mut buf)
         .ping(Id::new(0xFF))
         .unwrap_err();
     assert_eq!(err, WriteError::Invalid);
@@ -416,12 +416,12 @@ fn partial_header_prefix_yields_needmore() {
 
 fn round_trip<E, V>(label: &str, emit: E, verify: V)
 where
-    E: FnOnce(&mut InstructionEmitter<'_, HVec<u8, 256>, Crc>) -> Result<(), WriteError>,
+    E: FnOnce(&mut InstructionEncoder<'_, HVec<u8, 256>, Crc>) -> Result<(), WriteError>,
     V: FnOnce(overlay::Packet<'_>),
 {
     let mut wire: HVec<u8, 256> = HVec::new();
     {
-        let mut w = InstructionEmitter::<_, Crc>::new(&mut wire);
+        let mut w = InstructionEncoder::<_, Crc>::new(&mut wire);
         emit(&mut w).unwrap_or_else(|e| panic!("{label}: emit failed: {e:?}"));
     }
     let mut dec: Decoder<512, Crc> = Decoder::new();
@@ -613,7 +613,7 @@ fn round_trip_random_fields_across_variants() {
 
         let mut wire: HVec<u8, 256> = HVec::new();
         {
-            let mut w = InstructionEmitter::<_, Crc>::new(&mut wire);
+            let mut w = InstructionEncoder::<_, Crc>::new(&mut wire);
             match kind {
                 0 => w.ping(id).unwrap(),
                 1 => w.read(id, addr, length).unwrap(),
@@ -624,10 +624,10 @@ fn round_trip_random_fields_across_variants() {
                 6 => w.reboot(id).unwrap(),
                 7 => {
                     // Move-discard `w` so its `&mut wire` borrow ends before
-                    // StatusEmitter takes its own. `drop(w)` would do the
+                    // StatusEncoder takes its own. `drop(w)` would do the
                     // same but trips clippy::drop_non_drop.
                     let _ = w;
-                    StatusEmitter::<_, Crc>::new(&mut wire)
+                    StatusEncoder::<_, Crc>::new(&mut wire)
                         .ext(id, StatusError::from_byte(error), &body)
                         .unwrap();
                 }
@@ -656,27 +656,27 @@ fn stuffing_round_trip_for_every_body_carrying_variant() {
     type Case = (&'static str, fn(&mut HVec<u8, 64>, &[u8]));
     let cases: &[Case] = &[
         ("Write", |out, data| {
-            InstructionEmitter::<_, Crc>::new(out)
+            InstructionEncoder::<_, Crc>::new(out)
                 .write(Id::new(1), 0x0010, data)
                 .unwrap()
         }),
         ("RegWrite", |out, data| {
-            InstructionEmitter::<_, Crc>::new(out)
+            InstructionEncoder::<_, Crc>::new(out)
                 .reg_write(Id::new(1), 0x0010, data)
                 .unwrap()
         }),
         ("Status", |out, data| {
-            StatusEmitter::<_, Crc>::new(out)
+            StatusEncoder::<_, Crc>::new(out)
                 .ext(Id::new(1), StatusError::OK, data)
                 .unwrap()
         }),
         ("SyncWrite", |out, data| {
-            InstructionEmitter::<_, Crc>::new(out)
+            InstructionEncoder::<_, Crc>::new(out)
                 .sync_write(0x0010, 4, data)
                 .unwrap()
         }),
         ("BulkWrite", |out, data| {
-            InstructionEmitter::<_, Crc>::new(out)
+            InstructionEncoder::<_, Crc>::new(out)
                 .bulk_write(data)
                 .unwrap()
         }),
@@ -712,12 +712,12 @@ fn stuffing_round_trip_for_every_body_carrying_variant() {
     }
 }
 
-// Status with error code is encoded via StatusEmitter::ext with a non-OK
+// Status with error code is encoded via StatusEncoder::ext with a non-OK
 // code; covers the StatusError byte propagation through the round trip.
 #[test]
 fn status_with_error_code_round_trips() {
     let mut wire: HVec<u8, 32> = HVec::new();
-    StatusEmitter::<_, Crc>::new(&mut wire)
+    StatusEncoder::<_, Crc>::new(&mut wire)
         .ext(Id::new(1), StatusError::code(ErrorCode::DataRange), &[])
         .unwrap();
     let mut dec: Decoder<64, Crc> = Decoder::new();

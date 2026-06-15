@@ -9,12 +9,12 @@ use crate::packet::Slot;
 
 use super::{emit_slot_body, emit_slot_header};
 
-pub struct SlotEmitter<'a, W: WriteBuf, CRC: CrcUmts> {
+pub struct SlotEncoder<'a, W: WriteBuf, CRC: CrcUmts> {
     out: &'a mut W,
     crc: CRC,
 }
 
-impl<'a, W: WriteBuf, CRC: CrcUmts> SlotEmitter<'a, W, CRC> {
+impl<'a, W: WriteBuf, CRC: CrcUmts> SlotEncoder<'a, W, CRC> {
     pub fn new(out: &'a mut W) -> Self {
         Self {
             out,
@@ -117,8 +117,8 @@ impl<'a, W: WriteBuf, CRC: CrcUmts> SlotEmitter<'a, W, CRC> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::codec::decoder::{Decoder, Step};
     use crate::crc_software::SoftwareCrcUmts;
-    use crate::decoder::{Decoder, Step};
     use crate::packet::{Id, Instruction, Packet, RequestKind, Status, StatusError};
     use heapless::Vec;
 
@@ -133,7 +133,7 @@ mod tests {
             error: StatusError::OK,
             data: &[0xAA, 0xBB, 0xCC, 0xDD],
         };
-        SlotEmitter::<_, Crc>::new(&mut buf).only(&slot, 9).unwrap();
+        SlotEncoder::<_, Crc>::new(&mut buf).only(&slot, 9).unwrap();
 
         let mut dec: Decoder<32, Crc> = Decoder::new();
         match dec.feed(&buf).0 {
@@ -172,7 +172,7 @@ mod tests {
             data: &[0xEE, 0xFF],
         };
         let crc = u16::from_le_bytes([0xAA, 0xBB]);
-        let mut w = SlotEmitter::<_, Crc>::new(&mut buf);
+        let mut w = SlotEncoder::<_, Crc>::new(&mut buf);
         w.first(&s0, 15).unwrap();
         w.middle(&s1).unwrap();
         w.last(&s2, crc).unwrap();
@@ -212,7 +212,7 @@ mod tests {
             error: StatusError::from_byte(0x07),
             data: &[0x10, 0x20],
         };
-        SlotEmitter::<_, Crc>::new(&mut buf).middle(&slot).unwrap();
+        SlotEncoder::<_, Crc>::new(&mut buf).middle(&slot).unwrap();
         assert_eq!(&buf[..], &[0x07, 0x05, 0x10, 0x20]);
     }
 
@@ -236,14 +236,14 @@ mod tests {
         };
         let crc = u16::from_le_bytes([0xAA, 0xBB]);
 
-        let mut e = SlotEmitter::<_, Crc>::new(&mut emitted_via_emit);
+        let mut e = SlotEncoder::<_, Crc>::new(&mut emitted_via_emit);
         e.emit(&s0, SlotPosition::First { packet_length: 15 })
             .unwrap();
         e.emit(&s1, SlotPosition::Middle).unwrap();
         e.emit(&s2, SlotPosition::Last { crc }).unwrap();
 
         let mut expected = Buf::new();
-        let mut w = SlotEmitter::<_, Crc>::new(&mut expected);
+        let mut w = SlotEncoder::<_, Crc>::new(&mut expected);
         w.first(&s0, 15).unwrap();
         w.middle(&s1).unwrap();
         w.last(&s2, crc).unwrap();
@@ -259,7 +259,7 @@ mod tests {
             error: StatusError::OK,
             data: &[0xAA, 0xBB, 0xCC, 0xDD],
         };
-        SlotEmitter::<_, Crc>::new(&mut buf)
+        SlotEncoder::<_, Crc>::new(&mut buf)
             .emit(&slot, SlotPosition::Only { packet_length: 9 })
             .unwrap();
         let mut dec: Decoder<32, Crc> = Decoder::new();

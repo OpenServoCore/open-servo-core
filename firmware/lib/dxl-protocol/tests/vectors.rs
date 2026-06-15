@@ -1,11 +1,11 @@
 //! Reference vector encoding and decoding through the streaming Decoder
-//! and the new emitter API.
+//! and the codec encoder API.
 
-use dxl_protocol::decoder::{Decoder, ResyncKind, Step};
+use dxl_protocol::codec::{Decoder, ResyncKind, Step};
 use dxl_protocol::packet::{self as overlay, ErrorCode, Id, Slot, StatusError};
 use dxl_protocol::{
-    CrcUmts, Instruction, InstructionEmitter, PACKET_LEN_GUARD, SlotEmitter, SoftwareCrcUmts,
-    StatusEmitter, WriteBuf, WriteError,
+    CrcUmts, Instruction, InstructionEncoder, PACKET_LEN_GUARD, SlotEncoder, SoftwareCrcUmts,
+    StatusEncoder, WriteBuf, WriteError,
 };
 use heapless::Vec;
 
@@ -19,11 +19,11 @@ fn crc_oneshot(seed: u16, bytes: &[u8]) -> u16 {
 
 fn encode<F>(f: F) -> Vec<u8, 256>
 where
-    F: FnOnce(&mut InstructionEmitter<'_, Vec<u8, 256>, Crc>) -> Result<(), WriteError>,
+    F: FnOnce(&mut InstructionEncoder<'_, Vec<u8, 256>, Crc>) -> Result<(), WriteError>,
 {
     let mut out: Vec<u8, 256> = Vec::new();
     {
-        let mut w = InstructionEmitter::<_, Crc>::new(&mut out);
+        let mut w = InstructionEncoder::<_, Crc>::new(&mut out);
         f(&mut w).expect("encode failed");
     }
     out
@@ -98,7 +98,7 @@ const BODY_7: &[u8] = &[0x03, 0x00, 0x00, 0x00];
 #[test]
 fn write_slot_first_emits_header_then_body() {
     let mut out: Vec<u8, 32> = Vec::new();
-    SlotEmitter::<_, Crc>::new(&mut out)
+    SlotEncoder::<_, Crc>::new(&mut out)
         .first(&slot(5, StatusError::OK, BODY_5), 0x0015)
         .unwrap();
     assert_eq!(
@@ -112,7 +112,7 @@ fn write_slot_first_emits_header_then_body() {
 #[test]
 fn write_slot_middle_emits_body_only() {
     let mut out: Vec<u8, 32> = Vec::new();
-    SlotEmitter::<_, Crc>::new(&mut out)
+    SlotEncoder::<_, Crc>::new(&mut out)
         .middle(&slot(6, StatusError::OK, BODY_6))
         .unwrap();
     assert_eq!(out.as_slice(), &[0x00, 0x06, 0x02, 0x00, 0x00, 0x00]);
@@ -121,7 +121,7 @@ fn write_slot_middle_emits_body_only() {
 #[test]
 fn write_slot_last_reserves_crc_placeholder() {
     let mut out: Vec<u8, 32> = Vec::new();
-    SlotEmitter::<_, Crc>::new(&mut out)
+    SlotEncoder::<_, Crc>::new(&mut out)
         .last(&slot(7, StatusError::OK, BODY_7), 0xBBAA)
         .unwrap();
     assert_eq!(
@@ -133,7 +133,7 @@ fn write_slot_last_reserves_crc_placeholder() {
 #[test]
 fn write_slot_only_emits_header_body_and_computed_crc() {
     let mut out: Vec<u8, 32> = Vec::new();
-    SlotEmitter::<_, Crc>::new(&mut out)
+    SlotEncoder::<_, Crc>::new(&mut out)
         .only(&slot(5, StatusError::OK, BODY_5), 0x0009)
         .unwrap();
     let header_and_body = [
@@ -150,7 +150,7 @@ fn write_slot_only_emits_header_body_and_computed_crc() {
 fn write_slot_three_slave_response_assembles_to_valid_status_frame() {
     let mut out: Vec<u8, 64> = Vec::new();
     {
-        let mut w = SlotEmitter::<_, Crc>::new(&mut out);
+        let mut w = SlotEncoder::<_, Crc>::new(&mut out);
         w.first(&slot(5, StatusError::OK, BODY_5), 0x0015).unwrap();
         w.middle(&slot(6, StatusError::OK, BODY_6)).unwrap();
         w.last(&slot(7, StatusError::OK, BODY_7), 0xBBAA).unwrap();
@@ -176,7 +176,7 @@ fn write_slot_three_slave_response_assembles_to_valid_status_frame() {
 #[test]
 fn write_slot_overflow_truncates() {
     let mut out: Vec<u8, 8> = Vec::new();
-    let err = SlotEmitter::<_, Crc>::new(&mut out)
+    let err = SlotEncoder::<_, Crc>::new(&mut out)
         .first(&slot(5, StatusError::OK, BODY_5), 0x0015)
         .unwrap_err();
     assert_eq!(err, WriteError::Overflow);
@@ -187,7 +187,7 @@ fn write_slot_overflow_truncates() {
 fn write_slot_error_emits_caller_supplied_payload_with_error_byte() {
     let zero = [0u8; 4];
     let mut out: Vec<u8, 32> = Vec::new();
-    SlotEmitter::<_, Crc>::new(&mut out)
+    SlotEncoder::<_, Crc>::new(&mut out)
         .middle(&slot(7, StatusError::code(ErrorCode::DataRange), &zero))
         .unwrap();
     assert_eq!(
@@ -326,7 +326,7 @@ fn write_reboot_matches_reference() {
 fn write_status_round_trip() {
     let params = [0x06u8, 0x04, 0x26];
     let mut out: Vec<u8, 64> = Vec::new();
-    StatusEmitter::<_, Crc>::new(&mut out)
+    StatusEncoder::<_, Crc>::new(&mut out)
         .ext(Id::new(1), StatusError::OK, &params)
         .unwrap();
 
@@ -574,7 +574,7 @@ fn stuff_empty_payload() {
 fn stuff_status_with_trigger_in_params() {
     let params = [0xFFu8, 0xFF, 0xFD, 0x00, 0x42];
     let mut out: Vec<u8, 64> = Vec::new();
-    StatusEmitter::<_, Crc>::new(&mut out)
+    StatusEncoder::<_, Crc>::new(&mut out)
         .ext(Id::new(1), StatusError::OK, &params)
         .unwrap();
     let mut dec: Decoder<64, Crc> = Decoder::new();

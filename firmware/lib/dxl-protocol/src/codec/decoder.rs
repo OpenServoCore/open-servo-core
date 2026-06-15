@@ -344,7 +344,7 @@ impl<const M: usize, CRC: CrcUmts> Default for Decoder<M, CRC> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::InstructionEmitter;
+    use crate::InstructionEncoder;
     use crate::crc_software::SoftwareCrcUmts;
     use heapless::Vec;
 
@@ -353,7 +353,7 @@ mod tests {
 
     fn encode(id: u8, instruction: Instruction, params: &[u8]) -> Buf {
         let mut out = Buf::new();
-        InstructionEmitter::<_, Crc>::new(&mut out)
+        InstructionEncoder::<_, Crc>::new(&mut out)
             .ext(Id::new(id), instruction.as_u8(), params)
             .unwrap();
         out
