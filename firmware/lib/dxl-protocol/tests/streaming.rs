@@ -7,7 +7,8 @@ use dxl_protocol::streaming::{
     StatusPayload,
 };
 use dxl_protocol::types::{Id, Instruction, StatusError};
-use dxl_protocol::{CrcUmts, HEADER, SoftwareCrcUmts};
+use dxl_protocol::wire::HEADER;
+use dxl_protocol::{CrcUmts, SoftwareCrcUmts};
 
 type Crc = SoftwareCrcUmts;
 

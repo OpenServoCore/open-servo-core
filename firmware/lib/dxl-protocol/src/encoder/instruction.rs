@@ -1,11 +1,10 @@
 //! Request frame encoder (master -> slave).
 
-#![allow(dead_code)]
-
 use crate::buf::{WriteBuf, WriteError};
 use crate::crc::CrcUmts;
 use crate::types::{BulkReadEntry, Id, Instruction};
 
+use super::stuffing::Stuffer;
 use super::{emit_frame, emit_frame_with};
 
 pub struct InstructionEncoder<'a, W: WriteBuf, CRC: CrcUmts> {
@@ -184,7 +183,7 @@ impl<'a, W: WriteBuf, CRC: CrcUmts> InstructionEncoder<'a, W, CRC> {
 
 fn write_bulk_read_entries<W: WriteBuf>(
     out: &mut W,
-    stuffer: &mut super::Stuffer,
+    stuffer: &mut Stuffer,
     entries: &[BulkReadEntry],
 ) -> Result<(), WriteError> {
     for entry in entries {
@@ -203,7 +202,7 @@ extern crate alloc;
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::crc_software::SoftwareCrcUmts;
+    use crate::crc::SoftwareCrcUmts;
     use crate::streaming::InstructionHeader as PH;
     use crate::streaming::{Event, HeaderEvent, InstructionPayload, Parser, PayloadEvent};
     use alloc::vec;

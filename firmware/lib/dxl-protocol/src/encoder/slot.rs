@@ -1,7 +1,5 @@
 //! One slave's slice of a Fast Sync/Bulk Read coalesced reply chain.
 
-#![allow(dead_code)]
-
 use crate::buf::{WriteBuf, WriteError};
 use crate::crc::CrcUmts;
 use crate::types::{Slot, SlotPosition};
@@ -119,7 +117,7 @@ extern crate alloc;
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::crc_software::SoftwareCrcUmts;
+    use crate::crc::SoftwareCrcUmts;
     use crate::streaming::{Event, HeaderEvent, Parser};
     use crate::types::{Id, Instruction, StatusError};
     use heapless::Vec;

@@ -10,50 +10,28 @@
 //! `.emit(...)` over the matching enum (`Status<'_>` / `Slot<'_>` +
 //! `SlotPosition`).
 
-#![allow(dead_code)]
-
 mod instruction;
 mod slot;
 mod status;
+mod stuffing;
 
 pub use instruction::InstructionEncoder;
 pub use slot::SlotEncoder;
 pub use status::StatusEncoder;
 
 use crate::buf::{WriteBuf, WriteError};
-use crate::constants::{HEADER, STUFFING_BYTE, STUFFING_TRIGGER};
 use crate::crc::CrcUmts;
 use crate::types::{Id, Instruction, Slot};
+use crate::wire::HEADER;
 
-/// Sliding-window state for the byte-stuffing encoder: after each pushed
-/// param byte, a `0xFF 0xFF 0xFD` window triggers an inline `0xFD`.
-pub(super) struct Stuffer([u8; 2]);
-
-impl Stuffer {
-    /// Seed the window with the instruction byte so a trigger straddling the
-    /// instr->params boundary still emits the stuffing FD.
-    fn new(instruction: u8) -> Self {
-        Self([0, instruction])
-    }
-
-    pub(super) fn push<W: WriteBuf>(&mut self, out: &mut W, b: u8) -> Result<(), WriteError> {
-        out.push(b)?;
-        if [self.0[0], self.0[1], b] == STUFFING_TRIGGER {
-            out.push(STUFFING_BYTE)?;
-            self.0 = [self.0[1], STUFFING_BYTE];
-        } else {
-            self.0 = [self.0[1], b];
-        }
-        Ok(())
-    }
-}
+use stuffing::Stuffer;
 
 /// Emit one DXL 2.0 frame: header + id + length + instruction + stuffed
 /// params + CRC. `write_params` is called once with the open output and a
 /// [`Stuffer`] -- each `Stuffer::push` byte counts toward the wire `Length`
 /// field after stuffing. On failure `out` is truncated back to its entry
 /// length so prior frames stay intact.
-pub(super) fn emit_frame_with<W, CRC, F>(
+pub(in crate::encoder) fn emit_frame_with<W, CRC, F>(
     out: &mut W,
     crc: &mut CRC,
     id: Id,
@@ -123,7 +101,7 @@ where
 
 /// Convenience over [`emit_frame_with`] for params that are already a slice
 /// of byte chunks (stuffing window straddles chunk boundaries).
-pub(super) fn emit_frame<W: WriteBuf, CRC: CrcUmts>(
+pub(in crate::encoder) fn emit_frame<W: WriteBuf, CRC: CrcUmts>(
     out: &mut W,
     crc: &mut CRC,
     id: Id,
@@ -140,7 +118,10 @@ pub(super) fn emit_frame<W: WriteBuf, CRC: CrcUmts>(
     })
 }
 
-pub(super) fn emit_slot_header<W: WriteBuf>(out: &mut W, length: u16) -> Result<(), WriteError> {
+pub(in crate::encoder) fn emit_slot_header<W: WriteBuf>(
+    out: &mut W,
+    length: u16,
+) -> Result<(), WriteError> {
     out.push(HEADER[0])?;
     out.push(HEADER[1])?;
     out.push(HEADER[2])?;
@@ -153,7 +134,10 @@ pub(super) fn emit_slot_header<W: WriteBuf>(out: &mut W, length: u16) -> Result<
     Ok(())
 }
 
-pub(super) fn emit_slot_body<W: WriteBuf>(out: &mut W, slot: &Slot<'_>) -> Result<(), WriteError> {
+pub(in crate::encoder) fn emit_slot_body<W: WriteBuf>(
+    out: &mut W,
+    slot: &Slot<'_>,
+) -> Result<(), WriteError> {
     out.push(slot.error.as_byte())?;
     out.push(slot.id.as_byte())?;
     for &b in slot.data.iter() {

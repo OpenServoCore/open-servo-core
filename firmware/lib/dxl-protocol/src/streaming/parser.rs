@@ -12,7 +12,6 @@ enum Phase {
     Payload(PayloadStage),
     Slots(SlotsStage),
     Crc(CrcStage),
-    Done,
 }
 
 pub struct Parser<CRC: CrcUmts> {
@@ -78,7 +77,7 @@ impl<CRC: CrcUmts> Parser<CRC> {
                     CrcResult::Bad => Event::Resync(ResyncKind::BadCrc),
                 })
             }
-            Phase::Payload(_) | Phase::Slots(_) | Phase::Done => None,
+            Phase::Payload(_) | Phase::Slots(_) => None,
         }
     }
 }
@@ -106,9 +105,6 @@ impl<'p, CRC: CrcUmts> Iterator for EventStream<'p, CRC> {
 
     fn next(&mut self) -> Option<Event> {
         while self.offset < self.bytes.len() {
-            if matches!(self.parser.phase, Phase::Done) {
-                return None;
-            }
             if let Phase::Payload(ref mut s) = self.parser.phase {
                 let chunk_start = self.offset as u16;
                 let (consumed, ev) = s.feed(
@@ -157,12 +153,12 @@ extern crate alloc;
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::constants::PACKET_LEN_GUARD;
-    use crate::crc_software::SoftwareCrcUmts;
+    use crate::crc::SoftwareCrcUmts;
     use crate::streaming::event::{
         HeaderEvent, InstructionHeader, InstructionPayload, PayloadEvent, ResyncKind,
     };
     use crate::types::{Id, Instruction};
+    use crate::wire::PACKET_LEN_GUARD;
     use alloc::vec;
     use alloc::vec::Vec;
 

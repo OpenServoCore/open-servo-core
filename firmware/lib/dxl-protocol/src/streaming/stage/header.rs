@@ -1,9 +1,9 @@
 //! Header decode stage: id, length, instruction, optional error byte, and
 //! per-variant param bytes.
 
-use crate::constants::{HEADER, PACKET_LEN_GUARD, PACKET_LEN_MIN, REQUEST_HEADER_BYTES};
 use crate::crc::CrcUmts;
 use crate::types::{Id, Instruction, StatusError};
+use crate::wire::{HEADER, PACKET_LEN_GUARD, PACKET_LEN_MIN, REQUEST_HEADER_BYTES};
 
 use crate::streaming::event::{HeaderEvent, InstructionHeader, ResyncKind, StatusHeader};
 
@@ -117,7 +117,7 @@ impl HeaderStage {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::crc_software::SoftwareCrcUmts;
+    use crate::crc::SoftwareCrcUmts;
 
     type Crc = SoftwareCrcUmts;
 

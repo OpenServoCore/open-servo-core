@@ -1,7 +1,5 @@
 //! Status reply encoder (slave -> master).
 
-#![allow(dead_code)]
-
 use crate::buf::{WriteBuf, WriteError};
 use crate::crc::CrcUmts;
 use crate::types::{Id, Instruction, Status, StatusError};
@@ -92,7 +90,7 @@ extern crate alloc;
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::crc_software::SoftwareCrcUmts;
+    use crate::crc::SoftwareCrcUmts;
     use crate::streaming::{
         Event, HeaderEvent, Parser, PayloadEvent, StatusHeader as SH, StatusPayload,
     };

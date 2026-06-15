@@ -6,8 +6,6 @@
 //!
 //! See `docs/dxl-streaming-rx.md` §3 for the design.
 
-#![allow(dead_code)]
-
 mod event;
 mod parser;
 mod stage;

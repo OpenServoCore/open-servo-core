@@ -1,14 +1,9 @@
 //! Framing constants shared by encoder and decoder.
+//!
+//! Encoder-private stuffing constants live in [`crate::encoder::stuffing`].
 
 pub const HEADER: [u8; 4] = [0xFF, 0xFF, 0xFD, 0x00];
 pub const BROADCAST_ID: u8 = 0xFE;
-
-/// Logical pattern (HEADER[0..3]) that triggers byte stuffing -- encoder
-/// inserts `STUFFING_BYTE` after every occurrence in the payload so a fake
-/// header can't appear mid-frame.
-pub const STUFFING_TRIGGER: [u8; 3] = [HEADER[0], HEADER[1], HEADER[2]];
-
-pub const STUFFING_BYTE: u8 = 0xFD;
 
 /// Minimum `Length` field value: `INSTRUCTION(1) + CRC(2)`.
 pub const PACKET_LEN_MIN: usize = 1 + CRC_BYTES;

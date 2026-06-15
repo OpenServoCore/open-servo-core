@@ -170,7 +170,7 @@ fn build_slot_event(pattern: SlotPattern, index: u8, buf: &[u8; 5]) -> (PayloadE
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::crc_software::SoftwareCrcUmts;
+    use crate::crc::SoftwareCrcUmts;
 
     type Crc = SoftwareCrcUmts;
 

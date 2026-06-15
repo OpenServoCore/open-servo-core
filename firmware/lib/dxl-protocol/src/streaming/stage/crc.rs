@@ -39,7 +39,7 @@ impl CrcStage {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::crc_software::SoftwareCrcUmts;
+    use crate::crc::SoftwareCrcUmts;
 
     type Crc = SoftwareCrcUmts;
 

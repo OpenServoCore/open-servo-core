@@ -1,7 +1,7 @@
 //! Header-sync stage: KMP-style match of `FF FF FD 00`.
 
-use crate::constants::HEADER;
 use crate::crc::CrcUmts;
+use crate::wire::HEADER;
 
 pub(crate) struct SyncStage {
     matched: u8,
@@ -38,7 +38,7 @@ impl SyncStage {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::crc_software::SoftwareCrcUmts;
+    use crate::crc::SoftwareCrcUmts;
 
     type Crc = SoftwareCrcUmts;
 
