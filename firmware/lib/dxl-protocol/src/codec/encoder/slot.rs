@@ -115,11 +115,14 @@ impl<'a, W: WriteBuf, CRC: CrcUmts> SlotEncoder<'a, W, CRC> {
 }
 
 #[cfg(test)]
+extern crate alloc;
+
+#[cfg(test)]
 mod tests {
     use super::*;
-    use crate::codec::decoder::{Decoder, Step};
     use crate::crc_software::SoftwareCrcUmts;
-    use crate::packet::{Id, Instruction, Packet, RequestKind, Status, StatusError};
+    use crate::packet::{Id, Instruction, StatusError};
+    use crate::streaming::{Event, HeaderEvent, Parser};
     use heapless::Vec;
 
     type Crc = SoftwareCrcUmts;
@@ -135,22 +138,18 @@ mod tests {
         };
         SlotEncoder::<_, Crc>::new(&mut buf).only(&slot, 9).unwrap();
 
-        let mut dec: Decoder<32, Crc> = Decoder::new();
-        match dec.feed(&buf).0 {
-            Step::Packet(Packet::Status(s)) => {
-                assert_eq!(s.header.header.id, Id::BROADCAST);
-                assert_eq!(s.error(), StatusError::OK);
-                let slots: Vec<_, 4> = match s.interpret(RequestKind::FastSyncRead) {
-                    Status::FastSyncRead { status, .. } => status.slots(4).collect(),
-                    other => panic!("expected FastSyncRead, got {other:?}"),
-                };
-                assert_eq!(slots.len(), 1);
-                assert_eq!(slots[0].id, Id::new(7));
-                assert_eq!(slots[0].error, StatusError::OK);
-                assert_eq!(slots[0].data, &[0xAA, 0xBB, 0xCC, 0xDD]);
-            }
-            other => panic!("expected Status, got {other:?}"),
-        }
+        let mut p: Parser<Crc> = Parser::new();
+        let evs: alloc::vec::Vec<Event> = p.feed(&buf).collect();
+        let h = evs
+            .iter()
+            .find_map(|e| match e {
+                Event::Header(HeaderEvent::Status(h)) => Some(*h),
+                _ => None,
+            })
+            .expect("status header");
+        assert_eq!(h.id, Id::BROADCAST);
+        assert_eq!(h.error, StatusError::OK);
+        assert!(evs.iter().any(|e| matches!(e, Event::Crc)));
     }
 
     #[test]
@@ -262,7 +261,12 @@ mod tests {
         SlotEncoder::<_, Crc>::new(&mut buf)
             .emit(&slot, SlotPosition::Only { packet_length: 9 })
             .unwrap();
-        let mut dec: Decoder<32, Crc> = Decoder::new();
-        assert!(matches!(dec.feed(&buf).0, Step::Packet(Packet::Status(_))));
+        let mut p: Parser<Crc> = Parser::new();
+        let evs: alloc::vec::Vec<Event> = p.feed(&buf).collect();
+        assert!(
+            evs.iter()
+                .any(|e| matches!(e, Event::Header(HeaderEvent::Status(_))))
+        );
+        assert!(evs.iter().any(|e| matches!(e, Event::Crc)));
     }
 }

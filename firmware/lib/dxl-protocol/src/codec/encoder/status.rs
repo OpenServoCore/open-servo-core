@@ -87,15 +87,54 @@ impl<'a, W: WriteBuf, CRC: CrcUmts> StatusEncoder<'a, W, CRC> {
 }
 
 #[cfg(test)]
+extern crate alloc;
+
+#[cfg(test)]
 mod tests {
     use super::*;
-    use crate::codec::decoder::{Decoder, Step};
     use crate::crc_software::SoftwareCrcUmts;
-    use crate::packet::{FastSyncReadStatus, Packet, PingStatus, RequestKind, U16Le};
+    use crate::packet::{FastSyncReadStatus, PingStatus, U16Le};
+    use crate::streaming::{
+        Event, HeaderEvent, Parser, PayloadEvent, StatusHeader as SH, StatusPayload,
+    };
+    use alloc::vec::Vec as AVec;
     use heapless::Vec;
 
     type Crc = SoftwareCrcUmts;
     type Buf = Vec<u8, 256>;
+
+    fn parse(wire: &[u8]) -> AVec<Event> {
+        let mut p: Parser<Crc> = Parser::new();
+        p.feed(wire).collect()
+    }
+
+    fn status_header(events: &[Event]) -> SH {
+        events
+            .iter()
+            .find_map(|e| match e {
+                Event::Header(HeaderEvent::Status(h)) => Some(*h),
+                _ => None,
+            })
+            .expect("expected status header event")
+    }
+
+    fn read_data(wire: &[u8], events: &[Event]) -> AVec<u8> {
+        let mut out = AVec::new();
+        for ev in events {
+            if let Event::Payload(PayloadEvent::Status(StatusPayload::ReadDataChunk {
+                offset,
+                length,
+            })) = ev
+            {
+                out.extend_from_slice(&wire[*offset as usize..(*offset + *length) as usize]);
+            }
+        }
+        out
+    }
+
+    fn assert_crc_good(events: &[Event]) {
+        assert!(events.iter().any(|e| matches!(e, Event::Crc)));
+    }
 
     #[test]
     fn status_empty_round_trips() {
@@ -103,15 +142,12 @@ mod tests {
         StatusEncoder::<_, Crc>::new(&mut buf)
             .empty(Id::new(0x01), StatusError::OK)
             .unwrap();
-        let mut dec: Decoder<32, Crc> = Decoder::new();
-        match dec.feed(&buf).0 {
-            Step::Packet(Packet::Status(s)) => {
-                assert_eq!(s.header.header.id, Id::new(0x01));
-                assert_eq!(s.error(), StatusError::OK);
-                assert_eq!(s.params, &[]);
-            }
-            other => panic!("expected Status, got {other:?}"),
-        }
+        let evs = parse(&buf);
+        let h = status_header(&evs);
+        assert_eq!(h.id, Id::new(0x01));
+        assert_eq!(h.error, StatusError::OK);
+        assert_eq!(h.length, 0);
+        assert_crc_good(&evs);
     }
 
     #[test]
@@ -121,35 +157,25 @@ mod tests {
         StatusEncoder::<_, Crc>::new(&mut buf)
             .empty(Id::new(0x02), err)
             .unwrap();
-        let mut dec: Decoder<32, Crc> = Decoder::new();
-        match dec.feed(&buf).0 {
-            Step::Packet(Packet::Status(s)) => {
-                assert_eq!(s.header.header.id, Id::new(0x02));
-                assert_eq!(s.error(), err);
-            }
-            other => panic!("expected Status, got {other:?}"),
-        }
+        let evs = parse(&buf);
+        let h = status_header(&evs);
+        assert_eq!(h.id, Id::new(0x02));
+        assert_eq!(h.error, err);
+        assert_crc_good(&evs);
     }
 
     #[test]
-    fn status_ping_round_trips_through_interpret() {
+    fn status_ping_round_trips() {
         let mut buf = Buf::new();
         StatusEncoder::<_, Crc>::new(&mut buf)
             .ping(Id::new(0x03), StatusError::OK, 0x0203, 0x10)
             .unwrap();
-        let mut dec: Decoder<32, Crc> = Decoder::new();
-        match dec.feed(&buf).0 {
-            Step::Packet(Packet::Status(s)) => match s.interpret(RequestKind::Ping) {
-                Status::Ping { id, error, status } => {
-                    assert_eq!(id, Id::new(0x03));
-                    assert_eq!(error, StatusError::OK);
-                    assert_eq!(status.model.get(), 0x0203);
-                    assert_eq!(status.fw_version, 0x10);
-                }
-                other => panic!("expected Status::Ping, got {other:?}"),
-            },
-            other => panic!("expected Status, got {other:?}"),
-        }
+        let evs = parse(&buf);
+        let h = status_header(&evs);
+        assert_eq!(h.id, Id::new(0x03));
+        assert_eq!(h.error, StatusError::OK);
+        assert_eq!(read_data(&buf, &evs).as_slice(), &[0x03, 0x02, 0x10]);
+        assert_crc_good(&evs);
     }
 
     #[test]
@@ -159,18 +185,11 @@ mod tests {
         StatusEncoder::<_, Crc>::new(&mut buf)
             .read(Id::new(0x04), StatusError::OK, &data)
             .unwrap();
-        let mut dec: Decoder<32, Crc> = Decoder::new();
-        match dec.feed(&buf).0 {
-            Step::Packet(Packet::Status(s)) => match s.interpret(RequestKind::Read) {
-                Status::Read { id, error, data: d } => {
-                    assert_eq!(id, Id::new(0x04));
-                    assert_eq!(error, StatusError::OK);
-                    assert_eq!(d, &data);
-                }
-                other => panic!("expected Status::Read, got {other:?}"),
-            },
-            other => panic!("expected Status, got {other:?}"),
-        }
+        let evs = parse(&buf);
+        let h = status_header(&evs);
+        assert_eq!(h.id, Id::new(0x04));
+        assert_eq!(read_data(&buf, &evs).as_slice(), &data);
+        assert_crc_good(&evs);
     }
 
     #[test]
@@ -180,15 +199,11 @@ mod tests {
         StatusEncoder::<_, Crc>::new(&mut buf)
             .ext(Id::new(0x05), StatusError::OK, &payload)
             .unwrap();
-        let mut dec: Decoder<32, Crc> = Decoder::new();
-        match dec.feed(&buf).0 {
-            Step::Packet(Packet::Status(s)) => {
-                assert_eq!(s.header.header.id, Id::new(0x05));
-                assert_eq!(s.error(), StatusError::OK);
-                assert_eq!(s.params, &payload);
-            }
-            other => panic!("expected Status, got {other:?}"),
-        }
+        let evs = parse(&buf);
+        let h = status_header(&evs);
+        assert_eq!(h.id, Id::new(0x05));
+        assert_eq!(read_data(&buf, &evs).as_slice(), &payload);
+        assert_crc_good(&evs);
     }
 
     #[test]
@@ -201,19 +216,16 @@ mod tests {
                 error: err,
             })
             .unwrap();
-        let mut dec: Decoder<32, Crc> = Decoder::new();
-        match dec.feed(&buf).0 {
-            Step::Packet(Packet::Status(s)) => {
-                assert_eq!(s.header.header.id, Id::new(0x05));
-                assert_eq!(s.error(), err);
-                assert_eq!(s.params, &[]);
-            }
-            other => panic!("expected Status, got {other:?}"),
-        }
+        let evs = parse(&buf);
+        let h = status_header(&evs);
+        assert_eq!(h.id, Id::new(0x05));
+        assert_eq!(h.error, err);
+        assert_eq!(h.length, 0);
+        assert_crc_good(&evs);
     }
 
     #[test]
-    fn status_emit_ping_round_trips_through_interpret() {
+    fn status_emit_ping_round_trips() {
         let mut buf = Buf::new();
         StatusEncoder::<_, Crc>::new(&mut buf)
             .emit(Status::Ping {
@@ -225,19 +237,11 @@ mod tests {
                 },
             })
             .unwrap();
-        let mut dec: Decoder<32, Crc> = Decoder::new();
-        match dec.feed(&buf).0 {
-            Step::Packet(Packet::Status(s)) => match s.interpret(RequestKind::Ping) {
-                Status::Ping { id, error, status } => {
-                    assert_eq!(id, Id::new(0x07));
-                    assert_eq!(error, StatusError::OK);
-                    assert_eq!(status.model.get(), 0x1234);
-                    assert_eq!(status.fw_version, 0x42);
-                }
-                other => panic!("expected Status::Ping, got {other:?}"),
-            },
-            other => panic!("expected Status, got {other:?}"),
-        }
+        let evs = parse(&buf);
+        let h = status_header(&evs);
+        assert_eq!(h.id, Id::new(0x07));
+        assert_eq!(read_data(&buf, &evs).as_slice(), &[0x34, 0x12, 0x42]);
+        assert_crc_good(&evs);
     }
 
     #[test]
@@ -251,17 +255,10 @@ mod tests {
                 data: &data,
             })
             .unwrap();
-        let mut dec: Decoder<32, Crc> = Decoder::new();
-        match dec.feed(&buf).0 {
-            Step::Packet(Packet::Status(s)) => match s.interpret(RequestKind::Read) {
-                Status::Read { id, data: d, .. } => {
-                    assert_eq!(id, Id::new(0x09));
-                    assert_eq!(d, &data);
-                }
-                other => panic!("expected Status::Read, got {other:?}"),
-            },
-            other => panic!("expected Status, got {other:?}"),
-        }
+        let evs = parse(&buf);
+        let h = status_header(&evs);
+        assert_eq!(h.id, Id::new(0x09));
+        assert_eq!(read_data(&buf, &evs).as_slice(), &data);
     }
 
     #[test]
@@ -275,14 +272,10 @@ mod tests {
                 payload: &payload,
             })
             .unwrap();
-        let mut dec: Decoder<32, Crc> = Decoder::new();
-        match dec.feed(&buf).0 {
-            Step::Packet(Packet::Status(s)) => {
-                assert_eq!(s.header.header.id, Id::new(0x0B));
-                assert_eq!(s.params, &payload);
-            }
-            other => panic!("expected Status, got {other:?}"),
-        }
+        let evs = parse(&buf);
+        let h = status_header(&evs);
+        assert_eq!(h.id, Id::new(0x0B));
+        assert_eq!(read_data(&buf, &evs).as_slice(), &payload);
     }
 
     #[test]
@@ -298,14 +291,11 @@ mod tests {
                 },
             })
             .unwrap();
-        let mut dec: Decoder<64, Crc> = Decoder::new();
-        match dec.feed(&buf).0 {
-            Step::Packet(Packet::Status(s)) => {
-                assert_eq!(s.header.header.id, Id::BROADCAST);
-                assert_eq!(s.error(), StatusError::OK);
-                assert_eq!(s.params, &payload);
-            }
-            other => panic!("expected Status, got {other:?}"),
-        }
+        let evs = parse(&buf);
+        let h = status_header(&evs);
+        assert_eq!(h.id, Id::BROADCAST);
+        assert_eq!(h.error, StatusError::OK);
+        assert_eq!(read_data(&buf, &evs).as_slice(), &payload);
+        assert_crc_good(&evs);
     }
 }

@@ -226,16 +226,84 @@ impl<'a, W: WriteBuf, CRC: CrcUmts> InstructionEncoder<'a, W, CRC> {
 }
 
 #[cfg(test)]
+extern crate alloc;
+
+#[cfg(test)]
 mod tests {
     use super::*;
-    use crate::codec::decoder::{Decoder, Step};
-    use crate::codec::encoder::StatusEncoder;
     use crate::crc_software::SoftwareCrcUmts;
-    use crate::packet::{Packet, StatusError, U16Le};
+    use crate::packet::U16Le;
+    use crate::streaming::InstructionHeader as PH;
+    use crate::streaming::{Event, HeaderEvent, InstructionPayload, Parser, PayloadEvent};
+    use alloc::vec;
+    use alloc::vec::Vec as AVec;
     use heapless::Vec;
 
     type Crc = SoftwareCrcUmts;
     type Buf = Vec<u8, 256>;
+
+    fn parse(wire: &[u8]) -> AVec<Event> {
+        let mut p: Parser<Crc> = Parser::new();
+        p.feed(wire).collect()
+    }
+
+    fn instr_header(events: &[Event]) -> PH {
+        events
+            .iter()
+            .find_map(|e| match e {
+                Event::Header(HeaderEvent::Instruction(h)) => Some(*h),
+                _ => None,
+            })
+            .expect("expected instruction header event")
+    }
+
+    fn write_chunks(events: &[Event]) -> AVec<(u16, u16)> {
+        events
+            .iter()
+            .filter_map(|e| match e {
+                Event::Payload(PayloadEvent::Instruction(InstructionPayload::WriteDataChunk {
+                    offset,
+                    length,
+                })) => Some((*offset, *length)),
+                _ => None,
+            })
+            .collect()
+    }
+
+    fn sync_slots(events: &[Event]) -> AVec<(Id, u8)> {
+        events
+            .iter()
+            .filter_map(|e| match e {
+                Event::Payload(PayloadEvent::Instruction(InstructionPayload::SyncSlot {
+                    id,
+                    index,
+                })) => Some((*id, *index)),
+                _ => None,
+            })
+            .collect()
+    }
+
+    fn bulk_slots(events: &[Event]) -> AVec<(Id, u8, u16, u16)> {
+        events
+            .iter()
+            .filter_map(|e| match e {
+                Event::Payload(PayloadEvent::Instruction(InstructionPayload::BulkSlot {
+                    id,
+                    index,
+                    address,
+                    length,
+                })) => Some((*id, *index, *address, *length)),
+                _ => None,
+            })
+            .collect()
+    }
+
+    fn assert_crc_good(events: &[Event]) {
+        assert!(
+            events.iter().any(|e| matches!(e, Event::Crc)),
+            "no Crc verdict in events: {events:?}"
+        );
+    }
 
     #[test]
     fn instr_ping() {
@@ -243,16 +311,9 @@ mod tests {
         InstructionEncoder::<_, Crc>::new(&mut buf)
             .ping(Id::new(0x01))
             .unwrap();
-        let mut dec: Decoder<32, Crc> = Decoder::new();
-        let (step, n) = dec.feed(&buf);
-        assert_eq!(n, buf.len());
-        match step {
-            Step::Packet(Packet::Ping(p)) => {
-                assert_eq!(p.header.id, Id::new(0x01));
-                assert_eq!(p.header.instruction.kind(), Instruction::Ping);
-            }
-            other => panic!("expected Ping, got {other:?}"),
-        }
+        let evs = parse(&buf);
+        assert!(matches!(instr_header(&evs), PH::Ping { id } if id == Id::new(0x01)));
+        assert_crc_good(&evs);
     }
 
     #[test]
@@ -261,15 +322,16 @@ mod tests {
         InstructionEncoder::<_, Crc>::new(&mut buf)
             .read(Id::new(0x02), 0x0084, 4)
             .unwrap();
-        let mut dec: Decoder<32, Crc> = Decoder::new();
-        match dec.feed(&buf).0 {
-            Step::Packet(Packet::Read(p)) => {
-                assert_eq!(p.header.id, Id::new(0x02));
-                assert_eq!(p.addr.get(), 0x0084);
-                assert_eq!(p.length.get(), 4);
-            }
-            other => panic!("expected Read, got {other:?}"),
-        }
+        let evs = parse(&buf);
+        assert!(matches!(
+            instr_header(&evs),
+            PH::Read {
+                id,
+                address: 0x0084,
+                length: 4,
+            } if id == Id::new(0x02)
+        ));
+        assert_crc_good(&evs);
     }
 
     #[test]
@@ -279,15 +341,25 @@ mod tests {
         InstructionEncoder::<_, Crc>::new(&mut buf)
             .write(Id::new(0x03), 0x0084, &data)
             .unwrap();
-        let mut dec: Decoder<64, Crc> = Decoder::new();
-        match dec.feed(&buf).0 {
-            Step::Packet(Packet::Write(w)) => {
-                assert_eq!(w.header.header.id, Id::new(0x03));
-                assert_eq!(w.header.addr.get(), 0x0084);
-                assert_eq!(w.data, &data);
-            }
-            other => panic!("expected Write, got {other:?}"),
+        let evs = parse(&buf);
+        assert!(matches!(
+            instr_header(&evs),
+            PH::Write {
+                id,
+                address: 0x0084,
+                length: 4,
+            } if id == Id::new(0x03)
+        ));
+        let chunks = write_chunks(&evs);
+        let total: u16 = chunks.iter().map(|(_, l)| *l).sum();
+        assert_eq!(total, 4);
+        for (off, len) in chunks {
+            assert_eq!(
+                &buf[off as usize..(off + len) as usize],
+                &data[..len as usize]
+            );
         }
+        assert_crc_good(&evs);
     }
 
     #[test]
@@ -297,15 +369,16 @@ mod tests {
         InstructionEncoder::<_, Crc>::new(&mut buf)
             .reg_write(Id::new(0x04), 0x0030, &data)
             .unwrap();
-        let mut dec: Decoder<32, Crc> = Decoder::new();
-        match dec.feed(&buf).0 {
-            Step::Packet(Packet::RegWrite(w)) => {
-                assert_eq!(w.header.header.id, Id::new(0x04));
-                assert_eq!(w.header.addr.get(), 0x0030);
-                assert_eq!(w.data, &data);
-            }
-            other => panic!("expected RegWrite, got {other:?}"),
-        }
+        let evs = parse(&buf);
+        assert!(matches!(
+            instr_header(&evs),
+            PH::RegWrite {
+                id,
+                address: 0x0030,
+                length: 2,
+            } if id == Id::new(0x04)
+        ));
+        assert_crc_good(&evs);
     }
 
     #[test]
@@ -314,11 +387,9 @@ mod tests {
         InstructionEncoder::<_, Crc>::new(&mut buf)
             .action(Id::new(0x05))
             .unwrap();
-        let mut dec: Decoder<32, Crc> = Decoder::new();
-        match dec.feed(&buf).0 {
-            Step::Packet(Packet::Action(p)) => assert_eq!(p.header.id, Id::new(0x05)),
-            other => panic!("expected Action, got {other:?}"),
-        }
+        let evs = parse(&buf);
+        assert!(matches!(instr_header(&evs), PH::Action { id } if id == Id::new(0x05)));
+        assert_crc_good(&evs);
     }
 
     #[test]
@@ -327,11 +398,9 @@ mod tests {
         InstructionEncoder::<_, Crc>::new(&mut buf)
             .reboot(Id::new(0x06))
             .unwrap();
-        let mut dec: Decoder<32, Crc> = Decoder::new();
-        match dec.feed(&buf).0 {
-            Step::Packet(Packet::Reboot(p)) => assert_eq!(p.header.id, Id::new(0x06)),
-            other => panic!("expected Reboot, got {other:?}"),
-        }
+        let evs = parse(&buf);
+        assert!(matches!(instr_header(&evs), PH::Reboot { id } if id == Id::new(0x06)));
+        assert_crc_good(&evs);
     }
 
     #[test]
@@ -340,53 +409,42 @@ mod tests {
         InstructionEncoder::<_, Crc>::new(&mut buf)
             .factory_reset(Id::new(0x07), 0x02)
             .unwrap();
-        let mut dec: Decoder<32, Crc> = Decoder::new();
-        match dec.feed(&buf).0 {
-            Step::Packet(Packet::FactoryReset(p)) => {
-                assert_eq!(p.header.id, Id::new(0x07));
-                assert_eq!(p.mode, 0x02);
-            }
-            other => panic!("expected FactoryReset, got {other:?}"),
-        }
+        let evs = parse(&buf);
+        assert!(matches!(
+            instr_header(&evs),
+            PH::FactoryReset { id, mode: 0x02 } if id == Id::new(0x07)
+        ));
+        assert_crc_good(&evs);
     }
 
     #[test]
-    fn instr_clear_dispatches_as_raw() {
+    fn instr_clear_decodes_as_clear_with_body_length() {
         let mut buf = Buf::new();
         let body = [0x01, 0x44, 0x58, 0x4C, 0x22];
         InstructionEncoder::<_, Crc>::new(&mut buf)
             .clear(Id::new(0x08), &body)
             .unwrap();
-        let mut dec: Decoder<32, Crc> = Decoder::new();
-        match dec.feed(&buf).0 {
-            Step::Packet(Packet::Raw(r)) => {
-                assert_eq!(r.header.header.id, Id::new(0x08));
-                assert_eq!(r.header.header.instruction.kind(), Instruction::Clear);
-                assert_eq!(r.params, &body);
-            }
-            other => panic!("expected Raw(Clear), got {other:?}"),
-        }
+        let evs = parse(&buf);
+        assert!(matches!(
+            instr_header(&evs),
+            PH::Clear { id, length: 5 } if id == Id::new(0x08)
+        ));
+        assert_crc_good(&evs);
     }
 
     #[test]
-    fn instr_control_table_backup_dispatches_as_raw() {
+    fn instr_control_table_backup_decodes_as_ctb_with_body_length() {
         let mut buf = Buf::new();
         let body = [0xAA, 0xBB];
         InstructionEncoder::<_, Crc>::new(&mut buf)
             .control_table_backup(Id::new(0x09), &body)
             .unwrap();
-        let mut dec: Decoder<32, Crc> = Decoder::new();
-        match dec.feed(&buf).0 {
-            Step::Packet(Packet::Raw(r)) => {
-                assert_eq!(r.header.header.id, Id::new(0x09));
-                assert_eq!(
-                    r.header.header.instruction.kind(),
-                    Instruction::ControlTableBackup
-                );
-                assert_eq!(r.params, &body);
-            }
-            other => panic!("expected Raw(ControlTableBackup), got {other:?}"),
-        }
+        let evs = parse(&buf);
+        assert!(matches!(
+            instr_header(&evs),
+            PH::ControlTableBackup { id, length: 2 } if id == Id::new(0x09)
+        ));
+        assert_crc_good(&evs);
     }
 
     #[test]
@@ -396,16 +454,21 @@ mod tests {
         InstructionEncoder::<_, Crc>::new(&mut buf)
             .sync_read(0x0084, 4, &ids)
             .unwrap();
-        let mut dec: Decoder<64, Crc> = Decoder::new();
-        match dec.feed(&buf).0 {
-            Step::Packet(Packet::SyncRead(p)) => {
-                assert_eq!(p.header.header.id, Id::BROADCAST);
-                assert_eq!(p.header.addr.get(), 0x0084);
-                assert_eq!(p.header.length.get(), 4);
-                assert_eq!(p.ids, &ids);
-            }
-            other => panic!("expected SyncRead, got {other:?}"),
-        }
+        let evs = parse(&buf);
+        assert!(matches!(
+            instr_header(&evs),
+            PH::SyncRead {
+                id,
+                address: 0x0084,
+                length: 4,
+            } if id == Id::BROADCAST
+        ));
+        let slots = sync_slots(&evs);
+        assert_eq!(
+            slots,
+            vec![(Id::new(0x01), 0), (Id::new(0x02), 1), (Id::new(0x03), 2),]
+        );
+        assert_crc_good(&evs);
     }
 
     #[test]
@@ -415,21 +478,30 @@ mod tests {
         InstructionEncoder::<_, Crc>::new(&mut buf)
             .sync_write(0x0080, 2, &body)
             .unwrap();
-        let mut dec: Decoder<64, Crc> = Decoder::new();
-        match dec.feed(&buf).0 {
-            Step::Packet(Packet::SyncWrite(p)) => {
-                assert_eq!(p.header.header.id, Id::BROADCAST);
-                assert_eq!(p.header.addr.get(), 0x0080);
-                assert_eq!(p.header.length.get(), 2);
-                let entries: Vec<_, 4> = p.entries().collect();
-                assert_eq!(entries.len(), 2);
-                assert_eq!(entries[0].id, Id::new(0x01));
-                assert_eq!(entries[0].data, &[0xAA, 0xBB]);
-                assert_eq!(entries[1].id, Id::new(0x02));
-                assert_eq!(entries[1].data, &[0xCC, 0xDD]);
-            }
-            other => panic!("expected SyncWrite, got {other:?}"),
-        }
+        let evs = parse(&buf);
+        assert!(matches!(
+            instr_header(&evs),
+            PH::SyncWrite {
+                id,
+                address: 0x0080,
+                length: 2,
+            } if id == Id::BROADCAST
+        ));
+        assert_eq!(
+            sync_slots(&evs),
+            vec![(Id::new(0x01), 0), (Id::new(0x02), 1)]
+        );
+        let chunks = write_chunks(&evs);
+        assert_eq!(chunks.len(), 2);
+        assert_eq!(
+            &buf[chunks[0].0 as usize..(chunks[0].0 + 2) as usize],
+            &[0xAA, 0xBB]
+        );
+        assert_eq!(
+            &buf[chunks[1].0 as usize..(chunks[1].0 + 2) as usize],
+            &[0xCC, 0xDD]
+        );
+        assert_crc_good(&evs);
     }
 
     #[test]
@@ -450,20 +522,13 @@ mod tests {
         InstructionEncoder::<_, Crc>::new(&mut buf)
             .bulk_read(&entries)
             .unwrap();
-        let mut dec: Decoder<64, Crc> = Decoder::new();
-        match dec.feed(&buf).0 {
-            Step::Packet(Packet::BulkRead(p)) => {
-                assert_eq!(p.header.header.id, Id::BROADCAST);
-                assert_eq!(p.entries.len(), 2);
-                assert_eq!(p.entries[0].id, Id::new(1));
-                assert_eq!(p.entries[0].addr.get(), 0x0084);
-                assert_eq!(p.entries[0].length.get(), 4);
-                assert_eq!(p.entries[1].id, Id::new(2));
-                assert_eq!(p.entries[1].addr.get(), 0x0090);
-                assert_eq!(p.entries[1].length.get(), 2);
-            }
-            other => panic!("expected BulkRead, got {other:?}"),
-        }
+        let evs = parse(&buf);
+        assert!(matches!(instr_header(&evs), PH::BulkRead { id } if id == Id::BROADCAST));
+        assert_eq!(
+            bulk_slots(&evs),
+            vec![(Id::new(1), 0, 0x0084, 4), (Id::new(2), 1, 0x0090, 2),]
+        );
+        assert_crc_good(&evs);
     }
 
     #[test]
@@ -475,21 +540,23 @@ mod tests {
         InstructionEncoder::<_, Crc>::new(&mut buf)
             .bulk_write(&body)
             .unwrap();
-        let mut dec: Decoder<64, Crc> = Decoder::new();
-        match dec.feed(&buf).0 {
-            Step::Packet(Packet::BulkWrite(p)) => {
-                assert_eq!(p.header.header.id, Id::BROADCAST);
-                let entries: Vec<_, 4> = p.entries().collect();
-                assert_eq!(entries.len(), 2);
-                assert_eq!(entries[0].id, Id::new(0x01));
-                assert_eq!(entries[0].addr, 0x0084);
-                assert_eq!(entries[0].data, &[0xAA, 0xBB]);
-                assert_eq!(entries[1].id, Id::new(0x02));
-                assert_eq!(entries[1].addr, 0x0090);
-                assert_eq!(entries[1].data, &[0xCC]);
-            }
-            other => panic!("expected BulkWrite, got {other:?}"),
-        }
+        let evs = parse(&buf);
+        assert!(matches!(instr_header(&evs), PH::BulkWrite { id } if id == Id::BROADCAST));
+        assert_eq!(
+            bulk_slots(&evs),
+            vec![(Id::new(0x01), 0, 0x0084, 2), (Id::new(0x02), 1, 0x0090, 1),]
+        );
+        let chunks = write_chunks(&evs);
+        assert_eq!(chunks.len(), 2);
+        assert_eq!(
+            &buf[chunks[0].0 as usize..(chunks[0].0 + 2) as usize],
+            &[0xAA, 0xBB]
+        );
+        assert_eq!(
+            &buf[chunks[1].0 as usize..(chunks[1].0 + 1) as usize],
+            &[0xCC]
+        );
+        assert_crc_good(&evs);
     }
 
     #[test]
@@ -499,16 +566,20 @@ mod tests {
         InstructionEncoder::<_, Crc>::new(&mut buf)
             .fast_sync_read(0x0084, 4, &ids)
             .unwrap();
-        let mut dec: Decoder<64, Crc> = Decoder::new();
-        match dec.feed(&buf).0 {
-            Step::Packet(Packet::FastSyncRead(p)) => {
-                assert_eq!(p.header.header.id, Id::BROADCAST);
-                assert_eq!(p.header.addr.get(), 0x0084);
-                assert_eq!(p.header.length.get(), 4);
-                assert_eq!(p.ids, &ids);
-            }
-            other => panic!("expected FastSyncRead, got {other:?}"),
-        }
+        let evs = parse(&buf);
+        assert!(matches!(
+            instr_header(&evs),
+            PH::FastSyncRead {
+                id,
+                address: 0x0084,
+                length: 4,
+            } if id == Id::BROADCAST
+        ));
+        assert_eq!(
+            sync_slots(&evs),
+            vec![(Id::new(0x01), 0), (Id::new(0x02), 1)]
+        );
+        assert_crc_good(&evs);
     }
 
     #[test]
@@ -529,113 +600,31 @@ mod tests {
         InstructionEncoder::<_, Crc>::new(&mut buf)
             .fast_bulk_read(&entries)
             .unwrap();
-        let mut dec: Decoder<64, Crc> = Decoder::new();
-        match dec.feed(&buf).0 {
-            Step::Packet(Packet::FastBulkRead(p)) => {
-                assert_eq!(p.header.header.id, Id::BROADCAST);
-                assert_eq!(p.entries.len(), 2);
-                assert_eq!(p.entries[0].id, Id::new(1));
-                assert_eq!(p.entries[1].id, Id::new(2));
-            }
-            other => panic!("expected FastBulkRead, got {other:?}"),
-        }
+        let evs = parse(&buf);
+        assert!(matches!(instr_header(&evs), PH::FastBulkRead { id } if id == Id::BROADCAST));
+        assert_eq!(
+            bulk_slots(&evs),
+            vec![(Id::new(1), 0, 0x0084, 4), (Id::new(2), 1, 0x0090, 2),]
+        );
+        assert_crc_good(&evs);
     }
 
     #[test]
-    fn instr_ext_dispatches_as_raw() {
+    fn instr_ext_decodes_as_raw() {
         let mut buf = Buf::new();
         let params = [0xDE, 0xAD, 0xBE, 0xEF];
         InstructionEncoder::<_, Crc>::new(&mut buf)
             .ext(Id::new(0x0A), 0xE0, &params)
             .unwrap();
-        let mut dec: Decoder<32, Crc> = Decoder::new();
-        match dec.feed(&buf).0 {
-            Step::Packet(Packet::Raw(r)) => {
-                assert_eq!(r.header.header.id, Id::new(0x0A));
-                assert_eq!(r.header.header.instruction.kind(), Instruction::Ext(0xE0));
-                assert_eq!(r.params, &params);
-            }
-            other => panic!("expected Raw(Ext), got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn instruction_emit_round_trips_read_through_decoder() {
-        let mut a = Buf::new();
-        InstructionEncoder::<_, Crc>::new(&mut a)
-            .read(Id::new(0x02), 0x0084, 4)
-            .unwrap();
-
-        let mut dec: Decoder<32, Crc> = Decoder::new();
-        let pkt = match dec.feed(&a).0 {
-            Step::Packet(p) => p,
-            other => panic!("expected Packet, got {other:?}"),
-        };
-
-        let mut b = Buf::new();
-        InstructionEncoder::<_, Crc>::new(&mut b)
-            .emit(&pkt)
-            .unwrap();
-        assert_eq!(&a[..], &b[..]);
-    }
-
-    #[test]
-    fn instruction_emit_round_trips_write_with_data() {
-        let mut a = Buf::new();
-        let data = [0xAA, 0xBB, 0xCC, 0xDD];
-        InstructionEncoder::<_, Crc>::new(&mut a)
-            .write(Id::new(0x03), 0x0084, &data)
-            .unwrap();
-
-        let mut dec: Decoder<64, Crc> = Decoder::new();
-        let pkt = match dec.feed(&a).0 {
-            Step::Packet(p) => p,
-            other => panic!("expected Packet, got {other:?}"),
-        };
-
-        let mut b = Buf::new();
-        InstructionEncoder::<_, Crc>::new(&mut b)
-            .emit(&pkt)
-            .unwrap();
-        assert_eq!(&a[..], &b[..]);
-    }
-
-    #[test]
-    fn instruction_emit_round_trips_raw_extension() {
-        let mut a = Buf::new();
-        let params = [0xDE, 0xAD, 0xBE, 0xEF];
-        InstructionEncoder::<_, Crc>::new(&mut a)
-            .ext(Id::new(0x0A), 0xE0, &params)
-            .unwrap();
-
-        let mut dec: Decoder<32, Crc> = Decoder::new();
-        let pkt = match dec.feed(&a).0 {
-            Step::Packet(p) => p,
-            other => panic!("expected Packet, got {other:?}"),
-        };
-
-        let mut b = Buf::new();
-        InstructionEncoder::<_, Crc>::new(&mut b)
-            .emit(&pkt)
-            .unwrap();
-        assert_eq!(&a[..], &b[..]);
-    }
-
-    #[test]
-    fn instruction_emit_forwards_status_packet() {
-        let mut a = Buf::new();
-        StatusEncoder::<_, Crc>::new(&mut a)
-            .read(Id::new(0x07), StatusError::OK, &[0x10, 0x20, 0x30])
-            .unwrap();
-        let mut dec: Decoder<32, Crc> = Decoder::new();
-        let pkt = match dec.feed(&a).0 {
-            Step::Packet(p) => p,
-            other => panic!("expected Packet, got {other:?}"),
-        };
-        let mut b = Buf::new();
-        InstructionEncoder::<_, Crc>::new(&mut b)
-            .emit(&pkt)
-            .unwrap();
-        assert_eq!(&a[..], &b[..]);
+        let evs = parse(&buf);
+        assert!(matches!(
+            instr_header(&evs),
+            PH::Raw {
+                id,
+                instr: 0xE0,
+                length: 4,
+            } if id == Id::new(0x0A)
+        ));
+        assert_crc_good(&evs);
     }
 }

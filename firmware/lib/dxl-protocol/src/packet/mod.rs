@@ -1,5 +1,5 @@
 //! Overlay types. Every `#[repr(C)]` struct mirrors the on-the-wire
-//! (unstuffed) layout at alignment 1, so the decoder can cast a `&[u8]`
+//! (unstuffed) layout at alignment 1, so a consumer can cast a `&[u8]`
 //! accumulator into any of them at any offset.
 
 mod entries;
@@ -117,43 +117,45 @@ impl<'a> Packet<'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::InstructionEncoder;
-    use crate::codec::decoder::{Decoder, Step};
-    use crate::crc_software::SoftwareCrcUmts;
-    use heapless::Vec;
 
-    type Crc = SoftwareCrcUmts;
-
-    fn decode<'a, const M: usize>(
-        buf: &'a [u8],
-        dec: &'a mut Decoder<M, Crc>,
-    ) -> Option<Packet<'a>> {
-        match dec.feed(buf).0 {
-            Step::Packet(p) => Some(p),
-            _ => None,
-        }
+    /// Hand-roll a Status overlay over a buffer that mirrors the on-wire
+    /// shape; lets the projection test cover [`Packet::Status`] without a
+    /// wire-byte producer in this module.
+    fn status_packet(buf: &mut [u8]) -> Packet<'_> {
+        buf[..4].copy_from_slice(&[0xFF, 0xFF, 0xFD, 0x00]);
+        buf[4] = 0x05;
+        buf[5] = 0x04;
+        buf[6] = 0x00;
+        buf[7] = Instruction::Status.as_u8();
+        buf[8] = 0x00;
+        // SAFETY: buf is at least 9 bytes; StatusHeader is #[repr(C)] align
+        // 1 and the bytes we wrote match its field order exactly.
+        let header: &StatusHeader = unsafe { &*(buf.as_ptr() as *const StatusHeader) };
+        Packet::Status(StatusPacket {
+            header,
+            params: &buf[core::mem::size_of::<StatusHeader>()..],
+        })
     }
 
     #[test]
     fn status_projects_to_none() {
-        let mut out: Vec<u8, 32> = Vec::new();
-        InstructionEncoder::<_, Crc>::new(&mut out)
-            .ext(Id::new(0x05), Instruction::Status.as_u8(), &[0x00, 0xAA])
-            .unwrap();
-        let mut dec: Decoder<32, Crc> = Decoder::new();
-        let pkt = decode(&out, &mut dec).expect("decode");
+        let mut buf = [0u8; 9];
+        let pkt = status_packet(&mut buf);
         assert!(matches!(pkt, Packet::Status(_)));
         assert!(pkt.into_instruction_packet().is_none());
     }
 
     #[test]
     fn ping_projects_to_instruction_ping() {
-        let mut out: Vec<u8, 32> = Vec::new();
-        InstructionEncoder::<_, Crc>::new(&mut out)
-            .ext(Id::new(0x01), Instruction::Ping.as_u8(), &[])
-            .unwrap();
-        let mut dec: Decoder<32, Crc> = Decoder::new();
-        let pkt = decode(&out, &mut dec).expect("decode");
+        let mut buf = [0u8; 8];
+        buf[..4].copy_from_slice(&[0xFF, 0xFF, 0xFD, 0x00]);
+        buf[4] = 0x01;
+        buf[5] = 0x03;
+        buf[6] = 0x00;
+        buf[7] = Instruction::Ping.as_u8();
+        // SAFETY: PingPacket is #[repr(C)] align 1 covering the 8 bytes we wrote.
+        let p: &PingPacket = unsafe { &*(buf.as_ptr() as *const PingPacket) };
+        let pkt = Packet::Ping(p);
         match pkt.into_instruction_packet() {
             Some(InstructionPacket::Ping(p)) => assert_eq!(p.header.id, Id::new(0x01)),
             other => panic!("expected Ping, got {other:?}"),

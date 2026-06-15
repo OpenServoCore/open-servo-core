@@ -1,10 +1,9 @@
 #![no_std]
 //! DXL 2.0 wire-format codec.
 //!
-//! [`Decoder`](codec::Decoder) emits typed [`Packet`](packet::Packet)
-//! variants that overlay its internal buffer (zero-copy, alignment-1
-//! `#[repr(C)]` structs). [`InstructionEncoder`], [`StatusEncoder`], and
-//! [`SlotEncoder`] cover the three frame shapes.
+//! [`streaming::Parser`] walks wire bytes and emits typed
+//! [`Event`](streaming::Event)s per protocol field. [`InstructionEncoder`],
+//! [`StatusEncoder`], and [`SlotEncoder`] emit the three frame shapes.
 
 mod buf;
 pub mod codec;

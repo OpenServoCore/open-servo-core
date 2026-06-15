@@ -7,9 +7,8 @@
 //!
 //! Each encoder borrows the caller's TX buffer and emits one frame per
 //! method call. Each exposes a per-variant fluent API plus a unified
-//! `.emit(...)` that round-trips the matching decoder enum
-//! (`Packet<'_>` / `Status<'_>` / `Slot<'_>` + `SlotPosition`). The
-//! unified path handles every variant -- no decode-only refusals.
+//! `.emit(...)` over the matching enum
+//! (`Packet<'_>` / `Status<'_>` / `Slot<'_>` + `SlotPosition`).
 
 #![allow(dead_code)]
 
