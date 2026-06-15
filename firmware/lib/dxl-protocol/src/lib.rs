@@ -13,6 +13,7 @@ mod crc;
 #[cfg(feature = "software-crc")]
 mod crc_software;
 pub mod packet;
+pub mod streaming;
 
 pub use buf::{WriteBuf, WriteError};
 pub use codec::{InstructionEncoder, SlotEncoder, StatusEncoder};
