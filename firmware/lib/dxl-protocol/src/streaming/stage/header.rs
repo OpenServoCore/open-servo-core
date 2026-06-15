@@ -7,6 +7,8 @@ use crate::packet::{Id, Instruction, StatusError};
 
 use crate::streaming::event::{HeaderEvent, InstructionHeader, StatusHeader};
 
+use super::slots::SlotPattern;
+
 /// Header bytes after the sync preamble: `ID(1) + LENGTH(2) + INSTRUCTION(1)`.
 const POST_SYNC_HEADER_BYTES: usize = REQUEST_HEADER_BYTES - HEADER.len();
 
@@ -65,6 +67,21 @@ impl HeaderStage {
     pub(crate) fn body_len(&self) -> u16 {
         let extra = Instruction::from_u8(self.instr).header_extra_bytes() as u16;
         self.length.saturating_sub(PACKET_LEN_MIN as u16 + extra)
+    }
+
+    /// `Some(_)` for the six chained instructions; `None` means opaque body.
+    pub(crate) fn slot_pattern(&self) -> Option<SlotPattern> {
+        use Instruction as I;
+        match Instruction::from_u8(self.instr) {
+            I::SyncRead | I::FastSyncRead => Some(SlotPattern::SyncRead),
+            I::SyncWrite => {
+                let length = u16::from_le_bytes([self.params[2], self.params[3]]);
+                Some(SlotPattern::SyncWrite { length })
+            }
+            I::BulkRead | I::FastBulkRead => Some(SlotPattern::BulkRead),
+            I::BulkWrite => Some(SlotPattern::BulkWrite),
+            _ => None,
+        }
     }
 
     fn emit(&self) -> HeaderEvent {
