@@ -4,9 +4,9 @@
 
 use crate::buf::{WriteBuf, WriteError};
 use crate::crc::CrcUmts;
-use crate::packet::{BulkReadEntry, Id, Instruction, Packet};
+use crate::types::{BulkReadEntry, Id, Instruction};
 
-use super::{bulk_entries_as_bytes, emit_frame};
+use super::{emit_frame, emit_frame_with};
 
 pub struct InstructionEncoder<'a, W: WriteBuf, CRC: CrcUmts> {
     out: &'a mut W,
@@ -134,12 +134,12 @@ impl<'a, W: WriteBuf, CRC: CrcUmts> InstructionEncoder<'a, W, CRC> {
     }
 
     pub fn bulk_read(&mut self, entries: &[BulkReadEntry]) -> Result<(), WriteError> {
-        emit_frame(
+        emit_frame_with(
             self.out,
             &mut self.crc,
             Id::BROADCAST,
             Instruction::BulkRead.as_u8(),
-            &[bulk_entries_as_bytes(entries)],
+            |out, stuffer| write_bulk_read_entries(out, stuffer, entries),
         )
     }
 
@@ -166,12 +166,12 @@ impl<'a, W: WriteBuf, CRC: CrcUmts> InstructionEncoder<'a, W, CRC> {
     }
 
     pub fn fast_bulk_read(&mut self, entries: &[BulkReadEntry]) -> Result<(), WriteError> {
-        emit_frame(
+        emit_frame_with(
             self.out,
             &mut self.crc,
             Id::BROADCAST,
             Instruction::FastBulkRead.as_u8(),
-            &[bulk_entries_as_bytes(entries)],
+            |out, stuffer| write_bulk_read_entries(out, stuffer, entries),
         )
     }
 
@@ -180,49 +180,21 @@ impl<'a, W: WriteBuf, CRC: CrcUmts> InstructionEncoder<'a, W, CRC> {
     pub fn ext(&mut self, id: Id, instruction: u8, params: &[u8]) -> Result<(), WriteError> {
         emit_frame(self.out, &mut self.crc, id, instruction, &[params])
     }
+}
 
-    /// Round-trip a decoded [`Packet`] back to wire bytes -- for sniffers,
-    /// bridges, and replay tools. Handles every variant including
-    /// [`Packet::Status`]; for slave-side typed Status construction,
-    /// [`super::StatusEncoder`] is more ergonomic.
-    pub fn emit(&mut self, packet: &Packet<'_>) -> Result<(), WriteError> {
-        match *packet {
-            Packet::Ping(p) => self.ping(p.header.id),
-            Packet::Read(p) => self.read(p.header.id, p.addr.get(), p.length.get()),
-            Packet::Write(p) => self.write(p.header.header.id, p.header.addr.get(), p.data),
-            Packet::RegWrite(p) => self.reg_write(p.header.header.id, p.header.addr.get(), p.data),
-            Packet::Action(p) => self.action(p.header.id),
-            Packet::Reboot(p) => self.reboot(p.header.id),
-            Packet::FactoryReset(p) => self.factory_reset(p.header.id, p.mode),
-            Packet::SyncRead(p) => {
-                self.sync_read(p.header.addr.get(), p.header.length.get(), p.ids)
-            }
-            Packet::SyncWrite(p) => {
-                self.sync_write(p.header.addr.get(), p.header.length.get(), p.body)
-            }
-            Packet::BulkRead(p) => self.bulk_read(p.entries),
-            Packet::BulkWrite(p) => self.bulk_write(p.body),
-            Packet::FastSyncRead(p) => {
-                self.fast_sync_read(p.header.addr.get(), p.header.length.get(), p.ids)
-            }
-            Packet::FastBulkRead(p) => self.fast_bulk_read(p.entries),
-            Packet::Raw(r) => self.ext(
-                r.header.header.id,
-                r.header.header.instruction.as_byte(),
-                r.params,
-            ),
-            Packet::Status(s) => {
-                let err = [s.header.error.as_byte()];
-                emit_frame(
-                    self.out,
-                    &mut self.crc,
-                    s.header.header.id,
-                    Instruction::Status.as_u8(),
-                    &[&err, s.params],
-                )
-            }
+fn write_bulk_read_entries<W: WriteBuf>(
+    out: &mut W,
+    stuffer: &mut super::Stuffer,
+    entries: &[BulkReadEntry],
+) -> Result<(), WriteError> {
+    for entry in entries {
+        let addr = entry.address.to_le_bytes();
+        let length = entry.length.to_le_bytes();
+        for b in [entry.id.as_byte(), addr[0], addr[1], length[0], length[1]] {
+            stuffer.push(out, b)?;
         }
     }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -232,7 +204,6 @@ extern crate alloc;
 mod tests {
     use super::*;
     use crate::crc_software::SoftwareCrcUmts;
-    use crate::packet::U16Le;
     use crate::streaming::InstructionHeader as PH;
     use crate::streaming::{Event, HeaderEvent, InstructionPayload, Parser, PayloadEvent};
     use alloc::vec;
@@ -510,13 +481,13 @@ mod tests {
         let entries = [
             BulkReadEntry {
                 id: Id::new(1),
-                addr: U16Le::from_u16(0x0084),
-                length: U16Le::from_u16(4),
+                address: 0x0084,
+                length: 4,
             },
             BulkReadEntry {
                 id: Id::new(2),
-                addr: U16Le::from_u16(0x0090),
-                length: U16Le::from_u16(2),
+                address: 0x0090,
+                length: 2,
             },
         ];
         InstructionEncoder::<_, Crc>::new(&mut buf)
@@ -588,13 +559,13 @@ mod tests {
         let entries = [
             BulkReadEntry {
                 id: Id::new(1),
-                addr: U16Le::from_u16(0x0084),
-                length: U16Le::from_u16(4),
+                address: 0x0084,
+                length: 4,
             },
             BulkReadEntry {
                 id: Id::new(2),
-                addr: U16Le::from_u16(0x0090),
-                length: U16Le::from_u16(2),
+                address: 0x0090,
+                length: 2,
             },
         ];
         InstructionEncoder::<_, Crc>::new(&mut buf)

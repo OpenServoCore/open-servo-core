@@ -7,8 +7,8 @@
 //!
 //! Each encoder borrows the caller's TX buffer and emits one frame per
 //! method call. Each exposes a per-variant fluent API plus a unified
-//! `.emit(...)` over the matching enum
-//! (`Packet<'_>` / `Status<'_>` / `Slot<'_>` + `SlotPosition`).
+//! `.emit(...)` over the matching enum (`Status<'_>` / `Slot<'_>` +
+//! `SlotPosition`).
 
 #![allow(dead_code)]
 
@@ -23,27 +23,55 @@ pub use status::StatusEncoder;
 use crate::buf::{WriteBuf, WriteError};
 use crate::constants::{HEADER, STUFFING_BYTE, STUFFING_TRIGGER};
 use crate::crc::CrcUmts;
-use crate::packet::{BulkReadEntry, Id, Instruction, Slot};
+use crate::types::{Id, Instruction, Slot};
+
+/// Sliding-window state for the byte-stuffing encoder: after each pushed
+/// param byte, a `0xFF 0xFF 0xFD` window triggers an inline `0xFD`.
+pub(super) struct Stuffer([u8; 2]);
+
+impl Stuffer {
+    /// Seed the window with the instruction byte so a trigger straddling the
+    /// instr->params boundary still emits the stuffing FD.
+    fn new(instruction: u8) -> Self {
+        Self([0, instruction])
+    }
+
+    pub(super) fn push<W: WriteBuf>(&mut self, out: &mut W, b: u8) -> Result<(), WriteError> {
+        out.push(b)?;
+        if [self.0[0], self.0[1], b] == STUFFING_TRIGGER {
+            out.push(STUFFING_BYTE)?;
+            self.0 = [self.0[1], STUFFING_BYTE];
+        } else {
+            self.0 = [self.0[1], b];
+        }
+        Ok(())
+    }
+}
 
 /// Emit one DXL 2.0 frame: header + id + length + instruction + stuffed
-/// params + CRC. `params` chunks form the logical parameter region; the
-/// `0xFF 0xFF 0xFD` trigger is stuffed inline. CRC runs over the wire bytes
-/// (header through stuffed params). On failure `out` is truncated back to
-/// its entry length so prior frames stay intact.
-pub(super) fn emit_frame<W: WriteBuf, CRC: CrcUmts>(
+/// params + CRC. `write_params` is called once with the open output and a
+/// [`Stuffer`] -- each `Stuffer::push` byte counts toward the wire `Length`
+/// field after stuffing. On failure `out` is truncated back to its entry
+/// length so prior frames stay intact.
+pub(super) fn emit_frame_with<W, CRC, F>(
     out: &mut W,
     crc: &mut CRC,
     id: Id,
     instruction: u8,
-    params: &[&[u8]],
-) -> Result<(), WriteError> {
+    write_params: F,
+) -> Result<(), WriteError>
+where
+    W: WriteBuf,
+    CRC: CrcUmts,
+    F: FnOnce(&mut W, &mut Stuffer) -> Result<(), WriteError>,
+{
     // `id == 0xFF` would let the unstuffed header..instruction prefix itself
     // complete a stuffing trigger, breaking framing.
     if id.as_byte() == 0xFF {
         return Err(WriteError::Invalid);
     }
     let start = out.len();
-    match emit_frame_inner(out, crc, start, id, instruction, params) {
+    match emit_frame_inner(out, crc, start, id, instruction, write_params) {
         Ok(()) => Ok(()),
         Err(e) => {
             out.truncate(start);
@@ -52,14 +80,19 @@ pub(super) fn emit_frame<W: WriteBuf, CRC: CrcUmts>(
     }
 }
 
-fn emit_frame_inner<W: WriteBuf, CRC: CrcUmts>(
+fn emit_frame_inner<W, CRC, F>(
     out: &mut W,
     crc: &mut CRC,
     start: usize,
     id: Id,
     instruction: u8,
-    params: &[&[u8]],
-) -> Result<(), WriteError> {
+    write_params: F,
+) -> Result<(), WriteError>
+where
+    W: WriteBuf,
+    CRC: CrcUmts,
+    F: FnOnce(&mut W, &mut Stuffer) -> Result<(), WriteError>,
+{
     out.push(HEADER[0])?;
     out.push(HEADER[1])?;
     out.push(HEADER[2])?;
@@ -70,20 +103,8 @@ fn emit_frame_inner<W: WriteBuf, CRC: CrcUmts>(
     out.push(0)?;
     out.push(instruction)?;
 
-    // Seed the sliding window with the instruction byte so a trigger that
-    // straddles the instr->params boundary still emits the stuffing FD.
-    let mut last2 = [0u8, instruction];
-    for chunk in params {
-        for &b in *chunk {
-            out.push(b)?;
-            if [last2[0], last2[1], b] == STUFFING_TRIGGER {
-                out.push(STUFFING_BYTE)?;
-                last2 = [last2[1], STUFFING_BYTE];
-            } else {
-                last2 = [last2[1], b];
-            }
-        }
-    }
+    let mut stuffer = Stuffer::new(instruction);
+    write_params(out, &mut stuffer)?;
 
     let stuffed_params_len = out.len() - (len_pos + 2 + 1);
     let length_value = (1 + stuffed_params_len + 2) as u16;
@@ -98,6 +119,25 @@ fn emit_frame_inner<W: WriteBuf, CRC: CrcUmts>(
     out.push(crc_bytes[1])?;
 
     Ok(())
+}
+
+/// Convenience over [`emit_frame_with`] for params that are already a slice
+/// of byte chunks (stuffing window straddles chunk boundaries).
+pub(super) fn emit_frame<W: WriteBuf, CRC: CrcUmts>(
+    out: &mut W,
+    crc: &mut CRC,
+    id: Id,
+    instruction: u8,
+    params: &[&[u8]],
+) -> Result<(), WriteError> {
+    emit_frame_with(out, crc, id, instruction, |out, stuffer| {
+        for chunk in params {
+            for &b in *chunk {
+                stuffer.push(out, b)?;
+            }
+        }
+        Ok(())
+    })
 }
 
 pub(super) fn emit_slot_header<W: WriteBuf>(out: &mut W, length: u16) -> Result<(), WriteError> {
@@ -120,16 +160,4 @@ pub(super) fn emit_slot_body<W: WriteBuf>(out: &mut W, slot: &Slot<'_>) -> Resul
         out.push(b)?;
     }
     Ok(())
-}
-
-pub(super) fn bulk_entries_as_bytes(entries: &[BulkReadEntry]) -> &[u8] {
-    // SAFETY: BulkReadEntry is #[repr(C)] align 1 with three byte-sized
-    // fields (u8, U16Le, U16Le) = exactly 5 bytes, no padding. The byte
-    // view of the slice is sound.
-    unsafe {
-        core::slice::from_raw_parts(
-            entries.as_ptr() as *const u8,
-            core::mem::size_of_val(entries),
-        )
-    }
 }

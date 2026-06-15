@@ -3,8 +3,8 @@
 //! `WriteDataChunk` for data-carrying variants.
 
 use crate::crc::CrcUmts;
-use crate::packet::Id;
 use crate::streaming::event::{InstructionPayload, PayloadEvent};
+use crate::types::Id;
 
 #[cfg(test)]
 extern crate alloc;

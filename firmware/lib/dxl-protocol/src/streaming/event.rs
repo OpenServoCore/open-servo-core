@@ -7,7 +7,7 @@
 //! input. Sum of chunk lengths in a region equals the prior header's
 //! `length`.
 
-use crate::packet::{Id, Instruction, StatusError};
+use crate::types::{Id, Instruction, StatusError};
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub enum Event {

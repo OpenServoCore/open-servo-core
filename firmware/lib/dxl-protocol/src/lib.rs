@@ -11,8 +11,8 @@ mod constants;
 mod crc;
 #[cfg(feature = "software-crc")]
 mod crc_software;
-pub mod packet;
 pub mod streaming;
+pub mod types;
 
 pub use buf::{WriteBuf, WriteError};
 pub use codec::{InstructionEncoder, SlotEncoder, StatusEncoder};
@@ -24,4 +24,6 @@ pub use constants::{
 pub use crc::CrcUmts;
 #[cfg(feature = "software-crc")]
 pub use crc_software::SoftwareCrcUmts;
-pub use packet::{Id, Instruction, InstructionByte, InstructionPacket, Packet, SlotPosition};
+pub use types::{
+    BulkReadEntry, ErrorCode, Id, Instruction, PingStatus, Slot, SlotPosition, Status, StatusError,
+};

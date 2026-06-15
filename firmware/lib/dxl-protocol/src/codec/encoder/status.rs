@@ -4,7 +4,7 @@
 
 use crate::buf::{WriteBuf, WriteError};
 use crate::crc::CrcUmts;
-use crate::packet::{Id, Instruction, Status, StatusError};
+use crate::types::{Id, Instruction, Status, StatusError};
 
 use super::emit_frame;
 
@@ -65,12 +65,12 @@ impl<'a, W: WriteBuf, CRC: CrcUmts> StatusEncoder<'a, W, CRC> {
         match status {
             Status::Empty { id, error } => self.empty(id, error),
             Status::Ping { id, error, status } => {
-                self.ping(id, error, status.model.get(), status.fw_version)
+                self.ping(id, error, status.model, status.fw_version)
             }
             Status::Read { id, error, data } => self.read(id, error, data),
             Status::Raw { id, error, payload } => self.ext(id, error, payload),
-            Status::FastSyncRead { id, status } => self.frame(id, status.error, status.payload),
-            Status::FastBulkRead { id, status } => self.frame(id, status.error, status.payload),
+            Status::FastSyncRead { id, error, payload } => self.frame(id, error, payload),
+            Status::FastBulkRead { id, error, payload } => self.frame(id, error, payload),
         }
     }
 
@@ -93,10 +93,10 @@ extern crate alloc;
 mod tests {
     use super::*;
     use crate::crc_software::SoftwareCrcUmts;
-    use crate::packet::{FastSyncReadStatus, PingStatus, U16Le};
     use crate::streaming::{
         Event, HeaderEvent, Parser, PayloadEvent, StatusHeader as SH, StatusPayload,
     };
+    use crate::types::PingStatus;
     use alloc::vec::Vec as AVec;
     use heapless::Vec;
 
@@ -232,7 +232,7 @@ mod tests {
                 id: Id::new(0x07),
                 error: StatusError::OK,
                 status: PingStatus {
-                    model: U16Le::from_u16(0x1234),
+                    model: 0x1234,
                     fw_version: 0x42,
                 },
             })
@@ -285,10 +285,8 @@ mod tests {
         StatusEncoder::<_, Crc>::new(&mut buf)
             .emit(Status::FastSyncRead {
                 id: Id::BROADCAST,
-                status: FastSyncReadStatus {
-                    error: StatusError::OK,
-                    payload: &payload,
-                },
+                error: StatusError::OK,
+                payload: &payload,
             })
             .unwrap();
         let evs = parse(&buf);

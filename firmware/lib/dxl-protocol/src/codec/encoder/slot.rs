@@ -2,10 +2,9 @@
 
 #![allow(dead_code)]
 
-use crate::SlotPosition;
 use crate::buf::{WriteBuf, WriteError};
 use crate::crc::CrcUmts;
-use crate::packet::Slot;
+use crate::types::{Slot, SlotPosition};
 
 use super::{emit_slot_body, emit_slot_header};
 
@@ -121,8 +120,8 @@ extern crate alloc;
 mod tests {
     use super::*;
     use crate::crc_software::SoftwareCrcUmts;
-    use crate::packet::{Id, Instruction, StatusError};
     use crate::streaming::{Event, HeaderEvent, Parser};
+    use crate::types::{Id, Instruction, StatusError};
     use heapless::Vec;
 
     type Crc = SoftwareCrcUmts;

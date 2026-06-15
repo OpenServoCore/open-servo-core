@@ -159,10 +159,10 @@ mod tests {
     use super::*;
     use crate::constants::PACKET_LEN_GUARD;
     use crate::crc_software::SoftwareCrcUmts;
-    use crate::packet::{Id, Instruction};
     use crate::streaming::event::{
         HeaderEvent, InstructionHeader, InstructionPayload, PayloadEvent, ResyncKind,
     };
+    use crate::types::{Id, Instruction};
     use alloc::vec;
     use alloc::vec::Vec;
 
@@ -325,7 +325,7 @@ mod tests {
                 _ => None,
             })
             .collect();
-        assert_eq!(ids, vec![crate::packet::Id::new(0x05)]);
+        assert_eq!(ids, vec![crate::types::Id::new(0x05)]);
     }
 
     #[test]

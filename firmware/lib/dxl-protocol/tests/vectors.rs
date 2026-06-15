@@ -1,10 +1,10 @@
 //! Reference vector encoding and parsing through the streaming Parser
 //! and the codec encoder API.
 
-use dxl_protocol::packet::{ErrorCode, Id, Slot, StatusError};
 use dxl_protocol::streaming::{
     Event, HeaderEvent, InstructionHeader, InstructionPayload, Parser, PayloadEvent,
 };
+use dxl_protocol::types::{ErrorCode, Id, Slot, StatusError};
 use dxl_protocol::{
     CrcUmts, Instruction, InstructionEncoder, SlotEncoder, SoftwareCrcUmts, StatusEncoder,
     WriteError,

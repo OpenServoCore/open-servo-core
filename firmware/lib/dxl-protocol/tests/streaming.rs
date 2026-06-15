@@ -2,11 +2,11 @@
 //! chunking, recovery gestures, and adversarial input. The in-source unit
 //! tests stay focused on per-stage transitions.
 
-use dxl_protocol::packet::{Id, Instruction, StatusError};
 use dxl_protocol::streaming::{
     Event, HeaderEvent, InstructionHeader, InstructionPayload, Parser, PayloadEvent, ResyncKind,
     StatusPayload,
 };
+use dxl_protocol::types::{Id, Instruction, StatusError};
 use dxl_protocol::{CrcUmts, HEADER, SoftwareCrcUmts};
 
 type Crc = SoftwareCrcUmts;

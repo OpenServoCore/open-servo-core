@@ -3,7 +3,7 @@
 
 use crate::constants::{HEADER, PACKET_LEN_GUARD, PACKET_LEN_MIN, REQUEST_HEADER_BYTES};
 use crate::crc::CrcUmts;
-use crate::packet::{Id, Instruction, StatusError};
+use crate::types::{Id, Instruction, StatusError};
 
 use crate::streaming::event::{HeaderEvent, InstructionHeader, ResyncKind, StatusHeader};
 
