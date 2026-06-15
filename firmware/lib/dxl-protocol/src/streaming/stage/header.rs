@@ -1,11 +1,11 @@
 //! Header decode stage: id, length, instruction, optional error byte, and
 //! per-variant param bytes.
 
-use crate::constants::{HEADER, PACKET_LEN_MIN, REQUEST_HEADER_BYTES};
+use crate::constants::{HEADER, PACKET_LEN_GUARD, PACKET_LEN_MIN, REQUEST_HEADER_BYTES};
 use crate::crc::CrcUmts;
 use crate::packet::{Id, Instruction, StatusError};
 
-use crate::streaming::event::{HeaderEvent, InstructionHeader, StatusHeader};
+use crate::streaming::event::{HeaderEvent, InstructionHeader, ResyncKind, StatusHeader};
 
 use super::slots::SlotPattern;
 
@@ -34,8 +34,13 @@ impl HeaderStage {
     }
 
     /// Cursor: 0=id, 1..=2=length_le16, 3=instr, then error (Status) or up
-    /// to 4 params.
-    pub(crate) fn feed<CRC: CrcUmts>(&mut self, b: u8, crc: &mut CRC) -> Option<HeaderEvent> {
+    /// to 4 params. `Err(BadLength)` once `length` is outside
+    /// `[PACKET_LEN_MIN, PACKET_LEN_GUARD]`.
+    pub(crate) fn feed<CRC: CrcUmts>(
+        &mut self,
+        b: u8,
+        crc: &mut CRC,
+    ) -> Result<Option<HeaderEvent>, ResyncKind> {
         let c = self.cursor as usize;
         crc.update(&[b]);
         match c {
@@ -53,10 +58,16 @@ impl HeaderStage {
             }
         }
         self.cursor += 1;
-        if c >= 3 && self.cursor as usize == self.total_bytes() {
-            return Some(self.emit());
+        if c == 2 {
+            let len = self.length as usize;
+            if !(PACKET_LEN_MIN..=PACKET_LEN_GUARD).contains(&len) {
+                return Err(ResyncKind::BadLength);
+            }
         }
-        None
+        if c >= 3 && self.cursor as usize == self.total_bytes() {
+            return Ok(Some(self.emit()));
+        }
+        Ok(None)
     }
 
     fn total_bytes(&self) -> usize {
@@ -113,7 +124,7 @@ mod tests {
     fn feed_all(h: &mut HeaderStage, crc: &mut Crc, bytes: &[u8]) -> Option<HeaderEvent> {
         let mut last = None;
         for &b in bytes {
-            last = h.feed(b, crc);
+            last = h.feed(b, crc).expect("unexpected resync");
         }
         last
     }
@@ -265,6 +276,40 @@ mod tests {
                 "kind={kind:?} wire_len={wire_len:#x}"
             );
         }
+    }
+
+    #[test]
+    fn length_below_min_returns_bad_length() {
+        let (mut h, mut c) = (HeaderStage::new(), Crc::new());
+        assert!(h.feed(0x01, &mut c).unwrap().is_none());
+        assert!(h.feed(0x02, &mut c).unwrap().is_none());
+        assert_eq!(h.feed(0x00, &mut c), Err(ResyncKind::BadLength));
+    }
+
+    #[test]
+    fn length_above_guard_returns_bad_length() {
+        let (mut h, mut c) = (HeaderStage::new(), Crc::new());
+        let len = (PACKET_LEN_GUARD as u16 + 1).to_le_bytes();
+        assert!(h.feed(0x01, &mut c).unwrap().is_none());
+        assert!(h.feed(len[0], &mut c).unwrap().is_none());
+        assert_eq!(h.feed(len[1], &mut c), Err(ResyncKind::BadLength));
+    }
+
+    #[test]
+    fn length_at_min_passes_validation() {
+        let (mut h, mut c) = (HeaderStage::new(), Crc::new());
+        assert!(h.feed(0x07, &mut c).unwrap().is_none());
+        assert!(h.feed(PACKET_LEN_MIN as u8, &mut c).unwrap().is_none());
+        assert!(h.feed(0x00, &mut c).unwrap().is_none());
+    }
+
+    #[test]
+    fn length_at_guard_passes_validation() {
+        let (mut h, mut c) = (HeaderStage::new(), Crc::new());
+        let len = (PACKET_LEN_GUARD as u16).to_le_bytes();
+        assert!(h.feed(0x07, &mut c).unwrap().is_none());
+        assert!(h.feed(len[0], &mut c).unwrap().is_none());
+        assert!(h.feed(len[1], &mut c).unwrap().is_none());
     }
 
     #[test]

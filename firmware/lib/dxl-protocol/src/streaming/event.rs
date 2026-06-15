@@ -15,12 +15,13 @@ pub enum Event {
     Sync,
     Header(HeaderEvent),
     Payload(PayloadEvent),
-    Crc(CrcResult),
+    /// Good CRC verdict; bad CRC routes through [`Event::Resync`].
+    Crc,
     Resync(ResyncKind),
 }
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
-pub enum CrcResult {
+pub(crate) enum CrcResult {
     Good,
     Bad,
 }
