@@ -21,7 +21,7 @@ pub fn set_baud(r: Regs, brr: u32) {
     r.ctlr1().modify(|w| w.set_ue(true));
 }
 
-// SAFETY: see hal/SAFETY.md. CTLR3 is written from MAIN (arm_tx) + USART1 TC
+// SAFETY: see hal/SAFETY.md. CTLR3 is written from MAIN and the USART1 TC
 // ISR; CS keeps RMW atomic against future different-bit additions.
 // `inline(always)` folds this into the TIM2 CC3 hot path so the wire-driver
 // activate sequence stays inside the `.highcode` body — no standalone flash
@@ -48,8 +48,8 @@ pub fn set_idle_irq(r: Regs, enable: bool) {
     r.ctlr1().modify(|w| w.set_idleie(enable));
 }
 
-// SAFETY: see hal/SAFETY.md. CTLR1 is written from MAIN (arm_tx) + USART1 TC
-// ISR (here, and set_baud's UE toggle).
+// SAFETY: see hal/SAFETY.md. CTLR1 is written from MAIN and the USART1 TC
+// ISR (here, and the UE toggle in set_baud).
 // `inline(always)` folds this into the TIM2 CC3 hot path so the wire-driver
 // activate sequence stays inside the `.highcode` body — no standalone flash
 // fetch per call.

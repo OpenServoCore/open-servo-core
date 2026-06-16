@@ -22,8 +22,8 @@ pub fn set_cmp(value: u32) {
     SYSTICK.cmp().write_value(value);
 }
 
-// SAFETY: see hal/SAFETY.md. CTLR is written from MAIN (start_*_after, cancel)
-// + HIGH ISRs (on_systick, cancel via TC ISR); CS keeps STIE RMW atomic.
+// SAFETY: see hal/SAFETY.md. CTLR is written from MAIN and HIGH ISRs (SysTick
+// and USART1 TC); CS keeps STIE RMW atomic.
 #[inline(always)]
 pub fn set_irq(enable: bool) {
     critical_section::with(|_| {

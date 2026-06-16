@@ -52,10 +52,10 @@ pub fn set_count(ch: Channel, count: u16) {
     DMA1.ch(n).ndtr().write(|w| w.set_ndt(count));
 }
 
-// SAFETY: see hal/SAFETY.md. CH(n).CR is per-channel, but each channel's CR
-// is written from multiple contexts (CH4: MAIN fire_now [systick-fire] or
-// HW DMA1_CH2 stamp [hw-fire] + USART1 TC ISR; CH5: MAIN start_fast_after
-// + HIGH ISRs). CS keeps EN/TCIE RMW atomic.
+// SAFETY: see hal/SAFETY.md. CH(n).CR is per-channel; channels driven from
+// ≥ 2 priority contexts (the DXL TX channel today, touched from MAIN and
+// HIGH ISRs) need the CS to keep EN/TCIE RMW atomic. Single-context channels
+// pay the CS cost but stay correct.
 // `inline(always)` folds this into the TIM2 CC3 hot path so the wire-driver
 // activate sequence stays inside the `.highcode` body — no standalone flash
 // fetch per call.
