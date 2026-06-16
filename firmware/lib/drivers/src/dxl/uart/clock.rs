@@ -56,6 +56,15 @@ impl<U: UsartBaud, T: ClockTrim> Clock<U, T> {
     /// would overshoot and the post-step error would be worse than pre-step.
     const DRIFT_THRESHOLD_Q20: u32 = Self::TRIM_PER_STEP_Q20 / 2;
 
+    /// `CLOCK_HZ` in MHz — the divisor for `bytes_to_us*`. Folded to a literal
+    /// at monomorphization so `u32 / Self::MHZ` lowers to a reciprocal multiply
+    /// instead of `__udivsi3`, and the u64 form in `bytes_to_us_q88` likewise
+    /// avoids `__udivdi3` since it's a known small constant.
+    const MHZ: u32 = {
+        assert!(U::CLOCK_HZ.is_multiple_of(1_000_000));
+        U::CLOCK_HZ / 1_000_000
+    };
+
     /// `ticks_per_bit` at the given baud and the reference clock rate. Each
     /// arm folds to a literal at monomorphization — no runtime divide
     /// (matters on RV32EC, which has no hardware `div`).
@@ -178,16 +187,20 @@ impl<U: UsartBaud, T: ClockTrim> Clock<U, T> {
     /// Used by the composite's slot-offset math: `delay = rdt + bytes_to_us(offset)`.
     #[allow(dead_code)]
     pub fn bytes_to_us(&self, bytes: u32) -> u32 {
-        let ticks = (bytes as u64) * (self.ticks_per_bit as u64) * 10;
-        (ticks * 1_000_000 / U::CLOCK_HZ as u64) as u32
+        // bytes × tpb × 10 ≤ u16::MAX × 5000 × 10 ≈ 3.3e9 → fits u32 at every
+        // baud. Stays u32 end-to-end; `/ MHZ` lowers to a reciprocal multiply.
+        bytes * self.ticks_per_bit as u32 * 10 / Self::MHZ
     }
 
     /// Q8.8 µs duration of `bytes` wire bytes. Used by the Fast Last fire
     /// path where sub-µs precision matters at 3 Mbaud.
     #[allow(dead_code)]
     pub fn bytes_to_us_q88(&self, bytes: u32) -> u32 {
-        let ticks = (bytes as u64) * (self.ticks_per_bit as u64) * 10;
-        (ticks * (1_000_000 * 256) / U::CLOCK_HZ as u64) as u32
+        // × 2560 overflows u32 at the low-baud TPB end, so the multiply must
+        // be u64. The divisor is the same small const as `bytes_to_us`, so
+        // LLVM lowers the `u64 / const_u32` to a reciprocal multiply.
+        let product = (bytes as u64) * (self.ticks_per_bit as u64) * 2560;
+        (product / Self::MHZ as u64) as u32
     }
 }
 
