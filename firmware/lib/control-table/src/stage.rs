@@ -50,6 +50,16 @@ pub struct Snapshot {
     pub(crate) entries: u16,
 }
 
+impl Snapshot {
+    /// Start-of-buffer snapshot: `iter_from(&ZERO)` walks every staged entry.
+    /// Used by `commit_staged` to flush the full buffer through the same
+    /// path as range commits.
+    pub(crate) const ZERO: Snapshot = Snapshot {
+        data: 0,
+        entries: 0,
+    };
+}
+
 pub struct StagedWrites {
     pub(crate) data: heapless::Vec<u8, STAGE_DATA_CAP>,
     pub(crate) entries: heapless::Vec<StagedEntry, STAGE_ENTRY_CAP>,
@@ -103,14 +113,6 @@ impl StagedWrites {
                 Error::StagingFull
             })?;
         Ok(())
-    }
-
-    pub fn iter(&self) -> impl Iterator<Item = (u16, &[u8])> + '_ {
-        self.entries.iter().map(|e| {
-            let lo = e.data_off as usize;
-            let hi = lo + e.len as usize;
-            (e.addr, &self.data[lo..hi])
-        })
     }
 
     pub fn iter_from(&self, snap: &Snapshot) -> impl Iterator<Item = (u16, &[u8])> + '_ {

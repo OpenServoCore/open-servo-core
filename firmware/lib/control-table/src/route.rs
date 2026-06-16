@@ -45,7 +45,7 @@ pub trait Router {
         Self: Sized,
     {
         // SAFETY: caller upholds Router's single-writer contract.
-        unsafe { commit_staged_range_all(self, staged) };
+        unsafe { commit_staged_range(self, staged, &Snapshot::ZERO) };
         staged.clear();
     }
 }
@@ -114,18 +114,6 @@ pub(crate) unsafe fn commit_staged_range(
     snap: &Snapshot,
 ) {
     for (abs_addr, data) in staged.iter_from(snap) {
-        let end = abs_addr as usize + data.len();
-        let Some(r) = region_for(router, abs_addr, end) else {
-            debug_assert!(false, "staged entry resolved to no region at commit time");
-            continue;
-        };
-        unsafe { commit_chunk(r.base, abs_addr, data, r.def.blocks) };
-    }
-}
-
-/// SAFETY: caller holds the region's single-writer guarantee.
-unsafe fn commit_staged_range_all(router: &dyn Router, staged: &StagedWrites) {
-    for (abs_addr, data) in staged.iter() {
         let end = abs_addr as usize + data.len();
         let Some(r) = region_for(router, abs_addr, end) else {
             debug_assert!(false, "staged entry resolved to no region at commit time");
