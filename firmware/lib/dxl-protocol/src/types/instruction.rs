@@ -75,8 +75,8 @@ impl Instruction {
     pub const fn fixed_param_bytes(self) -> usize {
         use Instruction::*;
         match self {
-            Read | RegWrite | SyncRead | SyncWrite | FastSyncRead => 4,
-            Write => 2,
+            Read | SyncRead | SyncWrite | FastSyncRead => 4,
+            Write | RegWrite => 2,
             FactoryReset => 1,
             _ => 0,
         }
