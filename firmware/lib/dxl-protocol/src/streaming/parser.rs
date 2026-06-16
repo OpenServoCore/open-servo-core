@@ -32,6 +32,20 @@ impl<CRC: CrcUmts> Parser<CRC> {
         self.crc.reset();
     }
 
+    /// Bytes remaining in the in-flight packet (body + CRC) before the
+    /// parser would emit a terminal `Crc` / `Resync` event. Returns 0
+    /// outside Payload / Slots / Crc phase. Drivers read this after a
+    /// Header event for the universal byte-skip distance, then call
+    /// `reset()` to drop in-flight FSM / CRC state.
+    pub fn packet_remaining(&self) -> u16 {
+        match &self.phase {
+            Phase::Payload(p) => p.remaining().saturating_add(2),
+            Phase::Slots(s) => s.body_remaining().saturating_add(2),
+            Phase::Crc(c) => c.remaining(),
+            Phase::Sync(_) | Phase::Header(_) => 0,
+        }
+    }
+
     pub fn feed<'p>(&'p mut self, bytes: &'p [u8]) -> EventStream<'p, CRC> {
         EventStream {
             parser: self,
@@ -577,6 +591,71 @@ mod tests {
             other => panic!("expected WriteDataChunk, got {other:?}"),
         }
         assert_eq!(evs.last(), Some(&Event::Crc));
+    }
+
+    #[test]
+    fn packet_remaining_is_zero_in_sync_and_header_phases() {
+        let mut p: Parser<Crc> = Parser::new();
+        assert_eq!(p.packet_remaining(), 0);
+        // Drive into Header phase (Sync done, awaiting id/len/instr).
+        let _ = p.feed(&[0xFF, 0xFF, 0xFD, 0x00]).count();
+        assert!(in_header(&p));
+        assert_eq!(p.packet_remaining(), 0);
+    }
+
+    #[test]
+    fn packet_remaining_after_write_header_equals_body_plus_2() {
+        // Write with 4 body bytes; after Header event, body(4) + CRC(2) = 6.
+        let bytes = write_packet(0x03, 0x0050, &[0xAA, 0xBB, 0xCC, 0xDD]);
+        let mut p: Parser<Crc> = Parser::new();
+        // Write's header_end = sync(4) + id(1) + len(2) + instr(1) + addr(2).
+        let header_end = 4 + 6;
+        {
+            let mut events = p.feed(&bytes[..header_end]);
+            assert!(matches!(events.next(), Some(Event::Sync)));
+            assert!(matches!(events.next(), Some(Event::Header(_))));
+            assert!(events.next().is_none());
+        }
+        assert_eq!(p.packet_remaining(), 4 + 2);
+    }
+
+    #[test]
+    fn packet_remaining_decreases_as_payload_consumed() {
+        let bytes = write_packet(0x03, 0x0050, &[1, 2, 3, 4, 5, 6]);
+        let mut p: Parser<Crc> = Parser::new();
+        let header_end = 4 + 6;
+        let _ = p.feed(&bytes[..header_end]).count();
+        // Consume 2 body bytes; 4 body + 2 CRC remain.
+        let _ = p.feed(&bytes[header_end..header_end + 2]).count();
+        assert_eq!(p.packet_remaining(), 4 + 2);
+    }
+
+    #[test]
+    fn packet_remaining_in_slots_phase_tracks_body_plus_2() {
+        // SyncRead addr=0x0084 length=4 ids=[1,2,3] → 7 body bytes.
+        let params = [0x84, 0x00, 0x04, 0x00, 0x01, 0x02, 0x03];
+        let bytes = chained_packet(0xFE, Instruction::SyncRead, &params);
+        let mut p: Parser<Crc> = Parser::new();
+        // Feed through header end: sync(4) + id(1) + len(2) + instr(1) + addr(2) + read_len(2) = 12.
+        let header_end = 12;
+        let _ = p.feed(&bytes[..header_end]).count();
+        assert!(in_slots(&p));
+        // All 3 slot-ids + CRC remain.
+        assert_eq!(p.packet_remaining(), 3 + 2);
+    }
+
+    #[test]
+    fn packet_remaining_in_crc_phase_tracks_crc_byte_remaining() {
+        // Ping has zero body → parser is in Crc phase immediately post-Header.
+        let bytes = ping_packet(0x05);
+        let mut p: Parser<Crc> = Parser::new();
+        let header_end = 4 + 4; // sync + (id + len + instr)
+        let _ = p.feed(&bytes[..header_end]).count();
+        assert!(in_crc(&p));
+        assert_eq!(p.packet_remaining(), 2);
+        // Consume first CRC byte; one remaining.
+        let _ = p.feed(&bytes[header_end..header_end + 1]).count();
+        assert_eq!(p.packet_remaining(), 1);
     }
 
     #[test]

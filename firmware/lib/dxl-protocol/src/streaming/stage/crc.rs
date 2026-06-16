@@ -17,6 +17,11 @@ impl CrcStage {
         }
     }
 
+    /// CRC bytes still to consume before the verdict event (`Good` / `Bad`).
+    pub(crate) fn remaining(&self) -> u16 {
+        2u16.saturating_sub(self.cursor as u16)
+    }
+
     pub(crate) fn feed<CRC: CrcUmts>(&mut self, b: u8, crc: &CRC) -> Option<CrcResult> {
         match self.cursor {
             0 => {
