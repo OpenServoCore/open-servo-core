@@ -85,9 +85,7 @@ impl FastLastSchedulerTrait for FastLastScheduler {
         // DXL-side ISRs at the same PFIC priority, so the RMW is atomic
         // w.r.t. itself.
         unsafe {
-            let p = &raw mut (*SHARED.table.telemetry.get())
-                .link
-                .crc_patch_deadline_miss;
+            let p = &raw mut (*SHARED.table.telemetry.get()).link.crc_patch_deadline_miss;
             p.write_volatile(p.read_volatile().wrapping_add(1));
         }
     }

@@ -76,12 +76,7 @@ struct SkipState {
 /// Splits off from [`CodecTx`] under [`Codec`] so the parent driver can hand
 /// the dispatcher a `&mut CodecTx` reply handle alongside the parser event
 /// stream the dispatcher is consuming.
-pub struct CodecRx<
-    R: EdgeDma,
-    CRC: CrcUmts,
-    const RX_BUF_LEN: usize,
-    const EDGE_BUF_LEN: usize,
-> {
+pub struct CodecRx<R: EdgeDma, CRC: CrcUmts, const RX_BUF_LEN: usize, const EDGE_BUF_LEN: usize> {
     rx: Rx<R, EDGE_BUF_LEN>,
     parser: Parser<CRC>,
     /// DMA1_CH5 destination for received bytes. `SyncUnsafeCell` because
@@ -107,12 +102,8 @@ pub struct CodecRx<
     skip: Option<SkipState>,
 }
 
-impl<
-    R: EdgeDma,
-    CRC: CrcUmts,
-    const RX_BUF_LEN: usize,
-    const EDGE_BUF_LEN: usize,
-> CodecRx<R, CRC, RX_BUF_LEN, EDGE_BUF_LEN>
+impl<R: EdgeDma, CRC: CrcUmts, const RX_BUF_LEN: usize, const EDGE_BUF_LEN: usize>
+    CodecRx<R, CRC, RX_BUF_LEN, EDGE_BUF_LEN>
 {
     fn new(ring: R) -> Self {
         Self {
