@@ -12,7 +12,7 @@ use osc_core::BaudRate;
 use dxl_protocol::SoftwareCrcUmts;
 
 use crate::traits::dxl::{
-    BytesDma, ClockTrim, DmaFlags, EdgeDma, FastLastScheduler, Providers, SendKind, TxScheduler,
+    ClockTrim, DmaFlags, EdgeDma, FastLastScheduler, Providers, RxDma, SendKind, TxScheduler,
     UsartBaud,
 };
 use crate::traits::{DigitalOut, Monotonic};
@@ -31,7 +31,7 @@ impl Providers for TestProviders {
     type UsartBaud = FakeUsartBaud;
     type ClockTrim = FakeClockTrim;
     type EdgeDma = FakeEdgeDma;
-    type BytesDma = FakeBytesDma;
+    type RxDma = FakeRxDma;
     type TxScheduler = FakeTxScheduler;
     type FastLastScheduler = FakeFastLastScheduler;
     type Crc = SoftwareCrcUmts;
@@ -124,11 +124,11 @@ pub enum EdgeDmaOp {
 /// than a plain field so the test can mutate from inside a closure
 /// that borrows the bus immutably.
 #[derive(Default)]
-pub struct FakeBytesDma {
+pub struct FakeRxDma {
     pub remaining: Cell<u16>,
 }
 
-impl BytesDma for FakeBytesDma {
+impl RxDma for FakeRxDma {
     fn remaining(&self) -> u16 {
         self.remaining.get()
     }

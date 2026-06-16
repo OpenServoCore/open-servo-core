@@ -26,7 +26,7 @@ pub trait Providers {
     type UsartBaud: UsartBaud;
     type ClockTrim: ClockTrim;
     type EdgeDma: EdgeDma;
-    type BytesDma: BytesDma;
+    type RxDma: RxDma;
     type TxScheduler: TxScheduler;
     type FastLastScheduler: FastLastScheduler;
     type Crc: CrcUmts;
@@ -94,17 +94,17 @@ pub trait EdgeDma {
     fn resume(&mut self);
 }
 
-/// Byte-stream RX DMA channel — read-only NDTR accessor. The byte-DMA
-/// channel itself runs unconditionally (USART1 → byte ring); this trait
-/// surfaces the remaining-transfer count so the Fast Last fold body can
-/// refresh its view of newly-arrived RX bytes from inside the busy-wait
-/// without re-entering the chip-side ISR. The driver borrows one through
-/// its [`Providers`] bundle; the production adapter binds to DMA1_CH5.
+/// RX byte-ring DMA channel — read-only NDTR accessor. The RX DMA channel
+/// itself runs unconditionally (USART1 → byte ring); this trait surfaces
+/// the remaining-transfer count so the Fast Last fold body can refresh its
+/// view of newly-arrived RX bytes from inside the busy-wait without
+/// re-entering the chip-side ISR. The driver borrows one through its
+/// [`Providers`] bundle; the production adapter binds to DMA1_CH5.
 ///
 /// No flag-drain / mask methods: HT/TC drain for the parser path stays on
 /// the chip-side caller via `CodecRx::on_rx_dma_advance`, and the fold
 /// path doesn't want either signal — only NDTR.
-pub trait BytesDma {
+pub trait RxDma {
     fn remaining(&self) -> u16;
 }
 

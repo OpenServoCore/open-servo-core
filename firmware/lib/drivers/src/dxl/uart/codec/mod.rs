@@ -23,7 +23,7 @@ use dxl_protocol::streaming::{Event, HeaderEvent, InstructionPayload, Parser, Pa
 use dxl_protocol::types::{Slot, Status};
 use dxl_protocol::{CrcUmts, SlotEncoder, SlotPosition, StatusEncoder, WriteError};
 
-use crate::traits::dxl::{BytesDma, EdgeDma};
+use crate::traits::dxl::{EdgeDma, RxDma};
 use crate::util::HwRing;
 use rx::Rx;
 
@@ -295,7 +295,7 @@ impl<
     /// the parser. Used by the Fast Last fold path during the predecessor
     /// window: the SysTick CMP body and the CC3 post-fire body each spin
     /// inside this drain, refreshing the producer head from
-    /// `bytes_dma.remaining()` on every pass so newly-DMA'd bytes become
+    /// `rx_dma.remaining()` on every pass so newly-DMA'd bytes become
     /// reader-visible mid-loop without re-entering the chip-side ISR.
     /// Advances `wire_bytes_consumed` over each drained byte so a
     /// subsequent `poll()` resumes at the right cursor.
@@ -303,13 +303,13 @@ impl<
     /// The chip-side caller masks DMA1_CH7 HT/TC for the duration of the
     /// Fast Last window (doc §10.6.3); during that window `poll()` does
     /// not run, so the parser and this drain never race on `rx_buf`.
-    pub fn drain_raw<B: BytesDma, F: FnMut(u8, u32)>(&mut self, bytes_dma: &B, mut fold_byte: F) {
+    pub fn drain_raw<D: RxDma, F: FnMut(u8, u32)>(&mut self, rx_dma: &D, mut fold_byte: F) {
         // SAFETY: rx_buf is single-consumer at PFIC HIGH (same as `poll`).
         // The chip-side caller masks DMA1_CH7 HT/TC for the Fast Last window
         // so the parser and this drain never race on the ring.
         let rx_buf = unsafe { &mut *self.rx_buf.get() };
         loop {
-            rx_buf.on_publish(bytes_dma.remaining());
+            rx_buf.on_publish(rx_dma.remaining());
             let n = {
                 let mut reader = rx_buf.reader();
                 let (front, _back) = reader.peek_slices();

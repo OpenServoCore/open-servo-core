@@ -479,7 +479,7 @@ pub struct DxlUart<
     /// independently of the parser-path `on_rx_dma_advance` calls so the
     /// Fast Last fold body's intra-loop refresh doesn't go through the
     /// chip-side ISR — see [`Self::on_fold_step`] / [`Self::on_tx_start`].
-    bytes_dma: P::BytesDma,
+    rx_dma: P::RxDma,
     scheduler: P::TxScheduler,
     /// Periodic-walk grid scheduler for Fast Sync / Bulk Read Last replies.
     /// Driver-pattern §4 sub-driver: armed at `send_slot(Last)` via
@@ -521,7 +521,7 @@ impl<
     pub fn new(
         codec: Codec<P::EdgeDma, P::Crc, DECODER_CAP, RX_BUF_LEN, EDGE_BUF_LEN, TX_BUF_LEN>,
         clock: Clock<P::UsartBaud, P::ClockTrim>,
-        bytes_dma: P::BytesDma,
+        rx_dma: P::RxDma,
         scheduler: P::TxScheduler,
         fast_last: FastLast<P::FastLastScheduler>,
         id: u8,
@@ -530,7 +530,7 @@ impl<
         Self {
             codec,
             clock,
-            bytes_dma,
+            rx_dma,
             scheduler,
             fast_last,
             fast_last_crc: FastLastCrc::new(),
@@ -707,7 +707,7 @@ impl<
     /// The post-fire fold loops on `fast_last_crc.is_active()` —
     /// finalize-on-target clears `active` and patches the TX buffer's
     /// trailing CRC. Each [`CodecRx::drain_raw`] pass refreshes the byte-
-    /// ring producer head from [`BytesDma::remaining`] so newly-arrived
+    /// ring producer head from [`RxDma::remaining`] so newly-arrived
     /// GUARD bytes become visible inside the spin. If the spin observes
     /// no new bytes between iterations (plateau), the loop bails — the
     /// trailing CRC slot ships at its placeholder value, matching the
@@ -721,14 +721,14 @@ impl<
         }
         let Self {
             codec,
-            bytes_dma,
+            rx_dma,
             fast_last_crc,
             ..
         } = self;
         let (rx, tx) = codec.split_mut();
         while fast_last_crc.is_active() {
             let before = fast_last_crc.bytes_folded();
-            rx.drain_raw(bytes_dma, |byte, cursor| {
+            rx.drain_raw(rx_dma, |byte, cursor| {
                 fast_last_crc.on_byte(byte, cursor, tx);
             });
             if fast_last_crc.bytes_folded() == before {
@@ -749,14 +749,14 @@ impl<
         self.codec.pause_edges();
         let Self {
             codec,
-            bytes_dma,
+            rx_dma,
             fast_last,
             fast_last_crc,
             ..
         } = self;
         let (rx, tx) = codec.split_mut();
         fast_last.on_step(|| {
-            rx.drain_raw(bytes_dma, |byte, cursor| {
+            rx.drain_raw(rx_dma, |byte, cursor| {
                 fast_last_crc.on_byte(byte, cursor, tx);
             });
             fast_last_crc.bytes_folded()
@@ -809,7 +809,7 @@ mod tests {
     extern crate alloc;
     use super::*;
     use crate::mocks::{
-        FakeBytesDma, FakeClockTrim, FakeEdgeDma, FakeFastLastScheduler, FakeTxScheduler,
+        FakeClockTrim, FakeEdgeDma, FakeFastLastScheduler, FakeRxDma, FakeTxScheduler,
         FakeUsartBaud, FastLastSchedulerOp, ScheduleOp, TestProviders,
     };
     use dxl_protocol::types::StatusError;
@@ -840,7 +840,7 @@ mod tests {
         DxlUart::new(
             codec,
             make_clock(baud),
-            FakeBytesDma::default(),
+            FakeRxDma::default(),
             FakeTxScheduler::default(),
             FastLast::new(FakeFastLastScheduler::default()),
             TEST_ID,
@@ -1507,10 +1507,10 @@ mod tests {
         // hit its busy-wait target this poll.
         let predecessor = [0x11_u8, 0x22, 0x33, 0x44];
         bus.codec.stage_rx_bytes_for_test(start, &predecessor);
-        // BytesDma.remaining = N − (start + len) so on_publish leaves
+        // RxDma.remaining = N − (start + len) so on_publish leaves
         // write_seq at start+len (the same head stage_rx_bytes_for_test set).
         let new_head = start.wrapping_add(predecessor.len() as u16);
-        bus.bytes_dma
+        bus.rx_dma
             .remaining
             .set((RX_BUF_LEN as u16).wrapping_sub(new_head));
 
@@ -1547,7 +1547,7 @@ mod tests {
         ];
         bus.codec.stage_rx_bytes_for_test(start, &predecessor);
         let new_head = start.wrapping_add(predecessor.len() as u16);
-        bus.bytes_dma
+        bus.rx_dma
             .remaining
             .set((RX_BUF_LEN as u16).wrapping_sub(new_head));
         bus.codec.set_rx_read_seq_for_test(start);
@@ -1610,7 +1610,7 @@ mod tests {
         let start = req.len() as u16;
         bus.codec.stage_rx_bytes_for_test(start, &[]);
         bus.codec.set_rx_read_seq_for_test(start);
-        bus.bytes_dma
+        bus.rx_dma
             .remaining
             .set((RX_BUF_LEN as u16).wrapping_sub(start));
 
