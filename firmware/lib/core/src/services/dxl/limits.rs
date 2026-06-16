@@ -19,7 +19,7 @@
 //! `dxl_protocol`.
 
 use control_table::STAGE_DATA_CAP;
-use dxl_protocol::{CRC_BYTES, FAST_RESPONSE_SLOT0_BYTES, RESPONSE_HEADER_BYTES};
+use dxl_protocol::wire::{CRC_BYTES, FAST_RESPONSE_SLOT0_BYTES, RESPONSE_HEADER_BYTES};
 
 /// Worst-case slave count we participate in for Sync/Bulk/Fast coordinated
 /// operations. Override with `OSC_MAX_SLAVE_COUNT`.

@@ -2,7 +2,7 @@ use crate::desc::{
     BlockDesc, CompareOp, Error, FieldValidator, RegionValidator, Rhs, ValidationKind,
 };
 use crate::route::Router;
-use crate::stage::{StagedView, StagedWrites};
+use crate::stage::{Snapshot, StagedView, StagedWrites};
 
 impl CompareOp {
     pub fn apply<T: PartialOrd>(self, a: &T, b: &T) -> bool {
@@ -104,12 +104,12 @@ fn run_compare<T: PartialOrd + Copy, const N: usize>(
 pub(crate) fn run_field_validators(
     router: &dyn Router,
     staged: &StagedWrites,
-    start_entry: usize,
+    snap: Snapshot,
     abs_start: u16,
     len: usize,
     blocks: &[BlockDesc],
 ) -> Result<(), Error> {
-    let view = StagedView::new(router, staged, start_entry);
+    let view = StagedView::new(router, staged, snap);
     let req_lo = abs_start as usize;
     let req_hi = req_lo + len;
     for block in blocks {
@@ -144,7 +144,7 @@ pub(crate) fn run_field_validators(
 pub(crate) fn run_block_validators(
     router: &dyn Router,
     staged: &StagedWrites,
-    start_entry: usize,
+    snap: Snapshot,
     abs_start: u16,
     len: usize,
     blocks: &[BlockDesc],
@@ -164,7 +164,7 @@ pub(crate) fn run_block_validators(
         if block.validators.is_empty() {
             continue;
         }
-        let v = view.get_or_insert_with(|| StagedView::new(router, staged, start_entry));
+        let v = view.get_or_insert_with(|| StagedView::new(router, staged, snap));
         for f in block.validators {
             f(v, block.addr, block.size)?;
         }
@@ -175,13 +175,13 @@ pub(crate) fn run_block_validators(
 pub(crate) fn run_region_validators(
     router: &dyn Router,
     staged: &StagedWrites,
-    start_entry: usize,
+    snap: Snapshot,
     validators: &[RegionValidator],
 ) -> Result<(), Error> {
     if validators.is_empty() {
         return Ok(());
     }
-    let view = StagedView::new(router, staged, start_entry);
+    let view = StagedView::new(router, staged, snap);
     for v in validators {
         v(&view)?;
     }

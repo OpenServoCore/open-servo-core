@@ -1,21 +1,20 @@
 use crc::{CRC_16_UMTS, Crc};
-use dxl_protocol::codec::{Decoder, Step};
-use dxl_protocol::packet::{BulkReadEntry, ErrorCode, Id, Packet, Slot, Status, StatusError};
-use dxl_protocol::{
-    CrcUmts, InstructionEncoder, InstructionPacket, SlotEncoder, StatusEncoder, WriteError,
+use dxl_protocol::streaming::{
+    Event, HeaderEvent, InstructionPayload, Parser, PayloadEvent, StatusPayload,
 };
+use dxl_protocol::types::{BulkReadEntry, ErrorCode, Id, Slot, Status, StatusError};
+use dxl_protocol::{CrcUmts, InstructionEncoder, SlotEncoder, StatusEncoder, WriteError};
 use heapless::Vec;
 
 const BROADCAST_ID: Id = Id::BROADCAST;
 
 use crate::regions::config::BaudRate;
-use crate::traits::{DxlBus, DxlReply};
+use crate::traits::{DxlBus, DxlDispatcher, DxlReply};
 use crate::{BootMode, RegionStorage, Shared, StatusReturnLevel};
 
 use super::Dxl;
 
-/// Test-only `CrcUmts`. Production builds get the chip's impl directly; core
-/// itself never references a concrete CRC engine after the trait flip.
+/// Test-only `CrcUmts` — core never picks a concrete engine in production.
 struct TestDxlCrc {
     state: u16,
 }
@@ -42,33 +41,20 @@ impl CrcUmts for TestDxlCrc {
     }
 }
 
-/// Compact summary of the last `send_status` / `send_slot` call. Slot
-/// positioning is no longer on the dispatcher path (driver computes it from
-/// the cached request — see `firmware/lib/drivers/src/dxl/uart/mod.rs::ReplyContext`),
-/// so the kind here only distinguishes Plain Status from Fast Slot. Position
-/// assertions live in driver-crate tests.
+/// Slot position is driver-side; tests here only need to tell Plain Status
+/// apart from a Fast Slot reply.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 enum ReplyKind {
     Plain,
     Slot,
 }
 
-/// FakeBus impls both [`DxlBus`] and [`DxlReply`]. The decoder is local to
-/// `poll<F>` so the parsed packet borrows from that local — leaving `&mut
-/// self` free for the closure's `&mut dyn DxlReply` handle. The recording
-/// fields live as plain `pub` on `FakeBus` for ergonomic test access.
-struct FakeBus {
-    /// Bytes the next `poll` will hand to a local decoder. Stashed by
-    /// [`Self::feed`]; cleared (`burst_fresh = false`) by `poll`.
-    burst: Vec<u8, 256>,
-    burst_fresh: bool,
-
-    /// Most recent encoded TX bytes — overwritten each `send_status` /
-    /// `send_slot`.
+/// Split out from `FakeBus` so `poll` can disjoint-borrow burst (parser
+/// input) and reply (dispatcher output).
+struct FakeReply {
     pub tx: Vec<u8, 256>,
     pub send_count: u32,
     pub last_kind: Option<ReplyKind>,
-
     pub last_id_staged: Option<u8>,
     pub last_baud_staged: Option<BaudRate>,
     pub last_rdt_staged: Option<u32>,
@@ -76,11 +62,9 @@ struct FakeBus {
     pub reboot_count: u32,
 }
 
-impl FakeBus {
+impl FakeReply {
     fn new() -> Self {
         Self {
-            burst: Vec::new(),
-            burst_fresh: false,
             tx: Vec::new(),
             send_count: 0,
             last_kind: None,
@@ -91,46 +75,9 @@ impl FakeBus {
             reboot_count: 0,
         }
     }
-
-    /// Stash bytes as the next burst — `poll` decodes them once, then
-    /// `burst_fresh` clears so a second `poll` without re-feeding is a
-    /// no-op (the closure never fires).
-    fn feed(&mut self, bytes: &[u8]) {
-        self.burst.clear();
-        self.burst.extend_from_slice(bytes).unwrap();
-        self.burst_fresh = true;
-    }
-
-    /// Stand-in for the bus-collision / no-IDLE case: bytes drop, `poll`
-    /// surfaces nothing.
-    fn feed_no_idle(&mut self, _bytes: &[u8]) {}
 }
 
-impl DxlBus for FakeBus {
-    fn poll<F>(&mut self, f: F)
-    where
-        F: for<'a> FnOnce(InstructionPacket<'a>, &mut dyn DxlReply),
-    {
-        if !self.burst_fresh {
-            return;
-        }
-        self.burst_fresh = false;
-        let mut decoder: Decoder<256, TestDxlCrc> = Decoder::new();
-        let (step, _) = decoder.feed(&self.burst);
-        if !matches!(step, Step::Packet(_)) {
-            return;
-        }
-        // Packet borrows the local `decoder` (Decoder::dispatch_packet is
-        // `&self`), NOT `self`. `&mut self` is then free for the closure's
-        // DxlReply handle — `Self: DxlReply` coerces implicitly.
-        let Some(packet) = decoder.dispatch_packet().into_instruction_packet() else {
-            return;
-        };
-        f(packet, self);
-    }
-}
-
-impl DxlReply for FakeBus {
+impl DxlReply for FakeReply {
     fn send_status(&mut self, status: Status<'_>) -> Result<(), WriteError> {
         self.tx.clear();
         StatusEncoder::<_, TestDxlCrc>::new(&mut self.tx).emit(status)?;
@@ -140,9 +87,7 @@ impl DxlReply for FakeBus {
     }
 
     fn send_slot(&mut self, slot: &Slot<'_>) -> Result<(), WriteError> {
-        // Position is a driver-side concern — encode as `Only` to keep the
-        // round-trip wire bytes well-formed for assertions that inspect the
-        // encoded payload.
+        // Force `Only` so wire bytes round-trip cleanly for payload assertions.
         self.tx.clear();
         let len = (3 + slot.data.len() + 2) as u16;
         SlotEncoder::<_, TestDxlCrc>::new(&mut self.tx).emit(
@@ -172,6 +117,62 @@ impl DxlReply for FakeBus {
     }
 }
 
+struct FakeBus {
+    burst: Vec<u8, 256>,
+    burst_fresh: bool,
+    reply: FakeReply,
+}
+
+impl FakeBus {
+    fn new() -> Self {
+        Self {
+            burst: Vec::new(),
+            burst_fresh: false,
+            reply: FakeReply::new(),
+        }
+    }
+
+    fn feed(&mut self, bytes: &[u8]) {
+        self.burst.clear();
+        self.burst.extend_from_slice(bytes).unwrap();
+        self.burst_fresh = true;
+    }
+
+    /// Models the bus-collision / no-IDLE case where bytes never surface.
+    fn feed_no_idle(&mut self, _bytes: &[u8]) {}
+}
+
+impl DxlBus for FakeBus {
+    fn poll<D: DxlDispatcher>(&mut self, dispatcher: &mut D) {
+        if !self.burst_fresh {
+            return;
+        }
+        self.burst_fresh = false;
+        let burst: &[u8] = &self.burst;
+        let reply = &mut self.reply;
+        let mut parser = Parser::<TestDxlCrc>::new();
+        for ev in parser.feed(burst) {
+            let chunk = chunk_for(&ev, burst);
+            dispatcher.on_event(ev, chunk, reply);
+        }
+    }
+}
+
+/// Resolve a chunked-payload event's `(offset, length)` into a burst slice.
+fn chunk_for<'a>(ev: &Event, burst: &'a [u8]) -> &'a [u8] {
+    match *ev {
+        Event::Payload(PayloadEvent::Instruction(InstructionPayload::WriteDataChunk {
+            offset,
+            length,
+        })) => {
+            let lo = offset as usize;
+            let hi = lo + length as usize;
+            &burst[lo..hi]
+        }
+        _ => &[],
+    }
+}
+
 fn encode<F>(f: F) -> Vec<u8, 256>
 where
     F: FnOnce(&mut InstructionEncoder<'_, Vec<u8, 256>, TestDxlCrc>) -> Result<(), WriteError>,
@@ -181,28 +182,50 @@ where
     buf
 }
 
-/// Cast a 5-byte-stride byte buffer to a typed `[BulkReadEntry]` slice.
-/// `BulkReadEntry` is `#[repr(C)]` with align 1 (`U16Le` fields) — sound
-/// under any alignment.
-fn bulk_entries(body: &[u8]) -> &[BulkReadEntry] {
-    assert!(body.len().is_multiple_of(5));
-    unsafe { core::slice::from_raw_parts(body.as_ptr() as *const BulkReadEntry, body.len() / 5) }
+fn bre(id: u8, address: u16, length: u16) -> BulkReadEntry {
+    BulkReadEntry {
+        id: Id::new(id),
+        address,
+        length,
+    }
 }
 
+/// Returns `(id, error_byte, payload)`. Payload is the post-error wire bytes:
+/// data for Read-family, `(model_lo, model_hi, fw)` for Ping, empty for Empty.
 fn parse_status(bytes: &[u8]) -> (u8, u8, Vec<u8, 64>) {
-    let mut dec: Decoder<256, TestDxlCrc> = Decoder::new();
-    let (step, used) = dec.feed(bytes);
-    assert_eq!(used, bytes.len());
-    match step {
-        Step::Packet(Packet::Status(p)) => {
-            let id = p.header.header.id.as_byte();
-            let err = p.header.error.as_byte();
-            let mut out: Vec<u8, 64> = Vec::new();
-            out.extend_from_slice(p.params).unwrap();
-            (id, err, out)
+    let mut parser = Parser::<TestDxlCrc>::new();
+    let mut id: u8 = 0;
+    let mut err: u8 = 0;
+    let mut data: Vec<u8, 64> = Vec::new();
+    let mut saw_crc = false;
+    for ev in parser.feed(bytes) {
+        match ev {
+            Event::Header(HeaderEvent::Status(h)) => {
+                id = h.id.as_byte();
+                err = h.error.as_byte();
+            }
+            Event::Payload(PayloadEvent::Status(StatusPayload::ReadDataChunk {
+                offset,
+                length,
+            })) => {
+                let lo = offset as usize;
+                let hi = lo + length as usize;
+                data.extend_from_slice(&bytes[lo..hi]).unwrap();
+            }
+            Event::Payload(PayloadEvent::Status(StatusPayload::Ping { model, fw_version })) => {
+                data.extend_from_slice(&[(model & 0xFF) as u8, (model >> 8) as u8, fw_version])
+                    .unwrap();
+            }
+            Event::Crc => {
+                saw_crc = true;
+                break;
+            }
+            Event::Resync(kind) => panic!("status parser resync: {kind:?}"),
+            _ => {}
         }
-        _ => panic!("not a status packet"),
     }
+    assert!(saw_crc, "status parser did not reach Crc");
+    (id, err, data)
 }
 
 #[test]
@@ -215,12 +238,12 @@ fn ping_to_our_id_replies() {
     bus.feed(&req);
     h.poll(&shared, &mut bus);
 
-    assert_eq!(bus.send_count, 1);
-    let (id, err, params) = parse_status(&bus.tx);
+    assert_eq!(bus.reply.send_count, 1);
+    let (id, err, params) = parse_status(&bus.reply.tx);
     assert_eq!(id, 0);
     assert_eq!(err, 0);
     assert_eq!(&params[..], &[0, 0, 0]);
-    assert_eq!(bus.last_kind, Some(ReplyKind::Plain));
+    assert_eq!(bus.reply.last_kind, Some(ReplyKind::Plain));
 }
 
 #[test]
@@ -233,8 +256,8 @@ fn ping_to_broadcast_replies() {
     bus.feed(&req);
     h.poll(&shared, &mut bus);
 
-    assert_eq!(bus.send_count, 1);
-    let (id, err, _) = parse_status(&bus.tx);
+    assert_eq!(bus.reply.send_count, 1);
+    let (id, err, _) = parse_status(&bus.reply.tx);
     assert_eq!(id, 0);
     assert_eq!(err, 0);
 }
@@ -249,8 +272,8 @@ fn ping_to_other_id_silent() {
     bus.feed(&req);
     h.poll(&shared, &mut bus);
 
-    assert_eq!(bus.send_count, 0);
-    assert!(bus.tx.is_empty());
+    assert_eq!(bus.reply.send_count, 0);
+    assert!(bus.reply.tx.is_empty());
 }
 
 #[test]
@@ -263,7 +286,7 @@ fn read_model_number_returns_two_bytes() {
     bus.feed(&req);
     h.poll(&shared, &mut bus);
 
-    let (id, err, params) = parse_status(&bus.tx);
+    let (id, err, params) = parse_status(&bus.reply.tx);
     assert_eq!(id, 0);
     assert_eq!(err, 0);
     assert_eq!(&params[..], &[0, 0]);
@@ -279,7 +302,7 @@ fn read_zero_length_rejects_with_data_range() {
     bus.feed(&req);
     h.poll(&shared, &mut bus);
 
-    let (_, err, _) = parse_status(&bus.tx);
+    let (_, err, _) = parse_status(&bus.reply.tx);
     assert_eq!(err, StatusError::code(ErrorCode::DataRange).as_byte());
 }
 
@@ -293,7 +316,7 @@ fn unsupported_instruction_replies_instruction_error() {
     bus.feed(&req);
     h.poll(&shared, &mut bus);
 
-    let (_, err, _) = parse_status(&bus.tx);
+    let (_, err, _) = parse_status(&bus.reply.tx);
     assert_eq!(err, StatusError::code(ErrorCode::Instruction).as_byte());
 }
 
@@ -308,7 +331,7 @@ fn write_to_rw_address_succeeds_and_mutates() {
     bus.feed(&req);
     h.poll(&shared, &mut bus);
 
-    let (id, err, params) = parse_status(&bus.tx);
+    let (id, err, params) = parse_status(&bus.reply.tx);
     assert_eq!(id, 0);
     assert_eq!(err, 0);
     assert!(params.is_empty());
@@ -326,7 +349,7 @@ fn write_to_ro_address_replies_access_error() {
     bus.feed(&req);
     h.poll(&shared, &mut bus);
 
-    let (_, err, _) = parse_status(&bus.tx);
+    let (_, err, _) = parse_status(&bus.reply.tx);
     assert_eq!(err, StatusError::code(ErrorCode::Access).as_byte());
     let identity = shared.table.config.with(|c| c.identity);
     assert_eq!(identity.model_number, 0);
@@ -342,7 +365,7 @@ fn write_to_unmapped_address_replies_data_range_error() {
     bus.feed(&req);
     h.poll(&shared, &mut bus);
 
-    let (_, err, _) = parse_status(&bus.tx);
+    let (_, err, _) = parse_status(&bus.reply.tx);
     assert_eq!(err, StatusError::code(ErrorCode::DataRange).as_byte());
 }
 
@@ -357,7 +380,7 @@ fn write_to_other_id_silent_and_does_not_mutate() {
     bus.feed(&req);
     h.poll(&shared, &mut bus);
 
-    assert_eq!(bus.send_count, 0);
+    assert_eq!(bus.reply.send_count, 0);
     let lc = shared.table.control.with(|c| c.lifecycle);
     assert!(!lc.torque_enable);
 }
@@ -373,7 +396,7 @@ fn broadcast_write_applies_but_silent() {
     bus.feed(&req);
     h.poll(&shared, &mut bus);
 
-    assert_eq!(bus.send_count, 0);
+    assert_eq!(bus.reply.send_count, 0);
     let lc = shared.table.control.with(|c| c.lifecycle);
     assert!(lc.torque_enable);
 }
@@ -388,14 +411,14 @@ fn reg_write_then_action_commits_to_live_table() {
     let req = encode(|w| w.reg_write(Id::new(0), CONTROL_BASE_ADDR, &[1]));
     bus.feed(&req);
     h.poll(&shared, &mut bus);
-    let (_, err, _) = parse_status(&bus.tx);
+    let (_, err, _) = parse_status(&bus.reply.tx);
     assert_eq!(err, 0);
     assert!(!shared.table.control.with(|c| c.lifecycle.torque_enable));
 
     let req = encode(|w| w.action(Id::new(0)));
     bus.feed(&req);
     h.poll(&shared, &mut bus);
-    let (_, err, _) = parse_status(&bus.tx);
+    let (_, err, _) = parse_status(&bus.reply.tx);
     assert_eq!(err, 0);
     assert!(shared.table.control.with(|c| c.lifecycle.torque_enable));
 }
@@ -409,7 +432,7 @@ fn reg_write_to_ro_address_replies_access_error_immediately() {
     let req = encode(|w| w.reg_write(Id::new(0), 0, &[0xAA, 0xBB]));
     bus.feed(&req);
     h.poll(&shared, &mut bus);
-    let (_, err, _) = parse_status(&bus.tx);
+    let (_, err, _) = parse_status(&bus.reply.tx);
     assert_eq!(err, StatusError::code(ErrorCode::Access).as_byte());
 }
 
@@ -423,29 +446,32 @@ fn reg_write_invalid_value_rejected_at_stage_time() {
     let req = encode(|w| w.reg_write(Id::new(0), CONTROL_BASE_ADDR, &[2]));
     bus.feed(&req);
     h.poll(&shared, &mut bus);
-    let (_, err, _) = parse_status(&bus.tx);
+    let (_, err, _) = parse_status(&bus.reply.tx);
     assert_eq!(err, StatusError::code(ErrorCode::DataRange).as_byte());
 
     let req = encode(|w| w.action(Id::new(0)));
     bus.feed(&req);
     h.poll(&shared, &mut bus);
-    let (_, err, _) = parse_status(&bus.tx);
+    let (_, err, _) = parse_status(&bus.reply.tx);
     assert_eq!(err, 0);
     assert!(!shared.table.control.with(|c| c.lifecycle.torque_enable));
 }
 
 #[test]
-fn sync_write_clears_pending_reg_write_staging() {
+fn write_preserves_pending_reg_write_chain() {
     use crate::regions::CONTROL_BASE_ADDR;
     use crate::regions::control::Mode;
     let shared = Shared::new();
     let mut bus = FakeBus::new();
     let mut h = Dxl::new();
 
+    // Stage torque_enable=1 via RegWrite; chain pending.
     let req = encode(|w| w.reg_write(Id::new(0), CONTROL_BASE_ADDR, &[1]));
     bus.feed(&req);
     h.poll(&shared, &mut bus);
 
+    // Direct Write to a different register lands immediately, leaves the
+    // RegWrite chain intact.
     let req = encode(|w| w.write(Id::new(0), CONTROL_BASE_ADDR + 1, &[1]));
     bus.feed(&req);
     h.poll(&shared, &mut bus);
@@ -453,13 +479,15 @@ fn sync_write_clears_pending_reg_write_staging() {
         shared.table.control.with(|c| c.lifecycle.mode),
         Mode::PositionPid,
     );
+    assert!(!shared.table.control.with(|c| c.lifecycle.torque_enable));
 
+    // Action commits the still-pending RegWrite.
     let req = encode(|w| w.action(Id::new(0)));
     bus.feed(&req);
     h.poll(&shared, &mut bus);
-    let (_, err, _) = parse_status(&bus.tx);
+    let (_, err, _) = parse_status(&bus.reply.tx);
     assert_eq!(err, 0);
-    assert!(!shared.table.control.with(|c| c.lifecycle.torque_enable));
+    assert!(shared.table.control.with(|c| c.lifecycle.torque_enable));
 }
 
 #[test]
@@ -472,12 +500,12 @@ fn broadcast_reg_write_and_action_silent_but_commits() {
     let req = encode(|w| w.reg_write(BROADCAST_ID, CONTROL_BASE_ADDR, &[1]));
     bus.feed(&req);
     h.poll(&shared, &mut bus);
-    assert_eq!(bus.send_count, 0);
+    assert_eq!(bus.reply.send_count, 0);
 
     let req = encode(|w| w.action(BROADCAST_ID));
     bus.feed(&req);
     h.poll(&shared, &mut bus);
-    assert_eq!(bus.send_count, 0);
+    assert_eq!(bus.reply.send_count, 0);
     assert!(shared.table.control.with(|c| c.lifecycle.torque_enable));
 }
 
@@ -490,7 +518,7 @@ fn action_with_empty_staging_replies_ok() {
     let req = encode(|w| w.action(Id::new(0)));
     bus.feed(&req);
     h.poll(&shared, &mut bus);
-    let (_, err, _) = parse_status(&bus.tx);
+    let (_, err, _) = parse_status(&bus.reply.tx);
     assert_eq!(err, 0);
 }
 
@@ -504,12 +532,12 @@ fn reboot_to_our_id_acks_and_stages_reboot() {
     bus.feed(&req);
     h.poll(&shared, &mut bus);
 
-    let (id, err, params) = parse_status(&bus.tx);
+    let (id, err, params) = parse_status(&bus.reply.tx);
     assert_eq!(id, 0);
     assert_eq!(err, 0);
     assert!(params.is_empty());
-    assert_eq!(bus.reboot_count, 1);
-    assert_eq!(bus.last_reboot_mode, Some(BootMode::App));
+    assert_eq!(bus.reply.reboot_count, 1);
+    assert_eq!(bus.reply.last_reboot_mode, Some(BootMode::App));
 }
 
 #[test]
@@ -522,10 +550,10 @@ fn reboot_to_broadcast_stages_reboot_without_ack() {
     bus.feed(&req);
     h.poll(&shared, &mut bus);
 
-    assert_eq!(bus.send_count, 0);
-    assert!(bus.tx.is_empty());
-    assert_eq!(bus.reboot_count, 1);
-    assert_eq!(bus.last_reboot_mode, Some(BootMode::App));
+    assert_eq!(bus.reply.send_count, 0);
+    assert!(bus.reply.tx.is_empty());
+    assert_eq!(bus.reply.reboot_count, 1);
+    assert_eq!(bus.reply.last_reboot_mode, Some(BootMode::App));
 }
 
 #[test]
@@ -538,10 +566,10 @@ fn reboot_to_other_id_silent_and_no_request() {
     bus.feed(&req);
     h.poll(&shared, &mut bus);
 
-    assert_eq!(bus.send_count, 0);
-    assert!(bus.tx.is_empty());
-    assert_eq!(bus.reboot_count, 0);
-    assert_eq!(bus.last_reboot_mode, None);
+    assert_eq!(bus.reply.send_count, 0);
+    assert!(bus.reply.tx.is_empty());
+    assert_eq!(bus.reply.reboot_count, 0);
+    assert_eq!(bus.reply.last_reboot_mode, None);
 }
 
 #[test]
@@ -559,15 +587,12 @@ fn reboot_honors_staged_boot_mode() {
     bus.feed(&req);
     h.poll(&shared, &mut bus);
 
-    assert_eq!(bus.reboot_count, 1);
-    assert_eq!(bus.last_reboot_mode, Some(BootMode::Bootloader));
+    assert_eq!(bus.reply.reboot_count, 1);
+    assert_eq!(bus.reply.last_reboot_mode, Some(BootMode::Bootloader));
 }
 
 #[test]
 fn baud_write_stages_via_reply_handle() {
-    // Writing the baud-rate register forwards through the ControlTableHooks
-    // shim onto reply.stage_baud — the dispatcher no longer maintains a
-    // separate Event sink.
     use crate::regions::config::addr::comms::BAUD_RATE_IDX;
     let shared = Shared::new();
     let mut bus = FakeBus::new();
@@ -577,13 +602,11 @@ fn baud_write_stages_via_reply_handle() {
     bus.feed(&req);
     h.poll(&shared, &mut bus);
 
-    assert_eq!(bus.last_baud_staged, Some(BaudRate::B1000000));
+    assert_eq!(bus.reply.last_baud_staged, Some(BaudRate::B1000000));
 }
 
 #[test]
 fn id_write_stages_via_reply_handle() {
-    // Writing the ID register fires the on_id_write hook, which forwards
-    // through ControlTableHooks onto reply.stage_id.
     use crate::regions::config::addr::comms::ID;
     let shared = Shared::new();
     let mut bus = FakeBus::new();
@@ -593,13 +616,11 @@ fn id_write_stages_via_reply_handle() {
     bus.feed(&req);
     h.poll(&shared, &mut bus);
 
-    assert_eq!(bus.last_id_staged, Some(42));
+    assert_eq!(bus.reply.last_id_staged, Some(42));
 }
 
 #[test]
 fn rdt_write_stages_via_reply_handle_in_us() {
-    // Control-table RDT is stored in 2-µs units; the hook converts to
-    // plain µs at the trait boundary so the driver doesn't repeat the math.
     use crate::regions::config::addr::comms::RETURN_DELAY_2US;
     let shared = Shared::new();
     let mut bus = FakeBus::new();
@@ -609,7 +630,7 @@ fn rdt_write_stages_via_reply_handle_in_us() {
     bus.feed(&req);
     h.poll(&shared, &mut bus);
 
-    assert_eq!(bus.last_rdt_staged, Some(200));
+    assert_eq!(bus.reply.last_rdt_staged, Some(200));
 }
 
 fn set_level(shared: &Shared, level: StatusReturnLevel) {
@@ -630,15 +651,15 @@ fn return_level_none_silences_write_ack_but_ping_replies() {
     let req = encode(|w| w.write(Id::new(0), CONTROL_BASE_ADDR, &[1]));
     bus.feed(&req);
     h.poll(&shared, &mut bus);
-    assert_eq!(bus.send_count, 0);
-    assert!(bus.tx.is_empty());
+    assert_eq!(bus.reply.send_count, 0);
+    assert!(bus.reply.tx.is_empty());
     assert!(shared.table.control.with(|c| c.lifecycle.torque_enable));
 
     let req = encode(|w| w.ping(Id::new(0)));
     bus.feed(&req);
     h.poll(&shared, &mut bus);
-    assert_eq!(bus.send_count, 1);
-    let (_, err, _) = parse_status(&bus.tx);
+    assert_eq!(bus.reply.send_count, 1);
+    let (_, err, _) = parse_status(&bus.reply.tx);
     assert_eq!(err, 0);
 }
 
@@ -652,8 +673,8 @@ fn return_level_none_silences_read_reply() {
     let req = encode(|w| w.read(Id::new(0), 0, 2));
     bus.feed(&req);
     h.poll(&shared, &mut bus);
-    assert_eq!(bus.send_count, 0);
-    assert!(bus.tx.is_empty());
+    assert_eq!(bus.reply.send_count, 0);
+    assert!(bus.reply.tx.is_empty());
 }
 
 #[test]
@@ -667,13 +688,13 @@ fn return_level_read_silences_write_ack_but_read_replies() {
     let req = encode(|w| w.write(Id::new(0), CONTROL_BASE_ADDR, &[1]));
     bus.feed(&req);
     h.poll(&shared, &mut bus);
-    assert_eq!(bus.send_count, 0);
+    assert_eq!(bus.reply.send_count, 0);
 
     let req = encode(|w| w.read(Id::new(0), 0, 2));
     bus.feed(&req);
     h.poll(&shared, &mut bus);
-    assert_eq!(bus.send_count, 1);
-    let (_, err, _) = parse_status(&bus.tx);
+    assert_eq!(bus.reply.send_count, 1);
+    let (_, err, _) = parse_status(&bus.reply.tx);
     assert_eq!(err, 0);
 }
 
@@ -687,8 +708,8 @@ fn return_level_none_silences_write_error_reply() {
     let req = encode(|w| w.write(Id::new(0), 0, &[0xAA, 0xBB]));
     bus.feed(&req);
     h.poll(&shared, &mut bus);
-    assert_eq!(bus.send_count, 0);
-    assert!(bus.tx.is_empty());
+    assert_eq!(bus.reply.send_count, 0);
+    assert!(bus.reply.tx.is_empty());
 }
 
 #[test]
@@ -701,8 +722,8 @@ fn return_level_none_silences_unsupported_instruction_error() {
     let req = encode(|w| w.factory_reset(Id::new(0), 0xFF));
     bus.feed(&req);
     h.poll(&shared, &mut bus);
-    assert_eq!(bus.send_count, 0);
-    assert!(bus.tx.is_empty());
+    assert_eq!(bus.reply.send_count, 0);
+    assert!(bus.reply.tx.is_empty());
 }
 
 #[test]
@@ -721,7 +742,7 @@ fn return_level_none_silences_action_ack() {
     bus.feed(&req);
     h.poll(&shared, &mut bus);
 
-    assert_eq!(bus.send_count, 0);
+    assert_eq!(bus.reply.send_count, 0);
     assert!(shared.table.control.with(|c| c.lifecycle.torque_enable));
 }
 
@@ -736,10 +757,10 @@ fn return_level_none_silences_reboot_ack_but_reboot_still_fires() {
     bus.feed(&req);
     h.poll(&shared, &mut bus);
 
-    assert_eq!(bus.send_count, 0);
-    assert!(bus.tx.is_empty());
-    assert_eq!(bus.reboot_count, 1);
-    assert_eq!(bus.last_reboot_mode, Some(BootMode::App));
+    assert_eq!(bus.reply.send_count, 0);
+    assert!(bus.reply.tx.is_empty());
+    assert_eq!(bus.reply.reboot_count, 1);
+    assert_eq!(bus.reply.last_reboot_mode, Some(BootMode::App));
 }
 
 #[test]
@@ -753,8 +774,8 @@ fn return_level_none_still_replies_to_ping() {
     bus.feed(&req);
     h.poll(&shared, &mut bus);
 
-    assert_eq!(bus.send_count, 1);
-    let (id, err, params) = parse_status(&bus.tx);
+    assert_eq!(bus.reply.send_count, 1);
+    let (id, err, params) = parse_status(&bus.reply.tx);
     assert_eq!(id, 0);
     assert_eq!(err, 0);
     assert_eq!(&params[..], &[0, 0, 0]);
@@ -771,7 +792,7 @@ fn return_level_read_replies_to_read_errors() {
     bus.feed(&req);
     h.poll(&shared, &mut bus);
 
-    let (_, err, _) = parse_status(&bus.tx);
+    let (_, err, _) = parse_status(&bus.reply.tx);
     assert_eq!(err, StatusError::code(ErrorCode::DataRange).as_byte());
 }
 
@@ -785,8 +806,8 @@ fn sync_read_in_our_slot_replies() {
     bus.feed(&req);
     h.poll(&shared, &mut bus);
 
-    assert_eq!(bus.send_count, 1);
-    let (id, err, params) = parse_status(&bus.tx);
+    assert_eq!(bus.reply.send_count, 1);
+    let (id, err, params) = parse_status(&bus.reply.tx);
     assert_eq!(id, 0);
     assert_eq!(err, 0);
     assert_eq!(&params[..], &[0, 0]);
@@ -802,8 +823,8 @@ fn sync_read_silent_when_our_id_absent() {
     bus.feed(&req);
     h.poll(&shared, &mut bus);
 
-    assert_eq!(bus.send_count, 0);
-    assert!(bus.tx.is_empty());
+    assert_eq!(bus.reply.send_count, 0);
+    assert!(bus.reply.tx.is_empty());
 }
 
 #[test]
@@ -816,8 +837,8 @@ fn sync_read_skips_when_no_idle_anchor() {
     bus.feed_no_idle(&req);
     h.poll(&shared, &mut bus);
 
-    assert_eq!(bus.send_count, 0);
-    assert!(bus.tx.is_empty());
+    assert_eq!(bus.reply.send_count, 0);
+    assert!(bus.reply.tx.is_empty());
 }
 
 #[test]
@@ -830,8 +851,8 @@ fn sync_read_data_range_error_still_replies() {
     bus.feed(&req);
     h.poll(&shared, &mut bus);
 
-    assert_eq!(bus.send_count, 1);
-    let (_, err, _) = parse_status(&bus.tx);
+    assert_eq!(bus.reply.send_count, 1);
+    let (_, err, _) = parse_status(&bus.reply.tx);
     assert_eq!(err, StatusError::code(ErrorCode::DataRange).as_byte());
 }
 
@@ -846,8 +867,8 @@ fn sync_read_return_level_none_silences_reply() {
     bus.feed(&req);
     h.poll(&shared, &mut bus);
 
-    assert_eq!(bus.send_count, 0);
-    assert!(bus.tx.is_empty());
+    assert_eq!(bus.reply.send_count, 0);
+    assert!(bus.reply.tx.is_empty());
 }
 
 #[test]
@@ -856,13 +877,13 @@ fn bulk_read_in_our_slot_replies() {
     let mut bus = FakeBus::new();
     let mut h = Dxl::new();
 
-    let body = [0, 0, 0, 2, 0];
-    let req = encode(|w| w.bulk_read(bulk_entries(&body)));
+    let entries = [bre(0, 0, 2)];
+    let req = encode(|w| w.bulk_read(&entries));
     bus.feed(&req);
     h.poll(&shared, &mut bus);
 
-    assert_eq!(bus.send_count, 1);
-    let (id, err, params) = parse_status(&bus.tx);
+    assert_eq!(bus.reply.send_count, 1);
+    let (id, err, params) = parse_status(&bus.reply.tx);
     assert_eq!(id, 0);
     assert_eq!(err, 0);
     assert_eq!(&params[..], &[0, 0]);
@@ -874,13 +895,13 @@ fn bulk_read_silent_when_our_id_absent() {
     let mut bus = FakeBus::new();
     let mut h = Dxl::new();
 
-    let body = [5, 0, 0, 2, 0, 7, 0, 0, 2, 0];
-    let req = encode(|w| w.bulk_read(bulk_entries(&body)));
+    let entries = [bre(5, 0, 2), bre(7, 0, 2)];
+    let req = encode(|w| w.bulk_read(&entries));
     bus.feed(&req);
     h.poll(&shared, &mut bus);
 
-    assert_eq!(bus.send_count, 0);
-    assert!(bus.tx.is_empty());
+    assert_eq!(bus.reply.send_count, 0);
+    assert!(bus.reply.tx.is_empty());
 }
 
 #[test]
@@ -889,13 +910,13 @@ fn bulk_read_skips_when_no_idle_anchor() {
     let mut bus = FakeBus::new();
     let mut h = Dxl::new();
 
-    let body = [0, 0, 0, 2, 0];
-    let req = encode(|w| w.bulk_read(bulk_entries(&body)));
+    let entries = [bre(0, 0, 2)];
+    let req = encode(|w| w.bulk_read(&entries));
     bus.feed_no_idle(&req);
     h.poll(&shared, &mut bus);
 
-    assert_eq!(bus.send_count, 0);
-    assert!(bus.tx.is_empty());
+    assert_eq!(bus.reply.send_count, 0);
+    assert!(bus.reply.tx.is_empty());
 }
 
 #[test]
@@ -904,12 +925,12 @@ fn bulk_read_uses_our_tuples_address_not_a_preceding_slots() {
     let mut bus = FakeBus::new();
     let mut h = Dxl::new();
 
-    let body = [9, 0xFE, 0xFF, 4, 0, 0, 0, 0, 2, 0];
-    let req = encode(|w| w.bulk_read(bulk_entries(&body)));
+    let entries = [bre(9, 0xFFFE, 4), bre(0, 0, 2)];
+    let req = encode(|w| w.bulk_read(&entries));
     bus.feed(&req);
     h.poll(&shared, &mut bus);
 
-    let (_, err, params) = parse_status(&bus.tx);
+    let (_, err, params) = parse_status(&bus.reply.tx);
     assert_eq!(err, 0);
     assert_eq!(&params[..], &[0, 0]);
 }
@@ -920,13 +941,13 @@ fn bulk_read_data_range_error_still_replies() {
     let mut bus = FakeBus::new();
     let mut h = Dxl::new();
 
-    let body = [0, 0xFE, 0xFF, 1, 0];
-    let req = encode(|w| w.bulk_read(bulk_entries(&body)));
+    let entries = [bre(0, 0xFFFE, 1)];
+    let req = encode(|w| w.bulk_read(&entries));
     bus.feed(&req);
     h.poll(&shared, &mut bus);
 
-    assert_eq!(bus.send_count, 1);
-    let (_, err, _) = parse_status(&bus.tx);
+    assert_eq!(bus.reply.send_count, 1);
+    let (_, err, _) = parse_status(&bus.reply.tx);
     assert_eq!(err, StatusError::code(ErrorCode::DataRange).as_byte());
 }
 
@@ -937,13 +958,13 @@ fn bulk_read_return_level_none_silences_reply() {
     let mut bus = FakeBus::new();
     let mut h = Dxl::new();
 
-    let body = [0, 0, 0, 2, 0];
-    let req = encode(|w| w.bulk_read(bulk_entries(&body)));
+    let entries = [bre(0, 0, 2)];
+    let req = encode(|w| w.bulk_read(&entries));
     bus.feed(&req);
     h.poll(&shared, &mut bus);
 
-    assert_eq!(bus.send_count, 0);
-    assert!(bus.tx.is_empty());
+    assert_eq!(bus.reply.send_count, 0);
+    assert!(bus.reply.tx.is_empty());
 }
 
 #[test]
@@ -956,8 +977,8 @@ fn fast_sync_read_in_our_slot_emits_slot_reply() {
     bus.feed(&req);
     h.poll(&shared, &mut bus);
 
-    assert_eq!(bus.send_count, 1);
-    assert_eq!(bus.last_kind, Some(ReplyKind::Slot));
+    assert_eq!(bus.reply.send_count, 1);
+    assert_eq!(bus.reply.last_kind, Some(ReplyKind::Slot));
 }
 
 #[test]
@@ -970,8 +991,8 @@ fn fast_sync_read_silent_when_our_id_absent() {
     bus.feed(&req);
     h.poll(&shared, &mut bus);
 
-    assert_eq!(bus.send_count, 0);
-    assert!(bus.tx.is_empty());
+    assert_eq!(bus.reply.send_count, 0);
+    assert!(bus.reply.tx.is_empty());
 }
 
 #[test]
@@ -984,8 +1005,8 @@ fn fast_sync_read_skips_when_no_idle_anchor() {
     bus.feed_no_idle(&req);
     h.poll(&shared, &mut bus);
 
-    assert_eq!(bus.send_count, 0);
-    assert!(bus.tx.is_empty());
+    assert_eq!(bus.reply.send_count, 0);
+    assert!(bus.reply.tx.is_empty());
 }
 
 #[test]
@@ -999,8 +1020,8 @@ fn fast_sync_read_return_level_none_silences_reply() {
     bus.feed(&req);
     h.poll(&shared, &mut bus);
 
-    assert_eq!(bus.send_count, 0);
-    assert!(bus.tx.is_empty());
+    assert_eq!(bus.reply.send_count, 0);
+    assert!(bus.reply.tx.is_empty());
 }
 
 #[test]
@@ -1009,13 +1030,13 @@ fn fast_bulk_read_in_our_slot_emits_slot_reply() {
     let mut bus = FakeBus::new();
     let mut h = Dxl::new();
 
-    let body = [0, 0, 0, 2, 0];
-    let req = encode(|w| w.fast_bulk_read(bulk_entries(&body)));
+    let entries = [bre(0, 0, 2)];
+    let req = encode(|w| w.fast_bulk_read(&entries));
     bus.feed(&req);
     h.poll(&shared, &mut bus);
 
-    assert_eq!(bus.send_count, 1);
-    assert_eq!(bus.last_kind, Some(ReplyKind::Slot));
+    assert_eq!(bus.reply.send_count, 1);
+    assert_eq!(bus.reply.last_kind, Some(ReplyKind::Slot));
 }
 
 #[test]
@@ -1024,13 +1045,13 @@ fn fast_bulk_read_silent_when_our_id_absent() {
     let mut bus = FakeBus::new();
     let mut h = Dxl::new();
 
-    let body = [5, 0, 0, 2, 0, 7, 0, 0, 2, 0];
-    let req = encode(|w| w.fast_bulk_read(bulk_entries(&body)));
+    let entries = [bre(5, 0, 2), bre(7, 0, 2)];
+    let req = encode(|w| w.fast_bulk_read(&entries));
     bus.feed(&req);
     h.poll(&shared, &mut bus);
 
-    assert_eq!(bus.send_count, 0);
-    assert!(bus.tx.is_empty());
+    assert_eq!(bus.reply.send_count, 0);
+    assert!(bus.reply.tx.is_empty());
 }
 
 #[test]
@@ -1039,13 +1060,13 @@ fn fast_bulk_read_skips_when_no_idle_anchor() {
     let mut bus = FakeBus::new();
     let mut h = Dxl::new();
 
-    let body = [0, 0, 0, 2, 0];
-    let req = encode(|w| w.fast_bulk_read(bulk_entries(&body)));
+    let entries = [bre(0, 0, 2)];
+    let req = encode(|w| w.fast_bulk_read(&entries));
     bus.feed_no_idle(&req);
     h.poll(&shared, &mut bus);
 
-    assert_eq!(bus.send_count, 0);
-    assert!(bus.tx.is_empty());
+    assert_eq!(bus.reply.send_count, 0);
+    assert!(bus.reply.tx.is_empty());
 }
 
 #[test]
@@ -1055,21 +1076,18 @@ fn fast_bulk_read_return_level_none_silences_reply() {
     let mut bus = FakeBus::new();
     let mut h = Dxl::new();
 
-    let body = [0, 0, 0, 2, 0];
-    let req = encode(|w| w.fast_bulk_read(bulk_entries(&body)));
+    let entries = [bre(0, 0, 2)];
+    let req = encode(|w| w.fast_bulk_read(&entries));
     bus.feed(&req);
     h.poll(&shared, &mut bus);
 
-    assert_eq!(bus.send_count, 0);
-    assert!(bus.tx.is_empty());
+    assert_eq!(bus.reply.send_count, 0);
+    assert!(bus.reply.tx.is_empty());
 }
 
 #[test]
 fn fast_sync_read_error_emits_zero_payload_slot() {
-    // FastError path: control-table read fails → chip emits `length` zero
-    // bytes for the data field rather than reading garbage off a stale buf.
-    // FakeBus encodes whatever Slot the dispatcher hands it; verify the
-    // data is all-zeros and the error byte propagates.
+    // Read failure must emit `length` zero bytes, not stale buf contents.
     let shared = Shared::new();
     let mut bus = FakeBus::new();
     let mut h = Dxl::new();
@@ -1078,13 +1096,16 @@ fn fast_sync_read_error_emits_zero_payload_slot() {
     bus.feed(&req);
     h.poll(&shared, &mut bus);
 
-    assert_eq!(bus.send_count, 1);
-    assert_eq!(bus.last_kind, Some(ReplyKind::Slot));
-    // Wire bytes: HEADER(4) + 0xFE + LEN(2) + 0x55 + error + id + 2 zeros + CRC(2)
-    assert_eq!(bus.tx.len(), 14);
-    assert_eq!(bus.tx[8], StatusError::code(ErrorCode::DataRange).as_byte());
-    assert_eq!(bus.tx[9], 0); // our id
-    assert_eq!(&bus.tx[10..12], &[0, 0]); // length zero bytes
+    assert_eq!(bus.reply.send_count, 1);
+    assert_eq!(bus.reply.last_kind, Some(ReplyKind::Slot));
+    // HEADER(4) + 0xFE + LEN(2) + 0x55 + error + id + 2 data + CRC(2)
+    assert_eq!(bus.reply.tx.len(), 14);
+    assert_eq!(
+        bus.reply.tx[8],
+        StatusError::code(ErrorCode::DataRange).as_byte(),
+    );
+    assert_eq!(bus.reply.tx[9], 0);
+    assert_eq!(&bus.reply.tx[10..12], &[0, 0]);
 }
 
 #[test]
@@ -1094,13 +1115,13 @@ fn sync_write_to_our_id_mutates_and_silent() {
     let mut bus = FakeBus::new();
     let mut h = Dxl::new();
 
-    // Two slots: id=7 (not us), id=0 (us). length=1, both write 0x01 to torque_enable.
+    // Slots: id=7 (foreign), id=0 (us); both write 0x01 to torque_enable.
     let body = [7, 0x00, 0, 0x01];
     let req = encode(|w| w.sync_write(CONTROL_BASE_ADDR, 1, &body));
     bus.feed(&req);
     h.poll(&shared, &mut bus);
 
-    assert_eq!(bus.send_count, 0);
+    assert_eq!(bus.reply.send_count, 0);
     assert!(shared.table.control.with(|c| c.lifecycle.torque_enable));
 }
 
@@ -1116,23 +1137,25 @@ fn sync_write_to_other_ids_only_does_not_mutate() {
     bus.feed(&req);
     h.poll(&shared, &mut bus);
 
-    assert_eq!(bus.send_count, 0);
+    assert_eq!(bus.reply.send_count, 0);
     assert!(!shared.table.control.with(|c| c.lifecycle.torque_enable));
 }
 
 #[test]
-fn sync_write_clears_pending_reg_write_staging_too() {
+fn sync_write_preserves_pending_reg_write_chain() {
     use crate::regions::CONTROL_BASE_ADDR;
     use crate::regions::control::Mode;
     let shared = Shared::new();
     let mut bus = FakeBus::new();
     let mut h = Dxl::new();
 
+    // Stage torque_enable=1 via RegWrite; chain pending.
     let req = encode(|w| w.reg_write(Id::new(0), CONTROL_BASE_ADDR, &[1]));
     bus.feed(&req);
     h.poll(&shared, &mut bus);
 
-    // Sync Write to mode register — should wipe the RegWrite staging.
+    // SyncWrite to a different register lands immediately, leaves the
+    // RegWrite chain intact.
     let body = [0, Mode::PositionPid as u8];
     let req = encode(|w| w.sync_write(CONTROL_BASE_ADDR + 1, 1, &body));
     bus.feed(&req);
@@ -1141,13 +1164,15 @@ fn sync_write_clears_pending_reg_write_staging_too() {
         shared.table.control.with(|c| c.lifecycle.mode),
         Mode::PositionPid,
     );
+    assert!(!shared.table.control.with(|c| c.lifecycle.torque_enable));
 
+    // Action commits the still-pending RegWrite.
     let req = encode(|w| w.action(Id::new(0)));
     bus.feed(&req);
     h.poll(&shared, &mut bus);
-    let (_, err, _) = parse_status(&bus.tx);
+    let (_, err, _) = parse_status(&bus.reply.tx);
     assert_eq!(err, 0);
-    assert!(!shared.table.control.with(|c| c.lifecycle.torque_enable));
+    assert!(shared.table.control.with(|c| c.lifecycle.torque_enable));
 }
 
 #[test]
@@ -1157,7 +1182,6 @@ fn bulk_write_to_our_id_mutates_and_silent() {
     let mut bus = FakeBus::new();
     let mut h = Dxl::new();
 
-    // id=0, address=CONTROL_BASE_ADDR (torque_enable), length=1, data=[1].
     let addr_lo = (CONTROL_BASE_ADDR & 0xFF) as u8;
     let addr_hi = (CONTROL_BASE_ADDR >> 8) as u8;
     let body = [0, addr_lo, addr_hi, 1, 0, 1];
@@ -1165,7 +1189,7 @@ fn bulk_write_to_our_id_mutates_and_silent() {
     bus.feed(&req);
     h.poll(&shared, &mut bus);
 
-    assert_eq!(bus.send_count, 0);
+    assert_eq!(bus.reply.send_count, 0);
     assert!(shared.table.control.with(|c| c.lifecycle.torque_enable));
 }
 
@@ -1183,7 +1207,7 @@ fn bulk_write_to_other_id_silent_and_does_not_mutate() {
     bus.feed(&req);
     h.poll(&shared, &mut bus);
 
-    assert_eq!(bus.send_count, 0);
+    assert_eq!(bus.reply.send_count, 0);
     assert!(!shared.table.control.with(|c| c.lifecycle.torque_enable));
 }
 
@@ -1195,8 +1219,7 @@ fn bulk_write_uses_our_tuples_address_not_a_preceding_slots() {
     let mut bus = FakeBus::new();
     let mut h = Dxl::new();
 
-    // Slot for id=7 (foreign) targets torque_enable; our slot (id=0) targets
-    // the mode register one byte later. Verify we honor our own address.
+    // Foreign slot (id=7) targets torque_enable; our slot (id=0) targets mode.
     let other_lo = (CONTROL_BASE_ADDR & 0xFF) as u8;
     let other_hi = (CONTROL_BASE_ADDR >> 8) as u8;
     let mode_addr = CONTROL_BASE_ADDR + 1;
@@ -1220,7 +1243,7 @@ fn bulk_write_uses_our_tuples_address_not_a_preceding_slots() {
     bus.feed(&req);
     h.poll(&shared, &mut bus);
 
-    assert_eq!(bus.send_count, 0);
+    assert_eq!(bus.reply.send_count, 0);
     assert!(!shared.table.control.with(|c| c.lifecycle.torque_enable));
     assert_eq!(
         shared.table.control.with(|c| c.lifecycle.mode),

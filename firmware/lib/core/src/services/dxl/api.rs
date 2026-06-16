@@ -4,10 +4,8 @@ use crate::{Shared, StagedWrites};
 use super::dispatcher::Dispatcher;
 
 /// Services-side DXL wrapper. Holds only the staged-RegWrite buffer — the
-/// parser lives in the bus driver, so the CRC type doesn't appear in any
-/// services-layer type. `poll` hands the bus a closure that wraps the
-/// dispatcher; the bus invokes it with the parsed request and a reply
-/// handle, both borrowed from disjoint pieces of bus-internal state.
+/// streaming parser lives in the bus driver, so neither the CRC type nor any
+/// wire-byte buffer appears in any services-layer type.
 pub struct Dxl {
     staged: StagedWrites,
 }
@@ -20,10 +18,8 @@ impl Dxl {
     }
 
     pub fn poll<B: DxlBus>(&mut self, shared: &Shared, bus: &mut B) {
-        let staged = &mut self.staged;
-        bus.poll(|packet, reply| {
-            Dispatcher::new(shared, reply, staged).dispatch(packet);
-        });
+        let mut dispatcher = Dispatcher::new(shared, &mut self.staged);
+        bus.poll(&mut dispatcher);
     }
 }
 

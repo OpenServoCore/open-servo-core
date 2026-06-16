@@ -1,22 +1,15 @@
-use dxl_protocol::packet::{Slot, Status};
-use dxl_protocol::{InstructionPacket, WriteError};
+use dxl_protocol::WriteError;
+use dxl_protocol::streaming::Event;
+use dxl_protocol::types::{Slot, Status};
 
 use crate::{BaudRate, BootMode};
 
 /// Dispatcher-facing reply surface: encode a Status / encode a Fast slot /
-/// cancel an in-flight fire / stage a deferred config change. Per
-/// driver-pattern §7.4 these methods are **data-centric** — they carry only
-/// "what to do," never "where on the wire to position it." Slot positioning,
-/// RDT, chain-CRC anchoring, wire-end timing all live inside the bus impl,
-/// derived from the request the bus just handed the dispatcher.
-///
-/// Reply trait is separate from [`DxlBus`] so the dispatcher (and
-/// [`ControlTableHooks`]) can be generic over `DxlReply` alone — it never
-/// re-polls mid-dispatch. The chip-side `DxlBus` impl spawns a `&mut dyn
-/// DxlReply` through the closure handed to [`DxlBus::poll`]; the chip's
-/// `DxlBus` type itself does *not* impl `DxlReply` because reply state lives
-/// in driver internals reachable only through the disjoint split-borrow that
-/// `poll` orchestrates.
+/// stage a deferred config change. Per driver-pattern §7.4 these methods are
+/// **data-centric** — they carry only "what to do," never "where on the wire
+/// to position it." Slot positioning, RDT, chain-CRC anchoring, wire-end
+/// timing all live inside the bus impl, derived from the request the bus just
+/// handed the dispatcher.
 pub trait DxlReply {
     /// Encode a standalone Status reply and arm its fire. Bus folds RDT +
     /// slot offset (broadcast Ping / Sync/Bulk Read slot N) from its cached
@@ -43,27 +36,26 @@ pub trait DxlReply {
     fn stage_reboot(&mut self, mode: BootMode);
 }
 
-/// Bus surface the DXL services layer drives. Closure-based `poll` to break
-/// the otherwise-fatal borrow conflict between the parsed
-/// [`InstructionPacket`] (borrowed from bus-internal RX storage) and the
-/// `&mut` access the dispatcher needs for send / stage calls on the bus.
-/// The implementor splits its internal state into disjoint RX and TX halves
-/// and hands both into the closure simultaneously — see
-/// [`docs/driver-pattern.md §7.4`](../../../../../docs/driver-pattern.md)
-/// for the data-centric principle.
+/// Streaming dispatcher: bus hands one parser [`Event`] at a time, plus an
+/// optional contiguous ring slice for chunked-payload events (driver resolves
+/// wrap-around). `R` is generic per method so we avoid `dyn DxlReply` in the
+/// hot path; each bus impl monomorphizes over its concrete reply type.
 ///
-/// The parser lives entirely in the driver per [`docs/dxl-hw-timed-transport.md §10.5`](../../../../../docs/dxl-hw-timed-transport.md);
-/// the trait carries no CRC type parameter because services never touch the
-/// decoder. Staging methods (`stage_*`) and `cancel` only exist on
-/// [`DxlReply`] — the bus type itself is poll-only.
+/// `ring` is empty for non-chunk events. For
+/// `Event::Payload(Instruction(WriteDataChunk { .. }))` the slice is the
+/// resolved contiguous wire bytes for that chunk (length matches the event).
+pub trait DxlDispatcher {
+    fn on_event<R: DxlReply>(&mut self, ev: Event, ring: &[u8], reply: &mut R);
+}
+
+/// Bus surface the DXL services layer drives. The bus owns the streaming
+/// parser; on `poll` it feeds buffered wire bytes to the parser and forwards
+/// each [`Event`] to the dispatcher together with the resolved `ring` slice
+/// for chunked-payload events.
+///
+/// The dispatcher's `&mut R: DxlReply` is borrowed from a disjoint field of
+/// bus-internal state, paired with the parser borrowing the wire ring — see
+/// `docs/driver-pattern.md` §7.4 for the data-centric principle.
 pub trait DxlBus {
-    /// Drain bus state until a request addressed to us (or BROADCAST)
-    /// surfaces; if so, invoke `f` with the parsed packet and a reply
-    /// handle. Foreign-ID requests and Status frames are consumed silently
-    /// (they may feed bus-internal calibration state but never reach the
-    /// closure). `f` is called at most once per `poll` call — implementors
-    /// must NOT loop back into the closure after a return.
-    fn poll<F>(&mut self, f: F)
-    where
-        F: for<'a> FnOnce(InstructionPacket<'a>, &mut dyn DxlReply);
+    fn poll<D: DxlDispatcher>(&mut self, dispatcher: &mut D);
 }

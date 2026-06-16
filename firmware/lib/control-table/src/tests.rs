@@ -176,12 +176,11 @@ fn walk_fields_allows_reads_through_ro_and_rw() {
 fn stage_then_validator_reject_rewinds_buffer_and_does_not_commit() {
     let r = StubRouter::new();
     let mut staged = StagedWrites::new();
-    let saved_data = staged.data.len();
-    let saved_entries = staged.entries.len();
+    let snap = staged.snapshot();
     stage_write(0, &[0xAA], REJECTING_BLOCKS, &mut staged).unwrap();
-    let reject = run_field_validators(&r, &staged, saved_entries, 0, 1, REJECTING_BLOCKS);
+    let reject = run_field_validators(&r, &staged, snap, 0, 1, REJECTING_BLOCKS);
     assert_eq!(reject, Err(Error::ValidationError(ValidationKind::Custom)),);
-    staged.rewind(saved_data, saved_entries);
+    staged.rewind_to(snap);
     assert!(staged.is_empty());
     let mut buf = [0xFFu8; 1];
     r.read_bytes(0, &mut buf).unwrap();
@@ -206,8 +205,9 @@ fn staged_view_overlays_pending_bytes_on_live_data() {
     let mut staged = StagedWrites::new();
     r.write_bytes(0, &[0x11, 0x22, 0x33, 0x44], &mut staged)
         .unwrap();
-    staged.push_chunk(1, &[0xAA, 0xBB]).unwrap();
-    let view = StagedView::new(&r, &staged, 0);
+    let snap = staged.snapshot();
+    staged.push(1, &[0xAA, 0xBB]).unwrap();
+    let view = StagedView::new(&r, &staged, snap);
     let mut buf = [0u8; 4];
     view.read_bytes(0, &mut buf).unwrap();
     assert_eq!(buf, [0x11, 0xAA, 0xBB, 0x44]);
@@ -228,7 +228,7 @@ fn compare_u16_value_rhs_checks_literal_bound() {
     let r = StubRouter::new();
     seed(&r, &[(0, &100u16.to_le_bytes())]);
     let staged = StagedWrites::new();
-    let view = StagedView::new(&r, &staged, 0);
+    let view = StagedView::new(&r, &staged, staged.snapshot());
     let pass = FieldValidator::CompareU16 {
         op: CompareOp::Le,
         abs: false,
@@ -254,7 +254,7 @@ fn compare_i32_addr_rhs_reads_value_at_other_addr() {
         &[(0, &(-10i32).to_le_bytes()), (12, &100i32.to_le_bytes())],
     );
     let staged = StagedWrites::new();
-    let view = StagedView::new(&r, &staged, 0);
+    let view = StagedView::new(&r, &staged, staged.snapshot());
     let v = FieldValidator::CompareI32 {
         op: CompareOp::Lt,
         abs: false,
@@ -271,7 +271,7 @@ fn compare_i32_abs_compares_magnitudes() {
         &[(0, &(-150i32).to_le_bytes()), (12, &100i32.to_le_bytes())],
     );
     let staged = StagedWrites::new();
-    let view = StagedView::new(&r, &staged, 0);
+    let view = StagedView::new(&r, &staged, staged.snapshot());
     let fail = FieldValidator::CompareI32 {
         op: CompareOp::Le,
         abs: true,

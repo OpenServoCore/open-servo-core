@@ -16,6 +16,6 @@ pub use desc::{
 };
 pub use region::{Region, RegionStorage, RegionStorageRaw};
 pub use route::Router;
-pub use stage::{STAGE_DATA_CAP, STAGE_ENTRY_CAP, StagedView, StagedWrites};
+pub use stage::{STAGE_DATA_CAP, STAGE_ENTRY_CAP, Snapshot, StagedView, StagedWrites};
 
 pub use control_table_derive::{Block, Enum, Region, Table};

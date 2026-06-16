@@ -1,5 +1,5 @@
 use crate::desc::{Access, BlockDesc, Error, RegionDesc};
-use crate::stage::StagedWrites;
+use crate::stage::{Snapshot, StagedWrites};
 use crate::validate::{run_block_validators, run_field_validators, run_region_validators};
 
 /// `write_bytes`/`commit_staged` form a transient `&mut` to the region via the
@@ -25,12 +25,11 @@ pub trait Router {
     where
         Self: Sized,
     {
-        let saved_data = staged.data.len();
-        let saved_entries = staged.entries.len();
+        let snap = staged.snapshot();
         router_stage_bytes(self, addr, src, staged)?;
         // SAFETY: caller upholds Router's single-writer contract.
-        unsafe { commit_staged_range(self, staged, saved_entries) };
-        staged.rewind(saved_data, saved_entries);
+        unsafe { commit_staged_range(self, staged, &snap) };
+        staged.rewind_to(snap);
         Ok(())
     }
 
@@ -46,7 +45,7 @@ pub trait Router {
         Self: Sized,
     {
         // SAFETY: caller upholds Router's single-writer contract.
-        unsafe { commit_staged_range(self, staged, 0) };
+        unsafe { commit_staged_range_all(self, staged) };
         staged.clear();
     }
 }
@@ -97,18 +96,13 @@ pub(crate) fn router_stage_bytes(
         .checked_add(src.len())
         .ok_or(Error::OutOfRange)?;
     let r = region_for(router, addr, end).ok_or(Error::OutOfRange)?;
-    let saved_data = staged.data.len();
-    let saved_entries = staged.entries.len();
+    let snap = staged.snapshot();
     let result = stage_write(addr, src, r.def.blocks, staged)
-        .and_then(|()| {
-            run_field_validators(router, staged, saved_entries, addr, src.len(), r.def.blocks)
-        })
-        .and_then(|()| {
-            run_block_validators(router, staged, saved_entries, addr, src.len(), r.def.blocks)
-        })
-        .and_then(|()| run_region_validators(router, staged, saved_entries, r.def.validators));
+        .and_then(|()| run_field_validators(router, staged, snap, addr, src.len(), r.def.blocks))
+        .and_then(|()| run_block_validators(router, staged, snap, addr, src.len(), r.def.blocks))
+        .and_then(|()| run_region_validators(router, staged, snap, r.def.validators));
     if result.is_err() {
-        staged.rewind(saved_data, saved_entries);
+        staged.rewind_to(snap);
     }
     result
 }
@@ -117,9 +111,21 @@ pub(crate) fn router_stage_bytes(
 pub(crate) unsafe fn commit_staged_range(
     router: &dyn Router,
     staged: &StagedWrites,
-    start_entry: usize,
+    snap: &Snapshot,
 ) {
-    for (abs_addr, data) in staged.iter_from(start_entry) {
+    for (abs_addr, data) in staged.iter_from(snap) {
+        let end = abs_addr as usize + data.len();
+        let Some(r) = region_for(router, abs_addr, end) else {
+            debug_assert!(false, "staged entry resolved to no region at commit time");
+            continue;
+        };
+        unsafe { commit_chunk(r.base, abs_addr, data, r.def.blocks) };
+    }
+}
+
+/// SAFETY: caller holds the region's single-writer guarantee.
+unsafe fn commit_staged_range_all(router: &dyn Router, staged: &StagedWrites) {
+    for (abs_addr, data) in staged.iter() {
         let end = abs_addr as usize + data.len();
         let Some(r) = region_for(router, abs_addr, end) else {
             debug_assert!(false, "staged entry resolved to no region at commit time");
@@ -226,7 +232,7 @@ pub(crate) fn stage_write(
     staged: &mut StagedWrites,
 ) -> Result<(), Error> {
     walk_fields(abs_addr, src.len(), blocks, true, |_, _, _, _| {})?;
-    staged.push_chunk(abs_addr, src)
+    staged.push(abs_addr, src)
 }
 
 /// SAFETY: `region_base` points to the matching region struct; `[abs_addr, abs_addr+data.len())`

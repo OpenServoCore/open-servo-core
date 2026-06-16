@@ -41,6 +41,15 @@ pub(crate) struct StagedEntry {
     data_off: u16,
 }
 
+/// Caller-held transaction handle. Hand to `rewind_to` to discard pushes
+/// since capture, or to `iter_from` to walk them. Nesting is free — each
+/// caller holds its own.
+#[derive(Copy, Clone)]
+pub struct Snapshot {
+    pub(crate) data: u16,
+    pub(crate) entries: u16,
+}
+
 pub struct StagedWrites {
     pub(crate) data: heapless::Vec<u8, STAGE_DATA_CAP>,
     pub(crate) entries: heapless::Vec<StagedEntry, STAGE_ENTRY_CAP>,
@@ -63,7 +72,19 @@ impl StagedWrites {
         self.entries.is_empty()
     }
 
-    pub(crate) fn push_chunk(&mut self, addr: u16, src: &[u8]) -> Result<(), Error> {
+    pub fn snapshot(&self) -> Snapshot {
+        Snapshot {
+            data: self.data.len() as u16,
+            entries: self.entries.len() as u16,
+        }
+    }
+
+    pub fn rewind_to(&mut self, snap: Snapshot) {
+        self.data.truncate(snap.data as usize);
+        self.entries.truncate(snap.entries as usize);
+    }
+
+    pub fn push(&mut self, addr: u16, src: &[u8]) -> Result<(), Error> {
         let data_off = self.data.len();
         if data_off + src.len() > STAGE_DATA_CAP {
             return Err(Error::StagingFull);
@@ -84,13 +105,16 @@ impl StagedWrites {
         Ok(())
     }
 
-    pub(crate) fn rewind(&mut self, data_len: usize, entry_count: usize) {
-        self.data.truncate(data_len);
-        self.entries.truncate(entry_count);
+    pub fn iter(&self) -> impl Iterator<Item = (u16, &[u8])> + '_ {
+        self.entries.iter().map(|e| {
+            let lo = e.data_off as usize;
+            let hi = lo + e.len as usize;
+            (e.addr, &self.data[lo..hi])
+        })
     }
 
-    pub(crate) fn iter_from(&self, start_entry: usize) -> impl Iterator<Item = (u16, &[u8])> + '_ {
-        self.entries[start_entry..].iter().map(|e| {
+    pub fn iter_from(&self, snap: &Snapshot) -> impl Iterator<Item = (u16, &[u8])> + '_ {
+        self.entries[snap.entries as usize..].iter().map(|e| {
             let lo = e.data_off as usize;
             let hi = lo + e.len as usize;
             (e.addr, &self.data[lo..hi])
@@ -109,15 +133,15 @@ impl Default for StagedWrites {
 pub struct StagedView<'a> {
     router: &'a dyn Router,
     staged: &'a StagedWrites,
-    start_entry: usize,
+    snap: Snapshot,
 }
 
 impl<'a> StagedView<'a> {
-    pub fn new(router: &'a dyn Router, staged: &'a StagedWrites, start_entry: usize) -> Self {
+    pub fn new(router: &'a dyn Router, staged: &'a StagedWrites, snap: Snapshot) -> Self {
         Self {
             router,
             staged,
-            start_entry,
+            snap,
         }
     }
 
@@ -128,7 +152,7 @@ impl<'a> StagedView<'a> {
         }
         let req_lo = addr as usize;
         let req_hi = req_lo + dst.len();
-        for (s_addr, s_data) in self.staged.iter_from(self.start_entry) {
+        for (s_addr, s_data) in self.staged.iter_from(&self.snap) {
             let s_lo = s_addr as usize;
             let s_hi = s_lo + s_data.len();
             let lo = req_lo.max(s_lo);
