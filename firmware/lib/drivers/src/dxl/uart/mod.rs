@@ -483,7 +483,7 @@ pub struct DxlUart<
     /// `ReplyHandle`; `on_systick_match` drives one body per CMP.
     fast_last: FastLast<P::FastLastScheduler>,
     /// Chain-CRC fold engine. Per-byte hook is wired into the codec's
-    /// `poll_one` callback during the SysTick walker; finalize patches our
+    /// `drain_raw` callback during the SysTick walker; finalize patches our
     /// own trailing CRC slot before DMA1_CH4 reads it.
     fast_last_crc: FastLastCrc<P::Crc>,
 

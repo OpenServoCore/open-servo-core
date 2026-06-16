@@ -333,14 +333,6 @@ impl<
         self.instruction_count
     }
 
-    /// Cumulative wire-byte cursor (parser- + skip-consumed) for chain-
-    /// CRC fold anchoring. Composite captures this at poll surface as
-    /// the Fast Last scheduler's `anchor_bytes` input (interim until
-    /// Chunk 5 retires it).
-    pub fn wire_byte_cursor(&self) -> u32 {
-        self.wire_bytes_consumed
-    }
-
     /// Stable peripheral-memory address for DMA1_CH7's destination buffer.
     /// Bringup hands this to `dma::configure(CH7, ...)`.
     pub fn edges_addr(&self) -> usize {
@@ -544,10 +536,6 @@ impl<
         self.rx.instruction_count()
     }
 
-    pub fn wire_byte_cursor(&self) -> u32 {
-        self.rx.wire_byte_cursor()
-    }
-
     pub fn edges_addr(&self) -> usize {
         self.rx.edges_addr()
     }
@@ -651,6 +639,14 @@ impl<
     pub(crate) fn rx_classifier_hsi_active_for_test(&self) -> bool {
         self.rx.hsi_active()
     }
+
+    /// Cumulative parser- + skip-consumed wire-byte cursor. Production
+    /// callers read this per-event via `PollEvent::Event::next_status_pos`;
+    /// tests reach the underlying counter directly to verify the cursor
+    /// walks both parser and skip paths.
+    pub(crate) fn wire_byte_cursor_for_test(&self) -> u32 {
+        self.wire_bytes_consumed
+    }
 }
 
 #[cfg(test)]
@@ -677,6 +673,10 @@ impl<
 
     pub(crate) fn rx_classifier_hsi_active_for_test(&self) -> bool {
         self.rx.rx_classifier_hsi_active_for_test()
+    }
+
+    pub(crate) fn wire_byte_cursor_for_test(&self) -> u32 {
+        self.rx.wire_byte_cursor_for_test()
     }
 }
 
@@ -777,7 +777,7 @@ mod tests {
         let captures = collect_events(&mut c, |_| PollAction::Continue);
         assert!(captures.is_empty());
         assert_eq!(c.instruction_count(), 0);
-        assert_eq!(c.wire_byte_cursor(), 0);
+        assert_eq!(c.wire_byte_cursor_for_test(), 0);
     }
 
     #[test]
@@ -866,7 +866,7 @@ mod tests {
         ));
         assert!(iter.next().is_none());
         // Wire cursor advanced over the full packet.
-        assert_eq!(c.wire_byte_cursor() as usize, wire.len());
+        assert_eq!(c.wire_byte_cursor_for_test() as usize, wire.len());
     }
 
     #[test]
@@ -904,7 +904,7 @@ mod tests {
                 .iter()
                 .any(|c| matches!(c, Capture::SkipComplete { id } if *id == FOREIGN_ID))
         );
-        assert_eq!(c.wire_byte_cursor() as usize, wire.len());
+        assert_eq!(c.wire_byte_cursor_for_test() as usize, wire.len());
     }
 
     #[test]
@@ -987,7 +987,7 @@ mod tests {
             }
             _ => PollAction::Continue,
         });
-        assert_eq!(c.wire_byte_cursor() as usize, combined.len());
+        assert_eq!(c.wire_byte_cursor_for_test() as usize, combined.len());
     }
 
     #[test]

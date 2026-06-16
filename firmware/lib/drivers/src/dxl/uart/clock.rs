@@ -305,8 +305,9 @@ mod tests {
     #[test]
     fn out_of_window_byte_pair_is_dropped() {
         // delta > 11·tpb → GAP class (e.g. inter-packet gap). The integrator
-        // must not see it — the BT pair walk inside `Codec::poll_one`
-        // doesn't pre-filter; that's this method's job.
+        // must not see it — the pair callback driven by the classifier
+        // through `Codec::on_edge_advance` / `on_idle` doesn't pre-filter;
+        // that's this method's job.
         let mut c = clock(TEST_BAUD);
         // 12·SPEC = 60_000 → above hi=55_000.
         c.on_byte_pair(0, 60_000);

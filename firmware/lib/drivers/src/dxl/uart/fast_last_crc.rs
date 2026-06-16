@@ -2,9 +2,9 @@
 //!
 //! Owns a running [`CrcUmts`] engine plus the bookkeeping that decides
 //! when to feed wire bytes into it. Composite-side; the per-byte hook
-//! ([`Self::on_byte`]) is wired into [`super::codec::Codec::poll_one`]'s
-//! `on_byte` callback so every wire byte the parser consumes — own,
-//! foreign, Status-frame, resync'd prefix alike — flows through the
+//! ([`Self::on_byte`]) is wired into [`super::codec::Codec::drain_raw`]'s
+//! per-byte callback so every wire byte the post-parser drain surfaces —
+//! own, foreign, Status-frame, resync'd prefix alike — flows through the
 //! guard. Per `docs/dxl-hw-timed-transport.md` §10.6.
 //!
 //! Lifecycle: started at [`super::ReplyHandle::send_slot`] when the
@@ -20,10 +20,10 @@ use dxl_protocol::CrcUmts;
 
 use super::codec::CodecTx;
 
-/// Per [`super::codec::CodecRx::poll_one`]'s callback contract — fired
-/// once per parser-consumed wire byte (including resync'd prefixes and
-/// Status-frame bytes the parser drops); receives `(byte, cursor)` where
-/// `cursor` is the pre-advance value of `wire_byte_cursor`.
+/// Per [`super::codec::CodecRx::drain_raw`]'s callback contract — fired
+/// once per drained RX-ring byte during the Fast Last predecessor window;
+/// receives `(byte, cursor)` where `cursor` is the pre-advance value of
+/// the codec's `wire_bytes_consumed` counter.
 pub struct FastLastCrc<CRC: CrcUmts> {
     crc: CRC,
     /// Lower bound on the wire-byte cursor that contributes to the fold.
@@ -53,10 +53,10 @@ impl<CRC: CrcUmts> FastLastCrc<CRC> {
     }
 
     /// Begin folding for one Fast Last reply. `start_cursor` is the
-    /// composite-captured `wire_byte_cursor()` at parse-complete (so the
-    /// first byte of the predecessor's first reply lands at cursor ==
-    /// start_cursor); `predecessor_bytes` is `FastSlotInfo::bytes_before`.
-    /// Resets the running CRC; idempotent.
+    /// composite-captured `PollEvent::Event::next_status_pos` at
+    /// parse-complete (so the first byte of the predecessor's first reply
+    /// lands at cursor == start_cursor); `predecessor_bytes` is
+    /// `FastSlotInfo::bytes_before`. Resets the running CRC; idempotent.
     pub fn start(&mut self, start_cursor: u32, predecessor_bytes: u32) {
         self.crc.reset();
         self.start_cursor = start_cursor;
@@ -65,7 +65,7 @@ impl<CRC: CrcUmts> FastLastCrc<CRC> {
         self.active = true;
     }
 
-    /// Per-byte hook for [`super::codec::CodecRx::poll_one`]'s callback.
+    /// Per-byte hook for [`super::codec::CodecRx::drain_raw`]'s callback.
     /// Skips bytes the guard rejects (not active, before `start_cursor`);
     /// folds otherwise and finalize-patches on reaching
     /// `predecessor_bytes`.
