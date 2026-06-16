@@ -159,7 +159,7 @@ impl<
     /// skip-consumed bytes.
     pub fn poll<F>(&mut self, mut on_event: F)
     where
-        F: FnMut(PollEvent<'_>) -> PollAction,
+        F: FnMut(PollEvent<'_>, &mut Rx<R, EDGE_BUF_LEN, RX_BUF_LEN>) -> PollAction,
     {
         // SAFETY: rx_buf lives in a SyncUnsafeCell; this is the codec's
         // single consumer path. The reference is independent of any
@@ -186,7 +186,7 @@ impl<
                 }
                 let id = skip.id;
                 self.skip = None;
-                on_event(PollEvent::SkipComplete { id });
+                on_event(PollEvent::SkipComplete { id }, &mut self.rx);
                 continue;
             }
 
@@ -212,7 +212,7 @@ impl<
             let mut break_for_skip: Option<u8> = None;
             let consumed = {
                 let mut stream = self.parser.feed(input);
-                while let Some(ev) = stream.next() {
+                for ev in stream.by_ref() {
                     let ring: &[u8] = if let Event::Payload(PayloadEvent::Instruction(
                         InstructionPayload::WriteDataChunk { offset, length },
                     )) = ev
@@ -224,7 +224,7 @@ impl<
                     if matches!(ev, Event::Header(HeaderEvent::Instruction(_))) {
                         self.instruction_count = self.instruction_count.wrapping_add(1);
                     }
-                    match on_event(PollEvent::Event { ev, ring }) {
+                    match on_event(PollEvent::Event { ev, ring }, &mut self.rx) {
                         PollAction::Continue => {}
                         PollAction::Skip { id } => {
                             break_for_skip = Some(id);
@@ -303,6 +303,31 @@ impl<
     /// Forward to [`rx::Rx::resume_edges`].
     pub fn resume_edges(&mut self) {
         self.rx.resume_edges();
+    }
+
+    /// Forward to [`rx::Rx::try_anchor_from_header`].
+    pub fn try_anchor_from_header(&mut self, ticks_per_bit: u16) -> bool {
+        self.rx.try_anchor_from_header(ticks_per_bit)
+    }
+
+    /// Forward to [`rx::Rx::current_byte_tick`].
+    pub fn current_byte_tick(&self) -> Option<u16> {
+        self.rx.current_byte_tick()
+    }
+
+    /// Forward to [`rx::Rx::packet_end_tick`].
+    pub fn packet_end_tick(&self, ticks_per_bit: u16) -> Option<u16> {
+        self.rx.packet_end_tick(ticks_per_bit)
+    }
+
+    /// Forward to [`rx::Rx::set_hsi_active`].
+    pub fn set_hsi_active(&mut self, on: bool) {
+        self.rx.set_hsi_active(on);
+    }
+
+    /// Forward to [`rx::Rx::reset_anchor`].
+    pub fn reset_anchor(&mut self) {
+        self.rx.reset_anchor();
     }
 }
 
@@ -447,7 +472,7 @@ impl<
 
     pub fn poll<F>(&mut self, on_event: F)
     where
-        F: FnMut(PollEvent<'_>) -> PollAction,
+        F: FnMut(PollEvent<'_>, &mut Rx<R, EDGE_BUF_LEN, RX_BUF_LEN>) -> PollAction,
     {
         self.rx.poll(on_event);
     }
@@ -499,6 +524,31 @@ impl<
     pub fn resume_edges(&mut self) {
         self.rx.resume_edges();
     }
+
+    /// Forward to [`CodecRx::try_anchor_from_header`].
+    pub fn try_anchor_from_header(&mut self, ticks_per_bit: u16) -> bool {
+        self.rx.try_anchor_from_header(ticks_per_bit)
+    }
+
+    /// Forward to [`CodecRx::current_byte_tick`].
+    pub fn current_byte_tick(&self) -> Option<u16> {
+        self.rx.current_byte_tick()
+    }
+
+    /// Forward to [`CodecRx::packet_end_tick`].
+    pub fn packet_end_tick(&self, ticks_per_bit: u16) -> Option<u16> {
+        self.rx.packet_end_tick(ticks_per_bit)
+    }
+
+    /// Forward to [`CodecRx::set_hsi_active`].
+    pub fn set_hsi_active(&mut self, on: bool) {
+        self.rx.set_hsi_active(on);
+    }
+
+    /// Forward to [`CodecRx::reset_anchor`].
+    pub fn reset_anchor(&mut self) {
+        self.rx.reset_anchor();
+    }
 }
 
 #[cfg(test)]
@@ -527,6 +577,17 @@ impl<
         let buf = unsafe { &mut *self.rx_buf.get() };
         buf.set_read_seq_for_test(seq);
     }
+
+    /// Force the classifier's `last_byte_start` to a known tick. Composite
+    /// tests use this to seed `packet_end_tick` without staging real edges.
+    pub(crate) fn force_byte_tick_for_test(&mut self, tick: u16) {
+        self.rx.force_byte_tick_for_test(tick);
+    }
+
+    /// Read the classifier's `hsi_active` flag for composite tests.
+    pub(crate) fn rx_classifier_hsi_active_for_test(&self) -> bool {
+        self.rx.hsi_active()
+    }
 }
 
 #[cfg(test)]
@@ -546,39 +607,13 @@ impl<
     pub(crate) fn set_rx_read_seq_for_test(&mut self, seq: u16) {
         self.rx.set_rx_read_seq_for_test(seq);
     }
-}
 
-#[cfg(test)]
-impl<const EDGE_BUF_LEN: usize, const RX_BUF_LEN: usize, CRC: CrcUmts, const DECODER_CAP: usize>
-    CodecRx<crate::mocks::FakeEdgeDma, CRC, DECODER_CAP, RX_BUF_LEN, EDGE_BUF_LEN>
-{
-    pub(crate) fn stage_edges_for_test(&mut self, vals: &[u16]) {
-        self.rx.stage_edges_for_test(vals);
+    pub(crate) fn force_byte_tick_for_test(&mut self, tick: u16) {
+        self.rx.force_byte_tick_for_test(tick);
     }
 
-    pub(crate) fn arm_next_flags_for_test(&mut self, flags: crate::traits::dxl::DmaFlags) {
-        self.rx.arm_next_flags_for_test(flags);
-    }
-}
-
-#[cfg(test)]
-impl<
-    const EDGE_BUF_LEN: usize,
-    const RX_BUF_LEN: usize,
-    CRC: CrcUmts,
-    const DECODER_CAP: usize,
-    const TX_BUF_LEN: usize,
-> Codec<crate::mocks::FakeEdgeDma, CRC, DECODER_CAP, RX_BUF_LEN, EDGE_BUF_LEN, TX_BUF_LEN>
-{
-    /// Drive the inner `Rx`'s edge buffer staging + flag-arming through
-    /// the codec. Lets composite tests prepare the BT ring without
-    /// reaching past the codec boundary.
-    pub(crate) fn stage_edges_for_test(&mut self, vals: &[u16]) {
-        self.rx.stage_edges_for_test(vals);
-    }
-
-    pub(crate) fn arm_next_flags_for_test(&mut self, flags: crate::traits::dxl::DmaFlags) {
-        self.rx.arm_next_flags_for_test(flags);
+    pub(crate) fn rx_classifier_hsi_active_for_test(&self) -> bool {
+        self.rx.rx_classifier_hsi_active_for_test()
     }
 }
 
@@ -639,7 +674,7 @@ mod tests {
         F: FnMut(&Event) -> PollAction,
     {
         let mut out = alloc::vec::Vec::new();
-        c.poll(|pe| match pe {
+        c.poll(|pe, _rx| match pe {
             PollEvent::Event { ev, ring } => {
                 let action = if matches!(ev, Event::Header(_)) {
                     decide(&ev)

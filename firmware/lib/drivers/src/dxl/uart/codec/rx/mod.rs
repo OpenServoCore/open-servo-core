@@ -136,6 +136,14 @@ impl<R: EdgeDma, const EDGE_BUF_LEN: usize, const BT_BUF_LEN: usize>
         self.classifier.reset_anchor();
     }
 
+    /// Force a known `last_byte_start` tick — composite-test scaffolding so
+    /// `packet_end_tick` reads a deterministic value without staging real
+    /// edges.
+    #[cfg(test)]
+    pub fn force_byte_tick_for_test(&mut self, tick: u16) {
+        self.classifier.force_byte_tick_for_test(tick);
+    }
+
     /// Mask the edge-DMA channel's HT/TC IRQ + clear any latched flag.
     /// Composite calls this from `on_systick_match` at first Fast Last
     /// catchup entry so the classifier ISR doesn't preempt the catchup
@@ -156,13 +164,17 @@ impl<R: EdgeDma, const EDGE_BUF_LEN: usize, const BT_BUF_LEN: usize>
 impl<const EDGE_BUF_LEN: usize, const BT_BUF_LEN: usize>
     Rx<crate::mocks::FakeEdgeDma, EDGE_BUF_LEN, BT_BUF_LEN>
 {
-    /// Stage `vals` into the edges buffer as if DMA wrote them and set
-    /// `remaining` so `head == vals.len()`. Shared by leaf and composite tests.
+    /// Stage `vals` into the edges buffer as if DMA wrote them, publish the
+    /// producer head so direct `try_anchor_from_header` / `recent` reads see
+    /// them, and set `remaining` so a subsequent `on_edge_advance` /
+    /// `on_idle` finds nothing new. Shared by leaf and composite tests.
     pub(crate) fn stage_edges_for_test(&mut self, vals: &[u16]) {
         // SAFETY: test-only access to the SyncUnsafeCell; no DMA in tests.
         let buf = unsafe { &mut *self.edges.get() };
         buf.stage(0, vals);
-        self.ring.remaining = HwRing::<u16, EDGE_BUF_LEN>::LEN - vals.len() as u16;
+        let remaining = HwRing::<u16, EDGE_BUF_LEN>::LEN - vals.len() as u16;
+        buf.on_publish(remaining);
+        self.ring.remaining = remaining;
     }
 
     /// Arm the fake ring's next HT/TC flag response.

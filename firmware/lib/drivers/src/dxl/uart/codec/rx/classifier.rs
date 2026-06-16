@@ -163,13 +163,13 @@ impl Classifier {
             // successor edge yet (offset == 0 at the cold-edge case),
             // accept — byte 4's start bit may not have latched at the
             // moment the parser emitted Header.
-            if offset > 0 {
-                if let Some(&e6) = edges.recent(offset - 1) {
-                    let d_56 = e6.wrapping_sub(e5);
-                    let d_x2 = (d_56 as u32) * 2;
-                    if d_x2 < QUIET_MIN_X2 * ticks_per_bit as u32 {
-                        continue;
-                    }
+            if offset > 0
+                && let Some(&e6) = edges.recent(offset - 1)
+            {
+                let d_56 = e6.wrapping_sub(e5);
+                let d_x2 = (d_56 as u32) * 2;
+                if d_x2 < QUIET_MIN_X2 * ticks_per_bit as u32 {
+                    continue;
                 }
             }
 
@@ -298,6 +298,16 @@ impl Classifier {
         self.last_byte_start = None;
         self.prev_byte_start = None;
         self.hsi_active = false;
+    }
+
+    /// Force `last_byte_start` to a known tick without staging real edges.
+    /// Composite-test scaffolding so [`packet_end_tick`] reads a deterministic
+    /// value at Crc-good simulation. Production code mutates this only
+    /// through the walker.
+    #[cfg(test)]
+    pub fn force_byte_tick_for_test(&mut self, tick: u16) {
+        self.last_byte_start = Some(tick);
+        self.prev_byte_start = Some(tick);
     }
 }
 
