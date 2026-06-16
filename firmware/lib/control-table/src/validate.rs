@@ -21,78 +21,108 @@ impl FieldValidator {
     pub fn run(&self, view: &StagedView, addr: u16, size: u16) -> Result<(), Error> {
         match self {
             FieldValidator::EnumU8 { allowed } => {
-                let b = read_le(view, addr, |b: [u8; 1]| b[0])?;
-                if allowed.contains(&b) {
+                let mut b = [0u8; 1];
+                view.read_bytes(addr, &mut b)?;
+                if allowed.contains(&b[0]) {
                     Ok(())
                 } else {
                     Err(Error::ValidationError(ValidationKind::Enum))
                 }
             }
             FieldValidator::CompareU8 { op, abs, rhs } => {
-                run_compare(view, addr, *op, *abs, *rhs, |b: [u8; 1]| b[0], |v| v)
+                run_compare_i32(view, addr, *op, *abs, widen(rhs), 1, false, u8::MAX as i32)
             }
             FieldValidator::CompareU16 { op, abs, rhs } => {
-                run_compare(view, addr, *op, *abs, *rhs, u16::from_le_bytes, |v| v)
+                run_compare_i32(view, addr, *op, *abs, widen(rhs), 2, false, u16::MAX as i32)
             }
-            FieldValidator::CompareI8 { op, abs, rhs } => run_compare(
-                view,
-                addr,
-                *op,
-                *abs,
-                *rhs,
-                |b: [u8; 1]| b[0] as i8,
-                i8::saturating_abs,
-            ),
-            FieldValidator::CompareI16 { op, abs, rhs } => run_compare(
-                view,
-                addr,
-                *op,
-                *abs,
-                *rhs,
-                i16::from_le_bytes,
-                i16::saturating_abs,
-            ),
-            FieldValidator::CompareI32 { op, abs, rhs } => run_compare(
-                view,
-                addr,
-                *op,
-                *abs,
-                *rhs,
-                i32::from_le_bytes,
-                i32::saturating_abs,
-            ),
+            FieldValidator::CompareI8 { op, abs, rhs } => {
+                run_compare_i32(view, addr, *op, *abs, widen(rhs), 1, true, i8::MAX as i32)
+            }
+            FieldValidator::CompareI16 { op, abs, rhs } => {
+                run_compare_i32(view, addr, *op, *abs, widen(rhs), 2, true, i16::MAX as i32)
+            }
+            FieldValidator::CompareI32 { op, abs, rhs } => {
+                run_compare_i32(view, addr, *op, *abs, widen(rhs), 4, true, i32::MAX)
+            }
             FieldValidator::Custom(f) => f(view, addr, size),
         }
     }
 }
 
-fn read_le<T, const N: usize>(
-    view: &StagedView,
-    addr: u16,
-    decode: fn([u8; N]) -> T,
-) -> Result<T, Error> {
-    let mut b = [0u8; N];
-    view.read_bytes(addr, &mut b)?;
-    Ok(decode(b))
+enum RhsI32 {
+    Value(i32),
+    Addr(u16),
 }
 
-fn run_compare<T: PartialOrd + Copy, const N: usize>(
+trait WidenI32: Copy {
+    fn widen(self) -> i32;
+}
+impl WidenI32 for u8 {
+    fn widen(self) -> i32 {
+        self as i32
+    }
+}
+impl WidenI32 for u16 {
+    fn widen(self) -> i32 {
+        self as i32
+    }
+}
+impl WidenI32 for i8 {
+    fn widen(self) -> i32 {
+        self as i32
+    }
+}
+impl WidenI32 for i16 {
+    fn widen(self) -> i32 {
+        self as i32
+    }
+}
+impl WidenI32 for i32 {
+    fn widen(self) -> i32 {
+        self
+    }
+}
+
+fn widen<T: WidenI32>(rhs: &Rhs<T>) -> RhsI32 {
+    match rhs {
+        Rhs::Value(v) => RhsI32::Value(v.widen()),
+        Rhs::Addr(a) => RhsI32::Addr(*a),
+    }
+}
+
+#[inline(never)]
+fn read_widened(view: &StagedView, addr: u16, width: u8, signed: bool) -> Result<i32, Error> {
+    let mut b = [0u8; 4];
+    view.read_bytes(addr, &mut b[..width as usize])?;
+    Ok(match (width, signed) {
+        (1, false) => b[0] as i32,
+        (1, true) => b[0] as i8 as i32,
+        (2, false) => u16::from_le_bytes([b[0], b[1]]) as i32,
+        (2, true) => i16::from_le_bytes([b[0], b[1]]) as i32,
+        _ => i32::from_le_bytes(b),
+    })
+}
+
+#[inline(never)]
+#[allow(clippy::too_many_arguments)]
+fn run_compare_i32(
     view: &StagedView,
     self_addr: u16,
     op: CompareOp,
     abs: bool,
-    rhs: Rhs<T>,
-    decode: fn([u8; N]) -> T,
-    saturating_abs: fn(T) -> T,
+    rhs: RhsI32,
+    width: u8,
+    signed: bool,
+    sat_max: i32,
 ) -> Result<(), Error> {
-    let mut a = read_le(view, self_addr, decode)?;
+    let mut a = read_widened(view, self_addr, width, signed)?;
     let mut b = match rhs {
-        Rhs::Value(v) => v,
-        Rhs::Addr(other) => read_le(view, other, decode)?,
+        RhsI32::Value(v) => v,
+        RhsI32::Addr(other) => read_widened(view, other, width, signed)?,
     };
-    if abs {
-        a = saturating_abs(a);
-        b = saturating_abs(b);
+    if abs && signed {
+        a = a.saturating_abs().min(sat_max);
+        b = b.saturating_abs().min(sat_max);
     }
     if op.apply(&a, &b) {
         Ok(())
