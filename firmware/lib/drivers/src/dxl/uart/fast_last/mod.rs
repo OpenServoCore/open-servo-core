@@ -156,16 +156,32 @@ impl<S: FastLastScheduler> FastLast<S> {
                     // GUARD` OR scheduler reports deadline passed; the
                     // remaining GUARD bytes are absorbed by the TX-start
                     // body's tail fold.
+                    //
+                    // SAFETY: the plateau check (no progress between walker
+                    // calls) is a hard backstop — in production the deadline
+                    // is the primary exit, but if scheduler state ever
+                    // diverges (set_deadline math wrong, CMP latched but
+                    // mask-cleared, etc.) the chip must not spin forever
+                    // inside ISR. Bytes can only stall when the wire is
+                    // silent — the predecessor either dropped its reply
+                    // entirely or finished early — both of which mean
+                    // there's no more work to do here regardless.
                     let target =
                         (self.predecessor_bytes as u32).saturating_sub(S::GUARD_BYTES as u32);
                     if bytes_walked < target {
+                        let mut prev_walked = bytes_walked;
                         loop {
-                            if walker() >= target {
+                            let walked = walker();
+                            if walked >= target {
                                 break;
                             }
                             if self.scheduler.deadline_passed() {
                                 break;
                             }
+                            if walked == prev_walked {
+                                break;
+                            }
+                            prev_walked = walked;
                         }
                     }
                     self.phase = FastLastPhase::Idle;
@@ -373,6 +389,39 @@ mod tests {
         // catches: 2 calls.
         assert_eq!(walker_calls.get(), 2);
         assert_eq!(d.phase(), FastLastPhase::Idle);
+    }
+
+    #[test]
+    fn final_anchor_busy_wait_breaks_on_byte_plateau_when_deadline_stuck() {
+        // Backstop for the production-safety hazard the on_fold_step_*
+        // composite test surfaced: if the scheduler's `deadline_passed`
+        // ever lies (CMP misconfigured, IF cleared but match missed, etc.)
+        // the busy-wait must still exit when no new bytes arrive between
+        // walker calls. predecessor_bytes=10 / target=9; walker returns 4
+        // every call (no progress); deadline_passed stays false. Expected:
+        // 2 walker calls (1 pre-loop + 1 inside loop that observes the
+        // plateau against pre-loop's count) then break.
+        let mut d = fast_last();
+        d.start(FastLastSchedule {
+            packet_end_tick: 0,
+            rdt_ticks: 0,
+            byte_ticks: BYTE_TICKS_3M,
+            predecessor_bytes: 10,
+        });
+        assert_eq!(d.next_anchor_offset, d.final_anchor_offset);
+
+        let walker_calls = Cell::new(0u32);
+        d.on_step(|| {
+            walker_calls.set(walker_calls.get() + 1);
+            4 // never advances
+        });
+
+        assert_eq!(walker_calls.get(), 2);
+        assert_eq!(d.phase(), FastLastPhase::Idle);
+        assert!(matches!(
+            d.scheduler.log.last(),
+            Some(FastLastSchedulerOp::Cancel)
+        ));
     }
 
     #[test]
