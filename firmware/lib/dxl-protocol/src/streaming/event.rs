@@ -175,7 +175,16 @@ impl InstructionHeader {
                 instr: b,
                 length: opaque_body,
             },
-            I::Status => unreachable!("Status routes via HeaderEvent::Status"),
+            // SAFETY: the HeaderStage routes I::Status to HeaderEvent::Status
+            // before this match runs, so this arm is dead in practice. Kept as
+            // a defensive Raw fallback (rather than `unreachable!()`) so a
+            // future regression in the routing layer can never panic the ISR
+            // — motor firmware must keep running.
+            I::Status => Self::Raw {
+                id,
+                instr: I::Status.as_u8(),
+                length: opaque_body,
+            },
         }
     }
 }
