@@ -221,13 +221,17 @@ pub enum FastLastSchedulerOp {
     Cancel,
 }
 
-/// `deadline_passed` reads via interior mutability so the trait method
-/// stays `&self`-compatible with production's register-read impl. Tests
-/// write `deadline_passed_value.set(true)` to drive the busy-wait exit.
+/// `deadline_passed` / `patch_window_expired` read via interior mutability
+/// so the trait methods stay `&self`-compatible with production's
+/// register-read impls. Tests write `deadline_passed_value.set(true)` /
+/// `patch_window_expired_value.set(true)` to drive the busy-wait exits;
+/// `patch_miss_count` accumulates `record_patch_deadline_miss` calls.
 #[derive(Default)]
 pub struct FakeFastLastScheduler {
     pub log: Vec<FastLastSchedulerOp>,
     pub deadline_passed_value: Cell<bool>,
+    pub patch_window_expired_value: Cell<bool>,
+    pub patch_miss_count: Cell<u32>,
 }
 
 impl FastLastScheduler for FakeFastLastScheduler {
@@ -251,6 +255,15 @@ impl FastLastScheduler for FakeFastLastScheduler {
 
     fn deadline_passed(&self) -> bool {
         self.deadline_passed_value.get()
+    }
+
+    fn patch_window_expired(&self) -> bool {
+        self.patch_window_expired_value.get()
+    }
+
+    fn record_patch_deadline_miss(&mut self) {
+        self.patch_miss_count
+            .set(self.patch_miss_count.get().wrapping_add(1));
     }
 
     fn cancel(&mut self) {

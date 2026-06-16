@@ -214,6 +214,19 @@ impl<S: FastLastScheduler> FastLast<S> {
     pub fn phase(&self) -> FastLastPhase {
         self.phase
     }
+
+    /// Polled by `DxlUart::on_tx_start` post-fire fold loop — see
+    /// [`FastLastScheduler::patch_window_expired`].
+    pub fn patch_window_expired(&self) -> bool {
+        self.scheduler.patch_window_expired()
+    }
+
+    /// Bumped by `DxlUart::on_tx_start` on either miss route (expired
+    /// patch window or predecessor-byte plateau) — see
+    /// [`FastLastScheduler::record_patch_deadline_miss`].
+    pub fn record_patch_deadline_miss(&mut self) {
+        self.scheduler.record_patch_deadline_miss();
+    }
 }
 
 #[cfg(test)]

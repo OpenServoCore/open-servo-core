@@ -220,6 +220,21 @@ pub trait FastLastScheduler {
     /// `set_deadline`. Polled by the final-step busy-wait.
     fn deadline_passed(&self) -> bool;
 
+    /// True when the TX DMA channel's read cursor has reached the trailing
+    /// CRC slot. Once true, any further `patch_crc` write into
+    /// `tx_buf[len-CRC_BYTES..len]` ships too late — placeholder bytes are
+    /// already on the wire. Polled by `on_tx_start`'s post-fire fold loop
+    /// alongside the predecessor-byte-plateau backstop; whichever fires
+    /// first ends the loop.
+    fn patch_window_expired(&self) -> bool;
+
+    /// Bump the `crc_patch_deadline_miss` telemetry counter. Called once
+    /// per `on_tx_start` exit-via-miss — both the patch-window-expired
+    /// route and the plateau (predecessor-bytes-stalled) route feed the
+    /// same counter; both ship a placeholder CRC observable to the host as
+    /// a bad-CRC packet.
+    fn record_patch_deadline_miss(&mut self);
+
     /// Drop any pending CMP and return to idle. Idempotent.
     fn cancel(&mut self);
 }

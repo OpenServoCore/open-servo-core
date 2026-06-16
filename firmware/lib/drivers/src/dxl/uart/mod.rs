@@ -704,16 +704,24 @@ impl<
     /// patches the trailing CRC slot before DMA1_CH4's prefetch reads it
     /// (doc §10.6.2 CC3 body).
     ///
-    /// The post-fire fold loops on `fast_last_crc.is_active()` —
-    /// finalize-on-target clears `active` and patches the TX buffer's
-    /// trailing CRC. Each [`CodecRx::drain_raw`] pass refreshes the byte-
-    /// ring producer head from [`RxDma::remaining`] so newly-arrived
-    /// GUARD bytes become visible inside the spin. If the spin observes
-    /// no new bytes between iterations (plateau), the loop bails — the
-    /// trailing CRC slot ships at its placeholder value, matching the
-    /// `CrcPatchDeadlineMiss` telemetry shape of the prior design (a
-    /// bench-defended signal at the 3 Mbaud floor per dxl-streaming-rx.md
-    /// §6, not a wire-correctness failure).
+    /// The post-fire fold has three exits:
+    /// - **finalize** — `fast_last_crc` reaches its predecessor-byte target
+    ///   inside `on_byte`, which patches `tx_buf[len-CRC_BYTES..len]` and
+    ///   clears `active`. Success; no telemetry event.
+    /// - **patch-window-expired** — [`FastLast::patch_window_expired`]
+    ///   reports the TX DMA channel has prefetched into the trailing CRC
+    ///   slot. Any further patch ships too late; bump
+    ///   `crc_patch_deadline_miss`.
+    /// - **plateau** — no new RX bytes between iterations; predecessor
+    ///   starvation backstop (`[[busy-wait-plateau-backstop]]`). Same
+    ///   observable failure as expired-window (placeholder CRC ships); bumps
+    ///   the same counter.
+    ///
+    /// Each [`CodecRx::drain_raw`] pass refreshes the byte-ring producer
+    /// head from [`RxDma::remaining`] so newly-arrived GUARD bytes become
+    /// visible inside the spin (per `dxl-streaming-rx.md` §6, the
+    /// `crc_patch_deadline_miss` counter is a bench-defended floor signal at
+    /// the 3 Mbaud floor, not a wire-correctness failure).
     pub fn on_tx_start(&mut self) {
         self.scheduler.handle_start();
         if !self.fast_last_crc.is_active() {
@@ -722,16 +730,25 @@ impl<
         let Self {
             codec,
             rx_dma,
+            fast_last,
             fast_last_crc,
             ..
         } = self;
         let (rx, tx) = codec.split_mut();
-        while fast_last_crc.is_active() {
+        loop {
+            if fast_last.patch_window_expired() {
+                fast_last.record_patch_deadline_miss();
+                break;
+            }
             let before = fast_last_crc.bytes_folded();
             rx.drain_raw(rx_dma, |byte, cursor| {
                 fast_last_crc.on_byte(byte, cursor, tx);
             });
+            if !fast_last_crc.is_active() {
+                break;
+            }
             if fast_last_crc.bytes_folded() == before {
+                fast_last.record_patch_deadline_miss();
                 break;
             }
         }
@@ -1584,13 +1601,20 @@ mod tests {
             "patch_crc should overwrite the placeholder slot"
         );
         assert!(!bus.fast_last_crc.is_active());
+        assert_eq!(
+            bus.fast_last.scheduler().patch_miss_count.get(),
+            0,
+            "finalize path must not bump the deadline-miss counter",
+        );
     }
 
     /// Bytes-starved CC3 body must not hang. With no predecessor bytes
     /// staged the plateau check (no progress between drain passes) exits
-    /// the loop; trailing CRC stays at the placeholder.
+    /// the loop; trailing CRC stays at the placeholder. Plateau-exit also
+    /// bumps `crc_patch_deadline_miss` — same observable failure as the
+    /// expired-window route.
     #[test]
-    fn on_tx_start_breaks_on_plateau_when_bytes_starved() {
+    fn on_tx_start_plateau_records_miss() {
         let req = wire_fast_sync_read(0, 2, &[0x42, TEST_ID]);
         let (mut bus, _) = bus_seeded_with(&req);
         let payload = [0xAA_u8, 0xBB];
@@ -1616,5 +1640,43 @@ mod tests {
 
         bus.on_tx_start();
         assert!(bus.fast_last_crc.is_active(), "active stays set on bail");
+        assert_eq!(
+            bus.fast_last.scheduler().patch_miss_count.get(),
+            1,
+            "plateau-exit must bump the deadline-miss counter",
+        );
+    }
+
+    /// CH4 prefetch has reached the trailing CRC slot before finalize
+    /// landed. The expired-window check exits the loop and bumps
+    /// `crc_patch_deadline_miss`; placeholder CRC ships on the wire.
+    #[test]
+    fn on_tx_start_window_expiry_records_miss() {
+        let req = wire_fast_sync_read(0, 2, &[0x42, TEST_ID]);
+        let (mut bus, _) = bus_seeded_with(&req);
+        let payload = [0xAA_u8, 0xBB];
+        bus.poll(|_, _, reply| {
+            let slot = Slot {
+                id: Id::new(TEST_ID),
+                error: StatusError::OK,
+                data: &payload,
+            };
+            reply.send_slot(&slot).expect("encode fits");
+        });
+        bus.fast_last
+            .scheduler()
+            .patch_window_expired_value
+            .set(true);
+
+        bus.on_tx_start();
+        assert!(
+            bus.fast_last_crc.is_active(),
+            "active stays set on expired-window exit",
+        );
+        assert_eq!(
+            bus.fast_last.scheduler().patch_miss_count.get(),
+            1,
+            "expired-window exit must bump the deadline-miss counter",
+        );
     }
 }
