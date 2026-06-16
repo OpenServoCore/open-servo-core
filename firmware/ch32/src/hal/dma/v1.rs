@@ -56,7 +56,9 @@ pub fn set_count(ch: Channel, count: u16) {
 // is written from multiple contexts (CH4: MAIN fire_now [systick-fire] or
 // HW DMA1_CH2 stamp [hw-fire] + USART1 TC ISR; CH5: MAIN start_fast_after
 // + HIGH ISRs). CS keeps EN/TCIE RMW atomic.
-// `inline(always)` keeps these calls inside dxl_fast's `.highcode` section.
+// `inline(always)` folds this into the TIM2 CC3 hot path so the wire-driver
+// activate sequence stays inside the `.highcode` body — no standalone flash
+// fetch per call.
 #[inline(always)]
 pub fn enable(ch: Channel) {
     let n = (ch as u8 - 1) as usize;

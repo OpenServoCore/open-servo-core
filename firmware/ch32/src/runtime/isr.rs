@@ -150,21 +150,27 @@ pub fn on_systick() {
     unsafe { Drivers::dxl_uart() }.on_fold_step();
 }
 
-/// Wires osc-ch32 ISR bodies into the vector table. Caller must depend on `qingke-rt`.
+/// Wires osc-ch32 ISR bodies into the vector table. Caller must depend on
+/// `qingke-rt`. Only the TIM2 vector lands in `.highcode` (RAM) — its
+/// CC3 post-fire fold races CH4's DMA prefetch with ~10 byte-times slack
+/// at 3 Mbaud GUARD=1, so the body must skip the flash-fetch path. The
+/// other DXL/ADC ISRs opt out via `#[interrupt(lowcode)]` (upstream
+/// qingke-rt API): their bodies land in `.text.{NAME}` (flash) since
+/// per-grid-step or per-packet-end slack absorbs any flash-fetch jitter.
 #[macro_export]
 macro_rules! install_isrs {
     () => {
-        #[::qingke_rt::interrupt]
+        #[::qingke_rt::interrupt(lowcode)]
         fn DMA1_CHANNEL1() {
             $crate::runtime::isr::on_adc_dma_tc();
         }
 
-        #[::qingke_rt::interrupt]
+        #[::qingke_rt::interrupt(lowcode)]
         fn USART1() {
             $crate::runtime::isr::on_usart1();
         }
 
-        #[::qingke_rt::interrupt]
+        #[::qingke_rt::interrupt(lowcode)]
         fn DMA1_CHANNEL7() {
             $crate::runtime::isr::on_dma1_ch7();
         }
@@ -174,7 +180,7 @@ macro_rules! install_isrs {
             $crate::runtime::isr::on_tim2_cc3();
         }
 
-        #[::qingke_rt::interrupt]
+        #[::qingke_rt::interrupt(core, lowcode)]
         fn SysTick() {
             $crate::runtime::isr::on_systick();
         }

@@ -23,7 +23,9 @@ pub fn set_baud(r: Regs, brr: u32) {
 
 // SAFETY: see hal/SAFETY.md. CTLR3 is written from MAIN (arm_tx) + USART1 TC
 // ISR; CS keeps RMW atomic against future different-bit additions.
-// `inline(always)` keeps the call inside dxl_fast's `.highcode` section.
+// `inline(always)` folds this into the TIM2 CC3 hot path so the wire-driver
+// activate sequence stays inside the `.highcode` body — no standalone flash
+// fetch per call.
 #[inline(always)]
 pub fn set_dma_tx(r: Regs, enable: bool) {
     critical_section::with(|_| {
@@ -48,7 +50,9 @@ pub fn set_idle_irq(r: Regs, enable: bool) {
 
 // SAFETY: see hal/SAFETY.md. CTLR1 is written from MAIN (arm_tx) + USART1 TC
 // ISR (here, and set_baud's UE toggle).
-// `inline(always)` keeps the call inside dxl_fast's `.highcode` section.
+// `inline(always)` folds this into the TIM2 CC3 hot path so the wire-driver
+// activate sequence stays inside the `.highcode` body — no standalone flash
+// fetch per call.
 #[inline(always)]
 pub fn set_tc_irq(r: Regs, enable: bool) {
     critical_section::with(|_| {
@@ -65,7 +69,9 @@ pub fn clear_idle(r: Regs) {
 
 // SAFETY: see hal/SAFETY.md. STATR.modify is the only write-0-to-clear bit
 // path on this register today; CS guards against future write-clear additions.
-// `inline(always)` keeps the call inside dxl_fast's `.highcode` section.
+// `inline(always)` folds this into the TIM2 CC3 hot path so the wire-driver
+// activate sequence stays inside the `.highcode` body — no standalone flash
+// fetch per call.
 #[inline(always)]
 pub fn clear_tc(r: Regs) {
     critical_section::with(|_| {
