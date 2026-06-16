@@ -128,7 +128,7 @@ mod tests {
     use super::*;
     use crate::dxl::uart::codec::Codec;
     use crate::mocks::FakeEdgeDma;
-    use dxl_protocol::packet::{Id, Slot, StatusError};
+    use dxl_protocol::types::{Id, Slot, StatusError};
     use dxl_protocol::{SlotPosition, SoftwareCrcUmts};
 
     const DECODER_CAP: usize = 256;

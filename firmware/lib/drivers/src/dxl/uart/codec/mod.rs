@@ -1,52 +1,66 @@
 //! Bytes ↔ packets. Composite over two field-projection halves — `CodecRx`
-//! (decoder + RX byte ring + classifier + drift bookkeeping) and `CodecTx`
-//! (encoder + TX byte ring) — joined under `Codec`. The split lets the
-//! parent driver's closure-based `poll<F>` hand a parsed packet (borrowed
-//! from `CodecRx`) and a reply handle (borrowed from `CodecTx`) to the
-//! dispatcher closure simultaneously without a borrow conflict; outside
-//! that hot path, `Codec`'s forwarder methods keep the simpler call sites
-//! shape-unchanged.
+//! (streaming parser + RX byte ring + classifier + drift bookkeeping) and
+//! `CodecTx` (encoder + TX byte ring) — joined under `Codec`. The split lets
+//! the parent driver hand a `&mut CodecTx` reply handle to the dispatcher
+//! while a parser-event borrow lives in `CodecRx`.
 //!
-//! `Codec::poll_one` (delegating to `CodecRx`) surfaces an
-//! [`InstructionToken`] (a `Copy` description of the wire location) per
-//! decoded Instruction so the composite can walk BT pairs via
-//! [`Codec::byte_pairs`] and apply its id-filter without holding a `&mut`
-//! borrow that a returned `InstructionPacket<'_>` would imply. The packet
-//! itself materializes on demand through [`Codec::dispatch`] (shared
-//! borrow) so it can coexist with a disjoint `&mut CodecTx`.
+//! `CodecRx::poll` drives the streaming parser over the RX DMA ring and
+//! fans each [`streaming::Event`] (along with a resolved contiguous ring
+//! slice for `WriteDataChunk`) through a sink-style callback. The sink may
+//! return [`PollAction::Skip`] in response to a Header event to engage the
+//! universal byte-skip (doc §3 / §5.2) — codec records the body+CRC
+//! distance from [`Parser::packet_remaining`], resets the parser, and
+//! advances the RX ring tail past those bytes as they arrive. On
+//! completion the sink sees [`PollEvent::SkipComplete`], at which point
+//! the chain-fire predecessor-match check rides.
 
 pub mod rx;
 
 use core::cell::SyncUnsafeCell;
 use core::marker::PhantomData;
 
-use dxl_protocol::codec::{Decoder, Step};
-use dxl_protocol::packet::{Slot, Status};
-use dxl_protocol::{
-    CrcUmts, InstructionPacket, SlotEncoder, SlotPosition, StatusEncoder, WriteError,
-};
+use dxl_protocol::streaming::{Event, HeaderEvent, InstructionPayload, Parser, PayloadEvent};
+use dxl_protocol::types::{Slot, Status};
+use dxl_protocol::{CrcUmts, SlotEncoder, SlotPosition, StatusEncoder, WriteError};
 
 use crate::traits::dxl::EdgeDma;
 use crate::util::{HwRing, Seq};
 use rx::Rx;
 
-/// Copy-token describing a just-decoded Instruction's wire location.
-/// `start` / `end` are RX seqs (one per UART byte); the composite hands
-/// them to [`Codec::byte_pairs`] to walk the matching BT range. The token
-/// is `Copy` and carries no borrow, so the composite can call
-/// `byte_pairs(...)` + (conditionally) `dispatch()` after `poll_one`
-/// returns without a borrow conflict.
-#[derive(Copy, Clone, Debug)]
-pub struct InstructionToken<const RX_BUF_LEN: usize> {
-    pub id: u8,
-    pub start: Seq<u8, RX_BUF_LEN>,
-    pub end: Seq<u8, RX_BUF_LEN>,
+/// Event surfaced from [`CodecRx::poll`] to its sink callback.
+///
+/// `Event { .. }` is a 1:1 forward of [`streaming::Event`]; the codec
+/// translates `WriteDataChunk` `(offset, length)` into a contiguous ring
+/// slice via `ring` (empty for other events). `SkipComplete` fires when
+/// the universal byte-skip's remaining-byte counter hits zero — `id`
+/// round-trips the value the sink passed in [`PollAction::Skip`], so the
+/// chain-fire check (doc §5.2) can compare against `predecessor_id`.
+pub enum PollEvent<'a> {
+    Event { ev: Event, ring: &'a [u8] },
+    SkipComplete { id: u8 },
 }
 
-/// RX half — decoder, RX byte ring, classifier, drift bookkeeping. Splits
-/// off from [`CodecTx`] under [`Codec`] so the parent driver's closure-based
-/// `poll<F>` can hand a packet borrowed from this half and a reply handle
-/// borrowed from the TX half to the dispatcher at the same time.
+/// Return value from the sink callback.
+///
+/// `Skip` is meaningful only after [`PollEvent::Event`] carrying a
+/// [`Event::Header`]; on other events the codec ignores it and continues
+/// normally. On `Skip`, the codec reads [`Parser::packet_remaining`],
+/// resets the parser, and consumes the indicated count from the RX ring
+/// tail before surfacing [`PollEvent::SkipComplete`].
+pub enum PollAction {
+    Continue,
+    Skip { id: u8 },
+}
+
+struct SkipState {
+    bytes_remaining: u16,
+    id: u8,
+}
+
+/// RX half — streaming parser, RX byte ring, classifier, drift bookkeeping.
+/// Splits off from [`CodecTx`] under [`Codec`] so the parent driver can hand
+/// the dispatcher a `&mut CodecTx` reply handle alongside the parser event
+/// stream the dispatcher is consuming.
 pub struct CodecRx<
     R: EdgeDma,
     CRC: CrcUmts,
@@ -55,7 +69,7 @@ pub struct CodecRx<
     const EDGE_BUF_LEN: usize,
 > {
     rx: Rx<R, EDGE_BUF_LEN, RX_BUF_LEN>,
-    decoder: Decoder<DECODER_CAP, CRC>,
+    parser: Parser<CRC>,
     /// DMA1_CH5 destination for received bytes. `SyncUnsafeCell` because
     /// USART1's DMA writes it concurrently with the parser's reads — both
     /// reads happen at PFIC HIGH (no preemption from another consumer)
@@ -63,29 +77,25 @@ pub struct CodecRx<
     /// `% RX_BUF_LEN` collapses to AND, and the chip-side ISR publishes
     /// the producer head via [`HwRing::on_publish`] from NDTR.
     rx_buf: SyncUnsafeCell<HwRing<u8, RX_BUF_LEN>>,
-    /// Monotonic count of Instruction packets the decoder emitted —
-    /// regardless of target ID — across this codec's lifetime. The drift
-    /// signal ([[drift_sampling_instruction_only]]) ticks on every
-    /// Instruction so foreign-target instructions still calibrate, while
-    /// Status frames never contribute (peer HSI is its own clock domain).
+    /// Monotonic count of Instruction headers the parser emitted — own
+    /// or foreign IDs — across this codec's lifetime. Drift sampling
+    /// ([[drift_sampling_instruction_only]]) ticks on every Instruction
+    /// so foreign-target instructions still calibrate, while Status
+    /// frames never contribute (peer HSI is its own clock domain).
     instruction_count: u32,
-    /// Monotonic count of wire bytes consumed by `poll_one` across this
-    /// codec's lifetime. Bumped once per `reader.advance(1)` so it tracks
-    /// every byte the parser saw — including resync'd prefixes. Composite
-    /// reads it at poll-time as the chain-CRC fold cursor for Fast Last
-    /// replies (doc §10.6 — "snoop_head = rx_write_pos at parse-complete").
-    /// 32 bits ≈ 23.8 days at 3M sustained — wrap is non-physical.
+    /// Monotonic count of RX-ring bytes the codec has advanced past
+    /// across this codec's lifetime — covers both parser-consumed bytes
+    /// and byte-skip-consumed bytes. 32 bits ≈ 23.8 days at 3M sustained;
+    /// wrap is non-physical.
     wire_bytes_consumed: u32,
-    /// RX seq of the first byte of the in-progress decoder packet. `None`
-    /// whenever the decoder is between packets (fresh boot, post-Packet,
-    /// post-Resync); lazy-set to the pre-advance read seq on the next byte
-    /// `poll_one` consumes. Paired with the post-Packet read seq it bounds
-    /// the BT range the composite feeds into [`super::Clock::on_byte_pair`].
-    ///
-    /// Carries `Option` rather than a sentinel because [`Seq`]'s raw u16
-    /// wraps over the full value range — every potential sentinel is a
-    /// live cursor for one byte every 65536 RX bytes (~175 ms at 3 M).
-    packet_start_rx_seq: Option<Seq<u8, RX_BUF_LEN>>,
+    /// Universal byte-skip state. `Some` between a sink-requested
+    /// [`PollAction::Skip`] and the matching [`PollEvent::SkipComplete`].
+    skip: Option<SkipState>,
+    /// `DECODER_CAP` is retained as a const-generic for instantiation
+    /// stability while DxlUart still spells it out; the streaming parser
+    /// owns no payload buffer so the value is unused. Removed in Chunk 4
+    /// alongside the composite rewire.
+    _decoder_cap: PhantomData<[(); DECODER_CAP]>,
 }
 
 impl<
@@ -99,11 +109,12 @@ impl<
     fn new(ring: R) -> Self {
         Self {
             rx: Rx::new(ring),
-            decoder: Decoder::new(),
+            parser: Parser::new(),
             rx_buf: SyncUnsafeCell::new(HwRing::new(0)),
             instruction_count: 0,
             wire_bytes_consumed: 0,
-            packet_start_rx_seq: None,
+            skip: None,
+            _decoder_cap: PhantomData,
         }
     }
 
@@ -121,8 +132,8 @@ impl<
     }
 
     /// USART1 RX DMA published progress — `remaining` is the channel's
-    /// NDTR readback. Advances the `rx_buf` producer head so `poll_one`
-    /// sees newly-DMA'd bytes.
+    /// NDTR readback. Advances the `rx_buf` producer head so `poll` sees
+    /// newly-DMA'd bytes.
     pub fn on_rx_dma_advance(&mut self, remaining: u16) {
         // SAFETY: rx_buf is written only by DMA1_CH5 (hardware writer)
         // and read here from the same PFIC priority level as the DMA
@@ -131,94 +142,131 @@ impl<
         rx_buf.on_publish(remaining);
     }
 
-    /// Drain bytes from `rx_buf` through the streaming decoder; return on
-    /// the next Instruction (own *or* foreign — composite filters by ID).
-    /// Status frames continue past silently. `None` when the byte ring is
-    /// exhausted before another Instruction completes — the decoder yields
-    /// with its in-progress state intact and resumes on the next call.
+    /// Drain the RX byte ring through the streaming parser, fanning each
+    /// event (or skip-complete pseudo-event) to `on_event`. Reads the
+    /// front (pre-wrap) slice first, then the back (post-wrap) slice if
+    /// any; advances the ring tail by what the parser consumed. The sink
+    /// decides per-Header whether to forward the body or universal-byte-
+    /// skip past it (doc §3 driver rule). The skip is observable as
+    /// [`PollEvent::SkipComplete`] when its counter hits zero — the
+    /// chain-fire predecessor-match check (doc §5.2) rides there.
     ///
-    /// Bumps `instruction_count` per emitted Instruction. Lazy-seeds
-    /// `packet_start_rx_seq` on the first new byte; clears on `Step::Resync`
-    /// and on every `Step::Packet`. The returned [`InstructionToken`] is
-    /// `Copy` — its borrow on `&mut self` ends at the call's statement
-    /// boundary, so the composite is free to call [`Self::byte_pairs`] and
-    /// (conditionally) [`Self::dispatch`] after.
-    ///
-    /// `on_byte` is invoked once for every wire byte consumed (including
-    /// resync'd prefixes and Status-frame bytes the parser drops); it
-    /// receives the byte value and the pre-advance value of
-    /// [`Self::wire_byte_cursor`]. The first byte consumed after
-    /// `FastLastCrc::arm(snoop_head, _)` sees `parsed_idx == snoop_head`,
-    /// so the fold's `parsed_idx < snoop_head` guard evaluates false and
-    /// that byte is included. Callers without a fold pass `|_, _| {}`.
-    pub fn poll_one<F: FnMut(u8, u32)>(
-        &mut self,
-        mut on_byte: F,
-    ) -> Option<InstructionToken<RX_BUF_LEN>> {
-        // SAFETY: see `on_rx_dma_advance`.
-        let rx_buf = unsafe { &mut *self.rx_buf.get() };
-        let mut reader = rx_buf.reader();
-        while let Some(&byte) = reader.peek() {
-            // Lazy-seed packet_start on the first byte of each new packet
-            // hypothesis. After Resync / Packet the field is cleared back
-            // to None; the next byte we consume is, by definition, the
-            // first byte of whatever the decoder will parse next.
-            let pre_advance = reader.read_seq();
-            self.packet_start_rx_seq.get_or_insert(pre_advance);
-            let cursor = self.wire_bytes_consumed;
-            reader.advance(1);
-            on_byte(byte, cursor);
-            self.wire_bytes_consumed = self.wire_bytes_consumed.wrapping_add(1);
-            let (step, _) = self.decoder.feed(&[byte]);
-            match step {
-                Step::NeedMore => continue,
-                Step::Resync(_) => {
-                    // Decoder dropped the in-progress prefix; clear so the
-                    // next byte re-seeds.
-                    self.packet_start_rx_seq = None;
-                    continue;
+    /// `instruction_count` ticks on every emitted Instruction Header
+    /// regardless of subsequent Skip; Status frames never tick. The
+    /// `wire_bytes_consumed` cursor advances over both parser- and
+    /// skip-consumed bytes.
+    pub fn poll<F>(&mut self, mut on_event: F)
+    where
+        F: FnMut(PollEvent<'_>) -> PollAction,
+    {
+        // SAFETY: rx_buf lives in a SyncUnsafeCell; this is the codec's
+        // single consumer path. The reference is independent of any
+        // borrow on `self` for the parser / counters because it's
+        // constructed via a raw pointer (`SyncUnsafeCell::get` takes
+        // `&self`, returns `*mut T`; the &mut deref is fresh).
+        let rx_buf_ptr = self.rx_buf.get();
+        loop {
+            // Skip phase: drain ring up to bytes_remaining; emit
+            // SkipComplete on exhaust.
+            if let Some(skip) = self.skip.as_mut() {
+                // SAFETY: see note above.
+                let rx_buf = unsafe { &mut *rx_buf_ptr };
+                let avail = rx_buf.reader().avail();
+                let take = skip.bytes_remaining.min(avail);
+                if take > 0 {
+                    rx_buf.reader().advance(take);
+                    skip.bytes_remaining -= take;
+                    self.wire_bytes_consumed = self.wire_bytes_consumed.wrapping_add(take as u32);
                 }
-                Step::Packet(pkt) => {
-                    let end_seq = reader.read_seq();
-                    // Always Some here — get_or_insert at the loop top
-                    // seeded it this iteration (or kept an earlier seed).
-                    // Take to clear so the next iteration starts a fresh
-                    // hypothesis.
-                    let start_seq = self.packet_start_rx_seq.take().unwrap_or(end_seq);
-                    if let Some(ip) = pkt.into_instruction_packet() {
-                        let id = ip.id().as_byte();
+                if skip.bytes_remaining > 0 {
+                    // Ring exhausted mid-skip; resume on a later poll.
+                    return;
+                }
+                let id = skip.id;
+                self.skip = None;
+                on_event(PollEvent::SkipComplete { id });
+                continue;
+            }
+
+            // Feed phase: extract a contiguous front slice from the
+            // ring; feed to the parser; advance by what was consumed.
+            let (input_ptr, input_len) = {
+                // SAFETY: see note above.
+                let rx_buf = unsafe { &mut *rx_buf_ptr };
+                let mut reader = rx_buf.reader();
+                let (front, _back) = reader.peek_slices();
+                (front.as_ptr(), front.len())
+            };
+            if input_len == 0 {
+                return;
+            }
+            // SAFETY: `input_ptr` points into `rx_buf.data`, owned by
+            // self for the lifetime of this poll. The data is not
+            // mutated until we call `reader.advance(consumed)` after
+            // the parser loop. The parser only reads; on_event has no
+            // access path back to rx_buf.
+            let input: &[u8] = unsafe { core::slice::from_raw_parts(input_ptr, input_len) };
+
+            let mut break_for_skip: Option<u8> = None;
+            let consumed = {
+                let mut stream = self.parser.feed(input);
+                while let Some(ev) = stream.next() {
+                    let ring: &[u8] = if let Event::Payload(PayloadEvent::Instruction(
+                        InstructionPayload::WriteDataChunk { offset, length },
+                    )) = ev
+                    {
+                        &input[offset as usize..(offset as usize + length as usize)]
+                    } else {
+                        &[]
+                    };
+                    if matches!(ev, Event::Header(HeaderEvent::Instruction(_))) {
                         self.instruction_count = self.instruction_count.wrapping_add(1);
-                        return Some(InstructionToken {
-                            id,
-                            start: start_seq,
-                            end: end_seq,
-                        });
                     }
-                    // Status frames: don't surface, no drift (peer HSI is
-                    // its own clock domain — [[drift_sampling_instruction_only]]).
-                    // Decoder is back in NeedMore on the next feed; loop continues.
+                    match on_event(PollEvent::Event { ev, ring }) {
+                        PollAction::Continue => {}
+                        PollAction::Skip { id } => {
+                            break_for_skip = Some(id);
+                            break;
+                        }
+                    }
                 }
+                stream.consumed()
+            };
+
+            if consumed > 0 {
+                self.wire_bytes_consumed = self.wire_bytes_consumed.wrapping_add(consumed as u32);
+                // SAFETY: see note above.
+                let rx_buf = unsafe { &mut *rx_buf_ptr };
+                rx_buf.reader().advance(consumed as u16);
+            }
+
+            if let Some(id) = break_for_skip {
+                let bytes_remaining = self.parser.packet_remaining();
+                self.parser.reset();
+                self.skip = Some(SkipState {
+                    bytes_remaining,
+                    id,
+                });
+                continue;
+            }
+
+            if consumed == 0 {
+                // Parser made no progress on the front slice — either
+                // it's idling at end-of-input or the slice was empty.
+                // Try the back slice on next iteration via peek_slices.
+                // If the front slice was non-empty and consumed is 0,
+                // we'd loop forever — short-circuit.
+                return;
             }
         }
-        None
-    }
-
-    /// Re-derive the most recent decoded packet through the decoder's
-    /// immutable `dispatch_packet` path. The decoder stays in `Done`
-    /// between `feed()` calls, so the overlay is still valid for as long
-    /// as no new `poll_one` runs. Shared `&self` so the parent's closure
-    /// can hold the packet (which borrows the decoder's buffer through
-    /// `&self`) alongside a `&mut CodecTx` reply handle.
-    pub fn dispatch(&self) -> Option<InstructionPacket<'_>> {
-        self.decoder.dispatch_packet().into_instruction_packet()
     }
 
     /// Iterate consecutive `(prev, curr)` BT pairs across the RX seq
     /// range. Converts the RX-typed seqs to BT-typed (shared seq space
     /// per doc §8.3) at the boundary and forwards to
-    /// [`rx::Rx::byte_pairs`]. Composite calls this on each
-    /// [`InstructionToken`]'s span and routes each pair to
-    /// `Clock::on_byte_pair`.
+    /// [`rx::Rx::byte_pairs`]. Drift wiring will reshape in Chunk 3 /
+    /// Chunk 4; kept on the surface so the new wiring can pick it up.
+    #[allow(dead_code)]
     pub fn byte_pairs(
         &self,
         start: Seq<u8, RX_BUF_LEN>,
@@ -227,16 +275,17 @@ impl<
         self.rx.byte_pairs(start.into(), end.into())
     }
 
-    /// Monotonic count of Instruction packets the decoder has emitted.
-    /// Foreign IDs count too (composite filters at the surface);
-    /// Status frames don't.
+    /// Monotonic count of Instruction headers the parser has emitted.
+    /// Foreign IDs count too (sink filters at its layer); Status frames
+    /// don't.
     pub fn instruction_count(&self) -> u32 {
         self.instruction_count
     }
 
-    /// Cumulative wire-byte cursor (parser-consumed) for chain-CRC fold
-    /// anchoring. Composite captures this at poll surface as the Fast Last
-    /// scheduler's `anchor_bytes` input — see doc §10.6.
+    /// Cumulative wire-byte cursor (parser- + skip-consumed) for chain-
+    /// CRC fold anchoring. Composite captures this at poll surface as
+    /// the Fast Last scheduler's `anchor_bytes` input (interim until
+    /// Chunk 5 retires it).
     pub fn wire_byte_cursor(&self) -> u32 {
         self.wire_bytes_consumed
     }
@@ -265,10 +314,9 @@ impl<
     }
 
     /// Look up the start-bit tick of the byte at `seq`. The DXL composite
-    /// pairs this with `Clock::ticks_per_bit()` to derive
-    /// `packet_end_tick = BT[token.end.predecessor()] + 10·tpb` for
-    /// TX-start scheduling. Returns `None` if `seq` is past the BT head
-    /// or has lapped out of the ring window.
+    /// pairs this with `Clock::ticks_per_bit()` to derive packet_end
+    /// timing for TX-start scheduling. Returns `None` if `seq` is past
+    /// the BT head or has lapped out of the ring window.
     pub fn byte_ts_at(&self, seq: Seq<u8, RX_BUF_LEN>) -> Option<u16> {
         // RX and BT share a seq space per doc §8.3 — `.into()` retags
         // the type, raw is preserved.
@@ -287,9 +335,9 @@ impl<
 }
 
 /// TX half — encoder + TX byte ring. Splits off from [`CodecRx`] under
-/// [`Codec`] so the parent driver's closure-based `poll<F>` can hand the
-/// dispatcher's reply handle a `&mut CodecTx` alongside a packet that
-/// borrows the disjoint RX half.
+/// [`Codec`] so the parent driver's split-borrow `poll` can hand the
+/// dispatcher's reply handle a `&mut CodecTx` alongside a parser event
+/// stream that borrows the disjoint RX half.
 pub struct CodecTx<CRC: CrcUmts, const TX_BUF_LEN: usize> {
     /// DMA1_CH4 source for transmitted bytes. Single-shot DMA per fire:
     /// the encoder methods ([`Self::send_status`], [`Self::send_slot`])
@@ -399,9 +447,8 @@ impl<
     }
 
     /// Disjoint mutable borrow of the RX and TX halves. The parent driver's
-    /// closure-based `poll<F>` uses this to hand a packet (borrowed via
-    /// `CodecRx::dispatch`, which takes `&self`) and a `&mut CodecTx` reply
-    /// handle to the dispatcher at the same time.
+    /// `poll` uses this to hand the dispatcher a `&mut CodecTx` reply handle
+    /// while a parser event borrow lives in `&mut CodecRx`.
     pub fn split_mut(
         &mut self,
     ) -> (
@@ -426,23 +473,11 @@ impl<
         self.rx.on_rx_dma_advance(remaining);
     }
 
-    pub fn poll_one<F: FnMut(u8, u32)>(
-        &mut self,
-        on_byte: F,
-    ) -> Option<InstructionToken<RX_BUF_LEN>> {
-        self.rx.poll_one(on_byte)
-    }
-
-    pub fn dispatch(&self) -> Option<InstructionPacket<'_>> {
-        self.rx.dispatch()
-    }
-
-    pub fn byte_pairs(
-        &self,
-        start: Seq<u8, RX_BUF_LEN>,
-        end: Seq<u8, RX_BUF_LEN>,
-    ) -> impl Iterator<Item = (u16, u16)> + '_ {
-        self.rx.byte_pairs(start, end)
+    pub fn poll<F>(&mut self, on_event: F)
+    where
+        F: FnMut(PollEvent<'_>) -> PollAction,
+    {
+        self.rx.poll(on_event);
     }
 
     pub fn instruction_count(&self) -> u32 {
@@ -587,7 +622,8 @@ impl<
 mod tests {
     use super::*;
     use crate::mocks::FakeEdgeDma;
-    use dxl_protocol::packet::{Id, StatusError};
+    use dxl_protocol::streaming::{HeaderEvent, InstructionHeader, ResyncKind};
+    use dxl_protocol::types::{Id, StatusError};
     use dxl_protocol::{InstructionEncoder, SoftwareCrcUmts, StatusEncoder};
     use heapless::Vec;
 
@@ -598,6 +634,7 @@ mod tests {
     /// registry uses the same value.
     const TX_BUF_LEN: usize = 140;
     const TEST_ID: u8 = 0x07;
+    const FOREIGN_ID: u8 = 0x42;
 
     type TestCodec =
         Codec<FakeEdgeDma, SoftwareCrcUmts, DECODER_CAP, RX_BUF_LEN, EDGE_BUF_LEN, TX_BUF_LEN>;
@@ -614,139 +651,347 @@ mod tests {
         out
     }
 
-    fn wire_status(id: u8) -> Vec<u8, 32> {
-        let mut out: Vec<u8, 32> = Vec::new();
-        StatusEncoder::<_, SoftwareCrcUmts>::new(&mut out)
-            .empty(Id::new(id), dxl_protocol::packet::StatusError::OK)
+    fn wire_write(id: u8, addr: u16, body: &[u8]) -> Vec<u8, 64> {
+        let mut out: Vec<u8, 64> = Vec::new();
+        InstructionEncoder::<_, SoftwareCrcUmts>::new(&mut out)
+            .write(Id::new(id), addr, body)
             .unwrap();
         out
     }
 
+    fn wire_status(id: u8) -> Vec<u8, 32> {
+        let mut out: Vec<u8, 32> = Vec::new();
+        StatusEncoder::<_, SoftwareCrcUmts>::new(&mut out)
+            .empty(Id::new(id), StatusError::OK)
+            .unwrap();
+        out
+    }
+
+    /// Drain a codec into a `Vec` of captured events. `decide` controls
+    /// per-Header skip behavior; default `|_| PollAction::Continue` forwards
+    /// everything.
+    fn collect_events<F>(c: &mut TestCodec, mut decide: F) -> alloc::vec::Vec<Capture>
+    where
+        F: FnMut(&Event) -> PollAction,
+    {
+        let mut out = alloc::vec::Vec::new();
+        c.poll(|pe| match pe {
+            PollEvent::Event { ev, ring } => {
+                let action = if matches!(ev, Event::Header(_)) {
+                    decide(&ev)
+                } else {
+                    PollAction::Continue
+                };
+                out.push(Capture::Event {
+                    ev,
+                    ring: ring.into(),
+                });
+                action
+            }
+            PollEvent::SkipComplete { id } => {
+                out.push(Capture::SkipComplete { id });
+                PollAction::Continue
+            }
+        });
+        out
+    }
+
+    #[derive(Debug)]
+    enum Capture {
+        Event {
+            ev: Event,
+            ring: alloc::vec::Vec<u8>,
+        },
+        SkipComplete {
+            id: u8,
+        },
+    }
+
+    extern crate alloc;
+
     #[test]
-    fn poll_one_returns_none_when_no_new_bytes() {
+    fn poll_no_op_when_ring_empty() {
         let mut c = make();
-        assert!(c.poll_one(|_, _| {}).is_none());
+        let captures = collect_events(&mut c, |_| PollAction::Continue);
+        assert!(captures.is_empty());
+        assert_eq!(c.instruction_count(), 0);
+        assert_eq!(c.wire_byte_cursor(), 0);
     }
 
     #[test]
-    fn poll_one_yields_token_per_instruction_without_id_filter() {
+    fn poll_emits_sync_header_chunk_crc_for_own_write() {
         let mut c = make();
-        let ours = wire_ping(TEST_ID);
-        let theirs = wire_ping(0x42);
-        let mut combined: Vec<u8, 64> = Vec::new();
-        combined.extend_from_slice(&ours).unwrap();
-        combined.extend_from_slice(&theirs).unwrap();
+        let wire = wire_write(TEST_ID, 0x0050, &[0xAA, 0xBB, 0xCC, 0xDD]);
+        c.stage_rx_bytes_for_test(0, &wire);
+
+        let captures = collect_events(&mut c, |_| PollAction::Continue);
+
+        // Walk: Sync, Header(Write), Payload(WriteDataChunk), Crc.
+        let mut iter = captures.iter();
+        match iter.next() {
+            Some(Capture::Event {
+                ev: Event::Sync, ..
+            }) => {}
+            other => panic!("expected Sync, got {other:?}"),
+        }
+        match iter.next() {
+            Some(Capture::Event {
+                ev:
+                    Event::Header(HeaderEvent::Instruction(InstructionHeader::Write {
+                        id,
+                        address,
+                        length,
+                    })),
+                ..
+            }) => {
+                assert_eq!(*id, Id::new(TEST_ID));
+                assert_eq!(*address, 0x0050);
+                assert_eq!(*length, 4);
+            }
+            other => panic!("expected Header(Write), got {other:?}"),
+        }
+        match iter.next() {
+            Some(Capture::Event {
+                ev:
+                    Event::Payload(PayloadEvent::Instruction(InstructionPayload::WriteDataChunk {
+                        length,
+                        ..
+                    })),
+                ring,
+            }) => {
+                assert_eq!(*length, 4);
+                assert_eq!(ring.as_slice(), &[0xAA, 0xBB, 0xCC, 0xDD]);
+            }
+            other => panic!("expected WriteDataChunk, got {other:?}"),
+        }
+        match iter.next() {
+            Some(Capture::Event { ev: Event::Crc, .. }) => {}
+            other => panic!("expected Crc, got {other:?}"),
+        }
+        assert!(iter.next().is_none());
+    }
+
+    #[test]
+    fn poll_skip_consumes_foreign_ping_body_and_crc() {
+        let mut c = make();
+        let wire = wire_ping(FOREIGN_ID);
+        c.stage_rx_bytes_for_test(0, &wire);
+
+        let captures = collect_events(&mut c, |ev| match ev {
+            Event::Header(HeaderEvent::Instruction(_)) => PollAction::Skip { id: FOREIGN_ID },
+            _ => PollAction::Continue,
+        });
+
+        // Sync, Header, SkipComplete. The skip distance is body(0) + CRC(2).
+        let mut iter = captures.iter();
+        assert!(matches!(
+            iter.next(),
+            Some(Capture::Event {
+                ev: Event::Sync,
+                ..
+            })
+        ));
+        assert!(matches!(
+            iter.next(),
+            Some(Capture::Event {
+                ev: Event::Header(HeaderEvent::Instruction(InstructionHeader::Ping { .. })),
+                ..
+            })
+        ));
+        assert!(matches!(
+            iter.next(),
+            Some(Capture::SkipComplete { id }) if *id == FOREIGN_ID
+        ));
+        assert!(iter.next().is_none());
+        // Wire cursor advanced over the full packet.
+        assert_eq!(c.wire_byte_cursor() as usize, wire.len());
+    }
+
+    #[test]
+    fn poll_skip_consumes_foreign_write_body_and_crc() {
+        let mut c = make();
+        let wire = wire_write(FOREIGN_ID, 0x0050, &[1, 2, 3, 4]);
+        c.stage_rx_bytes_for_test(0, &wire);
+
+        let captures = collect_events(&mut c, |ev| match ev {
+            Event::Header(HeaderEvent::Instruction(_)) => PollAction::Skip { id: FOREIGN_ID },
+            _ => PollAction::Continue,
+        });
+
+        // No Payload / Crc events past Header — the parser was reset.
+        let payloads = captures
+            .iter()
+            .filter(|c| {
+                matches!(
+                    c,
+                    Capture::Event {
+                        ev: Event::Payload(_),
+                        ..
+                    }
+                )
+            })
+            .count();
+        assert_eq!(payloads, 0);
+        let crcs = captures
+            .iter()
+            .filter(|c| matches!(c, Capture::Event { ev: Event::Crc, .. }))
+            .count();
+        assert_eq!(crcs, 0);
+        assert!(
+            captures
+                .iter()
+                .any(|c| matches!(c, Capture::SkipComplete { id } if *id == FOREIGN_ID))
+        );
+        assert_eq!(c.wire_byte_cursor() as usize, wire.len());
+    }
+
+    #[test]
+    fn poll_skip_complete_carries_id() {
+        let mut c = make();
+        let wire = wire_ping(FOREIGN_ID);
+        c.stage_rx_bytes_for_test(0, &wire);
+
+        let custom = 0x33u8;
+        let captures = collect_events(&mut c, |_| PollAction::Skip { id: custom });
+        let id = captures.iter().find_map(|c| match c {
+            Capture::SkipComplete { id } => Some(*id),
+            _ => None,
+        });
+        assert_eq!(id, Some(custom));
+    }
+
+    #[test]
+    fn poll_skip_then_own_packet_parses_clean() {
+        let mut c = make();
+        let foreign = wire_ping(FOREIGN_ID);
+        let own = wire_write(TEST_ID, 0x0060, &[0x11, 0x22]);
+        let mut combined: Vec<u8, 96> = Vec::new();
+        combined.extend_from_slice(&foreign).unwrap();
+        combined.extend_from_slice(&own).unwrap();
         c.stage_rx_bytes_for_test(0, &combined);
 
-        // First Instruction — own id.
-        let t1 = c.poll_one(|_, _| {}).expect("first instruction");
-        assert_eq!(t1.id, TEST_ID);
-        // Second Instruction — foreign id; codec doesn't filter.
-        let t2 = c.poll_one(|_, _| {}).expect("second instruction");
-        assert_eq!(t2.id, 0x42);
-        // Nothing else queued.
-        assert!(c.poll_one(|_, _| {}).is_none());
+        let captures = collect_events(&mut c, |ev| match ev {
+            Event::Header(HeaderEvent::Instruction(InstructionHeader::Ping { id }))
+                if id.as_byte() == FOREIGN_ID =>
+            {
+                PollAction::Skip { id: FOREIGN_ID }
+            }
+            _ => PollAction::Continue,
+        });
+
+        let skip_done = captures
+            .iter()
+            .any(|c| matches!(c, Capture::SkipComplete { id } if *id == FOREIGN_ID));
+        assert!(skip_done);
+        let saw_write = captures.iter().any(|c| {
+            matches!(
+                c,
+                Capture::Event {
+                    ev: Event::Header(HeaderEvent::Instruction(InstructionHeader::Write { .. })),
+                    ..
+                }
+            )
+        });
+        assert!(saw_write);
+        let saw_chunk = captures.iter().any(|c| {
+            matches!(
+                c,
+                Capture::Event {
+                    ev: Event::Payload(PayloadEvent::Instruction(
+                        InstructionPayload::WriteDataChunk { .. }
+                    )),
+                    ring,
+                } if ring.as_slice() == [0x11, 0x22]
+            )
+        });
+        assert!(saw_chunk);
+    }
+
+    #[test]
+    fn wire_bytes_consumed_counts_parser_and_skip_bytes() {
+        let mut c = make();
+        let foreign = wire_ping(FOREIGN_ID);
+        let own = wire_ping(TEST_ID);
+        let mut combined: Vec<u8, 96> = Vec::new();
+        combined.extend_from_slice(&foreign).unwrap();
+        combined.extend_from_slice(&own).unwrap();
+        c.stage_rx_bytes_for_test(0, &combined);
+
+        let _ = collect_events(&mut c, |ev| match ev {
+            Event::Header(HeaderEvent::Instruction(InstructionHeader::Ping { id }))
+                if id.as_byte() == FOREIGN_ID =>
+            {
+                PollAction::Skip { id: FOREIGN_ID }
+            }
+            _ => PollAction::Continue,
+        });
+        assert_eq!(c.wire_byte_cursor() as usize, combined.len());
+    }
+
+    #[test]
+    fn instruction_count_ticks_on_every_instruction_header() {
+        let mut c = make();
+        let foreign = wire_ping(FOREIGN_ID);
+        let own = wire_ping(TEST_ID);
+        let mut combined: Vec<u8, 96> = Vec::new();
+        combined.extend_from_slice(&foreign).unwrap();
+        combined.extend_from_slice(&own).unwrap();
+        c.stage_rx_bytes_for_test(0, &combined);
+
+        let _ = collect_events(&mut c, |_| PollAction::Continue);
+        // Two Instruction headers (foreign + own).
         assert_eq!(c.instruction_count(), 2);
     }
 
     #[test]
-    fn poll_one_drains_status_without_emitting_token() {
+    fn instruction_count_does_not_tick_on_status_header() {
         let mut c = make();
         let status = wire_status(TEST_ID);
         c.stage_rx_bytes_for_test(0, &status);
 
-        assert!(c.poll_one(|_, _| {}).is_none());
-        // Status doesn't count — peer HSI is its own clock domain.
+        let _ = collect_events(&mut c, |_| PollAction::Continue);
         assert_eq!(c.instruction_count(), 0);
     }
 
     #[test]
-    fn poll_one_clears_packet_start_on_resync() {
+    fn poll_resync_on_bad_crc_emits_resync_event() {
         let mut c = make();
-        let mut bad = wire_ping(TEST_ID);
-        let crc_lo = bad.len() - 2;
-        bad[crc_lo] ^= 0xFF;
-        let good = wire_ping(TEST_ID);
+        let mut wire = wire_ping(TEST_ID);
+        let last = wire.len() - 1;
+        wire[last] ^= 0xFF;
+        c.stage_rx_bytes_for_test(0, &wire);
 
-        let mut combined: Vec<u8, 64> = Vec::new();
-        combined.extend_from_slice(&bad).unwrap();
-        combined.extend_from_slice(&good).unwrap();
-        c.stage_rx_bytes_for_test(0, &combined);
+        let captures = collect_events(&mut c, |_| PollAction::Continue);
+        let saw_resync = captures.iter().any(|c| {
+            matches!(
+                c,
+                Capture::Event {
+                    ev: Event::Resync(ResyncKind::BadCrc),
+                    ..
+                }
+            )
+        });
+        assert!(saw_resync);
+    }
 
-        let token = c
-            .poll_one(|_, _| {})
-            .expect("good instruction after resync");
-        assert_eq!(token.id, TEST_ID);
-        // The token's start must be inside the GOOD frame's RX range, not
-        // anchored at the bad frame's start — Resync cleared the cursor.
-        let good_start = bad.len() as u16;
-        let good_end = (bad.len() + good.len()) as u16;
-        // start is RX-typed Seq; we compare via test_raw. The decoder may
-        // re-anchor mid-bad-frame, so the precise raw value isn't fixed —
-        // assert it's strictly inside the good frame's wire range.
-        let s = token.start.test_raw();
+    #[test]
+    fn poll_handles_ring_wrap_across_two_feed_slices() {
+        let mut c = make();
+        // Pre-position the read/write seqs so the packet straddles the
+        // wrap boundary. RX_BUF_LEN = 64; start at seq 60 so 4 bytes fit
+        // before wrap and the remainder lands at seq 0+.
+        let wire = wire_write(TEST_ID, 0x0050, &[0xAA, 0xBB, 0xCC, 0xDD]);
+        c.set_rx_read_seq_for_test(60);
+        c.stage_rx_bytes_for_test(60, &wire);
+
+        let captures = collect_events(&mut c, |_| PollAction::Continue);
+        let saw_crc = captures
+            .iter()
+            .any(|c| matches!(c, Capture::Event { ev: Event::Crc, .. }));
         assert!(
-            s >= good_start && s < good_end,
-            "start {s} not in good frame [{good_start}, {good_end})"
+            saw_crc,
+            "expected Crc after wrap parse; got captures: {captures:?}"
         );
-    }
-
-    #[test]
-    fn dispatch_surfaces_token_packet() {
-        let mut c = make();
-        let ping = wire_ping(TEST_ID);
-        c.stage_rx_bytes_for_test(0, &ping);
-
-        let token = c.poll_one(|_, _| {}).expect("instruction");
-        assert_eq!(token.id, TEST_ID);
-        match c.dispatch() {
-            Some(InstructionPacket::Ping(p)) => assert_eq!(p.header.id.as_byte(), TEST_ID),
-            other => panic!("expected Ping, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn byte_pairs_iterates_consecutive_bt_entries() {
-        let mut c = make();
-        // Stage 4 edges spaced by one byte-time @ 3M (tpb=16 → 160 ticks
-        // per byte), publish them so the classifier emits 4 BT entries.
-        let edges: [u16; 4] = [1000, 1160, 1320, 1480];
-        c.stage_edges_for_test(&edges);
-        c.arm_next_flags_for_test(crate::traits::dxl::DmaFlags {
-            ht: true,
-            tc: false,
-        });
-        c.on_edge_advance(16);
-        assert_eq!(c.byte_ts_head().test_raw(), 4);
-
-        let start: Seq<u8, RX_BUF_LEN> = Seq::test_from_raw(0);
-        let end: Seq<u8, RX_BUF_LEN> = Seq::test_from_raw(4);
-        let pairs: heapless::Vec<(u16, u16), 8> = c.byte_pairs(start, end).collect();
-        assert_eq!(
-            pairs.as_slice(),
-            &[(1000, 1160), (1160, 1320), (1320, 1480)]
-        );
-    }
-
-    #[test]
-    fn byte_pairs_stops_at_first_lapped_seq() {
-        let mut c = make();
-        // Only 2 BTs published; ask for range covering 4. Iterator must
-        // stop at the first lapped lookup rather than skipping past it
-        // and producing a "consecutive" pair that isn't.
-        let edges: [u16; 2] = [1000, 1160];
-        c.stage_edges_for_test(&edges);
-        c.arm_next_flags_for_test(crate::traits::dxl::DmaFlags {
-            ht: true,
-            tc: false,
-        });
-        c.on_edge_advance(16);
-
-        let start: Seq<u8, RX_BUF_LEN> = Seq::test_from_raw(0);
-        let end: Seq<u8, RX_BUF_LEN> = Seq::test_from_raw(4);
-        let pairs: heapless::Vec<(u16, u16), 8> = c.byte_pairs(start, end).collect();
-        // Only one valid pair from BT[0..2].
-        assert_eq!(pairs.as_slice(), &[(1000, 1160)]);
     }
 
     #[test]
@@ -758,8 +1003,6 @@ mod tests {
         })
         .expect("encode fits");
 
-        // Round-trip the encoded bytes through the same emitter via a
-        // reference Vec — the codec's tx_buf must match byte-for-byte.
         let mut expected: Vec<u8, TX_BUF_LEN> = Vec::new();
         StatusEncoder::<_, SoftwareCrcUmts>::new(&mut expected)
             .empty(Id::new(TEST_ID), StatusError::OK)
@@ -779,13 +1022,11 @@ mod tests {
     #[test]
     fn send_status_overwrites_previous_contents() {
         let mut c = make();
-        // First emit a wider payload (Ping reply) to push the head past
-        // what a subsequent Empty would write.
         c.send_status(Status::Ping {
             id: Id::new(TEST_ID),
             error: StatusError::OK,
-            status: dxl_protocol::packet::PingStatus {
-                model: dxl_protocol::packet::U16Le::from_u16(0x0123),
+            status: dxl_protocol::types::PingStatus {
+                model: 0x0123,
                 fw_version: 0x45,
             },
         })
@@ -799,13 +1040,8 @@ mod tests {
         })
         .unwrap();
         let second_len = c.tx_len();
-
-        // Empty Status is smaller than Ping Status — second write must
-        // shorten tx_len, proving the buffer was cleared (not appended).
         assert!(second_len < first_len);
 
-        // Bytes at offset 0 are the new packet's header, not leftover
-        // tail of the previous one.
         // SAFETY: see `send_status_writes_wire_bytes_into_tx_buf`.
         let actual = unsafe {
             core::slice::from_raw_parts(c.tx_buf_addr() as *const u8, second_len as usize)
@@ -831,19 +1067,14 @@ mod tests {
             error: StatusError::OK,
             data: &payload,
         };
-        // packet_length = 3 (cmd+err+reserved) + 3 (payload) + 2 (CRC) = 8.
         c.send_slot(&slot, SlotPosition::Only { packet_length: 8 })
             .expect("encode fits");
 
-        // SAFETY: see `send_status_writes_wire_bytes_into_tx_buf`.
         let actual = unsafe {
             core::slice::from_raw_parts(c.tx_buf_addr() as *const u8, c.tx_len() as usize)
         };
-        // Wire-layout sanity: DXL 2.0 header begins `FF FF FD 00`.
         assert_eq!(&actual[0..4], &[0xFF, 0xFF, 0xFD, 0x00]);
 
-        // Round-trip via a reference SlotEncoder so byte-for-byte equality
-        // covers length / cmd / err / reserved / payload / CRC.
         let mut expected: Vec<u8, TX_BUF_LEN> = Vec::new();
         SlotEncoder::<_, SoftwareCrcUmts>::new(&mut expected)
             .emit(&slot, SlotPosition::Only { packet_length: 8 })
@@ -860,95 +1091,12 @@ mod tests {
             error: StatusError::OK,
             data: &payload,
         };
-        // SlotPosition::Last writes ID + error + payload + caller CRC.
         c.send_slot(&slot, SlotPosition::Last { crc: 0xDEAD })
             .expect("encode fits");
 
         let len = c.tx_len() as usize;
-        // SAFETY: see `send_status_writes_wire_bytes_into_tx_buf`.
         let actual = unsafe { core::slice::from_raw_parts(c.tx_buf_addr() as *const u8, len) };
-        // Trailing two bytes are the caller-supplied CRC, little-endian.
         assert_eq!(&actual[len - 2..], &[0xAD, 0xDE]);
-    }
-
-    #[test]
-    fn byte_ts_at_returns_published_entry() {
-        let mut c = make();
-        let edges: [u16; 3] = [1000, 1160, 1320];
-        c.stage_edges_for_test(&edges);
-        c.arm_next_flags_for_test(crate::traits::dxl::DmaFlags {
-            ht: true,
-            tc: false,
-        });
-        c.on_edge_advance(16);
-        assert_eq!(c.byte_ts_head().test_raw(), 3);
-
-        let s0: Seq<u8, RX_BUF_LEN> = Seq::test_from_raw(0);
-        let s1: Seq<u8, RX_BUF_LEN> = Seq::test_from_raw(1);
-        let s2: Seq<u8, RX_BUF_LEN> = Seq::test_from_raw(2);
-        assert_eq!(c.byte_ts_at(s0), Some(1000));
-        assert_eq!(c.byte_ts_at(s1), Some(1160));
-        assert_eq!(c.byte_ts_at(s2), Some(1320));
-    }
-
-    #[test]
-    fn byte_ts_at_returns_none_past_head() {
-        let mut c = make();
-        c.stage_edges_for_test(&[1000, 1160]);
-        c.arm_next_flags_for_test(crate::traits::dxl::DmaFlags {
-            ht: true,
-            tc: false,
-        });
-        c.on_edge_advance(16);
-        assert_eq!(c.byte_ts_head().test_raw(), 2);
-
-        // Seq 2 is at the head — not yet written.
-        let past: Seq<u8, RX_BUF_LEN> = Seq::test_from_raw(2);
-        assert_eq!(c.byte_ts_at(past), None);
-    }
-
-    #[test]
-    fn poll_one_invokes_callback_once_per_consumed_byte() {
-        let mut c = make();
-        let ping = wire_ping(TEST_ID);
-        c.stage_rx_bytes_for_test(0, &ping);
-
-        let mut log: Vec<(u8, u32), 32> = Vec::new();
-        let token = c
-            .poll_one(|b, i| log.push((b, i)).unwrap())
-            .expect("instruction");
-        assert_eq!(token.id, TEST_ID);
-        // One entry per encoded byte; cursor monotonic from 0; bytes match.
-        assert_eq!(log.len(), ping.len());
-        for (i, (b, idx)) in log.iter().enumerate() {
-            assert_eq!(*b, ping[i]);
-            assert_eq!(*idx, i as u32);
-        }
-    }
-
-    #[test]
-    fn poll_one_callback_does_not_replay_resync_consumed_bytes() {
-        let mut c = make();
-        let mut bad = wire_ping(TEST_ID);
-        let crc_lo = bad.len() - 2;
-        bad[crc_lo] ^= 0xFF;
-        let good = wire_ping(TEST_ID);
-        let mut combined: Vec<u8, 64> = Vec::new();
-        combined.extend_from_slice(&bad).unwrap();
-        combined.extend_from_slice(&good).unwrap();
-        c.stage_rx_bytes_for_test(0, &combined);
-
-        let mut log: Vec<(u8, u32), 64> = Vec::new();
-        let token = c
-            .poll_one(|b, i| log.push((b, i)).unwrap())
-            .expect("good instruction after resync");
-        assert_eq!(token.id, TEST_ID);
-        // Every wire byte was seen exactly once with a monotonic cursor.
-        assert_eq!(log.len(), combined.len());
-        for (i, (b, idx)) in log.iter().enumerate() {
-            assert_eq!(*b, combined[i]);
-            assert_eq!(*idx, i as u32);
-        }
     }
 
     #[test]
@@ -965,7 +1113,6 @@ mod tests {
 
         let len = c.tx_len() as usize;
         c.patch_crc(0xBEEF);
-        // SAFETY: see `send_status_writes_wire_bytes_into_tx_buf`.
         let actual = unsafe { core::slice::from_raw_parts(c.tx_buf_addr() as *const u8, len) };
         assert_eq!(&actual[len - 2..], &[0xEF, 0xBE]);
     }
@@ -993,7 +1140,6 @@ mod tests {
         let len = c.tx_len() as usize;
         let bytes = c.own_reply_bytes();
         assert_eq!(bytes.len(), len - 2);
-        // SAFETY: see `send_status_writes_wire_bytes_into_tx_buf`.
         let actual = unsafe { core::slice::from_raw_parts(c.tx_buf_addr() as *const u8, len) };
         assert_eq!(bytes, &actual[..len - 2]);
     }
