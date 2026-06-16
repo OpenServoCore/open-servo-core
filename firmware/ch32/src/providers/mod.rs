@@ -9,4 +9,5 @@ pub mod dxl_tx_scheduler;
 pub mod edge_dma;
 pub mod fast_last_scheduler;
 pub mod monotonic;
+pub mod rx_dma;
 pub mod usart_baud;

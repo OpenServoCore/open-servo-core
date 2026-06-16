@@ -12,12 +12,14 @@
 //! at HIGH ISR priority (no preemption) recovers the upper bits via the
 //! most-recent-TIM2-wrap window. See doc §12.
 
+use dxl_protocol::wire::CRC_BYTES;
 use osc_drivers::traits::dxl::FastLastScheduler as FastLastSchedulerTrait;
 
-use crate::hal::{systick, timer};
+use crate::hal::{dma, systick, timer};
 use crate::measurements::{
     FAST_LAST_BYTES_PER_INTERVAL, FAST_LAST_ENTRY_TICKS, FAST_LAST_GUARD_BYTES,
 };
+use crate::runtime::statics::SHARED;
 
 #[derive(Default)]
 pub struct FastLastScheduler {
@@ -64,6 +66,30 @@ impl FastLastSchedulerTrait for FastLastScheduler {
 
     fn deadline_passed(&self) -> bool {
         (systick::ticks().wrapping_sub(self.deadline_lifted) as i32) >= 0
+    }
+
+    fn patch_window_expired(&self) -> bool {
+        // CH4 has prefetched into (or past) the trailing CRC slot — any
+        // patch_crc write into tx_buf[len-CRC_BYTES..len] races CH4's read.
+        dma::remaining(dma::Channel::CH4) <= CRC_BYTES as u16
+    }
+
+    fn record_patch_deadline_miss(&mut self) {
+        // Volatile RMW into the telemetry region — same pattern as the
+        // `sample_tick` increment in `runtime/isr.rs`. Concurrent host clear
+        // (via DXL bus write to `crc_patch_deadline_miss`) can drop one
+        // update per race window, which the region's `rw` declaration
+        // explicitly accepts (`telemetry.rs:72-74`).
+        // SAFETY: SHARED is the canonical chip-side storage for the
+        // control-table region; writers other than this one only fire from
+        // DXL-side ISRs at the same PFIC priority, so the RMW is atomic
+        // w.r.t. itself.
+        unsafe {
+            let p = &raw mut (*SHARED.table.telemetry.get())
+                .link
+                .crc_patch_deadline_miss;
+            p.write_volatile(p.read_volatile().wrapping_add(1));
+        }
     }
 
     fn cancel(&mut self) {

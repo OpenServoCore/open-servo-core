@@ -30,6 +30,7 @@ use crate::providers::dxl_tx_scheduler::DxlTxScheduler;
 use crate::providers::edge_dma::EdgeDma;
 use crate::providers::fast_last_scheduler::FastLastScheduler;
 use crate::providers::monotonic::Monotonic;
+use crate::providers::rx_dma::RxDma;
 use crate::providers::usart_baud::UsartBaud;
 
 /// Concrete instantiations for this chip. The driver types stay generic
@@ -48,6 +49,7 @@ impl Providers for DxlUartProviders {
     type UsartBaud = UsartBaud;
     type ClockTrim = ClockTrim;
     type EdgeDma = EdgeDma;
+    type RxDma = RxDma;
     type TxScheduler = DxlTxScheduler;
     type FastLastScheduler = FastLastScheduler;
     type Crc = DxlCrc;
@@ -109,6 +111,7 @@ impl Drivers {
         *dxl_uart = Some(DxlUart::new(
             Codec::new(EdgeDma),
             Clock::new(defaults.dxl_baud, UsartBaud, ClockTrim),
+            RxDma,
             DxlTxScheduler,
             FastLast::new(FastLastScheduler::default()),
             defaults.dxl_id,
