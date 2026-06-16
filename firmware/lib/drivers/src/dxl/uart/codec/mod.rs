@@ -83,7 +83,7 @@ pub struct CodecRx<
     const RX_BUF_LEN: usize,
     const EDGE_BUF_LEN: usize,
 > {
-    rx: Rx<R, EDGE_BUF_LEN, RX_BUF_LEN>,
+    rx: Rx<R, EDGE_BUF_LEN>,
     parser: Parser<CRC>,
     /// DMA1_CH5 destination for received bytes. `SyncUnsafeCell` because
     /// USART1's DMA writes it concurrently with the parser's reads — both
@@ -174,7 +174,7 @@ impl<
     /// skip-consumed bytes.
     pub fn poll<F>(&mut self, mut on_event: F)
     where
-        F: FnMut(PollEvent<'_>, &mut Rx<R, EDGE_BUF_LEN, RX_BUF_LEN>) -> PollAction,
+        F: FnMut(PollEvent<'_>, &mut Rx<R, EDGE_BUF_LEN>) -> PollAction,
     {
         // SAFETY: rx_buf lives in a SyncUnsafeCell; this is the codec's
         // single consumer path. The reference is independent of any
@@ -535,7 +535,7 @@ impl<
 
     pub fn poll<F>(&mut self, on_event: F)
     where
-        F: FnMut(PollEvent<'_>, &mut Rx<R, EDGE_BUF_LEN, RX_BUF_LEN>) -> PollAction,
+        F: FnMut(PollEvent<'_>, &mut Rx<R, EDGE_BUF_LEN>) -> PollAction,
     {
         self.rx.poll(on_event);
     }

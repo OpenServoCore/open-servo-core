@@ -11,21 +11,17 @@
 //!
 //! The ET ring depth is const-generic so a chip/board can pick its own
 //! memory budget without touching driver code; per doc §4.5 the V006
-//! defaults to `EDGE_BUF_LEN = 128`. `BT_BUF_LEN` lives on the type
-//! signature as `PhantomData` ballast through Chunks 4 / 5 — the BT ring
-//! itself is gone — and gets retired at Chunk 6 alongside chip-side
-//! rewiring.
+//! defaults to `EDGE_BUF_LEN = 128`.
 
 mod classifier;
 
 use core::cell::SyncUnsafeCell;
-use core::marker::PhantomData;
 
 use crate::traits::dxl::EdgeDma;
 use crate::util::HwRing;
 use classifier::Classifier;
 
-pub struct Rx<R: EdgeDma, const EDGE_BUF_LEN: usize, const BT_BUF_LEN: usize> {
+pub struct Rx<R: EdgeDma, const EDGE_BUF_LEN: usize> {
     classifier: Classifier,
     /// DMA1_CH7's destination buffer. `SyncUnsafeCell` because the DMA
     /// engine writes it concurrently with the classifier's reads — both
@@ -36,18 +32,14 @@ pub struct Rx<R: EdgeDma, const EDGE_BUF_LEN: usize, const BT_BUF_LEN: usize> {
     /// NDTR`) maps cleanly to a ring position.
     edges: SyncUnsafeCell<HwRing<u16, EDGE_BUF_LEN>>,
     ring: R,
-    _bt_buf_len: PhantomData<[(); BT_BUF_LEN]>,
 }
 
-impl<R: EdgeDma, const EDGE_BUF_LEN: usize, const BT_BUF_LEN: usize>
-    Rx<R, EDGE_BUF_LEN, BT_BUF_LEN>
-{
+impl<R: EdgeDma, const EDGE_BUF_LEN: usize> Rx<R, EDGE_BUF_LEN> {
     pub const fn new(ring: R) -> Self {
         Self {
             classifier: Classifier::new(),
             edges: SyncUnsafeCell::new(HwRing::new(0)),
             ring,
-            _bt_buf_len: PhantomData,
         }
     }
 
@@ -161,9 +153,7 @@ impl<R: EdgeDma, const EDGE_BUF_LEN: usize, const BT_BUF_LEN: usize>
 }
 
 #[cfg(test)]
-impl<const EDGE_BUF_LEN: usize, const BT_BUF_LEN: usize>
-    Rx<crate::mocks::FakeEdgeDma, EDGE_BUF_LEN, BT_BUF_LEN>
-{
+impl<const EDGE_BUF_LEN: usize> Rx<crate::mocks::FakeEdgeDma, EDGE_BUF_LEN> {
     /// Stage `vals` into the edges buffer as if DMA wrote them, publish the
     /// producer head so direct `try_anchor_from_header` / `recent` reads see
     /// them, and set `remaining` so a subsequent `on_edge_advance` /
@@ -189,12 +179,9 @@ mod tests {
     use crate::mocks::FakeEdgeDma;
     use crate::traits::dxl::DmaFlags;
 
-    /// Test-side ring sizing. EDGE_BUF_LEN matches V006 per doc §4.5;
-    /// BT_BUF_LEN is PhantomData ballast — the size value is arbitrary
-    /// from Chunk 3 onward.
+    /// Test-side ring sizing. EDGE_BUF_LEN matches V006 per doc §4.5.
     const EDGE_BUF_LEN: usize = 128;
-    const BT_BUF_LEN: usize = 64;
-    type TestRx = Rx<FakeEdgeDma, EDGE_BUF_LEN, BT_BUF_LEN>;
+    type TestRx = Rx<FakeEdgeDma, EDGE_BUF_LEN>;
 
     // 3 Mbaud at HCLK 48 MHz → ticks_per_bit = 16. One byte = 160 ticks.
     const TPB_3M: u16 = 16;
