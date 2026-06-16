@@ -24,7 +24,7 @@ use dxl_protocol::types::{Slot, Status};
 use dxl_protocol::{CrcUmts, SlotEncoder, SlotPosition, StatusEncoder, WriteError};
 
 use crate::traits::dxl::EdgeDma;
-use crate::util::{HwRing, Seq};
+use crate::util::HwRing;
 use rx::Rx;
 
 /// Event surfaced from [`CodecRx::poll`] to its sink callback.
@@ -120,15 +120,17 @@ impl<
 
     /// New RX falling-edge timestamps may be available — forward
     /// `ticks_per_bit` (pulled from the clock by the composite) into the
-    /// RX classifier so its HIT window matches the current baud.
-    pub fn on_edge_advance(&mut self, ticks_per_bit: u16) {
-        self.rx.on_edge_advance(ticks_per_bit);
+    /// RX classifier so its HIT window matches the current baud. Drift
+    /// pairs route through `on_pair` when the classifier's `hsi_active`
+    /// flag is set; otherwise it's never called.
+    pub fn on_edge_advance<F: FnMut(u16, u16)>(&mut self, ticks_per_bit: u16, on_pair: F) {
+        self.rx.on_edge_advance(ticks_per_bit, on_pair);
     }
 
-    /// USART1 IDLE backstop — drain tail edges and reset the classifier
-    /// anchor for the next burst.
-    pub fn on_idle(&mut self, ticks_per_bit: u16) {
-        self.rx.on_idle(ticks_per_bit);
+    /// USART1 IDLE backstop — drain tail edges through `on_pair`, then
+    /// reset the classifier anchor and drift flag for the next burst.
+    pub fn on_idle<F: FnMut(u16, u16)>(&mut self, ticks_per_bit: u16, on_pair: F) {
+        self.rx.on_idle(ticks_per_bit, on_pair);
     }
 
     /// USART1 RX DMA published progress — `remaining` is the channel's
@@ -261,20 +263,6 @@ impl<
         }
     }
 
-    /// Iterate consecutive `(prev, curr)` BT pairs across the RX seq
-    /// range. Converts the RX-typed seqs to BT-typed (shared seq space
-    /// per doc §8.3) at the boundary and forwards to
-    /// [`rx::Rx::byte_pairs`]. Drift wiring will reshape in Chunk 3 /
-    /// Chunk 4; kept on the surface so the new wiring can pick it up.
-    #[allow(dead_code)]
-    pub fn byte_pairs(
-        &self,
-        start: Seq<u8, RX_BUF_LEN>,
-        end: Seq<u8, RX_BUF_LEN>,
-    ) -> impl Iterator<Item = (u16, u16)> + '_ {
-        self.rx.byte_pairs(start.into(), end.into())
-    }
-
     /// Monotonic count of Instruction headers the parser has emitted.
     /// Foreign IDs count too (sink filters at its layer); Status frames
     /// don't.
@@ -288,12 +276,6 @@ impl<
     /// Chunk 5 retires it).
     pub fn wire_byte_cursor(&self) -> u32 {
         self.wire_bytes_consumed
-    }
-
-    /// Sequence number of the next BT slot to write — one past the last
-    /// published BT entry.
-    pub fn byte_ts_head(&self) -> Seq<u16, RX_BUF_LEN> {
-        self.rx.byte_ts_head()
     }
 
     /// Stable peripheral-memory address for DMA1_CH7's destination buffer.
@@ -311,16 +293,6 @@ impl<
         // SAFETY: address-of read; no value materialized. Sound even while
         // DMA is writing the storage concurrently.
         unsafe { (*self.rx_buf.get()).as_ptr() as usize }
-    }
-
-    /// Look up the start-bit tick of the byte at `seq`. The DXL composite
-    /// pairs this with `Clock::ticks_per_bit()` to derive packet_end
-    /// timing for TX-start scheduling. Returns `None` if `seq` is past
-    /// the BT head or has lapped out of the ring window.
-    pub fn byte_ts_at(&self, seq: Seq<u8, RX_BUF_LEN>) -> Option<u16> {
-        // RX and BT share a seq space per doc §8.3 — `.into()` retags
-        // the type, raw is preserved.
-        self.rx.byte_ts_at(seq.into())
     }
 
     /// Forward to [`rx::Rx::pause_edges`].
@@ -461,12 +433,12 @@ impl<
     // ----- Forwarders. Keep sequential single-half call sites compact
     // without forcing every caller to disambiguate `.rx` / `.tx`. -----
 
-    pub fn on_edge_advance(&mut self, ticks_per_bit: u16) {
-        self.rx.on_edge_advance(ticks_per_bit);
+    pub fn on_edge_advance<F: FnMut(u16, u16)>(&mut self, ticks_per_bit: u16, on_pair: F) {
+        self.rx.on_edge_advance(ticks_per_bit, on_pair);
     }
 
-    pub fn on_idle(&mut self, ticks_per_bit: u16) {
-        self.rx.on_idle(ticks_per_bit);
+    pub fn on_idle<F: FnMut(u16, u16)>(&mut self, ticks_per_bit: u16, on_pair: F) {
+        self.rx.on_idle(ticks_per_bit, on_pair);
     }
 
     pub fn on_rx_dma_advance(&mut self, remaining: u16) {
@@ -488,20 +460,12 @@ impl<
         self.rx.wire_byte_cursor()
     }
 
-    pub fn byte_ts_head(&self) -> Seq<u16, RX_BUF_LEN> {
-        self.rx.byte_ts_head()
-    }
-
     pub fn edges_addr(&self) -> usize {
         self.rx.edges_addr()
     }
 
     pub fn rx_buf_addr(&self) -> usize {
         self.rx.rx_buf_addr()
-    }
-
-    pub fn byte_ts_at(&self, seq: Seq<u8, RX_BUF_LEN>) -> Option<u16> {
-        self.rx.byte_ts_at(seq)
     }
 
     pub fn send_status(&mut self, status: Status<'_>) -> Result<(), WriteError> {

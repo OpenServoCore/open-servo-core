@@ -270,6 +270,25 @@ impl<P: Producer, T: Copy, const N: usize> Ring<P, T, N> {
         Some(&self.data[(seq.raw as usize) % N])
     }
 
+    /// Look up an element by offset back from the producer's head,
+    /// bounded by the unread window. `recent(0)` is the most-recently
+    /// published value; `recent(k)` is `k` slots earlier. `None` when the
+    /// offset reaches past the unread tail (cold start, fewer than
+    /// `offset + 1` slots available) or when the consumer has lapped.
+    /// Opaque random-access op — pattern-match consumers (e.g. the DXL
+    /// header back-search) sweep `recent(k)` instead of computing seqs.
+    pub fn recent(&self, offset: u16) -> Option<&T> {
+        let unread = self.write_seq.wrapping_sub(self.read_seq) as usize;
+        if unread > N {
+            return None;
+        }
+        if (offset as usize) >= unread {
+            return None;
+        }
+        let raw = self.write_seq.wrapping_sub(1).wrapping_sub(offset);
+        Some(&self.data[(raw as usize) % N])
+    }
+
     /// Open a walking consumer view. The view re-borrows the ring; only
     /// one [`Reader`] may exist at a time.
     pub fn reader(&mut self) -> Reader<'_, P, T, N> {
@@ -470,6 +489,57 @@ mod tests {
         b.set_write_seq_for_test(3);
         b.set_read_seq_for_test(u16::MAX);
         assert_eq!(b.reader().avail(), 4);
+    }
+
+    #[test]
+    fn recent_returns_most_recently_published() {
+        let mut b: HwBuf = HwRing::new(0);
+        b.stage(0, &[10, 20, 30, 40, 50]);
+        b.set_write_seq_for_test(5);
+        assert_eq!(b.recent(0), Some(&50));
+        assert_eq!(b.recent(1), Some(&40));
+        assert_eq!(b.recent(4), Some(&10));
+    }
+
+    #[test]
+    fn recent_returns_none_past_published_head() {
+        let mut b: HwBuf = HwRing::new(0);
+        b.stage(0, &[10, 20, 30]);
+        b.set_write_seq_for_test(3);
+        // Only 3 slots published; offset 3+ reaches past head.
+        assert_eq!(b.recent(3), None);
+    }
+
+    #[test]
+    fn recent_returns_none_when_consumer_lapped() {
+        let mut b: HwBuf = HwRing::new(0);
+        b.set_write_seq_for_test(20);
+        // N=8 but unread=20 > N → consumer lapped; recent rejects
+        // everything (parity with Reader::avail's lap convention).
+        assert_eq!(b.recent(0), None);
+        assert_eq!(b.recent(5), None);
+    }
+
+    #[test]
+    fn recent_bounded_by_unread() {
+        // unread=8, N=8 → offsets 0..7 addressable, offset 8 past head.
+        let mut b: HwBuf = HwRing::new(0);
+        b.stage(0, &[1, 2, 3, 4, 5, 6, 7, 8]);
+        b.set_write_seq_for_test(8);
+        assert_eq!(b.recent(7), Some(&1));
+        assert_eq!(b.recent(8), None);
+    }
+
+    #[test]
+    fn recent_walks_correctly_across_u16_wrap() {
+        let mut b: HwBuf = HwRing::new(0);
+        b.stage(0, &[1, 2, 3, 4, 5, 6, 7, 8]);
+        b.set_write_seq_for_test(2);
+        b.set_read_seq_for_test(u16::MAX - 5);
+        // write_seq=2 wrapped past u16::MAX; recent(0) is the slot at
+        // seq 1 (raw u16), which holds 2 in our staged buffer.
+        assert_eq!(b.recent(0), Some(&2));
+        assert_eq!(b.recent(1), Some(&1));
     }
 
     #[test]
