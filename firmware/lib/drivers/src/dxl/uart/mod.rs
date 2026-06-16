@@ -21,7 +21,7 @@ use dxl_protocol::wire::{BROADCAST_ID, CRC_BYTES, RESPONSE_HEADER_BYTES};
 use dxl_protocol::{Id, Slot, SlotPosition, Status, WriteError};
 use osc_core::{BaudRate, BootMode, DxlReply};
 
-use crate::traits::dxl::{Providers, SendKind, TxBus, TxScheduler};
+use crate::traits::dxl::{Providers, RxDma, SendKind, TxBus, TxScheduler};
 use clock::Clock;
 use codec::{Codec, CodecTx, PollAction, PollEvent};
 use fast_last::{FastLast, FastLastSchedule};
@@ -644,6 +644,7 @@ impl<P: Providers, const RX_BUF_LEN: usize, const EDGE_BUF_LEN: usize, const TX_
     where
         F: FnMut(Event, &[u8], &mut ReplyHandle<'_, P, TX_BUF_LEN>),
     {
+        self.codec.on_rx_dma_advance(self.rx_dma.remaining());
         let id = self.id;
         let rdt_us = self.rdt_us;
         let ticks_per_bit = self.clock.ticks_per_bit();
@@ -942,6 +943,18 @@ mod tests {
         bus.codec.force_byte_tick_for_test(SEED_TICK);
     }
 
+    /// Stage `bytes` into the codec's RX byte ring at sequence `at` AND
+    /// publish the matching DMA1_CH5 NDTR readback through `FakeRxDma` so
+    /// the next `bus.poll()` entry sees `on_publish(remaining)` as a no-op
+    /// delta. Mirrors the chip-side wiring where the byte ring's producer
+    /// head only advances via NDTR readback inside `poll()`.
+    fn stage_rx(bus: &mut TestBus, at: u16, bytes: &[u8]) {
+        bus.codec.stage_rx_bytes_for_test(at, bytes);
+        let n = RX_BUF_LEN as u16;
+        let head_pos = at.wrapping_add(bytes.len() as u16) % n;
+        bus.rx_dma.remaining.set((n - head_pos) % n);
+    }
+
     /// Run one poll over `bytes`. Returns the captured event tags so tests
     /// can match on the parser stream the dispatcher closure receives.
     #[derive(Debug, PartialEq, Eq)]
@@ -976,7 +989,7 @@ mod tests {
     }
 
     fn poll_capture(bus: &mut TestBus, bytes: &[u8]) -> alloc::vec::Vec<Tag> {
-        bus.codec.stage_rx_bytes_for_test(0, bytes);
+        stage_rx(bus, 0, bytes);
         let mut tags = alloc::vec::Vec::new();
         bus.poll(|ev, _ring, _reply| {
             tags.push(ev_tag(ev));
@@ -1183,7 +1196,7 @@ mod tests {
         let pkt = wire_ping(TEST_ID);
         let start = (RX_BUF_LEN as u16).wrapping_sub(4);
         bus.codec.set_rx_read_seq_for_test(start);
-        bus.codec.stage_rx_bytes_for_test(start, &pkt);
+        stage_rx(&mut bus, start, &pkt);
 
         let mut tags = alloc::vec::Vec::new();
         bus.poll(|ev, _ring, _reply| tags.push(ev_tag(ev)));
@@ -1197,7 +1210,7 @@ mod tests {
         let pkt = wire_ping(TEST_ID);
 
         let split = pkt.len() - 1;
-        bus.codec.stage_rx_bytes_for_test(0, &pkt[..split]);
+        stage_rx(&mut bus, 0, &pkt[..split]);
         let mut tags = alloc::vec::Vec::new();
         bus.poll(|ev, _ring, _reply| tags.push(ev_tag(ev)));
         assert!(!saw_crc(&tags));
@@ -1205,8 +1218,7 @@ mod tests {
         // surfaces Header before it has the trailing CRC.
         assert_eq!(bus.instruction_count(), 1);
 
-        bus.codec
-            .stage_rx_bytes_for_test(split as u16, &pkt[split..]);
+        stage_rx(&mut bus, split as u16, &pkt[split..]);
         let mut tags2 = alloc::vec::Vec::new();
         bus.poll(|ev, _ring, _reply| tags2.push(ev_tag(ev)));
         assert!(saw_crc(&tags2));
@@ -1221,7 +1233,7 @@ mod tests {
         // composite has already cleared `hsi_active`, so we observe it
         // through the Payload event instead. Ping has no payload so we
         // observe via post-state: hsi_active is False after the Crc.
-        bus.codec.stage_rx_bytes_for_test(0, &pkt);
+        stage_rx(&mut bus, 0, &pkt);
         bus.poll(|_, _, _| {});
         // Post-Crc state.
         assert!(!bus.codec.rx_classifier_hsi_active_for_test());
@@ -1233,7 +1245,7 @@ mod tests {
         let mut bad = wire_ping(TEST_ID);
         let crc_lo = bad.len() - 2;
         bad[crc_lo] ^= 0xFF;
-        bus.codec.stage_rx_bytes_for_test(0, &bad);
+        stage_rx(&mut bus, 0, &bad);
         bus.poll(|_, _, _| {});
         assert!(!bus.codec.rx_classifier_hsi_active_for_test());
     }
@@ -1249,7 +1261,7 @@ mod tests {
         combined.extend_from_slice(&ours).unwrap();
         combined.extend_from_slice(&theirs).unwrap();
         combined.extend_from_slice(&status).unwrap();
-        bus.codec.stage_rx_bytes_for_test(0, &combined);
+        stage_rx(&mut bus, 0, &combined);
 
         bus.poll(|_, _, _| {});
         // Foreign Ping bumps the counter, Status doesn't.
@@ -1266,7 +1278,7 @@ mod tests {
     /// packet-end tick.
     fn bus_seeded_with(pkt: &[u8]) -> (TestBus, u16) {
         let mut bus = make_bus();
-        bus.codec.stage_rx_bytes_for_test(0, pkt);
+        stage_rx(&mut bus, 0, pkt);
         force_anchor(&mut bus);
         // tpb=16 @ 3M; packet_end = SEED_TICK + 10·tpb.
         let packet_end_tick = SEED_TICK.wrapping_add(16_u16.wrapping_mul(10));
@@ -1620,8 +1632,7 @@ mod tests {
         // Predecessor's Status frame — byte-skip consumes its body and
         // surfaces SkipComplete { id: 0x42 } at exhaust.
         let pred_status = wire_status(0x42);
-        bus.codec
-            .stage_rx_bytes_for_test(req.len() as u16, &pred_status);
+        stage_rx(&mut bus, req.len() as u16, &pred_status);
         bus.poll(|_, _, _| {});
 
         assert_eq!(
@@ -1642,8 +1653,7 @@ mod tests {
 
         // Some unrelated servo replies first — SkipComplete fires with id=0x05.
         let other_status = wire_status(0x05);
-        bus.codec
-            .stage_rx_bytes_for_test(req.len() as u16, &other_status);
+        stage_rx(&mut bus, req.len() as u16, &other_status);
         bus.poll(|_, _, _| {});
 
         assert!(bus.tx_bus.log.is_empty());
@@ -1688,7 +1698,7 @@ mod tests {
         let mut bad = wire_ping(TEST_ID);
         let crc_lo = bad.len() - 2;
         bad[crc_lo] ^= 0xFF;
-        bus.codec.stage_rx_bytes_for_test(0, &bad);
+        stage_rx(&mut bus, 0, &bad);
         bus.poll(|_, _, _| {});
         assert!(bus.predecessor_id.is_none());
     }
@@ -1739,7 +1749,7 @@ mod tests {
         // (`FAST_SLOT_HEADER_BYTES + body`). Stage fewer so the FSM doesn't
         // hit its busy-wait target this poll.
         let predecessor = [0x11_u8, 0x22, 0x33, 0x44];
-        bus.codec.stage_rx_bytes_for_test(start, &predecessor);
+        stage_rx(&mut bus, start, &predecessor);
         // RxDma.remaining = N − (start + len) so on_publish leaves
         // write_seq at start+len (the same head stage_rx_bytes_for_test set).
         let new_head = start.wrapping_add(predecessor.len() as u16);
@@ -1778,7 +1788,7 @@ mod tests {
         let predecessor = [
             0xA1, 0xA2, 0xA3, 0xA4, 0xA5, 0xA6, 0xA7, 0xA8, 0xA9, 0xAA, 0xAB, 0xAC,
         ];
-        bus.codec.stage_rx_bytes_for_test(start, &predecessor);
+        stage_rx(&mut bus, start, &predecessor);
         let new_head = start.wrapping_add(predecessor.len() as u16);
         bus.rx_dma
             .remaining
@@ -1849,7 +1859,7 @@ mod tests {
         // would advance the publisher by LEN - start bytes of garbage and
         // mask the plateau backstop under test.
         let start = req.len() as u16;
-        bus.codec.stage_rx_bytes_for_test(start, &[]);
+        stage_rx(&mut bus, start, &[]);
         bus.codec.set_rx_read_seq_for_test(start);
         bus.rx_dma
             .remaining
