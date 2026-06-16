@@ -457,9 +457,6 @@ impl<P: Providers, const TX_BUF_LEN: usize> DxlReply for ReplyHandle<'_, P, TX_B
 ///   covers max-RW + header + margin); decoupled from the on-wire RX byte
 ///   ring because the parser drains continuously per doc §8.1.
 /// - `RX_BUF_LEN`: DMA1_CH5 byte-ring depth (typically 64 per doc §8.1).
-///   Also drives the BT ring depth inside `Codec` — doc §8.3 requires
-///   they match so byte index `i` in RX maps to `BT[i mod RX_BUF_LEN]`,
-///   and the composite enforces that coupling by construction.
 /// - `EDGE_BUF_LEN`: DMA1_CH7 edge-timestamp ring depth (typically 128 /
 ///   option A in doc §8.4; 64 / option B trades CPU for memory).
 /// - `TX_BUF_LEN`: DMA1_CH4 source-buffer depth sized to
@@ -575,7 +572,7 @@ impl<
     /// forward every parser [`Event`] to the dispatcher closure alongside
     /// the ring slice and a [`ReplyHandle`]. The closure shape matches
     /// `osc_core::DxlDispatcher::on_event` so the chip-side
-    /// `Ch32Bus::poll` forwarder is a one-liner (Chunk 6 wires it).
+    /// `Ch32Bus::poll` forwarder is a one-liner.
     ///
     /// Per [doc §3 / §4.3]:
     /// - Instruction Header → `try_anchor_from_header`, `set_hsi_active(true)`.
