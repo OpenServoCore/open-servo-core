@@ -79,7 +79,6 @@ struct SkipState {
 pub struct CodecRx<
     R: EdgeDma,
     CRC: CrcUmts,
-    const DECODER_CAP: usize,
     const RX_BUF_LEN: usize,
     const EDGE_BUF_LEN: usize,
 > {
@@ -106,20 +105,14 @@ pub struct CodecRx<
     /// Universal byte-skip state. `Some` between a sink-requested
     /// [`PollAction::Skip`] and the matching [`PollEvent::SkipComplete`].
     skip: Option<SkipState>,
-    /// `DECODER_CAP` is retained as a const-generic for instantiation
-    /// stability while DxlUart still spells it out; the streaming parser
-    /// owns no payload buffer so the value is unused. Removed in Chunk 4
-    /// alongside the composite rewire.
-    _decoder_cap: PhantomData<[(); DECODER_CAP]>,
 }
 
 impl<
     R: EdgeDma,
     CRC: CrcUmts,
-    const DECODER_CAP: usize,
     const RX_BUF_LEN: usize,
     const EDGE_BUF_LEN: usize,
-> CodecRx<R, CRC, DECODER_CAP, RX_BUF_LEN, EDGE_BUF_LEN>
+> CodecRx<R, CRC, RX_BUF_LEN, EDGE_BUF_LEN>
 {
     fn new(ring: R) -> Self {
         Self {
@@ -129,7 +122,6 @@ impl<
             instruction_count: 0,
             wire_bytes_consumed: 0,
             skip: None,
-            _decoder_cap: PhantomData,
         }
     }
 
@@ -473,23 +465,21 @@ impl<CRC: CrcUmts, const TX_BUF_LEN: usize> CodecTx<CRC, TX_BUF_LEN> {
 pub struct Codec<
     R: EdgeDma,
     CRC: CrcUmts,
-    const DECODER_CAP: usize,
     const RX_BUF_LEN: usize,
     const EDGE_BUF_LEN: usize,
     const TX_BUF_LEN: usize,
 > {
-    pub(super) rx: CodecRx<R, CRC, DECODER_CAP, RX_BUF_LEN, EDGE_BUF_LEN>,
+    pub(super) rx: CodecRx<R, CRC, RX_BUF_LEN, EDGE_BUF_LEN>,
     pub(super) tx: CodecTx<CRC, TX_BUF_LEN>,
 }
 
 impl<
     R: EdgeDma,
     CRC: CrcUmts,
-    const DECODER_CAP: usize,
     const RX_BUF_LEN: usize,
     const EDGE_BUF_LEN: usize,
     const TX_BUF_LEN: usize,
-> Codec<R, CRC, DECODER_CAP, RX_BUF_LEN, EDGE_BUF_LEN, TX_BUF_LEN>
+> Codec<R, CRC, RX_BUF_LEN, EDGE_BUF_LEN, TX_BUF_LEN>
 {
     pub fn new(ring: R) -> Self {
         Self {
@@ -504,7 +494,7 @@ impl<
     pub fn split_mut(
         &mut self,
     ) -> (
-        &mut CodecRx<R, CRC, DECODER_CAP, RX_BUF_LEN, EDGE_BUF_LEN>,
+        &mut CodecRx<R, CRC, RX_BUF_LEN, EDGE_BUF_LEN>,
         &mut CodecTx<CRC, TX_BUF_LEN>,
     ) {
         (&mut self.rx, &mut self.tx)
@@ -603,13 +593,8 @@ impl<
 }
 
 #[cfg(test)]
-impl<
-    R: EdgeDma,
-    CRC: CrcUmts,
-    const DECODER_CAP: usize,
-    const RX_BUF_LEN: usize,
-    const EDGE_BUF_LEN: usize,
-> CodecRx<R, CRC, DECODER_CAP, RX_BUF_LEN, EDGE_BUF_LEN>
+impl<R: EdgeDma, CRC: CrcUmts, const RX_BUF_LEN: usize, const EDGE_BUF_LEN: usize>
+    CodecRx<R, CRC, RX_BUF_LEN, EDGE_BUF_LEN>
 {
     /// Stage `bytes` into `rx_buf` starting at sequence `at` and publish
     /// the producer head to `at + bytes.len()`. Mirrors the chip-side
@@ -653,11 +638,10 @@ impl<
 impl<
     R: EdgeDma,
     CRC: CrcUmts,
-    const DECODER_CAP: usize,
     const RX_BUF_LEN: usize,
     const EDGE_BUF_LEN: usize,
     const TX_BUF_LEN: usize,
-> Codec<R, CRC, DECODER_CAP, RX_BUF_LEN, EDGE_BUF_LEN, TX_BUF_LEN>
+> Codec<R, CRC, RX_BUF_LEN, EDGE_BUF_LEN, TX_BUF_LEN>
 {
     pub(crate) fn stage_rx_bytes_for_test(&mut self, at: u16, bytes: &[u8]) {
         self.rx.stage_rx_bytes_for_test(at, bytes);
@@ -689,7 +673,6 @@ mod tests {
     use dxl_protocol::{InstructionEncoder, SoftwareCrcUmts, StatusEncoder};
     use heapless::Vec;
 
-    const DECODER_CAP: usize = 256;
     const RX_BUF_LEN: usize = 64;
     const EDGE_BUF_LEN: usize = 128;
     /// `DXL_TX_MAX_BYTES` per `osc-core::services::dxl::limits` — chip-side
@@ -698,8 +681,7 @@ mod tests {
     const TEST_ID: u8 = 0x07;
     const FOREIGN_ID: u8 = 0x42;
 
-    type TestCodec =
-        Codec<FakeEdgeDma, SoftwareCrcUmts, DECODER_CAP, RX_BUF_LEN, EDGE_BUF_LEN, TX_BUF_LEN>;
+    type TestCodec = Codec<FakeEdgeDma, SoftwareCrcUmts, RX_BUF_LEN, EDGE_BUF_LEN, TX_BUF_LEN>;
 
     fn make() -> TestCodec {
         Codec::new(FakeEdgeDma::default())

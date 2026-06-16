@@ -131,13 +131,11 @@ mod tests {
     use dxl_protocol::types::{Id, Slot, StatusError};
     use dxl_protocol::{SlotPosition, SoftwareCrcUmts};
 
-    const DECODER_CAP: usize = 256;
     const RX_BUF_LEN: usize = 64;
     const EDGE_BUF_LEN: usize = 128;
     const TX_BUF_LEN: usize = 140;
 
-    type TestCodec =
-        Codec<FakeEdgeDma, SoftwareCrcUmts, DECODER_CAP, RX_BUF_LEN, EDGE_BUF_LEN, TX_BUF_LEN>;
+    type TestCodec = Codec<FakeEdgeDma, SoftwareCrcUmts, RX_BUF_LEN, EDGE_BUF_LEN, TX_BUF_LEN>;
 
     fn make_codec_with_last_reply() -> TestCodec {
         let mut c: TestCodec = Codec::new(FakeEdgeDma::default());

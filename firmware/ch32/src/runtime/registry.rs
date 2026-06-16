@@ -55,12 +55,7 @@ impl Providers for DxlUartProviders {
     type Crc = DxlCrc;
 }
 
-/// Streaming-decoder accumulator size — `osc-core`'s dispatcher uses this
-/// value for its sibling decoder (`services::dxl::api::DXL_DECODER_CAP`).
-/// Keep them in sync.
-pub(crate) const DXL_DECODER_CAP: usize = 256;
-/// DMA1_CH5 RX-byte ring depth (doc §8.1) — also the BT-ring depth inside
-/// the RX sub-driver (doc §8.3 requires them to match).
+/// DMA1_CH5 RX-byte ring depth (doc §8.1).
 pub(crate) const DXL_RX_BUF_LEN: usize = 64;
 /// DMA1_CH7 edge-timestamp ring depth — option A in doc §8.4.
 pub(crate) const DXL_EDGE_BUF_LEN: usize = 128;
@@ -68,8 +63,7 @@ pub(crate) const DXL_EDGE_BUF_LEN: usize = 128;
 /// `osc_core::services::dxl::limits::DXL_TX_MAX_BYTES` so the driver-owned
 /// buffer can hold any Status / Slot reply the dispatcher emits.
 pub(crate) const DXL_TX_BUF_LEN: usize = osc_core::services::dxl::limits::DXL_TX_MAX_BYTES;
-type DxlUartCh =
-    DxlUart<DxlUartProviders, DXL_DECODER_CAP, DXL_RX_BUF_LEN, DXL_EDGE_BUF_LEN, DXL_TX_BUF_LEN>;
+type DxlUartCh = DxlUart<DxlUartProviders, DXL_RX_BUF_LEN, DXL_EDGE_BUF_LEN, DXL_TX_BUF_LEN>;
 
 struct Cells {
     dbg: SyncUnsafeCell<Option<DigitalOut>>,

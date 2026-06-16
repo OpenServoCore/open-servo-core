@@ -452,10 +452,6 @@ impl<P: Providers, const TX_BUF_LEN: usize> DxlReply for ReplyHandle<'_, P, TX_B
 /// The DXL bus composite. `P` bundles the chip-side leaf interfaces this
 /// driver pulls — see [`Providers`]. The const generics are storage sizes:
 ///
-/// - `DECODER_CAP`: streaming-decoder accumulator size. Sized to hold the
-///   longest unstuffed frame the dispatcher will encounter (typically 256
-///   covers max-RW + header + margin); decoupled from the on-wire RX byte
-///   ring because the parser drains continuously per doc §8.1.
 /// - `RX_BUF_LEN`: DMA1_CH5 byte-ring depth (typically 64 per doc §8.1).
 /// - `EDGE_BUF_LEN`: DMA1_CH7 edge-timestamp ring depth (typically 128 /
 ///   option A in doc §8.4; 64 / option B trades CPU for memory).
@@ -465,12 +461,11 @@ impl<P: Providers, const TX_BUF_LEN: usize> DxlReply for ReplyHandle<'_, P, TX_B
 ///   driver-owned storage instead of a chip-side static.
 pub struct DxlUart<
     P: Providers,
-    const DECODER_CAP: usize,
     const RX_BUF_LEN: usize,
     const EDGE_BUF_LEN: usize,
     const TX_BUF_LEN: usize,
 > {
-    codec: Codec<P::EdgeDma, P::Crc, DECODER_CAP, RX_BUF_LEN, EDGE_BUF_LEN, TX_BUF_LEN>,
+    codec: Codec<P::EdgeDma, P::Crc, RX_BUF_LEN, EDGE_BUF_LEN, TX_BUF_LEN>,
     clock: Clock<P::UsartBaud, P::ClockTrim>,
     /// NDTR-only readback for DMA1_CH5 (the RX byte ring). Plumbed
     /// independently of the parser-path `on_rx_dma_advance` calls so the
@@ -509,14 +504,13 @@ pub struct DxlUart<
 
 impl<
     P: Providers,
-    const DECODER_CAP: usize,
     const RX_BUF_LEN: usize,
     const EDGE_BUF_LEN: usize,
     const TX_BUF_LEN: usize,
-> DxlUart<P, DECODER_CAP, RX_BUF_LEN, EDGE_BUF_LEN, TX_BUF_LEN>
+> DxlUart<P, RX_BUF_LEN, EDGE_BUF_LEN, TX_BUF_LEN>
 {
     pub fn new(
-        codec: Codec<P::EdgeDma, P::Crc, DECODER_CAP, RX_BUF_LEN, EDGE_BUF_LEN, TX_BUF_LEN>,
+        codec: Codec<P::EdgeDma, P::Crc, RX_BUF_LEN, EDGE_BUF_LEN, TX_BUF_LEN>,
         clock: Clock<P::UsartBaud, P::ClockTrim>,
         rx_dma: P::RxDma,
         scheduler: P::TxScheduler,
@@ -834,7 +828,6 @@ mod tests {
     /// Test-side storage sizing — matches V006 defaults per doc §§8.1, 8.3,
     /// 8.4 so any drift between driver tests and chip-side reality stays
     /// visible.
-    const DECODER_CAP: usize = 256;
     const RX_BUF_LEN: usize = 64;
     const EDGE_BUF_LEN: usize = 128;
     const TX_BUF_LEN: usize = 140;
@@ -843,8 +836,8 @@ mod tests {
     const TEST_RDT_US: u32 = 250;
 
     type TestCodec =
-        Codec<FakeEdgeDma, SoftwareCrcUmts, DECODER_CAP, RX_BUF_LEN, EDGE_BUF_LEN, TX_BUF_LEN>;
-    type TestBus = DxlUart<TestProviders, DECODER_CAP, RX_BUF_LEN, EDGE_BUF_LEN, TX_BUF_LEN>;
+        Codec<FakeEdgeDma, SoftwareCrcUmts, RX_BUF_LEN, EDGE_BUF_LEN, TX_BUF_LEN>;
+    type TestBus = DxlUart<TestProviders, RX_BUF_LEN, EDGE_BUF_LEN, TX_BUF_LEN>;
 
     fn make_clock(baud: BaudRate) -> Clock<FakeUsartBaud, FakeClockTrim> {
         Clock::new(baud, FakeUsartBaud::default(), FakeClockTrim::default())
