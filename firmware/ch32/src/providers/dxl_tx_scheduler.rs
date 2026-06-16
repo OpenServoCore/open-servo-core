@@ -5,6 +5,10 @@
 //! bit lands at or after deadline. CCR2 = deadline_tick verbatim — TX_EN
 //! rises ~1-2 ticks late by OC latency, biasing toward "late not early" so
 //! we never encroach on the previous slot's RDT.
+//!
+//! Wire-driver state (activate at CC3, release at TC, sequence-driven
+//! `start_now` for Plain chain k > 0) lives in the sibling
+//! [`crate::providers::dxl_tx_bus::DxlTxBus`] per the `TxBus` trait split.
 
 use ch32_metapac::USART1 as USART1_REGS;
 use osc_drivers::traits::dxl::{SendKind, TxScheduler as TxSchedulerTrait};
@@ -36,11 +40,16 @@ impl TxSchedulerTrait for DxlTxScheduler {
         timer::enable_tim2_cc3_irq(true);
 
         // §5.4 set-and-recheck: if CNT just passed CCR3, the next CC3IF is a
-        // full wrap (~1.365 ms) away. Detect modular underflow → start-now.
+        // full wrap (~1.365 ms) away. Detect modular underflow → start-now:
+        // force TX_EN active, mask CC3 IRQ so the late wrap-around match
+        // doesn't double-fire, kick DMA, clear the stale CC3 flag.
         let cnt = timer::tim2_cnt();
         let remaining = ccr3.wrapping_sub(cnt);
         if remaining > SCHEDULE_WRAP_GUARD_TICKS {
-            start_now();
+            timer::tim2_ch2_force_active();
+            timer::enable_tim2_cc3_irq(false);
+            dma::enable(dma::Channel::CH4);
+            timer::clear_tim2_cc3_flag();
         }
     }
 
@@ -52,30 +61,4 @@ impl TxSchedulerTrait for DxlTxScheduler {
         dma::disable(dma::Channel::CH4);
         timer::clear_tim2_cc3_flag();
     }
-
-    fn handle_start(&mut self) {
-        // DMA enable first — every tick here delays the wire bit. CC3IE
-        // mask follows: stale CC3IF stays set, the next `schedule` clears it
-        // before re-enabling CC3IE.
-        dma::enable(dma::Channel::CH4);
-        timer::enable_tim2_cc3_irq(false);
-    }
-
-    fn handle_tx_complete(&mut self) {
-        timer::tim2_ch2_force_inactive();
-        usart::set_tc_irq(USART1_REGS, false);
-        usart::set_dma_tx(USART1_REGS, false);
-        dma::disable(dma::Channel::CH4);
-    }
-}
-
-/// §5.4 start-now: CCR3 wrapped past CNT, so the CC3 IRQ is ~1.365 ms away.
-/// Drive PC2 high immediately and kick DMA from here. The CC3 IRQ is masked
-/// so the late wrap-around match doesn't double-fire.
-#[inline]
-fn start_now() {
-    timer::tim2_ch2_force_active();
-    timer::enable_tim2_cc3_irq(false);
-    dma::enable(dma::Channel::CH4);
-    timer::clear_tim2_cc3_flag();
 }

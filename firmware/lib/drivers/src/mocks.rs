@@ -12,8 +12,8 @@ use osc_core::BaudRate;
 use dxl_protocol::SoftwareCrcUmts;
 
 use crate::traits::dxl::{
-    ClockTrim, DmaFlags, EdgeDma, FastLastScheduler, Providers, RxDma, SendKind, TxScheduler,
-    UsartBaud,
+    ClockTrim, DmaFlags, EdgeDma, FastLastScheduler, Providers, RxDma, SendKind, TxBus,
+    TxScheduler, UsartBaud,
 };
 use crate::traits::{DigitalOut, Monotonic};
 use crate::types::Level;
@@ -33,6 +33,7 @@ impl Providers for TestProviders {
     type EdgeDma = FakeEdgeDma;
     type RxDma = FakeRxDma;
     type TxScheduler = FakeTxScheduler;
+    type TxBus = FakeTxBus;
     type FastLastScheduler = FakeFastLastScheduler;
     type Crc = SoftwareCrcUmts;
 }
@@ -172,8 +173,6 @@ pub enum ScheduleOp {
         kind: SendKind,
     },
     Cancel,
-    HandleStart,
-    HandleTxComplete,
 }
 
 #[derive(Default)]
@@ -197,13 +196,33 @@ impl TxScheduler for FakeTxScheduler {
     fn cancel(&mut self) {
         self.log.push(ScheduleOp::Cancel);
     }
+}
+
+/// One entry per [`TxBus`] call; tests assert the recorded sequence
+/// against expected wire-driver activity.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub enum TxBusOp {
+    StartNow { byte_count: u16 },
+    HandleStart,
+    HandleTxComplete,
+}
+
+#[derive(Default)]
+pub struct FakeTxBus {
+    pub log: Vec<TxBusOp>,
+}
+
+impl TxBus for FakeTxBus {
+    fn start_now(&mut self, byte_count: u16) {
+        self.log.push(TxBusOp::StartNow { byte_count });
+    }
 
     fn handle_start(&mut self) {
-        self.log.push(ScheduleOp::HandleStart);
+        self.log.push(TxBusOp::HandleStart);
     }
 
     fn handle_tx_complete(&mut self) {
-        self.log.push(ScheduleOp::HandleTxComplete);
+        self.log.push(TxBusOp::HandleTxComplete);
     }
 }
 

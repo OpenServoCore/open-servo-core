@@ -26,6 +26,7 @@ use crate::cfg::board_wiring::BoardWiring;
 use crate::providers::clock_trim::ClockTrim;
 use crate::providers::digital_out::DigitalOut;
 use crate::providers::dxl_crc::DxlCrc;
+use crate::providers::dxl_tx_bus::DxlTxBus;
 use crate::providers::dxl_tx_scheduler::DxlTxScheduler;
 use crate::providers::edge_dma::EdgeDma;
 use crate::providers::fast_last_scheduler::FastLastScheduler;
@@ -51,6 +52,7 @@ impl Providers for DxlUartProviders {
     type EdgeDma = EdgeDma;
     type RxDma = RxDma;
     type TxScheduler = DxlTxScheduler;
+    type TxBus = DxlTxBus;
     type FastLastScheduler = FastLastScheduler;
     type Crc = DxlCrc;
 }
@@ -107,6 +109,7 @@ impl Drivers {
             Clock::new(defaults.dxl_baud, UsartBaud, ClockTrim),
             RxDma,
             DxlTxScheduler,
+            DxlTxBus,
             FastLast::new(FastLastScheduler::default()),
             defaults.dxl_id,
             (defaults.dxl_return_delay_2us as u32) * 2,

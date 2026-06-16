@@ -21,7 +21,7 @@ use dxl_protocol::wire::{BROADCAST_ID, CRC_BYTES, RESPONSE_HEADER_BYTES};
 use dxl_protocol::{Id, Slot, SlotPosition, Status, WriteError};
 use osc_core::{BaudRate, BootMode, DxlReply};
 
-use crate::traits::dxl::{Providers, SendKind, TxScheduler};
+use crate::traits::dxl::{Providers, SendKind, TxBus, TxScheduler};
 use clock::Clock;
 use codec::{Codec, CodecTx, PollAction, PollEvent};
 use fast_last::{FastLast, FastLastSchedule};
@@ -62,6 +62,12 @@ struct ReplyContext {
     /// fold's `cursor < start_cursor` guard skips everything up to (but
     /// not including) the first predecessor byte.
     fold_start_cursor: u32,
+    /// `Some(predecessor_id)` for Plain Sync / Bulk Read chain slots at
+    /// k > 0 — the sequence-driven fire path of `docs/dxl-streaming-rx.md`
+    /// §5.2. `None` for single-target replies, slot 0 of any chain, and
+    /// all Fast chain replies. When Some, `send_status` defers the wire
+    /// send to the codec's matching `PollEvent::SkipComplete` event.
+    predecessor_id: Option<u8>,
 }
 
 /// Slot-header bytes a Fast First/Only emission carries (`FF FF FD 00` +
@@ -139,6 +145,13 @@ struct InflightCtx {
     /// own slot, used to size FastBulkRead's `Middle`/`Last` emission. None for
     /// non-Bulk variants.
     slot_length: Option<u16>,
+    /// Slot ID seen at the most recent SyncSlot / BulkSlot demarcation
+    /// before the chip's own slot lands. Updates per demarcation while
+    /// `slot` is still `None`; freezes once `slot` resolves — that's the
+    /// chip's chain predecessor for sequence-driven scheduling
+    /// (`docs/dxl-streaming-rx.md` §5.2). Stays `None` for slot 0 of any
+    /// chain and for non-chain instructions.
+    predecessor_id: Option<u8>,
 }
 
 impl InflightCtx {
@@ -149,6 +162,7 @@ impl InflightCtx {
             slot: None,
             bytes_before: 0,
             slot_length: None,
+            predecessor_id: None,
         }
     }
 
@@ -187,11 +201,20 @@ impl InflightCtx {
             }
             _ => (0, None),
         };
+        let predecessor_id = match (self.header, self.slot) {
+            (InstructionHeader::SyncRead { .. } | InstructionHeader::BulkRead { .. }, Some(k))
+                if k > 0 =>
+            {
+                self.predecessor_id
+            }
+            _ => None,
+        };
         ReplyContext {
             packet_end_tick,
             slot_offset_bytes,
             fast_slot_position,
             fold_start_cursor,
+            predecessor_id,
         }
     }
 }
@@ -214,9 +237,14 @@ fn slot_walk(ctx: &mut InflightCtx, payload: &InstructionPayload, id: u8) {
     if ctx.slot.is_some() {
         return;
     }
-    // Predecessor slot — accumulate wire bytes for Bulk variants. Per-slot
-    // shape depends on whether the chain is Fast (compact) or Plain
-    // (Status-per-slot).
+    // Predecessor slot — record the latest candidate (overwriting prior),
+    // then accumulate wire bytes for Bulk variants. The chain-fire path
+    // for slots k > 0 only reads `predecessor_id` if our own slot lands
+    // next — the standing value is always the immediate predecessor when
+    // it's read (`docs/dxl-streaming-rx.md` §5.2).
+    ctx.predecessor_id = Some(slot_id.as_byte());
+    // Per-slot shape depends on whether the chain is Fast (compact) or
+    // Plain (Status-per-slot).
     if let Some(length) = slot_length {
         let length = length as u32;
         match ctx.header {
@@ -284,6 +312,12 @@ pub struct ReplyHandle<'a, P: Providers, const TX_BUF_LEN: usize> {
     fast_last_crc: &'a mut FastLastCrc<P::Crc>,
     clock: &'a mut Clock<P::UsartBaud, P::ClockTrim>,
     last_reply_ctx: &'a mut Option<ReplyContext>,
+    /// Chain-pending state on `DxlUart`. Set to `Some(pred)` by
+    /// [`Self::send_status`] when the cached reply context names a Plain
+    /// chain k > 0 predecessor; the matching `PollEvent::SkipComplete`
+    /// arm consumes it and fires `TxBus::start_now`. Cleared by
+    /// [`Self::cancel`] alongside the schedule cancel.
+    predecessor_id: &'a mut Option<u8>,
     pending_id: &'a mut Option<u8>,
     pending_rdt_us: &'a mut Option<u32>,
     pending_reboot: &'a mut Option<BootMode>,
@@ -298,24 +332,37 @@ pub struct ReplyHandle<'a, P: Providers, const TX_BUF_LEN: usize> {
 }
 
 impl<P: Providers, const TX_BUF_LEN: usize> ReplyHandle<'_, P, TX_BUF_LEN> {
-    /// Encode a Status reply into the codec's TX buffer and schedule its
-    /// wire start. Fold RDT + slot offset (broadcast Ping / Sync / Bulk
-    /// Read slot N) from the [`ReplyContext`] cached at `poll()`, convert
-    /// the µs delay to scheduler ticks via `TxScheduler::TICKS_PER_US`, and
-    /// hand the pre-computed `deadline_tick` to the provider. If no context is
-    /// staged (foreign Instruction filtered upstream) or the wire-end tick
-    /// wasn't ready, the encode still succeeds but no schedule is armed —
-    /// the bytes simply won't ship. Context is taken on use so a
-    /// double-send without a fresh `poll()` no-ops on the scheduler.
+    /// Encode a Status reply into the codec's TX buffer and either schedule
+    /// its wire start (single-target / Plain chain slot 0) or stage the
+    /// chain-pending state (Plain chain slot k > 0; see
+    /// `docs/dxl-streaming-rx.md` §5.2). For the scheduled path: fold RDT +
+    /// slot offset (broadcast Ping / Sync / Bulk Read slot N) from the
+    /// [`ReplyContext`] cached at `poll()`, convert the µs delay to
+    /// scheduler ticks via `TxScheduler::TICKS_PER_US`, and hand the
+    /// pre-computed `deadline_tick` to the provider. For the chain-pending
+    /// path: record the predecessor's ID on the parent driver; the codec's
+    /// matching `PollEvent::SkipComplete` invokes `TxBus::start_now`. If no
+    /// context is staged (foreign Instruction filtered upstream) or the
+    /// wire-end tick wasn't ready (and the path needs it), the encode still
+    /// succeeds but no schedule is armed — the bytes simply won't ship.
+    /// Context is taken on use so a double-send without a fresh `poll()`
+    /// no-ops on the scheduler.
     pub fn send_status(&mut self, status: Status<'_>) -> Result<(), WriteError> {
         self.tx.send_status(status)?;
-        let byte_count = self.tx.tx_len();
         let Some(ctx) = self.last_reply_ctx.take() else {
             return Ok(());
         };
+        // Plain chain slot k > 0 — defer the wire send to the codec's
+        // SkipComplete match on `predecessor_id` (`docs/dxl-streaming-rx.md`
+        // §5.2). Anchor-independent: no `packet_end_tick` needed.
+        if let Some(pred) = ctx.predecessor_id {
+            *self.predecessor_id = Some(pred);
+            return Ok(());
+        }
         let Some(packet_end_tick) = ctx.packet_end_tick else {
             return Ok(());
         };
+        let byte_count = self.tx.tx_len();
         let delay_us = self.rdt_us + self.clock.bytes_to_us(ctx.slot_offset_bytes);
         let delay_ticks =
             delay_us.wrapping_mul(<P::TxScheduler as TxScheduler>::TICKS_PER_US as u32);
@@ -389,11 +436,13 @@ impl<P: Providers, const TX_BUF_LEN: usize> ReplyHandle<'_, P, TX_BUF_LEN> {
         Ok(())
     }
 
-    /// Drop any scheduled TX and clear the staged request state so the next
-    /// reply must come through a fresh `poll()`.
+    /// Drop any scheduled TX, clear chain-pending state, and clear the
+    /// staged request context so the next reply must come through a fresh
+    /// `poll()`.
     pub fn cancel(&mut self) {
         self.scheduler.cancel();
         *self.last_reply_ctx = None;
+        *self.predecessor_id = None;
     }
 
     /// Stage a deferred ID change — applies at the next `on_tx_complete`.
@@ -473,6 +522,11 @@ pub struct DxlUart<
     /// chip-side ISR — see [`Self::on_fold_step`] / [`Self::on_tx_start`].
     rx_dma: P::RxDma,
     scheduler: P::TxScheduler,
+    /// Chip-side bus-control provider. Used by [`Self::on_tx_start`] /
+    /// [`Self::on_tx_complete`] for the scheduled wire-driver lifecycle,
+    /// and by [`Self::poll`]'s SkipComplete arm for the Plain chain
+    /// k > 0 sequence-driven fire path (`docs/dxl-streaming-rx.md` §5.2).
+    tx_bus: P::TxBus,
     /// Periodic-walk grid scheduler for Fast Sync / Bulk Read Last replies.
     /// Driver-pattern §4 sub-driver: armed at `send_slot(Last)` via
     /// `ReplyHandle`; `on_systick_match` drives one body per CMP.
@@ -497,23 +551,33 @@ pub struct DxlUart<
     /// foreign Header.
     inflight: Option<InflightCtx>,
 
+    /// Predecessor ID the chip is awaiting before sending its own Plain
+    /// chain k > 0 reply. `Some(id)` set by [`ReplyHandle::send_status`]
+    /// when the cached [`ReplyContext`] names a chain k > 0 predecessor;
+    /// the codec's matching `PollEvent::SkipComplete { id }` arm consumes
+    /// it and fires `TxBus::start_now`. Cleared on
+    /// [`ReplyHandle::cancel`], on Resync, and on [`Self::on_tx_complete`]
+    /// (belt-and-suspenders — the SkipComplete path clears it on success).
+    /// A silent predecessor — SkipComplete never matches — leaves it
+    /// `Some` until the next chain or reset; harmless because the next
+    /// `send_status` overwrites it. Per `docs/dxl-streaming-rx.md` §5.2.
+    predecessor_id: Option<u8>,
+
     pending_id: Option<u8>,
     pending_rdt_us: Option<u32>,
     pending_reboot: Option<BootMode>,
 }
 
-impl<
-    P: Providers,
-    const RX_BUF_LEN: usize,
-    const EDGE_BUF_LEN: usize,
-    const TX_BUF_LEN: usize,
-> DxlUart<P, RX_BUF_LEN, EDGE_BUF_LEN, TX_BUF_LEN>
+impl<P: Providers, const RX_BUF_LEN: usize, const EDGE_BUF_LEN: usize, const TX_BUF_LEN: usize>
+    DxlUart<P, RX_BUF_LEN, EDGE_BUF_LEN, TX_BUF_LEN>
 {
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         codec: Codec<P::EdgeDma, P::Crc, RX_BUF_LEN, EDGE_BUF_LEN, TX_BUF_LEN>,
         clock: Clock<P::UsartBaud, P::ClockTrim>,
         rx_dma: P::RxDma,
         scheduler: P::TxScheduler,
+        tx_bus: P::TxBus,
         fast_last: FastLast<P::FastLastScheduler>,
         id: u8,
         rdt_us: u32,
@@ -523,12 +587,14 @@ impl<
             clock,
             rx_dma,
             scheduler,
+            tx_bus,
             fast_last,
             fast_last_crc: FastLastCrc::new(),
             id,
             rdt_us,
             last_reply_ctx: None,
             inflight: None,
+            predecessor_id: None,
             pending_id: None,
             pending_rdt_us: None,
             pending_reboot: None,
@@ -592,10 +658,12 @@ impl<
             codec,
             clock,
             scheduler,
+            tx_bus,
             fast_last,
             fast_last_crc,
             last_reply_ctx,
             inflight,
+            predecessor_id,
             pending_id,
             pending_rdt_us,
             pending_reboot,
@@ -657,6 +725,7 @@ impl<
                         rx_inner.reset_anchor();
                         rx_inner.set_hsi_active(false);
                         *inflight = None;
+                        *predecessor_id = None;
                         PollAction::Continue
                     }
                     Event::Sync => PollAction::Continue,
@@ -668,6 +737,7 @@ impl<
                     fast_last_crc,
                     clock,
                     last_reply_ctx,
+                    predecessor_id,
                     pending_id,
                     pending_rdt_us,
                     pending_reboot,
@@ -677,7 +747,13 @@ impl<
                 f(ev, ring, &mut reply);
                 action
             }
-            PollEvent::SkipComplete { .. } => PollAction::Continue,
+            PollEvent::SkipComplete { id: pred } => {
+                if *predecessor_id == Some(pred) {
+                    tx_bus.start_now(tx.tx_len());
+                    *predecessor_id = None;
+                }
+                PollAction::Continue
+            }
         });
     }
 
@@ -714,7 +790,7 @@ impl<
     /// `crc_patch_deadline_miss` counter is a bench-defended floor signal at
     /// the 3 Mbaud floor, not a wire-correctness failure).
     pub fn on_tx_start(&mut self) {
-        self.scheduler.handle_start();
+        self.tx_bus.handle_start();
         if !self.fast_last_crc.is_active() {
             return;
         }
@@ -782,10 +858,15 @@ impl<
     /// self-applied) because the chip controls how the reset actually
     /// happens; the driver only knows it was asked.
     pub fn on_tx_complete(&mut self) -> Option<BootMode> {
-        self.scheduler.handle_tx_complete();
+        self.tx_bus.handle_tx_complete();
         self.fast_last.cancel();
         self.fast_last_crc.cancel();
         self.codec.resume_edges();
+        // Belt-and-suspenders: the SkipComplete handler clears this on
+        // success, but a silent predecessor would leave it `Some` across
+        // the next reply. Clearing here keeps the chain-pending state
+        // bounded by the in-flight reply.
+        self.predecessor_id = None;
         if let Some(id) = self.pending_id.take() {
             self.id = id;
         }
@@ -817,8 +898,8 @@ mod tests {
     extern crate alloc;
     use super::*;
     use crate::mocks::{
-        FakeClockTrim, FakeEdgeDma, FakeFastLastScheduler, FakeRxDma, FakeTxScheduler,
-        FakeUsartBaud, FastLastSchedulerOp, ScheduleOp, TestProviders,
+        FakeClockTrim, FakeEdgeDma, FakeFastLastScheduler, FakeRxDma, FakeTxBus, FakeTxScheduler,
+        FakeUsartBaud, FastLastSchedulerOp, ScheduleOp, TestProviders, TxBusOp,
     };
     use dxl_protocol::types::StatusError;
     use dxl_protocol::{InstructionEncoder, SoftwareCrcUmts, StatusEncoder};
@@ -835,8 +916,7 @@ mod tests {
     const TEST_ID: u8 = 0x07;
     const TEST_RDT_US: u32 = 250;
 
-    type TestCodec =
-        Codec<FakeEdgeDma, SoftwareCrcUmts, RX_BUF_LEN, EDGE_BUF_LEN, TX_BUF_LEN>;
+    type TestCodec = Codec<FakeEdgeDma, SoftwareCrcUmts, RX_BUF_LEN, EDGE_BUF_LEN, TX_BUF_LEN>;
     type TestBus = DxlUart<TestProviders, RX_BUF_LEN, EDGE_BUF_LEN, TX_BUF_LEN>;
 
     fn make_clock(baud: BaudRate) -> Clock<FakeUsartBaud, FakeClockTrim> {
@@ -849,6 +929,7 @@ mod tests {
             make_clock(baud),
             FakeRxDma::default(),
             FakeTxScheduler::default(),
+            FakeTxBus::default(),
             FastLast::new(FakeFastLastScheduler::default()),
             TEST_ID,
             TEST_RDT_US,
@@ -1413,32 +1494,11 @@ mod tests {
     }
 
     #[test]
-    fn sync_read_folds_bytes_before_for_later_slot() {
-        let req = wire_sync_read(0, 2, &[0x09, 0x05, TEST_ID]);
-        let (mut bus, packet_end_tick) = bus_seeded_with(&req);
-
-        // per_slot = RESPONSE_HEADER_BYTES(9) + length(2) + CRC(2) = 13;
-        // bytes_before = 2 × 13 = 26.
-        let expected_offset_us = bus.clock.bytes_to_us(26);
-        bus.poll(|_, _, reply| reply.send_status(empty_status()).expect("encode fits"));
-
-        let byte_count = bus.codec.tx_len();
-        assert!(byte_count > 0);
-        assert_eq!(
-            bus.scheduler.log.as_slice(),
-            &[ScheduleOp::Schedule {
-                deadline_tick: expected_deadline(packet_end_tick, TEST_RDT_US + expected_offset_us),
-                byte_count,
-                kind: SendKind::Plain,
-            }]
-        );
-    }
-
-    #[test]
     fn on_tx_start_routes_to_handle_start() {
         let mut bus = make_bus();
         bus.on_tx_start();
-        assert_eq!(bus.scheduler.log.as_slice(), &[ScheduleOp::HandleStart]);
+        assert_eq!(bus.tx_bus.log.as_slice(), &[TxBusOp::HandleStart]);
+        assert!(bus.scheduler.log.is_empty());
     }
 
     #[test]
@@ -1451,20 +1511,193 @@ mod tests {
             reply.stage_reboot(BootMode::Bootloader);
             reply.send_status(empty_status()).expect("encode fits");
         });
-        bus.scheduler.log.clear();
+        bus.tx_bus.log.clear();
 
         assert_eq!(bus.id, TEST_ID);
         assert_eq!(bus.rdt_us, TEST_RDT_US);
 
         let pending_reboot = bus.on_tx_complete();
 
-        assert_eq!(
-            bus.scheduler.log.as_slice(),
-            &[ScheduleOp::HandleTxComplete]
-        );
+        assert_eq!(bus.tx_bus.log.as_slice(), &[TxBusOp::HandleTxComplete]);
         assert_eq!(bus.id, 0x42);
         assert_eq!(bus.rdt_us, 500);
         assert_eq!(pending_reboot, Some(BootMode::Bootloader));
+    }
+
+    // ------------------------------------------------------------------
+    // Chain fire for slots k > 0 (DXL streaming RX §5.2)
+    // ------------------------------------------------------------------
+
+    /// Emit a BulkRead with the given (id, addr, length) slots — host
+    /// targets BROADCAST per the spec, so target-addressable resolves to
+    /// our chain participation rather than the chain's target ID.
+    fn wire_bulk_read(slots: &[(u8, u16, u16)]) -> Vec<u8, 32> {
+        use dxl_protocol::BulkReadEntry;
+        let mut entries: Vec<BulkReadEntry, 4> = Vec::new();
+        for &(id, address, length) in slots {
+            entries
+                .push(BulkReadEntry {
+                    id: Id::new(id),
+                    address,
+                    length,
+                })
+                .unwrap();
+        }
+        let mut out: Vec<u8, 32> = Vec::new();
+        InstructionEncoder::<_, SoftwareCrcUmts>::new(&mut out)
+            .bulk_read(&entries)
+            .unwrap();
+        out
+    }
+
+    #[test]
+    fn sync_read_slot_zero_has_no_predecessor() {
+        let req = wire_sync_read(0, 2, &[TEST_ID]);
+        let (mut bus, _) = bus_seeded_with(&req);
+        bus.poll(|_, _, _| {});
+        let ctx = bus
+            .last_reply_ctx
+            .expect("SyncRead surfaces a reply context");
+        assert_eq!(ctx.predecessor_id, None);
+    }
+
+    #[test]
+    fn sync_read_slot_k_gt_zero_records_immediate_predecessor() {
+        let req = wire_sync_read(0, 2, &[0x42, 0x09, TEST_ID]);
+        let (mut bus, _) = bus_seeded_with(&req);
+        bus.poll(|_, _, _| {});
+        let ctx = bus
+            .last_reply_ctx
+            .expect("SyncRead surfaces a reply context");
+        assert_eq!(ctx.predecessor_id, Some(0x09));
+    }
+
+    #[test]
+    fn bulk_read_slot_k_gt_zero_records_immediate_predecessor() {
+        let req = wire_bulk_read(&[(0x42, 0, 2), (TEST_ID, 0, 2)]);
+        let (mut bus, _) = bus_seeded_with(&req);
+        bus.poll(|_, _, _| {});
+        let ctx = bus
+            .last_reply_ctx
+            .expect("BulkRead surfaces a reply context");
+        assert_eq!(ctx.predecessor_id, Some(0x42));
+    }
+
+    #[test]
+    fn fast_sync_read_slot_k_gt_zero_has_no_predecessor() {
+        // Fast chains carry no per-slot Status headers and therefore no
+        // per-slot SkipComplete events — chain-fire is absolute-deadline,
+        // not sequence-driven. `predecessor_id` must stay None per
+        // `docs/dxl-streaming-rx.md` §5.2.
+        let req = wire_fast_sync_read(0, 2, &[0x42, TEST_ID]);
+        let (mut bus, _) = bus_seeded_with(&req);
+        bus.poll(|_, _, _| {});
+        let ctx = bus
+            .last_reply_ctx
+            .expect("FastSyncRead surfaces a reply context");
+        assert_eq!(ctx.predecessor_id, None);
+    }
+
+    #[test]
+    fn send_status_defers_wire_send_for_chain_k_gt_zero() {
+        let req = wire_sync_read(0, 2, &[0x42, TEST_ID]);
+        let (mut bus, _) = bus_seeded_with(&req);
+        bus.poll(|_, _, reply| reply.send_status(empty_status()).expect("encode fits"));
+
+        assert!(
+            bus.scheduler.log.is_empty(),
+            "chain k > 0 does not arm a deadline",
+        );
+        assert!(
+            bus.tx_bus.log.is_empty(),
+            "wire send waits for SkipComplete",
+        );
+        assert_eq!(bus.predecessor_id, Some(0x42));
+    }
+
+    #[test]
+    fn skip_complete_matching_predecessor_fires_start_now() {
+        let req = wire_sync_read(0, 2, &[0x42, TEST_ID]);
+        let (mut bus, _) = bus_seeded_with(&req);
+        bus.poll(|_, _, reply| reply.send_status(empty_status()).expect("encode fits"));
+        let byte_count = bus.codec.tx_len();
+        assert!(byte_count > 0);
+        assert_eq!(bus.predecessor_id, Some(0x42));
+
+        // Predecessor's Status frame — byte-skip consumes its body and
+        // surfaces SkipComplete { id: 0x42 } at exhaust.
+        let pred_status = wire_status(0x42);
+        bus.codec
+            .stage_rx_bytes_for_test(req.len() as u16, &pred_status);
+        bus.poll(|_, _, _| {});
+
+        assert_eq!(
+            bus.tx_bus.log.as_slice(),
+            &[TxBusOp::StartNow { byte_count }],
+        );
+        assert!(
+            bus.predecessor_id.is_none(),
+            "chain-pending cleared on match",
+        );
+    }
+
+    #[test]
+    fn skip_complete_mismatched_predecessor_does_not_fire() {
+        let req = wire_sync_read(0, 2, &[0x42, TEST_ID]);
+        let (mut bus, _) = bus_seeded_with(&req);
+        bus.poll(|_, _, reply| reply.send_status(empty_status()).expect("encode fits"));
+
+        // Some unrelated servo replies first — SkipComplete fires with id=0x05.
+        let other_status = wire_status(0x05);
+        bus.codec
+            .stage_rx_bytes_for_test(req.len() as u16, &other_status);
+        bus.poll(|_, _, _| {});
+
+        assert!(bus.tx_bus.log.is_empty());
+        assert_eq!(
+            bus.predecessor_id,
+            Some(0x42),
+            "still waiting for the immediate predecessor",
+        );
+    }
+
+    #[test]
+    fn cancel_clears_chain_pending() {
+        let req = wire_sync_read(0, 2, &[0x42, TEST_ID]);
+        let (mut bus, _) = bus_seeded_with(&req);
+        bus.poll(|ev, _, reply| {
+            if matches!(ev, Event::Crc) {
+                reply.send_status(empty_status()).expect("encode fits");
+                reply.cancel();
+            }
+        });
+        assert!(bus.predecessor_id.is_none());
+    }
+
+    #[test]
+    fn on_tx_complete_clears_chain_pending() {
+        let req = wire_sync_read(0, 2, &[0x42, TEST_ID]);
+        let (mut bus, _) = bus_seeded_with(&req);
+        bus.poll(|_, _, reply| reply.send_status(empty_status()).expect("encode fits"));
+        assert_eq!(bus.predecessor_id, Some(0x42));
+
+        bus.on_tx_complete();
+        assert!(bus.predecessor_id.is_none());
+    }
+
+    #[test]
+    fn resync_clears_chain_pending() {
+        // Stage chain-pending directly — the alternative is a full chain
+        // + corrupted-predecessor encode, far more setup for the same
+        // observable.
+        let mut bus = make_bus();
+        bus.predecessor_id = Some(0x42);
+        let mut bad = wire_ping(TEST_ID);
+        let crc_lo = bad.len() - 2;
+        bad[crc_lo] ^= 0xFF;
+        bus.codec.stage_rx_bytes_for_test(0, &bad);
+        bus.poll(|_, _, _| {});
+        assert!(bus.predecessor_id.is_none());
     }
 
     // ------------------------------------------------------------------
@@ -1569,14 +1802,15 @@ mod tests {
             .to_vec();
         assert_eq!(trailing_before, [0x00, 0x00]);
 
-        // send_slot(Last) above pushed a FastLast `Schedule` entry; on_tx_start
-        // appends `HandleStart`. Assert only the trailing op so this test
-        // stays focused on the post-fire fold (FastLast scheduling math is a
-        // fast_last test concern).
+        // send_slot(Last) above pushed a FastLast `Schedule` entry;
+        // on_tx_start now routes `handle_start` through `TxBus` rather
+        // than the scheduler. Assert only the trailing op so this test
+        // stays focused on the post-fire fold (FastLast scheduling math
+        // is a fast_last test concern).
         bus.on_tx_start();
         assert_eq!(
-            bus.scheduler.log.last(),
-            Some(&ScheduleOp::HandleStart),
+            bus.tx_bus.log.last(),
+            Some(&TxBusOp::HandleStart),
             "on_tx_start must call handle_start once",
         );
 
