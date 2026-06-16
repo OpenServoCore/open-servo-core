@@ -125,10 +125,6 @@ fn target_addressable(h: &InstructionHeader, id: u8) -> bool {
 #[derive(Copy, Clone, Debug)]
 struct InflightCtx {
     header: InstructionHeader,
-    /// Codec's wire-byte cursor at the instruction-header surface. The first
-    /// predecessor reply byte arrives at this cursor; Fast Last fold pipeline
-    /// uses it as `start_cursor` so the fold skips the host's request bytes.
-    fold_start_cursor: u32,
     /// Slot-walk cursor. Bumped on each SyncSlot/BulkSlot event; resolves to
     /// the chain's `n_total` at Crc time.
     next_slot_index: u8,
@@ -146,10 +142,9 @@ struct InflightCtx {
 }
 
 impl InflightCtx {
-    fn new(header: InstructionHeader, fold_start_cursor: u32) -> Self {
+    fn new(header: InstructionHeader) -> Self {
         Self {
             header,
-            fold_start_cursor,
             next_slot_index: 0,
             slot: None,
             bytes_before: 0,
@@ -158,8 +153,17 @@ impl InflightCtx {
     }
 
     /// Final ReplyContext at Crc-good. `packet_end_tick` is captured from the
-    /// classifier at the same event.
-    fn into_reply_context(self, id: u8, packet_end_tick: Option<u16>) -> ReplyContext {
+    /// classifier at the same event; `fold_start_cursor` is the codec's
+    /// wire-byte cursor at the parser's Crc emit point — the cursor where
+    /// the First predecessor reply byte will land (the host's chain
+    /// instruction is fully consumed by then, so the next wire byte is the
+    /// First servo's `0xFF`).
+    fn into_reply_context(
+        self,
+        id: u8,
+        packet_end_tick: Option<u16>,
+        fold_start_cursor: u32,
+    ) -> ReplyContext {
         let (slot_offset_bytes, fast_slot_position) = match (self.header, self.slot) {
             (InstructionHeader::Ping { id: target }, _) if target.as_byte() == BROADCAST_ID => {
                 ((id as u32) * PING_STATUS_FRAME_BYTES, None)
@@ -187,7 +191,7 @@ impl InflightCtx {
             packet_end_tick,
             slot_offset_bytes,
             fast_slot_position,
-            fold_start_cursor: self.fold_start_cursor,
+            fold_start_cursor,
         }
     }
 }
@@ -471,6 +475,11 @@ pub struct DxlUart<
 > {
     codec: Codec<P::EdgeDma, P::Crc, DECODER_CAP, RX_BUF_LEN, EDGE_BUF_LEN, TX_BUF_LEN>,
     clock: Clock<P::UsartBaud, P::ClockTrim>,
+    /// NDTR-only readback for DMA1_CH5 (the RX byte ring). Plumbed
+    /// independently of the parser-path `on_rx_dma_advance` calls so the
+    /// Fast Last fold body's intra-loop refresh doesn't go through the
+    /// chip-side ISR — see [`Self::on_fold_step`] / [`Self::on_tx_start`].
+    bytes_dma: P::BytesDma,
     scheduler: P::TxScheduler,
     /// Periodic-walk grid scheduler for Fast Sync / Bulk Read Last replies.
     /// Driver-pattern §4 sub-driver: armed at `send_slot(Last)` via
@@ -512,6 +521,7 @@ impl<
     pub fn new(
         codec: Codec<P::EdgeDma, P::Crc, DECODER_CAP, RX_BUF_LEN, EDGE_BUF_LEN, TX_BUF_LEN>,
         clock: Clock<P::UsartBaud, P::ClockTrim>,
+        bytes_dma: P::BytesDma,
         scheduler: P::TxScheduler,
         fast_last: FastLast<P::FastLastScheduler>,
         id: u8,
@@ -520,6 +530,7 @@ impl<
         Self {
             codec,
             clock,
+            bytes_dma,
             scheduler,
             fast_last,
             fast_last_crc: FastLastCrc::new(),
@@ -601,19 +612,17 @@ impl<
         } = self;
         let (rx, tx) = codec.split_mut();
         rx.poll(|pe, rx_inner| match pe {
-            PollEvent::Event { ev, ring } => {
+            PollEvent::Event {
+                ev,
+                ring,
+                next_status_pos,
+            } => {
                 let action = match ev {
                     Event::Header(HeaderEvent::Instruction(h)) => {
                         rx_inner.try_anchor_from_header(ticks_per_bit);
                         rx_inner.set_hsi_active(true);
                         if target_addressable(&h, id) {
-                            // TODO(Chunk 5 / #5): fold_start_cursor is the
-                            // codec's wire-byte cursor at packet start.
-                            // CodecRx::wire_byte_cursor is not reachable
-                            // from inside the poll callback (parser borrow);
-                            // pinned at 0 until Chunk 5 rewires Fast Last to
-                            // read raw NDTR bytes directly per doc §6.
-                            *inflight = Some(InflightCtx::new(h, 0));
+                            *inflight = Some(InflightCtx::new(h));
                             PollAction::Continue
                         } else {
                             *inflight = None;
@@ -642,7 +651,14 @@ impl<
                         rx_inner.set_hsi_active(false);
                         if let Some(ctx) = inflight.take() {
                             let packet_end_tick = rx_inner.packet_end_tick(ticks_per_bit);
-                            *last_reply_ctx = Some(ctx.into_reply_context(id, packet_end_tick));
+                            // At Crc-of-host-instruction, the codec's wire
+                            // position has just walked past the request's last
+                            // CRC byte — the next byte on the wire is the First
+                            // predecessor's leading `0xFF`. So `next_status_pos`
+                            // is exactly the fold-start cursor for the Fast
+                            // Last CRC engine.
+                            *last_reply_ctx =
+                                Some(ctx.into_reply_context(id, packet_end_tick, next_status_pos));
                         }
                         PollAction::Continue
                     }
@@ -681,30 +697,70 @@ impl<
         self.codec.instruction_count()
     }
 
-    /// The TX-start tick has arrived (chip-side CC3 IRQ) — route to the
-    /// scheduler so it activates the wire driver. The Fast Last post-fire
-    /// residue fold body lives here once Chunk 5 wires it; today the path
-    /// is a no-op stub because the classifier-and-parser walk that lived
-    /// inline got retired alongside the BT ring (Chunks 2/3). Chunk 5
-    /// replaces with an NDTR-driven raw-byte fold per doc §6.
+    /// The TX-start tick has arrived (chip-side CC3 IRQ). Activates the
+    /// wire driver FIRST so the first wire bit lands on `fire_deadline`;
+    /// for Fast Last replies the body then tails with a post-fire residue
+    /// fold that absorbs any GUARD bytes still in-flight at fire time and
+    /// patches the trailing CRC slot before DMA1_CH4's prefetch reads it
+    /// (doc §10.6.2 CC3 body).
+    ///
+    /// The post-fire fold loops on `fast_last_crc.is_active()` —
+    /// finalize-on-target clears `active` and patches the TX buffer's
+    /// trailing CRC. Each [`CodecRx::drain_raw`] pass refreshes the byte-
+    /// ring producer head from [`BytesDma::remaining`] so newly-arrived
+    /// GUARD bytes become visible inside the spin. If the spin observes
+    /// no new bytes between iterations (plateau), the loop bails — the
+    /// trailing CRC slot ships at its placeholder value, matching the
+    /// `CrcPatchDeadlineMiss` telemetry shape of the prior design (a
+    /// bench-defended signal at the 3 Mbaud floor per dxl-streaming-rx.md
+    /// §6, not a wire-correctness failure).
     pub fn on_tx_start(&mut self) {
         self.scheduler.handle_start();
-        // TODO(Chunk 5 / #5): NDTR-fold body that absorbs predecessor + own
-        // bytes into the chain CRC and patches before DMA1_CH4 reads the
-        // trailing slot. The classifier-walk shape that lived here is
-        // retired per dxl-streaming-rx.md §6.
+        if !self.fast_last_crc.is_active() {
+            return;
+        }
+        let Self {
+            codec,
+            bytes_dma,
+            fast_last_crc,
+            ..
+        } = self;
+        let (rx, tx) = codec.split_mut();
+        while fast_last_crc.is_active() {
+            let before = fast_last_crc.bytes_folded();
+            rx.drain_raw(bytes_dma, |byte, cursor| {
+                fast_last_crc.on_byte(byte, cursor, tx);
+            });
+            if fast_last_crc.bytes_folded() == before {
+                break;
+            }
+        }
     }
 
-    /// One Fast Last periodic-walk fold body is due. The composite's
-    /// SysTick demux calls this. First entry pauses DMA1_CH7 HT/TC so the
-    /// classifier ISR can't preempt the body (doc §10.6.3); subsequent
-    /// entries no-op the pause (idempotent). The fold body itself lives
-    /// here once Chunk 5 wires it; today it's a stub for the same reason
-    /// `on_tx_start` is — the classifier walk got retired.
+    /// One Fast Last periodic-walk fold body is due (chip-side SysTick
+    /// CMP). First entry masks DMA1_CH7 HT/TC IRQ via [`Codec::pause_edges`]
+    /// so the busy-wait inside the FSM's final-anchor body is the sole
+    /// PFIC HIGH consumer (doc §10.6.3); edge DMA itself keeps capturing
+    /// into ET. Body drives [`FastLast::on_step`] forward — the walker
+    /// closure drains pending RX bytes raw through [`FastLastCrc::on_byte`]
+    /// and returns the cumulative folded count for the FSM's `target =
+    /// predecessor_bytes − GUARD` busy-wait exit (`fast_last/mod.rs`).
     pub fn on_fold_step(&mut self) {
         self.codec.pause_edges();
-        // TODO(Chunk 5 / #5): SysTick periodic-walk body that drives the
-        // NDTR fold engine forward. Was classifier+parser walk; retired.
+        let Self {
+            codec,
+            bytes_dma,
+            fast_last,
+            fast_last_crc,
+            ..
+        } = self;
+        let (rx, tx) = codec.split_mut();
+        fast_last.on_step(|| {
+            rx.drain_raw(bytes_dma, |byte, cursor| {
+                fast_last_crc.on_byte(byte, cursor, tx);
+            });
+            fast_last_crc.bytes_folded()
+        });
     }
 
     /// USART1 TC fired — the reply has fully drained the wire. Release
@@ -753,8 +809,8 @@ mod tests {
     extern crate alloc;
     use super::*;
     use crate::mocks::{
-        FakeClockTrim, FakeEdgeDma, FakeFastLastScheduler, FakeTxScheduler, FakeUsartBaud,
-        FastLastSchedulerOp, ScheduleOp, TestProviders,
+        FakeBytesDma, FakeClockTrim, FakeEdgeDma, FakeFastLastScheduler, FakeTxScheduler,
+        FakeUsartBaud, FastLastSchedulerOp, ScheduleOp, TestProviders,
     };
     use dxl_protocol::types::StatusError;
     use dxl_protocol::{InstructionEncoder, SoftwareCrcUmts, StatusEncoder};
@@ -784,6 +840,7 @@ mod tests {
         DxlUart::new(
             codec,
             make_clock(baud),
+            FakeBytesDma::default(),
             FakeTxScheduler::default(),
             FastLast::new(FakeFastLastScheduler::default()),
             TEST_ID,
@@ -1401,5 +1458,163 @@ mod tests {
         assert_eq!(bus.id, 0x42);
         assert_eq!(bus.rdt_us, 500);
         assert_eq!(pending_reboot, Some(BootMode::Bootloader));
+    }
+
+    // ------------------------------------------------------------------
+    // Fast Last NDTR fold (Chunk 5)
+    // ------------------------------------------------------------------
+
+    /// `fold_start_cursor` lands at the host chain instruction's CRC byte
+    /// — the codec's wire-byte cursor past that point is where the First
+    /// servo's leading `0xFF` will arrive. Any earlier capture would let
+    /// the host's own request bytes feed into the chain CRC.
+    #[test]
+    fn poll_captures_fold_start_cursor_at_crc() {
+        let req = wire_fast_sync_read(0, 2, &[0x42, TEST_ID]);
+        let (mut bus, _) = bus_seeded_with(&req);
+        bus.poll(|_, _, _| {});
+        let ctx = bus
+            .last_reply_ctx
+            .expect("FastSyncRead surfaces a reply context");
+        assert_eq!(ctx.fold_start_cursor, req.len() as u32);
+    }
+
+    /// Drive `on_fold_step` with predecessor bytes staged in `rx_buf` and
+    /// assert the running fold absorbs them. Predecessor_bytes here is
+    /// chosen `> staged.len()` so the FSM stays in `PeriodicWalk` (no
+    /// finalize-on-target this pass) — the assertion is purely that the
+    /// raw drain fed the bytes through.
+    #[test]
+    fn on_fold_step_drains_raw_bytes_into_fold() {
+        let req = wire_fast_sync_read(0, 2, &[0x42, TEST_ID]);
+        let (mut bus, _) = bus_seeded_with(&req);
+        let payload = [0xAA_u8, 0xBB];
+        bus.poll(|_, _, reply| {
+            let slot = Slot {
+                id: Id::new(TEST_ID),
+                error: StatusError::OK,
+                data: &payload,
+            };
+            reply.send_slot(&slot).expect("encode fits");
+        });
+        // FastLast is armed via `send_slot(Last)` above. The fold's
+        // start_cursor = fold_start_cursor = req.len(); stage predecessor
+        // bytes starting at that same wire-byte position so the drain's
+        // cursor matches `start_cursor` on the first byte folded.
+        let start = req.len() as u16;
+        // SyncRead has 2 slots → bytes_before for our slot = 12 wire bytes
+        // (`FAST_SLOT_HEADER_BYTES + body`). Stage fewer so the FSM doesn't
+        // hit its busy-wait target this poll.
+        let predecessor = [0x11_u8, 0x22, 0x33, 0x44];
+        bus.codec.stage_rx_bytes_for_test(start, &predecessor);
+        // BytesDma.remaining = N − (start + len) so on_publish leaves
+        // write_seq at start+len (the same head stage_rx_bytes_for_test set).
+        let new_head = start.wrapping_add(predecessor.len() as u16);
+        bus.bytes_dma
+            .remaining
+            .set((RX_BUF_LEN as u16).wrapping_sub(new_head));
+
+        bus.codec.set_rx_read_seq_for_test(start);
+        let before = bus.fast_last_crc.bytes_folded();
+        bus.on_fold_step();
+        let after = bus.fast_last_crc.bytes_folded();
+        assert_eq!(after - before, predecessor.len() as u32);
+    }
+
+    /// CC3 fire body folds the GUARD residue and patches the trailing
+    /// CRC. Stage `predecessor_bytes` worth of bytes so finalize lands on
+    /// the last drained byte; assert the TX buffer's trailing slot is no
+    /// longer the placeholder `[0x00, 0x00]`.
+    #[test]
+    fn on_tx_start_folds_residue_and_patches_crc() {
+        let req = wire_fast_sync_read(0, 2, &[0x42, TEST_ID]);
+        let (mut bus, _) = bus_seeded_with(&req);
+        let payload = [0xAA_u8, 0xBB];
+        bus.poll(|_, _, reply| {
+            let slot = Slot {
+                id: Id::new(TEST_ID),
+                error: StatusError::OK,
+                data: &payload,
+            };
+            reply.send_slot(&slot).expect("encode fits");
+        });
+        // bytes_before for the second slot of a Fast SyncRead with length=2
+        // is `FAST_SLOT_HEADER_BYTES(8) + body(4) = 12`. Stage exactly that
+        // many predecessor bytes so finalize lands inside on_tx_start.
+        let start = req.len() as u16;
+        let predecessor = [
+            0xA1, 0xA2, 0xA3, 0xA4, 0xA5, 0xA6, 0xA7, 0xA8, 0xA9, 0xAA, 0xAB, 0xAC,
+        ];
+        bus.codec.stage_rx_bytes_for_test(start, &predecessor);
+        let new_head = start.wrapping_add(predecessor.len() as u16);
+        bus.bytes_dma
+            .remaining
+            .set((RX_BUF_LEN as u16).wrapping_sub(new_head));
+        bus.codec.set_rx_read_seq_for_test(start);
+
+        // Snapshot the trailing slot before the fold runs.
+        let tx_len_before = bus.codec.tx_len() as usize;
+        // SAFETY: tx_buf is initialized up to tx_len_before; reading by raw
+        // pointer matches the production DMA1_CH4 view.
+        let trailing_before = unsafe {
+            core::slice::from_raw_parts(bus.codec.tx_buf_addr() as *const u8, tx_len_before)
+        }[tx_len_before - 2..]
+            .to_vec();
+        assert_eq!(trailing_before, [0x00, 0x00]);
+
+        // send_slot(Last) above pushed a FastLast `Schedule` entry; on_tx_start
+        // appends `HandleStart`. Assert only the trailing op so this test
+        // stays focused on the post-fire fold (FastLast scheduling math is a
+        // fast_last test concern).
+        bus.on_tx_start();
+        assert_eq!(
+            bus.scheduler.log.last(),
+            Some(&ScheduleOp::HandleStart),
+            "on_tx_start must call handle_start once",
+        );
+
+        let tx_len_after = bus.codec.tx_len() as usize;
+        let trailing_after = unsafe {
+            core::slice::from_raw_parts(bus.codec.tx_buf_addr() as *const u8, tx_len_after)
+        }[tx_len_after - 2..]
+            .to_vec();
+        assert_ne!(
+            trailing_after,
+            [0x00, 0x00],
+            "patch_crc should overwrite the placeholder slot"
+        );
+        assert!(!bus.fast_last_crc.is_active());
+    }
+
+    /// Bytes-starved CC3 body must not hang. With no predecessor bytes
+    /// staged the plateau check (no progress between drain passes) exits
+    /// the loop; trailing CRC stays at the placeholder.
+    #[test]
+    fn on_tx_start_breaks_on_plateau_when_bytes_starved() {
+        let req = wire_fast_sync_read(0, 2, &[0x42, TEST_ID]);
+        let (mut bus, _) = bus_seeded_with(&req);
+        let payload = [0xAA_u8, 0xBB];
+        bus.poll(|_, _, reply| {
+            let slot = Slot {
+                id: Id::new(TEST_ID),
+                error: StatusError::OK,
+                data: &payload,
+            };
+            reply.send_slot(&slot).expect("encode fits");
+        });
+        // Pin write_seq == read_seq == start. The NDTR value that keeps
+        // on_publish a no-op is `LEN - write_seq` (ring_pos = LEN - remaining
+        // = start, prev_pos = start → delta = 0). Setting remaining = LEN
+        // would advance the publisher by LEN - start bytes of garbage and
+        // mask the plateau backstop under test.
+        let start = req.len() as u16;
+        bus.codec.stage_rx_bytes_for_test(start, &[]);
+        bus.codec.set_rx_read_seq_for_test(start);
+        bus.bytes_dma
+            .remaining
+            .set((RX_BUF_LEN as u16).wrapping_sub(start));
+
+        bus.on_tx_start();
+        assert!(bus.fast_last_crc.is_active(), "active stays set on bail");
     }
 }

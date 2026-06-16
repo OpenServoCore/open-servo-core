@@ -23,7 +23,7 @@ use dxl_protocol::streaming::{Event, HeaderEvent, InstructionPayload, Parser, Pa
 use dxl_protocol::types::{Slot, Status};
 use dxl_protocol::{CrcUmts, SlotEncoder, SlotPosition, StatusEncoder, WriteError};
 
-use crate::traits::dxl::EdgeDma;
+use crate::traits::dxl::{BytesDma, EdgeDma};
 use crate::util::HwRing;
 use rx::Rx;
 
@@ -31,13 +31,28 @@ use rx::Rx;
 ///
 /// `Event { .. }` is a 1:1 forward of [`streaming::Event`]; the codec
 /// translates `WriteDataChunk` `(offset, length)` into a contiguous ring
-/// slice via `ring` (empty for other events). `SkipComplete` fires when
-/// the universal byte-skip's remaining-byte counter hits zero — `id`
-/// round-trips the value the sink passed in [`PollAction::Skip`], so the
-/// chain-fire check (doc §5.2) can compare against `predecessor_id`.
+/// slice via `ring` (empty for other events). `next_status_pos` is the
+/// codec's wire-byte position at this event's emit point — the value
+/// `wire_bytes_consumed` will hold after the parser has consumed the
+/// bytes that produced this event. Named for its load-bearing use: the
+/// Fast Last fold path captures it at the chain instruction's Crc event
+/// as `fold_start_cursor` — at that point it equals the wire position
+/// where the First predecessor's status packet will start (the next byte
+/// on the wire). At Header / Payload events the value is still the
+/// codec's running cursor, but no consumer reads it there today.
+/// `SkipComplete` fires when the universal byte-skip's remaining-byte
+/// counter hits zero — `id` round-trips the value the sink passed in
+/// [`PollAction::Skip`], so the chain-fire check (doc §5.2) can compare
+/// against `predecessor_id`.
 pub enum PollEvent<'a> {
-    Event { ev: Event, ring: &'a [u8] },
-    SkipComplete { id: u8 },
+    Event {
+        ev: Event,
+        ring: &'a [u8],
+        next_status_pos: u32,
+    },
+    SkipComplete {
+        id: u8,
+    },
 }
 
 /// Return value from the sink callback.
@@ -212,7 +227,10 @@ impl<
             let mut break_for_skip: Option<u8> = None;
             let consumed = {
                 let mut stream = self.parser.feed(input);
-                for ev in stream.by_ref() {
+                // `while let` rather than `for ... by_ref()` so each iteration
+                // releases the `&mut stream` borrow before we read
+                // `stream.consumed()` to compute the per-event wire position.
+                while let Some(ev) = stream.next() {
                     let ring: &[u8] = if let Event::Payload(PayloadEvent::Instruction(
                         InstructionPayload::WriteDataChunk { offset, length },
                     )) = ev
@@ -224,7 +242,17 @@ impl<
                     if matches!(ev, Event::Header(HeaderEvent::Instruction(_))) {
                         self.instruction_count = self.instruction_count.wrapping_add(1);
                     }
-                    match on_event(PollEvent::Event { ev, ring }, &mut self.rx) {
+                    let next_status_pos = self
+                        .wire_bytes_consumed
+                        .wrapping_add(stream.consumed() as u32);
+                    match on_event(
+                        PollEvent::Event {
+                            ev,
+                            ring,
+                            next_status_pos,
+                        },
+                        &mut self.rx,
+                    ) {
                         PollAction::Continue => {}
                         PollAction::Skip { id } => {
                             break_for_skip = Some(id);
@@ -260,6 +288,41 @@ impl<
                 // we'd loop forever — short-circuit.
                 return;
             }
+        }
+    }
+
+    /// Drain newly-published RX bytes through `fold_byte` without invoking
+    /// the parser. Used by the Fast Last fold path during the predecessor
+    /// window: the SysTick CMP body and the CC3 post-fire body each spin
+    /// inside this drain, refreshing the producer head from
+    /// `bytes_dma.remaining()` on every pass so newly-DMA'd bytes become
+    /// reader-visible mid-loop without re-entering the chip-side ISR.
+    /// Advances `wire_bytes_consumed` over each drained byte so a
+    /// subsequent `poll()` resumes at the right cursor.
+    ///
+    /// The chip-side caller masks DMA1_CH7 HT/TC for the duration of the
+    /// Fast Last window (doc §10.6.3); during that window `poll()` does
+    /// not run, so the parser and this drain never race on `rx_buf`.
+    pub fn drain_raw<B: BytesDma, F: FnMut(u8, u32)>(&mut self, bytes_dma: &B, mut fold_byte: F) {
+        // SAFETY: rx_buf is single-consumer at PFIC HIGH (same as `poll`).
+        // The chip-side caller masks DMA1_CH7 HT/TC for the Fast Last window
+        // so the parser and this drain never race on the ring.
+        let rx_buf = unsafe { &mut *self.rx_buf.get() };
+        loop {
+            rx_buf.on_publish(bytes_dma.remaining());
+            let n = {
+                let mut reader = rx_buf.reader();
+                let (front, _back) = reader.peek_slices();
+                if front.is_empty() {
+                    return;
+                }
+                for &b in front {
+                    fold_byte(b, self.wire_bytes_consumed);
+                    self.wire_bytes_consumed = self.wire_bytes_consumed.wrapping_add(1);
+                }
+                front.len() as u16
+            };
+            rx_buf.reader().advance(n);
         }
     }
 
@@ -675,7 +738,7 @@ mod tests {
     {
         let mut out = alloc::vec::Vec::new();
         c.poll(|pe, _rx| match pe {
-            PollEvent::Event { ev, ring } => {
+            PollEvent::Event { ev, ring, .. } => {
                 let action = if matches!(ev, Event::Header(_)) {
                     decide(&ev)
                 } else {

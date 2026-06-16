@@ -12,7 +12,8 @@ use osc_core::BaudRate;
 use dxl_protocol::SoftwareCrcUmts;
 
 use crate::traits::dxl::{
-    ClockTrim, DmaFlags, EdgeDma, FastLastScheduler, Providers, SendKind, TxScheduler, UsartBaud,
+    BytesDma, ClockTrim, DmaFlags, EdgeDma, FastLastScheduler, Providers, SendKind, TxScheduler,
+    UsartBaud,
 };
 use crate::traits::{DigitalOut, Monotonic};
 use crate::types::Level;
@@ -30,6 +31,7 @@ impl Providers for TestProviders {
     type UsartBaud = FakeUsartBaud;
     type ClockTrim = FakeClockTrim;
     type EdgeDma = FakeEdgeDma;
+    type BytesDma = FakeBytesDma;
     type TxScheduler = FakeTxScheduler;
     type FastLastScheduler = FakeFastLastScheduler;
     type Crc = SoftwareCrcUmts;
@@ -114,6 +116,22 @@ pub struct FakeEdgeDma {
 pub enum EdgeDmaOp {
     Pause,
     Resume,
+}
+
+/// NDTR readback only — used by the Fast Last fold body's intra-loop
+/// refresh. Tests write `remaining.set(n)` to model new bytes landing
+/// without re-entering the codec's `on_rx_dma_advance`. `Cell` rather
+/// than a plain field so the test can mutate from inside a closure
+/// that borrows the bus immutably.
+#[derive(Default)]
+pub struct FakeBytesDma {
+    pub remaining: Cell<u16>,
+}
+
+impl BytesDma for FakeBytesDma {
+    fn remaining(&self) -> u16 {
+        self.remaining.get()
+    }
 }
 
 impl EdgeDma for FakeEdgeDma {
