@@ -178,15 +178,14 @@ impl InflightCtx {
         packet_end_tick: Option<u16>,
         fold_start_cursor: u32,
     ) -> ReplyContext {
+        // Plain SyncRead / BulkRead don't appear here: slot 0 of either
+        // chain is single-target (slot_offset_bytes = 0 — handled by the
+        // catch-all), and slot k > 0 takes the chain-pending path in
+        // `ReplyHandle::send_status`, which never reads slot_offset_bytes.
         let (slot_offset_bytes, fast_slot_position) = match (self.header, self.slot) {
             (InstructionHeader::Ping { id: target }, _) if target.as_byte() == BROADCAST_ID => {
                 ((id as u32) * PING_STATUS_FRAME_BYTES, None)
             }
-            (InstructionHeader::SyncRead { length, .. }, Some(k)) => {
-                let per_slot = RESPONSE_HEADER_BYTES as u32 + length as u32 + CRC_BYTES as u32;
-                ((k as u32) * per_slot, None)
-            }
-            (InstructionHeader::BulkRead { .. }, Some(_)) => (self.bytes_before, None),
             (InstructionHeader::FastSyncRead { length, .. }, Some(k)) => {
                 let n = self.next_slot_index;
                 let position = compute_fast_position(k, n, length as u32);
@@ -237,30 +236,24 @@ fn slot_walk(ctx: &mut InflightCtx, payload: &InstructionPayload, id: u8) {
     if ctx.slot.is_some() {
         return;
     }
-    // Predecessor slot — record the latest candidate (overwriting prior),
-    // then accumulate wire bytes for Bulk variants. The chain-fire path
-    // for slots k > 0 only reads `predecessor_id` if our own slot lands
-    // next — the standing value is always the immediate predecessor when
-    // it's read (`docs/dxl-streaming-rx.md` §5.2).
+    // Predecessor slot — record the latest candidate (overwriting prior).
+    // The chain-fire path for slots k > 0 only reads `predecessor_id` if
+    // our own slot lands next; the standing value is always the immediate
+    // predecessor when it's read (`docs/dxl-streaming-rx.md` §5.2).
     ctx.predecessor_id = Some(slot_id.as_byte());
-    // Per-slot shape depends on whether the chain is Fast (compact) or
-    // Plain (Status-per-slot).
-    if let Some(length) = slot_length {
+    // Fast Bulk Read needs per-slot wire counts to size the chain CRC fold
+    // (FastSlotInfo::bytes_before on Last). Plain Bulk Read takes the
+    // chain-pending path on k > 0, so its predecessor sizes don't matter.
+    if let Some(length) = slot_length
+        && let InstructionHeader::FastBulkRead { .. } = ctx.header
+    {
         let length = length as u32;
-        match ctx.header {
-            InstructionHeader::BulkRead { .. } => {
-                ctx.bytes_before += RESPONSE_HEADER_BYTES as u32 + length + CRC_BYTES as u32;
-            }
-            InstructionHeader::FastBulkRead { .. } => {
-                let bytes = if k == 0 {
-                    fast_first_bytes(length)
-                } else {
-                    fast_middle_bytes(length)
-                };
-                ctx.bytes_before += bytes;
-            }
-            _ => {}
-        }
+        let bytes = if k == 0 {
+            fast_first_bytes(length)
+        } else {
+            fast_middle_bytes(length)
+        };
+        ctx.bytes_before += bytes;
     }
 }
 
