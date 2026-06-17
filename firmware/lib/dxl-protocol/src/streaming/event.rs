@@ -10,6 +10,7 @@
 use crate::types::{Id, Instruction, StatusError};
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
 pub enum Event {
     /// `FF FF FD 00` matched; classifier walker re-anchors here.
     Sync,
@@ -27,6 +28,7 @@ pub(crate) enum CrcResult {
 }
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
 pub enum ResyncKind {
     BadLength,
     BadCrc,
@@ -34,6 +36,7 @@ pub enum ResyncKind {
 }
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
 pub enum HeaderEvent {
     Instruction(InstructionHeader),
     Status(StatusHeader),
@@ -42,6 +45,7 @@ pub enum HeaderEvent {
 /// `length` is register-byte count for Read-family, opaque data-byte
 /// count for Write-family / `Clear` / `ControlTableBackup` / `Raw`.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
 pub enum InstructionHeader {
     Ping {
         id: Id,
@@ -190,6 +194,7 @@ impl InstructionHeader {
 }
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
 pub struct StatusHeader {
     pub id: Id,
     pub error: StatusError,
@@ -197,12 +202,14 @@ pub struct StatusHeader {
 }
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
 pub enum PayloadEvent {
     Instruction(InstructionPayload),
     Status(StatusPayload),
 }
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
 pub enum InstructionPayload {
     /// `address` / `length` come from the prior `SyncRead` / `SyncWrite` /
     /// `FastSyncRead` header (shared across slots).
@@ -225,6 +232,7 @@ pub enum InstructionPayload {
 }
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
 pub enum StatusPayload {
     Ping {
         model: u16,

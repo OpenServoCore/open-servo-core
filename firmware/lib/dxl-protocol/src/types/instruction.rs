@@ -5,6 +5,7 @@ use super::id::Id;
 /// DXL 2.0 instruction byte. `Ext(b)` carries any non-standard byte --
 /// pattern-match on it to dispatch chip-specific extensions.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
 pub enum Instruction {
     Ping,
     Read,
@@ -98,6 +99,7 @@ impl Instruction {
 /// [`InstructionEncoder::bulk_read`]: crate::InstructionEncoder::bulk_read
 /// [`InstructionEncoder::fast_bulk_read`]: crate::InstructionEncoder::fast_bulk_read
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
 pub struct BulkReadEntry {
     pub id: Id,
     pub address: u16,

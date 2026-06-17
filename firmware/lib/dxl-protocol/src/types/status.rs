@@ -3,6 +3,7 @@
 /// DXL 2.0 Status error byte. Bit 7 = sticky hardware Alert; bits 0..=6 =
 /// error code (only `0..=7` spec-defined).
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
 pub struct StatusError(pub u8);
 
 impl StatusError {
@@ -55,6 +56,7 @@ impl StatusError {
 
 #[repr(u8)]
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
 pub enum ErrorCode {
     None = 0x00,
     Result = 0x01,

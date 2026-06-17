@@ -6,6 +6,7 @@
 /// [`new`]: Self::new
 /// [`try_servo`]: Self::try_servo
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
 pub struct Id(pub u8);
 
 impl Id {

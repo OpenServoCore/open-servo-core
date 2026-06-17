@@ -5,6 +5,7 @@ use super::status::StatusError;
 
 /// Ping reply payload.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
 pub struct PingStatus {
     pub model: u16,
     pub fw_version: u8,
@@ -16,6 +17,7 @@ pub struct PingStatus {
 ///
 /// [`SlotEncoder`]: crate::SlotEncoder
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
 pub struct Slot<'a> {
     pub id: Id,
     pub error: StatusError,
@@ -31,6 +33,7 @@ pub struct Slot<'a> {
 /// fire-time ISR overwrite the trailing two bytes. Callers that *do* know
 /// the CRC (single-slot tests, replay tools, sniffers) pass the real value.
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
 pub enum SlotPosition {
     /// Single-slot response -- emits full header and locally-computed CRC.
     Only { packet_length: u16 },
@@ -46,6 +49,7 @@ pub enum SlotPosition {
 ///
 /// [`StatusEncoder::emit`]: crate::StatusEncoder::emit
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
 pub enum Status<'a> {
     /// Write-style ack -- no payload. Covers Write/RegWrite/Action/Reboot/
     /// FactoryReset/SyncWrite/BulkWrite replies and the short-payload-Ping
