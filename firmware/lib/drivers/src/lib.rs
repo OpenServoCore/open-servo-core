@@ -7,7 +7,7 @@ pub mod traits;
 pub mod types;
 pub mod util;
 
-#[cfg(test)]
+#[cfg(any(test, feature = "mocks"))]
 pub mod mocks;
 
 pub use types::Level;
