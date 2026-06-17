@@ -117,9 +117,8 @@ fn log_effects(log: &mut Vec<RxLogEntry>, effects: &[RxEffect]) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::sim::defaults::DEFAULT_BAUD as BAUD;
     use crate::sim::uart::TxEncoder;
-
-    const BAUD: BaudRate = BaudRate::B115200;
 
     fn drain_to(rx: &mut UartRx, until_ns: u64, step_ns: u64) {
         let mut t = 0u64;

@@ -1,10 +1,10 @@
 //! `Servo` — DXL servo device under test. Composes `Dxl` (services-layer
-//! dispatcher state) + `DxlUart<TestProviders, 64, 128, 140>` (the codec /
-//! classifier / scheduler driver) + `Shared` (control table) + the 7 spy
-//! state companions from `crate::mocks`. Drives inbound wire edges through
-//! the codec's trait surface (byte ring + edge ring + IDLE callback),
-//! invokes `Dxl::poll` to produce a Status reply, and re-encodes the reply's
-//! TX bytes onto outbound wire edges via `UartTx`.
+//! dispatcher state), a `DxlUart` typed with the chip-lib-mirrored buffer
+//! sizes from [`crate::sim::defaults`], `Shared` (control table), and the 7
+//! spy state companions from `crate::mocks`. Drives inbound wire edges
+//! through the codec's trait surface (byte ring + edge ring + IDLE
+//! callback), invokes `Dxl::poll` to produce a Status reply, and re-encodes
+//! the reply's TX bytes onto outbound wire edges via `UartTx`.
 
 use std::any::Any;
 
@@ -25,12 +25,9 @@ use crate::mocks::{
     UsartBaudState, mock_clock_trim, mock_edge_dma, mock_fast_last_scheduler, mock_rx_dma,
     mock_tx_bus, mock_tx_scheduler, mock_usart_baud,
 };
+use crate::sim::defaults::{DEFAULT_BAUD, EDGE_BUF_LEN, RX_BUF_LEN, SERVO_CLOCK, TX_BUF_LEN};
 use crate::sim::uart::{UartRx, UartTx, bit_period_ns};
 use crate::sim::{Clock, DeviceId, Effect, EventSource, SimTime};
-
-const RX_BUF_LEN: usize = 64;
-const EDGE_BUF_LEN: usize = 128;
-const TX_BUF_LEN: usize = 140;
 
 const DEFAULT_DXL_ID: Id = Id::new(1);
 const DEFAULT_RDT_US: u32 = 250;
@@ -63,17 +60,17 @@ pub struct Servo {
 }
 
 impl Servo {
-    pub fn new(id: DeviceId, clock: Clock, baud: BaudRate) -> Self {
+    pub fn new(id: DeviceId) -> Self {
         let mut s = Self {
             id,
-            clock,
-            baud,
+            clock: SERVO_CLOCK,
+            baud: DEFAULT_BAUD,
             dxl_id: DEFAULT_DXL_ID,
             rdt_us: DEFAULT_RDT_US,
 
             dxl: Dxl::new(),
             shared: Shared::new(),
-            uart: build_uart(baud, DEFAULT_DXL_ID, DEFAULT_RDT_US).uart,
+            uart: build_uart(DEFAULT_BAUD, DEFAULT_DXL_ID, DEFAULT_RDT_US).uart,
 
             tx_bus_state: TxBusState::default(),
             clock_trim_state: ClockTrimState::default(),
@@ -83,13 +80,24 @@ impl Servo {
             tx_scheduler_state: TxSchedulerState::default(),
             fast_last_scheduler_state: FastLastSchedulerState::default(),
 
-            uart_tx: UartTx::new(baud),
-            uart_rx: UartRx::new(baud),
+            uart_tx: UartTx::new(DEFAULT_BAUD),
+            uart_rx: UartRx::new(DEFAULT_BAUD),
             rx_seq: 0,
             edge_seq: 0,
         };
         s.rebuild_uart();
         s
+    }
+
+    pub fn with_clock(mut self, clock: Clock) -> Self {
+        self.clock = clock;
+        self
+    }
+
+    pub fn with_baud(mut self, baud: BaudRate) -> Self {
+        self.baud = baud;
+        self.rebuild_uart();
+        self
     }
 
     pub fn with_dxl_id(mut self, dxl_id: Id) -> Self {
@@ -406,38 +414,35 @@ mod tests {
     use crate::sim::Sim;
     use dxl_protocol::types::Id;
 
-    const SERVO_CLOCK: Clock = Clock::new(48_000_000);
-    const BAUD: BaudRate = BaudRate::B115200;
-
     #[test]
     fn defaults_for_dxl_id_and_rdt_us_match_constants() {
         let mut sim = Sim::default();
-        let id = sim.add_device(|id| Servo::new(id, SERVO_CLOCK, BAUD));
+        let id = sim.add_device(Servo::new);
         let s = sim.device::<Servo>(id).unwrap();
         assert_eq!(s.dxl_id(), DEFAULT_DXL_ID);
         assert_eq!(s.rdt_us(), DEFAULT_RDT_US);
         assert_eq!(s.clock(), SERVO_CLOCK);
-        assert_eq!(s.baud(), BAUD);
+        assert_eq!(s.baud(), DEFAULT_BAUD);
     }
 
     #[test]
     fn with_dxl_id_overrides_default() {
         let mut sim = Sim::default();
-        let id = sim.add_device(|id| Servo::new(id, SERVO_CLOCK, BAUD).with_dxl_id(Id::new(0x07)));
+        let id = sim.add_device(|id| Servo::new(id).with_dxl_id(Id::new(0x07)));
         assert_eq!(sim.device::<Servo>(id).unwrap().dxl_id(), Id::new(0x07));
     }
 
     #[test]
     fn with_rdt_us_overrides_default() {
         let mut sim = Sim::default();
-        let id = sim.add_device(|id| Servo::new(id, SERVO_CLOCK, BAUD).with_rdt_us(500));
+        let id = sim.add_device(|id| Servo::new(id).with_rdt_us(500));
         assert_eq!(sim.device::<Servo>(id).unwrap().rdt_us(), 500);
     }
 
     #[test]
     fn idle_servo_yields_no_next_event() {
         let mut sim = Sim::default();
-        let id = sim.add_device(|id| Servo::new(id, SERVO_CLOCK, BAUD));
+        let id = sim.add_device(Servo::new);
         assert_eq!(sim.device::<Servo>(id).unwrap().next_event_time(), None);
     }
 }

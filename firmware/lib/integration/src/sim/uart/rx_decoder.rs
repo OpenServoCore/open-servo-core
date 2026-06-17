@@ -141,9 +141,8 @@ fn decode_byte(edges: &[(u64, bool)], start_ns: u64, bit_period_ns: u64) -> u8 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::sim::defaults::DEFAULT_BAUD as BAUD;
     use crate::sim::uart::TxEncoder;
-
-    const BAUD: BaudRate = BaudRate::B115200;
 
     fn round_trip(byte: u8) -> u8 {
         let enc = TxEncoder::new(BAUD);

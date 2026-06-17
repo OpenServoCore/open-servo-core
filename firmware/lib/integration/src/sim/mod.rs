@@ -6,6 +6,7 @@
 //! devices in [`DeviceRegistry`].
 
 pub mod decode;
+pub mod defaults;
 pub mod effect;
 pub mod engine;
 pub mod host;

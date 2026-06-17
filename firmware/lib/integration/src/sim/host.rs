@@ -9,6 +9,7 @@ use std::any::Any;
 use dxl_protocol::{InstructionEncoder, SoftwareCrcUmts, types::Id};
 use osc_core::BaudRate;
 
+use crate::sim::defaults::{DEFAULT_BAUD, HOST_CLOCK};
 use crate::sim::uart::{RxLogEntry, TxLogEntry, UartRx, UartTx};
 use crate::sim::{Clock, DeviceId, Effect, EventSource, SimTime};
 
@@ -21,14 +22,26 @@ pub struct Host {
 }
 
 impl Host {
-    pub fn new(id: DeviceId, clock: Clock, baud: BaudRate) -> Self {
+    pub fn new(id: DeviceId) -> Self {
         Self {
             id,
-            clock,
-            baud,
-            uart_tx: UartTx::new(baud),
-            uart_rx: UartRx::new(baud),
+            clock: HOST_CLOCK,
+            baud: DEFAULT_BAUD,
+            uart_tx: UartTx::new(DEFAULT_BAUD),
+            uart_rx: UartRx::new(DEFAULT_BAUD),
         }
+    }
+
+    pub fn with_clock(mut self, clock: Clock) -> Self {
+        self.clock = clock;
+        self
+    }
+
+    pub fn with_baud(mut self, baud: BaudRate) -> Self {
+        self.baud = baud;
+        self.uart_tx = UartTx::new(baud);
+        self.uart_rx = UartRx::new(baud);
+        self
     }
 
     pub fn clock(&self) -> Clock {
@@ -117,11 +130,9 @@ impl EventSource for Host {
 mod tests {
     use super::*;
     use crate::sim::Sim;
+    use crate::sim::defaults::DEFAULT_BAUD;
     use crate::sim::uart::RxLogKind;
     use dxl_protocol::InstructionEncoder;
-
-    const HOST_CLOCK: Clock = Clock::new(48_000_000);
-    const BAUD: BaudRate = BaudRate::B115200;
 
     fn expected_ping_bytes(target: Id) -> Vec<u8> {
         let mut buf: Vec<u8> = Vec::new();
@@ -134,7 +145,7 @@ mod tests {
     #[test]
     fn tx_log_records_encoded_frame_in_order() {
         let mut sim = Sim::default();
-        let host = sim.add_device(|id| Host::new(id, HOST_CLOCK, BAUD));
+        let host = sim.add_device(Host::new);
         sim.advance(SimTime::from_ms(5), |sim, now| {
             sim.device_mut::<Host>(host)
                 .unwrap()
@@ -154,8 +165,8 @@ mod tests {
     #[test]
     fn rx_log_captures_remote_tx_with_idle_gap() {
         let mut sim = Sim::default();
-        let host = sim.add_device(|id| Host::new(id, HOST_CLOCK, BAUD));
-        let receiver = sim.add_device(|id| Host::new(id, HOST_CLOCK, BAUD));
+        let host = sim.add_device(Host::new);
+        let receiver = sim.add_device(Host::new);
 
         sim.advance(SimTime::from_ms(5), |sim, now| {
             sim.device_mut::<Host>(host)
@@ -177,14 +188,14 @@ mod tests {
     #[test]
     fn tx_byte_timestamps_align_with_baud_stride() {
         let mut sim = Sim::default();
-        let host = sim.add_device(|id| Host::new(id, HOST_CLOCK, BAUD));
+        let host = sim.add_device(Host::new);
         sim.advance(SimTime::from_ms(5), |sim, now| {
             sim.device_mut::<Host>(host)
                 .unwrap()
                 .send_ping(now, Id::new(0x01));
         });
 
-        let stride = 10 * crate::sim::uart::bit_period_ns(BAUD);
+        let stride = 10 * crate::sim::uart::bit_period_ns(DEFAULT_BAUD);
         let tx = sim.device::<Host>(host).unwrap().tx_log().to_vec();
         for (i, e) in tx.iter().enumerate() {
             assert_eq!(e.at.as_ns(), i as u64 * stride, "byte {i}");
@@ -194,7 +205,7 @@ mod tests {
     #[test]
     fn clear_logs_drops_history_without_resetting_queues() {
         let mut sim = Sim::default();
-        let host = sim.add_device(|id| Host::new(id, HOST_CLOCK, BAUD));
+        let host = sim.add_device(Host::new);
         sim.advance(SimTime::from_ms(5), |sim, now| {
             sim.device_mut::<Host>(host)
                 .unwrap()
@@ -210,8 +221,8 @@ mod tests {
     #[test]
     fn sim_reset_zeroes_time_and_clears_host_logs() {
         let mut sim = Sim::default();
-        let host = sim.add_device(|id| Host::new(id, HOST_CLOCK, BAUD));
-        let receiver = sim.add_device(|id| Host::new(id, HOST_CLOCK, BAUD));
+        let host = sim.add_device(Host::new);
+        let receiver = sim.add_device(Host::new);
         sim.advance(SimTime::from_ms(5), |sim, now| {
             sim.device_mut::<Host>(host)
                 .unwrap()

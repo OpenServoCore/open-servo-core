@@ -46,8 +46,7 @@ impl TxEncoder {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    const BAUD: BaudRate = BaudRate::B115200;
+    use crate::sim::defaults::DEFAULT_BAUD as BAUD;
 
     #[test]
     fn emits_start_and_first_transition_for_0xff() {
