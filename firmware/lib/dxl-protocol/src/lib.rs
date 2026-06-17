@@ -8,6 +8,7 @@
 mod buf;
 pub mod crc;
 pub mod encoder;
+pub mod log;
 pub mod streaming;
 pub mod types;
 pub mod wire;
