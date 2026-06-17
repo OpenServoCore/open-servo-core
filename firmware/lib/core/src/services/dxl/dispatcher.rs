@@ -7,7 +7,9 @@ use control_table::Snapshot;
 
 use crate::regions::hooks::ControlTableHooks;
 use crate::traits::{DxlDispatcher, DxlReply};
-use crate::{Error, RegionStorage, Router, Shared, StagedWrites, StatusReturnLevel, ValidationKind};
+use crate::{
+    Error, RegionStorage, Router, Shared, StagedWrites, StatusReturnLevel, ValidationKind,
+};
 
 use super::limits::MAX_CONTROL_RW;
 
