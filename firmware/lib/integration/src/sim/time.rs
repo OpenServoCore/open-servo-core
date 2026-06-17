@@ -30,6 +30,13 @@ impl Add<u64> for SimTime {
     }
 }
 
+impl Add for SimTime {
+    type Output = Self;
+    fn add(self, other: Self) -> Self {
+        Self(self.0 + other.0)
+    }
+}
+
 impl Sub for SimTime {
     type Output = u64;
     fn sub(self, other: Self) -> u64 {
@@ -38,30 +45,25 @@ impl Sub for SimTime {
 }
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
-pub struct ClockRatio {
-    pub num: u32,
-    pub den: u32,
+pub struct Clock {
+    freq_hz: u32,
 }
 
-impl ClockRatio {
-    pub const IDENTITY: Self = Self { num: 1, den: 1 };
+impl Clock {
+    pub const fn new(freq_hz: u32) -> Self {
+        Self { freq_hz }
+    }
 
-    pub const fn new(num: u32, den: u32) -> Self {
-        Self { num, den }
+    pub const fn freq_hz(self) -> u32 {
+        self.freq_hz
     }
 
     pub fn to_local(self, t: SimTime) -> u64 {
-        (t.as_ns() as u128 * self.num as u128 / self.den as u128) as u64
+        (t.as_ns() as u128 * self.freq_hz as u128 / 1_000_000_000) as u64
     }
 
-    pub fn from_local(self, local_ns: u64) -> SimTime {
-        SimTime((local_ns as u128 * self.den as u128 / self.num as u128) as u64)
-    }
-}
-
-impl Default for ClockRatio {
-    fn default() -> Self {
-        Self::IDENTITY
+    pub fn from_local(self, local_ticks: u64) -> SimTime {
+        SimTime((local_ticks as u128 * 1_000_000_000 / self.freq_hz as u128) as u64)
     }
 }
 
@@ -77,18 +79,18 @@ mod tests {
     }
 
     #[test]
-    fn identity_ratio_round_trips() {
-        let t = SimTime::from_us(123);
-        assert_eq!(ClockRatio::IDENTITY.to_local(t), t.as_ns());
-        assert_eq!(ClockRatio::IDENTITY.from_local(t.as_ns()), t);
+    fn clock_at_48mhz_yields_48k_ticks_per_ms() {
+        let c = Clock::new(48_000_000);
+        assert_eq!(c.to_local(SimTime::from_ms(1)), 48_000);
+        assert_eq!(c.from_local(48_000), SimTime::from_ms(1));
     }
 
     #[test]
-    fn drift_ratio_scales_local_clock() {
-        let r = ClockRatio::new(98, 100);
+    fn drifted_clock_produces_fewer_ticks_per_wall_ns() {
+        let nominal = Clock::new(24_000_000);
+        let slow = Clock::new(23_500_000);
         let t = SimTime::from_ms(1);
-        let local = r.to_local(t);
-        assert_eq!(local, 980_000);
-        assert_eq!(r.from_local(local), t);
+        assert_eq!(nominal.to_local(t), 24_000);
+        assert_eq!(slow.to_local(t), 23_500);
     }
 }

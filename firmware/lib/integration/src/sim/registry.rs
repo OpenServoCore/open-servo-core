@@ -66,6 +66,12 @@ impl DeviceRegistry {
         self.devices[idx].src.advance(t)
     }
 
+    pub fn reset_all(&mut self) {
+        for entry in &mut self.devices {
+            entry.src.reset();
+        }
+    }
+
     fn index_of(&self, id: DeviceId, op: &str) -> usize {
         *self
             .id_to_index

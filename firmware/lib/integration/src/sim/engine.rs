@@ -3,7 +3,7 @@ use crate::sim::{DeviceId, DeviceRegistry, Effect, EventSource, SimTime, Wire};
 pub struct Sim {
     wire: Wire,
     registry: DeviceRegistry,
-    sim_now: SimTime,
+    now: SimTime,
     baud: u32,
 }
 
@@ -17,13 +17,13 @@ impl Sim {
         Self {
             wire: Wire::new(),
             registry: DeviceRegistry::new(),
-            sim_now: SimTime::ZERO,
+            now: SimTime::ZERO,
             baud,
         }
     }
 
-    pub fn sim_now(&self) -> SimTime {
-        self.sim_now
+    pub fn now(&self) -> SimTime {
+        self.now
     }
 
     pub fn baud(&self) -> u32 {
@@ -48,30 +48,38 @@ impl Sim {
         self.registry.get_mut(id)
     }
 
-    pub fn run_until(&mut self, end_t: SimTime) {
-        loop {
-            let mut min_t = self.wire.next_delivery_time();
-            let mut min_source = SourceKind::Wire;
-            for (id, dev) in self.registry.iter() {
-                let Some(t) = dev.next_event_time() else {
-                    continue;
-                };
-                if min_t.is_none_or(|m| t < m) {
-                    min_t = Some(t);
-                    min_source = SourceKind::Device(id);
-                }
-            }
+    /// Reset every device + the wire + rewind virtual time to zero. For
+    /// table-driven tests reusing one sim across scenarios.
+    pub fn reset(&mut self) {
+        self.wire.reset();
+        self.registry.reset_all();
+        self.now = SimTime::ZERO;
+    }
 
-            let Some(t) = min_t else {
+    /// Run `action` synchronously at the current [`Sim::now`], then drain
+    /// the event queue until quiescence (no pending events anywhere) or
+    /// until `budget` has elapsed since the pre-action [`Sim::now`],
+    /// whichever first. [`Sim::now`] after return = time of last processed
+    /// event (or unchanged if no events fired).
+    pub fn advance<F>(&mut self, budget: SimTime, action: F)
+    where
+        F: FnOnce(&mut Sim, SimTime),
+    {
+        let start_now = self.now;
+        action(self, start_now);
+        let cap = start_now + budget;
+
+        loop {
+            let Some((t, source)) = self.peek_next_event() else {
                 return;
             };
-            if t > end_t {
+            if t > cap {
                 return;
             }
-            assert!(t >= self.sim_now, "sim time regressed");
-            self.sim_now = t;
+            assert!(t >= self.now, "sim time regressed");
+            self.now = t;
 
-            match min_source {
+            match source {
                 SourceKind::Wire => {
                     self.wire.deliver_pending(t, &mut self.registry);
                 }
@@ -87,6 +95,21 @@ impl Sim {
                 }
             }
         }
+    }
+
+    fn peek_next_event(&self) -> Option<(SimTime, SourceKind)> {
+        let mut min_t = self.wire.next_delivery_time();
+        let mut min_source = SourceKind::Wire;
+        for (id, dev) in self.registry.iter() {
+            let Some(t) = dev.next_event_time() else {
+                continue;
+            };
+            if min_t.is_none_or(|m| t < m) {
+                min_t = Some(t);
+                min_source = SourceKind::Device(id);
+            }
+        }
+        min_t.map(|t| (t, min_source))
     }
 }
 
@@ -130,6 +153,10 @@ mod tests {
 
         fn receive_edge(&mut self, _at: SimTime, _rising: bool) {}
 
+        fn reset(&mut self) {
+            self.cursor = 0;
+        }
+
         fn as_any(&self) -> &dyn Any {
             self
         }
@@ -157,6 +184,10 @@ mod tests {
             self.received.push((at, rising));
         }
 
+        fn reset(&mut self) {
+            self.received.clear();
+        }
+
         fn as_any(&self) -> &dyn Any {
             self
         }
@@ -176,12 +207,12 @@ mod tests {
     #[test]
     fn edge_delivers_to_other_subscriber_at_scheduled_time() {
         let (mut sim, _s, r) = build(vec![(SimTime::from_ns(100), false)]);
-        sim.run_until(SimTime::from_ns(200));
+        sim.advance(SimTime::from_ns(200), |_, _| {});
         assert_eq!(
             sim.device::<Receiver>(r).unwrap().received,
             vec![(SimTime::from_ns(100), false)],
         );
-        assert_eq!(sim.sim_now(), SimTime::from_ns(100));
+        assert_eq!(sim.now(), SimTime::from_ns(100));
     }
 
     #[test]
@@ -192,7 +223,7 @@ mod tests {
             (SimTime::from_ns(300), false),
             (SimTime::from_ns(400), true),
         ]);
-        sim.run_until(SimTime::from_ns(1_000));
+        sim.advance(SimTime::from_ns(1_000), |_, _| {});
         assert_eq!(
             sim.device::<Receiver>(r).unwrap().received,
             vec![
@@ -205,17 +236,39 @@ mod tests {
     }
 
     #[test]
-    fn run_until_stops_at_horizon() {
+    fn advance_stops_at_budget_cap() {
         let (mut sim, _s, r) = build(vec![
             (SimTime::from_ns(100), false),
             (SimTime::from_ns(500), true),
         ]);
-        sim.run_until(SimTime::from_ns(200));
+        sim.advance(SimTime::from_ns(200), |_, _| {});
         assert_eq!(
             sim.device::<Receiver>(r).unwrap().received,
             vec![(SimTime::from_ns(100), false)],
         );
-        assert_eq!(sim.sim_now(), SimTime::from_ns(100));
+        assert_eq!(sim.now(), SimTime::from_ns(100));
+    }
+
+    #[test]
+    fn advance_returns_at_quiescence_before_budget() {
+        let (mut sim, _s, r) = build(vec![(SimTime::from_ns(100), false)]);
+        sim.advance(SimTime::from_ms(1), |_, _| {});
+        assert_eq!(
+            sim.device::<Receiver>(r).unwrap().received,
+            vec![(SimTime::from_ns(100), false)],
+        );
+        assert_eq!(sim.now(), SimTime::from_ns(100));
+    }
+
+    #[test]
+    fn reset_zeroes_time_and_clears_device_state() {
+        let (mut sim, _s, r) = build(vec![(SimTime::from_ns(100), false)]);
+        sim.advance(SimTime::from_ns(200), |_, _| {});
+        assert_eq!(sim.now(), SimTime::from_ns(100));
+
+        sim.reset();
+        assert_eq!(sim.now(), SimTime::ZERO);
+        assert!(sim.device::<Receiver>(r).unwrap().received.is_empty());
     }
 
     #[test]
@@ -223,7 +276,7 @@ mod tests {
         let mut sim = Sim::new(115_200);
         let _r = sim.add_device(|_| Receiver::default());
         let _s = sim.add_device(|id| Sender::new(id, vec![(SimTime::from_ns(100), false)]));
-        sim.run_until(SimTime::from_ns(200));
+        sim.advance(SimTime::from_ns(200), |_, _| {});
     }
 
     #[test]
@@ -232,6 +285,6 @@ mod tests {
         let mut sim = Sim::new(115_200);
         let _a = sim.add_device(|id| Sender::new(id, vec![(SimTime::from_ns(100), false)]));
         let _b = sim.add_device(|id| Sender::new(id, vec![(SimTime::from_ns(100), false)]));
-        sim.run_until(SimTime::from_ns(200));
+        sim.advance(SimTime::from_ns(200), |_, _| {});
     }
 }

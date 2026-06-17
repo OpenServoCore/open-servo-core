@@ -107,6 +107,13 @@ impl Wire {
             registry.receive_edge(arrival.target, arrival.at, arrival.rising);
         }
     }
+
+    pub fn reset(&mut self) {
+        self.delivery_queue.clear();
+        self.active_source = None;
+        self.idle_since = SimTime::ZERO;
+        self.seq = SeqCounter::default();
+    }
 }
 
 impl Default for Wire {

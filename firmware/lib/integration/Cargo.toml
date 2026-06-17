@@ -5,6 +5,7 @@ edition.workspace = true
 license.workspace = true
 
 [dependencies]
-osc-core    = { workspace = true }
-osc-drivers = { workspace = true, features = ["mocks"] }
-mockall     = "0.14"
+osc-core     = { workspace = true }
+osc-drivers  = { workspace = true, features = ["mocks"] }
+dxl-protocol = { workspace = true, features = ["alloc", "software-crc"] }
+mockall      = "0.14"

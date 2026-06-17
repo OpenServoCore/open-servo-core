@@ -1,20 +1,24 @@
 //! Discrete-event simulator for the DXL bus.
 //!
 //! Each device owns its own clock and queue, advertises its next scheduled
-//! event time, and on `advance` returns `Effect`s the orchestrator routes
-//! back to peers. `Wire` is the delivery medium: it routes per-bit edges
-//! between devices in [`DeviceRegistry`].
+//! event time, and on `advance` returns `Effect`s the engine routes back to
+//! peers. `Wire` is the delivery medium: it routes per-bit edges between
+//! devices in [`DeviceRegistry`].
 
 pub mod effect;
-pub mod orchestrator;
+pub mod engine;
+pub mod host;
 pub mod registry;
 pub mod source;
 pub mod time;
+pub mod uart;
 pub mod wire;
 
 pub use effect::Effect;
-pub use orchestrator::Sim;
+pub use engine::Sim;
+pub use host::Host;
 pub use registry::{DeviceId, DeviceRegistry};
 pub use source::EventSource;
-pub use time::{ClockRatio, SimTime};
+pub use time::{Clock, SimTime};
+pub use uart::{RxDecoder, RxEffect, RxLogEntry, RxLogKind, TxEncoder, TxLogEntry, UartRx, UartTx};
 pub use wire::Wire;
