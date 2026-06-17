@@ -26,13 +26,20 @@ struct Ctx {
 
 impl Ctx {
     fn addressed(&self, target: Id) -> Option<(Id, bool)> {
-        if target == self.id {
+        let out = if target == self.id {
             Some((self.id, true))
         } else if target.is_broadcast() {
             Some((self.id, false))
         } else {
             None
-        }
+        };
+        crate::log::trace!(
+            "dispatcher: addressed my_id={:?} target={:?} → {:?}",
+            self.id,
+            target,
+            out,
+        );
+        out
     }
 }
 
@@ -41,7 +48,7 @@ struct MatchedSlot {
     length: u16,
 }
 
-struct Inflight {
+pub(super) struct Inflight {
     header: InstructionHeader,
     ctx: Ctx,
     matched_slot: Option<MatchedSlot>,
@@ -81,15 +88,23 @@ fn header_target(h: &InstructionHeader) -> Id {
 pub(super) struct Dispatcher<'a> {
     shared: &'a Shared,
     staged: &'a mut StagedWrites,
-    inflight: Option<Inflight>,
+    /// Borrowed from `Dxl`. Persists across `Dxl::poll` calls so a packet
+    /// whose Header and Crc straddle two poll wakes (edge HT vs IDLE) keeps
+    /// its bookkeeping. Owning it on `Dispatcher` would re-zero `inflight`
+    /// at every poll and drop the reply.
+    inflight: &'a mut Option<Inflight>,
 }
 
 impl<'a> Dispatcher<'a> {
-    pub(super) fn new(shared: &'a Shared, staged: &'a mut StagedWrites) -> Self {
+    pub(super) fn new(
+        shared: &'a Shared,
+        staged: &'a mut StagedWrites,
+        inflight: &'a mut Option<Inflight>,
+    ) -> Self {
         Self {
             shared,
             staged,
-            inflight: None,
+            inflight,
         }
     }
 
@@ -99,6 +114,7 @@ impl<'a> Dispatcher<'a> {
             .table
             .config
             .with(|c| (c.comms.id, c.comms.status_return_level));
+        crate::log::trace!("dispatcher: snapshot_ctx id={} level={:?}", id, level,);
         Ctx {
             id: Id::new(id),
             level,
@@ -108,6 +124,11 @@ impl<'a> Dispatcher<'a> {
 
 impl DxlDispatcher for Dispatcher<'_> {
     fn on_event<R: DxlReply>(&mut self, ev: Event, ring: &[u8], reply: &mut R) {
+        crate::log::trace!(
+            "dispatcher: on_event ev={:?} inflight={}",
+            ev,
+            self.inflight.is_some()
+        );
         match ev {
             Event::Sync => self.reset(),
             Event::Header(HeaderEvent::Instruction(h)) => self.start_inflight(h),
@@ -131,12 +152,18 @@ impl Dispatcher<'_> {
         let ctx = self.snapshot_ctx();
         let target = header_target(&header);
         let addressed = ctx.addressed(target).is_some();
+        crate::log::trace!(
+            "dispatcher: start_inflight header={:?} target={:?} addressed={}",
+            header,
+            target,
+            addressed,
+        );
         let accumulating = addressed
             && matches!(
                 header,
                 InstructionHeader::Write { .. } | InstructionHeader::RegWrite { .. },
             );
-        self.inflight = Some(Inflight {
+        *self.inflight = Some(Inflight {
             header,
             ctx,
             matched_slot: None,
@@ -224,9 +251,16 @@ impl Dispatcher<'_> {
 
     fn commit<R: DxlReply>(&mut self, reply: &mut R) {
         let Some(inflight) = self.inflight.take() else {
+            crate::log::debug!("dispatcher: commit drop (no inflight)");
             return;
         };
         let ctx = inflight.ctx;
+        crate::log::debug!(
+            "dispatcher: commit header={:?} my_id={:?} overflowed={}",
+            inflight.header,
+            ctx.id,
+            inflight.overflowed,
+        );
         match inflight.header {
             InstructionHeader::Ping { id } => self.handle_ping(&ctx, id, reply),
             InstructionHeader::Read {
@@ -265,12 +299,14 @@ impl Dispatcher<'_> {
     }
 
     fn send_status<R: DxlReply>(reply: &mut R, status: Status<'_>) {
+        crate::log::debug!("dispatcher: send_status status={:?}", status);
         // TX overflow is a sizing bug, not a runtime error — bench telemetry
         // catches it at integration.
         let _ = reply.send_status(status);
     }
 
     fn send_slot<R: DxlReply>(reply: &mut R, slot: &Slot<'_>) {
+        crate::log::debug!("dispatcher: send_slot slot={:?}", slot);
         let _ = reply.send_slot(slot);
     }
 
