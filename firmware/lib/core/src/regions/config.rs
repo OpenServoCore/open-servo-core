@@ -88,7 +88,9 @@ pub struct ConfigIdentity {
     #[ct_field(access = ro)]
     pub model_number: u16,
     #[ct_field(access = ro)]
-    pub firmware_version: u16,
+    pub firmware_version: u8,
+    #[ct_field(skip)]
+    pub _rsvd_align: u8,
     #[ct_field(access = ro)]
     pub hardware_revision: u32,
     #[ct_field(access = ro)]

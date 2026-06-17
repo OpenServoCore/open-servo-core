@@ -361,7 +361,7 @@ impl Dispatcher<'_> {
                 error: StatusError::OK,
                 status: PingStatus {
                     model: identity.model_number,
-                    fw_version: identity.firmware_version as u8,
+                    fw_version: identity.firmware_version,
                 },
             },
         );
