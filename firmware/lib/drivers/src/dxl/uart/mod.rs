@@ -341,18 +341,22 @@ impl<P: Providers, const TX_BUF_LEN: usize> ReplyHandle<'_, P, TX_BUF_LEN> {
     /// Context is taken on use so a double-send without a fresh `poll()`
     /// no-ops on the scheduler.
     pub fn send_status(&mut self, status: Status<'_>) -> Result<(), WriteError> {
+        crate::log::trace!("dxl: send_status entry");
         self.tx.send_status(status)?;
         let Some(ctx) = self.last_reply_ctx.take() else {
+            crate::log::debug!("dxl: send_status drop (no reply ctx)");
             return Ok(());
         };
         // Plain chain slot k > 0 — defer the wire send to the codec's
         // SkipComplete match on `predecessor_id` (`docs/dxl-streaming-rx.md`
         // §5.2). Anchor-independent: no `packet_end_tick` needed.
         if let Some(pred) = ctx.predecessor_id {
+            crate::log::debug!("dxl: send_status defer to predecessor={}", pred);
             *self.predecessor_id = Some(pred);
             return Ok(());
         }
         let Some(packet_end_tick) = ctx.packet_end_tick else {
+            crate::log::debug!("dxl: send_status drop (packet_end_tick=None)");
             return Ok(());
         };
         let byte_count = self.tx.tx_len();
@@ -360,6 +364,12 @@ impl<P: Providers, const TX_BUF_LEN: usize> ReplyHandle<'_, P, TX_BUF_LEN> {
         let delay_ticks =
             delay_us.wrapping_mul(<P::TxScheduler as TxScheduler>::TICKS_PER_US as u32);
         let deadline_tick = packet_end_tick.wrapping_add(delay_ticks as u16);
+        crate::log::debug!(
+            "dxl: send_status schedule packet_end={} deadline={} byte_count={}",
+            packet_end_tick,
+            deadline_tick,
+            byte_count
+        );
         self.scheduler
             .schedule(deadline_tick, byte_count, SendKind::Plain);
         Ok(())
@@ -672,25 +682,32 @@ impl<P: Providers, const RX_BUF_LEN: usize, const EDGE_BUF_LEN: usize, const TX_
             } => {
                 let action = match ev {
                     Event::Header(HeaderEvent::Instruction(h)) => {
+                        let target = header_target(&h).as_byte();
+                        let addressable = target_addressable(&h, id);
+                        crate::log::trace!(
+                            "dxl: event=header_instruction target={} addressable={}",
+                            target,
+                            addressable
+                        );
                         rx_inner.try_anchor_from_header(ticks_per_bit);
                         rx_inner.set_hsi_active(true);
-                        if target_addressable(&h, id) {
+                        if addressable {
                             *inflight = Some(InflightCtx::new(h));
                             PollAction::Continue
                         } else {
                             *inflight = None;
-                            PollAction::Skip {
-                                id: header_target(&h).as_byte(),
-                            }
+                            PollAction::Skip { id: target }
                         }
                     }
                     Event::Header(HeaderEvent::Status(sh)) => {
+                        crate::log::trace!("dxl: event=header_status id={}", sh.id.as_byte());
                         *inflight = None;
                         PollAction::Skip {
                             id: sh.id.as_byte(),
                         }
                     }
                     Event::Payload(PayloadEvent::Instruction(p)) => {
+                        crate::log::trace!("dxl: event=payload_instruction");
                         if let Some(ctx) = inflight.as_mut() {
                             slot_walk(ctx, &p, id);
                         }
@@ -701,9 +718,11 @@ impl<P: Providers, const RX_BUF_LEN: usize, const EDGE_BUF_LEN: usize, const TX_
                         PollAction::Continue
                     }
                     Event::Crc => {
+                        crate::log::trace!("dxl: event=crc");
                         rx_inner.set_hsi_active(false);
                         if let Some(ctx) = inflight.take() {
                             let packet_end_tick = rx_inner.packet_end_tick(ticks_per_bit);
+                            crate::log::debug!("dxl: crc packet_end_tick={:?}", packet_end_tick);
                             // At Crc-of-host-instruction, the codec's wire
                             // position has just walked past the request's last
                             // CRC byte — the next byte on the wire is the First
@@ -716,6 +735,7 @@ impl<P: Providers, const RX_BUF_LEN: usize, const EDGE_BUF_LEN: usize, const TX_
                         PollAction::Continue
                     }
                     Event::Resync(_) => {
+                        crate::log::trace!("dxl: event=resync");
                         rx_inner.reset_anchor();
                         rx_inner.set_hsi_active(false);
                         *inflight = None;
@@ -884,6 +904,12 @@ impl<P: Providers, const RX_BUF_LEN: usize, const EDGE_BUF_LEN: usize, const TX_
     /// Stable peripheral-memory address for DMA1_CH4's source buffer.
     pub fn tx_buf_addr(&self) -> usize {
         self.codec.tx_buf_addr()
+    }
+
+    /// Length in bytes of the most-recent encoded packet — the DMA1_CH4
+    /// transfer count for the next fire.
+    pub fn tx_len(&self) -> u16 {
+        self.codec.tx_len()
     }
 }
 

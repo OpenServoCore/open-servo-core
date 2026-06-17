@@ -107,7 +107,13 @@ impl Classifier {
         ticks_per_bit: u16,
     ) -> bool {
         let avail = edges.reader().avail();
+        crate::log::trace!(
+            "classifier: anchor entry avail={} ticks_per_bit={}",
+            avail,
+            ticks_per_bit
+        );
         if avail < 5 {
+            crate::log::trace!("classifier: anchor insufficient avail<5");
             return false;
         }
 
@@ -184,6 +190,12 @@ impl Classifier {
             // current read cursor.
             edges.reader().advance(avail - offset);
             self.header_matches = self.header_matches.wrapping_add(1);
+            crate::log::debug!(
+                "classifier: anchor match offset={} e5={} advance={}",
+                offset,
+                e5,
+                avail - offset
+            );
             return true;
         }
 
@@ -192,6 +204,10 @@ impl Classifier {
         self.last_byte_start = None;
         self.prev_byte_start = None;
         self.header_mismatches = self.header_mismatches.wrapping_add(1);
+        crate::log::debug!(
+            "classifier: anchor pattern miss across {} windows",
+            max_offset + 1
+        );
         false
     }
 
@@ -211,6 +227,11 @@ impl Classifier {
     {
         let win_lo = ticks_per_bit.wrapping_mul(WINDOW_LO_MUL);
         let win_hi = ticks_per_bit.wrapping_mul(WINDOW_HI_MUL);
+        crate::log::trace!(
+            "classifier: walk entry avail={} anchor={:?}",
+            edges.reader().avail(),
+            self.last_byte_start
+        );
 
         let mut reader = edges.reader();
         while let Some(&t) = reader.peek() {
@@ -218,11 +239,13 @@ impl Classifier {
                 None => {
                     // No anchor → drop edge silently. Not a fault — it's
                     // the documented cold/between-anchor behavior.
+                    crate::log::trace!("classifier: walk drop edge={} (no anchor)", t);
                 }
                 Some(a) => {
                     let delta = t.wrapping_sub(a);
                     if delta < win_lo {
                         self.skips = self.skips.wrapping_add(1);
+                        crate::log::trace!("classifier: walk skip edge={} delta={}", t, delta);
                     } else if delta <= win_hi {
                         self.prev_byte_start = self.last_byte_start;
                         self.last_byte_start = Some(t);
@@ -230,6 +253,7 @@ impl Classifier {
                             on_pair(a, t);
                         }
                         self.hits = self.hits.wrapping_add(1);
+                        crate::log::trace!("classifier: walk hit edge={} delta={}", t, delta);
                     } else {
                         // GAP. Per doc §4.4 — byte-alignment loss in
                         // packet body; drop anchor + prev, no pair, no
@@ -237,6 +261,7 @@ impl Classifier {
                         self.last_byte_start = None;
                         self.prev_byte_start = None;
                         self.gaps = self.gaps.wrapping_add(1);
+                        crate::log::trace!("classifier: walk gap edge={} delta={}", t, delta);
                     }
                 }
             }
@@ -257,6 +282,11 @@ impl Classifier {
     ) where
         F: FnMut(u16, u16),
     {
+        crate::log::trace!(
+            "classifier: on_idle entry avail={} anchor={:?}",
+            edges.reader().avail(),
+            self.last_byte_start
+        );
         self.on_edge_advance(edges, ticks_per_bit, on_pair);
         self.last_byte_start = None;
         self.prev_byte_start = None;

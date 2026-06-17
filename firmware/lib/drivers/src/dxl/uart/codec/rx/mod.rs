@@ -65,10 +65,12 @@ impl<R: EdgeDma, const EDGE_BUF_LEN: usize> Rx<R, EDGE_BUF_LEN> {
     /// against spurious vector entry).
     pub fn on_edge_advance<F: FnMut(u16, u16)>(&mut self, ticks_per_bit: u16, on_pair: F) {
         let flags = self.ring.read_and_ack();
+        crate::log::trace!("rx: on_edge_advance ht={} tc={}", flags.ht, flags.tc);
         if !flags.ht && !flags.tc {
             return;
         }
         let remaining = self.ring.remaining();
+        crate::log::trace!("rx: on_edge_advance publish remaining={}", remaining);
         // SAFETY: the edges buffer is mutated only by DMA1_CH7 (hardware
         // writer) and read here from a PFIC-HIGH ISR; no other code path
         // takes a `&mut` into it.
@@ -84,6 +86,7 @@ impl<R: EdgeDma, const EDGE_BUF_LEN: usize> Rx<R, EDGE_BUF_LEN> {
     /// invalidates drift gating, regardless of CRC event ordering.
     pub fn on_idle<F: FnMut(u16, u16)>(&mut self, ticks_per_bit: u16, on_pair: F) {
         let remaining = self.ring.remaining();
+        crate::log::trace!("rx: on_idle publish remaining={}", remaining);
         // SAFETY: see `on_edge_advance`.
         let edges = unsafe { &mut *self.edges.get() };
         edges.on_publish(remaining);
