@@ -67,6 +67,9 @@ fn region_for(router: &dyn Router, addr: u16, end: usize) -> Option<RegionRef> {
     })
 }
 
+/// DXL 2.0 reads are memory-like: bytes inside any region's gap (between
+/// blocks, inside a block, or past the last block) AND bytes outside every
+/// region come back as 0. Only writes treat unmapped addresses as errors.
 pub(crate) fn router_read_bytes(
     router: &dyn Router,
     addr: u16,
@@ -75,12 +78,35 @@ pub(crate) fn router_read_bytes(
     if dst.is_empty() {
         return Ok(());
     }
-    let end = (addr as usize)
-        .checked_add(dst.len())
-        .ok_or(Error::OutOfRange)?;
-    let r = region_for(router, addr, end).ok_or(Error::OutOfRange)?;
-    // SAFETY: get() non-null; descriptor sizes verified at construction.
-    unsafe { walk_read(r.base, addr, dst, r.def.blocks) }
+    dst.fill(0);
+    let req_lo = addr as usize;
+    let req_hi = req_lo + dst.len();
+    for region in router.regions() {
+        let r_lo = region.addr as usize;
+        let r_hi = r_lo + region.size as usize;
+        let lo = req_lo.max(r_lo);
+        let hi = req_hi.min(r_hi);
+        if lo >= hi {
+            continue;
+        }
+        let Some(base) = router.region_base(region) else {
+            continue;
+        };
+        let slice_off = lo - req_lo;
+        let slice_len = hi - lo;
+        // SAFETY: lo..hi ⊆ region.size, so base + (lo - r_lo) and base +
+        // (hi - r_lo) are both in-bounds; descriptor sizes verified at
+        // construction.
+        unsafe {
+            walk_read(
+                base,
+                lo as u16,
+                &mut dst[slice_off..slice_off + slice_len],
+                region.blocks,
+            )?;
+        }
+    }
+    Ok(())
 }
 
 pub(crate) fn router_stage_bytes(
@@ -130,8 +156,12 @@ fn range_in(addr: u16, end: usize, base: u16, size: usize) -> bool {
 
 /// Walk fields covering `[abs_start, +len)`. Calls `on_chunk(access, struct_off, buf_off, chunk_len)`
 /// for each overlapping byte run (`struct_off` is region-relative; `access` lets the read path
-/// zero-fill `Reserved` chunks instead of memcpy'ing storage). Returns `AccessError` on a gap
-/// (between blocks or inside one), or on a non-RW field if `require_rw`.
+/// zero-fill `Reserved` chunks instead of memcpy'ing storage).
+///
+/// `require_rw=true` (write path): any gap (inter-block, intra-block, or past
+/// the last block) and any non-RW field returns `AccessError`. `require_rw=false`
+/// (read path): gaps are skipped without `on_chunk`; the caller pre-zeros `dst`
+/// so the skipped bytes remain 0 per the DXL 2.0 memory-shaped read contract.
 /// Blocks and fields within each block must be sorted by `addr` and non-overlapping.
 fn walk_fields(
     abs_start: u16,
@@ -153,7 +183,15 @@ fn walk_fields(
             continue;
         }
         if b_lo > req_lo {
-            return Err(Error::AccessError);
+            if require_rw {
+                return Err(Error::AccessError);
+            }
+            let new_lo = b_lo.min(req_hi);
+            buf_pos += new_lo - req_lo;
+            req_lo = new_lo;
+            if req_lo >= req_hi {
+                break;
+            }
         }
         let block_struct = block.struct_offset as usize;
         for field in block.fields {
@@ -165,7 +203,18 @@ fn walk_fields(
             if f_hi <= req_lo {
                 continue;
             }
-            if f_lo > req_lo || (require_rw && field.access != Access::Rw) {
+            if f_lo > req_lo {
+                if require_rw {
+                    return Err(Error::AccessError);
+                }
+                let new_lo = f_lo.min(req_hi).min(b_hi);
+                buf_pos += new_lo - req_lo;
+                req_lo = new_lo;
+                if req_lo >= req_hi.min(b_hi) {
+                    break;
+                }
+            }
+            if require_rw && field.access != Access::Rw {
                 return Err(Error::AccessError);
             }
             let chunk_hi = req_hi.min(f_hi);
@@ -175,12 +224,20 @@ fn walk_fields(
             buf_pos += chunk_len;
             req_lo = chunk_hi;
         }
+        // Trailing gap inside this block (past the last field, before b_hi).
+        let block_hi = req_hi.min(b_hi);
+        if req_lo < block_hi {
+            if require_rw {
+                return Err(Error::AccessError);
+            }
+            buf_pos += block_hi - req_lo;
+            req_lo = block_hi;
+        }
     }
-    if req_lo < req_hi {
-        Err(Error::AccessError)
-    } else {
-        Ok(())
+    if req_lo < req_hi && require_rw {
+        return Err(Error::AccessError);
     }
+    Ok(())
 }
 
 unsafe fn walk_read(
@@ -189,6 +246,7 @@ unsafe fn walk_read(
     dst: &mut [u8],
     blocks: &[BlockDesc],
 ) -> Result<(), Error> {
+    dst.fill(0);
     let dst_ptr = dst.as_mut_ptr();
     walk_fields(
         abs_start,
@@ -198,7 +256,7 @@ unsafe fn walk_read(
         |access, struct_off, dst_pos, chunk_len| unsafe {
             match access {
                 Access::Reserved => {
-                    core::ptr::write_bytes(dst_ptr.add(dst_pos), 0, chunk_len);
+                    // Already zeroed by dst.fill(0) above.
                 }
                 Access::Ro | Access::Rw => {
                     core::ptr::copy_nonoverlapping(

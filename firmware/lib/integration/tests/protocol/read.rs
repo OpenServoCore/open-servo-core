@@ -85,27 +85,27 @@ fn read_length_over_cap_replies_data_range() {
 }
 
 #[test_log::test]
-fn read_over_region_boundary_replies_data_range() {
+fn read_across_region_boundary_returns_zero_bytes() {
     let rx = read_with(Id::new(1), CONFIG_REGION_END_ADDR - 2, 4);
     assert_eq!(
         parse_status(Instruction::Read, &rx),
         Status::Read {
             id: Id::new(1),
-            error: StatusError::code(ErrorCode::DataRange),
-            data: &[],
+            error: StatusError::OK,
+            data: &[0; 4],
         },
     );
 }
 
 #[test_log::test]
-fn read_into_intra_region_gap_replies_access_error() {
+fn read_in_intra_region_gap_returns_zero_bytes() {
     let rx = read_with(Id::new(1), CONFIG_INTRA_GAP_ADDR, 1);
     assert_eq!(
         parse_status(Instruction::Read, &rx),
         Status::Read {
             id: Id::new(1),
-            error: StatusError::code(ErrorCode::Access),
-            data: &[],
+            error: StatusError::OK,
+            data: &[0],
         },
     );
 }

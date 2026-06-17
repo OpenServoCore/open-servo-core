@@ -436,6 +436,148 @@ fn write_straddling_reserved_field_returns_access_error() {
 }
 
 #[test]
+fn read_into_inter_block_gap_returns_zero() {
+    let r = StubRouter::new();
+    seed(&r, &[(0, &[0x11, 0x22, 0x33, 0x44])]);
+    let mut buf = [0xFFu8; 4];
+    r.read_bytes(4, &mut buf).unwrap();
+    assert_eq!(buf, [0, 0, 0, 0]);
+}
+
+#[test]
+fn read_spanning_rw_gap_ro_zero_fills_middle() {
+    let r = StubRouter::new();
+    seed(
+        &r,
+        &[
+            (0, &[0x11, 0x22, 0x33, 0x44]),
+            (8, &[0xAA, 0xBB, 0xCC, 0xDD]),
+        ],
+    );
+    let mut buf = [0xFFu8; 10];
+    r.read_bytes(2, &mut buf).unwrap();
+    assert_eq!(buf, [0x33, 0x44, 0, 0, 0, 0, 0xAA, 0xBB, 0xCC, 0xDD]);
+}
+
+#[test]
+fn read_past_last_block_in_region_returns_zero() {
+    let r = StubRouter::new();
+    let mut buf = [0xFFu8; 4];
+    r.read_bytes(16, &mut buf).unwrap();
+    assert_eq!(buf, [0, 0, 0, 0]);
+}
+
+#[test]
+fn read_entirely_outside_any_region_returns_zero() {
+    let r = StubRouter::new();
+    let mut buf = [0xFFu8; 4];
+    r.read_bytes(200, &mut buf).unwrap();
+    assert_eq!(buf, [0, 0, 0, 0]);
+}
+
+const REGION_A_BLOCKS: &[BlockDesc] = &[BlockDesc {
+    addr: 0,
+    size: 4,
+    struct_offset: 0,
+    fields: &[FieldDesc {
+        addr: 0,
+        size: 4,
+        struct_offset: 0,
+        access: Access::Rw,
+        validators: &[],
+    }],
+    validators: &[],
+}];
+
+const REGION_B_BLOCKS: &[BlockDesc] = &[BlockDesc {
+    addr: 16,
+    size: 4,
+    struct_offset: 0,
+    fields: &[FieldDesc {
+        addr: 16,
+        size: 4,
+        struct_offset: 0,
+        access: Access::Rw,
+        validators: &[],
+    }],
+    validators: &[],
+}];
+
+static REGION_A: RegionDesc = RegionDesc {
+    addr: 0,
+    size: 16,
+    blocks: REGION_A_BLOCKS,
+    validators: &[],
+};
+
+static REGION_B: RegionDesc = RegionDesc {
+    addr: 16,
+    size: 16,
+    blocks: REGION_B_BLOCKS,
+    validators: &[],
+};
+
+static MULTI_REGIONS: &[&RegionDesc] = &[&REGION_A, &REGION_B];
+
+struct MultiRouter {
+    storage_a: UnsafeCell<[u8; 16]>,
+    storage_b: UnsafeCell<[u8; 16]>,
+}
+
+// SAFETY: tests are single-threaded.
+unsafe impl Sync for MultiRouter {}
+
+impl MultiRouter {
+    const fn new() -> Self {
+        Self {
+            storage_a: UnsafeCell::new([0; 16]),
+            storage_b: UnsafeCell::new([0; 16]),
+        }
+    }
+    fn seed(&self, region_addr: u16, off: usize, bytes: &[u8]) {
+        let ptr = match region_addr {
+            0 => self.storage_a.get() as *mut u8,
+            16 => self.storage_b.get() as *mut u8,
+            _ => panic!("unknown region {region_addr}"),
+        };
+        // SAFETY: tests are single-threaded.
+        unsafe { core::ptr::copy_nonoverlapping(bytes.as_ptr(), ptr.add(off), bytes.len()) }
+    }
+}
+
+impl Router for MultiRouter {
+    fn regions(&self) -> &'static [&'static RegionDesc] {
+        MULTI_REGIONS
+    }
+    fn region_base(&self, desc: &RegionDesc) -> Option<*mut u8> {
+        match desc.addr {
+            0 => Some(self.storage_a.get() as *mut u8),
+            16 => Some(self.storage_b.get() as *mut u8),
+            _ => None,
+        }
+    }
+}
+
+#[test]
+fn read_across_two_regions_walks_both() {
+    let r = MultiRouter::new();
+    r.seed(0, 0, &[0x11, 0x22, 0x33, 0x44]);
+    r.seed(16, 0, &[0xAA, 0xBB, 0xCC, 0xDD]);
+    // A.block 0..4, A.region 0..16, B.block 16..20, B.region 16..32.
+    // Read 2..20: A.block tail [0x33, 0x44] + A.gap 4..16 (12 zeros) + B.block 16..20.
+    let mut buf = [0xFFu8; 18];
+    r.read_bytes(2, &mut buf).unwrap();
+    let mut expected = [0u8; 18];
+    expected[0] = 0x33;
+    expected[1] = 0x44;
+    expected[14] = 0xAA;
+    expected[15] = 0xBB;
+    expected[16] = 0xCC;
+    expected[17] = 0xDD;
+    assert_eq!(buf, expected);
+}
+
+#[test]
 fn compare_op_apply_covers_every_op() {
     assert!(CompareOp::Lt.apply(&1, &2));
     assert!(!CompareOp::Lt.apply(&2, &2));

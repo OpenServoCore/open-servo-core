@@ -816,7 +816,9 @@ fn return_level_none_still_replies_to_ping() {
 }
 
 #[test]
-fn return_level_read_replies_to_read_errors() {
+fn return_level_read_replies_to_unmapped_read_with_zero_bytes() {
+    // Per DXL 2.0 the table is memory-shaped: unmapped addresses read back
+    // as zero rather than erroring. SRL=Read still produces the reply.
     let shared = Shared::new();
     set_level(&shared, StatusReturnLevel::Read);
     let mut bus = FakeBus::new();
@@ -826,8 +828,9 @@ fn return_level_read_replies_to_read_errors() {
     bus.feed(&req);
     h.poll(&shared, &mut bus);
 
-    let (_, err, _) = parse_status(&bus.reply.tx);
-    assert_eq!(err, StatusError::code(ErrorCode::DataRange).as_byte());
+    let (_, err, params) = parse_status(&bus.reply.tx);
+    assert_eq!(err, 0);
+    assert_eq!(&params[..], &[0]);
 }
 
 #[test]
@@ -876,7 +879,7 @@ fn sync_read_skips_when_no_idle_anchor() {
 }
 
 #[test]
-fn sync_read_data_range_error_still_replies() {
+fn sync_read_at_unmapped_address_replies_zero_bytes() {
     let shared = Shared::new();
     let mut bus = FakeBus::new();
     let mut h = Dxl::new();
@@ -886,8 +889,9 @@ fn sync_read_data_range_error_still_replies() {
     h.poll(&shared, &mut bus);
 
     assert_eq!(bus.reply.send_count, 1);
-    let (_, err, _) = parse_status(&bus.reply.tx);
-    assert_eq!(err, StatusError::code(ErrorCode::DataRange).as_byte());
+    let (_, err, params) = parse_status(&bus.reply.tx);
+    assert_eq!(err, 0);
+    assert_eq!(&params[..], &[0]);
 }
 
 #[test]
@@ -970,7 +974,7 @@ fn bulk_read_uses_our_tuples_address_not_a_preceding_slots() {
 }
 
 #[test]
-fn bulk_read_data_range_error_still_replies() {
+fn bulk_read_at_unmapped_address_replies_zero_bytes() {
     let shared = Shared::new();
     let mut bus = FakeBus::new();
     let mut h = Dxl::new();
@@ -981,8 +985,9 @@ fn bulk_read_data_range_error_still_replies() {
     h.poll(&shared, &mut bus);
 
     assert_eq!(bus.reply.send_count, 1);
-    let (_, err, _) = parse_status(&bus.reply.tx);
-    assert_eq!(err, StatusError::code(ErrorCode::DataRange).as_byte());
+    let (_, err, params) = parse_status(&bus.reply.tx);
+    assert_eq!(err, 0);
+    assert_eq!(&params[..], &[0]);
 }
 
 #[test]
@@ -1120,8 +1125,9 @@ fn fast_bulk_read_return_level_none_silences_reply() {
 }
 
 #[test]
-fn fast_sync_read_error_emits_zero_payload_slot() {
-    // Read failure must emit `length` zero bytes, not stale buf contents.
+fn fast_sync_read_at_unmapped_address_emits_zero_payload_slot() {
+    // Per the memory-shaped read contract the slot carries `length` zero bytes
+    // with error=OK, not stale buf contents.
     let shared = Shared::new();
     let mut bus = FakeBus::new();
     let mut h = Dxl::new();
@@ -1134,10 +1140,7 @@ fn fast_sync_read_error_emits_zero_payload_slot() {
     assert_eq!(bus.reply.last_kind, Some(ReplyKind::Slot));
     // HEADER(4) + 0xFE + LEN(2) + 0x55 + error + id + 2 data + CRC(2)
     assert_eq!(bus.reply.tx.len(), 14);
-    assert_eq!(
-        bus.reply.tx[8],
-        StatusError::code(ErrorCode::DataRange).as_byte(),
-    );
+    assert_eq!(bus.reply.tx[8], 0);
     assert_eq!(bus.reply.tx[9], 0);
     assert_eq!(&bus.reply.tx[10..12], &[0, 0]);
 }
