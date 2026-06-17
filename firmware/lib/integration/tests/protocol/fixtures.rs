@@ -6,7 +6,6 @@ use rstest::fixture;
 pub struct OneServo {
     pub sim: Sim,
     pub host: DeviceId,
-    #[allow(dead_code)]
     pub servo: DeviceId,
 }
 
