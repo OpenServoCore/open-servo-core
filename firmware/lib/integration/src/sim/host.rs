@@ -7,6 +7,7 @@
 use std::any::Any;
 
 use dxl_protocol::{InstructionEncoder, SoftwareCrcUmts, types::Id};
+use osc_core::BaudRate;
 
 use crate::sim::uart::{RxLogEntry, TxLogEntry, UartRx, UartTx};
 use crate::sim::{Clock, DeviceId, Effect, EventSource, SimTime};
@@ -14,13 +15,13 @@ use crate::sim::{Clock, DeviceId, Effect, EventSource, SimTime};
 pub struct Host {
     id: DeviceId,
     clock: Clock,
-    baud: u32,
+    baud: BaudRate,
     uart_tx: UartTx,
     uart_rx: UartRx,
 }
 
 impl Host {
-    pub fn new(id: DeviceId, clock: Clock, baud: u32) -> Self {
+    pub fn new(id: DeviceId, clock: Clock, baud: BaudRate) -> Self {
         Self {
             id,
             clock,
@@ -34,7 +35,7 @@ impl Host {
         self.clock
     }
 
-    pub fn baud(&self) -> u32 {
+    pub fn baud(&self) -> BaudRate {
         self.baud
     }
 
@@ -120,7 +121,7 @@ mod tests {
     use dxl_protocol::InstructionEncoder;
 
     const HOST_CLOCK: Clock = Clock::new(48_000_000);
-    const BAUD: u32 = 115_200;
+    const BAUD: BaudRate = BaudRate::B115200;
 
     fn expected_ping_bytes(target: Id) -> Vec<u8> {
         let mut buf: Vec<u8> = Vec::new();
@@ -132,7 +133,7 @@ mod tests {
 
     #[test]
     fn tx_log_records_encoded_frame_in_order() {
-        let mut sim = Sim::new(BAUD);
+        let mut sim = Sim::default();
         let host = sim.add_device(|id| Host::new(id, HOST_CLOCK, BAUD));
         sim.advance(SimTime::from_ms(5), |sim, now| {
             sim.device_mut::<Host>(host)
@@ -152,7 +153,7 @@ mod tests {
 
     #[test]
     fn rx_log_captures_remote_tx_with_idle_gap() {
-        let mut sim = Sim::new(BAUD);
+        let mut sim = Sim::default();
         let host = sim.add_device(|id| Host::new(id, HOST_CLOCK, BAUD));
         let receiver = sim.add_device(|id| Host::new(id, HOST_CLOCK, BAUD));
 
@@ -175,7 +176,7 @@ mod tests {
 
     #[test]
     fn tx_byte_timestamps_align_with_baud_stride() {
-        let mut sim = Sim::new(BAUD);
+        let mut sim = Sim::default();
         let host = sim.add_device(|id| Host::new(id, HOST_CLOCK, BAUD));
         sim.advance(SimTime::from_ms(5), |sim, now| {
             sim.device_mut::<Host>(host)
@@ -192,7 +193,7 @@ mod tests {
 
     #[test]
     fn clear_logs_drops_history_without_resetting_queues() {
-        let mut sim = Sim::new(BAUD);
+        let mut sim = Sim::default();
         let host = sim.add_device(|id| Host::new(id, HOST_CLOCK, BAUD));
         sim.advance(SimTime::from_ms(5), |sim, now| {
             sim.device_mut::<Host>(host)
@@ -208,7 +209,7 @@ mod tests {
 
     #[test]
     fn sim_reset_zeroes_time_and_clears_host_logs() {
-        let mut sim = Sim::new(BAUD);
+        let mut sim = Sim::default();
         let host = sim.add_device(|id| Host::new(id, HOST_CLOCK, BAUD));
         let receiver = sim.add_device(|id| Host::new(id, HOST_CLOCK, BAUD));
         sim.advance(SimTime::from_ms(5), |sim, now| {

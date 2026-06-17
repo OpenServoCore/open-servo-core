@@ -1,3 +1,5 @@
+use osc_core::BaudRate;
+
 use crate::sim::uart::bit_period_ns;
 
 /// Layer 1 — pure UART-frame encoder. Translates one byte into wire-edge
@@ -7,7 +9,7 @@ pub struct TxEncoder {
 }
 
 impl TxEncoder {
-    pub fn new(baud: u32) -> Self {
+    pub fn new(baud: BaudRate) -> Self {
         Self {
             bit_period_ns: bit_period_ns(baud),
         }
@@ -45,7 +47,7 @@ impl TxEncoder {
 mod tests {
     use super::*;
 
-    const BAUD: u32 = 115_200;
+    const BAUD: BaudRate = BaudRate::B115200;
 
     #[test]
     fn emits_start_and_first_transition_for_0xff() {

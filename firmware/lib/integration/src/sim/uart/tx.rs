@@ -1,6 +1,8 @@
 use std::cmp::Reverse;
 use std::collections::BinaryHeap;
 
+use osc_core::BaudRate;
+
 use crate::sim::SimTime;
 use crate::sim::uart::TxEncoder;
 
@@ -20,7 +22,7 @@ pub struct UartTx {
 }
 
 impl UartTx {
-    pub fn new(baud: u32) -> Self {
+    pub fn new(baud: BaudRate) -> Self {
         Self {
             encoder: TxEncoder::new(baud),
             pending: BinaryHeap::new(),
@@ -73,7 +75,7 @@ impl UartTx {
 mod tests {
     use super::*;
 
-    const BAUD: u32 = 115_200;
+    const BAUD: BaudRate = BaudRate::B115200;
 
     #[test]
     fn queue_then_advance_drains_due_byte_and_logs() {

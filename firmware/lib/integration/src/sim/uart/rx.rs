@@ -1,5 +1,7 @@
 use std::collections::VecDeque;
 
+use osc_core::BaudRate;
+
 use crate::sim::SimTime;
 use crate::sim::uart::{RxDecoder, RxEffect};
 
@@ -25,7 +27,7 @@ pub struct UartRx {
 }
 
 impl UartRx {
-    pub fn new(baud: u32) -> Self {
+    pub fn new(baud: BaudRate) -> Self {
         Self {
             decoder: RxDecoder::new(baud),
             pending_edges: VecDeque::new(),
@@ -117,7 +119,7 @@ mod tests {
     use super::*;
     use crate::sim::uart::TxEncoder;
 
-    const BAUD: u32 = 115_200;
+    const BAUD: BaudRate = BaudRate::B115200;
 
     fn drain_to(rx: &mut UartRx, until_ns: u64, step_ns: u64) {
         let mut t = 0u64;

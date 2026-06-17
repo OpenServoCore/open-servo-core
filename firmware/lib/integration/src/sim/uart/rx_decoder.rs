@@ -1,3 +1,5 @@
+use osc_core::BaudRate;
+
 use crate::sim::uart::bit_period_ns;
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
@@ -28,7 +30,7 @@ pub struct RxDecoder {
 }
 
 impl RxDecoder {
-    pub fn new(baud: u32) -> Self {
+    pub fn new(baud: BaudRate) -> Self {
         Self {
             bit_period_ns: bit_period_ns(baud),
             idle_threshold_bits: 10,
@@ -141,7 +143,7 @@ mod tests {
     use super::*;
     use crate::sim::uart::TxEncoder;
 
-    const BAUD: u32 = 115_200;
+    const BAUD: BaudRate = BaudRate::B115200;
 
     fn round_trip(byte: u8) -> u8 {
         let enc = TxEncoder::new(BAUD);

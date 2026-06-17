@@ -4,7 +4,6 @@ pub struct Sim {
     wire: Wire,
     registry: DeviceRegistry,
     now: SimTime,
-    baud: u32,
 }
 
 enum SourceKind {
@@ -13,21 +12,16 @@ enum SourceKind {
 }
 
 impl Sim {
-    pub fn new(baud: u32) -> Self {
+    pub fn new() -> Self {
         Self {
             wire: Wire::new(),
             registry: DeviceRegistry::new(),
             now: SimTime::ZERO,
-            baud,
         }
     }
 
     pub fn now(&self) -> SimTime {
         self.now
-    }
-
-    pub fn baud(&self) -> u32 {
-        self.baud
     }
 
     pub fn add_device<D, F>(&mut self, build: F) -> DeviceId
@@ -110,6 +104,12 @@ impl Sim {
             }
         }
         min_t.map(|t| (t, min_source))
+    }
+}
+
+impl Default for Sim {
+    fn default() -> Self {
+        Self::new()
     }
 }
 
@@ -198,7 +198,7 @@ mod tests {
     }
 
     fn build(plan: Vec<(SimTime, bool)>) -> (Sim, DeviceId, DeviceId) {
-        let mut sim = Sim::new(115_200);
+        let mut sim = Sim::default();
         let sender_id = sim.add_device(|id| Sender::new(id, plan));
         let receiver_id = sim.add_device(|_| Receiver::default());
         (sim, sender_id, receiver_id)
@@ -273,7 +273,7 @@ mod tests {
 
     #[test]
     fn sender_does_not_receive_its_own_edges() {
-        let mut sim = Sim::new(115_200);
+        let mut sim = Sim::default();
         let _r = sim.add_device(|_| Receiver::default());
         let _s = sim.add_device(|id| Sender::new(id, vec![(SimTime::from_ns(100), false)]));
         sim.advance(SimTime::from_ns(200), |_, _| {});
@@ -282,7 +282,7 @@ mod tests {
     #[test]
     #[should_panic(expected = "wire collision")]
     fn concurrent_falling_edge_from_different_sources_panics() {
-        let mut sim = Sim::new(115_200);
+        let mut sim = Sim::default();
         let _a = sim.add_device(|id| Sender::new(id, vec![(SimTime::from_ns(100), false)]));
         let _b = sim.add_device(|id| Sender::new(id, vec![(SimTime::from_ns(100), false)]));
         sim.advance(SimTime::from_ns(200), |_, _| {});
