@@ -7,12 +7,10 @@ error: Enum can only be derived for enums
 7 | | }
   | |_^
 
-error[E0517]: attribute should be applied to an enum
- --> tests/ui/enum_on_struct.rs:4:8
+error: `#[repr(u8)]` attribute cannot be used on structs
+ --> tests/ui/enum_on_struct.rs:4:1
   |
-4 |   #[repr(u8)]
-  |          ^^
-5 | / struct NotAnEnum {
-6 | |     x: u8,
-7 | | }
-  | |_- not an enum
+4 | #[repr(u8)]
+  | ^^^^^^^^^^^
+  |
+  = help: `#[repr(u8)]` can only be applied to enums
