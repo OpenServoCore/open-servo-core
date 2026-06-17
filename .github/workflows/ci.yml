@@ -39,6 +39,9 @@ jobs:
       - name: cargo test
         run: cargo test --workspace
 
+      - name: cargo check --features mocks
+        run: cargo check -p osc-drivers --features mocks
+
   dxl-protocol-features:
     name: dxl-protocol feature matrix
     runs-on: ubuntu-latest
