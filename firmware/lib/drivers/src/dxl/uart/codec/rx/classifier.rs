@@ -19,6 +19,8 @@
 //! deltas are compared as `delta·2 ≷ MUL_X2 · tpb` with both sides widened
 //! to `u32` — no integer division anywhere on the hot path.
 
+use dxl_protocol::wire::{HEADER, RESPONSE_HEADER_BYTES};
+
 use crate::util::HwRing;
 
 // Forward-walker window for the `[9·bit, 11·bit]` start-bit match.
@@ -36,12 +38,29 @@ const NARROW_LO_X2: u32 = 3; // 1.5·bit · 2
 const NARROW_HI_X2: u32 = 5; // 2.5·bit · 2
 const QUIET_MIN_X2: u32 = 14; //  7·bit · 2
 
+// Max falling edges produced by one 10-bit UART frame. Alternating-bit
+// patterns (`0x55`-class, LSB-first `1 0 1 0 1 0 1 0`) hit the peak:
+// `idle→start` (1) + four intra-byte 1→0 transitions = 5.
+const MAX_EDGES_PER_BYTE: u16 = 5;
+
+// Bytes between the end of the 4-byte `HEADER` signature and the parser
+// emitting Header. Uses `RESPONSE_HEADER_BYTES` (9: `HEADER + ID +
+// LENGTH + INST + ERROR`) so the math covers the host-RX path too;
+// instruction-RX path needs only 4 (no ERROR byte) but the 1-byte
+// over-count is free slack.
+const HEADER_BYTES_AFTER_SIGNATURE: u16 = (RESPONSE_HEADER_BYTES - HEADER.len()) as u16;
+
+// Drain-lag margin: bytes the codec may push into the parser in the
+// same poll cycle that emits Header. The composite runs the back-search
+// synchronously at the Header event so this is small in practice; 1
+// covers the common case where the next byte just completed.
+const DRAIN_LAG_BYTES: u16 = 1;
+
 // Back-search depth: try windows ending at `write_seq - 1 - k` for
-// `k ∈ [0, MAX_BACK]`. Covers up to 4 extra edges latched after byte 3's
-// start (byte 4 = 0xAA at 3 Mbaud produces 4 edges/byte, the realistic
-// worst case at the moment the parser fires the Header event). Doc §4.2:
-// "loose bounds are inexpensive."
-const MAX_BACK: u16 = 4;
+// `k ∈ [0, MAX_BACK]`. Protocol-bounded — the ring size just clamps the
+// search at runtime via `.min(avail - 5)`. Doc §4.2: "loose bounds are
+// inexpensive."
+const MAX_BACK: u16 = (HEADER_BYTES_AFTER_SIGNATURE + DRAIN_LAG_BYTES) * MAX_EDGES_PER_BYTE;
 
 #[inline]
 fn in_band(delta: u16, lo_x2: u32, hi_x2: u32, tpb: u16) -> bool {
@@ -214,9 +233,12 @@ impl Classifier {
     /// Walk newly-published edges, identifying byte starts via the
     /// `[9·bit, 11·bit]` window from `last_byte_start`. Emits each new
     /// `(prev, curr)` byte pair through `on_pair` when `hsi_active` is
-    /// set. Drops edges entirely while no anchor is held (cold / between
-    /// anchors) — per doc §4.4, "until the first header arrives there
-    /// is no timing state to be wrong about."
+    /// set. Bails on the first no-anchor edge without advancing the
+    /// reader — those edges stay in the ring for the next parser-Header
+    /// event's [`try_anchor_from_header`] back-search. Per doc §4.4,
+    /// "until the first header arrives there is no timing state to be
+    /// wrong about" — and the back-search needs the producer-side edge
+    /// history to find the signature.
     pub fn on_edge_advance<F, const EDGE_BUF_LEN: usize>(
         &mut self,
         edges: &mut HwRing<u16, EDGE_BUF_LEN>,
@@ -235,35 +257,31 @@ impl Classifier {
 
         let mut reader = edges.reader();
         while let Some(&t) = reader.peek() {
-            match self.last_byte_start {
-                None => {
-                    // No anchor → drop edge silently. Not a fault — it's
-                    // the documented cold/between-anchor behavior.
-                    crate::log::trace!("classifier: walk drop edge={} (no anchor)", t);
+            let Some(a) = self.last_byte_start else {
+                // No anchor → leave edge in ring for back-search.
+                crate::log::trace!("classifier: walk bail edge={} (no anchor)", t);
+                return;
+            };
+            let delta = t.wrapping_sub(a);
+            if delta < win_lo {
+                self.skips = self.skips.wrapping_add(1);
+                crate::log::trace!("classifier: walk skip edge={} delta={}", t, delta);
+            } else if delta <= win_hi {
+                self.prev_byte_start = self.last_byte_start;
+                self.last_byte_start = Some(t);
+                if self.hsi_active {
+                    on_pair(a, t);
                 }
-                Some(a) => {
-                    let delta = t.wrapping_sub(a);
-                    if delta < win_lo {
-                        self.skips = self.skips.wrapping_add(1);
-                        crate::log::trace!("classifier: walk skip edge={} delta={}", t, delta);
-                    } else if delta <= win_hi {
-                        self.prev_byte_start = self.last_byte_start;
-                        self.last_byte_start = Some(t);
-                        if self.hsi_active {
-                            on_pair(a, t);
-                        }
-                        self.hits = self.hits.wrapping_add(1);
-                        crate::log::trace!("classifier: walk hit edge={} delta={}", t, delta);
-                    } else {
-                        // GAP. Per doc §4.4 — byte-alignment loss in
-                        // packet body; drop anchor + prev, no pair, no
-                        // re-anchor. Next header re-establishes.
-                        self.last_byte_start = None;
-                        self.prev_byte_start = None;
-                        self.gaps = self.gaps.wrapping_add(1);
-                        crate::log::trace!("classifier: walk gap edge={} delta={}", t, delta);
-                    }
-                }
+                self.hits = self.hits.wrapping_add(1);
+                crate::log::trace!("classifier: walk hit edge={} delta={}", t, delta);
+            } else {
+                // GAP. Per doc §4.4 — byte-alignment loss in packet
+                // body; drop anchor + prev, no pair, no re-anchor. Next
+                // header re-establishes.
+                self.last_byte_start = None;
+                self.prev_byte_start = None;
+                self.gaps = self.gaps.wrapping_add(1);
+                crate::log::trace!("classifier: walk gap edge={} delta={}", t, delta);
             }
             reader.advance(1);
         }
@@ -497,9 +515,10 @@ mod tests {
     }
 
     #[test]
-    fn walker_without_anchor_drops_edges() {
+    fn walker_without_anchor_leaves_edges_in_ring() {
         let mut c = make();
         let mut edges = edges16(&[1000, 1160, 1320]);
+        let avail_before = edges.reader().avail();
         let mut emissions = 0_u32;
         c.on_edge_advance(&mut edges, TPB_3M, |_, _| emissions += 1);
         assert_eq!(c.last_byte_start, None);
@@ -507,6 +526,30 @@ mod tests {
         assert_eq!(c.skips, 0);
         assert_eq!(c.gaps, 0);
         assert_eq!(emissions, 0);
+        // Fix for the Ping-canary bug: edges must NOT be consumed when
+        // no anchor is held — `try_anchor_from_header` needs the
+        // producer-side edge history to back-search for the signature.
+        assert_eq!(edges.reader().avail(), avail_before);
+    }
+
+    #[test]
+    fn walker_with_no_anchor_preserves_header_signature_for_back_search() {
+        // Regression for the Ping-canary failure: walker ran first over a
+        // freshly-published header signature with no anchor, silently
+        // consumed all 5 edges, then `try_anchor_from_header` saw avail=0
+        // and the composite never stamped `packet_end_tick`, so the
+        // dispatcher dropped the reply schedule. The fixed walker bails
+        // on no-anchor; the signature stays available for the anchor.
+        let mut c = make();
+        let h = header_edges(1000, TPB_3M);
+        let mut edges = edges16(&h);
+
+        c.on_edge_advance(&mut edges, TPB_3M, |_, _| {});
+        assert_eq!(edges.reader().avail(), 5, "walker must leave edges");
+
+        assert!(c.try_anchor_from_header(&mut edges, TPB_3M));
+        assert_eq!(c.last_byte_start, Some(h[4]));
+        assert_eq!(c.header_matches, 1);
     }
 
     #[test]
