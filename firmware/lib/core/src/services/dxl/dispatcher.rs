@@ -7,13 +7,15 @@ use control_table::Snapshot;
 
 use crate::regions::hooks::ControlTableHooks;
 use crate::traits::{DxlDispatcher, DxlReply};
-use crate::{Error, RegionStorage, Router, Shared, StagedWrites, StatusReturnLevel};
+use crate::{Error, RegionStorage, Router, Shared, StagedWrites, StatusReturnLevel, ValidationKind};
 
 use super::limits::MAX_CONTROL_RW;
 
 fn error_to_status(e: Error) -> StatusError {
     match e {
-        Error::AccessError => StatusError::code(ErrorCode::Access),
+        Error::AccessError | Error::ValidationError(ValidationKind::Locked) => {
+            StatusError::code(ErrorCode::Access)
+        }
         _ => StatusError::code(ErrorCode::DataRange),
     }
 }
