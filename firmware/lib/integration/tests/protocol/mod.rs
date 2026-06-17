@@ -1,1 +1,2 @@
 mod fixtures;
+mod ping;

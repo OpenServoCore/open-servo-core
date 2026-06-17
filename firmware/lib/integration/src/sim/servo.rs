@@ -404,7 +404,6 @@ impl<P: Providers, const RX: usize, const EDGE: usize, const TX: usize> DxlBus
 mod tests {
     use super::*;
     use crate::sim::Sim;
-    use crate::sim::host::Host;
     use dxl_protocol::types::Id;
 
     const SERVO_CLOCK: Clock = Clock::new(48_000_000);
@@ -440,21 +439,5 @@ mod tests {
         let mut sim = Sim::default();
         let id = sim.add_device(|id| Servo::new(id, SERVO_CLOCK, BAUD));
         assert_eq!(sim.device::<Servo>(id).unwrap().next_event_time(), None);
-    }
-
-    #[test]
-    fn host_ping_to_dxl_id_zero_routes_through_servo_to_a_reply() {
-        let mut sim = Sim::default();
-        let host = sim.add_device(|id| Host::new(id, SERVO_CLOCK, BAUD));
-        sim.add_device(|id| Servo::new(id, SERVO_CLOCK, BAUD).with_dxl_id(Id::new(0)));
-
-        sim.advance(SimTime::from_ms(10), |sim, now| {
-            sim.device_mut::<Host>(host)
-                .unwrap()
-                .send_ping(now, Id::new(0));
-        });
-
-        let rx = sim.device::<Host>(host).unwrap().rx_bytes();
-        assert!(!rx.is_empty(), "host received nothing");
     }
 }

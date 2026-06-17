@@ -5,6 +5,7 @@
 //! peers. `Wire` is the delivery medium: it routes per-bit edges between
 //! devices in [`DeviceRegistry`].
 
+pub mod decode;
 pub mod effect;
 pub mod engine;
 pub mod host;
@@ -15,6 +16,7 @@ pub mod time;
 pub mod uart;
 pub mod wire;
 
+pub use decode::{format_hex, parse_status};
 pub use effect::Effect;
 pub use engine::Sim;
 pub use host::Host;
