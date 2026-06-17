@@ -15,7 +15,7 @@ pub struct PingStatus {
 /// reconstructs from streaming events.
 ///
 /// [`SlotEncoder`]: crate::SlotEncoder
-#[derive(Copy, Clone, Debug)]
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub struct Slot<'a> {
     pub id: Id,
     pub error: StatusError,
@@ -45,7 +45,7 @@ pub enum SlotPosition {
 /// Unified slave-originated reply. Encoder input for [`StatusEncoder::emit`].
 ///
 /// [`StatusEncoder::emit`]: crate::StatusEncoder::emit
-#[derive(Copy, Clone, Debug)]
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub enum Status<'a> {
     /// Write-style ack -- no payload. Covers Write/RegWrite/Action/Reboot/
     /// FactoryReset/SyncWrite/BulkWrite replies and the short-payload-Ping
