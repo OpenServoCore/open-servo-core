@@ -5,7 +5,11 @@ edition.workspace = true
 license.workspace = true
 
 [dependencies]
-osc-core     = { workspace = true }
-osc-drivers  = { workspace = true, features = ["mocks"] }
-dxl-protocol = { workspace = true, features = ["alloc", "software-crc"] }
+osc-core     = { workspace = true, features = ["log"] }
+osc-drivers  = { workspace = true, features = ["mocks", "log"] }
+dxl-protocol = { workspace = true, features = ["alloc", "software-crc", "log"] }
 mockall      = "0.14"
+
+[dev-dependencies]
+env_logger = "0.11"
+test-log   = "0.2"
