@@ -73,6 +73,7 @@ pub enum StallResponse {
 
 /// DXL Status Return Level. Ordered None < Read < All. Ping replies regardless.
 #[derive(Copy, Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Default, Enum)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
 #[repr(u8)]
 pub enum StatusReturnLevel {
     None = 0,

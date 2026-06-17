@@ -173,6 +173,7 @@ name = "dxl-protocol"
 version = "0.0.0"
 dependencies = [
  "crc",
+ "defmt",
  "heapless",
 ]
 
