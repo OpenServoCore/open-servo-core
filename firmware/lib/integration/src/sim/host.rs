@@ -95,6 +95,26 @@ impl Host {
         self.queue_frame(&buf);
     }
 
+    /// Encode a Reboot for `target` and queue the frame.
+    pub fn send_reboot(&mut self, target: Id) {
+        let mut buf: Vec<u8> = Vec::new();
+        InstructionEncoder::<_, SoftwareCrcUmts>::new(&mut buf)
+            .reboot(target)
+            .expect("reboot frame encodes");
+        self.queue_frame(&buf);
+    }
+
+    /// Encode an arbitrary instruction byte (with optional params) for `target`.
+    /// Use for non-standard / unsupported instruction tests; the servo's
+    /// streaming parser surfaces the byte as `Instruction::Ext(byte)`.
+    pub fn send_ext(&mut self, target: Id, instr: u8, params: &[u8]) {
+        let mut buf: Vec<u8> = Vec::new();
+        InstructionEncoder::<_, SoftwareCrcUmts>::new(&mut buf)
+            .ext(target, instr, params)
+            .expect("ext frame encodes");
+        self.queue_frame(&buf);
+    }
+
     fn queue_frame(&mut self, buf: &[u8]) {
         let stride = 10 * self.uart_tx.bit_period_ns();
         for (i, byte) in buf.iter().enumerate() {

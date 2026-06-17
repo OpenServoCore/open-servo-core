@@ -94,7 +94,8 @@ fn decode_one<'a>(req: Instruction, header: StatusHeader, body: Option<&'a [u8]>
         | Instruction::Reboot
         | Instruction::FactoryReset
         | Instruction::Clear
-        | Instruction::ControlTableBackup => Status::Empty {
+        | Instruction::ControlTableBackup
+        | Instruction::Ext(_) => Status::Empty {
             id: header.id,
             error: header.error,
         },
