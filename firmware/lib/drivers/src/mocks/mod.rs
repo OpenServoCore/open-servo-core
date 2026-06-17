@@ -1,12 +1,16 @@
-//! Recording mocks for driver unit tests and downstream integration crates.
-//! Each per-role child module owns one or more of the driver-owned interfaces.
-//! Tests assert against the recorded call log on each mock; cross-crate
-//! integration tests (under `osc-integration`) consume the same mocks via the
-//! `mocks` feature flag.
+//! mockall-generated mocks for the driver-owned interfaces. Each per-role
+//! child module declares one or more `mock!` blocks; associated constants
+//! are set inside the impl block per mockall's syntax for traits with
+//! consts.
 //!
-//! `std` is pulled into the crate root behind the same cfg gate that guards
-//! this module (see `lib.rs`), so `Vec` is available in tests and under the
-//! `mocks` feature without making the whole crate `std`-bound.
+//! `std` is pulled into the crate root behind the same cfg gate that
+//! guards this module (see `lib.rs`), so submodules can use `std`-backed
+//! types without making the whole crate `std`-bound.
+//!
+//! Higher-level test ergonomics — state companions, spy harnesses,
+//! `mock_x()` constructors — live in the `osc-integration` crate; this
+//! module is intentionally opinion-free about how downstream tests
+//! consume the mocks.
 
 use dxl_protocol::SoftwareCrcUmts;
 
@@ -28,9 +32,9 @@ pub use scheduler::{FastLastSchedulerOp, MockFastLastScheduler, MockTxScheduler,
 
 /// Driver-side `Providers` impl for tests — bundles every mock provider into
 /// the single super-trait the [`DxlUart`] composite consumes. Tests
-/// instantiate `DxlUart<TestProviders, …>` directly; the mocks' recording
-/// state is reached through the composite's accessors / debug `pub` fields
-/// (e.g. `bus.scheduler.log`, `bus.fast_last.scheduler().log`).
+/// instantiate `DxlUart<TestProviders, …>` directly; downstream harnesses
+/// reach the mock state through their own wiring (e.g. the integration
+/// crate's `mock_x()` constructors).
 ///
 /// [`DxlUart`]: crate::dxl::uart::DxlUart
 pub struct TestProviders;

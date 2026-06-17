@@ -1,9 +1,9 @@
-use std::vec::Vec;
+use mockall::mock;
 
 use crate::traits::dxl::TxBus;
 
-/// One entry per [`TxBus`] call; tests assert the recorded sequence
-/// against expected wire-driver activity.
+/// One entry per [`TxBus`] call; downstream test harnesses (e.g. the
+/// integration crate's spy state) use this as the recorded shape.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub enum TxBusOp {
     StartNow { byte_count: u16 },
@@ -11,21 +11,11 @@ pub enum TxBusOp {
     HandleTxComplete,
 }
 
-#[derive(Default)]
-pub struct MockTxBus {
-    pub log: Vec<TxBusOp>,
-}
-
-impl TxBus for MockTxBus {
-    fn start_now(&mut self, byte_count: u16) {
-        self.log.push(TxBusOp::StartNow { byte_count });
-    }
-
-    fn handle_start(&mut self) {
-        self.log.push(TxBusOp::HandleStart);
-    }
-
-    fn handle_tx_complete(&mut self) {
-        self.log.push(TxBusOp::HandleTxComplete);
+mock! {
+    pub TxBus {}
+    impl TxBus for TxBus {
+        fn start_now(&mut self, byte_count: u16);
+        fn handle_start(&mut self);
+        fn handle_tx_complete(&mut self);
     }
 }

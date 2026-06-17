@@ -1,22 +1,6 @@
-use std::vec::Vec;
+use mockall::mock;
 
 use crate::traits::dxl::{DmaFlags, EdgeDma};
-
-/// Configurable HT/TC flags + remaining count. Tests stage the next ISR
-/// view by writing the fields; the read+ack call returns the staged flags
-/// and pushes them into `ack_log` so the test can assert the sequence.
-/// `pause` / `resume` toggle `paused` and append to `op_log`; while
-/// `paused`, `read_and_ack` returns `DmaFlags::default()` without
-/// consuming the staged flags — mirroring production where masking
-/// HT/TC IE keeps the IRQ from firing in the first place.
-#[derive(Default)]
-pub struct MockEdgeDma {
-    pub next_flags: DmaFlags,
-    pub remaining: u16,
-    pub ack_log: Vec<DmaFlags>,
-    pub paused: bool,
-    pub op_log: Vec<EdgeDmaOp>,
-}
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub enum EdgeDmaOp {
@@ -24,31 +8,13 @@ pub enum EdgeDmaOp {
     Resume,
 }
 
-impl EdgeDma for MockEdgeDma {
-    fn read_and_ack(&mut self) -> DmaFlags {
-        if self.paused {
-            let flags = DmaFlags::default();
-            self.ack_log.push(flags);
-            return flags;
-        }
-        let flags = self.next_flags;
-        self.ack_log.push(flags);
-        self.next_flags = DmaFlags::default();
-        flags
-    }
-
-    fn remaining(&self) -> u16 {
-        self.remaining
-    }
-
-    fn pause(&mut self) {
-        self.paused = true;
-        self.op_log.push(EdgeDmaOp::Pause);
-    }
-
-    fn resume(&mut self) {
-        self.paused = false;
-        self.op_log.push(EdgeDmaOp::Resume);
+mock! {
+    pub EdgeDma {}
+    impl EdgeDma for EdgeDma {
+        fn read_and_ack(&mut self) -> DmaFlags;
+        fn remaining(&self) -> u16;
+        fn pause(&mut self);
+        fn resume(&mut self);
     }
 }
 
