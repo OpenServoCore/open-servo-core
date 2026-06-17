@@ -17,12 +17,14 @@ pub mod time;
 pub mod uart;
 pub mod wire;
 
-pub use decode::{format_hex, parse_status};
+pub use decode::{format_hex, parse_status, parse_status_stream};
 pub use effect::Effect;
 pub use engine::Sim;
 pub use host::Host;
 pub use registry::{DeviceId, DeviceRegistry};
-pub use servo::Servo;
+pub use servo::{
+    DEFAULT_DXL_ID, DEFAULT_FIRMWARE_VERSION, DEFAULT_MODEL_NUMBER, DEFAULT_RDT_US, Servo,
+};
 pub use source::EventSource;
 pub use time::{Clock, SimTime};
 pub use uart::{RxDecoder, RxEffect, RxLogEntry, RxLogKind, TxEncoder, TxLogEntry, UartRx, UartTx};

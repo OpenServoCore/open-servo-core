@@ -1,2 +1,2 @@
-mod fixtures;
 mod ping;
+mod support;

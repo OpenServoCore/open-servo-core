@@ -12,7 +12,7 @@ use dxl_protocol::SoftwareCrcUmts;
 use dxl_protocol::types::Id;
 use osc_core::services::dxl::Dxl;
 use osc_core::traits::{DxlBus, DxlDispatcher};
-use osc_core::{BaudRate, Shared};
+use osc_core::{BaudRate, RegionStorage, Shared, StatusReturnLevel};
 use osc_drivers::dxl::uart::DxlUart;
 use osc_drivers::dxl::uart::clock::Clock as DxlClock;
 use osc_drivers::dxl::uart::codec::Codec;
@@ -29,8 +29,10 @@ use crate::sim::defaults::{DEFAULT_BAUD, EDGE_BUF_LEN, RX_BUF_LEN, SERVO_CLOCK, 
 use crate::sim::uart::{UartRx, UartTx, bit_period_ns};
 use crate::sim::{Clock, DeviceId, Effect, EventSource, SimTime};
 
-const DEFAULT_DXL_ID: Id = Id::new(1);
-const DEFAULT_RDT_US: u32 = 250;
+pub const DEFAULT_DXL_ID: Id = Id::new(1);
+pub const DEFAULT_RDT_US: u32 = 250;
+pub const DEFAULT_MODEL_NUMBER: u16 = 0xC0DE;
+pub const DEFAULT_FIRMWARE_VERSION: u8 = 0x01;
 
 type ServoUart = DxlUart<TestProviders, RX_BUF_LEN, EDGE_BUF_LEN, TX_BUF_LEN>;
 
@@ -85,6 +87,10 @@ impl Servo {
             rx_seq: 0,
             edge_seq: 0,
         };
+        s.shared.table.config.with_mut(|c| {
+            c.identity.model_number = DEFAULT_MODEL_NUMBER;
+            c.identity.firmware_version = DEFAULT_FIRMWARE_VERSION;
+        });
         s.rebuild_uart();
         s
     }
@@ -102,6 +108,10 @@ impl Servo {
 
     pub fn with_dxl_id(mut self, dxl_id: Id) -> Self {
         self.dxl_id = dxl_id;
+        self.shared
+            .table
+            .config
+            .with_mut(|c| c.comms.id = dxl_id.as_byte());
         self.rebuild_uart();
         self
     }
@@ -109,6 +119,30 @@ impl Servo {
     pub fn with_rdt_us(mut self, rdt_us: u32) -> Self {
         self.rdt_us = rdt_us;
         self.rebuild_uart();
+        self
+    }
+
+    pub fn with_status_return_level(self, level: StatusReturnLevel) -> Self {
+        self.shared
+            .table
+            .config
+            .with_mut(|c| c.comms.status_return_level = level);
+        self
+    }
+
+    pub fn with_model_number(self, model: u16) -> Self {
+        self.shared
+            .table
+            .config
+            .with_mut(|c| c.identity.model_number = model);
+        self
+    }
+
+    pub fn with_firmware_version(self, fw: u8) -> Self {
+        self.shared
+            .table
+            .config
+            .with_mut(|c| c.identity.firmware_version = fw);
         self
     }
 
@@ -167,7 +201,6 @@ impl Servo {
         self.tx_scheduler_state = built.tx_scheduler_state;
         self.fast_last_scheduler_state = built.fast_last_scheduler_state;
         self.dxl = Dxl::new();
-        self.shared = Shared::new();
         self.uart_tx = UartTx::new(self.baud);
         self.uart_rx = UartRx::new(self.baud);
         self.rx_seq = 0;

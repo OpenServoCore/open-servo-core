@@ -1,0 +1,6 @@
+---
+source: integration/tests/protocol/ping.rs
+assertion_line: 90
+expression: format_hex(&rx)
+---
+ff ff fd 00 01 07 00 55 00 de c0 01 5b cb ff ff fd 00 02 07 00 55 00 de c0 01 51 fb ff ff fd 00 03 07 00 55 00 de c0 01 57 eb

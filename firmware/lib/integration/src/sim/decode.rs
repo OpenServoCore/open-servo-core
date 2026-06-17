@@ -7,7 +7,9 @@
 use core::fmt::Write;
 
 use dxl_protocol::crc::SoftwareCrcUmts;
-use dxl_protocol::streaming::{Event, HeaderEvent, Parser, PayloadEvent, StatusPayload};
+use dxl_protocol::streaming::{
+    Event, HeaderEvent, Parser, PayloadEvent, StatusHeader, StatusPayload,
+};
 use dxl_protocol::types::{Instruction, PingStatus, Status};
 
 pub fn format_hex(bytes: &[u8]) -> String {
@@ -27,24 +29,45 @@ pub fn format_hex(bytes: &[u8]) -> String {
 /// a DXL Status reply carries no instruction byte — its body is opaque to the
 /// parser, and the master must know what was sent to interpret what came back.
 pub fn parse_status(req: Instruction, wire: &[u8]) -> Status<'_> {
+    let mut iter = parse_status_stream(req, wire).into_iter();
+    let first = iter.next().expect("parse_status: no Status reply in wire");
+    assert!(
+        iter.next().is_none(),
+        "parse_status: more than one Status reply on wire; use parse_status_stream",
+    );
+    first
+}
+
+/// Decodes every consecutive Status reply on the wire (back-to-back broadcast
+/// replies, multi-servo Sync/Bulk responses, etc.) in the order they appear.
+pub fn parse_status_stream(req: Instruction, wire: &[u8]) -> Vec<Status<'_>> {
     let mut parser: Parser<SoftwareCrcUmts> = Parser::new();
     let events: Vec<Event> = parser.feed(wire).collect();
 
-    let header = events
-        .iter()
-        .find_map(|e| match e {
-            Event::Header(HeaderEvent::Status(h)) => Some(*h),
-            _ => None,
-        })
-        .expect("parse_status: no Status header in wire");
-
-    let body = events.iter().find_map(|e| match e {
-        Event::Payload(PayloadEvent::Status(StatusPayload::ReadDataChunk { offset, length })) => {
-            Some(&wire[*offset as usize..(*offset + *length) as usize])
+    let mut replies = Vec::new();
+    let mut pending_header: Option<StatusHeader> = None;
+    let mut pending_body: Option<&[u8]> = None;
+    for ev in &events {
+        match ev {
+            Event::Header(HeaderEvent::Status(h)) => pending_header = Some(*h),
+            Event::Payload(PayloadEvent::Status(StatusPayload::ReadDataChunk {
+                offset,
+                length,
+            })) => {
+                pending_body = Some(&wire[*offset as usize..(*offset + *length) as usize]);
+            }
+            Event::Crc => {
+                if let Some(header) = pending_header.take() {
+                    replies.push(decode_one(req, header, pending_body.take()));
+                }
+            }
+            _ => {}
         }
-        _ => None,
-    });
+    }
+    replies
+}
 
+fn decode_one<'a>(req: Instruction, header: StatusHeader, body: Option<&'a [u8]>) -> Status<'a> {
     match req {
         Instruction::Ping => {
             let body = body.expect("parse_status: Ping reply missing payload");

@@ -1,37 +1,14 @@
-use crate::fixtures::{OneServo, one_servo};
+use crate::support::{Setup, setup};
 use dxl_protocol::types::{Id, Instruction, PingStatus, Status, StatusError};
-use osc_core::{RegionStorage, StatusReturnLevel};
-use osc_integration::sim::{Host, Servo, SimTime, format_hex, parse_status};
-use rstest::rstest;
+use osc_core::StatusReturnLevel;
+use osc_integration::sim::{
+    DEFAULT_FIRMWARE_VERSION, DEFAULT_MODEL_NUMBER, Host, Servo, Sim, SimTime, format_hex,
+    parse_status, parse_status_stream,
+};
 
-#[test_log::test(rstest)]
-fn ping_to_dxl_id_zero_returns_model_and_fw(one_servo: OneServo) {
-    let OneServo { mut sim, host, .. } = one_servo;
-
-    sim.advance(SimTime::from_ms(5), |sim, now| {
-        sim.device_mut::<Host>(host)
-            .unwrap()
-            .send_ping(now, Id::new(0));
-    });
-
-    let rx = sim.device::<Host>(host).unwrap().rx_bytes();
-    insta::assert_snapshot!(format_hex(&rx));
-    assert_eq!(
-        parse_status(Instruction::Ping, &rx),
-        Status::Ping {
-            id: Id::new(0),
-            error: StatusError::OK,
-            status: PingStatus {
-                model: 0,
-                fw_version: 0,
-            },
-        },
-    );
-}
-
-#[test_log::test(rstest)]
-fn ping_to_wrong_id_yields_no_reply(one_servo: OneServo) {
-    let OneServo { mut sim, host, .. } = one_servo;
+#[test_log::test]
+fn ping_to_self_id_returns_model_and_fw() {
+    let Setup { mut sim, host, .. } = setup(1);
 
     sim.advance(SimTime::from_ms(5), |sim, now| {
         sim.device_mut::<Host>(host)
@@ -40,76 +17,107 @@ fn ping_to_wrong_id_yields_no_reply(one_servo: OneServo) {
     });
 
     let rx = sim.device::<Host>(host).unwrap().rx_bytes();
+    insta::assert_snapshot!(format_hex(&rx));
+    assert_eq!(
+        parse_status(Instruction::Ping, &rx),
+        Status::Ping {
+            id: Id::new(1),
+            error: StatusError::OK,
+            status: PingStatus {
+                model: DEFAULT_MODEL_NUMBER,
+                fw_version: DEFAULT_FIRMWARE_VERSION,
+            },
+        },
+    );
+}
+
+#[test_log::test]
+fn ping_to_wrong_id_yields_no_reply() {
+    let Setup { mut sim, host, .. } = setup(1);
+
+    sim.advance(SimTime::from_ms(5), |sim, now| {
+        sim.device_mut::<Host>(host)
+            .unwrap()
+            .send_ping(now, Id::new(2));
+    });
+
+    let rx = sim.device::<Host>(host).unwrap().rx_bytes();
     assert!(rx.is_empty(), "expected silent drop, got {:?}", rx);
 }
 
-#[test_log::test(rstest)]
-fn ping_replies_when_srl_is_none(one_servo: OneServo) {
-    let OneServo {
-        mut sim,
-        host,
-        servo,
-    } = one_servo;
-    set_srl(&mut sim, servo, StatusReturnLevel::None);
-
-    sim.advance(SimTime::from_ms(5), |sim, now| {
-        sim.device_mut::<Host>(host)
-            .unwrap()
-            .send_ping(now, Id::new(0));
-    });
-
-    let rx = sim.device::<Host>(host).unwrap().rx_bytes();
+#[test_log::test]
+fn ping_replies_when_srl_is_none() {
+    let rx = ping_under_srl(StatusReturnLevel::None);
     assert_eq!(
         parse_status(Instruction::Ping, &rx),
         Status::Ping {
-            id: Id::new(0),
+            id: Id::new(1),
             error: StatusError::OK,
             status: PingStatus {
-                model: 0,
-                fw_version: 0,
+                model: DEFAULT_MODEL_NUMBER,
+                fw_version: DEFAULT_FIRMWARE_VERSION,
             },
         },
     );
 }
 
-#[test_log::test(rstest)]
-fn ping_replies_when_srl_is_read(one_servo: OneServo) {
-    let OneServo {
-        mut sim,
-        host,
-        servo,
-    } = one_servo;
-    set_srl(&mut sim, servo, StatusReturnLevel::Read);
-
-    sim.advance(SimTime::from_ms(5), |sim, now| {
-        sim.device_mut::<Host>(host)
-            .unwrap()
-            .send_ping(now, Id::new(0));
-    });
-
-    let rx = sim.device::<Host>(host).unwrap().rx_bytes();
+#[test_log::test]
+fn ping_replies_when_srl_is_read() {
+    let rx = ping_under_srl(StatusReturnLevel::Read);
     assert_eq!(
         parse_status(Instruction::Ping, &rx),
         Status::Ping {
-            id: Id::new(0),
+            id: Id::new(1),
             error: StatusError::OK,
             status: PingStatus {
-                model: 0,
-                fw_version: 0,
+                model: DEFAULT_MODEL_NUMBER,
+                fw_version: DEFAULT_FIRMWARE_VERSION,
             },
         },
     );
 }
 
-fn set_srl(
-    sim: &mut osc_integration::sim::Sim,
-    servo: osc_integration::sim::DeviceId,
-    level: StatusReturnLevel,
-) {
-    sim.device::<Servo>(servo)
-        .unwrap()
-        .shared()
-        .table
-        .config
-        .with_mut(|c| c.comms.status_return_level = level);
+#[test_log::test]
+fn ping_broadcast_replies_in_id_order() {
+    let Setup { mut sim, host, .. } = setup(3);
+
+    sim.advance(SimTime::from_ms(5), |sim, now| {
+        sim.device_mut::<Host>(host)
+            .unwrap()
+            .send_ping(now, Id::BROADCAST);
+    });
+
+    let rx = sim.device::<Host>(host).unwrap().rx_bytes();
+    insta::assert_snapshot!(format_hex(&rx));
+
+    let replies = parse_status_stream(Instruction::Ping, &rx);
+    let expected: Vec<Status<'_>> = (1u8..=3)
+        .map(|id| Status::Ping {
+            id: Id::new(id),
+            error: StatusError::OK,
+            status: PingStatus {
+                model: DEFAULT_MODEL_NUMBER,
+                fw_version: DEFAULT_FIRMWARE_VERSION,
+            },
+        })
+        .collect();
+    assert_eq!(replies, expected);
+}
+
+fn ping_under_srl(level: StatusReturnLevel) -> Vec<u8> {
+    let mut sim = Sim::default();
+    let host = sim.add_device(Host::new);
+    sim.add_device(|id| {
+        Servo::new(id)
+            .with_dxl_id(Id::new(1))
+            .with_status_return_level(level)
+    });
+
+    sim.advance(SimTime::from_ms(5), |sim, now| {
+        sim.device_mut::<Host>(host)
+            .unwrap()
+            .send_ping(now, Id::new(1));
+    });
+
+    sim.device::<Host>(host).unwrap().rx_bytes()
 }
