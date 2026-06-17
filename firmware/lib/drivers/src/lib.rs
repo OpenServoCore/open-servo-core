@@ -3,6 +3,7 @@
 
 pub mod dxl;
 pub mod led;
+pub mod log;
 pub mod traits;
 pub mod types;
 pub mod util;
