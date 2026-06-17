@@ -19,6 +19,9 @@ pub struct Host {
     baud: BaudRate,
     uart_tx: UartTx,
     uart_rx: UartRx,
+    /// Tracks the sim clock so `send_*` can pace TX bytes without each caller
+    /// threading `now` through. Updated on every `EventSource::advance`.
+    now: SimTime,
 }
 
 impl Host {
@@ -29,6 +32,7 @@ impl Host {
             baud: DEFAULT_BAUD,
             uart_tx: UartTx::new(DEFAULT_BAUD),
             uart_rx: UartRx::new(DEFAULT_BAUD),
+            now: SimTime::ZERO,
         }
     }
 
@@ -69,18 +73,32 @@ impl Host {
         self.uart_tx.clear_log();
     }
 
-    /// Encode a Ping for `target` and queue one TX byte per frame byte onto
-    /// [`UartTx`] at `now + i * 10 * bit_period_ns`. The first byte goes out
-    /// on the next [`Sim::advance`](crate::sim::Sim::advance) that reaches
-    /// `now`.
-    pub fn send_ping(&mut self, now: SimTime, target: Id) {
+    /// Encode a Ping for `target` and queue the frame onto [`UartTx`] at
+    /// baud-stride pacing starting at the host's current sim time. The first
+    /// byte goes out on the next [`Sim::advance`](crate::sim::Sim::advance)
+    /// that reaches it.
+    pub fn send_ping(&mut self, target: Id) {
         let mut buf: Vec<u8> = Vec::new();
         InstructionEncoder::<_, SoftwareCrcUmts>::new(&mut buf)
             .ping(target)
             .expect("ping frame encodes");
+        self.queue_frame(&buf);
+    }
+
+    /// Encode a Read for `target` at `addr` for `length` bytes and queue the
+    /// frame onto [`UartTx`] at baud-stride pacing.
+    pub fn send_read(&mut self, target: Id, addr: u16, length: u16) {
+        let mut buf: Vec<u8> = Vec::new();
+        InstructionEncoder::<_, SoftwareCrcUmts>::new(&mut buf)
+            .read(target, addr, length)
+            .expect("read frame encodes");
+        self.queue_frame(&buf);
+    }
+
+    fn queue_frame(&mut self, buf: &[u8]) {
         let stride = 10 * self.uart_tx.bit_period_ns();
         for (i, byte) in buf.iter().enumerate() {
-            self.uart_tx.queue_byte(*byte, now + i as u64 * stride);
+            self.uart_tx.queue_byte(*byte, self.now + i as u64 * stride);
         }
     }
 }
@@ -94,6 +112,7 @@ impl EventSource for Host {
     }
 
     fn advance(&mut self, t: SimTime) -> Vec<Effect> {
+        self.now = t;
         // RX log accumulates inside UartRx; the Host has no protocol layer
         // yet, so the returned RxEffects are ignored here.
         let _ = self.uart_rx.advance(t);
@@ -115,6 +134,7 @@ impl EventSource for Host {
     fn reset(&mut self) {
         self.uart_tx = UartTx::new(self.baud);
         self.uart_rx = UartRx::new(self.baud);
+        self.now = SimTime::ZERO;
     }
 
     fn as_any(&self) -> &dyn Any {
@@ -146,10 +166,10 @@ mod tests {
     fn tx_log_records_encoded_frame_in_order() {
         let mut sim = Sim::default();
         let host = sim.add_device(Host::new);
-        sim.advance(SimTime::from_ms(5), |sim, now| {
+        sim.advance(SimTime::from_ms(5), |sim, _| {
             sim.device_mut::<Host>(host)
                 .unwrap()
-                .send_ping(now, Id::new(0x05));
+                .send_ping(Id::new(0x05));
         });
 
         let tx_bytes: Vec<u8> = sim
@@ -168,10 +188,10 @@ mod tests {
         let host = sim.add_device(Host::new);
         let receiver = sim.add_device(Host::new);
 
-        sim.advance(SimTime::from_ms(5), |sim, now| {
+        sim.advance(SimTime::from_ms(5), |sim, _| {
             sim.device_mut::<Host>(host)
                 .unwrap()
-                .send_ping(now, Id::new(0x05));
+                .send_ping(Id::new(0x05));
         });
 
         let rx = sim.device::<Host>(receiver).unwrap();
@@ -189,10 +209,10 @@ mod tests {
     fn tx_byte_timestamps_align_with_baud_stride() {
         let mut sim = Sim::default();
         let host = sim.add_device(Host::new);
-        sim.advance(SimTime::from_ms(5), |sim, now| {
+        sim.advance(SimTime::from_ms(5), |sim, _| {
             sim.device_mut::<Host>(host)
                 .unwrap()
-                .send_ping(now, Id::new(0x01));
+                .send_ping(Id::new(0x01));
         });
 
         let stride = 10 * crate::sim::uart::bit_period_ns(DEFAULT_BAUD);
@@ -206,10 +226,10 @@ mod tests {
     fn clear_logs_drops_history_without_resetting_queues() {
         let mut sim = Sim::default();
         let host = sim.add_device(Host::new);
-        sim.advance(SimTime::from_ms(5), |sim, now| {
+        sim.advance(SimTime::from_ms(5), |sim, _| {
             sim.device_mut::<Host>(host)
                 .unwrap()
-                .send_ping(now, Id::new(0x01));
+                .send_ping(Id::new(0x01));
         });
         assert!(!sim.device::<Host>(host).unwrap().tx_log().is_empty());
 
@@ -223,10 +243,10 @@ mod tests {
         let mut sim = Sim::default();
         let host = sim.add_device(Host::new);
         let receiver = sim.add_device(Host::new);
-        sim.advance(SimTime::from_ms(5), |sim, now| {
+        sim.advance(SimTime::from_ms(5), |sim, _| {
             sim.device_mut::<Host>(host)
                 .unwrap()
-                .send_ping(now, Id::new(0x01));
+                .send_ping(Id::new(0x01));
         });
         assert_ne!(sim.now(), SimTime::ZERO);
         assert!(!sim.device::<Host>(receiver).unwrap().rx_log().is_empty());

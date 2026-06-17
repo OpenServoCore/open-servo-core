@@ -10,10 +10,8 @@ use osc_integration::sim::{
 fn ping_to_self_id_returns_model_and_fw() {
     let Setup { mut sim, host, .. } = setup(1);
 
-    sim.advance(SimTime::from_ms(5), |sim, now| {
-        sim.device_mut::<Host>(host)
-            .unwrap()
-            .send_ping(now, Id::new(1));
+    sim.advance(SimTime::from_ms(5), |sim, _| {
+        sim.device_mut::<Host>(host).unwrap().send_ping(Id::new(1));
     });
 
     let rx = sim.device::<Host>(host).unwrap().rx_bytes();
@@ -35,10 +33,8 @@ fn ping_to_self_id_returns_model_and_fw() {
 fn ping_to_wrong_id_yields_no_reply() {
     let Setup { mut sim, host, .. } = setup(1);
 
-    sim.advance(SimTime::from_ms(5), |sim, now| {
-        sim.device_mut::<Host>(host)
-            .unwrap()
-            .send_ping(now, Id::new(2));
+    sim.advance(SimTime::from_ms(5), |sim, _| {
+        sim.device_mut::<Host>(host).unwrap().send_ping(Id::new(2));
     });
 
     let rx = sim.device::<Host>(host).unwrap().rx_bytes();
@@ -81,10 +77,10 @@ fn ping_replies_when_srl_is_read() {
 fn ping_broadcast_replies_in_id_order() {
     let Setup { mut sim, host, .. } = setup(3);
 
-    sim.advance(SimTime::from_ms(5), |sim, now| {
+    sim.advance(SimTime::from_ms(5), |sim, _| {
         sim.device_mut::<Host>(host)
             .unwrap()
-            .send_ping(now, Id::BROADCAST);
+            .send_ping(Id::BROADCAST);
     });
 
     let rx = sim.device::<Host>(host).unwrap().rx_bytes();
@@ -113,10 +109,8 @@ fn ping_under_srl(level: StatusReturnLevel) -> Vec<u8> {
             .with_status_return_level(level)
     });
 
-    sim.advance(SimTime::from_ms(5), |sim, now| {
-        sim.device_mut::<Host>(host)
-            .unwrap()
-            .send_ping(now, Id::new(1));
+    sim.advance(SimTime::from_ms(5), |sim, _| {
+        sim.device_mut::<Host>(host).unwrap().send_ping(Id::new(1));
     });
 
     sim.device::<Host>(host).unwrap().rx_bytes()

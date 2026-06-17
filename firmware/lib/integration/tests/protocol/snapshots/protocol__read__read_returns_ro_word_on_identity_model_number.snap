@@ -1,0 +1,6 @@
+---
+source: integration/tests/protocol/read.rs
+assertion_line: 49
+expression: format_hex(&rx)
+---
+ff ff fd 00 01 06 00 55 00 de c0 49 9d
