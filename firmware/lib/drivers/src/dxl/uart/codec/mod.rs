@@ -658,7 +658,7 @@ impl<
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::mocks::FakeEdgeDma;
+    use crate::mocks::MockEdgeDma;
     use dxl_protocol::streaming::{HeaderEvent, InstructionHeader, ResyncKind};
     use dxl_protocol::types::{Id, StatusError};
     use dxl_protocol::{InstructionEncoder, SoftwareCrcUmts, StatusEncoder};
@@ -672,10 +672,10 @@ mod tests {
     const TEST_ID: u8 = 0x07;
     const FOREIGN_ID: u8 = 0x42;
 
-    type TestCodec = Codec<FakeEdgeDma, SoftwareCrcUmts, RX_BUF_LEN, EDGE_BUF_LEN, TX_BUF_LEN>;
+    type TestCodec = Codec<MockEdgeDma, SoftwareCrcUmts, RX_BUF_LEN, EDGE_BUF_LEN, TX_BUF_LEN>;
 
     fn make() -> TestCodec {
-        Codec::new(FakeEdgeDma::default())
+        Codec::new(MockEdgeDma::default())
     }
 
     fn wire_ping(id: u8) -> Vec<u8, 32> {

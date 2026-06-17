@@ -241,7 +241,7 @@ impl<S: FastLastScheduler> FastLast<S> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::mocks::{FakeFastLastScheduler, FastLastSchedulerOp};
+    use crate::mocks::{FastLastSchedulerOp, MockFastLastScheduler};
     use core::cell::Cell;
 
     /// FAST_LAST_ENTRY_TICKS matching the mock — the back-date applied to
@@ -254,8 +254,8 @@ mod tests {
     /// 3M byte_time as u32 for arithmetic on offsets.
     const BYTE_TICKS_3M_U32: u32 = BYTE_TICKS_3M as u32;
 
-    fn fast_last() -> FastLast<FakeFastLastScheduler> {
-        FastLast::new(FakeFastLastScheduler::default())
+    fn fast_last() -> FastLast<MockFastLastScheduler> {
+        FastLast::new(MockFastLastScheduler::default())
     }
 
     #[test]

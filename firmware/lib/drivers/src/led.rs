@@ -76,12 +76,12 @@ impl<P: DigitalOut, M: Monotonic> Led<P, M> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::mocks::{FakeDigitalOut, FakeMonotonic};
+    use crate::mocks::{MockDigitalOut, MockMonotonic};
 
-    // FakeMonotonic uses 1 tick = 1 µs, so test arithmetic stays in µs.
+    // MockMonotonic uses 1 tick = 1 µs, so test arithmetic stays in µs.
 
-    fn led_with(pattern: Pattern) -> Led<FakeDigitalOut, FakeMonotonic> {
-        let mut led = Led::new(FakeDigitalOut::default(), FakeMonotonic::default());
+    fn led_with(pattern: Pattern) -> Led<MockDigitalOut, MockMonotonic> {
+        let mut led = Led::new(MockDigitalOut::default(), MockMonotonic::default());
         led.set_pattern(pattern);
         led
     }

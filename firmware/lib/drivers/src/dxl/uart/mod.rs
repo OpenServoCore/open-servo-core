@@ -892,8 +892,8 @@ mod tests {
     extern crate alloc;
     use super::*;
     use crate::mocks::{
-        FakeClockTrim, FakeEdgeDma, FakeFastLastScheduler, FakeRxDma, FakeTxBus, FakeTxScheduler,
-        FakeUsartBaud, FastLastSchedulerOp, ScheduleOp, TestProviders, TxBusOp,
+        FastLastSchedulerOp, MockClockTrim, MockEdgeDma, MockFastLastScheduler, MockRxDma,
+        MockTxBus, MockTxScheduler, MockUsartBaud, ScheduleOp, TestProviders, TxBusOp,
     };
     use dxl_protocol::types::StatusError;
     use dxl_protocol::{InstructionEncoder, SoftwareCrcUmts, StatusEncoder};
@@ -910,28 +910,28 @@ mod tests {
     const TEST_ID: u8 = 0x07;
     const TEST_RDT_US: u32 = 250;
 
-    type TestCodec = Codec<FakeEdgeDma, SoftwareCrcUmts, RX_BUF_LEN, EDGE_BUF_LEN, TX_BUF_LEN>;
+    type TestCodec = Codec<MockEdgeDma, SoftwareCrcUmts, RX_BUF_LEN, EDGE_BUF_LEN, TX_BUF_LEN>;
     type TestBus = DxlUart<TestProviders, RX_BUF_LEN, EDGE_BUF_LEN, TX_BUF_LEN>;
 
-    fn make_clock(baud: BaudRate) -> Clock<FakeUsartBaud, FakeClockTrim> {
-        Clock::new(baud, FakeUsartBaud::default(), FakeClockTrim::default())
+    fn make_clock(baud: BaudRate) -> Clock<MockUsartBaud, MockClockTrim> {
+        Clock::new(baud, MockUsartBaud::default(), MockClockTrim::default())
     }
 
     fn make_bus_with(codec: TestCodec, baud: BaudRate) -> TestBus {
         DxlUart::new(
             codec,
             make_clock(baud),
-            FakeRxDma::default(),
-            FakeTxScheduler::default(),
-            FakeTxBus::default(),
-            FastLast::new(FakeFastLastScheduler::default()),
+            MockRxDma::default(),
+            MockTxScheduler::default(),
+            MockTxBus::default(),
+            FastLast::new(MockFastLastScheduler::default()),
             TEST_ID,
             TEST_RDT_US,
         )
     }
 
     fn make_bus() -> TestBus {
-        make_bus_with(Codec::new(FakeEdgeDma::default()), BaudRate::B3000000)
+        make_bus_with(Codec::new(MockEdgeDma::default()), BaudRate::B3000000)
     }
 
     /// Pre-seed classifier `last_byte_start` so `packet_end_tick` reads a
@@ -944,7 +944,7 @@ mod tests {
     }
 
     /// Stage `bytes` into the codec's RX byte ring at sequence `at` AND
-    /// publish the matching DMA1_CH5 NDTR readback through `FakeRxDma` so
+    /// publish the matching DMA1_CH5 NDTR readback through `MockRxDma` so
     /// the next `bus.poll()` entry sees `on_publish(remaining)` as a no-op
     /// delta. Mirrors the chip-side wiring where the byte ring's producer
     /// head only advances via NDTR readback inside `poll()`.

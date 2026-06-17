@@ -208,22 +208,22 @@ impl<U: UsartBaud, T: ClockTrim> Clock<U, T> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::mocks::{FakeClockTrim, FakeUsartBaud};
+    use crate::mocks::{MockClockTrim, MockUsartBaud};
 
     // 9600 baud → BRR 5000 — high spec gives ample headroom for sub-tick
     // drift math without bumping against the i32 range or the deadband.
     const TEST_BAUD: BaudRate = BaudRate::B9600;
     const SPEC: u16 = 5000;
 
-    fn clock(baud: BaudRate) -> Clock<FakeUsartBaud, FakeClockTrim> {
-        Clock::new(baud, FakeUsartBaud::default(), FakeClockTrim::default())
+    fn clock(baud: BaudRate) -> Clock<MockUsartBaud, MockClockTrim> {
+        Clock::new(baud, MockUsartBaud::default(), MockClockTrim::default())
     }
 
     /// Feed one byte-time observation expressed as ticks-per-bit via
     /// `on_byte_pair`. `prev = 0`, `curr = observed_tpb * 10` lands a delta
     /// in the `[9·spec, 11·spec]` HIT window for `observed_tpb ≈ spec`, so
     /// the integrator sees the same input the production codec produces.
-    fn feed(c: &mut Clock<FakeUsartBaud, FakeClockTrim>, observed_tpb: u16) {
+    fn feed(c: &mut Clock<MockUsartBaud, MockClockTrim>, observed_tpb: u16) {
         c.on_byte_pair(0, observed_tpb * 10);
     }
 
@@ -307,7 +307,7 @@ mod tests {
     #[test]
     fn clamp_holds_trim_at_upper_bound() {
         let mut c = clock(TEST_BAUD);
-        c.trim_delta = FakeClockTrim::DELTA_MAX;
+        c.trim_delta = MockClockTrim::DELTA_MAX;
         for _ in 0..DRIFT_MIN_SAMPLES {
             feed(&mut c, SPEC - 100); // would step trim up
         }
@@ -338,7 +338,7 @@ mod tests {
 
     #[test]
     fn drift_threshold_q8_matches_formula() {
-        type C = Clock<FakeUsartBaud, FakeClockTrim>;
+        type C = Clock<MockUsartBaud, MockClockTrim>;
         assert_eq!(C::drift_threshold_q8(16), 163);
         assert_eq!(C::drift_threshold_q8(48), 491);
         assert_eq!(C::drift_threshold_q8(5000), 51171);

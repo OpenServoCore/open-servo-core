@@ -8,6 +8,9 @@ pub mod types;
 pub mod util;
 
 #[cfg(any(test, feature = "mocks"))]
+extern crate std;
+
+#[cfg(any(test, feature = "mocks"))]
 pub mod mocks;
 
 pub use types::Level;

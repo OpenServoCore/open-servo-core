@@ -7,7 +7,7 @@
 //!
 //! The driver depends on a [`EdgeDma`] adapter for HT/TC flag drain and
 //! NDTR readback; the production adapter binds to DMA1_CH7. Tests swap in
-//! [`crate::mocks::FakeEdgeDma`] and stage flags + remaining directly.
+//! [`crate::mocks::MockEdgeDma`] and stage flags + remaining directly.
 //!
 //! The ET ring depth is const-generic so a chip/board can pick its own
 //! memory budget without touching driver code; per doc §4.5 the V006
@@ -153,7 +153,7 @@ impl<R: EdgeDma, const EDGE_BUF_LEN: usize> Rx<R, EDGE_BUF_LEN> {
 }
 
 #[cfg(test)]
-impl<const EDGE_BUF_LEN: usize> Rx<crate::mocks::FakeEdgeDma, EDGE_BUF_LEN> {
+impl<const EDGE_BUF_LEN: usize> Rx<crate::mocks::MockEdgeDma, EDGE_BUF_LEN> {
     /// Stage `vals` into the edges buffer as if DMA wrote them, publish the
     /// producer head so direct `try_anchor_from_header` / `recent` reads see
     /// them, and set `remaining` so a subsequent `on_edge_advance` /
@@ -176,19 +176,19 @@ impl<const EDGE_BUF_LEN: usize> Rx<crate::mocks::FakeEdgeDma, EDGE_BUF_LEN> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::mocks::FakeEdgeDma;
+    use crate::mocks::MockEdgeDma;
     use crate::traits::dxl::DmaFlags;
 
     /// Test-side ring sizing. EDGE_BUF_LEN matches V006 per doc §4.5.
     const EDGE_BUF_LEN: usize = 128;
-    type TestRx = Rx<FakeEdgeDma, EDGE_BUF_LEN>;
+    type TestRx = Rx<MockEdgeDma, EDGE_BUF_LEN>;
 
     // 3 Mbaud at HCLK 48 MHz → ticks_per_bit = 16. One byte = 160 ticks.
     const TPB_3M: u16 = 16;
     const BYTE_TICKS_3M: u16 = 160;
 
     fn rx() -> TestRx {
-        Rx::new(FakeEdgeDma::default())
+        Rx::new(MockEdgeDma::default())
     }
 
     /// Synthesize a clean DXL header at base tick `t0` and bit-time `tpb`.
