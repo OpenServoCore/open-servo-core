@@ -95,6 +95,35 @@ impl Host {
         self.queue_frame(&buf);
     }
 
+    /// Encode a Write of `data` to `target` at `addr` and queue the frame.
+    pub fn send_write(&mut self, target: Id, addr: u16, data: &[u8]) {
+        let mut buf: Vec<u8> = Vec::new();
+        InstructionEncoder::<_, SoftwareCrcUmts>::new(&mut buf)
+            .write(target, addr, data)
+            .expect("write frame encodes");
+        self.queue_frame(&buf);
+    }
+
+    /// Encode a RegWrite of `data` to `target` at `addr` and queue the frame.
+    /// The receiver stages the bytes; an Action frame commits them atomically.
+    pub fn send_reg_write(&mut self, target: Id, addr: u16, data: &[u8]) {
+        let mut buf: Vec<u8> = Vec::new();
+        InstructionEncoder::<_, SoftwareCrcUmts>::new(&mut buf)
+            .reg_write(target, addr, data)
+            .expect("reg_write frame encodes");
+        self.queue_frame(&buf);
+    }
+
+    /// Encode an Action for `target` and queue the frame, committing any
+    /// previously staged RegWrite chain on the receiver.
+    pub fn send_action(&mut self, target: Id) {
+        let mut buf: Vec<u8> = Vec::new();
+        InstructionEncoder::<_, SoftwareCrcUmts>::new(&mut buf)
+            .action(target)
+            .expect("action frame encodes");
+        self.queue_frame(&buf);
+    }
+
     /// Encode a Reboot for `target` and queue the frame.
     pub fn send_reboot(&mut self, target: Id) {
         let mut buf: Vec<u8> = Vec::new();
