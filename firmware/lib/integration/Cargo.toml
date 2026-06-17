@@ -12,4 +12,18 @@ mockall      = "0.14"
 
 [dev-dependencies]
 env_logger = "0.11"
+insta      = "1"
+rstest     = "0.23"
 test-log   = "0.2"
+
+[[test]]
+name = "protocol"
+path = "tests/protocol/mod.rs"
+
+[[test]]
+name = "registers"
+path = "tests/registers/mod.rs"
+
+[[test]]
+name = "timing"
+path = "tests/timing/mod.rs"
