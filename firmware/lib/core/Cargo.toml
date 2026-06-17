@@ -12,6 +12,7 @@ portable-atomic.workspace  = true
 critical-section.workspace = true
 bitflags.workspace         = true
 defmt                      = { version = "1", optional = true }
+log                        = { version = "0.4", optional = true }
 
 osc-units.workspace     = true
 dxl-protocol.workspace  = true
@@ -24,3 +25,4 @@ dxl-protocol = { workspace = true, features = ["heapless"] }
 [features]
 default = []
 defmt   = ["dep:defmt", "control-table/defmt"]
+log     = ["dep:log"]
