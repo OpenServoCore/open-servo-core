@@ -22,7 +22,10 @@ pub mod scheduler;
 pub use bus::{TxBusState, mock_tx_bus};
 pub use clock::{ClockTrimState, UsartBaudState, mock_clock_trim, mock_usart_baud};
 pub use dma::{EdgeDmaState, mock_edge_dma};
-pub use primitives::{DigitalOutState, MonotonicState, mock_digital_out, mock_monotonic};
+pub use primitives::{
+    DigitalOutState, MonotonicState, WireClockState, mock_digital_out, mock_monotonic,
+    mock_wire_clock,
+};
 pub use rx::{RxDmaState, mock_rx_dma};
 pub use scheduler::{
     FastLastSchedulerState, TxSchedulerState, mock_fast_last_scheduler, mock_tx_scheduler,

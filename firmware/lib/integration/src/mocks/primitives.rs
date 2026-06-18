@@ -2,7 +2,7 @@ use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
 use osc_drivers::Level;
-use osc_drivers::mocks::{MockDigitalOut, MockMonotonic};
+use osc_drivers::mocks::{MockDigitalOut, MockMonotonic, MockWireClock};
 
 #[derive(Clone, Default)]
 pub struct DigitalOutState {
@@ -44,6 +44,27 @@ pub fn mock_monotonic() -> (MockMonotonic, MonotonicState) {
     {
         let now = state.now.clone();
         m.expect_ticks().returning_st(move || now.get());
+    }
+    (m, state)
+}
+
+#[derive(Clone, Default)]
+pub struct WireClockState {
+    now: Rc<Cell<u16>>,
+}
+
+impl WireClockState {
+    pub fn stage_now(&self, n: u16) {
+        self.now.set(n);
+    }
+}
+
+pub fn mock_wire_clock() -> (MockWireClock, WireClockState) {
+    let state = WireClockState::default();
+    let mut m = MockWireClock::new();
+    {
+        let now = state.now.clone();
+        m.expect_now().returning_st(move || now.get());
     }
     (m, state)
 }

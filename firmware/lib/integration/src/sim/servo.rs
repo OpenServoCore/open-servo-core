@@ -22,8 +22,8 @@ use osc_drivers::traits::dxl::{DmaFlags, Providers};
 
 use crate::mocks::{
     ClockTrimState, EdgeDmaState, FastLastSchedulerState, RxDmaState, TxBusState, TxSchedulerState,
-    UsartBaudState, mock_clock_trim, mock_edge_dma, mock_fast_last_scheduler, mock_rx_dma,
-    mock_tx_bus, mock_tx_scheduler, mock_usart_baud,
+    UsartBaudState, WireClockState, mock_clock_trim, mock_edge_dma, mock_fast_last_scheduler,
+    mock_rx_dma, mock_tx_bus, mock_tx_scheduler, mock_usart_baud, mock_wire_clock,
 };
 use crate::sim::defaults::{
     DEFAULT_BAUD, EDGE_BUF_LEN, RX_BUF_LEN, TX_BUF_LEN, default_servo_clock,
@@ -83,6 +83,11 @@ pub struct Servo {
     rx_dma_state: RxDmaState,
     tx_scheduler_state: TxSchedulerState,
     fast_last_scheduler_state: FastLastSchedulerState,
+    /// Shared cell behind the `MockWireClock`'s `now()` — `chip_tick(at)`
+    /// gets staged here at the top of every event handler that pokes the
+    /// codec, so the driver self-sources the matching tick value from its
+    /// `WireClock` provider.
+    wire_clock_state: WireClockState,
 
     /// Wall-clock equivalent of the most recent `set_deadline`'s
     /// `packet_end_tick`. Sim's stand-in for the chip-side scheduler's
@@ -134,6 +139,7 @@ impl Servo {
             rx_dma_state: RxDmaState::default(),
             tx_scheduler_state: TxSchedulerState::default(),
             fast_last_scheduler_state: FastLastSchedulerState::default(),
+            wire_clock_state: WireClockState::default(),
 
             packet_end_wall: None,
             systick_fire: None,
@@ -286,6 +292,7 @@ impl Servo {
         self.rx_dma_state = built.rx_dma_state;
         self.tx_scheduler_state = built.tx_scheduler_state;
         self.fast_last_scheduler_state = built.fast_last_scheduler_state;
+        self.wire_clock_state = built.wire_clock_state;
         self.dxl = Dxl::new();
         self.uart_tx = UartTx::new(baud);
         self.uart_rx = UartRx::new(baud);
@@ -354,7 +361,8 @@ impl Servo {
                 ht: crossed_ht,
                 tc: crossed_tc,
             });
-            self.uart.on_rx_edge_advance(self.chip_tick(at));
+            self.wire_clock_state.stage_now(self.chip_tick(at));
+            self.uart.on_rx_edge_advance();
             self.poll_and_queue_tx(at);
         }
     }
@@ -385,7 +393,8 @@ impl Servo {
 
     fn handle_idle(&mut self, at: SimTime) {
         log::trace!("servo[{:?}]: handle_idle at={:?}", self.id, at);
-        self.uart.on_rx_idle(self.chip_tick(at));
+        self.wire_clock_state.stage_now(self.chip_tick(at));
+        self.uart.on_rx_idle();
         self.poll_and_queue_tx(at);
     }
 
@@ -397,6 +406,7 @@ impl Servo {
         let pre_bus = self.tx_bus_state.operations().len();
         let pre_sch = self.tx_scheduler_state.operations().len();
 
+        self.wire_clock_state.stage_now(self.chip_tick(t));
         {
             let mut bus = ServoBus {
                 uart: &mut self.uart,
@@ -637,6 +647,7 @@ struct BuiltUart {
     rx_dma_state: RxDmaState,
     tx_scheduler_state: TxSchedulerState,
     fast_last_scheduler_state: FastLastSchedulerState,
+    wire_clock_state: WireClockState,
 }
 
 fn build_uart(baud: BaudRate, dxl_id: Id, rdt_us: u32) -> BuiltUart {
@@ -647,6 +658,7 @@ fn build_uart(baud: BaudRate, dxl_id: Id, rdt_us: u32) -> BuiltUart {
     let (mock_tx_scheduler, tx_scheduler_state) = mock_tx_scheduler();
     let (mock_tx_bus, tx_bus_state) = mock_tx_bus();
     let (mock_fast_last_scheduler, fast_last_scheduler_state) = mock_fast_last_scheduler();
+    let (mock_wire_clock, wire_clock_state) = mock_wire_clock();
 
     let codec: Codec<_, SoftwareCrcUmts, RX_BUF_LEN, EDGE_BUF_LEN, TX_BUF_LEN> =
         Codec::new(mock_edge_dma);
@@ -659,6 +671,7 @@ fn build_uart(baud: BaudRate, dxl_id: Id, rdt_us: u32) -> BuiltUart {
         mock_tx_scheduler,
         mock_tx_bus,
         fast_last,
+        mock_wire_clock,
         dxl_id.as_byte(),
         rdt_us,
     );
@@ -672,6 +685,7 @@ fn build_uart(baud: BaudRate, dxl_id: Id, rdt_us: u32) -> BuiltUart {
         rx_dma_state,
         tx_scheduler_state,
         fast_last_scheduler_state,
+        wire_clock_state,
     }
 }
 
