@@ -1,4 +1,5 @@
 mod bulk_read;
+mod bulk_write;
 mod ping;
 mod read;
 mod reg_write_action;
