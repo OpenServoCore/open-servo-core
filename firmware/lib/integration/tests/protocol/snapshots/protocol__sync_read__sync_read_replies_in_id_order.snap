@@ -1,0 +1,6 @@
+---
+source: integration/tests/protocol/sync_read.rs
+assertion_line: 20
+expression: format_hex(&rx)
+---
+ff ff fd 00 01 05 00 55 00 01 56 a1 ff ff fd 00 02 05 00 55 00 02 5c 29 ff ff fd 00 03 05 00 55 00 03 5a 51
