@@ -152,6 +152,12 @@ struct InflightCtx {
     /// own slot, used to size FastBulkRead's `Middle`/`Last` emission. None for
     /// non-Bulk variants.
     slot_length: Option<u16>,
+    /// Sum of per-slot data byte counts across the chain — feeds Fast
+    /// chain `packet_length` math for First/Only emissions. Accumulated
+    /// during `slot_walk` for FastBulkRead (per-slot length varies); for
+    /// FastSyncRead derived in `into_reply_context` from header.length ×
+    /// `n_total`.
+    chain_data_bytes: u32,
     /// Slot ID seen at the most recent SyncSlot / BulkSlot demarcation
     /// before the chip's own slot lands. Updates per demarcation while
     /// `slot` is still `None`; freezes once `slot` resolves — that's the
@@ -169,6 +175,7 @@ impl InflightCtx {
             slot: None,
             bytes_before: 0,
             slot_length: None,
+            chain_data_bytes: 0,
             predecessor_id: None,
         }
     }
@@ -210,14 +217,15 @@ impl InflightCtx {
             }
             (InstructionHeader::FastSyncRead { length, .. }, Some(k)) => {
                 let n = self.next_slot_index;
-                let position = compute_fast_position(k, n, length as u32);
+                let packet_length = fast_chain_packet_length(n, (n as u32) * (length as u32));
+                let position = compute_fast_position(k, n, packet_length);
                 let bytes_before = fast_bytes_before(k, length as u32);
                 (bytes_before, Some(position))
             }
             (InstructionHeader::FastBulkRead { .. }, Some(k)) => {
                 let n = self.next_slot_index;
-                let slot_length = self.slot_length.unwrap_or(0) as u32;
-                let position = compute_fast_position(k, n, slot_length);
+                let packet_length = fast_chain_packet_length(n, self.chain_data_bytes);
+                let position = compute_fast_position(k, n, packet_length);
                 (self.bytes_before, Some(position))
             }
             _ => (0, None),
@@ -250,6 +258,14 @@ fn slot_walk(ctx: &mut InflightCtx, payload: &InstructionPayload, id: u8) {
     };
     let k = ctx.next_slot_index;
     ctx.next_slot_index = ctx.next_slot_index.saturating_add(1);
+    // Chain-total data byte accumulator runs for every BulkSlot in a Fast
+    // Bulk Read — successor slots included — because First/Only's
+    // packet_length is the sum across the whole chain.
+    if let Some(length) = slot_length
+        && let InstructionHeader::FastBulkRead { .. } = ctx.header
+    {
+        ctx.chain_data_bytes = ctx.chain_data_bytes.saturating_add(length as u32);
+    }
     if slot_id.as_byte() == id && ctx.slot.is_none() {
         ctx.slot = Some(k);
         ctx.slot_length = slot_length;
@@ -290,18 +306,23 @@ fn fast_bytes_before(k: u8, length: u32) -> u32 {
     }
 }
 
-/// Map a chain `(slot_index, total_slots, slot_length)` to the
+/// Wire length carried by the Fast chain Status header — bytes from `INST`
+/// through trailing CRC inclusive. Encoder-input for both Only and First
+/// `packet_length`. Per-slot wire shape is `err(1) + id(1) + data(L_k)`,
+/// so the sum is `INST(1) + n·2 + Σ L_k + CRC(2)`.
+fn fast_chain_packet_length(n_total: u8, chain_data_bytes: u32) -> u16 {
+    (3 + 2 * (n_total as u32) + chain_data_bytes) as u16
+}
+
+/// Map a chain `(slot_index, total_slots, packet_length)` to the
 /// [`SlotPosition`] the encoder consumes. `packet_length` on First/Only is
 /// the chain's advertised wire length — emitted straight onto the wire by
-/// [`dxl_protocol::encoder::SlotEncoder::emit`]. Surfacing `0` here is
-/// interim: the chain-total length math (sum of all slot bodies + chain CRC)
-/// needs the full slot-list walk Chunks 5/6 plumb. `slot_length` is the
-/// chip's own slot length, captured here for that future arithmetic.
-fn compute_fast_position(k: u8, n_total: u8, _slot_length: u32) -> SlotPosition {
+/// [`dxl_protocol::encoder::SlotEncoder::emit`].
+fn compute_fast_position(k: u8, n_total: u8, packet_length: u16) -> SlotPosition {
     if n_total == 1 {
-        SlotPosition::Only { packet_length: 0 }
+        SlotPosition::Only { packet_length }
     } else if k == 0 {
-        SlotPosition::First { packet_length: 0 }
+        SlotPosition::First { packet_length }
     } else if k + 1 == n_total {
         SlotPosition::Last { crc: 0 }
     } else {
@@ -674,7 +695,7 @@ impl<P: Providers, const RX_BUF_LEN: usize, const EDGE_BUF_LEN: usize, const TX_
     /// parser-event borrow on the codec RX half and the `&mut` access the
     /// send path needs on the TX half. [`Codec::split_mut`] returns the two
     /// halves disjointly so the closure sees both at once.
-    pub fn poll<F>(&mut self, mut f: F)
+    pub fn poll<F>(&mut self, now: u16, mut f: F)
     where
         F: FnMut(Event, &[u8], &mut ReplyHandle<'_, P, TX_BUF_LEN>),
     {
@@ -699,7 +720,7 @@ impl<P: Providers, const RX_BUF_LEN: usize, const EDGE_BUF_LEN: usize, const TX_
             ..
         } = self;
         let (rx, tx) = codec.split_mut();
-        rx.poll(|pe, rx_inner| match pe {
+        rx.poll(now, ticks_per_bit, |pe, rx_inner| match pe {
             PollEvent::Event {
                 ev,
                 ring,
