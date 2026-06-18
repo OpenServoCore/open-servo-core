@@ -118,6 +118,25 @@ impl<R: EdgeDma, const EDGE_BUF_LEN: usize> Rx<R, EDGE_BUF_LEN> {
         self.classifier.on_idle(edges, ticks_per_bit, on_pair);
     }
 
+    /// Catchup-walk pending edges through the classifier without touching
+    /// `last_isr` or HT/TC flags. The composite calls this at the parser's
+    /// Crc event so `last_byte_start` reflects the packet's final byte
+    /// before [`Self::packet_end_tick`] reads it: HT/TC and IDLE are the
+    /// only walker drivers, and a packet bounded by a single such event
+    /// fires Header → Crc within one parser poll, leaving the anchor
+    /// placed by [`Self::try_anchor_from_header`] but never forward-walked
+    /// across bytes past the signature. Idempotent — the reader cursor
+    /// only advances over edges the walker hadn't yet processed.
+    pub fn drain_walker<F: FnMut(u16, u16)>(&mut self, ticks_per_bit: u16, on_pair: F) {
+        let remaining = self.ring.remaining();
+        crate::log::trace!("rx: drain_walker publish remaining={}", remaining);
+        // SAFETY: see `on_edge_advance`.
+        let edges = unsafe { &mut *self.edges.get() };
+        edges.on_publish(remaining);
+        self.classifier
+            .on_edge_advance(edges, ticks_per_bit, on_pair);
+    }
+
     /// Most recent ISR wake capture — `(now, src)` recorded at the last
     /// [`Self::on_edge_advance`] / [`Self::on_idle`] entry. Composite Crc
     /// handler consumes this when the classifier was unanchored (the

@@ -397,6 +397,11 @@ impl<R: EdgeDma, CRC: CrcUmts, const RX_BUF_LEN: usize, const EDGE_BUF_LEN: usiz
         self.rx.packet_end_tick(ticks_per_bit)
     }
 
+    /// Forward to [`rx::Rx::drain_walker`].
+    pub fn drain_walker<F: FnMut(u16, u16)>(&mut self, ticks_per_bit: u16, on_pair: F) {
+        self.rx.drain_walker(ticks_per_bit, on_pair);
+    }
+
     /// Forward to [`rx::Rx::set_hsi_active`].
     pub fn set_hsi_active(&mut self, on: bool) {
         self.rx.set_hsi_active(on);

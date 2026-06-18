@@ -742,7 +742,8 @@ impl<P: Providers, const RX_BUF_LEN: usize, const EDGE_BUF_LEN: usize, const TX_
                         let target = header_target(&h).as_byte();
                         let addressable = target_addressable(&h, id);
                         crate::log::trace!(
-                            "dxl: event=header_instruction target={} addressable={}",
+                            "dxl[id={}]: event=header_instruction target={} addressable={}",
+                            id,
                             target,
                             addressable
                         );
@@ -763,14 +764,18 @@ impl<P: Providers, const RX_BUF_LEN: usize, const EDGE_BUF_LEN: usize, const TX_
                         }
                     }
                     Event::Header(HeaderEvent::Status(sh)) => {
-                        crate::log::trace!("dxl: event=header_status id={}", sh.id.as_byte());
+                        crate::log::trace!(
+                            "dxl[id={}]: event=header_status status_id={}",
+                            id,
+                            sh.id.as_byte()
+                        );
                         *inflight = None;
                         PollAction::Skip {
                             id: sh.id.as_byte(),
                         }
                     }
                     Event::Payload(PayloadEvent::Instruction(p)) => {
-                        crate::log::trace!("dxl: event=payload_instruction");
+                        crate::log::trace!("dxl[id={}]: event=payload_instruction", id);
                         if let Some(ctx) = inflight.as_mut() {
                             slot_walk(ctx, &p, id);
                         }
@@ -781,8 +786,18 @@ impl<P: Providers, const RX_BUF_LEN: usize, const EDGE_BUF_LEN: usize, const TX_
                         PollAction::Continue
                     }
                     Event::Crc => {
-                        crate::log::trace!("dxl: event=crc");
+                        crate::log::trace!("dxl[id={}]: event=crc", id);
                         if let Some(ctx) = inflight.take() {
+                            // Bring `last_byte_start` current before stamping
+                            // packet_end. The walker only drains at HT/TC or
+                            // IDLE boundaries; for a short packet bounded by a
+                            // single such event the parser fires Header → Crc
+                            // within one poll, leaving the anchor placed by
+                            // `try_anchor_from_header` but never forward-walked
+                            // across bytes past the signature.
+                            rx_inner.drain_walker(ticks_per_bit, |prev, curr| {
+                                clock.on_byte_pair(prev, curr)
+                            });
                             // Anchored path is the common case; fallback fires
                             // when interference / edge loss starved the
                             // classifier. FAST chain ops skip the fallback
@@ -798,7 +813,7 @@ impl<P: Providers, const RX_BUF_LEN: usize, const EDGE_BUF_LEN: usize, const TX_
                                 }
                             };
                             if let Some(t) = packet_end_tick {
-                                crate::log::debug!("dxl: crc packet_end_tick={}", t);
+                                crate::log::debug!("dxl[id={}]: crc packet_end_tick={}", id, t);
                                 // At Crc-of-host-instruction, the codec's
                                 // wire position has just walked past the
                                 // request's last CRC byte — the next byte on
@@ -820,7 +835,7 @@ impl<P: Providers, const RX_BUF_LEN: usize, const EDGE_BUF_LEN: usize, const TX_
                         PollAction::Continue
                     }
                     Event::Resync(_) => {
-                        crate::log::trace!("dxl: event=resync");
+                        crate::log::trace!("dxl[id={}]: event=resync", id);
                         rx_inner.reset_anchor();
                         *inflight = None;
                         *predecessor_id = None;
@@ -847,13 +862,15 @@ impl<P: Providers, const RX_BUF_LEN: usize, const EDGE_BUF_LEN: usize, const TX_
             }
             PollEvent::SkipComplete { id: pred } => {
                 crate::log::trace!(
-                    "dxl: skip_complete pred={} predecessor_id={:?}",
+                    "dxl[id={}]: skip_complete pred={} predecessor_id={:?}",
+                    id,
                     pred,
                     *predecessor_id
                 );
                 if *predecessor_id == Some(pred) {
                     crate::log::debug!(
-                        "dxl: skip_complete match pred={} -> start_now byte_count={}",
+                        "dxl[id={}]: skip_complete match pred={} -> start_now byte_count={}",
+                        id,
                         pred,
                         tx.tx_len()
                     );
