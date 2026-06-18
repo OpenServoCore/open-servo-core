@@ -107,6 +107,14 @@ pub trait EdgeDma {
 /// path doesn't want either signal — only NDTR.
 pub trait RxDma {
     fn remaining(&self) -> u16;
+
+    /// Bump the `edge_anchor_miss` telemetry counter. Called once per
+    /// parser Crc event where the classifier had no anchor (interference
+    /// / edge loss) and the composite invoked
+    /// [`crate::dxl::uart::codec::rx::FallbackSrc`]-driven fallback for
+    /// `packet_end_tick`. Wire-condition floor signal — peer of the
+    /// `crc_patch_deadline_miss` counter on [`FastLastScheduler`].
+    fn record_edge_anchor_miss(&mut self);
 }
 
 /// What kind of TX this is — passes through `schedule` so the provider can

@@ -10,10 +10,13 @@
 //! [`crate::mocks::MockEdgeDma`] and stage flags + remaining directly.
 //!
 //! The ET ring depth is const-generic so a chip/board can pick its own
-//! memory budget without touching driver code; per doc §4.5 the V006
-//! defaults to `EDGE_BUF_LEN = 128`.
+//! memory budget without touching driver code. The chip-facing knob is
+//! [`sync_lookback_edges`] (the worst-case anchor back-search depth);
+//! [`edge_buf_len`] / [`rx_buf_len`] derive the matching ring sizes.
 
 mod classifier;
+
+pub use classifier::{FallbackSrc, edge_buf_len, rx_buf_len, sync_lookback_edges};
 
 use core::cell::SyncUnsafeCell;
 
@@ -32,6 +35,15 @@ pub struct Rx<R: EdgeDma, const EDGE_BUF_LEN: usize> {
     /// NDTR`) maps cleanly to a ring position.
     edges: SyncUnsafeCell<HwRing<u16, EDGE_BUF_LEN>>,
     ring: R,
+    /// Most recent ISR's wake capture — TIM2 tick at ISR entry plus the
+    /// source flavor. Set on every [`Self::on_edge_advance`] /
+    /// [`Self::on_idle`] entry; read by the composite Crc handler when
+    /// [`Self::packet_end_tick`] returns `None` to pick a fallback
+    /// formula via [`Self::packet_end_tick_fallback`]. Default value
+    /// `(0, FallbackSrc::Dma)` is unreachable in production — Crc
+    /// follows bytes which follow an ISR — but keeps the field non-
+    /// Optional so the hot path doesn't carry an `unwrap`.
+    last_isr: (u16, FallbackSrc),
 }
 
 impl<R: EdgeDma, const EDGE_BUF_LEN: usize> Rx<R, EDGE_BUF_LEN> {
@@ -40,6 +52,7 @@ impl<R: EdgeDma, const EDGE_BUF_LEN: usize> Rx<R, EDGE_BUF_LEN> {
             classifier: Classifier::new(),
             edges: SyncUnsafeCell::new(HwRing::new(0)),
             ring,
+            last_isr: (0, FallbackSrc::Dma),
         }
     }
 
@@ -62,8 +75,16 @@ impl<R: EdgeDma, const EDGE_BUF_LEN: usize> Rx<R, EDGE_BUF_LEN> {
     /// NDTR, walks newly-captured edges through the classifier. Drift
     /// pairs route through `on_pair` only while the classifier's
     /// `hsi_active` flag is set. No-op if neither flag is set (defends
-    /// against spurious vector entry).
-    pub fn on_edge_advance<F: FnMut(u16, u16)>(&mut self, ticks_per_bit: u16, on_pair: F) {
+    /// against spurious vector entry). `now` is the ISR-entry TIM2 tick,
+    /// stashed for the no-anchor fallback path at the parser's Crc
+    /// event — see [`Self::packet_end_tick_fallback`].
+    pub fn on_edge_advance<F: FnMut(u16, u16)>(
+        &mut self,
+        now: u16,
+        ticks_per_bit: u16,
+        on_pair: F,
+    ) {
+        self.last_isr = (now, FallbackSrc::Dma);
         let flags = self.ring.read_and_ack();
         crate::log::trace!("rx: on_edge_advance ht={} tc={}", flags.ht, flags.tc);
         if !flags.ht && !flags.tc {
@@ -82,15 +103,27 @@ impl<R: EdgeDma, const EDGE_BUF_LEN: usize> Rx<R, EDGE_BUF_LEN> {
 
     /// USART1 IDLE backstop. Drains any tail edges the HT/TC ISR hasn't
     /// drained yet (short packets that don't fill a half-ring never trip
-    /// HT), then clears anchor + drift flag — a packet boundary always
-    /// invalidates drift gating, regardless of CRC event ordering.
-    pub fn on_idle<F: FnMut(u16, u16)>(&mut self, ticks_per_bit: u16, on_pair: F) {
+    /// HT). Anchor + drift gating stay until the parser's Crc / Resync
+    /// event ([`reset_anchor`](Self::reset_anchor)) — IDLE only signals
+    /// "no more edges right now." `now` is the ISR-entry TIM2 tick,
+    /// stashed for the no-anchor fallback path at Crc — see
+    /// [`Self::packet_end_tick_fallback`].
+    pub fn on_idle<F: FnMut(u16, u16)>(&mut self, now: u16, ticks_per_bit: u16, on_pair: F) {
+        self.last_isr = (now, FallbackSrc::Idle);
         let remaining = self.ring.remaining();
         crate::log::trace!("rx: on_idle publish remaining={}", remaining);
         // SAFETY: see `on_edge_advance`.
         let edges = unsafe { &mut *self.edges.get() };
         edges.on_publish(remaining);
         self.classifier.on_idle(edges, ticks_per_bit, on_pair);
+    }
+
+    /// Most recent ISR wake capture — `(now, src)` recorded at the last
+    /// [`Self::on_edge_advance`] / [`Self::on_idle`] entry. Composite Crc
+    /// handler consumes this when the classifier was unanchored (the
+    /// `packet_end_tick_fallback` path).
+    pub fn last_isr_capture(&self) -> (u16, FallbackSrc) {
+        self.last_isr
     }
 
     /// Back-search the ET ring for the DXL header's 5-edge signature.
@@ -115,6 +148,15 @@ impl<R: EdgeDma, const EDGE_BUF_LEN: usize> Rx<R, EDGE_BUF_LEN> {
         self.classifier.packet_end_tick(ticks_per_bit)
     }
 
+    /// Fallback packet-end estimate for the no-anchor case — composite
+    /// calls when [`packet_end_tick`](Self::packet_end_tick) returns `None`
+    /// at the Crc event. See [`classifier::Classifier::packet_end_tick_fallback`]
+    /// for the per-source formulas.
+    pub fn packet_end_tick_fallback(&self, src: FallbackSrc, now: u16, ticks_per_bit: u16) -> u16 {
+        self.classifier
+            .packet_end_tick_fallback(src, now, ticks_per_bit)
+    }
+
     /// Toggle drift-sampling emission. Composite sets at Instruction-
     /// header events, clears at the matching CRC event.
     pub fn set_hsi_active(&mut self, on: bool) {
@@ -126,7 +168,7 @@ impl<R: EdgeDma, const EDGE_BUF_LEN: usize> Rx<R, EDGE_BUF_LEN> {
     }
 
     /// Force-drop anchor + drift flag. Composite calls at the parser's
-    /// Resync event.
+    /// Crc event (packet boundary) and Resync event (parser abort).
     pub fn reset_anchor(&mut self) {
         self.classifier.reset_anchor();
     }

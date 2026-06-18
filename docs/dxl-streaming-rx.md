@@ -114,7 +114,26 @@ The HSI drift budget is unchanged from the prior design. Static window tolerance
 
 The prior design sized the byte-time ring to match the RX ring so that byte index `i` in RX mapped to byte time `BT[i mod 64]`. With no derived ring, that constraint vanishes. RX and ET sit on independent axes, linked only by drain cadence.
 
-ET is bounded by walker latency × peak edge rate. At 3 Mbaud, 5 edges/byte, ET = 128 gives ~12.8 bytes between HT/TC walks, within the ISR-entry budget. RX is bounded by parser-drain cadence: between HT/TC events, RX must hold the bytes that arrived in that window. Worst case is 1 edge/byte (high `0xFF` density), where ET fills at byte rate and HT fires every ET/2 bytes — RX must hold ≥ ET/2 bytes between drains. With ET = 128, RX = 64 sits at the constraint floor; RX = 96 buys headroom against burst alignment.
+ET sizing balances three pressures: (a) HT/TC ISR-entry overhead, which falls as ET grows; (b) anchor back-search depth, capped at `ET/2 − 5` edges by the half-period drain bound; (c) SRAM cost, linear in ET. On V006 (48 MHz HCLK, 8 KB SRAM) across the 1–3 Mbaud envelope, ET = 128 (`u16` slots, 256 B) is the smallest size at which all three sit comfortably.
+
+**Edge cadence.** Peak edge rate is `baud × edges_per_byte / 10` with `edges_per_byte ∈ [1, 5]` — `1` for sustained `0xFF`/`0x00` (start bit only), `5` for sustained `0xAA` (start bit plus four bit transitions). At 3 Mbaud high-density burst that's ~1.5 Medges/sec; at 1 Mbaud high-density, ~500 kedges/sec. Real packet streams mix densities, but the design must absorb the peak instantaneously.
+
+**HT/TC ISR rate vs ET.** Each event drains ET/2 edges; HT + TC together pace at one event per ET/2 edges. Through the 3 Mbaud peak on V006:
+
+| ET (slots) | HT period | Entry rate | Entry overhead at 48 MHz |
+| --- | --- | --- | --- |
+| 32 | ~10.7 µs | ~94 kHz | ~6% CPU |
+| 64 | ~21.3 µs | ~47 kHz | ~3% CPU |
+| 128 | ~42.6 µs | ~23 kHz | ~1.5% CPU |
+| 256 | ~85 µs | ~12 kHz | ~0.7% CPU |
+
+Walker per-edge work (~25 cycles) is set by edge rate, not by ET — smaller ET only adds entry overhead and never reduces walker cost. ET = 128 fits the ISR-entry budget at the 3 Mbaud upper edge with headroom; ET = 64 starts to crowd the ~25% transport CPU envelope (§8) under sustained burst.
+
+**Anchor lookback budget.** At every header event the classifier walks ET backward for the 5-edge signature, up to `ET/2 − 5` slots back. The header event fires exactly once per packet — at the first drain that exposes the header bytes to the parser — and the drain cadence caps that drain at `ET/2` fresh edges. So the walker tail at header-event time is at most `ET/2 − 1` past the header, and back-search distance is at most `ET/2 − 5`, regardless of packet size: large packets that trip HT mid-packet hit the bound at HT-wake (walker tail at edge `~ET/2 − 1`, back-search `ET/2 − 5`); small packets that wake on IDLE land below it (walker tail at edge `E − 1` of an `E ≤ ET/2` packet, back-search `E − 5`); subsequent HT/TC within the same packet reuse the established anchor and trigger no second back-search. The budget is tight, not a margin choice — picking smaller fails the HT-wake case, picking larger reaches further back than the drain cadence allows. Whether the bound is sufficient reduces to whether `ET/2` edges covers typical packets at the first drain. At ~3 edges/byte (random content) ET = 128 gives a ceiling of 64 edges ≈ 21 bytes of packet — comfortable for typical Ping / single-Read replies (~12–18 bytes); larger packets simply have their header in an earlier HT batch and anchor cleanly at first wake. ET = 64 collapses the ceiling to 32 edges ≈ 10 bytes, *below* a typical 14-byte Ping reply (~30 edges at random content); anchor misses become the common case rather than the exception. Anchor misses fall back to the §4.4 TIM2-read path for `packet_end_tick`, but the design point is to anchor on every typical packet so HSI drift sampling and slot-0 single-target timing track without degradation.
+
+**RX sizing.** RX must hold the bytes that arrived between drains. Worst case is 1 edge/byte content (`0xFF`/`0x00`-dense), where ET fills at byte rate and HT fires every ET/2 bytes — RX must hold ≥ ET/2 bytes. With ET = 128, RX = 64 sits at the constraint floor; RX = 96 buys headroom against burst alignment if the budget allows.
+
+**Total.** ET (256 B) + RX (64 B) + classifier scalars (~16 B) ≈ 336 B, ~4% of V006 SRAM. Doubling ET halves HT cadence and grows the lookback budget but adds 256 B for marginal benefit on typical traffic; halving ET drops 160 B but undercuts the lookback budget below typical packet edge counts. ET = 128 / RX = 64 is the design point at which all three pressures are simultaneously comfortable on V006.
 
 ## 5. Plain chain timing
 

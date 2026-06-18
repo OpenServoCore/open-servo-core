@@ -19,8 +19,7 @@
 //! deltas are compared as `delta·2 ≷ MUL_X2 · tpb` with both sides widened
 //! to `u32` — no integer division anywhere on the hot path.
 
-use dxl_protocol::wire::{HEADER, RESPONSE_HEADER_BYTES};
-
+use crate::dxl::uart::BITS_PER_FRAME;
 use crate::util::HwRing;
 
 // Forward-walker window for the `[9·bit, 11·bit]` start-bit match.
@@ -38,29 +37,70 @@ const NARROW_LO_X2: u32 = 3; // 1.5·bit · 2
 const NARROW_HI_X2: u32 = 5; // 2.5·bit · 2
 const QUIET_MIN_X2: u32 = 14; //  7·bit · 2
 
-// Max falling edges produced by one 10-bit UART frame. Alternating-bit
-// patterns (`0x55`-class, LSB-first `1 0 1 0 1 0 1 0`) hit the peak:
-// `idle→start` (1) + four intra-byte 1→0 transitions = 5.
-const MAX_EDGES_PER_BYTE: u16 = 5;
+// Edges in the `FF FF FD 00` Sync signature. `idle→0xFF start`, `0xFF
+// end→0xFF start`, `0xFF end→0xFD start`, `0xFD bit0→bit1 transition`,
+// `0xFD end→0x00 start` = 5 falling edges. Load-bearing in the buffer-
+// sizing formulas below.
+const SYNC_SIGNATURE_EDGES: usize = 5;
 
-// Bytes between the end of the 4-byte `HEADER` signature and the parser
-// emitting Header. Uses `RESPONSE_HEADER_BYTES` (9: `HEADER + ID +
-// LENGTH + INST + ERROR`) so the math covers the host-RX path too;
-// instruction-RX path needs only 4 (no ERROR byte) but the 1-byte
-// over-count is free slack.
-const HEADER_BYTES_AFTER_SIGNATURE: u16 = (RESPONSE_HEADER_BYTES - HEADER.len()) as u16;
+/// Source of a [`Classifier::packet_end_tick_fallback`] call — picks the
+/// formula. Each variant maps to one parser-event poll context. Used when
+/// interference / edge loss left the classifier unanchored at the parser's
+/// Crc event; downstream RDT scheduling needs a tick even if degraded.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub enum FallbackSrc {
+    /// HT/TC poll context. Bytes arrived steadily; the CRC byte landed in
+    /// DMA ~now (sub-µs ISR-entry latency aside) so `now` is the
+    /// packet-end estimate.
+    Dma,
+    /// IDLE poll context. The wire has been quiet for one idle character
+    /// (`BITS_PER_FRAME` bit-times) so the last data byte ended that long
+    /// ago — back-date `now` by the idle gap.
+    Idle,
+}
 
-// Drain-lag margin: bytes the codec may push into the parser in the
-// same poll cycle that emits Header. The composite runs the back-search
-// synchronously at the Header event so this is small in practice; 1
-// covers the common case where the next byte just completed.
-const DRAIN_LAG_BYTES: u16 = 1;
+/// Worst-case anchor back-search depth (in edges) given an `EDGE_BUF_LEN`-
+/// slot DMA edge ring polled at HT/TC cadence. Equals `EDGE_BUF_LEN/2 − 5`:
+/// the half-buffer drain depth (the staleness budget between HT firings)
+/// minus the 5 edges spanned by the Sync signature itself.
+///
+/// Drives the [`Classifier::try_anchor_from_header`] back-search bound. The
+/// chip lib picks the desired lookback as a CPU/RAM budget knob; the byte
+/// ring and edge ring are then sized via [`edge_buf_len`] / [`rx_buf_len`]
+/// so this relationship holds at compile time.
+///
+/// ## Cost per +1 increment of the lookback target
+/// - **CPU**: ~63 cycles (~1.3 µs at 48 MHz RV32IMC) added to the worst-
+///   case Sync-not-found back-search. Per failed offset: 5 ring reads +
+///   4 band checks + 1 quiet check. Header events fire once per packet so
+///   this is a packet-rate cost, not a per-byte cost.
+/// - **RAM**: +4 B edge ring (u16) + 1 B byte ring before power-of-two
+///   rounding. After rounding, costs step in PoW2-sized jumps:
+///     - lookback 11  → E=32, R=16  =  80 B
+///     - lookback 27  → E=64, R=32  = 160 B
+///     - lookback 59  → E=128, R=64 = 320 B
+///
+/// CH32V006 (48 MHz, 8 KiB SRAM) targets 59 — see
+/// `firmware/ch32/src/runtime/registry.rs`.
+pub const fn sync_lookback_edges(edge_buf_len: usize) -> u16 {
+    (edge_buf_len / 2 - SYNC_SIGNATURE_EDGES) as u16
+}
 
-// Back-search depth: try windows ending at `write_seq - 1 - k` for
-// `k ∈ [0, MAX_BACK]`. Protocol-bounded — the ring size just clamps the
-// search at runtime via `.min(avail - 5)`. Doc §4.2: "loose bounds are
-// inexpensive."
-const MAX_BACK: u16 = (HEADER_BYTES_AFTER_SIGNATURE + DRAIN_LAG_BYTES) * MAX_EDGES_PER_BYTE;
+/// Minimum edge-ring depth (in `u16` slots, rounded up to a power of two)
+/// that satisfies the Sync back-search at the given lookback target. Power-
+/// of-two so the chip-side `% EDGE_BUF_LEN` math collapses to AND on the
+/// hardware-divider-free CH32V006.
+pub const fn edge_buf_len(sync_lookback_edges: u16) -> usize {
+    (2 * (sync_lookback_edges as usize + SYNC_SIGNATURE_EDGES)).next_power_of_two()
+}
+
+/// Minimum byte-ring depth (in `u8` slots, rounded up to a power of two)
+/// that holds one HT half-period of bytes. Bytes drain at `edges / k` where
+/// `k ∈ [1, 5]`; worst case `k=1` (high-density `0xFF` content) → one byte
+/// per edge → exactly `EDGE_BUF_LEN / 2` bytes between HT firings.
+pub const fn rx_buf_len(sync_lookback_edges: u16) -> usize {
+    (sync_lookback_edges as usize + SYNC_SIGNATURE_EDGES).next_power_of_two()
+}
 
 #[inline]
 fn in_band(delta: u16, lo_x2: u32, hi_x2: u32, tpb: u16) -> bool {
@@ -71,9 +111,9 @@ fn in_band(delta: u16, lo_x2: u32, hi_x2: u32, tpb: u16) -> bool {
 
 pub struct Classifier {
     /// Tick of the most recently classified byte's start bit. `None` when
-    /// no anchor is held (cold boot, post-IDLE, post-GAP, post-failed
-    /// back-search). Window math `last_byte_start ± 10·bit` drives
-    /// subsequent edges; updated per byte boundary by the walker.
+    /// no anchor is held (cold boot, post-Crc, post-Resync, post-GAP,
+    /// post-failed back-search). Window math `last_byte_start ± 10·bit`
+    /// drives subsequent edges; updated per byte boundary by the walker.
     last_byte_start: Option<u16>,
     /// Tick of the byte before `last_byte_start`. Lets the walker emit
     /// `(prev, curr)` pairs to the drift consumer without the consumer
@@ -115,11 +155,11 @@ impl Classifier {
     /// returned — the next packet's header re-attempts anchor from
     /// scratch (doc §4.4).
     ///
-    /// Scans up to [`MAX_BACK`]+1 windows ending at the most recent
-    /// published edges, most-recent first. Accepts the first window
-    /// whose 4 inter-edge deltas land in the `[~10, ~10, ~2, ~8]·bit`
-    /// bands and whose successor edge (if present) sits beyond the
-    /// `≥7·bit` quiet floor.
+    /// Scans up to [`sync_lookback_edges`]`(EDGE_BUF_LEN) + 1` windows
+    /// ending at the most recent published edges, most-recent first.
+    /// Accepts the first window whose 4 inter-edge deltas land in the
+    /// `[~10, ~10, ~2, ~8]·bit` bands and whose successor edge (if
+    /// present) sits beyond the `≥7·bit` quiet floor.
     pub fn try_anchor_from_header<const EDGE_BUF_LEN: usize>(
         &mut self,
         edges: &mut HwRing<u16, EDGE_BUF_LEN>,
@@ -136,7 +176,7 @@ impl Classifier {
             return false;
         }
 
-        let max_offset = MAX_BACK.min(avail - 5);
+        let max_offset = sync_lookback_edges(EDGE_BUF_LEN).min(avail - 5);
         for offset in 0..=max_offset {
             // Window edges (terminal = e5 at `offset` slots back from
             // the head, e1 the oldest of the window):
@@ -266,6 +306,7 @@ impl Classifier {
             if delta < win_lo {
                 self.skips = self.skips.wrapping_add(1);
                 crate::log::trace!("classifier: walk skip edge={} delta={}", t, delta);
+                reader.advance(1);
             } else if delta <= win_hi {
                 self.prev_byte_start = self.last_byte_start;
                 self.last_byte_start = Some(t);
@@ -274,23 +315,28 @@ impl Classifier {
                 }
                 self.hits = self.hits.wrapping_add(1);
                 crate::log::trace!("classifier: walk hit edge={} delta={}", t, delta);
+                reader.advance(1);
             } else {
-                // GAP. Per doc §4.4 — byte-alignment loss in packet
-                // body; drop anchor + prev, no pair, no re-anchor. Next
-                // header re-establishes.
+                // GAP. Per doc §4.4 — byte-alignment loss; drop anchor +
+                // prev and leave the edge in the ring. Mirrors the no-
+                // anchor bail: cross-packet stale anchors trip here on
+                // the next packet's first signature edge, and the back-
+                // search needs that edge to find the signature.
                 self.last_byte_start = None;
                 self.prev_byte_start = None;
                 self.gaps = self.gaps.wrapping_add(1);
                 crate::log::trace!("classifier: walk gap edge={} delta={}", t, delta);
+                return;
             }
-            reader.advance(1);
         }
     }
 
     /// USART1 IDLE backstop. Drains pending tail edges through the
-    /// walker, then clears anchor + prev + the drift flag — a packet
-    /// boundary always invalidates drift gating, even mid-packet edge
-    /// cases where the composite hasn't yet seen a CRC event.
+    /// walker. Anchor + drift gating live until the parser's Crc /
+    /// Resync event (composite calls [`reset_anchor`] there) — IDLE
+    /// only means "no more edges right now," which doesn't imply
+    /// state invalidation. The deterministic packet boundary is the
+    /// parser-side Crc, not the wire-side quiet.
     #[allow(dead_code)]
     pub fn on_idle<F, const EDGE_BUF_LEN: usize>(
         &mut self,
@@ -306,9 +352,6 @@ impl Classifier {
             self.last_byte_start
         );
         self.on_edge_advance(edges, ticks_per_bit, on_pair);
-        self.last_byte_start = None;
-        self.prev_byte_start = None;
-        self.hsi_active = false;
     }
 
     /// Tick of the most recently classified byte's start bit. Composite
@@ -325,7 +368,35 @@ impl Classifier {
     #[allow(dead_code)]
     pub fn packet_end_tick(&self, ticks_per_bit: u16) -> Option<u16> {
         self.last_byte_start
-            .map(|t| t.wrapping_add(ticks_per_bit.wrapping_mul(10)))
+            .map(|t| t.wrapping_add(ticks_per_bit.wrapping_mul(BITS_PER_FRAME)))
+    }
+
+    /// Fallback packet-end estimate for the no-anchor case — the composite
+    /// calls this at Crc when [`packet_end_tick`] returns `None` (interference
+    /// or edge loss starved the classifier). Formula per `src`:
+    ///
+    /// - [`FallbackSrc::Dma`]: returns `now`. CRC byte landed in DMA
+    ///   ~immediately before the poll, so `now` IS packet-end with negligible
+    ///   ISR-entry offset.
+    /// - [`FallbackSrc::Idle`]: returns `now − BITS_PER_FRAME · ticks_per_bit`.
+    ///   USART1 IDLE asserts one idle character after the last data byte's
+    ///   stop bit, so back-date by that interval.
+    ///
+    /// Bumps no state; the composite increments the telemetry counter via
+    /// [`crate::traits::dxl::RxDma::record_edge_anchor_miss`] alongside.
+    #[allow(dead_code)]
+    pub fn packet_end_tick_fallback(&self, src: FallbackSrc, now: u16, ticks_per_bit: u16) -> u16 {
+        match src {
+            FallbackSrc::Dma => now,
+            FallbackSrc::Idle => {
+                let gap = (BITS_PER_FRAME as u32).wrapping_mul(ticks_per_bit as u32);
+                debug_assert!(
+                    gap < u16::MAX as u32,
+                    "idle gap exceeds TIM2 wrap window — unreachable at supported baud rates",
+                );
+                now.wrapping_sub(gap as u16)
+            }
+        }
     }
 
     #[allow(dead_code)]
@@ -339,8 +410,9 @@ impl Classifier {
     }
 
     /// Force-drop anchor, prev, and the drift flag. Composite calls at
-    /// the parser's Resync event — mid-packet abort that discards any
-    /// in-flight timing state.
+    /// the parser's Crc event (deterministic packet boundary — state is
+    /// stale once the packet ended) and Resync event (mid-packet abort
+    /// — discard any in-flight timing state).
     #[allow(dead_code)]
     pub fn reset_anchor(&mut self) {
         self.last_byte_start = None;
@@ -601,13 +673,14 @@ mod tests {
     }
 
     #[test]
-    fn walker_gap_drops_anchor() {
+    fn walker_gap_drops_anchor_and_preserves_edge() {
         let mut c = make();
         c.last_byte_start = Some(1000);
         c.prev_byte_start = Some(1000);
         c.hsi_active = true;
         // 13·bit delta is way out of [9, 11]·bit → GAP.
         let mut edges = edges16(&[1000 + TPB_3M * 13]);
+        let avail_before = edges.reader().avail();
         let mut emissions = 0_u32;
         c.on_edge_advance(&mut edges, TPB_3M, |_, _| emissions += 1);
         assert_eq!(c.gaps, 1);
@@ -615,6 +688,34 @@ mod tests {
         assert_eq!(c.last_byte_start, None);
         assert_eq!(c.prev_byte_start, None);
         assert_eq!(emissions, 0);
+        // Edge stays in the ring so the next parser-Header back-search
+        // has producer-side material to find the signature — cross-
+        // packet stale-anchor case relies on this.
+        assert_eq!(edges.reader().avail(), avail_before);
+    }
+
+    #[test]
+    fn stale_anchor_then_new_header_re_anchors_via_back_search() {
+        // Cross-packet regression: classifier holds a stale anchor from a
+        // prior packet; the next packet's first signature edge arrives
+        // with a huge delta from the stale anchor → walker GAP arm
+        // clears the anchor and leaves the edge available; the remaining
+        // signature edges accumulate (no anchor → walker bails) until
+        // try_anchor_from_header back-searches the full 5-edge window.
+        let mut c = make();
+        c.last_byte_start = Some(1000);
+        c.prev_byte_start = Some(1000);
+
+        let h = header_edges(50_000, TPB_3M);
+        let mut edges = edges16(&h);
+
+        c.on_edge_advance(&mut edges, TPB_3M, |_, _| {});
+        assert_eq!(c.gaps, 1, "first edge of new packet trips GAP");
+        assert_eq!(c.last_byte_start, None);
+        assert_eq!(edges.reader().avail(), 5, "no edges consumed");
+
+        assert!(c.try_anchor_from_header(&mut edges, TPB_3M));
+        assert_eq!(c.last_byte_start, Some(h[4]));
     }
 
     #[test]
@@ -653,6 +754,59 @@ mod tests {
     }
 
     #[test]
+    fn fallback_dma_returns_now_unchanged() {
+        let c = make();
+        // Dma path: regardless of anchor state, packet_end ≈ now.
+        assert_eq!(
+            c.packet_end_tick_fallback(FallbackSrc::Dma, 1234, TPB_3M),
+            1234
+        );
+        assert_eq!(c.packet_end_tick_fallback(FallbackSrc::Dma, 0, TPB_3M), 0);
+        assert_eq!(
+            c.packet_end_tick_fallback(FallbackSrc::Dma, u16::MAX, TPB_3M),
+            u16::MAX,
+        );
+    }
+
+    #[test]
+    fn fallback_idle_back_dates_by_one_idle_char() {
+        let c = make();
+        // 3 Mbaud: gap = 10·16 = 160 ticks.
+        assert_eq!(
+            c.packet_end_tick_fallback(FallbackSrc::Idle, 1600, TPB_3M),
+            1600 - BYTE_TICKS_3M,
+        );
+        // 1 Mbaud: gap = 10·48 = 480 ticks.
+        assert_eq!(
+            c.packet_end_tick_fallback(FallbackSrc::Idle, 2000, TPB_1M),
+            2000 - BYTE_TICKS_1M,
+        );
+    }
+
+    #[test]
+    fn fallback_idle_wraps_at_tim2_boundary() {
+        // `now = 5`, idle gap = 160 → packet_end wraps below 0.
+        let c = make();
+        let expected = 5_u16.wrapping_sub(BYTE_TICKS_3M);
+        assert_eq!(
+            c.packet_end_tick_fallback(FallbackSrc::Idle, 5, TPB_3M),
+            expected,
+        );
+    }
+
+    #[test]
+    fn fallback_does_not_read_anchor_state() {
+        // Both formulas are pure in (src, now, ticks_per_bit); anchor
+        // state must not influence the result.
+        let mut c = make();
+        let unset = c.packet_end_tick_fallback(FallbackSrc::Dma, 4242, TPB_3M);
+        c.last_byte_start = Some(9999);
+        c.prev_byte_start = Some(9999);
+        let set = c.packet_end_tick_fallback(FallbackSrc::Dma, 4242, TPB_3M);
+        assert_eq!(unset, set);
+    }
+
+    #[test]
     fn reset_anchor_clears_state() {
         let mut c = make();
         c.last_byte_start = Some(1234);
@@ -665,7 +819,7 @@ mod tests {
     }
 
     #[test]
-    fn on_idle_drains_tail_then_resets() {
+    fn on_idle_drains_tail_without_resetting_anchor() {
         let mut c = make();
         c.last_byte_start = Some(1000);
         c.prev_byte_start = Some(1000);
@@ -673,22 +827,23 @@ mod tests {
         let mut edges = edges16(&[1000 + BYTE_TICKS_3M]);
         let mut pairs = 0_u32;
         c.on_idle(&mut edges, TPB_3M, |_, _| pairs += 1);
-        // Tail edge classified as a hit, pair emitted...
+        // Tail edge classified as a hit, pair emitted; anchor + drift
+        // flag stay — only the parser-side Crc / Resync event
+        // ([`reset_anchor`]) invalidates them.
         assert_eq!(pairs, 1);
         assert_eq!(c.hits, 1);
-        // ...then anchor + flag dropped at packet boundary.
-        assert_eq!(c.last_byte_start, None);
-        assert_eq!(c.prev_byte_start, None);
-        assert!(!c.hsi_active);
+        assert_eq!(c.last_byte_start, Some(1000 + BYTE_TICKS_3M));
+        assert_eq!(c.prev_byte_start, Some(1000));
+        assert!(c.hsi_active);
     }
 
     #[test]
-    fn on_idle_clears_hsi_active() {
+    fn on_idle_preserves_hsi_active() {
         let mut c = make();
         c.hsi_active = true;
         let mut edges = edges16(&[]);
         c.on_idle(&mut edges, TPB_3M, |_, _| {});
-        assert!(!c.hsi_active);
+        assert!(c.hsi_active);
     }
 
     #[test]

@@ -27,6 +27,12 @@ use codec::{Codec, CodecTx, PollAction, PollEvent};
 use fast_last::{FastLast, FastLastSchedule};
 use fast_last_crc::FastLastCrc;
 
+/// Bits on the wire for a single UART character: 1 start + 8 data + 1 stop
+/// (8N1). Multiply by `ticks_per_bit` to get one byte's wire duration in
+/// scheduler ticks. Also the IDLE detection threshold — CH32V00X RM §UART:
+/// "an idle frame is 10-or-11-bit high, including the stop bit"; M=0 → 10.
+pub(crate) const BITS_PER_FRAME: u16 = 10;
+
 /// Wire bytes of a single Ping Status reply — `RESPONSE_HEADER_BYTES`
 /// (header(4) + id + len(2) + inst + err = 9) + 3 payload bytes
 /// (model_lo + model_hi + firmware) + CRC_BYTES (2). Multi-servo broadcast
@@ -40,10 +46,11 @@ const PING_STATUS_FRAME_BYTES: u32 = RESPONSE_HEADER_BYTES as u32 + 3 + CRC_BYTE
 /// passes data; the driver derives wire shape from its cached request state.
 #[derive(Copy, Clone, Debug, Default)]
 struct ReplyContext {
-    /// Packet-end tick = `current_byte_tick + 10·tpb`, captured at the
-    /// classifier's instruction Crc-good event. `None` if the classifier
-    /// anchor was lost mid-packet — send drops silently.
-    packet_end_tick: Option<u16>,
+    /// Packet-end tick — anchored from the classifier at the parser's
+    /// Crc-good event, or a fallback estimate when the classifier was
+    /// unanchored (interference / edge loss). See
+    /// [`crate::dxl::uart::codec::rx::Classifier::packet_end_tick_fallback`].
+    packet_end_tick: u16,
     /// Wire-byte offset from request wire-end to this reply's fire moment.
     /// Zero for direct unicast; non-zero for broadcast Ping and
     /// Sync/Bulk/Fast Read slot N. For Fast Last replies this also equals
@@ -166,6 +173,21 @@ impl InflightCtx {
         }
     }
 
+    /// Whether a `packet_end_tick` fallback estimate is safe to use when
+    /// the classifier lost anchor. FAST chain ops drive chain-CRC
+    /// fold-grid back-dating; a guessed anchor mispatches the CRC by ≥1
+    /// byte and corrupts the entire downstream chain — strictly worse
+    /// than silence. Single-target replies (Ping / Read / Write /
+    /// RegWrite) absorb the ~µs-scale fallback jitter inside RDT slack;
+    /// plain Sync/Bulk Read slot k>0 schedules sequence-driven from the
+    /// predecessor and ignores `packet_end_tick` entirely.
+    fn allows_packet_end_fallback(&self) -> bool {
+        !matches!(
+            self.header,
+            InstructionHeader::FastSyncRead { .. } | InstructionHeader::FastBulkRead { .. },
+        )
+    }
+
     /// Final ReplyContext at Crc-good. `packet_end_tick` is captured from the
     /// classifier at the same event; `fold_start_cursor` is the codec's
     /// wire-byte cursor at the parser's Crc emit point — the cursor where
@@ -175,7 +197,7 @@ impl InflightCtx {
     fn into_reply_context(
         self,
         id: u8,
-        packet_end_tick: Option<u16>,
+        packet_end_tick: u16,
         fold_start_cursor: u32,
     ) -> ReplyContext {
         // Plain SyncRead / BulkRead don't appear here: slot 0 of either
@@ -355,10 +377,7 @@ impl<P: Providers, const TX_BUF_LEN: usize> ReplyHandle<'_, P, TX_BUF_LEN> {
             *self.predecessor_id = Some(pred);
             return Ok(());
         }
-        let Some(packet_end_tick) = ctx.packet_end_tick else {
-            crate::log::debug!("dxl: send_status drop (packet_end_tick=None)");
-            return Ok(());
-        };
+        let packet_end_tick = ctx.packet_end_tick;
         let byte_count = self.tx.tx_len();
         let delay_us = self.rdt_us + self.clock.bytes_to_us(ctx.slot_offset_bytes);
         let delay_ticks =
@@ -392,9 +411,7 @@ impl<P: Providers, const TX_BUF_LEN: usize> ReplyHandle<'_, P, TX_BUF_LEN> {
         };
         self.tx.send_slot(slot, position)?;
         let byte_count = self.tx.tx_len();
-        let Some(packet_end_tick) = ctx.packet_end_tick else {
-            return Ok(());
-        };
+        let packet_end_tick = ctx.packet_end_tick;
         let (delay_ticks, kind) = match position {
             SlotPosition::Last { .. } => {
                 // Q8.8 µs × ticks/µs = Q8.8 ticks; >> 8 lands on integer ticks.
@@ -419,7 +436,7 @@ impl<P: Providers, const TX_BUF_LEN: usize> ReplyHandle<'_, P, TX_BUF_LEN> {
         // bytes (excluding our own reply); the fold absorbs that count
         // before patching our trailing placeholder CRC slot.
         if matches!(position, SlotPosition::Last { .. }) {
-            let byte_ticks = self.clock.ticks_per_bit().wrapping_mul(10);
+            let byte_ticks = self.clock.ticks_per_bit().wrapping_mul(BITS_PER_FRAME);
             // RDT in scheduler ticks (FastLast trait surfaces u32 offsets,
             // but FastLastSchedule's fields stay u16-shaped per doc §10.6
             // — typical RDT ≤ 24k ticks, well under u16).
@@ -607,21 +624,28 @@ impl<P: Providers, const RX_BUF_LEN: usize, const EDGE_BUF_LEN: usize, const TX_
     /// New RX falling-edge timestamps may be available — pull the current
     /// `ticks_per_bit` from the clock and walk the classifier. Drift pairs
     /// emit while the classifier's `hsi_active` flag is set (instructions in
-    /// flight); they route into the clock's drift integrator.
-    pub fn on_rx_edge_advance(&mut self) {
+    /// flight); they route into the clock's drift integrator. `now` is the
+    /// TIM2 tick captured at ISR entry — stashed on the codec RX half so
+    /// the parser's Crc handler can fall back to a tick estimate when the
+    /// classifier was unanchored.
+    pub fn on_rx_edge_advance(&mut self, now: u16) {
         let ticks_per_bit = self.clock.ticks_per_bit();
         let clock = &mut self.clock;
         self.codec
-            .on_edge_advance(ticks_per_bit, |prev, curr| clock.on_byte_pair(prev, curr));
+            .on_edge_advance(now, ticks_per_bit, |prev, curr| {
+                clock.on_byte_pair(prev, curr)
+            });
     }
 
-    /// RX wire went idle — drain tail edges (drift-routed when active) and
-    /// reset the classifier anchor for the next burst.
-    pub fn on_rx_idle(&mut self) {
+    /// RX wire went idle — drain tail edges (drift-routed when active).
+    /// `now` is the TIM2 tick captured at ISR entry — see
+    /// [`Self::on_rx_edge_advance`].
+    pub fn on_rx_idle(&mut self, now: u16) {
         let ticks_per_bit = self.clock.ticks_per_bit();
         let clock = &mut self.clock;
-        self.codec
-            .on_idle(ticks_per_bit, |prev, curr| clock.on_byte_pair(prev, curr));
+        self.codec.on_idle(now, ticks_per_bit, |prev, curr| {
+            clock.on_byte_pair(prev, curr)
+        });
     }
 
     /// USART1 RX DMA published progress — `remaining` is the channel's
@@ -643,8 +667,8 @@ impl<P: Providers, const RX_BUF_LEN: usize, const EDGE_BUF_LEN: usize, const TX_
     /// - Status Header → universal byte-skip on the body.
     /// - SyncSlot / BulkSlot → slot-walk against `self.id`.
     /// - Crc → stamp packet-end tick, derive [`ReplyContext`],
-    ///   `set_hsi_active(false)`.
-    /// - Resync → `reset_anchor`, drop inflight, `set_hsi_active(false)`.
+    ///   `reset_anchor` (deterministic packet boundary).
+    /// - Resync → `reset_anchor`, drop inflight.
     ///
     /// Closure-based shape exists to break the borrow conflict between the
     /// parser-event borrow on the codec RX half and the `&mut` access the
@@ -665,6 +689,7 @@ impl<P: Providers, const RX_BUF_LEN: usize, const EDGE_BUF_LEN: usize, const TX_
             tx_bus,
             fast_last,
             fast_last_crc,
+            rx_dma,
             last_reply_ctx,
             inflight,
             predecessor_id,
@@ -719,25 +744,46 @@ impl<P: Providers, const RX_BUF_LEN: usize, const EDGE_BUF_LEN: usize, const TX_
                     }
                     Event::Crc => {
                         crate::log::trace!("dxl: event=crc");
-                        rx_inner.set_hsi_active(false);
                         if let Some(ctx) = inflight.take() {
-                            let packet_end_tick = rx_inner.packet_end_tick(ticks_per_bit);
-                            crate::log::debug!("dxl: crc packet_end_tick={:?}", packet_end_tick);
-                            // At Crc-of-host-instruction, the codec's wire
-                            // position has just walked past the request's last
-                            // CRC byte — the next byte on the wire is the First
-                            // predecessor's leading `0xFF`. So `next_status_pos`
-                            // is exactly the fold-start cursor for the Fast
-                            // Last CRC engine.
-                            *last_reply_ctx =
-                                Some(ctx.into_reply_context(id, packet_end_tick, next_status_pos));
+                            // Anchored path is the common case; fallback fires
+                            // when interference / edge loss starved the
+                            // classifier. FAST chain ops skip the fallback
+                            // — see `InflightCtx::allows_packet_end_fallback`.
+                            let packet_end_tick = match rx_inner.packet_end_tick(ticks_per_bit) {
+                                Some(t) => Some(t),
+                                None => {
+                                    rx_dma.record_edge_anchor_miss();
+                                    ctx.allows_packet_end_fallback().then(|| {
+                                        let (now, src) = rx_inner.last_isr_capture();
+                                        rx_inner.packet_end_tick_fallback(src, now, ticks_per_bit)
+                                    })
+                                }
+                            };
+                            if let Some(t) = packet_end_tick {
+                                crate::log::debug!("dxl: crc packet_end_tick={}", t);
+                                // At Crc-of-host-instruction, the codec's
+                                // wire position has just walked past the
+                                // request's last CRC byte — the next byte on
+                                // the wire is the First predecessor's leading
+                                // `0xFF`. So `next_status_pos` is exactly the
+                                // fold-start cursor for the Fast Last CRC
+                                // engine.
+                                *last_reply_ctx =
+                                    Some(ctx.into_reply_context(id, t, next_status_pos));
+                            } else {
+                                crate::log::debug!(
+                                    "dxl: crc anchor missing and fallback disallowed — drop reply"
+                                );
+                            }
                         }
+                        // Read packet_end_tick first, then invalidate —
+                        // Crc is the deterministic packet boundary.
+                        rx_inner.reset_anchor();
                         PollAction::Continue
                     }
                     Event::Resync(_) => {
                         crate::log::trace!("dxl: event=resync");
                         rx_inner.reset_anchor();
-                        rx_inner.set_hsi_active(false);
                         *inflight = None;
                         *predecessor_id = None;
                         PollAction::Continue
@@ -1935,5 +1981,59 @@ mod tests {
             1,
             "expired-window exit must bump the deadline-miss counter",
         );
+    }
+
+    fn allows_fallback(header: InstructionHeader) -> bool {
+        InflightCtx::new(header).allows_packet_end_fallback()
+    }
+
+    #[test]
+    fn inflight_for_single_target_allows_packet_end_fallback() {
+        assert!(allows_fallback(InstructionHeader::Ping {
+            id: Id::new(TEST_ID),
+        }));
+        assert!(allows_fallback(InstructionHeader::Read {
+            id: Id::new(TEST_ID),
+            address: 0,
+            length: 2,
+        }));
+        assert!(allows_fallback(InstructionHeader::Write {
+            id: Id::new(TEST_ID),
+            address: 0,
+            length: 2,
+        }));
+        assert!(allows_fallback(InstructionHeader::RegWrite {
+            id: Id::new(TEST_ID),
+            address: 0,
+            length: 2,
+        }));
+    }
+
+    #[test]
+    fn inflight_for_plain_sync_and_bulk_allows_packet_end_fallback() {
+        assert!(allows_fallback(InstructionHeader::SyncRead {
+            id: Id::new(BROADCAST_ID),
+            address: 0,
+            length: 2,
+        }));
+        assert!(allows_fallback(InstructionHeader::BulkRead {
+            id: Id::new(BROADCAST_ID),
+        }));
+    }
+
+    #[test]
+    fn inflight_for_fast_sync_read_disallows_packet_end_fallback() {
+        assert!(!allows_fallback(InstructionHeader::FastSyncRead {
+            id: Id::new(BROADCAST_ID),
+            address: 0,
+            length: 2,
+        }));
+    }
+
+    #[test]
+    fn inflight_for_fast_bulk_read_disallows_packet_end_fallback() {
+        assert!(!allows_fallback(InstructionHeader::FastBulkRead {
+            id: Id::new(BROADCAST_ID),
+        }));
     }
 }

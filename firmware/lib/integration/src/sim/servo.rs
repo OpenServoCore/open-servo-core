@@ -146,6 +146,15 @@ impl Servo {
         self
     }
 
+    /// Flip the `lifecycle.torque_enable` lock bit. Writes to torque-gated
+    /// config fields are rejected with `Access` while this is `true`.
+    pub fn set_torque_enabled(&self, enabled: bool) {
+        self.shared
+            .table
+            .control
+            .with_mut(|c| c.lifecycle.torque_enable = enabled);
+    }
+
     pub fn clock(&self) -> Clock {
         self.clock
     }
@@ -245,7 +254,7 @@ impl Servo {
                 ht: crossed_ht,
                 tc: crossed_tc,
             });
-            self.uart.on_rx_edge_advance();
+            self.uart.on_rx_edge_advance(self.chip_tick(at));
             self.poll_and_queue_tx(at);
         }
     }
@@ -269,7 +278,7 @@ impl Servo {
     }
 
     fn handle_idle(&mut self, at: SimTime) {
-        self.uart.on_rx_idle();
+        self.uart.on_rx_idle(self.chip_tick(at));
         self.poll_and_queue_tx(at);
     }
 

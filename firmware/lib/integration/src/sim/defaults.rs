@@ -8,6 +8,7 @@
 //! `.cargo/config.toml` `[env]` and rebuild.
 
 use osc_core::BaudRate;
+use osc_drivers::dxl::uart::codec::rx::{edge_buf_len, rx_buf_len};
 
 use crate::sim::Clock;
 
@@ -31,15 +32,19 @@ pub const DEFAULT_BAUD: BaudRate = {
     }
 };
 
-/// RX byte-ring length in the codec. Default mirrors
-/// `firmware/ch32/src/runtime/registry.rs::DXL_RX_BUF_LEN`.
-/// Override with `OSC_TEST_RX_BUF_LEN`.
-pub const RX_BUF_LEN: usize = env_usize(option_env!("OSC_TEST_RX_BUF_LEN"), 64);
+/// Anchor back-search depth target (in edges). Mirrors V006's
+/// `DXL_SYNC_LOOKBACK_EDGES` in `firmware/ch32/src/runtime/registry.rs`.
+/// Override with `OSC_TEST_SYNC_LOOKBACK_EDGES`. See
+/// [`osc_drivers::dxl::uart::codec::rx::sync_lookback_edges`] for the
+/// CPU / RAM cost per increment.
+pub const SYNC_LOOKBACK_EDGES: u16 =
+    env_u32(option_env!("OSC_TEST_SYNC_LOOKBACK_EDGES"), 59) as u16;
 
-/// Edge-DMA ring length. Default mirrors
-/// `firmware/ch32/src/runtime/registry.rs::DXL_EDGE_BUF_LEN`.
-/// Override with `OSC_TEST_EDGE_BUF_LEN`.
-pub const EDGE_BUF_LEN: usize = env_usize(option_env!("OSC_TEST_EDGE_BUF_LEN"), 128);
+/// RX byte-ring length, derived from [`SYNC_LOOKBACK_EDGES`].
+pub const RX_BUF_LEN: usize = rx_buf_len(SYNC_LOOKBACK_EDGES);
+
+/// Edge-DMA ring length, derived from [`SYNC_LOOKBACK_EDGES`].
+pub const EDGE_BUF_LEN: usize = edge_buf_len(SYNC_LOOKBACK_EDGES);
 
 /// TX-buffer length. Derived from
 /// `osc_core::services::dxl::limits::DXL_TX_MAX_BYTES`, which is itself
@@ -49,13 +54,6 @@ pub const TX_BUF_LEN: usize = osc_core::services::dxl::limits::DXL_TX_MAX_BYTES;
 const fn env_u32(value: Option<&'static str>, default: u32) -> u32 {
     match value {
         Some(s) => parse_u32(s),
-        None => default,
-    }
-}
-
-const fn env_usize(value: Option<&'static str>, default: usize) -> usize {
-    match value {
-        Some(s) => parse_u32(s) as usize,
         None => default,
     }
 }

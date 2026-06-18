@@ -121,14 +121,19 @@ impl<R: EdgeDma, CRC: CrcUmts, const RX_BUF_LEN: usize, const EDGE_BUF_LEN: usiz
     /// RX classifier so its HIT window matches the current baud. Drift
     /// pairs route through `on_pair` when the classifier's `hsi_active`
     /// flag is set; otherwise it's never called.
-    pub fn on_edge_advance<F: FnMut(u16, u16)>(&mut self, ticks_per_bit: u16, on_pair: F) {
-        self.rx.on_edge_advance(ticks_per_bit, on_pair);
+    pub fn on_edge_advance<F: FnMut(u16, u16)>(
+        &mut self,
+        now: u16,
+        ticks_per_bit: u16,
+        on_pair: F,
+    ) {
+        self.rx.on_edge_advance(now, ticks_per_bit, on_pair);
     }
 
     /// USART1 IDLE backstop — drain tail edges through `on_pair`, then
     /// reset the classifier anchor and drift flag for the next burst.
-    pub fn on_idle<F: FnMut(u16, u16)>(&mut self, ticks_per_bit: u16, on_pair: F) {
-        self.rx.on_idle(ticks_per_bit, on_pair);
+    pub fn on_idle<F: FnMut(u16, u16)>(&mut self, now: u16, ticks_per_bit: u16, on_pair: F) {
+        self.rx.on_idle(now, ticks_per_bit, on_pair);
     }
 
     /// USART1 RX DMA published progress — `remaining` is the channel's
@@ -494,12 +499,17 @@ impl<
     // ----- Forwarders. Keep sequential single-half call sites compact
     // without forcing every caller to disambiguate `.rx` / `.tx`. -----
 
-    pub fn on_edge_advance<F: FnMut(u16, u16)>(&mut self, ticks_per_bit: u16, on_pair: F) {
-        self.rx.on_edge_advance(ticks_per_bit, on_pair);
+    pub fn on_edge_advance<F: FnMut(u16, u16)>(
+        &mut self,
+        now: u16,
+        ticks_per_bit: u16,
+        on_pair: F,
+    ) {
+        self.rx.on_edge_advance(now, ticks_per_bit, on_pair);
     }
 
-    pub fn on_idle<F: FnMut(u16, u16)>(&mut self, ticks_per_bit: u16, on_pair: F) {
-        self.rx.on_idle(ticks_per_bit, on_pair);
+    pub fn on_idle<F: FnMut(u16, u16)>(&mut self, now: u16, ticks_per_bit: u16, on_pair: F) {
+        self.rx.on_idle(now, ticks_per_bit, on_pair);
     }
 
     pub fn on_rx_dma_advance(&mut self, remaining: u16) {

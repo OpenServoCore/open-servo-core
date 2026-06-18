@@ -1,7 +1,7 @@
 use ch32_metapac::{DMA1, USART1};
 use osc_core::{BootMode, ControlIo, ConversionVariables, Sensors};
 
-use crate::hal::{dma, flash, pfic, systick, usart};
+use crate::hal::{dma, flash, pfic, systick, timer, usart};
 use crate::runtime::Drivers;
 use crate::runtime::statics::{KERNEL, SHARED};
 
@@ -57,13 +57,17 @@ pub fn on_usart1() {
 
 /// DMA1_CH7 HT/TC handler — dispatches into `DxlUart`, which routes the
 /// `ticks_per_bit` lookup from its `clock` sub-driver into the RX
-/// classifier walk.
+/// classifier walk. `now` (TIM2.CNT) is captured at ISR entry — the
+/// driver stashes it on the codec RX half so the parser's Crc handler
+/// can pick a fallback `packet_end_tick` if the classifier was
+/// unanchored.
 ///
 /// SAFETY: driver is installed before this vector is unmasked, and
 /// DMA1_CH7 shares PFIC HIGH with USART1 so no concurrent `&mut` into the
 /// driver is possible.
 pub fn on_dma1_ch7() {
-    unsafe { Drivers::dxl_uart() }.on_rx_edge_advance();
+    let now = timer::tim2_cnt();
+    unsafe { Drivers::dxl_uart() }.on_rx_edge_advance(now);
 }
 
 fn on_usart1_rx_errors() {
@@ -93,13 +97,17 @@ fn on_usart1_idle() {
         return;
     }
     usart::clear_idle(USART1);
+    let now = timer::tim2_cnt();
     // Backstop the RX classifier: for packets shorter than half the ET ring
     // the HT/TC ISR never fires, so IDLE is the only chance to walk those
-    // edges. `on_rx_idle` drains the tail and invalidates the anchor so the
-    // next packet's first edge re-seeds. IDLE is *only* a signal here — no
-    // tick is derived from it per [[no_idle_timing]].
+    // edges. `on_rx_idle` drains the tail; anchor invalidation lives at
+    // the parser's Crc / Resync event (deterministic packet boundary),
+    // not here. `now` flows into the codec RX half as the fallback
+    // wake-capture — only consumed at Crc when the classifier was
+    // unanchored, so IDLE-derived timing per [[no_idle_timing]] never
+    // enters the anchored path.
     // SAFETY: see `on_dma1_ch7`.
-    unsafe { Drivers::dxl_uart() }.on_rx_idle();
+    unsafe { Drivers::dxl_uart() }.on_rx_idle(now);
 }
 
 fn on_usart1_tc() {
