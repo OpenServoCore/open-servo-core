@@ -36,6 +36,11 @@ pub struct UartTx {
     /// `at` precedes this would model two byte streams driving the same TX
     /// peripheral concurrently — physically impossible (one shift register).
     wire_busy_until: SimTime,
+    /// `wire_busy_until` at the moment the consumer last took a TC. A TC
+    /// is pending iff `wire_busy_until > tc_consumed_at`. Lets callers
+    /// auto-gate `on_tx_complete` off the wire-busy state without storing
+    /// a redundant fire-time alongside.
+    tc_consumed_at: SimTime,
 }
 
 impl UartTx {
@@ -45,6 +50,7 @@ impl UartTx {
             pending: BinaryHeap::new(),
             tx_log: Vec::new(),
             wire_busy_until: SimTime::ZERO,
+            tc_consumed_at: SimTime::ZERO,
         }
     }
 
@@ -78,6 +84,39 @@ impl UartTx {
         self.check_and_advance_wire_busy(at);
         self.pending
             .push(Reverse((at, PendingSource::Offset(offset))));
+    }
+
+    /// Stage a burst of `count` indirect bytes starting at `start_at`,
+    /// spaced one UART frame apart. Each byte's value is resolved from
+    /// `tx_buf[start_offset + i]` at drain time — same patch-honoring
+    /// semantics as [`Self::queue_byte_indirect`]. Encapsulates the
+    /// byte-rate stride so callers don't redo USART frame-width math.
+    pub fn queue_burst_indirect(&mut self, start_offset: u32, count: u16, start_at: SimTime) {
+        let stride = 10 * self.bit_period_ns();
+        for i in 0..count {
+            self.queue_byte_indirect(start_offset + i as u32, start_at + i as u64 * stride);
+        }
+    }
+
+    /// Wall-clock of a pending TC moment, or `None` if every byte queued
+    /// so far has already been signalled complete. Mirrors the real
+    /// USART's TC flag — pending while bytes are in flight (or queued),
+    /// auto-clears once the consumer takes it via
+    /// [`Self::take_tc_if_due`].
+    pub fn next_tc(&self) -> Option<SimTime> {
+        (self.wire_busy_until > self.tc_consumed_at).then_some(self.wire_busy_until)
+    }
+
+    /// Returns `Some(tc)` if a TC is pending and `tc <= now`, marking it
+    /// consumed. The caller invokes `on_tx_complete` on `Some`. Returning
+    /// `None` means either no TC is pending or the wire hasn't yet
+    /// finished draining the last byte.
+    pub fn take_tc_if_due(&mut self, now: SimTime) -> Option<SimTime> {
+        let tc = self.next_tc()?;
+        (tc <= now).then(|| {
+            self.tc_consumed_at = tc;
+            tc
+        })
     }
 
     fn check_and_advance_wire_busy(&mut self, at: SimTime) {

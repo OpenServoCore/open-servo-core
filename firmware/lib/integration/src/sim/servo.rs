@@ -28,7 +28,7 @@ use crate::mocks::{
 use crate::sim::defaults::{
     DEFAULT_BAUD, EDGE_BUF_LEN, RX_BUF_LEN, TX_BUF_LEN, default_servo_clock,
 };
-use crate::sim::uart::{UartRx, UartTx, bit_period_ns};
+use crate::sim::uart::{UartRx, UartTx};
 use crate::sim::{Clock, DeviceId, Effect, EventSource, SimTime};
 
 pub const DEFAULT_DXL_ID: Id = Id::new(1);
@@ -84,6 +84,30 @@ pub struct Servo {
     tx_scheduler_state: TxSchedulerState,
     fast_last_scheduler_state: FastLastSchedulerState,
 
+    /// Wall-clock equivalent of the most recent `set_deadline`'s
+    /// `packet_end_tick`. Sim's stand-in for the chip-side scheduler's
+    /// `packet_end_lifted` — every Fast Last `schedule(offset_ticks)`
+    /// anchors off this. `None` between chains.
+    packet_end_wall: Option<SimTime>,
+    /// Next SysTick CMP-match wall-clock for the Fast Last fold body, if
+    /// any. Set by `Schedule`, cleared by `Cancel` or by `advance` after
+    /// firing. Surfaced via [`EventSource::next_event_time`] so the engine
+    /// advances time to it; [`EventSource::advance`] calls `on_fold_step`
+    /// at the fire instant.
+    systick_fire: Option<SimTime>,
+    /// Cursor into `fast_last_scheduler_state.operations()` — separates
+    /// ops produced by `Dxl::poll` / `on_fold_step` since the last drain
+    /// from earlier ones. Reset to 0 on `rebuild_uart` (the state vec is
+    /// rebuilt fresh).
+    fast_last_drained: usize,
+
+    /// Wall-clock equivalent of the chip-side CC-compare that fires
+    /// `on_tx_start` at the scheduled TX deadline. Set when a
+    /// `TxScheduler::Schedule` op is staged; cleared after the body fires.
+    /// `None` between replies (and on the `TxBus::start_now` path — that
+    /// activation is inline, no CC-compare).
+    tx_start_fire: Option<SimTime>,
+
     uart_tx: UartTx,
     uart_rx: UartRx,
     rx_seq: u32,
@@ -110,6 +134,12 @@ impl Servo {
             rx_dma_state: RxDmaState::default(),
             tx_scheduler_state: TxSchedulerState::default(),
             fast_last_scheduler_state: FastLastSchedulerState::default(),
+
+            packet_end_wall: None,
+            systick_fire: None,
+            fast_last_drained: 0,
+
+            tx_start_fire: None,
 
             uart_tx: UartTx::new(DEFAULT_BAUD),
             uart_rx: UartRx::new(DEFAULT_BAUD),
@@ -261,6 +291,10 @@ impl Servo {
         self.uart_rx = UartRx::new(baud);
         self.rx_seq = 0;
         self.edge_seq = 0;
+        self.packet_end_wall = None;
+        self.systick_fire = None;
+        self.fast_last_drained = 0;
+        self.tx_start_fire = None;
     }
 
     /// Models a power-up reset: wipe the control table and rebuild the
@@ -379,7 +413,7 @@ impl Servo {
                     byte_count,
                     t
                 );
-                self.queue_tx_bytes(byte_count, t);
+                self.uart_tx.queue_burst_indirect(0, byte_count, t);
             }
         }
 
@@ -400,31 +434,63 @@ impl Servo {
                     fire_at,
                     t
                 );
-                self.queue_tx_bytes(byte_count, fire_at);
+                self.uart_tx.queue_burst_indirect(0, byte_count, fire_at);
+                self.tx_start_fire = Some(fire_at);
             }
         }
+
+        self.drain_fast_last_ops(t);
     }
 
-    /// Schedule each byte of the codec's encoded TX buffer for transmission,
-    /// stride-spaced from `start_at`. Bytes are queued by *offset* into the
-    /// codec's `tx_buf`, not by value — the actual byte read happens in
-    /// [`UartTx::advance`] at drain time. This mirrors the production DMA
-    /// cursor reading the buffer at byte-rate, so a [`Codec::patch_crc`]
-    /// write landing between this call and the CRC byte's drain time (the
-    /// Fast Last chain-CRC fold path) ships out the patched value.
-    fn queue_tx_bytes(&mut self, byte_count: u16, start_at: SimTime) {
-        let stride = 10 * bit_period_ns(self.baud());
-        log::trace!(
-            "servo[{:?}]: queue_tx_bytes byte_count={} start_at={:?} stride_ns={}",
-            self.id,
-            byte_count,
-            start_at,
-            stride,
-        );
-        for i in 0..byte_count {
-            self.uart_tx
-                .queue_byte_indirect(i as u32, start_at + i as u64 * stride);
+    /// Walk new `FastLastSchedulerOp` entries since the last drain and
+    /// resolve their chip-side tick args into wall-clock state — `SetDeadline`
+    /// caches `packet_end_wall`, `Schedule` derives the next CMP-match
+    /// `SimTime`, `Cancel` clears it. Mirrors the chip-side scheduler's
+    /// `packet_end_lifted = systick_now − (tim2_now − packet_end_tick)` lift
+    /// (TIM2 / SysTick share HCLK, so the delta is single-valued within one
+    /// wrap window). Called after every `Dxl::poll` and every `on_fold_step`
+    /// — both paths can append ops.
+    fn drain_fast_last_ops(&mut self, t: SimTime) {
+        let ops = self.fast_last_scheduler_state.operations();
+        for op in &ops[self.fast_last_drained..] {
+            match *op {
+                FastLastSchedulerOp::SetDeadline {
+                    packet_end_tick, ..
+                } => {
+                    let delta_ticks = self.chip_tick(t).wrapping_sub(packet_end_tick) as u64;
+                    let delta_ns = delta_ticks.saturating_mul(1_000_000_000) / self.freq_hz();
+                    self.packet_end_wall =
+                        Some(SimTime::from_ns(t.as_ns().saturating_sub(delta_ns)));
+                }
+                FastLastSchedulerOp::Schedule { offset_ticks } => {
+                    if let Some(pe) = self.packet_end_wall {
+                        let offset_ns =
+                            (offset_ticks as u64).saturating_mul(1_000_000_000) / self.freq_hz();
+                        let mut fire = pe + offset_ns;
+                        if fire <= t {
+                            // Past-CMP guard — chip-side scheduler clamps
+                            // `cmp = max(cmp, now + 1)` so the match still
+                            // latches. Sim mirrors with one chip-tick of
+                            // forward slop (≈21 ns at 48 MHz).
+                            let one_tick_ns = (1_000_000_000u64 / self.freq_hz()).max(1);
+                            fire = t + one_tick_ns;
+                        }
+                        log::trace!(
+                            "servo[{:?}]: fast_last Schedule offset_ticks={} fire_at={:?} (t={:?})",
+                            self.id,
+                            offset_ticks,
+                            fire,
+                            t
+                        );
+                        self.systick_fire = Some(fire);
+                    }
+                }
+                FastLastSchedulerOp::Cancel => {
+                    self.systick_fire = None;
+                }
+            }
         }
+        self.fast_last_drained = ops.len();
     }
 
     /// Convert a chip-side `deadline_tick` (u16 TIM2 tick) to a wall-clock
@@ -443,10 +509,16 @@ impl Servo {
 
 impl EventSource for Servo {
     fn next_event_time(&self) -> Option<SimTime> {
-        [self.uart_rx.next_wake(), self.uart_tx.next_wake()]
-            .into_iter()
-            .flatten()
-            .min()
+        [
+            self.uart_rx.next_wake(),
+            self.uart_tx.next_wake(),
+            self.systick_fire,
+            self.tx_start_fire,
+            self.uart_tx.next_tc(),
+        ]
+        .into_iter()
+        .flatten()
+        .min()
     }
 
     fn advance(&mut self, t: SimTime) -> Vec<Effect> {
@@ -458,6 +530,33 @@ impl EventSource for Servo {
                     RxEffect::ByteComplete { byte, .. } => self.handle_byte(byte, t),
                     RxEffect::IdleDetected { .. } => self.handle_idle(t),
                 }
+            }
+        }
+        if self.connected {
+            // Fast Last CMP-match fold body. Loop because `on_fold_step` may
+            // re-schedule and the new CMP can land at `t + 1tick` (past-CMP
+            // clamp); fire all due bodies before letting tx_buf settle so
+            // any chain-CRC patch lands before the patched byte ships out
+            // of `uart_tx.advance` below.
+            while let Some(fire) = self.systick_fire {
+                if fire > t {
+                    break;
+                }
+                self.systick_fire = None;
+                log::trace!("servo[{:?}]: on_fold_step fire_at={:?}", self.id, fire);
+                self.uart.on_fold_step();
+                self.drain_fast_last_ops(t);
+            }
+            // CC-compare body. On Fast Last replies this also runs the
+            // post-fire tail fold inside `on_tx_start`, draining any GUARD
+            // bytes still in the RX ring and patching the trailing chain
+            // CRC into `tx_buf` BEFORE `uart_tx.advance` reads it below.
+            if let Some(fire) = self.tx_start_fire
+                && fire <= t
+            {
+                self.tx_start_fire = None;
+                log::trace!("servo[{:?}]: on_tx_start fire_at={:?}", self.id, fire);
+                self.uart.on_tx_start();
             }
         }
         // SAFETY: `tx_buf_addr()` returns the codec's heapless::Vec<u8,
@@ -476,6 +575,12 @@ impl EventSource for Servo {
         let tx = self.uart_tx.advance(t, tx_buf);
         if !self.connected {
             return Vec::new();
+        }
+        // USART TC body. Auto-gated off `UartTx`'s wire-busy state —
+        // fires once the last queued byte's frame end is in the past.
+        if let Some(fire) = self.uart_tx.take_tc_if_due(t) {
+            log::trace!("servo[{:?}]: on_tx_complete fire_at={:?}", self.id, fire);
+            let _ = self.uart.on_tx_complete();
         }
         let effects: Vec<_> = tx
             .into_iter()
