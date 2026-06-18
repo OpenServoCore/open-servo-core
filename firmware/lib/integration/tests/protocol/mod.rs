@@ -3,5 +3,6 @@ mod read;
 mod reg_write_action;
 mod support;
 mod sync_read;
+mod sync_write;
 mod unsupported;
 mod write;
