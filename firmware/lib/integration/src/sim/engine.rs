@@ -55,11 +55,19 @@ impl Sim {
     /// until `budget` has elapsed since the pre-action [`Sim::now`],
     /// whichever first. [`Sim::now`] after return = time of last processed
     /// event (or unchanged if no events fired).
+    ///
+    /// Every device's clock cursor is ticked to `start_now` before `action`
+    /// runs (via [`EventSource::tick`]) so a device that stayed idle through
+    /// the previous quiescence (a Host whose servo replied with nothing)
+    /// still sees current time when the next closure queues work. Without
+    /// it, a stale cursor lets `action` queue work in the past and trip the
+    /// monotonic-time assertion below.
     pub fn advance<F>(&mut self, budget: SimTime, action: F)
     where
         F: FnOnce(&mut Sim, SimTime),
     {
         let start_now = self.now;
+        self.registry.tick_all(start_now);
         action(self, start_now);
         let cap = start_now + budget;
 

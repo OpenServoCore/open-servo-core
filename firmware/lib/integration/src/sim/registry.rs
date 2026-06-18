@@ -66,6 +66,12 @@ impl DeviceRegistry {
         self.devices[idx].src.advance(t)
     }
 
+    pub fn tick_all(&mut self, t: SimTime) {
+        for entry in &mut self.devices {
+            entry.src.tick(t);
+        }
+    }
+
     pub fn reset_all(&mut self) {
         for entry in &mut self.devices {
             entry.src.reset();

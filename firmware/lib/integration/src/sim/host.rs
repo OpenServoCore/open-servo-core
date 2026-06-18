@@ -186,6 +186,12 @@ impl EventSource for Host {
         self.now = SimTime::ZERO;
     }
 
+    fn tick(&mut self, t: SimTime) {
+        if t > self.now {
+            self.now = t;
+        }
+    }
+
     fn as_any(&self) -> &dyn Any {
         self
     }
