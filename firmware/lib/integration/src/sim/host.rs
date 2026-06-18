@@ -12,7 +12,7 @@ use dxl_protocol::{
 };
 use osc_core::BaudRate;
 
-use crate::sim::defaults::{DEFAULT_BAUD, HOST_CLOCK};
+use crate::sim::defaults::{DEFAULT_BAUD, default_host_clock};
 use crate::sim::uart::{RxLogEntry, TxLogEntry, UartRx, UartTx};
 use crate::sim::{Clock, DeviceId, Effect, EventSource, SimTime};
 
@@ -31,7 +31,7 @@ impl Host {
     pub fn new(id: DeviceId) -> Self {
         Self {
             id,
-            clock: HOST_CLOCK,
+            clock: default_host_clock(),
             baud: DEFAULT_BAUD,
             uart_tx: UartTx::new(DEFAULT_BAUD),
             uart_rx: UartRx::new(DEFAULT_BAUD),

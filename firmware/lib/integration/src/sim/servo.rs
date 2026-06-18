@@ -25,7 +25,9 @@ use crate::mocks::{
     UsartBaudState, mock_clock_trim, mock_edge_dma, mock_fast_last_scheduler, mock_rx_dma,
     mock_tx_bus, mock_tx_scheduler, mock_usart_baud,
 };
-use crate::sim::defaults::{DEFAULT_BAUD, EDGE_BUF_LEN, RX_BUF_LEN, SERVO_CLOCK, TX_BUF_LEN};
+use crate::sim::defaults::{
+    DEFAULT_BAUD, EDGE_BUF_LEN, RX_BUF_LEN, TX_BUF_LEN, default_servo_clock,
+};
 use crate::sim::uart::{UartRx, UartTx, bit_period_ns};
 use crate::sim::{Clock, DeviceId, Effect, EventSource, SimTime};
 
@@ -54,8 +56,8 @@ pub struct Servo {
     /// Per-servo system clock — modelling each device's HSI base frequency
     /// and any oscillator drift. Hardware-shaped, not a control-table
     /// register: persists across power-cycle resets. Default
-    /// [`SERVO_CLOCK`]; override via [`set_clock`](Self::set_clock) to
-    /// model multi-drift fleets on the same bus.
+    /// [`default_servo_clock`]; override via [`set_clock`](Self::set_clock)
+    /// to model multi-drift fleets on the same bus.
     clock: Clock,
 
     /// Bus visibility. When `false`, the wire still delivers edges to
@@ -92,7 +94,7 @@ impl Servo {
     pub fn new(id: DeviceId) -> Self {
         let mut s = Self {
             id,
-            clock: SERVO_CLOCK,
+            clock: default_servo_clock(),
 
             connected: true,
             pending_reset_on_connect: false,
@@ -531,7 +533,7 @@ mod tests {
         let s = sim.device::<Servo>(id).unwrap();
         assert_eq!(s.dxl_id(), DEFAULT_DXL_ID);
         assert_eq!(s.rdt_us(), DEFAULT_RDT_US);
-        assert_eq!(s.clock(), SERVO_CLOCK);
+        assert_eq!(s.clock(), default_servo_clock());
         assert_eq!(s.baud(), DEFAULT_BAUD);
     }
 

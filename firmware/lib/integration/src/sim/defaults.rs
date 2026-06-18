@@ -12,15 +12,29 @@ use osc_drivers::dxl::uart::codec::rx::{edge_buf_len, rx_buf_len};
 
 use crate::sim::Clock;
 
-/// Master device clock. Default matches CH32V307-class upper-tier SYSCLK.
-/// Override with `OSC_TEST_HOST_CLOCK_HZ`.
-pub const HOST_CLOCK: Clock =
-    Clock::new(env_u32(option_env!("OSC_TEST_HOST_CLOCK_HZ"), 144_000_000));
+/// Master device clock frequency, in MHz. Default matches CH32V307-class
+/// upper-tier SYSCLK. Override with `OSC_TEST_HOST_CLOCK_MHZ`. Whole-MHz
+/// only: downstream baud/timer divisors assume integer-MHz SYSCLK.
+pub const HOST_CLOCK_MHZ: u32 = env_u32(option_env!("OSC_TEST_HOST_CLOCK_MHZ"), 144);
 
-/// Servo device clock. Default = V006 SYSCLK (HSI 24 MHz × PLL 2).
-/// Override with `OSC_TEST_SERVO_CLOCK_HZ`.
-pub const SERVO_CLOCK: Clock =
-    Clock::new(env_u32(option_env!("OSC_TEST_SERVO_CLOCK_HZ"), 48_000_000));
+/// Servo device clock frequency, in MHz. Default = V006 SYSCLK
+/// (HSI 24 MHz × PLL 2). Override with `OSC_TEST_SERVO_CLOCK_MHZ`. Whole-MHz
+/// only — see [`HOST_CLOCK_MHZ`].
+pub const SERVO_CLOCK_MHZ: u32 = env_u32(option_env!("OSC_TEST_SERVO_CLOCK_MHZ"), 48);
+
+/// Construct a fresh master-device clock at the default frequency. Returned
+/// by value so each `Host` owns an independent clock — model HSE/HSI drift
+/// per device by overriding via `Host::with_clock` after construction.
+pub const fn default_host_clock() -> Clock {
+    Clock::new(HOST_CLOCK_MHZ * 1_000_000)
+}
+
+/// Construct a fresh servo-device clock at the default frequency. Returned
+/// by value so each `Servo` owns an independent clock — model per-device
+/// HSI base + drift by overriding via `Servo::set_clock` after construction.
+pub const fn default_servo_clock() -> Clock {
+    Clock::new(SERVO_CLOCK_MHZ * 1_000_000)
+}
 
 /// Bus baud rate. Default = DXL-2.0 spec default (1 Mbaud, idx 3).
 /// Override with `OSC_TEST_BAUD_IDX` (0..=5; see [`BaudRate::from_idx`]).
