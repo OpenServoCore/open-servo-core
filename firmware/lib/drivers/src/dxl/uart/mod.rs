@@ -21,7 +21,7 @@ use dxl_protocol::wire::{BROADCAST_ID, CRC_BYTES, RESPONSE_HEADER_BYTES};
 use dxl_protocol::{Id, Slot, SlotPosition, Status, WriteError};
 use osc_core::{BaudRate, BootMode, DxlReply};
 
-use crate::traits::dxl::{Providers, RxDma, SendKind, TxBus, TxScheduler};
+use crate::traits::dxl::{Providers, RxDma, SendKind, TxBus, TxScheduler, WireClock};
 use clock::Clock;
 use codec::{Codec, CodecTx, PollAction, PollEvent};
 use fast_last::{FastLast, FastLastSchedule};
@@ -576,6 +576,12 @@ pub struct DxlUart<
     /// `drain_raw` callback during the SysTick walker; finalize patches our
     /// own trailing CRC slot before DMA1_CH4 reads it.
     fast_last_crc: FastLastCrc<P::Crc>,
+    /// 16-bit wire-clock readout used by `on_rx_edge_advance`, `on_rx_idle`,
+    /// and `poll` to source `now` without taking it as a parameter. Same
+    /// physical counter the chip-side ISR layer stamps into the edge ring;
+    /// the provider exists so the driver stays unaware of which peripheral
+    /// the chip picked.
+    wire_clock: P::WireClock,
 
     id: u8,
     rdt_us: u32,
@@ -620,6 +626,7 @@ impl<P: Providers, const RX_BUF_LEN: usize, const EDGE_BUF_LEN: usize, const TX_
         scheduler: P::TxScheduler,
         tx_bus: P::TxBus,
         fast_last: FastLast<P::FastLastScheduler>,
+        wire_clock: P::WireClock,
         id: u8,
         rdt_us: u32,
     ) -> Self {
@@ -631,6 +638,7 @@ impl<P: Providers, const RX_BUF_LEN: usize, const EDGE_BUF_LEN: usize, const TX_
             tx_bus,
             fast_last,
             fast_last_crc: FastLastCrc::new(),
+            wire_clock,
             id,
             rdt_us,
             last_reply_ctx: None,
@@ -645,11 +653,12 @@ impl<P: Providers, const RX_BUF_LEN: usize, const EDGE_BUF_LEN: usize, const TX_
     /// New RX falling-edge timestamps may be available — pull the current
     /// `ticks_per_bit` from the clock and walk the classifier. Drift pairs
     /// emit while the classifier's `hsi_active` flag is set (instructions in
-    /// flight); they route into the clock's drift integrator. `now` is the
-    /// TIM2 tick captured at ISR entry — stashed on the codec RX half so
-    /// the parser's Crc handler can fall back to a tick estimate when the
-    /// classifier was unanchored.
-    pub fn on_rx_edge_advance(&mut self, now: u16) {
+    /// flight); they route into the clock's drift integrator. `now` is
+    /// self-sourced from the [`WireClock`] provider and stashed on the codec
+    /// RX half so the parser's Crc handler can fall back to a tick estimate
+    /// when the classifier was unanchored.
+    pub fn on_rx_edge_advance(&mut self) {
+        let now = self.wire_clock.now();
         let ticks_per_bit = self.clock.ticks_per_bit();
         let clock = &mut self.clock;
         self.codec
@@ -659,9 +668,10 @@ impl<P: Providers, const RX_BUF_LEN: usize, const EDGE_BUF_LEN: usize, const TX_
     }
 
     /// RX wire went idle — drain tail edges (drift-routed when active).
-    /// `now` is the TIM2 tick captured at ISR entry — see
+    /// `now` is self-sourced from the [`WireClock`] provider — see
     /// [`Self::on_rx_edge_advance`].
-    pub fn on_rx_idle(&mut self, now: u16) {
+    pub fn on_rx_idle(&mut self) {
+        let now = self.wire_clock.now();
         let ticks_per_bit = self.clock.ticks_per_bit();
         let clock = &mut self.clock;
         self.codec.on_idle(now, ticks_per_bit, |prev, curr| {
@@ -695,11 +705,12 @@ impl<P: Providers, const RX_BUF_LEN: usize, const EDGE_BUF_LEN: usize, const TX_
     /// parser-event borrow on the codec RX half and the `&mut` access the
     /// send path needs on the TX half. [`Codec::split_mut`] returns the two
     /// halves disjointly so the closure sees both at once.
-    pub fn poll<F>(&mut self, now: u16, mut f: F)
+    pub fn poll<F>(&mut self, mut f: F)
     where
         F: FnMut(Event, &[u8], &mut ReplyHandle<'_, P, TX_BUF_LEN>),
     {
         self.codec.on_rx_dma_advance(self.rx_dma.remaining());
+        let now = self.wire_clock.now();
         let id = self.id;
         let rdt_us = self.rdt_us;
         let ticks_per_bit = self.clock.ticks_per_bit();

@@ -1,7 +1,7 @@
 use ch32_metapac::{DMA1, USART1};
 use osc_core::{BootMode, ControlIo, ConversionVariables, Sensors};
 
-use crate::hal::{dma, flash, pfic, systick, timer, usart};
+use crate::hal::{dma, flash, pfic, systick, usart};
 use crate::runtime::Drivers;
 use crate::runtime::statics::{KERNEL, SHARED};
 
@@ -66,8 +66,7 @@ pub fn on_usart1() {
 /// DMA1_CH7 shares PFIC HIGH with USART1 so no concurrent `&mut` into the
 /// driver is possible.
 pub fn on_dma1_ch7() {
-    let now = timer::tim2_cnt();
-    unsafe { Drivers::dxl_uart() }.on_rx_edge_advance(now);
+    unsafe { Drivers::dxl_uart() }.on_rx_edge_advance();
 }
 
 fn on_usart1_rx_errors() {
@@ -97,17 +96,16 @@ fn on_usart1_idle() {
         return;
     }
     usart::clear_idle(USART1);
-    let now = timer::tim2_cnt();
     // Backstop the RX classifier: for packets shorter than half the ET ring
     // the HT/TC ISR never fires, so IDLE is the only chance to walk those
     // edges. `on_rx_idle` drains the tail; anchor invalidation lives at
     // the parser's Crc / Resync event (deterministic packet boundary),
-    // not here. `now` flows into the codec RX half as the fallback
-    // wake-capture — only consumed at Crc when the classifier was
+    // not here. The driver sources its fallback wake-capture from the
+    // WireClock provider — only consumed at Crc when the classifier was
     // unanchored, so IDLE-derived timing per [[no_idle_timing]] never
     // enters the anchored path.
     // SAFETY: see `on_dma1_ch7`.
-    unsafe { Drivers::dxl_uart() }.on_rx_idle(now);
+    unsafe { Drivers::dxl_uart() }.on_rx_idle();
 }
 
 fn on_usart1_tc() {

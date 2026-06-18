@@ -34,6 +34,7 @@ use crate::providers::fast_last_scheduler::FastLastScheduler;
 use crate::providers::monotonic::Monotonic;
 use crate::providers::rx_dma::RxDma;
 use crate::providers::usart_baud::UsartBaud;
+use crate::providers::wire_clock::WireClock;
 
 /// Concrete instantiations for this chip. The driver types stay generic
 /// in `osc-drivers`; this is the single spot that binds them to specific
@@ -55,6 +56,7 @@ impl Providers for DxlUartProviders {
     type TxScheduler = DxlTxScheduler;
     type TxBus = DxlTxBus;
     type FastLastScheduler = FastLastScheduler;
+    type WireClock = WireClock;
     type Crc = DxlCrc;
 }
 
@@ -120,6 +122,7 @@ impl Drivers {
             DxlTxScheduler,
             DxlTxBus,
             FastLast::new(FastLastScheduler::default()),
+            WireClock,
             defaults.dxl_id,
             (defaults.dxl_return_delay_2us as u32) * 2,
         ));

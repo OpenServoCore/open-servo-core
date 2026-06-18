@@ -30,7 +30,19 @@ pub trait Providers {
     type TxScheduler: TxScheduler;
     type TxBus: TxBus;
     type FastLastScheduler: FastLastScheduler;
+    type WireClock: WireClock;
     type Crc: CrcUmts;
+}
+
+/// 16-bit free-running wire-clock counter. Same physical clock that ticks
+/// `UsartBaud::CLOCK_HZ` and that the chip-side ISR layer stamps into the
+/// edge ring — the driver consumes it for poll-time decisions where ISR
+/// stamps aren't already on hand (universal byte-skip deadline check,
+/// classifier fallback wake-capture). 16-bit because at HCLK rates the
+/// rollover horizon (~1.4 ms at 48 MHz) is well over the longest single
+/// packet, and the surrounding tick math is already u16 wrapping.
+pub trait WireClock {
+    fn now(&self) -> u16;
 }
 
 /// Single-channel USART baud-rate control. The driver hands a domain-typed

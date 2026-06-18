@@ -22,6 +22,7 @@ pub mod dma;
 pub mod primitives;
 pub mod rx;
 pub mod scheduler;
+pub mod wire_clock;
 
 pub use bus::{MockTxBus, TxBusOp};
 pub use clock::{MockClockTrim, MockUsartBaud};
@@ -29,6 +30,7 @@ pub use dma::{EdgeDmaOp, MockEdgeDma};
 pub use primitives::{MockDigitalOut, MockMonotonic};
 pub use rx::MockRxDma;
 pub use scheduler::{FastLastSchedulerOp, MockFastLastScheduler, MockTxScheduler, ScheduleOp};
+pub use wire_clock::MockWireClock;
 
 /// Driver-side `Providers` impl for tests — bundles every mock provider into
 /// the single super-trait the [`DxlUart`] composite consumes. Tests
@@ -47,5 +49,6 @@ impl Providers for TestProviders {
     type TxScheduler = MockTxScheduler;
     type TxBus = MockTxBus;
     type FastLastScheduler = MockFastLastScheduler;
+    type WireClock = MockWireClock;
     type Crc = SoftwareCrcUmts;
 }
