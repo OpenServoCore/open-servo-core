@@ -1,0 +1,6 @@
+---
+source: integration/tests/protocol/reg_write_action.rs
+assertion_line: 33
+expression: format_hex(&rx)
+---
+ff ff fd 00 01 04 00 55 00 a1 0c
