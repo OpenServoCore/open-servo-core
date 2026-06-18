@@ -1,0 +1,5 @@
+---
+source: integration/tests/protocol/fast_bulk_read.rs
+expression: format_hex(&rx)
+---
+ff ff fd 00 fe 0d 00 55 00 01 01 00 02 de c0 00 03 01 1e 0e

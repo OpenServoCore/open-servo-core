@@ -27,6 +27,10 @@ impl EdgeDmaState {
         self.remaining.set(n);
     }
 
+    pub fn paused(&self) -> bool {
+        self.paused.get()
+    }
+
     pub fn operations(&self) -> Vec<EdgeDmaOp> {
         self.operations.borrow().clone()
     }

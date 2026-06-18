@@ -24,14 +24,12 @@ pub fn setup(n_servos: usize) -> Setup {
 /// lock up and no servo is stuck mid-parser.
 #[allow(dead_code)]
 pub fn assert_bus_healthy(sim: &mut Sim, host: DeviceId, servos: &[DeviceId]) {
-    sim.device_mut::<Host>(host).unwrap().clear_logs();
-    sim.advance(SimTime::from_ms(20), |sim, _| {
-        sim.device_mut::<Host>(host)
-            .unwrap()
-            .send_ping(Id::BROADCAST);
-    });
+    sim.device_mut::<Host>(host).clear_logs();
+    sim.device_mut::<Host>(host).send_ping(Id::BROADCAST);
+    sim.device_mut::<Host>(host).wait_for_status();
+    sim.advance(SimTime::from_ms(20));
 
-    let rx = sim.device::<Host>(host).unwrap().rx_bytes();
+    let rx = sim.device::<Host>(host).rx_bytes();
     let replies = parse_status_stream(Instruction::Ping, &rx);
     assert_eq!(
         replies.len(),
@@ -43,7 +41,7 @@ pub fn assert_bus_healthy(sim: &mut Sim, host: DeviceId, servos: &[DeviceId]) {
     );
     let expected_ids: Vec<u8> = servos
         .iter()
-        .map(|d| sim.device::<Servo>(*d).unwrap().dxl_id().as_byte())
+        .map(|d| sim.device::<Servo>(*d).dxl_id().as_byte())
         .collect();
     for (reply, expected_id) in replies.iter().zip(expected_ids.iter()) {
         match reply {

@@ -14,13 +14,12 @@ const OVER_MAX_CONTROL_RW: u16 = MAX_CONTROL_RW as u16 + 1;
 fn fast_sync_read_replies_per_id_in_order() {
     let Setup { mut sim, host, .. } = setup(3);
 
-    sim.advance(SimTime::from_ms(20), |sim, _| {
-        sim.device_mut::<Host>(host)
-            .unwrap()
-            .send_fast_sync_read(comms::ID, 1, &[1, 2, 3]);
-    });
+    sim.device_mut::<Host>(host)
+        .send_fast_sync_read(comms::ID, 1, &[1, 2, 3]);
+    sim.device_mut::<Host>(host).wait_for_status();
+    sim.advance(SimTime::from_ms(20));
 
-    let rx = sim.device::<Host>(host).unwrap().rx_bytes();
+    let rx = sim.device::<Host>(host).rx_bytes();
     insta::assert_snapshot!(format_hex(&rx));
 
     let status = parse_fast_sync_status(&rx, 1);
@@ -51,13 +50,12 @@ fn fast_sync_read_replies_per_id_in_order() {
 fn fast_sync_read_single_target_replies_once() {
     let Setup { mut sim, host, .. } = setup(1);
 
-    sim.advance(SimTime::from_ms(20), |sim, _| {
-        sim.device_mut::<Host>(host)
-            .unwrap()
-            .send_fast_sync_read(comms::ID, 1, &[1]);
-    });
+    sim.device_mut::<Host>(host)
+        .send_fast_sync_read(comms::ID, 1, &[1]);
+    sim.device_mut::<Host>(host).wait_for_status();
+    sim.advance(SimTime::from_ms(20));
 
-    let rx = sim.device::<Host>(host).unwrap().rx_bytes();
+    let rx = sim.device::<Host>(host).rx_bytes();
     let status = parse_fast_sync_status(&rx, 1);
     assert_eq!(status.crc, FastStatusCrc::Good);
     assert_eq!(
@@ -79,13 +77,12 @@ fn fast_sync_read_single_target_replies_once() {
 fn fast_sync_read_zero_length_yields_no_reply() {
     let Setup { mut sim, host, .. } = setup(3);
 
-    sim.advance(SimTime::from_ms(20), |sim, _| {
-        sim.device_mut::<Host>(host)
-            .unwrap()
-            .send_fast_sync_read(comms::ID, 0, &[1, 2, 3]);
-    });
+    sim.device_mut::<Host>(host)
+        .send_fast_sync_read(comms::ID, 0, &[1, 2, 3]);
+    sim.device_mut::<Host>(host).wait_for_status();
+    sim.advance(SimTime::from_ms(20));
 
-    let rx = sim.device::<Host>(host).unwrap().rx_bytes();
+    let rx = sim.device::<Host>(host).rx_bytes();
     assert!(rx.is_empty(), "expected silent drop, got {:?}", rx);
 }
 
@@ -95,15 +92,12 @@ fn fast_sync_read_zero_length_yields_no_reply() {
 fn fast_sync_read_length_over_cap_yields_no_reply() {
     let Setup { mut sim, host, .. } = setup(3);
 
-    sim.advance(SimTime::from_ms(20), |sim, _| {
-        sim.device_mut::<Host>(host).unwrap().send_fast_sync_read(
-            comms::ID,
-            OVER_MAX_CONTROL_RW,
-            &[1, 2, 3],
-        );
-    });
+    sim.device_mut::<Host>(host)
+        .send_fast_sync_read(comms::ID, OVER_MAX_CONTROL_RW, &[1, 2, 3]);
+    sim.device_mut::<Host>(host).wait_for_status();
+    sim.advance(SimTime::from_ms(20));
 
-    let rx = sim.device::<Host>(host).unwrap().rx_bytes();
+    let rx = sim.device::<Host>(host).rx_bytes();
     assert!(rx.is_empty(), "expected silent drop, got {:?}", rx);
 }
 
@@ -114,15 +108,12 @@ fn fast_sync_read_length_over_cap_yields_no_reply() {
 fn fast_sync_read_across_region_boundary_returns_zeros() {
     let Setup { mut sim, host, .. } = setup(3);
 
-    sim.advance(SimTime::from_ms(20), |sim, _| {
-        sim.device_mut::<Host>(host).unwrap().send_fast_sync_read(
-            CONFIG_REGION_END_ADDR - 2,
-            4,
-            &[1, 2, 3],
-        );
-    });
+    sim.device_mut::<Host>(host)
+        .send_fast_sync_read(CONFIG_REGION_END_ADDR - 2, 4, &[1, 2, 3]);
+    sim.device_mut::<Host>(host).wait_for_status();
+    sim.advance(SimTime::from_ms(20));
 
-    let rx = sim.device::<Host>(host).unwrap().rx_bytes();
+    let rx = sim.device::<Host>(host).rx_bytes();
     let status = parse_fast_sync_status(&rx, 4);
     assert_eq!(status.crc, FastStatusCrc::Good);
     let expected: Vec<Slot<'_>> = (1u8..=3)
@@ -151,16 +142,14 @@ fn fast_sync_read_srl_none_predecessor_collapses_tail() {
         servos,
     } = setup(3);
     sim.device_mut::<Servo>(servos[1])
-        .unwrap()
         .set_status_return_level(StatusReturnLevel::None);
 
-    sim.advance(SimTime::from_ms(20), |sim, _| {
-        sim.device_mut::<Host>(host)
-            .unwrap()
-            .send_fast_sync_read(comms::ID, 1, &[1, 2, 3]);
-    });
+    sim.device_mut::<Host>(host)
+        .send_fast_sync_read(comms::ID, 1, &[1, 2, 3]);
+    sim.device_mut::<Host>(host).wait_for_status();
+    sim.advance(SimTime::from_ms(20));
 
-    let rx = sim.device::<Host>(host).unwrap().rx_bytes();
+    let rx = sim.device::<Host>(host).rx_bytes();
     let status = parse_fast_sync_status(&rx, 1);
     assert_eq!(status.crc, FastStatusCrc::Truncated);
     assert_eq!(
@@ -194,17 +183,14 @@ fn fast_sync_read_data_line_disconnect_collapses_tail() {
         host,
         servos,
     } = setup(3);
-    sim.device_mut::<Servo>(servos[1])
-        .unwrap()
-        .disconnect(false);
+    sim.device_mut::<Servo>(servos[1]).disconnect(false);
 
-    sim.advance(SimTime::from_ms(20), |sim, _| {
-        sim.device_mut::<Host>(host)
-            .unwrap()
-            .send_fast_sync_read(comms::ID, 1, &[1, 2, 3]);
-    });
+    sim.device_mut::<Host>(host)
+        .send_fast_sync_read(comms::ID, 1, &[1, 2, 3]);
+    sim.device_mut::<Host>(host).wait_for_status();
+    sim.advance(SimTime::from_ms(20));
 
-    let rx = sim.device::<Host>(host).unwrap().rx_bytes();
+    let rx = sim.device::<Host>(host).rx_bytes();
     let status = parse_fast_sync_status(&rx, 1);
     assert_eq!(status.crc, FastStatusCrc::Truncated);
     assert_eq!(
@@ -223,7 +209,7 @@ fn fast_sync_read_data_line_disconnect_collapses_tail() {
         ],
     );
 
-    sim.device_mut::<Servo>(servos[1]).unwrap().connect();
+    sim.device_mut::<Servo>(servos[1]).connect();
     assert_bus_healthy(&mut sim, host, &servos);
 }
 
@@ -239,13 +225,12 @@ fn fast_sync_read_unknown_id_in_ids_collapses_tail() {
         servos,
     } = setup(3);
 
-    sim.advance(SimTime::from_ms(20), |sim, _| {
-        sim.device_mut::<Host>(host)
-            .unwrap()
-            .send_fast_sync_read(comms::ID, 1, &[1, 99, 3]);
-    });
+    sim.device_mut::<Host>(host)
+        .send_fast_sync_read(comms::ID, 1, &[1, 99, 3]);
+    sim.device_mut::<Host>(host).wait_for_status();
+    sim.advance(SimTime::from_ms(20));
 
-    let rx = sim.device::<Host>(host).unwrap().rx_bytes();
+    let rx = sim.device::<Host>(host).rx_bytes();
     let status = parse_fast_sync_status(&rx, 1);
     assert_eq!(status.crc, FastStatusCrc::Truncated);
     assert_eq!(
@@ -270,12 +255,11 @@ fn fast_sync_read_unknown_id_in_ids_collapses_tail() {
 fn fast_sync_read_all_unknown_ids_yields_no_reply() {
     let Setup { mut sim, host, .. } = setup(3);
 
-    sim.advance(SimTime::from_ms(20), |sim, _| {
-        sim.device_mut::<Host>(host)
-            .unwrap()
-            .send_fast_sync_read(comms::ID, 1, &[99]);
-    });
+    sim.device_mut::<Host>(host)
+        .send_fast_sync_read(comms::ID, 1, &[99]);
+    sim.device_mut::<Host>(host).wait_for_status();
+    sim.advance(SimTime::from_ms(20));
 
-    let rx = sim.device::<Host>(host).unwrap().rx_bytes();
+    let rx = sim.device::<Host>(host).rx_bytes();
     assert!(rx.is_empty(), "expected silent drop, got {:?}", rx);
 }

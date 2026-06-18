@@ -10,13 +10,12 @@ const CONFIG_REGION_END_ADDR: u16 = CONFIG_REGION_SIZE as u16;
 fn sync_read_replies_in_id_order() {
     let Setup { mut sim, host, .. } = setup(3);
 
-    sim.advance(SimTime::from_ms(20), |sim, _| {
-        sim.device_mut::<Host>(host)
-            .unwrap()
-            .send_sync_read(comms::ID, 1, &[1, 2, 3]);
-    });
+    sim.device_mut::<Host>(host)
+        .send_sync_read(comms::ID, 1, &[1, 2, 3]);
+    sim.device_mut::<Host>(host).wait_for_status();
+    sim.advance(SimTime::from_ms(20));
 
-    let rx = sim.device::<Host>(host).unwrap().rx_bytes();
+    let rx = sim.device::<Host>(host).rx_bytes();
     insta::assert_snapshot!(format_hex(&rx));
 
     let replies = parse_status_stream(Instruction::SyncRead, &rx);
@@ -38,13 +37,12 @@ fn sync_read_replies_in_id_order() {
 fn sync_read_single_id_replies_once() {
     let Setup { mut sim, host, .. } = setup(1);
 
-    sim.advance(SimTime::from_ms(20), |sim, _| {
-        sim.device_mut::<Host>(host)
-            .unwrap()
-            .send_sync_read(comms::ID, 1, &[1]);
-    });
+    sim.device_mut::<Host>(host)
+        .send_sync_read(comms::ID, 1, &[1]);
+    sim.device_mut::<Host>(host).wait_for_status();
+    sim.advance(SimTime::from_ms(20));
 
-    let rx = sim.device::<Host>(host).unwrap().rx_bytes();
+    let rx = sim.device::<Host>(host).rx_bytes();
     let replies = parse_status_stream(Instruction::SyncRead, &rx);
     assert_eq!(
         replies,
@@ -63,13 +61,12 @@ fn sync_read_single_id_replies_once() {
 fn sync_read_zero_length_errors_keep_chain_alive() {
     let Setup { mut sim, host, .. } = setup(3);
 
-    sim.advance(SimTime::from_ms(20), |sim, _| {
-        sim.device_mut::<Host>(host)
-            .unwrap()
-            .send_sync_read(comms::ID, 0, &[1, 2, 3]);
-    });
+    sim.device_mut::<Host>(host)
+        .send_sync_read(comms::ID, 0, &[1, 2, 3]);
+    sim.device_mut::<Host>(host).wait_for_status();
+    sim.advance(SimTime::from_ms(20));
 
-    let rx = sim.device::<Host>(host).unwrap().rx_bytes();
+    let rx = sim.device::<Host>(host).rx_bytes();
     let replies = parse_status_stream(Instruction::SyncRead, &rx);
     let expected: Vec<Status<'_>> = (1u8..=3)
         .map(|id| Status::Read {
@@ -85,15 +82,12 @@ fn sync_read_zero_length_errors_keep_chain_alive() {
 fn sync_read_across_region_boundary_returns_zeros_in_order() {
     let Setup { mut sim, host, .. } = setup(3);
 
-    sim.advance(SimTime::from_ms(20), |sim, _| {
-        sim.device_mut::<Host>(host).unwrap().send_sync_read(
-            CONFIG_REGION_END_ADDR - 2,
-            4,
-            &[1, 2, 3],
-        );
-    });
+    sim.device_mut::<Host>(host)
+        .send_sync_read(CONFIG_REGION_END_ADDR - 2, 4, &[1, 2, 3]);
+    sim.device_mut::<Host>(host).wait_for_status();
+    sim.advance(SimTime::from_ms(20));
 
-    let rx = sim.device::<Host>(host).unwrap().rx_bytes();
+    let rx = sim.device::<Host>(host).rx_bytes();
     let replies = parse_status_stream(Instruction::SyncRead, &rx);
     let expected: Vec<Status<'_>> = (1u8..=3)
         .map(|id| Status::Read {
@@ -118,17 +112,14 @@ fn sync_read_data_line_disconnect_collapses_tail() {
         host,
         servos,
     } = setup(3);
-    sim.device_mut::<Servo>(servos[1])
-        .unwrap()
-        .disconnect(false);
+    sim.device_mut::<Servo>(servos[1]).disconnect(false);
 
-    sim.advance(SimTime::from_ms(20), |sim, _| {
-        sim.device_mut::<Host>(host)
-            .unwrap()
-            .send_sync_read(comms::ID, 1, &[1, 2, 3]);
-    });
+    sim.device_mut::<Host>(host)
+        .send_sync_read(comms::ID, 1, &[1, 2, 3]);
+    sim.device_mut::<Host>(host).wait_for_status();
+    sim.advance(SimTime::from_ms(20));
 
-    let rx = sim.device::<Host>(host).unwrap().rx_bytes();
+    let rx = sim.device::<Host>(host).rx_bytes();
     let replies = parse_status_stream(Instruction::SyncRead, &rx);
     assert_eq!(
         replies,
@@ -139,7 +130,7 @@ fn sync_read_data_line_disconnect_collapses_tail() {
         }],
     );
 
-    sim.device_mut::<Servo>(servos[1]).unwrap().connect();
+    sim.device_mut::<Servo>(servos[1]).connect();
     assert_bus_healthy(&mut sim, host, &servos);
 }
 
@@ -154,16 +145,14 @@ fn sync_read_srl_none_predecessor_collapses_tail() {
         servos,
     } = setup(3);
     sim.device_mut::<Servo>(servos[1])
-        .unwrap()
         .set_status_return_level(StatusReturnLevel::None);
 
-    sim.advance(SimTime::from_ms(20), |sim, _| {
-        sim.device_mut::<Host>(host)
-            .unwrap()
-            .send_sync_read(comms::ID, 1, &[1, 2, 3]);
-    });
+    sim.device_mut::<Host>(host)
+        .send_sync_read(comms::ID, 1, &[1, 2, 3]);
+    sim.device_mut::<Host>(host).wait_for_status();
+    sim.advance(SimTime::from_ms(20));
 
-    let rx = sim.device::<Host>(host).unwrap().rx_bytes();
+    let rx = sim.device::<Host>(host).rx_bytes();
     let replies = parse_status_stream(Instruction::SyncRead, &rx);
     assert_eq!(
         replies,
@@ -187,13 +176,12 @@ fn sync_read_unknown_id_in_chain_collapses_tail() {
         servos,
     } = setup(3);
 
-    sim.advance(SimTime::from_ms(20), |sim, _| {
-        sim.device_mut::<Host>(host)
-            .unwrap()
-            .send_sync_read(comms::ID, 1, &[1, 99, 3]);
-    });
+    sim.device_mut::<Host>(host)
+        .send_sync_read(comms::ID, 1, &[1, 99, 3]);
+    sim.device_mut::<Host>(host).wait_for_status();
+    sim.advance(SimTime::from_ms(20));
 
-    let rx = sim.device::<Host>(host).unwrap().rx_bytes();
+    let rx = sim.device::<Host>(host).rx_bytes();
     let replies = parse_status_stream(Instruction::SyncRead, &rx);
     assert_eq!(
         replies,
@@ -210,12 +198,11 @@ fn sync_read_unknown_id_in_chain_collapses_tail() {
 fn sync_read_all_unknown_ids_yields_no_reply() {
     let Setup { mut sim, host, .. } = setup(3);
 
-    sim.advance(SimTime::from_ms(20), |sim, _| {
-        sim.device_mut::<Host>(host)
-            .unwrap()
-            .send_sync_read(comms::ID, 1, &[99]);
-    });
+    sim.device_mut::<Host>(host)
+        .send_sync_read(comms::ID, 1, &[99]);
+    sim.device_mut::<Host>(host).wait_for_status();
+    sim.advance(SimTime::from_ms(20));
 
-    let rx = sim.device::<Host>(host).unwrap().rx_bytes();
+    let rx = sim.device::<Host>(host).rx_bytes();
     assert!(rx.is_empty(), "expected silent drop, got {:?}", rx);
 }

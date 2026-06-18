@@ -12,7 +12,6 @@ const OVER_MAX_CONTROL_RW: u16 = MAX_CONTROL_RW as u16 + 1;
 
 fn servo_id(sim: &Sim, servo: DeviceId) -> u8 {
     sim.device::<Servo>(servo)
-        .unwrap()
         .shared()
         .table
         .config
@@ -30,13 +29,12 @@ fn sync_write_mutates_all_targets_silently() {
     // body = [id=1, new=10, id=2, new=20, id=3, new=30]; length=1 (1 byte/servo).
     let body = [1u8, 10, 2, 20, 3, 30];
 
-    sim.advance(SimTime::from_ms(20), |sim, _| {
-        sim.device_mut::<Host>(host)
-            .unwrap()
-            .send_sync_write(comms::ID, 1, &body);
-    });
+    sim.device_mut::<Host>(host)
+        .send_sync_write(comms::ID, 1, &body);
+    sim.device_mut::<Host>(host).wait_for_status();
+    sim.advance(SimTime::from_ms(20));
 
-    let rx = sim.device::<Host>(host).unwrap().rx_bytes();
+    let rx = sim.device::<Host>(host).rx_bytes();
     assert!(rx.is_empty(), "sync_write must be silent, got {:?}", rx);
 
     for (i, &expected) in [10u8, 20, 30].iter().enumerate() {
@@ -55,13 +53,12 @@ fn sync_write_single_target_mutates_only_that_servo() {
     // Body targets only id=2; servos 1 and 3 receive nothing.
     let body = [2u8, 20];
 
-    sim.advance(SimTime::from_ms(20), |sim, _| {
-        sim.device_mut::<Host>(host)
-            .unwrap()
-            .send_sync_write(comms::ID, 1, &body);
-    });
+    sim.device_mut::<Host>(host)
+        .send_sync_write(comms::ID, 1, &body);
+    sim.device_mut::<Host>(host).wait_for_status();
+    sim.advance(SimTime::from_ms(20));
 
-    let rx = sim.device::<Host>(host).unwrap().rx_bytes();
+    let rx = sim.device::<Host>(host).rx_bytes();
     assert!(rx.is_empty(), "sync_write must be silent, got {:?}", rx);
 
     assert_eq!(servo_id(&sim, servos[0]), 1, "servo[0] unchanged");
@@ -82,13 +79,12 @@ fn sync_write_zero_length_does_not_mutate() {
     // length=0 → per-servo chunk is just the id with no data bytes.
     let body = [1u8, 2, 3];
 
-    sim.advance(SimTime::from_ms(20), |sim, _| {
-        sim.device_mut::<Host>(host)
-            .unwrap()
-            .send_sync_write(comms::ID, 0, &body);
-    });
+    sim.device_mut::<Host>(host)
+        .send_sync_write(comms::ID, 0, &body);
+    sim.device_mut::<Host>(host).wait_for_status();
+    sim.advance(SimTime::from_ms(20));
 
-    let rx = sim.device::<Host>(host).unwrap().rx_bytes();
+    let rx = sim.device::<Host>(host).rx_bytes();
     assert!(rx.is_empty(), "sync_write must be silent, got {:?}", rx);
 
     for (i, expected) in [1u8, 2, 3].iter().enumerate() {
@@ -113,15 +109,12 @@ fn sync_write_length_over_cap_does_not_mutate() {
         body.extend(std::iter::repeat_n(0x55u8, OVER_MAX_CONTROL_RW as usize));
     }
 
-    sim.advance(SimTime::from_ms(20), |sim, _| {
-        sim.device_mut::<Host>(host).unwrap().send_sync_write(
-            comms::ID,
-            OVER_MAX_CONTROL_RW,
-            &body,
-        );
-    });
+    sim.device_mut::<Host>(host)
+        .send_sync_write(comms::ID, OVER_MAX_CONTROL_RW, &body);
+    sim.device_mut::<Host>(host).wait_for_status();
+    sim.advance(SimTime::from_ms(20));
 
-    let rx = sim.device::<Host>(host).unwrap().rx_bytes();
+    let rx = sim.device::<Host>(host).rx_bytes();
     assert!(rx.is_empty(), "sync_write must be silent, got {:?}", rx);
 
     for (i, expected) in [1u8, 2, 3].iter().enumerate() {
@@ -142,19 +135,17 @@ fn sync_write_to_ro_field_does_not_mutate() {
 
     let body = [1u8, 0x42, 2, 0x42, 3, 0x42];
 
-    sim.advance(SimTime::from_ms(20), |sim, _| {
-        sim.device_mut::<Host>(host)
-            .unwrap()
-            .send_sync_write(identity::FIRMWARE_VERSION, 1, &body);
-    });
+    sim.device_mut::<Host>(host)
+        .send_sync_write(identity::FIRMWARE_VERSION, 1, &body);
+    sim.device_mut::<Host>(host).wait_for_status();
+    sim.advance(SimTime::from_ms(20));
 
-    let rx = sim.device::<Host>(host).unwrap().rx_bytes();
+    let rx = sim.device::<Host>(host).rx_bytes();
     assert!(rx.is_empty(), "sync_write must be silent, got {:?}", rx);
 
     for (i, servo) in servos.iter().enumerate() {
         let fw = sim
             .device::<Servo>(*servo)
-            .unwrap()
             .shared()
             .table
             .config
@@ -177,20 +168,17 @@ fn sync_write_under_torque_lock_does_not_mutate() {
         servos,
     } = setup(3);
     for servo in &servos {
-        sim.device::<Servo>(*servo)
-            .unwrap()
-            .set_torque_enabled(true);
+        sim.device::<Servo>(*servo).set_torque_enabled(true);
     }
 
     let body = [1u8, 10, 2, 20, 3, 30];
 
-    sim.advance(SimTime::from_ms(20), |sim, _| {
-        sim.device_mut::<Host>(host)
-            .unwrap()
-            .send_sync_write(comms::ID, 1, &body);
-    });
+    sim.device_mut::<Host>(host)
+        .send_sync_write(comms::ID, 1, &body);
+    sim.device_mut::<Host>(host).wait_for_status();
+    sim.advance(SimTime::from_ms(20));
 
-    let rx = sim.device::<Host>(host).unwrap().rx_bytes();
+    let rx = sim.device::<Host>(host).rx_bytes();
     assert!(rx.is_empty(), "sync_write must be silent, got {:?}", rx);
 
     for (i, &expected) in [1u8, 2, 3].iter().enumerate() {
@@ -215,13 +203,12 @@ fn sync_write_across_region_boundary_does_not_mutate() {
         body.extend_from_slice(&[0xAA, 0xBB, 0xCC, 0xDD]);
     }
 
-    sim.advance(SimTime::from_ms(20), |sim, _| {
-        sim.device_mut::<Host>(host)
-            .unwrap()
-            .send_sync_write(CONFIG_REGION_END_ADDR - 2, 4, &body);
-    });
+    sim.device_mut::<Host>(host)
+        .send_sync_write(CONFIG_REGION_END_ADDR - 2, 4, &body);
+    sim.device_mut::<Host>(host).wait_for_status();
+    sim.advance(SimTime::from_ms(20));
 
-    let rx = sim.device::<Host>(host).unwrap().rx_bytes();
+    let rx = sim.device::<Host>(host).rx_bytes();
     assert!(rx.is_empty(), "sync_write must be silent, got {:?}", rx);
 
     for (i, expected) in [1u8, 2, 3].iter().enumerate() {
@@ -243,13 +230,12 @@ fn sync_write_unknown_id_in_body_skips_that_chunk() {
 
     let body = [1u8, 10, 99, 99, 3, 30];
 
-    sim.advance(SimTime::from_ms(20), |sim, _| {
-        sim.device_mut::<Host>(host)
-            .unwrap()
-            .send_sync_write(comms::ID, 1, &body);
-    });
+    sim.device_mut::<Host>(host)
+        .send_sync_write(comms::ID, 1, &body);
+    sim.device_mut::<Host>(host).wait_for_status();
+    sim.advance(SimTime::from_ms(20));
 
-    let rx = sim.device::<Host>(host).unwrap().rx_bytes();
+    let rx = sim.device::<Host>(host).rx_bytes();
     assert!(rx.is_empty(), "sync_write must be silent, got {:?}", rx);
 
     assert_eq!(servo_id(&sim, servos[0]), 10, "servo[0] mutated");

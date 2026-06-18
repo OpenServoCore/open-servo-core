@@ -31,13 +31,11 @@ fn bulk_read_replies_per_entry_in_order() {
         entry(3, identity::FIRMWARE_VERSION, 1),
     ];
 
-    sim.advance(SimTime::from_ms(20), |sim, _| {
-        sim.device_mut::<Host>(host)
-            .unwrap()
-            .send_bulk_read(&entries);
-    });
+    sim.device_mut::<Host>(host).send_bulk_read(&entries);
+    sim.device_mut::<Host>(host).wait_for_status();
+    sim.advance(SimTime::from_ms(20));
 
-    let rx = sim.device::<Host>(host).unwrap().rx_bytes();
+    let rx = sim.device::<Host>(host).rx_bytes();
     insta::assert_snapshot!(format_hex(&rx));
 
     let replies = parse_status_stream(Instruction::BulkRead, &rx);
@@ -66,13 +64,12 @@ fn bulk_read_replies_per_entry_in_order() {
 fn bulk_read_single_entry_replies_once() {
     let Setup { mut sim, host, .. } = setup(1);
 
-    sim.advance(SimTime::from_ms(20), |sim, _| {
-        sim.device_mut::<Host>(host)
-            .unwrap()
-            .send_bulk_read(&[entry(1, comms::ID, 1)]);
-    });
+    sim.device_mut::<Host>(host)
+        .send_bulk_read(&[entry(1, comms::ID, 1)]);
+    sim.device_mut::<Host>(host).wait_for_status();
+    sim.advance(SimTime::from_ms(20));
 
-    let rx = sim.device::<Host>(host).unwrap().rx_bytes();
+    let rx = sim.device::<Host>(host).rx_bytes();
     let replies = parse_status_stream(Instruction::BulkRead, &rx);
     assert_eq!(
         replies,
@@ -97,13 +94,11 @@ fn bulk_read_zero_length_entry_keeps_chain_alive() {
         entry(3, comms::ID, 1),
     ];
 
-    sim.advance(SimTime::from_ms(20), |sim, _| {
-        sim.device_mut::<Host>(host)
-            .unwrap()
-            .send_bulk_read(&entries);
-    });
+    sim.device_mut::<Host>(host).send_bulk_read(&entries);
+    sim.device_mut::<Host>(host).wait_for_status();
+    sim.advance(SimTime::from_ms(20));
 
-    let rx = sim.device::<Host>(host).unwrap().rx_bytes();
+    let rx = sim.device::<Host>(host).rx_bytes();
     let replies = parse_status_stream(Instruction::BulkRead, &rx);
     let expected = vec![
         Status::Read {
@@ -138,13 +133,11 @@ fn bulk_read_entry_across_region_boundary_returns_zeros() {
         entry(3, comms::ID, 1),
     ];
 
-    sim.advance(SimTime::from_ms(20), |sim, _| {
-        sim.device_mut::<Host>(host)
-            .unwrap()
-            .send_bulk_read(&entries);
-    });
+    sim.device_mut::<Host>(host).send_bulk_read(&entries);
+    sim.device_mut::<Host>(host).wait_for_status();
+    sim.advance(SimTime::from_ms(20));
 
-    let rx = sim.device::<Host>(host).unwrap().rx_bytes();
+    let rx = sim.device::<Host>(host).rx_bytes();
     let replies = parse_status_stream(Instruction::BulkRead, &rx);
     let expected = vec![
         Status::Read {
@@ -178,9 +171,7 @@ fn bulk_read_data_line_disconnect_collapses_tail() {
         host,
         servos,
     } = setup(3);
-    sim.device_mut::<Servo>(servos[1])
-        .unwrap()
-        .disconnect(false);
+    sim.device_mut::<Servo>(servos[1]).disconnect(false);
 
     let entries = [
         entry(1, comms::ID, 1),
@@ -188,13 +179,11 @@ fn bulk_read_data_line_disconnect_collapses_tail() {
         entry(3, comms::ID, 1),
     ];
 
-    sim.advance(SimTime::from_ms(20), |sim, _| {
-        sim.device_mut::<Host>(host)
-            .unwrap()
-            .send_bulk_read(&entries);
-    });
+    sim.device_mut::<Host>(host).send_bulk_read(&entries);
+    sim.device_mut::<Host>(host).wait_for_status();
+    sim.advance(SimTime::from_ms(20));
 
-    let rx = sim.device::<Host>(host).unwrap().rx_bytes();
+    let rx = sim.device::<Host>(host).rx_bytes();
     let replies = parse_status_stream(Instruction::BulkRead, &rx);
     assert_eq!(
         replies,
@@ -205,7 +194,7 @@ fn bulk_read_data_line_disconnect_collapses_tail() {
         }],
     );
 
-    sim.device_mut::<Servo>(servos[1]).unwrap().connect();
+    sim.device_mut::<Servo>(servos[1]).connect();
     assert_bus_healthy(&mut sim, host, &servos);
 }
 
@@ -219,7 +208,6 @@ fn bulk_read_srl_none_predecessor_collapses_tail() {
         servos,
     } = setup(3);
     sim.device_mut::<Servo>(servos[1])
-        .unwrap()
         .set_status_return_level(StatusReturnLevel::None);
 
     let entries = [
@@ -228,13 +216,11 @@ fn bulk_read_srl_none_predecessor_collapses_tail() {
         entry(3, comms::ID, 1),
     ];
 
-    sim.advance(SimTime::from_ms(20), |sim, _| {
-        sim.device_mut::<Host>(host)
-            .unwrap()
-            .send_bulk_read(&entries);
-    });
+    sim.device_mut::<Host>(host).send_bulk_read(&entries);
+    sim.device_mut::<Host>(host).wait_for_status();
+    sim.advance(SimTime::from_ms(20));
 
-    let rx = sim.device::<Host>(host).unwrap().rx_bytes();
+    let rx = sim.device::<Host>(host).rx_bytes();
     let replies = parse_status_stream(Instruction::BulkRead, &rx);
     assert_eq!(
         replies,
@@ -264,13 +250,11 @@ fn bulk_read_unknown_id_in_entries_collapses_tail() {
         entry(3, comms::ID, 1),
     ];
 
-    sim.advance(SimTime::from_ms(20), |sim, _| {
-        sim.device_mut::<Host>(host)
-            .unwrap()
-            .send_bulk_read(&entries);
-    });
+    sim.device_mut::<Host>(host).send_bulk_read(&entries);
+    sim.device_mut::<Host>(host).wait_for_status();
+    sim.advance(SimTime::from_ms(20));
 
-    let rx = sim.device::<Host>(host).unwrap().rx_bytes();
+    let rx = sim.device::<Host>(host).rx_bytes();
     let replies = parse_status_stream(Instruction::BulkRead, &rx);
     assert_eq!(
         replies,
@@ -287,12 +271,11 @@ fn bulk_read_unknown_id_in_entries_collapses_tail() {
 fn bulk_read_all_unknown_ids_yields_no_reply() {
     let Setup { mut sim, host, .. } = setup(3);
 
-    sim.advance(SimTime::from_ms(20), |sim, _| {
-        sim.device_mut::<Host>(host)
-            .unwrap()
-            .send_bulk_read(&[entry(99, comms::ID, 1)]);
-    });
+    sim.device_mut::<Host>(host)
+        .send_bulk_read(&[entry(99, comms::ID, 1)]);
+    sim.device_mut::<Host>(host).wait_for_status();
+    sim.advance(SimTime::from_ms(20));
 
-    let rx = sim.device::<Host>(host).unwrap().rx_bytes();
+    let rx = sim.device::<Host>(host).rx_bytes();
     assert!(rx.is_empty(), "expected silent drop, got {:?}", rx);
 }

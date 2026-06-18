@@ -10,11 +10,11 @@ use osc_integration::sim::{
 fn ping_to_self_id_returns_model_and_fw() {
     let Setup { mut sim, host, .. } = setup(1);
 
-    sim.advance(SimTime::from_ms(5), |sim, _| {
-        sim.device_mut::<Host>(host).unwrap().send_ping(Id::new(1));
-    });
+    sim.device_mut::<Host>(host).send_ping(Id::new(1));
+    sim.device_mut::<Host>(host).wait_for_status();
+    sim.advance(SimTime::from_ms(5));
 
-    let rx = sim.device::<Host>(host).unwrap().rx_bytes();
+    let rx = sim.device::<Host>(host).rx_bytes();
     insta::assert_snapshot!(format_hex(&rx));
     assert_eq!(
         parse_status(Instruction::Ping, &rx),
@@ -33,11 +33,11 @@ fn ping_to_self_id_returns_model_and_fw() {
 fn ping_to_wrong_id_yields_no_reply() {
     let Setup { mut sim, host, .. } = setup(1);
 
-    sim.advance(SimTime::from_ms(5), |sim, _| {
-        sim.device_mut::<Host>(host).unwrap().send_ping(Id::new(2));
-    });
+    sim.device_mut::<Host>(host).send_ping(Id::new(2));
+    sim.device_mut::<Host>(host).wait_for_status();
+    sim.advance(SimTime::from_ms(5));
 
-    let rx = sim.device::<Host>(host).unwrap().rx_bytes();
+    let rx = sim.device::<Host>(host).rx_bytes();
     assert!(rx.is_empty(), "expected silent drop, got {:?}", rx);
 }
 
@@ -77,13 +77,11 @@ fn ping_replies_when_srl_is_read() {
 fn ping_broadcast_replies_in_id_order() {
     let Setup { mut sim, host, .. } = setup(3);
 
-    sim.advance(SimTime::from_ms(5), |sim, _| {
-        sim.device_mut::<Host>(host)
-            .unwrap()
-            .send_ping(Id::BROADCAST);
-    });
+    sim.device_mut::<Host>(host).send_ping(Id::BROADCAST);
+    sim.device_mut::<Host>(host).wait_for_status();
+    sim.advance(SimTime::from_ms(5));
 
-    let rx = sim.device::<Host>(host).unwrap().rx_bytes();
+    let rx = sim.device::<Host>(host).rx_bytes();
     insta::assert_snapshot!(format_hex(&rx));
 
     let replies = parse_status_stream(Instruction::Ping, &rx);
@@ -110,9 +108,9 @@ fn ping_under_srl(level: StatusReturnLevel) -> Vec<u8> {
         })
     });
 
-    sim.advance(SimTime::from_ms(5), |sim, _| {
-        sim.device_mut::<Host>(host).unwrap().send_ping(Id::new(1));
-    });
+    sim.device_mut::<Host>(host).send_ping(Id::new(1));
+    sim.device_mut::<Host>(host).wait_for_status();
+    sim.advance(SimTime::from_ms(5));
 
-    sim.device::<Host>(host).unwrap().rx_bytes()
+    sim.device::<Host>(host).rx_bytes()
 }

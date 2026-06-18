@@ -1,3 +1,5 @@
+use std::any::type_name;
+
 use crate::sim::{DeviceId, DeviceRegistry, Effect, EventSource, SimTime, Wire};
 
 pub struct Sim {
@@ -34,12 +36,24 @@ impl Sim {
         id
     }
 
-    pub fn device<T: EventSource + 'static>(&self, id: DeviceId) -> Option<&T> {
-        self.registry.get(id)
+    /// Read-only handle to a device. Panics if `id` is unknown or the
+    /// device isn't of type `T` — both are programmer errors, never
+    /// recovered from at runtime.
+    pub fn device<T: EventSource + 'static>(&self, id: DeviceId) -> &T {
+        self.registry
+            .get(id)
+            .unwrap_or_else(|| panic!("Sim::device: no {:?} of type {}", id, type_name::<T>()))
     }
 
-    pub fn device_mut<T: EventSource + 'static>(&mut self, id: DeviceId) -> Option<&mut T> {
-        self.registry.get_mut(id)
+    /// Mutable handle to a device. Bumps the device's clock cursor to
+    /// [`Sim::now`] before returning so callers queuing work see current
+    /// sim time instead of the device's stale cursor from the previous
+    /// quiescence. Panics under the same conditions as [`Sim::device`].
+    pub fn device_mut<T: EventSource + 'static>(&mut self, id: DeviceId) -> &mut T {
+        self.registry.tick_one(id, self.now);
+        self.registry
+            .get_mut(id)
+            .unwrap_or_else(|| panic!("Sim::device_mut: no {:?} of type {}", id, type_name::<T>()))
     }
 
     /// Reset every device + the wire + rewind virtual time to zero. For
@@ -50,25 +64,17 @@ impl Sim {
         self.now = SimTime::ZERO;
     }
 
-    /// Run `action` synchronously at the current [`Sim::now`], then drain
-    /// the event queue until quiescence (no pending events anywhere) or
-    /// until `budget` has elapsed since the pre-action [`Sim::now`],
+    /// Drain the event queue until quiescence (no pending events anywhere)
+    /// or until `budget` has elapsed since the pre-call [`Sim::now`],
     /// whichever first. [`Sim::now`] after return = time of last processed
     /// event (or unchanged if no events fired).
     ///
-    /// Every device's clock cursor is ticked to `start_now` before `action`
-    /// runs (via [`EventSource::tick`]) so a device that stayed idle through
-    /// the previous quiescence (a Host whose servo replied with nothing)
-    /// still sees current time when the next closure queues work. Without
-    /// it, a stale cursor lets `action` queue work in the past and trip the
-    /// monotonic-time assertion below.
-    pub fn advance<F>(&mut self, budget: SimTime, action: F)
-    where
-        F: FnOnce(&mut Sim, SimTime),
-    {
+    /// Tests queue work via [`Sim::device_mut`] before calling — that path
+    /// ticks the accessed device's clock cursor so its `send_*` reads
+    /// current sim time instead of a stale cursor from the previous
+    /// quiescence.
+    pub fn advance(&mut self, budget: SimTime) {
         let start_now = self.now;
-        self.registry.tick_all(start_now);
-        action(self, start_now);
         let cap = start_now + budget;
 
         loop {
@@ -217,9 +223,9 @@ mod tests {
     #[test]
     fn edge_delivers_to_other_subscriber_at_scheduled_time() {
         let (mut sim, _s, r) = build(vec![(SimTime::from_ns(100), false)]);
-        sim.advance(SimTime::from_ns(200), |_, _| {});
+        sim.advance(SimTime::from_ns(200));
         assert_eq!(
-            sim.device::<Receiver>(r).unwrap().received,
+            sim.device::<Receiver>(r).received,
             vec![(SimTime::from_ns(100), false)],
         );
         assert_eq!(sim.now(), SimTime::from_ns(100));
@@ -233,9 +239,9 @@ mod tests {
             (SimTime::from_ns(300), false),
             (SimTime::from_ns(400), true),
         ]);
-        sim.advance(SimTime::from_ns(1_000), |_, _| {});
+        sim.advance(SimTime::from_ns(1_000));
         assert_eq!(
-            sim.device::<Receiver>(r).unwrap().received,
+            sim.device::<Receiver>(r).received,
             vec![
                 (SimTime::from_ns(100), false),
                 (SimTime::from_ns(200), true),
@@ -251,9 +257,9 @@ mod tests {
             (SimTime::from_ns(100), false),
             (SimTime::from_ns(500), true),
         ]);
-        sim.advance(SimTime::from_ns(200), |_, _| {});
+        sim.advance(SimTime::from_ns(200));
         assert_eq!(
-            sim.device::<Receiver>(r).unwrap().received,
+            sim.device::<Receiver>(r).received,
             vec![(SimTime::from_ns(100), false)],
         );
         assert_eq!(sim.now(), SimTime::from_ns(100));
@@ -262,9 +268,9 @@ mod tests {
     #[test]
     fn advance_returns_at_quiescence_before_budget() {
         let (mut sim, _s, r) = build(vec![(SimTime::from_ns(100), false)]);
-        sim.advance(SimTime::from_ms(1), |_, _| {});
+        sim.advance(SimTime::from_ms(1));
         assert_eq!(
-            sim.device::<Receiver>(r).unwrap().received,
+            sim.device::<Receiver>(r).received,
             vec![(SimTime::from_ns(100), false)],
         );
         assert_eq!(sim.now(), SimTime::from_ns(100));
@@ -273,12 +279,12 @@ mod tests {
     #[test]
     fn reset_zeroes_time_and_clears_device_state() {
         let (mut sim, _s, r) = build(vec![(SimTime::from_ns(100), false)]);
-        sim.advance(SimTime::from_ns(200), |_, _| {});
+        sim.advance(SimTime::from_ns(200));
         assert_eq!(sim.now(), SimTime::from_ns(100));
 
         sim.reset();
         assert_eq!(sim.now(), SimTime::ZERO);
-        assert!(sim.device::<Receiver>(r).unwrap().received.is_empty());
+        assert!(sim.device::<Receiver>(r).received.is_empty());
     }
 
     #[test]
@@ -286,7 +292,7 @@ mod tests {
         let mut sim = Sim::default();
         let _r = sim.add_device(|_| Receiver::default());
         let _s = sim.add_device(|id| Sender::new(id, vec![(SimTime::from_ns(100), false)]));
-        sim.advance(SimTime::from_ns(200), |_, _| {});
+        sim.advance(SimTime::from_ns(200));
     }
 
     #[test]
@@ -295,7 +301,7 @@ mod tests {
         let mut sim = Sim::default();
         let _a = sim.add_device(|id| Sender::new(id, vec![(SimTime::from_ns(100), false)]));
         let _b = sim.add_device(|id| Sender::new(id, vec![(SimTime::from_ns(100), false)]));
-        sim.advance(SimTime::from_ns(200), |_, _| {});
+        sim.advance(SimTime::from_ns(200));
     }
 
     #[test]
@@ -312,6 +318,6 @@ mod tests {
                 ],
             )
         });
-        sim.advance(SimTime::from_ns(300), |_, _| {});
+        sim.advance(SimTime::from_ns(300));
     }
 }

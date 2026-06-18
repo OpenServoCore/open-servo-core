@@ -12,13 +12,11 @@ const UNKNOWN_INSTRUCTION_BYTE: u8 = 0xC3;
 fn reboot_to_self_id_replies_ok() {
     let Setup { mut sim, host, .. } = setup(1);
 
-    sim.advance(SimTime::from_ms(5), |sim, _| {
-        sim.device_mut::<Host>(host)
-            .unwrap()
-            .send_reboot(Id::new(1));
-    });
+    sim.device_mut::<Host>(host).send_reboot(Id::new(1));
+    sim.device_mut::<Host>(host).wait_for_status();
+    sim.advance(SimTime::from_ms(5));
 
-    let rx = sim.device::<Host>(host).unwrap().rx_bytes();
+    let rx = sim.device::<Host>(host).rx_bytes();
     assert_eq!(
         parse_status(Instruction::Reboot, &rx),
         Status::Empty {
@@ -32,13 +30,11 @@ fn reboot_to_self_id_replies_ok() {
 fn reboot_to_wrong_id_yields_no_reply() {
     let Setup { mut sim, host, .. } = setup(1);
 
-    sim.advance(SimTime::from_ms(5), |sim, _| {
-        sim.device_mut::<Host>(host)
-            .unwrap()
-            .send_reboot(Id::new(2));
-    });
+    sim.device_mut::<Host>(host).send_reboot(Id::new(2));
+    sim.device_mut::<Host>(host).wait_for_status();
+    sim.advance(SimTime::from_ms(5));
 
-    let rx = sim.device::<Host>(host).unwrap().rx_bytes();
+    let rx = sim.device::<Host>(host).rx_bytes();
     assert!(rx.is_empty(), "expected silent drop, got {:?}", rx);
 }
 
@@ -46,13 +42,11 @@ fn reboot_to_wrong_id_yields_no_reply() {
 fn reboot_broadcast_yields_no_reply() {
     let Setup { mut sim, host, .. } = setup(1);
 
-    sim.advance(SimTime::from_ms(5), |sim, _| {
-        sim.device_mut::<Host>(host)
-            .unwrap()
-            .send_reboot(Id::BROADCAST);
-    });
+    sim.device_mut::<Host>(host).send_reboot(Id::BROADCAST);
+    sim.device_mut::<Host>(host).wait_for_status();
+    sim.advance(SimTime::from_ms(5));
 
-    let rx = sim.device::<Host>(host).unwrap().rx_bytes();
+    let rx = sim.device::<Host>(host).rx_bytes();
     assert!(rx.is_empty(), "expected silent drop, got {:?}", rx);
 }
 
@@ -66,13 +60,12 @@ fn reboot_silent_when_srl_is_read() {
 fn unknown_instruction_to_self_id_replies_instruction_error() {
     let Setup { mut sim, host, .. } = setup(1);
 
-    sim.advance(SimTime::from_ms(5), |sim, _| {
-        sim.device_mut::<Host>(host)
-            .unwrap()
-            .send_ext(Id::new(1), UNKNOWN_INSTRUCTION_BYTE, &[]);
-    });
+    sim.device_mut::<Host>(host)
+        .send_ext(Id::new(1), UNKNOWN_INSTRUCTION_BYTE, &[]);
+    sim.device_mut::<Host>(host).wait_for_status();
+    sim.advance(SimTime::from_ms(5));
 
-    let rx = sim.device::<Host>(host).unwrap().rx_bytes();
+    let rx = sim.device::<Host>(host).rx_bytes();
     assert_eq!(
         parse_status(Instruction::Ext(UNKNOWN_INSTRUCTION_BYTE), &rx),
         Status::Empty {
@@ -86,13 +79,12 @@ fn unknown_instruction_to_self_id_replies_instruction_error() {
 fn unknown_instruction_to_wrong_id_yields_no_reply() {
     let Setup { mut sim, host, .. } = setup(1);
 
-    sim.advance(SimTime::from_ms(5), |sim, _| {
-        sim.device_mut::<Host>(host)
-            .unwrap()
-            .send_ext(Id::new(2), UNKNOWN_INSTRUCTION_BYTE, &[]);
-    });
+    sim.device_mut::<Host>(host)
+        .send_ext(Id::new(2), UNKNOWN_INSTRUCTION_BYTE, &[]);
+    sim.device_mut::<Host>(host).wait_for_status();
+    sim.advance(SimTime::from_ms(5));
 
-    let rx = sim.device::<Host>(host).unwrap().rx_bytes();
+    let rx = sim.device::<Host>(host).rx_bytes();
     assert!(rx.is_empty(), "expected silent drop, got {:?}", rx);
 }
 
@@ -100,15 +92,12 @@ fn unknown_instruction_to_wrong_id_yields_no_reply() {
 fn unknown_instruction_broadcast_yields_no_reply() {
     let Setup { mut sim, host, .. } = setup(1);
 
-    sim.advance(SimTime::from_ms(5), |sim, _| {
-        sim.device_mut::<Host>(host).unwrap().send_ext(
-            Id::BROADCAST,
-            UNKNOWN_INSTRUCTION_BYTE,
-            &[],
-        );
-    });
+    sim.device_mut::<Host>(host)
+        .send_ext(Id::BROADCAST, UNKNOWN_INSTRUCTION_BYTE, &[]);
+    sim.device_mut::<Host>(host).wait_for_status();
+    sim.advance(SimTime::from_ms(5));
 
-    let rx = sim.device::<Host>(host).unwrap().rx_bytes();
+    let rx = sim.device::<Host>(host).rx_bytes();
     assert!(rx.is_empty(), "expected silent drop, got {:?}", rx);
 }
 
@@ -132,13 +121,11 @@ fn reboot_under_srl(level: StatusReturnLevel) -> Vec<u8> {
         })
     });
 
-    sim.advance(SimTime::from_ms(5), |sim, _| {
-        sim.device_mut::<Host>(host)
-            .unwrap()
-            .send_reboot(Id::new(1));
-    });
+    sim.device_mut::<Host>(host).send_reboot(Id::new(1));
+    sim.device_mut::<Host>(host).wait_for_status();
+    sim.advance(SimTime::from_ms(5));
 
-    sim.device::<Host>(host).unwrap().rx_bytes()
+    sim.device::<Host>(host).rx_bytes()
 }
 
 fn ext_under_srl(level: StatusReturnLevel) -> Vec<u8> {
@@ -151,11 +138,10 @@ fn ext_under_srl(level: StatusReturnLevel) -> Vec<u8> {
         })
     });
 
-    sim.advance(SimTime::from_ms(5), |sim, _| {
-        sim.device_mut::<Host>(host)
-            .unwrap()
-            .send_ext(Id::new(1), UNKNOWN_INSTRUCTION_BYTE, &[]);
-    });
+    sim.device_mut::<Host>(host)
+        .send_ext(Id::new(1), UNKNOWN_INSTRUCTION_BYTE, &[]);
+    sim.device_mut::<Host>(host).wait_for_status();
+    sim.advance(SimTime::from_ms(5));
 
-    sim.device::<Host>(host).unwrap().rx_bytes()
+    sim.device::<Host>(host).rx_bytes()
 }

@@ -66,10 +66,13 @@ impl DeviceRegistry {
         self.devices[idx].src.advance(t)
     }
 
-    pub fn tick_all(&mut self, t: SimTime) {
-        for entry in &mut self.devices {
-            entry.src.tick(t);
-        }
+    /// Bump a single device's clock cursor to `t`. Called from
+    /// [`Sim::device_mut`](crate::sim::Sim::device_mut) so a test queuing
+    /// work via the returned handle sees current sim time instead of the
+    /// device's last-touched cursor.
+    pub fn tick_one(&mut self, id: DeviceId, t: SimTime) {
+        let idx = self.index_of(id, "tick_one");
+        self.devices[idx].src.tick(t);
     }
 
     pub fn reset_all(&mut self) {

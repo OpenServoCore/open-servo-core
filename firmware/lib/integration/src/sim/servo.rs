@@ -361,6 +361,13 @@ impl Servo {
                 ht: crossed_ht,
                 tc: crossed_tc,
             });
+            // Production masks the DMA1_CH7 HT/TC IRQ during the Fast Last
+            // fold window via `codec.pause_edges()`; the ISR doesn't run, so
+            // `Dxl::poll` doesn't run either. Bytes accumulate in the RX
+            // ring untouched until `on_tx_start`'s `drain_raw` folds them.
+            if self.edge_dma_state.paused() {
+                return;
+            }
             self.wire_clock_state.stage_now(self.chip_tick(at));
             self.uart.on_rx_edge_advance();
             self.poll_and_queue_tx(at);
@@ -712,7 +719,7 @@ mod tests {
     fn defaults_for_dxl_id_and_rdt_us_match_constants() {
         let mut sim = Sim::default();
         let id = sim.add_device(Servo::new);
-        let s = sim.device::<Servo>(id).unwrap();
+        let s = sim.device::<Servo>(id);
         assert_eq!(s.dxl_id(), DEFAULT_DXL_ID);
         assert_eq!(s.rdt_us(), DEFAULT_RDT_US);
         assert_eq!(s.clock(), default_servo_clock());
@@ -723,27 +730,26 @@ mod tests {
     fn set_dxl_id_overrides_default() {
         let mut sim = Sim::default();
         let id = sim.add_device(|id| Servo::setup(id, |s| s.set_dxl_id(Id::new(0x07))));
-        assert_eq!(sim.device::<Servo>(id).unwrap().dxl_id(), Id::new(0x07));
+        assert_eq!(sim.device::<Servo>(id).dxl_id(), Id::new(0x07));
     }
 
     #[test]
     fn set_rdt_us_overrides_default() {
         let mut sim = Sim::default();
         let id = sim.add_device(|id| Servo::setup(id, |s| s.set_rdt_us(500)));
-        assert_eq!(sim.device::<Servo>(id).unwrap().rdt_us(), 500);
+        assert_eq!(sim.device::<Servo>(id).rdt_us(), 500);
     }
 
     #[test]
     fn idle_servo_yields_no_next_event() {
         let mut sim = Sim::default();
         let id = sim.add_device(Servo::new);
-        assert_eq!(sim.device::<Servo>(id).unwrap().next_event_time(), None);
+        assert_eq!(sim.device::<Servo>(id).next_event_time(), None);
     }
 
     fn ping_and_settle(sim: &mut Sim, host: DeviceId, target: Id) {
-        sim.advance(SimTime::from_ms(5), |sim, _| {
-            sim.device_mut::<Host>(host).unwrap().send_ping(target);
-        });
+        sim.device_mut::<Host>(host).send_ping(target);
+        sim.advance(SimTime::from_ms(5));
     }
 
     #[test]
@@ -751,11 +757,11 @@ mod tests {
         let mut sim = Sim::default();
         let host = sim.add_device(Host::new);
         let servo = sim.add_device(Servo::new);
-        sim.device_mut::<Servo>(servo).unwrap().disconnect(false);
+        sim.device_mut::<Servo>(servo).disconnect(false);
 
         ping_and_settle(&mut sim, host, DEFAULT_DXL_ID);
 
-        assert!(sim.device::<Host>(host).unwrap().rx_bytes().is_empty());
+        assert!(sim.device::<Host>(host).rx_bytes().is_empty());
     }
 
     #[test]
@@ -763,19 +769,18 @@ mod tests {
         let mut sim = Sim::default();
         let host = sim.add_device(Host::new);
         let servo = sim.add_device(Servo::new);
-        sim.device::<Servo>(servo).unwrap().set_torque_enabled(true);
+        sim.device::<Servo>(servo).set_torque_enabled(true);
 
         {
-            let s = sim.device_mut::<Servo>(servo).unwrap();
+            let s = sim.device_mut::<Servo>(servo);
             s.disconnect(false);
             s.connect();
         }
         ping_and_settle(&mut sim, host, DEFAULT_DXL_ID);
 
-        assert!(!sim.device::<Host>(host).unwrap().rx_bytes().is_empty());
+        assert!(!sim.device::<Host>(host).rx_bytes().is_empty());
         let torque = sim
             .device::<Servo>(servo)
-            .unwrap()
             .shared()
             .table
             .control
@@ -788,19 +793,18 @@ mod tests {
         let mut sim = Sim::default();
         let host = sim.add_device(Host::new);
         let servo = sim.add_device(Servo::new);
-        sim.device::<Servo>(servo).unwrap().set_torque_enabled(true);
+        sim.device::<Servo>(servo).set_torque_enabled(true);
 
         {
-            let s = sim.device_mut::<Servo>(servo).unwrap();
+            let s = sim.device_mut::<Servo>(servo);
             s.disconnect(true);
             s.connect();
         }
         ping_and_settle(&mut sim, host, DEFAULT_DXL_ID);
 
-        assert!(!sim.device::<Host>(host).unwrap().rx_bytes().is_empty());
+        assert!(!sim.device::<Host>(host).rx_bytes().is_empty());
         let torque = sim
             .device::<Servo>(servo)
-            .unwrap()
             .shared()
             .table
             .control
@@ -816,20 +820,20 @@ mod tests {
         let servo = sim.add_device(|id| Servo::setup(id, |s| s.set_dxl_id(CONFIGURED_ID)));
 
         {
-            let s = sim.device_mut::<Servo>(servo).unwrap();
+            let s = sim.device_mut::<Servo>(servo);
             s.disconnect(true);
             s.connect();
         }
         ping_and_settle(&mut sim, host, DEFAULT_DXL_ID);
 
-        let s = sim.device::<Servo>(servo).unwrap();
+        let s = sim.device::<Servo>(servo);
         assert_eq!(s.dxl_id(), DEFAULT_DXL_ID);
         assert_eq!(
             s.shared().table.config.with(|c| c.comms.id),
             DEFAULT_DXL_ID.as_byte()
         );
         assert!(
-            !sim.device::<Host>(host).unwrap().rx_bytes().is_empty(),
+            !sim.device::<Host>(host).rx_bytes().is_empty(),
             "after power-cycle the servo answers at DEFAULT_DXL_ID, not the prior set value",
         );
     }

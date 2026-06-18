@@ -17,13 +17,12 @@ const OVER_MAX_CONTROL_RW: u16 = 129;
 fn read_returns_rw_byte_on_comms_id_addr() {
     let Setup { mut sim, host, .. } = setup(1);
 
-    sim.advance(SimTime::from_ms(5), |sim, _| {
-        sim.device_mut::<Host>(host)
-            .unwrap()
-            .send_read(Id::new(1), comms::ID, 1);
-    });
+    sim.device_mut::<Host>(host)
+        .send_read(Id::new(1), comms::ID, 1);
+    sim.device_mut::<Host>(host).wait_for_status();
+    sim.advance(SimTime::from_ms(5));
 
-    let rx = sim.device::<Host>(host).unwrap().rx_bytes();
+    let rx = sim.device::<Host>(host).rx_bytes();
     insta::assert_snapshot!(format_hex(&rx));
     assert_eq!(
         parse_status(Instruction::Read, &rx),
@@ -39,13 +38,12 @@ fn read_returns_rw_byte_on_comms_id_addr() {
 fn read_returns_ro_word_on_identity_model_number() {
     let Setup { mut sim, host, .. } = setup(1);
 
-    sim.advance(SimTime::from_ms(5), |sim, _| {
-        sim.device_mut::<Host>(host)
-            .unwrap()
-            .send_read(Id::new(1), identity::MODEL_NUMBER, 2);
-    });
+    sim.device_mut::<Host>(host)
+        .send_read(Id::new(1), identity::MODEL_NUMBER, 2);
+    sim.device_mut::<Host>(host).wait_for_status();
+    sim.advance(SimTime::from_ms(5));
 
-    let rx = sim.device::<Host>(host).unwrap().rx_bytes();
+    let rx = sim.device::<Host>(host).rx_bytes();
     insta::assert_snapshot!(format_hex(&rx));
     let model_le = DEFAULT_MODEL_NUMBER.to_le_bytes();
     assert_eq!(
@@ -149,19 +147,17 @@ fn read_on_torque_locked_config_succeeds_locks_gate_writes_only() {
         servos,
     } = setup(1);
     sim.device::<Servo>(servos[0])
-        .unwrap()
         .shared()
         .table
         .control
         .with_mut(|c| c.lifecycle.torque_enable = true);
 
-    sim.advance(SimTime::from_ms(5), |sim, _| {
-        sim.device_mut::<Host>(host)
-            .unwrap()
-            .send_read(Id::new(1), comms::ID, 1);
-    });
+    sim.device_mut::<Host>(host)
+        .send_read(Id::new(1), comms::ID, 1);
+    sim.device_mut::<Host>(host).wait_for_status();
+    sim.advance(SimTime::from_ms(5));
 
-    let rx = sim.device::<Host>(host).unwrap().rx_bytes();
+    let rx = sim.device::<Host>(host).rx_bytes();
     assert_eq!(
         parse_status(Instruction::Read, &rx),
         Status::Read {
@@ -174,12 +170,10 @@ fn read_on_torque_locked_config_succeeds_locks_gate_writes_only() {
 
 fn read_with(target: Id, addr: u16, length: u16) -> Vec<u8> {
     let Setup { mut sim, host, .. } = setup(1);
-    sim.advance(SimTime::from_ms(5), |sim, _| {
-        sim.device_mut::<Host>(host)
-            .unwrap()
-            .send_read(target, addr, length);
-    });
-    sim.device::<Host>(host).unwrap().rx_bytes()
+    sim.device_mut::<Host>(host).send_read(target, addr, length);
+    sim.device_mut::<Host>(host).wait_for_status();
+    sim.advance(SimTime::from_ms(5));
+    sim.device::<Host>(host).rx_bytes()
 }
 
 fn read_under_srl(level: StatusReturnLevel, addr: u16, length: u16) -> Vec<u8> {
@@ -192,11 +186,10 @@ fn read_under_srl(level: StatusReturnLevel, addr: u16, length: u16) -> Vec<u8> {
         })
     });
 
-    sim.advance(SimTime::from_ms(5), |sim, _| {
-        sim.device_mut::<Host>(host)
-            .unwrap()
-            .send_read(Id::new(1), addr, length);
-    });
+    sim.device_mut::<Host>(host)
+        .send_read(Id::new(1), addr, length);
+    sim.device_mut::<Host>(host).wait_for_status();
+    sim.advance(SimTime::from_ms(5));
 
-    sim.device::<Host>(host).unwrap().rx_bytes()
+    sim.device::<Host>(host).rx_bytes()
 }
