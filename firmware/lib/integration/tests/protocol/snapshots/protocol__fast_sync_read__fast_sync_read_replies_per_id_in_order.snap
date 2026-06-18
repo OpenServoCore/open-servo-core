@@ -1,0 +1,6 @@
+---
+source: integration/tests/protocol/fast_sync_read.rs
+assertion_line: 22
+expression: format_hex(&rx)
+---
+ff ff fd 00 fe 0c 00 55 00 01 01 00 02 02 00 03 03 54 f1

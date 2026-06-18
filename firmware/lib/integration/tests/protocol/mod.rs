@@ -1,5 +1,6 @@
 mod bulk_read;
 mod bulk_write;
+mod fast_sync_read;
 mod ping;
 mod read;
 mod reg_write_action;
