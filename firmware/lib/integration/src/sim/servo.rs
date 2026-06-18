@@ -456,7 +456,7 @@ impl EventSource for Servo {
                 }
             }
         }
-        let tx = self.uart_tx.advance(t);
+        let tx = self.uart_tx.advance(t, &[]);
         if !self.connected {
             return Vec::new();
         }

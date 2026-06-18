@@ -210,7 +210,7 @@ impl EventSource for Host {
         let _ = self.uart_rx.advance(t);
         let effects: Vec<_> = self
             .uart_tx
-            .advance(t)
+            .advance(t, &[])
             .into_iter()
             .map(|(at_ns, rising)| Effect::WireEdge {
                 source: self.id,
