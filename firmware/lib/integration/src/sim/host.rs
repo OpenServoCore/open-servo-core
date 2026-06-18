@@ -6,7 +6,10 @@
 
 use std::any::Any;
 
-use dxl_protocol::{InstructionEncoder, SoftwareCrcUmts, types::Id};
+use dxl_protocol::{
+    InstructionEncoder, SoftwareCrcUmts,
+    types::{BulkReadEntry, Id},
+};
 use osc_core::BaudRate;
 
 use crate::sim::defaults::{DEFAULT_BAUD, HOST_CLOCK};
@@ -121,6 +124,46 @@ impl Host {
         InstructionEncoder::<_, SoftwareCrcUmts>::new(&mut buf)
             .action(target)
             .expect("action frame encodes");
+        self.queue_frame(&buf);
+    }
+
+    /// Encode a Sync Read broadcast (one `addr`/`length` applied to every id
+    /// in `ids`) and queue the frame.
+    pub fn send_sync_read(&mut self, addr: u16, length: u16, ids: &[u8]) {
+        let mut buf: Vec<u8> = Vec::new();
+        InstructionEncoder::<_, SoftwareCrcUmts>::new(&mut buf)
+            .sync_read(addr, length, ids)
+            .expect("sync_read frame encodes");
+        self.queue_frame(&buf);
+    }
+
+    /// Encode a Sync Write broadcast (one `addr`/`length` applied to every
+    /// `[id, data...]` chunk in `body`) and queue the frame.
+    pub fn send_sync_write(&mut self, addr: u16, length: u16, body: &[u8]) {
+        let mut buf: Vec<u8> = Vec::new();
+        InstructionEncoder::<_, SoftwareCrcUmts>::new(&mut buf)
+            .sync_write(addr, length, body)
+            .expect("sync_write frame encodes");
+        self.queue_frame(&buf);
+    }
+
+    /// Encode a Bulk Read broadcast (per-tuple `(id, addr, length)`) and
+    /// queue the frame.
+    pub fn send_bulk_read(&mut self, entries: &[BulkReadEntry]) {
+        let mut buf: Vec<u8> = Vec::new();
+        InstructionEncoder::<_, SoftwareCrcUmts>::new(&mut buf)
+            .bulk_read(entries)
+            .expect("bulk_read frame encodes");
+        self.queue_frame(&buf);
+    }
+
+    /// Encode a Bulk Write broadcast (`body` is a flat
+    /// `[id, addr_le, length_le, data...]+` per servo) and queue the frame.
+    pub fn send_bulk_write(&mut self, body: &[u8]) {
+        let mut buf: Vec<u8> = Vec::new();
+        InstructionEncoder::<_, SoftwareCrcUmts>::new(&mut buf)
+            .bulk_write(body)
+            .expect("bulk_write frame encodes");
         self.queue_frame(&buf);
     }
 
