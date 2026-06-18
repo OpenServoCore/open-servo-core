@@ -17,7 +17,9 @@ pub mod time;
 pub mod uart;
 pub mod wire;
 
-pub use decode::{format_hex, parse_status, parse_status_stream};
+pub use decode::{
+    format_hex, parse_fast_bulk_chain, parse_fast_sync_chain, parse_status, parse_status_stream,
+};
 pub use effect::Effect;
 pub use engine::Sim;
 pub use host::Host;

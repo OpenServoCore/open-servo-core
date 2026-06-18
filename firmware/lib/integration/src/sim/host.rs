@@ -167,6 +167,26 @@ impl Host {
         self.queue_frame(&buf);
     }
 
+    /// Encode a Fast Sync Read broadcast (shared `addr` / `length`, list of
+    /// `ids` in chain order) and queue the frame.
+    pub fn send_fast_sync_read(&mut self, addr: u16, length: u16, ids: &[u8]) {
+        let mut buf: Vec<u8> = Vec::new();
+        InstructionEncoder::<_, SoftwareCrcUmts>::new(&mut buf)
+            .fast_sync_read(addr, length, ids)
+            .expect("fast_sync_read frame encodes");
+        self.queue_frame(&buf);
+    }
+
+    /// Encode a Fast Bulk Read broadcast (per-entry `(id, addr, length)`) and
+    /// queue the frame.
+    pub fn send_fast_bulk_read(&mut self, entries: &[BulkReadEntry]) {
+        let mut buf: Vec<u8> = Vec::new();
+        InstructionEncoder::<_, SoftwareCrcUmts>::new(&mut buf)
+            .fast_bulk_read(entries)
+            .expect("fast_bulk_read frame encodes");
+        self.queue_frame(&buf);
+    }
+
     /// Encode a Reboot for `target` and queue the frame.
     pub fn send_reboot(&mut self, target: Id) {
         let mut buf: Vec<u8> = Vec::new();
