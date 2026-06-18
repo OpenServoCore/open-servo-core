@@ -286,9 +286,10 @@ fn write_under_srl(level: StatusReturnLevel, addr: u16, data: &[u8]) -> (Vec<u8>
     let mut sim = Sim::default();
     let host = sim.add_device(Host::new);
     let servo = sim.add_device(|id| {
-        Servo::new(id)
-            .with_dxl_id(Id::new(1))
-            .with_status_return_level(level)
+        Servo::setup(id, |s| {
+            s.set_dxl_id(Id::new(1));
+            s.set_status_return_level(level);
+        })
     });
 
     sim.advance(SimTime::from_ms(5), |sim, _| {

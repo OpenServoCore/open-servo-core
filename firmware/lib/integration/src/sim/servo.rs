@@ -12,7 +12,7 @@ use dxl_protocol::SoftwareCrcUmts;
 use dxl_protocol::types::Id;
 use osc_core::services::dxl::Dxl;
 use osc_core::traits::{DxlBus, DxlDispatcher};
-use osc_core::{BaudRate, RegionStorage, Shared, StatusReturnLevel};
+use osc_core::{BaudRate, ConfigDefaults, RegionStorage, Shared, StatusReturnLevel};
 use osc_drivers::dxl::uart::DxlUart;
 use osc_drivers::dxl::uart::clock::Clock as DxlClock;
 use osc_drivers::dxl::uart::codec::Codec;
@@ -34,14 +34,41 @@ pub const DEFAULT_RDT_US: u32 = 250;
 pub const DEFAULT_MODEL_NUMBER: u16 = 0xC0DE;
 pub const DEFAULT_FIRMWARE_VERSION: u8 = 0x01;
 
+/// Sim's stand-in for the firmware's boot-time `ConfigDefaults`. Stamped
+/// into the control table by [`Servo::reset_table`] — sim has no EEPROM,
+/// so this seed is re-applied on every power-cycle reset.
+const SIM_CONFIG_DEFAULTS: ConfigDefaults = ConfigDefaults {
+    pos_min_phys_urad: 0,
+    pos_max_phys_urad: 0,
+    vdd_mv: 0,
+    dxl_id: DEFAULT_DXL_ID.as_byte(),
+    dxl_baud: DEFAULT_BAUD,
+    dxl_return_delay_2us: (DEFAULT_RDT_US / 2) as u8,
+    clock_trim: 0,
+};
+
 type ServoUart = DxlUart<TestProviders, RX_BUF_LEN, EDGE_BUF_LEN, TX_BUF_LEN>;
 
 pub struct Servo {
     id: DeviceId,
+    /// Per-servo system clock — modelling each device's HSI base frequency
+    /// and any oscillator drift. Hardware-shaped, not a control-table
+    /// register: persists across power-cycle resets. Default
+    /// [`SERVO_CLOCK`]; override via [`set_clock`](Self::set_clock) to
+    /// model multi-drift fleets on the same bus.
     clock: Clock,
-    baud: BaudRate,
-    dxl_id: Id,
-    rdt_us: u32,
+
+    /// Bus visibility. When `false`, the wire still delivers edges to
+    /// `uart_rx` (logged for fidelity), but `handle_falling_edge` /
+    /// `handle_byte` / `handle_idle` short-circuit, no dispatcher poll runs,
+    /// and any TX edges produced by `uart_tx` are dropped. Distinct from
+    /// `StatusReturnLevel::None`, which leaves the dispatcher running.
+    connected: bool,
+    /// Set by `disconnect(true)` (power-cycle); consumed by `connect()` to
+    /// trigger `rebuild_chip_side` so the next bus activity sees a
+    /// freshly-defaulted control table — matching the firmware's
+    /// eeprom-less reset behaviour where any prior `set_*` writes are lost.
+    pending_reset_on_connect: bool,
 
     dxl: Dxl,
     shared: Shared,
@@ -66,9 +93,9 @@ impl Servo {
         let mut s = Self {
             id,
             clock: SERVO_CLOCK,
-            baud: DEFAULT_BAUD,
-            dxl_id: DEFAULT_DXL_ID,
-            rdt_us: DEFAULT_RDT_US,
+
+            connected: true,
+            pending_reset_on_connect: false,
 
             dxl: Dxl::new(),
             shared: Shared::new(),
@@ -87,63 +114,74 @@ impl Servo {
             rx_seq: 0,
             edge_seq: 0,
         };
-        s.shared.table.config.with_mut(|c| {
-            c.identity.model_number = DEFAULT_MODEL_NUMBER;
-            c.identity.firmware_version = DEFAULT_FIRMWARE_VERSION;
-        });
-        s.rebuild_uart();
+        s.rebuild_chip_side();
         s
     }
 
-    pub fn with_clock(mut self, clock: Clock) -> Self {
+    /// Construct a `Servo` and run `init` against it before returning.
+    /// Convenience wrapper for the `add_device` closure pattern, e.g.
+    /// `sim.add_device(|id| Servo::setup(id, |s| s.set_dxl_id(Id::new(1))))`.
+    pub fn setup(id: DeviceId, init: impl FnOnce(&mut Self)) -> Self {
+        let mut s = Self::new(id);
+        init(&mut s);
+        s
+    }
+
+    /// Override the per-servo system clock. Used to model HSI drift /
+    /// trim variation across servos on the same bus. Hardware-shaped:
+    /// survives a power-cycle reset.
+    pub fn set_clock(&mut self, clock: Clock) {
         self.clock = clock;
-        self
     }
 
-    pub fn with_baud(mut self, baud: BaudRate) -> Self {
-        self.baud = baud;
-        self.rebuild_uart();
-        self
-    }
-
-    pub fn with_dxl_id(mut self, dxl_id: Id) -> Self {
-        self.dxl_id = dxl_id;
+    pub fn set_dxl_id(&mut self, dxl_id: Id) {
         self.shared
             .table
             .config
             .with_mut(|c| c.comms.id = dxl_id.as_byte());
         self.rebuild_uart();
-        self
     }
 
-    pub fn with_rdt_us(mut self, rdt_us: u32) -> Self {
-        self.rdt_us = rdt_us;
+    pub fn set_rdt_us(&mut self, rdt_us: u32) {
+        self.shared
+            .table
+            .config
+            .with_mut(|c| c.comms.return_delay_2us = (rdt_us / 2) as u8);
         self.rebuild_uart();
-        self
     }
 
-    pub fn with_status_return_level(self, level: StatusReturnLevel) -> Self {
+    pub fn set_status_return_level(&mut self, level: StatusReturnLevel) {
         self.shared
             .table
             .config
             .with_mut(|c| c.comms.status_return_level = level);
-        self
     }
 
-    pub fn with_model_number(self, model: u16) -> Self {
-        self.shared
-            .table
-            .config
-            .with_mut(|c| c.identity.model_number = model);
-        self
+    /// Take the servo off the bus. Wire edges still arrive (uart_rx still
+    /// advances for log fidelity) but the chip-side stays dormant: no
+    /// dispatcher poll runs and no TX is emitted. When `reset` is `true`
+    /// (power-line disconnect), the next [`connect`](Self::connect) wipes the
+    /// control table back to [`SIM_CONFIG_DEFAULTS`] — any `set_*` writes
+    /// made before disconnect are lost, matching the firmware's eeprom-less
+    /// reset behaviour. When `reset` is `false` (data-line wiggle),
+    /// reconnect resumes from whatever in-flight state was active at
+    /// disconnect.
+    pub fn disconnect(&mut self, reset: bool) {
+        self.connected = false;
+        if reset {
+            self.pending_reset_on_connect = true;
+        }
     }
 
-    pub fn with_firmware_version(self, fw: u8) -> Self {
-        self.shared
-            .table
-            .config
-            .with_mut(|c| c.identity.firmware_version = fw);
-        self
+    /// Restore the servo to the bus. Reverses a [`disconnect`](Self::disconnect)
+    /// — if that disconnect was power-line (`reset = true`), the chip-side
+    /// is rebuilt from defaults before the connect flag flips.
+    pub fn connect(&mut self) {
+        if self.pending_reset_on_connect {
+            self.rebuild_chip_side();
+            self.pending_reset_on_connect = false;
+        }
+        self.connected = true;
     }
 
     /// Flip the `lifecycle.torque_enable` lock bit. Writes to torque-gated
@@ -160,15 +198,15 @@ impl Servo {
     }
 
     pub fn baud(&self) -> BaudRate {
-        self.baud
+        self.shared.table.config.with(|c| c.comms.baud_rate_idx)
     }
 
     pub fn dxl_id(&self) -> Id {
-        self.dxl_id
+        Id::new(self.shared.table.config.with(|c| c.comms.id))
     }
 
     pub fn rdt_us(&self) -> u32 {
-        self.rdt_us
+        self.shared.table.config.with(|c| c.comms.return_delay_2us) as u32 * 2
     }
 
     pub fn shared(&self) -> &Shared {
@@ -200,7 +238,14 @@ impl Servo {
     }
 
     fn rebuild_uart(&mut self) {
-        let built = build_uart(self.baud, self.dxl_id, self.rdt_us);
+        let (baud, dxl_id, rdt_us) = self.shared.table.config.with(|c| {
+            (
+                c.comms.baud_rate_idx,
+                Id::new(c.comms.id),
+                c.comms.return_delay_2us as u32 * 2,
+            )
+        });
+        let built = build_uart(baud, dxl_id, rdt_us);
         self.uart = built.uart;
         self.tx_bus_state = built.tx_bus_state;
         self.clock_trim_state = built.clock_trim_state;
@@ -210,10 +255,29 @@ impl Servo {
         self.tx_scheduler_state = built.tx_scheduler_state;
         self.fast_last_scheduler_state = built.fast_last_scheduler_state;
         self.dxl = Dxl::new();
-        self.uart_tx = UartTx::new(self.baud);
-        self.uart_rx = UartRx::new(self.baud);
+        self.uart_tx = UartTx::new(baud);
+        self.uart_rx = UartRx::new(baud);
         self.rx_seq = 0;
         self.edge_seq = 0;
+    }
+
+    /// Models a power-up reset: wipe the control table and rebuild the
+    /// chip-side codec / UART / spy states.
+    fn rebuild_chip_side(&mut self) {
+        self.reset_table();
+        self.rebuild_uart();
+    }
+
+    /// Wipe `shared` to a freshly-defaulted state. Mirrors the firmware's
+    /// eeprom-less reset: every config field returns to its boot constant,
+    /// no `set_*` writes survive.
+    fn reset_table(&mut self) {
+        self.shared = Shared::new();
+        self.shared.table.seed_config_defaults(&SIM_CONFIG_DEFAULTS);
+        self.shared.table.config.with_mut(|c| {
+            c.identity.model_number = DEFAULT_MODEL_NUMBER;
+            c.identity.firmware_version = DEFAULT_FIRMWARE_VERSION;
+        });
     }
 
     fn chip_tick(&self, at: SimTime) -> u16 {
@@ -322,7 +386,7 @@ impl Servo {
         let bytes = unsafe {
             core::slice::from_raw_parts(self.uart.tx_buf_addr() as *const u8, byte_count as usize)
         };
-        let stride = 10 * bit_period_ns(self.baud);
+        let stride = 10 * bit_period_ns(self.baud());
         for (i, &b) in bytes.iter().enumerate() {
             self.uart_tx.queue_byte(b, start_at + i as u64 * stride);
         }
@@ -353,15 +417,19 @@ impl EventSource for Servo {
     fn advance(&mut self, t: SimTime) -> Vec<Effect> {
         use crate::sim::uart::RxEffect;
         let rx_effects = self.uart_rx.advance(t);
-        for eff in rx_effects {
-            match eff {
-                RxEffect::ByteComplete { byte, .. } => self.handle_byte(byte, t),
-                RxEffect::IdleDetected { .. } => self.handle_idle(t),
+        if self.connected {
+            for eff in rx_effects {
+                match eff {
+                    RxEffect::ByteComplete { byte, .. } => self.handle_byte(byte, t),
+                    RxEffect::IdleDetected { .. } => self.handle_idle(t),
+                }
             }
         }
-        self.uart_tx
-            .advance(t)
-            .into_iter()
+        let tx = self.uart_tx.advance(t);
+        if !self.connected {
+            return Vec::new();
+        }
+        tx.into_iter()
             .map(|(at_ns, rising)| Effect::WireEdge {
                 source: self.id,
                 at: SimTime::from_ns(at_ns),
@@ -372,7 +440,7 @@ impl EventSource for Servo {
 
     fn receive_edge(&mut self, at: SimTime, rising: bool) {
         self.uart_rx.receive_edge(at, rising);
-        if !rising {
+        if !rising && self.connected {
             self.handle_falling_edge(at);
         }
     }
@@ -453,7 +521,7 @@ impl<P: Providers, const RX: usize, const EDGE: usize, const TX: usize> DxlBus
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::sim::Sim;
+    use crate::sim::{Host, Sim, SimTime};
     use dxl_protocol::types::Id;
 
     #[test]
@@ -468,16 +536,16 @@ mod tests {
     }
 
     #[test]
-    fn with_dxl_id_overrides_default() {
+    fn set_dxl_id_overrides_default() {
         let mut sim = Sim::default();
-        let id = sim.add_device(|id| Servo::new(id).with_dxl_id(Id::new(0x07)));
+        let id = sim.add_device(|id| Servo::setup(id, |s| s.set_dxl_id(Id::new(0x07))));
         assert_eq!(sim.device::<Servo>(id).unwrap().dxl_id(), Id::new(0x07));
     }
 
     #[test]
-    fn with_rdt_us_overrides_default() {
+    fn set_rdt_us_overrides_default() {
         let mut sim = Sim::default();
-        let id = sim.add_device(|id| Servo::new(id).with_rdt_us(500));
+        let id = sim.add_device(|id| Servo::setup(id, |s| s.set_rdt_us(500)));
         assert_eq!(sim.device::<Servo>(id).unwrap().rdt_us(), 500);
     }
 
@@ -486,5 +554,99 @@ mod tests {
         let mut sim = Sim::default();
         let id = sim.add_device(Servo::new);
         assert_eq!(sim.device::<Servo>(id).unwrap().next_event_time(), None);
+    }
+
+    fn ping_and_settle(sim: &mut Sim, host: DeviceId, target: Id) {
+        sim.advance(SimTime::from_ms(5), |sim, _| {
+            sim.device_mut::<Host>(host).unwrap().send_ping(target);
+        });
+    }
+
+    #[test]
+    fn data_line_disconnect_silences_ping() {
+        let mut sim = Sim::default();
+        let host = sim.add_device(Host::new);
+        let servo = sim.add_device(Servo::new);
+        sim.device_mut::<Servo>(servo).unwrap().disconnect(false);
+
+        ping_and_settle(&mut sim, host, DEFAULT_DXL_ID);
+
+        assert!(sim.device::<Host>(host).unwrap().rx_bytes().is_empty());
+    }
+
+    #[test]
+    fn data_line_reconnect_resumes_without_reset() {
+        let mut sim = Sim::default();
+        let host = sim.add_device(Host::new);
+        let servo = sim.add_device(Servo::new);
+        sim.device::<Servo>(servo).unwrap().set_torque_enabled(true);
+
+        {
+            let s = sim.device_mut::<Servo>(servo).unwrap();
+            s.disconnect(false);
+            s.connect();
+        }
+        ping_and_settle(&mut sim, host, DEFAULT_DXL_ID);
+
+        assert!(!sim.device::<Host>(host).unwrap().rx_bytes().is_empty());
+        let torque = sim
+            .device::<Servo>(servo)
+            .unwrap()
+            .shared()
+            .table
+            .control
+            .with(|c| c.lifecycle.torque_enable);
+        assert!(torque, "data-line disconnect preserves RAM state");
+    }
+
+    #[test]
+    fn power_cycle_disconnect_resets_chip_side() {
+        let mut sim = Sim::default();
+        let host = sim.add_device(Host::new);
+        let servo = sim.add_device(Servo::new);
+        sim.device::<Servo>(servo).unwrap().set_torque_enabled(true);
+
+        {
+            let s = sim.device_mut::<Servo>(servo).unwrap();
+            s.disconnect(true);
+            s.connect();
+        }
+        ping_and_settle(&mut sim, host, DEFAULT_DXL_ID);
+
+        assert!(!sim.device::<Host>(host).unwrap().rx_bytes().is_empty());
+        let torque = sim
+            .device::<Servo>(servo)
+            .unwrap()
+            .shared()
+            .table
+            .control
+            .with(|c| c.lifecycle.torque_enable);
+        assert!(!torque, "power-cycle reset wipes RAM state");
+    }
+
+    #[test]
+    fn power_cycle_loses_prior_set_writes() {
+        const CONFIGURED_ID: Id = Id::new(5);
+        let mut sim = Sim::default();
+        let host = sim.add_device(Host::new);
+        let servo = sim.add_device(|id| Servo::setup(id, |s| s.set_dxl_id(CONFIGURED_ID)));
+
+        {
+            let s = sim.device_mut::<Servo>(servo).unwrap();
+            s.disconnect(true);
+            s.connect();
+        }
+        ping_and_settle(&mut sim, host, DEFAULT_DXL_ID);
+
+        let s = sim.device::<Servo>(servo).unwrap();
+        assert_eq!(s.dxl_id(), DEFAULT_DXL_ID);
+        assert_eq!(
+            s.shared().table.config.with(|c| c.comms.id),
+            DEFAULT_DXL_ID.as_byte()
+        );
+        assert!(
+            !sim.device::<Host>(host).unwrap().rx_bytes().is_empty(),
+            "after power-cycle the servo answers at DEFAULT_DXL_ID, not the prior set value",
+        );
     }
 }
