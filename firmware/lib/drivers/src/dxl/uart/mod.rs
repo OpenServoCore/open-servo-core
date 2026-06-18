@@ -714,6 +714,12 @@ impl<P: Providers, const RX_BUF_LEN: usize, const EDGE_BUF_LEN: usize, const TX_
                             target,
                             addressable
                         );
+                        // Implicit chain-state reset per `dxl-streaming-rx.md`
+                        // §5.3 — any stale `predecessor_id` from a prior chain
+                        // whose predecessor went silent must clear here, or a
+                        // foreign Status whose id happens to match would
+                        // trigger a spurious `start_now` on the new chain.
+                        *predecessor_id = None;
                         rx_inner.try_anchor_from_header(ticks_per_bit);
                         rx_inner.set_hsi_active(true);
                         if addressable {
@@ -808,7 +814,17 @@ impl<P: Providers, const RX_BUF_LEN: usize, const EDGE_BUF_LEN: usize, const TX_
                 action
             }
             PollEvent::SkipComplete { id: pred } => {
+                crate::log::trace!(
+                    "dxl: skip_complete pred={} predecessor_id={:?}",
+                    pred,
+                    *predecessor_id
+                );
                 if *predecessor_id == Some(pred) {
+                    crate::log::debug!(
+                        "dxl: skip_complete match pred={} -> start_now byte_count={}",
+                        pred,
+                        tx.tx_len()
+                    );
                     tx_bus.start_now(tx.tx_len());
                     *predecessor_id = None;
                 }
@@ -1777,6 +1793,23 @@ mod tests {
         stage_rx(&mut bus, 0, &bad);
         bus.poll(|_, _, _| {});
         assert!(bus.predecessor_id.is_none());
+    }
+
+    #[test]
+    fn instruction_header_clears_stale_chain_pending() {
+        // Per `dxl-streaming-rx.md` §5.3: any stale `predecessor_id` from a
+        // prior chain whose immediate predecessor went silent must clear at
+        // the next instruction-header event, or a foreign Status whose id
+        // happens to match would trigger a spurious `start_now`.
+        let mut bus = make_bus();
+        bus.predecessor_id = Some(0x42);
+        let req = wire_ping(TEST_ID);
+        stage_rx(&mut bus, 0, &req);
+        bus.poll(|_, _, _| {});
+        assert!(
+            bus.predecessor_id.is_none(),
+            "instruction-header event must reset stale chain-pending",
+        );
     }
 
     // ------------------------------------------------------------------
