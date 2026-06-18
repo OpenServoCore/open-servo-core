@@ -208,7 +208,8 @@ impl EventSource for Host {
         // RX log accumulates inside UartRx; the Host has no protocol layer
         // yet, so the returned RxEffects are ignored here.
         let _ = self.uart_rx.advance(t);
-        self.uart_tx
+        let effects: Vec<_> = self
+            .uart_tx
             .advance(t)
             .into_iter()
             .map(|(at_ns, rising)| Effect::WireEdge {
@@ -216,10 +217,25 @@ impl EventSource for Host {
                 at: SimTime::from_ns(at_ns),
                 rising,
             })
-            .collect()
+            .collect();
+        if !effects.is_empty() {
+            log::trace!(
+                "host[{:?}]: advance t={:?} emit {} wire edges",
+                self.id,
+                t,
+                effects.len()
+            );
+        }
+        effects
     }
 
     fn receive_edge(&mut self, at: SimTime, rising: bool) {
+        log::trace!(
+            "host[{:?}]: receive_edge at={:?} rising={}",
+            self.id,
+            at,
+            rising
+        );
         self.uart_rx.receive_edge(at, rising);
     }
 

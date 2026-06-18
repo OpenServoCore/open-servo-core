@@ -8,6 +8,7 @@ license.workspace = true
 osc-core     = { workspace = true, features = ["log"] }
 osc-drivers  = { workspace = true, features = ["mocks", "log"] }
 dxl-protocol = { workspace = true, features = ["alloc", "software-crc", "log"] }
+log          = "0.4"
 mockall      = "0.14"
 
 [dev-dependencies]

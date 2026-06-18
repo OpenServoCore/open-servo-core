@@ -330,7 +330,13 @@ impl Servo {
     /// USART1-IDLE / DMA HT-TC, not per byte, and the dispatcher is
     /// reconstructed per poll — running it mid-packet would lose `inflight`
     /// between the Header and Crc events.
-    fn handle_byte(&mut self, byte: u8, _at: SimTime) {
+    fn handle_byte(&mut self, byte: u8, at: SimTime) {
+        log::trace!(
+            "servo[{:?}]: handle_byte byte=0x{:02X} at={:?}",
+            self.id,
+            byte,
+            at
+        );
         let slot = (self.rx_seq as usize) % RX_BUF_LEN;
         // SAFETY: byte ring at a known address; slot is in-range.
         unsafe {
@@ -344,6 +350,7 @@ impl Servo {
     }
 
     fn handle_idle(&mut self, at: SimTime) {
+        log::trace!("servo[{:?}]: handle_idle at={:?}", self.id, at);
         self.uart.on_rx_idle(self.chip_tick(at));
         self.poll_and_queue_tx(at);
     }
@@ -366,6 +373,12 @@ impl Servo {
         let bus_ops = self.tx_bus_state.operations();
         for op in &bus_ops[pre_bus..] {
             if let TxBusOp::StartNow { byte_count } = *op {
+                log::trace!(
+                    "servo[{:?}]: tx_bus StartNow byte_count={} t={:?}",
+                    self.id,
+                    byte_count,
+                    t
+                );
                 self.queue_tx_bytes(byte_count, t);
             }
         }
@@ -379,6 +392,14 @@ impl Servo {
             } = *op
             {
                 let fire_at = self.deadline_to_wall(deadline_tick, t);
+                log::trace!(
+                    "servo[{:?}]: tx_scheduler Schedule deadline_tick={} byte_count={} fire_at={:?} (t={:?})",
+                    self.id,
+                    deadline_tick,
+                    byte_count,
+                    fire_at,
+                    t
+                );
                 self.queue_tx_bytes(byte_count, fire_at);
             }
         }
@@ -389,6 +410,14 @@ impl Servo {
             core::slice::from_raw_parts(self.uart.tx_buf_addr() as *const u8, byte_count as usize)
         };
         let stride = 10 * bit_period_ns(self.baud());
+        log::trace!(
+            "servo[{:?}]: queue_tx_bytes byte_count={} start_at={:?} stride_ns={} bytes={:02X?}",
+            self.id,
+            byte_count,
+            start_at,
+            stride,
+            bytes
+        );
         for (i, &b) in bytes.iter().enumerate() {
             self.uart_tx.queue_byte(b, start_at + i as u64 * stride);
         }
@@ -431,16 +460,33 @@ impl EventSource for Servo {
         if !self.connected {
             return Vec::new();
         }
-        tx.into_iter()
+        let effects: Vec<_> = tx
+            .into_iter()
             .map(|(at_ns, rising)| Effect::WireEdge {
                 source: self.id,
                 at: SimTime::from_ns(at_ns),
                 rising,
             })
-            .collect()
+            .collect();
+        if !effects.is_empty() {
+            log::trace!(
+                "servo[{:?}]: advance t={:?} emit {} wire edges",
+                self.id,
+                t,
+                effects.len()
+            );
+        }
+        effects
     }
 
     fn receive_edge(&mut self, at: SimTime, rising: bool) {
+        log::trace!(
+            "servo[{:?}]: receive_edge at={:?} rising={} connected={}",
+            self.id,
+            at,
+            rising,
+            self.connected
+        );
         self.uart_rx.receive_edge(at, rising);
         if !rising && self.connected {
             self.handle_falling_edge(at);

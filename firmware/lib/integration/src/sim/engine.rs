@@ -83,9 +83,11 @@ impl Sim {
 
             match source {
                 SourceKind::Wire => {
+                    log::trace!("engine: drain wire t={:?}", t);
                     self.wire.deliver_pending(t, &mut self.registry);
                 }
                 SourceKind::Device(id) => {
+                    log::trace!("engine: drain device {:?} t={:?}", id, t);
                     let effects = self.registry.advance(id, t);
                     for effect in effects {
                         match effect {
@@ -294,5 +296,22 @@ mod tests {
         let _a = sim.add_device(|id| Sender::new(id, vec![(SimTime::from_ns(100), false)]));
         let _b = sim.add_device(|id| Sender::new(id, vec![(SimTime::from_ns(100), false)]));
         sim.advance(SimTime::from_ns(200), |_, _| {});
+    }
+
+    #[test]
+    #[should_panic(expected = "wire collision")]
+    fn falling_edge_from_same_source_while_line_low_panics() {
+        let mut sim = Sim::default();
+        let _r = sim.add_device(|_| Receiver::default());
+        let _s = sim.add_device(|id| {
+            Sender::new(
+                id,
+                vec![
+                    (SimTime::from_ns(100), false),
+                    (SimTime::from_ns(150), false),
+                ],
+            )
+        });
+        sim.advance(SimTime::from_ns(300), |_, _| {});
     }
 }

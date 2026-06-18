@@ -61,10 +61,19 @@ impl Wire {
     }
 
     pub fn schedule_edge(&mut self, source: DeviceId, at: SimTime, rising: bool) {
+        log::trace!(
+            "wire: schedule_edge source={:?} at={:?} rising={} active_source={:?}",
+            source,
+            at,
+            rising,
+            self.active_source
+        );
         if !rising {
-            if let Some((active, since)) = self.active_source
-                && active != source
-            {
+            // Any falling edge while the line is already low is a physics
+            // violation: the wire is single-level at any instant, regardless
+            // of source. Catches both cross-source contention and same-source
+            // overlap (two byte streams from one peripheral).
+            if let Some((active, since)) = self.active_source {
                 panic!(
                     "wire collision at {:?}: {:?} held line since {:?}, {:?} tried to drive",
                     at, active, since, source
@@ -104,6 +113,12 @@ impl Wire {
                 break;
             }
             let arrival = self.delivery_queue.pop().unwrap().0;
+            log::trace!(
+                "wire: deliver target={:?} at={:?} rising={}",
+                arrival.target,
+                arrival.at,
+                arrival.rising
+            );
             registry.receive_edge(arrival.target, arrival.at, arrival.rising);
         }
     }

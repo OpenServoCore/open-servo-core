@@ -19,6 +19,10 @@ pub struct UartTx {
     encoder: TxEncoder,
     pending: BinaryHeap<Reverse<(SimTime, u8)>>,
     tx_log: Vec<TxLogEntry>,
+    /// End-of-frame time for the latest queued byte. A new `queue_byte` whose
+    /// `at` precedes this would model two byte streams driving the same TX
+    /// peripheral concurrently — physically impossible (one shift register).
+    wire_busy_until: SimTime,
 }
 
 impl UartTx {
@@ -27,6 +31,7 @@ impl UartTx {
             encoder: TxEncoder::new(baud),
             pending: BinaryHeap::new(),
             tx_log: Vec::new(),
+            wire_busy_until: SimTime::ZERO,
         }
     }
 
@@ -44,8 +49,18 @@ impl UartTx {
 
     /// Stage `byte` for transmission starting at `at`. The first edge (start
     /// bit) fires at that instant; subsequent transitions follow one bit
-    /// period apart.
+    /// period apart. Panics if `at` falls inside an already-queued frame's
+    /// transmission window — modeling the single-shift-register constraint
+    /// of a real UART TX peripheral.
     pub fn queue_byte(&mut self, byte: u8, at: SimTime) {
+        assert!(
+            at >= self.wire_busy_until,
+            "UartTx: byte queued at {:?} overlaps in-flight frame ending at {:?} \
+             — one UART TX peripheral cannot drive two byte streams concurrently",
+            at,
+            self.wire_busy_until,
+        );
+        self.wire_busy_until = at + 10 * self.bit_period_ns();
         self.pending.push(Reverse((at, byte)));
     }
 
@@ -127,6 +142,33 @@ mod tests {
                 },
             ],
         );
+    }
+
+    #[test]
+    fn back_to_back_bytes_at_exact_frame_boundary_are_allowed() {
+        let mut tx = UartTx::new(BAUD);
+        let bp = tx.bit_period_ns();
+        tx.queue_byte(0xAA, SimTime::ZERO);
+        tx.queue_byte(0x55, SimTime::from_ns(10 * bp));
+    }
+
+    #[test]
+    #[should_panic(expected = "overlaps in-flight frame")]
+    fn overlapping_queue_panics_within_frame() {
+        let mut tx = UartTx::new(BAUD);
+        let bp = tx.bit_period_ns();
+        tx.queue_byte(0xAA, SimTime::ZERO);
+        // 1 bit_period into the first frame — frame ends at 10*bp.
+        tx.queue_byte(0x55, SimTime::from_ns(bp));
+    }
+
+    #[test]
+    #[should_panic(expected = "overlaps in-flight frame")]
+    fn overlapping_queue_panics_one_ns_before_end() {
+        let mut tx = UartTx::new(BAUD);
+        let bp = tx.bit_period_ns();
+        tx.queue_byte(0xAA, SimTime::ZERO);
+        tx.queue_byte(0x55, SimTime::from_ns(10 * bp - 1));
     }
 
     #[test]
