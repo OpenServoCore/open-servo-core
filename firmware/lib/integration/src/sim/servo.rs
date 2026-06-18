@@ -405,21 +405,25 @@ impl Servo {
         }
     }
 
+    /// Schedule each byte of the codec's encoded TX buffer for transmission,
+    /// stride-spaced from `start_at`. Bytes are queued by *offset* into the
+    /// codec's `tx_buf`, not by value — the actual byte read happens in
+    /// [`UartTx::advance`] at drain time. This mirrors the production DMA
+    /// cursor reading the buffer at byte-rate, so a [`Codec::patch_crc`]
+    /// write landing between this call and the CRC byte's drain time (the
+    /// Fast Last chain-CRC fold path) ships out the patched value.
     fn queue_tx_bytes(&mut self, byte_count: u16, start_at: SimTime) {
-        let bytes = unsafe {
-            core::slice::from_raw_parts(self.uart.tx_buf_addr() as *const u8, byte_count as usize)
-        };
         let stride = 10 * bit_period_ns(self.baud());
         log::trace!(
-            "servo[{:?}]: queue_tx_bytes byte_count={} start_at={:?} stride_ns={} bytes={:02X?}",
+            "servo[{:?}]: queue_tx_bytes byte_count={} start_at={:?} stride_ns={}",
             self.id,
             byte_count,
             start_at,
             stride,
-            bytes
         );
-        for (i, &b) in bytes.iter().enumerate() {
-            self.uart_tx.queue_byte(b, start_at + i as u64 * stride);
+        for i in 0..byte_count {
+            self.uart_tx
+                .queue_byte_indirect(i as u32, start_at + i as u64 * stride);
         }
     }
 
@@ -456,7 +460,20 @@ impl EventSource for Servo {
                 }
             }
         }
-        let tx = self.uart_tx.advance(t, &[]);
+        // SAFETY: `tx_buf_addr()` returns the codec's heapless::Vec<u8,
+        // TX_BUF_LEN> storage start; the first `tx_len()` bytes are
+        // initialized (encoded by the most recent send_slot). Indirect
+        // entries in uart_tx pending always point inside this initialized
+        // prefix because they were queued from `byte_count` = tx_len at
+        // StartNow time, and tx_len doesn't shrink until on_tx_complete
+        // (which runs after all bytes have drained).
+        let tx_buf = unsafe {
+            core::slice::from_raw_parts(
+                self.uart.tx_buf_addr() as *const u8,
+                self.uart.tx_len() as usize,
+            )
+        };
+        let tx = self.uart_tx.advance(t, tx_buf);
         if !self.connected {
             return Vec::new();
         }
