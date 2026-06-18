@@ -134,11 +134,13 @@ fn decode_one<'a>(req: Instruction, header: StatusHeader, body: Option<&'a [u8]>
 /// The streaming parser collapses a Fast Sync/Bulk reply into one
 /// `Status` header + one or more `ReadDataChunk` events because the wire
 /// IS one Status packet (broadcast id, single CRC). To recover per-slot
-/// views, this walker uses the host-known `length` (shared across slots
-/// in Sync Read) to slice the concatenated body: slot 0 hoists its
-/// `error` from the header (the wire's status-error byte position IS
-/// slot 0's error per [`SlotEncoder`]); slot k>0 reads its own
-/// `[err, id, data...]` from body bytes.
+/// views, this walker uses the host-known per-slot length to slice the
+/// concatenated body: slot 0 hoists its `error` from the header (the
+/// wire's status-error byte position IS slot 0's error per
+/// [`SlotEncoder`]); slot k>0 reads its own `[err, id, data...]` from
+/// body bytes. Slot length is looked up by **wire id** — a silenced
+/// middle slot would otherwise misalign a position-indexed walk against
+/// heterogeneous Bulk entries.
 ///
 /// Slots are decoded from whatever body bytes were observed, regardless
 /// of the trailing CRC outcome — so tests can assert the actual wire
@@ -147,19 +149,25 @@ fn decode_one<'a>(req: Instruction, header: StatusHeader, body: Option<&'a [u8]>
 ///
 /// [`SlotEncoder`]: dxl_protocol::SlotEncoder
 pub fn parse_fast_sync_status(wire: &[u8], length: u16) -> FastStatus<'_> {
-    decode_fast_status(wire, |_| length as usize)
+    decode_fast_status(wire, |_| Some(length as usize))
 }
 
 /// Decode a Fast Bulk Read coalesced reply. Per-slot length comes from
-/// the host-side `entries` list (one per slot, in request order). See
-/// [`parse_fast_sync_status`] for the wire-walk model.
+/// the host-side `entries` list, looked up by wire id. Returns `None`
+/// for an unexpected id — the walker treats that as a truncation
+/// boundary. See [`parse_fast_sync_status`] for the wire-walk model.
 pub fn parse_fast_bulk_status<'a>(wire: &'a [u8], entries: &[BulkReadEntry]) -> FastStatus<'a> {
-    decode_fast_status(wire, |idx| entries[idx].length as usize)
+    decode_fast_status(wire, |id| {
+        entries
+            .iter()
+            .find(|e| e.id.as_byte() == id)
+            .map(|e| e.length as usize)
+    })
 }
 
 fn decode_fast_status<'a>(
     wire: &'a [u8],
-    slot_data_len: impl Fn(usize) -> usize,
+    slot_data_len: impl Fn(u8) -> Option<usize>,
 ) -> FastStatus<'a> {
     let mut parser: Parser<SoftwareCrcUmts> = Parser::new();
     let events: Vec<Event> = parser.feed(wire).collect();
@@ -195,23 +203,28 @@ fn decode_fast_status<'a>(
 fn walk_fast_slots<'a>(
     header: StatusHeader,
     body: &'a [u8],
-    slot_data_len: impl Fn(usize) -> usize,
+    slot_data_len: impl Fn(u8) -> Option<usize>,
 ) -> Vec<Slot<'a>> {
     let mut slots = Vec::new();
     let mut cursor = 0usize;
-    let mut idx = 0usize;
+    let mut first = true;
     while cursor < body.len() {
-        let data_len = slot_data_len(idx);
-        let (error, id, after_id) = if idx == 0 {
+        let (error, id, after_id) = if first {
             // Slot 0: error hoisted into Status header; body starts at id.
             (header.error, body[cursor], cursor + 1)
         } else {
             // Slot k>0: [error, id, data...] inline.
+            if cursor + 1 >= body.len() {
+                break;
+            }
             (
                 StatusError::from_byte(body[cursor]),
                 body[cursor + 1],
                 cursor + 2,
             )
+        };
+        let Some(data_len) = slot_data_len(id) else {
+            break;
         };
         let data_end = after_id + data_len;
         if data_end > body.len() {
@@ -223,7 +236,7 @@ fn walk_fast_slots<'a>(
             data: &body[after_id..data_end],
         });
         cursor = data_end;
-        idx += 1;
+        first = false;
     }
     slots
 }
