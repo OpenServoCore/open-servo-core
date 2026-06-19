@@ -76,9 +76,9 @@ pub enum PollEvent<'a> {
 /// sink arms a per-byte consumer (today: the Fast Last CRC fold engine)
 /// that must own all subsequent ring bytes; leaving them in the ring is
 /// the only way to hand them off without losing the cursor. Used to
-/// honor the chip's promise that `poll()` does not run during the Fast
-/// Last fold window (`dxl-streaming-rx.md` §10.6.3) across the fold-
-/// arm boundary itself — `pause_edges()` only stops *future* polls.
+/// honor the RX-tail ownership contract across the fold-arm boundary
+/// itself (`dxl-streaming-rx.md` §6) — the edge-IRQ mask at arm only
+/// stops *future* polls.
 pub enum PollAction {
     Continue,
     Skip { id: u8 },
@@ -310,8 +310,9 @@ impl<R: EdgeDma, CRC: CrcUmts, const RX_BUF_LEN: usize, const EDGE_BUF_LEN: usiz
                 // driven by `drain_raw` on `on_fold_step` / `on_tx_start`
                 // — owns them. The same poll continuing here would let
                 // the parser eat predecessor reply bytes before the fold
-                // ever gets a turn (per `dxl-streaming-rx.md` §10.6.3,
-                // `pause_edges()` shuts the door on future polls only).
+                // ever gets a turn (per `dxl-streaming-rx.md` §6 —
+                // edge-IRQ masking at arm shuts the door on future polls
+                // only).
                 return;
             }
 
@@ -350,13 +351,15 @@ impl<R: EdgeDma, CRC: CrcUmts, const RX_BUF_LEN: usize, const EDGE_BUF_LEN: usiz
     /// Advances `wire_bytes_consumed` over each drained byte so a
     /// subsequent `poll()` resumes at the right cursor.
     ///
-    /// The chip-side caller masks DMA1_CH7 HT/TC for the duration of the
-    /// Fast Last window (doc §10.6.3); during that window `poll()` does
-    /// not run, so the parser and this drain never race on `rx_buf`.
+    /// The Fast Last fold owns the RX ring tail for the duration of the
+    /// window: the chip-side caller masks DMA1_CH7 HT/TC at arm
+    /// (`dxl-hw-timed-transport.md` §10.6.3), and `poll()` self-gates on
+    /// `fast_last_crc.is_active()` at entry (`dxl-streaming-rx.md` §6),
+    /// so the parser and this drain never race on `rx_buf`.
     pub fn drain_raw<D: RxDma, F: FnMut(u8, u32)>(&mut self, rx_dma: &D, mut fold_byte: F) {
         // SAFETY: rx_buf is single-consumer at PFIC HIGH (same as `poll`).
-        // The chip-side caller masks DMA1_CH7 HT/TC for the Fast Last window
-        // so the parser and this drain never race on the ring.
+        // The fold-window contract above keeps `poll()` and this drain
+        // from racing on the ring.
         let rx_buf = unsafe { &mut *self.rx_buf.get() };
         loop {
             rx_buf.on_publish(rx_dma.remaining());

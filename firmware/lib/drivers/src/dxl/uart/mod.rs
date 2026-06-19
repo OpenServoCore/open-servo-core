@@ -725,9 +725,10 @@ impl<P: Providers, const RX_BUF_LEN: usize, const EDGE_BUF_LEN: usize, const TX_
         // Fold window is owned by `drain_raw` via `on_fold_step` /
         // `on_tx_start`; the parser path must not touch the ring or its
         // cursor while a Fast Last fold is in flight. `pause_edges()`
-        // stops *future* HT/TC-triggered polls, but IDLE-triggered polls
-        // and any in-flight poll still need this entry gate to honor
-        // `dxl-streaming-rx.md` §10.6.3.
+        // stops *future* edge-driven polls, but IDLE-triggered and RX
+        // byte-ring HT/TC-triggered polls still need this entry gate to
+        // honor the RX-tail ownership contract in
+        // `dxl-streaming-rx.md` §6.
         if self.fast_last_crc.is_active() {
             return;
         }

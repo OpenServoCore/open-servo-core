@@ -189,6 +189,13 @@ The Robotis per-servo RDT-in-chain quirk is not inherited — RDT applies only a
 
 The Fast Last post-fire CRC fold mechanic — SysTick catchup grid, CC3 owns post-fire residue, deadline-bounded busy-wait — is unchanged; see [dxl-hw-timed-transport.md §10.6](dxl-hw-timed-transport.md) for the full path. The only delta is what the fold consumes: the streaming RX redesign retires the parser-and-classifier walk inside the fold loop. Both the catchup-grid CMP bodies and the CC3 post-fire body now read raw bytes directly off the RX DMA ring and accumulate them into the running CRC. No event emission, no walker advance, no per-byte tick. NDTR supplies the byte count; nothing in the fold path needs a tick.
 
+**RX-tail ownership during the fold.** Three consumers can advance the RX ring tail: the parser drain, the universal byte-skip (§5.2), and the Fast Last fold. While the fold is active they are mutually exclusive — the fold's CRC depends on observing exactly the `predecessor_bytes` between arm-time tail and the wire end of the chip's last predecessor, and any parser-side or skip-driven advance during that window silently steals bytes the fold needs. The fold owns the tail for the duration of the window, bracketed by two events:
+
+- **Arm** — at `send_slot(Last)` the driver suppresses edge-driven re-entry (DMA1_CH7 HT/TC, the walker's primary pump) at the source. ET DMA continues to capture; only the IRQ is masked. The in-flight `poll()` call that drove the arm event yields without draining further bytes, leaving them in the ring for the fold's drain path.
+- **Release** — the fold finalizes naturally when `predecessor_bytes` have been consumed (CRC patched, active cleared) or cancels at `on_tx_complete` if a silent predecessor stalled the chain (matching the universal-skip clear in §5.3). Both transitions implicitly re-open the tail to the parser, and the next poll re-enters normally.
+
+Between arm and release, USART1 IDLE and DMA1_CH5 HT/TC continue to fire — they cannot be masked without losing TX-half awareness — and may re-trigger `poll()`. Each such entry checks whether a fold is active and returns immediately without touching the parser or the tail cursor. The two suppression points — edge-IRQ mask at arm and `poll()` self-gate at re-entry — close the same failure (parser-side tail advance during the fold) at two different sources.
+
 `patch_deadline_tick` survives the redesign as a bench-defended floor signal: at 3 Mbaud worst-case Fast Last, 10K-cycle runs see zero miss at `GUARD = 1` and ~3% miss at `GUARD = 2`. Wire CRC stays correct in either case — the deadline is a telemetry signal at the 3 Mbaud floor, not a kill switch.
 
 ## 7. Resource shape
