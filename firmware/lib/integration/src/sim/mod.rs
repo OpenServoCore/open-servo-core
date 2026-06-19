@@ -21,7 +21,7 @@ pub use decode::{
     FastStatus, FastStatusCrc, format_hex, parse_fast_bulk_status, parse_fast_sync_status,
     parse_status, parse_status_stream,
 };
-pub use defaults::DEFAULT_RDT_US;
+pub use defaults::{DEFAULT_BAUD, DEFAULT_RDT_US};
 pub use effect::Effect;
 pub use engine::Sim;
 pub use host::Host;

@@ -2,10 +2,8 @@
 //!
 //! Defaults mirror the V006 chip lib so tests reproduce the production
 //! topology (`firmware/ch32/src/runtime/registry.rs` + `hal/clocks.rs`).
-//! Each value is overridable at build time via an env var so the same
-//! tests can run under different chip / link configs without forking.
-//! Values are baked in at compile time — set the env vars in
-//! `.cargo/config.toml` `[env]` and rebuild.
+//! Tests that sweep non-default values use `setup_with(...)` from
+//! `tests/support.rs` — see the `matrix` rstest_reuse template.
 
 use osc_core::BaudRate;
 use osc_drivers::dxl::uart::codec::rx::{edge_buf_len, rx_buf_len};
@@ -18,15 +16,14 @@ use crate::sim::{Clock, SimTime};
 /// Override per-call with [`Host::wait_for_status_within`].
 pub const DEFAULT_STATUS_TIMEOUT: SimTime = SimTime::from_us(1000);
 
-/// Master device clock frequency, in MHz. Default matches CH32V307-class
-/// upper-tier SYSCLK. Override with `OSC_TEST_HOST_CLOCK_MHZ`. Whole-MHz
-/// only: downstream baud/timer divisors assume integer-MHz SYSCLK.
-pub const HOST_CLOCK_MHZ: u32 = env_u32(option_env!("OSC_TEST_HOST_CLOCK_MHZ"), 144);
+/// Master device clock frequency, in MHz. Matches CH32V307-class
+/// upper-tier SYSCLK. Whole-MHz only: downstream baud/timer divisors
+/// assume integer-MHz SYSCLK.
+pub const HOST_CLOCK_MHZ: u32 = 144;
 
-/// Servo device clock frequency, in MHz. Default = V006 SYSCLK
-/// (HSI 24 MHz × PLL 2). Override with `OSC_TEST_SERVO_CLOCK_MHZ`. Whole-MHz
-/// only — see [`HOST_CLOCK_MHZ`].
-pub const SERVO_CLOCK_MHZ: u32 = env_u32(option_env!("OSC_TEST_SERVO_CLOCK_MHZ"), 48);
+/// Servo device clock frequency, in MHz. V006 SYSCLK (HSI 24 MHz × PLL 2).
+/// Whole-MHz only — see [`HOST_CLOCK_MHZ`].
+pub const SERVO_CLOCK_MHZ: u32 = 48;
 
 /// Construct a fresh master-device clock at the default frequency. Returned
 /// by value so each `Host` owns an independent clock — model HSE/HSI drift
@@ -42,37 +39,22 @@ pub const fn default_servo_clock() -> Clock {
     Clock::new(SERVO_CLOCK_MHZ * 1_000_000)
 }
 
-/// Bus baud rate. Default = DXL-2.0 spec default (1 Mbaud, idx 3).
-/// Override with `OSC_TEST_BAUD_IDX` (0..=5; see [`BaudRate::from_idx`]).
-pub const DEFAULT_BAUD: BaudRate = {
-    let idx = env_u32(option_env!("OSC_TEST_BAUD_IDX"), 3) as u8;
-    match BaudRate::from_idx(idx) {
-        Some(b) => b,
-        None => panic!("OSC_TEST_BAUD_IDX must be in 0..=5"),
-    }
+/// Bus baud rate. DXL-2.0 spec default (1 Mbaud, idx 3). Tests that sweep
+/// other baud rates use `setup_with(n, baud, rdt_us)`.
+pub const DEFAULT_BAUD: BaudRate = match BaudRate::from_idx(3) {
+    Some(b) => b,
+    None => panic!("baud idx 3 is the DXL-2.0 spec default"),
 };
 
-/// Per-servo return delay (µs). Default = DXL-2.0 spec factory default
-/// (250 µs). Override with `OSC_TEST_RDT_US` (0..=510, even values; the
-/// on-wire encoding is 2 µs units in a u8). Out-of-range values panic at
-/// const evaluation.
-pub const DEFAULT_RDT_US: u32 = {
-    let v = env_u32(option_env!("OSC_TEST_RDT_US"), 250);
-    assert!(v <= 510, "OSC_TEST_RDT_US must be in 0..=510");
-    assert!(
-        v.is_multiple_of(2),
-        "OSC_TEST_RDT_US must be even (2 µs units)"
-    );
-    v
-};
+/// Per-servo return delay (µs). DXL-2.0 spec factory default (250 µs).
+/// Tests that sweep other RDT values use `setup_with(n, baud, rdt_us)`.
+pub const DEFAULT_RDT_US: u32 = 250;
 
 /// Anchor back-search depth target (in edges). Mirrors V006's
 /// `DXL_SYNC_LOOKBACK_EDGES` in `firmware/ch32/src/runtime/registry.rs`.
-/// Override with `OSC_TEST_SYNC_LOOKBACK_EDGES`. See
-/// [`osc_drivers::dxl::uart::codec::rx::sync_lookback_edges`] for the
+/// See [`osc_drivers::dxl::uart::codec::rx::sync_lookback_edges`] for the
 /// CPU / RAM cost per increment.
-pub const SYNC_LOOKBACK_EDGES: u16 =
-    env_u32(option_env!("OSC_TEST_SYNC_LOOKBACK_EDGES"), 59) as u16;
+pub const SYNC_LOOKBACK_EDGES: u16 = 59;
 
 /// RX byte-ring length, derived from [`SYNC_LOOKBACK_EDGES`].
 pub const RX_BUF_LEN: usize = rx_buf_len(SYNC_LOOKBACK_EDGES);
@@ -84,26 +66,3 @@ pub const EDGE_BUF_LEN: usize = edge_buf_len(SYNC_LOOKBACK_EDGES);
 /// `osc_core::services::dxl::limits::DXL_TX_MAX_BYTES`, which is itself
 /// env-driven via `OSC_MAX_CONTROL_RW`.
 pub const TX_BUF_LEN: usize = osc_core::services::dxl::limits::DXL_TX_MAX_BYTES;
-
-const fn env_u32(value: Option<&'static str>, default: u32) -> u32 {
-    match value {
-        Some(s) => parse_u32(s),
-        None => default,
-    }
-}
-
-const fn parse_u32(s: &str) -> u32 {
-    let bytes = s.as_bytes();
-    let mut n: u32 = 0;
-    let mut i = 0;
-    while i < bytes.len() {
-        let b = bytes[i];
-        assert!(
-            b >= b'0' && b <= b'9',
-            "OSC_TEST_* must be a decimal integer"
-        );
-        n = n * 10 + (b - b'0') as u32;
-        i += 1;
-    }
-    n
-}

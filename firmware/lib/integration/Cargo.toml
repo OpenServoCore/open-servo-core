@@ -12,9 +12,11 @@ log          = "0.4"
 mockall      = "0.14"
 
 [dev-dependencies]
-env_logger = "0.11"
-insta      = "1"
-test-log   = "0.2"
+env_logger   = "0.11"
+insta        = "1"
+rstest       = "0.23"
+rstest_reuse = "0.7"
+test-log     = "0.2"
 
 [[test]]
 name = "protocol"

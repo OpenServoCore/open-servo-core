@@ -196,6 +196,14 @@ impl Servo {
         self.rebuild_uart();
     }
 
+    pub fn set_baud(&mut self, baud: BaudRate) {
+        self.shared
+            .table
+            .config
+            .with_mut(|c| c.comms.baud_rate_idx = baud);
+        self.rebuild_uart();
+    }
+
     pub fn set_status_return_level(&mut self, level: StatusReturnLevel) {
         self.shared
             .table

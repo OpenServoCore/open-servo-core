@@ -26,23 +26,30 @@
 //! the same long-offset chain and verifying every slot's Status lands in
 //! order.
 
-use crate::support::{Setup, setup};
+use crate::support::{Setup, matrix, setup_with};
 use dxl_protocol::types::{BulkReadEntry, Id, Instruction, PingStatus, Status, StatusError};
+use osc_core::BaudRate;
 use osc_core::regions::config::addr::comms;
 use osc_core::services::dxl::limits::MAX_CONTROL_RW;
 use osc_integration::sim::{
     DEFAULT_FIRMWARE_VERSION, DEFAULT_MODEL_NUMBER, FastStatusCrc, Host, SimTime,
     parse_fast_bulk_status, parse_status_stream,
 };
+use rstest::rstest;
+use rstest_reuse::apply;
 
-/// Bus drain window — at 1 Mbaud one wire byte is 10 µs, so a 12-servo
-/// broadcast Ping (~168 wire bytes of replies) needs ~1.7 ms minimum.
-/// Headroom for parser + IDLE settling: 10 ms.
-const STATUS_WINDOW: SimTime = SimTime::from_ms(10);
+/// Bus drain window — deliberately baud-agnostic. Long enough for the
+/// slowest baud (9600 ≈ 1 ms/wire-byte) to drain a 12-servo broadcast
+/// Ping (~175 ms) plus the multi-payload Bulk/Sync chains below
+/// (~400 ms). Sim advances the event queue; the budget only bounds
+/// how far `wait_for_status_within` walks before giving up.
+const STATUS_WINDOW: SimTime = SimTime::from_ms(1000);
 
+#[apply(matrix)]
 #[test_log::test]
-fn broadcast_ping_at_12_servos_replies_in_order() {
-    let Setup { mut sim, host, .. } = setup(12);
+fn broadcast_ping_at_12_servos_replies_in_order(baud_idx: u8, rdt_us: u32) {
+    let baud = BaudRate::from_idx(baud_idx).expect("valid baud idx");
+    let Setup { mut sim, host, .. } = setup_with(12, baud, rdt_us);
 
     sim.device_mut::<Host>(host).send_ping(Id::BROADCAST);
     sim.device_mut::<Host>(host)
@@ -64,9 +71,11 @@ fn broadcast_ping_at_12_servos_replies_in_order() {
     assert_eq!(replies, expected);
 }
 
+#[apply(matrix)]
 #[test_log::test]
-fn fast_bulk_read_3_servos_full_payload_chain_intact() {
-    let Setup { mut sim, host, .. } = setup(3);
+fn fast_bulk_read_3_servos_full_payload_chain_intact(baud_idx: u8, rdt_us: u32) {
+    let baud = BaudRate::from_idx(baud_idx).expect("valid baud idx");
+    let Setup { mut sim, host, .. } = setup_with(3, baud, rdt_us);
 
     let len = MAX_CONTROL_RW as u16;
     let entries = [
@@ -109,9 +118,11 @@ fn fast_bulk_read_3_servos_full_payload_chain_intact() {
     }
 }
 
+#[apply(matrix)]
 #[test_log::test]
-fn plain_sync_read_chain_remains_sequence_driven() {
-    let Setup { mut sim, host, .. } = setup(3);
+fn plain_sync_read_chain_remains_sequence_driven(baud_idx: u8, rdt_us: u32) {
+    let baud = BaudRate::from_idx(baud_idx).expect("valid baud idx");
+    let Setup { mut sim, host, .. } = setup_with(3, baud, rdt_us);
 
     // Multi-wrap-sized chain — each slot's `len` bytes of payload mean the
     // cumulative wire offset to slot 3 crosses the u16 wrap, mirroring the

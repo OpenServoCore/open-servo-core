@@ -100,44 +100,6 @@ jobs:
       - name: cargo test
         run: cargo test --features ch32v006x8x6 --lib
 
-  baud-rdt-matrix:
-    name: test (baud=${{ matrix.baud_name }}, rdt=${{ matrix.rdt_us }}us)
-    runs-on: ubuntu-latest
-    needs: [build-test, dxl-protocol-features, ch32-build-test]
-    defaults:
-      run:
-        working-directory: firmware/lib
-    strategy:
-      fail-fast: false
-      matrix:
-        # Edit either list to change coverage. Cross-product = baud_idx × rdt_us;
-        # `include` decorates each combo with a human-readable baud_name.
-        rdt_us: [0, 128, 256, 384, 510]
-        baud_idx: [0, 1, 2, 3, 4, 5]
-        include:
-          - { baud_idx: 0, baud_name: "9600"   }
-          - { baud_idx: 1, baud_name: "57600"  }
-          - { baud_idx: 2, baud_name: "115200" }
-          - { baud_idx: 3, baud_name: "1M"     }
-          - { baud_idx: 4, baud_name: "2M"     }
-          - { baud_idx: 5, baud_name: "3M"     }
-    env:
-      OSC_TEST_BAUD_IDX: ${{ matrix.baud_idx }}
-      OSC_TEST_RDT_US: ${{ matrix.rdt_us }}
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Install Rust (nightly)
-        uses: dtolnay/rust-toolchain@nightly
-
-      - uses: Swatinem/rust-cache@v2
-        with:
-          workspaces: firmware/lib
-          key: baud-${{ matrix.baud_idx }}-rdt-${{ matrix.rdt_us }}
-
-      - name: cargo test --workspace
-        run: cargo test --workspace
-
   osc-dev-v006-cross-build:
     name: cross-build (boards/osc-dev-v006)
     runs-on: ubuntu-latest
