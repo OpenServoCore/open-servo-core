@@ -109,8 +109,10 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # Edit this list to add or remove RDT buckets.
+        # Edit either list to change coverage. Cross-product = baud_idx × rdt_us;
+        # `include` decorates each combo with a human-readable baud_name.
         rdt_us: [0, 128, 256, 384, 510]
+        baud_idx: [0, 1, 2, 3, 4, 5]
         include:
           - { baud_idx: 0, baud_name: "9600"   }
           - { baud_idx: 1, baud_name: "57600"  }
