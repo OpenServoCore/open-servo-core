@@ -722,6 +722,15 @@ impl<P: Providers, const RX_BUF_LEN: usize, const EDGE_BUF_LEN: usize, const TX_
     where
         F: FnMut(Event, &[u8], &mut ReplyHandle<'_, P, TX_BUF_LEN>),
     {
+        // Fold window is owned by `drain_raw` via `on_fold_step` /
+        // `on_tx_start`; the parser path must not touch the ring or its
+        // cursor while a Fast Last fold is in flight. `pause_edges()`
+        // stops *future* HT/TC-triggered polls, but IDLE-triggered polls
+        // and any in-flight poll still need this entry gate to honor
+        // `dxl-streaming-rx.md` §10.6.3.
+        if self.fast_last_crc.is_active() {
+            return;
+        }
         self.codec.on_rx_dma_advance(self.rx_dma.remaining());
         let now = self.wire_clock.now();
         let id = self.id;
@@ -876,7 +885,18 @@ impl<P: Providers, const RX_BUF_LEN: usize, const EDGE_BUF_LEN: usize, const TX_
                     rdt_us,
                 };
                 f(ev, ring, &mut reply);
-                action
+                // If `f()` armed the Fast Last fold (via `send_slot(Last)`),
+                // the in-flight poll must exit before the parser eats any
+                // more bytes — those bytes belong to the fold engine. The
+                // SysTick CMP grid's `pause_edges()` stops future polls only;
+                // without this bail-out the parser+skip path consumes the
+                // predecessor's leading bytes in the same poll that armed
+                // the fold, and the fold engine starves.
+                if fast_last_crc.is_active() {
+                    PollAction::Stop
+                } else {
+                    action
+                }
             }
             PollEvent::SkipComplete { id: pred } => {
                 crate::log::trace!(

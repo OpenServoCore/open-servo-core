@@ -70,9 +70,19 @@ pub enum PollEvent<'a> {
 /// normally. On `Skip`, the codec reads [`Parser::packet_remaining`],
 /// resets the parser, and consumes the indicated count from the RX ring
 /// tail before surfacing [`PollEvent::SkipComplete`].
+///
+/// `Stop` exits the poll immediately after committing the bytes the
+/// parser already consumed for the in-flight event. Returned when the
+/// sink arms a per-byte consumer (today: the Fast Last CRC fold engine)
+/// that must own all subsequent ring bytes; leaving them in the ring is
+/// the only way to hand them off without losing the cursor. Used to
+/// honor the chip's promise that `poll()` does not run during the Fast
+/// Last fold window (`dxl-streaming-rx.md` §10.6.3) across the fold-
+/// arm boundary itself — `pause_edges()` only stops *future* polls.
 pub enum PollAction {
     Continue,
     Skip { id: u8 },
+    Stop,
 }
 
 struct SkipState {
@@ -244,6 +254,7 @@ impl<R: EdgeDma, CRC: CrcUmts, const RX_BUF_LEN: usize, const EDGE_BUF_LEN: usiz
             let input: &[u8] = unsafe { core::slice::from_raw_parts(input_ptr, input_len) };
 
             let mut break_for_skip: Option<u8> = None;
+            let mut stop = false;
             let consumed = {
                 let mut stream = self.parser.feed(input);
                 // `while let` rather than `for ... by_ref()` so each iteration
@@ -277,6 +288,10 @@ impl<R: EdgeDma, CRC: CrcUmts, const RX_BUF_LEN: usize, const EDGE_BUF_LEN: usiz
                             break_for_skip = Some(id);
                             break;
                         }
+                        PollAction::Stop => {
+                            stop = true;
+                            break;
+                        }
                     }
                 }
                 stream.consumed()
@@ -287,6 +302,17 @@ impl<R: EdgeDma, CRC: CrcUmts, const RX_BUF_LEN: usize, const EDGE_BUF_LEN: usiz
                 // SAFETY: see note above.
                 let rx_buf = unsafe { &mut *rx_buf_ptr };
                 rx_buf.reader().advance(consumed as u16);
+            }
+
+            if stop {
+                // Sink armed a per-byte consumer (Fast Last fold). Leave
+                // any unconsumed bytes in the ring so the fold engine —
+                // driven by `drain_raw` on `on_fold_step` / `on_tx_start`
+                // — owns them. The same poll continuing here would let
+                // the parser eat predecessor reply bytes before the fold
+                // ever gets a turn (per `dxl-streaming-rx.md` §10.6.3,
+                // `pause_edges()` shuts the door on future polls only).
+                return;
             }
 
             if let Some(id) = break_for_skip {
