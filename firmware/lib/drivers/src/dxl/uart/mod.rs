@@ -401,9 +401,10 @@ impl<P: Providers, const TX_BUF_LEN: usize> ReplyHandle<'_, P, TX_BUF_LEN> {
         }
         let packet_end_tick = ctx.packet_end_tick;
         let byte_count = self.tx.tx_len();
-        let delay_us = self.rdt_us + self.clock.bytes_to_us(ctx.slot_offset_bytes);
-        let delay_ticks =
-            delay_us.wrapping_mul(<P::TxScheduler as TxScheduler>::TICKS_PER_US as u32);
+        let rdt_ticks = self
+            .rdt_us
+            .wrapping_mul(<P::TxScheduler as TxScheduler>::TICKS_PER_US as u32);
+        let delay_ticks = rdt_ticks.wrapping_add(self.clock.bytes_to_ticks(ctx.slot_offset_bytes));
         let deadline = packet_end_tick.wrapping_add(delay_ticks);
         crate::log::debug!(
             "dxl: send_status schedule packet_end={} delay={} deadline={} byte_count={}",
@@ -421,8 +422,9 @@ impl<P: Providers, const TX_BUF_LEN: usize> ReplyHandle<'_, P, TX_BUF_LEN> {
     /// start. Slot position (Only/First/Middle/Last) comes from the cached
     /// [`ReplyContext`]; Last tags the schedule with [`SendKind::FastLast`]
     /// so the provider knows to coordinate with chain-CRC catchup (M6,
-    /// `#6`). Q8.8 µs precision flows through to the tick math so the
-    /// inter-slot gap (~3.33 µs at 3 Mbaud) is sub-µs-aligned.
+    /// `#6`). Slot offset composes in tick-space directly (see
+    /// [`Clock::bytes_to_ticks`]) so the inter-slot gap stays exact at
+    /// every baud, including the ~3.33 µs at 3 Mbaud.
     pub fn send_slot(&mut self, slot: &Slot<'_>) -> Result<(), WriteError> {
         let Some(ctx) = self.last_reply_ctx.take() else {
             crate::log::debug!("dxl[id={}]: send_slot drop (no reply ctx)", self.id);
@@ -443,22 +445,13 @@ impl<P: Providers, const TX_BUF_LEN: usize> ReplyHandle<'_, P, TX_BUF_LEN> {
         self.tx.send_slot(slot, position)?;
         let byte_count = self.tx.tx_len();
         let packet_end_tick = ctx.packet_end_tick;
-        let (delay_ticks, kind) = match position {
-            SlotPosition::Last { .. } => {
-                // Q8.8 µs × ticks/µs = Q8.8 ticks; >> 8 lands on integer ticks.
-                let delay_q88 =
-                    (self.rdt_us << 8) + self.clock.bytes_to_us_q88(ctx.slot_offset_bytes);
-                let ticks = (delay_q88
-                    .wrapping_mul(<P::TxScheduler as TxScheduler>::TICKS_PER_US as u32))
-                    >> 8;
-                (ticks, SendKind::FastLast)
-            }
-            _ => {
-                let delay_us = self.rdt_us + self.clock.bytes_to_us(ctx.slot_offset_bytes);
-                let ticks =
-                    delay_us.wrapping_mul(<P::TxScheduler as TxScheduler>::TICKS_PER_US as u32);
-                (ticks, SendKind::Plain)
-            }
+        let rdt_ticks = self
+            .rdt_us
+            .wrapping_mul(<P::TxScheduler as TxScheduler>::TICKS_PER_US as u32);
+        let delay_ticks = rdt_ticks.wrapping_add(self.clock.bytes_to_ticks(ctx.slot_offset_bytes));
+        let kind = match position {
+            SlotPosition::Last { .. } => SendKind::FastLast,
+            _ => SendKind::Plain,
         };
         let deadline = packet_end_tick.wrapping_add(delay_ticks);
         self.scheduler.schedule(deadline, byte_count, kind);
@@ -1474,10 +1467,10 @@ mod tests {
         }
     }
 
-    /// Packet-end tick + delay_us → expected deadline_tick at V006's
-    /// TICKS_PER_US=48 (matching the mock's const).
-    fn expected_deadline(packet_end_tick: u16, delay_us: u32) -> u16 {
-        packet_end_tick.wrapping_add(delay_us.wrapping_mul(48) as u16)
+    /// Packet-end tick + delay_ticks → expected deadline_tick. Pre-folded
+    /// to ticks at the call site so the helper stays unit-clean.
+    fn expected_deadline_ticks(packet_end_tick: u16, delay_ticks: u32) -> u16 {
+        packet_end_tick.wrapping_add(delay_ticks as u16)
     }
 
     #[test]
@@ -1491,7 +1484,10 @@ mod tests {
         assert_eq!(
             bus.scheduler.log.as_slice(),
             &[ScheduleOp::Schedule {
-                deadline_tick: expected_deadline(packet_end_tick, TEST_RDT_US),
+                deadline_tick: expected_deadline_ticks(
+                    packet_end_tick,
+                    TEST_RDT_US.wrapping_mul(48)
+                ),
                 byte_count,
                 kind: SendKind::Plain,
             }]
@@ -1530,7 +1526,10 @@ mod tests {
         assert_eq!(
             bus.scheduler.log.as_slice(),
             &[ScheduleOp::Schedule {
-                deadline_tick: expected_deadline(packet_end_tick, TEST_RDT_US),
+                deadline_tick: expected_deadline_ticks(
+                    packet_end_tick,
+                    TEST_RDT_US.wrapping_mul(48)
+                ),
                 byte_count,
                 kind: SendKind::Plain,
             }]
@@ -1546,8 +1545,7 @@ mod tests {
         let payload = [0xAA_u8, 0xBB];
         // First slot of 2 emits 8 (header) + 2 (error+id) + 2 (data) = 12
         // wire bytes; bytes_before for slot 1 = 12.
-        let expected_delay_q88 = (TEST_RDT_US << 8) + bus.clock.bytes_to_us_q88(12);
-        let expected_ticks = (expected_delay_q88.wrapping_mul(48)) >> 8;
+        let expected_ticks = TEST_RDT_US.wrapping_mul(48) + bus.clock.bytes_to_ticks(12);
         let expected = packet_end_tick.wrapping_add(expected_ticks as u16);
 
         bus.poll(|_, _, reply| {
@@ -1663,9 +1661,9 @@ mod tests {
         let req = wire_ping(BROADCAST_ID);
         let (mut bus, packet_end_tick) = bus_seeded_with(&req);
 
-        let expected_offset_us = bus
+        let expected_offset_ticks = bus
             .clock
-            .bytes_to_us(TEST_ID as u32 * PING_STATUS_FRAME_BYTES);
+            .bytes_to_ticks(TEST_ID as u32 * PING_STATUS_FRAME_BYTES);
         bus.poll(|_, _, reply| reply.send_status(empty_status()).expect("encode fits"));
 
         let byte_count = bus.codec.tx_len();
@@ -1673,7 +1671,10 @@ mod tests {
         assert_eq!(
             bus.scheduler.log.as_slice(),
             &[ScheduleOp::Schedule {
-                deadline_tick: expected_deadline(packet_end_tick, TEST_RDT_US + expected_offset_us),
+                deadline_tick: expected_deadline_ticks(
+                    packet_end_tick,
+                    TEST_RDT_US.wrapping_mul(48) + expected_offset_ticks,
+                ),
                 byte_count,
                 kind: SendKind::Plain,
             }]
