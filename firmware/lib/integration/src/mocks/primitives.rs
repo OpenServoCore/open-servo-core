@@ -50,11 +50,11 @@ pub fn mock_monotonic() -> (MockMonotonic, MonotonicState) {
 
 #[derive(Clone, Default)]
 pub struct WireClockState {
-    now: Rc<Cell<u16>>,
+    now: Rc<Cell<u32>>,
 }
 
 impl WireClockState {
-    pub fn stage_now(&self, n: u16) {
+    pub fn stage_now(&self, n: u32) {
         self.now.set(n);
     }
 }

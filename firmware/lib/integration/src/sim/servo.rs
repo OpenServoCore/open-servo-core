@@ -89,11 +89,6 @@ pub struct Servo {
     /// `WireClock` provider.
     wire_clock_state: WireClockState,
 
-    /// Wall-clock equivalent of the most recent `set_deadline`'s
-    /// `packet_end_tick`. Sim's stand-in for the chip-side scheduler's
-    /// `packet_end_lifted` — every Fast Last `schedule(offset_ticks)`
-    /// anchors off this. `None` between chains.
-    packet_end_wall: Option<SimTime>,
     /// Next SysTick CMP-match wall-clock for the Fast Last fold body, if
     /// any. Set by `Schedule`, cleared by `Cancel` or by `advance` after
     /// firing. Surfaced via [`EventSource::next_event_time`] so the engine
@@ -154,7 +149,6 @@ impl Servo {
             fast_last_scheduler_state: FastLastSchedulerState::default(),
             wire_clock_state: WireClockState::default(),
 
-            packet_end_wall: None,
             systick_fire: None,
             fast_last_drained: 0,
 
@@ -313,7 +307,6 @@ impl Servo {
         self.uart_rx = UartRx::new(baud);
         self.rx_seq = 0;
         self.edge_seq = 0;
-        self.packet_end_wall = None;
         self.systick_fire = None;
         self.fast_last_drained = 0;
         self.tx_start_fire = None;
@@ -340,8 +333,13 @@ impl Servo {
         });
     }
 
-    fn chip_tick(&self, at: SimTime) -> u16 {
-        (self.clock.to_local(at) % 65536) as u16
+    /// Full-width chip tick (WireClock u32 domain, truncated modulo 2³² to
+    /// fit a u32). Used to stage `WireClock::now()`, derive wire-clock
+    /// schedule deadlines, and resolve absolute u32 schedule deadlines back
+    /// to wall time. ET ring IC stamps see the low 16 bits via `chip_tick
+    /// as u16` — matches the chip-side TIM2/SysTick HCLK contract.
+    fn chip_tick(&self, at: SimTime) -> u32 {
+        self.clock.to_local(at) as u32
     }
 
     fn freq_hz(&self) -> u64 {
@@ -356,7 +354,7 @@ impl Servo {
     /// accumulate silently; the IDLE backstop (`handle_idle`) catches short
     /// packets that never trip HT.
     fn handle_falling_edge(&mut self, at: SimTime) {
-        let tick = self.chip_tick(at);
+        let tick = self.chip_tick(at) as u16;
         let slot = (self.edge_seq as usize) % EDGE_BUF_LEN;
         // SAFETY: `edges_addr()` returns the address of `HwRing<u16,
         // EDGE_BUF_LEN>::data[0]`; the slot lies inside that buffer because
@@ -468,18 +466,16 @@ impl Servo {
         for op in &sch_ops[self.tx_scheduler_drained..] {
             match *op {
                 ScheduleOp::Schedule {
-                    packet_end_tick,
-                    delay_ticks,
+                    deadline,
                     byte_count,
                     kind,
                 } => {
-                    let fire_at = self.anchor_plus_delay_to_wall(packet_end_tick, delay_ticks, t);
+                    let fire_at = self.deadline_to_wall(deadline, t);
                     log::trace!(
-                        "servo[{:?}]: tx_scheduler Schedule kind={:?} packet_end_tick={} delay_ticks={} byte_count={} fire_at={:?} (t={:?})",
+                        "servo[{:?}]: tx_scheduler Schedule kind={:?} deadline={} byte_count={} fire_at={:?} (t={:?})",
                         self.id,
                         kind,
-                        packet_end_tick,
-                        delay_ticks,
+                        deadline,
                         byte_count,
                         fire_at,
                         t
@@ -517,47 +513,35 @@ impl Servo {
     }
 
     /// Walk new `FastLastSchedulerOp` entries since the last drain and
-    /// resolve their chip-side tick args into wall-clock state — `SetDeadline`
-    /// caches `packet_end_wall`, `Schedule` derives the next CMP-match
-    /// `SimTime`, `Cancel` clears it. Mirrors the chip-side scheduler's
-    /// `packet_end_lifted = systick_now − (tim2_now − packet_end_tick)` lift
-    /// (TIM2 / SysTick share HCLK, so the delta is single-valued within one
-    /// wrap window). Called after every `Dxl::poll` and every `on_fold_step`
-    /// — both paths can append ops.
+    /// resolve their absolute-u32 deadlines into wall-clock state.
+    /// `SetDeadline` is a busy-wait threshold (no fire), `Schedule` derives
+    /// the next CMP-match `SimTime`, `Cancel` clears it. Called after every
+    /// `Dxl::poll` and every `on_fold_step` — both paths can append ops.
     fn drain_fast_last_ops(&mut self, t: SimTime) {
         let ops = self.fast_last_scheduler_state.operations();
         for op in &ops[self.fast_last_drained..] {
             match *op {
-                FastLastSchedulerOp::SetDeadline {
-                    packet_end_tick, ..
-                } => {
-                    let delta_ticks = self.chip_tick(t).wrapping_sub(packet_end_tick) as u64;
-                    let delta_ns = delta_ticks.saturating_mul(1_000_000_000) / self.freq_hz();
-                    self.packet_end_wall =
-                        Some(SimTime::from_ns(t.as_ns().saturating_sub(delta_ns)));
+                FastLastSchedulerOp::SetDeadline { .. } => {
+                    // Busy-wait threshold only — no wall-clock fire to stage.
                 }
-                FastLastSchedulerOp::Schedule { offset_ticks } => {
-                    if let Some(pe) = self.packet_end_wall {
-                        let offset_ns =
-                            (offset_ticks as u64).saturating_mul(1_000_000_000) / self.freq_hz();
-                        let mut fire = pe + offset_ns;
-                        if fire <= t {
-                            // Past-CMP guard — chip-side scheduler clamps
-                            // `cmp = max(cmp, now + 1)` so the match still
-                            // latches. Sim mirrors with one chip-tick of
-                            // forward slop (≈21 ns at 48 MHz).
-                            let one_tick_ns = (1_000_000_000u64 / self.freq_hz()).max(1);
-                            fire = t + one_tick_ns;
-                        }
-                        log::trace!(
-                            "servo[{:?}]: fast_last Schedule offset_ticks={} fire_at={:?} (t={:?})",
-                            self.id,
-                            offset_ticks,
-                            fire,
-                            t
-                        );
-                        self.systick_fire = Some(fire);
+                FastLastSchedulerOp::Schedule { deadline } => {
+                    let mut fire = self.deadline_to_wall(deadline, t);
+                    if fire <= t {
+                        // Past-CMP guard — chip-side scheduler clamps
+                        // `cmp = max(cmp, now + 1)` so the match still
+                        // latches. Sim mirrors with one chip-tick of
+                        // forward slop (≈21 ns at 48 MHz).
+                        let one_tick_ns = (1_000_000_000u64 / self.freq_hz()).max(1);
+                        fire = t + one_tick_ns;
                     }
+                    log::trace!(
+                        "servo[{:?}]: fast_last Schedule deadline={} fire_at={:?} (t={:?})",
+                        self.id,
+                        deadline,
+                        fire,
+                        t
+                    );
+                    self.systick_fire = Some(fire);
                 }
                 FastLastSchedulerOp::Cancel => {
                     self.systick_fire = None;
@@ -567,27 +551,18 @@ impl Servo {
         self.fast_last_drained = ops.len();
     }
 
-    /// Convert a chip-side `deadline_tick` (u16 TIM2 tick) to a wall-clock
-    /// `SimTime` by computing the forward delta from `t` in chip ticks and
-    /// converting via the device's clock frequency. Assumes the deadline is
-    /// in the future from `t` (true for Plain / RDT-based schedules; not
-    /// for already-passed deadlines, which the production code lets fire
-    /// ASAP).
-    /// Sim-side mirror of the chip-side `DxlTxScheduler::lift_combine` —
-    /// (anchor in TIM2 u16 ticks, delay in HCLK u32 ticks) → absolute wall
-    /// time. Same modular-delta-from-now math as `drain_fast_last_ops`'s
-    /// `SetDeadline` lift, just exposed for the TxScheduler path.
-    fn anchor_plus_delay_to_wall(
-        &self,
-        packet_end_tick: u16,
-        delay_ticks: u32,
-        t: SimTime,
-    ) -> SimTime {
-        let delta_ticks = self.chip_tick(t).wrapping_sub(packet_end_tick) as u64;
-        let delta_ns = delta_ticks.saturating_mul(1_000_000_000) / self.freq_hz();
-        let packet_end_wall = SimTime::from_ns(t.as_ns().saturating_sub(delta_ns));
-        let delay_ns = (delay_ticks as u64).saturating_mul(1_000_000_000) / self.freq_hz();
-        packet_end_wall + delay_ns
+    /// Convert an absolute chip-side u32 deadline to a wall-clock `SimTime`
+    /// by computing the forward delta from `t` in chip ticks and converting
+    /// via the device's clock frequency. Past-deadline (delta < 0) returns
+    /// `t` so the consumer can clamp to "fire ASAP" — production hardware
+    /// behaves the same way (the match latches immediately).
+    fn deadline_to_wall(&self, deadline: u32, t: SimTime) -> SimTime {
+        let delta_ticks = deadline.wrapping_sub(self.chip_tick(t)) as i32;
+        if delta_ticks <= 0 {
+            return t;
+        }
+        let delta_ns = (delta_ticks as u64).saturating_mul(1_000_000_000) / self.freq_hz();
+        t + delta_ns
     }
 }
 

@@ -5,11 +5,10 @@
 //! body folds the residue inline.
 //!
 //! The FSM lives here; the CRC engine and per-byte fold callback live on
-//! the [`DxlUart`] composite (next commit, alongside `crc.rs`). The
-//! driver works entirely in `(packet_end_tick, offset_ticks)` pairs — a
-//! wire-clock anchor + protocol-derived offsets. Lifting the anchor into
-//! the scheduler's tick domain is the chip-side provider's job; the
-//! driver itself stays clock-agnostic.
+//! the [`DxlUart`] composite. The driver works in absolute u32 deadlines
+//! (WireClock domain) — `start()` composes the packet-end anchor with
+//! protocol-derived offsets and hands the scheduler one u32 per arm. The
+//! chip-side provider applies the deadlines directly with no further lift.
 //!
 //! [`DxlUart`]: super::DxlUart
 
@@ -30,13 +29,13 @@ pub enum FastLastPhase {
 }
 
 /// Input to [`FastLast::start`]. `packet_end_tick` is parser-derived in
-/// the wire-clock domain (u16); all timing math derives from it.
+/// the WireClock u32 domain; all timing math derives from it.
 #[derive(Copy, Clone, Debug)]
 pub struct FastLastSchedule {
-    /// Parser-derived wire-clock value where the host's request ended
-    /// (= `BT[last_byte] + 10·tpb`). Scheduler will lift this into its
-    /// own tick domain at `set_deadline` time.
-    pub packet_end_tick: u16,
+    /// Parser-derived WireClock u32 value where the host's request ended
+    /// (= `BT[last_byte] + 10·tpb`). All grid CMPs land at
+    /// `packet_end_tick + offset` modulo u32.
+    pub packet_end_tick: u32,
     /// Return-delay-time, in scheduler ticks.
     pub rdt_ticks: u16,
     /// One wire byte time at the active baud, in scheduler ticks.
@@ -69,6 +68,9 @@ pub struct FastLast<S: FastLastScheduler> {
     /// Cached `predecessor_bytes` for the busy-wait's
     /// `bytes_walked >= predecessor_bytes − GUARD` branch.
     predecessor_bytes: u16,
+    /// WireClock u32 anchor cached at `start` — every subsequent
+    /// grid `schedule(deadline)` is `packet_end_tick + offset`.
+    packet_end_tick: u32,
 }
 
 impl<S: FastLastScheduler> FastLast<S> {
@@ -80,6 +82,7 @@ impl<S: FastLastScheduler> FastLast<S> {
             final_anchor_offset: 0,
             interval_ticks: 0,
             predecessor_bytes: 0,
+            packet_end_tick: 0,
         }
     }
 
@@ -119,13 +122,16 @@ impl<S: FastLastScheduler> FastLast<S> {
         self.final_anchor_offset = final_anchor_offset;
         self.interval_ticks = interval;
         self.predecessor_bytes = p.predecessor_bytes;
+        self.packet_end_tick = p.packet_end_tick;
         self.phase = FastLastPhase::PeriodicWalk;
 
         self.scheduler
-            .set_deadline(p.packet_end_tick, deadline_offset);
+            .set_deadline(p.packet_end_tick.wrapping_add(deadline_offset));
         // EVERY grid CMP back-dated by FAST_LAST_ENTRY_TICKS.
-        self.scheduler
-            .schedule(anchor.wrapping_sub(S::FAST_LAST_ENTRY_TICKS as u32));
+        self.scheduler.schedule(
+            p.packet_end_tick
+                .wrapping_add(anchor.wrapping_sub(S::FAST_LAST_ENTRY_TICKS as u32)),
+        );
     }
 
     /// Drive one grid body. Composite calls this from its long-horizon
@@ -202,8 +208,10 @@ impl<S: FastLastScheduler> FastLast<S> {
                 }
                 self.next_anchor_offset = self.next_anchor_offset.wrapping_add(self.interval_ticks);
                 self.scheduler.schedule(
-                    self.next_anchor_offset
-                        .wrapping_sub(S::FAST_LAST_ENTRY_TICKS as u32),
+                    self.packet_end_tick.wrapping_add(
+                        self.next_anchor_offset
+                            .wrapping_sub(S::FAST_LAST_ENTRY_TICKS as u32),
+                    ),
                 );
             }
             FastLastPhase::Idle => {

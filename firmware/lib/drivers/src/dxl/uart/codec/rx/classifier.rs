@@ -109,6 +109,17 @@ fn in_band(delta: u16, lo_x2: u32, hi_x2: u32, tpb: u16) -> bool {
     d_x2 >= lo_x2 * tpb && d_x2 <= hi_x2 * tpb
 }
 
+/// Lift a 16-bit IC stamp into the WireClock u32 domain. The contract
+/// (see [`crate::traits::dxl::WireClock`]) guarantees the low 16 bits of
+/// `now` equal the IC stamp captured at the same instant, so the modular
+/// delta from `stamp` to `now as u16` is the elapsed ticks — subtract that
+/// from `now` to recover the u32 reading at capture time.
+#[inline]
+fn lift(stamp: u16, now: u32) -> u32 {
+    let delta = (now as u16).wrapping_sub(stamp) as u32;
+    now.wrapping_sub(delta)
+}
+
 pub struct Classifier {
     /// Tick of the most recently classified byte's start bit. `None` when
     /// no anchor is held (cold boot, post-Crc, post-Resync, post-GAP,
@@ -354,21 +365,23 @@ impl Classifier {
         self.on_edge_advance(edges, ticks_per_bit, on_pair);
     }
 
-    /// Tick of the most recently classified byte's start bit. Composite
-    /// reads at parser event-handling time for one-shot stamps.
+    /// Tick of the most recently classified byte's start bit, lifted into
+    /// the WireClock u32 domain via `now`. Composite reads at parser
+    /// event-handling time for one-shot stamps.
     #[allow(dead_code)]
-    pub fn current_byte_tick(&self) -> Option<u16> {
-        self.last_byte_start
+    pub fn current_byte_tick(&self, now: u32) -> Option<u32> {
+        self.last_byte_start.map(|t| lift(t, now))
     }
 
-    /// Wire-end tick of the most recently classified byte. Composite
-    /// stamps `packet_end_tick` at the parser's CRC-good event — the
-    /// CRC byte's start sits at `last_byte_start`, the wire-end one
-    /// byte-time later.
+    /// Wire-end tick of the most recently classified byte, lifted into the
+    /// WireClock u32 domain. Composite stamps `packet_end_tick` at the
+    /// parser's CRC-good event — the CRC byte's start sits at
+    /// `last_byte_start`, the wire-end one byte-time later.
     #[allow(dead_code)]
-    pub fn packet_end_tick(&self, ticks_per_bit: u16) -> Option<u16> {
+    pub fn packet_end_tick(&self, ticks_per_bit: u16, now: u32) -> Option<u32> {
+        let frame_ticks = (ticks_per_bit as u32).wrapping_mul(BITS_PER_FRAME as u32);
         self.last_byte_start
-            .map(|t| t.wrapping_add(ticks_per_bit.wrapping_mul(BITS_PER_FRAME)))
+            .map(|t| lift(t, now).wrapping_add(frame_ticks))
     }
 
     /// Fallback packet-end estimate for the no-anchor case — the composite
@@ -385,16 +398,12 @@ impl Classifier {
     /// Bumps no state; the composite increments the telemetry counter via
     /// [`crate::traits::dxl::RxDma::record_edge_anchor_miss`] alongside.
     #[allow(dead_code)]
-    pub fn packet_end_tick_fallback(&self, src: FallbackSrc, now: u16, ticks_per_bit: u16) -> u16 {
+    pub fn packet_end_tick_fallback(&self, src: FallbackSrc, now: u32, ticks_per_bit: u16) -> u32 {
         match src {
             FallbackSrc::Dma => now,
             FallbackSrc::Idle => {
                 let gap = (BITS_PER_FRAME as u32).wrapping_mul(ticks_per_bit as u32);
-                debug_assert!(
-                    gap < u16::MAX as u32,
-                    "idle gap exceeds TIM2 wrap window — unreachable at supported baud rates",
-                );
-                now.wrapping_sub(gap as u16)
+                now.wrapping_sub(gap)
             }
         }
     }
@@ -737,20 +746,36 @@ mod tests {
     }
 
     #[test]
-    fn current_byte_tick_returns_last_byte_start() {
+    fn current_byte_tick_lifts_last_byte_start() {
         let mut c = make();
-        assert_eq!(c.current_byte_tick(), None);
+        assert_eq!(c.current_byte_tick(0x0001_0000), None);
         c.last_byte_start = Some(4242);
-        assert_eq!(c.current_byte_tick(), Some(4242));
+        // now's low-u16 == 4242 → delta == 0 → lift == now.
+        assert_eq!(
+            c.current_byte_tick(0x0001_0000 + 4242),
+            Some(0x0001_0000 + 4242)
+        );
+        // now's low-u16 > stamp by 100 → lift == now − 100.
+        assert_eq!(
+            c.current_byte_tick(0x0001_0000 + 4342),
+            Some(0x0001_0000 + 4242)
+        );
     }
 
     #[test]
-    fn packet_end_tick_adds_10bit() {
+    fn packet_end_tick_adds_10bit_after_lift() {
         let mut c = make();
-        assert_eq!(c.packet_end_tick(TPB_3M), None);
+        assert_eq!(c.packet_end_tick(TPB_3M, 1_000_000), None);
         c.last_byte_start = Some(5000);
-        assert_eq!(c.packet_end_tick(TPB_3M), Some(5000 + BYTE_TICKS_3M));
-        assert_eq!(c.packet_end_tick(TPB_1M), Some(5000 + BYTE_TICKS_1M));
+        let now = 0x0001_0000_u32 + 5000;
+        assert_eq!(
+            c.packet_end_tick(TPB_3M, now),
+            Some(now + BYTE_TICKS_3M as u32),
+        );
+        assert_eq!(
+            c.packet_end_tick(TPB_1M, now),
+            Some(now + BYTE_TICKS_1M as u32),
+        );
     }
 
     #[test]
@@ -763,8 +788,8 @@ mod tests {
         );
         assert_eq!(c.packet_end_tick_fallback(FallbackSrc::Dma, 0, TPB_3M), 0);
         assert_eq!(
-            c.packet_end_tick_fallback(FallbackSrc::Dma, u16::MAX, TPB_3M),
-            u16::MAX,
+            c.packet_end_tick_fallback(FallbackSrc::Dma, u32::MAX, TPB_3M),
+            u32::MAX,
         );
     }
 
@@ -774,20 +799,19 @@ mod tests {
         // 3 Mbaud: gap = 10·16 = 160 ticks.
         assert_eq!(
             c.packet_end_tick_fallback(FallbackSrc::Idle, 1600, TPB_3M),
-            1600 - BYTE_TICKS_3M,
+            1600 - BYTE_TICKS_3M as u32,
         );
         // 1 Mbaud: gap = 10·48 = 480 ticks.
         assert_eq!(
             c.packet_end_tick_fallback(FallbackSrc::Idle, 2000, TPB_1M),
-            2000 - BYTE_TICKS_1M,
+            2000 - BYTE_TICKS_1M as u32,
         );
     }
 
     #[test]
-    fn fallback_idle_wraps_at_tim2_boundary() {
-        // `now = 5`, idle gap = 160 → packet_end wraps below 0.
+    fn fallback_idle_wraps_at_u32_boundary() {
         let c = make();
-        let expected = 5_u16.wrapping_sub(BYTE_TICKS_3M);
+        let expected = 5_u32.wrapping_sub(BYTE_TICKS_3M as u32);
         assert_eq!(
             c.packet_end_tick_fallback(FallbackSrc::Idle, 5, TPB_3M),
             expected,

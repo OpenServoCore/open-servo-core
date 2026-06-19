@@ -34,15 +34,22 @@ pub trait Providers {
     type Crc: CrcUmts;
 }
 
-/// 16-bit free-running wire-clock counter. Same physical clock that ticks
-/// `UsartBaud::CLOCK_HZ` and that the chip-side ISR layer stamps into the
-/// edge ring — the driver consumes it for poll-time decisions where ISR
-/// stamps aren't already on hand (universal byte-skip deadline check,
-/// classifier fallback wake-capture). 16-bit because at HCLK rates the
-/// rollover horizon (~1.4 ms at 48 MHz) is well over the longest single
-/// packet, and the surrounding tick math is already u16 wrapping.
+/// 32-bit-horizon wire-clock counter. Same physical clock that ticks
+/// `UsartBaud::CLOCK_HZ`; the chip-side ISR layer stamps the low 16 bits
+/// (the IC peripheral's native width) into the edge ring, and `now()`
+/// returns the same clock lifted to u32 so the driver can store packet-end
+/// ticks, skip-deadline anchors, and scheduler deadlines without wrap
+/// concerns at any supported baud (~89 s horizon at 48 MHz HCLK well
+/// exceeds the longest packet at the lowest baud).
+///
+/// Contract: the low 16 bits of `now()` equal the modular IC-capture stamp
+/// at the same instant. The classifier walks IC stamps in u16 modular
+/// (small bit-time windows fit a single wrap) and lifts the output to u32
+/// using a current `now()` reading. The chip-side provider is responsible
+/// for satisfying the contract (e.g. by reading a u32 SysTick that shares
+/// the same HCLK as TIM2's IC).
 pub trait WireClock {
-    fn now(&self) -> u16;
+    fn now(&self) -> u32;
 }
 
 /// Single-channel USART baud-rate control. The driver hands a domain-typed
@@ -142,30 +149,27 @@ pub enum SendKind {
     FastLast,
 }
 
-/// Schedule a TX at a protocol-prescribed wire deadline. The driver hands an
-/// anchor (`packet_end_tick`, wire-clock u16) plus a protocol delay
-/// (`delay_ticks`, u32 in scheduler ticks via `TICKS_PER_US`); the chip-side
-/// provider combines them into its scheduling-tick domain (lifting the u16
-/// anchor to whatever long-horizon clock it uses) and applies its own bias
-/// compensation (PFIC + ISR-entry latency, TX_EN OC setup, wrap guard,
-/// time-remaining decision tree). The trait surface stays free of chip-side
-/// knobs — the driver never sees the lifted absolute deadline.
+/// Schedule a TX at a protocol-prescribed wire deadline. The driver hands
+/// an absolute `deadline` in the WireClock u32 domain; the chip-side
+/// provider applies its own bias compensation (PFIC + ISR-entry latency,
+/// TX_EN OC setup, wrap guard, time-remaining decision tree) without
+/// further lifting — the driver already computed the absolute deadline
+/// from a `WireClock::now()`-domain anchor.
 ///
 /// Sibling of [`TxBus`] — `TxScheduler` decides *when* the chip transmits;
 /// `TxBus` does the wire driving when that moment lands (or when a chain
 /// k > 0 reply fires sequence-driven off a SkipComplete event).
 pub trait TxScheduler {
     /// Tick rate of the chip-side TX-start timer, ticks per µs. Driver uses
-    /// this to convert protocol delay (µs / Q8.8 µs) to `delay_ticks` before
-    /// calling `schedule`.
+    /// this to convert protocol delay (µs / Q8.8 µs) to ticks before adding
+    /// to the wire-clock anchor.
     const TICKS_PER_US: u16;
 
-    /// Schedule a wire TX at `packet_end_tick + delay_ticks`. Provider lifts
-    /// the wire-clock anchor into its own scheduling-tick domain internally,
-    /// then applies chip-specific bias + decision tree — this method's
-    /// contract is "the first wire bit of `byte_count` bytes lands at
-    /// approximately `packet_end_tick + delay_ticks`." Idempotent on
-    /// re-schedule (overwrites any prior schedule).
+    /// Schedule a wire TX at the absolute `deadline` (WireClock u32 domain).
+    /// Provider applies chip-specific bias + decision tree directly — this
+    /// method's contract is "the first wire bit of `byte_count` bytes lands
+    /// at approximately `deadline`." Idempotent on re-schedule (overwrites
+    /// any prior schedule).
     ///
     /// - `kind == SendKind::Plain` — arm per the chip-side decision tree.
     /// - `kind == SendKind::FastLast` — stash; the composite triggers the
@@ -176,7 +180,7 @@ pub trait TxScheduler {
     /// `byte_count` is the size of the encoded packet sitting in the
     /// driver-owned TX buffer (codec's `tx_len`); the provider hands it to
     /// the chip-side DMA channel as the transfer count.
-    fn schedule(&mut self, packet_end_tick: u16, delay_ticks: u32, byte_count: u16, kind: SendKind);
+    fn schedule(&mut self, deadline: u32, byte_count: u16, kind: SendKind);
 
     /// Composite signals "the FastLast walk reached its final anchor — commit
     /// the stashed schedule now." Provider runs its time-remaining decision
@@ -243,12 +247,11 @@ pub trait TxBus {
 /// fold predecessor wire bytes into the running CRC during a Fast Sync /
 /// Bulk Read predecessor window.
 ///
-/// The driver works entirely in `(packet_end_tick: u16, offset_ticks: u32)`
-/// pairs — a wire-clock anchor plus protocol-derived offsets. The
-/// chip-side provider lifts `packet_end_tick` into its own scheduling
-/// tick domain once per Fast Last reply (via `set_deadline`) and treats
-/// all subsequent `schedule()` / `deadline_passed()` calls as offsets
-/// from that anchor. The driver never sees a scheduler-domain tick.
+/// The driver works entirely in absolute u32 deadlines (WireClock domain).
+/// The chip-side provider applies these directly — no lifting, no
+/// per-anchor caching of a separate scheduling-domain tick — because the
+/// WireClock contract guarantees a u32 horizon wide enough to span any
+/// supported Fast Sync / Bulk Read predecessor window.
 ///
 /// On V006 the chip-side provider binds to a SysTick CMP rather than a
 /// TIM2 CC channel: TIM2's shared prescaler is pinned at PSC=0 for the IC
@@ -257,12 +260,9 @@ pub trait TxBus {
 /// exceed that and the fire deadline can be many wraps out. SysTick is
 /// 32-bit at HCLK with ~89.5 s horizon, separate IRQ vector from TIM2,
 /// and the ~5 µs PFIC-entry jitter is dwarfed by the fold body cost.
-/// The lift uses the boot-captured TIM2 ↔ SysTick offset (see
-/// `docs/dxl-hw-timed-transport.md` §12); both clocks tick at HCLK so the
-/// offset is fixed.
 pub trait FastLastScheduler {
     /// CMP-match → body fold-start latency, in scheduler ticks. Driver
-    /// subtracts this from every grid anchor offset before handing it to
+    /// subtracts this from every grid anchor before handing it to
     /// `schedule` so the body's actual fold-start lands on the formula's
     /// intended wall-clock anchor.
     const FAST_LAST_ENTRY_TICKS: u16;
@@ -279,22 +279,18 @@ pub trait FastLastScheduler {
     /// of CH4's DMA-prefetch on byte[n − 2].
     const GUARD_BYTES: u16;
 
-    /// Cache the parser-derived `packet_end_tick` (wire-clock value where
-    /// the host's request ended) and the busy-wait exit deadline as a tick
-    /// offset from it. The provider lifts `packet_end_tick` into its own
-    /// scheduling-tick domain once, here, and caches both the lifted
-    /// anchor and the lifted deadline. Subsequent `schedule()` /
-    /// `deadline_passed()` calls reference the cached anchor.
-    fn set_deadline(&mut self, packet_end_tick: u16, deadline_ticks: u32);
+    /// Cache the busy-wait exit `deadline` (WireClock u32 domain).
+    /// Subsequent `deadline_passed()` calls compare against it.
+    fn set_deadline(&mut self, deadline: u32);
 
-    /// Arm the next CMP at `packet_end + offset_ticks` (caller has already
+    /// Arm the next CMP at the absolute `deadline` (caller has already
     /// back-dated by `FAST_LAST_ENTRY_TICKS`). Idempotent on re-arm.
     ///
     /// A CMP target that lands in the past — possible at low RDT + small
     /// predecessor counts where back-dating by ENTRY underflows — fires
     /// the IRQ ASAP; the body's first run lands ENTRY ticks late but the
     /// grid step advances cleanly from there.
-    fn schedule(&mut self, offset_ticks: u32);
+    fn schedule(&mut self, deadline: u32);
 
     /// True once the wall clock has passed the deadline staged via
     /// `set_deadline`. Polled by the final-step busy-wait.

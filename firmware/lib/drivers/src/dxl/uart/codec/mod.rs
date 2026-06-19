@@ -78,13 +78,15 @@ pub enum PollAction {
 struct SkipState {
     bytes_remaining: u16,
     id: u8,
-    /// Tick at which the skip gives up and clears itself, so a truncated
-    /// upstream packet can't bleed its uncounted bytes into the next
-    /// packet on the wire. Set at skip entry to
+    /// WireClock u32 tick at which the skip gives up and clears itself, so
+    /// a truncated upstream packet can't bleed its uncounted bytes into
+    /// the next packet on the wire. Set at skip entry to
     /// `now + (bytes_remaining + SKIP_DEADLINE_SLACK_BYTES) * frame_ticks`.
-    /// Compared with `now.wrapping_sub(deadline_tick) < 0x8000` so the
-    /// 16-bit free-running counter's wrap is honoured.
-    deadline_tick: u16,
+    /// Compared with `(now.wrapping_sub(deadline_tick) as i32) >= 0` —
+    /// u32 modular signed-comparison works for any elapsed budget under
+    /// 2³¹ ticks (~44 s at HCLK), comfortably above the slowest baud's
+    /// longest packet.
+    deadline_tick: u32,
 }
 
 /// RX half — streaming parser, RX byte ring, classifier, drift bookkeeping.
@@ -138,7 +140,7 @@ impl<R: EdgeDma, CRC: CrcUmts, const RX_BUF_LEN: usize, const EDGE_BUF_LEN: usiz
     /// flag is set; otherwise it's never called.
     pub fn on_edge_advance<F: FnMut(u16, u16)>(
         &mut self,
-        now: u16,
+        now: u32,
         ticks_per_bit: u16,
         on_pair: F,
     ) {
@@ -147,7 +149,7 @@ impl<R: EdgeDma, CRC: CrcUmts, const RX_BUF_LEN: usize, const EDGE_BUF_LEN: usiz
 
     /// USART1 IDLE backstop — drain tail edges through `on_pair`, then
     /// reset the classifier anchor and drift flag for the next burst.
-    pub fn on_idle<F: FnMut(u16, u16)>(&mut self, now: u16, ticks_per_bit: u16, on_pair: F) {
+    pub fn on_idle<F: FnMut(u16, u16)>(&mut self, now: u32, ticks_per_bit: u16, on_pair: F) {
         self.rx.on_idle(now, ticks_per_bit, on_pair);
     }
 
@@ -182,7 +184,7 @@ impl<R: EdgeDma, CRC: CrcUmts, const RX_BUF_LEN: usize, const EDGE_BUF_LEN: usiz
     /// drops a stale skip whose deadline has passed. The deadline path
     /// suppresses `SkipComplete` — it's a truncation recovery, not a
     /// successful drain, so chain-fire's predecessor-match must not ride.
-    pub fn poll<F>(&mut self, now: u16, ticks_per_bit: u16, mut on_event: F)
+    pub fn poll<F>(&mut self, now: u32, ticks_per_bit: u16, mut on_event: F)
     where
         F: FnMut(PollEvent<'_>, &mut Rx<R, EDGE_BUF_LEN>) -> PollAction,
     {
@@ -199,7 +201,7 @@ impl<R: EdgeDma, CRC: CrcUmts, const RX_BUF_LEN: usize, const EDGE_BUF_LEN: usiz
             // into the next packet — once the expected duration has
             // elapsed the ring's contents belong to whatever came next.
             if let Some(skip) = self.skip.as_mut() {
-                if now.wrapping_sub(skip.deadline_tick) < 0x8000 {
+                if (now.wrapping_sub(skip.deadline_tick) as i32) >= 0 {
                     self.skip = None;
                     continue;
                 }
@@ -290,9 +292,9 @@ impl<R: EdgeDma, CRC: CrcUmts, const RX_BUF_LEN: usize, const EDGE_BUF_LEN: usiz
             if let Some(id) = break_for_skip {
                 let bytes_remaining = self.parser.packet_remaining();
                 self.parser.reset();
-                let frame_ticks = ticks_per_bit.wrapping_mul(BITS_PER_FRAME);
+                let frame_ticks = (ticks_per_bit as u32).wrapping_mul(BITS_PER_FRAME as u32);
                 let budget_bytes = bytes_remaining.saturating_add(SKIP_DEADLINE_SLACK_BYTES);
-                let elapsed = (budget_bytes as u32).wrapping_mul(frame_ticks as u32) as u16;
+                let elapsed = (budget_bytes as u32).wrapping_mul(frame_ticks);
                 let deadline_tick = now.wrapping_add(elapsed);
                 self.skip = Some(SkipState {
                     bytes_remaining,
@@ -388,13 +390,13 @@ impl<R: EdgeDma, CRC: CrcUmts, const RX_BUF_LEN: usize, const EDGE_BUF_LEN: usiz
     }
 
     /// Forward to [`rx::Rx::current_byte_tick`].
-    pub fn current_byte_tick(&self) -> Option<u16> {
-        self.rx.current_byte_tick()
+    pub fn current_byte_tick(&self, now: u32) -> Option<u32> {
+        self.rx.current_byte_tick(now)
     }
 
     /// Forward to [`rx::Rx::packet_end_tick`].
-    pub fn packet_end_tick(&self, ticks_per_bit: u16) -> Option<u16> {
-        self.rx.packet_end_tick(ticks_per_bit)
+    pub fn packet_end_tick(&self, ticks_per_bit: u16, now: u32) -> Option<u32> {
+        self.rx.packet_end_tick(ticks_per_bit, now)
     }
 
     /// Forward to [`rx::Rx::drain_walker`].
@@ -540,14 +542,14 @@ impl<
 
     pub fn on_edge_advance<F: FnMut(u16, u16)>(
         &mut self,
-        now: u16,
+        now: u32,
         ticks_per_bit: u16,
         on_pair: F,
     ) {
         self.rx.on_edge_advance(now, ticks_per_bit, on_pair);
     }
 
-    pub fn on_idle<F: FnMut(u16, u16)>(&mut self, now: u16, ticks_per_bit: u16, on_pair: F) {
+    pub fn on_idle<F: FnMut(u16, u16)>(&mut self, now: u32, ticks_per_bit: u16, on_pair: F) {
         self.rx.on_idle(now, ticks_per_bit, on_pair);
     }
 
@@ -555,7 +557,7 @@ impl<
         self.rx.on_rx_dma_advance(remaining);
     }
 
-    pub fn poll<F>(&mut self, now: u16, ticks_per_bit: u16, on_event: F)
+    pub fn poll<F>(&mut self, now: u32, ticks_per_bit: u16, on_event: F)
     where
         F: FnMut(PollEvent<'_>, &mut Rx<R, EDGE_BUF_LEN>) -> PollAction,
     {
@@ -612,13 +614,13 @@ impl<
     }
 
     /// Forward to [`CodecRx::current_byte_tick`].
-    pub fn current_byte_tick(&self) -> Option<u16> {
-        self.rx.current_byte_tick()
+    pub fn current_byte_tick(&self, now: u32) -> Option<u32> {
+        self.rx.current_byte_tick(now)
     }
 
     /// Forward to [`CodecRx::packet_end_tick`].
-    pub fn packet_end_tick(&self, ticks_per_bit: u16) -> Option<u16> {
-        self.rx.packet_end_tick(ticks_per_bit)
+    pub fn packet_end_tick(&self, ticks_per_bit: u16, now: u32) -> Option<u32> {
+        self.rx.packet_end_tick(ticks_per_bit, now)
     }
 
     /// Forward to [`CodecRx::set_hsi_active`].

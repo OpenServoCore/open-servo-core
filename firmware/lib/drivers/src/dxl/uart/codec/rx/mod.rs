@@ -35,15 +35,15 @@ pub struct Rx<R: EdgeDma, const EDGE_BUF_LEN: usize> {
     /// NDTR`) maps cleanly to a ring position.
     edges: SyncUnsafeCell<HwRing<u16, EDGE_BUF_LEN>>,
     ring: R,
-    /// Most recent ISR's wake capture — TIM2 tick at ISR entry plus the
-    /// source flavor. Set on every [`Self::on_edge_advance`] /
+    /// Most recent ISR's wake capture — WireClock u32 tick at ISR entry
+    /// plus the source flavor. Set on every [`Self::on_edge_advance`] /
     /// [`Self::on_idle`] entry; read by the composite Crc handler when
     /// [`Self::packet_end_tick`] returns `None` to pick a fallback
     /// formula via [`Self::packet_end_tick_fallback`]. Default value
     /// `(0, FallbackSrc::Dma)` is unreachable in production — Crc
     /// follows bytes which follow an ISR — but keeps the field non-
     /// Optional so the hot path doesn't carry an `unwrap`.
-    last_isr: (u16, FallbackSrc),
+    last_isr: (u32, FallbackSrc),
 }
 
 impl<R: EdgeDma, const EDGE_BUF_LEN: usize> Rx<R, EDGE_BUF_LEN> {
@@ -75,12 +75,12 @@ impl<R: EdgeDma, const EDGE_BUF_LEN: usize> Rx<R, EDGE_BUF_LEN> {
     /// NDTR, walks newly-captured edges through the classifier. Drift
     /// pairs route through `on_pair` only while the classifier's
     /// `hsi_active` flag is set. No-op if neither flag is set (defends
-    /// against spurious vector entry). `now` is the ISR-entry TIM2 tick,
-    /// stashed for the no-anchor fallback path at the parser's Crc
-    /// event — see [`Self::packet_end_tick_fallback`].
+    /// against spurious vector entry). `now` is the ISR-entry WireClock
+    /// u32 reading, stashed for the no-anchor fallback path at the
+    /// parser's Crc event — see [`Self::packet_end_tick_fallback`].
     pub fn on_edge_advance<F: FnMut(u16, u16)>(
         &mut self,
-        now: u16,
+        now: u32,
         ticks_per_bit: u16,
         on_pair: F,
     ) {
@@ -105,10 +105,10 @@ impl<R: EdgeDma, const EDGE_BUF_LEN: usize> Rx<R, EDGE_BUF_LEN> {
     /// drained yet (short packets that don't fill a half-ring never trip
     /// HT). Anchor + drift gating stay until the parser's Crc / Resync
     /// event ([`reset_anchor`](Self::reset_anchor)) — IDLE only signals
-    /// "no more edges right now." `now` is the ISR-entry TIM2 tick,
-    /// stashed for the no-anchor fallback path at Crc — see
+    /// "no more edges right now." `now` is the ISR-entry WireClock u32
+    /// reading, stashed for the no-anchor fallback path at Crc — see
     /// [`Self::packet_end_tick_fallback`].
-    pub fn on_idle<F: FnMut(u16, u16)>(&mut self, now: u16, ticks_per_bit: u16, on_pair: F) {
+    pub fn on_idle<F: FnMut(u16, u16)>(&mut self, now: u32, ticks_per_bit: u16, on_pair: F) {
         self.last_isr = (now, FallbackSrc::Idle);
         let remaining = self.ring.remaining();
         crate::log::trace!("rx: on_idle publish remaining={}", remaining);
@@ -141,7 +141,7 @@ impl<R: EdgeDma, const EDGE_BUF_LEN: usize> Rx<R, EDGE_BUF_LEN> {
     /// [`Self::on_edge_advance`] / [`Self::on_idle`] entry. Composite Crc
     /// handler consumes this when the classifier was unanchored (the
     /// `packet_end_tick_fallback` path).
-    pub fn last_isr_capture(&self) -> (u16, FallbackSrc) {
+    pub fn last_isr_capture(&self) -> (u32, FallbackSrc) {
         self.last_isr
     }
 
@@ -156,22 +156,24 @@ impl<R: EdgeDma, const EDGE_BUF_LEN: usize> Rx<R, EDGE_BUF_LEN> {
         self.classifier.try_anchor_from_header(edges, ticks_per_bit)
     }
 
-    /// Tick of the most-recently classified byte's start bit, if any.
-    pub fn current_byte_tick(&self) -> Option<u16> {
-        self.classifier.current_byte_tick()
+    /// Tick of the most-recently classified byte's start bit, lifted into
+    /// the WireClock u32 domain via `now`.
+    pub fn current_byte_tick(&self, now: u32) -> Option<u32> {
+        self.classifier.current_byte_tick(now)
     }
 
-    /// Wire-end tick of the most-recently classified byte, if any.
-    /// Composite stamps `packet_end_tick` at the parser's CRC-good event.
-    pub fn packet_end_tick(&self, ticks_per_bit: u16) -> Option<u16> {
-        self.classifier.packet_end_tick(ticks_per_bit)
+    /// Wire-end tick of the most-recently classified byte, lifted into the
+    /// WireClock u32 domain. Composite stamps `packet_end_tick` at the
+    /// parser's CRC-good event.
+    pub fn packet_end_tick(&self, ticks_per_bit: u16, now: u32) -> Option<u32> {
+        self.classifier.packet_end_tick(ticks_per_bit, now)
     }
 
     /// Fallback packet-end estimate for the no-anchor case — composite
     /// calls when [`packet_end_tick`](Self::packet_end_tick) returns `None`
     /// at the Crc event. See [`classifier::Classifier::packet_end_tick_fallback`]
     /// for the per-source formulas.
-    pub fn packet_end_tick_fallback(&self, src: FallbackSrc, now: u16, ticks_per_bit: u16) -> u16 {
+    pub fn packet_end_tick_fallback(&self, src: FallbackSrc, now: u32, ticks_per_bit: u16) -> u32 {
         self.classifier
             .packet_end_tick_fallback(src, now, ticks_per_bit)
     }

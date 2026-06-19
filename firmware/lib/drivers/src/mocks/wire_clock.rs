@@ -5,6 +5,6 @@ use crate::traits::dxl::WireClock;
 mock! {
     pub WireClock {}
     impl WireClock for WireClock {
-        fn now(&self) -> u16;
+        fn now(&self) -> u32;
     }
 }

@@ -1,6 +1,6 @@
-//! TX scheduler — long-horizon wire-fire scheduling, lifting the driver-side
-//! `(packet_end_tick: u16, delay_ticks: u32)` pair into SysTick's u32 domain
-//! and applying a time-remaining decision tree:
+//! TX scheduler — long-horizon wire-fire scheduling. Driver hands an
+//! absolute u32 deadline in the WireClock domain (= SysTick on V006);
+//! provider applies a time-remaining decision tree:
 //!
 //! - **Direct CC3 arm** — `remaining` fits a single TIM2 wrap. CCR3 back-dates
 //!   by `TX_START_ENTRY_TICKS` to absorb the ISR+DMA+USART path so the wire
@@ -10,10 +10,10 @@
 //!   the software-fire path.
 //! - **SysTick handoff** — `remaining` exceeds the u16 comfort window
 //!   (multi-wrap distance — broadcast Ping at high IDs, Fast Middle with
-//!   many predecessor servos). Provider stashes the lifted deadline, arms
-//!   SysTick CMP at `deadline - SAFE_HORIZON_HANDOFF`; the SysTick ISR
-//!   re-enters `schedule` body via `on_schedule_due`, which by construction
-//!   lands in the direct-CC3 branch.
+//!   many predecessor servos). Provider stashes the deadline, arms SysTick
+//!   CMP at `deadline - SAFE_HORIZON_HANDOFF`; the SysTick ISR re-enters
+//!   `apply_schedule` via `on_schedule_due`, which by construction lands
+//!   in the direct-CC3 branch.
 //! - **Software fire** — `remaining` ≤ ~PFIC+body budget (already late, or
 //!   intentional walk-end commit on Fast Last). Force CCR2 active + kick
 //!   DMA inline; wire bit lands ~1 µs later.
@@ -56,35 +56,20 @@ const IMMEDIATE_GUARD: u32 = 64;
 
 #[derive(Default)]
 pub struct DxlTxScheduler {
-    /// Lifted (SysTick u32) deadline + byte_count, set when `schedule` arms
-    /// the SysTick handoff CMP. `on_schedule_due` consumes on match.
+    /// Absolute u32 deadline + byte_count, set when `schedule` arms the
+    /// SysTick handoff CMP. `on_schedule_due` consumes on match.
     handoff_stash: Option<(u32, u16)>,
-    /// Lifted (SysTick u32) deadline + byte_count, set when `schedule` is
-    /// called with `SendKind::FastLast`. `commit_pending` consumes (called
-    /// by composite from inside the FastLast walk's final-anchor body).
+    /// Absolute u32 deadline + byte_count, set when `schedule` is called
+    /// with `SendKind::FastLast`. `commit_pending` consumes (called by
+    /// composite from inside the FastLast walk's final-anchor body).
     fast_last_stash: Option<(u32, u16)>,
 }
 
 impl DxlTxScheduler {
-    /// Lift the wire-clock anchor + protocol delay into an absolute SysTick
-    /// u32 deadline. Same pattern as `FastLastScheduler::set_deadline`
-    /// (`fast_last_scheduler.rs:35-47`) — see `docs/dxl-hw-timed-transport.md`
-    /// §12. `packet_end_tick` must be within ~1 TIM2 wrap (~1.365 ms at
-    /// HCLK) of when it was captured; caller invokes `schedule` at parse
-    /// time so this holds.
-    #[inline(always)]
-    fn lift_combine(packet_end_tick: u16, delay_ticks: u32) -> u32 {
-        let systick_now = systick::ticks();
-        let tim2_now = timer::tim2_cnt();
-        let delta = tim2_now.wrapping_sub(packet_end_tick) as u32;
-        let packet_end_lifted = systick_now.wrapping_sub(delta);
-        packet_end_lifted.wrapping_add(delay_ticks)
-    }
-
-    /// Run the time-remaining decision tree against an already-lifted
-    /// absolute SysTick deadline. Called from `schedule` (Plain), from
-    /// `commit_pending` (FastLast walk-end), and from `on_schedule_due`
-    /// (SysTick handoff CMP fired).
+    /// Run the time-remaining decision tree against an absolute SysTick
+    /// deadline. Called from `schedule` (Plain), from `commit_pending`
+    /// (FastLast walk-end), and from `on_schedule_due` (SysTick handoff CMP
+    /// fired).
     fn apply_schedule(&mut self, deadline: u32, byte_count: u16) {
         let now = systick::ticks();
         let remaining = deadline.wrapping_sub(now) as i32;
@@ -154,14 +139,7 @@ impl DxlTxScheduler {
 impl TxSchedulerTrait for DxlTxScheduler {
     const TICKS_PER_US: u16 = (HCLK_HZ / 1_000_000) as u16;
 
-    fn schedule(
-        &mut self,
-        packet_end_tick: u16,
-        delay_ticks: u32,
-        byte_count: u16,
-        kind: SendKind,
-    ) {
-        let deadline = Self::lift_combine(packet_end_tick, delay_ticks);
+    fn schedule(&mut self, deadline: u32, byte_count: u16, kind: SendKind) {
         match kind {
             SendKind::FastLast => {
                 // FastLast walk co-owns SysTick CMP during the predecessor

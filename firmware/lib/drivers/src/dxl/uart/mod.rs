@@ -46,11 +46,12 @@ const PING_STATUS_FRAME_BYTES: u32 = RESPONSE_HEADER_BYTES as u32 + 3 + CRC_BYTE
 /// passes data; the driver derives wire shape from its cached request state.
 #[derive(Copy, Clone, Debug, Default)]
 struct ReplyContext {
-    /// Packet-end tick — anchored from the classifier at the parser's
-    /// Crc-good event, or a fallback estimate when the classifier was
-    /// unanchored (interference / edge loss). See
+    /// Packet-end tick (WireClock u32 domain) — anchored from the
+    /// classifier at the parser's Crc-good event, or a fallback estimate
+    /// when the classifier was unanchored (interference / edge loss).
+    /// See
     /// [`crate::dxl::uart::codec::rx::Classifier::packet_end_tick_fallback`].
-    packet_end_tick: u16,
+    packet_end_tick: u32,
     /// Wire-byte offset from request wire-end to this reply's fire moment.
     /// Zero for direct unicast; non-zero for broadcast Ping and
     /// Sync/Bulk/Fast Read slot N. For Fast Last replies this also equals
@@ -204,7 +205,7 @@ impl InflightCtx {
     fn into_reply_context(
         self,
         id: u8,
-        packet_end_tick: u16,
+        packet_end_tick: u32,
         fold_start_cursor: u32,
     ) -> ReplyContext {
         // Plain SyncRead / BulkRead don't appear here: slot 0 of either
@@ -403,14 +404,16 @@ impl<P: Providers, const TX_BUF_LEN: usize> ReplyHandle<'_, P, TX_BUF_LEN> {
         let delay_us = self.rdt_us + self.clock.bytes_to_us(ctx.slot_offset_bytes);
         let delay_ticks =
             delay_us.wrapping_mul(<P::TxScheduler as TxScheduler>::TICKS_PER_US as u32);
+        let deadline = packet_end_tick.wrapping_add(delay_ticks);
         crate::log::debug!(
-            "dxl: send_status schedule packet_end={} delay={} byte_count={}",
+            "dxl: send_status schedule packet_end={} delay={} deadline={} byte_count={}",
             packet_end_tick,
             delay_ticks,
+            deadline,
             byte_count
         );
         self.scheduler
-            .schedule(packet_end_tick, delay_ticks, byte_count, SendKind::Plain);
+            .schedule(deadline, byte_count, SendKind::Plain);
         Ok(())
     }
 
@@ -457,17 +460,16 @@ impl<P: Providers, const TX_BUF_LEN: usize> ReplyHandle<'_, P, TX_BUF_LEN> {
                 (ticks, SendKind::Plain)
             }
         };
-        self.scheduler
-            .schedule(packet_end_tick, delay_ticks, byte_count, kind);
+        let deadline = packet_end_tick.wrapping_add(delay_ticks);
+        self.scheduler.schedule(deadline, byte_count, kind);
         // Fast Last: arm the periodic-walk grid + chain-CRC fold engine.
         // `slot_offset_bytes` on Last == `bytes_before` == predecessor wire
         // bytes (excluding our own reply); the fold absorbs that count
         // before patching our trailing placeholder CRC slot.
         if matches!(position, SlotPosition::Last { .. }) {
             let byte_ticks = self.clock.ticks_per_bit().wrapping_mul(BITS_PER_FRAME);
-            // RDT in scheduler ticks (FastLast trait surfaces u32 offsets,
-            // but FastLastSchedule's fields stay u16-shaped per doc §10.6
-            // — typical RDT ≤ 24k ticks, well under u16).
+            // RDT in scheduler ticks (FastLastSchedule's RDT field stays
+            // u16 per doc §10.6 — typical RDT ≤ 24k ticks, well under u16).
             let rdt_ticks = (self
                 .rdt_us
                 .wrapping_mul(<P::TxScheduler as TxScheduler>::TICKS_PER_US as u32)
@@ -583,11 +585,10 @@ pub struct DxlUart<
     /// `drain_raw` callback during the SysTick walker; finalize patches our
     /// own trailing CRC slot before DMA1_CH4 reads it.
     fast_last_crc: FastLastCrc<P::Crc>,
-    /// 16-bit wire-clock readout used by `on_rx_edge_advance`, `on_rx_idle`,
-    /// and `poll` to source `now` without taking it as a parameter. Same
-    /// physical counter the chip-side ISR layer stamps into the edge ring;
-    /// the provider exists so the driver stays unaware of which peripheral
-    /// the chip picked.
+    /// WireClock u32 readout used by `on_rx_edge_advance`, `on_rx_idle`,
+    /// and `poll` to source `now` without taking it as a parameter. The
+    /// chip-side provider hides any peripheral-side composition (TIM2 u16
+    /// IC stamps lifted via SysTick u32, etc.) — see [`WireClock`].
     wire_clock: P::WireClock,
 
     id: u8,
@@ -809,13 +810,18 @@ impl<P: Providers, const RX_BUF_LEN: usize, const EDGE_BUF_LEN: usize, const TX_
                             // when interference / edge loss starved the
                             // classifier. FAST chain ops skip the fallback
                             // — see `InflightCtx::allows_packet_end_fallback`.
-                            let packet_end_tick = match rx_inner.packet_end_tick(ticks_per_bit) {
+                            let packet_end_tick = match rx_inner.packet_end_tick(ticks_per_bit, now)
+                            {
                                 Some(t) => Some(t),
                                 None => {
                                     rx_dma.record_edge_anchor_miss();
                                     ctx.allows_packet_end_fallback().then(|| {
-                                        let (now, src) = rx_inner.last_isr_capture();
-                                        rx_inner.packet_end_tick_fallback(src, now, ticks_per_bit)
+                                        let (cap_now, src) = rx_inner.last_isr_capture();
+                                        rx_inner.packet_end_tick_fallback(
+                                            src,
+                                            cap_now,
+                                            ticks_per_bit,
+                                        )
                                     })
                                 }
                             };

@@ -7,8 +7,7 @@ use crate::traits::dxl::{FastLastScheduler, SendKind, TxScheduler};
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub enum ScheduleOp {
     Schedule {
-        packet_end_tick: u16,
-        delay_ticks: u32,
+        deadline: u32,
         byte_count: u16,
         kind: SendKind,
     },
@@ -20,10 +19,10 @@ mock! {
     pub TxScheduler {}
     impl TxScheduler for TxScheduler {
         // Same value as the production V006 binding (HCLK = 48 MHz) so driver
-        // tests' delay_ticks math lands on the same numbers the chip sees.
+        // tests' deadline math lands on the same numbers the chip sees.
         const TICKS_PER_US: u16 = 48;
 
-        fn schedule(&mut self, packet_end_tick: u16, delay_ticks: u32, byte_count: u16, kind: SendKind);
+        fn schedule(&mut self, deadline: u32, byte_count: u16, kind: SendKind);
         fn commit_pending(&mut self);
         fn cancel(&mut self);
         fn on_schedule_due(&mut self) -> bool;
@@ -34,13 +33,8 @@ mock! {
 /// record these to assert scheduler operation sequences.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub enum FastLastSchedulerOp {
-    SetDeadline {
-        packet_end_tick: u16,
-        deadline_ticks: u32,
-    },
-    Schedule {
-        offset_ticks: u32,
-    },
+    SetDeadline { deadline: u32 },
+    Schedule { deadline: u32 },
     Cancel,
 }
 
@@ -53,8 +47,8 @@ mock! {
         const BYTES_PER_INTERVAL: u16 = 15;
         const GUARD_BYTES: u16 = 1;
 
-        fn set_deadline(&mut self, packet_end_tick: u16, deadline_ticks: u32);
-        fn schedule(&mut self, offset_ticks: u32);
+        fn set_deadline(&mut self, deadline: u32);
+        fn schedule(&mut self, deadline: u32);
         fn deadline_passed(&self) -> bool;
         fn patch_window_expired(&self) -> bool;
         fn record_patch_deadline_miss(&mut self);

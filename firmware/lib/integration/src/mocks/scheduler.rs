@@ -20,10 +20,9 @@ pub fn mock_tx_scheduler() -> (MockTxScheduler, TxSchedulerState) {
     {
         let ops = state.operations.clone();
         m.expect_schedule()
-            .returning_st(move |packet_end_tick, delay_ticks, byte_count, kind| {
+            .returning_st(move |deadline, byte_count, kind| {
                 ops.borrow_mut().push(ScheduleOp::Schedule {
-                    packet_end_tick,
-                    delay_ticks,
+                    deadline,
                     byte_count,
                     kind,
                 });
@@ -85,19 +84,16 @@ pub fn mock_fast_last_scheduler() -> (MockFastLastScheduler, FastLastSchedulerSt
     let mut m = MockFastLastScheduler::new();
     {
         let ops = state.operations.clone();
-        m.expect_set_deadline()
-            .returning_st(move |packet_end_tick, deadline_ticks| {
-                ops.borrow_mut().push(FastLastSchedulerOp::SetDeadline {
-                    packet_end_tick,
-                    deadline_ticks,
-                });
-            });
+        m.expect_set_deadline().returning_st(move |deadline| {
+            ops.borrow_mut()
+                .push(FastLastSchedulerOp::SetDeadline { deadline });
+        });
     }
     {
         let ops = state.operations.clone();
-        m.expect_schedule().returning_st(move |offset_ticks| {
+        m.expect_schedule().returning_st(move |deadline| {
             ops.borrow_mut()
-                .push(FastLastSchedulerOp::Schedule { offset_ticks });
+                .push(FastLastSchedulerOp::Schedule { deadline });
         });
     }
     {
