@@ -103,6 +103,7 @@ jobs:
   baud-rdt-matrix:
     name: test (baud=${{ matrix.baud_name }}, rdt=${{ matrix.rdt_us }}us)
     runs-on: ubuntu-latest
+    needs: [build-test, dxl-protocol-features, ch32-build-test]
     defaults:
       run:
         working-directory: firmware/lib
