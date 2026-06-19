@@ -1,27 +1,30 @@
-//! Multi-wrap broadcast-horizon timing tests — exercise the u32 schedule
-//! lift end-to-end at slot offsets that would silently truncate against
-//! TIM2's 16-bit CCR3 / CNT (1.365 ms at HCLK = 48 MHz).
+//! Long instruction-to-reply delay tests — pin the invariant that the
+//! chip's reply (or chain slot's fire) lands correctly regardless of how
+//! far past instruction-end the wire offset is. A naive integer-rollover
+//! bug anywhere in the chip's scheduling math would surface here.
 //!
-//! Wrap math at default 1 Mbaud × 48 MHz servo HCLK:
-//! `bit_time = 48 ticks` (= HCLK / baud), `byte_time = 480 ticks` (10 bits
-//! per UART frame), `u16_wrap = 65536 ticks ≈ 136.5 byte_times`.
+//! Today's V006 carries TIM2 at 16-bit / 1.365 ms wrap (`u16_wrap = 65536
+//! ticks ≈ 136.5 byte_times` at 1 Mbaud × 48 MHz HCLK; `bit_time = 48`,
+//! `byte_time = 480`), and the offsets below are sized to clear that
+//! boundary by multiple wraps. A chip with a wider timer would carry the
+//! same protocol-level invariant — these tests defend the guarantee,
+//! not the V006-specific math.
 //!
 //! **Broadcast Ping** positions servo N's reply at `N × 14` wire bytes past
 //! `packet_end` (`PING_STATUS_FRAME_BYTES = RESPONSE_HEADER_BYTES(9) + 3 +
-//! CRC_BYTES(2) = 14`). 136.5 / 14 ≈ 9.75 servos per wrap; servo 10+
-//! straddles the wrap. `setup(12)` puts the last three replies solidly past
-//! it.
+//! CRC_BYTES(2) = 14`). `setup(12)` puts the last three replies at offsets
+//! solidly past one V006 wrap.
 //!
 //! **Fast Bulk Read at L = MAX_CONTROL_RW (128)** carries `fast_first(L) =
-//! 138` and `fast_middle(L) = 130` wire bytes per slot — ~1 slot per wrap.
-//! A 3-servo chain places servo 3's fire offset ≈ 268 bytes past
-//! packet_end (~2 wraps).
+//! 138` and `fast_middle(L) = 130` wire bytes per slot. A 3-servo chain
+//! places servo 3's fire offset ≈ 268 bytes past `packet_end` — ~2× the
+//! V006 wrap.
 //!
 //! **Plain Sync Read at k > 0** fires sequence-driven off the predecessor's
 //! skip-exhaust event (`docs/dxl-streaming-rx.md` §5.2), not deadline-driven
 //! — wrap-agnostic by construction. The test pins the invariant by running
-//! the same multi-wrap-sized chain and verifying every slot's Status lands
-//! in order.
+//! the same long-offset chain and verifying every slot's Status lands in
+//! order.
 
 use crate::support::{Setup, setup};
 use dxl_protocol::types::{BulkReadEntry, Id, Instruction, PingStatus, Status, StatusError};
@@ -38,7 +41,7 @@ use osc_integration::sim::{
 const STATUS_WINDOW: SimTime = SimTime::from_ms(10);
 
 #[test_log::test]
-fn broadcast_ping_at_12_servos_replies_in_order_past_u16_wrap() {
+fn broadcast_ping_at_12_servos_replies_in_order() {
     let Setup { mut sim, host, .. } = setup(12);
 
     sim.device_mut::<Host>(host).send_ping(Id::BROADCAST);
@@ -62,7 +65,7 @@ fn broadcast_ping_at_12_servos_replies_in_order_past_u16_wrap() {
 }
 
 #[test_log::test]
-fn fast_bulk_read_3_servos_full_payload_chain_crosses_u16_wrap() {
+fn fast_bulk_read_3_servos_full_payload_chain_intact() {
     let Setup { mut sim, host, .. } = setup(3);
 
     let len = MAX_CONTROL_RW as u16;
@@ -107,7 +110,7 @@ fn fast_bulk_read_3_servos_full_payload_chain_crosses_u16_wrap() {
 }
 
 #[test_log::test]
-fn plain_sync_read_chain_remains_sequence_driven_past_u16_wrap() {
+fn plain_sync_read_chain_remains_sequence_driven() {
     let Setup { mut sim, host, .. } = setup(3);
 
     // Multi-wrap-sized chain — each slot's `len` bytes of payload mean the
