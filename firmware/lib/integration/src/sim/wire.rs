@@ -1,7 +1,7 @@
 use std::cmp::{Ordering, Reverse};
 use std::collections::BinaryHeap;
 
-use crate::sim::{DeviceId, DeviceRegistry, SimTime};
+use crate::sim::{DeviceId, SimTime};
 
 pub struct Wire {
     subscribers: Vec<DeviceId>,
@@ -107,7 +107,15 @@ impl Wire {
         self.delivery_queue.peek().map(|r| r.0.at)
     }
 
-    pub fn deliver_pending(&mut self, t: SimTime, registry: &mut DeviceRegistry) {
+    pub fn has_no_pending(&self) -> bool {
+        self.delivery_queue.is_empty()
+    }
+
+    /// Pop every delivery scheduled at exactly `t`. The conductor routes
+    /// each tuple by calling `receive_edge` on the target. Returns an
+    /// empty vec if no delivery lands at `t`.
+    pub fn take_pending(&mut self, t: SimTime) -> Vec<(DeviceId, SimTime, bool)> {
+        let mut out = Vec::new();
         while let Some(top) = self.delivery_queue.peek() {
             if top.0.at != t {
                 break;
@@ -119,15 +127,9 @@ impl Wire {
                 arrival.at,
                 arrival.rising
             );
-            registry.receive_edge(arrival.target, arrival.at, arrival.rising);
+            out.push((arrival.target, arrival.at, arrival.rising));
         }
-    }
-
-    pub fn reset(&mut self) {
-        self.delivery_queue.clear();
-        self.active_source = None;
-        self.idle_since = SimTime::ZERO;
-        self.seq = SeqCounter::default();
+        out
     }
 }
 

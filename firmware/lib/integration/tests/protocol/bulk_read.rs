@@ -6,8 +6,7 @@ use osc_core::regions::{
 };
 use osc_core::{BaudRate, StatusReturnLevel};
 use osc_integration::sim::{
-    DEFAULT_FIRMWARE_VERSION, DEFAULT_MODEL_NUMBER, Host, Servo, SimTime, format_hex,
-    parse_status_stream,
+    DEFAULT_FIRMWARE_VERSION, DEFAULT_MODEL_NUMBER, format_hex, parse_status_stream,
 };
 use rstest::rstest;
 use rstest_reuse::apply;
@@ -35,11 +34,12 @@ fn bulk_read_replies_per_entry_in_order(baud_idx: u8, rdt_us: u32) {
         entry(3, identity::FIRMWARE_VERSION, 1),
     ];
 
-    sim.device_mut::<Host>(host).send_bulk_read(&entries);
-    sim.device_mut::<Host>(host).wait_for_status();
-    sim.advance(SimTime::from_ms(20));
+    sim.with_host(host, |h| {
+        h.send_bulk_read(&entries);
+        h.wait_for_reply();
+    });
 
-    let rx = sim.device::<Host>(host).rx_bytes();
+    let rx = sim.host(host).rx_bytes();
     insta::assert_snapshot!("bulk_read_replies_per_entry_in_order", format_hex(&rx));
 
     let replies = parse_status_stream(Instruction::BulkRead, &rx);
@@ -70,12 +70,12 @@ fn bulk_read_single_entry_replies_once(baud_idx: u8, rdt_us: u32) {
     let baud = BaudRate::from_idx(baud_idx).expect("valid baud idx");
     let Setup { mut sim, host, .. } = setup_with(1, baud, rdt_us);
 
-    sim.device_mut::<Host>(host)
-        .send_bulk_read(&[entry(1, comms::ID, 1)]);
-    sim.device_mut::<Host>(host).wait_for_status();
-    sim.advance(SimTime::from_ms(20));
+    sim.with_host(host, |h| {
+        h.send_bulk_read(&[entry(1, comms::ID, 1)]);
+        h.wait_for_reply();
+    });
 
-    let rx = sim.device::<Host>(host).rx_bytes();
+    let rx = sim.host(host).rx_bytes();
     let replies = parse_status_stream(Instruction::BulkRead, &rx);
     assert_eq!(
         replies,
@@ -102,11 +102,12 @@ fn bulk_read_zero_length_entry_keeps_chain_alive(baud_idx: u8, rdt_us: u32) {
         entry(3, comms::ID, 1),
     ];
 
-    sim.device_mut::<Host>(host).send_bulk_read(&entries);
-    sim.device_mut::<Host>(host).wait_for_status();
-    sim.advance(SimTime::from_ms(20));
+    sim.with_host(host, |h| {
+        h.send_bulk_read(&entries);
+        h.wait_for_reply();
+    });
 
-    let rx = sim.device::<Host>(host).rx_bytes();
+    let rx = sim.host(host).rx_bytes();
     let replies = parse_status_stream(Instruction::BulkRead, &rx);
     let expected = vec![
         Status::Read {
@@ -143,11 +144,12 @@ fn bulk_read_entry_across_region_boundary_returns_zeros(baud_idx: u8, rdt_us: u3
         entry(3, comms::ID, 1),
     ];
 
-    sim.device_mut::<Host>(host).send_bulk_read(&entries);
-    sim.device_mut::<Host>(host).wait_for_status();
-    sim.advance(SimTime::from_ms(20));
+    sim.with_host(host, |h| {
+        h.send_bulk_read(&entries);
+        h.wait_for_reply();
+    });
 
-    let rx = sim.device::<Host>(host).rx_bytes();
+    let rx = sim.host(host).rx_bytes();
     let replies = parse_status_stream(Instruction::BulkRead, &rx);
     let expected = vec![
         Status::Read {
@@ -183,7 +185,7 @@ fn bulk_read_data_line_disconnect_collapses_tail(baud_idx: u8, rdt_us: u32) {
         host,
         servos,
     } = setup_with(3, baud, rdt_us);
-    sim.device_mut::<Servo>(servos[1]).disconnect(false);
+    sim.servo_mut(servos[1]).disconnect(false);
 
     let entries = [
         entry(1, comms::ID, 1),
@@ -191,11 +193,12 @@ fn bulk_read_data_line_disconnect_collapses_tail(baud_idx: u8, rdt_us: u32) {
         entry(3, comms::ID, 1),
     ];
 
-    sim.device_mut::<Host>(host).send_bulk_read(&entries);
-    sim.device_mut::<Host>(host).wait_for_status();
-    sim.advance(SimTime::from_ms(20));
+    sim.with_host(host, |h| {
+        h.send_bulk_read(&entries);
+        h.wait_for_reply();
+    });
 
-    let rx = sim.device::<Host>(host).rx_bytes();
+    let rx = sim.host(host).rx_bytes();
     let replies = parse_status_stream(Instruction::BulkRead, &rx);
     assert_eq!(
         replies,
@@ -206,7 +209,7 @@ fn bulk_read_data_line_disconnect_collapses_tail(baud_idx: u8, rdt_us: u32) {
         }],
     );
 
-    sim.device_mut::<Servo>(servos[1]).connect();
+    sim.servo_mut(servos[1]).connect();
     assert_bus_healthy(&mut sim, host, &servos);
 }
 
@@ -221,7 +224,7 @@ fn bulk_read_srl_none_predecessor_collapses_tail(baud_idx: u8, rdt_us: u32) {
         host,
         servos,
     } = setup_with(3, baud, rdt_us);
-    sim.device_mut::<Servo>(servos[1])
+    sim.servo_mut(servos[1])
         .set_status_return_level(StatusReturnLevel::None);
 
     let entries = [
@@ -230,11 +233,12 @@ fn bulk_read_srl_none_predecessor_collapses_tail(baud_idx: u8, rdt_us: u32) {
         entry(3, comms::ID, 1),
     ];
 
-    sim.device_mut::<Host>(host).send_bulk_read(&entries);
-    sim.device_mut::<Host>(host).wait_for_status();
-    sim.advance(SimTime::from_ms(20));
+    sim.with_host(host, |h| {
+        h.send_bulk_read(&entries);
+        h.wait_for_reply();
+    });
 
-    let rx = sim.device::<Host>(host).rx_bytes();
+    let rx = sim.host(host).rx_bytes();
     let replies = parse_status_stream(Instruction::BulkRead, &rx);
     assert_eq!(
         replies,
@@ -266,11 +270,12 @@ fn bulk_read_unknown_id_in_entries_collapses_tail(baud_idx: u8, rdt_us: u32) {
         entry(3, comms::ID, 1),
     ];
 
-    sim.device_mut::<Host>(host).send_bulk_read(&entries);
-    sim.device_mut::<Host>(host).wait_for_status();
-    sim.advance(SimTime::from_ms(20));
+    sim.with_host(host, |h| {
+        h.send_bulk_read(&entries);
+        h.wait_for_reply();
+    });
 
-    let rx = sim.device::<Host>(host).rx_bytes();
+    let rx = sim.host(host).rx_bytes();
     let replies = parse_status_stream(Instruction::BulkRead, &rx);
     assert_eq!(
         replies,
@@ -289,11 +294,11 @@ fn bulk_read_all_unknown_ids_yields_no_reply(baud_idx: u8, rdt_us: u32) {
     let baud = BaudRate::from_idx(baud_idx).expect("valid baud idx");
     let Setup { mut sim, host, .. } = setup_with(3, baud, rdt_us);
 
-    sim.device_mut::<Host>(host)
-        .send_bulk_read(&[entry(99, comms::ID, 1)]);
-    sim.device_mut::<Host>(host).wait_for_status();
-    sim.advance(SimTime::from_ms(20));
+    sim.with_host(host, |h| {
+        h.send_bulk_read(&[entry(99, comms::ID, 1)]);
+        h.wait_for_reply();
+    });
 
-    let rx = sim.device::<Host>(host).rx_bytes();
+    let rx = sim.host(host).rx_bytes();
     assert!(rx.is_empty(), "expected silent drop, got {:?}", rx);
 }

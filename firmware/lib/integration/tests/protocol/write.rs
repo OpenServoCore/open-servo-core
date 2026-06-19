@@ -5,9 +5,7 @@ use osc_core::regions::{
     config::addr::{comms, identity},
 };
 use osc_core::{BaudRate, RegionStorage, StatusReturnLevel};
-use osc_integration::sim::{
-    DEFAULT_FIRMWARE_VERSION, Host, Servo, Sim, SimTime, format_hex, parse_status,
-};
+use osc_integration::sim::{DEFAULT_FIRMWARE_VERSION, Host, Servo, Sim, format_hex, parse_status};
 use rstest::rstest;
 use rstest_reuse::apply;
 
@@ -26,12 +24,12 @@ fn write_to_comms_id_returns_ok_and_mutates_table(baud_idx: u8, rdt_us: u32) {
         servos,
     } = setup_with(1, baud, rdt_us);
 
-    sim.device_mut::<Host>(host)
-        .send_write(Id::new(1), comms::ID, &[NEW_ID]);
-    sim.device_mut::<Host>(host).wait_for_status();
-    sim.advance(SimTime::from_ms(5));
+    sim.with_host(host, |h| {
+        h.send_write(Id::new(1), comms::ID, &[NEW_ID]);
+        h.wait_for_reply();
+    });
 
-    let rx = sim.device::<Host>(host).rx_bytes();
+    let rx = sim.host(host).rx_bytes();
     insta::assert_snapshot!(
         "write_to_comms_id_returns_ok_and_mutates_table",
         format_hex(&rx)
@@ -44,7 +42,7 @@ fn write_to_comms_id_returns_ok_and_mutates_table(baud_idx: u8, rdt_us: u32) {
         },
     );
     assert_eq!(
-        sim.device::<Servo>(servos[0])
+        sim.servo(servos[0])
             .shared()
             .table
             .config
@@ -83,12 +81,12 @@ fn write_to_ro_field_replies_access_error(baud_idx: u8, rdt_us: u32) {
         servos,
     } = setup_with(1, baud, rdt_us);
 
-    sim.device_mut::<Host>(host)
-        .send_write(Id::new(1), identity::FIRMWARE_VERSION, &[0x42]);
-    sim.device_mut::<Host>(host).wait_for_status();
-    sim.advance(SimTime::from_ms(5));
+    sim.with_host(host, |h| {
+        h.send_write(Id::new(1), identity::FIRMWARE_VERSION, &[0x42]);
+        h.wait_for_reply();
+    });
 
-    let rx = sim.device::<Host>(host).rx_bytes();
+    let rx = sim.host(host).rx_bytes();
     assert_eq!(
         parse_status(Instruction::Write, &rx),
         Status::Empty {
@@ -97,7 +95,7 @@ fn write_to_ro_field_replies_access_error(baud_idx: u8, rdt_us: u32) {
         },
     );
     assert_eq!(
-        sim.device::<Servo>(servos[0])
+        sim.servo(servos[0])
             .shared()
             .table
             .config
@@ -154,12 +152,12 @@ fn write_partial_overlap_rw_into_gap_replies_access_error(baud_idx: u8, rdt_us: 
         servos,
     } = setup_with(1, baud, rdt_us);
 
-    sim.device_mut::<Host>(host)
-        .send_write(Id::new(1), comms::CLOCK_TRIM, &[0x7F, 0x00]);
-    sim.device_mut::<Host>(host).wait_for_status();
-    sim.advance(SimTime::from_ms(5));
+    sim.with_host(host, |h| {
+        h.send_write(Id::new(1), comms::CLOCK_TRIM, &[0x7F, 0x00]);
+        h.wait_for_reply();
+    });
 
-    let rx = sim.device::<Host>(host).rx_bytes();
+    let rx = sim.host(host).rx_bytes();
     assert_eq!(
         parse_status(Instruction::Write, &rx),
         Status::Empty {
@@ -168,7 +166,7 @@ fn write_partial_overlap_rw_into_gap_replies_access_error(baud_idx: u8, rdt_us: 
         },
     );
     assert_eq!(
-        sim.device::<Servo>(servos[0])
+        sim.servo(servos[0])
             .shared()
             .table
             .config
@@ -186,14 +184,14 @@ fn write_under_torque_lock_replies_access_error(baud_idx: u8, rdt_us: u32) {
         host,
         servos,
     } = setup_with(1, baud, rdt_us);
-    sim.device::<Servo>(servos[0]).set_torque_enabled(true);
+    sim.servo(servos[0]).set_torque_enabled(true);
 
-    sim.device_mut::<Host>(host)
-        .send_write(Id::new(1), comms::ID, &[NEW_ID]);
-    sim.device_mut::<Host>(host).wait_for_status();
-    sim.advance(SimTime::from_ms(5));
+    sim.with_host(host, |h| {
+        h.send_write(Id::new(1), comms::ID, &[NEW_ID]);
+        h.wait_for_reply();
+    });
 
-    let rx = sim.device::<Host>(host).rx_bytes();
+    let rx = sim.host(host).rx_bytes();
     assert_eq!(
         parse_status(Instruction::Write, &rx),
         Status::Empty {
@@ -202,7 +200,7 @@ fn write_under_torque_lock_replies_access_error(baud_idx: u8, rdt_us: u32) {
         },
     );
     assert_eq!(
-        sim.device::<Servo>(servos[0])
+        sim.servo(servos[0])
             .shared()
             .table
             .config
@@ -221,15 +219,15 @@ fn write_to_wrong_id_yields_no_reply(baud_idx: u8, rdt_us: u32) {
         servos,
     } = setup_with(1, baud, rdt_us);
 
-    sim.device_mut::<Host>(host)
-        .send_write(Id::new(2), comms::ID, &[NEW_ID]);
-    sim.device_mut::<Host>(host).wait_for_status();
-    sim.advance(SimTime::from_ms(5));
+    sim.with_host(host, |h| {
+        h.send_write(Id::new(2), comms::ID, &[NEW_ID]);
+        h.wait_for_reply();
+    });
 
-    let rx = sim.device::<Host>(host).rx_bytes();
+    let rx = sim.host(host).rx_bytes();
     assert!(rx.is_empty(), "expected silent drop, got {:?}", rx);
     assert_eq!(
-        sim.device::<Servo>(servos[0])
+        sim.servo(servos[0])
             .shared()
             .table
             .config
@@ -248,19 +246,19 @@ fn write_broadcast_mutates_table_silently(baud_idx: u8, rdt_us: u32) {
         servos,
     } = setup_with(1, baud, rdt_us);
 
-    sim.device_mut::<Host>(host)
-        .send_write(Id::BROADCAST, comms::ID, &[NEW_ID]);
-    sim.device_mut::<Host>(host).wait_for_status();
-    sim.advance(SimTime::from_ms(5));
+    sim.with_host(host, |h| {
+        h.send_write(Id::BROADCAST, comms::ID, &[NEW_ID]);
+        h.wait_for_reply();
+    });
 
-    let rx = sim.device::<Host>(host).rx_bytes();
+    let rx = sim.host(host).rx_bytes();
     assert!(
         rx.is_empty(),
         "broadcast write must not reply, got {:?}",
         rx
     );
     assert_eq!(
-        sim.device::<Servo>(servos[0])
+        sim.servo(servos[0])
             .shared()
             .table
             .config
@@ -291,10 +289,11 @@ fn write_silent_when_srl_is_read_but_table_still_mutates(baud_idx: u8, rdt_us: u
 
 fn write_with(target: Id, addr: u16, data: &[u8], baud: BaudRate, rdt_us: u32) -> Vec<u8> {
     let Setup { mut sim, host, .. } = setup_with(1, baud, rdt_us);
-    sim.device_mut::<Host>(host).send_write(target, addr, data);
-    sim.device_mut::<Host>(host).wait_for_status();
-    sim.advance(SimTime::from_ms(5));
-    sim.device::<Host>(host).rx_bytes()
+    sim.with_host(host, |h| {
+        h.send_write(target, addr, data);
+        h.wait_for_reply();
+    });
+    sim.host(host).rx_bytes()
 }
 
 fn write_under_srl(
@@ -315,17 +314,12 @@ fn write_under_srl(
         })
     });
 
-    sim.device_mut::<Host>(host)
-        .send_write(Id::new(1), addr, data);
-    sim.device_mut::<Host>(host).wait_for_status();
-    sim.advance(SimTime::from_ms(5));
+    sim.with_host(host, |h| {
+        h.send_write(Id::new(1), addr, data);
+        h.wait_for_reply();
+    });
 
-    let rx = sim.device::<Host>(host).rx_bytes();
-    let id_after = sim
-        .device::<Servo>(servo)
-        .shared()
-        .table
-        .config
-        .with(|c| c.comms.id);
+    let rx = sim.host(host).rx_bytes();
+    let id_after = sim.servo(servo).shared().table.config.with(|c| c.comms.id);
     (rx, id_after)
 }

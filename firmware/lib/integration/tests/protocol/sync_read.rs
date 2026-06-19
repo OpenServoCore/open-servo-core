@@ -2,7 +2,7 @@ use crate::support::{Setup, assert_bus_healthy, matrix, setup_with};
 use dxl_protocol::types::{ErrorCode, Id, Instruction, Status, StatusError};
 use osc_core::regions::{CONFIG_REGION_SIZE, config::addr::comms};
 use osc_core::{BaudRate, StatusReturnLevel};
-use osc_integration::sim::{Host, Servo, SimTime, format_hex, parse_status_stream};
+use osc_integration::sim::{format_hex, parse_status_stream};
 use rstest::rstest;
 use rstest_reuse::apply;
 
@@ -14,12 +14,12 @@ fn sync_read_replies_in_id_order(baud_idx: u8, rdt_us: u32) {
     let baud = BaudRate::from_idx(baud_idx).expect("valid baud idx");
     let Setup { mut sim, host, .. } = setup_with(3, baud, rdt_us);
 
-    sim.device_mut::<Host>(host)
-        .send_sync_read(comms::ID, 1, &[1, 2, 3]);
-    sim.device_mut::<Host>(host).wait_for_status();
-    sim.advance(SimTime::from_ms(20));
+    sim.with_host(host, |h| {
+        h.send_sync_read(comms::ID, 1, &[1, 2, 3]);
+        h.wait_for_reply();
+    });
 
-    let rx = sim.device::<Host>(host).rx_bytes();
+    let rx = sim.host(host).rx_bytes();
     insta::assert_snapshot!("sync_read_replies_in_id_order", format_hex(&rx));
 
     let replies = parse_status_stream(Instruction::SyncRead, &rx);
@@ -43,12 +43,12 @@ fn sync_read_single_id_replies_once(baud_idx: u8, rdt_us: u32) {
     let baud = BaudRate::from_idx(baud_idx).expect("valid baud idx");
     let Setup { mut sim, host, .. } = setup_with(1, baud, rdt_us);
 
-    sim.device_mut::<Host>(host)
-        .send_sync_read(comms::ID, 1, &[1]);
-    sim.device_mut::<Host>(host).wait_for_status();
-    sim.advance(SimTime::from_ms(20));
+    sim.with_host(host, |h| {
+        h.send_sync_read(comms::ID, 1, &[1]);
+        h.wait_for_reply();
+    });
 
-    let rx = sim.device::<Host>(host).rx_bytes();
+    let rx = sim.host(host).rx_bytes();
     let replies = parse_status_stream(Instruction::SyncRead, &rx);
     assert_eq!(
         replies,
@@ -69,12 +69,12 @@ fn sync_read_zero_length_errors_keep_chain_alive(baud_idx: u8, rdt_us: u32) {
     let baud = BaudRate::from_idx(baud_idx).expect("valid baud idx");
     let Setup { mut sim, host, .. } = setup_with(3, baud, rdt_us);
 
-    sim.device_mut::<Host>(host)
-        .send_sync_read(comms::ID, 0, &[1, 2, 3]);
-    sim.device_mut::<Host>(host).wait_for_status();
-    sim.advance(SimTime::from_ms(20));
+    sim.with_host(host, |h| {
+        h.send_sync_read(comms::ID, 0, &[1, 2, 3]);
+        h.wait_for_reply();
+    });
 
-    let rx = sim.device::<Host>(host).rx_bytes();
+    let rx = sim.host(host).rx_bytes();
     let replies = parse_status_stream(Instruction::SyncRead, &rx);
     let expected: Vec<Status<'_>> = (1u8..=3)
         .map(|id| Status::Read {
@@ -92,12 +92,12 @@ fn sync_read_across_region_boundary_returns_zeros_in_order(baud_idx: u8, rdt_us:
     let baud = BaudRate::from_idx(baud_idx).expect("valid baud idx");
     let Setup { mut sim, host, .. } = setup_with(3, baud, rdt_us);
 
-    sim.device_mut::<Host>(host)
-        .send_sync_read(CONFIG_REGION_END_ADDR - 2, 4, &[1, 2, 3]);
-    sim.device_mut::<Host>(host).wait_for_status();
-    sim.advance(SimTime::from_ms(20));
+    sim.with_host(host, |h| {
+        h.send_sync_read(CONFIG_REGION_END_ADDR - 2, 4, &[1, 2, 3]);
+        h.wait_for_reply();
+    });
 
-    let rx = sim.device::<Host>(host).rx_bytes();
+    let rx = sim.host(host).rx_bytes();
     let replies = parse_status_stream(Instruction::SyncRead, &rx);
     let expected: Vec<Status<'_>> = (1u8..=3)
         .map(|id| Status::Read {
@@ -124,14 +124,14 @@ fn sync_read_data_line_disconnect_collapses_tail(baud_idx: u8, rdt_us: u32) {
         host,
         servos,
     } = setup_with(3, baud, rdt_us);
-    sim.device_mut::<Servo>(servos[1]).disconnect(false);
+    sim.servo_mut(servos[1]).disconnect(false);
 
-    sim.device_mut::<Host>(host)
-        .send_sync_read(comms::ID, 1, &[1, 2, 3]);
-    sim.device_mut::<Host>(host).wait_for_status();
-    sim.advance(SimTime::from_ms(20));
+    sim.with_host(host, |h| {
+        h.send_sync_read(comms::ID, 1, &[1, 2, 3]);
+        h.wait_for_reply();
+    });
 
-    let rx = sim.device::<Host>(host).rx_bytes();
+    let rx = sim.host(host).rx_bytes();
     let replies = parse_status_stream(Instruction::SyncRead, &rx);
     assert_eq!(
         replies,
@@ -142,7 +142,7 @@ fn sync_read_data_line_disconnect_collapses_tail(baud_idx: u8, rdt_us: u32) {
         }],
     );
 
-    sim.device_mut::<Servo>(servos[1]).connect();
+    sim.servo_mut(servos[1]).connect();
     assert_bus_healthy(&mut sim, host, &servos);
 }
 
@@ -158,15 +158,15 @@ fn sync_read_srl_none_predecessor_collapses_tail(baud_idx: u8, rdt_us: u32) {
         host,
         servos,
     } = setup_with(3, baud, rdt_us);
-    sim.device_mut::<Servo>(servos[1])
+    sim.servo_mut(servos[1])
         .set_status_return_level(StatusReturnLevel::None);
 
-    sim.device_mut::<Host>(host)
-        .send_sync_read(comms::ID, 1, &[1, 2, 3]);
-    sim.device_mut::<Host>(host).wait_for_status();
-    sim.advance(SimTime::from_ms(20));
+    sim.with_host(host, |h| {
+        h.send_sync_read(comms::ID, 1, &[1, 2, 3]);
+        h.wait_for_reply();
+    });
 
-    let rx = sim.device::<Host>(host).rx_bytes();
+    let rx = sim.host(host).rx_bytes();
     let replies = parse_status_stream(Instruction::SyncRead, &rx);
     assert_eq!(
         replies,
@@ -192,12 +192,12 @@ fn sync_read_unknown_id_in_chain_collapses_tail(baud_idx: u8, rdt_us: u32) {
         servos,
     } = setup_with(3, baud, rdt_us);
 
-    sim.device_mut::<Host>(host)
-        .send_sync_read(comms::ID, 1, &[1, 99, 3]);
-    sim.device_mut::<Host>(host).wait_for_status();
-    sim.advance(SimTime::from_ms(20));
+    sim.with_host(host, |h| {
+        h.send_sync_read(comms::ID, 1, &[1, 99, 3]);
+        h.wait_for_reply();
+    });
 
-    let rx = sim.device::<Host>(host).rx_bytes();
+    let rx = sim.host(host).rx_bytes();
     let replies = parse_status_stream(Instruction::SyncRead, &rx);
     assert_eq!(
         replies,
@@ -216,11 +216,11 @@ fn sync_read_all_unknown_ids_yields_no_reply(baud_idx: u8, rdt_us: u32) {
     let baud = BaudRate::from_idx(baud_idx).expect("valid baud idx");
     let Setup { mut sim, host, .. } = setup_with(3, baud, rdt_us);
 
-    sim.device_mut::<Host>(host)
-        .send_sync_read(comms::ID, 1, &[99]);
-    sim.device_mut::<Host>(host).wait_for_status();
-    sim.advance(SimTime::from_ms(20));
+    sim.with_host(host, |h| {
+        h.send_sync_read(comms::ID, 1, &[99]);
+        h.wait_for_reply();
+    });
 
-    let rx = sim.device::<Host>(host).rx_bytes();
+    let rx = sim.host(host).rx_bytes();
     assert!(rx.is_empty(), "expected silent drop, got {:?}", rx);
 }

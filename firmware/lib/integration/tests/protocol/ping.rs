@@ -2,8 +2,8 @@ use crate::support::{Setup, matrix, setup_with};
 use dxl_protocol::types::{Id, Instruction, PingStatus, Status, StatusError};
 use osc_core::{BaudRate, StatusReturnLevel};
 use osc_integration::sim::{
-    DEFAULT_FIRMWARE_VERSION, DEFAULT_MODEL_NUMBER, Host, Servo, Sim, SimTime, format_hex,
-    parse_status, parse_status_stream,
+    DEFAULT_FIRMWARE_VERSION, DEFAULT_MODEL_NUMBER, Host, Servo, Sim, format_hex, parse_status,
+    parse_status_stream,
 };
 use rstest::rstest;
 use rstest_reuse::apply;
@@ -14,11 +14,12 @@ fn ping_to_self_id_returns_model_and_fw(baud_idx: u8, rdt_us: u32) {
     let baud = BaudRate::from_idx(baud_idx).expect("valid baud idx");
     let Setup { mut sim, host, .. } = setup_with(1, baud, rdt_us);
 
-    sim.device_mut::<Host>(host).send_ping(Id::new(1));
-    sim.device_mut::<Host>(host).wait_for_status();
-    sim.advance(SimTime::from_ms(5));
+    sim.with_host(host, |h| {
+        h.send_ping(Id::new(1));
+        h.wait_for_reply();
+    });
 
-    let rx = sim.device::<Host>(host).rx_bytes();
+    let rx = sim.host(host).rx_bytes();
     insta::assert_snapshot!("ping_to_self_id_returns_model_and_fw", format_hex(&rx));
     assert_eq!(
         parse_status(Instruction::Ping, &rx),
@@ -39,11 +40,12 @@ fn ping_to_wrong_id_yields_no_reply(baud_idx: u8, rdt_us: u32) {
     let baud = BaudRate::from_idx(baud_idx).expect("valid baud idx");
     let Setup { mut sim, host, .. } = setup_with(1, baud, rdt_us);
 
-    sim.device_mut::<Host>(host).send_ping(Id::new(2));
-    sim.device_mut::<Host>(host).wait_for_status();
-    sim.advance(SimTime::from_ms(5));
+    sim.with_host(host, |h| {
+        h.send_ping(Id::new(2));
+        h.wait_for_reply();
+    });
 
-    let rx = sim.device::<Host>(host).rx_bytes();
+    let rx = sim.host(host).rx_bytes();
     assert!(rx.is_empty(), "expected silent drop, got {:?}", rx);
 }
 
@@ -89,11 +91,12 @@ fn ping_broadcast_replies_in_id_order(baud_idx: u8, rdt_us: u32) {
     let baud = BaudRate::from_idx(baud_idx).expect("valid baud idx");
     let Setup { mut sim, host, .. } = setup_with(3, baud, rdt_us);
 
-    sim.device_mut::<Host>(host).send_ping(Id::BROADCAST);
-    sim.device_mut::<Host>(host).wait_for_status();
-    sim.advance(SimTime::from_ms(5));
+    sim.with_host(host, |h| {
+        h.send_ping(Id::BROADCAST);
+        h.wait_for_reply();
+    });
 
-    let rx = sim.device::<Host>(host).rx_bytes();
+    let rx = sim.host(host).rx_bytes();
     insta::assert_snapshot!("ping_broadcast_replies_in_id_order", format_hex(&rx));
 
     let replies = parse_status_stream(Instruction::Ping, &rx);
@@ -122,9 +125,10 @@ fn ping_under_srl(level: StatusReturnLevel, baud: BaudRate, rdt_us: u32) -> Vec<
         })
     });
 
-    sim.device_mut::<Host>(host).send_ping(Id::new(1));
-    sim.device_mut::<Host>(host).wait_for_status();
-    sim.advance(SimTime::from_ms(5));
+    sim.with_host(host, |h| {
+        h.send_ping(Id::new(1));
+        h.wait_for_reply();
+    });
 
-    sim.device::<Host>(host).rx_bytes()
+    sim.host(host).rx_bytes()
 }

@@ -32,18 +32,11 @@ use osc_core::BaudRate;
 use osc_core::regions::config::addr::comms;
 use osc_core::services::dxl::limits::MAX_CONTROL_RW;
 use osc_integration::sim::{
-    DEFAULT_FIRMWARE_VERSION, DEFAULT_MODEL_NUMBER, FastStatusCrc, Host, SimTime,
-    parse_fast_bulk_status, parse_status_stream,
+    DEFAULT_FIRMWARE_VERSION, DEFAULT_MODEL_NUMBER, FastStatusCrc, HOST_ABSOLUTE_CAP,
+    HOST_INTER_BYTE_TIMEOUT, parse_fast_bulk_status, parse_status_stream,
 };
 use rstest::rstest;
 use rstest_reuse::apply;
-
-/// Bus drain window — deliberately baud-agnostic. Long enough for the
-/// slowest baud (9600 ≈ 1 ms/wire-byte) to drain a 12-servo broadcast
-/// Ping (~175 ms) plus the multi-payload Bulk/Sync chains below
-/// (~400 ms). Sim advances the event queue; the budget only bounds
-/// how far `wait_for_status_within` walks before giving up.
-const STATUS_WINDOW: SimTime = SimTime::from_ms(1000);
 
 #[apply(matrix)]
 #[test_log::test]
@@ -51,12 +44,12 @@ fn broadcast_ping_at_12_servos_replies_in_order(baud_idx: u8, rdt_us: u32) {
     let baud = BaudRate::from_idx(baud_idx).expect("valid baud idx");
     let Setup { mut sim, host, .. } = setup_with(12, baud, rdt_us);
 
-    sim.device_mut::<Host>(host).send_ping(Id::BROADCAST);
-    sim.device_mut::<Host>(host)
-        .wait_for_status_within(STATUS_WINDOW);
-    sim.advance(SimTime::from_ms(20));
+    sim.with_host(host, |h| {
+        h.send_ping(Id::BROADCAST);
+        h.wait_for_reply_within(HOST_ABSOLUTE_CAP, HOST_INTER_BYTE_TIMEOUT);
+    });
 
-    let rx = sim.device::<Host>(host).rx_bytes();
+    let rx = sim.host(host).rx_bytes();
     let replies = parse_status_stream(Instruction::Ping, &rx);
     let expected: Vec<Status<'_>> = (1u8..=12)
         .map(|id| Status::Ping {
@@ -96,12 +89,12 @@ fn fast_bulk_read_3_servos_full_payload_chain_intact(baud_idx: u8, rdt_us: u32) 
         },
     ];
 
-    sim.device_mut::<Host>(host).send_fast_bulk_read(&entries);
-    sim.device_mut::<Host>(host)
-        .wait_for_status_within(STATUS_WINDOW);
-    sim.advance(SimTime::from_ms(20));
+    sim.with_host(host, |h| {
+        h.send_fast_bulk_read(&entries);
+        h.wait_for_reply_within(HOST_ABSOLUTE_CAP, HOST_INTER_BYTE_TIMEOUT);
+    });
 
-    let rx = sim.device::<Host>(host).rx_bytes();
+    let rx = sim.host(host).rx_bytes();
     let status = parse_fast_bulk_status(&rx, &entries);
     // Full-payload chain still patches the trailing CRC across multi-wrap
     // fire offsets — the chain-CRC fold runs on the 32-bit SysTick grid
@@ -133,13 +126,12 @@ fn plain_sync_read_chain_remains_sequence_driven(baud_idx: u8, rdt_us: u32) {
     // would fire at the wrong instant and the chain would either collide
     // or stall.
     let len = MAX_CONTROL_RW as u16;
-    sim.device_mut::<Host>(host)
-        .send_sync_read(comms::ID, len, &[1, 2, 3]);
-    sim.device_mut::<Host>(host)
-        .wait_for_status_within(STATUS_WINDOW);
-    sim.advance(SimTime::from_ms(20));
+    sim.with_host(host, |h| {
+        h.send_sync_read(comms::ID, len, &[1, 2, 3]);
+        h.wait_for_reply_within(HOST_ABSOLUTE_CAP, HOST_INTER_BYTE_TIMEOUT);
+    });
 
-    let rx = sim.device::<Host>(host).rx_bytes();
+    let rx = sim.host(host).rx_bytes();
     eprintln!(
         "plain sync rx ({}b): first 32 = {:02X?}",
         rx.len(),

@@ -5,7 +5,7 @@ use osc_core::regions::{
 };
 use osc_core::services::dxl::limits::MAX_CONTROL_RW;
 use osc_core::{BaudRate, RegionStorage};
-use osc_integration::sim::{DEFAULT_FIRMWARE_VERSION, DeviceId, Host, Servo, Sim, SimTime};
+use osc_integration::sim::{DEFAULT_FIRMWARE_VERSION, DeviceId, Sim};
 use rstest::rstest;
 use rstest_reuse::apply;
 
@@ -13,11 +13,7 @@ const CONFIG_REGION_END_ADDR: u16 = CONFIG_REGION_SIZE as u16;
 const OVER_MAX_CONTROL_RW: u16 = MAX_CONTROL_RW as u16 + 1;
 
 fn servo_id(sim: &Sim, servo: DeviceId) -> u8 {
-    sim.device::<Servo>(servo)
-        .shared()
-        .table
-        .config
-        .with(|c| c.comms.id)
+    sim.servo(servo).shared().table.config.with(|c| c.comms.id)
 }
 
 /// One per-servo chunk in a BulkWrite body: `[id, addr_le, len_le, data...]`.
@@ -62,23 +58,24 @@ fn bulk_write_mutates_all_targets_silently(baud_idx: u8, rdt_us: u32) {
     ));
     body.extend(chunk(3, comms::RETURN_DELAY_2US, &[50]));
 
-    sim.device_mut::<Host>(host).send_bulk_write(&body);
-    sim.device_mut::<Host>(host).wait_for_status();
-    sim.advance(SimTime::from_ms(20));
+    sim.with_host(host, |h| {
+        h.send_bulk_write(&body);
+        h.wait_for_reply();
+    });
 
-    let rx = sim.device::<Host>(host).rx_bytes();
+    let rx = sim.host(host).rx_bytes();
     assert!(rx.is_empty(), "bulk_write must be silent, got {:?}", rx);
 
     assert_eq!(servo_id(&sim, servos[0]), 10, "servo[0] id mutated");
     let s1_trim = sim
-        .device::<Servo>(servos[1])
+        .servo(servos[1])
         .shared()
         .table
         .config
         .with(|c| c.comms.clock_fine_trim_us);
     assert_eq!(s1_trim, 0x1234, "servo[1] clock_fine_trim_us mutated");
     let s2_rdt = sim
-        .device::<Servo>(servos[2])
+        .servo(servos[2])
         .shared()
         .table
         .config
@@ -99,11 +96,12 @@ fn bulk_write_single_target_mutates_only_that_servo(baud_idx: u8, rdt_us: u32) {
     // Body has only id=2 entry; servos 1 and 3 see no matched chunk.
     let body = chunk(2, comms::ID, &[20]);
 
-    sim.device_mut::<Host>(host).send_bulk_write(&body);
-    sim.device_mut::<Host>(host).wait_for_status();
-    sim.advance(SimTime::from_ms(20));
+    sim.with_host(host, |h| {
+        h.send_bulk_write(&body);
+        h.wait_for_reply();
+    });
 
-    let rx = sim.device::<Host>(host).rx_bytes();
+    let rx = sim.host(host).rx_bytes();
     assert!(rx.is_empty(), "bulk_write must be silent, got {:?}", rx);
 
     assert_eq!(servo_id(&sim, servos[0]), 1, "servo[0] unchanged");
@@ -129,11 +127,12 @@ fn bulk_write_zero_length_entry_does_not_mutate(baud_idx: u8, rdt_us: u32) {
     body.extend(chunk_with_len(2, comms::ID, 0, &[]));
     body.extend(chunk_with_len(3, comms::ID, 0, &[]));
 
-    sim.device_mut::<Host>(host).send_bulk_write(&body);
-    sim.device_mut::<Host>(host).wait_for_status();
-    sim.advance(SimTime::from_ms(20));
+    sim.with_host(host, |h| {
+        h.send_bulk_write(&body);
+        h.wait_for_reply();
+    });
 
-    let rx = sim.device::<Host>(host).rx_bytes();
+    let rx = sim.host(host).rx_bytes();
     assert!(rx.is_empty(), "bulk_write must be silent, got {:?}", rx);
 
     for (i, expected) in [1u8, 2, 3].iter().enumerate() {
@@ -161,11 +160,12 @@ fn bulk_write_length_over_cap_does_not_mutate(baud_idx: u8, rdt_us: u32) {
         body.extend(chunk_with_len(id, comms::ID, OVER_MAX_CONTROL_RW, &payload));
     }
 
-    sim.device_mut::<Host>(host).send_bulk_write(&body);
-    sim.device_mut::<Host>(host).wait_for_status();
-    sim.advance(SimTime::from_ms(20));
+    sim.with_host(host, |h| {
+        h.send_bulk_write(&body);
+        h.wait_for_reply();
+    });
 
-    let rx = sim.device::<Host>(host).rx_bytes();
+    let rx = sim.host(host).rx_bytes();
     assert!(rx.is_empty(), "bulk_write must be silent, got {:?}", rx);
 
     for (i, expected) in [1u8, 2, 3].iter().enumerate() {
@@ -191,16 +191,17 @@ fn bulk_write_to_ro_field_does_not_mutate(baud_idx: u8, rdt_us: u32) {
         body.extend(chunk(id, identity::FIRMWARE_VERSION, &[0x42]));
     }
 
-    sim.device_mut::<Host>(host).send_bulk_write(&body);
-    sim.device_mut::<Host>(host).wait_for_status();
-    sim.advance(SimTime::from_ms(20));
+    sim.with_host(host, |h| {
+        h.send_bulk_write(&body);
+        h.wait_for_reply();
+    });
 
-    let rx = sim.device::<Host>(host).rx_bytes();
+    let rx = sim.host(host).rx_bytes();
     assert!(rx.is_empty(), "bulk_write must be silent, got {:?}", rx);
 
     for (i, servo) in servos.iter().enumerate() {
         let fw = sim
-            .device::<Servo>(*servo)
+            .servo(*servo)
             .shared()
             .table
             .config
@@ -225,7 +226,7 @@ fn bulk_write_under_torque_lock_does_not_mutate(baud_idx: u8, rdt_us: u32) {
         servos,
     } = setup_with(3, baud, rdt_us);
     for servo in &servos {
-        sim.device::<Servo>(*servo).set_torque_enabled(true);
+        sim.servo(*servo).set_torque_enabled(true);
     }
 
     let mut body = Vec::new();
@@ -233,11 +234,12 @@ fn bulk_write_under_torque_lock_does_not_mutate(baud_idx: u8, rdt_us: u32) {
     body.extend(chunk(2, comms::ID, &[20]));
     body.extend(chunk(3, comms::ID, &[30]));
 
-    sim.device_mut::<Host>(host).send_bulk_write(&body);
-    sim.device_mut::<Host>(host).wait_for_status();
-    sim.advance(SimTime::from_ms(20));
+    sim.with_host(host, |h| {
+        h.send_bulk_write(&body);
+        h.wait_for_reply();
+    });
 
-    let rx = sim.device::<Host>(host).rx_bytes();
+    let rx = sim.host(host).rx_bytes();
     assert!(rx.is_empty(), "bulk_write must be silent, got {:?}", rx);
 
     for (i, &expected) in [1u8, 2, 3].iter().enumerate() {
@@ -266,11 +268,12 @@ fn bulk_write_across_region_boundary_does_not_mutate(baud_idx: u8, rdt_us: u32) 
         ));
     }
 
-    sim.device_mut::<Host>(host).send_bulk_write(&body);
-    sim.device_mut::<Host>(host).wait_for_status();
-    sim.advance(SimTime::from_ms(20));
+    sim.with_host(host, |h| {
+        h.send_bulk_write(&body);
+        h.wait_for_reply();
+    });
 
-    let rx = sim.device::<Host>(host).rx_bytes();
+    let rx = sim.host(host).rx_bytes();
     assert!(rx.is_empty(), "bulk_write must be silent, got {:?}", rx);
 
     for (i, expected) in [1u8, 2, 3].iter().enumerate() {
@@ -297,11 +300,12 @@ fn bulk_write_unknown_id_in_body_skips_that_chunk(baud_idx: u8, rdt_us: u32) {
     body.extend(chunk(99, comms::ID, &[99]));
     body.extend(chunk(3, comms::ID, &[30]));
 
-    sim.device_mut::<Host>(host).send_bulk_write(&body);
-    sim.device_mut::<Host>(host).wait_for_status();
-    sim.advance(SimTime::from_ms(20));
+    sim.with_host(host, |h| {
+        h.send_bulk_write(&body);
+        h.wait_for_reply();
+    });
 
-    let rx = sim.device::<Host>(host).rx_bytes();
+    let rx = sim.host(host).rx_bytes();
     assert!(rx.is_empty(), "bulk_write must be silent, got {:?}", rx);
 
     assert_eq!(servo_id(&sim, servos[0]), 10, "servo[0] mutated");

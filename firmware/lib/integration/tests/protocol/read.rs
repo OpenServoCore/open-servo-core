@@ -5,9 +5,7 @@ use osc_core::regions::{
     config::addr::{comms, identity},
 };
 use osc_core::{BaudRate, RegionStorage, StatusReturnLevel};
-use osc_integration::sim::{
-    DEFAULT_MODEL_NUMBER, Host, Servo, Sim, SimTime, format_hex, parse_status,
-};
+use osc_integration::sim::{DEFAULT_MODEL_NUMBER, Host, Servo, Sim, format_hex, parse_status};
 use rstest::rstest;
 use rstest_reuse::apply;
 
@@ -21,12 +19,12 @@ fn read_returns_rw_byte_on_comms_id_addr(baud_idx: u8, rdt_us: u32) {
     let baud = BaudRate::from_idx(baud_idx).expect("valid baud idx");
     let Setup { mut sim, host, .. } = setup_with(1, baud, rdt_us);
 
-    sim.device_mut::<Host>(host)
-        .send_read(Id::new(1), comms::ID, 1);
-    sim.device_mut::<Host>(host).wait_for_status();
-    sim.advance(SimTime::from_ms(5));
+    sim.with_host(host, |h| {
+        h.send_read(Id::new(1), comms::ID, 1);
+        h.wait_for_reply();
+    });
 
-    let rx = sim.device::<Host>(host).rx_bytes();
+    let rx = sim.host(host).rx_bytes();
     insta::assert_snapshot!("read_returns_rw_byte_on_comms_id_addr", format_hex(&rx));
     assert_eq!(
         parse_status(Instruction::Read, &rx),
@@ -44,12 +42,12 @@ fn read_returns_ro_word_on_identity_model_number(baud_idx: u8, rdt_us: u32) {
     let baud = BaudRate::from_idx(baud_idx).expect("valid baud idx");
     let Setup { mut sim, host, .. } = setup_with(1, baud, rdt_us);
 
-    sim.device_mut::<Host>(host)
-        .send_read(Id::new(1), identity::MODEL_NUMBER, 2);
-    sim.device_mut::<Host>(host).wait_for_status();
-    sim.advance(SimTime::from_ms(5));
+    sim.with_host(host, |h| {
+        h.send_read(Id::new(1), identity::MODEL_NUMBER, 2);
+        h.wait_for_reply();
+    });
 
-    let rx = sim.device::<Host>(host).rx_bytes();
+    let rx = sim.host(host).rx_bytes();
     insta::assert_snapshot!(
         "read_returns_ro_word_on_identity_model_number",
         format_hex(&rx)
@@ -179,18 +177,18 @@ fn read_on_torque_locked_config_succeeds_locks_gate_writes_only(baud_idx: u8, rd
         host,
         servos,
     } = setup_with(1, baud, rdt_us);
-    sim.device::<Servo>(servos[0])
+    sim.servo(servos[0])
         .shared()
         .table
         .control
         .with_mut(|c| c.lifecycle.torque_enable = true);
 
-    sim.device_mut::<Host>(host)
-        .send_read(Id::new(1), comms::ID, 1);
-    sim.device_mut::<Host>(host).wait_for_status();
-    sim.advance(SimTime::from_ms(5));
+    sim.with_host(host, |h| {
+        h.send_read(Id::new(1), comms::ID, 1);
+        h.wait_for_reply();
+    });
 
-    let rx = sim.device::<Host>(host).rx_bytes();
+    let rx = sim.host(host).rx_bytes();
     assert_eq!(
         parse_status(Instruction::Read, &rx),
         Status::Read {
@@ -203,10 +201,11 @@ fn read_on_torque_locked_config_succeeds_locks_gate_writes_only(baud_idx: u8, rd
 
 fn read_with(target: Id, addr: u16, length: u16, baud: BaudRate, rdt_us: u32) -> Vec<u8> {
     let Setup { mut sim, host, .. } = setup_with(1, baud, rdt_us);
-    sim.device_mut::<Host>(host).send_read(target, addr, length);
-    sim.device_mut::<Host>(host).wait_for_status();
-    sim.advance(SimTime::from_ms(5));
-    sim.device::<Host>(host).rx_bytes()
+    sim.with_host(host, |h| {
+        h.send_read(target, addr, length);
+        h.wait_for_reply();
+    });
+    sim.host(host).rx_bytes()
 }
 
 fn read_under_srl(
@@ -227,10 +226,10 @@ fn read_under_srl(
         })
     });
 
-    sim.device_mut::<Host>(host)
-        .send_read(Id::new(1), addr, length);
-    sim.device_mut::<Host>(host).wait_for_status();
-    sim.advance(SimTime::from_ms(5));
+    sim.with_host(host, |h| {
+        h.send_read(Id::new(1), addr, length);
+        h.wait_for_reply();
+    });
 
-    sim.device::<Host>(host).rx_bytes()
+    sim.host(host).rx_bytes()
 }

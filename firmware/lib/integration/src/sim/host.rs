@@ -12,28 +12,43 @@ use dxl_protocol::{
 };
 use osc_core::BaudRate;
 
-use crate::sim::defaults::{DEFAULT_BAUD, DEFAULT_STATUS_TIMEOUT, default_host_clock};
+use crate::sim::defaults::{DEFAULT_BAUD, default_host_clock};
 use crate::sim::uart::{RxLogEntry, RxLogKind, TxLogEntry, UartRx, UartTx};
 use crate::sim::{Clock, DeviceId, Effect, EventSource, SimTime};
 
-/// Bytes + timing captured during a single [`Host::wait_for_status`]
-/// window. `bytes` is the windowed slice of host RX (post-wait, not
-/// cumulative); `log` carries per-byte ns timestamps + `IdleGap`
-/// markers for timing assertions. `timed_out = true` iff no byte
-/// landed in the window.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct StatusReply {
-    pub bytes: Vec<u8>,
-    pub log: Vec<RxLogEntry>,
-    pub first_byte_at: Option<SimTime>,
-    pub last_byte_at: Option<SimTime>,
-    pub timed_out: bool,
-}
+/// FTDI/CH340 inter-byte LATENCY_TIMER — once a byte lands in the host
+/// UART, the driver schedules the next read after this much silence.
+/// Drives the dynamic-deadline arithmetic in [`Host::wait_for_reply`]:
+/// each new RX byte pushes the wait deadline forward by this amount.
+pub const HOST_INTER_BYTE_TIMEOUT: SimTime = SimTime::from_us(2_000);
 
+/// FTDI/CH340 first-byte budget — how long the host waits for the first
+/// byte of a reply before declaring the target silent. Tuned long enough
+/// to absorb a worst-case packet's TX-out time + RDT + the slowest
+/// servo's TX-back at 9600 baud, short enough that broadcast-write
+/// "no-reply" cases close quickly.
+pub const HOST_FIRST_BYTE_TIMEOUT: SimTime = SimTime::from_ms(50);
+
+/// Absolute backstop on a single `wait_for_reply` window — bounds the
+/// total time the host will spend waiting regardless of incoming-byte
+/// activity. Hit only when a buggy peer keeps the wire busy indefinitely;
+/// long enough that legitimate 12-servo broadcast chains at 9600 baud
+/// (~200 ms total) settle inside it.
+pub const HOST_ABSOLUTE_CAP: SimTime = SimTime::from_ms(1_000);
+
+/// Open wait-for-reply predicate. The host's `next_event_time` reports a
+/// dynamic deadline derived from `last_rx_byte_at` + `inter_byte_timeout`
+/// (or `opened_at + first_byte_timeout` if nothing has arrived). Each
+/// new RX byte pushes the deadline forward; settle keeps draining until
+/// the wire goes silent and the deadline holds. `advance` self-clears
+/// when `t >= deadline`.
 #[derive(Copy, Clone, Debug)]
-struct WaitWindow {
-    end: SimTime,
-    rx_cursor: usize,
+struct Wait {
+    opened_at: SimTime,
+    cursor_at_open: usize,
+    first_byte_timeout: SimTime,
+    inter_byte_timeout: SimTime,
+    absolute_cap: SimTime,
 }
 
 pub struct Host {
@@ -43,12 +58,10 @@ pub struct Host {
     uart_tx: UartTx,
     uart_rx: UartRx,
     /// Tracks the sim clock so `send_*` can pace TX bytes without each caller
-    /// threading `now` through. Updated on every `EventSource::advance`.
+    /// threading `now` through. Updated on every `EventSource::advance` and
+    /// on every test-facing accessor via `set_now`.
     now: SimTime,
-    /// Active reply-wait window. Open from the moment a test calls
-    /// `wait_for_status*` until it inspects via `status()`. Kept across
-    /// the window expiry so post-advance inspection is non-destructive.
-    wait_window: Option<WaitWindow>,
+    wait: Option<Wait>,
 }
 
 impl Host {
@@ -60,7 +73,7 @@ impl Host {
             uart_tx: UartTx::new(DEFAULT_BAUD),
             uart_rx: UartRx::new(DEFAULT_BAUD),
             now: SimTime::ZERO,
-            wait_window: None,
+            wait: None,
         }
     }
 
@@ -102,9 +115,7 @@ impl Host {
     }
 
     /// Encode a Ping for `target` and queue the frame onto [`UartTx`] at
-    /// baud-stride pacing starting at the host's current sim time. The first
-    /// byte goes out on the next [`Sim::advance`](crate::sim::Sim::advance)
-    /// that reaches it.
+    /// baud-stride pacing starting at the host's current sim time.
     pub fn send_ping(&mut self, target: Id) {
         let mut buf: Vec<u8> = Vec::new();
         InstructionEncoder::<_, SoftwareCrcUmts>::new(&mut buf)
@@ -232,63 +243,27 @@ impl Host {
         self.queue_frame(&buf);
     }
 
-    /// Open a status-reply window at `self.now` with the default timeout
-    /// ([`DEFAULT_STATUS_TIMEOUT`]). Use for tests where the timeout
-    /// itself isn't under test. See [`Host::wait_for_status_within`].
-    pub fn wait_for_status(&mut self) {
-        self.wait_for_status_within(DEFAULT_STATUS_TIMEOUT);
+    /// Open a reply-wait predicate at `self.now` with the default
+    /// FTDI-shaped timeouts. The host's `next_event_time` then reports a
+    /// dynamic deadline that pushes forward with each arriving RX byte;
+    /// `Sim::settle` keeps draining the wire until the deadline holds.
+    /// Multiple calls overwrite any prior predicate.
+    pub fn wait_for_reply(&mut self) {
+        self.wait_for_reply_within(HOST_FIRST_BYTE_TIMEOUT, HOST_INTER_BYTE_TIMEOUT);
     }
 
-    /// Open a status-reply window at `self.now` with an explicit timeout.
-    /// Schedules a wake event at `self.now + timeout` so [`Sim::advance`]
-    /// refuses to quiesce before the window closes — letting any servo-
-    /// side residual state (Skip deadlines, fold windows) drain to clear.
-    /// After [`Sim::advance`] returns, read the captured window via
-    /// [`Host::status`].
-    ///
-    /// Multiple calls overwrite the previous window. Tests that send
-    /// burst commands without intervening waits call this once at the
-    /// end of the burst.
-    pub fn wait_for_status_within(&mut self, timeout: SimTime) {
-        self.wait_window = Some(WaitWindow {
-            end: self.now + timeout,
-            rx_cursor: self.uart_rx.rx_log().len(),
+    /// Open a reply-wait predicate at `self.now` with explicit timeouts.
+    /// Use when a test specifically pins a non-default budget — e.g. very
+    /// long RDT sweeps, or chains long enough that the default
+    /// inter-byte gap is too tight.
+    pub fn wait_for_reply_within(&mut self, first_byte: SimTime, inter_byte: SimTime) {
+        self.wait = Some(Wait {
+            opened_at: self.now,
+            cursor_at_open: self.uart_rx.rx_log().len(),
+            first_byte_timeout: first_byte,
+            inter_byte_timeout: inter_byte,
+            absolute_cap: self.now + HOST_ABSOLUTE_CAP,
         });
-    }
-
-    /// Snapshot of the most recent status-reply window opened by
-    /// [`Host::wait_for_status`]/[`Host::wait_for_status_within`]. Returns
-    /// `None` if no window was opened. Window slices RX log from the
-    /// cursor recorded at `wait_for_status*` through the current end of
-    /// log; `timed_out` reflects "no bytes captured", independent of
-    /// whether `Sim::advance` actually crossed the wake event.
-    pub fn status(&self) -> Option<StatusReply> {
-        let win = self.wait_window?;
-        let entries = &self.uart_rx.rx_log()[win.rx_cursor..];
-        let bytes: Vec<u8> = entries
-            .iter()
-            .filter_map(|e| match e.kind {
-                RxLogKind::Byte(b) => Some(b),
-                RxLogKind::IdleGap => None,
-            })
-            .collect();
-        let first_byte_at = entries
-            .iter()
-            .find(|e| matches!(e.kind, RxLogKind::Byte(_)))
-            .map(|e| e.at);
-        let last_byte_at = entries
-            .iter()
-            .rev()
-            .find(|e| matches!(e.kind, RxLogKind::Byte(_)))
-            .map(|e| e.at);
-        let timed_out = bytes.is_empty();
-        Some(StatusReply {
-            bytes,
-            log: entries.to_vec(),
-            first_byte_at,
-            last_byte_at,
-            timed_out,
-        })
     }
 
     fn queue_frame(&mut self, buf: &[u8]) {
@@ -297,13 +272,31 @@ impl Host {
             self.uart_tx.queue_byte(*byte, self.now + i as u64 * stride);
         }
     }
+
+    fn wait_deadline(&self, w: &Wait) -> SimTime {
+        let dyn_deadline = match self.last_rx_byte_after(w.cursor_at_open) {
+            Some(last_at) => last_at + w.inter_byte_timeout,
+            None => w.opened_at + w.first_byte_timeout,
+        };
+        if dyn_deadline < w.absolute_cap {
+            dyn_deadline
+        } else {
+            w.absolute_cap
+        }
+    }
+
+    fn last_rx_byte_after(&self, cursor: usize) -> Option<SimTime> {
+        self.uart_rx.rx_log()[cursor..]
+            .iter()
+            .rev()
+            .find(|e| matches!(e.kind, RxLogKind::Byte(_)))
+            .map(|e| e.at)
+    }
 }
 
 impl EventSource for Host {
     fn next_event_time(&self) -> Option<SimTime> {
-        let wait_wake = self
-            .wait_window
-            .and_then(|w| if w.end > self.now { Some(w.end) } else { None });
+        let wait_wake = self.wait.as_ref().map(|w| self.wait_deadline(w));
         [
             self.uart_tx.next_wake(),
             self.uart_rx.next_wake(),
@@ -324,11 +317,15 @@ impl EventSource for Host {
             .advance(t, &[])
             .into_iter()
             .map(|(at_ns, rising)| Effect::WireEdge {
-                source: self.id,
                 at: SimTime::from_ns(at_ns),
                 rising,
             })
             .collect();
+        if let Some(w) = self.wait
+            && t >= self.wait_deadline(&w)
+        {
+            self.wait = None;
+        }
         if !effects.is_empty() {
             log::trace!(
                 "host[{:?}]: advance t={:?} emit {} wire edges",
@@ -350,14 +347,7 @@ impl EventSource for Host {
         self.uart_rx.receive_edge(at, rising);
     }
 
-    fn reset(&mut self) {
-        self.uart_tx = UartTx::new(self.baud);
-        self.uart_rx = UartRx::new(self.baud);
-        self.now = SimTime::ZERO;
-        self.wait_window = None;
-    }
-
-    fn tick(&mut self, t: SimTime) {
+    fn set_now(&mut self, t: SimTime) {
         if t > self.now {
             self.now = t;
         }
@@ -392,15 +382,12 @@ mod tests {
     fn tx_log_records_encoded_frame_in_order() {
         let mut sim = Sim::default();
         let host = sim.add_device(Host::new);
-        sim.device_mut::<Host>(host).send_ping(Id::new(0x05));
-        sim.advance(SimTime::from_ms(5));
+        sim.with_host(host, |h| {
+            h.send_ping(Id::new(0x05));
+            h.wait_for_reply();
+        });
 
-        let tx_bytes: Vec<u8> = sim
-            .device::<Host>(host)
-            .tx_log()
-            .iter()
-            .map(|e| e.byte)
-            .collect();
+        let tx_bytes: Vec<u8> = sim.host(host).tx_log().iter().map(|e| e.byte).collect();
         assert_eq!(tx_bytes, expected_ping_bytes(Id::new(0x05)));
     }
 
@@ -410,10 +397,12 @@ mod tests {
         let host = sim.add_device(Host::new);
         let receiver = sim.add_device(Host::new);
 
-        sim.device_mut::<Host>(host).send_ping(Id::new(0x05));
-        sim.advance(SimTime::from_ms(5));
+        sim.with_host(host, |h| {
+            h.send_ping(Id::new(0x05));
+            h.wait_for_reply();
+        });
 
-        let rx = sim.device::<Host>(receiver);
+        let rx = sim.host(receiver);
         assert_eq!(rx.rx_bytes(), expected_ping_bytes(Id::new(0x05)));
         assert!(
             rx.rx_log()
@@ -428,11 +417,13 @@ mod tests {
     fn tx_byte_timestamps_align_with_baud_stride() {
         let mut sim = Sim::default();
         let host = sim.add_device(Host::new);
-        sim.device_mut::<Host>(host).send_ping(Id::new(0x01));
-        sim.advance(SimTime::from_ms(5));
+        sim.with_host(host, |h| {
+            h.send_ping(Id::new(0x01));
+            h.wait_for_reply();
+        });
 
         let stride = 10 * crate::sim::uart::bit_period_ns(DEFAULT_BAUD);
-        let tx = sim.device::<Host>(host).tx_log().to_vec();
+        let tx = sim.host(host).tx_log().to_vec();
         for (i, e) in tx.iter().enumerate() {
             assert_eq!(e.at.as_ns(), i as u64 * stride, "byte {i}");
         }
@@ -442,54 +433,30 @@ mod tests {
     fn clear_logs_drops_history_without_resetting_queues() {
         let mut sim = Sim::default();
         let host = sim.add_device(Host::new);
-        sim.device_mut::<Host>(host).send_ping(Id::new(0x01));
-        sim.advance(SimTime::from_ms(5));
-        assert!(!sim.device::<Host>(host).tx_log().is_empty());
+        sim.with_host(host, |h| {
+            h.send_ping(Id::new(0x01));
+            h.wait_for_reply();
+        });
+        assert!(!sim.host(host).tx_log().is_empty());
 
-        sim.device_mut::<Host>(host).clear_logs();
-        assert!(sim.device::<Host>(host).tx_log().is_empty());
-        assert!(sim.device::<Host>(host).rx_log().is_empty());
+        sim.host_mut(host).clear_logs();
+        assert!(sim.host(host).tx_log().is_empty());
+        assert!(sim.host(host).rx_log().is_empty());
     }
 
     #[test]
-    fn sim_reset_zeroes_time_and_clears_host_logs() {
+    fn wait_for_reply_closes_on_first_byte_timeout_when_silent() {
         let mut sim = Sim::default();
         let host = sim.add_device(Host::new);
-        let receiver = sim.add_device(Host::new);
-        sim.device_mut::<Host>(host).send_ping(Id::new(0x01));
-        sim.advance(SimTime::from_ms(5));
-        assert_ne!(sim.now(), SimTime::ZERO);
-        assert!(!sim.device::<Host>(receiver).rx_log().is_empty());
+        let _peer = sim.add_device(Host::new);
 
-        sim.reset();
-        assert_eq!(sim.now(), SimTime::ZERO);
-        assert!(sim.device::<Host>(host).tx_log().is_empty());
-        assert!(sim.device::<Host>(receiver).rx_log().is_empty());
-    }
+        sim.with_host(host, |h| {
+            // No send → no TX to drive the peer; predicate closes on
+            // first-byte timeout alone.
+            h.wait_for_reply();
+        });
 
-    #[test]
-    fn wait_for_status_captures_reply_within_window() {
-        let mut sim = Sim::default();
-        let host = sim.add_device(Host::new);
-        let _receiver = sim.add_device(Host::new);
-
-        let h = sim.device_mut::<Host>(host);
-        h.send_ping(Id::new(0x05));
-        h.wait_for_status();
-        sim.advance(SimTime::from_ms(5));
-
-        // No reply from a peer Host — window times out.
-        let reply = sim.device::<Host>(host).status().expect("window open");
-        assert!(reply.timed_out);
-        assert!(reply.bytes.is_empty());
-    }
-
-    #[test]
-    fn status_returns_none_when_no_window_opened() {
-        let mut sim = Sim::default();
-        let host = sim.add_device(Host::new);
-        sim.device_mut::<Host>(host).send_ping(Id::new(0x01));
-        sim.advance(SimTime::from_ms(5));
-        assert!(sim.device::<Host>(host).status().is_none());
+        assert!(sim.host(host).rx_bytes().is_empty());
+        assert_eq!(sim.now(), HOST_FIRST_BYTE_TIMEOUT);
     }
 }

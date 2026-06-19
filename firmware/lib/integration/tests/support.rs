@@ -7,7 +7,7 @@
 use dxl_protocol::types::{Id, Instruction, PingStatus, Status, StatusError};
 use osc_core::BaudRate;
 use osc_integration::sim::{
-    DEFAULT_BAUD, DEFAULT_RDT_US, DeviceId, Host, Servo, Sim, SimTime, parse_status_stream,
+    DEFAULT_BAUD, DEFAULT_RDT_US, DeviceId, Host, Servo, Sim, parse_status_stream,
 };
 #[allow(unused_imports)]
 use rstest::rstest;
@@ -75,12 +75,13 @@ pub fn matrix(
 /// lock up and no servo is stuck mid-parser.
 #[allow(dead_code)]
 pub fn assert_bus_healthy(sim: &mut Sim, host: DeviceId, servos: &[DeviceId]) {
-    sim.device_mut::<Host>(host).clear_logs();
-    sim.device_mut::<Host>(host).send_ping(Id::BROADCAST);
-    sim.device_mut::<Host>(host).wait_for_status();
-    sim.advance(SimTime::from_ms(20));
+    sim.host_mut(host).clear_logs();
+    sim.with_host(host, |h| {
+        h.send_ping(Id::BROADCAST);
+        h.wait_for_reply();
+    });
 
-    let rx = sim.device::<Host>(host).rx_bytes();
+    let rx = sim.host(host).rx_bytes();
     let replies = parse_status_stream(Instruction::Ping, &rx);
     assert_eq!(
         replies.len(),
@@ -92,7 +93,7 @@ pub fn assert_bus_healthy(sim: &mut Sim, host: DeviceId, servos: &[DeviceId]) {
     );
     let expected_ids: Vec<u8> = servos
         .iter()
-        .map(|d| sim.device::<Servo>(*d).dxl_id().as_byte())
+        .map(|d| sim.servo(*d).dxl_id().as_byte())
         .collect();
     for (reply, expected_id) in replies.iter().zip(expected_ids.iter()) {
         match reply {

@@ -1,7 +1,7 @@
 use crate::support::{Setup, matrix, setup_with};
 use dxl_protocol::types::{ErrorCode, Id, Instruction, Status, StatusError};
 use osc_core::{BaudRate, StatusReturnLevel};
-use osc_integration::sim::{Host, Servo, Sim, SimTime, parse_status};
+use osc_integration::sim::{Host, Servo, Sim, parse_status};
 use rstest::rstest;
 use rstest_reuse::apply;
 
@@ -16,11 +16,12 @@ fn reboot_to_self_id_replies_ok(baud_idx: u8, rdt_us: u32) {
     let baud = BaudRate::from_idx(baud_idx).expect("valid baud idx");
     let Setup { mut sim, host, .. } = setup_with(1, baud, rdt_us);
 
-    sim.device_mut::<Host>(host).send_reboot(Id::new(1));
-    sim.device_mut::<Host>(host).wait_for_status();
-    sim.advance(SimTime::from_ms(5));
+    sim.with_host(host, |h| {
+        h.send_reboot(Id::new(1));
+        h.wait_for_reply();
+    });
 
-    let rx = sim.device::<Host>(host).rx_bytes();
+    let rx = sim.host(host).rx_bytes();
     assert_eq!(
         parse_status(Instruction::Reboot, &rx),
         Status::Empty {
@@ -36,11 +37,12 @@ fn reboot_to_wrong_id_yields_no_reply(baud_idx: u8, rdt_us: u32) {
     let baud = BaudRate::from_idx(baud_idx).expect("valid baud idx");
     let Setup { mut sim, host, .. } = setup_with(1, baud, rdt_us);
 
-    sim.device_mut::<Host>(host).send_reboot(Id::new(2));
-    sim.device_mut::<Host>(host).wait_for_status();
-    sim.advance(SimTime::from_ms(5));
+    sim.with_host(host, |h| {
+        h.send_reboot(Id::new(2));
+        h.wait_for_reply();
+    });
 
-    let rx = sim.device::<Host>(host).rx_bytes();
+    let rx = sim.host(host).rx_bytes();
     assert!(rx.is_empty(), "expected silent drop, got {:?}", rx);
 }
 
@@ -50,11 +52,12 @@ fn reboot_broadcast_yields_no_reply(baud_idx: u8, rdt_us: u32) {
     let baud = BaudRate::from_idx(baud_idx).expect("valid baud idx");
     let Setup { mut sim, host, .. } = setup_with(1, baud, rdt_us);
 
-    sim.device_mut::<Host>(host).send_reboot(Id::BROADCAST);
-    sim.device_mut::<Host>(host).wait_for_status();
-    sim.advance(SimTime::from_ms(5));
+    sim.with_host(host, |h| {
+        h.send_reboot(Id::BROADCAST);
+        h.wait_for_reply();
+    });
 
-    let rx = sim.device::<Host>(host).rx_bytes();
+    let rx = sim.host(host).rx_bytes();
     assert!(rx.is_empty(), "expected silent drop, got {:?}", rx);
 }
 
@@ -72,12 +75,12 @@ fn unknown_instruction_to_self_id_replies_instruction_error(baud_idx: u8, rdt_us
     let baud = BaudRate::from_idx(baud_idx).expect("valid baud idx");
     let Setup { mut sim, host, .. } = setup_with(1, baud, rdt_us);
 
-    sim.device_mut::<Host>(host)
-        .send_ext(Id::new(1), UNKNOWN_INSTRUCTION_BYTE, &[]);
-    sim.device_mut::<Host>(host).wait_for_status();
-    sim.advance(SimTime::from_ms(5));
+    sim.with_host(host, |h| {
+        h.send_ext(Id::new(1), UNKNOWN_INSTRUCTION_BYTE, &[]);
+        h.wait_for_reply();
+    });
 
-    let rx = sim.device::<Host>(host).rx_bytes();
+    let rx = sim.host(host).rx_bytes();
     assert_eq!(
         parse_status(Instruction::Ext(UNKNOWN_INSTRUCTION_BYTE), &rx),
         Status::Empty {
@@ -93,12 +96,12 @@ fn unknown_instruction_to_wrong_id_yields_no_reply(baud_idx: u8, rdt_us: u32) {
     let baud = BaudRate::from_idx(baud_idx).expect("valid baud idx");
     let Setup { mut sim, host, .. } = setup_with(1, baud, rdt_us);
 
-    sim.device_mut::<Host>(host)
-        .send_ext(Id::new(2), UNKNOWN_INSTRUCTION_BYTE, &[]);
-    sim.device_mut::<Host>(host).wait_for_status();
-    sim.advance(SimTime::from_ms(5));
+    sim.with_host(host, |h| {
+        h.send_ext(Id::new(2), UNKNOWN_INSTRUCTION_BYTE, &[]);
+        h.wait_for_reply();
+    });
 
-    let rx = sim.device::<Host>(host).rx_bytes();
+    let rx = sim.host(host).rx_bytes();
     assert!(rx.is_empty(), "expected silent drop, got {:?}", rx);
 }
 
@@ -108,12 +111,12 @@ fn unknown_instruction_broadcast_yields_no_reply(baud_idx: u8, rdt_us: u32) {
     let baud = BaudRate::from_idx(baud_idx).expect("valid baud idx");
     let Setup { mut sim, host, .. } = setup_with(1, baud, rdt_us);
 
-    sim.device_mut::<Host>(host)
-        .send_ext(Id::BROADCAST, UNKNOWN_INSTRUCTION_BYTE, &[]);
-    sim.device_mut::<Host>(host).wait_for_status();
-    sim.advance(SimTime::from_ms(5));
+    sim.with_host(host, |h| {
+        h.send_ext(Id::BROADCAST, UNKNOWN_INSTRUCTION_BYTE, &[]);
+        h.wait_for_reply();
+    });
 
-    let rx = sim.device::<Host>(host).rx_bytes();
+    let rx = sim.host(host).rx_bytes();
     assert!(rx.is_empty(), "expected silent drop, got {:?}", rx);
 }
 
@@ -141,11 +144,12 @@ fn reboot_under_srl(level: StatusReturnLevel, baud: BaudRate, rdt_us: u32) -> Ve
         })
     });
 
-    sim.device_mut::<Host>(host).send_reboot(Id::new(1));
-    sim.device_mut::<Host>(host).wait_for_status();
-    sim.advance(SimTime::from_ms(5));
+    sim.with_host(host, |h| {
+        h.send_reboot(Id::new(1));
+        h.wait_for_reply();
+    });
 
-    sim.device::<Host>(host).rx_bytes()
+    sim.host(host).rx_bytes()
 }
 
 fn ext_under_srl(level: StatusReturnLevel, baud: BaudRate, rdt_us: u32) -> Vec<u8> {
@@ -160,10 +164,10 @@ fn ext_under_srl(level: StatusReturnLevel, baud: BaudRate, rdt_us: u32) -> Vec<u
         })
     });
 
-    sim.device_mut::<Host>(host)
-        .send_ext(Id::new(1), UNKNOWN_INSTRUCTION_BYTE, &[]);
-    sim.device_mut::<Host>(host).wait_for_status();
-    sim.advance(SimTime::from_ms(5));
+    sim.with_host(host, |h| {
+        h.send_ext(Id::new(1), UNKNOWN_INSTRUCTION_BYTE, &[]);
+        h.wait_for_reply();
+    });
 
-    sim.device::<Host>(host).rx_bytes()
+    sim.host(host).rx_bytes()
 }

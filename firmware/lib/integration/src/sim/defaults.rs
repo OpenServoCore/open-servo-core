@@ -8,13 +8,7 @@
 use osc_core::BaudRate;
 use osc_drivers::dxl::uart::codec::rx::{edge_buf_len, rx_buf_len};
 
-use crate::sim::{Clock, SimTime};
-
-/// Default Host status-reply timeout. Mirrors a real DXL host's
-/// `LATENCY_TIMER` window — long enough for a coalesced chain reply to
-/// land, short enough that tests don't pay multi-ms penalties per command.
-/// Override per-call with [`Host::wait_for_status_within`].
-pub const DEFAULT_STATUS_TIMEOUT: SimTime = SimTime::from_us(1000);
+use crate::sim::Clock;
 
 /// Master device clock frequency, in MHz. Matches CH32V307-class
 /// upper-tier SYSCLK. Whole-MHz only: downstream baud/timer divisors
