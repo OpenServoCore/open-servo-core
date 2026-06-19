@@ -17,6 +17,7 @@ const OVER_MAX_CONTROL_RW: usize = 129;
 const NEW_ID: u8 = 2;
 
 #[apply(matrix)]
+#[test_log::test]
 fn write_to_comms_id_returns_ok_and_mutates_table(baud_idx: u8, rdt_us: u32) {
     let baud = BaudRate::from_idx(baud_idx).expect("valid baud idx");
     let Setup {
@@ -53,6 +54,7 @@ fn write_to_comms_id_returns_ok_and_mutates_table(baud_idx: u8, rdt_us: u32) {
 }
 
 #[apply(matrix)]
+#[test_log::test]
 fn write_length_over_cap_replies_data_range(baud_idx: u8, rdt_us: u32) {
     let baud = BaudRate::from_idx(baud_idx).expect("valid baud idx");
     // 0x55 alternates each bit so every wire byte produces ~7 falling edges;
@@ -72,6 +74,7 @@ fn write_length_over_cap_replies_data_range(baud_idx: u8, rdt_us: u32) {
 }
 
 #[apply(matrix)]
+#[test_log::test]
 fn write_to_ro_field_replies_access_error(baud_idx: u8, rdt_us: u32) {
     let baud = BaudRate::from_idx(baud_idx).expect("valid baud idx");
     let Setup {
@@ -104,6 +107,7 @@ fn write_to_ro_field_replies_access_error(baud_idx: u8, rdt_us: u32) {
 }
 
 #[apply(matrix)]
+#[test_log::test]
 fn write_to_intra_region_gap_replies_access_error(baud_idx: u8, rdt_us: u32) {
     let baud = BaudRate::from_idx(baud_idx).expect("valid baud idx");
     let rx = write_with(Id::new(1), CONFIG_INTRA_GAP_ADDR, &[0x01], baud, rdt_us);
@@ -117,6 +121,7 @@ fn write_to_intra_region_gap_replies_access_error(baud_idx: u8, rdt_us: u32) {
 }
 
 #[apply(matrix)]
+#[test_log::test]
 fn write_across_region_boundary_replies_data_range(baud_idx: u8, rdt_us: u32) {
     let baud = BaudRate::from_idx(baud_idx).expect("valid baud idx");
     let rx = write_with(
@@ -140,6 +145,7 @@ fn write_across_region_boundary_replies_data_range(baud_idx: u8, rdt_us: u32) {
 /// (stage_bytes rolls back via internal snapshot) so the underlying RW byte
 /// stays at its seed default.
 #[apply(matrix)]
+#[test_log::test]
 fn write_partial_overlap_rw_into_gap_replies_access_error(baud_idx: u8, rdt_us: u32) {
     let baud = BaudRate::from_idx(baud_idx).expect("valid baud idx");
     let Setup {
@@ -172,6 +178,7 @@ fn write_partial_overlap_rw_into_gap_replies_access_error(baud_idx: u8, rdt_us: 
 }
 
 #[apply(matrix)]
+#[test_log::test]
 fn write_under_torque_lock_replies_access_error(baud_idx: u8, rdt_us: u32) {
     let baud = BaudRate::from_idx(baud_idx).expect("valid baud idx");
     let Setup {
@@ -205,6 +212,7 @@ fn write_under_torque_lock_replies_access_error(baud_idx: u8, rdt_us: u32) {
 }
 
 #[apply(matrix)]
+#[test_log::test]
 fn write_to_wrong_id_yields_no_reply(baud_idx: u8, rdt_us: u32) {
     let baud = BaudRate::from_idx(baud_idx).expect("valid baud idx");
     let Setup {
@@ -231,6 +239,7 @@ fn write_to_wrong_id_yields_no_reply(baud_idx: u8, rdt_us: u32) {
 }
 
 #[apply(matrix)]
+#[test_log::test]
 fn write_broadcast_mutates_table_silently(baud_idx: u8, rdt_us: u32) {
     let baud = BaudRate::from_idx(baud_idx).expect("valid baud idx");
     let Setup {
@@ -261,6 +270,7 @@ fn write_broadcast_mutates_table_silently(baud_idx: u8, rdt_us: u32) {
 }
 
 #[apply(matrix)]
+#[test_log::test]
 fn write_silent_when_srl_is_none_but_table_still_mutates(baud_idx: u8, rdt_us: u32) {
     let baud = BaudRate::from_idx(baud_idx).expect("valid baud idx");
     let (rx, id_after) =
@@ -270,6 +280,7 @@ fn write_silent_when_srl_is_none_but_table_still_mutates(baud_idx: u8, rdt_us: u
 }
 
 #[apply(matrix)]
+#[test_log::test]
 fn write_silent_when_srl_is_read_but_table_still_mutates(baud_idx: u8, rdt_us: u32) {
     let baud = BaudRate::from_idx(baud_idx).expect("valid baud idx");
     let (rx, id_after) =

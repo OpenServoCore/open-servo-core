@@ -9,6 +9,7 @@ use rstest_reuse::apply;
 const CONFIG_REGION_END_ADDR: u16 = CONFIG_REGION_SIZE as u16;
 
 #[apply(matrix)]
+#[test_log::test]
 fn sync_read_replies_in_id_order(baud_idx: u8, rdt_us: u32) {
     let baud = BaudRate::from_idx(baud_idx).expect("valid baud idx");
     let Setup { mut sim, host, .. } = setup_with(3, baud, rdt_us);
@@ -37,6 +38,7 @@ fn sync_read_replies_in_id_order(baud_idx: u8, rdt_us: u32) {
 }
 
 #[apply(matrix)]
+#[test_log::test]
 fn sync_read_single_id_replies_once(baud_idx: u8, rdt_us: u32) {
     let baud = BaudRate::from_idx(baud_idx).expect("valid baud idx");
     let Setup { mut sim, host, .. } = setup_with(1, baud, rdt_us);
@@ -62,6 +64,7 @@ fn sync_read_single_id_replies_once(baud_idx: u8, rdt_us: u32) {
 /// so slot k+1 still sees its predecessor and the chain stays alive even when
 /// every slot errors. Length 0 trips DataRange on every slot.
 #[apply(matrix)]
+#[test_log::test]
 fn sync_read_zero_length_errors_keep_chain_alive(baud_idx: u8, rdt_us: u32) {
     let baud = BaudRate::from_idx(baud_idx).expect("valid baud idx");
     let Setup { mut sim, host, .. } = setup_with(3, baud, rdt_us);
@@ -84,6 +87,7 @@ fn sync_read_zero_length_errors_keep_chain_alive(baud_idx: u8, rdt_us: u32) {
 }
 
 #[apply(matrix)]
+#[test_log::test]
 fn sync_read_across_region_boundary_returns_zeros_in_order(baud_idx: u8, rdt_us: u32) {
     let baud = BaudRate::from_idx(baud_idx).expect("valid baud idx");
     let Setup { mut sim, host, .. } = setup_with(3, baud, rdt_us);
@@ -112,6 +116,7 @@ fn sync_read_across_region_boundary_returns_zeros_in_order(baud_idx: u8, rdt_us:
 /// `dxl-streaming-rx.md` §5.3 — chain-pending reset at next instruction
 /// header).
 #[apply(matrix)]
+#[test_log::test]
 fn sync_read_data_line_disconnect_collapses_tail(baud_idx: u8, rdt_us: u32) {
     let baud = BaudRate::from_idx(baud_idx).expect("valid baud idx");
     let Setup {
@@ -145,6 +150,7 @@ fn sync_read_data_line_disconnect_collapses_tail(baud_idx: u8, rdt_us: u32) {
 /// SRL=None on the middle servo — the dispatcher stays running, it just never
 /// emits a Status frame for Sync Read, so servo 3's snoop never fires.
 #[apply(matrix)]
+#[test_log::test]
 fn sync_read_srl_none_predecessor_collapses_tail(baud_idx: u8, rdt_us: u32) {
     let baud = BaudRate::from_idx(baud_idx).expect("valid baud idx");
     let Setup {
@@ -177,6 +183,7 @@ fn sync_read_srl_none_predecessor_collapses_tail(baud_idx: u8, rdt_us: u32) {
 /// bus, so no predecessor frame ever appears for servo 3 to snoop. Servo 1
 /// (slot 0, RDT-driven) replies; servo 3 stays armed and silent.
 #[apply(matrix)]
+#[test_log::test]
 fn sync_read_unknown_id_in_chain_collapses_tail(baud_idx: u8, rdt_us: u32) {
     let baud = BaudRate::from_idx(baud_idx).expect("valid baud idx");
     let Setup {
@@ -204,6 +211,7 @@ fn sync_read_unknown_id_in_chain_collapses_tail(baud_idx: u8, rdt_us: u32) {
 }
 
 #[apply(matrix)]
+#[test_log::test]
 fn sync_read_all_unknown_ids_yields_no_reply(baud_idx: u8, rdt_us: u32) {
     let baud = BaudRate::from_idx(baud_idx).expect("valid baud idx");
     let Setup { mut sim, host, .. } = setup_with(3, baud, rdt_us);

@@ -11,6 +11,7 @@ use rstest_reuse::apply;
 const UNKNOWN_INSTRUCTION_BYTE: u8 = 0xC3;
 
 #[apply(matrix)]
+#[test_log::test]
 fn reboot_to_self_id_replies_ok(baud_idx: u8, rdt_us: u32) {
     let baud = BaudRate::from_idx(baud_idx).expect("valid baud idx");
     let Setup { mut sim, host, .. } = setup_with(1, baud, rdt_us);
@@ -30,6 +31,7 @@ fn reboot_to_self_id_replies_ok(baud_idx: u8, rdt_us: u32) {
 }
 
 #[apply(matrix)]
+#[test_log::test]
 fn reboot_to_wrong_id_yields_no_reply(baud_idx: u8, rdt_us: u32) {
     let baud = BaudRate::from_idx(baud_idx).expect("valid baud idx");
     let Setup { mut sim, host, .. } = setup_with(1, baud, rdt_us);
@@ -43,6 +45,7 @@ fn reboot_to_wrong_id_yields_no_reply(baud_idx: u8, rdt_us: u32) {
 }
 
 #[apply(matrix)]
+#[test_log::test]
 fn reboot_broadcast_yields_no_reply(baud_idx: u8, rdt_us: u32) {
     let baud = BaudRate::from_idx(baud_idx).expect("valid baud idx");
     let Setup { mut sim, host, .. } = setup_with(1, baud, rdt_us);
@@ -56,6 +59,7 @@ fn reboot_broadcast_yields_no_reply(baud_idx: u8, rdt_us: u32) {
 }
 
 #[apply(matrix)]
+#[test_log::test]
 fn reboot_silent_when_srl_is_read(baud_idx: u8, rdt_us: u32) {
     let baud = BaudRate::from_idx(baud_idx).expect("valid baud idx");
     let rx = reboot_under_srl(StatusReturnLevel::Read, baud, rdt_us);
@@ -63,6 +67,7 @@ fn reboot_silent_when_srl_is_read(baud_idx: u8, rdt_us: u32) {
 }
 
 #[apply(matrix)]
+#[test_log::test]
 fn unknown_instruction_to_self_id_replies_instruction_error(baud_idx: u8, rdt_us: u32) {
     let baud = BaudRate::from_idx(baud_idx).expect("valid baud idx");
     let Setup { mut sim, host, .. } = setup_with(1, baud, rdt_us);
@@ -83,6 +88,7 @@ fn unknown_instruction_to_self_id_replies_instruction_error(baud_idx: u8, rdt_us
 }
 
 #[apply(matrix)]
+#[test_log::test]
 fn unknown_instruction_to_wrong_id_yields_no_reply(baud_idx: u8, rdt_us: u32) {
     let baud = BaudRate::from_idx(baud_idx).expect("valid baud idx");
     let Setup { mut sim, host, .. } = setup_with(1, baud, rdt_us);
@@ -97,6 +103,7 @@ fn unknown_instruction_to_wrong_id_yields_no_reply(baud_idx: u8, rdt_us: u32) {
 }
 
 #[apply(matrix)]
+#[test_log::test]
 fn unknown_instruction_broadcast_yields_no_reply(baud_idx: u8, rdt_us: u32) {
     let baud = BaudRate::from_idx(baud_idx).expect("valid baud idx");
     let Setup { mut sim, host, .. } = setup_with(1, baud, rdt_us);
@@ -111,6 +118,7 @@ fn unknown_instruction_broadcast_yields_no_reply(baud_idx: u8, rdt_us: u32) {
 }
 
 #[apply(matrix)]
+#[test_log::test]
 fn unknown_instruction_silent_when_srl_is_read(baud_idx: u8, rdt_us: u32) {
     let baud = BaudRate::from_idx(baud_idx).expect("valid baud idx");
     let rx = ext_under_srl(StatusReturnLevel::Read, baud, rdt_us);

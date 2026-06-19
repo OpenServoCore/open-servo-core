@@ -16,6 +16,7 @@ const TORQUE_ON: &[u8] = &[1];
 const MODE_PID: &[u8] = &[Mode::PositionPid as u8];
 
 #[apply(matrix)]
+#[test_log::test]
 fn reg_write_alone_replies_ok_and_does_not_mutate_table(baud_idx: u8, rdt_us: u32) {
     let baud = BaudRate::from_idx(baud_idx).expect("valid baud idx");
     let Setup {
@@ -52,6 +53,7 @@ fn reg_write_alone_replies_ok_and_does_not_mutate_table(baud_idx: u8, rdt_us: u3
 }
 
 #[apply(matrix)]
+#[test_log::test]
 fn action_alone_with_no_staged_writes_replies_ok(baud_idx: u8, rdt_us: u32) {
     let baud = BaudRate::from_idx(baud_idx).expect("valid baud idx");
     let Setup {
@@ -86,6 +88,7 @@ fn action_alone_with_no_staged_writes_replies_ok(baud_idx: u8, rdt_us: u32) {
 }
 
 #[apply(matrix)]
+#[test_log::test]
 fn reg_write_then_action_commits_to_table(baud_idx: u8, rdt_us: u32) {
     let baud = BaudRate::from_idx(baud_idx).expect("valid baud idx");
     let Setup {
@@ -129,6 +132,7 @@ fn reg_write_then_action_commits_to_table(baud_idx: u8, rdt_us: u32) {
 }
 
 #[apply(matrix)]
+#[test_log::test]
 fn chain_of_two_reg_writes_commits_atomically_on_action(baud_idx: u8, rdt_us: u32) {
     let baud = BaudRate::from_idx(baud_idx).expect("valid baud idx");
     let Setup {
@@ -172,6 +176,7 @@ fn chain_of_two_reg_writes_commits_atomically_on_action(baud_idx: u8, rdt_us: u3
 }
 
 #[apply(matrix)]
+#[test_log::test]
 fn action_clears_staged_queue_subsequent_action_is_noop(baud_idx: u8, rdt_us: u32) {
     let baud = BaudRate::from_idx(baud_idx).expect("valid baud idx");
     let Setup {
@@ -212,6 +217,7 @@ fn action_clears_staged_queue_subsequent_action_is_noop(baud_idx: u8, rdt_us: u3
 }
 
 #[apply(matrix)]
+#[test_log::test]
 fn reg_write_to_ro_field_replies_access_error(baud_idx: u8, rdt_us: u32) {
     let baud = BaudRate::from_idx(baud_idx).expect("valid baud idx");
     let Setup { mut sim, host, .. } = setup_with(1, baud, rdt_us);
@@ -232,6 +238,7 @@ fn reg_write_to_ro_field_replies_access_error(baud_idx: u8, rdt_us: u32) {
 }
 
 #[apply(matrix)]
+#[test_log::test]
 fn prior_staged_writes_survive_a_failed_reg_write(baud_idx: u8, rdt_us: u32) {
     let baud = BaudRate::from_idx(baud_idx).expect("valid baud idx");
     let Setup {
@@ -287,6 +294,7 @@ fn prior_staged_writes_survive_a_failed_reg_write(baud_idx: u8, rdt_us: u32) {
 }
 
 #[apply(matrix)]
+#[test_log::test]
 fn reg_write_broadcast_stages_silently_action_broadcast_commits_silently(
     baud_idx: u8,
     rdt_us: u32,
@@ -318,6 +326,7 @@ fn reg_write_broadcast_stages_silently_action_broadcast_commits_silently(
 }
 
 #[apply(matrix)]
+#[test_log::test]
 fn reg_write_silent_when_srl_is_read_but_action_still_commits(baud_idx: u8, rdt_us: u32) {
     let baud = BaudRate::from_idx(baud_idx).expect("valid baud idx");
     let mut sim = Sim::default();
@@ -361,6 +370,7 @@ fn reg_write_silent_when_srl_is_read_but_action_still_commits(baud_idx: u8, rdt_
 }
 
 #[apply(matrix)]
+#[test_log::test]
 fn action_silent_when_srl_is_read_after_visible_reg_write(baud_idx: u8, rdt_us: u32) {
     let baud = BaudRate::from_idx(baud_idx).expect("valid baud idx");
     let mut sim = Sim::default();
@@ -398,6 +408,7 @@ fn action_silent_when_srl_is_read_after_visible_reg_write(baud_idx: u8, rdt_us: 
 }
 
 #[apply(matrix)]
+#[test_log::test]
 fn reg_write_under_torque_lock_replies_access_error(baud_idx: u8, rdt_us: u32) {
     let baud = BaudRate::from_idx(baud_idx).expect("valid baud idx");
     let Setup {
@@ -444,6 +455,7 @@ fn reg_write_under_torque_lock_replies_access_error(baud_idx: u8, rdt_us: u32) {
 }
 
 #[apply(matrix)]
+#[test_log::test]
 fn inline_write_between_reg_writes_does_not_drain_staged_queue(baud_idx: u8, rdt_us: u32) {
     let baud = BaudRate::from_idx(baud_idx).expect("valid baud idx");
     let Setup {

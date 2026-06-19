@@ -1,0 +1,6 @@
+---
+source: integration/tests/protocol/ping.rs
+assertion_line: 22
+expression: format_hex(&rx)
+---
+

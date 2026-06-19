@@ -16,6 +16,7 @@ const CONFIG_REGION_END_ADDR: u16 = CONFIG_REGION_SIZE as u16;
 const OVER_MAX_CONTROL_RW: u16 = 129;
 
 #[apply(matrix)]
+#[test_log::test]
 fn read_returns_rw_byte_on_comms_id_addr(baud_idx: u8, rdt_us: u32) {
     let baud = BaudRate::from_idx(baud_idx).expect("valid baud idx");
     let Setup { mut sim, host, .. } = setup_with(1, baud, rdt_us);
@@ -38,6 +39,7 @@ fn read_returns_rw_byte_on_comms_id_addr(baud_idx: u8, rdt_us: u32) {
 }
 
 #[apply(matrix)]
+#[test_log::test]
 fn read_returns_ro_word_on_identity_model_number(baud_idx: u8, rdt_us: u32) {
     let baud = BaudRate::from_idx(baud_idx).expect("valid baud idx");
     let Setup { mut sim, host, .. } = setup_with(1, baud, rdt_us);
@@ -64,6 +66,7 @@ fn read_returns_ro_word_on_identity_model_number(baud_idx: u8, rdt_us: u32) {
 }
 
 #[apply(matrix)]
+#[test_log::test]
 fn read_zero_length_replies_data_range(baud_idx: u8, rdt_us: u32) {
     let baud = BaudRate::from_idx(baud_idx).expect("valid baud idx");
     let rx = read_with(Id::new(1), comms::ID, 0, baud, rdt_us);
@@ -78,6 +81,7 @@ fn read_zero_length_replies_data_range(baud_idx: u8, rdt_us: u32) {
 }
 
 #[apply(matrix)]
+#[test_log::test]
 fn read_length_over_cap_replies_data_range(baud_idx: u8, rdt_us: u32) {
     let baud = BaudRate::from_idx(baud_idx).expect("valid baud idx");
     let rx = read_with(
@@ -98,6 +102,7 @@ fn read_length_over_cap_replies_data_range(baud_idx: u8, rdt_us: u32) {
 }
 
 #[apply(matrix)]
+#[test_log::test]
 fn read_across_region_boundary_returns_zero_bytes(baud_idx: u8, rdt_us: u32) {
     let baud = BaudRate::from_idx(baud_idx).expect("valid baud idx");
     let rx = read_with(Id::new(1), CONFIG_REGION_END_ADDR - 2, 4, baud, rdt_us);
@@ -112,6 +117,7 @@ fn read_across_region_boundary_returns_zero_bytes(baud_idx: u8, rdt_us: u32) {
 }
 
 #[apply(matrix)]
+#[test_log::test]
 fn read_in_intra_region_gap_returns_zero_bytes(baud_idx: u8, rdt_us: u32) {
     let baud = BaudRate::from_idx(baud_idx).expect("valid baud idx");
     let rx = read_with(Id::new(1), CONFIG_INTRA_GAP_ADDR, 1, baud, rdt_us);
@@ -126,6 +132,7 @@ fn read_in_intra_region_gap_returns_zero_bytes(baud_idx: u8, rdt_us: u32) {
 }
 
 #[apply(matrix)]
+#[test_log::test]
 fn read_to_wrong_id_yields_no_reply(baud_idx: u8, rdt_us: u32) {
     let baud = BaudRate::from_idx(baud_idx).expect("valid baud idx");
     let rx = read_with(Id::new(2), comms::ID, 1, baud, rdt_us);
@@ -133,6 +140,7 @@ fn read_to_wrong_id_yields_no_reply(baud_idx: u8, rdt_us: u32) {
 }
 
 #[apply(matrix)]
+#[test_log::test]
 fn read_broadcast_yields_no_reply(baud_idx: u8, rdt_us: u32) {
     let baud = BaudRate::from_idx(baud_idx).expect("valid baud idx");
     let rx = read_with(Id::BROADCAST, comms::ID, 1, baud, rdt_us);
@@ -140,6 +148,7 @@ fn read_broadcast_yields_no_reply(baud_idx: u8, rdt_us: u32) {
 }
 
 #[apply(matrix)]
+#[test_log::test]
 fn read_silent_when_srl_is_none(baud_idx: u8, rdt_us: u32) {
     let baud = BaudRate::from_idx(baud_idx).expect("valid baud idx");
     let rx = read_under_srl(StatusReturnLevel::None, comms::ID, 1, baud, rdt_us);
@@ -147,6 +156,7 @@ fn read_silent_when_srl_is_none(baud_idx: u8, rdt_us: u32) {
 }
 
 #[apply(matrix)]
+#[test_log::test]
 fn read_replies_when_srl_is_read(baud_idx: u8, rdt_us: u32) {
     let baud = BaudRate::from_idx(baud_idx).expect("valid baud idx");
     let rx = read_under_srl(StatusReturnLevel::Read, comms::ID, 1, baud, rdt_us);
@@ -161,6 +171,7 @@ fn read_replies_when_srl_is_read(baud_idx: u8, rdt_us: u32) {
 }
 
 #[apply(matrix)]
+#[test_log::test]
 fn read_on_torque_locked_config_succeeds_locks_gate_writes_only(baud_idx: u8, rdt_us: u32) {
     let baud = BaudRate::from_idx(baud_idx).expect("valid baud idx");
     let Setup {

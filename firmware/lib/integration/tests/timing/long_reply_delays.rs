@@ -46,6 +46,7 @@ use rstest_reuse::apply;
 const STATUS_WINDOW: SimTime = SimTime::from_ms(1000);
 
 #[apply(matrix)]
+#[test_log::test]
 fn broadcast_ping_at_12_servos_replies_in_order(baud_idx: u8, rdt_us: u32) {
     let baud = BaudRate::from_idx(baud_idx).expect("valid baud idx");
     let Setup { mut sim, host, .. } = setup_with(12, baud, rdt_us);
@@ -71,6 +72,7 @@ fn broadcast_ping_at_12_servos_replies_in_order(baud_idx: u8, rdt_us: u32) {
 }
 
 #[apply(matrix)]
+#[test_log::test]
 fn fast_bulk_read_3_servos_full_payload_chain_intact(baud_idx: u8, rdt_us: u32) {
     let baud = BaudRate::from_idx(baud_idx).expect("valid baud idx");
     let Setup { mut sim, host, .. } = setup_with(3, baud, rdt_us);
@@ -117,6 +119,7 @@ fn fast_bulk_read_3_servos_full_payload_chain_intact(baud_idx: u8, rdt_us: u32) 
 }
 
 #[apply(matrix)]
+#[test_log::test]
 fn plain_sync_read_chain_remains_sequence_driven(baud_idx: u8, rdt_us: u32) {
     let baud = BaudRate::from_idx(baud_idx).expect("valid baud idx");
     let Setup { mut sim, host, .. } = setup_with(3, baud, rdt_us);

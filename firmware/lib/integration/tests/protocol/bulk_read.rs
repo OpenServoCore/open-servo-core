@@ -23,6 +23,7 @@ fn entry(id: u8, address: u16, length: u16) -> BulkReadEntry {
 }
 
 #[apply(matrix)]
+#[test_log::test]
 fn bulk_read_replies_per_entry_in_order(baud_idx: u8, rdt_us: u32) {
     let baud = BaudRate::from_idx(baud_idx).expect("valid baud idx");
     let Setup { mut sim, host, .. } = setup_with(3, baud, rdt_us);
@@ -64,6 +65,7 @@ fn bulk_read_replies_per_entry_in_order(baud_idx: u8, rdt_us: u32) {
 }
 
 #[apply(matrix)]
+#[test_log::test]
 fn bulk_read_single_entry_replies_once(baud_idx: u8, rdt_us: u32) {
     let baud = BaudRate::from_idx(baud_idx).expect("valid baud idx");
     let Setup { mut sim, host, .. } = setup_with(1, baud, rdt_us);
@@ -89,6 +91,7 @@ fn bulk_read_single_entry_replies_once(baud_idx: u8, rdt_us: u32) {
 /// wire frame, so slot k+1 sees it and the chain stays alive — same
 /// snoop-contract guarantee as sync_read.
 #[apply(matrix)]
+#[test_log::test]
 fn bulk_read_zero_length_entry_keeps_chain_alive(baud_idx: u8, rdt_us: u32) {
     let baud = BaudRate::from_idx(baud_idx).expect("valid baud idx");
     let Setup { mut sim, host, .. } = setup_with(3, baud, rdt_us);
@@ -129,6 +132,7 @@ fn bulk_read_zero_length_entry_keeps_chain_alive(baud_idx: u8, rdt_us: u32) {
 /// portion, the reply is `Status::Read { OK, [0; 4] }`. Other entries with
 /// in-range addresses reply normally.
 #[apply(matrix)]
+#[test_log::test]
 fn bulk_read_entry_across_region_boundary_returns_zeros(baud_idx: u8, rdt_us: u32) {
     let baud = BaudRate::from_idx(baud_idx).expect("valid baud idx");
     let Setup { mut sim, host, .. } = setup_with(3, baud, rdt_us);
@@ -171,6 +175,7 @@ fn bulk_read_entry_across_region_boundary_returns_zeros(baud_idx: u8, rdt_us: u3
 /// chain state stays latched across the collapse (same regression coverage
 /// as sync_read's mirror test, for `dxl-streaming-rx.md` §5.3).
 #[apply(matrix)]
+#[test_log::test]
 fn bulk_read_data_line_disconnect_collapses_tail(baud_idx: u8, rdt_us: u32) {
     let baud = BaudRate::from_idx(baud_idx).expect("valid baud idx");
     let Setup {
@@ -208,6 +213,7 @@ fn bulk_read_data_line_disconnect_collapses_tail(baud_idx: u8, rdt_us: u32) {
 /// SRL=None on the middle servo — the dispatcher stays running but emits
 /// no Status frame for BulkRead, so servo 3's snoop never fires.
 #[apply(matrix)]
+#[test_log::test]
 fn bulk_read_srl_none_predecessor_collapses_tail(baud_idx: u8, rdt_us: u32) {
     let baud = BaudRate::from_idx(baud_idx).expect("valid baud idx");
     let Setup {
@@ -245,6 +251,7 @@ fn bulk_read_srl_none_predecessor_collapses_tail(baud_idx: u8, rdt_us: u32) {
 /// predecessor frame for servo 3's snoop. Servo 1 (slot 0, RDT-driven)
 /// replies; servo 3 stays armed and silent.
 #[apply(matrix)]
+#[test_log::test]
 fn bulk_read_unknown_id_in_entries_collapses_tail(baud_idx: u8, rdt_us: u32) {
     let baud = BaudRate::from_idx(baud_idx).expect("valid baud idx");
     let Setup {
@@ -277,6 +284,7 @@ fn bulk_read_unknown_id_in_entries_collapses_tail(baud_idx: u8, rdt_us: u32) {
 }
 
 #[apply(matrix)]
+#[test_log::test]
 fn bulk_read_all_unknown_ids_yields_no_reply(baud_idx: u8, rdt_us: u32) {
     let baud = BaudRate::from_idx(baud_idx).expect("valid baud idx");
     let Setup { mut sim, host, .. } = setup_with(3, baud, rdt_us);

@@ -9,6 +9,7 @@ use rstest::rstest;
 use rstest_reuse::apply;
 
 #[apply(matrix)]
+#[test_log::test]
 fn ping_to_self_id_returns_model_and_fw(baud_idx: u8, rdt_us: u32) {
     let baud = BaudRate::from_idx(baud_idx).expect("valid baud idx");
     let Setup { mut sim, host, .. } = setup_with(1, baud, rdt_us);
@@ -33,6 +34,7 @@ fn ping_to_self_id_returns_model_and_fw(baud_idx: u8, rdt_us: u32) {
 }
 
 #[apply(matrix)]
+#[test_log::test]
 fn ping_to_wrong_id_yields_no_reply(baud_idx: u8, rdt_us: u32) {
     let baud = BaudRate::from_idx(baud_idx).expect("valid baud idx");
     let Setup { mut sim, host, .. } = setup_with(1, baud, rdt_us);
@@ -46,6 +48,7 @@ fn ping_to_wrong_id_yields_no_reply(baud_idx: u8, rdt_us: u32) {
 }
 
 #[apply(matrix)]
+#[test_log::test]
 fn ping_replies_when_srl_is_none(baud_idx: u8, rdt_us: u32) {
     let baud = BaudRate::from_idx(baud_idx).expect("valid baud idx");
     let rx = ping_under_srl(StatusReturnLevel::None, baud, rdt_us);
@@ -63,6 +66,7 @@ fn ping_replies_when_srl_is_none(baud_idx: u8, rdt_us: u32) {
 }
 
 #[apply(matrix)]
+#[test_log::test]
 fn ping_replies_when_srl_is_read(baud_idx: u8, rdt_us: u32) {
     let baud = BaudRate::from_idx(baud_idx).expect("valid baud idx");
     let rx = ping_under_srl(StatusReturnLevel::Read, baud, rdt_us);
@@ -80,6 +84,7 @@ fn ping_replies_when_srl_is_read(baud_idx: u8, rdt_us: u32) {
 }
 
 #[apply(matrix)]
+#[test_log::test]
 fn ping_broadcast_replies_in_id_order(baud_idx: u8, rdt_us: u32) {
     let baud = BaudRate::from_idx(baud_idx).expect("valid baud idx");
     let Setup { mut sim, host, .. } = setup_with(3, baud, rdt_us);
