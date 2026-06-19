@@ -228,7 +228,7 @@ Same two priority levels (V006 PFIC has nothing more). DXL-related IRQs stay at 
 | --- | --- | --- | --- |
 | High | USART1 | IDLE (parser kick) + TC (release bus) + RX errors | `.highcode` |
 | High | DMA1_CH7 HT/TC | Classifier walk (ET → BT) + parser drain. Folds Fast Last CRC inline when armed. *Masked during Fast Last* (§10.6.3) | `.highcode` |
-| High | DMA1_CH5 HT/TC | RX byte-ring publish: clear flags, read NDTR, advance `write_seq` via `on_publish`. No parser drain, no codec poll. *Masked during Fast Last* (§10.6.3) | `.highcode` |
+| High | DMA1_CH5 HT/TC | RX byte-ring publish: clear flags, read NDTR, advance `write_seq` via `on_publish`. No parser drain, no codec poll. Stays live during Fast Last (§10.6.3) | `.highcode` |
 | High | SysTick CMP | Fast Last catchup ISR: classifier + parser drain + CRC fold at fixed-byte intervals. Last body cancels SysTick CMP after the busy-wait; CC3 owns post-fire residue. | `.highcode` |
 | High | TIM2 (CC3IE) | Fire TX: enable DMA CH4 (FIRST action — wire bit lands here for all reply kinds). For Plain replies, body ends there. For Fast Last, tail extends with residue fold + `patch_crc`. | `.highcode` |
 | Low | DMA1_CH1 | ADC kernel pump (unchanged) | flash |
@@ -432,11 +432,11 @@ The busy-wait is uncontested — DMA1_CH7 HT/TC is masked (§10.6.3), so SysTick
 
 #### 10.6.3 Classifier+parser merge
 
-The catchup ISR masks DMA1_CH7 HT/TC **and DMA1_CH5 HT/TC** at first-catchup entry. From then until USART1 TC, neither the classifier nor the byte-ring publish ISR competes for the High slot — SysTick CMP is the sole High consumer. This is what makes the site 1 busy-wait deterministic.
+The catchup ISR masks DMA1_CH7 HT/TC at first-catchup entry. From then until USART1 TC, the classifier doesn't compete for the High slot — SysTick CMP owns the catchup busy-wait. This is what makes the site 1 busy-wait deterministic.
 
-CH5 masking is symmetry, not necessity: the catchup body's `drain_raw` refreshes NDTR every iteration, so byte-ring `write_seq` stays fresh without help from CH5 HT/TC during the Fast Last window. Masking removes the only redundant publish path so the busy-wait sees exactly one High consumer.
+DMA1_CH5 HT/TC stays live throughout. The catchup body's parser drain and CC3's post-fire `drain_raw` both refresh NDTR every iteration, so byte-ring `write_seq` freshness comes from those paths regardless of CH5 publish cadence. A redundant CH5 ISR landing between SysTick exit and CC3 entry costs ~10 cycles (~0.2 µs at 48 MHz) — well under the wire-bit jitter already absorbed at 3M GUARD = 1.
 
-**Pending-IRQ race.** If classifier HT/TC latches right before SysTick CMP fires, the catchup body's mask write happens *after* the latch — classifier IRQ is still pending and would run after the catchup body exits. After masking HT/TC, also clear pending on DMA1_CH7 and DMA1_CH5. The first catchup body has already done the classifier's job inline (and `drain_raw` will keep `write_seq` current), so dropping the pending bits is correct.
+**Pending-IRQ race.** If classifier HT/TC latches right before SysTick CMP fires, the catchup body's mask write happens *after* the latch — classifier IRQ is still pending and would run after the catchup body exits. After masking HT/TC, also clear pending on DMA1_CH7. The first catchup body has already done the classifier's job inline, so dropping the pending bit is correct.
 
 #### 10.6.4 Per-interval cost at 3M
 

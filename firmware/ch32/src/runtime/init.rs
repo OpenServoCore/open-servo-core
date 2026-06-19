@@ -256,15 +256,18 @@ fn bring_up_dxl(brr: u32, boot_filter: FilterValue) {
     // ADC (CH1) + USART RX/TX channels stay at LOW per
     // `docs/dxl-hw-timed-transport.md` §6, so ET (CH7) is the only DMA
     // channel at VERYHIGH — guaranteeing IC capture writes win arbitration
-    // against the byte-rate USART RX snoop.
+    // against the byte-rate USART RX snoop. HT/TC enabled for byte-ring
+    // publish (§9): the ISR is publish-only (clear flags, advance
+    // `write_seq`), bounding the codec's view-lag to `RX_BUF_LEN/2` under
+    // long byte-skip windows that edge HT/TC alone can miss.
     let dma_cfg = dma::Config {
         dir: Dir::FROMPERIPHERAL,
         circ: true,
         pinc: false,
         minc: true,
         size: dma::Size::BITS8,
-        htie: false,
-        tcie: false,
+        htie: true,
+        tcie: true,
         pl: dma::Pl::LOW,
     };
     // SAFETY: see `bring_up_edge_ts_capture`.

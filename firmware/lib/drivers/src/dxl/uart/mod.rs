@@ -693,6 +693,18 @@ impl<P: Providers, const RX_BUF_LEN: usize, const EDGE_BUF_LEN: usize, const TX_
         self.codec.on_rx_dma_advance(remaining);
     }
 
+    /// DMA1_CH5 HT/TC publish-only ISR entry — clear flags, refresh the
+    /// codec's view of `write_seq` from NDTR. No parser drain, no codec
+    /// poll; the chip ISR is the sole call site. Bounds `write_seq` lag
+    /// to `RX_BUF_LEN/2` so the codec's universal byte-skip can drain
+    /// payload-length packets without `on_publish`'s mod-`RX_BUF_LEN`
+    /// delta rounding full ring periods to zero (see `dxl-hw-timed-transport`
+    /// §9).
+    pub fn on_rx_advance(&mut self) {
+        let _ = self.rx_dma.read_and_ack();
+        self.codec.on_rx_dma_advance(self.rx_dma.remaining());
+    }
+
     /// Drive the codec event stream, manage wire-level state (anchor,
     /// drift gating, universal byte-skip, slot-walk, reply context) and
     /// forward every parser [`Event`] to the dispatcher closure alongside

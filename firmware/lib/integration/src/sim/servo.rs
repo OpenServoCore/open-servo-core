@@ -390,10 +390,11 @@ impl Servo {
     }
 
     /// Decoded byte from the line model — write to the codec's RX byte ring
-    /// and update NDTR. Does NOT call `Dxl::poll`: production polls on
-    /// USART1-IDLE / DMA HT-TC, not per byte, and the dispatcher is
-    /// reconstructed per poll — running it mid-packet would lose `inflight`
-    /// between the Header and Crc events.
+    /// and update NDTR. On `RX_BUF_LEN/2` (HT) and `RX_BUF_LEN` (TC)
+    /// crossings, fires `on_rx_advance` to mirror the production DMA1_CH5
+    /// HT/TC publish-only ISR. Does NOT call `Dxl::poll`: the publish ISR
+    /// only refreshes `write_seq`; parser drain stays on edge HT/TC + IDLE
+    /// where the dispatcher is reconstructed per poll.
     fn handle_byte(&mut self, byte: u8, at: SimTime) {
         log::trace!(
             "servo[{:?}]: handle_byte byte=0x{:02X} at={:?}",
@@ -411,6 +412,16 @@ impl Servo {
         let pos = (self.rx_seq as usize) % RX_BUF_LEN;
         let remaining = (RX_BUF_LEN - pos) as u16;
         self.rx_dma_state.stage_remaining(remaining);
+
+        let crossed_ht = pos == RX_BUF_LEN / 2;
+        let crossed_tc = pos == 0;
+        if crossed_ht || crossed_tc {
+            self.rx_dma_state.stage_next_flags(DmaFlags {
+                ht: crossed_ht,
+                tc: crossed_tc,
+            });
+            self.uart.on_rx_advance();
+        }
     }
 
     fn handle_idle(&mut self, at: SimTime) {

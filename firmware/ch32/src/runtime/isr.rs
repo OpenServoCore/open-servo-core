@@ -14,6 +14,11 @@ pub fn install_irqs() {
     // with USART1 so on_dma1_ch7 and on_usart1_idle serialize (same prio →
     // no preemption) — classifier state is mutated from both paths.
     pfic::set_priority(pfic::Interrupt::DMA1_CHANNEL7, pfic::Priority::High);
+    // DMA1_CH5 carries USART1 RX bytes; the HT/TC ISR is publish-only
+    // (clear flags + advance `write_seq` from NDTR) per doc §9. Shares
+    // HIGH with the other DXL ISRs so `on_publish` calls serialize against
+    // the codec's poll-path publishes.
+    pfic::set_priority(pfic::Interrupt::DMA1_CHANNEL5, pfic::Priority::High);
     // TIM2 CC3 IRQ kicks the wire-driver activate sequence; shares HIGH with
     // USART1 + DMA1_CH7 so the DXL transport's three IRQ sources serialize.
     pfic::set_priority(pfic::Interrupt::TIM2, pfic::Priority::High);
@@ -23,6 +28,7 @@ pub fn install_irqs() {
     pfic::set_priority(pfic::Interrupt::DMA1_CHANNEL1, pfic::Priority::Low);
     pfic::enable(pfic::Interrupt::USART1);
     pfic::enable(pfic::Interrupt::DMA1_CHANNEL7);
+    pfic::enable(pfic::Interrupt::DMA1_CHANNEL5);
     pfic::enable(pfic::Interrupt::TIM2);
     pfic::enable_systick();
     pfic::enable(pfic::Interrupt::DMA1_CHANNEL1);
@@ -67,6 +73,19 @@ pub fn on_usart1() {
 /// driver is possible.
 pub fn on_dma1_ch7() {
     unsafe { Drivers::dxl_uart() }.on_rx_edge_advance();
+}
+
+/// DMA1_CH5 HT/TC handler — publish-only ISR per doc §9. Dispatches into
+/// the driver's `on_rx_advance`, which clears the channel's HT/TC flags
+/// via the `RxDma` provider and refreshes the codec's `write_seq` from
+/// NDTR. No parser drain, no codec poll — those stay on the edge-ring +
+/// IDLE + SysTick paths.
+///
+/// SAFETY: see `on_dma1_ch7` — DMA1_CH5 shares PFIC HIGH with USART1 /
+/// DMA1_CH7 / TIM2 / SysTick so no concurrent `&mut` into the driver is
+/// possible.
+pub fn on_dma1_ch5() {
+    unsafe { Drivers::dxl_uart() }.on_rx_advance();
 }
 
 fn on_usart1_rx_errors() {
@@ -182,6 +201,11 @@ macro_rules! install_isrs {
         #[::qingke_rt::interrupt(lowcode)]
         fn DMA1_CHANNEL7() {
             $crate::runtime::isr::on_dma1_ch7();
+        }
+
+        #[::qingke_rt::interrupt(lowcode)]
+        fn DMA1_CHANNEL5() {
+            $crate::runtime::isr::on_dma1_ch5();
         }
 
         #[::qingke_rt::interrupt]

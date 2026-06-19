@@ -114,18 +114,22 @@ pub trait EdgeDma {
     fn resume(&mut self);
 }
 
-/// RX byte-ring DMA channel — read-only NDTR accessor. The RX DMA channel
-/// itself runs unconditionally (USART1 → byte ring); this trait surfaces
-/// the remaining-transfer count so the Fast Last fold body can refresh its
-/// view of newly-arrived RX bytes from inside the busy-wait without
-/// re-entering the chip-side ISR. The driver borrows one through its
-/// [`Providers`] bundle; the production adapter binds to DMA1_CH5.
-///
-/// No flag-drain / mask methods: HT/TC drain for the parser path stays on
-/// the chip-side caller via `CodecRx::on_rx_dma_advance`, and the fold
-/// path doesn't want either signal — only NDTR.
+/// RX byte-ring DMA channel — NDTR accessor + HT/TC flag ack. The RX DMA
+/// channel itself runs unconditionally (USART1 → byte ring); HT/TC fires
+/// a publish-only ISR (no parser drain, no codec poll) so the codec's view
+/// of `write_seq` stays within `RX_BUF_LEN/2` of the wire regardless of
+/// edge-ring cadence. The driver borrows one through its [`Providers`]
+/// bundle; the production adapter binds to DMA1_CH5. Always live — no
+/// pause/resume; redundant publishes during Fast Last cost ~10 cycles and
+/// don't perturb the catchup body's `drain_raw`-driven NDTR refresh.
 pub trait RxDma {
     fn remaining(&self) -> u16;
+
+    /// Read and clear HT/TC flags on this channel. Called from the
+    /// publish-only ISR before [`Self::remaining`] feeds
+    /// `CodecRx::on_rx_dma_advance`. Returned flags are informational;
+    /// the publish proceeds regardless of which crossing fired.
+    fn read_and_ack(&mut self) -> DmaFlags;
 
     /// Bump the `edge_anchor_miss` telemetry counter. Called once per
     /// parser Crc event where the classifier had no anchor (interference
