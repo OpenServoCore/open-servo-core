@@ -26,13 +26,12 @@ use crate::mocks::{
     mock_rx_dma, mock_tx_bus, mock_tx_scheduler, mock_usart_baud, mock_wire_clock,
 };
 use crate::sim::defaults::{
-    DEFAULT_BAUD, EDGE_BUF_LEN, RX_BUF_LEN, TX_BUF_LEN, default_servo_clock,
+    DEFAULT_BAUD, DEFAULT_RDT_US, EDGE_BUF_LEN, RX_BUF_LEN, TX_BUF_LEN, default_servo_clock,
 };
 use crate::sim::uart::{UartRx, UartTx};
 use crate::sim::{Clock, DeviceId, Effect, EventSource, SimTime};
 
 pub const DEFAULT_DXL_ID: Id = Id::new(1);
-pub const DEFAULT_RDT_US: u32 = 250;
 pub const DEFAULT_MODEL_NUMBER: u16 = 0xC0DE;
 pub const DEFAULT_FIRMWARE_VERSION: u8 = 0x01;
 

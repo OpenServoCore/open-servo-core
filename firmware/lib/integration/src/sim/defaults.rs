@@ -52,6 +52,20 @@ pub const DEFAULT_BAUD: BaudRate = {
     }
 };
 
+/// Per-servo return delay (µs). Default = DXL-2.0 spec factory default
+/// (250 µs). Override with `OSC_TEST_RDT_US` (0..=510, even values; the
+/// on-wire encoding is 2 µs units in a u8). Out-of-range values panic at
+/// const evaluation.
+pub const DEFAULT_RDT_US: u32 = {
+    let v = env_u32(option_env!("OSC_TEST_RDT_US"), 250);
+    assert!(v <= 510, "OSC_TEST_RDT_US must be in 0..=510");
+    assert!(
+        v.is_multiple_of(2),
+        "OSC_TEST_RDT_US must be even (2 µs units)"
+    );
+    v
+};
+
 /// Anchor back-search depth target (in edges). Mirrors V006's
 /// `DXL_SYNC_LOOKBACK_EDGES` in `firmware/ch32/src/runtime/registry.rs`.
 /// Override with `OSC_TEST_SYNC_LOOKBACK_EDGES`. See
