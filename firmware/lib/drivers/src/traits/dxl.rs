@@ -142,37 +142,63 @@ pub enum SendKind {
     FastLast,
 }
 
-/// Schedule a TX at a protocol-prescribed wire deadline. The driver computes
-/// the deadline in scheduler ticks (using `TICKS_PER_US` to convert µs ↔
-/// ticks); the provider applies chip-specific bias compensation (PFIC +
-/// ISR-entry latency, TX_EN OC setup, wrap guard) inside its own body. The
-/// trait surface stays free of chip-side knobs.
+/// Schedule a TX at a protocol-prescribed wire deadline. The driver hands an
+/// anchor (`packet_end_tick`, wire-clock u16) plus a protocol delay
+/// (`delay_ticks`, u32 in scheduler ticks via `TICKS_PER_US`); the chip-side
+/// provider combines them into its scheduling-tick domain (lifting the u16
+/// anchor to whatever long-horizon clock it uses) and applies its own bias
+/// compensation (PFIC + ISR-entry latency, TX_EN OC setup, wrap guard,
+/// time-remaining decision tree). The trait surface stays free of chip-side
+/// knobs — the driver never sees the lifted absolute deadline.
 ///
 /// Sibling of [`TxBus`] — `TxScheduler` decides *when* the chip transmits;
 /// `TxBus` does the wire driving when that moment lands (or when a chain
 /// k > 0 reply fires sequence-driven off a SkipComplete event).
 pub trait TxScheduler {
     /// Tick rate of the chip-side TX-start timer, ticks per µs. Driver uses
-    /// this to convert protocol delay (µs / Q8.8 µs) to `deadline_tick`
-    /// before calling `schedule`.
+    /// this to convert protocol delay (µs / Q8.8 µs) to `delay_ticks` before
+    /// calling `schedule`.
     const TICKS_PER_US: u16;
 
-    /// Schedule a wire TX at `deadline_tick`. Provider applies its own
-    /// bias / TX_EN setup compensation internally — this method's contract
-    /// is "the first wire bit of `byte_count` bytes lands at approximately
-    /// `deadline_tick`." Idempotent on re-schedule (overwrites any prior
-    /// schedule). `kind` lets the provider apply variant-specific bias.
+    /// Schedule a wire TX at `packet_end_tick + delay_ticks`. Provider lifts
+    /// the wire-clock anchor into its own scheduling-tick domain internally,
+    /// then applies chip-specific bias + decision tree — this method's
+    /// contract is "the first wire bit of `byte_count` bytes lands at
+    /// approximately `packet_end_tick + delay_ticks`." Idempotent on
+    /// re-schedule (overwrites any prior schedule).
+    ///
+    /// - `kind == SendKind::Plain` — arm per the chip-side decision tree.
+    /// - `kind == SendKind::FastLast` — stash; the composite triggers the
+    ///   commit via [`Self::commit_pending`] when the FastLast walk reaches
+    ///   its final anchor (chain-CRC catchup co-owns the long-horizon timer
+    ///   during the predecessor window, so the scheduler defers).
     ///
     /// `byte_count` is the size of the encoded packet sitting in the
     /// driver-owned TX buffer (codec's `tx_len`); the provider hands it to
     /// the chip-side DMA channel as the transfer count.
-    fn schedule(&mut self, deadline_tick: u16, byte_count: u16, kind: SendKind);
+    fn schedule(&mut self, packet_end_tick: u16, delay_ticks: u32, byte_count: u16, kind: SendKind);
+
+    /// Composite signals "the FastLast walk reached its final anchor — commit
+    /// the stashed schedule now." Provider runs its time-remaining decision
+    /// against the stashed deadline; by construction the caller invokes this
+    /// within ~1 byte_time of the wire deadline, so the decision lands in
+    /// the direct-arm or software-fire branch. No-op when nothing stashed;
+    /// idempotent.
+    fn commit_pending(&mut self);
 
     /// Drop any pending TX schedule. Idempotent. The wire driver itself is
     /// owned by [`TxBus`]; canceling the schedule alone leaves the bus in
     /// whatever state it was in (typically idle — between schedule and the
     /// deadline ISR no wire activity is in flight).
     fn cancel(&mut self);
+
+    /// Long-horizon timer match fired — provider returns `true` if it owned
+    /// the deadline (re-runs its decision tree internally) and `false` if
+    /// the match belongs to another scheduling consumer (the FastLast walk
+    /// grid co-owns the long-horizon timer during a chain-CRC catchup
+    /// window). The composite uses the return value to demux which sub-
+    /// driver consumes the match.
+    fn on_schedule_due(&mut self) -> bool;
 }
 
 /// Chip-side control of the half-duplex DXL bus during transmission. Owns

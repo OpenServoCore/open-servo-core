@@ -403,15 +403,14 @@ impl<P: Providers, const TX_BUF_LEN: usize> ReplyHandle<'_, P, TX_BUF_LEN> {
         let delay_us = self.rdt_us + self.clock.bytes_to_us(ctx.slot_offset_bytes);
         let delay_ticks =
             delay_us.wrapping_mul(<P::TxScheduler as TxScheduler>::TICKS_PER_US as u32);
-        let deadline_tick = packet_end_tick.wrapping_add(delay_ticks as u16);
         crate::log::debug!(
-            "dxl: send_status schedule packet_end={} deadline={} byte_count={}",
+            "dxl: send_status schedule packet_end={} delay={} byte_count={}",
             packet_end_tick,
-            deadline_tick,
+            delay_ticks,
             byte_count
         );
         self.scheduler
-            .schedule(deadline_tick, byte_count, SendKind::Plain);
+            .schedule(packet_end_tick, delay_ticks, byte_count, SendKind::Plain);
         Ok(())
     }
 
@@ -423,13 +422,21 @@ impl<P: Providers, const TX_BUF_LEN: usize> ReplyHandle<'_, P, TX_BUF_LEN> {
     /// inter-slot gap (~3.33 µs at 3 Mbaud) is sub-µs-aligned.
     pub fn send_slot(&mut self, slot: &Slot<'_>) -> Result<(), WriteError> {
         let Some(ctx) = self.last_reply_ctx.take() else {
+            crate::log::debug!("dxl[id={}]: send_slot drop (no reply ctx)", self.id);
             return Ok(());
         };
         let Some(position) = ctx.fast_slot_position else {
             // No Fast slot in the cached context — caller routed wrong;
             // drop silently (dispatcher bug, not driver concern).
+            crate::log::debug!("dxl[id={}]: send_slot drop (no fast slot pos)", self.id);
             return Ok(());
         };
+        crate::log::debug!(
+            "dxl[id={}]: send_slot slot={:?} position={:?}",
+            self.id,
+            slot,
+            position
+        );
         self.tx.send_slot(slot, position)?;
         let byte_count = self.tx.tx_len();
         let packet_end_tick = ctx.packet_end_tick;
@@ -450,8 +457,8 @@ impl<P: Providers, const TX_BUF_LEN: usize> ReplyHandle<'_, P, TX_BUF_LEN> {
                 (ticks, SendKind::Plain)
             }
         };
-        let deadline_tick = packet_end_tick.wrapping_add(delay_ticks as u16);
-        self.scheduler.schedule(deadline_tick, byte_count, kind);
+        self.scheduler
+            .schedule(packet_end_tick, delay_ticks, byte_count, kind);
         // Fast Last: arm the periodic-walk grid + chain-CRC fold engine.
         // `slot_offset_bytes` on Last == `bytes_before` == predecessor wire
         // bytes (excluding our own reply); the fold absorbs that count
@@ -961,15 +968,31 @@ impl<P: Providers, const RX_BUF_LEN: usize, const EDGE_BUF_LEN: usize, const TX_
             rx_dma,
             fast_last,
             fast_last_crc,
+            scheduler,
             ..
         } = self;
         let (rx, tx) = codec.split_mut();
-        fast_last.on_step(|| {
-            rx.drain_raw(rx_dma, |byte, cursor| {
-                fast_last_crc.on_byte(byte, cursor, tx);
-            });
-            fast_last_crc.bytes_folded()
-        });
+        fast_last.on_step(
+            || {
+                rx.drain_raw(rx_dma, |byte, cursor| {
+                    fast_last_crc.on_byte(byte, cursor, tx);
+                });
+                fast_last_crc.bytes_folded()
+            },
+            || scheduler.commit_pending(),
+        );
+    }
+
+    /// Long-horizon timer match fired (chip-side: SysTick CMP). Two consumers
+    /// share the CMP — the TX-scheduler handoff arm (multi-wrap distances
+    /// where direct TIM2 CC3 can't span the wait) and the Fast Last walk
+    /// grid. The TX-scheduler reports whether the match was its own; if so,
+    /// we're done, otherwise it's a Fast Last grid step.
+    pub fn on_schedule_due(&mut self) {
+        if self.scheduler.on_schedule_due() {
+            return;
+        }
+        self.on_fold_step();
     }
 
     /// USART1 TC fired — the reply has fully drained the wire. Release

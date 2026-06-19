@@ -18,7 +18,7 @@ use osc_drivers::dxl::uart::clock::Clock as DxlClock;
 use osc_drivers::dxl::uart::codec::Codec;
 use osc_drivers::dxl::uart::fast_last::FastLast;
 use osc_drivers::mocks::{EdgeDmaOp, FastLastSchedulerOp, ScheduleOp, TestProviders, TxBusOp};
-use osc_drivers::traits::dxl::{DmaFlags, Providers};
+use osc_drivers::traits::dxl::{DmaFlags, Providers, SendKind};
 
 use crate::mocks::{
     ClockTrimState, EdgeDmaState, FastLastSchedulerState, RxDmaState, TxBusState, TxSchedulerState,
@@ -113,6 +113,19 @@ pub struct Servo {
     /// activation is inline, no CC-compare).
     tx_start_fire: Option<SimTime>,
 
+    /// FastLast deferred-schedule stash — chip-side mirror of the
+    /// `DxlTxScheduler::fast_last_stash` field. Populated when the driver
+    /// calls `Schedule` with `SendKind::FastLast`; consumed by
+    /// `CommitPending` (emitted from inside the FastLast walk's final
+    /// anchor body via `FastLast::on_step`'s commit closure). Holds the
+    /// lifted wall-clock deadline + byte count.
+    tx_pending_stash: Option<(SimTime, u16)>,
+    /// Cursor into `tx_scheduler_state.operations()` — separates ops
+    /// produced since the last drain pass from earlier ones. Polled in
+    /// `advance` after each `on_fold_step` so a `CommitPending` emitted by
+    /// the walk's final body lands the burst within the same wall instant.
+    tx_scheduler_drained: usize,
+
     uart_tx: UartTx,
     uart_rx: UartRx,
     rx_seq: u32,
@@ -146,6 +159,8 @@ impl Servo {
             fast_last_drained: 0,
 
             tx_start_fire: None,
+            tx_pending_stash: None,
+            tx_scheduler_drained: 0,
 
             uart_tx: UartTx::new(DEFAULT_BAUD),
             uart_rx: UartRx::new(DEFAULT_BAUD),
@@ -302,6 +317,8 @@ impl Servo {
         self.systick_fire = None;
         self.fast_last_drained = 0;
         self.tx_start_fire = None;
+        self.tx_pending_stash = None;
+        self.tx_scheduler_drained = 0;
     }
 
     /// Models a power-up reset: wipe the control table and rebuild the
@@ -407,11 +424,12 @@ impl Servo {
 
     /// Drive `Dxl::poll`, then look at any new TxBus / TxScheduler ops to
     /// surface bytes onto `uart_tx`. `StartNow` queues immediately starting
-    /// at `t`; `Schedule` resolves `deadline_tick` to wall-clock and queues
-    /// from there.
+    /// at `t`; `Schedule` resolves the (packet_end_tick, delay_ticks) pair
+    /// to wall-clock — for `SendKind::Plain` queues from there, for
+    /// `SendKind::FastLast` stashes pending until `CommitPending` lands
+    /// from the walk's final-anchor body.
     fn poll_and_queue_tx(&mut self, t: SimTime) {
         let pre_bus = self.tx_bus_state.operations().len();
-        let pre_sch = self.tx_scheduler_state.operations().len();
 
         self.wire_clock_state.stage_now(self.chip_tick(t));
         {
@@ -434,29 +452,68 @@ impl Servo {
             }
         }
 
+        self.drain_tx_scheduler_ops(t);
+        self.drain_fast_last_ops(t);
+    }
+
+    /// Walk new `ScheduleOp` entries since the last drain. Plain schedules
+    /// queue the burst at the resolved wall-clock fire instant. FastLast
+    /// schedules stash the deadline; the matching `CommitPending` (emitted
+    /// by the walk's final-anchor body) takes the stash and queues the
+    /// burst — by construction the commit lands within ~1 byte_time of the
+    /// deadline, so `max(deadline, t)` clamps to "now" when the busy-wait
+    /// exit ran slightly past the deadline (recursive-fire mode at 3M).
+    fn drain_tx_scheduler_ops(&mut self, t: SimTime) {
         let sch_ops = self.tx_scheduler_state.operations();
-        for op in &sch_ops[pre_sch..] {
-            if let ScheduleOp::Schedule {
-                deadline_tick,
-                byte_count,
-                ..
-            } = *op
-            {
-                let fire_at = self.deadline_to_wall(deadline_tick, t);
-                log::trace!(
-                    "servo[{:?}]: tx_scheduler Schedule deadline_tick={} byte_count={} fire_at={:?} (t={:?})",
-                    self.id,
-                    deadline_tick,
+        for op in &sch_ops[self.tx_scheduler_drained..] {
+            match *op {
+                ScheduleOp::Schedule {
+                    packet_end_tick,
+                    delay_ticks,
                     byte_count,
-                    fire_at,
-                    t
-                );
-                self.uart_tx.queue_burst_indirect(0, byte_count, fire_at);
-                self.tx_start_fire = Some(fire_at);
+                    kind,
+                } => {
+                    let fire_at = self.anchor_plus_delay_to_wall(packet_end_tick, delay_ticks, t);
+                    log::trace!(
+                        "servo[{:?}]: tx_scheduler Schedule kind={:?} packet_end_tick={} delay_ticks={} byte_count={} fire_at={:?} (t={:?})",
+                        self.id,
+                        kind,
+                        packet_end_tick,
+                        delay_ticks,
+                        byte_count,
+                        fire_at,
+                        t
+                    );
+                    match kind {
+                        SendKind::Plain => {
+                            self.uart_tx.queue_burst_indirect(0, byte_count, fire_at);
+                            self.tx_start_fire = Some(fire_at);
+                        }
+                        SendKind::FastLast => {
+                            self.tx_pending_stash = Some((fire_at, byte_count));
+                        }
+                    }
+                }
+                ScheduleOp::CommitPending => {
+                    if let Some((deadline_wall, byte_count)) = self.tx_pending_stash.take() {
+                        let fire_at = deadline_wall.max(t);
+                        log::trace!(
+                            "servo[{:?}]: tx_scheduler CommitPending byte_count={} fire_at={:?} (t={:?})",
+                            self.id,
+                            byte_count,
+                            fire_at,
+                            t
+                        );
+                        self.uart_tx.queue_burst_indirect(0, byte_count, fire_at);
+                        self.tx_start_fire = Some(fire_at);
+                    }
+                }
+                ScheduleOp::Cancel => {
+                    self.tx_pending_stash = None;
+                }
             }
         }
-
-        self.drain_fast_last_ops(t);
+        self.tx_scheduler_drained = sch_ops.len();
     }
 
     /// Walk new `FastLastSchedulerOp` entries since the last drain and
@@ -516,11 +573,21 @@ impl Servo {
     /// in the future from `t` (true for Plain / RDT-based schedules; not
     /// for already-passed deadlines, which the production code lets fire
     /// ASAP).
-    fn deadline_to_wall(&self, deadline_tick: u16, t: SimTime) -> SimTime {
-        let now_tick = self.chip_tick(t);
-        let delta_ticks = deadline_tick.wrapping_sub(now_tick) as u64;
+    /// Sim-side mirror of the chip-side `DxlTxScheduler::lift_combine` —
+    /// (anchor in TIM2 u16 ticks, delay in HCLK u32 ticks) → absolute wall
+    /// time. Same modular-delta-from-now math as `drain_fast_last_ops`'s
+    /// `SetDeadline` lift, just exposed for the TxScheduler path.
+    fn anchor_plus_delay_to_wall(
+        &self,
+        packet_end_tick: u16,
+        delay_ticks: u32,
+        t: SimTime,
+    ) -> SimTime {
+        let delta_ticks = self.chip_tick(t).wrapping_sub(packet_end_tick) as u64;
         let delta_ns = delta_ticks.saturating_mul(1_000_000_000) / self.freq_hz();
-        t + delta_ns
+        let packet_end_wall = SimTime::from_ns(t.as_ns().saturating_sub(delta_ns));
+        let delay_ns = (delay_ticks as u64).saturating_mul(1_000_000_000) / self.freq_hz();
+        packet_end_wall + delay_ns
     }
 }
 
@@ -563,6 +630,7 @@ impl EventSource for Servo {
                 log::trace!("servo[{:?}]: on_fold_step fire_at={:?}", self.id, fire);
                 self.uart.on_fold_step();
                 self.drain_fast_last_ops(t);
+                self.drain_tx_scheduler_ops(t);
             }
             // CC-compare body. On Fast Last replies this also runs the
             // post-fire tail fold inside `on_tx_start`, draining any GUARD

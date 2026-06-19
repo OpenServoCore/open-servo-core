@@ -144,16 +144,19 @@ pub fn on_tim2_cc3() {
     unsafe { Drivers::dxl_uart() }.on_tx_start();
 }
 
-/// SysTick CMP-match — a Fast Last periodic-walk fold body is due. Routes
-/// into the driver's `on_fold_step`. CNTIF must be cleared at entry: the
-/// final body returns without re-arming, and a stale-but-latched CNTIF
-/// would re-fire the IRQ the moment we return.
+/// SysTick CMP-match — a long-horizon scheduling deadline arrived. Two
+/// consumers share the CMP: the TX-scheduler handoff (multi-wrap-distance
+/// arms that direct TIM2 CC3 can't span) and the Fast Last periodic-walk
+/// fold body. The driver's `on_schedule_due` demuxes; if the TX scheduler
+/// armed the match it consumes, otherwise the fold body runs. CNTIF must
+/// be cleared at entry: the final fold body returns without re-arming and
+/// a stale-but-latched CNTIF would re-fire the IRQ the moment we return.
 ///
 /// SAFETY: see `on_dma1_ch7` — SysTick shares PFIC HIGH with USART1 /
 /// DMA1_CH7 / TIM2 so no concurrent `&mut` into the driver is possible.
 pub fn on_systick() {
     systick::clear_match();
-    unsafe { Drivers::dxl_uart() }.on_fold_step();
+    unsafe { Drivers::dxl_uart() }.on_schedule_due();
 }
 
 /// Wires osc-ch32 ISR bodies into the vector table. Caller must depend on

@@ -119,7 +119,7 @@ impl Drivers {
             Codec::new(EdgeDma),
             Clock::new(defaults.dxl_baud, UsartBaud, ClockTrim),
             RxDma,
-            DxlTxScheduler,
+            DxlTxScheduler::default(),
             DxlTxBus,
             FastLast::new(FastLastScheduler::default()),
             WireClock,

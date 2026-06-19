@@ -7,10 +7,12 @@ use crate::traits::dxl::{FastLastScheduler, SendKind, TxScheduler};
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub enum ScheduleOp {
     Schedule {
-        deadline_tick: u16,
+        packet_end_tick: u16,
+        delay_ticks: u32,
         byte_count: u16,
         kind: SendKind,
     },
+    CommitPending,
     Cancel,
 }
 
@@ -18,11 +20,13 @@ mock! {
     pub TxScheduler {}
     impl TxScheduler for TxScheduler {
         // Same value as the production V006 binding (HCLK = 48 MHz) so driver
-        // tests' deadline_tick math lands on the same numbers the chip sees.
+        // tests' delay_ticks math lands on the same numbers the chip sees.
         const TICKS_PER_US: u16 = 48;
 
-        fn schedule(&mut self, deadline_tick: u16, byte_count: u16, kind: SendKind);
+        fn schedule(&mut self, packet_end_tick: u16, delay_ticks: u32, byte_count: u16, kind: SendKind);
+        fn commit_pending(&mut self);
         fn cancel(&mut self);
+        fn on_schedule_due(&mut self) -> bool;
     }
 }
 

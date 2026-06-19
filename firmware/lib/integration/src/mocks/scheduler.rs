@@ -20,9 +20,10 @@ pub fn mock_tx_scheduler() -> (MockTxScheduler, TxSchedulerState) {
     {
         let ops = state.operations.clone();
         m.expect_schedule()
-            .returning_st(move |deadline_tick, byte_count, kind| {
+            .returning_st(move |packet_end_tick, delay_ticks, byte_count, kind| {
                 ops.borrow_mut().push(ScheduleOp::Schedule {
-                    deadline_tick,
+                    packet_end_tick,
+                    delay_ticks,
                     byte_count,
                     kind,
                 });
@@ -30,10 +31,22 @@ pub fn mock_tx_scheduler() -> (MockTxScheduler, TxSchedulerState) {
     }
     {
         let ops = state.operations.clone();
+        m.expect_commit_pending().returning_st(move || {
+            ops.borrow_mut().push(ScheduleOp::CommitPending);
+        });
+    }
+    {
+        let ops = state.operations.clone();
         m.expect_cancel().returning_st(move || {
             ops.borrow_mut().push(ScheduleOp::Cancel);
         });
     }
+    // Sim doesn't model the SysTick handoff path — the simulated wire clock
+    // and scheduler tick share an axis, so `schedule` for Plain always lands
+    // in the direct-arm branch and never arms a handoff CMP. Return false so
+    // any stray invocation routes to the FastLast fold path. Override per-
+    // test if a future timing test exercises the handoff.
+    m.expect_on_schedule_due().returning_st(|| false);
     (m, state)
 }
 

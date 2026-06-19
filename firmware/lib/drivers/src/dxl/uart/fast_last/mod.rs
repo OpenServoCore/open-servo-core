@@ -128,8 +128,8 @@ impl<S: FastLastScheduler> FastLast<S> {
             .schedule(anchor.wrapping_sub(S::FAST_LAST_ENTRY_TICKS as u32));
     }
 
-    /// Drive one grid body. Composite calls this from its SysTick demux
-    /// when our CMP fires.
+    /// Drive one grid body. Composite calls this from its long-horizon
+    /// timer demux when our CMP fires.
     ///
     /// `walker` runs the classifier + parser-drain + per-byte fold for
     /// whatever bytes have landed since the last body, and returns the
@@ -137,25 +137,37 @@ impl<S: FastLastScheduler> FastLast<S> {
     /// Called at least once per invocation. The final-anchor busy-wait
     /// exits when the returned count reaches `predecessor_bytes − GUARD`.
     ///
-    /// Single closure (not `(walker, bytes_walked)`) so the composite can
-    /// capture `&mut codec` + `&mut fast_last_crc` once for both the walk
-    /// and the read — splitting them would force interior mutability on
-    /// the count.
-    pub fn on_step<W>(&mut self, mut walker: W)
+    /// `commit_pending` is invoked exactly once on entry to the final-
+    /// anchor body, *before* the busy-wait starts. The composite wires it
+    /// to `TxScheduler::commit_pending` so the wire-fire schedule the
+    /// TxScheduler stashed at `send_slot(Last)` time is committed while
+    /// there's still ~1 byte_time of headroom — the hardware match latches
+    /// during the busy-wait spin and the fire ISR runs as soon as the
+    /// busy-wait exits. Not called from intermediate-step bodies.
+    ///
+    /// Single walker closure (not `(walker, bytes_walked)`) so the
+    /// composite can capture `&mut codec` + `&mut fast_last_crc` once for
+    /// both the walk and the read — splitting them would force interior
+    /// mutability on the count.
+    pub fn on_step<W, C>(&mut self, mut walker: W, commit_pending: C)
     where
         W: FnMut() -> u32,
+        C: FnOnce(),
     {
         match self.phase {
             FastLastPhase::PeriodicWalk => {
                 let bytes_walked = walker();
                 if self.next_anchor_offset == self.final_anchor_offset {
-                    // Final anchor — busy-wait. Uncontested at high baud
+                    // Final anchor — commit the TxScheduler stash so the
+                    // wire-fire path arms while there's still a byte_time of
+                    // headroom, then busy-wait. Uncontested at high baud
                     // because the composite paused DMA1_CH7 HT/TC at start
                     // time, so this body is the sole HIGH consumer in the
                     // window. Exit when `bytes_walked >= predecessor_bytes −
                     // GUARD` OR scheduler reports deadline passed; the
                     // remaining GUARD bytes are absorbed by the TX-start
                     // body's tail fold.
+                    commit_pending();
                     //
                     // SAFETY: the plateau check (no progress between walker
                     // calls) is a hard backstop — in production the deadline
