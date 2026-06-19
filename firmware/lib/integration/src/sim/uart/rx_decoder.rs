@@ -56,7 +56,16 @@ impl RxDecoder {
             }
             RxState::RxActive { start_ns, edges } => {
                 let decode_at = *start_ns + 10 * self.bit_period_ns;
-                if at_ns >= decode_at {
+                // Any edge past the stop bit (9·bp) belongs to the next
+                // byte, not this one — data-bit samples max out at 8.5·bp,
+                // so finalizing here doesn't change the decode. Without
+                // this, a back-to-back start bit landing a few ns before
+                // `decode_at` (typical of integer-tick scheduling at bauds
+                // where the wall clock doesn't divide evenly into the
+                // ref-clock period) gets absorbed into this byte's edge
+                // list and silently dropped when the state transitions.
+                let stop_bit_at = *start_ns + 9 * self.bit_period_ns;
+                if at_ns >= stop_bit_at {
                     let byte = decode_byte(edges, *start_ns, self.bit_period_ns);
                     out.push(RxEffect::ByteComplete {
                         byte,
@@ -203,6 +212,37 @@ mod tests {
                 complete_at_ns: next_start + 10 * bp,
             }],
         );
+    }
+
+    #[test]
+    fn handles_back_to_back_bytes_with_sub_bp_overlap() {
+        // Simulate integer-tick truncation at 57600 baud: the firmware's
+        // `bytes_to_ticks(N)` rounds down, scheduling the next byte's start
+        // bit a few ns before this byte's nominal `decode_at`. Real UART
+        // hardware samples each bit at midpoint and treats any falling edge
+        // past the stop bit as the next start bit — the decoder must do
+        // the same, not absorb the early start bit into this byte's edges.
+        let enc = TxEncoder::new(BAUD);
+        let bp = enc.bit_period_ns();
+        let mut dec = RxDecoder::new(BAUD);
+        let mut effects = Vec::new();
+        for (at, rising) in enc.encode_byte(0x01, 0) {
+            dec.on_edge(at, rising, &mut effects);
+        }
+        // Next byte's start bit lands 2 ns before this one's decode_at.
+        let overlap_start = 10 * bp - 2;
+        for (at, rising) in enc.encode_byte(0x00, overlap_start) {
+            dec.on_edge(at, rising, &mut effects);
+        }
+        dec.on_internal_tick(overlap_start + 10 * bp, &mut effects);
+        let bytes: Vec<u8> = effects
+            .iter()
+            .filter_map(|e| match e {
+                RxEffect::ByteComplete { byte, .. } => Some(*byte),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(bytes, vec![0x01, 0x00]);
     }
 
     #[test]

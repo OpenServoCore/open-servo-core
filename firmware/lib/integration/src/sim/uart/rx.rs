@@ -155,10 +155,13 @@ mod tests {
 
     #[test]
     fn advance_returns_effects_for_caller_routing() {
+        // 0xFF ends high → no stop-bit edge, so completion comes through
+        // `on_internal_tick` at `decode_at = 10*bp`. A byte with bit 7 = 0
+        // would finalize on its stop-bit rising edge at 9*bp instead.
         let enc = TxEncoder::new(BAUD);
         let bp = enc.bit_period_ns();
         let mut rx = UartRx::new(BAUD);
-        for (at_ns, rising) in enc.encode_byte(0x42, 0) {
+        for (at_ns, rising) in enc.encode_byte(0xFF, 0) {
             rx.receive_edge(SimTime::from_ns(at_ns), rising);
         }
         for i in 0..=9u64 {
@@ -168,7 +171,7 @@ mod tests {
         assert_eq!(
             effects,
             vec![RxEffect::ByteComplete {
-                byte: 0x42,
+                byte: 0xFF,
                 complete_at_ns: 10 * bp,
             }],
         );
@@ -189,11 +192,13 @@ mod tests {
 
     #[test]
     fn next_wake_yields_internal_when_no_pending_edges() {
+        // See `advance_returns_effects_for_caller_routing` — 0xFF leaves the
+        // decoder in `RxActive` waiting on the internal-tick boundary.
         let enc = TxEncoder::new(BAUD);
         let bp = enc.bit_period_ns();
         let mut rx = UartRx::new(BAUD);
 
-        for (at_ns, rising) in enc.encode_byte(0x42, 0) {
+        for (at_ns, rising) in enc.encode_byte(0xFF, 0) {
             rx.receive_edge(SimTime::from_ns(at_ns), rising);
         }
         for i in 0..=9u64 {
