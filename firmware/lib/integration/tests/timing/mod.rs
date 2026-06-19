@@ -1,1 +1,2 @@
-mod fixtures;
+#[path = "../support.rs"]
+mod support;

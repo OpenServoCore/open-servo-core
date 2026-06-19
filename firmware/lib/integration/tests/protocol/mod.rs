@@ -1,3 +1,6 @@
+#[path = "../support.rs"]
+mod support;
+
 mod bulk_read;
 mod bulk_write;
 mod fast_bulk_read;
@@ -5,7 +8,6 @@ mod fast_sync_read;
 mod ping;
 mod read;
 mod reg_write_action;
-mod support;
 mod sync_read;
 mod sync_write;
 mod unsupported;

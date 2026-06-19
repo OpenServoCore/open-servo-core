@@ -1,6 +1,12 @@
 use dxl_protocol::types::{Id, Instruction, PingStatus, Status, StatusError};
 use osc_integration::sim::{DeviceId, Host, Servo, Sim, SimTime, parse_status_stream};
 
+// Shared by `tests/{protocol,registers,timing}/mod.rs` via
+// `#[path = "../support.rs"] mod support;`. Each test binary uses a
+// different subset of these helpers, so dead-code allows live on every
+// public item to keep the unused-in-this-binary warnings off.
+
+#[allow(dead_code)]
 pub struct Setup {
     pub sim: Sim,
     pub host: DeviceId,
@@ -9,6 +15,7 @@ pub struct Setup {
 }
 
 /// Build a host + `n_servos` servos at DXL ids `1..=n_servos`.
+#[allow(dead_code)]
 pub fn setup(n_servos: usize) -> Setup {
     let mut sim = Sim::default();
     let host = sim.add_device(Host::new);
