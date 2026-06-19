@@ -1021,6 +1021,13 @@ impl<P: Providers, const RX_BUF_LEN: usize, const EDGE_BUF_LEN: usize, const TX_
         self.fast_last.cancel();
         self.fast_last_crc.cancel();
         self.codec.resume_edges();
+        // Per `dxl-streaming-rx.md` §5.3: our own TX completion is a
+        // packet boundary at which stale chain state must reset. The
+        // §5.3 "next instruction header" trigger is too late for the
+        // universal byte-skip — at slow baud the deadline-bounded skip
+        // can outlive the inter-packet gap and eat the next preamble
+        // before the parser ever reaches the header event.
+        self.codec.cancel_skip();
         // Belt-and-suspenders: the SkipComplete handler clears this on
         // success, but a silent predecessor would leave it `Some` across
         // the next reply. Clearing here keeps the chain-pending state

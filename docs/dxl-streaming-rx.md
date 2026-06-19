@@ -169,6 +169,8 @@ For slots k > 0, the chip does not wait for any subsequent event. The handler th
 
 The §5.2 silent-predecessor handling matches observed Robotis behavior — a single silent slot kills the whole chain and host implementations do not attempt to skip past the gap. The chip's chain state implicitly resets at the next instruction-header event, when the chip re-derives whether it owns a slot in the new request. No cascading-silence recovery, no synthetic predecessor end, no per-slot or chain-level timeout.
 
+The next-instruction-header boundary is sufficient only when the universal byte-skip (§5.2) drains or expires before that header's bytes reach the parser. At slow baud the skip's per-byte deadline can outlive the inter-packet gap, eating the next preamble's leading bytes before the header event fires — at which point the parser never sees the new instruction and the skip-cleared-at-header trigger never gets the chance to run. The chip's own TX completion is the additional reset boundary: at `on_tx_complete` any in-flight skip is cleared, since our chain participation is over regardless of whether the chain ran clean or collapsed. For Plain (non-chain) replies the skip is already `None` and the clear is a no-op.
+
 ### 5.4 Drift sampling coverage
 
 The HSI drift estimator runs on every instruction packet regardless of target ID — instructions are always host-transmitted (HSE-clocked), so the source clock is consistent. Status packets never contribute, gated by the `hsi_active` flag described in §4.3. The ~7 header-byte ticks before flag activation are lost per instruction, which is acceptable: body bytes dominate the sample rate, and packets with no body (Ping) contribute little either way.

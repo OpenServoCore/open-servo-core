@@ -350,6 +350,17 @@ impl<R: EdgeDma, CRC: CrcUmts, const RX_BUF_LEN: usize, const EDGE_BUF_LEN: usiz
         }
     }
 
+    /// Clear any in-flight universal byte-skip. Called by the composite at
+    /// the chip's own TX-complete event (doc §5.3): once our chain
+    /// participation is over, a skip that's still tracking the chain
+    /// envelope is stale, and at slow baud the deadline-bounded skip
+    /// (`SKIP_DEADLINE_SLACK_BYTES`) can outlive the inter-packet gap and
+    /// eat the next preamble. On non-chain TX (Plain reply) the skip is
+    /// already `None`, so the clear is a no-op.
+    pub fn cancel_skip(&mut self) {
+        self.skip = None;
+    }
+
     /// Monotonic count of Instruction headers the parser has emitted.
     /// Foreign IDs count too (sink filters at its layer); Status frames
     /// don't.
@@ -562,6 +573,10 @@ impl<
         F: FnMut(PollEvent<'_>, &mut Rx<R, EDGE_BUF_LEN>) -> PollAction,
     {
         self.rx.poll(now, ticks_per_bit, on_event);
+    }
+
+    pub fn cancel_skip(&mut self) {
+        self.rx.cancel_skip();
     }
 
     pub fn instruction_count(&self) -> u32 {
