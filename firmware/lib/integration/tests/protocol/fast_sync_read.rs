@@ -1,18 +1,21 @@
-use crate::support::{Setup, assert_bus_healthy, setup};
+use crate::support::{Setup, assert_bus_healthy, matrix, setup_with};
 use dxl_protocol::types::{Id, Slot, StatusError};
-use osc_core::StatusReturnLevel;
 use osc_core::regions::{CONFIG_REGION_SIZE, config::addr::comms};
 use osc_core::services::dxl::limits::MAX_CONTROL_RW;
+use osc_core::{BaudRate, StatusReturnLevel};
 use osc_integration::sim::{
     FastStatusCrc, Host, Servo, SimTime, format_hex, parse_fast_sync_status,
 };
+use rstest::rstest;
+use rstest_reuse::apply;
 
 const CONFIG_REGION_END_ADDR: u16 = CONFIG_REGION_SIZE as u16;
 const OVER_MAX_CONTROL_RW: u16 = MAX_CONTROL_RW as u16 + 1;
 
-#[test_log::test]
-fn fast_sync_read_replies_per_id_in_order() {
-    let Setup { mut sim, host, .. } = setup(3);
+#[apply(matrix)]
+fn fast_sync_read_replies_per_id_in_order(baud_idx: u8, rdt_us: u32) {
+    let baud = BaudRate::from_idx(baud_idx).expect("valid baud idx");
+    let Setup { mut sim, host, .. } = setup_with(3, baud, rdt_us);
 
     sim.device_mut::<Host>(host)
         .send_fast_sync_read(comms::ID, 1, &[1, 2, 3]);
@@ -20,7 +23,7 @@ fn fast_sync_read_replies_per_id_in_order() {
     sim.advance(SimTime::from_ms(20));
 
     let rx = sim.device::<Host>(host).rx_bytes();
-    insta::assert_snapshot!(format_hex(&rx));
+    insta::assert_snapshot!("fast_sync_read_replies_per_id_in_order", format_hex(&rx));
 
     let status = parse_fast_sync_status(&rx, 1);
     assert_eq!(status.crc, FastStatusCrc::Good);
@@ -46,9 +49,10 @@ fn fast_sync_read_replies_per_id_in_order() {
     );
 }
 
-#[test_log::test]
-fn fast_sync_read_single_target_replies_once() {
-    let Setup { mut sim, host, .. } = setup(1);
+#[apply(matrix)]
+fn fast_sync_read_single_target_replies_once(baud_idx: u8, rdt_us: u32) {
+    let baud = BaudRate::from_idx(baud_idx).expect("valid baud idx");
+    let Setup { mut sim, host, .. } = setup_with(1, baud, rdt_us);
 
     sim.device_mut::<Host>(host)
         .send_fast_sync_read(comms::ID, 1, &[1]);
@@ -73,9 +77,10 @@ fn fast_sync_read_single_target_replies_once() {
 /// Read where the dispatcher still emits a per-slot DataRange error
 /// frame; for Fast, the per-slot wire shape has no room for an
 /// "error-only" slot, so the whole reply is suppressed.
-#[test_log::test]
-fn fast_sync_read_zero_length_yields_no_reply() {
-    let Setup { mut sim, host, .. } = setup(3);
+#[apply(matrix)]
+fn fast_sync_read_zero_length_yields_no_reply(baud_idx: u8, rdt_us: u32) {
+    let baud = BaudRate::from_idx(baud_idx).expect("valid baud idx");
+    let Setup { mut sim, host, .. } = setup_with(3, baud, rdt_us);
 
     sim.device_mut::<Host>(host)
         .send_fast_sync_read(comms::ID, 0, &[1, 2, 3]);
@@ -88,9 +93,10 @@ fn fast_sync_read_zero_length_yields_no_reply() {
 
 /// Same suppression mechanic as zero-length: `len > MAX_CONTROL_RW` short-
 /// circuits before slot emission.
-#[test_log::test]
-fn fast_sync_read_length_over_cap_yields_no_reply() {
-    let Setup { mut sim, host, .. } = setup(3);
+#[apply(matrix)]
+fn fast_sync_read_length_over_cap_yields_no_reply(baud_idx: u8, rdt_us: u32) {
+    let baud = BaudRate::from_idx(baud_idx).expect("valid baud idx");
+    let Setup { mut sim, host, .. } = setup_with(3, baud, rdt_us);
 
     sim.device_mut::<Host>(host)
         .send_fast_sync_read(comms::ID, OVER_MAX_CONTROL_RW, &[1, 2, 3]);
@@ -104,9 +110,10 @@ fn fast_sync_read_length_over_cap_yields_no_reply() {
 /// `read_bytes` zero-fills OOB and returns Ok, so each slot emits OK +
 /// zero-data. The Status reply stays whole because every slot still
 /// emits its `length` bytes.
-#[test_log::test]
-fn fast_sync_read_across_region_boundary_returns_zeros() {
-    let Setup { mut sim, host, .. } = setup(3);
+#[apply(matrix)]
+fn fast_sync_read_across_region_boundary_returns_zeros(baud_idx: u8, rdt_us: u32) {
+    let baud = BaudRate::from_idx(baud_idx).expect("valid baud idx");
+    let Setup { mut sim, host, .. } = setup_with(3, baud, rdt_us);
 
     sim.device_mut::<Host>(host)
         .send_fast_sync_read(CONFIG_REGION_END_ADDR - 2, 4, &[1, 2, 3]);
@@ -134,13 +141,14 @@ fn fast_sync_read_across_region_boundary_returns_zeros() {
 /// Wire shape is slot 0 + slot 2 with broken CRC; a real host rejects
 /// the Status reply via CRC validation while the decoder surfaces both
 /// pieces.
-#[test_log::test]
-fn fast_sync_read_srl_none_predecessor_collapses_tail() {
+#[apply(matrix)]
+fn fast_sync_read_srl_none_predecessor_collapses_tail(baud_idx: u8, rdt_us: u32) {
+    let baud = BaudRate::from_idx(baud_idx).expect("valid baud idx");
     let Setup {
         mut sim,
         host,
         servos,
-    } = setup(3);
+    } = setup_with(3, baud, rdt_us);
     sim.device_mut::<Servo>(servos[1])
         .set_status_return_level(StatusReturnLevel::None);
 
@@ -176,13 +184,14 @@ fn fast_sync_read_srl_none_predecessor_collapses_tail() {
 /// feeding the Fast Last fold. Wire = slot 0 + slot 2 + broken CRC; host
 /// rejects via CRC validation. Reconnect + `assert_bus_healthy` confirms
 /// no Fast Last state stays latched across the collapse.
-#[test_log::test]
-fn fast_sync_read_data_line_disconnect_collapses_tail() {
+#[apply(matrix)]
+fn fast_sync_read_data_line_disconnect_collapses_tail(baud_idx: u8, rdt_us: u32) {
+    let baud = BaudRate::from_idx(baud_idx).expect("valid baud idx");
     let Setup {
         mut sim,
         host,
         servos,
-    } = setup(3);
+    } = setup_with(3, baud, rdt_us);
     sim.device_mut::<Servo>(servos[1]).disconnect(false);
 
     sim.device_mut::<Host>(host)
@@ -217,13 +226,14 @@ fn fast_sync_read_data_line_disconnect_collapses_tail() {
 /// collapse as the disconnect / SRL=None cases. Slot 2 still fires via
 /// CC-compare; trailing CRC fails validation; host rejects the Status
 /// reply.
-#[test_log::test]
-fn fast_sync_read_unknown_id_in_ids_collapses_tail() {
+#[apply(matrix)]
+fn fast_sync_read_unknown_id_in_ids_collapses_tail(baud_idx: u8, rdt_us: u32) {
+    let baud = BaudRate::from_idx(baud_idx).expect("valid baud idx");
     let Setup {
         mut sim,
         host,
         servos,
-    } = setup(3);
+    } = setup_with(3, baud, rdt_us);
 
     sim.device_mut::<Host>(host)
         .send_fast_sync_read(comms::ID, 1, &[1, 99, 3]);
@@ -251,9 +261,10 @@ fn fast_sync_read_unknown_id_in_ids_collapses_tail() {
     assert_bus_healthy(&mut sim, host, &servos);
 }
 
-#[test_log::test]
-fn fast_sync_read_all_unknown_ids_yields_no_reply() {
-    let Setup { mut sim, host, .. } = setup(3);
+#[apply(matrix)]
+fn fast_sync_read_all_unknown_ids_yields_no_reply(baud_idx: u8, rdt_us: u32) {
+    let baud = BaudRate::from_idx(baud_idx).expect("valid baud idx");
+    let Setup { mut sim, host, .. } = setup_with(3, baud, rdt_us);
 
     sim.device_mut::<Host>(host)
         .send_fast_sync_read(comms::ID, 1, &[99]);

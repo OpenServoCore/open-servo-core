@@ -1,25 +1,28 @@
-use crate::support::{Setup, setup};
+use crate::support::{Setup, matrix, setup_with};
 use dxl_protocol::types::{ErrorCode, Id, Instruction, Status, StatusError};
 use osc_core::regions::{
     config::addr::{comms, identity},
     control::{Mode, addr::lifecycle},
 };
-use osc_core::{RegionStorage, StatusReturnLevel};
+use osc_core::{BaudRate, RegionStorage, StatusReturnLevel};
 use osc_integration::sim::{
     Host, Servo, Sim, SimTime, format_hex, parse_status, parse_status_stream,
 };
+use rstest::rstest;
+use rstest_reuse::apply;
 
 const NEW_ID: u8 = 2;
 const TORQUE_ON: &[u8] = &[1];
 const MODE_PID: &[u8] = &[Mode::PositionPid as u8];
 
-#[test_log::test]
-fn reg_write_alone_replies_ok_and_does_not_mutate_table() {
+#[apply(matrix)]
+fn reg_write_alone_replies_ok_and_does_not_mutate_table(baud_idx: u8, rdt_us: u32) {
+    let baud = BaudRate::from_idx(baud_idx).expect("valid baud idx");
     let Setup {
         mut sim,
         host,
         servos,
-    } = setup(1);
+    } = setup_with(1, baud, rdt_us);
 
     sim.device_mut::<Host>(host)
         .send_reg_write(Id::new(1), lifecycle::TORQUE_ENABLE, TORQUE_ON);
@@ -27,7 +30,10 @@ fn reg_write_alone_replies_ok_and_does_not_mutate_table() {
     sim.advance(SimTime::from_ms(5));
 
     let rx = sim.device::<Host>(host).rx_bytes();
-    insta::assert_snapshot!(format_hex(&rx));
+    insta::assert_snapshot!(
+        "reg_write_alone_replies_ok_and_does_not_mutate_table",
+        format_hex(&rx)
+    );
     assert_eq!(
         parse_status(Instruction::RegWrite, &rx),
         Status::Empty {
@@ -45,20 +51,24 @@ fn reg_write_alone_replies_ok_and_does_not_mutate_table() {
     );
 }
 
-#[test_log::test]
-fn action_alone_with_no_staged_writes_replies_ok() {
+#[apply(matrix)]
+fn action_alone_with_no_staged_writes_replies_ok(baud_idx: u8, rdt_us: u32) {
+    let baud = BaudRate::from_idx(baud_idx).expect("valid baud idx");
     let Setup {
         mut sim,
         host,
         servos,
-    } = setup(1);
+    } = setup_with(1, baud, rdt_us);
 
     sim.device_mut::<Host>(host).send_action(Id::new(1));
     sim.device_mut::<Host>(host).wait_for_status();
     sim.advance(SimTime::from_ms(5));
 
     let rx = sim.device::<Host>(host).rx_bytes();
-    insta::assert_snapshot!(format_hex(&rx));
+    insta::assert_snapshot!(
+        "action_alone_with_no_staged_writes_replies_ok",
+        format_hex(&rx)
+    );
     assert_eq!(
         parse_status(Instruction::Action, &rx),
         Status::Empty {
@@ -75,13 +85,14 @@ fn action_alone_with_no_staged_writes_replies_ok() {
     );
 }
 
-#[test_log::test]
-fn reg_write_then_action_commits_to_table() {
+#[apply(matrix)]
+fn reg_write_then_action_commits_to_table(baud_idx: u8, rdt_us: u32) {
+    let baud = BaudRate::from_idx(baud_idx).expect("valid baud idx");
     let Setup {
         mut sim,
         host,
         servos,
-    } = setup(1);
+    } = setup_with(1, baud, rdt_us);
 
     sim.device_mut::<Host>(host)
         .send_reg_write(Id::new(1), lifecycle::TORQUE_ENABLE, TORQUE_ON);
@@ -117,13 +128,14 @@ fn reg_write_then_action_commits_to_table() {
     );
 }
 
-#[test_log::test]
-fn chain_of_two_reg_writes_commits_atomically_on_action() {
+#[apply(matrix)]
+fn chain_of_two_reg_writes_commits_atomically_on_action(baud_idx: u8, rdt_us: u32) {
+    let baud = BaudRate::from_idx(baud_idx).expect("valid baud idx");
     let Setup {
         mut sim,
         host,
         servos,
-    } = setup(1);
+    } = setup_with(1, baud, rdt_us);
 
     sim.device_mut::<Host>(host)
         .send_reg_write(Id::new(1), lifecycle::TORQUE_ENABLE, TORQUE_ON);
@@ -159,13 +171,14 @@ fn chain_of_two_reg_writes_commits_atomically_on_action() {
     assert_eq!(lc.mode, Mode::PositionPid);
 }
 
-#[test_log::test]
-fn action_clears_staged_queue_subsequent_action_is_noop() {
+#[apply(matrix)]
+fn action_clears_staged_queue_subsequent_action_is_noop(baud_idx: u8, rdt_us: u32) {
+    let baud = BaudRate::from_idx(baud_idx).expect("valid baud idx");
     let Setup {
         mut sim,
         host,
         servos,
-    } = setup(1);
+    } = setup_with(1, baud, rdt_us);
 
     sim.device_mut::<Host>(host)
         .send_reg_write(Id::new(1), lifecycle::TORQUE_ENABLE, TORQUE_ON);
@@ -198,9 +211,10 @@ fn action_clears_staged_queue_subsequent_action_is_noop() {
     );
 }
 
-#[test_log::test]
-fn reg_write_to_ro_field_replies_access_error() {
-    let Setup { mut sim, host, .. } = setup(1);
+#[apply(matrix)]
+fn reg_write_to_ro_field_replies_access_error(baud_idx: u8, rdt_us: u32) {
+    let baud = BaudRate::from_idx(baud_idx).expect("valid baud idx");
+    let Setup { mut sim, host, .. } = setup_with(1, baud, rdt_us);
 
     sim.device_mut::<Host>(host)
         .send_reg_write(Id::new(1), identity::FIRMWARE_VERSION, &[0x42]);
@@ -217,13 +231,14 @@ fn reg_write_to_ro_field_replies_access_error() {
     );
 }
 
-#[test_log::test]
-fn prior_staged_writes_survive_a_failed_reg_write() {
+#[apply(matrix)]
+fn prior_staged_writes_survive_a_failed_reg_write(baud_idx: u8, rdt_us: u32) {
+    let baud = BaudRate::from_idx(baud_idx).expect("valid baud idx");
     let Setup {
         mut sim,
         host,
         servos,
-    } = setup(1);
+    } = setup_with(1, baud, rdt_us);
 
     sim.device_mut::<Host>(host)
         .send_reg_write(Id::new(1), lifecycle::TORQUE_ENABLE, TORQUE_ON);
@@ -271,13 +286,17 @@ fn prior_staged_writes_survive_a_failed_reg_write() {
     );
 }
 
-#[test_log::test]
-fn reg_write_broadcast_stages_silently_action_broadcast_commits_silently() {
+#[apply(matrix)]
+fn reg_write_broadcast_stages_silently_action_broadcast_commits_silently(
+    baud_idx: u8,
+    rdt_us: u32,
+) {
+    let baud = BaudRate::from_idx(baud_idx).expect("valid baud idx");
     let Setup {
         mut sim,
         host,
         servos,
-    } = setup(1);
+    } = setup_with(1, baud, rdt_us);
 
     sim.device_mut::<Host>(host)
         .send_reg_write(Id::BROADCAST, lifecycle::TORQUE_ENABLE, TORQUE_ON);
@@ -298,13 +317,16 @@ fn reg_write_broadcast_stages_silently_action_broadcast_commits_silently() {
     );
 }
 
-#[test_log::test]
-fn reg_write_silent_when_srl_is_read_but_action_still_commits() {
+#[apply(matrix)]
+fn reg_write_silent_when_srl_is_read_but_action_still_commits(baud_idx: u8, rdt_us: u32) {
+    let baud = BaudRate::from_idx(baud_idx).expect("valid baud idx");
     let mut sim = Sim::default();
-    let host = sim.add_device(Host::new);
-    let servo = sim.add_device(|id| {
+    let host = sim.add_device(move |id| Host::new(id).with_baud(baud));
+    let servo = sim.add_device(move |id| {
         Servo::setup(id, |s| {
             s.set_dxl_id(Id::new(1));
+            s.set_baud(baud);
+            s.set_rdt_us(rdt_us);
             s.set_status_return_level(StatusReturnLevel::Read);
         })
     });
@@ -338,13 +360,16 @@ fn reg_write_silent_when_srl_is_read_but_action_still_commits() {
     );
 }
 
-#[test_log::test]
-fn action_silent_when_srl_is_read_after_visible_reg_write() {
+#[apply(matrix)]
+fn action_silent_when_srl_is_read_after_visible_reg_write(baud_idx: u8, rdt_us: u32) {
+    let baud = BaudRate::from_idx(baud_idx).expect("valid baud idx");
     let mut sim = Sim::default();
-    let host = sim.add_device(Host::new);
-    let servo = sim.add_device(|id| {
+    let host = sim.add_device(move |id| Host::new(id).with_baud(baud));
+    let servo = sim.add_device(move |id| {
         Servo::setup(id, |s| {
             s.set_dxl_id(Id::new(1));
+            s.set_baud(baud);
+            s.set_rdt_us(rdt_us);
             s.set_status_return_level(StatusReturnLevel::Read);
         })
     });
@@ -372,13 +397,14 @@ fn action_silent_when_srl_is_read_after_visible_reg_write() {
     );
 }
 
-#[test_log::test]
-fn reg_write_under_torque_lock_replies_access_error() {
+#[apply(matrix)]
+fn reg_write_under_torque_lock_replies_access_error(baud_idx: u8, rdt_us: u32) {
+    let baud = BaudRate::from_idx(baud_idx).expect("valid baud idx");
     let Setup {
         mut sim,
         host,
         servos,
-    } = setup(1);
+    } = setup_with(1, baud, rdt_us);
     sim.device::<Servo>(servos[0]).set_torque_enabled(true);
 
     sim.device_mut::<Host>(host)
@@ -417,13 +443,14 @@ fn reg_write_under_torque_lock_replies_access_error() {
     );
 }
 
-#[test_log::test]
-fn inline_write_between_reg_writes_does_not_drain_staged_queue() {
+#[apply(matrix)]
+fn inline_write_between_reg_writes_does_not_drain_staged_queue(baud_idx: u8, rdt_us: u32) {
+    let baud = BaudRate::from_idx(baud_idx).expect("valid baud idx");
     let Setup {
         mut sim,
         host,
         servos,
-    } = setup(1);
+    } = setup_with(1, baud, rdt_us);
 
     sim.device_mut::<Host>(host)
         .send_reg_write(Id::new(1), lifecycle::TORQUE_ENABLE, TORQUE_ON);

@@ -1,11 +1,13 @@
-use crate::support::{Setup, setup};
-use osc_core::RegionStorage;
+use crate::support::{Setup, matrix, setup_with};
 use osc_core::regions::{
     CONFIG_REGION_SIZE,
     config::addr::{comms, identity},
 };
 use osc_core::services::dxl::limits::MAX_CONTROL_RW;
+use osc_core::{BaudRate, RegionStorage};
 use osc_integration::sim::{DEFAULT_FIRMWARE_VERSION, DeviceId, Host, Servo, Sim, SimTime};
+use rstest::rstest;
+use rstest_reuse::apply;
 
 const CONFIG_REGION_END_ADDR: u16 = CONFIG_REGION_SIZE as u16;
 const OVER_MAX_CONTROL_RW: u16 = MAX_CONTROL_RW as u16 + 1;
@@ -18,13 +20,14 @@ fn servo_id(sim: &Sim, servo: DeviceId) -> u8 {
         .with(|c| c.comms.id)
 }
 
-#[test_log::test]
-fn sync_write_mutates_all_targets_silently() {
+#[apply(matrix)]
+fn sync_write_mutates_all_targets_silently(baud_idx: u8, rdt_us: u32) {
+    let baud = BaudRate::from_idx(baud_idx).expect("valid baud idx");
     let Setup {
         mut sim,
         host,
         servos,
-    } = setup(3);
+    } = setup_with(3, baud, rdt_us);
 
     // body = [id=1, new=10, id=2, new=20, id=3, new=30]; length=1 (1 byte/servo).
     let body = [1u8, 10, 2, 20, 3, 30];
@@ -42,13 +45,14 @@ fn sync_write_mutates_all_targets_silently() {
     }
 }
 
-#[test_log::test]
-fn sync_write_single_target_mutates_only_that_servo() {
+#[apply(matrix)]
+fn sync_write_single_target_mutates_only_that_servo(baud_idx: u8, rdt_us: u32) {
+    let baud = BaudRate::from_idx(baud_idx).expect("valid baud idx");
     let Setup {
         mut sim,
         host,
         servos,
-    } = setup(3);
+    } = setup_with(3, baud, rdt_us);
 
     // Body targets only id=2; servos 1 and 3 receive nothing.
     let body = [2u8, 20];
@@ -68,13 +72,14 @@ fn sync_write_single_target_mutates_only_that_servo() {
 
 /// Per `handle_sync_write`: `len == 0` rewinds staged and returns without
 /// writing. No reply either way.
-#[test_log::test]
-fn sync_write_zero_length_does_not_mutate() {
+#[apply(matrix)]
+fn sync_write_zero_length_does_not_mutate(baud_idx: u8, rdt_us: u32) {
+    let baud = BaudRate::from_idx(baud_idx).expect("valid baud idx");
     let Setup {
         mut sim,
         host,
         servos,
-    } = setup(3);
+    } = setup_with(3, baud, rdt_us);
 
     // length=0 → per-servo chunk is just the id with no data bytes.
     let body = [1u8, 2, 3];
@@ -95,13 +100,14 @@ fn sync_write_zero_length_does_not_mutate() {
 /// `length > MAX_CONTROL_RW` trips the dispatcher's cap check before any
 /// table write. 0x55 payload keeps the RX edge density high enough for the
 /// 1 Mbaud parser to commit the full frame before the cap rejection fires.
-#[test_log::test]
-fn sync_write_length_over_cap_does_not_mutate() {
+#[apply(matrix)]
+fn sync_write_length_over_cap_does_not_mutate(baud_idx: u8, rdt_us: u32) {
+    let baud = BaudRate::from_idx(baud_idx).expect("valid baud idx");
     let Setup {
         mut sim,
         host,
         servos,
-    } = setup(3);
+    } = setup_with(3, baud, rdt_us);
 
     let mut body: Vec<u8> = Vec::new();
     for id in 1u8..=3 {
@@ -125,13 +131,14 @@ fn sync_write_length_over_cap_does_not_mutate() {
 /// `identity::FIRMWARE_VERSION` is RO; `write_bytes` returns Err → the
 /// dispatcher's `is_ok()` branch is skipped, no hooks dispatched, no
 /// mutation. Silent like every sync_write path.
-#[test_log::test]
-fn sync_write_to_ro_field_does_not_mutate() {
+#[apply(matrix)]
+fn sync_write_to_ro_field_does_not_mutate(baud_idx: u8, rdt_us: u32) {
+    let baud = BaudRate::from_idx(baud_idx).expect("valid baud idx");
     let Setup {
         mut sim,
         host,
         servos,
-    } = setup(3);
+    } = setup_with(3, baud, rdt_us);
 
     let body = [1u8, 0x42, 2, 0x42, 3, 0x42];
 
@@ -160,13 +167,14 @@ fn sync_write_to_ro_field_does_not_mutate() {
 
 /// `comms::ID` is torque-gated; while `torque_enable=true`, the table's
 /// write-lock policy rejects the write → no mutation, no reply.
-#[test_log::test]
-fn sync_write_under_torque_lock_does_not_mutate() {
+#[apply(matrix)]
+fn sync_write_under_torque_lock_does_not_mutate(baud_idx: u8, rdt_us: u32) {
+    let baud = BaudRate::from_idx(baud_idx).expect("valid baud idx");
     let Setup {
         mut sim,
         host,
         servos,
-    } = setup(3);
+    } = setup_with(3, baud, rdt_us);
     for servo in &servos {
         sim.device::<Servo>(*servo).set_torque_enabled(true);
     }
@@ -188,13 +196,14 @@ fn sync_write_under_torque_lock_does_not_mutate() {
 
 /// Write straddling the config region end → `write_bytes` returns Err
 /// (DataRange) → no mutation. Silent.
-#[test_log::test]
-fn sync_write_across_region_boundary_does_not_mutate() {
+#[apply(matrix)]
+fn sync_write_across_region_boundary_does_not_mutate(baud_idx: u8, rdt_us: u32) {
+    let baud = BaudRate::from_idx(baud_idx).expect("valid baud idx");
     let Setup {
         mut sim,
         host,
         servos,
-    } = setup(3);
+    } = setup_with(3, baud, rdt_us);
 
     // 4-byte body per servo straddling the last byte of CONFIG.
     let mut body: Vec<u8> = Vec::new();
@@ -220,13 +229,14 @@ fn sync_write_across_region_boundary_does_not_mutate() {
 /// Servos 1 and 3 still process their chunks — proves the parser walks
 /// every chunk in body order and a non-existent id mid-body doesn't drop
 /// the surrounding ones.
-#[test_log::test]
-fn sync_write_unknown_id_in_body_skips_that_chunk() {
+#[apply(matrix)]
+fn sync_write_unknown_id_in_body_skips_that_chunk(baud_idx: u8, rdt_us: u32) {
+    let baud = BaudRate::from_idx(baud_idx).expect("valid baud idx");
     let Setup {
         mut sim,
         host,
         servos,
-    } = setup(3);
+    } = setup_with(3, baud, rdt_us);
 
     let body = [1u8, 10, 99, 99, 3, 30];
 

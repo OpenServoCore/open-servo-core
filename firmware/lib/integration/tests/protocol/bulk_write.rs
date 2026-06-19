@@ -1,11 +1,13 @@
-use crate::support::{Setup, setup};
-use osc_core::RegionStorage;
+use crate::support::{Setup, matrix, setup_with};
 use osc_core::regions::{
     CONFIG_REGION_SIZE,
     config::addr::{comms, identity},
 };
 use osc_core::services::dxl::limits::MAX_CONTROL_RW;
+use osc_core::{BaudRate, RegionStorage};
 use osc_integration::sim::{DEFAULT_FIRMWARE_VERSION, DeviceId, Host, Servo, Sim, SimTime};
+use rstest::rstest;
+use rstest_reuse::apply;
 
 const CONFIG_REGION_END_ADDR: u16 = CONFIG_REGION_SIZE as u16;
 const OVER_MAX_CONTROL_RW: u16 = MAX_CONTROL_RW as u16 + 1;
@@ -40,13 +42,14 @@ fn chunk_with_len(id: u8, addr: u16, length: u16, data: &[u8]) -> Vec<u8> {
     out
 }
 
-#[test_log::test]
-fn bulk_write_mutates_all_targets_silently() {
+#[apply(matrix)]
+fn bulk_write_mutates_all_targets_silently(baud_idx: u8, rdt_us: u32) {
+    let baud = BaudRate::from_idx(baud_idx).expect("valid baud idx");
     let Setup {
         mut sim,
         host,
         servos,
-    } = setup(3);
+    } = setup_with(3, baud, rdt_us);
 
     // Heterogeneous (addr, length) per chunk — the bulk-specific shape.
     let mut body = Vec::new();
@@ -82,13 +85,14 @@ fn bulk_write_mutates_all_targets_silently() {
     assert_eq!(s2_rdt, 50, "servo[2] return_delay_2us mutated");
 }
 
-#[test_log::test]
-fn bulk_write_single_target_mutates_only_that_servo() {
+#[apply(matrix)]
+fn bulk_write_single_target_mutates_only_that_servo(baud_idx: u8, rdt_us: u32) {
+    let baud = BaudRate::from_idx(baud_idx).expect("valid baud idx");
     let Setup {
         mut sim,
         host,
         servos,
-    } = setup(3);
+    } = setup_with(3, baud, rdt_us);
 
     // Body has only id=2 entry; servos 1 and 3 see no matched chunk.
     let body = chunk(2, comms::ID, &[20]);
@@ -108,13 +112,14 @@ fn bulk_write_single_target_mutates_only_that_servo() {
 /// Per `handle_bulk_write`: `len == 0` rewinds staged and returns. No
 /// reply either way. Each chunk in the body advertises length=0 → no
 /// servo mutates.
-#[test_log::test]
-fn bulk_write_zero_length_entry_does_not_mutate() {
+#[apply(matrix)]
+fn bulk_write_zero_length_entry_does_not_mutate(baud_idx: u8, rdt_us: u32) {
+    let baud = BaudRate::from_idx(baud_idx).expect("valid baud idx");
     let Setup {
         mut sim,
         host,
         servos,
-    } = setup(3);
+    } = setup_with(3, baud, rdt_us);
 
     let mut body = Vec::new();
     body.extend(chunk_with_len(1, comms::ID, 0, &[]));
@@ -137,13 +142,14 @@ fn bulk_write_zero_length_entry_does_not_mutate() {
 /// table write. 0x55 payload keeps the RX edge density high enough for
 /// the 1 Mbaud parser to commit the full frame before the cap rejection
 /// fires.
-#[test_log::test]
-fn bulk_write_length_over_cap_does_not_mutate() {
+#[apply(matrix)]
+fn bulk_write_length_over_cap_does_not_mutate(baud_idx: u8, rdt_us: u32) {
+    let baud = BaudRate::from_idx(baud_idx).expect("valid baud idx");
     let Setup {
         mut sim,
         host,
         servos,
-    } = setup(3);
+    } = setup_with(3, baud, rdt_us);
 
     let payload = vec![0x55u8; OVER_MAX_CONTROL_RW as usize];
     let mut body = Vec::new();
@@ -166,13 +172,14 @@ fn bulk_write_length_over_cap_does_not_mutate() {
 /// `identity::FIRMWARE_VERSION` is RO; `write_bytes` returns Err → the
 /// dispatcher's `is_ok()` branch is skipped, no hooks dispatched, no
 /// mutation. Silent like every bulk_write path.
-#[test_log::test]
-fn bulk_write_to_ro_field_does_not_mutate() {
+#[apply(matrix)]
+fn bulk_write_to_ro_field_does_not_mutate(baud_idx: u8, rdt_us: u32) {
+    let baud = BaudRate::from_idx(baud_idx).expect("valid baud idx");
     let Setup {
         mut sim,
         host,
         servos,
-    } = setup(3);
+    } = setup_with(3, baud, rdt_us);
 
     let mut body = Vec::new();
     for id in 1u8..=3 {
@@ -203,13 +210,14 @@ fn bulk_write_to_ro_field_does_not_mutate() {
 
 /// `comms::ID` is torque-gated; while `torque_enable=true`, the table's
 /// write-lock policy rejects the write → no mutation, no reply.
-#[test_log::test]
-fn bulk_write_under_torque_lock_does_not_mutate() {
+#[apply(matrix)]
+fn bulk_write_under_torque_lock_does_not_mutate(baud_idx: u8, rdt_us: u32) {
+    let baud = BaudRate::from_idx(baud_idx).expect("valid baud idx");
     let Setup {
         mut sim,
         host,
         servos,
-    } = setup(3);
+    } = setup_with(3, baud, rdt_us);
     for servo in &servos {
         sim.device::<Servo>(*servo).set_torque_enabled(true);
     }
@@ -233,13 +241,14 @@ fn bulk_write_under_torque_lock_does_not_mutate() {
 
 /// Write straddling the config region end → `write_bytes` returns Err
 /// (DataRange) → no mutation. Silent.
-#[test_log::test]
-fn bulk_write_across_region_boundary_does_not_mutate() {
+#[apply(matrix)]
+fn bulk_write_across_region_boundary_does_not_mutate(baud_idx: u8, rdt_us: u32) {
+    let baud = BaudRate::from_idx(baud_idx).expect("valid baud idx");
     let Setup {
         mut sim,
         host,
         servos,
-    } = setup(3);
+    } = setup_with(3, baud, rdt_us);
 
     let mut body = Vec::new();
     for id in 1u8..=3 {
@@ -266,13 +275,14 @@ fn bulk_write_across_region_boundary_does_not_mutate() {
 /// Servos 1 and 3 still process their chunks — proves the parser walks
 /// every chunk in body order and a non-existent id mid-body doesn't drop
 /// the surrounding ones.
-#[test_log::test]
-fn bulk_write_unknown_id_in_body_skips_that_chunk() {
+#[apply(matrix)]
+fn bulk_write_unknown_id_in_body_skips_that_chunk(baud_idx: u8, rdt_us: u32) {
+    let baud = BaudRate::from_idx(baud_idx).expect("valid baud idx");
     let Setup {
         mut sim,
         host,
         servos,
-    } = setup(3);
+    } = setup_with(3, baud, rdt_us);
 
     let mut body = Vec::new();
     body.extend(chunk(1, comms::ID, &[10]));

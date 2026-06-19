@@ -1,16 +1,19 @@
-use crate::support::{Setup, setup};
+use crate::support::{Setup, matrix, setup_with};
 use dxl_protocol::types::{ErrorCode, Id, Instruction, Status, StatusError};
-use osc_core::StatusReturnLevel;
+use osc_core::{BaudRate, StatusReturnLevel};
 use osc_integration::sim::{Host, Servo, Sim, SimTime, parse_status};
+use rstest::rstest;
+use rstest_reuse::apply;
 
 /// Reserved per the DXL 2.0 instruction byte table — guaranteed to surface as
 /// `Instruction::Ext(_)` through the streaming parser, so `reply_unsupported`
 /// is the only dispatcher path that can fire.
 const UNKNOWN_INSTRUCTION_BYTE: u8 = 0xC3;
 
-#[test_log::test]
-fn reboot_to_self_id_replies_ok() {
-    let Setup { mut sim, host, .. } = setup(1);
+#[apply(matrix)]
+fn reboot_to_self_id_replies_ok(baud_idx: u8, rdt_us: u32) {
+    let baud = BaudRate::from_idx(baud_idx).expect("valid baud idx");
+    let Setup { mut sim, host, .. } = setup_with(1, baud, rdt_us);
 
     sim.device_mut::<Host>(host).send_reboot(Id::new(1));
     sim.device_mut::<Host>(host).wait_for_status();
@@ -26,9 +29,10 @@ fn reboot_to_self_id_replies_ok() {
     );
 }
 
-#[test_log::test]
-fn reboot_to_wrong_id_yields_no_reply() {
-    let Setup { mut sim, host, .. } = setup(1);
+#[apply(matrix)]
+fn reboot_to_wrong_id_yields_no_reply(baud_idx: u8, rdt_us: u32) {
+    let baud = BaudRate::from_idx(baud_idx).expect("valid baud idx");
+    let Setup { mut sim, host, .. } = setup_with(1, baud, rdt_us);
 
     sim.device_mut::<Host>(host).send_reboot(Id::new(2));
     sim.device_mut::<Host>(host).wait_for_status();
@@ -38,9 +42,10 @@ fn reboot_to_wrong_id_yields_no_reply() {
     assert!(rx.is_empty(), "expected silent drop, got {:?}", rx);
 }
 
-#[test_log::test]
-fn reboot_broadcast_yields_no_reply() {
-    let Setup { mut sim, host, .. } = setup(1);
+#[apply(matrix)]
+fn reboot_broadcast_yields_no_reply(baud_idx: u8, rdt_us: u32) {
+    let baud = BaudRate::from_idx(baud_idx).expect("valid baud idx");
+    let Setup { mut sim, host, .. } = setup_with(1, baud, rdt_us);
 
     sim.device_mut::<Host>(host).send_reboot(Id::BROADCAST);
     sim.device_mut::<Host>(host).wait_for_status();
@@ -50,15 +55,17 @@ fn reboot_broadcast_yields_no_reply() {
     assert!(rx.is_empty(), "expected silent drop, got {:?}", rx);
 }
 
-#[test_log::test]
-fn reboot_silent_when_srl_is_read() {
-    let rx = reboot_under_srl(StatusReturnLevel::Read);
+#[apply(matrix)]
+fn reboot_silent_when_srl_is_read(baud_idx: u8, rdt_us: u32) {
+    let baud = BaudRate::from_idx(baud_idx).expect("valid baud idx");
+    let rx = reboot_under_srl(StatusReturnLevel::Read, baud, rdt_us);
     assert!(rx.is_empty(), "reboot requires SRL=All; got {:?}", rx);
 }
 
-#[test_log::test]
-fn unknown_instruction_to_self_id_replies_instruction_error() {
-    let Setup { mut sim, host, .. } = setup(1);
+#[apply(matrix)]
+fn unknown_instruction_to_self_id_replies_instruction_error(baud_idx: u8, rdt_us: u32) {
+    let baud = BaudRate::from_idx(baud_idx).expect("valid baud idx");
+    let Setup { mut sim, host, .. } = setup_with(1, baud, rdt_us);
 
     sim.device_mut::<Host>(host)
         .send_ext(Id::new(1), UNKNOWN_INSTRUCTION_BYTE, &[]);
@@ -75,9 +82,10 @@ fn unknown_instruction_to_self_id_replies_instruction_error() {
     );
 }
 
-#[test_log::test]
-fn unknown_instruction_to_wrong_id_yields_no_reply() {
-    let Setup { mut sim, host, .. } = setup(1);
+#[apply(matrix)]
+fn unknown_instruction_to_wrong_id_yields_no_reply(baud_idx: u8, rdt_us: u32) {
+    let baud = BaudRate::from_idx(baud_idx).expect("valid baud idx");
+    let Setup { mut sim, host, .. } = setup_with(1, baud, rdt_us);
 
     sim.device_mut::<Host>(host)
         .send_ext(Id::new(2), UNKNOWN_INSTRUCTION_BYTE, &[]);
@@ -88,9 +96,10 @@ fn unknown_instruction_to_wrong_id_yields_no_reply() {
     assert!(rx.is_empty(), "expected silent drop, got {:?}", rx);
 }
 
-#[test_log::test]
-fn unknown_instruction_broadcast_yields_no_reply() {
-    let Setup { mut sim, host, .. } = setup(1);
+#[apply(matrix)]
+fn unknown_instruction_broadcast_yields_no_reply(baud_idx: u8, rdt_us: u32) {
+    let baud = BaudRate::from_idx(baud_idx).expect("valid baud idx");
+    let Setup { mut sim, host, .. } = setup_with(1, baud, rdt_us);
 
     sim.device_mut::<Host>(host)
         .send_ext(Id::BROADCAST, UNKNOWN_INSTRUCTION_BYTE, &[]);
@@ -101,9 +110,10 @@ fn unknown_instruction_broadcast_yields_no_reply() {
     assert!(rx.is_empty(), "expected silent drop, got {:?}", rx);
 }
 
-#[test_log::test]
-fn unknown_instruction_silent_when_srl_is_read() {
-    let rx = ext_under_srl(StatusReturnLevel::Read);
+#[apply(matrix)]
+fn unknown_instruction_silent_when_srl_is_read(baud_idx: u8, rdt_us: u32) {
+    let baud = BaudRate::from_idx(baud_idx).expect("valid baud idx");
+    let rx = ext_under_srl(StatusReturnLevel::Read, baud, rdt_us);
     assert!(
         rx.is_empty(),
         "reply_unsupported requires SRL=All; got {:?}",
@@ -111,12 +121,14 @@ fn unknown_instruction_silent_when_srl_is_read() {
     );
 }
 
-fn reboot_under_srl(level: StatusReturnLevel) -> Vec<u8> {
+fn reboot_under_srl(level: StatusReturnLevel, baud: BaudRate, rdt_us: u32) -> Vec<u8> {
     let mut sim = Sim::default();
-    let host = sim.add_device(Host::new);
-    sim.add_device(|id| {
+    let host = sim.add_device(move |id| Host::new(id).with_baud(baud));
+    sim.add_device(move |id| {
         Servo::setup(id, |s| {
             s.set_dxl_id(Id::new(1));
+            s.set_baud(baud);
+            s.set_rdt_us(rdt_us);
             s.set_status_return_level(level);
         })
     });
@@ -128,12 +140,14 @@ fn reboot_under_srl(level: StatusReturnLevel) -> Vec<u8> {
     sim.device::<Host>(host).rx_bytes()
 }
 
-fn ext_under_srl(level: StatusReturnLevel) -> Vec<u8> {
+fn ext_under_srl(level: StatusReturnLevel, baud: BaudRate, rdt_us: u32) -> Vec<u8> {
     let mut sim = Sim::default();
-    let host = sim.add_device(Host::new);
-    sim.add_device(|id| {
+    let host = sim.add_device(move |id| Host::new(id).with_baud(baud));
+    sim.add_device(move |id| {
         Servo::setup(id, |s| {
             s.set_dxl_id(Id::new(1));
+            s.set_baud(baud);
+            s.set_rdt_us(rdt_us);
             s.set_status_return_level(level);
         })
     });

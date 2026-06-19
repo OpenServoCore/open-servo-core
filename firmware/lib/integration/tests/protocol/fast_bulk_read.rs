@@ -1,15 +1,17 @@
-use crate::support::{Setup, assert_bus_healthy, setup};
+use crate::support::{Setup, assert_bus_healthy, matrix, setup_with};
 use dxl_protocol::types::{BulkReadEntry, Id, Slot, StatusError};
-use osc_core::StatusReturnLevel;
 use osc_core::regions::{
     CONFIG_REGION_SIZE,
     config::addr::{comms, identity},
 };
 use osc_core::services::dxl::limits::MAX_CONTROL_RW;
+use osc_core::{BaudRate, StatusReturnLevel};
 use osc_integration::sim::{
     DEFAULT_FIRMWARE_VERSION, DEFAULT_MODEL_NUMBER, FastStatusCrc, Host, Servo, SimTime,
     format_hex, parse_fast_bulk_status,
 };
+use rstest::rstest;
+use rstest_reuse::apply;
 
 const CONFIG_REGION_END_ADDR: u16 = CONFIG_REGION_SIZE as u16;
 const OVER_MAX_CONTROL_RW: u16 = MAX_CONTROL_RW as u16 + 1;
@@ -22,9 +24,10 @@ fn entry(id: u8, address: u16, length: u16) -> BulkReadEntry {
     }
 }
 
-#[test_log::test]
-fn fast_bulk_read_replies_per_entry_in_order() {
-    let Setup { mut sim, host, .. } = setup(3);
+#[apply(matrix)]
+fn fast_bulk_read_replies_per_entry_in_order(baud_idx: u8, rdt_us: u32) {
+    let baud = BaudRate::from_idx(baud_idx).expect("valid baud idx");
+    let Setup { mut sim, host, .. } = setup_with(3, baud, rdt_us);
 
     // Heterogeneous (addr, length) per entry — the bulk-specific shape.
     let entries = [
@@ -38,7 +41,7 @@ fn fast_bulk_read_replies_per_entry_in_order() {
     sim.advance(SimTime::from_ms(20));
 
     let rx = sim.device::<Host>(host).rx_bytes();
-    insta::assert_snapshot!(format_hex(&rx));
+    insta::assert_snapshot!("fast_bulk_read_replies_per_entry_in_order", format_hex(&rx));
 
     let status = parse_fast_bulk_status(&rx, &entries);
     assert_eq!(status.crc, FastStatusCrc::Good);
@@ -65,9 +68,10 @@ fn fast_bulk_read_replies_per_entry_in_order() {
     );
 }
 
-#[test_log::test]
-fn fast_bulk_read_single_entry_replies_once() {
-    let Setup { mut sim, host, .. } = setup(1);
+#[apply(matrix)]
+fn fast_bulk_read_single_entry_replies_once(baud_idx: u8, rdt_us: u32) {
+    let baud = BaudRate::from_idx(baud_idx).expect("valid baud idx");
+    let Setup { mut sim, host, .. } = setup_with(1, baud, rdt_us);
 
     let entries = [entry(1, comms::ID, 1)];
 
@@ -95,13 +99,14 @@ fn fast_bulk_read_single_entry_replies_once() {
 /// the trailing Status CRC never gets patched. Differs from plain Bulk
 /// Read where a zero-length entry emits `Status::Empty + DataRange` and
 /// keeps the chain alive — Fast has no error-only slot shape.
-#[test_log::test]
-fn fast_bulk_read_zero_length_entry_collapses_tail() {
+#[apply(matrix)]
+fn fast_bulk_read_zero_length_entry_collapses_tail(baud_idx: u8, rdt_us: u32) {
+    let baud = BaudRate::from_idx(baud_idx).expect("valid baud idx");
     let Setup {
         mut sim,
         host,
         servos,
-    } = setup(3);
+    } = setup_with(3, baud, rdt_us);
 
     let entries = [
         entry(1, comms::ID, 1),
@@ -137,13 +142,14 @@ fn fast_bulk_read_zero_length_entry_collapses_tail() {
 /// Same per-entry short-circuit as the zero-length case:
 /// `len > MAX_CONTROL_RW` silences slot 1 → predecessor bytes missing →
 /// trailing CRC stays unpatched.
-#[test_log::test]
-fn fast_bulk_read_length_over_cap_entry_collapses_tail() {
+#[apply(matrix)]
+fn fast_bulk_read_length_over_cap_entry_collapses_tail(baud_idx: u8, rdt_us: u32) {
+    let baud = BaudRate::from_idx(baud_idx).expect("valid baud idx");
     let Setup {
         mut sim,
         host,
         servos,
-    } = setup(3);
+    } = setup_with(3, baud, rdt_us);
 
     let entries = [
         entry(1, comms::ID, 1),
@@ -179,9 +185,10 @@ fn fast_bulk_read_length_over_cap_entry_collapses_tail() {
 /// One entry straddles the config region end → `read_bytes` zero-fills
 /// OOB and returns Ok, so the slot still emits `length` bytes. Every slot
 /// stays whole; chain Stays alive; CRC valid.
-#[test_log::test]
-fn fast_bulk_read_entry_across_region_boundary_returns_zeros() {
-    let Setup { mut sim, host, .. } = setup(3);
+#[apply(matrix)]
+fn fast_bulk_read_entry_across_region_boundary_returns_zeros(baud_idx: u8, rdt_us: u32) {
+    let baud = BaudRate::from_idx(baud_idx).expect("valid baud idx");
+    let Setup { mut sim, host, .. } = setup_with(3, baud, rdt_us);
 
     let entries = [
         entry(1, comms::ID, 1),
@@ -222,13 +229,14 @@ fn fast_bulk_read_entry_across_region_boundary_returns_zeros() {
 /// wire bytes. Slot 2 still fires (Fast schedules slot k>0 by CC-compare),
 /// but the Fast Last fold can't patch the trailing CRC without slot 1's
 /// bytes. Same collapse mechanic as the fast_sync_read mirror.
-#[test_log::test]
-fn fast_bulk_read_srl_none_predecessor_collapses_tail() {
+#[apply(matrix)]
+fn fast_bulk_read_srl_none_predecessor_collapses_tail(baud_idx: u8, rdt_us: u32) {
+    let baud = BaudRate::from_idx(baud_idx).expect("valid baud idx");
     let Setup {
         mut sim,
         host,
         servos,
-    } = setup(3);
+    } = setup_with(3, baud, rdt_us);
     sim.device_mut::<Servo>(servos[1])
         .set_status_return_level(StatusReturnLevel::None);
 
@@ -268,13 +276,14 @@ fn fast_bulk_read_srl_none_predecessor_collapses_tail() {
 /// the trailing Status CRC can't be patched without slot 1's bytes feeding
 /// the Fast Last fold. Reconnect + `assert_bus_healthy` confirms no Fast
 /// Last state stays latched across the collapse.
-#[test_log::test]
-fn fast_bulk_read_data_line_disconnect_collapses_tail() {
+#[apply(matrix)]
+fn fast_bulk_read_data_line_disconnect_collapses_tail(baud_idx: u8, rdt_us: u32) {
+    let baud = BaudRate::from_idx(baud_idx).expect("valid baud idx");
     let Setup {
         mut sim,
         host,
         servos,
-    } = setup(3);
+    } = setup_with(3, baud, rdt_us);
     sim.device_mut::<Servo>(servos[1]).disconnect(false);
 
     let entries = [
@@ -313,13 +322,14 @@ fn fast_bulk_read_data_line_disconnect_collapses_tail() {
 /// Middle entry targets an id that doesn't exist on the bus — no slot 1
 /// frame, same CRC collapse as the disconnect / SRL=None cases. Slot 2
 /// still fires via CC-compare; trailing CRC fails validation.
-#[test_log::test]
-fn fast_bulk_read_unknown_id_in_entries_collapses_tail() {
+#[apply(matrix)]
+fn fast_bulk_read_unknown_id_in_entries_collapses_tail(baud_idx: u8, rdt_us: u32) {
+    let baud = BaudRate::from_idx(baud_idx).expect("valid baud idx");
     let Setup {
         mut sim,
         host,
         servos,
-    } = setup(3);
+    } = setup_with(3, baud, rdt_us);
 
     let entries = [
         entry(1, comms::ID, 1),
@@ -352,9 +362,10 @@ fn fast_bulk_read_unknown_id_in_entries_collapses_tail() {
     assert_bus_healthy(&mut sim, host, &servos);
 }
 
-#[test_log::test]
-fn fast_bulk_read_all_unknown_ids_yields_no_reply() {
-    let Setup { mut sim, host, .. } = setup(3);
+#[apply(matrix)]
+fn fast_bulk_read_all_unknown_ids_yields_no_reply(baud_idx: u8, rdt_us: u32) {
+    let baud = BaudRate::from_idx(baud_idx).expect("valid baud idx");
+    let Setup { mut sim, host, .. } = setup_with(3, baud, rdt_us);
 
     sim.device_mut::<Host>(host)
         .send_fast_bulk_read(&[entry(99, comms::ID, 1)]);
