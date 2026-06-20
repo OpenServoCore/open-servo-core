@@ -23,6 +23,7 @@ use osc_core::{BaudRate, BootMode, DxlReply};
 
 use crate::traits::dxl::{Providers, RxDma, SendKind, TxBus, TxScheduler, WireClock};
 use clock::Clock;
+use codec::rx::PollSrc;
 use codec::{Codec, CodecTx, PollAction, PollEvent};
 use fast_last::{FastLast, FastLastSchedule};
 use fast_last_crc::FastLastCrc;
@@ -83,6 +84,13 @@ struct ReplyContext {
     /// (`crate::dxl::DEFAULT_RDT_2US`) — see that constant's doc for the
     /// collision-avoidance reasoning.
     rdt_us: u32,
+    /// Which ISR fired the parser's Crc event (HT/TC vs USART IDLE). The
+    /// Fast slot send path floors the effective RDT by the source's
+    /// `now − packet_end` offset so slot 0's fire wall doesn't slip behind
+    /// the IDLE-poll horizon while slot k > 0's CCR1 stays anchored to the
+    /// raw RDT — that mismatch would land slot k > 0 inside slot 0's TX.
+    /// See [`ReplyHandle::send_slot`].
+    src: PollSrc,
 }
 
 /// Slot-header bytes a Fast First/Only emission carries (`FF FF FD 00` +
@@ -215,6 +223,7 @@ impl InflightCtx {
         rdt_us: u32,
         packet_end_tick: u32,
         fold_start_cursor: u32,
+        src: PollSrc,
     ) -> ReplyContext {
         // Plain SyncRead / BulkRead don't appear here: slot 0 of either
         // chain is single-target (slot_offset_bytes = 0 — handled by the
@@ -256,6 +265,7 @@ impl InflightCtx {
             fold_start_cursor,
             predecessor_id,
             rdt_us: reply_rdt_us,
+            src,
         }
     }
 }
@@ -456,10 +466,26 @@ impl<P: Providers, const TX_BUF_LEN: usize> ReplyHandle<'_, P, TX_BUF_LEN> {
         self.tx.send_slot(slot, position)?;
         let byte_count = self.tx.tx_len();
         let packet_end_tick = ctx.packet_end_tick;
+        let byte_ticks = self.clock.ticks_per_bit().wrapping_mul(BITS_PER_FRAME);
         let rdt_ticks = ctx
             .rdt_us
             .wrapping_mul(<P::TxScheduler as TxScheduler>::TICKS_PER_US as u32);
-        let delay_ticks = rdt_ticks.wrapping_add(self.clock.bytes_to_ticks(ctx.slot_offset_bytes));
+        // Fast chains require every slot's CC-match to anchor off the SAME
+        // base above `packet_end_tick` for the wire to stay contiguous. Slot
+        // 0 (`slot_offset_bytes == 0`) can't fire before its own chip sees
+        // packet-end — at `PollSrc::Idle` that's `packet_end + 1 byte_time`
+        // — so when `rdt_ticks` falls below that horizon slot 0's wall-clock
+        // floors at the horizon while every other slot stays anchored to
+        // raw `rdt_ticks`. Result: slot k > 0 fires `1 byte_time` inside
+        // slot 0's trailing TX. Floor the effective RDT by the source's
+        // `now − packet_end` offset so the whole chain shifts together.
+        let floor_ticks: u32 = match ctx.src {
+            PollSrc::Dma => 0,
+            PollSrc::Idle => byte_ticks as u32,
+        };
+        let effective_rdt_ticks = rdt_ticks.max(floor_ticks);
+        let delay_ticks =
+            effective_rdt_ticks.wrapping_add(self.clock.bytes_to_ticks(ctx.slot_offset_bytes));
         let kind = match position {
             SlotPosition::Last { .. } => SendKind::FastLast,
             _ => SendKind::Plain,
@@ -471,13 +497,11 @@ impl<P: Providers, const TX_BUF_LEN: usize> ReplyHandle<'_, P, TX_BUF_LEN> {
         // bytes (excluding our own reply); the fold absorbs that count
         // before patching our trailing placeholder CRC slot.
         if matches!(position, SlotPosition::Last { .. }) {
-            let byte_ticks = self.clock.ticks_per_bit().wrapping_mul(BITS_PER_FRAME);
-            // RDT in scheduler ticks (FastLastSchedule's RDT field stays
-            // u16 per doc §10.6 — typical RDT ≤ 24k ticks, well under u16).
-            let rdt_ticks = (ctx
-                .rdt_us
-                .wrapping_mul(<P::TxScheduler as TxScheduler>::TICKS_PER_US as u32)
-                & 0xFFFF) as u16;
+            // Same effective RDT as the schedule above so the fold grid
+            // back-dates from the right anchor; `FastLastSchedule::rdt_ticks`
+            // is u16 per doc §10.6 — `effective_rdt_ticks` stays well under
+            // 16 bits at every supported baud (9600 floor = 50_000 ticks).
+            let rdt_ticks = (effective_rdt_ticks & 0xFFFF) as u16;
             self.fast_last.start(FastLastSchedule {
                 packet_end_tick,
                 rdt_ticks,
@@ -866,8 +890,13 @@ impl<P: Providers, const RX_BUF_LEN: usize, const EDGE_BUF_LEN: usize, const TX_
                                 // `0xFF`. So `next_status_pos` is exactly the
                                 // fold-start cursor for the Fast Last CRC
                                 // engine.
-                                *last_reply_ctx =
-                                    Some(ctx.into_reply_context(id, rdt_us, t, next_status_pos));
+                                *last_reply_ctx = Some(ctx.into_reply_context(
+                                    id,
+                                    rdt_us,
+                                    t,
+                                    next_status_pos,
+                                    src,
+                                ));
                             } else {
                                 crate::log::debug!(
                                     "dxl: crc anchor missing and fallback disallowed — drop reply"
