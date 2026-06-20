@@ -30,6 +30,13 @@ enum PendingSource {
 /// orchestrator reaches a scheduled time.
 pub struct UartTx {
     encoder: TxEncoder,
+    /// Cached `baud.as_hz() as u64` — divisor in [`Self::byte_offset_ns`].
+    /// Stored so the per-byte Bresenham math avoids re-walking the
+    /// BaudRate enum and keeps the wire stride drift-free (the encoder's
+    /// `bit_period_ns` truncates `1e9 / baud` at 3M — exact bit clock,
+    /// but ×10 ns accumulates to ~10 ns/byte phase error against the
+    /// real per-byte time of `1e10 / baud` ns).
+    baud_hz: u64,
     pending: BinaryHeap<Reverse<(SimTime, PendingSource)>>,
     tx_log: Vec<TxLogEntry>,
     /// End-of-frame time for the latest queued byte. A new queue whose
@@ -47,6 +54,7 @@ impl UartTx {
     pub fn new(baud: BaudRate) -> Self {
         Self {
             encoder: TxEncoder::new(baud),
+            baud_hz: baud.as_hz() as u64,
             pending: BinaryHeap::new(),
             tx_log: Vec::new(),
             wire_busy_until: SimTime::ZERO,
@@ -56,6 +64,18 @@ impl UartTx {
 
     pub fn bit_period_ns(&self) -> u64 {
         self.encoder.bit_period_ns()
+    }
+
+    /// Exact ns offset for the start bit of byte `byte_idx` relative to
+    /// byte 0 at the configured baud. Bresenham-style integer math:
+    /// `byte_idx × 10 × 10⁹ / baud_hz`. The cumulative phase error stays
+    /// bounded by ±1 ns regardless of `byte_idx` (vs ~3.33 ns/byte
+    /// accumulating drift from `byte_idx × (10 × 10⁹ / baud_hz)`). Models
+    /// a real USART's per-byte timing: the BRR-derived bit clock against
+    /// HCLK so each byte's start lands on an HCLK tick, not on a
+    /// truncated-ns stride.
+    pub fn byte_offset_ns(&self, byte_idx: u64) -> u64 {
+        (byte_idx * 10 * 1_000_000_000) / self.baud_hz
     }
 
     pub fn tx_log(&self) -> &[TxLogEntry] {
@@ -92,9 +112,9 @@ impl UartTx {
     /// semantics as [`Self::queue_byte_indirect`]. Encapsulates the
     /// byte-rate stride so callers don't redo USART frame-width math.
     pub fn queue_burst_indirect(&mut self, start_offset: u32, count: u16, start_at: SimTime) {
-        let stride = 10 * self.bit_period_ns();
         for i in 0..count {
-            self.queue_byte_indirect(start_offset + i as u32, start_at + i as u64 * stride);
+            let offset = self.byte_offset_ns(i as u64);
+            self.queue_byte_indirect(start_offset + i as u32, start_at + offset);
         }
     }
 

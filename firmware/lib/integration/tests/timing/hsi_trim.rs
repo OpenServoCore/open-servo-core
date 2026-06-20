@@ -13,7 +13,7 @@
 //!   Ping reply supplies the 6 byte pairs; one emit lands the correction
 //!   inside the ±20 000 ppm envelope so non-Fast commands work right
 //!   after init.
-//! - **Steady** (every subsequent batch): 32-sample batch with
+//! - **Steady** (every subsequent batch): 20-sample batch with
 //!   half-step deadband and a 4-step emit cap. Squeezes the residual
 //!   gap before the host issues Fast commands.
 //!
@@ -30,8 +30,8 @@ use rstest::rstest;
 use rstest_reuse::apply;
 
 /// Pings to drive per test. The boot phase closes one batch on Ping 1
-/// (6 byte pairs from the reply). Steady phase closes every ~5.3 pings
-/// (32 / 6). 64 pings leaves ~12 steady batches of headroom over the
+/// (6 byte pairs from the reply). Steady phase closes every ~3.3 pings
+/// (20 / 6). 64 pings leaves ~19 steady batches of headroom over the
 /// first-emit landing — enough margin to surface any regression in the
 /// steady-phase deadband or residual squeeze.
 const PING_BUDGET: u32 = 64;

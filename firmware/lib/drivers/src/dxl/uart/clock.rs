@@ -15,7 +15,7 @@
 //!       drift in a single packet so non-Fast commands work immediately
 //!       after init.
 //!     * **Steady** (every batch after the first): batch closes at
-//!       [`DRIFT_MIN_SAMPLES_STEADY`] = 32 pairs with a half-step
+//!       [`DRIFT_MIN_SAMPLES_STEADY`] = 20 pairs with a half-step
 //!       threshold and an emit cap of 4 steps. Bounds noise risk and
 //!       squeezes the residual gap before host issues Fast commands.
 //!
@@ -36,14 +36,14 @@ const Q8_SCALE: u32 = 256;
 /// hits across bytes 4–9), so the boot batch closes inside the first
 /// instruction the slave parses.
 const DRIFT_MIN_SAMPLES_BOOT: u16 = 6;
-/// Batch size after the boot phase has fired. At N=32 the half-step
-/// deadband sits 4.5σ above per-sample chip-stamp quantization noise
-/// under the conservative 1-tick σ model (15.6σ at the realistic
-/// uniform 1-LSB σ) at the worst-case 3M baud — false-emit rate
-/// ~6e-6 per batch. Empirically validated against the sim's structural
-/// wire-stride bias at 3M (integer-truncated `bit_period_ns` →
-/// ~+1000 ppm baud offset that compounds with quantization).
-const DRIFT_MIN_SAMPLES_STEADY: u16 = 32;
+/// Batch size after the boot phase has fired. At N=20 the half-step
+/// deadband sits 2.8σ above per-sample chip-stamp quantization noise
+/// under the conservative 1-tick σ model (9.8σ at the realistic uniform
+/// 1-LSB σ) at the worst-case 3M baud — false-emit rate ~5e-3 per batch
+/// conservative, ~0 uniform. ~one bogus correction every ~4 minutes at
+/// sustained 3M load in the conservative envelope; the next batch
+/// immediately reverts the spurious ±1-step nudge.
+const DRIFT_MIN_SAMPLES_STEADY: u16 = 20;
 
 /// Boot-phase emission cap = full register range. Estimator at 6
 /// samples has ~3.4σ SNR margin over chip-stamp quantization noise at
@@ -190,7 +190,7 @@ impl<U: UsartBaud, T: ClockTrim> Clock<U, T> {
         let per_step_q8 = Self::drift_per_step_q8(self.ticks_per_bit, n_samples);
         // Boot: full-step threshold (more conservative deadband over the
         // smaller 6-sample window). Steady: half-step (tighter; the
-        // 32-sample window has enough SNR margin to spot half-step drift).
+        // 20-sample window has enough SNR margin to spot half-step drift).
         self.drift_threshold_q8 = if self.is_boot {
             per_step_q8
         } else {

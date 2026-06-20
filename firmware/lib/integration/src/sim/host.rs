@@ -295,9 +295,9 @@ impl Host {
     }
 
     fn queue_frame(&mut self, buf: &[u8]) {
-        let stride = 10 * self.uart_tx.bit_period_ns();
         for (i, byte) in buf.iter().enumerate() {
-            self.uart_tx.queue_byte(*byte, self.now + i as u64 * stride);
+            let offset = self.uart_tx.byte_offset_ns(i as u64);
+            self.uart_tx.queue_byte(*byte, self.now + offset);
         }
     }
 
@@ -450,10 +450,16 @@ mod tests {
             h.wait_for_reply();
         });
 
-        let stride = 10 * crate::sim::uart::bit_period_ns(DEFAULT_BAUD);
+        // Bresenham byte stride: `i × 10 × 10⁹ / baud_hz` keeps cumulative
+        // phase drift bounded by ±1 ns regardless of `i`. At 1M baud
+        // (DEFAULT_BAUD) the divisor is exact so every byte lands on a
+        // 10_000 ns boundary — the test result is the same as the prior
+        // `10 × bit_period_ns(BAUD)` formulation.
+        let baud_hz = DEFAULT_BAUD.as_hz() as u64;
         let tx = sim.host(host).tx_log().to_vec();
         for (i, e) in tx.iter().enumerate() {
-            assert_eq!(e.at.as_ns(), i as u64 * stride, "byte {i}");
+            let expected = (i as u64 * 10 * 1_000_000_000) / baud_hz;
+            assert_eq!(e.at.as_ns(), expected, "byte {i}");
         }
     }
 
