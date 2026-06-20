@@ -25,4 +25,4 @@ pub use rx::{RxLogEntry, RxLogKind, UartRx};
 pub use rx_decoder::{RxDecoder, RxEffect};
 pub use tx::{TxLogEntry, UartTx};
 pub use tx_encoder::TxEncoder;
-pub use utils::bit_period_ns;
+pub use utils::{bit_period_ns, byte_time_ns};

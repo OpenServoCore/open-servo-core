@@ -13,7 +13,7 @@ use dxl_protocol::{
 use osc_core::BaudRate;
 
 use crate::sim::defaults::{DEFAULT_BAUD, default_host_clock};
-use crate::sim::uart::{RxLogEntry, RxLogKind, TxLogEntry, UartRx, UartTx};
+use crate::sim::uart::{RxLogEntry, RxLogKind, TxLogEntry, UartRx, UartTx, byte_time_ns};
 use crate::sim::{Clock, DeviceId, Effect, EventSource, SimTime};
 
 /// FTDI/CH340 inter-byte LATENCY_TIMER — once a byte lands in the host
@@ -107,6 +107,34 @@ impl Host {
 
     pub fn rx_bytes(&self) -> Vec<u8> {
         self.uart_rx.rx_bytes()
+    }
+
+    /// `packet_end` per DXL spec — the last queued TX byte's start
+    /// timestamp plus one `byte_time` (stop-bit clear). The anchor every
+    /// reply-timing assertion compares against. `None` when nothing has
+    /// been queued onto `UartTx`.
+    pub fn packet_end_ns(&self) -> Option<u64> {
+        self.uart_tx
+            .tx_log()
+            .last()
+            .map(|e| e.at.as_ns() + byte_time_ns(self.baud))
+    }
+
+    /// Start-bit timestamps of every received byte, in arrival order.
+    /// `rx_log` stamps land at byte completion (10·bp past the start
+    /// bit); the subtraction recovers the start-bit instant so callers
+    /// compare apples-to-apples with [`packet_end_ns`]. Idle gaps are
+    /// skipped.
+    pub fn rx_byte_starts_ns(&self) -> Vec<u64> {
+        let bt = byte_time_ns(self.baud);
+        self.uart_rx
+            .rx_log()
+            .iter()
+            .filter_map(|e| match e.kind {
+                RxLogKind::Byte(_) => Some(e.at.as_ns() - bt),
+                RxLogKind::IdleGap => None,
+            })
+            .collect()
     }
 
     pub fn clear_logs(&mut self) {

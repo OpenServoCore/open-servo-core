@@ -69,6 +69,14 @@ pub fn matrix(
 ) {
 }
 
+/// Baud-only sweep template for tests whose behavior is RDT-independent
+/// by spec (e.g. broadcast Ping sources its RDT from the driver default,
+/// not the per-servo register).
+#[template]
+#[rstest]
+#[allow(dead_code, unused_macros)]
+pub fn baud_matrix(#[values(0u8, 1, 2, 3, 4, 5)] baud_idx: u8) {}
+
 /// Clear host logs, broadcast Ping, and assert every servo replied with an
 /// OK status in chain order. Used as a recovery check at the end of tests
 /// that exercise chain-collapse or error paths to confirm the bus didn't

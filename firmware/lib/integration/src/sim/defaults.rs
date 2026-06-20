@@ -45,6 +45,10 @@ pub const DEFAULT_BAUD: BaudRate = match BaudRate::from_idx(3) {
 /// sweep other RDT values use `setup_with(n, baud, rdt_us)`.
 pub const DEFAULT_RDT_US: u32 = (osc_drivers::dxl::DEFAULT_RDT_2US as u32) * 2;
 
+/// Default RDT in nanoseconds — the same delay as [`DEFAULT_RDT_US`]
+/// pre-scaled into the unit the wire-timing tests assert against.
+pub const DEFAULT_RDT_NS: u64 = (DEFAULT_RDT_US as u64) * 1_000;
+
 /// Anchor back-search depth target (in edges). Mirrors V006's
 /// `DXL_SYNC_LOOKBACK_EDGES` in `firmware/ch32/src/runtime/registry.rs`.
 /// See [`osc_drivers::dxl::uart::codec::rx::sync_lookback_edges`] for the
