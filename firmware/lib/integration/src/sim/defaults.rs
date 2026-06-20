@@ -40,9 +40,10 @@ pub const DEFAULT_BAUD: BaudRate = match BaudRate::from_idx(3) {
     None => panic!("baud idx 3 is the DXL-2.0 spec default"),
 };
 
-/// Per-servo return delay (µs). DXL-2.0 spec factory default (250 µs).
-/// Tests that sweep other RDT values use `setup_with(n, baud, rdt_us)`.
-pub const DEFAULT_RDT_US: u32 = 250;
+/// Per-servo return delay (µs). Mirrors the driver-owned DXL spec
+/// factory default (`osc_drivers::dxl::DEFAULT_RDT_2US`); tests that
+/// sweep other RDT values use `setup_with(n, baud, rdt_us)`.
+pub const DEFAULT_RDT_US: u32 = (osc_drivers::dxl::DEFAULT_RDT_2US as u32) * 2;
 
 /// Anchor back-search depth target (in edges). Mirrors V006's
 /// `DXL_SYNC_LOOKBACK_EDGES` in `firmware/ch32/src/runtime/registry.rs`.

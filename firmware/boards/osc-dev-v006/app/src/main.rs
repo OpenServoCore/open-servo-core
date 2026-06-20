@@ -56,7 +56,7 @@ fn main() -> ! {
             vdd_mv: 3300,
             dxl_id: 1,
             dxl_baud: BaudRate::B1000000,
-            dxl_return_delay_2us: 125,
+            dxl_return_delay_2us: DEFAULT_RDT_2US,
             clock_trim: 0,
         },
     })

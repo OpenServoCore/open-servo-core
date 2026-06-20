@@ -8,3 +8,4 @@ use rstest_reuse;
 mod support;
 
 mod long_reply_delays;
+mod ping_broadcast;

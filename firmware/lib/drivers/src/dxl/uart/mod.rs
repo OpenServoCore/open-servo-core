@@ -44,7 +44,7 @@ const PING_STATUS_FRAME_BYTES: u32 = RESPONSE_HEADER_BYTES as u32 + 3 + CRC_BYTE
 /// `InflightCtx` slot-walk at the parser's Crc-good event; consumed by
 /// `send_status` / `send_slot`. Per driver-pattern §7.4 — the dispatcher
 /// passes data; the driver derives wire shape from its cached request state.
-#[derive(Copy, Clone, Debug, Default)]
+#[derive(Copy, Clone, Debug)]
 struct ReplyContext {
     /// Packet-end tick (WireClock u32 domain) — anchored from the
     /// classifier at the parser's Crc-good event, or a fallback estimate
@@ -76,6 +76,13 @@ struct ReplyContext {
     /// all Fast chain replies. When Some, `send_status` defers the wire
     /// send to the codec's matching `PollEvent::SkipComplete` event.
     predecessor_id: Option<u8>,
+    /// RDT (µs) the deadline math adds to `packet_end_tick`. Resolved at
+    /// `into_reply_context` build time so the send path is rdt-source-
+    /// agnostic: single-target / Fast chain replies see the per-instance
+    /// register value, broadcast Ping sees the uniform driver default
+    /// (`crate::dxl::DEFAULT_RDT_2US`) — see that constant's doc for the
+    /// collision-avoidance reasoning.
+    rdt_us: u32,
 }
 
 /// Slot-header bytes a Fast First/Only emission carries (`FF FF FD 00` +
@@ -205,6 +212,7 @@ impl InflightCtx {
     fn into_reply_context(
         self,
         id: u8,
+        rdt_us: u32,
         packet_end_tick: u32,
         fold_start_cursor: u32,
     ) -> ReplyContext {
@@ -212,24 +220,26 @@ impl InflightCtx {
         // chain is single-target (slot_offset_bytes = 0 — handled by the
         // catch-all), and slot k > 0 takes the chain-pending path in
         // `ReplyHandle::send_status`, which never reads slot_offset_bytes.
-        let (slot_offset_bytes, fast_slot_position) = match (self.header, self.slot) {
-            (InstructionHeader::Ping { id: target }, _) if target.as_byte() == BROADCAST_ID => {
-                ((id as u32) * PING_STATUS_FRAME_BYTES, None)
-            }
+        let (slot_offset_bytes, fast_slot_position, reply_rdt_us) = match (self.header, self.slot) {
+            (InstructionHeader::Ping { id: target }, _) if target.as_byte() == BROADCAST_ID => (
+                (id as u32) * PING_STATUS_FRAME_BYTES,
+                None,
+                (crate::dxl::DEFAULT_RDT_2US as u32) * 2,
+            ),
             (InstructionHeader::FastSyncRead { length, .. }, Some(k)) => {
                 let n = self.next_slot_index;
                 let packet_length = fast_chain_packet_length(n, (n as u32) * (length as u32));
                 let position = compute_fast_position(k, n, packet_length);
                 let bytes_before = fast_bytes_before(k, length as u32);
-                (bytes_before, Some(position))
+                (bytes_before, Some(position), rdt_us)
             }
             (InstructionHeader::FastBulkRead { .. }, Some(k)) => {
                 let n = self.next_slot_index;
                 let packet_length = fast_chain_packet_length(n, self.chain_data_bytes);
                 let position = compute_fast_position(k, n, packet_length);
-                (self.bytes_before, Some(position))
+                (self.bytes_before, Some(position), rdt_us)
             }
-            _ => (0, None),
+            _ => (0, None, rdt_us),
         };
         let predecessor_id = match (self.header, self.slot) {
             (InstructionHeader::SyncRead { .. } | InstructionHeader::BulkRead { .. }, Some(k))
@@ -245,6 +255,7 @@ impl InflightCtx {
             fast_slot_position,
             fold_start_cursor,
             predecessor_id,
+            rdt_us: reply_rdt_us,
         }
     }
 }
@@ -401,7 +412,7 @@ impl<P: Providers, const TX_BUF_LEN: usize> ReplyHandle<'_, P, TX_BUF_LEN> {
         }
         let packet_end_tick = ctx.packet_end_tick;
         let byte_count = self.tx.tx_len();
-        let rdt_ticks = self
+        let rdt_ticks = ctx
             .rdt_us
             .wrapping_mul(<P::TxScheduler as TxScheduler>::TICKS_PER_US as u32);
         let delay_ticks = rdt_ticks.wrapping_add(self.clock.bytes_to_ticks(ctx.slot_offset_bytes));
@@ -445,7 +456,7 @@ impl<P: Providers, const TX_BUF_LEN: usize> ReplyHandle<'_, P, TX_BUF_LEN> {
         self.tx.send_slot(slot, position)?;
         let byte_count = self.tx.tx_len();
         let packet_end_tick = ctx.packet_end_tick;
-        let rdt_ticks = self
+        let rdt_ticks = ctx
             .rdt_us
             .wrapping_mul(<P::TxScheduler as TxScheduler>::TICKS_PER_US as u32);
         let delay_ticks = rdt_ticks.wrapping_add(self.clock.bytes_to_ticks(ctx.slot_offset_bytes));
@@ -463,7 +474,7 @@ impl<P: Providers, const TX_BUF_LEN: usize> ReplyHandle<'_, P, TX_BUF_LEN> {
             let byte_ticks = self.clock.ticks_per_bit().wrapping_mul(BITS_PER_FRAME);
             // RDT in scheduler ticks (FastLastSchedule's RDT field stays
             // u16 per doc §10.6 — typical RDT ≤ 24k ticks, well under u16).
-            let rdt_ticks = (self
+            let rdt_ticks = (ctx
                 .rdt_us
                 .wrapping_mul(<P::TxScheduler as TxScheduler>::TICKS_PER_US as u32)
                 & 0xFFFF) as u16;
@@ -850,7 +861,7 @@ impl<P: Providers, const RX_BUF_LEN: usize, const EDGE_BUF_LEN: usize, const TX_
                                 // fold-start cursor for the Fast Last CRC
                                 // engine.
                                 *last_reply_ctx =
-                                    Some(ctx.into_reply_context(id, t, next_status_pos));
+                                    Some(ctx.into_reply_context(id, rdt_us, t, next_status_pos));
                             } else {
                                 crate::log::debug!(
                                     "dxl: crc anchor missing and fallback disallowed — drop reply"

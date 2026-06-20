@@ -33,5 +33,8 @@ pub use registry::{DeviceId, DeviceRegistry};
 pub use servo::{DEFAULT_DXL_ID, DEFAULT_FIRMWARE_VERSION, DEFAULT_MODEL_NUMBER, Servo};
 pub use source::EventSource;
 pub use time::{Clock, SimTime};
-pub use uart::{RxDecoder, RxEffect, RxLogEntry, RxLogKind, TxEncoder, TxLogEntry, UartRx, UartTx};
+pub use uart::{
+    RxDecoder, RxEffect, RxLogEntry, RxLogKind, TxEncoder, TxLogEntry, UartRx, UartTx,
+    bit_period_ns,
+};
 pub use wire::Wire;
