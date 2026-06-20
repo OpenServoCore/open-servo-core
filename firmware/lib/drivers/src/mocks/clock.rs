@@ -17,13 +17,13 @@ mock! {
 mock! {
     pub ClockTrim {}
     impl ClockTrim for ClockTrim {
-        // Same ratio as the real HSI so existing drift/threshold tests stay
-        // numerically aligned without baking in chip-specific imports.
-        const DELTA_MIN: i8 = -16;
-        const DELTA_MAX: i8 = 15;
-        const HZ: u32 = 24_000_000;
-        const STEP_HZ: u32 = 60_000;
+        // Same envelope + step as the production V006 binding so existing
+        // drift/threshold tests stay numerically aligned without baking in
+        // chip-specific imports. 60 kHz / 24 MHz HSI = 2500 ppm/step;
+        // envelope = -16/+15 trim register units × 2500 ppm/step.
+        const STEP_PPM: u32 = 2500;
+        const ENVELOPE_PPM: (i32, i32) = (-40_000, 37_500);
 
-        fn apply_delta(&mut self, delta: i8);
+        fn apply_ppm(&mut self, ppm: i32);
     }
 }

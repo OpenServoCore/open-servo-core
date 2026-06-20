@@ -29,7 +29,7 @@ use crate::sim::defaults::{
     DEFAULT_BAUD, DEFAULT_RDT_US, EDGE_BUF_LEN, RX_BUF_LEN, TX_BUF_LEN, default_servo_clock,
 };
 use crate::sim::uart::{UartRx, UartTx};
-use crate::sim::{Clock, DeviceId, Effect, EventSource, SimTime};
+use crate::sim::{Clock, DeviceId, Effect, EventSource, HsiClock, SimTime};
 
 pub const DEFAULT_DXL_ID: Id = Id::new(1);
 pub const DEFAULT_MODEL_NUMBER: u16 = 0xC0DE;
@@ -52,12 +52,13 @@ type ServoUart = DxlUart<TestProviders, RX_BUF_LEN, EDGE_BUF_LEN, TX_BUF_LEN>;
 
 pub struct Servo {
     id: DeviceId,
-    /// Per-servo system clock — modelling each device's HSI base frequency
-    /// and any oscillator drift. Hardware-shaped, not a control-table
-    /// register: persists across power-cycle resets. Default
-    /// [`default_servo_clock`]; override via [`set_clock`](Self::set_clock)
-    /// to model multi-drift fleets on the same bus.
-    clock: Clock,
+    /// Per-servo HSI model. Carries the chip's nominal HCLK, the
+    /// test-controlled factory drift ratio (set via
+    /// [`set_hsi_drift`](Self::set_hsi_drift)), and the latest absolute
+    /// trim correction drained from [`ClockTrimState`]. Hardware-shaped,
+    /// not a control-table register: persists across power-cycle resets.
+    /// `clock()` returns the composed live HCLK.
+    hsi_clock: HsiClock,
 
     /// Bus visibility. When `false`, the wire still delivers edges to
     /// `uart_rx` (logged for fidelity), but `handle_falling_edge` /
@@ -130,7 +131,7 @@ impl Servo {
     pub fn new(id: DeviceId) -> Self {
         let mut s = Self {
             id,
-            clock: default_servo_clock(),
+            hsi_clock: HsiClock::new(default_servo_clock()),
 
             connected: true,
             pending_reset_on_connect: false,
@@ -173,11 +174,20 @@ impl Servo {
         s
     }
 
-    /// Override the per-servo system clock. Used to model HSI drift /
-    /// trim variation across servos on the same bus. Hardware-shaped:
-    /// survives a power-cycle reset.
+    /// Override the per-servo nominal HCLK. Resets any prior factory drift
+    /// and applied trim — this is the "what chip is plugged in" knob, not a
+    /// runtime adjustment. Hardware-shaped: survives a power-cycle reset.
     pub fn set_clock(&mut self, clock: Clock) {
-        self.clock = clock;
+        self.hsi_clock = HsiClock::new(clock);
+    }
+
+    /// Set the simulated factory HSI drift as a rational fraction:
+    /// `live_factory = nominal × (den + num) / den`. Use `(1, 50)` for +2%,
+    /// `(-1, 50)` for −2%, etc. The denominator must be non-zero.
+    /// Hardware-shaped: survives a power-cycle reset (a real chip's factory
+    /// HSI offset doesn't reset).
+    pub fn set_hsi_drift(&mut self, num: i32, den: u32) {
+        self.hsi_clock.set_factory_drift(num, den);
     }
 
     pub fn set_dxl_id(&mut self, dxl_id: Id) {
@@ -248,7 +258,11 @@ impl Servo {
     }
 
     pub fn clock(&self) -> Clock {
-        self.clock
+        self.hsi_clock.live()
+    }
+
+    pub fn hsi_clock(&self) -> &HsiClock {
+        &self.hsi_clock
     }
 
     pub fn baud(&self) -> BaudRate {
@@ -287,7 +301,7 @@ impl Servo {
         self.usart_baud_state.operations()
     }
 
-    pub fn trim_ops(&self) -> Vec<i8> {
+    pub fn trim_ops(&self) -> Vec<i32> {
         self.clock_trim_state.operations()
     }
 
@@ -319,6 +333,9 @@ impl Servo {
         self.tx_start_fire = None;
         self.tx_pending_stash = None;
         self.tx_scheduler_drained = 0;
+        // Fresh ClockTrimState — reset HsiClock's cursor so subsequent
+        // drain_ops calls see the new log from index 0.
+        self.hsi_clock.reset_drain();
     }
 
     /// Models a power-up reset: wipe the control table and rebuild the
@@ -346,11 +363,11 @@ impl Servo {
     /// to wall time. ET ring IC stamps see the low 16 bits via `chip_tick
     /// as u16` — matches the chip-side TIM2/SysTick HCLK contract.
     fn chip_tick(&self, at: SimTime) -> u32 {
-        self.clock.to_local(at) as u32
+        self.hsi_clock.live().to_local(at) as u32
     }
 
     fn freq_hz(&self) -> u64 {
-        self.clock.freq_hz() as u64
+        self.hsi_clock.live().freq_hz() as u64
     }
 
     /// Inbound falling edge — write a TIM2 tick into the codec's edge ring
@@ -659,6 +676,12 @@ impl EventSource for Servo {
         if let Some(fire) = self.uart_tx.take_tc_if_due(t) {
             log::trace!("servo[{:?}]: on_tx_complete fire_at={:?}", self.id, fire);
             let _ = self.uart.on_tx_complete();
+            // `on_tx_complete` is where the driver's integrator commits any
+            // pending trim correction to `T::apply_ppm` — pull the new
+            // applied ppm into the sim's HSI model so subsequent wire-edge
+            // stamps reflect the post-trim HCLK.
+            let ops = self.clock_trim_state.operations();
+            self.hsi_clock.drain_ops(&ops);
         }
         let effects: Vec<_> = tx
             .into_iter()

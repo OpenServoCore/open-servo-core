@@ -29,11 +29,11 @@ pub fn mock_usart_baud() -> (MockUsartBaud, UsartBaudState) {
 
 #[derive(Clone, Default)]
 pub struct ClockTrimState {
-    operations: Rc<RefCell<Vec<i8>>>,
+    operations: Rc<RefCell<Vec<i32>>>,
 }
 
 impl ClockTrimState {
-    pub fn operations(&self) -> Vec<i8> {
+    pub fn operations(&self) -> Vec<i32> {
         self.operations.borrow().clone()
     }
 }
@@ -43,8 +43,8 @@ pub fn mock_clock_trim() -> (MockClockTrim, ClockTrimState) {
     let mut m = MockClockTrim::new();
     {
         let ops = state.operations.clone();
-        m.expect_apply_delta().returning_st(move |delta| {
-            ops.borrow_mut().push(delta);
+        m.expect_apply_ppm().returning_st(move |ppm| {
+            ops.borrow_mut().push(ppm);
         });
     }
     (m, state)

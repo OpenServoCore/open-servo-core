@@ -6,16 +6,57 @@
 //! Two inputs determine the value, both committed at `on_tx_complete` (USART
 //! can't change BRR mid-frame):
 //! - Baud, staged by control-table writes via [`Clock::stage_baud`].
-//! - HSITRIM step, derived from drift samples via
-//!   [`Clock::on_drift_sample`]. The integrator stages a ±1 step when the
-//!   running average crosses ~½ step; one step ≈ 0.4 ticks at the 11·bit
-//!   classifier-window edge, easily inside the ±10% tolerance.
+//! - Clock trim correction, derived from drift samples via
+//!   [`Clock::on_byte_pair`]. The integrator runs a two-phase control law:
+//!     * **Boot** (active until first batch close from [`Clock::new`]):
+//!       batch closes at [`DRIFT_MIN_SAMPLES_BOOT`] = 6 byte pairs (one
+//!       Ping reply's worth) with a full-step threshold and an emit cap
+//!       of 16 register steps (full envelope). Lands ±20 000 ppm factory
+//!       drift in a single packet so non-Fast commands work immediately
+//!       after init.
+//!     * **Steady** (every batch after the first): batch closes at
+//!       [`DRIFT_MIN_SAMPLES_STEADY`] = 32 pairs with a half-step
+//!       threshold and an emit cap of 4 steps. Bounds noise risk and
+//!       squeezes the residual gap before host issues Fast commands.
+//!
+//!   HSI drift is intrinsic to the oscillator, not the divider — baud
+//!   changes don't re-engage boot mode.
 
 use osc_core::BaudRate;
 
+use super::BITS_PER_FRAME;
 use crate::traits::dxl::{ClockTrim, UsartBaud};
 
-const DRIFT_MIN_SAMPLES: u16 = 32;
+/// Fixed-point lift: `× Q8_SCALE` shifts byte-tick deltas into the
+/// integrator's accumulator domain so sub-tick drift survives summation.
+const Q8_SCALE: u32 = 256;
+
+/// Batch size during the boot (first-emit) phase. One Ping instruction +
+/// reply supplies ~6 in-window byte pairs (anchor at byte 3 + 6 forward
+/// hits across bytes 4–9), so the boot batch closes inside the first
+/// instruction the slave parses.
+const DRIFT_MIN_SAMPLES_BOOT: u16 = 6;
+/// Batch size after the boot phase has fired. At N=32 the half-step
+/// deadband sits 4.5σ above per-sample chip-stamp quantization noise
+/// under the conservative 1-tick σ model (15.6σ at the realistic
+/// uniform 1-LSB σ) at the worst-case 3M baud — false-emit rate
+/// ~6e-6 per batch. Empirically validated against the sim's structural
+/// wire-stride bias at 3M (integer-truncated `bit_period_ns` →
+/// ~+1000 ppm baud offset that compounds with quantization).
+const DRIFT_MIN_SAMPLES_STEADY: u16 = 32;
+
+/// Boot-phase emission cap = full register range. Estimator at 6
+/// samples has ~3.4σ SNR margin over chip-stamp quantization noise at
+/// the worst baud (3M, tpb=16); for a real ±20 000 ppm factory drift
+/// it produces 8 ± 0.3 step estimates that commit cleanly to the
+/// envelope clamp in one go.
+const EMIT_CAP_STEPS_BOOT: i32 = 16;
+/// Steady-phase emission cap. Bounds noise sensitivity: a single
+/// anomalous batch can't swing the applied correction past
+/// `EMIT_CAP_STEPS_STEADY × STEP_PPM` ppm. Magnitude-aware otherwise —
+/// the integrator estimates accumulated drift in step units, emits the
+/// opposing magnitude clamped to the cap, then re-samples.
+const EMIT_CAP_STEPS_STEADY: i32 = 4;
 
 /// Round-to-nearest rate divisor — `ticks_per_bit` for a baud at the
 /// driver's reference clock. Folds to a literal whenever both arguments
@@ -33,29 +74,40 @@ pub struct Clock<U: UsartBaud, T: ClockTrim> {
     baud: BaudRate,
     ticks_per_bit: u16,
 
-    /// Sum of `delta_ticks << 8` across the current batch. Q8 keeps sub-tick
-    /// resolution at high baud (spec=16 → threshold ≈ 0.64 ticks/32 samples).
+    /// `true` until the first batch close from [`Clock::new`]. The first
+    /// `on_tx_complete` after that close transitions to steady mode
+    /// and stays there for the rest of the Clock's lifetime — HSI drift
+    /// is the oscillator's, not the divider's, so baud changes don't
+    /// re-engage boot.
+    is_boot: bool,
+    /// Sum of `(byte_ticks − BITS_PER_FRAME × tpb) << 8` across the
+    /// current batch. Tracking the raw byte-time delta (not `byte_ticks
+    /// / BITS_PER_FRAME`) keeps 1-tick chip-stamp quantization noise
+    /// below threshold at small `ticks_per_bit` (V006 at 3M baud:
+    /// tpb=16, 1 tick = 6% of a bit).
     drift_sum_q8: i32,
-    /// `(DRIFT_THRESHOLD_Q20 × ticks_per_bit × DRIFT_MIN_SAMPLES) >> 12`,
-    /// precomputed at baud change. Per-sample path becomes shift + add +
-    /// compare — no `__divsi3`.
+    /// `|drift_sum_q8|` value that flags a worth-emitting batch. Boot
+    /// phase uses a full-step threshold (= `drift_per_step_q8`);
+    /// steady uses a half-step (= `drift_per_step_q8 >> 1`).
+    /// Precomputed on baud change and on phase transition.
     drift_threshold_q8: u32,
-    trim_delta: i8,
+    /// Reciprocal of one full step's drift in Q32. Lets `on_byte_pair`
+    /// estimate accumulated drift in trim-step units via a single 64-bit
+    /// multiply + shift instead of a runtime divide. Precomputed
+    /// alongside `drift_threshold_q8`.
+    drift_per_step_recip_q32: u32,
+    /// Currently-applied absolute correction relative to factory cal, in
+    /// ppm. Mirrors the value last handed to `T::apply_ppm`; clamped to
+    /// `T::ENVELOPE_PPM` before emission so we never request a correction
+    /// the provider would saturate on.
+    applied_ppm: i32,
     drift_samples: u16,
 
     pending_baud: Option<BaudRate>,
-    pending_trim_delta: Option<i8>,
+    pending_applied_ppm: Option<i32>,
 }
 
 impl<U: UsartBaud, T: ClockTrim> Clock<U, T> {
-    /// Relative frequency shift per trim step, in Q20 (1 unit = 1/2^20).
-    /// Power-of-2 scale (instead of ppm) so the threshold compute is a pure
-    /// shift. Folded to a literal at monomorphization time.
-    const TRIM_PER_STEP_Q20: u32 = ((T::STEP_HZ as u64 * (1 << 20)) / T::HZ as u64) as u32;
-    /// Step iff average drift exceeds half a step — below it, the actuator
-    /// would overshoot and the post-step error would be worse than pre-step.
-    const DRIFT_THRESHOLD_Q20: u32 = Self::TRIM_PER_STEP_Q20 / 2;
-
     /// `ticks_per_bit` at the given baud and the reference clock rate. Each
     /// arm folds to a literal at monomorphization — no runtime divide
     /// (matters on RV32EC, which has no hardware `div`).
@@ -81,27 +133,70 @@ impl<U: UsartBaud, T: ClockTrim> Clock<U, T> {
 
     pub fn new(baud: BaudRate, usart: U, trim: T) -> Self {
         let ticks_per_bit = Self::ticks_per_bit_at(baud);
+        let per_step_q8 = Self::drift_per_step_q8(ticks_per_bit, DRIFT_MIN_SAMPLES_BOOT);
         Self {
             usart,
             trim,
             baud,
             ticks_per_bit,
-            trim_delta: 0,
+            is_boot: true,
+            applied_ppm: 0,
             pending_baud: None,
-            pending_trim_delta: None,
+            pending_applied_ppm: None,
             drift_sum_q8: 0,
-            drift_threshold_q8: Self::drift_threshold_q8(ticks_per_bit),
+            // Boot phase: full-step threshold for ≥3.4σ SNR margin at 3M.
+            drift_threshold_q8: per_step_q8,
+            drift_per_step_recip_q32: Self::drift_per_step_recip_q32(per_step_q8),
             drift_samples: 0,
         }
     }
 
-    /// `|drift_sum_q8|` value that flags a worth-stepping batch. Derives from
-    /// the half-step rule expressed in Q8 ticks: the `× 256` (Q8 scale) and
-    /// the `/ 2^20` (Q20 → ratio) collapse to a single `>> 12`.
-    const fn drift_threshold_q8(ticks_per_bit: u16) -> u32 {
-        let prod =
-            Self::DRIFT_THRESHOLD_Q20 as u64 * ticks_per_bit as u64 * DRIFT_MIN_SAMPLES as u64;
-        (prod >> 12) as u32
+    /// One full trim step's worth of accumulated byte-tick drift over `N`
+    /// samples, in Q8 ticks. `drift_per_byte_q8 = STEP_PPM × tpb ×
+    /// BITS_PER_FRAME × Q8_SCALE / 10⁶` (one step shifts a BITS_PER_FRAME-
+    /// bit byte-time by `BITS_PER_FRAME × tpb × STEP_PPM / 10⁶` ticks; the
+    /// × Q8_SCALE lifts to Q8). Multiplied by `N` gives full-step-over-N.
+    /// Half-step (steady deadband) is just `>> 1`. Tracking drift on raw
+    /// byte_ticks instead of `(byte_ticks / BITS_PER_FRAME)` keeps 1-tick
+    /// chip-stamp quantization noise below threshold at small
+    /// `ticks_per_bit` (V006 at 3M has tpb=16 — a single tick of stamp
+    /// jitter is 6% of one bit and would otherwise dominate).
+    fn drift_per_step_q8(ticks_per_bit: u16, n_samples: u16) -> u32 {
+        let prod = T::STEP_PPM as u64
+            * ticks_per_bit as u64
+            * n_samples as u64
+            * BITS_PER_FRAME as u64
+            * Q8_SCALE as u64;
+        (prod / 1_000_000) as u32
+    }
+
+    /// Q32 reciprocal of one full step's drift-Q8, so `on_byte_pair` can
+    /// estimate accumulated drift in step units without a runtime divide.
+    fn drift_per_step_recip_q32(drift_per_step_q8: u32) -> u32 {
+        let denom = (drift_per_step_q8 as u64).max(1);
+        ((1u64 << 32) / denom) as u32
+    }
+
+    /// Recompute `drift_threshold_q8` and `drift_per_step_recip_q32` from
+    /// the current `ticks_per_bit` and `is_boot`. Called on baud change
+    /// and on phase transition — both cold paths (at most twice per Clock
+    /// lifetime in steady state).
+    fn rebuild_integrator_consts(&mut self) {
+        let n_samples = if self.is_boot {
+            DRIFT_MIN_SAMPLES_BOOT
+        } else {
+            DRIFT_MIN_SAMPLES_STEADY
+        };
+        let per_step_q8 = Self::drift_per_step_q8(self.ticks_per_bit, n_samples);
+        // Boot: full-step threshold (more conservative deadband over the
+        // smaller 6-sample window). Steady: half-step (tighter; the
+        // 32-sample window has enough SNR margin to spot half-step drift).
+        self.drift_threshold_q8 = if self.is_boot {
+            per_step_q8
+        } else {
+            per_step_q8 >> 1
+        };
+        self.drift_per_step_recip_q32 = Self::drift_per_step_recip_q32(per_step_q8);
     }
 
     #[allow(dead_code)]
@@ -113,18 +208,30 @@ impl<U: UsartBaud, T: ClockTrim> Clock<U, T> {
 
     #[allow(dead_code)]
     pub fn on_tx_complete(&mut self) {
+        let mut needs_rebuild = false;
         let mut reset_integrator = false;
         if let Some(baud) = self.pending_baud.take() {
             self.usart.apply_baud(baud);
             self.baud = baud;
             self.ticks_per_bit = Self::ticks_per_bit_at(baud);
-            self.drift_threshold_q8 = Self::drift_threshold_q8(self.ticks_per_bit);
+            needs_rebuild = true;
             reset_integrator = true;
         }
-        if let Some(delta) = self.pending_trim_delta.take() {
-            self.trim.apply_delta(delta);
-            self.trim_delta = delta;
+        if let Some(applied) = self.pending_applied_ppm.take() {
+            self.trim.apply_ppm(applied);
+            self.applied_ppm = applied;
             reset_integrator = true;
+        }
+        // First TC after `Clock::new` ends the boot phase, whether or
+        // not it produced an emit. The host's next packet runs against
+        // steady integrator state.
+        if self.is_boot {
+            self.is_boot = false;
+            needs_rebuild = true;
+            reset_integrator = true;
+        }
+        if needs_rebuild {
+            self.rebuild_integrator_consts();
         }
         if reset_integrator {
             self.drift_sum_q8 = 0;
@@ -132,40 +239,77 @@ impl<U: UsartBaud, T: ClockTrim> Clock<U, T> {
         }
     }
 
-    /// Inter-byte BT delta from the codec. Doc §10.7.1: only deltas in
-    /// `[9·tpb, 11·tpb]` measure a real 10-bit byte-time; GAP-class deltas
-    /// would inject re-anchor distance and poison the running average, so
-    /// they're filtered here rather than in the composite. Per
-    /// driver-pattern §4 the HIT window belongs with the driver that owns
-    /// `ticks_per_bit` — this one — not with the routing.
+    /// One classifier byte-pair from the codec — `prev`/`curr` are
+    /// consecutive start-bit edge timestamps the classifier walked out
+    /// of the EXTI/DMA edge ring. The classifier gates on its HIT window
+    /// `[WINDOW_LO_MUL·tpb, WINDOW_HI_MUL·tpb]` (doc §10.7.1) before
+    /// emitting, so every pair reaching here is a real
+    /// `BITS_PER_FRAME`-bit byte-time delta.
+    ///
+    /// Despite the per-pair callback shape, the accumulator is *one
+    /// multi-byte stride measurement*: each pair contributes
+    /// `(e_k − e_{k−1}) − BITS_PER_FRAME·tpb`, and over N samples the
+    /// intermediate edge stamps telescope to give `(e_N − e_0) −
+    /// N·BITS_PER_FRAME·tpb`. Noise on `drift_sum_q8` is therefore
+    /// `√2·σ_edge` regardless of N — independent of sample count.
     #[allow(dead_code)]
-    pub fn on_byte_pair(&mut self, prev_ts: u16, curr_ts: u16) {
-        let byte_ticks = curr_ts.wrapping_sub(prev_ts);
-        let lo = self.ticks_per_bit.wrapping_mul(9);
-        let hi = self.ticks_per_bit.wrapping_mul(11);
-        if byte_ticks < lo || byte_ticks > hi {
-            return;
-        }
-
-        let observed_tpb = (byte_ticks / 10) as i32;
-        let drift = observed_tpb - self.ticks_per_bit as i32;
+    pub fn on_byte_pair(&mut self, prev: u16, curr: u16) {
+        let byte_ticks = curr.wrapping_sub(prev);
+        // Drift on raw byte_ticks (no `/BITS_PER_FRAME` truncation) — at
+        // small `ticks_per_bit` (V006 at 3M: tpb=16, byte=160) a 1-tick
+        // chip-stamp quantization is ~6% of one bit and would otherwise
+        // dominate the per-sample signal. Threshold scales by
+        // `BITS_PER_FRAME` to match.
+        let drift = byte_ticks as i32 - BITS_PER_FRAME as i32 * self.ticks_per_bit as i32;
         self.drift_sum_q8 = self.drift_sum_q8.saturating_add(drift << 8);
         self.drift_samples += 1;
-        if self.drift_samples < DRIFT_MIN_SAMPLES {
+        let min_samples = if self.is_boot {
+            DRIFT_MIN_SAMPLES_BOOT
+        } else {
+            DRIFT_MIN_SAMPLES_STEADY
+        };
+        if self.drift_samples < min_samples {
             return;
         }
 
         if self.drift_sum_q8.unsigned_abs() >= self.drift_threshold_q8 {
-            // Servo fast → observed ticks/bit short → HSITRIM must drop.
-            let step: i8 = if self.drift_sum_q8 > 0 { -1 } else { 1 };
-            let new_delta = (self.trim_delta as i32 + step as i32)
-                .clamp(T::DELTA_MIN as i32, T::DELTA_MAX as i32) as i8;
-            if new_delta != self.trim_delta {
-                self.pending_trim_delta = Some(new_delta);
+            // Magnitude-aware: estimate accumulated drift in trim steps,
+            // emit the opposing correction capped to bound noise risk.
+            // Servo fast → observed ticks/bit short → counter ppm DOWN.
+            let drift_steps = self.drift_in_steps();
+            let counter = -drift_steps;
+            let cap = if self.is_boot {
+                EMIT_CAP_STEPS_BOOT
+            } else {
+                EMIT_CAP_STEPS_STEADY
+            };
+            let capped = counter.clamp(-cap, cap);
+            let nudge_ppm = capped.saturating_mul(T::STEP_PPM as i32);
+            let new_applied = self
+                .applied_ppm
+                .saturating_add(nudge_ppm)
+                .clamp(T::ENVELOPE_PPM.0, T::ENVELOPE_PPM.1);
+            if new_applied != self.applied_ppm {
+                self.pending_applied_ppm = Some(new_applied);
             }
         }
         self.drift_sum_q8 = 0;
         self.drift_samples = 0;
+    }
+
+    /// Accumulated drift estimate in signed trim-step units. Uses the
+    /// precomputed Q32 reciprocal — single 64-bit multiply + shift, no
+    /// runtime divide. Rounds half-away-from-zero so a single
+    /// threshold-crossing batch produces `±1` instead of truncating to 0.
+    fn drift_in_steps(&self) -> i32 {
+        let abs_sum = self.drift_sum_q8.unsigned_abs() as u64;
+        let prod = abs_sum * self.drift_per_step_recip_q32 as u64;
+        let steps_abs = ((prod + (1u64 << 31)) >> 32) as i32;
+        if self.drift_sum_q8 >= 0 {
+            steps_abs
+        } else {
+            -steps_abs
+        }
     }
 
     #[inline(always)]
@@ -182,11 +326,11 @@ impl<U: UsartBaud, T: ClockTrim> Clock<U, T> {
     /// at V006's 48 MHz, far below the timer's 20.83 ns resolution).
     #[allow(dead_code)]
     pub fn bytes_to_ticks(&self, bytes: u32) -> u32 {
-        // 10 · CLOCK_HZ folds to a u64 literal at monomorphization (e.g.
-        // 480_000_000 for V006). Each match arm's divisor is also a literal,
-        // so LLVM lowers `u64 / const_u64` to a reciprocal multiply — no
-        // `__udivdi3` call.
-        let scaled = bytes as u64 * 10 * U::CLOCK_HZ as u64;
+        // BITS_PER_FRAME · CLOCK_HZ folds to a u64 literal at monomorphization
+        // (e.g. 480_000_000 for V006). Each match arm's divisor is also a
+        // literal, so LLVM lowers `u64 / const_u64` to a reciprocal multiply
+        // — no `__udivdi3` call.
+        let scaled = bytes as u64 * BITS_PER_FRAME as u64 * U::CLOCK_HZ as u64;
         match self.baud {
             BaudRate::B9600 => (scaled / 9_600u64) as u32,
             BaudRate::B57600 => (scaled / 57_600u64) as u32,

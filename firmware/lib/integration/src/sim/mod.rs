@@ -32,7 +32,7 @@ pub use host::{HOST_ABSOLUTE_CAP, HOST_FIRST_BYTE_TIMEOUT, HOST_INTER_BYTE_TIMEO
 pub use registry::{DeviceId, DeviceRegistry};
 pub use servo::{DEFAULT_DXL_ID, DEFAULT_FIRMWARE_VERSION, DEFAULT_MODEL_NUMBER, Servo};
 pub use source::EventSource;
-pub use time::{Clock, SimTime};
+pub use time::{Clock, HsiClock, SimTime};
 pub use uart::{
     RxDecoder, RxEffect, RxLogEntry, RxLogKind, TxEncoder, TxLogEntry, UartRx, UartTx,
     bit_period_ns, byte_time_ns,

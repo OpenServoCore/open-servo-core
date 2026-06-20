@@ -2,21 +2,32 @@
 
 use osc_drivers::traits::dxl;
 
-use crate::hal::clocks::{HSI_HZ, HSI_TRIM_STEP_HZ};
 use crate::hal::rcc;
+use crate::hal::rcc::CLOCK_TRIM_PPM_PER_STEP;
 
-/// Production binding to HSITRIM. Delta is added on top of the factory
-/// default trim.
+/// Production binding to HSITRIM. The driver hands an absolute correction
+/// in ppm relative to factory cal; the provider quantizes to the nearest
+/// HSI trim step (~2500 ppm/step on V006) and writes the register.
 pub struct ClockTrim;
 
 impl dxl::ClockTrim for ClockTrim {
-    const DELTA_MIN: i8 = rcc::CLOCK_TRIM_DELTA_MIN;
-    const DELTA_MAX: i8 = rcc::CLOCK_TRIM_DELTA_MAX;
-    const HZ: u32 = HSI_HZ;
-    const STEP_HZ: u32 = HSI_TRIM_STEP_HZ;
+    const STEP_PPM: u32 = CLOCK_TRIM_PPM_PER_STEP;
+    const ENVELOPE_PPM: (i32, i32) = (
+        rcc::CLOCK_TRIM_DELTA_MIN as i32 * CLOCK_TRIM_PPM_PER_STEP as i32,
+        rcc::CLOCK_TRIM_DELTA_MAX as i32 * CLOCK_TRIM_PPM_PER_STEP as i32,
+    );
 
     #[inline(always)]
-    fn apply_delta(&mut self, delta: i8) {
-        rcc::apply_clock_trim_delta(delta);
+    fn apply_ppm(&mut self, ppm: i32) {
+        // Round to nearest step away from zero so requests below half a
+        // step still snap to zero; requests above half snap to ±1 step.
+        let step_ppm = CLOCK_TRIM_PPM_PER_STEP as i32;
+        let half = step_ppm / 2;
+        let rounded = if ppm >= 0 { ppm + half } else { ppm - half };
+        let step = (rounded / step_ppm).clamp(
+            rcc::CLOCK_TRIM_DELTA_MIN as i32,
+            rcc::CLOCK_TRIM_DELTA_MAX as i32,
+        ) as i8;
+        rcc::apply_clock_trim_delta(step);
     }
 }
