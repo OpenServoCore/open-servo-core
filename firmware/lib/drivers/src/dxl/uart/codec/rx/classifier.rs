@@ -111,13 +111,49 @@ fn in_band(delta: u16, lo_x2: u32, hi_x2: u32, tpb: u16) -> bool {
 
 /// Lift a 16-bit IC stamp into the WireClock u32 domain. The contract
 /// (see [`crate::traits::dxl::WireClock`]) guarantees the low 16 bits of
-/// `now` equal the IC stamp captured at the same instant, so the modular
-/// delta from `stamp` to `now as u16` is the elapsed ticks — subtract that
-/// from `now` to recover the u32 reading at capture time.
+/// `ref_tick` equal the IC stamp captured at the same instant, so the
+/// modular delta from `stamp` to `ref_tick as u16` is the elapsed ticks —
+/// subtract that from `ref_tick` to recover the u32 reading at capture
+/// time. **Caller must ensure `ref_tick − stamp_u32 < 65536`**; if the
+/// reference sits more than a u16-wrap past the stamp the result aliases
+/// to a value one wrap too high. See [`drain_ref`] for the per-source
+/// reference correction the composite applies before calling.
 #[inline]
-fn lift(stamp: u16, now: u32) -> u32 {
-    let delta = (now as u16).wrapping_sub(stamp) as u32;
-    now.wrapping_sub(delta)
+fn lift(stamp: u16, ref_tick: u32) -> u32 {
+    let delta = (ref_tick as u16).wrapping_sub(stamp) as u32;
+    ref_tick.wrapping_sub(delta)
+}
+
+/// Correct an ISR-entry `now` back into the u16-wrap window above
+/// `last_byte_start` so [`lift`] doesn't alias under sub-wrap baud math.
+/// At low baud (9600), `now − stamp` at IDLE drain is `2·BITS_PER_FRAME·
+/// tpb = 100_000` ticks > 65_536 (u16 wrap @ 48 MHz HCLK) — `lift(stamp,
+/// now)` silently aliases one wrap too high (~1.365 ms drift). HT/TC
+/// drain runs ~1·tpb after the start bit, always within one wrap.
+///
+/// At Idle we subtract `BITS_PER_FRAME · tpb` (= 10·tpb) — NOT `2·tpb·
+/// BITS_PER_FRAME`. The exact IDLE elapsed is `2·BITS_PER_FRAME·tpb`
+/// (the byte's own 10 bits + 10 idle threshold bits), so subtracting
+/// 10·tpb lands `ref ≈ stamp + 10·tpb = packet_end_tick` — half-way
+/// through the wrap window above `stamp_full`. That gives ±10·tpb
+/// (= ±50_000 ticks at 9600 / ±160 at 3M) of slack on either side
+/// without crossing into the next wrap, so off-by-one truncation in
+/// the time→tick conversion can't slip `ref` below `stamp_full` (which
+/// would alias DOWN one wrap, the dual of the original bug).
+///
+/// `[[no_idle_timing]]` compliance: the returned reference is only used
+/// to disambiguate which u16-wrap window the IC stamp belongs to; the
+/// lifted stamp itself is hardware-precise. IDLE is signalling which
+/// formula to apply (Dma vs Idle), not measuring the packet's wire end.
+#[inline]
+fn drain_ref(now: u32, src: FallbackSrc, ticks_per_bit: u16) -> u32 {
+    match src {
+        FallbackSrc::Dma => now,
+        FallbackSrc::Idle => {
+            let half = (BITS_PER_FRAME as u32).wrapping_mul(ticks_per_bit as u32);
+            now.wrapping_sub(half)
+        }
+    }
 }
 
 pub struct Classifier {
@@ -366,22 +402,27 @@ impl Classifier {
     }
 
     /// Tick of the most recently classified byte's start bit, lifted into
-    /// the WireClock u32 domain via `now`. Composite reads at parser
-    /// event-handling time for one-shot stamps.
+    /// the WireClock u32 domain. Composite reads at parser event-handling
+    /// time for one-shot stamps. `now` is the most recent ISR-entry
+    /// WireClock reading; `src` picks the per-drain reference correction
+    /// (see [`drain_ref`]) so the lift doesn't alias at low baud.
     #[allow(dead_code)]
-    pub fn current_byte_tick(&self, now: u32) -> Option<u32> {
-        self.last_byte_start.map(|t| lift(t, now))
+    pub fn current_byte_tick(&self, ticks_per_bit: u16, now: u32, src: FallbackSrc) -> Option<u32> {
+        let r = drain_ref(now, src, ticks_per_bit);
+        self.last_byte_start.map(|t| lift(t, r))
     }
 
     /// Wire-end tick of the most recently classified byte, lifted into the
     /// WireClock u32 domain. Composite stamps `packet_end_tick` at the
     /// parser's CRC-good event — the CRC byte's start sits at
-    /// `last_byte_start`, the wire-end one byte-time later.
+    /// `last_byte_start`, the wire-end one byte-time later. `now` / `src`
+    /// route through [`drain_ref`] so the lift stays sub-wrap at low baud.
     #[allow(dead_code)]
-    pub fn packet_end_tick(&self, ticks_per_bit: u16, now: u32) -> Option<u32> {
+    pub fn packet_end_tick(&self, ticks_per_bit: u16, now: u32, src: FallbackSrc) -> Option<u32> {
         let frame_ticks = (ticks_per_bit as u32).wrapping_mul(BITS_PER_FRAME as u32);
+        let r = drain_ref(now, src, ticks_per_bit);
         self.last_byte_start
-            .map(|t| lift(t, now).wrapping_add(frame_ticks))
+            .map(|t| lift(t, r).wrapping_add(frame_ticks))
     }
 
     /// Fallback packet-end estimate for the no-anchor case — the composite
@@ -748,16 +789,19 @@ mod tests {
     #[test]
     fn current_byte_tick_lifts_last_byte_start() {
         let mut c = make();
-        assert_eq!(c.current_byte_tick(0x0001_0000), None);
-        c.last_byte_start = Some(4242);
-        // now's low-u16 == 4242 → delta == 0 → lift == now.
         assert_eq!(
-            c.current_byte_tick(0x0001_0000 + 4242),
+            c.current_byte_tick(TPB_3M, 0x0001_0000, FallbackSrc::Dma),
+            None
+        );
+        c.last_byte_start = Some(4242);
+        // Dma drain: ref == now. now's low-u16 == 4242 → delta == 0 → lift == now.
+        assert_eq!(
+            c.current_byte_tick(TPB_3M, 0x0001_0000 + 4242, FallbackSrc::Dma),
             Some(0x0001_0000 + 4242)
         );
         // now's low-u16 > stamp by 100 → lift == now − 100.
         assert_eq!(
-            c.current_byte_tick(0x0001_0000 + 4342),
+            c.current_byte_tick(TPB_3M, 0x0001_0000 + 4342, FallbackSrc::Dma),
             Some(0x0001_0000 + 4242)
         );
     }
@@ -765,16 +809,80 @@ mod tests {
     #[test]
     fn packet_end_tick_adds_10bit_after_lift() {
         let mut c = make();
-        assert_eq!(c.packet_end_tick(TPB_3M, 1_000_000), None);
+        assert_eq!(c.packet_end_tick(TPB_3M, 1_000_000, FallbackSrc::Dma), None);
         c.last_byte_start = Some(5000);
         let now = 0x0001_0000_u32 + 5000;
         assert_eq!(
-            c.packet_end_tick(TPB_3M, now),
+            c.packet_end_tick(TPB_3M, now, FallbackSrc::Dma),
             Some(now + BYTE_TICKS_3M as u32),
         );
         assert_eq!(
-            c.packet_end_tick(TPB_1M, now),
+            c.packet_end_tick(TPB_1M, now, FallbackSrc::Dma),
             Some(now + BYTE_TICKS_1M as u32),
+        );
+    }
+
+    #[test]
+    fn current_byte_tick_idle_drain_lifts_stamp() {
+        // IDLE drain enters 2·BITS_PER_FRAME·tpb past the last byte's
+        // start bit. With src=Idle the classifier subtracts BITS_PER_FRAME
+        // ·tpb to put `ref ≈ packet_end` — half-way through the wrap
+        // window above `stamp_full` — so `lift` snaps to `stamp_full`.
+        let mut c = make();
+        c.last_byte_start = Some(5000);
+        let stamp_full = 0x0001_0000_u32 + 5000;
+        let idle_elapsed = 2 * BITS_PER_FRAME as u32 * TPB_3M as u32;
+        let now_at_idle = stamp_full + idle_elapsed;
+        assert_eq!(
+            c.current_byte_tick(TPB_3M, now_at_idle, FallbackSrc::Idle),
+            Some(stamp_full),
+        );
+    }
+
+    #[test]
+    fn packet_end_tick_idle_drain_stays_sub_wrap_at_9600() {
+        // Regression: at 9600 baud (tpb = 5000 ticks @ 48 MHz HCLK) the
+        // IDLE elapsed = 2·10·5000 = 100_000 ticks > 65_536 (u16 wrap).
+        // Without the IDLE-aware reference, `lift` aliases one wrap too
+        // high — that's the broadcast-Ping slot drift `timing/
+        // ping_broadcast.rs` flagged at baud_idx 0. The corrected `ref`
+        // lands at `stamp + 50_000`, sub-wrap, lifts cleanly.
+        const TPB_9600: u16 = 5000;
+        const BYTE_TICKS_9600: u32 = 10 * TPB_9600 as u32;
+        let mut c = make();
+        c.last_byte_start = Some(5000);
+        let stamp_full = 0x0001_0000_u32 + 5000;
+        let idle_elapsed = 2 * BITS_PER_FRAME as u32 * TPB_9600 as u32;
+        let now_at_idle = stamp_full + idle_elapsed;
+        assert!(
+            now_at_idle - stamp_full > u16::MAX as u32,
+            "guards regression scope"
+        );
+        assert_eq!(
+            c.packet_end_tick(TPB_9600, now_at_idle, FallbackSrc::Idle),
+            Some(stamp_full + BYTE_TICKS_9600),
+        );
+    }
+
+    #[test]
+    fn packet_end_tick_idle_robust_to_truncated_elapsed() {
+        // Truncation regression: integer division in sim's ns→tick
+        // conversion (and HCLK/baud rounding for non-integer tpb) can
+        // shave one tick off the elapsed. Subtracting the FULL 20·tpb
+        // would push `ref` to `stamp_full - 1` and lift aliases DOWN
+        // one wrap. Subtracting only `BITS_PER_FRAME·tpb` leaves `ref ≈
+        // stamp + 10·tpb`, so a few ticks of slop in either direction
+        // stay safely inside the wrap window.
+        const TPB_9600: u16 = 5000;
+        const BYTE_TICKS_9600: u32 = 10 * TPB_9600 as u32;
+        let mut c = make();
+        c.last_byte_start = Some(5000);
+        let stamp_full = 0x0001_0000_u32 + 5000;
+        let truncated_elapsed = 2 * BITS_PER_FRAME as u32 * TPB_9600 as u32 - 1;
+        let now_at_idle = stamp_full + truncated_elapsed;
+        assert_eq!(
+            c.packet_end_tick(TPB_9600, now_at_idle, FallbackSrc::Idle),
+            Some(stamp_full + BYTE_TICKS_9600),
         );
     }
 

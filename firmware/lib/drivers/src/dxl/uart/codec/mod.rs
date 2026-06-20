@@ -26,7 +26,7 @@ use dxl_protocol::{CrcUmts, SlotEncoder, SlotPosition, StatusEncoder, WriteError
 use super::BITS_PER_FRAME;
 use crate::traits::dxl::{EdgeDma, RxDma};
 use crate::util::HwRing;
-use rx::Rx;
+use rx::{FallbackSrc, Rx};
 
 /// Slack added past the byte-count-derived skip end, in wire bytes. Absorbs
 /// inter-byte gaps and HSI wobble within healthy streams so a deadline-
@@ -430,13 +430,13 @@ impl<R: EdgeDma, CRC: CrcUmts, const RX_BUF_LEN: usize, const EDGE_BUF_LEN: usiz
     }
 
     /// Forward to [`rx::Rx::current_byte_tick`].
-    pub fn current_byte_tick(&self, now: u32) -> Option<u32> {
-        self.rx.current_byte_tick(now)
+    pub fn current_byte_tick(&self, ticks_per_bit: u16, now: u32, src: FallbackSrc) -> Option<u32> {
+        self.rx.current_byte_tick(ticks_per_bit, now, src)
     }
 
     /// Forward to [`rx::Rx::packet_end_tick`].
-    pub fn packet_end_tick(&self, ticks_per_bit: u16, now: u32) -> Option<u32> {
-        self.rx.packet_end_tick(ticks_per_bit, now)
+    pub fn packet_end_tick(&self, ticks_per_bit: u16, now: u32, src: FallbackSrc) -> Option<u32> {
+        self.rx.packet_end_tick(ticks_per_bit, now, src)
     }
 
     /// Forward to [`rx::Rx::drain_walker`].
@@ -658,13 +658,13 @@ impl<
     }
 
     /// Forward to [`CodecRx::current_byte_tick`].
-    pub fn current_byte_tick(&self, now: u32) -> Option<u32> {
-        self.rx.current_byte_tick(now)
+    pub fn current_byte_tick(&self, ticks_per_bit: u16, now: u32, src: FallbackSrc) -> Option<u32> {
+        self.rx.current_byte_tick(ticks_per_bit, now, src)
     }
 
     /// Forward to [`CodecRx::packet_end_tick`].
-    pub fn packet_end_tick(&self, ticks_per_bit: u16, now: u32) -> Option<u32> {
-        self.rx.packet_end_tick(ticks_per_bit, now)
+    pub fn packet_end_tick(&self, ticks_per_bit: u16, now: u32, src: FallbackSrc) -> Option<u32> {
+        self.rx.packet_end_tick(ticks_per_bit, now, src)
     }
 
     /// Forward to [`CodecRx::set_hsi_active`].

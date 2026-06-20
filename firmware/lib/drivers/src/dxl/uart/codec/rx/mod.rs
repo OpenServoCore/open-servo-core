@@ -157,16 +157,19 @@ impl<R: EdgeDma, const EDGE_BUF_LEN: usize> Rx<R, EDGE_BUF_LEN> {
     }
 
     /// Tick of the most-recently classified byte's start bit, lifted into
-    /// the WireClock u32 domain via `now`.
-    pub fn current_byte_tick(&self, now: u32) -> Option<u32> {
-        self.classifier.current_byte_tick(now)
+    /// the WireClock u32 domain. `now` / `src` route through the
+    /// classifier's drain-reference correction so the lift stays sub-
+    /// wrap at low baud — see `Classifier::drain_ref`.
+    pub fn current_byte_tick(&self, ticks_per_bit: u16, now: u32, src: FallbackSrc) -> Option<u32> {
+        self.classifier.current_byte_tick(ticks_per_bit, now, src)
     }
 
     /// Wire-end tick of the most-recently classified byte, lifted into the
     /// WireClock u32 domain. Composite stamps `packet_end_tick` at the
-    /// parser's CRC-good event.
-    pub fn packet_end_tick(&self, ticks_per_bit: u16, now: u32) -> Option<u32> {
-        self.classifier.packet_end_tick(ticks_per_bit, now)
+    /// parser's CRC-good event. `now` / `src` route through the drain-
+    /// reference correction — see `Classifier::drain_ref`.
+    pub fn packet_end_tick(&self, ticks_per_bit: u16, now: u32, src: FallbackSrc) -> Option<u32> {
+        self.classifier.packet_end_tick(ticks_per_bit, now, src)
     }
 
     /// Fallback packet-end estimate for the no-anchor case — composite

@@ -836,21 +836,27 @@ impl<P: Providers, const RX_BUF_LEN: usize, const EDGE_BUF_LEN: usize, const TX_
                             // when interference / edge loss starved the
                             // classifier. FAST chain ops skip the fallback
                             // — see `InflightCtx::allows_packet_end_fallback`.
-                            let packet_end_tick = match rx_inner.packet_end_tick(ticks_per_bit, now)
-                            {
-                                Some(t) => Some(t),
-                                None => {
-                                    rx_dma.record_edge_anchor_miss();
-                                    ctx.allows_packet_end_fallback().then(|| {
-                                        let (cap_now, src) = rx_inner.last_isr_capture();
-                                        rx_inner.packet_end_tick_fallback(
-                                            src,
-                                            cap_now,
-                                            ticks_per_bit,
-                                        )
-                                    })
-                                }
-                            };
+                            // Both paths source `(cap_now, src)` from the most
+                            // recent ISR entry — the primary path needs `src`
+                            // so the u16-stamp lift picks the right drain
+                            // reference (HT/TC ≈ stamp+1·bp vs IDLE ≈ stamp+
+                            // 2·BITS_PER_FRAME·tpb), critical at 9600 baud
+                            // where IDLE elapsed exceeds the u16 wrap.
+                            let (cap_now, src) = rx_inner.last_isr_capture();
+                            let packet_end_tick =
+                                match rx_inner.packet_end_tick(ticks_per_bit, cap_now, src) {
+                                    Some(t) => Some(t),
+                                    None => {
+                                        rx_dma.record_edge_anchor_miss();
+                                        ctx.allows_packet_end_fallback().then(|| {
+                                            rx_inner.packet_end_tick_fallback(
+                                                src,
+                                                cap_now,
+                                                ticks_per_bit,
+                                            )
+                                        })
+                                    }
+                                };
                             if let Some(t) = packet_end_tick {
                                 crate::log::debug!("dxl[id={}]: crc packet_end_tick={}", id, t);
                                 // At Crc-of-host-instruction, the codec's
