@@ -43,12 +43,16 @@ const QUIET_MIN_X2: u32 = 14; //  7·bit · 2
 // sizing formulas below.
 const SYNC_SIGNATURE_EDGES: usize = 5;
 
-/// Source of a [`Classifier::packet_end_tick_fallback`] call — picks the
-/// formula. Each variant maps to one parser-event poll context. Used when
-/// interference / edge loss left the classifier unanchored at the parser's
-/// Crc event; downstream RDT scheduling needs a tick even if degraded.
+/// Which ISR delivered the current poll — DMA1_CH7 HT/TC or USART RX
+/// IDLE. Threaded through every classifier read that converts an ISR-
+/// entry `now` into a packet-relative tick:
+/// [`Classifier::packet_end_tick`] (anchored u16→u32 lift), its
+/// fallback ([`Classifier::packet_end_tick_fallback`]), and
+/// [`Classifier::current_byte_tick`]. The two contexts have different
+/// elapsed-time relationships to the last data byte, so the formula
+/// downstream must pick the matching one.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
-pub enum FallbackSrc {
+pub enum PollSrc {
     /// HT/TC poll context. Bytes arrived steadily; the CRC byte landed in
     /// DMA ~now (sub-µs ISR-entry latency aside) so `now` is the
     /// packet-end estimate.
@@ -146,10 +150,10 @@ fn lift(stamp: u16, ref_tick: u32) -> u32 {
 /// lifted stamp itself is hardware-precise. IDLE is signalling which
 /// formula to apply (Dma vs Idle), not measuring the packet's wire end.
 #[inline]
-fn drain_ref(now: u32, src: FallbackSrc, ticks_per_bit: u16) -> u32 {
+fn drain_ref(now: u32, src: PollSrc, ticks_per_bit: u16) -> u32 {
     match src {
-        FallbackSrc::Dma => now,
-        FallbackSrc::Idle => {
+        PollSrc::Dma => now,
+        PollSrc::Idle => {
             let half = (BITS_PER_FRAME as u32).wrapping_mul(ticks_per_bit as u32);
             now.wrapping_sub(half)
         }
@@ -407,7 +411,7 @@ impl Classifier {
     /// WireClock reading; `src` picks the per-drain reference correction
     /// (see [`drain_ref`]) so the lift doesn't alias at low baud.
     #[allow(dead_code)]
-    pub fn current_byte_tick(&self, ticks_per_bit: u16, now: u32, src: FallbackSrc) -> Option<u32> {
+    pub fn current_byte_tick(&self, ticks_per_bit: u16, now: u32, src: PollSrc) -> Option<u32> {
         let r = drain_ref(now, src, ticks_per_bit);
         self.last_byte_start.map(|t| lift(t, r))
     }
@@ -418,7 +422,7 @@ impl Classifier {
     /// `last_byte_start`, the wire-end one byte-time later. `now` / `src`
     /// route through [`drain_ref`] so the lift stays sub-wrap at low baud.
     #[allow(dead_code)]
-    pub fn packet_end_tick(&self, ticks_per_bit: u16, now: u32, src: FallbackSrc) -> Option<u32> {
+    pub fn packet_end_tick(&self, ticks_per_bit: u16, now: u32, src: PollSrc) -> Option<u32> {
         let frame_ticks = (ticks_per_bit as u32).wrapping_mul(BITS_PER_FRAME as u32);
         let r = drain_ref(now, src, ticks_per_bit);
         self.last_byte_start
@@ -429,20 +433,20 @@ impl Classifier {
     /// calls this at Crc when [`packet_end_tick`] returns `None` (interference
     /// or edge loss starved the classifier). Formula per `src`:
     ///
-    /// - [`FallbackSrc::Dma`]: returns `now`. CRC byte landed in DMA
+    /// - [`PollSrc::Dma`]: returns `now`. CRC byte landed in DMA
     ///   ~immediately before the poll, so `now` IS packet-end with negligible
     ///   ISR-entry offset.
-    /// - [`FallbackSrc::Idle`]: returns `now − BITS_PER_FRAME · ticks_per_bit`.
+    /// - [`PollSrc::Idle`]: returns `now − BITS_PER_FRAME · ticks_per_bit`.
     ///   USART1 IDLE asserts one idle character after the last data byte's
     ///   stop bit, so back-date by that interval.
     ///
     /// Bumps no state; the composite increments the telemetry counter via
     /// [`crate::traits::dxl::RxDma::record_edge_anchor_miss`] alongside.
     #[allow(dead_code)]
-    pub fn packet_end_tick_fallback(&self, src: FallbackSrc, now: u32, ticks_per_bit: u16) -> u32 {
+    pub fn packet_end_tick_fallback(&self, src: PollSrc, now: u32, ticks_per_bit: u16) -> u32 {
         match src {
-            FallbackSrc::Dma => now,
-            FallbackSrc::Idle => {
+            PollSrc::Dma => now,
+            PollSrc::Idle => {
                 let gap = (BITS_PER_FRAME as u32).wrapping_mul(ticks_per_bit as u32);
                 now.wrapping_sub(gap)
             }
@@ -789,19 +793,16 @@ mod tests {
     #[test]
     fn current_byte_tick_lifts_last_byte_start() {
         let mut c = make();
-        assert_eq!(
-            c.current_byte_tick(TPB_3M, 0x0001_0000, FallbackSrc::Dma),
-            None
-        );
+        assert_eq!(c.current_byte_tick(TPB_3M, 0x0001_0000, PollSrc::Dma), None);
         c.last_byte_start = Some(4242);
         // Dma drain: ref == now. now's low-u16 == 4242 → delta == 0 → lift == now.
         assert_eq!(
-            c.current_byte_tick(TPB_3M, 0x0001_0000 + 4242, FallbackSrc::Dma),
+            c.current_byte_tick(TPB_3M, 0x0001_0000 + 4242, PollSrc::Dma),
             Some(0x0001_0000 + 4242)
         );
         // now's low-u16 > stamp by 100 → lift == now − 100.
         assert_eq!(
-            c.current_byte_tick(TPB_3M, 0x0001_0000 + 4342, FallbackSrc::Dma),
+            c.current_byte_tick(TPB_3M, 0x0001_0000 + 4342, PollSrc::Dma),
             Some(0x0001_0000 + 4242)
         );
     }
@@ -809,15 +810,15 @@ mod tests {
     #[test]
     fn packet_end_tick_adds_10bit_after_lift() {
         let mut c = make();
-        assert_eq!(c.packet_end_tick(TPB_3M, 1_000_000, FallbackSrc::Dma), None);
+        assert_eq!(c.packet_end_tick(TPB_3M, 1_000_000, PollSrc::Dma), None);
         c.last_byte_start = Some(5000);
         let now = 0x0001_0000_u32 + 5000;
         assert_eq!(
-            c.packet_end_tick(TPB_3M, now, FallbackSrc::Dma),
+            c.packet_end_tick(TPB_3M, now, PollSrc::Dma),
             Some(now + BYTE_TICKS_3M as u32),
         );
         assert_eq!(
-            c.packet_end_tick(TPB_1M, now, FallbackSrc::Dma),
+            c.packet_end_tick(TPB_1M, now, PollSrc::Dma),
             Some(now + BYTE_TICKS_1M as u32),
         );
     }
@@ -834,7 +835,7 @@ mod tests {
         let idle_elapsed = 2 * BITS_PER_FRAME as u32 * TPB_3M as u32;
         let now_at_idle = stamp_full + idle_elapsed;
         assert_eq!(
-            c.current_byte_tick(TPB_3M, now_at_idle, FallbackSrc::Idle),
+            c.current_byte_tick(TPB_3M, now_at_idle, PollSrc::Idle),
             Some(stamp_full),
         );
     }
@@ -859,7 +860,7 @@ mod tests {
             "guards regression scope"
         );
         assert_eq!(
-            c.packet_end_tick(TPB_9600, now_at_idle, FallbackSrc::Idle),
+            c.packet_end_tick(TPB_9600, now_at_idle, PollSrc::Idle),
             Some(stamp_full + BYTE_TICKS_9600),
         );
     }
@@ -881,7 +882,7 @@ mod tests {
         let truncated_elapsed = 2 * BITS_PER_FRAME as u32 * TPB_9600 as u32 - 1;
         let now_at_idle = stamp_full + truncated_elapsed;
         assert_eq!(
-            c.packet_end_tick(TPB_9600, now_at_idle, FallbackSrc::Idle),
+            c.packet_end_tick(TPB_9600, now_at_idle, PollSrc::Idle),
             Some(stamp_full + BYTE_TICKS_9600),
         );
     }
@@ -890,13 +891,10 @@ mod tests {
     fn fallback_dma_returns_now_unchanged() {
         let c = make();
         // Dma path: regardless of anchor state, packet_end ≈ now.
+        assert_eq!(c.packet_end_tick_fallback(PollSrc::Dma, 1234, TPB_3M), 1234);
+        assert_eq!(c.packet_end_tick_fallback(PollSrc::Dma, 0, TPB_3M), 0);
         assert_eq!(
-            c.packet_end_tick_fallback(FallbackSrc::Dma, 1234, TPB_3M),
-            1234
-        );
-        assert_eq!(c.packet_end_tick_fallback(FallbackSrc::Dma, 0, TPB_3M), 0);
-        assert_eq!(
-            c.packet_end_tick_fallback(FallbackSrc::Dma, u32::MAX, TPB_3M),
+            c.packet_end_tick_fallback(PollSrc::Dma, u32::MAX, TPB_3M),
             u32::MAX,
         );
     }
@@ -906,12 +904,12 @@ mod tests {
         let c = make();
         // 3 Mbaud: gap = 10·16 = 160 ticks.
         assert_eq!(
-            c.packet_end_tick_fallback(FallbackSrc::Idle, 1600, TPB_3M),
+            c.packet_end_tick_fallback(PollSrc::Idle, 1600, TPB_3M),
             1600 - BYTE_TICKS_3M as u32,
         );
         // 1 Mbaud: gap = 10·48 = 480 ticks.
         assert_eq!(
-            c.packet_end_tick_fallback(FallbackSrc::Idle, 2000, TPB_1M),
+            c.packet_end_tick_fallback(PollSrc::Idle, 2000, TPB_1M),
             2000 - BYTE_TICKS_1M as u32,
         );
     }
@@ -921,7 +919,7 @@ mod tests {
         let c = make();
         let expected = 5_u32.wrapping_sub(BYTE_TICKS_3M as u32);
         assert_eq!(
-            c.packet_end_tick_fallback(FallbackSrc::Idle, 5, TPB_3M),
+            c.packet_end_tick_fallback(PollSrc::Idle, 5, TPB_3M),
             expected,
         );
     }
@@ -931,10 +929,10 @@ mod tests {
         // Both formulas are pure in (src, now, ticks_per_bit); anchor
         // state must not influence the result.
         let mut c = make();
-        let unset = c.packet_end_tick_fallback(FallbackSrc::Dma, 4242, TPB_3M);
+        let unset = c.packet_end_tick_fallback(PollSrc::Dma, 4242, TPB_3M);
         c.last_byte_start = Some(9999);
         c.prev_byte_start = Some(9999);
-        let set = c.packet_end_tick_fallback(FallbackSrc::Dma, 4242, TPB_3M);
+        let set = c.packet_end_tick_fallback(PollSrc::Dma, 4242, TPB_3M);
         assert_eq!(unset, set);
     }
 

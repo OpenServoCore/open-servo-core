@@ -16,7 +16,7 @@
 
 mod classifier;
 
-pub use classifier::{FallbackSrc, edge_buf_len, rx_buf_len, sync_lookback_edges};
+pub use classifier::{PollSrc, edge_buf_len, rx_buf_len, sync_lookback_edges};
 
 use core::cell::SyncUnsafeCell;
 
@@ -40,10 +40,10 @@ pub struct Rx<R: EdgeDma, const EDGE_BUF_LEN: usize> {
     /// [`Self::on_idle`] entry; read by the composite Crc handler when
     /// [`Self::packet_end_tick`] returns `None` to pick a fallback
     /// formula via [`Self::packet_end_tick_fallback`]. Default value
-    /// `(0, FallbackSrc::Dma)` is unreachable in production — Crc
+    /// `(0, PollSrc::Dma)` is unreachable in production — Crc
     /// follows bytes which follow an ISR — but keeps the field non-
     /// Optional so the hot path doesn't carry an `unwrap`.
-    last_isr: (u32, FallbackSrc),
+    last_isr: (u32, PollSrc),
 }
 
 impl<R: EdgeDma, const EDGE_BUF_LEN: usize> Rx<R, EDGE_BUF_LEN> {
@@ -52,7 +52,7 @@ impl<R: EdgeDma, const EDGE_BUF_LEN: usize> Rx<R, EDGE_BUF_LEN> {
             classifier: Classifier::new(),
             edges: SyncUnsafeCell::new(HwRing::new(0)),
             ring,
-            last_isr: (0, FallbackSrc::Dma),
+            last_isr: (0, PollSrc::Dma),
         }
     }
 
@@ -84,7 +84,7 @@ impl<R: EdgeDma, const EDGE_BUF_LEN: usize> Rx<R, EDGE_BUF_LEN> {
         ticks_per_bit: u16,
         on_pair: F,
     ) {
-        self.last_isr = (now, FallbackSrc::Dma);
+        self.last_isr = (now, PollSrc::Dma);
         let flags = self.ring.read_and_ack();
         crate::log::trace!("rx: on_edge_advance ht={} tc={}", flags.ht, flags.tc);
         if !flags.ht && !flags.tc {
@@ -109,7 +109,7 @@ impl<R: EdgeDma, const EDGE_BUF_LEN: usize> Rx<R, EDGE_BUF_LEN> {
     /// reading, stashed for the no-anchor fallback path at Crc — see
     /// [`Self::packet_end_tick_fallback`].
     pub fn on_idle<F: FnMut(u16, u16)>(&mut self, now: u32, ticks_per_bit: u16, on_pair: F) {
-        self.last_isr = (now, FallbackSrc::Idle);
+        self.last_isr = (now, PollSrc::Idle);
         let remaining = self.ring.remaining();
         crate::log::trace!("rx: on_idle publish remaining={}", remaining);
         // SAFETY: see `on_edge_advance`.
@@ -141,7 +141,7 @@ impl<R: EdgeDma, const EDGE_BUF_LEN: usize> Rx<R, EDGE_BUF_LEN> {
     /// [`Self::on_edge_advance`] / [`Self::on_idle`] entry. Composite Crc
     /// handler consumes this when the classifier was unanchored (the
     /// `packet_end_tick_fallback` path).
-    pub fn last_isr_capture(&self) -> (u32, FallbackSrc) {
+    pub fn last_isr_capture(&self) -> (u32, PollSrc) {
         self.last_isr
     }
 
@@ -160,7 +160,7 @@ impl<R: EdgeDma, const EDGE_BUF_LEN: usize> Rx<R, EDGE_BUF_LEN> {
     /// the WireClock u32 domain. `now` / `src` route through the
     /// classifier's drain-reference correction so the lift stays sub-
     /// wrap at low baud — see `Classifier::drain_ref`.
-    pub fn current_byte_tick(&self, ticks_per_bit: u16, now: u32, src: FallbackSrc) -> Option<u32> {
+    pub fn current_byte_tick(&self, ticks_per_bit: u16, now: u32, src: PollSrc) -> Option<u32> {
         self.classifier.current_byte_tick(ticks_per_bit, now, src)
     }
 
@@ -168,7 +168,7 @@ impl<R: EdgeDma, const EDGE_BUF_LEN: usize> Rx<R, EDGE_BUF_LEN> {
     /// WireClock u32 domain. Composite stamps `packet_end_tick` at the
     /// parser's CRC-good event. `now` / `src` route through the drain-
     /// reference correction — see `Classifier::drain_ref`.
-    pub fn packet_end_tick(&self, ticks_per_bit: u16, now: u32, src: FallbackSrc) -> Option<u32> {
+    pub fn packet_end_tick(&self, ticks_per_bit: u16, now: u32, src: PollSrc) -> Option<u32> {
         self.classifier.packet_end_tick(ticks_per_bit, now, src)
     }
 
@@ -176,7 +176,7 @@ impl<R: EdgeDma, const EDGE_BUF_LEN: usize> Rx<R, EDGE_BUF_LEN> {
     /// calls when [`packet_end_tick`](Self::packet_end_tick) returns `None`
     /// at the Crc event. See [`classifier::Classifier::packet_end_tick_fallback`]
     /// for the per-source formulas.
-    pub fn packet_end_tick_fallback(&self, src: FallbackSrc, now: u32, ticks_per_bit: u16) -> u32 {
+    pub fn packet_end_tick_fallback(&self, src: PollSrc, now: u32, ticks_per_bit: u16) -> u32 {
         self.classifier
             .packet_end_tick_fallback(src, now, ticks_per_bit)
     }
