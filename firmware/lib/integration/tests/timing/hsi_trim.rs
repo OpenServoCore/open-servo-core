@@ -131,7 +131,10 @@ fn hsi_cold_corner_converges(baud_idx: u8) {
 /// Live HCLK ppm offset from nominal. Composes the servo's factory-drift
 /// ratio with the latest absolute correction the driver applied — same
 /// quantity the chip would carry on real silicon.
-fn live_residual_ppm(sim: &osc_integration::sim::Sim, servo: osc_integration::sim::DeviceId) -> i32 {
+fn live_residual_ppm(
+    sim: &osc_integration::sim::Sim,
+    servo: osc_integration::sim::DeviceId,
+) -> i32 {
     let live_hz = sim.servo(servo).clock().freq_hz() as i64;
     let nominal_hz = sim.servo(servo).hsi_clock().nominal().freq_hz() as i64;
     ((live_hz - nominal_hz) * 1_000_000 / nominal_hz) as i32
