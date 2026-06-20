@@ -86,8 +86,17 @@ impl RxDecoder {
                     edges.push((at_ns, rising));
                 }
             }
-            RxState::IdleDetectPending { .. } => {
+            RxState::IdleDetectPending { idle_at_ns } => {
                 if !rising {
+                    // Sticky IDLE semantics: if the threshold has already
+                    // elapsed by the time the next start bit arrives, real
+                    // hardware has latched the IDLE flag — emit it before
+                    // transitioning back to RxActive. Only suppress when the
+                    // start bit truly preempts the threshold.
+                    let due = *idle_at_ns;
+                    if at_ns >= due {
+                        out.push(RxEffect::IdleDetected { at_ns: due });
+                    }
                     self.state = RxState::RxActive {
                         start_ns: at_ns,
                         edges: Vec::new(),
@@ -190,7 +199,7 @@ mod tests {
     }
 
     #[test]
-    fn cancels_idle_on_next_start_bit() {
+    fn cancels_idle_when_start_bit_precedes_threshold() {
         let enc = TxEncoder::new(BAUD);
         let bp = enc.bit_period_ns();
         let mut dec = RxDecoder::new(BAUD);
@@ -211,6 +220,38 @@ mod tests {
                 byte: 0xC3,
                 complete_at_ns: next_start + 10 * bp,
             }],
+        );
+    }
+
+    #[test]
+    fn emits_idle_when_start_bit_arrives_at_threshold() {
+        // Sticky semantics: previous byte completes at 10·bp, threshold lapses
+        // at 20·bp. Next start bit arrives exactly at 20·bp — real hardware
+        // has already latched the IDLE flag, so the decoder emits IDLE before
+        // transitioning to the next RxActive.
+        let enc = TxEncoder::new(BAUD);
+        let bp = enc.bit_period_ns();
+        let mut dec = RxDecoder::new(BAUD);
+        let mut effects = Vec::new();
+        for (at, rising) in enc.encode_byte(0xAA, 0) {
+            dec.on_edge(at, rising, &mut effects);
+        }
+        dec.on_internal_tick(10 * bp, &mut effects);
+        effects.clear();
+        let next_start = 20 * bp;
+        for (at, rising) in enc.encode_byte(0x55, next_start) {
+            dec.on_edge(at, rising, &mut effects);
+        }
+        dec.on_internal_tick(next_start + 10 * bp, &mut effects);
+        assert_eq!(
+            effects,
+            vec![
+                RxEffect::IdleDetected { at_ns: 20 * bp },
+                RxEffect::ByteComplete {
+                    byte: 0x55,
+                    complete_at_ns: next_start + 10 * bp,
+                },
+            ],
         );
     }
 
