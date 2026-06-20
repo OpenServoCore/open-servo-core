@@ -28,9 +28,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from dxl_packet import (
-    BROADCAST_ID,
     build_bulk_write,
-    build_ping,
     build_read,
     build_sync_write,
     build_write,
@@ -41,24 +39,10 @@ from pirate_chip_common import (
     BAUD_INDEX,
     FOREIGN_ID,
     autodetect_pirate,
+    discover_chip_id,
     set_chip_baud,
-    step_hsi,
+    warm_up_trim,
 )
-
-
-def discover_chip_id(pirate: Pirate, baud: int) -> int:
-    """Sweep known bauds for a broadcast Ping reply; return the chip's ID.
-    Chip ID is UID-derived (see firmware/ch32/src/board/bringup.rs), so
-    callers can't assume a fixed default."""
-    candidates = [baud] + [b for b in sorted(BAUD_INDEX, reverse=True) if b != baud]
-    for b in candidates:
-        pirate.set_baud(b)
-        time.sleep(0.05)
-        pirate.drain_stamps()
-        reply = pirate.xfer(build_ping(BROADCAST_ID), reply_us=200_000)
-        if reply:
-            return parse_status(reply).id
-    raise PirateError("no chip responded to broadcast Ping at any known baud")
 
 # Mirror `dxl_link.LINK_BASE + 4*offset` for the two fields we touch.
 # These come from `firmware/lib/core/src/regions/telemetry.rs::TelemetryDxlLink`.
@@ -168,12 +152,12 @@ def main() -> None:
     ap.add_argument("--baud", type=int, default=1_000_000,
                     help="DXL baud rate (default 1_000_000)")
     ap.add_argument("--tune-baud", type=int, default=1_000_000,
-                    help="Baud at which to run HSI cal before the bench "
-                         "(default 1M — where fresh chips boot). Chip is "
-                         "switched to --baud after cal completes.")
+                    help="Baud at which to warm up the HSI trim before the "
+                         "bench (default 1M — where fresh chips boot). Chip is "
+                         "switched to --baud after warm-up.")
     ap.add_argument("--skip-tune", action="store_true",
-                    help="Skip the HSI auto-tune. Use when the chip already "
-                         "has a calibrated trim/fine state from a prior run.")
+                    help="Skip the HSI warm-up. Use when the chip's autonomous "
+                         "trim has already converged from a prior run.")
     args = ap.parse_args()
 
     if args.baud not in BAUD_INDEX:
@@ -188,18 +172,18 @@ def main() -> None:
         dxl_id = args.id if args.id is not None else discover_chip_id(pirate, args.baud)
         print(f"pirate: {port}   chip id: {dxl_id}")
         if not args.skip_tune:
-            # Mirror pirate_chip_stress's pre-flight: cal at --tune-baud where
-            # fresh chips boot, then switch to --baud for the actual bench.
-            # Trim/fine state survives the baud switch (RAM-backed CT).
-            print(f"\n[tune — HSI cal @ {args.tune_baud}]")
+            # Mirror pirate_chip_stress's pre-flight: warm up the autonomous
+            # HSI trim at --tune-baud where fresh chips boot, then switch to
+            # --baud for the actual bench. The trim is the oscillator's, not
+            # the divider's, so it survives the baud switch.
+            print(f"\n[tune — HSI warm-up @ {args.tune_baud}]")
             try:
                 set_chip_baud(pirate, dxl_id, args.tune_baud)
                 pirate.wait_quiet()
-                trim, q88 = step_hsi(pirate, dxl_id, args.tune_baud)
-                print(f"  → clock_trim={trim:+d}  clock_fine_trim_us={q88:+d} "
-                      f"({q88/256:+.3f}µs)")
+                drift = warm_up_trim(pirate, dxl_id, args.tune_baud)
+                print(f"  → drift={drift:+.0f} ppm")
             except PirateError as e:
-                sys.exit(f"  HSI cal failed: {e}")
+                sys.exit(f"  HSI warm-up failed: {e}")
         set_chip_baud(pirate, dxl_id, args.baud)
         time.sleep(0.05)
         pirate.drain_stamps()

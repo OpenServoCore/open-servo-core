@@ -10,8 +10,8 @@ import time
 import pytest
 import serial.tools.list_ports
 
-from cal import Calibrator
-from dxl_packet import build_ping, build_write, parse_status
+from drift import probe_drift_ppm
+from dxl_packet import BROADCAST_ID, build_ping, build_write, parse_status
 from pirate import Pirate
 
 PIRATE_VID = 0xC0DE
@@ -44,20 +44,18 @@ def pytest_addoption(parser):
         help="Baud the bootloader runs at; mirrors `boot/src/main.rs` and must "
              "be updated together if that file changes.",
     )
-    parser.addoption("--id", default=1, type=int, help="OSC servo DXL ID")
+    parser.addoption(
+        "--id",
+        default=None,
+        type=int,
+        help="OSC servo DXL ID. Default: discover via broadcast Ping (the ID "
+             "is UID-derived now, so there's no fixed default).",
+    )
     parser.addoption(
         "--no-dut",
         action="store_true",
         help="Skip V006 ping/retune at session start (for pirate-only smoke "
              "checks where the DUT is unplugged).",
-    )
-    parser.addoption(
-        "--no-cal",
-        action="store_true",
-        help="Skip the boot-time HSI cal at session start. Default is to "
-             "converge clock_trim via master-side CAL and apply the matching "
-             "clock_fine_trim_us residual so every test runs against a fully "
-             "calibrated chip.",
     )
     parser.addoption(
         "--trials",
@@ -102,6 +100,23 @@ def _ping_at(pirate: Pirate, dxl_id: int, bps: int, attempts: int = 3) -> bytes:
     return b""
 
 
+def discover_id(pirate: Pirate, target_bps: int) -> int:
+    """Broadcast-Ping the bus and return the responder's DXL ID. The ID is
+    UID-derived now, so there's no fixed default; sweep known bauds (target
+    first) and leave the pirate at whichever one answered, so a following
+    `ensure_chip_baud` retune starts from the right place."""
+    for bps in [target_bps] + [b for b in sorted(BAUD_INDEX, reverse=True)
+                               if b != target_bps]:
+        reply = _ping_at(pirate, BROADCAST_ID, bps)
+        if reply:
+            return parse_status(reply).id
+    pytest.fail(
+        f"no chip answered broadcast Ping at any known baud (target {target_bps}) "
+        "— flash/wiring issue?",
+        pytrace=False,
+    )
+
+
 def ensure_chip_baud(pirate: Pirate, dxl_id: int, target_bps: int) -> None:
     if target_bps not in BAUD_INDEX:
         pytest.fail(
@@ -141,33 +156,14 @@ def ensure_chip_baud(pirate: Pirate, dxl_id: int, target_bps: int) -> None:
     time.sleep(0.05)
 
 
-def _cal_hsi(pirate: Pirate, dxl_id: int, baud: int, max_cycles: int = 6) -> tuple[int, int]:
-    """Converge `clock_trim` via master-side CAL, then apply the
-    `clock_fine_trim_us` residual measured AT the converged trim (post-trim
-    residual is what the slot dispatcher needs — pre-trim residual is stale
-    once trim shifts HSI). Returns (final_trim, final_q88).
-
-    Per docs/dxl-hsi-calibration.md: chip's structural latency is carried
-    by the compile-time `TX_LATENCY_TICKS` (=104); the runtime
-    `clock_fine_trim_us` covers only the per-chip drift residual, which
-    lands inside the 3 Mbaud coalesce window with no per-chip sweep."""
-    c = Calibrator(pirate, dxl_id=dxl_id, baud=baud)
-    c.write_clock_fine_trim_us(0)
-    time.sleep(0.05)
-    for _ in range(max_cycles):
-        trim_before = c.read_clock_trim()
-        m = c.measure(count=128)
-        d = c.derive(m, current_trim=trim_before)
-        if d.step == 0:
-            c.write_clock_fine_trim_us(d.residual_q88)
-            time.sleep(0.05)
-            return trim_before, d.residual_q88
-        c.write_clock_trim(d.new_trim)
-        time.sleep(0.05)
-    pytest.fail(
-        f"HSI cal did not converge in {max_cycles} cycles",
-        pytrace=False,
-    )
+def _warm_up_trim(pirate: Pirate, dxl_id: int, baud: int, pings: int = 40) -> float:
+    """Drive plain Pings so the chip's autonomous HSI trim converges before
+    timing tests run. The boot batch lands the bulk of the factory drift in
+    the first reply; the steady batches (~3.3 pings each) squeeze the residual.
+    Returns the final probed drift in ppm."""
+    for _ in range(pings):
+        pirate.xfer(build_ping(dxl_id), reply_us=200_000)
+    return probe_drift_ppm(pirate, dxl_id, baud)
 
 
 def pytest_collection_modifyitems(config, items):
@@ -193,21 +189,22 @@ def pytest_sessionstart(session):
         target_baud = config.getoption("--baud")
         dxl_id = config.getoption("--id")
         if config.getoption("--no-dut"):
-            print("[bench] --no-dut: skipping V006 ping/retune + cal", flush=True)
+            print("[bench] --no-dut: skipping V006 discovery/retune + warm-up",
+                  flush=True)
             pirate.set_baud(target_baud)
+            dxl_id = dxl_id if dxl_id is not None else 1
         else:
+            if dxl_id is None:
+                dxl_id = discover_id(pirate, target_baud)
+                print(f"[bench] discovered chip id={dxl_id}", flush=True)
             ensure_chip_baud(pirate, dxl_id, target_baud)
-            if config.getoption("--no-cal"):
-                print("[bench] --no-cal: skipping HSI cal", flush=True)
-            else:
-                final_trim, final_q88 = _cal_hsi(pirate, dxl_id, target_baud)
-                print(f"[bench] HSI cal: clock_trim={final_trim:+d}, "
-                      f"clock_fine_trim_us={final_q88:+d} "
-                      f"(={final_q88/256:+.3f} µs)", flush=True)
+            drift = _warm_up_trim(pirate, dxl_id, target_baud)
+            print(f"[bench] HSI warm-up: drift={drift:+.0f} ppm", flush=True)
     finally:
         pirate.close()
 
     config._bench_pirate_path = pirate_path
+    config._bench_osc_id = dxl_id
     print("--- bench setup complete ---\n", flush=True)
 
 
@@ -231,7 +228,9 @@ def _drain_pirate_between_tests(pirate):
 
 @pytest.fixture(scope="session")
 def osc_id(request):
-    return request.config.getoption("--id")
+    # Set by pytest_sessionstart (discovered ID, or the --id override / a
+    # placeholder under --no-dut).
+    return getattr(request.config, "_bench_osc_id", request.config.getoption("--id"))
 
 
 @pytest.fixture(scope="session")

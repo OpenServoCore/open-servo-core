@@ -13,8 +13,14 @@ import time
 
 import serial.tools.list_ports
 
-from cal import Calibrator
-from dxl_packet import build_ping, build_read, build_write, parse_status
+from drift import probe_drift_ppm  # noqa: F401 — re-exported for scripts
+from dxl_packet import (
+    BROADCAST_ID,
+    build_ping,
+    build_read,
+    build_write,
+    parse_status,
+)
 from pirate import Pirate, PirateError
 
 PIRATE_VID = 0xC0DE
@@ -117,26 +123,29 @@ def set_chip_baud(pirate: Pirate, dxl_id: int, target_bps: int) -> None:
         raise PirateError(f"chip not responding after baud switch to {target_bps}")
 
 
-# ── HSI cal ─────────────────────────────────────────────────────────────────
+# ── discovery ────────────────────────────────────────────────────────────────
 
-def step_hsi(pirate: Pirate, dxl_id: int, baud: int, max_cycles: int = 6
-             ) -> tuple[int, int]:
-    """Converge clock_trim, then apply the matching clock_fine_trim_us residual.
-    Returns (final_trim, final_q88)."""
-    c = Calibrator(pirate, dxl_id=dxl_id, baud=baud)
-    c.write_clock_fine_trim_us(0)
-    time.sleep(0.05)
-    for cycle in range(1, max_cycles + 1):
-        trim_before = c.read_clock_trim()
-        m = c.measure(count=128)
-        d = c.derive(m, current_trim=trim_before)
-        print(f"  iter {cycle}: trim={trim_before:+d}  drift={m.drift_ppm:+.0f} ppm"
-              f"  step={d.step:+d}  residual={d.residual_ppm:+.0f} ppm "
-              f"({d.residual_q88:+d} q88 µs)")
-        if d.step == 0:
-            c.write_clock_fine_trim_us(d.residual_q88)
-            time.sleep(0.05)
-            return trim_before, d.residual_q88
-        c.write_clock_trim(d.new_trim)
+def discover_chip_id(pirate: Pirate, baud: int) -> int:
+    """Sweep known bauds for a broadcast-Ping reply; return the chip's ID.
+    The ID is UID-derived now (firmware/ch32/src/runtime/init.rs), so callers
+    can't assume a fixed default."""
+    candidates = [baud] + [b for b in sorted(BAUD_INDEX, reverse=True) if b != baud]
+    for b in candidates:
+        pirate.set_baud(b)
         time.sleep(0.05)
-    raise PirateError(f"HSI cal did not converge in {max_cycles} cycles")
+        pirate.drain_stamps()
+        reply = pirate.xfer(build_ping(BROADCAST_ID), reply_us=200_000)
+        if reply:
+            return parse_status(reply).id
+    raise PirateError("no chip responded to broadcast Ping at any known baud")
+
+
+# ── HSI warm-up ──────────────────────────────────────────────────────────────
+
+def warm_up_trim(pirate: Pirate, dxl_id: int, baud: int, pings: int = 40) -> float:
+    """Drive plain Pings so the chip's autonomous HSI trim converges, then
+    return the probed residual drift in ppm. Replaces the old master-side CAL:
+    the chip owns its trim now (firmware/lib/drivers/src/dxl/uart/clock.rs)."""
+    for _ in range(pings):
+        pirate.xfer(build_ping(dxl_id), reply_us=200_000)
+    return probe_drift_ppm(pirate, dxl_id, baud)

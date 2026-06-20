@@ -23,7 +23,6 @@ INSTR_BULK_READ = 0x92
 INSTR_BULK_WRITE = 0x93
 INSTR_FAST_SYNC_READ = 0x8A
 INSTR_FAST_BULK_READ = 0x9A
-INSTR_CALIBRATE = 0xE0
 
 HEADER = bytes([0xFF, 0xFF, 0xFD, 0x00])
 BROADCAST_ID = 0xFE
@@ -89,15 +88,6 @@ def build_action(id: int) -> bytes:
 
 def build_reboot(id: int) -> bytes:
     return build_packet(id, INSTR_REBOOT)
-
-
-def build_calibrate(id: int, count: int) -> bytes:
-    """CALIB request: master streams `count` zero filler bytes after the
-    count field. Slave times its own RX between T_first (first RXNE) and
-    T_last (IDLE-backdated end of last byte) and replies with the measurement.
-    Wire payload = count(2 LE) + count zeros; total frame = 12 + count bytes."""
-    payload = bytes([count & 0xFF, (count >> 8) & 0xFF]) + bytes(count)
-    return build_packet(id, INSTR_CALIBRATE, payload)
 
 
 def build_factory_reset(id: int, option: int = 0xFF) -> bytes:

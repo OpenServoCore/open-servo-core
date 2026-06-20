@@ -63,9 +63,10 @@ from pirate_chip_common import (
     FOREIGN_ID,
     RETURN_DELAY_2US_ADDR,
     autodetect_pirate,
+    discover_chip_id,
     read_ct_u8,
     set_chip_baud,
-    step_hsi,
+    warm_up_trim,
 )
 
 INJ_ID = 50
@@ -388,7 +389,9 @@ def main() -> None:
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     ap.add_argument("--port", default=None)
-    ap.add_argument("--id", type=int, default=1)
+    ap.add_argument("--id", type=int, default=None,
+                    help="chip DXL ID. If omitted, broadcast-Ping the bus "
+                         "and use the responding chip's ID (UID-derived).")
     ap.add_argument("--baud", type=int, default=2_000_000,
                     help="Baud for single-shot/continuous (default 2M).")
     ap.add_argument("--position", choices=POSITIONS, default="first",
@@ -444,12 +447,12 @@ def main() -> None:
                          "Write to 0x023C (clear_counters) is part of the "
                          "wedge trigger versus pure plain-Read storm.")
     ap.add_argument("--tune-baud", type=int, default=1_000_000,
-                    help="Baud at which to run HSI cal before the stress run "
-                         "(default 1M — where fresh chips boot). Chip is "
-                         "switched back to --baud after cal completes.")
+                    help="Baud at which to warm up the HSI trim before the "
+                         "stress run (default 1M — where fresh chips boot). "
+                         "Chip is switched back to --baud after warm-up.")
     ap.add_argument("--skip-tune", action="store_true",
-                    help="Skip the HSI auto-tune. Use when you want the chip "
-                         "at its current trim/fine state.")
+                    help="Skip the HSI warm-up. Use when the chip's autonomous "
+                         "trim has already converged from a prior run.")
     args = ap.parse_args()
 
     if args.baud not in BAUD_INDEX:
@@ -461,22 +464,23 @@ def main() -> None:
     port = args.port or autodetect_pirate()
     pirate = Pirate(port)
     try:
+        if args.id is None:
+            args.id = discover_chip_id(pirate, args.baud)
         print(f"pirate: {port}   chip id: {args.id}")
         if not args.skip_tune:
-            # Cal at --tune-baud (1M default — where fresh chips boot),
-            # then leave the chip's trim/fine state in place. The
-            # mode-specific branches below re-set the chip baud to
-            # --baud (or walk it, in --matrix). Trim/fine survive the
-            # baud switch (RAM-backed CT, no flash write).
-            print(f"\n[tune — HSI cal @ {args.tune_baud}]")
+            # Warm up the chip's autonomous HSI trim at --tune-baud (1M
+            # default — where fresh chips boot), then leave its trim state in
+            # place. The mode-specific branches below re-set the chip baud to
+            # --baud (or walk it, in --matrix); the trim is the oscillator's,
+            # not the divider's, so it survives the baud switch.
+            print(f"\n[tune — HSI warm-up @ {args.tune_baud}]")
             try:
                 set_chip_baud(pirate, args.id, args.tune_baud)
                 pirate.wait_quiet()
-                trim, q88 = step_hsi(pirate, args.id, args.tune_baud)
-                print(f"  → clock_trim={trim:+d}  clock_fine_trim_us={q88:+d} "
-                      f"({q88/256:+.3f}µs)")
+                drift = warm_up_trim(pirate, args.id, args.tune_baud)
+                print(f"  → drift={drift:+.0f} ppm")
             except PirateError as e:
-                sys.exit(f"  HSI cal failed: {e}")
+                sys.exit(f"  HSI warm-up failed: {e}")
 
         if args.matrix:
             bauds = [int(x) for x in args.matrix_bauds.split(",")]
