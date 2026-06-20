@@ -10,3 +10,4 @@ mod support;
 mod hsi_trim;
 mod long_reply_delays;
 mod ping_broadcast;
+mod rdt;
