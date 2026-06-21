@@ -270,19 +270,48 @@ impl<P: Producer, T: Copy, const N: usize> Ring<P, T, N> {
         Some(&self.data[(seq.raw as usize) % N])
     }
 
-    /// Look up an element by offset back from the producer's head,
-    /// bounded by the unread window. `recent(0)` is the most-recently
-    /// published value; `recent(k)` is `k` slots earlier. `None` when the
-    /// offset reaches past the unread tail (cold start, fewer than
-    /// `offset + 1` slots available) or when the consumer has lapped.
-    /// Opaque random-access op — pattern-match consumers (e.g. the DXL
-    /// header back-search) sweep `recent(k)` instead of computing seqs.
+    /// Producer-side count of slots that [`Self::recent`] will resolve.
+    /// Saturates at `N` when the consumer has been lapped — the
+    /// physical buffer still holds the most recent `N` writes, so the
+    /// back-search bound is `N`, not the consumer-side `avail` (which
+    /// the lap zeroes by design).
+    pub fn recent_count(&self) -> u16 {
+        let unread = self.write_seq.wrapping_sub(self.read_seq);
+        if (unread as usize) > N {
+            N as u16
+        } else {
+            unread
+        }
+    }
+
+    /// Look up an element by offset back from the producer's head.
+    /// `recent(0)` is the most-recently published value; `recent(k)` is
+    /// `k` slots earlier. Opaque random-access op — pattern-match
+    /// consumers (e.g. the DXL header back-search) sweep `recent(k)`
+    /// instead of computing seqs.
+    ///
+    /// Lap-safe at the primitive level: for `0 ≤ offset < N` the slot at
+    /// `write_seq − 1 − offset` is the value the producer wrote in its
+    /// last `N` rounds, regardless of how far behind the read cursor has
+    /// fallen. This matters when a heavy producer burst (e.g. a DMA
+    /// flood past the ring depth) outpaces a paused consumer —
+    /// `recent()` still resolves the most recent slots for, say, a Sync
+    /// back-search after a wedge garbage burst.
+    ///
+    /// Returns `None` when:
+    /// - `offset >= N` (outside ring capacity), or
+    /// - the producer hasn't published `offset + 1` slots yet (cold
+    ///   start — only enforced before the first lap).
     pub fn recent(&self, offset: u16) -> Option<&T> {
-        let unread = self.write_seq.wrapping_sub(self.read_seq) as usize;
-        if unread > N {
+        if (offset as usize) >= N {
             return None;
         }
-        if (offset as usize) >= unread {
+        let unread = self.write_seq.wrapping_sub(self.read_seq) as usize;
+        // Cold-start gate: before the ring is fully populated, slots
+        // past `unread` haven't been written. Once `unread >= N` (full
+        // or lapped) the gate's irrelevant — the last `N` physical
+        // slots are all valid producer output.
+        if unread < N && (offset as usize) >= unread {
             return None;
         }
         let raw = self.write_seq.wrapping_sub(1).wrapping_sub(offset);
@@ -397,7 +426,16 @@ impl<'a, P: Producer, T: Copy, const N: usize> Reader<'a, P, T, N> {
         self.ring.read_seq = self.ring.read_seq.wrapping_add(n);
     }
 
-    fn resync_if_lapped(&mut self) {
+    /// Force `read_seq` to `write_seq − N` if the producer has lapped
+    /// the consumer (`write_seq − read_seq > N`). Otherwise a no-op.
+    /// Called internally by [`Self::peek`] / [`Self::peek_slices`];
+    /// also `pub` so producer-side primitives (e.g. the edge-ring
+    /// back-search after a heavy wire-noise burst) can establish a
+    /// known cursor before computing relative advances — without
+    /// this, a post-lap `advance(n)` lands at `pre_lap_read_seq + n`
+    /// and a subsequent `peek` auto-resyncs past the caller's intended
+    /// target.
+    pub fn resync_if_lapped(&mut self) {
         let behind = self.ring.write_seq.wrapping_sub(self.ring.read_seq);
         if behind as usize > N {
             self.ring.read_seq = self.ring.write_seq.wrapping_sub(N as u16);
@@ -511,13 +549,63 @@ mod tests {
     }
 
     #[test]
-    fn recent_returns_none_when_consumer_lapped() {
+    fn recent_count_saturates_at_n_after_lap() {
         let mut b: HwBuf = HwRing::new(0);
+        b.set_write_seq_for_test(5);
+        // Cold start: fewer writes than capacity → unsaturated.
+        assert_eq!(b.recent_count(), 5);
+        b.set_write_seq_for_test(8);
+        // Exactly N writes → ring full, still unsaturated by lap math.
+        assert_eq!(b.recent_count(), 8);
+        b.set_write_seq_for_test(40);
+        // Producer raced past the reader by `40 - 0 = 40 > N` → ring
+        // wrapped; recent_count saturates so the consumer (e.g. anchor
+        // back-search) sees the lap-safe count instead of `Reader::
+        // avail`'s zero.
+        assert_eq!(b.recent_count(), 8);
+    }
+
+    #[test]
+    fn recent_stays_lap_safe_when_consumer_falls_behind() {
+        // N=8 but `unread = 20 > N` → consumer lapped multiple times.
+        // The last N writes overwrote exactly the same physical slots,
+        // so `recent(0..N-1)` must still resolve to the producer's
+        // most-recent values rather than parroting Reader::avail's
+        // "lapped → 0" convention. This is the load-bearing path the
+        // edge-ring back-search relies on after a long wire-noise burst.
+        let mut b: HwBuf = HwRing::new(0);
+        b.stage(0, &[1, 2, 3, 4, 5, 6, 7, 8]);
         b.set_write_seq_for_test(20);
-        // N=8 but unread=20 > N → consumer lapped; recent rejects
-        // everything (parity with Reader::avail's lap convention).
-        assert_eq!(b.recent(0), None);
-        assert_eq!(b.recent(5), None);
+        // Most-recent write landed at slot `(20 - 1) % 8 = 3` → value 4.
+        assert_eq!(b.recent(0), Some(&4));
+        // Walking back wraps through the physical buffer.
+        assert_eq!(b.recent(1), Some(&3));
+        assert_eq!(b.recent(7), Some(&5));
+        // offset >= N stays None — outside ring capacity, can't resolve.
+        assert_eq!(b.recent(8), None);
+    }
+
+    #[test]
+    fn recent_resolves_most_recent_n_after_heavy_burst() {
+        // Mirrors the wedge-test failure shape: producer writes more
+        // than N items past where the consumer last sat, so the
+        // physical buffer holds purely producer-burst data. The last N
+        // writes must surface through `recent()` regardless of the read
+        // cursor — DMA's circular semantics guarantee those slots are
+        // valid, and the back-search depends on it.
+        let mut b: HwBuf = HwRing::new(0);
+        // First fill: 8 zeroes (initial). Then 4 fresh values overwrite
+        // slots 0..3. write_seq advances by 12; read_seq stayed at 0
+        // (the wedge scenario — walker paused after Crc(Bad)).
+        b.stage(0, &[99, 99, 99, 99, 5, 6, 7, 8]);
+        b.set_write_seq_for_test(12);
+        // recent(0) = slot at `(12 - 1) % 8 = 3` = 99 (most recent
+        // wrap's 4th write). recent(1) = slot 2 = 99. recent(4) walks
+        // back to the previous wrap's slot 7 = 8.
+        assert_eq!(b.recent(0), Some(&99));
+        assert_eq!(b.recent(3), Some(&99));
+        assert_eq!(b.recent(4), Some(&8));
+        assert_eq!(b.recent(7), Some(&5));
     }
 
     #[test]

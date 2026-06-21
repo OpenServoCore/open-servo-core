@@ -234,7 +234,19 @@ impl EdgeParser {
         edges: &mut HwRing<u16, EDGE_BUF_LEN>,
         ticks_per_bit: u16,
     ) -> bool {
-        let avail = edges.reader().avail();
+        // After a heavy wire-noise burst (host glitch / wedge sequence)
+        // the producer may have lapped the consumer by many rings.
+        // Force-resync the reader to `write_seq − N` so the post-match
+        // `advance(avail − offset)` lands at exactly `write_seq − offset`
+        // — without this, `advance` is relative to a stale cursor and
+        // the walker's first `peek` auto-resyncs past the just-anchored
+        // byte.
+        edges.reader().resync_if_lapped();
+        // Producer-side, lap-safe count: `Reader::avail` zeros on lap
+        // (consumer-cursor freshness); `recent_count` saturates at `N`
+        // (producer-side accessibility), which is what the back-search
+        // actually has to work with.
+        let avail = edges.recent_count();
         crate::log::trace!(
             "classifier: anchor entry avail={} ticks_per_bit={}",
             avail,
