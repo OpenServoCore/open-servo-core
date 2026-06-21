@@ -305,6 +305,27 @@ impl<R: EdgeDma, CRC: CrcUmts, const RX_BUF_LEN: usize, const EDGE_BUF_LEN: usiz
                         self.rx.anchor_at_signature(ticks_per_bit);
                         self.last_walked_pos = next_status_pos;
                     } else if self.last_walked_pos != 0 {
+                        // Set hsi_active BEFORE the advance so the bytes
+                        // the parser just consumed for THIS event are
+                        // credited to the correct packet type. The flag
+                        // is naturally sticky between events (Header sets
+                        // it, packet boundary clears it) — only Header
+                        // events need to mutate it here. Resolving the
+                        // packet type at the header is the earliest
+                        // point the codec can know which way to go;
+                        // doing it in the driver's event sink (today's
+                        // [[drift_sampling_instruction_only]] gate) runs
+                        // AFTER the walker has already advanced the 4–8
+                        // header bytes, so those samples would be lost.
+                        match ev {
+                            Event::Header(HeaderEvent::Instruction(_)) => {
+                                self.rx.set_hsi_active(true);
+                            }
+                            Event::Header(HeaderEvent::Status(_)) => {
+                                self.rx.set_hsi_active(false);
+                            }
+                            _ => {}
+                        }
                         let delta = next_status_pos.wrapping_sub(self.last_walked_pos) as u16;
                         if delta > 0 {
                             let _ = self.rx.advance_walker(delta, ticks_per_bit, &mut on_pair);
