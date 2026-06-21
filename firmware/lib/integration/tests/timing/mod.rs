@@ -11,3 +11,4 @@ mod hsi_trim;
 mod long_reply_delays;
 mod ping_broadcast;
 mod rdt;
+mod slot_timing;
