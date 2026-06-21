@@ -124,6 +124,14 @@ pub struct CodecRx<R: EdgeDma, CRC: CrcUmts, const RX_BUF_LEN: usize, const EDGE
     /// and byte-skip-consumed bytes. 32 bits ≈ 23.8 days at 3M sustained;
     /// wrap is non-physical.
     wire_bytes_consumed: u32,
+    /// Wire-byte position the edge parser's anchor currently represents.
+    /// Per parser event, `delta = (wire_bytes_consumed +
+    /// stream.consumed()) - last_walked_pos` is the number of byte-
+    /// boundaries to walk the edge parser forward — the codec drives
+    /// the edge parser in lockstep with the byte parser. Sentinel `0`
+    /// means "no anchor yet"; advance is skipped until the first
+    /// `Event::Sync` seeds the anchor and sets `last_walked_pos = 4`.
+    last_walked_pos: u32,
     /// Universal byte-skip state. `Some` between a sink-requested
     /// [`PollAction::Skip`] and the matching [`PollEvent::SkipComplete`].
     skip: Option<SkipState>,
@@ -139,28 +147,24 @@ impl<R: EdgeDma, CRC: CrcUmts, const RX_BUF_LEN: usize, const EDGE_BUF_LEN: usiz
             rx_buf: SyncUnsafeCell::new(HwRing::new(0)),
             instruction_count: 0,
             wire_bytes_consumed: 0,
+            last_walked_pos: 0,
             skip: None,
         }
     }
 
-    /// New RX falling-edge timestamps may be available — forward
-    /// `ticks_per_bit` (pulled from the clock by the composite) into the
-    /// RX classifier so its HIT window matches the current baud. Drift
-    /// pairs route through `on_pair` when the classifier's `hsi_active`
-    /// flag is set; otherwise it's never called.
-    pub fn on_edge_advance<F: FnMut(u16, u16)>(
-        &mut self,
-        now: u32,
-        ticks_per_bit: u16,
-        on_pair: F,
-    ) {
-        self.rx.on_edge_advance(now, ticks_per_bit, on_pair);
+    /// DMA1_CH7 HT/TC ISR entry — acks flags, publishes the ET producer
+    /// head, stashes the ISR-entry tick + Dma source for the Crc-time
+    /// fallback path. No walking; all advance is parser-event driven
+    /// through [`Self::poll`].
+    pub fn on_edge_advance(&mut self, now: u32, ticks_per_bit: u16) {
+        self.rx.on_edge_advance(now, ticks_per_bit);
     }
 
-    /// USART1 IDLE backstop — drain tail edges through `on_pair`, then
-    /// reset the classifier anchor and drift flag for the next burst.
-    pub fn on_idle<F: FnMut(u16, u16)>(&mut self, now: u32, ticks_per_bit: u16, on_pair: F) {
-        self.rx.on_idle(now, ticks_per_bit, on_pair);
+    /// USART1 IDLE ISR entry — publishes the ET producer head, stashes
+    /// the ISR-entry tick + Idle source for the Crc-time fallback path.
+    /// No walking; same contract as [`Self::on_edge_advance`].
+    pub fn on_idle(&mut self, now: u32, ticks_per_bit: u16) {
+        self.rx.on_idle(now, ticks_per_bit);
     }
 
     /// USART1 RX DMA published progress — `remaining` is the channel's
@@ -194,9 +198,10 @@ impl<R: EdgeDma, CRC: CrcUmts, const RX_BUF_LEN: usize, const EDGE_BUF_LEN: usiz
     /// drops a stale skip whose deadline has passed. The deadline path
     /// suppresses `SkipComplete` — it's a truncation recovery, not a
     /// successful drain, so chain-fire's predecessor-match must not ride.
-    pub fn poll<F>(&mut self, now: u32, ticks_per_bit: u16, mut on_event: F)
+    pub fn poll<F, G>(&mut self, now: u32, ticks_per_bit: u16, mut on_event: F, mut on_pair: G)
     where
         F: FnMut(PollEvent<'_>, &mut Rx<R, EDGE_BUF_LEN>) -> PollAction,
+        G: FnMut(u16, u16),
     {
         // SAFETY: rx_buf lives in a SyncUnsafeCell; this is the codec's
         // single consumer path. The reference is independent of any
@@ -223,6 +228,16 @@ impl<R: EdgeDma, CRC: CrcUmts, const RX_BUF_LEN: usize, const EDGE_BUF_LEN: usiz
                     rx_buf.reader().advance(take);
                     skip.bytes_remaining -= take;
                     self.wire_bytes_consumed = self.wire_bytes_consumed.wrapping_add(take as u32);
+                    // Walker advances in lockstep with the byte cursor
+                    // during foreign-packet skip too — keeps the edge
+                    // ring's anchor coherent with the wire, and (when
+                    // hsi_active is on from a foreign Instruction Header)
+                    // emits drift pairs over the skipped body bytes per
+                    // [[drift_sampling_instruction_only]].
+                    if self.last_walked_pos != 0 {
+                        let _ = self.rx.advance_walker(take, ticks_per_bit, &mut on_pair);
+                        self.last_walked_pos = self.last_walked_pos.wrapping_add(take as u32);
+                    }
                 }
                 if skip.bytes_remaining > 0 {
                     // Ring exhausted mid-skip; resume on a later poll.
@@ -275,6 +290,28 @@ impl<R: EdgeDma, CRC: CrcUmts, const RX_BUF_LEN: usize, const EDGE_BUF_LEN: usiz
                     let next_status_pos = self
                         .wire_bytes_consumed
                         .wrapping_add(stream.consumed() as u32);
+
+                    // Drive the edge parser in lockstep with the byte
+                    // parser. At `Event::Sync`, back-search seeds the
+                    // anchor at byte 3 of the new packet — back-search
+                    // itself accounts for the 4 signature bytes, so
+                    // last_walked_pos jumps straight to next_status_pos
+                    // with no forward advance call. At every other event,
+                    // walk forward by the byte delta the parser consumed
+                    // since the previous event. `last_walked_pos == 0`
+                    // means we haven't seen the first Sync yet, so skip
+                    // advance.
+                    if matches!(ev, Event::Sync) {
+                        self.rx.anchor_at_signature(ticks_per_bit);
+                        self.last_walked_pos = next_status_pos;
+                    } else if self.last_walked_pos != 0 {
+                        let delta = next_status_pos.wrapping_sub(self.last_walked_pos) as u16;
+                        if delta > 0 {
+                            let _ = self.rx.advance_walker(delta, ticks_per_bit, &mut on_pair);
+                        }
+                        self.last_walked_pos = next_status_pos;
+                    }
+
                     match on_event(
                         PollEvent::Event {
                             ev,
@@ -292,6 +329,16 @@ impl<R: EdgeDma, CRC: CrcUmts, const RX_BUF_LEN: usize, const EDGE_BUF_LEN: usiz
                             stop = true;
                             break;
                         }
+                    }
+
+                    // Crc / Resync are packet boundaries — drop the
+                    // walker anchor so the next packet's Sync re-seeds
+                    // from scratch. Zeroing `last_walked_pos` puts the
+                    // codec back in "no anchor yet" mode so an
+                    // unexpected mid-stream event before the next Sync
+                    // doesn't try to advance against the dropped anchor.
+                    if matches!(ev, Event::Crc(_) | Event::Resync(_)) {
+                        self.last_walked_pos = 0;
                     }
                 }
                 stream.consumed()
@@ -424,9 +471,9 @@ impl<R: EdgeDma, CRC: CrcUmts, const RX_BUF_LEN: usize, const EDGE_BUF_LEN: usiz
         self.rx.resume_edges();
     }
 
-    /// Forward to [`rx::Rx::try_anchor_from_header`].
-    pub fn try_anchor_from_header(&mut self, ticks_per_bit: u16) -> bool {
-        self.rx.try_anchor_from_header(ticks_per_bit)
+    /// Forward to [`rx::Rx::anchor_at_signature`].
+    pub fn anchor_at_signature(&mut self, ticks_per_bit: u16) -> bool {
+        self.rx.anchor_at_signature(ticks_per_bit)
     }
 
     /// Forward to [`rx::Rx::current_byte_tick`].
@@ -437,11 +484,6 @@ impl<R: EdgeDma, CRC: CrcUmts, const RX_BUF_LEN: usize, const EDGE_BUF_LEN: usiz
     /// Forward to [`rx::Rx::packet_end_tick`].
     pub fn packet_end_tick(&self, ticks_per_bit: u16, now: u32, src: PollSrc) -> Option<u32> {
         self.rx.packet_end_tick(ticks_per_bit, now, src)
-    }
-
-    /// Forward to [`rx::Rx::drain_walker`].
-    pub fn drain_walker<F: FnMut(u16, u16)>(&mut self, ticks_per_bit: u16, on_pair: F) {
-        self.rx.drain_walker(ticks_per_bit, on_pair);
     }
 
     /// Forward to [`rx::Rx::set_hsi_active`].
@@ -580,28 +622,24 @@ impl<
     // ----- Forwarders. Keep sequential single-half call sites compact
     // without forcing every caller to disambiguate `.rx` / `.tx`. -----
 
-    pub fn on_edge_advance<F: FnMut(u16, u16)>(
-        &mut self,
-        now: u32,
-        ticks_per_bit: u16,
-        on_pair: F,
-    ) {
-        self.rx.on_edge_advance(now, ticks_per_bit, on_pair);
+    pub fn on_edge_advance(&mut self, now: u32, ticks_per_bit: u16) {
+        self.rx.on_edge_advance(now, ticks_per_bit);
     }
 
-    pub fn on_idle<F: FnMut(u16, u16)>(&mut self, now: u32, ticks_per_bit: u16, on_pair: F) {
-        self.rx.on_idle(now, ticks_per_bit, on_pair);
+    pub fn on_idle(&mut self, now: u32, ticks_per_bit: u16) {
+        self.rx.on_idle(now, ticks_per_bit);
     }
 
     pub fn on_rx_dma_advance(&mut self, remaining: u16) {
         self.rx.on_rx_dma_advance(remaining);
     }
 
-    pub fn poll<F>(&mut self, now: u32, ticks_per_bit: u16, on_event: F)
+    pub fn poll<F, G>(&mut self, now: u32, ticks_per_bit: u16, on_event: F, on_pair: G)
     where
         F: FnMut(PollEvent<'_>, &mut Rx<R, EDGE_BUF_LEN>) -> PollAction,
+        G: FnMut(u16, u16),
     {
-        self.rx.poll(now, ticks_per_bit, on_event);
+        self.rx.poll(now, ticks_per_bit, on_event, on_pair);
     }
 
     pub fn cancel_skip(&mut self) {
@@ -652,9 +690,9 @@ impl<
         self.rx.resume_edges();
     }
 
-    /// Forward to [`CodecRx::try_anchor_from_header`].
-    pub fn try_anchor_from_header(&mut self, ticks_per_bit: u16) -> bool {
-        self.rx.try_anchor_from_header(ticks_per_bit)
+    /// Forward to [`CodecRx::anchor_at_signature`].
+    pub fn anchor_at_signature(&mut self, ticks_per_bit: u16) -> bool {
+        self.rx.anchor_at_signature(ticks_per_bit)
     }
 
     /// Forward to [`CodecRx::current_byte_tick`].

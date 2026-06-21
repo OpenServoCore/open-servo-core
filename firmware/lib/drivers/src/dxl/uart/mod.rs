@@ -686,33 +686,23 @@ impl<P: Providers, const RX_BUF_LEN: usize, const EDGE_BUF_LEN: usize, const TX_
         }
     }
 
-    /// New RX falling-edge timestamps may be available — pull the current
-    /// `ticks_per_bit` from the clock and walk the classifier. Drift pairs
-    /// emit while the classifier's `hsi_active` flag is set (instructions in
-    /// flight); they route into the clock's drift integrator. `now` is
-    /// self-sourced from the [`WireClock`] provider and stashed on the codec
-    /// RX half so the parser's Crc handler can fall back to a tick estimate
-    /// when the classifier was unanchored.
+    /// DMA1_CH7 HT/TC ISR entry — refresh the ET producer head from
+    /// NDTR and stash `(now, Dma)` for the Crc-time fallback path. No
+    /// walking; advance happens inside [`Self::poll`] as the byte
+    /// parser emits events.
     pub fn on_rx_edge_advance(&mut self) {
         let now = self.wire_clock.now();
         let ticks_per_bit = self.clock.ticks_per_bit();
-        let clock = &mut self.clock;
-        self.codec
-            .on_edge_advance(now, ticks_per_bit, |prev, curr| {
-                clock.on_byte_pair(prev, curr)
-            });
+        self.codec.on_edge_advance(now, ticks_per_bit);
     }
 
-    /// RX wire went idle — drain tail edges (drift-routed when active).
-    /// `now` is self-sourced from the [`WireClock`] provider — see
-    /// [`Self::on_rx_edge_advance`].
+    /// USART1 IDLE ISR entry — refresh the ET producer head and stash
+    /// `(now, Idle)` for the Crc-time fallback path. No walking; same
+    /// contract as [`Self::on_rx_edge_advance`].
     pub fn on_rx_idle(&mut self) {
         let now = self.wire_clock.now();
         let ticks_per_bit = self.clock.ticks_per_bit();
-        let clock = &mut self.clock;
-        self.codec.on_idle(now, ticks_per_bit, |prev, curr| {
-            clock.on_byte_pair(prev, curr)
-        });
+        self.codec.on_idle(now, ticks_per_bit);
     }
 
     /// USART1 RX DMA published progress — `remaining` is the channel's
@@ -788,6 +778,13 @@ impl<P: Providers, const RX_BUF_LEN: usize, const EDGE_BUF_LEN: usize, const TX_
             pending_reboot,
             ..
         } = self;
+        // Drift pairs from the per-event walker advance buffer here and
+        // drain into `clock.on_byte_pair` after `codec.poll` returns —
+        // routing them through `clock` inside the on_pair closure would
+        // force a second `&mut clock` capture concurrent with the event
+        // sink's `ReplyHandle { clock, .. }` capture. Bound at one DXL
+        // packet's worth of body bytes (well under 32).
+        let mut pair_buf: heapless::Vec<(u16, u16), 32> = heapless::Vec::new();
         let (rx, tx) = codec.split_mut();
         rx.poll(now, ticks_per_bit, |pe, rx_inner| match pe {
             PollEvent::Event {
@@ -811,7 +808,13 @@ impl<P: Providers, const RX_BUF_LEN: usize, const EDGE_BUF_LEN: usize, const TX_
                         // foreign Status whose id happens to match would
                         // trigger a spurious `start_now` on the new chain.
                         *predecessor_id = None;
-                        rx_inner.try_anchor_from_header(ticks_per_bit);
+                        // Anchor was already seeded by the codec at the prior
+                        // `Event::Sync` (back-search); just toggle drift
+                        // sampling on. Owns and foreigns both set it — host
+                        // HSE clocks all instructions, so foreign Instruction
+                        // bodies are valid drift samples per
+                        // [[drift_sampling_instruction_only]]. Cleared at the
+                        // matching packet boundary (Crc, SkipComplete, Resync).
                         rx_inner.set_hsi_active(true);
                         if addressable {
                             *inflight = Some(InflightCtx::new(h));
@@ -846,20 +849,15 @@ impl<P: Providers, const RX_BUF_LEN: usize, const EDGE_BUF_LEN: usize, const TX_
                     Event::Crc(CrcResult::Good) => {
                         crate::log::trace!("dxl[id={}]: event=crc(good)", id);
                         if let Some(ctx) = inflight.take() {
-                            // Bring `last_byte_start` current before stamping
-                            // packet_end. The walker only drains at HT/TC or
-                            // IDLE boundaries; for a short packet bounded by a
-                            // single such event the parser fires Header → Crc
-                            // within one poll, leaving the anchor placed by
-                            // `try_anchor_from_header` but never forward-walked
-                            // across bytes past the signature.
-                            rx_inner.drain_walker(ticks_per_bit, |prev, curr| {
-                                clock.on_byte_pair(prev, curr)
-                            });
-                            // Anchored path is the common case; fallback fires
-                            // when interference / edge loss starved the
-                            // classifier. FAST chain ops skip the fallback
-                            // — see `InflightCtx::allows_packet_end_fallback`.
+                            // Anchor is current by construction — the codec
+                            // walked the edge parser in lockstep with the byte
+                            // parser through the 2 CRC bytes before emitting
+                            // this event. `last_byte_start` reflects the CRC
+                            // byte's start; `packet_end_tick` is one byte-time
+                            // past that. Fallback fires only when interference
+                            // / edge loss starved the edge parser. FAST chain
+                            // ops skip the fallback — see
+                            // `InflightCtx::allows_packet_end_fallback`.
                             // Both paths source `(cap_now, src)` from the most
                             // recent ISR entry — the primary path needs `src`
                             // so the u16-stamp lift picks the right drain
@@ -962,9 +960,22 @@ impl<P: Providers, const RX_BUF_LEN: usize, const EDGE_BUF_LEN: usize, const TX_
                     tx_bus.start_now(tx.tx_len());
                     *predecessor_id = None;
                 }
+                // Packet boundary — drop the anchor + clear hsi_active.
+                // For foreign Instruction skips this releases the drift-
+                // sampling flag set at the Header; for Status-Header skips
+                // it's idempotent (hsi was off going in).
+                rx_inner.reset_anchor();
                 PollAction::Continue
             }
+        }, |prev, curr| {
+            // Best-effort — at 32 slots / ~30 body bytes per packet this
+            // never fills under normal load; if it ever does, we drop the
+            // pair (drift integrator tolerates skips by design).
+            let _ = pair_buf.push((prev, curr));
         });
+        for &(prev, curr) in &pair_buf {
+            clock.on_byte_pair(prev, curr);
+        }
     }
 
     /// Monotonic count of Instruction packets seen on the wire — own and

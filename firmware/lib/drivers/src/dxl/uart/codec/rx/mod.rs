@@ -1,9 +1,24 @@
 //! Hardware-timed DXL receive path. Owns the edge-timestamp ring
-//! (DMA1_CH7 destination) and the header-anchored classifier that turns
-//! captured falling edges into per-byte start ticks. Consumers query
-//! `current_byte_tick()` / `packet_end_tick()` at parser-event time in
-//! lieu of IDLE backdates, and route drift pairs through the `on_pair`
-//! callback to the HSI clock service.
+//! (DMA1_CH7 destination) and the streaming edge parser that turns
+//! captured falling edges into per-byte start ticks in lockstep with
+//! the byte parser.
+//!
+//! The Rx wrapper exposes three operations the codec drives:
+//!
+//! - [`Rx::publish_edges`] (and the ISR entries [`Rx::on_edge_advance`],
+//!   [`Rx::on_idle`]) — read NDTR, advance the producer head. Pure ring
+//!   bookkeeping, no walking.
+//! - [`Rx::anchor_at_signature`] — called at the parser's `Event::Sync`;
+//!   back-searches for the DXL header signature and seeds the anchor.
+//! - [`Rx::advance_walker`] — called once per subsequent parser event
+//!   with the byte delta the parser has consumed; advances the edge
+//!   parser by exactly that many byte-boundaries.
+//!
+//! Consumers then read `current_byte_tick()` / `packet_end_tick()` at
+//! parser-event time. Drift pairs route through the `on_pair` callback
+//! the codec threads into `advance_walker`. The autonomous HT/TC and
+//! IDLE walker entries the prior design used no longer exist —
+//! overshoot past the byte parser cursor is structurally impossible.
 //!
 //! The driver depends on a [`EdgeDma`] adapter for HT/TC flag drain and
 //! NDTR readback; the production adapter binds to DMA1_CH7. Tests swap in
@@ -14,23 +29,23 @@
 //! [`sync_lookback_edges`] (the worst-case anchor back-search depth);
 //! [`edge_buf_len`] / [`rx_buf_len`] derive the matching ring sizes.
 
-mod classifier;
+mod edge_parser;
 
-pub use classifier::{PollSrc, edge_buf_len, rx_buf_len, sync_lookback_edges};
+pub use edge_parser::{PollSrc, edge_buf_len, rx_buf_len, sync_lookback_edges};
 
 use core::cell::SyncUnsafeCell;
 
 use crate::traits::dxl::EdgeDma;
 use crate::util::HwRing;
-use classifier::Classifier;
+use edge_parser::EdgeParser;
 
 pub struct Rx<R: EdgeDma, const EDGE_BUF_LEN: usize> {
-    classifier: Classifier,
+    parser: EdgeParser,
     /// DMA1_CH7's destination buffer. `SyncUnsafeCell` because the DMA
-    /// engine writes it concurrently with the classifier's reads — both
+    /// engine writes it concurrently with the edge parser's reads — both
     /// reads happen at PFIC HIGH (no preemption from another consumer)
     /// and the producer is hardware, so plain `&` references inside
-    /// classifier walks are sound. [`HwRing`] enforces pow-2 sizing at
+    /// edge-parser walks are sound. [`HwRing`] enforces pow-2 sizing at
     /// construction so the chip-side NDTR head math (`EDGE_BUF_LEN -
     /// NDTR`) maps cleanly to a ring position.
     edges: SyncUnsafeCell<HwRing<u16, EDGE_BUF_LEN>>,
@@ -49,7 +64,7 @@ pub struct Rx<R: EdgeDma, const EDGE_BUF_LEN: usize> {
 impl<R: EdgeDma, const EDGE_BUF_LEN: usize> Rx<R, EDGE_BUF_LEN> {
     pub const fn new(ring: R) -> Self {
         Self {
-            classifier: Classifier::new(),
+            parser: EdgeParser::new(),
             edges: SyncUnsafeCell::new(HwRing::new(0)),
             ring,
             last_isr: (0, PollSrc::Dma),
@@ -70,131 +85,124 @@ impl<R: EdgeDma, const EDGE_BUF_LEN: usize> Rx<R, EDGE_BUF_LEN> {
         unsafe { (*self.edges.get()).as_ptr() as usize }
     }
 
-    /// Called when new RX falling-edge timestamps may be available. Drains
-    /// HT/TC flags through the adapter, publishes the write head from
-    /// NDTR, walks newly-captured edges through the classifier. Drift
-    /// pairs route through `on_pair` only while the classifier's
-    /// `hsi_active` flag is set. No-op if neither flag is set (defends
-    /// against spurious vector entry). `now` is the ISR-entry WireClock
-    /// u32 reading, stashed for the no-anchor fallback path at the
-    /// parser's Crc event — see [`Self::packet_end_tick_fallback`].
-    pub fn on_edge_advance<F: FnMut(u16, u16)>(
-        &mut self,
-        now: u32,
-        ticks_per_bit: u16,
-        on_pair: F,
-    ) {
+    /// DMA1_CH7 HT/TC ISR entry. Acks the flag, publishes the producer
+    /// head from NDTR. Stashes `(now, Dma)` for the Crc-time fallback
+    /// path. No walking — all walker advance is parser-event-driven via
+    /// [`Self::advance_walker`].
+    pub fn on_edge_advance(&mut self, now: u32, _ticks_per_bit: u16) {
         self.last_isr = (now, PollSrc::Dma);
         let flags = self.ring.read_and_ack();
         crate::log::trace!("rx: on_edge_advance ht={} tc={}", flags.ht, flags.tc);
         if !flags.ht && !flags.tc {
             return;
         }
+        self.publish_edges();
+    }
+
+    /// USART1 IDLE ISR entry. Publishes the producer head (small packets
+    /// that don't fill a half-ring never trip HT). Stashes `(now, Idle)`
+    /// for the Crc-time fallback path. No walking — same contract as
+    /// [`Self::on_edge_advance`].
+    pub fn on_idle(&mut self, now: u32, _ticks_per_bit: u16) {
+        self.last_isr = (now, PollSrc::Idle);
+        crate::log::trace!("rx: on_idle");
+        self.publish_edges();
+    }
+
+    /// Publish the producer head from `ring.remaining()` (NDTR readback)
+    /// so subsequent walker advances see newly-captured edges. Pure ring
+    /// bookkeeping — no walking, no anchor mutation. Called from ISR
+    /// entries and from [`Self::advance_walker`] / [`Self::anchor_at_signature`]
+    /// to refresh before the edge parser reads.
+    fn publish_edges(&mut self) {
         let remaining = self.ring.remaining();
-        crate::log::trace!("rx: on_edge_advance publish remaining={}", remaining);
         // SAFETY: the edges buffer is mutated only by DMA1_CH7 (hardware
         // writer) and read here from a PFIC-HIGH ISR; no other code path
         // takes a `&mut` into it.
         let edges = unsafe { &mut *self.edges.get() };
         edges.on_publish(remaining);
-        self.classifier
-            .on_edge_advance(edges, ticks_per_bit, on_pair);
     }
 
-    /// USART1 IDLE backstop. Drains any tail edges the HT/TC ISR hasn't
-    /// drained yet (short packets that don't fill a half-ring never trip
-    /// HT). Anchor + drift gating stay until the parser's Crc / Resync
-    /// event ([`reset_anchor`](Self::reset_anchor)) — IDLE only signals
-    /// "no more edges right now." `now` is the ISR-entry WireClock u32
-    /// reading, stashed for the no-anchor fallback path at Crc — see
-    /// [`Self::packet_end_tick_fallback`].
-    pub fn on_idle<F: FnMut(u16, u16)>(&mut self, now: u32, ticks_per_bit: u16, on_pair: F) {
-        self.last_isr = (now, PollSrc::Idle);
-        let remaining = self.ring.remaining();
-        crate::log::trace!("rx: on_idle publish remaining={}", remaining);
-        // SAFETY: see `on_edge_advance`.
+    /// Walk `n` byte-boundaries forward from the current anchor. The
+    /// codec calls this once per parser event with the byte delta the
+    /// parser consumed since the last call (and once per skip-byte batch
+    /// during foreign-packet skip phase). Drift `(prev, curr)` pairs
+    /// emit through `on_pair` when the edge parser's `hsi_active` flag
+    /// is set. Returns the count actually advanced — may be less than
+    /// `n` if edges are late or an anomaly fired; the codec accounts
+    /// for the shortfall via the next event's delta.
+    pub fn advance_walker<F: FnMut(u16, u16)>(
+        &mut self,
+        n: u16,
+        ticks_per_bit: u16,
+        on_pair: F,
+    ) -> u16 {
+        self.publish_edges();
+        // SAFETY: see `publish_edges`.
         let edges = unsafe { &mut *self.edges.get() };
-        edges.on_publish(remaining);
-        self.classifier.on_idle(edges, ticks_per_bit, on_pair);
-    }
-
-    /// Catchup-walk pending edges through the classifier without touching
-    /// `last_isr` or HT/TC flags. The composite calls this at the parser's
-    /// Crc event so `last_byte_start` reflects the packet's final byte
-    /// before [`Self::packet_end_tick`] reads it: HT/TC and IDLE are the
-    /// only walker drivers, and a packet bounded by a single such event
-    /// fires Header → Crc within one parser poll, leaving the anchor
-    /// placed by [`Self::try_anchor_from_header`] but never forward-walked
-    /// across bytes past the signature. Idempotent — the reader cursor
-    /// only advances over edges the walker hadn't yet processed.
-    pub fn drain_walker<F: FnMut(u16, u16)>(&mut self, ticks_per_bit: u16, on_pair: F) {
-        let remaining = self.ring.remaining();
-        crate::log::trace!("rx: drain_walker publish remaining={}", remaining);
-        // SAFETY: see `on_edge_advance`.
-        let edges = unsafe { &mut *self.edges.get() };
-        edges.on_publish(remaining);
-        self.classifier
-            .on_edge_advance(edges, ticks_per_bit, on_pair);
+        self.parser.advance_bytes(edges, n, ticks_per_bit, on_pair)
     }
 
     /// Most recent ISR wake capture — `(now, src)` recorded at the last
     /// [`Self::on_edge_advance`] / [`Self::on_idle`] entry. Composite Crc
-    /// handler consumes this when the classifier was unanchored (the
+    /// handler consumes this when the edge parser was unanchored (the
     /// `packet_end_tick_fallback` path).
     pub fn last_isr_capture(&self) -> (u32, PollSrc) {
         self.last_isr
     }
 
     /// Back-search the ET ring for the DXL header's 5-edge signature.
-    /// Composite calls at every parser Header event. On match the anchor
-    /// is established and the walker's ET cursor advances past the
-    /// header edges; on mismatch any stale anchor is cleared and the
-    /// next packet's header re-attempts from scratch.
-    pub fn try_anchor_from_header(&mut self, ticks_per_bit: u16) -> bool {
-        // SAFETY: see `on_edge_advance`.
+    /// Codec calls at every parser `Event::Sync`. On match the anchor is
+    /// established at byte 3 (the `0x00` start bit) and the edge parser's
+    /// ET cursor advances past the header edges; on mismatch any stale
+    /// anchor is cleared and the next packet's Sync re-attempts from
+    /// scratch.
+    pub fn anchor_at_signature(&mut self, ticks_per_bit: u16) -> bool {
+        self.publish_edges();
+        // SAFETY: see `publish_edges`.
         let edges = unsafe { &mut *self.edges.get() };
-        self.classifier.try_anchor_from_header(edges, ticks_per_bit)
+        self.parser.anchor_at_signature(edges, ticks_per_bit)
     }
 
     /// Tick of the most-recently classified byte's start bit, lifted into
-    /// the WireClock u32 domain. `now` / `src` route through the
-    /// classifier's drain-reference correction so the lift stays sub-
-    /// wrap at low baud — see `Classifier::drain_ref`.
+    /// the WireClock u32 domain. `now` / `src` route through the edge
+    /// parser's drain-reference correction so the lift stays sub-wrap
+    /// at low baud — see `EdgeParser::drain_ref`.
     pub fn current_byte_tick(&self, ticks_per_bit: u16, now: u32, src: PollSrc) -> Option<u32> {
-        self.classifier.current_byte_tick(ticks_per_bit, now, src)
+        self.parser.current_byte_tick(ticks_per_bit, now, src)
     }
 
     /// Wire-end tick of the most-recently classified byte, lifted into the
     /// WireClock u32 domain. Composite stamps `packet_end_tick` at the
     /// parser's CRC-good event. `now` / `src` route through the drain-
-    /// reference correction — see `Classifier::drain_ref`.
+    /// reference correction — see `EdgeParser::drain_ref`.
     pub fn packet_end_tick(&self, ticks_per_bit: u16, now: u32, src: PollSrc) -> Option<u32> {
-        self.classifier.packet_end_tick(ticks_per_bit, now, src)
+        self.parser.packet_end_tick(ticks_per_bit, now, src)
     }
 
     /// Fallback packet-end estimate for the no-anchor case — composite
     /// calls when [`packet_end_tick`](Self::packet_end_tick) returns `None`
-    /// at the Crc event. See [`classifier::Classifier::packet_end_tick_fallback`]
+    /// at the Crc event. See [`edge_parser::EdgeParser::packet_end_tick_fallback`]
     /// for the per-source formulas.
     pub fn packet_end_tick_fallback(&self, src: PollSrc, now: u32, ticks_per_bit: u16) -> u32 {
-        self.classifier
+        self.parser
             .packet_end_tick_fallback(src, now, ticks_per_bit)
     }
 
     /// Toggle drift-sampling emission. Composite sets at Instruction-
     /// header events, clears at the matching CRC event.
     pub fn set_hsi_active(&mut self, on: bool) {
-        self.classifier.set_hsi_active(on);
+        self.parser.set_hsi_active(on);
     }
 
     pub fn hsi_active(&self) -> bool {
-        self.classifier.hsi_active()
+        self.parser.hsi_active()
     }
 
     /// Force-drop anchor + drift flag. Composite calls at the parser's
     /// Crc event (packet boundary) and Resync event (parser abort).
     pub fn reset_anchor(&mut self) {
-        self.classifier.reset_anchor();
+        self.parser.reset_anchor();
     }
 
     /// Force a known `last_byte_start` tick — composite-test scaffolding so
@@ -202,7 +210,7 @@ impl<R: EdgeDma, const EDGE_BUF_LEN: usize> Rx<R, EDGE_BUF_LEN> {
     /// edges.
     #[cfg(test)]
     pub fn force_byte_tick_for_test(&mut self, tick: u16) {
-        self.classifier.force_byte_tick_for_test(tick);
+        self.parser.force_byte_tick_for_test(tick);
     }
 
     /// Mask the edge-DMA channel's HT/TC IRQ + clear any latched flag.
