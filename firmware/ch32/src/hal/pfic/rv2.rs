@@ -43,6 +43,19 @@ pub fn enable_systick() {
     PFIC.ienr1().write(|w| w.0 = 1 << SYSTICK_IRQ);
 }
 
+/// Force the SysTick IRQ to dispatch on the next vector entry, independent
+/// of CNT == CMP. Used by `FastLastScheduler::schedule` when the requested
+/// deadline is already in the past: writing CMP near `now` races the few
+/// HCLK cycles between reading CNT and the CMP store, often leaving CMP
+/// behind CNT — at which point the next CNT == CMP match is a u32 wrap
+/// (~89 s) away, wedging the chip. Pending the IRQ directly via IPSR1
+/// sidesteps the match entirely. Write-only register; bit-set semantics
+/// (other bits unaffected).
+#[inline]
+pub fn pend_systick() {
+    PFIC.ipsr1().write(|w| w.0 = 1 << SYSTICK_IRQ);
+}
+
 #[inline]
 pub fn set_priority(irq: Interrupt, prio: Priority) {
     PFIC.iprior(irq as usize).write_value(prio.as_u8());

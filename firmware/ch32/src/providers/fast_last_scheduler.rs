@@ -11,7 +11,7 @@
 use dxl_protocol::wire::CRC_BYTES;
 use osc_drivers::traits::dxl::FastLastScheduler as FastLastSchedulerTrait;
 
-use crate::hal::{dma, systick};
+use crate::hal::{dma, pfic, systick};
 use crate::measurements::{
     FAST_LAST_BYTES_PER_INTERVAL, FAST_LAST_ENTRY_TICKS, FAST_LAST_GUARD_BYTES,
 };
@@ -21,6 +21,29 @@ use crate::runtime::statics::SHARED;
 pub struct FastLastScheduler {
     deadline: u32,
 }
+
+/// DEBUG-ONLY: ring of last 8 schedule() captures, written via volatile RMW.
+/// Read via wlink after a wedge — `nm` the symbols for addresses.
+/// Removed once the wedge investigation lands.
+#[repr(C)]
+#[derive(Copy, Clone)]
+pub struct FlSchedSample {
+    pub now: u32,
+    pub deadline: u32,
+    pub diff: i32,
+    pub safe_cmp: u32,
+}
+
+#[unsafe(no_mangle)]
+pub static mut FL_SCHED_RING: [FlSchedSample; 8] = [FlSchedSample {
+    now: 0,
+    deadline: 0,
+    diff: 0,
+    safe_cmp: 0,
+}; 8];
+
+#[unsafe(no_mangle)]
+pub static mut FL_SCHED_HEAD: u32 = 0;
 
 impl FastLastSchedulerTrait for FastLastScheduler {
     const FAST_LAST_ENTRY_TICKS: u16 = FAST_LAST_ENTRY_TICKS;
@@ -32,20 +55,40 @@ impl FastLastSchedulerTrait for FastLastScheduler {
     }
 
     fn schedule(&mut self, deadline: u32) {
-        // Past-CMP guard: low RDT + small predecessor counts can land the
-        // back-dated CMP behind SysTick CNT. SysTick wouldn't match until
-        // u32 wrap (~89 s) — clamp to "just past now" so the body fires
-        // ASAP. Body's first run lands ENTRY ticks late; grid step
-        // advances normally from there.
+        // Past-CMP handling: the parser path (IDLE → Crc event → send_slot
+        // → here) can easily exceed the slot-offset budget at high baud
+        // with short chains, so `deadline` lands behind CNT on the common
+        // case. Setting CMP near `now` races the ~30–80 HCLK cycles
+        // between reading CNT and writing CMP — CNT typically overshoots
+        // CMP and the next CNT == CMP match is a u32 wrap (~89 s) away,
+        // which wedges the chip permanently. Instead force the SysTick IRQ
+        // to dispatch via PFIC IPSR; the body fires on the next vector
+        // entry independent of CMP, runs the catchup step, and re-arms
+        // CMP for the next interval (which may itself be past — self-
+        // healing across grid steps). CMP is left untouched on this path;
+        // its prior value is either `u32::MAX` (cancel sentinel) or a
+        // stale forward value the next body will overwrite.
         let now = systick::ticks();
-        let safe_cmp = if (deadline.wrapping_sub(now) as i32) < 0 {
-            now.wrapping_add(1)
-        } else {
-            deadline
-        };
+        let diff = deadline.wrapping_sub(now) as i32;
+        // SAFETY: debug-only scratch; same-prio ISR serialization (HIGH).
+        unsafe {
+            let head = (FL_SCHED_HEAD as usize) & 7;
+            let p = &raw mut FL_SCHED_RING[head];
+            p.write_volatile(FlSchedSample {
+                now,
+                deadline,
+                diff,
+                safe_cmp: if diff < 0 { 0 } else { deadline },
+            });
+            FL_SCHED_HEAD = FL_SCHED_HEAD.wrapping_add(1);
+        }
         systick::clear_match();
-        systick::set_cmp(safe_cmp);
         systick::set_irq(true);
+        if diff < 0 {
+            pfic::pend_systick();
+        } else {
+            systick::set_cmp(deadline);
+        }
     }
 
     fn deadline_passed(&self) -> bool {
