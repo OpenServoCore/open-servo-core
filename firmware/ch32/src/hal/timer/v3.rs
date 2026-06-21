@@ -103,6 +103,16 @@ pub fn init_tim2_ch4_ic_capture(boot_filter: FilterValue) {
         w.set_cce(3, true);
     });
     TIM2.dmaintenr().modify(|w| w.set_ccde(3, true));
+    // `EdgeParser` lifts u16 IC4 stamps to u32 wire-time against
+    // `WireClock::now()` (SysTick u32) by assuming the low 16 bits match.
+    // The two counters share HCLK, so co-zeroing them in adjacent writes
+    // immediately before TIM2.CEN=true locks the invariant in. Residual
+    // offset is the HCLK gap between this SysTick CNT store and the TIM2
+    // CEN store taking effect — one APB1 RMW, ~10 HCLK cycles, sub-tick
+    // at any DXL baud. TIM2.CNT is already 0 (peripheral reset, CEN was
+    // never on). Post-boot: no code may reset CNT on either timer or the
+    // lift contract is broken silently.
+    crate::hal::systick::reset_cnt();
     TIM2.ctlr1().modify(|w| w.set_cen(true));
 }
 
