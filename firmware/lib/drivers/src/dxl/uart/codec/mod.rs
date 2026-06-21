@@ -905,7 +905,9 @@ mod tests {
             other => panic!("expected WriteDataChunk, got {other:?}"),
         }
         match iter.next() {
-            Some(Capture::Event { ev: Event::Crc, .. }) => {}
+            Some(Capture::Event {
+                ev: Event::Crc(_), ..
+            }) => {}
             other => panic!("expected Crc, got {other:?}"),
         }
         assert!(iter.next().is_none());
@@ -974,7 +976,15 @@ mod tests {
         assert_eq!(payloads, 0);
         let crcs = captures
             .iter()
-            .filter(|c| matches!(c, Capture::Event { ev: Event::Crc, .. }))
+            .filter(|c| {
+                matches!(
+                    c,
+                    Capture::Event {
+                        ev: Event::Crc(_),
+                        ..
+                    }
+                )
+            })
             .count();
         assert_eq!(crcs, 0);
         assert!(
@@ -1094,7 +1104,7 @@ mod tests {
     }
 
     #[test]
-    fn poll_resync_on_bad_crc_emits_resync_event() {
+    fn poll_emits_crc_bad_verdict_on_bad_crc() {
         let mut c = make();
         let mut wire = wire_ping(TEST_ID);
         let last = wire.len() - 1;
@@ -1102,16 +1112,16 @@ mod tests {
         c.stage_rx_bytes_for_test(0, &wire);
 
         let captures = collect_events(&mut c, |_| PollAction::Continue);
-        let saw_resync = captures.iter().any(|c| {
+        let saw_bad = captures.iter().any(|c| {
             matches!(
                 c,
                 Capture::Event {
-                    ev: Event::Resync(ResyncKind::BadCrc),
+                    ev: Event::Crc(dxl_protocol::streaming::CrcResult::Bad),
                     ..
                 }
             )
         });
-        assert!(saw_resync);
+        assert!(saw_bad);
     }
 
     #[test]
@@ -1125,9 +1135,15 @@ mod tests {
         c.stage_rx_bytes_for_test(60, &wire);
 
         let captures = collect_events(&mut c, |_| PollAction::Continue);
-        let saw_crc = captures
-            .iter()
-            .any(|c| matches!(c, Capture::Event { ev: Event::Crc, .. }));
+        let saw_crc = captures.iter().any(|c| {
+            matches!(
+                c,
+                Capture::Event {
+                    ev: Event::Crc(_),
+                    ..
+                }
+            )
+        });
         assert!(
             saw_crc,
             "expected Crc after wrap parse; got captures: {captures:?}"

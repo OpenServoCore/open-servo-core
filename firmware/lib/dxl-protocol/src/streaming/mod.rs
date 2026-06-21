@@ -11,7 +11,7 @@ mod parser;
 mod stage;
 
 pub use event::{
-    Event, HeaderEvent, InstructionHeader, InstructionPayload, PayloadEvent, ResyncKind,
+    CrcResult, Event, HeaderEvent, InstructionHeader, InstructionPayload, PayloadEvent, ResyncKind,
     StatusHeader, StatusPayload,
 };
 pub use parser::{EventStream, Parser};

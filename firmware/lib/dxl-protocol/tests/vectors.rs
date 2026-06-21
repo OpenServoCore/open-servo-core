@@ -196,7 +196,7 @@ fn parse_ping() {
         InstructionHeader::Ping { id } => assert_eq!(id, Id::new(1)),
         other => panic!("not Ping: {other:?}"),
     }
-    assert!(evs.iter().any(|e| matches!(e, Event::Crc)));
+    assert!(evs.iter().any(|e| matches!(e, Event::Crc(_))));
 }
 
 #[test]
@@ -214,7 +214,7 @@ fn parse_read() {
         }
         other => panic!("not Read: {other:?}"),
     }
-    assert!(evs.iter().any(|e| matches!(e, Event::Crc)));
+    assert!(evs.iter().any(|e| matches!(e, Event::Crc(_))));
 }
 
 #[test]
@@ -236,7 +236,7 @@ fn parse_write() {
         write_data_unstuffed(WRITE_ID1_GOAL512, &evs),
         vec![0x00, 0x02, 0x00, 0x00]
     );
-    assert!(evs.iter().any(|e| matches!(e, Event::Crc)));
+    assert!(evs.iter().any(|e| matches!(e, Event::Crc(_))));
 }
 
 #[test]
@@ -246,7 +246,7 @@ fn parse_reboot() {
         instruction_header(&evs),
         InstructionHeader::Reboot { id } if id == Id::new(1)
     ));
-    assert!(evs.iter().any(|e| matches!(e, Event::Crc)));
+    assert!(evs.iter().any(|e| matches!(e, Event::Crc(_))));
 }
 
 #[test]
@@ -286,7 +286,7 @@ fn write_status_round_trip() {
     assert_eq!(hdr.id, Id::new(1));
     assert_eq!(hdr.error.as_byte(), 0);
     assert_eq!(status_data_unstuffed(&out, &evs), params);
-    assert!(evs.iter().any(|e| matches!(e, Event::Crc)));
+    assert!(evs.iter().any(|e| matches!(e, Event::Crc(_))));
 }
 
 #[test]
@@ -337,7 +337,7 @@ fn unknown_instruction_routes_to_raw() {
         }
         other => panic!("expected Raw, got {other:?}"),
     }
-    assert!(evs.iter().any(|e| matches!(e, Event::Crc)));
+    assert!(evs.iter().any(|e| matches!(e, Event::Crc(_))));
 }
 
 fn fds_in_payload_region(frame: &[u8]) -> usize {
@@ -356,7 +356,7 @@ fn assert_write_decodes_to(wire: &[u8], expected_data: &[u8]) {
         other => panic!("not Write: {other:?}"),
     }
     assert_eq!(write_data_unstuffed(wire, &evs), expected_data);
-    assert!(evs.iter().any(|e| matches!(e, Event::Crc)));
+    assert!(evs.iter().any(|e| matches!(e, Event::Crc(_))));
 }
 
 #[test]
@@ -447,7 +447,7 @@ fn stuff_empty_payload() {
         instruction_header(&evs),
         InstructionHeader::Write { length: 0, .. }
     ));
-    assert!(evs.iter().any(|e| matches!(e, Event::Crc)));
+    assert!(evs.iter().any(|e| matches!(e, Event::Crc(_))));
 }
 
 #[test]

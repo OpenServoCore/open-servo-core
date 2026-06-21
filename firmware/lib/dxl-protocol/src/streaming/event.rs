@@ -16,13 +16,18 @@ pub enum Event {
     Sync,
     Header(HeaderEvent),
     Payload(PayloadEvent),
-    /// Good CRC verdict; bad CRC routes through [`Event::Resync`].
-    Crc,
+    /// Packet boundary at the trailing CRC pair — verdict embedded so the
+    /// byte-delta to this event is structurally `+2` regardless of pass /
+    /// fail. Bad CRC was previously routed through `Resync(BadCrc)`; the
+    /// fold keeps that "consumed 2 trailing bytes" math in one place so the
+    /// classifier walker can step in lockstep without verdict-aware branches.
+    Crc(CrcResult),
     Resync(ResyncKind),
 }
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
-pub(crate) enum CrcResult {
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
+pub enum CrcResult {
     Good,
     Bad,
 }
@@ -31,7 +36,6 @@ pub(crate) enum CrcResult {
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
 pub enum ResyncKind {
     BadLength,
-    BadCrc,
     Overflow,
 }
 

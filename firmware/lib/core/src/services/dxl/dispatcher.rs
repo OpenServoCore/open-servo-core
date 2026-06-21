@@ -1,5 +1,5 @@
 use dxl_protocol::streaming::{
-    Event, HeaderEvent, InstructionHeader, InstructionPayload, PayloadEvent,
+    CrcResult, Event, HeaderEvent, InstructionHeader, InstructionPayload, PayloadEvent,
 };
 use dxl_protocol::types::{ErrorCode, Id, PingStatus, Slot, Status, StatusError};
 
@@ -139,8 +139,8 @@ impl DxlDispatcher for Dispatcher<'_> {
             Event::Header(HeaderEvent::Status(_)) => {}
             Event::Payload(PayloadEvent::Instruction(p)) => self.on_instruction_payload(p, ring),
             Event::Payload(PayloadEvent::Status(_)) => {}
-            Event::Crc => self.commit(reply),
-            Event::Resync(_) => self.reset(),
+            Event::Crc(CrcResult::Good) => self.commit(reply),
+            Event::Crc(CrcResult::Bad) | Event::Resync(_) => self.reset(),
         }
     }
 }

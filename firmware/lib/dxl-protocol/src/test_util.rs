@@ -40,8 +40,10 @@ pub fn status_header(events: &[Event]) -> StatusHeader {
 
 pub fn assert_crc_good(events: &[Event]) {
     assert!(
-        events.iter().any(|e| matches!(e, Event::Crc)),
-        "no Crc verdict in events: {events:?}"
+        events
+            .iter()
+            .any(|e| matches!(e, Event::Crc(crate::streaming::CrcResult::Good))),
+        "no Crc(Good) verdict in events: {events:?}"
     );
 }
 

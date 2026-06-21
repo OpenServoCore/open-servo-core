@@ -8,20 +8,20 @@ use core::fmt::Write;
 
 use dxl_protocol::crc::SoftwareCrcUmts;
 use dxl_protocol::streaming::{
-    Event, HeaderEvent, Parser, PayloadEvent, ResyncKind, StatusHeader, StatusPayload,
+    CrcResult, Event, HeaderEvent, Parser, PayloadEvent, StatusHeader, StatusPayload,
 };
 use dxl_protocol::types::{BulkReadEntry, Id, Instruction, PingStatus, Slot, Status, StatusError};
 
 /// CRC outcome observed at the end of a Fast Status decode.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub enum FastStatusCrc {
-    /// Parser emitted `Event::Crc` — a spec-compliant host accepts the
-    /// Status packet.
+    /// Parser emitted `Event::Crc(CrcResult::Good)` — a spec-compliant
+    /// host accepts the Status packet.
     Good,
-    /// Parser emitted `Event::Resync(ResyncKind::BadCrc)` — a spec-
-    /// compliant host rejects the whole packet. The decoded slots still
-    /// reflect the bytes actually on the wire, so tests can assert
-    /// packet shape independently of host acceptance.
+    /// Parser emitted `Event::Crc(CrcResult::Bad)` — a spec-compliant
+    /// host rejects the whole packet. The decoded slots still reflect
+    /// the bytes actually on the wire, so tests can assert packet shape
+    /// independently of host acceptance.
     Bad,
     /// Stream ended without a terminal CRC event of either flavour
     /// (e.g. truncated mid-frame).
@@ -81,7 +81,7 @@ pub fn parse_status_stream(req: Instruction, wire: &[u8]) -> Vec<Status<'_>> {
             })) => {
                 pending_body = Some(&wire[*offset as usize..(*offset + *length) as usize]);
             }
-            Event::Crc => {
+            Event::Crc(CrcResult::Good) => {
                 if let Some(header) = pending_header.take() {
                     replies.push(decode_one(req, header, pending_body.take()));
                 }
@@ -188,8 +188,8 @@ fn decode_fast_status<'a>(
                 body_start = Some(body_start.unwrap_or(lo));
                 body_end = Some(hi);
             }
-            Event::Crc => crc = FastStatusCrc::Good,
-            Event::Resync(ResyncKind::BadCrc) => crc = FastStatusCrc::Bad,
+            Event::Crc(CrcResult::Good) => crc = FastStatusCrc::Good,
+            Event::Crc(CrcResult::Bad) => crc = FastStatusCrc::Bad,
             _ => {}
         }
     }

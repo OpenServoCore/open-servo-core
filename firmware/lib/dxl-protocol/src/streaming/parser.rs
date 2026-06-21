@@ -3,7 +3,7 @@
 use crate::crc::CrcUmts;
 
 use super::Event;
-use super::event::{CrcResult, HeaderEvent, ResyncKind};
+use super::event::HeaderEvent;
 use super::stage::{CrcStage, HeaderStage, PayloadKind, PayloadStage, SlotsStage, SyncStage};
 
 enum Phase {
@@ -86,10 +86,7 @@ impl<CRC: CrcUmts> Parser<CRC> {
             Phase::Crc(s) => {
                 let result = s.feed(b, &self.crc)?;
                 self.reset();
-                Some(match result {
-                    CrcResult::Good => Event::Crc,
-                    CrcResult::Bad => Event::Resync(ResyncKind::BadCrc),
-                })
+                Some(Event::Crc(result))
             }
             Phase::Payload(_) | Phase::Slots(_) => None,
         }
@@ -169,7 +166,7 @@ mod tests {
     use super::*;
     use crate::crc::SoftwareCrcUmts;
     use crate::streaming::event::{
-        HeaderEvent, InstructionHeader, InstructionPayload, PayloadEvent, ResyncKind,
+        CrcResult, HeaderEvent, InstructionHeader, InstructionPayload, PayloadEvent, ResyncKind,
     };
     use crate::types::{Id, Instruction};
     use crate::wire::PACKET_LEN_GUARD;
@@ -262,20 +259,18 @@ mod tests {
             }
             other => panic!("expected WriteDataChunk, got {other:?}"),
         }
-        assert_eq!(events.next(), Some(Event::Crc));
+        assert_eq!(events.next(), Some(Event::Crc(CrcResult::Good)));
         assert_eq!(events.consumed(), bytes.len());
     }
 
     #[test]
-    fn bad_crc_emits_resync() {
+    fn bad_crc_emits_crc_bad_verdict() {
         let mut bytes = write_packet(0x03, 0x0050, &[1, 2, 3, 4]);
         let last = bytes.len() - 1;
         bytes[last] ^= 0xFF;
         let mut p: Parser<Crc> = Parser::new();
-        let verdict = p
-            .feed(&bytes)
-            .find(|e| matches!(e, Event::Crc | Event::Resync(_)));
-        assert_eq!(verdict, Some(Event::Resync(ResyncKind::BadCrc)));
+        let verdict = p.feed(&bytes).find(|e| matches!(e, Event::Crc(_)));
+        assert_eq!(verdict, Some(Event::Crc(CrcResult::Bad)));
         assert!(in_sync(&p));
     }
 
@@ -285,7 +280,7 @@ mod tests {
         let mut p: Parser<Crc> = Parser::new();
         let events: Vec<Event> = p.feed(&bytes).collect();
         assert!(!events.iter().any(|e| matches!(e, Event::Payload(_))));
-        assert_eq!(events.last(), Some(&Event::Crc));
+        assert_eq!(events.last(), Some(&Event::Crc(CrcResult::Good)));
     }
 
     #[test]
@@ -316,7 +311,7 @@ mod tests {
         let mut p: Parser<Crc> = Parser::new();
         let evs: Vec<Event> = p.feed(&bytes).collect();
         assert!(evs.contains(&Event::Resync(ResyncKind::BadLength)));
-        assert_eq!(evs.last(), Some(&Event::Crc));
+        assert_eq!(evs.last(), Some(&Event::Crc(CrcResult::Good)));
         let ids: Vec<_> = evs
             .iter()
             .filter_map(|e| match e {
@@ -350,7 +345,7 @@ mod tests {
                 .collect();
         assert_eq!(chunks.len(), 2);
         assert_eq!(chunks.iter().map(|(_, l)| *l).sum::<u16>(), 6);
-        assert_eq!(got.last(), Some(&Event::Crc));
+        assert_eq!(got.last(), Some(&Event::Crc(CrcResult::Good)));
     }
 
     #[test]
@@ -366,8 +361,14 @@ mod tests {
         let mut bytes = ping_packet(0x01);
         bytes.extend(ping_packet(0x02));
         let mut p: Parser<Crc> = Parser::new();
-        let verdicts: Vec<Event> = p.feed(&bytes).filter(|e| matches!(e, Event::Crc)).collect();
-        assert_eq!(verdicts, vec![Event::Crc, Event::Crc]);
+        let verdicts: Vec<Event> = p
+            .feed(&bytes)
+            .filter(|e| matches!(e, Event::Crc(_)))
+            .collect();
+        assert_eq!(
+            verdicts,
+            vec![Event::Crc(CrcResult::Good), Event::Crc(CrcResult::Good)]
+        );
     }
 
     #[test]
@@ -416,7 +417,7 @@ mod tests {
             slots,
             vec![(Id::new(0x01), 0), (Id::new(0x02), 1), (Id::new(0x03), 2),]
         );
-        assert_eq!(evs.last(), Some(&Event::Crc));
+        assert_eq!(evs.last(), Some(&Event::Crc(CrcResult::Good)));
     }
 
     #[test]
@@ -434,7 +435,7 @@ mod tests {
             })
             .count();
         assert_eq!(count, 3);
-        assert_eq!(evs.last(), Some(&Event::Crc));
+        assert_eq!(evs.last(), Some(&Event::Crc(CrcResult::Good)));
     }
 
     #[test]
@@ -484,7 +485,7 @@ mod tests {
             }
             other => panic!("expected WriteDataChunk, got {other:?}"),
         }
-        assert_eq!(evs.last(), Some(&Event::Crc));
+        assert_eq!(evs.last(), Some(&Event::Crc(CrcResult::Good)));
     }
 
     fn bulk_read_like(instr: Instruction) -> Vec<Event> {
@@ -517,7 +518,7 @@ mod tests {
             entries,
             vec![(Id::new(0x01), 0, 0x0084, 4), (Id::new(0x02), 1, 0x0090, 2),]
         );
-        assert_eq!(evs.last(), Some(&Event::Crc));
+        assert_eq!(evs.last(), Some(&Event::Crc(CrcResult::Good)));
     }
 
     #[test]
@@ -535,7 +536,7 @@ mod tests {
             })
             .count();
         assert_eq!(count, 2);
-        assert_eq!(evs.last(), Some(&Event::Crc));
+        assert_eq!(evs.last(), Some(&Event::Crc(CrcResult::Good)));
     }
 
     #[test]
@@ -590,7 +591,7 @@ mod tests {
             }
             other => panic!("expected WriteDataChunk, got {other:?}"),
         }
-        assert_eq!(evs.last(), Some(&Event::Crc));
+        assert_eq!(evs.last(), Some(&Event::Crc(CrcResult::Good)));
     }
 
     #[test]

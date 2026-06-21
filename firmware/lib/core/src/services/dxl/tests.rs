@@ -221,7 +221,9 @@ fn parse_status(bytes: &[u8]) -> (u8, u8, Vec<u8, 64>) {
                 data.extend_from_slice(&[(model & 0xFF) as u8, (model >> 8) as u8, fw_version])
                     .unwrap();
             }
-            Event::Crc => {
+            Event::Crc(verdict) => {
+                use dxl_protocol::streaming::CrcResult;
+                assert_eq!(verdict, CrcResult::Good, "status parser saw bad CRC");
                 saw_crc = true;
                 break;
             }

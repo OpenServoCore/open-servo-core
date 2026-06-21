@@ -6,7 +6,7 @@ mod common;
 
 use common::{Crc, Rng, ping_packet, status_packet, write_packet};
 use dxl_protocol::streaming::{
-    Event, HeaderEvent, InstructionHeader, InstructionPayload, Parser, PayloadEvent, ResyncKind,
+    CrcResult, Event, HeaderEvent, InstructionHeader, InstructionPayload, Parser, PayloadEvent,
     StatusPayload,
 };
 use dxl_protocol::types::{Id, StatusError};
@@ -42,7 +42,7 @@ fn drain_chunks(bytes: &[u8], chunk_size: usize) -> Vec<Event> {
 }
 
 fn count_crc(events: &[Event]) -> usize {
-    events.iter().filter(|e| matches!(e, Event::Crc)).count()
+    events.iter().filter(|e| matches!(e, Event::Crc(_))).count()
 }
 
 fn payload_bytes(events: &[Event]) -> u32 {
@@ -88,7 +88,7 @@ fn status_reply_emits_sync_header_chunk_and_crc() {
         }
         ref other => panic!("expected ReadDataChunk, got {other:?}"),
     }
-    assert_eq!(evs[3], Event::Crc);
+    assert_eq!(evs[3], Event::Crc(CrcResult::Good));
 }
 
 #[test]
@@ -214,7 +214,7 @@ fn mid_packet_reset_then_clean_packet_parses() {
         Event::Header(HeaderEvent::Instruction(InstructionHeader::Ping { id }))
             if *id == Id::new(0x07)
     )));
-    assert_eq!(evs.last(), Some(&Event::Crc));
+    assert_eq!(evs.last(), Some(&Event::Crc(CrcResult::Good)));
 }
 
 #[test]
@@ -226,13 +226,13 @@ fn parser_recovers_through_bad_crc_then_clean_packet() {
 
     let mut p: Parser<Crc> = Parser::new();
     let evs: Vec<Event> = p.feed(&corrupted).collect();
-    assert!(evs.contains(&Event::Resync(ResyncKind::BadCrc)));
+    assert!(evs.contains(&Event::Crc(CrcResult::Bad)));
     assert!(evs.iter().any(|e| matches!(
         e,
         Event::Header(HeaderEvent::Instruction(InstructionHeader::Ping { id }))
             if *id == Id::new(0x05)
     )));
-    assert_eq!(count_crc(&evs), 1);
+    assert_eq!(count_crc(&evs), 2);
 }
 
 #[test]

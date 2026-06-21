@@ -15,7 +15,7 @@ pub mod fast_last;
 pub mod fast_last_crc;
 
 use dxl_protocol::streaming::{
-    Event, HeaderEvent, InstructionHeader, InstructionPayload, PayloadEvent,
+    CrcResult, Event, HeaderEvent, InstructionHeader, InstructionPayload, PayloadEvent,
 };
 use dxl_protocol::wire::{BROADCAST_ID, CRC_BYTES, RESPONSE_HEADER_BYTES};
 use dxl_protocol::{Id, Slot, SlotPosition, Status, WriteError};
@@ -843,8 +843,8 @@ impl<P: Providers, const RX_BUF_LEN: usize, const EDGE_BUF_LEN: usize, const TX_
                         debug_assert!(false, "Status payload should have been byte-skipped");
                         PollAction::Continue
                     }
-                    Event::Crc => {
-                        crate::log::trace!("dxl[id={}]: event=crc", id);
+                    Event::Crc(CrcResult::Good) => {
+                        crate::log::trace!("dxl[id={}]: event=crc(good)", id);
                         if let Some(ctx) = inflight.take() {
                             // Bring `last_byte_start` current before stamping
                             // packet_end. The walker only drains at HT/TC or
@@ -908,8 +908,8 @@ impl<P: Providers, const RX_BUF_LEN: usize, const EDGE_BUF_LEN: usize, const TX_
                         rx_inner.reset_anchor();
                         PollAction::Continue
                     }
-                    Event::Resync(_) => {
-                        crate::log::trace!("dxl[id={}]: event=resync", id);
+                    Event::Crc(CrcResult::Bad) | Event::Resync(_) => {
+                        crate::log::trace!("dxl[id={}]: event=crc(bad)/resync", id);
                         rx_inner.reset_anchor();
                         *inflight = None;
                         *predecessor_id = None;
@@ -1231,7 +1231,7 @@ mod tests {
                 Tag::InstrFastSyncRead
             }
             Event::Header(HeaderEvent::Status(sh)) => Tag::StatusHeader(sh.id.as_byte()),
-            Event::Crc => Tag::Crc,
+            Event::Crc(_) => Tag::Crc,
             Event::Resync(_) => Tag::Resync,
             _ => Tag::Other,
         }
@@ -1705,7 +1705,7 @@ mod tests {
         // Gate to Crc — the event-stream poll dispatches the closure on
         // every event; one Cancel per packet is what we want, not three.
         bus.poll(|ev, _, reply| {
-            if matches!(ev, Event::Crc) {
+            if matches!(ev, Event::Crc(_)) {
                 reply.cancel();
             }
         });
@@ -1720,7 +1720,7 @@ mod tests {
         // Drive the per-packet send only at the Crc event so we don't fire
         // it twice via the multi-event stream.
         bus.poll(|ev, _, reply| {
-            if matches!(ev, Event::Crc) {
+            if matches!(ev, Event::Crc(_)) {
                 reply.send_status(empty_status()).expect("encode fits");
                 // Second send within the same callback consumes nothing —
                 // ctx was taken on the first; scheduler log shows one entry.
@@ -1926,7 +1926,7 @@ mod tests {
         let req = wire_sync_read(0, 2, &[0x42, TEST_ID]);
         let (mut bus, _) = bus_seeded_with(&req);
         bus.poll(|ev, _, reply| {
-            if matches!(ev, Event::Crc) {
+            if matches!(ev, Event::Crc(_)) {
                 reply.send_status(empty_status()).expect("encode fits");
                 reply.cancel();
             }
