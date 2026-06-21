@@ -40,8 +40,28 @@ pub fn bringup(
     // pin output — initialized here so the IRQ stays masked at boot.
     bring_up_tim2_oc();
     configure_pins(wiring);
+
+    // Sole writer to CONFIG: pre-IRQ, pre-`Drivers::install`. The driver's
+    // own-id filter and the dispatcher's snapshot both read `c.comms.id`;
+    // seeding before install lets `Drivers::install` pick up the resolved
+    // ID so the two layers agree from the first poll.
+    SHARED.table.seed_config_defaults(defaults);
+    SHARED.table.config.with_mut(|c| {
+        c.comms.clock_step_ppm = rcc::CLOCK_TRIM_PPM_PER_STEP as u16;
+    });
+
+    // Override `ConfigDefaults::dxl_id` with a UID-derived ID so a freshly
+    // flashed chip plugged into an existing bus doesn't collide on the
+    // default. EEPROM persistence (when landed) layers on top — it loads
+    // *after* this and wins if a stored ID is present.
+    let dxl_id = derive_dxl_id_from_uid();
+    crate::log::info!("seed comms.id={} from UID", dxl_id);
+    SHARED.table.config.with_mut(|c| {
+        c.comms.id = dxl_id;
+    });
+
     // SAFETY: bringup-only, pre-IRQ; sole writer.
-    unsafe { Drivers::install(wiring, defaults) };
+    unsafe { Drivers::install(wiring, defaults, dxl_id) };
     crate::log::debug!("gpio configured");
 
     bring_up_analog_chain(&wiring.current_sense);
@@ -62,22 +82,6 @@ pub fn bringup(
         ADC_DMA_BUF_LEN,
         shunt_bias_raw,
     );
-
-    // Sole writer to CONFIG: pre-IRQ, pre-install_kernel.
-    SHARED.table.seed_config_defaults(defaults);
-    SHARED.table.config.with_mut(|c| {
-        c.comms.clock_step_ppm = rcc::CLOCK_TRIM_PPM_PER_STEP as u16;
-    });
-
-    // Override `ConfigDefaults::dxl_id` with a UID-derived ID so a freshly
-    // flashed chip plugged into an existing bus doesn't collide on the
-    // default. EEPROM persistence (when landed) layers on top — it loads
-    // *after* this and wins if a stored ID is present.
-    let id = derive_dxl_id_from_uid();
-    crate::log::info!("seed comms.id={} from UID", id);
-    SHARED.table.config.with_mut(|c| {
-        c.comms.id = id;
-    });
 
     bring_up_dxl(pre.usart_brr, usart_baud::filter_for(defaults.dxl_baud));
     crate::log::debug!("dxl usart + dma rx armed");

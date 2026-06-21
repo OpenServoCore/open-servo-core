@@ -98,7 +98,14 @@ pub struct Drivers;
 #[allow(clippy::missing_safety_doc)]
 impl Drivers {
     /// SAFETY: bringup-only, pre-IRQ; sole writer. Must be called exactly once.
-    pub unsafe fn install(w: &BoardWiring, defaults: &ConfigDefaults) {
+    ///
+    /// `dxl_id` is the resolved chip ID — caller seeds `SHARED.table.config
+    /// .comms.id` to the same value before this runs. The driver's filter
+    /// (`target_addressable`) and the dispatcher's snapshot both read from
+    /// that one source; passing it here keeps the in-driver cache aligned
+    /// from boot. `defaults.dxl_id` is the unresolved seed and is not used
+    /// here directly.
+    pub unsafe fn install(w: &BoardWiring, defaults: &ConfigDefaults, dxl_id: u8) {
         // SAFETY: see fn doc.
         let dbg = unsafe { &mut *CELLS.dbg.get() };
         debug_assert!(dbg.is_none(), "Drivers: dbg already installed");
@@ -123,7 +130,7 @@ impl Drivers {
             DxlTxBus,
             FastLast::new(FastLastScheduler::default()),
             WireClock,
-            defaults.dxl_id,
+            dxl_id,
             (defaults.dxl_return_delay_2us as u32) * 2,
         ));
     }
