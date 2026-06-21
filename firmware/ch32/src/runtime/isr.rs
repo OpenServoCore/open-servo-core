@@ -3,7 +3,7 @@ use osc_core::{BootMode, ControlIo, ConversionVariables, Sensors};
 
 use crate::hal::{dma, flash, pfic, systick, usart};
 use crate::runtime::Drivers;
-use crate::runtime::statics::{KERNEL, SHARED};
+use crate::runtime::statics::{KERNEL, SERVICES, SHARED};
 
 /// Configures PFIC priorities and unmasks every DXL-transport + ADC IRQ.
 /// Called once during bringup, after the drivers and statics are installed.
@@ -61,18 +61,23 @@ pub fn on_usart1() {
     on_usart1_tc();
 }
 
-/// DMA1_CH7 HT/TC handler — dispatches into `DxlUart`, which routes the
-/// `ticks_per_bit` lookup from its `clock` sub-driver into the RX
-/// classifier walk. `now` (TIM2.CNT) is captured at ISR entry — the
-/// driver stashes it on the codec RX half so the parser's Crc handler
-/// can pick a fallback `packet_end_tick` if the classifier was
-/// unanchored.
+/// DMA1_CH7 HT/TC handler — refreshes the codec's edge-ring view (NDTR
+/// + `(now, Dma)` ISR-capture stash for the Crc fallback path), then
+/// drives the parser drain via `services.poll`. Per
+/// `dxl-streaming-rx.md` §3 / §4.4 / §5.2, parser drains on three
+/// triggers (USART1 IDLE, DMA1_CH7 HT, DMA1_CH7 TC); same-handler
+/// drain is what makes the §5.1 chain-slot fire rule (observe
+/// predecessor skip-exhaust → arm CCR3 inline) hold under low-RDT
+/// timing.
 ///
-/// SAFETY: driver is installed before this vector is unmasked, and
-/// DMA1_CH7 shares PFIC HIGH with USART1 so no concurrent `&mut` into the
-/// driver is possible.
+/// SAFETY: driver + services installed before this vector unmasks, and
+/// DMA1_CH7 shares PFIC HIGH with USART1 / DMA1_CH5 / TIM2 / SysTick so
+/// no concurrent `&mut` into either is possible.
 pub fn on_dma1_ch7() {
     unsafe { Drivers::dxl_uart() }.on_rx_edge_advance();
+    // SAFETY: see fn doc.
+    let services = unsafe { (*SERVICES.get()).assume_init_mut() };
+    services.poll(&SHARED);
 }
 
 /// DMA1_CH5 HT/TC handler — publish-only ISR per doc §9. Dispatches into
@@ -117,14 +122,20 @@ fn on_usart1_idle() {
     usart::clear_idle(USART1);
     // Backstop the RX classifier: for packets shorter than half the ET ring
     // the HT/TC ISR never fires, so IDLE is the only chance to walk those
-    // edges. `on_rx_idle` drains the tail; anchor invalidation lives at
-    // the parser's Crc / Resync event (deterministic packet boundary),
-    // not here. The driver sources its fallback wake-capture from the
-    // WireClock provider — only consumed at Crc when the classifier was
-    // unanchored, so IDLE-derived timing per [[no_idle_timing]] never
-    // enters the anchored path.
+    // edges. `on_rx_idle` refreshes the codec's edge-ring view (`(now,
+    // Idle)` ISR-capture stash for the Crc fallback path); the parser
+    // drain itself runs via `services.poll` below — IDLE is one of the
+    // three parser-drive triggers per `dxl-streaming-rx.md` §3 / §4.4.
+    // Anchor invalidation lives at the parser's Crc / Resync event
+    // (deterministic packet boundary), not here. IDLE-derived timing
+    // per [[no_idle_timing]] never enters the anchored path — the
+    // fallback is only consumed at Crc when the classifier was
+    // unanchored.
     // SAFETY: see `on_dma1_ch7`.
     unsafe { Drivers::dxl_uart() }.on_rx_idle();
+    // SAFETY: see `on_dma1_ch7`.
+    let services = unsafe { (*SERVICES.get()).assume_init_mut() };
+    services.poll(&SHARED);
 }
 
 fn on_usart1_tc() {

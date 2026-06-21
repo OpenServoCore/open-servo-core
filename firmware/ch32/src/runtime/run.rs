@@ -25,9 +25,10 @@ pub fn __run(cfg: BoardConfig, pre: Precomputed) -> ! {
     crate::runtime::statics::install(io);
     crate::runtime::isr::install_irqs();
     loop {
-        // SAFETY: SERVICES initialized in `install`; no ISR aliases it.
-        let services = unsafe { (*crate::runtime::statics::SERVICES.get()).assume_init_mut() };
-        services.poll(&crate::runtime::statics::SHARED);
+        // DXL parser drain runs on the three RX triggers (DMA1_CH7 HT/TC,
+        // USART1 IDLE) per `dxl-streaming-rx.md` §3 / §4.4 / §5.2 — see
+        // `runtime::isr::on_dma1_ch7` / `on_usart1_idle`. Main loop owns
+        // only LED housekeeping + sleep.
         // SAFETY: stat_led installed in bringup; main-loop sole accessor.
         unsafe { crate::runtime::Drivers::stat_led() }.poll();
         // M2 (#33) → M5+ regression: the stat LED's TX-activity blink moved

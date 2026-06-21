@@ -11,7 +11,11 @@ pub static SHARED: Shared = Shared::new();
 pub(crate) static KERNEL: SyncUnsafeCell<MaybeUninit<Kernel<Ch32ControlIo>>> =
     SyncUnsafeCell::new(MaybeUninit::uninit());
 
-/// Initialised by `install`; sole `&mut` writer is the main loop.
+/// Initialised by `install`; `&mut` access lives on the DXL ISR family
+/// (DMA1_CH7 HT/TC and USART1 IDLE — the parser-drain triggers per
+/// `dxl-streaming-rx.md` §3 / §4.4 / §5.2). All DXL-side ISRs share PFIC
+/// HIGH so same-priority no-preemption serializes the access; the main
+/// loop never reaches in.
 pub(crate) static SERVICES: SyncUnsafeCell<MaybeUninit<Services<Ch32Bus>>> =
     SyncUnsafeCell::new(MaybeUninit::uninit());
 
