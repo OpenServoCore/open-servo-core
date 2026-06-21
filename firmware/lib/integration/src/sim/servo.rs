@@ -471,6 +471,13 @@ impl Servo {
             };
             self.dxl.poll(&self.shared, &mut bus);
         }
+        // The driver applies pending trim at every RX-side packet
+        // boundary now (`Clock::on_rx_packet_end`), not just at
+        // `on_tx_complete`. Drain the mock's log here so foreign-
+        // instruction packets — which never produce a TX — still
+        // commit their correction to the sim's live HSI.
+        let ops = self.clock_trim_state.operations();
+        self.hsi_clock.drain_ops(&ops);
 
         let bus_ops = self.tx_bus_state.operations();
         for op in &bus_ops[pre_bus..] {

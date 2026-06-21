@@ -323,9 +323,7 @@ fn hsi_hot_corner_converges_via_foreign_ping(baud_idx: u8) {
         "foreign-ping correction too small for +2% drift: {final_ppm} \
          (baud_idx={baud_idx}, ops={ops:?})",
     );
-    log::info!(
-        "baud_idx={baud_idx} +2% drift, foreign pings → final_ppm={final_ppm}, ops={ops:?}",
-    );
+    log::info!("baud_idx={baud_idx} +2% drift, foreign pings → final_ppm={final_ppm}, ops={ops:?}",);
 }
 
 /// -2% drift, foreign-instruction sampling path. Symmetric to the
@@ -355,9 +353,7 @@ fn hsi_cold_corner_converges_via_foreign_ping(baud_idx: u8) {
         "foreign-ping correction too small for -2% drift: {final_ppm} \
          (baud_idx={baud_idx}, ops={ops:?})",
     );
-    log::info!(
-        "baud_idx={baud_idx} -2% drift, foreign pings → final_ppm={final_ppm}, ops={ops:?}",
-    );
+    log::info!("baud_idx={baud_idx} -2% drift, foreign pings → final_ppm={final_ppm}, ops={ops:?}",);
 }
 
 /// +2% drift, one foreign Ping. The boot batch closes during the skip

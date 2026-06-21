@@ -976,6 +976,12 @@ impl<P: Providers, const RX_BUF_LEN: usize, const EDGE_BUF_LEN: usize, const TX_
         for &(prev, curr) in &pair_buf {
             clock.on_byte_pair(prev, curr);
         }
+        // Apply any pending trim correction at the RX-side packet
+        // boundary. Idempotent when nothing changed; necessary so
+        // foreign-instruction packets — which never reach
+        // `on_tx_complete` — still commit their drift samples per
+        // [[drift_sampling_instruction_only]].
+        clock.on_rx_packet_end();
     }
 
     /// Monotonic count of Instruction packets seen on the wire — own and

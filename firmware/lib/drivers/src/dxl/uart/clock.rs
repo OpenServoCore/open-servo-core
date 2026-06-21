@@ -208,29 +208,47 @@ impl<U: UsartBaud, T: ClockTrim> Clock<U, T> {
 
     #[allow(dead_code)]
     pub fn on_tx_complete(&mut self) {
-        let mut needs_rebuild = false;
-        let mut reset_integrator = false;
+        // Baud-only: BRR can't change mid-frame, so a staged baud waits
+        // for the USART to go idle after our own TX. Trim corrections
+        // and boot→steady transitions happen at RX packet boundaries
+        // via [`Self::on_rx_packet_end`] — trim writes HSITRIM (not BRR)
+        // and the integrator is fed by RX edges, so an RX boundary is
+        // both the earliest and the natural quiet point.
         if let Some(baud) = self.pending_baud.take() {
             self.usart.apply_baud(baud);
             self.baud = baud;
             self.ticks_per_bit = Self::ticks_per_bit_at(baud);
-            needs_rebuild = true;
-            reset_integrator = true;
+            self.rebuild_integrator_consts();
+            self.drift_sum_q8 = 0;
+            self.drift_samples = 0;
         }
+    }
+
+    /// RX-side packet boundary — applies any pending trim correction and
+    /// transitions boot→steady. Trim writes HSITRIM directly (no BRR
+    /// mid-frame constraint), so the earliest safe apply point is the
+    /// first quiet moment after the integrator has seen all of a
+    /// packet's byte pairs. Called by the driver at every poll after
+    /// the byte-pair buffer is drained into [`Self::on_byte_pair`] — at
+    /// own-Crc, foreign-SkipComplete, and Bad-CRC / Resync boundaries
+    /// alike, so foreign-instruction sampling per
+    /// [[drift_sampling_instruction_only]] converges the same as own.
+    /// Idempotent: with no pending correction and `is_boot` already
+    /// false, the call is a no-op.
+    #[allow(dead_code)]
+    pub fn on_rx_packet_end(&mut self) {
+        let mut reset_integrator = false;
         if let Some(applied) = self.pending_applied_ppm.take() {
             self.trim.apply_ppm(applied);
             self.applied_ppm = applied;
             reset_integrator = true;
         }
-        // First TC after `Clock::new` ends the boot phase, whether or
-        // not it produced an emit. The host's next packet runs against
-        // steady integrator state.
-        if self.is_boot {
+        let was_boot = self.is_boot;
+        if was_boot {
             self.is_boot = false;
-            needs_rebuild = true;
             reset_integrator = true;
         }
-        if needs_rebuild {
+        if was_boot {
             self.rebuild_integrator_consts();
         }
         if reset_integrator {
