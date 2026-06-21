@@ -38,6 +38,12 @@ const PING_BUDGET: u32 = 64;
 
 const TARGET: Id = Id::new(1);
 
+/// Foreign target: nothing in the bus answers this id, so the servo at id=1
+/// sees the Ping as a foreign instruction and runs the byte-skip path.
+/// HSI sampling must still fire across the header+CRC bytes (host HSE clocks
+/// all instructions; foreign vs. own is irrelevant to the integrator).
+const FOREIGN_TARGET: Id = Id::new(99);
+
 /// At nominal factory HSI the integrator must emit zero corrections at
 /// every baud. Any spurious emit signals a threshold-compute bug — most
 /// likely 1-tick chip-stamp quantization at high baud crossing the
@@ -282,5 +288,162 @@ fn hsi_steady_phase_tracks_dynamic_drift(baud_idx: u8) {
     log::info!(
         "baud_idx={baud_idx} dynamic +0.5% drift after 16 pings → \
          residual_ppm={residual_ppm} ops={ops:?}",
+    );
+}
+
+/// +2% drift, foreign-instruction sampling path. Each Ping targets id=99
+/// (no servo answers) so the lone servo at id=1 parses Sync + Header then
+/// drops into byte-skip for the remaining CRC. The byte-parser-driven
+/// edge walker advances in lockstep through both regions, so the
+/// integrator gets the same 6 byte pairs per Ping it would get from an
+/// own-target reception. Convergence must therefore match the own-target
+/// hot-corner case.
+#[apply(baud_matrix)]
+#[test_log::test]
+fn hsi_hot_corner_converges_via_foreign_ping(baud_idx: u8) {
+    let baud = BaudRate::from_idx(baud_idx).expect("valid baud idx");
+    let Setup {
+        mut sim,
+        host,
+        servos,
+    } = setup_with(1, baud, DEFAULT_RDT_US);
+    sim.servo_mut(servos[0]).set_hsi_drift(1, 50);
+
+    for _ in 0..PING_BUDGET {
+        sim.with_host(host, |h| {
+            h.send_ping(FOREIGN_TARGET);
+            h.wait_for_reply();
+        });
+    }
+    let ops = sim.servo(servos[0]).trim_ops();
+    let final_ppm = *ops.last().expect("expected at least one trim op");
+
+    assert!(
+        final_ppm <= -15_000,
+        "foreign-ping correction too small for +2% drift: {final_ppm} \
+         (baud_idx={baud_idx}, ops={ops:?})",
+    );
+    log::info!(
+        "baud_idx={baud_idx} +2% drift, foreign pings → final_ppm={final_ppm}, ops={ops:?}",
+    );
+}
+
+/// -2% drift, foreign-instruction sampling path. Symmetric to the
+/// foreign-ping hot-corner case.
+#[apply(baud_matrix)]
+#[test_log::test]
+fn hsi_cold_corner_converges_via_foreign_ping(baud_idx: u8) {
+    let baud = BaudRate::from_idx(baud_idx).expect("valid baud idx");
+    let Setup {
+        mut sim,
+        host,
+        servos,
+    } = setup_with(1, baud, DEFAULT_RDT_US);
+    sim.servo_mut(servos[0]).set_hsi_drift(-1, 50);
+
+    for _ in 0..PING_BUDGET {
+        sim.with_host(host, |h| {
+            h.send_ping(FOREIGN_TARGET);
+            h.wait_for_reply();
+        });
+    }
+    let ops = sim.servo(servos[0]).trim_ops();
+    let final_ppm = *ops.last().expect("expected at least one trim op");
+
+    assert!(
+        final_ppm >= 15_000,
+        "foreign-ping correction too small for -2% drift: {final_ppm} \
+         (baud_idx={baud_idx}, ops={ops:?})",
+    );
+    log::info!(
+        "baud_idx={baud_idx} -2% drift, foreign pings → final_ppm={final_ppm}, ops={ops:?}",
+    );
+}
+
+/// +2% drift, one foreign Ping. The boot batch closes during the skip
+/// phase of the first Ping the same way it closes during the body of an
+/// own-target reception. Emit must equal exactly -20_000 ppm — same byte
+/// pair count, same magnitude-aware estimator, same boot-phase emit cap.
+#[apply(baud_matrix)]
+#[test_log::test]
+fn hsi_hot_corner_lands_in_one_foreign_ping(baud_idx: u8) {
+    let baud = BaudRate::from_idx(baud_idx).expect("valid baud idx");
+    let Setup {
+        mut sim,
+        host,
+        servos,
+    } = setup_with(1, baud, DEFAULT_RDT_US);
+    sim.servo_mut(servos[0]).set_hsi_drift(1, 50);
+
+    sim.with_host(host, |h| {
+        h.send_ping(FOREIGN_TARGET);
+        h.wait_for_reply();
+    });
+
+    let ops = sim.servo(servos[0]).trim_ops();
+    assert_eq!(
+        ops.len(),
+        1,
+        "expected exactly one emit after first foreign Ping \
+         (baud_idx={baud_idx}, ops={ops:?})",
+    );
+    assert_eq!(
+        ops[0], -20_000,
+        "boot emit at +2% drift via foreign Ping should be exactly -20_000 ppm \
+         (8 steps × 2500 ppm/step); got {} (baud_idx={baud_idx})",
+        ops[0],
+    );
+    let residual_ppm = live_residual_ppm(&sim, servos[0]);
+    assert!(
+        residual_ppm.abs() < 1000,
+        "expected |residual_ppm| < 1000 after 1-foreign-ping boot landing, \
+         got {residual_ppm} (baud_idx={baud_idx})",
+    );
+    log::info!(
+        "baud_idx={baud_idx} +2% drift, 1 foreign ping → emit={} residual_ppm={residual_ppm}",
+        ops[0],
+    );
+}
+
+/// -2% drift, one foreign Ping. Symmetric to the foreign-ping hot-corner
+/// one-Ping case.
+#[apply(baud_matrix)]
+#[test_log::test]
+fn hsi_cold_corner_lands_in_one_foreign_ping(baud_idx: u8) {
+    let baud = BaudRate::from_idx(baud_idx).expect("valid baud idx");
+    let Setup {
+        mut sim,
+        host,
+        servos,
+    } = setup_with(1, baud, DEFAULT_RDT_US);
+    sim.servo_mut(servos[0]).set_hsi_drift(-1, 50);
+
+    sim.with_host(host, |h| {
+        h.send_ping(FOREIGN_TARGET);
+        h.wait_for_reply();
+    });
+
+    let ops = sim.servo(servos[0]).trim_ops();
+    assert_eq!(
+        ops.len(),
+        1,
+        "expected exactly one emit after first foreign Ping \
+         (baud_idx={baud_idx}, ops={ops:?})",
+    );
+    assert_eq!(
+        ops[0], 20_000,
+        "boot emit at -2% drift via foreign Ping should be exactly +20_000 ppm \
+         (8 steps × 2500 ppm/step); got {} (baud_idx={baud_idx})",
+        ops[0],
+    );
+    let residual_ppm = live_residual_ppm(&sim, servos[0]);
+    assert!(
+        residual_ppm.abs() < 1000,
+        "expected |residual_ppm| < 1000 after 1-foreign-ping boot landing, \
+         got {residual_ppm} (baud_idx={baud_idx})",
+    );
+    log::info!(
+        "baud_idx={baud_idx} -2% drift, 1 foreign ping → emit={} residual_ppm={residual_ppm}",
+        ops[0],
     );
 }
