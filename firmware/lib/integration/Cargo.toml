@@ -31,5 +31,5 @@ name = "timing"
 path = "tests/timing/mod.rs"
 
 [[test]]
-name = "wedge"
-path = "tests/wedge/mod.rs"
+name = "resilience"
+path = "tests/resilience/mod.rs"

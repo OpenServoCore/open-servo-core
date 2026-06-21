@@ -1,11 +1,13 @@
-//! Host-side packet shape pathologies — the servo must never wedge on a
-//! truncated, malformed, or cross-baud byte sequence. Every test follows
-//! the same shape: send garbage, then `assert_bus_healthy` (broadcast
-//! Ping that the servo must answer in chain order) confirms the servo's
-//! parser, dispatcher, scheduler, and inflight state recovered.
+//! Host-side packet shape pathologies — the servo must recover from any
+//! truncated, malformed, or cross-baud byte sequence and answer the next
+//! valid request cleanly. Every test follows the same shape: send bad
+//! bytes, then `assert_bus_healthy` (broadcast Ping that all servos must
+//! answer in chain order) confirms the parser, dispatcher, scheduler, and
+//! inflight state all returned to a known-good baseline.
 //!
-//! Baud sweep only — RDT is irrelevant to the wedge surface (RDT bounds
-//! reply-side timing, not how the streaming parser tolerates bad input).
+//! Baud sweep only — RDT bounds reply-side timing, not how the streaming
+//! parser tolerates bad input, so the cross-product would only inflate
+//! runtime without expanding coverage.
 
 use crate::support::{
     SYNC_PREFIX, Setup, assert_bus_healthy, baud_matrix, encode_ping, setup_with,
@@ -24,8 +26,8 @@ const TARGET: Id = Id::new(1);
 /// resync; Phase::Payload/Slots advances to Crc → bad CRC → reset.
 /// All paths leave the parser back at Phase::Sync after at most ~10
 /// bytes, with the remaining FFs harmlessly drained. Mirrors real-host
-/// recovery behavior: hosts retry packets that don't get a reply, and
-/// each retry's prefix flushes any stuck state from the prior wedge.
+/// retry behavior: hosts retry packets that don't get a reply, and each
+/// retry's prefix flushes any stuck state left by the prior attempt.
 const PARSER_FLUSH: [u8; 256] = [0xFFu8; 256];
 
 /// Send a raw byte slice from the host, settle, then a parser flush in
@@ -33,8 +35,8 @@ const PARSER_FLUSH: [u8; 256] = [0xFFu8; 256];
 /// batch's TX end — the sim's UART panics if back-to-back bytes overlap
 /// in flight). The flush models real-host retry behavior: without it a
 /// truncated packet's leftover state would consume the next packet's
-/// sync prefix and we'd be testing recovery latency, not whether the
-/// servo wedges.
+/// sync prefix, and the test would measure recovery latency instead of
+/// the steady-state recovery property.
 fn send_and_settle(
     sim: &mut osc_integration::sim::Sim,
     host: osc_integration::sim::DeviceId,
@@ -57,7 +59,7 @@ fn send_and_settle(
 /// no stale inflight context when the recovery broadcast lands.
 #[apply(baud_matrix)]
 #[test_log::test]
-fn sync_only_flood_does_not_wedge(baud_idx: u8) {
+fn sync_only_flood_recovers(baud_idx: u8) {
     let baud = BaudRate::from_idx(baud_idx).expect("valid baud idx");
     let Setup {
         mut sim,
@@ -79,7 +81,7 @@ fn sync_only_flood_does_not_wedge(baud_idx: u8) {
 /// must hard-resync without leaking inflight state from the truncated id.
 #[apply(baud_matrix)]
 #[test_log::test]
-fn sync_plus_partial_header_does_not_wedge(baud_idx: u8) {
+fn sync_plus_partial_header_recovers(baud_idx: u8) {
     let baud = BaudRate::from_idx(baud_idx).expect("valid baud idx");
     for take in 1..=3 {
         let Setup {
@@ -104,7 +106,7 @@ fn sync_plus_partial_header_does_not_wedge(baud_idx: u8) {
 /// addressable target or not).
 #[apply(baud_matrix)]
 #[test_log::test]
-fn header_without_crc_does_not_wedge(baud_idx: u8) {
+fn header_without_crc_recovers(baud_idx: u8) {
     let baud = BaudRate::from_idx(baud_idx).expect("valid baud idx");
     let Setup {
         mut sim,
@@ -125,7 +127,7 @@ fn header_without_crc_does_not_wedge(baud_idx: u8) {
 /// event. Recovery hits the same Sync-resyncs-everything path.
 #[apply(baud_matrix)]
 #[test_log::test]
-fn header_with_partial_crc_does_not_wedge(baud_idx: u8) {
+fn header_with_partial_crc_recovers(baud_idx: u8) {
     let baud = BaudRate::from_idx(baud_idx).expect("valid baud idx");
     let Setup {
         mut sim,
@@ -147,7 +149,7 @@ fn header_with_partial_crc_does_not_wedge(baud_idx: u8) {
 /// the parser commits to the LEN before the truncation matters.
 #[apply(baud_matrix)]
 #[test_log::test]
-fn impossible_length_field_does_not_wedge(baud_idx: u8) {
+fn impossible_length_field_recovers(baud_idx: u8) {
     let baud = BaudRate::from_idx(baud_idx).expect("valid baud idx");
     let Setup {
         mut sim,
@@ -173,7 +175,7 @@ fn impossible_length_field_does_not_wedge(baud_idx: u8) {
 /// Verifies the sync-stage doesn't lock on a partial match.
 #[apply(baud_matrix)]
 #[test_log::test]
-fn near_sync_patterns_do_not_wedge(baud_idx: u8) {
+fn near_sync_patterns_recover(baud_idx: u8) {
     let baud = BaudRate::from_idx(baud_idx).expect("valid baud idx");
     let near_patterns: &[&[u8]] = &[
         &[0xFF, 0xFF, 0xFD, 0xFF], // signature with bad 4th byte
@@ -198,7 +200,7 @@ fn near_sync_patterns_do_not_wedge(baud_idx: u8) {
 /// dispatcher must hold no spurious state when the recovery lands.
 #[apply(baud_matrix)]
 #[test_log::test]
-fn all_ff_flood_does_not_wedge(baud_idx: u8) {
+fn all_ff_flood_recovers(baud_idx: u8) {
     let baud = BaudRate::from_idx(baud_idx).expect("valid baud idx");
     let Setup {
         mut sim,
@@ -216,7 +218,7 @@ fn all_ff_flood_does_not_wedge(baud_idx: u8) {
 /// surface as the all-0xFF case.
 #[apply(baud_matrix)]
 #[test_log::test]
-fn all_zero_flood_does_not_wedge(baud_idx: u8) {
+fn all_zero_flood_recovers(baud_idx: u8) {
     let baud = BaudRate::from_idx(baud_idx).expect("valid baud idx");
     let Setup {
         mut sim,
@@ -235,7 +237,7 @@ fn all_zero_flood_does_not_wedge(baud_idx: u8) {
 /// the bad-CRC path doesn't leak inflight state across packets.
 #[apply(baud_matrix)]
 #[test_log::test]
-fn bad_crc_does_not_wedge(baud_idx: u8) {
+fn bad_crc_recovers(baud_idx: u8) {
     let baud = BaudRate::from_idx(baud_idx).expect("valid baud idx");
     let Setup {
         mut sim,
@@ -259,7 +261,7 @@ fn bad_crc_does_not_wedge(baud_idx: u8) {
 /// the correct baud.
 #[apply(baud_matrix)]
 #[test_log::test]
-fn cross_baud_noise_does_not_wedge(baud_idx: u8) {
+fn cross_baud_noise_recovers(baud_idx: u8) {
     let servo_baud = BaudRate::from_idx(baud_idx).expect("valid baud idx");
     // Pick a host baud that's one step away on the table; wrap so every
     // servo baud has a paired mismatch test.

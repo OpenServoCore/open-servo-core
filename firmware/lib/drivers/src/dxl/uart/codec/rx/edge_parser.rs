@@ -234,8 +234,9 @@ impl EdgeParser {
         edges: &mut HwRing<u16, EDGE_BUF_LEN>,
         ticks_per_bit: u16,
     ) -> bool {
-        // After a heavy wire-noise burst (host glitch / wedge sequence)
-        // the producer may have lapped the consumer by many rings.
+        // After a heavy wire-noise burst (host glitch / malformed-input
+        // sequence) the producer may have lapped the consumer by many
+        // rings.
         // Force-resync the reader to `write_seq − N` so the post-match
         // `advance(avail − offset)` lands at exactly `write_seq − offset`
         // — without this, `advance` is relative to a stale cursor and

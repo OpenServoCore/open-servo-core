@@ -269,9 +269,10 @@ impl Host {
     }
 
     /// Queue an arbitrary byte sequence onto the wire at the host's current
-    /// baud. Used by the wedge tests to inject malformed, truncated, or
-    /// cross-baud garbage that the protocol-aware `send_*` builders can't
-    /// produce. No framing, no CRC fixup — bytes go on the wire verbatim.
+    /// baud. Used by the resilience tests to inject malformed, truncated,
+    /// or cross-baud byte sequences that the protocol-aware `send_*`
+    /// builders can't produce. No framing, no CRC fixup — bytes go on
+    /// the wire verbatim.
     pub fn send_raw(&mut self, bytes: &[u8]) {
         self.queue_frame(bytes);
     }

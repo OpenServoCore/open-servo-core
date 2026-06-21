@@ -296,7 +296,7 @@ impl<P: Producer, T: Copy, const N: usize> Ring<P, T, N> {
     /// fallen. This matters when a heavy producer burst (e.g. a DMA
     /// flood past the ring depth) outpaces a paused consumer —
     /// `recent()` still resolves the most recent slots for, say, a Sync
-    /// back-search after a wedge garbage burst.
+    /// back-search after a heavy wire-noise burst.
     ///
     /// Returns `None` when:
     /// - `offset >= N` (outside ring capacity), or
@@ -587,7 +587,7 @@ mod tests {
 
     #[test]
     fn recent_resolves_most_recent_n_after_heavy_burst() {
-        // Mirrors the wedge-test failure shape: producer writes more
+        // Mirrors the noise-burst failure shape: producer writes more
         // than N items past where the consumer last sat, so the
         // physical buffer holds purely producer-burst data. The last N
         // writes must surface through `recent()` regardless of the read
@@ -596,7 +596,7 @@ mod tests {
         let mut b: HwBuf = HwRing::new(0);
         // First fill: 8 zeroes (initial). Then 4 fresh values overwrite
         // slots 0..3. write_seq advances by 12; read_seq stayed at 0
-        // (the wedge scenario — walker paused after Crc(Bad)).
+        // (the scenario where the walker paused after Crc(Bad)).
         b.stage(0, &[99, 99, 99, 99, 5, 6, 7, 8]);
         b.set_write_seq_for_test(12);
         // recent(0) = slot at `(12 - 1) % 8 = 3` = 99 (most recent
