@@ -83,10 +83,18 @@ impl Host {
     }
 
     pub fn with_baud(mut self, baud: BaudRate) -> Self {
+        self.set_baud(baud);
+        self
+    }
+
+    /// Mid-sim baud retune. Wedge tests use this to simulate a host that
+    /// switches baud rates without coordinating with the servo — the
+    /// fresh UART state drops any half-shifted state from the prior
+    /// baud, so subsequent `send_*` writes land at the new bit time.
+    pub fn set_baud(&mut self, baud: BaudRate) {
         self.baud = baud;
         self.uart_tx = UartTx::new(baud);
         self.uart_rx = UartRx::new(baud);
-        self
     }
 
     pub fn clock(&self) -> Clock {
@@ -258,6 +266,14 @@ impl Host {
             .reboot(target)
             .expect("reboot frame encodes");
         self.queue_frame(&buf);
+    }
+
+    /// Queue an arbitrary byte sequence onto the wire at the host's current
+    /// baud. Used by the wedge tests to inject malformed, truncated, or
+    /// cross-baud garbage that the protocol-aware `send_*` builders can't
+    /// produce. No framing, no CRC fixup — bytes go on the wire verbatim.
+    pub fn send_raw(&mut self, bytes: &[u8]) {
+        self.queue_frame(bytes);
     }
 
     /// Encode an arbitrary instruction byte (with optional params) for `target`.

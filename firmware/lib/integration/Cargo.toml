@@ -29,3 +29,7 @@ path = "tests/registers/mod.rs"
 [[test]]
 name = "timing"
 path = "tests/timing/mod.rs"
+
+[[test]]
+name = "wedge"
+path = "tests/wedge/mod.rs"

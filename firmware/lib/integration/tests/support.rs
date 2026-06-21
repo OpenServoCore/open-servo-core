@@ -5,6 +5,8 @@
 #![allow(unused_macros)]
 
 use dxl_protocol::types::{Id, Instruction, PingStatus, Status, StatusError};
+use dxl_protocol::wire::HEADER;
+use dxl_protocol::{InstructionEncoder, SoftwareCrcUmts};
 use osc_core::BaudRate;
 use osc_integration::sim::{
     DEFAULT_BAUD, DEFAULT_RDT_US, DeviceId, Host, Servo, Sim, parse_status_stream,
@@ -13,6 +15,23 @@ use osc_integration::sim::{
 use rstest::rstest;
 #[allow(unused_imports)]
 use rstest_reuse::template;
+
+/// Encode a complete Ping packet's wire bytes for `id` — header, length,
+/// instruction, CRC. Wedge tests use this to obtain a canonical packet
+/// and then truncate / mutate it before `Host::send_raw`.
+#[allow(dead_code)]
+pub fn encode_ping(id: u8) -> Vec<u8> {
+    let mut buf: Vec<u8> = Vec::new();
+    InstructionEncoder::<_, SoftwareCrcUmts>::new(&mut buf)
+        .ping(Id::new(id))
+        .expect("ping encodes");
+    buf
+}
+
+/// Wire-format DXL 2.0 header signature (`FF FF FD 00`). Wedge tests
+/// inject this prefix when crafting partial / near-sync byte sequences.
+#[allow(dead_code)]
+pub const SYNC_PREFIX: [u8; 4] = [HEADER[0], HEADER[1], HEADER[2], 0x00];
 
 // Shared by `tests/{protocol,registers,timing}/mod.rs` via
 // `#[path = "../support.rs"] mod support;`. Each test binary uses a
