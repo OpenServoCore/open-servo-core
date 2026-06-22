@@ -54,41 +54,57 @@ impl<CRC: CrcUmts> Parser<CRC> {
         }
     }
 
-    fn step(&mut self, b: u8) -> Option<Event> {
+    /// Slice-shaped dispatch for the byte-driven phases (Sync, Header,
+    /// Crc). Returns `(consumed, event)` for the current phase; consumes
+    /// up to a phase boundary (preamble match / header complete / CRC
+    /// verdict) and emits at most one event. Payload and Slots phases
+    /// have their own slice feeds wired directly into [`EventStream`]
+    /// so the per-event WriteDataChunk offset can be tracked against
+    /// the parent input slice.
+    fn feed_sync_header_crc(&mut self, slice: &[u8]) -> (usize, Option<Event>) {
         match &mut self.phase {
             Phase::Sync(s) => {
-                s.feed(b, &mut self.crc)?;
-                self.phase = Phase::Header(HeaderStage::new());
-                Some(Event::Sync)
-            }
-            Phase::Header(s) => match s.feed(b, &mut self.crc) {
-                Err(kind) => {
-                    self.reset();
-                    Some(Event::Resync(kind))
+                let (consumed, m) = s.feed(slice, &mut self.crc);
+                if m.is_some() {
+                    self.phase = Phase::Header(HeaderStage::new());
+                    return (consumed, Some(Event::Sync));
                 }
-                Ok(None) => None,
-                Ok(Some(ev)) => {
-                    let body_len = s.body_len();
-                    self.phase = if body_len == 0 {
-                        Phase::Crc(CrcStage::new())
-                    } else if let Some(pattern) = s.slot_pattern() {
-                        Phase::Slots(SlotsStage::new(pattern, body_len))
-                    } else {
-                        let kind = match ev {
-                            HeaderEvent::Status(_) => PayloadKind::Status,
-                            HeaderEvent::Instruction(_) => PayloadKind::Instruction,
+                (consumed, None)
+            }
+            Phase::Header(s) => {
+                let (consumed, result) = s.feed(slice, &mut self.crc);
+                match result {
+                    Err(kind) => {
+                        self.reset();
+                        (consumed, Some(Event::Resync(kind)))
+                    }
+                    Ok(None) => (consumed, None),
+                    Ok(Some(ev)) => {
+                        let body_len = s.body_len();
+                        self.phase = if body_len == 0 {
+                            Phase::Crc(CrcStage::new())
+                        } else if let Some(pattern) = s.slot_pattern() {
+                            Phase::Slots(SlotsStage::new(pattern, body_len))
+                        } else {
+                            let kind = match ev {
+                                HeaderEvent::Status(_) => PayloadKind::Status,
+                                HeaderEvent::Instruction(_) => PayloadKind::Instruction,
+                            };
+                            Phase::Payload(PayloadStage::new(kind, body_len))
                         };
-                        Phase::Payload(PayloadStage::new(kind, body_len))
-                    };
-                    Some(Event::Header(ev))
+                        (consumed, Some(Event::Header(ev)))
+                    }
                 }
-            },
-            Phase::Crc(s) => {
-                let result = s.feed(b, &self.crc)?;
-                self.reset();
-                Some(Event::Crc(result))
             }
-            Phase::Payload(_) | Phase::Slots(_) => None,
+            Phase::Crc(s) => {
+                let (consumed, verdict) = s.feed(slice, &self.crc);
+                if let Some(result) = verdict {
+                    self.reset();
+                    return (consumed, Some(Event::Crc(result)));
+                }
+                (consumed, None)
+            }
+            Phase::Payload(_) | Phase::Slots(_) => (0, None),
         }
     }
 }
@@ -148,10 +164,15 @@ impl<'p, CRC: CrcUmts> Iterator for EventStream<'p, CRC> {
                 }
                 continue;
             }
-            let b = self.bytes[self.offset];
-            self.offset += 1;
-            if let Some(ev) = self.parser.step(b) {
+            // Sync / Header / Crc — slice-shaped dispatch.
+            let (consumed, ev) =
+                self.parser.feed_sync_header_crc(&self.bytes[self.offset..]);
+            self.offset += consumed;
+            if let Some(ev) = ev {
                 return Some(ev);
+            }
+            if consumed == 0 {
+                return None;
             }
         }
         None

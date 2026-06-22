@@ -66,8 +66,10 @@ impl SlotsStage {
         self.body_remaining
     }
 
-    /// `(consumed, event)`; consumed bytes are CRC-folded. One event per
-    /// call: slot demarcation on header completion, or `WriteDataChunk`
+    /// `(consumed, event)`; consumed bytes are CRC-folded in **one** bulk
+    /// call per stage call (Header arm: up to the remaining slot-header
+    /// bytes; Data arm: up to remaining data bytes). One event per call:
+    /// slot demarcation on header completion, or `WriteDataChunk`
     /// mid-data.
     pub(crate) fn feed<CRC: CrcUmts>(
         &mut self,
@@ -85,14 +87,14 @@ impl SlotsStage {
                 mut cursor,
             } => {
                 let needed = self.pattern.header_bytes();
-                let b = slice[0];
-                crc.update(&[b]);
-                buf[cursor as usize] = b;
-                cursor += 1;
-                self.body_remaining -= 1;
+                let take = core::cmp::min((needed - cursor) as usize, avail);
+                crc.update(&slice[..take]);
+                buf[cursor as usize..(cursor as usize + take)].copy_from_slice(&slice[..take]);
+                cursor += take as u8;
+                self.body_remaining -= take as u16;
                 if cursor < needed {
                     self.state = SlotState::Header { buf, cursor };
-                    return (1, None);
+                    return (take as u16, None);
                 }
                 let (ev, data_len) = build_slot_event(self.pattern, self.slot_index, &buf);
                 self.slot_index = self.slot_index.wrapping_add(1);
@@ -103,7 +105,7 @@ impl SlotsStage {
                 } else {
                     SlotState::fresh_header()
                 };
-                (1, Some(ev))
+                (take as u16, Some(ev))
             }
             SlotState::Data { remaining } => {
                 let take = core::cmp::min(remaining as usize, avail) as u16;
@@ -368,24 +370,19 @@ mod tests {
 
     #[test]
     fn chunked_feed_resumes_mid_bulk_header() {
-        // 5-byte BulkRead entry, byte-at-a-time.
+        // 5-byte BulkRead entry spread across three feed calls; each call
+        // consumes as much of the remaining header as the slice provides.
         let mut s = SlotsStage::new(SlotPattern::BulkRead, 5);
         let mut c = Crc::new();
-        let (n0, ev0) = s.feed(&[0x07, 0x84], 0, &mut c);
+        let (n0, ev0) = s.feed(&[0x07], 0, &mut c);
         assert_eq!(n0, 1);
         assert!(ev0.is_none());
-        let (n1, ev1) = s.feed(&[0x84], 0, &mut c);
-        assert_eq!(n1, 1);
+        let (n1, ev1) = s.feed(&[0x84, 0x00], 0, &mut c);
+        assert_eq!(n1, 2);
         assert!(ev1.is_none());
-        let (n2, ev2) = s.feed(&[0x00, 0x04, 0x00], 0, &mut c);
-        assert_eq!(n2, 1);
-        assert!(ev2.is_none());
-        let (n3, ev3) = s.feed(&[0x04, 0x00], 0, &mut c);
-        assert_eq!(n3, 1);
-        assert!(ev3.is_none());
-        let (n4, ev4) = s.feed(&[0x00], 0, &mut c);
-        assert_eq!(n4, 1);
-        match ev4 {
+        let (n2, ev2) = s.feed(&[0x04, 0x00], 0, &mut c);
+        assert_eq!(n2, 2);
+        match ev2 {
             Some(PayloadEvent::Instruction(InstructionPayload::BulkSlot {
                 id,
                 address,
@@ -399,6 +396,22 @@ mod tests {
             other => panic!("expected BulkSlot, got {other:?}"),
         }
         assert_eq!(s.body_remaining(), 0);
+    }
+
+    #[test]
+    fn bulk_header_in_single_call_consumes_only_header() {
+        // 5-byte header + 2 trailing bytes that belong to the NEXT entry's
+        // body region; one feed call must consume exactly 5 and emit the
+        // BulkSlot event.
+        let mut s = SlotsStage::new(SlotPattern::BulkRead, 10);
+        let mut c = Crc::new();
+        let (n, ev) = s.feed(&[0x07, 0x84, 0x00, 0x04, 0x00, 0xAA, 0xBB], 0, &mut c);
+        assert_eq!(n, 5);
+        assert!(matches!(
+            ev,
+            Some(PayloadEvent::Instruction(InstructionPayload::BulkSlot { .. }))
+        ));
+        assert_eq!(s.body_remaining(), 5);
     }
 
     #[test]

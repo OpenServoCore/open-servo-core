@@ -12,16 +12,33 @@ impl SyncStage {
         Self { matched: 0 }
     }
 
-    /// KMP backoff (`f[1]=0, f[2]=1, f[3]=0`) locks `FF FF FF FD 00` onto the
-    /// embedded header at offset 1. Seeds the CRC on match.
-    pub(crate) fn feed<CRC: CrcUmts>(&mut self, b: u8, crc: &mut CRC) -> Option<()> {
+    /// Scan `slice` for the `FF FF FD 00` preamble; on match, seed the CRC
+    /// with the 4-byte header in one fold and return `(consumed,
+    /// Some(()))`, where `consumed` is the count of bytes through the
+    /// matching `00` byte inclusive. No match returns `(slice.len(),
+    /// None)`. KMP backoff (`f[1]=0, f[2]=1, f[3]=0`) locks the embedded
+    /// header at offset 1 of `FF FF FF FD 00`.
+    pub(crate) fn feed<CRC: CrcUmts>(
+        &mut self,
+        slice: &[u8],
+        crc: &mut CRC,
+    ) -> (usize, Option<()>) {
+        for (i, &b) in slice.iter().enumerate() {
+            if self.step(b) {
+                crc.update(&HEADER);
+                return (i + 1, Some(()));
+            }
+        }
+        (slice.len(), None)
+    }
+
+    fn step(&mut self, b: u8) -> bool {
         let m = self.matched as usize;
         if b == HEADER[m] {
             let new_m = m + 1;
             if new_m == HEADER.len() {
-                crc.update(&HEADER);
                 self.matched = 0;
-                return Some(());
+                return true;
             }
             self.matched = new_m as u8;
         } else {
@@ -31,7 +48,7 @@ impl SyncStage {
                 _ => self.matched = if b == HEADER[0] { 1 } else { 0 },
             }
         }
-        None
+        false
     }
 }
 
@@ -43,12 +60,8 @@ mod tests {
     type Crc = SoftwareCrcUmts;
 
     fn feed_all(s: &mut SyncStage, crc: &mut Crc, bytes: &[u8]) -> Option<usize> {
-        for (i, &b) in bytes.iter().enumerate() {
-            if s.feed(b, crc).is_some() {
-                return Some(i + 1);
-            }
-        }
-        None
+        let (consumed, m) = s.feed(bytes, crc);
+        m.map(|()| consumed)
     }
 
     #[test]
@@ -85,10 +98,10 @@ mod tests {
     #[test]
     fn partial_state_preserved_across_calls() {
         let (mut s, mut c) = (SyncStage::new(), Crc::new());
-        assert!(s.feed(0xFF, &mut c).is_none());
-        assert!(s.feed(0xFF, &mut c).is_none());
-        assert!(s.feed(0xFD, &mut c).is_none());
-        assert_eq!(s.feed(0x00, &mut c), Some(()));
+        assert_eq!(s.feed(&[0xFF], &mut c), (1, None));
+        assert_eq!(s.feed(&[0xFF], &mut c), (1, None));
+        assert_eq!(s.feed(&[0xFD], &mut c), (1, None));
+        assert_eq!(s.feed(&[0x00], &mut c), (1, Some(())));
     }
 
     #[test]
@@ -106,5 +119,16 @@ mod tests {
         let (mut s, mut c) = (SyncStage::new(), Crc::new());
         let _ = feed_all(&mut s, &mut c, &[0xFF, 0xFF, 0xFD, 0x00]);
         assert_eq!(s.matched, 0);
+    }
+
+    #[test]
+    fn slice_stops_consumption_at_match_boundary() {
+        let (mut s, mut c) = (SyncStage::new(), Crc::new());
+        // Two extra bytes past the match — feed must report `consumed=4`
+        // so the next phase sees the trailing `AA BB`.
+        assert_eq!(
+            s.feed(&[0xFF, 0xFF, 0xFD, 0x00, 0xAA, 0xBB], &mut c),
+            (4, Some(()))
+        );
     }
 }

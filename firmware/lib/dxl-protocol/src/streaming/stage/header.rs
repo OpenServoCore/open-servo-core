@@ -33,16 +33,38 @@ impl HeaderStage {
         }
     }
 
-    /// Cursor: 0=id, 1..=2=length_le16, 3=instr, then error (Status) or up
-    /// to 4 params. `Err(BadLength)` once `length` is outside
-    /// `[PACKET_LEN_MIN, PACKET_LEN_GUARD]`.
+    /// Consume up to the remaining header bytes from `slice`, folding the
+    /// consumed prefix into `crc` in **one** bulk call. Cursor: 0=id,
+    /// 1..=2=length_le16, 3=instr, then error (Status) or up to 4 params.
+    /// `Err(BadLength)` once `length` is outside
+    /// `[PACKET_LEN_MIN, PACKET_LEN_GUARD]`. On either terminal outcome
+    /// (header complete or BadLength) the consumed byte is included in
+    /// the bulk CRC fold, matching the prior per-byte behavior.
     pub(crate) fn feed<CRC: CrcUmts>(
         &mut self,
-        b: u8,
+        slice: &[u8],
         crc: &mut CRC,
-    ) -> Result<Option<HeaderEvent>, ResyncKind> {
+    ) -> (usize, Result<Option<HeaderEvent>, ResyncKind>) {
+        let mut consumed = 0;
+        let mut outcome: Result<Option<HeaderEvent>, ResyncKind> = Ok(None);
+        for &b in slice {
+            match self.step(b) {
+                Ok(None) => consumed += 1,
+                done => {
+                    consumed += 1;
+                    outcome = done;
+                    break;
+                }
+            }
+        }
+        if consumed > 0 {
+            crc.update(&slice[..consumed]);
+        }
+        (consumed, outcome)
+    }
+
+    fn step(&mut self, b: u8) -> Result<Option<HeaderEvent>, ResyncKind> {
         let c = self.cursor as usize;
-        crc.update(&[b]);
         match c {
             0 => self.id = Id::new(b),
             1 => self.length = b as u16,
@@ -122,11 +144,8 @@ mod tests {
     type Crc = SoftwareCrcUmts;
 
     fn feed_all(h: &mut HeaderStage, crc: &mut Crc, bytes: &[u8]) -> Option<HeaderEvent> {
-        let mut last = None;
-        for &b in bytes {
-            last = h.feed(b, crc).expect("unexpected resync");
-        }
-        last
+        let (_consumed, result) = h.feed(bytes, crc);
+        result.expect("unexpected resync")
     }
 
     #[test]
@@ -281,35 +300,33 @@ mod tests {
     #[test]
     fn length_below_min_returns_bad_length() {
         let (mut h, mut c) = (HeaderStage::new(), Crc::new());
-        assert!(h.feed(0x01, &mut c).unwrap().is_none());
-        assert!(h.feed(0x02, &mut c).unwrap().is_none());
-        assert_eq!(h.feed(0x00, &mut c), Err(ResyncKind::BadLength));
+        let (consumed, result) = h.feed(&[0x01, 0x02, 0x00], &mut c);
+        assert_eq!(consumed, 3);
+        assert_eq!(result, Err(ResyncKind::BadLength));
     }
 
     #[test]
     fn length_above_guard_returns_bad_length() {
         let (mut h, mut c) = (HeaderStage::new(), Crc::new());
         let len = (PACKET_LEN_GUARD as u16 + 1).to_le_bytes();
-        assert!(h.feed(0x01, &mut c).unwrap().is_none());
-        assert!(h.feed(len[0], &mut c).unwrap().is_none());
-        assert_eq!(h.feed(len[1], &mut c), Err(ResyncKind::BadLength));
+        let (consumed, result) = h.feed(&[0x01, len[0], len[1]], &mut c);
+        assert_eq!(consumed, 3);
+        assert_eq!(result, Err(ResyncKind::BadLength));
     }
 
     #[test]
     fn length_at_min_passes_validation() {
         let (mut h, mut c) = (HeaderStage::new(), Crc::new());
-        assert!(h.feed(0x07, &mut c).unwrap().is_none());
-        assert!(h.feed(PACKET_LEN_MIN as u8, &mut c).unwrap().is_none());
-        assert!(h.feed(0x00, &mut c).unwrap().is_none());
+        let (_, r) = h.feed(&[0x07, PACKET_LEN_MIN as u8, 0x00], &mut c);
+        assert!(matches!(r, Ok(None)));
     }
 
     #[test]
     fn length_at_guard_passes_validation() {
         let (mut h, mut c) = (HeaderStage::new(), Crc::new());
         let len = (PACKET_LEN_GUARD as u16).to_le_bytes();
-        assert!(h.feed(0x07, &mut c).unwrap().is_none());
-        assert!(h.feed(len[0], &mut c).unwrap().is_none());
-        assert!(h.feed(len[1], &mut c).unwrap().is_none());
+        let (_, r) = h.feed(&[0x07, len[0], len[1]], &mut c);
+        assert!(matches!(r, Ok(None)));
     }
 
     #[test]

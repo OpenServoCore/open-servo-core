@@ -22,22 +22,37 @@ impl CrcStage {
         2u16.saturating_sub(self.cursor as u16)
     }
 
-    pub(crate) fn feed<CRC: CrcUmts>(&mut self, b: u8, crc: &CRC) -> Option<CrcResult> {
-        match self.cursor {
-            0 => {
-                self.expected = b as u16;
-                self.cursor = 1;
-                None
-            }
-            _ => {
-                self.expected |= (b as u16) << 8;
-                Some(if self.expected == crc.finalize() {
-                    CrcResult::Good
-                } else {
-                    CrcResult::Bad
-                })
+    /// Consume up to 2 expected-CRC bytes from `slice`; return `(consumed,
+    /// Some(verdict))` once both have been seen, or `(consumed, None)` if
+    /// the slice runs out mid-CRC. The verdict compares the parsed LE
+    /// u16 against `crc.finalize()` — no CRC update happens here (the
+    /// trailing CRC bytes are not part of the covered region).
+    pub(crate) fn feed<CRC: CrcUmts>(
+        &mut self,
+        slice: &[u8],
+        crc: &CRC,
+    ) -> (usize, Option<CrcResult>) {
+        let mut consumed = 0;
+        for &b in slice {
+            match self.cursor {
+                0 => {
+                    self.expected = b as u16;
+                    self.cursor = 1;
+                    consumed += 1;
+                }
+                _ => {
+                    self.expected |= (b as u16) << 8;
+                    consumed += 1;
+                    let verdict = if self.expected == crc.finalize() {
+                        CrcResult::Good
+                    } else {
+                        CrcResult::Bad
+                    };
+                    return (consumed, Some(verdict));
+                }
             }
         }
+        (consumed, None)
     }
 }
 
@@ -58,26 +73,27 @@ mod tests {
     fn matching_crc_emits_good() {
         let body = [0xDE, 0xAD, 0xBE, 0xEF];
         let c = folded(&body);
-        let crc = c.finalize();
+        let crc = c.finalize().to_le_bytes();
         let mut s = CrcStage::new();
-        assert!(s.feed(crc as u8, &c).is_none());
-        assert_eq!(s.feed((crc >> 8) as u8, &c), Some(CrcResult::Good));
+        assert_eq!(s.feed(&crc, &c), (2, Some(CrcResult::Good)));
     }
 
     #[test]
     fn mismatching_crc_emits_bad() {
         let c = folded(&[1, 2, 3]);
-        let crc = c.finalize();
+        let crc = c.finalize().to_le_bytes();
         let mut s = CrcStage::new();
-        assert!(s.feed(crc as u8, &c).is_none());
-        assert_eq!(s.feed((crc >> 8) as u8 ^ 0xFF, &c), Some(CrcResult::Bad));
+        assert_eq!(
+            s.feed(&[crc[0], crc[1] ^ 0xFF], &c),
+            (2, Some(CrcResult::Bad))
+        );
     }
 
     #[test]
     fn first_byte_does_not_finalize() {
         let c = folded(&[0xAA]);
         let mut s = CrcStage::new();
-        assert!(s.feed(0x12, &c).is_none());
+        assert_eq!(s.feed(&[0x12], &c), (1, None));
     }
 
     #[test]
@@ -85,8 +101,18 @@ mod tests {
         let c = folded(&[1, 2, 3, 4]);
         let before = c.finalize();
         let mut s = CrcStage::new();
-        let _ = s.feed(before as u8, &c);
-        let _ = s.feed((before >> 8) as u8, &c);
+        let _ = s.feed(&before.to_le_bytes(), &c);
         assert_eq!(c.finalize(), before);
+    }
+
+    #[test]
+    fn slice_stops_at_verdict_boundary() {
+        let c = folded(&[0xAA]);
+        let crc = c.finalize().to_le_bytes();
+        let mut s = CrcStage::new();
+        // Pass 3 bytes — only 2 should be consumed.
+        let (consumed, verdict) = s.feed(&[crc[0], crc[1], 0xCC], &c);
+        assert_eq!(consumed, 2);
+        assert_eq!(verdict, Some(CrcResult::Good));
     }
 }
