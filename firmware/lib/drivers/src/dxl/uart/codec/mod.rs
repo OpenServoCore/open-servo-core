@@ -302,7 +302,13 @@ impl<R: EdgeDma, CRC: CrcUmts, const RX_BUF_LEN: usize, const EDGE_BUF_LEN: usiz
                     // means we haven't seen the first Sync yet, so skip
                     // advance.
                     if matches!(ev, Event::Sync) {
-                        self.rx.anchor_at_signature(ticks_per_bit);
+                        // Body bytes already in the front slice past the
+                        // parser's just-consumed sync header drive the
+                        // hinted anchor's byte-derived edge estimate.
+                        let consumed = stream.consumed() as usize;
+                        let body_bytes = &input[consumed..];
+                        self.rx
+                            .anchor_at_signature_hinted(ticks_per_bit, body_bytes);
                         self.last_walked_pos = next_status_pos;
                     } else if self.last_walked_pos != 0 {
                         // Set hsi_active BEFORE the advance so the bytes

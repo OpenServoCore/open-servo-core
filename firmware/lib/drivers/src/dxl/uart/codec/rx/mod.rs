@@ -164,6 +164,24 @@ impl<R: EdgeDma, const EDGE_BUF_LEN: usize> Rx<R, EDGE_BUF_LEN> {
         self.parser.anchor_at_signature(edges, ticks_per_bit)
     }
 
+    /// Hinted anchor fast path. `body_bytes` is the codec-supplied slice
+    /// of bytes already sitting in the byte ring past the parser's
+    /// just-consumed sync header; their cumulative edge count drives the
+    /// byte-derived position estimate. Tries a small window around the
+    /// estimate first, then falls back to the full
+    /// [`Self::anchor_at_signature`] back-search.
+    pub fn anchor_at_signature_hinted(&mut self, ticks_per_bit: u16, body_bytes: &[u8]) -> bool {
+        self.publish_edges();
+        let body_edges: u16 = body_bytes
+            .iter()
+            .map(|&b| edge_parser::EDGES_PER_BYTE[b as usize] as u16)
+            .sum();
+        // SAFETY: see `publish_edges`.
+        let edges = unsafe { &mut *self.edges.get() };
+        self.parser
+            .anchor_at_signature_hinted(edges, ticks_per_bit, body_edges)
+    }
+
     /// Tick of the most-recently classified byte's start bit, lifted into
     /// the WireClock u32 domain. `now` / `src` route through the edge
     /// parser's drain-reference correction so the lift stays sub-wrap

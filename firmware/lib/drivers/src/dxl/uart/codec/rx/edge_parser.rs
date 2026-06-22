@@ -61,6 +61,40 @@ const QUIET_MIN_X2: u32 = 14; //  7·bit · 2
 // sizing formulas below.
 const SYNC_SIGNATURE_EDGES: usize = 5;
 
+/// Falling-edge count per UART byte value, indexed by the byte. Edges
+/// come from `1→0` transitions in the bit stream
+/// `[idle=1, start=0, b.bit0..b.bit7, stop=1, idle=1]`: always one
+/// `idle→start` falling edge, plus one for every `(bit_i=1, bit_{i+1}=0)`
+/// pair in the data bits. Stop and trailing transitions never fall.
+///
+/// Used by [`EdgeParser::anchor_at_signature_hinted`] to convert the
+/// codec's "body bytes already in the byte ring" into the corresponding
+/// edge offset, so the back-search jumps straight to a few candidate
+/// positions around the byte-derived estimate.
+pub const EDGES_PER_BYTE: [u8; 256] = {
+    let mut t = [0u8; 256];
+    let mut i = 0;
+    while i < 256 {
+        let b = i as u8;
+        t[i] = 1 + (b & !(b >> 1) & 0x7F).count_ones() as u8;
+        i += 1;
+    }
+    t
+};
+
+/// Upper slack on the byte-derived hint offset for the hinted anchor
+/// fast path. The [`EDGES_PER_BYTE`] LUT gives the *minimum* edge count
+/// — what a clean, back-to-back, noise-free wire would produce. Real
+/// wire conditions can only ADD edges, never remove them:
+/// idle gaps and start-bit jitter shift edge *timing* but not *count*;
+/// in-flight partial bytes (start bit captured before DMA commits the
+/// byte) contribute up to ~5 edges; back-slice wraps contribute body
+/// bytes the codec didn't see; EMI spurious edges add count. So actual
+/// e5 sits at offset ≥ `body_edges`, never less — the fast path probes
+/// `[body_edges ..= body_edges + PADDING_EDGES_AHEAD]` with no lower
+/// slack. Falls back to the full back-search if the window misses.
+const PADDING_EDGES_AHEAD: u16 = 5;
+
 /// Which ISR delivered the current poll — DMA1_CH7 HT/TC or USART RX
 /// IDLE. Threaded through every classifier read that converts an ISR-
 /// entry `now` into a packet-relative tick:
@@ -216,13 +250,95 @@ impl EdgeParser {
         }
     }
 
+    /// Single-window check of the Sync signature at exactly `offset` edges
+    /// back from the published head. On match: sets `last_byte_start` /
+    /// `prev_byte_start` to e5 (the `0x00` start bit), advances the ET
+    /// reader past e5, and returns `true`. On miss: returns `false` with
+    /// no state mutation. Caller is responsible for the `resync_if_lapped`
+    /// + `recent_count` prelude and for incrementing `header_matches` on
+    ///   success / `header_mismatches` after exhausting the search.
+    fn try_anchor_at_offset<const EDGE_BUF_LEN: usize>(
+        &mut self,
+        edges: &mut HwRing<u16, EDGE_BUF_LEN>,
+        avail: u16,
+        offset: u16,
+        ticks_per_bit: u16,
+    ) -> bool {
+        // Window edges (terminal = e5 at `offset` slots back from the
+        // head, e1 the oldest of the window):
+        //   e5 = recent(offset),     e4 = recent(offset + 1),
+        //   e3 = recent(offset + 2), e2 = recent(offset + 3),
+        //   e1 = recent(offset + 4).
+        // Quiet check (when offset > 0) reads e6 = recent(offset - 1).
+        let Some(&e5) = edges.recent(offset) else {
+            return false;
+        };
+        let Some(&e4) = edges.recent(offset + 1) else {
+            return false;
+        };
+        let Some(&e3) = edges.recent(offset + 2) else {
+            return false;
+        };
+        let Some(&e2) = edges.recent(offset + 3) else {
+            return false;
+        };
+        let Some(&e1) = edges.recent(offset + 4) else {
+            return false;
+        };
+
+        let d_12 = e2.wrapping_sub(e1);
+        let d_23 = e3.wrapping_sub(e2);
+        let d_34 = e4.wrapping_sub(e3);
+        let d_45 = e5.wrapping_sub(e4);
+
+        if !in_band(d_12, WIDE_LO_X2, WIDE_HI_X2, ticks_per_bit) {
+            return false;
+        }
+        if !in_band(d_23, WIDE_LO_X2, WIDE_HI_X2, ticks_per_bit) {
+            return false;
+        }
+        if !in_band(d_34, NARROW_LO_X2, NARROW_HI_X2, ticks_per_bit) {
+            return false;
+        }
+        if !in_band(d_45, MID_LO_X2, MID_HI_X2, ticks_per_bit) {
+            return false;
+        }
+
+        // Quiet check: if a successor edge has been published, its delta
+        // from e5 must clear the `≥7·bit` floor. If no successor edge yet
+        // (offset == 0 at the cold-edge case), accept — byte 4's start
+        // bit may not have latched at the moment the parser emitted
+        // Header.
+        if offset > 0
+            && let Some(&e6) = edges.recent(offset - 1)
+        {
+            let d_56 = e6.wrapping_sub(e5);
+            let d_x2 = (d_56 as u32) * 2;
+            if d_x2 < QUIET_MIN_X2 * ticks_per_bit as u32 {
+                return false;
+            }
+        }
+
+        // Match. Anchor = e5 (byte 3 start bit). Seed prev = e5 so
+        // the first forward HIT (byte 4) emits the (byte 3, byte 4)
+        // pair — the first drift-eligible body-byte transition.
+        self.last_byte_start = Some(e5);
+        self.prev_byte_start = Some(e5);
+        // Advance ET reader to one past e5: e5 sits `offset + 1` slots
+        // before the head, so the slot just after e5 is `offset` slots
+        // before the head, i.e. distance `avail - offset` from the
+        // current read cursor.
+        edges.reader().advance(avail - offset);
+        true
+    }
+
     /// Back-search the ET ring for the DXL header's 5-edge signature.
-    /// Called by the codec at every parser `Event::Sync`. On match, the
-    /// anchor is set to edge 5's tick (= byte 3 = `0x00` start bit), the
-    /// ET reader cursor advances to one past edge 5, and `true` is
-    /// returned. On mismatch, anchor + prev are cleared and `false` is
-    /// returned — the next packet's Sync re-attempts anchor from scratch
-    /// (doc §4.4).
+    /// Called by the codec at every parser `Event::Sync` (via the hinted
+    /// fast path's fallback). On match, the anchor is set to edge 5's
+    /// tick (= byte 3 = `0x00` start bit), the ET reader cursor advances
+    /// to one past edge 5, and `true` is returned. On mismatch, anchor +
+    /// prev are cleared and `false` is returned — the next packet's Sync
+    /// re-attempts anchor from scratch (doc §4.4).
     ///
     /// Scans up to [`sync_lookback_edges`]`(EDGE_BUF_LEN) + 1` windows
     /// ending at the most recent published edges, most-recent first.
@@ -260,84 +376,11 @@ impl EdgeParser {
 
         let max_offset = sync_lookback_edges(EDGE_BUF_LEN).min(avail - 5);
         for offset in 0..=max_offset {
-            // Window edges (terminal = e5 at `offset` slots back from
-            // the head, e1 the oldest of the window):
-            //   e5 = recent(offset),     e4 = recent(offset + 1),
-            //   e3 = recent(offset + 2), e2 = recent(offset + 3),
-            //   e1 = recent(offset + 4).
-            // Quiet check (when offset > 0) reads e6 = recent(offset - 1).
-            let e5 = match edges.recent(offset) {
-                Some(&v) => v,
-                None => continue,
-            };
-            let e4 = match edges.recent(offset + 1) {
-                Some(&v) => v,
-                None => continue,
-            };
-            let e3 = match edges.recent(offset + 2) {
-                Some(&v) => v,
-                None => continue,
-            };
-            let e2 = match edges.recent(offset + 3) {
-                Some(&v) => v,
-                None => continue,
-            };
-            let e1 = match edges.recent(offset + 4) {
-                Some(&v) => v,
-                None => continue,
-            };
-
-            let d_12 = e2.wrapping_sub(e1);
-            let d_23 = e3.wrapping_sub(e2);
-            let d_34 = e4.wrapping_sub(e3);
-            let d_45 = e5.wrapping_sub(e4);
-
-            if !in_band(d_12, WIDE_LO_X2, WIDE_HI_X2, ticks_per_bit) {
-                continue;
+            if self.try_anchor_at_offset(edges, avail, offset, ticks_per_bit) {
+                self.header_matches = self.header_matches.wrapping_add(1);
+                crate::log::debug!("classifier: anchor match offset={}", offset);
+                return true;
             }
-            if !in_band(d_23, WIDE_LO_X2, WIDE_HI_X2, ticks_per_bit) {
-                continue;
-            }
-            if !in_band(d_34, NARROW_LO_X2, NARROW_HI_X2, ticks_per_bit) {
-                continue;
-            }
-            if !in_band(d_45, MID_LO_X2, MID_HI_X2, ticks_per_bit) {
-                continue;
-            }
-
-            // Quiet check: if a successor edge has been published, its
-            // delta from e5 must clear the `≥7·bit` floor. If no
-            // successor edge yet (offset == 0 at the cold-edge case),
-            // accept — byte 4's start bit may not have latched at the
-            // moment the parser emitted Header.
-            if offset > 0
-                && let Some(&e6) = edges.recent(offset - 1)
-            {
-                let d_56 = e6.wrapping_sub(e5);
-                let d_x2 = (d_56 as u32) * 2;
-                if d_x2 < QUIET_MIN_X2 * ticks_per_bit as u32 {
-                    continue;
-                }
-            }
-
-            // Match. Anchor = e5 (byte 3 start bit). Seed prev = e5 so
-            // the first forward HIT (byte 4) emits the (byte 3, byte 4)
-            // pair — the first drift-eligible body-byte transition.
-            self.last_byte_start = Some(e5);
-            self.prev_byte_start = Some(e5);
-            // Advance ET reader to one past e5: e5 sits `offset + 1` slots
-            // before the head, so the slot just after e5 is `offset` slots
-            // before the head, i.e. distance `avail - offset` from the
-            // current read cursor.
-            edges.reader().advance(avail - offset);
-            self.header_matches = self.header_matches.wrapping_add(1);
-            crate::log::debug!(
-                "classifier: anchor match offset={} e5={} advance={}",
-                offset,
-                e5,
-                avail - offset
-            );
-            return true;
         }
 
         // No window matched: drop any stale anchor; the packet boundary
@@ -350,6 +393,55 @@ impl EdgeParser {
             max_offset + 1
         );
         false
+    }
+
+    /// Hinted anchor fast path. `body_edges` is the byte-derived count of
+    /// edges produced by uncommitted body bytes already sitting in the
+    /// byte ring past the parser's just-consumed sync header — summing
+    /// [`EDGES_PER_BYTE`] over those bytes. Because the LUT yields the
+    /// *minimum* (clean back-to-back) edge count and real wire only adds
+    /// edges (see [`PADDING_EDGES_AHEAD`] for the inventory), actual e5
+    /// sits at offset ≥ `body_edges` — this method probes
+    /// `[body_edges ..= body_edges + PADDING_EDGES_AHEAD]` with no lower
+    /// slack, walking forward only the few extra edges contributed by
+    /// idle / partial-byte / jitter / noise. Falls back to the full
+    /// [`Self::anchor_at_signature`] back-search on miss.
+    ///
+    /// Same correctness as the full back-search: on match, anchor + ET
+    /// cursor are established; on full miss anchor is cleared.
+    pub fn anchor_at_signature_hinted<const EDGE_BUF_LEN: usize>(
+        &mut self,
+        edges: &mut HwRing<u16, EDGE_BUF_LEN>,
+        ticks_per_bit: u16,
+        body_edges: u16,
+    ) -> bool {
+        edges.reader().resync_if_lapped();
+        let avail = edges.recent_count();
+        if avail < 5 {
+            return false;
+        }
+        let max_offset = sync_lookback_edges(EDGE_BUF_LEN).min(avail - 5);
+        let lo = body_edges.min(max_offset);
+        let hi = body_edges
+            .saturating_add(PADDING_EDGES_AHEAD)
+            .min(max_offset);
+
+        for offset in lo..=hi {
+            if self.try_anchor_at_offset(edges, avail, offset, ticks_per_bit) {
+                self.header_matches = self.header_matches.wrapping_add(1);
+                crate::log::debug!(
+                    "classifier: anchor fast match offset={} hint={}",
+                    offset,
+                    body_edges
+                );
+                return true;
+            }
+        }
+
+        // Fast path didn't find the signature in the hinted window —
+        // fall back to the full back-search. Residue scenarios (stale
+        // sync further out than the hint range) land here.
+        self.anchor_at_signature(edges, ticks_per_bit)
     }
 
     /// Walk forward exactly `n` byte-boundaries from the current anchor,
