@@ -131,8 +131,8 @@ fn run_compare_i32(
     }
 }
 
-pub(crate) fn run_field_validators(
-    router: &dyn Router,
+pub(crate) fn run_field_validators<R: Router>(
+    router: &R,
     staged: &StagedWrites,
     snap: Snapshot,
     abs_start: u16,
@@ -171,8 +171,8 @@ pub(crate) fn run_field_validators(
     Ok(())
 }
 
-pub(crate) fn run_block_validators(
-    router: &dyn Router,
+pub(crate) fn run_block_validators<R: Router>(
+    router: &R,
     staged: &StagedWrites,
     snap: Snapshot,
     abs_start: u16,
@@ -202,8 +202,8 @@ pub(crate) fn run_block_validators(
     Ok(())
 }
 
-pub(crate) fn run_region_validators(
-    router: &dyn Router,
+pub(crate) fn run_region_validators<R: Router>(
+    router: &R,
     staged: &StagedWrites,
     snap: Snapshot,
     validators: &[RegionValidator],

@@ -6,10 +6,10 @@ use crate::validate::{run_block_validators, run_field_validators, run_region_val
 /// pointer from `region_base`; caller must hold its single-writer guarantee.
 ///
 /// Default methods are gated `where Self: Sized` so they aren't callable via
-/// `&dyn Router` — `router_*` free fns take `&dyn Router` internally, and the
-/// `Sized` bound prevents the trait-object recursion that would otherwise result.
-/// Callers wanting to abstract over routers must take `&S: Router` generically,
-/// not `&dyn Router`.
+/// `&dyn Router`. `router_*` free fns are generic `<R: Router + ?Sized>` so the
+/// hot Read path (called with `&ControlTable`) monomorphizes and inlines the
+/// `regions()` / `region_base()` calls, while off-path callers (`StagedView`'s
+/// internal `&dyn Router`) keep the existing dynamic dispatch path.
 pub trait Router {
     fn regions(&self) -> &'static [&'static RegionDesc];
     fn region_base(&self, desc: &RegionDesc) -> Option<*mut u8>;
@@ -88,7 +88,7 @@ struct RegionRef {
     def: &'static RegionDesc,
 }
 
-fn region_for(router: &dyn Router, addr: u16, end: usize) -> Option<RegionRef> {
+fn region_for<R: Router>(router: &R, addr: u16, end: usize) -> Option<RegionRef> {
     let def = router
         .regions()
         .iter()
@@ -103,8 +103,8 @@ fn region_for(router: &dyn Router, addr: u16, end: usize) -> Option<RegionRef> {
 /// DXL 2.0 reads are memory-like: bytes inside any region's gap (between
 /// blocks, inside a block, or past the last block) AND bytes outside every
 /// region come back as 0. Only writes treat unmapped addresses as errors.
-pub(crate) fn router_read_bytes(
-    router: &dyn Router,
+pub(crate) fn router_read_bytes<R: Router + ?Sized>(
+    router: &R,
     addr: u16,
     dst: &mut [u8],
 ) -> Result<(), Error> {
@@ -142,8 +142,8 @@ pub(crate) fn router_read_bytes(
     Ok(())
 }
 
-pub(crate) fn router_stage_bytes_iter(
-    router: &dyn Router,
+pub(crate) fn router_stage_bytes_iter<R: Router>(
+    router: &R,
     addr: u16,
     staged: &mut StagedWrites,
     snap: &Snapshot,
@@ -176,8 +176,8 @@ pub(crate) fn router_stage_bytes_iter(
     result
 }
 
-pub(crate) fn router_write_bytes_iter(
-    router: &dyn Router,
+pub(crate) fn router_write_bytes_iter<R: Router>(
+    router: &R,
     addr: u16,
     staged: &mut StagedWrites,
     snap: &Snapshot,
@@ -190,8 +190,8 @@ pub(crate) fn router_write_bytes_iter(
 }
 
 /// SAFETY: caller holds the region's single-writer guarantee.
-pub(crate) unsafe fn commit_staged_range(
-    router: &dyn Router,
+pub(crate) unsafe fn commit_staged_range<R: Router>(
+    router: &R,
     staged: &StagedWrites,
     snap: &Snapshot,
 ) {
