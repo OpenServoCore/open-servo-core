@@ -277,11 +277,9 @@ impl Dispatcher<'_> {
                 address,
                 length,
             } => self.handle_write(&ctx, id, address, length, &inflight, reply),
-            InstructionHeader::RegWrite {
-                id,
-                address,
-                length,
-            } => self.handle_reg_write(&ctx, id, address, length, &inflight, reply),
+            InstructionHeader::RegWrite { id, address, .. } => {
+                self.handle_reg_write(&ctx, id, address, &inflight, reply)
+            }
             InstructionHeader::Action { id } => self.handle_action(&ctx, id, reply),
             InstructionHeader::Reboot { id } => self.handle_reboot(&ctx, id, reply),
             InstructionHeader::FactoryReset { id, .. }
@@ -411,19 +409,6 @@ impl Dispatcher<'_> {
         Self::send_status(reply, r);
     }
 
-    fn collect_chunks(staged: &StagedWrites, snap: &Snapshot, dst: &mut [u8]) -> usize {
-        let mut off = 0;
-        for (_, data) in staged.iter_from(snap) {
-            if off >= dst.len() {
-                break;
-            }
-            let take = (dst.len() - off).min(data.len());
-            dst[off..off + take].copy_from_slice(&data[..take]);
-            off += take;
-        }
-        off
-    }
-
     fn handle_write<R: DxlReply>(
         &mut self,
         ctx: &Ctx,
@@ -437,8 +422,7 @@ impl Dispatcher<'_> {
             self.staged.rewind_to(inflight.snap);
             return;
         };
-        let len = length as usize;
-        if inflight.overflowed || len > MAX_CONTROL_RW {
+        if inflight.overflowed {
             self.staged.rewind_to(inflight.snap);
             if direct && ctx.level >= StatusReturnLevel::All {
                 Self::send_status(
@@ -451,20 +435,17 @@ impl Dispatcher<'_> {
             }
             return;
         }
-        let mut buf = [0u8; MAX_CONTROL_RW];
-        let off = Self::collect_chunks(self.staged, &inflight.snap, &mut buf);
-        self.staged.rewind_to(inflight.snap);
         let result = self
             .shared
             .table
-            .write_bytes(address, &buf[..off], self.staged);
+            .write_bytes_iter(address, self.staged, &inflight.snap);
         let ok = result.is_ok();
         self.reply_table_result(ctx, id, direct, result, reply);
         if ok {
             let mut hooks = ControlTableHooks::new(reply);
             self.shared
                 .table
-                .dispatch_events(address, off as u16, &mut hooks);
+                .dispatch_events(address, length, &mut hooks);
         }
     }
 
@@ -473,7 +454,6 @@ impl Dispatcher<'_> {
         ctx: &Ctx,
         target: Id,
         address: u16,
-        length: u16,
         inflight: &Inflight,
         reply: &mut R,
     ) {
@@ -481,8 +461,7 @@ impl Dispatcher<'_> {
             self.staged.rewind_to(inflight.snap);
             return;
         };
-        let len = length as usize;
-        if inflight.overflowed || len > MAX_CONTROL_RW {
+        if inflight.overflowed {
             self.staged.rewind_to(inflight.snap);
             if direct && ctx.level >= StatusReturnLevel::All {
                 Self::send_status(
@@ -495,13 +474,10 @@ impl Dispatcher<'_> {
             }
             return;
         }
-        let mut buf = [0u8; MAX_CONTROL_RW];
-        let off = Self::collect_chunks(self.staged, &inflight.snap, &mut buf);
-        self.staged.rewind_to(inflight.snap);
         let result = self
             .shared
             .table
-            .stage_bytes(address, &buf[..off], self.staged);
+            .stage_bytes_iter(address, self.staged, &inflight.snap);
         if !direct || ctx.level < StatusReturnLevel::All {
             return;
         }
@@ -595,31 +571,20 @@ impl Dispatcher<'_> {
         inflight: &Inflight,
         reply: &mut R,
     ) {
-        let len = length as usize;
-        if inflight.matched_slot.is_none()
-            || inflight.overflowed
-            || len == 0
-            || len > MAX_CONTROL_RW
-        {
+        if inflight.matched_slot.is_none() || inflight.overflowed || length == 0 {
             self.staged.rewind_to(inflight.snap);
-            return;
-        }
-        let mut buf = [0u8; MAX_CONTROL_RW];
-        let off = Self::collect_chunks(self.staged, &inflight.snap, &mut buf);
-        self.staged.rewind_to(inflight.snap);
-        if off < len {
             return;
         }
         if self
             .shared
             .table
-            .write_bytes(address, &buf[..len], self.staged)
+            .write_bytes_iter(address, self.staged, &inflight.snap)
             .is_ok()
         {
             let mut hooks = ControlTableHooks::new(reply);
             self.shared
                 .table
-                .dispatch_events(address, len as u16, &mut hooks);
+                .dispatch_events(address, length, &mut hooks);
         }
     }
 
@@ -661,28 +626,22 @@ impl Dispatcher<'_> {
             self.staged.rewind_to(inflight.snap);
             return;
         };
-        let len = slot.length as usize;
-        if inflight.overflowed || len == 0 || len > MAX_CONTROL_RW {
+        let length = slot.length;
+        if inflight.overflowed || length == 0 {
             self.staged.rewind_to(inflight.snap);
-            return;
-        }
-        let mut buf = [0u8; MAX_CONTROL_RW];
-        let off = Self::collect_chunks(self.staged, &inflight.snap, &mut buf);
-        self.staged.rewind_to(inflight.snap);
-        if off < len {
             return;
         }
         let address = slot.address;
         if self
             .shared
             .table
-            .write_bytes(address, &buf[..len], self.staged)
+            .write_bytes_iter(address, self.staged, &inflight.snap)
             .is_ok()
         {
             let mut hooks = ControlTableHooks::new(reply);
             self.shared
                 .table
-                .dispatch_events(address, len as u16, &mut hooks);
+                .dispatch_events(address, length, &mut hooks);
         }
     }
 
