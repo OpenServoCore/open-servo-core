@@ -61,9 +61,9 @@ pub fn on_usart1() {
     on_usart1_tc();
 }
 
-/// DMA1_CH7 HT/TC handler — refreshes the codec's edge-ring view (NDTR
-/// + `(now, Dma)` ISR-capture stash for the Crc fallback path), then
-/// drives the parser drain via `services.poll`. Per
+/// DMA1_CH7 HT/TC handler — refreshes the codec's edge-ring view
+/// (NDTR + `(now, Dma)` ISR-capture stash for the Crc fallback path),
+/// then drives the parser drain via `services.poll`. Per
 /// `dxl-streaming-rx.md` §3 / §4.4 / §5.2, parser drains on three
 /// triggers (USART1 IDLE, DMA1_CH7 HT, DMA1_CH7 TC); same-handler
 /// drain is what makes the §5.1 chain-slot fire rule (observe
