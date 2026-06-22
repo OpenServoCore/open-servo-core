@@ -26,11 +26,8 @@ pub trait Router {
         Self: Sized,
     {
         let snap = staged.snapshot();
-        router_stage_bytes(self, addr, src, staged)?;
-        // SAFETY: caller upholds Router's single-writer contract.
-        unsafe { commit_staged_range(self, staged, &snap) };
-        staged.rewind_to(snap);
-        Ok(())
+        staged.push(addr, src)?;
+        self.write_bytes_iter(addr, staged, &snap)
     }
 
     /// Validate + commit a write to `[addr, addr+total)` where `total` is the
@@ -54,7 +51,9 @@ pub trait Router {
     where
         Self: Sized,
     {
-        router_stage_bytes(self, addr, src, staged)
+        let snap = staged.snapshot();
+        staged.push(addr, src)?;
+        self.stage_bytes_iter(addr, staged, &snap)
     }
 
     /// Validate (without committing) a write to `[addr, addr+total)` where
@@ -141,30 +140,6 @@ pub(crate) fn router_read_bytes(
         }
     }
     Ok(())
-}
-
-pub(crate) fn router_stage_bytes(
-    router: &dyn Router,
-    addr: u16,
-    src: &[u8],
-    staged: &mut StagedWrites,
-) -> Result<(), Error> {
-    if src.is_empty() {
-        return Ok(());
-    }
-    let end = (addr as usize)
-        .checked_add(src.len())
-        .ok_or(Error::OutOfRange)?;
-    let r = region_for(router, addr, end).ok_or(Error::OutOfRange)?;
-    let snap = staged.snapshot();
-    let result = stage_write(addr, src, r.def.blocks, staged)
-        .and_then(|()| run_field_validators(router, staged, snap, addr, src.len(), r.def.blocks))
-        .and_then(|()| run_block_validators(router, staged, snap, addr, src.len(), r.def.blocks))
-        .and_then(|()| run_region_validators(router, staged, snap, r.def.validators));
-    if result.is_err() {
-        staged.rewind_to(snap);
-    }
-    result
 }
 
 pub(crate) fn router_stage_bytes_iter(
@@ -349,17 +324,6 @@ unsafe fn walk_read(
             }
         },
     )
-}
-
-/// Validate that `src` lies entirely in RW fields with no gaps; stage as one entry.
-pub(crate) fn stage_write(
-    abs_addr: u16,
-    src: &[u8],
-    blocks: &[BlockDesc],
-    staged: &mut StagedWrites,
-) -> Result<(), Error> {
-    walk_fields(abs_addr, src.len(), blocks, true, |_, _, _, _| {})?;
-    staged.push(abs_addr, src)
 }
 
 /// SAFETY: `region_base` points to the matching region struct; `[abs_addr, abs_addr+data.len())`

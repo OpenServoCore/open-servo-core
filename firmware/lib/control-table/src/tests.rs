@@ -1,4 +1,3 @@
-use crate::route::stage_write;
 use crate::validate::run_field_validators;
 use crate::*;
 use core::cell::UnsafeCell;
@@ -177,7 +176,7 @@ fn stage_then_validator_reject_rewinds_buffer_and_does_not_commit() {
     let r = StubRouter::new();
     let mut staged = StagedWrites::new();
     let snap = staged.snapshot();
-    stage_write(0, &[0xAA], REJECTING_BLOCKS, &mut staged).unwrap();
+    staged.push(0, &[0xAA]).unwrap();
     let reject = run_field_validators(&r, &staged, snap, 0, 1, REJECTING_BLOCKS);
     assert_eq!(reject, Err(Error::ValidationError(ValidationKind::Custom)),);
     staged.rewind_to(snap);
