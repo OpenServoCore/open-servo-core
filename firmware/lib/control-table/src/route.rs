@@ -33,11 +33,45 @@ pub trait Router {
         Ok(())
     }
 
+    /// Validate + commit a write to `[addr, addr+total)` where `total` is the
+    /// summed length of staged chunks at indices >= `snap`. Zero-copy: the
+    /// chunks live in `staged` from prior `push`es; no scratch buffer.
+    /// On error: rewinds `staged` to `snap` and returns `Err`.
+    /// On success: commits to the backing region and rewinds to `snap`.
+    fn write_bytes_iter(
+        &self,
+        addr: u16,
+        staged: &mut StagedWrites,
+        snap: &Snapshot,
+    ) -> Result<(), Error>
+    where
+        Self: Sized,
+    {
+        router_write_bytes_iter(self, addr, staged, snap)
+    }
+
     fn stage_bytes(&self, addr: u16, src: &[u8], staged: &mut StagedWrites) -> Result<(), Error>
     where
         Self: Sized,
     {
         router_stage_bytes(self, addr, src, staged)
+    }
+
+    /// Validate (without committing) a write to `[addr, addr+total)` where
+    /// `total` is the summed length of staged chunks at indices >= `snap`.
+    /// On error: rewinds `staged` to `snap`.
+    /// On success: chunks remain staged for a later `commit_staged` (RegWrite
+    /// flow). Zero-copy: chunks live in `staged` from prior `push`es.
+    fn stage_bytes_iter(
+        &self,
+        addr: u16,
+        staged: &mut StagedWrites,
+        snap: &Snapshot,
+    ) -> Result<(), Error>
+    where
+        Self: Sized,
+    {
+        router_stage_bytes_iter(self, addr, staged, snap)
     }
 
     fn commit_staged(&self, staged: &mut StagedWrites)
@@ -131,6 +165,53 @@ pub(crate) fn router_stage_bytes(
         staged.rewind_to(snap);
     }
     result
+}
+
+pub(crate) fn router_stage_bytes_iter(
+    router: &dyn Router,
+    addr: u16,
+    staged: &mut StagedWrites,
+    snap: &Snapshot,
+) -> Result<(), Error> {
+    let total: usize = staged.iter_from(snap).map(|(_, d)| d.len()).sum();
+    if total == 0 {
+        return Ok(());
+    }
+    let end = match (addr as usize).checked_add(total) {
+        Some(e) => e,
+        None => {
+            staged.rewind_to(*snap);
+            return Err(Error::OutOfRange);
+        }
+    };
+    let r = match region_for(router, addr, end) {
+        Some(r) => r,
+        None => {
+            staged.rewind_to(*snap);
+            return Err(Error::OutOfRange);
+        }
+    };
+    let result = walk_fields(addr, total, r.def.blocks, true, |_, _, _, _| {})
+        .and_then(|()| run_field_validators(router, staged, *snap, addr, total, r.def.blocks))
+        .and_then(|()| run_block_validators(router, staged, *snap, addr, total, r.def.blocks))
+        .and_then(|()| run_region_validators(router, staged, *snap, r.def.validators));
+    if result.is_err() {
+        staged.rewind_to(*snap);
+    }
+    result
+}
+
+pub(crate) fn router_write_bytes_iter(
+    router: &dyn Router,
+    addr: u16,
+    staged: &mut StagedWrites,
+    snap: &Snapshot,
+) -> Result<(), Error> {
+    router_stage_bytes_iter(router, addr, staged, snap)?;
+    // SAFETY: caller upholds Router's single-writer contract.
+    unsafe { commit_staged_range(router, staged, snap) };
+    staged.rewind_to(*snap);
+    Ok(())
 }
 
 /// SAFETY: caller holds the region's single-writer guarantee.
