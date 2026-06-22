@@ -1,11 +1,12 @@
 //! Chain-CRC fold engine for Fast Sync / Bulk Read Last replies.
 //!
 //! Owns a running [`CrcUmts`] engine plus the bookkeeping that decides
-//! when to feed wire bytes into it. Composite-side; the per-byte hook
-//! ([`Self::on_byte`]) is wired into [`super::codec::Codec::drain_raw`]'s
-//! per-byte callback so every wire byte the post-parser drain surfaces —
+//! when to feed wire bytes into it. Composite-side; the slice hook
+//! ([`Self::on_slice`]) is wired into [`super::codec::CodecRx::drain_raw`]'s
+//! slice callback so every wire byte the post-parser drain surfaces —
 //! own, foreign, Status-frame, resync'd prefix alike — flows through the
-//! guard. Per `docs/dxl-hw-timed-transport.md` §10.6.
+//! guard in one bulk CRC fold per drain pass. Per
+//! `docs/dxl-hw-timed-transport.md` §10.6.
 //!
 //! Lifecycle: started at [`super::ReplyHandle::send_slot`] when the
 //! cached slot position is [`SlotPosition::Last`]; cancelled by
@@ -21,9 +22,10 @@ use dxl_protocol::CrcUmts;
 use super::codec::CodecTx;
 
 /// Per [`super::codec::CodecRx::drain_raw`]'s callback contract — fired
-/// once per drained RX-ring byte during the Fast Last predecessor window;
-/// receives `(byte, cursor)` where `cursor` is the pre-advance value of
-/// the codec's `wire_bytes_consumed` counter.
+/// once per drained RX-ring front slice during the Fast Last predecessor
+/// window; receives `(slice, base_cursor)` where `base_cursor` is the
+/// pre-advance value of the codec's `wire_bytes_consumed` counter, so
+/// `slice[i]` sits at wire cursor `base_cursor + i`.
 pub struct FastLastCrc<CRC: CrcUmts> {
     crc: CRC,
     /// Lower bound on the wire-byte cursor that contributes to the fold.
@@ -65,10 +67,11 @@ impl<CRC: CrcUmts> FastLastCrc<CRC> {
         self.active = true;
     }
 
-    /// Per-byte hook for [`super::codec::CodecRx::drain_raw`]'s callback.
-    /// Skips bytes the guard rejects (not active, before `start_cursor`);
-    /// folds otherwise and finalize-patches on reaching
-    /// `predecessor_bytes`.
+    /// Bulk slice hook for [`super::codec::CodecRx::drain_raw`]'s callback.
+    /// Trims the leading slice prefix that sits before `start_cursor`,
+    /// caps the fold at the remaining predecessor budget, folds the
+    /// resulting active region in one CRC pass, and finalize-patches on
+    /// reaching `predecessor_bytes`.
     ///
     /// Finalize mixes our own reply bytes (`tx.own_reply_bytes()` —
     /// everything except the trailing 2-byte placeholder CRC slot) and
@@ -76,20 +79,27 @@ impl<CRC: CrcUmts> FastLastCrc<CRC> {
     /// `tx_buf` must already be encoded by the caller's earlier
     /// `send_slot(Last)` — empty `own_reply_bytes()` is a programmer error
     /// the engine doesn't try to catch.
-    pub fn on_byte<const TX_BUF_LEN: usize>(
+    pub fn on_slice<const TX_BUF_LEN: usize>(
         &mut self,
-        byte: u8,
-        cursor: u32,
+        slice: &[u8],
+        base_cursor: u32,
         tx: &mut CodecTx<CRC, TX_BUF_LEN>,
     ) {
         if !self.active {
             return;
         }
-        if cursor < self.start_cursor {
+        let skip = self
+            .start_cursor
+            .saturating_sub(base_cursor)
+            .min(slice.len() as u32) as usize;
+        let active = &slice[skip..];
+        let need = self.predecessor_bytes.wrapping_sub(self.bytes_folded);
+        let take = (active.len() as u32).min(need) as usize;
+        if take == 0 {
             return;
         }
-        self.crc.update(&[byte]);
-        self.bytes_folded = self.bytes_folded.wrapping_add(1);
+        self.crc.update(&active[..take]);
+        self.bytes_folded = self.bytes_folded.wrapping_add(take as u32);
         if self.bytes_folded >= self.predecessor_bytes {
             self.crc.update(tx.own_reply_bytes());
             tx.patch_crc(self.crc.finalize());

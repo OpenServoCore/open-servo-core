@@ -416,21 +416,29 @@ impl<R: EdgeDma, CRC: CrcUmts, const RX_BUF_LEN: usize, const EDGE_BUF_LEN: usiz
         }
     }
 
-    /// Drain newly-published RX bytes through `fold_byte` without invoking
+    /// Drain newly-published RX bytes through `fold_slice` without invoking
     /// the parser. Used by the Fast Last fold path during the predecessor
     /// window: the SysTick CMP body and the CC3 post-fire body each spin
     /// inside this drain, refreshing the producer head from
     /// `rx_dma.remaining()` on every pass so newly-DMA'd bytes become
     /// reader-visible mid-loop without re-entering the chip-side ISR.
-    /// Advances `wire_bytes_consumed` over each drained byte so a
+    /// Advances `wire_bytes_consumed` by each handed-off slice so a
     /// subsequent `poll()` resumes at the right cursor.
+    ///
+    /// `fold_slice` receives `(slice, base_cursor)` where `base_cursor` is
+    /// the value of `wire_bytes_consumed` BEFORE this slice is folded —
+    /// i.e. `slice[i]` sits at wire cursor `base_cursor + i`. The callback
+    /// runs once per ring front-slice (typically one call per drain pass),
+    /// so a bulk CRC fold and a single skip-before-`start_cursor` check
+    /// suffice. Multiple ring laps still surface as multiple calls because
+    /// `peek_slices` returns a wrap-aware front slice.
     ///
     /// The Fast Last fold owns the RX ring tail for the duration of the
     /// window: the chip-side caller masks DMA1_CH7 HT/TC at arm
     /// (`dxl-hw-timed-transport.md` §10.6.3), and `poll()` self-gates on
     /// `fast_last_crc.is_active()` at entry (`dxl-streaming-rx.md` §6),
     /// so the parser and this drain never race on `rx_buf`.
-    pub fn drain_raw<D: RxDma, F: FnMut(u8, u32)>(&mut self, rx_dma: &D, mut fold_byte: F) {
+    pub fn drain_raw<D: RxDma, F: FnMut(&[u8], u32)>(&mut self, rx_dma: &D, mut fold_slice: F) {
         // SAFETY: rx_buf is single-consumer at PFIC HIGH (same as `poll`).
         // The fold-window contract above keeps `poll()` and this drain
         // from racing on the ring.
@@ -443,10 +451,9 @@ impl<R: EdgeDma, CRC: CrcUmts, const RX_BUF_LEN: usize, const EDGE_BUF_LEN: usiz
                 if front.is_empty() {
                     return;
                 }
-                for &b in front {
-                    fold_byte(b, self.wire_bytes_consumed);
-                    self.wire_bytes_consumed = self.wire_bytes_consumed.wrapping_add(1);
-                }
+                fold_slice(front, self.wire_bytes_consumed);
+                self.wire_bytes_consumed =
+                    self.wire_bytes_consumed.wrapping_add(front.len() as u32);
                 front.len() as u16
             };
             rx_buf.reader().advance(n);

@@ -1035,8 +1035,8 @@ impl<P: Providers, const RX_BUF_LEN: usize, const EDGE_BUF_LEN: usize, const TX_
                 break;
             }
             let before = fast_last_crc.bytes_folded();
-            rx.drain_raw(rx_dma, |byte, cursor| {
-                fast_last_crc.on_byte(byte, cursor, tx);
+            rx.drain_raw(rx_dma, |slice, base_cursor| {
+                fast_last_crc.on_slice(slice, base_cursor, tx);
             });
             if !fast_last_crc.is_active() {
                 break;
@@ -1053,7 +1053,7 @@ impl<P: Providers, const RX_BUF_LEN: usize, const EDGE_BUF_LEN: usize, const TX_
     /// so the busy-wait inside the FSM's final-anchor body is the sole
     /// PFIC HIGH consumer (doc §10.6.3); edge DMA itself keeps capturing
     /// into ET. Body drives [`FastLast::on_step`] forward — the walker
-    /// closure drains pending RX bytes raw through [`FastLastCrc::on_byte`]
+    /// closure drains pending RX bytes raw through [`FastLastCrc::on_slice`]
     /// and returns the cumulative folded count for the FSM's `target =
     /// predecessor_bytes − GUARD` busy-wait exit (`fast_last/mod.rs`).
     pub fn on_fold_step(&mut self) {
@@ -1069,8 +1069,8 @@ impl<P: Providers, const RX_BUF_LEN: usize, const EDGE_BUF_LEN: usize, const TX_
         let (rx, tx) = codec.split_mut();
         fast_last.on_step(
             || {
-                rx.drain_raw(rx_dma, |byte, cursor| {
-                    fast_last_crc.on_byte(byte, cursor, tx);
+                rx.drain_raw(rx_dma, |slice, base_cursor| {
+                    fast_last_crc.on_slice(slice, base_cursor, tx);
                 });
                 fast_last_crc.bytes_folded()
             },
