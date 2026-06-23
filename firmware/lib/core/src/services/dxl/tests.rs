@@ -119,7 +119,9 @@ impl DxlReply for FakeReply {
         let mut scratch: Vec<u8, 64> = Vec::new();
         for chunk in chunks {
             match chunk {
-                Chunk::Slice(s) => scratch.extend_from_slice(s).map_err(|_| WriteError::Overflow)?,
+                Chunk::Slice(s) => scratch
+                    .extend_from_slice(s)
+                    .map_err(|_| WriteError::Overflow)?,
                 Chunk::Zero(n) => {
                     for _ in 0..n {
                         scratch.push(0).map_err(|_| WriteError::Overflow)?;

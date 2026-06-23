@@ -165,8 +165,7 @@ impl<'p, CRC: CrcUmts> Iterator for EventStream<'p, CRC> {
                 continue;
             }
             // Sync / Header / Crc — slice-shaped dispatch.
-            let (consumed, ev) =
-                self.parser.feed_sync_header_crc(&self.bytes[self.offset..]);
+            let (consumed, ev) = self.parser.feed_sync_header_crc(&self.bytes[self.offset..]);
             self.offset += consumed;
             if let Some(ev) = ev {
                 return Some(ev);

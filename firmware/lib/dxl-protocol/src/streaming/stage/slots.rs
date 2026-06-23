@@ -409,7 +409,9 @@ mod tests {
         assert_eq!(n, 5);
         assert!(matches!(
             ev,
-            Some(PayloadEvent::Instruction(InstructionPayload::BulkSlot { .. }))
+            Some(PayloadEvent::Instruction(
+                InstructionPayload::BulkSlot { .. }
+            ))
         ));
         assert_eq!(s.body_remaining(), 5);
     }

@@ -1,8 +1,8 @@
+use dxl_protocol::Chunk;
 use dxl_protocol::streaming::{
     CrcResult, Event, HeaderEvent, InstructionHeader, InstructionPayload, PayloadEvent,
 };
 use dxl_protocol::types::{ErrorCode, Id, PingStatus, Status, StatusError};
-use dxl_protocol::Chunk;
 
 use control_table::{ReadChunk, Snapshot};
 

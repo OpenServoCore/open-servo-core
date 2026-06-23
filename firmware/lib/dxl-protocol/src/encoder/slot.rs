@@ -317,7 +317,11 @@ mod tests {
         let id = Id::new(0x0A);
         let error = StatusError::from_byte(0x07);
         let data = [0x11, 0x00, 0x00, 0x44, 0x55];
-        let slot = Slot { id, error, data: &data };
+        let slot = Slot {
+            id,
+            error,
+            data: &data,
+        };
 
         for position in [
             SlotPosition::Only { packet_length: 11 },
