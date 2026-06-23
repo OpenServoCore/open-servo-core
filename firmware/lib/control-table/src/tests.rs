@@ -576,6 +576,153 @@ fn read_across_two_regions_walks_both() {
     assert_eq!(buf, expected);
 }
 
+/// Compares actual chunks against an expected sequence describing each as
+/// either `Copy(&[u8])` or `Zero(u16)`. Verifies count, kind, and payload.
+fn assert_chunks<R: Router>(r: &R, addr: u16, len: u16, expected: &[ReadChunk<'_>]) {
+    let mut i = 0;
+    for chunk in r.read_iter(addr, len) {
+        let exp = expected
+            .get(i)
+            .unwrap_or_else(|| panic!("extra chunk at index {i}: {chunk:?}"));
+        assert_eq!(&chunk, exp, "chunk[{i}]");
+        i += 1;
+    }
+    assert_eq!(i, expected.len(), "fewer chunks than expected");
+}
+
+#[test]
+fn read_iter_zero_len_yields_no_chunks() {
+    let r = StubRouter::new();
+    assert_chunks(&r, 0, 0, &[]);
+}
+
+#[test]
+fn read_iter_single_field_yields_one_copy() {
+    let r = StubRouter::new();
+    seed(&r, &[(0, &[0x11, 0x22, 0x33, 0x44])]);
+    assert_chunks(&r, 0, 4, &[ReadChunk::Copy(&[0x11, 0x22, 0x33, 0x44])]);
+}
+
+#[test]
+fn read_iter_inter_block_gap_yields_copy_zero_copy() {
+    let r = StubRouter::new();
+    seed(
+        &r,
+        &[
+            (0, &[0x11, 0x22, 0x33, 0x44]),
+            (8, &[0xAA, 0xBB, 0xCC, 0xDD]),
+        ],
+    );
+    // Block 1 [8..16) has two fields (Ro [8..9), Rw [9..16)) → one Copy each.
+    assert_chunks(
+        &r,
+        0,
+        12,
+        &[
+            ReadChunk::Copy(&[0x11, 0x22, 0x33, 0x44]),
+            ReadChunk::Zero(4),
+            ReadChunk::Copy(&[0xAA]),
+            ReadChunk::Copy(&[0xBB, 0xCC, 0xDD]),
+        ],
+    );
+}
+
+#[test]
+fn read_iter_multi_field_block_emits_copy_per_field() {
+    let r = StubRouter::new();
+    // ROUTING block 1: Ro [8..9) then Rw [9..16).
+    seed(
+        &r,
+        &[
+            (8, &[0xAA]),
+            (9, &[0xBB, 0xCC, 0xDD, 0xEE, 0xFF, 0x10, 0x20]),
+        ],
+    );
+    assert_chunks(
+        &r,
+        8,
+        8,
+        &[
+            ReadChunk::Copy(&[0xAA]),
+            ReadChunk::Copy(&[0xBB, 0xCC, 0xDD, 0xEE, 0xFF, 0x10, 0x20]),
+        ],
+    );
+}
+
+#[test]
+fn read_iter_reserved_field_yields_zero_chunk() {
+    let r = ReservedRouter::new();
+    r.seed(0, &[0x11, 0x22, 0xAA, 0xBB, 0xCC, 0xDD, 0x33, 0x44]);
+    // RESERVED block: rw [0..2), reserved [2..6), rw [6..8).
+    assert_chunks(
+        &r,
+        0,
+        8,
+        &[
+            ReadChunk::Copy(&[0x11, 0x22]),
+            ReadChunk::Zero(4),
+            ReadChunk::Copy(&[0x33, 0x44]),
+        ],
+    );
+}
+
+#[test]
+fn read_iter_past_all_regions_yields_single_zero() {
+    let r = StubRouter::new();
+    assert_chunks(&r, 200, 8, &[ReadChunk::Zero(8)]);
+}
+
+#[test]
+fn read_iter_inter_region_gap_yields_zero_between_copies() {
+    let r = MultiRouter::new();
+    r.seed(0, 0, &[0x11, 0x22, 0x33, 0x44]);
+    r.seed(16, 0, &[0xAA, 0xBB, 0xCC, 0xDD]);
+    // A: [0..16), block [0..4). B: [16..32), block [16..20).
+    // Read [2..20): A.block tail + A.region gap [4..16) + B.block [16..20).
+    assert_chunks(
+        &r,
+        2,
+        18,
+        &[
+            ReadChunk::Copy(&[0x33, 0x44]),
+            ReadChunk::Zero(12),
+            ReadChunk::Copy(&[0xAA, 0xBB, 0xCC, 0xDD]),
+        ],
+    );
+}
+
+#[test]
+fn read_iter_chunks_tile_dst_exactly_for_arbitrary_ranges() {
+    let r = ReservedRouter::new();
+    r.seed(0, &[0x11, 0x22, 0xAA, 0xBB, 0xCC, 0xDD, 0x33, 0x44]);
+    // For each (addr, len): chunks emitted by read_iter must reproduce the
+    // bytes that read_bytes would write into a same-sized buffer.
+    for (addr, len) in [(0, 1), (1, 2), (2, 1), (3, 4), (5, 3), (7, 5), (0, 20)] {
+        let mut by_read = [0u8; 24];
+        r.read_bytes(addr, &mut by_read[..len as usize]).unwrap();
+        let mut by_iter = [0u8; 24];
+        let mut pos = 0;
+        for chunk in r.read_iter(addr, len) {
+            match chunk {
+                ReadChunk::Copy(s) => {
+                    by_iter[pos..pos + s.len()].copy_from_slice(s);
+                    pos += s.len();
+                }
+                ReadChunk::Zero(n) => {
+                    by_iter[pos..pos + n as usize].fill(0);
+                    pos += n as usize;
+                }
+            }
+        }
+        assert_eq!(pos, len as usize, "addr={addr} len={len}: pos");
+        assert_eq!(
+            &by_read[..len as usize],
+            &by_iter[..len as usize],
+            "addr={addr} len={len}",
+        );
+    }
+}
+
 #[test]
 fn compare_op_apply_covers_every_op() {
     assert!(CompareOp::Lt.apply(&1, &2));
