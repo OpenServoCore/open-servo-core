@@ -111,12 +111,18 @@ pub struct Clock<U: UsartBaud, T: ClockTrim> {
     /// multiply + shift instead of a runtime divide. Precomputed
     /// alongside `drift_threshold_q8`.
     drift_per_step_recip_q32: u32,
-    /// Last batch's leftover phase error after the coarse-step apply was
-    /// emitted (or full `drift_sum_q8` if the batch was below threshold /
-    /// envelope-clamped to no-op). Signed Q8.8 byte-ticks. Range bounded
-    /// by `drift_per_step_q8 / 2` in the uncapped path. Persists across
-    /// batches until the next batch close overwrites it; consumers
-    /// (e.g. TX scheduler deadline math) read the latest estimate.
+    /// Reciprocal of the steady-phase integrator window (`N_steady × BPF ×
+    /// tpb` HCLK ticks) in Q32. Lets [`Self::projected_phase_error_hclk`]
+    /// scale the residual by `distance_hclk / window` via multiply + shift
+    /// instead of a runtime divide. Precomputed alongside the other
+    /// integrator consts (baud change is the only mutator).
+    window_recip_q32: u32,
+    /// Predicted next-window drift_sum after the most recent batch's apply
+    /// takes effect — i.e. the sub-step residual the integer-step
+    /// quantization couldn't cancel. Signed Q8.8 byte-ticks; sign matches
+    /// drift convention (positive = HSI fast). Persists across batches
+    /// until the next batch close overwrites it; consumers (the TX
+    /// scheduler's phase-adjust math) read the latest estimate.
     residual_q8: i32,
     /// Currently-applied absolute correction relative to factory cal, in
     /// ppm. Mirrors the value last handed to `T::apply_ppm`; clamped to
@@ -170,6 +176,7 @@ impl<U: UsartBaud, T: ClockTrim> Clock<U, T> {
             drift_threshold_q8: per_step_q8,
             drift_per_step_q8: per_step_q8,
             drift_per_step_recip_q32: Self::drift_per_step_recip_q32(per_step_q8),
+            window_recip_q32: Self::window_recip_q32(ticks_per_bit),
             drift_samples: 0,
             residual_q8: 0,
         }
@@ -201,6 +208,17 @@ impl<U: UsartBaud, T: ClockTrim> Clock<U, T> {
         ((1u64 << 32) / denom) as u32
     }
 
+    /// Q32 reciprocal of the steady-phase integrator window, so
+    /// [`Self::projected_phase_error_hclk`] can scale by
+    /// `distance_hclk / window` without a runtime divide on the per-
+    /// deadline TX scheduler path. Window range across all supported
+    /// bauds: [3200 ticks (3 Mbaud), 1_000_000 ticks (9600 baud)] →
+    /// recip range [~4_294, ~1_342_177]; fits comfortably in `u32`.
+    fn window_recip_q32(ticks_per_bit: u16) -> u32 {
+        let window = DRIFT_MIN_SAMPLES_STEADY as u64 * BITS_PER_FRAME as u64 * ticks_per_bit as u64;
+        ((1u64 << 32) / window.max(1)) as u32
+    }
+
     /// Recompute `drift_threshold_q8` and `drift_per_step_recip_q32` from
     /// the current `ticks_per_bit` and `is_boot`. Called on baud change
     /// and on phase transition — both cold paths (at most twice per Clock
@@ -222,6 +240,7 @@ impl<U: UsartBaud, T: ClockTrim> Clock<U, T> {
         };
         self.drift_per_step_q8 = per_step_q8;
         self.drift_per_step_recip_q32 = Self::drift_per_step_recip_q32(per_step_q8);
+        self.window_recip_q32 = Self::window_recip_q32(self.ticks_per_bit);
     }
 
     #[allow(dead_code)]
@@ -294,9 +313,14 @@ impl<U: UsartBaud, T: ClockTrim> Clock<U, T> {
         if was_boot {
             self.is_boot = false;
             reset_integrator = true;
-        }
-        if was_boot {
             self.rebuild_integrator_consts();
+            // Boot batch close stored a residual accumulated over only
+            // `DRIFT_MIN_SAMPLES_BOOT` (6) pairs, but the projection scales
+            // by the steady window (20 pairs). Drop it; the first steady
+            // batch overwrites in ~20 byte pairs of wall-clock and host-
+            // side Fast TX is unlikely to fire in that gap (host has to
+            // finish init protocol first).
+            self.residual_q8 = 0;
         }
         if reset_integrator {
             self.drift_sum_q8 = 0;
@@ -363,14 +387,20 @@ impl<U: UsartBaud, T: ClockTrim> Clock<U, T> {
                 self.pending_applied_ppm = Some(new_applied);
             }
         }
-        // residual = drift_sum − absorbed_drift. Applying `+1` step nudges
-        // the chip's HSI faster → future byte_ticks observed LARGER → would
-        // INCREASE drift_sum by `drift_per_step_q8`. So the drift_sum
-        // "absorbed" by an apply of `applied_steps` (signed) is
-        // `+applied_steps × drift_per_step_q8` (signed): the apply consumes
-        // the drift that would otherwise have shown up in future windows.
-        let absorbed_q8 = applied_steps as i64 * self.drift_per_step_q8 as i64;
-        self.residual_q8 = self.drift_sum_q8.saturating_sub(absorbed_q8 as i32);
+        // Predicted next-window drift_sum after the apply takes effect —
+        // the sub-step residual that integer-step quantization couldn't
+        // cancel. Applying +1 step nudges HSI faster by STEP_PPM ppm,
+        // which adds `drift_per_step_q8` to next window's drift_sum (per
+        // the `drift_per_step_q8` derivation). For signed `applied_steps`:
+        //
+        //   predicted = drift_sum + applied_steps × drift_per_step_q8
+        //
+        // Example: drift_sum = +30 (HSI fast), applied_steps = -1 (slowing
+        // direction), drift_per_step_q8 = 24 → predicted = +6, still
+        // slightly fast — quantization under-corrected by 6.
+        let delta = (applied_steps as i64 * self.drift_per_step_q8 as i64)
+            .clamp(i32::MIN as i64, i32::MAX as i64) as i32;
+        self.residual_q8 = self.drift_sum_q8.saturating_add(delta);
         self.drift_sum_q8 = 0;
         self.drift_samples = 0;
     }
@@ -396,33 +426,33 @@ impl<U: UsartBaud, T: ClockTrim> Clock<U, T> {
         self.ticks_per_bit
     }
 
-    /// Sub-step residual from the most recent batch close, in Q8.8 HCLK
-    /// ticks accumulated over [`Self::integrator_window_hclk_ticks`] of
-    /// wall-clock time. Sign matches drift: positive = chip stamps
-    /// accumulating *faster* than the host reference (HSI fast). Zero
-    /// until the first batch closes after construction or baud change.
+    /// Project the integrator's pending residual to a chip-HCLK-tick
+    /// offset that, added to a wall-clock-relative deadline, lands the
+    /// fire moment on the host's reference. Sign: positive = HSI fast =
+    /// chip-clock ticks accumulate ahead of wall clock → deadline must
+    /// shift LATER (added) by the projected amount. Linear scaling: the
+    /// integrator's window-summed residual scales by `distance_hclk /
+    /// window` to the deadline distance, then strips Q8.
     ///
-    /// To project the residual to a future deadline at wall-clock
-    /// distance `T` from the integrator window: scale linearly by
-    /// `T / integrator_window_hclk_ticks`. The TX scheduler consumes
-    /// this to back-date `deadline_tick` by the projected HSI phase
-    /// error so the wire bit lands on the host-reference deadline.
-    #[inline(always)]
+    /// Uses the precomputed [`Self::window_recip_q32`] reciprocal — a
+    /// `__udivdi3` here would land on every scheduled deadline, and
+    /// RV32EC has no hardware divide. The wide multiply lowers to a
+    /// single `__multi3` call (~tens of cycles) instead.
     #[allow(dead_code)]
-    pub fn pending_residual_q8(&self) -> i32 {
-        self.residual_q8
-    }
-
-    /// Wall-clock duration the [`Self::pending_residual_q8`] sample
-    /// represents — the integrator window's `N × BITS_PER_FRAME × tpb`
-    /// HCLK ticks. Steady-phase value (uses
-    /// [`DRIFT_MIN_SAMPLES_STEADY`]); during boot the actual window
-    /// may be shorter, but the residual is only meaningful after the
-    /// first close, by which point boot has typically transitioned.
-    #[inline(always)]
-    #[allow(dead_code)]
-    pub fn integrator_window_hclk_ticks(&self) -> u32 {
-        DRIFT_MIN_SAMPLES_STEADY as u32 * BITS_PER_FRAME as u32 * self.ticks_per_bit as u32
+    pub fn projected_phase_error_hclk(&self, distance_hclk: u32) -> i32 {
+        if self.residual_q8 == 0 || distance_hclk == 0 {
+            return 0;
+        }
+        // residual_q8 × distance / (window × Q8_SCALE)
+        //   = residual_q8 × distance × window_recip_q32 >> (32 + 8)
+        //   = residual_q8 × distance × window_recip_q32 >> 40
+        //
+        // u128 keeps the multiply correct for the rare saturated
+        // residual_q8 (near i32::MAX) case without silently truncating.
+        let abs_res = self.residual_q8.unsigned_abs() as u128;
+        let prod = abs_res * distance_hclk as u128 * self.window_recip_q32 as u128;
+        let mag = (prod >> 40).min(i32::MAX as u128) as i32;
+        if self.residual_q8 >= 0 { mag } else { -mag }
     }
 
     /// Wire-byte duration in monotonic timer ticks at the current baud.

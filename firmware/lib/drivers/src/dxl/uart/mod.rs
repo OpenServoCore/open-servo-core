@@ -451,11 +451,15 @@ impl<P: Providers, const TX_BUF_LEN: usize> ReplyHandle<'_, P, TX_BUF_LEN> {
             .rdt_us
             .wrapping_mul(<P::TxScheduler as TxScheduler>::TICKS_PER_US as u32);
         let delay_ticks = rdt_ticks.wrapping_add(self.clock.bytes_to_ticks(ctx.slot_offset_bytes));
-        let deadline = packet_end_tick.wrapping_add(delay_ticks);
+        let phase_adjust = self.clock.projected_phase_error_hclk(delay_ticks);
+        let deadline = packet_end_tick
+            .wrapping_add(delay_ticks)
+            .wrapping_add_signed(phase_adjust);
         crate::log::debug!(
-            "dxl: send_status schedule packet_end={} delay={} deadline={} byte_count={}",
+            "dxl: send_status schedule packet_end={} delay={} phase_adjust={} deadline={} byte_count={}",
             packet_end_tick,
             delay_ticks,
+            phase_adjust,
             deadline,
             byte_count
         );
@@ -560,7 +564,10 @@ impl<P: Providers, const TX_BUF_LEN: usize> ReplyHandle<'_, P, TX_BUF_LEN> {
             SlotPosition::Last { .. } => SendKind::FastLast,
             _ => SendKind::Plain,
         };
-        let deadline = packet_end_tick.wrapping_add(delay_ticks);
+        let phase_adjust = self.clock.projected_phase_error_hclk(delay_ticks);
+        let deadline = packet_end_tick
+            .wrapping_add(delay_ticks)
+            .wrapping_add_signed(phase_adjust);
         self.scheduler.schedule(deadline, byte_count, kind);
         if matches!(position, SlotPosition::Last { .. }) {
             // Same effective RDT as the schedule above so the fold grid
