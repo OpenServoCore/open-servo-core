@@ -41,9 +41,7 @@ impl<'a, W: WriteBuf, CRC: CrcUmts> SlotEncoder<'a, W, CRC> {
         emit_slot_body(self.out, slot)?;
         self.crc.reset();
         self.crc.update(&self.out.as_slice()[start..]);
-        let crc = self.crc.finalize();
-        self.out.push(crc as u8)?;
-        self.out.push((crc >> 8) as u8)?;
+        self.out.push_slice(&self.crc.finalize().to_le_bytes())?;
         Ok(())
     }
 
@@ -94,8 +92,7 @@ impl<'a, W: WriteBuf, CRC: CrcUmts> SlotEncoder<'a, W, CRC> {
 
     fn last_inner(&mut self, slot: &Slot<'_>, crc: u16) -> Result<(), WriteError> {
         emit_slot_body(self.out, slot)?;
-        self.out.push(crc as u8)?;
-        self.out.push((crc >> 8) as u8)?;
+        self.out.push_slice(&crc.to_le_bytes())?;
         Ok(())
     }
 
@@ -151,9 +148,7 @@ impl<'a, W: WriteBuf, CRC: CrcUmts> SlotEncoder<'a, W, CRC> {
                 emit_slot_body_chunked(self.out, id, error, chunks)?;
                 self.crc.reset();
                 self.crc.update(&self.out.as_slice()[start..]);
-                let crc = self.crc.finalize();
-                self.out.push(crc as u8)?;
-                self.out.push((crc >> 8) as u8)?;
+                self.out.push_slice(&self.crc.finalize().to_le_bytes())?;
             }
             SlotPosition::First { packet_length } => {
                 emit_slot_header(self.out, packet_length)?;
@@ -164,8 +159,7 @@ impl<'a, W: WriteBuf, CRC: CrcUmts> SlotEncoder<'a, W, CRC> {
             }
             SlotPosition::Last { crc } => {
                 emit_slot_body_chunked(self.out, id, error, chunks)?;
-                self.out.push(crc as u8)?;
-                self.out.push((crc >> 8) as u8)?;
+                self.out.push_slice(&crc.to_le_bytes())?;
             }
         }
         Ok(())

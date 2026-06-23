@@ -124,24 +124,25 @@ pub(in crate::encoder) fn emit_slot_header<W: WriteBuf>(
     out: &mut W,
     length: u16,
 ) -> Result<(), WriteError> {
-    out.push(HEADER[0])?;
-    out.push(HEADER[1])?;
-    out.push(HEADER[2])?;
-    out.push(HEADER[3])?;
-    out.push(Id::BROADCAST.as_byte())?;
     let lb = length.to_le_bytes();
-    out.push(lb[0])?;
-    out.push(lb[1])?;
-    out.push(Instruction::Status.as_u8())?;
-    Ok(())
+    let prefix = [
+        HEADER[0],
+        HEADER[1],
+        HEADER[2],
+        HEADER[3],
+        Id::BROADCAST.as_byte(),
+        lb[0],
+        lb[1],
+        Instruction::Status.as_u8(),
+    ];
+    out.push_slice(&prefix)
 }
 
 pub(in crate::encoder) fn emit_slot_body<W: WriteBuf>(
     out: &mut W,
     slot: &Slot<'_>,
 ) -> Result<(), WriteError> {
-    out.push(slot.error.as_byte())?;
-    out.push(slot.id.as_byte())?;
+    out.push_slice(&[slot.error.as_byte(), slot.id.as_byte()])?;
     out.push_slice(slot.data)
 }
 
@@ -160,8 +161,7 @@ where
     W: WriteBuf,
     I: IntoIterator<Item = Chunk<'a>>,
 {
-    out.push(error.as_byte())?;
-    out.push(id.as_byte())?;
+    out.push_slice(&[error.as_byte(), id.as_byte()])?;
     for chunk in chunks {
         match chunk {
             Chunk::Slice(s) => out.push_slice(s)?,
