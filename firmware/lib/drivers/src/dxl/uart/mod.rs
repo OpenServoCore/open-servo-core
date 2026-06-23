@@ -1084,6 +1084,15 @@ impl<P: Providers, const RX_BUF_LEN: usize, const EDGE_BUF_LEN: usize, const TX_
         self.codec.instruction_count()
     }
 
+    /// Inspection passthrough to [`Clock::projected_phase_error_hclk`] —
+    /// production scheduler call sites read this directly off `self.clock`;
+    /// this exists so sim/test code can sample the same value externally
+    /// without exposing the integrator state itself.
+    #[allow(dead_code)]
+    pub fn projected_phase_error_hclk(&self, distance_hclk: u32) -> i32 {
+        self.clock.projected_phase_error_hclk(distance_hclk)
+    }
+
     /// The TX-start tick has arrived (chip-side CC3 IRQ). Activates the
     /// wire driver FIRST so the first wire bit lands on `fire_deadline`;
     /// for Fast Last replies the body then tails with a post-fire residue

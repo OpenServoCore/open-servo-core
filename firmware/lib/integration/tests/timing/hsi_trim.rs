@@ -134,6 +134,111 @@ fn hsi_cold_corner_converges(baud_idx: u8) {
     log::info!("baud_idx={baud_idx} -2% drift → final_ppm={final_ppm}, ops={ops:?}",);
 }
 
+/// Sub-step phase-projection assertions need a deterministic fixed-baud
+/// scenario — at 1 Mbaud the integrator settles to a known state under
+/// ±0.4% drift, with no cross-baud quantization variance in the residual.
+/// Other bauds (especially 115200) show ±1 tick of stamp-noise jitter on
+/// the same drift, so a matrix sweep can't pin the projection to an exact
+/// value.
+const FINE_TRIM_BAUD: BaudRate = BaudRate::B1000000;
+/// 100 µs of chip-HCLK ticks at the V006's 48 MHz reference. Representative
+/// of a single-slot RDT delay at typical bench RDT values.
+const PHASE_PROBE_DISTANCE_HCLK: u32 = 4800;
+
+/// At nominal HSI on 1 Mbaud, the integrator stays exactly inside the
+/// half-step deadband and emits zero — the residual_q8 latches at the
+/// noise floor (just inside zero) and the projection rounds to 0 over
+/// the 100 µs probe distance. Any non-zero return means either an
+/// unintended residual accumulation or a regression in the projection
+/// math.
+#[test_log::test]
+fn fine_trim_phase_adjust_at_nominal_drift_is_zero() {
+    let Setup {
+        mut sim,
+        host,
+        servos,
+    } = setup_with(1, FINE_TRIM_BAUD, 0);
+
+    for _ in 0..PING_BUDGET {
+        sim.with_host(host, |h| {
+            h.send_ping(TARGET);
+            h.wait_for_reply();
+        });
+    }
+
+    let phase = sim
+        .servo(servos[0])
+        .projected_phase_error_hclk(PHASE_PROBE_DISTANCE_HCLK);
+    assert_eq!(phase, 0, "expected zero phase adjust at nominal HSI");
+}
+
+/// +0.4% factory drift (= 1.6 trim-steps worth in the steady-phase
+/// integrator window) lands the integer-step apply at -5000 ppm
+/// (2 steps; the ideal correction would be -3982 ppm). The resulting
+/// live HSI runs slow at `(1.004)(0.995) - 1 ≈ -1020 ppm`, the
+/// integrator's residual_q8 inherits that signed offset (negative =
+/// HSI slow), and the back-date projection over 100 µs lands NEGATIVE:
+///
+///   phase ≈ -0.4 × STEP_PPM × distance / 1e6
+///         = -0.4 × 2500 × 4800 / 1e6
+///         ≈ -4.8 HCLK ticks  →  -4 (signed integer truncation toward zero)
+///
+/// A residual-sign inversion would land near +43; a scale regression
+/// would land far from -4.
+#[test_log::test]
+fn fine_trim_phase_adjust_under_positive_drift_is_negative() {
+    let Setup {
+        mut sim,
+        host,
+        servos,
+    } = setup_with(1, FINE_TRIM_BAUD, 0);
+    sim.servo_mut(servos[0]).set_hsi_drift(1, 250);
+
+    for _ in 0..PING_BUDGET {
+        sim.with_host(host, |h| {
+            h.send_ping(TARGET);
+            h.wait_for_reply();
+        });
+    }
+
+    let phase = sim
+        .servo(servos[0])
+        .projected_phase_error_hclk(PHASE_PROBE_DISTANCE_HCLK);
+    assert_eq!(
+        phase, -4,
+        "expected -4 HCLK ticks (over-corrected at +0.4% drift)",
+    );
+}
+
+/// Symmetric to the positive-drift case: -0.4% factory drift sets
+/// applied = +5000 ppm (2 steps), live HSI runs fast at ~+1020 ppm,
+/// residual_q8 is positive (HSI fast), projection over 100 µs lands
+/// POSITIVE at +4 HCLK ticks.
+#[test_log::test]
+fn fine_trim_phase_adjust_under_negative_drift_is_positive() {
+    let Setup {
+        mut sim,
+        host,
+        servos,
+    } = setup_with(1, FINE_TRIM_BAUD, 0);
+    sim.servo_mut(servos[0]).set_hsi_drift(-1, 250);
+
+    for _ in 0..PING_BUDGET {
+        sim.with_host(host, |h| {
+            h.send_ping(TARGET);
+            h.wait_for_reply();
+        });
+    }
+
+    let phase = sim
+        .servo(servos[0])
+        .projected_phase_error_hclk(PHASE_PROBE_DISTANCE_HCLK);
+    assert_eq!(
+        phase, 4,
+        "expected +4 HCLK ticks (over-corrected at -0.4% drift)",
+    );
+}
+
 /// Live HCLK ppm offset from nominal. Composes the servo's factory-drift
 /// ratio with the latest absolute correction the driver applied — same
 /// quantity the chip would carry on real silicon.
