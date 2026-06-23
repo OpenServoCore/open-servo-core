@@ -214,6 +214,11 @@ pub fn tim2_cnt() -> u16 {
     TIM2.cnt().read()
 }
 
+#[inline]
+pub fn tim2_ccr3() -> u16 {
+    TIM2.chcvr(2).read()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

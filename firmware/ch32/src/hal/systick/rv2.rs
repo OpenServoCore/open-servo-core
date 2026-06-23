@@ -32,6 +32,11 @@ pub fn set_cmp(value: u32) {
     SYSTICK.cmp().write_value(value);
 }
 
+#[inline(always)]
+pub fn cmp() -> u32 {
+    SYSTICK.cmp().read()
+}
+
 // SAFETY: see hal/SAFETY.md. CTLR is written from MAIN and HIGH ISRs (SysTick
 // and USART1 TC); CS keeps STIE RMW atomic.
 #[inline(always)]
