@@ -9,8 +9,8 @@ use std::thread::sleep;
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, anyhow, bail};
-use dxl_protocol::crc::CrcUmts;
-use dxl_protocol::types::Id;
+use dxl_protocol::streaming::{CrcResult, Event, HeaderEvent, Parser, PayloadEvent, StatusPayload};
+use dxl_protocol::types::{Id, StatusError};
 use dxl_protocol::{InstructionEncoder, SoftwareCrcUmts};
 use heapless::Vec as HVec;
 use serialport::SerialPort;
@@ -377,6 +377,17 @@ pub struct PingInfo {
     pub error: u8,
 }
 
+/// A complete, CRC-verified Status reply, decoded via
+/// [`dxl_protocol::streaming::Parser`]. `data` is the assembled payload
+/// bytes — for Ping replies that's `[model_lo, model_hi, fw_version]`; for
+/// Read replies it's the requested register window.
+#[derive(Debug, Clone)]
+pub struct StatusReply {
+    pub id: Id,
+    pub error: StatusError,
+    pub data: Vec<u8>,
+}
+
 pub fn build_ping(id: Id) -> Result<HVec<u8, 16>> {
     let mut frame: HVec<u8, 16> = HVec::new();
     InstructionEncoder::<_, SoftwareCrcUmts>::new(&mut frame)
@@ -409,48 +420,86 @@ pub fn build_reboot(id: Id) -> Result<HVec<u8, 16>> {
     Ok(frame)
 }
 
-/// Hand-decode a Ping status reply. Stuffing inside the 3 param bytes
-/// (`model_lo`, `model_hi`, `fw_ver`) requires `model == 0xFFFF` paired with
-/// `fw_ver == 0xFD` — physically impossible for any real servo — so we skip
-/// the destuffer here and let CRC verification catch any wire corruption.
+/// Decode a Status reply by running the dxl-protocol streaming parser over
+/// it. Returns the verified header + accumulated payload; only `Status`
+/// frames are accepted (the parser otherwise routes Instruction frames
+/// through a separate event branch).
 ///
 /// Pass `expected_id == None` to accept any id (e.g. broadcast-Ping
-/// discovery); the responding servo's id is returned in `PingInfo`.
-pub fn decode_ping_status(bytes: &[u8], expected_id: Option<Id>) -> Result<PingInfo> {
-    if bytes.len() != 14 {
+/// discovery).
+pub fn parse_status_reply(bytes: &[u8], expected_id: Option<Id>) -> Result<StatusReply> {
+    let mut parser = Parser::<SoftwareCrcUmts>::new();
+    let mut header_id: Option<Id> = None;
+    let mut header_err = StatusError::OK;
+    let mut data: Vec<u8> = Vec::new();
+    let mut done = false;
+    for evt in parser.feed(bytes) {
+        if done {
+            bail!("trailing bytes after Status reply CRC: {bytes:02X?}");
+        }
+        match evt {
+            Event::Sync => {}
+            Event::Header(HeaderEvent::Status(h)) => {
+                header_id = Some(h.id);
+                header_err = h.error;
+            }
+            Event::Header(HeaderEvent::Instruction(_)) => {
+                bail!("expected Status reply, got Instruction frame: {bytes:02X?}");
+            }
+            Event::Payload(PayloadEvent::Status(StatusPayload::ReadDataChunk {
+                offset,
+                length,
+            })) => {
+                let lo = offset as usize;
+                let hi = lo + length as usize;
+                data.extend_from_slice(&bytes[lo..hi]);
+            }
+            // The streaming parser does not distinguish Ping replies from Read
+            // replies at the payload level — both arrive as ReadDataChunk(s).
+            // Other StatusPayload variants are reserved for the Fast-Read
+            // decoder (see parse_fast_response in B3).
+            Event::Payload(_) => {
+                bail!("unexpected payload event in Status reply: {bytes:02X?}");
+            }
+            Event::Crc(CrcResult::Good) => done = true,
+            Event::Crc(CrcResult::Bad) => bail!("bad CRC on Status reply: {bytes:02X?}"),
+            Event::Resync(kind) => bail!("parser resync ({kind:?}) on: {bytes:02X?}"),
+        }
+    }
+    if !done {
         bail!(
-            "expected 14-byte status reply, got {} bytes: {:02X?}",
-            bytes.len(),
-            bytes
+            "incomplete Status reply ({} bytes, no terminal CRC event): {bytes:02X?}",
+            bytes.len()
         );
     }
-    if bytes[0..4] != [0xFF, 0xFF, 0xFD, 0x00] {
-        bail!("bad header: {:02X?}", &bytes[0..4]);
-    }
+    let id = header_id.ok_or_else(|| anyhow!("no Status header in reply: {bytes:02X?}"))?;
     if let Some(e) = expected_id
-        && bytes[4] != e.as_byte()
+        && id.as_byte() != e.as_byte()
     {
-        bail!("reply id {} != expected {}", bytes[4], e.as_byte());
+        bail!("reply id {} != expected {}", id.as_byte(), e.as_byte());
     }
-    let length = u16::from_le_bytes([bytes[5], bytes[6]]);
-    if length != 7 {
-        bail!("reply length field {length} != 7 (expected 1 instr + 1 err + 3 params + 2 crc)");
-    }
-    if bytes[7] != 0x55 {
-        bail!("instruction byte 0x{:02X} != 0x55 (Status)", bytes[7]);
-    }
-    let mut crc = SoftwareCrcUmts::new();
-    crc.update(&bytes[..bytes.len() - 2]);
-    let got_crc = u16::from_le_bytes([bytes[12], bytes[13]]);
-    let want_crc = crc.finalize();
-    if want_crc != got_crc {
-        bail!("CRC mismatch: computed 0x{want_crc:04X}, got 0x{got_crc:04X}");
+    Ok(StatusReply {
+        id,
+        error: header_err,
+        data,
+    })
+}
+
+/// Convenience wrapper for Ping replies. The 3 payload bytes are
+/// `[model_lo, model_hi, fw_version]`.
+pub fn decode_ping_status(bytes: &[u8], expected_id: Option<Id>) -> Result<PingInfo> {
+    let reply = parse_status_reply(bytes, expected_id)?;
+    if reply.data.len() != 3 {
+        bail!(
+            "Ping reply has {} payload bytes, expected 3: {bytes:02X?}",
+            reply.data.len()
+        );
     }
     Ok(PingInfo {
-        id: bytes[4],
-        model: u16::from_le_bytes([bytes[9], bytes[10]]),
-        fw_ver: bytes[11],
-        error: bytes[8],
+        id: reply.id.as_byte(),
+        model: u16::from_le_bytes([reply.data[0], reply.data[1]]),
+        fw_ver: reply.data[2],
+        error: reply.error.as_byte(),
     })
 }
 
@@ -594,11 +643,9 @@ pub mod drift {
     //! span.
 
     use anyhow::{Result, anyhow, bail};
-    use dxl_protocol::SoftwareCrcUmts;
-    use dxl_protocol::crc::CrcUmts;
     use dxl_protocol::types::Id;
 
-    use super::{IdleStamp, PirateClient, build_read};
+    use super::{IdleStamp, PirateClient, build_read, parse_status_reply};
 
     /// HSITRIM step size mapped to ppm. Mirrors
     /// `firmware/ch32/src/hal/rcc/v00x.rs::CLOCK_TRIM_PPM_PER_STEP`
@@ -659,7 +706,20 @@ pub mod drift {
         let reply = pirate
             .xfer(&frame, READ_REPLY_US)?
             .ok_or_else(|| anyhow!("no Status reply on drift Read"))?;
-        validate_status_reply(&reply, PROBE_LEN as usize)?;
+        let decoded = parse_status_reply(&reply, Some(id))?;
+        if decoded.error.as_byte() != 0 {
+            bail!(
+                "drift Read returned error byte 0x{:02X}",
+                decoded.error.as_byte()
+            );
+        }
+        if decoded.data.len() != PROBE_LEN as usize {
+            bail!(
+                "drift Read returned {} data bytes, expected {}",
+                decoded.data.len(),
+                PROBE_LEN
+            );
+        }
         let stamps = pirate.drain_stamps()?;
         let rounds: Vec<_> = stamps
             .iter()
@@ -672,34 +732,6 @@ pub mod drift {
             bail!("drift Read produced {} Round stamps", rounds.len());
         }
         Ok(rounds[0].last.wrapping_sub(rounds[0].first))
-    }
-
-    /// Hand-decode a Read Status reply. Wire-bytes-only length check
-    /// (matches the Python probe) — the chip's config region 0..128 is
-    /// known not to contain `FF FF` and so cannot trigger stuffing. CRC
-    /// catches any wire corruption.
-    fn validate_status_reply(reply: &[u8], expected_params: usize) -> Result<()> {
-        let expected_len = STATUS_OVERHEAD + expected_params;
-        if reply.len() != expected_len {
-            bail!("reply length {} != {}", reply.len(), expected_len);
-        }
-        if reply[0..4] != [0xFF, 0xFF, 0xFD, 0x00] {
-            bail!("bad header: {:02X?}", &reply[0..4]);
-        }
-        if reply[7] != 0x55 {
-            bail!("instruction 0x{:02X} != 0x55 (Status)", reply[7]);
-        }
-        if reply[8] != 0 {
-            bail!("Status error byte 0x{:02X}", reply[8]);
-        }
-        let mut crc = SoftwareCrcUmts::new();
-        crc.update(&reply[..reply.len() - 2]);
-        let got = u16::from_le_bytes([reply[reply.len() - 2], reply[reply.len() - 1]]);
-        let want = crc.finalize();
-        if got != want {
-            bail!("CRC mismatch: computed 0x{want:04X}, got 0x{got:04X}");
-        }
-        Ok(())
     }
 }
 
