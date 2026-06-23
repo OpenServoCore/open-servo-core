@@ -39,6 +39,9 @@ if you want `defmt` logs or live debugging.
 
 PA2 and PB11 land on the **same** wire — PA2 drives, PB11 listens.
 
+For the hardware-timing architecture (time domain, peripheral assignments,
+RX/TX pipelines) see [TIMING.md](TIMING.md).
+
 ## Flash
 
 Build once, then push it over USB with `wchisp`:
