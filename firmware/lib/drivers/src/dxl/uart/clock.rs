@@ -101,11 +101,23 @@ pub struct Clock<U: UsartBaud, T: ClockTrim> {
     /// steady uses a half-step (= `drift_per_step_q8 >> 1`).
     /// Precomputed on baud change and on phase transition.
     drift_threshold_q8: u32,
+    /// One full trim step's worth of accumulated byte-tick drift over N
+    /// samples, in Q8.8 ticks. Used at batch close to compute the
+    /// sub-step residual (`drift_sum - actual_applied_steps × step_q8`)
+    /// exposed via [`Self::pending_residual_q8`].
+    drift_per_step_q8: u32,
     /// Reciprocal of one full step's drift in Q32. Lets `on_byte_pair`
     /// estimate accumulated drift in trim-step units via a single 64-bit
     /// multiply + shift instead of a runtime divide. Precomputed
     /// alongside `drift_threshold_q8`.
     drift_per_step_recip_q32: u32,
+    /// Last batch's leftover phase error after the coarse-step apply was
+    /// emitted (or full `drift_sum_q8` if the batch was below threshold /
+    /// envelope-clamped to no-op). Signed Q8.8 byte-ticks. Range bounded
+    /// by `drift_per_step_q8 / 2` in the uncapped path. Persists across
+    /// batches until the next batch close overwrites it; consumers
+    /// (e.g. TX scheduler deadline math) read the latest estimate.
+    residual_q8: i32,
     /// Currently-applied absolute correction relative to factory cal, in
     /// ppm. Mirrors the value last handed to `T::apply_ppm`; clamped to
     /// `T::ENVELOPE_PPM` before emission so we never request a correction
@@ -156,8 +168,10 @@ impl<U: UsartBaud, T: ClockTrim> Clock<U, T> {
             drift_sum_q8: 0,
             // Boot phase: full-step threshold for ≥3.4σ SNR margin at 3M.
             drift_threshold_q8: per_step_q8,
+            drift_per_step_q8: per_step_q8,
             drift_per_step_recip_q32: Self::drift_per_step_recip_q32(per_step_q8),
             drift_samples: 0,
+            residual_q8: 0,
         }
     }
 
@@ -206,6 +220,7 @@ impl<U: UsartBaud, T: ClockTrim> Clock<U, T> {
         } else {
             per_step_q8 >> 1
         };
+        self.drift_per_step_q8 = per_step_q8;
         self.drift_per_step_recip_q32 = Self::drift_per_step_recip_q32(per_step_q8);
     }
 
@@ -231,6 +246,9 @@ impl<U: UsartBaud, T: ClockTrim> Clock<U, T> {
             self.rebuild_integrator_consts();
             self.drift_sum_q8 = 0;
             self.drift_samples = 0;
+            // Residual was measured against the old `drift_per_step_q8`;
+            // it's stale after the rebuild.
+            self.residual_q8 = 0;
         }
     }
 
@@ -319,6 +337,10 @@ impl<U: UsartBaud, T: ClockTrim> Clock<U, T> {
             return;
         }
 
+        // Steps the upcoming apply will actually shift HSITRIM by (signed,
+        // same direction as `applied_ppm` delta). 0 below threshold; may
+        // be less than `capped` magnitude if the envelope clamps.
+        let mut applied_steps: i32 = 0;
         if self.drift_sum_q8.unsigned_abs() >= self.drift_threshold_q8 {
             // Magnitude-aware: estimate accumulated drift in trim steps,
             // emit the opposing correction capped to bound noise risk.
@@ -336,10 +358,19 @@ impl<U: UsartBaud, T: ClockTrim> Clock<U, T> {
                 .applied_ppm
                 .saturating_add(nudge_ppm)
                 .clamp(T::ENVELOPE_PPM.0, T::ENVELOPE_PPM.1);
+            applied_steps = (new_applied - self.applied_ppm) / T::STEP_PPM as i32;
             if new_applied != self.applied_ppm {
                 self.pending_applied_ppm = Some(new_applied);
             }
         }
+        // residual = drift_sum − absorbed_drift. Applying `+1` step nudges
+        // the chip's HSI faster → future byte_ticks observed LARGER → would
+        // INCREASE drift_sum by `drift_per_step_q8`. So the drift_sum
+        // "absorbed" by an apply of `applied_steps` (signed) is
+        // `+applied_steps × drift_per_step_q8` (signed): the apply consumes
+        // the drift that would otherwise have shown up in future windows.
+        let absorbed_q8 = applied_steps as i64 * self.drift_per_step_q8 as i64;
+        self.residual_q8 = self.drift_sum_q8.saturating_sub(absorbed_q8 as i32);
         self.drift_sum_q8 = 0;
         self.drift_samples = 0;
     }
@@ -363,6 +394,35 @@ impl<U: UsartBaud, T: ClockTrim> Clock<U, T> {
     #[allow(dead_code)]
     pub fn ticks_per_bit(&self) -> u16 {
         self.ticks_per_bit
+    }
+
+    /// Sub-step residual from the most recent batch close, in Q8.8 HCLK
+    /// ticks accumulated over [`Self::integrator_window_hclk_ticks`] of
+    /// wall-clock time. Sign matches drift: positive = chip stamps
+    /// accumulating *faster* than the host reference (HSI fast). Zero
+    /// until the first batch closes after construction or baud change.
+    ///
+    /// To project the residual to a future deadline at wall-clock
+    /// distance `T` from the integrator window: scale linearly by
+    /// `T / integrator_window_hclk_ticks`. The TX scheduler consumes
+    /// this to back-date `deadline_tick` by the projected HSI phase
+    /// error so the wire bit lands on the host-reference deadline.
+    #[inline(always)]
+    #[allow(dead_code)]
+    pub fn pending_residual_q8(&self) -> i32 {
+        self.residual_q8
+    }
+
+    /// Wall-clock duration the [`Self::pending_residual_q8`] sample
+    /// represents — the integrator window's `N × BITS_PER_FRAME × tpb`
+    /// HCLK ticks. Steady-phase value (uses
+    /// [`DRIFT_MIN_SAMPLES_STEADY`]); during boot the actual window
+    /// may be shorter, but the residual is only meaningful after the
+    /// first close, by which point boot has typically transitioned.
+    #[inline(always)]
+    #[allow(dead_code)]
+    pub fn integrator_window_hclk_ticks(&self) -> u32 {
+        DRIFT_MIN_SAMPLES_STEADY as u32 * BITS_PER_FRAME as u32 * self.ticks_per_bit as u32
     }
 
     /// Wire-byte duration in monotonic timer ticks at the current baud.
