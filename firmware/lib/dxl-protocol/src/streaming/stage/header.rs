@@ -45,51 +45,73 @@ impl HeaderStage {
         slice: &[u8],
         crc: &mut CRC,
     ) -> (usize, Result<Option<HeaderEvent>, ResyncKind>) {
+        if slice.is_empty() {
+            return (0, Ok(None));
+        }
+
         let mut consumed = 0;
-        let mut outcome: Result<Option<HeaderEvent>, ResyncKind> = Ok(None);
-        for &b in slice {
-            match self.step(b) {
-                Ok(None) => consumed += 1,
-                done => {
-                    consumed += 1;
-                    outcome = done;
-                    break;
-                }
+
+        // Stage 1: cursor 0..3 -> id, length_lo, length_hi.
+        while (self.cursor as usize) < 3 && consumed < slice.len() {
+            let b = slice[consumed];
+            match self.cursor {
+                0 => self.id = Id::new(b),
+                1 => self.length = b as u16,
+                _ => self.length |= (b as u16) << 8,
+            }
+            self.cursor += 1;
+            consumed += 1;
+        }
+
+        // Length is complete the moment cursor reaches 3; validate once.
+        if self.cursor as usize >= 3 {
+            let len = self.length as usize;
+            if !(PACKET_LEN_MIN..=PACKET_LEN_GUARD).contains(&len) {
+                crc.update(&slice[..consumed]);
+                return (consumed, Err(ResyncKind::BadLength));
             }
         }
+
+        // Stage 2: cursor 3 -> instr.
+        if self.cursor as usize == 3 && consumed < slice.len() {
+            self.instr = slice[consumed];
+            self.cursor += 1;
+            consumed += 1;
+        }
+
+        // Stage 3: cursor 4..total -> error byte (Status) or param bytes.
+        // `total_bytes()` resolves through `Instruction::from_u8` once per
+        // call instead of per byte as the prior per-byte path did.
+        if self.cursor as usize >= 4 {
+            let total = self.total_bytes();
+            let want = total.saturating_sub(self.cursor as usize);
+            let take = want.min(slice.len() - consumed);
+            let is_status = self.instr == Instruction::Status.as_u8();
+            let base = self.cursor as usize - 4;
+            for i in 0..take {
+                let b = slice[consumed + i];
+                if is_status {
+                    self.error = b;
+                } else {
+                    let idx = base + i;
+                    if idx < self.params.len() {
+                        self.params[idx] = b;
+                    }
+                }
+            }
+            self.cursor += take as u8;
+            consumed += take;
+
+            if self.cursor as usize == total {
+                crc.update(&slice[..consumed]);
+                return (consumed, Ok(Some(self.emit())));
+            }
+        }
+
         if consumed > 0 {
             crc.update(&slice[..consumed]);
         }
-        (consumed, outcome)
-    }
-
-    fn step(&mut self, b: u8) -> Result<Option<HeaderEvent>, ResyncKind> {
-        let c = self.cursor as usize;
-        match c {
-            0 => self.id = Id::new(b),
-            1 => self.length = b as u16,
-            2 => self.length |= (b as u16) << 8,
-            3 => self.instr = b,
-            _ => {
-                let i = c - 4;
-                if self.instr == Instruction::Status.as_u8() {
-                    self.error = b;
-                } else if i < self.params.len() {
-                    self.params[i] = b;
-                }
-            }
-        }
-        self.cursor += 1;
-        if c == 2 {
-            let len = self.length as usize;
-            if !(PACKET_LEN_MIN..=PACKET_LEN_GUARD).contains(&len) {
-                return Err(ResyncKind::BadLength);
-            }
-        }
-        if c >= 3 && self.cursor as usize == self.total_bytes() {
-            return Ok(Some(self.emit()));
-        }
-        Ok(None)
+        (consumed, Ok(None))
     }
 
     fn total_bytes(&self) -> usize {
