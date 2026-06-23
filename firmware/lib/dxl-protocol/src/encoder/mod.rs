@@ -71,15 +71,18 @@ where
     CRC: CrcUmts,
     F: FnOnce(&mut W, &mut Stuffer) -> Result<(), WriteError>,
 {
-    out.push(HEADER[0])?;
-    out.push(HEADER[1])?;
-    out.push(HEADER[2])?;
-    out.push(HEADER[3])?;
-    out.push(id.as_byte())?;
-    let len_pos = out.len();
-    out.push(0)?;
-    out.push(0)?;
-    out.push(instruction)?;
+    let prefix = [
+        HEADER[0],
+        HEADER[1],
+        HEADER[2],
+        HEADER[3],
+        id.as_byte(),
+        0,
+        0,
+        instruction,
+    ];
+    let len_pos = out.len() + 5;
+    out.push_slice(&prefix)?;
 
     let mut stuffer = Stuffer::new(instruction);
     write_params(out, &mut stuffer)?;
@@ -93,8 +96,7 @@ where
     crc.reset();
     crc.update(&out.as_slice()[start..]);
     let crc_bytes = crc.finalize().to_le_bytes();
-    out.push(crc_bytes[0])?;
-    out.push(crc_bytes[1])?;
+    out.push_slice(&crc_bytes)?;
 
     Ok(())
 }
