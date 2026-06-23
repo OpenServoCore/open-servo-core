@@ -9,7 +9,8 @@ use control_table::{ReadChunk, Snapshot};
 use crate::regions::hooks::ControlTableHooks;
 use crate::traits::{DxlDispatcher, DxlReply};
 use crate::{
-    Error, RegionStorage, Router, Shared, StagedWrites, StatusReturnLevel, ValidationKind,
+    ConfigIdentity, Error, RegionStorage, Router, Shared, StagedWrites, StatusReturnLevel,
+    ValidationKind,
 };
 
 use super::limits::MAX_CONTROL_RW;
@@ -27,6 +28,7 @@ fn error_to_status(e: Error) -> StatusError {
 struct Ctx {
     id: Id,
     level: StatusReturnLevel,
+    identity: ConfigIdentity,
 }
 
 impl Ctx {
@@ -56,6 +58,11 @@ struct MatchedSlot {
 pub(super) struct Inflight {
     header: InstructionHeader,
     ctx: Ctx,
+    /// Pre-computed `Ctx::addressed(header_target)` at start_inflight time.
+    /// Direct-target handlers read this instead of re-running the match;
+    /// chain-target handlers (Sync/Bulk/Fast) ignore it and gate on
+    /// `matched_slot` instead.
+    addressed: Option<(Id, bool)>,
     matched_slot: Option<MatchedSlot>,
     /// Gates `WriteDataChunk` absorption; toggles per Sync/Bulk slot.
     accumulating: bool,
@@ -114,15 +121,16 @@ impl<'a> Dispatcher<'a> {
     }
 
     fn snapshot_ctx(&self) -> Ctx {
-        let (id, level) = self
+        let (id, level, identity) = self
             .shared
             .table
             .config
-            .with(|c| (c.comms.id, c.comms.status_return_level));
+            .with(|c| (c.comms.id, c.comms.status_return_level, c.identity));
         crate::log::trace!("dispatcher: snapshot_ctx id={} level={:?}", id, level,);
         Ctx {
             id: Id::new(id),
             level,
+            identity,
         }
     }
 }
@@ -156,14 +164,14 @@ impl Dispatcher<'_> {
     fn start_inflight(&mut self, header: InstructionHeader) {
         let ctx = self.snapshot_ctx();
         let target = header_target(&header);
-        let addressed = ctx.addressed(target).is_some();
+        let addressed = ctx.addressed(target);
         crate::log::trace!(
-            "dispatcher: start_inflight header={:?} target={:?} addressed={}",
+            "dispatcher: start_inflight header={:?} target={:?} addressed={:?}",
             header,
             target,
             addressed,
         );
-        let accumulating = addressed
+        let accumulating = addressed.is_some()
             && matches!(
                 header,
                 InstructionHeader::Write { .. } | InstructionHeader::RegWrite { .. },
@@ -171,6 +179,7 @@ impl Dispatcher<'_> {
         *self.inflight = Some(Inflight {
             header,
             ctx,
+            addressed,
             matched_slot: None,
             accumulating,
             write_offset: 0,
@@ -260,6 +269,7 @@ impl Dispatcher<'_> {
             return;
         };
         let ctx = inflight.ctx;
+        let addressed = inflight.addressed;
         crate::log::debug!(
             "dispatcher: commit header={:?} my_id={:?} overflowed={}",
             inflight.header,
@@ -267,26 +277,22 @@ impl Dispatcher<'_> {
             inflight.overflowed,
         );
         match inflight.header {
-            InstructionHeader::Ping { id } => self.handle_ping(&ctx, id, reply),
+            InstructionHeader::Ping { .. } => self.handle_ping(&ctx, addressed, reply),
             InstructionHeader::Read {
-                id,
-                address,
-                length,
-            } => self.handle_read(&ctx, id, address, length, reply),
+                address, length, ..
+            } => self.handle_read(&ctx, addressed, address, length, reply),
             InstructionHeader::Write {
-                id,
-                address,
-                length,
-            } => self.handle_write(&ctx, id, address, length, &inflight, reply),
-            InstructionHeader::RegWrite { id, address, .. } => {
-                self.handle_reg_write(&ctx, id, address, &inflight, reply)
+                address, length, ..
+            } => self.handle_write(&ctx, addressed, address, length, &inflight, reply),
+            InstructionHeader::RegWrite { address, .. } => {
+                self.handle_reg_write(&ctx, addressed, address, &inflight, reply)
             }
-            InstructionHeader::Action { id } => self.handle_action(&ctx, id, reply),
-            InstructionHeader::Reboot { id } => self.handle_reboot(&ctx, id, reply),
-            InstructionHeader::FactoryReset { id, .. }
-            | InstructionHeader::Clear { id, .. }
-            | InstructionHeader::ControlTableBackup { id, .. }
-            | InstructionHeader::Raw { id, .. } => self.reply_unsupported(&ctx, id, reply),
+            InstructionHeader::Action { .. } => self.handle_action(&ctx, addressed, reply),
+            InstructionHeader::Reboot { .. } => self.handle_reboot(&ctx, addressed, reply),
+            InstructionHeader::FactoryReset { .. }
+            | InstructionHeader::Clear { .. }
+            | InstructionHeader::ControlTableBackup { .. }
+            | InstructionHeader::Raw { .. } => self.reply_unsupported(&ctx, addressed, reply),
             InstructionHeader::SyncRead {
                 address, length, ..
             } => self.handle_sync_read(&ctx, address, length, &inflight, reply),
@@ -308,11 +314,16 @@ impl Dispatcher<'_> {
         let _ = reply.send_status(status);
     }
 
-    fn reply_unsupported<R: DxlReply>(&mut self, ctx: &Ctx, target: Id, reply: &mut R) {
+    fn reply_unsupported<R: DxlReply>(
+        &mut self,
+        ctx: &Ctx,
+        addressed: Option<(Id, bool)>,
+        reply: &mut R,
+    ) {
         if ctx.level < StatusReturnLevel::All {
             return;
         }
-        if let Some((id, true)) = ctx.addressed(target) {
+        if let Some((id, true)) = addressed {
             Self::send_status(
                 reply,
                 Status::Empty {
@@ -347,19 +358,23 @@ impl Dispatcher<'_> {
         Self::send_status(reply, r);
     }
 
-    fn handle_ping<R: DxlReply>(&mut self, ctx: &Ctx, target: Id, reply: &mut R) {
-        let Some((id, _)) = ctx.addressed(target) else {
+    fn handle_ping<R: DxlReply>(
+        &mut self,
+        ctx: &Ctx,
+        addressed: Option<(Id, bool)>,
+        reply: &mut R,
+    ) {
+        let Some((id, _)) = addressed else {
             return;
         };
-        let identity = self.shared.table.config.with(|c| c.identity);
         Self::send_status(
             reply,
             Status::Ping {
                 id,
                 error: StatusError::OK,
                 status: PingStatus {
-                    model: identity.model_number,
-                    fw_version: identity.firmware_version,
+                    model: ctx.identity.model_number,
+                    fw_version: ctx.identity.firmware_version,
                 },
             },
         );
@@ -368,7 +383,7 @@ impl Dispatcher<'_> {
     fn handle_read<R: DxlReply>(
         &mut self,
         ctx: &Ctx,
-        target: Id,
+        addressed: Option<(Id, bool)>,
         address: u16,
         length: u16,
         reply: &mut R,
@@ -376,7 +391,7 @@ impl Dispatcher<'_> {
         if ctx.level < StatusReturnLevel::Read {
             return;
         }
-        let Some((id, true)) = ctx.addressed(target) else {
+        let Some((id, true)) = addressed else {
             return;
         };
         let len = length as usize;
@@ -397,13 +412,13 @@ impl Dispatcher<'_> {
     fn handle_write<R: DxlReply>(
         &mut self,
         ctx: &Ctx,
-        target: Id,
+        addressed: Option<(Id, bool)>,
         address: u16,
         length: u16,
         inflight: &Inflight,
         reply: &mut R,
     ) {
-        let Some((id, direct)) = ctx.addressed(target) else {
+        let Some((id, direct)) = addressed else {
             self.staged.rewind_to(inflight.snap);
             return;
         };
@@ -437,12 +452,12 @@ impl Dispatcher<'_> {
     fn handle_reg_write<R: DxlReply>(
         &mut self,
         ctx: &Ctx,
-        target: Id,
+        addressed: Option<(Id, bool)>,
         address: u16,
         inflight: &Inflight,
         reply: &mut R,
     ) {
-        let Some((id, direct)) = ctx.addressed(target) else {
+        let Some((id, direct)) = addressed else {
             self.staged.rewind_to(inflight.snap);
             return;
         };
@@ -479,8 +494,13 @@ impl Dispatcher<'_> {
         Self::send_status(reply, r);
     }
 
-    fn handle_action<R: DxlReply>(&mut self, ctx: &Ctx, target: Id, reply: &mut R) {
-        let Some((id, direct)) = ctx.addressed(target) else {
+    fn handle_action<R: DxlReply>(
+        &mut self,
+        ctx: &Ctx,
+        addressed: Option<(Id, bool)>,
+        reply: &mut R,
+    ) {
+        let Some((id, direct)) = addressed else {
             return;
         };
         self.shared.table.commit_staged(self.staged);
@@ -495,8 +515,13 @@ impl Dispatcher<'_> {
         }
     }
 
-    fn handle_reboot<R: DxlReply>(&mut self, ctx: &Ctx, target: Id, reply: &mut R) {
-        let Some((id, direct)) = ctx.addressed(target) else {
+    fn handle_reboot<R: DxlReply>(
+        &mut self,
+        ctx: &Ctx,
+        addressed: Option<(Id, bool)>,
+        reply: &mut R,
+    ) {
+        let Some((id, direct)) = addressed else {
             return;
         };
         let mode = self.shared.table.control.with(|c| c.system.boot_mode);
