@@ -16,8 +16,6 @@ pub(crate) trait ControlTableHookEvents {
     fn on_id_write(&mut self, value: u8);
     fn on_baud_rate_idx_write(&mut self, value: BaudRate);
     fn on_return_delay_2us_write(&mut self, value: u8);
-    fn on_clock_trim_write(&mut self, value: i8);
-    fn on_clock_fine_trim_us_write(&mut self, value: i16);
 }
 
 pub(crate) struct ControlTableHooks<'a, R: DxlReply + ?Sized> {
@@ -43,10 +41,4 @@ impl<R: DxlReply + ?Sized> ControlTableHookEvents for ControlTableHooks<'_, R> {
     fn on_return_delay_2us_write(&mut self, value: u8) {
         self.reply.stage_rdt((value as u32) * 2);
     }
-    /// Drift-trim hooks are no-ops in M2 — the driver owns drift integration
-    /// end-to-end (BT-ring → `Clock::on_byte_pair` → `ClockTrim` provider per
-    /// doc §10.7.1). Control-table writes to these fields still validate /
-    /// stage, but their post-commit dispatch fires no chip-side action.
-    fn on_clock_trim_write(&mut self, _value: i8) {}
-    fn on_clock_fine_trim_us_write(&mut self, _value: i16) {}
 }

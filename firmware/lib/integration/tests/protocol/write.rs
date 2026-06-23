@@ -138,43 +138,6 @@ fn write_across_region_boundary_replies_data_range(baud_idx: u8, rdt_us: u32) {
     );
 }
 
-/// Write at `clock_trim` (RW i8) extending 2 bytes — the second byte lands in
-/// the `_rsvd_align` skip-gap inside `ConfigComms`. The whole write must reject
-/// (stage_bytes rolls back via internal snapshot) so the underlying RW byte
-/// stays at its seed default.
-#[apply(matrix)]
-#[test_log::test]
-fn write_partial_overlap_rw_into_gap_replies_access_error(baud_idx: u8, rdt_us: u32) {
-    let baud = BaudRate::from_idx(baud_idx).expect("valid baud idx");
-    let Setup {
-        mut sim,
-        host,
-        servos,
-    } = setup_with(1, baud, rdt_us);
-
-    sim.with_host(host, |h| {
-        h.send_write(Id::new(1), comms::CLOCK_TRIM, &[0x7F, 0x00]);
-        h.wait_for_reply();
-    });
-
-    let rx = sim.host(host).rx_bytes();
-    assert_eq!(
-        parse_status(Instruction::Write, &rx),
-        Status::Empty {
-            id: Id::new(1),
-            error: StatusError::code(ErrorCode::Access),
-        },
-    );
-    assert_eq!(
-        sim.servo(servos[0])
-            .shared()
-            .table
-            .config
-            .with(|c| c.comms.clock_trim),
-        0,
-    );
-}
-
 #[apply(matrix)]
 #[test_log::test]
 fn write_under_torque_lock_replies_access_error(baud_idx: u8, rdt_us: u32) {

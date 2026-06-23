@@ -109,18 +109,6 @@ pub struct ConfigComms {
     #[ct_field(hook = on_return_delay_2us_write)]
     pub return_delay_2us: u8,
     pub status_return_level: StatusReturnLevel,
-    /// Signed delta from the chip's factory clock-trim default. Applied at
-    /// the next USART1 TC so the change never lands mid-byte.
-    #[ct_field(hook = on_clock_trim_write)]
-    pub clock_trim: i8,
-    #[ct_field(skip)]
-    pub _rsvd_align: u8,
-    #[ct_field(access = ro)]
-    pub clock_step_ppm: u16,
-    /// Q8.8 µs. Does NOT trim the HSI despite the name; advances the Fast
-    /// slot fire time to absorb sub-step `clock_trim` residual.
-    #[ct_field(hook = on_clock_fine_trim_us_write)]
-    pub clock_fine_trim_us: i16,
 }
 
 #[repr(C)]
@@ -227,7 +215,4 @@ pub struct ConfigDefaults {
     pub dxl_baud: BaudRate,
     /// DXL 2.0 RDT encoding: 2 µs units. Spec factory default = 125 (250 µs).
     pub dxl_return_delay_2us: u8,
-    /// Initial `clock_trim` seed; signed delta from the device's factory
-    /// default. 0 = use the default unchanged.
-    pub clock_trim: i8,
 }

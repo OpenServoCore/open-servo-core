@@ -28,11 +28,7 @@ pub fn bringup(
     pre: &Precomputed,
 ) -> BringupResult {
     enable_clocks_and_remaps(wiring);
-    rcc::apply_clock_trim_delta(defaults.clock_trim);
-    crate::log::debug!(
-        "clocks + remaps configured (clock_trim={})",
-        defaults.clock_trim
-    );
+    crate::log::debug!("clocks + remaps configured");
 
     // Must run before `configure_pins`: TIM2 OC2M=Force-inactive sets the
     // idle level on PC2's CC2 output, so the moment AF mode latches the pin
@@ -46,9 +42,6 @@ pub fn bringup(
     // seeding before install lets `Drivers::install` pick up the resolved
     // ID so the two layers agree from the first poll.
     SHARED.table.seed_config_defaults(defaults);
-    SHARED.table.config.with_mut(|c| {
-        c.comms.clock_step_ppm = rcc::CLOCK_TRIM_PPM_PER_STEP as u16;
-    });
 
     // Override `ConfigDefaults::dxl_id` with a UID-derived ID so a freshly
     // flashed chip plugged into an existing bus doesn't collide on the

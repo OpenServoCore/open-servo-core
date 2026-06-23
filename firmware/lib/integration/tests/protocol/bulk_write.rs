@@ -1,7 +1,10 @@
 use crate::support::{Setup, matrix, setup_with};
 use osc_core::regions::{
     CONFIG_REGION_SIZE,
-    config::addr::{comms, identity},
+    config::{
+        StatusReturnLevel,
+        addr::{comms, identity},
+    },
 };
 use osc_core::services::dxl::limits::MAX_CONTROL_RW;
 use osc_core::{BaudRate, RegionStorage};
@@ -51,11 +54,7 @@ fn bulk_write_mutates_all_targets_silently(baud_idx: u8, rdt_us: u32) {
     // Heterogeneous (addr, length) per chunk — the bulk-specific shape.
     let mut body = Vec::new();
     body.extend(chunk(1, comms::ID, &[10]));
-    body.extend(chunk(
-        2,
-        comms::CLOCK_FINE_TRIM_US,
-        &0x1234i16.to_le_bytes(),
-    ));
+    body.extend(chunk(2, comms::STATUS_RETURN_LEVEL, &[1]));
     body.extend(chunk(3, comms::RETURN_DELAY_2US, &[50]));
 
     sim.with_host(host, |h| {
@@ -67,13 +66,17 @@ fn bulk_write_mutates_all_targets_silently(baud_idx: u8, rdt_us: u32) {
     assert!(rx.is_empty(), "bulk_write must be silent, got {:?}", rx);
 
     assert_eq!(servo_id(&sim, servos[0]), 10, "servo[0] id mutated");
-    let s1_trim = sim
+    let s1_srl = sim
         .servo(servos[1])
         .shared()
         .table
         .config
-        .with(|c| c.comms.clock_fine_trim_us);
-    assert_eq!(s1_trim, 0x1234, "servo[1] clock_fine_trim_us mutated");
+        .with(|c| c.comms.status_return_level);
+    assert_eq!(
+        s1_srl,
+        StatusReturnLevel::Read,
+        "servo[1] status_return_level mutated"
+    );
     let s2_rdt = sim
         .servo(servos[2])
         .shared()

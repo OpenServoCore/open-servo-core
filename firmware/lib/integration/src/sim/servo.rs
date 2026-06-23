@@ -45,7 +45,6 @@ const SIM_CONFIG_DEFAULTS: ConfigDefaults = ConfigDefaults {
     dxl_id: DEFAULT_DXL_ID.as_byte(),
     dxl_baud: DEFAULT_BAUD,
     dxl_return_delay_2us: (DEFAULT_RDT_US / 2) as u8,
-    clock_trim: 0,
 };
 
 type ServoUart = DxlUart<TestProviders, RX_BUF_LEN, EDGE_BUF_LEN, TX_BUF_LEN>;
