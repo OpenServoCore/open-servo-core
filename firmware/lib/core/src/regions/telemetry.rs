@@ -97,6 +97,32 @@ pub struct TelemetryDxlLink {
     pub noise_error: u32,
 }
 
+/// Bench tuning maxima. Always zero in non-tuning chip builds; chip-side
+/// stamps live under `osc-ch32`'s `tuning` feature. The block is
+/// unconditional so host tooling can probe the addresses without
+/// depending on chip-build features. Host can write zero to clear,
+/// matching the `TelemetryDxlLink` carve-out pattern.
+#[repr(C)]
+#[derive(Copy, Clone, Block)]
+pub struct TelemetryDxlTune {
+    /// Max observed `(TIM2_CNT − CCR3)` at `on_tim2_cc3` IRQ entry, in
+    /// TIM2 ticks. Floor measurement for
+    /// `firmware/ch32/src/measurements.rs::TX_START_ENTRY_TICKS`.
+    #[ct_field(access = rw)]
+    pub tx_start_entry_max: u16,
+    /// Max observed `(SysTick.CNT − SysTick.CMP)` at `on_systick` entry,
+    /// in HCLK ticks. Floor measurement for `FAST_LAST_ENTRY_TICKS`.
+    #[ct_field(access = rw)]
+    pub fast_last_entry_max: u16,
+    /// Max observed `(CCR3 − TIM2_CNT)` at `arm_tim2` post-CCR3-write
+    /// (legitimate-window only — wrap-guard misses excluded), in TIM2
+    /// ticks. Upper bound for `SCHEDULE_WRAP_GUARD_TICKS`.
+    #[ct_field(access = rw)]
+    pub schedule_remaining_max: u16,
+    #[ct_field(skip)]
+    pub _rsvd_align: u16,
+}
+
 #[repr(C)]
 #[derive(Copy, Clone, Region)]
 #[ct_region(addr = crate::regions::TELEMETRY_BASE_ADDR, size = crate::regions::TELEMETRY_REGION_SIZE)]
@@ -106,4 +132,5 @@ pub struct TelemetryRegs {
     pub fault: TelemetryFault,
     pub raw: TelemetryRaw,
     pub link: TelemetryDxlLink,
+    pub tune: TelemetryDxlTune,
 }
