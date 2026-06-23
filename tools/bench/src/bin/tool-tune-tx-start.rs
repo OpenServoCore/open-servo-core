@@ -13,9 +13,15 @@
 //!   pirate's stable-clock measurement of when the chip's first wire bit
 //!   lands vs the deadline implied by `RDT`. This is the ground truth
 //!   for the const — it covers the full path CC3-match → wire-bit. The
-//!   smallest wire excess across all shots is the slack we can shrink
-//!   into `TX_START_ENTRY_TICKS` while still keeping every wire bit at
-//!   or after deadline.
+//!   0.1th-percentile (p0.1) wire excess is the robust slack we can shrink
+//!   into `TX_START_ENTRY_TICKS` while still keeping 99.9% of wire bits at
+//!   or after deadline. 99.9% (not 99%) because Fast Sync chains snoop
+//!   each predecessor's reply — a single CRC-rejected frame collapses the
+//!   chain tail, so a 1-in-1000 failure rate at scale is unacceptable.
+//!   `min` is reported for diagnostic context but is a heavy-tailed
+//!   extreme-order statistic — a single noise edge picked up by the
+//!   pirate during the idle gap swings `min` by 1+ µs across runs while
+//!   p0.1 stays within ~1 chip-HCLK tick at 20k samples (20-sample tail).
 //!
 //! Output (all ticks HCLK = 48 MHz): per-batch distribution plus an
 //! across-batch summary with the recommended *delta* to apply to the
@@ -31,7 +37,7 @@ use std::time::Duration;
 
 use anyhow::{Result, bail};
 use bench::{
-    BOOT_BAUD, RETURN_DELAY_2US_ADDR, Session, SessionArgs, TuneStamps, UNICAST_REPLY_US,
+    RETURN_DELAY_2US_ADDR, Session, SessionArgs, TuneStamps, UNICAST_REPLY_US,
     build_ping, clear_tune, read_ct_u8, read_tune, round_from_stamps,
 };
 use clap::Parser;
@@ -42,24 +48,38 @@ use dxl_protocol::types::Id;
 /// and must be converted to HCLK before adding to K.
 const HCLK_TICKS_PER_US: f64 = 48.0;
 
+/// Cliff-detection threshold for `p95 − median` wire-excess spread, in µs.
+/// Healthy chip-side post-stamp latency produces a tight distribution
+/// (observed spread ~0.3-0.5 µs at K below the floor); above the cliff
+/// the upper tail jumps ~3 µs because CC3 scheduling falls into the
+/// wrap-into-past / fire-immediately fallback path (one byte_time of
+/// delay penalty at 3M baud). 1.5 µs sits 3-5× above healthy noise and
+/// well below the smallest observed cliff jump, so it triggers cleanly.
+const CLIFF_SPREAD_THRESHOLD_US: f64 = 1.5;
+
 #[derive(Parser, Debug)]
 #[command(about = "Sample the chip's TX_START_ENTRY_TICKS floor + wire RDT distribution.")]
 struct Args {
     /// Pirate USB-CDC device. Default: autodetect by VID/PID.
     #[arg(short, long)]
     port: Option<String>,
-    /// Wire baud to drive at. The chip-side CC3 latency is in the HCLK
-    /// domain so the floor is baud-independent in principle; the option
-    /// lets you sanity-check across bauds.
-    #[arg(short, long, default_value_t = BOOT_BAUD)]
+    /// Wire baud to drive at. Default 3M: worst-case slot-timing margin
+    /// (byte_time = 3.33 µs) where TX_START_ENTRY_TICKS most needs to be
+    /// pinned; chip-side CC3 latency is HCLK-domain so the floor is
+    /// baud-independent in principle, but the wire-excess deep tail
+    /// matters most here. Override to sanity-check across bauds.
+    #[arg(short, long, default_value_t = 3_000_000)]
     baud: u32,
     /// Independent batches; each batch starts with a tune-block clear and
     /// drives `--shots` Pings before reading the saturating-min back.
-    #[arg(long, default_value_t = 10)]
+    #[arg(long, default_value_t = 20)]
     batches: u32,
     /// Pings per batch. Each Ping triggers one chip-side CC3 IRQ on the
     /// reply path, contributing one entry-latency sample to the field.
-    #[arg(long, default_value_t = 200)]
+    /// 1000 is large enough that every batch reliably samples the rare
+    /// PFIC-entry low-tail (~0.5% of pings) — smaller batches expose a
+    /// min-of-batch sampling artifact that masquerades as bimodal.
+    #[arg(long, default_value_t = 1000)]
     shots: u32,
     /// Inter-batch idle, milliseconds.
     #[arg(long, default_value_t = 10)]
@@ -171,40 +191,74 @@ fn print_summary(batch_mins: &[u16], wire_us: &[f64], expected_first_us: f64) {
     // latency relative to the deadline implied by RDT.
     let excess_us: Vec<f64> = wire_us.iter().map(|us| us - expected_first_us).collect();
     let w_min = excess_us.iter().copied().fold(f64::INFINITY, f64::min);
+    let w_p0_1 = quantile_us(&excess_us, 0.001);
     let w_med = quantile_us(&excess_us, 0.50);
     let w_p95 = quantile_us(&excess_us, 0.95);
     let w_max = excess_us.iter().copied().fold(f64::NEG_INFINITY, f64::max);
     println!();
     println!("=== wire excess (first-byte − configured deadline) — ground truth ===");
     println!(
-        "  min={w_min:+.2} µs   median={w_med:+.2} µs   p95={w_p95:+.2} µs   max={w_max:+.2} µs   \
+        "  min={w_min:+.2} µs   p0.1={w_p0_1:+.2} µs   median={w_med:+.2} µs   p95={w_p95:+.2} µs   max={w_max:+.2} µs   \
          n={}",
         wire_us.len(),
     );
-    // Recommendation: shift K by `min_wire_excess` HCLK ticks. K LARGER →
-    // CCR3 earlier → wire bit earlier (risks landing before deadline —
-    // collides with prior slot). K SMALLER → wire bit later (safe; wastes
-    // a few HCLK ticks of slot time). Operator applies the delta to
-    // whatever K is currently in
-    // `firmware/ch32/src/measurements.rs::TX_START_ENTRY_TICKS`,
-    // optionally subtracting a safety pad based on the inter-batch min
-    // spread visible in the per-batch table above.
-    let min_excess_hclk = (w_min * HCLK_TICKS_PER_US).floor() as i32;
+    // Recommendation: shift K so 99.9% of pings land at or after deadline.
+    // p0.1 (0.1th-percentile excess) is the lower tail bound — robust
+    // against rare deep-tail outliers that `min` would amplify (wire noise
+    // during the idle gap, USB-CDC timestamp glitches), but tight enough
+    // that the residual 0.1% failure rate doesn't collapse Fast Sync
+    // chains via snoop-CRC rejection at scale. K LARGER → CCR3 earlier →
+    // wire bit earlier (risks colliding with prior slot at the p0.1 tail);
+    // K SMALLER → wire bit later (safe; wastes slot µs). Operator applies
+    // the delta to `firmware/ch32/src/measurements.rs::TX_START_ENTRY_TICKS`.
+    //
+    // Cliff guard: above some K the chip's CC3 scheduling enters a regime
+    // where CCR3 lands too close to TIM2 CNT at schedule time, triggering
+    // the wrap-into-past / fire-immediately fallback. This shows up as the
+    // UPPER tail exploding (p95 jumps ~3 µs above median) while the bulk
+    // and p0.1 stay put — the tool's p0.1-based math is blind to it
+    // because the failures are LATE, not EARLY. Past the cliff the chip
+    // cannot physically squeeze further; bumping K just makes more pings
+    // late (and on real hardware corrupts the start byte → CRC-rejection
+    // by the next slot's snoop → Fast Sync chain collapse).
+    let spread_us = w_p95 - w_med;
+    let cliff_detected = spread_us > CLIFF_SPREAD_THRESHOLD_US;
+    let p0_1_excess_hclk = (w_p0_1 * HCLK_TICKS_PER_US).floor() as i32;
     println!();
-    println!("=== suggestion ===");
-    println!(
-        "  shift TX_START_ENTRY_TICKS by {min_excess_hclk:+} HCLK ticks (new = current{min_excess_hclk:+})"
-    );
-    if min_excess_hclk < 0 {
+    if cliff_detected {
+        println!("=== ⚠  K AT/PAST FLOOR — DO NOT BUMP ===");
         println!(
-            "  K is too LARGE — wire bit lands BEFORE deadline; reduce K to push wire bit later."
+            "  p95 ({w_p95:+.2} µs) is {spread_us:.2} µs above median ({w_med:+.2} µs) — \
+             upper tail has exploded."
         );
-    } else if min_excess_hclk > 0 {
         println!(
-            "  K is too SMALL — wire bit lands well after deadline; enlarge K to tighten slot."
+            "  Healthy spread is ~0.3-0.5 µs; >{CLIFF_SPREAD_THRESHOLD_US:.1} µs means CC3 \
+             scheduling is hitting wrap-into-past / fire-immediately fallback."
+        );
+        println!(
+            "  At this regime the chip's USART/DMA setup races with CC3 IRQ — first byte \
+             of the reply gets garbled on the wire, breaking snoop CRC."
+        );
+        println!(
+            "  Roll TX_START_ENTRY_TICKS back -3 (or more for margin) and re-measure; ignore \
+             any p0.1-based suggestion this run."
+        );
+        return;
+    }
+    println!("=== suggestion (99.9% wire-excess safety bound) ===");
+    println!(
+        "  shift TX_START_ENTRY_TICKS by {p0_1_excess_hclk:+} HCLK ticks (new = current{p0_1_excess_hclk:+})"
+    );
+    if p0_1_excess_hclk < 0 {
+        println!(
+            "  K is too LARGE — wire bit lands BEFORE deadline at the p0.1 tail; reduce K to push wire bit later."
+        );
+    } else if p0_1_excess_hclk > 0 {
+        println!(
+            "  K is too SMALL — even the p0.1 tail lands after deadline; enlarge K to tighten slot."
         );
     } else {
-        println!("  K is at the floor (wire bit lands exactly at deadline).");
+        println!("  K is at the p0.1 floor (0.1% of pings land at or just before deadline).");
     }
 }
 
