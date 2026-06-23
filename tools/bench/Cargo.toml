@@ -18,6 +18,10 @@ path = "src/bin/tool-ping.rs"
 name = "tool-hsi-conv"
 path = "src/bin/tool-hsi-conv.rs"
 
+[[bin]]
+name = "tool-fast-stress"
+path = "src/bin/tool-fast-stress.rs"
+
 [dependencies]
 dxl-protocol = { path = "../../firmware/lib/dxl-protocol", features = ["heapless", "software-crc"] }
 heapless     = "0.9"

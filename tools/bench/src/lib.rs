@@ -10,8 +10,8 @@ use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, anyhow, bail};
 use dxl_protocol::streaming::{CrcResult, Event, HeaderEvent, Parser, PayloadEvent, StatusPayload};
-use dxl_protocol::types::{Id, StatusError};
-use dxl_protocol::{InstructionEncoder, SoftwareCrcUmts};
+use dxl_protocol::types::{BulkReadEntry, Id, Slot, SlotPosition, StatusError};
+use dxl_protocol::{InstructionEncoder, SlotEncoder, SoftwareCrcUmts};
 use heapless::Vec as HVec;
 use serialport::SerialPort;
 
@@ -500,6 +500,283 @@ pub fn decode_ping_status(bytes: &[u8], expected_id: Option<Id>) -> Result<PingI
         model: u16::from_le_bytes([reply.data[0], reply.data[1]]),
         fw_ver: reply.data[2],
         error: reply.error.as_byte(),
+    })
+}
+
+// ---------------------------------------------------------------------------
+// Fast-stress helpers (chain emit + counter probes)
+// ---------------------------------------------------------------------------
+
+/// `comms::RETURN_DELAY_2US` — see `firmware/lib/core/src/regions/config.rs`.
+/// One unit = 2 µs of slave-side reply delay.
+pub const RETURN_DELAY_2US_ADDR: u16 = 14;
+
+/// High-id slot stand-in used by the `--position first` cell: chip emits its
+/// First-slot bytes then the foreign id never replies, so the chain CRC
+/// patch deadline misses by design. 199 is well outside the usual low-id
+/// range a real chip would self-assign.
+pub const FOREIGN_ID: u8 = 199;
+
+/// Predecessor slot id for `--position last`: pirate ARMs a synthetic INJ
+/// reply so the chip's snoop walk + chain CRC patch fire as in production.
+pub const INJ_ID: u8 = 50;
+
+/// Base address of the chip's `TelemetryDxlLink` fault-counter block —
+/// 10 × u32, RW. Host writes zero to clear; chip-side `report_fault`
+/// increments via raw pointer.
+pub const LINK_BASE: u16 = 0x023C;
+
+/// Snapshot of the chip's `TelemetryDxlLink` counter block. Field order
+/// matches `firmware/lib/core/src/regions/telemetry.rs::TelemetryDxlLink`
+/// — keep them in lockstep.
+#[derive(Copy, Clone, Debug, Default, PartialEq, Eq)]
+pub struct LinkCounters {
+    pub illegal_transition: u32,
+    pub unexpected_byte_count: u32,
+    pub previous_slot_timeout: u32,
+    pub slot_timing_miss: u32,
+    pub crc_patch_deadline_miss: u32,
+    pub edge_anchor_miss: u32,
+    pub dma_overrun: u32,
+    pub parity_error: u32,
+    pub framing_error: u32,
+    pub noise_error: u32,
+}
+
+impl LinkCounters {
+    pub const FIELDS: &'static [&'static str] = &[
+        "illegal_transition",
+        "unexpected_byte_count",
+        "previous_slot_timeout",
+        "slot_timing_miss",
+        "crc_patch_deadline_miss",
+        "edge_anchor_miss",
+        "dma_overrun",
+        "parity_error",
+        "framing_error",
+        "noise_error",
+    ];
+    pub const LEN: usize = 4 * Self::FIELDS.len();
+
+    pub fn as_slice(&self) -> [u32; 10] {
+        [
+            self.illegal_transition,
+            self.unexpected_byte_count,
+            self.previous_slot_timeout,
+            self.slot_timing_miss,
+            self.crc_patch_deadline_miss,
+            self.edge_anchor_miss,
+            self.dma_overrun,
+            self.parity_error,
+            self.framing_error,
+            self.noise_error,
+        ]
+    }
+
+    /// Non-zero per-field deltas vs `prev`, in field order. Wraps via u32
+    /// subtraction — counters are monotonic between clears so a non-wrap
+    /// delta is always >= 0 in practice.
+    pub fn delta_from(&self, prev: &Self) -> Vec<(&'static str, u32)> {
+        let curr = self.as_slice();
+        let prev = prev.as_slice();
+        Self::FIELDS
+            .iter()
+            .zip(curr.iter().zip(prev.iter()))
+            .filter_map(|(name, (c, p))| {
+                let d = c.wrapping_sub(*p);
+                (d != 0).then_some((*name, d))
+            })
+            .collect()
+    }
+
+    fn from_le_bytes(buf: &[u8]) -> Result<Self> {
+        if buf.len() != Self::LEN {
+            bail!(
+                "LinkCounters expects {} bytes, got {}",
+                Self::LEN,
+                buf.len()
+            );
+        }
+        let mut words = [0u32; 10];
+        for (i, w) in words.iter_mut().enumerate() {
+            let off = i * 4;
+            *w = u32::from_le_bytes([buf[off], buf[off + 1], buf[off + 2], buf[off + 3]]);
+        }
+        Ok(Self {
+            illegal_transition: words[0],
+            unexpected_byte_count: words[1],
+            previous_slot_timeout: words[2],
+            slot_timing_miss: words[3],
+            crc_patch_deadline_miss: words[4],
+            edge_anchor_miss: words[5],
+            dma_overrun: words[6],
+            parity_error: words[7],
+            framing_error: words[8],
+            noise_error: words[9],
+        })
+    }
+}
+
+/// Snapshot the chip's fault counters via a single Read at `LINK_BASE`.
+pub fn read_counters(pirate: &mut PirateClient, id: Id) -> Result<LinkCounters> {
+    let frame = build_read(id, LINK_BASE, LinkCounters::LEN as u16)?;
+    let reply = pirate
+        .xfer(&frame, UNICAST_REPLY_US)?
+        .ok_or_else(|| anyhow!("counter read: no reply"))?;
+    let decoded = parse_status_reply(&reply, Some(id))?;
+    if decoded.error.as_byte() != 0 {
+        bail!("counter read error byte 0x{:02X}", decoded.error.as_byte());
+    }
+    LinkCounters::from_le_bytes(&decoded.data)
+}
+
+/// Zero the chip's fault counters.
+pub fn clear_counters(pirate: &mut PirateClient, id: Id) -> Result<()> {
+    let zeros = [0u8; LinkCounters::LEN];
+    let frame = build_write(id, LINK_BASE, &zeros)?;
+    let reply = pirate
+        .xfer(&frame, UNICAST_REPLY_US)?
+        .ok_or_else(|| anyhow!("counter clear: no reply"))?;
+    let decoded = parse_status_reply(&reply, Some(id))?;
+    if decoded.error.as_byte() != 0 {
+        bail!("counter clear error byte 0x{:02X}", decoded.error.as_byte());
+    }
+    Ok(())
+}
+
+/// Snapshot counters, swallowing transport / parse failures into `None`.
+/// Used as a wedge probe — chip silent or replying garbage both signal a
+/// wedged transport.
+pub fn try_read_counters(pirate: &mut PirateClient, id: Id) -> Option<LinkCounters> {
+    read_counters(pirate, id).ok()
+}
+
+/// Read a single u8 from the chip's control table.
+pub fn read_ct_u8(pirate: &mut PirateClient, id: Id, addr: u16) -> Result<u8> {
+    let frame = build_read(id, addr, 1)?;
+    let reply = pirate
+        .xfer(&frame, UNICAST_REPLY_US)?
+        .ok_or_else(|| anyhow!("read_ct_u8: no reply"))?;
+    let decoded = parse_status_reply(&reply, Some(id))?;
+    if decoded.error.as_byte() != 0 {
+        bail!(
+            "read_ct_u8 error byte 0x{:02X} at addr 0x{:04X}",
+            decoded.error.as_byte(),
+            addr
+        );
+    }
+    if decoded.data.len() != 1 {
+        bail!(
+            "read_ct_u8 returned {} bytes at addr 0x{:04X}",
+            decoded.data.len(),
+            addr
+        );
+    }
+    Ok(decoded.data[0])
+}
+
+/// Encode a Fast Bulk Read instruction frame via [`InstructionEncoder`].
+pub fn build_fast_bulk_read(entries: &[BulkReadEntry]) -> Result<HVec<u8, 64>> {
+    let mut frame: HVec<u8, 64> = HVec::new();
+    InstructionEncoder::<_, SoftwareCrcUmts>::new(&mut frame)
+        .fast_bulk_read(entries)
+        .map_err(|e| anyhow!("encode fast_bulk_read: {e:?}"))?;
+    Ok(frame)
+}
+
+/// Build the on-wire bytes for a synthetic First-slot reply, used to ARM
+/// a predecessor in `--position last`. The chip's snoop walker treats these
+/// bytes as the prior slot's status frame and computes its own slot's chain
+/// CRC against them.
+pub fn build_inj_first_bytes(
+    slot_id: Id,
+    error: StatusError,
+    data: &[u8],
+    packet_length: u16,
+) -> Result<HVec<u8, 64>> {
+    let mut frame: HVec<u8, 64> = HVec::new();
+    let slot = Slot {
+        id: slot_id,
+        error,
+        data,
+    };
+    SlotEncoder::<_, SoftwareCrcUmts>::new(&mut frame)
+        .emit(&slot, SlotPosition::First { packet_length })
+        .map_err(|e| anyhow!("encode inj first slot: {e:?}"))?;
+    Ok(frame)
+}
+
+/// One parsed slot from a Fast Sync/Bulk Read reply.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FastSlot {
+    pub id: Id,
+    pub error: StatusError,
+    pub data: Vec<u8>,
+}
+
+/// Decode a coalesced Fast Sync/Bulk Read reply. `slot_lengths` is the
+/// per-slot payload length list in chain order. Driven by the dxl-protocol
+/// streaming parser like [`parse_status_reply`], but pulls slot
+/// metadata + payload bytes from the Fast-Read event taxonomy.
+///
+/// NOTE: the current streaming parser emits `ReadDataChunk` events for the
+/// concatenated body of a Fast reply (the body framing collapses to one
+/// payload stream). We slice the body ourselves using `slot_lengths` — the
+/// chip's wire output is `(err, id, data..)` per slot in order, with the
+/// first slot's `err` lifted to the Status header.
+pub fn parse_fast_response(bytes: &[u8], slot_lengths: &[usize]) -> Result<Vec<FastSlot>> {
+    let decoded = parse_status_reply(bytes, None)?;
+    // First slot's error byte comes from the header; subsequent slots carry
+    // their own (err, id, data) prefix in the streamed body.
+    let body = &decoded.data;
+    let mut slots = Vec::with_capacity(slot_lengths.len());
+    let mut cursor = 0usize;
+    for (idx, &slot_len) in slot_lengths.iter().enumerate() {
+        if idx == 0 {
+            // Slot 0: header carries the error byte; body starts with id + data.
+            if body.len() < cursor + 1 + slot_len {
+                bail!("fast reply too short for slot 0 (len {slot_len}): {bytes:02X?}");
+            }
+            let id_byte = body[cursor];
+            cursor += 1;
+            let data = body[cursor..cursor + slot_len].to_vec();
+            cursor += slot_len;
+            slots.push(FastSlot {
+                id: Id::new(id_byte),
+                error: decoded.error,
+                data,
+            });
+        } else {
+            if body.len() < cursor + 2 + slot_len {
+                bail!("fast reply too short for slot {idx} (len {slot_len}): {bytes:02X?}");
+            }
+            let err_byte = body[cursor];
+            let id_byte = body[cursor + 1];
+            cursor += 2;
+            let data = body[cursor..cursor + slot_len].to_vec();
+            cursor += slot_len;
+            slots.push(FastSlot {
+                id: Id::new(id_byte),
+                error: StatusError::from_byte(err_byte),
+                data,
+            });
+        }
+    }
+    if cursor != body.len() {
+        bail!(
+            "fast reply has {} trailing body bytes after {} slots: {bytes:02X?}",
+            body.len() - cursor,
+            slot_lengths.len()
+        );
+    }
+    Ok(slots)
+}
+
+/// Pull the lone `Round` stamp emitted by an XFER, if present.
+pub fn round_from_stamps(stamps: &[IdleStamp]) -> Option<Round> {
+    stamps.iter().find_map(|s| match s {
+        IdleStamp::Round(r) => Some(*r),
+        IdleStamp::Plain(_) => None,
     })
 }
 
