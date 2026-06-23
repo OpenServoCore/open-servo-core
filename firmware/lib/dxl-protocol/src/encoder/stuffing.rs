@@ -36,13 +36,26 @@ impl Stuffer {
 
     /// Per-byte push over a slice; the window straddles slice boundaries
     /// so consecutive `push_slice` calls behave identically to repeated
-    /// `push` calls. Default loops through `push`; faster impls could
-    /// scan the slice for the trigger triple inline.
+    /// `push` calls. Fast-paths slices that contain no `0xFD` byte —
+    /// the `FF FF FD` trigger requires the third byte to be `FD`, so
+    /// a slice without one cannot complete a trigger regardless of
+    /// window state on entry, and bulk push + window-update-from-tail
+    /// is equivalent to the per-byte loop.
     pub(in crate::encoder) fn push_slice<W: WriteBuf>(
         &mut self,
         out: &mut W,
         slice: &[u8],
     ) -> Result<(), WriteError> {
+        if !slice.contains(&STUFFING_BYTE) {
+            out.push_slice(slice)?;
+            let n = slice.len();
+            if n >= 2 {
+                self.0 = [slice[n - 2], slice[n - 1]];
+            } else if n == 1 {
+                self.0 = [self.0[1], slice[0]];
+            }
+            return Ok(());
+        }
         for &b in slice {
             self.push(out, b)?;
         }
