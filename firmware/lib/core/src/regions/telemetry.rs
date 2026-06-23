@@ -126,7 +126,10 @@ pub struct TelemetryDxlTune {
     /// ticks. Upper bound for `SCHEDULE_WRAP_GUARD_TICKS`.
     #[ct_field(access = rw)]
     pub schedule_remaining_max: u16,
-    #[ct_field(skip)]
+    /// Reserved for a future tune metric. `rw` (not `skip`) so the host
+    /// can write the whole block contiguously to clear — `skip` would
+    /// surface as a gap and trip `AccessError` on the multi-field write.
+    #[ct_field(access = rw)]
     pub _rsvd_align: u16,
 }
 
