@@ -18,6 +18,37 @@ pub trait WriteBuf {
     fn is_empty(&self) -> bool {
         self.len() == 0
     }
+
+    /// Default byte-by-byte loop; impls override for `extend_from_slice`
+    /// fast paths. Atomicity (on `Overflow`, leave the buffer truncated to
+    /// entry length) is the caller's responsibility — encoders already
+    /// truncate on failure at the frame boundary.
+    fn push_slice(&mut self, slice: &[u8]) -> Result<(), WriteError> {
+        for &b in slice {
+            self.push(b)?;
+        }
+        Ok(())
+    }
+
+    /// Append `n` zero bytes. Default byte-by-byte; impls may override.
+    fn push_zero(&mut self, n: u16) -> Result<(), WriteError> {
+        for _ in 0..n {
+            self.push(0)?;
+        }
+        Ok(())
+    }
+}
+
+/// One run yielded by a chunk-iterator on the way to the wire: either a
+/// borrowed slice the encoder writes verbatim, or a phantom span the
+/// encoder materializes as `n` zero bytes. Used by the streamed encoder
+/// paths so the dispatcher can hand a control-table read iterator (or any
+/// other source) to `StatusEncoder` / `SlotEncoder` without a scratch
+/// buffer in between.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub enum Chunk<'a> {
+    Slice(&'a [u8]),
+    Zero(u16),
 }
 
 #[cfg(feature = "heapless")]
@@ -36,6 +67,9 @@ impl<const N: usize> WriteBuf for heapless::Vec<u8, N> {
     }
     fn as_slice(&self) -> &[u8] {
         heapless::Vec::as_slice(self)
+    }
+    fn push_slice(&mut self, slice: &[u8]) -> Result<(), WriteError> {
+        heapless::Vec::extend_from_slice(self, slice).map_err(|_| WriteError::Overflow)
     }
 }
 

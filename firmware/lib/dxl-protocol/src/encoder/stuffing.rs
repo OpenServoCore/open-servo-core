@@ -33,4 +33,36 @@ impl Stuffer {
         }
         Ok(())
     }
+
+    /// Per-byte push over a slice; the window straddles slice boundaries
+    /// so consecutive `push_slice` calls behave identically to repeated
+    /// `push` calls. Default loops through `push`; faster impls could
+    /// scan the slice for the trigger triple inline.
+    pub(in crate::encoder) fn push_slice<W: WriteBuf>(
+        &mut self,
+        out: &mut W,
+        slice: &[u8],
+    ) -> Result<(), WriteError> {
+        for &b in slice {
+            self.push(out, b)?;
+        }
+        Ok(())
+    }
+
+    /// Append `n` zero bytes. Zeros can never complete the trigger
+    /// `FF FF FD` (the trailing byte must be `FD`), so the buffer write
+    /// uses [`WriteBuf::push_zero`] directly and the window is rebuilt
+    /// from the tail of the run.
+    pub(in crate::encoder) fn push_zero<W: WriteBuf>(
+        &mut self,
+        out: &mut W,
+        n: u16,
+    ) -> Result<(), WriteError> {
+        if n == 0 {
+            return Ok(());
+        }
+        out.push_zero(n)?;
+        self.0 = if n >= 2 { [0, 0] } else { [self.0[1], 0] };
+        Ok(())
+    }
 }

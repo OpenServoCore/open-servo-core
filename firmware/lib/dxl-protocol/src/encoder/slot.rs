@@ -1,10 +1,10 @@
 //! One slave's slice of a Fast Sync/Bulk Read coalesced reply chain.
 
-use crate::buf::{WriteBuf, WriteError};
+use crate::buf::{Chunk, WriteBuf, WriteError};
 use crate::crc::CrcUmts;
-use crate::types::{Slot, SlotPosition};
+use crate::types::{Id, Slot, SlotPosition, StatusError};
 
-use super::{emit_slot_body, emit_slot_header};
+use super::{emit_slot_body, emit_slot_body_chunked, emit_slot_header};
 
 pub struct SlotEncoder<'a, W: WriteBuf, CRC: CrcUmts> {
     out: &'a mut W,
@@ -108,6 +108,67 @@ impl<'a, W: WriteBuf, CRC: CrcUmts> SlotEncoder<'a, W, CRC> {
             SlotPosition::Middle => self.middle(slot),
             SlotPosition::Last { crc } => self.last(slot, crc),
         }
+    }
+
+    /// Streamed counterpart of [`Self::emit`]: same wire shape, but the
+    /// slot body bytes come from a chunk iterator instead of `Slot::data`.
+    /// Used by dispatchers that read straight from a control-table iterator
+    /// into the TX buffer with no intermediate scratch.
+    pub fn emit_chunked<'c, I>(
+        &mut self,
+        id: Id,
+        error: StatusError,
+        position: SlotPosition,
+        chunks: I,
+    ) -> Result<(), WriteError>
+    where
+        I: IntoIterator<Item = Chunk<'c>>,
+    {
+        let start = self.out.len();
+        match self.emit_chunked_inner(id, error, position, chunks, start) {
+            Ok(()) => Ok(()),
+            Err(e) => {
+                self.out.truncate(start);
+                Err(e)
+            }
+        }
+    }
+
+    fn emit_chunked_inner<'c, I>(
+        &mut self,
+        id: Id,
+        error: StatusError,
+        position: SlotPosition,
+        chunks: I,
+        start: usize,
+    ) -> Result<(), WriteError>
+    where
+        I: IntoIterator<Item = Chunk<'c>>,
+    {
+        match position {
+            SlotPosition::Only { packet_length } => {
+                emit_slot_header(self.out, packet_length)?;
+                emit_slot_body_chunked(self.out, id, error, chunks)?;
+                self.crc.reset();
+                self.crc.update(&self.out.as_slice()[start..]);
+                let crc = self.crc.finalize();
+                self.out.push(crc as u8)?;
+                self.out.push((crc >> 8) as u8)?;
+            }
+            SlotPosition::First { packet_length } => {
+                emit_slot_header(self.out, packet_length)?;
+                emit_slot_body_chunked(self.out, id, error, chunks)?;
+            }
+            SlotPosition::Middle => {
+                emit_slot_body_chunked(self.out, id, error, chunks)?;
+            }
+            SlotPosition::Last { crc } => {
+                emit_slot_body_chunked(self.out, id, error, chunks)?;
+                self.out.push(crc as u8)?;
+                self.out.push((crc >> 8) as u8)?;
+            }
+        }
+        Ok(())
     }
 }
 
@@ -245,6 +306,62 @@ mod tests {
         };
         SlotEncoder::<_, Crc>::new(&mut buf)
             .emit(&slot, SlotPosition::Only { packet_length: 9 })
+            .unwrap();
+        let evs = parse(&buf);
+        let _ = status_header(&evs);
+        assert_crc_good(&evs);
+    }
+
+    #[test]
+    fn slot_emit_chunked_matches_data_slice_path_for_each_position() {
+        let id = Id::new(0x0A);
+        let error = StatusError::from_byte(0x07);
+        let data = [0x11, 0x00, 0x00, 0x44, 0x55];
+        let slot = Slot { id, error, data: &data };
+
+        for position in [
+            SlotPosition::Only { packet_length: 11 },
+            SlotPosition::First { packet_length: 13 },
+            SlotPosition::Middle,
+            SlotPosition::Last { crc: 0x1234 },
+        ] {
+            let mut by_slice = Buf::new();
+            SlotEncoder::<_, Crc>::new(&mut by_slice)
+                .emit(&slot, position)
+                .unwrap();
+
+            let mut by_chunks = Buf::new();
+            SlotEncoder::<_, Crc>::new(&mut by_chunks)
+                .emit_chunked(
+                    id,
+                    error,
+                    position,
+                    [
+                        Chunk::Slice(&data[..1]),
+                        Chunk::Zero(2),
+                        Chunk::Slice(&data[3..]),
+                    ],
+                )
+                .unwrap();
+
+            assert_eq!(
+                by_slice.as_slice(),
+                by_chunks.as_slice(),
+                "position={position:?}",
+            );
+        }
+    }
+
+    #[test]
+    fn slot_emit_chunked_only_round_trips() {
+        let mut buf = Buf::new();
+        SlotEncoder::<_, Crc>::new(&mut buf)
+            .emit_chunked(
+                Id::new(7),
+                StatusError::OK,
+                SlotPosition::Only { packet_length: 9 },
+                [Chunk::Slice(&[0xAA, 0xBB]), Chunk::Zero(2)],
+            )
             .unwrap();
         let evs = parse(&buf);
         let _ = status_header(&evs);

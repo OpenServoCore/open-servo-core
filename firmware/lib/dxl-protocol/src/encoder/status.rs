@@ -1,10 +1,10 @@
 //! Status reply encoder (slave -> master).
 
-use crate::buf::{WriteBuf, WriteError};
+use crate::buf::{Chunk, WriteBuf, WriteError};
 use crate::crc::CrcUmts;
 use crate::types::{Id, Instruction, Status, StatusError};
 
-use super::emit_frame;
+use super::{emit_frame, emit_frame_with};
 
 pub struct StatusEncoder<'a, W: WriteBuf, CRC: CrcUmts> {
     out: &'a mut W,
@@ -44,6 +44,38 @@ impl<'a, W: WriteBuf, CRC: CrcUmts> StatusEncoder<'a, W, CRC> {
 
     pub fn read(&mut self, id: Id, error: StatusError, data: &[u8]) -> Result<(), WriteError> {
         self.frame(id, error, data)
+    }
+
+    /// Status::Read body from a chunk iterator: skips the dispatcher's
+    /// scratch buffer by stuffing each `Chunk::Slice` / `Chunk::Zero` run
+    /// straight from its source into the output. Frame layout (header +
+    /// error + stuffed body + CRC) matches [`Self::read`].
+    pub fn read_chunked<'c, I>(
+        &mut self,
+        id: Id,
+        error: StatusError,
+        chunks: I,
+    ) -> Result<(), WriteError>
+    where
+        I: IntoIterator<Item = Chunk<'c>>,
+    {
+        let err_byte = error.as_byte();
+        emit_frame_with(
+            self.out,
+            &mut self.crc,
+            id,
+            Instruction::Status.as_u8(),
+            |out, stuffer| {
+                stuffer.push(out, err_byte)?;
+                for chunk in chunks {
+                    match chunk {
+                        Chunk::Slice(s) => stuffer.push_slice(out, s)?,
+                        Chunk::Zero(n) => stuffer.push_zero(out, n)?,
+                    }
+                }
+                Ok(())
+            },
+        )
     }
 
     /// Vendor-extension escape hatch - Status reply with a chip-defined
@@ -233,6 +265,50 @@ mod tests {
         let h = status_header(&evs);
         assert_eq!(h.id, Id::new(0x0B));
         assert_eq!(read_data(&buf, &evs).as_slice(), &payload);
+    }
+
+    #[test]
+    fn status_read_chunked_matches_data_slice_path() {
+        // For any (slice/zero) chunk sequence whose payloads concatenate to
+        // the same bytes the `read(&[u8])` path takes, the encoded wire frame
+        // must be identical.
+        let payload = [0x10, 0x00, 0x00, 0x40, 0xFF, 0xFF, 0xFD];
+        let mut by_slice = Buf::new();
+        StatusEncoder::<_, Crc>::new(&mut by_slice)
+            .read(Id::new(0x04), StatusError::OK, &payload)
+            .unwrap();
+
+        let mut by_chunks = Buf::new();
+        StatusEncoder::<_, Crc>::new(&mut by_chunks)
+            .read_chunked(
+                Id::new(0x04),
+                StatusError::OK,
+                [
+                    Chunk::Slice(&payload[..1]),
+                    Chunk::Zero(2),
+                    Chunk::Slice(&payload[3..]),
+                ],
+            )
+            .unwrap();
+
+        assert_eq!(by_slice.as_slice(), by_chunks.as_slice());
+    }
+
+    #[test]
+    fn status_read_chunked_round_trips() {
+        let mut buf = Buf::new();
+        StatusEncoder::<_, Crc>::new(&mut buf)
+            .read_chunked(
+                Id::new(0x09),
+                StatusError::OK,
+                [Chunk::Slice(&[0x10, 0x20]), Chunk::Zero(2)],
+            )
+            .unwrap();
+        let evs = parse(&buf);
+        let h = status_header(&evs);
+        assert_eq!(h.id, Id::new(0x09));
+        assert_eq!(read_data(&buf, &evs).as_slice(), &[0x10, 0x20, 0, 0]);
+        assert_crc_good(&evs);
     }
 
     #[test]

@@ -19,9 +19,9 @@ pub use instruction::InstructionEncoder;
 pub use slot::SlotEncoder;
 pub use status::StatusEncoder;
 
-use crate::buf::{WriteBuf, WriteError};
+use crate::buf::{Chunk, WriteBuf, WriteError};
 use crate::crc::CrcUmts;
-use crate::types::{Id, Instruction, Slot};
+use crate::types::{Id, Instruction, Slot, StatusError};
 use crate::wire::HEADER;
 
 use stuffing::Stuffer;
@@ -140,8 +140,31 @@ pub(in crate::encoder) fn emit_slot_body<W: WriteBuf>(
 ) -> Result<(), WriteError> {
     out.push(slot.error.as_byte())?;
     out.push(slot.id.as_byte())?;
-    for &b in slot.data.iter() {
-        out.push(b)?;
+    out.push_slice(slot.data)
+}
+
+/// Body emitter for a slot whose data comes from a chunk iterator. Same
+/// wire shape as [`emit_slot_body`] (`error`, `id`, then `data...`) but
+/// the data bytes are written straight from each `Chunk::Slice` /
+/// `Chunk::Zero` without a scratch buffer in between. Slot bodies are
+/// unstuffed, so this is a plain `push_slice` / `push_zero` per chunk.
+pub(in crate::encoder) fn emit_slot_body_chunked<'a, W, I>(
+    out: &mut W,
+    id: Id,
+    error: StatusError,
+    chunks: I,
+) -> Result<(), WriteError>
+where
+    W: WriteBuf,
+    I: IntoIterator<Item = Chunk<'a>>,
+{
+    out.push(error.as_byte())?;
+    out.push(id.as_byte())?;
+    for chunk in chunks {
+        match chunk {
+            Chunk::Slice(s) => out.push_slice(s)?,
+            Chunk::Zero(n) => out.push_zero(n)?,
+        }
     }
     Ok(())
 }

@@ -16,7 +16,7 @@ pub mod wire;
 #[cfg(test)]
 mod test_util;
 
-pub use buf::{WriteBuf, WriteError};
+pub use buf::{Chunk, WriteBuf, WriteError};
 pub use crc::CrcUmts;
 #[cfg(feature = "software-crc")]
 pub use crc::SoftwareCrcUmts;
