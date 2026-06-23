@@ -31,8 +31,11 @@
 ///
 /// USART bit-clock alignment (0-16 ticks at 3 Mbaud) is *excluded* — that
 /// jitter pushes the wire-bit later, which is the safe direction.
-/// Measured: TBD (bench, `#8`).
-pub const TX_START_ENTRY_TICKS: u16 = 46;
+/// Measured: 35 (tool-tune-tx-start, 4 × 20000 pings @ 3 Mbaud; mean of
+/// K_recommended at 3-tick safety margin). Deep tail (1 run in 4) can
+/// land 1 HCLK tick before deadline — acceptable at 3 Mbaud where slot
+/// RDT absorbs it.
+pub const TX_START_ENTRY_TICKS: u16 = 35;
 
 /// Set-and-recheck threshold for the §5.4 wrap-into-past guard. Largest
 /// legitimate `(CCR3 - CNT) & 0xFFFF` value expected at `schedule` time —
