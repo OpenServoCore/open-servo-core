@@ -1,9 +1,10 @@
 use dxl_protocol::streaming::{
     CrcResult, Event, HeaderEvent, InstructionHeader, InstructionPayload, PayloadEvent,
 };
-use dxl_protocol::types::{ErrorCode, Id, PingStatus, Slot, Status, StatusError};
+use dxl_protocol::types::{ErrorCode, Id, PingStatus, Status, StatusError};
+use dxl_protocol::Chunk;
 
-use control_table::Snapshot;
+use control_table::{ReadChunk, Snapshot};
 
 use crate::regions::hooks::ControlTableHooks;
 use crate::traits::{DxlDispatcher, DxlReply};
@@ -307,11 +308,6 @@ impl Dispatcher<'_> {
         let _ = reply.send_status(status);
     }
 
-    fn send_slot<R: DxlReply>(reply: &mut R, slot: &Slot<'_>) {
-        crate::log::debug!("dispatcher: send_slot slot={:?}", slot);
-        let _ = reply.send_slot(slot);
-    }
-
     fn reply_unsupported<R: DxlReply>(&mut self, ctx: &Ctx, target: Id, reply: &mut R) {
         if ctx.level < StatusReturnLevel::All {
             return;
@@ -394,19 +390,8 @@ impl Dispatcher<'_> {
             );
             return;
         }
-        let mut buf = [0u8; MAX_CONTROL_RW];
-        let r = match self.shared.table.read_bytes(address, &mut buf[..len]) {
-            Ok(()) => Status::Read {
-                id,
-                error: StatusError::OK,
-                data: &buf[..len],
-            },
-            Err(e) => Status::Empty {
-                id,
-                error: error_to_status(e),
-            },
-        };
-        Self::send_status(reply, r);
+        let chunks = self.shared.table.read_iter(address, length).map(into_chunk);
+        let _ = reply.send_status_read_chunked(id, StatusError::OK, chunks);
     }
 
     fn handle_write<R: DxlReply>(
@@ -549,19 +534,8 @@ impl Dispatcher<'_> {
             );
             return;
         }
-        let mut buf = [0u8; MAX_CONTROL_RW];
-        let r = match self.shared.table.read_bytes(address, &mut buf[..len]) {
-            Ok(()) => Status::Read {
-                id: ctx.id,
-                error: StatusError::OK,
-                data: &buf[..len],
-            },
-            Err(e) => Status::Empty {
-                id: ctx.id,
-                error: error_to_status(e),
-            },
-        };
-        Self::send_status(reply, r);
+        let chunks = self.shared.table.read_iter(address, length).map(into_chunk);
+        let _ = reply.send_status_read_chunked(ctx.id, StatusError::OK, chunks);
     }
 
     fn handle_sync_write<R: DxlReply>(
@@ -606,19 +580,12 @@ impl Dispatcher<'_> {
             );
             return;
         }
-        let mut buf = [0u8; MAX_CONTROL_RW];
-        let r = match self.shared.table.read_bytes(slot.address, &mut buf[..len]) {
-            Ok(()) => Status::Read {
-                id: ctx.id,
-                error: StatusError::OK,
-                data: &buf[..len],
-            },
-            Err(e) => Status::Empty {
-                id: ctx.id,
-                error: error_to_status(e),
-            },
-        };
-        Self::send_status(reply, r);
+        let chunks = self
+            .shared
+            .table
+            .read_iter(slot.address, slot.length)
+            .map(into_chunk);
+        let _ = reply.send_status_read_chunked(ctx.id, StatusError::OK, chunks);
     }
 
     fn handle_bulk_write<R: DxlReply>(&mut self, inflight: &Inflight, reply: &mut R) {
@@ -656,21 +623,18 @@ impl Dispatcher<'_> {
         if len == 0 || len > MAX_CONTROL_RW {
             return;
         }
-        // On read failure: emit `length` zero bytes so the chain stays
-        // positionally aligned; the error byte carries the code.
-        let mut buf = [0u8; MAX_CONTROL_RW];
-        let (error, data_len) = match self.shared.table.read_bytes(slot.address, &mut buf[..len]) {
-            Ok(()) => (StatusError::OK, len),
-            Err(e) => {
-                buf[..len].fill(0);
-                (error_to_status(e), len)
-            }
-        };
-        let slot_reply = Slot {
-            id: ctx.id,
-            error,
-            data: &buf[..data_len],
-        };
-        Self::send_slot(reply, &slot_reply);
+        let chunks = self
+            .shared
+            .table
+            .read_iter(slot.address, slot.length)
+            .map(into_chunk);
+        let _ = reply.send_slot_chunked(ctx.id, StatusError::OK, chunks);
+    }
+}
+
+fn into_chunk(c: ReadChunk<'_>) -> Chunk<'_> {
+    match c {
+        ReadChunk::Copy(s) => Chunk::Slice(s),
+        ReadChunk::Zero(n) => Chunk::Zero(n),
     }
 }
