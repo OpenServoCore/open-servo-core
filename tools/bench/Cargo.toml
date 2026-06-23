@@ -22,6 +22,10 @@ path = "src/bin/tool-hsi-conv.rs"
 name = "tool-fast-stress"
 path = "src/bin/tool-fast-stress.rs"
 
+[[bin]]
+name = "tool-tune-tx-start"
+path = "src/bin/tool-tune-tx-start.rs"
+
 [dependencies]
 dxl-protocol = { path = "../../firmware/lib/dxl-protocol", features = ["heapless", "software-crc"] }
 heapless     = "0.9"
