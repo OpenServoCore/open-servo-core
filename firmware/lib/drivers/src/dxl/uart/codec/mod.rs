@@ -20,8 +20,8 @@ use core::cell::SyncUnsafeCell;
 use core::marker::PhantomData;
 
 use dxl_protocol::streaming::{Event, HeaderEvent, InstructionPayload, Parser, PayloadEvent};
-use dxl_protocol::types::{Slot, Status};
-use dxl_protocol::{CrcUmts, SlotEncoder, SlotPosition, StatusEncoder, WriteError};
+use dxl_protocol::types::{Id, Slot, Status, StatusError};
+use dxl_protocol::{Chunk, CrcUmts, SlotEncoder, SlotPosition, StatusEncoder, WriteError};
 
 use super::BITS_PER_FRAME;
 use crate::traits::dxl::{EdgeDma, RxDma};
@@ -572,6 +572,41 @@ impl<CRC: CrcUmts, const TX_BUF_LEN: usize> CodecTx<CRC, TX_BUF_LEN> {
     pub fn send_slot(&mut self, slot: &Slot<'_>, position: SlotPosition) -> Result<(), WriteError> {
         self.tx_buf.clear();
         SlotEncoder::<_, CRC>::new(&mut self.tx_buf).emit(slot, position)
+    }
+
+    /// Streamed counterpart of [`Self::send_status`] for `Status::Read`
+    /// replies: the dispatcher hands an iterator of [`Chunk`]s sourced
+    /// directly from a control-table read; the stuffer consumes them in
+    /// place of a scratch buffer.
+    pub fn send_status_read_chunked<'c, I>(
+        &mut self,
+        id: Id,
+        error: StatusError,
+        chunks: I,
+    ) -> Result<(), WriteError>
+    where
+        I: IntoIterator<Item = Chunk<'c>>,
+    {
+        self.tx_buf.clear();
+        StatusEncoder::<_, CRC>::new(&mut self.tx_buf).read_chunked(id, error, chunks)
+    }
+
+    /// Streamed counterpart of [`Self::send_slot`]: slot body bytes come
+    /// from a chunk iterator. Slot bodies are unstuffed, so each
+    /// `Chunk::Slice` is a single `push_slice` and `Chunk::Zero` a
+    /// single `push_zero` on the TX buffer.
+    pub fn send_slot_chunked<'c, I>(
+        &mut self,
+        id: Id,
+        error: StatusError,
+        position: SlotPosition,
+        chunks: I,
+    ) -> Result<(), WriteError>
+    where
+        I: IntoIterator<Item = Chunk<'c>>,
+    {
+        self.tx_buf.clear();
+        SlotEncoder::<_, CRC>::new(&mut self.tx_buf).emit_chunked(id, error, position, chunks)
     }
 
     /// Stable peripheral-memory address for DMA1_CH4's source buffer.

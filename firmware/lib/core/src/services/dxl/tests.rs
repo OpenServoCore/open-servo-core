@@ -3,7 +3,7 @@ use dxl_protocol::streaming::{
     Event, HeaderEvent, InstructionPayload, Parser, PayloadEvent, StatusPayload,
 };
 use dxl_protocol::types::{BulkReadEntry, ErrorCode, Id, Slot, Status, StatusError};
-use dxl_protocol::{CrcUmts, InstructionEncoder, SlotEncoder, StatusEncoder, WriteError};
+use dxl_protocol::{Chunk, CrcUmts, InstructionEncoder, SlotEncoder, StatusEncoder, WriteError};
 use heapless::Vec;
 
 const BROADCAST_ID: Id = Id::BROADCAST;
@@ -92,6 +92,62 @@ impl DxlReply for FakeReply {
         let len = (3 + slot.data.len() + 2) as u16;
         SlotEncoder::<_, TestDxlCrc>::new(&mut self.tx).emit(
             slot,
+            dxl_protocol::SlotPosition::Only { packet_length: len },
+        )?;
+        self.send_count += 1;
+        self.last_kind = Some(ReplyKind::Slot);
+        Ok(())
+    }
+
+    fn send_status_read_chunked<'c, I>(
+        &mut self,
+        id: Id,
+        error: StatusError,
+        chunks: I,
+    ) -> Result<(), WriteError>
+    where
+        I: IntoIterator<Item = Chunk<'c>>,
+    {
+        self.tx.clear();
+        StatusEncoder::<_, TestDxlCrc>::new(&mut self.tx).read_chunked(id, error, chunks)?;
+        self.send_count += 1;
+        self.last_kind = Some(ReplyKind::Plain);
+        Ok(())
+    }
+
+    fn send_slot_chunked<'c, I>(
+        &mut self,
+        id: Id,
+        error: StatusError,
+        chunks: I,
+    ) -> Result<(), WriteError>
+    where
+        I: IntoIterator<Item = Chunk<'c>>,
+    {
+        // Match the slice-path mock: force `Only` + compute the framing length
+        // by buffering the chunks into a tiny scratch first. Production never
+        // routes the chunked slot through this position; the buffering is
+        // bounded by the test slot payloads (sub-32 B).
+        self.tx.clear();
+        let mut scratch: Vec<u8, 64> = Vec::new();
+        for chunk in chunks {
+            match chunk {
+                Chunk::Slice(s) => scratch.extend_from_slice(s).map_err(|_| WriteError::Overflow)?,
+                Chunk::Zero(n) => {
+                    for _ in 0..n {
+                        scratch.push(0).map_err(|_| WriteError::Overflow)?;
+                    }
+                }
+            }
+        }
+        let len = (3 + scratch.len() + 2) as u16;
+        let slot = Slot {
+            id,
+            error,
+            data: &scratch,
+        };
+        SlotEncoder::<_, TestDxlCrc>::new(&mut self.tx).emit(
+            &slot,
             dxl_protocol::SlotPosition::Only { packet_length: len },
         )?;
         self.send_count += 1;

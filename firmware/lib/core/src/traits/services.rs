@@ -1,6 +1,6 @@
-use dxl_protocol::WriteError;
 use dxl_protocol::streaming::Event;
-use dxl_protocol::types::{Slot, Status};
+use dxl_protocol::types::{Id, Slot, Status, StatusError};
+use dxl_protocol::{Chunk, WriteError};
 
 use crate::{BaudRate, BootMode};
 
@@ -21,6 +21,32 @@ pub trait DxlReply {
     /// bus's cached request state; Last engages the chain-CRC fold
     /// scheduler arm.
     fn send_slot(&mut self, slot: &Slot<'_>) -> Result<(), WriteError>;
+
+    /// Streamed counterpart of [`Self::send_status`] for `Status::Read`
+    /// replies: the dispatcher hands a [`Chunk`] iterator (sourced from
+    /// a control-table read), which the bus stuffs straight into the TX
+    /// buffer without a scratch copy.
+    fn send_status_read_chunked<'c, I>(
+        &mut self,
+        id: Id,
+        error: StatusError,
+        chunks: I,
+    ) -> Result<(), WriteError>
+    where
+        I: IntoIterator<Item = Chunk<'c>>;
+
+    /// Streamed counterpart of [`Self::send_slot`]: slot body bytes come
+    /// from a [`Chunk`] iterator instead of a `Slot::data` slice. Slot
+    /// position and chain-CRC anchor still come from the bus's cached
+    /// request state.
+    fn send_slot_chunked<'c, I>(
+        &mut self,
+        id: Id,
+        error: StatusError,
+        chunks: I,
+    ) -> Result<(), WriteError>
+    where
+        I: IntoIterator<Item = Chunk<'c>>;
 
     /// Stage a deferred ID change — applies after the next TX completes.
     fn stage_id(&mut self, id: u8);

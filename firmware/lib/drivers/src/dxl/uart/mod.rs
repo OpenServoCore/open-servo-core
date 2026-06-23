@@ -18,7 +18,7 @@ use dxl_protocol::streaming::{
     CrcResult, Event, HeaderEvent, InstructionHeader, InstructionPayload, PayloadEvent,
 };
 use dxl_protocol::wire::{BROADCAST_ID, CRC_BYTES, RESPONSE_HEADER_BYTES};
-use dxl_protocol::{Id, Slot, SlotPosition, Status, WriteError};
+use dxl_protocol::{Chunk, Id, Slot, SlotPosition, Status, StatusError, WriteError};
 use osc_core::{BaudRate, BootMode, DxlReply};
 
 use crate::traits::dxl::{Providers, RxDma, SendKind, TxBus, TxScheduler, WireClock};
@@ -408,17 +408,42 @@ impl<P: Providers, const TX_BUF_LEN: usize> ReplyHandle<'_, P, TX_BUF_LEN> {
     pub fn send_status(&mut self, status: Status<'_>) -> Result<(), WriteError> {
         crate::log::trace!("dxl: send_status entry");
         self.tx.send_status(status)?;
+        self.schedule_after_status_encode();
+        Ok(())
+    }
+
+    /// Streamed counterpart of [`Self::send_status`] for `Status::Read`
+    /// replies: the dispatcher hands a [`Chunk`] iterator from a
+    /// control-table read, skipping the 128 B scratch buffer. Encode +
+    /// scheduling shape are identical to [`Self::send_status`].
+    pub fn send_status_read_chunked<'c, I>(
+        &mut self,
+        id: Id,
+        error: StatusError,
+        chunks: I,
+    ) -> Result<(), WriteError>
+    where
+        I: IntoIterator<Item = Chunk<'c>>,
+    {
+        crate::log::trace!("dxl: send_status_read_chunked entry");
+        self.tx.send_status_read_chunked(id, error, chunks)?;
+        self.schedule_after_status_encode();
+        Ok(())
+    }
+
+    /// Post-encode scheduling shared by [`Self::send_status`] and the
+    /// streamed variants. Plain chain k > 0 defers to predecessor; every
+    /// other path lands a single `Plain` schedule entry against the
+    /// cached `packet_end_tick` + RDT + slot offset.
+    fn schedule_after_status_encode(&mut self) {
         let Some(ctx) = self.last_reply_ctx.take() else {
             crate::log::debug!("dxl: send_status drop (no reply ctx)");
-            return Ok(());
+            return;
         };
-        // Plain chain slot k > 0 — defer the wire send to the codec's
-        // SkipComplete match on `predecessor_id` (`docs/dxl-streaming-rx.md`
-        // §5.2). Anchor-independent: no `packet_end_tick` needed.
         if let Some(pred) = ctx.predecessor_id {
             crate::log::debug!("dxl: send_status defer to predecessor={}", pred);
             *self.predecessor_id = Some(pred);
-            return Ok(());
+            return;
         }
         let packet_end_tick = ctx.packet_end_tick;
         let byte_count = self.tx.tx_len();
@@ -436,7 +461,6 @@ impl<P: Providers, const TX_BUF_LEN: usize> ReplyHandle<'_, P, TX_BUF_LEN> {
         );
         self.scheduler
             .schedule(deadline, byte_count, SendKind::Plain);
-        Ok(())
     }
 
     /// Encode one Fast Sync/Bulk Read slot reply and schedule its wire
@@ -447,14 +471,7 @@ impl<P: Providers, const TX_BUF_LEN: usize> ReplyHandle<'_, P, TX_BUF_LEN> {
     /// [`Clock::bytes_to_ticks`]) so the inter-slot gap stays exact at
     /// every baud, including the ~3.33 µs at 3 Mbaud.
     pub fn send_slot(&mut self, slot: &Slot<'_>) -> Result<(), WriteError> {
-        let Some(ctx) = self.last_reply_ctx.take() else {
-            crate::log::debug!("dxl[id={}]: send_slot drop (no reply ctx)", self.id);
-            return Ok(());
-        };
-        let Some(position) = ctx.fast_slot_position else {
-            // No Fast slot in the cached context — caller routed wrong;
-            // drop silently (dispatcher bug, not driver concern).
-            crate::log::debug!("dxl[id={}]: send_slot drop (no fast slot pos)", self.id);
+        let Some((ctx, position)) = self.take_slot_ctx() else {
             return Ok(());
         };
         crate::log::debug!(
@@ -464,6 +481,59 @@ impl<P: Providers, const TX_BUF_LEN: usize> ReplyHandle<'_, P, TX_BUF_LEN> {
             position
         );
         self.tx.send_slot(slot, position)?;
+        self.schedule_after_slot_encode(ctx, position);
+        Ok(())
+    }
+
+    /// Streamed counterpart of [`Self::send_slot`]: slot body bytes come
+    /// from a [`Chunk`] iterator sourced directly from a control-table
+    /// read. The cached `ReplyContext` provides the slot position; the
+    /// post-encode schedule + Fast Last arm path is identical to
+    /// [`Self::send_slot`].
+    pub fn send_slot_chunked<'c, I>(
+        &mut self,
+        id: Id,
+        error: StatusError,
+        chunks: I,
+    ) -> Result<(), WriteError>
+    where
+        I: IntoIterator<Item = Chunk<'c>>,
+    {
+        let Some((ctx, position)) = self.take_slot_ctx() else {
+            return Ok(());
+        };
+        crate::log::debug!(
+            "dxl[id={}]: send_slot_chunked id={} err={:?} position={:?}",
+            self.id,
+            id.as_byte(),
+            error,
+            position,
+        );
+        self.tx.send_slot_chunked(id, error, position, chunks)?;
+        self.schedule_after_slot_encode(ctx, position);
+        Ok(())
+    }
+
+    /// Take the cached reply context iff it carries a Fast slot position;
+    /// shared between the slice and streamed slot paths. Logs and returns
+    /// `None` on the two drop cases (no context, no slot).
+    fn take_slot_ctx(&mut self) -> Option<(ReplyContext, SlotPosition)> {
+        let ctx = self.last_reply_ctx.take().or_else(|| {
+            crate::log::debug!("dxl[id={}]: send_slot drop (no reply ctx)", self.id);
+            None
+        })?;
+        let Some(position) = ctx.fast_slot_position else {
+            crate::log::debug!("dxl[id={}]: send_slot drop (no fast slot pos)", self.id);
+            return None;
+        };
+        Some((ctx, position))
+    }
+
+    /// Post-encode scheduling for a slot reply: anchor against
+    /// `packet_end_tick`, fold RDT + per-source floor + slot offset into
+    /// the deadline, tag the entry `FastLast` for Last, and arm the
+    /// chain-CRC fold engine on Last.
+    fn schedule_after_slot_encode(&mut self, ctx: ReplyContext, position: SlotPosition) {
         let byte_count = self.tx.tx_len();
         let packet_end_tick = ctx.packet_end_tick;
         let byte_ticks = self.clock.ticks_per_bit().wrapping_mul(BITS_PER_FRAME);
@@ -492,10 +562,6 @@ impl<P: Providers, const TX_BUF_LEN: usize> ReplyHandle<'_, P, TX_BUF_LEN> {
         };
         let deadline = packet_end_tick.wrapping_add(delay_ticks);
         self.scheduler.schedule(deadline, byte_count, kind);
-        // Fast Last: arm the periodic-walk grid + chain-CRC fold engine.
-        // `slot_offset_bytes` on Last == `bytes_before` == predecessor wire
-        // bytes (excluding our own reply); the fold absorbs that count
-        // before patching our trailing placeholder CRC slot.
         if matches!(position, SlotPosition::Last { .. }) {
             // Same effective RDT as the schedule above so the fold grid
             // back-dates from the right anchor; `FastLastSchedule::rdt_ticks`
@@ -511,7 +577,6 @@ impl<P: Providers, const TX_BUF_LEN: usize> ReplyHandle<'_, P, TX_BUF_LEN> {
             self.fast_last_crc
                 .start(ctx.fold_start_cursor, ctx.slot_offset_bytes);
         }
-        Ok(())
     }
 
     /// Drop any scheduled TX, clear chain-pending state, and clear the
@@ -557,6 +622,30 @@ impl<P: Providers, const TX_BUF_LEN: usize> DxlReply for ReplyHandle<'_, P, TX_B
 
     fn send_slot(&mut self, slot: &Slot<'_>) -> Result<(), WriteError> {
         ReplyHandle::send_slot(self, slot)
+    }
+
+    fn send_status_read_chunked<'c, I>(
+        &mut self,
+        id: Id,
+        error: StatusError,
+        chunks: I,
+    ) -> Result<(), WriteError>
+    where
+        I: IntoIterator<Item = Chunk<'c>>,
+    {
+        ReplyHandle::send_status_read_chunked(self, id, error, chunks)
+    }
+
+    fn send_slot_chunked<'c, I>(
+        &mut self,
+        id: Id,
+        error: StatusError,
+        chunks: I,
+    ) -> Result<(), WriteError>
+    where
+        I: IntoIterator<Item = Chunk<'c>>,
+    {
+        ReplyHandle::send_slot_chunked(self, id, error, chunks)
     }
 
     fn stage_id(&mut self, id: u8) {
