@@ -31,11 +31,16 @@
 ///
 /// USART bit-clock alignment (0-16 ticks at 3 Mbaud) is *excluded* — that
 /// jitter pushes the wire-bit later, which is the safe direction.
-/// Measured: 35 (tool-tune-tx-start, 4 × 20000 pings @ 3 Mbaud; mean of
-/// K_recommended at 3-tick safety margin). Deep tail (1 run in 4) can
-/// land 1 HCLK tick before deadline — acceptable at 3 Mbaud where slot
-/// RDT absorbs it.
-pub const TX_START_ENTRY_TICKS: u16 = 35;
+///
+/// Measured: 60 (tool-tune-tx-start @ 3 Mbaud, 20 × 1000 pings, p0.1
+/// estimator). p0.1 wire excess sits at ≈0 µs and p95-median spread is
+/// ~0.3 µs — well below the ~1.5 µs cliff where CCR3 lands too close to
+/// TIM2 CNT at schedule time and the USART/DMA setup races with CC3 IRQ
+/// (corrupting the reply's first byte → snoop-CRC rejection on Fast Sync
+/// chains). The median (+0.6 µs after deadline) is the post-stamp floor:
+/// `dma::enable` + DMA AHB arb + USART DR write cannot be squeezed
+/// further. K bigger than ~63 starts hitting the cliff.
+pub const TX_START_ENTRY_TICKS: u16 = 60;
 
 /// Set-and-recheck threshold for the §5.4 wrap-into-past guard. Largest
 /// legitimate `(CCR3 - CNT) & 0xFFFF` value expected at `schedule` time —
