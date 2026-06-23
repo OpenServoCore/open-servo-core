@@ -25,7 +25,8 @@
 use crate::support::{Setup, baud_matrix, setup_with};
 use dxl_protocol::types::Id;
 use osc_core::BaudRate;
-use osc_integration::sim::DEFAULT_RDT_US;
+use osc_core::regions::config::addr::comms;
+use osc_integration::sim::{DEFAULT_RDT_US, byte_time_ns};
 use rstest::rstest;
 use rstest_reuse::apply;
 
@@ -236,6 +237,128 @@ fn fine_trim_phase_adjust_under_negative_drift_is_positive() {
     assert_eq!(
         phase, 4,
         "expected +4 HCLK ticks (over-corrected at -0.4% drift)",
+    );
+}
+
+/// Max realistic RDT (`u8 × 2 µs`). Phase-adjust scales by `delay_ticks`,
+/// so a larger RDT gives `projected_phase_error_hclk` more leverage. At 1M
+/// baud × 510 µs the uncorrected wire-bit drift under ±0.4% factory drift
+/// (post-convergence ≈ ±1020 ppm live residual) is ~530 ns ≈ 0.5 bp —
+/// well above the [`FINE_TRIM_WIRE_TOLERANCE_NS`] floor.
+const FINE_TRIM_WIRE_RDT_US: u32 = 510;
+/// Sub-bit-period tolerance for fixed-1M-baud wire-edge tests. 10× the
+/// observed ~10 ns residual after phase_adjust correctly cancels ±0.4%
+/// drift, 5× under the smallest catchable bug (a 25% scale error in
+/// `projected_phase_error_hclk` lands ~130 ns drift; a missing wireup
+/// at a scheduler call site lands ~530 ns; a sign bug lands ~1060 ns).
+const FINE_TRIM_WIRE_TOLERANCE_NS: u64 = 100;
+
+/// At nominal HSI the integrator's residual stays zero; phase_adjust is
+/// zero; the reply's first wire bit lands exactly on
+/// `packet_end + max(RDT, byte_time)`. Baseline against the drift cases
+/// below — any non-zero phase_adjust here would point at residual
+/// accumulation on a quiescent integrator.
+#[test_log::test]
+fn fine_trim_wire_edge_at_nominal_drift_lands_on_packet_end_plus_rdt() {
+    let Setup { mut sim, host, .. } = setup_with(1, FINE_TRIM_BAUD, FINE_TRIM_WIRE_RDT_US);
+
+    for _ in 0..PING_BUDGET {
+        sim.with_host(host, |h| {
+            h.send_ping(TARGET);
+            h.wait_for_reply();
+        });
+    }
+    sim.host_mut(host).clear_logs();
+    sim.with_host(host, |h| {
+        h.send_read(TARGET, comms::ID, 1);
+        h.wait_for_reply();
+    });
+
+    let packet_end = sim.host(host).packet_end_ns().expect("read sent");
+    let starts = sim.host(host).rx_byte_starts_ns();
+    let actual = *starts.first().expect("at least one reply byte");
+    let rdt_ns = (FINE_TRIM_WIRE_RDT_US as u64) * 1_000;
+    let expected = packet_end + rdt_ns.max(byte_time_ns(FINE_TRIM_BAUD));
+    let drift = actual.abs_diff(expected);
+    assert!(
+        drift < FINE_TRIM_WIRE_TOLERANCE_NS,
+        "actual {actual}ns, expected {expected}ns, drift {drift}ns (tol {FINE_TRIM_WIRE_TOLERANCE_NS}ns)",
+    );
+}
+
+/// +0.4% factory drift → boot fires -5000 ppm, live HSI lands at ~-1020 ppm
+/// (slow). Without phase_adjust the chip's TX countdown runs slow, so the
+/// reply's first wire bit lands ~530 ns LATE. The negative residual_q8
+/// → negative phase_adjust pulls the chip-tick deadline EARLIER, cancelling
+/// the wall-clock drift.
+#[test_log::test]
+fn fine_trim_wire_edge_under_positive_drift_lands_on_packet_end_plus_rdt() {
+    let Setup {
+        mut sim,
+        host,
+        servos,
+    } = setup_with(1, FINE_TRIM_BAUD, FINE_TRIM_WIRE_RDT_US);
+    sim.servo_mut(servos[0]).set_hsi_drift(1, 250);
+
+    for _ in 0..PING_BUDGET {
+        sim.with_host(host, |h| {
+            h.send_ping(TARGET);
+            h.wait_for_reply();
+        });
+    }
+    sim.host_mut(host).clear_logs();
+    sim.with_host(host, |h| {
+        h.send_read(TARGET, comms::ID, 1);
+        h.wait_for_reply();
+    });
+
+    let packet_end = sim.host(host).packet_end_ns().expect("read sent");
+    let starts = sim.host(host).rx_byte_starts_ns();
+    let actual = *starts.first().expect("at least one reply byte");
+    let rdt_ns = (FINE_TRIM_WIRE_RDT_US as u64) * 1_000;
+    let expected = packet_end + rdt_ns.max(byte_time_ns(FINE_TRIM_BAUD));
+    let drift = actual.abs_diff(expected);
+    assert!(
+        drift < FINE_TRIM_WIRE_TOLERANCE_NS,
+        "actual {actual}ns, expected {expected}ns, drift {drift}ns (tol {FINE_TRIM_WIRE_TOLERANCE_NS}ns)",
+    );
+}
+
+/// -0.4% factory drift, symmetric to the +drift case. Boot fires +5000 ppm,
+/// live HSI lands at ~+1020 ppm (fast); without phase_adjust the chip-tick
+/// countdown overshoots and the wire bit lands ~500 ns EARLY. The positive
+/// residual_q8 → positive phase_adjust pushes the deadline LATER, cancelling
+/// the drift.
+#[test_log::test]
+fn fine_trim_wire_edge_under_negative_drift_lands_on_packet_end_plus_rdt() {
+    let Setup {
+        mut sim,
+        host,
+        servos,
+    } = setup_with(1, FINE_TRIM_BAUD, FINE_TRIM_WIRE_RDT_US);
+    sim.servo_mut(servos[0]).set_hsi_drift(-1, 250);
+
+    for _ in 0..PING_BUDGET {
+        sim.with_host(host, |h| {
+            h.send_ping(TARGET);
+            h.wait_for_reply();
+        });
+    }
+    sim.host_mut(host).clear_logs();
+    sim.with_host(host, |h| {
+        h.send_read(TARGET, comms::ID, 1);
+        h.wait_for_reply();
+    });
+
+    let packet_end = sim.host(host).packet_end_ns().expect("read sent");
+    let starts = sim.host(host).rx_byte_starts_ns();
+    let actual = *starts.first().expect("at least one reply byte");
+    let rdt_ns = (FINE_TRIM_WIRE_RDT_US as u64) * 1_000;
+    let expected = packet_end + rdt_ns.max(byte_time_ns(FINE_TRIM_BAUD));
+    let drift = actual.abs_diff(expected);
+    assert!(
+        drift < FINE_TRIM_WIRE_TOLERANCE_NS,
+        "actual {actual}ns, expected {expected}ns, drift {drift}ns (tol {FINE_TRIM_WIRE_TOLERANCE_NS}ns)",
     );
 }
 
