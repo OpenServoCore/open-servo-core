@@ -84,6 +84,12 @@ impl Bucket {
     }
 }
 
+/// Wall-clock delay between master IDLE and the pirate's injected predecessor
+/// status reply for `last`/`middle` shots. 250 µs ≈ one nominal DXL RDT —
+/// matches the legacy `pirate_chip_stress.py` baseline and exercises the
+/// SysTick CMP-scheduled fire path (vs the `after_idle=0` immediate path).
+const INJ_ARM_AFTER_IDLE_US: u32 = 250;
+
 struct Tally([u32; 5]);
 impl Tally {
     fn new() -> Self {
@@ -740,7 +746,7 @@ fn shot_last(
     let request = build_fast_bulk_read(&entries)?;
     let _ = pirate.drain_stamps()?;
     let b0 = pirate.bytes_count()?;
-    pirate.arm(&inj_bytes, 250 * 18)?;
+    pirate.arm(&inj_bytes, INJ_ARM_AFTER_IDLE_US)?;
     pirate.master(&request)?;
     sleep(Duration::from_secs_f64(shot_wait_ms / 1000.0));
     let b1 = pirate.bytes_count()?;
@@ -845,7 +851,7 @@ fn shot_middle(
     let request = build_fast_bulk_read(&entries)?;
     let _ = pirate.drain_stamps()?;
     let b0 = pirate.bytes_count()?;
-    pirate.arm(&inj_bytes, 250 * 18)?;
+    pirate.arm(&inj_bytes, INJ_ARM_AFTER_IDLE_US)?;
     pirate.master(&request)?;
     sleep(Duration::from_secs_f64(shot_wait_ms / 1000.0));
     let b1 = pirate.bytes_count()?;

@@ -40,6 +40,7 @@ pub enum IdleStamp {
 pub struct PirateClient {
     port: Box<dyn SerialPort>,
     port_path: String,
+    hz_per_us: Option<u32>,
 }
 
 impl PirateClient {
@@ -64,6 +65,7 @@ impl PirateClient {
         Ok(Self {
             port,
             port_path: port_path.to_string(),
+            hz_per_us: None,
         })
     }
 
@@ -142,20 +144,28 @@ impl PirateClient {
         parse_kv::<u32>(&reply, "BYTES")
     }
 
+    /// SysTick ticks per microsecond on the pirate (a compile-time firmware
+    /// constant). Cached after the first query.
     pub fn hz_per_us(&mut self) -> Result<u32> {
+        if let Some(v) = self.hz_per_us {
+            return Ok(v);
+        }
         let reply = self.command("HZ")?;
-        parse_kv::<u32>(&reply, "HZ")
+        let v = parse_kv::<u32>(&reply, "HZ")?;
+        self.hz_per_us = Some(v);
+        Ok(v)
     }
 
     pub fn master(&mut self, data: &[u8]) -> Result<()> {
         self.expect_ok(&format!("MASTER bytes={}", hex(data)))
     }
 
-    pub fn arm(&mut self, data: &[u8], after_idle_ticks: u32) -> Result<()> {
-        self.expect_ok(&format!(
-            "ARM bytes={} after_idle={after_idle_ticks}",
-            hex(data)
-        ))
+    /// Stage `data` to fire `after_idle_us` microseconds after the next bus
+    /// IDLE. Wall-clock units — the µs→tick conversion uses the pirate's
+    /// cached `hz_per_us` so callers stay firmware-version-agnostic.
+    pub fn arm(&mut self, data: &[u8], after_idle_us: u32) -> Result<()> {
+        let ticks = after_idle_us * self.hz_per_us()?;
+        self.expect_ok(&format!("ARM bytes={} after_idle={ticks}", hex(data)))
     }
 
     pub fn fire(&mut self, data: &[u8], at_tick: u64) -> Result<()> {
