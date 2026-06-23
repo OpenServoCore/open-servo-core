@@ -97,23 +97,30 @@ pub struct TelemetryDxlLink {
     pub noise_error: u32,
 }
 
-/// Bench tuning maxima. Always zero in non-tuning chip builds; chip-side
+/// Bench tuning stamps. Always zero in non-tuning chip builds; chip-side
 /// stamps live under `osc-ch32`'s `tuning` feature. The block is
 /// unconditional so host tooling can probe the addresses without
 /// depending on chip-build features. Host can write zero to clear,
-/// matching the `TelemetryDxlLink` carve-out pattern.
+/// matching the `TelemetryDxlLink` carve-out pattern. Zero in any
+/// _min field doubles as the "no sample yet" sentinel — the chip
+/// treats `cur == 0` as uninitialised and writes any first delta.
 #[repr(C)]
 #[derive(Copy, Clone, Block)]
 pub struct TelemetryDxlTune {
-    /// Max observed `(TIM2_CNT − CCR3)` at `on_tim2_cc3` IRQ entry, in
-    /// TIM2 ticks. Floor measurement for
-    /// `firmware/ch32/src/measurements.rs::TX_START_ENTRY_TICKS`.
+    /// Min observed `(TIM2_CNT − CCR3)` at `on_tim2_cc3` IRQ entry, in
+    /// TIM2 ticks. CCR3 back-dates the deadline by
+    /// `TX_START_ENTRY_TICKS`, so the wire-bit lands at
+    /// `deadline + (L_entry − K)`. To guarantee `wire ≥ deadline` the
+    /// const must be sized to the *minimum* observed entry latency —
+    /// anything above min just widens the slot (jitter-safe).
     #[ct_field(access = rw)]
-    pub tx_start_entry_max: u16,
-    /// Max observed `(SysTick.CNT − SysTick.CMP)` at `on_systick` entry,
-    /// in HCLK ticks. Floor measurement for `FAST_LAST_ENTRY_TICKS`.
+    pub tx_start_entry_min: u16,
+    /// Min observed `(SysTick.CNT − SysTick.CMP)` at `on_systick` entry,
+    /// in HCLK ticks. Same back-date logic as `tx_start_entry_min`;
+    /// the const must be sized to the minimum to keep the fold-start
+    /// at-or-after the grid anchor.
     #[ct_field(access = rw)]
-    pub fast_last_entry_max: u16,
+    pub fast_last_entry_min: u16,
     /// Max observed `(CCR3 − TIM2_CNT)` at `arm_tim2` post-CCR3-write
     /// (legitimate-window only — wrap-guard misses excluded), in TIM2
     /// ticks. Upper bound for `SCHEDULE_WRAP_GUARD_TICKS`.

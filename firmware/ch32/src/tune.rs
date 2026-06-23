@@ -11,7 +11,12 @@
 #[cfg(feature = "tuning")]
 use crate::runtime::statics::SHARED;
 
-/// Saturating-max update of [`crate::regions::telemetry::TelemetryDxlTune::tx_start_entry_max`].
+/// Saturating-min update of
+/// [`crate::regions::telemetry::TelemetryDxlTune::tx_start_entry_min`].
+/// `cur == 0` doubles as the "no sample yet" sentinel so the first
+/// non-zero delta always lands. The CCR3 back-date math requires the
+/// const to be sized to the MIN of observed entry latencies — see the
+/// field docstring on `TelemetryDxlTune`.
 ///
 /// SAFETY: telemetry SRAM is install-time initialised before any IRQ
 /// unmask; all DXL ISRs (USART1 / DMA1_CH5 / DMA1_CH7 / TIM2 / SysTick)
@@ -22,9 +27,9 @@ use crate::runtime::statics::SHARED;
 pub fn record_tx_start_entry(delta: u16) {
     #[cfg(feature = "tuning")]
     unsafe {
-        let p = &raw mut (*SHARED.table.telemetry.get()).tune.tx_start_entry_max;
+        let p = &raw mut (*SHARED.table.telemetry.get()).tune.tx_start_entry_min;
         let cur = p.read_volatile();
-        if delta > cur {
+        if cur == 0 || delta < cur {
             p.write_volatile(delta);
         }
     }
@@ -32,15 +37,16 @@ pub fn record_tx_start_entry(delta: u16) {
     let _ = delta;
 }
 
-/// Saturating-max update of `TelemetryDxlTune::fast_last_entry_max`.
-/// See [`record_tx_start_entry`] for the SAFETY argument.
+/// Saturating-min update of `TelemetryDxlTune::fast_last_entry_min`.
+/// See [`record_tx_start_entry`] for the SAFETY argument and the
+/// rationale behind capturing the MIN rather than the MAX.
 #[inline]
 pub fn record_fast_last_entry(delta: u16) {
     #[cfg(feature = "tuning")]
     unsafe {
-        let p = &raw mut (*SHARED.table.telemetry.get()).tune.fast_last_entry_max;
+        let p = &raw mut (*SHARED.table.telemetry.get()).tune.fast_last_entry_min;
         let cur = p.read_volatile();
-        if delta > cur {
+        if cur == 0 || delta < cur {
             p.write_volatile(delta);
         }
     }
@@ -49,7 +55,9 @@ pub fn record_fast_last_entry(delta: u16) {
 }
 
 /// Saturating-max update of `TelemetryDxlTune::schedule_remaining_max`.
-/// See [`record_tx_start_entry`] for the SAFETY argument.
+/// MAX direction here — the wrap-guard threshold is sized as an upper
+/// bound on legitimate remainings. See [`record_tx_start_entry`] for the
+/// SAFETY argument.
 #[inline]
 pub fn record_schedule_remaining(delta: u16) {
     #[cfg(feature = "tuning")]

@@ -651,6 +651,66 @@ pub fn try_read_counters(pirate: &mut PirateClient, id: Id) -> Option<LinkCounte
     read_counters(pirate, id).ok()
 }
 
+/// Base address of the chip's `TelemetryDxlTune` block — 4 × u16, RW. Only
+/// populated when the chip was built with `osc-ch32`'s `tuning` feature;
+/// otherwise zero. `LINK_BASE + LinkCounters::LEN` (= 0x0264).
+pub const TUNE_BASE: u16 = LINK_BASE + LinkCounters::LEN as u16;
+
+/// Snapshot of the chip's `TelemetryDxlTune` stamps. Mirrors
+/// `firmware/lib/core/src/regions/telemetry.rs::TelemetryDxlTune` — field
+/// order in lockstep. Zero in either `_min` field means "no sample yet"
+/// (the chip's saturating-min sentinel).
+#[derive(Copy, Clone, Debug, Default, PartialEq, Eq)]
+pub struct TuneStamps {
+    pub tx_start_entry_min: u16,
+    pub fast_last_entry_min: u16,
+    pub schedule_remaining_max: u16,
+    pub _rsvd_align: u16,
+}
+
+impl TuneStamps {
+    pub const LEN: usize = 8;
+
+    fn from_le_bytes(buf: &[u8]) -> Result<Self> {
+        if buf.len() != Self::LEN {
+            bail!("TuneStamps expects {} bytes, got {}", Self::LEN, buf.len());
+        }
+        Ok(Self {
+            tx_start_entry_min: u16::from_le_bytes([buf[0], buf[1]]),
+            fast_last_entry_min: u16::from_le_bytes([buf[2], buf[3]]),
+            schedule_remaining_max: u16::from_le_bytes([buf[4], buf[5]]),
+            _rsvd_align: u16::from_le_bytes([buf[6], buf[7]]),
+        })
+    }
+}
+
+/// Snapshot the chip's tune stamps via a single Read at `TUNE_BASE`.
+pub fn read_tune(pirate: &mut PirateClient, id: Id) -> Result<TuneStamps> {
+    let frame = build_read(id, TUNE_BASE, TuneStamps::LEN as u16)?;
+    let reply = pirate
+        .xfer(&frame, UNICAST_REPLY_US)?
+        .ok_or_else(|| anyhow!("tune read: no reply"))?;
+    let decoded = parse_status_reply(&reply, Some(id))?;
+    if decoded.error.as_byte() != 0 {
+        bail!("tune read error byte 0x{:02X}", decoded.error.as_byte());
+    }
+    TuneStamps::from_le_bytes(&decoded.data)
+}
+
+/// Zero the chip's tune stamps.
+pub fn clear_tune(pirate: &mut PirateClient, id: Id) -> Result<()> {
+    let zeros = [0u8; TuneStamps::LEN];
+    let frame = build_write(id, TUNE_BASE, &zeros)?;
+    let reply = pirate
+        .xfer(&frame, UNICAST_REPLY_US)?
+        .ok_or_else(|| anyhow!("tune clear: no reply"))?;
+    let decoded = parse_status_reply(&reply, Some(id))?;
+    if decoded.error.as_byte() != 0 {
+        bail!("tune clear error byte 0x{:02X}", decoded.error.as_byte());
+    }
+    Ok(())
+}
+
 /// Read a single u8 from the chip's control table.
 pub fn read_ct_u8(pirate: &mut PirateClient, id: Id, addr: u16) -> Result<u8> {
     let frame = build_read(id, addr, 1)?;
