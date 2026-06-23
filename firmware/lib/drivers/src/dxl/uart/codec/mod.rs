@@ -198,11 +198,16 @@ impl<R: EdgeDma, CRC: CrcUmts, const RX_BUF_LEN: usize, const EDGE_BUF_LEN: usiz
     /// drops a stale skip whose deadline has passed. The deadline path
     /// suppresses `SkipComplete` — it's a truncation recovery, not a
     /// successful drain, so chain-fire's predecessor-match must not ride.
-    pub fn poll<F, G>(&mut self, now: u32, ticks_per_bit: u16, mut on_event: F, mut on_pair: G)
-    where
+    pub fn poll<F, const PAIRS_LEN: usize>(
+        &mut self,
+        now: u32,
+        ticks_per_bit: u16,
+        pairs: &mut heapless::Vec<(u16, u16), PAIRS_LEN>,
+        mut on_event: F,
+    ) where
         F: FnMut(PollEvent<'_>, &mut Rx<R, EDGE_BUF_LEN>) -> PollAction,
-        G: FnMut(u16, u16),
     {
+        let (win_lo, win_hi) = rx::walker_window(ticks_per_bit);
         // SAFETY: rx_buf lives in a SyncUnsafeCell; this is the codec's
         // single consumer path. The reference is independent of any
         // borrow on `self` for the parser / counters because it's
@@ -235,7 +240,7 @@ impl<R: EdgeDma, CRC: CrcUmts, const RX_BUF_LEN: usize, const EDGE_BUF_LEN: usiz
                     // emits drift pairs over the skipped body bytes per
                     // [[drift_sampling_instruction_only]].
                     if self.last_walked_pos != 0 {
-                        let _ = self.rx.advance_walker(take, ticks_per_bit, &mut on_pair);
+                        let _ = self.rx.advance_walker(take, win_lo, win_hi, pairs);
                         self.last_walked_pos = self.last_walked_pos.wrapping_add(take as u32);
                     }
                 }
@@ -334,7 +339,7 @@ impl<R: EdgeDma, CRC: CrcUmts, const RX_BUF_LEN: usize, const EDGE_BUF_LEN: usiz
                         }
                         let delta = next_status_pos.wrapping_sub(self.last_walked_pos) as u16;
                         if delta > 0 {
-                            let _ = self.rx.advance_walker(delta, ticks_per_bit, &mut on_pair);
+                            let _ = self.rx.advance_walker(delta, win_lo, win_hi, pairs);
                         }
                         self.last_walked_pos = next_status_pos;
                     }
@@ -703,12 +708,16 @@ impl<
         self.rx.on_rx_dma_advance(remaining);
     }
 
-    pub fn poll<F, G>(&mut self, now: u32, ticks_per_bit: u16, on_event: F, on_pair: G)
-    where
+    pub fn poll<F, const PAIRS_LEN: usize>(
+        &mut self,
+        now: u32,
+        ticks_per_bit: u16,
+        pairs: &mut heapless::Vec<(u16, u16), PAIRS_LEN>,
+        on_event: F,
+    ) where
         F: FnMut(PollEvent<'_>, &mut Rx<R, EDGE_BUF_LEN>) -> PollAction,
-        G: FnMut(u16, u16),
     {
-        self.rx.poll(now, ticks_per_bit, on_event, on_pair);
+        self.rx.poll(now, ticks_per_bit, pairs, on_event);
     }
 
     pub fn cancel_skip(&mut self) {

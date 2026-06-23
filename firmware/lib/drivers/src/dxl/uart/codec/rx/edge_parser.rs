@@ -44,6 +44,18 @@ use crate::util::HwRing;
 const WINDOW_LO_MUL: u16 = 9;
 const WINDOW_HI_MUL: u16 = 11;
 
+/// Pre-multiplied `(win_lo, win_hi)` for the forward walker's
+/// `[9·bit, 11·bit]` window. Codec computes once per `poll()` entry and
+/// threads into every [`EdgeParser::advance_bytes`] call so the same two
+/// muls aren't paid per parser event.
+#[inline]
+pub fn walker_window(ticks_per_bit: u16) -> (u16, u16) {
+    (
+        ticks_per_bit.wrapping_mul(WINDOW_LO_MUL),
+        ticks_per_bit.wrapping_mul(WINDOW_HI_MUL),
+    )
+}
+
 // Half-bit-scaled band multipliers for the header pattern. See module
 // docs — `_X2` = the multiplier doubled, so the narrow `1.5·bit`/`2.5·bit`
 // bounds stay integer when compared against `delta·2`.
@@ -447,9 +459,11 @@ impl EdgeParser {
     /// Walk forward exactly `n` byte-boundaries from the current anchor,
     /// identifying each next start-bit edge via the `[9·bit, 11·bit]`
     /// window and consuming any intra-byte transitions (SKIP arm) along
-    /// the way. Emits each new `(prev, curr)` byte pair through `on_pair`
-    /// when `hsi_active` is set. Returns the number of byte-boundaries
-    /// actually advanced — which may be less than `n` when:
+    /// the way. Pushes each new `(prev, curr)` byte pair into `pairs`
+    /// when `hsi_active` is set; overflow past the buffer's capacity is
+    /// silently dropped (the drift integrator tolerates skips). Returns
+    /// the number of byte-boundaries actually advanced — which may be
+    /// less than `n` when:
     ///
     /// - No anchor is held (cold boot, post-Crc, post-Resync, post-GAP,
     ///   post-failed back-search). Edges stay in the ring for the next
@@ -464,21 +478,21 @@ impl EdgeParser {
     ///
     /// `n == 0` is a no-op. Cross-packet stale anchors are handled by
     /// the next packet's `anchor_at_signature` (back-search re-seeds).
-    pub fn advance_bytes<F, const EDGE_BUF_LEN: usize>(
+    ///
+    /// `win_lo` / `win_hi` come from [`walker_window`] — caller computes
+    /// once per `poll()` so the same two muls aren't paid per event.
+    #[inline]
+    pub fn advance_bytes<const EDGE_BUF_LEN: usize, const PAIRS_LEN: usize>(
         &mut self,
         edges: &mut HwRing<u16, EDGE_BUF_LEN>,
         n: u16,
-        ticks_per_bit: u16,
-        mut on_pair: F,
-    ) -> u16
-    where
-        F: FnMut(u16, u16),
-    {
+        win_lo: u16,
+        win_hi: u16,
+        pairs: &mut heapless::Vec<(u16, u16), PAIRS_LEN>,
+    ) -> u16 {
         if n == 0 {
             return 0;
         }
-        let win_lo = ticks_per_bit.wrapping_mul(WINDOW_LO_MUL);
-        let win_hi = ticks_per_bit.wrapping_mul(WINDOW_HI_MUL);
         crate::log::trace!(
             "classifier: advance entry avail={} anchor={:?} n={}",
             edges.reader().avail(),
@@ -512,7 +526,7 @@ impl EdgeParser {
                 self.prev_byte_start = self.last_byte_start;
                 self.last_byte_start = Some(t);
                 if self.hsi_active {
-                    on_pair(a, t);
+                    let _ = pairs.push((a, t));
                 }
                 self.hits = self.hits.wrapping_add(1);
                 advanced += 1;
@@ -777,14 +791,15 @@ mod tests {
         let mut c = make();
         let mut edges = edges16(&[1000, 1160, 1320]);
         let avail_before = edges.reader().avail();
-        let mut emissions = 0_u32;
-        let advanced = c.advance_bytes(&mut edges, 3, TPB_3M, |_, _| emissions += 1);
+        let (lo, hi) = walker_window(TPB_3M);
+        let mut pairs: heapless::Vec<(u16, u16), 4> = heapless::Vec::new();
+        let advanced = c.advance_bytes(&mut edges, 3, lo, hi, &mut pairs);
         assert_eq!(advanced, 0);
         assert_eq!(c.last_byte_start, None);
         assert_eq!(c.hits, 0);
         assert_eq!(c.skips, 0);
         assert_eq!(c.gaps, 0);
-        assert_eq!(emissions, 0);
+        assert!(pairs.is_empty());
         // No anchor → edges stay for the next Sync back-search.
         assert_eq!(edges.reader().avail(), avail_before);
     }
@@ -799,7 +814,9 @@ mod tests {
         let h = header_edges(1000, TPB_3M);
         let mut edges = edges16(&h);
 
-        let advanced = c.advance_bytes(&mut edges, 5, TPB_3M, |_, _| {});
+        let (lo, hi) = walker_window(TPB_3M);
+        let mut pairs: heapless::Vec<(u16, u16), 4> = heapless::Vec::new();
+        let advanced = c.advance_bytes(&mut edges, 5, lo, hi, &mut pairs);
         assert_eq!(advanced, 0);
         assert_eq!(edges.reader().avail(), 5, "advance must leave edges");
 
@@ -815,10 +832,9 @@ mod tests {
         c.prev_byte_start = Some(1000);
         c.hsi_active = true;
         let mut edges = edges16(&[1000 + BYTE_TICKS_3M]);
+        let (lo, hi) = walker_window(TPB_3M);
         let mut pairs: heapless::Vec<(u16, u16), 4> = heapless::Vec::new();
-        let advanced = c.advance_bytes(&mut edges, 1, TPB_3M, |p, n| {
-            pairs.push((p, n)).unwrap();
-        });
+        let advanced = c.advance_bytes(&mut edges, 1, lo, hi, &mut pairs);
         assert_eq!(advanced, 1);
         assert_eq!(pairs.as_slice(), &[(1000, 1000 + BYTE_TICKS_3M)]);
         assert_eq!(c.hits, 1);
@@ -833,10 +849,11 @@ mod tests {
         c.prev_byte_start = Some(1000);
         c.hsi_active = false;
         let mut edges = edges16(&[1000 + BYTE_TICKS_3M]);
-        let mut emissions = 0_u32;
-        let advanced = c.advance_bytes(&mut edges, 1, TPB_3M, |_, _| emissions += 1);
+        let (lo, hi) = walker_window(TPB_3M);
+        let mut pairs: heapless::Vec<(u16, u16), 4> = heapless::Vec::new();
+        let advanced = c.advance_bytes(&mut edges, 1, lo, hi, &mut pairs);
         assert_eq!(advanced, 1);
-        assert_eq!(emissions, 0);
+        assert!(pairs.is_empty());
         // Hit still classified — flag only gates emission, not classification.
         assert_eq!(c.hits, 1);
         assert_eq!(c.last_byte_start, Some(1000 + BYTE_TICKS_3M));
@@ -853,13 +870,14 @@ mod tests {
         c.hsi_active = true;
         // 32 ticks = 2·bit — intra-byte for 0xAA at 3 Mbaud.
         let mut edges = edges16(&[1032]);
-        let mut emissions = 0_u32;
-        let advanced = c.advance_bytes(&mut edges, 1, TPB_3M, |_, _| emissions += 1);
+        let (lo, hi) = walker_window(TPB_3M);
+        let mut pairs: heapless::Vec<(u16, u16), 4> = heapless::Vec::new();
+        let advanced = c.advance_bytes(&mut edges, 1, lo, hi, &mut pairs);
         assert_eq!(advanced, 0);
         assert_eq!(c.skips, 1);
         assert_eq!(c.hits, 0);
         assert_eq!(c.last_byte_start, Some(1000));
-        assert_eq!(emissions, 0);
+        assert!(pairs.is_empty());
     }
 
     #[test]
@@ -871,14 +889,15 @@ mod tests {
         // 13·bit delta is way out of [9, 11]·bit → GAP.
         let mut edges = edges16(&[1000 + TPB_3M * 13]);
         let avail_before = edges.reader().avail();
-        let mut emissions = 0_u32;
-        let advanced = c.advance_bytes(&mut edges, 1, TPB_3M, |_, _| emissions += 1);
+        let (lo, hi) = walker_window(TPB_3M);
+        let mut pairs: heapless::Vec<(u16, u16), 4> = heapless::Vec::new();
+        let advanced = c.advance_bytes(&mut edges, 1, lo, hi, &mut pairs);
         assert_eq!(advanced, 0);
         assert_eq!(c.gaps, 1);
         assert_eq!(c.hits, 0);
         assert_eq!(c.last_byte_start, None);
         assert_eq!(c.prev_byte_start, None);
-        assert_eq!(emissions, 0);
+        assert!(pairs.is_empty());
         // Edge stays; in the parser-driven design GAP is a genuine
         // anomaly signal and the dropped anchor flows through to
         // `packet_end_tick = None`, triggering the ISR-time fallback.
@@ -899,7 +918,9 @@ mod tests {
         let h = header_edges(50_000, TPB_3M);
         let mut edges = edges16(&h);
 
-        let advanced = c.advance_bytes(&mut edges, 1, TPB_3M, |_, _| {});
+        let (lo, hi) = walker_window(TPB_3M);
+        let mut pairs: heapless::Vec<(u16, u16), 4> = heapless::Vec::new();
+        let advanced = c.advance_bytes(&mut edges, 1, lo, hi, &mut pairs);
         assert_eq!(advanced, 0);
         assert_eq!(c.gaps, 1, "first edge of new packet trips GAP");
         assert_eq!(c.last_byte_start, None);
@@ -919,10 +940,9 @@ mod tests {
         let t2 = t1 + BYTE_TICKS_3M;
         let t3 = t2 + BYTE_TICKS_3M;
         let mut edges = edges16(&[t1, t2, t3]);
+        let (lo, hi) = walker_window(TPB_3M);
         let mut pairs: heapless::Vec<(u16, u16), 4> = heapless::Vec::new();
-        let advanced = c.advance_bytes(&mut edges, 3, TPB_3M, |p, n| {
-            pairs.push((p, n)).unwrap();
-        });
+        let advanced = c.advance_bytes(&mut edges, 3, lo, hi, &mut pairs);
         assert_eq!(advanced, 3);
         assert_eq!(pairs.as_slice(), &[(1000, t1), (t1, t2), (t2, t3)]);
         assert_eq!(c.hits, 3);
@@ -935,7 +955,9 @@ mod tests {
         c.prev_byte_start = Some(1000);
         let t1 = 1000 + BYTE_TICKS_3M;
         let mut edges = edges16(&[t1]);
-        let advanced = c.advance_bytes(&mut edges, 0, TPB_3M, |_, _| {});
+        let (lo, hi) = walker_window(TPB_3M);
+        let mut pairs: heapless::Vec<(u16, u16), 4> = heapless::Vec::new();
+        let advanced = c.advance_bytes(&mut edges, 0, lo, hi, &mut pairs);
         assert_eq!(advanced, 0);
         assert_eq!(c.hits, 0);
         assert_eq!(c.last_byte_start, Some(1000));
@@ -954,7 +976,9 @@ mod tests {
         let t2 = t1 + BYTE_TICKS_3M;
         let t3 = t2 + BYTE_TICKS_3M;
         let mut edges = edges16(&[t1, t2, t3]);
-        let advanced = c.advance_bytes(&mut edges, 2, TPB_3M, |_, _| {});
+        let (lo, hi) = walker_window(TPB_3M);
+        let mut pairs: heapless::Vec<(u16, u16), 4> = heapless::Vec::new();
+        let advanced = c.advance_bytes(&mut edges, 2, lo, hi, &mut pairs);
         assert_eq!(advanced, 2);
         assert_eq!(c.hits, 2);
         assert_eq!(c.last_byte_start, Some(t2));
@@ -1148,9 +1172,8 @@ mod tests {
         edges2.on_publish(HwRing::<u16, 16>::LEN - 5 - body.len() as u16);
 
         let mut pairs: heapless::Vec<(u16, u16), 8> = heapless::Vec::new();
-        let advanced = c.advance_bytes(&mut edges2, 4, TPB_3M, |p, n| {
-            pairs.push((p, n)).unwrap();
-        });
+        let (lo, hi) = walker_window(TPB_3M);
+        let advanced = c.advance_bytes(&mut edges2, 4, lo, hi, &mut pairs);
         assert_eq!(advanced, 4);
         assert_eq!(
             pairs.as_slice(),
@@ -1173,7 +1196,9 @@ mod tests {
         c_3m.prev_byte_start = Some(1000);
         c_3m.hsi_active = false;
         let mut e1 = edges16(&[1160]);
-        let advanced_3m = c_3m.advance_bytes(&mut e1, 1, TPB_3M, |_, _| {});
+        let (lo_3m, hi_3m) = walker_window(TPB_3M);
+        let mut pairs: heapless::Vec<(u16, u16), 4> = heapless::Vec::new();
+        let advanced_3m = c_3m.advance_bytes(&mut e1, 1, lo_3m, hi_3m, &mut pairs);
         assert_eq!(advanced_3m, 1);
         assert_eq!(c_3m.hits, 1);
         assert_eq!(c_3m.skips, 0);
@@ -1183,7 +1208,9 @@ mod tests {
         c_1m.prev_byte_start = Some(1000);
         c_1m.hsi_active = false;
         let mut e2 = edges16(&[1160]);
-        let advanced_1m = c_1m.advance_bytes(&mut e2, 1, TPB_1M, |_, _| {});
+        let (lo_1m, hi_1m) = walker_window(TPB_1M);
+        pairs.clear();
+        let advanced_1m = c_1m.advance_bytes(&mut e2, 1, lo_1m, hi_1m, &mut pairs);
         assert_eq!(advanced_1m, 0);
         assert_eq!(c_1m.hits, 0);
         assert_eq!(c_1m.skips, 1);

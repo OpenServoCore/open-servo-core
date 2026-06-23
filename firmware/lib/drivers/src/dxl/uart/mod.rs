@@ -865,13 +865,13 @@ impl<P: Providers, const RX_BUF_LEN: usize, const EDGE_BUF_LEN: usize, const TX_
         } = self;
         // Drift pairs from the per-event walker advance buffer here and
         // drain into `clock.on_byte_pair` after `codec.poll` returns —
-        // routing them through `clock` inside the on_pair closure would
-        // force a second `&mut clock` capture concurrent with the event
-        // sink's `ReplyHandle { clock, .. }` capture. Bound at one DXL
-        // packet's worth of body bytes (well under 32).
+        // routing them through `clock` inside the walker would force a
+        // second `&mut clock` capture concurrent with the event sink's
+        // `ReplyHandle { clock, .. }` capture. Bound at one DXL packet's
+        // worth of body bytes (well under 32).
         let mut pair_buf: heapless::Vec<(u16, u16), 32> = heapless::Vec::new();
         let (rx, tx) = codec.split_mut();
-        rx.poll(now, ticks_per_bit, |pe, rx_inner| match pe {
+        rx.poll(now, ticks_per_bit, &mut pair_buf, |pe, rx_inner| match pe {
             PollEvent::Event {
                 ev,
                 ring,
@@ -1052,11 +1052,6 @@ impl<P: Providers, const RX_BUF_LEN: usize, const EDGE_BUF_LEN: usize, const TX_
                 rx_inner.reset_anchor();
                 PollAction::Continue
             }
-        }, |prev, curr| {
-            // Best-effort — at 32 slots / ~30 body bytes per packet this
-            // never fills under normal load; if it ever does, we drop the
-            // pair (drift integrator tolerates skips by design).
-            let _ = pair_buf.push((prev, curr));
         });
         for &(prev, curr) in &pair_buf {
             clock.on_byte_pair(prev, curr);

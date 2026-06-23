@@ -31,7 +31,7 @@
 
 mod edge_parser;
 
-pub use edge_parser::{PollSrc, edge_buf_len, rx_buf_len, sync_lookback_edges};
+pub use edge_parser::{PollSrc, edge_buf_len, rx_buf_len, sync_lookback_edges, walker_window};
 
 use core::cell::SyncUnsafeCell;
 
@@ -127,20 +127,26 @@ impl<R: EdgeDma, const EDGE_BUF_LEN: usize> Rx<R, EDGE_BUF_LEN> {
     /// codec calls this once per parser event with the byte delta the
     /// parser consumed since the last call (and once per skip-byte batch
     /// during foreign-packet skip phase). Drift `(prev, curr)` pairs
-    /// emit through `on_pair` when the edge parser's `hsi_active` flag
-    /// is set. Returns the count actually advanced — may be less than
-    /// `n` if edges are late or an anomaly fired; the codec accounts
-    /// for the shortfall via the next event's delta.
-    pub fn advance_walker<F: FnMut(u16, u16)>(
+    /// are pushed into `pairs` when the edge parser's `hsi_active` flag
+    /// is set; overflow past capacity is silently dropped. Returns the
+    /// count actually advanced — may be less than `n` if edges are late
+    /// or an anomaly fired; the codec accounts for the shortfall via
+    /// the next event's delta.
+    ///
+    /// `win_lo` / `win_hi` come from [`walker_window`] — codec computes
+    /// once per `poll()` entry so the per-event muls don't repeat.
+    #[inline]
+    pub fn advance_walker<const PAIRS_LEN: usize>(
         &mut self,
         n: u16,
-        ticks_per_bit: u16,
-        on_pair: F,
+        win_lo: u16,
+        win_hi: u16,
+        pairs: &mut heapless::Vec<(u16, u16), PAIRS_LEN>,
     ) -> u16 {
         self.publish_edges();
         // SAFETY: see `publish_edges`.
         let edges = unsafe { &mut *self.edges.get() };
-        self.parser.advance_bytes(edges, n, ticks_per_bit, on_pair)
+        self.parser.advance_bytes(edges, n, win_lo, win_hi, pairs)
     }
 
     /// Most recent ISR wake capture — `(now, src)` recorded at the last
