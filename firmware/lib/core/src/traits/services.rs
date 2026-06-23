@@ -1,5 +1,5 @@
 use dxl_protocol::streaming::Event;
-use dxl_protocol::types::{Id, Slot, Status, StatusError};
+use dxl_protocol::types::{Id, Status, StatusError};
 use dxl_protocol::{Chunk, WriteError};
 
 use crate::{BaudRate, BootMode};
@@ -16,12 +16,6 @@ pub trait DxlReply {
     /// request state; the dispatcher passes only the reply data.
     fn send_status(&mut self, status: Status<'_>) -> Result<(), WriteError>;
 
-    /// Encode one Fast Sync/Bulk Read slot reply and arm its fire. Slot
-    /// position (Only/First/Middle/Last) and chain-CRC anchor come from the
-    /// bus's cached request state; Last engages the chain-CRC fold
-    /// scheduler arm.
-    fn send_slot(&mut self, slot: &Slot<'_>) -> Result<(), WriteError>;
-
     /// Streamed counterpart of [`Self::send_status`] for `Status::Read`
     /// replies: the dispatcher hands a [`Chunk`] iterator (sourced from
     /// a control-table read), which the bus stuffs straight into the TX
@@ -35,10 +29,11 @@ pub trait DxlReply {
     where
         I: IntoIterator<Item = Chunk<'c>>;
 
-    /// Streamed counterpart of [`Self::send_slot`]: slot body bytes come
-    /// from a [`Chunk`] iterator instead of a `Slot::data` slice. Slot
-    /// position and chain-CRC anchor still come from the bus's cached
-    /// request state.
+    /// Encode one Fast Sync/Bulk Read slot reply and arm its fire. Slot
+    /// body bytes come from a [`Chunk`] iterator (sourced from a
+    /// control-table read); slot position (Only/First/Middle/Last) and
+    /// chain-CRC anchor come from the bus's cached request state; Last
+    /// engages the chain-CRC fold scheduler arm.
     fn send_slot_chunked<'c, I>(
         &mut self,
         id: Id,

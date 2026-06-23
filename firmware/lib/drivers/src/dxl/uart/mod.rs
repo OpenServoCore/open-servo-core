@@ -620,10 +620,6 @@ impl<P: Providers, const TX_BUF_LEN: usize> DxlReply for ReplyHandle<'_, P, TX_B
         ReplyHandle::send_status(self, status)
     }
 
-    fn send_slot(&mut self, slot: &Slot<'_>) -> Result<(), WriteError> {
-        ReplyHandle::send_slot(self, slot)
-    }
-
     fn send_status_read_chunked<'c, I>(
         &mut self,
         id: Id,

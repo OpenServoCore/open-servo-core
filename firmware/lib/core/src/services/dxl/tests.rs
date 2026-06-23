@@ -86,19 +86,6 @@ impl DxlReply for FakeReply {
         Ok(())
     }
 
-    fn send_slot(&mut self, slot: &Slot<'_>) -> Result<(), WriteError> {
-        // Force `Only` so wire bytes round-trip cleanly for payload assertions.
-        self.tx.clear();
-        let len = (3 + slot.data.len() + 2) as u16;
-        SlotEncoder::<_, TestDxlCrc>::new(&mut self.tx).emit(
-            slot,
-            dxl_protocol::SlotPosition::Only { packet_length: len },
-        )?;
-        self.send_count += 1;
-        self.last_kind = Some(ReplyKind::Slot);
-        Ok(())
-    }
-
     fn send_status_read_chunked<'c, I>(
         &mut self,
         id: Id,
