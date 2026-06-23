@@ -58,6 +58,16 @@ const EMIT_CAP_STEPS_BOOT: i32 = 16;
 /// opposing magnitude clamped to the cap, then re-samples.
 const EMIT_CAP_STEPS_STEADY: i32 = 4;
 
+/// Steady-phase drain cap, in byte pairs per packet. Caller (the driver)
+/// reads via [`Clock::samples_wanted_per_packet`] and truncates the
+/// per-packet pair buffer before draining into [`Clock::on_byte_pair`].
+/// At 4/packet × [`DRIFT_MIN_SAMPLES_STEADY`] = 20 → 5 packets fill a
+/// batch (vs 1–2 today), trading convergence latency for ~2–4 µs/cycle
+/// of drain work. Per-packet skew tolerance unchanged: the integrator
+/// is already noise-tolerant by design, and the missed pairs are
+/// time-uniform so no systematic bias.
+const STEADY_SAMPLES_PER_PACKET: u8 = 4;
+
 /// Round-to-nearest rate divisor — `ticks_per_bit` for a baud at the
 /// driver's reference clock. Folds to a literal whenever both arguments
 /// are const at the call site. Numerically identical to a USART BRR
@@ -221,6 +231,25 @@ impl<U: UsartBaud, T: ClockTrim> Clock<U, T> {
             self.rebuild_integrator_consts();
             self.drift_sum_q8 = 0;
             self.drift_samples = 0;
+        }
+    }
+
+    /// Max byte pairs per packet the driver should drain into
+    /// [`Self::on_byte_pair`]. During boot phase: unbounded (every pair
+    /// — fast first-close). After boot: capped at
+    /// [`STEADY_SAMPLES_PER_PACKET`] — drift is slow, so a sparser feed
+    /// across more packets is fine, and the saved drain work shows up
+    /// as ~2–4 µs/cycle on the chip-side floor.
+    ///
+    /// Per [[drift_sampling_instruction_only]]: both own + foreign
+    /// Instruction packets feed (gated by `hsi_active` upstream at the
+    /// codec); Status frames never contribute regardless of cap.
+    #[allow(dead_code)]
+    pub fn samples_wanted_per_packet(&self) -> u8 {
+        if self.is_boot {
+            u8::MAX
+        } else {
+            STEADY_SAMPLES_PER_PACKET
         }
     }
 

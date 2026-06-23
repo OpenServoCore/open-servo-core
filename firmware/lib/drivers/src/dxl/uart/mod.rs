@@ -1053,7 +1053,13 @@ impl<P: Providers, const RX_BUF_LEN: usize, const EDGE_BUF_LEN: usize, const TX_
                 PollAction::Continue
             }
         });
-        for &(prev, curr) in &pair_buf {
+        // Bounded drain — Clock self-gates on convergence state: boot
+        // returns u8::MAX (feed everything for fast first close), steady
+        // returns a small cap (drift is slow, so 4 pairs per packet ×
+        // N packets fills the steady batch threshold without burning
+        // µs draining the rest).
+        let want = clock.samples_wanted_per_packet() as usize;
+        for &(prev, curr) in pair_buf.iter().take(want) {
             clock.on_byte_pair(prev, curr);
         }
         // Apply any pending trim correction at the RX-side packet
