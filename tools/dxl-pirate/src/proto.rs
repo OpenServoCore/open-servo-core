@@ -10,7 +10,7 @@
 //! Host → device
 //!   `FIRE bytes=<hex> at=<u64>`
 //!       Arm `inject` to push `bytes` onto the wire when SysTick.CNT == `at`.
-//!       `at` is in HCLK/8 ticks (18 MHz at 144 MHz).
+//!       `at` is in HCLK ticks (144 MHz).
 //!   `ARM bytes=<hex> after_idle=<u32>`
 //!       Same TX, but fire `after_idle` ticks after the wire returns to idle.
 //!       Listener backdates IDLE-ISR entry by one char-time, so this is the

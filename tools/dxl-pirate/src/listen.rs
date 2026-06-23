@@ -48,8 +48,8 @@ const _: () = assert!(
 static CHAR_TIME_SYSTICKS: AtomicU32 = AtomicU32::new(0);
 
 const fn char_time_systicks(brr: u32) -> u32 {
-    // USART bit-time = `brr` HCLK ticks; SysTick = HCLK/8 → 9 bit-times = 9 * brr / 8.
-    9 * brr / 8
+    // USART bit-time = `brr` HCLK ticks; SysTick = HCLK → 9 bit-times = 9 * brr.
+    9 * brr
 }
 
 /// Plain = a bus IDLE we observed but didn't initiate. Round = the slave-reply
@@ -58,7 +58,7 @@ const fn char_time_systicks(brr: u32) -> u32 {
 #[derive(Copy, Clone)]
 pub enum IdleStamp {
     Plain {
-        /// SysTick CNT low half at wire-end (HCLK/8 ticks).
+        /// SysTick CNT low half at wire-end (HCLK ticks = 144 MHz).
         tick: u32,
         /// DMA write head (bytes received since boot, low 16 bits).
         head: u16,

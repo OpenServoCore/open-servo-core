@@ -36,19 +36,19 @@ pub const TX_BUF_LEN: usize = 1024;
 
 /// (fire_at - now) below this many SysTick ticks bypasses TIM4 and writes the
 /// armed CFGR word directly into DMA1_CH4. Equal to (TIM4 arm overhead +
-/// PFIC dispatch margin) — 32 ticks ≈ 1.8 µs at 18 MHz, safely above the
+/// PFIC dispatch margin) — 256 ticks ≈ 1.8 µs at 144 MHz, safely above the
 /// register-write latency for the arm sequence. A too-close deadline still
 /// fires (wire-edge lands ≈ "now") instead of silently missing on a wrap.
-const FIRE_NOW_THRESHOLD_TICKS: u64 = 32;
+const FIRE_NOW_THRESHOLD_TICKS: u64 = 256;
 
-/// TIM4 ARR (u16) max in SysTick units. With PSC=7 the timer ticks at
-/// HCLK/8 = 18 MHz = 1:1 with SysTick, so ARR = delta_systick directly and
-/// max schedule is 65 535 ticks ≈ 3.6 ms. Fires beyond this fall back to
-/// immediate (host should never request them — slot timing is sub-ms).
+/// TIM4 ARR (u16) max in SysTick units. With PSC=0 the timer ticks at
+/// HCLK = 144 MHz = 1:1 with SysTick, so ARR = delta_systick directly and
+/// max schedule is 65 535 ticks ≈ 455 µs. Fires beyond this fall back to
+/// `software_fire` (host should never request them — slot timing is sub-ms).
 const TIM4_MAX_DELTA_TICKS: u64 = u16::MAX as u64;
 
-/// TIM4 prescaler register: divide-by-8 → 18 MHz tick = 1:1 with SysTick.
-const TIM4_PSC: u16 = 7;
+/// TIM4 prescaler register: divide-by-1 → 144 MHz tick = 1:1 with SysTick.
+const TIM4_PSC: u16 = 0;
 
 /// FIRE / MASTER share this buffer; both fire from DMA1_CH4 (FIRE on a TIM4
 /// UEV match via DMA1_CH7, MASTER on its own dispatch). MASTER preempts any
@@ -76,8 +76,10 @@ pub const APB2_HZ: u32 = 144_000_000;
 pub const APB1_HZ: u32 = 144_000_000;
 pub const DEFAULT_BAUD: u32 = 1_000_000;
 
-// SysTick on V4 ticks at HCLK/8 = 18 MHz with the 144 MHz preset, so 1 µs ≈ 18.
-const SYSTICK_HZ: u32 = 144_000_000 / 8;
+// SysTick on V4 ticks at HCLK = 144 MHz, so 1 µs = 144 ticks. Quantization is
+// ~6.94 ns/tick — fine enough to measure DXL wire-bit timing without aliasing
+// the chip-under-test's 48 MHz HCLK (one pirate tick ≈ 1/3 of one chip tick).
+const SYSTICK_HZ: u32 = 144_000_000;
 
 /// arm_after_idle arms the payload + offset and sets this; the next IDLE the
 /// listener observes consumes it via swap. The swap is the only RMW —
@@ -136,12 +138,12 @@ pub(crate) static EXPECT_FIRE_FIRST_BYTE: AtomicBool = AtomicBool::new(false);
 /// detection still works.
 static FIRE_COMP_TICKS: AtomicU32 = AtomicU32::new(0);
 
-const FIRE_COMP_FLAT_TICKS: u32 = 12;
+const FIRE_COMP_FLAT_TICKS: u32 = 96;
 
-/// `brr` is USART1 BRR (HCLK ticks per bit at this baud). SysTick = HCLK/8,
-/// so bit_time_systicks = brr / 8. Half = brr / 16.
+/// `brr` is USART1 BRR (HCLK ticks per bit at this baud). SysTick = HCLK,
+/// so bit_time_systicks = brr. Half = brr / 2.
 const fn fire_comp_ticks(brr: u32) -> u32 {
-    FIRE_COMP_FLAT_TICKS + brr / 16
+    FIRE_COMP_FLAT_TICKS + brr / 2
 }
 
 #[inline]
@@ -266,7 +268,7 @@ pub fn init() {
             w.set_en(true);
         });
 
-        // ── TIM4 OPM. PSC=7 → 18 MHz tick (= 1:1 with SysTick). URS=1 so a
+        // ── TIM4 OPM. PSC=0 → 144 MHz tick (= 1:1 with SysTick). URS=1 so a
         // UG software event (used to reset CNT between fires) doesn't
         // generate an UEV that would spuriously kick DMA1_CH7. UDE=1 routes
         // CNT-overflow UEV to DMA. OPM=1 auto-clears CEN after the first
@@ -283,7 +285,7 @@ pub fn init() {
             w.set_ude(true);
         });
 
-        // ── SysTick: HCLK/8 upcount, free-running, NO IRQ. ch32-hal's time
+        // ── SysTick: HCLK upcount, free-running, NO IRQ. ch32-hal's time
         // driver isn't using SysTick (we picked time-driver-tim2), so this
         // peripheral is fully ours for tick reads (host queries, ARM/MASTER
         // stamping). The fire path lives on TIM4 + DMA chain, no CMP IRQ.
@@ -296,7 +298,7 @@ pub fn init() {
         SYSTICK.ctlr().modify(|w| {
             w.set_mode(ch32_hal::pac::systick::vals::Mode::UPCOUNT);
             w.set_stre(false);
-            w.set_stclk(ch32_hal::pac::systick::vals::Stclk::HCLK_DIV8);
+            w.set_stclk(ch32_hal::pac::systick::vals::Stclk::HCLK);
             w.set_stie(false);
         });
 
@@ -305,7 +307,7 @@ pub fn init() {
 }
 
 /// Load `payload` into the TX buffer and fire when `SysTick.CNT` reaches
-/// `fire_at_tick` (HCLK/8 = 18 MHz). Bytes are blasted verbatim — callers own
+/// `fire_at_tick` (HCLK = 144 MHz). Bytes are blasted verbatim — callers own
 /// the wire format.
 ///
 /// Held under a critical section so a pending USART3 IDLE can't fire the DMA
