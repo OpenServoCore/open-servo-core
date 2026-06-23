@@ -124,17 +124,48 @@ pub struct CodecRx<R: EdgeDma, CRC: CrcUmts, const RX_BUF_LEN: usize, const EDGE
     /// and byte-skip-consumed bytes. 32 bits ≈ 23.8 days at 3M sustained;
     /// wrap is non-physical.
     wire_bytes_consumed: u32,
-    /// Wire-byte position the edge parser's anchor currently represents.
-    /// Per parser event, `delta = (wire_bytes_consumed +
-    /// stream.consumed()) - last_walked_pos` is the number of byte-
-    /// boundaries to walk the edge parser forward — the codec drives
-    /// the edge parser in lockstep with the byte parser. Sentinel `0`
-    /// means "no anchor yet"; advance is skipped until the first
-    /// `Event::Sync` seeds the anchor and sets `last_walked_pos = 4`.
+    /// Wire-byte position the edge parser's anchor currently represents
+    /// AT THE LOGICAL LEVEL — updated per parser event regardless of
+    /// whether the walker has actually flushed. The walker's true
+    /// anchor sits at `last_walked_pos − pending_walker_advance`. Per
+    /// parser event, `delta = (wire_bytes_consumed + stream.consumed())
+    /// − last_walked_pos` is the byte count added to
+    /// `pending_walker_advance`. Sentinel `0` means "no anchor yet";
+    /// advance is skipped until the first `Event::Sync` seeds the
+    /// anchor.
     last_walked_pos: u32,
+    /// Bulk-within-poll walker pending count. Per-event byte deltas
+    /// accumulate here; flushes to `Rx::advance_walker` at events that
+    /// read the anchor (Crc, SkipComplete, Resync) and at every poll
+    /// return path. Always 0 at poll entry — the lap risk only exists
+    /// when unflushed work persists across polls, which never happens.
+    /// Per `dxl-streaming-rx.md` §4 lockstep invariant: walker never
+    /// advances past parser cursor, preserved here by deferring (not
+    /// dropping) the work.
+    pending_walker_advance: u16,
     /// Universal byte-skip state. `Some` between a sink-requested
     /// [`PollAction::Skip`] and the matching [`PollEvent::SkipComplete`].
     skip: Option<SkipState>,
+}
+
+/// Flush bulk-within-poll walker pending. Free function (not a method)
+/// so it can take disjoint `&mut` borrows of `Rx` and the pending
+/// counter without colliding with active `&mut self.parser` /
+/// `&mut self.skip` borrows at the call sites.
+#[inline]
+fn flush_walker_pending<R, const EDGE_BUF_LEN: usize, const PAIRS_LEN: usize>(
+    rx: &mut Rx<R, EDGE_BUF_LEN>,
+    pending: &mut u16,
+    win_lo: u16,
+    win_hi: u16,
+    pairs: &mut heapless::Vec<(u16, u16), PAIRS_LEN>,
+) where
+    R: EdgeDma,
+{
+    if *pending > 0 {
+        let _ = rx.advance_walker(*pending, win_lo, win_hi, pairs);
+        *pending = 0;
+    }
 }
 
 impl<R: EdgeDma, CRC: CrcUmts, const RX_BUF_LEN: usize, const EDGE_BUF_LEN: usize>
@@ -148,6 +179,7 @@ impl<R: EdgeDma, CRC: CrcUmts, const RX_BUF_LEN: usize, const EDGE_BUF_LEN: usiz
             instruction_count: 0,
             wire_bytes_consumed: 0,
             last_walked_pos: 0,
+            pending_walker_advance: 0,
             skip: None,
         }
     }
@@ -233,23 +265,43 @@ impl<R: EdgeDma, CRC: CrcUmts, const RX_BUF_LEN: usize, const EDGE_BUF_LEN: usiz
                     rx_buf.reader().advance(take);
                     skip.bytes_remaining -= take;
                     self.wire_bytes_consumed = self.wire_bytes_consumed.wrapping_add(take as u32);
-                    // Walker advances in lockstep with the byte cursor
-                    // during foreign-packet skip too — keeps the edge
-                    // ring's anchor coherent with the wire, and (when
-                    // hsi_active is on from a foreign Instruction Header)
-                    // emits drift pairs over the skipped body bytes per
-                    // [[drift_sampling_instruction_only]].
+                    // Skip bytes go to pending under the hsi_active flag
+                    // the foreign Instruction Header left in place — flush
+                    // at SkipComplete emits the drift pairs per
+                    // [[drift_sampling_instruction_only]]. For foreign
+                    // Status frames hsi_active is off so no pairs come out.
                     if self.last_walked_pos != 0 {
-                        let _ = self.rx.advance_walker(take, win_lo, win_hi, pairs);
+                        self.pending_walker_advance =
+                            self.pending_walker_advance.wrapping_add(take);
                         self.last_walked_pos = self.last_walked_pos.wrapping_add(take as u32);
                     }
                 }
                 if skip.bytes_remaining > 0 {
                     // Ring exhausted mid-skip; resume on a later poll.
+                    // Flush so the consumer doesn't lap the producer across
+                    // the poll boundary (`dxl-streaming-rx.md` §4 lockstep
+                    // invariant).
+                    flush_walker_pending(
+                        &mut self.rx,
+                        &mut self.pending_walker_advance,
+                        win_lo,
+                        win_hi,
+                        pairs,
+                    );
                     return;
                 }
                 let id = skip.id;
                 self.skip = None;
+                // Anchor must be current before SkipComplete dispatches —
+                // the handler resets the anchor in its boundary cleanup, so
+                // unflushed pending would silently drop those drift samples.
+                flush_walker_pending(
+                    &mut self.rx,
+                    &mut self.pending_walker_advance,
+                    win_lo,
+                    win_hi,
+                    pairs,
+                );
                 on_event(PollEvent::SkipComplete { id }, &mut self.rx);
                 continue;
             }
@@ -264,6 +316,18 @@ impl<R: EdgeDma, CRC: CrcUmts, const RX_BUF_LEN: usize, const EDGE_BUF_LEN: usiz
                 (front.as_ptr(), front.len())
             };
             if input_len == 0 {
+                // Defensive flush: pending should already be 0 (the
+                // prior packet's Crc flushed and reset it), but a Sync
+                // → exit-with-no-more-bytes window could leave pending
+                // > 0. Don't carry across polls — `dxl-streaming-rx.md`
+                // §4 lockstep.
+                flush_walker_pending(
+                    &mut self.rx,
+                    &mut self.pending_walker_advance,
+                    win_lo,
+                    win_hi,
+                    pairs,
+                );
                 return;
             }
             // SAFETY: `input_ptr` points into `rx_buf.data`, owned by
@@ -316,18 +380,16 @@ impl<R: EdgeDma, CRC: CrcUmts, const RX_BUF_LEN: usize, const EDGE_BUF_LEN: usiz
                             .anchor_at_signature_hinted(ticks_per_bit, body_bytes);
                         self.last_walked_pos = next_status_pos;
                     } else if self.last_walked_pos != 0 {
-                        // Set hsi_active BEFORE the advance so the bytes
-                        // the parser just consumed for THIS event are
-                        // credited to the correct packet type. The flag
-                        // is naturally sticky between events (Header sets
-                        // it, packet boundary clears it) — only Header
-                        // events need to mutate it here. Resolving the
-                        // packet type at the header is the earliest
-                        // point the codec can know which way to go;
-                        // doing it in the driver's event sink (today's
-                        // [[drift_sampling_instruction_only]] gate) runs
-                        // AFTER the walker has already advanced the 4–8
-                        // header bytes, so those samples would be lost.
+                        // Set hsi_active BEFORE the pending byte count
+                        // grows — the walker reads it at flush time, so
+                        // the bytes this event represents need the new
+                        // flag in place before they fall under flush
+                        // attribution. hsi_active is naturally sticky
+                        // between events (Header sets, packet boundary
+                        // clears), so only Header events mutate it; all
+                        // bytes from this Header through to the matching
+                        // Crc/SkipComplete inherit the same flag and
+                        // batch-flush correctly.
                         match ev {
                             Event::Header(HeaderEvent::Instruction(_)) => {
                                 self.rx.set_hsi_active(true);
@@ -338,10 +400,24 @@ impl<R: EdgeDma, CRC: CrcUmts, const RX_BUF_LEN: usize, const EDGE_BUF_LEN: usiz
                             _ => {}
                         }
                         let delta = next_status_pos.wrapping_sub(self.last_walked_pos) as u16;
-                        if delta > 0 {
-                            let _ = self.rx.advance_walker(delta, win_lo, win_hi, pairs);
-                        }
+                        self.pending_walker_advance =
+                            self.pending_walker_advance.wrapping_add(delta);
                         self.last_walked_pos = next_status_pos;
+                    }
+
+                    // Crc / Resync read the anchor in the driver's event
+                    // sink (`packet_end_tick` at Crc; boundary cleanup at
+                    // Resync resets it). Flush before dispatch so the
+                    // anchor is current AND drift pairs from this packet
+                    // commit before the boundary clears.
+                    if matches!(ev, Event::Crc(_) | Event::Resync(_)) {
+                        flush_walker_pending(
+                            &mut self.rx,
+                            &mut self.pending_walker_advance,
+                            win_lo,
+                            win_hi,
+                            pairs,
+                        );
                     }
 
                     match on_event(
@@ -369,8 +445,13 @@ impl<R: EdgeDma, CRC: CrcUmts, const RX_BUF_LEN: usize, const EDGE_BUF_LEN: usiz
                     // codec back in "no anchor yet" mode so an
                     // unexpected mid-stream event before the next Sync
                     // doesn't try to advance against the dropped anchor.
+                    // Pending was flushed just before the dispatch above
+                    // so this reset is defensive — keeps the
+                    // pending=0-at-poll-entry invariant under any
+                    // intra-poll handler that might mutate state.
                     if matches!(ev, Event::Crc(_) | Event::Resync(_)) {
                         self.last_walked_pos = 0;
+                        self.pending_walker_advance = 0;
                     }
                 }
                 stream.consumed()
@@ -392,6 +473,19 @@ impl<R: EdgeDma, CRC: CrcUmts, const RX_BUF_LEN: usize, const EDGE_BUF_LEN: usiz
                 // ever gets a turn (per `dxl-streaming-rx.md` §6 —
                 // edge-IRQ masking at arm shuts the door on future polls
                 // only).
+                //
+                // Flush before returning — the Crc dispatch already
+                // flushed before this point, but a Stop after a non-Crc
+                // event would leave pending unflushed. The fold engine
+                // takes RX ownership next; we own the edge ring until
+                // that handoff.
+                flush_walker_pending(
+                    &mut self.rx,
+                    &mut self.pending_walker_advance,
+                    win_lo,
+                    win_hi,
+                    pairs,
+                );
                 return;
             }
 
@@ -416,6 +510,13 @@ impl<R: EdgeDma, CRC: CrcUmts, const RX_BUF_LEN: usize, const EDGE_BUF_LEN: usiz
                 // Try the back slice on next iteration via peek_slices.
                 // If the front slice was non-empty and consumed is 0,
                 // we'd loop forever — short-circuit.
+                flush_walker_pending(
+                    &mut self.rx,
+                    &mut self.pending_walker_advance,
+                    win_lo,
+                    win_hi,
+                    pairs,
+                );
                 return;
             }
         }
