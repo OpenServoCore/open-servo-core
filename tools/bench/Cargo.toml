@@ -1,0 +1,22 @@
+[package]
+name        = "bench"
+version     = "0.1.0"
+edition     = "2024"
+description = "Host-side bench tools: drive dxl-pirate, talk to chip-side firmware over DXL 2.0"
+license     = "MIT OR Apache-2.0"
+
+[workspace]
+
+[lib]
+path = "src/lib.rs"
+
+[[bin]]
+name = "tool-ping"
+path = "src/bin/tool-ping.rs"
+
+[dependencies]
+dxl-protocol = { path = "../../firmware/lib/dxl-protocol", features = ["heapless", "software-crc"] }
+heapless     = "0.9"
+serialport   = "4"
+anyhow       = "1"
+clap         = { version = "4", features = ["derive"] }
