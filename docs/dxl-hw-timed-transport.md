@@ -479,9 +479,13 @@ Filtering: only count tight matches (no re-anchor between), discard pairs spanni
 
 V006's HSI tune is `RCC_CTLR.HSITRIM[4:0]`, ~2500 ppm per step. One step shifts the 16-tick bit_time by 0.04 ticks; window-edge shift at the 11·bit boundary is 0.4 ticks — negligible against the ±10% (16-tick) window. So HSITRIM can be freely retuned at packet boundaries without classifier desync.
 
-Coarse trim aims drift inside ±1250 ppm (half a step). The HSITRIM write is committed at USART1 TC tail, alongside any pending BRR / capture-filter updates (§7). Input signal: BT-averaged drift estimate.
+Coarse trim aims drift inside ±1250 ppm (half a step). HSITRIM is written at the RX packet boundary — `on_rx_packet_end`, right after the byte-pair drain (§4.3) — so the new rate takes effect *before* `send_status` / `send_slot` compute the reply deadline. Two-phase integrator: a 6-sample boot batch with a full register-range emit cap lands the cold-start ±2% factory drift in a single packet (one Ping reply's worth of byte pairs), then 20-sample steady batches with a 4-step emit cap and half-step deadband squeeze the residual without overshooting on noise. Magnitude-aware control law throughout — drift in step units → opposing correction, clamped to the envelope.
 
-Sub-step residual goes to a software fine-trim: a per-ppm correction applied to the wire-end → fire arithmetic. Concretely, `BT[last_byte] + 10·bit_time + RDT_ticks` is adjusted by `residual_ppm × elapsed_ticks_since_last_BT` — a few-tick correction over the wire-end-to-fire window.
+**Sub-step residual feeds a fire-deadline correction.** After every batch close, the integrator stores `residual_q8 = drift_sum + applied_steps × drift_per_step_q8` — the predicted next-window drift_sum in Q8.8 byte-ticks (signed; positive = HSI still fast after the apply). Both fire-scheduling sites read this through
+
+    phase_adjust = (|residual_q8| × distance_hclk × window_recip_q32) >> 40   // signed by residual sign
+
+and fold it into the deadline as `packet_end_tick + delay_ticks + phase_adjust`. `window_recip_q32` is precomputed on baud change so the per-deadline path stays divide-free — RV32EC has no hardware divide, and a `__udivdi3` here would land on every scheduled wire bit. The `>>40` strips the Q32 reciprocal and the Q8 of `residual_q8` in one shift; the u128 multiply lowers to a single `__multi3` call (~tens of cycles). The correction is signed by the residual: positive residual (HSI fast → chip ticks accumulate ahead of wall clock) shifts the deadline LATER in tick-space, so the wire bit lands on the host's reference. End-to-end verification: integration tests pin the wire-edge arrival to within ~10 ns of `packet_end + RDT` under ±0.4% simulated factory drift at 1 Mbaud (a missing wireup would land ~530 ns off, a sign bug ~1060 ns).
 
 ---
 
