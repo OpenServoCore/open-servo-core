@@ -393,6 +393,22 @@ pub fn build_write(id: Id, addr: u16, data: &[u8]) -> Result<HVec<u8, 64>> {
     Ok(frame)
 }
 
+pub fn build_read(id: Id, addr: u16, length: u16) -> Result<HVec<u8, 16>> {
+    let mut frame: HVec<u8, 16> = HVec::new();
+    InstructionEncoder::<_, SoftwareCrcUmts>::new(&mut frame)
+        .read(id, addr, length)
+        .map_err(|e| anyhow!("encode read: {e:?}"))?;
+    Ok(frame)
+}
+
+pub fn build_reboot(id: Id) -> Result<HVec<u8, 16>> {
+    let mut frame: HVec<u8, 16> = HVec::new();
+    InstructionEncoder::<_, SoftwareCrcUmts>::new(&mut frame)
+        .reboot(id)
+        .map_err(|e| anyhow!("encode reboot: {e:?}"))?;
+    Ok(frame)
+}
+
 /// Hand-decode a Ping status reply. Stuffing inside the 3 param bytes
 /// (`model_lo`, `model_hi`, `fw_ver`) requires `model == 0xFFFF` paired with
 /// `fw_ver == 0xFD` — physically impossible for any real servo — so we skip
@@ -458,7 +474,7 @@ fn broadcast_ping_reply_us(bps: u32) -> u32 {
 /// Single-target reply window: 14-byte Status at the slowest supported baud
 /// (9600) + max RDT (510 µs) + slack. Safe for any unicast Read/Write/Ping
 /// at any supported baud.
-const UNICAST_REPLY_US: u32 = 50_000;
+pub const UNICAST_REPLY_US: u32 = 50_000;
 const BAUD_SETTLE: Duration = Duration::from_millis(50);
 
 #[derive(Clone, Debug)]
@@ -485,7 +501,6 @@ impl Session {
             None => auto_detect_pirate()?,
         };
         let mut pirate = PirateClient::open(&port, Duration::from_millis(500))?;
-        let target_idx = baud_index(args.target_baud)?;
 
         // 1. Probe target baud first; if the servo already lives there, done.
         if let Some(id) = probe_baud(&mut pirate, args.target_baud)? {
@@ -507,40 +522,184 @@ impl Session {
                 break;
             }
         }
-        let (current_baud, id) =
+        let (_current_baud, id) =
             found.ok_or_else(|| anyhow!("no servo found at any known baud"))?;
 
-        // 3. Tell the servo to switch.
-        let frame = build_write(Id::new(id), BAUD_RATE_IDX_ADDR, &[target_idx])?;
-        let _ = pirate.xfer(&frame, UNICAST_REPLY_US)?;
-        sleep(BAUD_SETTLE);
-
-        // 4. Move pirate to target, reverify. USB-CDC baud reconfig can glitch
-        // the pirate TX line into a phantom byte that the chip frames as FE/NE,
-        // so the first post-switch ping may legitimately time out — retry a few.
-        pirate.set_baud(args.target_baud)?;
-        sleep(BAUD_SETTLE);
-        let _ = pirate.drain_stamps()?;
-        let mut verified = false;
-        for _ in 0..3 {
-            if probe_unicast(&mut pirate, Id::new(id))?.is_some() {
-                verified = true;
-                break;
-            }
-            sleep(Duration::from_millis(20));
-        }
-        if !verified {
-            bail!(
-                "servo at id {id} stopped replying after baud switch {current_baud} -> {}",
-                args.target_baud,
-            );
-        }
+        // 3. Switch to the target.
+        set_chip_baud(&mut pirate, id, args.target_baud)?;
 
         Ok(Self {
             pirate,
             id,
             baud: args.target_baud,
         })
+    }
+}
+
+/// Default baud the chip boots at — mirrors `BaudRate::B1000000` (default) in
+/// `firmware/lib/core/src/regions/config.rs`.
+pub const BOOT_BAUD: u32 = 1_000_000;
+
+/// Write `BAUD_RATE_IDX` on the chip, then move the pirate to match. USB-CDC
+/// baud reconfig can glitch the pirate TX line into a phantom byte that the
+/// chip's USART frames as FE/NE — the first post-switch ping may legitimately
+/// time out, so retry a few times before bailing.
+pub fn set_chip_baud(pirate: &mut PirateClient, id: u8, target_baud: u32) -> Result<()> {
+    let target_idx = baud_index(target_baud)?;
+    let frame = build_write(Id::new(id), BAUD_RATE_IDX_ADDR, &[target_idx])?;
+    let _ = pirate.xfer(&frame, UNICAST_REPLY_US)?;
+    sleep(BAUD_SETTLE);
+    pirate.set_baud(target_baud)?;
+    sleep(BAUD_SETTLE);
+    let _ = pirate.drain_stamps()?;
+    for _ in 0..3 {
+        if probe_unicast(pirate, Id::new(id))?.is_some() {
+            return Ok(());
+        }
+        sleep(Duration::from_millis(20));
+    }
+    bail!("servo {id} stopped replying after baud switch to {target_baud}");
+}
+
+/// Reboot the chip and wait for it to come back at `BOOT_BAUD`. The reboot
+/// ACK can race the reset, so a missing reply is non-fatal. The pirate is
+/// left at `BOOT_BAUD` with stamps drained.
+pub fn reboot_chip(pirate: &mut PirateClient, id: u8) -> Result<()> {
+    let frame = build_reboot(Id::new(id))?;
+    let _ = pirate.xfer(&frame, UNICAST_REPLY_US)?;
+    sleep(Duration::from_millis(500));
+    pirate.set_baud(BOOT_BAUD)?;
+    let _ = pirate.drain_stamps()?;
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// HSI drift probe
+// ---------------------------------------------------------------------------
+
+pub mod drift {
+    //! Host-side HSI drift probe.
+    //!
+    //! The chip owns its clock trim — it watches inter-byte timing on every
+    //! non-Status packet and nudges HSITRIM toward zero drift autonomously
+    //! (see `firmware/lib/drivers/src/dxl/uart/clock.rs`). There is no CAL
+    //! round-trip and no readable trim register: the only signal the host
+    //! can observe is how long the chip takes to transmit a reply, measured
+    //! against the pirate's stable clock.
+    //!
+    //! [`probe_drift_ppm`] issues long Reads and reads the pirate's `Round`
+    //! stamp for the reply: `first`/`last` are the per-byte RXNE timestamps
+    //! of the first and last reply bytes. Their span covers `(N-1)`
+    //! chip-transmitted byte-times; HSI fast → short span, HSI slow → long
+    //! span.
+
+    use anyhow::{Result, anyhow, bail};
+    use dxl_protocol::SoftwareCrcUmts;
+    use dxl_protocol::crc::CrcUmts;
+    use dxl_protocol::types::Id;
+
+    use super::{IdleStamp, PirateClient, build_read};
+
+    /// HSITRIM step size mapped to ppm. Mirrors
+    /// `firmware/ch32/src/hal/rcc/v00x.rs::CLOCK_TRIM_PPM_PER_STEP`
+    /// (HSI_TRIM_STEP_HZ 60 kHz / HSI_HZ 24 MHz). One step ≈ 2500 ppm.
+    pub const DRIFT_STEP_PPM: f64 = 2500.0;
+
+    /// Probe the chip's config region — always present, RO, and long enough
+    /// that the per-byte RXNE quantization stays small vs the reply span.
+    const PROBE_ADDR: u16 = 0;
+    const PROBE_LEN: u16 = 128;
+
+    /// Full Status frame around an N-byte payload: 4 header + id + 2 len +
+    /// instr + err + N params + 2 CRC.
+    const STATUS_OVERHEAD: usize = 11;
+
+    /// Generous Read window — at the slowest supported baud (9600), a
+    /// 139-byte Status frame takes ~145 ms on the wire alone.
+    const READ_REPLY_US: u32 = 200_000;
+
+    /// Mean chip-TX drift in ppm over `samples` long-Read probes.
+    /// Positive ⇒ chip TX slow (HSI slow); negative ⇒ fast.
+    pub fn probe_drift_ppm(
+        pirate: &mut PirateClient,
+        id: Id,
+        baud: u32,
+        samples: u32,
+    ) -> Result<f64> {
+        const RETRIES: u32 = 3;
+        let n = STATUS_OVERHEAD + PROBE_LEN as usize;
+        let ticks_per_us = pirate.hz_per_us()? as f64;
+        // (n - 1) byte-times of span, each 10 bit periods, in pirate ticks.
+        let nominal_ticks = (n as f64 - 1.0) * 10.0 / baud as f64 * ticks_per_us * 1_000_000.0;
+
+        let mut spans: Vec<u32> = Vec::with_capacity(samples as usize);
+        for _ in 0..samples {
+            let mut last_err: Option<anyhow::Error> = None;
+            for _ in 0..RETRIES {
+                match one_span(pirate, id) {
+                    Ok(span) => {
+                        spans.push(span);
+                        last_err = None;
+                        break;
+                    }
+                    Err(e) => last_err = Some(e),
+                }
+            }
+            if let Some(e) = last_err {
+                return Err(e);
+            }
+        }
+        let mean_span: f64 = spans.iter().map(|&s| s as f64).sum::<f64>() / spans.len() as f64;
+        Ok((mean_span / nominal_ticks - 1.0) * 1_000_000.0)
+    }
+
+    fn one_span(pirate: &mut PirateClient, id: Id) -> Result<u32> {
+        let _ = pirate.drain_stamps()?;
+        let frame = build_read(id, PROBE_ADDR, PROBE_LEN)?;
+        let reply = pirate
+            .xfer(&frame, READ_REPLY_US)?
+            .ok_or_else(|| anyhow!("no Status reply on drift Read"))?;
+        validate_status_reply(&reply, PROBE_LEN as usize)?;
+        let stamps = pirate.drain_stamps()?;
+        let rounds: Vec<_> = stamps
+            .iter()
+            .filter_map(|s| match s {
+                IdleStamp::Round(r) => Some(*r),
+                IdleStamp::Plain(_) => None,
+            })
+            .collect();
+        if rounds.len() != 1 {
+            bail!("drift Read produced {} Round stamps", rounds.len());
+        }
+        Ok(rounds[0].last.wrapping_sub(rounds[0].first))
+    }
+
+    /// Hand-decode a Read Status reply. Wire-bytes-only length check
+    /// (matches the Python probe) — the chip's config region 0..128 is
+    /// known not to contain `FF FF` and so cannot trigger stuffing. CRC
+    /// catches any wire corruption.
+    fn validate_status_reply(reply: &[u8], expected_params: usize) -> Result<()> {
+        let expected_len = STATUS_OVERHEAD + expected_params;
+        if reply.len() != expected_len {
+            bail!("reply length {} != {}", reply.len(), expected_len);
+        }
+        if reply[0..4] != [0xFF, 0xFF, 0xFD, 0x00] {
+            bail!("bad header: {:02X?}", &reply[0..4]);
+        }
+        if reply[7] != 0x55 {
+            bail!("instruction 0x{:02X} != 0x55 (Status)", reply[7]);
+        }
+        if reply[8] != 0 {
+            bail!("Status error byte 0x{:02X}", reply[8]);
+        }
+        let mut crc = SoftwareCrcUmts::new();
+        crc.update(&reply[..reply.len() - 2]);
+        let got = u16::from_le_bytes([reply[reply.len() - 2], reply[reply.len() - 1]]);
+        let want = crc.finalize();
+        if got != want {
+            bail!("CRC mismatch: computed 0x{want:04X}, got 0x{got:04X}");
+        }
+        Ok(())
     }
 }
 

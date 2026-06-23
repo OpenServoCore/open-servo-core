@@ -14,6 +14,10 @@ path = "src/lib.rs"
 name = "tool-ping"
 path = "src/bin/tool-ping.rs"
 
+[[bin]]
+name = "tool-hsi-conv"
+path = "src/bin/tool-hsi-conv.rs"
+
 [dependencies]
 dxl-protocol = { path = "../../firmware/lib/dxl-protocol", features = ["heapless", "software-crc"] }
 heapless     = "0.9"
