@@ -1,25 +1,31 @@
 //! Measure the chip's `TX_START_ENTRY_TICKS` floor — the back-date the
 //! `arm_tim2` path applies to CCR3 so the wire-bit lands at or after the
-//! scheduled deadline. The const must be sized to the *minimum* observed
-//! CC3-IRQ-entry latency; any larger value would let the wire-bit land
-//! before the deadline (collides with prior slot's RDT).
+//! scheduled deadline.
+//!
+//! Two signals captured per run, both required because they cover
+//! complementary slices of the CC3→wire-bit path:
+//!
+//! - **Chip-side stamp** `TelemetryDxlTune.tx_start_entry_min`: captured
+//!   at the very top of `on_tim2_cc3`. Covers PFIC entry + `qingke-rt`
+//!   context save. Diagnostic only — `dma::enable` + DMA AHB arbitration
+//!   + USART DR write happen AFTER the stamp and are NOT in the number.
+//! - **Wire-side excess** `(first − req) − configured_first_byte_us`:
+//!   pirate's stable-clock measurement of when the chip's first wire bit
+//!   lands vs the deadline implied by `RDT`. This is the ground truth
+//!   for the const — it covers the full path CC3-match → wire-bit. The
+//!   smallest wire excess across all shots is the slack we can shrink
+//!   into `TX_START_ENTRY_TICKS` while still keeping every wire bit at
+//!   or after deadline.
+//!
+//! Suggestion math (all ticks HCLK = 48 MHz):
+//! `K_recommended = K_current + min(wire_excess_hclk_ticks) - safety_margin`.
+//! Pasting `K_recommended` makes the worst-case wire bit land
+//! `safety_margin` ticks AFTER deadline; pasting a larger K would push
+//! the worst-case wire bit BEFORE deadline (collides with prior slot's
+//! RDT).
 //!
 //! Requires the chip to be built with `--features tuning`; otherwise the
-//! stamp surface (`TelemetryDxlTune`) stays zero.
-//!
-//! Workflow per batch:
-//!   1. Clear `TelemetryDxlTune.tx_start_entry_min` (host writes 0).
-//!   2. Drive N plain Pings (each Ping ⇒ one CC3 fire in the chip's
-//!      reply path, which is the path the const back-dates).
-//!   3. Read the field — saturating-min over the batch.
-//!   4. Also collect pirate wire stamps `(first − req)` per shot to
-//!      report wire-observed RDT vs configured RDT — the operator-side
-//!      cross-check that says "K sized correctly ⟹ wire RDT ≈ configured".
-//!
-//! Final report: distribution of per-batch minima (min / median / p95 /
-//! max) and the suggested const = `max(batch_min)` (the floor — every
-//! batch saw at least this entry latency, so the next firmware build
-//! sizing CCR3 to this value still satisfies `L_entry ≥ K`).
+//! chip-side stamp surface stays zero (wire excess still works).
 
 use std::time::Duration;
 
@@ -35,6 +41,11 @@ use dxl_protocol::types::Id;
 /// `firmware/ch32/src/measurements.rs`. Reprinted next to the suggestion
 /// so the operator can eyeball the delta without grepping the firmware.
 const CURRENT_TX_START_ENTRY_TICKS: u16 = 46;
+
+/// V006 HCLK ticks per µs — TIM2 / chip-side `TX_START_ENTRY_TICKS` are
+/// in this domain. Pirate ticks are at a different rate (18 MHz SysTick)
+/// and must be converted to HCLK before adding to K.
+const HCLK_TICKS_PER_US: f64 = 48.0;
 
 #[derive(Parser, Debug)]
 #[command(about = "Sample the chip's TX_START_ENTRY_TICKS floor + wire RDT distribution.")]
@@ -58,6 +69,13 @@ struct Args {
     /// Inter-batch idle, milliseconds.
     #[arg(long, default_value_t = 10)]
     inter_batch_ms: u64,
+    /// Safety margin to keep between worst-case wire bit and deadline,
+    /// in HCLK ticks. The recommended const is `K_max_safe -
+    /// safety_margin`. Default 3 ticks (~62 ns at 48 MHz) — small
+    /// enough that K stays close to the optimum, large enough to
+    /// absorb a sample we didn't observe.
+    #[arg(long, default_value_t = 3)]
+    safety_margin: u16,
 }
 
 fn main() -> Result<()> {
@@ -139,53 +157,97 @@ fn main() -> Result<()> {
     }
 
     println!();
-    print_summary(&batch_mins, &all_round_us, expected_first_us);
+    print_summary(
+        &batch_mins,
+        &all_round_us,
+        expected_first_us,
+        args.safety_margin,
+    );
     Ok(())
 }
 
-fn print_summary(batch_mins: &[u16], wire_us: &[f64], expected_first_us: f64) {
+fn print_summary(batch_mins: &[u16], wire_us: &[f64], expected_first_us: f64, safety_margin: u16) {
     let mins_f: Vec<f64> = batch_mins.iter().map(|&v| v as f64).collect();
     let bm_min = mins_f.iter().copied().fold(f64::INFINITY, f64::min);
     let bm_med = quantile_us(&mins_f, 0.50);
     let bm_p95 = quantile_us(&mins_f, 0.95);
     let bm_max = mins_f.iter().copied().fold(f64::NEG_INFINITY, f64::max);
 
-    println!("=== batch-min tx_start_entry distribution (TIM2 ticks) ===");
+    println!("=== chip-side tx_start_entry_min distribution (TIM2 ticks, diagnostic) ===");
     println!(
         "  min={bm_min:.0}   median={bm_med:.0}   p95={bm_p95:.0}   max={bm_max:.0}   n={}",
         batch_mins.len(),
     );
+    println!(
+        "  covers PFIC entry + qingke-rt save only; dma::enable + DMA arb + USART DR write \
+         happen AFTER the stamp."
+    );
 
     // Wire RDT excess vs configured: (first − req) − expected_first_us.
+    // This is the ground-truth signal: end-to-end CC3-match → wire-bit
+    // latency relative to the deadline implied by RDT.
     let excess_us: Vec<f64> = wire_us.iter().map(|us| us - expected_first_us).collect();
     let w_min = excess_us.iter().copied().fold(f64::INFINITY, f64::min);
     let w_med = quantile_us(&excess_us, 0.50);
     let w_p95 = quantile_us(&excess_us, 0.95);
     let w_max = excess_us.iter().copied().fold(f64::NEG_INFINITY, f64::max);
     println!();
-    println!("=== wire RDT excess vs configured first-byte (µs) ===");
+    println!("=== wire excess (first-byte − configured deadline) — ground truth ===");
     println!(
-        "  min={w_min:+.2}   median={w_med:+.2}   p95={w_p95:+.2}   max={w_max:+.2}   n={}",
+        "  min={w_min:+.2} µs   median={w_med:+.2} µs   p95={w_p95:+.2} µs   max={w_max:+.2} µs   \
+         n={}",
         wire_us.len(),
     );
     if w_min < 0.0 {
         println!(
-            "  note: negative excess means a wire bit landed BEFORE the configured RDT — the \
-             const is undersized (wire bit encroaches on prior slot's RDT)."
+            "  WARN: negative excess — chip's wire bit landed BEFORE the configured deadline. \
+             TX_START_ENTRY_TICKS is too LARGE; reduce it by at least {} HCLK ticks before \
+             reflashing.",
+            (-w_min * HCLK_TICKS_PER_US).ceil() as i64,
         );
     }
 
-    let suggested = bm_max as u16;
+    // Suggestion math, fully wire-derived. All ticks here are HCLK
+    // (48 MHz, V006) — the chip's K and TIM2 domain are HCLK. Wire
+    // excess is in µs; convert with HCLK_TICKS_PER_US, never with the
+    // pirate's slower SysTick rate (those are separate domains).
+    //
+    //   K_max_safe = K_current + min(wire_excess_hclk_ticks)
+    //   K_recommended = K_max_safe − safety_margin
+    //
+    // K LARGER → CCR3 earlier → wire bit earlier (risks landing before
+    // deadline — collides with prior slot). K SMALLER → wire bit later
+    // (safe; wastes a few HCLK ticks of slot time). `K_max_safe` is the
+    // tightest legal K under the observed distribution.
+    let min_excess_hclk = (w_min * HCLK_TICKS_PER_US).floor() as i32;
+    let k_max_safe_signed = CURRENT_TX_START_ENTRY_TICKS as i32 + min_excess_hclk;
+    let k_recommended_signed = k_max_safe_signed - safety_margin as i32;
     println!();
     println!("=== suggestion ===");
     println!(
-        "  current TX_START_ENTRY_TICKS = {CURRENT_TX_START_ENTRY_TICKS}   measured floor = \
-         {suggested}   delta = {:+}",
-        suggested as i32 - CURRENT_TX_START_ENTRY_TICKS as i32,
+        "  current K = {CURRENT_TX_START_ENTRY_TICKS}   min_wire_excess = {min_excess_hclk} HCLK \
+         ticks   safety_margin = {safety_margin}"
+    );
+    println!(
+        "  K_max_safe = current + min_excess = {k_max_safe_signed}   (largest K where worst-case \
+         wire bit still ≥ deadline)"
+    );
+    if k_recommended_signed <= 0 || k_recommended_signed > u16::MAX as i32 {
+        println!(
+            "  ERROR: K_recommended = {k_recommended_signed} out of range. Re-run with \
+             different --safety-margin."
+        );
+        return;
+    }
+    let k_recommended = k_recommended_signed as u16;
+    let delta = k_recommended as i32 - CURRENT_TX_START_ENTRY_TICKS as i32;
+    println!(
+        "  K_recommended = K_max_safe − safety_margin = {k_recommended}   delta_from_current = \
+         {delta:+}"
     );
     println!(
         "  paste into firmware/ch32/src/measurements.rs:\n      pub const \
-         TX_START_ENTRY_TICKS: u16 = {suggested};"
+         TX_START_ENTRY_TICKS: u16 = {k_recommended};"
     );
 }
 
