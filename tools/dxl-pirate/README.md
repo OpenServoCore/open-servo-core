@@ -8,7 +8,7 @@ the Dynamixel 2.0 bus. Three things it does that a plain USB-UART can't:
 - **Inject** raw byte payloads onto the bus with sub-microsecond start jitter,
   scheduled either at an absolute SysTick value or a chosen delay after the
   next idle on the wire.
-- **Listen** passively and timestamp every idle gap (HCLK/8 = 18 MHz ticks), so
+- **Listen** passively and timestamp every idle gap (144 MHz HCLK ticks), so
   you can see exactly when a servo starts and finishes transmitting.
 
 `tools/dxl-bench` uses it to exercise DXL Fast Sync/Bulk Read coalescing at
@@ -63,7 +63,7 @@ ones you'll actually use:
 
 ```
 TICK?                                # current SysTick value
-HZ                                   # ticks per microsecond (= 18)
+HZ                                   # ticks per microsecond (= 144)
 BAUD 3000000                         # retune both TX + RX (quiesce bus first)
 
 DRAIN                                # pop one idle timestamp, or EMPTY
@@ -93,10 +93,10 @@ Poll `DRAIN` in a loop. Every gap ≥ 1 byte time on the wire produces a stamp:
 ### Inject a synthetic slave response
 
 After the host issues a multi-slave Fast Sync Read, fire a fake slot one
-round-trip-delay (≈ 250 µs = 4500 ticks) after the request ends:
+round-trip-delay (≈ 250 µs = 36000 ticks) after the request ends:
 
 ```
-> ARM bytes=55ff00fdfd...crc... after_idle=4500
+> ARM bytes=55ff00fdfd...crc... after_idle=36000
 < OK
 ```
 
