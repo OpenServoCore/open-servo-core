@@ -4,25 +4,29 @@ use ch32_hal as hal;
 use ch32_hal::Peri;
 use ch32_hal::peripherals::{PA11, PA12, USBD};
 use ch32_hal::usbd::{Driver, Instance, InterruptHandler};
-use embassy_futures::select::{Either, select};
-use embassy_time::{Duration, Timer};
 use embassy_usb::Builder;
 use embassy_usb::class::cdc_acm::{CdcAcmClass, State};
 use embassy_usb::driver::EndpointError;
 use heapless::Vec;
 
-use crate::inject::{self, TX_BUF_LEN};
-use crate::listen;
+use crate::capture::{self, ByteRecord};
+use crate::inject::TX_BUF_LEN;
 use crate::proto::{self, Reply};
 
-// `FIRE bytes=<TX_BUF_LEN*2 hex> at=<u64>` = TX_BUF_LEN*2 + 35; +slop.
+// `FIRE bytes=<TX_BUF_LEN*2 hex> at=<u32>` ≤ TX_BUF_LEN*2 + 35; +slop.
 const LINE_BUF_LEN: usize = TX_BUF_LEN * 2 + 64;
 
-/// CDC bulk EP max-packet size. CdcAcmClass::new sets this on both endpoints;
-/// `class.write_packet` requires the buffer to be ≤ this size (an oversized
-/// write hangs the EP without erroring). All single-line replies fit easily;
-/// stream_reply chunks at this boundary.
+/// CDC bulk EP max-packet size. CdcAcmClass::new sets this on both
+/// endpoints; `class.write_packet` requires the buffer to be ≤ this size
+/// (an oversized write hangs the EP without erroring).
 const CDC_BULK_PACKET: u16 = 64;
+
+/// BBATCH per-call cap. Each record on the wire is 6 bytes (u32 tick LE,
+/// u8 byte, u8 flags); a 64-record batch is 384 B plus 16 B ASCII header
+/// and newline — ~6 CDC bulk packets per batch. Sized to keep the per-call
+/// stack buffer small while amortizing CDC overhead.
+const BBATCH_MAX: usize = 64;
+const BSTAMP_SIZE: usize = 6;
 
 hal::bind_interrupts!(struct Irqs {
     USB_LP_CAN1_RX0 => InterruptHandler<USBD>;
@@ -83,10 +87,8 @@ async fn serve<'d, T: Instance + 'd>(
                 continue;
             }
             if b == b'\n' {
-                if let Some(rest) = line.strip_prefix(b"XFER ") {
-                    handle_xfer(class, rest).await?;
-                } else if let Some(rest) = line.strip_prefix(b"RX ") {
-                    handle_rx(class, rest).await?;
+                if let Some(rest) = line.strip_prefix(b"BBATCH ") {
+                    handle_batch(class, rest).await?;
                 } else {
                     let reply = proto::handle_line(&line);
                     send_reply(class, reply).await?;
@@ -100,96 +102,57 @@ async fn serve<'d, T: Instance + 'd>(
     }
 }
 
-async fn handle_xfer<'d, T: Instance + 'd>(
+async fn handle_batch<'d, T: Instance + 'd>(
     class: &mut CdcAcmClass<'d, Driver<'d, T>>,
     rest: &[u8],
 ) -> Result<(), EndpointError> {
-    let req = match proto::parse_xfer(rest) {
+    if let Some(cause) = capture::desync_cause() {
+        return send_reply(class, Reply::Err(proto::desync_err_for(cause))).await;
+    }
+    let req = match proto::parse_batch(rest) {
         Ok(r) => r,
         Err(e) => return send_reply(class, Reply::Err(e)).await,
     };
 
-    // Drain any prior IDLE stamps so a stale Round/Plain entry from the
-    // previous trip can't masquerade as this trip's reply IDLE.
-    while listen::drain_stamp().is_some() {}
+    let mut records = [ByteRecord {
+        tick: 0,
+        byte: 0,
+        flags: 0,
+    }; BBATCH_MAX];
+    let want = (req.count as usize).min(BBATCH_MAX);
+    let n = capture::drain_batch(&mut records[..want]);
 
-    let bytes_before = listen::byte_count();
-    let tx_len = req.len as u32;
-    if inject::master_send(&req.payload[..req.len]).is_err() {
-        return send_reply(class, Reply::Err("toolong")).await;
-    }
+    // Binary frame: sync header 0xA5 0x5A + count:u16 LE + n × (tick:u32 LE,
+    // byte:u8, flags:u8). No trailing newline; framing is length-prefixed.
+    // The sync header lets a host that lost framing scan-and-relock on the
+    // next call.
+    let mut hdr: Vec<u8, 4> = Vec::new();
+    let _ = hdr.push(0xA5);
+    let _ = hdr.push(0x5A);
+    let _ = hdr.extend_from_slice(&(n as u16).to_le_bytes());
+    class.write_packet(&hdr).await?;
 
-    let timeout = Timer::after(Duration::from_micros(req.reply_us as u64));
-    let wait = async {
-        // Poll the ring; pop any Plain entries and stop on the first Round.
-        // Peek-not-pop on Round so DRAIN still surfaces (req, first, last) to
-        // the host afterward. 50 µs cadence is fine — a 1 Mbaud round-trip is
-        // ~300 µs and we just need ordering, not sub-tick precision.
-        loop {
-            match listen::peek_stamp() {
-                Some(listen::IdleStamp::Round { .. }) => return,
-                Some(listen::IdleStamp::Plain { .. }) => {
-                    listen::drain_stamp();
-                }
-                None => Timer::after(Duration::from_micros(50)).await,
-            }
-        }
-    };
-
-    match select(wait, timeout).await {
-        Either::First(()) => {
-            let bytes_after = listen::byte_count();
-            let reply_start = bytes_before.wrapping_add(tx_len);
-            let reply_len = bytes_after.wrapping_sub(reply_start);
-            stream_reply(class, reply_start, reply_len).await
-        }
-        Either::Second(()) => class.write_packet(b"NOREPLY\n").await,
-    }
-}
-
-async fn handle_rx<'d, T: Instance + 'd>(
-    class: &mut CdcAcmClass<'d, Driver<'d, T>>,
-    rest: &[u8],
-) -> Result<(), EndpointError> {
-    match proto::parse_rx(rest) {
-        Ok(req) => stream_reply(class, req.from, req.len as u32).await,
-        Err(e) => send_reply(class, Reply::Err(e)).await,
-    }
-}
-
-async fn stream_reply<'d, T: Instance + 'd>(
-    class: &mut CdcAcmClass<'d, Driver<'d, T>>,
-    start: u32,
-    len: u32,
-) -> Result<(), EndpointError> {
-    const HEX: &[u8; 16] = b"0123456789abcdef";
-    // Chunk at the EP boundary, not the Vec capacity — write_packet hangs
-    // when given more than max_packet_size. "REPLY " (7) + 2 hex per byte
-    // + trailing "\n" must all fit per packet.
     let mut chunk: Vec<u8, { CDC_BULK_PACKET as usize }> = Vec::new();
-    let _ = chunk.extend_from_slice(b"REPLY ");
-    for i in 0..len {
-        if chunk.len() + 2 > chunk.capacity() {
+    for r in &records[..n] {
+        if chunk.len() + BSTAMP_SIZE > chunk.capacity() {
             class.write_packet(&chunk).await?;
             chunk.clear();
         }
-        let b = listen::read_byte(start.wrapping_add(i));
-        let _ = chunk.push(HEX[(b >> 4) as usize]);
-        let _ = chunk.push(HEX[(b & 0xF) as usize]);
+        let _ = chunk.extend_from_slice(&r.tick.to_le_bytes());
+        let _ = chunk.push(r.byte);
+        let _ = chunk.push(r.flags);
     }
-    if chunk.len() + 1 > chunk.capacity() {
+    if !chunk.is_empty() {
         class.write_packet(&chunk).await?;
-        chunk.clear();
     }
-    let _ = chunk.push(b'\n');
-    class.write_packet(&chunk).await
+    Ok(())
 }
 
 async fn send_reply<'d, T: Instance + 'd>(
     class: &mut CdcAcmClass<'d, Driver<'d, T>>,
     reply: Reply,
 ) -> Result<(), EndpointError> {
-    let mut out: Vec<u8, 128> = Vec::new();
+    let mut out: Vec<u8, 64> = Vec::new();
     match reply {
         Reply::Ok => {
             let _ = out.extend_from_slice(b"OK\n");
@@ -202,80 +165,90 @@ async fn send_reply<'d, T: Instance + 'd>(
             let _ = out.extend_from_slice(r.as_bytes());
             let _ = out.push(b'\n');
         }
-        Reply::Tick(t) => write_u64(&mut out, b"TICK ", t),
+        Reply::Tick(t) => write_u32(&mut out, b"TICK ", t),
         Reply::Last(t) => write_u32(&mut out, b"LAST ", t),
-        Reply::Req(t) => write_u32(&mut out, b"REQ ", t),
-        Reply::First(t) => write_u32(&mut out, b"FIRST ", t),
-        Reply::FireFirst(t) => write_u32(&mut out, b"FIREFIRST ", t),
-        Reply::Bytes(n) => write_u32(&mut out, b"BYTES ", n),
         Reply::HzPerUs(n) => write_u32(&mut out, b"HZ ", n),
-        Reply::Stamp { tick, head } => write_stamp(&mut out, tick, head),
-        Reply::Round {
-            req,
-            first,
-            last,
-            head,
-        } => write_round(&mut out, req, first, last, head),
+        Reply::BStamp { tick, byte, flags } => write_bstamp(&mut out, tick, byte, flags),
+        Reply::BTrace(r) => write_btrace(&mut out, r),
+        Reply::Status {
+            baud,
+            avail,
+            cause,
+            last_tick,
+        } => write_status(&mut out, baud, avail, cause, last_tick),
     }
-    // Catches a future reply format that overflows the 64-byte Vec — the
-    // `let _` swallows above would silently truncate otherwise.
     debug_assert!(out.len() <= out.capacity());
     class.write_packet(&out).await
 }
 
-fn write_stamp(out: &mut Vec<u8, 128>, tick: u32, head: u16) {
-    let _ = out.extend_from_slice(b"STAMP ");
+fn write_status(
+    out: &mut Vec<u8, 64>,
+    baud: u32,
+    avail: u32,
+    cause: Option<capture::DesyncCause>,
+    last_tick: u32,
+) {
+    let _ = out.extend_from_slice(b"STATUS ");
+    push_dec_u32(out, baud);
+    let _ = out.push(b' ');
+    push_dec_u32(out, avail);
+    let _ = out.push(b' ');
+    let _ = out.push(if cause.is_some() { b'1' } else { b'0' });
+    let _ = out.push(b' ');
+    let cause_str = match cause {
+        Some(c) => c.as_str(),
+        None => "none",
+    };
+    let _ = out.extend_from_slice(cause_str.as_bytes());
+    let _ = out.push(b' ');
+    push_dec_u32(out, last_tick);
+    let _ = out.push(b'\n');
+}
+
+fn write_bstamp(out: &mut Vec<u8, 64>, tick: u32, byte: u8, flags: u8) {
+    let _ = out.extend_from_slice(b"BSTAMP ");
     push_dec_u32(out, tick);
     let _ = out.push(b' ');
-    push_dec_u32(out, head as u32);
+    push_dec_u32(out, byte as u32);
+    let _ = out.push(b' ');
+    push_dec_u32(out, flags as u32);
     let _ = out.push(b'\n');
 }
 
-fn write_round(out: &mut Vec<u8, 128>, req: u32, first: u32, last: u32, head: u16) {
-    let _ = out.extend_from_slice(b"ROUND ");
-    push_dec_u32(out, req);
+fn write_btrace(out: &mut Vec<u8, 64>, r: capture::WalkerTrace) {
+    let _ = out.extend_from_slice(b"BTRACE ");
+    push_dec_u32(out, r.phase as u32);
     let _ = out.push(b' ');
-    push_dec_u32(out, first);
+    push_dec_u32(out, r.intfr_post_clear as u32);
     let _ = out.push(b' ');
-    push_dec_u32(out, last);
+    push_dec_u32(out, r.tim2_cnt_entry as u32);
     let _ = out.push(b' ');
-    push_dec_u32(out, head as u32);
+    push_dec_u32(out, r.tim2_cnt_exit as u32);
+    let _ = out.push(b' ');
+    push_dec_u32(out, r.falling_pending_entry as u32);
+    let _ = out.push(b' ');
+    push_dec_u32(out, r.edges_consumed as u32);
+    let _ = out.push(b' ');
+    push_dec_u32(out, r.bytes_emitted as u32);
+    let _ = out.push(b' ');
+    push_dec_u32(out, r.falling_total);
+    let _ = out.push(b' ');
+    push_dec_u32(out, r.rx_total);
     let _ = out.push(b'\n');
 }
 
-fn write_u32(out: &mut Vec<u8, 128>, prefix: &[u8], v: u32) {
+fn write_u32<const N: usize>(out: &mut Vec<u8, N>, prefix: &[u8], v: u32) {
     let _ = out.extend_from_slice(prefix);
     push_dec_u32(out, v);
     let _ = out.push(b'\n');
 }
 
-fn write_u64(out: &mut Vec<u8, 128>, prefix: &[u8], v: u64) {
-    let _ = out.extend_from_slice(prefix);
-    push_dec_u64(out, v);
-    let _ = out.push(b'\n');
-}
-
-fn push_dec_u32(out: &mut Vec<u8, 128>, mut v: u32) {
+fn push_dec_u32<const N: usize>(out: &mut Vec<u8, N>, mut v: u32) {
     if v == 0 {
         let _ = out.push(b'0');
         return;
     }
     let mut buf = [0u8; 10];
-    let mut i = buf.len();
-    while v != 0 {
-        i -= 1;
-        buf[i] = b'0' + (v % 10) as u8;
-        v /= 10;
-    }
-    let _ = out.extend_from_slice(&buf[i..]);
-}
-
-fn push_dec_u64(out: &mut Vec<u8, 128>, mut v: u64) {
-    if v == 0 {
-        let _ = out.push(b'0');
-        return;
-    }
-    let mut buf = [0u8; 20];
     let mut i = buf.len();
     while v != 0 {
         i -= 1;

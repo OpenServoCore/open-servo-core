@@ -1,9 +1,6 @@
-//! PA7 scope marker for chain-latency analysis. Rising edge = USART3 IDLE ISR
-//! entry (i.e. wire-end + IDLE-assertion delay + IRQ entry latency). Falling
-//! edge = DMA EN write — the injector's fire kickoff. Pulse width therefore
-//! captures only the path between listener IDLE and DMA enable; it should be
-//! small and baud-independent. Any baud drift in that width localizes a bug
-//! to the INJ side.
+//! PA7 scope marker. Currently cleared at each fire kickoff (CC2-stamp arm
+//! path) so an external probe can correlate logic-analyzer captures with
+//! injector timing.
 
 use ch32_hal::pac::{GPIOA, RCC};
 
@@ -19,11 +16,6 @@ pub fn init() {
         w.0 = v;
     });
     clear();
-}
-
-#[inline]
-pub fn set() {
-    GPIOA.bshr().write(|w| w.set_bs(7, true));
 }
 
 #[inline]

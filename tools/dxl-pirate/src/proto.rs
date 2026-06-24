@@ -1,142 +1,102 @@
-//! ASCII line protocol over USB-CDC. Greppable in pytest logs; deliberately
-//! tolerant of whitespace, intolerant of anything else.
-//!
-//! The injector is intentionally protocol-agnostic on the TX side: callers
-//! supply the exact wire bytes via `bytes=<hex>`. That lets the host stay in
-//! charge of DXL framing (any FastSlot variant, plain Status, fuzz junk, …)
-//! without bloating the firmware with encoders for every shape we want to
-//! emit.
+//! ASCII line protocol over USB-CDC. The high-throughput per-byte stamp
+//! drain (`BBATCH`) goes binary because at 3 Mbaud the byte rate
+//! (~300 kB/s after framing) won't survive ASCII per-line framing; the
+//! binary handler lives in `usb_cdc::serve` since the frame spans
+//! multiple CDC bulk packets.
 //!
 //! Host → device
-//!   `FIRE bytes=<hex> at=<u64>`
-//!       Arm `inject` to push `bytes` onto the wire when SysTick.CNT == `at`.
-//!       `at` is in HCLK ticks (144 MHz).
+//!   `FIRE bytes=<hex> at=<u32>`
+//!       Arm `inject` to push `bytes` onto the wire when tick32 == `at`.
 //!   `ARM bytes=<hex> after_idle=<u32>`
-//!       Same TX, but fire `after_idle` ticks after the wire returns to idle.
-//!       Listener backdates IDLE-ISR entry by one char-time, so this is the
-//!       spec-natural "ticks after end-of-frame" — no compensation needed.
+//!       Same TX, but fire `after_idle` tick32 ticks after the next
+//!       USART IDLE assertion (≈ 1 char-time after wire-end).
 //!   `MASTER bytes=<hex>`
-//!       Fire `bytes` now as the bus master; USART1 TC IRQ captures wire-end
-//!       (T_request_end). Listener suppresses the IDLE stamp from our own
-//!       TX echo so the slave-side stamp ring isn't polluted.
-//!   `XFER bytes=<hex> reply_us=<u32>`
-//!       MASTER + wait up to `reply_us` for the slave-reply end-of-frame IDLE.
-//!       Streams `REPLY <hex>\n` with the slave's reply bytes (extracted from
-//!       the RX DMA ring) on success, `NOREPLY\n` on timeout. Drains the stamp
-//!       ring first so a stale Round/Plain can't masquerade as this trip's
-//!       reply. Handled directly in `usb_cdc::serve` so the hex stream can
-//!       span multiple CDC bulk packets.
-//!   `RX from=<u32> len=<u16>`
-//!       Stream `REPLY <hex>\n` with `len` bytes from the RX DMA ring starting
-//!       at absolute byte-count address `from`. Caller must keep `from` within
-//!       the last `RX_BUF_LEN` of `BYTES` or the bytes will have been
-//!       overwritten. For MASTER+ARM chains where the reply isn't a single
-//!       Round trip — split tx echo and arm-emitted bytes apart by offset.
-//!   `TICK?`      → `TICK <u64>`           current SysTick.CNT
-//!   `LAST?`      → `LAST <u32>`           last `inject` kickoff tick (low half)
-//!   `REQ?`       → `REQ <u32>`            last master TC stamp (low half)
-//!   `FIRST?`     → `FIRST <u32>`          last slave-reply T0 stamp (low half)
-//!   `FIREFIRST?` → `FIREFIRST <u32>`      last FIRE self-echo T0 stamp (low half)
-//!   `DRAIN`      → one entry from the listen ring:
-//!                  `STAMP <tick> <head>`                     plain bus IDLE
-//!                  `ROUND <req> <first> <last> <head>`       master round-trip
-//!                  `EMPTY`                                   ring empty
-//!   `BYTES`      → `BYTES <u32>`          total RX bytes since boot
-//!   `HZ`         → `HZ <u32>`             SysTick ticks per microsecond
-//!   `BAUD <bps>` → `OK` or `ERR baud`     retune both USART1 TX + USART3 RX
+//!       Fire `bytes` now as the bus master. Host derives the request-
+//!       end stamp from the per-byte stream.
+//!   `BDRAIN`
+//!       Pop one byte record. Reply: `BSTAMP <tick> <byte> <flags>` or
+//!       `EMPTY`. ASCII; debug only — use `BBATCH` for throughput.
+//!   `BBATCH <count:u16>`
+//!       Drain up to `count` byte records as a binary frame. Handled
+//!       directly in `usb_cdc::serve` — see that file for wire format.
+//!   `BTRACE`
+//!       Pop one walker-ISR trace record. Reply: `BTRACE <phase>
+//!       <intfr_post> <cnt_entry> <cnt_exit> <pending> <edges> <bytes>`
+//!       (decimal) or `EMPTY`.
+//!   `BTRACECLEAR`
+//!       Reset the trace ring tail. Use before a stress run.
+//!   `STATUS`
+//!       `STATUS <baud> <avail> <desynced> <cause> <last_tick>`. Always
+//!       responds — even mid-desync — so the host has a one-shot health
+//!       probe that can't be masked by walker state.
+//!   `RESET`
+//!       Clear `DESYNCED` + cause, drain stamp/IC rings, re-arm walker.
+//!       Keeps baud. The routine recovery for any of the three desync
+//!       causes (TIMING.md §3.5).
+//!   `BAUD <bps>` → `OK` / `ERR baud`. Implicit RESET. Caller must
+//!       quiesce the bus.
+//!   `TICK?`      → `TICK <tick32:u32>`
+//!   `LAST?`      → `LAST <tick32:u32>` last fire kickoff
+//!   `HZ`         → `HZ <u32>` tick32 ticks per microsecond
 //!
 //! Device → host
-//!   `OK`, `ERR <reason>`, plus the per-command replies above. Newlines are
-//!   appended by the CDC writer.
+//!   `OK`, `ERR <reason>`, plus the per-command replies above. Newlines
+//!   are appended by the CDC writer.
+//!
+//! Desync handling: `STATUS`, `RESET`, and `BAUD` are processed
+//! unconditionally so the host always has a recovery path. Every other
+//! command returns `ERR desync <cause>` while the flag is set.
 
 use core::str;
 
 use dxl_pirate::parse::decode_hex;
 
-use crate::inject::TX_BUF_LEN;
-use crate::{inject, led, listen};
+use crate::capture::{self, DesyncCause};
+use crate::inject::{self, TX_BUF_LEN};
+use crate::led;
 
 pub enum Reply {
     Ok,
     Err(&'static str),
-    Tick(u64),
+    Tick(u32),
     Last(u32),
-    Req(u32),
-    First(u32),
-    FireFirst(u32),
-    Stamp {
+    BStamp {
         tick: u32,
-        head: u16,
+        byte: u8,
+        flags: u8,
     },
-    Round {
-        req: u32,
-        first: u32,
-        last: u32,
-        head: u16,
-    },
+    BTrace(capture::WalkerTrace),
     Empty,
-    Bytes(u32),
+    Status {
+        baud: u32,
+        avail: u32,
+        cause: Option<DesyncCause>,
+        last_tick: u32,
+    },
     HzPerUs(u32),
 }
 
-pub struct XferRequest {
-    pub payload: [u8; TX_BUF_LEN],
-    pub len: usize,
-    pub reply_us: u32,
+pub struct BatchRequest {
+    pub count: u16,
 }
 
-pub fn parse_xfer(rest: &[u8]) -> Result<XferRequest, &'static str> {
+pub fn parse_batch(rest: &[u8]) -> Result<BatchRequest, &'static str> {
     let Ok(rest) = str::from_utf8(rest) else {
         return Err("utf8");
     };
-    let mut payload = [0u8; TX_BUF_LEN];
-    let mut len: Option<usize> = None;
-    let mut reply_us: Option<u32> = None;
-    for tok in rest.trim().split_ascii_whitespace() {
-        let Some((k, v)) = tok.split_once('=') else {
-            return Err("kv");
-        };
-        match k {
-            "bytes" => len = decode_hex(v, &mut payload),
-            "reply_us" => reply_us = v.parse().ok(),
-            _ => return Err("key"),
-        }
-    }
-    let (Some(len), Some(reply_us)) = (len, reply_us) else {
-        return Err("missing");
-    };
-    Ok(XferRequest {
-        payload,
-        len,
-        reply_us,
-    })
+    let count: u16 = rest.trim().parse().map_err(|_| "count")?;
+    Ok(BatchRequest { count })
 }
 
-pub struct RxRequest {
-    pub from: u32,
-    pub len: u16,
-}
-
-pub fn parse_rx(rest: &[u8]) -> Result<RxRequest, &'static str> {
-    let Ok(rest) = str::from_utf8(rest) else {
-        return Err("utf8");
-    };
-    let mut from: Option<u32> = None;
-    let mut len: Option<u16> = None;
-    for tok in rest.trim().split_ascii_whitespace() {
-        let Some((k, v)) = tok.split_once('=') else {
-            return Err("kv");
-        };
-        match k {
-            "from" => from = v.parse().ok(),
-            "len" => len = v.parse().ok(),
-            _ => return Err("key"),
-        }
+/// Returns the static error string for a desync cause. Format used by
+/// every command that errors out on DESYNCED, plus by `usb_cdc::handle_batch`
+/// for the BBATCH error path.
+pub fn desync_err_for(cause: DesyncCause) -> &'static str {
+    match cause {
+        DesyncCause::WalkerLate => "desync walker_late",
+        DesyncCause::IcOverrun => "desync ic_overrun",
+        DesyncCause::StampOverflow => "desync stamp_overflow",
     }
-    let (Some(from), Some(len)) = (from, len) else {
-        return Err("missing");
-    };
-    Ok(RxRequest { from, len })
 }
 
 pub fn handle_line(line: &[u8]) -> Reply {
@@ -144,6 +104,24 @@ pub fn handle_line(line: &[u8]) -> Reply {
         return Reply::Err("utf8");
     };
     let line = line.trim();
+
+    // STATUS, RESET, BAUD bypass the desync guard so the host always has
+    // a recovery path (and a probe that surfaces the current state).
+    if line == "STATUS" {
+        return status();
+    }
+    if line == "RESET" {
+        capture::reset_walker();
+        return Reply::Ok;
+    }
+    if let Some(rest) = line.strip_prefix("BAUD ") {
+        return baud(rest);
+    }
+
+    // Every other command fails fast on desync.
+    if let Some(cause) = capture::desync_cause() {
+        return Reply::Err(desync_err_for(cause));
+    }
 
     if let Some(rest) = line.strip_prefix("FIRE ") {
         return fire(rest);
@@ -154,34 +132,37 @@ pub fn handle_line(line: &[u8]) -> Reply {
     if let Some(rest) = line.strip_prefix("MASTER ") {
         return master(rest);
     }
-    if let Some(rest) = line.strip_prefix("BAUD ") {
-        return baud(rest);
-    }
 
     match line {
-        "TICK?" => Reply::Tick(inject::read_systick_cnt()),
+        "TICK?" => Reply::Tick(inject::read_tick32()),
         "LAST?" => Reply::Last(inject::last_fired_tick()),
-        "REQ?" => Reply::Req(inject::last_master_request_end()),
-        "FIRST?" => Reply::First(listen::last_t_first()),
-        "FIREFIRST?" => Reply::FireFirst(listen::last_fire_t_first()),
-        "BYTES" => Reply::Bytes(listen::byte_count()),
-        "HZ" => Reply::HzPerUs(inject::ticks_per_us()),
-        "DRAIN" => match listen::drain_stamp() {
-            Some(listen::IdleStamp::Plain { tick, head }) => Reply::Stamp { tick, head },
-            Some(listen::IdleStamp::Round {
-                req,
-                first,
-                last,
-                head,
-            }) => Reply::Round {
-                req,
-                first,
-                last,
-                head,
+        "HZ" => Reply::HzPerUs(inject::wire_ticks_per_us()),
+        "BDRAIN" => match capture::drain_byte() {
+            Some(r) => Reply::BStamp {
+                tick: r.tick,
+                byte: r.byte,
+                flags: r.flags,
             },
             None => Reply::Empty,
         },
+        "BTRACE" => match capture::trace_drain() {
+            Some(r) => Reply::BTrace(r),
+            None => Reply::Empty,
+        },
+        "BTRACECLEAR" => {
+            capture::trace_clear();
+            Reply::Ok
+        }
         _ => Reply::Err("unknown"),
+    }
+}
+
+fn status() -> Reply {
+    Reply::Status {
+        baud: capture::current_baud(),
+        avail: capture::stamps_available(),
+        cause: capture::desync_cause(),
+        last_tick: inject::last_fired_tick(),
     }
 }
 
@@ -189,19 +170,19 @@ fn baud(rest: &str) -> Reply {
     let Ok(bps) = rest.trim().parse::<u32>() else {
         return Reply::Err("baud");
     };
-    // Caller must quiesce the bus first — both calls bounce UE around a BRR
-    // write, which garbles any byte in flight on either USART.
-    if inject::set_baud(bps).is_err() {
-        return Reply::Err("baud");
+    match inject::set_baud(bps) {
+        Ok(()) => {}
+        Err(inject::BaudError::OutOfRange) => return Reply::Err("baud"),
+        Err(inject::BaudError::Busy) => return Reply::Err("busy"),
     }
-    if listen::set_baud(bps).is_err() {
+    if capture::set_baud(bps).is_err() {
         return Reply::Err("baud");
     }
     Reply::Ok
 }
 
 fn fire(rest: &str) -> Reply {
-    let mut at: Option<u64> = None;
+    let mut at: Option<u32> = None;
     let mut buf = [0u8; TX_BUF_LEN];
     let mut len: Option<usize> = None;
 
@@ -219,12 +200,13 @@ fn fire(rest: &str) -> Reply {
         return Reply::Err("missing");
     };
 
-    match inject::arm(&buf[..len], at) {
+    match inject::schedule_fire(&buf[..len], at) {
         Ok(()) => {
             led::signal();
             Reply::Ok
         }
         Err(inject::ArmError::TooLong) => Reply::Err("toolong"),
+        Err(inject::ArmError::Busy) => Reply::Err("busy"),
     }
 }
 
@@ -247,12 +229,13 @@ fn arm(rest: &str) -> Reply {
         return Reply::Err("missing");
     };
 
-    match inject::arm_after_idle(&buf[..len], after) {
+    match inject::schedule_fire_after_idle(&buf[..len], after) {
         Ok(()) => {
             led::signal();
             Reply::Ok
         }
         Err(inject::ArmError::TooLong) => Reply::Err("toolong"),
+        Err(inject::ArmError::Busy) => Reply::Err("busy"),
     }
 }
 
@@ -273,11 +256,12 @@ fn master(rest: &str) -> Reply {
         return Reply::Err("missing");
     };
 
-    match inject::master_send(&buf[..len]) {
+    match inject::fire_now_master(&buf[..len]) {
         Ok(()) => {
             led::signal();
             Reply::Ok
         }
         Err(inject::ArmError::TooLong) => Reply::Err("toolong"),
+        Err(inject::ArmError::Busy) => Reply::Err("busy"),
     }
 }

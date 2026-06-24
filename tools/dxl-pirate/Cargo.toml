@@ -24,7 +24,6 @@ ch32-hal  = { git = "https://github.com/ch32-rs/ch32-hal", default-features = fa
   "ch32v203c8t6",
   "rt",
   "embassy",
-  "time-driver-tim2",
   "memory-x",
 ] }
 qingke    = { version = "0.7", features = ["v4", "critical-section-impl"] }
@@ -47,6 +46,15 @@ static_cell      = "2"
 
 panic-halt = "1"
 
+# Local checkout of ch32-hal carries `feat-dma-isrs-feature` (commit
+# 47cfe6b), which gates the auto-generated DMA1_CHANNELx ISR stubs behind
+# the `dma-isrs` Cargo feature. We supply our own DMA1_CHANNEL1/CHANNEL3
+# handlers (capture.rs) so the feature stays OFF; without this patch the
+# upstream pin (71a2985) emits stubs unconditionally and the link fails
+# on "symbol multiply defined".
+[patch."https://github.com/ch32-rs/ch32-hal"]
+ch32-hal = { path = "/Users/aaron/projects/ch32-rs/ch32-hal" }
+
 [profile.release]
 opt-level     = 3
 lto           = true
@@ -60,3 +68,4 @@ lto           = true
 codegen-units = 1
 debug         = 2
 debug-assertions = false
+

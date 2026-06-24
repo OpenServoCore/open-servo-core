@@ -1,154 +1,122 @@
-//! DXL Fast slot injector hot path: pre-encoded payload → DMA1_CH4 → USART1
-//! (HDSEL) kicked off by TIM4 OPM update event chained through DMA1_CH7 — no
-//! IRQ in the fire path, ≤100 ns wire-edge jitter from the scheduled tick.
+//! DXL TX path: pre-encoded payload → DMA1_CH2 → USART3 (TX=PB10 AF OD,
+//! RX=PB11 input-pullup), kicked by TIM4 OPM CC2 match chained through
+//! DMA1_CH4 — no IRQ in the fire path.
 //!
-//! Architecture:
-//!   1. Payload pre-loaded into DMA1_CH4 (USART1_TX), channel EN=0.
-//!   2. arm()/arm_after_idle() program TIM4 OPM ARR = (fire_at - now), CEN=1.
-//!   3. When CNT == ARR, TIM4 UEV fires → UDE routes to DMA1_CH7 → CH7 writes
-//!      precomputed armed-CFGR word (EN=1) into DMA1_CH4.CFGR.
-//!   4. USART1 TXE is permanently asserted (DMAT=1), so as soon as CH4 sees
-//!      EN=1 it pushes bytes into DATAR; on-wire start bit follows by ≤1 bit
-//!      period.
+//! USART3 runs **full-duplex**, not HDSEL: PB10 and PB11 are bridged
+//! externally on the bench, putting both halves of the USART block across
+//! the single-wire DXL line. The chip then RX-captures both our own TX
+//! echo (useful for FIRE_COMP autocal) and remote servo replies. HDSEL
+//! would internally tri-state RX during TX, which is the opposite of
+//! what we need.
 //!
-//! Timer choice: TIM1 was the original pick but TIM1_CH2 default-maps to PA9
-//! (same as USART1_TX) on LQFP48, and even with CC2E=0+MOE=0 the implicit AF
-//! mux lets TIM1's PP output dominate USART1's OD line — bus driven LOW.
-//! TIM1 has no remap option that frees PA9 on LQFP48. TIM4 channels live on
-//! PB6/PB7/PB8/PB9, no PA9 overlap; TIM4_UP routes to DMA1_CH7.
+//! Why USART3 and not USART2 on PA2/PA3: PA3 has R10=10 kΩ to 3V3 on the
+//! MuseLab board (SD-card CS pull-up). With the bus connected idle-high
+//! before USB plugs in, current trickles via bus → series-R → PA3 → R10
+//! → chip 3V3 rail and parasitically charges VDD above POR threshold,
+//! leaving the chip stuck in a half-booted state when USB later supplies
+//! real power. PB10/PB11 are clean breakouts with no onboard pulls.
 //!
-//! HAL owns clocks + USB; everything else is direct metapac so the DMA chain
-//! is a handful of register writes with no abstraction layers between us and
-//! the bus.
+//! TIM4 OPM, PSC=0, ARR=delta, CCR2=ARR. On CC2 compare match, DMA1_CH4
+//! stamps a precomputed armed-CFGR word (EN=1) over DMA1_CH2.CR; CH2 then
+//! drains the prepared payload into USART3.DATAR. CCR2=ARR puts the CC2
+//! event on the same edge as the OPM overflow.
+//!
+//! V20x DMA pairs are fixed: USART3_TX → DMA1_CH2, USART3_RX → DMA1_CH3.
+//! TIM4_CC2 → DMA1_CH4 (same trigger as the prior USART2 build), so only
+//! the stamp target moves (CH7.CR → CH2.CR). CH7 is now free.
+//!
+//! This module also owns TIM2 + TIM3 (the wire clock; see TIMING.md §1)
+//! since they need to come up before USART3 / TIM4. `capture` consumes the
+//! resulting `tick32` via `read_tick32()`.
 
 use core::cell::SyncUnsafeCell;
 use core::ptr;
 
 use ch32_hal::pac::Interrupt;
-use ch32_hal::pac::dma::vals::{Dir, Size};
-use ch32_hal::pac::timer::vals::Urs;
-use ch32_hal::pac::{DMA1, GPIOA, RCC, SYSTICK, TIM4, USART1};
+use ch32_hal::pac::dma::vals::{Dir, Pl, Size};
+use ch32_hal::pac::timer::vals::{CcmrInputCcs, Ckd, Mms, Urs};
+use ch32_hal::pac::{AFIO, DMA1, GPIOB, RCC, TIM2, TIM3, TIM4, USART3};
 use dxl_pirate::parse::brr_for;
 use portable_atomic::{AtomicBool, AtomicU32, Ordering};
-use qingke_rt::interrupt;
 
 pub const TX_BUF_LEN: usize = 1024;
 
-/// (fire_at - now) below this many SysTick ticks bypasses TIM4 and writes the
-/// armed CFGR word directly into DMA1_CH4. Equal to (TIM4 arm overhead +
-/// PFIC dispatch margin) — 256 ticks ≈ 1.8 µs at 144 MHz, safely above the
-/// register-write latency for the arm sequence. A too-close deadline still
-/// fires (wire-edge lands ≈ "now") instead of silently missing on a wrap.
-const FIRE_NOW_THRESHOLD_TICKS: u64 = 256;
+/// (fire_at - now) below this many `tick32` ticks bypasses TIM4 and writes
+/// the armed CFGR word directly into DMA1_CH2. 256 ticks ≈ 1.8 µs at
+/// 144 MHz — safely above the arm-sequence register-write latency. A
+/// too-close deadline still fires (wire-edge lands ≈ "now") instead of
+/// silently missing on a wrap.
+const FIRE_NOW_THRESHOLD_TICKS: u32 = 256;
 
-/// TIM4 ARR (u16) max in SysTick units. With PSC=0 the timer ticks at
-/// HCLK = 144 MHz = 1:1 with SysTick, so ARR = delta_systick directly and
-/// max schedule is 65 535 ticks ≈ 455 µs. Fires beyond this fall back to
-/// `software_fire` (host should never request them — slot timing is sub-ms).
-const TIM4_MAX_DELTA_TICKS: u64 = u16::MAX as u64;
+/// TIM4 ARR (u16) max in tick32 units. PSC=0 → 144 MHz tick = 1:1 with
+/// tick32, so ARR = delta directly and max schedule is 65 535 ticks ≈
+/// 455 µs. Fires beyond this fall back to the immediate path (host should
+/// never request them — DXL slot timing is sub-ms).
+const TIM4_MAX_DELTA_TICKS: u32 = u16::MAX as u32;
 
-/// TIM4 prescaler register: divide-by-1 → 144 MHz tick = 1:1 with SysTick.
+/// TIM4 prescaler register: divide-by-1 → 144 MHz tick = 1:1 with TIM2.
 const TIM4_PSC: u16 = 0;
 
-/// FIRE / MASTER share this buffer; both fire from DMA1_CH4 (FIRE on a TIM4
-/// UEV match via DMA1_CH7, MASTER on its own dispatch). MASTER preempts any
-/// pending FIRE.
-static TX_BUF: SyncUnsafeCell<[u8; TX_BUF_LEN]> = SyncUnsafeCell::new([0; TX_BUF_LEN]);
-
-/// ARM uses a separate buffer so a MASTER+ARM chain (= "fire master request,
-/// then emit a faked foreign-slave slot one RDT after the master IDLE")
-/// keeps both payloads loaded simultaneously. The on_listen_idle swap path
-/// reloads the DMA channel to point here before kicking the fire.
-static ARM_TX_BUF: SyncUnsafeCell<[u8; TX_BUF_LEN]> = SyncUnsafeCell::new([0; TX_BUF_LEN]);
-/// ARM payload length (bytes loaded into ARM_TX_BUF). ISR-only writer is
-/// arm_after_idle; ISR-only reader is on_listen_idle's swap path.
-static ARM_TX_LEN: SyncUnsafeCell<u16> = SyncUnsafeCell::new(0);
-
-/// Precomputed DMA1_CH4 CFGR word with EN=1; DMA1_CH7 copies this byte-pattern
-/// over DMA1_CH4.CFGR on the TIM4 fire to enable the USART1_TX channel
-/// without an IRQ. Init writes the value once; the cell is read-only
-/// thereafter so the DMA can safely treat it as constant memory.
-static ARMED_CH4_CFGR_WORD: SyncUnsafeCell<u32> = SyncUnsafeCell::new(0);
-
-// USART1 on APB2, TIM4 on APB1. With SYSCLK_FREQ_144MHZ_HSE both APB1/2 run at
-// 144 MHz (prescaler DIV1) so TIM4 ticks at the same rate as USART1's BRR base.
-pub const APB2_HZ: u32 = 144_000_000;
+/// `wire_hz`, used by the protocol layer to answer `HZ?`. TIM2/TIM3 chain
+/// at HCLK; both APB buses also run at HCLK under SYSCLK_FREQ_144MHZ_HSE.
+pub const WIRE_HZ: u32 = 144_000_000;
+/// USART3 sits on APB1. Same rate as HCLK with prescaler DIV1.
 pub const APB1_HZ: u32 = 144_000_000;
 pub const DEFAULT_BAUD: u32 = 1_000_000;
 
-// SysTick on V4 ticks at HCLK = 144 MHz, so 1 µs = 144 ticks. Quantization is
-// ~6.94 ns/tick — fine enough to measure DXL wire-bit timing without aliasing
-// the chip-under-test's 48 MHz HCLK (one pirate tick ≈ 1/3 of one chip tick).
-const SYSTICK_HZ: u32 = 144_000_000;
+/// FIRE / MASTER share this buffer. FIRE fires through TIM4 CC2 → CH4 →
+/// CH7. MASTER preempts any pending FIRE by re-arming CH7 and stamping
+/// directly.
+static TX_BUF: SyncUnsafeCell<[u8; TX_BUF_LEN]> = SyncUnsafeCell::new([0; TX_BUF_LEN]);
 
-/// arm_after_idle arms the payload + offset and sets this; the next IDLE the
-/// listener observes consumes it via swap. The swap is the only RMW —
-/// FIRED_TICK_LO and PENDING_AFTER_IDLE_TICKS below are single-word,
-/// single-writer-at-a-time cells accessed via volatile read/write (V203 is
-/// single-core, aligned u32 stores are tear-free).
+/// ARM uses a separate buffer so a MASTER+ARM chain (master TX echoes,
+/// then ARM emits a faked slave slot after the bus goes idle) keeps both
+/// payloads loaded simultaneously. `on_idle()` swaps DMA1_CH2 onto
+/// ARM_TX_BUF before kicking the fire.
+static ARM_TX_BUF: SyncUnsafeCell<[u8; TX_BUF_LEN]> = SyncUnsafeCell::new([0; TX_BUF_LEN]);
+static ARM_TX_LEN: SyncUnsafeCell<u16> = SyncUnsafeCell::new(0);
+
+/// Precomputed DMA1_CH2 CFGR word with EN=1. DMA1_CH4 copies this 32-bit
+/// word over DMA1_CH2.CR on the TIM4 CC2 fire. Written once during init,
+/// read-only thereafter so the DMA can treat it as constant memory.
+static ARMED_CH2_CFGR_WORD: SyncUnsafeCell<u32> = SyncUnsafeCell::new(0);
+
+/// Set by `schedule_fire_after_idle`; consumed by `on_idle`. Re-armed each
+/// IDLE swap.
 static ARMED_AFTER_IDLE: AtomicBool = AtomicBool::new(false);
-static FIRED_TICK_LO: SyncUnsafeCell<u32> = SyncUnsafeCell::new(0);
 static PENDING_AFTER_IDLE_TICKS: SyncUnsafeCell<u32> = SyncUnsafeCell::new(0);
 
-/// USART1 TXC stamp: SysTick.CNTL captured the moment the master's last byte
-/// finishes shifting out (TC asserts post-shift, unlike TXE which fires when
-/// the holding register empties). This is T_request_end in the cal model.
-/// Sole writer = USART1 ISR.
-static MASTER_T_REQUEST_END: SyncUnsafeCell<u32> = SyncUnsafeCell::new(0);
+/// `tick32` at the last fire kickoff (commanded value for scheduled fires,
+/// "now" for immediate fires). Host correlates against per-byte stamps.
+static FIRED_TICK: SyncUnsafeCell<u32> = SyncUnsafeCell::new(0);
 
-/// master_send sets; listen's USART3 IDLE ISR consumes via swap and skips
-/// publishing that stamp. The master's own TX echoes into the USART3 listener
-/// and produces one IDLE we don't want polluting the slave-side stamp ring.
-pub(crate) static SUPPRESS_NEXT_IDLE_STAMP: AtomicBool = AtomicBool::new(false);
-
-/// Gate for the RXNE handler's T_FIRST stamp. Set ONLY by the USART3
-/// IDLE-suppress branch (= master TX echo IDLE just fired). The RXNE handler
-/// swap-clears it on the next received byte. Cleared (not set) by master_send
-/// so a stale RXNEIE left armed by a no-reply prior trip can fire on our
-/// master TX-echo byte without misattributing it as the slave-reply T0.
-pub(crate) static EXPECT_FIRST_BYTE: AtomicBool = AtomicBool::new(false);
-
-/// The USART3 IDLE handler sets this when it consumes SUPPRESS (= master TX
-/// echo IDLE just fired). The next non-suppressed IDLE is the slave-reply
-/// wire-end, and the handler publishes a Round stamp instead of Plain, then
-/// clears this flag. master_send also resets it so a no-reply trip doesn't
-/// taint the next round.
-pub(crate) static EXPECT_REPLY_END_IDLE: AtomicBool = AtomicBool::new(false);
-
-/// Set by `arm()` (= FIRE command). Consumed by the listener's RXNE handler
-/// on the first byte after fire — captures `FIRE_T_FIRST` for the host
-/// jitter script. Independent of the master-send `EXPECT_FIRST_BYTE` flow
-/// so FIRE and MASTER paths don't collide. Cleared by the RXNE swap.
-pub(crate) static EXPECT_FIRE_FIRST_BYTE: AtomicBool = AtomicBool::new(false);
-
-/// Per-baud fire-path latency compensation in SysTicks. Subtracted from the
-/// commanded `fire_at_tick` inside `schedule_or_fire_now` so the wire start
-/// bit lands at the commanded tick on wall-clock terms.
+/// Per-baud fire-path latency compensation in `tick32` ticks. Subtracted
+/// from the commanded fire-at inside `schedule_or_fire_now` so the wire
+/// start bit lands at the commanded tick.
 ///
-/// Decomposition (measured by `scripts/pirate_jitter.py`):
-///   FIRE_COMP = 11 (flat DMA chain + IRQ entry) + bit_time_systicks / 2
-///                                                 (USART start-bit BRR sync avg)
-/// The flat 11 SysTicks (~611 ns) is the TIM4 OPM CC match → DMA1_CH7 →
-/// CH4.CFGR write → CH4 fires → DR write → USART start-bit chain.
-/// The `bit_time / 2` is the half-bit average wait from the USART
-/// synchronizer aligning to the next BRR clock edge.
-///
-/// Recomputed in `set_baud`; the `fire_at_tick` stored in FIRED_TICK_LO
-/// stays the COMMANDED value (pre-comp) so host-side missed-schedule
-/// detection still works.
+/// Decomposition:
+///   FIRE_COMP = FIRE_COMP_FLAT_TICKS (DMA chain + CC2 sync overhead)
+///             + bit_time / 2          (USART start-bit BRR sync avg)
+/// Retuned per `set_baud`. Phase-C autocal will retune
+/// `FIRE_COMP_FLAT_TICKS` empirically against a loopback measurement.
 static FIRE_COMP_TICKS: AtomicU32 = AtomicU32::new(0);
 
 const FIRE_COMP_FLAT_TICKS: u32 = 96;
 
-/// `brr` is USART1 BRR (HCLK ticks per bit at this baud). SysTick = HCLK,
-/// so bit_time_systicks = brr. Half = brr / 2.
 const fn fire_comp_ticks(brr: u32) -> u32 {
     FIRE_COMP_FLAT_TICKS + brr / 2
 }
 
+/// Upper bound on how long `wait_tx_complete` will spin for `USART3.SR.TC`.
+/// 200 ms at 144 MHz. Generous enough for any payload up to TX_BUF_LEN at
+/// 9600 baud (≈ 1.1 s for 1024 bytes — we cap shorter than that on
+/// purpose: a stuck TC means something genuinely broke and the host should
+/// see a `busy` error rather than the chip pretending to work).
+const TX_WAIT_TIMEOUT_TICKS: u32 = 28_800_000;
+
 #[inline]
 fn store_fired_tick(t: u32) {
-    unsafe { ptr::write_volatile(FIRED_TICK_LO.get(), t) }
+    unsafe { ptr::write_volatile(FIRED_TICK.get(), t) }
 }
 #[inline]
 fn store_pending_after_idle(v: u32) {
@@ -159,120 +127,156 @@ fn load_pending_after_idle() -> u32 {
     unsafe { ptr::read_volatile(PENDING_AFTER_IDLE_TICKS.get()) }
 }
 
+/// Coherent (TIM2, TIM3) snapshot per TIMING.md §3.3. Three loads in the
+/// common case, six if TIM2 wraps between the first read and the TIM3
+/// read.
+#[inline]
+pub fn read_tick32() -> u32 {
+    loop {
+        let lo_1 = TIM2.cnt().read();
+        let hi = TIM3.cnt().read();
+        let lo_2 = TIM2.cnt().read();
+        if lo_2 >= lo_1 {
+            return ((hi as u32) << 16) | (lo_2 as u32);
+        }
+    }
+}
+
 pub fn init() {
     unsafe {
-        // ── Clocks. USART1 on APB2 (default PA9/PA10 needs no AFIO); TIM4 on
-        // APB1. TIM1 is forbidden here — its CH2 default-maps to PA9 and
-        // fights USART1_TX on the AF mux even with CC2E=0+MOE=0 (see file
-        // header). DMA1 on AHB.
+        // ── Clocks. USART3 + TIM2/3/4 on APB1; GPIOB + AFIO on APB2;
+        // DMA1 on AHB.
         RCC.apb2pcenr().modify(|w| {
-            w.set_iopaen(true);
-            w.set_usart1en(true);
+            w.set_iopben(true);
+            w.set_afioen(true);
         });
-        RCC.apb1pcenr().modify(|w| w.set_tim4en(true));
+        RCC.apb1pcenr().modify(|w| {
+            w.set_usart3en(true);
+            w.set_tim2en(true);
+            w.set_tim3en(true);
+            w.set_tim4en(true);
+        });
         RCC.ahbpcenr().modify(|w| w.set_dma1en(true));
 
-        // ── PA9 = USART1_TX (default mapping), AF push-pull, 50 MHz. HDSEL
-        // works with either OD or PP; we use PP because OD relies on a strong
-        // external bus pull-up to recover idle-HIGH between LOW bits, and the
-        // DUT's pull-up isn't strong enough to keep up at 1M+ baud — bytes
-        // get clipped after the first LOW transition. Collisions aren't a
-        // concern on this bench (single master + chip-side TX_EN gating), so
-        // active push-pull is safe and matches the pre-TIM4 USART2 config
-        // that's known to work on this hardware.
+        // USART3 default mapping is PB10/PB11 (no remap). TIM2 partial
+        // remap #2 moves CH3/CH4 to PB10/PB11 while leaving CH1/CH2 on
+        // PA0/PA1. TIM2_CH3 IC then reads PB10 via GPIO_INDR regardless of
+        // USART3's AF state; PB11 is bridged externally to PB10 so the IC
+        // sees the same wire edge a hypothetical PB11 tap would.
+        AFIO.pcfr1().modify(|w| {
+            w.set_usart3_rm(0); // 00 = default PB10/PB11
+            w.set_tim2_rm(0b10); // 10 = CH3/CH4 → PB10/PB11
+        });
+
+        // ── PB10 = USART3_TX, AF **push-pull**, 50 MHz. The bench wiring
+        // has no servo, no transceiver, just PB10↔PB11 bridged through
+        // open air — the only pull on the wire is PB11's ~30 kΩ internal
+        // pull-up, which gives τ ≈ 500–900 ns rise time and makes USART
+        // RX mis-sample at ≥ 2 Mbaud. Push-pull actively drives both
+        // edges, so the wire matches transmit timing at any baud the
+        // chip can clock. The DXL multi-drop "no PP fighting OD" concern
+        // doesn't apply to this bench rig.
         //
-        // ODR set HIGH first: belt-and-suspenders against any init phase
-        // where the GPIO momentarily falls back to ODR-controlled (e.g.,
-        // before USART CTLR1 enables UE, the AF block may not be actively
-        // driving and ODR=0 would pull the line LOW).
-        GPIOA.outdr().modify(|w| w.set_odr(9, true));
-        // CFGHR controls PA8..PA15; PA9 sits in bits [7:4]. Mode=11, CNF=10.
-        let cnf_mode_pa9 = 0b1011u32;
-        GPIOA.cfghr().modify(|w| {
+        // ODR high before AF lock: guards against a transient ODR-LOW
+        // pulling the bus while the AF block is mid-init.
+        GPIOB.outdr().modify(|w| {
+            w.set_odr(10, true);
+            w.set_odr(11, true); // select PB11 input pullup (see below)
+        });
+        // CFGHR controls PB8..PB15.
+        //   PB10 in bits [11:8]: Mode=11 (50 MHz), CNF=10 (AF PP) → 0b1011.
+        //   PB11 in bits [15:12]: Mode=00 (input),   CNF=10 (input w/ pull)
+        //                         → 0b1000; ODR(11)=1 above selects pull-up.
+        GPIOB.cfghr().modify(|w| {
             let mut v = w.0;
-            v &= !(0xF << 4);
-            v |= cnf_mode_pa9 << 4;
+            v &= !(0xF << 8);
+            v &= !(0xF << 12);
+            v |= 0b1011u32 << 8;
+            v |= 0b1000u32 << 12;
             w.0 = v;
         });
 
-        // ── USART1: default 1 Mbaud, 8N1, HDSEL, DMAT. Init order matters —
-        // set TE/RE first (with UE=0) so the AF block knows its direction
-        // before being enabled, then enable HDSEL, then UE in its own write.
-        // The TE+UE-in-one-write idiom can transiently glitch the TX line
-        // LOW on STM32-family USARTs (V20x included), which on AF_OD + bus
-        // pull-up leaves the bus stuck LOW with the USART parked in a
-        // confused state. Mirrors the ch32-hal recipe at
-        // ch32-hal/src/usart/mod.rs::configure.
-        USART1.ctlr2().modify(|w| w.set_stop(0b00));
-        USART1.ctlr1().modify(|w| {
+        // ── USART3: 8N1, full-duplex, DMAT, DMAR, IDLEIE. Init order
+        // matters — TE/RE with UE=0, then DMAT/DMAR, then UE in its own
+        // write, to avoid the TX-line glitch the STM32-family USARTs
+        // throw when TE+UE land in the same write.
+        USART3.ctlr2().modify(|w| w.set_stop(0b00));
+        USART3.ctlr1().modify(|w| {
             w.set_m(false);
             w.set_pce(false);
             w.set_te(true);
             w.set_re(true);
+            w.set_idleie(true);
         });
-        USART1.ctlr3().modify(|w| {
-            w.set_hdsel(true);
+        USART3.ctlr3().modify(|w| {
             w.set_dmat(true);
+            w.set_dmar(true);
         });
-        USART1.brr().write(|w| w.0 = APB2_HZ / DEFAULT_BAUD);
-        USART1.ctlr1().modify(|w| w.set_ue(true));
-        FIRE_COMP_TICKS.store(fire_comp_ticks(APB2_HZ / DEFAULT_BAUD), Ordering::Relaxed);
+        let brr0 = APB1_HZ / DEFAULT_BAUD;
+        USART3.brr().write(|w| w.0 = brr0);
+        USART3.ctlr1().modify(|w| w.set_ue(true));
+        FIRE_COMP_TICKS.store(fire_comp_ticks(brr0), Ordering::Relaxed);
 
-        // ── DMA1_CH4 = USART1_TX. metapac channels are zero-indexed: CH4 → ch(3).
-        // EN stays clear at init — TIM4 fire path flips it via the DMA1_CH7
-        // chain; load_payload also reloads MAR/NDTR with EN=0 between fires.
-        let ch4 = DMA1.ch(3);
-        ch4.par().write_value(USART1.datar().as_ptr() as u32);
-        ch4.cr().write(|w| {
-            w.set_dir(Dir::FROMMEMORY);
-            w.set_minc(true);
-            w.set_pinc(false);
-            w.set_circ(false);
-            w.set_msize(Size::BITS8);
-            w.set_psize(Size::BITS8);
-            w.set_tcie(false);
+        // ── TIM2 master, low 16 of tick32. PSC=0, ARR=0xFFFF, MMS=update
+        // → TRGO on each wrap drives TIM3 slave clock. No CC1/CC2/CC4
+        // walker cadence: the event-driven walker (TIMING.md §3.2) runs
+        // off USART3 IDLE + DMA1_CH1/CH3 HT/TC, not TIM2 IRQs. TIM2 IRQ
+        // stays disabled at the PFIC.
+        //
+        // CC3 input capture on TI3 (= PB10 via TIM2_RM=0b10).
+        // CKD=DIV_1 pins fDTS at HCLK = 144 MHz; the IC3F filter is set
+        // per-baud by `capture::apply_filter_for_brr` from the LUT in
+        // TIMING.md §4 (largest delay ≤ brr/3). CCER CC3P=1 → falling-
+        // edge sensitivity. CC3E=1 → capture enabled. DIER CC3DE=1 →
+        // each capture kicks DMA1_CH1.
+        TIM2.psc().write_value(0);
+        TIM2.atrlr().write_value(0xFFFF);
+        TIM2.ctlr1().write(|w| {
+            w.set_cen(false);
+            w.set_arpe(false);
+            w.set_ckd(Ckd::DIV_1);
         });
-
-        // Precompute the EN=1 CFGR word DMA1_CH7 stamps on fire. Same bits as
-        // the disarmed config above, plus the enable bit. Computed via the
-        // metapac builder so a future field-layout shuffle propagates here.
-        let mut armed = ch32_hal::pac::dma::regs::Cr(0);
-        armed.set_dir(Dir::FROMMEMORY);
-        armed.set_minc(true);
-        armed.set_pinc(false);
-        armed.set_circ(false);
-        armed.set_msize(Size::BITS8);
-        armed.set_psize(Size::BITS8);
-        armed.set_tcie(false);
-        armed.set_en(true);
-        ptr::write_volatile(ARMED_CH4_CFGR_WORD.get(), armed.0);
-
-        // ── DMA1_CH7 = TIM4_UP. Circular, single-word transfer per trigger:
-        // copy ARMED_CH4_CFGR_WORD → DMA1_CH4.CFGR. Peripheral side is the
-        // CFGR MMIO register; memory side is the precomputed word in SRAM.
-        // EN=1 permanently — the trigger source (TIM4_UP) gates fires, not
-        // EN. NDTR=1 auto-reloads each cycle thanks to CIRC=1, so we never
-        // re-arm CH7 from software.
-        let ch7 = DMA1.ch(6);
-        ch7.par().write_value(ch4.cr().as_ptr() as u32);
-        ch7.mar().write_value(ARMED_CH4_CFGR_WORD.get() as u32);
-        ch7.ndtr().write(|w| w.set_ndt(1));
-        ch7.cr().write(|w| {
-            w.set_dir(Dir::FROMMEMORY);
-            w.set_minc(false);
-            w.set_pinc(false);
-            w.set_circ(true);
-            w.set_msize(Size::BITS32);
-            w.set_psize(Size::BITS32);
-            w.set_tcie(false);
-            w.set_en(true);
+        TIM2.ctlr2().modify(|w| w.set_mms(Mms::UPDATE));
+        TIM2.chctlr_input(1).modify(|w| {
+            // chctlr_input(1) = CCMR2. CC3S in bits [1:0]. IC3F (bits
+            // [7:4]) is written separately by `capture::init` from the
+            // per-baud LUT.
+            w.set_ccs(0, CcmrInputCcs::TI4); // "normal" mapping → IC3 ← TI3
         });
+        TIM2.ccer().modify(|w| {
+            w.set_ccp(2, true); // CC3P=1 falling edge
+            w.set_cce(2, true); // CC3E=1
+        });
+        TIM2.dmaintenr().write(|w| {
+            w.set_ccde(2, true); // CC3DE (IC capture → DMA1_CH1)
+        });
+        TIM2.swevgr().write(|w| w.set_ug(true)); // load PSC/ARR
+        TIM2.intfr().write(|w| {
+            w.set_uif(false);
+            w.set_ccif(0, false);
+            w.set_ccif(1, false);
+            w.set_ccif(2, false);
+            w.set_ccif(3, false);
+        });
+        TIM2.ctlr1().modify(|w| w.set_cen(true));
 
-        // ── TIM4 OPM. PSC=0 → 144 MHz tick (= 1:1 with SysTick). URS=1 so a
-        // UG software event (used to reset CNT between fires) doesn't
-        // generate an UEV that would spuriously kick DMA1_CH7. UDE=1 routes
-        // CNT-overflow UEV to DMA. OPM=1 auto-clears CEN after the first
-        // UEV, so each fire is exactly one shot.
+        // ── TIM3 slave, high 16. SMS=7 (external clock mode 1), TS=1
+        // (ITR1 = TIM2 TRGO).
+        TIM3.psc().write_value(0);
+        TIM3.atrlr().write_value(0xFFFF);
+        TIM3.ctlr1().write(|w| w.set_cen(false));
+        TIM3.smcfgr().modify(|w| {
+            w.set_sms(7);
+            w.set_ts(1);
+        });
+        TIM3.swevgr().write(|w| w.set_ug(true));
+        TIM3.intfr().write(|w| w.set_uif(false));
+        TIM3.ctlr1().modify(|w| w.set_cen(true));
+
+        // ── TIM4 OPM. PSC=0 (1:1 with tick32). CR1: OPM=1 (auto-clear CEN
+        // after first UEV), URS=1 (UG software event resets CNT without
+        // generating a UEV that would spuriously kick CC2). DIER CC2DE=1
+        // routes CC2 compare match to DMA1_CH4.
         TIM4.psc().write_value(TIM4_PSC);
         TIM4.atrlr().write_value(0xFFFF);
         TIM4.ctlr1().write(|w| {
@@ -282,69 +286,89 @@ pub fn init() {
             w.set_arpe(false);
         });
         TIM4.dmaintenr().write(|w| {
-            w.set_ude(true);
+            w.set_ccde(1, true); // CC2DE (channels 0-indexed)
         });
 
-        // ── SysTick: HCLK upcount, free-running, NO IRQ. ch32-hal's time
-        // driver isn't using SysTick (we picked time-driver-tim2), so this
-        // peripheral is fully ours for tick reads (host queries, ARM/MASTER
-        // stamping). The fire path lives on TIM4 + DMA chain, no CMP IRQ.
-        SYSTICK.ctlr().write(|w| {
-            w.set_init(true);
-            w.set_ste(true);
-        });
-        SYSTICK.cmp().write_value(u64::MAX);
-        SYSTICK.sr().write(|w| w.set_cntif(false));
-        SYSTICK.ctlr().modify(|w| {
-            w.set_mode(ch32_hal::pac::systick::vals::Mode::UPCOUNT);
-            w.set_stre(false);
-            w.set_stclk(ch32_hal::pac::systick::vals::Stclk::HCLK);
-            w.set_stie(false);
+        // ── DMA1_CH2 = USART3_TX. EN stays clear at init; CC2 stamp
+        // flips it via DMA1_CH4. `load_payload` reloads MAR/NDTR with
+        // EN=0 between fires.
+        let ch2 = DMA1.ch(1);
+        ch2.par().write_value(USART3.datar().as_ptr() as u32);
+        ch2.cr().write(|w| {
+            w.set_dir(Dir::FROMMEMORY);
+            w.set_minc(true);
+            w.set_pinc(false);
+            w.set_circ(false);
+            w.set_msize(Size::BITS8);
+            w.set_psize(Size::BITS8);
+            w.set_pl(Pl::MEDIUM); // TX paced by USART; arbiter delay is harmless
+            w.set_tcie(false);
         });
 
-        qingke::pfic::enable_interrupt(Interrupt::USART1 as u8);
+        // Precompute the EN=1 CFGR word DMA1_CH4 stamps on fire. Same
+        // bits as the disarmed config above, plus EN=1.
+        let mut armed = ch32_hal::pac::dma::regs::Cr(0);
+        armed.set_dir(Dir::FROMMEMORY);
+        armed.set_minc(true);
+        armed.set_pinc(false);
+        armed.set_circ(false);
+        armed.set_msize(Size::BITS8);
+        armed.set_psize(Size::BITS8);
+        armed.set_pl(Pl::MEDIUM); // mirror disarmed CH2 PL so the stamp doesn't drop priority
+        armed.set_tcie(false);
+        armed.set_en(true);
+        ptr::write_volatile(ARMED_CH2_CFGR_WORD.get(), armed.0);
+
+        // ── DMA1_CH4 = TIM4_CC2 trigger. Circular, single-word transfer:
+        // copy ARMED_CH2_CFGR_WORD → DMA1_CH2.CR. NDTR=1 auto-reloads
+        // each cycle thanks to CIRC=1, so we never re-arm CH4 from
+        // software. EN=1 permanently — the CC2DE gate fires it, not EN.
+        let ch4 = DMA1.ch(3);
+        ch4.par().write_value(ch2.cr().as_ptr() as u32);
+        ch4.mar().write_value(ARMED_CH2_CFGR_WORD.get() as u32);
+        ch4.ndtr().write(|w| w.set_ndt(1));
+        ch4.cr().write(|w| {
+            w.set_dir(Dir::FROMMEMORY);
+            w.set_minc(false);
+            w.set_pinc(false);
+            w.set_circ(true);
+            w.set_msize(Size::BITS32);
+            w.set_psize(Size::BITS32);
+            w.set_pl(Pl::MEDIUM); // one-shot per fire; no throughput pressure
+            w.set_tcie(false);
+            w.set_en(true);
+        });
+
+        qingke::pfic::enable_interrupt(Interrupt::USART3 as u8);
+        qingke::pfic::enable_interrupt(Interrupt::DMA1_CHANNEL1 as u8);
+        qingke::pfic::enable_interrupt(Interrupt::DMA1_CHANNEL3 as u8);
     }
 }
 
-/// Load `payload` into the TX buffer and fire when `SysTick.CNT` reaches
-/// `fire_at_tick` (HCLK = 144 MHz). Bytes are blasted verbatim — callers own
-/// the wire format.
-///
-/// Held under a critical section so a pending USART3 IDLE can't fire the DMA
-/// between disabling EN and writing NDTR/MAR. The TIM4 schedule itself is
-/// race-free because OPM auto-clears CEN after each fire.
-pub fn arm(payload: &[u8], fire_at_tick: u64) -> Result<(), ArmError> {
+/// Load `payload` and fire when `tick32` reaches `at`. Held under a
+/// critical section so a pending USART3 IDLE can't fire the DMA between
+/// disabling EN and writing NDTR/MAR.
+pub fn schedule_fire(payload: &[u8], at: u32) -> Result<(), ArmError> {
     critical_section::with(|_| {
         ARMED_AFTER_IDLE.store(false, Ordering::Release);
         disarm_tim4();
-        load_payload(payload)?;
-        // Arm FIRE_T_FIRST capture so the listener's RXNE handler stamps the
-        // first self-echo byte. Reset the stored value so a missed RXNE
-        // can't deliver a stale stamp from the previous fire.
-        crate::listen::reset_fire_t_first();
-        EXPECT_FIRE_FIRST_BYTE.store(true, Ordering::Release);
-        schedule_or_fire_now(fire_at_tick);
+        load_payload_main(payload)?;
+        schedule_or_fire_now(at);
         Ok(())
     })
 }
 
-/// Load `payload` into ARM_TX_BUF and fire `after_idle_ticks` after wire-end.
-/// Listener backdates by one char-time so the caller passes spec-relative
-/// "ticks after end-of-frame" — no char-time compensation needed.
-///
-/// Uses a separate buffer from TX_BUF so a MASTER+ARM chain (master TX
-/// echo IDLE → ARM fires INJ slot) doesn't need to dodge MASTER's
-/// load_payload. The on_listen_idle consumer swaps the DMA channel to
-/// ARM_TX_BUF before kicking the fire.
-pub fn arm_after_idle(payload: &[u8], after_idle_ticks: u32) -> Result<(), ArmError> {
+/// Load `payload` into ARM_TX_BUF and fire `after_idle_ticks` after the
+/// next USART3 IDLE assertion. Note: IDLE asserts ~1 character time after
+/// wire-end; host should subtract that if sub-byte alignment matters.
+pub fn schedule_fire_after_idle(payload: &[u8], after_idle_ticks: u32) -> Result<(), ArmError> {
     critical_section::with(|_| -> Result<(), ArmError> {
-        // Reset scope marker LOW for a clean re-arm window before next IDLE.
         crate::debug::clear();
         ARMED_AFTER_IDLE.store(false, Ordering::Release);
         if payload.len() > TX_BUF_LEN {
             return Err(ArmError::TooLong);
         }
-        // SAFETY: ARMED_AFTER_IDLE=false above prevents on_listen_idle from
+        // SAFETY: ARMED_AFTER_IDLE=false above prevents on_idle from
         // reading ARM_TX_BUF until we set true below.
         unsafe {
             let buf = &mut *ARM_TX_BUF.get();
@@ -357,131 +381,105 @@ pub fn arm_after_idle(payload: &[u8], after_idle_ticks: u32) -> Result<(), ArmEr
     })
 }
 
-/// Stop a pending TIM4 OPM cleanly: clear CEN, reset CNT (URS=1 means this
-/// won't generate a UEV that would kick DMA1_CH7), clear the UIF flag for
-/// good measure. Idempotent — safe to call when TIM4 isn't armed.
-fn disarm_tim4() {
-    TIM4.ctlr1().modify(|w| w.set_cen(false));
-    // UG = bit 0 of swevgr; resets CNT + PSC counter. URS=1 blocks the UEV
-    // that would otherwise propagate to UDE.
-    TIM4.swevgr().write(|w| w.set_ug(true));
-    TIM4.intfr().modify(|w| w.set_uif(false));
+/// Fire `payload` immediately as the bus master. Preempts any pending
+/// `schedule_fire`; coexists with a pending `schedule_fire_after_idle`
+/// (separate buffer). Waits for any in-flight TX to drain first so a
+/// back-to-back MASTER from the host can't truncate the previous frame.
+pub fn fire_now_master(payload: &[u8]) -> Result<(), ArmError> {
+    wait_tx_complete().map_err(|TxTimeout| ArmError::Busy)?;
+    critical_section::with(|_| -> Result<(), ArmError> {
+        disarm_tim4();
+        load_payload_main(payload)?;
+        store_fired_tick(read_tick32());
+        crate::debug::clear();
+        fire_now_dma();
+        Ok(())
+    })
 }
 
-/// Called from listen's USART3 IDLE IRQ. When armed-after-idle, swaps DMA1_CH4
-/// to point at ARM_TX_BUF and fires `after_idle_ticks` after `idle_tick`.
-pub fn on_listen_idle(idle_tick: u32) {
+fn disarm_tim4() {
+    TIM4.ctlr1().modify(|w| w.set_cen(false));
+    // URS=1 blocks UEV from this UG, so DMA1_CH4 isn't kicked.
+    TIM4.swevgr().write(|w| w.set_ug(true));
+    TIM4.intfr().write(|w| {
+        w.set_uif(false);
+        w.set_ccif(1, false);
+    });
+}
+
+/// Called from `capture::on_usart3_idle` after an IDLE assertion. When
+/// armed-after-idle, swaps DMA1_CH2 to point at ARM_TX_BUF and fires
+/// `after_idle_ticks` after the IDLE-assertion tick32.
+pub fn on_idle(idle_tick: u32) {
     if !ARMED_AFTER_IDLE.swap(false, Ordering::AcqRel) {
         return;
     }
     let after = load_pending_after_idle();
 
-    // OPM normally self-clears CEN on the prior UEV, but a pipelined
-    // FIRE(future)+ARM that races the IDLE here can leave TIM4 with CEN=1
-    // and ARR pointing at the stale TX_BUF schedule — DMA1_CH7 would then
-    // stamp EN=1 into our half-reconfigured CH4. Disarm so schedule_or_fire_now
-    // below starts from a known-idle TIM4.
+    // A pipelined FIRE(future) + ARM that races IDLE can leave TIM4 with
+    // CEN=1 mid-schedule; disarm so schedule_or_fire_now starts from a
+    // known-idle TIM4 with our reloaded buffer.
     disarm_tim4();
 
-    // Reload DMA from ARM_TX_BUF so this fire emits the arm payload, not
-    // whatever was last in TX_BUF (most often the MASTER request bytes).
+    // Swap DMA1_CH2 to ARM_TX_BUF.
     // SAFETY: USART3 IDLE ISR is the sole reader of ARM_TX_BUF/ARM_TX_LEN;
-    // arm_after_idle is the sole writer, and ARMED_AFTER_IDLE gating means
-    // it can't be mid-write here (the swap-to-false above ate the flag).
+    // schedule_fire_after_idle is the sole writer, and ARMED_AFTER_IDLE
+    // gating means it can't be mid-write here (the swap above ate the
+    // flag).
     unsafe {
         let len = ptr::read_volatile(ARM_TX_LEN.get());
-        let ch = DMA1.ch(3);
+        let ch = DMA1.ch(1);
         ch.cr().modify(|w| w.set_en(false));
         ch.ndtr().write(|w| w.set_ndt(len));
         ch.mar().write_value((*ARM_TX_BUF.get()).as_ptr() as u32);
     }
 
-    // `idle_tick` is the low 32 captured a few cycles ago, so it equals
-    // `now` minus a small wrapping low-half delta — recover the u64 timeline
-    // by subtracting that delta from the current u64 CNT.
-    let now = SYSTICK.cnt().read();
-    let elapsed = (now as u32).wrapping_sub(idle_tick);
-    let fire_at = now.wrapping_sub(elapsed as u64).wrapping_add(after as u64);
-
+    let fire_at = idle_tick.wrapping_add(after);
     schedule_or_fire_now(fire_at);
 }
 
-/// Fire `payload` immediately as the master and capture the wire-end SysTick
-/// stamp in MASTER_T_REQUEST_END via the TC IRQ. Preempts any pending
-/// absolute-tick `arm` (FIRE cmd) but does NOT cancel `arm_after_idle` (ARM
-/// cmd) — ARM lives in a separate buffer and an explicit MASTER+ARM chain
-/// (master TX echo IDLE → ARM emits faked-foreign slot) is a supported
-/// pattern. Listener suppresses the one IDLE generated by our own TX echo
-/// so the stamp ring stays slave-side.
-pub fn master_send(payload: &[u8]) -> Result<(), ArmError> {
-    critical_section::with(|_| -> Result<(), ArmError> {
-        disarm_tim4();
-        load_payload(payload)?;
-
-        SUPPRESS_NEXT_IDLE_STAMP.store(true, Ordering::Release);
-        EXPECT_FIRST_BYTE.store(false, Ordering::Release);
-        EXPECT_REPLY_END_IDLE.store(false, Ordering::Release);
-        crate::listen::reset_t_first();
-
-        // Clear TC before unmasking TCIE so a pre-existing TC=1 (set by the
-        // previous master_send or reset state) can't fire the IRQ before our
-        // burst has even started shifting.
-        USART1.statr().modify(|w| w.set_tc(false));
-        USART1.ctlr1().modify(|w| w.set_tcie(true));
-
-        store_fired_tick(SYSTICK.cntl().read());
-        crate::debug::clear();
-        fire_now();
-        Ok(())
-    })
-}
-
-pub fn last_master_request_end() -> u32 {
-    unsafe { ptr::read_volatile(MASTER_T_REQUEST_END.get()) }
-}
-
-/// Reconfigure USART1's bit rate. Bounces UE around the BRR write so the
-/// peripheral picks up the new divisor cleanly. Caller must quiesce the bus
-/// first — changing baud mid-frame will garbage anything in flight.
-///
-/// Held under a critical section: USART1 ISR also `.modify()`s `ctlr1` to
-/// clear TCIE; without locking, this RMW races the ISR and either loses the
-/// ISR's TCIE clear (leaving TCIE stuck on) or clobbers UE state. Same
-/// pattern that caused the prior TX_EN-stuck-HIGH wedge.
+/// Reconfigure USART3 bit rate. Bounces UE around the BRR write, which
+/// truncates any in-flight TX — so we wait for `SR.TC` first. The wait
+/// runs outside the critical section to keep USB ISR latency bounded.
 pub fn set_baud(bps: u32) -> Result<(), BaudError> {
-    let brr = brr_for(APB2_HZ, bps).ok_or(BaudError::OutOfRange)?;
+    let brr = brr_for(APB1_HZ, bps).ok_or(BaudError::OutOfRange)?;
+    wait_tx_complete().map_err(|TxTimeout| BaudError::Busy)?;
     critical_section::with(|_| {
-        USART1.ctlr1().modify(|w| w.set_ue(false));
-        USART1.brr().write(|w| w.0 = brr);
-        USART1.ctlr1().modify(|w| w.set_ue(true));
+        USART3.ctlr1().modify(|w| w.set_ue(false));
+        USART3.brr().write(|w| w.0 = brr);
+        USART3.ctlr1().modify(|w| w.set_ue(true));
         FIRE_COMP_TICKS.store(fire_comp_ticks(brr), Ordering::Relaxed);
-        // chip_tune crosses baud tiers between shots; clearing all per-trip
-        // expectation flags + any pending TIM4 here prevents flags armed at
-        // the previous baud from being consumed by the new baud's stamping
-        // and the bench seeing cross-tier "extra_idle" or stale Round entries.
         ARMED_AFTER_IDLE.store(false, Ordering::Release);
-        SUPPRESS_NEXT_IDLE_STAMP.store(false, Ordering::Release);
-        EXPECT_FIRST_BYTE.store(false, Ordering::Release);
-        EXPECT_REPLY_END_IDLE.store(false, Ordering::Release);
-        EXPECT_FIRE_FIRST_BYTE.store(false, Ordering::Release);
         disarm_tim4();
     });
     Ok(())
 }
 
-pub fn read_systick_cnt() -> u64 {
-    SYSTICK.cnt().read()
+/// Spin until USART3 finishes transmitting the last frame, bounded by
+/// `TX_WAIT_TIMEOUT_TICKS`. TC is set out of reset and after every
+/// transmission, so this returns instantly on a quiesced bus.
+struct TxTimeout;
+
+fn wait_tx_complete() -> Result<(), TxTimeout> {
+    let start = read_tick32();
+    while !USART3.statr().read().tc() {
+        let elapsed = read_tick32().wrapping_sub(start);
+        if elapsed > TX_WAIT_TIMEOUT_TICKS {
+            return Err(TxTimeout);
+        }
+    }
+    Ok(())
 }
 
 pub fn last_fired_tick() -> u32 {
-    unsafe { ptr::read_volatile(FIRED_TICK_LO.get()) }
+    unsafe { ptr::read_volatile(FIRED_TICK.get()) }
 }
 
-pub const fn ticks_per_us() -> u32 {
-    SYSTICK_HZ / 1_000_000
+pub const fn wire_ticks_per_us() -> u32 {
+    WIRE_HZ / 1_000_000
 }
 
-fn load_payload(payload: &[u8]) -> Result<(), ArmError> {
+fn load_payload_main(payload: &[u8]) -> Result<(), ArmError> {
     if payload.len() > TX_BUF_LEN {
         return Err(ArmError::TooLong);
     }
@@ -489,7 +487,7 @@ fn load_payload(payload: &[u8]) -> Result<(), ArmError> {
         let buf = &mut *TX_BUF.get();
         buf[..payload.len()].copy_from_slice(payload);
 
-        let ch = DMA1.ch(3);
+        let ch = DMA1.ch(1);
         ch.cr().modify(|w| w.set_en(false));
         ch.ndtr().write(|w| w.set_ndt(payload.len() as u16));
         ch.mar().write_value(buf.as_ptr() as u32);
@@ -497,66 +495,49 @@ fn load_payload(payload: &[u8]) -> Result<(), ArmError> {
     Ok(())
 }
 
-/// Fire the pre-loaded DMA1_CH4 payload immediately by stamping the armed
-/// CFGR word over the channel's config register. Same effect as a TIM4 UEV
-/// → DMA1_CH7 chain firing, just bypassing the timer. Used by master_send
-/// and by the FIRE-NOW threshold branch in schedule_or_fire_now.
+/// Same effect as TIM4 CC2 → DMA1_CH4 firing, just bypassing the timer.
 #[inline]
-fn fire_now() {
-    let armed = unsafe { ptr::read_volatile(ARMED_CH4_CFGR_WORD.get()) };
-    DMA1.ch(3)
+fn fire_now_dma() {
+    let armed = unsafe { ptr::read_volatile(ARMED_CH2_CFGR_WORD.get()) };
+    DMA1.ch(1)
         .cr()
         .write_value(ch32_hal::pac::dma::regs::Cr(armed));
 }
 
-/// Must be paired with a prior `load_payload`. Programs TIM4 OPM to fire the
-/// DMA chain when `SYSTICK.cnt()` reaches `fire_at_tick`, or fires
-/// immediately if the deadline is already past / within the arm overhead /
-/// beyond TIM4's 16-bit ARR range.
-fn schedule_or_fire_now(fire_at_tick: u64) {
-    // FIRE_COMP_TICKS subtracts the measured pipeline (TIM4 OPM CC → wire
-    // start) so the WIRE start bit lands at `fire_at_tick` on the wall clock.
-    // Stored stamp is the commanded value (pre-comp) so the host-side
-    // missed-schedule detection keeps working: scheduled path stamps
-    // `fire_at_tick`, immediate-fire path stamps `now`.
-    let comp = FIRE_COMP_TICKS.load(Ordering::Relaxed) as u64;
-    let scheduled_at = fire_at_tick.wrapping_sub(comp);
-    let now = SYSTICK.cnt().read();
-    let delta = scheduled_at.saturating_sub(now);
-    if delta < FIRE_NOW_THRESHOLD_TICKS || delta > TIM4_MAX_DELTA_TICKS {
-        store_fired_tick(now as u32);
+/// Program TIM4 OPM to fire DMA1_CH2 when `tick32` reaches `at`, or fire
+/// immediately if the deadline is past / within arm overhead / beyond
+/// TIM4's 16-bit ARR range.
+fn schedule_or_fire_now(at: u32) {
+    let comp = FIRE_COMP_TICKS.load(Ordering::Relaxed);
+    let scheduled_at = at.wrapping_sub(comp);
+    let now = read_tick32();
+    let delta = scheduled_at.wrapping_sub(now);
+    // `delta` is u32 modular; treat very large values (= past deadline)
+    // as "fire now". With wrapping subtraction, "past" maps to large
+    // positive deltas, so a single threshold covers both close-and-past.
+    if !(FIRE_NOW_THRESHOLD_TICKS..=TIM4_MAX_DELTA_TICKS).contains(&delta) {
+        store_fired_tick(now);
         crate::debug::clear();
-        fire_now();
+        fire_now_dma();
         return;
     }
-    // ARR latches the next time CNT == ARR (URS=1 + ARPE=0 → take effect
-    // immediately on next compare). Start the timer with CEN=1; OPM clears
-    // it after the first UEV.
-    TIM4.atrlr().write_value(delta as u16);
-    store_fired_tick(fire_at_tick as u32);
+    // ARR latches the next time CNT==ARR. CCR2=ARR puts CC2 on the same
+    // edge as the OPM overflow.
+    let arr = delta as u16;
+    TIM4.atrlr().write_value(arr);
+    TIM4.chcvr(1).write_value(arr); // CCR2 (0-indexed)
+    store_fired_tick(at);
     TIM4.ctlr1().modify(|w| w.set_cen(true));
 }
 
 #[derive(Copy, Clone, Debug)]
 pub enum ArmError {
     TooLong,
+    Busy,
 }
 
 #[derive(Copy, Clone, Debug)]
 pub enum BaudError {
     OutOfRange,
-}
-
-#[interrupt]
-fn USART1() {
-    // TC asserts once the shift register drains — this is the master's
-    // last-bit-out moment, i.e. T_request_end in the cal model. Stamp
-    // first, then mask + clear, so a late TC re-assertion can't reorder.
-    let tick = SYSTICK.cntl().read();
-    unsafe {
-        USART1.ctlr1().modify(|w| w.set_tcie(false));
-        USART1.statr().modify(|w| w.set_tc(false));
-        ptr::write_volatile(MASTER_T_REQUEST_END.get(), tick);
-    }
-    crate::led::signal();
+    Busy,
 }
