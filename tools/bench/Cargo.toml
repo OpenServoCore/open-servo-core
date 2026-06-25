@@ -26,6 +26,10 @@ path = "src/bin/tool-fast-stress.rs"
 name = "tool-tune-tx-start"
 path = "src/bin/tool-tune-tx-start.rs"
 
+[[bin]]
+name = "tool-pirate-walker-validate"
+path = "src/bin/tool-pirate-walker-validate.rs"
+
 [dependencies]
 dxl-protocol = { path = "../../firmware/lib/dxl-protocol", features = ["heapless", "software-crc"] }
 heapless     = "0.9"

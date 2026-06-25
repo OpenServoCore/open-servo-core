@@ -15,8 +15,8 @@ use heapless::Vec as HVec;
 mod pirate;
 
 pub use pirate::{
-    BStamp, DesyncCause, PIRATE_PID, PIRATE_VID, PirateDesync, PirateStatus, ReplyCapture,
-    ReplyTiming, auto_detect_pirate,
+    BStamp, DesyncCause, IcSnapshot, PIRATE_PID, PIRATE_VID, PirateDesync, PirateStatus,
+    ReplyCapture, ReplyTiming, auto_detect_pirate, lift_against,
 };
 
 // ---------------------------------------------------------------------------
@@ -466,6 +466,24 @@ impl Bus {
         })
     }
 
+    /// Open the pirate without probing for a servo. For selftest bins that
+    /// validate the pirate against its own TX-echo loopback. `id()` returns
+    /// `0` as a sentinel; `baud()` reflects whatever the pirate is currently
+    /// at (callers typically follow with `pirate_set_baud`).
+    pub fn start_pirate_only(port: Option<String>) -> Result<Self> {
+        let port = match port {
+            Some(p) => p,
+            None => auto_detect_pirate()?,
+        };
+        let client = pirate::Client::open(&port, Duration::from_millis(500))?;
+        let baud = client.current_baud();
+        Ok(Self {
+            pirate: client,
+            id: 0,
+            baud,
+        })
+    }
+
     pub fn id(&self) -> u8 {
         self.id
     }
@@ -633,6 +651,31 @@ impl Bus {
     /// Clear DESYNCED + cause, drain stamp/IC rings, re-arm walker.
     pub fn pirate_reset(&mut self) -> Result<()> {
         self.pirate.reset()
+    }
+
+    /// Atomic snapshot of the pirate's IC ring + walker counters. Diagnostic
+    /// surface — bypasses the desync guard so it stays usable post-trip.
+    pub fn ic_snapshot(&mut self) -> Result<IcSnapshot> {
+        self.pirate.ic_snapshot()
+    }
+
+    /// Direct pirate `MASTER`/`FIRE` access for selftest-style bins that
+    /// need to drive bytes without the `xfer`-shaped echo+reply contract.
+    /// Avoid for protocol tools.
+    pub fn pirate_master(&mut self, data: &[u8]) -> Result<()> {
+        self.pirate.master(data)
+    }
+
+    /// Drain up to `max` byte stamps as a binary BBATCH frame.
+    pub fn pirate_bbatch(&mut self, max: u16) -> Result<Vec<BStamp>> {
+        self.pirate.bbatch(max)
+    }
+
+    /// Reconfigure the pirate's USART baud (and IC filter). Use for selftest
+    /// runs where there is no chip to follow along — `set_chip_baud`
+    /// otherwise drives both sides together.
+    pub fn pirate_set_baud(&mut self, bps: u32) -> Result<()> {
+        self.pirate.set_baud(bps)
     }
 }
 
