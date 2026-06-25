@@ -94,18 +94,30 @@ static FIRED_TICK: SyncUnsafeCell<u32> = SyncUnsafeCell::new(0);
 /// from the commanded fire-at inside `schedule_or_fire_now` so the wire
 /// start bit lands at the commanded tick.
 ///
-/// Decomposition:
+/// Decomposition (empirically validated via loopback at 144 MHz):
 ///   FIRE_COMP = FIRE_COMP_FLAT_TICKS (DMA chain + CC2 sync overhead)
-///             + bit_time / 2          (USART start-bit BRR sync avg)
-/// Retuned per `set_baud`. Phase-C autocal will retune
-/// `FIRE_COMP_FLAT_TICKS` empirically against a loopback measurement.
+///             + brr                   (USART TSR-load + start-bit shift)
+/// The `brr` term is one full bit-time of USART internal pipeline: DR is
+/// transferred to TSR on the next bit-clock edge, and start bit begins
+/// shifting on the following edge. Earlier revisions used `brr/2` (just
+/// the phase-to-bit-clock average), which under-compensated by half a
+/// bit-time at every baud.
 static FIRE_COMP_TICKS: AtomicU32 = AtomicU32::new(0);
 
 const FIRE_COMP_FLAT_TICKS: u32 = 96;
 
 const fn fire_comp_ticks(brr: u32) -> u32 {
-    FIRE_COMP_FLAT_TICKS + brr / 2
+    FIRE_COMP_FLAT_TICKS + brr
 }
+
+/// Headroom added to `read_systick()` when [`fire_now_master`] schedules
+/// its near-future fire through [`schedule_or_fire_now`]. Sized so the
+/// resulting `delta` lands comfortably above [`FIRE_NOW_THRESHOLD_TICKS`]
+/// — keeping the scheduled (TIM4 OPM) path in play rather than falling
+/// back to the immediate DMA-direct branch, so `FIRED_TICK` matches the
+/// commanded wire-start tick. 512 ticks ≈ 3.5 µs at 144 MHz — negligible
+/// added latency, well above the 256-tick scheduler threshold.
+const MASTER_MARGIN_HEADROOM_TICKS: u32 = 512;
 
 /// Upper bound on how long `wait_tx_complete` will spin for `USART3.SR.TC`.
 /// 200 ms at 144 MHz. Generous enough for any payload up to TX_BUF_LEN at
@@ -381,18 +393,29 @@ pub fn schedule_fire_after_idle(payload: &[u8], after_idle_ticks: u32) -> Result
     })
 }
 
-/// Fire `payload` immediately as the bus master. Preempts any pending
-/// `schedule_fire`; coexists with a pending `schedule_fire_after_idle`
-/// (separate buffer). Waits for any in-flight TX to drain first so a
-/// back-to-back MASTER from the host can't truncate the previous frame.
+/// Fire `payload` as the bus master with no precise timing — the chip
+/// commands a near-future fire at `read_systick() + FIRE_COMP_TICKS +
+/// MASTER_MARGIN_HEADROOM_TICKS` through [`schedule_or_fire_now`], so the
+/// scheduled (TIM4 OPM) path always wins. Wire-start lands ~3.5 µs after
+/// the call; `FIRED_TICK` is the commanded target tick (set by
+/// `schedule_or_fire_now`), so `LAST?` returns the actual wire-start time
+/// regardless of which entry fired — no host-side TX-pipeline math.
+///
+/// Preempts any pending `schedule_fire`; coexists with a pending
+/// `schedule_fire_after_idle` (separate buffer). Waits for any in-flight
+/// TX to drain first so a back-to-back MASTER from the host can't
+/// truncate the previous frame.
 pub fn fire_now_master(payload: &[u8]) -> Result<(), ArmError> {
     wait_tx_complete().map_err(|TxTimeout| ArmError::Busy)?;
     critical_section::with(|_| -> Result<(), ArmError> {
         disarm_tim4();
         load_payload_main(payload)?;
-        store_fired_tick(read_tick32());
+        let comp = FIRE_COMP_TICKS.load(Ordering::Relaxed);
+        let at = read_tick32()
+            .wrapping_add(comp)
+            .wrapping_add(MASTER_MARGIN_HEADROOM_TICKS);
         crate::debug::clear();
-        fire_now_dma();
+        schedule_or_fire_now(at);
         Ok(())
     })
 }
