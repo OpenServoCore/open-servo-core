@@ -313,7 +313,13 @@ pub fn init() {
             w.set_circ(false);
             w.set_msize(Size::BITS8);
             w.set_psize(Size::BITS8);
-            w.set_pl(Pl::MEDIUM); // TX paced by USART; arbiter delay is harmless
+            // VERYHIGH is defensive: today only CH2 + CH4 are active so
+            // inter-channel arbitration doesn't trigger, but pins the fire
+            // path at top priority against any future DMA channel we add.
+            // (Empirically does NOT tighten TX wire-edge jitter — the
+            // observed loopback variance is CPU-vs-DMA AHB arbitration,
+            // which channel-priority bits don't control.)
+            w.set_pl(Pl::VERYHIGH);
             w.set_tcie(false);
         });
 
@@ -326,7 +332,7 @@ pub fn init() {
         armed.set_circ(false);
         armed.set_msize(Size::BITS8);
         armed.set_psize(Size::BITS8);
-        armed.set_pl(Pl::MEDIUM); // mirror disarmed CH2 PL so the stamp doesn't drop priority
+        armed.set_pl(Pl::VERYHIGH); // mirror CH2 PL above so the stamp doesn't drop priority on fire
         armed.set_tcie(false);
         armed.set_en(true);
         ptr::write_volatile(ARMED_CH2_CFGR_WORD.get(), armed.0);
@@ -346,7 +352,7 @@ pub fn init() {
             w.set_circ(true);
             w.set_msize(Size::BITS32);
             w.set_psize(Size::BITS32);
-            w.set_pl(Pl::MEDIUM); // one-shot per fire; no throughput pressure
+            w.set_pl(Pl::VERYHIGH); // mirror CH2 PL above; defensive against future inter-channel contention
             w.set_tcie(false);
             w.set_en(true);
         });
