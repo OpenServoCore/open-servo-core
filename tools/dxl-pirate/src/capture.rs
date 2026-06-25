@@ -30,11 +30,13 @@
 //! every IC entry the walker processes has `entry.lo ≤ lift_ceiling.lo`
 //! (TIMING.md §3.3).
 //!
-//! Classification is **lockstep window** per TIMING.md §3.4: each byte's
-//! start tick is anchored on its own first unconsumed IC edge; edges
-//! within `[anchor, anchor + 10·bit]` belong to that byte; count drives
-//! validation flags only, never walker advancement. No across-byte
-//! prediction state to go stale on a quiet bus.
+//! Classification is **predict-and-snap PLL** per TIMING.md §3.4: the
+//! first byte's start tick is anchored on the first unconsumed IC edge;
+//! every subsequent byte's start is predicted at `prev_anchor + 10·bit`
+//! and snapped to the closest IC entry within `±SNAP_BITS·bit` of that
+//! prediction (later-edge tiebreak). On miss, the walker free-runs on
+//! the prediction and flags `COUNT_UNDER` — anchor still updates, so the
+//! prediction chain survives a short edge dropout.
 //!
 //! Per TIMING.md §3.5: three conditions flip the sticky `DESYNCED` flag —
 //! two designed-impossible (`walker_late`, `ic_overrun`) and one host-paced
@@ -79,10 +81,17 @@ const STAMP_LEN: usize = 1024;
 const STAMP_MASK: u32 = (STAMP_LEN - 1) as u32;
 const _: () = assert!(STAMP_LEN.is_power_of_two());
 
-/// Edge-count slack per byte. Real conditions only add falling edges
-/// (glitches surviving the CC filter, ringing). Under-count is a real
-/// anomaly, never noise; this slack is over-count only.
-const NOISE_TOLERANCE: u8 = 1;
+/// Half-width of the PLL snap window in bit-times. Each byte's start is
+/// predicted at `prev_anchor + 10·bit_ticks`; the walker scans
+/// `[predicted − SNAP_BITS·bit_ticks, predicted + SNAP_BITS·bit_ticks]`
+/// for the closest IC entry. 3 was the value that bottomed out the
+/// off-line classifier comparison against the captured corpus — wide
+/// enough to absorb upstream chips' worst-case 3-bit hardware idle
+/// between bytes inside a Status burst, narrow enough that wire glitches
+/// rarely land closer to prediction than the real start edge. Tighten
+/// to 2 (or even 1) once we have wire-side telemetry showing inter-byte
+/// gaps are systematically smaller in real operation.
+const SNAP_BITS: u32 = 3;
 
 /// Per-baud CC filter LUT per TIMING.md §4. fDTS pinned at HCLK = 144 MHz
 /// (CKD=`DIV_1`, set in `inject::init`). Each entry is `(ICxF bits, filter
@@ -145,23 +154,6 @@ const fn filter_for_brr(brr: u32) -> (u8, u32) {
 /// stored tick reads as wire-edge time, not filter-output time.
 static CC_FILTER_DELAY_TICKS: AtomicU32 = AtomicU32::new(0);
 
-/// EDGES_PER_BYTE_FALLING[B] = falling-edge count of the bit stream
-/// `[idle=1, start=0, b₀..b₇, stop=1, idle=1]`. Formula per TIMING.md §4.
-const fn edges_per_byte_falling(b: u8) -> u8 {
-    let v = (b & !(b >> 1)) & 0x7F;
-    1 + v.count_ones() as u8
-}
-
-const EDGES_LUT: [u8; 256] = {
-    let mut t = [0u8; 256];
-    let mut i = 0;
-    while i < 256 {
-        t[i] = edges_per_byte_falling(i as u8);
-        i += 1;
-    }
-    t
-};
-
 #[derive(Copy, Clone)]
 pub struct ByteRecord {
     pub tick: u32,
@@ -170,8 +162,14 @@ pub struct ByteRecord {
 }
 
 pub mod flags {
-    pub const COUNT_OVER: u8 = 1 << 0;
-    pub const COUNT_UNDER: u8 = 1 << 1;
+    /// Walker predicted this byte's start at `prev_anchor + 10·bit_ticks`
+    /// but found no IC entry in `±SNAP_BITS·bit_ticks` of the prediction;
+    /// emitted `tick = predicted − cc_filter_delay` instead. Cause: real
+    /// start edge eaten by CC filter, upstream chip drove an inter-byte
+    /// gap exceeding the snap window, or pirate snapped on the wrong edge
+    /// the byte before. Host treats this byte's `tick` as ±0.5·bit
+    /// accurate, not sub-tick.
+    pub const COUNT_UNDER: u8 = 1 << 0;
 }
 
 /// Sticky-fatal cause for the `DESYNCED` flag (TIMING.md §3.5). Stored
@@ -224,11 +222,20 @@ static BYTE_TAIL: AtomicU32 = AtomicU32::new(0);
 
 // ── Walker state ───────────────────────────────────────────────────────
 // All written from ISR context only; single-threaded across IRQs at the
-// same priority. Per TIMING.md §3.4 the walker's entire state surface is
-// just these two counters plus the DESYNCED sticky flag.
+// same priority. Per TIMING.md §3.4 the walker's surface is the IC/RX
+// position counters, the PLL anchor pair, and the `DESYNCED` sticky flag.
 static WALKED_FALLING: SyncUnsafeCell<u32> = SyncUnsafeCell::new(0);
 static FALLING_TOTAL: SyncUnsafeCell<u32> = SyncUnsafeCell::new(0);
 static LAST_FALLING_NDTR: SyncUnsafeCell<u16> = SyncUnsafeCell::new(FALL_LEN as u16);
+
+/// Last emitted byte's start tick (lifted u32). Source of the prediction
+/// chain — next byte's start is `LAST_ANCHOR + 10·bit_ticks` ± SNAP_BITS·
+/// bit_ticks. Meaningless when `HAS_ANCHOR == false`.
+static LAST_ANCHOR: SyncUnsafeCell<u32> = SyncUnsafeCell::new(0);
+/// `false` at cold boot, after `reset_walker`, and after every `set_baud`.
+/// First post-reset byte anchors on the next unconsumed IC entry (no
+/// prediction yet); subsequent bytes use the PLL with `LAST_ANCHOR`.
+static HAS_ANCHOR: SyncUnsafeCell<bool> = SyncUnsafeCell::new(false);
 
 static RX_TOTAL: SyncUnsafeCell<u32> = SyncUnsafeCell::new(0);
 static LAST_RX_NDTR: SyncUnsafeCell<u16> = SyncUnsafeCell::new(RX_LEN as u16);
@@ -431,6 +438,10 @@ pub fn reset_walker() {
         let falling_total = refresh_falling_total();
         let rx_total = refresh_rx_total();
         ptr::write_volatile(WALKED_FALLING.get(), falling_total);
+        // Drop the PLL chain. The next byte the walker emits will anchor
+        // on its own IC entry (no prediction) — same cold-start path as
+        // boot, so post-reset behaviour matches first-packet behaviour.
+        ptr::write_volatile(HAS_ANCHOR.get(), false);
         BYTE_HEAD.store(rx_total, Ordering::Release);
         BYTE_TAIL.store(rx_total, Ordering::Release);
         DESYNC_CAUSE.store(0, Ordering::Release);
@@ -573,12 +584,12 @@ fn emit(byte_idx: u32, byte: u8, tick: u32, flags: u8) {
     }
 }
 
-/// Lockstep window walker per TIMING.md §3.4. Constructs `lift_ceiling`
-/// internally: refresh the IC NDTR snapshot first, THEN read `tick32`.
-/// Ordering guarantees `lift_ceiling.lo ≥ entry.lo` for every entry in
-/// [walked, falling_total) — newer entries that land between the NDTR
-/// refresh and the tick32 read aren't in this walker's snapshot, so they
-/// fall to the next trigger.
+/// Predict-and-snap PLL walker per TIMING.md §3.4. Constructs
+/// `lift_ceiling` internally: refresh the IC NDTR snapshot first, THEN
+/// read `tick32`. Ordering guarantees `lift_ceiling.lo ≥ entry.lo` for
+/// every entry in [walked, falling_total) — newer entries that land
+/// between the NDTR refresh and the tick32 read aren't in this walker's
+/// snapshot, so they fall to the next trigger.
 pub fn walk() {
     if DESYNCED.load(Ordering::Relaxed) {
         return;
@@ -587,7 +598,8 @@ pub fn walk() {
     if bit_ticks == 0 {
         return;
     }
-    let byte_window = 10u32.wrapping_mul(bit_ticks);
+    let byte_period = 10u32.wrapping_mul(bit_ticks);
+    let snap = SNAP_BITS.wrapping_mul(bit_ticks);
     let cc_filter_delay = CC_FILTER_DELAY_TICKS.load(Ordering::Relaxed);
 
     let falling_total = refresh_falling_total();
@@ -603,6 +615,8 @@ pub fn walk() {
     }
 
     let mut byte_head = BYTE_HEAD.load(Ordering::Relaxed);
+    let mut anchor = unsafe { ptr::read_volatile(LAST_ANCHOR.get()) };
+    let mut has_anchor = unsafe { ptr::read_volatile(HAS_ANCHOR.get()) };
 
     while byte_head != rx_total {
         // §3.5 stamp_overflow: if the host hasn't drained, the next emit
@@ -614,65 +628,114 @@ pub fn walk() {
             set_desync(DesyncCause::StampOverflow);
             break;
         }
-        // Need at least one IC entry to anchor this byte; yield if not.
-        if walked == falling_total {
-            break;
-        }
         let byte = rx_at(byte_head);
-        let expected_edges = EDGES_LUT[byte as usize];
 
-        // §3.4 anchor: first unconsumed IC entry IS this byte's start
-        // tick (no across-byte prediction). Subtract CC filter delay so
-        // ts_ring reads as wire-edge time, not filter-output time.
-        let first_edge = lift(lift_ceiling, falling_at(walked));
+        let chosen_anchor: u32;
+        let mut flags = 0u8;
 
-        // §3.4 yield mid-byte: if `lift_ceiling` can't bound the byte's
-        // window's right edge, more in-window edges may still arrive
-        // before the next cadence. Defer; do NOT advance `walked`. Skip
-        // this and the walker silently slips edge↔byte lockstep by one
-        // byte (emits the in-progress byte with COUNT_UNDER, anchors the
-        // next byte on what should have been THIS byte's remaining
-        // edges, ad infinitum).
-        if lift_ceiling.wrapping_sub(first_edge) < byte_window {
-            break;
-        }
-
-        let start_tick = first_edge.wrapping_sub(cc_filter_delay);
-        walked = walked.wrapping_add(1);
-        let mut count: u8 = 1;
-
-        // §3.4 window: consume edges in [first_edge, first_edge +
-        // 10·bit). Half-open on the right — an edge AT first_edge +
-        // 10·bit is the next byte's start bit (which fires immediately
-        // after this byte's stop bit) and belongs to byte+1's anchor,
-        // not this byte's count.
-        while walked != falling_total {
-            let lifted = lift(lift_ceiling, falling_at(walked));
-            let from_first = lifted.wrapping_sub(first_edge);
-            if from_first < byte_window {
-                count = count.saturating_add(1);
-                walked = walked.wrapping_add(1);
-            } else {
+        if !has_anchor {
+            // Cold-start path: post-boot, post-RESET, post-set_baud. No
+            // prediction available, so anchor on the first unconsumed IC
+            // entry. Need `lift_ceiling` to bound `byte_period` past
+            // first_edge so we don't anchor on what is actually some
+            // interior edge of the same byte whose start bit is still
+            // unwalked.
+            if walked == falling_total {
                 break;
+            }
+            let first_edge = lift(lift_ceiling, falling_at(walked));
+            if lift_ceiling.wrapping_sub(first_edge) < byte_period {
+                break;
+            }
+            chosen_anchor = first_edge;
+            walked = walked.wrapping_add(1);
+        } else {
+            // Steady-state PLL. Predict the next start bit, then snap to
+            // the IC entry closest to prediction within `±snap`.
+            let predicted = anchor.wrapping_add(byte_period);
+            let snap_high = predicted.wrapping_add(snap);
+            // Yield mid-byte: `lift_ceiling` must reach past `snap_high`
+            // before we can rule out a real edge that's still in flight
+            // toward the IC ring. Without this guard, an edge landing at
+            // (predicted, snap_high] after the walker exits would be lost
+            // — we'd have already stamped a free-run miss.
+            if lift_ceiling.wrapping_sub(snap_high) > u32::MAX / 2 {
+                break;
+            }
+            let snap_low = predicted.wrapping_sub(snap);
+
+            // Skip any leftover prev-byte interior edges (everything
+            // sitting before `snap_low` is past byte N−1's start bit but
+            // before byte N's snap window).
+            while walked != falling_total {
+                let lifted = lift(lift_ceiling, falling_at(walked));
+                if lifted.wrapping_sub(snap_low) > u32::MAX / 2 {
+                    walked = walked.wrapping_add(1);
+                } else {
+                    break;
+                }
+            }
+
+            // Scan `[snap_low, snap_high]` for the closest-to-predicted
+            // edge. Tiebreak prefers the later edge: real start bits come
+            // AT or AFTER prediction (upstream chip inter-byte hardware
+            // idle shifts the start LATER, never earlier), so on a tie
+            // the later candidate is far more likely the real start than
+            // the earlier one (which is then a glitch or stuck-edge
+            // ringing tail).
+            let mut chosen: Option<u32> = None;
+            let mut chosen_walked = walked;
+            let mut best_dist = u32::MAX;
+            let mut probe = walked;
+            while probe != falling_total {
+                let lifted = lift(lift_ceiling, falling_at(probe));
+                // Past snap_high → stop scanning.
+                if lifted.wrapping_sub(snap_high) <= u32::MAX / 2 && lifted != snap_high {
+                    break;
+                }
+                let dist = if lifted >= predicted {
+                    lifted.wrapping_sub(predicted)
+                } else {
+                    predicted.wrapping_sub(lifted)
+                };
+                if dist < best_dist || (dist == best_dist && lifted >= predicted) {
+                    best_dist = dist;
+                    chosen = Some(lifted);
+                    chosen_walked = probe.wrapping_add(1);
+                }
+                probe = probe.wrapping_add(1);
+            }
+
+            match chosen {
+                Some(c) => {
+                    chosen_anchor = c;
+                    walked = chosen_walked;
+                }
+                None => {
+                    // Miss. Free-run on the prediction so the chain
+                    // survives one or two dropouts. `walked` was already
+                    // advanced past everything below `snap_low`, so any
+                    // remaining entries (between snap_high and the next
+                    // byte's snap_low) stay in the ring for the next
+                    // iteration's skip pass.
+                    chosen_anchor = predicted;
+                    flags |= flags::COUNT_UNDER;
+                }
             }
         }
 
-        // Validation flags — never feed back into walker advancement.
-        let mut flags = 0u8;
-        if count > expected_edges.saturating_add(NOISE_TOLERANCE) {
-            flags |= flags::COUNT_OVER;
-        }
-        if count < expected_edges {
-            flags |= flags::COUNT_UNDER;
-        }
-
+        let start_tick = chosen_anchor.wrapping_sub(cc_filter_delay);
         emit(byte_head, byte, start_tick, flags);
         byte_head = byte_head.wrapping_add(1);
+        anchor = chosen_anchor;
+        has_anchor = true;
     }
 
     BYTE_HEAD.store(byte_head, Ordering::Release);
     unsafe {
         ptr::write_volatile(WALKED_FALLING.get(), walked);
+        ptr::write_volatile(LAST_ANCHOR.get(), anchor);
+        ptr::write_volatile(HAS_ANCHOR.get(), has_anchor);
     }
 }
 

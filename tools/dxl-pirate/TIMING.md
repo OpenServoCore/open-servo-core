@@ -118,185 +118,229 @@ to that physical slot.
 Producer invariant: `byte_head ≤ rx_total`. The walker can't stamp a byte
 that hasn't arrived; the host reads up to `byte_head`.
 
-### 3.2 Walker cadence
+### 3.2 Walker triggers
 
-One trigger source, four interrupts per TIM2 wrap, single IRQ vector:
+The walker fires on three event sources. All three share one PFIC
+priority so `walk()` runs single-threaded across them — no concurrent
+walker hazard.
 
-| Event             | TIM2 register | Fires at      | Role                  |
-|-------------------|---------------|---------------|-----------------------|
-| Update (UEV)      | UIF           | CNT = 0x0000  | walker tick           |
-| Compare CC1       | CC1IF         | CNT = 0x4000  | walker tick           |
-| Compare CC2       | CC2IF         | CNT = 0x8000  | walker tick           |
-| Compare CC4       | CC4IF         | CNT = 0xC000  | walker tick           |
+| ISR vector       | Trigger                            | Phase tag              |
+|------------------|------------------------------------|------------------------|
+| `DMA1_CHANNEL1`  | IC ring half-transfer / complete   | `TRACE_PHASE_IC_HT/TC` |
+| `DMA1_CHANNEL3`  | RX ring half-transfer / complete   | `TRACE_PHASE_RX_HT/TC` |
+| `USART3`         | USART3 line-idle (IDLE flag)       | `TRACE_PHASE_IDLE`     |
 
-CC1/CC2/CC4 in output-compare-frozen mode (OCxM=0b000, no pin, no DMA);
-only their CCxIF flag matters. All four events mux into the TIM2 IRQ
-vector — `walk()` runs single-threaded by construction, no concurrent
-walker hazard. Cadence: 16384 ticks ≈ **114 µs** between walker entries
-at 144 MHz.
+DMA HT fires at half-ring fill, TC at full-fill — the walker drains
+promptly without waiting for a separate cadence. Time-to-HT scales with
+edge density at the configured baud and stays well under one u16 wrap of
+TIM2 (≈ 455 µs at 144 MHz) at every baud, so §3.4's lift never crosses
+a wrap boundary mid-walk.
 
-CC3 stays in input-capture mode driving DMA1_CH1; its CCxDE bit is set,
-its CCxIE is not — capture remains zero-CPU per edge.
+USART3 IDLE fires one character-time after the wire goes idle — catches
+the tail bytes of every reply burst. Per `[[no_idle_timing]]` it's
+**signal-only**: triggers `walk()` to drain stamps that have already
+arrived, never back-dates a tick from idle elapsed time.
 
-This cadence bounds every IC entry's age at walker entry to one quarter
-wrap (16384 ticks), which is what the §3.4 lift formula needs. No
-high-baud HT/TC trigger, no IDLE-driven flush, no low-baud edge-density
-argument: the bound holds at every baud, every bus state, by the timer
-cadence alone.
-
-Per `[[no_idle_timing]]`: USART3 IDLE is **signal-only** — it hands off
-to the `inject::on_idle` path for `schedule_fire_after_idle` consumers
-and does not touch walker state. The closing packet's tail gets stamped
-at the next TIM2 walker tick (≤114 µs later).
+TIM2 CC3 stays in input-capture mode driving DMA1_CH1; its CCxDE bit is
+set, its CCxIE is not — capture stays zero-CPU per edge. No TIM2 update
+or compare interrupts feed the walker.
 
 ### 3.3 Constructing `lift_ceiling`
 
-`lift_ceiling` is the lift formula's reference point — **not** a
-sampling of "now" — constructed from the trigger identity, not read
-from a register. Naming intent: the value is a **ceiling on raw IC
-entry CNTs visible at this walker entry**, used by §3.4's backward
-lift to land each entry in the correct TIM3 wrap.
+`lift_ceiling` is the §3.4 lift formula's reference point — a **ceiling
+on raw IC entry CNTs visible at this walker entry**. Each entry lifts
+backward against it into the correct TIM3 wrap.
 
-The four walker triggers fire at hardware-deterministic TIM2.CNT
-phases; each phase has a corresponding `lift_ceiling.lo`:
+`walk()` constructs it by reading `read_tick32()` **after** refreshing
+the IC NDTR snapshot:
 
-| Trigger     | Fires at TIM2.CNT | `lift_ceiling.lo`    |
-|-------------|-------------------|----------------------|
-| UEV (UIF)   | 0x0000            | 0x3FFF               |
-| CC1 (CC1IF) | 0x4000            | 0x7FFF               |
-| CC2 (CC2IF) | 0x8000            | 0xBFFF               |
-| CC4 (CC4IF) | 0xC000            | 0xFFFF               |
+    falling_total = refresh_falling_total()    // pulls NDTR, advances u32 cursor
+    rx_total      = refresh_rx_total()
+    lift_ceiling  = read_tick32()              // (TIM3.CNT << 16) | TIM2.CNT
 
-Each `lift_ceiling.lo` is `phase + cadence − 1` — the maximum CNT
-possible within one cadence period before the next trigger fires. With
-ISR latency bounded below one cadence by the `walker_late` contract
-(§3.5), this is a safe upper bound on actual TIM2.CNT at every walker
-entry. The bare `phase` value is **not** correct here: by the time the
-ISR runs, TIM2.CNT has advanced to `phase + Δ`, and any IC entry
-captured during Δ has raw u16 > phase. The §3.4 lift formula requires
-`lift_ceiling.lo ≥ entry.lo` to place the entry in the correct wrap,
-so the upper-bound value is load-bearing.
+The ordering matters. Every IC entry reflected in `falling_total` has
+already been latched by hardware at `refresh_falling_total()` time, so
+its raw u16 is ≤ `lift_ceiling as u16` after the subsequent
+`read_tick32()`. An entry latched between the NDTR refresh and the
+`read_tick32()` call isn't counted in this walker's `falling_total` and
+won't be processed until the next trigger.
 
-`lift_ceiling.lo`'s specific value within the wrap does **not** affect
-the lifted u32 — `lift(lift_ceiling, entry)` returns the same u32 for
-any `lift_ceiling` whose hi half matches the entry's wrap, as long as
-`lift_ceiling.lo ≥ entry.lo`. The upper-bound constant therefore costs
-no precision and saves the `TIM2.CNT` register read.
+`lift_ceiling.lo`'s specific value within the wrap doesn't change the
+lifted u32 — the formula returns the same value for any ceiling whose
+hi half matches the entry's wrap, as long as `ceiling.lo ≥ entry.lo`.
+The live-read formula therefore costs no precision over the previous
+design's phase-derived constant; it just trades one MMIO read for
+robustness against trigger-source phase variation.
 
-TIM3 only advances on TIM2 TRGO (= UEV); its CNT is stable between UEVs,
-so a single load is race-free at every cadence point. Combine:
+`read_tick32()` is a single read pair (TIM3.CNT, TIM2.CNT) with a
+coherence loop only on the rare wrap-mid-read; cost is well under one
+bit-time even at 3 Mbaud.
 
-    lo = 0xFFFF if CC4IF
-       else 0xBFFF if CC2IF
-       else 0x7FFF if CC1IF
-       else 0x3FFF                  // UIF
-    lift_ceiling = (TIM3.CNT << 16) | lo
-
-One register read (`TIM3.CNT`), no coherence loop, no `TIM2.CNT` access.
-By design (§3.5) the walker can never see more than one of {UIF, CC1IF,
-CC2IF, CC4IF} pending at entry, so the resolution is unambiguous.
-
-### 3.4 Lockstep window walker
+### 3.4 Predict-and-snap PLL walker
 
 Walker state across calls (entire surface):
 
-    walked    : u32  — count of IC entries consumed, monotonic
-    byte_head : u32  — count of bytes emitted, monotonic
+    walked       : u32   — count of IC entries consumed, monotonic
+    byte_head    : u32   — count of bytes emitted, monotonic
+    last_anchor  : u32   — most recently emitted byte's start tick (lifted)
+    has_anchor   : bool  — false at boot / post-RESET / post-set_baud
 
-That's it. No `LAST_TS`, no `PREV_VALID`, no `PENDING_RECOVER`. Those two
-producer counters and the `DESYNCED` sticky flag (§3.5) are the
-walker's entire state.
+Those four fields plus the `DESYNCED` sticky flag (§3.5) are the
+walker's entire mutable state.
 
 #### Lift
 
 For each IC entry to be classified, lift to u32 by walking **backward**
-from the §3.3 `lift_ceiling`:
+from `lift_ceiling`, which `walk()` constructs by reading `tick32`
+immediately after refreshing the IC NDTR snapshot. The ordering
+guarantees `lift_ceiling.lo ≥ entry.lo` for every entry in
+`[walked, falling_total)` — entries deposited between the NDTR refresh
+and the `tick32` read aren't in this walker's snapshot and fall to the
+next trigger.
 
     delta  = (lift_ceiling as u16).wrapping_sub(entry)   // u16 modular
     lifted = lift_ceiling.wrapping_sub(delta as u32)
 
 `lifted` is the most recent u32 whose low 16 bits equal `entry`, always
-≤ `lift_ceiling`. Valid as long as actual age of the entry < 65536
-ticks at walker entry — guaranteed with 4× headroom by §3.2's
-quarter-wrap walker cadence (16384 ticks ≈ 114 µs at 144 MHz). Each
-entry is lifted independently against `lift_ceiling`; no forward chain
-across entries. Mirrors `firmware/lib/drivers/.../edge_parser::lift` in
-production firmware.
+≤ `lift_ceiling`. Valid as long as actual age of the entry is < one u16
+wrap of TIM2 (≈ 455 µs at 144 MHz). Realistic DXL bursts at every
+supported baud keep this true: high-edge-density traffic fires DMA1_CH1
+HT well inside one wrap, and sparse traffic ends in USART3 IDLE before
+the IC ring half-fills. Sustained low-edge-density bursts at slow bauds
+(e.g. all-`0xFF` at 9600) could in principle let an entry age past one
+wrap; the §3.5 `ic_overrun` backstop catches the upper bound.
+Mirrors `firmware/lib/drivers/.../edge_parser::lift` in production
+firmware.
 
 #### Classification
 
-The algorithm is **time-windowed, lockstep, no across-byte prediction**.
+The algorithm is **predict-and-snap with closest-edge tiebreak**, with
+`SNAP_BITS = 3` half-width on the snap window.
+
 For each byte `B` newly present in `rx_ring`:
 
-1. **Anchor.** The next unconsumed IC entry (lifted) is byte `B`'s
-   window anchor. `start_tick = lifted − CC_FILTER_DELAY_TICKS`.
-2. **Window.** Edges with `lifted − anchor < 10·bit_time` belong to
-   byte `B`. Half-open on the right: an edge at exactly
-   `anchor + 10·bit_time` is byte `B+1`'s start bit (which fires
-   immediately after `B`'s stop bit) and belongs to the next iteration's
-   anchor, not `B`'s window.
-3. **Validate.** Compare count to `EDGES_PER_BYTE_FALLING[B]`. Set
-   `COUNT_OVER` if count exceeds expected + `NOISE_TOLERANCE`;
-   `COUNT_UNDER` if count falls short.
-4. **Emit.** `(B, start_tick, flags)` into the three parallel rings;
-   advance `byte_head`.
+1. **Cold-start path (`has_anchor == false`).** No prediction available
+   yet, so anchor on the next unconsumed IC entry. Yield mid-byte if
+   `lift_ceiling < first_edge + 10·bit_ticks` — more interior edges of
+   this byte may still be in flight, and anchoring now would risk a
+   silent slip if one arrives between iterations. Otherwise
+   `chosen_anchor = first_edge`; advance `walked` past it. This path
+   runs once per cold start (boot, RESET, set_baud, post-`IcOverrun`
+   recovery); every subsequent byte goes through the steady-state path.
 
-If `walked == falling_total` mid-byte, the walker yields and waits for
-the next cadence — it never invents a stamp and never skips ahead.
+2. **Steady-state path (`has_anchor == true`).** Predict
+   `predicted = last_anchor + 10·bit_ticks`. Yield mid-byte if
+   `lift_ceiling < predicted + SNAP_BITS·bit_ticks` — a real start edge
+   inside the snap window may still be inbound, and stamping a free-run
+   miss now would overwrite a recoverable hit at the next trigger.
 
-**Key property: no across-byte state.** Each byte's window is anchored
-on **its own** first unconsumed IC edge, not on `ts[B−1] + 10·bit`.
-Bootstrap, post-baud-change resume, and inter-packet "resync" are all
-the same code path — every byte's classification is self-contained.
-There is no inter-byte prediction that could go stale during a quiet
-bus.
+   a. Skip-walk `walked` past any IC entries before
+      `predicted − SNAP_BITS·bit_ticks` (leftover interior edges of
+      byte `B−1`, plus any wire glitches that survived the CC filter
+      and landed in the inter-byte gap).
+   b. Scan `[predicted − SNAP_BITS·bit_ticks, predicted + SNAP_BITS·
+      bit_ticks]` for the IC entry closest to `predicted`. Tiebreak
+      prefers the **later** entry: real start edges always sit AT or
+      AFTER prediction (upstream chip's inter-byte hardware idle shifts
+      the start LATER, never earlier), so on a distance tie the later
+      candidate is far more likely the real start than the earlier one
+      (which would be ringing-tail noise from byte `B−1`).
+   c. **Hit**: `chosen_anchor = matched entry`; advance `walked` past it.
+   d. **Miss**: `chosen_anchor = predicted` (free-run). Flag
+      `COUNT_UNDER`. Do NOT advance `walked` past anything in the scan
+      window — those entries stay in the ring for the next byte's
+      skip-walk pass.
 
-**Count drives validation, never advancement.** A glitch surviving the
-CC filter inside byte `B`'s window inflates `B`'s count (→
-`COUNT_OVER`), but byte `B+1`'s anchor is the first edge *outside* `B`'s
-window — no cascade. A missing edge inside `B`'s window flags
-`COUNT_UNDER`, same story: `B+1`'s anchor is unaffected.
+3. **Emit.** `start_tick = chosen_anchor − cc_filter_delay`; write
+   `(B, start_tick, flags)` into the three parallel rings; update
+   `last_anchor = chosen_anchor`; advance `byte_head`.
+
+#### Why `SNAP_BITS = 3`
+
+The snap has to absorb the worst-case inter-byte hardware idle that
+upstream chips drive between bytes inside a Status burst. The bit-time
+unit normalizes HCLK out: `SNAP_BITS · bit_ticks` is `SNAP_BITS` bit-
+times of wall-clock regardless of who's measuring, so 3 here means
+"3 bit-times of inter-byte gap variation tolerated." Wider hurts
+glitch resistance — a wire glitch surviving the CC filter is more
+likely to land closer to `predicted` than the real start edge as the
+window grows. Narrower drops bytes whose upstream-chip TX hardware
+idle exceeded the window, free-running on prediction and flagging
+`COUNT_UNDER` until the chain recovers.
+
+3 was the value that bottomed out the off-line classifier comparison
+against the captured corpus. Tighten only after wire-side telemetry
+shows inter-byte gaps are systematically smaller in real operation.
+
+#### Why predict-and-snap
+
+The prior **lockstep window** walker anchored each byte on its own
+first unconsumed IC entry and counted edges in `[anchor, anchor +
+10·bit_ticks)`. That window unintentionally absorbed the **next**
+byte's start edge whenever the upstream chip's tpb ran ahead of the
+pirate's — pushing the next byte's anchor onto whatever non-edge sat
+after the absorbed one, then cascading the misalignment forward through
+the whole burst. Low-edge bytes (`0x00`, `0xFF`) made this worst: no
+intermediate edges separated the byte from its successor, so the count
+loop ate the next start bit with nothing to break the cascade.
+
+PLL avoids the cascade two ways:
+
+- Anchor on `last + 10·bit_ticks ± snap`, not on "first unconsumed
+  edge." A next-byte start that would have been absorbed by the old
+  window now sits one byte-period ahead and is the exact target of the
+  next iteration's snap scan. Bounded error, no propagation.
+- Closest-to-prediction snap rejects glitches by distance. A glitch in
+  the snap window beats the real start only when the glitch sits
+  closer to `predicted` than the real start does — and the later-on-tie
+  rule covers the equidistant case in favour of the chip-physics-real
+  edge.
 
 #### Trade-off
 
-A glitch surviving the CC filter **during a long idle gap between
-packets** corrupts the next packet's byte 0. Because the walker anchors
-on the next available edge regardless of when it arrived, a stale glitch
-sitting in `falling_ring` becomes byte 0's start tick. Downstream bytes
-shift by the glitch-to-real-start-bit gap; `COUNT_UNDER` (or
-`COUNT_OVER`) flags the affected byte once its edge pattern no longer
-matches `EDGES_PER_BYTE_FALLING`.
+Cold-start re-anchors on the next unconsumed IC entry. A stale glitch
+sitting in `falling_ring` from before the cold-start moment becomes
+byte 0's start tick — the same vulnerability the lockstep walker had
+at **every** byte. PLL hardens steady-state behaviour without rescuing
+cold start; the trip points are bounded (boot, RESET, set_baud,
+post-`IcOverrun` recovery) and the host re-issues a packet either way.
+
+In steady state, a glitch surviving the CC filter and landing in a
+byte's snap window pulls the anchor onto itself only when it sits
+strictly closer to `predicted` than the real start does. The real
+start edge sits at `predicted + chip_idle_gap` where `chip_idle_gap ∈
+[0, ~3·bit_ticks]`; a glitch closer than that has to land within
+`[predicted, predicted + chip_idle_gap]` — a narrow band relative to
+the full snap window. On a clean wire the CC filter eats glitches
+before they reach this stage.
 
 Mitigations explicitly rejected (per design constraints):
 
-- IDLE-driven flush of stale edges — violates `[[no_idle_timing]]` and
-  the "IDLE doesn't touch walker state" contract.
-- Predicted-window search around `ts[B−1] + 10·bit` — reintroduces the
-  across-byte prediction state and resync complexity that this design
-  exists to eliminate.
-- Best-effort invented stamps when no edge lands in window — the walker
-  never invents; the corresponding `STAMP_BESTEFFORT` flag is gone (§4).
+- IDLE-driven flush of stale edges before cold-start — violates
+  `[[no_idle_timing]]` and the "IDLE doesn't touch walker state"
+  contract.
+- Best-effort invented stamps on free-run miss — PLL's
+  `chosen_anchor = predicted` IS the invented stamp, but it's bounded
+  to `±snap` of the real value and flagged `COUNT_UNDER` so the host
+  can recognize it as estimated rather than measured.
 
-On a clean DXL bus with proper grounding the CC filter eats glitches
-before they reach `falling_ring`. If one slips through during idle, the
-host sees `COUNT_OVER`/`COUNT_UNDER` and can drop the packet. **Surfacing
-the anomaly is the contract; silent recovery is not.**
+**Surfacing the anomaly via `COUNT_UNDER` is the contract; silent
+recovery is not.**
 
 ### 3.5 Desync contract
 
-Three conditions trip a single sticky `DESYNCED` flag — two
-designed-impossible internal failures plus one host-paced bench-script
+Two conditions trip a single sticky `DESYNCED` flag — one
+designed-impossible internal failure plus one host-paced bench-script
 bug. Once tripped, the walker stops emitting and the host protocol
 surface fails loud; recovery is the explicit `RESET` command (or `BAUD`,
 which implicitly resets).
 
-| Cause            | Check                                                    | Class                              |
-|------------------|----------------------------------------------------------|------------------------------------|
-| `walker_late`    | More than one of {UIF, CC1IF, CC2IF, CC4IF} set at entry | Designed-impossible — `PRIO_WALKER=0x00` tops preempt class; walker drains faster than 3 Mbaud fills the IC ring. |
-| `ic_overrun`     | `falling_total − walked > FALL_LEN`                      | Designed-impossible — IC ring (256 entries) fills slower than the walker drains it (~200 edges / 114 µs). |
-| `stamp_overflow` | At emit, `byte_head − byte_tail ≥ STAMP_LEN`             | Host-paced — bench script didn't drain via BBATCH; ring depth is 1024 (~10 ms at 1 Mbaud). |
+| Cause            | Check                                              | Class                              |
+|------------------|----------------------------------------------------|------------------------------------|
+| `ic_overrun`     | `falling_total − walked > FALL_LEN`                | Designed-impossible — IC ring (256 entries) fills slower than the walker drains it under the event-driven HT/TC contract (§3.2). |
+| `stamp_overflow` | At emit, `byte_head − byte_tail ≥ STAMP_LEN`       | Host-paced — bench script didn't drain via BBATCH; ring depth is 1024 (~10 ms at 1 Mbaud). |
 
-When any trips:
+When either trips:
 
     DESYNC_CAUSE.compare_exchange(0, cause, …)   // first trip wins
     DESYNCED.store(true, Release)
@@ -308,38 +352,44 @@ Subsequent host commands return `ERR desync <cause>` — except `STATUS`
 implicitly resets via `reset_walker`). Recovery is one of those three
 commands, not a power cycle.
 
-The two designed-impossible causes still mean what they always did: if
-`walker_late` or `ic_overrun` ever fires, that's a hard bug worth
-investigating — a clean RESET clears the symptom but doesn't fix the
-underlying timing budget violation. `stamp_overflow` is the expected
-"your test script needs to drain more often" signal; it's a contract
-surface, not a bug indicator.
+`ic_overrun` is designed-impossible: if it ever fires, that's a hard
+bug worth investigating — a clean RESET clears the symptom but doesn't
+fix the underlying timing budget violation. `stamp_overflow` is the
+expected "your test script needs to drain more often" signal; it's a
+contract surface, not a bug indicator.
+
+The `DesyncCause::WalkerLate` enum variant is reserved (set in earlier
+cadence-based revisions when more than one cadence flag was pending at
+entry). The event-driven trigger model has no analogous condition, so
+the cause is never raised — folded into `ic_overrun` if ISR latency
+ever stretches that far. Variant retained in the wire-protocol enum to
+keep the cause-code numbering stable; eligible for removal once the
+host protocol can tolerate the renumbering.
 
 The walker hot path may be placed in SRAM via `qingke-rt`'s
 `#[interrupt(highcode)]` attribute to shave flash-wait-state cycles and
-reinforce the latency budget that keeps `walker_late` impossible.
+keep ISR latency well under the IC ring's HT-to-fill window.
 
 ## 4. Validation contract
 
-### Edge-count LUT
+### Timing slack
 
-`EDGES_PER_BYTE_FALLING[B]` is the number of `1→0` transitions structurally
-produced by the wire bit stream `[idle=1, start=0, b₀..b₇, stop=1, idle=1]`:
+The PLL snap absorbs whatever shifts the real wire-side start edge
+away from `predicted = last_anchor + 10·bit_ticks`. The known
+contributors are pirate-vs-upstream clock drift (sub-bit_ticks for
+crystal-vs-HSI pairs) and transceiver / DMA arbiter latency
+(sub-bit_ticks), but the dominant contributor in the captured corpus
+was the upstream chip's inter-byte spacing on TX, which empirically
+reached the `±2..3·bit_ticks` range on slow-baud Status replies.
 
-    falling[B] = 1 + (B & !(B >> 1) & 0x7F).count_ones()
-
-Range: 1..=5. The wire **always** produces at least this count for byte
-`B`; real conditions only add edges (EMI glitches that survived the CC
-filter, ringing on direction reversals, etc.) — never remove them.
-
-### Two slacks
-
-| Slack       | Absorbs                                                      | Tolerance               |
-|-------------|--------------------------------------------------------------|-------------------------|
-| Edge count  | EMI surviving the filter, slow ringing                       | `+NOISE_TOLERANCE`; under never |
-| Timing      | HSI drift, transceiver propagation, DMA arbiter latency      | `±1·bit` on `10·bit` cross-byte spacing |
-
-`NOISE_TOLERANCE` starts at 1–2 per byte; bench-tuned.
+`SNAP_BITS = 3` sized empirically: `2` showed a ~14% per-byte miss
+rate against the corpus, `3` showed ~1.2%, `4`+ wasn't probed but
+trades glitch resistance for headroom we didn't need. The root cause
+of the slow-baud inter-byte spread isn't pinned down in this
+codebase — telemetry from wire-side captures across more chip families
+would say whether it's PFIC + DMA latency, software inter-byte pacing,
+ringing on the bench wiring, or some mix. The snap width is the knob
+that hides this unknown from the host.
 
 ### Anomaly flags
 
@@ -347,20 +397,31 @@ Each byte carries one `u8` of flags:
 
 | Bit | Name              | Meaning                                                 |
 |-----|-------------------|---------------------------------------------------------|
-| 0   | `COUNT_OVER`      | actual falling > expected — EMI glitch survived filter  |
-| 1   | `COUNT_UNDER`     | actual falling < expected — signal loss / filter ate edge|
-| 2-7 | reserved          |                                                         |
+| 0   | `COUNT_UNDER`     | snap miss — `tick` is the predicted free-run value      |
+| 1-7 | reserved          |                                                         |
 
-Every emitted stamp uses a real hardware IC edge — the walker never
-invents a `start_tick`. `flags == 0` means the wire byte's edge count
-matched `EDGES_PER_BYTE_FALLING[B]` exactly. Non-zero flags signal wire
-anomalies (EMI glitch survived the filter, edge loss inside the filter);
-the stamp itself remains hardware-precise.
+`flags == 0` means the walker found a real IC edge inside the snap
+window and the emitted `tick` is hardware-precise (sub-tick of the
+wire edge after subtracting `cc_filter_delay`). `COUNT_UNDER` means no
+edge landed in `[predicted ± SNAP_BITS·bit_ticks]` — the emitted
+`tick = predicted − cc_filter_delay` is the walker's best estimate,
+accurate to `± SNAP_BITS·bit_ticks`. Host code that needs sub-tick
+precision should filter on `COUNT_UNDER` and treat those bytes as
+ranged, not point, measurements.
+
+The prior `COUNT_OVER` flag is gone: the predict-and-snap walker
+ignores edges outside the snap window, so an "extra edge in the byte's
+wire window" no longer has a contract semantic. Glitches surviving the
+CC filter only affect the byte if they sit closer to `predicted` than
+the real start, in which case the misanchor surfaces in the *next*
+byte's snap as either a hit at the corrected `predicted = misanchor +
+10·bit_ticks` (PLL self-corrects within one byte) or a `COUNT_UNDER`
+miss.
 
 `TIMING_DRIFT`, `TIMING_RECOVER`, and `STAMP_BESTEFFORT` are absent by
-design: the walker has no `ts[k−1] + 10·bit` prediction to drift against,
-no recovery path it could re-engage from, and no condition under which it
-would invent a stamp. If the walker ever encounters a designed-impossible
+design: the PLL has no separate recovery state to engage (every byte is
+either hit or free-run-miss), and `COUNT_UNDER` already names the
+best-effort case. If the walker ever encounters a designed-impossible
 condition that could leave the rings desynced (multi-flag walker entry,
 IC ring overrun), it does not emit a flag — it flips `DESYNCED` and
 the host gets an explicit error on the next command (§3.5).
