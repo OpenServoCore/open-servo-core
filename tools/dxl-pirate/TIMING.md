@@ -136,10 +136,19 @@ edge density at the configured baud and stays well under one u16 wrap of
 TIM2 (≈ 455 µs at 144 MHz) at every baud, so §3.4's lift never crosses
 a wrap boundary mid-walk.
 
-USART3 IDLE fires one character-time after the wire goes idle — catches
-the tail bytes of every reply burst. Per `[[no_idle_timing]]` it's
-**signal-only**: triggers `walk()` to drain stamps that have already
-arrived, never back-dates a tick from idle elapsed time.
+USART3 IDLE fires one character-time after the wire goes idle. It does
+two things — both signal-only per `[[no_idle_timing]]`, neither derives a
+tick from elapsed idle time:
+
+1. **Drains tail bytes.** Triggers `walk()` so the last byte of every
+   reply burst gets stamped without waiting for the next DMA HT/TC.
+2. **Marks the chain boundary.** Once `walk()` finishes draining and
+   `byte_head == rx_total`, the walker flushes any trailing interior
+   edges of the last byte (`walked = falling_total`) and drops the PLL
+   anchor (`has_anchor = false`). The next byte the walker stamps cold-
+   starts on its own IC edge instead of free-running off a stale
+   `last_anchor + 10·bit_ticks` prediction that would sit one inter-
+   packet quiet window (RDT) before reality.
 
 TIM2 CC3 stays in input-capture mode driving DMA1_CH1; its CCxDE bit is
 set, its CCxIE is not — capture stays zero-CPU per edge. No TIM2 update
@@ -225,8 +234,10 @@ For each byte `B` newly present in `rx_ring`:
    this byte may still be in flight, and anchoring now would risk a
    silent slip if one arrives between iterations. Otherwise
    `chosen_anchor = first_edge`; advance `walked` past it. This path
-   runs once per cold start (boot, RESET, set_baud, post-`IcOverrun`
-   recovery); every subsequent byte goes through the steady-state path.
+   runs at every cold-start trip — boot, RESET, set_baud, post-
+   `IcOverrun` recovery, **and post-USART-IDLE chain boundary (§3.2)**;
+   every subsequent byte inside a contiguous burst goes through the
+   steady-state path.
 
 2. **Steady-state path (`has_anchor == true`).** Predict
    `predicted = last_anchor + 10·bit_ticks`. Yield mid-byte if
@@ -302,8 +313,16 @@ Cold-start re-anchors on the next unconsumed IC entry. A stale glitch
 sitting in `falling_ring` from before the cold-start moment becomes
 byte 0's start tick — the same vulnerability the lockstep walker had
 at **every** byte. PLL hardens steady-state behaviour without rescuing
-cold start; the trip points are bounded (boot, RESET, set_baud,
-post-`IcOverrun` recovery) and the host re-issues a packet either way.
+cold start. The trip points span boot/RESET/set_baud (the host re-
+issues a packet either way), `IcOverrun` recovery (designed-impossible,
+host hard-fails), and post-USART-IDLE chain boundaries (every
+request/reply gap). The last one is the common-case trip: a glitch
+landing in the inter-burst quiet window between echo and reply would
+mis-anchor reply byte 0. In practice the CC filter eats sub-bit-time
+glitches at every baud (§4) and inter-burst quiet windows on a healthy
+DXL bus are clean — the IDLE-driven flush also drops trailing interior
+edges of the last byte, so cold-start scans only edges that landed
+after the bus actually quiesced.
 
 In steady state, a glitch surviving the CC filter and landing in a
 byte's snap window pulls the anchor onto itself only when it sits

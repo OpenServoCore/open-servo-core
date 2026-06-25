@@ -590,7 +590,17 @@ fn emit(byte_idx: u32, byte: u8, tick: u32, flags: u8) {
 /// every entry in [walked, falling_total) — newer entries that land
 /// between the NDTR refresh and the tick32 read aren't in this walker's
 /// snapshot, so they fall to the next trigger.
-pub fn walk() {
+///
+/// `idle == true` marks this invocation as USART-IDLE-triggered: the
+/// wire has been quiet one character time, so the next byte (when it
+/// arrives) is the start of a new burst — not contiguous with the last.
+/// After draining, the walker flushes trailing interior edges and drops
+/// `has_anchor` so the next byte cold-starts on its own IC edge instead
+/// of free-running off a stale `last_anchor + 10·bit_ticks` prediction
+/// that would sit one inter-packet gap (RDT) before the real edge. IDLE
+/// is signal-only here — the next byte's tick still comes from its own
+/// IC entry via the cold-start path (`[[no_idle_timing]]`).
+pub fn walk(idle: bool) {
     if DESYNCED.load(Ordering::Relaxed) {
         return;
     }
@@ -731,6 +741,20 @@ pub fn walk() {
         has_anchor = true;
     }
 
+    // Chain-break on IDLE-after-drain: USART IDLE means the wire just
+    // went quiet. If the byte queue fully drained, any trailing IC
+    // entries are interior edges of the last byte that the snap window
+    // chose not to consume; they're stale once the next burst starts.
+    // Drop them, drop the prediction chain, and the next byte cold-starts
+    // on its own real IC edge. Without this, request/reply traffic (TX
+    // echo → RDT silence → reply) tries to anchor reply byte 0 at
+    // `last_echo_anchor + 10·bit_ticks` and free-runs every reply byte
+    // because the real edges sit hundreds of bit-times past the snap.
+    if idle && byte_head == rx_total {
+        walked = falling_total;
+        has_anchor = false;
+    }
+
     BYTE_HEAD.store(byte_head, Ordering::Release);
     unsafe {
         ptr::write_volatile(WALKED_FALLING.get(), walked);
@@ -766,7 +790,7 @@ fn run_walker(phase: u8, isr_post_bits: u8) {
         (ft, rt, ft.wrapping_sub(walked_pre))
     };
 
-    walk();
+    walk(phase == TRACE_PHASE_IDLE);
 
     let walked_post = unsafe { ptr::read_volatile(WALKED_FALLING.get()) };
     let byte_head_post = BYTE_HEAD.load(Ordering::Relaxed);
