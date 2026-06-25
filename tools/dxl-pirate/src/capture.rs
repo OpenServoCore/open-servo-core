@@ -205,6 +205,20 @@ impl DesyncCause {
 static FALLING_RING: SyncUnsafeCell<[u16; FALL_LEN]> = SyncUnsafeCell::new([0; FALL_LEN]);
 static RX_RING: SyncUnsafeCell<[u8; RX_LEN]> = SyncUnsafeCell::new([0; RX_LEN]);
 
+/// Pre-lifted u32 ticks for every IC entry, parallel to `FALLING_RING`.
+/// `walk()` lifts each newly-deposited entry against the current
+/// `lift_ceiling` at entry, so `ic_snapshot` can return correctly-wrapped
+/// u32 ticks for the whole ring window. Without this, a single late
+/// `lift_ceiling` carried back to the host would put any entry deposited
+/// more than one TIM2 wrap (~455 µs at 144 MHz) earlier into the wrong
+/// high half — symptomatic at 1 Mbaud Ping where the echo→reply span
+/// is ~500 µs.
+///
+/// Entries lifted in a prior walker call stay valid: `walk()` only lifts
+/// entries past `PRE_LIFTED_FALLING`, so existing slots are never
+/// overwritten with a re-lift that could fall outside one wrap.
+static IC_TICKS_RING: SyncUnsafeCell<[u32; FALL_LEN]> = SyncUnsafeCell::new([0; FALL_LEN]);
+
 // ── Walker-populated rings ─────────────────────────────────────────────
 // `bytes_ring` mirrors the byte value at stamp time, decoupling drain from
 // `rx_ring`'s DMA wrap. Without this mirror, a host that drains long after
@@ -227,6 +241,12 @@ static BYTE_TAIL: AtomicU32 = AtomicU32::new(0);
 static WALKED_FALLING: SyncUnsafeCell<u32> = SyncUnsafeCell::new(0);
 static FALLING_TOTAL: SyncUnsafeCell<u32> = SyncUnsafeCell::new(0);
 static LAST_FALLING_NDTR: SyncUnsafeCell<u16> = SyncUnsafeCell::new(FALL_LEN as u16);
+
+/// Cumulative IC entry count that `walk()` has already pre-lifted into
+/// `IC_TICKS_RING`. Advanced at every walker call after the pre-lift
+/// loop; reset to current `falling_total` on `reset_walker` so the next
+/// walker call only lifts genuinely-new entries.
+static PRE_LIFTED_FALLING: SyncUnsafeCell<u32> = SyncUnsafeCell::new(0);
 
 /// Last emitted byte's start tick (lifted u32). Source of the prediction
 /// chain — next byte's start is `LAST_ANCHOR + 10·bit_ticks` ± SNAP_BITS·
@@ -256,12 +276,10 @@ static DESYNC_CAUSE: AtomicU8 = AtomicU8::new(0);
 /// per bit (USART3 sits on APB1 which runs at HCLK).
 static BIT_TICKS: AtomicU32 = AtomicU32::new(0);
 
-/// `lift_ceiling` snapshot at the walker's most recent exit. Read by
-/// `ic_snapshot` so a host-side lifter has a ceiling close to when the
-/// raw IC entries were actually captured (each entry ages out of the
-/// single-wrap lift window in ~455 µs at 144 MHz). A snapshot that simply
-/// re-read `tick32()` at call time would put every entry older than one
-/// TIM2 wrap into the wrong high half.
+/// `lift_ceiling` snapshot at the walker's most recent exit. Reported by
+/// `ic_snapshot` as the chip-side "now" reference so the host can place
+/// the IC ring window relative to wall time. Not used for re-lifting —
+/// entries arrive in the snapshot already lifted via `IC_TICKS_RING`.
 static LAST_LIFT_CEILING: AtomicU32 = AtomicU32::new(0);
 
 // ── Walker ISR trace ring ──────────────────────────────────────────────
@@ -446,6 +464,11 @@ pub fn reset_walker() {
         let falling_total = refresh_falling_total();
         let rx_total = refresh_rx_total();
         ptr::write_volatile(WALKED_FALLING.get(), falling_total);
+        // Forfeit any pre-lifted entries: they're tied to the pre-reset
+        // burst and aren't useful anymore. Bringing the cursor forward
+        // also means the next walker call doesn't waste cycles re-lifting
+        // entries we're throwing away.
+        ptr::write_volatile(PRE_LIFTED_FALLING.get(), falling_total);
         // Drop the PLL chain. The next byte the walker emits will anchor
         // on its own IC entry (no prediction) — same cold-start path as
         // boot, so post-reset behaviour matches first-packet behaviour.
@@ -509,11 +532,17 @@ pub fn drain_byte() -> Option<ByteRecord> {
 /// Atomic snapshot of the IC ring + walker counters for the `BICSNAP`
 /// diagnostic host command. Counters and ring contents are read under
 /// critical_section so they're coherent against walker ISRs. Returns the
-/// snapshot header plus the number of u16 raw entries written to `out`,
+/// snapshot header plus the number of u32 lifted ticks written to `out`,
 /// in oldest-first order (`out[0]` is the oldest in-ring entry, `out[n-1]`
-/// the newest). If `falling_total > FALL_LEN`, only the most recent
-/// `FALL_LEN` entries are still in the ring — older ones have been
-/// overwritten by DMA wrap.
+/// the newest). Each entry is **already lifted to `tick32`** by the walker
+/// via `IC_TICKS_RING`, so the host receives the same u32 the walker used
+/// for classification — no host-side lift required, and the per-wrap
+/// limitation of a single late `ref_tick` doesn't apply.
+///
+/// Entries past the walker's most recent `PRE_LIFTED_FALLING` are skipped:
+/// they sit in `FALLING_RING` as raw u16 but haven't been lifted yet.
+/// `walk()` covers them on its next invocation; the host can re-`BICSNAP`
+/// after a `STATUS` confirms walker progress.
 #[derive(Copy, Clone)]
 pub struct IcSnapshot {
     pub ref_tick: u32,
@@ -525,20 +554,14 @@ pub struct IcSnapshot {
     pub cc_filter_delay: u32,
 }
 
-pub fn ic_snapshot(out: &mut [u16]) -> (IcSnapshot, usize) {
+pub fn ic_snapshot(out: &mut [u32]) -> (IcSnapshot, usize) {
     critical_section::with(|_| {
-        // Use the walker's LAST exit state. `ref_tick` comes from
-        // `LAST_LIFT_CEILING` (stored by `walk()` at entry) rather than a
-        // fresh `read_tick32()`: every entry in `falling_ring[..falling_total]`
-        // was deposited before the walker's last `lift_ceiling`, so a
-        // host-side lift against that ceiling reconstructs the same u32
-        // tick the walker would have. Re-reading `tick32()` here puts
-        // any entry older than one TIM2 wrap (~455 µs) into the wrong
-        // high half — a real bug we hit on the first selftest pass.
-        // NDTR is intentionally NOT refreshed here: entries captured
-        // after the last walker exit aren't covered by the stored
-        // `lift_ceiling` and would lift to the wrong wrap, so they stay
-        // out of the snapshot.
+        // `falling_total` is intentionally NOT refreshed via NDTR: entries
+        // deposited after the last walker exit aren't in `IC_TICKS_RING`
+        // yet (no lift pass has covered them). The host sees only the
+        // pre-lifted window — same set of entries the walker has already
+        // anchored byte stamps against.
+        let pre_lifted = unsafe { ptr::read_volatile(PRE_LIFTED_FALLING.get()) };
         let falling_total = unsafe { ptr::read_volatile(FALLING_TOTAL.get()) };
         let rx_total = unsafe { ptr::read_volatile(RX_TOTAL.get()) };
         let walked = unsafe { ptr::read_volatile(WALKED_FALLING.get()) };
@@ -547,12 +570,12 @@ pub fn ic_snapshot(out: &mut [u16]) -> (IcSnapshot, usize) {
         let bit_ticks = BIT_TICKS.load(Ordering::Relaxed);
         let cc_filter_delay = CC_FILTER_DELAY_TICKS.load(Ordering::Relaxed);
 
-        let in_ring = (falling_total as usize).min(FALL_LEN);
+        let in_ring = (pre_lifted as usize).min(FALL_LEN);
         let n = in_ring.min(out.len());
-        let start = falling_total.wrapping_sub(n as u32);
+        let start = pre_lifted.wrapping_sub(n as u32);
         for (i, slot) in out.iter_mut().take(n).enumerate() {
             let idx = (start.wrapping_add(i as u32) & FALL_MASK) as usize;
-            *slot = unsafe { (*FALLING_RING.get())[idx] };
+            *slot = unsafe { (*IC_TICKS_RING.get())[idx] };
         }
         (
             IcSnapshot {
@@ -688,6 +711,24 @@ pub fn walk(idle: bool) {
     let lift_ceiling = read_tick32();
     LAST_LIFT_CEILING.store(lift_ceiling, Ordering::Release);
     let mut walked = unsafe { ptr::read_volatile(WALKED_FALLING.get()) };
+
+    // Pre-lift any new IC entries into `IC_TICKS_RING`. Each entry is
+    // lifted against the current `lift_ceiling`, valid because we hit
+    // this loop within one TIM2 wrap of the entry's deposit (HT fires
+    // every FALL_LEN/2 edges = ≪ 1 wrap at any baud, and IDLE adds a
+    // wire-quiet trigger inside that). Persisting the lifted u32 here
+    // means `ic_snapshot` can return correctly-wrapped ticks even when
+    // the host calls it minutes later — no host-side lift, no per-wrap
+    // limit on the snapshot window.
+    let mut probe = unsafe { ptr::read_volatile(PRE_LIFTED_FALLING.get()) };
+    while probe != falling_total {
+        let lifted = lift(lift_ceiling, falling_at(probe));
+        unsafe {
+            (*IC_TICKS_RING.get())[(probe & FALL_MASK) as usize] = lifted;
+        }
+        probe = probe.wrapping_add(1);
+    }
+    unsafe { ptr::write_volatile(PRE_LIFTED_FALLING.get(), falling_total) };
 
     // §3.5 ic_overrun: if more new entries arrived than the ring can
     // hold, we lost edges → permanent lockstep desync. Sticky-fatal.

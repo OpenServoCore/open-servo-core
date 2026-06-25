@@ -93,19 +93,29 @@ per-byte stamps.
 
 ### 3.1 Ring layout
 
-Three host-facing rings produced by the walker plus two internal DMA
-staging buffers:
+Three host-facing rings produced by the walker plus three internal DMA
+staging buffers (one parallel to `falling_ring` for pre-lifted ticks):
 
-| Ring           | Width | Producer  | Role                                  |
-|----------------|-------|-----------|---------------------------------------|
-| `falling_ring` | u16   | DMA1_CH1  | internal — raw IC stamps              |
-| `rx_ring[i]`   | u8    | DMA1_CH3  | internal — USART RX bytes, walker-only|
-| `bytes_ring[i]`| u8    | walker    | byte value at stamp time              |
-| `ts_ring[i]`   | u32   | walker    | byte start tick (lifted to `tick32`)  |
-| `flags_ring[i]`| u8    | walker    | anomaly flags per byte                |
+| Ring             | Width | Producer  | Role                                       |
+|------------------|-------|-----------|--------------------------------------------|
+| `falling_ring`   | u16   | DMA1_CH1  | internal — raw IC stamps                   |
+| `ic_ticks_ring`  | u32   | walker    | internal — pre-lifted `tick32` per IC entry|
+| `rx_ring[i]`     | u8    | DMA1_CH3  | internal — USART RX bytes, walker-only     |
+| `bytes_ring[i]`  | u8    | walker    | byte value at stamp time                   |
+| `ts_ring[i]`     | u32   | walker    | byte start tick (lifted to `tick32`)       |
+| `flags_ring[i]`  | u8    | walker    | anomaly flags per byte                     |
 
 `bytes_ring`, `ts_ring`, and `flags_ring` are **parallel arrays** indexed
 in lockstep. One byte's complete record is `(bytes[i], ts[i], flags[i])`.
+
+`ic_ticks_ring` is parallel to `falling_ring` and populated by `walk()`'s
+pre-lift loop: every newly-deposited IC entry is lifted to its u32
+`tick32` against the current walker call's `lift_ceiling`. The host-facing
+`BICSNAP` diagnostic reads from `ic_ticks_ring`, so it returns
+correctly-wrapped ticks regardless of how long ago each entry was
+captured — a single late `lift_ceiling` carried back to the host would
+otherwise miswrap entries deposited > one TIM2 wrap (~455 µs) earlier in
+the burst (e.g. 1 Mbaud Ping at ~500 µs).
 
 The walker mirrors the byte value from `rx_ring` into `bytes_ring` at
 stamp time. `rx_ring` is a circular DMA buffer the walker reads from at

@@ -102,14 +102,16 @@ pub struct ReplyTiming {
     pub reply_last: u32,
 }
 
-/// `BICSNAP` payload. Atomic view of the IC ring (raw u16 captures plus
-/// walker state) at the moment the pirate served the request. `entries`
-/// holds the in-ring window in OLDEST-FIRST order; for `falling_total >
-/// FALL_LEN` only the most recent `FALL_LEN` raw values are preserved
-/// (older ones were overwritten by DMA wrap before the snapshot).
+/// `BICSNAP` payload. Atomic view of the IC ring (pre-lifted u32 ticks
+/// plus walker state) at the moment the pirate served the request.
+/// `entries` holds the in-ring window in OLDEST-FIRST order; entries are
+/// already lifted to `tick32` on chip via the walker's `IC_TICKS_RING`,
+/// so the host can compare them directly against stamp ticks without a
+/// host-side lift step.
 ///
-/// Lift a raw u16 to the pirate's tick32 domain with
-/// [`lift_against`] using `ref_tick` as the ceiling.
+/// `ref_tick` is the walker's "now" reference at its most recent exit —
+/// useful for relating the entry window to wall time, not required for
+/// using the ticks themselves.
 #[derive(Clone, Debug)]
 pub struct IcSnapshot {
     pub ref_tick: u32,
@@ -119,18 +121,7 @@ pub struct IcSnapshot {
     pub byte_head: u32,
     pub bit_ticks: u32,
     pub cc_filter_delay: u32,
-    /// Cumulative IC entry index of `entries[0]`. Equal to
-    /// `falling_total - entries.len()`.
-    pub start_index: u32,
-    pub entries: Vec<u16>,
-}
-
-/// Lift a raw u16 IC capture to the pirate's tick32 domain. Mirrors
-/// firmware-side `capture::lift` (TIMING.md §3.4). Valid as long as the
-/// entry's actual age is < one TIM2 u16 wrap (~455 µs at 144 MHz).
-pub fn lift_against(ref_tick: u32, raw: u16) -> u32 {
-    let delta = (ref_tick as u16).wrapping_sub(raw) as u32;
-    ref_tick.wrapping_sub(delta)
+    pub entries: Vec<u32>,
 }
 
 // ---------------------------------------------------------------------------
@@ -427,13 +418,19 @@ impl Client {
         let cc_filter_delay = u32::from_le_bytes([hdr[24], hdr[25], hdr[26], hdr[27]]);
         let n = u16::from_le_bytes([hdr[28], hdr[29]]) as usize;
         let body = if n > 0 {
-            self.read_exact_bytes(n * 2)?
+            self.read_exact_bytes(n * 4)?
         } else {
             Vec::new()
         };
         let mut entries = Vec::with_capacity(n);
         for i in 0..n {
-            entries.push(u16::from_le_bytes([body[i * 2], body[i * 2 + 1]]));
+            let b = i * 4;
+            entries.push(u32::from_le_bytes([
+                body[b],
+                body[b + 1],
+                body[b + 2],
+                body[b + 3],
+            ]));
         }
         Ok(IcSnapshot {
             ref_tick,
@@ -443,7 +440,6 @@ impl Client {
             byte_head,
             bit_ticks,
             cc_filter_delay,
-            start_index: falling_total.wrapping_sub(n as u32),
             entries,
         })
     }

@@ -16,7 +16,7 @@ mod pirate;
 
 pub use pirate::{
     BStamp, DesyncCause, IcSnapshot, PIRATE_PID, PIRATE_VID, PirateDesync, PirateStatus,
-    ReplyCapture, ReplyTiming, auto_detect_pirate, lift_against,
+    ReplyCapture, ReplyTiming, auto_detect_pirate,
 };
 
 // ---------------------------------------------------------------------------

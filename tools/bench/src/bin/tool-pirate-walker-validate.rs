@@ -23,7 +23,7 @@
 use std::time::Duration;
 
 use anyhow::{Result, anyhow, bail};
-use bench::{BStamp, Bus, BusArgs, DEFAULT_IDLE_US, IcSnapshot, build_ping, lift_against};
+use bench::{BStamp, Bus, BusArgs, DEFAULT_IDLE_US, IcSnapshot, build_ping};
 use clap::Parser;
 use dxl_protocol::types::Id;
 
@@ -278,14 +278,10 @@ fn validate_spacing(
 }
 
 fn validate_ic_correspondence(stamps: &[BStamp], snap: &IcSnapshot) -> Result<()> {
-    let lifted: Vec<u32> = snap
-        .entries
-        .iter()
-        .map(|&raw| lift_against(snap.ref_tick, raw))
-        .collect();
     for (i, s) in stamps.iter().enumerate() {
         let anchor = s.tick.wrapping_add(snap.cc_filter_delay);
-        let closest = lifted
+        let closest = snap
+            .entries
             .iter()
             .map(|&t| (t as i64 - anchor as i64).abs())
             .min()

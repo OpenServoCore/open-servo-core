@@ -157,15 +157,18 @@ async fn handle_batch<'d, T: Instance + 'd>(
 ///   [ref_tick:u32 LE][falling_total:u32 LE][walked:u32 LE]
 ///   [rx_total:u32 LE][byte_head:u32 LE][bit_ticks:u32 LE][cc_filter_delay:u32 LE]
 ///   [entries:u16 LE]
-///   [raw: u16 LE × entries]    // oldest-first
+///   [ticks: u32 LE × entries]    // oldest-first, pre-lifted on chip
 ///
-/// Header = 32 B fits one CDC bulk packet; the raw window streams as
-/// `entries × 2 B` over additional packets.
+/// Header = 32 B fits one CDC bulk packet; the tick window streams as
+/// `entries × 4 B` over additional packets. Each tick is already lifted
+/// from the raw u16 capture into the correct `tick32` wrap by the
+/// walker, so the host can compare directly against stamp ticks without
+/// re-lifting.
 async fn handle_ic_snapshot<'d, T: Instance + 'd>(
     class: &mut CdcAcmClass<'d, Driver<'d, T>>,
 ) -> Result<(), EndpointError> {
-    let mut raw = [0u16; FALL_LEN];
-    let (snap, n) = capture::ic_snapshot(&mut raw);
+    let mut ticks = [0u32; FALL_LEN];
+    let (snap, n) = capture::ic_snapshot(&mut ticks);
 
     let mut hdr: Vec<u8, 32> = Vec::new();
     let _ = hdr.push(0xA5);
@@ -181,8 +184,8 @@ async fn handle_ic_snapshot<'d, T: Instance + 'd>(
     class.write_packet(&hdr).await?;
 
     let mut chunk: Vec<u8, { CDC_BULK_PACKET as usize }> = Vec::new();
-    for &v in &raw[..n] {
-        if chunk.len() + 2 > chunk.capacity() {
+    for &v in &ticks[..n] {
+        if chunk.len() + 4 > chunk.capacity() {
             class.write_packet(&chunk).await?;
             chunk.clear();
         }
