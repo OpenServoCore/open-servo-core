@@ -26,10 +26,9 @@ use std::time::Duration;
 
 use anyhow::{Result, anyhow, bail};
 use bench::{
-    FOREIGN_ID, INJ_ID, IdleStamp, LinkCounters, PirateClient, RETURN_DELAY_2US_ADDR, Round,
-    Session, SessionArgs, build_fast_bulk_read, build_inj_first_bytes, build_read, clear_counters,
-    parse_fast_response, parse_status_reply, read_counters, read_ct_u8, round_from_stamps,
-    set_chip_baud, try_read_counters,
+    Bus, BusArgs, FOREIGN_ID, INJ_ID, LinkCounters, RETURN_DELAY_2US_ADDR, ReplyCapture,
+    ReplyTiming, build_fast_bulk_read, build_inj_first_bytes, build_read, parse_fast_response,
+    parse_status_reply,
 };
 use clap::{Parser, ValueEnum};
 use dxl_protocol::types::{BulkReadEntry, Id, StatusError};
@@ -107,7 +106,7 @@ struct ShotOutcome {
     bucket: Bucket,
     request: Vec<u8>,
     reply: Vec<u8>,
-    round: Option<Round>,
+    timing: Option<ReplyTiming>,
 }
 
 #[derive(Parser, Debug)]
@@ -131,10 +130,12 @@ struct Args {
     /// Shots in default mode (single-cell). Ignored under --continuous/--matrix.
     #[arg(long, default_value_t = 128)]
     shots: u32,
-    /// Post-MASTER capture wait for first/last shots (ms). Sets per-shot
-    /// duration: master fires, we sleep this long, then capture RX + stamps.
-    #[arg(long, default_value_t = 1.0)]
-    shot_wait_ms: f64,
+    /// Idle window (ms) — how long the bus must be silent before the
+    /// pirate stamp-drain loop returns. Each new byte stamp resets the
+    /// timer, so the helper naturally extends through long chain replies
+    /// and only exits once the wire genuinely quiesces.
+    #[arg(long, default_value_t = 5.0)]
+    idle_ms: f64,
     /// Sleep between shots (continuous + matrix). 0 = back-to-back.
     #[arg(long, default_value_t = 0.0)]
     inter_shot_ms: f64,
@@ -172,57 +173,45 @@ struct Args {
 
 fn main() -> Result<()> {
     let args = Args::parse();
-    let mut session = Session::start(SessionArgs {
+    let mut bus = Bus::start(BusArgs {
         port: args.port.clone(),
         target_baud: args.baud,
     })?;
-    let id = Id::new(session.id);
-    println!(
-        "pirate: {}   chip id: {}",
-        session.pirate.port_path(),
-        session.id
-    );
+    let id = Id::new(bus.id());
+    println!("pirate: {}   chip id: {}", bus.port_path(), bus.id());
 
     if args.matrix {
-        return run_matrix(&mut session, id, &args);
+        return run_matrix(&mut bus, id, &args);
     }
     if args.continuous {
-        return run_continuous(&mut session, id, &args);
+        return run_continuous(&mut bus, id, &args);
     }
-    run_default(&mut session, id, &args)
+    run_default(&mut bus, id, &args)
 }
 
 // ---------------------------------------------------------------------------
 // Modes
 // ---------------------------------------------------------------------------
 
-fn run_default(session: &mut Session, id: Id, args: &Args) -> Result<()> {
+fn run_default(bus: &mut Bus, id: Id, args: &Args) -> Result<()> {
     println!(
         "baud: {}   position: {}   INJ_LEN: {}   DUT_LEN: {}",
-        session.baud,
+        bus.baud(),
         args.position.as_str(),
         args.inj_len,
         args.dut_len
     );
 
-    let before = read_counters(&mut session.pirate, id)?;
-    clear_counters(&mut session.pirate, id)?;
+    let before = bus.read_counters(id)?;
+    bus.clear_counters(id)?;
 
     if args.scope_delay_s > 0.0 {
         println!("[arming scope in {:.1}s]", args.scope_delay_s);
         sleep(Duration::from_secs_f64(args.scope_delay_s));
     }
 
-    let ctx = CellCtx::new(&mut session.pirate, id, session.baud, args)?;
-    let stats = run_cell(
-        &mut session.pirate,
-        id,
-        &ctx,
-        args.shots,
-        args.shot_wait_ms,
-        args.inter_shot_ms,
-        0,
-    )?;
+    let ctx = CellCtx::new(bus, id, bus.baud(), args)?;
+    let stats = run_cell(bus, id, &ctx, args.shots, args.inter_shot_ms, 0)?;
     print_cell_summary("single", &stats, &ctx);
     for bucket in Bucket::ALL {
         if let Some((shot_i, req, reply)) = stats.first_per_bucket(bucket) {
@@ -234,7 +223,7 @@ fn run_default(session: &mut Session, id: Id, args: &Args) -> Result<()> {
         }
     }
 
-    let after = try_read_counters(&mut session.pirate, id);
+    let after = bus.try_read_counters(id);
     let _ = before;
     match after {
         None => {
@@ -250,10 +239,10 @@ fn run_default(session: &mut Session, id: Id, args: &Args) -> Result<()> {
     Ok(())
 }
 
-fn run_continuous(session: &mut Session, id: Id, args: &Args) -> Result<()> {
+fn run_continuous(bus: &mut Bus, id: Id, args: &Args) -> Result<()> {
     println!(
         "baud: {}   position: {}   INJ_LEN: {}   DUT_LEN: {}",
-        session.baud,
+        bus.baud(),
         args.position.as_str(),
         args.inj_len,
         args.dut_len
@@ -262,21 +251,15 @@ fn run_continuous(session: &mut Session, id: Id, args: &Args) -> Result<()> {
         "[continuous — up to {} shots; stop on {} consecutive NOREPLY/other]",
         args.max_shots, args.wedge_threshold
     );
-    let before = read_counters(&mut session.pirate, id)?;
-    clear_counters(&mut session.pirate, id)?;
+    let before = bus.read_counters(id)?;
+    bus.clear_counters(id)?;
 
-    let ctx = CellCtx::new(&mut session.pirate, id, session.baud, args)?;
+    let ctx = CellCtx::new(bus, id, bus.baud(), args)?;
     let mut stats = CellStats::new();
     let mut consecutive_wedge: u32 = 0;
     let mut wedge_shot: Option<u32> = None;
     for i in 1..=args.max_shots {
-        let out = run_shot(
-            &mut session.pirate,
-            id,
-            args.position,
-            &ctx,
-            args.shot_wait_ms,
-        )?;
+        let out = run_shot(bus, id, args.position, &ctx)?;
         consecutive_wedge = if out.bucket.is_wedge() {
             consecutive_wedge + 1
         } else {
@@ -303,7 +286,7 @@ fn run_continuous(session: &mut Session, id: Id, args: &Args) -> Result<()> {
             );
         }
     }
-    let after = try_read_counters(&mut session.pirate, id);
+    let after = bus.try_read_counters(id);
     if let Some(shot) = wedge_shot {
         print_wedge_banner(&format!(
             "at shot {shot} ({} consecutive NOREPLY/other)",
@@ -328,7 +311,7 @@ fn run_continuous(session: &mut Session, id: Id, args: &Args) -> Result<()> {
     Ok(())
 }
 
-fn run_matrix(session: &mut Session, id: Id, args: &Args) -> Result<()> {
+fn run_matrix(bus: &mut Bus, id: Id, args: &Args) -> Result<()> {
     let bauds = parse_int_list(&args.matrix_bauds)?;
     let dut_lens: Vec<usize> = parse_int_list(&args.matrix_dut_lens)?
         .into_iter()
@@ -353,7 +336,7 @@ fn run_matrix(session: &mut Session, id: Id, args: &Args) -> Result<()> {
                 args.matrix_repeat
             );
         }
-        let wedged = walk_matrix(&mut session.pirate, id, &bauds, &dut_lens, &positions, args)?;
+        let wedged = walk_matrix(bus, id, &bauds, &dut_lens, &positions, args)?;
         if wedged {
             std::process::exit(1);
         }
@@ -362,21 +345,21 @@ fn run_matrix(session: &mut Session, id: Id, args: &Args) -> Result<()> {
 }
 
 fn walk_matrix(
-    pirate: &mut PirateClient,
+    bus: &mut Bus,
     id: Id,
     bauds: &[u32],
     dut_lens: &[usize],
     positions: &[Position],
     args: &Args,
 ) -> Result<bool> {
-    let mut last_counters = read_counters(pirate, id).unwrap_or_default();
+    let mut last_counters = bus.read_counters(id).unwrap_or_default();
     for (baud_idx, &baud) in bauds.iter().enumerate() {
         if baud_idx > 0 {
             println!();
         }
-        if let Err(e) = set_chip_baud(pirate, id.as_byte(), baud) {
+        if let Err(e) = bus.set_chip_baud(baud) {
             println!("  {}M baud: set_chip_baud failed: {e}", baud / 1_000_000);
-            if try_read_counters(pirate, id).is_none() {
+            if bus.try_read_counters(id).is_none() {
                 print_wedge_banner(&format!("on set_chip_baud({baud})"));
                 return Ok(true);
             }
@@ -386,7 +369,7 @@ fn walk_matrix(
         // glitch — the FE/NE bumps from the switch are already in the
         // counters; snapshot here so the first cell's delta starts
         // post-switch.
-        if let Some(rebaseline) = try_read_counters(pirate, id) {
+        if let Some(rebaseline) = bus.try_read_counters(id) {
             last_counters = rebaseline;
         }
         for &dut_len in dut_lens {
@@ -396,14 +379,13 @@ fn walk_matrix(
                     dut_len,
                     ..clone_args(args)
                 };
-                let ctx = CellCtx::new(pirate, id, baud, &cell_args)?;
+                let ctx = CellCtx::new(bus, id, baud, &cell_args)?;
                 let cell = format!("{}M {:<5} {:>3}B", baud / 1_000_000, pos.as_str(), dut_len);
                 let stats = match run_cell(
-                    pirate,
+                    bus,
                     id,
                     &ctx,
                     args.matrix_n,
-                    args.shot_wait_ms,
                     args.inter_shot_ms,
                     args.matrix_health_every,
                 ) {
@@ -430,7 +412,7 @@ fn walk_matrix(
                     ));
                     return Ok(true);
                 }
-                let health = try_read_counters(pirate, id);
+                let health = bus.try_read_counters(id);
                 let tag = match &health {
                     None => "WEDGE@cell-end".to_string(),
                     Some(h) => {
@@ -472,31 +454,28 @@ struct CellCtx {
     position: Position,
     dut_len: usize,
     inj_len: usize,
+    idle_us: u32,
 }
 
 impl CellCtx {
-    fn new(pirate: &mut PirateClient, id: Id, baud: u32, args: &Args) -> Result<Self> {
-        let ticks_per_us = pirate.hz_per_us()? as f64;
+    fn new(bus: &mut Bus, id: Id, baud: u32, args: &Args) -> Result<Self> {
+        let ticks_per_us = bus.hz_per_us()? as f64;
         let byte_time_ticks = 10.0 * ticks_per_us * 1_000_000.0 / baud as f64;
         let byte_time_us = byte_time_ticks / ticks_per_us;
-        let rdt_us = read_ct_u8(pirate, id, RETURN_DELAY_2US_ADDR)? as f64 * 2.0;
+        let rdt_us = bus.read_ct_u8(id, RETURN_DELAY_2US_ADDR)? as f64 * 2.0;
         let target_ticks = match args.position {
             Position::Last => {
-                // 2-slot chain (INJ + chip) including CRC; span = (last - first).
                 let packet_length = 1 + (2 + args.inj_len) + (2 + args.dut_len) + 2;
                 let reply_bytes = 7 + packet_length;
                 (reply_bytes - 1) as f64 * byte_time_ticks
             }
             Position::Middle => {
-                // 3-slot chain captured up to chip's last byte: FOREIGN never
-                // emits and the chain CRC patch deadline misses, so the bytes
-                // we see are INJ's first-slot (10 + inj_len) + chip's middle
-                // body (2 + dut_len). Span = (last - first).
                 let reply_bytes = 10 + args.inj_len + 2 + args.dut_len;
                 (reply_bytes - 1) as f64 * byte_time_ticks
             }
             _ => rdt_us * ticks_per_us + byte_time_ticks,
         };
+        let idle_us = (args.idle_ms * 1000.0) as u32;
         Ok(Self {
             target_ticks,
             thresh_us: byte_time_us / 2.0,
@@ -504,11 +483,11 @@ impl CellCtx {
             position: args.position,
             dut_len: args.dut_len,
             inj_len: args.inj_len,
+            idle_us,
         })
     }
 }
 
-/// (shot_index, request_bytes, reply_bytes) of the first capture in a bucket.
 type FirstCapture = (u32, Vec<u8>, Vec<u8>);
 
 struct CellStats {
@@ -538,10 +517,10 @@ impl CellStats {
         if !matches!(out.bucket, Bucket::Clean | Bucket::ExtraIdle) && self.first_fail.is_none() {
             self.first_fail = Some((shot, out.bucket, out.request.clone(), out.reply.clone()));
         }
-        if let (Bucket::Clean | Bucket::ExtraIdle, Some(r)) = (out.bucket, out.round) {
+        if let (Bucket::Clean | Bucket::ExtraIdle, Some(t)) = (out.bucket, out.timing) {
             let raw = match ctx.position {
-                Position::Last => r.last.wrapping_sub(r.first) as f64,
-                _ => r.first.wrapping_sub(r.req) as f64,
+                Position::Last => t.reply_last.wrapping_sub(t.reply_first) as f64,
+                _ => t.reply_first.wrapping_sub(t.req_end) as f64,
             };
             self.offsets.push(raw - ctx.target_ticks);
         }
@@ -567,21 +546,20 @@ impl CellStats {
 }
 
 fn run_cell(
-    pirate: &mut PirateClient,
+    bus: &mut Bus,
     id: Id,
     ctx: &CellCtx,
     n: u32,
-    shot_wait_ms: f64,
     inter_shot_ms: f64,
     health_every: u32,
 ) -> Result<CellStats> {
     let mut stats = CellStats::new();
     for shot in 1..=n {
-        let out = run_shot(pirate, id, ctx.position, ctx, shot_wait_ms)?;
+        let out = run_shot(bus, id, ctx.position, ctx)?;
         stats.record(shot, &out, ctx);
         if health_every > 0
             && shot.is_multiple_of(health_every)
-            && try_read_counters(pirate, id).is_none()
+            && bus.try_read_counters(id).is_none()
         {
             stats.wedge_shot = Some(shot);
             break;
@@ -593,42 +571,27 @@ fn run_cell(
     Ok(stats)
 }
 
-fn run_shot(
-    pirate: &mut PirateClient,
-    id: Id,
-    pos: Position,
-    ctx: &CellCtx,
-    shot_wait_ms: f64,
-) -> Result<ShotOutcome> {
+fn run_shot(bus: &mut Bus, id: Id, pos: Position, ctx: &CellCtx) -> Result<ShotOutcome> {
     match pos {
-        Position::Only => shot_only(pirate, id, ctx.dut_len),
-        Position::First => shot_first(pirate, id, ctx.dut_len, shot_wait_ms),
-        Position::Middle => shot_middle(pirate, id, ctx.inj_len, ctx.dut_len, shot_wait_ms),
-        Position::Last => shot_last(pirate, id, ctx.inj_len, ctx.dut_len, shot_wait_ms),
+        Position::Only => shot_only(bus, id, ctx),
+        Position::First => shot_first(bus, id, ctx),
+        Position::Middle => shot_middle(bus, id, ctx),
+        Position::Last => shot_last(bus, id, ctx),
     }
 }
 
-fn shot_only(pirate: &mut PirateClient, id: Id, dut_len: usize) -> Result<ShotOutcome> {
-    let request = build_read(id, 0, dut_len as u16)?;
-    let _ = pirate.drain_stamps()?;
-    let reply = pirate.xfer(&request, 10_000)?;
-    let stamps = pirate.drain_stamps()?;
-    let round = round_from_stamps(&stamps);
+fn shot_only(bus: &mut Bus, id: Id, ctx: &CellCtx) -> Result<ShotOutcome> {
+    let request = build_read(id, 0, ctx.dut_len as u16)?;
+    let cap = bus.xfer(&request, ctx.idle_us)?;
     let request = request.to_vec();
-    let Some(reply) = reply else {
-        return Ok(ShotOutcome {
-            bucket: Bucket::Noreply,
-            request,
-            reply: Vec::new(),
-            round,
-        });
-    };
-    if reply.len() < 11 {
+    let reply = reply_bytes(&cap, request.len());
+    let timing = cap.timing;
+    if timing.is_none() || reply.len() < 11 {
         return Ok(ShotOutcome {
             bucket: Bucket::Noreply,
             request,
             reply,
-            round,
+            timing,
         });
     }
     let bucket = match parse_status_reply(&reply, None) {
@@ -640,21 +603,16 @@ fn shot_only(pirate: &mut PirateClient, id: Id, dut_len: usize) -> Result<ShotOu
         bucket,
         request,
         reply,
-        round,
+        timing,
     })
 }
 
-fn shot_first(
-    pirate: &mut PirateClient,
-    id: Id,
-    dut_len: usize,
-    shot_wait_ms: f64,
-) -> Result<ShotOutcome> {
+fn shot_first(bus: &mut Bus, id: Id, ctx: &CellCtx) -> Result<ShotOutcome> {
     let entries = [
         BulkReadEntry {
             id,
             address: 0,
-            length: dut_len as u16,
+            length: ctx.dut_len as u16,
         },
         BulkReadEntry {
             id: Id::new(FOREIGN_ID),
@@ -663,148 +621,85 @@ fn shot_first(
         },
     ];
     let request = build_fast_bulk_read(&entries)?;
-    let _ = pirate.drain_stamps()?;
-    let b0 = pirate.bytes_count()?;
-    pirate.master(&request)?;
-    sleep(Duration::from_secs_f64(shot_wait_ms / 1000.0));
-    let b1 = pirate.bytes_count()?;
-    let total = b1.wrapping_sub(b0);
-    let capture = total.min(256);
-    let all_rx = if capture > 0 {
-        pirate.rx_range(b0, capture as u16)?
-    } else {
-        Vec::new()
-    };
-    let reply = if all_rx.len() >= request.len() {
-        all_rx[request.len()..].to_vec()
-    } else {
-        Vec::new()
-    };
-    let stamps = pirate.drain_stamps()?;
-    let round = round_from_stamps(&stamps);
+    let cap = bus.xfer(&request, ctx.idle_us)?;
     let request = request.to_vec();
+    let reply = reply_bytes(&cap, request.len());
+    let timing = cap.timing;
 
     // First-slot wire bytes: 4 sync + bcast_id + 2 len + STATUS + err +
     // slot_id + N data — total 10 + N.
-    let first_slot_bytes = 10 + dut_len;
-    if total > 256 {
-        return Ok(ShotOutcome {
-            bucket: Bucket::Other,
-            request,
-            reply,
-            round,
-        });
-    }
-    if total < (request.len() + first_slot_bytes / 2) as u32 || reply.len() < first_slot_bytes {
+    let first_slot_bytes = 10 + ctx.dut_len;
+    if reply.len() < first_slot_bytes {
         return Ok(ShotOutcome {
             bucket: Bucket::Noreply,
             request,
             reply,
-            round,
+            timing,
         });
     }
+    let extra_idle = reply.len() > first_slot_bytes;
     let header_ok = reply[..4] == [0xFF, 0xFF, 0xFD, 0x00]
         && reply[4] == 0xFE
         && reply[7] == 0x55
         && reply[9] == id.as_byte();
-    let bucket = if header_ok {
-        Bucket::Clean
-    } else {
+    let bucket = if !header_ok {
         Bucket::Crc
+    } else if extra_idle {
+        Bucket::ExtraIdle
+    } else {
+        Bucket::Clean
     };
     Ok(ShotOutcome {
         bucket,
         request,
         reply,
-        round,
+        timing,
     })
 }
 
-fn shot_last(
-    pirate: &mut PirateClient,
-    id: Id,
-    inj_len: usize,
-    dut_len: usize,
-    shot_wait_ms: f64,
-) -> Result<ShotOutcome> {
-    let inj_data = vec![0xAAu8; inj_len];
-    let packet_length = (1 + (2 + inj_len) + (2 + dut_len) + 2) as u16;
+fn shot_last(bus: &mut Bus, id: Id, ctx: &CellCtx) -> Result<ShotOutcome> {
+    let inj_data = vec![0xAAu8; ctx.inj_len];
+    let packet_length = (1 + (2 + ctx.inj_len) + (2 + ctx.dut_len) + 2) as u16;
     let inj_bytes =
         build_inj_first_bytes(Id::new(INJ_ID), StatusError::OK, &inj_data, packet_length)?;
     let entries = [
         BulkReadEntry {
             id: Id::new(INJ_ID),
             address: 0,
-            length: inj_len as u16,
+            length: ctx.inj_len as u16,
         },
         BulkReadEntry {
             id,
             address: 0,
-            length: dut_len as u16,
+            length: ctx.dut_len as u16,
         },
     ];
     let request = build_fast_bulk_read(&entries)?;
-    let _ = pirate.drain_stamps()?;
-    let b0 = pirate.bytes_count()?;
-    pirate.arm(&inj_bytes, INJ_ARM_AFTER_IDLE_US)?;
-    pirate.master(&request)?;
-    sleep(Duration::from_secs_f64(shot_wait_ms / 1000.0));
-    let b1 = pirate.bytes_count()?;
-    let total = b1.wrapping_sub(b0);
-    let capture = total.min(256);
-    let all_rx = if capture > 0 {
-        pirate.rx_range(b0, capture as u16)?
-    } else {
-        Vec::new()
-    };
-    let reply = if all_rx.len() >= request.len() {
-        all_rx[request.len()..].to_vec()
-    } else {
-        Vec::new()
-    };
-    let stamps = pirate.drain_stamps()?;
-    let round = round_from_stamps(&stamps);
-    let extra_idle = stamps
-        .iter()
-        .filter(|s| matches!(s, IdleStamp::Round(_)))
-        .count()
-        != 1
-        || stamps.iter().any(|s| matches!(s, IdleStamp::Plain(_)));
+    let cap = bus.arm_then_master(&inj_bytes, INJ_ARM_AFTER_IDLE_US, &request, ctx.idle_us)?;
     let request = request.to_vec();
+    let reply = reply_bytes(&cap, request.len());
+    let timing = cap.timing;
 
-    let expected_min = 11 + inj_len + 2 + dut_len;
-    if total < (request.len() + expected_min / 2) as u32 {
+    let expected = 11 + ctx.inj_len + 2 + ctx.dut_len;
+    if reply.len() < expected {
         return Ok(ShotOutcome {
             bucket: Bucket::Noreply,
             request,
             reply,
-            round,
+            timing,
         });
     }
-    if total > 256 {
-        return Ok(ShotOutcome {
-            bucket: Bucket::Other,
-            request,
-            reply,
-            round,
-        });
-    }
-    if reply.len() < 11 {
-        return Ok(ShotOutcome {
-            bucket: Bucket::Noreply,
-            request,
-            reply,
-            round,
-        });
-    }
-    let bucket = match parse_fast_response(&reply, &[inj_len, dut_len]) {
+    let extra_idle = reply.len() > expected;
+    let bucket = match parse_fast_response(&reply, &[ctx.inj_len, ctx.dut_len]) {
         Err(_) => Bucket::Crc,
         Ok(slots)
             if slots.len() != 2 || slots[0].id.as_byte() != INJ_ID || slots[0].data != inj_data =>
         {
             Bucket::Crc
         }
-        Ok(slots) if slots[1].id.as_byte() != id.as_byte() || slots[1].data.len() != dut_len => {
+        Ok(slots)
+            if slots[1].id.as_byte() != id.as_byte() || slots[1].data.len() != ctx.dut_len =>
+        {
             Bucket::Other
         }
         Ok(_) if extra_idle => Bucket::ExtraIdle,
@@ -814,33 +709,27 @@ fn shot_last(
         bucket,
         request,
         reply,
-        round,
+        timing,
     })
 }
 
-fn shot_middle(
-    pirate: &mut PirateClient,
-    id: Id,
-    inj_len: usize,
-    dut_len: usize,
-    shot_wait_ms: f64,
-) -> Result<ShotOutcome> {
-    let inj_data = vec![0xAAu8; inj_len];
-    // 3-slot chain reply structure: STATUS + (err+id+inj_data) +
-    // (err+id+chip_data) + (err+id+1B_foreign) + CRC.
-    let packet_length = (1 + (2 + inj_len) + (2 + dut_len) + (2 + 1) + 2) as u16;
+fn shot_middle(bus: &mut Bus, id: Id, ctx: &CellCtx) -> Result<ShotOutcome> {
+    let inj_data = vec![0xAAu8; ctx.inj_len];
+    // 3-slot chain reply: STATUS + (err+id+inj_data) + (err+id+chip_data) +
+    // (err+id+1B_foreign) + CRC.
+    let packet_length = (1 + (2 + ctx.inj_len) + (2 + ctx.dut_len) + (2 + 1) + 2) as u16;
     let inj_bytes =
         build_inj_first_bytes(Id::new(INJ_ID), StatusError::OK, &inj_data, packet_length)?;
     let entries = [
         BulkReadEntry {
             id: Id::new(INJ_ID),
             address: 0,
-            length: inj_len as u16,
+            length: ctx.inj_len as u16,
         },
         BulkReadEntry {
             id,
             address: 0,
-            length: dut_len as u16,
+            length: ctx.dut_len as u16,
         },
         BulkReadEntry {
             id: Id::new(FOREIGN_ID),
@@ -849,72 +738,42 @@ fn shot_middle(
         },
     ];
     let request = build_fast_bulk_read(&entries)?;
-    let _ = pirate.drain_stamps()?;
-    let b0 = pirate.bytes_count()?;
-    pirate.arm(&inj_bytes, INJ_ARM_AFTER_IDLE_US)?;
-    pirate.master(&request)?;
-    sleep(Duration::from_secs_f64(shot_wait_ms / 1000.0));
-    let b1 = pirate.bytes_count()?;
-    let total = b1.wrapping_sub(b0);
-    let capture = total.min(256);
-    let all_rx = if capture > 0 {
-        pirate.rx_range(b0, capture as u16)?
-    } else {
-        Vec::new()
-    };
-    let reply = if all_rx.len() >= request.len() {
-        all_rx[request.len()..].to_vec()
-    } else {
-        Vec::new()
-    };
-    let stamps = pirate.drain_stamps()?;
-    let round = round_from_stamps(&stamps);
+    let cap = bus.arm_then_master(&inj_bytes, INJ_ARM_AFTER_IDLE_US, &request, ctx.idle_us)?;
     let request = request.to_vec();
+    let reply = reply_bytes(&cap, request.len());
+    let timing = cap.timing;
 
     // Captured reply ends at chip's last middle byte; FOREIGN never replies.
-    let first_slot_bytes = 10 + inj_len;
-    let middle_bytes = 2 + dut_len;
-    let expected_min = first_slot_bytes + middle_bytes;
-    if total < (request.len() + expected_min / 2) as u32 {
+    let first_slot_bytes = 10 + ctx.inj_len;
+    let middle_bytes = 2 + ctx.dut_len;
+    let expected = first_slot_bytes + middle_bytes;
+    if reply.len() < expected {
         return Ok(ShotOutcome {
             bucket: Bucket::Noreply,
             request,
             reply,
-            round,
+            timing,
         });
     }
-    if total > 256 {
-        return Ok(ShotOutcome {
-            bucket: Bucket::Other,
-            request,
-            reply,
-            round,
-        });
-    }
-    if reply.len() < expected_min {
-        return Ok(ShotOutcome {
-            bucket: Bucket::Noreply,
-            request,
-            reply,
-            round,
-        });
-    }
+    let extra_idle = reply.len() > expected;
     let header_ok = reply[..4] == [0xFF, 0xFF, 0xFD, 0x00]
         && reply[4] == 0xFE
         && reply[7] == 0x55
         && reply[9] == INJ_ID
-        && reply[10..10 + inj_len] == inj_data[..];
+        && reply[10..10 + ctx.inj_len] == inj_data[..];
     if !header_ok {
         return Ok(ShotOutcome {
             bucket: Bucket::Crc,
             request,
             reply,
-            round,
+            timing,
         });
     }
     let chip_id = reply[first_slot_bytes + 1];
     let bucket = if chip_id != id.as_byte() {
         Bucket::Other
+    } else if extra_idle {
+        Bucket::ExtraIdle
     } else {
         Bucket::Clean
     };
@@ -922,8 +781,14 @@ fn shot_middle(
         bucket,
         request,
         reply,
-        round,
+        timing,
     })
+}
+
+/// Slice the post-echo bytes out of a [`ReplyCapture`]. The first
+/// `req_len` stamps are the master TX echo; the rest is the reply chain.
+fn reply_bytes(cap: &ReplyCapture, req_len: usize) -> Vec<u8> {
+    cap.stamps.iter().skip(req_len).map(|s| s.byte).collect()
 }
 
 // ---------------------------------------------------------------------------
@@ -1073,7 +938,7 @@ fn clone_args(args: &Args) -> Args {
         inj_len: args.inj_len,
         dut_len: args.dut_len,
         shots: args.shots,
-        shot_wait_ms: args.shot_wait_ms,
+        idle_ms: args.idle_ms,
         inter_shot_ms: args.inter_shot_ms,
         scope_delay_s: args.scope_delay_s,
         continuous: args.continuous,

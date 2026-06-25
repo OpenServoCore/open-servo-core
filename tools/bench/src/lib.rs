@@ -1,370 +1,77 @@
-//! USB-CDC client for the dxl-pirate.
-//!
-//! The pirate is the bench's sole bus actor: master TX, listener, and
-//! IDLE-stamp ring all in one V203 firmware. See `tools/dxl-pirate/src/proto.rs`
-//! for the ASCII grammar this client wraps.
+//! Bench-side facade over the dxl-pirate. Bins drive [`Bus`]; the raw
+//! USB-CDC client (`pirate::Client`) is private to this crate so bins
+//! never type a wire command directly. See `tools/dxl-pirate/src/proto.rs`
+//! for the underlying grammar.
 
-use std::io::{self, Read, Write};
 use std::thread::sleep;
 use std::time::{Duration, Instant};
 
-use anyhow::{Context, Result, anyhow, bail};
+use anyhow::{Result, anyhow, bail};
 use dxl_protocol::streaming::{CrcResult, Event, HeaderEvent, Parser, PayloadEvent, StatusPayload};
 use dxl_protocol::types::{BulkReadEntry, Id, Slot, SlotPosition, StatusError};
 use dxl_protocol::{InstructionEncoder, SlotEncoder, SoftwareCrcUmts};
 use heapless::Vec as HVec;
-use serialport::SerialPort;
 
-/// SysTick stamp of a bus-IDLE event, no associated master TX.
-#[derive(Copy, Clone, Debug, PartialEq, Eq)]
-pub struct Plain {
-    pub tick: u32,
-    pub head: u32,
-}
+mod pirate;
 
-/// Atomic master-TX + slave-reply round-trip captured by the pirate listener.
-#[derive(Copy, Clone, Debug, PartialEq, Eq)]
-pub struct Round {
-    pub req: u32,
-    pub first: u32,
-    pub last: u32,
-    pub head: u32,
-}
-
-#[derive(Copy, Clone, Debug, PartialEq, Eq)]
-pub enum IdleStamp {
-    Plain(Plain),
-    Round(Round),
-}
-
-pub struct PirateClient {
-    port: Box<dyn SerialPort>,
-    port_path: String,
-    hz_per_us: Option<u32>,
-}
-
-impl PirateClient {
-    pub fn port_path(&self) -> &str {
-        &self.port_path
-    }
-
-    /// Open a pirate over USB-CDC. The nominal 115200 baud is purely cosmetic;
-    /// the wire baud is whatever `BAUD <bps>` was last set to.
-    ///
-    /// DTR is asserted post-open because the pirate firmware blocks at
-    /// `CdcAcmClass::wait_connection()` until the host signals connected.
-    /// pyserial does this implicitly on every open; serialport-rs doesn't.
-    pub fn open(port_path: &str, timeout: Duration) -> Result<Self> {
-        let mut port = serialport::new(port_path, 115_200)
-            .timeout(timeout)
-            .open()
-            .with_context(|| format!("opening pirate at {port_path}"))?;
-        port.write_data_terminal_ready(true)
-            .context("asserting DTR")?;
-        port.write_request_to_send(true).context("asserting RTS")?;
-        Ok(Self {
-            port,
-            port_path: port_path.to_string(),
-            hz_per_us: None,
-        })
-    }
-
-    /// Drain anything the OS has buffered from the pirate. Called before every
-    /// command so stale `STAMP`/`ROUND` lines from a prior listen don't poison
-    /// the next reply.
-    fn discard_pending(&mut self) -> Result<()> {
-        loop {
-            let avail = self.port.bytes_to_read()?;
-            if avail == 0 {
-                return Ok(());
-            }
-            let mut tmp = vec![0u8; avail as usize];
-            self.port.read_exact(&mut tmp)?;
-        }
-    }
-
-    fn send(&mut self, line: &str) -> Result<()> {
-        self.discard_pending()?;
-        self.port.write_all(line.as_bytes())?;
-        self.port.write_all(b"\n")?;
-        self.port.flush()?;
-        Ok(())
-    }
-
-    fn read_line(&mut self) -> Result<String> {
-        let mut buf = Vec::with_capacity(64);
-        let mut b = [0u8; 1];
-        loop {
-            match self.port.read(&mut b) {
-                Ok(0) => continue,
-                Ok(_) => {
-                    if b[0] == b'\n' {
-                        break;
-                    }
-                    if b[0] != b'\r' {
-                        buf.push(b[0]);
-                    }
-                }
-                Err(e) if e.kind() == io::ErrorKind::TimedOut => {
-                    bail!("pirate read timed out on {}", self.port_path);
-                }
-                Err(e) => return Err(e.into()),
-            }
-        }
-        Ok(String::from_utf8_lossy(&buf).into_owned())
-    }
-
-    /// Send one line, return one stripped reply. Use for `OK`/value/`STAMP`/etc.
-    /// Don't use for `XFER`/`RX` — their `REPLY <hex>` may span multiple CDC
-    /// packets and is concatenated transparently by `read_line`.
-    pub fn command(&mut self, line: &str) -> Result<String> {
-        self.send(line)?;
-        self.read_line()
-    }
-
-    pub fn expect_ok(&mut self, line: &str) -> Result<()> {
-        let reply = self.command(line)?;
-        if reply != "OK" {
-            bail!("{line:?} → {reply:?}");
-        }
-        Ok(())
-    }
-
-    pub fn set_baud(&mut self, bps: u32) -> Result<()> {
-        self.expect_ok(&format!("BAUD {bps}"))
-    }
-
-    pub fn tick(&mut self) -> Result<u64> {
-        let reply = self.command("TICK?")?;
-        parse_kv(&reply, "TICK")
-    }
-
-    pub fn bytes_count(&mut self) -> Result<u32> {
-        let reply = self.command("BYTES")?;
-        parse_kv::<u32>(&reply, "BYTES")
-    }
-
-    /// SysTick ticks per microsecond on the pirate (a compile-time firmware
-    /// constant). Cached after the first query.
-    pub fn hz_per_us(&mut self) -> Result<u32> {
-        if let Some(v) = self.hz_per_us {
-            return Ok(v);
-        }
-        let reply = self.command("HZ")?;
-        let v = parse_kv::<u32>(&reply, "HZ")?;
-        self.hz_per_us = Some(v);
-        Ok(v)
-    }
-
-    pub fn master(&mut self, data: &[u8]) -> Result<()> {
-        self.expect_ok(&format!("MASTER bytes={}", hex(data)))
-    }
-
-    /// Stage `data` to fire `after_idle_us` microseconds after the next bus
-    /// IDLE. Wall-clock units — the µs→tick conversion uses the pirate's
-    /// cached `hz_per_us` so callers stay firmware-version-agnostic.
-    pub fn arm(&mut self, data: &[u8], after_idle_us: u32) -> Result<()> {
-        let ticks = after_idle_us * self.hz_per_us()?;
-        self.expect_ok(&format!("ARM bytes={} after_idle={ticks}", hex(data)))
-    }
-
-    pub fn fire(&mut self, data: &[u8], at_tick: u64) -> Result<()> {
-        self.expect_ok(&format!("FIRE bytes={} at={at_tick}", hex(data)))
-    }
-
-    /// Low-32 SysTick from inject's `FIRED_TICK_LO`. After a FIRE, equals
-    /// `at_tick & 0xFFFFFFFF` on the scheduled path, or `now-on-device` if the
-    /// TIM4-OPM schedule was missed (immediate-fire fallback).
-    pub fn last_fired(&mut self) -> Result<u32> {
-        let reply = self.command("LAST?")?;
-        parse_kv::<u32>(&reply, "LAST")
-    }
-
-    /// Low-32 SysTick from listen's `FIRE_T_FIRST`. RXNE stamp of the first
-    /// self-echo byte after a FIRE. Returns 0 if RXNE didn't fire (e.g. bus
-    /// disconnected or per-byte ISR missed).
-    pub fn last_fire_t_first(&mut self) -> Result<u32> {
-        let reply = self.command("FIREFIRST?")?;
-        parse_kv::<u32>(&reply, "FIREFIRST")
-    }
-
-    /// Fire `data` as master and wait up to `reply_us` for the slave's
-    /// end-of-frame IDLE. Returns the slave's reply bytes, or `None` on timeout.
-    pub fn xfer(&mut self, data: &[u8], reply_us: u32) -> Result<Option<Vec<u8>>> {
-        self.send(&format!("XFER bytes={} reply_us={reply_us}", hex(data)))?;
-        let reply = self.read_line()?;
-        if reply == "NOREPLY" {
-            return Ok(None);
-        }
-        if let Some(rest) = reply.strip_prefix("REPLY ") {
-            return Ok(Some(unhex(rest)?));
-        }
-        if reply == "REPLY" {
-            return Ok(Some(Vec::new()));
-        }
-        if let Some(err) = reply.strip_prefix("ERR ") {
-            bail!("XFER error: {err}");
-        }
-        bail!("unexpected XFER response: {reply:?}");
-    }
-
-    /// Pull `length` raw bytes from the RX DMA ring starting at absolute
-    /// byte-count address `from_addr`. Caller stays within the last 256
-    /// bytes of the current head.
-    pub fn rx_range(&mut self, from_addr: u32, length: u16) -> Result<Vec<u8>> {
-        if length == 0 {
-            return Ok(Vec::new());
-        }
-        self.send(&format!("RX from={from_addr} len={length}"))?;
-        let reply = self.read_line()?;
-        if let Some(rest) = reply.strip_prefix("REPLY ") {
-            return unhex(rest);
-        }
-        if reply == "REPLY" {
-            return Ok(Vec::new());
-        }
-        if let Some(err) = reply.strip_prefix("ERR ") {
-            bail!("RX error: {err}");
-        }
-        bail!("unexpected RX response: {reply:?}");
-    }
-
-    pub fn drain_stamps(&mut self) -> Result<Vec<IdleStamp>> {
-        let mut out = Vec::new();
-        loop {
-            let reply = self.command("DRAIN")?;
-            if reply == "EMPTY" {
-                return Ok(out);
-            }
-            let parts: Vec<&str> = reply.split_whitespace().collect();
-            match parts.as_slice() {
-                ["STAMP", tick, head] => {
-                    out.push(IdleStamp::Plain(Plain {
-                        tick: tick.parse()?,
-                        head: head.parse()?,
-                    }));
-                }
-                ["ROUND", req, first, last, head] => {
-                    out.push(IdleStamp::Round(Round {
-                        req: req.parse()?,
-                        first: first.parse()?,
-                        last: last.parse()?,
-                        head: head.parse()?,
-                    }));
-                }
-                _ => bail!("unexpected DRAIN entry: {reply:?}"),
-            }
-        }
-    }
-
-    /// Block until the bus has been silent (no new RX bytes) for `window`.
-    /// Used between probes to absorb stragglers from a previous reply that
-    /// arrived after the read window closed.
-    pub fn wait_quiet(&mut self, window: Duration) -> Result<()> {
-        let deadline = Instant::now() + window * 10;
-        let mut prev = self.bytes_count()?;
-        let mut silent_since: Option<Instant> = None;
-        while Instant::now() < deadline {
-            std::thread::sleep(Duration::from_millis(5));
-            let now = self.bytes_count()?;
-            if now != prev {
-                prev = now;
-                silent_since = None;
-            } else if silent_since.is_none() {
-                silent_since = Some(Instant::now());
-            } else if Instant::now().duration_since(silent_since.unwrap()) >= window {
-                return Ok(());
-            }
-        }
-        Ok(())
-    }
-}
-
-fn hex(data: &[u8]) -> String {
-    let mut s = String::with_capacity(data.len() * 2);
-    for b in data {
-        s.push_str(&format!("{b:02x}"));
-    }
-    s
-}
-
-fn unhex(s: &str) -> Result<Vec<u8>> {
-    let s = s.trim();
-    if s.is_empty() {
-        return Ok(Vec::new());
-    }
-    if !s.len().is_multiple_of(2) {
-        bail!("odd-length hex string: {s:?}");
-    }
-    let mut out = Vec::with_capacity(s.len() / 2);
-    for i in (0..s.len()).step_by(2) {
-        out.push(u8::from_str_radix(&s[i..i + 2], 16)?);
-    }
-    Ok(out)
-}
-
-fn parse_kv<T: std::str::FromStr>(reply: &str, tag: &str) -> Result<T>
-where
-    T::Err: std::fmt::Display,
-{
-    let rest = reply
-        .strip_prefix(tag)
-        .and_then(|s| s.strip_prefix(' '))
-        .ok_or_else(|| anyhow!("{tag}? → {reply:?}"))?;
-    rest.parse::<T>()
-        .map_err(|e| anyhow!("{tag}? parse {rest:?}: {e}"))
-}
+pub use pirate::{
+    BStamp, DesyncCause, PIRATE_PID, PIRATE_VID, PirateDesync, PirateStatus, ReplyCapture,
+    ReplyTiming, auto_detect_pirate,
+};
 
 // ---------------------------------------------------------------------------
-// USB autodetect
-// ---------------------------------------------------------------------------
-
-pub const PIRATE_VID: u16 = 0xC0DE;
-pub const PIRATE_PID: u16 = 0xCAFE;
-
-/// Find the pirate's USB-CDC port by VID/PID. On macOS the same device shows
-/// as both `/dev/cu.*` and `/dev/tty.*`; `/dev/cu.*` is the callout path
-/// (non-blocking) and is what we want.
-pub fn auto_detect_pirate() -> Result<String> {
-    let ports = serialport::available_ports().context("listing serial ports")?;
-    let mut hits: Vec<String> = ports
-        .into_iter()
-        .filter_map(|p| match &p.port_type {
-            serialport::SerialPortType::UsbPort(info)
-                if info.vid == PIRATE_VID && info.pid == PIRATE_PID =>
-            {
-                Some(p.port_name)
-            }
-            _ => None,
-        })
-        .collect();
-    hits.retain(|p| !p.contains("/tty."));
-    match hits.len() {
-        0 => bail!(
-            "no dxl-pirate found (VID 0x{PIRATE_VID:04X} PID 0x{PIRATE_PID:04X}); pass --port to override"
-        ),
-        1 => Ok(hits.into_iter().next().unwrap()),
-        n => {
-            let list = hits
-                .iter()
-                .map(|p| format!("  {p}"))
-                .collect::<Vec<_>>()
-                .join("\n");
-            bail!("found {n} pirates; pass --port to pick one:\n{list}");
-        }
-    }
-}
-
-// ---------------------------------------------------------------------------
-// DXL encode/decode helpers
+// Constants — wire bauds + DXL register addresses
 // ---------------------------------------------------------------------------
 
 /// `comms::BAUD_RATE_IDX` — see `firmware/lib/core/src/regions/config.rs`.
 pub const BAUD_RATE_IDX_ADDR: u16 = 13;
 
+/// `comms::RETURN_DELAY_2US` — see `firmware/lib/core/src/regions/config.rs`.
+/// One unit = 2 µs of slave-side reply delay.
+pub const RETURN_DELAY_2US_ADDR: u16 = 14;
+
 /// Wire bauds supported by the firmware's `BaudRate` enum, in
 /// discovery-sweep order: 1M first (default), then most-likely-current.
 pub const SUPPORTED_BAUDS: &[u32] = &[1_000_000, 3_000_000, 2_000_000, 115_200, 57_600, 9_600];
+
+/// Default baud the chip boots at — mirrors `BaudRate::B1000000` in
+/// `firmware/lib/core/src/regions/config.rs`.
+pub const BOOT_BAUD: u32 = 1_000_000;
+
+/// Default bus-silence window for `Bus::xfer` and friends.
+///
+/// Each non-empty `bbatch` poll resets the silence timer; the helper
+/// returns when no new bytes have arrived for `DEFAULT_IDLE_US` of host
+/// wall-clock. There is no total-elapsed cap inside the helper — the same
+/// constant governs unicast (one reply burst), broadcast (254 servos
+/// chaining replies), and `arm_then_master` (predecessor-then-chain) calls.
+///
+/// Sized above two hardware floors that combine to lag the host's
+/// observed `last_byte_time` behind the wire:
+///
+/// - Pirate walker cadence ~114 µs (§3.2 `tools/dxl-pirate/TIMING.md`):
+///   a byte received on the wire is stamped at the next TIM2 quarter-wrap
+///   walker tick.
+/// - USB-CDC `bbatch` RTT ~1 ms per poll.
+///
+/// At 5 ms the helper waits ~3.9 ms of actual wire silence after the
+/// last byte, which is >> any DXL inter-byte gap up through 3 Mbaud and
+/// >> the inter-servo gap in a broadcast Ping chain.
+pub const DEFAULT_IDLE_US: u32 = 10_000;
+
+/// Backstop on total wall-clock spent in a single xfer. The idle-window
+/// exit handles every normal case (responsive, unresponsive, broadcast);
+/// this only catches a malfunctioning pirate that never goes quiet.
+const MAX_TOTAL_WAIT: Duration = Duration::from_secs(5);
+
+/// Pause between consecutive *empty* `bbatch` polls. Avoids hammering
+/// the pirate's USB-CDC stack at the bare USB-RTT rate (~1 ms/poll =
+/// 1000 polls/s), which has been observed to wedge the device on
+/// sustained traffic. Non-empty polls return immediately — only the
+/// idle-wait branch waits.
+const EMPTY_POLL_BACKOFF: Duration = Duration::from_millis(1);
+
+const BAUD_SETTLE: Duration = Duration::from_millis(50);
 
 /// `BaudRate` enum discriminant for a given wire baud.
 pub fn baud_index(bps: u32) -> Result<u8> {
@@ -379,6 +86,10 @@ pub fn baud_index(bps: u32) -> Result<u8> {
     })
 }
 
+// ---------------------------------------------------------------------------
+// DXL frame encoders + Status decoder (unchanged)
+// ---------------------------------------------------------------------------
+
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub struct PingInfo {
     pub id: u8,
@@ -387,10 +98,6 @@ pub struct PingInfo {
     pub error: u8,
 }
 
-/// A complete, CRC-verified Status reply, decoded via
-/// [`dxl_protocol::streaming::Parser`]. `data` is the assembled payload
-/// bytes — for Ping replies that's `[model_lo, model_hi, fw_version]`; for
-/// Read replies it's the requested register window.
 #[derive(Debug, Clone)]
 pub struct StatusReply {
     pub id: Id,
@@ -430,13 +137,37 @@ pub fn build_reboot(id: Id) -> Result<HVec<u8, 16>> {
     Ok(frame)
 }
 
-/// Decode a Status reply by running the dxl-protocol streaming parser over
-/// it. Returns the verified header + accumulated payload; only `Status`
-/// frames are accepted (the parser otherwise routes Instruction frames
-/// through a separate event branch).
-///
-/// Pass `expected_id == None` to accept any id (e.g. broadcast-Ping
-/// discovery).
+pub fn build_fast_bulk_read(entries: &[BulkReadEntry]) -> Result<HVec<u8, 64>> {
+    let mut frame: HVec<u8, 64> = HVec::new();
+    InstructionEncoder::<_, SoftwareCrcUmts>::new(&mut frame)
+        .fast_bulk_read(entries)
+        .map_err(|e| anyhow!("encode fast_bulk_read: {e:?}"))?;
+    Ok(frame)
+}
+
+/// Encode the synthetic First-slot bytes used by `--position last`. The
+/// chip's snoop walker treats these as the prior slot's status frame and
+/// computes its own chain CRC against them.
+pub fn build_inj_first_bytes(
+    slot_id: Id,
+    error: StatusError,
+    data: &[u8],
+    packet_length: u16,
+) -> Result<HVec<u8, 64>> {
+    let mut frame: HVec<u8, 64> = HVec::new();
+    let slot = Slot {
+        id: slot_id,
+        error,
+        data,
+    };
+    SlotEncoder::<_, SoftwareCrcUmts>::new(&mut frame)
+        .emit(&slot, SlotPosition::First { packet_length })
+        .map_err(|e| anyhow!("encode inj first slot: {e:?}"))?;
+    Ok(frame)
+}
+
+/// Decode a Status reply via the dxl-protocol streaming parser. Pass
+/// `expected_id == None` to accept any id (e.g. broadcast-Ping discovery).
 pub fn parse_status_reply(bytes: &[u8], expected_id: Option<Id>) -> Result<StatusReply> {
     let mut parser = Parser::<SoftwareCrcUmts>::new();
     let mut header_id: Option<Id> = None;
@@ -464,10 +195,6 @@ pub fn parse_status_reply(bytes: &[u8], expected_id: Option<Id>) -> Result<Statu
                 let hi = lo + length as usize;
                 data.extend_from_slice(&bytes[lo..hi]);
             }
-            // The streaming parser does not distinguish Ping replies from Read
-            // replies at the payload level — both arrive as ReadDataChunk(s).
-            // Other StatusPayload variants are reserved for the Fast-Read
-            // decoder (see parse_fast_response in B3).
             Event::Payload(_) => {
                 bail!("unexpected payload event in Status reply: {bytes:02X?}");
             }
@@ -495,8 +222,6 @@ pub fn parse_status_reply(bytes: &[u8], expected_id: Option<Id>) -> Result<Statu
     })
 }
 
-/// Convenience wrapper for Ping replies. The 3 payload bytes are
-/// `[model_lo, model_hi, fw_version]`.
 pub fn decode_ping_status(bytes: &[u8], expected_id: Option<Id>) -> Result<PingInfo> {
     let reply = parse_status_reply(bytes, expected_id)?;
     if reply.data.len() != 3 {
@@ -514,31 +239,14 @@ pub fn decode_ping_status(bytes: &[u8], expected_id: Option<Id>) -> Result<PingI
 }
 
 // ---------------------------------------------------------------------------
-// Fast-stress helpers (chain emit + counter probes)
+// Fast-stress chain helpers
 // ---------------------------------------------------------------------------
 
-/// `comms::RETURN_DELAY_2US` — see `firmware/lib/core/src/regions/config.rs`.
-/// One unit = 2 µs of slave-side reply delay.
-pub const RETURN_DELAY_2US_ADDR: u16 = 14;
-
-/// High-id slot stand-in used by the `--position first` cell: chip emits its
-/// First-slot bytes then the foreign id never replies, so the chain CRC
-/// patch deadline misses by design. 199 is well outside the usual low-id
-/// range a real chip would self-assign.
 pub const FOREIGN_ID: u8 = 199;
-
-/// Predecessor slot id for `--position last`: pirate ARMs a synthetic INJ
-/// reply so the chip's snoop walk + chain CRC patch fire as in production.
 pub const INJ_ID: u8 = 50;
-
-/// Base address of the chip's `TelemetryDxlLink` fault-counter block —
-/// 10 × u32, RW. Host writes zero to clear; chip-side `report_fault`
-/// increments via raw pointer.
 pub const LINK_BASE: u16 = 0x023C;
+pub const TUNE_BASE: u16 = LINK_BASE + LinkCounters::LEN as u16;
 
-/// Snapshot of the chip's `TelemetryDxlLink` counter block. Field order
-/// matches `firmware/lib/core/src/regions/telemetry.rs::TelemetryDxlLink`
-/// — keep them in lockstep.
 #[derive(Copy, Clone, Debug, Default, PartialEq, Eq)]
 pub struct LinkCounters {
     pub illegal_transition: u32,
@@ -583,9 +291,6 @@ impl LinkCounters {
         ]
     }
 
-    /// Non-zero per-field deltas vs `prev`, in field order. Wraps via u32
-    /// subtraction — counters are monotonic between clears so a non-wrap
-    /// delta is always >= 0 in practice.
     pub fn delta_from(&self, prev: &Self) -> Vec<(&'static str, u32)> {
         let curr = self.as_slice();
         let prev = prev.as_slice();
@@ -627,49 +332,6 @@ impl LinkCounters {
     }
 }
 
-/// Snapshot the chip's fault counters via a single Read at `LINK_BASE`.
-pub fn read_counters(pirate: &mut PirateClient, id: Id) -> Result<LinkCounters> {
-    let frame = build_read(id, LINK_BASE, LinkCounters::LEN as u16)?;
-    let reply = pirate
-        .xfer(&frame, UNICAST_REPLY_US)?
-        .ok_or_else(|| anyhow!("counter read: no reply"))?;
-    let decoded = parse_status_reply(&reply, Some(id))?;
-    if decoded.error.as_byte() != 0 {
-        bail!("counter read error byte 0x{:02X}", decoded.error.as_byte());
-    }
-    LinkCounters::from_le_bytes(&decoded.data)
-}
-
-/// Zero the chip's fault counters.
-pub fn clear_counters(pirate: &mut PirateClient, id: Id) -> Result<()> {
-    let zeros = [0u8; LinkCounters::LEN];
-    let frame = build_write(id, LINK_BASE, &zeros)?;
-    let reply = pirate
-        .xfer(&frame, UNICAST_REPLY_US)?
-        .ok_or_else(|| anyhow!("counter clear: no reply"))?;
-    let decoded = parse_status_reply(&reply, Some(id))?;
-    if decoded.error.as_byte() != 0 {
-        bail!("counter clear error byte 0x{:02X}", decoded.error.as_byte());
-    }
-    Ok(())
-}
-
-/// Snapshot counters, swallowing transport / parse failures into `None`.
-/// Used as a wedge probe — chip silent or replying garbage both signal a
-/// wedged transport.
-pub fn try_read_counters(pirate: &mut PirateClient, id: Id) -> Option<LinkCounters> {
-    read_counters(pirate, id).ok()
-}
-
-/// Base address of the chip's `TelemetryDxlTune` block — 4 × u16, RW. Only
-/// populated when the chip was built with `osc-ch32`'s `tuning` feature;
-/// otherwise zero. `LINK_BASE + LinkCounters::LEN` (= 0x0264).
-pub const TUNE_BASE: u16 = LINK_BASE + LinkCounters::LEN as u16;
-
-/// Snapshot of the chip's `TelemetryDxlTune` stamps. Mirrors
-/// `firmware/lib/core/src/regions/telemetry.rs::TelemetryDxlTune` — field
-/// order in lockstep. Zero in either `_min` field means "no sample yet"
-/// (the chip's saturating-min sentinel).
 #[derive(Copy, Clone, Debug, Default, PartialEq, Eq)]
 pub struct TuneStamps {
     pub tx_start_entry_min: u16,
@@ -694,89 +356,6 @@ impl TuneStamps {
     }
 }
 
-/// Snapshot the chip's tune stamps via a single Read at `TUNE_BASE`.
-pub fn read_tune(pirate: &mut PirateClient, id: Id) -> Result<TuneStamps> {
-    let frame = build_read(id, TUNE_BASE, TuneStamps::LEN as u16)?;
-    let reply = pirate
-        .xfer(&frame, UNICAST_REPLY_US)?
-        .ok_or_else(|| anyhow!("tune read: no reply"))?;
-    let decoded = parse_status_reply(&reply, Some(id))?;
-    if decoded.error.as_byte() != 0 {
-        bail!("tune read error byte 0x{:02X}", decoded.error.as_byte());
-    }
-    TuneStamps::from_le_bytes(&decoded.data)
-}
-
-/// Zero the chip's tune stamps.
-pub fn clear_tune(pirate: &mut PirateClient, id: Id) -> Result<()> {
-    let zeros = [0u8; TuneStamps::LEN];
-    let frame = build_write(id, TUNE_BASE, &zeros)?;
-    let reply = pirate
-        .xfer(&frame, UNICAST_REPLY_US)?
-        .ok_or_else(|| anyhow!("tune clear: no reply"))?;
-    let decoded = parse_status_reply(&reply, Some(id))?;
-    if decoded.error.as_byte() != 0 {
-        bail!("tune clear error byte 0x{:02X}", decoded.error.as_byte());
-    }
-    Ok(())
-}
-
-/// Read a single u8 from the chip's control table.
-pub fn read_ct_u8(pirate: &mut PirateClient, id: Id, addr: u16) -> Result<u8> {
-    let frame = build_read(id, addr, 1)?;
-    let reply = pirate
-        .xfer(&frame, UNICAST_REPLY_US)?
-        .ok_or_else(|| anyhow!("read_ct_u8: no reply"))?;
-    let decoded = parse_status_reply(&reply, Some(id))?;
-    if decoded.error.as_byte() != 0 {
-        bail!(
-            "read_ct_u8 error byte 0x{:02X} at addr 0x{:04X}",
-            decoded.error.as_byte(),
-            addr
-        );
-    }
-    if decoded.data.len() != 1 {
-        bail!(
-            "read_ct_u8 returned {} bytes at addr 0x{:04X}",
-            decoded.data.len(),
-            addr
-        );
-    }
-    Ok(decoded.data[0])
-}
-
-/// Encode a Fast Bulk Read instruction frame via [`InstructionEncoder`].
-pub fn build_fast_bulk_read(entries: &[BulkReadEntry]) -> Result<HVec<u8, 64>> {
-    let mut frame: HVec<u8, 64> = HVec::new();
-    InstructionEncoder::<_, SoftwareCrcUmts>::new(&mut frame)
-        .fast_bulk_read(entries)
-        .map_err(|e| anyhow!("encode fast_bulk_read: {e:?}"))?;
-    Ok(frame)
-}
-
-/// Build the on-wire bytes for a synthetic First-slot reply, used to ARM
-/// a predecessor in `--position last`. The chip's snoop walker treats these
-/// bytes as the prior slot's status frame and computes its own slot's chain
-/// CRC against them.
-pub fn build_inj_first_bytes(
-    slot_id: Id,
-    error: StatusError,
-    data: &[u8],
-    packet_length: u16,
-) -> Result<HVec<u8, 64>> {
-    let mut frame: HVec<u8, 64> = HVec::new();
-    let slot = Slot {
-        id: slot_id,
-        error,
-        data,
-    };
-    SlotEncoder::<_, SoftwareCrcUmts>::new(&mut frame)
-        .emit(&slot, SlotPosition::First { packet_length })
-        .map_err(|e| anyhow!("encode inj first slot: {e:?}"))?;
-    Ok(frame)
-}
-
-/// One parsed slot from a Fast Sync/Bulk Read reply.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FastSlot {
     pub id: Id,
@@ -784,26 +363,13 @@ pub struct FastSlot {
     pub data: Vec<u8>,
 }
 
-/// Decode a coalesced Fast Sync/Bulk Read reply. `slot_lengths` is the
-/// per-slot payload length list in chain order. Driven by the dxl-protocol
-/// streaming parser like [`parse_status_reply`], but pulls slot
-/// metadata + payload bytes from the Fast-Read event taxonomy.
-///
-/// NOTE: the current streaming parser emits `ReadDataChunk` events for the
-/// concatenated body of a Fast reply (the body framing collapses to one
-/// payload stream). We slice the body ourselves using `slot_lengths` — the
-/// chip's wire output is `(err, id, data..)` per slot in order, with the
-/// first slot's `err` lifted to the Status header.
 pub fn parse_fast_response(bytes: &[u8], slot_lengths: &[usize]) -> Result<Vec<FastSlot>> {
     let decoded = parse_status_reply(bytes, None)?;
-    // First slot's error byte comes from the header; subsequent slots carry
-    // their own (err, id, data) prefix in the streamed body.
     let body = &decoded.data;
     let mut slots = Vec::with_capacity(slot_lengths.len());
     let mut cursor = 0usize;
     for (idx, &slot_len) in slot_lengths.iter().enumerate() {
         if idx == 0 {
-            // Slot 0: header carries the error byte; body starts with id + data.
             if body.len() < cursor + 1 + slot_len {
                 bail!("fast reply too short for slot 0 (len {slot_len}): {bytes:02X?}");
             }
@@ -842,78 +408,49 @@ pub fn parse_fast_response(bytes: &[u8], slot_lengths: &[usize]) -> Result<Vec<F
     Ok(slots)
 }
 
-/// Pull the lone `Round` stamp emitted by an XFER, if present.
-pub fn round_from_stamps(stamps: &[IdleStamp]) -> Option<Round> {
-    stamps.iter().find_map(|s| match s {
-        IdleStamp::Round(r) => Some(*r),
-        IdleStamp::Plain(_) => None,
-    })
-}
-
 // ---------------------------------------------------------------------------
-// Session prologue
+// Bus — bin-facing facade
 // ---------------------------------------------------------------------------
-
-/// Per DXL 2.0, a servo with id N answering a broadcast Ping waits
-/// `N * 14_bytes` of bus time after the request packet end before sending
-/// its reply, so multiple servos chain replies without colliding. We don't
-/// know the responder's id until we hear from it, so the discovery probe
-/// budgets for the max-id worst case at each baud.
-fn broadcast_ping_reply_us(bps: u32) -> u32 {
-    const MAX_ID: u32 = 253;
-    const STATUS_FRAME_BYTES: u32 = 14;
-    const SLACK_US: u32 = 5_000;
-    let byte_time_us = (10u32 * 1_000_000).div_ceil(bps);
-    MAX_ID * STATUS_FRAME_BYTES * byte_time_us + SLACK_US
-}
-
-/// Single-target reply window: 14-byte Status at the slowest supported baud
-/// (9600) + max RDT (510 µs) + slack. Safe for any unicast Read/Write/Ping
-/// at any supported baud.
-pub const UNICAST_REPLY_US: u32 = 50_000;
-const BAUD_SETTLE: Duration = Duration::from_millis(50);
 
 #[derive(Clone, Debug)]
-pub struct SessionArgs {
+pub struct BusArgs {
     /// Pirate USB-CDC path. `None` → autodetect by VID/PID.
     pub port: Option<String>,
-    /// Wire baud to leave the bus at. The servo is switched to this baud if
-    /// it's currently at a different one.
+    /// Wire baud to leave the bus at. The servo is switched to this baud
+    /// if it's currently at a different one.
     pub target_baud: u32,
 }
 
-/// Open pirate + locate servo. After `Session::start` returns, the pirate is
-/// running at `baud` and the servo at `id` has been confirmed responsive.
-pub struct Session {
-    pub pirate: PirateClient,
-    pub id: u8,
-    pub baud: u32,
+pub struct Bus {
+    pirate: pirate::Client,
+    id: u8,
+    baud: u32,
 }
 
-impl Session {
-    pub fn start(args: SessionArgs) -> Result<Self> {
+impl Bus {
+    /// Open pirate + locate servo. After `start` returns, the pirate is
+    /// at `target_baud` and `id` has been confirmed responsive.
+    pub fn start(args: BusArgs) -> Result<Self> {
         let port = match args.port {
             Some(p) => p,
             None => auto_detect_pirate()?,
         };
-        let mut pirate = PirateClient::open(&port, Duration::from_millis(500))?;
+        let mut client = pirate::Client::open(&port, Duration::from_millis(500))?;
 
-        // 1. Probe target baud first; if the servo already lives there, done.
-        if let Some(id) = probe_baud(&mut pirate, args.target_baud)? {
+        if let Some(id) = probe_baud(&mut client, args.target_baud)? {
             return Ok(Self {
-                pirate,
+                pirate: client,
                 id,
                 baud: args.target_baud,
             });
         }
 
-        // 2. Sweep known bauds to find the servo's current home.
         let mut found: Option<(u32, u8)> = None;
         for b in SUPPORTED_BAUDS.iter().copied() {
             if b == args.target_baud {
                 continue;
             }
-            if let Some(id) = probe_baud(&mut pirate, b)? {
+            if let Some(id) = probe_baud(&mut client, b)? {
                 found = Some((b, id));
                 break;
             }
@@ -921,35 +458,335 @@ impl Session {
         let (_current_baud, id) =
             found.ok_or_else(|| anyhow!("no servo found at any known baud"))?;
 
-        // 3. Switch to the target.
-        set_chip_baud(&mut pirate, id, args.target_baud)?;
-
+        set_chip_baud_inner(&mut client, id, args.target_baud)?;
         Ok(Self {
-            pirate,
+            pirate: client,
             id,
             baud: args.target_baud,
         })
     }
+
+    pub fn id(&self) -> u8 {
+        self.id
+    }
+
+    pub fn baud(&self) -> u32 {
+        self.baud
+    }
+
+    pub fn port_path(&self) -> &str {
+        self.pirate.port_path()
+    }
+
+    pub fn hz_per_us(&mut self) -> Result<u32> {
+        self.pirate.hz_per_us()
+    }
+
+    // -----------------------------------------------------------------------
+    // Transport (master/arm/fire → drain stamps)
+    // -----------------------------------------------------------------------
+
+    /// Fire `req` as bus master, drain stamps until the bus has been
+    /// silent for `idle_us` of host wall-clock, return the full capture.
+    /// Each non-empty `bbatch` poll resets the silence timer, so the
+    /// helper naturally accommodates long replies (broadcast Ping, fast
+    /// Bulk Read chains) without a per-call timeout knob.
+    /// See [`DEFAULT_IDLE_US`] for sizing guidance.
+    pub fn xfer(&mut self, req: &[u8], idle_us: u32) -> Result<ReplyCapture> {
+        xfer_inner(&mut self.pirate, req, idle_us)
+    }
+
+    /// `xfer` + slice off the master TX echo. `None` if no reply arrived.
+    pub fn xfer_reply(&mut self, req: &[u8], idle_us: u32) -> Result<Option<Vec<u8>>> {
+        let cap = self.xfer(req, idle_us)?;
+        if cap.timing.is_none() {
+            return Ok(None);
+        }
+        let reply_bytes: Vec<u8> = cap.stamps.iter().skip(req.len()).map(|s| s.byte).collect();
+        Ok(Some(reply_bytes))
+    }
+
+    /// `xfer` returning just the three-point timing (`None` if no reply).
+    pub fn xfer_round(&mut self, req: &[u8], idle_us: u32) -> Result<Option<ReplyTiming>> {
+        Ok(self.xfer(req, idle_us)?.timing)
+    }
+
+    /// Stage `inject` to fire after the next IDLE, then send `req`. Used
+    /// to emulate a predecessor slot's reply in chain timing tests.
+    pub fn arm_then_master(
+        &mut self,
+        inject: &[u8],
+        after_idle_us: u32,
+        req: &[u8],
+        idle_us: u32,
+    ) -> Result<ReplyCapture> {
+        drain_all(&mut self.pirate)?;
+        self.pirate.arm(inject, after_idle_us)?;
+        self.pirate.master(req)?;
+        collect_until_silent(&mut self.pirate, req, idle_us)
+    }
+
+    // -----------------------------------------------------------------------
+    // Register-level convenience
+    // -----------------------------------------------------------------------
+
+    pub fn read_register(&mut self, id: Id, addr: u16, len: u16) -> Result<Vec<u8>> {
+        let frame = build_read(id, addr, len)?;
+        let reply = self
+            .xfer_reply(&frame, DEFAULT_IDLE_US)?
+            .ok_or_else(|| anyhow!("read {addr:#06X}: no reply"))?;
+        let decoded = parse_status_reply(&reply, Some(id))?;
+        if decoded.error.as_byte() != 0 {
+            bail!(
+                "read {addr:#06X} error byte 0x{:02X}",
+                decoded.error.as_byte()
+            );
+        }
+        Ok(decoded.data)
+    }
+
+    pub fn write_register(&mut self, id: Id, addr: u16, data: &[u8]) -> Result<()> {
+        let frame = build_write(id, addr, data)?;
+        let reply = self
+            .xfer_reply(&frame, DEFAULT_IDLE_US)?
+            .ok_or_else(|| anyhow!("write {addr:#06X}: no reply"))?;
+        let decoded = parse_status_reply(&reply, Some(id))?;
+        if decoded.error.as_byte() != 0 {
+            bail!(
+                "write {addr:#06X} error byte 0x{:02X}",
+                decoded.error.as_byte()
+            );
+        }
+        Ok(())
+    }
+
+    pub fn read_counters(&mut self, id: Id) -> Result<LinkCounters> {
+        let data = self.read_register(id, LINK_BASE, LinkCounters::LEN as u16)?;
+        LinkCounters::from_le_bytes(&data)
+    }
+
+    pub fn clear_counters(&mut self, id: Id) -> Result<()> {
+        let zeros = [0u8; LinkCounters::LEN];
+        self.write_register(id, LINK_BASE, &zeros)
+    }
+
+    /// Counter read that swallows transport / parse failures into `None`
+    /// — used as a wedge probe (silent chip and garbled reply both signal
+    /// a wedged transport).
+    pub fn try_read_counters(&mut self, id: Id) -> Option<LinkCounters> {
+        self.read_counters(id).ok()
+    }
+
+    pub fn read_tune(&mut self, id: Id) -> Result<TuneStamps> {
+        let data = self.read_register(id, TUNE_BASE, TuneStamps::LEN as u16)?;
+        TuneStamps::from_le_bytes(&data)
+    }
+
+    pub fn clear_tune(&mut self, id: Id) -> Result<()> {
+        let zeros = [0u8; TuneStamps::LEN];
+        self.write_register(id, TUNE_BASE, &zeros)
+    }
+
+    pub fn read_ct_u8(&mut self, id: Id, addr: u16) -> Result<u8> {
+        let data = self.read_register(id, addr, 1)?;
+        if data.len() != 1 {
+            bail!(
+                "read_ct_u8 returned {} bytes at addr {addr:#06X}",
+                data.len()
+            );
+        }
+        Ok(data[0])
+    }
+
+    // -----------------------------------------------------------------------
+    // Lifecycle helpers
+    // -----------------------------------------------------------------------
+
+    pub fn set_chip_baud(&mut self, target_baud: u32) -> Result<()> {
+        set_chip_baud_inner(&mut self.pirate, self.id, target_baud)?;
+        self.baud = target_baud;
+        Ok(())
+    }
+
+    /// Reboot the chip and wait for it to come back at `BOOT_BAUD`.
+    pub fn reboot_chip(&mut self) -> Result<()> {
+        let frame = build_reboot(Id::new(self.id))?;
+        let _ = self.xfer_reply(&frame, DEFAULT_IDLE_US)?;
+        sleep(Duration::from_millis(500));
+        self.pirate.set_baud(BOOT_BAUD)?;
+        self.baud = BOOT_BAUD;
+        drain_all(&mut self.pirate)?;
+        Ok(())
+    }
+
+    /// Mean chip-TX drift in ppm over `samples` long-Read probes.
+    /// Positive ⇒ chip TX slow (HSI slow); negative ⇒ fast.
+    pub fn probe_drift_ppm(&mut self, samples: u32) -> Result<f64> {
+        drift::probe_drift_ppm(self, samples)
+    }
+
+    /// Pirate health probe. Always succeeds even when DESYNCED.
+    pub fn pirate_status(&mut self) -> Result<PirateStatus> {
+        self.pirate.status()
+    }
+
+    /// Clear DESYNCED + cause, drain stamp/IC rings, re-arm walker.
+    pub fn pirate_reset(&mut self) -> Result<()> {
+        self.pirate.reset()
+    }
 }
 
-/// Default baud the chip boots at — mirrors `BaudRate::B1000000` (default) in
-/// `firmware/lib/core/src/regions/config.rs`.
-pub const BOOT_BAUD: u32 = 1_000_000;
+// ---------------------------------------------------------------------------
+// Internal: probing + xfer loop
+// ---------------------------------------------------------------------------
 
-/// Write `BAUD_RATE_IDX` on the chip, then move the pirate to match. USB-CDC
-/// baud reconfig can glitch the pirate TX line into a phantom byte that the
-/// chip's USART frames as FE/NE — the first post-switch ping may legitimately
-/// time out, so retry a few times before bailing.
-pub fn set_chip_baud(pirate: &mut PirateClient, id: u8, target_baud: u32) -> Result<()> {
+/// Drain the pirate's stamp ring until one `bbatch` comes back empty.
+/// Pre-call invariant (held by every `Bus` entry point): the bus has
+/// already been silent for at least `DEFAULT_IDLE_US`, so a single empty
+/// poll genuinely means the ring is clear — there are no bytes still in
+/// flight that could slip in between `drain_all` returning and `master`
+/// firing.
+fn drain_all(client: &mut pirate::Client) -> Result<()> {
+    loop {
+        if client.bbatch(255)?.is_empty() {
+            return Ok(());
+        }
+    }
+}
+
+fn xfer_inner(client: &mut pirate::Client, req: &[u8], idle_us: u32) -> Result<ReplyCapture> {
+    drain_all(client)?;
+    client.master(req)?;
+    collect_until_silent(client, req, idle_us)
+}
+
+/// Collect post-fire stamps until `idle_us` of host wall-clock has
+/// elapsed since the most recent non-empty `bbatch`. Each new batch
+/// resets the silence timer; no explicit "first byte arrived" gate is
+/// needed because the timer starts at the call boundary and only an
+/// unresponsive bus (no bytes, ever) will trip it before the wire
+/// quiesces.
+///
+/// Two hardware floors shape the lower bound on `idle_us`:
+///
+/// - Walker cadence ~114 µs (§3.2 of `tools/dxl-pirate/TIMING.md`):
+///   stamps lag the wire by up to one quarter-wrap.
+/// - `bbatch` USB-CDC RTT ~1 ms per poll.
+///
+/// `DEFAULT_IDLE_US = 5 ms` clears both with margin; callers can pass
+/// larger values to absorb longer expected inter-byte gaps.
+///
+/// `MAX_TOTAL_WAIT` is a hang-protection backstop only — a healthy
+/// pirate never reaches it because `collect_until_silent`'s exit
+/// criterion is silence, not elapsed time.
+fn collect_until_silent(
+    client: &mut pirate::Client,
+    req: &[u8],
+    idle_us: u32,
+) -> Result<ReplyCapture> {
+    let idle = Duration::from_micros(idle_us as u64);
+    let start = Instant::now();
+    let mut stamps: Vec<BStamp> = Vec::new();
+    let mut last_byte_time = Instant::now();
+
+    loop {
+        let batch = client.bbatch(64)?;
+        if batch.is_empty() {
+            if last_byte_time.elapsed() >= idle {
+                break;
+            }
+            sleep(EMPTY_POLL_BACKOFF);
+        } else {
+            stamps.extend(batch);
+            last_byte_time = Instant::now();
+        }
+        if start.elapsed() >= MAX_TOTAL_WAIT {
+            bail!(
+                "pirate xfer exceeded {} s without bus going quiet — pirate likely wedged",
+                MAX_TOTAL_WAIT.as_secs()
+            );
+        }
+    }
+
+    // Echo verification: if we have at least req.len() stamps, the leading
+    // window must byte-match the request. Mismatches mean wire-RC trouble
+    // or a foreign source on the bus — bail loudly, do not paper over.
+    if stamps.len() >= req.len() {
+        for (i, &expected) in req.iter().enumerate() {
+            if stamps[i].byte != expected {
+                bail!(
+                    "master echo mismatch at byte {i}: got 0x{:02X}, expected 0x{:02X}",
+                    stamps[i].byte,
+                    expected
+                );
+            }
+        }
+    }
+
+    let timing = if stamps.len() > req.len() {
+        Some(ReplyTiming {
+            req_end: stamps[req.len() - 1].tick,
+            reply_first: stamps[req.len()].tick,
+            reply_last: stamps.last().unwrap().tick,
+        })
+    } else {
+        None
+    };
+    Ok(ReplyCapture { stamps, timing })
+}
+
+fn probe_baud(client: &mut pirate::Client, bps: u32) -> Result<Option<u8>> {
+    client.set_baud(bps)?;
+    sleep(BAUD_SETTLE);
+    drain_all(client)?;
+    let frame = build_ping(Id::BROADCAST)?;
+    // Broadcast Ping needs an idle window that outlasts the worst-case
+    // pre-reply silence: per DXL 2.0, a servo with id N delays its reply
+    // by `N * 14 * byte_time` after the request packet end. Until that
+    // delay elapses no bytes hit the wire — the inter-byte-reset path
+    // can't help. Size the initial window for ID=253 (the max), then the
+    // normal idle path handles any inter-servo gap once replies start.
+    let cap = xfer_inner(client, &frame, broadcast_ping_idle_us(bps))?;
+    if cap.timing.is_none() {
+        return Ok(None);
+    }
+    let reply: Vec<u8> = cap
+        .stamps
+        .iter()
+        .skip(frame.len())
+        .map(|s| s.byte)
+        .collect();
+    Ok(Some(decode_ping_status(&reply, None)?.id))
+}
+
+fn probe_unicast(client: &mut pirate::Client, id: Id) -> Result<Option<u8>> {
+    let frame = build_ping(id)?;
+    let cap = xfer_inner(client, &frame, DEFAULT_IDLE_US)?;
+    if cap.timing.is_none() {
+        return Ok(None);
+    }
+    let reply: Vec<u8> = cap
+        .stamps
+        .iter()
+        .skip(frame.len())
+        .map(|s| s.byte)
+        .collect();
+    Ok(Some(decode_ping_status(&reply, Some(id))?.id))
+}
+
+fn set_chip_baud_inner(client: &mut pirate::Client, id: u8, target_baud: u32) -> Result<()> {
     let target_idx = baud_index(target_baud)?;
     let frame = build_write(Id::new(id), BAUD_RATE_IDX_ADDR, &[target_idx])?;
-    let _ = pirate.xfer(&frame, UNICAST_REPLY_US)?;
+    let _ = xfer_inner(client, &frame, DEFAULT_IDLE_US)?;
     sleep(BAUD_SETTLE);
-    pirate.set_baud(target_baud)?;
+    client.set_baud(target_baud)?;
     sleep(BAUD_SETTLE);
-    let _ = pirate.drain_stamps()?;
+    drain_all(client)?;
+    // USB-CDC baud reconfig can glitch the pirate TX line into a phantom
+    // byte that the chip's USART frames as FE/NE — the first post-switch
+    // ping may legitimately time out, so retry before bailing.
     for _ in 0..3 {
-        if probe_unicast(pirate, Id::new(id))?.is_some() {
+        if probe_unicast(client, Id::new(id))?.is_some() {
             return Ok(());
         }
         sleep(Duration::from_millis(20));
@@ -957,16 +794,16 @@ pub fn set_chip_baud(pirate: &mut PirateClient, id: u8, target_baud: u32) -> Res
     bail!("servo {id} stopped replying after baud switch to {target_baud}");
 }
 
-/// Reboot the chip and wait for it to come back at `BOOT_BAUD`. The reboot
-/// ACK can race the reset, so a missing reply is non-fatal. The pirate is
-/// left at `BOOT_BAUD` with stamps drained.
-pub fn reboot_chip(pirate: &mut PirateClient, id: u8) -> Result<()> {
-    let frame = build_reboot(Id::new(id))?;
-    let _ = pirate.xfer(&frame, UNICAST_REPLY_US)?;
-    sleep(Duration::from_millis(500));
-    pirate.set_baud(BOOT_BAUD)?;
-    let _ = pirate.drain_stamps()?;
-    Ok(())
+/// Idle window for a broadcast Ping discovery probe at `bps`. Covers the
+/// worst-case ID=253 reply delay (`253 * 14 * byte_time`) plus a small
+/// margin so the helper doesn't return empty before the chip starts
+/// replying. Once any byte arrives the standard idle-reset path takes
+/// over.
+fn broadcast_ping_idle_us(bps: u32) -> u32 {
+    const MAX_ID: u32 = 253;
+    const STATUS_FRAME_BYTES: u32 = 14;
+    let byte_time_us = (10u32 * 1_000_000).div_ceil(bps);
+    MAX_ID * STATUS_FRAME_BYTES * byte_time_us + DEFAULT_IDLE_US
 }
 
 // ---------------------------------------------------------------------------
@@ -976,61 +813,39 @@ pub fn reboot_chip(pirate: &mut PirateClient, id: u8) -> Result<()> {
 pub mod drift {
     //! Host-side HSI drift probe.
     //!
-    //! The chip owns its clock trim — it watches inter-byte timing on every
-    //! non-Status packet and nudges HSITRIM toward zero drift autonomously
-    //! (see `firmware/lib/drivers/src/dxl/uart/clock.rs`). There is no CAL
-    //! round-trip and no readable trim register: the only signal the host
-    //! can observe is how long the chip takes to transmit a reply, measured
-    //! against the pirate's stable clock.
-    //!
-    //! [`probe_drift_ppm`] issues long Reads and reads the pirate's `Round`
-    //! stamp for the reply: `first`/`last` are the per-byte RXNE timestamps
-    //! of the first and last reply bytes. Their span covers `(N-1)`
-    //! chip-transmitted byte-times; HSI fast → short span, HSI slow → long
-    //! span.
+    //! The chip owns its clock trim — it watches inter-byte timing on
+    //! every non-Status packet and nudges HSITRIM toward zero drift
+    //! autonomously (see `firmware/lib/drivers/src/dxl/uart/clock.rs`).
+    //! There is no CAL round-trip and no readable trim register: the only
+    //! signal the host can observe is how long the chip takes to transmit
+    //! a reply, measured against the pirate's stable clock.
 
     use anyhow::{Result, anyhow, bail};
     use dxl_protocol::types::Id;
 
-    use super::{IdleStamp, PirateClient, build_read, parse_status_reply};
+    use super::{Bus, DEFAULT_IDLE_US, ReplyTiming, build_read, parse_status_reply};
 
     /// HSITRIM step size mapped to ppm. Mirrors
-    /// `firmware/ch32/src/hal/rcc/v00x.rs::CLOCK_TRIM_PPM_PER_STEP`
-    /// (HSI_TRIM_STEP_HZ 60 kHz / HSI_HZ 24 MHz). One step ≈ 2500 ppm.
+    /// `firmware/ch32/src/hal/rcc/v00x.rs::CLOCK_TRIM_PPM_PER_STEP`.
     pub const DRIFT_STEP_PPM: f64 = 2500.0;
 
-    /// Probe the chip's config region — always present, RO, and long enough
-    /// that the per-byte RXNE quantization stays small vs the reply span.
     const PROBE_ADDR: u16 = 0;
     const PROBE_LEN: u16 = 128;
-
-    /// Full Status frame around an N-byte payload: 4 header + id + 2 len +
-    /// instr + err + N params + 2 CRC.
     const STATUS_OVERHEAD: usize = 11;
 
-    /// Generous Read window — at the slowest supported baud (9600), a
-    /// 139-byte Status frame takes ~145 ms on the wire alone.
-    const READ_REPLY_US: u32 = 200_000;
-
-    /// Mean chip-TX drift in ppm over `samples` long-Read probes.
-    /// Positive ⇒ chip TX slow (HSI slow); negative ⇒ fast.
-    pub fn probe_drift_ppm(
-        pirate: &mut PirateClient,
-        id: Id,
-        baud: u32,
-        samples: u32,
-    ) -> Result<f64> {
+    pub fn probe_drift_ppm(bus: &mut Bus, samples: u32) -> Result<f64> {
         const RETRIES: u32 = 3;
+        let id = Id::new(bus.id());
+        let baud = bus.baud();
         let n = STATUS_OVERHEAD + PROBE_LEN as usize;
-        let ticks_per_us = pirate.hz_per_us()? as f64;
-        // (n - 1) byte-times of span, each 10 bit periods, in pirate ticks.
+        let ticks_per_us = bus.hz_per_us()? as f64;
         let nominal_ticks = (n as f64 - 1.0) * 10.0 / baud as f64 * ticks_per_us * 1_000_000.0;
 
         let mut spans: Vec<u32> = Vec::with_capacity(samples as usize);
         for _ in 0..samples {
             let mut last_err: Option<anyhow::Error> = None;
             for _ in 0..RETRIES {
-                match one_span(pirate, id) {
+                match one_span(bus, id) {
                     Ok(span) => {
                         spans.push(span);
                         last_err = None;
@@ -1047,12 +862,25 @@ pub mod drift {
         Ok((mean_span / nominal_ticks - 1.0) * 1_000_000.0)
     }
 
-    fn one_span(pirate: &mut PirateClient, id: Id) -> Result<u32> {
-        let _ = pirate.drain_stamps()?;
+    fn one_span(bus: &mut Bus, id: Id) -> Result<u32> {
         let frame = build_read(id, PROBE_ADDR, PROBE_LEN)?;
-        let reply = pirate
-            .xfer(&frame, READ_REPLY_US)?
-            .ok_or_else(|| anyhow!("no Status reply on drift Read"))?;
+        let cap = bus.xfer(&frame, DEFAULT_IDLE_US)?;
+        let ReplyTiming {
+            reply_first,
+            reply_last,
+            ..
+        } = cap
+            .timing
+            .ok_or_else(|| anyhow!("no reply on drift Read"))?;
+        // Decode + validate the reply bytes too, so a CRC-broken response
+        // counts as a retry-able transport failure rather than feeding bad
+        // timing into the average.
+        let reply: Vec<u8> = cap
+            .stamps
+            .iter()
+            .skip(frame.len())
+            .map(|s| s.byte)
+            .collect();
         let decoded = parse_status_reply(&reply, Some(id))?;
         if decoded.error.as_byte() != 0 {
             bail!(
@@ -1067,38 +895,6 @@ pub mod drift {
                 PROBE_LEN
             );
         }
-        let stamps = pirate.drain_stamps()?;
-        let rounds: Vec<_> = stamps
-            .iter()
-            .filter_map(|s| match s {
-                IdleStamp::Round(r) => Some(*r),
-                IdleStamp::Plain(_) => None,
-            })
-            .collect();
-        if rounds.len() != 1 {
-            bail!("drift Read produced {} Round stamps", rounds.len());
-        }
-        Ok(rounds[0].last.wrapping_sub(rounds[0].first))
-    }
-}
-
-/// Set pirate baud, drain stamps, broadcast-ping. Returns the responding id
-/// (if any) or `None` on timeout.
-fn probe_baud(pirate: &mut PirateClient, bps: u32) -> Result<Option<u8>> {
-    pirate.set_baud(bps)?;
-    sleep(BAUD_SETTLE);
-    let _ = pirate.drain_stamps()?;
-    let frame = build_ping(Id::BROADCAST)?;
-    match pirate.xfer(&frame, broadcast_ping_reply_us(bps))? {
-        None => Ok(None),
-        Some(bytes) => Ok(Some(decode_ping_status(&bytes, None)?.id)),
-    }
-}
-
-fn probe_unicast(pirate: &mut PirateClient, id: Id) -> Result<Option<u8>> {
-    let frame = build_ping(id)?;
-    match pirate.xfer(&frame, UNICAST_REPLY_US)? {
-        None => Ok(None),
-        Some(bytes) => Ok(Some(decode_ping_status(&bytes, Some(id))?.id)),
+        Ok(reply_last.wrapping_sub(reply_first))
     }
 }

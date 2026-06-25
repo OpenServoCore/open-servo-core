@@ -9,7 +9,7 @@
 //!   at the very top of `on_tim2_cc3`. Covers PFIC entry + `qingke-rt`
 //!   context save. Diagnostic only — `dma::enable` + DMA AHB arbitration
 //!   + USART DR write happen AFTER the stamp and are NOT in the number.
-//! - **Wire-side excess** `(first − req) − configured_first_byte_us`:
+//! - **Wire-side excess** `(reply_first − req_end) − configured_first_byte_us`:
 //!   pirate's stable-clock measurement of when the chip's first wire bit
 //!   lands vs the deadline implied by `RDT`. This is the ground truth
 //!   for the const — it covers the full path CC3-match → wire-bit. The
@@ -36,10 +36,7 @@
 use std::time::Duration;
 
 use anyhow::{Result, bail};
-use bench::{
-    RETURN_DELAY_2US_ADDR, Session, SessionArgs, TuneStamps, UNICAST_REPLY_US,
-    build_ping, clear_tune, read_ct_u8, read_tune, round_from_stamps,
-};
+use bench::{Bus, BusArgs, DEFAULT_IDLE_US, RETURN_DELAY_2US_ADDR, TuneStamps, build_ping};
 use clap::Parser;
 use dxl_protocol::types::Id;
 
@@ -89,22 +86,22 @@ struct Args {
 fn main() -> Result<()> {
     let args = Args::parse();
 
-    let mut session = Session::start(SessionArgs {
+    let mut bus = Bus::start(BusArgs {
         port: args.port,
         target_baud: args.baud,
     })?;
-    let id = Id::new(session.id);
-    let ticks_per_us = session.pirate.hz_per_us()? as f64;
-    let rdt_us = read_ct_u8(&mut session.pirate, id, RETURN_DELAY_2US_ADDR)? as f64 * 2.0;
+    let id = Id::new(bus.id());
+    let ticks_per_us = bus.hz_per_us()? as f64;
+    let rdt_us = bus.read_ct_u8(id, RETURN_DELAY_2US_ADDR)? as f64 * 2.0;
     let byte_time_us = 10.0 * 1_000_000.0 / args.baud as f64;
     let expected_first_us = rdt_us + byte_time_us;
 
     println!(
         "pirate: {}   chip id: {}   baud: {}   rdt: {rdt_us:.1} µs   expected first-byte: \
          {expected_first_us:.1} µs ({rdt_us:.0} rdt + {byte_time_us:.2} byte_time)",
-        session.pirate.port_path(),
-        session.id,
-        session.baud,
+        bus.port_path(),
+        bus.id(),
+        bus.baud(),
     );
     println!(
         "sampling {} batches × \
@@ -122,16 +119,13 @@ fn main() -> Result<()> {
     let mut all_round_us: Vec<f64> = Vec::with_capacity((args.batches * args.shots) as usize);
 
     for b in 0..args.batches {
-        clear_tune(&mut session.pirate, id)?;
-        let _ = session.pirate.drain_stamps()?;
+        bus.clear_tune(id)?;
 
         let mut batch_rounds_us: Vec<f64> = Vec::with_capacity(args.shots as usize);
         for _ in 0..args.shots {
             let frame = build_ping(id)?;
-            let _ = session.pirate.xfer(&frame, UNICAST_REPLY_US)?;
-            let stamps = session.pirate.drain_stamps()?;
-            if let Some(r) = round_from_stamps(&stamps) {
-                let first_us = r.first.wrapping_sub(r.req) as f64 / ticks_per_us;
+            if let Some(t) = bus.xfer_round(&frame, DEFAULT_IDLE_US)? {
+                let first_us = t.reply_first.wrapping_sub(t.req_end) as f64 / ticks_per_us;
                 batch_rounds_us.push(first_us);
             }
         }
@@ -139,7 +133,7 @@ fn main() -> Result<()> {
 
         let TuneStamps {
             tx_start_entry_min, ..
-        } = read_tune(&mut session.pirate, id)?;
+        } = bus.read_tune(id)?;
         if tx_start_entry_min == 0 {
             bail!(
                 "tune block returned zero for tx_start_entry_min after {} pings; chip not built \
@@ -186,9 +180,6 @@ fn print_summary(batch_mins: &[u16], wire_us: &[f64], expected_first_us: f64) {
          happen AFTER the stamp."
     );
 
-    // Wire RDT excess vs configured: (first − req) − expected_first_us.
-    // This is the ground-truth signal: end-to-end CC3-match → wire-bit
-    // latency relative to the deadline implied by RDT.
     let excess_us: Vec<f64> = wire_us.iter().map(|us| us - expected_first_us).collect();
     let w_min = excess_us.iter().copied().fold(f64::INFINITY, f64::min);
     let w_p0_1 = quantile_us(&excess_us, 0.001);
@@ -202,25 +193,6 @@ fn print_summary(batch_mins: &[u16], wire_us: &[f64], expected_first_us: f64) {
          n={}",
         wire_us.len(),
     );
-    // Recommendation: shift K so 99.9% of pings land at or after deadline.
-    // p0.1 (0.1th-percentile excess) is the lower tail bound — robust
-    // against rare deep-tail outliers that `min` would amplify (wire noise
-    // during the idle gap, USB-CDC timestamp glitches), but tight enough
-    // that the residual 0.1% failure rate doesn't collapse Fast Sync
-    // chains via snoop-CRC rejection at scale. K LARGER → CCR3 earlier →
-    // wire bit earlier (risks colliding with prior slot at the p0.1 tail);
-    // K SMALLER → wire bit later (safe; wastes slot µs). Operator applies
-    // the delta to `firmware/ch32/src/measurements.rs::TX_START_ENTRY_TICKS`.
-    //
-    // Cliff guard: above some K the chip's CC3 scheduling enters a regime
-    // where CCR3 lands too close to TIM2 CNT at schedule time, triggering
-    // the wrap-into-past / fire-immediately fallback. This shows up as the
-    // UPPER tail exploding (p95 jumps ~3 µs above median) while the bulk
-    // and p0.1 stay put — the tool's p0.1-based math is blind to it
-    // because the failures are LATE, not EARLY. Past the cliff the chip
-    // cannot physically squeeze further; bumping K just makes more pings
-    // late (and on real hardware corrupts the start byte → CRC-rejection
-    // by the next slot's snoop → Fast Sync chain collapse).
     let spread_us = w_p95 - w_med;
     let cliff_detected = spread_us > CLIFF_SPREAD_THRESHOLD_US;
     let p0_1_excess_hclk = (w_p0_1 * HCLK_TICKS_PER_US).floor() as i32;

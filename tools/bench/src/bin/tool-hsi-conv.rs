@@ -8,17 +8,15 @@
 //!
 //! This tool reboots the chip to its factory-default HSI, drives Pings, and
 //! periodically probes the residual drift via the pirate's stable-clock
-//! `Round` stamp. Exits nonzero if the trim doesn't settle inside
+//! reply-span measurement. Exits nonzero if the trim doesn't settle inside
 //! `1.5 * DRIFT_STEP_PPM` within `--max-pings`, so it doubles as a
 //! regression check.
 
 use std::time::Duration;
 
 use anyhow::{Result, anyhow};
-use bench::drift::{DRIFT_STEP_PPM, probe_drift_ppm};
-use bench::{
-    BOOT_BAUD, Session, SessionArgs, UNICAST_REPLY_US, build_ping, reboot_chip, set_chip_baud,
-};
+use bench::drift::DRIFT_STEP_PPM;
+use bench::{BOOT_BAUD, Bus, BusArgs, DEFAULT_IDLE_US, build_ping};
 use clap::Parser;
 use dxl_protocol::types::Id;
 
@@ -55,21 +53,21 @@ fn main() -> Result<()> {
     let args = Args::parse();
     let bound = 1.5 * DRIFT_STEP_PPM;
 
-    let mut session = Session::start(SessionArgs {
+    let mut bus = Bus::start(BusArgs {
         port: args.port,
         target_baud: BOOT_BAUD,
     })?;
-    let id = Id::new(session.id);
+    let id = Id::new(bus.id());
     println!(
         "pirate: {}   chip id: {}   bound: ±{bound:.0} ppm",
-        session.pirate.port_path(),
-        session.id,
+        bus.port_path(),
+        bus.id(),
     );
 
     println!("\n[reboot → factory-default HSI]");
-    reboot_chip(&mut session.pirate, session.id)?;
+    bus.reboot_chip()?;
 
-    let cold = match probe_drift_ppm(&mut session.pirate, id, BOOT_BAUD, 1) {
+    let cold = match bus.probe_drift_ppm(1) {
         Ok(v) => {
             println!("  cold drift   = {v:+.0} ppm");
             Some(v)
@@ -84,14 +82,14 @@ fn main() -> Result<()> {
     // full-envelope correction, distinct from the steady ±4-step nudges
     // that follow. Probe (at boot baud, before any switch) to isolate
     // what that single boot correction left.
-    let _ = session.pirate.xfer(&build_ping(id)?, UNICAST_REPLY_US)?;
-    match probe_drift_ppm(&mut session.pirate, id, BOOT_BAUD, 1) {
+    let _ = bus.xfer_reply(&build_ping(id)?, DEFAULT_IDLE_US)?;
+    match bus.probe_drift_ppm(1) {
         Ok(v) => println!("  after 1 ping = {v:+.0} ppm"),
         Err(e) => println!("  after 1 ping = n/a ({e})"),
     }
 
     if args.baud != BOOT_BAUD {
-        set_chip_baud(&mut session.pirate, session.id, args.baud)?;
+        bus.set_chip_baud(args.baud)?;
     }
 
     println!("\n[converge @ {}]", args.baud);
@@ -106,11 +104,11 @@ fn main() -> Result<()> {
             break;
         }
         for _ in 0..args.probe_every {
-            let _ = session.pirate.xfer(&build_ping(id)?, UNICAST_REPLY_US)?;
+            let _ = bus.xfer_reply(&build_ping(id)?, DEFAULT_IDLE_US)?;
         }
         pings += args.probe_every;
 
-        match probe_drift_ppm(&mut session.pirate, id, args.baud, args.probe_samples) {
+        match bus.probe_drift_ppm(args.probe_samples) {
             Ok(drift) => {
                 let flag = if drift.abs() <= bound { "ok" } else { "  " };
                 println!("  {pings:>6}  {drift:>+10.0}  {flag}");
@@ -132,8 +130,6 @@ fn main() -> Result<()> {
                 streak = 0;
             }
         }
-        // Small inter-batch pause so the bench operator (and the chip's
-        // poll-stamp ring) get a breath between probes.
         std::thread::sleep(Duration::from_millis(5));
     }
 
