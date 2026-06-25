@@ -61,7 +61,7 @@ use crate::inject::{APB1_HZ, BaudError, DEFAULT_BAUD, read_tick32};
 // a cadence tick. 256 gives ample slack for any sustained burst (3 Mbaud
 // × 5 edges/byte → 1 edge per 667 ns; HT-to-drain latency is bounded by
 // PFIC dispatch + walker run, both sub-µs at PRIO_WALKER).
-const FALL_LEN: usize = 256;
+pub const FALL_LEN: usize = 256;
 const FALL_MASK: u32 = (FALL_LEN - 1) as u32;
 const _: () = assert!(FALL_LEN.is_power_of_two());
 
@@ -255,6 +255,14 @@ static DESYNC_CAUSE: AtomicU8 = AtomicU8::new(0);
 /// Bit-time in tick32 ticks. Refreshed on `set_baud`. brr at HCLK = ticks
 /// per bit (USART3 sits on APB1 which runs at HCLK).
 static BIT_TICKS: AtomicU32 = AtomicU32::new(0);
+
+/// `lift_ceiling` snapshot at the walker's most recent exit. Read by
+/// `ic_snapshot` so a host-side lifter has a ceiling close to when the
+/// raw IC entries were actually captured (each entry ages out of the
+/// single-wrap lift window in ~455 µs at 144 MHz). A snapshot that simply
+/// re-read `tick32()` at call time would put every entry older than one
+/// TIM2 wrap into the wrong high half.
+static LAST_LIFT_CEILING: AtomicU32 = AtomicU32::new(0);
 
 // ── Walker ISR trace ring ──────────────────────────────────────────────
 // One record per walker invocation, drained by host `BTRACE`. Diagnoses
@@ -498,6 +506,69 @@ pub fn drain_byte() -> Option<ByteRecord> {
     Some(rec)
 }
 
+/// Atomic snapshot of the IC ring + walker counters for the `BICSNAP`
+/// diagnostic host command. Counters and ring contents are read under
+/// critical_section so they're coherent against walker ISRs. Returns the
+/// snapshot header plus the number of u16 raw entries written to `out`,
+/// in oldest-first order (`out[0]` is the oldest in-ring entry, `out[n-1]`
+/// the newest). If `falling_total > FALL_LEN`, only the most recent
+/// `FALL_LEN` entries are still in the ring — older ones have been
+/// overwritten by DMA wrap.
+#[derive(Copy, Clone)]
+pub struct IcSnapshot {
+    pub ref_tick: u32,
+    pub falling_total: u32,
+    pub walked: u32,
+    pub rx_total: u32,
+    pub byte_head: u32,
+    pub bit_ticks: u32,
+    pub cc_filter_delay: u32,
+}
+
+pub fn ic_snapshot(out: &mut [u16]) -> (IcSnapshot, usize) {
+    critical_section::with(|_| {
+        // Use the walker's LAST exit state. `ref_tick` comes from
+        // `LAST_LIFT_CEILING` (stored by `walk()` at entry) rather than a
+        // fresh `read_tick32()`: every entry in `falling_ring[..falling_total]`
+        // was deposited before the walker's last `lift_ceiling`, so a
+        // host-side lift against that ceiling reconstructs the same u32
+        // tick the walker would have. Re-reading `tick32()` here puts
+        // any entry older than one TIM2 wrap (~455 µs) into the wrong
+        // high half — a real bug we hit on the first selftest pass.
+        // NDTR is intentionally NOT refreshed here: entries captured
+        // after the last walker exit aren't covered by the stored
+        // `lift_ceiling` and would lift to the wrong wrap, so they stay
+        // out of the snapshot.
+        let falling_total = unsafe { ptr::read_volatile(FALLING_TOTAL.get()) };
+        let rx_total = unsafe { ptr::read_volatile(RX_TOTAL.get()) };
+        let walked = unsafe { ptr::read_volatile(WALKED_FALLING.get()) };
+        let byte_head = BYTE_HEAD.load(Ordering::Relaxed);
+        let ref_tick = LAST_LIFT_CEILING.load(Ordering::Acquire);
+        let bit_ticks = BIT_TICKS.load(Ordering::Relaxed);
+        let cc_filter_delay = CC_FILTER_DELAY_TICKS.load(Ordering::Relaxed);
+
+        let in_ring = (falling_total as usize).min(FALL_LEN);
+        let n = in_ring.min(out.len());
+        let start = falling_total.wrapping_sub(n as u32);
+        for (i, slot) in out.iter_mut().take(n).enumerate() {
+            let idx = (start.wrapping_add(i as u32) & FALL_MASK) as usize;
+            *slot = unsafe { (*FALLING_RING.get())[idx] };
+        }
+        (
+            IcSnapshot {
+                ref_tick,
+                falling_total,
+                walked,
+                rx_total,
+                byte_head,
+                bit_ticks,
+                cc_filter_delay,
+            },
+            n,
+        )
+    })
+}
+
 /// Drain up to `out.len()` byte records into `out`. Returns the count
 /// actually written. Cheaper per-byte than `drain_byte` for the BBATCH
 /// host transport.
@@ -615,6 +686,7 @@ pub fn walk(idle: bool) {
     let falling_total = refresh_falling_total();
     let rx_total = refresh_rx_total();
     let lift_ceiling = read_tick32();
+    LAST_LIFT_CEILING.store(lift_ceiling, Ordering::Release);
     let mut walked = unsafe { ptr::read_volatile(WALKED_FALLING.get()) };
 
     // §3.5 ic_overrun: if more new entries arrived than the ring can

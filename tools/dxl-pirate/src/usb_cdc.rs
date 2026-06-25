@@ -9,7 +9,7 @@ use embassy_usb::class::cdc_acm::{CdcAcmClass, State};
 use embassy_usb::driver::EndpointError;
 use heapless::Vec;
 
-use crate::capture::{self, ByteRecord};
+use crate::capture::{self, ByteRecord, FALL_LEN};
 use crate::inject::TX_BUF_LEN;
 use crate::proto::{self, Reply};
 
@@ -89,6 +89,8 @@ async fn serve<'d, T: Instance + 'd>(
             if b == b'\n' {
                 if let Some(rest) = line.strip_prefix(b"BBATCH ") {
                     handle_batch(class, rest).await?;
+                } else if line.as_slice() == b"BICSNAP" {
+                    handle_ic_snapshot(class).await?;
                 } else {
                     let reply = proto::handle_line(&line);
                     send_reply(class, reply).await?;
@@ -141,6 +143,50 @@ async fn handle_batch<'d, T: Instance + 'd>(
         let _ = chunk.extend_from_slice(&r.tick.to_le_bytes());
         let _ = chunk.push(r.byte);
         let _ = chunk.push(r.flags);
+    }
+    if !chunk.is_empty() {
+        class.write_packet(&chunk).await?;
+    }
+    Ok(())
+}
+
+/// Diagnostic IC-ring snapshot. Bypasses the desync guard — meant for
+/// post-trip inspection. Wire layout:
+///
+///   [0xA5][0x5C]
+///   [ref_tick:u32 LE][falling_total:u32 LE][walked:u32 LE]
+///   [rx_total:u32 LE][byte_head:u32 LE][bit_ticks:u32 LE][cc_filter_delay:u32 LE]
+///   [entries:u16 LE]
+///   [raw: u16 LE × entries]    // oldest-first
+///
+/// Header = 32 B fits one CDC bulk packet; the raw window streams as
+/// `entries × 2 B` over additional packets.
+async fn handle_ic_snapshot<'d, T: Instance + 'd>(
+    class: &mut CdcAcmClass<'d, Driver<'d, T>>,
+) -> Result<(), EndpointError> {
+    let mut raw = [0u16; FALL_LEN];
+    let (snap, n) = capture::ic_snapshot(&mut raw);
+
+    let mut hdr: Vec<u8, 32> = Vec::new();
+    let _ = hdr.push(0xA5);
+    let _ = hdr.push(0x5C);
+    let _ = hdr.extend_from_slice(&snap.ref_tick.to_le_bytes());
+    let _ = hdr.extend_from_slice(&snap.falling_total.to_le_bytes());
+    let _ = hdr.extend_from_slice(&snap.walked.to_le_bytes());
+    let _ = hdr.extend_from_slice(&snap.rx_total.to_le_bytes());
+    let _ = hdr.extend_from_slice(&snap.byte_head.to_le_bytes());
+    let _ = hdr.extend_from_slice(&snap.bit_ticks.to_le_bytes());
+    let _ = hdr.extend_from_slice(&snap.cc_filter_delay.to_le_bytes());
+    let _ = hdr.extend_from_slice(&(n as u16).to_le_bytes());
+    class.write_packet(&hdr).await?;
+
+    let mut chunk: Vec<u8, { CDC_BULK_PACKET as usize }> = Vec::new();
+    for &v in &raw[..n] {
+        if chunk.len() + 2 > chunk.capacity() {
+            class.write_packet(&chunk).await?;
+            chunk.clear();
+        }
+        let _ = chunk.extend_from_slice(&v.to_le_bytes());
     }
     if !chunk.is_empty() {
         class.write_packet(&chunk).await?;

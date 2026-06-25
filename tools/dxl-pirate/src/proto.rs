@@ -107,6 +107,9 @@ pub fn handle_line(line: &[u8]) -> Reply {
 
     // STATUS, RESET, BAUD bypass the desync guard so the host always has
     // a recovery path (and a probe that surfaces the current state).
+    // BTRACE / BTRACECLEAR also bypass — they're read-only diagnostics
+    // against the walker trace ring and surfacing them post-desync lets
+    // the host inspect what the walker was doing at the moment of trip.
     if line == "STATUS" {
         return status();
     }
@@ -116,6 +119,16 @@ pub fn handle_line(line: &[u8]) -> Reply {
     }
     if let Some(rest) = line.strip_prefix("BAUD ") {
         return baud(rest);
+    }
+    if line == "BTRACE" {
+        return match capture::trace_drain() {
+            Some(r) => Reply::BTrace(r),
+            None => Reply::Empty,
+        };
+    }
+    if line == "BTRACECLEAR" {
+        capture::trace_clear();
+        return Reply::Ok;
     }
 
     // Every other command fails fast on desync.
