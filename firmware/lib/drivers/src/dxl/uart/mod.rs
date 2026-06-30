@@ -705,8 +705,8 @@ pub struct DxlUart<
     /// `drain_raw` callback during the SysTick walker; finalize patches our
     /// own trailing CRC slot before DMA1_CH4 reads it.
     fast_last_crc: FastLastCrc<P::Crc>,
-    /// WireClock u32 readout used by `on_rx_edge_advance`, `on_rx_idle`,
-    /// and `poll` to source `now` without taking it as a parameter. The
+    /// WireClock u32 readout used by `on_rx_advance`, `on_rx_idle`, and
+    /// `poll` to source `now` without taking it as a parameter. The
     /// chip-side provider hides any peripheral-side composition (TIM2 u16
     /// IC stamps lifted via SysTick u32, etc.) — see [`WireClock`].
     wire_clock: P::WireClock,
@@ -784,41 +784,30 @@ impl<P: Providers, const RX_BUF_LEN: usize, const EDGE_BUF_LEN: usize, const TX_
         s
     }
 
-    /// DMA1_CH7 HT/TC ISR entry — refresh the ET producer head from
-    /// NDTR and stash `(now, Dma)` for the Crc-time fallback path. No
-    /// walking; advance happens inside [`Self::poll`] as the byte
-    /// parser emits events.
-    pub fn on_rx_edge_advance(&mut self) {
-        let now = self.wire_clock.now();
-        let ticks_per_bit = self.clock.ticks_per_bit();
-        self.codec.on_edge_advance(now, ticks_per_bit);
-    }
-
     /// USART1 IDLE ISR entry — refresh the ET producer head and stash
-    /// `(now, Idle)` for the Crc-time fallback path. No walking; same
-    /// contract as [`Self::on_rx_edge_advance`].
+    /// `(now, Idle)` for the Crc-time fallback path. Small-packet
+    /// backstop for the parser drain (chip ISR follows with
+    /// `services.poll` to drain any packet whose last byte arrived
+    /// before RX HT/TC tripped).
     pub fn on_rx_idle(&mut self) {
         let now = self.wire_clock.now();
         let ticks_per_bit = self.clock.ticks_per_bit();
         self.codec.on_idle(now, ticks_per_bit);
     }
 
-    /// USART1 RX DMA published progress — `remaining` is the channel's
-    /// NDTR readback.
-    pub fn on_rx_dma_advance(&mut self, remaining: u16) {
-        self.codec.on_rx_dma_advance(remaining);
-    }
-
-    /// DMA1_CH5 HT/TC publish-only ISR entry — clear flags, refresh the
-    /// codec's view of `write_seq` from NDTR. No parser drain, no codec
-    /// poll; the chip ISR is the sole call site. Bounds `write_seq` lag
+    /// DMA1_CH5 HT/TC ISR entry — clear flags, refresh the codec's view
+    /// of `write_seq` from NDTR. The chip ISR follows with
+    /// `services.poll` to drive the parser drain over the freshly-
+    /// published bytes (see `dxl-hw-timed-transport.md` §9,
+    /// `dxl-streaming-rx.md` §3 / §4.4 / §5.2). Bounds `write_seq` lag
     /// to `RX_BUF_LEN/2` so the codec's universal byte-skip can drain
     /// payload-length packets without `on_publish`'s mod-`RX_BUF_LEN`
-    /// delta rounding full ring periods to zero (see `dxl-hw-timed-transport`
-    /// §9).
+    /// delta rounding full ring periods to zero.
     pub fn on_rx_advance(&mut self) {
         let _ = self.rx_dma.read_and_ack();
+        let now = self.wire_clock.now();
         self.codec.on_rx_dma_advance(self.rx_dma.remaining());
+        self.codec.stash_dma_isr(now);
     }
 
     /// Drive the codec event stream, manage wire-level state (anchor,
@@ -829,13 +818,13 @@ impl<P: Providers, const RX_BUF_LEN: usize, const EDGE_BUF_LEN: usize, const TX_
     /// `Ch32Bus::poll` forwarder is a one-liner.
     ///
     /// Per [doc §3 / §4.3]:
-    /// - Instruction Header → `try_anchor_from_header`, `set_hsi_active(true)`.
+    /// - Instruction Header → mark packet as Instruction (drift sampling).
     /// - Instruction Header (foreign) → universal byte-skip on the body.
     /// - Status Header → universal byte-skip on the body.
     /// - SyncSlot / BulkSlot → slot-walk against `self.id`.
-    /// - Crc → stamp packet-end tick, derive [`ReplyContext`],
-    ///   `reset_anchor` (deterministic packet boundary).
-    /// - Resync → `reset_anchor`, drop inflight.
+    /// - Crc → stamp packet-end tick, derive [`ReplyContext`]. Anchor
+    ///   reset is codec-owned (after `walk_pairs_back` at the same Crc).
+    /// - Resync → drop inflight (codec resets anchor).
     ///
     /// Closure-based shape exists to break the borrow conflict between the
     /// parser-event borrow on the codec RX half and the `&mut` access the
@@ -848,7 +837,7 @@ impl<P: Providers, const RX_BUF_LEN: usize, const EDGE_BUF_LEN: usize, const TX_
         // Fold window is owned by `drain_raw` via `on_fold_step` /
         // `on_tx_start`; the parser path must not touch the ring or its
         // cursor while a Fast Last fold is in flight. `pause_edges()`
-        // stops *future* edge-driven polls, but IDLE-triggered and RX
+        // stops future edge-DMA advancing, but IDLE-triggered and RX
         // byte-ring HT/TC-triggered polls still need this entry gate to
         // honor the RX-tail ownership contract in
         // `dxl-streaming-rx.md` §6.
@@ -876,15 +865,16 @@ impl<P: Providers, const RX_BUF_LEN: usize, const EDGE_BUF_LEN: usize, const TX_
             pending_reboot,
             ..
         } = self;
-        // Drift pairs from the per-event walker advance buffer here and
-        // drain into `clock.on_byte_pair` after `codec.poll` returns —
-        // routing them through `clock` inside the walker would force a
-        // second `&mut clock` capture concurrent with the event sink's
+        // Drift pairs from the codec's retroactive walk at Crc and drain
+        // into `clock.on_byte_pair` after `codec.poll` returns — routing
+        // them through `clock` inside the poll would force a second
+        // `&mut clock` capture concurrent with the event sink's
         // `ReplyHandle { clock, .. }` capture. Bound at one DXL packet's
         // worth of body bytes (well under 32).
         let mut pair_buf: heapless::Vec<(u16, u16), 32> = heapless::Vec::new();
+        let n_pairs_wanted = clock.samples_wanted_per_packet();
         let (rx, tx) = codec.split_mut();
-        rx.poll(now, ticks_per_bit, &mut pair_buf, |pe, rx_inner| match pe {
+        rx.poll(now, ticks_per_bit, n_pairs_wanted, &mut pair_buf, |pe, rx_inner| match pe {
             PollEvent::Event {
                 ev,
                 ring,
@@ -906,14 +896,6 @@ impl<P: Providers, const RX_BUF_LEN: usize, const EDGE_BUF_LEN: usize, const TX_
                         // foreign Status whose id happens to match would
                         // trigger a spurious `start_now` on the new chain.
                         *predecessor_id = None;
-                        // Anchor was already seeded by the codec at the prior
-                        // `Event::Sync` (back-search); just toggle drift
-                        // sampling on. Owns and foreigns both set it — host
-                        // HSE clocks all instructions, so foreign Instruction
-                        // bodies are valid drift samples per
-                        // [[drift_sampling_instruction_only]]. Cleared at the
-                        // matching packet boundary (Crc, SkipComplete, Resync).
-                        rx_inner.set_hsi_active(true);
                         if addressable {
                             *inflight = Some(InflightCtx::new(h));
                             PollAction::Continue
@@ -999,14 +981,14 @@ impl<P: Providers, const RX_BUF_LEN: usize, const EDGE_BUF_LEN: usize, const TX_
                                 );
                             }
                         }
-                        // Read packet_end_tick first, then invalidate —
-                        // Crc is the deterministic packet boundary.
-                        rx_inner.reset_anchor();
+                        // Anchor reset is owned by the codec (after
+                        // walk_pairs_back at the same Crc iteration) —
+                        // `packet_end_tick` above was the driver's last
+                        // read on this packet.
                         PollAction::Continue
                     }
                     Event::Crc(CrcResult::Bad) | Event::Resync(_) => {
                         crate::log::trace!("dxl[id={}]: event=crc(bad)/resync", id);
-                        rx_inner.reset_anchor();
                         *inflight = None;
                         *predecessor_id = None;
                         PollAction::Continue
@@ -1058,21 +1040,17 @@ impl<P: Providers, const RX_BUF_LEN: usize, const EDGE_BUF_LEN: usize, const TX_
                     tx_bus.start_now(tx.tx_len());
                     *predecessor_id = None;
                 }
-                // Packet boundary — drop the anchor + clear hsi_active.
-                // For foreign Instruction skips this releases the drift-
-                // sampling flag set at the Header; for Status-Header skips
-                // it's idempotent (hsi was off going in).
-                rx_inner.reset_anchor();
+                // Codec clears `packet_is_instruction` internally on
+                // SkipComplete; no anchor is set between the previous
+                // Crc (where the codec resets it) and here, so no
+                // driver-side invalidation is required.
                 PollAction::Continue
             }
         });
-        // Bounded drain — Clock self-gates on convergence state: boot
-        // returns u8::MAX (feed everything for fast first close), steady
-        // returns a small cap (drift is slow, so 4 pairs per packet ×
-        // N packets fills the steady batch threshold without burning
-        // µs draining the rest).
-        let want = clock.samples_wanted_per_packet() as usize;
-        for &(prev, curr) in pair_buf.iter().take(want) {
+        // Drain the codec's retroactive-walk pairs into the drift
+        // integrator. Cap is already applied inside the walk
+        // (`n_pairs_wanted`), so the drain is unbounded here.
+        for &(prev, curr) in pair_buf.iter() {
             clock.on_byte_pair(prev, curr);
         }
         // Apply any pending trim correction at the RX-side packet
@@ -1157,15 +1135,11 @@ impl<P: Providers, const RX_BUF_LEN: usize, const EDGE_BUF_LEN: usize, const TX_
     }
 
     /// One Fast Last periodic-walk fold body is due (chip-side SysTick
-    /// CMP). First entry masks DMA1_CH7 HT/TC IRQ via [`Codec::pause_edges`]
-    /// so the busy-wait inside the FSM's final-anchor body is the sole
-    /// PFIC HIGH consumer (doc §10.6.3); edge DMA itself keeps capturing
-    /// into ET. Body drives [`FastLast::on_step`] forward — the walker
+    /// CMP). Body drives [`FastLast::on_step`] forward — the walker
     /// closure drains pending RX bytes raw through [`FastLastCrc::on_slice`]
     /// and returns the cumulative folded count for the FSM's `target =
     /// predecessor_bytes − GUARD` busy-wait exit (`fast_last/mod.rs`).
     pub fn on_fold_step(&mut self) {
-        self.codec.pause_edges();
         let Self {
             codec,
             rx_dma,
@@ -1204,15 +1178,13 @@ impl<P: Providers, const RX_BUF_LEN: usize, const EDGE_BUF_LEN: usize, const TX_
     /// then drain staged writes (id / baud / trim / rdt) and surface any
     /// pending reboot to the chip-side ISR. Also disarms the Fast Last
     /// state (idempotent — both already disarmed naturally on the
-    /// successful path) and re-enables DMA1_CH7 HT/TC (no-op for Plain
-    /// replies that never paused). Reboot is returned (rather than
-    /// self-applied) because the chip controls how the reset actually
-    /// happens; the driver only knows it was asked.
+    /// successful path). Reboot is returned (rather than self-applied)
+    /// because the chip controls how the reset actually happens; the
+    /// driver only knows it was asked.
     pub fn on_tx_complete(&mut self) -> Option<BootMode> {
         self.tx_bus.handle_tx_complete();
         self.fast_last.cancel();
         self.fast_last_crc.cancel();
-        self.codec.resume_edges();
         // Per `dxl-streaming-rx.md` §5.3: our own TX completion is a
         // packet boundary at which stale chain state must reset. The
         // §5.3 "next instruction header" trigger is too late for the
@@ -1379,12 +1351,6 @@ mod tests {
     /// instruction completed and the dispatcher would commit."
     fn saw_crc(tags: &[Tag]) -> bool {
         tags.iter().any(|t| matches!(t, Tag::Crc))
-    }
-
-    #[test]
-    fn on_rx_edge_advance_does_not_panic_with_empty_buffer() {
-        let mut bus = make_bus();
-        bus.on_rx_edge_advance();
     }
 
     #[test]

@@ -26,7 +26,7 @@ pub mod wire_clock;
 
 pub use bus::{MockTxBus, TxBusOp};
 pub use clock::{MockClockTrim, MockUsartBaud};
-pub use dma::{EdgeDmaOp, MockEdgeDma};
+pub use dma::MockEdgeDma;
 pub use primitives::{MockDigitalOut, MockMonotonic};
 pub use rx::MockRxDma;
 pub use scheduler::{FastLastSchedulerOp, MockFastLastScheduler, MockTxScheduler, ScheduleOp};

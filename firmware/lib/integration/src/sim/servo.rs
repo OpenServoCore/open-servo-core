@@ -17,7 +17,7 @@ use osc_drivers::dxl::uart::DxlUart;
 use osc_drivers::dxl::uart::clock::Clock as DxlClock;
 use osc_drivers::dxl::uart::codec::Codec;
 use osc_drivers::dxl::uart::fast_last::FastLast;
-use osc_drivers::mocks::{EdgeDmaOp, FastLastSchedulerOp, ScheduleOp, TestProviders, TxBusOp};
+use osc_drivers::mocks::{FastLastSchedulerOp, ScheduleOp, TestProviders, TxBusOp};
 use osc_drivers::traits::dxl::{DmaFlags, Providers, SendKind};
 
 use crate::mocks::{
@@ -326,10 +326,6 @@ impl Servo {
         self.fast_last_scheduler_state.operations()
     }
 
-    pub fn edge_dma_ops(&self) -> Vec<EdgeDmaOp> {
-        self.edge_dma_state.operations()
-    }
-
     pub fn baud_ops(&self) -> Vec<BaudRate> {
         self.usart_baud_state.operations()
     }
@@ -441,33 +437,15 @@ impl Servo {
         let pos = (self.edge_seq as usize) % EDGE_BUF_LEN;
         let remaining = (EDGE_BUF_LEN - pos) as u16;
         self.edge_dma_state.stage_remaining(remaining);
-
-        let crossed_ht = pos == EDGE_BUF_LEN / 2;
-        let crossed_tc = pos == 0;
-        if crossed_ht || crossed_tc {
-            self.edge_dma_state.stage_next_flags(DmaFlags {
-                ht: crossed_ht,
-                tc: crossed_tc,
-            });
-            // Production masks the DMA1_CH7 HT/TC IRQ during the Fast Last
-            // fold window via `codec.pause_edges()`; the ISR doesn't run, so
-            // `Dxl::poll` doesn't run either. Bytes accumulate in the RX
-            // ring untouched until `on_tx_start`'s `drain_raw` folds them.
-            if self.edge_dma_state.paused() {
-                return;
-            }
-            self.wire_clock_state.stage_now(self.chip_tick(at));
-            self.uart.on_rx_edge_advance();
-            self.poll_and_queue_tx(at);
-        }
     }
 
     /// Decoded byte from the line model — write to the codec's RX byte ring
     /// and update NDTR. On `RX_BUF_LEN/2` (HT) and `RX_BUF_LEN` (TC)
-    /// crossings, fires `on_rx_advance` to mirror the production DMA1_CH5
-    /// HT/TC publish-only ISR. Does NOT call `Dxl::poll`: the publish ISR
-    /// only refreshes `write_seq`; parser drain stays on edge HT/TC + IDLE
-    /// where the dispatcher is reconstructed per poll.
+    /// crossings, fires `on_rx_advance` (mirroring the production DMA1_CH5
+    /// HT/TC ISR body) and drives the parser drain via `poll_and_queue_tx`
+    /// — production runs `services.poll` from the same vector so drain
+    /// cadence tracks complete-byte boundaries (`dxl-streaming-rx.md` §3 /
+    /// §4.4 / §5.2).
     fn handle_byte(&mut self, byte: u8, at: SimTime) {
         log::trace!(
             "servo[{:?}]: handle_byte byte=0x{:02X} at={:?}",
@@ -493,7 +471,9 @@ impl Servo {
                 ht: crossed_ht,
                 tc: crossed_tc,
             });
+            self.wire_clock_state.stage_now(self.chip_tick(at));
             self.uart.on_rx_advance();
+            self.poll_and_queue_tx(at);
         }
     }
 

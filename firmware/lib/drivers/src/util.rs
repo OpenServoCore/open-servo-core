@@ -306,12 +306,13 @@ impl<P: Producer, T: Copy, const N: usize> Ring<P, T, N> {
         if (offset as usize) >= N {
             return None;
         }
-        let unread = self.write_seq.wrapping_sub(self.read_seq) as usize;
-        // Cold-start gate: before the ring is fully populated, slots
-        // past `unread` haven't been written. Once `unread >= N` (full
-        // or lapped) the gate's irrelevant — the last `N` physical
-        // slots are all valid producer output.
-        if unread < N && (offset as usize) >= unread {
+        // Cold-start gate: before the first lap, only offsets < write_seq
+        // are backed by an actual producer write. Reader position is
+        // irrelevant here — a consumer that's walked past most of the
+        // ring hasn't invalidated the physical slots, which producer-side
+        // back-search (e.g. Crc tail-signature read in the RX codec)
+        // needs to reach.
+        if self.lap_count == 0 && offset >= self.write_seq {
             return None;
         }
         let raw = self.write_seq.wrapping_sub(1).wrapping_sub(offset);
@@ -616,6 +617,25 @@ mod tests {
         b.set_write_seq_for_test(8);
         assert_eq!(b.recent(7), Some(&1));
         assert_eq!(b.recent(8), None);
+    }
+
+    #[test]
+    fn recent_reaches_past_consumer_cursor_before_first_lap() {
+        // Producer wrote 6 items, consumer walked forward to slot 5 (so
+        // unread=1). Cold-start gate must key off `write_seq`, not
+        // `unread`, so `recent(0..5)` still surfaces the physical writes
+        // — the codec's Crc-time tail-signature read hits this shape
+        // when RX HT drains most of the ring before the IDLE poll fires
+        // the last byte.
+        let mut b: HwBuf = HwRing::new(0);
+        b.stage(0, &[10, 20, 30, 40, 50, 60, 0, 0]);
+        b.set_write_seq_for_test(6);
+        b.set_read_seq_for_test(5);
+        assert_eq!(b.recent(0), Some(&60));
+        assert_eq!(b.recent(3), Some(&30));
+        assert_eq!(b.recent(5), Some(&10));
+        // offset == write_seq (nothing written that far back yet).
+        assert_eq!(b.recent(6), None);
     }
 
     #[test]

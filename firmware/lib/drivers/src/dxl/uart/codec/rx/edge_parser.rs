@@ -1,77 +1,26 @@
 //! Streaming edge parser — turns falling-edge timestamps (TIM2_CH4 IC)
-//! into per-byte start ticks, advancing in lockstep with the byte parser.
+//! into the packet's wire-end tick and the trailing byte-pair samples the
+//! HSI-drift integrator feeds on.
 //!
-//! ## Two operations, both parser-driven
+//! ## Two operations, both event-driven at Crc
 //!
-//! - **Anchor at signature** ([`EdgeParser::anchor_at_signature`]). On the
-//!   parser's `Event::Sync`, walk the ET ring backward looking for the
-//!   DXL header's edge signature `FF FF FD 00` (5 edges with intervals
-//!   `[~10·bit, ~10·bit, ~2·bit, ~8·bit]`, followed by `≥7·bit` quiet).
-//!   On match, seed the anchor at byte 3 (the `0x00` start bit). On
-//!   mismatch, anchor stays `None` and the packet's `packet_end_tick`
-//!   later falls back to the ISR-time backstop.
-//! - **Advance N byte-boundaries** ([`EdgeParser::advance_bytes`]). For
-//!   every subsequent parser event, the codec passes the byte delta the
-//!   parser has consumed since the last call; the edge parser walks
-//!   forward exactly that many start-bit edges using the
-//!   `[9·bit, 11·bit]` window from the current anchor, skipping
-//!   intra-byte transitions (SKIP arm). The walker never advances past
-//!   the parser cursor by construction — overshoot is structurally
-//!   impossible.
+//! - **Anchor at tail signature** ([`EdgeParser::anchor_at_tail`]). At the
+//!   parser's `Event::Crc`, hint-first back-search over the ET ring using
+//!   the last few raw wire bytes the parser just consumed as signature.
+//!   Sets `tail_anchor` to the CRC byte's start tick on match.
+//! - **Retroactive integrator walk** ([`EdgeParser::walk_pairs_back`]).
+//!   Called AFTER the wire-schedule call at Crc so the tail-anchor jitter
+//!   sits off the deadline path. Walks backward from `tail_anchor` in
+//!   `BITS_PER_FRAME·tpb` strides, snapping each predicted position to
+//!   the nearest captured IC edge within a ±`HSI_WALK_SNAP_BITS·tpb`
+//!   window; emits `(prev, curr)` pairs for [`crate::dxl::uart::clock::Clock::on_byte_pair`].
 //!
-//! Algorithm specified in `docs/dxl-streaming-rx.md` §4. The autonomous
-//! "walk to end of ring" entry points the prior design used at HT/TC and
-//! IDLE no longer exist — both ISRs now only publish the producer head
-//! (NDTR readback); all walking is parser-event-driven.
-//!
-//! ## Why the back-search
-//! The prior design seeded the anchor on the first edge after IDLE — fine
-//! for clean idle gaps, ambiguous at cold boot or post-resync. Header
-//! pattern match is unambiguous (DXL stuffing guarantees `FF FF FD` never
-//! appears in payload) and re-establishes anchor on every packet, so
-//! timing drift never accumulates across packet boundaries.
-//!
-//! ## Tolerance encoding
-//! Per doc §4.4: `±1·bit` on wide intervals (`10·bit`, `8·bit`), `±0.5·bit`
-//! on the narrow `2·bit` gap. To keep the half-bit precision integer, all
-//! deltas are compared as `delta·2 ≷ MUL_X2 · tpb` with both sides widened
-//! to `u32` — no integer division anywhere on the hot path.
+//! Both operations subtract [`Self::rx_edge_comp_ticks`] from every ring
+//! read so stored state, band checks, and emitted pairs all live in
+//! wire-edge time rather than IC-filter-output time.
 
 use crate::dxl::uart::BITS_PER_FRAME;
 use crate::util::HwRing;
-
-// Forward-walker window for the `[9·bit, 11·bit]` start-bit match.
-const WINDOW_LO_MUL: u16 = 9;
-const WINDOW_HI_MUL: u16 = 11;
-
-/// Pre-multiplied `(win_lo, win_hi)` for the forward walker's
-/// `[9·bit, 11·bit]` window. Codec computes once per `poll()` entry and
-/// threads into every [`EdgeParser::advance_bytes`] call so the same two
-/// muls aren't paid per parser event.
-#[inline]
-pub fn walker_window(ticks_per_bit: u16) -> (u16, u16) {
-    (
-        ticks_per_bit.wrapping_mul(WINDOW_LO_MUL),
-        ticks_per_bit.wrapping_mul(WINDOW_HI_MUL),
-    )
-}
-
-// Half-bit-scaled band multipliers for the header pattern. See module
-// docs — `_X2` = the multiplier doubled, so the narrow `1.5·bit`/`2.5·bit`
-// bounds stay integer when compared against `delta·2`.
-const WIDE_LO_X2: u32 = 18; //  9·bit · 2  (10·bit − 1·bit)
-const WIDE_HI_X2: u32 = 22; // 11·bit · 2
-const MID_LO_X2: u32 = 14; //  7·bit · 2  ( 8·bit − 1·bit)
-const MID_HI_X2: u32 = 18; //  9·bit · 2
-const NARROW_LO_X2: u32 = 3; // 1.5·bit · 2
-const NARROW_HI_X2: u32 = 5; // 2.5·bit · 2
-const QUIET_MIN_X2: u32 = 14; //  7·bit · 2
-
-// Edges in the `FF FF FD 00` Sync signature. `idle→0xFF start`, `0xFF
-// end→0xFF start`, `0xFF end→0xFD start`, `0xFD bit0→bit1 transition`,
-// `0xFD end→0x00 start` = 5 falling edges. Load-bearing in the buffer-
-// sizing formulas below.
-const SYNC_SIGNATURE_EDGES: usize = 5;
 
 /// Falling-edge count per UART byte value, indexed by the byte. Edges
 /// come from `1→0` transitions in the bit stream
@@ -79,10 +28,9 @@ const SYNC_SIGNATURE_EDGES: usize = 5;
 /// `idle→start` falling edge, plus one for every `(bit_i=1, bit_{i+1}=0)`
 /// pair in the data bits. Stop and trailing transitions never fall.
 ///
-/// Used by [`EdgeParser::anchor_at_signature_hinted`] to convert the
-/// codec's "body bytes already in the byte ring" into the corresponding
-/// edge offset, so the back-search jumps straight to a few candidate
-/// positions around the byte-derived estimate.
+/// Used by [`EdgeParser::anchor_at_tail`] to convert the parser's just-
+/// consumed tail-byte slice into an expected total edge count so the
+/// signature match locks against the exact per-byte edge pattern.
 pub const EDGES_PER_BYTE: [u8; 256] = {
     let mut t = [0u8; 256];
     let mut i = 0;
@@ -94,27 +42,43 @@ pub const EDGES_PER_BYTE: [u8; 256] = {
     t
 };
 
-/// Upper slack on the byte-derived hint offset for the hinted anchor
-/// fast path. The [`EDGES_PER_BYTE`] LUT gives the *minimum* edge count
-/// — what a clean, back-to-back, noise-free wire would produce. Real
-/// wire conditions can only ADD edges, never remove them:
-/// idle gaps and start-bit jitter shift edge *timing* but not *count*;
-/// in-flight partial bytes (start bit captured before DMA commits the
-/// byte) contribute up to ~5 edges; back-slice wraps contribute body
-/// bytes the codec didn't see; EMI spurious edges add count. So actual
-/// e5 sits at offset ≥ `body_edges`, never less — the fast path probes
-/// `[body_edges ..= body_edges + PADDING_EDGES_AHEAD]` with no lower
-/// slack. Falls back to the full back-search if the window misses.
+/// Max entry in [`EDGES_PER_BYTE`]: start bit + four `1→0` transitions in
+/// alternating data bits (e.g. `0x55`, `0xAA`). Load-bearing in
+/// [`edge_buf_len`]'s worst-case sizing.
+pub const MAX_EDGES_PER_BYTE: u8 = 5;
+
+/// Upper slack on the tail-anchor search window. `EDGES_PER_BYTE` sums to
+/// the *minimum* edge count between two known ring positions on a clean
+/// noise-free wire. Real wire only adds edges past that floor: in-flight
+/// partial bytes (start bit captured before DMA commits the byte), EMI
+/// spurious edges, back-slice residue from previous polls. Both search
+/// slack (the anchor probe window `[D_min ..= D_min + PADDING]` in
+/// [`EdgeParser::anchor_at_tail`]) and per-poll ring headroom size against
+/// this.
 const PADDING_EDGES_AHEAD: u16 = 5;
+
+/// Tail-signature byte count — the codec always passes 4 bytes
+/// ([data_last_2, data_last_1, CRC_lo, CRC_hi]) to [`EdgeParser::anchor_at_tail`].
+/// Load-bearing for the walker's `tail_starts` cache size (see
+/// [`EdgeParser::walk_pairs_back`]) and the offset math that reseeds the
+/// walker past the cached-pair region.
+const TAIL_STARTS: usize = 4;
+
+/// Snap half-width for [`EdgeParser::walk_pairs_back`], in bit-times. Sets
+/// how far the predicted position can drift from the captured stamp before
+/// the walk free-runs on that step. `2·bit` at 3M = 32 ticks ≈ 0.66 µs —
+/// wide enough to absorb factory HSI drift plus IC-stamp jitter, tight
+/// enough that spurious intra-byte edges outside the expected byte
+/// boundary don't spoof a HIT.
+const HSI_WALK_SNAP_BITS: u16 = 2;
 
 /// Which ISR delivered the current poll — DMA1_CH7 HT/TC or USART RX
 /// IDLE. Threaded through every classifier read that converts an ISR-
 /// entry `now` into a packet-relative tick:
-/// [`EdgeParser::packet_end_tick`] (anchored u16→u32 lift), its
-/// fallback ([`EdgeParser::packet_end_tick_fallback`]), and
-/// [`EdgeParser::current_byte_tick`]. The two contexts have different
-/// elapsed-time relationships to the last data byte, so the formula
-/// downstream must pick the matching one.
+/// [`EdgeParser::packet_end_tick`] (anchored u16→u32 lift) and its
+/// fallback ([`EdgeParser::packet_end_tick_fallback`]). The two
+/// contexts have different elapsed-time relationships to the last data
+/// byte, so the formula downstream must pick the matching one.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub enum PollSrc {
     /// HT/TC poll context. Bytes arrived steadily; the CRC byte landed in
@@ -127,54 +91,68 @@ pub enum PollSrc {
     Idle,
 }
 
-/// Worst-case anchor back-search depth (in edges) given an `EDGE_BUF_LEN`-
-/// slot DMA edge ring polled at HT/TC cadence. Equals `EDGE_BUF_LEN/2 − 5`:
-/// the half-buffer drain depth (the staleness budget between HT firings)
-/// minus the 5 edges spanned by the Sync signature itself.
-///
-/// Drives the [`EdgeParser::anchor_at_signature`] back-search bound. The
-/// chip lib picks the desired lookback as a CPU/RAM budget knob; the byte
-/// ring and edge ring are then sized via [`edge_buf_len`] / [`rx_buf_len`]
-/// so this relationship holds at compile time.
-///
-/// ## Cost per +1 increment of the lookback target
-/// - **CPU**: ~63 cycles (~1.3 µs at 48 MHz RV32IMC) added to the worst-
-///   case Sync-not-found back-search. Per failed offset: 5 ring reads +
-///   4 band checks + 1 quiet check. Header events fire once per packet so
-///   this is a packet-rate cost, not a per-byte cost.
-/// - **RAM**: +4 B edge ring (u16) + 1 B byte ring before power-of-two
-///   rounding. After rounding, costs step in PoW2-sized jumps:
-///     - lookback 11  → E=32, R=16  =  80 B
-///     - lookback 27  → E=64, R=32  = 160 B
-///     - lookback 59  → E=128, R=64 = 320 B
-///
-/// CH32V006 (48 MHz, 8 KiB SRAM) targets 59 — see
-/// `firmware/ch32/src/runtime/registry.rs`.
-pub const fn sync_lookback_edges(edge_buf_len: usize) -> u16 {
-    (edge_buf_len / 2 - SYNC_SIGNATURE_EDGES) as u16
-}
-
 /// Minimum edge-ring depth (in `u16` slots, rounded up to a power of two)
-/// that satisfies the Sync back-search at the given lookback target. Power-
-/// of-two so the chip-side `% EDGE_BUF_LEN` math collapses to AND on the
-/// hardware-divider-free CH32V006.
-pub const fn edge_buf_len(sync_lookback_edges: u16) -> usize {
-    (2 * (sync_lookback_edges as usize + SYNC_SIGNATURE_EDGES)).next_power_of_two()
+/// derived from the byte-ring size. Power-of-two so the chip-side
+/// `% EDGE_BUF_LEN` math collapses to AND on the hardware-divider-free
+/// CH32V006.
+///
+/// The edge ring must hold every falling-edge stamp produced by the bytes
+/// in one poll batch. Under byte-ring HT/TC drain, one batch is at most
+/// `rx_buf_len / 2` bytes (bytes accumulated between two half-transfer
+/// events), each contributing at most [`MAX_EDGES_PER_BYTE`] edges. Add
+/// [`PADDING_EDGES_AHEAD`] for noise + one in-flight partial-byte start-
+/// bit edge whose byte is still shifting on the wire at poll entry.
+///
+/// [`EdgeParser::walk_pairs_back`]'s reach beyond the batch is best-
+/// effort: on missing edges it free-runs and emits fewer HSI drift pairs
+/// (slower convergence, never incorrect). It lives in the headroom
+/// `next_power_of_two` rounding leaves.
+pub const fn edge_buf_len(rx_buf_len: usize) -> usize {
+    let et_min = (rx_buf_len / 2) * MAX_EDGES_PER_BYTE as usize + PADDING_EDGES_AHEAD as usize;
+    et_min.next_power_of_two()
 }
 
-/// Minimum byte-ring depth (in `u8` slots, rounded up to a power of two)
-/// that holds one HT half-period of bytes. Bytes drain at `edges / k` where
-/// `k ∈ [1, 5]`; worst case `k=1` (high-density `0xFF` content) → one byte
-/// per edge → exactly `EDGE_BUF_LEN / 2` bytes between HT firings.
-pub const fn rx_buf_len(sync_lookback_edges: u16) -> usize {
-    (sync_lookback_edges as usize + SYNC_SIGNATURE_EDGES).next_power_of_two()
-}
-
+/// Tail-signature band check. Intra-byte transitions (two edges inside one
+/// byte) get a ±0.5·bit window — drift can't accumulate inside a single
+/// byte, so the floor is capture jitter. Cross-byte transitions (last edge
+/// of byte N → first edge of byte N+1) get ±1·bit — same as a wide Sync
+/// band — to absorb factory HSI drift plus residual idle-gap jitter.
 #[inline]
-fn in_band(delta: u16, lo_x2: u32, hi_x2: u32, tpb: u16) -> bool {
-    let d_x2 = (delta as u32) * 2;
-    let tpb = tpb as u32;
-    d_x2 >= lo_x2 * tpb && d_x2 <= hi_x2 * tpb
+fn tail_delta_in_band(delta: u16, expected_bits: u16, tpb: u16, cross_byte: bool) -> bool {
+    let actual_x2 = (delta as u32) * 2;
+    let expected_x2 = (expected_bits as u32) * 2 * (tpb as u32);
+    let tol_x2 = if cross_byte {
+        2 * tpb as u32
+    } else {
+        tpb as u32
+    };
+    actual_x2.abs_diff(expected_x2) <= tol_x2
+}
+
+/// Falling-edge positions within a single UART byte, expressed as bit-time
+/// offsets from the start bit. Always includes position 0 (the start
+/// edge). Returns `(positions, count)` — at most 5 entries (start + up to
+/// 4 intra-byte `1→0` transitions across `d0..d7`; stop=1 produces no
+/// trailing edge). UART stream is LSB-first
+/// `[idle=1, start=0, d0, d1, …, d7, stop=1]`; an edge lands at position
+/// `p` iff bit at `p-1` is `1` and bit at `p` is `0`. Position 0 is the
+/// `idle→start` transition (always present).
+#[inline]
+fn byte_edge_positions(b: u8) -> ([u8; 5], usize) {
+    let mut positions = [0u8; 5];
+    let mut n = 1;
+    let mut prev = 0u8;
+    let mut i = 0;
+    while i < 8 {
+        let cur = (b >> i) & 1;
+        if prev == 1 && cur == 0 {
+            positions[n] = (i + 1) as u8;
+            n += 1;
+        }
+        prev = cur;
+        i += 1;
+    }
+    (positions, n)
 }
 
 /// Lift a 16-bit IC stamp into the WireClock u32 domain. The contract
@@ -192,12 +170,12 @@ fn lift(stamp: u16, ref_tick: u32) -> u32 {
     ref_tick.wrapping_sub(delta)
 }
 
-/// Correct an ISR-entry `now` back into the u16-wrap window above
-/// `last_byte_start` so [`lift`] doesn't alias under sub-wrap baud math.
-/// At low baud (9600), `now − stamp` at IDLE drain is `2·BITS_PER_FRAME·
-/// tpb = 100_000` ticks > 65_536 (u16 wrap @ 48 MHz HCLK) — `lift(stamp,
-/// now)` silently aliases one wrap too high (~1.365 ms drift). HT/TC
-/// drain runs ~1·tpb after the start bit, always within one wrap.
+/// Correct an ISR-entry `now` back into the u16-wrap window above the tail
+/// anchor so [`lift`] doesn't alias under sub-wrap baud math. At low baud
+/// (9600), `now − stamp` at IDLE drain is `2·BITS_PER_FRAME·tpb = 100_000`
+/// ticks > 65_536 (u16 wrap @ 48 MHz HCLK) — `lift(stamp, now)` silently
+/// aliases one wrap too high (~1.365 ms drift). HT/TC drain runs ~1·tpb
+/// after the start bit, always within one wrap.
 ///
 /// At Idle we subtract `BITS_PER_FRAME · tpb` (= 10·tpb) — NOT `2·tpb·
 /// BITS_PER_FRAME`. The exact IDLE elapsed is `2·BITS_PER_FRAME·tpb`
@@ -225,51 +203,48 @@ fn drain_ref(now: u32, src: PollSrc, ticks_per_bit: u16) -> u32 {
 }
 
 pub struct EdgeParser {
-    /// Tick of the most recently classified byte's start bit. `None` when
-    /// no anchor is held (cold boot, post-Crc, post-Resync, post-GAP,
-    /// post-failed back-search). Window math `last_byte_start ± 10·bit`
-    /// drives subsequent edges; updated per byte boundary by the walker.
-    last_byte_start: Option<u16>,
-    /// Tick of the byte before `last_byte_start`. Lets the walker emit
-    /// `(prev, curr)` pairs to the drift consumer without the consumer
-    /// having to thread its own previous-tick state.
-    prev_byte_start: Option<u16>,
-    /// Drift-sampling enable. The composite sets this at the parser's
-    /// Instruction-header event, clears at the matching CRC event (or
-    /// earlier on Resync). Status frames never set it — drift sampling
-    /// is sourced from host HSE only (doc §5.4).
-    hsi_active: bool,
+    /// Tail-signature back-search anchor — the LAST tail byte's start
+    /// tick, set by [`Self::anchor_at_tail`] at the parser's Crc event.
+    /// Sole source for [`Self::packet_end_tick`]; also the walk seed for
+    /// [`Self::walk_pairs_back`]. Cleared at packet boundary.
+    tail_anchor: Option<u16>,
+    /// Start-edge stamps of the four tail-signature bytes, oldest first
+    /// (`tail_starts[3]` == `tail_anchor` on match). Populated by
+    /// [`Self::anchor_at_tail`] during signature validation — the walk
+    /// already visits each byte's start edge for band-checking, so
+    /// caching them costs a few u16 writes. Consumed by
+    /// [`Self::walk_pairs_back`] to emit up to three
+    /// `(tail_starts[k], tail_starts[k+1])` pairs directly, skipping
+    /// three per-step ring scans in steady mode. Valid iff
+    /// `tail_anchor.is_some()`.
+    tail_starts: [u16; TAIL_STARTS],
+    /// Ring offset of `tail_starts[0]` — the OLDEST cached start edge —
+    /// so [`Self::walk_pairs_back`] can seed the ring walk from there
+    /// when it needs pairs beyond the cache. Same lifecycle as
+    /// [`Self::tail_starts`].
+    tail_starts_oldest_ring_off: Option<u16>,
     /// Per-baud RX edge-stamp compensation, in IC-stamp ticks. Every
     /// stamp read from the edge ring gets `wrapping_sub(rx_edge_comp_ticks)`
-    /// applied before any internal use, so stored state
-    /// (`last_byte_start`, `prev_byte_start`), classifier band checks, and
-    /// pushed `(prev, curr)` pairs all live in wire-edge time. Pushed by
-    /// the codec via [`Self::on_baud_change`] at driver construction and
-    /// after every applied baud change. Default `0` until the first push —
-    /// safe (no anchor exists yet at default) and matches the
-    /// no-compensation case on chips that ship a zero-delay stamp path.
+    /// applied before any internal use, so stored state (`tail_anchor`),
+    /// band checks, and pushed `(prev, curr)` pairs all live in wire-edge
+    /// time. Pushed by the codec via [`Self::on_baud_change`] at driver
+    /// construction and after every applied baud change. Default `0` until
+    /// the first push — safe (no anchor exists yet at default) and matches
+    /// the no-compensation case on chips that ship a zero-delay stamp path.
     rx_edge_comp_ticks: u16,
-
-    hits: u16,
-    skips: u16,
-    gaps: u16,
-    header_matches: u16,
-    header_mismatches: u16,
 }
 
 impl EdgeParser {
-    #[allow(dead_code)]
+    // `const fn` — can't implement `Default::default` (not const), so the
+    // clippy suggestion doesn't apply. `Rx::new` (also `pub const fn`)
+    // calls this at codec initialization.
+    #[allow(clippy::new_without_default)]
     pub const fn new() -> Self {
         Self {
-            last_byte_start: None,
-            prev_byte_start: None,
-            hsi_active: false,
+            tail_anchor: None,
+            tail_starts: [0u16; TAIL_STARTS],
+            tail_starts_oldest_ring_off: None,
             rx_edge_comp_ticks: 0,
-            hits: 0,
-            skips: 0,
-            gaps: 0,
-            header_matches: 0,
-            header_mismatches: 0,
         }
     }
 
@@ -283,346 +258,189 @@ impl EdgeParser {
         self.rx_edge_comp_ticks = rx_edge_comp_ticks;
     }
 
-    /// Single-window check of the Sync signature at exactly `offset` edges
-    /// back from the published head. On match: sets `last_byte_start` /
-    /// `prev_byte_start` to e5 (the `0x00` start bit), advances the ET
-    /// reader past e5, and returns `true`. On miss: returns `false` with
-    /// no state mutation. Caller is responsible for the `resync_if_lapped`
-    /// + `recent_count` prelude and for incrementing `header_matches` on
-    ///   success / `header_mismatches` after exhausting the search.
+    /// Single-window check of the tail signature: anchor the FIRST tail
+    /// byte's start edge at `head_offset` slots back from the ring head,
+    /// then walk forward through the per-byte falling-edge pattern checking
+    /// each inter-edge delta. On match: returns each tail byte's start
+    /// tick (oldest at `[0]`, LAST tail byte's start = CRC byte's start
+    /// at `[TAIL_STARTS - 1]`). On miss: returns `None` with no state
+    /// mutation.
     ///
-    /// `self.rx_edge_comp_ticks` is subtracted from every stamp at
-    /// read-from-ring time so all stored state (`last_byte_start`,
-    /// `prev_byte_start`) and every downstream consumer (`packet_end_tick`,
-    /// integrator pairs) live in wire-edge time rather than IC-filter-output
-    /// time. The intra-window delta band checks are comp-invariant — the
-    /// constant cancels.
-    fn try_anchor_at_offset<const EDGE_BUF_LEN: usize>(
-        &mut self,
-        edges: &mut HwRing<u16, EDGE_BUF_LEN>,
-        avail: u16,
-        offset: u16,
+    /// Cross-byte deltas (last edge of byte N → first edge of byte N+1)
+    /// allow ±1·bit; intra-byte deltas allow ±0.5·bit — same convention
+    /// as a wide/narrow band split. `rx_edge_comp_ticks` is subtracted
+    /// from every stamp at read-from-ring time so the return value is
+    /// wire-edge time.
+    fn try_anchor_at_tail_offset<const EDGE_BUF_LEN: usize>(
+        &self,
+        edges: &HwRing<u16, EDGE_BUF_LEN>,
+        head_offset: u16,
+        tail_bytes: &[u8],
         ticks_per_bit: u16,
-    ) -> bool {
+    ) -> Option<[u16; TAIL_STARTS]> {
         let rx_edge_comp = self.rx_edge_comp_ticks;
-        // Window edges (terminal = e5 at `offset` slots back from the
-        // head, e1 the oldest of the window):
-        //   e5 = recent(offset),     e4 = recent(offset + 1),
-        //   e3 = recent(offset + 2), e2 = recent(offset + 3),
-        //   e1 = recent(offset + 4).
-        // Quiet check (when offset > 0) reads e6 = recent(offset - 1).
-        let Some(&e5_raw) = edges.recent(offset) else {
-            return false;
-        };
-        let Some(&e4_raw) = edges.recent(offset + 1) else {
-            return false;
-        };
-        let Some(&e3_raw) = edges.recent(offset + 2) else {
-            return false;
-        };
-        let Some(&e2_raw) = edges.recent(offset + 3) else {
-            return false;
-        };
-        let Some(&e1_raw) = edges.recent(offset + 4) else {
-            return false;
-        };
-        let e5 = e5_raw.wrapping_sub(rx_edge_comp);
-        let e4 = e4_raw.wrapping_sub(rx_edge_comp);
-        let e3 = e3_raw.wrapping_sub(rx_edge_comp);
-        let e2 = e2_raw.wrapping_sub(rx_edge_comp);
-        let e1 = e1_raw.wrapping_sub(rx_edge_comp);
+        let mut sig_idx: u16 = 0;
+        let mut prev_tick: u16 = 0;
+        let mut prev_bit_pos: u16 = 0;
+        let mut starts = [0u16; TAIL_STARTS];
+        let mut matched = false;
 
-        let d_12 = e2.wrapping_sub(e1);
-        let d_23 = e3.wrapping_sub(e2);
-        let d_34 = e4.wrapping_sub(e3);
-        let d_45 = e5.wrapping_sub(e4);
+        let n_bytes = tail_bytes.len();
+        let mut bi = 0;
+        while bi < n_bytes {
+            let b = tail_bytes[bi];
+            let (positions, count) = byte_edge_positions(b);
+            let byte_start_bit = (bi as u16).wrapping_mul(BITS_PER_FRAME);
 
-        if !in_band(d_12, WIDE_LO_X2, WIDE_HI_X2, ticks_per_bit) {
-            return false;
-        }
-        if !in_band(d_23, WIDE_LO_X2, WIDE_HI_X2, ticks_per_bit) {
-            return false;
-        }
-        if !in_band(d_34, NARROW_LO_X2, NARROW_HI_X2, ticks_per_bit) {
-            return false;
-        }
-        if !in_band(d_45, MID_LO_X2, MID_HI_X2, ticks_per_bit) {
-            return false;
-        }
+            let mut k = 0;
+            while k < count {
+                let bit_pos = byte_start_bit.wrapping_add(positions[k] as u16);
 
-        // Quiet check: if a successor edge has been published, its delta
-        // from e5 must clear the `≥7·bit` floor. If no successor edge yet
-        // (offset == 0 at the cold-edge case), accept — byte 4's start
-        // bit may not have latched at the moment the parser emitted
-        // Header.
-        if offset > 0
-            && let Some(&e6_raw) = edges.recent(offset - 1)
-        {
-            // Subtract comp from e6 too so the delta is symmetric with the
-            // intra-window checks above — comp cancels in the delta, but
-            // keeping every stamp in the same domain prevents subtle off-
-            // by-comp drift if either side of this band check changes.
-            let e6 = e6_raw.wrapping_sub(rx_edge_comp);
-            let d_56 = e6.wrapping_sub(e5);
-            let d_x2 = (d_56 as u32) * 2;
-            if d_x2 < QUIET_MIN_X2 * ticks_per_bit as u32 {
-                return false;
+                // Map signature index → ring offset. sig_idx 0 sits at
+                // `head_offset` (oldest in the signature); sig_idx grows
+                // toward the ring head as we walk forward.
+                let recent_off = head_offset.wrapping_sub(sig_idx);
+                let &e_raw = edges.recent(recent_off)?;
+                let e = e_raw.wrapping_sub(rx_edge_comp);
+
+                if sig_idx > 0 {
+                    let actual = e.wrapping_sub(prev_tick);
+                    let expected_bits = bit_pos.wrapping_sub(prev_bit_pos);
+                    let cross_byte = k == 0;
+                    if !tail_delta_in_band(actual, expected_bits, ticks_per_bit, cross_byte) {
+                        return None;
+                    }
+                }
+
+                if k == 0 && bi < TAIL_STARTS {
+                    starts[bi] = e;
+                    if bi == n_bytes - 1 {
+                        matched = true;
+                    }
+                }
+
+                prev_tick = e;
+                prev_bit_pos = bit_pos;
+                sig_idx = sig_idx.wrapping_add(1);
+                k += 1;
             }
+            bi += 1;
         }
 
-        // Match. Anchor = e5 (byte 3 start bit). Seed prev = e5 so
-        // the first forward HIT (byte 4) emits the (byte 3, byte 4)
-        // pair — the first drift-eligible body-byte transition.
-        self.last_byte_start = Some(e5);
-        self.prev_byte_start = Some(e5);
-        // Advance ET reader to one past e5: e5 sits `offset + 1` slots
-        // before the head, so the slot just after e5 is `offset` slots
-        // before the head, i.e. distance `avail - offset` from the
-        // current read cursor.
-        edges.reader().advance(avail - offset);
-        true
+        matched.then_some(starts)
     }
 
-    /// Back-search the ET ring for the DXL header's 5-edge signature.
-    /// Called by the codec at every parser `Event::Sync` (via the hinted
-    /// fast path's fallback). On match, the anchor is set to edge 5's
-    /// tick (= byte 3 = `0x00` start bit), the ET reader cursor advances
-    /// to one past edge 5, and `true` is returned. On mismatch, anchor +
-    /// prev are cleared and `false` is returned — the next packet's Sync
-    /// re-attempts anchor from scratch (doc §4.4).
+    /// Back-search the ET ring for the just-received tail bytes' wire-edge
+    /// signature. Called by the codec at every parser `Event::Crc` with
+    /// the last few raw wire bytes (pre-unstuff) the parser consumed and
+    /// `d_min` — the summed [`EDGES_PER_BYTE`] of bytes drained-but-not-
+    /// yet-parsed past CRC in the byte ring at Crc emit. On match,
+    /// [`Self::tail_anchor`] is set to the LAST tail byte's start tick —
+    /// what [`Self::packet_end_tick`] reads to derive `packet_end_tick
+    /// = anchor + 10·bit` in wire-edge time. On miss, [`Self::tail_anchor`]
+    /// is cleared and the composite's downstream fallback path runs.
     ///
-    /// Scans up to [`sync_lookback_edges`]`(EDGE_BUF_LEN) + 1` windows
-    /// ending at the most recent published edges, most-recent first.
-    /// Accepts the first window whose 4 inter-edge deltas land in the
-    /// `[~10, ~10, ~2, ~8]·bit` bands and whose successor edge (if
-    /// present) sits beyond the `≥7·bit` quiet floor.
-    pub fn anchor_at_signature<const EDGE_BUF_LEN: usize>(
+    /// Search window: `[d_min .. d_min + PADDING_EDGES_AHEAD]` slots back
+    /// from head, where `d_min` locates CRC's tail edge in ET (bytes past
+    /// CRC in the ring contribute edges between head and CRC's tail
+    /// edge). The signature spans `total_edges - 1` slots deeper still,
+    /// so the actual probe offset walked by [`Self::try_anchor_at_tail_offset`]
+    /// is `d_min + total_edges - 1 + slack`. [`EDGES_PER_BYTE`] gives the
+    /// *minimum* edge count — real wire adds edges past that floor via
+    /// in-flight partial bytes / EMI, absorbed by the `PADDING_EDGES_AHEAD`
+    /// asymmetric slack.
+    ///
+    /// The 4-byte tail signature includes both CRC bytes, so per-shift
+    /// false-positive entropy is ~2^-16 — comfortably below the packet
+    /// rate.
+    pub fn anchor_at_tail<const EDGE_BUF_LEN: usize>(
         &mut self,
         edges: &mut HwRing<u16, EDGE_BUF_LEN>,
         ticks_per_bit: u16,
-    ) -> bool {
-        // After a heavy wire-noise burst (host glitch / malformed-input
-        // sequence) the producer may have lapped the consumer by many
-        // rings.
-        // Force-resync the reader to `write_seq − N` so the post-match
-        // `advance(avail − offset)` lands at exactly `write_seq − offset`
-        // — without this, `advance` is relative to a stale cursor and
-        // the walker's first `peek` auto-resyncs past the just-anchored
-        // byte.
-        edges.reader().resync_if_lapped();
-        // Producer-side, lap-safe count: `Reader::avail` zeros on lap
-        // (consumer-cursor freshness); `recent_count` saturates at `N`
-        // (producer-side accessibility), which is what the back-search
-        // actually has to work with.
-        let avail = edges.recent_count();
-        crate::log::trace!(
-            "classifier: anchor entry avail={} ticks_per_bit={}",
-            avail,
-            ticks_per_bit
-        );
-        if avail < 5 {
-            crate::log::trace!("classifier: anchor insufficient avail<5");
-            return false;
-        }
-
-        let max_offset = sync_lookback_edges(EDGE_BUF_LEN).min(avail - 5);
-        for offset in 0..=max_offset {
-            if self.try_anchor_at_offset(edges, avail, offset, ticks_per_bit) {
-                self.header_matches = self.header_matches.wrapping_add(1);
-                crate::log::debug!("classifier: anchor match offset={}", offset);
-                return true;
-            }
-        }
-
-        // No window matched: drop any stale anchor; the packet boundary
-        // is real even if the pattern didn't resolve.
-        self.last_byte_start = None;
-        self.prev_byte_start = None;
-        self.header_mismatches = self.header_mismatches.wrapping_add(1);
-        crate::log::debug!(
-            "classifier: anchor pattern miss across {} windows",
-            max_offset + 1
-        );
-        false
-    }
-
-    /// Hinted anchor fast path. `body_edges` is the byte-derived count of
-    /// edges produced by uncommitted body bytes already sitting in the
-    /// byte ring past the parser's just-consumed sync header — summing
-    /// [`EDGES_PER_BYTE`] over those bytes. Because the LUT yields the
-    /// *minimum* (clean back-to-back) edge count and real wire only adds
-    /// edges (see [`PADDING_EDGES_AHEAD`] for the inventory), actual e5
-    /// sits at offset ≥ `body_edges` — this method probes
-    /// `[body_edges ..= body_edges + PADDING_EDGES_AHEAD]` with no lower
-    /// slack, walking forward only the few extra edges contributed by
-    /// idle / partial-byte / jitter / noise. Falls back to the full
-    /// [`Self::anchor_at_signature`] back-search on miss.
-    ///
-    /// Same correctness as the full back-search: on match, anchor + ET
-    /// cursor are established; on full miss anchor is cleared.
-    pub fn anchor_at_signature_hinted<const EDGE_BUF_LEN: usize>(
-        &mut self,
-        edges: &mut HwRing<u16, EDGE_BUF_LEN>,
-        ticks_per_bit: u16,
-        body_edges: u16,
+        tail_bytes: &[u8],
+        d_min: u16,
     ) -> bool {
         edges.reader().resync_if_lapped();
         let avail = edges.recent_count();
-        if avail < 5 {
+
+        let mut total_edges: u16 = 0;
+        for &b in tail_bytes {
+            total_edges = total_edges.wrapping_add(EDGES_PER_BYTE[b as usize] as u16);
+        }
+        // First tail byte's start edge sits this many slots back from head
+        // when CRC's tail edge is at offset `d_min`.
+        let base = d_min.saturating_add(total_edges.saturating_sub(1));
+        if total_edges < 2 || avail <= base {
+            self.tail_anchor = None;
+            self.tail_starts_oldest_ring_off = None;
+            crate::log::trace!(
+                "classifier: tail-anchor insufficient avail={} base={} total_edges={} d_min={}",
+                avail,
+                base,
+                total_edges,
+                d_min,
+            );
             return false;
         }
-        let max_offset = sync_lookback_edges(EDGE_BUF_LEN).min(avail - 5);
-        let lo = body_edges.min(max_offset);
-        let hi = body_edges
-            .saturating_add(PADDING_EDGES_AHEAD)
-            .min(max_offset);
 
-        for offset in lo..=hi {
-            if self.try_anchor_at_offset(edges, avail, offset, ticks_per_bit) {
-                self.header_matches = self.header_matches.wrapping_add(1);
+        let max_offset = avail - 1;
+        let lo = base.min(max_offset);
+        let hi = base.saturating_add(PADDING_EDGES_AHEAD).min(max_offset);
+
+        for o in lo..=hi {
+            if let Some(starts) = self.try_anchor_at_tail_offset(edges, o, tail_bytes, ticks_per_bit)
+            {
+                self.tail_anchor = Some(starts[TAIL_STARTS - 1]);
+                self.tail_starts = starts;
+                // `o` IS the oldest cached start's ring offset — the FIRST
+                // tail byte's start edge, by the sig_idx=0 invariant in
+                // `try_anchor_at_tail_offset`.
+                self.tail_starts_oldest_ring_off = Some(o);
                 crate::log::debug!(
-                    "classifier: anchor fast match offset={} hint={}",
-                    offset,
-                    body_edges
+                    "classifier: tail-anchor match offset={} base={} d_min={} total={}",
+                    o,
+                    base,
+                    d_min,
+                    total_edges,
                 );
                 return true;
             }
         }
 
-        // Fast path didn't find the signature in the hinted window —
-        // fall back to the full back-search. Residue scenarios (stale
-        // sync further out than the hint range) land here.
-        self.anchor_at_signature(edges, ticks_per_bit)
-    }
-
-    /// Walk forward exactly `n` byte-boundaries from the current anchor,
-    /// identifying each next start-bit edge via the `[9·bit, 11·bit]`
-    /// window and consuming any intra-byte transitions (SKIP arm) along
-    /// the way. Pushes each new `(prev, curr)` byte pair into `pairs`
-    /// when `hsi_active` is set; overflow past the buffer's capacity is
-    /// silently dropped (the drift integrator tolerates skips). Returns
-    /// the number of byte-boundaries actually advanced — which may be
-    /// less than `n` when:
-    ///
-    /// - No anchor is held (cold boot, post-Crc, post-Resync, post-GAP,
-    ///   post-failed back-search). Edges stay in the ring for the next
-    ///   `Event::Sync` back-search.
-    /// - The reader exhausts mid-advance (edges for the next boundary
-    ///   haven't arrived yet at this poll). Anchor is preserved; the
-    ///   next call resumes from where this one left off, by computing a
-    ///   new delta against the codec's `last_walked_pos`.
-    /// - A GAP fires (out-of-window edge): anchor drops, `n` is partially
-    ///   credited up to the GAP. `packet_end_tick` at Crc then returns
-    ///   `None` and the driver falls back to the ISR-time backstop.
-    ///
-    /// `n == 0` is a no-op. Cross-packet stale anchors are handled by
-    /// the next packet's `anchor_at_signature` (back-search re-seeds).
-    ///
-    /// `win_lo` / `win_hi` come from [`walker_window`] — caller computes
-    /// once per `poll()` so the same two muls aren't paid per event.
-    #[inline]
-    pub fn advance_bytes<const EDGE_BUF_LEN: usize, const PAIRS_LEN: usize>(
-        &mut self,
-        edges: &mut HwRing<u16, EDGE_BUF_LEN>,
-        n: u16,
-        win_lo: u16,
-        win_hi: u16,
-        pairs: &mut heapless::Vec<(u16, u16), PAIRS_LEN>,
-    ) -> u16 {
-        if n == 0 {
-            return 0;
-        }
-        crate::log::trace!(
-            "classifier: advance entry avail={} anchor={:?} n={}",
-            edges.reader().avail(),
-            self.last_byte_start,
-            n
+        self.tail_anchor = None;
+        self.tail_starts_oldest_ring_off = None;
+        crate::log::debug!(
+            "classifier: tail-anchor miss base={} d_min={} total={}",
+            base,
+            d_min,
+            total_edges,
         );
-
-        let rx_edge_comp = self.rx_edge_comp_ticks;
-        let mut advanced: u16 = 0;
-        let mut reader = edges.reader();
-        while advanced < n {
-            let Some(&t_raw) = reader.peek() else {
-                // Edges for the next boundary haven't arrived yet —
-                // leave anchor intact and the caller's outstanding
-                // count to be picked up on the next poll's delta.
-                crate::log::trace!("classifier: advance bail (no edges) advanced={}", advanced);
-                return advanced;
-            };
-            // Compensate at read-from-ring; from here `t` is wire-edge
-            // time. `last_byte_start` is already compensated by a prior
-            // anchor-or-advance step, so the delta below is wire-edge
-            // delta (comp cancels in the subtraction either way).
-            let t = t_raw.wrapping_sub(rx_edge_comp);
-            let Some(a) = self.last_byte_start else {
-                // No anchor → can't classify this byte. Leave the edge
-                // in the ring so the next Sync back-search has the
-                // signature available.
-                crate::log::trace!("classifier: advance bail edge={} (no anchor)", t);
-                return advanced;
-            };
-            let delta = t.wrapping_sub(a);
-            if delta < win_lo {
-                self.skips = self.skips.wrapping_add(1);
-                crate::log::trace!("classifier: advance skip edge={} delta={}", t, delta);
-                reader.advance(1);
-            } else if delta <= win_hi {
-                self.prev_byte_start = self.last_byte_start;
-                self.last_byte_start = Some(t);
-                if self.hsi_active {
-                    let _ = pairs.push((a, t));
-                }
-                self.hits = self.hits.wrapping_add(1);
-                advanced += 1;
-                crate::log::trace!("classifier: advance hit edge={} delta={}", t, delta);
-                reader.advance(1);
-            } else {
-                // GAP — out-of-window edge. Drop anchor + prev and
-                // leave the edge in the ring. This is now a genuine
-                // anomaly signal (the parser-driven design never
-                // overshoots), not a cross-packet boundary guard:
-                // either we lost an edge (DMA overflow / EMI) or HSI
-                // drift exceeded the window. packet_end_tick at the
-                // pending Crc returns None; the driver falls back.
-                self.last_byte_start = None;
-                self.prev_byte_start = None;
-                self.gaps = self.gaps.wrapping_add(1);
-                crate::log::trace!("classifier: advance gap edge={} delta={}", t, delta);
-                return advanced;
-            }
-        }
-        crate::log::trace!("classifier: advance done advanced={}", advanced);
-        advanced
+        false
     }
 
-    /// Tick of the most recently classified byte's start bit, lifted into
-    /// the WireClock u32 domain. Composite reads at parser event-handling
-    /// time for one-shot stamps. `now` is the most recent ISR-entry
-    /// WireClock reading; `src` picks the per-drain reference correction
-    /// (see [`drain_ref`]) so the lift doesn't alias at low baud.
-    #[allow(dead_code)]
-    pub fn current_byte_tick(&self, ticks_per_bit: u16, now: u32, src: PollSrc) -> Option<u32> {
-        let r = drain_ref(now, src, ticks_per_bit);
-        self.last_byte_start.map(|t| lift(t, r))
+    /// Read the tail-anchor tick in wire-edge time. Composite consults at
+    /// walk time after `arm_tim2` has fired at the parser's Crc event so
+    /// the retroactive integrator walk lives off the deadline path.
+    pub fn tail_anchor(&self) -> Option<u16> {
+        self.tail_anchor
     }
 
-    /// Wire-end tick of the most recently classified byte, lifted into the
-    /// WireClock u32 domain. Composite stamps `packet_end_tick` at the
-    /// parser's CRC-good event — the CRC byte's start sits at
-    /// `last_byte_start`, the wire-end one byte-time later. `now` / `src`
-    /// route through [`drain_ref`] so the lift stays sub-wrap at low baud.
+    /// Wire-end tick of the just-completed packet, lifted into the WireClock
+    /// u32 domain. Composite stamps `packet_end_tick` at the parser's
+    /// CRC-good event — the CRC byte's start sits at the tail anchor, the
+    /// wire-end one byte-time later. `now` / `src` route through
+    /// [`drain_ref`] so the lift stays sub-wrap at low baud.
     #[allow(dead_code)]
     pub fn packet_end_tick(&self, ticks_per_bit: u16, now: u32, src: PollSrc) -> Option<u32> {
         let frame_ticks = (ticks_per_bit as u32).wrapping_mul(BITS_PER_FRAME as u32);
         let r = drain_ref(now, src, ticks_per_bit);
-        self.last_byte_start
+        self.tail_anchor
             .map(|t| lift(t, r).wrapping_add(frame_ticks))
     }
 
     /// Fallback packet-end estimate for the no-anchor case — the composite
     /// calls this at Crc when [`packet_end_tick`] returns `None` (interference
-    /// or edge loss starved the classifier). Formula per `src`:
+    /// or edge loss starved the tail-anchor back-search). Formula per `src`:
     ///
     /// - [`PollSrc::Dma`]: returns `now`. CRC byte landed in DMA
     ///   ~immediately before the poll, so `now` IS packet-end with negligible
@@ -644,35 +462,200 @@ impl EdgeParser {
         }
     }
 
-    #[allow(dead_code)]
-    pub fn set_hsi_active(&mut self, on: bool) {
-        self.hsi_active = on;
-    }
-
-    #[allow(dead_code)]
-    pub fn hsi_active(&self) -> bool {
-        self.hsi_active
-    }
-
-    /// Force-drop anchor, prev, and the drift flag. Composite calls at
-    /// the parser's Crc event (deterministic packet boundary — state is
-    /// stale once the packet ended) and Resync event (mid-packet abort
-    /// — discard any in-flight timing state).
+    /// Force-drop the tail anchor. Composite calls at the parser's Crc
+    /// event (deterministic packet boundary — state is stale once the
+    /// packet ended) and Resync event (mid-packet abort — discard any
+    /// in-flight timing state).
     #[allow(dead_code)]
     pub fn reset_anchor(&mut self) {
-        self.last_byte_start = None;
-        self.prev_byte_start = None;
-        self.hsi_active = false;
+        self.tail_anchor = None;
+        self.tail_starts_oldest_ring_off = None;
     }
 
-    /// Force `last_byte_start` to a known tick without staging real edges.
-    /// Composite-test scaffolding so [`packet_end_tick`] reads a deterministic
-    /// value at Crc-good simulation. Production code mutates this only
-    /// through the walker.
+    /// Retroactive integrator walk. Emits pairs going backward from
+    /// `tail_anchor`: first the three cached `(tail_starts[k],
+    /// tail_starts[k+1])` pairs from the signature validation (no ring
+    /// scan needed), then — for any remaining `n_pairs` — a proper ring
+    /// walk seeded at `tail_starts[0]`. Each ring step predicts the
+    /// next byte's start at `anchor − BITS_PER_FRAME·tpb` and snaps to
+    /// the nearest captured IC edge within `±HSI_WALK_SNAP_BITS·tpb`;
+    /// on no-match the walk free-runs to the prediction without
+    /// emitting a pair (a zero-drift synthetic pair would bias the
+    /// integrator toward the free-run rate).
+    ///
+    /// Runs after `arm_tim2` at the parser's Crc event so the deadline
+    /// path pays only the tail-anchor cost, not the walk cost. `n_pairs`
+    /// comes from [`crate::dxl::uart::clock::Clock::samples_wanted_per_packet`];
+    /// `n_pairs == 0` is a no-op. `rx_edge_comp_ticks` is subtracted from
+    /// every stamp at read-from-ring time so emitted pairs are in wire-
+    /// edge time.
+    pub fn walk_pairs_back<const EDGE_BUF_LEN: usize, const PAIRS_LEN: usize>(
+        &self,
+        edges: &HwRing<u16, EDGE_BUF_LEN>,
+        _tail_anchor: u16,
+        n_pairs: u8,
+        ticks_per_bit: u16,
+        out_pairs: &mut heapless::Vec<(u16, u16), PAIRS_LEN>,
+    ) {
+        if n_pairs == 0 {
+            return;
+        }
+
+        // Emit cached pairs first: the anchor's signature walk already
+        // visited each byte's start edge and validated it against a
+        // ±1·bit cross-byte band — tighter than the walker's ±2·bit
+        // snap. So these pairs are strictly higher quality than a
+        // ring-walk snap; use them whenever we've got them.
+        let mut emitted: u8 = 0;
+        if self.tail_anchor.is_some() {
+            let cache_pairs = (TAIL_STARTS as u8) - 1;
+            let cache_take = n_pairs.min(cache_pairs);
+            let mut i = 0;
+            while i < cache_take {
+                let idx = i as usize;
+                let _ = out_pairs.push((self.tail_starts[idx], self.tail_starts[idx + 1]));
+                i += 1;
+            }
+            emitted = cache_take;
+        }
+        if emitted >= n_pairs {
+            return;
+        }
+
+        // i32 keeps the signed distance metric honest at 9600 baud —
+        // `byte_ticks = 50_000` overflows i16's positive range, so an
+        // `(e - predicted) as i16` metric aliases on the very first scan
+        // iter and every step free-runs. Consecutive edges within a
+        // packet are strictly < 65_536 ticks apart at every supported
+        // baud (max = 50_000 = one byte-time at 9600), so summing
+        // per-hop u16 deltas into an i32 accumulator relative to the
+        // walk seed gives an unaliased signed offset. No absolute-tick
+        // lift needed.
+        let byte_ticks = (ticks_per_bit as i32).wrapping_mul(BITS_PER_FRAME as i32);
+        let snap = (ticks_per_bit as i32).wrapping_mul(HSI_WALK_SNAP_BITS as i32);
+        let rx_edge_comp = self.rx_edge_comp_ticks;
+        let avail = edges.recent_count();
+
+        // Ring walk seeds at `tail_starts[0]` (the OLDEST cached start).
+        // Its ring offset is recorded by `anchor_at_tail` on match;
+        // without a match there's nothing to seed and we early-return.
+        let Some(probe_start) = self.tail_starts_oldest_ring_off else {
+            return;
+        };
+        if probe_start >= avail {
+            return;
+        }
+        let seed_stamp = self.tail_starts[0];
+
+        // `anchor` is the wire-clock u16 stamp emitted as `curr` in the
+        // next pair. `prev` is the last edge examined (or the anchor if
+        // no edge examined yet). `older_from_seed` is the i32 wire-clock
+        // distance from `seed_stamp` (the walk start) to `prev`,
+        // accumulated from per-hop deltas — persists across free-runs
+        // so scans resume from the right offset in signed space.
+        // `probe_offset` advances strictly older with each match
+        // (free-runs don't consume ring edges).
+        let mut anchor = seed_stamp;
+        let mut prev = seed_stamp;
+        let mut older_from_seed: i32 = 0;
+        let mut probe_offset: u16 = probe_start;
+
+        let remaining = n_pairs - emitted;
+        for k in 1..=remaining as u32 {
+            let target_older = (k as i32).wrapping_mul(byte_ticks);
+
+            // Scan older-ward from probe_offset for the edge closest to
+            // `target_older` back from tail_anchor. Track a per-scan
+            // (older, prev) copy so a mid-scan `break` doesn't leak
+            // partial-accumulator state into the free-run case.
+            let mut best: Option<(u16, u16, i32, i32)> = None; // (off, stamp, signed_delta, older_at_match)
+            let mut scan_older = older_from_seed;
+            let mut scan_prev = prev;
+            let mut off = probe_offset;
+            while off < avail {
+                let Some(&e_raw) = edges.recent(off) else {
+                    break;
+                };
+                let e = e_raw.wrapping_sub(rx_edge_comp);
+                let step = scan_prev.wrapping_sub(e) as i32;
+                scan_older = scan_older.saturating_add(step);
+                let signed_delta = target_older.saturating_sub(scan_older);
+                let abs = signed_delta.unsigned_abs();
+
+                if abs <= snap as u32 {
+                    let take = match best {
+                        None => true,
+                        Some((_, _, prev_sd, _)) => {
+                            let prev_abs = prev_sd.unsigned_abs();
+                            // Closest-to-prediction; tiebreak on
+                            // at-or-before predicted (real start edge
+                            // shifts NEXT byte start LATER on a chip-
+                            // driven inter-byte gap, so `at-or-before`
+                            // is the physical direction).
+                            abs < prev_abs || (abs == prev_abs && signed_delta <= 0)
+                        }
+                    };
+                    if take {
+                        best = Some((off, e, signed_delta, scan_older));
+                    }
+                }
+
+                if signed_delta < -snap {
+                    break;
+                }
+                scan_prev = e;
+                off = off.wrapping_add(1);
+            }
+
+            match best {
+                Some((off, match_stamp, _, older_at_match)) => {
+                    let _ = out_pairs.push((match_stamp, anchor));
+                    anchor = match_stamp;
+                    prev = match_stamp;
+                    older_from_seed = older_at_match;
+                    probe_offset = off.wrapping_add(1);
+                }
+                None => {
+                    // Free-run: virtual position moves back by
+                    // `byte_ticks`, but no ring edge was consumed —
+                    // leave `prev`, `older_from_seed`, and
+                    // `probe_offset` untouched so the next iter's scan
+                    // resumes from the same accumulator state.
+                    anchor = anchor.wrapping_sub(byte_ticks as u16);
+                }
+            }
+        }
+    }
+
+    /// Force the tail anchor to a known tick without staging real edges.
+    /// Composite-test scaffolding so [`packet_end_tick`] reads a
+    /// deterministic value at Crc-good simulation. Production code
+    /// mutates this only through [`Self::anchor_at_tail`].
     #[cfg(test)]
     pub fn force_byte_tick_for_test(&mut self, tick: u16) {
-        self.last_byte_start = Some(tick);
-        self.prev_byte_start = Some(tick);
+        self.tail_anchor = Some(tick);
+    }
+
+    /// Seed the walker's ring-scan starting point for tests that stage
+    /// edges directly. Bypasses the cache-emit path (`tail_anchor` left
+    /// `None`) so tests exercise the ring-walk accumulator in isolation.
+    /// `seed_stamp` is stored as `tail_starts[0]` (the walk's initial
+    /// anchor); `oldest_off` is its ring offset.
+    #[cfg(test)]
+    pub fn force_walker_ring_seed_for_test(&mut self, seed_stamp: u16, oldest_off: u16) {
+        self.tail_starts[0] = seed_stamp;
+        self.tail_starts_oldest_ring_off = Some(oldest_off);
+    }
+
+    /// Seed the cache-emit path AND ring seed for tests that exercise
+    /// the "3 pairs from cache + walker for the rest" flow. `starts` is
+    /// the 4-byte tail signature (oldest first); `oldest_off` is
+    /// `starts[0]`'s ring offset. `tail_anchor` = `starts[3]`.
+    #[cfg(test)]
+    pub fn force_tail_starts_for_test(&mut self, starts: [u16; TAIL_STARTS], oldest_off: u16) {
+        self.tail_starts = starts;
+        self.tail_starts_oldest_ring_off = Some(oldest_off);
+        self.tail_anchor = Some(starts[TAIL_STARTS - 1]);
     }
 }
 
@@ -686,7 +669,11 @@ mod tests {
     const BYTE_TICKS_3M: u16 = 160;
     // 1 Mbaud at HCLK 48 MHz → ticks_per_bit = 48. One byte = 480 ticks.
     const TPB_1M: u16 = 48;
-    const BYTE_TICKS_1M: u16 = 480;
+    // 9600 baud at HCLK 48 MHz → ticks_per_bit = 5000. One byte = 50000
+    // ticks — inside u16 range, but the walker's signed-distance metric
+    // aliases at i16 (50000 > i16::MAX). Regression fixture.
+    const TPB_9600: u16 = 5000;
+    const BYTE_TICKS_9600: u16 = 50000;
 
     fn make() -> EdgeParser {
         EdgeParser::new()
@@ -701,382 +688,17 @@ mod tests {
         b
     }
 
-    /// Synthesize a clean DXL header at base tick `t0` and bit-time `tpb`.
-    /// Returns the 5 falling-edge timestamps.
-    fn header_edges(t0: u16, tpb: u16) -> [u16; 5] {
-        let bt = tpb.wrapping_mul(10);
-        [
-            t0,                                  // byte 0 (0xFF) start
-            t0.wrapping_add(bt),                 // byte 1 (0xFF) start
-            t0.wrapping_add(bt.wrapping_mul(2)), // byte 2 (0xFD) start
-            t0.wrapping_add(bt.wrapping_mul(2))
-                .wrapping_add(tpb.wrapping_mul(2)), // 0xFD bit0→1 transition
-            t0.wrapping_add(bt.wrapping_mul(3)), // byte 3 (0x00) start
-        ]
-    }
-
-    #[test]
-    fn back_search_matches_3m_header_pattern() {
-        let mut c = make();
-        let h = header_edges(1000, TPB_3M);
-        let mut edges = edges16(&h);
-        assert!(c.anchor_at_signature(&mut edges, TPB_3M));
-        assert_eq!(c.last_byte_start, Some(h[4]));
-        assert_eq!(c.prev_byte_start, Some(h[4]));
-        assert_eq!(c.header_matches, 1);
-        assert_eq!(c.header_mismatches, 0);
-    }
-
-    #[test]
-    fn back_search_matches_1m_header_pattern() {
-        let mut c = make();
-        let h = header_edges(2000, TPB_1M);
-        let mut edges = edges16(&h);
-        assert!(c.anchor_at_signature(&mut edges, TPB_1M));
-        assert_eq!(c.last_byte_start, Some(h[4]));
-    }
-
-    #[test]
-    fn back_search_rejects_too_few_edges() {
-        let mut c = make();
-        // Only 4 of the 5 header edges present.
-        let mut edges = edges16(&[1000, 1160, 1320, 1352]);
-        assert!(!c.anchor_at_signature(&mut edges, TPB_3M));
-        // No anchor seeded; counter doesn't tick a mismatch either —
-        // insufficient data is distinct from pattern rejection.
-        assert_eq!(c.last_byte_start, None);
-        assert_eq!(c.header_matches, 0);
-        assert_eq!(c.header_mismatches, 0);
-    }
-
-    #[test]
-    fn back_search_rejects_wrong_narrow_gap() {
-        let mut c = make();
-        let mut h = header_edges(1000, TPB_3M);
-        // Perturb the 2·bit gap (e3→e4) to 4·bit.
-        h[3] = h[2].wrapping_add(TPB_3M.wrapping_mul(4));
-        let mut edges = edges16(&h);
-        assert!(!c.anchor_at_signature(&mut edges, TPB_3M));
-        assert_eq!(c.header_mismatches, 1);
-    }
-
-    #[test]
-    fn back_search_rejects_wrong_wide_interval() {
-        let mut c = make();
-        let mut h = header_edges(1000, TPB_3M);
-        // Perturb e1→e2 to 13·bit (way out of [9, 11]·bit).
-        h[1] = h[0].wrapping_add(TPB_3M.wrapping_mul(13));
-        h[2] = h[1].wrapping_add(TPB_3M.wrapping_mul(10));
-        h[3] = h[2].wrapping_add(TPB_3M.wrapping_mul(2));
-        h[4] = h[3].wrapping_add(TPB_3M.wrapping_mul(8));
-        let mut edges = edges16(&h);
-        assert!(!c.anchor_at_signature(&mut edges, TPB_3M));
-        assert_eq!(c.header_mismatches, 1);
-    }
-
-    #[test]
-    fn back_search_disambiguates_stuffed_payload() {
-        // FF FF FD FD near-match: the 6th edge would sit ~2·bit after e5
-        // (the second 0xFD's bit-0→bit-1 transition) instead of at the
-        // quiet ≥7·bit gap. Verifies the quiet check guards against
-        // stuffed payload near-matches.
-        let mut c = make();
-        let mut h = header_edges(1000, TPB_3M).to_vec();
-        // Push a 6th edge at e5 + 2·bit (would be quiet ≥7·bit on a real
-        // header).
-        h.push(h[4].wrapping_add(TPB_3M.wrapping_mul(2)));
-        let mut edges = edges16(&h);
-        // With offset==0, the 5 most recent edges are [e2, e3, e4, e5, e6];
-        // those deltas don't match the pattern, so window 0 rejects.
-        // With offset==1, the 5-edge window is [e1, e2, e3, e4, e5];
-        // pattern matches BUT the e6 quiet check fires and rejects.
-        assert!(!c.anchor_at_signature(&mut edges, TPB_3M));
-        assert_eq!(c.header_mismatches, 1);
-    }
-
-    #[test]
-    fn back_search_advances_read_cursor_past_header_edges() {
-        let mut c = make();
-        let h = header_edges(1000, TPB_3M);
-        let mut edges = edges16(&h);
-        assert!(c.anchor_at_signature(&mut edges, TPB_3M));
-        // Walker's next call should see zero available edges — the 5
-        // header edges were consumed by the back-search advance.
-        assert_eq!(edges.reader().avail(), 0);
-    }
-
-    #[test]
-    fn back_search_with_one_extra_edge_finds_window_at_offset_1() {
-        let mut c = make();
-        let mut h = header_edges(1000, TPB_3M).to_vec();
-        // Add byte 4's start bit at e5 + 10·bit (clears the ≥7·bit quiet
-        // floor) — exercises offset>0 path with a clean quiet check.
-        h.push(h[4].wrapping_add(BYTE_TICKS_3M));
-        let mut edges = edges16(&h);
-        assert!(c.anchor_at_signature(&mut edges, TPB_3M));
-        assert_eq!(c.last_byte_start, Some(h[4]));
-        // Reader advanced past e5 — byte 4's edge is still pending.
-        assert_eq!(edges.reader().avail(), 1);
-    }
-
-    #[test]
-    fn back_search_mismatch_drops_stale_anchor() {
-        let mut c = make();
-        c.last_byte_start = Some(7777);
-        c.prev_byte_start = Some(7777);
-        let mut edges = edges16(&[1000, 1160, 1320, 1352, 9999]);
-        // The 4·bit delta from e4 (1352) to e5 (9999) is way out of band.
-        assert!(!c.anchor_at_signature(&mut edges, TPB_3M));
-        assert_eq!(c.last_byte_start, None);
-        assert_eq!(c.prev_byte_start, None);
-    }
-
-    #[test]
-    fn advance_without_anchor_leaves_edges_in_ring() {
-        let mut c = make();
-        let mut edges = edges16(&[1000, 1160, 1320]);
-        let avail_before = edges.reader().avail();
-        let (lo, hi) = walker_window(TPB_3M);
-        let mut pairs: heapless::Vec<(u16, u16), 4> = heapless::Vec::new();
-        let advanced = c.advance_bytes(&mut edges, 3, lo, hi, &mut pairs);
-        assert_eq!(advanced, 0);
-        assert_eq!(c.last_byte_start, None);
-        assert_eq!(c.hits, 0);
-        assert_eq!(c.skips, 0);
-        assert_eq!(c.gaps, 0);
-        assert!(pairs.is_empty());
-        // No anchor → edges stay for the next Sync back-search.
-        assert_eq!(edges.reader().avail(), avail_before);
-    }
-
-    #[test]
-    fn advance_with_no_anchor_preserves_header_signature_for_back_search() {
-        // Regression for the Ping-canary failure: an early advance must
-        // not silently consume the header signature when no anchor is
-        // held; otherwise `anchor_at_signature` sees avail=0 and the
-        // composite never stamps `packet_end_tick`.
-        let mut c = make();
-        let h = header_edges(1000, TPB_3M);
-        let mut edges = edges16(&h);
-
-        let (lo, hi) = walker_window(TPB_3M);
-        let mut pairs: heapless::Vec<(u16, u16), 4> = heapless::Vec::new();
-        let advanced = c.advance_bytes(&mut edges, 5, lo, hi, &mut pairs);
-        assert_eq!(advanced, 0);
-        assert_eq!(edges.reader().avail(), 5, "advance must leave edges");
-
-        assert!(c.anchor_at_signature(&mut edges, TPB_3M));
-        assert_eq!(c.last_byte_start, Some(h[4]));
-        assert_eq!(c.header_matches, 1);
-    }
-
-    #[test]
-    fn advance_hit_emits_pair_when_active() {
-        let mut c = make();
-        c.last_byte_start = Some(1000);
-        c.prev_byte_start = Some(1000);
-        c.hsi_active = true;
-        let mut edges = edges16(&[1000 + BYTE_TICKS_3M]);
-        let (lo, hi) = walker_window(TPB_3M);
-        let mut pairs: heapless::Vec<(u16, u16), 4> = heapless::Vec::new();
-        let advanced = c.advance_bytes(&mut edges, 1, lo, hi, &mut pairs);
-        assert_eq!(advanced, 1);
-        assert_eq!(pairs.as_slice(), &[(1000, 1000 + BYTE_TICKS_3M)]);
-        assert_eq!(c.hits, 1);
-        assert_eq!(c.last_byte_start, Some(1000 + BYTE_TICKS_3M));
-        assert_eq!(c.prev_byte_start, Some(1000));
-    }
-
-    #[test]
-    fn advance_hit_skips_pair_when_inactive() {
-        let mut c = make();
-        c.last_byte_start = Some(1000);
-        c.prev_byte_start = Some(1000);
-        c.hsi_active = false;
-        let mut edges = edges16(&[1000 + BYTE_TICKS_3M]);
-        let (lo, hi) = walker_window(TPB_3M);
-        let mut pairs: heapless::Vec<(u16, u16), 4> = heapless::Vec::new();
-        let advanced = c.advance_bytes(&mut edges, 1, lo, hi, &mut pairs);
-        assert_eq!(advanced, 1);
-        assert!(pairs.is_empty());
-        // Hit still classified — flag only gates emission, not classification.
-        assert_eq!(c.hits, 1);
-        assert_eq!(c.last_byte_start, Some(1000 + BYTE_TICKS_3M));
-    }
-
-    #[test]
-    fn advance_skip_drops_intra_byte_edge_then_bails_short() {
-        // SKIP doesn't count toward the byte-boundary tally; with only
-        // the intra-byte edge in the ring, advance(1) consumes the SKIP
-        // and then bails with advanced=0 (no HIT found).
-        let mut c = make();
-        c.last_byte_start = Some(1000);
-        c.prev_byte_start = Some(1000);
-        c.hsi_active = true;
-        // 32 ticks = 2·bit — intra-byte for 0xAA at 3 Mbaud.
-        let mut edges = edges16(&[1032]);
-        let (lo, hi) = walker_window(TPB_3M);
-        let mut pairs: heapless::Vec<(u16, u16), 4> = heapless::Vec::new();
-        let advanced = c.advance_bytes(&mut edges, 1, lo, hi, &mut pairs);
-        assert_eq!(advanced, 0);
-        assert_eq!(c.skips, 1);
-        assert_eq!(c.hits, 0);
-        assert_eq!(c.last_byte_start, Some(1000));
-        assert!(pairs.is_empty());
-    }
-
-    #[test]
-    fn advance_gap_drops_anchor_and_preserves_edge() {
-        let mut c = make();
-        c.last_byte_start = Some(1000);
-        c.prev_byte_start = Some(1000);
-        c.hsi_active = true;
-        // 13·bit delta is way out of [9, 11]·bit → GAP.
-        let mut edges = edges16(&[1000 + TPB_3M * 13]);
-        let avail_before = edges.reader().avail();
-        let (lo, hi) = walker_window(TPB_3M);
-        let mut pairs: heapless::Vec<(u16, u16), 4> = heapless::Vec::new();
-        let advanced = c.advance_bytes(&mut edges, 1, lo, hi, &mut pairs);
-        assert_eq!(advanced, 0);
-        assert_eq!(c.gaps, 1);
-        assert_eq!(c.hits, 0);
-        assert_eq!(c.last_byte_start, None);
-        assert_eq!(c.prev_byte_start, None);
-        assert!(pairs.is_empty());
-        // Edge stays; in the parser-driven design GAP is a genuine
-        // anomaly signal and the dropped anchor flows through to
-        // `packet_end_tick = None`, triggering the ISR-time fallback.
-        assert_eq!(edges.reader().avail(), avail_before);
-    }
-
-    #[test]
-    fn stale_anchor_then_new_header_re_anchors_via_back_search() {
-        // Cross-packet stale anchor: codec calls advance_bytes against
-        // a stale anchor from the prior packet; the huge delta to the
-        // new packet's first signature edge trips GAP, clears the
-        // anchor, leaves the edge. `Event::Sync` then re-anchors via
-        // back-search.
-        let mut c = make();
-        c.last_byte_start = Some(1000);
-        c.prev_byte_start = Some(1000);
-
-        let h = header_edges(50_000, TPB_3M);
-        let mut edges = edges16(&h);
-
-        let (lo, hi) = walker_window(TPB_3M);
-        let mut pairs: heapless::Vec<(u16, u16), 4> = heapless::Vec::new();
-        let advanced = c.advance_bytes(&mut edges, 1, lo, hi, &mut pairs);
-        assert_eq!(advanced, 0);
-        assert_eq!(c.gaps, 1, "first edge of new packet trips GAP");
-        assert_eq!(c.last_byte_start, None);
-        assert_eq!(edges.reader().avail(), 5, "no edges consumed");
-
-        assert!(c.anchor_at_signature(&mut edges, TPB_3M));
-        assert_eq!(c.last_byte_start, Some(h[4]));
-    }
-
-    #[test]
-    fn advance_consecutive_hits_chain_pairs() {
-        let mut c = make();
-        c.last_byte_start = Some(1000);
-        c.prev_byte_start = Some(1000);
-        c.hsi_active = true;
-        let t1 = 1000 + BYTE_TICKS_3M;
-        let t2 = t1 + BYTE_TICKS_3M;
-        let t3 = t2 + BYTE_TICKS_3M;
-        let mut edges = edges16(&[t1, t2, t3]);
-        let (lo, hi) = walker_window(TPB_3M);
-        let mut pairs: heapless::Vec<(u16, u16), 4> = heapless::Vec::new();
-        let advanced = c.advance_bytes(&mut edges, 3, lo, hi, &mut pairs);
-        assert_eq!(advanced, 3);
-        assert_eq!(pairs.as_slice(), &[(1000, t1), (t1, t2), (t2, t3)]);
-        assert_eq!(c.hits, 3);
-    }
-
-    #[test]
-    fn advance_zero_is_noop() {
-        let mut c = make();
-        c.last_byte_start = Some(1000);
-        c.prev_byte_start = Some(1000);
-        let t1 = 1000 + BYTE_TICKS_3M;
-        let mut edges = edges16(&[t1]);
-        let (lo, hi) = walker_window(TPB_3M);
-        let mut pairs: heapless::Vec<(u16, u16), 4> = heapless::Vec::new();
-        let advanced = c.advance_bytes(&mut edges, 0, lo, hi, &mut pairs);
-        assert_eq!(advanced, 0);
-        assert_eq!(c.hits, 0);
-        assert_eq!(c.last_byte_start, Some(1000));
-        assert_eq!(edges.reader().avail(), 1);
-    }
-
-    #[test]
-    fn advance_stops_at_requested_count_leaving_excess_edges() {
-        // Lockstep promise: even when more edges are in the ring,
-        // advance_bytes(n) consumes only `n` byte-boundaries and leaves
-        // the rest for a later call.
-        let mut c = make();
-        c.last_byte_start = Some(1000);
-        c.prev_byte_start = Some(1000);
-        let t1 = 1000 + BYTE_TICKS_3M;
-        let t2 = t1 + BYTE_TICKS_3M;
-        let t3 = t2 + BYTE_TICKS_3M;
-        let mut edges = edges16(&[t1, t2, t3]);
-        let (lo, hi) = walker_window(TPB_3M);
-        let mut pairs: heapless::Vec<(u16, u16), 4> = heapless::Vec::new();
-        let advanced = c.advance_bytes(&mut edges, 2, lo, hi, &mut pairs);
-        assert_eq!(advanced, 2);
-        assert_eq!(c.hits, 2);
-        assert_eq!(c.last_byte_start, Some(t2));
-        assert_eq!(edges.reader().avail(), 1, "third edge still pending");
-    }
-
-    #[test]
-    fn current_byte_tick_lifts_last_byte_start() {
-        let mut c = make();
-        assert_eq!(c.current_byte_tick(TPB_3M, 0x0001_0000, PollSrc::Dma), None);
-        c.last_byte_start = Some(4242);
-        // Dma drain: ref == now. now's low-u16 == 4242 → delta == 0 → lift == now.
-        assert_eq!(
-            c.current_byte_tick(TPB_3M, 0x0001_0000 + 4242, PollSrc::Dma),
-            Some(0x0001_0000 + 4242)
-        );
-        // now's low-u16 > stamp by 100 → lift == now − 100.
-        assert_eq!(
-            c.current_byte_tick(TPB_3M, 0x0001_0000 + 4342, PollSrc::Dma),
-            Some(0x0001_0000 + 4242)
-        );
-    }
+    // ---------- lift / drain_ref ----------
 
     #[test]
     fn packet_end_tick_adds_10bit_after_lift() {
         let mut c = make();
         assert_eq!(c.packet_end_tick(TPB_3M, 1_000_000, PollSrc::Dma), None);
-        c.last_byte_start = Some(5000);
+        c.tail_anchor = Some(5000);
         let now = 0x0001_0000_u32 + 5000;
         assert_eq!(
             c.packet_end_tick(TPB_3M, now, PollSrc::Dma),
             Some(now + BYTE_TICKS_3M as u32),
-        );
-        assert_eq!(
-            c.packet_end_tick(TPB_1M, now, PollSrc::Dma),
-            Some(now + BYTE_TICKS_1M as u32),
-        );
-    }
-
-    #[test]
-    fn current_byte_tick_idle_drain_lifts_stamp() {
-        // IDLE drain enters 2·BITS_PER_FRAME·tpb past the last byte's
-        // start bit. With src=Idle the classifier subtracts BITS_PER_FRAME
-        // ·tpb to put `ref ≈ packet_end` — half-way through the wrap
-        // window above `stamp_full` — so `lift` snaps to `stamp_full`.
-        let mut c = make();
-        c.last_byte_start = Some(5000);
-        let stamp_full = 0x0001_0000_u32 + 5000;
-        let idle_elapsed = 2 * BITS_PER_FRAME as u32 * TPB_3M as u32;
-        let now_at_idle = stamp_full + idle_elapsed;
-        assert_eq!(
-            c.current_byte_tick(TPB_3M, now_at_idle, PollSrc::Idle),
-            Some(stamp_full),
         );
     }
 
@@ -1091,7 +713,7 @@ mod tests {
         const TPB_9600: u16 = 5000;
         const BYTE_TICKS_9600: u32 = 10 * TPB_9600 as u32;
         let mut c = make();
-        c.last_byte_start = Some(5000);
+        c.tail_anchor = Some(5000);
         let stamp_full = 0x0001_0000_u32 + 5000;
         let idle_elapsed = 2 * BITS_PER_FRAME as u32 * TPB_9600 as u32;
         let now_at_idle = stamp_full + idle_elapsed;
@@ -1109,15 +731,11 @@ mod tests {
     fn packet_end_tick_idle_robust_to_truncated_elapsed() {
         // Truncation regression: integer division in sim's ns→tick
         // conversion (and HCLK/baud rounding for non-integer tpb) can
-        // shave one tick off the elapsed. Subtracting the FULL 20·tpb
-        // would push `ref` to `stamp_full - 1` and lift aliases DOWN
-        // one wrap. Subtracting only `BITS_PER_FRAME·tpb` leaves `ref ≈
-        // stamp + 10·tpb`, so a few ticks of slop in either direction
-        // stay safely inside the wrap window.
+        // shave one tick off the elapsed.
         const TPB_9600: u16 = 5000;
         const BYTE_TICKS_9600: u32 = 10 * TPB_9600 as u32;
         let mut c = make();
-        c.last_byte_start = Some(5000);
+        c.tail_anchor = Some(5000);
         let stamp_full = 0x0001_0000_u32 + 5000;
         let truncated_elapsed = 2 * BITS_PER_FRAME as u32 * TPB_9600 as u32 - 1;
         let now_at_idle = stamp_full + truncated_elapsed;
@@ -1130,7 +748,6 @@ mod tests {
     #[test]
     fn fallback_dma_returns_now_unchanged() {
         let c = make();
-        // Dma path: regardless of anchor state, packet_end ≈ now.
         assert_eq!(c.packet_end_tick_fallback(PollSrc::Dma, 1234, TPB_3M), 1234);
         assert_eq!(c.packet_end_tick_fallback(PollSrc::Dma, 0, TPB_3M), 0);
         assert_eq!(
@@ -1142,15 +759,9 @@ mod tests {
     #[test]
     fn fallback_idle_back_dates_by_one_idle_char() {
         let c = make();
-        // 3 Mbaud: gap = 10·16 = 160 ticks.
         assert_eq!(
             c.packet_end_tick_fallback(PollSrc::Idle, 1600, TPB_3M),
             1600 - BYTE_TICKS_3M as u32,
-        );
-        // 1 Mbaud: gap = 10·48 = 480 ticks.
-        assert_eq!(
-            c.packet_end_tick_fallback(PollSrc::Idle, 2000, TPB_1M),
-            2000 - BYTE_TICKS_1M as u32,
         );
     }
 
@@ -1165,99 +776,369 @@ mod tests {
     }
 
     #[test]
-    fn fallback_does_not_read_anchor_state() {
-        // Both formulas are pure in (src, now, ticks_per_bit); anchor
-        // state must not influence the result.
-        let mut c = make();
-        let unset = c.packet_end_tick_fallback(PollSrc::Dma, 4242, TPB_3M);
-        c.last_byte_start = Some(9999);
-        c.prev_byte_start = Some(9999);
-        let set = c.packet_end_tick_fallback(PollSrc::Dma, 4242, TPB_3M);
-        assert_eq!(unset, set);
-    }
-
-    #[test]
     fn reset_anchor_clears_state() {
         let mut c = make();
-        c.last_byte_start = Some(1234);
-        c.prev_byte_start = Some(1100);
-        c.hsi_active = true;
+        c.tail_anchor = Some(1234);
         c.reset_anchor();
-        assert_eq!(c.last_byte_start, None);
-        assert_eq!(c.prev_byte_start, None);
-        assert!(!c.hsi_active);
+        assert_eq!(c.tail_anchor, None);
+    }
+
+    // ---------- tail-signature back-search ----------
+
+    /// Synthesize the wire-edge timestamps for a back-to-back sequence of
+    /// `tail_bytes` starting at base tick `t0`, bit-time `tpb`. Mirrors
+    /// the runtime's [`byte_edge_positions`] table walk so the unit tests
+    /// exercise the same per-byte arithmetic the production back-search
+    /// validates against.
+    fn tail_edges(tail_bytes: &[u8], t0: u16, tpb: u16) -> heapless::Vec<u16, 20> {
+        let mut out: heapless::Vec<u16, 20> = heapless::Vec::new();
+        for (bi, &b) in tail_bytes.iter().enumerate() {
+            let byte_start_bit = (bi as u16).wrapping_mul(BITS_PER_FRAME);
+            let (positions, count) = byte_edge_positions(b);
+            for &pos in positions.iter().take(count) {
+                let abs_bit = byte_start_bit.wrapping_add(pos as u16);
+                let t = t0.wrapping_add(abs_bit.wrapping_mul(tpb));
+                let _ = out.push(t);
+            }
+        }
+        out
     }
 
     #[test]
-    fn header_match_then_advance_classifies_body() {
-        // Full happy path: synthesize header at t=1000 plus 4 body bytes
-        // of 0xFF (1 edge/byte at byte_ticks_3M spacing). Back-search
-        // anchors at byte 3; advance_bytes(4) classifies the 4 body
-        // bytes as hits and emits 4 (prev, curr) pairs when hsi_active.
+    fn byte_edge_positions_ff_is_start_only() {
+        let (p, n) = byte_edge_positions(0xFF);
+        assert_eq!(n, 1);
+        assert_eq!(p[0], 0);
+    }
+
+    #[test]
+    fn byte_edge_positions_aa_walks_alternating_pairs() {
+        // 0xAA LSB-first: d0..d7 = 0,1,0,1,0,1,0,1. Falling edges at start
+        // + each 1→0 transition (stream positions 3, 5, 7).
+        let (p, n) = byte_edge_positions(0xAA);
+        assert_eq!(n, 4);
+        assert_eq!(&p[..n], &[0, 3, 5, 7]);
+    }
+
+    #[test]
+    fn byte_edge_positions_zero_is_start_only() {
+        let (p, n) = byte_edge_positions(0x00);
+        assert_eq!(n, 1);
+        assert_eq!(p[0], 0);
+    }
+
+    #[test]
+    fn tail_anchor_matches_4_byte_ff_tail_at_3m() {
         let mut c = make();
-        let h = header_edges(1000, TPB_3M);
-        let body_start = h[4].wrapping_add(BYTE_TICKS_3M);
-        let body: [u16; 4] = [
-            body_start,
-            body_start.wrapping_add(BYTE_TICKS_3M),
-            body_start.wrapping_add(BYTE_TICKS_3M.wrapping_mul(2)),
-            body_start.wrapping_add(BYTE_TICKS_3M.wrapping_mul(3)),
-        ];
+        let tail = [0xFFu8, 0xFF, 0xFF, 0xFF];
+        let edges_vec = tail_edges(&tail, 1000, TPB_3M);
+        let mut edges = edges16(&edges_vec);
+        assert!(c.anchor_at_tail(&mut edges, TPB_3M, &tail, 0));
+        assert_eq!(c.tail_anchor, Some(1000u16.wrapping_add(30 * TPB_3M)),);
+    }
 
-        let mut combined: heapless::Vec<u16, 16> = heapless::Vec::new();
-        combined.extend_from_slice(&h).unwrap();
-        let mut edges = edges16(&combined);
+    #[test]
+    fn tail_anchor_matches_intra_byte_rich_tail() {
+        let mut c = make();
+        let tail = [0xAAu8, 0xFF, 0xFF, 0xFF];
+        let edges_vec = tail_edges(&tail, 5000, TPB_3M);
+        let mut edges = edges16(&edges_vec);
+        assert!(c.anchor_at_tail(&mut edges, TPB_3M, &tail, 0));
+        assert_eq!(c.tail_anchor, Some(5000u16.wrapping_add(30 * TPB_3M)),);
+    }
 
-        assert!(c.anchor_at_signature(&mut edges, TPB_3M));
-        c.hsi_active = true;
+    #[test]
+    fn tail_anchor_matches_4_byte_ff_tail_at_1m() {
+        let mut c = make();
+        let tail = [0xFFu8, 0xFF, 0xFF, 0xFF];
+        let edges_vec = tail_edges(&tail, 2000, TPB_1M);
+        let mut edges = edges16(&edges_vec);
+        assert!(c.anchor_at_tail(&mut edges, TPB_1M, &tail, 0));
+        assert_eq!(c.tail_anchor, Some(2000u16.wrapping_add(30 * TPB_1M)),);
+    }
 
-        // Stage the body edges as if they arrived next.
-        let mut edges2 = edges; // move
-        edges2.stage(5, &body);
-        edges2.on_publish(HwRing::<u16, 16>::LEN - 5 - body.len() as u16);
+    #[test]
+    fn tail_anchor_rejects_too_few_edges() {
+        let mut c = make();
+        let tail = [0xFFu8, 0xFF, 0xFF, 0xFF];
+        let mut edges = edges16(&[1000, 1160, 1320]);
+        c.tail_anchor = Some(7777);
+        assert!(!c.anchor_at_tail(&mut edges, TPB_3M, &tail, 0));
+        assert_eq!(c.tail_anchor, None);
+    }
 
+    #[test]
+    fn tail_anchor_rejects_wrong_byte_content() {
+        let mut c = make();
+        let real = [0xFFu8, 0xFF, 0xFF, 0xFF];
+        let claimed = [0xAAu8, 0xFF, 0xFF, 0xFF];
+        let edges_vec = tail_edges(&real, 1000, TPB_3M);
+        let mut edges = edges16(&edges_vec);
+        c.tail_anchor = Some(7777);
+        assert!(!c.anchor_at_tail(&mut edges, TPB_3M, &claimed, 0));
+        assert_eq!(c.tail_anchor, None);
+    }
+
+    #[test]
+    fn tail_anchor_rejects_perturbed_intra_byte_delta() {
+        let mut c = make();
+        let tail = [0xAAu8, 0xFF, 0xFF, 0xFF];
+        let mut edges_vec = tail_edges(&tail, 1000, TPB_3M);
+        // Shift the second intra-byte edge of 0xAA by +2·bit — outside
+        // the ±0.5·bit intra-byte tolerance.
+        edges_vec[1] = edges_vec[1].wrapping_add(2u16.wrapping_mul(TPB_3M));
+        let mut edges = edges16(&edges_vec);
+        assert!(!c.anchor_at_tail(&mut edges, TPB_3M, &tail, 0));
+        assert_eq!(c.tail_anchor, None);
+    }
+
+    #[test]
+    fn tail_anchor_padding_window_absorbs_one_extra_trailing_edge() {
+        // Realistic tail (contains a non-0xFF byte with intra-byte edges)
+        // so the first probe rejects the spurious newer window on band-
+        // check mismatch before landing at the true offset.
+        let mut c = make();
+        let tail = [0xAAu8, 0xFF, 0xFF, 0xFF];
+        let mut edges_vec = tail_edges(&tail, 1000, TPB_3M);
+        // Simulate one in-flight edge past the CRC byte — the next byte's
+        // start bit has landed but the byte itself hasn't been DMA'd, so
+        // d_min stays 0 (D_min counts complete-byte edges only). Search
+        // slack absorbs the extra edge.
+        edges_vec
+            .push(edges_vec[edges_vec.len() - 1].wrapping_add(BYTE_TICKS_3M))
+            .unwrap();
+        let mut edges = edges16(&edges_vec);
+        assert!(c.anchor_at_tail(&mut edges, TPB_3M, &tail, 0));
+        assert_eq!(c.tail_anchor, Some(1000u16.wrapping_add(30 * TPB_3M)));
+    }
+
+    #[test]
+    fn tail_anchor_d_min_shift_matches_past_batch_bytes() {
+        // Simulate a batch where two complete bytes (0xFF each — 1 edge
+        // each) landed past CRC in the RX ring at Crc emit. d_min = 2
+        // shifts the search deeper to skip those trailing edges.
+        let mut c = make();
+        let tail = [0xFFu8, 0xFF, 0xFF, 0xFF];
+        let mut edges_vec = tail_edges(&tail, 1000, TPB_3M);
+        let crc_tail_edge = edges_vec[edges_vec.len() - 1];
+        // Two extra bytes' start-bit edges (0xFF contributes 1 edge/byte)
+        // one and two byte-times past the CRC byte's start edge.
+        edges_vec
+            .push(crc_tail_edge.wrapping_add(BYTE_TICKS_3M))
+            .unwrap();
+        edges_vec
+            .push(crc_tail_edge.wrapping_add(2u16.wrapping_mul(BYTE_TICKS_3M)))
+            .unwrap();
+        let mut edges = edges16(&edges_vec);
+        // Without d_min shift the naive probe lands on the trailing
+        // edges; the search-slack window (5 edges) still swallows it
+        // here, but the doc-contract is that d_min carries the exact
+        // shift. Verify a d_min=2 call matches at the intended offset.
+        assert!(c.anchor_at_tail(&mut edges, TPB_3M, &tail, 2));
+        assert_eq!(c.tail_anchor, Some(1000u16.wrapping_add(30 * TPB_3M)));
+    }
+
+    // ---------- retroactive walk ----------
+
+    #[test]
+    fn walk_pairs_back_zero_is_noop() {
+        let mut c = make();
+        c.force_walker_ring_seed_for_test(5000, 0);
+        let edges = edges16(&[]);
         let mut pairs: heapless::Vec<(u16, u16), 8> = heapless::Vec::new();
-        let (lo, hi) = walker_window(TPB_3M);
-        let advanced = c.advance_bytes(&mut edges2, 4, lo, hi, &mut pairs);
-        assert_eq!(advanced, 4);
+        c.walk_pairs_back(&edges, 5000, 0, TPB_3M, &mut pairs);
+        assert!(pairs.is_empty());
+    }
+
+    #[test]
+    fn walk_pairs_back_emits_backwards_pairs_on_clean_tail() {
+        // 4-byte 0xFF tail — one edge per byte, spaced BYTE_TICKS_3M apart.
+        // Walk from the CRC byte's start (t0+30·bit) back through the 3
+        // preceding byte starts. Ring-walk-only mode (no cache).
+        let mut c = make();
+        let tail = [0xFFu8, 0xFF, 0xFF, 0xFF];
+        let edges_vec = tail_edges(&tail, 1000, TPB_3M);
+        let edges = edges16(&edges_vec);
+        let tail_anchor = 1000u16.wrapping_add(30 * TPB_3M);
+        c.force_walker_ring_seed_for_test(tail_anchor, 0);
+        let mut pairs: heapless::Vec<(u16, u16), 8> = heapless::Vec::new();
+        c.walk_pairs_back(&edges, tail_anchor, 3, TPB_3M, &mut pairs);
         assert_eq!(
             pairs.as_slice(),
             &[
-                (h[4], body[0]),
-                (body[0], body[1]),
-                (body[1], body[2]),
-                (body[2], body[3]),
+                (
+                    1000u16.wrapping_add(20 * TPB_3M),
+                    1000u16.wrapping_add(30 * TPB_3M)
+                ),
+                (
+                    1000u16.wrapping_add(10 * TPB_3M),
+                    1000u16.wrapping_add(20 * TPB_3M)
+                ),
+                (1000u16, 1000u16.wrapping_add(10 * TPB_3M)),
             ]
         );
-        assert_eq!(c.hits, 4);
     }
 
     #[test]
-    fn respects_ticks_per_bit_arg() {
-        // Same delta at different baud → HIT vs SKIP, exercising the
-        // ticks_per_bit-scaled window.
-        let mut c_3m = make();
-        c_3m.last_byte_start = Some(1000);
-        c_3m.prev_byte_start = Some(1000);
-        c_3m.hsi_active = false;
-        let mut e1 = edges16(&[1160]);
-        let (lo_3m, hi_3m) = walker_window(TPB_3M);
-        let mut pairs: heapless::Vec<(u16, u16), 4> = heapless::Vec::new();
-        let advanced_3m = c_3m.advance_bytes(&mut e1, 1, lo_3m, hi_3m, &mut pairs);
-        assert_eq!(advanced_3m, 1);
-        assert_eq!(c_3m.hits, 1);
-        assert_eq!(c_3m.skips, 0);
+    fn walk_pairs_back_free_runs_when_edge_missing() {
+        // Only 2 tail edges present but ask for 3 pairs. First 2 hit;
+        // third step's predicted position sits before the ring's oldest
+        // edge, so the walk free-runs without emitting a pair.
+        let mut c = make();
+        let edges = edges16(&[
+            1000u16.wrapping_add(20 * TPB_3M),
+            1000u16.wrapping_add(30 * TPB_3M),
+        ]);
+        let tail_anchor = 1000u16.wrapping_add(30 * TPB_3M);
+        c.force_walker_ring_seed_for_test(tail_anchor, 0);
+        let mut pairs: heapless::Vec<(u16, u16), 8> = heapless::Vec::new();
+        c.walk_pairs_back(&edges, tail_anchor, 3, TPB_3M, &mut pairs);
+        assert_eq!(
+            pairs.as_slice(),
+            &[(
+                1000u16.wrapping_add(20 * TPB_3M),
+                1000u16.wrapping_add(30 * TPB_3M)
+            )],
+        );
+    }
 
-        let mut c_1m = make();
-        c_1m.last_byte_start = Some(1000);
-        c_1m.prev_byte_start = Some(1000);
-        c_1m.hsi_active = false;
-        let mut e2 = edges16(&[1160]);
-        let (lo_1m, hi_1m) = walker_window(TPB_1M);
-        pairs.clear();
-        let advanced_1m = c_1m.advance_bytes(&mut e2, 1, lo_1m, hi_1m, &mut pairs);
-        assert_eq!(advanced_1m, 0);
-        assert_eq!(c_1m.hits, 0);
-        assert_eq!(c_1m.skips, 1);
+    #[test]
+    fn walk_pairs_back_snaps_within_window() {
+        // Perturb each byte start by +1·bit (well inside the 2·bit snap
+        // window). Walk still matches and emits pairs at the perturbed
+        // stamps.
+        let mut c = make();
+        let e0 = 1000u16.wrapping_add(TPB_3M);
+        let e1 = 1000u16.wrapping_add(10 * TPB_3M).wrapping_add(TPB_3M);
+        let e2 = 1000u16.wrapping_add(20 * TPB_3M).wrapping_add(TPB_3M);
+        let e3 = 1000u16.wrapping_add(30 * TPB_3M).wrapping_add(TPB_3M);
+        let edges = edges16(&[e0, e1, e2, e3]);
+        let mut pairs: heapless::Vec<(u16, u16), 8> = heapless::Vec::new();
+        c.force_walker_ring_seed_for_test(e3, 0);
+        c.walk_pairs_back(&edges, e3, 3, TPB_3M, &mut pairs);
+        assert_eq!(pairs.as_slice(), &[(e2, e3), (e1, e2), (e0, e1)]);
+    }
+
+    #[test]
+    fn walk_pairs_back_emits_backwards_pairs_at_9600() {
+        // Regression: at 9600 baud byte_ticks = 50000 > i16::MAX. The old
+        // walker's `(e - predicted) as i16` aliased on the first scan iter
+        // and broke out before scanning the correct predecessor edge, so
+        // every pair emit at 9600 free-ran. i32 accumulator fixes it.
+        let mut c = make();
+        let tail = [0xFFu8, 0xFF, 0xFF, 0xFF];
+        let edges_vec = tail_edges(&tail, 1000, TPB_9600);
+        let edges = edges16(&edges_vec);
+        let tail_anchor = 1000u16.wrapping_add(30u16.wrapping_mul(TPB_9600));
+        c.force_walker_ring_seed_for_test(tail_anchor, 0);
+        let mut pairs: heapless::Vec<(u16, u16), 8> = heapless::Vec::new();
+        c.walk_pairs_back(&edges, tail_anchor, 3, TPB_9600, &mut pairs);
+        let byte = BYTE_TICKS_9600;
+        assert_eq!(
+            pairs.as_slice(),
+            &[
+                (
+                    1000u16.wrapping_add(2u16.wrapping_mul(byte)),
+                    1000u16.wrapping_add(3u16.wrapping_mul(byte))
+                ),
+                (
+                    1000u16.wrapping_add(byte),
+                    1000u16.wrapping_add(2u16.wrapping_mul(byte))
+                ),
+                (1000u16, 1000u16.wrapping_add(byte)),
+            ]
+        );
+    }
+
+    #[test]
+    fn walk_pairs_back_skips_out_of_window_edge() {
+        // Predecessor stamp perturbed by +3·bit (outside 2·bit snap) —
+        // walk should free-run past it (no pair emitted at that step).
+        let mut c = make();
+        let e0 = 1000u16;
+        let e1 = 1000u16.wrapping_add(10 * TPB_3M);
+        // e2 shifted way off: +5·bit (well outside snap).
+        let e2 = 1000u16.wrapping_add(20 * TPB_3M).wrapping_add(5 * TPB_3M);
+        let e3 = 1000u16.wrapping_add(30 * TPB_3M);
+        let edges = edges16(&[e0, e1, e2, e3]);
+        let mut pairs: heapless::Vec<(u16, u16), 8> = heapless::Vec::new();
+        c.force_walker_ring_seed_for_test(e3, 0);
+        c.walk_pairs_back(&edges, e3, 3, TPB_3M, &mut pairs);
+        // Step 1 (predicted ≈ e3-10·bit = expected e2 slot): e2 is out
+        // of window; predicted position is close to e2's SHOULD-BE slot
+        // but no edge lands there → free-run. Step 2 (predicted =
+        // e2_expected - 10·bit = e1_expected): e1 hits → emit. Step 3:
+        // e0 hits → emit. Result: 2 pairs, both after free-run.
+        assert_eq!(pairs.len(), 2);
+    }
+
+    // ---------- anchor+walker cache emission ----------
+
+    #[test]
+    fn anchor_populates_tail_starts_cache_for_multi_edge_crc() {
+        // Regression: CRC bytes can have multi-edge patterns. Anchor's
+        // per-byte start-edge capture must record byte N's OLDEST edge
+        // (its start), not its newest — otherwise `tail_starts[N-1]`
+        // ≠ tail_anchor and the cache emits garbage pairs. Use 0x55 as
+        // CRC_hi (5 edges/byte) so this only passes if `k == 0`
+        // recording is correct.
+        let mut c = make();
+        let tail = [0xFFu8, 0xFF, 0xFF, 0x55];
+        let edges_vec = tail_edges(&tail, 1000, TPB_3M);
+        let mut edges = edges16(&edges_vec);
+        assert!(c.anchor_at_tail(&mut edges, TPB_3M, &tail, 0));
+        // tail_anchor tick == tail_starts[3] (last byte's start), and
+        // the three cached pairs are consecutive byte-time deltas.
+        assert_eq!(c.tail_anchor, Some(c.tail_starts[3]));
+        for k in 1..TAIL_STARTS {
+            let delta = c.tail_starts[k].wrapping_sub(c.tail_starts[k - 1]);
+            assert_eq!(delta, 10 * TPB_3M, "byte {} spacing", k);
+        }
+    }
+
+    #[test]
+    fn walk_pairs_back_emits_cache_pairs_without_ring_scan() {
+        // Steady-state target: emit the 3 anchor-cached pairs, then
+        // stop (n_pairs == 3). No ring walk needed. Bypass anchor
+        // signature validation by forcing state directly, using edges
+        // the walker's ring-scan path would refuse to snap to — proves
+        // the pairs came from the cache, not the ring.
+        let mut c = make();
+        let starts = [1000u16, 2000, 3000, 4000];
+        c.force_tail_starts_for_test(starts, 0);
+        let edges = edges16(&[0xDEAD, 0xBEEF]); // decoy — walker must ignore
+        let mut pairs: heapless::Vec<(u16, u16), 8> = heapless::Vec::new();
+        c.walk_pairs_back(&edges, starts[3], 3, TPB_3M, &mut pairs);
+        assert_eq!(pairs.as_slice(), &[(1000, 2000), (2000, 3000), (3000, 4000)]);
+    }
+
+    #[test]
+    fn walk_pairs_back_cache_plus_one_ring_pair() {
+        // Steady in an ideal packet asks for 4 pairs. Cache emits 3;
+        // walker walks 1 more from the OLDEST cached start
+        // (`tail_starts[0]`) back through the ring.
+        let mut c = make();
+        let tail = [0xFFu8, 0xFF, 0xFF, 0xFF];
+        let edges_vec = tail_edges(&tail, 1000, TPB_3M);
+        // Prepend one older edge (byte-time older than tail_starts[0])
+        // that the walker snaps to for the 4th pair.
+        let mut extended: heapless::Vec<u16, 20> = heapless::Vec::new();
+        let _ = extended.push(1000u16.wrapping_sub(BYTE_TICKS_3M));
+        for &e in edges_vec.iter() {
+            let _ = extended.push(e);
+        }
+        let mut edges = edges16(&extended);
+        assert!(c.anchor_at_tail(&mut edges, TPB_3M, &tail, 0));
+        let starts = c.tail_starts;
+        let mut pairs: heapless::Vec<(u16, u16), 8> = heapless::Vec::new();
+        c.walk_pairs_back(&edges, starts[3], 4, TPB_3M, &mut pairs);
+        assert_eq!(pairs.len(), 4);
+        // First 3 come from cache.
+        assert_eq!(pairs[0], (starts[0], starts[1]));
+        assert_eq!(pairs[1], (starts[1], starts[2]));
+        assert_eq!(pairs[2], (starts[2], starts[3]));
+        // 4th: walker snaps to the prepended older edge.
+        let older = 1000u16.wrapping_sub(BYTE_TICKS_3M);
+        assert_eq!(pairs[3], (older, starts[0]));
     }
 }

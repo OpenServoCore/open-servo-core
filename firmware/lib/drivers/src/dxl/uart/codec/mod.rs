@@ -26,6 +26,7 @@ use dxl_protocol::{Chunk, CrcUmts, SlotEncoder, SlotPosition, StatusEncoder, Wri
 use super::BITS_PER_FRAME;
 use crate::traits::dxl::{EdgeDma, RxDma};
 use crate::util::HwRing;
+use rx::edge_parser::EDGES_PER_BYTE;
 use rx::{PollSrc, Rx};
 
 /// Slack added past the byte-count-derived skip end, in wire bytes. Absorbs
@@ -34,6 +35,46 @@ use rx::{PollSrc, Rx};
 /// bytes ≈ 7 µs at 3 Mbaud — negligible vs. the host's own ~1 ms timeout,
 /// tight enough that a truncated chain aborts well before the host's retry.
 const SKIP_DEADLINE_SLACK_BYTES: u16 = 2;
+
+/// Number of raw wire bytes at the tail of a just-parsed packet handed to
+/// the tail-signature back-search at `Event::Crc`. 4 bytes — including
+/// both CRC bytes plus the last 2 data bytes — gives high signature
+/// uniqueness (intra-byte deltas across at least one non-`0xFF` byte
+/// disambiguate from any same-spacing window elsewhere in the ring) while
+/// keeping the worst-case back-search work bounded at ~20 edges checked.
+const TAIL_BYTES_FOR_ANCHOR: usize = 4;
+
+/// Read the last 4 wire bytes of a just-consumed packet + the summed
+/// edge count of any bytes DMA already latched past that tail. Shared
+/// between the parser `Event::Crc` path and the byte-skip `SkipComplete`
+/// path — both anchor the drift walker at the CRC byte's start tick and
+/// need the same signature bytes and `d_min` shift on the ET back-search.
+///
+/// `head_gap` = bytes from parser/skip cursor to producer head (bytes
+/// DMA'd but not yet parsed/skipped). At `head_gap = 0` (typical IDLE
+/// drain), the ring's most-recent 4 bytes ARE the packet's tail. Under
+/// byte-ring HT/TC drain `head_gap` can be nonzero (next packet's
+/// leading bytes already in the ring), so the tail sits `head_gap`
+/// slots back from head. Returns `None` if the ring can't resolve the
+/// tail slots (cold-start, not yet enough bytes published).
+fn read_tail_and_d_min<const RX_BUF_LEN: usize>(
+    rx_buf: &HwRing<u8, RX_BUF_LEN>,
+    head_gap: u16,
+) -> Option<([u8; TAIL_BYTES_FOR_ANCHOR], u16)> {
+    let mut tail = [0u8; TAIL_BYTES_FOR_ANCHOR];
+    // Oldest → newest: recent(head_gap + 3) … recent(head_gap).
+    for (i, slot) in tail.iter_mut().enumerate() {
+        let off = head_gap.wrapping_add((TAIL_BYTES_FOR_ANCHOR - 1 - i) as u16);
+        *slot = *rx_buf.recent(off)?;
+    }
+    let mut d_min: u16 = 0;
+    for off in 0..head_gap {
+        if let Some(&b) = rx_buf.recent(off) {
+            d_min = d_min.wrapping_add(EDGES_PER_BYTE[b as usize] as u16);
+        }
+    }
+    Some((tail, d_min))
+}
 
 /// Event surfaced from [`CodecRx::poll`] to its sink callback.
 ///
@@ -99,7 +140,7 @@ struct SkipState {
     deadline_tick: u32,
 }
 
-/// RX half — streaming parser, RX byte ring, classifier, drift bookkeeping.
+/// RX half — streaming parser, RX byte ring, drift-sampling gate.
 /// Splits off from [`CodecTx`] under [`Codec`] so the parent driver can hand
 /// the dispatcher a `&mut CodecTx` reply handle alongside the parser event
 /// stream the dispatcher is consuming.
@@ -114,58 +155,22 @@ pub struct CodecRx<R: EdgeDma, CRC: CrcUmts, const RX_BUF_LEN: usize, const EDGE
     /// the producer head via [`HwRing::on_publish`] from NDTR.
     rx_buf: SyncUnsafeCell<HwRing<u8, RX_BUF_LEN>>,
     /// Monotonic count of Instruction headers the parser emitted — own
-    /// or foreign IDs — across this codec's lifetime. Drift sampling
-    /// ([[drift_sampling_instruction_only]]) ticks on every Instruction
-    /// so foreign-target instructions still calibrate, while Status
-    /// frames never contribute (peer HSI is its own clock domain).
+    /// or foreign IDs — across this codec's lifetime.
     instruction_count: u32,
     /// Monotonic count of RX-ring bytes the codec has advanced past
     /// across this codec's lifetime — covers both parser-consumed bytes
     /// and byte-skip-consumed bytes. 32 bits ≈ 23.8 days at 3M sustained;
     /// wrap is non-physical.
     wire_bytes_consumed: u32,
-    /// Wire-byte position the edge parser's anchor currently represents
-    /// AT THE LOGICAL LEVEL — updated per parser event regardless of
-    /// whether the walker has actually flushed. The walker's true
-    /// anchor sits at `last_walked_pos − pending_walker_advance`. Per
-    /// parser event, `delta = (wire_bytes_consumed + stream.consumed())
-    /// − last_walked_pos` is the byte count added to
-    /// `pending_walker_advance`. Sentinel `0` means "no anchor yet";
-    /// advance is skipped until the first `Event::Sync` seeds the
-    /// anchor.
-    last_walked_pos: u32,
-    /// Bulk-within-poll walker pending count. Per-event byte deltas
-    /// accumulate here; flushes to `Rx::advance_walker` at events that
-    /// read the anchor (Crc, SkipComplete, Resync) and at every poll
-    /// return path. Always 0 at poll entry — the lap risk only exists
-    /// when unflushed work persists across polls, which never happens.
-    /// Per `dxl-streaming-rx.md` §4 lockstep invariant: walker never
-    /// advances past parser cursor, preserved here by deferring (not
-    /// dropping) the work.
-    pending_walker_advance: u16,
+    /// Whether the in-flight packet is an Instruction — set at the
+    /// Instruction Header event, cleared at Status Header, cleared at
+    /// packet boundary (Crc / Resync / SkipComplete). Gates
+    /// [`Rx::walk_pairs_back`] at Crc so Status frames never contribute
+    /// drift samples per [[drift_sampling_instruction_only]].
+    packet_is_instruction: bool,
     /// Universal byte-skip state. `Some` between a sink-requested
     /// [`PollAction::Skip`] and the matching [`PollEvent::SkipComplete`].
     skip: Option<SkipState>,
-}
-
-/// Flush bulk-within-poll walker pending. Free function (not a method)
-/// so it can take disjoint `&mut` borrows of `Rx` and the pending
-/// counter without colliding with active `&mut self.parser` /
-/// `&mut self.skip` borrows at the call sites.
-#[inline]
-fn flush_walker_pending<R, const EDGE_BUF_LEN: usize, const PAIRS_LEN: usize>(
-    rx: &mut Rx<R, EDGE_BUF_LEN>,
-    pending: &mut u16,
-    win_lo: u16,
-    win_hi: u16,
-    pairs: &mut heapless::Vec<(u16, u16), PAIRS_LEN>,
-) where
-    R: EdgeDma,
-{
-    if *pending > 0 {
-        let _ = rx.advance_walker(*pending, win_lo, win_hi, pairs);
-        *pending = 0;
-    }
 }
 
 impl<R: EdgeDma, CRC: CrcUmts, const RX_BUF_LEN: usize, const EDGE_BUF_LEN: usize>
@@ -178,36 +183,35 @@ impl<R: EdgeDma, CRC: CrcUmts, const RX_BUF_LEN: usize, const EDGE_BUF_LEN: usiz
             rx_buf: SyncUnsafeCell::new(HwRing::new(0)),
             instruction_count: 0,
             wire_bytes_consumed: 0,
-            last_walked_pos: 0,
-            pending_walker_advance: 0,
+            packet_is_instruction: false,
             skip: None,
         }
     }
 
-    /// DMA1_CH7 HT/TC ISR entry — acks flags, publishes the ET producer
-    /// head, stashes the ISR-entry tick + Dma source for the Crc-time
-    /// fallback path. No walking; all advance is parser-event driven
-    /// through [`Self::poll`].
-    pub fn on_edge_advance(&mut self, now: u32, ticks_per_bit: u16) {
-        self.rx.on_edge_advance(now, ticks_per_bit);
-    }
-
     /// USART1 IDLE ISR entry — publishes the ET producer head, stashes
     /// the ISR-entry tick + Idle source for the Crc-time fallback path.
-    /// No walking; same contract as [`Self::on_edge_advance`].
     pub fn on_idle(&mut self, now: u32, ticks_per_bit: u16) {
         self.rx.on_idle(now, ticks_per_bit);
     }
 
     /// USART1 RX DMA published progress — `remaining` is the channel's
     /// NDTR readback. Advances the `rx_buf` producer head so `poll` sees
-    /// newly-DMA'd bytes.
+    /// newly-DMA'd bytes. Pure ring bookkeeping; does not touch
+    /// `last_isr` — the DMA1_CH5 ISR entry that owns the stash calls
+    /// [`Self::stash_dma_isr`] alongside.
     pub fn on_rx_dma_advance(&mut self, remaining: u16) {
         // SAFETY: rx_buf is written only by DMA1_CH5 (hardware writer)
         // and read here from the same PFIC priority level as the DMA
         // HT/TC ISR, so no other consumer can `&mut` it concurrently.
         let rx_buf = unsafe { &mut *self.rx_buf.get() };
         rx_buf.on_publish(remaining);
+    }
+
+    /// Stash `(now, Dma)` for the Crc-time fallback path. Called from the
+    /// DMA1_CH5 HT/TC ISR entry — that vector drives the parser drain,
+    /// so its wake tick is what Crc's fallback formula expects.
+    pub fn stash_dma_isr(&mut self, now: u32) {
+        self.rx.stash_last_isr_dma(now);
     }
 
     /// Drain the RX byte ring through the streaming parser, fanning each
@@ -234,12 +238,12 @@ impl<R: EdgeDma, CRC: CrcUmts, const RX_BUF_LEN: usize, const EDGE_BUF_LEN: usiz
         &mut self,
         now: u32,
         ticks_per_bit: u16,
+        n_pairs_wanted: u8,
         pairs: &mut heapless::Vec<(u16, u16), PAIRS_LEN>,
         mut on_event: F,
     ) where
         F: FnMut(PollEvent<'_>, &mut Rx<R, EDGE_BUF_LEN>) -> PollAction,
     {
-        let (win_lo, win_hi) = rx::walker_window(ticks_per_bit);
         // SAFETY: rx_buf lives in a SyncUnsafeCell; this is the codec's
         // single consumer path. The reference is independent of any
         // borrow on `self` for the parser / counters because it's
@@ -255,6 +259,7 @@ impl<R: EdgeDma, CRC: CrcUmts, const RX_BUF_LEN: usize, const EDGE_BUF_LEN: usiz
             if let Some(skip) = self.skip.as_mut() {
                 if (now.wrapping_sub(skip.deadline_tick) as i32) >= 0 {
                     self.skip = None;
+                    self.packet_is_instruction = false;
                     continue;
                 }
                 // SAFETY: see note above.
@@ -265,69 +270,56 @@ impl<R: EdgeDma, CRC: CrcUmts, const RX_BUF_LEN: usize, const EDGE_BUF_LEN: usiz
                     rx_buf.reader().advance(take);
                     skip.bytes_remaining -= take;
                     self.wire_bytes_consumed = self.wire_bytes_consumed.wrapping_add(take as u32);
-                    // Skip bytes go to pending under the hsi_active flag
-                    // the foreign Instruction Header left in place — flush
-                    // at SkipComplete emits the drift pairs per
-                    // [[drift_sampling_instruction_only]]. For foreign
-                    // Status frames hsi_active is off so no pairs come out.
-                    if self.last_walked_pos != 0 {
-                        self.pending_walker_advance =
-                            self.pending_walker_advance.wrapping_add(take);
-                        self.last_walked_pos = self.last_walked_pos.wrapping_add(take as u32);
-                    }
                 }
                 if skip.bytes_remaining > 0 {
                     // Ring exhausted mid-skip; resume on a later poll.
-                    // Flush so the consumer doesn't lap the producer across
-                    // the poll boundary (`dxl-streaming-rx.md` §4 lockstep
-                    // invariant).
-                    flush_walker_pending(
-                        &mut self.rx,
-                        &mut self.pending_walker_advance,
-                        win_lo,
-                        win_hi,
-                        pairs,
-                    );
                     return;
                 }
                 let id = skip.id;
                 self.skip = None;
-                // Anchor must be current before SkipComplete dispatches —
-                // the handler resets the anchor in its boundary cleanup, so
-                // unflushed pending would silently drop those drift samples.
-                flush_walker_pending(
-                    &mut self.rx,
-                    &mut self.pending_walker_advance,
-                    win_lo,
-                    win_hi,
-                    pairs,
-                );
                 on_event(PollEvent::SkipComplete { id }, &mut self.rx);
+                // Foreign Instruction packets never emit a parser
+                // `Event::Crc` (parser byte-skipped past the tail), so
+                // anchor + retroactive walk piggyback here. Skip drain
+                // just consumed both CRC bytes, so the ring's last 4
+                // bytes past `head_gap` are the packet's tail signature.
+                // Fires AFTER `on_event` for deadline-path hygiene —
+                // SkipComplete's sink (chain-fire predecessor-match ->
+                // `start_now`) is deadline-sensitive but doesn't read
+                // `packet_end_tick`, so the walk cost sits off it. Gated
+                // on `packet_is_instruction` per
+                // [[drift_sampling_instruction_only]] — Status skips
+                // never contribute.
+                if self.packet_is_instruction {
+                    // SAFETY: see note above.
+                    let rx_buf = unsafe { &mut *rx_buf_ptr };
+                    let head_gap = rx_buf.reader().avail();
+                    if let Some((tail, d_min)) = read_tail_and_d_min(rx_buf, head_gap)
+                        && self.rx.anchor_at_tail(ticks_per_bit, &tail, d_min)
+                        && let Some(anchor) = self.rx.tail_anchor()
+                    {
+                        self.rx
+                            .walk_pairs_back(anchor, n_pairs_wanted, ticks_per_bit, pairs);
+                    }
+                    self.rx.reset_anchor();
+                }
+                self.packet_is_instruction = false;
                 continue;
             }
 
             // Feed phase: extract a contiguous front slice from the
             // ring; feed to the parser; advance by what was consumed.
-            let (input_ptr, input_len) = {
+            // Also record `back_len` — the parser only sees `front`, but
+            // `avail_at_iter_start = input_len + back_len` is what maps
+            // parser cursor → producer-head distance at Crc time.
+            let (input_ptr, input_len, back_len) = {
                 // SAFETY: see note above.
                 let rx_buf = unsafe { &mut *rx_buf_ptr };
                 let mut reader = rx_buf.reader();
-                let (front, _back) = reader.peek_slices();
-                (front.as_ptr(), front.len())
+                let (front, back) = reader.peek_slices();
+                (front.as_ptr(), front.len(), back.len())
             };
             if input_len == 0 {
-                // Defensive flush: pending should already be 0 (the
-                // prior packet's Crc flushed and reset it), but a Sync
-                // → exit-with-no-more-bytes window could leave pending
-                // > 0. Don't carry across polls — `dxl-streaming-rx.md`
-                // §4 lockstep.
-                flush_walker_pending(
-                    &mut self.rx,
-                    &mut self.pending_walker_advance,
-                    win_lo,
-                    win_hi,
-                    pairs,
-                );
                 return;
             }
             // SAFETY: `input_ptr` points into `rx_buf.data`, owned by
@@ -339,6 +331,11 @@ impl<R: EdgeDma, CRC: CrcUmts, const RX_BUF_LEN: usize, const EDGE_BUF_LEN: usiz
 
             let mut break_for_skip: Option<u8> = None;
             let mut stop = false;
+            // Ring depth from parser cursor to producer head at the start
+            // of this feed iteration. Stays fixed for the parser loop
+            // (no `on_publish` runs mid-poll), so `head_gap` at any point
+            // inside the loop is `avail_at_iter_start - stream.consumed()`.
+            let avail_at_iter_start = input_len + back_len;
             let consumed = {
                 let mut stream = self.parser.feed(input);
                 // `while let` rather than `for ... by_ref()` so each iteration
@@ -360,64 +357,44 @@ impl<R: EdgeDma, CRC: CrcUmts, const RX_BUF_LEN: usize, const EDGE_BUF_LEN: usiz
                         .wire_bytes_consumed
                         .wrapping_add(stream.consumed() as u32);
 
-                    // Drive the edge parser in lockstep with the byte
-                    // parser. At `Event::Sync`, back-search seeds the
-                    // anchor at byte 3 of the new packet — back-search
-                    // itself accounts for the 4 signature bytes, so
-                    // last_walked_pos jumps straight to next_status_pos
-                    // with no forward advance call. At every other event,
-                    // walk forward by the byte delta the parser consumed
-                    // since the previous event. `last_walked_pos == 0`
-                    // means we haven't seen the first Sync yet, so skip
-                    // advance.
-                    if matches!(ev, Event::Sync) {
-                        // Body bytes already in the front slice past the
-                        // parser's just-consumed sync header drive the
-                        // hinted anchor's byte-derived edge estimate.
-                        let consumed = stream.consumed() as usize;
-                        let body_bytes = &input[consumed..];
-                        self.rx
-                            .anchor_at_signature_hinted(ticks_per_bit, body_bytes);
-                        self.last_walked_pos = next_status_pos;
-                    } else if self.last_walked_pos != 0 {
-                        // Set hsi_active BEFORE the pending byte count
-                        // grows — the walker reads it at flush time, so
-                        // the bytes this event represents need the new
-                        // flag in place before they fall under flush
-                        // attribution. hsi_active is naturally sticky
-                        // between events (Header sets, packet boundary
-                        // clears), so only Header events mutate it; all
-                        // bytes from this Header through to the matching
-                        // Crc/SkipComplete inherit the same flag and
-                        // batch-flush correctly.
-                        match ev {
-                            Event::Header(HeaderEvent::Instruction(_)) => {
-                                self.rx.set_hsi_active(true);
-                            }
-                            Event::Header(HeaderEvent::Status(_)) => {
-                                self.rx.set_hsi_active(false);
-                            }
-                            _ => {}
+                    // Track packet kind for the Crc-time retroactive walk
+                    // gate: Instruction packets (own or foreign) contribute
+                    // drift samples per [[drift_sampling_instruction_only]];
+                    // Status frames don't.
+                    match ev {
+                        Event::Header(HeaderEvent::Instruction(_)) => {
+                            self.packet_is_instruction = true;
                         }
-                        let delta = next_status_pos.wrapping_sub(self.last_walked_pos) as u16;
-                        self.pending_walker_advance =
-                            self.pending_walker_advance.wrapping_add(delta);
-                        self.last_walked_pos = next_status_pos;
+                        Event::Header(HeaderEvent::Status(_)) => {
+                            self.packet_is_instruction = false;
+                        }
+                        _ => {}
                     }
 
-                    // Crc / Resync read the anchor in the driver's event
-                    // sink (`packet_end_tick` at Crc; boundary cleanup at
-                    // Resync resets it). Flush before dispatch so the
-                    // anchor is current AND drift pairs from this packet
-                    // commit before the boundary clears.
-                    if matches!(ev, Event::Crc(_) | Event::Resync(_)) {
-                        flush_walker_pending(
-                            &mut self.rx,
-                            &mut self.pending_walker_advance,
-                            win_lo,
-                            win_hi,
-                            pairs,
-                        );
+                    // At Crc: back-search the ET ring against the last 4
+                    // raw wire bytes the parser just consumed. Sets
+                    // `tail_anchor` so `packet_end_tick` reads in wire-
+                    // edge time anchored on the CRC byte's start.
+                    //
+                    // Read the tail bytes directly from the RX ring via
+                    // `recent(offset)` back from the producer head.
+                    // `head_gap` is the byte distance between the parser
+                    // cursor and the producer head — 0 when Crc lands as
+                    // the very last byte in the ring; nonzero under batch
+                    // drain (RX HT/TC) when bytes past CRC still sit
+                    // unread. Those past-CRC bytes' edges contributed to
+                    // ET, so their summed `EDGES_PER_BYTE` becomes `d_min`
+                    // — the anchor search origin shift.
+                    if matches!(ev, Event::Crc(_)) {
+                        // SAFETY: `rx_buf_ptr` is valid for the duration of
+                        // this poll; `stream` only reads `input` (not the
+                        // ring), so a fresh shared borrow here doesn't
+                        // alias the parser's slice.
+                        let rx_buf = unsafe { &*rx_buf_ptr };
+                        let head_gap = (avail_at_iter_start - stream.consumed() as usize) as u16;
+                        if let Some((tail, d_min)) = read_tail_and_d_min(rx_buf, head_gap) {
+                            self.rx.anchor_at_tail(ticks_per_bit, &tail, d_min);
+                        }
                     }
 
                     match on_event(
@@ -439,19 +416,27 @@ impl<R: EdgeDma, CRC: CrcUmts, const RX_BUF_LEN: usize, const EDGE_BUF_LEN: usiz
                         }
                     }
 
-                    // Crc / Resync are packet boundaries — drop the
-                    // walker anchor so the next packet's Sync re-seeds
-                    // from scratch. Zeroing `last_walked_pos` puts the
-                    // codec back in "no anchor yet" mode so an
-                    // unexpected mid-stream event before the next Sync
-                    // doesn't try to advance against the dropped anchor.
-                    // Pending was flushed just before the dispatch above
-                    // so this reset is defensive — keeps the
-                    // pending=0-at-poll-entry invariant under any
-                    // intra-poll handler that might mutate state.
+                    // Retroactive integrator walk. Runs AFTER `on_event`
+                    // — i.e. after the wire-schedule call (`arm_tim2` /
+                    // `scheduler.schedule`) has fired inside the sink —
+                    // so the walk cost sits off the deadline path. Gated
+                    // on Instruction packets only; Status frames don't
+                    // contribute drift samples ([[drift_sampling_instruction_only]]).
+                    if matches!(ev, Event::Crc(_))
+                        && self.packet_is_instruction
+                        && let Some(anchor) = self.rx.tail_anchor()
+                    {
+                        self.rx
+                            .walk_pairs_back(anchor, n_pairs_wanted, ticks_per_bit, pairs);
+                    }
+
                     if matches!(ev, Event::Crc(_) | Event::Resync(_)) {
-                        self.last_walked_pos = 0;
-                        self.pending_walker_advance = 0;
+                        self.packet_is_instruction = false;
+                        // Packet boundary — anchor state is stale.
+                        // Owned here (not in the driver's `on_event`) so
+                        // `walk_pairs_back` above still sees the anchor
+                        // set by `anchor_at_tail` for THIS packet.
+                        self.rx.reset_anchor();
                     }
                 }
                 stream.consumed()
@@ -473,19 +458,6 @@ impl<R: EdgeDma, CRC: CrcUmts, const RX_BUF_LEN: usize, const EDGE_BUF_LEN: usiz
                 // ever gets a turn (per `dxl-streaming-rx.md` §6 —
                 // edge-IRQ masking at arm shuts the door on future polls
                 // only).
-                //
-                // Flush before returning — the Crc dispatch already
-                // flushed before this point, but a Stop after a non-Crc
-                // event would leave pending unflushed. The fold engine
-                // takes RX ownership next; we own the edge ring until
-                // that handoff.
-                flush_walker_pending(
-                    &mut self.rx,
-                    &mut self.pending_walker_advance,
-                    win_lo,
-                    win_hi,
-                    pairs,
-                );
                 return;
             }
 
@@ -507,16 +479,6 @@ impl<R: EdgeDma, CRC: CrcUmts, const RX_BUF_LEN: usize, const EDGE_BUF_LEN: usiz
             if consumed == 0 {
                 // Parser made no progress on the front slice — either
                 // it's idling at end-of-input or the slice was empty.
-                // Try the back slice on next iteration via peek_slices.
-                // If the front slice was non-empty and consumed is 0,
-                // we'd loop forever — short-circuit.
-                flush_walker_pending(
-                    &mut self.rx,
-                    &mut self.pending_walker_advance,
-                    win_lo,
-                    win_hi,
-                    pairs,
-                );
                 return;
             }
         }
@@ -601,19 +563,9 @@ impl<R: EdgeDma, CRC: CrcUmts, const RX_BUF_LEN: usize, const EDGE_BUF_LEN: usiz
         unsafe { (*self.rx_buf.get()).as_ptr() as usize }
     }
 
-    /// Forward to [`rx::Rx::pause_edges`].
-    pub fn pause_edges(&mut self) {
-        self.rx.pause_edges();
-    }
-
-    /// Forward to [`rx::Rx::resume_edges`].
-    pub fn resume_edges(&mut self) {
-        self.rx.resume_edges();
-    }
-
-    /// Forward to [`rx::Rx::anchor_at_signature`].
-    pub fn anchor_at_signature(&mut self, ticks_per_bit: u16) -> bool {
-        self.rx.anchor_at_signature(ticks_per_bit)
+    /// Forward to [`rx::Rx::anchor_at_tail`].
+    pub fn anchor_at_tail(&mut self, ticks_per_bit: u16, tail_bytes: &[u8], d_min: u16) -> bool {
+        self.rx.anchor_at_tail(ticks_per_bit, tail_bytes, d_min)
     }
 
     /// Forward to [`rx::Rx::on_baud_change`].
@@ -621,19 +573,9 @@ impl<R: EdgeDma, CRC: CrcUmts, const RX_BUF_LEN: usize, const EDGE_BUF_LEN: usiz
         self.rx.on_baud_change(rx_edge_comp_ticks);
     }
 
-    /// Forward to [`rx::Rx::current_byte_tick`].
-    pub fn current_byte_tick(&self, ticks_per_bit: u16, now: u32, src: PollSrc) -> Option<u32> {
-        self.rx.current_byte_tick(ticks_per_bit, now, src)
-    }
-
     /// Forward to [`rx::Rx::packet_end_tick`].
     pub fn packet_end_tick(&self, ticks_per_bit: u16, now: u32, src: PollSrc) -> Option<u32> {
         self.rx.packet_end_tick(ticks_per_bit, now, src)
-    }
-
-    /// Forward to [`rx::Rx::set_hsi_active`].
-    pub fn set_hsi_active(&mut self, on: bool) {
-        self.rx.set_hsi_active(on);
     }
 
     /// Forward to [`rx::Rx::reset_anchor`].
@@ -802,10 +744,6 @@ impl<
     // ----- Forwarders. Keep sequential single-half call sites compact
     // without forcing every caller to disambiguate `.rx` / `.tx`. -----
 
-    pub fn on_edge_advance(&mut self, now: u32, ticks_per_bit: u16) {
-        self.rx.on_edge_advance(now, ticks_per_bit);
-    }
-
     pub fn on_idle(&mut self, now: u32, ticks_per_bit: u16) {
         self.rx.on_idle(now, ticks_per_bit);
     }
@@ -814,16 +752,22 @@ impl<
         self.rx.on_rx_dma_advance(remaining);
     }
 
+    pub fn stash_dma_isr(&mut self, now: u32) {
+        self.rx.stash_dma_isr(now);
+    }
+
     pub fn poll<F, const PAIRS_LEN: usize>(
         &mut self,
         now: u32,
         ticks_per_bit: u16,
+        n_pairs_wanted: u8,
         pairs: &mut heapless::Vec<(u16, u16), PAIRS_LEN>,
         on_event: F,
     ) where
         F: FnMut(PollEvent<'_>, &mut Rx<R, EDGE_BUF_LEN>) -> PollAction,
     {
-        self.rx.poll(now, ticks_per_bit, pairs, on_event);
+        self.rx
+            .poll(now, ticks_per_bit, n_pairs_wanted, pairs, on_event);
     }
 
     pub fn cancel_skip(&mut self) {
@@ -866,17 +810,9 @@ impl<
         self.tx.own_reply_bytes()
     }
 
-    pub fn pause_edges(&mut self) {
-        self.rx.pause_edges();
-    }
-
-    pub fn resume_edges(&mut self) {
-        self.rx.resume_edges();
-    }
-
-    /// Forward to [`CodecRx::anchor_at_signature`].
-    pub fn anchor_at_signature(&mut self, ticks_per_bit: u16) -> bool {
-        self.rx.anchor_at_signature(ticks_per_bit)
+    /// Forward to [`CodecRx::anchor_at_tail`].
+    pub fn anchor_at_tail(&mut self, ticks_per_bit: u16, tail_bytes: &[u8], d_min: u16) -> bool {
+        self.rx.anchor_at_tail(ticks_per_bit, tail_bytes, d_min)
     }
 
     /// Forward to [`CodecRx::on_baud_change`].
@@ -884,19 +820,9 @@ impl<
         self.rx.on_baud_change(rx_edge_comp_ticks);
     }
 
-    /// Forward to [`CodecRx::current_byte_tick`].
-    pub fn current_byte_tick(&self, ticks_per_bit: u16, now: u32, src: PollSrc) -> Option<u32> {
-        self.rx.current_byte_tick(ticks_per_bit, now, src)
-    }
-
     /// Forward to [`CodecRx::packet_end_tick`].
     pub fn packet_end_tick(&self, ticks_per_bit: u16, now: u32, src: PollSrc) -> Option<u32> {
         self.rx.packet_end_tick(ticks_per_bit, now, src)
-    }
-
-    /// Forward to [`CodecRx::set_hsi_active`].
-    pub fn set_hsi_active(&mut self, on: bool) {
-        self.rx.set_hsi_active(on);
     }
 
     /// Forward to [`CodecRx::reset_anchor`].

@@ -107,30 +107,11 @@ pub struct DmaFlags {
 /// Edge-capture DMA channel handle — controller for the DMA channel
 /// that lands TIM2_CH4 IC timestamps into the driver-owned `edges`
 /// buffer. The buffer itself lives on the driver (`Rx::edges`); this
-/// trait owns the channel's ISR-side surface: read+ack HT/TC flags,
-/// read remaining-transfer count (NDTR), and toggle HT/TC IE for the
-/// Fast Last fold window. The driver borrows one through its type
-/// parameter; the production adapter binds to DMA1_CH7.
+/// trait owns the channel's ISR-side surface: read+ack HT/TC flags and
+/// read remaining-transfer count (NDTR). The driver borrows one through
+/// its type parameter; the production adapter binds to DMA1_CH7.
 pub trait EdgeDma {
-    fn read_and_ack(&mut self) -> DmaFlags;
     fn remaining(&self) -> u16;
-
-    /// Mask HT/TC interrupt enable on this channel **and** clear any
-    /// latched HT/TC IF. Called by the Fast Last scheduler at first-fold
-    /// entry (high baud) so the classifier ISR doesn't preempt CC1's body
-    /// during the Fast Last window.
-    ///
-    /// The IF clear is load-bearing, not housekeeping: if HT/TC latches
-    /// microseconds before `pause` runs, masking IE alone leaves the IRQ
-    /// pending — it would fire and run the classifier ISR the moment CC1
-    /// exits, defeating the §10.6 merge. CC1's first fold body has already
-    /// done the classifier's work inline, so dropping the latched flag is
-    /// correct. Idempotent.
-    fn pause(&mut self);
-
-    /// Re-enable HT/TC IRQs on this channel. Called from USART1 TC after
-    /// our Fast Last reply finishes. Idempotent.
-    fn resume(&mut self);
 }
 
 /// RX byte-ring DMA channel — NDTR accessor + HT/TC flag ack. The RX DMA

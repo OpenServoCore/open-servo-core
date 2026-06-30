@@ -322,8 +322,8 @@ fn bring_up_edge_ts_capture(boot_filter: FilterValue) {
         pinc: false,
         minc: true,
         size: dma::Size::BITS16,
-        htie: true,
-        tcie: true,
+        htie: false,
+        tcie: false,
         pl: dma::Pl::VERYHIGH,
     };
     // SAFETY: `Drivers::install` ran in `run()` before `bring_up_dxl`; the

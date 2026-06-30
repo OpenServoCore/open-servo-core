@@ -9,25 +9,18 @@ use crate::runtime::statics::{KERNEL, SERVICES, SHARED};
 /// Called once during bringup, after the drivers and statics are installed.
 pub fn install_irqs() {
     pfic::set_priority(pfic::Interrupt::USART1, pfic::Priority::High);
-    // DMA1_CH7 carries TIM2_CH4 edge timestamps; the HT/TC ISR walks them
-    // through the RX classifier and IDLE drains the tail. Share HIGH
-    // with USART1 so on_dma1_ch7 and on_usart1_idle serialize (same prio →
-    // no preemption) — classifier state is mutated from both paths.
-    pfic::set_priority(pfic::Interrupt::DMA1_CHANNEL7, pfic::Priority::High);
-    // DMA1_CH5 carries USART1 RX bytes; the HT/TC ISR is publish-only
-    // (clear flags + advance `write_seq` from NDTR) per doc §9. Shares
-    // HIGH with the other DXL ISRs so `on_publish` calls serialize against
-    // the codec's poll-path publishes.
+    // DMA1_CH5 carries USART1 RX bytes; the HT/TC ISR publishes the byte-
+    // ring head + drives the parser drain (see `on_dma1_ch5`). Shares HIGH
+    // with the other DXL ISRs so parser-state mutations serialize.
     pfic::set_priority(pfic::Interrupt::DMA1_CHANNEL5, pfic::Priority::High);
-    // TIM2 CC3 IRQ kicks the wire-driver activate sequence; shares HIGH with
-    // USART1 + DMA1_CH7 so the DXL transport's three IRQ sources serialize.
+    // TIM2 CC3 IRQ kicks the wire-driver activate sequence; shares HIGH so
+    // the DXL transport ISR sources serialize.
     pfic::set_priority(pfic::Interrupt::TIM2, pfic::Priority::High);
     // SysTick CMP fires the Fast Last periodic-walk fold body; shares HIGH
-    // with USART1 / DMA1_CH7 / TIM2 so all four DXL ISR sources serialize.
+    // so all DXL ISR sources serialize.
     pfic::set_systick_priority(pfic::Priority::High);
     pfic::set_priority(pfic::Interrupt::DMA1_CHANNEL1, pfic::Priority::Low);
     pfic::enable(pfic::Interrupt::USART1);
-    pfic::enable(pfic::Interrupt::DMA1_CHANNEL7);
     pfic::enable(pfic::Interrupt::DMA1_CHANNEL5);
     pfic::enable(pfic::Interrupt::TIM2);
     pfic::enable_systick();
@@ -61,36 +54,24 @@ pub fn on_usart1() {
     on_usart1_tc();
 }
 
-/// DMA1_CH7 HT/TC handler — refreshes the codec's edge-ring view
-/// (NDTR + `(now, Dma)` ISR-capture stash for the Crc fallback path),
-/// then drives the parser drain via `services.poll`. Per
+/// DMA1_CH5 HT/TC handler — byte-ring publish plus parser drain. `on_rx_advance`
+/// clears the channel's HT/TC flags via the `RxDma` provider and refreshes
+/// the codec's `write_seq` from NDTR; `services.poll` then drives the
+/// streaming parser over the freshly-published bytes. Per
 /// `dxl-streaming-rx.md` §3 / §4.4 / §5.2, parser drains on three
-/// triggers (USART1 IDLE, DMA1_CH7 HT, DMA1_CH7 TC); same-handler
+/// triggers (USART1 IDLE, DMA1_CH5 HT, DMA1_CH5 TC); same-handler
 /// drain is what makes the §5.1 chain-slot fire rule (observe
 /// predecessor skip-exhaust → arm CCR3 inline) hold under low-RDT
 /// timing.
 ///
-/// SAFETY: driver + services installed before this vector unmasks, and
-/// DMA1_CH7 shares PFIC HIGH with USART1 / DMA1_CH5 / TIM2 / SysTick so
-/// no concurrent `&mut` into either is possible.
-pub fn on_dma1_ch7() {
-    unsafe { Drivers::dxl_uart() }.on_rx_edge_advance();
+/// SAFETY: driver installed before this vector unmasks, and DMA1_CH5
+/// shares PFIC HIGH with USART1 / TIM2 / SysTick so no concurrent `&mut`
+/// into the driver is possible.
+pub fn on_dma1_ch5() {
+    unsafe { Drivers::dxl_uart() }.on_rx_advance();
     // SAFETY: see fn doc.
     let services = unsafe { (*SERVICES.get()).assume_init_mut() };
     services.poll(&SHARED);
-}
-
-/// DMA1_CH5 HT/TC handler — publish-only ISR per doc §9. Dispatches into
-/// the driver's `on_rx_advance`, which clears the channel's HT/TC flags
-/// via the `RxDma` provider and refreshes the codec's `write_seq` from
-/// NDTR. No parser drain, no codec poll — those stay on the edge-ring +
-/// IDLE + SysTick paths.
-///
-/// SAFETY: see `on_dma1_ch7` — DMA1_CH5 shares PFIC HIGH with USART1 /
-/// DMA1_CH7 / TIM2 / SysTick so no concurrent `&mut` into the driver is
-/// possible.
-pub fn on_dma1_ch5() {
-    unsafe { Drivers::dxl_uart() }.on_rx_advance();
 }
 
 fn on_usart1_rx_errors() {
@@ -215,11 +196,6 @@ macro_rules! install_isrs {
         #[::qingke_rt::interrupt(lowcode)]
         fn USART1() {
             $crate::runtime::isr::on_usart1();
-        }
-
-        #[::qingke_rt::interrupt(lowcode)]
-        fn DMA1_CHANNEL7() {
-            $crate::runtime::isr::on_dma1_ch7();
         }
 
         #[::qingke_rt::interrupt(lowcode)]

@@ -17,7 +17,7 @@ use osc_drivers::Level;
 use osc_drivers::dxl::uart::DxlUart;
 use osc_drivers::dxl::uart::clock::Clock;
 use osc_drivers::dxl::uart::codec::Codec;
-use osc_drivers::dxl::uart::codec::rx::{edge_buf_len, rx_buf_len};
+use osc_drivers::dxl::uart::codec::rx::edge_buf_len;
 use osc_drivers::dxl::uart::fast_last::FastLast;
 use osc_drivers::led::Led;
 use osc_drivers::traits::dxl::Providers;
@@ -60,18 +60,14 @@ impl Providers for DxlUartProviders {
     type Crc = DxlCrc;
 }
 
-/// Anchor back-search depth target (in edges). Single design knob —
-/// `osc_drivers::dxl::uart::codec::rx::{edge_buf_len, rx_buf_len}` derive
-/// the matching ring sizes. See the docstring on
-/// [`osc_drivers::dxl::uart::codec::rx::sync_lookback_edges`] for the
-/// CPU / RAM cost per increment. V006 (48 MHz, 8 KiB SRAM) uses 59 →
-/// `EDGE_BUF_LEN = 128`, `RX_BUF_LEN = 64`.
-pub(crate) const DXL_SYNC_LOOKBACK_EDGES: u16 = 59;
-/// DMA1_CH5 RX-byte ring depth, derived from [`DXL_SYNC_LOOKBACK_EDGES`].
-pub(crate) const DXL_RX_BUF_LEN: usize = rx_buf_len(DXL_SYNC_LOOKBACK_EDGES);
-/// DMA1_CH7 edge-timestamp ring depth, derived from
-/// [`DXL_SYNC_LOOKBACK_EDGES`].
-pub(crate) const DXL_EDGE_BUF_LEN: usize = edge_buf_len(DXL_SYNC_LOOKBACK_EDGES);
+/// DMA1_CH5 RX-byte ring depth. Chip-facing design knob for the DXL RX
+/// path. Gated from below by Fast Last's `RX_BUF_LEN/2 ≥ grid_interval`
+/// (= 15 bytes; see `firmware/ch32/src/measurements.rs`) — pick a power
+/// of two ≥ 32. V006 (48 MHz, 8 KiB SRAM) uses 32.
+pub(crate) const DXL_RX_BUF_LEN: usize = 32;
+/// DMA1_CH7 edge-timestamp ring depth, derived from [`DXL_RX_BUF_LEN`] via
+/// [`osc_drivers::dxl::uart::codec::rx::edge_buf_len`].
+pub(crate) const DXL_EDGE_BUF_LEN: usize = edge_buf_len(DXL_RX_BUF_LEN);
 /// DMA1_CH4 TX-source buffer depth — mirrors
 /// `osc_core::services::dxl::limits::DXL_TX_MAX_BYTES` so the driver-owned
 /// buffer can hold any Status / Slot reply the dispatcher emits.

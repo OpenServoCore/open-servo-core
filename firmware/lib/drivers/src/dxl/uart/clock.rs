@@ -68,6 +68,14 @@ const EMIT_CAP_STEPS_STEADY: i32 = 4;
 /// time-uniform so no systematic bias.
 const STEADY_SAMPLES_PER_PACKET: u8 = 4;
 
+/// Boot-phase drain cap, in byte pairs per packet. Matches
+/// [`DRIFT_MIN_SAMPLES_BOOT`] so a single Ping's worth of pairs closes
+/// the boot batch in one packet (the walker's cache emits 3 pairs from
+/// the tail signature, ring walk adds the rest). Bounded — not
+/// `u8::MAX` — so the walker doesn't spin ~250 free-run iterations per
+/// Crc waiting for edges past the packet's boundary.
+const BOOT_SAMPLES_PER_PACKET: u8 = DRIFT_MIN_SAMPLES_BOOT as u8;
+
 /// Round-to-nearest rate divisor — `ticks_per_bit` for a baud at the
 /// driver's reference clock. Folds to a literal whenever both arguments
 /// are const at the call site. Numerically identical to a USART BRR
@@ -283,11 +291,11 @@ impl<U: UsartBaud, T: ClockTrim> Clock<U, T> {
     }
 
     /// Max byte pairs per packet the driver should drain into
-    /// [`Self::on_byte_pair`]. During boot phase: unbounded (every pair
-    /// — fast first-close). After boot: capped at
-    /// [`STEADY_SAMPLES_PER_PACKET`] — drift is slow, so a sparser feed
-    /// across more packets is fine, and the saved drain work shows up
-    /// as ~2–4 µs/cycle on the chip-side floor.
+    /// [`Self::on_byte_pair`]. Boot: [`BOOT_SAMPLES_PER_PACKET`] — one
+    /// Ping's worth of pairs closes the boot batch in a single packet.
+    /// Steady: [`STEADY_SAMPLES_PER_PACKET`] — drift is slow, so a
+    /// sparser feed across more packets is fine, and the saved drain
+    /// work shows up as ~2–4 µs/cycle on the chip-side floor.
     ///
     /// Per [[drift_sampling_instruction_only]]: both own + foreign
     /// Instruction packets feed (gated by `hsi_active` upstream at the
@@ -295,7 +303,7 @@ impl<U: UsartBaud, T: ClockTrim> Clock<U, T> {
     #[allow(dead_code)]
     pub fn samples_wanted_per_packet(&self) -> u8 {
         if self.is_boot {
-            u8::MAX
+            BOOT_SAMPLES_PER_PACKET
         } else {
             STEADY_SAMPLES_PER_PACKET
         }

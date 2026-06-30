@@ -36,7 +36,9 @@
 use std::time::Duration;
 
 use anyhow::{Result, bail};
-use bench::{Bus, BusArgs, DEFAULT_IDLE_US, RETURN_DELAY_2US_ADDR, TuneStamps, build_ping};
+use bench::{
+    Bus, BusArgs, DEFAULT_IDLE_US, LinkCounters, RETURN_DELAY_2US_ADDR, TuneStamps, build_ping,
+};
 use clap::Parser;
 use dxl_protocol::types::Id;
 
@@ -81,6 +83,13 @@ struct Args {
     /// Inter-batch idle, milliseconds.
     #[arg(long, default_value_t = 10)]
     inter_batch_ms: u64,
+    /// Optionally rewrite the chip's `RETURN_DELAY_2US` CT register before
+    /// sampling. Value in µs, rounded to the nearest 2 µs step. Useful for
+    /// A/B-testing whether the wire-excess tail is CPU-cost driven (extra
+    /// slack should collapse the tail) or false-positive-anchor driven
+    /// (extra slack won't help).
+    #[arg(long)]
+    rdt_us: Option<u16>,
 }
 
 fn main() -> Result<()> {
@@ -92,6 +101,10 @@ fn main() -> Result<()> {
     })?;
     let id = Id::new(bus.id());
     let ticks_per_us = bus.hz_per_us()? as f64;
+    if let Some(us) = args.rdt_us {
+        let steps = (us / 2).min(255) as u8;
+        bus.write_register(id, RETURN_DELAY_2US_ADDR, &[steps])?;
+    }
     let rdt_us = bus.read_ct_u8(id, RETURN_DELAY_2US_ADDR)? as f64 * 2.0;
     let byte_time_us = 10.0 * 1_000_000.0 / args.baud as f64;
     let expected_first_us = rdt_us + byte_time_us;
@@ -111,12 +124,22 @@ fn main() -> Result<()> {
     println!();
 
     println!(
-        "  {:>5}  {:>10}  {:>11}  {:>11}  {:>11}  {:>11}  {:>6}",
-        "batch", "tx_min_tk", "wire_med_us", "wire_p95_us", "wire_p99_us", "wire_max_us", "rounds",
+        "  {:>5}  {:>10}  {:>11}  {:>11}  {:>11}  {:>11}  {:>6}  {:>10}",
+        "batch",
+        "tx_min_tk",
+        "wire_med_us",
+        "wire_p95_us",
+        "wire_p99_us",
+        "wire_max_us",
+        "rounds",
+        "anchor_ms",
     );
 
     let mut batch_mins: Vec<u16> = Vec::with_capacity(args.batches as usize);
     let mut all_round_us: Vec<f64> = Vec::with_capacity((args.batches * args.shots) as usize);
+    let mut total_anchor_miss: u32 = 0;
+    let mut prev_counters = LinkCounters::default();
+    bus.clear_counters(id)?;
 
     for b in 0..args.batches {
         bus.clear_tune(id)?;
@@ -150,15 +173,32 @@ fn main() -> Result<()> {
             .iter()
             .copied()
             .fold(f64::NEG_INFINITY, f64::max);
+        let counters = bus.read_counters(id)?;
+        let anchor_miss = counters.edge_anchor_miss.wrapping_sub(prev_counters.edge_anchor_miss);
+        total_anchor_miss = total_anchor_miss.wrapping_add(anchor_miss);
+        prev_counters = counters;
         println!(
             "  {b:>5}  {tx_start_entry_min:>10}  {med:>11.2}  {p95:>11.2}  {p99:>11.2}  {max:>11.2}  \
-             {:>6}",
+             {:>6}  {anchor_miss:>10}",
             batch_rounds_us.len(),
         );
 
         std::thread::sleep(Duration::from_millis(args.inter_batch_ms));
     }
 
+    println!();
+    let total_shots = args.batches.saturating_mul(args.shots);
+    let miss_pct = if total_shots > 0 {
+        100.0 * total_anchor_miss as f64 / total_shots as f64
+    } else {
+        0.0
+    };
+    println!(
+        "=== edge-anchor misses (packet_end_tick fallback fired, SW-timed) ===",
+    );
+    println!(
+        "  total_misses={total_anchor_miss} / {total_shots} pings ({miss_pct:.2}%)",
+    );
     println!();
     print_summary(&batch_mins, &all_round_us, expected_first_us);
     Ok(())
