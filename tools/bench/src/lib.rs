@@ -16,7 +16,7 @@ mod pirate;
 
 pub use pirate::{
     BStamp, DesyncCause, IcSnapshot, PIRATE_PID, PIRATE_VID, PirateDesync, PirateStatus,
-    ReplyCapture, ReplyTiming, auto_detect_pirate,
+    ReplyCapture, ReplyTiming, TxComp, auto_detect_pirate,
 };
 
 // ---------------------------------------------------------------------------
@@ -695,6 +695,17 @@ impl Bus {
     /// otherwise drives both sides together.
     pub fn pirate_set_baud(&mut self, bps: u32) -> Result<()> {
         self.pirate.set_baud(bps)
+    }
+
+    /// Read the pirate's TX-comp tunables (`pipe`, `bit_q4`).
+    pub fn pirate_comp(&mut self) -> Result<TxComp> {
+        self.pirate.comp()
+    }
+
+    /// Write both TX-comp tunables. Recompute happens chip-side under the
+    /// pirate's critical section.
+    pub fn pirate_set_comp(&mut self, comp: TxComp) -> Result<()> {
+        self.pirate.set_comp(comp.pipe, comp.bit_q4)
     }
 }
 

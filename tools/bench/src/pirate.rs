@@ -81,6 +81,17 @@ pub struct PirateStatus {
     pub last_tick: u32,
 }
 
+/// TX-comp tunables read from the pirate via `COMP?`. See firmware
+/// `inject.rs` for the decomposition:
+/// `FIRE_COMP_TICKS = pipe + (bit_q4 × brr) / 16`.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub struct TxComp {
+    /// Static HCLK-domain pipeline ticks (TIM4 CC2 → USART3.DR write).
+    pub pipe: u32,
+    /// USART bit-clock multiplier in Q4 (16 = 1.0 × brr).
+    pub bit_q4: u32,
+}
+
 /// Full capture from one transfer: the raw per-byte stream plus
 /// (when a reply arrived) the three load-bearing timing points.
 #[derive(Clone, Debug, Default)]
@@ -305,6 +316,20 @@ impl Client {
         parse_status(&reply)
     }
 
+    /// Read TX-comp tunables: HCLK-domain pipeline ticks and the bit-clock
+    /// multiplier in Q4 (16 = 1.0 × brr). Bypasses the desync guard so
+    /// it's safe to call after a stage trip.
+    pub fn comp(&mut self) -> Result<TxComp> {
+        let reply = self.command("COMP?")?;
+        parse_comp(&reply)
+    }
+
+    /// Write one or both TX-comp tunables. `bit_q4` clamps to a u32 — the
+    /// firmware refuses negative values at the parser layer.
+    pub fn set_comp(&mut self, pipe: u32, bit_q4: u32) -> Result<()> {
+        self.expect_ok(&format!("COMP pipe={pipe} bit_q4={bit_q4}"))
+    }
+
     pub fn reset(&mut self) -> Result<()> {
         self.expect_ok("RESET")
     }
@@ -501,6 +526,27 @@ where
         .ok_or_else(|| anyhow!("{tag}? → {reply:?}"))?;
     rest.parse::<T>()
         .map_err(|e| anyhow!("{tag}? parse {rest:?}: {e}"))
+}
+
+fn parse_comp(reply: &str) -> Result<TxComp> {
+    let rest = reply
+        .strip_prefix("COMP ")
+        .ok_or_else(|| anyhow!("COMP reply: {reply:?}"))?;
+    let mut pipe: Option<u32> = None;
+    let mut bit_q4: Option<u32> = None;
+    for tok in rest.split_ascii_whitespace() {
+        let (k, v) = tok
+            .split_once('=')
+            .ok_or_else(|| anyhow!("COMP token: {tok:?}"))?;
+        match k {
+            "pipe" => pipe = Some(v.parse()?),
+            "bit_q4" => bit_q4 = Some(v.parse()?),
+            _ => bail!("COMP unknown key: {k:?}"),
+        }
+    }
+    let pipe = pipe.ok_or_else(|| anyhow!("COMP missing pipe"))?;
+    let bit_q4 = bit_q4.ok_or_else(|| anyhow!("COMP missing bit_q4"))?;
+    Ok(TxComp { pipe, bit_q4 })
 }
 
 fn parse_status(reply: &str) -> Result<PirateStatus> {

@@ -6,21 +6,29 @@
 //!    inter-packet gap. Validates byte values, no `COUNT_UNDER`, inter-byte
 //!    spacing within tolerance, and every stamp anchor matches a real IC
 //!    ring entry.
-//! 2. **stress** — slow-baud (115 200) single-byte `MASTER` shots with
-//!    host-side gaps that scatter DMA HT/TC/IDLE across the inter-byte
-//!    window. Validates the RX edge ring and byte ring stay paired across
-//!    walker boundaries: byte values, strictly-monotone stamp ticks, and
-//!    1:1 IC ring correspondence. Host-sleep is non-deterministic by
-//!    design — the test gates on pirate-attested invariants only.
+//! 2. **stress** — slow-baud (115 200) random-burst soak. A seeded LCG
+//!    generates 32 bursts of 1..=32 random bytes with random 0..=20 ms
+//!    inter-burst gaps. Variable byte values mean variable falling-edge
+//!    counts per byte, so the RX byte-ring index drifts independently
+//!    of the IC edge-ring index — any pair-up bug shows up as a byte
+//!    mismatch. Validates per-burst: byte count, byte values, strictly
+//!    monotone stamp ticks, and `falling_total` delta == sum of expected
+//!    edges (computed from the LSB-first UART frame of each byte).
 //! 3. **fire-comp** — scheduled-`FIRE` vs stamped wire edge, swept across
-//!    baud. Residual = `stamp[0].tick − LAST?`. Regressed `a + b·brr`:
-//!    `a` reports the `FIRE_COMP_FLAT_TICKS` delta (firmware ships 96);
-//!    `b` ≈ 0 confirms the brr-coefficient is correct.
+//!    baud. Residual = `stamp[0].tick − LAST?`. Regressed `a + b·brr`,
+//!    then stacked onto the pirate's current `(pipe, bit_q4)` (read via
+//!    `COMP?`) to recommend new tunables:
+//!    `pipe_new = pipe_cur + a`, `bit_q4_new = bit_q4_cur + 16·b`.
+//!    Bench reports per-baud residuals as ticks AND as `err/bit` =
+//!    `median/brr` — a constant `err/bit` across rows means the model is
+//!    off by a single scalar (move `bit_q4`); a varying `err/bit` means
+//!    the linear-in-brr model itself is wrong. Pass `--write` to push
+//!    the recommendation back via `COMP`.
 
 use std::time::{Duration, Instant};
 
 use anyhow::{Result, bail};
-use bench::{BStamp, Bus, IcSnapshot};
+use bench::{BStamp, Bus, IcSnapshot, TxComp};
 use clap::{Parser, ValueEnum};
 
 #[derive(Copy, Clone, Debug, ValueEnum, PartialEq, Eq)]
@@ -53,6 +61,23 @@ struct Args {
     /// Shots per baud for fire-comp regression.
     #[arg(long, default_value_t = 16)]
     fire_comp_shots: u32,
+    /// After stage 3, write the regression-recommended TX-comp values
+    /// (`pipe`, `bit_q4`) back to the pirate via `COMP`. No-op if the
+    /// recommendation matches what the pirate already has.
+    #[arg(long)]
+    write: bool,
+    /// Stage 2 RNG seed (decimal or 0x-prefixed hex). Reproduce a failing
+    /// run by re-running with the seed printed at stage start.
+    #[arg(long, value_parser = parse_seed)]
+    seed: Option<u64>,
+}
+
+fn parse_seed(s: &str) -> std::result::Result<u64, String> {
+    if let Some(hex) = s.strip_prefix("0x").or_else(|| s.strip_prefix("0X")) {
+        u64::from_str_radix(hex, 16).map_err(|e| e.to_string())
+    } else {
+        s.parse::<u64>().map_err(|e| e.to_string())
+    }
 }
 
 /// Loopback payload (16 bytes). Varied edge density across the byte
@@ -61,23 +86,28 @@ const LOOPBACK_PAYLOAD: [u8; 16] = [
     0x55, 0xAA, 0x55, 0xAA, 0xF0, 0x0F, 0x33, 0xCC, 0x00, 0xFE, 0x01, 0x80, 0xA5, 0x5A, 0xC3, 0x3C,
 ];
 
-/// Stress probe baud — slow enough that a single byte fits well inside one
-/// TIM2 wrap (~455 µs at 144 MHz), so the inter-byte gap dominates.
+/// Stress probe baud — slow enough that each burst fits well under the
+/// 200 ms drain timeout while still exercising DMA HT/TC/IDLE many times
+/// over the run.
 const STRESS_BAUD: u32 = 115_200;
 
-/// Stress shots per gap setting. Keep small enough that the IC ring still
-/// holds every entry when we snapshot at the end (ring is sized for normal
-/// bus traffic, not a forensic capture).
-const STRESS_SHOTS: usize = 16;
+/// Number of random bursts in the stress soak.
+const STRESS_BURSTS: usize = 32;
 
-/// Gap multiples (× TIM2 wrap) used for the stress sweep. Different
-/// gap sizes land DMA HT/TC/IDLE at different positions relative to
-/// each start-bit edge, scattering walker-boundary cases across the run.
-const STRESS_GAP_WRAPS: &[u32] = &[1, 2, 5, 10];
+/// Per-burst byte-count range. Spans both sub-half-ring (no HT trip
+/// within the burst) and a regime where back-to-back bursts cross HT/TC
+/// boundaries on both the RX and IC rings.
+const STRESS_MIN_BURST: u32 = 1;
+const STRESS_MAX_BURST: u32 = 32;
 
-/// Firmware-side `FIRE_COMP_FLAT_TICKS` we're calibrating. Stage 3's
-/// regression intercept is reported as a delta from this baseline.
-const FIRE_COMP_FLAT_TICKS_FW: u32 = 96;
+/// Inter-burst host-side gap range (µs). 0 → back-to-back, upper end ≫
+/// TIM2 wrap (~455 µs at 144 MHz) so HT/TC/IDLE fire at every relative
+/// offset across the soak.
+const STRESS_MAX_GAP_US: u32 = 20_000;
+
+/// Default RNG seed (override with `--seed`). Fixed so CI runs are
+/// reproducible; the actual seed used is printed at stage start.
+const STRESS_DEFAULT_SEED: u64 = 0xC0DE_1234_DEAD_BEEF;
 
 fn main() -> Result<()> {
     let args = Args::parse();
@@ -94,10 +124,10 @@ fn main() -> Result<()> {
         stage_classifier(&mut bus, &bauds, args.tolerance)?;
     }
     if run_all || args.stage == Stage::Stress {
-        stage_stress(&mut bus)?;
+        stage_stress(&mut bus, args.seed.unwrap_or(STRESS_DEFAULT_SEED))?;
     }
     if run_all || args.stage == Stage::FireComp {
-        stage_fire_comp(&mut bus, &bauds, args.fire_comp_shots)?;
+        stage_fire_comp(&mut bus, &bauds, args.fire_comp_shots, args.write)?;
     }
     Ok(())
 }
@@ -178,119 +208,250 @@ fn run_classifier_probe(bus: &mut Bus, baud: u32, tol_arg: Option<u32>) -> Resul
 }
 
 // ---------------------------------------------------------------------------
-// Stage 2: multi-wrap stress
+// Stage 2: random-burst soak
 // ---------------------------------------------------------------------------
 
-fn stage_stress(bus: &mut Bus) -> Result<()> {
+fn stage_stress(bus: &mut Bus, seed: u64) -> Result<()> {
     println!();
-    println!("stage 2: stress (baud={STRESS_BAUD}, single 0xFF shots, host-side gaps)");
-    println!("  gates: byte values, strictly-monotone stamp ticks, Δ sanity ceiling,");
-    println!("  IC ring 1:1 matches stamps (host-sleep jitter is the randomizer, not a metric).");
+    println!("stage 2: stress — random bursts (baud={STRESS_BAUD}, seed=0x{seed:016X})");
+    println!("  gates per burst: byte count, byte values, strictly-monotone ticks,");
+    println!("  falling_total delta == expected edges (computed from byte payload).");
     println!();
     println!(
-        "  {:>3}  {:>9}  {:>5}  {:>9}  {:>9}  {:>8}  result",
-        "×wr", "gap_us", "shots", "min_dt_us", "max_dt_us", "ic_match"
+        "  {:>5}  {:>3}  {:>7}  {:>5}  result",
+        "burst", "len", "gap_us", "edges"
     );
+
     bus.pirate_set_baud(STRESS_BAUD)?;
-    let hz_per_us = bus.hz_per_us()?;
-    // TIM2 wraps every 2^16 ticks = 65536 / hz_per_us µs.
-    let wrap_us = 65536u32.div_ceil(hz_per_us);
+    bus.pirate_reset()?;
+    std::thread::sleep(Duration::from_millis(20));
+    while !bus.pirate_bbatch(255)?.is_empty() {}
+
+    let mut rng = seed;
     let mut any_fail = false;
-    for &gap_wraps in STRESS_GAP_WRAPS {
-        let gap_us = wrap_us * gap_wraps;
-        match run_stress_probe(bus, gap_us, hz_per_us) {
-            Ok(line) => println!("  {gap_wraps:>3}  {gap_us:>9}  {line}  PASS"),
+    let mut total_bytes = 0usize;
+    let mut total_edges = 0u32;
+    let mut burst = Vec::with_capacity(STRESS_MAX_BURST as usize);
+
+    for i in 0..STRESS_BURSTS {
+        let len = lcg_in_range(&mut rng, STRESS_MIN_BURST, STRESS_MAX_BURST) as usize;
+        burst.clear();
+        burst.extend((0..len).map(|_| lcg_next(&mut rng) as u8));
+        let gap_us = lcg_in_range(&mut rng, 0, STRESS_MAX_GAP_US);
+        let expected_edges: u32 = burst.iter().map(|&b| falling_edges(b)).sum();
+        match run_stress_burst(bus, &burst, expected_edges) {
+            Ok(()) => {
+                println!("  {i:>5}  {len:>3}  {gap_us:>7}  {expected_edges:>5}  PASS");
+                total_bytes += len;
+                total_edges += expected_edges;
+            }
             Err(e) => {
-                println!("  {gap_wraps:>3}  {gap_us:>9}  ----  FAIL: {e}");
+                println!("  {i:>5}  {len:>3}  {gap_us:>7}  {expected_edges:>5}  FAIL: {e}");
                 any_fail = true;
+                break;
             }
         }
+        std::thread::sleep(Duration::from_micros(gap_us as u64));
     }
+    println!();
+    println!("  summary: {STRESS_BURSTS} bursts, {total_bytes} bytes, {total_edges} edges total");
     if any_fail {
         bail!("stage 2 (stress) failed");
     }
     Ok(())
 }
 
-fn run_stress_probe(bus: &mut Bus, gap_us: u32, hz_per_us: u32) -> Result<String> {
-    bus.pirate_reset()?;
-    std::thread::sleep(Duration::from_millis(20));
-    while !bus.pirate_bbatch(255)?.is_empty() {}
-    // pirate_reset() doesn't clear FALLING_TOTAL or the IC ring (the ring
-    // is post-trip diagnostic state). Snapshot the pre-probe count and
-    // gate on the delta instead — any spurious capture during the probe
-    // window shows up as ic_delta > STRESS_SHOTS.
+fn run_stress_burst(bus: &mut Bus, burst: &[u8], expected_edges: u32) -> Result<()> {
+    // pirate_reset() doesn't clear FALLING_TOTAL or the IC ring (post-
+    // trip diagnostic state). Snapshot the pre-burst count and gate on
+    // the delta against the payload's exact expected edge count.
     let pre_total = bus.ic_snapshot()?.falling_total;
-
-    // 0xFF: lone start-bit falling edge, then 9 high bits + idle. One IC
-    // entry per shot — easy to count, easy to back-check.
-    for _ in 0..STRESS_SHOTS {
-        bus.pirate_master(&[0xFF])?;
-        std::thread::sleep(Duration::from_micros(gap_us as u64));
-    }
-    let stamps = drain_stamps_until(bus, STRESS_SHOTS, Duration::from_millis(200))?;
+    bus.pirate_master(burst)?;
+    let stamps = drain_stamps_until(bus, burst.len(), Duration::from_millis(200))?;
     let snap = bus.ic_snapshot()?;
 
-    if stamps.len() != STRESS_SHOTS {
-        bail!("got {} stamps, expected {STRESS_SHOTS}", stamps.len());
+    let verdict = validate_burst(burst, &stamps, &snap, pre_total, expected_edges);
+    if let Err(e) = &verdict {
+        dump_failure_context(burst, &stamps, &snap, pre_total, expected_edges, e);
     }
-    for (i, s) in stamps.iter().enumerate() {
-        if s.byte != 0xFF {
-            bail!("stress[{i}] byte = 0x{:02X}, expected 0xFF", s.byte);
-        }
-    }
-    validate_no_count_under(&stamps)?;
-    validate_ic_correspondence(&stamps, &snap)?;
-    let ic_delta = snap.falling_total.wrapping_sub(pre_total);
-    if ic_delta as usize != STRESS_SHOTS {
+    verdict
+}
+
+fn validate_burst(
+    burst: &[u8],
+    stamps: &[BStamp],
+    snap: &IcSnapshot,
+    pre_total: u32,
+    expected_edges: u32,
+) -> Result<()> {
+    if stamps.len() != burst.len() {
         bail!(
-            "falling_total advanced by {ic_delta}, expected {STRESS_SHOTS} \
-             (extras = spurious IC captures during the probe window)"
+            "got {} stamps, expected {} (echo incomplete or unexpected tail)",
+            stamps.len(),
+            burst.len()
         );
     }
-
-    // Δ sanity ceiling: 100 ms ≈ 100 000 µs × hz_per_us. A backwards
-    // tick (wrap-race miscount) shows up as `wrapping_sub` returning a
-    // value near u32::MAX, far above this ceiling.
-    let max_sane_delta = 100_000u32.saturating_mul(hz_per_us);
-    let mut min_dt = u32::MAX;
-    let mut max_dt = 0u32;
-    for i in 0..stamps.len() - 1 {
+    validate_byte_match(stamps, burst)?;
+    validate_no_count_under(stamps)?;
+    for i in 0..stamps.len().saturating_sub(1) {
         let dt = stamps[i + 1].tick.wrapping_sub(stamps[i].tick);
-        if dt == 0 {
-            bail!("Δ stamps[{i}]→stamps[{}] = 0 (duplicate tick)", i + 1);
-        }
-        if dt > max_sane_delta {
+        // Top half of u32 = wrapping_sub underflow = backwards stamp.
+        if dt == 0 || dt > u32::MAX / 2 {
             bail!(
-                "Δ stamps[{i}]→stamps[{}] = {dt} ticks > sane ceiling \
-                 {max_sane_delta} (TIM3 stitch failure or backwards stamp)",
+                "Δ stamps[{i}]→stamps[{}] = {dt} ticks (non-monotone or backwards)",
                 i + 1
             );
         }
-        min_dt = min_dt.min(dt);
-        max_dt = max_dt.max(dt);
     }
+    let ic_delta = snap.falling_total.wrapping_sub(pre_total);
+    if ic_delta != expected_edges {
+        bail!(
+            "falling_total advanced by {ic_delta}, expected {expected_edges} \
+             (mismatch ⇒ byte/edge ring desync or spurious IC capture)"
+        );
+    }
+    Ok(())
+}
 
-    let ic_str = format!("{ic_delta}/{STRESS_SHOTS}");
-    Ok(format!(
-        "{n:>5}  {min:>9}  {max:>9}  {ic:>8}",
-        n = stamps.len(),
-        min = min_dt / hz_per_us,
-        max = max_dt / hz_per_us,
-        ic = ic_str,
-    ))
+/// Forensic dump for a failed burst. Prints the payload, every stamp with
+/// its delta from the prev stamp and from the PLL-predicted tick (anchor
+/// chain), and the surrounding IC ring entries. Stamp[0] is the cold-start
+/// anchor; predicted[i] = stamps[0].tick + i·10·bit_ticks. Drift between
+/// stamps[i].tick and predicted[i] reveals whether the PLL is snapping to
+/// glitch edges (drift grows) vs missing a real edge (one-time miss).
+fn dump_failure_context(
+    burst: &[u8],
+    stamps: &[BStamp],
+    snap: &IcSnapshot,
+    pre_total: u32,
+    expected_edges: u32,
+    err: &anyhow::Error,
+) {
+    let bit_ticks = snap.bit_ticks;
+    let byte_period = bit_ticks.wrapping_mul(10);
+    let ic_delta = snap.falling_total.wrapping_sub(pre_total);
+    eprintln!();
+    eprintln!("    --- forensic dump ---");
+    eprintln!("    error: {err}");
+    eprintln!(
+        "    payload ({}B): {}",
+        burst.len(),
+        burst
+            .iter()
+            .map(|b| format!("{b:02X}"))
+            .collect::<Vec<_>>()
+            .join(" ")
+    );
+    eprintln!(
+        "    bit_ticks={bit_ticks}, byte_period={byte_period}, cc_filter_delay={}",
+        snap.cc_filter_delay
+    );
+    eprintln!(
+        "    falling_total: pre={pre_total} post={} delta={ic_delta} expected={expected_edges}",
+        snap.falling_total
+    );
+    eprintln!();
+    eprintln!(
+        "    {:>3}  {:>4}  {:>10}  {:>10}  {:>7}  {:>7}  flags  payload",
+        "i", "byte", "tick", "predicted", "Δ_prev", "Δ_pred"
+    );
+    let base = stamps.first().map(|s| s.tick).unwrap_or(0);
+    for (i, s) in stamps.iter().enumerate() {
+        let predicted = base.wrapping_add(byte_period.wrapping_mul(i as u32));
+        let delta_prev = if i == 0 {
+            0i32
+        } else {
+            stamps[i].tick.wrapping_sub(stamps[i - 1].tick) as i32
+        };
+        let delta_pred = s.tick.wrapping_sub(predicted) as i32;
+        let want = burst.get(i).copied().unwrap_or(0xFF);
+        let match_mark = if s.byte == want { ' ' } else { '!' };
+        eprintln!(
+            "    {i:>3}  0x{:02X}  {:>10}  {:>10}  {:>+7}  {:>+7}  0x{:02X}    0x{want:02X}{match_mark}",
+            s.byte, s.tick, predicted, delta_prev, delta_pred, s.flags
+        );
+    }
+    eprintln!();
+    eprintln!(
+        "    IC ring window ({} entries shown, oldest first):",
+        snap.entries.len()
+    );
+    let stamp_range = stamps
+        .first()
+        .zip(stamps.last())
+        .map(|(f, l)| (f.tick, l.tick));
+    for (i, &t) in snap.entries.iter().enumerate() {
+        let in_burst = match stamp_range {
+            Some((first, last)) => {
+                let before =
+                    t.wrapping_sub(first.wrapping_sub(byte_period)) <= byte_period.wrapping_mul(2);
+                let inside = t.wrapping_sub(first) <= last.wrapping_sub(first);
+                let after = last.wrapping_sub(t) > u32::MAX / 2
+                    && t.wrapping_sub(last) <= byte_period.wrapping_mul(2);
+                if inside {
+                    '*'
+                } else if before || after {
+                    '~'
+                } else {
+                    ' '
+                }
+            }
+            None => ' ',
+        };
+        eprintln!("    {in_burst} [{i:>3}] tick={t}");
+    }
+    eprintln!("    (* = inside stamp range, ~ = within 2 byte-periods of edge)");
+    eprintln!();
+}
+
+/// Count 1→0 transitions in one LSB-first UART frame for `byte`:
+/// `idle(1) → start(0) → b0 → b1 → … → b7 → stop(1)`. The start bit
+/// always contributes one falling edge; data-bit edges depend on the
+/// byte's bit pattern. The stop bit is high so it never adds a falling
+/// edge regardless of `b7`.
+fn falling_edges(byte: u8) -> u32 {
+    let mut count = 1u32;
+    let mut prev = 0u8;
+    for i in 0..8 {
+        let curr = (byte >> i) & 1;
+        if prev == 1 && curr == 0 {
+            count += 1;
+        }
+        prev = curr;
+    }
+    count
+}
+
+/// SplitMix64 — single-state deterministic generator. No external crate,
+/// good enough for test-payload randomization.
+fn lcg_next(state: &mut u64) -> u64 {
+    *state = state.wrapping_add(0x9E37_79B9_7F4A_7C15);
+    let mut z = *state;
+    z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+    z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+    z ^ (z >> 31)
+}
+
+fn lcg_in_range(state: &mut u64, lo: u32, hi: u32) -> u32 {
+    let span = (hi - lo + 1) as u64;
+    lo + (lcg_next(state) % span) as u32
 }
 
 // ---------------------------------------------------------------------------
 // Stage 3: FIRE_COMP_FLAT calibration
 // ---------------------------------------------------------------------------
 
-fn stage_fire_comp(bus: &mut Bus, bauds: &[u32], shots: u32) -> Result<()> {
+fn stage_fire_comp(bus: &mut Bus, bauds: &[u32], shots: u32, write: bool) -> Result<()> {
     println!();
     println!("stage 3: fire-comp (residual = stamp[0].tick − LAST?, single 0x55 byte)");
+    let current = bus.pirate_comp()?;
     println!(
-        "  {:>8}  {:>5}  {:>5}  {:>10}  {:>11}  result",
-        "baud", "brr", "shots", "median", "range"
+        "  current TX-comp:  pipe={} bit_q4={}    (intrinsic phase floor: ±0.5 bit-time at every baud)",
+        current.pipe, current.bit_q4
+    );
+    println!(
+        "  {:>8}  {:>5}  {:>5}  {:>9}  {:>9}  {:>9}  result",
+        "baud", "brr", "shots", "median", "±jitter", "err/bit"
     );
     let hz_per_us = bus.hz_per_us()?;
     let hclk_hz = hz_per_us * 1_000_000;
@@ -304,8 +465,11 @@ fn stage_fire_comp(bus: &mut Bus, bauds: &[u32], shots: u32) -> Result<()> {
                 let med = median_i64(&residuals);
                 let lo = *residuals.iter().min().unwrap();
                 let hi = *residuals.iter().max().unwrap();
-                let range = format!("[{lo:+},{hi:+}]");
-                println!("  {baud:>8}  {brr:>5}  {shots:>5}  {med:>+10}  {range:>11}  PASS");
+                let jitter = (hi - lo) / 2;
+                let err_per_bit = med as f64 / brr as f64;
+                println!(
+                    "  {baud:>8}  {brr:>5}  {shots:>5}  {med:>+9}  {jitter:>+9}  {err_per_bit:>+9.3}  PASS"
+                );
                 points.push((brr as f64, med as f64));
             }
             Err(e) => {
@@ -317,14 +481,44 @@ fn stage_fire_comp(bus: &mut Bus, bauds: &[u32], shots: u32) -> Result<()> {
     if any_fail {
         bail!("stage 3 (fire-comp) failed");
     }
-    if let Some((a, b)) = least_squares_fit(&points) {
-        let measured_flat = (FIRE_COMP_FLAT_TICKS_FW as f64) + a;
-        println!();
-        println!("  fit:  residual = a + b·brr");
-        println!(
-            "        a = {a:+.2} ticks   →  measured FIRE_COMP_FLAT_TICKS ≈ {measured_flat:.1} (firmware has {FIRE_COMP_FLAT_TICKS_FW})"
-        );
-        println!("        b = {b:+.4}         (brr-slope residual; ideal 0)");
+    let Some((a, b)) = least_squares_fit(&points) else {
+        bail!("stage 3: regression underdetermined (need ≥ 2 bauds)");
+    };
+
+    // Recommendation: stack the residual fit on top of what the pirate
+    // already has — pipe_new = pipe_cur + a, bit_q4_new = bit_q4_cur + 16·b.
+    // Clamp bit_q4 at 0; it's a u32 chip-side and a runaway model could
+    // produce a (rounded) negative recommendation.
+    let pipe_new = ((current.pipe as f64) + a).round();
+    let bit_q4_new = ((current.bit_q4 as f64) + 16.0 * b).round().max(0.0);
+    let pipe_new_u32 = pipe_new as u32;
+    let bit_q4_new_u32 = bit_q4_new as u32;
+    let d_pipe = pipe_new_u32 as i64 - current.pipe as i64;
+    let d_bit = bit_q4_new_u32 as i64 - current.bit_q4 as i64;
+
+    println!();
+    println!("  fit:        residual = a + b·brr");
+    println!("              a = {a:+.2} ticks");
+    println!("              b = {b:+.4}");
+    println!(
+        "  recommend:  pipe={pipe_new_u32}  bit_q4={bit_q4_new_u32}    (Δ pipe={d_pipe:+}  Δ bit_q4={d_bit:+})"
+    );
+
+    let recommended = TxComp {
+        pipe: pipe_new_u32,
+        bit_q4: bit_q4_new_u32,
+    };
+    if recommended == current {
+        println!("  already at recommended values; nothing to write.");
+    } else if write {
+        bus.pirate_set_comp(recommended)?;
+        let verify = bus.pirate_comp()?;
+        if verify != recommended {
+            bail!("COMP write verify: wrote {recommended:?}, read back {verify:?}");
+        }
+        println!("  wrote COMP pipe={pipe_new_u32} bit_q4={bit_q4_new_u32}  →  OK");
+    } else {
+        println!("  rerun with --write to apply.");
     }
     Ok(())
 }
