@@ -8,7 +8,7 @@ use embassy_usb::driver::EndpointError;
 use heapless::Vec;
 
 use crate::capture::{self, ByteRecord, FALL_LEN};
-use crate::inject::TX_BUF_LEN;
+use crate::tx::TX_BUF_LEN;
 use crate::proto::{self, Reply};
 use crate::usbd::Driver;
 

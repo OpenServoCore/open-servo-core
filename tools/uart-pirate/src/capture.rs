@@ -61,8 +61,8 @@ use ch32_metapac::{DMA1, TIM2, TIM3, USART3};
 use crate::parse::brr_for;
 use qingke_rt::interrupt;
 
-use crate::inject::{APB1_HZ, BaudError, DEFAULT_BAUD};
 use crate::tick::read_tick32;
+use crate::tx::{APB1_HZ, BaudError, DEFAULT_BAUD};
 
 // IC ring. With event-driven walker, DMA1_CH1 HT fires at FALL_LEN/2
 // entries — the walker drains promptly without waiting for a cadence
@@ -101,7 +101,7 @@ const BITS_PER_BYTE_8N1: u32 = 10;
 const SNAP_BITS: u32 = 1;
 
 /// Per-baud CC filter LUT. fDTS pinned at HCLK = 144 MHz (CKD=`DIV_1`,
-/// set in `inject::init`). Each entry is `(ICxF bits, filter delay in
+/// set in `tick::init`). Each entry is `(ICxF bits, filter delay in
 /// tick32 ticks)` for every legal `ICxF` value, sorted by delay.
 /// `filter_for_brr` picks the **largest delay ≤ brr/3 (≈ 0.333·bit)** at
 /// the configured baud — tighter than production's natural pick because
@@ -448,7 +448,7 @@ fn apply_filter_for_brr(brr: u32) {
 }
 
 /// Reconfigure USART3 BIT_TICKS reference. Caller already retuned the
-/// USART itself via `inject::set_baud`; this just keeps the walker's bit
+/// USART itself via `tx::set_baud`; this just keeps the walker's bit
 /// window aligned with the new baud.
 pub fn set_baud(bps: u32) -> Result<(), BaudError> {
     let brr = brr_for(APB1_HZ, bps).ok_or(BaudError::OutOfRange)?;
@@ -667,7 +667,7 @@ fn refresh_rx_total() -> u32 {
 /// wrap-race correction.
 ///
 /// The phase-locked TIM3 (started one AHB write ahead of TIM2 in
-/// `inject::init`) increments a few cycles BEFORE each TIM2 wrap. If a
+/// `tick::init`) increments a few cycles BEFORE each TIM2 wrap. If a
 /// capture latches inside that gap, TIM3.CCR1 latches the new high half
 /// while TIM2.CCR1 still holds the pre-wrap low half — combined value
 /// reads as `actual + 65536`.
@@ -1002,7 +1002,7 @@ fn USART3() {
         // populated tail. This catches the last-byte-of-reply case that
         // would otherwise wait for the next DMA HT/TC trigger.
         run_walker(TRACE_PHASE_IDLE);
-        crate::inject::on_idle(idle_tick);
+        crate::tx::on_idle(idle_tick);
     }
     crate::led::signal();
 }

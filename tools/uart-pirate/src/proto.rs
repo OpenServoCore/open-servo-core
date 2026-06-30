@@ -59,9 +59,9 @@ use core::str;
 use crate::parse::decode_hex;
 
 use crate::capture::{self, DesyncCause};
-use crate::inject::{self, TX_BUF_LEN};
 use crate::led;
 use crate::tick;
+use crate::tx::{self, TX_BUF_LEN};
 
 pub enum Reply {
     Ok,
@@ -132,7 +132,7 @@ pub fn handle_line(line: &[u8]) -> Reply {
         return baud(rest);
     }
     if line == "COMP?" {
-        let (pipe, bit_q4) = inject::tx_comp();
+        let (pipe, bit_q4) = tx::tx_comp();
         return Reply::Comp { pipe, bit_q4 };
     }
     if let Some(rest) = line.strip_prefix("COMP ") {
@@ -159,7 +159,7 @@ pub fn handle_line(line: &[u8]) -> Reply {
 
     match line {
         "TICK?" => Reply::Tick(tick::read_tick32()),
-        "LAST?" => Reply::Last(inject::last_send_tick()),
+        "LAST?" => Reply::Last(tx::last_send_tick()),
         "HZ" => Reply::HzPerUs(tick::wire_ticks_per_us()),
         "BDRAIN" => match capture::drain_byte() {
             Some(r) => Reply::BStamp {
@@ -178,7 +178,7 @@ fn status() -> Reply {
         baud: capture::current_baud(),
         avail: capture::stamps_available(),
         cause: capture::desync_cause(),
-        last_tick: inject::last_send_tick(),
+        last_tick: tx::last_send_tick(),
     }
 }
 
@@ -205,7 +205,7 @@ fn comp(rest: &str) -> Reply {
     if pipe.is_none() && bit_q4.is_none() {
         return Reply::Err("missing");
     }
-    inject::set_tx_comp(pipe, bit_q4);
+    tx::set_tx_comp(pipe, bit_q4);
     Reply::Ok
 }
 
@@ -213,10 +213,10 @@ fn baud(rest: &str) -> Reply {
     let Ok(bps) = rest.trim().parse::<u32>() else {
         return Reply::Err("baud");
     };
-    match inject::set_baud(bps) {
+    match tx::set_baud(bps) {
         Ok(()) => {}
-        Err(inject::BaudError::OutOfRange) => return Reply::Err("baud"),
-        Err(inject::BaudError::Busy) => return Reply::Err("busy"),
+        Err(tx::BaudError::OutOfRange) => return Reply::Err("baud"),
+        Err(tx::BaudError::Busy) => return Reply::Err("busy"),
     }
     if capture::set_baud(bps).is_err() {
         return Reply::Err("baud");
@@ -251,9 +251,9 @@ fn send(rest: &str) -> Reply {
     }
 
     let result = match (at, after_idle) {
-        (Some(at), None) => inject::schedule_send_at(&buf[..len], at),
-        (None, Some(after)) => inject::schedule_send_after_idle(&buf[..len], after),
-        (None, None) => inject::send_now(&buf[..len]),
+        (Some(at), None) => tx::schedule_send_at(&buf[..len], at),
+        (None, Some(after)) => tx::schedule_send_after_idle(&buf[..len], after),
+        (None, None) => tx::send_now(&buf[..len]),
         (Some(_), Some(_)) => return Reply::Err("conflict"),
     };
     match result {
@@ -261,7 +261,7 @@ fn send(rest: &str) -> Reply {
             led::signal();
             Reply::Ok
         }
-        Err(inject::SendError::TooLong) => Reply::Err("toolong"),
-        Err(inject::SendError::Busy) => Reply::Err("busy"),
+        Err(tx::SendError::TooLong) => Reply::Err("toolong"),
+        Err(tx::SendError::Busy) => Reply::Err("busy"),
     }
 }

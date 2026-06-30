@@ -3,7 +3,6 @@
 #![feature(sync_unsafe_cell)]
 
 mod capture;
-mod inject;
 mod led;
 mod parse;
 mod pfic;
@@ -11,6 +10,7 @@ mod proto;
 mod rcc;
 mod tick;
 mod time_driver;
+mod tx;
 mod usb_cdc;
 mod usbd;
 
@@ -73,12 +73,12 @@ async fn main(spawner: Spawner) {
         w.set_br(11, true);
         w.set_br(12, true);
     });
-    let _ = AFIO; // referenced by remap pokes in inject.rs; keep import live here
+    let _ = AFIO; // referenced by remap pokes in tx::init_clocks_and_remap; keep import live here
 
     led::init();
     led::on();
     tick::init();
-    inject::init();
+    tx::init();
     capture::init();
     pfic::set_priorities();
 
