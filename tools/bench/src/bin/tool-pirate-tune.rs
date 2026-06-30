@@ -15,15 +15,20 @@
 //!    monotone stamp ticks, and `falling_total` delta == sum of expected
 //!    edges (computed from the LSB-first UART frame of each byte).
 //! 3. **fire-comp** — scheduled-`FIRE` vs stamped wire edge, swept across
-//!    baud. Residual = `stamp[0].tick − LAST?`. Regressed `a + b·brr`,
+//!    baud. Residual = `stamp[0].tick − LAST?`. Regressed `a + b·brr`
+//!    with inverse-variance weighting (weight ∝ 1/brr², since per-shot
+//!    phase noise is U[0, brr] so median variance ∝ brr²); the slope is
 //!    then stacked onto the pirate's current `(pipe, bit_q4)` (read via
 //!    `COMP?`) to recommend new tunables:
 //!    `pipe_new = pipe_cur + a`, `bit_q4_new = bit_q4_cur + 16·b`.
-//!    Bench reports per-baud residuals as ticks AND as `err/bit` =
-//!    `median/brr` — a constant `err/bit` across rows means the model is
-//!    off by a single scalar (move `bit_q4`); a varying `err/bit` means
-//!    the linear-in-brr model itself is wrong. Pass `--write` to push
-//!    the recommendation back via `COMP`.
+//!    Per-baud the bench reports `min/median/max/span` (raw spread of N
+//!    shots), `span/brr` (normalized — pure UART DR→TSR phase noise is
+//!    U[0, brr] so this should be ≈ 0.88 at the floor; >>1 means another
+//!    jitter source is bleeding in), and `err/bit = median/brr` (a
+//!    constant `err/bit` across rows means the model is off by one
+//!    scalar — move `bit_q4`; a varying `err/bit` means the
+//!    linear-in-brr model itself is wrong). Pass `--write` to push the
+//!    recommendation back via `COMP`.
 
 use std::time::{Duration, Instant};
 
@@ -58,8 +63,11 @@ struct Args {
     /// Default: bit_ticks / 4.
     #[arg(long)]
     tolerance: Option<u32>,
-    /// Shots per baud for fire-comp regression.
-    #[arg(long, default_value_t = 16)]
+    /// Shots per baud for fire-comp regression. Each shot draws an
+    /// independent φ ~ U[0, brr] from the USART DR→TSR bit-clock sync,
+    /// so median SE shrinks ∝ 1/√n. 64 puts slow-baud median SE
+    /// (~brr/16) inside ±150 ticks at brr=2500.
+    #[arg(long, default_value_t = 64)]
     fire_comp_shots: u32,
     /// After stage 3, write the regression-recommended TX-comp values
     /// (`pipe`, `bit_q4`) back to the pirate via `COMP`. No-op if the
@@ -449,13 +457,21 @@ fn stage_fire_comp(bus: &mut Bus, bauds: &[u32], shots: u32, write: bool) -> Res
         "  current TX-comp:  pipe={} bit_q4={}    (intrinsic phase floor: ±0.5 bit-time at every baud)",
         current.pipe, current.bit_q4
     );
+    // span_norm = (max-min) / brr. Pure UART DR→TSR phase noise is
+    // U[0, brr], so span_norm ≈ 0.88 (= (n-1)/(n+1) for n=16) is the
+    // floor; >>1 means another jitter source (AHB arbitration, ISR
+    // contention) is bleeding into the wire-edge tick.
     println!(
-        "  {:>8}  {:>5}  {:>5}  {:>9}  {:>9}  {:>9}  result",
-        "baud", "brr", "shots", "median", "±jitter", "err/bit"
+        "  {:>8}  {:>5}  {:>5}  {:>8}  {:>8}  {:>8}  {:>6}  {:>9}  {:>8}  result",
+        "baud", "brr", "shots", "min", "median", "max", "span", "span/brr", "err/bit"
     );
     let hz_per_us = bus.hz_per_us()?;
     let hclk_hz = hz_per_us * 1_000_000;
-    let mut points: Vec<(f64, f64)> = Vec::with_capacity(bauds.len());
+    // (brr, median, weight) for the weighted LS fit. Weight = 1/brr² is
+    // the optimal inverse-variance weighting under the U[0, brr] phase
+    // noise model: per-shot variance is brr²/12, so the variance of the
+    // n-shot median scales the same way and 1/var = 12/brr² ∝ 1/brr².
+    let mut points: Vec<(f64, f64, f64)> = Vec::with_capacity(bauds.len());
     let mut any_fail = false;
     for &baud in bauds {
         bus.pirate_set_baud(baud)?;
@@ -465,12 +481,14 @@ fn stage_fire_comp(bus: &mut Bus, bauds: &[u32], shots: u32, write: bool) -> Res
                 let med = median_i64(&residuals);
                 let lo = *residuals.iter().min().unwrap();
                 let hi = *residuals.iter().max().unwrap();
-                let jitter = (hi - lo) / 2;
+                let span = hi - lo;
+                let span_norm = span as f64 / brr as f64;
                 let err_per_bit = med as f64 / brr as f64;
                 println!(
-                    "  {baud:>8}  {brr:>5}  {shots:>5}  {med:>+9}  {jitter:>+9}  {err_per_bit:>+9.3}  PASS"
+                    "  {baud:>8}  {brr:>5}  {shots:>5}  {lo:>+8}  {med:>+8}  {hi:>+8}  {span:>6}  {span_norm:>9.3}  {err_per_bit:>+8.3}  PASS"
                 );
-                points.push((brr as f64, med as f64));
+                let weight = 1.0 / (brr as f64).powi(2);
+                points.push((brr as f64, med as f64, weight));
             }
             Err(e) => {
                 println!("  {baud:>8}  {brr:>5}  ----  FAIL: {e}");
@@ -481,7 +499,7 @@ fn stage_fire_comp(bus: &mut Bus, bauds: &[u32], shots: u32, write: bool) -> Res
     if any_fail {
         bail!("stage 3 (fire-comp) failed");
     }
-    let Some((a, b)) = least_squares_fit(&points) else {
+    let Some((a, b)) = weighted_least_squares_fit(&points) else {
         bail!("stage 3: regression underdetermined (need ≥ 2 bauds)");
     };
 
@@ -497,7 +515,7 @@ fn stage_fire_comp(bus: &mut Bus, bauds: &[u32], shots: u32, write: bool) -> Res
     let d_bit = bit_q4_new_u32 as i64 - current.bit_q4 as i64;
 
     println!();
-    println!("  fit:        residual = a + b·brr");
+    println!("  fit:        residual = a + b·brr   (weighted LS, w ∝ 1/brr²)");
     println!("              a = {a:+.2} ticks");
     println!("              b = {b:+.4}");
     println!(
@@ -668,23 +686,32 @@ fn median_i64(xs: &[i64]) -> i64 {
     }
 }
 
-fn least_squares_fit(points: &[(f64, f64)]) -> Option<(f64, f64)> {
+/// Weighted least-squares fit `y = a + b·x` over `(x, y, weight)` triples.
+/// Closed form: with `S_w = Σwᵢ`, `S_wx = Σwᵢxᵢ`, etc, the normal
+/// equations give `b = (S_w·S_wxy − S_wx·S_wy) / (S_w·S_wxx − S_wx²)`
+/// and `a = (S_wy − b·S_wx) / S_w`. Returns None if underdetermined
+/// (< 2 points) or if the x-values are collinear under the weights.
+fn weighted_least_squares_fit(points: &[(f64, f64, f64)]) -> Option<(f64, f64)> {
     if points.len() < 2 {
         return None;
     }
-    let n = points.len() as f64;
-    let mean_x = points.iter().map(|(x, _)| *x).sum::<f64>() / n;
-    let mean_y = points.iter().map(|(_, y)| *y).sum::<f64>() / n;
-    let mut num = 0.0;
-    let mut den = 0.0;
-    for &(x, y) in points {
-        num += (x - mean_x) * (y - mean_y);
-        den += (x - mean_x) * (x - mean_x);
+    let mut sw = 0.0;
+    let mut swx = 0.0;
+    let mut swy = 0.0;
+    let mut swxx = 0.0;
+    let mut swxy = 0.0;
+    for &(x, y, w) in points {
+        sw += w;
+        swx += w * x;
+        swy += w * y;
+        swxx += w * x * x;
+        swxy += w * x * y;
     }
+    let den = sw * swxx - swx * swx;
     if den == 0.0 {
         return None;
     }
-    let b = num / den;
-    let a = mean_y - b * mean_x;
+    let b = (sw * swxy - swx * swy) / den;
+    let a = (swy - b * swx) / sw;
     Some((a, b))
 }
