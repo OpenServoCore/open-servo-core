@@ -617,34 +617,52 @@ pub fn drain_batch(out: &mut [ByteRecord]) -> usize {
 
 // ── Walker ─────────────────────────────────────────────────────────────
 
+/// Live-NDTR total without mutating walker state. Returns `(total, ndtr)`
+/// so the committing variant can store the matching NDTR without re-
+/// reading the register. CH6 (TIM3.CCR1 high half) is the trailing DMA
+/// writer: CH5 (TIM2) wins same-priority arbitration AND TIM3's TRC-
+/// driven capture latches one sync cycle after TIM2's, so reading CH6's
+/// NDTR bounds the count of fully-written 32-bit pairs.
 #[inline]
-fn refresh_falling_total() -> u32 {
-    // CH6 (TIM3.CCR1 high half) is the trailing DMA writer: CH5 (TIM2)
-    // wins same-priority arbitration AND TIM3's TRC-driven capture
-    // latches one sync cycle after TIM2's. Reading CH6's NDTR therefore
-    // bounds the count of fully-written 32-bit pairs.
+fn peek_falling_total() -> (u32, u16) {
     let ndtr = DMA1.ch(5).ndtr().read().ndt();
     unsafe {
-        let prev = *LAST_FALLING_NDTR.get();
-        *LAST_FALLING_NDTR.get() = ndtr;
-        let consumed = prev.wrapping_sub(ndtr) as u32 & FALL_MASK;
+        let prev_ndtr = *LAST_FALLING_NDTR.get();
+        let consumed = prev_ndtr.wrapping_sub(ndtr) as u32 & FALL_MASK;
         let total = ptr::read_volatile(FALLING_TOTAL.get()).wrapping_add(consumed);
-        ptr::write_volatile(FALLING_TOTAL.get(), total);
-        total
+        (total, ndtr)
     }
 }
 
 #[inline]
-fn refresh_rx_total() -> u32 {
+fn peek_rx_total() -> (u32, u16) {
     let ndtr = DMA1.ch(2).ndtr().read().ndt();
     unsafe {
-        let prev = *LAST_RX_NDTR.get();
-        *LAST_RX_NDTR.get() = ndtr;
-        let consumed = prev.wrapping_sub(ndtr) as u32 & RX_MASK;
+        let prev_ndtr = *LAST_RX_NDTR.get();
+        let consumed = prev_ndtr.wrapping_sub(ndtr) as u32 & RX_MASK;
         let total = ptr::read_volatile(RX_TOTAL.get()).wrapping_add(consumed);
-        ptr::write_volatile(RX_TOTAL.get(), total);
-        total
+        (total, ndtr)
     }
+}
+
+#[inline]
+fn refresh_falling_total() -> u32 {
+    let (total, ndtr) = peek_falling_total();
+    unsafe {
+        *LAST_FALLING_NDTR.get() = ndtr;
+        ptr::write_volatile(FALLING_TOTAL.get(), total);
+    }
+    total
+}
+
+#[inline]
+fn refresh_rx_total() -> u32 {
+    let (total, ndtr) = peek_rx_total();
+    unsafe {
+        *LAST_RX_NDTR.get() = ndtr;
+        ptr::write_volatile(RX_TOTAL.get(), total);
+    }
+    total
 }
 
 /// Read the hardware-atomic 32-bit IC capture pair at `idx` and apply
@@ -904,22 +922,11 @@ fn run_walker(phase: u8) {
     let cnt_entry = TIM2.cnt().read();
     let walked_pre = unsafe { ptr::read_volatile(WALKED_FALLING.get()) };
     let byte_head_pre = BYTE_HEAD.load(Ordering::Relaxed);
-    let (falling_total_now, rx_total_now, falling_pending_entry) = {
-        // Live-NDTR pending count: how many IC pairs are fully written
-        // RIGHT NOW. Does not mutate walker state; `walk()` re-reads
-        // NDTR before processing. CH6 = trailing IC DMA writer.
-        let prev_total = unsafe { ptr::read_volatile(FALLING_TOTAL.get()) };
-        let prev_ndtr = unsafe { *LAST_FALLING_NDTR.get() };
-        let curr_ndtr = DMA1.ch(5).ndtr().read().ndt();
-        let new_edges = prev_ndtr.wrapping_sub(curr_ndtr) as u32 & FALL_MASK;
-        let ft = prev_total.wrapping_add(new_edges);
-        let prev_rx = unsafe { ptr::read_volatile(RX_TOTAL.get()) };
-        let prev_rx_ndtr = unsafe { *LAST_RX_NDTR.get() };
-        let curr_rx_ndtr = DMA1.ch(2).ndtr().read().ndt();
-        let new_rx = prev_rx_ndtr.wrapping_sub(curr_rx_ndtr) as u32 & RX_MASK;
-        let rt = prev_rx.wrapping_add(new_rx);
-        (ft, rt, ft.wrapping_sub(walked_pre))
-    };
+    // Live-NDTR pending counts without mutating walker state; `walk()`
+    // re-reads NDTR before processing.
+    let (falling_total_now, _) = peek_falling_total();
+    let (rx_total_now, _) = peek_rx_total();
+    let falling_pending_entry = falling_total_now.wrapping_sub(walked_pre);
 
     walk(phase == TRACE_PHASE_IDLE);
 
