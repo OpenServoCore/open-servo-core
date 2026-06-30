@@ -20,7 +20,9 @@ pub mod rx;
 pub mod scheduler;
 
 pub use bus::{TxBusState, mock_tx_bus};
-pub use clock::{ClockTrimState, UsartBaudState, mock_clock_trim, mock_usart_baud};
+pub use clock::{
+    ClockTrimState, UsartBaudState, mock_clock_trim, mock_usart_baud, mock_usart_baud_with_comp,
+};
 pub use dma::{EdgeDmaState, mock_edge_dma};
 pub use primitives::{
     DigitalOutState, MonotonicState, WireClockState, mock_digital_out, mock_monotonic,

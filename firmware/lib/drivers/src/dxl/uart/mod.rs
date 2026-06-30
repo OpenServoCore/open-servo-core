@@ -758,7 +758,7 @@ impl<P: Providers, const RX_BUF_LEN: usize, const EDGE_BUF_LEN: usize, const TX_
         id: u8,
         rdt_us: u32,
     ) -> Self {
-        Self {
+        let mut s = Self {
             codec,
             clock,
             rx_dma,
@@ -775,7 +775,13 @@ impl<P: Providers, const RX_BUF_LEN: usize, const EDGE_BUF_LEN: usize, const TX_
             pending_id: None,
             pending_rdt_us: None,
             pending_reboot: None,
-        }
+        };
+        // Seed the codec's edge parser with the Clock's initial-baud
+        // edge-stamp compensation. Subsequent baud changes re-publish via
+        // `Self::on_tx_complete` after `Clock::on_tx_complete` applies the
+        // pending baud.
+        s.codec.on_baud_change(s.clock.rx_edge_comp_ticks());
+        s
     }
 
     /// DMA1_CH7 HT/TC ISR entry — refresh the ET producer head from
@@ -1226,6 +1232,10 @@ impl<P: Providers, const RX_BUF_LEN: usize, const EDGE_BUF_LEN: usize, const TX_
             self.rdt_us = rdt;
         }
         self.clock.on_tx_complete();
+        // Clock just applied any pending baud — refresh the codec's edge
+        // parser with the new per-baud edge-stamp compensation. Idempotent
+        // when no baud change landed (the value is the same as before).
+        self.codec.on_baud_change(self.clock.rx_edge_comp_ticks());
         self.pending_reboot.take()
     }
 

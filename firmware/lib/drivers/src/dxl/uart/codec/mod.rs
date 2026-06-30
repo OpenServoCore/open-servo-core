@@ -616,6 +616,11 @@ impl<R: EdgeDma, CRC: CrcUmts, const RX_BUF_LEN: usize, const EDGE_BUF_LEN: usiz
         self.rx.anchor_at_signature(ticks_per_bit)
     }
 
+    /// Forward to [`rx::Rx::on_baud_change`].
+    pub fn on_baud_change(&mut self, rx_edge_comp_ticks: u16) {
+        self.rx.on_baud_change(rx_edge_comp_ticks);
+    }
+
     /// Forward to [`rx::Rx::current_byte_tick`].
     pub fn current_byte_tick(&self, ticks_per_bit: u16, now: u32, src: PollSrc) -> Option<u32> {
         self.rx.current_byte_tick(ticks_per_bit, now, src)
@@ -872,6 +877,11 @@ impl<
     /// Forward to [`CodecRx::anchor_at_signature`].
     pub fn anchor_at_signature(&mut self, ticks_per_bit: u16) -> bool {
         self.rx.anchor_at_signature(ticks_per_bit)
+    }
+
+    /// Forward to [`CodecRx::on_baud_change`].
+    pub fn on_baud_change(&mut self, rx_edge_comp_ticks: u16) {
+        self.rx.on_baud_change(rx_edge_comp_ticks);
     }
 
     /// Forward to [`CodecRx::current_byte_tick`].

@@ -23,7 +23,7 @@ use osc_drivers::traits::dxl::{DmaFlags, Providers, SendKind};
 use crate::mocks::{
     ClockTrimState, EdgeDmaState, FastLastSchedulerState, RxDmaState, TxBusState, TxSchedulerState,
     UsartBaudState, WireClockState, mock_clock_trim, mock_edge_dma, mock_fast_last_scheduler,
-    mock_rx_dma, mock_tx_bus, mock_tx_scheduler, mock_usart_baud, mock_wire_clock,
+    mock_rx_dma, mock_tx_bus, mock_tx_scheduler, mock_usart_baud_with_comp, mock_wire_clock,
 };
 use crate::sim::defaults::{
     DEFAULT_BAUD, DEFAULT_RDT_US, EDGE_BUF_LEN, RX_BUF_LEN, TX_BUF_LEN, default_servo_clock,
@@ -124,6 +124,17 @@ pub struct Servo {
     uart_rx: UartRx,
     rx_seq: u32,
     edge_seq: u32,
+
+    /// Per-baud RX edge-stamp compensation handed to the driver's
+    /// `UsartBaud::rx_edge_comp_ticks` mock and used by `handle_falling_edge`
+    /// to offset the IC stamp value past the wire edge. Models the chip's
+    /// IC-filter delay (or any equivalent stamp offset) so the driver-side
+    /// compensation has something real to subtract. Default `0`: stamps land
+    /// exactly at wire-edge time and the driver subtracts nothing — the
+    /// shape every existing timing test exercises. Tests that exercise the
+    /// compensation path set this to a non-zero value via
+    /// [`Self::set_rx_edge_comp_ticks`].
+    rx_edge_comp_ticks: u16,
 }
 
 impl Servo {
@@ -137,7 +148,7 @@ impl Servo {
 
             dxl: Dxl::new(),
             shared: Shared::new(),
-            uart: build_uart(DEFAULT_BAUD, DEFAULT_DXL_ID, DEFAULT_RDT_US).uart,
+            uart: build_uart(DEFAULT_BAUD, DEFAULT_DXL_ID, DEFAULT_RDT_US, 0).uart,
 
             tx_bus_state: TxBusState::default(),
             clock_trim_state: ClockTrimState::default(),
@@ -159,6 +170,8 @@ impl Servo {
             uart_rx: UartRx::new(DEFAULT_BAUD),
             rx_seq: 0,
             edge_seq: 0,
+
+            rx_edge_comp_ticks: 0,
         };
         s.rebuild_chip_side();
         s
@@ -218,6 +231,27 @@ impl Servo {
             .table
             .config
             .with_mut(|c| c.comms.status_return_level = level);
+    }
+
+    /// Set the simulated per-baud RX edge-stamp compensation, in chip
+    /// HCLK ticks. Stamps the IC delivers to the driver shift by this many
+    /// ticks past the wire edge — modeling V006's TIM2_CH4 IC filter (or
+    /// any equivalent stamp offset on a different chip). The driver's mock
+    /// `UsartBaud::rx_edge_comp_ticks` returns the same value so the edge
+    /// parser's read-time subtraction recovers wire-edge time. Hardware-
+    /// shaped: survives a power-cycle reset (the IC filter pick is fixed
+    /// by baud + clock-tree, not RAM state). Rebuilds the chip-side codec/
+    /// UART so the new value plumbs through immediately.
+    pub fn set_rx_edge_comp_ticks(&mut self, ticks: u16) {
+        self.rx_edge_comp_ticks = ticks;
+        self.rebuild_uart();
+    }
+
+    /// Currently-staged simulated RX edge-stamp compensation, in chip HCLK
+    /// ticks. Tests sample this to align their expected wire-edge offsets
+    /// with the value the chip-side driver will subtract.
+    pub fn rx_edge_comp_ticks(&self) -> u16 {
+        self.rx_edge_comp_ticks
     }
 
     /// Take the servo off the bus. Wire edges still arrive (uart_rx still
@@ -320,7 +354,7 @@ impl Servo {
                 c.comms.return_delay_2us as u32 * 2,
             )
         });
-        let built = build_uart(baud, dxl_id, rdt_us);
+        let built = build_uart(baud, dxl_id, rdt_us, self.rx_edge_comp_ticks);
         self.uart = built.uart;
         self.tx_bus_state = built.tx_bus_state;
         self.clock_trim_state = built.clock_trim_state;
@@ -385,7 +419,15 @@ impl Servo {
     /// accumulate silently; the IDLE backstop (`handle_idle`) catches short
     /// packets that never trip HT.
     fn handle_falling_edge(&mut self, at: SimTime) {
-        let tick = self.chip_tick(at) as u16;
+        // Stamp shifts by `rx_edge_comp_ticks` past the wire-edge time —
+        // models the chip's IC-filter output delay. The driver subtracts
+        // the same value at read-from-ring time (via Clock's
+        // `rx_edge_comp_ticks` + EdgeParser's compensation), recovering the
+        // true wire-edge tick. Tests pick a non-zero value to exercise
+        // that round-trip; default `0` matches every existing timing test.
+        let tick = self
+            .chip_tick(at)
+            .wrapping_add(self.rx_edge_comp_ticks as u32) as u16;
         let slot = (self.edge_seq as usize) % EDGE_BUF_LEN;
         // SAFETY: `edges_addr()` returns the address of `HwRing<u16,
         // EDGE_BUF_LEN>::data[0]`; the slot lies inside that buffer because
@@ -750,10 +792,10 @@ struct BuiltUart {
     wire_clock_state: WireClockState,
 }
 
-fn build_uart(baud: BaudRate, dxl_id: Id, rdt_us: u32) -> BuiltUart {
+fn build_uart(baud: BaudRate, dxl_id: Id, rdt_us: u32, rx_edge_comp_ticks: u16) -> BuiltUart {
     let (mock_edge_dma, edge_dma_state) = mock_edge_dma();
     let (mock_clock_trim, clock_trim_state) = mock_clock_trim();
-    let (mock_usart_baud, usart_baud_state) = mock_usart_baud();
+    let (mock_usart_baud, usart_baud_state) = mock_usart_baud_with_comp(rx_edge_comp_ticks);
     let (mock_rx_dma, rx_dma_state) = mock_rx_dma();
     let (mock_tx_scheduler, tx_scheduler_state) = mock_tx_scheduler();
     let (mock_tx_bus, tx_bus_state) = mock_tx_bus();

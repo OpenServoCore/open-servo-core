@@ -15,7 +15,12 @@ impl UsartBaudState {
     }
 }
 
-pub fn mock_usart_baud() -> (MockUsartBaud, UsartBaudState) {
+/// Build a recording `MockUsartBaud` with the given per-baud RX edge-stamp
+/// compensation, in driver `CLOCK_HZ` (= 48 MHz HCLK) ticks. Same value
+/// returned regardless of baud — tests that exercise the compensation path
+/// pick the value they want directly (e.g. `12` to mirror the V006 3 Mbaud
+/// LUT entry), and tests that don't care pass `0` via [`mock_usart_baud`].
+pub fn mock_usart_baud_with_comp(rx_edge_comp_ticks: u16) -> (MockUsartBaud, UsartBaudState) {
     let state = UsartBaudState::default();
     let mut m = MockUsartBaud::new();
     {
@@ -24,7 +29,16 @@ pub fn mock_usart_baud() -> (MockUsartBaud, UsartBaudState) {
             ops.borrow_mut().push(baud);
         });
     }
+    m.expect_rx_edge_comp_ticks()
+        .returning_st(move |_baud| rx_edge_comp_ticks);
     (m, state)
+}
+
+/// Default `MockUsartBaud` with zero RX edge-stamp compensation — the
+/// shape every existing timing test exercises, where the sim stamps at
+/// wire-edge time and the driver subtracts nothing.
+pub fn mock_usart_baud() -> (MockUsartBaud, UsartBaudState) {
+    mock_usart_baud_with_comp(0)
 }
 
 #[derive(Clone, Default)]

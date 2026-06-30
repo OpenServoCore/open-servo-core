@@ -11,6 +11,7 @@ mock! {
         const CLOCK_HZ: u32 = 48_000_000;
 
         fn apply_baud(&mut self, baud: BaudRate);
+        fn rx_edge_comp_ticks(&self, baud: BaudRate) -> u16;
     }
 }
 

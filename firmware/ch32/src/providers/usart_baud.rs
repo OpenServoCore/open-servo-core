@@ -22,6 +22,11 @@ impl dxl::UsartBaud for UsartBaud {
         usart::set_baud(USART1_REGS, brr_for(baud));
         timer::set_tim2_ch4_icf(filter_for(baud));
     }
+
+    #[inline(always)]
+    fn rx_edge_comp_ticks(&self, baud: BaudRate) -> u16 {
+        ic_filter_delay_ticks_for(baud)
+    }
 }
 
 /// Round-to-nearest USART_BRR divisor at PCLK for the chip's six supported
@@ -60,5 +65,31 @@ pub const fn filter_for(baud: BaudRate) -> FilterValue {
         // 5333 ns min pulse — covers every sub-1M baud (bit times start at
         // 8681 ns for B115200 and grow from there).
         BaudRate::B115200 | BaudRate::B57600 | BaudRate::B9600 => FilterValue::FDTS_DIV32_N8,
+    }
+}
+
+/// IC filter output-delay per baud, in HCLK ticks. Each stamp the IC
+/// writes to the edge ring lands offset by `N / fSAMPLING` past the wire
+/// edge — the time the filter needs to recognize the edge as stable. The
+/// driver subtracts this from every stamp at read-from-ring time so its
+/// classifier anchor, `packet_end_tick`, and HSI integrator pairs live in
+/// wire-edge time rather than filter-output time.
+///
+/// Direct consequence of [`filter_for`]'s pick at fDTS = HCLK = 48 MHz
+/// (CKD = DIV_1, pinned by `hal::timer::init_tim2_ch4_ic_capture`) —
+/// adding a `BaudRate` variant forces a new arm here in lockstep:
+///
+/// | Baud      | FilterValue   | fSAMPLING | N | delay (ticks) | delay / tpb |
+/// | --------- | ------------- | --------- | - | ------------- | ----------- |
+/// | 3_000_000 | FDTS_DIV2_N6  | 24 MHz    | 6 |            12 |        0.75 |
+/// | 2_000_000 | FDTS_DIV2_N8  | 24 MHz    | 8 |            16 |        0.67 |
+/// | 1_000_000 | FDTS_DIV4_N8  | 12 MHz    | 8 |            32 |        0.67 |
+/// | ≤115200   | FDTS_DIV32_N8 | 1.5 MHz   | 8 |           256 |   ≤0.61·tpb |
+pub const fn ic_filter_delay_ticks_for(baud: BaudRate) -> u16 {
+    match baud {
+        BaudRate::B3000000 => 12,
+        BaudRate::B2000000 => 16,
+        BaudRate::B1000000 => 32,
+        BaudRate::B115200 | BaudRate::B57600 | BaudRate::B9600 => 256,
     }
 }

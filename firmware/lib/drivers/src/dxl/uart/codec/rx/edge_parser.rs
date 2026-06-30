@@ -239,6 +239,16 @@ pub struct EdgeParser {
     /// earlier on Resync). Status frames never set it — drift sampling
     /// is sourced from host HSE only (doc §5.4).
     hsi_active: bool,
+    /// Per-baud RX edge-stamp compensation, in IC-stamp ticks. Every
+    /// stamp read from the edge ring gets `wrapping_sub(rx_edge_comp_ticks)`
+    /// applied before any internal use, so stored state
+    /// (`last_byte_start`, `prev_byte_start`), classifier band checks, and
+    /// pushed `(prev, curr)` pairs all live in wire-edge time. Pushed by
+    /// the codec via [`Self::on_baud_change`] at driver construction and
+    /// after every applied baud change. Default `0` until the first push —
+    /// safe (no anchor exists yet at default) and matches the
+    /// no-compensation case on chips that ship a zero-delay stamp path.
+    rx_edge_comp_ticks: u16,
 
     hits: u16,
     skips: u16,
@@ -254,12 +264,23 @@ impl EdgeParser {
             last_byte_start: None,
             prev_byte_start: None,
             hsi_active: false,
+            rx_edge_comp_ticks: 0,
             hits: 0,
             skips: 0,
             gaps: 0,
             header_matches: 0,
             header_mismatches: 0,
         }
+    }
+
+    /// Refresh the per-baud RX edge-stamp compensation. Codec routes this
+    /// through from the [`crate::dxl::uart::clock::Clock`]'s currently-applied
+    /// baud — once at driver construction (initial baud) and once after every
+    /// applied baud change (Clock's `on_tx_complete` pending-baud branch).
+    /// All subsequent classifier reads from the edge ring subtract the new
+    /// value before storing or comparing.
+    pub fn on_baud_change(&mut self, rx_edge_comp_ticks: u16) {
+        self.rx_edge_comp_ticks = rx_edge_comp_ticks;
     }
 
     /// Single-window check of the Sync signature at exactly `offset` edges
@@ -269,6 +290,13 @@ impl EdgeParser {
     /// no state mutation. Caller is responsible for the `resync_if_lapped`
     /// + `recent_count` prelude and for incrementing `header_matches` on
     ///   success / `header_mismatches` after exhausting the search.
+    ///
+    /// `self.rx_edge_comp_ticks` is subtracted from every stamp at
+    /// read-from-ring time so all stored state (`last_byte_start`,
+    /// `prev_byte_start`) and every downstream consumer (`packet_end_tick`,
+    /// integrator pairs) live in wire-edge time rather than IC-filter-output
+    /// time. The intra-window delta band checks are comp-invariant — the
+    /// constant cancels.
     fn try_anchor_at_offset<const EDGE_BUF_LEN: usize>(
         &mut self,
         edges: &mut HwRing<u16, EDGE_BUF_LEN>,
@@ -276,27 +304,33 @@ impl EdgeParser {
         offset: u16,
         ticks_per_bit: u16,
     ) -> bool {
+        let rx_edge_comp = self.rx_edge_comp_ticks;
         // Window edges (terminal = e5 at `offset` slots back from the
         // head, e1 the oldest of the window):
         //   e5 = recent(offset),     e4 = recent(offset + 1),
         //   e3 = recent(offset + 2), e2 = recent(offset + 3),
         //   e1 = recent(offset + 4).
         // Quiet check (when offset > 0) reads e6 = recent(offset - 1).
-        let Some(&e5) = edges.recent(offset) else {
+        let Some(&e5_raw) = edges.recent(offset) else {
             return false;
         };
-        let Some(&e4) = edges.recent(offset + 1) else {
+        let Some(&e4_raw) = edges.recent(offset + 1) else {
             return false;
         };
-        let Some(&e3) = edges.recent(offset + 2) else {
+        let Some(&e3_raw) = edges.recent(offset + 2) else {
             return false;
         };
-        let Some(&e2) = edges.recent(offset + 3) else {
+        let Some(&e2_raw) = edges.recent(offset + 3) else {
             return false;
         };
-        let Some(&e1) = edges.recent(offset + 4) else {
+        let Some(&e1_raw) = edges.recent(offset + 4) else {
             return false;
         };
+        let e5 = e5_raw.wrapping_sub(rx_edge_comp);
+        let e4 = e4_raw.wrapping_sub(rx_edge_comp);
+        let e3 = e3_raw.wrapping_sub(rx_edge_comp);
+        let e2 = e2_raw.wrapping_sub(rx_edge_comp);
+        let e1 = e1_raw.wrapping_sub(rx_edge_comp);
 
         let d_12 = e2.wrapping_sub(e1);
         let d_23 = e3.wrapping_sub(e2);
@@ -322,8 +356,13 @@ impl EdgeParser {
         // bit may not have latched at the moment the parser emitted
         // Header.
         if offset > 0
-            && let Some(&e6) = edges.recent(offset - 1)
+            && let Some(&e6_raw) = edges.recent(offset - 1)
         {
+            // Subtract comp from e6 too so the delta is symmetric with the
+            // intra-window checks above — comp cancels in the delta, but
+            // keeping every stamp in the same domain prevents subtle off-
+            // by-comp drift if either side of this band check changes.
+            let e6 = e6_raw.wrapping_sub(rx_edge_comp);
             let d_56 = e6.wrapping_sub(e5);
             let d_x2 = (d_56 as u32) * 2;
             if d_x2 < QUIET_MIN_X2 * ticks_per_bit as u32 {
@@ -500,16 +539,22 @@ impl EdgeParser {
             n
         );
 
+        let rx_edge_comp = self.rx_edge_comp_ticks;
         let mut advanced: u16 = 0;
         let mut reader = edges.reader();
         while advanced < n {
-            let Some(&t) = reader.peek() else {
+            let Some(&t_raw) = reader.peek() else {
                 // Edges for the next boundary haven't arrived yet —
                 // leave anchor intact and the caller's outstanding
                 // count to be picked up on the next poll's delta.
                 crate::log::trace!("classifier: advance bail (no edges) advanced={}", advanced);
                 return advanced;
             };
+            // Compensate at read-from-ring; from here `t` is wire-edge
+            // time. `last_byte_start` is already compensated by a prior
+            // anchor-or-advance step, so the delta below is wire-edge
+            // delta (comp cancels in the subtraction either way).
+            let t = t_raw.wrapping_sub(rx_edge_comp);
             let Some(a) = self.last_byte_start else {
                 // No anchor → can't classify this byte. Leave the edge
                 // in the ring so the next Sync back-search has the

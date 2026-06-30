@@ -219,6 +219,13 @@ impl<R: EdgeDma, const EDGE_BUF_LEN: usize> Rx<R, EDGE_BUF_LEN> {
         self.parser.set_hsi_active(on);
     }
 
+    /// Refresh the edge parser's per-baud RX edge-stamp compensation.
+    /// Forwarded from the composite's `on_baud_change` event — see
+    /// [`edge_parser::EdgeParser::on_baud_change`].
+    pub fn on_baud_change(&mut self, rx_edge_comp_ticks: u16) {
+        self.parser.on_baud_change(rx_edge_comp_ticks);
+    }
+
     pub fn hsi_active(&self) -> bool {
         self.parser.hsi_active()
     }

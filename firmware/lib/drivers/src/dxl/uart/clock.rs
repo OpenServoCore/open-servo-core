@@ -83,6 +83,14 @@ pub struct Clock<U: UsartBaud, T: ClockTrim> {
 
     baud: BaudRate,
     ticks_per_bit: u16,
+    /// Per-baud RX edge-stamp compensation, in HCLK ticks. Cached from
+    /// `U::rx_edge_comp_ticks(baud)` at `new` and on every applied baud
+    /// change in `on_tx_complete`. Codec reads it via
+    /// [`Self::rx_edge_comp_ticks`] once per poll and threads through to
+    /// `EdgeParser`, which subtracts it from every IC stamp at read-from-
+    /// ring time so anchors, pairs, and `packet_end_tick` all live in
+    /// wire-edge time.
+    rx_edge_comp_ticks: u16,
 
     /// `true` until the first batch close from [`Clock::new`]. The first
     /// `on_tx_complete` after that close transitions to steady mode
@@ -161,12 +169,14 @@ impl<U: UsartBaud, T: ClockTrim> Clock<U, T> {
 
     pub fn new(baud: BaudRate, usart: U, trim: T) -> Self {
         let ticks_per_bit = Self::ticks_per_bit_at(baud);
+        let rx_edge_comp_ticks = usart.rx_edge_comp_ticks(baud);
         let per_step_q8 = Self::drift_per_step_q8(ticks_per_bit, DRIFT_MIN_SAMPLES_BOOT);
         Self {
             usart,
             trim,
             baud,
             ticks_per_bit,
+            rx_edge_comp_ticks,
             is_boot: true,
             applied_ppm: 0,
             pending_baud: None,
@@ -262,6 +272,7 @@ impl<U: UsartBaud, T: ClockTrim> Clock<U, T> {
             self.usart.apply_baud(baud);
             self.baud = baud;
             self.ticks_per_bit = Self::ticks_per_bit_at(baud);
+            self.rx_edge_comp_ticks = self.usart.rx_edge_comp_ticks(baud);
             self.rebuild_integrator_consts();
             self.drift_sum_q8 = 0;
             self.drift_samples = 0;
@@ -424,6 +435,14 @@ impl<U: UsartBaud, T: ClockTrim> Clock<U, T> {
     #[allow(dead_code)]
     pub fn ticks_per_bit(&self) -> u16 {
         self.ticks_per_bit
+    }
+
+    /// Per-baud RX edge-stamp compensation in HCLK ticks. Codec reads
+    /// once per poll and threads to `EdgeParser` so anchors, pairs, and
+    /// `packet_end_tick` live in wire-edge time. See the field doc.
+    #[inline(always)]
+    pub fn rx_edge_comp_ticks(&self) -> u16 {
+        self.rx_edge_comp_ticks
     }
 
     /// Project the integrator's pending residual to a chip-HCLK-tick
