@@ -111,8 +111,8 @@ fn main() -> Result<()> {
     println!();
 
     println!(
-        "  {:>5}  {:>10}  {:>11}  {:>11}  {:>11}  {:>6}",
-        "batch", "tx_min_tk", "wire_med_us", "wire_p95_us", "wire_max_us", "rounds",
+        "  {:>5}  {:>10}  {:>11}  {:>11}  {:>11}  {:>11}  {:>6}",
+        "batch", "tx_min_tk", "wire_med_us", "wire_p95_us", "wire_p99_us", "wire_max_us", "rounds",
     );
 
     let mut batch_mins: Vec<u16> = Vec::with_capacity(args.batches as usize);
@@ -145,12 +145,13 @@ fn main() -> Result<()> {
 
         let med = quantile_us(&batch_rounds_us, 0.50);
         let p95 = quantile_us(&batch_rounds_us, 0.95);
+        let p99 = quantile_us(&batch_rounds_us, 0.99);
         let max = batch_rounds_us
             .iter()
             .copied()
             .fold(f64::NEG_INFINITY, f64::max);
         println!(
-            "  {b:>5}  {tx_start_entry_min:>10}  {med:>11.2}  {p95:>11.2}  {max:>11.2}  \
+            "  {b:>5}  {tx_start_entry_min:>10}  {med:>11.2}  {p95:>11.2}  {p99:>11.2}  {max:>11.2}  \
              {:>6}",
             batch_rounds_us.len(),
         );
@@ -185,6 +186,9 @@ fn print_summary(batch_mins: &[u16], wire_us: &[f64], expected_first_us: f64) {
     let w_p0_1 = quantile_us(&excess_us, 0.001);
     let w_med = quantile_us(&excess_us, 0.50);
     let w_p95 = quantile_us(&excess_us, 0.95);
+    let w_p99 = quantile_us(&excess_us, 0.99);
+    let w_p99_9 = quantile_us(&excess_us, 0.999);
+    let w_p99_99 = quantile_us(&excess_us, 0.9999);
     let w_max = excess_us.iter().copied().fold(f64::NEG_INFINITY, f64::max);
     println!();
     println!("=== wire excess (first-byte − configured deadline) — ground truth ===");
@@ -192,6 +196,9 @@ fn print_summary(batch_mins: &[u16], wire_us: &[f64], expected_first_us: f64) {
         "  min={w_min:+.2} µs   p0.1={w_p0_1:+.2} µs   median={w_med:+.2} µs   p95={w_p95:+.2} µs   max={w_max:+.2} µs   \
          n={}",
         wire_us.len(),
+    );
+    println!(
+        "  upper tail:   p99={w_p99:+.2} µs   p99.9={w_p99_9:+.2} µs   p99.99={w_p99_99:+.2} µs",
     );
     let spread_us = w_p95 - w_med;
     let cliff_detected = spread_us > CLIFF_SPREAD_THRESHOLD_US;
