@@ -88,9 +88,12 @@ const STAMP_LEN: usize = 1024;
 const STAMP_MASK: u32 = (STAMP_LEN - 1) as u32;
 const _: () = assert!(STAMP_LEN.is_power_of_two());
 
+/// 8N1 wire framing: 1 start + 8 data + 1 stop = 10 bit-times per byte.
+const BITS_PER_BYTE_8N1: u32 = 10;
+
 /// Half-width of the PLL snap window in bit-times. Each byte's start is
-/// predicted at `prev_anchor + 10·bit_ticks`; the walker scans
-/// `[predicted − SNAP_BITS·bit_ticks, predicted + SNAP_BITS·bit_ticks]`
+/// predicted at `prev_anchor + BITS_PER_BYTE_8N1·bit_ticks`; the walker
+/// scans `[predicted − SNAP_BITS·bit_ticks, predicted + SNAP_BITS·bit_ticks]`
 /// for the closest IC entry. 1 bit-time is ~50× the observed loopback
 /// jitter floor (tool-pirate-tune stage 1: dev ≤ 24 ticks at brr=2500,
 /// = 0.01 bit-times). Widen to 2 or 3 if real-servo Status replies miss
@@ -291,11 +294,6 @@ pub const TRACE_PHASE_IC_TC: u8 = 4;
 #[repr(C)]
 pub struct WalkerTrace {
     pub phase: u8,
-    /// INTFR re-read **after** the clear write; non-zero `UIF/CC1IF/CC2IF/
-    /// CC4IF` bits here mean a cadence flag latched in the read→clear gap
-    /// and was silently dropped — direct evidence of the race the previous
-    /// agent suspected.
-    pub intfr_post_clear: u8,
     pub tim2_cnt_entry: u16,
     pub tim2_cnt_exit: u16,
     /// `falling_total - walked` at ISR entry — how deep the IC ring was
@@ -318,7 +316,6 @@ const TRACE_MASK: u32 = (TRACE_LEN - 1) as u32;
 const _: () = assert!(TRACE_LEN.is_power_of_two());
 const TRACE_ZERO: WalkerTrace = WalkerTrace {
     phase: 0,
-    intfr_post_clear: 0,
     tim2_cnt_entry: 0,
     tim2_cnt_exit: 0,
     falling_pending_entry: 0,
@@ -741,7 +738,7 @@ pub fn walk(idle: bool) {
     if bit_ticks == 0 {
         return;
     }
-    let byte_period = 10u32.wrapping_mul(bit_ticks);
+    let byte_period = BITS_PER_BYTE_8N1.wrapping_mul(bit_ticks);
     let snap = SNAP_BITS.wrapping_mul(bit_ticks);
     let cc_filter_delay = CC_FILTER_DELAY_TICKS.load(Ordering::Relaxed);
 
@@ -903,7 +900,7 @@ pub fn walk(idle: bool) {
 /// Snapshots pre-walk counters for the trace ring, runs `walk()`, then
 /// pushes a record reflecting actual work performed.
 #[inline]
-fn run_walker(phase: u8, isr_post_bits: u8) {
+fn run_walker(phase: u8) {
     let cnt_entry = TIM2.cnt().read();
     let walked_pre = unsafe { ptr::read_volatile(WALKED_FALLING.get()) };
     let byte_head_pre = BYTE_HEAD.load(Ordering::Relaxed);
@@ -938,7 +935,6 @@ fn run_walker(phase: u8, isr_post_bits: u8) {
     }
     trace_push(WalkerTrace {
         phase,
-        intfr_post_clear: isr_post_bits,
         tim2_cnt_entry: cnt_entry,
         tim2_cnt_exit: TIM2.cnt().read(),
         falling_pending_entry: falling_pending_entry.min(u16::MAX as u32) as u16,
@@ -961,14 +957,12 @@ fn DMA1_CHANNEL6() {
         w.set_htif(5, true);
         w.set_tcif(5, true);
     });
-    let post = DMA1.isr().read();
-    let post_bits = (post.htif(5) as u8) | ((post.tcif(5) as u8) << 1);
     let phase = if tc {
         TRACE_PHASE_IC_TC
     } else {
         TRACE_PHASE_IC_HT
     };
-    run_walker(phase, post_bits);
+    run_walker(phase);
 }
 
 /// DMA1_CH3 = rx_ring (USART3 RX) HT/TC. Drains the walker so bytes don't
@@ -981,14 +975,12 @@ fn DMA1_CHANNEL3() {
         w.set_htif(2, true);
         w.set_tcif(2, true);
     });
-    let post = DMA1.isr().read();
-    let post_bits = (post.htif(2) as u8) | ((post.tcif(2) as u8) << 1);
     let phase = if tc {
         TRACE_PHASE_RX_TC
     } else {
         TRACE_PHASE_RX_HT
     };
-    run_walker(phase, post_bits);
+    run_walker(phase);
 }
 
 #[interrupt]
@@ -1004,7 +996,7 @@ fn USART3() {
         // the idle window that triggers IDLE), so the walker sees a fully
         // populated tail. This catches the last-byte-of-reply case that
         // would otherwise wait for the next DMA HT/TC trigger.
-        run_walker(TRACE_PHASE_IDLE, 0);
+        run_walker(TRACE_PHASE_IDLE);
         crate::inject::on_idle(idle_tick);
     }
     crate::led::signal();

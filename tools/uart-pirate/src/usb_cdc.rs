@@ -270,8 +270,6 @@ fn write_btrace(out: &mut Vec<u8, 64>, r: capture::WalkerTrace) {
     let _ = out.extend_from_slice(b"BTRACE ");
     push_dec_u32(out, r.phase as u32);
     let _ = out.push(b' ');
-    push_dec_u32(out, r.intfr_post_clear as u32);
-    let _ = out.push(b' ');
     push_dec_u32(out, r.tim2_cnt_entry as u32);
     let _ = out.push(b' ');
     push_dec_u32(out, r.tim2_cnt_exit as u32);

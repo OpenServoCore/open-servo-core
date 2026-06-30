@@ -21,8 +21,8 @@
 //!       directly in `usb_cdc::serve` — see that file for wire format.
 //!   `BTRACE`
 //!       Pop one walker-ISR trace record. Reply: `BTRACE <phase>
-//!       <intfr_post> <cnt_entry> <cnt_exit> <pending> <edges> <bytes>`
-//!       (decimal) or `EMPTY`.
+//!       <cnt_entry> <cnt_exit> <pending> <edges> <bytes> <falling_total>
+//!       <rx_total>` (decimal) or `EMPTY`.
 //!   `BTRACECLEAR`
 //!       Reset the trace ring tail. Use before a stress run.
 //!   `STATUS`
