@@ -1,8 +1,9 @@
 //! PFIC priority assignment. The three walker-driving IRQs — USART3
-//! (IDLE drain), DMA1_CHANNEL1 (IC ring HT/TC), and DMA1_CHANNEL3 (RX
-//! ring HT/TC) — share `PRIO_WALKER` so they cannot preempt one another
-//! mid-walk; `capture::walk()` runs single-threaded across all three.
-//! USB sits at `PRIO_USB` so it can't delay a wire-side stamp.
+//! (IDLE drain), DMA1_CHANNEL6 (IC ring HT/TC; trailing high-half
+//! writer), and DMA1_CHANNEL3 (RX ring HT/TC) — share `PRIO_WALKER` so
+//! they cannot preempt one another mid-walk; `capture::walk()` runs
+//! single-threaded across all three. USB sits at `PRIO_USB` so it
+//! can't delay a wire-side stamp.
 //!
 //! Per TIMING.md §3.2 the walker is fully event-driven (no TIM2 cadence),
 //! so TIM2's PFIC slot is unconfigured (= reset default, IRQ disabled at
@@ -23,7 +24,7 @@ pub fn set_priorities() {
     // boot before USB enumeration and bus traffic can race.
     unsafe {
         pfic::set_priority(Interrupt::USART3 as u8, PRIO_WALKER);
-        pfic::set_priority(Interrupt::DMA1_CHANNEL1 as u8, PRIO_WALKER);
+        pfic::set_priority(Interrupt::DMA1_CHANNEL6 as u8, PRIO_WALKER);
         pfic::set_priority(Interrupt::DMA1_CHANNEL3 as u8, PRIO_WALKER);
         pfic::set_priority(Interrupt::USB_LP_CAN1_RX0 as u8, PRIO_USB);
 

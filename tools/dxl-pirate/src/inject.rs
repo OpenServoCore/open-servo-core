@@ -35,7 +35,7 @@ use core::ptr;
 use ch32_hal::pac::Interrupt;
 use ch32_hal::pac::dma::vals::{Dir, Pl, Size};
 use ch32_hal::pac::timer::vals::{CcmrInputCcs, Ckd, Mms, Urs};
-use ch32_hal::pac::{AFIO, DMA1, GPIOB, RCC, TIM2, TIM3, TIM4, USART3};
+use ch32_hal::pac::{AFIO, DMA1, GPIOA, GPIOB, RCC, TIM2, TIM3, TIM4, USART3};
 use dxl_pirate::parse::brr_for;
 use portable_atomic::{AtomicBool, AtomicU32, Ordering};
 
@@ -159,6 +159,7 @@ pub fn init() {
         // ── Clocks. USART3 + TIM2/3/4 on APB1; GPIOB + AFIO on APB2;
         // DMA1 on AHB.
         RCC.apb2pcenr().modify(|w| {
+            w.set_iopaen(true);
             w.set_iopben(true);
             w.set_afioen(true);
         });
@@ -171,13 +172,38 @@ pub fn init() {
         RCC.ahbpcenr().modify(|w| w.set_dma1en(true));
 
         // USART3 default mapping is PB10/PB11 (no remap). TIM2 partial
-        // remap #2 moves CH3/CH4 to PB10/PB11 while leaving CH1/CH2 on
-        // PA0/PA1. TIM2_CH3 IC then reads PB10 via GPIO_INDR regardless of
-        // USART3's AF state; PB11 is bridged externally to PB10 so the IC
-        // sees the same wire edge a hypothetical PB11 tap would.
+        // remap #2 puts CH3 on PB10 (CH4 on PB11) while leaving CH1/CH2
+        // on PA0/PA1. CC3 isn't itself wired to a channel — PB10's
+        // falling edge propagates through TI1 via the TI1S XOR (CTLR2
+        // below) and triggers IC1 capture.
         AFIO.pcfr1().modify(|w| {
             w.set_usart3_rm(0); // 00 = default PB10/PB11
             w.set_tim2_rm(0b10); // 10 = CH3/CH4 → PB10/PB11
+        });
+
+        // ── PA0/PA1: input pull-down. TIM2 CTLR2.TI1S=1 (set below) makes
+        // TI1 = XOR(CH1_pin, CH2_pin, CH3_pin) so PB10's edge can drive
+        // CC1 IC even though PB10 maps to CH3 via TIM2_RM=0b10. PA0/PA1
+        // are the TIM2_RM=0b10 CH1/CH2 pins; forcing them to 0 makes the
+        // XOR collapse to PB10 alone.
+        //
+        // SAFETY: PA0/PA1 must be physically unrouted on the board. A
+        // future variant that wires either pin to external signal will
+        // inject XOR noise and break IC capture; re-evaluate this block
+        // before that point.
+        GPIOA.outdr().modify(|w| {
+            w.set_odr(0, false);
+            w.set_odr(1, false);
+        });
+        // CFGLR controls PA0..PA7. PA0 in bits [3:0], PA1 in bits [7:4].
+        // MODE=00 (input), CNF=10 (input with pull-up/down) → 0b1000.
+        // ODR(0)=0 / ODR(1)=0 above selects pull-down.
+        GPIOA.cfglr().modify(|w| {
+            let mut v = w.0;
+            v &= !0xFF;
+            v |= 0b1000u32; // PA0
+            v |= 0b1000u32 << 4; // PA1
+            w.0 = v;
         });
 
         // ── PB10 = USART3_TX, AF **push-pull**, 50 MHz. The bench wiring
@@ -229,18 +255,27 @@ pub fn init() {
         USART3.ctlr1().modify(|w| w.set_ue(true));
         FIRE_COMP_TICKS.store(fire_comp_ticks(brr0), Ordering::Relaxed);
 
-        // ── TIM2 master, low 16 of tick32. PSC=0, ARR=0xFFFF, MMS=update
-        // → TRGO on each wrap drives TIM3 slave clock. No CC1/CC2/CC4
-        // walker cadence: the event-driven walker (TIMING.md §3.2) runs
-        // off USART3 IDLE + DMA1_CH1/CH3 HT/TC, not TIM2 IRQs. TIM2 IRQ
-        // stays disabled at the PFIC.
+        // ── TIM2 master, low 16 of tick32. PSC=0, ARR=0xFFFF. CKD=DIV_1
+        // pins fDTS at HCLK = 144 MHz; the IC1F filter is set per-baud by
+        // `capture::apply_filter_for_brr` from the LUT in TIMING.md §4
+        // (largest delay ≤ brr/3). No CC walker cadence: the event-driven
+        // walker runs off USART3 IDLE + DMA1_CH6/CH3 HT/TC, not TIM2 IRQs.
         //
-        // CC3 input capture on TI3 (= PB10 via TIM2_RM=0b10).
-        // CKD=DIV_1 pins fDTS at HCLK = 144 MHz; the IC3F filter is set
-        // per-baud by `capture::apply_filter_for_brr` from the LUT in
-        // TIMING.md §4 (largest delay ≤ brr/3). CCER CC3P=1 → falling-
-        // edge sensitivity. CC3E=1 → capture enabled. DIER CC3DE=1 →
-        // each capture kicks DMA1_CH1.
+        // Hardware atomic 32-bit IC capture per TIMING.md §3.3:
+        //
+        // - CTLR2.TI1S=1 routes XOR(CH1_pin, CH2_pin, CH3_pin) → TI1
+        //   internal. PA0/PA1 (CH1/CH2 under TIM2_RM=0b10) are pulled
+        //   down above, so TI1 mirrors PB10's falling edges directly.
+        // - CCMR1.CC1S=TI4 (= "normal" CC1 ← TI1). CCER CC1P=1 falling,
+        //   CC1E=1. DMAINTENR CC1DE=1 kicks DMA1_CH5 (TIM2.CCR1 → low
+        //   half of every IC entry).
+        // - CTLR2.MMS=COMPARE_PULSE: TRGO emits a one-cycle pulse on
+        //   every CC1IF set, driving TIM3 TRC → TIM3.CCR1 latches the
+        //   matching high half. The pair forms an atomic 32-bit tick.
+        //
+        // The 1-cycle TRC-sync race window at every TIM2 wrap leaves bad
+        // pairs off-by-+65536 (combined > ceiling), which the walker
+        // detects and corrects by subtracting one wrap.
         TIM2.psc().write_value(0);
         TIM2.atrlr().write_value(0xFFFF);
         TIM2.ctlr1().write(|w| {
@@ -248,19 +283,21 @@ pub fn init() {
             w.set_arpe(false);
             w.set_ckd(Ckd::DIV_1);
         });
-        TIM2.ctlr2().modify(|w| w.set_mms(Mms::UPDATE));
-        TIM2.chctlr_input(1).modify(|w| {
-            // chctlr_input(1) = CCMR2. CC3S in bits [1:0]. IC3F (bits
-            // [7:4]) is written separately by `capture::init` from the
-            // per-baud LUT.
-            w.set_ccs(0, CcmrInputCcs::TI4); // "normal" mapping → IC3 ← TI3
+        TIM2.ctlr2().modify(|w| {
+            w.set_mms(Mms::COMPARE_PULSE);
+            w.set_ti1s(true);
+        });
+        TIM2.chctlr_input(0).modify(|w| {
+            // CCMR1. CC1S in bits [1:0]. IC1F (bits [7:4]) is written
+            // separately by `capture::init` from the per-baud LUT.
+            w.set_ccs(0, CcmrInputCcs::TI4); // normal mapping → IC1 ← TI1
         });
         TIM2.ccer().modify(|w| {
-            w.set_ccp(2, true); // CC3P=1 falling edge
-            w.set_cce(2, true); // CC3E=1
+            w.set_ccp(0, true); // CC1P=1 falling edge
+            w.set_cce(0, true); // CC1E=1
         });
         TIM2.dmaintenr().write(|w| {
-            w.set_ccde(2, true); // CC3DE (IC capture → DMA1_CH1)
+            w.set_ccde(0, true); // CC1DE (IC capture → DMA1_CH5)
         });
         TIM2.swevgr().write(|w| w.set_ug(true)); // load PSC/ARR
         TIM2.intfr().write(|w| {
@@ -270,20 +307,48 @@ pub fn init() {
             w.set_ccif(2, false);
             w.set_ccif(3, false);
         });
-        TIM2.ctlr1().modify(|w| w.set_cen(true));
 
-        // ── TIM3 slave, high 16. SMS=7 (external clock mode 1), TS=1
-        // (ITR1 = TIM2 TRGO).
-        TIM3.psc().write_value(0);
+        // ── TIM3 free-running, high 16 of tick32. PSC=0xFFFF →
+        // CK_CNT = HCLK/65536 = TIM2 wrap rate. No slave mode (SMS=0);
+        // TS=1 keeps TRC routed to ITR1 = TIM2 TRGO. CCMR1.CC1S=TRC
+        // latches TIM3.CCR1 on every TRGO pulse; CCER CC1P=0 picks the
+        // rising edge of the one-cycle pulse. DMAINTENR CC1DE=1 kicks
+        // DMA1_CH6 (TIM3.CCR1 → high half of every IC entry).
+        TIM3.psc().write_value(0xFFFF);
         TIM3.atrlr().write_value(0xFFFF);
-        TIM3.ctlr1().write(|w| w.set_cen(false));
+        TIM3.ctlr1().write(|w| {
+            w.set_cen(false);
+            w.set_arpe(false);
+        });
         TIM3.smcfgr().modify(|w| {
-            w.set_sms(7);
-            w.set_ts(1);
+            w.set_sms(0); // disable slave clock — TIM3 free-runs on CK_INT
+            w.set_ts(1); // ITR1 = TIM2 TRGO → TRC
+        });
+        TIM3.chctlr_input(0).modify(|w| {
+            w.set_ccs(0, CcmrInputCcs::TRC); // CC1 from TRC
+        });
+        TIM3.ccer().modify(|w| {
+            w.set_ccp(0, false); // CC1P=0 rising edge of TRGO pulse
+            w.set_cce(0, true);
+        });
+        TIM3.dmaintenr().write(|w| {
+            w.set_ccde(0, true); // CC1DE → DMA1_CH6
         });
         TIM3.swevgr().write(|w| w.set_ug(true));
-        TIM3.intfr().write(|w| w.set_uif(false));
-        TIM3.ctlr1().modify(|w| w.set_cen(true));
+        TIM3.intfr().write(|w| {
+            w.set_uif(false);
+            w.set_ccif(0, false);
+        });
+
+        // Phase-lock startup: enable TIM3.CEN before TIM2.CEN so TIM3's
+        // prescaler leads TIM2's counter by the AHB write gap. TIM3.CNT
+        // increments a few cycles before TIM2 wraps, biasing any
+        // wrap-race IC pair to off-by-+65536 (combined > ceiling) which
+        // the walker detects unambiguously.
+        critical_section::with(|_| {
+            TIM3.ctlr1().modify(|w| w.set_cen(true));
+            TIM2.ctlr1().modify(|w| w.set_cen(true));
+        });
 
         // ── TIM4 OPM. PSC=0 (1:1 with tick32). CR1: OPM=1 (auto-clear CEN
         // after first UEV), URS=1 (UG software event resets CNT without
@@ -358,7 +423,7 @@ pub fn init() {
         });
 
         qingke::pfic::enable_interrupt(Interrupt::USART3 as u8);
-        qingke::pfic::enable_interrupt(Interrupt::DMA1_CHANNEL1 as u8);
+        qingke::pfic::enable_interrupt(Interrupt::DMA1_CHANNEL6 as u8);
         qingke::pfic::enable_interrupt(Interrupt::DMA1_CHANNEL3 as u8);
     }
 }
