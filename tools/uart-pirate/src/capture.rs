@@ -95,9 +95,8 @@ const BITS_PER_BYTE_8N1: u32 = 10;
 /// scans `[predicted − SNAP_BITS·bit_ticks, predicted + SNAP_BITS·bit_ticks]`
 /// for the closest IC entry. 1 bit-time is ~50× the observed loopback
 /// jitter floor (tool-pirate-tune stage 1: dev ≤ 24 ticks at brr=2500,
-/// = 0.01 bit-times). Widen to 2 or 3 if real-servo Status replies miss
-/// bytes mid-chain — the DXL spec allows up to ~3-bit hardware idle
-/// inside a chain that the upstream chip can drive between bytes.
+/// = 0.01 bit-times). Widen to 2 or 3 if real upstream chips drive more
+/// inter-byte hardware idle than 1 bit-time between bytes in a chain.
 const SNAP_BITS: u32 = 1;
 
 /// Per-baud CC filter LUT. fDTS pinned at HCLK = 144 MHz (CKD=`DIV_1`,

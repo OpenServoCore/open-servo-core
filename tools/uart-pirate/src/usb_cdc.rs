@@ -12,7 +12,7 @@ use crate::inject::TX_BUF_LEN;
 use crate::proto::{self, Reply};
 use crate::usbd::Driver;
 
-// `FIRE bytes=<TX_BUF_LEN*2 hex> at=<u32>` ≤ TX_BUF_LEN*2 + 35; +slop.
+// `SEND bytes=<TX_BUF_LEN*2 hex> at=<u32>` ≤ TX_BUF_LEN*2 + 35; +slop.
 const LINE_BUF_LEN: usize = TX_BUF_LEN * 2 + 64;
 
 /// CDC bulk EP max-packet size. CdcAcmClass::new sets this on both

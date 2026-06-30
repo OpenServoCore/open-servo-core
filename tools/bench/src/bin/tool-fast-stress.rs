@@ -12,14 +12,14 @@
 //!
 //! Position semantics (mirrors `pirate_chip_stress.py`, plus middle):
 //!   only    plain Read; chip is the sole responder.
-//!   first   Fast Bulk Read [(chip), (FOREIGN_ID)] — chip fires slot 0, bus
-//!           IDLEs after (FOREIGN_ID never replies).
-//!   middle  Fast Bulk Read [(INJ_ID), (chip), (FOREIGN_ID)] — pirate ARMs
-//!           INJ predecessor, chip emits middle-slot body (no header, no
-//!           CRC), FOREIGN_ID never replies.
-//!   last    Fast Bulk Read [(INJ_ID), (chip)] — pirate ARMs INJ predecessor
-//!           reply so chip's snoop walk + chain CRC patch fire as in
-//!           production.
+//!   first   Fast Bulk Read [(chip), (FOREIGN_ID)] — chip emits slot 0,
+//!           bus IDLEs after (FOREIGN_ID never replies).
+//!   middle  Fast Bulk Read [(INJ_ID), (chip), (FOREIGN_ID)] — pirate
+//!           sends INJ predecessor, chip emits middle-slot body (no
+//!           header, no CRC), FOREIGN_ID never replies.
+//!   last    Fast Bulk Read [(INJ_ID), (chip)] — pirate sends INJ
+//!           predecessor reply so chip's snoop walk + chain CRC patch
+//!           run as in production.
 
 use std::thread::sleep;
 use std::time::Duration;
@@ -83,11 +83,11 @@ impl Bucket {
     }
 }
 
-/// Wall-clock delay between master IDLE and the pirate's injected predecessor
+/// Wall-clock delay between host IDLE and the pirate's injected predecessor
 /// status reply for `last`/`middle` shots. 250 µs ≈ one nominal DXL RDT —
 /// matches the legacy `pirate_chip_stress.py` baseline and exercises the
-/// SysTick CMP-scheduled fire path (vs the `after_idle=0` immediate path).
-const INJ_ARM_AFTER_IDLE_US: u32 = 250;
+/// SysTick CMP-scheduled send path (vs the `after_idle=0` immediate path).
+const INJ_SEND_AFTER_IDLE_US: u32 = 250;
 
 struct Tally([u32; 5]);
 impl Tally {
@@ -675,7 +675,7 @@ fn shot_last(bus: &mut Bus, id: Id, ctx: &CellCtx) -> Result<ShotOutcome> {
         },
     ];
     let request = build_fast_bulk_read(&entries)?;
-    let cap = bus.arm_then_master(&inj_bytes, INJ_ARM_AFTER_IDLE_US, &request, ctx.idle_us)?;
+    let cap = bus.inject_then_send(&inj_bytes, INJ_SEND_AFTER_IDLE_US, &request, ctx.idle_us)?;
     let request = request.to_vec();
     let reply = reply_bytes(&cap, request.len());
     let timing = cap.timing;
@@ -738,7 +738,7 @@ fn shot_middle(bus: &mut Bus, id: Id, ctx: &CellCtx) -> Result<ShotOutcome> {
         },
     ];
     let request = build_fast_bulk_read(&entries)?;
-    let cap = bus.arm_then_master(&inj_bytes, INJ_ARM_AFTER_IDLE_US, &request, ctx.idle_us)?;
+    let cap = bus.inject_then_send(&inj_bytes, INJ_SEND_AFTER_IDLE_US, &request, ctx.idle_us)?;
     let request = request.to_vec();
     let reply = reply_bytes(&cap, request.len());
     let timing = cap.timing;
@@ -786,7 +786,7 @@ fn shot_middle(bus: &mut Bus, id: Id, ctx: &CellCtx) -> Result<ShotOutcome> {
 }
 
 /// Slice the post-echo bytes out of a [`ReplyCapture`]. The first
-/// `req_len` stamps are the master TX echo; the rest is the reply chain.
+/// `req_len` stamps are the host TX echo; the rest is the reply chain.
 fn reply_bytes(cap: &ReplyCapture, req_len: usize) -> Vec<u8> {
     cap.stamps.iter().skip(req_len).map(|s| s.byte).collect()
 }

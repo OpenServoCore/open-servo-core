@@ -30,7 +30,6 @@ pub struct BStamp {
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub enum DesyncCause {
-    WalkerLate,
     IcOverrun,
     StampOverflow,
 }
@@ -38,7 +37,6 @@ pub enum DesyncCause {
 impl DesyncCause {
     pub fn parse(s: &str) -> Option<Self> {
         match s.trim() {
-            "walker_late" => Some(Self::WalkerLate),
             "ic_overrun" => Some(Self::IcOverrun),
             "stamp_overflow" => Some(Self::StampOverflow),
             _ => None,
@@ -46,7 +44,6 @@ impl DesyncCause {
     }
     pub fn as_str(self) -> &'static str {
         match self {
-            Self::WalkerLate => "walker_late",
             Self::IcOverrun => "ic_overrun",
             Self::StampOverflow => "stamp_overflow",
         }
@@ -83,7 +80,7 @@ pub struct PirateStatus {
 
 /// TX-comp tunables read from the pirate via `COMP?`. See firmware
 /// `inject.rs` for the decomposition:
-/// `FIRE_COMP_TICKS = pipe + (bit_q4 × brr) / 16`.
+/// `TX_COMP_TICKS = pipe + (bit_q4 × brr) / 16`.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub struct TxComp {
     /// Static HCLK-domain pipeline ticks (TIM4 CC2 → USART3.DR write).
@@ -105,9 +102,9 @@ pub struct ReplyCapture {
 /// `Client::hz_per_us`.
 #[derive(Copy, Clone, Debug)]
 pub struct ReplyTiming {
-    /// Last byte of the master TX echo. Equivalent to the old `Round.req`.
+    /// Last byte of the host TX echo. Equivalent to the old `Round.req`.
     pub req_end: u32,
-    /// First byte after the master TX echo. Equivalent to `Round.first`.
+    /// First byte after the host TX echo. Equivalent to `Round.first`.
     pub reply_first: u32,
     /// Last byte in the captured stream. Equivalent to `Round.last`.
     pub reply_last: u32,
@@ -279,7 +276,7 @@ impl Client {
         parse_kv(&reply, "TICK")
     }
 
-    pub fn last_fired(&mut self) -> Result<u32> {
+    pub fn last_send_tick(&mut self) -> Result<u32> {
         let reply = self.command("LAST?")?;
         parse_kv(&reply, "LAST")
     }
@@ -296,19 +293,20 @@ impl Client {
         Ok(v)
     }
 
-    pub fn master(&mut self, data: &[u8]) -> Result<()> {
-        self.expect_ok(&format!("MASTER bytes={}", hex(data)))
+    pub fn send_now(&mut self, data: &[u8]) -> Result<()> {
+        self.expect_ok(&format!("SEND bytes={}", hex(data)))
     }
 
-    /// Stage `data` to fire `after_idle_us` microseconds after the next bus
-    /// IDLE. Wall-clock units; converts to ticks via cached `hz_per_us`.
-    pub fn arm(&mut self, data: &[u8], after_idle_us: u32) -> Result<()> {
+    /// Stage `data` to send `after_idle_us` microseconds after the next
+    /// wire IDLE. Wall-clock units; converts to ticks via cached
+    /// `hz_per_us`.
+    pub fn schedule_send_after_idle(&mut self, data: &[u8], after_idle_us: u32) -> Result<()> {
         let ticks = after_idle_us * self.hz_per_us()?;
-        self.expect_ok(&format!("ARM bytes={} after_idle={ticks}", hex(data)))
+        self.expect_ok(&format!("SEND bytes={} after_idle={ticks}", hex(data)))
     }
 
-    pub fn fire(&mut self, data: &[u8], at_tick: u32) -> Result<()> {
-        self.expect_ok(&format!("FIRE bytes={} at={at_tick}", hex(data)))
+    pub fn schedule_send_at(&mut self, data: &[u8], at_tick: u32) -> Result<()> {
+        self.expect_ok(&format!("SEND bytes={} at={at_tick}", hex(data)))
     }
 
     pub fn status(&mut self) -> Result<PirateStatus> {

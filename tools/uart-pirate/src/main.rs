@@ -19,24 +19,25 @@ use embassy_executor::Spawner;
 
 // ── Wiring (MuseLab nanoCH32V203, V203C8T6 LQFP48)
 //
-//   PB10  USART3_TX (AF OD)        ─► DXL bus
-//   PB11  USART3_RX (input pullup) ◄─ DXL bus  (jumpered to PB10)
+//   PB10  USART3_TX (AF OD)        ─► wire
+//   PB11  USART3_RX (input pullup) ◄─ wire  (jumpered to PB10)
 //   PA12  USB DP                       host
 //   PA11  USB DM                       host
 //
 // USART3 runs full-duplex with PB10 and PB11 bridged externally on the
-// bench, putting both halves of the USART block across the single-wire DXL
-// line. RX captures our own TX echo (FIRE_COMP autocal) and remote replies;
-// HDSEL would internally tri-state RX during TX and is not used.
+// bench, putting both halves of the USART block across the same single
+// wire. RX captures our own TX echo (TX_COMP autocal) and remote
+// replies; HDSEL would internally tri-state RX during TX and is not
+// used.
 //
-// USART3 + TIM2/TIM3/TIM4 all on APB1 (DXL bus + wire clock + fire timer).
-// With SYSCLK_FREQ_144MHZ_HSE both APB1/2 run at 144 MHz (prescaler DIV1),
-// so BRR = 144_000_000 / 3_000_000 = 48 for the 3 Mbaud DXL Fast wire
-// rate. tick32 (TIM2 low + TIM3 high) ticks at 144 MHz; TIM2_CH3 IC taps
-// PB10 (via TIM2_RM=0b10 partial remap) for falling-edge stamping
-// (PB10/PB11 share a wire so either pin shows the same edges); TIM4 OPM
-// CC2 → DMA1_CH4 → DMA1_CH2 stamps USART3 TX with no IRQ between deadline
-// and wire edge.
+// USART3 + TIM2/TIM3/TIM4 all on APB1 (wire UART + wire clock + send
+// scheduler). With SYSCLK_FREQ_144MHZ_HSE both APB1/2 run at 144 MHz
+// (prescaler DIV1), so BRR = 144_000_000 / 3_000_000 = 48 at 3 Mbaud.
+// tick32 (TIM2 low + TIM3 high) ticks at 144 MHz; TIM2_CH3 IC taps PB10
+// (via TIM2_RM=0b10 partial remap) for falling-edge stamping (PB10/PB11
+// share a wire so either pin shows the same edges); TIM4 OPM CC2 →
+// DMA1_CH4 → DMA1_CH2 stamps USART3 TX with no IRQ between deadline and
+// wire edge.
 //
 // HSE (8 MHz crystal) is required, not HSI: this firmware doubles as the
 // bench timebase, and HSI's ±1% trim would systematically corrupt ppm-

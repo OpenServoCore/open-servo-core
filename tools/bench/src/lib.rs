@@ -44,7 +44,7 @@ pub const BOOT_BAUD: u32 = 1_000_000;
 /// returns when no new bytes have arrived for `DEFAULT_IDLE_US` of host
 /// wall-clock. There is no total-elapsed cap inside the helper — the same
 /// constant governs unicast (one reply burst), broadcast (254 servos
-/// chaining replies), and `arm_then_master` (predecessor-then-chain) calls.
+/// chaining replies), and `inject_then_send` (predecessor-then-chain) calls.
 ///
 /// Sized above two hardware floors that combine to lag the host's
 /// observed `last_byte_time` behind the wire:
@@ -501,10 +501,10 @@ impl Bus {
     }
 
     // -----------------------------------------------------------------------
-    // Transport (master/arm/fire → drain stamps)
+    // Transport (send → drain stamps)
     // -----------------------------------------------------------------------
 
-    /// Fire `req` as bus master, drain stamps until the bus has been
+    /// Send `req` onto the wire, drain stamps until the wire has been
     /// silent for `idle_us` of host wall-clock, return the full capture.
     /// Each non-empty `bbatch` poll resets the silence timer, so the
     /// helper naturally accommodates long replies (broadcast Ping, fast
@@ -514,7 +514,7 @@ impl Bus {
         xfer_inner(&mut self.pirate, req, idle_us)
     }
 
-    /// `xfer` + slice off the master TX echo. `None` if no reply arrived.
+    /// `xfer` + slice off the host TX echo. `None` if no reply arrived.
     pub fn xfer_reply(&mut self, req: &[u8], idle_us: u32) -> Result<Option<Vec<u8>>> {
         let cap = self.xfer(req, idle_us)?;
         if cap.timing.is_none() {
@@ -529,9 +529,9 @@ impl Bus {
         Ok(self.xfer(req, idle_us)?.timing)
     }
 
-    /// Stage `inject` to fire after the next IDLE, then send `req`. Used
+    /// Stage `inject` to send after the next IDLE, then send `req`. Used
     /// to emulate a predecessor slot's reply in chain timing tests.
-    pub fn arm_then_master(
+    pub fn inject_then_send(
         &mut self,
         inject: &[u8],
         after_idle_us: u32,
@@ -539,8 +539,8 @@ impl Bus {
         idle_us: u32,
     ) -> Result<ReplyCapture> {
         drain_all(&mut self.pirate)?;
-        self.pirate.arm(inject, after_idle_us)?;
-        self.pirate.master(req)?;
+        self.pirate.schedule_send_after_idle(inject, after_idle_us)?;
+        self.pirate.send_now(req)?;
         collect_until_silent(&mut self.pirate, req, idle_us)
     }
 
@@ -648,7 +648,7 @@ impl Bus {
         self.pirate.status()
     }
 
-    /// Clear DESYNCED + cause, drain stamp/IC rings, re-arm walker.
+    /// Clear DESYNCED + cause, drain stamp/IC rings, restart walker.
     pub fn pirate_reset(&mut self) -> Result<()> {
         self.pirate.reset()
     }
@@ -659,18 +659,18 @@ impl Bus {
         self.pirate.ic_snapshot()
     }
 
-    /// Direct pirate `MASTER`/`FIRE` access for selftest-style bins that
-    /// need to drive bytes without the `xfer`-shaped echo+reply contract.
-    /// Avoid for protocol tools.
-    pub fn pirate_master(&mut self, data: &[u8]) -> Result<()> {
-        self.pirate.master(data)
+    /// Direct pirate `SEND` access for selftest-style bins that need to
+    /// drive bytes without the `xfer`-shaped echo+reply contract. Avoid
+    /// for protocol tools.
+    pub fn pirate_send_now(&mut self, data: &[u8]) -> Result<()> {
+        self.pirate.send_now(data)
     }
 
-    /// Schedule `data` to fire when pirate `tick32` reaches `at_tick`.
-    /// `LAST?` (`pirate_last_fired`) will then return the commanded
-    /// wire-start tick — used by fire-comp calibration.
-    pub fn pirate_fire(&mut self, data: &[u8], at_tick: u32) -> Result<()> {
-        self.pirate.fire(data, at_tick)
+    /// Schedule `data` to send when pirate `tick32` reaches `at_tick`.
+    /// `LAST?` (`pirate_last_send_tick`) will then return the commanded
+    /// wire-start tick — used by tx-comp calibration.
+    pub fn pirate_send_at(&mut self, data: &[u8], at_tick: u32) -> Result<()> {
+        self.pirate.schedule_send_at(data, at_tick)
     }
 
     /// Pirate `tick32` "now" — TIM2 (low u16) + TIM3 (high u16) chained
@@ -679,10 +679,11 @@ impl Bus {
         self.pirate.tick()
     }
 
-    /// Commanded wire-start tick of the last scheduled fire (`FIRED_TICK`).
-    /// For a scheduled `FIRE`, equals the `at_tick` argument verbatim.
-    pub fn pirate_last_fired(&mut self) -> Result<u32> {
-        self.pirate.last_fired()
+    /// Commanded wire-start tick of the last scheduled send
+    /// (`LAST_SEND_TICK`). For a scheduled `SEND at=`, equals the
+    /// `at_tick` argument verbatim.
+    pub fn pirate_last_send_tick(&mut self) -> Result<u32> {
+        self.pirate.last_send_tick()
     }
 
     /// Drain up to `max` byte stamps as a binary BBATCH frame.
@@ -717,8 +718,8 @@ impl Bus {
 /// Pre-call invariant (held by every `Bus` entry point): the bus has
 /// already been silent for at least `DEFAULT_IDLE_US`, so a single empty
 /// poll genuinely means the ring is clear — there are no bytes still in
-/// flight that could slip in between `drain_all` returning and `master`
-/// firing.
+/// flight that could slip in between `drain_all` returning and the next
+/// `send_now`.
 fn drain_all(client: &mut pirate::Client) -> Result<()> {
     loop {
         if client.bbatch(255)?.is_empty() {
@@ -729,11 +730,11 @@ fn drain_all(client: &mut pirate::Client) -> Result<()> {
 
 fn xfer_inner(client: &mut pirate::Client, req: &[u8], idle_us: u32) -> Result<ReplyCapture> {
     drain_all(client)?;
-    client.master(req)?;
+    client.send_now(req)?;
     collect_until_silent(client, req, idle_us)
 }
 
-/// Collect post-fire stamps until `idle_us` of host wall-clock has
+/// Collect post-send stamps until `idle_us` of host wall-clock has
 /// elapsed since the most recent non-empty `bbatch`. Each new batch
 /// resets the silence timer; no explicit "first byte arrived" gate is
 /// needed because the timer starts at the call boundary and only an
@@ -788,7 +789,7 @@ fn collect_until_silent(
         for (i, &expected) in req.iter().enumerate() {
             if stamps[i].byte != expected {
                 bail!(
-                    "master echo mismatch at byte {i}: got 0x{:02X}, expected 0x{:02X}",
+                    "echo mismatch at byte {i}: got 0x{:02X}, expected 0x{:02X}",
                     stamps[i].byte,
                     expected
                 );

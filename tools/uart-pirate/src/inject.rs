@@ -1,13 +1,12 @@
-//! DXL TX path: pre-encoded payload → DMA1_CH2 → USART3 (TX=PB10 AF OD,
+//! Wire TX path: pre-encoded payload → DMA1_CH2 → USART3 (TX=PB10 AF OD,
 //! RX=PB11 input-pullup), kicked by TIM4 OPM CC2 match chained through
-//! DMA1_CH4 — no IRQ in the fire path.
+//! DMA1_CH4 — no IRQ in the send path.
 //!
 //! USART3 runs **full-duplex**, not HDSEL: PB10 and PB11 are bridged
 //! externally on the bench, putting both halves of the USART block across
-//! the single-wire DXL line. The chip then RX-captures both our own TX
-//! echo (useful for FIRE_COMP autocal) and remote servo replies. HDSEL
-//! would internally tri-state RX during TX, which is the opposite of
-//! what we need.
+//! the same wire. The chip then RX-captures both our own TX echo (useful
+//! for TX_COMP autocal) and remote replies. HDSEL would internally tri-
+//! state RX during TX, which is the opposite of what we need.
 //!
 //! Why USART3 and not USART2 on PA2/PA3: PA3 has R10=10 kΩ to 3V3 on the
 //! MuseLab board (SD-card CS pull-up). With the bus connected idle-high
@@ -17,13 +16,9 @@
 //! real power. PB10/PB11 are clean breakouts with no onboard pulls.
 //!
 //! TIM4 OPM, PSC=0, ARR=delta, CCR2=ARR. On CC2 compare match, DMA1_CH4
-//! stamps a precomputed armed-CFGR word (EN=1) over DMA1_CH2.CR; CH2 then
+//! stamps a precomputed run-CFGR word (EN=1) over DMA1_CH2.CR; CH2 then
 //! drains the prepared payload into USART3.DATAR. CCR2=ARR puts the CC2
 //! event on the same edge as the OPM overflow.
-//!
-//! V20x DMA pairs are fixed: USART3_TX → DMA1_CH2, USART3_RX → DMA1_CH3.
-//! TIM4_CC2 → DMA1_CH4 (same trigger as the prior USART2 build), so only
-//! the stamp target moves (CH7.CR → CH2.CR). CH7 is now free.
 //!
 //! This module also owns TIM2 + TIM3 (the wire clock) since they need to
 //! come up before USART3 / TIM4. `capture` consumes the resulting
@@ -41,17 +36,17 @@ use portable_atomic::{AtomicBool, AtomicU32, Ordering};
 
 pub const TX_BUF_LEN: usize = 1024;
 
-/// (fire_at - now) below this many `tick32` ticks bypasses TIM4 and writes
-/// the armed CFGR word directly into DMA1_CH2. 256 ticks ≈ 1.8 µs at
-/// 144 MHz — safely above the arm-sequence register-write latency. A
-/// too-close deadline still fires (wire-edge lands ≈ "now") instead of
-/// silently missing on a wrap.
-const FIRE_NOW_THRESHOLD_TICKS: u32 = 256;
+/// (send_at - now) below this many `tick32` ticks bypasses TIM4 and writes
+/// the run-CFGR word directly into DMA1_CH2. 256 ticks ≈ 1.8 µs at
+/// 144 MHz — safely above the register-write latency of the immediate
+/// path. A too-close deadline still kicks (wire-edge lands ≈ "now")
+/// instead of silently missing on a wrap.
+const IMMEDIATE_SEND_THRESHOLD_TICKS: u32 = 256;
 
 /// TIM4 ARR (u16) max in tick32 units. PSC=0 → 144 MHz tick = 1:1 with
 /// tick32, so ARR = delta directly and max schedule is 65 535 ticks ≈
-/// 455 µs. Fires beyond this fall back to the immediate path (host should
-/// never request them — DXL slot timing is sub-ms).
+/// 455 µs. Deadlines beyond this fall back to the immediate path (host
+/// should never request them — typical wire-side slot timing is sub-ms).
 const TIM4_MAX_DELTA_TICKS: u32 = u16::MAX as u32;
 
 const TIM4_PSC: u16 = 0;
@@ -63,36 +58,37 @@ pub const WIRE_HZ: u32 = 144_000_000;
 pub const APB1_HZ: u32 = 144_000_000;
 pub const DEFAULT_BAUD: u32 = 1_000_000;
 
-/// FIRE / MASTER share this buffer. FIRE fires through TIM4 CC2 → CH4 →
-/// CH7. MASTER preempts any pending FIRE by re-arming CH7 and stamping
-/// directly.
+/// `SEND` at/now buffer. The `at=` and no-key paths share it; the
+/// no-key path routes through `schedule_send_at` internally so the same
+/// commanded-tick semantics apply to both.
 static TX_BUF: SyncUnsafeCell<[u8; TX_BUF_LEN]> = SyncUnsafeCell::new([0; TX_BUF_LEN]);
 
-/// ARM uses a separate buffer so a MASTER+ARM chain (master TX echoes,
-/// then ARM emits a faked slave slot after the bus goes idle) keeps both
-/// payloads loaded simultaneously. `on_idle()` swaps DMA1_CH2 onto
-/// ARM_TX_BUF before kicking the fire.
-static ARM_TX_BUF: SyncUnsafeCell<[u8; TX_BUF_LEN]> = SyncUnsafeCell::new([0; TX_BUF_LEN]);
-static ARM_TX_LEN: SyncUnsafeCell<u16> = SyncUnsafeCell::new(0);
+/// `SEND after_idle=` uses a separate buffer so a `SEND` immediately
+/// followed by a `SEND after_idle=` (echo TX, then a scheduled response
+/// after the wire goes idle) keeps both payloads loaded simultaneously.
+/// `on_idle()` swaps DMA1_CH2 onto IDLE_TX_BUF before kicking the send.
+static IDLE_TX_BUF: SyncUnsafeCell<[u8; TX_BUF_LEN]> = SyncUnsafeCell::new([0; TX_BUF_LEN]);
+static IDLE_TX_LEN: SyncUnsafeCell<u16> = SyncUnsafeCell::new(0);
 
 /// Precomputed DMA1_CH2 CFGR word with EN=1. DMA1_CH4 copies this 32-bit
-/// word over DMA1_CH2.CR on the TIM4 CC2 fire. Written once during init,
-/// read-only thereafter so the DMA can treat it as constant memory.
-static ARMED_CH2_CFGR_WORD: SyncUnsafeCell<u32> = SyncUnsafeCell::new(0);
+/// word over DMA1_CH2.CR on the TIM4 CC2 kickoff. Written once during
+/// init, read-only thereafter so the DMA can treat it as constant memory.
+static CH2_CFGR_RUN_WORD: SyncUnsafeCell<u32> = SyncUnsafeCell::new(0);
 
-/// Set by `schedule_fire_after_idle`; consumed by `on_idle`. Re-armed each
+/// Set by `schedule_send_after_idle`; consumed by `on_idle`. Cleared each
 /// IDLE swap.
-static ARMED_AFTER_IDLE: AtomicBool = AtomicBool::new(false);
-static PENDING_AFTER_IDLE_TICKS: SyncUnsafeCell<u32> = SyncUnsafeCell::new(0);
+static IDLE_SEND_PENDING: AtomicBool = AtomicBool::new(false);
+static IDLE_SEND_DELAY_TICKS: SyncUnsafeCell<u32> = SyncUnsafeCell::new(0);
 
-/// `tick32` at the last fire kickoff (commanded value for scheduled fires,
-/// "now" for immediate fires). Host correlates against per-byte stamps.
-static FIRED_TICK: SyncUnsafeCell<u32> = SyncUnsafeCell::new(0);
+/// `tick32` at the last send kickoff (commanded value for scheduled
+/// sends, "now" for immediate sends). Host correlates against per-byte
+/// stamps.
+static LAST_SEND_TICK: SyncUnsafeCell<u32> = SyncUnsafeCell::new(0);
 
-/// Fire-path latency compensation decomposed into the two clock domains
+/// TX-path latency compensation decomposed into the two clock domains
 /// the TX chain crosses (TIM4 CC2 match → wire start-bit edge):
 ///
-///   FIRE_COMP_TICKS = TX_PIPELINE_TICKS
+///   TX_COMP_TICKS = TX_PIPELINE_TICKS
 ///                   + (TX_BIT_TIMES_Q4 × brr) / 16
 ///
 /// `TX_PIPELINE_TICKS` covers the HCLK-domain pipeline:
@@ -108,23 +104,23 @@ static FIRED_TICK: SyncUnsafeCell<u32> = SyncUnsafeCell::new(0);
 ///
 /// Both atoms are runtime-tunable via the `COMP` protocol command so
 /// bench can write measured values back without a firmware rebuild.
-/// `FIRE_COMP_TICKS` is the precomputed sum read by the fire fast path —
-/// recomputed by `recompute_fire_comp` whenever brr or either tunable
+/// `TX_COMP_TICKS` is the precomputed sum read by the send fast path —
+/// recomputed by `recompute_tx_comp` whenever brr or either tunable
 /// changes. Defaults below are the converged values from
-/// `tool-pirate-tune --stage fire-comp` on osc-dev-v20x at 144 MHz HCLK
+/// `tool-pirate-tune --stage tx-comp` on osc-dev-v20x at 144 MHz HCLK
 /// (median across 5 runs at n=64 shots/baud; per-run wobble ±~5 ticks
 /// on pipe, ±1 on bit_q4 — bounded by the U[0, brr] median SE floor).
-static FIRE_COMP_TICKS: AtomicU32 = AtomicU32::new(0);
+static TX_COMP_TICKS: AtomicU32 = AtomicU32::new(0);
 static TX_PIPELINE_TICKS: AtomicU32 = AtomicU32::new(TX_PIPELINE_TICKS_DEFAULT);
 static TX_BIT_TIMES_Q4: AtomicU32 = AtomicU32::new(TX_BIT_TIMES_Q4_DEFAULT);
 
 const TX_PIPELINE_TICKS_DEFAULT: u32 = 45;
 const TX_BIT_TIMES_Q4_DEFAULT: u32 = 8;
 
-fn recompute_fire_comp(brr: u32) {
+fn recompute_tx_comp(brr: u32) {
     let pipe = TX_PIPELINE_TICKS.load(Ordering::Relaxed);
     let q4 = TX_BIT_TIMES_Q4.load(Ordering::Relaxed);
-    FIRE_COMP_TICKS.store(pipe + ((q4 * brr) >> 4), Ordering::Relaxed);
+    TX_COMP_TICKS.store(pipe + ((q4 * brr) >> 4), Ordering::Relaxed);
 }
 
 pub fn tx_comp() -> (u32, u32) {
@@ -134,8 +130,8 @@ pub fn tx_comp() -> (u32, u32) {
     )
 }
 
-/// Update one or both comp tunables, then recompute `FIRE_COMP_TICKS` for
-/// the current baud. Held under a critical section so a fire racing the
+/// Update one or both comp tunables, then recompute `TX_COMP_TICKS` for
+/// the current baud. Held under a critical section so a send racing the
 /// update can't see a half-updated comp.
 pub fn set_tx_comp(pipe: Option<u32>, bit_q4: Option<u32>) {
     critical_section::with(|_| {
@@ -146,18 +142,18 @@ pub fn set_tx_comp(pipe: Option<u32>, bit_q4: Option<u32>) {
             TX_BIT_TIMES_Q4.store(q, Ordering::Relaxed);
         }
         let brr = USART3.brr().read().0;
-        recompute_fire_comp(brr);
+        recompute_tx_comp(brr);
     });
 }
 
-/// Headroom added to `read_systick()` when [`fire_now_master`] schedules
-/// its near-future fire through [`schedule_or_fire_now`]. Sized so the
-/// resulting `delta` lands comfortably above [`FIRE_NOW_THRESHOLD_TICKS`]
+/// Headroom added to `read_tick32()` when [`send_now`] schedules its
+/// near-future send through [`schedule_or_send_now`]. Sized so the
+/// resulting `delta` lands comfortably above [`IMMEDIATE_SEND_THRESHOLD_TICKS`]
 /// — keeping the scheduled (TIM4 OPM) path in play rather than falling
-/// back to the immediate DMA-direct branch, so `FIRED_TICK` matches the
-/// commanded wire-start tick. 512 ticks ≈ 3.5 µs at 144 MHz — negligible
-/// added latency, well above the 256-tick scheduler threshold.
-const MASTER_MARGIN_HEADROOM_TICKS: u32 = 512;
+/// back to the immediate DMA-direct branch, so `LAST_SEND_TICK` matches
+/// the commanded wire-start tick. 512 ticks ≈ 3.5 µs at 144 MHz —
+/// negligible added latency, well above the 256-tick scheduler threshold.
+const IMMEDIATE_SEND_MARGIN_TICKS: u32 = 512;
 
 /// Upper bound on how long `wait_tx_complete` will spin for `USART3.SR.TC`.
 /// 200 ms at 144 MHz. Generous enough for any payload up to TX_BUF_LEN at
@@ -167,16 +163,16 @@ const MASTER_MARGIN_HEADROOM_TICKS: u32 = 512;
 const TX_WAIT_TIMEOUT_TICKS: u32 = 28_800_000;
 
 #[inline]
-fn store_fired_tick(t: u32) {
-    unsafe { ptr::write_volatile(FIRED_TICK.get(), t) }
+fn store_last_send_tick(t: u32) {
+    unsafe { ptr::write_volatile(LAST_SEND_TICK.get(), t) }
 }
 #[inline]
-fn store_pending_after_idle(v: u32) {
-    unsafe { ptr::write_volatile(PENDING_AFTER_IDLE_TICKS.get(), v) }
+fn store_idle_send_delay(v: u32) {
+    unsafe { ptr::write_volatile(IDLE_SEND_DELAY_TICKS.get(), v) }
 }
 #[inline]
-fn load_pending_after_idle() -> u32 {
-    unsafe { ptr::read_volatile(PENDING_AFTER_IDLE_TICKS.get()) }
+fn load_idle_send_delay() -> u32 {
+    unsafe { ptr::read_volatile(IDLE_SEND_DELAY_TICKS.get()) }
 }
 
 /// Coherent (TIM2, TIM3) snapshot. Three loads in the common case, six
@@ -247,8 +243,8 @@ fn init_clocks_and_remap() {
 /// PB10↔PB11 are bridged through open air with no transceiver, so the
 /// only pull on the wire is PB11's ~30 kΩ internal pull-up, giving
 /// τ ≈ 500–900 ns rise time and USART RX mis-sample at ≥ 2 Mbaud. Push-
-/// pull actively drives both edges. The DXL multi-drop "no PP fighting
-/// OD" concern doesn't apply to this rig.
+/// pull actively drives both edges. The multi-drop "no PP fighting OD"
+/// concern doesn't apply to this rig.
 fn init_pins() {
     GPIOA.outdr().modify(|w| {
         w.set_odr(0, false);
@@ -303,7 +299,7 @@ fn init_usart3() {
     let brr0 = APB1_HZ / DEFAULT_BAUD;
     USART3.brr().write(|w| w.0 = brr0);
     USART3.ctlr1().modify(|w| w.set_ue(true));
-    recompute_fire_comp(brr0);
+    recompute_tx_comp(brr0);
 }
 
 /// TIM2 master + TIM3 high-half, forming the hardware atomic 32-bit IC
@@ -422,11 +418,11 @@ fn init_tim4_scheduler() {
 }
 
 /// DMA1_CH2 = USART3_TX + DMA1_CH4 = TIM4_CC2 stamper that flips CH2.EN
-/// on fire. CH2.EN stays clear at init; `load_payload` reloads
-/// MAR/NDTR with EN=0 between fires. CH4 is circular single-word: copy
-/// ARMED_CH2_CFGR_WORD → DMA1_CH2.CR. NDTR=1 auto-reloads each cycle
-/// (CIRC=1), so we never re-arm CH4 from software. CH4.EN=1
-/// permanently — the CC2DE gate fires it, not EN.
+/// on send. CH2.EN stays clear at init; `load_payload` reloads MAR/NDTR
+/// with EN=0 between sends. CH4 is circular single-word: copy
+/// CH2_CFGR_RUN_WORD → DMA1_CH2.CR. NDTR=1 auto-reloads each cycle
+/// (CIRC=1), so we never re-program CH4 from software. CH4.EN=1
+/// permanently — the CC2DE gate kicks it, not EN.
 fn init_dma_tx() {
     let ch2 = DMA1.ch(1);
     ch2.par().write_value(USART3.datar().as_ptr() as u32);
@@ -438,7 +434,7 @@ fn init_dma_tx() {
         w.set_msize(Size::BITS8);
         w.set_psize(Size::BITS8);
         // VERYHIGH is defensive: today only CH2 + CH4 are active so
-        // inter-channel arbitration doesn't trigger, but pins the fire
+        // inter-channel arbitration doesn't kick in, but pins the send
         // path at top priority against any future DMA channel we add.
         // (Empirically does NOT tighten TX wire-edge jitter — the
         // observed loopback variance is CPU-vs-DMA AHB arbitration,
@@ -447,25 +443,25 @@ fn init_dma_tx() {
         w.set_tcie(false);
     });
 
-    // Precompute the EN=1 CFGR word DMA1_CH4 stamps on fire. Same bits
-    // as the disarmed config above, plus EN=1.
-    let mut armed = ch32_metapac::dma::regs::Cr(0);
-    armed.set_dir(Dir::FROMMEMORY);
-    armed.set_minc(true);
-    armed.set_pinc(false);
-    armed.set_circ(false);
-    armed.set_msize(Size::BITS8);
-    armed.set_psize(Size::BITS8);
-    armed.set_pl(Pl::VERYHIGH); // mirror CH2 PL above so the stamp doesn't drop priority on fire
-    armed.set_tcie(false);
-    armed.set_en(true);
-    // SAFETY: ARMED_CH2_CFGR_WORD is only read by DMA1_CH4 (set up
+    // Precompute the EN=1 CFGR word DMA1_CH4 stamps on send. Same bits
+    // as the stopped config above, plus EN=1.
+    let mut run = ch32_metapac::dma::regs::Cr(0);
+    run.set_dir(Dir::FROMMEMORY);
+    run.set_minc(true);
+    run.set_pinc(false);
+    run.set_circ(false);
+    run.set_msize(Size::BITS8);
+    run.set_psize(Size::BITS8);
+    run.set_pl(Pl::VERYHIGH); // mirror CH2 PL above so the stamp doesn't drop priority on kickoff
+    run.set_tcie(false);
+    run.set_en(true);
+    // SAFETY: CH2_CFGR_RUN_WORD is only read by DMA1_CH4 (set up
     // below). CH4 isn't enabled yet, so no concurrent reader.
-    unsafe { ptr::write_volatile(ARMED_CH2_CFGR_WORD.get(), armed.0) };
+    unsafe { ptr::write_volatile(CH2_CFGR_RUN_WORD.get(), run.0) };
 
     let ch4 = DMA1.ch(3);
     ch4.par().write_value(ch2.cr().as_ptr() as u32);
-    ch4.mar().write_value(ARMED_CH2_CFGR_WORD.get() as u32);
+    ch4.mar().write_value(CH2_CFGR_RUN_WORD.get() as u32);
     ch4.ndtr().write(|w| w.set_ndt(1));
     ch4.cr().write(|w| {
         w.set_dir(Dir::FROMMEMORY);
@@ -480,66 +476,67 @@ fn init_dma_tx() {
     });
 }
 
-/// Load `payload` and fire when `tick32` reaches `at`. Held under a
-/// critical section so a pending USART3 IDLE can't fire the DMA between
+/// Load `payload` and kick off when `tick32` reaches `at`. Held under a
+/// critical section so a pending USART3 IDLE can't kick the DMA between
 /// disabling EN and writing NDTR/MAR.
-pub fn schedule_fire(payload: &[u8], at: u32) -> Result<(), ArmError> {
+pub fn schedule_send_at(payload: &[u8], at: u32) -> Result<(), SendError> {
     critical_section::with(|_| {
-        ARMED_AFTER_IDLE.store(false, Ordering::Release);
-        disarm_tim4();
+        IDLE_SEND_PENDING.store(false, Ordering::Release);
+        cancel_tim4_schedule();
         load_payload_main(payload)?;
-        schedule_or_fire_now(at);
+        schedule_or_send_now(at);
         Ok(())
     })
 }
 
-/// Load `payload` into ARM_TX_BUF and fire `after_idle_ticks` after the
-/// next USART3 IDLE assertion. Note: IDLE asserts ~1 character time after
-/// wire-end; host should subtract that if sub-byte alignment matters.
-pub fn schedule_fire_after_idle(payload: &[u8], after_idle_ticks: u32) -> Result<(), ArmError> {
-    critical_section::with(|_| -> Result<(), ArmError> {
-        ARMED_AFTER_IDLE.store(false, Ordering::Release);
+/// Load `payload` into IDLE_TX_BUF and kick off `after_idle_ticks` after
+/// the next USART3 IDLE assertion. Note: IDLE asserts ~1 character time
+/// after wire-end; host should subtract that if sub-byte alignment
+/// matters.
+pub fn schedule_send_after_idle(payload: &[u8], after_idle_ticks: u32) -> Result<(), SendError> {
+    critical_section::with(|_| -> Result<(), SendError> {
+        IDLE_SEND_PENDING.store(false, Ordering::Release);
         if payload.len() > TX_BUF_LEN {
-            return Err(ArmError::TooLong);
+            return Err(SendError::TooLong);
         }
-        // SAFETY: ARMED_AFTER_IDLE=false above prevents on_idle from
-        // reading ARM_TX_BUF until we set true below.
+        // SAFETY: IDLE_SEND_PENDING=false above prevents on_idle from
+        // reading IDLE_TX_BUF until we set true below.
         unsafe {
-            let buf = &mut *ARM_TX_BUF.get();
+            let buf = &mut *IDLE_TX_BUF.get();
             buf[..payload.len()].copy_from_slice(payload);
-            ptr::write_volatile(ARM_TX_LEN.get(), payload.len() as u16);
+            ptr::write_volatile(IDLE_TX_LEN.get(), payload.len() as u16);
         }
-        store_pending_after_idle(after_idle_ticks);
-        ARMED_AFTER_IDLE.store(true, Ordering::Release);
+        store_idle_send_delay(after_idle_ticks);
+        IDLE_SEND_PENDING.store(true, Ordering::Release);
         Ok(())
     })
 }
 
-/// Fire `payload` as the bus master with no precise timing — commands a
-/// near-future fire at `now + FIRE_COMP_TICKS + MASTER_MARGIN_HEADROOM_TICKS`
-/// so the scheduled (TIM4 OPM) path always wins and `FIRED_TICK` reflects
+/// Send `payload` with no precise timing — commands a near-future
+/// kickoff at `now + TX_COMP_TICKS + IMMEDIATE_SEND_MARGIN_TICKS` so the
+/// scheduled (TIM4 OPM) path always wins and `LAST_SEND_TICK` reflects
 /// the actual wire-start tick. Wire-start lands ~3.5 µs after the call.
 ///
-/// Preempts any pending `schedule_fire`; coexists with a pending
-/// `schedule_fire_after_idle` (separate buffer). Waits for any in-flight
-/// TX to drain first so a back-to-back MASTER from the host can't
-/// truncate the previous frame.
-pub fn fire_now_master(payload: &[u8]) -> Result<(), ArmError> {
-    wait_tx_complete().map_err(|TxTimeout| ArmError::Busy)?;
-    // CS keeps the `at` computation atomic with `schedule_fire` so an ISR
-    // between read_tick32 and the schedule can't eat the
-    // MASTER_MARGIN_HEADROOM and push us onto the immediate-fire branch.
-    // Nested CS (schedule_fire opens its own) refcount-stacks under qingke.
+/// Preempts any pending `schedule_send_at`; coexists with a pending
+/// `schedule_send_after_idle` (separate buffer). Waits for any in-flight
+/// TX to drain first so a back-to-back send from the host can't truncate
+/// the previous frame.
+pub fn send_now(payload: &[u8]) -> Result<(), SendError> {
+    wait_tx_complete().map_err(|TxTimeout| SendError::Busy)?;
+    // CS keeps the `at` computation atomic with `schedule_send_at` so an
+    // ISR between read_tick32 and the schedule can't eat the
+    // IMMEDIATE_SEND_MARGIN and push us onto the immediate-DMA branch.
+    // Nested CS (schedule_send_at opens its own) refcount-stacks under qingke.
     critical_section::with(|_| {
-        let comp = FIRE_COMP_TICKS.load(Ordering::Relaxed);
+        let comp = TX_COMP_TICKS.load(Ordering::Relaxed);
         let at = read_tick32()
             .wrapping_add(comp)
-            .wrapping_add(MASTER_MARGIN_HEADROOM_TICKS);
-        schedule_fire(payload, at)
+            .wrapping_add(IMMEDIATE_SEND_MARGIN_TICKS);
+        schedule_send_at(payload, at)
     })
 }
 
-fn disarm_tim4() {
+fn cancel_tim4_schedule() {
     TIM4.ctlr1().modify(|w| w.set_cen(false));
     // URS=1 blocks UEV from this UG, so DMA1_CH4 isn't kicked.
     TIM4.swevgr().write(|w| w.set_ug(true));
@@ -549,35 +546,35 @@ fn disarm_tim4() {
     });
 }
 
-/// Called from `capture::on_usart3_idle` after an IDLE assertion. When
-/// armed-after-idle, swaps DMA1_CH2 to point at ARM_TX_BUF and fires
+/// Called from the USART3 IDLE handler. When a `send_after_idle` is
+/// pending, swaps DMA1_CH2 to point at IDLE_TX_BUF and kicks off
 /// `after_idle_ticks` after the IDLE-assertion tick32.
 pub fn on_idle(idle_tick: u32) {
-    if !ARMED_AFTER_IDLE.swap(false, Ordering::AcqRel) {
+    if !IDLE_SEND_PENDING.swap(false, Ordering::AcqRel) {
         return;
     }
-    let after = load_pending_after_idle();
+    let after = load_idle_send_delay();
 
-    // A pipelined FIRE(future) + ARM that races IDLE can leave TIM4 with
-    // CEN=1 mid-schedule; disarm so schedule_or_fire_now starts from a
-    // known-idle TIM4 with our reloaded buffer.
-    disarm_tim4();
+    // A pipelined SEND(at=) + SEND(after_idle=) that races IDLE can leave
+    // TIM4 with CEN=1 mid-schedule; cancel so schedule_or_send_now starts
+    // from a known-idle TIM4 with our reloaded buffer.
+    cancel_tim4_schedule();
 
-    // Swap DMA1_CH2 to ARM_TX_BUF.
-    // SAFETY: USART3 IDLE ISR is the sole reader of ARM_TX_BUF/ARM_TX_LEN;
-    // schedule_fire_after_idle is the sole writer, and ARMED_AFTER_IDLE
+    // Swap DMA1_CH2 to IDLE_TX_BUF.
+    // SAFETY: USART3 IDLE ISR is the sole reader of IDLE_TX_BUF/IDLE_TX_LEN;
+    // schedule_send_after_idle is the sole writer, and IDLE_SEND_PENDING
     // gating means it can't be mid-write here (the swap above ate the
     // flag).
     unsafe {
-        let len = ptr::read_volatile(ARM_TX_LEN.get());
+        let len = ptr::read_volatile(IDLE_TX_LEN.get());
         let ch = DMA1.ch(1);
         ch.cr().modify(|w| w.set_en(false));
         ch.ndtr().write(|w| w.set_ndt(len));
-        ch.mar().write_value((*ARM_TX_BUF.get()).as_ptr() as u32);
+        ch.mar().write_value((*IDLE_TX_BUF.get()).as_ptr() as u32);
     }
 
-    let fire_at = idle_tick.wrapping_add(after);
-    schedule_or_fire_now(fire_at);
+    let send_at = idle_tick.wrapping_add(after);
+    schedule_or_send_now(send_at);
 }
 
 /// Reconfigure USART3 bit rate. Bounces UE around the BRR write, which
@@ -590,9 +587,9 @@ pub fn set_baud(bps: u32) -> Result<(), BaudError> {
         USART3.ctlr1().modify(|w| w.set_ue(false));
         USART3.brr().write(|w| w.0 = brr);
         USART3.ctlr1().modify(|w| w.set_ue(true));
-        recompute_fire_comp(brr);
-        ARMED_AFTER_IDLE.store(false, Ordering::Release);
-        disarm_tim4();
+        recompute_tx_comp(brr);
+        IDLE_SEND_PENDING.store(false, Ordering::Release);
+        cancel_tim4_schedule();
     });
     Ok(())
 }
@@ -613,17 +610,17 @@ fn wait_tx_complete() -> Result<(), TxTimeout> {
     Ok(())
 }
 
-pub fn last_fired_tick() -> u32 {
-    unsafe { ptr::read_volatile(FIRED_TICK.get()) }
+pub fn last_send_tick() -> u32 {
+    unsafe { ptr::read_volatile(LAST_SEND_TICK.get()) }
 }
 
 pub const fn wire_ticks_per_us() -> u32 {
     WIRE_HZ / 1_000_000
 }
 
-fn load_payload_main(payload: &[u8]) -> Result<(), ArmError> {
+fn load_payload_main(payload: &[u8]) -> Result<(), SendError> {
     if payload.len() > TX_BUF_LEN {
-        return Err(ArmError::TooLong);
+        return Err(SendError::TooLong);
     }
     unsafe {
         let buf = &mut *TX_BUF.get();
@@ -637,29 +634,30 @@ fn load_payload_main(payload: &[u8]) -> Result<(), ArmError> {
     Ok(())
 }
 
-/// Same effect as TIM4 CC2 → DMA1_CH4 firing, just bypassing the timer.
+/// Same effect as TIM4 CC2 → DMA1_CH4 kicking CH2, just bypassing the
+/// timer.
 #[inline]
-fn fire_now_dma() {
-    let armed = unsafe { ptr::read_volatile(ARMED_CH2_CFGR_WORD.get()) };
+fn start_dma_send() {
+    let run = unsafe { ptr::read_volatile(CH2_CFGR_RUN_WORD.get()) };
     DMA1.ch(1)
         .cr()
-        .write_value(ch32_metapac::dma::regs::Cr(armed));
+        .write_value(ch32_metapac::dma::regs::Cr(run));
 }
 
-/// Program TIM4 OPM to fire DMA1_CH2 when `tick32` reaches `at`, or fire
-/// immediately if the deadline is past / within arm overhead / beyond
-/// TIM4's 16-bit ARR range.
-fn schedule_or_fire_now(at: u32) {
-    let comp = FIRE_COMP_TICKS.load(Ordering::Relaxed);
+/// Program TIM4 OPM to kick DMA1_CH2 when `tick32` reaches `at`, or send
+/// immediately if the deadline is past / within scheduling overhead /
+/// beyond TIM4's 16-bit ARR range.
+fn schedule_or_send_now(at: u32) {
+    let comp = TX_COMP_TICKS.load(Ordering::Relaxed);
     let scheduled_at = at.wrapping_sub(comp);
     let now = read_tick32();
     let delta = scheduled_at.wrapping_sub(now);
     // `delta` is u32 modular; treat very large values (= past deadline)
-    // as "fire now". With wrapping subtraction, "past" maps to large
+    // as "send now". With wrapping subtraction, "past" maps to large
     // positive deltas, so a single threshold covers both close-and-past.
-    if !(FIRE_NOW_THRESHOLD_TICKS..=TIM4_MAX_DELTA_TICKS).contains(&delta) {
-        store_fired_tick(now);
-        fire_now_dma();
+    if !(IMMEDIATE_SEND_THRESHOLD_TICKS..=TIM4_MAX_DELTA_TICKS).contains(&delta) {
+        store_last_send_tick(now);
+        start_dma_send();
         return;
     }
     // ARR latches the next time CNT==ARR. CCR2=ARR puts CC2 on the same
@@ -667,12 +665,12 @@ fn schedule_or_fire_now(at: u32) {
     let arr = delta as u16;
     TIM4.atrlr().write_value(arr);
     TIM4.chcvr(1).write_value(arr); // CCR2 (0-indexed)
-    store_fired_tick(at);
+    store_last_send_tick(at);
     TIM4.ctlr1().modify(|w| w.set_cen(true));
 }
 
 #[derive(Copy, Clone, Debug)]
-pub enum ArmError {
+pub enum SendError {
     TooLong,
     Busy,
 }

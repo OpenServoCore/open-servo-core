@@ -2,7 +2,7 @@
 //!
 //! Three stages, run in order, halting at first failure:
 //!
-//! 1. **classifier** — fixed-density 16-byte payload via `MASTER`, no
+//! 1. **classifier** — fixed-density 16-byte payload via `SEND`, no
 //!    inter-packet gap. Validates byte values, no `COUNT_UNDER`, inter-byte
 //!    spacing within tolerance, and every stamp anchor matches a real IC
 //!    ring entry.
@@ -14,8 +14,8 @@
 //!    mismatch. Validates per-burst: byte count, byte values, strictly
 //!    monotone stamp ticks, and `falling_total` delta == sum of expected
 //!    edges (computed from the LSB-first UART frame of each byte).
-//! 3. **fire-comp** — scheduled-`FIRE` vs stamped wire edge, swept across
-//!    baud. Residual = `stamp[0].tick − LAST?`. Regressed `a + b·brr`
+//! 3. **tx-comp** — scheduled-`SEND at=` vs stamped wire edge, swept
+//!    across baud. Residual = `stamp[0].tick − LAST?`. Regressed `a + b·brr`
 //!    with inverse-variance weighting (weight ∝ 1/brr², since per-shot
 //!    phase noise is U[0, brr] so median variance ∝ brr²); the slope is
 //!    then stacked onto the pirate's current `(pipe, bit_q4)` (read via
@@ -40,19 +40,19 @@ use clap::{Parser, ValueEnum};
 enum Stage {
     Classifier,
     Stress,
-    FireComp,
+    TxComp,
     All,
 }
 
 #[derive(Parser, Debug)]
 #[command(
-    about = "Pirate self-tune (loopback only): classifier + multi-wrap stress + FIRE_COMP cal."
+    about = "Pirate self-tune (loopback only): classifier + multi-wrap stress + TX_COMP cal."
 )]
 struct Args {
     /// Pirate USB-CDC path. Default: autodetect by VID/PID.
     #[arg(short, long)]
     port: Option<String>,
-    /// Bauds for classifier + fire-comp sweep.
+    /// Bauds for classifier + tx-comp sweep.
     /// Default: 57600, 115200, 1M, 2M, 3M.
     #[arg(short, long, value_delimiter = ',')]
     bauds: Option<Vec<u32>>,
@@ -63,12 +63,12 @@ struct Args {
     /// Default: bit_ticks / 4.
     #[arg(long)]
     tolerance: Option<u32>,
-    /// Shots per baud for fire-comp regression. Each shot draws an
+    /// Shots per baud for tx-comp regression. Each shot draws an
     /// independent φ ~ U[0, brr] from the USART DR→TSR bit-clock sync,
     /// so median SE shrinks ∝ 1/√n. 64 puts slow-baud median SE
     /// (~brr/16) inside ±150 ticks at brr=2500.
     #[arg(long, default_value_t = 64)]
-    fire_comp_shots: u32,
+    tx_comp_shots: u32,
     /// After stage 3, write the regression-recommended TX-comp values
     /// (`pipe`, `bit_q4`) back to the pirate via `COMP`. No-op if the
     /// recommendation matches what the pirate already has.
@@ -134,8 +134,8 @@ fn main() -> Result<()> {
     if run_all || args.stage == Stage::Stress {
         stage_stress(&mut bus, args.seed.unwrap_or(STRESS_DEFAULT_SEED))?;
     }
-    if run_all || args.stage == Stage::FireComp {
-        stage_fire_comp(&mut bus, &bauds, args.fire_comp_shots, args.write)?;
+    if run_all || args.stage == Stage::TxComp {
+        stage_tx_comp(&mut bus, &bauds, args.tx_comp_shots, args.write)?;
     }
     Ok(())
 }
@@ -176,7 +176,7 @@ fn run_classifier_probe(bus: &mut Bus, baud: u32, tol_arg: Option<u32>) -> Resul
     std::thread::sleep(Duration::from_millis(20));
     while !bus.pirate_bbatch(255)?.is_empty() {}
 
-    bus.pirate_master(&LOOPBACK_PAYLOAD)?;
+    bus.pirate_send_now(&LOOPBACK_PAYLOAD)?;
     // Wait for the wire to finish + IDLE to assert (10 bit-times per byte +
     // one char-time idle gap) before draining; the walker fires once on
     // IDLE and at slow baud HT/TC won't trigger before then.
@@ -268,7 +268,7 @@ fn run_stress_burst(bus: &mut Bus, burst: &[u8], expected_edges: u32) -> Result<
     // trip diagnostic state). Snapshot the pre-burst count and gate on
     // the delta against the payload's exact expected edge count.
     let pre_total = bus.ic_snapshot()?.falling_total;
-    bus.pirate_master(burst)?;
+    bus.pirate_send_now(burst)?;
     let stamps = drain_stamps_until(bus, burst.len(), Duration::from_millis(200))?;
     let snap = bus.ic_snapshot()?;
 
@@ -440,12 +440,12 @@ fn lcg_in_range(state: &mut u64, lo: u32, hi: u32) -> u32 {
 }
 
 // ---------------------------------------------------------------------------
-// Stage 3: FIRE_COMP_FLAT calibration
+// Stage 3: TX_COMP calibration
 // ---------------------------------------------------------------------------
 
-fn stage_fire_comp(bus: &mut Bus, bauds: &[u32], shots: u32, write: bool) -> Result<()> {
+fn stage_tx_comp(bus: &mut Bus, bauds: &[u32], shots: u32, write: bool) -> Result<()> {
     println!();
-    println!("stage 3: fire-comp (residual = stamp[0].tick − LAST?, single 0x55 byte)");
+    println!("stage 3: tx-comp (residual = stamp[0].tick − LAST?, single 0x55 byte)");
     let current = bus.pirate_comp()?;
     println!(
         "  current TX-comp:  pipe={} bit_q4={}",
@@ -477,7 +477,7 @@ fn stage_fire_comp(bus: &mut Bus, bauds: &[u32], shots: u32, write: bool) -> Res
         bus.pirate_set_baud(baud)?;
         let brr = hclk_hz / baud;
         let byte_ticks = (brr * 10) as f64;
-        match collect_fire_comp_residuals(bus, shots) {
+        match collect_tx_comp_residuals(bus, shots) {
             Ok(residuals) => {
                 let med = median_i64(&residuals);
                 let lo = *residuals.iter().min().unwrap();
@@ -502,7 +502,7 @@ fn stage_fire_comp(bus: &mut Bus, bauds: &[u32], shots: u32, write: bool) -> Res
         }
     }
     if any_fail {
-        bail!("stage 3 (fire-comp) failed");
+        bail!("stage 3 (tx-comp) failed");
     }
     let Some((a, b)) = weighted_least_squares_fit(&points) else {
         bail!("stage 3: regression underdetermined (need ≥ 2 bauds)");
@@ -555,23 +555,24 @@ fn stage_fire_comp(bus: &mut Bus, bauds: &[u32], shots: u32, write: bool) -> Res
     Ok(())
 }
 
-fn collect_fire_comp_residuals(bus: &mut Bus, shots: u32) -> Result<Vec<i64>> {
+fn collect_tx_comp_residuals(bus: &mut Bus, shots: u32) -> Result<Vec<i64>> {
     let mut out = Vec::with_capacity(shots as usize);
     for shot in 0..shots {
         bus.pirate_reset()?;
         std::thread::sleep(Duration::from_millis(5));
         while !bus.pirate_bbatch(255)?.is_empty() {}
 
-        // MASTER routes through fire_now_master → schedule_fire with
-        // at = now + FIRE_COMP + 512, which forces the TIM4 OPM path
-        // (delta = 512, well inside the 16-bit scheduler window) and
-        // stores FIRED_TICK = at. `LAST?` then returns the commanded
-        // wire-start tick, so residual = stamp − LAST? directly measures
-        // (actual_pipeline − FIRE_COMP) + phase — i.e. the value the
-        // fire path actually consumes. (Previously fired 2 ms in the
-        // future, which exceeds TIM4 OPM's 16-bit range → immediate-fire
-        // branch → FIRE_COMP never read → regression diverged.)
-        bus.pirate_master(&[0x55])?;
+        // `send_now` routes through `schedule_send_at` with
+        // at = now + TX_COMP + IMMEDIATE_SEND_MARGIN, which forces the
+        // TIM4 OPM path (delta = 512, well inside the 16-bit scheduler
+        // window) and stores LAST_SEND_TICK = at. `LAST?` then returns
+        // the commanded wire-start tick, so residual = stamp − LAST?
+        // directly measures (actual_pipeline − TX_COMP) + phase — i.e.
+        // the value the send path actually consumes. (A naive 2 ms
+        // future schedule would exceed TIM4 OPM's 16-bit range → fall
+        // back to the immediate-DMA branch → TX_COMP never read →
+        // regression diverges.)
+        bus.pirate_send_now(&[0x55])?;
 
         let stamps = drain_stamps_until(bus, 1, Duration::from_millis(200))?;
         if stamps.is_empty() {
@@ -589,7 +590,7 @@ fn collect_fire_comp_residuals(bus: &mut Bus, shots: u32) -> Result<Vec<i64>> {
                 stamps[0].byte
             );
         }
-        let commanded = bus.pirate_last_fired()?;
+        let commanded = bus.pirate_last_send_tick()?;
         let residual = stamps[0].tick.wrapping_sub(commanded) as i32 as i64;
         out.push(residual);
     }

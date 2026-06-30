@@ -5,14 +5,14 @@
 //! multiple CDC bulk packets.
 //!
 //! Host → device
-//!   `FIRE bytes=<hex> at=<u32>`
-//!       Arm `inject` to push `bytes` onto the wire when tick32 == `at`.
-//!   `ARM bytes=<hex> after_idle=<u32>`
-//!       Same TX, but fire `after_idle` tick32 ticks after the next
-//!       USART IDLE assertion (≈ 1 char-time after wire-end).
-//!   `MASTER bytes=<hex>`
-//!       Fire `bytes` now as the bus master. Host derives the request-
-//!       end stamp from the per-byte stream.
+//!   `SEND bytes=<hex>`
+//!       Push `bytes` onto the wire now (no precise timing — wire-start
+//!       lands a few µs after the command).
+//!   `SEND bytes=<hex> at=<u32>`
+//!       Push `bytes` onto the wire when tick32 == `at`.
+//!   `SEND bytes=<hex> after_idle=<u32>`
+//!       Push `bytes` `after_idle` tick32 ticks after the next USART
+//!       IDLE assertion (≈ 1 char-time after wire-end).
 //!   `BDRAIN`
 //!       Pop one byte record. Reply: `BSTAMP <tick> <byte> <flags>` or
 //!       `EMPTY`. ASCII; debug only — use `BBATCH` for throughput.
@@ -30,7 +30,7 @@
 //!       responds — even mid-desync — so the host has a one-shot health
 //!       probe that can't be masked by walker state.
 //!   `RESET`
-//!       Clear `DESYNCED` + cause, drain stamp/IC rings, re-arm walker.
+//!       Clear `DESYNCED` + cause, drain stamp/IC rings, restart walker.
 //!       Keeps baud. The routine recovery for any desync cause.
 //!   `BAUD <bps>` → `OK` / `ERR baud`. Implicit RESET. Caller must
 //!       quiesce the bus.
@@ -39,11 +39,11 @@
 //!       multiplier in Q4 (16 = 1.0 × brr).
 //!   `COMP pipe=<u32> bit_q4=<u32>`
 //!       Set one or both tunables (missing key leaves that side
-//!       unchanged); `FIRE_COMP_TICKS` is recomputed for the current
-//!       baud immediately. Bypasses the desync guard so bench can
-//!       calibrate after a trip.
+//!       unchanged); `TX_COMP_TICKS` is recomputed for the current baud
+//!       immediately. Bypasses the desync guard so bench can calibrate
+//!       after a trip.
 //!   `TICK?`      → `TICK <tick32:u32>`
-//!   `LAST?`      → `LAST <tick32:u32>` last fire kickoff
+//!   `LAST?`      → `LAST <tick32:u32>` last send kickoff
 //!   `HZ`         → `HZ <u32>` tick32 ticks per microsecond
 //!
 //! Device → host
@@ -152,19 +152,13 @@ pub fn handle_line(line: &[u8]) -> Reply {
         return Reply::Err(desync_err_for(cause));
     }
 
-    if let Some(rest) = line.strip_prefix("FIRE ") {
-        return fire(rest);
-    }
-    if let Some(rest) = line.strip_prefix("ARM ") {
-        return arm(rest);
-    }
-    if let Some(rest) = line.strip_prefix("MASTER ") {
-        return master(rest);
+    if let Some(rest) = line.strip_prefix("SEND ") {
+        return send(rest);
     }
 
     match line {
         "TICK?" => Reply::Tick(inject::read_tick32()),
-        "LAST?" => Reply::Last(inject::last_fired_tick()),
+        "LAST?" => Reply::Last(inject::last_send_tick()),
         "HZ" => Reply::HzPerUs(inject::wire_ticks_per_us()),
         "BDRAIN" => match capture::drain_byte() {
             Some(r) => Reply::BStamp {
@@ -183,7 +177,7 @@ fn status() -> Reply {
         baud: capture::current_baud(),
         avail: capture::stamps_available(),
         cause: capture::desync_cause(),
-        last_tick: inject::last_fired_tick(),
+        last_tick: inject::last_send_tick(),
     }
 }
 
@@ -229,8 +223,9 @@ fn baud(rest: &str) -> Reply {
     Reply::Ok
 }
 
-fn fire(rest: &str) -> Reply {
+fn send(rest: &str) -> Reply {
     let mut at: Option<u32> = None;
+    let mut after_idle: Option<u32> = None;
     let mut buf = [0u8; TX_BUF_LEN];
     let mut len: Option<usize> = None;
 
@@ -240,62 +235,7 @@ fn fire(rest: &str) -> Reply {
         };
         match k {
             "at" => at = v.parse().ok(),
-            "bytes" => len = decode_hex(v, &mut buf),
-            _ => return Reply::Err("key"),
-        }
-    }
-    let (Some(at), Some(len)) = (at, len) else {
-        return Reply::Err("missing");
-    };
-
-    match inject::schedule_fire(&buf[..len], at) {
-        Ok(()) => {
-            led::signal();
-            Reply::Ok
-        }
-        Err(inject::ArmError::TooLong) => Reply::Err("toolong"),
-        Err(inject::ArmError::Busy) => Reply::Err("busy"),
-    }
-}
-
-fn arm(rest: &str) -> Reply {
-    let mut after: Option<u32> = None;
-    let mut buf = [0u8; TX_BUF_LEN];
-    let mut len: Option<usize> = None;
-
-    for tok in rest.split_ascii_whitespace() {
-        let Some((k, v)) = tok.split_once('=') else {
-            return Reply::Err("kv");
-        };
-        match k {
-            "after_idle" => after = v.parse().ok(),
-            "bytes" => len = decode_hex(v, &mut buf),
-            _ => return Reply::Err("key"),
-        }
-    }
-    let (Some(after), Some(len)) = (after, len) else {
-        return Reply::Err("missing");
-    };
-
-    match inject::schedule_fire_after_idle(&buf[..len], after) {
-        Ok(()) => {
-            led::signal();
-            Reply::Ok
-        }
-        Err(inject::ArmError::TooLong) => Reply::Err("toolong"),
-        Err(inject::ArmError::Busy) => Reply::Err("busy"),
-    }
-}
-
-fn master(rest: &str) -> Reply {
-    let mut buf = [0u8; TX_BUF_LEN];
-    let mut len: Option<usize> = None;
-
-    for tok in rest.split_ascii_whitespace() {
-        let Some((k, v)) = tok.split_once('=') else {
-            return Reply::Err("kv");
-        };
-        match k {
+            "after_idle" => after_idle = v.parse().ok(),
             "bytes" => len = decode_hex(v, &mut buf),
             _ => return Reply::Err("key"),
         }
@@ -303,13 +243,24 @@ fn master(rest: &str) -> Reply {
     let Some(len) = len else {
         return Reply::Err("missing");
     };
+    // SAFETY: (Some, Some) returns "conflict" up-front, so the match
+    // below never sees both keys.
+    if at.is_some() && after_idle.is_some() {
+        return Reply::Err("conflict");
+    }
 
-    match inject::fire_now_master(&buf[..len]) {
+    let result = match (at, after_idle) {
+        (Some(at), None) => inject::schedule_send_at(&buf[..len], at),
+        (None, Some(after)) => inject::schedule_send_after_idle(&buf[..len], after),
+        (None, None) => inject::send_now(&buf[..len]),
+        (Some(_), Some(_)) => return Reply::Err("conflict"),
+    };
+    match result {
         Ok(()) => {
             led::signal();
             Reply::Ok
         }
-        Err(inject::ArmError::TooLong) => Reply::Err("toolong"),
-        Err(inject::ArmError::Busy) => Reply::Err("busy"),
+        Err(inject::SendError::TooLong) => Reply::Err("toolong"),
+        Err(inject::SendError::Busy) => Reply::Err("busy"),
     }
 }
