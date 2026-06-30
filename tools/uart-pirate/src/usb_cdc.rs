@@ -7,7 +7,7 @@ use embassy_usb::class::cdc_acm::{CdcAcmClass, State};
 use embassy_usb::driver::EndpointError;
 use heapless::Vec;
 
-use crate::capture::{self, ByteRecord, FALL_LEN};
+use crate::rx::{self, ByteRecord, FALL_LEN};
 use crate::tx::TX_BUF_LEN;
 use crate::proto::{self, Reply};
 use crate::usbd::Driver;
@@ -101,7 +101,7 @@ async fn handle_batch<'d>(
     class: &mut CdcAcmClass<'d, Driver<'d>>,
     rest: &[u8],
 ) -> Result<(), EndpointError> {
-    if let Some(cause) = capture::desync_cause() {
+    if let Some(cause) = rx::desync_cause() {
         return send_reply(class, Reply::Err(proto::desync_err_for(cause))).await;
     }
     let req = match proto::parse_batch(rest) {
@@ -115,7 +115,7 @@ async fn handle_batch<'d>(
         flags: 0,
     }; BBATCH_MAX];
     let want = (req.count as usize).min(BBATCH_MAX);
-    let n = capture::drain_batch(&mut records[..want]);
+    let n = rx::drain_batch(&mut records[..want]);
 
     // Binary frame: sync header 0xA5 0x5A + count:u16 LE + n × (tick:u32 LE,
     // byte:u8, flags:u8). No trailing newline; framing is length-prefixed.
@@ -161,7 +161,7 @@ async fn handle_ic_snapshot<'d>(
     class: &mut CdcAcmClass<'d, Driver<'d>>,
 ) -> Result<(), EndpointError> {
     let mut ticks = [0u32; FALL_LEN];
-    let (snap, n) = capture::ic_snapshot(&mut ticks);
+    let (snap, n) = rx::ic_snapshot(&mut ticks);
 
     let mut hdr: Vec<u8, 32> = Vec::new();
     let _ = hdr.push(0xA5);
@@ -228,7 +228,7 @@ fn write_status(
     out: &mut Vec<u8, 64>,
     baud: u32,
     avail: u32,
-    cause: Option<capture::DesyncCause>,
+    cause: Option<rx::DesyncCause>,
     last_tick: u32,
 ) {
     let _ = out.extend_from_slice(b"STATUS ");
@@ -266,7 +266,7 @@ fn write_bstamp(out: &mut Vec<u8, 64>, tick: u32, byte: u8, flags: u8) {
     let _ = out.push(b'\n');
 }
 
-fn write_btrace(out: &mut Vec<u8, 64>, r: capture::WalkerTrace) {
+fn write_btrace(out: &mut Vec<u8, 64>, r: rx::WalkerTrace) {
     let _ = out.extend_from_slice(b"BTRACE ");
     push_dec_u32(out, r.phase as u32);
     let _ = out.push(b' ');

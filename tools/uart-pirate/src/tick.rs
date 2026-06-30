@@ -2,9 +2,9 @@
 //! HCLK = 144 MHz, with TIM3 latched by TIM2's TRGO via TI1S XOR + TRC
 //! pulse. `read_tick32` returns a coherent (lo, hi) snapshot; falling-edge
 //! IC captures on PB10 land as paired (TIM2.CCR1, TIM3.CCR1) values that
-//! the walker lifts in `capture::falling_at`.
+//! the walker lifts in `rx::rings::falling_at`.
 //!
-//! Both TX (`inject` scheduler deadline math) and RX (`capture` walker
+//! Both TX (`tx::scheduler` deadline math) and RX (`rx::walker`
 //! ceiling) consume `tick32`, so the clock pair lives at the top level
 //! rather than under either side.
 
@@ -38,7 +38,7 @@ pub fn read_tick32() -> u32 {
 ///
 /// TIM2 master + TIM3 high-half. TIM2 PSC=0, ARR=0xFFFF, CKD=DIV_1 pins
 /// fDTS at HCLK = 144 MHz; the IC1F filter is set per-baud by
-/// `capture::apply_filter_for_brr` (largest delay ≤ brr/3). No CC walker
+/// `rx::filter::apply_for_brr` (largest delay ≤ brr/3). No CC walker
 /// cadence: the event-driven walker runs off USART3 IDLE + DMA1_CH6/CH3
 /// HT/TC, not TIM2 IRQs.
 ///
@@ -107,7 +107,7 @@ pub fn init() {
     });
     TIM2.chctlr_input(0).modify(|w| {
         // CCMR1. CC1S in bits [1:0]. IC1F (bits [7:4]) is written
-        // separately by `capture::init` from the per-baud LUT.
+        // separately by `rx::filter::apply_for_brr` from the per-baud LUT.
         w.set_ccs(0, CcmrInputCcs::TI4); // normal mapping → IC1 ← TI1
     });
     TIM2.ccer().modify(|w| {

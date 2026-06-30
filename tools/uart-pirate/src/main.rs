@@ -2,12 +2,12 @@
 #![no_main]
 #![feature(sync_unsafe_cell)]
 
-mod capture;
 mod led;
 mod parse;
 mod pfic;
 mod proto;
 mod rcc;
+mod rx;
 mod tick;
 mod time_driver;
 mod tx;
@@ -79,7 +79,7 @@ async fn main(spawner: Spawner) {
     led::on();
     tick::init();
     tx::init();
-    capture::init();
+    rx::init();
     pfic::set_priorities();
 
     // Pull D+ high via EXTEND so the host sees us. This is done inside

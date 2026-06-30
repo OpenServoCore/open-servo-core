@@ -1,7 +1,7 @@
 //! PFIC priority assignment. The three walker-driving IRQs — USART3
 //! (IDLE drain), DMA1_CHANNEL6 (IC ring HT/TC; trailing high-half
 //! writer), and DMA1_CHANNEL3 (RX ring HT/TC) — share `PRIO_WALKER` so
-//! they cannot preempt one another mid-walk; `capture::walk()` runs
+//! they cannot preempt one another mid-walk; `rx::walker::walk()` runs
 //! single-threaded across all three. USB sits at `PRIO_USB` so it
 //! can't delay a wire-side stamp.
 //!

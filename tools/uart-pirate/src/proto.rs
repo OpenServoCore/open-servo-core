@@ -58,8 +58,8 @@ use core::str;
 
 use crate::parse::decode_hex;
 
-use crate::capture::{self, DesyncCause};
 use crate::led;
+use crate::rx::{self, DesyncCause};
 use crate::tick;
 use crate::tx::{self, TX_BUF_LEN};
 
@@ -73,7 +73,7 @@ pub enum Reply {
         byte: u8,
         flags: u8,
     },
-    BTrace(capture::WalkerTrace),
+    BTrace(rx::WalkerTrace),
     Empty,
     Status {
         baud: u32,
@@ -125,7 +125,7 @@ pub fn handle_line(line: &[u8]) -> Reply {
         return status();
     }
     if line == "RESET" {
-        capture::reset_walker();
+        rx::reset_walker();
         return Reply::Ok;
     }
     if let Some(rest) = line.strip_prefix("BAUD ") {
@@ -139,17 +139,17 @@ pub fn handle_line(line: &[u8]) -> Reply {
         return comp(rest);
     }
     if line == "BTRACE" {
-        return match capture::trace_drain() {
+        return match rx::trace_drain() {
             Some(r) => Reply::BTrace(r),
             None => Reply::Empty,
         };
     }
     if line == "BTRACECLEAR" {
-        capture::trace_clear();
+        rx::trace_clear();
         return Reply::Ok;
     }
 
-    if let Some(cause) = capture::desync_cause() {
+    if let Some(cause) = rx::desync_cause() {
         return Reply::Err(desync_err_for(cause));
     }
 
@@ -161,7 +161,7 @@ pub fn handle_line(line: &[u8]) -> Reply {
         "TICK?" => Reply::Tick(tick::read_tick32()),
         "LAST?" => Reply::Last(tx::last_send_tick()),
         "HZ" => Reply::HzPerUs(tick::wire_ticks_per_us()),
-        "BDRAIN" => match capture::drain_byte() {
+        "BDRAIN" => match rx::drain_byte() {
             Some(r) => Reply::BStamp {
                 tick: r.tick,
                 byte: r.byte,
@@ -175,9 +175,9 @@ pub fn handle_line(line: &[u8]) -> Reply {
 
 fn status() -> Reply {
     Reply::Status {
-        baud: capture::current_baud(),
-        avail: capture::stamps_available(),
-        cause: capture::desync_cause(),
+        baud: rx::current_baud(),
+        avail: rx::stamps_available(),
+        cause: rx::desync_cause(),
         last_tick: tx::last_send_tick(),
     }
 }
@@ -218,7 +218,7 @@ fn baud(rest: &str) -> Reply {
         Err(tx::BaudError::OutOfRange) => return Reply::Err("baud"),
         Err(tx::BaudError::Busy) => return Reply::Err("busy"),
     }
-    if capture::set_baud(bps).is_err() {
+    if rx::set_baud(bps).is_err() {
         return Reply::Err("baud");
     }
     Reply::Ok

@@ -21,7 +21,6 @@ mod scheduler;
 use core::cell::SyncUnsafeCell;
 use core::ptr;
 
-use ch32_metapac::Interrupt;
 use ch32_metapac::{AFIO, DMA1, GPIOB, RCC, USART3};
 use portable_atomic::{AtomicBool, Ordering};
 
@@ -75,12 +74,6 @@ pub fn init() {
     init_pins();
     init_usart3();
     scheduler::init();
-
-    unsafe {
-        qingke::pfic::enable_interrupt(Interrupt::USART3 as u8);
-        qingke::pfic::enable_interrupt(Interrupt::DMA1_CHANNEL6 as u8);
-        qingke::pfic::enable_interrupt(Interrupt::DMA1_CHANNEL3 as u8);
-    }
 }
 
 /// Clocks (USART3 + TIM4 on APB1, GPIOB + AFIO on APB2, DMA1 on AHB) and
