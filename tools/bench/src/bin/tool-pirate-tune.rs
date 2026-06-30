@@ -146,13 +146,13 @@ fn main() -> Result<()> {
 
 fn stage_classifier(bus: &mut Bus, bauds: &[u32], tol: Option<u32>) -> Result<()> {
     println!();
-    println!("stage 1: classifier — 16-byte loopback echo");
+    println!("stage 1: classifier — 16-byte loopback echo (RX byte-spacing accuracy)");
     println!("  gates: stamp count, byte values, no PLL miss, inter-byte spacing ≤ tol,");
     println!("  every stamp anchored on a real IC edge.");
     println!();
     println!(
-        "  {:>8}  {:>5}  {:>5}  {:>5}  {:>6}  result",
-        "baud", "brr", "dev", "tol", "margin"
+        "  {:>8}  {:>5}  {:>5}  {:>8}  result",
+        "baud", "brr", "dev", "dev%bit"
     );
     let mut any_fail = false;
     for &baud in bauds {
@@ -199,19 +199,15 @@ fn run_classifier_probe(bus: &mut Bus, baud: u32, tol_arg: Option<u32>) -> Resul
     let max_dev = validate_spacing(&stamps, byte_period, tol, 0..stamps.len())?;
     validate_ic_correspondence(&stamps, &snap)?;
 
-    // (tol - dev) / tol * 100; PASS guarantees dev ≤ tol so margin ∈ [0, 100].
-    let margin_pct = if tol == 0 {
-        0
-    } else {
-        let tol_i = tol as i64;
-        ((tol_i - max_dev).max(0) * 100 / tol_i) as i32
-    };
-    let margin = format!("{margin_pct}%");
+    // dev as % of one bit-time: 100% means the byte boundary slid a
+    // full bit. PASS already gates dev ≤ tol (= brr/4 by default), so
+    // values here are bounded by ~25% in the happy path.
+    let _ = tol; // gating only; not shown
+    let dev_pct_bit = max_dev as f64 / snap.bit_ticks as f64 * 100.0;
     Ok(format!(
-        "{brr:>5}  {dev:>5}  {tol:>5}  {margin:>6}",
+        "{brr:>5}  {dev:>5}  {dev_pct_bit:>+7.2}%",
         brr = snap.bit_ticks,
         dev = max_dev,
-        tol = tol,
     ))
 }
 
@@ -224,11 +220,6 @@ fn stage_stress(bus: &mut Bus, seed: u64) -> Result<()> {
     println!("stage 2: stress — random bursts (baud={STRESS_BAUD}, seed=0x{seed:016X})");
     println!("  gates per burst: byte count, byte values, strictly-monotone ticks,");
     println!("  falling_total delta == expected edges (computed from byte payload).");
-    println!();
-    println!(
-        "  {:>5}  {:>3}  {:>7}  {:>5}  result",
-        "burst", "len", "gap_us", "edges"
-    );
 
     bus.pirate_set_baud(STRESS_BAUD)?;
     bus.pirate_reset()?;
@@ -249,20 +240,23 @@ fn stage_stress(bus: &mut Bus, seed: u64) -> Result<()> {
         let expected_edges: u32 = burst.iter().map(|&b| falling_edges(b)).sum();
         match run_stress_burst(bus, &burst, expected_edges) {
             Ok(()) => {
-                println!("  {i:>5}  {len:>3}  {gap_us:>7}  {expected_edges:>5}  PASS");
                 total_bytes += len;
                 total_edges += expected_edges;
             }
             Err(e) => {
-                println!("  {i:>5}  {len:>3}  {gap_us:>7}  {expected_edges:>5}  FAIL: {e}");
+                println!(
+                    "  burst {i}: len={len} gap_us={gap_us} edges={expected_edges}  FAIL: {e}"
+                );
                 any_fail = true;
                 break;
             }
         }
         std::thread::sleep(Duration::from_micros(gap_us as u64));
     }
-    println!();
-    println!("  summary: {STRESS_BURSTS} bursts, {total_bytes} bytes, {total_edges} edges total");
+    println!(
+        "  {STRESS_BURSTS} bursts, {total_bytes} bytes, {total_edges} edges  —  {}",
+        if any_fail { "FAIL" } else { "PASS" }
+    );
     if any_fail {
         bail!("stage 2 (stress) failed");
     }
@@ -454,44 +448,55 @@ fn stage_fire_comp(bus: &mut Bus, bauds: &[u32], shots: u32, write: bool) -> Res
     println!("stage 3: fire-comp (residual = stamp[0].tick − LAST?, single 0x55 byte)");
     let current = bus.pirate_comp()?;
     println!(
-        "  current TX-comp:  pipe={} bit_q4={}    (intrinsic phase floor: ±0.5 bit-time at every baud)",
+        "  current TX-comp:  pipe={} bit_q4={}",
         current.pipe, current.bit_q4
     );
-    // span_norm = (max-min) / brr. Pure UART DR→TSR phase noise is
-    // U[0, brr], so span_norm ≈ 0.88 (= (n-1)/(n+1) for n=16) is the
-    // floor; >>1 means another jitter source (AHB arbitration, ISR
-    // contention) is bleeding into the wire-edge tick.
+    // bias%byte = systematic TX offset (= median residual) as % of one
+    // byte-time. Tunable via (pipe, bit_q4); should be ~0 after tuning.
+    // ±jit%byte = per-shot deviation from the median (half the peak-to-
+    // peak span), again as % byte-time. Floor is ±0.5 bit-time ≈ ±5%
+    // byte-time, from the U[0, brr] DR→TSR phase wait — physical, not
+    // tunable. ±jit_ns is the same number in absolute nanoseconds.
     println!(
-        "  {:>8}  {:>5}  {:>5}  {:>8}  {:>8}  {:>8}  {:>6}  {:>9}  {:>8}  result",
-        "baud", "brr", "shots", "min", "median", "max", "span", "span/brr", "err/bit"
+        "  {:>8}  {:>5}  {:>8}  {:>6}  {:>10}  {:>10}  {:>8}  result",
+        "baud", "brr", "median", "span", "bias%byte", "±jit%byte", "±jit_ns"
     );
     let hz_per_us = bus.hz_per_us()?;
     let hclk_hz = hz_per_us * 1_000_000;
+    let ns_per_tick = 1000.0 / hz_per_us as f64;
     // (brr, median, weight) for the weighted LS fit. Weight = 1/brr² is
     // the optimal inverse-variance weighting under the U[0, brr] phase
     // noise model: per-shot variance is brr²/12, so the variance of the
     // n-shot median scales the same way and 1/var = 12/brr² ∝ 1/brr².
     let mut points: Vec<(f64, f64, f64)> = Vec::with_capacity(bauds.len());
+    let mut worst_bias_pct = 0.0_f64;
+    let mut worst_half_jit_pct = 0.0_f64;
+    let mut worst_half_jit_ns = 0.0_f64;
     let mut any_fail = false;
     for &baud in bauds {
         bus.pirate_set_baud(baud)?;
         let brr = hclk_hz / baud;
+        let byte_ticks = (brr * 10) as f64;
         match collect_fire_comp_residuals(bus, shots) {
             Ok(residuals) => {
                 let med = median_i64(&residuals);
                 let lo = *residuals.iter().min().unwrap();
                 let hi = *residuals.iter().max().unwrap();
                 let span = hi - lo;
-                let span_norm = span as f64 / brr as f64;
-                let err_per_bit = med as f64 / brr as f64;
+                let bias_pct = med as f64 / byte_ticks * 100.0;
+                let half_jit_pct = (span as f64 / 2.0) / byte_ticks * 100.0;
+                let half_jit_ns = (span as f64 / 2.0) * ns_per_tick;
+                worst_bias_pct = worst_bias_pct.max(bias_pct.abs());
+                worst_half_jit_pct = worst_half_jit_pct.max(half_jit_pct);
+                worst_half_jit_ns = worst_half_jit_ns.max(half_jit_ns);
                 println!(
-                    "  {baud:>8}  {brr:>5}  {shots:>5}  {lo:>+8}  {med:>+8}  {hi:>+8}  {span:>6}  {span_norm:>9.3}  {err_per_bit:>+8.3}  PASS"
+                    "  {baud:>8}  {brr:>5}  {med:>+8}  {span:>6}  {bias_pct:>+9.3}%  ±{half_jit_pct:>8.3}%  ±{half_jit_ns:>6.0}  PASS"
                 );
                 let weight = 1.0 / (brr as f64).powi(2);
                 points.push((brr as f64, med as f64, weight));
             }
             Err(e) => {
-                println!("  {baud:>8}  {brr:>5}  ----  FAIL: {e}");
+                println!("  {baud:>8}  {brr:>5}  FAIL: {e}");
                 any_fail = true;
             }
         }
@@ -538,6 +543,15 @@ fn stage_fire_comp(bus: &mut Bus, bauds: &[u32], shots: u32, write: bool) -> Res
     } else {
         println!("  rerun with --write to apply.");
     }
+    println!();
+    println!("  TX ruler accuracy:");
+    println!(
+        "    bias  ±{worst_bias_pct:.2}% byte-time   (systematic — tunable; should be ~0 after tuning)"
+    );
+    println!(
+        "    jit   ±{worst_half_jit_pct:.2}% byte-time = ±{worst_half_jit_ns:.0} ns   (per-shot deviation from median)"
+    );
+    println!("    floor: ±0.5 bit-time ≈ ±5% byte-time from U[0, brr] DR→TSR phase wait — physical, not tunable");
     Ok(())
 }
 
