@@ -9,6 +9,7 @@ mod parse;
 mod pfic;
 mod proto;
 mod rcc;
+mod tick;
 mod time_driver;
 mod usb_cdc;
 mod usbd;
@@ -76,6 +77,7 @@ async fn main(spawner: Spawner) {
 
     led::init();
     led::on();
+    tick::init();
     inject::init();
     capture::init();
     pfic::set_priorities();

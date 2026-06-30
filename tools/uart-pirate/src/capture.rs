@@ -61,7 +61,8 @@ use ch32_metapac::{DMA1, TIM2, TIM3, USART3};
 use crate::parse::brr_for;
 use qingke_rt::interrupt;
 
-use crate::inject::{APB1_HZ, BaudError, DEFAULT_BAUD, read_tick32};
+use crate::inject::{APB1_HZ, BaudError, DEFAULT_BAUD};
+use crate::tick::read_tick32;
 
 // IC ring. With event-driven walker, DMA1_CH1 HT fires at FALL_LEN/2
 // entries — the walker drains promptly without waiting for a cadence

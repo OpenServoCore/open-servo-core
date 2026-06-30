@@ -61,6 +61,7 @@ use crate::parse::decode_hex;
 use crate::capture::{self, DesyncCause};
 use crate::inject::{self, TX_BUF_LEN};
 use crate::led;
+use crate::tick;
 
 pub enum Reply {
     Ok,
@@ -157,9 +158,9 @@ pub fn handle_line(line: &[u8]) -> Reply {
     }
 
     match line {
-        "TICK?" => Reply::Tick(inject::read_tick32()),
+        "TICK?" => Reply::Tick(tick::read_tick32()),
         "LAST?" => Reply::Last(inject::last_send_tick()),
-        "HZ" => Reply::HzPerUs(inject::wire_ticks_per_us()),
+        "HZ" => Reply::HzPerUs(tick::wire_ticks_per_us()),
         "BDRAIN" => match capture::drain_byte() {
             Some(r) => Reply::BStamp {
                 tick: r.tick,
