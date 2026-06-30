@@ -487,7 +487,6 @@ pub fn schedule_fire(payload: &[u8], at: u32) -> Result<(), ArmError> {
 /// wire-end; host should subtract that if sub-byte alignment matters.
 pub fn schedule_fire_after_idle(payload: &[u8], after_idle_ticks: u32) -> Result<(), ArmError> {
     critical_section::with(|_| -> Result<(), ArmError> {
-        crate::debug::clear();
         ARMED_AFTER_IDLE.store(false, Ordering::Release);
         if payload.len() > TX_BUF_LEN {
             return Err(ArmError::TooLong);
@@ -649,7 +648,6 @@ fn schedule_or_fire_now(at: u32) {
     // positive deltas, so a single threshold covers both close-and-past.
     if !(FIRE_NOW_THRESHOLD_TICKS..=TIM4_MAX_DELTA_TICKS).contains(&delta) {
         store_fired_tick(now);
-        crate::debug::clear();
         fire_now_dma();
         return;
     }

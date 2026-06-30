@@ -3,7 +3,6 @@
 #![feature(sync_unsafe_cell)]
 
 mod capture;
-mod debug;
 mod inject;
 mod led;
 mod pfic;
@@ -77,7 +76,6 @@ async fn main(spawner: Spawner) {
 
     led::init();
     led::on();
-    debug::init();
     inject::init();
     capture::init();
     pfic::set_priorities();
