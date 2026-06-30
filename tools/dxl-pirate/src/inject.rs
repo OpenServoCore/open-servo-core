@@ -102,23 +102,25 @@ static FIRED_TICK: SyncUnsafeCell<u32> = SyncUnsafeCell::new(0);
 ///
 /// `TX_BIT_TIMES_Q4` covers the USART bit-clock-domain pipeline in Q4
 /// (16 = 1.0 × brr). After the DR write, the byte waits 0..brr HCLK for
-/// the next bit-clock edge to load TSR (avg 0.5 × brr), then the start
-/// bit shifts out over 1.0 × brr — so the theoretical mean is 1.5 × brr
-/// (Q4 = 24). The historical default 16 (= 1.0 × brr) under-compensates
-/// by half a bit-time at every baud; bench measurement of the residual
-/// slope confirms ~1.5 is closer to truth.
+/// the next bit-clock edge to load TSR; TSR loads on that edge and the
+/// start bit (high→low) falls at the same instant. IC1 captures the
+/// falling edge, so the latency we compensate is exactly the DR→edge
+/// wait — U[0, brr] per shot, mean 0.5 × brr → Q4 = 8.
 ///
 /// Both atoms are runtime-tunable via the `COMP` protocol command so
 /// bench can write measured values back without a firmware rebuild.
 /// `FIRE_COMP_TICKS` is the precomputed sum read by the fire fast path —
 /// recomputed by `recompute_fire_comp` whenever brr or either tunable
-/// changes. Default values preserve the historical formula `96 + brr`.
+/// changes. Defaults below are the converged values from
+/// `tool-pirate-tune --stage fire-comp` on osc-dev-v20x at 144 MHz HCLK
+/// (median across 5 runs at n=64 shots/baud; per-run wobble ±~5 ticks
+/// on pipe, ±1 on bit_q4 — bounded by the U[0, brr] median SE floor).
 static FIRE_COMP_TICKS: AtomicU32 = AtomicU32::new(0);
 static TX_PIPELINE_TICKS: AtomicU32 = AtomicU32::new(TX_PIPELINE_TICKS_DEFAULT);
 static TX_BIT_TIMES_Q4: AtomicU32 = AtomicU32::new(TX_BIT_TIMES_Q4_DEFAULT);
 
-const TX_PIPELINE_TICKS_DEFAULT: u32 = 96;
-const TX_BIT_TIMES_Q4_DEFAULT: u32 = 16;
+const TX_PIPELINE_TICKS_DEFAULT: u32 = 45;
+const TX_BIT_TIMES_Q4_DEFAULT: u32 = 8;
 
 fn recompute_fire_comp(brr: u32) {
     let pipe = TX_PIPELINE_TICKS.load(Ordering::Relaxed);
