@@ -90,24 +90,63 @@ static PENDING_AFTER_IDLE_TICKS: SyncUnsafeCell<u32> = SyncUnsafeCell::new(0);
 /// "now" for immediate fires). Host correlates against per-byte stamps.
 static FIRED_TICK: SyncUnsafeCell<u32> = SyncUnsafeCell::new(0);
 
-/// Per-baud fire-path latency compensation in `tick32` ticks. Subtracted
-/// from the commanded fire-at inside `schedule_or_fire_now` so the wire
-/// start bit lands at the commanded tick.
+/// Fire-path latency compensation decomposed into the two clock domains
+/// the TX chain crosses (TIM4 CC2 match → wire start-bit edge):
 ///
-/// Decomposition (empirically validated via loopback at 144 MHz):
-///   FIRE_COMP = FIRE_COMP_FLAT_TICKS (DMA chain + CC2 sync overhead)
-///             + brr                   (USART TSR-load + start-bit shift)
-/// The `brr` term is one full bit-time of USART internal pipeline: DR is
-/// transferred to TSR on the next bit-clock edge, and start bit begins
-/// shifting on the following edge. Earlier revisions used `brr/2` (just
-/// the phase-to-bit-clock average), which under-compensated by half a
-/// bit-time at every baud.
+///   FIRE_COMP_TICKS = TX_PIPELINE_TICKS
+///                   + (TX_BIT_TIMES_Q4 × brr) / 16
+///
+/// `TX_PIPELINE_TICKS` covers the HCLK-domain pipeline:
+///   TIM4 CC2 → DMA1_CH4 stamp → DMA1_CH2.CR (EN=1) → DMA fetch → USART3.DR
+/// Fixed HCLK cycles + AHB arbitration; no baud dependency.
+///
+/// `TX_BIT_TIMES_Q4` covers the USART bit-clock-domain pipeline in Q4
+/// (16 = 1.0 × brr). After the DR write, the byte waits 0..brr HCLK for
+/// the next bit-clock edge to load TSR (avg 0.5 × brr), then the start
+/// bit shifts out over 1.0 × brr — so the theoretical mean is 1.5 × brr
+/// (Q4 = 24). The historical default 16 (= 1.0 × brr) under-compensates
+/// by half a bit-time at every baud; bench measurement of the residual
+/// slope confirms ~1.5 is closer to truth.
+///
+/// Both atoms are runtime-tunable via the `COMP` protocol command so
+/// bench can write measured values back without a firmware rebuild.
+/// `FIRE_COMP_TICKS` is the precomputed sum read by the fire fast path —
+/// recomputed by `recompute_fire_comp` whenever brr or either tunable
+/// changes. Default values preserve the historical formula `96 + brr`.
 static FIRE_COMP_TICKS: AtomicU32 = AtomicU32::new(0);
+static TX_PIPELINE_TICKS: AtomicU32 = AtomicU32::new(TX_PIPELINE_TICKS_DEFAULT);
+static TX_BIT_TIMES_Q4: AtomicU32 = AtomicU32::new(TX_BIT_TIMES_Q4_DEFAULT);
 
-const FIRE_COMP_FLAT_TICKS: u32 = 96;
+const TX_PIPELINE_TICKS_DEFAULT: u32 = 96;
+const TX_BIT_TIMES_Q4_DEFAULT: u32 = 16;
 
-const fn fire_comp_ticks(brr: u32) -> u32 {
-    FIRE_COMP_FLAT_TICKS + brr
+fn recompute_fire_comp(brr: u32) {
+    let pipe = TX_PIPELINE_TICKS.load(Ordering::Relaxed);
+    let q4 = TX_BIT_TIMES_Q4.load(Ordering::Relaxed);
+    FIRE_COMP_TICKS.store(pipe + ((q4 * brr) >> 4), Ordering::Relaxed);
+}
+
+pub fn tx_comp() -> (u32, u32) {
+    (
+        TX_PIPELINE_TICKS.load(Ordering::Relaxed),
+        TX_BIT_TIMES_Q4.load(Ordering::Relaxed),
+    )
+}
+
+/// Update one or both comp tunables, then recompute `FIRE_COMP_TICKS` for
+/// the current baud. Held under a critical section so a fire racing the
+/// update can't see a half-updated comp.
+pub fn set_tx_comp(pipe: Option<u32>, bit_q4: Option<u32>) {
+    critical_section::with(|_| {
+        if let Some(p) = pipe {
+            TX_PIPELINE_TICKS.store(p, Ordering::Relaxed);
+        }
+        if let Some(q) = bit_q4 {
+            TX_BIT_TIMES_Q4.store(q, Ordering::Relaxed);
+        }
+        let brr = USART3.brr().read().0;
+        recompute_fire_comp(brr);
+    });
 }
 
 /// Headroom added to `read_systick()` when [`fire_now_master`] schedules
@@ -253,7 +292,7 @@ pub fn init() {
         let brr0 = APB1_HZ / DEFAULT_BAUD;
         USART3.brr().write(|w| w.0 = brr0);
         USART3.ctlr1().modify(|w| w.set_ue(true));
-        FIRE_COMP_TICKS.store(fire_comp_ticks(brr0), Ordering::Relaxed);
+        recompute_fire_comp(brr0);
 
         // ── TIM2 master, low 16 of tick32. PSC=0, ARR=0xFFFF. CKD=DIV_1
         // pins fDTS at HCLK = 144 MHz; the IC1F filter is set per-baud by
@@ -539,7 +578,7 @@ pub fn set_baud(bps: u32) -> Result<(), BaudError> {
         USART3.ctlr1().modify(|w| w.set_ue(false));
         USART3.brr().write(|w| w.0 = brr);
         USART3.ctlr1().modify(|w| w.set_ue(true));
-        FIRE_COMP_TICKS.store(fire_comp_ticks(brr), Ordering::Relaxed);
+        recompute_fire_comp(brr);
         ARMED_AFTER_IDLE.store(false, Ordering::Release);
         disarm_tim4();
     });

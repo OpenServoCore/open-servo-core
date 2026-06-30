@@ -30,7 +30,8 @@ use ch32_metapac::{EXTEND, RCC, USBD, USBRAM};
 use embassy_sync::waitqueue::AtomicWaker;
 use embassy_usb_driver as driver;
 use embassy_usb_driver::{
-    Direction, EndpointAddress, EndpointAllocError, EndpointError, EndpointInfo, EndpointType, Event, Unsupported,
+    Direction, EndpointAddress, EndpointAllocError, EndpointError, EndpointInfo, EndpointType,
+    Event, Unsupported,
 };
 
 const EP_COUNT: usize = 8;
@@ -181,7 +182,9 @@ impl EndpointBuffer {
             let chunk = USBRAM_ALIGN.min(n - i * USBRAM_ALIGN);
             val[..chunk].copy_from_slice(&buf[i * USBRAM_ALIGN..][..chunk]);
             let v = u16::from_le_bytes(val);
-            USBRAM.mem(self.addr as usize / USBRAM_ALIGN + i).write_value(v);
+            USBRAM
+                .mem(self.addr as usize / USBRAM_ALIGN + i)
+                .write_value(v);
         }
     }
 }
@@ -473,7 +476,9 @@ impl<'d> driver::Bus for Bus<'d> {
                         _ => {
                             let want_stat = if stalled { Stat::STALL } else { Stat::NAK };
                             let mut w = invariant(r);
-                            w.set_stat_tx(Stat::from_bits(r.stat_tx().to_bits() ^ want_stat.to_bits()));
+                            w.set_stat_tx(Stat::from_bits(
+                                r.stat_tx().to_bits() ^ want_stat.to_bits(),
+                            ));
                             reg.write_value(w);
                         }
                     }
@@ -489,7 +494,9 @@ impl<'d> driver::Bus for Bus<'d> {
                         _ => {
                             let want_stat = if stalled { Stat::STALL } else { Stat::VALID };
                             let mut w = invariant(r);
-                            w.set_stat_rx(Stat::from_bits(r.stat_rx().to_bits() ^ want_stat.to_bits()));
+                            w.set_stat_rx(Stat::from_bits(
+                                r.stat_rx().to_bits() ^ want_stat.to_bits(),
+                            ));
                             reg.write_value(w);
                         }
                     }
@@ -728,7 +735,12 @@ impl<'d> driver::ControlPipe for ControlPipe<'d> {
         }
     }
 
-    async fn data_out(&mut self, buf: &mut [u8], first: bool, last: bool) -> Result<usize, EndpointError> {
+    async fn data_out(
+        &mut self,
+        buf: &mut [u8],
+        first: bool,
+        last: bool,
+    ) -> Result<usize, EndpointError> {
         if first || last {
             let mut stat_rx = 0;
             let mut stat_tx = 0;
@@ -833,8 +845,12 @@ impl<'d> driver::ControlPipe for ControlPipe<'d> {
         let epr = USBD.epr(0).read();
         USBD.epr(0).write(|w| {
             w.set_ep_type(EpType::CONTROL);
-            w.set_stat_rx(Stat::from_bits(epr.stat_rx().to_bits() ^ Stat::STALL.to_bits()));
-            w.set_stat_tx(Stat::from_bits(epr.stat_tx().to_bits() ^ Stat::VALID.to_bits()));
+            w.set_stat_rx(Stat::from_bits(
+                epr.stat_rx().to_bits() ^ Stat::STALL.to_bits(),
+            ));
+            w.set_stat_tx(Stat::from_bits(
+                epr.stat_tx().to_bits() ^ Stat::VALID.to_bits(),
+            ));
             w.set_ctr_rx(true);
             w.set_ctr_tx(true);
         });
@@ -854,8 +870,12 @@ impl<'d> driver::ControlPipe for ControlPipe<'d> {
         let epr = USBD.epr(0).read();
         USBD.epr(0).write(|w| {
             w.set_ep_type(EpType::CONTROL);
-            w.set_stat_rx(Stat::from_bits(epr.stat_rx().to_bits() ^ Stat::STALL.to_bits()));
-            w.set_stat_tx(Stat::from_bits(epr.stat_tx().to_bits() ^ Stat::STALL.to_bits()));
+            w.set_stat_rx(Stat::from_bits(
+                epr.stat_rx().to_bits() ^ Stat::STALL.to_bits(),
+            ));
+            w.set_stat_tx(Stat::from_bits(
+                epr.stat_tx().to_bits() ^ Stat::STALL.to_bits(),
+            ));
             w.set_ctr_rx(true);
             w.set_ctr_tx(true);
         });

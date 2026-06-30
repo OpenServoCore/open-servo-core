@@ -218,6 +218,7 @@ async fn send_reply<'d>(
             cause,
             last_tick,
         } => write_status(&mut out, baud, avail, cause, last_tick),
+        Reply::Comp { pipe, bit_q4 } => write_comp(&mut out, pipe, bit_q4),
     }
     debug_assert!(out.len() <= out.capacity());
     class.write_packet(&out).await
@@ -244,6 +245,14 @@ fn write_status(
     let _ = out.extend_from_slice(cause_str.as_bytes());
     let _ = out.push(b' ');
     push_dec_u32(out, last_tick);
+    let _ = out.push(b'\n');
+}
+
+fn write_comp(out: &mut Vec<u8, 64>, pipe: u32, bit_q4: u32) {
+    let _ = out.extend_from_slice(b"COMP pipe=");
+    push_dec_u32(out, pipe);
+    let _ = out.extend_from_slice(b" bit_q4=");
+    push_dec_u32(out, bit_q4);
     let _ = out.push(b'\n');
 }
 

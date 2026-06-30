@@ -39,7 +39,8 @@ impl SystickDriver {
     fn init_inner(&'static self, _cs: CriticalSection) {
         let cnt_per_second = HCLK_HZ / 8;
         let cnt_per_tick = cnt_per_second / embassy_time_driver::TICK_HZ;
-        self.cnt_per_tick.store(cnt_per_tick as u32, Ordering::Relaxed);
+        self.cnt_per_tick
+            .store(cnt_per_tick as u32, Ordering::Relaxed);
 
         SYSTICK.ctlr().write(|w| {
             w.set_init(true);
@@ -66,9 +67,17 @@ impl SystickDriver {
     }
 
     fn trigger_alarm(&self, cs: CriticalSection) {
-        let mut next = self.queue.borrow(cs).borrow_mut().next_expiration(self.raw_cnt());
+        let mut next = self
+            .queue
+            .borrow(cs)
+            .borrow_mut()
+            .next_expiration(self.raw_cnt());
         while !self.set_alarm(cs, next) {
-            next = self.queue.borrow(cs).borrow_mut().next_expiration(self.raw_cnt());
+            next = self
+                .queue
+                .borrow(cs)
+                .borrow_mut()
+                .next_expiration(self.raw_cnt());
         }
     }
 

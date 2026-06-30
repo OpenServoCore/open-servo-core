@@ -693,9 +693,7 @@ fn falling_at(idx: u32, falling_total: u32, ceiling: u32) -> u32 {
         let lo_n = unsafe { (*FALLING_LO.get())[ni] };
         let hi_n = unsafe { (*FALLING_HI.get())[ni] };
         let combined_next = ((hi_n as u32) << 16) | (lo_n as u32);
-        if combined != combined_next
-            && combined.wrapping_sub(combined_next) <= u32::MAX / 2
-        {
+        if combined != combined_next && combined.wrapping_sub(combined_next) <= u32::MAX / 2 {
             return combined.wrapping_sub(1 << 16);
         }
         combined

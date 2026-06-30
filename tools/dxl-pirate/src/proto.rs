@@ -35,6 +35,14 @@
 //!       causes (TIMING.md §3.5).
 //!   `BAUD <bps>` → `OK` / `ERR baud`. Implicit RESET. Caller must
 //!       quiesce the bus.
+//!   `COMP?`      → `COMP pipe=<u32> bit_q4=<u32>`. Reads the TX-comp
+//!       tunables — static HCLK-domain pipeline ticks and the bit-clock
+//!       multiplier in Q4 (16 = 1.0 × brr).
+//!   `COMP pipe=<u32> bit_q4=<u32>`
+//!       Set one or both tunables (missing key leaves that side
+//!       unchanged); `FIRE_COMP_TICKS` is recomputed for the current
+//!       baud immediately. Bypasses the desync guard so bench can
+//!       calibrate after a trip.
 //!   `TICK?`      → `TICK <tick32:u32>`
 //!   `LAST?`      → `LAST <tick32:u32>` last fire kickoff
 //!   `HZ`         → `HZ <u32>` tick32 ticks per microsecond
@@ -74,6 +82,10 @@ pub enum Reply {
         last_tick: u32,
     },
     HzPerUs(u32),
+    Comp {
+        pipe: u32,
+        bit_q4: u32,
+    },
 }
 
 pub struct BatchRequest {
@@ -119,6 +131,13 @@ pub fn handle_line(line: &[u8]) -> Reply {
     }
     if let Some(rest) = line.strip_prefix("BAUD ") {
         return baud(rest);
+    }
+    if line == "COMP?" {
+        let (pipe, bit_q4) = inject::tx_comp();
+        return Reply::Comp { pipe, bit_q4 };
+    }
+    if let Some(rest) = line.strip_prefix("COMP ") {
+        return comp(rest);
     }
     if line == "BTRACE" {
         return match capture::trace_drain() {
@@ -177,6 +196,33 @@ fn status() -> Reply {
         cause: capture::desync_cause(),
         last_tick: inject::last_fired_tick(),
     }
+}
+
+fn comp(rest: &str) -> Reply {
+    let mut pipe: Option<u32> = None;
+    let mut bit_q4: Option<u32> = None;
+
+    for tok in rest.split_ascii_whitespace() {
+        let Some((k, v)) = tok.split_once('=') else {
+            return Reply::Err("kv");
+        };
+        match k {
+            "pipe" => match v.parse() {
+                Ok(n) => pipe = Some(n),
+                Err(_) => return Reply::Err("pipe"),
+            },
+            "bit_q4" => match v.parse() {
+                Ok(n) => bit_q4 = Some(n),
+                Err(_) => return Reply::Err("bit_q4"),
+            },
+            _ => return Reply::Err("key"),
+        }
+    }
+    if pipe.is_none() && bit_q4.is_none() {
+        return Reply::Err("missing");
+    }
+    inject::set_tx_comp(pipe, bit_q4);
+    Reply::Ok
 }
 
 fn baud(rest: &str) -> Reply {
