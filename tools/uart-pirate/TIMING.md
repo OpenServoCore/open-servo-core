@@ -7,7 +7,7 @@ pipeline, and the validation principles that keep measurements
 hardware-grounded.
 
 The chip is the MuseLab nanoCH32V203 (V203C8T6, QingKe V4B @ HCLK = 144 MHz).
-Bus is single-pair half-duplex DXL 2.0 up to 3 Mbaud.
+Wire is single-pair half-duplex UART up to 3 Mbaud.
 
 ## 1. Time domain
 
@@ -54,10 +54,10 @@ around that contract.
 
 ## 3. Wire-side capture (RX)
 
-Two GPIO pins bridged externally to one DXL line, four peripheral block
+Two GPIO pins bridged externally to one wire, four peripheral block
 taps, zero CPU per edge.
 
-    PB10 ──┬── USART3_TX (AF OD) ◄─ DMA1_CH2 ◄─ TX burst (per-fire, §5)
+    PB10 ──┬── USART3_TX (AF PP) ◄─ DMA1_CH2 ◄─ TX burst (per-send, §5)
            │
            └── TIM2_CH3 pin ─┐
                              ├── TI1 = TI1 XOR TI2 XOR TI3 (CTLR2.TI1S=1)
@@ -78,22 +78,25 @@ taps, zero CPU per edge.
                                             │
                                             └──► DMA1_CH6 ─► falling_hi (high 16)
            │
-           │   external jumper:  PB10 ───┬──── DXL bus line
+           │   external jumper:  PB10 ───┬──── wire
            │                             │
            │                             └──── PB11
            │
     PB11 ──── USART3_RX (input pullup) ─► DMA1_CH3 ─► rx_ring (DMA-populated)
 
-USART3 runs full-duplex: PB10 drives the bus via AF open-drain TX, PB11
+USART3 runs full-duplex: PB10 drives the wire via AF push-pull TX, PB11
 listens via input-with-pullup RX, and the bench jumper ties both pins to
-the same DXL line so on-chip RX sees both our own TX echo and remote
-servo replies. HDSEL would internally tri-state RX during TX and is not
-used here.
+the same wire so on-chip RX sees both our own TX echo and any remote
+replies. HDSEL would internally tri-state RX during TX and is not used
+here. (Push-pull on PB10 vs the spec-correct open-drain is bench-only:
+the loopback wiring has no transceiver and only PB11's ~30 kΩ internal
+pull-up, giving τ ≈ 500–900 ns rise time and RX mis-sample at ≥ 2 Mbaud
+under OD — PP drives both edges actively.)
 
 PA2/PA3 were the original choice (USART2 default mapping) but boot-wedge
 on the MuseLab nanoCH32V203: PA3 has R10 = 10 kΩ to 3V3 on the board
-(SD-card CS pull-up). With the bus connected idle-high before USB plugs
-in, current trickles via bus → series-R → PA3 → R10 → chip 3V3 rail and
+(SD-card CS pull-up). With the wire connected idle-high before USB plugs
+in, current trickles via wire → series-R → PA3 → R10 → chip 3V3 rail and
 parasitically charges VDD above POR threshold; the chip then enters a
 half-booted state that doesn't recover when USB later supplies real
 power. PB10/PB11 are clean GPIO breakouts with no onboard pulls (verified
@@ -107,17 +110,17 @@ pull-down — TI1 collapses to PB10's signal alone. CC1 then captures
 the falling edge through the standard IC pipeline. PB11 (CH4 under the
 same remap) is unused.
 
-**Atomic 32-bit IC.** Every PB10 falling edge fires TIM2 CC1IF, which
-triggers two events on the same silicon cycle: (a) TIM2.CCR1 latches
-the low half via DMA1_CH5, and (b) TRGO pulses (MMS=COMPARE_PULSE)
-into TIM3's TRC, latching TIM3.CCR1 high half via DMA1_CH6. The pair
-forms a 32-bit tick that the walker reads without any software lift
-step. A 1-cycle TRC synchronization window per TIM2 wrap can produce
-an off-by-+65536 pair; §3.3 documents detection and correction.
+**Atomic 32-bit IC.** Every PB10 falling edge sets TIM2 CC1IF, which
+gates two events on the same silicon cycle: (a) TIM2.CCR1 latches the
+low half via DMA1_CH5, and (b) TRGO pulses (MMS=COMPARE_PULSE) into
+TIM3's TRC, latching TIM3.CCR1 high half via DMA1_CH6. The pair forms a
+32-bit tick that the walker reads without any software lift step. A
+1-cycle TRC synchronization window per TIM2 wrap can produce an
+off-by-+65536 pair; §3.3 documents detection and correction.
 
 **No per-edge ISR.** At 3 Mbaud worst case that's the difference
 between a usable instrument and a wedged one. The walker (§3.4)
-drains the rings on DMA HT/TC and USART IDLE triggers, forward-walks
+drains the rings on DMA HT/TC and USART IDLE events, forward-walks
 both rings in lockstep, and produces per-byte stamps.
 
 ### 3.1 Ring layout
@@ -165,11 +168,11 @@ that hasn't arrived; the host reads up to `byte_head`.
 
 ### 3.2 Walker triggers
 
-The walker fires on three event sources. All three share one PFIC
+The walker runs on three event sources. All three share one PFIC
 priority so `walk()` runs single-threaded across them — no concurrent
 walker hazard.
 
-| ISR vector       | Trigger                            | Phase tag              |
+| ISR vector       | Event                              | Phase tag              |
 |------------------|------------------------------------|------------------------|
 | `DMA1_CHANNEL6`  | IC ring half-transfer / complete   | `TRACE_PHASE_IC_HT/TC` |
 | `DMA1_CHANNEL3`  | RX ring half-transfer / complete   | `TRACE_PHASE_RX_HT/TC` |
@@ -177,16 +180,16 @@ walker hazard.
 
 CH6 is the IC ring's trailing DMA writer (§3.1); its HT/TC therefore
 guarantees both halves of every entry up to the cursor are written. CH5
-fires the same TIM2 TRGO pulse but ~1 DMA-transfer cycle earlier and is
-left without IRQ. DMA HT fires at half-ring fill, TC at full-fill — the
-walker drains promptly without waiting for a separate cadence. Time-to-
-HT scales with edge density at the configured baud.
+captures off the same TIM2 TRGO pulse but ~1 DMA-transfer cycle earlier
+and is left without IRQ. DMA HT runs at half-ring fill, TC at full-fill
+— the walker drains promptly without waiting for a separate cadence.
+Time-to-HT scales with edge density at the configured baud.
 
-USART3 IDLE fires one character-time after the wire goes idle. It does
-two things — both signal-only per `[[no_idle_timing]]`, neither derives a
-tick from elapsed idle time:
+USART3 IDLE asserts one character-time after the wire goes idle. It
+does two things — both signal-only, neither derives a tick from elapsed
+idle time:
 
-1. **Drains tail bytes.** Triggers `walk()` so the last byte of every
+1. **Drains tail bytes.** Runs `walk()` so the last byte of every
    reply burst gets stamped without waiting for the next DMA HT/TC.
 2. **Marks the chain boundary.** Once `walk()` finishes draining and
    `byte_head == rx_total`, the walker flushes any trailing interior
@@ -271,7 +274,7 @@ parallel `falling_lo[idx]` / `falling_hi[idx]` u16 halves into a u32
 tick and applies the §3.3 wrap-race correction. No backward-lift step,
 no per-wrap window limit — the hardware delivers a 32-bit pair
 atomically and `ceiling` is only used to detect the 1-cycle TRC-sync
-race. Realistic DXL bursts at any supported baud (down to 57.6 kbaud
+race. Realistic UART bursts at any supported baud (down to 57.6 kbaud
 verified by tool-pirate-tune) work identically.
 
 #### Classification
@@ -335,12 +338,12 @@ exceeded the window, free-running on prediction and flagging
 1 is ~50× the observed loopback jitter floor: tool-pirate-tune stage 1
 reports max inter-byte deviation `dev ≤ 24 ticks` at the slowest
 supported baud (57.6 kbaud, `brr = 2500`) — 0.01 bit-times. At every
-faster baud `dev = 0`. The DXL spec allows the upstream chip to drive
-up to ~3 bit-times of hardware idle inside a Status chain, so widen to
-2 or 3 if real-servo telemetry shows mid-chain bytes missing. The
-loopback path cannot exercise this directly — both halves of the
-PB10/PB11 bridge are the same chip — so widening is a wire-telemetry
-decision, not a tool-pirate-tune one.
+faster baud `dev = 0`. Real upstream chips may drive up to ~3 bit-times
+of hardware idle between bytes in a chain, so widen to 2 or 3 if mid-
+chain bytes go missing on a real target. The loopback path cannot
+exercise this directly — both halves of the PB10/PB11 bridge are the
+same chip — so widening is a wire-telemetry decision, not a
+tool-pirate-tune one.
 
 #### Why predict-and-snap
 
@@ -379,9 +382,9 @@ request/reply gap). The last one is the common-case trip: a glitch
 landing in the inter-burst quiet window between echo and reply would
 mis-anchor reply byte 0. In practice the CC filter eats sub-bit-time
 glitches at every baud (§4) and inter-burst quiet windows on a healthy
-DXL bus are clean — the IDLE-driven flush also drops trailing interior
+wire are clean — the IDLE-driven flush also drops trailing interior
 edges of the last byte, so cold-start scans only edges that landed
-after the bus actually quiesced.
+after the wire actually quiesced.
 
 In steady state, a glitch surviving the CC filter and landing in a
 byte's snap window pulls the anchor onto itself only when it sits
@@ -394,9 +397,9 @@ before they reach this stage.
 
 Mitigations explicitly rejected (per design constraints):
 
-- IDLE-driven flush of stale edges before cold-start — violates
-  `[[no_idle_timing]]` and the "IDLE doesn't touch walker state"
-  contract.
+- IDLE-driven flush of stale edges before cold-start — violates the
+  "IDLE doesn't touch walker state" contract (IDLE is signal-only;
+  walker state never derives from elapsed idle time).
 - Best-effort invented stamps on free-run miss — PLL's
   `chosen_anchor = predicted` IS the invented stamp, but it's bounded
   to `±snap` of the real value and flagged `COUNT_UNDER` so the host
@@ -430,19 +433,11 @@ Subsequent host commands return `ERR desync <cause>` — except `STATUS`
 implicitly resets via `reset_walker`). Recovery is one of those three
 commands, not a power cycle.
 
-`ic_overrun` is designed-impossible: if it ever fires, that's a hard
+`ic_overrun` is designed-impossible: if it ever trips, that's a hard
 bug worth investigating — a clean RESET clears the symptom but doesn't
 fix the underlying timing budget violation. `stamp_overflow` is the
 expected "your test script needs to drain more often" signal; it's a
 contract surface, not a bug indicator.
-
-The `DesyncCause::WalkerLate` enum variant is reserved (set in earlier
-cadence-based revisions when more than one cadence flag was pending at
-entry). The event-driven trigger model has no analogous condition, so
-the cause is never raised — folded into `ic_overrun` if ISR latency
-ever stretches that far. Variant retained in the wire-protocol enum to
-keep the cause-code numbering stable; eligible for removal once the
-host protocol can tolerate the renumbering.
 
 The walker hot path may be placed in SRAM via `qingke-rt`'s
 `#[interrupt(highcode)]` attribute to shave flash-wait-state cycles and
@@ -456,15 +451,15 @@ The PLL snap absorbs whatever shifts the real wire-side start edge
 away from `predicted = last_anchor + 10·bit_ticks`. Known contributors:
 pirate-vs-upstream clock drift (sub-bit_ticks for crystal-vs-HSI
 pairs), DMA arbiter latency (sub-bit_ticks), and upstream-chip
-inter-byte hardware idle inside a Status chain (DXL spec: up to
-~3 bit_ticks).
+inter-byte hardware idle inside a chain (up to ~3 bit_ticks for typical
+half-duplex protocols).
 
 `SNAP_BITS = 1` sized against tool-pirate-tune loopback measurements:
 `dev ≤ 24 ticks` at 57.6 kbaud (`brr = 2500` → 0.01 bit-times), and
 `dev = 0` at every faster baud. 1 bit-time is ~50× the observed
-jitter floor under loopback. Real-servo chains may expose the
+jitter floor under loopback. Real-target chains may expose the
 upstream-idle contributor — widen toward 2 or 3 if the host sees
-mid-chain `COUNT_UNDER` flags on Status replies; the snap width is
+mid-chain `COUNT_UNDER` flags on chained replies; the snap width is
 the knob that hides this unknown from the host.
 
 ### Anomaly flags
@@ -485,22 +480,12 @@ accurate to `± SNAP_BITS·bit_ticks`. Host code that needs sub-tick
 precision should filter on `COUNT_UNDER` and treat those bytes as
 ranged, not point, measurements.
 
-The prior `COUNT_OVER` flag is gone: the predict-and-snap walker
-ignores edges outside the snap window, so an "extra edge in the byte's
-wire window" no longer has a contract semantic. Glitches surviving the
-CC filter only affect the byte if they sit closer to `predicted` than
-the real start, in which case the misanchor surfaces in the *next*
-byte's snap as either a hit at the corrected `predicted = misanchor +
-10·bit_ticks` (PLL self-corrects within one byte) or a `COUNT_UNDER`
-miss.
-
-`TIMING_DRIFT`, `TIMING_RECOVER`, and `STAMP_BESTEFFORT` are absent by
-design: the PLL has no separate recovery state to engage (every byte is
-either hit or free-run-miss), and `COUNT_UNDER` already names the
-best-effort case. If the walker ever encounters a designed-impossible
-condition that could leave the rings desynced (multi-flag walker entry,
-IC ring overrun), it does not emit a flag — it flips `DESYNCED` and
-the host gets an explicit error on the next command (§3.5).
+The PLL has no separate recovery state to engage (every byte is either
+hit or free-run-miss), and `COUNT_UNDER` already names the best-effort
+case. If the walker ever encounters a designed-impossible condition
+that could leave the rings desynced (IC ring overrun) it does not emit
+a flag — it flips `DESYNCED` and the host gets an explicit error on
+the next command (§3.5).
 
 ### CC filter delay
 
@@ -513,23 +498,22 @@ The filter is **retuned per baud** on every `set_baud`. CKD is pinned at
 `DIV_1` (CKD=00, fDTS = HCLK = 144 MHz) so the whole ICxF table is
 reachable without bouncing CKD; only the IC1F nibble in CCMR1 moves.
 
-The picker rule is **largest filter delay ≤ brr/3 (≈ 0.333·bit time)** —
-*tighter* than production's natural pick at 48 MHz HCLK. The bench wiring
-deviates from production's electrical model in a load-bearing way: PB10
-is AF open-drain and the only pull-up on the wire (no servo, no external
-resistor) is PB11's ~30 kΩ internal pull-up. RC rise time τ ≈ 500–900 ns
-puts the Schmitt-threshold crossing ~400 ns after OD release. Inside a
+The picker rule is **largest filter delay ≤ brr/3 (≈ 0.333·bit time)**.
+The bench loopback wiring has no transceiver and only PB11's ~30 kΩ
+internal pull-up. RC rise time τ ≈ 500–900 ns puts the Schmitt-
+threshold crossing ~400 ns after OD release (PB10 is push-pull on this
+bench but the rule was sized under OD as the worst case). Inside a
 back-to-back 1-bit-time inter-byte HIGH gap (every byte whose
-predecessor has `b7=0`), the line only stays above threshold for ~400 ns
-before the next fall — so a filter that needs > 400 ns of stable HIGH to
-confirm state will silently drop the next byte's anchor.
+predecessor has `b7=0`), the line only stays above threshold for
+~400 ns before the next fall — so a filter that needs > 400 ns of
+stable HIGH to confirm state will silently drop the next byte's anchor.
 
-Production runs through a DXL transceiver (τ ≈ 50 ns), so its
-`2·brr/3`-equivalent pick has plenty of margin. The pirate cannot
-assume a transceiver, so its rule is stricter. Looser rules
-wire-empirically lose anchors at 1 Mbaud: `< brr` ate ~60%; `≤ 2·brr/3`
-was marginal — stochastically clean trials interleaved with ~50%
-anchor-loss trials depending on instantaneous VDD/Schmitt noise.
+A transceiver-driven target (τ ≈ 50 ns) would tolerate a looser
+`2·brr/3`-equivalent pick. The pirate can't assume a transceiver, so
+its rule is stricter. Looser rules wire-empirically lose anchors at
+1 Mbaud: `< brr` ate ~60%; `≤ 2·brr/3` was marginal — stochastically
+clean trials interleaved with ~50% anchor-loss trials depending on
+instantaneous VDD/Schmitt noise.
 
 Per-baud picks (HCLK = 144 MHz, fDTS = 144 MHz):
 
@@ -547,7 +531,7 @@ per RM `CH32FV2x_V3xRM` §14.4.7) lives as a const LUT in `capture.rs`;
 `filter_for_brr(brr)` walks it at compile time. `CC_FILTER_DELAY_TICKS`
 is an atomic refreshed from the LUT entry each `set_baud`; the walker
 subtracts it from every IC stamp before storing into `ts_ring` so
-external time comparisons (e.g. against TIM4 OPM fire deadlines) compose
+external time comparisons (e.g. against TIM4 OPM send deadlines) compose
 cleanly.
 
 A `set_baud` while bytes are in flight produces a brief window where
@@ -557,20 +541,20 @@ next byte anchors on a fresh-filter edge.
 
 ## 5. Wire-side drive (TX)
 
-    host: FIRE bytes=…  at=<tick32>
+    host: SEND bytes=…  at=<tick32>
       └─► TIM4 OPM, ARR = (at − now_tick32) low 16
             └─► CC2 match → DMA1_CH4 stamps EN=1 over DMA1_CH2.CR
                   └─► DMA1_CH2 streams payload into USART3 DR
-                        └─► AF OD drives PB10
+                        └─► AF PP drives PB10
 
-TIM4 in one-pulse mode holds the inject window; its CC2 match enables
-USART3's TX DMA, which streams the prepared payload into the data register.
-Hardware-coupled — no CPU between deadline and first wire bit, no
-ISR-latency floor on the inject side.
+TIM4 in one-pulse mode holds the send window; its CC2 match enables
+USART3's TX DMA, which streams the prepared payload into the data
+register. Hardware-coupled — no CPU between deadline and first wire
+bit, no ISR-latency floor on the send side.
 
-For `at − now_tick32 > 0xFFFF` (≈ 455 µs) the schedule falls through to a
-software-fire path. Sub-455 µs is the entire DXL-timing regime we measure,
-so the timer-fire path covers the common case.
+For `at − now_tick32 > 0xFFFF` (≈ 455 µs) the schedule falls through to
+a software-immediate path. Sub-455 µs is the typical wire-timing regime
+we measure, so the timer-driven path covers the common case.
 
 ## 6. Peripheral map
 
@@ -585,12 +569,12 @@ so the timer-fire path covers the common case.
 |            | wrap rate), phase-locked at init; SMCFGR.SMS=0 (slave disabled),    |
 |            | SMCFGR.TS=1 routes TIM2 TRGO → TRC; CCMR1.CC1S=TRC + CCER.CC1P=0    |
 |            | → TIM3.CCR1 latches on every TRGO pulse; DMA1_CH6 (DMAINTENR.CC1DE) |
-| TIM4       | TX inject OPM fire (CC2 → DMA1_CH4 stamps DMA1_CH2.CR)              |
+| TIM4       | TX send OPM (CC2 → DMA1_CH4 stamps DMA1_CH2.CR)                     |
 | SysTick    | embassy time-driver only (qingke V4 64-bit hw counter)              |
-| USART3     | full-duplex: TX=PB10 AF OD → DMA1_CH2; RX=PB11 input-pullup →       |
-|            | DMA1_CH3; PB10/PB11 bridged externally to one DXL line;             |
+| USART3     | full-duplex: TX=PB10 AF PP → DMA1_CH2; RX=PB11 input-pullup →       |
+|            | DMA1_CH3; PB10/PB11 bridged externally to one wire;                 |
 |            | IDLE → signal-only                                                  |
-| DMA1_CH2   | USART3 TX (per-fire)                                                |
+| DMA1_CH2   | USART3 TX (per-send)                                                |
 | DMA1_CH3   | USART3 RX → `rx_ring`; HT/TC → walker (PRIO_WALKER)                 |
 | DMA1_CH4   | TIM4_CC2-triggered stamp of EN=1 over DMA1_CH2.CR                   |
 | DMA1_CH5   | TIM2_CC1 capture → `falling_lo` (low 16 of IC pair); no IRQ         |
@@ -625,7 +609,7 @@ ASCII single-record drain for human debug only.
 ### State + recovery
 
     STATUS              → STATUS <baud>:u32 <avail>:u32 <desynced>:0|1
-                            <cause>:none|walker_late|ic_overrun|stamp_overflow
+                            <cause>:none|ic_overrun|stamp_overflow
                             <last_tick>:u32
 
 Always responds, even mid-desync — the host's one-shot health probe.
@@ -634,28 +618,28 @@ simplicity.
 
     RESET               → OK
 
-Clears `DESYNCED` + cause, drains stamp/IC rings, re-arms walker. Keeps
-baud. The routine recovery for any of the three desync causes (§3.5).
+Clears `DESYNCED` + cause, drains stamp/IC rings, restarts walker.
+Keeps baud. The routine recovery for any desync cause (§3.5).
 
     BAUD <bps>          → OK | ERR baud
 
-Changes baud; implicit `RESET` inside. Caller must quiesce the bus first.
+Changes baud; implicit `RESET` inside. Caller must quiesce the wire
+first.
 
 ### Diagnostics
 
-    BTRACE              → BTRACE <phase> <intfr_post_clear> <cnt_entry>
-                            <cnt_exit> <falling_pending_entry>
-                            <edges_consumed> <bytes_emitted>
+    BTRACE              → BTRACE <phase> <tim2_cnt_entry> <tim2_cnt_exit>
+                            <falling_pending_entry> <edges_consumed>
+                            <bytes_emitted> <falling_total> <rx_total>
                           | EMPTY
     BTRACECLEAR         → OK
 
 Each `BTRACE` record is one walker invocation tagged by trigger source
-(phase ∈ {IDLE=0, RX_HT=1, RX_TC=2, IC_HT=3, IC_TC=4}). `intfr_post_clear`
-re-reads the source DMA channel's interrupt-flag register after the
-HT/TC clear write — a non-zero value means a flag latched in the
-read→clear window and was silently dropped (the `DESYNCED` contract
-relies on this never happening). The other fields measure ISR latency,
-queue depth, and walker workload per invocation. The trace ring is 64
+(phase ∈ {IDLE=0, RX_HT=1, RX_TC=2, IC_HT=3, IC_TC=4}). `tim2_cnt_*`
+brackets the walker's ISR-to-exit duration in tick32 ticks;
+`falling_pending_entry` is the IC backlog at ISR entry; `edges_consumed`
+and `bytes_emitted` are this invocation's workload; `falling_total` and
+`rx_total` are cumulative counters at entry. The trace ring is 64
 entries deep; when the host falls behind, the oldest records get
 overwritten and `BTRACE` snaps the tail forward.
 
@@ -675,7 +659,7 @@ overwritten and `BTRACE` snaps the tail forward.
 - **Event-driven walker, hardware-atomic IC pair.** Each PB10 falling
   edge captures a full 32-bit tick in hardware via TIM2.CCR1 +
   TIM3.CCR1 (TRC), eliminating any per-wrap software lift. The walker
-  fires on DMA HT/TC and USART IDLE only — no cadence, no per-edge
+  runs on DMA HT/TC and USART IDLE only — no cadence, no per-edge
   ISR. Works identically at 57.6 kbaud and 3 Mbaud.
 - **Predict-and-snap PLL classification.** Each byte's stamp anchors
   on the IC edge closest to `predicted = last_anchor + 10·bit_ticks`
@@ -684,12 +668,12 @@ overwritten and `BTRACE` snaps the tail forward.
   to one byte-period regardless of which edge inside a byte gets
   picked. Cold-start path (post-RESET, post-IDLE chain boundary)
   anchors on the next unconsumed IC entry — same code path as bootstrap.
-- **Fail loud, never silently recover.** Three conditions — two
-  designed-impossible (`walker_late`, `ic_overrun`) and one host-paced
-  bench-script bug (`stamp_overflow`) — flip a single sticky `DESYNCED`
-  flag. Every host command then errors out until `RESET` (or `BAUD`,
-  which implicitly resets). A walker that silently re-acquires would
-  mask whatever bug let a designed-impossible failure fire; silently
+- **Fail loud, never silently recover.** Two conditions — one
+  designed-impossible (`ic_overrun`) and one host-paced bench-script
+  bug (`stamp_overflow`) — flip a single sticky `DESYNCED` flag. Every
+  host command then errors out until `RESET` (or `BAUD`, which
+  implicitly resets). A walker that silently re-acquires would mask
+  whatever bug let a designed-impossible failure trip; silently
   dropping stamps on overflow would lie about wire state.
 - **Embassy stays off the wire.** SysTick hosts embassy's time queue for
   USB and utility timers. It does not appear in any wire-timing path, so
@@ -701,7 +685,7 @@ overwritten and `BTRACE` snaps the tail forward.
   rewiring.
 - **The ruler exposes its own uncertainty.** Every byte stamp carries a
   flags byte; the host can distinguish hardware-precise from best-effort
-  stamps, and bus-anomalous from clean conditions. A ruler that silently
+  stamps, and wire-anomalous from clean conditions. A ruler that silently
   produces wrong measurements under noise is worse than one that flags its
   own limits.
 
@@ -737,7 +721,7 @@ overrun the ring before the walker drains it.
 | CH6 (IC high half)   | `VERYHIGH`  | Paired with CH5; equal priority → numeric arbitration puts CH5 first, CH6 second — the source of CH6's trailing-writer property (§3.1) |
 | CH3 (USART3_RX)      | `HIGH`      | Must not drop bytes at 3 Mbaud; one tier below the IC pair   |
 | CH2 (USART3_TX)      | `VERYHIGH`  | Defensive; paced by USART (FIFO absorbs arbiter delay) but pinned to top tier against future inter-channel contention |
-| CH4 (CC2 stamp)      | `VERYHIGH`  | Mirrors CH2 above; one-shot per fire                         |
+| CH4 (CC2 stamp)      | `VERYHIGH`  | Mirrors CH2 above; one-shot per send                         |
 | (USB)                | `LOW` (default) | USB is throughput-bursty but tolerates µs-scale arbiter latency |
 
 CH5/CH6 outrank CH3 so a back-to-back IC + RX simultaneous request
