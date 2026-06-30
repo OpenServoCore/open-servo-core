@@ -196,277 +196,292 @@ pub fn read_tick32() -> u32 {
 }
 
 pub fn init() {
+    init_clocks_and_remap();
+    init_pins();
+    init_usart3();
+    init_tim2_tim3_capture();
+    init_tim4_scheduler();
+    init_dma_tx();
+
     unsafe {
-        // ── Clocks. USART3 + TIM2/3/4 on APB1; GPIOB + AFIO on APB2;
-        // DMA1 on AHB.
-        RCC.apb2pcenr().modify(|w| {
-            w.set_iopaen(true);
-            w.set_iopben(true);
-            w.set_afioen(true);
-        });
-        RCC.apb1pcenr().modify(|w| {
-            w.set_usart3en(true);
-            w.set_tim2en(true);
-            w.set_tim3en(true);
-            w.set_tim4en(true);
-        });
-        RCC.ahbpcenr().modify(|w| w.set_dma1en(true));
-
-        // USART3 default mapping is PB10/PB11 (no remap). TIM2 partial
-        // remap #2 puts CH3 on PB10 (CH4 on PB11) while leaving CH1/CH2
-        // on PA0/PA1. CC3 isn't itself wired to a channel — PB10's
-        // falling edge propagates through TI1 via the TI1S XOR (CTLR2
-        // below) and triggers IC1 capture.
-        AFIO.pcfr1().modify(|w| {
-            w.set_usart3_rm(0); // 00 = default PB10/PB11
-            w.set_tim2_rm(0b10); // 10 = CH3/CH4 → PB10/PB11
-        });
-
-        // ── PA0/PA1: input pull-down. TIM2 CTLR2.TI1S=1 (set below) makes
-        // TI1 = XOR(CH1_pin, CH2_pin, CH3_pin) so PB10's edge can drive
-        // CC1 IC even though PB10 maps to CH3 via TIM2_RM=0b10. PA0/PA1
-        // are the TIM2_RM=0b10 CH1/CH2 pins; forcing them to 0 makes the
-        // XOR collapse to PB10 alone.
-        //
-        // SAFETY: PA0/PA1 must be physically unrouted on the board. A
-        // future variant that wires either pin to external signal will
-        // inject XOR noise and break IC capture; re-evaluate this block
-        // before that point.
-        GPIOA.outdr().modify(|w| {
-            w.set_odr(0, false);
-            w.set_odr(1, false);
-        });
-        // CFGLR controls PA0..PA7. PA0 in bits [3:0], PA1 in bits [7:4].
-        // MODE=00 (input), CNF=10 (input with pull-up/down) → 0b1000.
-        // ODR(0)=0 / ODR(1)=0 above selects pull-down.
-        GPIOA.cfglr().modify(|w| {
-            let mut v = w.0;
-            v &= !0xFF;
-            v |= 0b1000u32; // PA0
-            v |= 0b1000u32 << 4; // PA1
-            w.0 = v;
-        });
-
-        // ── PB10 = USART3_TX, AF **push-pull**, 50 MHz. The bench wiring
-        // has no servo, no transceiver, just PB10↔PB11 bridged through
-        // open air — the only pull on the wire is PB11's ~30 kΩ internal
-        // pull-up, which gives τ ≈ 500–900 ns rise time and makes USART
-        // RX mis-sample at ≥ 2 Mbaud. Push-pull actively drives both
-        // edges, so the wire matches transmit timing at any baud the
-        // chip can clock. The DXL multi-drop "no PP fighting OD" concern
-        // doesn't apply to this bench rig.
-        //
-        // ODR high before AF lock: guards against a transient ODR-LOW
-        // pulling the bus while the AF block is mid-init.
-        GPIOB.outdr().modify(|w| {
-            w.set_odr(10, true);
-            w.set_odr(11, true); // select PB11 input pullup (see below)
-        });
-        // CFGHR controls PB8..PB15.
-        //   PB10 in bits [11:8]: Mode=11 (50 MHz), CNF=10 (AF PP) → 0b1011.
-        //   PB11 in bits [15:12]: Mode=00 (input),   CNF=10 (input w/ pull)
-        //                         → 0b1000; ODR(11)=1 above selects pull-up.
-        GPIOB.cfghr().modify(|w| {
-            let mut v = w.0;
-            v &= !(0xF << 8);
-            v &= !(0xF << 12);
-            v |= 0b1011u32 << 8;
-            v |= 0b1000u32 << 12;
-            w.0 = v;
-        });
-
-        // ── USART3: 8N1, full-duplex, DMAT, DMAR, IDLEIE. Init order
-        // matters — TE/RE with UE=0, then DMAT/DMAR, then UE in its own
-        // write, to avoid the TX-line glitch the STM32-family USARTs
-        // throw when TE+UE land in the same write.
-        USART3.ctlr2().modify(|w| w.set_stop(0b00));
-        USART3.ctlr1().modify(|w| {
-            w.set_m(false);
-            w.set_pce(false);
-            w.set_te(true);
-            w.set_re(true);
-            w.set_idleie(true);
-        });
-        USART3.ctlr3().modify(|w| {
-            w.set_dmat(true);
-            w.set_dmar(true);
-        });
-        let brr0 = APB1_HZ / DEFAULT_BAUD;
-        USART3.brr().write(|w| w.0 = brr0);
-        USART3.ctlr1().modify(|w| w.set_ue(true));
-        recompute_fire_comp(brr0);
-
-        // ── TIM2 master, low 16 of tick32. PSC=0, ARR=0xFFFF. CKD=DIV_1
-        // pins fDTS at HCLK = 144 MHz; the IC1F filter is set per-baud by
-        // `capture::apply_filter_for_brr` from the LUT in TIMING.md §4
-        // (largest delay ≤ brr/3). No CC walker cadence: the event-driven
-        // walker runs off USART3 IDLE + DMA1_CH6/CH3 HT/TC, not TIM2 IRQs.
-        //
-        // Hardware atomic 32-bit IC capture per TIMING.md §3.3:
-        //
-        // - CTLR2.TI1S=1 routes XOR(CH1_pin, CH2_pin, CH3_pin) → TI1
-        //   internal. PA0/PA1 (CH1/CH2 under TIM2_RM=0b10) are pulled
-        //   down above, so TI1 mirrors PB10's falling edges directly.
-        // - CCMR1.CC1S=TI4 (= "normal" CC1 ← TI1). CCER CC1P=1 falling,
-        //   CC1E=1. DMAINTENR CC1DE=1 kicks DMA1_CH5 (TIM2.CCR1 → low
-        //   half of every IC entry).
-        // - CTLR2.MMS=COMPARE_PULSE: TRGO emits a one-cycle pulse on
-        //   every CC1IF set, driving TIM3 TRC → TIM3.CCR1 latches the
-        //   matching high half. The pair forms an atomic 32-bit tick.
-        //
-        // The 1-cycle TRC-sync race window at every TIM2 wrap leaves bad
-        // pairs off-by-+65536 (combined > ceiling), which the walker
-        // detects and corrects by subtracting one wrap.
-        TIM2.psc().write_value(0);
-        TIM2.atrlr().write_value(0xFFFF);
-        TIM2.ctlr1().write(|w| {
-            w.set_cen(false);
-            w.set_arpe(false);
-            w.set_ckd(Ckd::DIV_1);
-        });
-        TIM2.ctlr2().modify(|w| {
-            w.set_mms(Mms::COMPARE_PULSE);
-            w.set_ti1s(true);
-        });
-        TIM2.chctlr_input(0).modify(|w| {
-            // CCMR1. CC1S in bits [1:0]. IC1F (bits [7:4]) is written
-            // separately by `capture::init` from the per-baud LUT.
-            w.set_ccs(0, CcmrInputCcs::TI4); // normal mapping → IC1 ← TI1
-        });
-        TIM2.ccer().modify(|w| {
-            w.set_ccp(0, true); // CC1P=1 falling edge
-            w.set_cce(0, true); // CC1E=1
-        });
-        TIM2.dmaintenr().write(|w| {
-            w.set_ccde(0, true); // CC1DE (IC capture → DMA1_CH5)
-        });
-        TIM2.swevgr().write(|w| w.set_ug(true)); // load PSC/ARR
-        TIM2.intfr().write(|w| {
-            w.set_uif(false);
-            w.set_ccif(0, false);
-            w.set_ccif(1, false);
-            w.set_ccif(2, false);
-            w.set_ccif(3, false);
-        });
-
-        // ── TIM3 free-running, high 16 of tick32. PSC=0xFFFF →
-        // CK_CNT = HCLK/65536 = TIM2 wrap rate. No slave mode (SMS=0);
-        // TS=1 keeps TRC routed to ITR1 = TIM2 TRGO. CCMR1.CC1S=TRC
-        // latches TIM3.CCR1 on every TRGO pulse; CCER CC1P=0 picks the
-        // rising edge of the one-cycle pulse. DMAINTENR CC1DE=1 kicks
-        // DMA1_CH6 (TIM3.CCR1 → high half of every IC entry).
-        TIM3.psc().write_value(0xFFFF);
-        TIM3.atrlr().write_value(0xFFFF);
-        TIM3.ctlr1().write(|w| {
-            w.set_cen(false);
-            w.set_arpe(false);
-        });
-        TIM3.smcfgr().modify(|w| {
-            w.set_sms(0); // disable slave clock — TIM3 free-runs on CK_INT
-            w.set_ts(1); // ITR1 = TIM2 TRGO → TRC
-        });
-        TIM3.chctlr_input(0).modify(|w| {
-            w.set_ccs(0, CcmrInputCcs::TRC); // CC1 from TRC
-        });
-        TIM3.ccer().modify(|w| {
-            w.set_ccp(0, false); // CC1P=0 rising edge of TRGO pulse
-            w.set_cce(0, true);
-        });
-        TIM3.dmaintenr().write(|w| {
-            w.set_ccde(0, true); // CC1DE → DMA1_CH6
-        });
-        TIM3.swevgr().write(|w| w.set_ug(true));
-        TIM3.intfr().write(|w| {
-            w.set_uif(false);
-            w.set_ccif(0, false);
-        });
-
-        // Phase-lock startup: enable TIM3.CEN before TIM2.CEN so TIM3's
-        // prescaler leads TIM2's counter by the AHB write gap. TIM3.CNT
-        // increments a few cycles before TIM2 wraps, biasing any
-        // wrap-race IC pair to off-by-+65536 (combined > ceiling) which
-        // the walker detects unambiguously.
-        critical_section::with(|_| {
-            TIM3.ctlr1().modify(|w| w.set_cen(true));
-            TIM2.ctlr1().modify(|w| w.set_cen(true));
-        });
-
-        // ── TIM4 OPM. PSC=0 (1:1 with tick32). CR1: OPM=1 (auto-clear CEN
-        // after first UEV), URS=1 (UG software event resets CNT without
-        // generating a UEV that would spuriously kick CC2). DIER CC2DE=1
-        // routes CC2 compare match to DMA1_CH4.
-        TIM4.psc().write_value(TIM4_PSC);
-        TIM4.atrlr().write_value(0xFFFF);
-        TIM4.ctlr1().write(|w| {
-            w.set_cen(false);
-            w.set_opm(true);
-            w.set_urs(Urs::COUNTERONLY);
-            w.set_arpe(false);
-        });
-        TIM4.dmaintenr().write(|w| {
-            w.set_ccde(1, true); // CC2DE (channels 0-indexed)
-        });
-
-        // ── DMA1_CH2 = USART3_TX. EN stays clear at init; CC2 stamp
-        // flips it via DMA1_CH4. `load_payload` reloads MAR/NDTR with
-        // EN=0 between fires.
-        let ch2 = DMA1.ch(1);
-        ch2.par().write_value(USART3.datar().as_ptr() as u32);
-        ch2.cr().write(|w| {
-            w.set_dir(Dir::FROMMEMORY);
-            w.set_minc(true);
-            w.set_pinc(false);
-            w.set_circ(false);
-            w.set_msize(Size::BITS8);
-            w.set_psize(Size::BITS8);
-            // VERYHIGH is defensive: today only CH2 + CH4 are active so
-            // inter-channel arbitration doesn't trigger, but pins the fire
-            // path at top priority against any future DMA channel we add.
-            // (Empirically does NOT tighten TX wire-edge jitter — the
-            // observed loopback variance is CPU-vs-DMA AHB arbitration,
-            // which channel-priority bits don't control.)
-            w.set_pl(Pl::VERYHIGH);
-            w.set_tcie(false);
-        });
-
-        // Precompute the EN=1 CFGR word DMA1_CH4 stamps on fire. Same
-        // bits as the disarmed config above, plus EN=1.
-        let mut armed = ch32_metapac::dma::regs::Cr(0);
-        armed.set_dir(Dir::FROMMEMORY);
-        armed.set_minc(true);
-        armed.set_pinc(false);
-        armed.set_circ(false);
-        armed.set_msize(Size::BITS8);
-        armed.set_psize(Size::BITS8);
-        armed.set_pl(Pl::VERYHIGH); // mirror CH2 PL above so the stamp doesn't drop priority on fire
-        armed.set_tcie(false);
-        armed.set_en(true);
-        ptr::write_volatile(ARMED_CH2_CFGR_WORD.get(), armed.0);
-
-        // ── DMA1_CH4 = TIM4_CC2 trigger. Circular, single-word transfer:
-        // copy ARMED_CH2_CFGR_WORD → DMA1_CH2.CR. NDTR=1 auto-reloads
-        // each cycle thanks to CIRC=1, so we never re-arm CH4 from
-        // software. EN=1 permanently — the CC2DE gate fires it, not EN.
-        let ch4 = DMA1.ch(3);
-        ch4.par().write_value(ch2.cr().as_ptr() as u32);
-        ch4.mar().write_value(ARMED_CH2_CFGR_WORD.get() as u32);
-        ch4.ndtr().write(|w| w.set_ndt(1));
-        ch4.cr().write(|w| {
-            w.set_dir(Dir::FROMMEMORY);
-            w.set_minc(false);
-            w.set_pinc(false);
-            w.set_circ(true);
-            w.set_msize(Size::BITS32);
-            w.set_psize(Size::BITS32);
-            w.set_pl(Pl::VERYHIGH); // mirror CH2 PL above; defensive against future inter-channel contention
-            w.set_tcie(false);
-            w.set_en(true);
-        });
-
         qingke::pfic::enable_interrupt(Interrupt::USART3 as u8);
         qingke::pfic::enable_interrupt(Interrupt::DMA1_CHANNEL6 as u8);
         qingke::pfic::enable_interrupt(Interrupt::DMA1_CHANNEL3 as u8);
     }
+}
+
+/// Clocks (USART3 + TIM2/3/4 on APB1, GPIOA/B + AFIO on APB2, DMA1 on
+/// AHB) and AFIO remap. USART3 default mapping is PB10/PB11 (no remap).
+/// TIM2 partial remap #2 puts CH3 on PB10 (CH4 on PB11) while leaving
+/// CH1/CH2 on PA0/PA1. CC3 isn't itself wired to a channel — PB10's
+/// falling edge propagates through TI1 via the TI1S XOR (set in
+/// `init_tim2_tim3_capture`) and triggers IC1 capture.
+fn init_clocks_and_remap() {
+    RCC.apb2pcenr().modify(|w| {
+        w.set_iopaen(true);
+        w.set_iopben(true);
+        w.set_afioen(true);
+    });
+    RCC.apb1pcenr().modify(|w| {
+        w.set_usart3en(true);
+        w.set_tim2en(true);
+        w.set_tim3en(true);
+        w.set_tim4en(true);
+    });
+    RCC.ahbpcenr().modify(|w| w.set_dma1en(true));
+
+    AFIO.pcfr1().modify(|w| {
+        w.set_usart3_rm(0); // 00 = default PB10/PB11
+        w.set_tim2_rm(0b10); // 10 = CH3/CH4 → PB10/PB11
+    });
+}
+
+/// PA0/PA1 (TIM2_RM=0b10 CH1/CH2): input pull-down so the TI1S XOR in
+/// `init_tim2_tim3_capture` collapses to PB10 alone. PB10/PB11
+/// (USART3_TX/RX): TX as AF push-pull (50 MHz), RX as input pull-up.
+///
+/// SAFETY: PA0/PA1 must be physically unrouted on the board. A future
+/// variant that wires either pin to external signal will inject XOR
+/// noise and break IC capture; re-evaluate this block before that
+/// point.
+///
+/// Push-pull on PB10 (vs the spec-correct open-drain) is bench-only:
+/// PB10↔PB11 are bridged through open air with no transceiver, so the
+/// only pull on the wire is PB11's ~30 kΩ internal pull-up, giving
+/// τ ≈ 500–900 ns rise time and USART RX mis-sample at ≥ 2 Mbaud. Push-
+/// pull actively drives both edges. The DXL multi-drop "no PP fighting
+/// OD" concern doesn't apply to this rig.
+fn init_pins() {
+    GPIOA.outdr().modify(|w| {
+        w.set_odr(0, false);
+        w.set_odr(1, false);
+    });
+    // CFGLR controls PA0..PA7. PA0 in bits [3:0], PA1 in bits [7:4].
+    // MODE=00 (input), CNF=10 (input with pull-up/down) → 0b1000.
+    // ODR(0)=0 / ODR(1)=0 above selects pull-down.
+    GPIOA.cfglr().modify(|w| {
+        let mut v = w.0;
+        v &= !0xFF;
+        v |= 0b1000u32; // PA0
+        v |= 0b1000u32 << 4; // PA1
+        w.0 = v;
+    });
+
+    // ODR high before AF lock: guards against a transient ODR-LOW
+    // pulling the bus while the AF block is mid-init.
+    GPIOB.outdr().modify(|w| {
+        w.set_odr(10, true);
+        w.set_odr(11, true); // select PB11 input pullup (see below)
+    });
+    // CFGHR controls PB8..PB15.
+    //   PB10 in bits [11:8]: Mode=11 (50 MHz), CNF=10 (AF PP) → 0b1011.
+    //   PB11 in bits [15:12]: Mode=00 (input),   CNF=10 (input w/ pull)
+    //                         → 0b1000; ODR(11)=1 above selects pull-up.
+    GPIOB.cfghr().modify(|w| {
+        let mut v = w.0;
+        v &= !(0xF << 8);
+        v &= !(0xF << 12);
+        v |= 0b1011u32 << 8;
+        v |= 0b1000u32 << 12;
+        w.0 = v;
+    });
+}
+
+/// USART3: 8N1, full-duplex, DMAT, DMAR, IDLEIE. Init order matters —
+/// TE/RE with UE=0, then DMAT/DMAR, then UE in its own write, to avoid
+/// the TX-line glitch the STM32-family USARTs throw when TE+UE land in
+/// the same write.
+fn init_usart3() {
+    USART3.ctlr2().modify(|w| w.set_stop(0b00));
+    USART3.ctlr1().modify(|w| {
+        w.set_m(false);
+        w.set_pce(false);
+        w.set_te(true);
+        w.set_re(true);
+        w.set_idleie(true);
+    });
+    USART3.ctlr3().modify(|w| {
+        w.set_dmat(true);
+        w.set_dmar(true);
+    });
+    let brr0 = APB1_HZ / DEFAULT_BAUD;
+    USART3.brr().write(|w| w.0 = brr0);
+    USART3.ctlr1().modify(|w| w.set_ue(true));
+    recompute_fire_comp(brr0);
+}
+
+/// TIM2 master + TIM3 high-half, forming the hardware atomic 32-bit IC
+/// tick32 path. TIM2 PSC=0, ARR=0xFFFF, CKD=DIV_1 pins fDTS at HCLK =
+/// 144 MHz; the IC1F filter is set per-baud by
+/// `capture::apply_filter_for_brr` from the LUT in TIMING.md §4
+/// (largest delay ≤ brr/3). No CC walker cadence: the event-driven
+/// walker runs off USART3 IDLE + DMA1_CH6/CH3 HT/TC, not TIM2 IRQs.
+///
+/// Hardware atomic 32-bit IC capture per TIMING.md §3.3:
+///
+/// - CTLR2.TI1S=1 routes XOR(CH1_pin, CH2_pin, CH3_pin) → TI1 internal.
+///   PA0/PA1 (CH1/CH2 under TIM2_RM=0b10) are pulled down in
+///   `init_pins`, so TI1 mirrors PB10's falling edges directly.
+/// - CCMR1.CC1S=TI4 (= "normal" CC1 ← TI1). CCER CC1P=1 falling,
+///   CC1E=1. DMAINTENR CC1DE=1 kicks DMA1_CH5 (TIM2.CCR1 → low half of
+///   every IC entry).
+/// - CTLR2.MMS=COMPARE_PULSE: TRGO emits a one-cycle pulse on every
+///   CC1IF set, driving TIM3 TRC → TIM3.CCR1 latches the matching high
+///   half. The pair forms an atomic 32-bit tick.
+///
+/// The 1-cycle TRC-sync race window at every TIM2 wrap leaves bad pairs
+/// off-by-+65536 (combined > ceiling), which the walker detects and
+/// corrects by subtracting one wrap.
+///
+/// Phase-lock startup: enable TIM3.CEN before TIM2.CEN so TIM3's
+/// prescaler leads TIM2's counter by the AHB write gap. TIM3.CNT
+/// increments a few cycles before TIM2 wraps, biasing any wrap-race IC
+/// pair to off-by-+65536 which the walker detects unambiguously.
+fn init_tim2_tim3_capture() {
+    TIM2.psc().write_value(0);
+    TIM2.atrlr().write_value(0xFFFF);
+    TIM2.ctlr1().write(|w| {
+        w.set_cen(false);
+        w.set_arpe(false);
+        w.set_ckd(Ckd::DIV_1);
+    });
+    TIM2.ctlr2().modify(|w| {
+        w.set_mms(Mms::COMPARE_PULSE);
+        w.set_ti1s(true);
+    });
+    TIM2.chctlr_input(0).modify(|w| {
+        // CCMR1. CC1S in bits [1:0]. IC1F (bits [7:4]) is written
+        // separately by `capture::init` from the per-baud LUT.
+        w.set_ccs(0, CcmrInputCcs::TI4); // normal mapping → IC1 ← TI1
+    });
+    TIM2.ccer().modify(|w| {
+        w.set_ccp(0, true); // CC1P=1 falling edge
+        w.set_cce(0, true); // CC1E=1
+    });
+    TIM2.dmaintenr().write(|w| {
+        w.set_ccde(0, true); // CC1DE (IC capture → DMA1_CH5)
+    });
+    TIM2.swevgr().write(|w| w.set_ug(true)); // load PSC/ARR
+    TIM2.intfr().write(|w| {
+        w.set_uif(false);
+        w.set_ccif(0, false);
+        w.set_ccif(1, false);
+        w.set_ccif(2, false);
+        w.set_ccif(3, false);
+    });
+
+    // TIM3: PSC=0xFFFF → CK_CNT = HCLK/65536 = TIM2 wrap rate. No slave
+    // mode (SMS=0); TS=1 keeps TRC routed to ITR1 = TIM2 TRGO.
+    // CCMR1.CC1S=TRC latches TIM3.CCR1 on every TRGO pulse; CCER CC1P=0
+    // picks the rising edge of the one-cycle pulse. DMAINTENR CC1DE=1
+    // kicks DMA1_CH6 (TIM3.CCR1 → high half of every IC entry).
+    TIM3.psc().write_value(0xFFFF);
+    TIM3.atrlr().write_value(0xFFFF);
+    TIM3.ctlr1().write(|w| {
+        w.set_cen(false);
+        w.set_arpe(false);
+    });
+    TIM3.smcfgr().modify(|w| {
+        w.set_sms(0); // disable slave clock — TIM3 free-runs on CK_INT
+        w.set_ts(1); // ITR1 = TIM2 TRGO → TRC
+    });
+    TIM3.chctlr_input(0).modify(|w| {
+        w.set_ccs(0, CcmrInputCcs::TRC); // CC1 from TRC
+    });
+    TIM3.ccer().modify(|w| {
+        w.set_ccp(0, false); // CC1P=0 rising edge of TRGO pulse
+        w.set_cce(0, true);
+    });
+    TIM3.dmaintenr().write(|w| {
+        w.set_ccde(0, true); // CC1DE → DMA1_CH6
+    });
+    TIM3.swevgr().write(|w| w.set_ug(true));
+    TIM3.intfr().write(|w| {
+        w.set_uif(false);
+        w.set_ccif(0, false);
+    });
+
+    critical_section::with(|_| {
+        TIM3.ctlr1().modify(|w| w.set_cen(true));
+        TIM2.ctlr1().modify(|w| w.set_cen(true));
+    });
+}
+
+/// TIM4 OPM. PSC=0 (1:1 with tick32). CR1: OPM=1 (auto-clear CEN after
+/// first UEV), URS=1 (UG software event resets CNT without generating a
+/// UEV that would spuriously kick CC2). DIER CC2DE=1 routes CC2 compare
+/// match to DMA1_CH4.
+fn init_tim4_scheduler() {
+    TIM4.psc().write_value(TIM4_PSC);
+    TIM4.atrlr().write_value(0xFFFF);
+    TIM4.ctlr1().write(|w| {
+        w.set_cen(false);
+        w.set_opm(true);
+        w.set_urs(Urs::COUNTERONLY);
+        w.set_arpe(false);
+    });
+    TIM4.dmaintenr().write(|w| {
+        w.set_ccde(1, true); // CC2DE (channels 0-indexed)
+    });
+}
+
+/// DMA1_CH2 = USART3_TX + DMA1_CH4 = TIM4_CC2 stamper that flips CH2.EN
+/// on fire. CH2.EN stays clear at init; `load_payload` reloads
+/// MAR/NDTR with EN=0 between fires. CH4 is circular single-word: copy
+/// ARMED_CH2_CFGR_WORD → DMA1_CH2.CR. NDTR=1 auto-reloads each cycle
+/// (CIRC=1), so we never re-arm CH4 from software. CH4.EN=1
+/// permanently — the CC2DE gate fires it, not EN.
+fn init_dma_tx() {
+    let ch2 = DMA1.ch(1);
+    ch2.par().write_value(USART3.datar().as_ptr() as u32);
+    ch2.cr().write(|w| {
+        w.set_dir(Dir::FROMMEMORY);
+        w.set_minc(true);
+        w.set_pinc(false);
+        w.set_circ(false);
+        w.set_msize(Size::BITS8);
+        w.set_psize(Size::BITS8);
+        // VERYHIGH is defensive: today only CH2 + CH4 are active so
+        // inter-channel arbitration doesn't trigger, but pins the fire
+        // path at top priority against any future DMA channel we add.
+        // (Empirically does NOT tighten TX wire-edge jitter — the
+        // observed loopback variance is CPU-vs-DMA AHB arbitration,
+        // which channel-priority bits don't control.)
+        w.set_pl(Pl::VERYHIGH);
+        w.set_tcie(false);
+    });
+
+    // Precompute the EN=1 CFGR word DMA1_CH4 stamps on fire. Same bits
+    // as the disarmed config above, plus EN=1.
+    let mut armed = ch32_metapac::dma::regs::Cr(0);
+    armed.set_dir(Dir::FROMMEMORY);
+    armed.set_minc(true);
+    armed.set_pinc(false);
+    armed.set_circ(false);
+    armed.set_msize(Size::BITS8);
+    armed.set_psize(Size::BITS8);
+    armed.set_pl(Pl::VERYHIGH); // mirror CH2 PL above so the stamp doesn't drop priority on fire
+    armed.set_tcie(false);
+    armed.set_en(true);
+    // SAFETY: ARMED_CH2_CFGR_WORD is only read by DMA1_CH4 (set up
+    // below). CH4 isn't enabled yet, so no concurrent reader.
+    unsafe { ptr::write_volatile(ARMED_CH2_CFGR_WORD.get(), armed.0) };
+
+    let ch4 = DMA1.ch(3);
+    ch4.par().write_value(ch2.cr().as_ptr() as u32);
+    ch4.mar().write_value(ARMED_CH2_CFGR_WORD.get() as u32);
+    ch4.ndtr().write(|w| w.set_ndt(1));
+    ch4.cr().write(|w| {
+        w.set_dir(Dir::FROMMEMORY);
+        w.set_minc(false);
+        w.set_pinc(false);
+        w.set_circ(true);
+        w.set_msize(Size::BITS32);
+        w.set_psize(Size::BITS32);
+        w.set_pl(Pl::VERYHIGH); // mirror CH2 PL above; defensive against future inter-channel contention
+        w.set_tcie(false);
+        w.set_en(true);
+    });
 }
 
 /// Load `payload` and fire when `tick32` reaches `at`. Held under a
