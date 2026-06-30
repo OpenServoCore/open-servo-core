@@ -464,13 +464,10 @@ pub fn schedule_fire_after_idle(payload: &[u8], after_idle_ticks: u32) -> Result
     })
 }
 
-/// Fire `payload` as the bus master with no precise timing — the chip
-/// commands a near-future fire at `read_systick() + FIRE_COMP_TICKS +
-/// MASTER_MARGIN_HEADROOM_TICKS` through [`schedule_or_fire_now`], so the
-/// scheduled (TIM4 OPM) path always wins. Wire-start lands ~3.5 µs after
-/// the call; `FIRED_TICK` is the commanded target tick (set by
-/// `schedule_or_fire_now`), so `LAST?` returns the actual wire-start time
-/// regardless of which entry fired — no host-side TX-pipeline math.
+/// Fire `payload` as the bus master with no precise timing — commands a
+/// near-future fire at `now + FIRE_COMP_TICKS + MASTER_MARGIN_HEADROOM_TICKS`
+/// so the scheduled (TIM4 OPM) path always wins and `FIRED_TICK` reflects
+/// the actual wire-start tick. Wire-start lands ~3.5 µs after the call.
 ///
 /// Preempts any pending `schedule_fire`; coexists with a pending
 /// `schedule_fire_after_idle` (separate buffer). Waits for any in-flight
@@ -478,16 +475,16 @@ pub fn schedule_fire_after_idle(payload: &[u8], after_idle_ticks: u32) -> Result
 /// truncate the previous frame.
 pub fn fire_now_master(payload: &[u8]) -> Result<(), ArmError> {
     wait_tx_complete().map_err(|TxTimeout| ArmError::Busy)?;
-    critical_section::with(|_| -> Result<(), ArmError> {
-        disarm_tim4();
-        load_payload_main(payload)?;
+    // CS keeps the `at` computation atomic with `schedule_fire` so an ISR
+    // between read_tick32 and the schedule can't eat the
+    // MASTER_MARGIN_HEADROOM and push us onto the immediate-fire branch.
+    // Nested CS (schedule_fire opens its own) refcount-stacks under qingke.
+    critical_section::with(|_| {
         let comp = FIRE_COMP_TICKS.load(Ordering::Relaxed);
         let at = read_tick32()
             .wrapping_add(comp)
             .wrapping_add(MASTER_MARGIN_HEADROOM_TICKS);
-        crate::debug::clear();
-        schedule_or_fire_now(at);
-        Ok(())
+        schedule_fire(payload, at)
     })
 }
 
