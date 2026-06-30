@@ -14,18 +14,23 @@ Bus is single-pair half-duplex DXL 2.0 up to 3 Mbaud.
 One clock, one base, no software wrap counter on the hot path.
 
 - **TIM2** — PSC=0, ARR=0xFFFF, free-running at HCLK. Low 16 bits.
-  MMS=update, so each wrap fires TRGO.
-- **TIM3** — slave mode, TS=ITR1 (= TIM2 TRGO), SMS=ext-clock-mode-1.
-  Increments exactly once per TIM2 wrap. High 16 bits.
+  MMS=COMPARE_PULSE: TRGO pulses on every CC1IF set (§3 IC capture).
+- **TIM3** — free-running, PSC=0xFFFF, ARR=0xFFFF, no slave mode.
+  Increments once per HCLK/65536 cycles = same rate as TIM2 wraps. High
+  16 bits.
 
 Combined stamp:
 
     tick32 = (TIM3.CNT << 16) | TIM2.CNT
 
-Hardware-locked: TIM3 only advances on the same silicon edge that wraps
-TIM2.CNT to zero. No race in the silicon between high and low halves, no
-software wrap bookkeeping. The read protocol that recovers `tick32` from
-the two registers atomically lives in §3.3.
+Phase-locked at init: TIM3.CEN is asserted before TIM2.CEN inside a
+critical section, so TIM3's prescaler leads TIM2's counter by the AHB
+write gap (~3–6 cycles). TIM3.CNT therefore increments a few cycles
+*before* each TIM2 wrap. The 1-cycle race window where TIM3 has just
+ticked but TIM2 hasn't yet wrapped is detected and corrected as
+described in §3.3. The `read_tick32()` read protocol (§3.3) absorbs
+this offset via its retry-on-wrap loop — peripheral reads span ~10
+cycles, comfortably wider than the 1-cycle race.
 
 | Quantity     | Value           |
 | ------------ | --------------- |
@@ -49,13 +54,29 @@ around that contract.
 
 ## 3. Wire-side capture (RX)
 
-Two GPIO pins bridged externally to one DXL line, three peripheral block
+Two GPIO pins bridged externally to one DXL line, four peripheral block
 taps, zero CPU per edge.
 
     PB10 ──┬── USART3_TX (AF OD) ◄─ DMA1_CH2 ◄─ TX burst (per-fire, §5)
            │
-           └── TIM2_CH3 IC      ─► DMA1_CH1 ─► falling_ring (internal)
-               (falling, CC-filtered; PB10 via TIM2_RM=0b10 partial remap)
+           └── TIM2_CH3 pin ─┐
+                             ├── TI1 = TI1 XOR TI2 XOR TI3 (CTLR2.TI1S=1)
+    PA0 ─── TIM2_CH1 pin ──┘     │
+    PA1 ─── TIM2_CH2 pin ──┘     │
+    (both pulled-down)           │
+                                 ▼
+                       TIM2_CC1 IC (CCMR1.CC1S=TI4, CCER.CC1P=1 falling,
+                                    IC1F per-baud)
+                                 │
+                                 ├──► DMA1_CH5 ─► falling_lo (low 16)
+                                 │
+                                 └──► TIM2 TRGO pulse (MMS=COMPARE_PULSE)
+                                            │
+                                            ▼
+                                  TIM3_CC1 IC (CCMR1.CC1S=TRC, CCER.CC1P=0
+                                               rising-edge of TRGO pulse)
+                                            │
+                                            └──► DMA1_CH6 ─► falling_hi (high 16)
            │
            │   external jumper:  PB10 ───┬──── DXL bus line
            │                             │
@@ -78,44 +99,58 @@ half-booted state that doesn't recover when USB later supplies real
 power. PB10/PB11 are clean GPIO breakouts with no onboard pulls (verified
 against schematic v1.1).
 
-TIM2_CH3 input capture taps PB10 via GPIO_INDR; no AFIO conflict because
-IC reads the input register regardless of the USART block's output state.
-TIM2_CH4 (PB11 by the same remap) is unused — PB10 and PB11 see
-electrically identical edges (same wire node), so the IC stays on CH3 for
-mechanical compatibility with the existing DMA channel and CC-filter
-calibration.
+**TI1S XOR routing.** TIM2 CC1 doesn't have a direct path to PB10 under
+any AFIO remap. The fix is `CTLR2.TI1S=1`, which routes TI1 internal =
+XOR(CH1_pin, CH2_pin, CH3_pin). With `TIM2_RM=0b10` putting CH3 on
+PB10, CH1 on PA0, and CH2 on PA1 — and PA0/PA1 configured as input
+pull-down — TI1 collapses to PB10's signal alone. CC1 then captures
+the falling edge through the standard IC pipeline. PB11 (CH4 under the
+same remap) is unused.
 
-DMA1_CH1 streams 16-bit IC captures into `falling_ring`. **No per-edge ISR**
-— at 3 Mbaud worst case that's the difference between a usable instrument
-and a wedged one. The walker (§3.4) drains the ring on periodic and
-event-driven triggers, forward-walks both rings in lockstep, and produces
-per-byte stamps.
+**Atomic 32-bit IC.** Every PB10 falling edge fires TIM2 CC1IF, which
+triggers two events on the same silicon cycle: (a) TIM2.CCR1 latches
+the low half via DMA1_CH5, and (b) TRGO pulses (MMS=COMPARE_PULSE)
+into TIM3's TRC, latching TIM3.CCR1 high half via DMA1_CH6. The pair
+forms a 32-bit tick that the walker reads without any software lift
+step. A 1-cycle TRC synchronization window per TIM2 wrap can produce
+an off-by-+65536 pair; §3.3 documents detection and correction.
+
+**No per-edge ISR.** At 3 Mbaud worst case that's the difference
+between a usable instrument and a wedged one. The walker (§3.4)
+drains the rings on DMA HT/TC and USART IDLE triggers, forward-walks
+both rings in lockstep, and produces per-byte stamps.
 
 ### 3.1 Ring layout
 
 Three host-facing rings produced by the walker plus three internal DMA
-staging buffers (one parallel to `falling_ring` for pre-lifted ticks):
+staging buffers. The IC pair is split across two DMA channels writing
+parallel u16 rings; the walker reads them in lockstep through a single
+`falling_at(idx, ceiling)` accessor that combines and wrap-race-corrects.
 
 | Ring             | Width | Producer  | Role                                       |
 |------------------|-------|-----------|--------------------------------------------|
-| `falling_ring`   | u16   | DMA1_CH1  | internal — raw IC stamps                   |
-| `ic_ticks_ring`  | u32   | walker    | internal — pre-lifted `tick32` per IC entry|
+| `falling_lo[i]`  | u16   | DMA1_CH5  | internal — TIM2.CCR1, low 16 of IC tick    |
+| `falling_hi[i]`  | u16   | DMA1_CH6  | internal — TIM3.CCR1, high 16 of IC tick   |
 | `rx_ring[i]`     | u8    | DMA1_CH3  | internal — USART RX bytes, walker-only     |
 | `bytes_ring[i]`  | u8    | walker    | byte value at stamp time                   |
-| `ts_ring[i]`     | u32   | walker    | byte start tick (lifted to `tick32`)       |
+| `ts_ring[i]`     | u32   | walker    | byte start tick (`tick32`)                 |
 | `flags_ring[i]`  | u8    | walker    | anomaly flags per byte                     |
 
 `bytes_ring`, `ts_ring`, and `flags_ring` are **parallel arrays** indexed
 in lockstep. One byte's complete record is `(bytes[i], ts[i], flags[i])`.
 
-`ic_ticks_ring` is parallel to `falling_ring` and populated by `walk()`'s
-pre-lift loop: every newly-deposited IC entry is lifted to its u32
-`tick32` against the current walker call's `lift_ceiling`. The host-facing
-`BICSNAP` diagnostic reads from `ic_ticks_ring`, so it returns
-correctly-wrapped ticks regardless of how long ago each entry was
-captured — a single late `lift_ceiling` carried back to the host would
-otherwise miswrap entries deposited > one TIM2 wrap (~455 µs) earlier in
-the burst (e.g. 1 Mbaud Ping at ~500 µs).
+`falling_lo` / `falling_hi` are parallel u16 rings, both `FALL_LEN`
+entries deep, written by separate DMA channels on the same TIM2 TRGO
+pulse. DMA1_CH5 (TIM2.CCR1) services first per same-priority arbitration,
+DMA1_CH6 (TIM3.CCR1 via TRC) trails by one DMA-transfer cycle. The
+walker tracks **CH6's NDTR** as `falling_total` — when CH6 has
+decremented past entry `i`, both halves of slot `i` are written and the
+combined 32-bit tick is safe to read. `falling_at(idx, ceiling)` is the
+single read accessor: it reads both halves, combines `(hi << 16) | lo`,
+and applies the §3.3 wrap-race correction. The host-facing `BICSNAP`
+diagnostic uses the same accessor, so it returns sub-µs-accurate ticks
+regardless of how long ago each entry was captured — no per-wrap window
+limit.
 
 The walker mirrors the byte value from `rx_ring` into `bytes_ring` at
 stamp time. `rx_ring` is a circular DMA buffer the walker reads from at
@@ -136,15 +171,16 @@ walker hazard.
 
 | ISR vector       | Trigger                            | Phase tag              |
 |------------------|------------------------------------|------------------------|
-| `DMA1_CHANNEL1`  | IC ring half-transfer / complete   | `TRACE_PHASE_IC_HT/TC` |
+| `DMA1_CHANNEL6`  | IC ring half-transfer / complete   | `TRACE_PHASE_IC_HT/TC` |
 | `DMA1_CHANNEL3`  | RX ring half-transfer / complete   | `TRACE_PHASE_RX_HT/TC` |
 | `USART3`         | USART3 line-idle (IDLE flag)       | `TRACE_PHASE_IDLE`     |
 
-DMA HT fires at half-ring fill, TC at full-fill — the walker drains
-promptly without waiting for a separate cadence. Time-to-HT scales with
-edge density at the configured baud and stays well under one u16 wrap of
-TIM2 (≈ 455 µs at 144 MHz) at every baud, so §3.4's lift never crosses
-a wrap boundary mid-walk.
+CH6 is the IC ring's trailing DMA writer (§3.1); its HT/TC therefore
+guarantees both halves of every entry up to the cursor are written. CH5
+fires the same TIM2 TRGO pulse but ~1 DMA-transfer cycle earlier and is
+left without IRQ. DMA HT fires at half-ring fill, TC at full-fill — the
+walker drains promptly without waiting for a separate cadence. Time-to-
+HT scales with edge density at the configured baud.
 
 USART3 IDLE fires one character-time after the wire goes idle. It does
 two things — both signal-only per `[[no_idle_timing]]`, neither derives a
@@ -160,40 +196,61 @@ tick from elapsed idle time:
    `last_anchor + 10·bit_ticks` prediction that would sit one inter-
    packet quiet window (RDT) before reality.
 
-TIM2 CC3 stays in input-capture mode driving DMA1_CH1; its CCxDE bit is
-set, its CCxIE is not — capture stays zero-CPU per edge. No TIM2 update
-or compare interrupts feed the walker.
+TIM2 CC1 (TI1S XOR routing per §3) and TIM3 CC1 (TRC) drive their DMA
+requests via CCxDE; neither CCxIE is enabled. Capture stays zero-CPU
+per edge. No TIM2 update or compare interrupts feed the walker.
 
-### 3.3 Constructing `lift_ceiling`
+### 3.3 Constructing `ceiling`
 
-`lift_ceiling` is the §3.4 lift formula's reference point — a **ceiling
-on raw IC entry CNTs visible at this walker entry**. Each entry lifts
-backward against it into the correct TIM3 wrap.
+`ceiling` is the wrap-race detection reference for `falling_at(idx,
+ceiling)`. Since the IC pair is captured atomically in hardware (§3),
+there's no per-wrap lift step; the only correction needed is the
+1-cycle TRC-sync race that can mis-pair a low half from before TIM2
+wraps with a high half from after TIM3 increments.
 
-`walk()` constructs it by reading `read_tick32()` **after** refreshing
-the IC NDTR snapshot:
+`walk()` constructs `ceiling` by reading `read_tick32()` **after**
+refreshing the IC NDTR snapshot:
 
-    falling_total = refresh_falling_total()    // pulls NDTR, advances u32 cursor
+    falling_total = refresh_falling_total()    // CH6 NDTR → u32 cursor
     rx_total      = refresh_rx_total()
-    lift_ceiling  = read_tick32()              // (TIM3.CNT << 16) | TIM2.CNT
+    ceiling       = read_tick32()              // (TIM3.CNT << 16) | TIM2.CNT
 
-The ordering matters. Every IC entry reflected in `falling_total` has
-already been latched by hardware at `refresh_falling_total()` time, so
-its raw u16 is ≤ `lift_ceiling as u16` after the subsequent
-`read_tick32()`. An entry latched between the NDTR refresh and the
-`read_tick32()` call isn't counted in this walker's `falling_total` and
-won't be processed until the next trigger.
+The ordering matters. Every IC pair reflected in `falling_total` was
+latched by hardware before the subsequent `read_tick32()` call, so
+`combined ≤ ceiling` for every valid entry. An entry latched between
+the NDTR refresh and the `read_tick32()` call isn't counted in this
+walker's `falling_total` and falls to the next trigger.
 
-`lift_ceiling.lo`'s specific value within the wrap doesn't change the
-lifted u32 — the formula returns the same value for any ceiling whose
-hi half matches the entry's wrap, as long as `ceiling.lo ≥ entry.lo`.
-The live-read formula therefore costs no precision over the previous
-design's phase-derived constant; it just trades one MMIO read for
-robustness against trigger-source phase variation.
+**Wrap-race correction.** TIM3 phase-leads TIM2 by the AHB write gap at
+init (§1). TIM3.CNT therefore increments a few cycles BEFORE each TIM2
+wrap. If a capture latches inside that 1-cycle window:
+
+- TIM2.CCR1 = 0xFFFF (still pre-wrap)
+- TIM3.CCR1 = NEW_hi (TIM3 just ticked, latched via TRC one sync cycle later)
+- combined = (NEW_hi << 16) | 0xFFFF = actual + 65536
+
+Detection is mathematically disjoint from valid entries: bad pairs have
+`combined > ceiling` (NEW_hi rolled forward while actual entry's tick is
+still in OLD_hi); valid pairs have `combined ≤ ceiling`. Correction:
+
+    if combined != ceiling
+       && combined.wrapping_sub(ceiling) <= u32::MAX / 2 {
+        combined.wrapping_sub(1 << 16)        // raced — subtract one wrap
+    } else {
+        combined                               // valid
+    }
+
+One arithmetic compare plus one conditional subtract per entry. Zero
+false positives (the cyclic distance check is symmetric and the
+`!= ceiling` guard excludes the exact-tie case where a legitimate edge
+happened to capture at the same tick we read in `read_tick32`).
 
 `read_tick32()` is a single read pair (TIM3.CNT, TIM2.CNT) with a
 coherence loop only on the rare wrap-mid-read; cost is well under one
-bit-time even at 3 Mbaud.
+bit-time even at 3 Mbaud. The phase offset between TIM3 (free-running)
+and TIM2 doesn't break the read protocol — peripheral reads span ~10
+cycles, much wider than the 1-cycle race window, so `lo_2 < lo_1`
+triggers retry whenever a wrap could have raced the read.
 
 ### 3.4 Predict-and-snap PLL walker
 
@@ -207,40 +264,26 @@ Walker state across calls (entire surface):
 Those four fields plus the `DESYNCED` sticky flag (§3.5) are the
 walker's entire mutable state.
 
-#### Lift
+#### Reading IC entries
 
-For each IC entry to be classified, lift to u32 by walking **backward**
-from `lift_ceiling`, which `walk()` constructs by reading `tick32`
-immediately after refreshing the IC NDTR snapshot. The ordering
-guarantees `lift_ceiling.lo ≥ entry.lo` for every entry in
-`[walked, falling_total)` — entries deposited between the NDTR refresh
-and the `tick32` read aren't in this walker's snapshot and fall to the
-next trigger.
-
-    delta  = (lift_ceiling as u16).wrapping_sub(entry)   // u16 modular
-    lifted = lift_ceiling.wrapping_sub(delta as u32)
-
-`lifted` is the most recent u32 whose low 16 bits equal `entry`, always
-≤ `lift_ceiling`. Valid as long as actual age of the entry is < one u16
-wrap of TIM2 (≈ 455 µs at 144 MHz). Realistic DXL bursts at every
-supported baud keep this true: high-edge-density traffic fires DMA1_CH1
-HT well inside one wrap, and sparse traffic ends in USART3 IDLE before
-the IC ring half-fills. Sustained low-edge-density bursts at slow bauds
-(e.g. all-`0xFF` at 9600) could in principle let an entry age past one
-wrap; the §3.5 `ic_overrun` backstop catches the upper bound.
-Mirrors `firmware/lib/drivers/.../edge_parser::lift` in production
-firmware.
+Each entry is read via `falling_at(idx, ceiling)`, which combines the
+parallel `falling_lo[idx]` / `falling_hi[idx]` u16 halves into a u32
+tick and applies the §3.3 wrap-race correction. No backward-lift step,
+no per-wrap window limit — the hardware delivers a 32-bit pair
+atomically and `ceiling` is only used to detect the 1-cycle TRC-sync
+race. Realistic DXL bursts at any supported baud (down to 57.6 kbaud
+verified by tool-pirate-tune) work identically.
 
 #### Classification
 
 The algorithm is **predict-and-snap with closest-edge tiebreak**, with
-`SNAP_BITS = 3` half-width on the snap window.
+`SNAP_BITS = 1` half-width on the snap window.
 
 For each byte `B` newly present in `rx_ring`:
 
 1. **Cold-start path (`has_anchor == false`).** No prediction available
    yet, so anchor on the next unconsumed IC entry. Yield mid-byte if
-   `lift_ceiling < first_edge + 10·bit_ticks` — more interior edges of
+   `ceiling < first_edge + 10·bit_ticks` — more interior edges of
    this byte may still be in flight, and anchoring now would risk a
    silent slip if one arrives between iterations. Otherwise
    `chosen_anchor = first_edge`; advance `walked` past it. This path
@@ -251,7 +294,7 @@ For each byte `B` newly present in `rx_ring`:
 
 2. **Steady-state path (`has_anchor == true`).** Predict
    `predicted = last_anchor + 10·bit_ticks`. Yield mid-byte if
-   `lift_ceiling < predicted + SNAP_BITS·bit_ticks` — a real start edge
+   `ceiling < predicted + SNAP_BITS·bit_ticks` — a real start edge
    inside the snap window may still be inbound, and stamping a free-run
    miss now would overwrite a recoverable hit at the next trigger.
 
@@ -276,22 +319,28 @@ For each byte `B` newly present in `rx_ring`:
    `(B, start_tick, flags)` into the three parallel rings; update
    `last_anchor = chosen_anchor`; advance `byte_head`.
 
-#### Why `SNAP_BITS = 3`
+#### Why `SNAP_BITS = 1`
 
-The snap has to absorb the worst-case inter-byte hardware idle that
-upstream chips drive between bytes inside a Status burst. The bit-time
-unit normalizes HCLK out: `SNAP_BITS · bit_ticks` is `SNAP_BITS` bit-
-times of wall-clock regardless of who's measuring, so 3 here means
-"3 bit-times of inter-byte gap variation tolerated." Wider hurts
-glitch resistance — a wire glitch surviving the CC filter is more
-likely to land closer to `predicted` than the real start edge as the
-window grows. Narrower drops bytes whose upstream-chip TX hardware
-idle exceeded the window, free-running on prediction and flagging
+The snap has to absorb whatever shifts the real wire-side start edge
+away from `predicted = last_anchor + 10·bit_ticks`. The bit-time unit
+normalizes HCLK out: `SNAP_BITS · bit_ticks` is `SNAP_BITS` bit-times
+of wall-clock regardless of who's measuring, so 1 here means "1 bit-
+time of inter-byte gap variation tolerated." Wider hurts glitch
+resistance — a wire glitch surviving the CC filter is more likely to
+land closer to `predicted` than the real start edge as the window
+grows. Narrower drops bytes whose upstream-chip TX hardware idle
+exceeded the window, free-running on prediction and flagging
 `COUNT_UNDER` until the chain recovers.
 
-3 was the value that bottomed out the off-line classifier comparison
-against the captured corpus. Tighten only after wire-side telemetry
-shows inter-byte gaps are systematically smaller in real operation.
+1 is ~50× the observed loopback jitter floor: tool-pirate-tune stage 1
+reports max inter-byte deviation `dev ≤ 24 ticks` at the slowest
+supported baud (57.6 kbaud, `brr = 2500`) — 0.01 bit-times. At every
+faster baud `dev = 0`. The DXL spec allows the upstream chip to drive
+up to ~3 bit-times of hardware idle inside a Status chain, so widen to
+2 or 3 if real-servo telemetry shows mid-chain bytes missing. The
+loopback path cannot exercise this directly — both halves of the
+PB10/PB11 bridge are the same chip — so widening is a wire-telemetry
+decision, not a tool-pirate-tune one.
 
 #### Why predict-and-snap
 
@@ -320,7 +369,7 @@ PLL avoids the cascade two ways:
 #### Trade-off
 
 Cold-start re-anchors on the next unconsumed IC entry. A stale glitch
-sitting in `falling_ring` from before the cold-start moment becomes
+sitting in the IC ring from before the cold-start moment becomes
 byte 0's start tick — the same vulnerability the lockstep walker had
 at **every** byte. PLL hardens steady-state behaviour without rescuing
 cold start. The trip points span boot/RESET/set_baud (the host re-
@@ -373,7 +422,7 @@ When either trips:
 
     DESYNC_CAUSE.compare_exchange(0, cause, …)   // first trip wins
     DESYNCED.store(true, Release)
-    // walker stops emitting; rx_ring + falling_ring keep filling but
+    // walker stops emitting; rx_ring + falling_lo/hi keep filling but
     // are forfeit — next RESET drops them.
 
 Subsequent host commands return `ERR desync <cause>` — except `STATUS`
@@ -404,21 +453,19 @@ keep ISR latency well under the IC ring's HT-to-fill window.
 ### Timing slack
 
 The PLL snap absorbs whatever shifts the real wire-side start edge
-away from `predicted = last_anchor + 10·bit_ticks`. The known
-contributors are pirate-vs-upstream clock drift (sub-bit_ticks for
-crystal-vs-HSI pairs) and transceiver / DMA arbiter latency
-(sub-bit_ticks), but the dominant contributor in the captured corpus
-was the upstream chip's inter-byte spacing on TX, which empirically
-reached the `±2..3·bit_ticks` range on slow-baud Status replies.
+away from `predicted = last_anchor + 10·bit_ticks`. Known contributors:
+pirate-vs-upstream clock drift (sub-bit_ticks for crystal-vs-HSI
+pairs), DMA arbiter latency (sub-bit_ticks), and upstream-chip
+inter-byte hardware idle inside a Status chain (DXL spec: up to
+~3 bit_ticks).
 
-`SNAP_BITS = 3` sized empirically: `2` showed a ~14% per-byte miss
-rate against the corpus, `3` showed ~1.2%, `4`+ wasn't probed but
-trades glitch resistance for headroom we didn't need. The root cause
-of the slow-baud inter-byte spread isn't pinned down in this
-codebase — telemetry from wire-side captures across more chip families
-would say whether it's PFIC + DMA latency, software inter-byte pacing,
-ringing on the bench wiring, or some mix. The snap width is the knob
-that hides this unknown from the host.
+`SNAP_BITS = 1` sized against tool-pirate-tune loopback measurements:
+`dev ≤ 24 ticks` at 57.6 kbaud (`brr = 2500` → 0.01 bit-times), and
+`dev = 0` at every faster baud. 1 bit-time is ~50× the observed
+jitter floor under loopback. Real-servo chains may expose the
+upstream-idle contributor — widen toward 2 or 3 if the host sees
+mid-chain `COUNT_UNDER` flags on Status replies; the snap width is
+the knob that hides this unknown from the host.
 
 ### Anomaly flags
 
@@ -457,13 +504,14 @@ the host gets an explicit error on the next command (§3.5).
 
 ### CC filter delay
 
-TIM2 CC3 IC's digital filter (CCMR2 IC3F + CKD) suppresses glitches narrower
-than `N·t_sample`. It adds a **systematic per-edge delay** of `N·t_sample`,
-identical across all edges — calibratable shift, not jitter widening.
+TIM2 CC1 IC's digital filter (CCMR1 IC1F + CKD) suppresses glitches
+narrower than `N·t_sample`. It adds a **systematic per-edge delay** of
+`N·t_sample`, identical across all edges — calibratable shift, not
+jitter widening.
 
 The filter is **retuned per baud** on every `set_baud`. CKD is pinned at
 `DIV_1` (CKD=00, fDTS = HCLK = 144 MHz) so the whole ICxF table is
-reachable without bouncing CKD; only the IC3F nibble in CCMR2 moves.
+reachable without bouncing CKD; only the IC1F nibble in CCMR1 moves.
 
 The picker rule is **largest filter delay ≤ brr/3 (≈ 0.333·bit time)** —
 *tighter* than production's natural pick at 48 MHz HCLK. The bench wiring
@@ -485,7 +533,7 @@ anchor-loss trials depending on instantaneous VDD/Schmitt noise.
 
 Per-baud picks (HCLK = 144 MHz, fDTS = 144 MHz):
 
-| Baud | bit (ns) | IC3F | fSAMPLING | N | delay (ns) | delay (ticks) |
+| Baud | bit (ns) | IC1F | fSAMPLING | N | delay (ns) | delay (ticks) |
 |------|----------|------|-----------|---|------------|---------------|
 | 3 M    | 333    | 0101 | fDTS/2 = 72 MHz  | 8 | 111    | 16   |
 | 2 M    | 500    | 0110 | fDTS/4 = 36 MHz  | 6 | 167    | 24   |
@@ -503,7 +551,7 @@ external time comparisons (e.g. against TIM4 OPM fire deadlines) compose
 cleanly.
 
 A `set_baud` while bytes are in flight produces a brief window where
-old-filter and new-filter IC entries could coexist in `falling_ring`;
+old-filter and new-filter IC entries could coexist in the IC ring;
 the matching `reset_walker()` call drops them to `falling_total` so the
 next byte anchors on a fresh-filter edge.
 
@@ -529,20 +577,25 @@ so the timer-fire path covers the common case.
 | Peripheral | Role                                                                |
 | ---------- | ------------------------------------------------------------------- |
 | TIM1       | unused (reserved for future debug instrumentation)                  |
-| TIM2       | master, low 16 of `tick32`; CKD=`DIV_1` (fDTS = HCLK = 144 MHz);    |
-|            | CC3 IC on PB10 + per-baud IC3F filter, DMA1_CH1;                    |
-|            | UEV + CC1/CC2/CC4 quarter-wrap walker cadence (§3.2); TIM2_RM=0b10  |
-|            | partial remap for CH3/CH4                                           |
-| TIM3       | slave, high 16 of `tick32` (TIM2 TRGO → ITR1, ext-clock-mode-1)     |
+| TIM2       | low 16 of `tick32`; PSC=0, ARR=0xFFFF, CKD=`DIV_1`; CTLR2.TI1S=1    |
+|            | + CCMR1.CC1S=TI4 + IC1F per-baud + CCER.CC1P=1 → CC1 IC on PB10    |
+|            | via XOR routing; CTLR2.MMS=COMPARE_PULSE → TRGO pulses TIM3 TRC;    |
+|            | DMA1_CH5 (DMAINTENR.CC1DE); TIM2_RM=0b10 partial remap; no PFIC IRQ |
+| TIM3       | high 16 of `tick32`; PSC=0xFFFF free-running (HCLK/65536 = TIM2     |
+|            | wrap rate), phase-locked at init; SMCFGR.SMS=0 (slave disabled),    |
+|            | SMCFGR.TS=1 routes TIM2 TRGO → TRC; CCMR1.CC1S=TRC + CCER.CC1P=0    |
+|            | → TIM3.CCR1 latches on every TRGO pulse; DMA1_CH6 (DMAINTENR.CC1DE) |
 | TIM4       | TX inject OPM fire (CC2 → DMA1_CH4 stamps DMA1_CH2.CR)              |
 | SysTick    | embassy time-driver only (qingke V4 64-bit hw counter)              |
 | USART3     | full-duplex: TX=PB10 AF OD → DMA1_CH2; RX=PB11 input-pullup →       |
 |            | DMA1_CH3; PB10/PB11 bridged externally to one DXL line;             |
 |            | IDLE → signal-only                                                  |
-| DMA1_CH1   | TIM2_CH3 capture → `falling_ring`; no IRQ                           |
 | DMA1_CH2   | USART3 TX (per-fire)                                                |
-| DMA1_CH3   | USART3 RX → `rx_ring`; no IRQ                                       |
+| DMA1_CH3   | USART3 RX → `rx_ring`; HT/TC → walker (PRIO_WALKER)                 |
 | DMA1_CH4   | TIM4_CC2-triggered stamp of EN=1 over DMA1_CH2.CR                   |
+| DMA1_CH5   | TIM2_CC1 capture → `falling_lo` (low 16 of IC pair); no IRQ         |
+| DMA1_CH6   | TIM3_CC1 capture → `falling_hi` (high 16 of IC pair);               |
+|            | HT/TC → walker (PRIO_WALKER); CH6 is the trailing writer            |
 
 ## 7. Host protocol surface
 
@@ -596,14 +649,15 @@ Changes baud; implicit `RESET` inside. Caller must quiesce the bus first.
                           | EMPTY
     BTRACECLEAR         → OK
 
-Each `BTRACE` record is one TIM2 ISR invocation (phase ∈ {UIF=0, CC1=1,
-CC2=2, CC4=3, MULTI=4, SPURIOUS=5}). `intfr_post_clear` re-reads INTFR
-after the cadence-flag clear write — a non-zero value means a flag
-latched in the read→clear window and was silently dropped (the
-`DESYNCED` contract relies on this never happening). The other fields
-measure ISR latency, queue depth, and walker workload per ISR. The
-trace ring is 64 entries deep; when the host falls behind, the oldest
-records get overwritten and `BTRACE` snaps the tail forward.
+Each `BTRACE` record is one walker invocation tagged by trigger source
+(phase ∈ {IDLE=0, RX_HT=1, RX_TC=2, IC_HT=3, IC_TC=4}). `intfr_post_clear`
+re-reads the source DMA channel's interrupt-flag register after the
+HT/TC clear write — a non-zero value means a flag latched in the
+read→clear window and was silently dropped (the `DESYNCED` contract
+relies on this never happening). The other fields measure ISR latency,
+queue depth, and walker workload per invocation. The trace ring is 64
+entries deep; when the host falls behind, the oldest records get
+overwritten and `BTRACE` snaps the tail forward.
 
 ## 8. Design principles
 
@@ -618,20 +672,18 @@ records get overwritten and `BTRACE` snaps the tail forward.
 - **DMA-only on the hot path.** A per-edge ISR at 3 Mbaud costs more than
   the measurement it would produce. RX edges land in a ring without CPU;
   only walker invocations spend cycles.
-- **Walker outpaces TIM2 wraps.** UEV + CC1/CC2/CC4 give 4 walker
-  invocations per TIM2 wrap (~114 µs cadence), so any IC entry is at
-  most one quarter wrap old when the walker sees it. The
-  backward-from-now lift in §3.4 needs only one-wrap-of-bound to place
-  each entry in the correct high-word window; we have 4× headroom on
-  that, no software multi-wrap bookkeeping, no per-edge ISR cost.
-  Works identically at 9600 baud and 3 Mbaud.
-- **Lockstep window classification, no across-byte prediction.** Each
-  byte's stamp anchors on its own first unconsumed IC edge; edges within
-  `[anchor, anchor + 10·bit]` are that byte's. There is no
-  `ts[k−1] + 10·bit` prediction, no across-byte state to go stale on a
-  quiet bus; bootstrap, baud-change resume, and inter-packet "resync" are
-  all the same code path. Edge count drives validation flags only, never
-  walker advancement.
+- **Event-driven walker, hardware-atomic IC pair.** Each PB10 falling
+  edge captures a full 32-bit tick in hardware via TIM2.CCR1 +
+  TIM3.CCR1 (TRC), eliminating any per-wrap software lift. The walker
+  fires on DMA HT/TC and USART IDLE only — no cadence, no per-edge
+  ISR. Works identically at 57.6 kbaud and 3 Mbaud.
+- **Predict-and-snap PLL classification.** Each byte's stamp anchors
+  on the IC edge closest to `predicted = last_anchor + 10·bit_ticks`
+  within `±SNAP_BITS·bit_ticks`; on miss the walker free-runs on the
+  prediction and flags `COUNT_UNDER`. The PLL bounds across-byte drift
+  to one byte-period regardless of which edge inside a byte gets
+  picked. Cold-start path (post-RESET, post-IDLE chain boundary)
+  anchors on the next unconsumed IC entry — same code path as bootstrap.
 - **Fail loud, never silently recover.** Three conditions — two
   designed-impossible (`walker_late`, `ic_overrun`) and one host-paced
   bench-script bug (`stamp_overflow`) — flip a single sticky `DESYNCED`
@@ -662,15 +714,15 @@ the firmware enforces.
 
 ### 9.1 PFIC interrupt priorities
 
-| Class         | IPRIOR | IRQs                                  | Why                                  |
-|---------------|--------|---------------------------------------|--------------------------------------|
-| `PRIO_WALKER` | `0x00` | `TIM2`, `USART3`                      | Single walker class; ISRs share it so `walk()` is single-threaded by construction. |
-| `PRIO_USB`    | `0x80` | `USB_LP_CAN1_RX0`                     | Lower preempt class — USB stack delays cannot delay a wire-side stamp. |
+| Class         | IPRIOR | IRQs                                                  | Why                                  |
+|---------------|--------|-------------------------------------------------------|--------------------------------------|
+| `PRIO_WALKER` | `0x00` | `USART3`, `DMA1_CHANNEL6`, `DMA1_CHANNEL3`            | Single walker class; ISRs share it so `walk()` is single-threaded by construction. |
+| `PRIO_USB`    | `0x80` | `USB_LP_CAN1_RX0`                                     | Lower preempt class — USB stack delays cannot delay a wire-side stamp. |
 
-`TIM2` covers all four walker-cadence events (UEV, CC1, CC2, CC4) plus the
-CC3 IC capture flag — they mux into one vector. `USART3` carries only IDLE
-(signal-only per §3.2). DMA1_CH1/CH2/CH3/CH4 have **no IRQ enabled** —
-their PFIC slots are intentionally unconfigured.
+`USART3` carries only IDLE (signal-only per §3.2). `DMA1_CHANNEL6` is
+the IC ring's trailing-writer HT/TC. `DMA1_CHANNEL3` is RX HT/TC. TIM2,
+TIM3, DMA1_CH1/CH2/CH4/CH5 have **no IRQ enabled** — their PFIC slots
+are intentionally unconfigured.
 
 ### 9.2 DMA arbiter priorities (CHCFG.PL)
 
@@ -679,16 +731,17 @@ default is LOW for every channel. At 3 Mbaud burst the IC ring fills at
 ~167 ns per edge, so an arbiter delay caused by a coincident USB DMA can
 overrun the ring before the walker drains it.
 
-| Channel        | PL          | Why                                                          |
-|----------------|-------------|--------------------------------------------------------------|
-| CH1 (IC)       | `VERYHIGH`  | Measurement clock; arbiter delay → ring overrun → lost edges |
-| CH3 (USART3_RX)| `HIGH`      | Must not drop bytes at 3 Mbaud; one tier below CH1           |
-| CH2 (USART3_TX)| `MEDIUM`    | Paced by USART; arbiter delay is harmless (TX FIFO absorbs)  |
-| CH4 (CC2 stamp)| `MEDIUM`    | One-shot per fire; not throughput-limited                    |
-| (USB)          | `LOW` (default) | USB is throughput-bursty but tolerates µs-scale arbiter latency |
+| Channel              | PL          | Why                                                          |
+|----------------------|-------------|--------------------------------------------------------------|
+| CH5 (IC low half)    | `VERYHIGH`  | Measurement clock; arbiter delay → ring overrun → lost edges |
+| CH6 (IC high half)   | `VERYHIGH`  | Paired with CH5; equal priority → numeric arbitration puts CH5 first, CH6 second — the source of CH6's trailing-writer property (§3.1) |
+| CH3 (USART3_RX)      | `HIGH`      | Must not drop bytes at 3 Mbaud; one tier below the IC pair   |
+| CH2 (USART3_TX)      | `VERYHIGH`  | Defensive; paced by USART (FIFO absorbs arbiter delay) but pinned to top tier against future inter-channel contention |
+| CH4 (CC2 stamp)      | `VERYHIGH`  | Mirrors CH2 above; one-shot per fire                         |
+| (USB)                | `LOW` (default) | USB is throughput-bursty but tolerates µs-scale arbiter latency |
 
-CH1 outranks CH3 so a back-to-back IC + RX simultaneous request (typical
-at every byte's start bit) resolves to "stamp the edge before the byte
-value lands" — i.e. `falling_ring` always leads `rx_ring`, never lags.
-That matches the walker's invariant (§3.1: `ts_head ≤ rx_total`, sourced
-from IC entries).
+CH5/CH6 outrank CH3 so a back-to-back IC + RX simultaneous request
+(typical at every byte's start bit) resolves to "stamp the edge before
+the byte value lands" — i.e. the IC pair always leads `rx_ring`, never
+lags. That matches the walker's invariant (§3.1: `byte_head ≤ rx_total`,
+sourced from IC entries).
