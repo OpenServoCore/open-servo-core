@@ -666,6 +666,25 @@ impl Bus {
         self.pirate.master(data)
     }
 
+    /// Schedule `data` to fire when pirate `tick32` reaches `at_tick`.
+    /// `LAST?` (`pirate_last_fired`) will then return the commanded
+    /// wire-start tick — used by fire-comp calibration.
+    pub fn pirate_fire(&mut self, data: &[u8], at_tick: u32) -> Result<()> {
+        self.pirate.fire(data, at_tick)
+    }
+
+    /// Pirate `tick32` "now" — TIM2 (low u16) + TIM3 (high u16) chained
+    /// at HCLK. Wraps every ~30 s at 144 MHz.
+    pub fn pirate_tick(&mut self) -> Result<u32> {
+        self.pirate.tick()
+    }
+
+    /// Commanded wire-start tick of the last scheduled fire (`FIRED_TICK`).
+    /// For a scheduled `FIRE`, equals the `at_tick` argument verbatim.
+    pub fn pirate_last_fired(&mut self) -> Result<u32> {
+        self.pirate.last_fired()
+    }
+
     /// Drain up to `max` byte stamps as a binary BBATCH frame.
     pub fn pirate_bbatch(&mut self, max: u16) -> Result<Vec<BStamp>> {
         self.pirate.bbatch(max)

@@ -27,8 +27,8 @@ name = "tool-tune-tx-start"
 path = "src/bin/tool-tune-tx-start.rs"
 
 [[bin]]
-name = "tool-pirate-walker-validate"
-path = "src/bin/tool-pirate-walker-validate.rs"
+name = "tool-pirate-tune"
+path = "src/bin/tool-pirate-tune.rs"
 
 [dependencies]
 dxl-protocol = { path = "../../firmware/lib/dxl-protocol", features = ["heapless", "software-crc"] }

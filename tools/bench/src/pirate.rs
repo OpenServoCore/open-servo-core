@@ -263,13 +263,11 @@ impl Client {
         Ok(())
     }
 
-    #[allow(dead_code)]
     pub fn tick(&mut self) -> Result<u32> {
         let reply = self.command("TICK?")?;
         parse_kv(&reply, "TICK")
     }
 
-    #[allow(dead_code)]
     pub fn last_fired(&mut self) -> Result<u32> {
         let reply = self.command("LAST?")?;
         parse_kv(&reply, "LAST")
@@ -298,7 +296,6 @@ impl Client {
         self.expect_ok(&format!("ARM bytes={} after_idle={ticks}", hex(data)))
     }
 
-    #[allow(dead_code)]
     pub fn fire(&mut self, data: &[u8], at_tick: u32) -> Result<()> {
         self.expect_ok(&format!("FIRE bytes={} at={at_tick}", hex(data)))
     }
