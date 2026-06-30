@@ -476,7 +476,7 @@ fn stage_fire_comp(bus: &mut Bus, bauds: &[u32], shots: u32, write: bool) -> Res
     for &baud in bauds {
         bus.pirate_set_baud(baud)?;
         let brr = hclk_hz / baud;
-        match collect_fire_comp_residuals(bus, hz_per_us, shots) {
+        match collect_fire_comp_residuals(bus, shots) {
             Ok(residuals) => {
                 let med = median_i64(&residuals);
                 let lo = *residuals.iter().min().unwrap();
@@ -541,18 +541,23 @@ fn stage_fire_comp(bus: &mut Bus, bauds: &[u32], shots: u32, write: bool) -> Res
     Ok(())
 }
 
-fn collect_fire_comp_residuals(bus: &mut Bus, hz_per_us: u32, shots: u32) -> Result<Vec<i64>> {
+fn collect_fire_comp_residuals(bus: &mut Bus, shots: u32) -> Result<Vec<i64>> {
     let mut out = Vec::with_capacity(shots as usize);
     for shot in 0..shots {
         bus.pirate_reset()?;
         std::thread::sleep(Duration::from_millis(5));
         while !bus.pirate_bbatch(255)?.is_empty() {}
 
-        // Fire 2 ms in the future — plenty of slack for the scheduler to
-        // pick the TIM4 OPM path even at low baud where FIRE_COMP is fat.
-        let now = bus.pirate_tick()?;
-        let target = now.wrapping_add(2 * hz_per_us * 1_000);
-        bus.pirate_fire(&[0x55], target)?;
+        // MASTER routes through fire_now_master → schedule_fire with
+        // at = now + FIRE_COMP + 512, which forces the TIM4 OPM path
+        // (delta = 512, well inside the 16-bit scheduler window) and
+        // stores FIRED_TICK = at. `LAST?` then returns the commanded
+        // wire-start tick, so residual = stamp − LAST? directly measures
+        // (actual_pipeline − FIRE_COMP) + phase — i.e. the value the
+        // fire path actually consumes. (Previously fired 2 ms in the
+        // future, which exceeds TIM4 OPM's 16-bit range → immediate-fire
+        // branch → FIRE_COMP never read → regression diverged.)
+        bus.pirate_master(&[0x55])?;
 
         let stamps = drain_stamps_until(bus, 1, Duration::from_millis(200))?;
         if stamps.is_empty() {
