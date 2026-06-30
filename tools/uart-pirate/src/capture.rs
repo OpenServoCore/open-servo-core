@@ -1,4 +1,4 @@
-//! Wire-side capture: per-byte stamp pipeline per TIMING.md §3.
+//! Wire-side capture: per-byte stamp pipeline.
 //!
 //! Two DMA-populated IC half-rings + an RX byte ring + a walker-populated
 //! stamp ring:
@@ -6,7 +6,7 @@
 //! - `falling_lo` (u16) ← TIM2.CCR1 via DMA1_CH5 — low 16 of each IC tick.
 //! - `falling_hi` (u16) ← TIM3.CCR1 via DMA1_CH6 — high 16, latched on
 //!   the same TIM2 TRGO pulse that fired CH5. Pair forms a hardware
-//!   atomic 32-bit tick (TIMING.md §3.3); no walker-side lift step.
+//!   atomic 32-bit tick; no walker-side lift step.
 //! - `rx_ring` (u8) ← USART3 DATAR via DMA1_CH3; received bytes
 //!   (internal staging; not host-facing).
 //! - `bytes_ring` (u8) ← walker; per-byte value captured at stamp time.
@@ -18,8 +18,8 @@
 //! The byte VALUE is mirrored into `bytes_ring` at stamp time so drain
 //! semantics are decoupled from `rx_ring`'s DMA wrap.
 //!
-//! Walker triggers (TIMING.md §3.2): event-driven, no cadence. Three IRQ
-//! vectors fan into `walk()` at `PRIO_WALKER`:
+//! Walker triggers: event-driven, no cadence. Three IRQ vectors fan into
+//! `walk()` at `PRIO_WALKER`:
 //!
 //! - `USART3` IDLE — end-of-burst drain. Fires 1 char time after the
 //!   wire goes idle (~10 µs at 1M, ~3.3 µs at 3M). Catches the tail
@@ -37,17 +37,17 @@
 //! interior entries; `combined > ceiling` for the tail) handles the
 //! few-cycle TRC sync window per TIM2 wrap.
 //!
-//! Classification is **predict-and-snap PLL** per TIMING.md §3.4: the
-//! first byte's start tick is anchored on the first unconsumed IC edge;
-//! every subsequent byte's start is predicted at `prev_anchor + 10·bit`
-//! and snapped to the closest IC entry within `±SNAP_BITS·bit` of that
-//! prediction (later-edge tiebreak). On miss, the walker free-runs on
-//! the prediction and flags `COUNT_UNDER` — anchor still updates, so the
+//! Classification is **predict-and-snap PLL**: the first byte's start
+//! tick is anchored on the first unconsumed IC edge; every subsequent
+//! byte's start is predicted at `prev_anchor + 10·bit` and snapped to
+//! the closest IC entry within `±SNAP_BITS·bit` of that prediction
+//! (later-edge tiebreak). On miss, the walker free-runs on the
+//! prediction and flags `COUNT_UNDER` — anchor still updates, so the
 //! prediction chain survives a short edge dropout.
 //!
-//! Per TIMING.md §3.5: two conditions flip the sticky `DESYNCED` flag —
-//! one designed-impossible (`ic_overrun`) and one host-paced bench-script
-//! bug (`stamp_overflow`). Host commands error out until a `RESET` (or
+//! Two conditions flip the sticky `DESYNCED` flag — one designed-
+//! impossible (`ic_overrun`) and one host-paced bench-script bug
+//! (`stamp_overflow`). Host commands error out until a `RESET` (or
 //! `BAUD`, which implicitly resets) clears the flag.
 
 use core::cell::SyncUnsafeCell;
@@ -63,10 +63,10 @@ use qingke_rt::interrupt;
 
 use crate::inject::{APB1_HZ, BaudError, DEFAULT_BAUD, read_tick32};
 
-// IC ring per TIMING.md §3.1. With event-driven walker, DMA1_CH1 HT fires
-// at FALL_LEN/2 entries — the walker drains promptly without waiting for
-// a cadence tick. 256 gives ample slack for any sustained burst (3 Mbaud
-// × 5 edges/byte → 1 edge per 667 ns; HT-to-drain latency is bounded by
+// IC ring. With event-driven walker, DMA1_CH1 HT fires at FALL_LEN/2
+// entries — the walker drains promptly without waiting for a cadence
+// tick. 256 gives ample slack for any sustained burst (3 Mbaud × 5
+// edges/byte → 1 edge per 667 ns; HT-to-drain latency is bounded by
 // PFIC dispatch + walker run, both sub-µs at PRIO_WALKER).
 pub const FALL_LEN: usize = 256;
 const FALL_MASK: u32 = (FALL_LEN - 1) as u32;
@@ -80,10 +80,9 @@ const _: () = assert!(RX_LEN.is_power_of_two());
 /// pulls via BBATCH between fires) without overflowing while leaving 5+ KB
 /// stack headroom on the V203's 20 KB SRAM. At 1024 records the three
 /// rings total 6 KB (`bytes_ring` 1 KB + `ts_ring` 4 KB + `flags_ring`
-/// 1 KB) — projected bss ~14.9 KB, ~5.5 KB stack room. Per TIMING.md
-/// §3.5 `stamp_overflow`: past 1024 records of undrained backlog the
-/// host has either gone away or has a bench-script bug; either way the
-/// `DESYNCED` flag trips and host must `RESET`.
+/// 1 KB) — projected bss ~14.9 KB, ~5.5 KB stack room. Past 1024 records
+/// of undrained backlog the host has either gone away or has a bench-
+/// script bug; either way `stamp_overflow` trips and host must `RESET`.
 const STAMP_LEN: usize = 1024;
 const STAMP_MASK: u32 = (STAMP_LEN - 1) as u32;
 const _: () = assert!(STAMP_LEN.is_power_of_two());
@@ -101,16 +100,16 @@ const BITS_PER_BYTE_8N1: u32 = 10;
 /// inside a chain that the upstream chip can drive between bytes.
 const SNAP_BITS: u32 = 1;
 
-/// Per-baud CC filter LUT per TIMING.md §4. fDTS pinned at HCLK = 144 MHz
-/// (CKD=`DIV_1`, set in `inject::init`). Each entry is `(ICxF bits, filter
-/// delay in tick32 ticks)` for every legal `ICxF` value, sorted by delay.
-/// `filter_for_brr` picks the **largest delay ≤ brr/3 (≈ 0.333·bit)** at the
-/// configured baud — tighter than production's natural pick because the
-/// bench wiring (PB10 AF-OD + PB11 ~30 kΩ internal pull-up, no transceiver)
-/// has τ ≈ 500–900 ns line rise. A 1-bit-time HIGH gap between two
-/// consecutive falls (every byte whose predecessor has `b7=0`) only leaves
-/// ~400 ns of stable HIGH for the filter to recognize before the next
-/// fall, so the delay must fit inside that.
+/// Per-baud CC filter LUT. fDTS pinned at HCLK = 144 MHz (CKD=`DIV_1`,
+/// set in `inject::init`). Each entry is `(ICxF bits, filter delay in
+/// tick32 ticks)` for every legal `ICxF` value, sorted by delay.
+/// `filter_for_brr` picks the **largest delay ≤ brr/3 (≈ 0.333·bit)** at
+/// the configured baud — tighter than production's natural pick because
+/// the bench wiring (PB10 AF-OD + PB11 ~30 kΩ internal pull-up, no
+/// transceiver) has τ ≈ 500–900 ns line rise. A 1-bit-time HIGH gap
+/// between two consecutive falls (every byte whose predecessor has
+/// `b7=0`) only leaves ~400 ns of stable HIGH for the filter to
+/// recognize before the next fall, so the delay must fit inside that.
 ///
 /// Each entry's delay = N / fSAMPLING, scaled to 144 MHz ticks. RM
 /// `CH32FV2x_V3xRM` §14.4.7 ICxF table.
@@ -142,8 +141,7 @@ const ICF_LUT: &[(u8, u32)] = &[
 /// anchors on every byte whose predecessor has b7=0. `brr/3` puts the
 /// delay safely under that window at every baud and still rejects
 /// glitches narrower than ~1/3·bit, which is well below any real wire
-/// noise. Linear walk is fine — const-evaluated at every set_baud site,
-/// and the LUT has 15 entries.
+/// noise.
 const fn filter_for_brr(brr: u32) -> (u8, u32) {
     let mut best = ICF_LUT[0];
     let mut i = 0;
@@ -180,8 +178,8 @@ pub mod flags {
     pub const COUNT_UNDER: u8 = 1 << 0;
 }
 
-/// Sticky-fatal cause for the `DESYNCED` flag (TIMING.md §3.5). Stored
-/// as `u8` in `DESYNC_CAUSE`; first trip wins (compare_exchange semantics).
+/// Sticky-fatal cause for the `DESYNCED` flag. Stored as `u8` in
+/// `DESYNC_CAUSE`; first trip wins (compare_exchange semantics).
 #[repr(u8)]
 #[derive(Copy, Clone, Eq, PartialEq, Debug)]
 pub enum DesyncCause {
@@ -232,8 +230,8 @@ static BYTE_TAIL: AtomicU32 = AtomicU32::new(0);
 
 // ── Walker state ───────────────────────────────────────────────────────
 // All written from ISR context only; single-threaded across IRQs at the
-// same priority. Per TIMING.md §3.4 the walker's surface is the IC/RX
-// position counters, the PLL anchor pair, and the `DESYNCED` sticky flag.
+// same priority. The walker's surface is the IC/RX position counters,
+// the PLL anchor pair, and the `DESYNCED` sticky flag.
 static WALKED_FALLING: SyncUnsafeCell<u32> = SyncUnsafeCell::new(0);
 /// IC entry count safely written by BOTH DMA1_CH5 (lo) and DMA1_CH6
 /// (hi). Tracked via CH6's NDTR — CH6 is the trailing writer (TIM3.CCR1
@@ -255,11 +253,11 @@ static HAS_ANCHOR: SyncUnsafeCell<bool> = SyncUnsafeCell::new(false);
 static RX_TOTAL: SyncUnsafeCell<u32> = SyncUnsafeCell::new(0);
 static LAST_RX_NDTR: SyncUnsafeCell<u16> = SyncUnsafeCell::new(RX_LEN as u16);
 
-/// Sticky-fatal flag per TIMING.md §3.5. Set once on either of two
-/// conditions: IC ring overrun (`ic_overrun`) or stamp ring overflow
-/// from host backpressure (`stamp_overflow`). Once set, `walk()` is a
-/// no-op and host commands return `ERR desync <cause>` until a `RESET`
-/// (or `BAUD`, which implicitly resets) clears the flag.
+/// Sticky-fatal flag. Set once on either of two conditions: IC ring
+/// overrun (`ic_overrun`) or stamp ring overflow from host backpressure
+/// (`stamp_overflow`). Once set, `walk()` is a no-op and host commands
+/// return `ERR desync <cause>` until a `RESET` (or `BAUD`, which
+/// implicitly resets) clears the flag.
 static DESYNCED: AtomicBool = AtomicBool::new(false);
 /// Sticky cause tag for the `DESYNCED` trip. `0` = not desynced; first
 /// trip wins via `compare_exchange` so the cause reflects the originating
@@ -493,15 +491,15 @@ fn set_desync(cause: DesyncCause) {
     DESYNCED.store(true, Ordering::Release);
 }
 
-/// Returns `Some(cause)` once any of the three trip conditions has fired,
-/// `None` while READY. Recovery from desync is `RESET` (TIMING.md §3.5).
+/// Returns `Some(cause)` once any of the trip conditions has fired,
+/// `None` while READY. Recovery from desync is `RESET`.
 pub fn desync_cause() -> Option<DesyncCause> {
     let raw = DESYNC_CAUSE.load(Ordering::Acquire);
     DesyncCause::from_u8(raw)
 }
 
-/// Stamps queued for drain (= `byte_head - byte_tail`). Reported by
-/// STATUS so the host can pace its BBATCH calls against the ring depth.
+/// Stamps queued for drain (= `byte_head - byte_tail`). Host paces BBATCH
+/// calls against this.
 pub fn stamps_available() -> u32 {
     let head = BYTE_HEAD.load(Ordering::Acquire);
     let tail = BYTE_TAIL.load(Ordering::Relaxed);
@@ -509,7 +507,7 @@ pub fn stamps_available() -> u32 {
 }
 
 /// Configured baud (= `APB1_HZ / BIT_TICKS`). Returns 0 before the first
-/// `set_baud` completes. Used by STATUS.
+/// `set_baud` completes.
 pub fn current_baud() -> u32 {
     APB1_HZ
         .checked_div(BIT_TICKS.load(Ordering::Relaxed))
@@ -540,8 +538,8 @@ pub fn drain_byte() -> Option<ByteRecord> {
 /// snapshot header plus the number of u32 ticks written to `out`, in
 /// oldest-first order (`out[0]` is the oldest in-ring entry, `out[n-1]`
 /// the newest). Each entry is the wrap-race-corrected combined
-/// `(hi, lo)` pair (TIMING.md §3.3), so the host receives sub-µs
-/// tick32 values — no host-side lift required.
+/// `(hi, lo)` pair, so the host receives sub-µs tick32 values — no
+/// host-side lift required.
 ///
 /// `falling_total` is sourced from the walker's last refresh, which
 /// tracks CH6 (the trailing DMA writer). Entries past CH5's NDTR but
@@ -689,9 +687,9 @@ fn refresh_rx_total() -> u32 {
 ///   cycles).
 /// - **Tail (`idx + 1 == falling_total`)**: no successor exists. `ceiling`
 ///   was sampled microseconds after the latest IC pair was written
-///   (NDTR refresh precedes `read_tick32` per TIMING.md §3.3), so it is
-///   within one wrap of the tail entry's capture time and the original
-///   `combined > ceiling` predicate is reliable here.
+///   (NDTR refresh precedes `read_tick32`), so it is within one wrap of
+///   the tail entry's capture time and the original `combined > ceiling`
+///   predicate is reliable here.
 #[inline]
 fn falling_at(idx: u32, falling_total: u32, ceiling: u32) -> u32 {
     let i = (idx & FALL_MASK) as usize;
@@ -732,12 +730,12 @@ fn emit(byte_idx: u32, byte: u8, tick: u32, flags: u8) {
     }
 }
 
-/// Predict-and-snap PLL walker per TIMING.md §3.4. Constructs `ceiling`
-/// internally: refresh the IC NDTR snapshot first, THEN read `tick32`.
-/// Ordering guarantees `combined ≤ ceiling` for every non-raced entry in
-/// `[walked, falling_total)` — newer entries that land between the NDTR
-/// refresh and the tick32 read aren't in this walker's snapshot, so they
-/// fall to the next trigger.
+/// Predict-and-snap PLL walker. Constructs `ceiling` internally: refresh
+/// the IC NDTR snapshot first, THEN read `tick32`. Ordering guarantees
+/// `combined ≤ ceiling` for every non-raced entry in `[walked,
+/// falling_total)` — newer entries that land between the NDTR refresh
+/// and the tick32 read aren't in this walker's snapshot, so they fall
+/// to the next trigger.
 ///
 /// `idle == true` marks this invocation as USART-IDLE-triggered: the
 /// wire has been quiet one character time, so the next byte (when it
@@ -747,7 +745,7 @@ fn emit(byte_idx: u32, byte: u8, tick: u32, flags: u8) {
 /// of free-running off a stale `last_anchor + 10·bit_ticks` prediction
 /// that would sit one inter-packet gap (RDT) before the real edge. IDLE
 /// is signal-only here — the next byte's tick still comes from its own
-/// IC entry via the cold-start path (`[[no_idle_timing]]`).
+/// IC entry via the cold-start path.
 pub fn walk(idle: bool) {
     if DESYNCED.load(Ordering::Relaxed) {
         return;
@@ -766,8 +764,8 @@ pub fn walk(idle: bool) {
     LAST_LIFT_CEILING.store(ceiling, Ordering::Release);
     let mut walked = unsafe { ptr::read_volatile(WALKED_FALLING.get()) };
 
-    // §3.5 ic_overrun: if more new entries arrived than the ring can
-    // hold, we lost edges → permanent lockstep desync. Sticky-fatal.
+    // ic_overrun: if more new entries arrived than the ring can hold,
+    // we lost edges → permanent lockstep desync. Sticky-fatal.
     if falling_total.wrapping_sub(walked) > FALL_LEN as u32 {
         set_desync(DesyncCause::IcOverrun);
         return;
@@ -778,7 +776,7 @@ pub fn walk(idle: bool) {
     let mut has_anchor = unsafe { ptr::read_volatile(HAS_ANCHOR.get()) };
 
     while byte_head != rx_total {
-        // §3.5 stamp_overflow: if the host hasn't drained, the next emit
+        // stamp_overflow: if the host hasn't drained, the next emit
         // would overwrite an unread stamp. Sticky-fatal; host must RESET.
         // Check is at the loop head so byte_head is NOT advanced for the
         // byte we refused to emit.

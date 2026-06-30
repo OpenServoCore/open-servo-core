@@ -1,6 +1,6 @@
 //! USB-CDC ACM transport. Originally modelled on ch32-hal's
 //! `examples/ch32v203/src/bin/usbd.rs`; the driver type now comes from the
-//! vendored `crate::usbd` module (see comment there for why we vendored).
+//! vendored `crate::usbd` module.
 
 use embassy_usb::Builder;
 use embassy_usb::class::cdc_acm::{CdcAcmClass, State};

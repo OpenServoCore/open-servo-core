@@ -25,9 +25,9 @@
 //! TIM4_CC2 → DMA1_CH4 (same trigger as the prior USART2 build), so only
 //! the stamp target moves (CH7.CR → CH2.CR). CH7 is now free.
 //!
-//! This module also owns TIM2 + TIM3 (the wire clock; see TIMING.md §1)
-//! since they need to come up before USART3 / TIM4. `capture` consumes the
-//! resulting `tick32` via `read_tick32()`.
+//! This module also owns TIM2 + TIM3 (the wire clock) since they need to
+//! come up before USART3 / TIM4. `capture` consumes the resulting
+//! `tick32` via `read_tick32()`.
 
 use core::cell::SyncUnsafeCell;
 use core::ptr;
@@ -54,7 +54,6 @@ const FIRE_NOW_THRESHOLD_TICKS: u32 = 256;
 /// never request them — DXL slot timing is sub-ms).
 const TIM4_MAX_DELTA_TICKS: u32 = u16::MAX as u32;
 
-/// TIM4 prescaler register: divide-by-1 → 144 MHz tick = 1:1 with TIM2.
 const TIM4_PSC: u16 = 0;
 
 /// `wire_hz`, used by the protocol layer to answer `HZ?`. TIM2/TIM3 chain
@@ -180,9 +179,8 @@ fn load_pending_after_idle() -> u32 {
     unsafe { ptr::read_volatile(PENDING_AFTER_IDLE_TICKS.get()) }
 }
 
-/// Coherent (TIM2, TIM3) snapshot per TIMING.md §3.3. Three loads in the
-/// common case, six if TIM2 wraps between the first read and the TIM3
-/// read.
+/// Coherent (TIM2, TIM3) snapshot. Three loads in the common case, six
+/// if TIM2 wraps between the first read and the TIM3 read.
 #[inline]
 pub fn read_tick32() -> u32 {
     loop {
@@ -256,7 +254,6 @@ fn init_pins() {
         w.set_odr(0, false);
         w.set_odr(1, false);
     });
-    // CFGLR controls PA0..PA7. PA0 in bits [3:0], PA1 in bits [7:4].
     // MODE=00 (input), CNF=10 (input with pull-up/down) → 0b1000.
     // ODR(0)=0 / ODR(1)=0 above selects pull-down.
     GPIOA.cfglr().modify(|w| {
@@ -273,10 +270,9 @@ fn init_pins() {
         w.set_odr(10, true);
         w.set_odr(11, true); // select PB11 input pullup (see below)
     });
-    // CFGHR controls PB8..PB15.
-    //   PB10 in bits [11:8]: Mode=11 (50 MHz), CNF=10 (AF PP) → 0b1011.
-    //   PB11 in bits [15:12]: Mode=00 (input),   CNF=10 (input w/ pull)
-    //                         → 0b1000; ODR(11)=1 above selects pull-up.
+    //   PB10: Mode=11 (50 MHz), CNF=10 (AF PP) → 0b1011.
+    //   PB11: Mode=00 (input),  CNF=10 (input w/ pull) → 0b1000;
+    //         ODR(11)=1 above selects pull-up.
     GPIOB.cfghr().modify(|w| {
         let mut v = w.0;
         v &= !(0xF << 8);
@@ -313,11 +309,11 @@ fn init_usart3() {
 /// TIM2 master + TIM3 high-half, forming the hardware atomic 32-bit IC
 /// tick32 path. TIM2 PSC=0, ARR=0xFFFF, CKD=DIV_1 pins fDTS at HCLK =
 /// 144 MHz; the IC1F filter is set per-baud by
-/// `capture::apply_filter_for_brr` from the LUT in TIMING.md §4
-/// (largest delay ≤ brr/3). No CC walker cadence: the event-driven
-/// walker runs off USART3 IDLE + DMA1_CH6/CH3 HT/TC, not TIM2 IRQs.
+/// `capture::apply_filter_for_brr` (largest delay ≤ brr/3). No CC walker
+/// cadence: the event-driven walker runs off USART3 IDLE + DMA1_CH6/CH3
+/// HT/TC, not TIM2 IRQs.
 ///
-/// Hardware atomic 32-bit IC capture per TIMING.md §3.3:
+/// Hardware atomic 32-bit IC capture:
 ///
 /// - CTLR2.TI1S=1 routes XOR(CH1_pin, CH2_pin, CH3_pin) → TI1 internal.
 ///   PA0/PA1 (CH1/CH2 under TIM2_RM=0b10) are pulled down in

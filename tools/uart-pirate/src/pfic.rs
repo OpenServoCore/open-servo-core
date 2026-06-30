@@ -5,10 +5,6 @@
 //! single-threaded across all three. USB sits at `PRIO_USB` so it
 //! can't delay a wire-side stamp.
 //!
-//! Per TIMING.md §3.2 the walker is fully event-driven (no TIM2 cadence),
-//! so TIM2's PFIC slot is unconfigured (= reset default, IRQ disabled at
-//! init time too).
-//!
 //! qingke-rt's V4 init writes INTSYSCR=0x3 (HWSTKEN + INESTEN). With
 //! default PMTCFG, IPRIOR bit 7 is the preempt-class select (0 = high,
 //! 1 = low) and bits 6:4 are subpriority within the class.

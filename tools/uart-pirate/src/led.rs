@@ -27,8 +27,7 @@ pub fn init() {
         w.0 = v;
     });
 
-    // PA15 = GP push-pull, 50 MHz. CFGHR controls PA8..PA15; PA15 sits in
-    // bits [31:28]. Mode=11 (50 MHz), CNF=00 (GP push-pull) → 0b0011.
+    // PA15 = GP push-pull, 50 MHz. Mode=11 (50 MHz), CNF=00 (GP PP) → 0b0011.
     GPIOA.cfghr().modify(|w| {
         let mut v = w.0;
         v &= !(0xF << 28);

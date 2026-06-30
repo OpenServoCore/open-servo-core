@@ -55,15 +55,13 @@ async fn main(spawner: Spawner) {
     // PA11/PA12 = USB DM/DP. V20x RM: drive both low push-pull before
     // enabling the USBD block so the host can't see a phantom device
     // during init. Once USBD is enabled, EXTEND.usbdpu pulls D+ high to
-    // attach. Pins are PA11 and PA12 — both in CFGHR ([15:0] for PA8..15
-    // means PA11 = bits [15:12], PA12 = bits [19:16]).
+    // attach.
     RCC.apb2pcenr().modify(|w| w.set_iopaen(true));
     GPIOA.cfghr().modify(|w| {
         let mut v = w.0;
-        // PA11 ([15:12]): mode=11 (50 MHz), cnf=00 (GP push-pull) → 0b0011
+        // mode=11 (50 MHz), cnf=00 (GP push-pull) → 0b0011
         v &= !(0xF << 12);
         v |= 0b0011 << 12;
-        // PA12 ([19:16]): same
         v &= !(0xF << 16);
         v |= 0b0011 << 16;
         w.0 = v;

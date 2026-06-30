@@ -31,8 +31,7 @@
 //!       probe that can't be masked by walker state.
 //!   `RESET`
 //!       Clear `DESYNCED` + cause, drain stamp/IC rings, re-arm walker.
-//!       Keeps baud. The routine recovery for any of the three desync
-//!       causes (TIMING.md §3.5).
+//!       Keeps baud. The routine recovery for any desync cause.
 //!   `BAUD <bps>` → `OK` / `ERR baud`. Implicit RESET. Caller must
 //!       quiesce the bus.
 //!   `COMP?`      → `COMP pipe=<u32> bit_q4=<u32>`. Reads the TX-comp
@@ -149,7 +148,6 @@ pub fn handle_line(line: &[u8]) -> Reply {
         return Reply::Ok;
     }
 
-    // Every other command fails fast on desync.
     if let Some(cause) = capture::desync_cause() {
         return Reply::Err(desync_err_for(cause));
     }
