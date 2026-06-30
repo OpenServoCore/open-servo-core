@@ -90,14 +90,12 @@ const _: () = assert!(STAMP_LEN.is_power_of_two());
 /// Half-width of the PLL snap window in bit-times. Each byte's start is
 /// predicted at `prev_anchor + 10·bit_ticks`; the walker scans
 /// `[predicted − SNAP_BITS·bit_ticks, predicted + SNAP_BITS·bit_ticks]`
-/// for the closest IC entry. 3 was the value that bottomed out the
-/// off-line classifier comparison against the captured corpus — wide
-/// enough to absorb upstream chips' worst-case 3-bit hardware idle
-/// between bytes inside a Status burst, narrow enough that wire glitches
-/// rarely land closer to prediction than the real start edge. Tighten
-/// to 2 (or even 1) once we have wire-side telemetry showing inter-byte
-/// gaps are systematically smaller in real operation.
-const SNAP_BITS: u32 = 3;
+/// for the closest IC entry. 1 bit-time is ~50× the observed loopback
+/// jitter floor (tool-pirate-tune stage 1: dev ≤ 24 ticks at brr=2500,
+/// = 0.01 bit-times). Widen to 2 or 3 if real-servo Status replies miss
+/// bytes mid-chain — the DXL spec allows up to ~3-bit hardware idle
+/// inside a chain that the upstream chip can drive between bytes.
+const SNAP_BITS: u32 = 1;
 
 /// Per-baud CC filter LUT per TIMING.md §4. fDTS pinned at HCLK = 144 MHz
 /// (CKD=`DIV_1`, set in `inject::init`). Each entry is `(ICxF bits, filter
