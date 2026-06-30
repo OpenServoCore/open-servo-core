@@ -7,9 +7,11 @@
 //!    spacing within tolerance, and every stamp anchor matches a real IC
 //!    ring entry.
 //! 2. **stress** — slow-baud (115 200) single-byte `MASTER` shots with
-//!    deliberate ≥1×TIM2-wrap host-side gaps. Validates the walker stays
-//!    monotonic across long durations and the IC pre-lift survives sparse
-//!    traffic. Catches a lift-slip as a stamp-tick jump.
+//!    host-side gaps that scatter DMA HT/TC/IDLE across the inter-byte
+//!    window. Validates the RX edge ring and byte ring stay paired across
+//!    walker boundaries: byte values, strictly-monotone stamp ticks, and
+//!    1:1 IC ring correspondence. Host-sleep is non-deterministic by
+//!    design — the test gates on pirate-attested invariants only.
 //! 3. **fire-comp** — scheduled-`FIRE` vs stamped wire edge, swept across
 //!    baud. Residual = `stamp[0].tick − LAST?`. Regressed `a + b·brr`:
 //!    `a` reports the `FIRE_COMP_FLAT_TICKS` delta (firmware ships 96);
@@ -44,7 +46,7 @@ struct Args {
     /// Run only one stage. Default: all (halts at first failure).
     #[arg(long, value_enum, default_value_t = Stage::All)]
     stage: Stage,
-    /// Inter-byte spacing tolerance (ticks) for classifier + stress.
+    /// Inter-byte spacing tolerance (ticks) for the classifier.
     /// Default: bit_ticks / 4.
     #[arg(long)]
     tolerance: Option<u32>,
@@ -68,8 +70,9 @@ const STRESS_BAUD: u32 = 115_200;
 /// bus traffic, not a forensic capture).
 const STRESS_SHOTS: usize = 16;
 
-/// Gap multiples (× TIM2 wrap) used for the stress sweep. 1× is the
-/// boundary case; 10× confirms long-duration sparse traffic stays clean.
+/// Gap multiples (× TIM2 wrap) used for the stress sweep. Different
+/// gap sizes land DMA HT/TC/IDLE at different positions relative to
+/// each start-bit edge, scattering walker-boundary cases across the run.
 const STRESS_GAP_WRAPS: &[u32] = &[1, 2, 5, 10];
 
 /// Firmware-side `FIRE_COMP_FLAT_TICKS` we're calibrating. Stage 3's
@@ -91,7 +94,7 @@ fn main() -> Result<()> {
         stage_classifier(&mut bus, &bauds, args.tolerance)?;
     }
     if run_all || args.stage == Stage::Stress {
-        stage_stress(&mut bus, args.tolerance)?;
+        stage_stress(&mut bus)?;
     }
     if run_all || args.stage == Stage::FireComp {
         stage_fire_comp(&mut bus, &bauds, args.fire_comp_shots)?;
@@ -178,12 +181,15 @@ fn run_classifier_probe(bus: &mut Bus, baud: u32, tol_arg: Option<u32>) -> Resul
 // Stage 2: multi-wrap stress
 // ---------------------------------------------------------------------------
 
-fn stage_stress(bus: &mut Bus, tol: Option<u32>) -> Result<()> {
+fn stage_stress(bus: &mut Bus) -> Result<()> {
     println!();
     println!("stage 2: stress (baud={STRESS_BAUD}, single 0xFF shots, host-side gaps)");
+    println!("  gates: byte values, strictly-monotone stamp ticks, Δ sanity ceiling,");
+    println!("  IC ring 1:1 matches stamps (host-sleep jitter is the randomizer, not a metric).");
+    println!();
     println!(
-        "  {:>3}  {:>9}  {:>5}  {:>11}  {:>4}  {:>4}  result",
-        "×wr", "gap_us", "shots", "exp_period", "dev", "ic"
+        "  {:>3}  {:>9}  {:>5}  {:>9}  {:>9}  {:>8}  result",
+        "×wr", "gap_us", "shots", "min_dt_us", "max_dt_us", "ic_match"
     );
     bus.pirate_set_baud(STRESS_BAUD)?;
     let hz_per_us = bus.hz_per_us()?;
@@ -192,7 +198,7 @@ fn stage_stress(bus: &mut Bus, tol: Option<u32>) -> Result<()> {
     let mut any_fail = false;
     for &gap_wraps in STRESS_GAP_WRAPS {
         let gap_us = wrap_us * gap_wraps;
-        match run_stress_probe(bus, STRESS_BAUD, gap_us, hz_per_us, tol) {
+        match run_stress_probe(bus, gap_us, hz_per_us) {
             Ok(line) => println!("  {gap_wraps:>3}  {gap_us:>9}  {line}  PASS"),
             Err(e) => {
                 println!("  {gap_wraps:>3}  {gap_us:>9}  ----  FAIL: {e}");
@@ -206,16 +212,15 @@ fn stage_stress(bus: &mut Bus, tol: Option<u32>) -> Result<()> {
     Ok(())
 }
 
-fn run_stress_probe(
-    bus: &mut Bus,
-    baud: u32,
-    gap_us: u32,
-    hz_per_us: u32,
-    tol_arg: Option<u32>,
-) -> Result<String> {
+fn run_stress_probe(bus: &mut Bus, gap_us: u32, hz_per_us: u32) -> Result<String> {
     bus.pirate_reset()?;
     std::thread::sleep(Duration::from_millis(20));
     while !bus.pirate_bbatch(255)?.is_empty() {}
+    // pirate_reset() doesn't clear FALLING_TOTAL or the IC ring (the ring
+    // is post-trip diagnostic state). Snapshot the pre-probe count and
+    // gate on the delta instead — any spurious capture during the probe
+    // window shows up as ic_delta > STRESS_SHOTS.
+    let pre_total = bus.ic_snapshot()?.falling_total;
 
     // 0xFF: lone start-bit falling edge, then 9 high bits + idle. One IC
     // entry per shot — easy to count, easy to back-check.
@@ -235,22 +240,44 @@ fn run_stress_probe(
         }
     }
     validate_no_count_under(&stamps)?;
-    // Expected period: byte_time + host gap. Round byte_us up to be lenient.
-    let byte_us = 10_000_000u32 / baud + 1;
-    let exp_period = (byte_us + gap_us) * hz_per_us;
-    // Host-side sleep is wall-clock with OS-scheduling jitter (tens to
-    // hundreds of µs). Tolerance here is checking for "stamp jumped a
-    // wrap", not for jitter accounting — allow ±½ wrap.
-    let tol = tol_arg.unwrap_or(65536 / 2);
-    let max_dev = validate_spacing(&stamps, exp_period, tol, 0..stamps.len())?;
     validate_ic_correspondence(&stamps, &snap)?;
+    let ic_delta = snap.falling_total.wrapping_sub(pre_total);
+    if ic_delta as usize != STRESS_SHOTS {
+        bail!(
+            "falling_total advanced by {ic_delta}, expected {STRESS_SHOTS} \
+             (extras = spurious IC captures during the probe window)"
+        );
+    }
 
+    // Δ sanity ceiling: 100 ms ≈ 100 000 µs × hz_per_us. A backwards
+    // tick (wrap-race miscount) shows up as `wrapping_sub` returning a
+    // value near u32::MAX, far above this ceiling.
+    let max_sane_delta = 100_000u32.saturating_mul(hz_per_us);
+    let mut min_dt = u32::MAX;
+    let mut max_dt = 0u32;
+    for i in 0..stamps.len() - 1 {
+        let dt = stamps[i + 1].tick.wrapping_sub(stamps[i].tick);
+        if dt == 0 {
+            bail!("Δ stamps[{i}]→stamps[{}] = 0 (duplicate tick)", i + 1);
+        }
+        if dt > max_sane_delta {
+            bail!(
+                "Δ stamps[{i}]→stamps[{}] = {dt} ticks > sane ceiling \
+                 {max_sane_delta} (TIM3 stitch failure or backwards stamp)",
+                i + 1
+            );
+        }
+        min_dt = min_dt.min(dt);
+        max_dt = max_dt.max(dt);
+    }
+
+    let ic_str = format!("{ic_delta}/{STRESS_SHOTS}");
     Ok(format!(
-        "{n:>5}  {ep:>11}  {dev:>4}  {ic:>4}",
+        "{n:>5}  {min:>9}  {max:>9}  {ic:>8}",
         n = stamps.len(),
-        ep = exp_period,
-        dev = max_dev,
-        ic = snap.entries.len(),
+        min = min_dt / hz_per_us,
+        max = max_dt / hz_per_us,
+        ic = ic_str,
     ))
 }
 
