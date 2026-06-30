@@ -105,7 +105,6 @@ pub fn parse_batch(rest: &[u8]) -> Result<BatchRequest, &'static str> {
 /// for the BBATCH error path.
 pub fn desync_err_for(cause: DesyncCause) -> &'static str {
     match cause {
-        DesyncCause::WalkerLate => "desync walker_late",
         DesyncCause::IcOverrun => "desync ic_overrun",
         DesyncCause::StampOverflow => "desync stamp_overflow",
     }
@@ -177,14 +176,6 @@ pub fn handle_line(line: &[u8]) -> Reply {
             },
             None => Reply::Empty,
         },
-        "BTRACE" => match capture::trace_drain() {
-            Some(r) => Reply::BTrace(r),
-            None => Reply::Empty,
-        },
-        "BTRACECLEAR" => {
-            capture::trace_clear();
-            Reply::Ok
-        }
         _ => Reply::Err("unknown"),
     }
 }

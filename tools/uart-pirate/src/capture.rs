@@ -45,10 +45,10 @@
 //! the prediction and flags `COUNT_UNDER` — anchor still updates, so the
 //! prediction chain survives a short edge dropout.
 //!
-//! Per TIMING.md §3.5: three conditions flip the sticky `DESYNCED` flag —
-//! two designed-impossible (`walker_late`, `ic_overrun`) and one host-paced
-//! bench-script bug (`stamp_overflow`). Host commands error out until a
-//! `RESET` (or `BAUD`, which implicitly resets) clears the flag.
+//! Per TIMING.md §3.5: two conditions flip the sticky `DESYNCED` flag —
+//! one designed-impossible (`ic_overrun`) and one host-paced bench-script
+//! bug (`stamp_overflow`). Host commands error out until a `RESET` (or
+//! `BAUD`, which implicitly resets) clears the flag.
 
 use core::cell::SyncUnsafeCell;
 use core::ptr;
@@ -182,7 +182,6 @@ pub mod flags {
 #[repr(u8)]
 #[derive(Copy, Clone, Eq, PartialEq, Debug)]
 pub enum DesyncCause {
-    WalkerLate = 1,
     IcOverrun = 2,
     StampOverflow = 3,
 }
@@ -190,7 +189,6 @@ pub enum DesyncCause {
 impl DesyncCause {
     fn from_u8(v: u8) -> Option<Self> {
         match v {
-            1 => Some(Self::WalkerLate),
             2 => Some(Self::IcOverrun),
             3 => Some(Self::StampOverflow),
             _ => None,
@@ -199,7 +197,6 @@ impl DesyncCause {
 
     pub fn as_str(self) -> &'static str {
         match self {
-            Self::WalkerLate => "walker_late",
             Self::IcOverrun => "ic_overrun",
             Self::StampOverflow => "stamp_overflow",
         }
@@ -255,12 +252,11 @@ static HAS_ANCHOR: SyncUnsafeCell<bool> = SyncUnsafeCell::new(false);
 static RX_TOTAL: SyncUnsafeCell<u32> = SyncUnsafeCell::new(0);
 static LAST_RX_NDTR: SyncUnsafeCell<u16> = SyncUnsafeCell::new(RX_LEN as u16);
 
-/// Sticky-fatal flag per TIMING.md §3.5. Set once on any of three
-/// conditions: multi-cadence-flag walker entry (`walker_late`), IC ring
-/// overrun (`ic_overrun`), or stamp ring overflow from host backpressure
-/// (`stamp_overflow`). Once set, `walk()` is a no-op and host commands
-/// return `ERR desync <cause>` until a `RESET` (or `BAUD`, which
-/// implicitly resets) clears the flag.
+/// Sticky-fatal flag per TIMING.md §3.5. Set once on either of two
+/// conditions: IC ring overrun (`ic_overrun`) or stamp ring overflow
+/// from host backpressure (`stamp_overflow`). Once set, `walk()` is a
+/// no-op and host commands return `ERR desync <cause>` until a `RESET`
+/// (or `BAUD`, which implicitly resets) clears the flag.
 static DESYNCED: AtomicBool = AtomicBool::new(false);
 /// Sticky cause tag for the `DESYNCED` trip. `0` = not desynced; first
 /// trip wins via `compare_exchange` so the cause reflects the originating
