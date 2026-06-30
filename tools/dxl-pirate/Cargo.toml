@@ -26,8 +26,13 @@ ch32-hal  = { git = "https://github.com/ch32-rs/ch32-hal", default-features = fa
   "embassy",
   "memory-x",
 ] }
-qingke    = { version = "0.7", features = ["v4", "critical-section-impl"] }
-qingke-rt = { version = "0.7", features = ["v4"] }
+# Pinned to git main for ch32-rs/qingke#25 — V4 critical-section uses
+# the 0x88 mask (MIE + MPIE together) to avoid an INESTEN=1
+# MIE-stuck-at-0 wedge when `critical_section::with` runs inside an ISR
+# body. The patch override below also redirects ch32-hal's transitive
+# 0.7 dep so we end up with one qingke instance, not two.
+qingke    = { git = "https://github.com/ch32-rs/qingke", features = ["v4", "critical-section-impl"] }
+qingke-rt = { git = "https://github.com/ch32-rs/qingke", features = ["v4"] }
 
 embassy-executor = { version = "0.9", features = ["arch-spin", "executor-thread"] }
 embassy-futures  = "0.1"
@@ -54,6 +59,16 @@ panic-halt = "1"
 # on "symbol multiply defined".
 [patch."https://github.com/ch32-rs/ch32-hal"]
 ch32-hal = { path = "/Users/aaron/projects/ch32-rs/ch32-hal" }
+
+# Redirect ch32-hal's transitive `qingke = "0.7"` and `qingke-rt = "0.7"`
+# crates.io deps to git main so we end up with exactly one qingke
+# instance carrying the V4 0x88-mask fix (PR #25). Without this override
+# we'd link two copies — the critical-section-impl from one wouldn't
+# apply to call sites that resolve to the other, and the wedge would
+# remain.
+[patch.crates-io]
+qingke    = { git = "https://github.com/ch32-rs/qingke" }
+qingke-rt = { git = "https://github.com/ch32-rs/qingke" }
 
 [profile.release]
 opt-level     = 3
