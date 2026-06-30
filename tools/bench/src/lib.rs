@@ -1,6 +1,6 @@
-//! Bench-side facade over the dxl-pirate. Bins drive [`Bus`]; the raw
+//! Bench-side facade over the uart-pirate. Bins drive [`Bus`]; the raw
 //! USB-CDC client (`pirate::Client`) is private to this crate so bins
-//! never type a wire command directly. See `tools/dxl-pirate/src/proto.rs`
+//! never type a wire command directly. See `tools/uart-pirate/src/proto.rs`
 //! for the underlying grammar.
 
 use std::thread::sleep;
@@ -49,7 +49,7 @@ pub const BOOT_BAUD: u32 = 1_000_000;
 /// Sized above two hardware floors that combine to lag the host's
 /// observed `last_byte_time` behind the wire:
 ///
-/// - Pirate walker cadence ~114 µs (§3.2 `tools/dxl-pirate/TIMING.md`):
+/// - Pirate walker cadence ~114 µs (§3.2 `tools/uart-pirate/TIMING.md`):
 ///   a byte received on the wire is stamped at the next TIM2 quarter-wrap
 ///   walker tick.
 /// - USB-CDC `bbatch` RTT ~1 ms per poll.
@@ -742,7 +742,7 @@ fn xfer_inner(client: &mut pirate::Client, req: &[u8], idle_us: u32) -> Result<R
 ///
 /// Two hardware floors shape the lower bound on `idle_us`:
 ///
-/// - Walker cadence ~114 µs (§3.2 of `tools/dxl-pirate/TIMING.md`):
+/// - Walker cadence ~114 µs (§3.2 of `tools/uart-pirate/TIMING.md`):
 ///   stamps lag the wire by up to one quarter-wrap.
 /// - `bbatch` USB-CDC RTT ~1 ms per poll.
 ///

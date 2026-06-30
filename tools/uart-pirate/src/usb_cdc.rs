@@ -33,7 +33,7 @@ pub async fn run() {
 
     let mut config = embassy_usb::Config::new(0xC0DE, 0xCAFE);
     config.manufacturer = Some("OpenServoCore");
-    config.product = Some("dxl-pirate");
+    config.product = Some("uart-pirate");
     config.serial_number = Some("bench-1");
     config.max_power = 100;
     config.max_packet_size_0 = 64;

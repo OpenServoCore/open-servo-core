@@ -1,6 +1,6 @@
 # Pirate Hardware Timing
 
-The dxl-pirate's job is to be a more accurate, more precise, and more reliable
+The uart-pirate's job is to be a more accurate, more precise, and more reliable
 ruler than anything it measures. This doc is the architecture contract for how
 that's wired — peripheral assignments, the time domain, the per-byte stamp
 pipeline, and the validation principles that keep measurements

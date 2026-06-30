@@ -1,4 +1,4 @@
-//! Raw USB-CDC client for the dxl-pirate device.
+//! Raw USB-CDC client for the uart-pirate device.
 //!
 //! Internal to the bench crate — bins import [`crate::Bus`] (the
 //! task-shaped facade) and never touch this module directly. All wire
@@ -490,7 +490,7 @@ pub fn auto_detect_pirate() -> Result<String> {
     hits.retain(|p| !p.contains("/tty."));
     match hits.len() {
         0 => bail!(
-            "no dxl-pirate found (VID 0x{PIRATE_VID:04X} PID 0x{PIRATE_PID:04X}); pass --port to override"
+            "no uart-pirate found (VID 0x{PIRATE_VID:04X} PID 0x{PIRATE_PID:04X}); pass --port to override"
         ),
         1 => Ok(hits.into_iter().next().unwrap()),
         n => {

@@ -1,15 +1,15 @@
 [package]
-name    = "dxl-pirate"
+name    = "uart-pirate"
 version = "0.1.0"
 edition = "2024"
-description = "Host-commanded DXL bus multi-tool (master + listener + injector) firmware for nanoCH32V203 — used by tools/dxl-bench"
+description = "Host-commanded half-duplex UART multi-tool (snoop + injection + hardware-stamped capture) firmware for nanoCH32V203 — used by tools/bench"
 
 [lib]
-name = "dxl_pirate"
+name = "uart_pirate"
 path = "src/lib.rs"
 
 [[bin]]
-name  = "dxl-pirate"
+name  = "uart-pirate"
 path  = "src/main.rs"
 
 [dependencies]
@@ -18,7 +18,7 @@ path  = "src/main.rs"
 # portable-atomic's `unsafe-assume-single-core` (embedded-only) or any of the
 # WCH/embassy crates.
 [target.'cfg(target_arch = "riscv32")'.dependencies]
-# PAC directly; no ch32-hal layer. dxl-pirate's surface (TIM2/TIM3 IC,
+# PAC directly; no ch32-hal layer. uart-pirate's surface (TIM2/TIM3 IC,
 # USART3 + DMA, USBD) is mostly hot-path register pokes that the HAL's
 # abstractions either get in the way of or don't cover at all (custom
 # DMA1 channel ISRs collide with ch32-hal's auto-generated stubs). What

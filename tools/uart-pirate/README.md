@@ -1,4 +1,4 @@
-# dxl-pirate
+# uart-pirate
 
 Firmware that turns a MuseLab nanoCH32V203 into a host-driven multi-tool for
 the Dynamixel 2.0 bus. Three things it does that a plain USB-UART can't:
@@ -49,7 +49,7 @@ Build once, then push it over USB with `wchisp`:
 ```
 cargo build --release
 wchisp info                                   # confirm the chip is alive
-wchisp flash target/riscv32imac-unknown-none-elf/release/dxl-pirate
+wchisp flash target/riscv32imac-unknown-none-elf/release/uart-pirate
 ```
 
 You may need to hold the BOOT button while plugging in (or pressing RESET) to

@@ -2,7 +2,7 @@
 name        = "bench"
 version     = "0.1.0"
 edition     = "2024"
-description = "Host-side bench tools: drive dxl-pirate, talk to chip-side firmware over DXL 2.0"
+description = "Host-side bench tools: drive uart-pirate, talk to chip-side firmware over DXL 2.0"
 license     = "MIT OR Apache-2.0"
 
 [workspace]

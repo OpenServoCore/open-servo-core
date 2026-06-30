@@ -57,7 +57,7 @@
 
 use core::str;
 
-use dxl_pirate::parse::decode_hex;
+use uart_pirate::parse::decode_hex;
 
 use crate::capture::{self, DesyncCause};
 use crate::inject::{self, TX_BUF_LEN};
