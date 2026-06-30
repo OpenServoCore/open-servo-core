@@ -134,10 +134,7 @@ fn calc_out_len(len: u16) -> (u16, u16) {
     match len {
         2..=60 => (align_len_up(len), align_len_up(len) / 2 << 10),
         61..=1024 => ((len + 31) / 32 * 32, (((len + 31) / 32 - 1) << 10) | 0x8000),
-        // SAFETY: control + bulk endpoints in this firmware are sized to 64 B; isoc/large bulk
-        // would have caught at the EndpointBufferAllocator level upstream. Saturate rather
-        // than panic so a stray oversized request can't brick the chip.
-        _ => (1024, 0x8000 | (31 << 10)),
+        _ => panic!("invalid OUT length {}", len),
     }
 }
 
@@ -359,24 +356,12 @@ impl<'d> driver::Driver<'d> for Driver<'d> {
     }
 
     fn start(mut self, control_max_packet_size: u16) -> (Self::Bus, Self::ControlPipe) {
-        // Control IN/OUT for EP0; allocator above returns Err only on
-        // size/exhaust failures, neither of which can happen here at
-        // boot with a 64 B EP0 + fresh ring.
         let ep_out = self
             .alloc_endpoint::<Out>(EndpointType::Control, None, control_max_packet_size, 0)
-            .ok();
+            .unwrap();
         let ep_in = self
             .alloc_endpoint::<In>(EndpointType::Control, None, control_max_packet_size, 0)
-            .ok();
-        let (ep_out, ep_in) = match (ep_out, ep_in) {
-            (Some(o), Some(i)) => (o, i),
-            // SAFETY: EP0 allocation can't fail at fresh boot. If it
-            // ever does (corrupted state), spin and let the watchdog
-            // recover rather than panic.
-            _ => loop {
-                core::hint::spin_loop();
-            },
-        };
+            .unwrap();
 
         let regs = USBD;
         regs.cntr().write(|w| {
