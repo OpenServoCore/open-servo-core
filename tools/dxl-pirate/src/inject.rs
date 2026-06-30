@@ -32,10 +32,10 @@
 use core::cell::SyncUnsafeCell;
 use core::ptr;
 
-use ch32_hal::pac::Interrupt;
-use ch32_hal::pac::dma::vals::{Dir, Pl, Size};
-use ch32_hal::pac::timer::vals::{CcmrInputCcs, Ckd, Mms, Urs};
-use ch32_hal::pac::{AFIO, DMA1, GPIOA, GPIOB, RCC, TIM2, TIM3, TIM4, USART3};
+use ch32_metapac::Interrupt;
+use ch32_metapac::dma::vals::{Dir, Pl, Size};
+use ch32_metapac::timer::vals::{CcmrInputCcs, Ckd, Mms, Urs};
+use ch32_metapac::{AFIO, DMA1, GPIOA, GPIOB, RCC, TIM2, TIM3, TIM4, USART3};
 use dxl_pirate::parse::brr_for;
 use portable_atomic::{AtomicBool, AtomicU32, Ordering};
 
@@ -390,7 +390,7 @@ pub fn init() {
 
         // Precompute the EN=1 CFGR word DMA1_CH4 stamps on fire. Same
         // bits as the disarmed config above, plus EN=1.
-        let mut armed = ch32_hal::pac::dma::regs::Cr(0);
+        let mut armed = ch32_metapac::dma::regs::Cr(0);
         armed.set_dir(Dir::FROMMEMORY);
         armed.set_minc(true);
         armed.set_pinc(false);
@@ -595,7 +595,7 @@ fn fire_now_dma() {
     let armed = unsafe { ptr::read_volatile(ARMED_CH2_CFGR_WORD.get()) };
     DMA1.ch(1)
         .cr()
-        .write_value(ch32_hal::pac::dma::regs::Cr(armed));
+        .write_value(ch32_metapac::dma::regs::Cr(armed));
 }
 
 /// Program TIM4 OPM to fire DMA1_CH2 when `tick32` reaches `at`, or fire

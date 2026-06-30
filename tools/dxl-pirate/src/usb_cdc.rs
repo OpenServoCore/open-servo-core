@@ -1,9 +1,7 @@
-//! USB-CDC ACM transport. Structure mirrors ch32-hal's `examples/ch32v203/src/bin/usbd.rs`.
+//! USB-CDC ACM transport. Originally modelled on ch32-hal's
+//! `examples/ch32v203/src/bin/usbd.rs`; the driver type now comes from the
+//! vendored `crate::usbd` module (see comment there for why we vendored).
 
-use ch32_hal as hal;
-use ch32_hal::Peri;
-use ch32_hal::peripherals::{PA11, PA12, USBD};
-use ch32_hal::usbd::{Driver, Instance, InterruptHandler};
 use embassy_usb::Builder;
 use embassy_usb::class::cdc_acm::{CdcAcmClass, State};
 use embassy_usb::driver::EndpointError;
@@ -12,6 +10,7 @@ use heapless::Vec;
 use crate::capture::{self, ByteRecord, FALL_LEN};
 use crate::inject::TX_BUF_LEN;
 use crate::proto::{self, Reply};
+use crate::usbd::Driver;
 
 // `FIRE bytes=<TX_BUF_LEN*2 hex> at=<u32>` ≤ TX_BUF_LEN*2 + 35; +slop.
 const LINE_BUF_LEN: usize = TX_BUF_LEN * 2 + 64;
@@ -28,13 +27,9 @@ const CDC_BULK_PACKET: u16 = 64;
 const BBATCH_MAX: usize = 64;
 const BSTAMP_SIZE: usize = 6;
 
-hal::bind_interrupts!(struct Irqs {
-    USB_LP_CAN1_RX0 => InterruptHandler<USBD>;
-});
-
 #[embassy_executor::task]
-pub async fn run(usbd: Peri<'static, USBD>, dp: Peri<'static, PA12>, dm: Peri<'static, PA11>) {
-    let driver = Driver::new(usbd, Irqs, dp, dm);
+pub async fn run() {
+    let driver = Driver::new();
 
     let mut config = embassy_usb::Config::new(0xC0DE, 0xCAFE);
     config.manufacturer = Some("OpenServoCore");
@@ -74,9 +69,7 @@ pub async fn run(usbd: Peri<'static, USBD>, dp: Peri<'static, PA12>, dm: Peri<'s
     embassy_futures::join::join(usb_fut, io_fut).await;
 }
 
-async fn serve<'d, T: Instance + 'd>(
-    class: &mut CdcAcmClass<'d, Driver<'d, T>>,
-) -> Result<(), EndpointError> {
+async fn serve<'d>(class: &mut CdcAcmClass<'d, Driver<'d>>) -> Result<(), EndpointError> {
     let mut rx = [0u8; 64];
     let mut line: Vec<u8, LINE_BUF_LEN> = Vec::new();
 
@@ -104,8 +97,8 @@ async fn serve<'d, T: Instance + 'd>(
     }
 }
 
-async fn handle_batch<'d, T: Instance + 'd>(
-    class: &mut CdcAcmClass<'d, Driver<'d, T>>,
+async fn handle_batch<'d>(
+    class: &mut CdcAcmClass<'d, Driver<'d>>,
     rest: &[u8],
 ) -> Result<(), EndpointError> {
     if let Some(cause) = capture::desync_cause() {
@@ -164,8 +157,8 @@ async fn handle_batch<'d, T: Instance + 'd>(
 /// from the raw u16 capture into the correct `tick32` wrap by the
 /// walker, so the host can compare directly against stamp ticks without
 /// re-lifting.
-async fn handle_ic_snapshot<'d, T: Instance + 'd>(
-    class: &mut CdcAcmClass<'d, Driver<'d, T>>,
+async fn handle_ic_snapshot<'d>(
+    class: &mut CdcAcmClass<'d, Driver<'d>>,
 ) -> Result<(), EndpointError> {
     let mut ticks = [0u32; FALL_LEN];
     let (snap, n) = capture::ic_snapshot(&mut ticks);
@@ -197,8 +190,8 @@ async fn handle_ic_snapshot<'d, T: Instance + 'd>(
     Ok(())
 }
 
-async fn send_reply<'d, T: Instance + 'd>(
-    class: &mut CdcAcmClass<'d, Driver<'d, T>>,
+async fn send_reply<'d>(
+    class: &mut CdcAcmClass<'d, Driver<'d>>,
     reply: Reply,
 ) -> Result<(), EndpointError> {
     let mut out: Vec<u8, 64> = Vec::new();

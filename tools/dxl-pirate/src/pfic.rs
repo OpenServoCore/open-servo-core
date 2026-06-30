@@ -13,7 +13,7 @@
 //! default PMTCFG, IPRIOR bit 7 is the preempt-class select (0 = high,
 //! 1 = low) and bits 6:4 are subpriority within the class.
 
-use ch32_hal::pac::Interrupt;
+use ch32_metapac::Interrupt;
 use qingke::pfic;
 
 const PRIO_WALKER: u8 = 0x00;

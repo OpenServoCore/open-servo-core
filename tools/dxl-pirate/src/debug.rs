@@ -2,7 +2,7 @@
 //! path) so an external probe can correlate logic-analyzer captures with
 //! injector timing.
 
-use ch32_hal::pac::{GPIOA, RCC};
+use ch32_metapac::{GPIOA, RCC};
 
 pub fn init() {
     RCC.apb2pcenr().modify(|w| w.set_iopaen(true));

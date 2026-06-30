@@ -18,31 +18,34 @@ path  = "src/main.rs"
 # portable-atomic's `unsafe-assume-single-core` (embedded-only) or any of the
 # WCH/embassy crates.
 [target.'cfg(target_arch = "riscv32")'.dependencies]
-# ch32-hal V203 metadata ships with empty dma_channels, so TxDma<USART1> isn't
-# generated; the hot path drives USART/DMA via metapac directly.
-ch32-hal  = { git = "https://github.com/ch32-rs/ch32-hal", default-features = false, features = [
+# PAC directly; no ch32-hal layer. dxl-pirate's surface (TIM2/TIM3 IC,
+# USART3 + DMA, USBD) is mostly hot-path register pokes that the HAL's
+# abstractions either get in the way of or don't cover at all (custom
+# DMA1 channel ISRs collide with ch32-hal's auto-generated stubs). What
+# the HAL did provide — RCC init, V20x USBD → embassy-usb-driver bridge,
+# GPIO pin setup — is vendored locally under `src/rcc.rs`, `src/usbd.rs`,
+# and inline pin pokes. Pinned to the same metapac rev ch32-hal main
+# uses.
+ch32-metapac = { git = "https://github.com/ch32-rs/ch32-metapac", rev = "23d667214e30fae690c739d27efca4cfe0e042d0", features = [
   "ch32v203c8t6",
   "rt",
-  "embassy",
   "memory-x",
 ] }
 # Pinned to git main for ch32-rs/qingke#25 — V4 critical-section uses
 # the 0x88 mask (MIE + MPIE together) to avoid an INESTEN=1
 # MIE-stuck-at-0 wedge when `critical_section::with` runs inside an ISR
-# body. The patch override below also redirects ch32-hal's transitive
-# 0.7 dep so we end up with one qingke instance, not two.
+# body.
 qingke    = { git = "https://github.com/ch32-rs/qingke", features = ["v4", "critical-section-impl"] }
 qingke-rt = { git = "https://github.com/ch32-rs/qingke", features = ["v4"] }
 
-embassy-executor = { version = "0.9", features = ["arch-spin", "executor-thread"] }
-embassy-futures  = "0.1"
-embassy-sync     = "0.7"
-embassy-time     = "0.5"
-embassy-usb      = { version = "0.5", default-features = false }
-# embassy-usb 0.5.1 was built against embassy-usb-driver 0.2.0; the 0.2.1
-# point release silently bumped embedded-io-async from 0.6 to 0.7. Pin
-# explicitly to dodge the trait-impl mismatch.
-embassy-usb-driver = "=0.2.0"
+embassy-executor         = { version = "0.10", features = ["platform-spin", "executor-thread"] }
+embassy-futures          = "0.1"
+embassy-sync             = "0.8"
+embassy-time             = "0.5"
+embassy-time-driver      = "0.2"
+embassy-time-queue-utils = "0.3"
+embassy-usb              = { version = "0.6", default-features = false }
+embassy-usb-driver       = "0.2"
 
 portable-atomic  = { version = "1", features = ["unsafe-assume-single-core"] }
 critical-section = "1"
@@ -50,25 +53,6 @@ heapless         = "0.8"
 static_cell      = "2"
 
 panic-halt = "1"
-
-# Local checkout of ch32-hal carries `feat-dma-isrs-feature` (commit
-# 47cfe6b), which gates the auto-generated DMA1_CHANNELx ISR stubs behind
-# the `dma-isrs` Cargo feature. We supply our own DMA1_CHANNEL1/CHANNEL3
-# handlers (capture.rs) so the feature stays OFF; without this patch the
-# upstream pin (71a2985) emits stubs unconditionally and the link fails
-# on "symbol multiply defined".
-[patch."https://github.com/ch32-rs/ch32-hal"]
-ch32-hal = { path = "/Users/aaron/projects/ch32-rs/ch32-hal" }
-
-# Redirect ch32-hal's transitive `qingke = "0.7"` and `qingke-rt = "0.7"`
-# crates.io deps to git main so we end up with exactly one qingke
-# instance carrying the V4 0x88-mask fix (PR #25). Without this override
-# we'd link two copies — the critical-section-impl from one wouldn't
-# apply to call sites that resolve to the other, and the wedge would
-# remain.
-[patch.crates-io]
-qingke    = { git = "https://github.com/ch32-rs/qingke" }
-qingke-rt = { git = "https://github.com/ch32-rs/qingke" }
 
 [profile.release]
 opt-level     = 3

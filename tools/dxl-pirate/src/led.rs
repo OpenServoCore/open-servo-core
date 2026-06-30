@@ -6,7 +6,7 @@
 //!
 //! Solid on when idle; ~10 Hz blink on activity (signal() latches; blink task drains).
 
-use ch32_hal::pac::{AFIO, GPIOA, RCC};
+use ch32_metapac::{AFIO, GPIOA, RCC};
 use embassy_time::{Duration, Timer};
 use portable_atomic::{AtomicBool, Ordering};
 
