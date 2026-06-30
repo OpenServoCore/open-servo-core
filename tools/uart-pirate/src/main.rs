@@ -5,6 +5,7 @@
 mod capture;
 mod inject;
 mod led;
+mod parse;
 mod pfic;
 mod proto;
 mod rcc;

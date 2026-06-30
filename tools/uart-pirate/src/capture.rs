@@ -58,7 +58,7 @@ use portable_atomic::{AtomicBool, AtomicU8, AtomicU32, Ordering};
 use ch32_metapac::dma::vals::{Dir, Pl, Size};
 use ch32_metapac::timer::vals::FilterValue;
 use ch32_metapac::{DMA1, TIM2, TIM3, USART3};
-use uart_pirate::parse::brr_for;
+use crate::parse::brr_for;
 use qingke_rt::interrupt;
 
 use crate::inject::{APB1_HZ, BaudError, DEFAULT_BAUD, read_tick32};

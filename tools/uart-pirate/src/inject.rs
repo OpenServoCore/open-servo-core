@@ -31,7 +31,7 @@ use ch32_metapac::Interrupt;
 use ch32_metapac::dma::vals::{Dir, Pl, Size};
 use ch32_metapac::timer::vals::{CcmrInputCcs, Ckd, Mms, Urs};
 use ch32_metapac::{AFIO, DMA1, GPIOA, GPIOB, RCC, TIM2, TIM3, TIM4, USART3};
-use uart_pirate::parse::brr_for;
+use crate::parse::brr_for;
 use portable_atomic::{AtomicBool, AtomicU32, Ordering};
 
 pub const TX_BUF_LEN: usize = 1024;
