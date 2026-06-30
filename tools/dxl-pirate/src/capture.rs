@@ -33,8 +33,9 @@
 //! All three sources share `PRIO_WALKER` so they cannot preempt one
 //! another; `walk()` runs single-threaded across them. `ceiling` is a
 //! `read_tick32()` snapshot taken AFTER `refresh_falling_total`. The
-//! wrap-race detection on each IC pair (`combined > ceiling` → subtract
-//! one wrap) handles the 1-cycle TRC sync window per TIM2 wrap.
+//! wrap-race detection on each IC pair (peek-next monotonicity for
+//! interior entries; `combined > ceiling` for the tail) handles the
+//! few-cycle TRC sync window per TIM2 wrap.
 //!
 //! Classification is **predict-and-snap PLL** per TIMING.md §3.4: the
 //! first byte's start tick is anchored on the first unconsumed IC edge;
@@ -580,7 +581,7 @@ pub fn ic_snapshot(out: &mut [u32]) -> (IcSnapshot, usize) {
         let start = falling_total.wrapping_sub(n as u32);
         for (i, slot) in out.iter_mut().take(n).enumerate() {
             let probe = start.wrapping_add(i as u32);
-            *slot = falling_at(probe, ref_tick);
+            *slot = falling_at(probe, falling_total, ref_tick);
         }
         (
             IcSnapshot {
@@ -654,23 +655,51 @@ fn refresh_rx_total() -> u32 {
 }
 
 /// Read the hardware-atomic 32-bit IC capture pair at `idx` and apply
-/// wrap-race correction against `ceiling`.
+/// wrap-race correction.
 ///
 /// The phase-locked TIM3 (started one AHB write ahead of TIM2 in
 /// `inject::init`) increments a few cycles BEFORE each TIM2 wrap. If a
 /// capture latches inside that gap, TIM3.CCR1 latches the new high half
 /// while TIM2.CCR1 still holds the pre-wrap low half — combined value
-/// reads as `actual + 65536`. Since every valid entry was captured
-/// strictly before the walker read `ceiling` (NDTR refresh precedes
-/// `read_tick32` per TIMING.md §3.3), `combined > ceiling` is a
-/// disjoint signal of the race; subtract one wrap.
+/// reads as `actual + 65536`.
+///
+/// Detection uses two signals depending on whether `idx` is an interior
+/// entry or the tail:
+///
+/// - **Interior (`idx + 1 < falling_total`)**: capture times in the ring
+///   are monotonically non-decreasing (DMA writes them in order), so
+///   `combined > combined_next` is a disjoint signal of the race on
+///   `idx`. This is timing-independent: it works regardless of how many
+///   TIM2 wraps elapse between capture and walker read, which the
+///   earlier `combined > ceiling` predicate didn't survive at low baud /
+///   long bursts. Two consecutive races would require TIM2 to wrap twice
+///   between two captures — impossible since min inter-capture spacing
+///   (filter delay = 256 cycles) is far below the wrap period (65536
+///   cycles).
+/// - **Tail (`idx + 1 == falling_total`)**: no successor exists. `ceiling`
+///   was sampled microseconds after the latest IC pair was written
+///   (NDTR refresh precedes `read_tick32` per TIMING.md §3.3), so it is
+///   within one wrap of the tail entry's capture time and the original
+///   `combined > ceiling` predicate is reliable here.
 #[inline]
-fn falling_at(idx: u32, ceiling: u32) -> u32 {
+fn falling_at(idx: u32, falling_total: u32, ceiling: u32) -> u32 {
     let i = (idx & FALL_MASK) as usize;
     let lo = unsafe { (*FALLING_LO.get())[i] };
     let hi = unsafe { (*FALLING_HI.get())[i] };
     let combined = ((hi as u32) << 16) | (lo as u32);
-    if combined != ceiling && combined.wrapping_sub(ceiling) <= u32::MAX / 2 {
+
+    if idx.wrapping_add(1) != falling_total {
+        let ni = (idx.wrapping_add(1) & FALL_MASK) as usize;
+        let lo_n = unsafe { (*FALLING_LO.get())[ni] };
+        let hi_n = unsafe { (*FALLING_HI.get())[ni] };
+        let combined_next = ((hi_n as u32) << 16) | (lo_n as u32);
+        if combined != combined_next
+            && combined.wrapping_sub(combined_next) <= u32::MAX / 2
+        {
+            return combined.wrapping_sub(1 << 16);
+        }
+        combined
+    } else if combined != ceiling && combined.wrapping_sub(ceiling) <= u32::MAX / 2 {
         combined.wrapping_sub(1 << 16)
     } else {
         combined
@@ -764,7 +793,7 @@ pub fn walk(idle: bool) {
             if walked == falling_total {
                 break;
             }
-            let first_edge = falling_at(walked, ceiling);
+            let first_edge = falling_at(walked, falling_total, ceiling);
             if ceiling.wrapping_sub(first_edge) < byte_period {
                 break;
             }
@@ -789,7 +818,7 @@ pub fn walk(idle: bool) {
             // sitting before `snap_low` is past byte N−1's start bit but
             // before byte N's snap window).
             while walked != falling_total {
-                let tick = falling_at(walked, ceiling);
+                let tick = falling_at(walked, falling_total, ceiling);
                 if tick.wrapping_sub(snap_low) > u32::MAX / 2 {
                     walked = walked.wrapping_add(1);
                 } else {
@@ -809,7 +838,7 @@ pub fn walk(idle: bool) {
             let mut best_dist = u32::MAX;
             let mut probe = walked;
             while probe != falling_total {
-                let tick = falling_at(probe, ceiling);
+                let tick = falling_at(probe, falling_total, ceiling);
                 // Past snap_high → stop scanning.
                 if tick.wrapping_sub(snap_high) <= u32::MAX / 2 && tick != snap_high {
                     break;
