@@ -28,6 +28,13 @@ impl<'a, R: DxlReply + ?Sized> ControlTableHooks<'a, R> {
     }
 }
 
+/// DXL wire encodes RDT in 2-µs units; the trait surface carries plain µs.
+const RDT_UNIT_US: u32 = 2;
+
+fn rdt_us_from_units(value: u8) -> u32 {
+    value as u32 * RDT_UNIT_US
+}
+
 impl<R: DxlReply + ?Sized> ControlTableHookEvents for ControlTableHooks<'_, R> {
     fn on_id_write(&mut self, value: u8) {
         self.reply.stage_id(value);
@@ -35,10 +42,22 @@ impl<R: DxlReply + ?Sized> ControlTableHookEvents for ControlTableHooks<'_, R> {
     fn on_baud_rate_idx_write(&mut self, value: BaudRate) {
         self.reply.stage_baud(value);
     }
-    /// Control-table field is u8 in 2-µs units (matching the DXL spec wire
-    /// representation); the trait surface carries plain µs. Multiply at the
-    /// boundary.
     fn on_return_delay_2us_write(&mut self, value: u8) {
-        self.reply.stage_rdt((value as u32) * 2);
+        self.reply.stage_rdt(rdt_us_from_units(value));
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::rdt_us_from_units;
+
+    #[test]
+    fn rdt_us_widens_and_scales_by_two() {
+        assert_eq!(rdt_us_from_units(0), 0);
+        assert_eq!(rdt_us_from_units(1), 2);
+        assert_eq!(rdt_us_from_units(127), 254);
+        // u8::MAX * 2 = 510, past u8's range — proves the widening cast
+        // happens before the multiply.
+        assert_eq!(rdt_us_from_units(u8::MAX), 510);
     }
 }
