@@ -133,10 +133,6 @@ impl<CRC: CrcUmts> Default for FastLastCrc<CRC> {
     }
 }
 
-// Shelved pending U4 (osc-drivers unit test audit): tests below bind to
-// hand-rolled mock fields; will be migrated to the mockall + state-companion
-// API as part of the audit.
-#[cfg(any())]
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -165,6 +161,18 @@ mod tests {
         c
     }
 
+    /// Read the last `n` bytes of the encoded reply as an array.
+    ///
+    /// SAFETY: `tx_buf` is initialized up to `tx_len` bytes by the earlier
+    /// `send_slot` call in `make_codec_with_last_reply`.
+    fn tx_trailing<const N: usize>(codec: &TestCodec) -> [u8; N] {
+        let len = codec.tx_len() as usize;
+        let s = unsafe { core::slice::from_raw_parts(codec.tx_buf_addr() as *const u8, len) };
+        let mut out = [0u8; N];
+        out.copy_from_slice(&s[len - N..]);
+        out
+    }
+
     #[test]
     fn skips_bytes_before_start_cursor() {
         let mut codec = make_codec_with_last_reply();
@@ -173,10 +181,8 @@ mod tests {
             /* start_cursor = */ 10, /* predecessor_bytes = */ 4,
         );
 
-        // Cursors 0..9 are before start_cursor; fold drops them silently.
-        for cursor in 0..10 {
-            fl.on_byte(0xAA, cursor, &mut codec.tx);
-        }
+        // Slice cursors 0..9; all before start_cursor → fold drops silently.
+        fl.on_slice(&[0xAA; 10], 0, &mut codec.tx);
         assert_eq!(fl.bytes_folded(), 0);
         assert!(fl.is_active());
     }
@@ -187,37 +193,25 @@ mod tests {
         let mut fl = FastLastCrc::<SoftwareCrcUmts>::new();
         fl.start(5, 4);
 
-        // Cursor == start_cursor IS included.
-        fl.on_byte(0xAA, 5, &mut codec.tx);
+        // Slice base_cursor == start_cursor; byte IS included.
+        fl.on_slice(&[0xAA], 5, &mut codec.tx);
         assert_eq!(fl.bytes_folded(), 1);
     }
 
     #[test]
     fn finalize_patches_trailing_crc_slot_on_target_hit() {
         let mut codec = make_codec_with_last_reply();
-        let pre_patch_len = codec.tx_len() as usize;
-        // Capture pre-patch trailing bytes — placeholder 0x0000 LE.
-        // SAFETY: tx_buf is initialized to pre_patch_len bytes.
-        let trailing_before =
-            unsafe { core::slice::from_raw_parts(codec.tx_buf_addr() as *const u8, pre_patch_len) }
-                [pre_patch_len - 2..]
-                .to_vec();
-        assert_eq!(trailing_before, [0x00, 0x00]);
+        // Pre-patch: placeholder 0x0000 LE from `send_slot(Last {crc: 0 })`.
+        assert_eq!(tx_trailing::<2>(&codec), [0x00, 0x00]);
 
         let mut fl = FastLastCrc::<SoftwareCrcUmts>::new();
         fl.start(0, 3);
-        fl.on_byte(0x11, 0, &mut codec.tx);
-        fl.on_byte(0x22, 1, &mut codec.tx);
-        // Third byte trips finalize → patch.
-        fl.on_byte(0x33, 2, &mut codec.tx);
+        // Slice of 3 bytes trips finalize on the third byte → patch.
+        fl.on_slice(&[0x11, 0x22, 0x33], 0, &mut codec.tx);
 
         assert!(!fl.is_active(), "finalize should clear active");
-        // SAFETY: see above.
-        let len = codec.tx_len() as usize;
-        let actual = unsafe { core::slice::from_raw_parts(codec.tx_buf_addr() as *const u8, len) };
-        // Patched trailing slot must NOT be the placeholder anymore.
-        let patched = &actual[len - 2..];
-        assert_ne!(patched, &[0x00, 0x00], "patch_crc should overwrite slot");
+        let patched = tx_trailing::<2>(&codec);
+        assert_ne!(patched, [0x00, 0x00], "patch_crc should overwrite slot");
 
         // Independently compute the expected CRC: chain-CRC over the
         // three predecessor bytes + own_reply_bytes (= the encoded reply
@@ -225,9 +219,7 @@ mod tests {
         let mut expected = SoftwareCrcUmts::new();
         expected.update(&[0x11, 0x22, 0x33]);
         expected.update(codec.own_reply_bytes());
-        let expected_crc = expected.finalize();
-        let actual_crc = u16::from_le_bytes([patched[0], patched[1]]);
-        assert_eq!(actual_crc, expected_crc);
+        assert_eq!(u16::from_le_bytes(patched), expected.finalize());
     }
 
     #[test]
@@ -235,43 +227,31 @@ mod tests {
         let mut codec = make_codec_with_last_reply();
         let mut fl = FastLastCrc::<SoftwareCrcUmts>::new();
         fl.start(0, 2);
-        fl.on_byte(0x11, 0, &mut codec.tx);
-        fl.on_byte(0x22, 1, &mut codec.tx);
+        fl.on_slice(&[0x11, 0x22], 0, &mut codec.tx);
         assert!(!fl.is_active());
 
         // Already cleared; this is a no-op (doesn't fold, doesn't panic).
-        fl.on_byte(0x33, 2, &mut codec.tx);
+        fl.on_slice(&[0x33], 2, &mut codec.tx);
         assert_eq!(fl.bytes_folded(), 2);
     }
 
     #[test]
     fn cancel_clears_without_patching() {
         let mut codec = make_codec_with_last_reply();
-        let pre_patch_len = codec.tx_len() as usize;
-        // SAFETY: tx_buf initialized to pre_patch_len.
-        let trailing_before =
-            unsafe { core::slice::from_raw_parts(codec.tx_buf_addr() as *const u8, pre_patch_len) }
-                [pre_patch_len - 2..]
-                .to_vec();
+        let trailing_before: [u8; 2] = tx_trailing(&codec);
 
         let mut fl = FastLastCrc::<SoftwareCrcUmts>::new();
         fl.start(0, 4);
-        fl.on_byte(0x11, 0, &mut codec.tx);
+        fl.on_slice(&[0x11], 0, &mut codec.tx);
         fl.cancel();
         assert!(!fl.is_active());
 
         // Subsequent bytes silently drop.
-        fl.on_byte(0x22, 1, &mut codec.tx);
+        fl.on_slice(&[0x22], 1, &mut codec.tx);
         assert_eq!(fl.bytes_folded(), 1);
 
         // Trailing slot unchanged.
-        // SAFETY: see above.
-        let after_len = codec.tx_len() as usize;
-        let trailing_after =
-            unsafe { core::slice::from_raw_parts(codec.tx_buf_addr() as *const u8, after_len) }
-                [after_len - 2..]
-                .to_vec();
-        assert_eq!(trailing_before, trailing_after);
+        assert_eq!(tx_trailing::<2>(&codec), trailing_before);
     }
 
     #[test]
@@ -281,23 +261,13 @@ mod tests {
 
         // First cycle.
         fl.start(0, 1);
-        fl.on_byte(0xFF, 0, &mut codec.tx);
-        let first_patch = {
-            let len = codec.tx_len() as usize;
-            // SAFETY: see above.
-            let s = unsafe { core::slice::from_raw_parts(codec.tx_buf_addr() as *const u8, len) };
-            [s[len - 2], s[len - 1]]
-        };
+        fl.on_slice(&[0xFF], 0, &mut codec.tx);
+        let first_patch: [u8; 2] = tx_trailing(&codec);
 
         // Re-start; same start_cursor and predecessor_bytes but different byte.
         fl.start(0, 1);
-        fl.on_byte(0x42, 0, &mut codec.tx);
-        let second_patch = {
-            let len = codec.tx_len() as usize;
-            // SAFETY: see above.
-            let s = unsafe { core::slice::from_raw_parts(codec.tx_buf_addr() as *const u8, len) };
-            [s[len - 2], s[len - 1]]
-        };
+        fl.on_slice(&[0x42], 0, &mut codec.tx);
+        let second_patch: [u8; 2] = tx_trailing(&codec);
 
         // Different inputs → different patches; proves crc.reset() ran on
         // re-start rather than continuing the prior run.
