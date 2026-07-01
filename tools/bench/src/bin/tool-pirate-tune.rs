@@ -551,7 +551,9 @@ fn stage_tx_comp(bus: &mut Bus, bauds: &[u32], shots: u32, write: bool) -> Resul
     println!(
         "    jit   ±{worst_half_jit_pct:.2}% byte-time = ±{worst_half_jit_ns:.0} ns   (per-shot deviation from median)"
     );
-    println!("    floor: ±0.5 bit-time ≈ ±5% byte-time from U[0, brr] DR→TSR phase wait — physical, not tunable");
+    println!(
+        "    floor: ±0.5 bit-time ≈ ±5% byte-time from U[0, brr] DR→TSR phase wait — physical, not tunable"
+    );
     Ok(())
 }
 

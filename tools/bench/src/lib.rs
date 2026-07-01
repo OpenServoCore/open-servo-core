@@ -539,7 +539,8 @@ impl Bus {
         idle_us: u32,
     ) -> Result<ReplyCapture> {
         drain_all(&mut self.pirate)?;
-        self.pirate.schedule_send_after_idle(inject, after_idle_us)?;
+        self.pirate
+            .schedule_send_after_idle(inject, after_idle_us)?;
         self.pirate.send_now(req)?;
         collect_until_silent(&mut self.pirate, req, idle_us)
     }
