@@ -831,9 +831,6 @@ impl<
     }
 }
 
-// Shelved pending U4 (osc-drivers unit test audit): helpers below are only
-// reached from the shelved tests; revive together with them.
-#[cfg(any())]
 #[cfg(test)]
 impl<R: EdgeDma, CRC: CrcUmts, const RX_BUF_LEN: usize, const EDGE_BUF_LEN: usize>
     CodecRx<R, CRC, RX_BUF_LEN, EDGE_BUF_LEN>
@@ -856,17 +853,6 @@ impl<R: EdgeDma, CRC: CrcUmts, const RX_BUF_LEN: usize, const EDGE_BUF_LEN: usiz
         buf.set_read_seq_for_test(seq);
     }
 
-    /// Force the classifier's `last_byte_start` to a known tick. Composite
-    /// tests use this to seed `packet_end_tick` without staging real edges.
-    pub(crate) fn force_byte_tick_for_test(&mut self, tick: u16) {
-        self.rx.force_byte_tick_for_test(tick);
-    }
-
-    /// Read the classifier's `hsi_active` flag for composite tests.
-    pub(crate) fn rx_classifier_hsi_active_for_test(&self) -> bool {
-        self.rx.hsi_active()
-    }
-
     /// Cumulative parser- + skip-consumed wire-byte cursor. Production
     /// callers read this per-event via `PollEvent::Event::next_status_pos`;
     /// tests reach the underlying counter directly to verify the cursor
@@ -876,9 +862,6 @@ impl<R: EdgeDma, CRC: CrcUmts, const RX_BUF_LEN: usize, const EDGE_BUF_LEN: usiz
     }
 }
 
-// Shelved pending U4 (osc-drivers unit test audit): helpers below are only
-// reached from the shelved tests; revive together with them.
-#[cfg(any())]
 #[cfg(test)]
 impl<
     R: EdgeDma,
@@ -896,28 +879,16 @@ impl<
         self.rx.set_rx_read_seq_for_test(seq);
     }
 
-    pub(crate) fn force_byte_tick_for_test(&mut self, tick: u16) {
-        self.rx.force_byte_tick_for_test(tick);
-    }
-
-    pub(crate) fn rx_classifier_hsi_active_for_test(&self) -> bool {
-        self.rx.rx_classifier_hsi_active_for_test()
-    }
-
     pub(crate) fn wire_byte_cursor_for_test(&self) -> u32 {
         self.rx.wire_byte_cursor_for_test()
     }
 }
 
-// Shelved pending U4 (osc-drivers unit test audit): tests below bind to
-// hand-rolled mock fields; will be migrated to the mockall + state-companion
-// API as part of the audit.
-#[cfg(any())]
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::mocks::MockEdgeDma;
-    use dxl_protocol::streaming::{HeaderEvent, InstructionHeader, ResyncKind};
+    use dxl_protocol::streaming::{HeaderEvent, InstructionHeader};
     use dxl_protocol::types::{Id, StatusError};
     use dxl_protocol::{InstructionEncoder, SoftwareCrcUmts, StatusEncoder};
     use heapless::Vec;
@@ -933,7 +904,12 @@ mod tests {
     type TestCodec = Codec<MockEdgeDma, SoftwareCrcUmts, RX_BUF_LEN, EDGE_BUF_LEN, TX_BUF_LEN>;
 
     fn make() -> TestCodec {
-        Codec::new(MockEdgeDma::default())
+        // Tests stage bytes manually via `stage_rx_bytes_for_test`; the
+        // edge-ring DMA counter is never advanced by anything real, so
+        // `remaining()` can return a fixed value for every call.
+        let mut edge_dma = MockEdgeDma::default();
+        edge_dma.expect_remaining().returning(|| 0);
+        Codec::new(edge_dma)
     }
 
     fn wire_ping(id: u8) -> Vec<u8, 32> {
@@ -962,13 +938,15 @@ mod tests {
 
     /// Drain a codec into a `Vec` of captured events. `decide` controls
     /// per-Header skip behavior; default `|_| PollAction::Continue` forwards
-    /// everything.
+    /// everything. The walker args are unused here (`n_pairs_wanted = 0`) —
+    /// these tests validate parser/skip behavior, not drift sampling.
     fn collect_events<F>(c: &mut TestCodec, mut decide: F) -> alloc::vec::Vec<Capture>
     where
         F: FnMut(&Event) -> PollAction,
     {
         let mut out = alloc::vec::Vec::new();
-        c.poll(|pe, _rx| match pe {
+        let mut pairs: heapless::Vec<(u16, u16), 4> = heapless::Vec::new();
+        c.poll(0, 160, 0, &mut pairs, |pe, _rx| match pe {
             PollEvent::Event { ev, ring, .. } => {
                 let action = if matches!(ev, Event::Header(_)) {
                     decide(&ev)
