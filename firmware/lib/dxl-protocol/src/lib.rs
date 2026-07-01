@@ -13,8 +13,8 @@ pub mod streaming;
 pub mod types;
 pub mod wire;
 
-#[cfg(test)]
-mod test_util;
+#[cfg(any(test, feature = "test-util"))]
+pub mod test_util;
 
 pub use buf::{Chunk, WriteBuf, WriteError};
 pub use crc::CrcUmts;

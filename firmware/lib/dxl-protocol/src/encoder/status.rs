@@ -119,7 +119,7 @@ impl<'a, W: WriteBuf, CRC: CrcUmts> StatusEncoder<'a, W, CRC> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::test_util::{Crc, assert_crc_good, parse, read_data, status_header};
+    use crate::test_util::{Crc, assert_crc_good, parse_events, read_data, status_header};
     use crate::types::PingStatus;
     use heapless::Vec;
 
@@ -131,7 +131,7 @@ mod tests {
         StatusEncoder::<_, Crc>::new(&mut buf)
             .empty(Id::new(0x01), StatusError::OK)
             .unwrap();
-        let evs = parse(&buf);
+        let evs = parse_events(&buf);
         let h = status_header(&evs);
         assert_eq!(h.id, Id::new(0x01));
         assert_eq!(h.error, StatusError::OK);
@@ -146,7 +146,7 @@ mod tests {
         StatusEncoder::<_, Crc>::new(&mut buf)
             .empty(Id::new(0x02), err)
             .unwrap();
-        let evs = parse(&buf);
+        let evs = parse_events(&buf);
         let h = status_header(&evs);
         assert_eq!(h.id, Id::new(0x02));
         assert_eq!(h.error, err);
@@ -159,7 +159,7 @@ mod tests {
         StatusEncoder::<_, Crc>::new(&mut buf)
             .ping(Id::new(0x03), StatusError::OK, 0x0203, 0x10)
             .unwrap();
-        let evs = parse(&buf);
+        let evs = parse_events(&buf);
         let h = status_header(&evs);
         assert_eq!(h.id, Id::new(0x03));
         assert_eq!(h.error, StatusError::OK);
@@ -174,7 +174,7 @@ mod tests {
         StatusEncoder::<_, Crc>::new(&mut buf)
             .read(Id::new(0x04), StatusError::OK, &data)
             .unwrap();
-        let evs = parse(&buf);
+        let evs = parse_events(&buf);
         let h = status_header(&evs);
         assert_eq!(h.id, Id::new(0x04));
         assert_eq!(read_data(&buf, &evs).as_slice(), &data);
@@ -188,7 +188,7 @@ mod tests {
         StatusEncoder::<_, Crc>::new(&mut buf)
             .ext(Id::new(0x05), StatusError::OK, &payload)
             .unwrap();
-        let evs = parse(&buf);
+        let evs = parse_events(&buf);
         let h = status_header(&evs);
         assert_eq!(h.id, Id::new(0x05));
         assert_eq!(read_data(&buf, &evs).as_slice(), &payload);
@@ -205,7 +205,7 @@ mod tests {
                 error: err,
             })
             .unwrap();
-        let evs = parse(&buf);
+        let evs = parse_events(&buf);
         let h = status_header(&evs);
         assert_eq!(h.id, Id::new(0x05));
         assert_eq!(h.error, err);
@@ -226,7 +226,7 @@ mod tests {
                 },
             })
             .unwrap();
-        let evs = parse(&buf);
+        let evs = parse_events(&buf);
         let h = status_header(&evs);
         assert_eq!(h.id, Id::new(0x07));
         assert_eq!(read_data(&buf, &evs).as_slice(), &[0x34, 0x12, 0x42]);
@@ -244,7 +244,7 @@ mod tests {
                 data: &data,
             })
             .unwrap();
-        let evs = parse(&buf);
+        let evs = parse_events(&buf);
         let h = status_header(&evs);
         assert_eq!(h.id, Id::new(0x09));
         assert_eq!(read_data(&buf, &evs).as_slice(), &data);
@@ -261,7 +261,7 @@ mod tests {
                 payload: &payload,
             })
             .unwrap();
-        let evs = parse(&buf);
+        let evs = parse_events(&buf);
         let h = status_header(&evs);
         assert_eq!(h.id, Id::new(0x0B));
         assert_eq!(read_data(&buf, &evs).as_slice(), &payload);
@@ -304,7 +304,7 @@ mod tests {
                 [Chunk::Slice(&[0x10, 0x20]), Chunk::Zero(2)],
             )
             .unwrap();
-        let evs = parse(&buf);
+        let evs = parse_events(&buf);
         let h = status_header(&evs);
         assert_eq!(h.id, Id::new(0x09));
         assert_eq!(read_data(&buf, &evs).as_slice(), &[0x10, 0x20, 0, 0]);
@@ -322,7 +322,7 @@ mod tests {
                 payload: &payload,
             })
             .unwrap();
-        let evs = parse(&buf);
+        let evs = parse_events(&buf);
         let h = status_header(&evs);
         assert_eq!(h.id, Id::BROADCAST);
         assert_eq!(h.error, StatusError::OK);

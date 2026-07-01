@@ -204,8 +204,8 @@ mod tests {
     use super::*;
     use crate::streaming::InstructionHeader as PH;
     use crate::test_util::{
-        Crc, assert_crc_good, bulk_slots, instruction_header as instr_header, parse, sync_slots,
-        write_chunks,
+        Crc, assert_crc_good, bulk_slots, instruction_header as instr_header, parse_events,
+        sync_slots, write_chunks,
     };
     use alloc::vec;
     use heapless::Vec;
@@ -218,7 +218,7 @@ mod tests {
         InstructionEncoder::<_, Crc>::new(&mut buf)
             .ping(Id::new(0x01))
             .unwrap();
-        let evs = parse(&buf);
+        let evs = parse_events(&buf);
         assert!(matches!(instr_header(&evs), PH::Ping { id } if id == Id::new(0x01)));
         assert_crc_good(&evs);
     }
@@ -229,7 +229,7 @@ mod tests {
         InstructionEncoder::<_, Crc>::new(&mut buf)
             .read(Id::new(0x02), 0x0084, 4)
             .unwrap();
-        let evs = parse(&buf);
+        let evs = parse_events(&buf);
         assert!(matches!(
             instr_header(&evs),
             PH::Read {
@@ -248,7 +248,7 @@ mod tests {
         InstructionEncoder::<_, Crc>::new(&mut buf)
             .write(Id::new(0x03), 0x0084, &data)
             .unwrap();
-        let evs = parse(&buf);
+        let evs = parse_events(&buf);
         assert!(matches!(
             instr_header(&evs),
             PH::Write {
@@ -276,7 +276,7 @@ mod tests {
         InstructionEncoder::<_, Crc>::new(&mut buf)
             .reg_write(Id::new(0x04), 0x0030, &data)
             .unwrap();
-        let evs = parse(&buf);
+        let evs = parse_events(&buf);
         assert!(matches!(
             instr_header(&evs),
             PH::RegWrite {
@@ -294,7 +294,7 @@ mod tests {
         InstructionEncoder::<_, Crc>::new(&mut buf)
             .action(Id::new(0x05))
             .unwrap();
-        let evs = parse(&buf);
+        let evs = parse_events(&buf);
         assert!(matches!(instr_header(&evs), PH::Action { id } if id == Id::new(0x05)));
         assert_crc_good(&evs);
     }
@@ -305,7 +305,7 @@ mod tests {
         InstructionEncoder::<_, Crc>::new(&mut buf)
             .reboot(Id::new(0x06))
             .unwrap();
-        let evs = parse(&buf);
+        let evs = parse_events(&buf);
         assert!(matches!(instr_header(&evs), PH::Reboot { id } if id == Id::new(0x06)));
         assert_crc_good(&evs);
     }
@@ -316,7 +316,7 @@ mod tests {
         InstructionEncoder::<_, Crc>::new(&mut buf)
             .factory_reset(Id::new(0x07), 0x02)
             .unwrap();
-        let evs = parse(&buf);
+        let evs = parse_events(&buf);
         assert!(matches!(
             instr_header(&evs),
             PH::FactoryReset { id, mode: 0x02 } if id == Id::new(0x07)
@@ -331,7 +331,7 @@ mod tests {
         InstructionEncoder::<_, Crc>::new(&mut buf)
             .clear(Id::new(0x08), &body)
             .unwrap();
-        let evs = parse(&buf);
+        let evs = parse_events(&buf);
         assert!(matches!(
             instr_header(&evs),
             PH::Clear { id, length: 5 } if id == Id::new(0x08)
@@ -346,7 +346,7 @@ mod tests {
         InstructionEncoder::<_, Crc>::new(&mut buf)
             .control_table_backup(Id::new(0x09), &body)
             .unwrap();
-        let evs = parse(&buf);
+        let evs = parse_events(&buf);
         assert!(matches!(
             instr_header(&evs),
             PH::ControlTableBackup { id, length: 2 } if id == Id::new(0x09)
@@ -361,7 +361,7 @@ mod tests {
         InstructionEncoder::<_, Crc>::new(&mut buf)
             .sync_read(0x0084, 4, &ids)
             .unwrap();
-        let evs = parse(&buf);
+        let evs = parse_events(&buf);
         assert!(matches!(
             instr_header(&evs),
             PH::SyncRead {
@@ -385,7 +385,7 @@ mod tests {
         InstructionEncoder::<_, Crc>::new(&mut buf)
             .sync_write(0x0080, 2, &body)
             .unwrap();
-        let evs = parse(&buf);
+        let evs = parse_events(&buf);
         assert!(matches!(
             instr_header(&evs),
             PH::SyncWrite {
@@ -429,7 +429,7 @@ mod tests {
         InstructionEncoder::<_, Crc>::new(&mut buf)
             .bulk_read(&entries)
             .unwrap();
-        let evs = parse(&buf);
+        let evs = parse_events(&buf);
         assert!(matches!(instr_header(&evs), PH::BulkRead { id } if id == Id::BROADCAST));
         assert_eq!(
             bulk_slots(&evs),
@@ -447,7 +447,7 @@ mod tests {
         InstructionEncoder::<_, Crc>::new(&mut buf)
             .bulk_write(&body)
             .unwrap();
-        let evs = parse(&buf);
+        let evs = parse_events(&buf);
         assert!(matches!(instr_header(&evs), PH::BulkWrite { id } if id == Id::BROADCAST));
         assert_eq!(
             bulk_slots(&evs),
@@ -473,7 +473,7 @@ mod tests {
         InstructionEncoder::<_, Crc>::new(&mut buf)
             .fast_sync_read(0x0084, 4, &ids)
             .unwrap();
-        let evs = parse(&buf);
+        let evs = parse_events(&buf);
         assert!(matches!(
             instr_header(&evs),
             PH::FastSyncRead {
@@ -507,7 +507,7 @@ mod tests {
         InstructionEncoder::<_, Crc>::new(&mut buf)
             .fast_bulk_read(&entries)
             .unwrap();
-        let evs = parse(&buf);
+        let evs = parse_events(&buf);
         assert!(matches!(instr_header(&evs), PH::FastBulkRead { id } if id == Id::BROADCAST));
         assert_eq!(
             bulk_slots(&evs),
@@ -523,7 +523,7 @@ mod tests {
         InstructionEncoder::<_, Crc>::new(&mut buf)
             .ext(Id::new(0x0A), 0xE0, &params)
             .unwrap();
-        let evs = parse(&buf);
+        let evs = parse_events(&buf);
         assert!(matches!(
             instr_header(&evs),
             PH::Raw {

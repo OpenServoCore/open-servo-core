@@ -169,7 +169,7 @@ impl<'a, W: WriteBuf, CRC: CrcUmts> SlotEncoder<'a, W, CRC> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::test_util::{Crc, assert_crc_good, parse, status_header};
+    use crate::test_util::{Crc, assert_crc_good, parse_events, status_header};
     use crate::types::{Id, Instruction, StatusError};
     use heapless::Vec;
 
@@ -185,7 +185,7 @@ mod tests {
         };
         SlotEncoder::<_, Crc>::new(&mut buf).only(&slot, 9).unwrap();
 
-        let evs = parse(&buf);
+        let evs = parse_events(&buf);
         let h = status_header(&evs);
         assert_eq!(h.id, Id::BROADCAST);
         assert_eq!(h.error, StatusError::OK);
@@ -301,7 +301,7 @@ mod tests {
         SlotEncoder::<_, Crc>::new(&mut buf)
             .emit(&slot, SlotPosition::Only { packet_length: 9 })
             .unwrap();
-        let evs = parse(&buf);
+        let evs = parse_events(&buf);
         let _ = status_header(&evs);
         assert_crc_good(&evs);
     }
@@ -361,7 +361,7 @@ mod tests {
                 [Chunk::Slice(&[0xAA, 0xBB]), Chunk::Zero(2)],
             )
             .unwrap();
-        let evs = parse(&buf);
+        let evs = parse_events(&buf);
         let _ = status_header(&evs);
         assert_crc_good(&evs);
     }

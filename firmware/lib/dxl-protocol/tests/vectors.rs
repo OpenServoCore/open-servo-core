@@ -1,13 +1,11 @@
 //! Reference vector encoding and parsing through the streaming Parser
 //! and the codec encoder API.
 
-mod common;
-
-use common::{
+use dxl_protocol::streaming::{Event, InstructionHeader};
+use dxl_protocol::test_util::{
     Crc, crc_oneshot, instruction_header, parse_events, status_data_unstuffed, status_header,
     write_data_unstuffed,
 };
-use dxl_protocol::streaming::{Event, InstructionHeader};
 use dxl_protocol::types::{ErrorCode, Id, Slot, StatusError};
 use dxl_protocol::{InstructionEncoder, SlotEncoder, StatusEncoder, WriteError};
 use heapless::Vec as HVec;

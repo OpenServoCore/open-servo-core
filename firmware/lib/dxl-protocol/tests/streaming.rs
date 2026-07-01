@@ -2,13 +2,11 @@
 //! chunking, recovery gestures, and adversarial input. The in-source unit
 //! tests stay focused on per-stage transitions.
 
-mod common;
-
-use common::{Crc, Rng, ping_packet, status_packet, write_packet};
 use dxl_protocol::streaming::{
     CrcResult, Event, HeaderEvent, InstructionHeader, InstructionPayload, Parser, PayloadEvent,
     StatusPayload,
 };
+use dxl_protocol::test_util::{Crc, Rng, ping_packet, status_packet, write_packet};
 use dxl_protocol::types::{Id, StatusError};
 use dxl_protocol::wire::HEADER;
 
