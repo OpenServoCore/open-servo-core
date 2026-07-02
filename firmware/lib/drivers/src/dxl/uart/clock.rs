@@ -137,6 +137,16 @@ pub struct Clock<U: UsartBaud, T: ClockTrim> {
 
     baud: BaudRate,
     ticks_per_bit: u16,
+    /// Ideal wire byte-time in Q16 HCLK ticks (`BITS_PER_FRAME × CLOCK_HZ ×
+    /// 2^16 / baud_hz`, ceil), cached per baud so [`Self::bytes_to_ticks`]
+    /// stays divide-free on the reply-schedule hot path. Q16 (vs an integer
+    /// tick count) preserves the exact truncation of the prior end-to-end
+    /// `bytes × BITS × CLOCK / baud` formula at fractional bauds — an
+    /// integer per-byte cache at 57600 would drift by 1 tick every 3
+    /// bytes (`floor(8333.33) × 3 = 24999` vs true 25000) and blow the
+    /// Fast Last CRC patch deadline. Ceil-rounded so per-byte error stays
+    /// non-negative and bounded well past any packet size.
+    ticks_per_byte_q16: u32,
     /// Per-baud RX edge-stamp compensation, in HCLK ticks. Cached from
     /// `U::rx_edge_comp_ticks(baud)` at `new` and on every applied baud
     /// change in `on_tx_complete`. Codec reads it via
@@ -221,8 +231,32 @@ impl<U: UsartBaud, T: ClockTrim> Clock<U, T> {
         }
     }
 
+    /// Q16 wire byte-time per baud. Each arm's u64 divide happens at
+    /// monomorphization (const-folded like [`Self::ticks_per_bit_at`]) so
+    /// runtime stays divide-free on RV32EC+Zmmul. Exact-integer arms (9600,
+    /// 1M, 2M, 3M) get zero rounding error; 57600 / 115200 ceil-round so
+    /// per-byte error stays non-negative and `floor(bytes × M_q16 / 2^16)`
+    /// matches the prior `bytes × BITS × CLOCK / baud` end-to-end
+    /// truncation for any realistic packet size.
+    #[inline]
+    fn ticks_per_byte_at(baud: BaudRate) -> u32 {
+        const fn per_byte_q16(clock_hz: u32, baud_hz: u32) -> u32 {
+            let num = BITS_PER_FRAME as u64 * clock_hz as u64 * (1u64 << 16);
+            num.div_ceil(baud_hz as u64) as u32
+        }
+        match baud {
+            BaudRate::B9600 => const { per_byte_q16(U::CLOCK_HZ, BaudRate::B9600.as_hz()) },
+            BaudRate::B57600 => const { per_byte_q16(U::CLOCK_HZ, BaudRate::B57600.as_hz()) },
+            BaudRate::B115200 => const { per_byte_q16(U::CLOCK_HZ, BaudRate::B115200.as_hz()) },
+            BaudRate::B1000000 => const { per_byte_q16(U::CLOCK_HZ, BaudRate::B1000000.as_hz()) },
+            BaudRate::B2000000 => const { per_byte_q16(U::CLOCK_HZ, BaudRate::B2000000.as_hz()) },
+            BaudRate::B3000000 => const { per_byte_q16(U::CLOCK_HZ, BaudRate::B3000000.as_hz()) },
+        }
+    }
+
     pub fn new(baud: BaudRate, usart: U, trim: T) -> Self {
         let ticks_per_bit = Self::ticks_per_bit_at(baud);
+        let ticks_per_byte = Self::ticks_per_byte_at(baud);
         let rx_edge_comp_ticks = usart.rx_edge_comp_ticks(baud);
         let consts = Self::drift_consts_at(baud, true);
         Self {
@@ -230,6 +264,7 @@ impl<U: UsartBaud, T: ClockTrim> Clock<U, T> {
             trim,
             baud,
             ticks_per_bit,
+            ticks_per_byte_q16: ticks_per_byte,
             rx_edge_comp_ticks,
             is_boot: true,
             applied_ppm: 0,
@@ -321,6 +356,7 @@ impl<U: UsartBaud, T: ClockTrim> Clock<U, T> {
             self.usart.apply_baud(baud);
             self.baud = baud;
             self.ticks_per_bit = Self::ticks_per_bit_at(baud);
+            self.ticks_per_byte_q16 = Self::ticks_per_byte_at(baud);
             self.rx_edge_comp_ticks = self.usart.rx_edge_comp_ticks(baud);
             self.rebuild_integrator_consts();
             self.drift_sum_q8 = 0;
@@ -522,22 +558,14 @@ impl<U: UsartBaud, T: ClockTrim> Clock<U, T> {
     /// Used by the composite's slot-offset math:
     /// `delay_ticks = rdt_us · TICKS_PER_US + bytes_to_ticks(offset)`.
     ///
-    /// Exact at 9600/1M/2M/3M; sub-tick truncation at 57600/115200 (≤14 ns
-    /// at V006's 48 MHz, far below the timer's 20.83 ns resolution).
+    /// `u32 × u32 → u64` multiply + `>> 16` — no divide. Q16 factor caches
+    /// per-baud via [`Self::ticks_per_byte_at`] at every baud change (cold
+    /// path); the u64 divide folds at monomorphization so `__udivdi3`
+    /// never appears on this hot path. Exact at 9600/1M/2M/3M; matches
+    /// the prior end-to-end truncation semantics at 57600/115200 too
+    /// (per-byte error bounded well past any packet size).
     pub fn bytes_to_ticks(&self, bytes: u32) -> u32 {
-        // BITS_PER_FRAME · CLOCK_HZ folds to a u64 literal at monomorphization
-        // (e.g. 480_000_000 for V006). Each match arm's divisor is also a
-        // literal, so LLVM lowers `u64 / const_u64` to a reciprocal multiply
-        // — no `__udivdi3` call.
-        let scaled = bytes as u64 * BITS_PER_FRAME as u64 * U::CLOCK_HZ as u64;
-        match self.baud {
-            BaudRate::B9600 => (scaled / 9_600u64) as u32,
-            BaudRate::B57600 => (scaled / 57_600u64) as u32,
-            BaudRate::B115200 => (scaled / 115_200u64) as u32,
-            BaudRate::B1000000 => (scaled / 1_000_000u64) as u32,
-            BaudRate::B2000000 => (scaled / 2_000_000u64) as u32,
-            BaudRate::B3000000 => (scaled / 3_000_000u64) as u32,
-        }
+        ((bytes as u64 * self.ticks_per_byte_q16 as u64) >> 16) as u32
     }
 }
 
