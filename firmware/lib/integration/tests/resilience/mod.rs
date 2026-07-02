@@ -6,5 +6,6 @@ use rstest_reuse;
 #[path = "../support.rs"]
 mod support;
 
+mod chain;
 mod disconnect;
 mod host_glitch;

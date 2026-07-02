@@ -1,11 +1,11 @@
 use crate::support::{Setup, assert_bus_healthy, matrix, setup_with};
 use dxl_protocol::types::{BulkReadEntry, Id, Slot, StatusError};
+use osc_core::BaudRate;
 use osc_core::regions::{
     CONFIG_REGION_SIZE,
     config::addr::{comms, identity},
 };
 use osc_core::services::dxl::limits::MAX_CONTROL_RW;
-use osc_core::{BaudRate, StatusReturnLevel};
 use osc_integration::sim::{
     DEFAULT_FIRMWARE_VERSION, DEFAULT_MODEL_NUMBER, FastStatusCrc, format_hex,
     parse_fast_bulk_status,
@@ -233,149 +233,6 @@ fn fast_bulk_read_entry_across_region_boundary_returns_zeros(baud_idx: u8, rdt_u
             },
         ],
     );
-}
-
-/// Middle servo SRL=None → `handle_fast_read` returns silent → no slot 1
-/// wire bytes. Slot 2 still fires (Fast schedules slot k>0 by CC-compare),
-/// but the Fast Last fold can't patch the trailing CRC without slot 1's
-/// bytes. Same collapse mechanic as the fast_sync_read mirror.
-#[apply(matrix)]
-#[test_log::test]
-fn fast_bulk_read_srl_none_predecessor_collapses_tail(baud_idx: u8, rdt_us: u32) {
-    let baud = BaudRate::from_idx(baud_idx).expect("valid baud idx");
-    let Setup {
-        mut sim,
-        host,
-        servos,
-    } = setup_with(3, baud, rdt_us);
-    sim.servo_mut(servos[1])
-        .set_status_return_level(StatusReturnLevel::None);
-
-    let entries = [
-        entry(1, comms::ID, 1),
-        entry(2, comms::ID, 1),
-        entry(3, comms::ID, 1),
-    ];
-
-    sim.with_host(host, |h| {
-        h.send_fast_bulk_read(&entries);
-        h.wait_for_reply();
-    });
-
-    let rx = sim.host(host).rx_bytes();
-    let status = parse_fast_bulk_status(&rx, &entries);
-    assert_eq!(status.crc, FastStatusCrc::Truncated);
-    assert_eq!(
-        status.slots,
-        vec![
-            Slot {
-                id: Id::new(1),
-                error: StatusError::OK,
-                data: &[1],
-            },
-            Slot {
-                id: Id::new(3),
-                error: StatusError::OK,
-                data: &[3],
-            },
-        ],
-    );
-    assert_bus_healthy(&mut sim, host, &servos);
-}
-
-/// Data-line disconnect on the middle servo — slot 1 emits no bytes. Slot
-/// 2 fires anyway (CC-compare-driven) so its frame lands on the wire, but
-/// the trailing Status CRC can't be patched without slot 1's bytes feeding
-/// the Fast Last fold. Reconnect + `assert_bus_healthy` confirms no Fast
-/// Last state stays latched across the collapse.
-#[apply(matrix)]
-#[test_log::test]
-fn fast_bulk_read_data_line_disconnect_collapses_tail(baud_idx: u8, rdt_us: u32) {
-    let baud = BaudRate::from_idx(baud_idx).expect("valid baud idx");
-    let Setup {
-        mut sim,
-        host,
-        servos,
-    } = setup_with(3, baud, rdt_us);
-    sim.servo_mut(servos[1]).disconnect(false);
-
-    let entries = [
-        entry(1, comms::ID, 1),
-        entry(2, comms::ID, 1),
-        entry(3, comms::ID, 1),
-    ];
-
-    sim.with_host(host, |h| {
-        h.send_fast_bulk_read(&entries);
-        h.wait_for_reply();
-    });
-
-    let rx = sim.host(host).rx_bytes();
-    let status = parse_fast_bulk_status(&rx, &entries);
-    assert_eq!(status.crc, FastStatusCrc::Truncated);
-    assert_eq!(
-        status.slots,
-        vec![
-            Slot {
-                id: Id::new(1),
-                error: StatusError::OK,
-                data: &[1],
-            },
-            Slot {
-                id: Id::new(3),
-                error: StatusError::OK,
-                data: &[3],
-            },
-        ],
-    );
-
-    sim.servo_mut(servos[1]).connect();
-    assert_bus_healthy(&mut sim, host, &servos);
-}
-
-/// Middle entry targets an id that doesn't exist on the bus — no slot 1
-/// frame, same CRC collapse as the disconnect / SRL=None cases. Slot 2
-/// still fires via CC-compare; trailing CRC fails validation.
-#[apply(matrix)]
-#[test_log::test]
-fn fast_bulk_read_unknown_id_in_entries_collapses_tail(baud_idx: u8, rdt_us: u32) {
-    let baud = BaudRate::from_idx(baud_idx).expect("valid baud idx");
-    let Setup {
-        mut sim,
-        host,
-        servos,
-    } = setup_with(3, baud, rdt_us);
-
-    let entries = [
-        entry(1, comms::ID, 1),
-        entry(99, comms::ID, 1),
-        entry(3, comms::ID, 1),
-    ];
-
-    sim.with_host(host, |h| {
-        h.send_fast_bulk_read(&entries);
-        h.wait_for_reply();
-    });
-
-    let rx = sim.host(host).rx_bytes();
-    let status = parse_fast_bulk_status(&rx, &entries);
-    assert_eq!(status.crc, FastStatusCrc::Truncated);
-    assert_eq!(
-        status.slots,
-        vec![
-            Slot {
-                id: Id::new(1),
-                error: StatusError::OK,
-                data: &[1],
-            },
-            Slot {
-                id: Id::new(3),
-                error: StatusError::OK,
-                data: &[3],
-            },
-        ],
-    );
-    assert_bus_healthy(&mut sim, host, &servos);
 }
 
 #[apply(matrix)]

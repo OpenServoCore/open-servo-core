@@ -1,7 +1,7 @@
-use crate::support::{Setup, assert_bus_healthy, matrix, setup_with};
+use crate::support::{Setup, matrix, setup_with};
 use dxl_protocol::types::{ErrorCode, Id, Instruction, Status, StatusError};
+use osc_core::BaudRate;
 use osc_core::regions::{CONFIG_REGION_SIZE, config::addr::comms};
-use osc_core::{BaudRate, StatusReturnLevel};
 use osc_integration::sim::{format_hex, parse_status_stream};
 use rstest::rstest;
 use rstest_reuse::apply;
@@ -107,107 +107,6 @@ fn sync_read_across_region_boundary_returns_zeros_in_order(baud_idx: u8, rdt_us:
         })
         .collect();
     assert_eq!(replies, expected);
-}
-
-/// Silent predecessor (data-line disconnect on the middle servo) collapses
-/// the chain tail — servo 1 replies, servo 3 stays armed but never sees slot
-/// 1's frame. Reconnect + `assert_bus_healthy` confirms no servo's chain
-/// state stays latched across the collapse (regression for
-/// `dxl-streaming-rx.md` §5.3 — chain-pending reset at next instruction
-/// header).
-#[apply(matrix)]
-#[test_log::test]
-fn sync_read_data_line_disconnect_collapses_tail(baud_idx: u8, rdt_us: u32) {
-    let baud = BaudRate::from_idx(baud_idx).expect("valid baud idx");
-    let Setup {
-        mut sim,
-        host,
-        servos,
-    } = setup_with(3, baud, rdt_us);
-    sim.servo_mut(servos[1]).disconnect(false);
-
-    sim.with_host(host, |h| {
-        h.send_sync_read(comms::ID, 1, &[1, 2, 3]);
-        h.wait_for_reply();
-    });
-
-    let rx = sim.host(host).rx_bytes();
-    let replies = parse_status_stream(Instruction::SyncRead, &rx);
-    assert_eq!(
-        replies,
-        vec![Status::Read {
-            id: Id::new(1),
-            error: StatusError::OK,
-            data: &[1],
-        }],
-    );
-
-    sim.servo_mut(servos[1]).connect();
-    assert_bus_healthy(&mut sim, host, &servos);
-}
-
-/// Same chain-collapse mechanic as the disconnect case, but driven by
-/// SRL=None on the middle servo — the dispatcher stays running, it just never
-/// emits a Status frame for Sync Read, so servo 3's snoop never fires.
-#[apply(matrix)]
-#[test_log::test]
-fn sync_read_srl_none_predecessor_collapses_tail(baud_idx: u8, rdt_us: u32) {
-    let baud = BaudRate::from_idx(baud_idx).expect("valid baud idx");
-    let Setup {
-        mut sim,
-        host,
-        servos,
-    } = setup_with(3, baud, rdt_us);
-    sim.servo_mut(servos[1])
-        .set_status_return_level(StatusReturnLevel::None);
-
-    sim.with_host(host, |h| {
-        h.send_sync_read(comms::ID, 1, &[1, 2, 3]);
-        h.wait_for_reply();
-    });
-
-    let rx = sim.host(host).rx_bytes();
-    let replies = parse_status_stream(Instruction::SyncRead, &rx);
-    assert_eq!(
-        replies,
-        vec![Status::Read {
-            id: Id::new(1),
-            error: StatusError::OK,
-            data: &[1],
-        }],
-    );
-    assert_bus_healthy(&mut sim, host, &servos);
-}
-
-/// Same collapse mechanic again — the middle id simply doesn't exist on the
-/// bus, so no predecessor frame ever appears for servo 3 to snoop. Servo 1
-/// (slot 0, RDT-driven) replies; servo 3 stays armed and silent.
-#[apply(matrix)]
-#[test_log::test]
-fn sync_read_unknown_id_in_chain_collapses_tail(baud_idx: u8, rdt_us: u32) {
-    let baud = BaudRate::from_idx(baud_idx).expect("valid baud idx");
-    let Setup {
-        mut sim,
-        host,
-        servos,
-    } = setup_with(3, baud, rdt_us);
-
-    sim.with_host(host, |h| {
-        h.send_sync_read(comms::ID, 1, &[1, 99, 3]);
-        h.wait_for_reply();
-    });
-
-    let rx = sim.host(host).rx_bytes();
-    let replies = parse_status_stream(Instruction::SyncRead, &rx);
-    assert_eq!(
-        replies,
-        vec![Status::Read {
-            id: Id::new(1),
-            error: StatusError::OK,
-            data: &[1],
-        }],
-    );
-    assert_bus_healthy(&mut sim, host, &servos);
 }
 
 #[apply(matrix)]
