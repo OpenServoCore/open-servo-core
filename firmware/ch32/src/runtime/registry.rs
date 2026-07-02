@@ -162,7 +162,6 @@ impl Drivers {
     /// HIGH, so same-priority serialization keeps the composite's interior
     /// state race-free).
     #[inline(always)]
-    #[allow(dead_code)]
     pub unsafe fn dxl_uart() -> &'static mut DxlUartCh {
         // SAFETY: see fn doc.
         let cell = unsafe { &mut *CELLS.dxl_uart.get() };
