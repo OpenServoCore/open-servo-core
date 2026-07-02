@@ -120,7 +120,13 @@ fn on_usart1_idle() {
 }
 
 fn on_usart1_tc() {
-    if !usart::is_tc(USART1) {
+    // TCIE gates arbitration: the peripheral would not have raised this vector
+    // for TC unless the scheduler armed TCIE=1. The shared USART1 vector fans
+    // in RX-errors / IDLE / TC — a foreign source can enter here with TC=1
+    // stale from silicon reset (STATR reset = 0xC0). Gate on TCIE so a stale
+    // TC bit at boot does not walk into `on_tx_complete` and disarm the first
+    // reply's SysTick handoff.
+    if !usart::is_tcie(USART1) || !usart::is_tc(USART1) {
         return;
     }
     // Guard against spurious mid-stream TC: a per-byte TC oscillation can

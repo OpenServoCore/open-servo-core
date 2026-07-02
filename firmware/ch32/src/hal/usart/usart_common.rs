@@ -116,6 +116,11 @@ pub fn is_tc(r: Regs) -> bool {
 }
 
 #[inline]
+pub fn is_tcie(r: Regs) -> bool {
+    r.ctlr1().read().tcie()
+}
+
+#[inline]
 pub fn is_rxne(r: Regs) -> bool {
     r.statr().read().rxne()
 }
