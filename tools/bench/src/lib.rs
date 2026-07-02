@@ -145,6 +145,54 @@ pub fn build_fast_bulk_read(entries: &[BulkReadEntry]) -> Result<HVec<u8, 64>> {
     Ok(frame)
 }
 
+pub fn build_reg_write(id: Id, addr: u16, data: &[u8]) -> Result<HVec<u8, 64>> {
+    let mut frame: HVec<u8, 64> = HVec::new();
+    InstructionEncoder::<_, SoftwareCrcUmts>::new(&mut frame)
+        .reg_write(id, addr, data)
+        .map_err(|e| anyhow!("encode reg_write: {e:?}"))?;
+    Ok(frame)
+}
+
+pub fn build_action(id: Id) -> Result<HVec<u8, 16>> {
+    let mut frame: HVec<u8, 16> = HVec::new();
+    InstructionEncoder::<_, SoftwareCrcUmts>::new(&mut frame)
+        .action(id)
+        .map_err(|e| anyhow!("encode action: {e:?}"))?;
+    Ok(frame)
+}
+
+pub fn build_sync_read(addr: u16, length: u16, ids: &[u8]) -> Result<HVec<u8, 128>> {
+    let mut frame: HVec<u8, 128> = HVec::new();
+    InstructionEncoder::<_, SoftwareCrcUmts>::new(&mut frame)
+        .sync_read(addr, length, ids)
+        .map_err(|e| anyhow!("encode sync_read: {e:?}"))?;
+    Ok(frame)
+}
+
+pub fn build_sync_write(addr: u16, length: u16, body: &[u8]) -> Result<HVec<u8, 128>> {
+    let mut frame: HVec<u8, 128> = HVec::new();
+    InstructionEncoder::<_, SoftwareCrcUmts>::new(&mut frame)
+        .sync_write(addr, length, body)
+        .map_err(|e| anyhow!("encode sync_write: {e:?}"))?;
+    Ok(frame)
+}
+
+pub fn build_bulk_read(entries: &[BulkReadEntry]) -> Result<HVec<u8, 128>> {
+    let mut frame: HVec<u8, 128> = HVec::new();
+    InstructionEncoder::<_, SoftwareCrcUmts>::new(&mut frame)
+        .bulk_read(entries)
+        .map_err(|e| anyhow!("encode bulk_read: {e:?}"))?;
+    Ok(frame)
+}
+
+pub fn build_fast_sync_read(addr: u16, length: u16, ids: &[u8]) -> Result<HVec<u8, 128>> {
+    let mut frame: HVec<u8, 128> = HVec::new();
+    InstructionEncoder::<_, SoftwareCrcUmts>::new(&mut frame)
+        .fast_sync_read(addr, length, ids)
+        .map_err(|e| anyhow!("encode fast_sync_read: {e:?}"))?;
+    Ok(frame)
+}
+
 /// Encode the synthetic First-slot bytes used by `--position last`. The
 /// chip's snoop walker treats these as the prior slot's status frame and
 /// computes its own chain CRC against them.
@@ -419,6 +467,25 @@ pub struct BusArgs {
     /// Wire baud to leave the bus at. The servo is switched to this baud
     /// if it's currently at a different one.
     pub target_baud: u32,
+}
+
+impl BusArgs {
+    /// Read hardware config from `BENCH_PORT` + `BENCH_BAUD` environment
+    /// variables. Used by `cargo test`-driven bench suites that can't
+    /// receive CLI flags.
+    ///
+    /// - `BENCH_PORT` unset or empty → `port = None` (pirate autodetect).
+    /// - `BENCH_BAUD` unset → default `1_000_000`. Malformed → `bail!`.
+    pub fn from_env() -> Result<Self> {
+        let port = std::env::var("BENCH_PORT").ok().filter(|s| !s.is_empty());
+        let target_baud = match std::env::var("BENCH_BAUD") {
+            Ok(s) => s
+                .parse::<u32>()
+                .map_err(|e| anyhow!("BENCH_BAUD='{s}' not a valid u32: {e}"))?,
+            Err(_) => 1_000_000,
+        };
+        Ok(Self { port, target_baud })
+    }
 }
 
 pub struct Bus {
