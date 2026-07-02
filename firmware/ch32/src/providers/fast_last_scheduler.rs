@@ -96,9 +96,7 @@ impl FastLastSchedulerTrait for FastLastScheduler {
     }
 
     fn patch_window_expired(&self) -> bool {
-        // CH4 has prefetched into (or past) the trailing CRC slot — any
-        // patch_crc write into tx_buf[len-CRC_BYTES..len] races CH4's read.
-        dma::remaining(dma::Channel::CH4) <= CRC_BYTES as u16
+        dma_prefetched_into_crc(dma::remaining(dma::Channel::CH4), CRC_BYTES as u16)
     }
 
     fn record_patch_deadline_miss(&mut self) {
@@ -121,5 +119,46 @@ impl FastLastSchedulerTrait for FastLastScheduler {
         systick::set_irq(false);
         systick::set_cmp(u32::MAX);
         systick::clear_match();
+    }
+}
+
+/// True if CH4's remaining count has reached the trailing CRC slot — any
+/// `patch_crc` write into `tx_buf[len-crc_bytes..len]` from this point
+/// races CH4's read of the same bytes.
+fn dma_prefetched_into_crc(ndtr: u16, crc_bytes: u16) -> bool {
+    ndtr <= crc_bytes
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn dma_before_crc_slot_window_open() {
+        // Plenty of payload left → patch is safe.
+        assert!(!dma_prefetched_into_crc(10, 2));
+    }
+
+    #[test]
+    fn dma_one_byte_past_crc_boundary_window_open() {
+        // ndtr = crc_bytes + 1: last non-CRC byte still ahead → safe.
+        assert!(!dma_prefetched_into_crc(3, 2));
+    }
+
+    #[test]
+    fn dma_at_crc_boundary_window_expired() {
+        // ndtr == crc_bytes: DMA is about to output the first CRC byte —
+        // the boundary is treated as inside the race window.
+        assert!(dma_prefetched_into_crc(2, 2));
+    }
+
+    #[test]
+    fn dma_inside_crc_slot_window_expired() {
+        assert!(dma_prefetched_into_crc(1, 2));
+    }
+
+    #[test]
+    fn dma_drained_window_expired() {
+        assert!(dma_prefetched_into_crc(0, 2));
     }
 }

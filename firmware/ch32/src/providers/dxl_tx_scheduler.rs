@@ -113,15 +113,14 @@ impl DxlTxScheduler {
         // force TX_EN active, mask CC3 IRQ so the late wrap-around match
         // doesn't double-fire, kick DMA, clear the stale CC3 flag.
         let cnt = timer::tim2_cnt();
-        let remaining = ccr3.wrapping_sub(cnt);
-        if remaining > SCHEDULE_WRAP_GUARD_TICKS {
+        if cc3_arm_wrapped(cnt, ccr3, SCHEDULE_WRAP_GUARD_TICKS) {
             self.software_fire(byte_count);
             // Software fire already configured DMA — undo the CC3IE arm so
             // the eventual wrap-around match doesn't double-fire.
             timer::enable_tim2_cc3_irq(false);
             timer::clear_tim2_cc3_flag();
         } else {
-            crate::tune::record_schedule_remaining(remaining);
+            crate::tune::record_schedule_remaining(ccr3.wrapping_sub(cnt));
         }
     }
 
@@ -182,5 +181,59 @@ impl TxSchedulerTrait for DxlTxScheduler {
             return true;
         }
         false
+    }
+}
+
+/// True if TIM2 CNT has walked past CCR3 by more than `guard` — the next
+/// CC3 match will be a full timer wrap (~1.365 ms at HCLK) away. The §5.4
+/// set-and-recheck test after `arm_tim2` stages CCR3; when true the caller
+/// falls through to the software-fire path so the wire bit doesn't stall a
+/// full wrap.
+///
+/// Reads as "modular ticks from CNT to CCR3." A small remaining means CNT
+/// is still before CCR3 (arm succeeded); a large remaining (> half the u16
+/// range) means CNT has just wrapped past CCR3.
+fn cc3_arm_wrapped(cnt: u16, ccr3: u16, guard: u16) -> bool {
+    ccr3.wrapping_sub(cnt) > guard
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // Sized like production so guard-boundary tests exercise the same
+    // half-u16 threshold the chip sees.
+    const GUARD: u16 = 0x8000;
+
+    #[test]
+    fn arm_before_ccr3_within_guard_not_wrapped() {
+        // CNT well before CCR3 by a small delta → still time to arm.
+        assert!(!cc3_arm_wrapped(1000, 1500, GUARD));
+    }
+
+    #[test]
+    fn arm_exactly_at_ccr3_not_wrapped() {
+        // remaining = 0, 0 > GUARD is false. Boundary case of arming at
+        // the exact match tick.
+        assert!(!cc3_arm_wrapped(1500, 1500, GUARD));
+    }
+
+    #[test]
+    fn arm_just_past_ccr3_is_wrapped() {
+        // CNT walked one tick past CCR3 — modular remaining = 0xFFFF,
+        // firmly above GUARD.
+        assert!(cc3_arm_wrapped(1501, 1500, GUARD));
+    }
+
+    #[test]
+    fn arm_at_guard_boundary_not_wrapped() {
+        // remaining == GUARD, `>` not `>=`, so still considered armed.
+        assert!(!cc3_arm_wrapped(0, GUARD, GUARD));
+    }
+
+    #[test]
+    fn arm_one_tick_past_guard_boundary_is_wrapped() {
+        // remaining == GUARD + 1 crosses the threshold.
+        assert!(cc3_arm_wrapped(0, GUARD + 1, GUARD));
     }
 }
