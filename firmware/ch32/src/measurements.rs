@@ -40,7 +40,7 @@
 /// chains). The median (+0.6 µs after deadline) is the post-stamp floor:
 /// `dma::enable` + DMA AHB arb + USART DR write cannot be squeezed
 /// further. K bigger than ~63 starts hitting the cliff.
-pub const TX_START_ENTRY_TICKS: u16 = 60;
+pub const TX_START_ENTRY_TICKS: u16 = 40;
 
 /// Set-and-recheck threshold for the §5.4 wrap-into-past guard. Largest
 /// legitimate `(CCR3 - CNT) & 0xFFFF` value expected at `schedule` time —
