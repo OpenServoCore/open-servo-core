@@ -32,13 +32,18 @@
 
 use core::cell::SyncUnsafeCell;
 
+use super::anchor::AnchorCache;
 use super::edge_parser::EdgeParser;
 use crate::dxl::uart::poll_src::PollSrc;
 use crate::ring::HwRing;
 use crate::traits::dxl::EdgeDma;
 
 pub struct EdgeCapture<R: EdgeDma, const EDGE_BUF_LEN: usize> {
+    /// Stateless wire-walker over [`Self::edges`]. Threads [`Self::anchor`]
+    /// for the tail-anchor state it reads and writes.
     parser: EdgeParser,
+    /// Tail-anchor state the parser operates on.
+    anchor: AnchorCache,
     /// DMA1_CH7's destination buffer. `SyncUnsafeCell` because the DMA
     /// engine writes it concurrently with the edge parser's reads — both
     /// reads happen at PFIC HIGH (no preemption from another consumer)
@@ -63,6 +68,7 @@ impl<R: EdgeDma, const EDGE_BUF_LEN: usize> EdgeCapture<R, EDGE_BUF_LEN> {
     pub const fn new(ring: R) -> Self {
         Self {
             parser: EdgeParser::new(),
+            anchor: AnchorCache::new(),
             edges: SyncUnsafeCell::new(HwRing::new(0)),
             ring,
             last_isr: (0, PollSrc::ByteBatch),
@@ -135,13 +141,13 @@ impl<R: EdgeDma, const EDGE_BUF_LEN: usize> EdgeCapture<R, EDGE_BUF_LEN> {
         // SAFETY: see `publish_edges`.
         let edges = unsafe { &mut *self.edges.get() };
         self.parser
-            .anchor_at_tail(edges, ticks_per_bit, tail_bytes, d_min)
+            .anchor_at_tail(edges, &mut self.anchor, ticks_per_bit, tail_bytes, d_min)
     }
 
     /// Read the tail-anchor tick in wire-edge time. Composite reads at
     /// walk-time after `arm_tim2` fires.
     pub fn tail_anchor(&self) -> Option<u16> {
-        self.parser.tail_anchor()
+        self.anchor.tail_anchor()
     }
 
     /// Retroactive integrator walk. Codec calls after the wire-schedule
@@ -156,7 +162,7 @@ impl<R: EdgeDma, const EDGE_BUF_LEN: usize> EdgeCapture<R, EDGE_BUF_LEN> {
         // SAFETY: see `publish_edges`; read-only path.
         let edges = unsafe { &*self.edges.get() };
         self.parser
-            .walk_pairs_back(edges, n_pairs, ticks_per_bit, out_pairs)
+            .walk_pairs_back(edges, &self.anchor, n_pairs, ticks_per_bit, out_pairs)
     }
 
     /// Wire-end tick of the most-recently classified byte, lifted into the
@@ -164,7 +170,8 @@ impl<R: EdgeDma, const EDGE_BUF_LEN: usize> EdgeCapture<R, EDGE_BUF_LEN> {
     /// parser's CRC-good event. `now` / `src` route through the drain-
     /// reference correction — see `EdgeParser::drain_ref`.
     pub fn packet_end_tick(&self, ticks_per_bit: u16, now: u32, src: PollSrc) -> Option<u32> {
-        self.parser.packet_end_tick(ticks_per_bit, now, src)
+        self.parser
+            .packet_end_tick(&self.anchor, ticks_per_bit, now, src)
     }
 
     /// Fallback packet-end estimate for the no-anchor case — composite
@@ -176,17 +183,17 @@ impl<R: EdgeDma, const EDGE_BUF_LEN: usize> EdgeCapture<R, EDGE_BUF_LEN> {
             .packet_end_tick_fallback(src, now, ticks_per_bit)
     }
 
-    /// Refresh the edge parser's per-baud RX edge-stamp compensation.
+    /// Refresh the tail-anchor cache's per-baud RX edge-stamp compensation.
     /// Forwarded from the composite's `on_baud_change` event — see
-    /// [`super::edge_parser::EdgeParser::on_baud_change`].
+    /// [`AnchorCache::set_edge_comp`].
     pub fn on_baud_change(&mut self, rx_edge_comp_ticks: u16) {
-        self.parser.on_baud_change(rx_edge_comp_ticks);
+        self.anchor.set_edge_comp(rx_edge_comp_ticks);
     }
 
     /// Force-drop the tail anchor. Composite calls at the parser's Crc
     /// event (packet boundary) and Resync event (parser abort).
     pub fn reset_anchor(&mut self) {
-        self.parser.reset_anchor();
+        self.anchor.reset();
     }
 
     /// Force a known tail-anchor tick — composite-test scaffolding so
@@ -194,7 +201,7 @@ impl<R: EdgeDma, const EDGE_BUF_LEN: usize> EdgeCapture<R, EDGE_BUF_LEN> {
     /// edges.
     #[cfg(test)]
     pub fn force_byte_tick_for_test(&mut self, tick: u16) {
-        self.parser.force_byte_tick_for_test(tick);
+        self.anchor.tail_anchor = Some(tick);
     }
 
     /// Stage falling-edge stamps into the ET ring so [`Self::anchor_at_tail`]

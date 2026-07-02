@@ -14,6 +14,7 @@
 //! completion the sink sees [`PollEvent::SkipComplete`], at which point
 //! the chain-fire predecessor-match check rides.
 
+mod anchor;
 mod edge_capture;
 mod edge_parser;
 mod skip;

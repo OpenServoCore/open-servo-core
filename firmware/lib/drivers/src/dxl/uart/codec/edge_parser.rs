@@ -19,6 +19,7 @@
 //! read so stored state, band checks, and emitted pairs all live in
 //! wire-edge time rather than IC-filter-output time.
 
+use super::anchor::{AnchorCache, TAIL_STARTS};
 use crate::dxl::uart::BITS_PER_FRAME;
 use crate::dxl::uart::poll_src::PollSrc;
 use crate::ring::HwRing;
@@ -69,13 +70,6 @@ pub const MAX_EDGES_PER_BYTE: u8 = 5;
 /// [`EdgeParser::anchor_at_tail`]) and per-poll ring headroom size against
 /// this.
 const PADDING_EDGES_AHEAD: u16 = 5;
-
-/// Tail-signature byte count — the codec always passes 4 bytes
-/// ([data_last_2, data_last_1, CRC_lo, CRC_hi]) to [`EdgeParser::anchor_at_tail`].
-/// Load-bearing for the walker's `tail_starts` cache size (see
-/// [`EdgeParser::walk_pairs_back`]) and the offset math that reseeds the
-/// walker past the cached-pair region.
-const TAIL_STARTS: usize = 4;
 
 /// Snap half-width for [`EdgeParser::walk_pairs_back`], in bit-times. Sets
 /// how far the predicted position can drift from the captured stamp before
@@ -196,60 +190,19 @@ fn drain_ref(now: u32, src: PollSrc, ticks_per_bit: u16) -> u32 {
     }
 }
 
-pub struct EdgeParser {
-    /// Tail-signature back-search anchor — the LAST tail byte's start
-    /// tick, set by [`Self::anchor_at_tail`] at the parser's Crc event.
-    /// Sole source for [`Self::packet_end_tick`]; also the walk seed for
-    /// [`Self::walk_pairs_back`]. Cleared at packet boundary.
-    tail_anchor: Option<u16>,
-    /// Start-edge stamps of the four tail-signature bytes, oldest first
-    /// (`tail_starts[3]` == `tail_anchor` on match). Populated by
-    /// [`Self::anchor_at_tail`] during signature validation — the walk
-    /// already visits each byte's start edge for band-checking, so
-    /// caching them costs a few u16 writes. Consumed by
-    /// [`Self::walk_pairs_back`] to emit up to three
-    /// `(tail_starts[k], tail_starts[k+1])` pairs directly, skipping
-    /// three per-step ring scans in steady mode. Valid iff
-    /// `tail_anchor.is_some()`.
-    tail_starts: [u16; TAIL_STARTS],
-    /// Ring offset of `tail_starts[0]` — the OLDEST cached start edge —
-    /// so [`Self::walk_pairs_back`] can seed the ring walk from there
-    /// when it needs pairs beyond the cache. Same lifecycle as
-    /// [`Self::tail_starts`].
-    tail_starts_oldest_ring_off: Option<u16>,
-    /// Per-baud RX edge-stamp compensation, in IC-stamp ticks. Every
-    /// stamp read from the edge ring gets `wrapping_sub(rx_edge_comp_ticks)`
-    /// applied before any internal use, so stored state (`tail_anchor`),
-    /// band checks, and pushed `(prev, curr)` pairs all live in wire-edge
-    /// time. Pushed by the codec via [`Self::on_baud_change`] at driver
-    /// construction and after every applied baud change. Default `0` until
-    /// the first push — safe (no anchor exists yet at default) and matches
-    /// the no-compensation case on chips that ship a zero-delay stamp path.
-    rx_edge_comp_ticks: u16,
-}
+/// Stateless wire-walker over the edge-timestamp ring. Holds no state of
+/// its own — every operation threads a borrowed [`AnchorCache`] for the
+/// tail-anchor state it reads and writes. The codec's [`EdgeCapture`] owns
+/// one alongside the cache and drives both.
+///
+/// [`AnchorCache`]: super::anchor::AnchorCache
+/// [`EdgeCapture`]: super::edge_capture::EdgeCapture
+pub struct EdgeParser;
 
 impl EdgeParser {
-    // `const fn` — can't implement `Default::default` (not const), so the
-    // clippy suggestion doesn't apply. `Rx::new` (also `pub const fn`)
-    // calls this at codec initialization.
     #[allow(clippy::new_without_default)]
     pub const fn new() -> Self {
-        Self {
-            tail_anchor: None,
-            tail_starts: [0u16; TAIL_STARTS],
-            tail_starts_oldest_ring_off: None,
-            rx_edge_comp_ticks: 0,
-        }
-    }
-
-    /// Refresh the per-baud RX edge-stamp compensation. Codec routes this
-    /// through from the [`crate::dxl::uart::clock::Clock`]'s currently-applied
-    /// baud — once at driver construction (initial baud) and once after every
-    /// applied baud change (Clock's `on_tx_complete` pending-baud branch).
-    /// All subsequent classifier reads from the edge ring subtract the new
-    /// value before storing or comparing.
-    pub fn on_baud_change(&mut self, rx_edge_comp_ticks: u16) {
-        self.rx_edge_comp_ticks = rx_edge_comp_ticks;
+        EdgeParser
     }
 
     /// Single-window check of the tail signature: anchor the FIRST tail
@@ -262,17 +215,18 @@ impl EdgeParser {
     ///
     /// Cross-byte deltas (last edge of byte N → first edge of byte N+1)
     /// allow ±1·bit; intra-byte deltas allow ±0.5·bit — same convention
-    /// as a wide/narrow band split. `rx_edge_comp_ticks` is subtracted
-    /// from every stamp at read-from-ring time so the return value is
-    /// wire-edge time.
+    /// as a wide/narrow band split. `anchor.rx_edge_comp_ticks` is
+    /// subtracted from every stamp at read-from-ring time so the return
+    /// value is wire-edge time.
     fn try_anchor_at_tail_offset<const EDGE_BUF_LEN: usize>(
         &self,
         edges: &HwRing<u16, EDGE_BUF_LEN>,
+        anchor: &AnchorCache,
         head_offset: u16,
         tail_bytes: &[u8],
         ticks_per_bit: u16,
     ) -> Option<[u16; TAIL_STARTS]> {
-        let rx_edge_comp = self.rx_edge_comp_ticks;
+        let rx_edge_comp = anchor.rx_edge_comp_ticks;
         let mut sig_idx: u16 = 0;
         let mut prev_tick: u16 = 0;
         let mut prev_bit_pos: u16 = 0;
@@ -348,8 +302,9 @@ impl EdgeParser {
     /// false-positive entropy is ~2^-16 — comfortably below the packet
     /// rate.
     pub fn anchor_at_tail<const EDGE_BUF_LEN: usize>(
-        &mut self,
+        &self,
         edges: &mut HwRing<u16, EDGE_BUF_LEN>,
+        anchor: &mut AnchorCache,
         ticks_per_bit: u16,
         tail_bytes: &[u8],
         d_min: u16,
@@ -365,8 +320,8 @@ impl EdgeParser {
         // when CRC's tail edge is at offset `d_min`.
         let base = d_min.saturating_add(total_edges.saturating_sub(1));
         if total_edges < 2 || avail <= base {
-            self.tail_anchor = None;
-            self.tail_starts_oldest_ring_off = None;
+            anchor.tail_anchor = None;
+            anchor.tail_starts_oldest_ring_off = None;
             crate::log::trace!(
                 "classifier: tail-anchor insufficient avail={} base={} total_edges={} d_min={}",
                 avail,
@@ -383,14 +338,14 @@ impl EdgeParser {
 
         for o in lo..=hi {
             if let Some(starts) =
-                self.try_anchor_at_tail_offset(edges, o, tail_bytes, ticks_per_bit)
+                self.try_anchor_at_tail_offset(edges, anchor, o, tail_bytes, ticks_per_bit)
             {
-                self.tail_anchor = Some(starts[TAIL_STARTS - 1]);
-                self.tail_starts = starts;
+                anchor.tail_anchor = Some(starts[TAIL_STARTS - 1]);
+                anchor.tail_starts = starts;
                 // `o` IS the oldest cached start's ring offset — the FIRST
                 // tail byte's start edge, by the sig_idx=0 invariant in
                 // `try_anchor_at_tail_offset`.
-                self.tail_starts_oldest_ring_off = Some(o);
+                anchor.tail_starts_oldest_ring_off = Some(o);
                 crate::log::debug!(
                     "classifier: tail-anchor match offset={} base={} d_min={} total={}",
                     o,
@@ -402,8 +357,8 @@ impl EdgeParser {
             }
         }
 
-        self.tail_anchor = None;
-        self.tail_starts_oldest_ring_off = None;
+        anchor.tail_anchor = None;
+        anchor.tail_starts_oldest_ring_off = None;
         crate::log::debug!(
             "classifier: tail-anchor miss base={} d_min={} total={}",
             base,
@@ -413,23 +368,23 @@ impl EdgeParser {
         false
     }
 
-    /// Read the tail-anchor tick in wire-edge time. Composite consults at
-    /// walk time after `arm_tim2` has fired at the parser's Crc event so
-    /// the retroactive integrator walk lives off the deadline path.
-    pub fn tail_anchor(&self) -> Option<u16> {
-        self.tail_anchor
-    }
-
     /// Wire-end tick of the just-completed packet, lifted into the WireClock
     /// u32 domain. Composite stamps `packet_end_tick` at the parser's
     /// CRC-good event — the CRC byte's start sits at the tail anchor, the
     /// wire-end one byte-time later. `now` / `src` route through
     /// [`drain_ref`] so the lift stays sub-wrap at low baud.
     #[allow(dead_code)]
-    pub fn packet_end_tick(&self, ticks_per_bit: u16, now: u32, src: PollSrc) -> Option<u32> {
+    pub fn packet_end_tick(
+        &self,
+        anchor: &AnchorCache,
+        ticks_per_bit: u16,
+        now: u32,
+        src: PollSrc,
+    ) -> Option<u32> {
         let frame_ticks = (ticks_per_bit as u32).wrapping_mul(BITS_PER_FRAME as u32);
         let r = drain_ref(now, src, ticks_per_bit);
-        self.tail_anchor
+        anchor
+            .tail_anchor
             .map(|t| lift(t, r).wrapping_add(frame_ticks))
     }
 
@@ -457,16 +412,6 @@ impl EdgeParser {
         }
     }
 
-    /// Force-drop the tail anchor. Composite calls at the parser's Crc
-    /// event (deterministic packet boundary — state is stale once the
-    /// packet ended) and Resync event (mid-packet abort — discard any
-    /// in-flight timing state).
-    #[allow(dead_code)]
-    pub fn reset_anchor(&mut self) {
-        self.tail_anchor = None;
-        self.tail_starts_oldest_ring_off = None;
-    }
-
     /// Retroactive integrator walk. Emits pairs going backward from
     /// `tail_anchor`: first the three cached `(tail_starts[k],
     /// tail_starts[k+1])` pairs from the signature validation (no ring
@@ -487,6 +432,7 @@ impl EdgeParser {
     pub fn walk_pairs_back<const EDGE_BUF_LEN: usize, const PAIRS_LEN: usize>(
         &self,
         edges: &HwRing<u16, EDGE_BUF_LEN>,
+        anchor: &AnchorCache,
         n_pairs: u8,
         ticks_per_bit: u16,
         out_pairs: &mut heapless::Vec<(u16, u16), PAIRS_LEN>,
@@ -501,13 +447,13 @@ impl EdgeParser {
         // snap. So these pairs are strictly higher quality than a
         // ring-walk snap; use them whenever we've got them.
         let mut emitted: u8 = 0;
-        if self.tail_anchor.is_some() {
+        if anchor.tail_anchor.is_some() {
             let cache_pairs = (TAIL_STARTS as u8) - 1;
             let cache_take = n_pairs.min(cache_pairs);
             let mut i = 0;
             while i < cache_take {
                 let idx = i as usize;
-                let _ = out_pairs.push((self.tail_starts[idx], self.tail_starts[idx + 1]));
+                let _ = out_pairs.push((anchor.tail_starts[idx], anchor.tail_starts[idx + 1]));
                 i += 1;
             }
             emitted = cache_take;
@@ -527,29 +473,29 @@ impl EdgeParser {
         // lift needed.
         let byte_ticks = (ticks_per_bit as i32).wrapping_mul(BITS_PER_FRAME as i32);
         let snap = (ticks_per_bit as i32).wrapping_mul(HSI_WALK_SNAP_BITS as i32);
-        let rx_edge_comp = self.rx_edge_comp_ticks;
+        let rx_edge_comp = anchor.rx_edge_comp_ticks;
         let avail = edges.recent_count();
 
         // Ring walk seeds at `tail_starts[0]` (the OLDEST cached start).
         // Its ring offset is recorded by `anchor_at_tail` on match;
         // without a match there's nothing to seed and we early-return.
-        let Some(probe_start) = self.tail_starts_oldest_ring_off else {
+        let Some(probe_start) = anchor.tail_starts_oldest_ring_off else {
             return;
         };
         if probe_start >= avail {
             return;
         }
-        let seed_stamp = self.tail_starts[0];
+        let seed_stamp = anchor.tail_starts[0];
 
-        // `anchor` is the wire-clock u16 stamp emitted as `curr` in the
-        // next pair. `prev` is the last edge examined (or the anchor if
+        // `curr` is the wire-clock u16 stamp emitted as the newer half of
+        // the next pair. `prev` is the last edge examined (or the seed if
         // no edge examined yet). `older_from_seed` is the i32 wire-clock
         // distance from `seed_stamp` (the walk start) to `prev`,
         // accumulated from per-hop deltas — persists across free-runs
         // so scans resume from the right offset in signed space.
         // `probe_offset` advances strictly older with each match
         // (free-runs don't consume ring edges).
-        let mut anchor = seed_stamp;
+        let mut curr = seed_stamp;
         let mut prev = seed_stamp;
         let mut older_from_seed: i32 = 0;
         let mut probe_offset: u16 = probe_start;
@@ -603,8 +549,8 @@ impl EdgeParser {
 
             match best {
                 Some((off, match_stamp, _, older_at_match)) => {
-                    let _ = out_pairs.push((match_stamp, anchor));
-                    anchor = match_stamp;
+                    let _ = out_pairs.push((match_stamp, curr));
+                    curr = match_stamp;
                     prev = match_stamp;
                     older_from_seed = older_at_match;
                     probe_offset = off.wrapping_add(1);
@@ -615,41 +561,10 @@ impl EdgeParser {
                     // leave `prev`, `older_from_seed`, and
                     // `probe_offset` untouched so the next iter's scan
                     // resumes from the same accumulator state.
-                    anchor = anchor.wrapping_sub(byte_ticks as u16);
+                    curr = curr.wrapping_sub(byte_ticks as u16);
                 }
             }
         }
-    }
-
-    /// Force the tail anchor to a known tick without staging real edges.
-    /// Composite-test scaffolding so [`packet_end_tick`] reads a
-    /// deterministic value at Crc-good simulation. Production code
-    /// mutates this only through [`Self::anchor_at_tail`].
-    #[cfg(test)]
-    pub fn force_byte_tick_for_test(&mut self, tick: u16) {
-        self.tail_anchor = Some(tick);
-    }
-
-    /// Seed the walker's ring-scan starting point for tests that stage
-    /// edges directly. Bypasses the cache-emit path (`tail_anchor` left
-    /// `None`) so tests exercise the ring-walk accumulator in isolation.
-    /// `seed_stamp` is stored as `tail_starts[0]` (the walk's initial
-    /// anchor); `oldest_off` is its ring offset.
-    #[cfg(test)]
-    pub fn force_walker_ring_seed_for_test(&mut self, seed_stamp: u16, oldest_off: u16) {
-        self.tail_starts[0] = seed_stamp;
-        self.tail_starts_oldest_ring_off = Some(oldest_off);
-    }
-
-    /// Seed the cache-emit path AND ring seed for tests that exercise
-    /// the "3 pairs from cache + walker for the rest" flow. `starts` is
-    /// the 4-byte tail signature (oldest first); `oldest_off` is
-    /// `starts[0]`'s ring offset. `tail_anchor` = `starts[3]`.
-    #[cfg(test)]
-    pub fn force_tail_starts_for_test(&mut self, starts: [u16; TAIL_STARTS], oldest_off: u16) {
-        self.tail_starts = starts;
-        self.tail_starts_oldest_ring_off = Some(oldest_off);
-        self.tail_anchor = Some(starts[TAIL_STARTS - 1]);
     }
 
     /// Stage a matching falling-edge signature for `tail_bytes` into `edges`
@@ -662,7 +577,7 @@ impl EdgeParser {
     /// number of stamps written.
     #[cfg(test)]
     pub fn stage_tail_signature_for_test<const EDGE_BUF_LEN: usize>(
-        &mut self,
+        &self,
         edges: &mut HwRing<u16, EDGE_BUF_LEN>,
         tail_bytes: &[u8],
         ticks_per_bit: u16,
@@ -708,8 +623,75 @@ mod tests {
     const TPB_9600: u16 = 5000;
     const BYTE_TICKS_9600: u16 = 50000;
 
-    fn make() -> EdgeParser {
-        EdgeParser::new()
+    /// Bundles the stateless walker with the [`AnchorCache`] it threads so
+    /// test bodies read as `f.op(...)`. The two are genuinely separate in
+    /// production — this fixture just spares each test the `&mut anchor`
+    /// plumbing. The `seed_*` helpers build cache state directly, replacing
+    /// the deleted production force-shims.
+    struct Fixture {
+        parser: EdgeParser,
+        anchor: AnchorCache,
+    }
+
+    impl Fixture {
+        fn new() -> Self {
+            Self {
+                parser: EdgeParser::new(),
+                anchor: AnchorCache::new(),
+            }
+        }
+
+        fn anchor_at_tail<const EDGE_BUF_LEN: usize>(
+            &mut self,
+            edges: &mut HwRing<u16, EDGE_BUF_LEN>,
+            ticks_per_bit: u16,
+            tail_bytes: &[u8],
+            d_min: u16,
+        ) -> bool {
+            self.parser
+                .anchor_at_tail(edges, &mut self.anchor, ticks_per_bit, tail_bytes, d_min)
+        }
+
+        fn walk_pairs_back<const EDGE_BUF_LEN: usize, const PAIRS_LEN: usize>(
+            &self,
+            edges: &HwRing<u16, EDGE_BUF_LEN>,
+            n_pairs: u8,
+            ticks_per_bit: u16,
+            out_pairs: &mut heapless::Vec<(u16, u16), PAIRS_LEN>,
+        ) {
+            self.parser
+                .walk_pairs_back(edges, &self.anchor, n_pairs, ticks_per_bit, out_pairs);
+        }
+
+        fn packet_end_tick(&self, ticks_per_bit: u16, now: u32, src: PollSrc) -> Option<u32> {
+            self.parser
+                .packet_end_tick(&self.anchor, ticks_per_bit, now, src)
+        }
+
+        fn packet_end_tick_fallback(&self, src: PollSrc, now: u32, ticks_per_bit: u16) -> u32 {
+            self.parser
+                .packet_end_tick_fallback(src, now, ticks_per_bit)
+        }
+
+        /// Seed the ring-walk start without the cache-emit path
+        /// (`tail_anchor` left `None`) so tests exercise the ring-walk
+        /// accumulator in isolation.
+        fn seed_walker(&mut self, seed_stamp: u16, oldest_off: u16) {
+            self.anchor.tail_starts[0] = seed_stamp;
+            self.anchor.tail_starts_oldest_ring_off = Some(oldest_off);
+        }
+
+        /// Seed the cache-emit path AND ring seed for the "3 pairs from
+        /// cache + walker for the rest" flow. `tail_anchor` = `starts[3]`.
+        fn seed_cache(&mut self, starts: [u16; TAIL_STARTS], oldest_off: u16) {
+            self.anchor.tail_starts = starts;
+            self.anchor.tail_starts_oldest_ring_off = Some(oldest_off);
+            self.anchor.tail_anchor = Some(starts[TAIL_STARTS - 1]);
+        }
+    }
+
+    fn make() -> Fixture {
+        Fixture::new()
     }
 
     /// Stage edges into a 16-slot HwRing and publish the producer head
@@ -730,7 +712,7 @@ mod tests {
             c.packet_end_tick(TPB_3M, 1_000_000, PollSrc::ByteBatch),
             None
         );
-        c.tail_anchor = Some(5000);
+        c.anchor.tail_anchor = Some(5000);
         let now = 0x0001_0000_u32 + 5000;
         assert_eq!(
             c.packet_end_tick(TPB_3M, now, PollSrc::ByteBatch),
@@ -749,7 +731,7 @@ mod tests {
         const TPB_9600: u16 = 5000;
         const BYTE_TICKS_9600: u32 = 10 * TPB_9600 as u32;
         let mut c = make();
-        c.tail_anchor = Some(5000);
+        c.anchor.tail_anchor = Some(5000);
         let stamp_full = 0x0001_0000_u32 + 5000;
         let idle_elapsed = 2 * BITS_PER_FRAME as u32 * TPB_9600 as u32;
         let now_at_idle = stamp_full + idle_elapsed;
@@ -771,7 +753,7 @@ mod tests {
         const TPB_9600: u16 = 5000;
         const BYTE_TICKS_9600: u32 = 10 * TPB_9600 as u32;
         let mut c = make();
-        c.tail_anchor = Some(5000);
+        c.anchor.tail_anchor = Some(5000);
         let stamp_full = 0x0001_0000_u32 + 5000;
         let truncated_elapsed = 2 * BITS_PER_FRAME as u32 * TPB_9600 as u32 - 1;
         let now_at_idle = stamp_full + truncated_elapsed;
@@ -817,9 +799,9 @@ mod tests {
     #[test]
     fn reset_anchor_clears_state() {
         let mut c = make();
-        c.tail_anchor = Some(1234);
-        c.reset_anchor();
-        assert_eq!(c.tail_anchor, None);
+        c.anchor.tail_anchor = Some(1234);
+        c.anchor.reset();
+        assert_eq!(c.anchor.tail_anchor, None);
     }
 
     // ---------- tail-signature back-search ----------
@@ -873,7 +855,10 @@ mod tests {
         let edges_vec = tail_edges(&tail, 1000, TPB_3M);
         let mut edges = edges16(&edges_vec);
         assert!(c.anchor_at_tail(&mut edges, TPB_3M, &tail, 0));
-        assert_eq!(c.tail_anchor, Some(1000u16.wrapping_add(30 * TPB_3M)),);
+        assert_eq!(
+            c.anchor.tail_anchor,
+            Some(1000u16.wrapping_add(30 * TPB_3M)),
+        );
     }
 
     #[test]
@@ -883,7 +868,10 @@ mod tests {
         let edges_vec = tail_edges(&tail, 5000, TPB_3M);
         let mut edges = edges16(&edges_vec);
         assert!(c.anchor_at_tail(&mut edges, TPB_3M, &tail, 0));
-        assert_eq!(c.tail_anchor, Some(5000u16.wrapping_add(30 * TPB_3M)),);
+        assert_eq!(
+            c.anchor.tail_anchor,
+            Some(5000u16.wrapping_add(30 * TPB_3M)),
+        );
     }
 
     #[test]
@@ -893,7 +881,10 @@ mod tests {
         let edges_vec = tail_edges(&tail, 2000, TPB_1M);
         let mut edges = edges16(&edges_vec);
         assert!(c.anchor_at_tail(&mut edges, TPB_1M, &tail, 0));
-        assert_eq!(c.tail_anchor, Some(2000u16.wrapping_add(30 * TPB_1M)),);
+        assert_eq!(
+            c.anchor.tail_anchor,
+            Some(2000u16.wrapping_add(30 * TPB_1M)),
+        );
     }
 
     #[test]
@@ -901,9 +892,9 @@ mod tests {
         let mut c = make();
         let tail = [0xFFu8, 0xFF, 0xFF, 0xFF];
         let mut edges = edges16(&[1000, 1160, 1320]);
-        c.tail_anchor = Some(7777);
+        c.anchor.tail_anchor = Some(7777);
         assert!(!c.anchor_at_tail(&mut edges, TPB_3M, &tail, 0));
-        assert_eq!(c.tail_anchor, None);
+        assert_eq!(c.anchor.tail_anchor, None);
     }
 
     #[test]
@@ -913,9 +904,9 @@ mod tests {
         let claimed = [0xAAu8, 0xFF, 0xFF, 0xFF];
         let edges_vec = tail_edges(&real, 1000, TPB_3M);
         let mut edges = edges16(&edges_vec);
-        c.tail_anchor = Some(7777);
+        c.anchor.tail_anchor = Some(7777);
         assert!(!c.anchor_at_tail(&mut edges, TPB_3M, &claimed, 0));
-        assert_eq!(c.tail_anchor, None);
+        assert_eq!(c.anchor.tail_anchor, None);
     }
 
     #[test]
@@ -928,7 +919,7 @@ mod tests {
         edges_vec[1] = edges_vec[1].wrapping_add(2u16.wrapping_mul(TPB_3M));
         let mut edges = edges16(&edges_vec);
         assert!(!c.anchor_at_tail(&mut edges, TPB_3M, &tail, 0));
-        assert_eq!(c.tail_anchor, None);
+        assert_eq!(c.anchor.tail_anchor, None);
     }
 
     #[test]
@@ -948,7 +939,10 @@ mod tests {
             .unwrap();
         let mut edges = edges16(&edges_vec);
         assert!(c.anchor_at_tail(&mut edges, TPB_3M, &tail, 0));
-        assert_eq!(c.tail_anchor, Some(1000u16.wrapping_add(30 * TPB_3M)));
+        assert_eq!(
+            c.anchor.tail_anchor,
+            Some(1000u16.wrapping_add(30 * TPB_3M))
+        );
     }
 
     #[test]
@@ -974,7 +968,10 @@ mod tests {
         // here, but the doc-contract is that d_min carries the exact
         // shift. Verify a d_min=2 call matches at the intended offset.
         assert!(c.anchor_at_tail(&mut edges, TPB_3M, &tail, 2));
-        assert_eq!(c.tail_anchor, Some(1000u16.wrapping_add(30 * TPB_3M)));
+        assert_eq!(
+            c.anchor.tail_anchor,
+            Some(1000u16.wrapping_add(30 * TPB_3M))
+        );
     }
 
     // ---------- retroactive walk ----------
@@ -982,7 +979,7 @@ mod tests {
     #[test]
     fn walk_pairs_back_zero_is_noop() {
         let mut c = make();
-        c.force_walker_ring_seed_for_test(5000, 0);
+        c.seed_walker(5000, 0);
         let edges = edges16(&[]);
         let mut pairs: heapless::Vec<(u16, u16), 8> = heapless::Vec::new();
         c.walk_pairs_back(&edges, 0, TPB_3M, &mut pairs);
@@ -999,7 +996,7 @@ mod tests {
         let edges_vec = tail_edges(&tail, 1000, TPB_3M);
         let edges = edges16(&edges_vec);
         let tail_anchor = 1000u16.wrapping_add(30 * TPB_3M);
-        c.force_walker_ring_seed_for_test(tail_anchor, 0);
+        c.seed_walker(tail_anchor, 0);
         let mut pairs: heapless::Vec<(u16, u16), 8> = heapless::Vec::new();
         c.walk_pairs_back(&edges, 3, TPB_3M, &mut pairs);
         assert_eq!(
@@ -1029,7 +1026,7 @@ mod tests {
             1000u16.wrapping_add(30 * TPB_3M),
         ]);
         let tail_anchor = 1000u16.wrapping_add(30 * TPB_3M);
-        c.force_walker_ring_seed_for_test(tail_anchor, 0);
+        c.seed_walker(tail_anchor, 0);
         let mut pairs: heapless::Vec<(u16, u16), 8> = heapless::Vec::new();
         c.walk_pairs_back(&edges, 3, TPB_3M, &mut pairs);
         assert_eq!(
@@ -1053,7 +1050,7 @@ mod tests {
         let e3 = 1000u16.wrapping_add(30 * TPB_3M).wrapping_add(TPB_3M);
         let edges = edges16(&[e0, e1, e2, e3]);
         let mut pairs: heapless::Vec<(u16, u16), 8> = heapless::Vec::new();
-        c.force_walker_ring_seed_for_test(e3, 0);
+        c.seed_walker(e3, 0);
         c.walk_pairs_back(&edges, 3, TPB_3M, &mut pairs);
         assert_eq!(pairs.as_slice(), &[(e2, e3), (e1, e2), (e0, e1)]);
     }
@@ -1069,7 +1066,7 @@ mod tests {
         let edges_vec = tail_edges(&tail, 1000, TPB_9600);
         let edges = edges16(&edges_vec);
         let tail_anchor = 1000u16.wrapping_add(30u16.wrapping_mul(TPB_9600));
-        c.force_walker_ring_seed_for_test(tail_anchor, 0);
+        c.seed_walker(tail_anchor, 0);
         let mut pairs: heapless::Vec<(u16, u16), 8> = heapless::Vec::new();
         c.walk_pairs_back(&edges, 3, TPB_9600, &mut pairs);
         let byte = BYTE_TICKS_9600;
@@ -1101,7 +1098,7 @@ mod tests {
         let e3 = 1000u16.wrapping_add(30 * TPB_3M);
         let edges = edges16(&[e0, e1, e2, e3]);
         let mut pairs: heapless::Vec<(u16, u16), 8> = heapless::Vec::new();
-        c.force_walker_ring_seed_for_test(e3, 0);
+        c.seed_walker(e3, 0);
         c.walk_pairs_back(&edges, 3, TPB_3M, &mut pairs);
         // Step 1 (predicted ≈ e3-10·bit = expected e2 slot): e2 is out
         // of window; predicted position is close to e2's SHOULD-BE slot
@@ -1128,9 +1125,9 @@ mod tests {
         assert!(c.anchor_at_tail(&mut edges, TPB_3M, &tail, 0));
         // tail_anchor tick == tail_starts[3] (last byte's start), and
         // the three cached pairs are consecutive byte-time deltas.
-        assert_eq!(c.tail_anchor, Some(c.tail_starts[3]));
+        assert_eq!(c.anchor.tail_anchor, Some(c.anchor.tail_starts[3]));
         for k in 1..TAIL_STARTS {
-            let delta = c.tail_starts[k].wrapping_sub(c.tail_starts[k - 1]);
+            let delta = c.anchor.tail_starts[k].wrapping_sub(c.anchor.tail_starts[k - 1]);
             assert_eq!(delta, 10 * TPB_3M, "byte {} spacing", k);
         }
     }
@@ -1144,7 +1141,7 @@ mod tests {
         // the pairs came from the cache, not the ring.
         let mut c = make();
         let starts = [1000u16, 2000, 3000, 4000];
-        c.force_tail_starts_for_test(starts, 0);
+        c.seed_cache(starts, 0);
         let edges = edges16(&[0xDEAD, 0xBEEF]); // decoy — walker must ignore
         let mut pairs: heapless::Vec<(u16, u16), 8> = heapless::Vec::new();
         c.walk_pairs_back(&edges, 3, TPB_3M, &mut pairs);
@@ -1171,7 +1168,7 @@ mod tests {
         }
         let mut edges = edges16(&extended);
         assert!(c.anchor_at_tail(&mut edges, TPB_3M, &tail, 0));
-        let starts = c.tail_starts;
+        let starts = c.anchor.tail_starts;
         let mut pairs: heapless::Vec<(u16, u16), 8> = heapless::Vec::new();
         c.walk_pairs_back(&edges, 4, TPB_3M, &mut pairs);
         assert_eq!(pairs.len(), 4);
