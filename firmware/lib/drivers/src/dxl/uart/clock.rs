@@ -85,6 +85,52 @@ pub(crate) const fn divisor_for(clock_hz: u32, baud_hz: u32) -> u32 {
     (clock_hz + baud_hz / 2) / baud_hz
 }
 
+/// Bundle of integrator constants that vary with `(baud, is_boot)`.
+/// Grouped so a single `const { ... }` block folds all three fields at
+/// monomorphization — see [[perf_optimization_workflow]] and
+/// [`Clock::drift_consts_at`] for why per-baud tabulation is needed:
+/// the underlying `u64 / const_u64` divides don't lower to reciprocal
+/// multiplies on RV32EC+Zmmul (no hardware `div`) and would otherwise
+/// call `__udivdi3` on every baud change.
+#[derive(Copy, Clone)]
+struct DriftConsts {
+    per_step_q8: u32,
+    recip_q32: u32,
+    window_recip_q32: u32,
+}
+
+/// Const-evaluable formula for one `(step_ppm, tpb, n_samples)` triple.
+/// Runs at monomorphization when wrapped in `const { ... }`; the u64
+/// divides fold to literals so no library call survives to runtime.
+const fn compute_drift_consts(step_ppm: u32, ticks_per_bit: u16, n_samples: u16) -> DriftConsts {
+    let per_step_q8 = {
+        let prod = step_ppm as u64
+            * ticks_per_bit as u64
+            * n_samples as u64
+            * BITS_PER_FRAME as u64
+            * Q8_SCALE as u64;
+        (prod / 1_000_000) as u32
+    };
+    let recip_q32 = {
+        let denom = if per_step_q8 == 0 {
+            1u64
+        } else {
+            per_step_q8 as u64
+        };
+        ((1u64 << 32) / denom) as u32
+    };
+    let window_recip_q32 = {
+        let window = DRIFT_MIN_SAMPLES_STEADY as u64 * BITS_PER_FRAME as u64 * ticks_per_bit as u64;
+        let denom = if window == 0 { 1u64 } else { window };
+        ((1u64 << 32) / denom) as u32
+    };
+    DriftConsts {
+        per_step_q8,
+        recip_q32,
+        window_recip_q32,
+    }
+}
+
 pub struct Clock<U: UsartBaud, T: ClockTrim> {
     usart: U,
     trim: T,
@@ -178,7 +224,7 @@ impl<U: UsartBaud, T: ClockTrim> Clock<U, T> {
     pub fn new(baud: BaudRate, usart: U, trim: T) -> Self {
         let ticks_per_bit = Self::ticks_per_bit_at(baud);
         let rx_edge_comp_ticks = usart.rx_edge_comp_ticks(baud);
-        let per_step_q8 = Self::drift_per_step_q8(ticks_per_bit, DRIFT_MIN_SAMPLES_BOOT);
+        let consts = Self::drift_consts_at(baud, true);
         Self {
             usart,
             trim,
@@ -191,74 +237,71 @@ impl<U: UsartBaud, T: ClockTrim> Clock<U, T> {
             pending_applied_ppm: None,
             drift_sum_q8: 0,
             // Boot phase: full-step threshold for ≥3.4σ SNR margin at 3M.
-            drift_threshold_q8: per_step_q8,
-            drift_per_step_q8: per_step_q8,
-            drift_per_step_recip_q32: Self::drift_per_step_recip_q32(per_step_q8),
-            window_recip_q32: Self::window_recip_q32(ticks_per_bit),
+            drift_threshold_q8: consts.per_step_q8,
+            drift_per_step_q8: consts.per_step_q8,
+            drift_per_step_recip_q32: consts.recip_q32,
+            window_recip_q32: consts.window_recip_q32,
             drift_samples: 0,
             residual_q8: 0,
         }
     }
 
-    /// One full trim step's worth of accumulated byte-tick drift over `N`
-    /// samples, in Q8 ticks. `drift_per_byte_q8 = STEP_PPM × tpb ×
-    /// BITS_PER_FRAME × Q8_SCALE / 10⁶` (one step shifts a BITS_PER_FRAME-
-    /// bit byte-time by `BITS_PER_FRAME × tpb × STEP_PPM / 10⁶` ticks; the
-    /// × Q8_SCALE lifts to Q8). Multiplied by `N` gives full-step-over-N.
-    /// Half-step (steady deadband) is just `>> 1`. Tracking drift on raw
-    /// byte_ticks instead of `(byte_ticks / BITS_PER_FRAME)` keeps 1-tick
-    /// chip-stamp quantization noise below threshold at small
-    /// `ticks_per_bit` (V006 at 3M has tpb=16 — a single tick of stamp
-    /// jitter is 6% of one bit and would otherwise dominate).
-    fn drift_per_step_q8(ticks_per_bit: u16, n_samples: u16) -> u32 {
-        let prod = T::STEP_PPM as u64
-            * ticks_per_bit as u64
-            * n_samples as u64
-            * BITS_PER_FRAME as u64
-            * Q8_SCALE as u64;
-        (prod / 1_000_000) as u32
+    /// Return the precomputed integrator triple for `(baud, is_boot)`.
+    /// One `const { ... }` block per arm folds the u64 divides at
+    /// monomorphization — runtime cost is a 12-arm dispatch with baked
+    /// literals, no `__udivdi3`. Formula reference:
+    /// `drift_per_step_q8 = STEP_PPM × tpb × N × BITS_PER_FRAME × Q8_SCALE /
+    /// 10⁶` (one step shifts a `BITS_PER_FRAME`-bit byte-time by
+    /// `BITS_PER_FRAME × tpb × STEP_PPM / 10⁶` ticks; × Q8_SCALE lifts to
+    /// Q8; × N gives full-step-over-N). Half-step (steady deadband) is
+    /// applied by the caller via `>> 1`. Tracking drift on raw byte_ticks
+    /// keeps 1-tick chip-stamp quantization noise below threshold at
+    /// small `ticks_per_bit` (V006 at 3M: tpb=16, 1 tick = 6% of a bit).
+    fn drift_consts_at(baud: BaudRate, is_boot: bool) -> DriftConsts {
+        macro_rules! arm {
+            ($baud:expr, $n:expr) => {
+                const {
+                    compute_drift_consts(
+                        T::STEP_PPM,
+                        divisor_for(U::CLOCK_HZ, $baud.as_hz()) as u16,
+                        $n,
+                    )
+                }
+            };
+        }
+        match (baud, is_boot) {
+            (BaudRate::B9600, true) => arm!(BaudRate::B9600, DRIFT_MIN_SAMPLES_BOOT),
+            (BaudRate::B9600, false) => arm!(BaudRate::B9600, DRIFT_MIN_SAMPLES_STEADY),
+            (BaudRate::B57600, true) => arm!(BaudRate::B57600, DRIFT_MIN_SAMPLES_BOOT),
+            (BaudRate::B57600, false) => arm!(BaudRate::B57600, DRIFT_MIN_SAMPLES_STEADY),
+            (BaudRate::B115200, true) => arm!(BaudRate::B115200, DRIFT_MIN_SAMPLES_BOOT),
+            (BaudRate::B115200, false) => arm!(BaudRate::B115200, DRIFT_MIN_SAMPLES_STEADY),
+            (BaudRate::B1000000, true) => arm!(BaudRate::B1000000, DRIFT_MIN_SAMPLES_BOOT),
+            (BaudRate::B1000000, false) => arm!(BaudRate::B1000000, DRIFT_MIN_SAMPLES_STEADY),
+            (BaudRate::B2000000, true) => arm!(BaudRate::B2000000, DRIFT_MIN_SAMPLES_BOOT),
+            (BaudRate::B2000000, false) => arm!(BaudRate::B2000000, DRIFT_MIN_SAMPLES_STEADY),
+            (BaudRate::B3000000, true) => arm!(BaudRate::B3000000, DRIFT_MIN_SAMPLES_BOOT),
+            (BaudRate::B3000000, false) => arm!(BaudRate::B3000000, DRIFT_MIN_SAMPLES_STEADY),
+        }
     }
 
-    /// Q32 reciprocal of one full step's drift-Q8, so `on_byte_pair` can
-    /// estimate accumulated drift in step units without a runtime divide.
-    fn drift_per_step_recip_q32(drift_per_step_q8: u32) -> u32 {
-        let denom = (drift_per_step_q8 as u64).max(1);
-        ((1u64 << 32) / denom) as u32
-    }
-
-    /// Q32 reciprocal of the steady-phase integrator window, so
-    /// [`Self::projected_phase_error_hclk`] can scale by
-    /// `distance_hclk / window` without a runtime divide on the per-
-    /// deadline TX scheduler path. Window range across all supported
-    /// bauds: [3200 ticks (3 Mbaud), 1_000_000 ticks (9600 baud)] →
-    /// recip range [~4_294, ~1_342_177]; fits comfortably in `u32`.
-    fn window_recip_q32(ticks_per_bit: u16) -> u32 {
-        let window = DRIFT_MIN_SAMPLES_STEADY as u64 * BITS_PER_FRAME as u64 * ticks_per_bit as u64;
-        ((1u64 << 32) / window.max(1)) as u32
-    }
-
-    /// Recompute `drift_threshold_q8` and `drift_per_step_recip_q32` from
-    /// the current `ticks_per_bit` and `is_boot`. Called on baud change
-    /// and on phase transition — both cold paths (at most twice per Clock
-    /// lifetime in steady state).
+    /// Recompute integrator constants from the current `(baud, is_boot)`.
+    /// Called on baud change (in [`Self::on_tx_complete`]) and on phase
+    /// transition (in [`Self::on_rx_packet_end`]) — both cold paths (at
+    /// most twice per Clock lifetime in steady state).
     fn rebuild_integrator_consts(&mut self) {
-        let n_samples = if self.is_boot {
-            DRIFT_MIN_SAMPLES_BOOT
-        } else {
-            DRIFT_MIN_SAMPLES_STEADY
-        };
-        let per_step_q8 = Self::drift_per_step_q8(self.ticks_per_bit, n_samples);
+        let consts = Self::drift_consts_at(self.baud, self.is_boot);
         // Boot: full-step threshold (more conservative deadband over the
         // smaller 6-sample window). Steady: half-step (tighter; the
         // 20-sample window has enough SNR margin to spot half-step drift).
         self.drift_threshold_q8 = if self.is_boot {
-            per_step_q8
+            consts.per_step_q8
         } else {
-            per_step_q8 >> 1
+            consts.per_step_q8 >> 1
         };
-        self.drift_per_step_q8 = per_step_q8;
-        self.drift_per_step_recip_q32 = Self::drift_per_step_recip_q32(per_step_q8);
-        self.window_recip_q32 = Self::window_recip_q32(self.ticks_per_bit);
+        self.drift_per_step_q8 = consts.per_step_q8;
+        self.drift_per_step_recip_q32 = consts.recip_q32;
+        self.window_recip_q32 = consts.window_recip_q32;
     }
 
     pub fn stage_baud(&mut self, baud: BaudRate) {
