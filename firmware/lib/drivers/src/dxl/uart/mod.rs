@@ -14,6 +14,9 @@ pub mod codec;
 pub mod fast_last;
 pub mod fast_last_crc;
 
+#[cfg(test)]
+mod test_support;
+
 use dxl_protocol::streaming::{
     CrcResult, Event, HeaderEvent, InstructionHeader, InstructionPayload, PayloadEvent,
 };
@@ -1239,6 +1242,7 @@ mod tests {
     use std::cell::{Cell, RefCell};
     use std::rc::Rc;
 
+    use super::test_support::{SEED_TICK, TEST_ID, TEST_RDT_US, TICKS_PER_BIT_3M};
     use super::*;
     use crate::mocks::{
         FastLastSchedulerOp, MockClockTrim, MockEdgeDma, MockFastLastScheduler, MockRxDma,
@@ -1257,13 +1261,6 @@ mod tests {
     const RX_BUF_LEN: usize = 64;
     const EDGE_BUF_LEN: usize = 128;
     const TX_BUF_LEN: usize = 140;
-
-    const TEST_ID: u8 = 0x07;
-    const TEST_RDT_US: u32 = 250;
-
-    /// Pre-seed classifier `last_byte_start` so `packet_end_tick` reads a
-    /// known tick at Crc-good without staging real edges.
-    const SEED_TICK: u16 = 1000;
 
     type TestCodec = Codec<MockEdgeDma, SoftwareCrcUmts, RX_BUF_LEN, EDGE_BUF_LEN, TX_BUF_LEN>;
     type TestBus = DxlUart<TestProviders, RX_BUF_LEN, EDGE_BUF_LEN, TX_BUF_LEN>;
@@ -1435,16 +1432,11 @@ mod tests {
     }
 
     fn mk_clock_trim() -> MockClockTrim {
-        let mut m = MockClockTrim::new();
-        m.expect_apply_ppm().returning_st(|_| ());
-        m
+        super::test_support::mk_clock_trim().0
     }
 
     fn mk_usart_baud() -> MockUsartBaud {
-        let mut m = MockUsartBaud::new();
-        m.expect_apply_baud().returning_st(|_| ());
-        m.expect_rx_edge_comp_ticks().returning_st(|_| 0);
-        m
+        super::test_support::mk_usart_baud().0
     }
 
     #[derive(Clone, Default)]
@@ -1514,10 +1506,6 @@ mod tests {
         let (edge_dma, edge_state) = mk_edge_dma();
         make_bus_with(Codec::new(edge_dma), edge_state, BaudRate::B3000000)
     }
-
-    /// `ticks_per_bit` at `BaudRate::B3000000` for the test HCLK. Matches the
-    /// `TPB_3M` used by the edge-parser unit tests.
-    const TICKS_PER_BIT_3M: u16 = 16;
 
     /// Stage a matching falling-edge signature for the last 4 bytes of `pkt`
     /// so `codec.poll`'s `anchor_at_tail` at Crc-good resolves

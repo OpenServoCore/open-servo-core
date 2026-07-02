@@ -261,14 +261,12 @@ impl<U: UsartBaud, T: ClockTrim> Clock<U, T> {
         self.window_recip_q32 = Self::window_recip_q32(self.ticks_per_bit);
     }
 
-    #[allow(dead_code)]
     pub fn stage_baud(&mut self, baud: BaudRate) {
         if baud != self.baud {
             self.pending_baud = Some(baud);
         }
     }
 
-    #[allow(dead_code)]
     pub fn on_tx_complete(&mut self) {
         // Baud-only: BRR can't change mid-frame, so a staged baud waits
         // for the USART to go idle after our own TX. Trim corrections
@@ -300,7 +298,6 @@ impl<U: UsartBaud, T: ClockTrim> Clock<U, T> {
     /// Per [[drift_sampling_instruction_only]]: both own + foreign
     /// Instruction packets feed (gated by `hsi_active` upstream at the
     /// codec); Status frames never contribute regardless of cap.
-    #[allow(dead_code)]
     pub fn samples_wanted_per_packet(&self) -> u8 {
         if self.is_boot {
             BOOT_SAMPLES_PER_PACKET
@@ -320,7 +317,6 @@ impl<U: UsartBaud, T: ClockTrim> Clock<U, T> {
     /// [[drift_sampling_instruction_only]] converges the same as own.
     /// Idempotent: with no pending correction and `is_boot` already
     /// false, the call is a no-op.
-    #[allow(dead_code)]
     pub fn on_rx_packet_end(&mut self) {
         let mut reset_integrator = false;
         if let Some(applied) = self.pending_applied_ppm.take() {
@@ -360,7 +356,6 @@ impl<U: UsartBaud, T: ClockTrim> Clock<U, T> {
     /// intermediate edge stamps telescope to give `(e_N − e_0) −
     /// N·BITS_PER_FRAME·tpb`. Noise on `drift_sum_q8` is therefore
     /// `√2·σ_edge` regardless of N — independent of sample count.
-    #[allow(dead_code)]
     pub fn on_byte_pair(&mut self, prev: u16, curr: u16) {
         let byte_ticks = curr.wrapping_sub(prev);
         // Drift on raw byte_ticks (no `/BITS_PER_FRAME` truncation) — at
@@ -440,7 +435,6 @@ impl<U: UsartBaud, T: ClockTrim> Clock<U, T> {
     }
 
     #[inline(always)]
-    #[allow(dead_code)]
     pub fn ticks_per_bit(&self) -> u16 {
         self.ticks_per_bit
     }
@@ -465,7 +459,6 @@ impl<U: UsartBaud, T: ClockTrim> Clock<U, T> {
     /// `__udivdi3` here would land on every scheduled deadline, and
     /// RV32EC has no hardware divide. The wide multiply lowers to a
     /// single `__multi3` call (~tens of cycles) instead.
-    #[allow(dead_code)]
     pub fn projected_phase_error_hclk(&self, distance_hclk: u32) -> i32 {
         if self.residual_q8 == 0 || distance_hclk == 0 {
             return 0;
@@ -488,7 +481,6 @@ impl<U: UsartBaud, T: ClockTrim> Clock<U, T> {
     ///
     /// Exact at 9600/1M/2M/3M; sub-tick truncation at 57600/115200 (≤14 ns
     /// at V006's 48 MHz, far below the timer's 20.83 ns resolution).
-    #[allow(dead_code)]
     pub fn bytes_to_ticks(&self, bytes: u32) -> u32 {
         // BITS_PER_FRAME · CLOCK_HZ folds to a u64 literal at monomorphization
         // (e.g. 480_000_000 for V006). Each match arm's divisor is also a
@@ -506,201 +498,259 @@ impl<U: UsartBaud, T: ClockTrim> Clock<U, T> {
     }
 }
 
-// Shelved pending U4 (osc-drivers unit test audit): tests below bind to
-// hand-rolled mock fields; will be migrated to the mockall + state-companion
-// API as part of the audit.
-#[cfg(any())]
-#[cfg(test)]
 #[cfg(test)]
 mod tests {
+    extern crate alloc;
+
+    use super::super::test_support::{
+        ClockTrimState, UsartBaudState, mk_clock_trim, mk_usart_baud,
+    };
     use super::*;
     use crate::mocks::{MockClockTrim, MockUsartBaud};
 
-    // 9600 baud → BRR 5000 — high spec gives ample headroom for sub-tick
-    // drift math without bumping against the i32 range or the deadband.
-    const TEST_BAUD: BaudRate = BaudRate::B9600;
-    const SPEC: u16 = 5000;
+    type TestClock = Clock<MockUsartBaud, MockClockTrim>;
 
-    fn clock(baud: BaudRate) -> Clock<MockUsartBaud, MockClockTrim> {
-        Clock::new(baud, MockUsartBaud::default(), MockClockTrim::default())
+    /// Fresh clock at `baud` with wired call logs on the USART / trim mocks.
+    fn make(baud: BaudRate) -> (TestClock, UsartBaudState, ClockTrimState) {
+        let (usart, u_state) = mk_usart_baud();
+        let (trim, t_state) = mk_clock_trim();
+        (Clock::new(baud, usart, trim), u_state, t_state)
     }
 
-    /// Feed one byte-time observation expressed as ticks-per-bit via
-    /// `on_byte_pair`. `prev = 0`, `curr = observed_tpb * 10` lands a delta
-    /// in the `[9·spec, 11·spec]` HIT window for `observed_tpb ≈ spec`, so
-    /// the integrator sees the same input the production codec produces.
-    fn feed(c: &mut Clock<MockUsartBaud, MockClockTrim>, observed_tpb: u16) {
-        c.on_byte_pair(0, observed_tpb * 10);
+    fn clock_at(baud: BaudRate) -> TestClock {
+        make(baud).0
     }
+
+    /// Feed one classifier byte pair where `observed_tpb` sets `byte_ticks =
+    /// observed_tpb * BITS_PER_FRAME`. Per-sample drift is
+    /// `BITS_PER_FRAME × (observed_tpb − tpb)`.
+    fn feed(c: &mut TestClock, observed_tpb: u16) {
+        c.on_byte_pair(0, observed_tpb.wrapping_mul(BITS_PER_FRAME));
+    }
+
+    // ---------- ticks_per_bit ----------
 
     #[test]
-    fn new_computes_ticks_per_bit_from_brr() {
-        assert_eq!(clock(BaudRate::B3000000).ticks_per_bit, 16);
-        assert_eq!(clock(BaudRate::B1000000).ticks_per_bit, 48);
-        assert_eq!(clock(BaudRate::B9600).ticks_per_bit, 5000);
+    fn new_computes_ticks_per_bit_from_baud() {
+        assert_eq!(clock_at(BaudRate::B3000000).ticks_per_bit(), 16);
+        assert_eq!(clock_at(BaudRate::B1000000).ticks_per_bit(), 48);
+        assert_eq!(clock_at(BaudRate::B9600).ticks_per_bit(), 5000);
     }
 
+    // ---------- stage_baud / on_tx_complete ----------
+
     #[test]
-    fn stage_baud_records_change() {
-        let mut c = clock(TEST_BAUD);
+    fn stage_baud_records_pending_change() {
+        let mut c = clock_at(BaudRate::B9600);
         c.stage_baud(BaudRate::B3000000);
         assert_eq!(c.pending_baud, Some(BaudRate::B3000000));
     }
 
     #[test]
     fn stage_baud_is_noop_for_same_baud() {
-        let mut c = clock(TEST_BAUD);
-        c.stage_baud(TEST_BAUD);
+        let mut c = clock_at(BaudRate::B9600);
+        c.stage_baud(BaudRate::B9600);
         assert_eq!(c.pending_baud, None);
     }
 
     #[test]
-    fn single_sample_does_not_stage_trim() {
-        let mut c = clock(TEST_BAUD);
-        feed(&mut c, SPEC + 100);
-        assert_eq!(c.pending_trim_delta, None);
+    fn on_tx_complete_applies_pending_baud_to_usart_and_updates_tpb() {
+        let (mut c, u_state, _) = make(BaudRate::B9600);
+        c.stage_baud(BaudRate::B3000000);
+        c.on_tx_complete();
+        assert_eq!(u_state.apply_baud_log(), alloc::vec![BaudRate::B3000000]);
+        assert_eq!(c.ticks_per_bit(), 16);
+    }
+
+    #[test]
+    fn on_tx_complete_is_noop_with_nothing_pending() {
+        let (mut c, u_state, t_state) = make(BaudRate::B9600);
+        c.on_tx_complete();
+        assert!(u_state.apply_baud_log().is_empty());
+        assert!(t_state.apply_ppm_log().is_empty());
+    }
+
+    // ---------- boot integrator ----------
+    //
+    // At B9600: tpb = 5000; boot batch = 6 pairs; drift_per_step_q8 =
+    // STEP_PPM · tpb · 6 · BITS_PER_FRAME · Q8_SCALE / 10⁶ = 2500 · 5000 · 6
+    // · 10 · 256 / 10⁶ = 192_000. Full-step boot deadband = 192_000.
+
+    const SPEC_9600: u16 = 5000;
+
+    #[test]
+    fn single_sample_does_not_stage_ppm() {
+        let mut c = clock_at(BaudRate::B9600);
+        feed(&mut c, SPEC_9600 + 40);
+        assert_eq!(c.pending_applied_ppm, None);
         assert_eq!(c.drift_samples, 1);
     }
 
     #[test]
-    fn batch_at_zero_drift_does_not_stage_trim() {
-        let mut c = clock(TEST_BAUD);
-        for _ in 0..DRIFT_MIN_SAMPLES {
-            feed(&mut c, SPEC);
+    fn boot_batch_at_zero_drift_stages_nothing() {
+        let mut c = clock_at(BaudRate::B9600);
+        for _ in 0..DRIFT_MIN_SAMPLES_BOOT {
+            feed(&mut c, SPEC_9600);
         }
-        assert_eq!(c.pending_trim_delta, None);
+        assert_eq!(c.pending_applied_ppm, None);
     }
 
     #[test]
-    fn batch_within_deadband_does_not_stage_trim() {
-        // delta=3 per sample → ~600 ppm, well under the ~1250 ppm half-step.
-        let mut c = clock(TEST_BAUD);
-        for _ in 0..DRIFT_MIN_SAMPLES {
-            feed(&mut c, SPEC + 3);
+    fn boot_batch_within_deadband_stages_nothing() {
+        // Per-sample drift = 40 (raw ticks); 6 · 40 · 256 = 61_440 <
+        // 192_000 full-step boot deadband.
+        let mut c = clock_at(BaudRate::B9600);
+        for _ in 0..DRIFT_MIN_SAMPLES_BOOT {
+            feed(&mut c, SPEC_9600 + 4);
         }
-        assert_eq!(c.pending_trim_delta, None);
+        assert_eq!(c.pending_applied_ppm, None);
     }
 
     #[test]
-    fn sustained_positive_drift_stages_trim_down() {
-        // delta=10 per sample → ~2000 ppm → above threshold; servo runs fast.
-        let mut c = clock(TEST_BAUD);
-        for _ in 0..DRIFT_MIN_SAMPLES {
-            feed(&mut c, SPEC + 10);
+    fn boot_batch_positive_drift_stages_negative_ppm() {
+        // Per-sample drift = 400; 6 · 400 · 256 = 614_400 > 192_000.
+        // drift_in_steps rounds to 3; counter = −3; nudge = −7500 ppm.
+        let mut c = clock_at(BaudRate::B9600);
+        for _ in 0..DRIFT_MIN_SAMPLES_BOOT {
+            feed(&mut c, SPEC_9600 + 40);
         }
-        assert_eq!(c.pending_trim_delta, Some(-1));
+        assert_eq!(c.pending_applied_ppm, Some(-7500));
     }
 
     #[test]
-    fn sustained_negative_drift_stages_trim_up() {
-        let mut c = clock(TEST_BAUD);
-        for _ in 0..DRIFT_MIN_SAMPLES {
-            feed(&mut c, SPEC - 10);
+    fn boot_batch_negative_drift_stages_positive_ppm() {
+        let mut c = clock_at(BaudRate::B9600);
+        for _ in 0..DRIFT_MIN_SAMPLES_BOOT {
+            feed(&mut c, SPEC_9600 - 40);
         }
-        assert_eq!(c.pending_trim_delta, Some(1));
+        assert_eq!(c.pending_applied_ppm, Some(7500));
     }
 
     #[test]
     fn integrator_resets_after_batch_close() {
-        let mut c = clock(TEST_BAUD);
-        for _ in 0..DRIFT_MIN_SAMPLES {
-            feed(&mut c, SPEC + 10);
+        let mut c = clock_at(BaudRate::B9600);
+        for _ in 0..DRIFT_MIN_SAMPLES_BOOT {
+            feed(&mut c, SPEC_9600 + 40);
         }
         assert_eq!(c.drift_sum_q8, 0);
         assert_eq!(c.drift_samples, 0);
     }
 
+    // ---------- envelope clamp ----------
+
     #[test]
-    fn clamp_holds_trim_at_upper_bound() {
-        let mut c = clock(TEST_BAUD);
-        c.trim_delta = MockClockTrim::DELTA_MAX;
-        for _ in 0..DRIFT_MIN_SAMPLES {
-            feed(&mut c, SPEC - 100); // would step trim up
+    fn upper_envelope_bound_clamps_positive_nudge() {
+        // Per-sample drift = −2000; 6 · −2000 · 256 = −3_072_000; magnitude
+        // matches 16 · drift_per_step_q8 → drift_in_steps = 16 (at emit cap
+        // ceiling), counter = +16, nudge = +40_000. Envelope upper bound
+        // 37_500 clamps → stage = Some(37_500).
+        let mut c = clock_at(BaudRate::B9600);
+        for _ in 0..DRIFT_MIN_SAMPLES_BOOT {
+            feed(&mut c, SPEC_9600 - 200);
         }
-        // At MAX already → clamp keeps new == current → no stage.
-        assert_eq!(c.pending_trim_delta, None);
+        assert_eq!(c.pending_applied_ppm, Some(MockClockTrim::ENVELOPE_PPM.1));
+    }
+
+    // ---------- boot → steady transition ----------
+
+    #[test]
+    fn samples_wanted_per_packet_reflects_phase() {
+        let mut c = clock_at(BaudRate::B9600);
+        assert_eq!(c.samples_wanted_per_packet(), BOOT_SAMPLES_PER_PACKET);
+        c.on_rx_packet_end();
+        assert_eq!(c.samples_wanted_per_packet(), STEADY_SAMPLES_PER_PACKET);
     }
 
     #[test]
-    fn out_of_window_byte_pair_is_dropped() {
-        // delta > 11·tpb → GAP class (e.g. inter-packet gap). The integrator
-        // must not see it — the pair callback driven by the classifier
-        // through `Codec::on_edge_advance` / `on_idle` doesn't pre-filter;
-        // that's this method's job.
-        let mut c = clock(TEST_BAUD);
-        // 12·SPEC = 60_000 → above hi=55_000.
-        c.on_byte_pair(0, 60_000);
-        assert_eq!(c.drift_samples, 0);
+    fn on_rx_packet_end_transitions_out_of_boot() {
+        let mut c = clock_at(BaudRate::B9600);
+        assert!(c.is_boot);
+        c.on_rx_packet_end();
+        assert!(!c.is_boot);
     }
 
     #[test]
-    fn under_window_byte_pair_is_dropped() {
-        // delta < 9·tpb → SKIP class (intra-byte edge). Same drop.
-        let mut c = clock(TEST_BAUD);
-        // 8·SPEC = 40_000 → below lo=45_000.
-        c.on_byte_pair(0, 40_000);
-        assert_eq!(c.drift_samples, 0);
-    }
-
-    #[test]
-    fn drift_threshold_q8_matches_formula() {
-        type C = Clock<MockUsartBaud, MockClockTrim>;
-        assert_eq!(C::drift_threshold_q8(16), 163);
-        assert_eq!(C::drift_threshold_q8(48), 491);
-        assert_eq!(C::drift_threshold_q8(5000), 51171);
-    }
-
-    #[test]
-    fn on_tx_complete_applies_staged_baud_to_usart() {
-        let mut c = clock(TEST_BAUD);
-        c.stage_baud(BaudRate::B3000000);
-        c.on_tx_complete();
-        assert_eq!(c.usart.log, [BaudRate::B3000000]);
-        assert_eq!(c.baud, BaudRate::B3000000);
-        assert_eq!(c.ticks_per_bit, 16);
-    }
-
-    #[test]
-    fn on_tx_complete_applies_staged_trim_to_rcc() {
-        let mut c = clock(TEST_BAUD);
-        for _ in 0..DRIFT_MIN_SAMPLES {
-            feed(&mut c, SPEC + 10);
+    fn steady_batch_closes_at_20_pairs_not_6() {
+        let mut c = clock_at(BaudRate::B9600);
+        c.on_rx_packet_end(); // boot → steady, integrator reset.
+        // 6 pairs at boot-trip drift no longer close a batch in steady.
+        for _ in 0..DRIFT_MIN_SAMPLES_BOOT {
+            feed(&mut c, SPEC_9600 + 40);
         }
-        // Sustained positive drift staged trim_delta = -1; commit it now.
-        c.on_tx_complete();
-        assert_eq!(c.trim.log, [-1]);
-        assert_eq!(c.trim_delta, -1);
+        assert_eq!(c.pending_applied_ppm, None);
+        // Fill to the 20-pair steady window; drift trips the (halved) deadband.
+        for _ in DRIFT_MIN_SAMPLES_BOOT..DRIFT_MIN_SAMPLES_STEADY {
+            feed(&mut c, SPEC_9600 + 40);
+        }
+        assert_eq!(c.pending_applied_ppm, Some(-7500));
+    }
+
+    // ---------- trim apply ----------
+
+    #[test]
+    fn on_rx_packet_end_applies_pending_ppm_to_trim() {
+        let (mut c, _, t_state) = make(BaudRate::B9600);
+        for _ in 0..DRIFT_MIN_SAMPLES_BOOT {
+            feed(&mut c, SPEC_9600 + 40);
+        }
+        assert_eq!(c.pending_applied_ppm, Some(-7500));
+        c.on_rx_packet_end();
+        assert_eq!(t_state.apply_ppm_log(), alloc::vec![-7500]);
+        assert_eq!(c.applied_ppm, -7500);
+        assert_eq!(c.pending_applied_ppm, None);
+    }
+
+    // ---------- bytes_to_ticks ----------
+
+    #[test]
+    fn bytes_to_ticks_at_1m_is_480_per_byte() {
+        // 10 bits · 48 tpb = 480 ticks / byte.
+        let c = clock_at(BaudRate::B1000000);
+        assert_eq!(c.bytes_to_ticks(1), 480);
+        assert_eq!(c.bytes_to_ticks(5), 2400);
     }
 
     #[test]
-    fn on_tx_complete_is_noop_with_nothing_pending() {
-        let mut c = clock(TEST_BAUD);
-        c.on_tx_complete();
-        assert!(c.usart.log.is_empty());
-        assert!(c.trim.log.is_empty());
+    fn bytes_to_ticks_at_3m_is_160_per_byte() {
+        let c = clock_at(BaudRate::B3000000);
+        assert_eq!(c.bytes_to_ticks(1), 160);
+        assert_eq!(c.bytes_to_ticks(3), 480);
+    }
+
+    // ---------- projected_phase_error_hclk ----------
+
+    #[test]
+    fn projected_phase_error_zero_with_no_residual() {
+        let c = clock_at(BaudRate::B9600);
+        assert_eq!(c.projected_phase_error_hclk(100_000), 0);
     }
 
     #[test]
-    fn bytes_to_us_at_1m_is_ten_us_per_byte() {
-        let c = clock(BaudRate::B1000000);
-        assert_eq!(c.bytes_to_us(1), 10);
-        assert_eq!(c.bytes_to_us(5), 50);
+    fn projected_phase_error_zero_at_zero_distance() {
+        let mut c = clock_at(BaudRate::B9600);
+        for _ in 0..DRIFT_MIN_SAMPLES_BOOT {
+            feed(&mut c, SPEC_9600 + 40);
+        }
+        assert_ne!(c.residual_q8, 0);
+        assert_eq!(c.projected_phase_error_hclk(0), 0);
     }
 
     #[test]
-    fn bytes_to_us_at_3m_truncates_to_three_us_per_byte() {
-        // 10 bits / 3 Mbaud = 3.33 µs/byte → 3 µs integer.
-        let c = clock(BaudRate::B3000000);
-        assert_eq!(c.bytes_to_us(1), 3);
-        assert_eq!(c.bytes_to_us(3), 10); // 9.99 µs → 9? actually (3*16*10*1e6/48e6)=10
-    }
+    fn projected_phase_error_sign_matches_residual() {
+        // Positive drift → positive drift_sum → integer quantization leaves a
+        // positive residual after the −3 emit; projected error is positive.
+        let mut c = clock_at(BaudRate::B9600);
+        for _ in 0..DRIFT_MIN_SAMPLES_BOOT {
+            feed(&mut c, SPEC_9600 + 40);
+        }
+        assert!(c.residual_q8 > 0);
+        assert!(c.projected_phase_error_hclk(100_000) > 0);
 
-    #[test]
-    fn bytes_to_us_q88_at_3m_preserves_sub_us_resolution() {
-        // (1 * 16 * 10 * 256_000_000 / 48_000_000) = 853 (Q8.8) ≈ 3.33 µs.
-        // Linear in bytes — no truncation accumulates across multipliers.
-        let c = clock(BaudRate::B3000000);
-        assert_eq!(c.bytes_to_us_q88(1), 853);
-        assert_eq!(c.bytes_to_us_q88(3), 2560);
+        let mut c = clock_at(BaudRate::B9600);
+        for _ in 0..DRIFT_MIN_SAMPLES_BOOT {
+            feed(&mut c, SPEC_9600 - 40);
+        }
+        assert!(c.residual_q8 < 0);
+        assert!(c.projected_phase_error_hclk(100_000) < 0);
     }
 }
