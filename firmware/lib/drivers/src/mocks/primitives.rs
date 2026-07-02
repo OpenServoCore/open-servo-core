@@ -1,7 +1,6 @@
 use mockall::mock;
 
-use crate::traits::{DigitalOut, Monotonic};
-use crate::types::Level;
+use crate::traits::{DigitalOut, Level, Monotonic};
 
 mock! {
     pub DigitalOut {}

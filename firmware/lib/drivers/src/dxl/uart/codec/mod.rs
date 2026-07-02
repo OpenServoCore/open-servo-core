@@ -24,8 +24,8 @@ use dxl_protocol::types::{Id, Slot, Status, StatusError};
 use dxl_protocol::{Chunk, CrcUmts, SlotEncoder, SlotPosition, StatusEncoder, WriteError};
 
 use super::BITS_PER_FRAME;
+use crate::ring::HwRing;
 use crate::traits::dxl::{EdgeDma, RxDma};
-use crate::util::HwRing;
 use rx::edge_parser::EDGES_PER_BYTE;
 use rx::{PollSrc, Rx};
 

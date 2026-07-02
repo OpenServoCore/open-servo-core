@@ -34,8 +34,8 @@ pub use edge_parser::{PollSrc, edge_buf_len};
 
 use core::cell::SyncUnsafeCell;
 
+use crate::ring::HwRing;
 use crate::traits::dxl::EdgeDma;
-use crate::util::HwRing;
 use edge_parser::EdgeParser;
 
 pub struct Rx<R: EdgeDma, const EDGE_BUF_LEN: usize> {

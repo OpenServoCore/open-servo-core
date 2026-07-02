@@ -20,7 +20,7 @@
 //! wire-edge time rather than IC-filter-output time.
 
 use crate::dxl::uart::BITS_PER_FRAME;
-use crate::util::HwRing;
+use crate::ring::HwRing;
 
 /// Falling-edge count per UART byte value, indexed by the byte. Edges
 /// come from `1→0` transitions in the bit stream
@@ -702,7 +702,7 @@ impl EdgeParser {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::util::HwRing;
+    use crate::ring::HwRing;
 
     // 3 Mbaud at HCLK 48 MHz → ticks_per_bit = 16. One byte = 160 ticks.
     const TPB_3M: u16 = 16;

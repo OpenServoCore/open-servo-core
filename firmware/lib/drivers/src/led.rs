@@ -5,8 +5,7 @@
 //! changes; the main loop calls [`Led::poll`] every iteration to advance
 //! the pin level by elapsed time.
 
-use crate::traits::{DigitalOut, Monotonic};
-use crate::types::Level;
+use crate::traits::{DigitalOut, Level, Monotonic};
 
 /// What the LED should be doing.
 #[derive(Copy, Clone, PartialEq, Eq)]

@@ -4,9 +4,8 @@
 pub mod dxl;
 pub mod led;
 pub mod log;
+pub mod ring;
 pub mod traits;
-pub mod types;
-pub mod util;
 
 #[cfg(any(test, feature = "mocks"))]
 extern crate std;
@@ -14,4 +13,4 @@ extern crate std;
 #[cfg(any(test, feature = "mocks"))]
 pub mod mocks;
 
-pub use types::Level;
+pub use traits::Level;
