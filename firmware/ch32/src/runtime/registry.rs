@@ -17,7 +17,7 @@ use osc_drivers::Level;
 use osc_drivers::dxl::uart::DxlUart;
 use osc_drivers::dxl::uart::clock::Clock;
 use osc_drivers::dxl::uart::codec::Codec;
-use osc_drivers::dxl::uart::codec::rx::edge_buf_len;
+use osc_drivers::dxl::uart::codec::edge_buf_len;
 use osc_drivers::dxl::uart::fast_last::FastLast;
 use osc_drivers::led::Led;
 use osc_drivers::traits::dxl::Providers;
@@ -66,7 +66,7 @@ impl Providers for DxlUartProviders {
 /// of two ≥ 32. V006 (48 MHz, 8 KiB SRAM) uses 32.
 pub(crate) const DXL_RX_BUF_LEN: usize = 32;
 /// DMA1_CH7 edge-timestamp ring depth, derived from [`DXL_RX_BUF_LEN`] via
-/// [`osc_drivers::dxl::uart::codec::rx::edge_buf_len`].
+/// [`osc_drivers::dxl::uart::codec::edge_buf_len`].
 pub(crate) const DXL_EDGE_BUF_LEN: usize = edge_buf_len(DXL_RX_BUF_LEN);
 /// DMA1_CH4 TX-source buffer depth — mirrors
 /// `osc_core::services::dxl::limits::DXL_TX_MAX_BYTES` so the driver-owned

@@ -20,6 +20,7 @@
 //! wire-edge time rather than IC-filter-output time.
 
 use crate::dxl::uart::BITS_PER_FRAME;
+use crate::dxl::uart::poll_src::PollSrc;
 use crate::ring::HwRing;
 
 /// Falling-edge count per UART byte value, indexed by the byte. Edges
@@ -30,8 +31,11 @@ use crate::ring::HwRing;
 ///
 /// Used by [`EdgeParser::anchor_at_tail`] to convert the parser's just-
 /// consumed tail-byte slice into an expected total edge count so the
-/// signature match locks against the exact per-byte edge pattern.
-pub const EDGES_PER_BYTE: [u8; 256] = {
+/// signature match locks against the exact per-byte edge pattern; codec
+/// reaches it through [`edges_in_byte`] to sum the `d_min` shift over
+/// bytes drained past CRC. Private — the table is the edge parser's own
+/// wire-model knowledge.
+const EDGES_PER_BYTE: [u8; 256] = {
     let mut t = [0u8; 256];
     let mut i = 0;
     while i < 256 {
@@ -41,6 +45,15 @@ pub const EDGES_PER_BYTE: [u8; 256] = {
     }
     t
 };
+
+/// Falling-edge count for one wire byte. The codec's tail-anchor
+/// back-search origin (`d_min`) sums this over the bytes DMA latched past
+/// CRC in the RX ring — those bytes' edges sit between the ET head and
+/// CRC's tail edge. Keeps [`EDGES_PER_BYTE`] private to the edge parser
+/// while the byte-ring iteration stays with the codec that owns that ring.
+pub(super) fn edges_in_byte(b: u8) -> u8 {
+    EDGES_PER_BYTE[b as usize]
+}
 
 /// Max entry in [`EDGES_PER_BYTE`]: start bit + four `1→0` transitions in
 /// alternating data bits (e.g. `0x55`, `0xAA`). Load-bearing in
@@ -71,25 +84,6 @@ const TAIL_STARTS: usize = 4;
 /// enough that spurious intra-byte edges outside the expected byte
 /// boundary don't spoof a HIT.
 const HSI_WALK_SNAP_BITS: u16 = 2;
-
-/// Which ISR delivered the current poll — DMA1_CH7 HT/TC or USART RX
-/// IDLE. Threaded through every classifier read that converts an ISR-
-/// entry `now` into a packet-relative tick:
-/// [`EdgeParser::packet_end_tick`] (anchored u16→u32 lift) and its
-/// fallback ([`EdgeParser::packet_end_tick_fallback`]). The two
-/// contexts have different elapsed-time relationships to the last data
-/// byte, so the formula downstream must pick the matching one.
-#[derive(Copy, Clone, Debug, PartialEq, Eq)]
-pub enum PollSrc {
-    /// Byte-ring HT/TC poll context. Bytes arrived steadily; the CRC byte
-    /// landed in DMA ~now (sub-µs ISR-entry latency aside) so `now` is the
-    /// packet-end estimate.
-    ByteBatch,
-    /// USART line-IDLE poll context. The wire has been quiet for one idle
-    /// character (`BITS_PER_FRAME` bit-times) so the last data byte ended
-    /// that long ago — back-date `now` by the idle gap.
-    LineIdle,
-}
 
 /// Minimum edge-ring depth (in `u16` slots, rounded up to a power of two)
 /// derived from the byte-ring size. Power-of-two so the chip-side

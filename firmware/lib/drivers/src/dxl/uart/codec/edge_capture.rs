@@ -3,19 +3,19 @@
 //! captured falling edges into the tail-anchor tick and the retroactive
 //! integrator walk.
 //!
-//! The Rx wrapper exposes four operations the codec drives:
+//! The EdgeCapture wrapper exposes four operations the codec drives:
 //!
-//! - [`Rx::on_idle`] and [`Rx::on_byte_batch_wake`] — ISR entries that
-//!   stash the wake tick for the Crc-time fallback path; `on_idle` also
-//!   publishes the ET producer head from NDTR.
-//! - [`Rx::anchor_at_tail`] — called at the parser's `Event::Crc`;
+//! - [`EdgeCapture::on_idle`] and [`EdgeCapture::on_byte_batch_wake`] — ISR
+//!   entries that stash the wake tick for the Crc-time fallback path;
+//!   `on_idle` also publishes the ET producer head from NDTR.
+//! - [`EdgeCapture::anchor_at_tail`] — called at the parser's `Event::Crc`;
 //!   back-searches the ET ring for the tail-byte signature at
 //!   `[d_min ..= d_min + PADDING_EDGES_AHEAD]` back from head, where the
 //!   codec-supplied `d_min` locates CRC's tail edge in ET. Sets the tail
 //!   anchor.
-//! - [`Rx::walk_pairs_back`] — called AFTER the wire-schedule call at the
-//!   parser's `Event::Crc`. Retroactively feeds the drift integrator so
-//!   the walk cost lives off the deadline path.
+//! - [`EdgeCapture::walk_pairs_back`] — called AFTER the wire-schedule call
+//!   at the parser's `Event::Crc`. Retroactively feeds the drift integrator
+//!   so the walk cost lives off the deadline path.
 //!
 //! Consumers read `packet_end_tick()` at parser Crc time.
 //!
@@ -27,18 +27,17 @@
 //! memory budget without touching driver code. The chip-facing knob is
 //! the byte-ring size; [`edge_buf_len`] derives the matching ET depth
 //! from it.
-
-pub mod edge_parser;
-
-pub use edge_parser::{PollSrc, edge_buf_len};
+//!
+//! [`edge_buf_len`]: super::edge_parser::edge_buf_len
 
 use core::cell::SyncUnsafeCell;
 
+use super::edge_parser::EdgeParser;
+use crate::dxl::uart::poll_src::PollSrc;
 use crate::ring::HwRing;
 use crate::traits::dxl::EdgeDma;
-use edge_parser::EdgeParser;
 
-pub struct Rx<R: EdgeDma, const EDGE_BUF_LEN: usize> {
+pub struct EdgeCapture<R: EdgeDma, const EDGE_BUF_LEN: usize> {
     parser: EdgeParser,
     /// DMA1_CH7's destination buffer. `SyncUnsafeCell` because the DMA
     /// engine writes it concurrently with the edge parser's reads — both
@@ -60,7 +59,7 @@ pub struct Rx<R: EdgeDma, const EDGE_BUF_LEN: usize> {
     last_isr: (u32, PollSrc),
 }
 
-impl<R: EdgeDma, const EDGE_BUF_LEN: usize> Rx<R, EDGE_BUF_LEN> {
+impl<R: EdgeDma, const EDGE_BUF_LEN: usize> EdgeCapture<R, EDGE_BUF_LEN> {
     pub const fn new(ring: R) -> Self {
         Self {
             parser: EdgeParser::new(),
@@ -72,7 +71,7 @@ impl<R: EdgeDma, const EDGE_BUF_LEN: usize> Rx<R, EDGE_BUF_LEN> {
 
     /// Stable peripheral-memory address for the DMA destination. Bringup
     /// hands this to `dma::configure(CH7, ...)`; the driver instance lives
-    /// in the registry's `SyncUnsafeCell<Option<Rx>>` so the address is
+    /// in the registry's `SyncUnsafeCell<Option<EdgeCapture>>` so the address is
     /// fixed for the lifetime of the program once `install` returns.
     /// [`HwRing::as_ptr`] returns the address of the first storage slot —
     /// the struct's outer address is offset by the bookkeeping fields.
@@ -126,7 +125,7 @@ impl<R: EdgeDma, const EDGE_BUF_LEN: usize> Rx<R, EDGE_BUF_LEN> {
     /// Back-search the ET ring for the just-received tail bytes' wire-edge
     /// signature. Codec calls at every parser `Event::Crc` with the last
     /// few raw wire bytes the parser consumed and `d_min` (summed
-    /// [`edge_parser::EDGES_PER_BYTE`] of bytes drained-but-not-yet-parsed
+    /// [`super::edge_parser::edges_in_byte`] of bytes drained-but-not-yet-parsed
     /// past CRC in the byte ring at Crc emit — the exact shift from ET
     /// head to CRC's tail edge). On match the edge parser's tail anchor
     /// is set to the CRC byte's start tick — what [`Self::packet_end_tick`]
@@ -147,7 +146,7 @@ impl<R: EdgeDma, const EDGE_BUF_LEN: usize> Rx<R, EDGE_BUF_LEN> {
 
     /// Retroactive integrator walk. Codec calls after the wire-schedule
     /// call at the parser's `Event::Crc` so the walk cost sits off the
-    /// deadline path. See [`edge_parser::EdgeParser::walk_pairs_back`].
+    /// deadline path. See [`super::edge_parser::EdgeParser::walk_pairs_back`].
     pub fn walk_pairs_back<const PAIRS_LEN: usize>(
         &self,
         n_pairs: u8,
@@ -170,7 +169,7 @@ impl<R: EdgeDma, const EDGE_BUF_LEN: usize> Rx<R, EDGE_BUF_LEN> {
 
     /// Fallback packet-end estimate for the no-anchor case — composite
     /// calls when [`packet_end_tick`](Self::packet_end_tick) returns `None`
-    /// at the Crc event. See [`edge_parser::EdgeParser::packet_end_tick_fallback`]
+    /// at the Crc event. See [`super::edge_parser::EdgeParser::packet_end_tick_fallback`]
     /// for the per-source formulas.
     pub fn packet_end_tick_fallback(&self, src: PollSrc, now: u32, ticks_per_bit: u16) -> u32 {
         self.parser
@@ -179,7 +178,7 @@ impl<R: EdgeDma, const EDGE_BUF_LEN: usize> Rx<R, EDGE_BUF_LEN> {
 
     /// Refresh the edge parser's per-baud RX edge-stamp compensation.
     /// Forwarded from the composite's `on_baud_change` event — see
-    /// [`edge_parser::EdgeParser::on_baud_change`].
+    /// [`super::edge_parser::EdgeParser::on_baud_change`].
     pub fn on_baud_change(&mut self, rx_edge_comp_ticks: u16) {
         self.parser.on_baud_change(rx_edge_comp_ticks);
     }

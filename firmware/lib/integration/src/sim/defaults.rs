@@ -6,7 +6,7 @@
 //! `tests/support.rs` — see the `matrix` rstest_reuse template.
 
 use osc_core::BaudRate;
-use osc_drivers::dxl::uart::codec::rx::edge_buf_len;
+use osc_drivers::dxl::uart::codec::edge_buf_len;
 
 use crate::sim::Clock;
 
@@ -55,7 +55,7 @@ pub const DEFAULT_RDT_NS: u64 = (DEFAULT_RDT_US as u64) * 1_000;
 pub const RX_BUF_LEN: usize = 32;
 
 /// Edge-DMA ring length, derived from [`RX_BUF_LEN`] via
-/// [`osc_drivers::dxl::uart::codec::rx::edge_buf_len`].
+/// [`osc_drivers::dxl::uart::codec::edge_buf_len`].
 pub const EDGE_BUF_LEN: usize = edge_buf_len(RX_BUF_LEN);
 
 /// TX-buffer length. Derived from

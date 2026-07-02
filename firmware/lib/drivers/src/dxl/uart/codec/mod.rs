@@ -14,7 +14,11 @@
 //! completion the sink sees [`PollEvent::SkipComplete`], at which point
 //! the chain-fire predecessor-match check rides.
 
-pub mod rx;
+mod edge_capture;
+mod edge_parser;
+
+pub use edge_capture::EdgeCapture;
+pub use edge_parser::edge_buf_len;
 
 use core::cell::SyncUnsafeCell;
 use core::marker::PhantomData;
@@ -24,10 +28,9 @@ use dxl_protocol::types::{Id, Slot, Status, StatusError};
 use dxl_protocol::{Chunk, CrcUmts, SlotEncoder, SlotPosition, StatusEncoder, WriteError};
 
 use super::BITS_PER_FRAME;
+use crate::dxl::uart::poll_src::PollSrc;
 use crate::ring::HwRing;
 use crate::traits::dxl::{EdgeDma, RxDma};
-use rx::edge_parser::EDGES_PER_BYTE;
-use rx::{PollSrc, Rx};
 
 /// Slack added past the byte-count-derived skip end, in wire bytes. Absorbs
 /// inter-byte gaps and HSI wobble within healthy streams so a deadline-
@@ -70,7 +73,7 @@ fn read_tail_and_d_min<const RX_BUF_LEN: usize>(
     let mut d_min: u16 = 0;
     for off in 0..head_gap {
         if let Some(&b) = rx_buf.recent(off) {
-            d_min = d_min.wrapping_add(EDGES_PER_BYTE[b as usize] as u16);
+            d_min = d_min.wrapping_add(edge_parser::edges_in_byte(b) as u16);
         }
     }
     Some((tail, d_min))
@@ -145,7 +148,7 @@ struct SkipState {
 /// the dispatcher a `&mut CodecTx` reply handle alongside the parser event
 /// stream the dispatcher is consuming.
 pub struct CodecRx<R: EdgeDma, CRC: CrcUmts, const RX_BUF_LEN: usize, const EDGE_BUF_LEN: usize> {
-    rx: Rx<R, EDGE_BUF_LEN>,
+    edge_capture: EdgeCapture<R, EDGE_BUF_LEN>,
     parser: Parser<CRC>,
     /// DMA1_CH5 destination for received bytes. `SyncUnsafeCell` because
     /// USART1's DMA writes it concurrently with the parser's reads — both
@@ -165,7 +168,7 @@ pub struct CodecRx<R: EdgeDma, CRC: CrcUmts, const RX_BUF_LEN: usize, const EDGE
     /// Whether the in-flight packet is an Instruction — set at the
     /// Instruction Header event, cleared at Status Header, cleared at
     /// packet boundary (Crc / Resync / SkipComplete). Gates
-    /// [`Rx::walk_pairs_back`] at Crc so Status frames never contribute
+    /// [`EdgeCapture::walk_pairs_back`] at Crc so Status frames never contribute
     /// drift samples per [[drift_sampling_instruction_only]].
     packet_is_instruction: bool,
     /// Universal byte-skip state. `Some` between a sink-requested
@@ -178,7 +181,7 @@ impl<R: EdgeDma, CRC: CrcUmts, const RX_BUF_LEN: usize, const EDGE_BUF_LEN: usiz
 {
     fn new(ring: R) -> Self {
         Self {
-            rx: Rx::new(ring),
+            edge_capture: EdgeCapture::new(ring),
             parser: Parser::new(),
             rx_buf: SyncUnsafeCell::new(HwRing::new(0)),
             instruction_count: 0,
@@ -191,7 +194,7 @@ impl<R: EdgeDma, CRC: CrcUmts, const RX_BUF_LEN: usize, const EDGE_BUF_LEN: usiz
     /// USART1 IDLE ISR entry — publishes the ET producer head, stashes
     /// the ISR-entry tick + LineIdle source for the Crc-time fallback path.
     pub fn on_idle(&mut self, now: u32) {
-        self.rx.on_idle(now);
+        self.edge_capture.on_idle(now);
     }
 
     /// USART1 RX DMA published progress — `remaining` is the channel's
@@ -211,7 +214,7 @@ impl<R: EdgeDma, CRC: CrcUmts, const RX_BUF_LEN: usize, const EDGE_BUF_LEN: usiz
     /// DMA1_CH5 HT/TC ISR entry — that vector drives the parser drain,
     /// so its wake tick is what Crc's fallback formula expects.
     pub fn on_byte_batch_wake(&mut self, now: u32) {
-        self.rx.record_wake_tick(now);
+        self.edge_capture.record_wake_tick(now);
     }
 
     /// Drain the RX byte ring through the streaming parser, fanning each
@@ -242,7 +245,7 @@ impl<R: EdgeDma, CRC: CrcUmts, const RX_BUF_LEN: usize, const EDGE_BUF_LEN: usiz
         pairs: &mut heapless::Vec<(u16, u16), PAIRS_LEN>,
         mut on_event: F,
     ) where
-        F: FnMut(PollEvent<'_>, &mut Rx<R, EDGE_BUF_LEN>) -> PollAction,
+        F: FnMut(PollEvent<'_>, &mut EdgeCapture<R, EDGE_BUF_LEN>) -> PollAction,
     {
         // SAFETY: rx_buf lives in a SyncUnsafeCell; this is the codec's
         // single consumer path. The reference is independent of any
@@ -277,7 +280,7 @@ impl<R: EdgeDma, CRC: CrcUmts, const RX_BUF_LEN: usize, const EDGE_BUF_LEN: usiz
                 }
                 let id = skip.id;
                 self.skip = None;
-                on_event(PollEvent::SkipComplete { id }, &mut self.rx);
+                on_event(PollEvent::SkipComplete { id }, &mut self.edge_capture);
                 // Foreign Instruction packets never emit a parser
                 // `Event::Crc` (parser byte-skipped past the tail), so
                 // anchor + retroactive walk piggyback here. Skip drain
@@ -295,12 +298,14 @@ impl<R: EdgeDma, CRC: CrcUmts, const RX_BUF_LEN: usize, const EDGE_BUF_LEN: usiz
                     let rx_buf = unsafe { &mut *rx_buf_ptr };
                     let head_gap = rx_buf.reader().avail();
                     if let Some((tail, d_min)) = read_tail_and_d_min(rx_buf, head_gap)
-                        && self.rx.anchor_at_tail(ticks_per_bit, &tail, d_min)
+                        && self
+                            .edge_capture
+                            .anchor_at_tail(ticks_per_bit, &tail, d_min)
                     {
-                        self.rx
+                        self.edge_capture
                             .walk_pairs_back(n_pairs_wanted, ticks_per_bit, pairs);
                     }
-                    self.rx.reset_anchor();
+                    self.edge_capture.reset_anchor();
                 }
                 self.packet_is_instruction = false;
                 continue;
@@ -392,7 +397,8 @@ impl<R: EdgeDma, CRC: CrcUmts, const RX_BUF_LEN: usize, const EDGE_BUF_LEN: usiz
                         let rx_buf = unsafe { &*rx_buf_ptr };
                         let head_gap = (avail_at_iter_start - stream.consumed() as usize) as u16;
                         if let Some((tail, d_min)) = read_tail_and_d_min(rx_buf, head_gap) {
-                            self.rx.anchor_at_tail(ticks_per_bit, &tail, d_min);
+                            self.edge_capture
+                                .anchor_at_tail(ticks_per_bit, &tail, d_min);
                         }
                     }
 
@@ -402,7 +408,7 @@ impl<R: EdgeDma, CRC: CrcUmts, const RX_BUF_LEN: usize, const EDGE_BUF_LEN: usiz
                             ring,
                             next_status_pos,
                         },
-                        &mut self.rx,
+                        &mut self.edge_capture,
                     ) {
                         PollAction::Continue => {}
                         PollAction::Skip { id } => {
@@ -423,9 +429,9 @@ impl<R: EdgeDma, CRC: CrcUmts, const RX_BUF_LEN: usize, const EDGE_BUF_LEN: usiz
                     // contribute drift samples ([[drift_sampling_instruction_only]]).
                     if matches!(ev, Event::Crc(_))
                         && self.packet_is_instruction
-                        && self.rx.tail_anchor().is_some()
+                        && self.edge_capture.tail_anchor().is_some()
                     {
-                        self.rx
+                        self.edge_capture
                             .walk_pairs_back(n_pairs_wanted, ticks_per_bit, pairs);
                     }
 
@@ -435,7 +441,7 @@ impl<R: EdgeDma, CRC: CrcUmts, const RX_BUF_LEN: usize, const EDGE_BUF_LEN: usiz
                         // Owned here (not in the driver's `on_event`) so
                         // `walk_pairs_back` above still sees the anchor
                         // set by `anchor_at_tail` for THIS packet.
-                        self.rx.reset_anchor();
+                        self.edge_capture.reset_anchor();
                     }
                 }
                 stream.consumed()
@@ -548,7 +554,7 @@ impl<R: EdgeDma, CRC: CrcUmts, const RX_BUF_LEN: usize, const EDGE_BUF_LEN: usiz
     /// Stable peripheral-memory address for DMA1_CH7's destination buffer.
     /// Bringup hands this to `dma::configure(CH7, ...)`.
     pub fn edges_addr(&self) -> usize {
-        self.rx.edges_addr()
+        self.edge_capture.edges_addr()
     }
 
     /// Stable peripheral-memory address for DMA1_CH5's destination buffer.
@@ -562,24 +568,25 @@ impl<R: EdgeDma, CRC: CrcUmts, const RX_BUF_LEN: usize, const EDGE_BUF_LEN: usiz
         unsafe { (*self.rx_buf.get()).as_ptr() as usize }
     }
 
-    /// Forward to [`rx::Rx::anchor_at_tail`].
+    /// Forward to [`edge_capture::EdgeCapture::anchor_at_tail`].
     pub fn anchor_at_tail(&mut self, ticks_per_bit: u16, tail_bytes: &[u8], d_min: u16) -> bool {
-        self.rx.anchor_at_tail(ticks_per_bit, tail_bytes, d_min)
+        self.edge_capture
+            .anchor_at_tail(ticks_per_bit, tail_bytes, d_min)
     }
 
-    /// Forward to [`rx::Rx::on_baud_change`].
+    /// Forward to [`edge_capture::EdgeCapture::on_baud_change`].
     pub fn on_baud_change(&mut self, rx_edge_comp_ticks: u16) {
-        self.rx.on_baud_change(rx_edge_comp_ticks);
+        self.edge_capture.on_baud_change(rx_edge_comp_ticks);
     }
 
-    /// Forward to [`rx::Rx::packet_end_tick`].
+    /// Forward to [`edge_capture::EdgeCapture::packet_end_tick`].
     pub fn packet_end_tick(&self, ticks_per_bit: u16, now: u32, src: PollSrc) -> Option<u32> {
-        self.rx.packet_end_tick(ticks_per_bit, now, src)
+        self.edge_capture.packet_end_tick(ticks_per_bit, now, src)
     }
 
-    /// Forward to [`rx::Rx::reset_anchor`].
+    /// Forward to [`edge_capture::EdgeCapture::reset_anchor`].
     pub fn reset_anchor(&mut self) {
-        self.rx.reset_anchor();
+        self.edge_capture.reset_anchor();
     }
 }
 
@@ -777,7 +784,7 @@ impl<
         pairs: &mut heapless::Vec<(u16, u16), PAIRS_LEN>,
         on_event: F,
     ) where
-        F: FnMut(PollEvent<'_>, &mut Rx<R, EDGE_BUF_LEN>) -> PollAction,
+        F: FnMut(PollEvent<'_>, &mut EdgeCapture<R, EDGE_BUF_LEN>) -> PollAction,
     {
         self.rx
             .poll(now, ticks_per_bit, n_pairs_wanted, pairs, on_event);
@@ -875,17 +882,17 @@ impl<R: EdgeDma, CRC: CrcUmts, const RX_BUF_LEN: usize, const EDGE_BUF_LEN: usiz
     }
 
     /// Stage ET-ring stamps matching `tail_bytes`' falling-edge signature so
-    /// [`Rx::anchor_at_tail`] resolves to `tail_anchor = anchor_tick` when
+    /// [`EdgeCapture::anchor_at_tail`] resolves to `tail_anchor = anchor_tick` when
     /// the codec's poll reaches the packet's Crc event. Returns the number
     /// of edge stamps written — the caller staggers `MockEdgeDma::remaining`
-    /// so [`Rx::publish_edges`] advances `write_seq` by that count.
+    /// so `EdgeCapture`'s edge publish advances `write_seq` by that count.
     pub(crate) fn stage_tail_signature_for_test(
         &mut self,
         tail_bytes: &[u8],
         ticks_per_bit: u16,
         anchor_tick: u16,
     ) -> u16 {
-        self.rx
+        self.edge_capture
             .stage_tail_signature_for_test(tail_bytes, ticks_per_bit, anchor_tick)
     }
 }

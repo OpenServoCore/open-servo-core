@@ -12,6 +12,9 @@
 pub mod clock;
 pub mod codec;
 pub mod fast_last;
+mod poll_src;
+
+pub use poll_src::PollSrc;
 
 #[cfg(test)]
 mod test_support;
@@ -25,7 +28,6 @@ use osc_core::{BaudRate, BootMode, DxlReply};
 
 use crate::traits::dxl::{Providers, RxDma, SendKind, TxBus, TxScheduler, WireClock};
 use clock::Clock;
-use codec::rx::PollSrc;
 use codec::{Codec, CodecTx, PollAction, PollEvent};
 use fast_last::{FastLast, FastLastSchedule};
 
@@ -52,7 +54,7 @@ struct ReplyContext {
     /// classifier at the parser's Crc-good event, or a fallback estimate
     /// when the classifier was unanchored (interference / edge loss).
     /// See
-    /// [`crate::dxl::uart::codec::rx::Classifier::packet_end_tick_fallback`].
+    /// `EdgeCapture::packet_end_tick_fallback`.
     packet_end_tick: u32,
     /// Wire-byte offset from request wire-end to this reply's fire moment.
     /// Zero for direct unicast; non-zero for broadcast Ping and

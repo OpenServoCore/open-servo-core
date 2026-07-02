@@ -20,7 +20,7 @@ mod drift_integrator;
 
 use osc_core::BaudRate;
 
-use crate::dxl::uart::codec::rx::PollSrc;
+use crate::dxl::uart::poll_src::PollSrc;
 use crate::traits::dxl::{ClockTrim, UsartBaud};
 use baud_cache::BaudCache;
 use drift_integrator::DriftIntegrator;
