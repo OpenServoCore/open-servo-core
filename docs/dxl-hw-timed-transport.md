@@ -102,7 +102,7 @@ This is the BT ring: byte-time, sized to match RX, indexed parallel.
 
 The fire trigger moves off SysTick onto a TIM2 compare event, but the actual register write stays in software. The fire-side critical action — `dma::enable(CH4)` — runs first, so wire-bit landing is unaffected by anything after it. For Plain replies the ISR has nothing else to do; body lands at ~0.3 µs MIN. Total fire floor: ~0.7 µs PFIC + ~0.3 µs body ≈ 1 µs MIN, comfortably under the 3.33 µs Fast-Last inter-slot cap at 3 Mbaud. Fast Last replies extend the body's tail (busy-wait for residue + fold + patch) but the wire bit has already left; tail timing is bounded by DMA1_CH4's prefetch slack on `tx_buf[len-2..len]`, not the wire fire. Not as good as a hardware-DMA fire (~100 ns) but enough to close the gap, and ADC stays on its existing DMA pump.
 
-**Bias compensation.** Measure CCR3-match → first-wire-bit latency on hardware and store its **1st-percentile lower bound** as `FIRE_BIAS_TICKS`. CCR3 is then armed at `fire_tick − FIRE_BIAS_TICKS`. MIN calibration (not mean) guarantees the wire bit always lands at or after `fire_tick`: PFIC variance and USART bit-clock alignment only push it later. The tradeoff is ~15 ticks (~312 ns at 3M) of mean lateness on the wire in exchange for a one-sided bound that lets §5.3 drop T_setup compensation entirely.
+**Bias compensation.** Measure CCR3-match → first-wire-bit latency on hardware and store `FIRE_BIAS_TICKS` (implemented as `TX_START_ENTRY_TICKS` in `firmware/ch32/src/measurements.rs`) calibrated so first-bit lands **slightly after** `fire_tick` — i.e. small positive wire excess at the p0.1 tail. CCR3 is then armed at `fire_tick − FIRE_BIAS_TICKS`. Positive excess (not "at or after") is the target because CCR2 fires TX_EN at `fire_tick` verbatim (§5.3); the transceiver + downstream RX (bench pirate at 3M) need TX_EN active *before* the first bit appears, or the leading `0xFF` gets lost in the direction-switch window. `tool-tune-tx-start` measures both signals — wire excess (ground truth) and any missing-leading-FF `DroppedLeadingFf` events (K-too-aggressive drops, direct evidence CCR2 raced first-bit).
 
 Jitter comes from same-priority IRQs running when CC3IF latches. In practice neither USART1 IDLE nor TC are active at fire-time (IDLE finished by `wire_end + RDT`; TC hasn't fired yet for the reply we're about to start). The fire IRQ's worst-case contention is the classifier.
 
@@ -126,16 +126,18 @@ No GPIO write from software at fire time. No ISR in the wire-edge path. The tran
 The two channels have different roles:
 
 - **CCR2 drives PC2 directly via hardware OC** — TX_EN asserts on hardware match. The pad lags CCR2 by ~2 ticks (CCxIF latch + OC mux + pad synchronizer); the external bus buffer (`SN74LVC2G241` tPZH ≤4.7 ns at 3.3 V) adds <1 tick on top.
-- **CCR3 raises CC3IF to trigger the fire ISR** — the lean ISR body enables DMA CH4 `FIRE_BIAS_TICKS` after CCR3 match (§5.1). Bias is sized to the *minimum* observed path, not the mean.
+- **CCR3 raises CC3IF to trigger the fire ISR** — the lean ISR body enables DMA CH4 `FIRE_BIAS_TICKS` after CCR3 match (§5.1). Bias is calibrated so first-bit lands slightly *after* `fire_tick` — small positive wire excess at the p0.1 tail.
 
 Composition:
 
-    CCR3 = fire_tick - FIRE_BIAS_TICKS       # ~46 ticks ≈ 960 ns at 3M
+    CCR3 = fire_tick - FIRE_BIAS_TICKS       # ~40 ticks ≈ 833 ns at 3M
     CCR2 = fire_tick                          # no offset
 
-No T_setup offset on CCR2. The ~2-tick OC pad latency means PC2 rises ~40 ns after `fire_tick`. Against the 333 ns bit-time at 3M, the buffer enables during the leading ~12% of the start bit; the bus pull-up (R17 = 10 kΩ on the schematic) holds DATA high during the brief hi-Z window; the receiver samples at mid-bit and reads the driven LOW. Invisible on the wire.
+No T_setup offset on CCR2. The `FIRE_BIAS_TICKS` calibration deliberately targets small positive wire excess (~0.5 µs median): first-bit lands after CCR2 has already activated TX_EN, so the transceiver + downstream RX see a clean start bit driven from an already-active buffer. TX_EN lead time is provided by the calibrated `FIRE_BIAS_TICKS`, not by a separate CCR2 offset — single knob, single measurement (wire excess).
 
-**Why no T_setup compensation?** MIN-calibrated `FIRE_BIAS_TICKS` guarantees the wire bit never appears before `fire_tick` — jitter only pushes it later, so there's no "wire bit early, TX_EN late" race. Shifting CCR2 earlier instead risks bus contention with the previous slave still releasing TX_EN; the asymmetric cost makes "late not early" the safe direction.
+**Why no T_setup compensation on CCR2?** `FIRE_BIAS_TICKS` calibration is the single knob that positions first-bit relative to TX_EN. A separate CCR2 offset would be redundant. Shifting CCR2 earlier also risks bus contention with the previous slave still releasing TX_EN; keeping CCR2 = fire_tick verbatim keeps that boundary clean.
+
+**Failure mode.** If `FIRE_BIAS_TICKS` is too large (K-too-aggressive), first-bit lands *at or before* CCR2 match; the buffer is still switching direction and the leading `0xFF` gets lost. `tool-tune-tx-start` detects this via [`bench::DroppedLeadingFf`] — a Status reply arriving as `FF FD 00 <id> …` instead of `FF FF FD 00 <id> …`. Any drop → K reduction, independent of the wire-excess distribution.
 
 **TE is set permanently at USART init.** The half-duplex (HDSEL) USART tristates its own TX driver between shifts, and the external buffer gates the bus via TX_EN regardless of TE state — leaving TE on doesn't drive the bus when idle. Per-fire the ISR only enables DMA CH4.
 
@@ -512,7 +514,7 @@ The CPU savings aren't load-bearing — §10's 25% peak leaves comfortable margi
 
 - **AFIO dual-remap stability.** F1 documentation is explicit about peripheral-side input dual-tap working; V006 RM is less so. Confirm by direct bench measurement.
 - **Capture filter setting per baud (§7).** Filter width must be < 1 bit-time at the operating baud; default `(fCK_INT/2, N=2)` for 3M. Compute alongside BRR; relax (heavier filter) at lower baud if bench shows noise immunity needs it.
-- **Fire-floor MIN measurement.** Measure CCR3-match → first-wire-bit at 3M on bench across many fires. Lock `FIRE_BIAS_TICKS` to the **1st-percentile lower bound** (not the mean) so the wire bit always lands at or after `fire_tick` — see §5.1 / §5.3. Placeholder estimate is ~46 ticks (~960 ns); confirm on hardware.
+- **Fire-floor calibration.** Measure CCR3-match → first-wire-bit at 3M on bench across many fires. Lock `FIRE_BIAS_TICKS` (`TX_START_ENTRY_TICKS` in the code) so first-bit lands *slightly after* `fire_tick` at the p0.1 tail — small positive wire excess so CCR2 activates TX_EN before first-bit appears (§5.1 / §5.3). Measured on osc-dev-v006 at 3M: 40 ticks (~833 ns).
 - **ET sizing + interval (§8.4 Option A vs B).** Default plan is 17-byte interval / ET depth = 128. Option B (12-byte interval / ET depth = 64) saves 128 B of SRAM at ~1% extra CPU. Decide based on memory pressure measured during integration.
 - **Fast Last CRC fold cost.** §10.6 estimates ~10 cyc/byte for CRC16 update. If the implementation lands closer to 20 cyc/byte, peak CPU during Fast Last RX climbs from ~54% to ~60%. Still well under the 75% spike target.
 - **Classifier-pending-at-catchup-entry race.** §10.6.3 proposes "mask + clear pending" at first SysTick catchup entry to defeat a classifier IRQ that latched right before the catchup ISR fired. Confirm the clear-pending write to `PFIC.IPRR.CH7` actually drops the latched IRQ on V006 (not just future ones).
