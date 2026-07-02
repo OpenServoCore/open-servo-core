@@ -198,4 +198,23 @@ impl<R: EdgeDma, const EDGE_BUF_LEN: usize> Rx<R, EDGE_BUF_LEN> {
     pub fn force_byte_tick_for_test(&mut self, tick: u16) {
         self.parser.force_byte_tick_for_test(tick);
     }
+
+    /// Stage falling-edge stamps into the ET ring so [`Self::anchor_at_tail`]
+    /// resolves to `tail_anchor = anchor_tick` for `tail_bytes`' signature.
+    /// Composite-test scaffolding — the caller staggers
+    /// `EdgeDma::remaining()` so the follow-up [`Self::publish_edges`]
+    /// advances `write_seq` by the returned count. Assumes
+    /// `rx_edge_comp_ticks = 0` on the edge parser (test setup).
+    #[cfg(test)]
+    pub fn stage_tail_signature_for_test(
+        &mut self,
+        tail_bytes: &[u8],
+        ticks_per_bit: u16,
+        anchor_tick: u16,
+    ) -> u16 {
+        // SAFETY: test-only mut access; no DMA in tests.
+        let edges = unsafe { &mut *self.edges.get() };
+        self.parser
+            .stage_tail_signature_for_test(edges, tail_bytes, ticks_per_bit, anchor_tick)
+    }
 }

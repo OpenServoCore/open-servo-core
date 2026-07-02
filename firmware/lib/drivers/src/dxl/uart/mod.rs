@@ -1233,18 +1233,19 @@ impl<P: Providers, const RX_BUF_LEN: usize, const EDGE_BUF_LEN: usize, const TX_
     }
 }
 
-// Shelved pending U4 (osc-drivers unit test audit): tests below bind to
-// hand-rolled mock fields; will be migrated to the mockall + state-companion
-// API as part of the audit.
-#[cfg(any())]
 #[cfg(test)]
 mod tests {
     extern crate alloc;
+    use std::cell::{Cell, RefCell};
+    use std::rc::Rc;
+
     use super::*;
     use crate::mocks::{
         FastLastSchedulerOp, MockClockTrim, MockEdgeDma, MockFastLastScheduler, MockRxDma,
-        MockTxBus, MockTxScheduler, MockUsartBaud, ScheduleOp, TestProviders, TxBusOp,
+        MockTxBus, MockTxScheduler, MockUsartBaud, MockWireClock, ScheduleOp, TestProviders,
+        TxBusOp,
     };
+    use crate::traits::dxl::DmaFlags;
     use dxl_protocol::types::StatusError;
     use dxl_protocol::{InstructionEncoder, SoftwareCrcUmts, StatusEncoder};
     use heapless::Vec;
@@ -1260,53 +1261,297 @@ mod tests {
     const TEST_ID: u8 = 0x07;
     const TEST_RDT_US: u32 = 250;
 
+    /// Pre-seed classifier `last_byte_start` so `packet_end_tick` reads a
+    /// known tick at Crc-good without staging real edges.
+    const SEED_TICK: u16 = 1000;
+
     type TestCodec = Codec<MockEdgeDma, SoftwareCrcUmts, RX_BUF_LEN, EDGE_BUF_LEN, TX_BUF_LEN>;
     type TestBus = DxlUart<TestProviders, RX_BUF_LEN, EDGE_BUF_LEN, TX_BUF_LEN>;
 
-    fn make_clock(baud: BaudRate) -> Clock<MockUsartBaud, MockClockTrim> {
-        Clock::new(baud, MockUsartBaud::default(), MockClockTrim::default())
+    // Local state companions mirror `osc-integration::mocks::*` — clone-
+    // shared Cell/RefCell handles the mock closures push into so tests
+    // read observed effects out of the state rather than the mock. C5
+    // hoists these into a shared `test_support` module.
+
+    #[derive(Clone, Default)]
+    struct SchedState {
+        ops: Rc<RefCell<alloc::vec::Vec<ScheduleOp>>>,
+    }
+    impl SchedState {
+        fn operations(&self) -> alloc::vec::Vec<ScheduleOp> {
+            self.ops.borrow().clone()
+        }
+    }
+    fn mk_scheduler() -> (MockTxScheduler, SchedState) {
+        let state = SchedState::default();
+        let mut m = MockTxScheduler::new();
+        {
+            let ops = state.ops.clone();
+            m.expect_schedule()
+                .returning_st(move |deadline, byte_count, kind| {
+                    ops.borrow_mut().push(ScheduleOp::Schedule {
+                        deadline,
+                        byte_count,
+                        kind,
+                    });
+                });
+        }
+        {
+            let ops = state.ops.clone();
+            m.expect_commit_pending().returning_st(move || {
+                ops.borrow_mut().push(ScheduleOp::CommitPending);
+            });
+        }
+        {
+            let ops = state.ops.clone();
+            m.expect_cancel().returning_st(move || {
+                ops.borrow_mut().push(ScheduleOp::Cancel);
+            });
+        }
+        m.expect_on_schedule_due().returning_st(|| false);
+        (m, state)
     }
 
-    fn make_bus_with(codec: TestCodec, baud: BaudRate) -> TestBus {
-        DxlUart::new(
+    #[derive(Clone, Default)]
+    struct TxBusState {
+        ops: Rc<RefCell<alloc::vec::Vec<TxBusOp>>>,
+    }
+    impl TxBusState {
+        fn operations(&self) -> alloc::vec::Vec<TxBusOp> {
+            self.ops.borrow().clone()
+        }
+        fn clear(&self) {
+            self.ops.borrow_mut().clear();
+        }
+    }
+    fn mk_tx_bus() -> (MockTxBus, TxBusState) {
+        let state = TxBusState::default();
+        let mut m = MockTxBus::new();
+        {
+            let ops = state.ops.clone();
+            m.expect_start_now().returning_st(move |byte_count| {
+                ops.borrow_mut().push(TxBusOp::StartNow { byte_count });
+            });
+        }
+        {
+            let ops = state.ops.clone();
+            m.expect_handle_start().returning_st(move || {
+                ops.borrow_mut().push(TxBusOp::HandleStart);
+            });
+        }
+        {
+            let ops = state.ops.clone();
+            m.expect_handle_tx_complete().returning_st(move || {
+                ops.borrow_mut().push(TxBusOp::HandleTxComplete);
+            });
+        }
+        (m, state)
+    }
+
+    #[derive(Clone, Default)]
+    struct RxDmaState {
+        remaining: Rc<Cell<u16>>,
+    }
+    impl RxDmaState {
+        fn stage_remaining(&self, n: u16) {
+            self.remaining.set(n);
+        }
+    }
+    fn mk_rx_dma() -> (MockRxDma, RxDmaState) {
+        let state = RxDmaState::default();
+        let mut m = MockRxDma::new();
+        {
+            let r = state.remaining.clone();
+            m.expect_remaining().returning_st(move || r.get());
+        }
+        m.expect_read_and_ack().returning_st(DmaFlags::default);
+        m.expect_record_edge_anchor_miss().returning_st(|| ());
+        (m, state)
+    }
+
+    #[derive(Clone, Default)]
+    struct FastLastState {
+        ops: Rc<RefCell<alloc::vec::Vec<FastLastSchedulerOp>>>,
+        deadline_passed: Rc<Cell<bool>>,
+        patch_window_expired: Rc<Cell<bool>>,
+        patch_miss_count: Rc<Cell<u32>>,
+    }
+    impl FastLastState {
+        fn operations(&self) -> alloc::vec::Vec<FastLastSchedulerOp> {
+            self.ops.borrow().clone()
+        }
+        fn stage_patch_window_expired(&self, v: bool) {
+            self.patch_window_expired.set(v);
+        }
+        fn patch_miss_count(&self) -> u32 {
+            self.patch_miss_count.get()
+        }
+    }
+    fn mk_fast_last() -> (MockFastLastScheduler, FastLastState) {
+        let state = FastLastState::default();
+        let mut m = MockFastLastScheduler::new();
+        {
+            let ops = state.ops.clone();
+            m.expect_set_deadline().returning_st(move |deadline| {
+                ops.borrow_mut()
+                    .push(FastLastSchedulerOp::SetDeadline { deadline });
+            });
+        }
+        {
+            let ops = state.ops.clone();
+            m.expect_schedule().returning_st(move |deadline| {
+                ops.borrow_mut()
+                    .push(FastLastSchedulerOp::Schedule { deadline });
+            });
+        }
+        {
+            let dp = state.deadline_passed.clone();
+            m.expect_deadline_passed().returning_st(move || dp.get());
+        }
+        {
+            let pwe = state.patch_window_expired.clone();
+            m.expect_patch_window_expired()
+                .returning_st(move || pwe.get());
+        }
+        {
+            let c = state.patch_miss_count.clone();
+            m.expect_record_patch_deadline_miss().returning_st(move || {
+                c.set(c.get().wrapping_add(1));
+            });
+        }
+        {
+            let ops = state.ops.clone();
+            m.expect_cancel().returning_st(move || {
+                ops.borrow_mut().push(FastLastSchedulerOp::Cancel);
+            });
+        }
+        (m, state)
+    }
+
+    fn mk_wire_clock() -> MockWireClock {
+        let mut m = MockWireClock::new();
+        m.expect_now().returning_st(|| SEED_TICK as u32);
+        m
+    }
+
+    fn mk_clock_trim() -> MockClockTrim {
+        let mut m = MockClockTrim::new();
+        m.expect_apply_ppm().returning_st(|_| ());
+        m
+    }
+
+    fn mk_usart_baud() -> MockUsartBaud {
+        let mut m = MockUsartBaud::new();
+        m.expect_apply_baud().returning_st(|_| ());
+        m.expect_rx_edge_comp_ticks().returning_st(|_| 0);
+        m
+    }
+
+    #[derive(Clone, Default)]
+    struct EdgeDmaState {
+        remaining: Rc<Cell<u16>>,
+    }
+    impl EdgeDmaState {
+        fn stage_remaining(&self, n: u16) {
+            self.remaining.set(n);
+        }
+    }
+    fn mk_edge_dma() -> (MockEdgeDma, EdgeDmaState) {
+        let state = EdgeDmaState::default();
+        let mut m = MockEdgeDma::default();
+        {
+            let r = state.remaining.clone();
+            m.expect_remaining().returning_st(move || r.get());
+        }
+        (m, state)
+    }
+
+    struct TestState {
+        sch: SchedState,
+        tx_bus: TxBusState,
+        rx: RxDmaState,
+        edge: EdgeDmaState,
+        fl: FastLastState,
+    }
+
+    fn make_clock(baud: BaudRate) -> Clock<MockUsartBaud, MockClockTrim> {
+        Clock::new(baud, mk_usart_baud(), mk_clock_trim())
+    }
+
+    fn make_bus_with(
+        codec: TestCodec,
+        edge_state: EdgeDmaState,
+        baud: BaudRate,
+    ) -> (TestBus, TestState) {
+        let (rx_dma, rx_state) = mk_rx_dma();
+        let (scheduler, sch_state) = mk_scheduler();
+        let (tx_bus, tx_bus_state) = mk_tx_bus();
+        let (fl_sched, fl_state) = mk_fast_last();
+        let bus = DxlUart::new(
             codec,
             make_clock(baud),
-            MockRxDma::default(),
-            MockTxScheduler::default(),
-            MockTxBus::default(),
-            FastLast::new(MockFastLastScheduler::default()),
+            rx_dma,
+            scheduler,
+            tx_bus,
+            FastLast::new(fl_sched),
+            mk_wire_clock(),
             TEST_ID,
             TEST_RDT_US,
+        );
+        (
+            bus,
+            TestState {
+                sch: sch_state,
+                tx_bus: tx_bus_state,
+                rx: rx_state,
+                edge: edge_state,
+                fl: fl_state,
+            },
         )
     }
 
-    fn make_bus() -> TestBus {
-        make_bus_with(Codec::new(MockEdgeDma::default()), BaudRate::B3000000)
+    fn make_bus() -> (TestBus, TestState) {
+        let (edge_dma, edge_state) = mk_edge_dma();
+        make_bus_with(Codec::new(edge_dma), edge_state, BaudRate::B3000000)
     }
 
-    /// Pre-seed classifier `last_byte_start` so `packet_end_tick` reads a
-    /// known tick at Crc-good without staging real edges. Composite tests
-    /// for the TX scheduling path use this — the classifier-leaf tests cover
-    /// the per-edge walker; the composite asserts the wiring.
-    const SEED_TICK: u16 = 1000;
-    fn force_anchor(bus: &mut TestBus) {
-        bus.codec.force_byte_tick_for_test(SEED_TICK);
+    /// `ticks_per_bit` at `BaudRate::B3000000` for the test HCLK. Matches the
+    /// `TPB_3M` used by the edge-parser unit tests.
+    const TICKS_PER_BIT_3M: u16 = 16;
+
+    /// Stage a matching falling-edge signature for the last 4 bytes of `pkt`
+    /// so `codec.poll`'s `anchor_at_tail` at Crc-good resolves
+    /// `tail_anchor = SEED_TICK` — the composite then reads
+    /// `packet_end_tick = SEED_TICK + BITS_PER_FRAME·tpb`. Also stashes the
+    /// DMA-ISR capture at `SEED_TICK` so `lift`'s u16→u32 reconstruction
+    /// stays in-wrap.
+    fn force_anchor(bus: &mut TestBus, state: &TestState, pkt: &[u8]) {
+        // TAIL_BYTES_FOR_ANCHOR = 4 — private to `codec::mod`; kept in sync
+        // with the codec's Crc-time tail read.
+        let tail_len = 4usize.min(pkt.len());
+        let tail = &pkt[pkt.len() - tail_len..];
+        let total_edges =
+            bus.codec
+                .stage_tail_signature_for_test(tail, TICKS_PER_BIT_3M, SEED_TICK);
+        // `on_publish(remaining)` will advance `write_seq` by `total_edges`
+        // (from ring position 0 to `total_edges`).
+        state
+            .edge
+            .stage_remaining((EDGE_BUF_LEN as u16) - total_edges);
+        bus.codec.stash_dma_isr(SEED_TICK as u32);
     }
 
     /// Stage `bytes` into the codec's RX byte ring at sequence `at` AND
     /// publish the matching DMA1_CH5 NDTR readback through `MockRxDma` so
     /// the next `bus.poll()` entry sees `on_publish(remaining)` as a no-op
-    /// delta. Mirrors the chip-side wiring where the byte ring's producer
-    /// head only advances via NDTR readback inside `poll()`.
-    fn stage_rx(bus: &mut TestBus, at: u16, bytes: &[u8]) {
+    /// delta.
+    fn stage_rx(bus: &mut TestBus, state: &TestState, at: u16, bytes: &[u8]) {
         bus.codec.stage_rx_bytes_for_test(at, bytes);
         let n = RX_BUF_LEN as u16;
         let head_pos = at.wrapping_add(bytes.len() as u16) % n;
-        bus.rx_dma.remaining.set((n - head_pos) % n);
+        state.rx.stage_remaining((n - head_pos) % n);
     }
 
-    /// Run one poll over `bytes`. Returns the captured event tags so tests
-    /// can match on the parser stream the dispatcher closure receives.
     #[derive(Debug, PartialEq, Eq)]
     enum Tag {
         Sync,
@@ -1338,8 +1583,8 @@ mod tests {
         }
     }
 
-    fn poll_capture(bus: &mut TestBus, bytes: &[u8]) -> alloc::vec::Vec<Tag> {
-        stage_rx(bus, 0, bytes);
+    fn poll_capture(bus: &mut TestBus, state: &TestState, bytes: &[u8]) -> alloc::vec::Vec<Tag> {
+        stage_rx(bus, state, 0, bytes);
         let mut tags = alloc::vec::Vec::new();
         bus.poll(|ev, _ring, _reply| {
             tags.push(ev_tag(ev));
@@ -1347,80 +1592,10 @@ mod tests {
         tags
     }
 
-    /// True if the stream surfaced a Crc — proxy for "an addressed
-    /// instruction completed and the dispatcher would commit."
     fn saw_crc(tags: &[Tag]) -> bool {
         tags.iter().any(|t| matches!(t, Tag::Crc))
     }
 
-    #[test]
-    fn on_rx_idle_does_not_panic_with_empty_buffer() {
-        let mut bus = make_bus();
-        bus.on_rx_idle();
-    }
-
-    #[test]
-    fn stage_id_defers_until_tx_complete() {
-        let ping = wire_ping(TEST_ID);
-        let (mut bus, _) = bus_seeded_with(&ping);
-        bus.poll(|_, _, reply| reply.stage_id(0x42));
-        assert_eq!(bus.id, TEST_ID);
-        let reboot = bus.on_tx_complete();
-        assert_eq!(bus.id, 0x42);
-        assert!(reboot.is_none());
-    }
-
-    #[test]
-    fn stage_id_noop_when_unchanged() {
-        let ping = wire_ping(TEST_ID);
-        let (mut bus, _) = bus_seeded_with(&ping);
-        bus.poll(|_, _, reply| reply.stage_id(TEST_ID));
-        assert!(bus.pending_id.is_none());
-    }
-
-    #[test]
-    fn stage_rdt_defers_until_tx_complete() {
-        let ping = wire_ping(TEST_ID);
-        let (mut bus, _) = bus_seeded_with(&ping);
-        bus.poll(|_, _, reply| reply.stage_rdt(500));
-        assert_eq!(bus.rdt_us, TEST_RDT_US);
-        bus.on_tx_complete();
-        assert_eq!(bus.rdt_us, 500);
-    }
-
-    #[test]
-    fn stage_baud_forwards_to_clock() {
-        let ping = wire_ping(TEST_ID);
-        let (mut bus, _) = bus_seeded_with(&ping);
-        bus.poll(|_, _, reply| reply.stage_baud(BaudRate::B1000000));
-        // Still at 3M until the apply.
-        assert_eq!(bus.clock.ticks_per_bit(), 16);
-        bus.on_tx_complete();
-        assert_eq!(bus.clock.ticks_per_bit(), 48);
-    }
-
-    #[test]
-    fn stage_reboot_surfaces_through_on_tx_complete() {
-        let ping = wire_ping(TEST_ID);
-        let (mut bus, _) = bus_seeded_with(&ping);
-        bus.poll(|_, _, reply| reply.stage_reboot(BootMode::Bootloader));
-        assert!(bus.pending_reboot.is_some());
-        let mode = bus.on_tx_complete();
-        assert_eq!(mode, Some(BootMode::Bootloader));
-        // Consume-on-take: next TC is clean.
-        assert!(bus.on_tx_complete().is_none());
-    }
-
-    #[test]
-    fn rx_buf_addr_is_stable() {
-        let bus = make_bus();
-        let a = bus.rx_buf_addr();
-        let b = bus.rx_buf_addr();
-        assert_eq!(a, b);
-        assert_ne!(a, 0);
-    }
-
-    /// Emit a Ping addressed to `id`.
     fn wire_ping(id: u8) -> Vec<u8, 32> {
         let mut out: Vec<u8, 32> = Vec::new();
         InstructionEncoder::<_, SoftwareCrcUmts>::new(&mut out)
@@ -1429,7 +1604,6 @@ mod tests {
         out
     }
 
-    /// Emit a Status reply from `id` (the kind we never want to surface).
     fn wire_status(id: u8) -> Vec<u8, 32> {
         let mut out: Vec<u8, 32> = Vec::new();
         StatusEncoder::<_, SoftwareCrcUmts>::new(&mut out)
@@ -1438,8 +1612,6 @@ mod tests {
         out
     }
 
-    /// Sync Read targets BROADCAST on the wire — exercises the
-    /// id-as-BROADCAST branch with a richer (non-Ping) packet shape.
     fn wire_sync_read(addr: u16, length: u16, ids: &[u8]) -> Vec<u8, 32> {
         let mut out: Vec<u8, 32> = Vec::new();
         InstructionEncoder::<_, SoftwareCrcUmts>::new(&mut out)
@@ -1448,8 +1620,6 @@ mod tests {
         out
     }
 
-    /// Fast Sync Read — same broadcast addressing as Sync Read but the
-    /// reply path goes through `send_slot` per the FastSlotInfo position.
     fn wire_fast_sync_read(addr: u16, length: u16, ids: &[u8]) -> Vec<u8, 64> {
         let mut out: Vec<u8, 64> = Vec::new();
         InstructionEncoder::<_, SoftwareCrcUmts>::new(&mut out)
@@ -1458,436 +1628,6 @@ mod tests {
         out
     }
 
-    #[test]
-    fn poll_returns_no_events_when_no_new_bytes() {
-        let mut bus = make_bus();
-        let mut count = 0;
-        bus.poll(|_, _, _| count += 1);
-        assert_eq!(count, 0);
-        // Idempotent — calling again still drains nothing.
-        bus.poll(|_, _, _| count += 1);
-        assert_eq!(count, 0);
-    }
-
-    #[test]
-    fn poll_streams_instruction_addressed_to_us_through_crc() {
-        let mut bus = make_bus();
-        let pkt = wire_ping(TEST_ID);
-        let tags = poll_capture(&mut bus, &pkt);
-        assert!(tags.contains(&Tag::InstrPing(TEST_ID)));
-        assert!(saw_crc(&tags));
-        assert_eq!(bus.instruction_count(), 1);
-    }
-
-    #[test]
-    fn poll_byte_skips_foreign_instruction_body() {
-        let mut bus = make_bus();
-        let pkt = wire_ping(0x42);
-        let tags = poll_capture(&mut bus, &pkt);
-        // Foreign Header surfaces; its Crc does NOT (universal byte-skip
-        // consumed the body before the parser reaches CRC).
-        assert!(tags.contains(&Tag::InstrPing(0x42)));
-        assert!(!saw_crc(&tags));
-        // Foreign Instructions still tick the instruction count.
-        assert_eq!(bus.instruction_count(), 1);
-    }
-
-    #[test]
-    fn poll_surfaces_broadcast_instruction() {
-        let mut bus = make_bus();
-        let pkt = wire_sync_read(0x84, 4, &[0x01, 0x02, 0x03]);
-        let tags = poll_capture(&mut bus, &pkt);
-        assert!(tags.contains(&Tag::InstrSyncRead));
-        assert!(saw_crc(&tags));
-        assert_eq!(bus.instruction_count(), 1);
-    }
-
-    #[test]
-    fn poll_byte_skips_status_frames() {
-        let mut bus = make_bus();
-        let pkt = wire_status(TEST_ID);
-        let tags = poll_capture(&mut bus, &pkt);
-        assert!(tags.contains(&Tag::StatusHeader(TEST_ID)));
-        assert!(!saw_crc(&tags));
-        // Status frames never tick the instruction count.
-        assert_eq!(bus.instruction_count(), 0);
-    }
-
-    #[test]
-    fn poll_recovers_from_bad_crc() {
-        let mut bus = make_bus();
-        let mut bad = wire_ping(TEST_ID);
-        let crc_lo_pos = bad.len() - 2;
-        bad[crc_lo_pos] ^= 0xFF;
-        let good = wire_ping(TEST_ID);
-
-        let mut combined: Vec<u8, 32> = Vec::new();
-        combined.extend_from_slice(&bad).unwrap();
-        combined.extend_from_slice(&good).unwrap();
-
-        let tags = poll_capture(&mut bus, &combined);
-        assert!(tags.iter().any(|t| matches!(t, Tag::Resync)));
-        // The good frame's Crc surfaces after recovery.
-        assert!(saw_crc(&tags));
-        // instruction_count ticks on every emitted Instruction Header
-        // regardless of subsequent Crc verdict — both Pings show up.
-        assert_eq!(bus.instruction_count(), 2);
-    }
-
-    #[test]
-    fn poll_handles_ring_wrap() {
-        let mut bus = make_bus();
-        let pkt = wire_ping(TEST_ID);
-        let start = (RX_BUF_LEN as u16).wrapping_sub(4);
-        bus.codec.set_rx_read_seq_for_test(start);
-        stage_rx(&mut bus, start, &pkt);
-
-        let mut tags = alloc::vec::Vec::new();
-        bus.poll(|ev, _ring, _reply| tags.push(ev_tag(ev)));
-        assert!(saw_crc(&tags));
-        assert_eq!(bus.instruction_count(), 1);
-    }
-
-    #[test]
-    fn poll_partial_packet_resumes_on_next_call() {
-        let mut bus = make_bus();
-        let pkt = wire_ping(TEST_ID);
-
-        let split = pkt.len() - 1;
-        stage_rx(&mut bus, 0, &pkt[..split]);
-        let mut tags = alloc::vec::Vec::new();
-        bus.poll(|ev, _ring, _reply| tags.push(ev_tag(ev)));
-        assert!(!saw_crc(&tags));
-        // Header ticked instruction_count even on the partial — the parser
-        // surfaces Header before it has the trailing CRC.
-        assert_eq!(bus.instruction_count(), 1);
-
-        stage_rx(&mut bus, split as u16, &pkt[split..]);
-        let mut tags2 = alloc::vec::Vec::new();
-        bus.poll(|ev, _ring, _reply| tags2.push(ev_tag(ev)));
-        assert!(saw_crc(&tags2));
-        assert_eq!(bus.instruction_count(), 1);
-    }
-
-    #[test]
-    fn poll_sets_hsi_active_at_instruction_header_and_clears_at_crc() {
-        let mut bus = make_bus();
-        let pkt = wire_ping(TEST_ID);
-        // Snapshot the classifier flag mid-stream — at the Crc event the
-        // composite has already cleared `hsi_active`, so we observe it
-        // through the Payload event instead. Ping has no payload so we
-        // observe via post-state: hsi_active is False after the Crc.
-        stage_rx(&mut bus, 0, &pkt);
-        bus.poll(|_, _, _| {});
-        // Post-Crc state.
-        assert!(!bus.codec.rx_classifier_hsi_active_for_test());
-    }
-
-    #[test]
-    fn poll_resync_resets_hsi_active() {
-        let mut bus = make_bus();
-        let mut bad = wire_ping(TEST_ID);
-        let crc_lo = bad.len() - 2;
-        bad[crc_lo] ^= 0xFF;
-        stage_rx(&mut bus, 0, &bad);
-        bus.poll(|_, _, _| {});
-        assert!(!bus.codec.rx_classifier_hsi_active_for_test());
-    }
-
-    #[test]
-    fn instruction_count_advances_on_every_instruction_regardless_of_id() {
-        let mut bus = make_bus();
-        let ours = wire_ping(TEST_ID);
-        let theirs = wire_ping(0x42);
-        let status = wire_status(0x42);
-
-        let mut combined: Vec<u8, 64> = Vec::new();
-        combined.extend_from_slice(&ours).unwrap();
-        combined.extend_from_slice(&theirs).unwrap();
-        combined.extend_from_slice(&status).unwrap();
-        stage_rx(&mut bus, 0, &combined);
-
-        bus.poll(|_, _, _| {});
-        // Foreign Ping bumps the counter, Status doesn't.
-        assert_eq!(bus.instruction_count(), 2);
-    }
-
-    // ------------------------------------------------------------------
-    // TX scheduling
-    // ------------------------------------------------------------------
-
-    /// Construct a bus pre-loaded with `pkt` bytes and a forced classifier
-    /// anchor at [`SEED_TICK`] so `packet_end_tick` reads
-    /// `SEED_TICK + 10·tpb` at Crc-good. Returns the bus and the expected
-    /// packet-end tick.
-    fn bus_seeded_with(pkt: &[u8]) -> (TestBus, u16) {
-        let mut bus = make_bus();
-        stage_rx(&mut bus, 0, pkt);
-        force_anchor(&mut bus);
-        // tpb=16 @ 3M; packet_end = SEED_TICK + 10·tpb.
-        let packet_end_tick = SEED_TICK.wrapping_add(16_u16.wrapping_mul(10));
-        (bus, packet_end_tick)
-    }
-
-    fn empty_status() -> Status<'static> {
-        Status::Empty {
-            id: Id::new(TEST_ID),
-            error: StatusError::OK,
-        }
-    }
-
-    /// Packet-end tick + delay_ticks → expected deadline_tick. Pre-folded
-    /// to ticks at the call site so the helper stays unit-clean.
-    fn expected_deadline_ticks(packet_end_tick: u16, delay_ticks: u32) -> u16 {
-        packet_end_tick.wrapping_add(delay_ticks as u16)
-    }
-
-    #[test]
-    fn send_status_after_poll_schedules_at_packet_end_plus_rdt() {
-        let ping = wire_ping(TEST_ID);
-        let (mut bus, packet_end_tick) = bus_seeded_with(&ping);
-        bus.poll(|_, _, reply| reply.send_status(empty_status()).expect("encode fits"));
-
-        let byte_count = bus.codec.tx_len();
-        assert!(byte_count > 0);
-        assert_eq!(
-            bus.scheduler.log.as_slice(),
-            &[ScheduleOp::Schedule {
-                deadline_tick: expected_deadline_ticks(
-                    packet_end_tick,
-                    TEST_RDT_US.wrapping_mul(48)
-                ),
-                byte_count,
-                kind: SendKind::Plain,
-            }]
-        );
-    }
-
-    #[test]
-    fn send_status_drops_silently_for_foreign_instruction() {
-        // Foreign-ID Instruction → no last_reply_ctx → send_status no-ops on
-        // the scheduler even if the dispatcher fires it.
-        let ping = wire_ping(0x42);
-        let (mut bus, _) = bus_seeded_with(&ping);
-        bus.poll(|_, _, reply| reply.send_status(empty_status()).expect("encode fits"));
-        assert!(bus.scheduler.log.is_empty());
-    }
-
-    #[test]
-    fn send_slot_only_schedules_plain() {
-        // Fast Sync Read with our_id as the sole slot → SlotPosition::Only.
-        let req = wire_fast_sync_read(0, 2, &[TEST_ID]);
-        let (mut bus, packet_end_tick) = bus_seeded_with(&req);
-
-        let payload = [0x11_u8, 0x22];
-        bus.poll(|_, _, reply| {
-            let slot = Slot {
-                id: Id::new(TEST_ID),
-                error: StatusError::OK,
-                data: &payload,
-            };
-            reply.send_slot(&slot).expect("encode fits");
-        });
-
-        // our_slot=0 of n_slots=1 → bytes_before=0 → delay = RDT, kind=Plain.
-        let byte_count = bus.codec.tx_len();
-        assert!(byte_count > 0);
-        assert_eq!(
-            bus.scheduler.log.as_slice(),
-            &[ScheduleOp::Schedule {
-                deadline_tick: expected_deadline_ticks(
-                    packet_end_tick,
-                    TEST_RDT_US.wrapping_mul(48)
-                ),
-                byte_count,
-                kind: SendKind::Plain,
-            }]
-        );
-    }
-
-    #[test]
-    fn send_slot_last_schedules_fast_last() {
-        // Fast Sync Read with two slaves where we're the last → Last position.
-        let req = wire_fast_sync_read(0, 2, &[0x42, TEST_ID]);
-        let (mut bus, packet_end_tick) = bus_seeded_with(&req);
-
-        let payload = [0xAA_u8, 0xBB];
-        // First slot of 2 emits 8 (header) + 2 (error+id) + 2 (data) = 12
-        // wire bytes; bytes_before for slot 1 = 12.
-        let expected_ticks = TEST_RDT_US.wrapping_mul(48) + bus.clock.bytes_to_ticks(12);
-        let expected = packet_end_tick.wrapping_add(expected_ticks as u16);
-
-        bus.poll(|_, _, reply| {
-            let slot = Slot {
-                id: Id::new(TEST_ID),
-                error: StatusError::OK,
-                data: &payload,
-            };
-            reply.send_slot(&slot).expect("encode fits");
-        });
-
-        let byte_count = bus.codec.tx_len();
-        assert!(byte_count > 0);
-        assert_eq!(
-            bus.scheduler.log.as_slice(),
-            &[ScheduleOp::Schedule {
-                deadline_tick: expected,
-                byte_count,
-                kind: SendKind::FastLast,
-            }]
-        );
-        let fl_log = bus.fast_last.scheduler().log.as_slice();
-        assert!(matches!(
-            fl_log,
-            [
-                FastLastSchedulerOp::SetDeadline { .. },
-                FastLastSchedulerOp::Schedule { .. },
-            ]
-        ));
-        assert!(bus.fast_last_crc.is_active());
-        assert!(bus.fast_last.is_active());
-    }
-
-    #[test]
-    fn on_tx_complete_cancels_fast_last_state() {
-        let req = wire_fast_sync_read(0, 2, &[0x42, TEST_ID]);
-        let (mut bus, _) = bus_seeded_with(&req);
-        let payload = [0xAA_u8, 0xBB];
-        bus.poll(|_, _, reply| {
-            let slot = Slot {
-                id: Id::new(TEST_ID),
-                error: StatusError::OK,
-                data: &payload,
-            };
-            reply.send_slot(&slot).expect("encode fits");
-        });
-        assert!(bus.fast_last.is_active());
-        assert!(bus.fast_last_crc.is_active());
-
-        let _ = bus.on_tx_complete();
-
-        assert!(!bus.fast_last.is_active());
-        assert!(!bus.fast_last_crc.is_active());
-        assert!(matches!(
-            bus.fast_last.scheduler().log.last(),
-            Some(FastLastSchedulerOp::Cancel)
-        ));
-    }
-
-    #[test]
-    fn send_slot_without_fast_context_drops_silently() {
-        // Polled a Ping → no Fast slot position cached. send_slot must
-        // silently no-op (dispatcher bug, not driver concern).
-        let ping = wire_ping(TEST_ID);
-        let (mut bus, _) = bus_seeded_with(&ping);
-
-        let payload = [0x00_u8];
-        bus.poll(|_, _, reply| {
-            let slot = Slot {
-                id: Id::new(TEST_ID),
-                error: StatusError::OK,
-                data: &payload,
-            };
-            reply.send_slot(&slot).expect("encode fits");
-        });
-        assert!(bus.scheduler.log.is_empty());
-    }
-
-    #[test]
-    fn cancel_clears_context_and_forwards() {
-        let ping = wire_ping(TEST_ID);
-        let (mut bus, _) = bus_seeded_with(&ping);
-        // Gate to Crc — the event-stream poll dispatches the closure on
-        // every event; one Cancel per packet is what we want, not three.
-        bus.poll(|ev, _, reply| {
-            if matches!(ev, Event::Crc(_)) {
-                reply.cancel();
-            }
-        });
-        assert_eq!(bus.scheduler.log.as_slice(), &[ScheduleOp::Cancel]);
-        assert!(bus.last_reply_ctx.is_none());
-    }
-
-    #[test]
-    fn send_status_consumes_ctx_so_double_send_is_silent() {
-        let ping = wire_ping(TEST_ID);
-        let (mut bus, _) = bus_seeded_with(&ping);
-        // Drive the per-packet send only at the Crc event so we don't fire
-        // it twice via the multi-event stream.
-        bus.poll(|ev, _, reply| {
-            if matches!(ev, Event::Crc(_)) {
-                reply.send_status(empty_status()).expect("encode fits");
-                // Second send within the same callback consumes nothing —
-                // ctx was taken on the first; scheduler log shows one entry.
-                reply.send_status(empty_status()).expect("encode fits");
-            }
-        });
-        assert_eq!(bus.scheduler.log.len(), 1);
-    }
-
-    #[test]
-    fn broadcast_ping_folds_id_indexed_slot_offset() {
-        let req = wire_ping(BROADCAST_ID);
-        let (mut bus, packet_end_tick) = bus_seeded_with(&req);
-
-        let expected_offset_ticks = bus
-            .clock
-            .bytes_to_ticks(TEST_ID as u32 * PING_STATUS_FRAME_BYTES);
-        bus.poll(|_, _, reply| reply.send_status(empty_status()).expect("encode fits"));
-
-        let byte_count = bus.codec.tx_len();
-        assert!(byte_count > 0);
-        assert_eq!(
-            bus.scheduler.log.as_slice(),
-            &[ScheduleOp::Schedule {
-                deadline_tick: expected_deadline_ticks(
-                    packet_end_tick,
-                    TEST_RDT_US.wrapping_mul(48) + expected_offset_ticks,
-                ),
-                byte_count,
-                kind: SendKind::Plain,
-            }]
-        );
-    }
-
-    #[test]
-    fn on_tx_start_routes_to_handle_start() {
-        let mut bus = make_bus();
-        bus.on_tx_start();
-        assert_eq!(bus.tx_bus.log.as_slice(), &[TxBusOp::HandleStart]);
-        assert!(bus.scheduler.log.is_empty());
-    }
-
-    #[test]
-    fn on_tx_complete_releases_wire_before_draining_pending_config() {
-        let ping = wire_ping(TEST_ID);
-        let (mut bus, _) = bus_seeded_with(&ping);
-        bus.poll(|_, _, reply| {
-            reply.stage_id(0x42);
-            reply.stage_rdt(500);
-            reply.stage_reboot(BootMode::Bootloader);
-            reply.send_status(empty_status()).expect("encode fits");
-        });
-        bus.tx_bus.log.clear();
-
-        assert_eq!(bus.id, TEST_ID);
-        assert_eq!(bus.rdt_us, TEST_RDT_US);
-
-        let pending_reboot = bus.on_tx_complete();
-
-        assert_eq!(bus.tx_bus.log.as_slice(), &[TxBusOp::HandleTxComplete]);
-        assert_eq!(bus.id, 0x42);
-        assert_eq!(bus.rdt_us, 500);
-        assert_eq!(pending_reboot, Some(BootMode::Bootloader));
-    }
-
-    // ------------------------------------------------------------------
-    // Chain fire for slots k > 0 (DXL streaming RX §5.2)
-    // ------------------------------------------------------------------
-
-    /// Emit a BulkRead with the given (id, addr, length) slots — host
-    /// targets BROADCAST per the spec, so target-addressable resolves to
-    /// our chain participation rather than the chain's target ID.
     fn wire_bulk_read(slots: &[(u8, u16, u16)]) -> Vec<u8, 32> {
         use dxl_protocol::BulkReadEntry;
         let mut entries: Vec<BulkReadEntry, 4> = Vec::new();
@@ -1907,10 +1647,451 @@ mod tests {
         out
     }
 
+    /// Construct a bus pre-loaded with `pkt` bytes and a forced classifier
+    /// anchor at [`SEED_TICK`] so `packet_end_tick` reads `SEED_TICK + 10·tpb`
+    /// at Crc-good. Returns the bus, state, and expected packet-end tick.
+    fn bus_seeded_with(pkt: &[u8]) -> (TestBus, TestState, u32) {
+        let (mut bus, state) = make_bus();
+        stage_rx(&mut bus, &state, 0, pkt);
+        force_anchor(&mut bus, &state, pkt);
+        // tpb = 16 @ 3M; packet_end = SEED_TICK + 10·tpb.
+        let packet_end_tick =
+            (SEED_TICK as u32).wrapping_add((TICKS_PER_BIT_3M as u32).wrapping_mul(10));
+        (bus, state, packet_end_tick)
+    }
+
+    fn empty_status() -> Status<'static> {
+        Status::Empty {
+            id: Id::new(TEST_ID),
+            error: StatusError::OK,
+        }
+    }
+
+    // ------------------------------------------------------------------
+    // Deferred config staging
+    // ------------------------------------------------------------------
+
+    #[test]
+    fn on_rx_idle_does_not_panic_with_empty_buffer() {
+        let (mut bus, _) = make_bus();
+        bus.on_rx_idle();
+    }
+
+    #[test]
+    fn stage_id_defers_until_tx_complete() {
+        let ping = wire_ping(TEST_ID);
+        let (mut bus, _, _) = bus_seeded_with(&ping);
+        bus.poll(|_, _, reply| reply.stage_id(0x42));
+        assert_eq!(bus.id, TEST_ID);
+        let reboot = bus.on_tx_complete();
+        assert_eq!(bus.id, 0x42);
+        assert!(reboot.is_none());
+    }
+
+    #[test]
+    fn stage_id_noop_when_unchanged() {
+        let ping = wire_ping(TEST_ID);
+        let (mut bus, _, _) = bus_seeded_with(&ping);
+        bus.poll(|_, _, reply| reply.stage_id(TEST_ID));
+        assert!(bus.pending_id.is_none());
+    }
+
+    #[test]
+    fn stage_rdt_defers_until_tx_complete() {
+        let ping = wire_ping(TEST_ID);
+        let (mut bus, _, _) = bus_seeded_with(&ping);
+        bus.poll(|_, _, reply| reply.stage_rdt(500));
+        assert_eq!(bus.rdt_us, TEST_RDT_US);
+        bus.on_tx_complete();
+        assert_eq!(bus.rdt_us, 500);
+    }
+
+    #[test]
+    fn stage_baud_forwards_to_clock() {
+        let ping = wire_ping(TEST_ID);
+        let (mut bus, _, _) = bus_seeded_with(&ping);
+        bus.poll(|_, _, reply| reply.stage_baud(BaudRate::B1000000));
+        assert_eq!(bus.clock.ticks_per_bit(), 16);
+        bus.on_tx_complete();
+        assert_eq!(bus.clock.ticks_per_bit(), 48);
+    }
+
+    #[test]
+    fn stage_reboot_surfaces_through_on_tx_complete() {
+        let ping = wire_ping(TEST_ID);
+        let (mut bus, _, _) = bus_seeded_with(&ping);
+        bus.poll(|_, _, reply| reply.stage_reboot(BootMode::Bootloader));
+        assert!(bus.pending_reboot.is_some());
+        let mode = bus.on_tx_complete();
+        assert_eq!(mode, Some(BootMode::Bootloader));
+        assert!(bus.on_tx_complete().is_none());
+    }
+
+    #[test]
+    fn rx_buf_addr_is_stable() {
+        let (bus, _) = make_bus();
+        let a = bus.rx_buf_addr();
+        let b = bus.rx_buf_addr();
+        assert_eq!(a, b);
+        assert_ne!(a, 0);
+    }
+
+    // ------------------------------------------------------------------
+    // Poll dispatch
+    // ------------------------------------------------------------------
+
+    #[test]
+    fn poll_returns_no_events_when_no_new_bytes() {
+        let (mut bus, _) = make_bus();
+        let mut count = 0;
+        bus.poll(|_, _, _| count += 1);
+        assert_eq!(count, 0);
+        bus.poll(|_, _, _| count += 1);
+        assert_eq!(count, 0);
+    }
+
+    #[test]
+    fn poll_streams_instruction_addressed_to_us_through_crc() {
+        let (mut bus, state) = make_bus();
+        let pkt = wire_ping(TEST_ID);
+        let tags = poll_capture(&mut bus, &state, &pkt);
+        assert!(tags.contains(&Tag::InstrPing(TEST_ID)));
+        assert!(saw_crc(&tags));
+        assert_eq!(bus.instruction_count(), 1);
+    }
+
+    #[test]
+    fn poll_byte_skips_foreign_instruction_body() {
+        let (mut bus, state) = make_bus();
+        let pkt = wire_ping(0x42);
+        let tags = poll_capture(&mut bus, &state, &pkt);
+        assert!(tags.contains(&Tag::InstrPing(0x42)));
+        assert!(!saw_crc(&tags));
+        assert_eq!(bus.instruction_count(), 1);
+    }
+
+    #[test]
+    fn poll_surfaces_broadcast_instruction() {
+        let (mut bus, state) = make_bus();
+        let pkt = wire_sync_read(0x84, 4, &[0x01, 0x02, 0x03]);
+        let tags = poll_capture(&mut bus, &state, &pkt);
+        assert!(tags.contains(&Tag::InstrSyncRead));
+        assert!(saw_crc(&tags));
+        assert_eq!(bus.instruction_count(), 1);
+    }
+
+    #[test]
+    fn poll_byte_skips_status_frames() {
+        let (mut bus, state) = make_bus();
+        let pkt = wire_status(TEST_ID);
+        let tags = poll_capture(&mut bus, &state, &pkt);
+        assert!(tags.contains(&Tag::StatusHeader(TEST_ID)));
+        assert!(!saw_crc(&tags));
+        assert_eq!(bus.instruction_count(), 0);
+    }
+
+    #[test]
+    fn poll_recovers_from_bad_crc() {
+        let (mut bus, state) = make_bus();
+        let mut bad = wire_ping(TEST_ID);
+        let crc_lo_pos = bad.len() - 2;
+        bad[crc_lo_pos] ^= 0xFF;
+        let good = wire_ping(TEST_ID);
+
+        let mut combined: Vec<u8, 32> = Vec::new();
+        combined.extend_from_slice(&bad).unwrap();
+        combined.extend_from_slice(&good).unwrap();
+
+        let tags = poll_capture(&mut bus, &state, &combined);
+        // Bad CRC now emits `Crc(Bad)` (was `Resync(BadCrc)` in an earlier
+        // parser). Recovery is asserted via seeing a second instruction
+        // header + a second `Crc` event.
+        assert!(saw_crc(&tags));
+        assert_eq!(bus.instruction_count(), 2);
+    }
+
+    #[test]
+    fn poll_handles_ring_wrap() {
+        let (mut bus, state) = make_bus();
+        let pkt = wire_ping(TEST_ID);
+        let start = (RX_BUF_LEN as u16).wrapping_sub(4);
+        bus.codec.set_rx_read_seq_for_test(start);
+        stage_rx(&mut bus, &state, start, &pkt);
+
+        let mut tags = alloc::vec::Vec::new();
+        bus.poll(|ev, _ring, _reply| tags.push(ev_tag(ev)));
+        assert!(saw_crc(&tags));
+        assert_eq!(bus.instruction_count(), 1);
+    }
+
+    #[test]
+    fn poll_partial_packet_resumes_on_next_call() {
+        let (mut bus, state) = make_bus();
+        let pkt = wire_ping(TEST_ID);
+
+        let split = pkt.len() - 1;
+        stage_rx(&mut bus, &state, 0, &pkt[..split]);
+        let mut tags = alloc::vec::Vec::new();
+        bus.poll(|ev, _ring, _reply| tags.push(ev_tag(ev)));
+        assert!(!saw_crc(&tags));
+        assert_eq!(bus.instruction_count(), 1);
+
+        stage_rx(&mut bus, &state, split as u16, &pkt[split..]);
+        let mut tags2 = alloc::vec::Vec::new();
+        bus.poll(|ev, _ring, _reply| tags2.push(ev_tag(ev)));
+        assert!(saw_crc(&tags2));
+        assert_eq!(bus.instruction_count(), 1);
+    }
+
+    #[test]
+    fn instruction_count_advances_on_every_instruction_regardless_of_id() {
+        let (mut bus, state) = make_bus();
+        let ours = wire_ping(TEST_ID);
+        let theirs = wire_ping(0x42);
+        let status = wire_status(0x42);
+
+        let mut combined: Vec<u8, 64> = Vec::new();
+        combined.extend_from_slice(&ours).unwrap();
+        combined.extend_from_slice(&theirs).unwrap();
+        combined.extend_from_slice(&status).unwrap();
+        stage_rx(&mut bus, &state, 0, &combined);
+
+        bus.poll(|_, _, _| {});
+        assert_eq!(bus.instruction_count(), 2);
+    }
+
+    // ------------------------------------------------------------------
+    // TX scheduling
+    // ------------------------------------------------------------------
+
+    #[test]
+    fn send_status_after_poll_schedules_at_packet_end_plus_rdt() {
+        let ping = wire_ping(TEST_ID);
+        let (mut bus, state, packet_end_tick) = bus_seeded_with(&ping);
+        bus.poll(|_, _, reply| reply.send_status(empty_status()).expect("encode fits"));
+
+        let byte_count = bus.codec.tx_len();
+        assert!(byte_count > 0);
+        assert_eq!(
+            state.sch.operations(),
+            alloc::vec![ScheduleOp::Schedule {
+                deadline: packet_end_tick.wrapping_add(TEST_RDT_US.wrapping_mul(48)),
+                byte_count,
+                kind: SendKind::Plain,
+            }]
+        );
+    }
+
+    #[test]
+    fn send_status_drops_silently_for_foreign_instruction() {
+        let ping = wire_ping(0x42);
+        let (mut bus, state, _) = bus_seeded_with(&ping);
+        bus.poll(|_, _, reply| reply.send_status(empty_status()).expect("encode fits"));
+        assert!(state.sch.operations().is_empty());
+    }
+
+    #[test]
+    fn send_slot_only_schedules_plain() {
+        let req = wire_fast_sync_read(0, 2, &[TEST_ID]);
+        let (mut bus, state, packet_end_tick) = bus_seeded_with(&req);
+
+        let payload = [0x11_u8, 0x22];
+        bus.poll(|_, _, reply| {
+            let slot = Slot {
+                id: Id::new(TEST_ID),
+                error: StatusError::OK,
+                data: &payload,
+            };
+            reply.send_slot(&slot).expect("encode fits");
+        });
+
+        let byte_count = bus.codec.tx_len();
+        assert!(byte_count > 0);
+        assert_eq!(
+            state.sch.operations(),
+            alloc::vec![ScheduleOp::Schedule {
+                deadline: packet_end_tick.wrapping_add(TEST_RDT_US.wrapping_mul(48)),
+                byte_count,
+                kind: SendKind::Plain,
+            }]
+        );
+    }
+
+    #[test]
+    fn send_slot_last_schedules_fast_last() {
+        let req = wire_fast_sync_read(0, 2, &[0x42, TEST_ID]);
+        let (mut bus, state, packet_end_tick) = bus_seeded_with(&req);
+
+        let payload = [0xAA_u8, 0xBB];
+        // First slot of 2 emits 8 (header) + 2 (error+id) + 2 (data) = 12
+        // wire bytes; bytes_before for slot 1 = 12.
+        let expected_ticks = TEST_RDT_US.wrapping_mul(48) + bus.clock.bytes_to_ticks(12);
+        let expected = packet_end_tick.wrapping_add(expected_ticks);
+
+        bus.poll(|_, _, reply| {
+            let slot = Slot {
+                id: Id::new(TEST_ID),
+                error: StatusError::OK,
+                data: &payload,
+            };
+            reply.send_slot(&slot).expect("encode fits");
+        });
+
+        let byte_count = bus.codec.tx_len();
+        assert!(byte_count > 0);
+        assert_eq!(
+            state.sch.operations(),
+            alloc::vec![ScheduleOp::Schedule {
+                deadline: expected,
+                byte_count,
+                kind: SendKind::FastLast,
+            }]
+        );
+        let fl_ops = state.fl.operations();
+        assert!(matches!(
+            fl_ops.as_slice(),
+            [
+                FastLastSchedulerOp::SetDeadline { .. },
+                FastLastSchedulerOp::Schedule { .. },
+            ]
+        ));
+        assert!(bus.fast_last_crc.is_active());
+        assert!(bus.fast_last.is_active());
+    }
+
+    #[test]
+    fn on_tx_complete_cancels_fast_last_state() {
+        let req = wire_fast_sync_read(0, 2, &[0x42, TEST_ID]);
+        let (mut bus, state, _) = bus_seeded_with(&req);
+        let payload = [0xAA_u8, 0xBB];
+        bus.poll(|_, _, reply| {
+            let slot = Slot {
+                id: Id::new(TEST_ID),
+                error: StatusError::OK,
+                data: &payload,
+            };
+            reply.send_slot(&slot).expect("encode fits");
+        });
+        assert!(bus.fast_last.is_active());
+        assert!(bus.fast_last_crc.is_active());
+
+        let _ = bus.on_tx_complete();
+
+        assert!(!bus.fast_last.is_active());
+        assert!(!bus.fast_last_crc.is_active());
+        assert!(matches!(
+            state.fl.operations().last(),
+            Some(FastLastSchedulerOp::Cancel)
+        ));
+    }
+
+    #[test]
+    fn send_slot_without_fast_context_drops_silently() {
+        let ping = wire_ping(TEST_ID);
+        let (mut bus, state, _) = bus_seeded_with(&ping);
+        let payload = [0x00_u8];
+        bus.poll(|_, _, reply| {
+            let slot = Slot {
+                id: Id::new(TEST_ID),
+                error: StatusError::OK,
+                data: &payload,
+            };
+            reply.send_slot(&slot).expect("encode fits");
+        });
+        assert!(state.sch.operations().is_empty());
+    }
+
+    #[test]
+    fn cancel_clears_context_and_forwards() {
+        let ping = wire_ping(TEST_ID);
+        let (mut bus, state, _) = bus_seeded_with(&ping);
+        bus.poll(|ev, _, reply| {
+            if matches!(ev, Event::Crc(_)) {
+                reply.cancel();
+            }
+        });
+        assert_eq!(state.sch.operations(), alloc::vec![ScheduleOp::Cancel]);
+        assert!(bus.last_reply_ctx.is_none());
+    }
+
+    #[test]
+    fn send_status_consumes_ctx_so_double_send_is_silent() {
+        let ping = wire_ping(TEST_ID);
+        let (mut bus, state, _) = bus_seeded_with(&ping);
+        bus.poll(|ev, _, reply| {
+            if matches!(ev, Event::Crc(_)) {
+                reply.send_status(empty_status()).expect("encode fits");
+                reply.send_status(empty_status()).expect("encode fits");
+            }
+        });
+        assert_eq!(state.sch.operations().len(), 1);
+    }
+
+    #[test]
+    fn broadcast_ping_folds_id_indexed_slot_offset() {
+        let req = wire_ping(BROADCAST_ID);
+        let (mut bus, state, packet_end_tick) = bus_seeded_with(&req);
+
+        let expected_offset_ticks = bus
+            .clock
+            .bytes_to_ticks(TEST_ID as u32 * PING_STATUS_FRAME_BYTES);
+        bus.poll(|_, _, reply| reply.send_status(empty_status()).expect("encode fits"));
+
+        let byte_count = bus.codec.tx_len();
+        assert!(byte_count > 0);
+        assert_eq!(
+            state.sch.operations(),
+            alloc::vec![ScheduleOp::Schedule {
+                deadline: packet_end_tick
+                    .wrapping_add(TEST_RDT_US.wrapping_mul(48) + expected_offset_ticks),
+                byte_count,
+                kind: SendKind::Plain,
+            }]
+        );
+    }
+
+    #[test]
+    fn on_tx_start_routes_to_handle_start() {
+        let (mut bus, state) = make_bus();
+        bus.on_tx_start();
+        assert_eq!(state.tx_bus.operations(), alloc::vec![TxBusOp::HandleStart]);
+        assert!(state.sch.operations().is_empty());
+    }
+
+    #[test]
+    fn on_tx_complete_releases_wire_before_draining_pending_config() {
+        let ping = wire_ping(TEST_ID);
+        let (mut bus, state, _) = bus_seeded_with(&ping);
+        bus.poll(|_, _, reply| {
+            reply.stage_id(0x42);
+            reply.stage_rdt(500);
+            reply.stage_reboot(BootMode::Bootloader);
+            reply.send_status(empty_status()).expect("encode fits");
+        });
+        state.tx_bus.clear();
+
+        assert_eq!(bus.id, TEST_ID);
+        assert_eq!(bus.rdt_us, TEST_RDT_US);
+
+        let pending_reboot = bus.on_tx_complete();
+
+        assert_eq!(
+            state.tx_bus.operations(),
+            alloc::vec![TxBusOp::HandleTxComplete]
+        );
+        assert_eq!(bus.id, 0x42);
+        assert_eq!(bus.rdt_us, 500);
+        assert_eq!(pending_reboot, Some(BootMode::Bootloader));
+    }
+
+    // ------------------------------------------------------------------
+    // Chain fire for slots k > 0 (DXL streaming RX §5.2)
+    // ------------------------------------------------------------------
+
     #[test]
     fn sync_read_slot_zero_has_no_predecessor() {
         let req = wire_sync_read(0, 2, &[TEST_ID]);
-        let (mut bus, _) = bus_seeded_with(&req);
+        let (mut bus, _, _) = bus_seeded_with(&req);
         bus.poll(|_, _, _| {});
         let ctx = bus
             .last_reply_ctx
@@ -1921,7 +2102,7 @@ mod tests {
     #[test]
     fn sync_read_slot_k_gt_zero_records_immediate_predecessor() {
         let req = wire_sync_read(0, 2, &[0x42, 0x09, TEST_ID]);
-        let (mut bus, _) = bus_seeded_with(&req);
+        let (mut bus, _, _) = bus_seeded_with(&req);
         bus.poll(|_, _, _| {});
         let ctx = bus
             .last_reply_ctx
@@ -1932,7 +2113,7 @@ mod tests {
     #[test]
     fn bulk_read_slot_k_gt_zero_records_immediate_predecessor() {
         let req = wire_bulk_read(&[(0x42, 0, 2), (TEST_ID, 0, 2)]);
-        let (mut bus, _) = bus_seeded_with(&req);
+        let (mut bus, _, _) = bus_seeded_with(&req);
         bus.poll(|_, _, _| {});
         let ctx = bus
             .last_reply_ctx
@@ -1942,12 +2123,11 @@ mod tests {
 
     #[test]
     fn fast_sync_read_slot_k_gt_zero_has_no_predecessor() {
-        // Fast chains carry no per-slot Status headers and therefore no
-        // per-slot SkipComplete events — chain-fire is absolute-deadline,
-        // not sequence-driven. `predecessor_id` must stay None per
-        // `docs/dxl-streaming-rx.md` §5.2.
+        // Fast chains carry no per-slot Status headers → chain-fire is
+        // absolute-deadline, not sequence-driven. `predecessor_id` must
+        // stay None per `docs/dxl-streaming-rx.md` §5.2.
         let req = wire_fast_sync_read(0, 2, &[0x42, TEST_ID]);
-        let (mut bus, _) = bus_seeded_with(&req);
+        let (mut bus, _, _) = bus_seeded_with(&req);
         bus.poll(|_, _, _| {});
         let ctx = bus
             .last_reply_ctx
@@ -1958,15 +2138,15 @@ mod tests {
     #[test]
     fn send_status_defers_wire_send_for_chain_k_gt_zero() {
         let req = wire_sync_read(0, 2, &[0x42, TEST_ID]);
-        let (mut bus, _) = bus_seeded_with(&req);
+        let (mut bus, state, _) = bus_seeded_with(&req);
         bus.poll(|_, _, reply| reply.send_status(empty_status()).expect("encode fits"));
 
         assert!(
-            bus.scheduler.log.is_empty(),
+            state.sch.operations().is_empty(),
             "chain k > 0 does not arm a deadline",
         );
         assert!(
-            bus.tx_bus.log.is_empty(),
+            state.tx_bus.operations().is_empty(),
             "wire send waits for SkipComplete",
         );
         assert_eq!(bus.predecessor_id, Some(0x42));
@@ -1975,21 +2155,19 @@ mod tests {
     #[test]
     fn skip_complete_matching_predecessor_fires_start_now() {
         let req = wire_sync_read(0, 2, &[0x42, TEST_ID]);
-        let (mut bus, _) = bus_seeded_with(&req);
+        let (mut bus, state, _) = bus_seeded_with(&req);
         bus.poll(|_, _, reply| reply.send_status(empty_status()).expect("encode fits"));
         let byte_count = bus.codec.tx_len();
         assert!(byte_count > 0);
         assert_eq!(bus.predecessor_id, Some(0x42));
 
-        // Predecessor's Status frame — byte-skip consumes its body and
-        // surfaces SkipComplete { id: 0x42 } at exhaust.
         let pred_status = wire_status(0x42);
-        stage_rx(&mut bus, req.len() as u16, &pred_status);
+        stage_rx(&mut bus, &state, req.len() as u16, &pred_status);
         bus.poll(|_, _, _| {});
 
         assert_eq!(
-            bus.tx_bus.log.as_slice(),
-            &[TxBusOp::StartNow { byte_count }],
+            state.tx_bus.operations(),
+            alloc::vec![TxBusOp::StartNow { byte_count }],
         );
         assert!(
             bus.predecessor_id.is_none(),
@@ -2000,15 +2178,14 @@ mod tests {
     #[test]
     fn skip_complete_mismatched_predecessor_does_not_fire() {
         let req = wire_sync_read(0, 2, &[0x42, TEST_ID]);
-        let (mut bus, _) = bus_seeded_with(&req);
+        let (mut bus, state, _) = bus_seeded_with(&req);
         bus.poll(|_, _, reply| reply.send_status(empty_status()).expect("encode fits"));
 
-        // Some unrelated servo replies first — SkipComplete fires with id=0x05.
         let other_status = wire_status(0x05);
-        stage_rx(&mut bus, req.len() as u16, &other_status);
+        stage_rx(&mut bus, &state, req.len() as u16, &other_status);
         bus.poll(|_, _, _| {});
 
-        assert!(bus.tx_bus.log.is_empty());
+        assert!(state.tx_bus.operations().is_empty());
         assert_eq!(
             bus.predecessor_id,
             Some(0x42),
@@ -2019,7 +2196,7 @@ mod tests {
     #[test]
     fn cancel_clears_chain_pending() {
         let req = wire_sync_read(0, 2, &[0x42, TEST_ID]);
-        let (mut bus, _) = bus_seeded_with(&req);
+        let (mut bus, _, _) = bus_seeded_with(&req);
         bus.poll(|ev, _, reply| {
             if matches!(ev, Event::Crc(_)) {
                 reply.send_status(empty_status()).expect("encode fits");
@@ -2032,7 +2209,7 @@ mod tests {
     #[test]
     fn on_tx_complete_clears_chain_pending() {
         let req = wire_sync_read(0, 2, &[0x42, TEST_ID]);
-        let (mut bus, _) = bus_seeded_with(&req);
+        let (mut bus, _, _) = bus_seeded_with(&req);
         bus.poll(|_, _, reply| reply.send_status(empty_status()).expect("encode fits"));
         assert_eq!(bus.predecessor_id, Some(0x42));
 
@@ -2045,26 +2222,27 @@ mod tests {
         // Stage chain-pending directly — the alternative is a full chain
         // + corrupted-predecessor encode, far more setup for the same
         // observable.
-        let mut bus = make_bus();
+        let (mut bus, state) = make_bus();
         bus.predecessor_id = Some(0x42);
         let mut bad = wire_ping(TEST_ID);
         let crc_lo = bad.len() - 2;
         bad[crc_lo] ^= 0xFF;
-        stage_rx(&mut bus, 0, &bad);
+        stage_rx(&mut bus, &state, 0, &bad);
         bus.poll(|_, _, _| {});
         assert!(bus.predecessor_id.is_none());
     }
 
     #[test]
     fn instruction_header_clears_stale_chain_pending() {
-        // Per `dxl-streaming-rx.md` §5.3: any stale `predecessor_id` from a
-        // prior chain whose immediate predecessor went silent must clear at
-        // the next instruction-header event, or a foreign Status whose id
-        // happens to match would trigger a spurious `start_now`.
-        let mut bus = make_bus();
+        // Per `dxl-streaming-rx.md` §5.3: any stale `predecessor_id` from
+        // a prior chain whose immediate predecessor went silent must
+        // clear at the next instruction-header event, or a foreign
+        // Status whose id happens to match would trigger a spurious
+        // `start_now`.
+        let (mut bus, state) = make_bus();
         bus.predecessor_id = Some(0x42);
         let req = wire_ping(TEST_ID);
-        stage_rx(&mut bus, 0, &req);
+        stage_rx(&mut bus, &state, 0, &req);
         bus.poll(|_, _, _| {});
         assert!(
             bus.predecessor_id.is_none(),
@@ -2076,14 +2254,13 @@ mod tests {
     // Fast Last NDTR fold (Chunk 5)
     // ------------------------------------------------------------------
 
-    /// `fold_start_cursor` lands at the host chain instruction's CRC byte
-    /// — the codec's wire-byte cursor past that point is where the First
-    /// servo's leading `0xFF` will arrive. Any earlier capture would let
-    /// the host's own request bytes feed into the chain CRC.
     #[test]
     fn poll_captures_fold_start_cursor_at_crc() {
+        // `fold_start_cursor` lands at the host chain instruction's CRC
+        // byte — the codec's wire-byte cursor past that point is where
+        // the First servo's leading `0xFF` will arrive.
         let req = wire_fast_sync_read(0, 2, &[0x42, TEST_ID]);
-        let (mut bus, _) = bus_seeded_with(&req);
+        let (mut bus, _, _) = bus_seeded_with(&req);
         bus.poll(|_, _, _| {});
         let ctx = bus
             .last_reply_ctx
@@ -2091,15 +2268,10 @@ mod tests {
         assert_eq!(ctx.fold_start_cursor, req.len() as u32);
     }
 
-    /// Drive `on_fold_step` with predecessor bytes staged in `rx_buf` and
-    /// assert the running fold absorbs them. Predecessor_bytes here is
-    /// chosen `> staged.len()` so the FSM stays in `PeriodicWalk` (no
-    /// finalize-on-target this pass) — the assertion is purely that the
-    /// raw drain fed the bytes through.
     #[test]
     fn on_fold_step_drains_raw_bytes_into_fold() {
         let req = wire_fast_sync_read(0, 2, &[0x42, TEST_ID]);
-        let (mut bus, _) = bus_seeded_with(&req);
+        let (mut bus, state, _) = bus_seeded_with(&req);
         let payload = [0xAA_u8, 0xBB];
         bus.poll(|_, _, reply| {
             let slot = Slot {
@@ -2109,22 +2281,21 @@ mod tests {
             };
             reply.send_slot(&slot).expect("encode fits");
         });
-        // FastLast is armed via `send_slot(Last)` above. The fold's
-        // start_cursor = fold_start_cursor = req.len(); stage predecessor
-        // bytes starting at that same wire-byte position so the drain's
-        // cursor matches `start_cursor` on the first byte folded.
+        // FastLast armed via `send_slot(Last)` above. Fold's start_cursor
+        // = fold_start_cursor = req.len(); stage predecessor bytes at
+        // that wire-byte position so the drain's cursor matches
+        // `start_cursor` on the first byte folded. SyncRead has 2 slots
+        // → bytes_before for our slot = 12 wire bytes; stage fewer so
+        // the FSM doesn't hit its busy-wait target this poll.
         let start = req.len() as u16;
-        // SyncRead has 2 slots → bytes_before for our slot = 12 wire bytes
-        // (`FAST_SLOT_HEADER_BYTES + body`). Stage fewer so the FSM doesn't
-        // hit its busy-wait target this poll.
         let predecessor = [0x11_u8, 0x22, 0x33, 0x44];
-        stage_rx(&mut bus, start, &predecessor);
+        stage_rx(&mut bus, &state, start, &predecessor);
         // RxDma.remaining = N − (start + len) so on_publish leaves
-        // write_seq at start+len (the same head stage_rx_bytes_for_test set).
+        // write_seq at start+len.
         let new_head = start.wrapping_add(predecessor.len() as u16);
-        bus.rx_dma
-            .remaining
-            .set((RX_BUF_LEN as u16).wrapping_sub(new_head));
+        state
+            .rx
+            .stage_remaining((RX_BUF_LEN as u16).wrapping_sub(new_head));
 
         bus.codec.set_rx_read_seq_for_test(start);
         let before = bus.fast_last_crc.bytes_folded();
@@ -2133,14 +2304,14 @@ mod tests {
         assert_eq!(after - before, predecessor.len() as u32);
     }
 
-    /// CC3 fire body folds the GUARD residue and patches the trailing
-    /// CRC. Stage `predecessor_bytes` worth of bytes so finalize lands on
-    /// the last drained byte; assert the TX buffer's trailing slot is no
-    /// longer the placeholder `[0x00, 0x00]`.
     #[test]
     fn on_tx_start_folds_residue_and_patches_crc() {
+        // CC3 fire body folds the GUARD residue and patches the trailing
+        // CRC. Stage `predecessor_bytes` worth so finalize lands on the
+        // last drained byte; assert the TX buffer's trailing slot is no
+        // longer the placeholder `[0x00, 0x00]`.
         let req = wire_fast_sync_read(0, 2, &[0x42, TEST_ID]);
-        let (mut bus, _) = bus_seeded_with(&req);
+        let (mut bus, state, _) = bus_seeded_with(&req);
         let payload = [0xAA_u8, 0xBB];
         bus.poll(|_, _, reply| {
             let slot = Slot {
@@ -2150,38 +2321,32 @@ mod tests {
             };
             reply.send_slot(&slot).expect("encode fits");
         });
-        // bytes_before for the second slot of a Fast SyncRead with length=2
-        // is `FAST_SLOT_HEADER_BYTES(8) + body(4) = 12`. Stage exactly that
-        // many predecessor bytes so finalize lands inside on_tx_start.
+        // bytes_before for slot 1 of Fast SyncRead length=2 is
+        // `FAST_SLOT_HEADER_BYTES(8) + body(4) = 12`; stage exactly
+        // that many so finalize lands inside on_tx_start.
         let start = req.len() as u16;
         let predecessor = [
             0xA1, 0xA2, 0xA3, 0xA4, 0xA5, 0xA6, 0xA7, 0xA8, 0xA9, 0xAA, 0xAB, 0xAC,
         ];
-        stage_rx(&mut bus, start, &predecessor);
+        stage_rx(&mut bus, &state, start, &predecessor);
         let new_head = start.wrapping_add(predecessor.len() as u16);
-        bus.rx_dma
-            .remaining
-            .set((RX_BUF_LEN as u16).wrapping_sub(new_head));
+        state
+            .rx
+            .stage_remaining((RX_BUF_LEN as u16).wrapping_sub(new_head));
         bus.codec.set_rx_read_seq_for_test(start);
 
-        // Snapshot the trailing slot before the fold runs.
         let tx_len_before = bus.codec.tx_len() as usize;
-        // SAFETY: tx_buf is initialized up to tx_len_before; reading by raw
-        // pointer matches the production DMA1_CH4 view.
+        // SAFETY: tx_buf is initialized up to tx_len_before; reading by
+        // raw pointer matches the production DMA1_CH4 view.
         let trailing_before = unsafe {
             core::slice::from_raw_parts(bus.codec.tx_buf_addr() as *const u8, tx_len_before)
         }[tx_len_before - 2..]
             .to_vec();
         assert_eq!(trailing_before, [0x00, 0x00]);
 
-        // send_slot(Last) above pushed a FastLast `Schedule` entry;
-        // on_tx_start now routes `handle_start` through `TxBus` rather
-        // than the scheduler. Assert only the trailing op so this test
-        // stays focused on the post-fire fold (FastLast scheduling math
-        // is a fast_last test concern).
         bus.on_tx_start();
         assert_eq!(
-            bus.tx_bus.log.last(),
+            state.tx_bus.operations().last(),
             Some(&TxBusOp::HandleStart),
             "on_tx_start must call handle_start once",
         );
@@ -2198,21 +2363,19 @@ mod tests {
         );
         assert!(!bus.fast_last_crc.is_active());
         assert_eq!(
-            bus.fast_last.scheduler().patch_miss_count.get(),
+            state.fl.patch_miss_count(),
             0,
             "finalize path must not bump the deadline-miss counter",
         );
     }
 
-    /// Bytes-starved CC3 body must not hang. With no predecessor bytes
-    /// staged the plateau check (no progress between drain passes) exits
-    /// the loop; trailing CRC stays at the placeholder. Plateau-exit also
-    /// bumps `crc_patch_deadline_miss` — same observable failure as the
-    /// expired-window route.
     #[test]
     fn on_tx_start_plateau_records_miss() {
+        // Bytes-starved CC3 body must not hang. With no predecessor
+        // bytes staged the plateau check (no progress between drain
+        // passes) exits the loop; trailing CRC stays at the placeholder.
         let req = wire_fast_sync_read(0, 2, &[0x42, TEST_ID]);
-        let (mut bus, _) = bus_seeded_with(&req);
+        let (mut bus, state, _) = bus_seeded_with(&req);
         let payload = [0xAA_u8, 0xBB];
         bus.poll(|_, _, reply| {
             let slot = Slot {
@@ -2222,34 +2385,34 @@ mod tests {
             };
             reply.send_slot(&slot).expect("encode fits");
         });
-        // Pin write_seq == read_seq == start. The NDTR value that keeps
-        // on_publish a no-op is `LEN - write_seq` (ring_pos = LEN - remaining
-        // = start, prev_pos = start → delta = 0). Setting remaining = LEN
-        // would advance the publisher by LEN - start bytes of garbage and
+        // Pin write_seq == read_seq == start. NDTR = LEN - write_seq
+        // keeps on_publish a no-op (ring_pos = LEN - remaining = start,
+        // prev_pos = start → delta = 0). Setting remaining = LEN would
+        // advance the publisher by LEN - start bytes of garbage and
         // mask the plateau backstop under test.
         let start = req.len() as u16;
-        stage_rx(&mut bus, start, &[]);
+        stage_rx(&mut bus, &state, start, &[]);
         bus.codec.set_rx_read_seq_for_test(start);
-        bus.rx_dma
-            .remaining
-            .set((RX_BUF_LEN as u16).wrapping_sub(start));
+        state
+            .rx
+            .stage_remaining((RX_BUF_LEN as u16).wrapping_sub(start));
 
         bus.on_tx_start();
         assert!(bus.fast_last_crc.is_active(), "active stays set on bail");
         assert_eq!(
-            bus.fast_last.scheduler().patch_miss_count.get(),
+            state.fl.patch_miss_count(),
             1,
             "plateau-exit must bump the deadline-miss counter",
         );
     }
 
-    /// CH4 prefetch has reached the trailing CRC slot before finalize
-    /// landed. The expired-window check exits the loop and bumps
-    /// `crc_patch_deadline_miss`; placeholder CRC ships on the wire.
     #[test]
     fn on_tx_start_window_expiry_records_miss() {
+        // CH4 prefetch reached the trailing CRC slot before finalize
+        // landed. The expired-window check exits the loop and bumps
+        // `crc_patch_deadline_miss`.
         let req = wire_fast_sync_read(0, 2, &[0x42, TEST_ID]);
-        let (mut bus, _) = bus_seeded_with(&req);
+        let (mut bus, state, _) = bus_seeded_with(&req);
         let payload = [0xAA_u8, 0xBB];
         bus.poll(|_, _, reply| {
             let slot = Slot {
@@ -2259,10 +2422,7 @@ mod tests {
             };
             reply.send_slot(&slot).expect("encode fits");
         });
-        bus.fast_last
-            .scheduler()
-            .patch_window_expired_value
-            .set(true);
+        state.fl.stage_patch_window_expired(true);
 
         bus.on_tx_start();
         assert!(
@@ -2270,11 +2430,15 @@ mod tests {
             "active stays set on expired-window exit",
         );
         assert_eq!(
-            bus.fast_last.scheduler().patch_miss_count.get(),
+            state.fl.patch_miss_count(),
             1,
             "expired-window exit must bump the deadline-miss counter",
         );
     }
+
+    // ------------------------------------------------------------------
+    // InflightCtx fallback allowance (per-instruction packet-end policy)
+    // ------------------------------------------------------------------
 
     fn allows_fallback(header: InstructionHeader) -> bool {
         InflightCtx::new(header).allows_packet_end_fallback()

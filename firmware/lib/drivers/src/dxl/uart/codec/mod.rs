@@ -860,6 +860,21 @@ impl<R: EdgeDma, CRC: CrcUmts, const RX_BUF_LEN: usize, const EDGE_BUF_LEN: usiz
     pub(crate) fn wire_byte_cursor_for_test(&self) -> u32 {
         self.wire_bytes_consumed
     }
+
+    /// Stage ET-ring stamps matching `tail_bytes`' falling-edge signature so
+    /// [`Rx::anchor_at_tail`] resolves to `tail_anchor = anchor_tick` when
+    /// the codec's poll reaches the packet's Crc event. Returns the number
+    /// of edge stamps written — the caller staggers `MockEdgeDma::remaining`
+    /// so [`Rx::publish_edges`] advances `write_seq` by that count.
+    pub(crate) fn stage_tail_signature_for_test(
+        &mut self,
+        tail_bytes: &[u8],
+        ticks_per_bit: u16,
+        anchor_tick: u16,
+    ) -> u16 {
+        self.rx
+            .stage_tail_signature_for_test(tail_bytes, ticks_per_bit, anchor_tick)
+    }
 }
 
 #[cfg(test)]
@@ -881,6 +896,16 @@ impl<
 
     pub(crate) fn wire_byte_cursor_for_test(&self) -> u32 {
         self.rx.wire_byte_cursor_for_test()
+    }
+
+    pub(crate) fn stage_tail_signature_for_test(
+        &mut self,
+        tail_bytes: &[u8],
+        ticks_per_bit: u16,
+        anchor_tick: u16,
+    ) -> u16 {
+        self.rx
+            .stage_tail_signature_for_test(tail_bytes, ticks_per_bit, anchor_tick)
     }
 }
 

@@ -388,7 +388,8 @@ impl EdgeParser {
         let hi = base.saturating_add(PADDING_EDGES_AHEAD).min(max_offset);
 
         for o in lo..=hi {
-            if let Some(starts) = self.try_anchor_at_tail_offset(edges, o, tail_bytes, ticks_per_bit)
+            if let Some(starts) =
+                self.try_anchor_at_tail_offset(edges, o, tail_bytes, ticks_per_bit)
             {
                 self.tail_anchor = Some(starts[TAIL_STARTS - 1]);
                 self.tail_starts = starts;
@@ -656,6 +657,45 @@ impl EdgeParser {
         self.tail_starts = starts;
         self.tail_starts_oldest_ring_off = Some(oldest_off);
         self.tail_anchor = Some(starts[TAIL_STARTS - 1]);
+    }
+
+    /// Stage a matching falling-edge signature for `tail_bytes` into `edges`
+    /// so a follow-up [`Self::anchor_at_tail`] resolves the tail anchor to
+    /// `anchor_tick`. Composite-test scaffolding — real code populates the
+    /// ET ring from the DMA1_CH7 IC-capture. Writes stamps oldest-first
+    /// starting at ring index 0; caller advances `write_seq` via
+    /// `on_publish(EDGE_BUF_LEN - total_edges)`. Assumes
+    /// `self.rx_edge_comp_ticks == 0` (test-baud default). Returns the
+    /// number of stamps written.
+    #[cfg(test)]
+    pub fn stage_tail_signature_for_test<const EDGE_BUF_LEN: usize>(
+        &mut self,
+        edges: &mut HwRing<u16, EDGE_BUF_LEN>,
+        tail_bytes: &[u8],
+        ticks_per_bit: u16,
+        anchor_tick: u16,
+    ) -> u16 {
+        // Max footprint: TAIL_STARTS bytes × MAX_EDGES_PER_BYTE = 4 × 5 = 20.
+        const MAX_TAIL_EDGES: usize = TAIL_STARTS * MAX_EDGES_PER_BYTE as usize;
+        let mut stamps = [0u16; MAX_TAIL_EDGES];
+        let mut n: u16 = 0;
+        // Last tail byte's start edge sits at `anchor_tick`; earlier edges
+        // step back by `(last_start_bit - bit_pos) * tpb`.
+        let last_start_bit =
+            ((tail_bytes.len().saturating_sub(1)) as u16).wrapping_mul(BITS_PER_FRAME);
+        for (bi, &b) in tail_bytes.iter().enumerate() {
+            let (positions, count) = byte_edge_positions(b);
+            let byte_start_bit = (bi as u16).wrapping_mul(BITS_PER_FRAME);
+            for &pos in positions.iter().take(count) {
+                let bit_pos = byte_start_bit.wrapping_add(pos as u16);
+                let delta_bits = last_start_bit.wrapping_sub(bit_pos);
+                stamps[n as usize] =
+                    anchor_tick.wrapping_sub(delta_bits.wrapping_mul(ticks_per_bit));
+                n = n.wrapping_add(1);
+            }
+        }
+        edges.stage(0, &stamps[..n as usize]);
+        n
     }
 }
 
@@ -1109,7 +1149,10 @@ mod tests {
         let edges = edges16(&[0xDEAD, 0xBEEF]); // decoy — walker must ignore
         let mut pairs: heapless::Vec<(u16, u16), 8> = heapless::Vec::new();
         c.walk_pairs_back(&edges, starts[3], 3, TPB_3M, &mut pairs);
-        assert_eq!(pairs.as_slice(), &[(1000, 2000), (2000, 3000), (3000, 4000)]);
+        assert_eq!(
+            pairs.as_slice(),
+            &[(1000, 2000), (2000, 3000), (3000, 4000)]
+        );
     }
 
     #[test]
