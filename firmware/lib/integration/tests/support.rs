@@ -17,8 +17,9 @@ use rstest::rstest;
 use rstest_reuse::template;
 
 /// Encode a complete Ping packet's wire bytes for `id` — header, length,
-/// instruction, CRC. Wedge tests use this to obtain a canonical packet
-/// and then truncate / mutate it before `Host::send_raw`.
+/// instruction, CRC. Resilience tests use this to obtain a canonical
+/// packet and then truncate / mutate it before `Host::send_raw`, or to
+/// concatenate a Ping onto a prior instruction with no inter-packet IDLE.
 #[allow(dead_code)]
 pub fn encode_ping(id: u8) -> Vec<u8> {
     let mut buf: Vec<u8> = Vec::new();
@@ -28,10 +29,52 @@ pub fn encode_ping(id: u8) -> Vec<u8> {
     buf
 }
 
-/// Wire-format DXL 2.0 header signature (`FF FF FD 00`). Wedge tests
-/// inject this prefix when crafting partial / near-sync byte sequences.
+/// Encode a complete SyncRead packet — same shape as `Host::send_sync_read`
+/// but returns the bytes for callers that want to prefix / concatenate.
+#[allow(dead_code)]
+pub fn encode_sync_read(addr: u16, length: u16, ids: &[u8]) -> Vec<u8> {
+    let mut buf: Vec<u8> = Vec::new();
+    InstructionEncoder::<_, SoftwareCrcUmts>::new(&mut buf)
+        .sync_read(addr, length, ids)
+        .expect("sync_read encodes");
+    buf
+}
+
+/// Encode a complete SyncWrite packet — returns the bytes for callers that
+/// want to concatenate a Write with a following instruction (no IDLE gap).
+#[allow(dead_code)]
+pub fn encode_sync_write(addr: u16, length: u16, body: &[u8]) -> Vec<u8> {
+    let mut buf: Vec<u8> = Vec::new();
+    InstructionEncoder::<_, SoftwareCrcUmts>::new(&mut buf)
+        .sync_write(addr, length, body)
+        .expect("sync_write encodes");
+    buf
+}
+
+/// Encode a complete BulkWrite packet — returns the bytes for callers that
+/// want to concatenate a Write with a following instruction (no IDLE gap).
+#[allow(dead_code)]
+pub fn encode_bulk_write(body: &[u8]) -> Vec<u8> {
+    let mut buf: Vec<u8> = Vec::new();
+    InstructionEncoder::<_, SoftwareCrcUmts>::new(&mut buf)
+        .bulk_write(body)
+        .expect("bulk_write encodes");
+    buf
+}
+
+/// Wire-format DXL 2.0 header signature (`FF FF FD 00`). Resilience
+/// tests inject this prefix when crafting partial / near-sync byte
+/// sequences.
 #[allow(dead_code)]
 pub const SYNC_PREFIX: [u8; 4] = [HEADER[0], HEADER[1], HEADER[2], 0x00];
+
+/// 256 bytes of `0xFF` — canonical parser-drain filler that leaves the
+/// servo's streaming parser at `Phase::Sync` regardless of the mid-
+/// packet state it was in. Used by resilience / disconnect tests to
+/// model the prefix of a real host's retry that clears a stuck parser
+/// before the recovery packet is issued.
+#[allow(dead_code)]
+pub const PARSER_FLUSH: [u8; 256] = [0xFFu8; 256];
 
 // Shared by `tests/{protocol,registers,timing}/mod.rs` via
 // `#[path = "../support.rs"] mod support;`. Each test binary uses a

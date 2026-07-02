@@ -9,21 +9,15 @@
 //! sweeping it surfaces interactions between RDT-driven scheduler state
 //! and the recovery path that a baud-only sweep would miss.
 
-use crate::support::{SYNC_PREFIX, Setup, assert_bus_healthy, encode_ping, matrix, setup_with};
+use crate::support::{
+    PARSER_FLUSH, SYNC_PREFIX, Setup, assert_bus_healthy, encode_ping, matrix, setup_with,
+};
 use dxl_protocol::types::Id;
 use osc_core::BaudRate;
 use rstest::rstest;
 use rstest_reuse::apply;
 
 const TARGET: Id = Id::new(1);
-
-/// 256 bytes of 0xFF — drains any mid-packet parser state without
-/// itself producing a sync signature. Phase::Crc consumes 2 as bad
-/// CRC → reset; Phase::Header completes with garbage → bad length →
-/// resync; Phase::Payload/Slots advances to Crc → bad CRC → reset.
-/// All paths leave the parser back at Phase::Sync after at most ~10
-/// bytes, with the remaining FFs harmlessly drained.
-const PARSER_FLUSH: [u8; 256] = [0xFFu8; 256];
 
 /// Drop bytes on the wire and settle. Used by `*_recovers_immediately`
 /// tests where the bad input self-drains the parser back to Phase::Sync
