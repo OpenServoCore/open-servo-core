@@ -143,6 +143,15 @@ impl<U: UsartBaud> BaudCache<U> {
         self.ticks_per_bit
     }
 
+    /// One wire byte's duration in HCLK ticks at the current baud
+    /// (`ticks_per_bit × BITS_PER_FRAME`). u16 to match `FastLastSchedule`'s
+    /// grid fields; the widest value (9600 baud → 50_000) stays under
+    /// `u16::MAX`.
+    #[inline(always)]
+    pub fn byte_ticks(&self) -> u16 {
+        self.ticks_per_bit.wrapping_mul(BITS_PER_FRAME)
+    }
+
     /// Per-baud RX edge-stamp compensation in HCLK ticks. Codec reads once
     /// per poll and threads to `EdgeParser` so anchors, pairs, and
     /// `packet_end_tick` live in wire-edge time. See the field doc.

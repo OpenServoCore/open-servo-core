@@ -453,16 +453,12 @@ impl<P: Providers, const TX_BUF_LEN: usize> ReplyHandle<'_, P, TX_BUF_LEN> {
         let rdt_ticks = ctx
             .rdt_us
             .wrapping_mul(<P::TxScheduler as TxScheduler>::TICKS_PER_US as u32);
-        let delay_ticks = rdt_ticks.wrapping_add(self.clock.bytes_to_ticks(ctx.slot_offset_bytes));
-        let phase_adjust = self.clock.projected_phase_error_hclk(delay_ticks);
-        let deadline = packet_end_tick
-            .wrapping_add(delay_ticks)
-            .wrapping_add_signed(phase_adjust);
+        let deadline =
+            self.clock
+                .compute_status_deadline(packet_end_tick, rdt_ticks, ctx.slot_offset_bytes);
         crate::log::debug!(
-            "dxl: send_status schedule packet_end={} delay={} phase_adjust={} deadline={} byte_count={}",
+            "dxl: send_status schedule packet_end={} deadline={} byte_count={}",
             packet_end_tick,
-            delay_ticks,
-            phase_adjust,
             deadline,
             byte_count
         );
@@ -543,45 +539,34 @@ impl<P: Providers, const TX_BUF_LEN: usize> ReplyHandle<'_, P, TX_BUF_LEN> {
     fn schedule_after_slot_encode(&mut self, ctx: ReplyContext, position: SlotPosition) {
         let byte_count = self.tx.tx_len();
         let packet_end_tick = ctx.packet_end_tick;
-        let byte_ticks = self.clock.ticks_per_bit().wrapping_mul(BITS_PER_FRAME);
         let rdt_ticks = ctx
             .rdt_us
             .wrapping_mul(<P::TxScheduler as TxScheduler>::TICKS_PER_US as u32);
-        // Fast chains require every slot's CC-match to anchor off the SAME
-        // base above `packet_end_tick` for the wire to stay contiguous. Slot
-        // 0 (`slot_offset_bytes == 0`) can't fire before its own chip sees
-        // packet-end — at `PollSrc::LineIdle` that's `packet_end + 1 byte_time`
-        // — so when `rdt_ticks` falls below that horizon slot 0's wall-clock
-        // floors at the horizon while every other slot stays anchored to
-        // raw `rdt_ticks`. Result: slot k > 0 fires `1 byte_time` inside
-        // slot 0's trailing TX. Floor the effective RDT by the source's
-        // `now − packet_end` offset so the whole chain shifts together.
-        let floor_ticks: u32 = match ctx.src {
-            PollSrc::ByteBatch => 0,
-            PollSrc::LineIdle => byte_ticks as u32,
-        };
-        let effective_rdt_ticks = rdt_ticks.max(floor_ticks);
-        let delay_ticks =
-            effective_rdt_ticks.wrapping_add(self.clock.bytes_to_ticks(ctx.slot_offset_bytes));
+        // The source-floored effective RDT (see `Clock::effective_slot_rdt`)
+        // keeps every slot in a Fast chain anchored off the same base above
+        // `packet_end_tick`, so the wire stays contiguous instead of slot
+        // k > 0 firing inside slot 0's trailing TX.
+        let deadline = self.clock.compute_slot_deadline(
+            packet_end_tick,
+            rdt_ticks,
+            ctx.slot_offset_bytes,
+            ctx.src,
+        );
         let kind = match position {
             SlotPosition::Last { .. } => SendKind::FastLast,
             _ => SendKind::Plain,
         };
-        let phase_adjust = self.clock.projected_phase_error_hclk(delay_ticks);
-        let deadline = packet_end_tick
-            .wrapping_add(delay_ticks)
-            .wrapping_add_signed(phase_adjust);
         self.scheduler.schedule(deadline, byte_count, kind);
         if matches!(position, SlotPosition::Last { .. }) {
             // Same effective RDT as the schedule above so the fold grid
             // back-dates from the right anchor; `FastLastSchedule::rdt_ticks`
-            // is u16 per doc §10.6 — `effective_rdt_ticks` stays well under
+            // is u16 per doc §10.6 — the effective RDT stays well under
             // 16 bits at every supported baud (9600 floor = 50_000 ticks).
-            let rdt_ticks = (effective_rdt_ticks & 0xFFFF) as u16;
+            let rdt_ticks = (self.clock.effective_slot_rdt(rdt_ticks, ctx.src) & 0xFFFF) as u16;
             self.fast_last.start(FastLastSchedule {
                 packet_end_tick,
                 rdt_ticks,
-                byte_ticks,
+                byte_ticks: self.clock.byte_ticks(),
                 predecessor_bytes: ctx.slot_offset_bytes as u16,
             });
             self.fast_last_crc

@@ -20,6 +20,7 @@ mod drift_integrator;
 
 use osc_core::BaudRate;
 
+use crate::dxl::uart::codec::rx::PollSrc;
 use crate::traits::dxl::{ClockTrim, UsartBaud};
 use baud_cache::BaudCache;
 use drift_integrator::DriftIntegrator;
@@ -95,6 +96,67 @@ impl<U: UsartBaud, T: ClockTrim> Clock<U, T> {
     /// [`BaudCache::bytes_to_ticks`].
     pub fn bytes_to_ticks(&self, bytes: u32) -> u32 {
         self.cache.bytes_to_ticks(bytes)
+    }
+
+    /// One wire byte's duration in HCLK ticks at the current baud. See
+    /// [`BaudCache::byte_ticks`].
+    #[inline(always)]
+    pub fn byte_ticks(&self) -> u16 {
+        self.cache.byte_ticks()
+    }
+
+    /// Effective RDT for a Fast slot: floored by the poll source's
+    /// `now − packet_end` offset so slot 0 can't fire before its own chip
+    /// observes packet-end (at [`PollSrc::LineIdle`] that's one byte-time
+    /// past `packet_end`) and the whole chain shifts together. `ByteBatch`
+    /// needs no floor. The Fast Last grid reads this to back-date from the
+    /// same anchor the schedule used.
+    pub fn effective_slot_rdt(&self, rdt_ticks: u32, src: PollSrc) -> u32 {
+        let floor = match src {
+            PollSrc::ByteBatch => 0,
+            PollSrc::LineIdle => self.byte_ticks() as u32,
+        };
+        rdt_ticks.max(floor)
+    }
+
+    /// Plain (status / non-Fast) reply deadline: anchor `rdt_ticks` + the
+    /// slot-offset gap against `packet_end_tick`, folding the drift
+    /// integrator's projected phase error over that distance.
+    pub fn compute_status_deadline(
+        &self,
+        packet_end_tick: u32,
+        rdt_ticks: u32,
+        slot_offset_bytes: u32,
+    ) -> u32 {
+        let delay = rdt_ticks.wrapping_add(self.cache.bytes_to_ticks(slot_offset_bytes));
+        self.deadline_after(packet_end_tick, delay)
+    }
+
+    /// Fast slot reply deadline: like [`Self::compute_status_deadline`] but
+    /// with the source-floored effective RDT (see [`Self::effective_slot_rdt`])
+    /// so every slot in a chain anchors off the same base above
+    /// `packet_end_tick` and the wire stays contiguous.
+    pub fn compute_slot_deadline(
+        &self,
+        packet_end_tick: u32,
+        rdt_ticks: u32,
+        slot_offset_bytes: u32,
+        src: PollSrc,
+    ) -> u32 {
+        let delay = self
+            .effective_slot_rdt(rdt_ticks, src)
+            .wrapping_add(self.cache.bytes_to_ticks(slot_offset_bytes));
+        self.deadline_after(packet_end_tick, delay)
+    }
+
+    /// Anchor a `delay_ticks` distance against `packet_end_tick` and fold in
+    /// the drift integrator's projected phase error over that distance.
+    /// Shared tail of both deadline computations.
+    fn deadline_after(&self, packet_end_tick: u32, delay_ticks: u32) -> u32 {
+        let phase_adjust = self.drift.projected_phase_error_hclk(delay_ticks);
+        packet_end_tick
+            .wrapping_add(delay_ticks)
+            .wrapping_add_signed(phase_adjust)
     }
 
     /// Max byte pairs per packet the driver should drain into
