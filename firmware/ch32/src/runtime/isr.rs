@@ -158,11 +158,7 @@ fn on_usart1_tc() {
 /// SAFETY: see `on_dma1_ch7` — TIM2 shares PFIC HIGH with USART1 / DMA1_CH7
 /// so no concurrent `&mut` into the driver is possible.
 pub fn on_tim2_cc3() {
-    #[cfg(feature = "tuning")]
-    let entry_delta = crate::hal::timer::tim2_cnt().wrapping_sub(crate::hal::timer::tim2_ccr3());
     unsafe { Drivers::dxl_uart() }.on_tx_start();
-    #[cfg(feature = "tuning")]
-    crate::tune::record_tx_start_entry(entry_delta);
 }
 
 /// SysTick CMP-match — a long-horizon scheduling deadline arrived. Two
@@ -176,12 +172,8 @@ pub fn on_tim2_cc3() {
 /// SAFETY: see `on_dma1_ch7` — SysTick shares PFIC HIGH with USART1 /
 /// DMA1_CH7 / TIM2 so no concurrent `&mut` into the driver is possible.
 pub fn on_systick() {
-    #[cfg(feature = "tuning")]
-    let entry_delta = systick::ticks().wrapping_sub(systick::cmp()) as u16;
     systick::clear_match();
     unsafe { Drivers::dxl_uart() }.on_schedule_due();
-    #[cfg(feature = "tuning")]
-    crate::tune::record_fast_last_entry(entry_delta);
 }
 
 /// Wires osc-ch32 ISR bodies into the vector table. Caller must depend on

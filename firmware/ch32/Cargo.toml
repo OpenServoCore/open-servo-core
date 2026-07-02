@@ -37,8 +37,3 @@ default      = ["ch32v006x8x6"]
 ch32v006x8x6 = ["ch32-metapac/ch32v006x8x6"]
 rt           = ["ch32-metapac/rt"]
 defmt        = ["dep:defmt", "osc-core/defmt", "osc-drivers/defmt"]
-# Bench-tuning instrumentation. Enables hot-path stamps that capture
-# IRQ-entry / scheduler-remaining maxima into `TelemetryDxlTune` for the
-# B5 / B6 tune binaries to read. Off in production so the IRQ vector
-# bodies stay byte-identical to the measured baseline.
-tuning       = []

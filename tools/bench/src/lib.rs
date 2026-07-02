@@ -361,7 +361,6 @@ pub fn decode_ping_status(bytes: &[u8], expected_id: Option<Id>) -> Result<PingI
 pub const FOREIGN_ID: u8 = 199;
 pub const INJ_ID: u8 = 50;
 pub const LINK_BASE: u16 = 0x023C;
-pub const TUNE_BASE: u16 = LINK_BASE + LinkCounters::LEN as u16;
 
 #[derive(Copy, Clone, Debug, Default, PartialEq, Eq)]
 pub struct LinkCounters {
@@ -444,30 +443,6 @@ impl LinkCounters {
             parity_error: words[7],
             framing_error: words[8],
             noise_error: words[9],
-        })
-    }
-}
-
-#[derive(Copy, Clone, Debug, Default, PartialEq, Eq)]
-pub struct TuneStamps {
-    pub tx_start_entry_min: u16,
-    pub fast_last_entry_min: u16,
-    pub schedule_remaining_max: u16,
-    pub _rsvd_align: u16,
-}
-
-impl TuneStamps {
-    pub const LEN: usize = 8;
-
-    fn from_le_bytes(buf: &[u8]) -> Result<Self> {
-        if buf.len() != Self::LEN {
-            bail!("TuneStamps expects {} bytes, got {}", Self::LEN, buf.len());
-        }
-        Ok(Self {
-            tx_start_entry_min: u16::from_le_bytes([buf[0], buf[1]]),
-            fast_last_entry_min: u16::from_le_bytes([buf[2], buf[3]]),
-            schedule_remaining_max: u16::from_le_bytes([buf[4], buf[5]]),
-            _rsvd_align: u16::from_le_bytes([buf[6], buf[7]]),
         })
     }
 }
@@ -729,16 +704,6 @@ impl Bus {
     /// a wedged transport).
     pub fn try_read_counters(&mut self, id: Id) -> Option<LinkCounters> {
         self.read_counters(id).ok()
-    }
-
-    pub fn read_tune(&mut self, id: Id) -> Result<TuneStamps> {
-        let data = self.read_register(id, TUNE_BASE, TuneStamps::LEN as u16)?;
-        TuneStamps::from_le_bytes(&data)
-    }
-
-    pub fn clear_tune(&mut self, id: Id) -> Result<()> {
-        let zeros = [0u8; TuneStamps::LEN];
-        self.write_register(id, TUNE_BASE, &zeros)
     }
 
     pub fn read_ct_u8(&mut self, id: Id, addr: u16) -> Result<u8> {

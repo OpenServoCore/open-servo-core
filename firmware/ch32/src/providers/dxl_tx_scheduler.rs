@@ -119,8 +119,6 @@ impl DxlTxScheduler {
             // the eventual wrap-around match doesn't double-fire.
             timer::enable_tim2_cc3_irq(false);
             timer::clear_tim2_cc3_flag();
-        } else {
-            crate::tune::record_schedule_remaining(ccr3.wrapping_sub(cnt));
         }
     }
 

@@ -1,27 +1,28 @@
 //! Measure the chip's `TX_START_ENTRY_TICKS` floor — the back-date the
-//! `arm_tim2` path applies to CCR3 so the wire-bit lands at or after the
-//! scheduled deadline.
+//! `arm_tim2` path applies to CCR3 so the wire-bit lands slightly after
+//! CC2 activates TX_EN.
 //!
-//! Two signals captured per run, both required because they cover
-//! complementary slices of the CC3→wire-bit path:
+//! Ground-truth signal: **wire-side excess**
+//! `(reply_first − req_end) − configured_first_byte_us` — the pirate's
+//! stable-clock measurement of when the chip's first wire bit lands vs
+//! the deadline implied by `RDT`. Covers the full path
+//! CC3-match → wire-bit. The 0.1th-percentile (p0.1) wire excess is the
+//! robust slack we can shrink into `TX_START_ENTRY_TICKS` while still
+//! keeping 99.9% of wire bits *after* CC2 (TX_EN active). 99.9% (not
+//! 99%) because Fast Sync chains snoop each predecessor's reply — a
+//! single first-byte drop collapses the chain tail, so a 1-in-1000
+//! failure rate at scale is unacceptable. `min` is reported for
+//! diagnostic context but is a heavy-tailed extreme-order statistic —
+//! a single noise edge picked up by the pirate during the idle gap
+//! swings `min` by 1+ µs across runs while p0.1 stays within ~1
+//! chip-HCLK tick at 20k samples (20-sample tail).
 //!
-//! - **Chip-side stamp** `TelemetryDxlTune.tx_start_entry_min`: captured
-//!   at the very top of `on_tim2_cc3`. Covers PFIC entry + `qingke-rt`
-//!   context save. Diagnostic only — `dma::enable` + DMA AHB arbitration
-//!   + USART DR write happen AFTER the stamp and are NOT in the number.
-//! - **Wire-side excess** `(reply_first − req_end) − configured_first_byte_us`:
-//!   pirate's stable-clock measurement of when the chip's first wire bit
-//!   lands vs the deadline implied by `RDT`. This is the ground truth
-//!   for the const — it covers the full path CC3-match → wire-bit. The
-//!   0.1th-percentile (p0.1) wire excess is the robust slack we can shrink
-//!   into `TX_START_ENTRY_TICKS` while still keeping 99.9% of wire bits at
-//!   or after deadline. 99.9% (not 99%) because Fast Sync chains snoop
-//!   each predecessor's reply — a single CRC-rejected frame collapses the
-//!   chain tail, so a 1-in-1000 failure rate at scale is unacceptable.
-//!   `min` is reported for diagnostic context but is a heavy-tailed
-//!   extreme-order statistic — a single noise edge picked up by the
-//!   pirate during the idle gap swings `min` by 1+ µs across runs while
-//!   p0.1 stays within ~1 chip-HCLK tick at 20k samples (20-sample tail).
+//! Complementary failure signal: **K-too-aggressive drop** — a Status
+//! reply arriving with its leading `0xFF` missing (see
+//! [`bench::DroppedLeadingFf`]). Chip's first bit-on-wire landed
+//! *before* CC2 activated TX_EN, so the transceiver + pirate lost the
+//! first byte in the direction-switch window. Any drop = K reduction
+//! required, independent of the wire-excess distribution.
 //!
 //! Output (all ticks HCLK = 48 MHz): per-batch distribution plus an
 //! across-batch summary with the recommended *delta* to apply to the
@@ -29,16 +30,12 @@
 //! Operator adds the delta to the current value. Delta sign convention:
 //! positive → enlarge K (wire bit was landing too late); negative →
 //! shrink K (wire bit was landing too early).
-//!
-//! Requires the chip to be built with `--features tuning`; otherwise the
-//! chip-side stamp surface stays zero (wire excess still works).
 
 use std::time::Duration;
 
 use anyhow::Result;
 use bench::{
-    Bus, BusArgs, DroppedLeadingFf, LinkCounters, RETURN_DELAY_2US_ADDR, TuneStamps, build_ping,
-    retry_on_drop,
+    Bus, BusArgs, DroppedLeadingFf, LinkCounters, RETURN_DELAY_2US_ADDR, build_ping, retry_on_drop,
 };
 use clap::Parser;
 use dxl_protocol::types::Id;
@@ -64,6 +61,15 @@ const HCLK_TICKS_PER_US: f64 = 48.0;
 /// delay penalty at 3M baud). 1.5 µs sits 3-5× above healthy noise and
 /// well below the smallest observed cliff jump, so it triggers cleanly.
 const CLIFF_SPREAD_THRESHOLD_US: f64 = 1.5;
+
+/// Median wire-excess above which the chip is treated as using the
+/// `software_fire` fallback path rather than `arm_tim2`'s hardware-OC
+/// path. Empirical: at RDT below the arm_tim2 floor, `software_fire` adds
+/// ~110-150 µs of DMA + USART setup latency on top of the configured
+/// deadline; the hardware-OC path lands within ~1 µs. 50 µs sits well
+/// above the arm_tim2 tail and well below the software_fire floor, so it
+/// triggers cleanly.
+const SOFTWARE_FIRE_EXCESS_THRESHOLD_US: f64 = 50.0;
 
 #[derive(Parser, Debug)]
 #[command(about = "Sample the chip's TX_START_ENTRY_TICKS floor + wire RDT distribution.")]
@@ -169,28 +175,17 @@ fn run(args: &Args, drops: &mut u32) -> Result<()> {
     println!();
 
     println!(
-        "  {:>5}  {:>10}  {:>11}  {:>11}  {:>11}  {:>11}  {:>6}  {:>10}",
-        "batch",
-        "tx_min_tk",
-        "wire_med_us",
-        "wire_p95_us",
-        "wire_p99_us",
-        "wire_max_us",
-        "rounds",
-        "anchor_ms",
+        "  {:>5}  {:>11}  {:>11}  {:>11}  {:>11}  {:>6}  {:>10}",
+        "batch", "wire_med_us", "wire_p95_us", "wire_p99_us", "wire_max_us", "rounds", "anchor_ms",
     );
 
-    let mut batch_mins: Vec<u16> = Vec::with_capacity(args.batches as usize);
     let mut all_round_us: Vec<f64> = Vec::with_capacity((args.batches * args.shots) as usize);
     let mut total_anchor_miss: u32 = 0;
     let mut prev_counters = LinkCounters::default();
     retry_on_drop(2, drops, || bus.clear_counters(id))?;
 
     let mut batches_with_wire: u32 = 0;
-    let mut batches_with_tune: u32 = 0;
     for b in 0..args.batches {
-        retry_on_drop(2, drops, || bus.clear_tune(id))?;
-
         let mut batch_rounds_us: Vec<f64> = Vec::with_capacity(args.shots as usize);
         for _ in 0..args.shots {
             let frame = build_ping(id)?;
@@ -201,17 +196,8 @@ fn run(args: &Args, drops: &mut u32) -> Result<()> {
         }
         all_round_us.extend(batch_rounds_us.iter().copied());
         let has_wire = !batch_rounds_us.is_empty();
-
-        let TuneStamps {
-            tx_start_entry_min, ..
-        } = retry_on_drop(2, drops, || bus.read_tune(id))?;
-        let has_tune = tx_start_entry_min != 0;
         if has_wire {
             batches_with_wire += 1;
-        }
-        if has_tune {
-            batches_with_tune += 1;
-            batch_mins.push(tx_start_entry_min);
         }
 
         let counters = retry_on_drop(2, drops, || bus.read_counters(id))?;
@@ -222,11 +208,6 @@ fn run(args: &Args, drops: &mut u32) -> Result<()> {
         prev_counters = counters;
 
         print!("  {b:>5}  ");
-        if has_tune {
-            print!("{tx_start_entry_min:>10}  ");
-        } else {
-            print!("{:>10}  ", "-");
-        }
         if has_wire {
             let med = quantile_us(&batch_rounds_us, 0.50);
             let p95 = quantile_us(&batch_rounds_us, 0.95);
@@ -246,42 +227,17 @@ fn run(args: &Args, drops: &mut u32) -> Result<()> {
 
     println!();
 
-    // Mode diagnosis. Three shapes to distinguish:
-    //   1. wire=0, tune=0: chip silent — transport dead, or RDT too low for
-    //      the chip to reply at all (deadline slipped past + fire-immediately
-    //      couldn't recover before host echo drained).
-    //   2. wire>0, tune=0: chip replies via the arm_tim2 fire-immediately
-    //      fallback path, bypassing `on_tim2_cc3` — no stamp lands. K-tuning
-    //      suggestion suppressed (would be garbage). Wire distribution still
-    //      shows real turnaround.
-    //   3. wire=0, tune>0: shouldn't happen (chip stamped without
-    //      transmitting); if seen, report and proceed.
-    //   4. wire>0, tune>0: normal case, print full summary + suggestion.
-    match (batches_with_wire, batches_with_tune) {
-        (0, 0) => {
-            println!(
-                "=== ⚠  chip silent — no replies and no tune stamps in {} batches ===",
-                args.batches
-            );
-            println!(
-                "  Possible causes: RDT ({rdt_us:.0} µs) below the chip's turnaround floor \
-                 (deadline math wraps into past + fire-immediately can't recover before host \
-                 echo drains), transport wedge, or servo powered off. Raise `--rdt-us` and retry."
-            );
-            return Ok(());
-        }
-        (w, 0) if w > 0 => {
-            println!("=== ⚠  chip replying via fire-immediately fallback ===");
-            println!(
-                "  {w}/{} batches saw wire replies but zero of them touched the tim2_cc3 IRQ \
-                 stamp path. RDT ({rdt_us:.0} µs) is below the chip's arm_tim2 floor — scheduler \
-                 skips CC3 arming and starts TX inline. K-tuning suggestion suppressed; the wire \
-                 distribution below still reflects real chip turnaround.",
-                args.batches,
-            );
-            println!();
-        }
-        (_, _) => {}
+    if batches_with_wire == 0 {
+        println!(
+            "=== ⚠  chip silent — no wire replies in {} batches ===",
+            args.batches,
+        );
+        println!(
+            "  Possible causes: RDT ({rdt_us:.0} µs) below the chip's turnaround floor \
+             (deadline math wraps into past + fire-immediately can't recover before host \
+             echo drains), transport wedge, or servo powered off. Raise `--rdt-us` and retry."
+        );
+        return Ok(());
     }
 
     let total_shots = args.batches.saturating_mul(args.shots);
@@ -293,34 +249,11 @@ fn run(args: &Args, drops: &mut u32) -> Result<()> {
     println!("=== edge-anchor misses (packet_end_tick fallback fired, SW-timed) ===",);
     println!("  total_misses={total_anchor_miss} / {total_shots} pings ({miss_pct:.2}%)",);
     println!();
-    print_summary(
-        &batch_mins,
-        &all_round_us,
-        expected_first_us,
-        batches_with_tune > 0,
-    );
+    print_summary(&all_round_us, expected_first_us);
     Ok(())
 }
 
-fn print_summary(batch_mins: &[u16], wire_us: &[f64], expected_first_us: f64, tune_ok: bool) {
-    if tune_ok {
-        let mins_f: Vec<f64> = batch_mins.iter().map(|&v| v as f64).collect();
-        let bm_min = mins_f.iter().copied().fold(f64::INFINITY, f64::min);
-        let bm_med = quantile_us(&mins_f, 0.50);
-        let bm_p95 = quantile_us(&mins_f, 0.95);
-        let bm_max = mins_f.iter().copied().fold(f64::NEG_INFINITY, f64::max);
-
-        println!("=== chip-side tx_start_entry_min distribution (TIM2 ticks, diagnostic) ===");
-        println!(
-            "  min={bm_min:.0}   median={bm_med:.0}   p95={bm_p95:.0}   max={bm_max:.0}   n={}",
-            batch_mins.len(),
-        );
-        println!(
-            "  covers PFIC entry + qingke-rt save only; dma::enable + DMA arb + USART DR write \
-             happen AFTER the stamp."
-        );
-    }
-
+fn print_summary(wire_us: &[f64], expected_first_us: f64) {
     if wire_us.is_empty() {
         return;
     }
@@ -334,7 +267,18 @@ fn print_summary(batch_mins: &[u16], wire_us: &[f64], expected_first_us: f64, tu
     let w_p99_9 = quantile_us(&excess_us, 0.999);
     let w_p99_99 = quantile_us(&excess_us, 0.9999);
     let w_max = excess_us.iter().copied().fold(f64::NEG_INFINITY, f64::max);
-    println!();
+
+    if w_med > SOFTWARE_FIRE_EXCESS_THRESHOLD_US {
+        println!("=== ⚠  chip replying via fire-immediately fallback ===");
+        println!(
+            "  wire_med excess is +{w_med:.1} µs — above the {SOFTWARE_FIRE_EXCESS_THRESHOLD_US:.0} µs threshold. \
+             RDT is below the chip's arm_tim2 floor: the scheduler skipped CC3 arming and \
+             started TX inline. K-tuning suggestion suppressed (would be garbage); raise \
+             `--rdt-us` to exercise arm_tim2 and re-run."
+        );
+        println!();
+    }
+
     println!("=== wire excess (first-byte − configured deadline) — ground truth ===");
     println!(
         "  min={w_min:+.2} µs   p0.1={w_p0_1:+.2} µs   median={w_med:+.2} µs   p95={w_p95:+.2} µs   max={w_max:+.2} µs   \
@@ -344,6 +288,9 @@ fn print_summary(batch_mins: &[u16], wire_us: &[f64], expected_first_us: f64, tu
     println!(
         "  upper tail:   p99={w_p99:+.2} µs   p99.9={w_p99_9:+.2} µs   p99.99={w_p99_99:+.2} µs",
     );
+    if w_med > SOFTWARE_FIRE_EXCESS_THRESHOLD_US {
+        return;
+    }
     let spread_us = w_p95 - w_med;
     let cliff_detected = spread_us > CLIFF_SPREAD_THRESHOLD_US;
     let p0_1_excess_hclk = (w_p0_1 * HCLK_TICKS_PER_US).floor() as i32;
