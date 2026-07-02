@@ -16,9 +16,12 @@
 
 mod edge_capture;
 mod edge_parser;
+mod skip;
 
 pub use edge_capture::EdgeCapture;
 pub use edge_parser::edge_buf_len;
+
+use skip::{SKIP_DEADLINE_SLACK_BYTES, SkipFsm};
 
 use core::cell::SyncUnsafeCell;
 use core::marker::PhantomData;
@@ -31,13 +34,6 @@ use super::BITS_PER_FRAME;
 use crate::dxl::uart::poll_src::PollSrc;
 use crate::ring::HwRing;
 use crate::traits::dxl::{EdgeDma, RxDma};
-
-/// Slack added past the byte-count-derived skip end, in wire bytes. Absorbs
-/// inter-byte gaps and HSI wobble within healthy streams so a deadline-
-/// bounded skip doesn't false-trigger on a slow-but-fine predecessor. 2
-/// bytes ≈ 7 µs at 3 Mbaud — negligible vs. the host's own ~1 ms timeout,
-/// tight enough that a truncated chain aborts well before the host's retry.
-const SKIP_DEADLINE_SLACK_BYTES: u16 = 2;
 
 /// Number of raw wire bytes at the tail of a just-parsed packet handed to
 /// the tail-signature back-search at `Event::Crc`. 4 bytes — including
@@ -129,20 +125,6 @@ pub enum PollAction {
     Stop,
 }
 
-struct SkipState {
-    bytes_remaining: u16,
-    id: u8,
-    /// WireClock u32 tick at which the skip gives up and clears itself, so
-    /// a truncated upstream packet can't bleed its uncounted bytes into
-    /// the next packet on the wire. Set at skip entry to
-    /// `now + (bytes_remaining + SKIP_DEADLINE_SLACK_BYTES) * frame_ticks`.
-    /// Compared with `(now.wrapping_sub(deadline_tick) as i32) >= 0` —
-    /// u32 modular signed-comparison works for any elapsed budget under
-    /// 2³¹ ticks (~44 s at HCLK), comfortably above the slowest baud's
-    /// longest packet.
-    deadline_tick: u32,
-}
-
 /// RX half — streaming parser, RX byte ring, drift-sampling gate.
 /// Splits off from [`CodecTx`] under [`Codec`] so the parent driver can hand
 /// the dispatcher a `&mut CodecTx` reply handle alongside the parser event
@@ -165,15 +147,10 @@ pub struct CodecRx<R: EdgeDma, CRC: CrcUmts, const RX_BUF_LEN: usize, const EDGE
     /// and byte-skip-consumed bytes. 32 bits ≈ 23.8 days at 3M sustained;
     /// wrap is non-physical.
     wire_bytes_consumed: u32,
-    /// Whether the in-flight packet is an Instruction — set at the
-    /// Instruction Header event, cleared at Status Header, cleared at
-    /// packet boundary (Crc / Resync / SkipComplete). Gates
-    /// [`EdgeCapture::walk_pairs_back`] at Crc so Status frames never contribute
-    /// drift samples per [[drift_sampling_instruction_only]].
-    packet_is_instruction: bool,
-    /// Universal byte-skip state. `Some` between a sink-requested
-    /// [`PollAction::Skip`] and the matching [`PollEvent::SkipComplete`].
-    skip: Option<SkipState>,
+    /// Universal byte-skip FSM + the drift-sampling gate — the poll loop's
+    /// packet-kind and skip-counter state, owned together off the ring
+    /// bookkeeping.
+    skip_fsm: SkipFsm,
 }
 
 impl<R: EdgeDma, CRC: CrcUmts, const RX_BUF_LEN: usize, const EDGE_BUF_LEN: usize>
@@ -186,8 +163,7 @@ impl<R: EdgeDma, CRC: CrcUmts, const RX_BUF_LEN: usize, const EDGE_BUF_LEN: usiz
             rx_buf: SyncUnsafeCell::new(HwRing::new(0)),
             instruction_count: 0,
             wire_bytes_consumed: 0,
-            packet_is_instruction: false,
-            skip: None,
+            skip_fsm: SkipFsm::new(),
         }
     }
 
@@ -259,28 +235,26 @@ impl<R: EdgeDma, CRC: CrcUmts, const RX_BUF_LEN: usize, const EDGE_BUF_LEN: usiz
             // truncated upstream packet can't leak its uncounted bytes
             // into the next packet — once the expected duration has
             // elapsed the ring's contents belong to whatever came next.
-            if let Some(skip) = self.skip.as_mut() {
-                if (now.wrapping_sub(skip.deadline_tick) as i32) >= 0 {
-                    self.skip = None;
-                    self.packet_is_instruction = false;
+            if self.skip_fsm.is_skipping() {
+                if self.skip_fsm.deadline_passed(now) {
+                    self.skip_fsm.clear();
+                    self.skip_fsm.on_packet_end();
                     continue;
                 }
                 // SAFETY: see note above.
                 let rx_buf = unsafe { &mut *rx_buf_ptr };
-                let avail = rx_buf.reader().avail();
-                let take = skip.bytes_remaining.min(avail);
+                let take = self.skip_fsm.take(rx_buf.reader().avail());
                 if take > 0 {
                     rx_buf.reader().advance(take);
-                    skip.bytes_remaining -= take;
                     self.wire_bytes_consumed = self.wire_bytes_consumed.wrapping_add(take as u32);
                 }
-                if skip.bytes_remaining > 0 {
+                if !self.skip_fsm.is_exhausted() {
                     // Ring exhausted mid-skip; resume on a later poll.
                     return;
                 }
-                let id = skip.id;
-                self.skip = None;
-                on_event(PollEvent::SkipComplete { id }, &mut self.edge_capture);
+                if let Some(id) = self.skip_fsm.finish() {
+                    on_event(PollEvent::SkipComplete { id }, &mut self.edge_capture);
+                }
                 // Foreign Instruction packets never emit a parser
                 // `Event::Crc` (parser byte-skipped past the tail), so
                 // anchor + retroactive walk piggyback here. Skip drain
@@ -290,10 +264,10 @@ impl<R: EdgeDma, CRC: CrcUmts, const RX_BUF_LEN: usize, const EDGE_BUF_LEN: usiz
                 // SkipComplete's sink (chain-fire predecessor-match ->
                 // `start_now`) is deadline-sensitive but doesn't read
                 // `packet_end_tick`, so the walk cost sits off it. Gated
-                // on `packet_is_instruction` per
+                // on the instruction-only drift rule per
                 // [[drift_sampling_instruction_only]] — Status skips
                 // never contribute.
-                if self.packet_is_instruction {
+                if self.skip_fsm.should_sample_drift() {
                     // SAFETY: see note above.
                     let rx_buf = unsafe { &mut *rx_buf_ptr };
                     let head_gap = rx_buf.reader().avail();
@@ -307,7 +281,7 @@ impl<R: EdgeDma, CRC: CrcUmts, const RX_BUF_LEN: usize, const EDGE_BUF_LEN: usiz
                     }
                     self.edge_capture.reset_anchor();
                 }
-                self.packet_is_instruction = false;
+                self.skip_fsm.on_packet_end();
                 continue;
             }
 
@@ -367,10 +341,10 @@ impl<R: EdgeDma, CRC: CrcUmts, const RX_BUF_LEN: usize, const EDGE_BUF_LEN: usiz
                     // Status frames don't.
                     match ev {
                         Event::Header(HeaderEvent::Instruction(_)) => {
-                            self.packet_is_instruction = true;
+                            self.skip_fsm.on_header(true);
                         }
                         Event::Header(HeaderEvent::Status(_)) => {
-                            self.packet_is_instruction = false;
+                            self.skip_fsm.on_header(false);
                         }
                         _ => {}
                     }
@@ -428,7 +402,7 @@ impl<R: EdgeDma, CRC: CrcUmts, const RX_BUF_LEN: usize, const EDGE_BUF_LEN: usiz
                     // on Instruction packets only; Status frames don't
                     // contribute drift samples ([[drift_sampling_instruction_only]]).
                     if matches!(ev, Event::Crc(_))
-                        && self.packet_is_instruction
+                        && self.skip_fsm.should_sample_drift()
                         && self.edge_capture.tail_anchor().is_some()
                     {
                         self.edge_capture
@@ -436,7 +410,7 @@ impl<R: EdgeDma, CRC: CrcUmts, const RX_BUF_LEN: usize, const EDGE_BUF_LEN: usiz
                     }
 
                     if matches!(ev, Event::Crc(_) | Event::Resync(_)) {
-                        self.packet_is_instruction = false;
+                        self.skip_fsm.on_packet_end();
                         // Packet boundary — anchor state is stale.
                         // Owned here (not in the driver's `on_event`) so
                         // `walk_pairs_back` above still sees the anchor
@@ -473,11 +447,7 @@ impl<R: EdgeDma, CRC: CrcUmts, const RX_BUF_LEN: usize, const EDGE_BUF_LEN: usiz
                 let budget_bytes = bytes_remaining.saturating_add(SKIP_DEADLINE_SLACK_BYTES);
                 let elapsed = (budget_bytes as u32).wrapping_mul(frame_ticks);
                 let deadline_tick = now.wrapping_add(elapsed);
-                self.skip = Some(SkipState {
-                    bytes_remaining,
-                    id,
-                    deadline_tick,
-                });
+                self.skip_fsm.arm(bytes_remaining, id, deadline_tick);
                 continue;
             }
 
@@ -541,7 +511,7 @@ impl<R: EdgeDma, CRC: CrcUmts, const RX_BUF_LEN: usize, const EDGE_BUF_LEN: usiz
     /// eat the next preamble. On non-chain TX (Plain reply) the skip is
     /// already `None`, so the clear is a no-op.
     pub fn cancel_skip(&mut self) {
-        self.skip = None;
+        self.skip_fsm.clear();
     }
 
     /// Monotonic count of Instruction headers the parser has emitted.
