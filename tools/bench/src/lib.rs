@@ -105,6 +105,69 @@ pub struct StatusReply {
     pub data: Vec<u8>,
 }
 
+/// Chip Status reply that arrived missing exactly one leading `0xFF` byte.
+///
+/// A valid DXL 2.0 Status header is `FF FF FD 00 <id> <len_l> <len_h> 0x55
+/// <err> …`. When the chip's first bit-on-wire lands *before* CC2 activates
+/// TX_EN (i.e. `TX_START_ENTRY_TICKS` is too large by more than the RX-side
+/// direction-switch slack), the transceiver + pirate lose the first byte and
+/// the tool observes `FF FD 00 <id> <len_l> <len_h> 0x55 <err> …` — the
+/// Status marker `0x55` now at position 6 instead of 7.
+///
+/// Callers that recognize this failure mode can categorize it as
+/// "K-too-aggressive" and either retry or surface a targeted suggestion,
+/// distinct from a generic parse failure.
+#[derive(Debug)]
+pub struct DroppedLeadingFf {
+    pub bytes: Vec<u8>,
+}
+
+impl std::fmt::Display for DroppedLeadingFf {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "chip Status reply dropped leading 0xFF (K-too-aggressive): {:02X?}",
+            self.bytes,
+        )
+    }
+}
+
+impl std::error::Error for DroppedLeadingFf {}
+
+/// Match the "one leading FF dropped" Status shape: `FF FD 00 <id> _ _ 0x55
+/// …`. The 0x55 (Status marker) at position 6 is the disambiguator — a
+/// valid Status has it at position 7.
+fn is_dropped_leading_ff(bytes: &[u8]) -> bool {
+    bytes.len() >= 7 && bytes[0] == 0xFF && bytes[1] == 0xFD && bytes[2] == 0x00 && bytes[6] == 0x55
+}
+
+/// Run `op`, catching [`DroppedLeadingFf`] and retrying up to `max_retries`
+/// times. Every drop encountered increments `drop_counter`, whether or not
+/// a subsequent retry succeeded — so the counter reflects the true rate of
+/// K-too-aggressive events observed. Non-drop errors propagate immediately.
+pub fn retry_on_drop<T>(
+    max_retries: u32,
+    drop_counter: &mut u32,
+    mut op: impl FnMut() -> Result<T>,
+) -> Result<T> {
+    let mut attempts = 0u32;
+    loop {
+        match op() {
+            Ok(v) => return Ok(v),
+            Err(e) => {
+                if e.downcast_ref::<DroppedLeadingFf>().is_none() {
+                    return Err(e);
+                }
+                *drop_counter += 1;
+                if attempts >= max_retries {
+                    return Err(e);
+                }
+                attempts += 1;
+            }
+        }
+    }
+}
+
 pub fn build_ping(id: Id) -> Result<HVec<u8, 16>> {
     let mut frame: HVec<u8, 16> = HVec::new();
     InstructionEncoder::<_, SoftwareCrcUmts>::new(&mut frame)
@@ -252,6 +315,11 @@ pub fn parse_status_reply(bytes: &[u8], expected_id: Option<Id>) -> Result<Statu
         }
     }
     if !done {
+        if is_dropped_leading_ff(bytes) {
+            return Err(anyhow::Error::new(DroppedLeadingFf {
+                bytes: bytes.to_vec(),
+            }));
+        }
         bail!(
             "incomplete Status reply ({} bytes, no terminal CRC event): {bytes:02X?}",
             bytes.len()

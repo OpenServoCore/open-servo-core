@@ -36,7 +36,10 @@
 use std::time::Duration;
 
 use anyhow::Result;
-use bench::{Bus, BusArgs, LinkCounters, RETURN_DELAY_2US_ADDR, TuneStamps, build_ping};
+use bench::{
+    Bus, BusArgs, DroppedLeadingFf, LinkCounters, RETURN_DELAY_2US_ADDR, TuneStamps, build_ping,
+    retry_on_drop,
+};
 use clap::Parser;
 use dxl_protocol::types::Id;
 
@@ -100,18 +103,54 @@ struct Args {
 
 fn main() -> Result<()> {
     let args = Args::parse();
+    let mut drops: u32 = 0;
+    let result = run(&args, &mut drops);
+    let terminal_drop = result
+        .as_ref()
+        .err()
+        .is_some_and(|e| e.downcast_ref::<DroppedLeadingFf>().is_some());
+    if drops > 0 || terminal_drop {
+        print_k_too_aggressive_advice(drops);
+    }
+    result
+}
 
-    let mut bus = Bus::start(BusArgs {
-        port: args.port,
-        target_baud: args.baud,
+fn print_k_too_aggressive_advice(drops: u32) {
+    eprintln!();
+    eprintln!(
+        "=== ⚠  TX_START_ENTRY_TICKS TOO AGGRESSIVE — {drops} K-drop event(s) during run ==="
+    );
+    eprintln!(
+        "  One or more chip Status replies dropped their leading 0xFF byte: the chip's first"
+    );
+    eprintln!(
+        "  bit-on-wire landed BEFORE CC2 activated TX_EN, so the transceiver + pirate lost the"
+    );
+    eprintln!("  first byte in the direction-switch window. Reduce TX_START_ENTRY_TICKS in");
+    eprintln!(
+        "  firmware/ch32/src/measurements.rs by ~5-10 HCLK ticks and re-flash before re-running."
+    );
+}
+
+fn run(args: &Args, drops: &mut u32) -> Result<()> {
+    let port = args.port.clone();
+    let baud = args.baud;
+    let mut bus = retry_on_drop(2, drops, || {
+        Bus::start(BusArgs {
+            port: port.clone(),
+            target_baud: baud,
+        })
     })?;
     let id = Id::new(bus.id());
     let ticks_per_us = bus.hz_per_us()? as f64;
     if let Some(us) = args.rdt_us {
         let steps = (us / 2).min(255) as u8;
-        bus.write_register(id, RETURN_DELAY_2US_ADDR, &[steps])?;
+        retry_on_drop(2, drops, || {
+            bus.write_register(id, RETURN_DELAY_2US_ADDR, &[steps])
+        })?;
     }
-    let rdt_us = bus.read_ct_u8(id, RETURN_DELAY_2US_ADDR)? as f64 * 2.0;
+    let rdt_us =
+        retry_on_drop(2, drops, || bus.read_ct_u8(id, RETURN_DELAY_2US_ADDR))? as f64 * 2.0;
     let byte_time_us = 10.0 * 1_000_000.0 / args.baud as f64;
     let expected_first_us = rdt_us + byte_time_us;
 
@@ -145,12 +184,12 @@ fn main() -> Result<()> {
     let mut all_round_us: Vec<f64> = Vec::with_capacity((args.batches * args.shots) as usize);
     let mut total_anchor_miss: u32 = 0;
     let mut prev_counters = LinkCounters::default();
-    bus.clear_counters(id)?;
+    retry_on_drop(2, drops, || bus.clear_counters(id))?;
 
     let mut batches_with_wire: u32 = 0;
     let mut batches_with_tune: u32 = 0;
     for b in 0..args.batches {
-        bus.clear_tune(id)?;
+        retry_on_drop(2, drops, || bus.clear_tune(id))?;
 
         let mut batch_rounds_us: Vec<f64> = Vec::with_capacity(args.shots as usize);
         for _ in 0..args.shots {
@@ -165,7 +204,7 @@ fn main() -> Result<()> {
 
         let TuneStamps {
             tx_start_entry_min, ..
-        } = bus.read_tune(id)?;
+        } = retry_on_drop(2, drops, || bus.read_tune(id))?;
         let has_tune = tx_start_entry_min != 0;
         if has_wire {
             batches_with_wire += 1;
@@ -175,7 +214,7 @@ fn main() -> Result<()> {
             batch_mins.push(tx_start_entry_min);
         }
 
-        let counters = bus.read_counters(id)?;
+        let counters = retry_on_drop(2, drops, || bus.read_counters(id))?;
         let anchor_miss = counters
             .edge_anchor_miss
             .wrapping_sub(prev_counters.edge_anchor_miss);
