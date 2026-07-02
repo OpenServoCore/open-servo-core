@@ -36,3 +36,10 @@ heapless     = "0.9"
 serialport   = "4"
 anyhow       = "1"
 clap         = { version = "4", features = ["derive"] }
+
+[dev-dependencies]
+serial_test  = "3"
+
+[[test]]
+name = "protocol"
+path = "tests/protocol/mod.rs"
