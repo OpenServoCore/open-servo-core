@@ -550,15 +550,15 @@ impl<P: Providers, const TX_BUF_LEN: usize> ReplyHandle<'_, P, TX_BUF_LEN> {
         // Fast chains require every slot's CC-match to anchor off the SAME
         // base above `packet_end_tick` for the wire to stay contiguous. Slot
         // 0 (`slot_offset_bytes == 0`) can't fire before its own chip sees
-        // packet-end — at `PollSrc::Idle` that's `packet_end + 1 byte_time`
+        // packet-end — at `PollSrc::LineIdle` that's `packet_end + 1 byte_time`
         // — so when `rdt_ticks` falls below that horizon slot 0's wall-clock
         // floors at the horizon while every other slot stays anchored to
         // raw `rdt_ticks`. Result: slot k > 0 fires `1 byte_time` inside
         // slot 0's trailing TX. Floor the effective RDT by the source's
         // `now − packet_end` offset so the whole chain shifts together.
         let floor_ticks: u32 = match ctx.src {
-            PollSrc::Dma => 0,
-            PollSrc::Idle => byte_ticks as u32,
+            PollSrc::ByteBatch => 0,
+            PollSrc::LineIdle => byte_ticks as u32,
         };
         let effective_rdt_ticks = rdt_ticks.max(floor_ticks);
         let delay_ticks =
@@ -690,7 +690,7 @@ pub struct DxlUart<
     codec: Codec<P::EdgeDma, P::Crc, RX_BUF_LEN, EDGE_BUF_LEN, TX_BUF_LEN>,
     clock: Clock<P::UsartBaud, P::ClockTrim>,
     /// NDTR-only readback for DMA1_CH5 (the RX byte ring). Plumbed
-    /// independently of the parser-path `on_rx_dma_advance` calls so the
+    /// independently of the parser-path `on_rx_progress` calls so the
     /// Fast Last fold body's intra-loop refresh doesn't go through the
     /// chip-side ISR — see [`Self::on_fold_step`] / [`Self::on_tx_start`].
     rx_dma: P::RxDma,
@@ -788,14 +788,13 @@ impl<P: Providers, const RX_BUF_LEN: usize, const EDGE_BUF_LEN: usize, const TX_
     }
 
     /// USART1 IDLE ISR entry — refresh the ET producer head and stash
-    /// `(now, Idle)` for the Crc-time fallback path. Small-packet
+    /// `(now, LineIdle)` for the Crc-time fallback path. Small-packet
     /// backstop for the parser drain (chip ISR follows with
     /// `services.poll` to drain any packet whose last byte arrived
     /// before RX HT/TC tripped).
     pub fn on_rx_idle(&mut self) {
         let now = self.wire_clock.now();
-        let ticks_per_bit = self.clock.ticks_per_bit();
-        self.codec.on_idle(now, ticks_per_bit);
+        self.codec.on_idle(now);
     }
 
     /// DMA1_CH5 HT/TC ISR entry — clear flags, refresh the codec's view
@@ -809,8 +808,8 @@ impl<P: Providers, const RX_BUF_LEN: usize, const EDGE_BUF_LEN: usize, const TX_
     pub fn on_rx_advance(&mut self) {
         let _ = self.rx_dma.read_and_ack();
         let now = self.wire_clock.now();
-        self.codec.on_rx_dma_advance(self.rx_dma.remaining());
-        self.codec.stash_dma_isr(now);
+        self.codec.on_rx_progress(self.rx_dma.remaining());
+        self.codec.on_byte_batch_wake(now);
     }
 
     /// Drive the codec event stream, manage wire-level state (anchor,
@@ -847,7 +846,7 @@ impl<P: Providers, const RX_BUF_LEN: usize, const EDGE_BUF_LEN: usize, const TX_
         if self.fast_last_crc.is_active() {
             return;
         }
-        self.codec.on_rx_dma_advance(self.rx_dma.remaining());
+        self.codec.on_rx_progress(self.rx_dma.remaining());
         let now = self.wire_clock.now();
         let id = self.id;
         let rdt_us = self.rdt_us;
@@ -1526,7 +1525,7 @@ mod tests {
         state
             .edge
             .stage_remaining((EDGE_BUF_LEN as u16) - total_edges);
-        bus.codec.stash_dma_isr(SEED_TICK as u32);
+        bus.codec.on_byte_batch_wake(SEED_TICK as u32);
     }
 
     /// Stage `bytes` into the codec's RX byte ring at sequence `at` AND

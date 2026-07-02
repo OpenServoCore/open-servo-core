@@ -5,9 +5,9 @@
 //!
 //! The Rx wrapper exposes four operations the codec drives:
 //!
-//! - [`Rx::publish_edges`] (and the ISR entries [`Rx::on_edge_advance`],
-//!   [`Rx::on_idle`]) — read NDTR, advance the producer head. Pure ring
-//!   bookkeeping.
+//! - [`Rx::on_idle`] and [`Rx::on_byte_batch_wake`] — ISR entries that
+//!   stash the wake tick for the Crc-time fallback path; `on_idle` also
+//!   publishes the ET producer head from NDTR.
 //! - [`Rx::anchor_at_tail`] — called at the parser's `Event::Crc`;
 //!   back-searches the ET ring for the tail-byte signature at
 //!   `[d_min ..= d_min + PADDING_EDGES_AHEAD]` back from head, where the
@@ -50,11 +50,11 @@ pub struct Rx<R: EdgeDma, const EDGE_BUF_LEN: usize> {
     edges: SyncUnsafeCell<HwRing<u16, EDGE_BUF_LEN>>,
     ring: R,
     /// Most recent ISR's wake capture — WireClock u32 tick at ISR entry
-    /// plus the source flavor. Set on every [`Self::on_edge_advance`] /
-    /// [`Self::on_idle`] entry; read by the composite Crc handler when
+    /// plus the source flavor. Set on every [`Self::on_idle`] /
+    /// [`Self::on_byte_batch_wake`] entry; read by the composite Crc handler when
     /// [`Self::packet_end_tick`] returns `None` to pick a fallback
     /// formula via [`Self::packet_end_tick_fallback`]. Default value
-    /// `(0, PollSrc::Dma)` is unreachable in production — Crc
+    /// `(0, PollSrc::ByteBatch)` is unreachable in production — Crc
     /// follows bytes which follow an ISR — but keeps the field non-
     /// Optional so the hot path doesn't carry an `unwrap`.
     last_isr: (u32, PollSrc),
@@ -66,7 +66,7 @@ impl<R: EdgeDma, const EDGE_BUF_LEN: usize> Rx<R, EDGE_BUF_LEN> {
             parser: EdgeParser::new(),
             edges: SyncUnsafeCell::new(HwRing::new(0)),
             ring,
-            last_isr: (0, PollSrc::Dma),
+            last_isr: (0, PollSrc::ByteBatch),
         }
     }
 
@@ -85,20 +85,20 @@ impl<R: EdgeDma, const EDGE_BUF_LEN: usize> Rx<R, EDGE_BUF_LEN> {
     }
 
     /// USART1 IDLE ISR entry. Publishes the producer head (small packets
-    /// that don't fill a half-ring never trip HT). Stashes `(now, Idle)`
+    /// that don't fill a half-ring never trip HT). Stashes `(now, LineIdle)`
     /// for the Crc-time fallback path.
-    pub fn on_idle(&mut self, now: u32, _ticks_per_bit: u16) {
-        self.last_isr = (now, PollSrc::Idle);
+    pub fn on_idle(&mut self, now: u32) {
+        self.last_isr = (now, PollSrc::LineIdle);
         crate::log::trace!("rx: on_idle");
         self.publish_edges();
     }
 
-    /// Stash `(now, Dma)` on the DMA1_CH5 (byte-ring) HT/TC ISR entry.
+    /// Stash `(now, ByteBatch)` on the DMA1_CH5 (byte-ring) HT/TC ISR entry.
     /// That vector drives the parser drain, so the Crc-time fallback path
     /// needs a fresh capture from here — not from DMA1_CH7 (edge-ring),
     /// which small packets bypass entirely.
-    pub fn stash_last_isr_dma(&mut self, now: u32) {
-        self.last_isr = (now, PollSrc::Dma);
+    pub fn record_wake_tick(&mut self, now: u32) {
+        self.last_isr = (now, PollSrc::ByteBatch);
     }
 
     /// Publish the producer head from `ring.remaining()` (NDTR readback)
@@ -116,7 +116,7 @@ impl<R: EdgeDma, const EDGE_BUF_LEN: usize> Rx<R, EDGE_BUF_LEN> {
     }
 
     /// Most recent ISR wake capture — `(now, src)` recorded at the last
-    /// [`Self::on_edge_advance`] / [`Self::on_idle`] entry. Composite Crc
+    /// [`Self::on_idle`] / [`Self::on_byte_batch_wake`] entry. Composite Crc
     /// handler consumes this when the edge parser was unanchored (the
     /// `packet_end_tick_fallback` path).
     pub fn last_isr_capture(&self) -> (u32, PollSrc) {
@@ -150,7 +150,6 @@ impl<R: EdgeDma, const EDGE_BUF_LEN: usize> Rx<R, EDGE_BUF_LEN> {
     /// deadline path. See [`edge_parser::EdgeParser::walk_pairs_back`].
     pub fn walk_pairs_back<const PAIRS_LEN: usize>(
         &self,
-        tail_anchor: u16,
         n_pairs: u8,
         ticks_per_bit: u16,
         out_pairs: &mut heapless::Vec<(u16, u16), PAIRS_LEN>,
@@ -158,7 +157,7 @@ impl<R: EdgeDma, const EDGE_BUF_LEN: usize> Rx<R, EDGE_BUF_LEN> {
         // SAFETY: see `publish_edges`; read-only path.
         let edges = unsafe { &*self.edges.get() };
         self.parser
-            .walk_pairs_back(edges, tail_anchor, n_pairs, ticks_per_bit, out_pairs)
+            .walk_pairs_back(edges, n_pairs, ticks_per_bit, out_pairs)
     }
 
     /// Wire-end tick of the most-recently classified byte, lifted into the

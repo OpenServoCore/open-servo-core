@@ -20,7 +20,7 @@ pub trait RxDma {
 
     /// Read and clear HT/TC flags on this channel. Called from the
     /// publish-only ISR before [`Self::remaining`] feeds
-    /// `CodecRx::on_rx_dma_advance`. Returned flags are informational;
+    /// `CodecRx::on_rx_progress`. Returned flags are informational;
     /// the publish proceeds regardless of which crossing fired.
     fn read_and_ack(&mut self) -> DmaFlags;
 

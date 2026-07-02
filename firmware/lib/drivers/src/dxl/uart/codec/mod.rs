@@ -189,17 +189,17 @@ impl<R: EdgeDma, CRC: CrcUmts, const RX_BUF_LEN: usize, const EDGE_BUF_LEN: usiz
     }
 
     /// USART1 IDLE ISR entry — publishes the ET producer head, stashes
-    /// the ISR-entry tick + Idle source for the Crc-time fallback path.
-    pub fn on_idle(&mut self, now: u32, ticks_per_bit: u16) {
-        self.rx.on_idle(now, ticks_per_bit);
+    /// the ISR-entry tick + LineIdle source for the Crc-time fallback path.
+    pub fn on_idle(&mut self, now: u32) {
+        self.rx.on_idle(now);
     }
 
     /// USART1 RX DMA published progress — `remaining` is the channel's
     /// NDTR readback. Advances the `rx_buf` producer head so `poll` sees
     /// newly-DMA'd bytes. Pure ring bookkeeping; does not touch
     /// `last_isr` — the DMA1_CH5 ISR entry that owns the stash calls
-    /// [`Self::stash_dma_isr`] alongside.
-    pub fn on_rx_dma_advance(&mut self, remaining: u16) {
+    /// [`Self::on_byte_batch_wake`] alongside.
+    pub fn on_rx_progress(&mut self, remaining: u16) {
         // SAFETY: rx_buf is written only by DMA1_CH5 (hardware writer)
         // and read here from the same PFIC priority level as the DMA
         // HT/TC ISR, so no other consumer can `&mut` it concurrently.
@@ -207,11 +207,11 @@ impl<R: EdgeDma, CRC: CrcUmts, const RX_BUF_LEN: usize, const EDGE_BUF_LEN: usiz
         rx_buf.on_publish(remaining);
     }
 
-    /// Stash `(now, Dma)` for the Crc-time fallback path. Called from the
+    /// Stash `(now, ByteBatch)` for the Crc-time fallback path. Called from the
     /// DMA1_CH5 HT/TC ISR entry — that vector drives the parser drain,
     /// so its wake tick is what Crc's fallback formula expects.
-    pub fn stash_dma_isr(&mut self, now: u32) {
-        self.rx.stash_last_isr_dma(now);
+    pub fn on_byte_batch_wake(&mut self, now: u32) {
+        self.rx.record_wake_tick(now);
     }
 
     /// Drain the RX byte ring through the streaming parser, fanning each
@@ -296,10 +296,9 @@ impl<R: EdgeDma, CRC: CrcUmts, const RX_BUF_LEN: usize, const EDGE_BUF_LEN: usiz
                     let head_gap = rx_buf.reader().avail();
                     if let Some((tail, d_min)) = read_tail_and_d_min(rx_buf, head_gap)
                         && self.rx.anchor_at_tail(ticks_per_bit, &tail, d_min)
-                        && let Some(anchor) = self.rx.tail_anchor()
                     {
                         self.rx
-                            .walk_pairs_back(anchor, n_pairs_wanted, ticks_per_bit, pairs);
+                            .walk_pairs_back(n_pairs_wanted, ticks_per_bit, pairs);
                     }
                     self.rx.reset_anchor();
                 }
@@ -424,10 +423,10 @@ impl<R: EdgeDma, CRC: CrcUmts, const RX_BUF_LEN: usize, const EDGE_BUF_LEN: usiz
                     // contribute drift samples ([[drift_sampling_instruction_only]]).
                     if matches!(ev, Event::Crc(_))
                         && self.packet_is_instruction
-                        && let Some(anchor) = self.rx.tail_anchor()
+                        && self.rx.tail_anchor().is_some()
                     {
                         self.rx
-                            .walk_pairs_back(anchor, n_pairs_wanted, ticks_per_bit, pairs);
+                            .walk_pairs_back(n_pairs_wanted, ticks_per_bit, pairs);
                     }
 
                     if matches!(ev, Event::Crc(_) | Event::Resync(_)) {
@@ -744,16 +743,16 @@ impl<
     // ----- Forwarders. Keep sequential single-half call sites compact
     // without forcing every caller to disambiguate `.rx` / `.tx`. -----
 
-    pub fn on_idle(&mut self, now: u32, ticks_per_bit: u16) {
-        self.rx.on_idle(now, ticks_per_bit);
+    pub fn on_idle(&mut self, now: u32) {
+        self.rx.on_idle(now);
     }
 
-    pub fn on_rx_dma_advance(&mut self, remaining: u16) {
-        self.rx.on_rx_dma_advance(remaining);
+    pub fn on_rx_progress(&mut self, remaining: u16) {
+        self.rx.on_rx_progress(remaining);
     }
 
-    pub fn stash_dma_isr(&mut self, now: u32) {
-        self.rx.stash_dma_isr(now);
+    pub fn on_byte_batch_wake(&mut self, now: u32) {
+        self.rx.on_byte_batch_wake(now);
     }
 
     pub fn poll<F, const PAIRS_LEN: usize>(

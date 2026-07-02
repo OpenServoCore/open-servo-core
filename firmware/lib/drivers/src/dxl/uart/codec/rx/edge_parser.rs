@@ -81,14 +81,14 @@ const HSI_WALK_SNAP_BITS: u16 = 2;
 /// byte, so the formula downstream must pick the matching one.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub enum PollSrc {
-    /// HT/TC poll context. Bytes arrived steadily; the CRC byte landed in
-    /// DMA ~now (sub-µs ISR-entry latency aside) so `now` is the
+    /// Byte-ring HT/TC poll context. Bytes arrived steadily; the CRC byte
+    /// landed in DMA ~now (sub-µs ISR-entry latency aside) so `now` is the
     /// packet-end estimate.
-    Dma,
-    /// IDLE poll context. The wire has been quiet for one idle character
-    /// (`BITS_PER_FRAME` bit-times) so the last data byte ended that long
-    /// ago — back-date `now` by the idle gap.
-    Idle,
+    ByteBatch,
+    /// USART line-IDLE poll context. The wire has been quiet for one idle
+    /// character (`BITS_PER_FRAME` bit-times) so the last data byte ended
+    /// that long ago — back-date `now` by the idle gap.
+    LineIdle,
 }
 
 /// Minimum edge-ring depth (in `u16` slots, rounded up to a power of two)
@@ -194,8 +194,8 @@ fn lift(stamp: u16, ref_tick: u32) -> u32 {
 #[inline]
 fn drain_ref(now: u32, src: PollSrc, ticks_per_bit: u16) -> u32 {
     match src {
-        PollSrc::Dma => now,
-        PollSrc::Idle => {
+        PollSrc::ByteBatch => now,
+        PollSrc::LineIdle => {
             let half = (BITS_PER_FRAME as u32).wrapping_mul(ticks_per_bit as u32);
             now.wrapping_sub(half)
         }
@@ -443,10 +443,10 @@ impl EdgeParser {
     /// calls this at Crc when [`packet_end_tick`] returns `None` (interference
     /// or edge loss starved the tail-anchor back-search). Formula per `src`:
     ///
-    /// - [`PollSrc::Dma`]: returns `now`. CRC byte landed in DMA
+    /// - [`PollSrc::ByteBatch`]: returns `now`. CRC byte landed in DMA
     ///   ~immediately before the poll, so `now` IS packet-end with negligible
     ///   ISR-entry offset.
-    /// - [`PollSrc::Idle`]: returns `now − BITS_PER_FRAME · ticks_per_bit`.
+    /// - [`PollSrc::LineIdle`]: returns `now − BITS_PER_FRAME · ticks_per_bit`.
     ///   USART1 IDLE asserts one idle character after the last data byte's
     ///   stop bit, so back-date by that interval.
     ///
@@ -455,8 +455,8 @@ impl EdgeParser {
     #[allow(dead_code)]
     pub fn packet_end_tick_fallback(&self, src: PollSrc, now: u32, ticks_per_bit: u16) -> u32 {
         match src {
-            PollSrc::Dma => now,
-            PollSrc::Idle => {
+            PollSrc::ByteBatch => now,
+            PollSrc::LineIdle => {
                 let gap = (BITS_PER_FRAME as u32).wrapping_mul(ticks_per_bit as u32);
                 now.wrapping_sub(gap)
             }
@@ -493,7 +493,6 @@ impl EdgeParser {
     pub fn walk_pairs_back<const EDGE_BUF_LEN: usize, const PAIRS_LEN: usize>(
         &self,
         edges: &HwRing<u16, EDGE_BUF_LEN>,
-        _tail_anchor: u16,
         n_pairs: u8,
         ticks_per_bit: u16,
         out_pairs: &mut heapless::Vec<(u16, u16), PAIRS_LEN>,
@@ -733,11 +732,14 @@ mod tests {
     #[test]
     fn packet_end_tick_adds_10bit_after_lift() {
         let mut c = make();
-        assert_eq!(c.packet_end_tick(TPB_3M, 1_000_000, PollSrc::Dma), None);
+        assert_eq!(
+            c.packet_end_tick(TPB_3M, 1_000_000, PollSrc::ByteBatch),
+            None
+        );
         c.tail_anchor = Some(5000);
         let now = 0x0001_0000_u32 + 5000;
         assert_eq!(
-            c.packet_end_tick(TPB_3M, now, PollSrc::Dma),
+            c.packet_end_tick(TPB_3M, now, PollSrc::ByteBatch),
             Some(now + BYTE_TICKS_3M as u32),
         );
     }
@@ -762,7 +764,7 @@ mod tests {
             "guards regression scope"
         );
         assert_eq!(
-            c.packet_end_tick(TPB_9600, now_at_idle, PollSrc::Idle),
+            c.packet_end_tick(TPB_9600, now_at_idle, PollSrc::LineIdle),
             Some(stamp_full + BYTE_TICKS_9600),
         );
     }
@@ -780,7 +782,7 @@ mod tests {
         let truncated_elapsed = 2 * BITS_PER_FRAME as u32 * TPB_9600 as u32 - 1;
         let now_at_idle = stamp_full + truncated_elapsed;
         assert_eq!(
-            c.packet_end_tick(TPB_9600, now_at_idle, PollSrc::Idle),
+            c.packet_end_tick(TPB_9600, now_at_idle, PollSrc::LineIdle),
             Some(stamp_full + BYTE_TICKS_9600),
         );
     }
@@ -788,10 +790,13 @@ mod tests {
     #[test]
     fn fallback_dma_returns_now_unchanged() {
         let c = make();
-        assert_eq!(c.packet_end_tick_fallback(PollSrc::Dma, 1234, TPB_3M), 1234);
-        assert_eq!(c.packet_end_tick_fallback(PollSrc::Dma, 0, TPB_3M), 0);
         assert_eq!(
-            c.packet_end_tick_fallback(PollSrc::Dma, u32::MAX, TPB_3M),
+            c.packet_end_tick_fallback(PollSrc::ByteBatch, 1234, TPB_3M),
+            1234
+        );
+        assert_eq!(c.packet_end_tick_fallback(PollSrc::ByteBatch, 0, TPB_3M), 0);
+        assert_eq!(
+            c.packet_end_tick_fallback(PollSrc::ByteBatch, u32::MAX, TPB_3M),
             u32::MAX,
         );
     }
@@ -800,7 +805,7 @@ mod tests {
     fn fallback_idle_back_dates_by_one_idle_char() {
         let c = make();
         assert_eq!(
-            c.packet_end_tick_fallback(PollSrc::Idle, 1600, TPB_3M),
+            c.packet_end_tick_fallback(PollSrc::LineIdle, 1600, TPB_3M),
             1600 - BYTE_TICKS_3M as u32,
         );
     }
@@ -810,7 +815,7 @@ mod tests {
         let c = make();
         let expected = 5_u32.wrapping_sub(BYTE_TICKS_3M as u32);
         assert_eq!(
-            c.packet_end_tick_fallback(PollSrc::Idle, 5, TPB_3M),
+            c.packet_end_tick_fallback(PollSrc::LineIdle, 5, TPB_3M),
             expected,
         );
     }
@@ -986,7 +991,7 @@ mod tests {
         c.force_walker_ring_seed_for_test(5000, 0);
         let edges = edges16(&[]);
         let mut pairs: heapless::Vec<(u16, u16), 8> = heapless::Vec::new();
-        c.walk_pairs_back(&edges, 5000, 0, TPB_3M, &mut pairs);
+        c.walk_pairs_back(&edges, 0, TPB_3M, &mut pairs);
         assert!(pairs.is_empty());
     }
 
@@ -1002,7 +1007,7 @@ mod tests {
         let tail_anchor = 1000u16.wrapping_add(30 * TPB_3M);
         c.force_walker_ring_seed_for_test(tail_anchor, 0);
         let mut pairs: heapless::Vec<(u16, u16), 8> = heapless::Vec::new();
-        c.walk_pairs_back(&edges, tail_anchor, 3, TPB_3M, &mut pairs);
+        c.walk_pairs_back(&edges, 3, TPB_3M, &mut pairs);
         assert_eq!(
             pairs.as_slice(),
             &[
@@ -1032,7 +1037,7 @@ mod tests {
         let tail_anchor = 1000u16.wrapping_add(30 * TPB_3M);
         c.force_walker_ring_seed_for_test(tail_anchor, 0);
         let mut pairs: heapless::Vec<(u16, u16), 8> = heapless::Vec::new();
-        c.walk_pairs_back(&edges, tail_anchor, 3, TPB_3M, &mut pairs);
+        c.walk_pairs_back(&edges, 3, TPB_3M, &mut pairs);
         assert_eq!(
             pairs.as_slice(),
             &[(
@@ -1055,7 +1060,7 @@ mod tests {
         let edges = edges16(&[e0, e1, e2, e3]);
         let mut pairs: heapless::Vec<(u16, u16), 8> = heapless::Vec::new();
         c.force_walker_ring_seed_for_test(e3, 0);
-        c.walk_pairs_back(&edges, e3, 3, TPB_3M, &mut pairs);
+        c.walk_pairs_back(&edges, 3, TPB_3M, &mut pairs);
         assert_eq!(pairs.as_slice(), &[(e2, e3), (e1, e2), (e0, e1)]);
     }
 
@@ -1072,7 +1077,7 @@ mod tests {
         let tail_anchor = 1000u16.wrapping_add(30u16.wrapping_mul(TPB_9600));
         c.force_walker_ring_seed_for_test(tail_anchor, 0);
         let mut pairs: heapless::Vec<(u16, u16), 8> = heapless::Vec::new();
-        c.walk_pairs_back(&edges, tail_anchor, 3, TPB_9600, &mut pairs);
+        c.walk_pairs_back(&edges, 3, TPB_9600, &mut pairs);
         let byte = BYTE_TICKS_9600;
         assert_eq!(
             pairs.as_slice(),
@@ -1103,7 +1108,7 @@ mod tests {
         let edges = edges16(&[e0, e1, e2, e3]);
         let mut pairs: heapless::Vec<(u16, u16), 8> = heapless::Vec::new();
         c.force_walker_ring_seed_for_test(e3, 0);
-        c.walk_pairs_back(&edges, e3, 3, TPB_3M, &mut pairs);
+        c.walk_pairs_back(&edges, 3, TPB_3M, &mut pairs);
         // Step 1 (predicted ≈ e3-10·bit = expected e2 slot): e2 is out
         // of window; predicted position is close to e2's SHOULD-BE slot
         // but no edge lands there → free-run. Step 2 (predicted =
@@ -1148,7 +1153,7 @@ mod tests {
         c.force_tail_starts_for_test(starts, 0);
         let edges = edges16(&[0xDEAD, 0xBEEF]); // decoy — walker must ignore
         let mut pairs: heapless::Vec<(u16, u16), 8> = heapless::Vec::new();
-        c.walk_pairs_back(&edges, starts[3], 3, TPB_3M, &mut pairs);
+        c.walk_pairs_back(&edges, 3, TPB_3M, &mut pairs);
         assert_eq!(
             pairs.as_slice(),
             &[(1000, 2000), (2000, 3000), (3000, 4000)]
@@ -1174,7 +1179,7 @@ mod tests {
         assert!(c.anchor_at_tail(&mut edges, TPB_3M, &tail, 0));
         let starts = c.tail_starts;
         let mut pairs: heapless::Vec<(u16, u16), 8> = heapless::Vec::new();
-        c.walk_pairs_back(&edges, starts[3], 4, TPB_3M, &mut pairs);
+        c.walk_pairs_back(&edges, 4, TPB_3M, &mut pairs);
         assert_eq!(pairs.len(), 4);
         // First 3 come from cache.
         assert_eq!(pairs[0], (starts[0], starts[1]));
