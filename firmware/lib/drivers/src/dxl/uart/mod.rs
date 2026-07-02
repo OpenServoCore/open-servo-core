@@ -12,7 +12,6 @@
 pub mod clock;
 pub mod codec;
 pub mod fast_last;
-pub mod fast_last_crc;
 
 #[cfg(test)]
 mod test_support;
@@ -29,7 +28,6 @@ use clock::Clock;
 use codec::rx::PollSrc;
 use codec::{Codec, CodecTx, PollAction, PollEvent};
 use fast_last::{FastLast, FastLastSchedule};
-use fast_last_crc::FastLastCrc;
 
 /// Bits on the wire for a single UART character: 1 start + 8 data + 1 stop
 /// (8N1). Multiply by `ticks_per_bit` to get one byte's wire duration in
@@ -69,7 +67,7 @@ struct ReplyContext {
     /// predecessor + own bytes before DMA1_CH4 reads it.
     fast_slot_position: Option<SlotPosition>,
     /// Parser wire-byte cursor at parse-complete. Forwarded into
-    /// [`FastLastCrc::start`] as its `start_cursor` — the first
+    /// [`FoldEngine::start`] as its `start_cursor` — the first
     /// predecessor reply byte arrives at exactly this cursor, so the
     /// fold's `cursor < start_cursor` guard skips everything up to (but
     /// not including) the first predecessor byte.
@@ -369,8 +367,7 @@ fn compute_fast_position(k: u8, n_total: u8, packet_length: u16) -> SlotPosition
 pub struct ReplyHandle<'a, P: Providers, const TX_BUF_LEN: usize> {
     tx: &'a mut CodecTx<P::Crc, TX_BUF_LEN>,
     scheduler: &'a mut P::TxScheduler,
-    fast_last: &'a mut FastLast<P::FastLastScheduler>,
-    fast_last_crc: &'a mut FastLastCrc<P::Crc>,
+    fast_last: &'a mut FastLast<P::FastLastScheduler, P::Crc>,
     clock: &'a mut Clock<P::UsartBaud, P::ClockTrim>,
     last_reply_ctx: &'a mut Option<ReplyContext>,
     /// Chain-pending state on `DxlUart`. Set to `Some(pred)` by
@@ -567,10 +564,9 @@ impl<P: Providers, const TX_BUF_LEN: usize> ReplyHandle<'_, P, TX_BUF_LEN> {
                 packet_end_tick,
                 rdt_ticks,
                 byte_ticks: self.clock.byte_ticks(),
-                predecessor_bytes: ctx.slot_offset_bytes as u16,
+                predecessor_bytes: ctx.slot_offset_bytes,
+                fold_start_cursor: ctx.fold_start_cursor,
             });
-            self.fast_last_crc
-                .start(ctx.fold_start_cursor, ctx.slot_offset_bytes);
         }
     }
 
@@ -685,14 +681,13 @@ pub struct DxlUart<
     /// and by [`Self::poll`]'s SkipComplete arm for the Plain chain
     /// k > 0 sequence-driven fire path (`docs/dxl-streaming-rx.md` §5.2).
     tx_bus: P::TxBus,
-    /// Periodic-walk grid scheduler for Fast Sync / Bulk Read Last replies.
-    /// Driver-pattern §4 sub-driver: armed at `send_slot(Last)` via
-    /// `ReplyHandle`; `on_systick_match` drives one body per CMP.
-    fast_last: FastLast<P::FastLastScheduler>,
-    /// Chain-CRC fold engine. Per-byte hook is wired into the codec's
-    /// `drain_raw` callback during the SysTick walker; finalize patches our
+    /// Fast Last fold pipeline for Fast Sync / Bulk Read Last replies — a
+    /// §4.3 sub-composite of the periodic-walk grid scheduler and the
+    /// chain-CRC fold engine. Armed at `send_slot(Last)` via `ReplyHandle`;
+    /// the grid drives one body per CMP, the fold engine's per-byte hook is
+    /// wired into the codec's `drain_raw` callback and finalize patches our
     /// own trailing CRC slot before DMA1_CH4 reads it.
-    fast_last_crc: FastLastCrc<P::Crc>,
+    fast_last: FastLast<P::FastLastScheduler, P::Crc>,
     /// WireClock u32 readout used by `on_rx_advance`, `on_rx_idle`, and
     /// `poll` to source `now` without taking it as a parameter. The
     /// chip-side provider hides any peripheral-side composition (TIM2 u16
@@ -741,7 +736,7 @@ impl<P: Providers, const RX_BUF_LEN: usize, const EDGE_BUF_LEN: usize, const TX_
         rx_dma: P::RxDma,
         scheduler: P::TxScheduler,
         tx_bus: P::TxBus,
-        fast_last: FastLast<P::FastLastScheduler>,
+        fast_last: FastLast<P::FastLastScheduler, P::Crc>,
         wire_clock: P::WireClock,
         id: u8,
         rdt_us: u32,
@@ -753,7 +748,6 @@ impl<P: Providers, const RX_BUF_LEN: usize, const EDGE_BUF_LEN: usize, const TX_
             scheduler,
             tx_bus,
             fast_last,
-            fast_last_crc: FastLastCrc::new(),
             wire_clock,
             id,
             rdt_us,
@@ -828,7 +822,7 @@ impl<P: Providers, const RX_BUF_LEN: usize, const EDGE_BUF_LEN: usize, const TX_
         // byte-ring HT/TC-triggered polls still need this entry gate to
         // honor the RX-tail ownership contract in
         // `dxl-streaming-rx.md` §6.
-        if self.fast_last_crc.is_active() {
+        if self.fast_last.fold_active() {
             return;
         }
         self.codec.on_rx_progress(self.rx_dma.remaining());
@@ -842,7 +836,6 @@ impl<P: Providers, const RX_BUF_LEN: usize, const EDGE_BUF_LEN: usize, const TX_
             scheduler,
             tx_bus,
             fast_last,
-            fast_last_crc,
             rx_dma,
             last_reply_ctx,
             inflight,
@@ -986,7 +979,6 @@ impl<P: Providers, const RX_BUF_LEN: usize, const EDGE_BUF_LEN: usize, const TX_
                     tx,
                     scheduler,
                     fast_last,
-                    fast_last_crc,
                     clock,
                     last_reply_ctx,
                     predecessor_id,
@@ -1004,7 +996,7 @@ impl<P: Providers, const RX_BUF_LEN: usize, const EDGE_BUF_LEN: usize, const TX_
                 // without this bail-out the parser+skip path consumes the
                 // predecessor's leading bytes in the same poll that armed
                 // the fold, and the fold engine starves.
-                if fast_last_crc.is_active() {
+                if fast_last.fold_active() {
                     PollAction::Stop
                 } else {
                     action
@@ -1072,10 +1064,10 @@ impl<P: Providers, const RX_BUF_LEN: usize, const EDGE_BUF_LEN: usize, const TX_
     /// (doc §10.6.2 CC3 body).
     ///
     /// The post-fire fold has three exits:
-    /// - **finalize** — `fast_last_crc` reaches its predecessor-byte target
-    ///   inside `on_byte`, which patches `tx_buf[len-CRC_BYTES..len]` and
+    /// - **finalize** — the fold engine reaches its predecessor-byte target
+    ///   inside `on_slice`, which patches `tx_buf[len-CRC_BYTES..len]` and
     ///   clears `active`. Success; no telemetry event.
-    /// - **patch-window-expired** — [`FastLast::patch_window_expired`]
+    /// - **patch-window-expired** — [`FsmScheduler::patch_window_expired`]
     ///   reports the TX DMA channel has prefetched into the trailing CRC
     ///   slot. Any further patch ships too late; bump
     ///   `crc_patch_deadline_miss`.
@@ -1091,57 +1083,57 @@ impl<P: Providers, const RX_BUF_LEN: usize, const EDGE_BUF_LEN: usize, const TX_
     /// the 3 Mbaud floor, not a wire-correctness failure).
     pub fn on_tx_start(&mut self) {
         self.tx_bus.handle_start();
-        if !self.fast_last_crc.is_active() {
+        if !self.fast_last.fold_active() {
             return;
         }
         let Self {
             codec,
             rx_dma,
             fast_last,
-            fast_last_crc,
             ..
         } = self;
         let (rx, tx) = codec.split_mut();
+        let (fl_sched, fl_crc) = fast_last.split_mut();
         loop {
-            if fast_last.patch_window_expired() {
-                fast_last.record_patch_deadline_miss();
+            if fl_sched.patch_window_expired() {
+                fl_sched.record_patch_deadline_miss();
                 break;
             }
-            let before = fast_last_crc.bytes_folded();
+            let before = fl_crc.bytes_folded();
             rx.drain_raw(rx_dma, |slice, base_cursor| {
-                fast_last_crc.on_slice(slice, base_cursor, tx);
+                fl_crc.on_slice(slice, base_cursor, tx);
             });
-            if !fast_last_crc.is_active() {
+            if !fl_crc.is_active() {
                 break;
             }
-            if fast_last_crc.bytes_folded() == before {
-                fast_last.record_patch_deadline_miss();
+            if fl_crc.bytes_folded() == before {
+                fl_sched.record_patch_deadline_miss();
                 break;
             }
         }
     }
 
     /// One Fast Last periodic-walk fold body is due (chip-side SysTick
-    /// CMP). Body drives [`FastLast::on_step`] forward — the walker
-    /// closure drains pending RX bytes raw through [`FastLastCrc::on_slice`]
+    /// CMP). Body drives [`FsmScheduler::on_step`] forward — the walker
+    /// closure drains pending RX bytes raw through [`FoldEngine::on_slice`]
     /// and returns the cumulative folded count for the FSM's `target =
-    /// predecessor_bytes − GUARD` busy-wait exit (`fast_last/mod.rs`).
+    /// predecessor_bytes − GUARD` busy-wait exit (`fast_last/`).
     pub fn on_fold_step(&mut self) {
         let Self {
             codec,
             rx_dma,
             fast_last,
-            fast_last_crc,
             scheduler,
             ..
         } = self;
         let (rx, tx) = codec.split_mut();
-        fast_last.on_step(
+        let (fl_sched, fl_crc) = fast_last.split_mut();
+        fl_sched.on_step(
             || {
                 rx.drain_raw(rx_dma, |slice, base_cursor| {
-                    fast_last_crc.on_slice(slice, base_cursor, tx);
+                    fl_crc.on_slice(slice, base_cursor, tx);
                 });
-                fast_last_crc.bytes_folded()
+                fl_crc.bytes_folded()
             },
             || scheduler.commit_pending(),
         );
@@ -1171,7 +1163,6 @@ impl<P: Providers, const RX_BUF_LEN: usize, const EDGE_BUF_LEN: usize, const TX_
     pub fn on_tx_complete(&mut self) -> Option<BootMode> {
         self.tx_bus.handle_tx_complete();
         self.fast_last.cancel();
-        self.fast_last_crc.cancel();
         // Per `dxl-streaming-rx.md` §5.3: our own TX completion is a
         // packet boundary at which stale chain state must reset. The
         // §5.3 "next instruction header" trigger is too late for the
@@ -1927,8 +1918,8 @@ mod tests {
                 FastLastSchedulerOp::Schedule { .. },
             ]
         ));
-        assert!(bus.fast_last_crc.is_active());
-        assert!(bus.fast_last.is_active());
+        assert!(bus.fast_last.fold_active());
+        assert!(bus.fast_last.grid_active());
     }
 
     #[test]
@@ -1944,13 +1935,13 @@ mod tests {
             };
             reply.send_slot(&slot).expect("encode fits");
         });
-        assert!(bus.fast_last.is_active());
-        assert!(bus.fast_last_crc.is_active());
+        assert!(bus.fast_last.grid_active());
+        assert!(bus.fast_last.fold_active());
 
         let _ = bus.on_tx_complete();
 
-        assert!(!bus.fast_last.is_active());
-        assert!(!bus.fast_last_crc.is_active());
+        assert!(!bus.fast_last.grid_active());
+        assert!(!bus.fast_last.fold_active());
         assert!(matches!(
             state.fl.operations().last(),
             Some(FastLastSchedulerOp::Cancel)
@@ -2270,9 +2261,9 @@ mod tests {
             .stage_remaining((RX_BUF_LEN as u16).wrapping_sub(new_head));
 
         bus.codec.set_rx_read_seq_for_test(start);
-        let before = bus.fast_last_crc.bytes_folded();
+        let before = bus.fast_last.bytes_folded();
         bus.on_fold_step();
-        let after = bus.fast_last_crc.bytes_folded();
+        let after = bus.fast_last.bytes_folded();
         assert_eq!(after - before, predecessor.len() as u32);
     }
 
@@ -2333,7 +2324,7 @@ mod tests {
             [0x00, 0x00],
             "patch_crc should overwrite the placeholder slot"
         );
-        assert!(!bus.fast_last_crc.is_active());
+        assert!(!bus.fast_last.fold_active());
         assert_eq!(
             state.fl.patch_miss_count(),
             0,
@@ -2370,7 +2361,7 @@ mod tests {
             .stage_remaining((RX_BUF_LEN as u16).wrapping_sub(start));
 
         bus.on_tx_start();
-        assert!(bus.fast_last_crc.is_active(), "active stays set on bail");
+        assert!(bus.fast_last.fold_active(), "active stays set on bail");
         assert_eq!(
             state.fl.patch_miss_count(),
             1,
@@ -2398,7 +2389,7 @@ mod tests {
 
         bus.on_tx_start();
         assert!(
-            bus.fast_last_crc.is_active(),
+            bus.fast_last.fold_active(),
             "active stays set on expired-window exit",
         );
         assert_eq!(

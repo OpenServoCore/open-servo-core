@@ -26,9 +26,8 @@ pub use wire_clock::WireClock;
 /// [`crate::dxl::uart::DxlUart`] consumes. One associated type per leaf
 /// trait below so the composite's signature collapses from six type
 /// parameters to one while each sub-driver
-/// ([`Clock`], [`Codec`], [`FastLast`], [`FastLastCrc`]) stays narrowly
-/// typed and still documents exactly what hardware it depends on. Per
-/// driver-pattern §5.4.
+/// ([`Clock`], [`Codec`], [`FastLast`]) stays narrowly typed and still
+/// documents exactly what hardware it depends on. Per driver-pattern §5.4.
 ///
 /// Chip-side providers don't implement this trait directly — they
 /// implement each leaf trait on their own zero-sized type, and the
@@ -38,7 +37,6 @@ pub use wire_clock::WireClock;
 /// [`Clock`]: crate::dxl::uart::clock::Clock
 /// [`Codec`]: crate::dxl::uart::codec::Codec
 /// [`FastLast`]: crate::dxl::uart::fast_last::FastLast
-/// [`FastLastCrc`]: crate::dxl::uart::fast_last_crc::FastLastCrc
 pub trait Providers {
     type UsartBaud: UsartBaud;
     type ClockTrim: ClockTrim;

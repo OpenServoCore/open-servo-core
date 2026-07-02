@@ -503,7 +503,7 @@ impl<R: EdgeDma, CRC: CrcUmts, const RX_BUF_LEN: usize, const EDGE_BUF_LEN: usiz
     /// The Fast Last fold owns the RX ring tail for the duration of the
     /// window: the chip-side caller masks DMA1_CH7 HT/TC at arm
     /// (`dxl-hw-timed-transport.md` §10.6.3), and `poll()` self-gates on
-    /// `fast_last_crc.is_active()` at entry (`dxl-streaming-rx.md` §6),
+    /// `fast_last.fold_active()` at entry (`dxl-streaming-rx.md` §6),
     /// so the parser and this drain never race on `rx_buf`.
     pub fn drain_raw<D: RxDma, F: FnMut(&[u8], u32)>(&mut self, rx_dma: &D, mut fold_slice: F) {
         // SAFETY: rx_buf is single-consumer at PFIC HIGH (same as `poll`).
@@ -699,6 +699,20 @@ impl<CRC: CrcUmts, const TX_BUF_LEN: usize> CodecTx<CRC, TX_BUF_LEN> {
             return &[];
         }
         &self.tx_buf[..n - 2]
+    }
+}
+
+/// The Fast Last fold engine finalizes into the TX half without importing it
+/// (driver-pattern §5.1). Both methods delegate to the inherent forms above.
+impl<CRC: CrcUmts, const TX_BUF_LEN: usize> super::fast_last::CrcPatchSink
+    for CodecTx<CRC, TX_BUF_LEN>
+{
+    fn own_reply_bytes(&self) -> &[u8] {
+        CodecTx::own_reply_bytes(self)
+    }
+
+    fn patch_crc(&mut self, crc: u16) {
+        CodecTx::patch_crc(self, crc)
     }
 }
 

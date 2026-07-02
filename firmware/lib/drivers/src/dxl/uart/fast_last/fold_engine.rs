@@ -1,49 +1,73 @@
 //! Chain-CRC fold engine for Fast Sync / Bulk Read Last replies.
 //!
-//! Owns a running [`CrcUmts`] engine plus the bookkeeping that decides
-//! when to feed wire bytes into it. Composite-side; the slice hook
-//! ([`Self::on_slice`]) is wired into [`super::codec::CodecRx::drain_raw`]'s
-//! slice callback so every wire byte the post-parser drain surfaces —
-//! own, foreign, Status-frame, resync'd prefix alike — flows through the
-//! guard in one bulk CRC fold per drain pass. Per
+//! Half of the [`FastLast`] sub-composite (§4.3): the fold half. Owns a
+//! running [`CrcUmts`] engine plus the bookkeeping that decides when to feed
+//! wire bytes into it. The slice hook ([`Self::on_slice`]) is wired into
+//! [`CodecRx::drain_raw`]'s slice callback so every wire byte the
+//! post-parser drain surfaces — own, foreign, Status-frame, resync'd prefix
+//! alike — flows through the guard in one bulk CRC fold per drain pass. Per
 //! `docs/dxl-hw-timed-transport.md` §10.6.
 //!
-//! Lifecycle: started at [`super::ReplyHandle::send_slot`] when the
-//! cached slot position is [`SlotPosition::Last`]; cancelled by
-//! [`Self::cancel`] at [`super::DxlUart::on_tx_complete`] or self-clears
-//! naturally when `predecessor_bytes` have been folded — the latter
-//! finalizes the CRC over our own reply bytes and patches the TX
-//! buffer's trailing slot before DMA1_CH4 reads it.
+//! Lifecycle: started at [`ReplyHandle::send_slot`] when the cached slot
+//! position is [`SlotPosition::Last`]; cancelled by [`Self::cancel`] at
+//! [`DxlUart::on_tx_complete`] or self-clears naturally when
+//! `predecessor_bytes` have been folded — the latter finalizes the CRC over
+//! our own reply bytes and patches the TX buffer's trailing slot before
+//! DMA1_CH4 reads it.
 //!
+//! Finalize never reaches into a sibling sub-driver: the fold engine folds
+//! the predecessor bytes but never learns *where* our own reply lives.
+//! [`CrcPatchSink`] — implemented by the codec's TX half, passed in by the
+//! composite — exposes our reply bytes for the final mix and patches the
+//! trailing CRC slot (driver-pattern §5.1: consumer-owned interface).
+//!
+//! [`FastLast`]: super::FastLast
+//! [`CodecRx::drain_raw`]: super::super::codec::CodecRx::drain_raw
+//! [`ReplyHandle::send_slot`]: super::super::ReplyHandle::send_slot
+//! [`DxlUart::on_tx_complete`]: super::super::DxlUart::on_tx_complete
 //! [`SlotPosition`]: dxl_protocol::SlotPosition
 
 use dxl_protocol::CrcUmts;
 
-use super::codec::CodecTx;
+/// Sink the [`FoldEngine`] finalizes the chain CRC into. Consumer-owned
+/// (driver-pattern §5.1): the fold engine folds predecessor wire bytes but
+/// never sees the reply buffer — the codec's TX half implements this so the
+/// engine mixes our own reply bytes and patches the trailing CRC slot
+/// without importing or reaching into a sibling sub-driver.
+pub trait CrcPatchSink {
+    /// Our own encoded reply bytes, excluding the trailing 2-byte
+    /// placeholder CRC slot — the tail the chain CRC folds last. Empty when
+    /// no reply has been encoded yet.
+    fn own_reply_bytes(&self) -> &[u8];
 
-/// Per [`super::codec::CodecRx::drain_raw`]'s callback contract — fired
-/// once per drained RX-ring front slice during the Fast Last predecessor
-/// window; receives `(slice, base_cursor)` where `base_cursor` is the
-/// pre-advance value of the codec's `wire_bytes_consumed` counter, so
-/// `slice[i]` sits at wire cursor `base_cursor + i`.
-pub struct FastLastCrc<CRC: CrcUmts> {
+    /// Overwrite the trailing 2-byte placeholder CRC slot with the finalized
+    /// chain CRC (little-endian).
+    fn patch_crc(&mut self, crc: u16);
+}
+
+/// Running chain-CRC fold state for one Fast Last reply. Consumes the
+/// per-drain slice contract from [`super::super::codec::CodecRx::drain_raw`]:
+/// fired once per drained RX-ring front slice during the predecessor window;
+/// receives `(slice, base_cursor)` where `base_cursor` is the pre-advance
+/// value of the codec's `wire_bytes_consumed` counter, so `slice[i]` sits at
+/// wire cursor `base_cursor + i`.
+pub struct FoldEngine<CRC: CrcUmts> {
     crc: CRC,
     /// Lower bound on the wire-byte cursor that contributes to the fold.
-    /// Bytes with `cursor < start_cursor` were already past at
-    /// [`Self::start`] time (the parser had already moved on); the chain
-    /// CRC begins from the byte that completes parsing, which sits at
-    /// `cursor == start_cursor`. Compared `<` so the byte at exactly
-    /// `start_cursor` IS folded.
+    /// Bytes with `cursor < start_cursor` were already past at [`Self::start`]
+    /// time (the parser had already moved on); the chain CRC begins from the
+    /// byte that completes parsing, which sits at `cursor == start_cursor`.
+    /// Compared `<` so the byte at exactly `start_cursor` IS folded.
     start_cursor: u32,
     bytes_folded: u32,
     /// Total predecessor wire bytes to fold before finalize.
-    /// `FastSlotInfo::bytes_before` on Last. Matches the field of the
-    /// same name on [`super::fast_last::FastLastSchedule`].
+    /// `FastSlotInfo::bytes_before` on Last. The composite passes the same
+    /// value to the scheduler half at `start`.
     predecessor_bytes: u32,
     active: bool,
 }
 
-impl<CRC: CrcUmts> FastLastCrc<CRC> {
+impl<CRC: CrcUmts> FoldEngine<CRC> {
     pub fn new() -> Self {
         Self {
             crc: CRC::new(),
@@ -54,37 +78,21 @@ impl<CRC: CrcUmts> FastLastCrc<CRC> {
         }
     }
 
-    /// Begin folding for one Fast Last reply. `start_cursor` is the
-    /// composite-captured `PollEvent::Event::next_status_pos` at
-    /// parse-complete (so the first byte of the predecessor's first reply
-    /// lands at cursor == start_cursor); `predecessor_bytes` is
-    /// `FastSlotInfo::bytes_before`. Resets the running CRC; idempotent.
-    pub fn start(&mut self, start_cursor: u32, predecessor_bytes: u32) {
-        self.crc.reset();
-        self.start_cursor = start_cursor;
-        self.bytes_folded = 0;
-        self.predecessor_bytes = predecessor_bytes;
-        self.active = true;
-    }
+    // -- events -----------------------------------------------------------------
 
-    /// Bulk slice hook for [`super::codec::CodecRx::drain_raw`]'s callback.
-    /// Trims the leading slice prefix that sits before `start_cursor`,
-    /// caps the fold at the remaining predecessor budget, folds the
-    /// resulting active region in one CRC pass, and finalize-patches on
-    /// reaching `predecessor_bytes`.
+    /// Bulk slice hook for [`super::super::codec::CodecRx::drain_raw`]'s
+    /// callback. Trims the leading slice prefix that sits before
+    /// `start_cursor`, caps the fold at the remaining predecessor budget,
+    /// folds the resulting active region in one CRC pass, and
+    /// finalize-patches on reaching `predecessor_bytes`.
     ///
-    /// Finalize mixes our own reply bytes (`tx.own_reply_bytes()` —
-    /// everything except the trailing 2-byte placeholder CRC slot) and
-    /// writes the result to the placeholder via [`CodecTx::patch_crc`].
-    /// `tx_buf` must already be encoded by the caller's earlier
-    /// `send_slot(Last)` — empty `own_reply_bytes()` is a programmer error
-    /// the engine doesn't try to catch.
-    pub fn on_slice<const TX_BUF_LEN: usize>(
-        &mut self,
-        slice: &[u8],
-        base_cursor: u32,
-        tx: &mut CodecTx<CRC, TX_BUF_LEN>,
-    ) {
+    /// Finalize mixes our own reply bytes (`sink.own_reply_bytes()` —
+    /// everything except the trailing 2-byte placeholder CRC slot) and writes
+    /// the result to the placeholder via [`CrcPatchSink::patch_crc`]. The
+    /// sink must already be encoded by the caller's earlier `send_slot(Last)`
+    /// — empty `own_reply_bytes()` is a programmer error the engine doesn't
+    /// try to catch.
+    pub fn on_slice(&mut self, slice: &[u8], base_cursor: u32, sink: &mut impl CrcPatchSink) {
         if !self.active {
             return;
         }
@@ -101,33 +109,52 @@ impl<CRC: CrcUmts> FastLastCrc<CRC> {
         self.crc.update(&active[..take]);
         self.bytes_folded = self.bytes_folded.wrapping_add(take as u32);
         if self.bytes_folded >= self.predecessor_bytes {
-            self.crc.update(tx.own_reply_bytes());
-            tx.patch_crc(self.crc.finalize());
+            self.crc.update(sink.own_reply_bytes());
+            sink.patch_crc(self.crc.finalize());
             self.active = false;
         }
     }
 
+    // -- commands ---------------------------------------------------------------
+
+    /// Begin folding for one Fast Last reply. `start_cursor` is the
+    /// composite-captured `PollEvent::Event::next_status_pos` at
+    /// parse-complete (so the first byte of the predecessor's first reply
+    /// lands at cursor == start_cursor); `predecessor_bytes` is
+    /// `FastSlotInfo::bytes_before`. Resets the running CRC; idempotent.
+    pub fn start(&mut self, start_cursor: u32, predecessor_bytes: u32) {
+        self.crc.reset();
+        self.start_cursor = start_cursor;
+        self.bytes_folded = 0;
+        self.predecessor_bytes = predecessor_bytes;
+        self.active = true;
+    }
+
     /// Drop the running state. Idempotent. Called from
-    /// [`super::DxlUart::on_tx_complete`] regardless of whether finalize
-    /// ran — finalize already cleared `active`, so this is a no-op in the
+    /// [`DxlUart::on_tx_complete`] regardless of whether finalize ran —
+    /// finalize already cleared `active`, so this is a no-op in the
     /// successful path.
+    ///
+    /// [`DxlUart::on_tx_complete`]: super::super::DxlUart::on_tx_complete
     pub fn cancel(&mut self) {
         self.active = false;
     }
+
+    // -- accessors --------------------------------------------------------------
 
     pub fn is_active(&self) -> bool {
         self.active
     }
 
-    /// Cumulative count of folded bytes since the last [`Self::start`].
-    /// Driver-side [`super::FastLast::on_step`] reads this through the
-    /// composite's walker closure as the busy-wait exit condition.
+    /// Cumulative count of folded bytes since the last [`Self::start`]. The
+    /// scheduler half reads this through the composite's walker closure as
+    /// the busy-wait exit condition.
     pub fn bytes_folded(&self) -> u32 {
         self.bytes_folded
     }
 }
 
-impl<CRC: CrcUmts> Default for FastLastCrc<CRC> {
+impl<CRC: CrcUmts> Default for FoldEngine<CRC> {
     fn default() -> Self {
         Self::new()
     }
@@ -176,7 +203,7 @@ mod tests {
     #[test]
     fn skips_bytes_before_start_cursor() {
         let mut codec = make_codec_with_last_reply();
-        let mut fl = FastLastCrc::<SoftwareCrcUmts>::new();
+        let mut fl = FoldEngine::<SoftwareCrcUmts>::new();
         fl.start(
             /* start_cursor = */ 10, /* predecessor_bytes = */ 4,
         );
@@ -190,7 +217,7 @@ mod tests {
     #[test]
     fn folds_byte_at_start_cursor() {
         let mut codec = make_codec_with_last_reply();
-        let mut fl = FastLastCrc::<SoftwareCrcUmts>::new();
+        let mut fl = FoldEngine::<SoftwareCrcUmts>::new();
         fl.start(5, 4);
 
         // Slice base_cursor == start_cursor; byte IS included.
@@ -204,7 +231,7 @@ mod tests {
         // Pre-patch: placeholder 0x0000 LE from `send_slot(Last {crc: 0 })`.
         assert_eq!(tx_trailing::<2>(&codec), [0x00, 0x00]);
 
-        let mut fl = FastLastCrc::<SoftwareCrcUmts>::new();
+        let mut fl = FoldEngine::<SoftwareCrcUmts>::new();
         fl.start(0, 3);
         // Slice of 3 bytes trips finalize on the third byte → patch.
         fl.on_slice(&[0x11, 0x22, 0x33], 0, &mut codec.tx);
@@ -225,7 +252,7 @@ mod tests {
     #[test]
     fn extra_bytes_after_finalize_are_dropped() {
         let mut codec = make_codec_with_last_reply();
-        let mut fl = FastLastCrc::<SoftwareCrcUmts>::new();
+        let mut fl = FoldEngine::<SoftwareCrcUmts>::new();
         fl.start(0, 2);
         fl.on_slice(&[0x11, 0x22], 0, &mut codec.tx);
         assert!(!fl.is_active());
@@ -240,7 +267,7 @@ mod tests {
         let mut codec = make_codec_with_last_reply();
         let trailing_before: [u8; 2] = tx_trailing(&codec);
 
-        let mut fl = FastLastCrc::<SoftwareCrcUmts>::new();
+        let mut fl = FoldEngine::<SoftwareCrcUmts>::new();
         fl.start(0, 4);
         fl.on_slice(&[0x11], 0, &mut codec.tx);
         fl.cancel();
@@ -257,7 +284,7 @@ mod tests {
     #[test]
     fn restart_resets_running_crc() {
         let mut codec = make_codec_with_last_reply();
-        let mut fl = FastLastCrc::<SoftwareCrcUmts>::new();
+        let mut fl = FoldEngine::<SoftwareCrcUmts>::new();
 
         // First cycle.
         fl.start(0, 1);
