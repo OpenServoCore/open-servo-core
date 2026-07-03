@@ -573,3 +573,101 @@ fn fast_bulk_read_unknown_id_in_entries_collapses_tail(baud_idx: u8, rdt_us: u32
     );
     assert_bus_healthy(&mut sim, host, &servos);
 }
+
+// ---------------- Fast chain: first servo silent (task #142) ----------------
+
+/// First servo SRL=None — the chain's Status packet never starts, so no
+/// slot k > 0 ever gets its anchor: the WHOLE reply stays silent (slots
+/// k > 0 defer to the observed status start; no observation, no wire
+/// start). A host retry must not provoke a stale fire either — each
+/// parked slot's per-byte wake sees the retry's own bytes, judges the
+/// stamp past the staleness window, and drops the slot instead of
+/// scheduling into the host's instruction. The trailing broadcast Ping
+/// (`assert_bus_healthy`) also regression-pins the un-parking: every
+/// servo answers normally after two dead FAST exchanges.
+#[apply(matrix)]
+#[test_log::test]
+fn fast_sync_read_first_servo_silent_keeps_chain_silent(baud_idx: u8, rdt_us: u32) {
+    let baud = BaudRate::from_idx(baud_idx).expect("valid baud idx");
+    let Setup {
+        mut sim,
+        host,
+        servos,
+    } = setup_with(3, baud, rdt_us);
+    sim.servo_mut(servos[0])
+        .set_status_return_level(StatusReturnLevel::None);
+
+    sim.with_host(host, |h| {
+        h.send_fast_sync_read(comms::ID, 1, &[1, 2, 3]);
+        h.wait_for_reply();
+    });
+    assert!(
+        sim.host(host).rx_bytes().is_empty(),
+        "no status start observed → no slot may fire",
+    );
+
+    sim.host_mut(host).clear_logs();
+    sim.with_host(host, |h| {
+        h.send_fast_sync_read(comms::ID, 1, &[1, 2, 3]);
+        h.wait_for_reply();
+    });
+    assert!(
+        sim.host(host).rx_bytes().is_empty(),
+        "host retry must not trigger a stale fire from a parked slot",
+    );
+
+    assert_bus_healthy(&mut sim, host, &servos);
+}
+
+/// Power-line variant — the first servo drops off the bus entirely
+/// (chip-side reset on reconnect) instead of parsing-but-not-replying.
+/// Same contract: no anchor, no tail, and the bus recovers. Runs at the
+/// factory-default baud so the power-cycled servo (whose staged baud is
+/// wiped by the reset) still hears the recovery Ping.
+#[rstest]
+#[test_log::test]
+fn fast_sync_read_first_servo_power_line_disconnect_keeps_chain_silent() {
+    let Setup {
+        mut sim,
+        host,
+        servos,
+    } = setup_with(3, BaudRate::from_idx(3).unwrap(), 250);
+    sim.servo_mut(servos[0]).disconnect(true);
+
+    sim.with_host(host, |h| {
+        h.send_fast_sync_read(comms::ID, 1, &[1, 2, 3]);
+        h.wait_for_reply();
+    });
+    assert!(
+        sim.host(host).rx_bytes().is_empty(),
+        "no status start observed → no slot may fire",
+    );
+
+    sim.servo_mut(servos[0]).connect();
+    assert_bus_healthy(&mut sim, host, &servos);
+}
+
+/// Fast Bulk variant of the first-servo-silent contract.
+#[apply(matrix)]
+#[test_log::test]
+fn fast_bulk_read_first_servo_silent_keeps_chain_silent(baud_idx: u8, rdt_us: u32) {
+    let baud = BaudRate::from_idx(baud_idx).expect("valid baud idx");
+    let Setup {
+        mut sim,
+        host,
+        servos,
+    } = setup_with(3, baud, rdt_us);
+    sim.servo_mut(servos[0])
+        .set_status_return_level(StatusReturnLevel::None);
+
+    sim.with_host(host, |h| {
+        h.send_fast_bulk_read(&[entry(1, comms::ID, 1), entry(2, 0, 2), entry(3, 2, 1)]);
+        h.wait_for_reply();
+    });
+    assert!(
+        sim.host(host).rx_bytes().is_empty(),
+        "no status start observed → no slot may fire",
+    );
+
+    assert_bus_healthy(&mut sim, host, &servos);
+}

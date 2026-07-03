@@ -111,6 +111,14 @@ pub struct Servo {
     /// activation is inline, no CC-compare).
     tx_start_fire: Option<SimTime>,
 
+    /// Extra RX→TX turnaround this servo adds before every wire emission,
+    /// in wall nanoseconds — models a real (non-osc) servo whose reply
+    /// starts late relative to its scheduled deadline (measured ~50 µs on
+    /// MX chains). Applied at the burst-queue points only, NOT to
+    /// scheduler CMP deadlines: the chip-internal grid stays honest while
+    /// snooping peers see the delayed wire edges. Default 0.
+    reply_latency_ns: u64,
+
     /// FastLast deferred-schedule stash — chip-side mirror of the
     /// `DxlTxScheduler::fast_last_stash` field. Populated when the driver
     /// calls `Schedule` with `SendKind::FastLast`; consumed by
@@ -168,6 +176,7 @@ impl Servo {
             fast_last_drained: 0,
 
             tx_start_fire: None,
+            reply_latency_ns: 0,
             tx_pending_stash: None,
             tx_scheduler_drained: 0,
 
@@ -247,6 +256,13 @@ impl Servo {
     /// shaped: survives a power-cycle reset (the IC filter pick is fixed
     /// by baud + clock-tree, not RAM state). Rebuilds the chip-side codec/
     /// UART so the new value plumbs through immediately.
+    /// Extra RX→TX turnaround before every wire emission, in wall ns.
+    /// See the field doc — models a slow (non-osc) predecessor whose
+    /// reply starts late; snooping peers observe the delayed wire edges.
+    pub fn set_reply_latency_ns(&mut self, ns: u64) {
+        self.reply_latency_ns = ns;
+    }
+
     pub fn set_rx_edge_comp_ticks(&mut self, ticks: u16) {
         self.rx_edge_comp_ticks = ticks;
         self.rebuild_uart();
@@ -537,7 +553,8 @@ impl Servo {
                     byte_count,
                     t
                 );
-                self.uart_tx.queue_burst_indirect(0, byte_count, t);
+                self.uart_tx
+                    .queue_burst_indirect(0, byte_count, t + self.reply_latency_ns);
             }
         }
 
@@ -573,8 +590,9 @@ impl Servo {
                     );
                     match kind {
                         SendKind::Plain => {
-                            self.uart_tx.queue_burst_indirect(0, byte_count, fire_at);
-                            self.tx_start_fire = Some(fire_at);
+                            let start_at = fire_at + self.reply_latency_ns;
+                            self.uart_tx.queue_burst_indirect(0, byte_count, start_at);
+                            self.tx_start_fire = Some(start_at);
                         }
                         SendKind::FastLast => {
                             self.tx_pending_stash = Some((fire_at, byte_count));
@@ -583,7 +601,7 @@ impl Servo {
                 }
                 ScheduleOp::CommitPending => {
                     if let Some((deadline_wall, byte_count)) = self.tx_pending_stash.take() {
-                        let fire_at = deadline_wall.max(t);
+                        let fire_at = deadline_wall.max(t) + self.reply_latency_ns;
                         log::trace!(
                             "servo[{:?}]: tx_scheduler CommitPending byte_count={} fire_at={:?} (t={:?})",
                             self.id,
