@@ -115,10 +115,20 @@ impl<S: FastLastScheduler> FsmScheduler<S> {
 
         self.scheduler
             .set_deadline(p.packet_end_tick.wrapping_add(deadline_offset));
-        // EVERY grid CMP back-dated by FAST_LAST_ENTRY_TICKS.
+        self.schedule_walk_cmp(anchor);
+    }
+
+    /// Arm one periodic-walk CMP at `anchor_offset` past the packet-end
+    /// anchor. Single arming point for the grid — EVERY CMP, intermediates
+    /// AND the final one, back-dates by `FAST_LAST_ENTRY_TICKS` so
+    /// ISR-entry latency lands the body ON the grid point, not after it
+    /// (back-dating only the last CMP is exactly how the legacy fold grid
+    /// drifted into contention).
+    #[inline]
+    fn schedule_walk_cmp(&mut self, anchor_offset: u32) {
         self.scheduler.schedule(
-            p.packet_end_tick
-                .wrapping_add(anchor.wrapping_sub(S::FAST_LAST_ENTRY_TICKS as u32)),
+            self.packet_end_tick
+                .wrapping_add(anchor_offset.wrapping_sub(S::FAST_LAST_ENTRY_TICKS as u32)),
         );
     }
 
@@ -192,12 +202,7 @@ impl<S: FastLastScheduler> FsmScheduler<S> {
                     return;
                 }
                 self.next_anchor_offset = self.next_anchor_offset.wrapping_add(self.interval_ticks);
-                self.scheduler.schedule(
-                    self.packet_end_tick.wrapping_add(
-                        self.next_anchor_offset
-                            .wrapping_sub(S::FAST_LAST_ENTRY_TICKS as u32),
-                    ),
-                );
+                self.schedule_walk_cmp(self.next_anchor_offset);
             }
             FastLastPhase::Idle => {
                 // Spurious CMP entry — defensive cancel.

@@ -34,6 +34,17 @@ pub(crate) const fn divisor_for(clock_hz: u32, baud_hz: u32) -> u32 {
     (clock_hz + baud_hz / 2) / baud_hz
 }
 
+/// Timing pair for one Fast slot reply — the wire-start deadline and the
+/// source-floored effective RDT it was derived from, returned together by
+/// [`Clock::compute_slot_deadline`] so the Fast Last fold grid back-dates
+/// from the SAME anchor the schedule used. Structural: a caller can't
+/// re-derive the RDT with different inputs and shear the grid off the
+/// deadline.
+pub struct SlotTiming {
+    pub deadline: u32,
+    pub effective_rdt_ticks: u32,
+}
+
 pub struct Clock<U: UsartBaud, T: ClockTrim> {
     cache: BaudCache<U>,
     drift: DriftIntegrator<U, T>,
@@ -132,21 +143,24 @@ impl<U: UsartBaud, T: ClockTrim> Clock<U, T> {
         self.deadline_after(packet_end_tick, delay)
     }
 
-    /// Fast slot reply deadline: like [`Self::compute_status_deadline`] but
+    /// Fast slot reply timing: like [`Self::compute_status_deadline`] but
     /// with the source-floored effective RDT (see [`Self::effective_slot_rdt`])
     /// so every slot in a chain anchors off the same base above
-    /// `packet_end_tick` and the wire stays contiguous.
+    /// `packet_end_tick` and the wire stays contiguous. Returns the
+    /// effective RDT alongside the deadline — see [`SlotTiming`].
     pub fn compute_slot_deadline(
         &self,
         packet_end_tick: u32,
         rdt_ticks: u32,
         slot_offset_bytes: u32,
         src: PollSrc,
-    ) -> u32 {
-        let delay = self
-            .effective_slot_rdt(rdt_ticks, src)
-            .wrapping_add(self.cache.bytes_to_ticks(slot_offset_bytes));
-        self.deadline_after(packet_end_tick, delay)
+    ) -> SlotTiming {
+        let effective_rdt_ticks = self.effective_slot_rdt(rdt_ticks, src);
+        let delay = effective_rdt_ticks.wrapping_add(self.cache.bytes_to_ticks(slot_offset_bytes));
+        SlotTiming {
+            deadline: self.deadline_after(packet_end_tick, delay),
+            effective_rdt_ticks,
+        }
     }
 
     /// Anchor a `delay_ticks` distance against `packet_end_tick` and fold in
@@ -169,5 +183,155 @@ impl<U: UsartBaud, T: ClockTrim> Clock<U, T> {
     /// deadline distance. See [`DriftIntegrator::projected_phase_error_hclk`].
     pub fn projected_phase_error_hclk(&self, distance_hclk: u32) -> i32 {
         self.drift.projected_phase_error_hclk(distance_hclk)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::dxl::uart::BITS_PER_FRAME;
+    use crate::dxl::uart::test_support::{
+        TICKS_PER_BIT_3M, TICKS_PER_BIT_9600, mk_clock_trim, mk_usart_baud,
+    };
+    use crate::mocks::{MockClockTrim, MockUsartBaud};
+
+    type TestClock = Clock<MockUsartBaud, MockClockTrim>;
+
+    fn clock_at(baud: BaudRate) -> TestClock {
+        let (usart, _) = mk_usart_baud();
+        let (trim, _) = mk_clock_trim();
+        Clock::new(baud, usart, trim)
+    }
+
+    /// Close one boot drift batch at B9600 with per-sample drift
+    /// `delta_tpb` bits — leaves a same-signed sub-step residual for the
+    /// phase-fold tests (mirrors the `drift_integrator` fixtures).
+    fn clock_9600_with_residual(delta_tpb: i16) -> TestClock {
+        let mut c = clock_at(BaudRate::B9600);
+        let observed = (TICKS_PER_BIT_9600 as i32 + delta_tpb as i32) as u16;
+        for _ in 0..6 {
+            c.on_byte_pair(0, observed.wrapping_mul(BITS_PER_FRAME));
+        }
+        c
+    }
+
+    const BYTE_TICKS_3M: u32 = TICKS_PER_BIT_3M as u32 * BITS_PER_FRAME as u32;
+
+    // ---------- effective_slot_rdt ----------
+
+    #[test]
+    fn effective_slot_rdt_is_identity_at_byte_batch() {
+        let c = clock_at(BaudRate::B3000000);
+        assert_eq!(c.effective_slot_rdt(0, PollSrc::ByteBatch), 0);
+        assert_eq!(c.effective_slot_rdt(100, PollSrc::ByteBatch), 100);
+    }
+
+    #[test]
+    fn effective_slot_rdt_floor_engages_at_line_idle() {
+        // LineIdle observes packet-end one byte-time late, so the RDT
+        // floors at one byte-time (160 ticks at 3M).
+        let c = clock_at(BaudRate::B3000000);
+        assert_eq!(c.effective_slot_rdt(100, PollSrc::LineIdle), BYTE_TICKS_3M);
+        assert_eq!(c.effective_slot_rdt(0, PollSrc::LineIdle), BYTE_TICKS_3M);
+    }
+
+    #[test]
+    fn effective_slot_rdt_floor_is_inert_above_one_byte_time() {
+        let c = clock_at(BaudRate::B3000000);
+        assert_eq!(
+            c.effective_slot_rdt(BYTE_TICKS_3M + 1, PollSrc::LineIdle),
+            BYTE_TICKS_3M + 1
+        );
+    }
+
+    // ---------- deadline composition ----------
+
+    #[test]
+    fn status_deadline_is_packet_end_plus_rdt_plus_offset() {
+        // No drift residual → pure delay composition. 12 offset bytes at
+        // 3M = 1920 ticks.
+        let c = clock_at(BaudRate::B3000000);
+        assert_eq!(c.compute_status_deadline(50_000, 12_000, 0), 62_000);
+        assert_eq!(c.compute_status_deadline(50_000, 12_000, 12), 63_920);
+    }
+
+    #[test]
+    fn slot_deadline_equals_status_deadline_with_pre_floored_rdt() {
+        // `compute_slot_deadline` is `compute_status_deadline` composed
+        // with the source floor — pin the equivalence at both sources.
+        let c = clock_at(BaudRate::B3000000);
+        for (rdt, src) in [
+            (100, PollSrc::LineIdle),
+            (12_000, PollSrc::LineIdle),
+            (100, PollSrc::ByteBatch),
+        ] {
+            let timing = c.compute_slot_deadline(50_000, rdt, 12, src);
+            let floored = c.effective_slot_rdt(rdt, src);
+            assert_eq!(timing.effective_rdt_ticks, floored);
+            assert_eq!(
+                timing.deadline,
+                c.compute_status_deadline(50_000, floored, 12)
+            );
+        }
+    }
+
+    #[test]
+    fn slot_timing_carries_the_rdt_the_deadline_was_derived_from() {
+        // The Fast Last grid anchors off `effective_rdt_ticks`; it MUST be
+        // the floored value the deadline folded, not the raw input.
+        let c = clock_at(BaudRate::B3000000);
+        let timing = c.compute_slot_deadline(50_000, 100, 0, PollSrc::LineIdle);
+        assert_eq!(timing.effective_rdt_ticks, BYTE_TICKS_3M);
+        assert_eq!(timing.deadline, 50_000 + BYTE_TICKS_3M);
+    }
+
+    #[test]
+    fn deadline_wraps_cleanly_near_u32_max() {
+        let c = clock_at(BaudRate::B3000000);
+        let packet_end = u32::MAX - 100;
+        assert_eq!(
+            c.compute_status_deadline(packet_end, 1_000, 0),
+            packet_end.wrapping_add(1_000)
+        );
+    }
+
+    // ---------- drift phase fold ----------
+
+    #[test]
+    fn deadline_folds_positive_phase_residual_later() {
+        // HSI fast → positive residual → the reply must start LATER in
+        // chip ticks to land on the host's reference.
+        let c = clock_9600_with_residual(40);
+        let delay = 120_000;
+        let adjust = c.projected_phase_error_hclk(delay);
+        assert!(adjust > 0, "boot batch must leave a positive residual");
+        assert_eq!(
+            c.compute_status_deadline(50_000, delay, 0),
+            50_000 + delay + adjust as u32
+        );
+    }
+
+    #[test]
+    fn deadline_folds_negative_phase_residual_earlier() {
+        let c = clock_9600_with_residual(-40);
+        let delay = 120_000;
+        let adjust = c.projected_phase_error_hclk(delay);
+        assert!(adjust < 0, "boot batch must leave a negative residual");
+        assert_eq!(
+            c.compute_status_deadline(50_000, delay, 0),
+            (50_000 + delay).wrapping_add_signed(adjust)
+        );
+    }
+
+    #[test]
+    fn slot_deadline_folds_the_same_phase_residual() {
+        let c = clock_9600_with_residual(40);
+        let rdt = 120_000;
+        let timing = c.compute_slot_deadline(50_000, rdt, 0, PollSrc::ByteBatch);
+        assert_eq!(
+            timing.deadline,
+            c.compute_status_deadline(50_000, rdt, 0),
+            "slot and status paths must fold the residual identically"
+        );
     }
 }

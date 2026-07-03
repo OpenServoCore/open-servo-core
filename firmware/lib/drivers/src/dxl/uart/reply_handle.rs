@@ -13,6 +13,15 @@ use super::fast_last::{FastLast, FastLastSchedule};
 use super::send_policy::{ReplyContext, SendPolicy};
 use crate::traits::dxl::{Providers, SendKind, TxScheduler};
 
+/// The context's RDT in scheduler ticks — the single µs→ticks conversion
+/// point for both the status and slot schedule paths. The factor is a
+/// `TxScheduler` const, so the µs value never leaves this file's
+/// scheduling math.
+fn rdt_ticks<P: Providers>(ctx: &ReplyContext) -> u32 {
+    ctx.rdt_us
+        .wrapping_mul(<P::TxScheduler as TxScheduler>::TICKS_PER_US as u32)
+}
+
 /// A reply handle borrowed from disjoint pieces of [`DxlUart`] — the codec
 /// TX half + scheduler + clock + the small set of pending-state fields. The
 /// parent's closure-based [`DxlUart::poll`] hands the dispatcher one of
@@ -96,12 +105,11 @@ impl<P: Providers, const TX_BUF_LEN: usize> ReplyHandle<'_, P, TX_BUF_LEN> {
         }
         let packet_end_tick = ctx.packet_end_tick;
         let byte_count = self.tx.tx_len();
-        let rdt_ticks = ctx
-            .rdt_us
-            .wrapping_mul(<P::TxScheduler as TxScheduler>::TICKS_PER_US as u32);
-        let deadline =
-            self.clock
-                .compute_status_deadline(packet_end_tick, rdt_ticks, ctx.slot_offset_bytes);
+        let deadline = self.clock.compute_status_deadline(
+            packet_end_tick,
+            rdt_ticks::<P>(&ctx),
+            ctx.slot_offset_bytes,
+        );
         crate::log::debug!(
             "dxl: send_status schedule packet_end={} deadline={} byte_count={}",
             packet_end_tick,
@@ -191,16 +199,13 @@ impl<P: Providers, const TX_BUF_LEN: usize> ReplyHandle<'_, P, TX_BUF_LEN> {
     fn schedule_after_slot_encode(&mut self, ctx: ReplyContext, position: SlotPosition) {
         let byte_count = self.tx.tx_len();
         let packet_end_tick = ctx.packet_end_tick;
-        let rdt_ticks = ctx
-            .rdt_us
-            .wrapping_mul(<P::TxScheduler as TxScheduler>::TICKS_PER_US as u32);
         // The source-floored effective RDT (see `Clock::effective_slot_rdt`)
         // keeps every slot in a Fast chain anchored off the same base above
         // `packet_end_tick`, so the wire stays contiguous instead of slot
-        // k > 0 firing inside slot 0's trailing TX.
-        let deadline = self.clock.compute_slot_deadline(
+        // k > 0 starting inside slot 0's trailing TX.
+        let timing = self.clock.compute_slot_deadline(
             packet_end_tick,
-            rdt_ticks,
+            rdt_ticks::<P>(&ctx),
             ctx.slot_offset_bytes,
             ctx.src,
         );
@@ -208,16 +213,17 @@ impl<P: Providers, const TX_BUF_LEN: usize> ReplyHandle<'_, P, TX_BUF_LEN> {
             SlotPosition::Last { .. } => SendKind::FastLast,
             _ => SendKind::Plain,
         };
-        self.scheduler.schedule(deadline, byte_count, kind);
+        self.scheduler.schedule(timing.deadline, byte_count, kind);
         if matches!(position, SlotPosition::Last { .. }) {
-            // Same effective RDT as the schedule above so the fold grid
-            // back-dates from the right anchor; `FastLastSchedule::rdt_ticks`
-            // is u16 per doc §10.6 — the effective RDT stays well under
-            // 16 bits at every supported baud (9600 floor = 50_000 ticks).
-            let rdt_ticks = (self.clock.effective_slot_rdt(rdt_ticks, ctx.src) & 0xFFFF) as u16;
+            // `SlotTiming` carries the effective RDT the deadline above was
+            // derived from, so the fold grid back-dates from the same
+            // anchor by construction. `FastLastSchedule::rdt_ticks` is u16
+            // per doc §10.6 — the effective RDT stays well under 16 bits
+            // at every supported baud (9600 floor = 50_000 ticks).
+            debug_assert!(timing.effective_rdt_ticks <= u16::MAX as u32);
             self.fast_last.start(FastLastSchedule {
                 packet_end_tick,
-                rdt_ticks,
+                rdt_ticks: timing.effective_rdt_ticks as u16,
                 byte_ticks: self.clock.byte_ticks(),
                 predecessor_bytes: ctx.slot_offset_bytes,
                 fold_start_cursor: ctx.fold_start_cursor,

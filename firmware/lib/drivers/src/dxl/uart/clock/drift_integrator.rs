@@ -639,6 +639,59 @@ mod tests {
         assert_eq!(c.projected_phase_error_hclk(0), 0);
     }
 
+    // ---------- baud change ----------
+
+    #[test]
+    fn on_baud_change_resets_batch_and_drops_residual() {
+        // Close a boot batch to seed a residual, then change baud: the
+        // residual was measured against the old `drift_per_step_q8`, so
+        // keeping it would project a wrong-scaled phase error onto every
+        // scheduled deadline at the new baud.
+        let mut c = integrator_9600();
+        for _ in 0..DRIFT_MIN_SAMPLES_BOOT {
+            feed(&mut c, SPEC_9600 + 40);
+        }
+        assert_ne!(c.residual_q8, 0);
+        // Partial batch in flight on top.
+        feed(&mut c, SPEC_9600 + 40);
+        assert_eq!(c.drift_samples, 1);
+
+        c.on_baud_change(BaudRate::B3000000, 16);
+        assert_eq!(c.drift_sum_q8, 0);
+        assert_eq!(c.drift_samples, 0);
+        assert_eq!(c.residual_q8, 0);
+        assert_eq!(c.projected_phase_error_hclk(100_000), 0);
+    }
+
+    #[test]
+    fn on_baud_change_rebuilds_consts_for_new_baud() {
+        // Boot at 3M: per_step_q8 = 2500 · 16 · 6 · 10 · 256 / 10⁶ = 614.
+        let mut c = integrator_9600();
+        assert_eq!(c.drift_per_step_q8, 192_000);
+        c.on_baud_change(BaudRate::B3000000, 16);
+        assert_eq!(c.drift_per_step_q8, 614);
+        assert_eq!(c.drift_threshold_q8, 614);
+    }
+
+    // ---------- steady emit cap ----------
+
+    #[test]
+    fn steady_emit_cap_clamps_to_four_steps() {
+        // Per-sample drift = 600 raw ticks → sum = 20 · 600 · 256 =
+        // 3_072_000 → drift_in_steps = round(3_072_000 / 640_000) = 5.
+        // The steady cap clamps the counter-nudge to −4 steps = −10_000
+        // ppm even though the estimate says −5.
+        let mut c = integrator_9600();
+        c.on_rx_packet_end(); // boot → steady
+        for _ in 0..DRIFT_MIN_SAMPLES_STEADY {
+            feed(&mut c, SPEC_9600 + 60);
+        }
+        assert_eq!(
+            c.pending_applied_ppm,
+            Some(-(EMIT_CAP_STEPS_STEADY * MockClockTrim::STEP_PPM as i32))
+        );
+    }
+
     #[test]
     fn projected_phase_error_sign_matches_residual() {
         // Positive drift → positive drift_sum → integer quantization leaves a

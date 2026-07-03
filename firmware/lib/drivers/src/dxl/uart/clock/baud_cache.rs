@@ -246,4 +246,41 @@ mod tests {
         assert_eq!(c.bytes_to_ticks(1), 160);
         assert_eq!(c.bytes_to_ticks(3), 480);
     }
+
+    #[test]
+    fn bytes_to_ticks_at_57600_matches_end_to_end_truncation() {
+        // The Q16 cache's charter (see the `ticks_per_byte_q16` field doc):
+        // at the fractional 57600 baud, `floor(bytes × M_q16 >> 16)` must
+        // equal the prior end-to-end `bytes × BITS × CLOCK / baud`
+        // truncation for every realistic packet size — an integer per-byte
+        // cache drifts 1 tick every 3 bytes and blows the Fast Last CRC
+        // patch deadline. Pin the whole TX-buffer-sized range.
+        let c = cache_at(BaudRate::B57600);
+        for bytes in 1..=140u32 {
+            let exact = (bytes as u64 * BITS_PER_FRAME as u64 * 48_000_000 / 57_600) as u32;
+            assert_eq!(c.bytes_to_ticks(bytes), exact, "bytes = {bytes}");
+        }
+        // The doc's example: integer cache would give 24_999 here.
+        assert_eq!(c.bytes_to_ticks(3), 25_000);
+    }
+
+    #[test]
+    fn commit_pending_baud_refreshes_rx_edge_comp() {
+        // Per-baud edge-stamp compensation must track the committed baud,
+        // not the construction-time one — the codec re-reads it after
+        // every applied change.
+        let mut usart = MockUsartBaud::new();
+        usart.expect_apply_baud().returning_st(|_| ());
+        usart
+            .expect_rx_edge_comp_ticks()
+            .returning_st(|baud| match baud {
+                BaudRate::B3000000 => 7,
+                _ => 3,
+            });
+        let mut c = BaudCache::new(BaudRate::B9600, usart);
+        assert_eq!(c.rx_edge_comp_ticks(), 3);
+        c.stage_baud(BaudRate::B3000000);
+        c.commit_pending_baud();
+        assert_eq!(c.rx_edge_comp_ticks(), 7);
+    }
 }
