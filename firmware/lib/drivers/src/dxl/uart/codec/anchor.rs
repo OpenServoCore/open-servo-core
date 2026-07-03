@@ -13,7 +13,7 @@
 pub(super) const TAIL_STARTS: usize = 4;
 
 /// Co-varying tail-anchor state the edge parser reads and writes. Pure data
-/// (per driver-pattern §4 pure-data carve-out) — the parser owns the
+/// crossing the walker boundary (driver-pattern §3.3) — the parser owns the
 /// algorithm, this owns the state it operates on.
 pub(super) struct AnchorCache {
     /// Tail-signature back-search anchor — the LAST tail byte's start tick,

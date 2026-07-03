@@ -94,7 +94,7 @@ impl<R: EdgeDma, const EDGE_BUF_LEN: usize> EdgeCapture<R, EDGE_BUF_LEN> {
     /// for the Crc-time fallback path.
     pub fn on_idle(&mut self, now: u32) {
         self.last_isr = (now, PollSrc::LineIdle);
-        crate::log::trace!("rx: on_idle");
+        crate::log::trace!("edge_capture: on_idle");
         self.publish_edges();
     }
 

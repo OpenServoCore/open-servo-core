@@ -11,7 +11,7 @@
 /// bounded skip doesn't false-trigger on a slow-but-fine predecessor. 2
 /// bytes ≈ 7 µs at 3 Mbaud — negligible vs. the host's own ~1 ms timeout,
 /// tight enough that a truncated chain aborts well before the host's retry.
-pub(super) const SKIP_DEADLINE_SLACK_BYTES: u16 = 2;
+const SKIP_DEADLINE_SLACK_BYTES: u16 = 2;
 
 struct SkipState {
     bytes_remaining: u16,
@@ -64,13 +64,18 @@ impl SkipFsm {
     }
 
     /// Arm the universal byte-skip: `bytes_remaining` body+CRC bytes past
-    /// the sink-rejected Header, giving up at `deadline_tick` so a truncated
-    /// upstream packet can't bleed uncounted bytes into the next.
-    pub(super) fn arm(&mut self, bytes_remaining: u16, id: u8, deadline_tick: u32) {
+    /// the sink-rejected Header. The give-up deadline is derived here —
+    /// `now + (bytes_remaining + SKIP_DEADLINE_SLACK_BYTES) · frame_ticks`
+    /// — so a truncated upstream packet can't bleed uncounted bytes into
+    /// the next. `frame_ticks` is one wire byte's duration in WireClock
+    /// ticks at the current baud.
+    pub(super) fn arm(&mut self, bytes_remaining: u16, id: u8, now: u32, frame_ticks: u32) {
+        let budget_bytes = bytes_remaining.saturating_add(SKIP_DEADLINE_SLACK_BYTES);
+        let elapsed = (budget_bytes as u32).wrapping_mul(frame_ticks);
         self.skip = Some(SkipState {
             bytes_remaining,
             id,
-            deadline_tick,
+            deadline_tick: now.wrapping_add(elapsed),
         });
     }
 

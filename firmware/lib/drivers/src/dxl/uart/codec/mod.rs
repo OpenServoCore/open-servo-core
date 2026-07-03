@@ -22,17 +22,17 @@ mod skip;
 pub use edge_capture::EdgeCapture;
 pub use edge_parser::edge_buf_len;
 
-use skip::{SKIP_DEADLINE_SLACK_BYTES, SkipFsm};
+use skip::SkipFsm;
 
 use core::cell::SyncUnsafeCell;
 use core::marker::PhantomData;
 
 use dxl_protocol::streaming::{Event, HeaderEvent, InstructionPayload, Parser, PayloadEvent};
 use dxl_protocol::types::{Id, Slot, Status, StatusError};
+use dxl_protocol::wire::CRC_BYTES;
 use dxl_protocol::{Chunk, CrcUmts, SlotEncoder, SlotPosition, StatusEncoder, WriteError};
 
 use super::BITS_PER_FRAME;
-use crate::dxl::uart::poll_src::PollSrc;
 use crate::ring::HwRing;
 use crate::traits::dxl::{EdgeDma, RxDma};
 
@@ -42,7 +42,11 @@ use crate::traits::dxl::{EdgeDma, RxDma};
 /// uniqueness (intra-byte deltas across at least one non-`0xFF` byte
 /// disambiguate from any same-spacing window elsewhere in the ring) while
 /// keeping the worst-case back-search work bounded at ~20 edges checked.
-const TAIL_BYTES_FOR_ANCHOR: usize = 4;
+/// Defined as [`anchor::TAIL_STARTS`] because the two MUST agree: the
+/// walker's signature match only completes when the last tail byte lands
+/// inside the starts cache — a longer tail slice would silently never
+/// anchor (every packet degrading to the fallback path with no error).
+const TAIL_BYTES_FOR_ANCHOR: usize = anchor::TAIL_STARTS;
 
 /// Read the last 4 wire bytes of a just-consumed packet + the summed
 /// edge count of any bytes DMA already latched past that tail. Shared
@@ -325,7 +329,13 @@ impl<R: EdgeDma, CRC: CrcUmts, const RX_BUF_LEN: usize, const EDGE_BUF_LEN: usiz
                         InstructionPayload::WriteDataChunk { offset, length },
                     )) = ev
                     {
-                        &input[offset as usize..(offset as usize + length as usize)]
+                        // SAFETY: the parser emits chunk coordinates inside
+                        // the slice it was fed, so the range is always in
+                        // bounds; defensive empty slice (never panic) on a
+                        // contract violation.
+                        input
+                            .get(offset as usize..(offset as usize + length as usize))
+                            .unwrap_or(&[])
                     } else {
                         &[]
                     };
@@ -445,10 +455,7 @@ impl<R: EdgeDma, CRC: CrcUmts, const RX_BUF_LEN: usize, const EDGE_BUF_LEN: usiz
                 let bytes_remaining = self.parser.packet_remaining();
                 self.parser.reset();
                 let frame_ticks = (ticks_per_bit as u32).wrapping_mul(BITS_PER_FRAME as u32);
-                let budget_bytes = bytes_remaining.saturating_add(SKIP_DEADLINE_SLACK_BYTES);
-                let elapsed = (budget_bytes as u32).wrapping_mul(frame_ticks);
-                let deadline_tick = now.wrapping_add(elapsed);
-                self.skip_fsm.arm(bytes_remaining, id, deadline_tick);
+                self.skip_fsm.arm(bytes_remaining, id, now, frame_ticks);
                 continue;
             }
 
@@ -539,25 +546,9 @@ impl<R: EdgeDma, CRC: CrcUmts, const RX_BUF_LEN: usize, const EDGE_BUF_LEN: usiz
         unsafe { (*self.rx_buf.get()).as_ptr() as usize }
     }
 
-    /// Forward to [`edge_capture::EdgeCapture::anchor_at_tail`].
-    pub fn anchor_at_tail(&mut self, ticks_per_bit: u16, tail_bytes: &[u8], d_min: u16) -> bool {
-        self.edge_capture
-            .anchor_at_tail(ticks_per_bit, tail_bytes, d_min)
-    }
-
     /// Forward to [`edge_capture::EdgeCapture::on_baud_change`].
     pub fn on_baud_change(&mut self, rx_edge_comp_ticks: u16) {
         self.edge_capture.on_baud_change(rx_edge_comp_ticks);
-    }
-
-    /// Forward to [`edge_capture::EdgeCapture::packet_end_tick`].
-    pub fn packet_end_tick(&self, ticks_per_bit: u16, now: u32, src: PollSrc) -> Option<u32> {
-        self.edge_capture.packet_end_tick(ticks_per_bit, now, src)
-    }
-
-    /// Forward to [`edge_capture::EdgeCapture::reset_anchor`].
-    pub fn reset_anchor(&mut self) {
-        self.edge_capture.reset_anchor();
     }
 }
 
@@ -652,31 +643,30 @@ impl<CRC: CrcUmts, const TX_BUF_LEN: usize> CodecTx<CRC, TX_BUF_LEN> {
         self.tx_buf.len() as u16
     }
 
-    /// Overwrite the trailing 2 bytes of the encoded TX buffer with `crc`
-    /// in little-endian. The Fast Last chain-CRC fold path calls this once
-    /// the predecessor wire bytes have been folded and our own reply bytes
-    /// are mixed in: the encoder emitted a placeholder CRC at
+    /// Overwrite the trailing [`CRC_BYTES`] of the encoded TX buffer with
+    /// `crc` in little-endian. The Fast Last chain-CRC fold path calls this
+    /// once the predecessor wire bytes have been folded and our own reply
+    /// bytes are mixed in: the encoder emitted a placeholder CRC at
     /// `send_slot(Last)` time and this patches it before DMA1_CH4's read
     /// cursor reaches the trailing slot (doc §10.6). No-op when `tx_buf`
-    /// hasn't been encoded yet (length < 2).
+    /// hasn't been encoded yet.
     pub fn patch_crc(&mut self, crc: u16) {
         let n = self.tx_buf.len();
-        if n < 2 {
+        if n < CRC_BYTES {
             return;
         }
-        self.tx_buf[n - 2] = (crc & 0xFF) as u8;
-        self.tx_buf[n - 1] = (crc >> 8) as u8;
+        self.tx_buf[n - CRC_BYTES..].copy_from_slice(&crc.to_le_bytes());
     }
 
-    /// Slice of our own reply bytes excluding the trailing 2-byte CRC
+    /// Slice of our own reply bytes excluding the trailing [`CRC_BYTES`]
     /// slot — the bytes the Fast Last fold mixes into the chain CRC
     /// before patching. Empty when no reply has been encoded yet.
     pub fn own_reply_bytes(&self) -> &[u8] {
         let n = self.tx_buf.len();
-        if n < 2 {
+        if n < CRC_BYTES {
             return &[];
         }
-        &self.tx_buf[..n - 2]
+        &self.tx_buf[..n - CRC_BYTES]
     }
 }
 
@@ -747,20 +737,6 @@ impl<
         self.rx.on_byte_batch_wake(now);
     }
 
-    pub fn poll<F, const PAIRS_LEN: usize>(
-        &mut self,
-        now: u32,
-        ticks_per_bit: u16,
-        n_pairs_wanted: u8,
-        pairs: &mut heapless::Vec<(u16, u16), PAIRS_LEN>,
-        on_event: F,
-    ) where
-        F: FnMut(PollEvent<'_>, &mut EdgeCapture<R, EDGE_BUF_LEN>) -> PollAction,
-    {
-        self.rx
-            .poll(now, ticks_per_bit, n_pairs_wanted, pairs, on_event);
-    }
-
     pub fn cancel_skip(&mut self) {
         self.rx.cancel_skip();
     }
@@ -777,14 +753,6 @@ impl<
         self.rx.rx_buf_addr()
     }
 
-    pub fn send_status(&mut self, status: Status<'_>) -> Result<(), WriteError> {
-        self.tx.send_status(status)
-    }
-
-    pub fn send_slot(&mut self, slot: &Slot<'_>, position: SlotPosition) -> Result<(), WriteError> {
-        self.tx.send_slot(slot, position)
-    }
-
     pub fn tx_buf_addr(&self) -> usize {
         self.tx.tx_buf_addr()
     }
@@ -793,32 +761,9 @@ impl<
         self.tx.tx_len()
     }
 
-    pub fn patch_crc(&mut self, crc: u16) {
-        self.tx.patch_crc(crc);
-    }
-
-    pub fn own_reply_bytes(&self) -> &[u8] {
-        self.tx.own_reply_bytes()
-    }
-
-    /// Forward to [`CodecRx::anchor_at_tail`].
-    pub fn anchor_at_tail(&mut self, ticks_per_bit: u16, tail_bytes: &[u8], d_min: u16) -> bool {
-        self.rx.anchor_at_tail(ticks_per_bit, tail_bytes, d_min)
-    }
-
     /// Forward to [`CodecRx::on_baud_change`].
     pub fn on_baud_change(&mut self, rx_edge_comp_ticks: u16) {
         self.rx.on_baud_change(rx_edge_comp_ticks);
-    }
-
-    /// Forward to [`CodecRx::packet_end_tick`].
-    pub fn packet_end_tick(&self, ticks_per_bit: u16, now: u32, src: PollSrc) -> Option<u32> {
-        self.rx.packet_end_tick(ticks_per_bit, now, src)
-    }
-
-    /// Forward to [`CodecRx::reset_anchor`].
-    pub fn reset_anchor(&mut self) {
-        self.rx.reset_anchor();
     }
 }
 
@@ -877,6 +822,44 @@ impl<
     const TX_BUF_LEN: usize,
 > Codec<R, CRC, RX_BUF_LEN, EDGE_BUF_LEN, TX_BUF_LEN>
 {
+    // Test-only forwarders — production reaches both halves through
+    // `split_mut`; only this crate's tests drive the halves through the
+    // whole `Codec`.
+
+    pub(crate) fn poll<F, const PAIRS_LEN: usize>(
+        &mut self,
+        now: u32,
+        ticks_per_bit: u16,
+        n_pairs_wanted: u8,
+        pairs: &mut heapless::Vec<(u16, u16), PAIRS_LEN>,
+        on_event: F,
+    ) where
+        F: FnMut(PollEvent<'_>, &mut EdgeCapture<R, EDGE_BUF_LEN>) -> PollAction,
+    {
+        self.rx
+            .poll(now, ticks_per_bit, n_pairs_wanted, pairs, on_event);
+    }
+
+    pub(crate) fn send_status(&mut self, status: Status<'_>) -> Result<(), WriteError> {
+        self.tx.send_status(status)
+    }
+
+    pub(crate) fn send_slot(
+        &mut self,
+        slot: &Slot<'_>,
+        position: SlotPosition,
+    ) -> Result<(), WriteError> {
+        self.tx.send_slot(slot, position)
+    }
+
+    pub(crate) fn patch_crc(&mut self, crc: u16) {
+        self.tx.patch_crc(crc);
+    }
+
+    pub(crate) fn own_reply_bytes(&self) -> &[u8] {
+        self.tx.own_reply_bytes()
+    }
+
     pub(crate) fn stage_rx_bytes_for_test(&mut self, at: u16, bytes: &[u8]) {
         self.rx.stage_rx_bytes_for_test(at, bytes);
     }

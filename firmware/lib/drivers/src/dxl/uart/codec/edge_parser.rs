@@ -323,7 +323,7 @@ impl EdgeParser {
             anchor.tail_anchor = None;
             anchor.tail_starts_oldest_ring_off = None;
             crate::log::trace!(
-                "classifier: tail-anchor insufficient avail={} base={} total_edges={} d_min={}",
+                "edge_parser: tail-anchor insufficient avail={} base={} total_edges={} d_min={}",
                 avail,
                 base,
                 total_edges,
@@ -347,7 +347,7 @@ impl EdgeParser {
                 // `try_anchor_at_tail_offset`.
                 anchor.tail_starts_oldest_ring_off = Some(o);
                 crate::log::debug!(
-                    "classifier: tail-anchor match offset={} base={} d_min={} total={}",
+                    "edge_parser: tail-anchor match offset={} base={} d_min={} total={}",
                     o,
                     base,
                     d_min,
@@ -360,7 +360,7 @@ impl EdgeParser {
         anchor.tail_anchor = None;
         anchor.tail_starts_oldest_ring_off = None;
         crate::log::debug!(
-            "classifier: tail-anchor miss base={} d_min={} total={}",
+            "edge_parser: tail-anchor miss base={} d_min={} total={}",
             base,
             d_min,
             total_edges,
@@ -373,7 +373,6 @@ impl EdgeParser {
     /// CRC-good event — the CRC byte's start sits at the tail anchor, the
     /// wire-end one byte-time later. `now` / `src` route through
     /// [`drain_ref`] so the lift stays sub-wrap at low baud.
-    #[allow(dead_code)]
     pub fn packet_end_tick(
         &self,
         anchor: &AnchorCache,
@@ -401,15 +400,13 @@ impl EdgeParser {
     ///
     /// Bumps no state; the composite increments the telemetry counter via
     /// [`crate::traits::dxl::RxDma::record_edge_anchor_miss`] alongside.
-    #[allow(dead_code)]
+    ///
+    /// The formulas coincide with [`drain_ref`] by construction — the
+    /// corrected lift reference IS the fallback estimate (both back-date
+    /// LineIdle by exactly one frame) — so this delegates rather than
+    /// duplicating the match.
     pub fn packet_end_tick_fallback(&self, src: PollSrc, now: u32, ticks_per_bit: u16) -> u32 {
-        match src {
-            PollSrc::ByteBatch => now,
-            PollSrc::LineIdle => {
-                let gap = (BITS_PER_FRAME as u32).wrapping_mul(ticks_per_bit as u32);
-                now.wrapping_sub(gap)
-            }
-        }
+        drain_ref(now, src, ticks_per_bit)
     }
 
     /// Retroactive integrator walk. Emits pairs going backward from
