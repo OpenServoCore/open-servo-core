@@ -5,26 +5,10 @@
 //! Transport-shaped traits live under [`dxl`]; the root holds only
 //! cross-driver primitives ([`DigitalOut`], [`Monotonic`]).
 
+mod digital_out;
+mod monotonic;
+
 pub mod dxl;
 
-/// Two-state digital line level. Shared across driver trait surfaces
-/// ([`DigitalOut::set`], LED patterns, board wiring active-level).
-#[derive(Copy, Clone, PartialEq, Eq, Debug)]
-pub enum Level {
-    Low,
-    High,
-}
-
-/// Drive a single digital output. Owned by the adapter; the driver holds
-/// one `P: DigitalOut` and calls `set` to change the wire state.
-pub trait DigitalOut {
-    fn set(&mut self, level: Level);
-}
-
-/// Free-running monotonic tick counter, used by drivers that schedule by
-/// elapsed time. `TICKS_PER_US` describes the rate so the driver can
-/// convert µs ↔ ticks without importing chip constants.
-pub trait Monotonic {
-    const TICKS_PER_US: u32;
-    fn ticks(&self) -> u32;
-}
+pub use digital_out::{DigitalOut, Level};
+pub use monotonic::Monotonic;
