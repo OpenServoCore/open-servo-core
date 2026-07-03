@@ -152,6 +152,35 @@ impl<R: EdgeDma, const EDGE_BUF_LEN: usize> EdgeCapture<R, EDGE_BUF_LEN> {
     pub fn reset_anchor(&mut self) {
         self.anchor.reset();
     }
+
+    /// Start tick of the awaited Status packet's first byte, resolved
+    /// from the newest ET stamps at that byte's RXNE trap. See
+    /// [`super::edge_parser::first_status_byte_start`] for the window
+    /// and second-byte disambiguation. Reads no anchor state beyond the
+    /// per-baud edge compensation.
+    pub fn first_status_byte_start(&mut self, ticks_per_bit: u16, now: u32) -> Option<u32> {
+        self.publish_edges();
+        // SAFETY: see `publish_edges`.
+        let edges = unsafe { &mut *self.edges.get() };
+        edge_parser::first_status_byte_start(edges, &self.anchor, ticks_per_bit, now)
+    }
+
+    /// Start tick of the newest of `tail_bytes` — the multi-byte arm of
+    /// the FAST status-start query, for traps that observe the Status
+    /// packet two or more bytes in. Same signature back-search as
+    /// [`Self::anchor_at_tail`] but read-only on the anchor cache: the
+    /// Crc-time drift path never sees a stale tail anchor from this.
+    pub fn reply_tail_newest_start(
+        &mut self,
+        ticks_per_bit: u16,
+        tail_bytes: &[u8],
+        now: u32,
+    ) -> Option<u32> {
+        self.publish_edges();
+        // SAFETY: see `publish_edges`.
+        let edges = unsafe { &mut *self.edges.get() };
+        edge_parser::reply_tail_newest_start(edges, &self.anchor, ticks_per_bit, tail_bytes, now)
+    }
 }
 
 // -- accessors ------------------------------------------------------------
