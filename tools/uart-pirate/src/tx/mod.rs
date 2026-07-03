@@ -147,12 +147,25 @@ fn init_usart3() {
     comp::recompute(brr0);
 }
 
+/// Drop a pending `schedule_send_after_idle` arm without sending it.
+/// Proto routes the explicit `SEND at=` command through this before
+/// scheduling, so a commanded-tick send still displaces a stale idle
+/// arm — but `send_now` (which routes through [`schedule_send_at`]
+/// internally) does NOT, honoring its coexistence contract: arm the
+/// idle send, then `send_now` the request whose trailing IDLE triggers
+/// it. Clearing inside `schedule_send_at` broke exactly that sequence —
+/// the host-side `inject_then_send` armed the injection and then
+/// `send_now` silently killed it before the request ever shipped.
+pub fn cancel_idle_send() {
+    IDLE_SEND_PENDING.store(false, Ordering::Release);
+}
+
 /// Load `payload` and kick off when `tick32` reaches `at`. Held under a
 /// critical section so a pending USART3 IDLE can't kick the DMA between
-/// disabling EN and writing NDTR/MAR.
+/// disabling EN and writing NDTR/MAR. Leaves a pending idle-send arm
+/// alone — see [`cancel_idle_send`].
 pub fn schedule_send_at(payload: &[u8], at: u32) -> Result<(), SendError> {
     critical_section::with(|_| {
-        IDLE_SEND_PENDING.store(false, Ordering::Release);
         scheduler::cancel();
         load_payload_main(payload)?;
         scheduler::schedule_or_send_now(at);

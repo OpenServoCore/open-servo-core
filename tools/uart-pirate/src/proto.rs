@@ -251,7 +251,12 @@ fn send(rest: &str) -> Reply {
     }
 
     let result = match (at, after_idle) {
-        (Some(at), None) => tx::schedule_send_at(&buf[..len], at),
+        (Some(at), None) => {
+            // Commanded-tick send displaces a stale idle arm; a plain
+            // `SEND` (send_now) coexists with one — see `cancel_idle_send`.
+            tx::cancel_idle_send();
+            tx::schedule_send_at(&buf[..len], at)
+        }
         (None, Some(after)) => tx::schedule_send_after_idle(&buf[..len], after),
         (None, None) => tx::send_now(&buf[..len]),
         (Some(_), Some(_)) => return Reply::Err("conflict"),
