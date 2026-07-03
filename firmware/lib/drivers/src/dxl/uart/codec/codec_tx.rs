@@ -31,6 +31,15 @@ impl<CRC: CrcUmts, const TX_BUF_LEN: usize> CodecTx<CRC, TX_BUF_LEN> {
     }
 }
 
+#[cfg(test)]
+impl<CRC: CrcUmts, const TX_BUF_LEN: usize> CodecTx<CRC, TX_BUF_LEN> {
+    /// Standalone TX half for `ReplyHandle` tests — production constructs
+    /// only through `Codec::new`.
+    pub(crate) fn new_for_test() -> Self {
+        Self::new()
+    }
+}
+
 // -- commands -----------------------------------------------------------
 
 impl<CRC: CrcUmts, const TX_BUF_LEN: usize> CodecTx<CRC, TX_BUF_LEN> {

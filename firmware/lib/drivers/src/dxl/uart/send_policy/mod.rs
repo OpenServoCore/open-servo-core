@@ -15,7 +15,6 @@ mod reply_gate;
 
 #[cfg(test)]
 pub(super) use fast_shape::PING_STATUS_FRAME_BYTES;
-pub(super) use fast_shape::header_target;
 pub(super) use reply_context::ReplyContext;
 
 use config_mediator::ConfigMediator;
@@ -176,12 +175,14 @@ impl SendPolicy {
 impl SendPolicy {
     /// Peek the staged reply context without consuming it — composite
     /// tests assert on the derived wire shape before any send.
-    pub(super) fn staged_reply_for_test(&mut self) -> Option<ReplyContext> {
-        let ctx = self.reply.take_reply_context();
-        if let Some(ctx) = ctx {
-            self.reply.on_reply_context(ctx);
-        }
-        ctx
+    pub(super) fn staged_reply_for_test(&self) -> Option<ReplyContext> {
+        self.reply.staged()
+    }
+
+    /// Stage a hand-built context directly, bypassing the parse-side
+    /// tracker — `ReplyHandle` tests drive the send paths in isolation.
+    pub(super) fn stage_reply_context_for_test(&mut self, ctx: ReplyContext) {
+        self.reply.on_reply_context(ctx);
     }
 
     pub(super) fn rdt_us(&self) -> u32 {

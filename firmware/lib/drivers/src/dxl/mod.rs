@@ -18,3 +18,7 @@ pub mod uart;
 ///    regardless of any RDT override (including legacy on-bus chips
 ///    needing extra turnaround).
 pub const DEFAULT_RDT_2US: u8 = 125;
+
+/// [`DEFAULT_RDT_2US`] decoded from register units to the µs value the
+/// deadline math consumes.
+pub const DEFAULT_RDT_US: u32 = DEFAULT_RDT_2US as u32 * 2;

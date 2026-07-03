@@ -21,6 +21,9 @@ pub const RESPONSE_HEADER_BYTES: usize = 9;
 
 pub const CRC_BYTES: usize = 2;
 
+/// Ping Status parameters: `model_number_le16(2) + firmware_version(1)`.
+pub const PING_STATUS_PARAM_BYTES: usize = 3;
+
 /// SyncRead/FastSyncRead per-slave entry: `id(1)`.
 pub const SYNC_REQUEST_SLOT_BYTES: usize = 1;
 

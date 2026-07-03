@@ -120,6 +120,29 @@ pub enum InstructionHeader {
 }
 
 impl InstructionHeader {
+    /// Target servo id — every Instruction variant carries exactly one.
+    pub fn target(&self) -> Id {
+        use InstructionHeader::*;
+        match *self {
+            Ping { id }
+            | Read { id, .. }
+            | Write { id, .. }
+            | RegWrite { id, .. }
+            | Action { id }
+            | Reboot { id }
+            | FactoryReset { id, .. }
+            | Clear { id, .. }
+            | ControlTableBackup { id, .. }
+            | SyncRead { id, .. }
+            | SyncWrite { id, .. }
+            | BulkRead { id }
+            | BulkWrite { id }
+            | FastSyncRead { id, .. }
+            | FastBulkRead { id }
+            | Raw { id, .. } => id,
+        }
+    }
+
     /// `params` holds up to 4 bytes after the instruction byte (unused slots
     /// zero). Status is invalid here -- callers route it via
     /// [`HeaderEvent::Status`].

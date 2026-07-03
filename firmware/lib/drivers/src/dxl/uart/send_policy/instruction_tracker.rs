@@ -7,7 +7,7 @@
 
 use dxl_protocol::streaming::{InstructionHeader, InstructionPayload};
 
-use super::fast_shape::{header_target, target_addressable};
+use super::fast_shape::target_addressable;
 use super::inflight::InflightCtx;
 
 /// Parse phase of the in-flight host Instruction.
@@ -44,7 +44,7 @@ impl InstructionTracker {
             None
         } else {
             self.phase = InstructionPhase::Idle;
-            Some(header_target(h).as_byte())
+            Some(h.target().as_byte())
         }
     }
 

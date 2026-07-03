@@ -47,7 +47,7 @@ pub(crate) struct ReplyContext {
     /// `into_reply_context` build time so the send path is rdt-source-
     /// agnostic: single-target / Fast chain replies see the per-instance
     /// register value, broadcast Ping sees the uniform driver default
-    /// (`crate::dxl::DEFAULT_RDT_2US`) — see that constant's doc for the
+    /// (`crate::dxl::DEFAULT_RDT_US`) — see `DEFAULT_RDT_2US`'s doc for the
     /// collision-avoidance reasoning.
     pub(crate) rdt_us: u32,
     /// Which ISR fired the parser's Crc event (HT/TC vs USART IDLE). The

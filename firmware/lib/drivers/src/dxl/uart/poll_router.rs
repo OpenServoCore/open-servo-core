@@ -13,7 +13,7 @@ use super::clock::Clock;
 use super::codec::{CodecTx, PacketEnd, PollAction};
 use super::fast_last::FastLast;
 use super::reply_handle::ReplyHandle;
-use super::send_policy::{SendPolicy, header_target};
+use super::send_policy::SendPolicy;
 use crate::traits::dxl::{Providers, RxDma, TxBus};
 
 pub(super) struct PollRouter<'a, P: Providers, const TX_BUF_LEN: usize> {
@@ -49,7 +49,7 @@ impl<P: Providers, const TX_BUF_LEN: usize> PollRouter<'_, P, TX_BUF_LEN> {
                 crate::log::trace!(
                     "dxl[id={}]: event=header_instruction target={} addressable={}",
                     self.id,
-                    header_target(&h).as_byte(),
+                    h.target().as_byte(),
                     skip_target.is_none()
                 );
                 match skip_target {

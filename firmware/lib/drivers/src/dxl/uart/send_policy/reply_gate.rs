@@ -129,6 +129,17 @@ impl ReplyGate {
 }
 
 #[cfg(test)]
+impl ReplyGate {
+    /// Peek the staged context without consuming it.
+    pub(super) fn staged(&self) -> Option<ReplyContext> {
+        match self.phase {
+            ReplyPhase::Staged(ctx) => Some(ctx),
+            _ => None,
+        }
+    }
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use crate::dxl::uart::poll_src::PollSrc;

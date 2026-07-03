@@ -58,7 +58,7 @@ struct MatchedSlot {
 pub(super) struct Inflight {
     header: InstructionHeader,
     ctx: Ctx,
-    /// Pre-computed `Ctx::addressed(header_target)` at start_inflight time.
+    /// Pre-computed `Ctx::addressed(header.target())` at start_inflight time.
     /// Direct-target handlers read this instead of re-running the match;
     /// chain-target handlers (Sync/Bulk/Fast) ignore it and gate on
     /// `matched_slot` instead.
@@ -73,28 +73,6 @@ pub(super) struct Inflight {
     snap: Snapshot,
     /// Sticky on `push` failure; commit maps to `Status::Empty{DataRange}`.
     overflowed: bool,
-}
-
-fn header_target(h: &InstructionHeader) -> Id {
-    use InstructionHeader::*;
-    match *h {
-        Ping { id }
-        | Read { id, .. }
-        | Write { id, .. }
-        | RegWrite { id, .. }
-        | Action { id }
-        | Reboot { id }
-        | FactoryReset { id, .. }
-        | Clear { id, .. }
-        | ControlTableBackup { id, .. }
-        | SyncRead { id, .. }
-        | SyncWrite { id, .. }
-        | BulkRead { id }
-        | BulkWrite { id }
-        | FastSyncRead { id, .. }
-        | FastBulkRead { id }
-        | Raw { id, .. } => id,
-    }
 }
 
 pub(super) struct Dispatcher<'a> {
@@ -163,7 +141,7 @@ impl Dispatcher<'_> {
 
     fn start_inflight(&mut self, header: InstructionHeader) {
         let ctx = self.snapshot_ctx();
-        let target = header_target(&header);
+        let target = header.target();
         let addressed = ctx.addressed(target);
         crate::log::trace!(
             "dispatcher: start_inflight header={:?} target={:?} addressed={:?}",

@@ -307,3 +307,306 @@ impl<P: Providers, const TX_BUF_LEN: usize> DxlReply for ReplyHandle<'_, P, TX_B
         ReplyHandle::stage_reboot(self, mode)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    extern crate alloc;
+    use std::cell::RefCell;
+    use std::rc::Rc;
+
+    use super::*;
+    use crate::dxl::uart::poll_src::PollSrc;
+    use crate::dxl::uart::test_support::{
+        SEED_TICK, TEST_ID, TEST_RDT_US, TICKS_PER_US, mk_clock_trim, mk_usart_baud,
+    };
+    use crate::mocks::{
+        FastLastSchedulerOp, MockClockTrim, MockFastLastScheduler, MockTxScheduler, MockUsartBaud,
+        ScheduleOp, TestProviders,
+    };
+    use dxl_protocol::SoftwareCrcUmts;
+
+    const TX_BUF_LEN: usize = 140;
+    const SEED: u32 = SEED_TICK as u32;
+    const RDT_TICKS: u32 = TEST_RDT_US * TICKS_PER_US;
+    /// 3M byte time in scheduler ticks (10 · 16).
+    const BYTE_TICKS_3M: u32 = 160;
+
+    // Local mock-state companions, mirroring `uart/mod.rs` tests until the
+    // D9 `test_support` hoist unifies them.
+
+    struct Harness {
+        tx: CodecTx<SoftwareCrcUmts, TX_BUF_LEN>,
+        scheduler: MockTxScheduler,
+        sched_ops: Rc<RefCell<alloc::vec::Vec<ScheduleOp>>>,
+        fast_last: FastLast<MockFastLastScheduler, SoftwareCrcUmts>,
+        fl_ops: Rc<RefCell<alloc::vec::Vec<FastLastSchedulerOp>>>,
+        clock: Clock<MockUsartBaud, MockClockTrim>,
+        send_policy: SendPolicy,
+    }
+
+    impl Harness {
+        fn new() -> Self {
+            let sched_ops: Rc<RefCell<alloc::vec::Vec<ScheduleOp>>> = Rc::default();
+            let mut scheduler = MockTxScheduler::new();
+            {
+                let ops = sched_ops.clone();
+                scheduler
+                    .expect_schedule()
+                    .returning_st(move |deadline, byte_count, kind| {
+                        ops.borrow_mut().push(ScheduleOp::Schedule {
+                            deadline,
+                            byte_count,
+                            kind,
+                        });
+                    });
+            }
+            {
+                let ops = sched_ops.clone();
+                scheduler.expect_cancel().returning_st(move || {
+                    ops.borrow_mut().push(ScheduleOp::Cancel);
+                });
+            }
+
+            let fl_ops: Rc<RefCell<alloc::vec::Vec<FastLastSchedulerOp>>> = Rc::default();
+            let mut fl_sched = MockFastLastScheduler::new();
+            {
+                let ops = fl_ops.clone();
+                fl_sched
+                    .expect_set_deadline()
+                    .returning_st(move |deadline| {
+                        ops.borrow_mut()
+                            .push(FastLastSchedulerOp::SetDeadline { deadline });
+                    });
+            }
+            {
+                let ops = fl_ops.clone();
+                fl_sched.expect_schedule().returning_st(move |deadline| {
+                    ops.borrow_mut()
+                        .push(FastLastSchedulerOp::Schedule { deadline });
+                });
+            }
+
+            Self {
+                tx: CodecTx::new_for_test(),
+                scheduler,
+                sched_ops,
+                fast_last: FastLast::new(fl_sched),
+                fl_ops,
+                clock: Clock::new(BaudRate::B3000000, mk_usart_baud().0, mk_clock_trim().0),
+                send_policy: SendPolicy::new(TEST_ID, TEST_RDT_US),
+            }
+        }
+
+        fn stage(&mut self, ctx: ReplyContext) {
+            self.send_policy.stage_reply_context_for_test(ctx);
+        }
+
+        fn handle(&mut self) -> ReplyHandle<'_, TestProviders, TX_BUF_LEN> {
+            ReplyHandle {
+                tx: &mut self.tx,
+                scheduler: &mut self.scheduler,
+                fast_last: &mut self.fast_last,
+                clock: &mut self.clock,
+                send_policy: &mut self.send_policy,
+            }
+        }
+
+        fn sched_ops(&self) -> alloc::vec::Vec<ScheduleOp> {
+            self.sched_ops.borrow().clone()
+        }
+    }
+
+    fn ctx() -> ReplyContext {
+        ReplyContext {
+            packet_end_tick: SEED,
+            slot_offset_bytes: 0,
+            fast_slot_position: None,
+            fold_start_cursor: 0,
+            predecessor_id: None,
+            rdt_us: TEST_RDT_US,
+            src: PollSrc::ByteBatch,
+        }
+    }
+
+    fn empty_status() -> Status<'static> {
+        Status::Empty {
+            id: Id::new(TEST_ID),
+            error: StatusError::OK,
+        }
+    }
+
+    fn own_slot(data: &[u8]) -> Slot<'_> {
+        Slot {
+            id: Id::new(TEST_ID),
+            error: StatusError::OK,
+            data,
+        }
+    }
+
+    #[test]
+    fn send_status_schedules_plain_at_packet_end_plus_rdt_plus_offset() {
+        let mut h = Harness::new();
+        h.stage(ReplyContext {
+            slot_offset_bytes: 12,
+            ..ctx()
+        });
+        h.handle().send_status(empty_status()).expect("encode fits");
+
+        let byte_count = h.tx.tx_len();
+        assert!(byte_count > 0);
+        assert_eq!(
+            h.sched_ops(),
+            alloc::vec![ScheduleOp::Schedule {
+                deadline: SEED + RDT_TICKS + 12 * BYTE_TICKS_3M,
+                byte_count,
+                kind: SendKind::Plain,
+            }]
+        );
+    }
+
+    #[test]
+    fn send_status_defers_to_predecessor_without_scheduling() {
+        let mut h = Harness::new();
+        h.stage(ReplyContext {
+            predecessor_id: Some(0x42),
+            ..ctx()
+        });
+        h.handle().send_status(empty_status()).expect("encode fits");
+
+        assert!(h.sched_ops().is_empty());
+        assert_eq!(h.send_policy.awaited_predecessor(), Some(0x42));
+    }
+
+    #[test]
+    fn send_status_without_context_encodes_but_never_schedules() {
+        let mut h = Harness::new();
+        h.handle().send_status(empty_status()).expect("encode fits");
+
+        assert!(h.tx.tx_len() > 0);
+        assert!(h.sched_ops().is_empty());
+    }
+
+    #[test]
+    fn context_is_consumed_so_double_send_schedules_once() {
+        let mut h = Harness::new();
+        h.stage(ctx());
+        let mut handle = h.handle();
+        handle.send_status(empty_status()).expect("encode fits");
+        handle.send_status(empty_status()).expect("encode fits");
+
+        assert_eq!(h.sched_ops().len(), 1);
+    }
+
+    #[test]
+    fn send_slot_non_last_positions_schedule_plain_and_leave_the_fold_idle() {
+        for position in [
+            SlotPosition::Only { packet_length: 7 },
+            SlotPosition::First { packet_length: 15 },
+            SlotPosition::Middle,
+        ] {
+            let mut h = Harness::new();
+            h.stage(ReplyContext {
+                fast_slot_position: Some(position),
+                ..ctx()
+            });
+            h.handle()
+                .send_slot(&own_slot(&[0x11, 0x22]))
+                .expect("encode fits");
+
+            assert_eq!(
+                h.sched_ops(),
+                alloc::vec![ScheduleOp::Schedule {
+                    deadline: SEED + RDT_TICKS,
+                    byte_count: h.tx.tx_len(),
+                    kind: SendKind::Plain,
+                }],
+                "position {position:?}"
+            );
+            assert!(h.fl_ops.borrow().is_empty());
+            assert!(!h.fast_last.fold_active());
+        }
+    }
+
+    #[test]
+    fn send_slot_without_position_drops_silently() {
+        let mut h = Harness::new();
+        h.stage(ctx());
+        h.handle()
+            .send_slot(&own_slot(&[0x11]))
+            .expect("encode fits");
+
+        assert!(h.sched_ops().is_empty());
+    }
+
+    #[test]
+    fn send_slot_last_tags_fast_last_and_arms_the_grid_off_the_same_rdt() {
+        let mut h = Harness::new();
+        h.stage(ReplyContext {
+            fast_slot_position: Some(SlotPosition::Last { crc: 0 }),
+            slot_offset_bytes: 12,
+            fold_start_cursor: 30,
+            ..ctx()
+        });
+        h.handle()
+            .send_slot(&own_slot(&[0xAA, 0xBB]))
+            .expect("encode fits");
+
+        assert_eq!(
+            h.sched_ops(),
+            alloc::vec![ScheduleOp::Schedule {
+                deadline: SEED + RDT_TICKS + 12 * BYTE_TICKS_3M,
+                byte_count: h.tx.tx_len(),
+                kind: SendKind::FastLast,
+            }]
+        );
+        // The grid's stop-fold deadline composes the SAME effective RDT the
+        // schedule used: packet_end + rdt + predecessor·byte − GUARD·byte.
+        assert_eq!(
+            h.fl_ops.borrow().first(),
+            Some(&FastLastSchedulerOp::SetDeadline {
+                deadline: SEED + RDT_TICKS + 12 * BYTE_TICKS_3M - BYTE_TICKS_3M,
+            })
+        );
+        assert!(h.fast_last.fold_active());
+        assert!(h.fast_last.grid_active());
+    }
+
+    #[test]
+    fn line_idle_source_floors_the_slot_rdt_at_one_byte_time() {
+        // rdt = 1 µs → 48 ticks, under the 160-tick byte time at 3M.
+        for (src, expected_rdt_ticks) in
+            [(PollSrc::LineIdle, BYTE_TICKS_3M), (PollSrc::ByteBatch, 48)]
+        {
+            let mut h = Harness::new();
+            h.stage(ReplyContext {
+                fast_slot_position: Some(SlotPosition::Only { packet_length: 7 }),
+                rdt_us: 1,
+                src,
+                ..ctx()
+            });
+            h.handle()
+                .send_slot(&own_slot(&[0x11]))
+                .expect("encode fits");
+
+            assert_eq!(
+                h.sched_ops(),
+                alloc::vec![ScheduleOp::Schedule {
+                    deadline: SEED + expected_rdt_ticks,
+                    byte_count: h.tx.tx_len(),
+                    kind: SendKind::Plain,
+                }],
+                "src {src:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn cancel_forwards_to_the_scheduler_and_clears_the_staged_context() {
+        let mut h = Harness::new();
+        h.stage(ctx());
+        h.handle().cancel();
+
+        assert_eq!(h.sched_ops(), alloc::vec![ScheduleOp::Cancel]);
+        assert!(h.send_policy.staged_reply_for_test().is_none());
+    }
+}

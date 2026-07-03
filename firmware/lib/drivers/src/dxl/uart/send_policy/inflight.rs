@@ -99,7 +99,7 @@ impl InflightCtx {
             (InstructionHeader::Ping { id: target }, _) if target.as_byte() == BROADCAST_ID => (
                 (id as u32) * PING_STATUS_FRAME_BYTES,
                 None,
-                (crate::dxl::DEFAULT_RDT_2US as u32) * 2,
+                crate::dxl::DEFAULT_RDT_US,
             ),
             (InstructionHeader::FastSyncRead { length, .. }, Some(k)) => {
                 let n = self.next_slot_index;
@@ -245,5 +245,164 @@ mod tests {
         assert!(!allows_fallback(InstructionHeader::FastBulkRead {
             id: Id::new(BROADCAST_ID),
         }));
+    }
+
+    // InflightCtx slot walk → ReplyContext derivation
+
+    use dxl_protocol::SlotPosition;
+
+    fn sync_slot(id: u8, index: u8) -> InstructionPayload {
+        InstructionPayload::SyncSlot {
+            id: Id::new(id),
+            index,
+        }
+    }
+
+    fn bulk_slot(id: u8, index: u8, length: u16) -> InstructionPayload {
+        InstructionPayload::BulkSlot {
+            id: Id::new(id),
+            index,
+            address: 0,
+            length,
+        }
+    }
+
+    fn walk(header: InstructionHeader, slots: &[InstructionPayload]) -> InflightCtx {
+        let mut ctx = InflightCtx::new(header);
+        for s in slots {
+            ctx.on_slot(s, TEST_ID);
+        }
+        ctx
+    }
+
+    fn resolve(ctx: InflightCtx) -> ReplyContext {
+        ctx.into_reply_context(TEST_ID, 250, 1000, 0, PollSrc::ByteBatch)
+    }
+
+    fn fast_sync_read(length: u16) -> InstructionHeader {
+        InstructionHeader::FastSyncRead {
+            id: Id::new(BROADCAST_ID),
+            address: 0,
+            length,
+        }
+    }
+
+    #[test]
+    fn slot_walk_freezes_predecessor_at_own_slot() {
+        let header = InstructionHeader::SyncRead {
+            id: Id::new(BROADCAST_ID),
+            address: 0,
+            length: 2,
+        };
+        let ctx = walk(
+            header,
+            &[
+                sync_slot(0x30, 0),
+                sync_slot(0x31, 1),
+                sync_slot(TEST_ID, 2),
+                sync_slot(0x33, 3),
+            ],
+        );
+        // Plain SyncRead slot k > 0 → the ReplyContext carries the
+        // immediate predecessor; the successor slot doesn't overwrite it.
+        assert_eq!(resolve(ctx).predecessor_id, Some(0x31));
+    }
+
+    #[test]
+    fn slot_zero_and_fast_chains_carry_no_predecessor() {
+        let sync = InstructionHeader::SyncRead {
+            id: Id::new(BROADCAST_ID),
+            address: 0,
+            length: 2,
+        };
+        let at_zero = walk(sync, &[sync_slot(TEST_ID, 0), sync_slot(0x31, 1)]);
+        assert_eq!(resolve(at_zero).predecessor_id, None);
+
+        // Fast chains fire grid-driven, never sequence-driven.
+        let fast = walk(
+            fast_sync_read(2),
+            &[sync_slot(0x30, 0), sync_slot(TEST_ID, 1)],
+        );
+        assert_eq!(resolve(fast).predecessor_id, None);
+    }
+
+    #[test]
+    fn fast_sync_read_derives_offset_and_position_from_uniform_length() {
+        let ctx = walk(
+            fast_sync_read(2),
+            &[
+                sync_slot(0x30, 0),
+                sync_slot(TEST_ID, 1),
+                sync_slot(0x33, 2),
+            ],
+        );
+        let reply = resolve(ctx);
+        // Slot 1 of 3 follows one First emission: 10 + 2 = 12 wire bytes.
+        assert_eq!(reply.slot_offset_bytes, 12);
+        assert_eq!(reply.fast_slot_position, Some(SlotPosition::Middle));
+        assert_eq!(reply.rdt_us, 250);
+    }
+
+    #[test]
+    fn fast_bulk_read_accumulates_per_slot_lengths() {
+        let header = InstructionHeader::FastBulkRead {
+            id: Id::new(BROADCAST_ID),
+        };
+        let ctx = walk(
+            header,
+            &[
+                bulk_slot(0x30, 0, 4),
+                bulk_slot(TEST_ID, 1, 2),
+                bulk_slot(0x33, 2, 6),
+            ],
+        );
+        let reply = resolve(ctx);
+        // First emission for the length-4 predecessor: 10 + 4 = 14 bytes.
+        assert_eq!(reply.slot_offset_bytes, 14);
+        assert_eq!(reply.fast_slot_position, Some(SlotPosition::Middle));
+    }
+
+    #[test]
+    fn fast_last_slot_resolves_last_position() {
+        let ctx = walk(
+            fast_sync_read(2),
+            &[sync_slot(0x30, 0), sync_slot(TEST_ID, 1)],
+        );
+        let reply = resolve(ctx);
+        assert_eq!(
+            reply.fast_slot_position,
+            Some(SlotPosition::Last { crc: 0 })
+        );
+        assert_eq!(reply.slot_offset_bytes, 12);
+    }
+
+    #[test]
+    fn write_data_chunks_do_not_advance_the_slot_walk() {
+        let mut ctx = InflightCtx::new(fast_sync_read(2));
+        ctx.on_slot(&sync_slot(0x30, 0), TEST_ID);
+        ctx.on_slot(
+            &InstructionPayload::WriteDataChunk {
+                offset: 0,
+                length: 4,
+            },
+            TEST_ID,
+        );
+        ctx.on_slot(&sync_slot(TEST_ID, 1), TEST_ID);
+        // Own slot still lands at k = 1 — the chunk didn't bump the cursor.
+        assert_eq!(resolve(ctx).slot_offset_bytes, 12);
+    }
+
+    #[test]
+    fn broadcast_ping_positions_by_id_with_the_uniform_default_rdt() {
+        let ctx = InflightCtx::new(InstructionHeader::Ping {
+            id: Id::new(BROADCAST_ID),
+        });
+        let reply = resolve(ctx);
+        assert_eq!(
+            reply.slot_offset_bytes,
+            TEST_ID as u32 * PING_STATUS_FRAME_BYTES
+        );
+        assert_eq!(reply.rdt_us, crate::dxl::DEFAULT_RDT_US);
+        assert_eq!(reply.fast_slot_position, None);
     }
 }
