@@ -12,6 +12,7 @@
 pub mod clock;
 pub mod codec;
 pub mod fast_last;
+mod poll_router;
 mod poll_src;
 mod reply_handle;
 mod send_policy;
@@ -22,20 +23,27 @@ pub use reply_handle::ReplyHandle;
 #[cfg(test)]
 mod test_support;
 
-use dxl_protocol::streaming::{CrcResult, Event, HeaderEvent, PayloadEvent};
+use dxl_protocol::streaming::Event;
 use osc_core::BootMode;
 
 use crate::traits::dxl::{Providers, RxDma, TxBus, TxScheduler, WireClock};
 use clock::Clock;
 use codec::{Codec, PollAction, PollEvent};
 use fast_last::FastLast;
-use send_policy::{SendPolicy, header_target};
+use poll_router::PollRouter;
+use send_policy::SendPolicy;
 
 /// Bits on the wire for a single UART character: 1 start + 8 data + 1 stop
 /// (8N1). Multiply by `ticks_per_bit` to get one byte's wire duration in
 /// scheduler ticks. Also the IDLE detection threshold — CH32V00X RM §UART:
 /// "an idle frame is 10-or-11-bit high, including the stop bit"; M=0 → 10.
 pub(crate) const BITS_PER_FRAME: u16 = 10;
+
+/// Capacity bound for the per-poll drift-pair scratch buffer. The
+/// retroactive walk emits at most `Clock::samples_wanted_per_packet`
+/// pairs per packet (single digits) and the cap is enforced inside the
+/// walk — 32 is generous headroom without a meaningful ISR stack cost.
+const DRIFT_PAIRS_MAX: usize = 32;
 
 /// The DXL bus composite. `P` bundles the chip-side leaf interfaces this
 /// driver pulls — see [`Providers`]. The const generics are storage sizes:
@@ -121,6 +129,8 @@ impl<P: Providers, const RX_BUF_LEN: usize, const EDGE_BUF_LEN: usize, const TX_
         s
     }
 
+    // -- events -------------------------------------------------------------
+
     /// USART1 IDLE ISR entry — refresh the ET producer head and stash
     /// `(now, LineIdle)` for the Crc-time fallback path. Small-packet
     /// backstop for the parser drain (chip ISR follows with
@@ -145,6 +155,106 @@ impl<P: Providers, const RX_BUF_LEN: usize, const EDGE_BUF_LEN: usize, const TX_
         self.codec.on_rx_progress(self.rx_dma.remaining());
         self.codec.on_byte_batch_wake(now);
     }
+
+    /// The TX-start tick has arrived (chip-side CC3 IRQ). Activates the
+    /// wire driver FIRST so the first wire bit lands on the scheduled
+    /// deadline; for Fast Last replies the body then tails with the
+    /// post-TX-start residue fold — exit policy lives in
+    /// [`FastLast::on_tx_start`]; the composite supplies one drain pass
+    /// per iteration. Each [`CodecRx::drain_raw`] pass refreshes the
+    /// byte-ring producer head from [`RxDma::remaining`] so newly-arrived
+    /// GUARD bytes become visible inside the spin (per
+    /// `dxl-streaming-rx.md` §6, the `crc_patch_deadline_miss` counter is
+    /// a bench-defended floor signal at the 3 Mbaud floor, not a
+    /// wire-correctness failure).
+    ///
+    /// [`CodecRx::drain_raw`]: codec::CodecRx::drain_raw
+    pub fn on_tx_start(&mut self) {
+        self.tx_bus.handle_start();
+        let Self {
+            codec,
+            rx_dma,
+            fast_last,
+            ..
+        } = self;
+        let (rx, tx) = codec.split_mut();
+        fast_last.on_tx_start(|fl_crc| {
+            rx.drain_raw(rx_dma, |slice, base_cursor| {
+                fl_crc.on_slice(slice, base_cursor, tx);
+            });
+        });
+    }
+
+    /// One Fast Last periodic-walk fold body is due (chip-side SysTick
+    /// CMP). Body drives [`FsmScheduler::on_step`] forward — the walker
+    /// closure drains pending RX bytes raw through [`FoldEngine::on_slice`]
+    /// and returns the cumulative folded count for the FSM's `target =
+    /// predecessor_bytes − GUARD` busy-wait exit (`fast_last/`).
+    ///
+    /// [`FsmScheduler::on_step`]: fast_last::FsmScheduler::on_step
+    /// [`FoldEngine::on_slice`]: fast_last::FoldEngine::on_slice
+    pub fn on_fold_step(&mut self) {
+        let Self {
+            codec,
+            rx_dma,
+            fast_last,
+            scheduler,
+            ..
+        } = self;
+        let (rx, tx) = codec.split_mut();
+        let (fl_sched, fl_crc) = fast_last.split_mut();
+        fl_sched.on_step(
+            || {
+                rx.drain_raw(rx_dma, |slice, base_cursor| {
+                    fl_crc.on_slice(slice, base_cursor, tx);
+                });
+                fl_crc.bytes_folded()
+            },
+            || scheduler.commit_pending(),
+        );
+    }
+
+    /// Long-horizon timer match fired (chip-side: SysTick CMP). Two consumers
+    /// share the CMP — the TX-scheduler handoff arm (multi-wrap distances
+    /// where direct TIM2 CC3 can't span the wait) and the Fast Last walk
+    /// grid. The TX-scheduler reports whether the match was its own; if so,
+    /// we're done, otherwise it's a Fast Last grid step.
+    pub fn on_schedule_due(&mut self) {
+        if self.scheduler.on_schedule_due() {
+            return;
+        }
+        self.on_fold_step();
+    }
+
+    /// USART1 TC fired — the reply has fully drained the wire. Release
+    /// the wire driver *first* (drop TX_EN, mask TC IRQ, disable DMA) so
+    /// stale TX_EN doesn't sit on the bus while pending config mutates;
+    /// then drain staged writes (id / baud / trim / rdt) and surface any
+    /// pending reboot to the chip-side ISR. Also resets the Fast Last
+    /// state (idempotent — both halves already return to idle naturally
+    /// on the successful path). Reboot is returned (rather than
+    /// self-applied) because the chip controls how the reset actually
+    /// happens; the driver only knows it was asked.
+    pub fn on_tx_complete(&mut self) -> Option<BootMode> {
+        self.tx_bus.handle_tx_complete();
+        self.fast_last.cancel();
+        // Per `dxl-streaming-rx.md` §5.3: our own TX completion is a
+        // packet boundary at which stale chain state must reset. The
+        // §5.3 "next instruction header" trigger is too late for the
+        // universal byte-skip — at slow baud the deadline-bounded skip
+        // can outlive the inter-packet gap and eat the next preamble
+        // before the parser ever reaches the header event.
+        self.codec.cancel_skip();
+        let reboot = self.send_policy.on_tx_complete();
+        self.clock.on_tx_complete();
+        // Clock just applied any pending baud — refresh the codec's edge
+        // parser with the new per-baud edge-stamp compensation. Idempotent
+        // when no baud change landed (the value is the same as before).
+        self.codec.on_baud_change(self.clock.rx_edge_comp_ticks());
+        reboot
+    }
+
+    // -- commands -------------------------------------------------------------
 
     /// Drive the codec event stream, manage wire-level state (anchor,
     /// drift gating, universal byte-skip, slot-walk, reply context) and
@@ -194,170 +304,72 @@ impl<P: Providers, const RX_BUF_LEN: usize, const EDGE_BUF_LEN: usize, const TX_
             send_policy,
             ..
         } = self;
-        // Drift pairs from the codec's retroactive walk at Crc and drain
-        // into `clock.on_byte_pair` after `codec.poll` returns — routing
-        // them through `clock` inside the poll would force a second
-        // `&mut clock` capture concurrent with the event sink's
-        // `ReplyHandle { clock, .. }` capture. Bound at one DXL packet's
-        // worth of body bytes (well under 32).
-        let mut pair_buf: heapless::Vec<(u16, u16), 32> = heapless::Vec::new();
+        // Drift pairs from the codec's retroactive walk at Crc drain into
+        // `clock.on_byte_pair` after the codec poll returns — routing them
+        // through `clock` inside the poll would force a second `&mut
+        // clock` capture concurrent with the router's.
+        let mut pair_buf: heapless::Vec<(u16, u16), DRIFT_PAIRS_MAX> = heapless::Vec::new();
         let n_pairs_wanted = clock.samples_wanted_per_packet();
         let (rx, tx) = codec.split_mut();
-        rx.poll(now, ticks_per_bit, n_pairs_wanted, &mut pair_buf, |pe| match pe {
-            PollEvent::Parser {
-                ev,
-                ring,
-                next_status_pos,
-                packet_end,
-            } => {
-                let action = match ev {
-                    Event::Header(HeaderEvent::Instruction(h)) => {
-                        let skip_target = send_policy.on_instruction_header(&h);
-                        crate::log::trace!(
-                            "dxl[id={}]: event=header_instruction target={} addressable={}",
-                            id,
-                            header_target(&h).as_byte(),
-                            skip_target.is_none()
-                        );
-                        match skip_target {
-                            None => PollAction::Continue,
-                            Some(target) => PollAction::Skip { id: target },
-                        }
+        let mut router = PollRouter::<P, TX_BUF_LEN> {
+            tx,
+            scheduler,
+            tx_bus,
+            fast_last,
+            clock,
+            send_policy,
+            rx_dma,
+            id,
+        };
+        rx.poll(
+            now,
+            ticks_per_bit,
+            n_pairs_wanted,
+            &mut pair_buf,
+            |pe| match pe {
+                PollEvent::Parser {
+                    ev,
+                    ring,
+                    next_status_pos,
+                    packet_end,
+                } => {
+                    let action = router.on_parser_event(ev, next_status_pos, packet_end);
+                    f(ev, ring, &mut router.reply());
+                    // If `f()` engaged the Fast Last fold (via
+                    // `send_slot(Last)`), the in-flight poll must exit before
+                    // the parser eats any more bytes — those bytes belong to
+                    // the fold engine. The SysTick CMP grid's `pause_edges()`
+                    // stops future polls only; without this bail-out the
+                    // parser+skip path consumes the predecessor's leading
+                    // bytes in the same poll that engaged the fold, and the
+                    // fold engine starves.
+                    if router.fast_last.fold_active() {
+                        PollAction::Stop
+                    } else {
+                        action
                     }
-                    Event::Header(HeaderEvent::Status(sh)) => {
-                        crate::log::trace!(
-                            "dxl[id={}]: event=header_status status_id={}",
-                            id,
-                            sh.id.as_byte()
-                        );
-                        send_policy.on_status_header();
-                        PollAction::Skip {
-                            id: sh.id.as_byte(),
-                        }
-                    }
-                    Event::Payload(PayloadEvent::Instruction(p)) => {
-                        crate::log::trace!("dxl[id={}]: event=payload_instruction", id);
-                        send_policy.on_slot(&p);
-                        PollAction::Continue
-                    }
-                    Event::Payload(PayloadEvent::Status(_)) => {
-                        debug_assert!(false, "Status payload should have been byte-skipped");
-                        PollAction::Continue
-                    }
-                    Event::Crc(CrcResult::Good) => {
-                        crate::log::trace!("dxl[id={}]: event=crc(good)", id);
-                        // The Crc event carries codec-resolved packet-end
-                        // timing (anchored wire-end tick, or `None` when
-                        // interference / edge loss starved the tail-anchor
-                        // back-search, plus the per-source ISR-entry
-                        // estimate). Policy stays here: the anchor miss
-                        // counts as RX telemetry, and the fallback
-                        // estimate is acceptable only for ops that allow
-                        // it — FAST chain ops don't, see
-                        // `SendPolicy::allows_packet_end_fallback`.
-                        if send_policy.is_tracking()
-                            && let Some(pe) = packet_end
-                        {
-                            let packet_end_tick = match pe.tick {
-                                Some(t) => Some(t),
-                                None => {
-                                    rx_dma.record_edge_anchor_miss();
-                                    send_policy
-                                        .allows_packet_end_fallback()
-                                        .then_some(pe.fallback_tick)
-                                }
-                            };
-                            // At Crc-of-host-instruction, the codec's wire
-                            // position has just walked past the request's
-                            // last CRC byte — the next byte on the wire is
-                            // the First predecessor's leading `0xFF`. So
-                            // `next_status_pos` is exactly the fold-start
-                            // cursor for the Fast Last CRC engine.
-                            match send_policy.on_crc_good(
-                                packet_end_tick,
-                                next_status_pos,
-                                pe.src,
-                            ) {
-                                Some(t) => {
-                                    crate::log::debug!(
-                                        "dxl[id={}]: crc packet_end_tick={}",
-                                        id,
-                                        t
-                                    );
-                                }
-                                None => {
-                                    crate::log::debug!(
-                                        "dxl: crc anchor missing and fallback disallowed — drop reply"
-                                    );
-                                }
-                            }
-                        }
-                        PollAction::Continue
-                    }
-                    Event::Crc(CrcResult::Bad) | Event::Resync(_) => {
-                        crate::log::trace!("dxl[id={}]: event=crc(bad)/resync", id);
-                        send_policy.on_resync();
-                        PollAction::Continue
-                    }
-                    Event::Sync => PollAction::Continue,
-                };
-                let mut reply = ReplyHandle {
-                    tx,
-                    scheduler,
-                    fast_last,
-                    clock,
-                    send_policy,
-                };
-                f(ev, ring, &mut reply);
-                // If `f()` armed the Fast Last fold (via `send_slot(Last)`),
-                // the in-flight poll must exit before the parser eats any
-                // more bytes — those bytes belong to the fold engine. The
-                // SysTick CMP grid's `pause_edges()` stops future polls only;
-                // without this bail-out the parser+skip path consumes the
-                // predecessor's leading bytes in the same poll that armed
-                // the fold, and the fold engine starves.
-                if fast_last.fold_active() {
-                    PollAction::Stop
-                } else {
-                    action
                 }
-            }
-            PollEvent::SkipComplete { id: pred } => {
-                crate::log::trace!(
-                    "dxl[id={}]: skip_complete pred={} predecessor_id={:?}",
-                    id,
-                    pred,
-                    send_policy.awaited_predecessor()
-                );
-                if send_policy.on_skip_complete(pred) {
-                    crate::log::debug!(
-                        "dxl[id={}]: skip_complete match pred={} -> start_now byte_count={}",
-                        id,
-                        pred,
-                        tx.tx_len()
-                    );
-                    tx_bus.start_now(tx.tx_len());
+                PollEvent::SkipComplete { id: pred } => {
+                    router.on_skip_complete(pred);
+                    PollAction::Continue
                 }
-                // Codec clears `packet_is_instruction` internally on
-                // SkipComplete; no anchor is set between the previous
-                // Crc (where the codec resets it) and here, so no
-                // driver-side invalidation is required.
-                PollAction::Continue
-            }
-        });
+            },
+        );
         // Drain the codec's retroactive-walk pairs into the drift
         // integrator. Cap is already applied inside the walk
         // (`n_pairs_wanted`), so the drain is unbounded here.
         for &(prev, curr) in pair_buf.iter() {
-            clock.on_byte_pair(prev, curr);
+            router.clock.on_byte_pair(prev, curr);
         }
         // Apply any pending trim correction at the RX-side packet
         // boundary. Idempotent when nothing changed; necessary so
         // foreign-instruction packets — which never reach
         // `on_tx_complete` — still commit their drift samples per
         // [[drift_sampling_instruction_only]].
-        clock.on_rx_packet_end();
+        router.clock.on_rx_packet_end();
     }
+
+    // -- accessors ------------------------------------------------------------
 
     /// Monotonic count of Instruction packets seen on the wire — own and
     /// foreign IDs included; Status frames excluded. Drift estimator's
@@ -370,101 +382,8 @@ impl<P: Providers, const RX_BUF_LEN: usize, const EDGE_BUF_LEN: usize, const TX_
     /// production scheduler call sites read this directly off `self.clock`;
     /// this exists so sim/test code can sample the same value externally
     /// without exposing the integrator state itself.
-    #[allow(dead_code)]
     pub fn projected_phase_error_hclk(&self, distance_hclk: u32) -> i32 {
         self.clock.projected_phase_error_hclk(distance_hclk)
-    }
-
-    /// The TX-start tick has arrived (chip-side CC3 IRQ). Activates the
-    /// wire driver FIRST so the first wire bit lands on `fire_deadline`;
-    /// for Fast Last replies the body then tails with the post-fire
-    /// residue fold — exit policy lives in [`FastLast::on_tx_start`]; the
-    /// composite supplies one drain pass per iteration. Each
-    /// [`CodecRx::drain_raw`] pass refreshes the byte-ring producer head
-    /// from [`RxDma::remaining`] so newly-arrived GUARD bytes become
-    /// visible inside the spin (per `dxl-streaming-rx.md` §6, the
-    /// `crc_patch_deadline_miss` counter is a bench-defended floor signal
-    /// at the 3 Mbaud floor, not a wire-correctness failure).
-    pub fn on_tx_start(&mut self) {
-        self.tx_bus.handle_start();
-        let Self {
-            codec,
-            rx_dma,
-            fast_last,
-            ..
-        } = self;
-        let (rx, tx) = codec.split_mut();
-        fast_last.on_tx_start(|fl_crc| {
-            rx.drain_raw(rx_dma, |slice, base_cursor| {
-                fl_crc.on_slice(slice, base_cursor, tx);
-            });
-        });
-    }
-
-    /// One Fast Last periodic-walk fold body is due (chip-side SysTick
-    /// CMP). Body drives [`FsmScheduler::on_step`] forward — the walker
-    /// closure drains pending RX bytes raw through [`FoldEngine::on_slice`]
-    /// and returns the cumulative folded count for the FSM's `target =
-    /// predecessor_bytes − GUARD` busy-wait exit (`fast_last/`).
-    pub fn on_fold_step(&mut self) {
-        let Self {
-            codec,
-            rx_dma,
-            fast_last,
-            scheduler,
-            ..
-        } = self;
-        let (rx, tx) = codec.split_mut();
-        let (fl_sched, fl_crc) = fast_last.split_mut();
-        fl_sched.on_step(
-            || {
-                rx.drain_raw(rx_dma, |slice, base_cursor| {
-                    fl_crc.on_slice(slice, base_cursor, tx);
-                });
-                fl_crc.bytes_folded()
-            },
-            || scheduler.commit_pending(),
-        );
-    }
-
-    /// Long-horizon timer match fired (chip-side: SysTick CMP). Two consumers
-    /// share the CMP — the TX-scheduler handoff arm (multi-wrap distances
-    /// where direct TIM2 CC3 can't span the wait) and the Fast Last walk
-    /// grid. The TX-scheduler reports whether the match was its own; if so,
-    /// we're done, otherwise it's a Fast Last grid step.
-    pub fn on_schedule_due(&mut self) {
-        if self.scheduler.on_schedule_due() {
-            return;
-        }
-        self.on_fold_step();
-    }
-
-    /// USART1 TC fired — the reply has fully drained the wire. Release
-    /// the wire driver *first* (drop TX_EN, mask TC IRQ, disable DMA) so
-    /// stale TX_EN doesn't sit on the bus while pending config mutates;
-    /// then drain staged writes (id / baud / trim / rdt) and surface any
-    /// pending reboot to the chip-side ISR. Also disarms the Fast Last
-    /// state (idempotent — both already disarmed naturally on the
-    /// successful path). Reboot is returned (rather than self-applied)
-    /// because the chip controls how the reset actually happens; the
-    /// driver only knows it was asked.
-    pub fn on_tx_complete(&mut self) -> Option<BootMode> {
-        self.tx_bus.handle_tx_complete();
-        self.fast_last.cancel();
-        // Per `dxl-streaming-rx.md` §5.3: our own TX completion is a
-        // packet boundary at which stale chain state must reset. The
-        // §5.3 "next instruction header" trigger is too late for the
-        // universal byte-skip — at slow baud the deadline-bounded skip
-        // can outlive the inter-packet gap and eat the next preamble
-        // before the parser ever reaches the header event.
-        self.codec.cancel_skip();
-        let reboot = self.send_policy.on_tx_complete();
-        self.clock.on_tx_complete();
-        // Clock just applied any pending baud — refresh the codec's edge
-        // parser with the new per-baud edge-stamp compensation. Idempotent
-        // when no baud change landed (the value is the same as before).
-        self.codec.on_baud_change(self.clock.rx_edge_comp_ticks());
-        reboot
     }
 
     /// Stable peripheral-memory address for DMA1_CH7's destination buffer.
@@ -504,7 +423,7 @@ mod tests {
         TxBusOp,
     };
     use crate::traits::dxl::{DmaFlags, SendKind};
-    use dxl_protocol::streaming::InstructionHeader;
+    use dxl_protocol::streaming::{HeaderEvent, InstructionHeader};
     use dxl_protocol::types::StatusError;
     use dxl_protocol::wire::BROADCAST_ID;
     use dxl_protocol::{Id, InstructionEncoder, Slot, SoftwareCrcUmts, Status, StatusEncoder};

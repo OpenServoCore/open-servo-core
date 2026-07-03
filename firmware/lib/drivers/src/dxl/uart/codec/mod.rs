@@ -16,7 +16,7 @@ pub use codec_rx::CodecRx;
 pub use codec_tx::CodecTx;
 pub use edge_capture::EdgeCapture;
 pub use edge_parser::edge_buf_len;
-pub use poll_event::{PollAction, PollEvent};
+pub use poll_event::{PacketEnd, PollAction, PollEvent};
 
 use dxl_protocol::CrcUmts;
 
