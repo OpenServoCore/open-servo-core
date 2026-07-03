@@ -5,6 +5,7 @@
 //! dispatcher is consuming.
 
 use core::cell::SyncUnsafeCell;
+use core::ops::ControlFlow;
 
 use dxl_protocol::CrcUmts;
 use dxl_protocol::streaming::{Event, HeaderEvent, InstructionPayload, Parser, PayloadEvent};
@@ -60,6 +61,21 @@ fn read_tail_and_d_min<const RX_BUF_LEN: usize>(
         }
     }
     Some((tail, d_min))
+}
+
+/// Exit disposition of one [`CodecRx::feed_parser`] phase — why the feed
+/// stopped, decided by ring supply or by the sink's [`PollAction`]. The
+/// poll loop dispatches on this instead of re-inspecting a
+/// bool + `Option<u8>` flag pair.
+enum FeedExit {
+    /// Ring supplied no (more) parseable bytes — the poll is done.
+    Exhausted,
+    /// Sink rejected the in-flight Header; the poll arms the universal
+    /// byte-skip for `id` and re-enters the skip phase.
+    Skip { id: u8 },
+    /// Sink engaged a per-byte consumer (Fast Last fold) that owns all
+    /// remaining ring bytes — the poll exits without touching them.
+    Stop,
 }
 
 /// RX half — streaming parser, RX byte ring, drift-sampling gate.
@@ -175,73 +191,126 @@ impl<R: EdgeDma, CRC: CrcUmts, const RX_BUF_LEN: usize, const EDGE_BUF_LEN: usiz
     ) where
         F: FnMut(PollEvent<'_>, &mut EdgeCapture<R, EDGE_BUF_LEN>) -> PollAction,
     {
+        loop {
+            // Skip phase first: an armed byte-skip owns the ring tail
+            // until it exhausts. Break = ring starved mid-skip; resume
+            // on a later poll.
+            if self.skip_fsm.is_skipping()
+                && self
+                    .drain_skip(now, ticks_per_bit, n_pairs_wanted, pairs, &mut on_event)
+                    .is_break()
+            {
+                return;
+            }
+            // Feed phase: parser drains the ring until it runs dry or the
+            // sink redirects the poll.
+            match self.feed_parser(ticks_per_bit, n_pairs_wanted, pairs, &mut on_event) {
+                FeedExit::Exhausted | FeedExit::Stop => return,
+                FeedExit::Skip { id } => {
+                    let bytes_remaining = self.parser.packet_remaining();
+                    self.parser.reset();
+                    let frame_ticks = (ticks_per_bit as u32).wrapping_mul(BITS_PER_FRAME as u32);
+                    self.skip_fsm.arm(bytes_remaining, id, now, frame_ticks);
+                }
+            }
+        }
+    }
+
+    /// Skip phase of [`Self::poll`]: drain the ring up to the armed skip's
+    /// remaining count; emit [`PollEvent::SkipComplete`] on exhaust.
+    /// `Break` = the ring starved mid-skip (resume on a later poll);
+    /// `Continue` = the skip finished (or its deadline dropped it) and the
+    /// feed phase may run. The deadline check rides first so a truncated
+    /// upstream packet can't leak its uncounted bytes into the next packet
+    /// — once the expected duration has elapsed the ring's contents belong
+    /// to whatever came next.
+    #[inline]
+    fn drain_skip<F, const PAIRS_LEN: usize>(
+        &mut self,
+        now: u32,
+        ticks_per_bit: u16,
+        n_pairs_wanted: u8,
+        pairs: &mut heapless::Vec<(u16, u16), PAIRS_LEN>,
+        on_event: &mut F,
+    ) -> ControlFlow<()>
+    where
+        F: FnMut(PollEvent<'_>, &mut EdgeCapture<R, EDGE_BUF_LEN>) -> PollAction,
+    {
+        if self.skip_fsm.deadline_passed(now) {
+            self.skip_fsm.clear();
+            self.skip_fsm.on_packet_end();
+            return ControlFlow::Continue(());
+        }
         // SAFETY: rx_buf lives in a SyncUnsafeCell; this is the codec's
         // single consumer path. The reference is independent of any
-        // borrow on `self` for the parser / counters because it's
-        // constructed via a raw pointer (`SyncUnsafeCell::get` takes
-        // `&self`, returns `*mut T`; the &mut deref is fresh).
+        // borrow on `self` for the counters because it's constructed via
+        // a raw pointer (`SyncUnsafeCell::get` takes `&self`, returns
+        // `*mut T`; the &mut deref is fresh).
+        let rx_buf_ptr = self.rx_buf.get();
+        // SAFETY: see note above.
+        let rx_buf = unsafe { &mut *rx_buf_ptr };
+        let take = self.skip_fsm.take(rx_buf.reader().avail());
+        if take > 0 {
+            rx_buf.reader().advance(take);
+            self.wire_bytes_consumed = self.wire_bytes_consumed.wrapping_add(take as u32);
+        }
+        if !self.skip_fsm.is_exhausted() {
+            // Ring exhausted mid-skip; resume on a later poll.
+            return ControlFlow::Break(());
+        }
+        if let Some(id) = self.skip_fsm.finish() {
+            on_event(PollEvent::SkipComplete { id }, &mut self.edge_capture);
+        }
+        // Foreign Instruction packets never emit a parser `Event::Crc`
+        // (parser byte-skipped past the tail), so anchor + retroactive
+        // walk piggyback here. Skip drain just consumed both CRC bytes,
+        // so the ring's last 4 bytes past `head_gap` are the packet's
+        // tail signature. Runs AFTER `on_event` for deadline-path hygiene
+        // — SkipComplete's sink (chain predecessor-match -> `start_now`)
+        // is deadline-sensitive but doesn't read `packet_end_tick`, so
+        // the walk cost sits off it. Gated on the instruction-only drift
+        // rule per [[drift_sampling_instruction_only]] — Status skips
+        // never contribute.
+        if self.skip_fsm.should_sample_drift() {
+            // SAFETY: see note above.
+            let rx_buf = unsafe { &mut *rx_buf_ptr };
+            let head_gap = rx_buf.reader().avail();
+            if let Some((tail, d_min)) = read_tail_and_d_min(rx_buf, head_gap)
+                && self
+                    .edge_capture
+                    .anchor_at_tail(ticks_per_bit, &tail, d_min)
+            {
+                self.edge_capture
+                    .walk_pairs_back(n_pairs_wanted, ticks_per_bit, pairs);
+            }
+            self.edge_capture.reset_anchor();
+        }
+        self.skip_fsm.on_packet_end();
+        ControlFlow::Continue(())
+    }
+
+    /// Feed phase of [`Self::poll`]: extract contiguous front slices from
+    /// the ring, feed each to the parser, and advance by what was consumed
+    /// — until the ring runs dry ([`FeedExit::Exhausted`]) or the sink
+    /// redirects the poll ([`FeedExit::Skip`] / [`FeedExit::Stop`]).
+    ///
+    /// The parser only sees `front`, but `avail_at_iter_start =
+    /// input_len + back_len` is what maps parser cursor → producer-head
+    /// distance at Crc time.
+    #[inline]
+    fn feed_parser<F, const PAIRS_LEN: usize>(
+        &mut self,
+        ticks_per_bit: u16,
+        n_pairs_wanted: u8,
+        pairs: &mut heapless::Vec<(u16, u16), PAIRS_LEN>,
+        on_event: &mut F,
+    ) -> FeedExit
+    where
+        F: FnMut(PollEvent<'_>, &mut EdgeCapture<R, EDGE_BUF_LEN>) -> PollAction,
+    {
+        // SAFETY: see `drain_skip` — same single-consumer contract.
         let rx_buf_ptr = self.rx_buf.get();
         loop {
-            // Skip phase: drain ring up to bytes_remaining; emit
-            // SkipComplete on exhaust. Deadline check rides first so a
-            // truncated upstream packet can't leak its uncounted bytes
-            // into the next packet — once the expected duration has
-            // elapsed the ring's contents belong to whatever came next.
-            if self.skip_fsm.is_skipping() {
-                if self.skip_fsm.deadline_passed(now) {
-                    self.skip_fsm.clear();
-                    self.skip_fsm.on_packet_end();
-                    continue;
-                }
-                // SAFETY: see note above.
-                let rx_buf = unsafe { &mut *rx_buf_ptr };
-                let take = self.skip_fsm.take(rx_buf.reader().avail());
-                if take > 0 {
-                    rx_buf.reader().advance(take);
-                    self.wire_bytes_consumed = self.wire_bytes_consumed.wrapping_add(take as u32);
-                }
-                if !self.skip_fsm.is_exhausted() {
-                    // Ring exhausted mid-skip; resume on a later poll.
-                    return;
-                }
-                if let Some(id) = self.skip_fsm.finish() {
-                    on_event(PollEvent::SkipComplete { id }, &mut self.edge_capture);
-                }
-                // Foreign Instruction packets never emit a parser
-                // `Event::Crc` (parser byte-skipped past the tail), so
-                // anchor + retroactive walk piggyback here. Skip drain
-                // just consumed both CRC bytes, so the ring's last 4
-                // bytes past `head_gap` are the packet's tail signature.
-                // Runs AFTER `on_event` for deadline-path hygiene —
-                // SkipComplete's sink (chain predecessor-match ->
-                // `start_now`) is deadline-sensitive but doesn't read
-                // `packet_end_tick`, so the walk cost sits off it. Gated
-                // on the instruction-only drift rule per
-                // [[drift_sampling_instruction_only]] — Status skips
-                // never contribute.
-                if self.skip_fsm.should_sample_drift() {
-                    // SAFETY: see note above.
-                    let rx_buf = unsafe { &mut *rx_buf_ptr };
-                    let head_gap = rx_buf.reader().avail();
-                    if let Some((tail, d_min)) = read_tail_and_d_min(rx_buf, head_gap)
-                        && self
-                            .edge_capture
-                            .anchor_at_tail(ticks_per_bit, &tail, d_min)
-                    {
-                        self.edge_capture
-                            .walk_pairs_back(n_pairs_wanted, ticks_per_bit, pairs);
-                    }
-                    self.edge_capture.reset_anchor();
-                }
-                self.skip_fsm.on_packet_end();
-                continue;
-            }
-
-            // Feed phase: extract a contiguous front slice from the
-            // ring; feed to the parser; advance by what was consumed.
-            // Also record `back_len` — the parser only sees `front`, but
-            // `avail_at_iter_start = input_len + back_len` is what maps
-            // parser cursor → producer-head distance at Crc time.
             let (input_ptr, input_len, back_len) = {
                 // SAFETY: see note above.
                 let rx_buf = unsafe { &mut *rx_buf_ptr };
@@ -250,7 +319,7 @@ impl<R: EdgeDma, CRC: CrcUmts, const RX_BUF_LEN: usize, const EDGE_BUF_LEN: usiz
                 (front.as_ptr(), front.len(), back.len())
             };
             if input_len == 0 {
-                return;
+                return FeedExit::Exhausted;
             }
             // SAFETY: `input_ptr` points into `rx_buf.data`, owned by
             // self for the lifetime of this poll. The data is not
@@ -259,8 +328,9 @@ impl<R: EdgeDma, CRC: CrcUmts, const RX_BUF_LEN: usize, const EDGE_BUF_LEN: usiz
             // access path back to rx_buf.
             let input: &[u8] = unsafe { core::slice::from_raw_parts(input_ptr, input_len) };
 
-            let mut break_for_skip: Option<u8> = None;
-            let mut stop = false;
+            // Set when the sink's `PollAction` breaks the parser loop;
+            // returned only after the consumed bytes are committed below.
+            let mut sink_exit: Option<FeedExit> = None;
             // Ring depth from parser cursor to producer head at the start
             // of this feed iteration. Stays fixed for the parser loop
             // (no `on_publish` runs mid-poll), so `head_gap` at any point
@@ -344,11 +414,11 @@ impl<R: EdgeDma, CRC: CrcUmts, const RX_BUF_LEN: usize, const EDGE_BUF_LEN: usiz
                     ) {
                         PollAction::Continue => {}
                         PollAction::Skip { id } => {
-                            break_for_skip = Some(id);
+                            sink_exit = Some(FeedExit::Skip { id });
                             break;
                         }
                         PollAction::Stop => {
-                            stop = true;
+                            sink_exit = Some(FeedExit::Stop);
                             break;
                         }
                     }
@@ -386,30 +456,20 @@ impl<R: EdgeDma, CRC: CrcUmts, const RX_BUF_LEN: usize, const EDGE_BUF_LEN: usiz
                 rx_buf.reader().advance(consumed as u16);
             }
 
-            if stop {
-                // Sink engaged a per-byte consumer (Fast Last fold). Leave
-                // any unconsumed bytes in the ring so the fold engine —
-                // driven by `drain_raw` on `on_fold_step` / `on_tx_start`
-                // — owns them. The same poll continuing here would let
-                // the parser eat predecessor reply bytes before the fold
-                // ever gets a turn (per `dxl-streaming-rx.md` §6 —
+            match sink_exit {
+                // On Stop: leave any unconsumed bytes in the ring so the
+                // fold engine — driven by `drain_raw` on `on_fold_step` /
+                // `on_tx_start` — owns them. Continuing to feed here would
+                // let the parser eat predecessor reply bytes before the
+                // fold ever gets a turn (per `dxl-streaming-rx.md` §6 —
                 // edge-IRQ masking at fold start shuts the door on future
                 // polls only).
-                return;
-            }
-
-            if let Some(id) = break_for_skip {
-                let bytes_remaining = self.parser.packet_remaining();
-                self.parser.reset();
-                let frame_ticks = (ticks_per_bit as u32).wrapping_mul(BITS_PER_FRAME as u32);
-                self.skip_fsm.arm(bytes_remaining, id, now, frame_ticks);
-                continue;
-            }
-
-            if consumed == 0 {
-                // Parser made no progress on the front slice — either
-                // it's idling at end-of-input or the slice was empty.
-                return;
+                Some(exit) => return exit,
+                // Parser made no progress on the front slice — it's
+                // idling at end-of-input.
+                None if consumed == 0 => return FeedExit::Exhausted,
+                // Progress without a sink redirect: feed the next slice.
+                None => {}
             }
         }
     }
