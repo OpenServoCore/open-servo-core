@@ -60,7 +60,7 @@ impl<P: Providers, const TX_BUF_LEN: usize> ReplyHandle<'_, P, TX_BUF_LEN> {
     /// matching `PollEvent::SkipComplete` invokes `TxBus::start_now`. If no
     /// context is staged (foreign Instruction filtered upstream) or the
     /// wire-end tick wasn't ready (and the path needs it), the encode still
-    /// succeeds but no schedule is armed — the bytes simply won't ship.
+    /// succeeds but no schedule is staged — the bytes simply won't ship.
     /// Context is taken on use so a double-send without a fresh `poll()`
     /// no-ops on the scheduler.
     pub fn send_status(&mut self, status: Status<'_>) -> Result<(), WriteError> {
@@ -145,7 +145,7 @@ impl<P: Providers, const TX_BUF_LEN: usize> ReplyHandle<'_, P, TX_BUF_LEN> {
     /// Streamed counterpart of [`Self::send_slot`]: slot body bytes come
     /// from a [`Chunk`] iterator sourced directly from a control-table
     /// read. The cached `ReplyContext` provides the slot position; the
-    /// post-encode schedule + Fast Last arm path is identical to
+    /// post-encode schedule + Fast Last start path is identical to
     /// [`Self::send_slot`].
     pub fn send_slot_chunked<'c, I>(
         &mut self,
@@ -194,7 +194,7 @@ impl<P: Providers, const TX_BUF_LEN: usize> ReplyHandle<'_, P, TX_BUF_LEN> {
 
     /// Post-encode scheduling for a slot reply: anchor against
     /// `packet_end_tick`, fold RDT + per-source floor + slot offset into
-    /// the deadline, tag the entry `FastLast` for Last, and arm the
+    /// the deadline, tag the entry `FastLast` for Last, and start the
     /// chain-CRC fold engine on Last.
     fn schedule_after_slot_encode(&mut self, ctx: ReplyContext, position: SlotPosition) {
         let byte_count = self.tx.tx_len();

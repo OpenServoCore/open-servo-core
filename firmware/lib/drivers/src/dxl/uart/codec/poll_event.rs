@@ -40,7 +40,7 @@ pub struct PacketEnd {
 /// on the wire). At Header / Payload events the value is still the
 /// codec's running cursor, but no consumer reads it there today.
 /// `packet_end` is `Some` exactly at `Crc` events — see [`PacketEnd`].
-/// `SkipComplete` fires when the universal byte-skip's remaining-byte
+/// `SkipComplete` emits when the universal byte-skip's remaining-byte
 /// counter hits zero — `id` round-trips the value the sink passed in
 /// [`PollAction::Skip`], so the chain predecessor-match check
 /// (doc §5.2) can compare against `predecessor_id`.

@@ -320,7 +320,7 @@ impl<U: UsartBaud, T: ClockTrim> DriftIntegrator<U, T> {
             // `DRIFT_MIN_SAMPLES_BOOT` (6) pairs, but the projection scales
             // by the steady window (20 pairs). Drop it; the first steady
             // batch overwrites in ~20 byte pairs of wall-clock and host-
-            // side Fast TX is unlikely to fire in that gap (host has to
+            // side Fast TX is unlikely to start in that gap (host has to
             // finish init protocol first).
             self.residual_q8 = 0;
         }
@@ -348,7 +348,7 @@ impl<U: UsartBaud, T: ClockTrim> DriftIntegrator<U, T> {
 
     /// Project the integrator's pending residual to a chip-HCLK-tick
     /// offset that, added to a wall-clock-relative deadline, lands the
-    /// fire moment on the host's reference. Sign: positive = HSI fast =
+    /// wire-start moment on the host's reference. Sign: positive = HSI fast =
     /// chip-clock ticks accumulate ahead of wall clock → deadline must
     /// shift LATER (added) by the projected amount. Linear scaling: the
     /// integrator's window-summed residual scales by `distance_hclk /

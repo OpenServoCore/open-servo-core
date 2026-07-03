@@ -93,7 +93,7 @@ impl InflightCtx {
             return;
         }
         // Predecessor slot — record the latest candidate (overwriting prior).
-        // The chain-fire path for slots k > 0 only reads `predecessor_id` if
+        // The chain-start path for slots k > 0 only reads `predecessor_id` if
         // our own slot lands next; the standing value is always the immediate
         // predecessor when it's read (`docs/dxl-streaming-rx.md` §5.2).
         self.predecessor_id = Some(slot_id.as_byte());
@@ -328,7 +328,7 @@ mod tests {
         let at_zero = walk(sync, &[sync_slot(TEST_ID, 0), sync_slot(0x31, 1)]);
         assert_eq!(resolve(at_zero).predecessor_id, None);
 
-        // Fast chains fire grid-driven, never sequence-driven.
+        // Fast chains start grid-driven, never sequence-driven.
         let fast = walk(
             fast_sync_read(2),
             &[sync_slot(0x30, 0), sync_slot(TEST_ID, 1)],

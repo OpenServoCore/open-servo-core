@@ -1,6 +1,4 @@
-//! DXL-family drivers. One sibling module per wire — today only
-//! [`uart`]; a future CAN-FD variant would land as a sibling `can`
-//! module without rearranging the parent.
+//! DXL-family drivers — one module per wire, today only [`uart`].
 
 pub mod uart;
 

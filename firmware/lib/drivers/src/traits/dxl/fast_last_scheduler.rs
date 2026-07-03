@@ -9,14 +9,6 @@
 /// per-anchor caching of a separate scheduling-domain tick — because the
 /// WireClock contract guarantees a u32 horizon wide enough to span any
 /// supported Fast Sync / Bulk Read predecessor window.
-///
-/// On V006 the chip-side provider binds to a SysTick CMP rather than a
-/// TIM2 CC channel: TIM2's shared prescaler is pinned at PSC=0 for the IC
-/// side's 16-tick resolution at 3M, so its 16-bit CNT wraps every
-/// 1.365 ms — the Fast Last grid step at low baud (`15 × byte_ticks`) can
-/// exceed that and the fire deadline can be many wraps out. SysTick is
-/// 32-bit at HCLK with ~89.5 s horizon, separate IRQ vector from TIM2,
-/// and the ~5 µs PFIC-entry jitter is dwarfed by the fold body cost.
 pub trait FastLastScheduler {
     /// CMP-match → body fold-start latency, in scheduler ticks. Driver
     /// subtracts this from every grid anchor before handing it to
@@ -26,7 +18,7 @@ pub trait FastLastScheduler {
 
     /// Periodic-walk grid step, in predecessor wire bytes. Each fold body
     /// folds up to `BYTES_PER_INTERVAL` bytes of newly-classified residue
-    /// before re-arming the next CMP one grid step ahead.
+    /// before re-scheduling the next CMP one grid step ahead.
     const BYTES_PER_INTERVAL: u16;
 
     /// Pre-start fold residue cap, in predecessor wire bytes. The final
@@ -40,11 +32,11 @@ pub trait FastLastScheduler {
     /// Subsequent `deadline_passed()` calls compare against it.
     fn set_busy_wait_deadline(&mut self, deadline: u32);
 
-    /// Arm the next CMP at the absolute `deadline` (caller has already
-    /// back-dated by `FAST_LAST_ENTRY_TICKS`). Idempotent on re-arm.
+    /// Schedule the next CMP at the absolute `deadline` (caller has already
+    /// back-dated by `FAST_LAST_ENTRY_TICKS`). Idempotent on re-schedule.
     ///
     /// A CMP target that lands in the past — possible at low RDT + small
-    /// predecessor counts where back-dating by ENTRY underflows — fires
+    /// predecessor counts where back-dating by ENTRY underflows — triggers
     /// the IRQ ASAP; the body's first run lands ENTRY ticks late but the
     /// grid step advances cleanly from there.
     fn schedule(&mut self, deadline: u32);
@@ -56,8 +48,8 @@ pub trait FastLastScheduler {
     /// True when the TX DMA channel's read cursor has reached the trailing
     /// CRC slot. Once true, any further `patch_crc` write into
     /// `tx_buf[len-CRC_BYTES..len]` ships too late — placeholder bytes are
-    /// already on the wire. Polled by `on_tx_start`'s post-fire fold loop
-    /// alongside the predecessor-byte-plateau backstop; whichever fires
+    /// already on the wire. Polled by `on_tx_start`'s post-start fold loop
+    /// alongside the predecessor-byte-plateau backstop; whichever trips
     /// first ends the loop.
     fn patch_window_expired(&self) -> bool;
 

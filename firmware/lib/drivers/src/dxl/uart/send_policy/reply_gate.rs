@@ -18,7 +18,7 @@ enum ReplyPhase {
     Staged(ReplyContext),
     /// Plain Sync/Bulk chain k > 0: reply encoded, wire start deferred
     /// until the named predecessor's Status frame finishes skipping —
-    /// the sequence-driven fire path of `docs/dxl-streaming-rx.md` §5.2.
+    /// the sequence-driven start path of `docs/dxl-streaming-rx.md` §5.2.
     AwaitingPredecessor(u8),
 }
 
@@ -80,7 +80,7 @@ impl ReplyGate {
 
     /// Our reply fully drained the wire. Belt-and-suspenders — the
     /// SkipComplete path clears the wait on success, but a silent
-    /// predecessor would leave it armed across the next reply; clearing
+    /// predecessor would leave it staged across the next reply; clearing
     /// here bounds the chain-pending state by the in-flight exchange.
     pub(super) fn on_tx_complete(&mut self) {
         self.clear_awaiting();

@@ -11,7 +11,7 @@
 //!   push; no `on_publish`.
 //!
 //! Consumer surface ([`Reader`] + [`Ring::at`]) is shared. Lookup-only
-//! consumers (drift, fire) never carry a [`Reader`] — they just call
+//! consumers (drift, wire-start) never carry a [`Reader`] — they just call
 //! `at(seq)`. Walking consumers (parser, classifier) take a reader.
 //!
 //! ## Seq vs ring position
@@ -625,7 +625,7 @@ mod tests {
         // unread=1). Cold-start gate must key off `write_seq`, not
         // `unread`, so `recent(0..5)` still surfaces the physical writes
         // — the codec's Crc-time tail-signature read hits this shape
-        // when RX HT drains most of the ring before the IDLE poll fires
+        // when RX HT drains most of the ring before the IDLE poll runs
         // the last byte.
         let mut b: HwBuf = HwRing::new(0);
         b.stage(0, &[10, 20, 30, 40, 50, 60, 0, 0]);

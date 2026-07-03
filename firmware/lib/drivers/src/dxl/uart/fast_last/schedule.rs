@@ -6,7 +6,7 @@
 //! [`FsmScheduler`]: super::fsm_scheduler::FsmScheduler
 //! [`FoldEngine`]: super::fold_engine::FoldEngine
 
-/// Everything the Fast Last pipeline needs to arm one Last reply, composed
+/// Everything the Fast Last pipeline needs to start one Last reply, composed
 /// by the composite at `send_slot(Last)` time. `packet_end_tick` is
 /// parser-derived in the WireClock u32 domain; all grid timing derives from
 /// it.
@@ -26,7 +26,7 @@ pub struct FastLastSchedule {
     pub predecessor_bytes: u32,
     /// Wire cursor of the predecessor's first reply byte — the fold engine's
     /// lower bound (`ReplyContext::fold_start_cursor` at parse-complete). The
-    /// scheduler ignores it; it exists so the composite can arm both halves
+    /// scheduler ignores it; it exists so the composite can start both halves
     /// from one record.
     pub fold_start_cursor: u32,
 }

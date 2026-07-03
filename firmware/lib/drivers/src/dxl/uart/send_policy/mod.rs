@@ -232,7 +232,7 @@ mod tests {
         }
     }
 
-    // Chain fire for slots k > 0 (`docs/dxl-streaming-rx.md` §5.2): the
+    // Chain start for slots k > 0 (`docs/dxl-streaming-rx.md` §5.2): the
     // staged context names the immediate predecessor for Plain chains
     // only — slot 0 and Fast chains schedule without one.
 
@@ -266,7 +266,7 @@ mod tests {
 
     #[test]
     fn fast_sync_read_slot_k_gt_zero_has_no_predecessor() {
-        // Fast chains carry no per-slot Status headers → chain-fire is
+        // Fast chains carry no per-slot Status headers → chain-start is
         // absolute-deadline, not sequence-driven. `predecessor_id` must
         // stay None per `docs/dxl-streaming-rx.md` §5.2.
         let header = InstructionHeader::FastSyncRead {

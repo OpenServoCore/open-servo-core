@@ -7,7 +7,7 @@
 //! Half of the [`FastLast`] sub-composite (§4.3): the scheduling half. The
 //! fold half is [`FoldEngine`]. This half works in absolute u32 deadlines
 //! (WireClock domain) — `start()` composes the packet-end anchor with
-//! protocol-derived offsets and hands the provider one u32 per arm. The
+//! protocol-derived offsets and hands the provider one u32 per staged CMP. The
 //! chip-side provider applies the deadlines directly with no further lift.
 //!
 //! [`FastLast`]: super::FastLast
@@ -34,7 +34,7 @@ enum FastLastPhase {
 /// Grid geometry for one Last reply, derived by [`FsmScheduler::plan`] from
 /// the shared [`FastLastSchedule`]. All offsets are from `packet_end_tick`.
 struct GridPlan {
-    /// First armed CMP — `final_anchor_offset` stepped back by whole
+    /// First scheduled CMP — `final_anchor_offset` stepped back by whole
     /// intervals until ≤ one step from the predecessor's first wire byte.
     first_anchor_offset: u32,
     /// The terminal (busy-wait) body's anchor.
@@ -56,8 +56,8 @@ struct GridPlan {
 pub struct FsmScheduler<S: FastLastScheduler> {
     scheduler: S,
     phase: FastLastPhase,
-    /// Wall-clock offset (from packet_end) of the body currently armed on
-    /// the scheduler. Body bumps this by `interval_ticks` before re-arming —
+    /// Wall-clock offset (from packet_end) of the body currently scheduled on
+    /// the scheduler. Body bumps this by `interval_ticks` before re-scheduling —
     /// drift in any one body's ISR-entry latency doesn't propagate.
     next_anchor_offset: u32,
     /// Wall-clock offset (from packet_end) of the terminal (busy-wait) body.
@@ -65,7 +65,7 @@ pub struct FsmScheduler<S: FastLastScheduler> {
     /// switches from "advance grid" to "busy-wait and return".
     final_anchor_offset: u32,
     /// `BYTES_PER_INTERVAL · byte_ticks` — grid step in scheduler ticks.
-    /// Cached at `start` for fast re-arming.
+    /// Cached at `start` for fast re-scheduling.
     interval_ticks: u32,
     /// `predecessor_bytes − GUARD_BYTES`, derived once at `start`. The final
     /// body's busy-wait exits when the walked count reaches it; the trailing
@@ -92,7 +92,7 @@ impl<S: FastLastScheduler> FsmScheduler<S> {
     // -- events -----------------------------------------------------------------
 
     /// Drive one grid body. Composite calls this from its long-horizon timer
-    /// demux when our CMP fires.
+    /// demux when our CMP triggers.
     ///
     /// `walker` runs the classifier + parser-drain + per-byte fold for
     /// whatever bytes have landed since the last body, and returns the
@@ -102,10 +102,10 @@ impl<S: FastLastScheduler> FsmScheduler<S> {
     ///
     /// `commit_pending` is invoked exactly once on entry to the final-anchor
     /// body, *before* the busy-wait starts. The composite wires it to
-    /// `TxScheduler::commit_pending` so the wire-fire schedule the
+    /// `TxScheduler::commit_pending` so the wire-start schedule the
     /// TxScheduler stashed at `send_slot(Last)` time is committed while
     /// there's still ~1 byte_time of headroom — the hardware match latches
-    /// during the busy-wait spin and the fire ISR runs as soon as the
+    /// during the busy-wait spin and the wire-start ISR runs as soon as the
     /// busy-wait exits. Not called from intermediate-step bodies.
     ///
     /// Single walker closure (not `(walker, bytes_walked)`) so the composite
@@ -121,7 +121,7 @@ impl<S: FastLastScheduler> FsmScheduler<S> {
                 let bytes_walked = walker();
                 if self.next_anchor_offset == self.final_anchor_offset {
                     // Final anchor — commit the TxScheduler stash so the
-                    // wire-fire path arms while there's still a byte_time of
+                    // wire-start path stages while there's still a byte_time of
                     // headroom, then busy-wait. Uncontested at high baud
                     // because the composite paused DMA1_CH7 HT/TC at start
                     // time, so this body is the sole HIGH consumer in the
@@ -172,7 +172,7 @@ impl<S: FastLastScheduler> FsmScheduler<S> {
 
     // -- commands ---------------------------------------------------------------
 
-    /// Compute the periodic-walk grid, stage the deadline, arm the first CMP,
+    /// Compute the periodic-walk grid, stage the deadline, schedule the first CMP,
     /// and flip the FSM into [`FastLastPhase::PeriodicWalk`].
     pub fn start(&mut self, p: FastLastSchedule) {
         let plan = Self::plan(&p);
@@ -231,8 +231,8 @@ impl<S: FastLastScheduler> FsmScheduler<S> {
         }
     }
 
-    /// Arm one periodic-walk CMP at `anchor_offset` past the packet-end
-    /// anchor. Single arming point for the grid — EVERY CMP, intermediates
+    /// Schedule one periodic-walk CMP at `anchor_offset` past the packet-end
+    /// anchor. Single scheduling point for the grid — EVERY CMP, intermediates
     /// AND the final one, back-dates by `FAST_LAST_ENTRY_TICKS` so
     /// ISR-entry latency lands the body ON the grid point, not after it
     /// (back-dating only the last CMP is exactly how the legacy fold grid
@@ -266,7 +266,7 @@ impl<S: FastLastScheduler> FsmScheduler<S> {
         !matches!(self.phase, FastLastPhase::Idle)
     }
 
-    /// Polled by the [`FastLast::on_tx_start`] post-fire fold loop — see
+    /// Polled by the [`FastLast::on_tx_start`] post-start fold loop — see
     /// [`FastLastScheduler::patch_window_expired`].
     ///
     /// [`FastLast::on_tx_start`]: super::FastLast::on_tx_start
@@ -437,7 +437,7 @@ mod tests {
         );
 
         assert_eq!(walker_calls.get(), 4);
-        // commit_pending fires exactly once, on entry to the final-anchor body.
+        // commit_pending runs exactly once, on entry to the final-anchor body.
         assert_eq!(commit_calls.get(), 1);
         assert!(!d.is_active());
         assert!(matches!(

@@ -72,11 +72,11 @@ pub struct DxlUart<
     /// Chip-side bus-control provider. Used by [`Self::on_tx_start`] /
     /// [`Self::on_tx_complete`] for the scheduled wire-driver lifecycle,
     /// and by [`Self::poll`]'s SkipComplete arm for the Plain chain
-    /// k > 0 sequence-driven fire path (`docs/dxl-streaming-rx.md` §5.2).
+    /// k > 0 sequence-driven start path (`docs/dxl-streaming-rx.md` §5.2).
     tx_bus: P::TxBus,
     /// Fast Last fold pipeline for Fast Sync / Bulk Read Last replies — a
     /// §4.3 sub-composite of the periodic-walk grid scheduler and the
-    /// chain-CRC fold engine. Armed at `send_slot(Last)` via `ReplyHandle`;
+    /// chain-CRC fold engine. Started at `send_slot(Last)` via `ReplyHandle`;
     /// the grid drives one body per CMP, the fold engine's per-byte hook is
     /// wired into the codec's `drain_raw` callback and finalize patches our
     /// own trailing CRC slot before DMA1_CH4 reads it.
@@ -214,7 +214,7 @@ impl<P: Providers, const RX_BUF_LEN: usize, const EDGE_BUF_LEN: usize, const TX_
         );
     }
 
-    /// Long-horizon timer match fired (chip-side: SysTick CMP). Two consumers
+    /// Long-horizon timer match triggered (chip-side: SysTick CMP). Two consumers
     /// share the CMP — the TX-scheduler handoff arm (multi-wrap distances
     /// where direct TIM2 CC3 can't span the wait) and the Fast Last walk
     /// grid. The TX-scheduler reports whether the match was its own; if so,
@@ -226,7 +226,7 @@ impl<P: Providers, const RX_BUF_LEN: usize, const EDGE_BUF_LEN: usize, const TX_
         self.on_fold_step();
     }
 
-    /// USART1 TC fired — the reply has fully drained the wire. Release
+    /// USART1 TC triggered — the reply has fully drained the wire. Release
     /// the wire driver *first* (drop TX_EN, mask TC IRQ, disable DMA) so
     /// stale TX_EN doesn't sit on the bus while pending config mutates;
     /// then drain staged writes (id / baud / trim / rdt) and surface any
@@ -402,7 +402,7 @@ impl<P: Providers, const RX_BUF_LEN: usize, const EDGE_BUF_LEN: usize, const TX_
     }
 
     /// Length in bytes of the most-recent encoded packet — the DMA1_CH4
-    /// transfer count for the next fire.
+    /// transfer count for the next wire start.
     pub fn tx_len(&self) -> u16 {
         self.codec.tx_len()
     }
@@ -788,7 +788,7 @@ mod tests {
     }
 
     // ------------------------------------------------------------------
-    // Chain fire for slots k > 0 (DXL streaming RX §5.2)
+    // Chain start for slots k > 0 (DXL streaming RX §5.2)
     // ------------------------------------------------------------------
 
     #[test]
@@ -799,7 +799,7 @@ mod tests {
 
         assert!(
             state.sch.operations().is_empty(),
-            "chain k > 0 does not arm a deadline",
+            "chain k > 0 does not stage a deadline",
         );
         assert!(
             state.tx_bus.operations().is_empty(),
@@ -863,7 +863,7 @@ mod tests {
             };
             reply.send_slot(&slot).expect("encode fits");
         });
-        // FastLast armed via `send_slot(Last)` above. Fold's start_cursor
+        // FastLast started via `send_slot(Last)` above. Fold's start_cursor
         // = fold_start_cursor = req.len(); stage predecessor bytes at
         // that wire-byte position so the drain's cursor matches
         // `start_cursor` on the first byte folded. SyncRead has 2 slots
@@ -888,7 +888,7 @@ mod tests {
 
     #[test]
     fn on_tx_start_folds_residue_and_patches_crc() {
-        // CC3 fire body folds the GUARD residue and patches the trailing
+        // CC3 wire-start body folds the GUARD residue and patches the trailing
         // CRC. Stage `predecessor_bytes` worth so finalize lands on the
         // last drained byte; assert the TX buffer's trailing slot is no
         // longer the placeholder `[0x00, 0x00]`.

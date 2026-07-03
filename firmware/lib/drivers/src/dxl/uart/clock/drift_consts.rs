@@ -21,7 +21,7 @@ pub(super) const Q8_SCALE: u32 = 1 << Q8_SHIFT;
 /// hits across bytes 4–9), so the boot batch closes inside the first
 /// instruction the servo parses.
 pub(super) const DRIFT_MIN_SAMPLES_BOOT: u16 = 6;
-/// Batch size after the boot phase has fired. At N=20 the half-step
+/// Batch size after the boot phase's one-shot emission. At N=20 the half-step
 /// deadband sits 2.8σ above per-sample chip-stamp quantization noise
 /// under the conservative 1-tick σ model (9.8σ at the realistic uniform
 /// 1-LSB σ) at the worst-case 3M baud — false-emit rate ~5e-3 per batch

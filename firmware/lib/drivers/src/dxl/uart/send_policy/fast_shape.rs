@@ -85,7 +85,7 @@ mod tests {
 
     #[test]
     fn fast_first_carries_chain_header_plus_slot_prefix() {
-        // FF FF FD 00 + id + len(2) + inst + err + slave_id = 10, then data.
+        // FF FF FD 00 + id + len(2) + inst + err + servo_id = 10, then data.
         assert_eq!(fast_first_bytes(2), 12);
         assert_eq!(fast_middle_bytes(2), 4);
     }

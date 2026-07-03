@@ -20,7 +20,7 @@ pub enum SendKind {
 ///
 /// Sibling of [`super::TxBus`] — `TxScheduler` decides *when* the chip
 /// transmits; `TxBus` does the wire driving when that moment lands (or
-/// when a chain k > 0 reply fires sequence-driven off a SkipComplete
+/// when a chain k > 0 reply starts sequence-driven off a SkipComplete
 /// event).
 pub trait TxScheduler {
     /// Tick rate of the chip-side TX-start timer, ticks per µs. Driver uses
@@ -34,7 +34,7 @@ pub trait TxScheduler {
     /// at approximately `deadline`." Idempotent on re-schedule (overwrites
     /// any prior schedule).
     ///
-    /// - `kind == SendKind::Plain` — arm per the chip-side decision tree.
+    /// - `kind == SendKind::Plain` — schedule per the chip-side decision tree.
     /// - `kind == SendKind::FastLast` — stash; the composite triggers the
     ///   commit via [`Self::commit_pending`] when the FastLast walk reaches
     ///   its final anchor (chain-CRC catchup co-owns the long-horizon timer
@@ -49,7 +49,7 @@ pub trait TxScheduler {
     /// the stashed schedule now." Provider runs its time-remaining decision
     /// against the stashed deadline; by construction the caller invokes this
     /// within ~1 byte_time of the wire deadline, so the decision lands in
-    /// the direct-arm or software-fire branch. No-op when nothing stashed;
+    /// the direct-schedule or software-start branch. No-op when nothing stashed;
     /// idempotent.
     fn commit_pending(&mut self);
 
@@ -59,7 +59,7 @@ pub trait TxScheduler {
     /// and the deadline ISR no wire activity is in flight).
     fn cancel(&mut self);
 
-    /// Long-horizon timer match fired — provider returns `true` if it owned
+    /// Long-horizon timer match triggered — provider returns `true` if it owned
     /// the deadline (re-runs its decision tree internally) and `false` if
     /// the match belongs to another scheduling consumer (the FastLast walk
     /// grid co-owns the long-horizon timer during a chain-CRC catchup

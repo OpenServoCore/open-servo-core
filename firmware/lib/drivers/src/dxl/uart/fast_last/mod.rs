@@ -47,8 +47,8 @@ impl<S: FastLastScheduler, CRC: CrcUmts> FastLast<S, CRC> {
     // -- events -----------------------------------------------------------------
 
     /// The TX-start tick arrived with the fold still active — run the
-    /// post-fire residue fold that absorbs any GUARD bytes in flight at
-    /// fire time and patches the trailing CRC slot before DMA1_CH4's
+    /// post-start residue fold that absorbs any GUARD bytes in flight at
+    /// TX-start time and patches the trailing CRC slot before DMA1_CH4's
     /// prefetch reads it (doc §10.6.2 CC3 body). `drain` is one pass of
     /// the caller's RX drain, folding fresh bytes into the handed
     /// [`FoldEngine`]. No-op when the fold is idle.
@@ -91,7 +91,7 @@ impl<S: FastLastScheduler, CRC: CrcUmts> FastLast<S, CRC> {
 
     // -- commands ---------------------------------------------------------------
 
-    /// Arm both halves for one Last reply: the scheduler builds its grid from
+    /// Start both halves for one Last reply: the scheduler builds its grid from
     /// the timing fields; the fold engine begins folding from
     /// `fold_start_cursor` with the same `predecessor_bytes` finalize cap.
     pub fn start(&mut self, p: FastLastSchedule) {
@@ -99,7 +99,7 @@ impl<S: FastLastScheduler, CRC: CrcUmts> FastLast<S, CRC> {
         self.crc.start(p.fold_start_cursor, p.predecessor_bytes);
     }
 
-    /// Disarm both halves. Idempotent — the fold engine's finalize path and
+    /// Return both halves to idle. Idempotent — the fold engine's finalize path and
     /// the scheduler's busy-wait exit already return each half to idle on the
     /// successful path, so this is the belt-and-suspenders reset at
     /// `on_tx_complete`.

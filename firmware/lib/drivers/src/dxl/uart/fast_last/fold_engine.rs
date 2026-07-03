@@ -33,7 +33,7 @@ use super::crc_patch_sink::CrcPatchSink;
 
 /// Running chain-CRC fold state for one Fast Last reply. Consumes the
 /// per-drain slice contract from [`super::super::codec::CodecRx::drain_raw`]:
-/// fired once per drained RX-ring front slice during the predecessor window;
+/// invoked once per drained RX-ring front slice during the predecessor window;
 /// receives `(slice, base_cursor)` where `base_cursor` is the pre-advance
 /// value of the codec's `wire_bytes_consumed` counter, so `slice[i]` sits at
 /// wire cursor `base_cursor + i`.

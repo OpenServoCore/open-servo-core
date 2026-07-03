@@ -5,11 +5,11 @@
 /// Sibling of [`super::TxScheduler`]. Two activation sources:
 ///
 /// - The scheduler's deadline ISR — calls [`Self::take_bus`] to take
-///   over the bus once the hardware match channel fires.
+///   over the bus once the hardware match channel triggers.
 /// - The Plain Sync / Bulk Read chain reply at slot k > 0
 ///   (`docs/dxl-streaming-rx.md` §5.2) — calls [`Self::start_now`] from
 ///   the codec's `PollEvent::SkipComplete` arm matching the chip's
-///   immediate predecessor's ID, fires the wire bit immediately with no
+///   immediate predecessor's ID, starting the wire immediately with no
 ///   deadline math.
 ///
 /// In both cases the bus is released via [`Self::release_bus`] when

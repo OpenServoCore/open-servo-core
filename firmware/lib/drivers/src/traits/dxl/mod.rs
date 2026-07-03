@@ -24,7 +24,7 @@ pub use wire_clock::WireClock;
 
 /// Role-shaped bundle of every chip-side leaf interface
 /// [`crate::dxl::uart::DxlUart`] consumes. One associated type per leaf
-/// trait below so the composite's signature collapses from six type
+/// trait below so the composite's signature collapses from nine type
 /// parameters to one while each sub-driver
 /// ([`Clock`], [`Codec`], [`FastLast`]) stays narrowly typed and still
 /// documents exactly what hardware it depends on. Per driver-pattern §5.4.

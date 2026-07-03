@@ -6,13 +6,13 @@ pub struct DmaFlags {
 }
 
 /// RX byte-ring DMA channel — NDTR accessor + HT/TC flag ack. The RX DMA
-/// channel itself runs unconditionally (USART1 → byte ring); HT/TC fires
-/// a publish-only ISR (no parser drain, no codec poll) so the codec's view
-/// of `write_seq` stays within `RX_BUF_LEN/2` of the wire regardless of
-/// edge-ring cadence. The driver borrows one through its [`Providers`]
-/// bundle; the production adapter binds to DMA1_CH5. Always live — no
-/// pause/resume; redundant publishes during Fast Last cost ~10 cycles and
-/// don't perturb the catchup body's `drain_raw`-driven NDTR refresh.
+/// channel itself runs unconditionally (USART RX → byte ring); HT/TC
+/// triggers a publish-only ISR (no parser drain, no codec poll) so the
+/// codec's view of `write_seq` stays within `RX_BUF_LEN/2` of the wire
+/// regardless of edge-ring cadence. The driver borrows one through its
+/// [`Providers`] bundle. Always live — no pause/resume; redundant
+/// publishes during Fast Last cost ~10 cycles and don't perturb the
+/// catchup body's `drain_raw`-driven NDTR refresh.
 ///
 /// [`Providers`]: super::Providers
 pub trait RxDma {
@@ -21,7 +21,7 @@ pub trait RxDma {
     /// Read and clear HT/TC flags on this channel. Called from the
     /// publish-only ISR before [`Self::remaining`] feeds
     /// `CodecRx::on_rx_progress`. Returned flags are informational;
-    /// the publish proceeds regardless of which crossing fired.
+    /// the publish proceeds regardless of which crossing triggered.
     fn read_and_ack(&mut self) -> DmaFlags;
 
     /// Bump the `edge_anchor_miss` telemetry counter. Called once per

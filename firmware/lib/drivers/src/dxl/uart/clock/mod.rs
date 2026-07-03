@@ -2,7 +2,7 @@
 //! independent halves (§4.3):
 //!
 //! - [`BaudCache`] — the per-baud `ticks_per_bit` / byte-time cache plus the
-//!   staged-baud mailbox. Everything downstream (RX classifier window, fire
+//!   staged-baud mailbox. Everything downstream (RX classifier window, TX
 //!   scheduler wire-end math, snoop tick) reads its ticks; µs conversion
 //!   only at the edge (telemetry).
 //! - [`DriftIntegrator`] — the boot/steady HSI drift-correction control law
@@ -118,7 +118,7 @@ impl<U: UsartBaud, T: ClockTrim> Clock<U, T> {
     }
 
     /// Effective RDT for a Fast slot: floored by the poll source's
-    /// `now − packet_end` offset so slot 0 can't fire before its own chip
+    /// `now − packet_end` offset so slot 0 can't start before its own chip
     /// observes packet-end (at [`PollSrc::LineIdle`] that's one byte-time
     /// past `packet_end`) and the whole chain shifts together. `ByteBatch`
     /// needs no floor. The Fast Last grid reads this to back-date from the
