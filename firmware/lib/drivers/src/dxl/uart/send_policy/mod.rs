@@ -1,9 +1,20 @@
 //! Send-side policy sub-composite — the state that decides how this servo
 //! participates in a DXL exchange, split out of the `DxlUart` composite per
 //! driver-pattern §4.3 so wire routing and send policy stop sharing one
-//! struct. Owns [`ConfigMediator`] (bus identity + staged-config mailbox).
+//! struct. Owns [`ConfigMediator`] (bus identity + staged-config mailbox)
+//! plus the exchange-shaped data types and chain-shape arithmetic the
+//! composite's poll routing and send paths consume.
 
 mod config_mediator;
+mod fast_shape;
+mod inflight;
+mod reply_context;
+
+#[cfg(test)]
+pub(super) use fast_shape::PING_STATUS_FRAME_BYTES;
+pub(super) use fast_shape::{header_target, target_addressable};
+pub(super) use inflight::{InflightCtx, slot_walk};
+pub(super) use reply_context::ReplyContext;
 
 use config_mediator::ConfigMediator;
 use osc_core::BootMode;

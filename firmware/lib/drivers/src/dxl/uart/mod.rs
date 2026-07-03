@@ -20,10 +20,7 @@ pub use poll_src::PollSrc;
 #[cfg(test)]
 mod test_support;
 
-use dxl_protocol::streaming::{
-    CrcResult, Event, HeaderEvent, InstructionHeader, InstructionPayload, PayloadEvent,
-};
-use dxl_protocol::wire::{BROADCAST_ID, CRC_BYTES, RESPONSE_HEADER_BYTES};
+use dxl_protocol::streaming::{CrcResult, Event, HeaderEvent, PayloadEvent};
 use dxl_protocol::{Chunk, Id, Slot, SlotPosition, Status, StatusError, WriteError};
 use osc_core::{BaudRate, BootMode, DxlReply};
 
@@ -31,331 +28,15 @@ use crate::traits::dxl::{Providers, RxDma, SendKind, TxBus, TxScheduler, WireClo
 use clock::Clock;
 use codec::{Codec, CodecTx, PollAction, PollEvent};
 use fast_last::{FastLast, FastLastSchedule};
-use send_policy::SendPolicy;
+use send_policy::{
+    InflightCtx, ReplyContext, SendPolicy, header_target, slot_walk, target_addressable,
+};
 
 /// Bits on the wire for a single UART character: 1 start + 8 data + 1 stop
 /// (8N1). Multiply by `ticks_per_bit` to get one byte's wire duration in
 /// scheduler ticks. Also the IDLE detection threshold — CH32V00X RM §UART:
 /// "an idle frame is 10-or-11-bit high, including the stop bit"; M=0 → 10.
 pub(crate) const BITS_PER_FRAME: u16 = 10;
-
-/// Wire bytes of a single Ping Status reply — `RESPONSE_HEADER_BYTES`
-/// (header(4) + id + len(2) + inst + err = 9) + 3 payload bytes
-/// (model_lo + model_hi + firmware) + CRC_BYTES (2). Multi-servo broadcast
-/// Ping convention positions servo N's reply at `N × PING_STATUS_FRAME_BYTES`
-/// wire bytes past wire-end so the servos don't collide.
-const PING_STATUS_FRAME_BYTES: u32 = RESPONSE_HEADER_BYTES as u32 + 3 + CRC_BYTES as u32;
-
-/// What the driver needs to position a reply on the wire. Built from the
-/// `InflightCtx` slot-walk at the parser's Crc-good event; consumed by
-/// `send_status` / `send_slot`. Per driver-pattern §7.4 — the dispatcher
-/// passes data; the driver derives wire shape from its cached request state.
-#[derive(Copy, Clone, Debug)]
-struct ReplyContext {
-    /// Packet-end tick (WireClock u32 domain) — anchored from the
-    /// classifier at the parser's Crc-good event, or a fallback estimate
-    /// when the classifier was unanchored (interference / edge loss).
-    /// See
-    /// `EdgeCapture::packet_end_tick_fallback`.
-    packet_end_tick: u32,
-    /// Wire-byte offset from request wire-end to this reply's fire moment.
-    /// Zero for direct unicast; non-zero for broadcast Ping and
-    /// Sync/Bulk/Fast Read slot N. For Fast Last replies this also equals
-    /// `predecessor_bytes` — the count of predecessor wire bytes the
-    /// chain-CRC fold pipeline must absorb before patching our trailing
-    /// CRC slot.
-    slot_offset_bytes: u32,
-    /// Fast Sync/Bulk Read slot position. `None` for non-Fast paths;
-    /// `Some(Last { .. })` arms the Fast Last CRC fold pipeline so our
-    /// own trailing CRC slot gets patched with the chain CRC covering
-    /// predecessor + own bytes before DMA1_CH4 reads it.
-    fast_slot_position: Option<SlotPosition>,
-    /// Parser wire-byte cursor at parse-complete. Forwarded into
-    /// [`FoldEngine::start`] as its `start_cursor` — the first
-    /// predecessor reply byte arrives at exactly this cursor, so the
-    /// fold's `cursor < start_cursor` guard skips everything up to (but
-    /// not including) the first predecessor byte.
-    fold_start_cursor: u32,
-    /// `Some(predecessor_id)` for Plain Sync / Bulk Read chain slots at
-    /// k > 0 — the sequence-driven fire path of `docs/dxl-streaming-rx.md`
-    /// §5.2. `None` for single-target replies, slot 0 of any chain, and
-    /// all Fast chain replies. When Some, `send_status` defers the wire
-    /// send to the codec's matching `PollEvent::SkipComplete` event.
-    predecessor_id: Option<u8>,
-    /// RDT (µs) the deadline math adds to `packet_end_tick`. Resolved at
-    /// `into_reply_context` build time so the send path is rdt-source-
-    /// agnostic: single-target / Fast chain replies see the per-instance
-    /// register value, broadcast Ping sees the uniform driver default
-    /// (`crate::dxl::DEFAULT_RDT_2US`) — see that constant's doc for the
-    /// collision-avoidance reasoning.
-    rdt_us: u32,
-    /// Which ISR fired the parser's Crc event (HT/TC vs USART IDLE). The
-    /// Fast slot send path floors the effective RDT by the source's
-    /// `now − packet_end` offset so slot 0's fire wall doesn't slip behind
-    /// the IDLE-poll horizon while slot k > 0's CCR1 stays anchored to the
-    /// raw RDT — that mismatch would land slot k > 0 inside slot 0's TX.
-    /// See [`ReplyHandle::send_slot`].
-    src: PollSrc,
-}
-
-/// Slot-header bytes a Fast First/Only emission carries (`FF FF FD 00` +
-/// BROADCAST id + length(2) + Status instruction = 8 bytes). Sized to match
-/// `emit_slot_header` in `dxl-protocol`.
-const FAST_SLOT_HEADER_BYTES: u32 = 8;
-
-/// Per-slot body bytes excluding the trailing CRC: `error(1) + id(1) + data`.
-fn fast_slot_body_bytes(length: u32) -> u32 {
-    2 + length
-}
-
-/// Wire bytes a Fast First emission consumes for a per-slot `length`: header +
-/// body, no trailing CRC (successors continue).
-fn fast_first_bytes(length: u32) -> u32 {
-    FAST_SLOT_HEADER_BYTES + fast_slot_body_bytes(length)
-}
-
-/// Wire bytes a Fast Middle emission consumes for a per-slot `length`: body
-/// only.
-fn fast_middle_bytes(length: u32) -> u32 {
-    fast_slot_body_bytes(length)
-}
-
-/// Target id carried in any Instruction header. Mirrors
-/// `osc_core::services::dxl::dispatcher::header_target` — copied here to keep
-/// osc-drivers self-contained per the driver-pattern doc.
-fn header_target(h: &InstructionHeader) -> Id {
-    use InstructionHeader::*;
-    match *h {
-        Ping { id }
-        | Read { id, .. }
-        | Write { id, .. }
-        | RegWrite { id, .. }
-        | Action { id }
-        | Reboot { id }
-        | FactoryReset { id, .. }
-        | Clear { id, .. }
-        | ControlTableBackup { id, .. }
-        | SyncRead { id, .. }
-        | SyncWrite { id, .. }
-        | BulkRead { id }
-        | BulkWrite { id }
-        | FastSyncRead { id, .. }
-        | FastBulkRead { id }
-        | Raw { id, .. } => id,
-    }
-}
-
-/// True when the instruction's target is the chip's own ID or BROADCAST.
-fn target_addressable(h: &InstructionHeader, id: u8) -> bool {
-    let target = header_target(h);
-    target.as_byte() == id || target.as_byte() == BROADCAST_ID
-}
-
-/// Per-packet wire-state aggregator. Lives while the parser is inside an
-/// instruction the chip will reply to; consumed at the Crc-good event to
-/// derive the [`ReplyContext`] the send path needs. State accumulates from
-/// header + per-slot demarcation events; finalized math lives in
-/// [`InflightCtx::into_reply_context`].
-#[derive(Copy, Clone, Debug)]
-struct InflightCtx {
-    header: InstructionHeader,
-    /// Slot-walk cursor. Bumped on each SyncSlot/BulkSlot event; resolves to
-    /// the chain's `n_total` at Crc time.
-    next_slot_index: u8,
-    /// Index of the chip's own slot once identified. Stays `None` for
-    /// non-Sync/Bulk variants and for chains the chip is not in.
-    slot: Option<u8>,
-    /// Wire bytes preceding the chip's slot — accumulated incrementally
-    /// during BulkRead / FastBulkRead walks (per-slot length varies);
-    /// derived at Crc for SyncRead / FastSyncRead (uniform per-slot length).
-    bytes_before: u32,
-    /// Per-slot length captured at BulkSlot demarcation just before the chip's
-    /// own slot, used to size FastBulkRead's `Middle`/`Last` emission. None for
-    /// non-Bulk variants.
-    slot_length: Option<u16>,
-    /// Sum of per-slot data byte counts across the chain — feeds Fast
-    /// chain `packet_length` math for First/Only emissions. Accumulated
-    /// during `slot_walk` for FastBulkRead (per-slot length varies); for
-    /// FastSyncRead derived in `into_reply_context` from header.length ×
-    /// `n_total`.
-    chain_data_bytes: u32,
-    /// Slot ID seen at the most recent SyncSlot / BulkSlot demarcation
-    /// before the chip's own slot lands. Updates per demarcation while
-    /// `slot` is still `None`; freezes once `slot` resolves — that's the
-    /// chip's chain predecessor for sequence-driven scheduling
-    /// (`docs/dxl-streaming-rx.md` §5.2). Stays `None` for slot 0 of any
-    /// chain and for non-chain instructions.
-    predecessor_id: Option<u8>,
-}
-
-impl InflightCtx {
-    fn new(header: InstructionHeader) -> Self {
-        Self {
-            header,
-            next_slot_index: 0,
-            slot: None,
-            bytes_before: 0,
-            slot_length: None,
-            chain_data_bytes: 0,
-            predecessor_id: None,
-        }
-    }
-
-    /// Whether a `packet_end_tick` fallback estimate is safe to use when
-    /// the classifier lost anchor. FAST chain ops drive chain-CRC
-    /// fold-grid back-dating; a guessed anchor mispatches the CRC by ≥1
-    /// byte and corrupts the entire downstream chain — strictly worse
-    /// than silence. Single-target replies (Ping / Read / Write /
-    /// RegWrite) absorb the ~µs-scale fallback jitter inside RDT slack;
-    /// plain Sync/Bulk Read slot k>0 schedules sequence-driven from the
-    /// predecessor and ignores `packet_end_tick` entirely.
-    fn allows_packet_end_fallback(&self) -> bool {
-        !matches!(
-            self.header,
-            InstructionHeader::FastSyncRead { .. } | InstructionHeader::FastBulkRead { .. },
-        )
-    }
-
-    /// Final ReplyContext at Crc-good. `packet_end_tick` is captured from the
-    /// classifier at the same event; `fold_start_cursor` is the codec's
-    /// wire-byte cursor at the parser's Crc emit point — the cursor where
-    /// the First predecessor reply byte will land (the host's chain
-    /// instruction is fully consumed by then, so the next wire byte is the
-    /// First servo's `0xFF`).
-    fn into_reply_context(
-        self,
-        id: u8,
-        rdt_us: u32,
-        packet_end_tick: u32,
-        fold_start_cursor: u32,
-        src: PollSrc,
-    ) -> ReplyContext {
-        // Plain SyncRead / BulkRead don't appear here: slot 0 of either
-        // chain is single-target (slot_offset_bytes = 0 — handled by the
-        // catch-all), and slot k > 0 takes the chain-pending path in
-        // `ReplyHandle::send_status`, which never reads slot_offset_bytes.
-        let (slot_offset_bytes, fast_slot_position, reply_rdt_us) = match (self.header, self.slot) {
-            (InstructionHeader::Ping { id: target }, _) if target.as_byte() == BROADCAST_ID => (
-                (id as u32) * PING_STATUS_FRAME_BYTES,
-                None,
-                (crate::dxl::DEFAULT_RDT_2US as u32) * 2,
-            ),
-            (InstructionHeader::FastSyncRead { length, .. }, Some(k)) => {
-                let n = self.next_slot_index;
-                let packet_length = fast_chain_packet_length(n, (n as u32) * (length as u32));
-                let position = compute_fast_position(k, n, packet_length);
-                let bytes_before = fast_bytes_before(k, length as u32);
-                (bytes_before, Some(position), rdt_us)
-            }
-            (InstructionHeader::FastBulkRead { .. }, Some(k)) => {
-                let n = self.next_slot_index;
-                let packet_length = fast_chain_packet_length(n, self.chain_data_bytes);
-                let position = compute_fast_position(k, n, packet_length);
-                (self.bytes_before, Some(position), rdt_us)
-            }
-            _ => (0, None, rdt_us),
-        };
-        let predecessor_id = match (self.header, self.slot) {
-            (InstructionHeader::SyncRead { .. } | InstructionHeader::BulkRead { .. }, Some(k))
-                if k > 0 =>
-            {
-                self.predecessor_id
-            }
-            _ => None,
-        };
-        ReplyContext {
-            packet_end_tick,
-            slot_offset_bytes,
-            fast_slot_position,
-            fold_start_cursor,
-            predecessor_id,
-            rdt_us: reply_rdt_us,
-            src,
-        }
-    }
-}
-
-/// Bump slot-walk cursor on a per-slot demarcation event and update
-/// `slot` / `bytes_before` if applicable.
-fn slot_walk(ctx: &mut InflightCtx, payload: &InstructionPayload, id: u8) {
-    let (slot_id, slot_length) = match *payload {
-        InstructionPayload::SyncSlot { id, .. } => (id, None),
-        InstructionPayload::BulkSlot { id, length, .. } => (id, Some(length)),
-        InstructionPayload::WriteDataChunk { .. } => return,
-    };
-    let k = ctx.next_slot_index;
-    ctx.next_slot_index = ctx.next_slot_index.saturating_add(1);
-    // Chain-total data byte accumulator runs for every BulkSlot in a Fast
-    // Bulk Read — successor slots included — because First/Only's
-    // packet_length is the sum across the whole chain.
-    if let Some(length) = slot_length
-        && let InstructionHeader::FastBulkRead { .. } = ctx.header
-    {
-        ctx.chain_data_bytes = ctx.chain_data_bytes.saturating_add(length as u32);
-    }
-    if slot_id.as_byte() == id && ctx.slot.is_none() {
-        ctx.slot = Some(k);
-        ctx.slot_length = slot_length;
-        return;
-    }
-    if ctx.slot.is_some() {
-        return;
-    }
-    // Predecessor slot — record the latest candidate (overwriting prior).
-    // The chain-fire path for slots k > 0 only reads `predecessor_id` if
-    // our own slot lands next; the standing value is always the immediate
-    // predecessor when it's read (`docs/dxl-streaming-rx.md` §5.2).
-    ctx.predecessor_id = Some(slot_id.as_byte());
-    // Fast Bulk Read needs per-slot wire counts to size the chain CRC fold
-    // (FastSlotInfo::bytes_before on Last). Plain Bulk Read takes the
-    // chain-pending path on k > 0, so its predecessor sizes don't matter.
-    if let Some(length) = slot_length
-        && let InstructionHeader::FastBulkRead { .. } = ctx.header
-    {
-        let length = length as u32;
-        let bytes = if k == 0 {
-            fast_first_bytes(length)
-        } else {
-            fast_middle_bytes(length)
-        };
-        ctx.bytes_before += bytes;
-    }
-}
-
-/// Wire bytes preceding slot `k` in a Fast Sync Read chain with uniform
-/// per-slot register length. Slot 0 sits at offset 0 (it carries the chain
-/// header). Slot k > 0 follows a First emission and `k-1` Middle emissions.
-fn fast_bytes_before(k: u8, length: u32) -> u32 {
-    if k == 0 {
-        0
-    } else {
-        fast_first_bytes(length) + ((k as u32) - 1) * fast_middle_bytes(length)
-    }
-}
-
-/// Wire length carried by the Fast chain Status header — bytes from `INST`
-/// through trailing CRC inclusive. Encoder-input for both Only and First
-/// `packet_length`. Per-slot wire shape is `err(1) + id(1) + data(L_k)`,
-/// so the sum is `INST(1) + n·2 + Σ L_k + CRC(2)`.
-fn fast_chain_packet_length(n_total: u8, chain_data_bytes: u32) -> u16 {
-    (3 + 2 * (n_total as u32) + chain_data_bytes) as u16
-}
-
-/// Map a chain `(slot_index, total_slots, packet_length)` to the
-/// [`SlotPosition`] the encoder consumes. `packet_length` on First/Only is
-/// the chain's advertised wire length — emitted straight onto the wire by
-/// [`dxl_protocol::encoder::SlotEncoder::emit`].
-fn compute_fast_position(k: u8, n_total: u8, packet_length: u16) -> SlotPosition {
-    if n_total == 1 {
-        SlotPosition::Only { packet_length }
-    } else if k == 0 {
-        SlotPosition::First { packet_length }
-    } else if k + 1 == n_total {
-        SlotPosition::Last { crc: 0 }
-    } else {
-        SlotPosition::Middle
-    }
-}
 
 /// A reply handle borrowed from disjoint pieces of [`DxlUart`] — the codec
 /// TX half + scheduler + clock + the small set of pending-state fields. The
@@ -1200,6 +881,7 @@ mod tests {
     use std::cell::{Cell, RefCell};
     use std::rc::Rc;
 
+    use super::send_policy::PING_STATUS_FRAME_BYTES;
     use super::test_support::{SEED_TICK, TEST_ID, TEST_RDT_US, TICKS_PER_BIT_3M};
     use super::*;
     use crate::mocks::{
@@ -1208,7 +890,9 @@ mod tests {
         TxBusOp,
     };
     use crate::traits::dxl::DmaFlags;
+    use dxl_protocol::streaming::InstructionHeader;
     use dxl_protocol::types::StatusError;
+    use dxl_protocol::wire::BROADCAST_ID;
     use dxl_protocol::{InstructionEncoder, SoftwareCrcUmts, StatusEncoder};
     use heapless::Vec;
     use osc_core::BaudRate;
@@ -2380,63 +2064,5 @@ mod tests {
             1,
             "expired-window exit must bump the deadline-miss counter",
         );
-    }
-
-    // ------------------------------------------------------------------
-    // InflightCtx fallback allowance (per-instruction packet-end policy)
-    // ------------------------------------------------------------------
-
-    fn allows_fallback(header: InstructionHeader) -> bool {
-        InflightCtx::new(header).allows_packet_end_fallback()
-    }
-
-    #[test]
-    fn inflight_for_single_target_allows_packet_end_fallback() {
-        assert!(allows_fallback(InstructionHeader::Ping {
-            id: Id::new(TEST_ID),
-        }));
-        assert!(allows_fallback(InstructionHeader::Read {
-            id: Id::new(TEST_ID),
-            address: 0,
-            length: 2,
-        }));
-        assert!(allows_fallback(InstructionHeader::Write {
-            id: Id::new(TEST_ID),
-            address: 0,
-            length: 2,
-        }));
-        assert!(allows_fallback(InstructionHeader::RegWrite {
-            id: Id::new(TEST_ID),
-            address: 0,
-            length: 2,
-        }));
-    }
-
-    #[test]
-    fn inflight_for_plain_sync_and_bulk_allows_packet_end_fallback() {
-        assert!(allows_fallback(InstructionHeader::SyncRead {
-            id: Id::new(BROADCAST_ID),
-            address: 0,
-            length: 2,
-        }));
-        assert!(allows_fallback(InstructionHeader::BulkRead {
-            id: Id::new(BROADCAST_ID),
-        }));
-    }
-
-    #[test]
-    fn inflight_for_fast_sync_read_disallows_packet_end_fallback() {
-        assert!(!allows_fallback(InstructionHeader::FastSyncRead {
-            id: Id::new(BROADCAST_ID),
-            address: 0,
-            length: 2,
-        }));
-    }
-
-    #[test]
-    fn inflight_for_fast_bulk_read_disallows_packet_end_fallback() {
-        assert!(!allows_fallback(InstructionHeader::FastBulkRead {
-            id: Id::new(BROADCAST_ID),
-        }));
     }
 }
