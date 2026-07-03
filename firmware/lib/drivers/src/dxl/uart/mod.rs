@@ -52,18 +52,12 @@ pub struct ReplyHandle<'a, P: Providers, const TX_BUF_LEN: usize> {
     scheduler: &'a mut P::TxScheduler,
     fast_last: &'a mut FastLast<P::FastLastScheduler, P::Crc>,
     clock: &'a mut Clock<P::UsartBaud, P::ClockTrim>,
-    last_reply_ctx: &'a mut Option<ReplyContext>,
-    /// Chain-pending state on `DxlUart`. Set to `Some(pred)` by
-    /// [`Self::send_status`] when the cached reply context names a Plain
-    /// chain k > 0 predecessor; the matching `PollEvent::SkipComplete`
-    /// arm consumes it and fires `TxBus::start_now`. Cleared by
-    /// [`Self::cancel`] alongside the schedule cancel.
-    predecessor_id: &'a mut Option<u8>,
-    /// Send-policy sub-composite on the parent — bus identity (`id`,
-    /// `rdt_us`) plus the staged-config mailbox the `stage_*` commands
-    /// write into. Live values can't shift under the handle: they only
-    /// mutate at `on_tx_complete`, which can't run while the handle
-    /// holds this borrow.
+    /// Send-policy sub-composite on the parent — bus identity, the
+    /// staged-config mailbox the `stage_*` commands write into, and the
+    /// reply gate holding the staged [`ReplyContext`] / chain-pending
+    /// wait. Live values can't shift under the handle: they only mutate
+    /// at `on_tx_complete`, which can't run while the handle holds this
+    /// borrow.
     send_policy: &'a mut SendPolicy,
 }
 
@@ -114,13 +108,13 @@ impl<P: Providers, const TX_BUF_LEN: usize> ReplyHandle<'_, P, TX_BUF_LEN> {
     /// other path lands a single `Plain` schedule entry against the
     /// cached `packet_end_tick` + RDT + slot offset.
     fn schedule_after_status_encode(&mut self) {
-        let Some(ctx) = self.last_reply_ctx.take() else {
+        let Some(ctx) = self.send_policy.take_reply_context() else {
             crate::log::debug!("dxl: send_status drop (no reply ctx)");
             return;
         };
         if let Some(pred) = ctx.predecessor_id {
             crate::log::debug!("dxl: send_status defer to predecessor={}", pred);
-            *self.predecessor_id = Some(pred);
+            self.send_policy.defer_to_predecessor(pred);
             return;
         }
         let packet_end_tick = ctx.packet_end_tick;
@@ -196,7 +190,7 @@ impl<P: Providers, const TX_BUF_LEN: usize> ReplyHandle<'_, P, TX_BUF_LEN> {
     /// shared between the slice and streamed slot paths. Logs and returns
     /// `None` on the two drop cases (no context, no slot).
     fn take_slot_ctx(&mut self) -> Option<(ReplyContext, SlotPosition)> {
-        let ctx = self.last_reply_ctx.take().or_else(|| {
+        let ctx = self.send_policy.take_reply_context().or_else(|| {
             crate::log::debug!(
                 "dxl[id={}]: send_slot drop (no reply ctx)",
                 self.send_policy.id()
@@ -259,8 +253,7 @@ impl<P: Providers, const TX_BUF_LEN: usize> ReplyHandle<'_, P, TX_BUF_LEN> {
     /// `poll()`.
     pub fn cancel(&mut self) {
         self.scheduler.cancel();
-        *self.last_reply_ctx = None;
-        *self.predecessor_id = None;
+        self.send_policy.cancel();
     }
 
     /// Stage a deferred ID change — applies at the next `on_tx_complete`.
@@ -374,28 +367,13 @@ pub struct DxlUart<
     /// IC stamps lifted via SysTick u32, etc.) — see [`WireClock`].
     wire_clock: P::WireClock,
 
-    /// Send-side policy sub-composite — bus identity (`id`, `rdt_us`) and
-    /// the staged-config mailbox committed at [`Self::on_tx_complete`].
+    /// Send-side policy sub-composite — bus identity + staged-config
+    /// mailbox (committed at [`Self::on_tx_complete`]), the parse-side
+    /// Instruction tracker, and the reply gate holding the staged
+    /// [`ReplyContext`] / chain-pending predecessor wait. Per
+    /// driver-pattern §7.4 — driver-derivable wire shape stays in the
+    /// driver, not on the trait surface.
     send_policy: SendPolicy,
-
-    /// Wire-positioning info derived from the most recently surfaced
-    /// packet — wire-end tick, slot offset, Fast slot position, chain-CRC
-    /// anchor. Computed at poll surface and consumed by `ReplyHandle`'s
-    /// send methods. Per driver-pattern §7.4 — driver-derivable wire shape
-    /// stays in the driver, not on the trait surface.
-    last_reply_ctx: Option<ReplyContext>,
-
-    /// Predecessor ID the chip is awaiting before sending its own Plain
-    /// chain k > 0 reply. `Some(id)` set by [`ReplyHandle::send_status`]
-    /// when the cached [`ReplyContext`] names a chain k > 0 predecessor;
-    /// the codec's matching `PollEvent::SkipComplete { id }` arm consumes
-    /// it and fires `TxBus::start_now`. Cleared on
-    /// [`ReplyHandle::cancel`], on Resync, and on [`Self::on_tx_complete`]
-    /// (belt-and-suspenders — the SkipComplete path clears it on success).
-    /// A silent predecessor — SkipComplete never matches — leaves it
-    /// `Some` until the next chain or reset; harmless because the next
-    /// `send_status` overwrites it. Per `docs/dxl-streaming-rx.md` §5.2.
-    predecessor_id: Option<u8>,
 }
 
 impl<P: Providers, const RX_BUF_LEN: usize, const EDGE_BUF_LEN: usize, const TX_BUF_LEN: usize>
@@ -422,8 +400,6 @@ impl<P: Providers, const RX_BUF_LEN: usize, const EDGE_BUF_LEN: usize, const TX_
             fast_last,
             wire_clock,
             send_policy: SendPolicy::new(id, rdt_us),
-            last_reply_ctx: None,
-            predecessor_id: None,
         };
         // Seed the codec's edge parser with the Clock's initial-baud
         // edge-stamp compensation. Subsequent baud changes re-publish via
@@ -504,8 +480,6 @@ impl<P: Providers, const RX_BUF_LEN: usize, const EDGE_BUF_LEN: usize, const TX_
             fast_last,
             rx_dma,
             send_policy,
-            last_reply_ctx,
-            predecessor_id,
             ..
         } = self;
         // Drift pairs from the codec's retroactive walk at Crc and drain
@@ -525,12 +499,6 @@ impl<P: Providers, const RX_BUF_LEN: usize, const EDGE_BUF_LEN: usize, const TX_
             } => {
                 let action = match ev {
                     Event::Header(HeaderEvent::Instruction(h)) => {
-                        // Implicit chain-state reset per `dxl-streaming-rx.md`
-                        // §5.3 — any stale `predecessor_id` from a prior chain
-                        // whose predecessor went silent must clear here, or a
-                        // foreign Status whose id happens to match would
-                        // trigger a spurious `start_now` on the new chain.
-                        *predecessor_id = None;
                         let skip_target = send_policy.on_instruction_header(&h);
                         crate::log::trace!(
                             "dxl[id={}]: event=header_instruction target={} addressable={}",
@@ -604,13 +572,12 @@ impl<P: Providers, const RX_BUF_LEN: usize, const EDGE_BUF_LEN: usize, const TX_
                             // cursor for the Fast Last CRC engine.
                             match send_policy.on_crc_good(packet_end_tick, next_status_pos, src)
                             {
-                                Some(ctx) => {
+                                Some(t) => {
                                     crate::log::debug!(
                                         "dxl[id={}]: crc packet_end_tick={}",
                                         id,
-                                        ctx.packet_end_tick
+                                        t
                                     );
-                                    *last_reply_ctx = Some(ctx);
                                 }
                                 None => {
                                     crate::log::debug!(
@@ -628,7 +595,6 @@ impl<P: Providers, const RX_BUF_LEN: usize, const EDGE_BUF_LEN: usize, const TX_
                     Event::Crc(CrcResult::Bad) | Event::Resync(_) => {
                         crate::log::trace!("dxl[id={}]: event=crc(bad)/resync", id);
                         send_policy.on_resync();
-                        *predecessor_id = None;
                         PollAction::Continue
                     }
                     Event::Sync => PollAction::Continue,
@@ -638,8 +604,6 @@ impl<P: Providers, const RX_BUF_LEN: usize, const EDGE_BUF_LEN: usize, const TX_
                     scheduler,
                     fast_last,
                     clock,
-                    last_reply_ctx,
-                    predecessor_id,
                     send_policy,
                 };
                 f(ev, ring, &mut reply);
@@ -661,9 +625,9 @@ impl<P: Providers, const RX_BUF_LEN: usize, const EDGE_BUF_LEN: usize, const TX_
                     "dxl[id={}]: skip_complete pred={} predecessor_id={:?}",
                     id,
                     pred,
-                    *predecessor_id
+                    send_policy.awaited_predecessor()
                 );
-                if *predecessor_id == Some(pred) {
+                if send_policy.on_skip_complete(pred) {
                     crate::log::debug!(
                         "dxl[id={}]: skip_complete match pred={} -> start_now byte_count={}",
                         id,
@@ -671,7 +635,6 @@ impl<P: Providers, const RX_BUF_LEN: usize, const EDGE_BUF_LEN: usize, const TX_
                         tx.tx_len()
                     );
                     tx_bus.start_now(tx.tx_len());
-                    *predecessor_id = None;
                 }
                 // Codec clears `packet_is_instruction` internally on
                 // SkipComplete; no anchor is set between the previous
@@ -824,11 +787,6 @@ impl<P: Providers, const RX_BUF_LEN: usize, const EDGE_BUF_LEN: usize, const TX_
         // can outlive the inter-packet gap and eat the next preamble
         // before the parser ever reaches the header event.
         self.codec.cancel_skip();
-        // Belt-and-suspenders: the SkipComplete handler clears this on
-        // success, but a silent predecessor would leave it `Some` across
-        // the next reply. Clearing here keeps the chain-pending state
-        // bounded by the in-flight reply.
-        self.predecessor_id = None;
         let reboot = self.send_policy.on_tx_complete();
         self.clock.on_tx_complete();
         // Clock just applied any pending baud — refresh the codec's edge
@@ -1626,7 +1584,7 @@ mod tests {
             }
         });
         assert_eq!(state.sch.operations(), alloc::vec![ScheduleOp::Cancel]);
-        assert!(bus.last_reply_ctx.is_none());
+        assert!(bus.send_policy.staged_reply_for_test().is_none());
     }
 
     #[test]
@@ -1709,7 +1667,8 @@ mod tests {
         let (mut bus, _, _) = bus_seeded_with(&req);
         bus.poll(|_, _, _| {});
         let ctx = bus
-            .last_reply_ctx
+            .send_policy
+            .staged_reply_for_test()
             .expect("SyncRead surfaces a reply context");
         assert_eq!(ctx.predecessor_id, None);
     }
@@ -1720,7 +1679,8 @@ mod tests {
         let (mut bus, _, _) = bus_seeded_with(&req);
         bus.poll(|_, _, _| {});
         let ctx = bus
-            .last_reply_ctx
+            .send_policy
+            .staged_reply_for_test()
             .expect("SyncRead surfaces a reply context");
         assert_eq!(ctx.predecessor_id, Some(0x09));
     }
@@ -1731,7 +1691,8 @@ mod tests {
         let (mut bus, _, _) = bus_seeded_with(&req);
         bus.poll(|_, _, _| {});
         let ctx = bus
-            .last_reply_ctx
+            .send_policy
+            .staged_reply_for_test()
             .expect("BulkRead surfaces a reply context");
         assert_eq!(ctx.predecessor_id, Some(0x42));
     }
@@ -1745,7 +1706,8 @@ mod tests {
         let (mut bus, _, _) = bus_seeded_with(&req);
         bus.poll(|_, _, _| {});
         let ctx = bus
-            .last_reply_ctx
+            .send_policy
+            .staged_reply_for_test()
             .expect("FastSyncRead surfaces a reply context");
         assert_eq!(ctx.predecessor_id, None);
     }
@@ -1764,7 +1726,7 @@ mod tests {
             state.tx_bus.operations().is_empty(),
             "wire send waits for SkipComplete",
         );
-        assert_eq!(bus.predecessor_id, Some(0x42));
+        assert_eq!(bus.send_policy.awaited_predecessor(), Some(0x42));
     }
 
     #[test]
@@ -1774,7 +1736,7 @@ mod tests {
         bus.poll(|_, _, reply| reply.send_status(empty_status()).expect("encode fits"));
         let byte_count = bus.codec.tx_len();
         assert!(byte_count > 0);
-        assert_eq!(bus.predecessor_id, Some(0x42));
+        assert_eq!(bus.send_policy.awaited_predecessor(), Some(0x42));
 
         let pred_status = wire_status(0x42);
         stage_rx(&mut bus, &state, req.len() as u16, &pred_status);
@@ -1785,7 +1747,7 @@ mod tests {
             alloc::vec![TxBusOp::StartNow { byte_count }],
         );
         assert!(
-            bus.predecessor_id.is_none(),
+            bus.send_policy.awaited_predecessor().is_none(),
             "chain-pending cleared on match",
         );
     }
@@ -1802,7 +1764,7 @@ mod tests {
 
         assert!(state.tx_bus.operations().is_empty());
         assert_eq!(
-            bus.predecessor_id,
+            bus.send_policy.awaited_predecessor(),
             Some(0x42),
             "still waiting for the immediate predecessor",
         );
@@ -1818,7 +1780,7 @@ mod tests {
                 reply.cancel();
             }
         });
-        assert!(bus.predecessor_id.is_none());
+        assert!(bus.send_policy.awaited_predecessor().is_none());
     }
 
     #[test]
@@ -1826,10 +1788,10 @@ mod tests {
         let req = wire_sync_read(0, 2, &[0x42, TEST_ID]);
         let (mut bus, _, _) = bus_seeded_with(&req);
         bus.poll(|_, _, reply| reply.send_status(empty_status()).expect("encode fits"));
-        assert_eq!(bus.predecessor_id, Some(0x42));
+        assert_eq!(bus.send_policy.awaited_predecessor(), Some(0x42));
 
         bus.on_tx_complete();
-        assert!(bus.predecessor_id.is_none());
+        assert!(bus.send_policy.awaited_predecessor().is_none());
     }
 
     #[test]
@@ -1838,13 +1800,13 @@ mod tests {
         // + corrupted-predecessor encode, far more setup for the same
         // observable.
         let (mut bus, state) = make_bus();
-        bus.predecessor_id = Some(0x42);
+        bus.send_policy.defer_to_predecessor(0x42);
         let mut bad = wire_ping(TEST_ID);
         let crc_lo = bad.len() - 2;
         bad[crc_lo] ^= 0xFF;
         stage_rx(&mut bus, &state, 0, &bad);
         bus.poll(|_, _, _| {});
-        assert!(bus.predecessor_id.is_none());
+        assert!(bus.send_policy.awaited_predecessor().is_none());
     }
 
     #[test]
@@ -1855,12 +1817,12 @@ mod tests {
         // Status whose id happens to match would trigger a spurious
         // `start_now`.
         let (mut bus, state) = make_bus();
-        bus.predecessor_id = Some(0x42);
+        bus.send_policy.defer_to_predecessor(0x42);
         let req = wire_ping(TEST_ID);
         stage_rx(&mut bus, &state, 0, &req);
         bus.poll(|_, _, _| {});
         assert!(
-            bus.predecessor_id.is_none(),
+            bus.send_policy.awaited_predecessor().is_none(),
             "instruction-header event must reset stale chain-pending",
         );
     }
@@ -1878,7 +1840,8 @@ mod tests {
         let (mut bus, _, _) = bus_seeded_with(&req);
         bus.poll(|_, _, _| {});
         let ctx = bus
-            .last_reply_ctx
+            .send_policy
+            .staged_reply_for_test()
             .expect("FastSyncRead surfaces a reply context");
         assert_eq!(ctx.fold_start_cursor, req.len() as u32);
     }

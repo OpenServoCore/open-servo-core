@@ -1,0 +1,217 @@
+//! Reply-side FSM — the staged Status reply's path to the wire.
+//! Transitions on reply events only (context staged at Crc-good,
+//! dispatcher send, predecessor skip completion, TX completion); one
+//! exchange's lifetime. Runs out of phase with the parse-side
+//! `InstructionTracker`: a staged context the dispatcher never consumed
+//! (e.g. a broadcast write with no Status) survives the next
+//! Instruction's header and is displaced at that packet's Crc-good.
+
+use super::reply_context::ReplyContext;
+
+/// Wire-placement phase of the staged reply.
+enum ReplyPhase {
+    /// Nothing staged. A reply already handed to the scheduler is the
+    /// scheduler's business, not this machine's.
+    Idle,
+    /// Crc-good derived a context; waiting for the dispatcher's `send_*`
+    /// call to consume it.
+    Staged(ReplyContext),
+    /// Plain Sync/Bulk chain k > 0: reply encoded, wire start deferred
+    /// until the named predecessor's Status frame finishes skipping —
+    /// the sequence-driven fire path of `docs/dxl-streaming-rx.md` §5.2.
+    AwaitingPredecessor(u8),
+}
+
+pub(super) struct ReplyGate {
+    phase: ReplyPhase,
+}
+
+impl ReplyGate {
+    pub(super) const fn new() -> Self {
+        Self {
+            phase: ReplyPhase::Idle,
+        }
+    }
+
+    /// Awaiting-predecessor is the only phase external packet boundaries
+    /// may clear; a staged context stays put (displaced at the next
+    /// Crc-good, exactly the pre-FSM overwrite semantics).
+    fn clear_awaiting(&mut self) {
+        if let ReplyPhase::AwaitingPredecessor(_) = self.phase {
+            self.phase = ReplyPhase::Idle;
+        }
+    }
+}
+
+// -- events -------------------------------------------------------------
+
+impl ReplyGate {
+    /// Crc-good derived a fresh context — stage it, displacing any
+    /// unconsumed one.
+    pub(super) fn on_reply_context(&mut self, ctx: ReplyContext) {
+        self.phase = ReplyPhase::Staged(ctx);
+    }
+
+    /// A foreign packet's byte-skip completed under `pred`'s id. `true`
+    /// when it was the awaited predecessor — the caller starts the wire
+    /// send now; the wait is over either way on a match.
+    pub(super) fn on_skip_complete(&mut self, pred: u8) -> bool {
+        match self.phase {
+            ReplyPhase::AwaitingPredecessor(p) if p == pred => {
+                self.phase = ReplyPhase::Idle;
+                true
+            }
+            _ => false,
+        }
+    }
+
+    /// A new Instruction header parsed — stale chain-pending state from a
+    /// silent predecessor must reset per `dxl-streaming-rx.md` §5.3, or a
+    /// foreign Status whose id happens to match would trigger a spurious
+    /// wire start on the new chain.
+    pub(super) fn on_new_instruction(&mut self) {
+        self.clear_awaiting();
+    }
+
+    /// Crc-bad / parser resync — the wire state is void; drop the wait.
+    pub(super) fn on_resync(&mut self) {
+        self.clear_awaiting();
+    }
+
+    /// Our reply fully drained the wire. Belt-and-suspenders — the
+    /// SkipComplete path clears the wait on success, but a silent
+    /// predecessor would leave it armed across the next reply; clearing
+    /// here bounds the chain-pending state by the in-flight exchange.
+    pub(super) fn on_tx_complete(&mut self) {
+        self.clear_awaiting();
+    }
+}
+
+// -- commands -----------------------------------------------------------
+
+impl ReplyGate {
+    /// Consume the staged context for a `send_*` call. Take-once: a
+    /// double-send without a fresh Crc-good gets `None` and no-ops on the
+    /// scheduler.
+    pub(super) fn take_reply_context(&mut self) -> Option<ReplyContext> {
+        match core::mem::replace(&mut self.phase, ReplyPhase::Idle) {
+            ReplyPhase::Staged(ctx) => Some(ctx),
+            other => {
+                self.phase = other;
+                None
+            }
+        }
+    }
+
+    /// The taken context named a chain predecessor — hold the encoded
+    /// reply until that id's Status frame finishes skipping.
+    pub(super) fn defer_to_predecessor(&mut self, pred: u8) {
+        self.phase = ReplyPhase::AwaitingPredecessor(pred);
+    }
+
+    /// Drop the staged context and any predecessor wait; the next reply
+    /// must come through a fresh Crc-good.
+    pub(super) fn cancel(&mut self) {
+        self.phase = ReplyPhase::Idle;
+    }
+}
+
+// -- accessors ----------------------------------------------------------
+
+impl ReplyGate {
+    /// The predecessor id a deferred chain reply is waiting on, if any.
+    pub(super) fn awaited_predecessor(&self) -> Option<u8> {
+        match self.phase {
+            ReplyPhase::AwaitingPredecessor(p) => Some(p),
+            _ => None,
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::dxl::uart::poll_src::PollSrc;
+
+    fn ctx() -> ReplyContext {
+        ReplyContext {
+            packet_end_tick: 100,
+            slot_offset_bytes: 0,
+            fast_slot_position: None,
+            fold_start_cursor: 0,
+            predecessor_id: None,
+            rdt_us: 250,
+            src: PollSrc::ByteBatch,
+        }
+    }
+
+    #[test]
+    fn staged_context_takes_once() {
+        let mut g = ReplyGate::new();
+        g.on_reply_context(ctx());
+        assert!(g.take_reply_context().is_some());
+        assert!(g.take_reply_context().is_none());
+    }
+
+    #[test]
+    fn take_while_awaiting_returns_none_and_keeps_the_wait() {
+        let mut g = ReplyGate::new();
+        g.defer_to_predecessor(0x42);
+        assert!(g.take_reply_context().is_none());
+        assert_eq!(g.awaited_predecessor(), Some(0x42));
+    }
+
+    #[test]
+    fn skip_complete_fires_only_on_the_awaited_predecessor() {
+        let mut g = ReplyGate::new();
+        g.defer_to_predecessor(0x42);
+        assert!(!g.on_skip_complete(0x05));
+        assert_eq!(g.awaited_predecessor(), Some(0x42));
+        assert!(g.on_skip_complete(0x42));
+        assert_eq!(g.awaited_predecessor(), None);
+        assert!(!g.on_skip_complete(0x42), "wait consumed on match");
+    }
+
+    #[test]
+    fn packet_boundaries_clear_the_wait_but_keep_a_staged_context() {
+        for clear in [
+            ReplyGate::on_new_instruction,
+            ReplyGate::on_resync,
+            ReplyGate::on_tx_complete,
+        ] {
+            let mut g = ReplyGate::new();
+            g.defer_to_predecessor(0x42);
+            clear(&mut g);
+            assert_eq!(g.awaited_predecessor(), None);
+
+            let mut g = ReplyGate::new();
+            g.on_reply_context(ctx());
+            clear(&mut g);
+            assert!(g.take_reply_context().is_some(), "staged context survives");
+        }
+    }
+
+    #[test]
+    fn cancel_clears_both_phases() {
+        let mut g = ReplyGate::new();
+        g.on_reply_context(ctx());
+        g.cancel();
+        assert!(g.take_reply_context().is_none());
+
+        g.defer_to_predecessor(0x42);
+        g.cancel();
+        assert_eq!(g.awaited_predecessor(), None);
+    }
+
+    #[test]
+    fn fresh_context_displaces_a_stale_one() {
+        let mut g = ReplyGate::new();
+        g.on_reply_context(ctx());
+        let fresh = ReplyContext {
+            packet_end_tick: 999,
+            ..ctx()
+        };
+        g.on_reply_context(fresh);
+        assert_eq!(g.take_reply_context().unwrap().packet_end_tick, 999);
+    }
+}
