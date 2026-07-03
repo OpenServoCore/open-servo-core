@@ -82,7 +82,7 @@ Given RX ring index `i`, what was TIM2 CNT at the *start bit* of byte `i`? With 
 
 - Wire-end of any byte: `BT[i] + 10 × bit_time`.
 - Snoop CRC can timestamp each byte for jitter analysis.
-- Fast-Last slot fires at `BT[i_last_master] + 10·bit + RDT + slot_offset` with no backdate.
+- FAST chain slot timing splits by slot (task #142): slot 0 fires at `packet_end + RDT` (spec single-target semantics); slots k > 0 fire at `status_start_tick + bytes_before(k) × byte_time` — anchored on the OBSERVED start of the chain's single Status packet (resolved from ET stamps at a per-byte RXNE wake), no RDT term, no backdate. See [dxl-streaming-rx.md §5.6](dxl-streaming-rx.md).
 - The framing FSM's IDLE/RXNE split disappears — per-byte timestamps at every baud.
 
 This is the BT ring: byte-time, sized to match RX, indexed parallel.
@@ -378,20 +378,25 @@ The TIM2 budget is spent on what jitter actually buys: CC4 IC (per-byte timestam
 
 The catchup ISR runs at fixed-byte intervals on SysTick CMP, owning **all** RX-side work during the predecessor reception window. Same scheduling pattern as the canonical walk-loop + split-fire design in [dxl-fast-chain-crc-walkloop.md](dxl-fast-chain-crc-walkloop.md), targeted to SysTick.
 
-**Arm time** (Fast Last reply scheduled):
+**Defer time** (`send_slot(Last)`, task #142): the reply is encoded but nothing is armed. The reply gate parks a status-start wait and the RxDma provider opens the per-byte RXNE wake window; `poll()` gates on the parked wait so the parser leaves the Status packet's bytes for the fold.
 
-    arm Fast Last CRC state with (snoop_head = parsed_idx_now, expected_n_pred)
+**Arm time** (status-start wake — the Status packet's first byte observed on the wire):
+
+    status_start_tick = ET-resolved start of the Status packet's first byte
+    arm Fast Last CRC state with (snoop_head = status_start_cursor, expected_n_pred)
     mask DMA1_CH7 HT/TC                                   # §10.6.3 classifier merge
+    t_prior_end           = status_start_tick + expected_n_pred × byte_time   # no RDT term
     walk_deadline_tick    = t_prior_end - GUARD × byte_time
     final_anchor_tick     = fire_deadline_tick - min(interval, t_prior_duration) - GUARD × byte_time
     next_anchor_tick      = step_back(final_anchor_tick, interval, t_prior_start)
     patch_deadline_tick   = fire_deadline_tick + (tx_len - 2) × byte_time
     SysTick CMP = next_anchor_tick - FAST_LAST_ENTRY_TICKS  # every CMP back-dated, not just last
-    # CCR2 + CCR3 already armed by the TX scheduler (§5.3); SysTick CMP added here.
+    stage CCR3 (SendKind::FastLast stash) with fire_deadline = t_prior_end; unwatch RXNE
+    # CCR2 composes at commit per §5.3.
 
-All anchor / deadline math is u32 in SysTick HCLK ticks. `interval_ticks = 15 × byte_time`. Every grid CMP is back-dated by `FAST_LAST_ENTRY_TICKS` so the body's fold-start lands on the formula's wall-clock anchor instead of `anchor + ISR_entry_latency`. Tracking `next_anchor_tick` in state and advancing by fixed `+ interval` keeps the grid rigid regardless of per-body overhead.
+All anchor / deadline math is u32 in HCLK ticks off the observed `status_start_tick`. `interval_ticks = 15 × byte_time`. Every grid CMP is back-dated by `FAST_LAST_ENTRY_TICKS` so the body's fold-start lands on the formula's wall-clock anchor instead of `anchor + ISR_entry_latency`. Tracking `next_anchor_tick` in state and advancing by fixed `+ interval` keeps the grid rigid regardless of per-body overhead. For a small predecessor budget (≤ interval + GUARD bytes) the final anchor lands AT the window start; the observation happens a byte or more in, so the first CMP is already past — the provider's past-CMP pend path runs the body immediately and the grid self-heals forward.
 
-The composite is responsible for translating TIM2-domain values (BT[last_master], packet_end) into the SysTick u32 domain at arm time — see §12 (TIM2 ↔ SysTick clock bridging).
+The wake's ET read is also the natural boundary for the planned DMA1_CH7 IC↔OC time-share (hardware TX-start kickoff): after `status_start_tick` is stamped nothing needs edge capture until our TX completes — drift sampling is instruction-only, the fold reads the byte ring, and the next packet-end anchor isn't needed until after TC.
 
 **At every SysTick CMP IRQ (intermediate):**
 
@@ -431,6 +436,7 @@ The busy-wait is uncontested — DMA1_CH7 HT/TC is masked (§10.6.3), so SysTick
     disarm Fast Last CRC state               # idempotent — fold already disarmed
     cancel SysTick CMP                       # idempotent — already cancelled at last CMP
     unmask DMA1_CH7 HT/TC
+    unwatch RXNE                             # idempotent — wake window already closed at arm
 
 #### 10.6.3 Classifier+parser merge
 
