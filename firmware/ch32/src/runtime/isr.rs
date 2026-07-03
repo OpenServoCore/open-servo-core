@@ -152,7 +152,7 @@ fn on_usart1_tc() {
 ///
 /// Hot path: no pending-flag check (CC3IE is the only IRQ enabled on TIM2
 /// — nothing else can fire this vector) and no flag clear (the scheduler
-/// provider masks CC3IE in `handle_start`; CC3IF stays set but harmless,
+/// provider masks CC3IE in `take_bus`; CC3IF stays set but harmless,
 /// and the next `schedule()` clears it before re-arming CC3IE).
 ///
 /// SAFETY: see `on_dma1_ch7` — TIM2 shares PFIC HIGH with USART1 / DMA1_CH7

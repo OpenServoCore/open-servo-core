@@ -169,14 +169,14 @@ pub(crate) fn mk_tx_bus() -> (MockTxBus, TxBusState) {
     }
     {
         let ops = state.ops.clone();
-        m.expect_handle_start().returning_st(move || {
-            ops.borrow_mut().push(TxBusOp::HandleStart);
+        m.expect_take_bus().returning_st(move || {
+            ops.borrow_mut().push(TxBusOp::TakeBus);
         });
     }
     {
         let ops = state.ops.clone();
-        m.expect_handle_tx_complete().returning_st(move || {
-            ops.borrow_mut().push(TxBusOp::HandleTxComplete);
+        m.expect_release_bus().returning_st(move || {
+            ops.borrow_mut().push(TxBusOp::ReleaseBus);
         });
     }
     (m, state)
@@ -263,10 +263,11 @@ pub(crate) fn mk_fast_last() -> (MockFastLastScheduler, FastLastState) {
     let mut m = MockFastLastScheduler::new();
     {
         let ops = state.ops.clone();
-        m.expect_set_deadline().returning_st(move |deadline| {
-            ops.borrow_mut()
-                .push(FastLastSchedulerOp::SetDeadline { deadline });
-        });
+        m.expect_set_busy_wait_deadline()
+            .returning_st(move |deadline| {
+                ops.borrow_mut()
+                    .push(FastLastSchedulerOp::SetBusyWaitDeadline { deadline });
+            });
     }
     {
         let ops = state.ops.clone();

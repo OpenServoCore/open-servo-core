@@ -33,7 +33,7 @@ mock! {
 /// record these to assert scheduler operation sequences.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub enum FastLastSchedulerOp {
-    SetDeadline { deadline: u32 },
+    SetBusyWaitDeadline { deadline: u32 },
     Schedule { deadline: u32 },
     Cancel,
 }
@@ -47,7 +47,7 @@ mock! {
         const BYTES_PER_INTERVAL: u16 = 15;
         const GUARD_BYTES: u16 = 1;
 
-        fn set_deadline(&mut self, deadline: u32);
+        fn set_busy_wait_deadline(&mut self, deadline: u32);
         fn schedule(&mut self, deadline: u32);
         fn deadline_passed(&self) -> bool;
         fn patch_window_expired(&self) -> bool;

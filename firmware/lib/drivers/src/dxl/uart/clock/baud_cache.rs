@@ -4,7 +4,7 @@
 //! recomputed only when the baud actually changes. Baud is staged by
 //! control-table writes via [`Self::stage_baud`] and committed at
 //! `on_tx_complete` (USART can't change BRR mid-frame) via
-//! [`Self::commit_pending_baud`].
+//! [`Self::on_tx_complete`].
 
 use osc_core::BaudRate;
 
@@ -97,7 +97,7 @@ impl<U: UsartBaud> BaudCache<U> {
     }
 
     /// Refresh every per-baud cache from `baud`. Shared by the constructor
-    /// and [`Self::commit_pending_baud`] so the two never drift apart. Does
+    /// and [`Self::on_tx_complete`] so the two never drift apart. Does
     /// not touch the USART — the constructor assumes the peripheral is
     /// already at `baud`, and the commit path drives `apply_baud` itself
     /// before calling this.
@@ -116,7 +116,7 @@ impl<U: UsartBaud> BaudCache<U> {
     /// nothing was staged. BRR can't change mid-frame, so the composite
     /// calls this at `on_tx_complete` — the first USART-idle point after our
     /// own TX.
-    pub fn commit_pending_baud(&mut self) -> Option<u16> {
+    pub fn on_tx_complete(&mut self) -> Option<u16> {
         let baud = self.pending_baud.take()?;
         self.usart.apply_baud(baud);
         self.apply_baud_change(baud);
@@ -216,19 +216,19 @@ mod tests {
     }
 
     #[test]
-    fn commit_pending_baud_applies_to_usart_and_returns_new_tpb() {
+    fn on_tx_complete_applies_to_usart_and_returns_new_tpb() {
         let (mut c, u_state) = make(BaudRate::B9600);
         c.stage_baud(BaudRate::B3000000);
-        assert_eq!(c.commit_pending_baud(), Some(16));
+        assert_eq!(c.on_tx_complete(), Some(16));
         assert_eq!(u_state.apply_baud_log(), alloc::vec![BaudRate::B3000000]);
         assert_eq!(c.ticks_per_bit(), 16);
         assert_eq!(c.baud(), BaudRate::B3000000);
     }
 
     #[test]
-    fn commit_pending_baud_is_noop_with_nothing_staged() {
+    fn on_tx_complete_is_noop_with_nothing_staged() {
         let (mut c, u_state) = make(BaudRate::B9600);
-        assert_eq!(c.commit_pending_baud(), None);
+        assert_eq!(c.on_tx_complete(), None);
         assert!(u_state.apply_baud_log().is_empty());
     }
 
@@ -265,7 +265,7 @@ mod tests {
     }
 
     #[test]
-    fn commit_pending_baud_refreshes_rx_edge_comp() {
+    fn on_tx_complete_refreshes_rx_edge_comp() {
         // Per-baud edge-stamp compensation must track the committed baud,
         // not the construction-time one — the codec re-reads it after
         // every applied change.
@@ -280,7 +280,7 @@ mod tests {
         let mut c = BaudCache::new(BaudRate::B9600, usart);
         assert_eq!(c.rx_edge_comp_ticks(), 3);
         c.stage_baud(BaudRate::B3000000);
-        c.commit_pending_baud();
+        c.on_tx_complete();
         assert_eq!(c.rx_edge_comp_ticks(), 7);
     }
 }

@@ -521,7 +521,7 @@ mod tests {
         // schedule used: packet_end + rdt + predecessor·byte − GUARD·byte.
         assert_eq!(
             h.fl.operations().first(),
-            Some(&FastLastSchedulerOp::SetDeadline {
+            Some(&FastLastSchedulerOp::SetBusyWaitDeadline {
                 deadline: SEED + RDT_TICKS + 12 * BYTE_TICKS_3M - BYTE_TICKS_3M,
             })
         );

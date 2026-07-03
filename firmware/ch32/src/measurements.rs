@@ -17,7 +17,7 @@
 ///
 /// Breakdown (CC3 match → DMA pumps first byte into USART DR). Under O3
 /// the full driver dispatch (`on_tim2_cc3` → `Drivers::dxl_uart()` →
-/// `on_tx_start` → `handle_start`) inlines into the IRQ vector body. Only
+/// `on_tx_start` → `take_bus`) inlines into the IRQ vector body. Only
 /// the DMA-enable path is on the critical path — the CC3IE mask that
 /// follows is housekeeping after DMA is already pumping:
 ///

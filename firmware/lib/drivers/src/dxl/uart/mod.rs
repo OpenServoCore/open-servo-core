@@ -170,7 +170,7 @@ impl<P: Providers, const RX_BUF_LEN: usize, const EDGE_BUF_LEN: usize, const TX_
     ///
     /// [`CodecRx::drain_raw`]: codec::CodecRx::drain_raw
     pub fn on_tx_start(&mut self) {
-        self.tx_bus.handle_start();
+        self.tx_bus.take_bus();
         let Self {
             codec,
             rx_dma,
@@ -236,7 +236,7 @@ impl<P: Providers, const RX_BUF_LEN: usize, const EDGE_BUF_LEN: usize, const TX_
     /// self-applied) because the chip controls how the reset actually
     /// happens; the driver only knows it was asked.
     pub fn on_tx_complete(&mut self) -> Option<BootMode> {
-        self.tx_bus.handle_tx_complete();
+        self.tx_bus.release_bus();
         self.fast_last.cancel();
         // Per `dxl-streaming-rx.md` §5.3: our own TX completion is a
         // packet boundary at which stale chain state must reset. The
@@ -722,7 +722,7 @@ mod tests {
         assert!(matches!(
             fl_ops.as_slice(),
             [
-                FastLastSchedulerOp::SetDeadline { .. },
+                FastLastSchedulerOp::SetBusyWaitDeadline { .. },
                 FastLastSchedulerOp::Schedule { .. },
             ]
         ));
@@ -757,10 +757,10 @@ mod tests {
     }
 
     #[test]
-    fn on_tx_start_routes_to_handle_start() {
+    fn on_tx_start_routes_to_take_bus() {
         let (mut bus, state) = make_bus();
         bus.on_tx_start();
-        assert_eq!(state.tx_bus.operations(), alloc::vec![TxBusOp::HandleStart]);
+        assert_eq!(state.tx_bus.operations(), alloc::vec![TxBusOp::TakeBus]);
         assert!(state.sch.operations().is_empty());
     }
 
@@ -781,10 +781,7 @@ mod tests {
 
         let pending_reboot = bus.on_tx_complete();
 
-        assert_eq!(
-            state.tx_bus.operations(),
-            alloc::vec![TxBusOp::HandleTxComplete]
-        );
+        assert_eq!(state.tx_bus.operations(), alloc::vec![TxBusOp::ReleaseBus]);
         assert_eq!(bus.send_policy.id(), 0x42);
         assert_eq!(bus.send_policy.rdt_us(), 500);
         assert_eq!(pending_reboot, Some(BootMode::Bootloader));
@@ -925,8 +922,8 @@ mod tests {
         bus.on_tx_start();
         assert_eq!(
             state.tx_bus.operations().last(),
-            Some(&TxBusOp::HandleStart),
-            "on_tx_start must call handle_start once",
+            Some(&TxBusOp::TakeBus),
+            "on_tx_start must call take_bus once",
         );
 
         assert_ne!(

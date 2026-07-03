@@ -585,14 +585,14 @@ impl Servo {
 
     /// Walk new `FastLastSchedulerOp` entries since the last drain and
     /// resolve their absolute-u32 deadlines into wall-clock state.
-    /// `SetDeadline` is a busy-wait threshold (no fire), `Schedule` derives
+    /// `SetBusyWaitDeadline` is a busy-wait threshold (no fire), `Schedule` derives
     /// the next CMP-match `SimTime`, `Cancel` clears it. Called after every
     /// `Dxl::poll` and every `on_fold_step` — both paths can append ops.
     fn drain_fast_last_ops(&mut self, t: SimTime) {
         let ops = self.fast_last_scheduler_state.operations();
         for op in &ops[self.fast_last_drained..] {
             match *op {
-                FastLastSchedulerOp::SetDeadline { .. } => {
+                FastLastSchedulerOp::SetBusyWaitDeadline { .. } => {
                     // Busy-wait threshold only — no wall-clock fire to stage.
                 }
                 FastLastSchedulerOp::Schedule { deadline } => {

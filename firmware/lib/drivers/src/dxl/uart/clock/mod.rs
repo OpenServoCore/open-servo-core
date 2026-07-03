@@ -65,7 +65,7 @@ impl<U: UsartBaud, T: ClockTrim> Clock<U, T> {
     /// new `ticks_per_bit` fans out to the drift integrator so its per-baud
     /// constants and reference tpb track the wire.
     pub fn on_tx_complete(&mut self) {
-        if self.cache.commit_pending_baud().is_some() {
+        if self.cache.on_tx_complete().is_some() {
             self.drift
                 .on_baud_change(self.cache.baud(), self.cache.ticks_per_bit());
         }
@@ -164,16 +164,6 @@ impl<U: UsartBaud, T: ClockTrim> Clock<U, T> {
         }
     }
 
-    /// Anchor a `delay_ticks` distance against `packet_end_tick` and fold in
-    /// the drift integrator's projected phase error over that distance.
-    /// Shared tail of both deadline computations.
-    fn deadline_after(&self, packet_end_tick: u32, delay_ticks: u32) -> u32 {
-        let phase_adjust = self.drift.projected_phase_error_hclk(delay_ticks);
-        packet_end_tick
-            .wrapping_add(delay_ticks)
-            .wrapping_add_signed(phase_adjust)
-    }
-
     /// Max byte pairs per packet the driver should drain into
     /// [`Self::on_byte_pair`]. See [`DriftIntegrator::samples_wanted_per_packet`].
     pub fn samples_wanted_per_packet(&self) -> u8 {
@@ -184,6 +174,16 @@ impl<U: UsartBaud, T: ClockTrim> Clock<U, T> {
     /// deadline distance. See [`DriftIntegrator::projected_phase_error_hclk`].
     pub fn projected_phase_error_hclk(&self, distance_hclk: u32) -> i32 {
         self.drift.projected_phase_error_hclk(distance_hclk)
+    }
+
+    /// Anchor a `delay_ticks` distance against `packet_end_tick` and fold in
+    /// the drift integrator's projected phase error over that distance.
+    /// Shared tail of both deadline computations.
+    fn deadline_after(&self, packet_end_tick: u32, delay_ticks: u32) -> u32 {
+        let phase_adjust = self.drift.projected_phase_error_hclk(delay_ticks);
+        packet_end_tick
+            .wrapping_add(delay_ticks)
+            .wrapping_add_signed(phase_adjust)
     }
 }
 

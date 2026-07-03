@@ -13,8 +13,9 @@
 //! together via [`Self::split_mut`] when it must drive the grid and fold in
 //! one borrow (the walker closure folds bytes while the FSM advances).
 //!
-//! [`CrcPatchSink`]: fold_engine::CrcPatchSink
+//! [`CrcPatchSink`]: crc_patch_sink::CrcPatchSink
 
+mod crc_patch_sink;
 mod fold_engine;
 mod fsm_scheduler;
 mod schedule;
@@ -23,7 +24,8 @@ use dxl_protocol::CrcUmts;
 
 use crate::traits::dxl::FastLastScheduler;
 
-pub use fold_engine::{CrcPatchSink, FoldEngine};
+pub use crc_patch_sink::CrcPatchSink;
+pub use fold_engine::FoldEngine;
 pub use fsm_scheduler::FsmScheduler;
 pub use schedule::FastLastSchedule;
 
@@ -43,14 +45,6 @@ impl<S: FastLastScheduler, CRC: CrcUmts> FastLast<S, CRC> {
     }
 
     // -- events -----------------------------------------------------------------
-
-    /// Arm both halves for one Last reply: the scheduler builds its grid from
-    /// the timing fields; the fold engine begins folding from
-    /// `fold_start_cursor` with the same `predecessor_bytes` finalize cap.
-    pub fn start(&mut self, p: FastLastSchedule) {
-        self.scheduler.start(p);
-        self.crc.start(p.fold_start_cursor, p.predecessor_bytes);
-    }
 
     /// The TX-start tick arrived with the fold still active — run the
     /// post-fire residue fold that absorbs any GUARD bytes in flight at
@@ -96,6 +90,14 @@ impl<S: FastLastScheduler, CRC: CrcUmts> FastLast<S, CRC> {
     }
 
     // -- commands ---------------------------------------------------------------
+
+    /// Arm both halves for one Last reply: the scheduler builds its grid from
+    /// the timing fields; the fold engine begins folding from
+    /// `fold_start_cursor` with the same `predecessor_bytes` finalize cap.
+    pub fn start(&mut self, p: FastLastSchedule) {
+        self.scheduler.start(p);
+        self.crc.start(p.fold_start_cursor, p.predecessor_bytes);
+    }
 
     /// Disarm both halves. Idempotent — the fold engine's finalize path and
     /// the scheduler's busy-wait exit already return each half to idle on the

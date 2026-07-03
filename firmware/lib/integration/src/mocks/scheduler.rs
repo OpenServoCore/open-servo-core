@@ -84,10 +84,11 @@ pub fn mock_fast_last_scheduler() -> (MockFastLastScheduler, FastLastSchedulerSt
     let mut m = MockFastLastScheduler::new();
     {
         let ops = state.operations.clone();
-        m.expect_set_deadline().returning_st(move |deadline| {
-            ops.borrow_mut()
-                .push(FastLastSchedulerOp::SetDeadline { deadline });
-        });
+        m.expect_set_busy_wait_deadline()
+            .returning_st(move |deadline| {
+                ops.borrow_mut()
+                    .push(FastLastSchedulerOp::SetBusyWaitDeadline { deadline });
+            });
     }
     {
         let ops = state.operations.clone();

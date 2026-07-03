@@ -4,7 +4,7 @@
 ///
 /// Sibling of [`super::TxScheduler`]. Two activation sources:
 ///
-/// - The scheduler's deadline ISR — calls [`Self::handle_start`] to take
+/// - The scheduler's deadline ISR — calls [`Self::take_bus`] to take
 ///   over the bus once the hardware match channel fires.
 /// - The Plain Sync / Bulk Read chain reply at slot k > 0
 ///   (`docs/dxl-streaming-rx.md` §5.2) — calls [`Self::start_now`] from
@@ -12,7 +12,7 @@
 ///   immediate predecessor's ID, fires the wire bit immediately with no
 ///   deadline math.
 ///
-/// In both cases the bus is released via [`Self::handle_tx_complete`] when
+/// In both cases the bus is released via [`Self::release_bus`] when
 /// the chip-side TC IRQ surfaces.
 pub trait TxBus {
     /// Stage DMA + USART for `byte_count` outgoing bytes, drive TX_EN
@@ -26,10 +26,10 @@ pub trait TxBus {
     /// to take over the bus (enable TX DMA so byte 0 ships). TX_EN is
     /// already up via hardware OC. Not called on the [`Self::start_now`]
     /// path — `start_now` does its own activation inline.
-    fn handle_start(&mut self);
+    fn take_bus(&mut self);
 
     /// Driver's `on_tx_complete` calls this to release the bus — drop
     /// TX_EN, disable USART TX direction + TC IRQ, disable TX DMA. Driver
     /// body then drains pending config + surfaces any pending reboot.
-    fn handle_tx_complete(&mut self);
+    fn release_bus(&mut self);
 }

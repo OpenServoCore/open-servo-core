@@ -50,7 +50,7 @@ impl FastLastSchedulerTrait for FastLastScheduler {
     const BYTES_PER_INTERVAL: u16 = FAST_LAST_BYTES_PER_INTERVAL;
     const GUARD_BYTES: u16 = FAST_LAST_GUARD_BYTES;
 
-    fn set_deadline(&mut self, deadline: u32) {
+    fn set_busy_wait_deadline(&mut self, deadline: u32) {
         self.deadline = deadline;
     }
 

@@ -91,6 +91,87 @@ impl<S: FastLastScheduler> FsmScheduler<S> {
 
     // -- events -----------------------------------------------------------------
 
+    /// Drive one grid body. Composite calls this from its long-horizon timer
+    /// demux when our CMP fires.
+    ///
+    /// `walker` runs the classifier + parser-drain + per-byte fold for
+    /// whatever bytes have landed since the last body, and returns the
+    /// composite-side cumulative count of predecessor bytes folded so far.
+    /// Called at least once per invocation. The final-anchor busy-wait exits
+    /// when the returned count reaches `predecessor_bytes − GUARD`.
+    ///
+    /// `commit_pending` is invoked exactly once on entry to the final-anchor
+    /// body, *before* the busy-wait starts. The composite wires it to
+    /// `TxScheduler::commit_pending` so the wire-fire schedule the
+    /// TxScheduler stashed at `send_slot(Last)` time is committed while
+    /// there's still ~1 byte_time of headroom — the hardware match latches
+    /// during the busy-wait spin and the fire ISR runs as soon as the
+    /// busy-wait exits. Not called from intermediate-step bodies.
+    ///
+    /// Single walker closure (not `(walker, bytes_walked)`) so the composite
+    /// can capture `&mut FoldEngine` once for both the walk and the read —
+    /// splitting them would force interior mutability on the count.
+    pub fn on_step<W, C>(&mut self, mut walker: W, commit_pending: C)
+    where
+        W: FnMut() -> u32,
+        C: FnOnce(),
+    {
+        match self.phase {
+            FastLastPhase::PeriodicWalk => {
+                let bytes_walked = walker();
+                if self.next_anchor_offset == self.final_anchor_offset {
+                    // Final anchor — commit the TxScheduler stash so the
+                    // wire-fire path arms while there's still a byte_time of
+                    // headroom, then busy-wait. Uncontested at high baud
+                    // because the composite paused DMA1_CH7 HT/TC at start
+                    // time, so this body is the sole HIGH consumer in the
+                    // window. Exit when `bytes_walked >= busy_wait_target` OR
+                    // scheduler reports deadline passed; the remaining GUARD
+                    // bytes are absorbed by the TX-start body's tail fold.
+                    commit_pending();
+                    //
+                    // SAFETY: the plateau check (no progress between walker
+                    // calls) is a hard backstop — in production the deadline
+                    // is the primary exit, but if scheduler state ever
+                    // diverges (set_busy_wait_deadline math wrong, CMP latched but
+                    // mask-cleared, etc.) the chip must not spin forever
+                    // inside ISR. Bytes can only stall when the wire is
+                    // silent — the predecessor either dropped its reply
+                    // entirely or finished early — both of which mean there's
+                    // no more work to do here regardless.
+                    let target = self.busy_wait_target;
+                    if bytes_walked < target {
+                        let mut prev_walked = bytes_walked;
+                        loop {
+                            let walked = walker();
+                            if walked >= target {
+                                break;
+                            }
+                            if self.scheduler.deadline_passed() {
+                                break;
+                            }
+                            if walked == prev_walked {
+                                break;
+                            }
+                            prev_walked = walked;
+                        }
+                    }
+                    self.phase = FastLastPhase::Idle;
+                    self.scheduler.cancel();
+                    return;
+                }
+                self.next_anchor_offset = self.next_anchor_offset.wrapping_add(self.interval_ticks);
+                self.schedule_walk_cmp(self.next_anchor_offset);
+            }
+            FastLastPhase::Idle => {
+                // Spurious CMP entry — defensive cancel.
+                self.scheduler.cancel();
+            }
+        }
+    }
+
+    // -- commands ---------------------------------------------------------------
+
     /// Compute the periodic-walk grid, stage the deadline, arm the first CMP,
     /// and flip the FSM into [`FastLastPhase::PeriodicWalk`].
     pub fn start(&mut self, p: FastLastSchedule) {
@@ -103,7 +184,7 @@ impl<S: FastLastScheduler> FsmScheduler<S> {
         self.phase = FastLastPhase::PeriodicWalk;
 
         self.scheduler
-            .set_deadline(p.packet_end_tick.wrapping_add(plan.deadline_offset));
+            .set_busy_wait_deadline(p.packet_end_tick.wrapping_add(plan.deadline_offset));
         self.schedule_walk_cmp(plan.first_anchor_offset);
     }
 
@@ -163,87 +244,6 @@ impl<S: FastLastScheduler> FsmScheduler<S> {
                 .wrapping_add(anchor_offset.wrapping_sub(S::FAST_LAST_ENTRY_TICKS as u32)),
         );
     }
-
-    /// Drive one grid body. Composite calls this from its long-horizon timer
-    /// demux when our CMP fires.
-    ///
-    /// `walker` runs the classifier + parser-drain + per-byte fold for
-    /// whatever bytes have landed since the last body, and returns the
-    /// composite-side cumulative count of predecessor bytes folded so far.
-    /// Called at least once per invocation. The final-anchor busy-wait exits
-    /// when the returned count reaches `predecessor_bytes − GUARD`.
-    ///
-    /// `commit_pending` is invoked exactly once on entry to the final-anchor
-    /// body, *before* the busy-wait starts. The composite wires it to
-    /// `TxScheduler::commit_pending` so the wire-fire schedule the
-    /// TxScheduler stashed at `send_slot(Last)` time is committed while
-    /// there's still ~1 byte_time of headroom — the hardware match latches
-    /// during the busy-wait spin and the fire ISR runs as soon as the
-    /// busy-wait exits. Not called from intermediate-step bodies.
-    ///
-    /// Single walker closure (not `(walker, bytes_walked)`) so the composite
-    /// can capture `&mut FoldEngine` once for both the walk and the read —
-    /// splitting them would force interior mutability on the count.
-    pub fn on_step<W, C>(&mut self, mut walker: W, commit_pending: C)
-    where
-        W: FnMut() -> u32,
-        C: FnOnce(),
-    {
-        match self.phase {
-            FastLastPhase::PeriodicWalk => {
-                let bytes_walked = walker();
-                if self.next_anchor_offset == self.final_anchor_offset {
-                    // Final anchor — commit the TxScheduler stash so the
-                    // wire-fire path arms while there's still a byte_time of
-                    // headroom, then busy-wait. Uncontested at high baud
-                    // because the composite paused DMA1_CH7 HT/TC at start
-                    // time, so this body is the sole HIGH consumer in the
-                    // window. Exit when `bytes_walked >= busy_wait_target` OR
-                    // scheduler reports deadline passed; the remaining GUARD
-                    // bytes are absorbed by the TX-start body's tail fold.
-                    commit_pending();
-                    //
-                    // SAFETY: the plateau check (no progress between walker
-                    // calls) is a hard backstop — in production the deadline
-                    // is the primary exit, but if scheduler state ever
-                    // diverges (set_deadline math wrong, CMP latched but
-                    // mask-cleared, etc.) the chip must not spin forever
-                    // inside ISR. Bytes can only stall when the wire is
-                    // silent — the predecessor either dropped its reply
-                    // entirely or finished early — both of which mean there's
-                    // no more work to do here regardless.
-                    let target = self.busy_wait_target;
-                    if bytes_walked < target {
-                        let mut prev_walked = bytes_walked;
-                        loop {
-                            let walked = walker();
-                            if walked >= target {
-                                break;
-                            }
-                            if self.scheduler.deadline_passed() {
-                                break;
-                            }
-                            if walked == prev_walked {
-                                break;
-                            }
-                            prev_walked = walked;
-                        }
-                    }
-                    self.phase = FastLastPhase::Idle;
-                    self.scheduler.cancel();
-                    return;
-                }
-                self.next_anchor_offset = self.next_anchor_offset.wrapping_add(self.interval_ticks);
-                self.schedule_walk_cmp(self.next_anchor_offset);
-            }
-            FastLastPhase::Idle => {
-                // Spurious CMP entry — defensive cancel.
-                self.scheduler.cancel();
-            }
-        }
-    }
-
-    // -- commands ---------------------------------------------------------------
 
     /// Drop any pending CMP and return to [`FastLastPhase::Idle`]. Idempotent.
     pub fn cancel(&mut self) {
@@ -343,7 +343,7 @@ mod tests {
         assert_eq!(
             state.operations().as_slice(),
             &[
-                FastLastSchedulerOp::SetDeadline {
+                FastLastSchedulerOp::SetBusyWaitDeadline {
                     deadline: 2000 + plan.deadline_offset,
                 },
                 FastLastSchedulerOp::Schedule {
@@ -363,7 +363,7 @@ mod tests {
         d.start(sched(0, 0, 2));
 
         assert_eq!(d.next_anchor_offset_for_test(), 0);
-        // SetDeadline + exactly one Schedule — step-back didn't spin.
+        // SetBusyWaitDeadline + exactly one Schedule — step-back didn't spin.
         assert_eq!(state.operations().len(), 2);
     }
 
@@ -392,7 +392,7 @@ mod tests {
         assert_eq!(
             state.operations().as_slice(),
             &[
-                FastLastSchedulerOp::SetDeadline {
+                FastLastSchedulerOp::SetBusyWaitDeadline {
                     deadline: 12000 + 50 * BYTE_TICKS_3M_U32 - BYTE_TICKS_3M_U32,
                 },
                 FastLastSchedulerOp::Schedule {
@@ -516,7 +516,7 @@ mod tests {
         );
 
         assert!(!d.is_active());
-        // Log: SetDeadline + Schedule (from start) then Cancel (from on_step exit).
+        // Log: SetBusyWaitDeadline + Schedule (from start) then Cancel (from on_step exit).
         let ops = state.operations();
         assert_eq!(ops.len(), 3);
         assert!(matches!(ops[2], FastLastSchedulerOp::Cancel));
@@ -561,7 +561,7 @@ mod tests {
         assert_eq!(
             state.operations().as_slice(),
             &[
-                FastLastSchedulerOp::SetDeadline { deadline: 14080 },
+                FastLastSchedulerOp::SetBusyWaitDeadline { deadline: 14080 },
                 FastLastSchedulerOp::Schedule {
                     deadline: 12000 - ENTRY,
                 },

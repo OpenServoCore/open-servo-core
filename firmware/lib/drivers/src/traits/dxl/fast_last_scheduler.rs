@@ -38,7 +38,7 @@ pub trait FastLastScheduler {
 
     /// Cache the busy-wait exit `deadline` (WireClock u32 domain).
     /// Subsequent `deadline_passed()` calls compare against it.
-    fn set_deadline(&mut self, deadline: u32);
+    fn set_busy_wait_deadline(&mut self, deadline: u32);
 
     /// Arm the next CMP at the absolute `deadline` (caller has already
     /// back-dated by `FAST_LAST_ENTRY_TICKS`). Idempotent on re-arm.
@@ -50,7 +50,7 @@ pub trait FastLastScheduler {
     fn schedule(&mut self, deadline: u32);
 
     /// True once the wall clock has passed the deadline staged via
-    /// `set_deadline`. Polled by the final-step busy-wait.
+    /// `set_busy_wait_deadline`. Polled by the final-step busy-wait.
     fn deadline_passed(&self) -> bool;
 
     /// True when the TX DMA channel's read cursor has reached the trailing

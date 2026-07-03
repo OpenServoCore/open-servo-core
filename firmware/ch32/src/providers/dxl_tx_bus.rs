@@ -36,7 +36,7 @@ impl TxBusTrait for DxlTxBus {
         timer::clear_tim2_cc3_flag();
     }
 
-    fn handle_start(&mut self) {
+    fn take_bus(&mut self) {
         // DMA enable first — every tick here delays the wire bit. CC3IE
         // mask follows: stale CC3IF stays set, the next `schedule`
         // clears it before re-enabling CC3IE.
@@ -44,7 +44,7 @@ impl TxBusTrait for DxlTxBus {
         timer::enable_tim2_cc3_irq(false);
     }
 
-    fn handle_tx_complete(&mut self) {
+    fn release_bus(&mut self) {
         timer::tim2_ch2_force_inactive();
         usart::set_tc_irq(USART1_REGS, false);
         usart::set_dma_tx(USART1_REGS, false);
