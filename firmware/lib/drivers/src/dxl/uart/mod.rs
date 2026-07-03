@@ -13,6 +13,7 @@ pub mod clock;
 pub mod codec;
 pub mod fast_last;
 mod poll_src;
+mod send_policy;
 
 pub use poll_src::PollSrc;
 
@@ -30,6 +31,7 @@ use crate::traits::dxl::{Providers, RxDma, SendKind, TxBus, TxScheduler, WireClo
 use clock::Clock;
 use codec::{Codec, CodecTx, PollAction, PollEvent};
 use fast_last::{FastLast, FastLastSchedule};
+use send_policy::SendPolicy;
 
 /// Bits on the wire for a single UART character: 1 start + 8 data + 1 stop
 /// (8N1). Multiply by `ticks_per_bit` to get one byte's wire duration in
@@ -378,17 +380,12 @@ pub struct ReplyHandle<'a, P: Providers, const TX_BUF_LEN: usize> {
     /// arm consumes it and fires `TxBus::start_now`. Cleared by
     /// [`Self::cancel`] alongside the schedule cancel.
     predecessor_id: &'a mut Option<u8>,
-    pending_id: &'a mut Option<u8>,
-    pending_rdt_us: &'a mut Option<u32>,
-    pending_reboot: &'a mut Option<BootMode>,
-    /// Snapshot of the parent's `id` field at poll surface. Used by
-    /// `stage_id` for the no-op-on-unchanged comparison; the actual
-    /// `id` field on the parent isn't mutated until `on_tx_complete`,
-    /// so this snapshot stays consistent for the lifetime of the
-    /// reply handle.
-    id: u8,
-    /// Snapshot of the parent's `rdt_us` field — same reasoning as `id`.
-    rdt_us: u32,
+    /// Send-policy sub-composite on the parent — bus identity (`id`,
+    /// `rdt_us`) plus the staged-config mailbox the `stage_*` commands
+    /// write into. Live values can't shift under the handle: they only
+    /// mutate at `on_tx_complete`, which can't run while the handle
+    /// holds this borrow.
+    send_policy: &'a mut SendPolicy,
 }
 
 impl<P: Providers, const TX_BUF_LEN: usize> ReplyHandle<'_, P, TX_BUF_LEN> {
@@ -478,7 +475,7 @@ impl<P: Providers, const TX_BUF_LEN: usize> ReplyHandle<'_, P, TX_BUF_LEN> {
         };
         crate::log::debug!(
             "dxl[id={}]: send_slot slot={:?} position={:?}",
-            self.id,
+            self.send_policy.id(),
             slot,
             position
         );
@@ -506,7 +503,7 @@ impl<P: Providers, const TX_BUF_LEN: usize> ReplyHandle<'_, P, TX_BUF_LEN> {
         };
         crate::log::debug!(
             "dxl[id={}]: send_slot_chunked id={} err={:?} position={:?}",
-            self.id,
+            self.send_policy.id(),
             id.as_byte(),
             error,
             position,
@@ -521,11 +518,17 @@ impl<P: Providers, const TX_BUF_LEN: usize> ReplyHandle<'_, P, TX_BUF_LEN> {
     /// `None` on the two drop cases (no context, no slot).
     fn take_slot_ctx(&mut self) -> Option<(ReplyContext, SlotPosition)> {
         let ctx = self.last_reply_ctx.take().or_else(|| {
-            crate::log::debug!("dxl[id={}]: send_slot drop (no reply ctx)", self.id);
+            crate::log::debug!(
+                "dxl[id={}]: send_slot drop (no reply ctx)",
+                self.send_policy.id()
+            );
             None
         })?;
         let Some(position) = ctx.fast_slot_position else {
-            crate::log::debug!("dxl[id={}]: send_slot drop (no fast slot pos)", self.id);
+            crate::log::debug!(
+                "dxl[id={}]: send_slot drop (no fast slot pos)",
+                self.send_policy.id()
+            );
             return None;
         };
         Some((ctx, position))
@@ -583,9 +586,7 @@ impl<P: Providers, const TX_BUF_LEN: usize> ReplyHandle<'_, P, TX_BUF_LEN> {
 
     /// Stage a deferred ID change — applies at the next `on_tx_complete`.
     pub fn stage_id(&mut self, id: u8) {
-        if id != self.id {
-            *self.pending_id = Some(id);
-        }
+        self.send_policy.stage_id(id);
     }
 
     /// Stage a deferred baud-rate change. Forwarded to `Clock`; applied
@@ -597,14 +598,12 @@ impl<P: Providers, const TX_BUF_LEN: usize> ReplyHandle<'_, P, TX_BUF_LEN> {
     /// Stage a deferred Return Delay Time change in µs — applies at the
     /// next `on_tx_complete`.
     pub fn stage_rdt(&mut self, us: u32) {
-        if us != self.rdt_us {
-            *self.pending_rdt_us = Some(us);
-        }
+        self.send_policy.stage_rdt(us);
     }
 
     /// Stage a deferred reboot, honored after any in-flight TX drains.
     pub fn stage_reboot(&mut self, mode: BootMode) {
-        *self.pending_reboot = Some(mode);
+        self.send_policy.stage_reboot(mode);
     }
 }
 
@@ -696,8 +695,9 @@ pub struct DxlUart<
     /// IC stamps lifted via SysTick u32, etc.) — see [`WireClock`].
     wire_clock: P::WireClock,
 
-    id: u8,
-    rdt_us: u32,
+    /// Send-side policy sub-composite — bus identity (`id`, `rdt_us`) and
+    /// the staged-config mailbox committed at [`Self::on_tx_complete`].
+    send_policy: SendPolicy,
 
     /// Wire-positioning info derived from the most recently surfaced
     /// packet — wire-end tick, slot offset, Fast slot position, chain-CRC
@@ -722,10 +722,6 @@ pub struct DxlUart<
     /// `Some` until the next chain or reset; harmless because the next
     /// `send_status` overwrites it. Per `docs/dxl-streaming-rx.md` §5.2.
     predecessor_id: Option<u8>,
-
-    pending_id: Option<u8>,
-    pending_rdt_us: Option<u32>,
-    pending_reboot: Option<BootMode>,
 }
 
 impl<P: Providers, const RX_BUF_LEN: usize, const EDGE_BUF_LEN: usize, const TX_BUF_LEN: usize>
@@ -751,14 +747,10 @@ impl<P: Providers, const RX_BUF_LEN: usize, const EDGE_BUF_LEN: usize, const TX_
             tx_bus,
             fast_last,
             wire_clock,
-            id,
-            rdt_us,
+            send_policy: SendPolicy::new(id, rdt_us),
             last_reply_ctx: None,
             inflight: None,
             predecessor_id: None,
-            pending_id: None,
-            pending_rdt_us: None,
-            pending_reboot: None,
         };
         // Seed the codec's edge parser with the Clock's initial-baud
         // edge-stamp compensation. Subsequent baud changes re-publish via
@@ -804,7 +796,7 @@ impl<P: Providers, const RX_BUF_LEN: usize, const EDGE_BUF_LEN: usize, const TX_
     /// - Instruction Header → mark packet as Instruction (drift sampling).
     /// - Instruction Header (foreign) → universal byte-skip on the body.
     /// - Status Header → universal byte-skip on the body.
-    /// - SyncSlot / BulkSlot → slot-walk against `self.id`.
+    /// - SyncSlot / BulkSlot → slot-walk against the servo ID.
     /// - Crc → stamp packet-end tick, derive [`ReplyContext`]. Anchor
     ///   reset is codec-owned (after `walk_pairs_back` at the same Crc).
     /// - Resync → drop inflight (codec resets anchor).
@@ -829,8 +821,8 @@ impl<P: Providers, const RX_BUF_LEN: usize, const EDGE_BUF_LEN: usize, const TX_
         }
         self.codec.on_rx_progress(self.rx_dma.remaining());
         let now = self.wire_clock.now();
-        let id = self.id;
-        let rdt_us = self.rdt_us;
+        let id = self.send_policy.id();
+        let rdt_us = self.send_policy.rdt_us();
         let ticks_per_bit = self.clock.ticks_per_bit();
         let Self {
             codec,
@@ -839,12 +831,10 @@ impl<P: Providers, const RX_BUF_LEN: usize, const EDGE_BUF_LEN: usize, const TX_
             tx_bus,
             fast_last,
             rx_dma,
+            send_policy,
             last_reply_ctx,
             inflight,
             predecessor_id,
-            pending_id,
-            pending_rdt_us,
-            pending_reboot,
             ..
         } = self;
         // Drift pairs from the codec's retroactive walk at Crc and drain
@@ -984,11 +974,7 @@ impl<P: Providers, const RX_BUF_LEN: usize, const EDGE_BUF_LEN: usize, const TX_
                     clock,
                     last_reply_ctx,
                     predecessor_id,
-                    pending_id,
-                    pending_rdt_us,
-                    pending_reboot,
-                    id,
-                    rdt_us,
+                    send_policy,
                 };
                 f(ev, ring, &mut reply);
                 // If `f()` armed the Fast Last fold (via `send_slot(Last)`),
@@ -1177,18 +1163,13 @@ impl<P: Providers, const RX_BUF_LEN: usize, const EDGE_BUF_LEN: usize, const TX_
         // the next reply. Clearing here keeps the chain-pending state
         // bounded by the in-flight reply.
         self.predecessor_id = None;
-        if let Some(id) = self.pending_id.take() {
-            self.id = id;
-        }
-        if let Some(rdt) = self.pending_rdt_us.take() {
-            self.rdt_us = rdt;
-        }
+        let reboot = self.send_policy.on_tx_complete();
         self.clock.on_tx_complete();
         // Clock just applied any pending baud — refresh the codec's edge
         // parser with the new per-baud edge-stamp compensation. Idempotent
         // when no baud change landed (the value is the same as before).
         self.codec.on_baud_change(self.clock.rx_edge_comp_ticks());
-        self.pending_reboot.take()
+        reboot
     }
 
     /// Stable peripheral-memory address for DMA1_CH7's destination buffer.
@@ -1647,9 +1628,9 @@ mod tests {
         let ping = wire_ping(TEST_ID);
         let (mut bus, _, _) = bus_seeded_with(&ping);
         bus.poll(|_, _, reply| reply.stage_id(0x42));
-        assert_eq!(bus.id, TEST_ID);
+        assert_eq!(bus.send_policy.id(), TEST_ID);
         let reboot = bus.on_tx_complete();
-        assert_eq!(bus.id, 0x42);
+        assert_eq!(bus.send_policy.id(), 0x42);
         assert!(reboot.is_none());
     }
 
@@ -1658,7 +1639,7 @@ mod tests {
         let ping = wire_ping(TEST_ID);
         let (mut bus, _, _) = bus_seeded_with(&ping);
         bus.poll(|_, _, reply| reply.stage_id(TEST_ID));
-        assert!(bus.pending_id.is_none());
+        assert!(bus.send_policy.pending_id().is_none());
     }
 
     #[test]
@@ -1666,9 +1647,9 @@ mod tests {
         let ping = wire_ping(TEST_ID);
         let (mut bus, _, _) = bus_seeded_with(&ping);
         bus.poll(|_, _, reply| reply.stage_rdt(500));
-        assert_eq!(bus.rdt_us, TEST_RDT_US);
+        assert_eq!(bus.send_policy.rdt_us(), TEST_RDT_US);
         bus.on_tx_complete();
-        assert_eq!(bus.rdt_us, 500);
+        assert_eq!(bus.send_policy.rdt_us(), 500);
     }
 
     #[test]
@@ -1686,7 +1667,7 @@ mod tests {
         let ping = wire_ping(TEST_ID);
         let (mut bus, _, _) = bus_seeded_with(&ping);
         bus.poll(|_, _, reply| reply.stage_reboot(BootMode::Bootloader));
-        assert!(bus.pending_reboot.is_some());
+        assert!(bus.send_policy.pending_reboot().is_some());
         let mode = bus.on_tx_complete();
         assert_eq!(mode, Some(BootMode::Bootloader));
         assert!(bus.on_tx_complete().is_none());
@@ -2035,8 +2016,8 @@ mod tests {
         });
         state.tx_bus.clear();
 
-        assert_eq!(bus.id, TEST_ID);
-        assert_eq!(bus.rdt_us, TEST_RDT_US);
+        assert_eq!(bus.send_policy.id(), TEST_ID);
+        assert_eq!(bus.send_policy.rdt_us(), TEST_RDT_US);
 
         let pending_reboot = bus.on_tx_complete();
 
@@ -2044,8 +2025,8 @@ mod tests {
             state.tx_bus.operations(),
             alloc::vec![TxBusOp::HandleTxComplete]
         );
-        assert_eq!(bus.id, 0x42);
-        assert_eq!(bus.rdt_us, 500);
+        assert_eq!(bus.send_policy.id(), 0x42);
+        assert_eq!(bus.send_policy.rdt_us(), 500);
         assert_eq!(pending_reboot, Some(BootMode::Bootloader));
     }
 
