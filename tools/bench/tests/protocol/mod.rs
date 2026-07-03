@@ -22,6 +22,7 @@ mod support;
 
 mod bulk_read;
 mod fast_bulk_read;
+mod fast_injected;
 mod fast_sync_read;
 mod ping;
 mod read;
