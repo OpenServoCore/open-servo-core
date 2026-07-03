@@ -15,8 +15,8 @@ use dxl_protocol::{Id, InstructionEncoder, SoftwareCrcUmts, StatusEncoder, Statu
 use osc_core::BaudRate;
 
 use crate::mocks::{
-    FastLastSchedulerOp, MockClockTrim, MockEdgeDma, MockFastLastScheduler, MockRxDma, MockTxBus,
-    MockTxScheduler, MockUsartBaud, MockWireClock, ScheduleOp, TxBusOp,
+    FastLastSchedulerOp, MockClockTrim, MockEdgeDma, MockFastLastScheduler, MockRxDma,
+    MockTelemetry, MockTxBus, MockTxScheduler, MockUsartBaud, MockWireClock, ScheduleOp, TxBusOp,
 };
 use crate::traits::dxl::DmaFlags;
 
@@ -194,7 +194,7 @@ impl RxDmaState {
 }
 
 /// `MockRxDma` whose `remaining()` reads the staged counter; `read_and_ack`
-/// returns quiet flags and anchor-miss telemetry is accepted silently.
+/// returns quiet flags.
 pub(crate) fn mk_rx_dma() -> (MockRxDma, RxDmaState) {
     let state = RxDmaState::default();
     let mut m = MockRxDma::new();
@@ -203,7 +203,6 @@ pub(crate) fn mk_rx_dma() -> (MockRxDma, RxDmaState) {
         m.expect_remaining().returning_st(move || r.get());
     }
     m.expect_read_and_ack().returning_st(DmaFlags::default);
-    m.expect_record_edge_anchor_miss().returning_st(|| ());
     (m, state)
 }
 
@@ -237,7 +236,6 @@ pub(crate) struct FastLastState {
     ops: Rc<RefCell<alloc::vec::Vec<FastLastSchedulerOp>>>,
     deadline_passed: Rc<Cell<bool>>,
     patch_window_expired: Rc<Cell<bool>>,
-    patch_miss_count: Rc<Cell<u32>>,
 }
 
 impl FastLastState {
@@ -250,14 +248,10 @@ impl FastLastState {
     pub(crate) fn stage_patch_window_expired(&self, v: bool) {
         self.patch_window_expired.set(v);
     }
-    pub(crate) fn patch_miss_count(&self) -> u32 {
-        self.patch_miss_count.get()
-    }
 }
 
 /// `MockFastLastScheduler` logging grid ops into its state companion, with
-/// `deadline_passed` / `patch_window_expired` reading the staged flags and
-/// `record_patch_deadline_miss` bumping the counter.
+/// `deadline_passed` / `patch_window_expired` reading the staged flags.
 pub(crate) fn mk_fast_last() -> (MockFastLastScheduler, FastLastState) {
     let state = FastLastState::default();
     let mut m = MockFastLastScheduler::new();
@@ -286,16 +280,47 @@ pub(crate) fn mk_fast_last() -> (MockFastLastScheduler, FastLastState) {
             .returning_st(move || pwe.get());
     }
     {
-        let c = state.patch_miss_count.clone();
-        m.expect_record_patch_deadline_miss().returning_st(move || {
-            c.set(c.get().wrapping_add(1));
-        });
-    }
-    {
         let ops = state.ops.clone();
         m.expect_cancel().returning_st(move || {
             ops.borrow_mut().push(FastLastSchedulerOp::Cancel);
         });
+    }
+    (m, state)
+}
+
+/// Counter companion for `MockTelemetry` — both miss counters accumulate
+/// so composite tests assert on observed telemetry.
+#[derive(Clone, Default)]
+pub(crate) struct TelemetryState {
+    edge_anchor_misses: Rc<Cell<u32>>,
+    patch_misses: Rc<Cell<u32>>,
+}
+
+impl TelemetryState {
+    pub(crate) fn edge_anchor_miss_count(&self) -> u32 {
+        self.edge_anchor_misses.get()
+    }
+    pub(crate) fn patch_miss_count(&self) -> u32 {
+        self.patch_misses.get()
+    }
+}
+
+/// `MockTelemetry` bumping the state companion's counters.
+pub(crate) fn mk_telemetry() -> (MockTelemetry, TelemetryState) {
+    let state = TelemetryState::default();
+    let mut m = MockTelemetry::new();
+    {
+        let c = state.edge_anchor_misses.clone();
+        m.expect_record_edge_anchor_miss().returning_st(move || {
+            c.set(c.get().wrapping_add(1));
+        });
+    }
+    {
+        let c = state.patch_misses.clone();
+        m.expect_record_crc_patch_deadline_miss()
+            .returning_st(move || {
+                c.set(c.get().wrapping_add(1));
+            });
     }
     (m, state)
 }

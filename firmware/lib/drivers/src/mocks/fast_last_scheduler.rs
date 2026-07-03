@@ -24,7 +24,6 @@ mock! {
         fn schedule(&mut self, deadline: u32);
         fn deadline_passed(&self) -> bool;
         fn patch_window_expired(&self) -> bool;
-        fn record_patch_deadline_miss(&mut self);
         fn cancel(&mut self);
     }
 }

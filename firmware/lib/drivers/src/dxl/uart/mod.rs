@@ -26,10 +26,10 @@ mod test_support;
 use dxl_protocol::streaming::Event;
 use osc_core::BootMode;
 
-use crate::traits::dxl::{Providers, RxDma, TxBus, TxScheduler, WireClock};
+use crate::traits::dxl::{Providers, RxDma, Telemetry, TxBus, TxScheduler, WireClock};
 use clock::Clock;
 use codec::{Codec, PollAction, PollEvent};
-use fast_last::FastLast;
+use fast_last::{FastLast, FoldExit};
 use poll_router::PollRouter;
 use send_policy::SendPolicy;
 
@@ -86,6 +86,11 @@ pub struct DxlUart<
     /// chip-side provider hides any peripheral-side composition (TIM2 u16
     /// IC stamps lifted via SysTick u32, etc.) — see [`WireClock`].
     wire_clock: P::WireClock,
+    /// Wire-condition miss counters. The composite records at the point
+    /// of detection ([`Self::poll`]'s Crc arm for anchor misses,
+    /// [`Self::on_tx_start`]'s fold exit for patch misses); the provider
+    /// owns where the counts live chip-side.
+    telemetry: P::Telemetry,
 
     /// Send-side policy sub-composite — bus identity + staged-config
     /// mailbox (committed at [`Self::on_tx_complete`]), the parse-side
@@ -108,6 +113,7 @@ impl<P: Providers, const RX_BUF_LEN: usize, const EDGE_BUF_LEN: usize, const TX_
         tx_bus: P::TxBus,
         fast_last: FastLast<P::FastLastScheduler, P::Crc>,
         wire_clock: P::WireClock,
+        telemetry: P::Telemetry,
         id: u8,
         rdt_us: u32,
     ) -> Self {
@@ -119,6 +125,7 @@ impl<P: Providers, const RX_BUF_LEN: usize, const EDGE_BUF_LEN: usize, const TX_
             tx_bus,
             fast_last,
             wire_clock,
+            telemetry,
             send_policy: SendPolicy::new(id, rdt_us),
         };
         // Seed the codec's edge parser with the Clock's initial-baud
@@ -178,11 +185,14 @@ impl<P: Providers, const RX_BUF_LEN: usize, const EDGE_BUF_LEN: usize, const TX_
             ..
         } = self;
         let (rx, tx) = codec.split_mut();
-        fast_last.on_tx_start(|fl_crc| {
+        let exit = fast_last.on_tx_start(|fl_crc| {
             rx.drain_raw(rx_dma, |slice, base_cursor| {
                 fl_crc.on_slice(slice, base_cursor, tx);
             });
         });
+        if matches!(exit, FoldExit::WindowExpired | FoldExit::Plateau) {
+            self.telemetry.record_crc_patch_deadline_miss();
+        }
     }
 
     /// One Fast Last periodic-walk fold body is due (chip-side SysTick
@@ -300,7 +310,7 @@ impl<P: Providers, const RX_BUF_LEN: usize, const EDGE_BUF_LEN: usize, const TX_
             scheduler,
             tx_bus,
             fast_last,
-            rx_dma,
+            telemetry,
             send_policy,
             ..
         } = self;
@@ -318,7 +328,7 @@ impl<P: Providers, const RX_BUF_LEN: usize, const EDGE_BUF_LEN: usize, const TX_
             fast_last,
             clock,
             send_policy,
-            rx_dma,
+            telemetry,
             id,
         };
         rx.poll(
@@ -415,8 +425,9 @@ mod tests {
     use super::codec::TAIL_BYTES_FOR_ANCHOR;
     use super::test_support::{
         EdgeDmaState, FastLastState, RxDmaState, SEED_TICK, SchedState, TEST_ID, TEST_RDT_US,
-        TICKS_PER_BIT_3M, TICKS_PER_US, TxBusState, mk_clock_trim, mk_edge_dma, mk_fast_last,
-        mk_rx_dma, mk_scheduler, mk_tx_bus, mk_usart_baud, mk_wire_clock, wire_ping, wire_status,
+        TICKS_PER_BIT_3M, TICKS_PER_US, TelemetryState, TxBusState, mk_clock_trim, mk_edge_dma,
+        mk_fast_last, mk_rx_dma, mk_scheduler, mk_telemetry, mk_tx_bus, mk_usart_baud,
+        mk_wire_clock, wire_ping, wire_status,
     };
     use super::*;
     use crate::mocks::{
@@ -447,6 +458,7 @@ mod tests {
         rx: RxDmaState,
         edge: EdgeDmaState,
         fl: FastLastState,
+        telemetry: TelemetryState,
     }
 
     fn make_clock(baud: BaudRate) -> Clock<MockUsartBaud, MockClockTrim> {
@@ -462,6 +474,7 @@ mod tests {
         let (scheduler, sch_state) = mk_scheduler();
         let (tx_bus, tx_bus_state) = mk_tx_bus();
         let (fl_sched, fl_state) = mk_fast_last();
+        let (telemetry, telemetry_state) = mk_telemetry();
         let bus = DxlUart::new(
             codec,
             make_clock(baud),
@@ -470,6 +483,7 @@ mod tests {
             tx_bus,
             FastLast::new(fl_sched),
             mk_wire_clock(),
+            telemetry,
             TEST_ID,
             TEST_RDT_US,
         );
@@ -481,6 +495,7 @@ mod tests {
                 rx: rx_state,
                 edge: edge_state,
                 fl: fl_state,
+                telemetry: telemetry_state,
             },
         )
     }
@@ -633,6 +648,17 @@ mod tests {
         assert!(tags.contains(&Tag::InstrPing(TEST_ID)));
         assert!(saw_crc(&tags));
         assert_eq!(bus.instruction_count(), 1);
+        // No edge signature was staged, so the classifier had no anchor at
+        // Crc — the composite must record exactly one edge-anchor miss.
+        assert_eq!(state.telemetry.edge_anchor_miss_count(), 1);
+    }
+
+    #[test]
+    fn anchored_crc_records_no_edge_anchor_miss() {
+        let ping = wire_ping(TEST_ID);
+        let (mut bus, state, _) = bus_seeded_with(&ping);
+        bus.poll(|_, _, _| {});
+        assert_eq!(state.telemetry.edge_anchor_miss_count(), 0);
     }
 
     #[test]
@@ -933,7 +959,7 @@ mod tests {
         );
         assert!(!bus.fast_last.fold_active());
         assert_eq!(
-            state.fl.patch_miss_count(),
+            state.telemetry.patch_miss_count(),
             0,
             "finalize path must not bump the deadline-miss counter",
         );
@@ -970,7 +996,7 @@ mod tests {
         bus.on_tx_start();
         assert!(bus.fast_last.fold_active(), "active stays set on bail");
         assert_eq!(
-            state.fl.patch_miss_count(),
+            state.telemetry.patch_miss_count(),
             1,
             "plateau-exit must bump the deadline-miss counter",
         );
@@ -1000,7 +1026,7 @@ mod tests {
             "active stays set on expired-window exit",
         );
         assert_eq!(
-            state.fl.patch_miss_count(),
+            state.telemetry.patch_miss_count(),
             1,
             "expired-window exit must bump the deadline-miss counter",
         );

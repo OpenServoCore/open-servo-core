@@ -53,13 +53,6 @@ pub trait FastLastScheduler {
     /// first ends the loop.
     fn patch_window_expired(&self) -> bool;
 
-    /// Bump the `crc_patch_deadline_miss` telemetry counter. Called once
-    /// per `on_tx_start` exit-via-miss — both the patch-window-expired
-    /// route and the plateau (predecessor-bytes-stalled) route feed the
-    /// same counter; both ship a placeholder CRC observable to the host as
-    /// a bad-CRC packet.
-    fn record_patch_deadline_miss(&mut self);
-
     /// Drop any pending CMP and return to idle. Idempotent.
     fn cancel(&mut self);
 }

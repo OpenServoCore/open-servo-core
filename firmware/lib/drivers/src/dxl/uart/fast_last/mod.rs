@@ -29,6 +29,24 @@ pub use fold_engine::FoldEngine;
 pub use fsm_scheduler::FsmScheduler;
 pub use schedule::FastLastSchedule;
 
+/// Exit disposition of [`FastLast::on_tx_start`]'s residue fold. The
+/// composite routes [`Self::WindowExpired`] / [`Self::Plateau`] to the
+/// `crc_patch_deadline_miss` telemetry counter — both ship a placeholder
+/// CRC observable to the host as a bad-CRC packet.
+#[derive(Copy, Clone, PartialEq, Eq, Debug)]
+pub enum FoldExit {
+    /// Fold wasn't active — nothing to do.
+    Idle,
+    /// Predecessor-byte target reached; trailing CRC patched in time.
+    Finalized,
+    /// The TX DMA channel prefetched into the trailing CRC slot before
+    /// finalize — any patch would ship too late.
+    WindowExpired,
+    /// A drain pass folded nothing new — predecessor starvation backstop
+    /// ([[busy-wait-plateau-backstop]]).
+    Plateau,
+}
+
 /// Fast Last pipeline composite. Generic over its scheduler provider `S` and
 /// CRC engine `CRC`; holds the two halves and routes between them.
 pub struct FastLast<S: FastLastScheduler, CRC: CrcUmts> {
@@ -53,38 +71,27 @@ impl<S: FastLastScheduler, CRC: CrcUmts> FastLast<S, CRC> {
     /// the caller's RX drain, folding fresh bytes into the handed
     /// [`FoldEngine`]. No-op when the fold is idle.
     ///
-    /// Three exits:
-    /// - **finalize** — the engine reaches its predecessor-byte target
-    ///   inside `drain`, patches the CRC slot, and clears `active`.
-    ///   Success; no telemetry event.
-    /// - **patch-window-expired** — [`FsmScheduler::patch_window_expired`]
-    ///   reports the TX DMA channel has prefetched into the trailing CRC
-    ///   slot; any further patch ships too late. Bumps
-    ///   `crc_patch_deadline_miss`.
-    /// - **plateau** — a `drain` pass folded nothing new; predecessor
-    ///   starvation backstop ([[busy-wait-plateau-backstop]]). Same
-    ///   observable failure as expired-window (placeholder CRC ships);
-    ///   bumps the same counter.
-    pub fn on_tx_start<D>(&mut self, mut drain: D)
+    /// Returns the [`FoldExit`] disposition; the composite routes the two
+    /// miss variants to telemetry (this half only decides *when* to stop,
+    /// not what the miss means chip-side).
+    pub fn on_tx_start<D>(&mut self, mut drain: D) -> FoldExit
     where
         D: FnMut(&mut FoldEngine<CRC>),
     {
         if !self.crc.is_active() {
-            return;
+            return FoldExit::Idle;
         }
         loop {
             if self.scheduler.patch_window_expired() {
-                self.scheduler.record_patch_deadline_miss();
-                break;
+                return FoldExit::WindowExpired;
             }
             let before = self.crc.bytes_folded();
             drain(&mut self.crc);
             if !self.crc.is_active() {
-                break;
+                return FoldExit::Finalized;
             }
             if self.crc.bytes_folded() == before {
-                self.scheduler.record_patch_deadline_miss();
-                break;
+                return FoldExit::Plateau;
             }
         }
     }

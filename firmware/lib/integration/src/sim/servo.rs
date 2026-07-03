@@ -21,9 +21,10 @@ use osc_drivers::mocks::{FastLastSchedulerOp, ScheduleOp, TestProviders, TxBusOp
 use osc_drivers::traits::dxl::{DmaFlags, Providers, SendKind};
 
 use crate::mocks::{
-    ClockTrimState, EdgeDmaState, FastLastSchedulerState, RxDmaState, TxBusState, TxSchedulerState,
-    UsartBaudState, WireClockState, mock_clock_trim, mock_edge_dma, mock_fast_last_scheduler,
-    mock_rx_dma, mock_tx_bus, mock_tx_scheduler, mock_usart_baud_with_comp, mock_wire_clock,
+    ClockTrimState, EdgeDmaState, FastLastSchedulerState, RxDmaState, TelemetryState, TxBusState,
+    TxSchedulerState, UsartBaudState, WireClockState, mock_clock_trim, mock_edge_dma,
+    mock_fast_last_scheduler, mock_rx_dma, mock_telemetry, mock_tx_bus, mock_tx_scheduler,
+    mock_usart_baud_with_comp, mock_wire_clock,
 };
 use crate::sim::defaults::{
     DEFAULT_BAUD, DEFAULT_RDT_US, EDGE_BUF_LEN, RX_BUF_LEN, TX_BUF_LEN, default_servo_clock,
@@ -87,6 +88,9 @@ pub struct Servo {
     /// codec, so the driver self-sources the matching tick value from its
     /// `WireClock` provider.
     wire_clock_state: WireClockState,
+
+    /// Wire-condition miss counters recorded by the driver composite.
+    telemetry_state: TelemetryState,
 
     /// Next SysTick CMP-match wall-clock for the Fast Last fold body, if
     /// any. Set by `Schedule`, cleared by `Cancel` or by `advance` after
@@ -158,6 +162,7 @@ impl Servo {
             tx_scheduler_state: TxSchedulerState::default(),
             fast_last_scheduler_state: FastLastSchedulerState::default(),
             wire_clock_state: WireClockState::default(),
+            telemetry_state: TelemetryState::default(),
 
             systick_fire: None,
             fast_last_drained: 0,
@@ -360,6 +365,7 @@ impl Servo {
         self.tx_scheduler_state = built.tx_scheduler_state;
         self.fast_last_scheduler_state = built.fast_last_scheduler_state;
         self.wire_clock_state = built.wire_clock_state;
+        self.telemetry_state = built.telemetry_state;
         self.dxl = Dxl::new();
         self.uart_tx = UartTx::new(baud);
         self.uart_rx = UartRx::new(baud);
@@ -770,6 +776,7 @@ struct BuiltUart {
     tx_scheduler_state: TxSchedulerState,
     fast_last_scheduler_state: FastLastSchedulerState,
     wire_clock_state: WireClockState,
+    telemetry_state: TelemetryState,
 }
 
 fn build_uart(baud: BaudRate, dxl_id: Id, rdt_us: u32, rx_edge_comp_ticks: u16) -> BuiltUart {
@@ -781,6 +788,7 @@ fn build_uart(baud: BaudRate, dxl_id: Id, rdt_us: u32, rx_edge_comp_ticks: u16) 
     let (mock_tx_bus, tx_bus_state) = mock_tx_bus();
     let (mock_fast_last_scheduler, fast_last_scheduler_state) = mock_fast_last_scheduler();
     let (mock_wire_clock, wire_clock_state) = mock_wire_clock();
+    let (mock_telemetry, telemetry_state) = mock_telemetry();
 
     let codec: Codec<_, SoftwareCrcUmts, RX_BUF_LEN, EDGE_BUF_LEN, TX_BUF_LEN> =
         Codec::new(mock_edge_dma);
@@ -794,6 +802,7 @@ fn build_uart(baud: BaudRate, dxl_id: Id, rdt_us: u32, rx_edge_comp_ticks: u16) 
         mock_tx_bus,
         fast_last,
         mock_wire_clock,
+        mock_telemetry,
         dxl_id.as_byte(),
         rdt_us,
     );
@@ -808,6 +817,7 @@ fn build_uart(baud: BaudRate, dxl_id: Id, rdt_us: u32, rx_edge_comp_ticks: u16) 
         tx_scheduler_state,
         fast_last_scheduler_state,
         wire_clock_state,
+        telemetry_state,
     }
 }
 

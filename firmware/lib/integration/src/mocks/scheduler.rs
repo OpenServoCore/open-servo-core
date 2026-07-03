@@ -51,13 +51,11 @@ pub fn mock_tx_scheduler() -> (MockTxScheduler, TxSchedulerState) {
 
 /// `deadline_passed` / `patch_window_expired` are staged via interior
 /// mutability so the trait methods stay `&self`-compatible with
-/// production's register-read impls. `patch_miss_count` accumulates
-/// `record_patch_deadline_miss` calls.
+/// production's register-read impls.
 #[derive(Clone, Default)]
 pub struct FastLastSchedulerState {
     deadline_passed: Rc<Cell<bool>>,
     patch_window_expired: Rc<Cell<bool>>,
-    patch_miss_count: Rc<Cell<u32>>,
     operations: Rc<RefCell<Vec<FastLastSchedulerOp>>>,
 }
 
@@ -68,10 +66,6 @@ impl FastLastSchedulerState {
 
     pub fn stage_patch_window_expired(&self, v: bool) {
         self.patch_window_expired.set(v);
-    }
-
-    pub fn patch_miss_count(&self) -> u32 {
-        self.patch_miss_count.get()
     }
 
     pub fn operations(&self) -> Vec<FastLastSchedulerOp> {
@@ -105,12 +99,6 @@ pub fn mock_fast_last_scheduler() -> (MockFastLastScheduler, FastLastSchedulerSt
         let pwe = state.patch_window_expired.clone();
         m.expect_patch_window_expired()
             .returning_st(move || pwe.get());
-    }
-    {
-        let c = state.patch_miss_count.clone();
-        m.expect_record_patch_deadline_miss().returning_st(move || {
-            c.set(c.get().wrapping_add(1));
-        });
     }
     {
         let ops = state.operations.clone();

@@ -251,15 +251,6 @@ impl<S: FastLastScheduler> FsmScheduler<S> {
         self.phase = FastLastPhase::Idle;
     }
 
-    /// Bumped by [`FastLast::on_tx_start`] on either miss route (expired
-    /// patch window or predecessor-byte plateau) — see
-    /// [`FastLastScheduler::record_patch_deadline_miss`].
-    ///
-    /// [`FastLast::on_tx_start`]: super::FastLast::on_tx_start
-    pub fn record_patch_deadline_miss(&mut self) {
-        self.scheduler.record_patch_deadline_miss();
-    }
-
     // -- accessors --------------------------------------------------------------
 
     pub fn is_active(&self) -> bool {

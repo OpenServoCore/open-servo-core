@@ -11,5 +11,6 @@ pub mod edge_dma;
 pub mod fast_last_scheduler;
 pub mod monotonic;
 pub mod rx_dma;
+pub mod telemetry;
 pub mod usart_baud;
 pub mod wire_clock;

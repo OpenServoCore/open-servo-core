@@ -18,6 +18,7 @@ pub mod dma;
 pub mod primitives;
 pub mod rx;
 pub mod scheduler;
+pub mod telemetry;
 
 pub use bus::{TxBusState, mock_tx_bus};
 pub use clock::{
@@ -32,3 +33,4 @@ pub use rx::{RxDmaState, mock_rx_dma};
 pub use scheduler::{
     FastLastSchedulerState, TxSchedulerState, mock_fast_last_scheduler, mock_tx_scheduler,
 };
+pub use telemetry::{TelemetryState, mock_telemetry};

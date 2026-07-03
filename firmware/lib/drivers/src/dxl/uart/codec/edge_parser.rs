@@ -387,7 +387,7 @@ pub(super) fn packet_end_tick(
 ///   stop bit, so back-date by that interval.
 ///
 /// Bumps no state; the composite increments the telemetry counter via
-/// [`crate::traits::dxl::RxDma::record_edge_anchor_miss`] alongside.
+/// [`crate::traits::dxl::Telemetry::record_edge_anchor_miss`] alongside.
 ///
 /// The formulas coincide with [`drain_ref`] by construction — the
 /// corrected lift reference IS the fallback estimate (both back-date

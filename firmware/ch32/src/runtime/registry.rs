@@ -33,6 +33,7 @@ use crate::providers::edge_dma::EdgeDma;
 use crate::providers::fast_last_scheduler::FastLastScheduler;
 use crate::providers::monotonic::Monotonic;
 use crate::providers::rx_dma::RxDma;
+use crate::providers::telemetry::Telemetry;
 use crate::providers::usart_baud::UsartBaud;
 use crate::providers::wire_clock::WireClock;
 
@@ -57,6 +58,7 @@ impl Providers for DxlUartProviders {
     type TxBus = DxlTxBus;
     type FastLastScheduler = FastLastScheduler;
     type WireClock = WireClock;
+    type Telemetry = Telemetry;
     type Crc = DxlCrc;
 }
 
@@ -126,6 +128,7 @@ impl Drivers {
             DxlTxBus,
             FastLast::new(FastLastScheduler::default()),
             WireClock,
+            Telemetry,
             dxl_id,
             (defaults.dxl_return_delay_2us as u32) * 2,
         ));

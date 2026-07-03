@@ -14,7 +14,7 @@ use super::codec::{CodecTx, PacketEnd, PollAction};
 use super::fast_last::FastLast;
 use super::reply_handle::ReplyHandle;
 use super::send_policy::SendPolicy;
-use crate::traits::dxl::{Providers, RxDma, TxBus};
+use crate::traits::dxl::{Providers, Telemetry, TxBus};
 
 pub(super) struct PollRouter<'a, P: Providers, const TX_BUF_LEN: usize> {
     pub(super) tx: &'a mut CodecTx<P::Crc, TX_BUF_LEN>,
@@ -23,7 +23,7 @@ pub(super) struct PollRouter<'a, P: Providers, const TX_BUF_LEN: usize> {
     pub(super) fast_last: &'a mut FastLast<P::FastLastScheduler, P::Crc>,
     pub(super) clock: &'a mut Clock<P::UsartBaud, P::ClockTrim>,
     pub(super) send_policy: &'a mut SendPolicy,
-    pub(super) rx_dma: &'a mut P::RxDma,
+    pub(super) telemetry: &'a mut P::Telemetry,
     /// Live bus ID snapshot for log lines — stable for the poll's duration
     /// (staged ID commits only at `on_tx_complete`).
     pub(super) id: u8,
@@ -91,7 +91,7 @@ impl<P: Providers, const TX_BUF_LEN: usize> PollRouter<'_, P, TX_BUF_LEN> {
     /// packet-end timing (anchored wire-end tick, or `None` when
     /// interference / edge loss starved the tail-anchor back-search, plus
     /// the per-source ISR-entry estimate). Policy lives here: the anchor
-    /// miss counts as RX telemetry, and the fallback estimate is
+    /// miss counts as telemetry, and the fallback estimate is
     /// acceptable only for ops that allow it — FAST chain ops don't, see
     /// `SendPolicy::allows_packet_end_fallback`.
     #[inline(always)]
@@ -103,7 +103,7 @@ impl<P: Providers, const TX_BUF_LEN: usize> PollRouter<'_, P, TX_BUF_LEN> {
             let packet_end_tick = match pe.tick {
                 Some(t) => Some(t),
                 None => {
-                    self.rx_dma.record_edge_anchor_miss();
+                    self.telemetry.record_edge_anchor_miss();
                     self.send_policy
                         .allows_packet_end_fallback()
                         .then_some(pe.fallback_tick)

@@ -8,6 +8,7 @@ mod clock_trim;
 mod edge_dma;
 mod fast_last_scheduler;
 mod rx_dma;
+mod telemetry;
 mod tx_bus;
 mod tx_scheduler;
 mod usart_baud;
@@ -17,6 +18,7 @@ pub use clock_trim::ClockTrim;
 pub use edge_dma::EdgeDma;
 pub use fast_last_scheduler::FastLastScheduler;
 pub use rx_dma::{DmaFlags, RxDma};
+pub use telemetry::Telemetry;
 pub use tx_bus::TxBus;
 pub use tx_scheduler::{SendKind, TxScheduler};
 pub use usart_baud::UsartBaud;
@@ -24,7 +26,7 @@ pub use wire_clock::WireClock;
 
 /// Role-shaped bundle of every chip-side leaf interface
 /// [`crate::dxl::uart::DxlUart`] consumes. One associated type per leaf
-/// trait below so the composite's signature collapses from nine type
+/// trait below so the composite's signature collapses from ten type
 /// parameters to one while each sub-driver
 /// ([`Clock`], [`Codec`], [`FastLast`]) stays narrowly typed and still
 /// documents exactly what hardware it depends on. Per driver-pattern §5.4.
@@ -46,5 +48,6 @@ pub trait Providers {
     type TxBus: TxBus;
     type FastLastScheduler: FastLastScheduler;
     type WireClock: WireClock;
+    type Telemetry: Telemetry;
     type Crc: CrcUmts;
 }

@@ -23,6 +23,7 @@ pub mod edge_dma;
 pub mod fast_last_scheduler;
 pub mod monotonic;
 pub mod rx_dma;
+pub mod telemetry;
 pub mod tx_bus;
 pub mod tx_scheduler;
 pub mod usart_baud;
@@ -34,6 +35,7 @@ pub use edge_dma::MockEdgeDma;
 pub use fast_last_scheduler::{FastLastSchedulerOp, MockFastLastScheduler};
 pub use monotonic::MockMonotonic;
 pub use rx_dma::MockRxDma;
+pub use telemetry::MockTelemetry;
 pub use tx_bus::{MockTxBus, TxBusOp};
 pub use tx_scheduler::{MockTxScheduler, ScheduleOp};
 pub use usart_baud::MockUsartBaud;
@@ -57,5 +59,6 @@ impl Providers for TestProviders {
     type TxBus = MockTxBus;
     type FastLastScheduler = MockFastLastScheduler;
     type WireClock = MockWireClock;
+    type Telemetry = MockTelemetry;
     type Crc = SoftwareCrcUmts;
 }
