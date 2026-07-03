@@ -48,6 +48,21 @@ pub fn set_idle_irq(r: Regs, enable: bool) {
     r.ctlr1().modify(|w| w.set_idleie(enable));
 }
 
+// SAFETY: see hal/SAFETY.md. CTLR1 is written from MAIN and the USART1
+// ISR set (here from the RXNE wake window, plus the TCIE toggle and
+// set_baud's UE bounce); CS keeps the RMW atomic across those writers.
+#[inline]
+pub fn set_rxne_irq(r: Regs, enable: bool) {
+    critical_section::with(|_| {
+        r.ctlr1().modify(|w| w.set_rxneie(enable));
+    });
+}
+
+#[inline]
+pub fn is_rxneie(r: Regs) -> bool {
+    r.ctlr1().read().rxneie()
+}
+
 // SAFETY: see hal/SAFETY.md. CTLR1 is written from MAIN and the USART1 TC
 // ISR (here, and the UE toggle in set_baud).
 // `inline(always)` folds this into the TIM2 CC3 hot path so the wire-driver
