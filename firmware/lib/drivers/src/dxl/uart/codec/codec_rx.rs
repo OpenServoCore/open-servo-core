@@ -29,7 +29,7 @@ use crate::traits::dxl::{EdgeDma, RxDma};
 /// lands inside the starts cache — a longer tail slice would silently
 /// never anchor (every packet degrading to the fallback path with no
 /// error).
-const TAIL_BYTES_FOR_ANCHOR: usize = super::anchor::TAIL_STARTS;
+pub(crate) const TAIL_BYTES_FOR_ANCHOR: usize = super::anchor::TAIL_STARTS;
 
 /// Read the last 4 wire bytes of a just-consumed packet + the summed
 /// edge count of any bytes DMA already latched past that tail. Shared
@@ -688,6 +688,18 @@ mod tests {
         },
     }
 
+    fn saw_crc(captures: &[Capture]) -> bool {
+        captures.iter().any(|c| {
+            matches!(
+                c,
+                Capture::Event {
+                    ev: Event::Crc(_),
+                    ..
+                }
+            )
+        })
+    }
+
     #[test]
     fn poll_no_op_when_ring_empty() {
         let mut rx = make();
@@ -695,6 +707,31 @@ mod tests {
         assert!(captures.is_empty());
         assert_eq!(rx.instruction_count(), 0);
         assert_eq!(rx.wire_byte_cursor_for_test(), 0);
+    }
+
+    #[test]
+    fn rx_buf_addr_is_stable() {
+        let rx = make();
+        let a = rx.rx_buf_addr();
+        assert_eq!(a, rx.rx_buf_addr());
+        assert_ne!(a, 0);
+    }
+
+    #[test]
+    fn poll_partial_packet_resumes_on_next_call() {
+        let mut rx = make();
+        let pkt = wire_ping(TEST_ID);
+        let split = pkt.len() - 1;
+
+        rx.stage_rx_bytes_for_test(0, &pkt[..split]);
+        let captures = collect_events(&mut rx, |_| PollAction::Continue);
+        assert!(!saw_crc(&captures));
+        assert_eq!(rx.instruction_count(), 1);
+
+        rx.stage_rx_bytes_for_test(split as u16, &pkt[split..]);
+        let captures = collect_events(&mut rx, |_| PollAction::Continue);
+        assert!(saw_crc(&captures));
+        assert_eq!(rx.instruction_count(), 1, "same packet, no re-parse");
     }
 
     #[test]

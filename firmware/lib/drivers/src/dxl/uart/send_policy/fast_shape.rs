@@ -13,7 +13,7 @@ use dxl_protocol::wire::{
 /// Wire bytes of a single Ping Status reply. Multi-servo broadcast Ping
 /// convention positions servo N's reply at `N × PING_STATUS_FRAME_BYTES`
 /// wire bytes past wire-end so the servos don't collide.
-pub(crate) const PING_STATUS_FRAME_BYTES: u32 =
+pub(super) const PING_STATUS_FRAME_BYTES: u32 =
     (RESPONSE_HEADER_BYTES + PING_STATUS_PARAM_BYTES + CRC_BYTES) as u32;
 
 /// Wire bytes a Fast First emission consumes for a per-slot `length`: chain

@@ -92,10 +92,6 @@ impl ConfigMediator {
     pub(super) fn pending_id(&self) -> Option<u8> {
         self.pending_id
     }
-
-    pub(super) fn pending_reboot(&self) -> Option<BootMode> {
-        self.pending_reboot
-    }
 }
 
 #[cfg(test)]

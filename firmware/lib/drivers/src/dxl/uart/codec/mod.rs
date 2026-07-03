@@ -13,6 +13,8 @@ mod poll_event;
 mod skip;
 
 pub use codec_rx::CodecRx;
+#[cfg(test)]
+pub(crate) use codec_rx::TAIL_BYTES_FOR_ANCHOR;
 pub use codec_tx::CodecTx;
 pub use edge_capture::EdgeCapture;
 pub use edge_parser::edge_buf_len;

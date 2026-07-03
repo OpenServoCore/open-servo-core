@@ -38,6 +38,14 @@ impl<CRC: CrcUmts, const TX_BUF_LEN: usize> CodecTx<CRC, TX_BUF_LEN> {
     pub(crate) fn new_for_test() -> Self {
         Self::new()
     }
+
+    /// The trailing CRC slot of the encoded TX buffer — fold tests assert
+    /// the placeholder → patched transition without raw-pointer reads.
+    pub(crate) fn trailing_crc_slot_for_test(&self) -> [u8; CRC_BYTES] {
+        self.tx_buf[self.tx_buf.len() - CRC_BYTES..]
+            .try_into()
+            .unwrap()
+    }
 }
 
 // -- commands -----------------------------------------------------------

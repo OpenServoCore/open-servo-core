@@ -13,8 +13,6 @@ mod instruction_tracker;
 mod reply_context;
 mod reply_gate;
 
-#[cfg(test)]
-pub(super) use fast_shape::PING_STATUS_FRAME_BYTES;
 pub(super) use reply_context::ReplyContext;
 
 use config_mediator::ConfigMediator;
@@ -188,12 +186,95 @@ impl SendPolicy {
     pub(super) fn rdt_us(&self) -> u32 {
         self.config.rdt_us()
     }
+}
 
-    pub(super) fn pending_id(&self) -> Option<u8> {
-        self.config.pending_id()
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::dxl::uart::test_support::TEST_ID;
+    use dxl_protocol::Id;
+    use dxl_protocol::wire::BROADCAST_ID;
+
+    fn sync_slot(id: u8, index: u8) -> InstructionPayload {
+        InstructionPayload::SyncSlot {
+            id: Id::new(id),
+            index,
+        }
     }
 
-    pub(super) fn pending_reboot(&self) -> Option<BootMode> {
-        self.config.pending_reboot()
+    fn bulk_slot(id: u8, index: u8) -> InstructionPayload {
+        InstructionPayload::BulkSlot {
+            id: Id::new(id),
+            index,
+            address: 0,
+            length: 2,
+        }
+    }
+
+    /// Drive one addressed Instruction through header → slot walk →
+    /// Crc-good and peek the staged context.
+    fn staged_after_walk(header: InstructionHeader, slots: &[InstructionPayload]) -> ReplyContext {
+        let mut p = SendPolicy::new(TEST_ID, 250);
+        assert_eq!(p.on_instruction_header(&header), None, "addressed to us");
+        for s in slots {
+            p.on_slot(s);
+        }
+        p.on_crc_good(Some(1000), 0, PollSrc::ByteBatch)
+            .expect("stages a context");
+        p.staged_reply_for_test().expect("context staged")
+    }
+
+    fn sync_read() -> InstructionHeader {
+        InstructionHeader::SyncRead {
+            id: Id::new(BROADCAST_ID),
+            address: 0,
+            length: 2,
+        }
+    }
+
+    // Chain fire for slots k > 0 (`docs/dxl-streaming-rx.md` §5.2): the
+    // staged context names the immediate predecessor for Plain chains
+    // only — slot 0 and Fast chains schedule without one.
+
+    #[test]
+    fn sync_read_slot_zero_has_no_predecessor() {
+        let ctx = staged_after_walk(sync_read(), &[sync_slot(TEST_ID, 0)]);
+        assert_eq!(ctx.predecessor_id, None);
+    }
+
+    #[test]
+    fn sync_read_slot_k_gt_zero_records_immediate_predecessor() {
+        let ctx = staged_after_walk(
+            sync_read(),
+            &[
+                sync_slot(0x42, 0),
+                sync_slot(0x09, 1),
+                sync_slot(TEST_ID, 2),
+            ],
+        );
+        assert_eq!(ctx.predecessor_id, Some(0x09));
+    }
+
+    #[test]
+    fn bulk_read_slot_k_gt_zero_records_immediate_predecessor() {
+        let header = InstructionHeader::BulkRead {
+            id: Id::new(BROADCAST_ID),
+        };
+        let ctx = staged_after_walk(header, &[bulk_slot(0x42, 0), bulk_slot(TEST_ID, 1)]);
+        assert_eq!(ctx.predecessor_id, Some(0x42));
+    }
+
+    #[test]
+    fn fast_sync_read_slot_k_gt_zero_has_no_predecessor() {
+        // Fast chains carry no per-slot Status headers → chain-fire is
+        // absolute-deadline, not sequence-driven. `predecessor_id` must
+        // stay None per `docs/dxl-streaming-rx.md` §5.2.
+        let header = InstructionHeader::FastSyncRead {
+            id: Id::new(BROADCAST_ID),
+            address: 0,
+            length: 2,
+        };
+        let ctx = staged_after_walk(header, &[sync_slot(0x42, 0), sync_slot(TEST_ID, 1)]);
+        assert_eq!(ctx.predecessor_id, None);
     }
 }
