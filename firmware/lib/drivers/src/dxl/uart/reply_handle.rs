@@ -311,13 +311,12 @@ impl<P: Providers, const TX_BUF_LEN: usize> DxlReply for ReplyHandle<'_, P, TX_B
 #[cfg(test)]
 mod tests {
     extern crate alloc;
-    use std::cell::RefCell;
-    use std::rc::Rc;
 
     use super::*;
     use crate::dxl::uart::poll_src::PollSrc;
     use crate::dxl::uart::test_support::{
-        SEED_TICK, TEST_ID, TEST_RDT_US, TICKS_PER_US, mk_clock_trim, mk_usart_baud,
+        FastLastState, SEED_TICK, SchedState, TEST_ID, TEST_RDT_US, TICKS_PER_US, mk_clock_trim,
+        mk_fast_last, mk_scheduler, mk_usart_baud,
     };
     use crate::mocks::{
         FastLastSchedulerOp, MockClockTrim, MockFastLastScheduler, MockTxScheduler, MockUsartBaud,
@@ -331,67 +330,26 @@ mod tests {
     /// 3M byte time in scheduler ticks (10 · 16).
     const BYTE_TICKS_3M: u32 = 160;
 
-    // Local mock-state companions, mirroring `uart/mod.rs` tests until the
-    // D9 `test_support` hoist unifies them.
-
     struct Harness {
         tx: CodecTx<SoftwareCrcUmts, TX_BUF_LEN>,
         scheduler: MockTxScheduler,
-        sched_ops: Rc<RefCell<alloc::vec::Vec<ScheduleOp>>>,
+        sched: SchedState,
         fast_last: FastLast<MockFastLastScheduler, SoftwareCrcUmts>,
-        fl_ops: Rc<RefCell<alloc::vec::Vec<FastLastSchedulerOp>>>,
+        fl: FastLastState,
         clock: Clock<MockUsartBaud, MockClockTrim>,
         send_policy: SendPolicy,
     }
 
     impl Harness {
         fn new() -> Self {
-            let sched_ops: Rc<RefCell<alloc::vec::Vec<ScheduleOp>>> = Rc::default();
-            let mut scheduler = MockTxScheduler::new();
-            {
-                let ops = sched_ops.clone();
-                scheduler
-                    .expect_schedule()
-                    .returning_st(move |deadline, byte_count, kind| {
-                        ops.borrow_mut().push(ScheduleOp::Schedule {
-                            deadline,
-                            byte_count,
-                            kind,
-                        });
-                    });
-            }
-            {
-                let ops = sched_ops.clone();
-                scheduler.expect_cancel().returning_st(move || {
-                    ops.borrow_mut().push(ScheduleOp::Cancel);
-                });
-            }
-
-            let fl_ops: Rc<RefCell<alloc::vec::Vec<FastLastSchedulerOp>>> = Rc::default();
-            let mut fl_sched = MockFastLastScheduler::new();
-            {
-                let ops = fl_ops.clone();
-                fl_sched
-                    .expect_set_deadline()
-                    .returning_st(move |deadline| {
-                        ops.borrow_mut()
-                            .push(FastLastSchedulerOp::SetDeadline { deadline });
-                    });
-            }
-            {
-                let ops = fl_ops.clone();
-                fl_sched.expect_schedule().returning_st(move |deadline| {
-                    ops.borrow_mut()
-                        .push(FastLastSchedulerOp::Schedule { deadline });
-                });
-            }
-
+            let (scheduler, sched) = mk_scheduler();
+            let (fl_sched, fl) = mk_fast_last();
             Self {
                 tx: CodecTx::new_for_test(),
                 scheduler,
-                sched_ops,
+                sched,
                 fast_last: FastLast::new(fl_sched),
-                fl_ops,
+                fl,
                 clock: Clock::new(BaudRate::B3000000, mk_usart_baud().0, mk_clock_trim().0),
                 send_policy: SendPolicy::new(TEST_ID, TEST_RDT_US),
             }
@@ -412,7 +370,7 @@ mod tests {
         }
 
         fn sched_ops(&self) -> alloc::vec::Vec<ScheduleOp> {
-            self.sched_ops.borrow().clone()
+            self.sched.operations()
         }
     }
 
@@ -522,7 +480,7 @@ mod tests {
                 }],
                 "position {position:?}"
             );
-            assert!(h.fl_ops.borrow().is_empty());
+            assert!(h.fl.operations().is_empty());
             assert!(!h.fast_last.fold_active());
         }
     }
@@ -562,7 +520,7 @@ mod tests {
         // The grid's stop-fold deadline composes the SAME effective RDT the
         // schedule used: packet_end + rdt + predecessor·byte − GUARD·byte.
         assert_eq!(
-            h.fl_ops.borrow().first(),
+            h.fl.operations().first(),
             Some(&FastLastSchedulerOp::SetDeadline {
                 deadline: SEED + RDT_TICKS + 12 * BYTE_TICKS_3M - BYTE_TICKS_3M,
             })

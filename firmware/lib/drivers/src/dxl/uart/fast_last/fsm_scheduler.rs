@@ -293,10 +293,9 @@ mod tests {
     extern crate alloc;
 
     use super::*;
+    use crate::dxl::uart::test_support::{self, FastLastState};
     use crate::mocks::{FastLastSchedulerOp, MockFastLastScheduler};
     use core::cell::Cell;
-    use std::cell::RefCell;
-    use std::rc::Rc;
 
     /// FAST_LAST_ENTRY_TICKS matching the mock — the back-date applied to
     /// every grid CMP.
@@ -320,47 +319,8 @@ mod tests {
         }
     }
 
-    #[derive(Clone, Default)]
-    struct FastLastState {
-        ops: Rc<RefCell<alloc::vec::Vec<FastLastSchedulerOp>>>,
-        deadline_passed: Rc<Cell<bool>>,
-    }
-    impl FastLastState {
-        fn operations(&self) -> alloc::vec::Vec<FastLastSchedulerOp> {
-            self.ops.borrow().clone()
-        }
-        fn stage_deadline_passed(&self, v: bool) {
-            self.deadline_passed.set(v);
-        }
-    }
-
     fn mk_fast_last() -> (FsmScheduler<MockFastLastScheduler>, FastLastState) {
-        let state = FastLastState::default();
-        let mut m = MockFastLastScheduler::new();
-        {
-            let ops = state.ops.clone();
-            m.expect_set_deadline().returning_st(move |deadline| {
-                ops.borrow_mut()
-                    .push(FastLastSchedulerOp::SetDeadline { deadline });
-            });
-        }
-        {
-            let ops = state.ops.clone();
-            m.expect_schedule().returning_st(move |deadline| {
-                ops.borrow_mut()
-                    .push(FastLastSchedulerOp::Schedule { deadline });
-            });
-        }
-        {
-            let dp = state.deadline_passed.clone();
-            m.expect_deadline_passed().returning_st(move || dp.get());
-        }
-        {
-            let ops = state.ops.clone();
-            m.expect_cancel().returning_st(move || {
-                ops.borrow_mut().push(FastLastSchedulerOp::Cancel);
-            });
-        }
+        let (m, state) = test_support::mk_fast_last();
         (FsmScheduler::new(m), state)
     }
 

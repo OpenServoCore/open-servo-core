@@ -616,15 +616,15 @@ mod tests {
     extern crate alloc;
 
     use super::*;
+    use crate::dxl::uart::test_support::{TEST_ID, wire_ping, wire_status};
     use crate::mocks::MockEdgeDma;
     use dxl_protocol::streaming::InstructionHeader;
-    use dxl_protocol::types::{Id, StatusError};
-    use dxl_protocol::{InstructionEncoder, SoftwareCrcUmts, StatusEncoder};
+    use dxl_protocol::types::Id;
+    use dxl_protocol::{InstructionEncoder, SoftwareCrcUmts};
     use heapless::Vec;
 
     const RX_BUF_LEN: usize = 64;
     const EDGE_BUF_LEN: usize = 128;
-    const TEST_ID: u8 = 0x07;
     const FOREIGN_ID: u8 = 0x42;
 
     type TestRx = CodecRx<MockEdgeDma, SoftwareCrcUmts, RX_BUF_LEN, EDGE_BUF_LEN>;
@@ -638,26 +638,10 @@ mod tests {
         CodecRx::new(edge_dma)
     }
 
-    fn wire_ping(id: u8) -> Vec<u8, 32> {
-        let mut out: Vec<u8, 32> = Vec::new();
-        InstructionEncoder::<_, SoftwareCrcUmts>::new(&mut out)
-            .ping(Id::new(id))
-            .unwrap();
-        out
-    }
-
     fn wire_write(id: u8, addr: u16, body: &[u8]) -> Vec<u8, 64> {
         let mut out: Vec<u8, 64> = Vec::new();
         InstructionEncoder::<_, SoftwareCrcUmts>::new(&mut out)
             .write(Id::new(id), addr, body)
-            .unwrap();
-        out
-    }
-
-    fn wire_status(id: u8) -> Vec<u8, 32> {
-        let mut out: Vec<u8, 32> = Vec::new();
-        StatusEncoder::<_, SoftwareCrcUmts>::new(&mut out)
-            .empty(Id::new(id), StatusError::OK)
             .unwrap();
         out
     }

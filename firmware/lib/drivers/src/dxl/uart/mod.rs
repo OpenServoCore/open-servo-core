@@ -411,22 +411,23 @@ impl<P: Providers, const RX_BUF_LEN: usize, const EDGE_BUF_LEN: usize, const TX_
 #[cfg(test)]
 mod tests {
     extern crate alloc;
-    use std::cell::{Cell, RefCell};
-    use std::rc::Rc;
 
     use super::send_policy::PING_STATUS_FRAME_BYTES;
-    use super::test_support::{SEED_TICK, TEST_ID, TEST_RDT_US, TICKS_PER_BIT_3M};
+    use super::test_support::{
+        EdgeDmaState, FastLastState, RxDmaState, SEED_TICK, SchedState, TEST_ID, TEST_RDT_US,
+        TICKS_PER_BIT_3M, TxBusState, mk_clock_trim, mk_edge_dma, mk_fast_last, mk_rx_dma,
+        mk_scheduler, mk_tx_bus, mk_usart_baud, mk_wire_clock, wire_ping, wire_status,
+    };
     use super::*;
     use crate::mocks::{
-        FastLastSchedulerOp, MockClockTrim, MockEdgeDma, MockFastLastScheduler, MockRxDma,
-        MockTxBus, MockTxScheduler, MockUsartBaud, MockWireClock, ScheduleOp, TestProviders,
+        FastLastSchedulerOp, MockClockTrim, MockEdgeDma, MockUsartBaud, ScheduleOp, TestProviders,
         TxBusOp,
     };
-    use crate::traits::dxl::{DmaFlags, SendKind};
+    use crate::traits::dxl::SendKind;
     use dxl_protocol::streaming::{HeaderEvent, InstructionHeader};
     use dxl_protocol::types::StatusError;
     use dxl_protocol::wire::BROADCAST_ID;
-    use dxl_protocol::{Id, InstructionEncoder, Slot, SoftwareCrcUmts, Status, StatusEncoder};
+    use dxl_protocol::{Id, InstructionEncoder, Slot, SoftwareCrcUmts, Status};
     use heapless::Vec;
     use osc_core::BaudRate;
 
@@ -440,199 +441,6 @@ mod tests {
     type TestCodec = Codec<MockEdgeDma, SoftwareCrcUmts, RX_BUF_LEN, EDGE_BUF_LEN, TX_BUF_LEN>;
     type TestBus = DxlUart<TestProviders, RX_BUF_LEN, EDGE_BUF_LEN, TX_BUF_LEN>;
 
-    // Local state companions mirror `osc-integration::mocks::*` — clone-
-    // shared Cell/RefCell handles the mock closures push into so tests
-    // read observed effects out of the state rather than the mock. C5
-    // hoists these into a shared `test_support` module.
-
-    #[derive(Clone, Default)]
-    struct SchedState {
-        ops: Rc<RefCell<alloc::vec::Vec<ScheduleOp>>>,
-    }
-    impl SchedState {
-        fn operations(&self) -> alloc::vec::Vec<ScheduleOp> {
-            self.ops.borrow().clone()
-        }
-    }
-    fn mk_scheduler() -> (MockTxScheduler, SchedState) {
-        let state = SchedState::default();
-        let mut m = MockTxScheduler::new();
-        {
-            let ops = state.ops.clone();
-            m.expect_schedule()
-                .returning_st(move |deadline, byte_count, kind| {
-                    ops.borrow_mut().push(ScheduleOp::Schedule {
-                        deadline,
-                        byte_count,
-                        kind,
-                    });
-                });
-        }
-        {
-            let ops = state.ops.clone();
-            m.expect_commit_pending().returning_st(move || {
-                ops.borrow_mut().push(ScheduleOp::CommitPending);
-            });
-        }
-        {
-            let ops = state.ops.clone();
-            m.expect_cancel().returning_st(move || {
-                ops.borrow_mut().push(ScheduleOp::Cancel);
-            });
-        }
-        m.expect_on_schedule_due().returning_st(|| false);
-        (m, state)
-    }
-
-    #[derive(Clone, Default)]
-    struct TxBusState {
-        ops: Rc<RefCell<alloc::vec::Vec<TxBusOp>>>,
-    }
-    impl TxBusState {
-        fn operations(&self) -> alloc::vec::Vec<TxBusOp> {
-            self.ops.borrow().clone()
-        }
-        fn clear(&self) {
-            self.ops.borrow_mut().clear();
-        }
-    }
-    fn mk_tx_bus() -> (MockTxBus, TxBusState) {
-        let state = TxBusState::default();
-        let mut m = MockTxBus::new();
-        {
-            let ops = state.ops.clone();
-            m.expect_start_now().returning_st(move |byte_count| {
-                ops.borrow_mut().push(TxBusOp::StartNow { byte_count });
-            });
-        }
-        {
-            let ops = state.ops.clone();
-            m.expect_handle_start().returning_st(move || {
-                ops.borrow_mut().push(TxBusOp::HandleStart);
-            });
-        }
-        {
-            let ops = state.ops.clone();
-            m.expect_handle_tx_complete().returning_st(move || {
-                ops.borrow_mut().push(TxBusOp::HandleTxComplete);
-            });
-        }
-        (m, state)
-    }
-
-    #[derive(Clone, Default)]
-    struct RxDmaState {
-        remaining: Rc<Cell<u16>>,
-    }
-    impl RxDmaState {
-        fn stage_remaining(&self, n: u16) {
-            self.remaining.set(n);
-        }
-    }
-    fn mk_rx_dma() -> (MockRxDma, RxDmaState) {
-        let state = RxDmaState::default();
-        let mut m = MockRxDma::new();
-        {
-            let r = state.remaining.clone();
-            m.expect_remaining().returning_st(move || r.get());
-        }
-        m.expect_read_and_ack().returning_st(DmaFlags::default);
-        m.expect_record_edge_anchor_miss().returning_st(|| ());
-        (m, state)
-    }
-
-    #[derive(Clone, Default)]
-    struct FastLastState {
-        ops: Rc<RefCell<alloc::vec::Vec<FastLastSchedulerOp>>>,
-        deadline_passed: Rc<Cell<bool>>,
-        patch_window_expired: Rc<Cell<bool>>,
-        patch_miss_count: Rc<Cell<u32>>,
-    }
-    impl FastLastState {
-        fn operations(&self) -> alloc::vec::Vec<FastLastSchedulerOp> {
-            self.ops.borrow().clone()
-        }
-        fn stage_patch_window_expired(&self, v: bool) {
-            self.patch_window_expired.set(v);
-        }
-        fn patch_miss_count(&self) -> u32 {
-            self.patch_miss_count.get()
-        }
-    }
-    fn mk_fast_last() -> (MockFastLastScheduler, FastLastState) {
-        let state = FastLastState::default();
-        let mut m = MockFastLastScheduler::new();
-        {
-            let ops = state.ops.clone();
-            m.expect_set_deadline().returning_st(move |deadline| {
-                ops.borrow_mut()
-                    .push(FastLastSchedulerOp::SetDeadline { deadline });
-            });
-        }
-        {
-            let ops = state.ops.clone();
-            m.expect_schedule().returning_st(move |deadline| {
-                ops.borrow_mut()
-                    .push(FastLastSchedulerOp::Schedule { deadline });
-            });
-        }
-        {
-            let dp = state.deadline_passed.clone();
-            m.expect_deadline_passed().returning_st(move || dp.get());
-        }
-        {
-            let pwe = state.patch_window_expired.clone();
-            m.expect_patch_window_expired()
-                .returning_st(move || pwe.get());
-        }
-        {
-            let c = state.patch_miss_count.clone();
-            m.expect_record_patch_deadline_miss().returning_st(move || {
-                c.set(c.get().wrapping_add(1));
-            });
-        }
-        {
-            let ops = state.ops.clone();
-            m.expect_cancel().returning_st(move || {
-                ops.borrow_mut().push(FastLastSchedulerOp::Cancel);
-            });
-        }
-        (m, state)
-    }
-
-    fn mk_wire_clock() -> MockWireClock {
-        let mut m = MockWireClock::new();
-        m.expect_now().returning_st(|| SEED_TICK as u32);
-        m
-    }
-
-    fn mk_clock_trim() -> MockClockTrim {
-        super::test_support::mk_clock_trim().0
-    }
-
-    fn mk_usart_baud() -> MockUsartBaud {
-        super::test_support::mk_usart_baud().0
-    }
-
-    #[derive(Clone, Default)]
-    struct EdgeDmaState {
-        remaining: Rc<Cell<u16>>,
-    }
-    impl EdgeDmaState {
-        fn stage_remaining(&self, n: u16) {
-            self.remaining.set(n);
-        }
-    }
-    fn mk_edge_dma() -> (MockEdgeDma, EdgeDmaState) {
-        let state = EdgeDmaState::default();
-        let mut m = MockEdgeDma::default();
-        {
-            let r = state.remaining.clone();
-            m.expect_remaining().returning_st(move || r.get());
-        }
-        (m, state)
-    }
-
     struct TestState {
         sch: SchedState,
         tx_bus: TxBusState,
@@ -642,7 +450,7 @@ mod tests {
     }
 
     fn make_clock(baud: BaudRate) -> Clock<MockUsartBaud, MockClockTrim> {
-        Clock::new(baud, mk_usart_baud(), mk_clock_trim())
+        Clock::new(baud, mk_usart_baud().0, mk_clock_trim().0)
     }
 
     fn make_bus_with(
@@ -757,22 +565,6 @@ mod tests {
 
     fn saw_crc(tags: &[Tag]) -> bool {
         tags.iter().any(|t| matches!(t, Tag::Crc))
-    }
-
-    fn wire_ping(id: u8) -> Vec<u8, 32> {
-        let mut out: Vec<u8, 32> = Vec::new();
-        InstructionEncoder::<_, SoftwareCrcUmts>::new(&mut out)
-            .ping(Id::new(id))
-            .unwrap();
-        out
-    }
-
-    fn wire_status(id: u8) -> Vec<u8, 32> {
-        let mut out: Vec<u8, 32> = Vec::new();
-        StatusEncoder::<_, SoftwareCrcUmts>::new(&mut out)
-            .empty(Id::new(id), StatusError::OK)
-            .unwrap();
-        out
     }
 
     fn wire_sync_read(addr: u16, length: u16, ids: &[u8]) -> Vec<u8, 32> {
