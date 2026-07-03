@@ -18,7 +18,7 @@ use crate::dxl::uart::poll_src::PollSrc;
 /// header + per-slot demarcation events; finalized math lives in
 /// [`InflightCtx::into_reply_context`].
 #[derive(Copy, Clone, Debug)]
-pub(crate) struct InflightCtx {
+pub(super) struct InflightCtx {
     header: InstructionHeader,
     /// Slot-walk cursor. Bumped on each SyncSlot/BulkSlot event; resolves to
     /// the chain's `n_total` at Crc time.
@@ -50,7 +50,7 @@ pub(crate) struct InflightCtx {
 }
 
 impl InflightCtx {
-    pub(crate) fn new(header: InstructionHeader) -> Self {
+    pub(super) fn new(header: InstructionHeader) -> Self {
         Self {
             header,
             next_slot_index: 0,
@@ -70,7 +70,7 @@ impl InflightCtx {
     /// RegWrite) absorb the ~µs-scale fallback jitter inside RDT slack;
     /// plain Sync/Bulk Read slot k>0 schedules sequence-driven from the
     /// predecessor and ignores `packet_end_tick` entirely.
-    pub(crate) fn allows_packet_end_fallback(&self) -> bool {
+    pub(super) fn allows_packet_end_fallback(&self) -> bool {
         !matches!(
             self.header,
             InstructionHeader::FastSyncRead { .. } | InstructionHeader::FastBulkRead { .. },
@@ -83,7 +83,7 @@ impl InflightCtx {
     /// the First predecessor reply byte will land (the host's chain
     /// instruction is fully consumed by then, so the next wire byte is the
     /// First servo's `0xFF`).
-    pub(crate) fn into_reply_context(
+    pub(super) fn into_reply_context(
         self,
         id: u8,
         rdt_us: u32,
@@ -136,50 +136,52 @@ impl InflightCtx {
     }
 }
 
-/// Bump slot-walk cursor on a per-slot demarcation event and update
-/// `slot` / `bytes_before` if applicable.
-pub(crate) fn slot_walk(ctx: &mut InflightCtx, payload: &InstructionPayload, id: u8) {
-    let (slot_id, slot_length) = match *payload {
-        InstructionPayload::SyncSlot { id, .. } => (id, None),
-        InstructionPayload::BulkSlot { id, length, .. } => (id, Some(length)),
-        InstructionPayload::WriteDataChunk { .. } => return,
-    };
-    let k = ctx.next_slot_index;
-    ctx.next_slot_index = ctx.next_slot_index.saturating_add(1);
-    // Chain-total data byte accumulator runs for every BulkSlot in a Fast
-    // Bulk Read — successor slots included — because First/Only's
-    // packet_length is the sum across the whole chain.
-    if let Some(length) = slot_length
-        && let InstructionHeader::FastBulkRead { .. } = ctx.header
-    {
-        ctx.chain_data_bytes = ctx.chain_data_bytes.saturating_add(length as u32);
-    }
-    if slot_id.as_byte() == id && ctx.slot.is_none() {
-        ctx.slot = Some(k);
-        ctx.slot_length = slot_length;
-        return;
-    }
-    if ctx.slot.is_some() {
-        return;
-    }
-    // Predecessor slot — record the latest candidate (overwriting prior).
-    // The chain-fire path for slots k > 0 only reads `predecessor_id` if
-    // our own slot lands next; the standing value is always the immediate
-    // predecessor when it's read (`docs/dxl-streaming-rx.md` §5.2).
-    ctx.predecessor_id = Some(slot_id.as_byte());
-    // Fast Bulk Read needs per-slot wire counts to size the chain CRC fold
-    // (FastSlotInfo::bytes_before on Last). Plain Bulk Read takes the
-    // chain-pending path on k > 0, so its predecessor sizes don't matter.
-    if let Some(length) = slot_length
-        && let InstructionHeader::FastBulkRead { .. } = ctx.header
-    {
-        let length = length as u32;
-        let bytes = if k == 0 {
-            fast_first_bytes(length)
-        } else {
-            fast_middle_bytes(length)
+impl InflightCtx {
+    /// Bump slot-walk cursor on a per-slot demarcation event and update
+    /// `slot` / `bytes_before` if applicable.
+    pub(super) fn on_slot(&mut self, payload: &InstructionPayload, id: u8) {
+        let (slot_id, slot_length) = match *payload {
+            InstructionPayload::SyncSlot { id, .. } => (id, None),
+            InstructionPayload::BulkSlot { id, length, .. } => (id, Some(length)),
+            InstructionPayload::WriteDataChunk { .. } => return,
         };
-        ctx.bytes_before += bytes;
+        let k = self.next_slot_index;
+        self.next_slot_index = self.next_slot_index.saturating_add(1);
+        // Chain-total data byte accumulator runs for every BulkSlot in a Fast
+        // Bulk Read — successor slots included — because First/Only's
+        // packet_length is the sum across the whole chain.
+        if let Some(length) = slot_length
+            && let InstructionHeader::FastBulkRead { .. } = self.header
+        {
+            self.chain_data_bytes = self.chain_data_bytes.saturating_add(length as u32);
+        }
+        if slot_id.as_byte() == id && self.slot.is_none() {
+            self.slot = Some(k);
+            self.slot_length = slot_length;
+            return;
+        }
+        if self.slot.is_some() {
+            return;
+        }
+        // Predecessor slot — record the latest candidate (overwriting prior).
+        // The chain-fire path for slots k > 0 only reads `predecessor_id` if
+        // our own slot lands next; the standing value is always the immediate
+        // predecessor when it's read (`docs/dxl-streaming-rx.md` §5.2).
+        self.predecessor_id = Some(slot_id.as_byte());
+        // Fast Bulk Read needs per-slot wire counts to size the chain CRC fold
+        // (FastSlotInfo::bytes_before on Last). Plain Bulk Read takes the
+        // chain-pending path on k > 0, so its predecessor sizes don't matter.
+        if let Some(length) = slot_length
+            && let InstructionHeader::FastBulkRead { .. } = self.header
+        {
+            let length = length as u32;
+            let bytes = if k == 0 {
+                fast_first_bytes(length)
+            } else {
+                fast_middle_bytes(length)
+            };
+            self.bytes_before += bytes;
+        }
     }
 }
 

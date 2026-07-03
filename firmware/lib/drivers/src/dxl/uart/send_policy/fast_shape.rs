@@ -62,7 +62,7 @@ pub(crate) fn header_target(h: &InstructionHeader) -> Id {
 }
 
 /// True when the instruction's target is the chip's own ID or BROADCAST.
-pub(crate) fn target_addressable(h: &InstructionHeader, id: u8) -> bool {
+pub(super) fn target_addressable(h: &InstructionHeader, id: u8) -> bool {
     let target = header_target(h);
     target.as_byte() == id || target.as_byte() == BROADCAST_ID
 }

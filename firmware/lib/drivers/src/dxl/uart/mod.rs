@@ -28,9 +28,7 @@ use crate::traits::dxl::{Providers, RxDma, SendKind, TxBus, TxScheduler, WireClo
 use clock::Clock;
 use codec::{Codec, CodecTx, PollAction, PollEvent};
 use fast_last::{FastLast, FastLastSchedule};
-use send_policy::{
-    InflightCtx, ReplyContext, SendPolicy, header_target, slot_walk, target_addressable,
-};
+use send_policy::{ReplyContext, SendPolicy, header_target};
 
 /// Bits on the wire for a single UART character: 1 start + 8 data + 1 stop
 /// (8N1). Multiply by `ticks_per_bit` to get one byte's wire duration in
@@ -387,11 +385,6 @@ pub struct DxlUart<
     /// stays in the driver, not on the trait surface.
     last_reply_ctx: Option<ReplyContext>,
 
-    /// Slot-walk + addressed-instruction state while the parser is inside
-    /// an Instruction the chip will reply to. Cleared at Crc / Resync /
-    /// foreign Header.
-    inflight: Option<InflightCtx>,
-
     /// Predecessor ID the chip is awaiting before sending its own Plain
     /// chain k > 0 reply. `Some(id)` set by [`ReplyHandle::send_status`]
     /// when the cached [`ReplyContext`] names a chain k > 0 predecessor;
@@ -430,7 +423,6 @@ impl<P: Providers, const RX_BUF_LEN: usize, const EDGE_BUF_LEN: usize, const TX_
             wire_clock,
             send_policy: SendPolicy::new(id, rdt_us),
             last_reply_ctx: None,
-            inflight: None,
             predecessor_id: None,
         };
         // Seed the codec's edge parser with the Clock's initial-baud
@@ -503,7 +495,6 @@ impl<P: Providers, const RX_BUF_LEN: usize, const EDGE_BUF_LEN: usize, const TX_
         self.codec.on_rx_progress(self.rx_dma.remaining());
         let now = self.wire_clock.now();
         let id = self.send_policy.id();
-        let rdt_us = self.send_policy.rdt_us();
         let ticks_per_bit = self.clock.ticks_per_bit();
         let Self {
             codec,
@@ -514,7 +505,6 @@ impl<P: Providers, const RX_BUF_LEN: usize, const EDGE_BUF_LEN: usize, const TX_
             rx_dma,
             send_policy,
             last_reply_ctx,
-            inflight,
             predecessor_id,
             ..
         } = self;
@@ -535,26 +525,22 @@ impl<P: Providers, const RX_BUF_LEN: usize, const EDGE_BUF_LEN: usize, const TX_
             } => {
                 let action = match ev {
                     Event::Header(HeaderEvent::Instruction(h)) => {
-                        let target = header_target(&h).as_byte();
-                        let addressable = target_addressable(&h, id);
-                        crate::log::trace!(
-                            "dxl[id={}]: event=header_instruction target={} addressable={}",
-                            id,
-                            target,
-                            addressable
-                        );
                         // Implicit chain-state reset per `dxl-streaming-rx.md`
                         // §5.3 — any stale `predecessor_id` from a prior chain
                         // whose predecessor went silent must clear here, or a
                         // foreign Status whose id happens to match would
                         // trigger a spurious `start_now` on the new chain.
                         *predecessor_id = None;
-                        if addressable {
-                            *inflight = Some(InflightCtx::new(h));
-                            PollAction::Continue
-                        } else {
-                            *inflight = None;
-                            PollAction::Skip { id: target }
+                        let skip_target = send_policy.on_instruction_header(&h);
+                        crate::log::trace!(
+                            "dxl[id={}]: event=header_instruction target={} addressable={}",
+                            id,
+                            header_target(&h).as_byte(),
+                            skip_target.is_none()
+                        );
+                        match skip_target {
+                            None => PollAction::Continue,
+                            Some(target) => PollAction::Skip { id: target },
                         }
                     }
                     Event::Header(HeaderEvent::Status(sh)) => {
@@ -563,16 +549,14 @@ impl<P: Providers, const RX_BUF_LEN: usize, const EDGE_BUF_LEN: usize, const TX_
                             id,
                             sh.id.as_byte()
                         );
-                        *inflight = None;
+                        send_policy.on_status_header();
                         PollAction::Skip {
                             id: sh.id.as_byte(),
                         }
                     }
                     Event::Payload(PayloadEvent::Instruction(p)) => {
                         crate::log::trace!("dxl[id={}]: event=payload_instruction", id);
-                        if let Some(ctx) = inflight.as_mut() {
-                            slot_walk(ctx, &p, id);
-                        }
+                        send_policy.on_slot(&p);
                         PollAction::Continue
                     }
                     Event::Payload(PayloadEvent::Status(_)) => {
@@ -581,7 +565,7 @@ impl<P: Providers, const RX_BUF_LEN: usize, const EDGE_BUF_LEN: usize, const TX_
                     }
                     Event::Crc(CrcResult::Good) => {
                         crate::log::trace!("dxl[id={}]: event=crc(good)", id);
-                        if let Some(ctx) = inflight.take() {
+                        if send_policy.is_tracking() {
                             // Anchor is current by construction — the codec
                             // walked the edge parser in lockstep with the byte
                             // parser through the 2 CRC bytes before emitting
@@ -590,7 +574,7 @@ impl<P: Providers, const RX_BUF_LEN: usize, const EDGE_BUF_LEN: usize, const TX_
                             // past that. Fallback fires only when interference
                             // / edge loss starved the edge parser. FAST chain
                             // ops skip the fallback — see
-                            // `InflightCtx::allows_packet_end_fallback`.
+                            // `SendPolicy::allows_packet_end_fallback`.
                             // Both paths source `(cap_now, src)` from the most
                             // recent ISR entry — the primary path needs `src`
                             // so the u16-stamp lift picks the right drain
@@ -603,7 +587,7 @@ impl<P: Providers, const RX_BUF_LEN: usize, const EDGE_BUF_LEN: usize, const TX_
                                     Some(t) => Some(t),
                                     None => {
                                         rx_dma.record_edge_anchor_miss();
-                                        ctx.allows_packet_end_fallback().then(|| {
+                                        send_policy.allows_packet_end_fallback().then(|| {
                                             rx_inner.packet_end_tick_fallback(
                                                 src,
                                                 cap_now,
@@ -612,26 +596,27 @@ impl<P: Providers, const RX_BUF_LEN: usize, const EDGE_BUF_LEN: usize, const TX_
                                         })
                                     }
                                 };
-                            if let Some(t) = packet_end_tick {
-                                crate::log::debug!("dxl[id={}]: crc packet_end_tick={}", id, t);
-                                // At Crc-of-host-instruction, the codec's
-                                // wire position has just walked past the
-                                // request's last CRC byte — the next byte on
-                                // the wire is the First predecessor's leading
-                                // `0xFF`. So `next_status_pos` is exactly the
-                                // fold-start cursor for the Fast Last CRC
-                                // engine.
-                                *last_reply_ctx = Some(ctx.into_reply_context(
-                                    id,
-                                    rdt_us,
-                                    t,
-                                    next_status_pos,
-                                    src,
-                                ));
-                            } else {
-                                crate::log::debug!(
-                                    "dxl: crc anchor missing and fallback disallowed — drop reply"
-                                );
+                            // At Crc-of-host-instruction, the codec's wire
+                            // position has just walked past the request's
+                            // last CRC byte — the next byte on the wire is
+                            // the First predecessor's leading `0xFF`. So
+                            // `next_status_pos` is exactly the fold-start
+                            // cursor for the Fast Last CRC engine.
+                            match send_policy.on_crc_good(packet_end_tick, next_status_pos, src)
+                            {
+                                Some(ctx) => {
+                                    crate::log::debug!(
+                                        "dxl[id={}]: crc packet_end_tick={}",
+                                        id,
+                                        ctx.packet_end_tick
+                                    );
+                                    *last_reply_ctx = Some(ctx);
+                                }
+                                None => {
+                                    crate::log::debug!(
+                                        "dxl: crc anchor missing and fallback disallowed — drop reply"
+                                    );
+                                }
                             }
                         }
                         // Anchor reset is owned by the codec (after
@@ -642,7 +627,7 @@ impl<P: Providers, const RX_BUF_LEN: usize, const EDGE_BUF_LEN: usize, const TX_
                     }
                     Event::Crc(CrcResult::Bad) | Event::Resync(_) => {
                         crate::log::trace!("dxl[id={}]: event=crc(bad)/resync", id);
-                        *inflight = None;
+                        send_policy.on_resync();
                         *predecessor_id = None;
                         PollAction::Continue
                     }
