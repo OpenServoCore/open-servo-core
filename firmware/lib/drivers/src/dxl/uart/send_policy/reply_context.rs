@@ -13,10 +13,9 @@ use dxl_protocol::SlotPosition;
 #[derive(Copy, Clone, Debug)]
 pub(crate) struct ReplyContext {
     /// Packet-end tick (WireClock u32 domain) — anchored from the
-    /// classifier at the parser's Crc-good event, or a fallback estimate
-    /// when the classifier was unanchored (interference / edge loss).
-    /// See
-    /// `EdgeCapture::packet_end_tick_fallback`.
+    /// classifier at the parser's Crc-good event, or the codec's
+    /// per-source fallback estimate when the classifier was unanchored
+    /// (interference / edge loss).
     pub(crate) packet_end_tick: u32,
     /// Wire-byte offset from request wire-end to this reply's fire moment.
     /// Zero for direct unicast; non-zero for broadcast Ping and

@@ -34,6 +34,7 @@ use core::cell::SyncUnsafeCell;
 
 use super::anchor::AnchorCache;
 use super::edge_parser;
+use super::poll_event::PacketEnd;
 use crate::dxl::uart::poll_src::PollSrc;
 use crate::ring::HwRing;
 use crate::traits::dxl::EdgeDma;
@@ -52,11 +53,11 @@ pub struct EdgeCapture<R: EdgeDma, const EDGE_BUF_LEN: usize> {
     ring: R,
     /// Most recent ISR's wake capture — WireClock u32 tick at ISR entry
     /// plus the source flavor. Set on every [`Self::on_idle`] /
-    /// [`Self::on_byte_batch_wake`] entry; read by the composite Crc
-    /// handler when [`Self::packet_end_tick`] returns `None` to pick a
-    /// fallback formula via [`Self::packet_end_tick_fallback`]. Default
-    /// value `(0, PollSrc::ByteBatch)` is unreachable in production —
-    /// Crc follows bytes which follow an ISR — but keeps the field non-
+    /// [`Self::on_byte_batch_wake`] entry; consumed by
+    /// [`Self::packet_end`] at the parser's Crc event to resolve the
+    /// wire-end tick and its fallback estimate. Default value
+    /// `(0, PollSrc::ByteBatch)` is unreachable in production — Crc
+    /// follows bytes which follow an ISR — but keeps the field non-
     /// Optional so the hot path doesn't carry an `unwrap`.
     last_isr: (u32, PollSrc),
 }
@@ -170,46 +171,33 @@ impl<R: EdgeDma, const EDGE_BUF_LEN: usize> EdgeCapture<R, EDGE_BUF_LEN> {
         unsafe { (*self.edges.get()).as_ptr() as usize }
     }
 
-    /// Most recent ISR wake capture — `(now, src)` recorded at the last
-    /// [`Self::on_idle`] / [`Self::on_byte_batch_wake`] entry. Composite Crc
-    /// handler consumes this when the edge walker was unanchored (the
-    /// `packet_end_tick_fallback` path).
-    pub fn last_isr_capture(&self) -> (u32, PollSrc) {
-        self.last_isr
-    }
-
     /// Read the tail-anchor tick in wire-edge time. Composite reads at
     /// walk-time after the wire-schedule call completes.
     pub fn tail_anchor(&self) -> Option<u16> {
         self.anchor.tail_anchor()
     }
 
-    /// Wire-end tick of the most-recently classified byte, lifted into the
-    /// WireClock u32 domain. Composite stamps `packet_end_tick` at the
-    /// parser's CRC-good event. `now` / `src` route through the drain-
-    /// reference correction — see `edge_parser::drain_ref`.
-    pub fn packet_end_tick(&self, ticks_per_bit: u16, now: u32, src: PollSrc) -> Option<u32> {
-        edge_parser::packet_end_tick(&self.anchor, ticks_per_bit, now, src)
-    }
-
-    /// Fallback packet-end estimate for the no-anchor case — composite
-    /// calls when [`packet_end_tick`](Self::packet_end_tick) returns `None`
-    /// at the Crc event. See [`super::edge_parser::packet_end_tick_fallback`]
-    /// for the per-source formulas.
-    pub fn packet_end_tick_fallback(&self, src: PollSrc, now: u32, ticks_per_bit: u16) -> u32 {
-        edge_parser::packet_end_tick_fallback(src, now, ticks_per_bit)
+    /// Packet-end timing snapshot at the parser's Crc event — the anchored
+    /// wire-end tick lifted into the WireClock u32 domain (one byte-time
+    /// past the CRC byte's start; `None` when the tail-anchor back-search
+    /// missed) plus the per-source fallback estimate. `now` / `src` come
+    /// from [`Self::last_isr`]; both route through the drain-reference
+    /// correction (`edge_parser::drain_ref`) so the u16-stamp lift picks
+    /// the right reference — HT/TC ≈ stamp + 1·byte vs IDLE ≈ stamp +
+    /// 2·`BITS_PER_FRAME`·tpb — critical at 9600 baud where the IDLE
+    /// elapsed exceeds the u16 wrap.
+    pub(super) fn packet_end(&self, ticks_per_bit: u16) -> PacketEnd {
+        let (now, src) = self.last_isr;
+        PacketEnd {
+            tick: edge_parser::packet_end_tick(&self.anchor, ticks_per_bit, now, src),
+            fallback_tick: edge_parser::packet_end_tick_fallback(src, now, ticks_per_bit),
+            src,
+        }
     }
 }
 
 #[cfg(test)]
 impl<R: EdgeDma, const EDGE_BUF_LEN: usize> EdgeCapture<R, EDGE_BUF_LEN> {
-    /// Force a known tail-anchor tick — composite-test scaffolding so
-    /// `packet_end_tick` reads a deterministic value without staging real
-    /// edges.
-    pub fn force_byte_tick_for_test(&mut self, tick: u16) {
-        self.anchor.tail_anchor = Some(tick);
-    }
-
     /// Stage falling-edge stamps into the ET ring so [`Self::anchor_at_tail`]
     /// resolves to `tail_anchor = anchor_tick` for `tail_bytes`' signature.
     /// Composite-test scaffolding — the caller staggers

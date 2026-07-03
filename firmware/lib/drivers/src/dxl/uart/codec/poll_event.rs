@@ -8,6 +8,24 @@
 
 use dxl_protocol::streaming::Event;
 
+use crate::dxl::uart::poll_src::PollSrc;
+
+/// Packet-end timing the codec resolves and attaches to every `Crc`
+/// [`PollEvent::Parser`] — primitives per driver-pattern §3.3, so the
+/// sink never reaches into the codec's edge-capture half.
+///
+/// `tick` is the anchored wire-end tick (CRC byte start + one byte-time,
+/// lifted into the WireClock u32 domain); `None` means interference /
+/// edge loss starved the tail-anchor back-search — the sink owns the
+/// anchor-miss telemetry and the decision whether `fallback_tick` (the
+/// per-`src` ISR-entry estimate) is an acceptable substitute.
+#[derive(Clone, Copy)]
+pub struct PacketEnd {
+    pub tick: Option<u32>,
+    pub fallback_tick: u32,
+    pub src: PollSrc,
+}
+
 /// Event surfaced from [`CodecRx::poll`] to its sink callback.
 ///
 /// `Parser { .. }` is a 1:1 forward of [`Event`]; the codec translates
@@ -21,6 +39,7 @@ use dxl_protocol::streaming::Event;
 /// where the First predecessor's status packet will start (the next byte
 /// on the wire). At Header / Payload events the value is still the
 /// codec's running cursor, but no consumer reads it there today.
+/// `packet_end` is `Some` exactly at `Crc` events — see [`PacketEnd`].
 /// `SkipComplete` fires when the universal byte-skip's remaining-byte
 /// counter hits zero — `id` round-trips the value the sink passed in
 /// [`PollAction::Skip`], so the chain predecessor-match check
@@ -32,6 +51,7 @@ pub enum PollEvent<'a> {
         ev: Event,
         ring: &'a [u8],
         next_status_pos: u32,
+        packet_end: Option<PacketEnd>,
     },
     SkipComplete {
         id: u8,

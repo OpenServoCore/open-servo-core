@@ -189,7 +189,7 @@ impl<R: EdgeDma, CRC: CrcUmts, const RX_BUF_LEN: usize, const EDGE_BUF_LEN: usiz
         pairs: &mut heapless::Vec<(u16, u16), PAIRS_LEN>,
         mut on_event: F,
     ) where
-        F: FnMut(PollEvent<'_>, &mut EdgeCapture<R, EDGE_BUF_LEN>) -> PollAction,
+        F: FnMut(PollEvent<'_>) -> PollAction,
     {
         loop {
             // Skip phase first: an armed byte-skip owns the ring tail
@@ -234,7 +234,7 @@ impl<R: EdgeDma, CRC: CrcUmts, const RX_BUF_LEN: usize, const EDGE_BUF_LEN: usiz
         on_event: &mut F,
     ) -> ControlFlow<()>
     where
-        F: FnMut(PollEvent<'_>, &mut EdgeCapture<R, EDGE_BUF_LEN>) -> PollAction,
+        F: FnMut(PollEvent<'_>) -> PollAction,
     {
         if self.skip_fsm.deadline_passed(now) {
             self.skip_fsm.clear();
@@ -259,7 +259,7 @@ impl<R: EdgeDma, CRC: CrcUmts, const RX_BUF_LEN: usize, const EDGE_BUF_LEN: usiz
             return ControlFlow::Break(());
         }
         if let Some(id) = self.skip_fsm.finish() {
-            on_event(PollEvent::SkipComplete { id }, &mut self.edge_capture);
+            on_event(PollEvent::SkipComplete { id });
         }
         // Foreign Instruction packets never emit a parser `Event::Crc`
         // (parser byte-skipped past the tail), so anchor + retroactive
@@ -306,7 +306,7 @@ impl<R: EdgeDma, CRC: CrcUmts, const RX_BUF_LEN: usize, const EDGE_BUF_LEN: usiz
         on_event: &mut F,
     ) -> FeedExit
     where
-        F: FnMut(PollEvent<'_>, &mut EdgeCapture<R, EDGE_BUF_LEN>) -> PollAction,
+        F: FnMut(PollEvent<'_>) -> PollAction,
     {
         // SAFETY: see `drain_skip` — same single-consumer contract.
         let rx_buf_ptr = self.rx_buf.get();
@@ -404,14 +404,18 @@ impl<R: EdgeDma, CRC: CrcUmts, const RX_BUF_LEN: usize, const EDGE_BUF_LEN: usiz
                         }
                     }
 
-                    match on_event(
-                        PollEvent::Parser {
-                            ev,
-                            ring,
-                            next_status_pos,
-                        },
-                        &mut self.edge_capture,
-                    ) {
+                    // Resolve packet-end timing while the anchor set above
+                    // is still fresh, so the Crc event carries primitives
+                    // and the sink never reaches into the capture half.
+                    let packet_end = matches!(ev, Event::Crc(_))
+                        .then(|| self.edge_capture.packet_end(ticks_per_bit));
+
+                    match on_event(PollEvent::Parser {
+                        ev,
+                        ring,
+                        next_status_pos,
+                        packet_end,
+                    }) {
                         PollAction::Continue => {}
                         PollAction::Skip { id } => {
                             sink_exit = Some(FeedExit::Skip { id });
@@ -668,7 +672,7 @@ mod tests {
     {
         let mut out = alloc::vec::Vec::new();
         let mut pairs: heapless::Vec<(u16, u16), 4> = heapless::Vec::new();
-        rx.poll(0, 160, 0, &mut pairs, |pe, _capture| match pe {
+        rx.poll(0, 160, 0, &mut pairs, |pe| match pe {
             PollEvent::Parser { ev, ring, .. } => {
                 let action = if matches!(ev, Event::Header(_)) {
                     decide(&ev)

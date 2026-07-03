@@ -203,11 +203,12 @@ impl<P: Providers, const RX_BUF_LEN: usize, const EDGE_BUF_LEN: usize, const TX_
         let mut pair_buf: heapless::Vec<(u16, u16), 32> = heapless::Vec::new();
         let n_pairs_wanted = clock.samples_wanted_per_packet();
         let (rx, tx) = codec.split_mut();
-        rx.poll(now, ticks_per_bit, n_pairs_wanted, &mut pair_buf, |pe, rx_inner| match pe {
+        rx.poll(now, ticks_per_bit, n_pairs_wanted, &mut pair_buf, |pe| match pe {
             PollEvent::Parser {
                 ev,
                 ring,
                 next_status_pos,
+                packet_end,
             } => {
                 let action = match ev {
                     Event::Header(HeaderEvent::Instruction(h)) => {
@@ -245,45 +246,38 @@ impl<P: Providers, const RX_BUF_LEN: usize, const EDGE_BUF_LEN: usize, const TX_
                     }
                     Event::Crc(CrcResult::Good) => {
                         crate::log::trace!("dxl[id={}]: event=crc(good)", id);
-                        if send_policy.is_tracking() {
-                            // Anchor is current by construction — the codec
-                            // walked the edge parser in lockstep with the byte
-                            // parser through the 2 CRC bytes before emitting
-                            // this event. `last_byte_start` reflects the CRC
-                            // byte's start; `packet_end_tick` is one byte-time
-                            // past that. Fallback fires only when interference
-                            // / edge loss starved the edge parser. FAST chain
-                            // ops skip the fallback — see
-                            // `SendPolicy::allows_packet_end_fallback`.
-                            // Both paths source `(cap_now, src)` from the most
-                            // recent ISR entry — the primary path needs `src`
-                            // so the u16-stamp lift picks the right drain
-                            // reference (HT/TC ≈ stamp+1·bp vs IDLE ≈ stamp+
-                            // 2·BITS_PER_FRAME·tpb), critical at 9600 baud
-                            // where IDLE elapsed exceeds the u16 wrap.
-                            let (cap_now, src) = rx_inner.last_isr_capture();
-                            let packet_end_tick =
-                                match rx_inner.packet_end_tick(ticks_per_bit, cap_now, src) {
-                                    Some(t) => Some(t),
-                                    None => {
-                                        rx_dma.record_edge_anchor_miss();
-                                        send_policy.allows_packet_end_fallback().then(|| {
-                                            rx_inner.packet_end_tick_fallback(
-                                                src,
-                                                cap_now,
-                                                ticks_per_bit,
-                                            )
-                                        })
-                                    }
-                                };
+                        // The Crc event carries codec-resolved packet-end
+                        // timing (anchored wire-end tick, or `None` when
+                        // interference / edge loss starved the tail-anchor
+                        // back-search, plus the per-source ISR-entry
+                        // estimate). Policy stays here: the anchor miss
+                        // counts as RX telemetry, and the fallback
+                        // estimate is acceptable only for ops that allow
+                        // it — FAST chain ops don't, see
+                        // `SendPolicy::allows_packet_end_fallback`.
+                        if send_policy.is_tracking()
+                            && let Some(pe) = packet_end
+                        {
+                            let packet_end_tick = match pe.tick {
+                                Some(t) => Some(t),
+                                None => {
+                                    rx_dma.record_edge_anchor_miss();
+                                    send_policy
+                                        .allows_packet_end_fallback()
+                                        .then_some(pe.fallback_tick)
+                                }
+                            };
                             // At Crc-of-host-instruction, the codec's wire
                             // position has just walked past the request's
                             // last CRC byte — the next byte on the wire is
                             // the First predecessor's leading `0xFF`. So
                             // `next_status_pos` is exactly the fold-start
                             // cursor for the Fast Last CRC engine.
-                            match send_policy.on_crc_good(packet_end_tick, next_status_pos, src)
-                            {
+                            match send_policy.on_crc_good(
+                                packet_end_tick,
+                                next_status_pos,
+                                pe.src,
+                            ) {
                                 Some(t) => {
                                     crate::log::debug!(
                                         "dxl[id={}]: crc packet_end_tick={}",
@@ -298,10 +292,6 @@ impl<P: Providers, const RX_BUF_LEN: usize, const EDGE_BUF_LEN: usize, const TX_
                                 }
                             }
                         }
-                        // Anchor reset is owned by the codec (after
-                        // walk_pairs_back at the same Crc iteration) —
-                        // `packet_end_tick` above was the driver's last
-                        // read on this packet.
                         PollAction::Continue
                     }
                     Event::Crc(CrcResult::Bad) | Event::Resync(_) => {
