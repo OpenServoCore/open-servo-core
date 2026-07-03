@@ -387,34 +387,16 @@ impl<P: Providers, const RX_BUF_LEN: usize, const EDGE_BUF_LEN: usize, const TX_
 
     /// The TX-start tick has arrived (chip-side CC3 IRQ). Activates the
     /// wire driver FIRST so the first wire bit lands on `fire_deadline`;
-    /// for Fast Last replies the body then tails with a post-fire residue
-    /// fold that absorbs any GUARD bytes still in-flight at fire time and
-    /// patches the trailing CRC slot before DMA1_CH4's prefetch reads it
-    /// (doc §10.6.2 CC3 body).
-    ///
-    /// The post-fire fold has three exits:
-    /// - **finalize** — the fold engine reaches its predecessor-byte target
-    ///   inside `on_slice`, which patches `tx_buf[len-CRC_BYTES..len]` and
-    ///   clears `active`. Success; no telemetry event.
-    /// - **patch-window-expired** — [`FsmScheduler::patch_window_expired`]
-    ///   reports the TX DMA channel has prefetched into the trailing CRC
-    ///   slot. Any further patch ships too late; bump
-    ///   `crc_patch_deadline_miss`.
-    /// - **plateau** — no new RX bytes between iterations; predecessor
-    ///   starvation backstop (`[[busy-wait-plateau-backstop]]`). Same
-    ///   observable failure as expired-window (placeholder CRC ships); bumps
-    ///   the same counter.
-    ///
-    /// Each [`CodecRx::drain_raw`] pass refreshes the byte-ring producer
-    /// head from [`RxDma::remaining`] so newly-arrived GUARD bytes become
+    /// for Fast Last replies the body then tails with the post-fire
+    /// residue fold — exit policy lives in [`FastLast::on_tx_start`]; the
+    /// composite supplies one drain pass per iteration. Each
+    /// [`CodecRx::drain_raw`] pass refreshes the byte-ring producer head
+    /// from [`RxDma::remaining`] so newly-arrived GUARD bytes become
     /// visible inside the spin (per `dxl-streaming-rx.md` §6, the
-    /// `crc_patch_deadline_miss` counter is a bench-defended floor signal at
-    /// the 3 Mbaud floor, not a wire-correctness failure).
+    /// `crc_patch_deadline_miss` counter is a bench-defended floor signal
+    /// at the 3 Mbaud floor, not a wire-correctness failure).
     pub fn on_tx_start(&mut self) {
         self.tx_bus.handle_start();
-        if !self.fast_last.fold_active() {
-            return;
-        }
         let Self {
             codec,
             rx_dma,
@@ -422,24 +404,11 @@ impl<P: Providers, const RX_BUF_LEN: usize, const EDGE_BUF_LEN: usize, const TX_
             ..
         } = self;
         let (rx, tx) = codec.split_mut();
-        let (fl_sched, fl_crc) = fast_last.split_mut();
-        loop {
-            if fl_sched.patch_window_expired() {
-                fl_sched.record_patch_deadline_miss();
-                break;
-            }
-            let before = fl_crc.bytes_folded();
+        fast_last.on_tx_start(|fl_crc| {
             rx.drain_raw(rx_dma, |slice, base_cursor| {
                 fl_crc.on_slice(slice, base_cursor, tx);
             });
-            if !fl_crc.is_active() {
-                break;
-            }
-            if fl_crc.bytes_folded() == before {
-                fl_sched.record_patch_deadline_miss();
-                break;
-            }
-        }
+        });
     }
 
     /// One Fast Last periodic-walk fold body is due (chip-side SysTick

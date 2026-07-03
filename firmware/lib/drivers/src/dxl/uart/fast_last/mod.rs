@@ -52,6 +52,49 @@ impl<S: FastLastScheduler, CRC: CrcUmts> FastLast<S, CRC> {
         self.crc.start(p.fold_start_cursor, p.predecessor_bytes);
     }
 
+    /// The TX-start tick arrived with the fold still active — run the
+    /// post-fire residue fold that absorbs any GUARD bytes in flight at
+    /// fire time and patches the trailing CRC slot before DMA1_CH4's
+    /// prefetch reads it (doc §10.6.2 CC3 body). `drain` is one pass of
+    /// the caller's RX drain, folding fresh bytes into the handed
+    /// [`FoldEngine`]. No-op when the fold is idle.
+    ///
+    /// Three exits:
+    /// - **finalize** — the engine reaches its predecessor-byte target
+    ///   inside `drain`, patches the CRC slot, and clears `active`.
+    ///   Success; no telemetry event.
+    /// - **patch-window-expired** — [`FsmScheduler::patch_window_expired`]
+    ///   reports the TX DMA channel has prefetched into the trailing CRC
+    ///   slot; any further patch ships too late. Bumps
+    ///   `crc_patch_deadline_miss`.
+    /// - **plateau** — a `drain` pass folded nothing new; predecessor
+    ///   starvation backstop ([[busy-wait-plateau-backstop]]). Same
+    ///   observable failure as expired-window (placeholder CRC ships);
+    ///   bumps the same counter.
+    pub fn on_tx_start<D>(&mut self, mut drain: D)
+    where
+        D: FnMut(&mut FoldEngine<CRC>),
+    {
+        if !self.crc.is_active() {
+            return;
+        }
+        loop {
+            if self.scheduler.patch_window_expired() {
+                self.scheduler.record_patch_deadline_miss();
+                break;
+            }
+            let before = self.crc.bytes_folded();
+            drain(&mut self.crc);
+            if !self.crc.is_active() {
+                break;
+            }
+            if self.crc.bytes_folded() == before {
+                self.scheduler.record_patch_deadline_miss();
+                break;
+            }
+        }
+    }
+
     // -- commands ---------------------------------------------------------------
 
     /// Disarm both halves. Idempotent — the fold engine's finalize path and

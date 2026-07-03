@@ -227,8 +227,10 @@ impl<S: FastLastScheduler> FsmScheduler<S> {
         !matches!(self.phase, FastLastPhase::Idle)
     }
 
-    /// Polled by `DxlUart::on_tx_start` post-fire fold loop — see
+    /// Polled by the [`FastLast::on_tx_start`] post-fire fold loop — see
     /// [`FastLastScheduler::patch_window_expired`].
+    ///
+    /// [`FastLast::on_tx_start`]: super::FastLast::on_tx_start
     pub fn patch_window_expired(&self) -> bool {
         self.scheduler.patch_window_expired()
     }
