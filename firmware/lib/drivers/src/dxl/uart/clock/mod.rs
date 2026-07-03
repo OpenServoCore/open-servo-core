@@ -16,6 +16,7 @@
 //! and accessor to the half that owns it.
 
 mod baud_cache;
+mod drift_consts;
 mod drift_integrator;
 
 use osc_core::BaudRate;

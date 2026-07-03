@@ -31,6 +31,23 @@ enum FastLastPhase {
     PeriodicWalk,
 }
 
+/// Grid geometry for one Last reply, derived by [`FsmScheduler::plan`] from
+/// the shared [`FastLastSchedule`]. All offsets are from `packet_end_tick`.
+struct GridPlan {
+    /// First armed CMP — `final_anchor_offset` stepped back by whole
+    /// intervals until ≤ one step from the predecessor's first wire byte.
+    first_anchor_offset: u32,
+    /// The terminal (busy-wait) body's anchor.
+    final_anchor_offset: u32,
+    /// `BYTES_PER_INTERVAL · byte_ticks` — grid step in scheduler ticks.
+    interval_ticks: u32,
+    /// `predecessor_bytes − GUARD_BYTES` — the final body's busy-wait exit.
+    busy_wait_target: u32,
+    /// Stop-fold deadline: predecessor wire-end minus the GUARD window the
+    /// TX-start body absorbs.
+    deadline_offset: u32,
+}
+
 /// Grid math + FSM for the Fast Last fold pipeline.
 ///
 /// Generic over its scheduler provider `S`. The driver works in offsets from
@@ -77,45 +94,60 @@ impl<S: FastLastScheduler> FsmScheduler<S> {
     /// Compute the periodic-walk grid, stage the deadline, arm the first CMP,
     /// and flip the FSM into [`FastLastPhase::PeriodicWalk`].
     pub fn start(&mut self, p: FastLastSchedule) {
+        let plan = Self::plan(&p);
+        self.next_anchor_offset = plan.first_anchor_offset;
+        self.final_anchor_offset = plan.final_anchor_offset;
+        self.interval_ticks = plan.interval_ticks;
+        self.busy_wait_target = plan.busy_wait_target;
+        self.packet_end_tick = p.packet_end_tick;
+        self.phase = FastLastPhase::PeriodicWalk;
+
+        self.scheduler
+            .set_deadline(p.packet_end_tick.wrapping_add(plan.deadline_offset));
+        self.schedule_walk_cmp(plan.first_anchor_offset);
+    }
+
+    /// Pure grid geometry from one [`FastLastSchedule`] — no FSM state.
+    fn plan(p: &FastLastSchedule) -> GridPlan {
         let byte_ticks = p.byte_ticks as u32;
         let rdt_ticks = p.rdt_ticks as u32;
         let predecessor_bytes = p.predecessor_bytes;
-        let interval = S::BYTES_PER_INTERVAL as u32 * byte_ticks;
+        let interval_ticks = S::BYTES_PER_INTERVAL as u32 * byte_ticks;
         let t_guard = S::GUARD_BYTES as u32 * byte_ticks;
 
         let t_prior_start_offset = rdt_ticks.wrapping_add(byte_ticks);
         let t_prior_end_offset = rdt_ticks.wrapping_add(predecessor_bytes * byte_ticks);
         let t_prior_duration = predecessor_bytes.saturating_sub(1) * byte_ticks;
         // Our reply must land at predecessor_end (no inter-slot gap).
-        let fire_offset = t_prior_end_offset;
+        let tx_start_offset = t_prior_end_offset;
 
         let deadline_offset = t_prior_end_offset.wrapping_sub(t_guard);
         let final_anchor_offset = if predecessor_bytes > S::GUARD_BYTES as u32 {
-            fire_offset
-                .wrapping_sub(core::cmp::min(interval, t_prior_duration))
+            tx_start_offset
+                .wrapping_sub(core::cmp::min(interval_ticks, t_prior_duration))
                 .wrapping_sub(t_guard)
         } else {
-            fire_offset
+            tx_start_offset
         };
 
         // Step back by `interval` until ≤ one step from t_prior_start_offset.
         // The i32 cast handles the small-predecessor case where
         // `final_anchor_offset` < `t_prior_start_offset` modular-wraps —
         // without it the loop would spin ~4G times.
-        let mut anchor = final_anchor_offset;
-        while (anchor.wrapping_sub(t_prior_start_offset) as i32) >= interval as i32 {
-            anchor = anchor.wrapping_sub(interval);
+        let mut first_anchor_offset = final_anchor_offset;
+        while (first_anchor_offset.wrapping_sub(t_prior_start_offset) as i32)
+            >= interval_ticks as i32
+        {
+            first_anchor_offset = first_anchor_offset.wrapping_sub(interval_ticks);
         }
-        self.next_anchor_offset = anchor;
-        self.final_anchor_offset = final_anchor_offset;
-        self.interval_ticks = interval;
-        self.busy_wait_target = predecessor_bytes.saturating_sub(S::GUARD_BYTES as u32);
-        self.packet_end_tick = p.packet_end_tick;
-        self.phase = FastLastPhase::PeriodicWalk;
 
-        self.scheduler
-            .set_deadline(p.packet_end_tick.wrapping_add(deadline_offset));
-        self.schedule_walk_cmp(anchor);
+        GridPlan {
+            first_anchor_offset,
+            final_anchor_offset,
+            interval_ticks,
+            busy_wait_target: predecessor_bytes.saturating_sub(S::GUARD_BYTES as u32),
+            deadline_offset,
+        }
     }
 
     /// Arm one periodic-walk CMP at `anchor_offset` past the packet-end
@@ -219,9 +251,11 @@ impl<S: FastLastScheduler> FsmScheduler<S> {
         self.phase = FastLastPhase::Idle;
     }
 
-    /// Bumped by `DxlUart::on_tx_start` on either miss route (expired patch
-    /// window or predecessor-byte plateau) — see
+    /// Bumped by [`FastLast::on_tx_start`] on either miss route (expired
+    /// patch window or predecessor-byte plateau) — see
     /// [`FastLastScheduler::record_patch_deadline_miss`].
+    ///
+    /// [`FastLast::on_tx_start`]: super::FastLast::on_tx_start
     pub fn record_patch_deadline_miss(&mut self) {
         self.scheduler.record_patch_deadline_miss();
     }
@@ -332,24 +366,28 @@ mod tests {
 
     #[test]
     fn start_stages_deadline_and_first_cmp_at_anchor_minus_entry() {
-        // predecessor_bytes=2 with rdt=12000 → fire_offset = 12000 + 2·160 =
-        // 12320. t_prior_duration = 1·160 = 160. final_anchor_offset =
-        // 12320 − min(2400, 160) − 160 = 12320 − 160 − 160 = 12000. Step-
-        // back doesn't trigger (anchor − t_prior_start = 12000 − 12160 < 0).
-        // deadline_offset = t_prior_end − GUARD·byte = 12320 − 160 = 12160.
-        let (mut d, state) = mk_fast_last();
-        d.start(sched(2000, 12000, 2));
+        // predecessor_bytes=2 with rdt=12000: tx_start = 12000 + 2·160 =
+        // 12320; single-step grid (t_prior_duration = 160 < interval), so
+        // the final anchor doubles as the first.
+        let p = sched(2000, 12000, 2);
+        let plan = FsmScheduler::<MockFastLastScheduler>::plan(&p);
+        assert_eq!(plan.final_anchor_offset, 12320 - 160 - 160);
+        assert_eq!(plan.first_anchor_offset, plan.final_anchor_offset);
+        assert_eq!(plan.deadline_offset, 12320 - 160);
 
-        assert_eq!(d.next_anchor_offset_for_test(), 12000);
-        assert_eq!(d.final_anchor_offset_for_test(), 12000);
+        let (mut d, state) = mk_fast_last();
+        d.start(p);
+
+        assert_eq!(d.next_anchor_offset_for_test(), plan.first_anchor_offset);
+        assert_eq!(d.final_anchor_offset_for_test(), plan.final_anchor_offset);
         assert_eq!(
             state.operations().as_slice(),
             &[
                 FastLastSchedulerOp::SetDeadline {
-                    deadline: 2000 + 12160,
+                    deadline: 2000 + plan.deadline_offset,
                 },
                 FastLastSchedulerOp::Schedule {
-                    deadline: 2000 + (12000 - ENTRY),
+                    deadline: 2000 + (plan.first_anchor_offset - ENTRY),
                 },
             ]
         );
@@ -371,15 +409,22 @@ mod tests {
 
     #[test]
     fn intermediate_step_advances_grid_by_interval() {
-        // predecessor_bytes=50 spans three anchors. final_anchor_offset =
-        // 12000 + 50·160 − min(2400, 49·160) − 160 = 20000 − 2400 − 160 =
-        // 17440. Step back twice: 17440 − 2400 = 15040 (15040 − 12160 =
-        // 2880 ≥ 2400, step); 15040 − 2400 = 12640 (12640 − 12160 = 480 <
-        // 2400, stop). next_anchor_offset = 12640.
+        // predecessor_bytes=50 spans three anchors: the final anchor backs
+        // off tx_start (20000) by one interval + guard, then the step-back
+        // loop retreats two whole intervals toward the predecessor's start.
+        let p = sched(0, 12000, 50);
+        let plan = FsmScheduler::<MockFastLastScheduler>::plan(&p);
+        assert_eq!(plan.final_anchor_offset, 20000 - INTERVAL_3M - 160);
+        assert_eq!(
+            plan.first_anchor_offset,
+            plan.final_anchor_offset - 2 * INTERVAL_3M
+        );
+        assert_eq!(plan.interval_ticks, INTERVAL_3M);
+
         let (mut d, state) = mk_fast_last();
-        d.start(sched(0, 12000, 50));
-        assert_eq!(d.next_anchor_offset_for_test(), 12640);
-        assert_eq!(d.final_anchor_offset_for_test(), 17440);
+        d.start(p);
+        assert_eq!(d.next_anchor_offset_for_test(), plan.first_anchor_offset);
+        assert_eq!(d.final_anchor_offset_for_test(), plan.final_anchor_offset);
 
         d.on_step(|| 0, || {});
         d.on_step(|| 0, || {});
@@ -391,18 +436,18 @@ mod tests {
                     deadline: 12000 + 50 * BYTE_TICKS_3M_U32 - BYTE_TICKS_3M_U32,
                 },
                 FastLastSchedulerOp::Schedule {
-                    deadline: 12640 - ENTRY,
+                    deadline: plan.first_anchor_offset - ENTRY,
                 },
                 FastLastSchedulerOp::Schedule {
-                    deadline: 15040 - ENTRY,
+                    deadline: plan.first_anchor_offset + INTERVAL_3M - ENTRY,
                 },
                 FastLastSchedulerOp::Schedule {
-                    deadline: 17440 - ENTRY,
+                    deadline: plan.final_anchor_offset - ENTRY,
                 },
             ]
         );
         assert!(d.is_active());
-        assert_eq!(d.next_anchor_offset_for_test(), 17440);
+        assert_eq!(d.next_anchor_offset_for_test(), plan.final_anchor_offset);
     }
 
     #[test]
@@ -539,8 +584,16 @@ mod tests {
     /// deadline_offset = `t_prior_end − GUARD · byte` = 14080.
     #[test]
     fn deadline_grid_correctness_3m_predecessor_bytes_14() {
+        let p = sched(0, 12000, 14);
+        let plan = FsmScheduler::<MockFastLastScheduler>::plan(&p);
+        assert_eq!(plan.final_anchor_offset, 12000);
+        assert_eq!(plan.first_anchor_offset, 12000);
+        assert_eq!(plan.interval_ticks, INTERVAL_3M);
+        assert_eq!(plan.deadline_offset, 14080);
+        assert_eq!(plan.busy_wait_target, 13);
+
         let (mut d, state) = mk_fast_last();
-        d.start(sched(0, 12000, 14));
+        d.start(p);
 
         assert_eq!(d.final_anchor_offset_for_test(), 12000);
         assert_eq!(d.next_anchor_offset_for_test(), 12000);

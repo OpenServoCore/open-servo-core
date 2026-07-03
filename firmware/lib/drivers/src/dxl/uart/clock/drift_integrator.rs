@@ -23,27 +23,11 @@ use core::marker::PhantomData;
 
 use osc_core::BaudRate;
 
-use super::divisor_for;
+use super::drift_consts::{
+    DRIFT_MIN_SAMPLES_BOOT, DRIFT_MIN_SAMPLES_STEADY, Q8_SHIFT, drift_consts_at,
+};
 use crate::dxl::uart::BITS_PER_FRAME;
 use crate::traits::dxl::{ClockTrim, UsartBaud};
-
-/// Fixed-point lift: `× Q8_SCALE` shifts byte-tick deltas into the
-/// integrator's accumulator domain so sub-tick drift survives summation.
-const Q8_SCALE: u32 = 256;
-
-/// Batch size during the boot (first-emit) phase. One Ping instruction +
-/// reply supplies ~6 in-window byte pairs (anchor at byte 3 + 6 forward
-/// hits across bytes 4–9), so the boot batch closes inside the first
-/// instruction the slave parses.
-const DRIFT_MIN_SAMPLES_BOOT: u16 = 6;
-/// Batch size after the boot phase has fired. At N=20 the half-step
-/// deadband sits 2.8σ above per-sample chip-stamp quantization noise
-/// under the conservative 1-tick σ model (9.8σ at the realistic uniform
-/// 1-LSB σ) at the worst-case 3M baud — false-emit rate ~5e-3 per batch
-/// conservative, ~0 uniform. ~one bogus correction every ~4 minutes at
-/// sustained 3M load in the conservative envelope; the next batch
-/// immediately reverts the spurious ±1-step nudge.
-const DRIFT_MIN_SAMPLES_STEADY: u16 = 20;
 
 /// Boot-phase emission cap = full register range. Estimator at 6
 /// samples has ~3.4σ SNR margin over chip-stamp quantization noise at
@@ -77,52 +61,6 @@ const STEADY_SAMPLES_PER_PACKET: u8 = 4;
 /// Crc waiting for edges past the packet's boundary.
 const BOOT_SAMPLES_PER_PACKET: u8 = DRIFT_MIN_SAMPLES_BOOT as u8;
 
-/// Bundle of integrator constants that vary with `(baud, is_boot)`.
-/// Grouped so a single `const { ... }` block folds all three fields at
-/// monomorphization — see [[perf_optimization_workflow]] and
-/// [`DriftIntegrator::drift_consts_at`] for why per-baud tabulation is
-/// needed: the underlying `u64 / const_u64` divides don't lower to
-/// reciprocal multiplies on RV32EC+Zmmul (no hardware `div`) and would
-/// otherwise call `__udivdi3` on every baud change.
-#[derive(Copy, Clone)]
-struct DriftConsts {
-    per_step_q8: u32,
-    recip_q32: u32,
-    window_recip_q32: u32,
-}
-
-/// Const-evaluable formula for one `(step_ppm, tpb, n_samples)` triple.
-/// Runs at monomorphization when wrapped in `const { ... }`; the u64
-/// divides fold to literals so no library call survives to runtime.
-const fn compute_drift_consts(step_ppm: u32, ticks_per_bit: u16, n_samples: u16) -> DriftConsts {
-    let per_step_q8 = {
-        let prod = step_ppm as u64
-            * ticks_per_bit as u64
-            * n_samples as u64
-            * BITS_PER_FRAME as u64
-            * Q8_SCALE as u64;
-        (prod / 1_000_000) as u32
-    };
-    let recip_q32 = {
-        let denom = if per_step_q8 == 0 {
-            1u64
-        } else {
-            per_step_q8 as u64
-        };
-        ((1u64 << 32) / denom) as u32
-    };
-    let window_recip_q32 = {
-        let window = DRIFT_MIN_SAMPLES_STEADY as u64 * BITS_PER_FRAME as u64 * ticks_per_bit as u64;
-        let denom = if window == 0 { 1u64 } else { window };
-        ((1u64 << 32) / denom) as u32
-    };
-    DriftConsts {
-        per_step_q8,
-        recip_q32,
-        window_recip_q32,
-    }
-}
-
 pub struct DriftIntegrator<U: UsartBaud, T: ClockTrim> {
     trim: T,
     /// The reference clock rate (`U::CLOCK_HZ`) parameterizes the per-baud
@@ -135,7 +73,7 @@ pub struct DriftIntegrator<U: UsartBaud, T: ClockTrim> {
     ticks_per_bit: u16,
 
     state: DriftPhase,
-    /// Sum of `(byte_ticks − BITS_PER_FRAME × tpb) << 8` across the
+    /// Sum of `(byte_ticks − BITS_PER_FRAME × tpb) << Q8_SHIFT` across the
     /// current batch. Tracking the raw byte-time delta (not `byte_ticks
     /// / BITS_PER_FRAME`) keeps 1-tick chip-stamp quantization noise
     /// below threshold at small `ticks_per_bit` (V006 at 3M baud:
@@ -187,9 +125,50 @@ enum DriftPhase {
     Steady,
 }
 
+/// The per-phase control-law parameters, each next to its rationale.
+impl DriftPhase {
+    /// Byte pairs that close a batch. Boot: one Ping's worth. Steady: the
+    /// 20-pair window whose half-step deadband clears quantization noise.
+    fn min_samples(self) -> u16 {
+        match self {
+            Self::Boot => DRIFT_MIN_SAMPLES_BOOT,
+            Self::Steady => DRIFT_MIN_SAMPLES_STEADY,
+        }
+    }
+
+    /// Emission cap in trim steps — see [`EMIT_CAP_STEPS_BOOT`] /
+    /// [`EMIT_CAP_STEPS_STEADY`].
+    fn emit_cap_steps(self) -> i32 {
+        match self {
+            Self::Boot => EMIT_CAP_STEPS_BOOT,
+            Self::Steady => EMIT_CAP_STEPS_STEADY,
+        }
+    }
+
+    /// Per-packet drain cap — see [`BOOT_SAMPLES_PER_PACKET`] /
+    /// [`STEADY_SAMPLES_PER_PACKET`].
+    fn samples_per_packet(self) -> u8 {
+        match self {
+            Self::Boot => BOOT_SAMPLES_PER_PACKET,
+            Self::Steady => STEADY_SAMPLES_PER_PACKET,
+        }
+    }
+
+    /// Worth-emitting deadband on `|drift_sum_q8|`. Boot: full-step (more
+    /// conservative over the smaller 6-sample window). Steady: half-step
+    /// (tighter; the 20-sample window has enough SNR margin to spot
+    /// half-step drift).
+    fn threshold_q8(self, per_step_q8: u32) -> u32 {
+        match self {
+            Self::Boot => per_step_q8,
+            Self::Steady => per_step_q8 >> 1,
+        }
+    }
+}
+
 impl<U: UsartBaud, T: ClockTrim> DriftIntegrator<U, T> {
     pub fn new(baud: BaudRate, ticks_per_bit: u16, trim: T) -> Self {
-        let consts = Self::drift_consts_at(baud, true);
+        let consts = drift_consts_at::<U, T>(baud, true);
         Self {
             trim,
             _usart: PhantomData,
@@ -198,8 +177,7 @@ impl<U: UsartBaud, T: ClockTrim> DriftIntegrator<U, T> {
             state: DriftPhase::Boot,
             drift_sum_q8: 0,
             drift_samples: 0,
-            // Boot phase: full-step threshold for ≥3.4σ SNR margin at 3M.
-            drift_threshold_q8: consts.per_step_q8,
+            drift_threshold_q8: DriftPhase::Boot.threshold_q8(consts.per_step_q8),
             drift_per_step_q8: consts.per_step_q8,
             drift_per_step_recip_q32: consts.recip_q32,
             window_recip_q32: consts.window_recip_q32,
@@ -214,59 +192,13 @@ impl<U: UsartBaud, T: ClockTrim> DriftIntegrator<U, T> {
         matches!(self.state, DriftPhase::Boot)
     }
 
-    /// Return the precomputed integrator triple for `(baud, is_boot)`.
-    /// One `const { ... }` block per arm folds the u64 divides at
-    /// monomorphization — runtime cost is a 12-arm dispatch with baked
-    /// literals, no `__udivdi3`. Formula reference:
-    /// `drift_per_step_q8 = STEP_PPM × tpb × N × BITS_PER_FRAME × Q8_SCALE /
-    /// 10⁶` (one step shifts a `BITS_PER_FRAME`-bit byte-time by
-    /// `BITS_PER_FRAME × tpb × STEP_PPM / 10⁶` ticks; × Q8_SCALE lifts to
-    /// Q8; × N gives full-step-over-N). Half-step (steady deadband) is
-    /// applied by the caller via `>> 1`. Tracking drift on raw byte_ticks
-    /// keeps 1-tick chip-stamp quantization noise below threshold at
-    /// small `ticks_per_bit` (V006 at 3M: tpb=16, 1 tick = 6% of a bit).
-    fn drift_consts_at(baud: BaudRate, is_boot: bool) -> DriftConsts {
-        macro_rules! arm {
-            ($baud:expr, $n:expr) => {
-                const {
-                    compute_drift_consts(
-                        T::STEP_PPM,
-                        divisor_for(U::CLOCK_HZ, $baud.as_hz()) as u16,
-                        $n,
-                    )
-                }
-            };
-        }
-        match (baud, is_boot) {
-            (BaudRate::B9600, true) => arm!(BaudRate::B9600, DRIFT_MIN_SAMPLES_BOOT),
-            (BaudRate::B9600, false) => arm!(BaudRate::B9600, DRIFT_MIN_SAMPLES_STEADY),
-            (BaudRate::B57600, true) => arm!(BaudRate::B57600, DRIFT_MIN_SAMPLES_BOOT),
-            (BaudRate::B57600, false) => arm!(BaudRate::B57600, DRIFT_MIN_SAMPLES_STEADY),
-            (BaudRate::B115200, true) => arm!(BaudRate::B115200, DRIFT_MIN_SAMPLES_BOOT),
-            (BaudRate::B115200, false) => arm!(BaudRate::B115200, DRIFT_MIN_SAMPLES_STEADY),
-            (BaudRate::B1000000, true) => arm!(BaudRate::B1000000, DRIFT_MIN_SAMPLES_BOOT),
-            (BaudRate::B1000000, false) => arm!(BaudRate::B1000000, DRIFT_MIN_SAMPLES_STEADY),
-            (BaudRate::B2000000, true) => arm!(BaudRate::B2000000, DRIFT_MIN_SAMPLES_BOOT),
-            (BaudRate::B2000000, false) => arm!(BaudRate::B2000000, DRIFT_MIN_SAMPLES_STEADY),
-            (BaudRate::B3000000, true) => arm!(BaudRate::B3000000, DRIFT_MIN_SAMPLES_BOOT),
-            (BaudRate::B3000000, false) => arm!(BaudRate::B3000000, DRIFT_MIN_SAMPLES_STEADY),
-        }
-    }
-
-    /// Recompute integrator constants from the current `(baud, is_boot)`.
+    /// Recompute integrator constants from the current `(baud, phase)`.
     /// Called on baud change (in [`Self::on_baud_change`]) and on phase
     /// transition (in [`Self::on_rx_packet_end`]) — both cold paths (at
     /// most twice per integrator lifetime in steady state).
     fn rebuild_integrator_consts(&mut self) {
-        let consts = Self::drift_consts_at(self.baud, self.is_boot());
-        // Boot: full-step threshold (more conservative deadband over the
-        // smaller 6-sample window). Steady: half-step (tighter; the
-        // 20-sample window has enough SNR margin to spot half-step drift).
-        self.drift_threshold_q8 = if self.is_boot() {
-            consts.per_step_q8
-        } else {
-            consts.per_step_q8 >> 1
-        };
+        let consts = drift_consts_at::<U, T>(self.baud, self.is_boot());
+        self.drift_threshold_q8 = self.state.threshold_q8(consts.per_step_q8);
         self.drift_per_step_q8 = consts.per_step_q8;
         self.drift_per_step_recip_q32 = consts.recip_q32;
         self.window_recip_q32 = consts.window_recip_q32;
@@ -309,17 +241,19 @@ impl<U: UsartBaud, T: ClockTrim> DriftIntegrator<U, T> {
         // dominate the per-sample signal. Threshold scales by
         // `BITS_PER_FRAME` to match.
         let drift = byte_ticks as i32 - BITS_PER_FRAME as i32 * self.ticks_per_bit as i32;
-        self.drift_sum_q8 = self.drift_sum_q8.saturating_add(drift << 8);
+        self.drift_sum_q8 = self.drift_sum_q8.saturating_add(drift << Q8_SHIFT);
         self.drift_samples += 1;
-        let min_samples = if self.is_boot() {
-            DRIFT_MIN_SAMPLES_BOOT
-        } else {
-            DRIFT_MIN_SAMPLES_STEADY
-        };
-        if self.drift_samples < min_samples {
+        if self.drift_samples < self.state.min_samples() {
             return;
         }
+        self.close_batch();
+    }
 
+    /// Close one batch: estimate accumulated drift, stage the capped
+    /// counter-correction if it clears the deadband, record the sub-step
+    /// residual, and reset the accumulator for the next window.
+    #[inline]
+    fn close_batch(&mut self) {
         // Steps the upcoming apply will actually shift HSITRIM by (signed,
         // same direction as `applied_ppm` delta). 0 below threshold; may
         // be less than `capped` magnitude if the envelope clamps.
@@ -330,11 +264,7 @@ impl<U: UsartBaud, T: ClockTrim> DriftIntegrator<U, T> {
             // Servo fast → observed ticks/bit short → counter ppm DOWN.
             let drift_steps = self.drift_in_steps();
             let counter = -drift_steps;
-            let cap = if self.is_boot() {
-                EMIT_CAP_STEPS_BOOT
-            } else {
-                EMIT_CAP_STEPS_STEADY
-            };
+            let cap = self.state.emit_cap_steps();
             let capped = counter.clamp(-cap, cap);
             let nudge_ppm = capped.saturating_mul(T::STEP_PPM as i32);
             let new_applied = self
@@ -413,11 +343,7 @@ impl<U: UsartBaud, T: ClockTrim> DriftIntegrator<U, T> {
     /// Instruction packets feed (gated by `hsi_active` upstream at the
     /// codec); Status frames never contribute regardless of cap.
     pub fn samples_wanted_per_packet(&self) -> u8 {
-        if self.is_boot() {
-            BOOT_SAMPLES_PER_PACKET
-        } else {
-            STEADY_SAMPLES_PER_PACKET
-        }
+        self.state.samples_per_packet()
     }
 
     /// Project the integrator's pending residual to a chip-HCLK-tick
@@ -437,14 +363,13 @@ impl<U: UsartBaud, T: ClockTrim> DriftIntegrator<U, T> {
             return 0;
         }
         // residual_q8 × distance / (window × Q8_SCALE)
-        //   = residual_q8 × distance × window_recip_q32 >> (32 + 8)
-        //   = residual_q8 × distance × window_recip_q32 >> 40
+        //   = residual_q8 × distance × window_recip_q32 >> (32 + Q8_SHIFT)
         //
         // u128 keeps the multiply correct for the rare saturated
         // residual_q8 (near i32::MAX) case without silently truncating.
         let abs_res = self.residual_q8.unsigned_abs() as u128;
         let prod = abs_res * distance_hclk as u128 * self.window_recip_q32 as u128;
-        let mag = (prod >> 40).min(i32::MAX as u128) as i32;
+        let mag = (prod >> (32 + Q8_SHIFT)).min(i32::MAX as u128) as i32;
         if self.residual_q8 >= 0 { mag } else { -mag }
     }
 
