@@ -204,7 +204,7 @@ impl<P: Providers, const RX_BUF_LEN: usize, const EDGE_BUF_LEN: usize, const TX_
         let n_pairs_wanted = clock.samples_wanted_per_packet();
         let (rx, tx) = codec.split_mut();
         rx.poll(now, ticks_per_bit, n_pairs_wanted, &mut pair_buf, |pe, rx_inner| match pe {
-            PollEvent::Event {
+            PollEvent::Parser {
                 ev,
                 ring,
                 next_status_pos,

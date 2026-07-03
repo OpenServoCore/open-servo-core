@@ -29,7 +29,7 @@ pub struct BaudCache<U: UsartBaud> {
     /// Per-baud RX edge-stamp compensation, in HCLK ticks. Refreshed from
     /// `U::rx_edge_comp_ticks(baud)` at `new` and on every committed baud
     /// change. Codec reads it via [`Self::rx_edge_comp_ticks`] once per poll
-    /// and threads through to `EdgeParser`, which subtracts it from every IC
+    /// and threads through to the edge walker, which subtracts it from every IC
     /// stamp at read-from-ring time so anchors, pairs, and `packet_end_tick`
     /// all live in wire-edge time.
     rx_edge_comp_ticks: u16,
@@ -153,7 +153,7 @@ impl<U: UsartBaud> BaudCache<U> {
     }
 
     /// Per-baud RX edge-stamp compensation in HCLK ticks. Codec reads once
-    /// per poll and threads to `EdgeParser` so anchors, pairs, and
+    /// per poll and threads to the edge walker so anchors, pairs, and
     /// `packet_end_tick` live in wire-edge time. See the field doc.
     #[inline(always)]
     pub fn rx_edge_comp_ticks(&self) -> u16 {

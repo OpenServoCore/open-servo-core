@@ -1,13 +1,13 @@
 //! Tail-anchor state for the edge parser. A co-varying data record, not a
 //! driver: the four fields move as a unit across the parser's two
 //! operations (anchor-at-tail signature match, retroactive walk). Split out
-//! of [`super::edge_parser::EdgeParser`] so the parser is a pure wire-walker
+//! of [`super::edge_parser`] so the parser is a pure wire-walker
 //! over a borrowed cache — the algorithm and the state it threads no longer
 //! share one struct.
 
 /// Tail-signature byte count — the codec always passes 4 bytes
 /// ([data_last_2, data_last_1, CRC_lo, CRC_hi]) to
-/// [`super::edge_parser::EdgeParser::anchor_at_tail`]. Load-bearing for the
+/// [`super::edge_parser::anchor_at_tail`]. Load-bearing for the
 /// walker's [`AnchorCache::tail_starts`] cache size and the offset math that
 /// reseeds the walker past the cached-pair region.
 pub(super) const TAIL_STARTS: usize = 4;
@@ -17,9 +17,9 @@ pub(super) const TAIL_STARTS: usize = 4;
 /// algorithm, this owns the state it operates on.
 pub(super) struct AnchorCache {
     /// Tail-signature back-search anchor — the LAST tail byte's start tick,
-    /// set by [`super::edge_parser::EdgeParser::anchor_at_tail`] at the
+    /// set by [`super::edge_parser::anchor_at_tail`] at the
     /// parser's Crc event. Sole source for
-    /// [`super::edge_parser::EdgeParser::packet_end_tick`]; also the walk
+    /// [`super::edge_parser::packet_end_tick`]; also the walk
     /// seed. Cleared at packet boundary via [`Self::reset`].
     pub(super) tail_anchor: Option<u16>,
     /// Start-edge stamps of the four tail-signature bytes, oldest first
