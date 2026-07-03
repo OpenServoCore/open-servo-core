@@ -2,13 +2,15 @@
 //! `fast_sync_read`: absent foreigns → chip alone emits; length + prefix
 //! identify the position the dispatcher chose.
 
-use bench::{DEFAULT_IDLE_US, build_fast_bulk_read, parse_fast_response};
+use bench::{DEFAULT_IDLE_US, build_fast_bulk_read, build_ping, parse_fast_response};
 use dxl_protocol::types::{BulkReadEntry, Id};
 use dxl_protocol::wire::HEADER;
-use dxl_protocol::{CrcUmts, SoftwareCrcUmts};
 use serial_test::serial;
 
-use super::support::{BROADCAST_ID, FOREIGN_A, FOREIGN_B, bus, servo_id, silent_window_us};
+use super::support::{
+    BROADCAST_ID, FOREIGN_A, FOREIGN_B, bus, expect_no_reply, expect_status_ok, servo_id,
+    silent_window_us,
+};
 
 const INSTR_STATUS: u8 = 0x55;
 
@@ -62,9 +64,11 @@ fn fast_bulk_read_first_emits_header_and_body_only() {
     assert_eq!(chunk[9], id.as_byte());
 }
 
+/// See the fast_sync_read equivalent — #142 collapse contract on the
+/// single-DUT rig: absent slot 0 → no status start → silence.
 #[test]
 #[serial]
-fn fast_bulk_read_middle_emits_body_only() {
+fn fast_bulk_read_middle_with_silent_first_stays_silent() {
     let mut bus = bus();
     let id = servo_id(&bus);
     let baud = bus.baud();
@@ -74,21 +78,17 @@ fn fast_bulk_read_middle_emits_body_only() {
         entry(FOREIGN_B, 0, 2),
     ])
     .unwrap();
-    let chunk = bus
-        .xfer_reply(&frame, silent_window_us(baud, 2, 2))
-        .unwrap()
-        .expect("no reply");
-    assert_eq!(chunk.len(), 4, "expected 4 bytes, got {}", chunk.len());
-    assert_eq!(chunk[0], 0);
-    assert_eq!(chunk[1], id.as_byte());
+    expect_no_reply(&mut bus, &frame, silent_window_us(baud, 2, 2));
+    let ping = build_ping(id).expect("encode ping");
+    let reply = expect_status_ok(&mut bus, &ping).expect("servo recovers after collapsed chain");
+    assert_eq!(reply.id, id);
 }
 
-/// See the fast_sync_read equivalent for the pending-#134+#142
-/// unignore rationale.
+/// See the fast_sync_read equivalent — Last variant additionally pins
+/// that a parked fold never deafens the servo.
 #[test]
 #[serial]
-#[ignore = "chip fires + CRC-patches slot k>0 without predecessor observation; pending #134 + #142"]
-fn fast_bulk_read_last_emits_body_and_self_crc() {
+fn fast_bulk_read_last_with_silent_predecessors_stays_silent() {
     let mut bus = bus();
     let id = servo_id(&bus);
     let baud = bus.baud();
@@ -98,18 +98,10 @@ fn fast_bulk_read_last_emits_body_and_self_crc() {
         entry(id.as_byte(), 0, 2),
     ])
     .unwrap();
-    let chunk = bus
-        .xfer_reply(&frame, silent_window_us(baud, 2, 2))
-        .unwrap()
-        .expect("no reply");
-    assert_eq!(chunk.len(), 6, "expected 6 bytes, got {}", chunk.len());
-    assert_eq!(chunk[0], 0);
-    assert_eq!(chunk[1], id.as_byte());
-    let mut crc = SoftwareCrcUmts::new();
-    crc.update(&chunk[..4]);
-    let expected = crc.finalize();
-    let observed = u16::from_le_bytes([chunk[4], chunk[5]]);
-    assert_eq!(observed, expected);
+    expect_no_reply(&mut bus, &frame, silent_window_us(baud, 2, 2));
+    let ping = build_ping(id).expect("encode ping");
+    let reply = expect_status_ok(&mut bus, &ping).expect("servo recovers after collapsed chain");
+    assert_eq!(reply.id, id);
 }
 
 #[test]
