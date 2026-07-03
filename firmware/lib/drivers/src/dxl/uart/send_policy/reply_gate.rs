@@ -8,6 +8,30 @@
 
 use super::reply_context::ReplyContext;
 
+/// Deferred-schedule record for a FAST Sync/Bulk Read slot k > 0 — the
+/// reply is encoded, its wire start waits on the observed start of the
+/// chain's single Status packet (task #142 model). Payload of
+/// [`ReplyPhase::AwaitingStatusStart`]; pure data crossing the gate
+/// boundary (driver-pattern §3.3).
+#[derive(Copy, Clone, Debug)]
+pub(crate) struct StatusStartWait {
+    /// Wire cursor where the Status packet's first byte lands — the
+    /// instruction Crc's `next_status_pos` (= `fold_start_cursor`).
+    pub(crate) status_start_cursor: u32,
+    /// Wire bytes from the Status packet's first byte to our slot's
+    /// first byte (= [`ReplyContext::slot_offset_bytes`]).
+    pub(crate) slot_offset_bytes: u32,
+    /// Latest plausible status-start tick (WireClock u32): packet end
+    /// plus effective RDT plus turnaround slack. A stamp past this is
+    /// stale traffic (the host's retry after a dead chain), not the
+    /// awaited reply: drop the slot instead of scheduling into the
+    /// host's instruction. Hygiene bound only, never a wire TX deadline.
+    pub(crate) latest_start_tick: u32,
+    /// Slot position is Last — on observation the composite also starts
+    /// the Fast Last fold/grid off the observed anchor.
+    pub(crate) is_last: bool,
+}
+
 /// Wire-placement phase of the staged reply.
 enum ReplyPhase {
     /// Nothing staged. A reply already handed to the scheduler is the
@@ -20,6 +44,9 @@ enum ReplyPhase {
     /// until the named predecessor's Status frame finishes skipping —
     /// the sequence-driven start path of `docs/dxl-streaming-rx.md` §5.2.
     AwaitingPredecessor(u8),
+    /// FAST Sync/Bulk chain k > 0: reply encoded, wire start deferred
+    /// until the Status packet's first byte is observed on the wire.
+    AwaitingStatusStart(StatusStartWait),
 }
 
 pub(super) struct ReplyGate {
@@ -33,11 +60,12 @@ impl ReplyGate {
         }
     }
 
-    /// Awaiting-predecessor is the only phase external packet boundaries
+    /// The awaiting phases are the only ones external packet boundaries
     /// may clear; a staged context stays put (displaced at the next
     /// Crc-good, exactly the pre-FSM overwrite semantics).
     fn clear_awaiting(&mut self) {
-        if let ReplyPhase::AwaitingPredecessor(_) = self.phase {
+        if let ReplyPhase::AwaitingPredecessor(_) | ReplyPhase::AwaitingStatusStart(_) = self.phase
+        {
             self.phase = ReplyPhase::Idle;
         }
     }
@@ -62,6 +90,15 @@ impl ReplyGate {
                 true
             }
             _ => false,
+        }
+    }
+
+    /// The deferred FAST slot's wire start was scheduled off the observed
+    /// status-start (or the wait was judged stale and dropped) — either
+    /// way the wait is over.
+    pub(super) fn on_status_start_scheduled(&mut self) {
+        if let ReplyPhase::AwaitingStatusStart(_) = self.phase {
+            self.phase = ReplyPhase::Idle;
         }
     }
 
@@ -109,7 +146,13 @@ impl ReplyGate {
         self.phase = ReplyPhase::AwaitingPredecessor(pred);
     }
 
-    /// Drop the staged context and any predecessor wait; the next reply
+    /// The taken context is a FAST slot k > 0 — hold the encoded reply
+    /// until the Status packet's first byte is observed on the wire.
+    pub(super) fn defer_to_status_start(&mut self, wait: StatusStartWait) {
+        self.phase = ReplyPhase::AwaitingStatusStart(wait);
+    }
+
+    /// Drop the staged context and any deferred wait; the next reply
     /// must come through a fresh Crc-good.
     pub(super) fn cancel(&mut self) {
         self.phase = ReplyPhase::Idle;
@@ -123,6 +166,14 @@ impl ReplyGate {
     pub(super) fn awaited_predecessor(&self) -> Option<u8> {
         match self.phase {
             ReplyPhase::AwaitingPredecessor(p) => Some(p),
+            _ => None,
+        }
+    }
+
+    /// The status-start wait a deferred FAST slot is parked on, if any.
+    pub(super) fn awaited_status_start(&self) -> Option<StatusStartWait> {
+        match self.phase {
+            ReplyPhase::AwaitingStatusStart(w) => Some(w),
             _ => None,
         }
     }
@@ -183,8 +234,17 @@ mod tests {
         assert!(!g.on_skip_complete(0x42), "wait consumed on match");
     }
 
+    fn wait() -> StatusStartWait {
+        StatusStartWait {
+            status_start_cursor: 10,
+            slot_offset_bytes: 14,
+            latest_start_tick: 5000,
+            is_last: false,
+        }
+    }
+
     #[test]
-    fn packet_boundaries_clear_the_wait_but_keep_a_staged_context() {
+    fn packet_boundaries_clear_the_waits_but_keep_a_staged_context() {
         for clear in [
             ReplyGate::on_new_instruction,
             ReplyGate::on_resync,
@@ -196,6 +256,11 @@ mod tests {
             assert_eq!(g.awaited_predecessor(), None);
 
             let mut g = ReplyGate::new();
+            g.defer_to_status_start(wait());
+            clear(&mut g);
+            assert!(g.awaited_status_start().is_none());
+
+            let mut g = ReplyGate::new();
             g.on_reply_context(ctx());
             clear(&mut g);
             assert!(g.take_reply_context().is_some(), "staged context survives");
@@ -203,7 +268,7 @@ mod tests {
     }
 
     #[test]
-    fn cancel_clears_both_phases() {
+    fn cancel_clears_all_phases() {
         let mut g = ReplyGate::new();
         g.on_reply_context(ctx());
         g.cancel();
@@ -212,6 +277,39 @@ mod tests {
         g.defer_to_predecessor(0x42);
         g.cancel();
         assert_eq!(g.awaited_predecessor(), None);
+
+        g.defer_to_status_start(wait());
+        g.cancel();
+        assert!(g.awaited_status_start().is_none());
+    }
+
+    #[test]
+    fn status_start_wait_peeks_until_scheduled() {
+        let mut g = ReplyGate::new();
+        g.defer_to_status_start(wait());
+        // Peek is non-consuming: retries across polls read the same wait.
+        assert_eq!(g.awaited_status_start().unwrap().slot_offset_bytes, 14);
+        assert_eq!(g.awaited_status_start().unwrap().status_start_cursor, 10);
+        g.on_status_start_scheduled();
+        assert!(g.awaited_status_start().is_none());
+    }
+
+    #[test]
+    fn take_while_awaiting_status_start_returns_none_and_keeps_the_wait() {
+        let mut g = ReplyGate::new();
+        g.defer_to_status_start(wait());
+        assert!(g.take_reply_context().is_none());
+        assert!(g.awaited_status_start().is_some());
+    }
+
+    #[test]
+    fn skip_complete_does_not_touch_a_status_start_wait() {
+        // The two deferral mechanisms are disjoint: a foreign skip-exhaust
+        // (Plain chain machinery) must not release a FAST slot.
+        let mut g = ReplyGate::new();
+        g.defer_to_status_start(wait());
+        assert!(!g.on_skip_complete(0x42));
+        assert!(g.awaited_status_start().is_some());
     }
 
     #[test]

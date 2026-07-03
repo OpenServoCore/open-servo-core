@@ -52,6 +52,7 @@ pub fn on_usart1() {
     on_usart1_rx_errors();
     on_usart1_idle();
     on_usart1_tc();
+    on_usart1_status_start();
 }
 
 /// DMA1_CH5 HT/TC handler — byte-ring publish plus parser drain. `on_rx_advance`
@@ -144,6 +145,23 @@ fn on_usart1_tc() {
         flash::set_boot_mode(matches!(mode, BootMode::Bootloader));
         pfic::software_reset();
     }
+}
+
+/// Per-byte status-start wake for a deferred FAST slot k > 0 (task
+/// #142). Gated on CTLR1.RXNEIE — the watch window the RxDma provider
+/// opens at `send_slot` and the driver closes on resolution — NOT on
+/// `STATR.RXNE`, which always reads 0 in DMA-RX mode (DMA wins the clear
+/// race; see the provider doc). While the window is open every USART1
+/// vector entry routes one wake; spurious entries (residual-drain race,
+/// IDLE sharing the vector) are cursor-qualified inside
+/// `on_status_start`, so no flag inspection happens here. Runs after the
+/// existing IDLE/TC bodies — additive per [[isr-ordering]].
+fn on_usart1_status_start() {
+    if !usart::is_rxneie(USART1) {
+        return;
+    }
+    // SAFETY: see `on_dma1_ch5`.
+    unsafe { Drivers::dxl_uart() }.on_status_start();
 }
 
 /// TIM2 CC3 compare-match — TX-start deadline reached. Routes into the

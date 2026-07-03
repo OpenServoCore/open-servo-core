@@ -7,17 +7,17 @@
 //! [`FoldEngine`]: super::fold_engine::FoldEngine
 
 /// Everything the Fast Last pipeline needs to start one Last reply, composed
-/// by the composite at `send_slot(Last)` time. `packet_end_tick` is
-/// parser-derived in the WireClock u32 domain; all grid timing derives from
-/// it.
+/// by the composite at the status-start observation (task #142 model:
+/// `DxlUart::on_status_start`). `status_start_tick` is the ET-ring-derived
+/// start of the chain's single Status packet; all grid timing derives from
+/// it — the predecessor window literally begins at the anchor, so no RDT
+/// term exists ([[rdt-single-target-only]]).
 #[derive(Copy, Clone, Debug)]
 pub struct FastLastSchedule {
-    /// Parser-derived WireClock u32 value where the host's request ended
-    /// (= `BT[last_byte] + 10·tpb`). All grid CMPs land at
-    /// `packet_end_tick + offset` modulo u32.
-    pub packet_end_tick: u32,
-    /// Return-delay-time, in scheduler ticks.
-    pub rdt_ticks: u16,
+    /// Observed WireClock u32 tick where the Status packet's first wire
+    /// byte started. All grid CMPs land at `status_start_tick + offset`
+    /// modulo u32.
+    pub status_start_tick: u32,
     /// One wire byte time at the active baud, in scheduler ticks.
     pub byte_ticks: u16,
     /// Count of wire bytes the host's request will pull from servos with
@@ -25,8 +25,9 @@ pub struct FastLastSchedule {
     /// span and the fold engine's finalize cap.
     pub predecessor_bytes: u32,
     /// Wire cursor of the predecessor's first reply byte — the fold engine's
-    /// lower bound (`ReplyContext::fold_start_cursor` at parse-complete). The
-    /// scheduler ignores it; it exists so the composite can start both halves
-    /// from one record.
+    /// lower bound (the Status packet's first byte lands at exactly this
+    /// cursor, so the fold's `cursor < start_cursor` guard skips everything
+    /// before it). The scheduler ignores it; it exists so the composite can
+    /// start both halves from one record.
     pub fold_start_cursor: u32,
 }

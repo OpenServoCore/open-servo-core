@@ -243,4 +243,16 @@ impl<R: EdgeDma, const EDGE_BUF_LEN: usize> EdgeCapture<R, EDGE_BUF_LEN> {
         let edges = unsafe { &mut *self.edges.get() };
         edge_parser::stage_tail_signature_for_test(edges, tail_bytes, ticks_per_bit, anchor_tick)
     }
+
+    /// Stage one falling-edge stamp at the ET producer head — the shape a
+    /// newly-arrived `0xFF` (exactly one edge) leaves in the ring. Returns
+    /// the produced-slot count the caller publishes via the staged
+    /// `EdgeDma::remaining` (`EDGE_BUF_LEN − count`).
+    pub fn stage_edge_at_head_for_test(&mut self, stamp: u16) -> u16 {
+        // SAFETY: test-only mut access; no DMA in tests.
+        let edges = unsafe { &mut *self.edges.get() };
+        let at = edges.write_seq_for_test();
+        edges.stage(at, &[stamp]);
+        at.wrapping_add(1)
+    }
 }

@@ -35,17 +35,6 @@ pub(crate) const fn divisor_for(clock_hz: u32, baud_hz: u32) -> u32 {
     (clock_hz + baud_hz / 2) / baud_hz
 }
 
-/// Timing pair for one Fast slot reply — the wire-start deadline and the
-/// source-floored effective RDT it was derived from, returned together by
-/// [`Clock::compute_slot_deadline`] so the Fast Last fold grid back-dates
-/// from the SAME anchor the schedule used. Structural: a caller can't
-/// re-derive the RDT with different inputs and shear the grid off the
-/// deadline.
-pub struct SlotTiming {
-    pub deadline: u32,
-    pub effective_rdt_ticks: u32,
-}
-
 pub struct Clock<U: UsartBaud, T: ClockTrim> {
     cache: BaudCache<U>,
     drift: DriftIntegrator<U, T>,
@@ -144,24 +133,36 @@ impl<U: UsartBaud, T: ClockTrim> Clock<U, T> {
         self.deadline_after(packet_end_tick, delay)
     }
 
-    /// Fast slot reply timing: like [`Self::compute_status_deadline`] but
-    /// with the source-floored effective RDT (see [`Self::effective_slot_rdt`])
-    /// so every slot in a chain anchors off the same base above
-    /// `packet_end_tick` and the wire stays contiguous. Returns the
-    /// effective RDT alongside the deadline — see [`SlotTiming`].
-    pub fn compute_slot_deadline(
-        &self,
-        packet_end_tick: u32,
-        rdt_ticks: u32,
-        slot_offset_bytes: u32,
-        src: PollSrc,
-    ) -> SlotTiming {
+    /// Fast slot 0 (Only/First) reply deadline: RDT past the request's
+    /// wire end per the DXL spec, with the source-floored effective RDT
+    /// (see [`Self::effective_slot_rdt`]) so an IDLE-observed packet end
+    /// can't schedule the start before this chip could have seen it.
+    /// Slots k > 0 never come here — they anchor on the observed status
+    /// start via [`Self::compute_slot_start_deadline`] (task #142).
+    pub fn compute_slot_deadline(&self, packet_end_tick: u32, rdt_ticks: u32, src: PollSrc) -> u32 {
         let effective_rdt_ticks = self.effective_slot_rdt(rdt_ticks, src);
-        let delay = effective_rdt_ticks.wrapping_add(self.cache.bytes_to_ticks(slot_offset_bytes));
-        SlotTiming {
-            deadline: self.deadline_after(packet_end_tick, delay),
-            effective_rdt_ticks,
-        }
+        self.deadline_after(packet_end_tick, effective_rdt_ticks)
+    }
+
+    /// FAST slot k > 0 wire-start deadline anchored on the observed start
+    /// of the chain's Status packet: our slot starts `slot_offset_bytes`
+    /// whole wire bytes after that first byte's start edge — a contiguous
+    /// continuation of the single Status packet. No RDT term (RDT is
+    /// single-target-reply-only per spec) and no LineIdle floor: the
+    /// anchor is a hardware edge stamp strictly in the past, physically
+    /// received before the query could run, so there is nothing to floor
+    /// against. Folds the drift phase residual over the extrapolated
+    /// distance like every other schedule site — load-bearing for long
+    /// chains at low baud, where the distance spans many milliseconds.
+    pub fn compute_slot_start_deadline(
+        &self,
+        status_start_tick: u32,
+        slot_offset_bytes: u32,
+    ) -> u32 {
+        self.deadline_after(
+            status_start_tick,
+            self.cache.bytes_to_ticks(slot_offset_bytes),
+        )
     }
 
     /// Max byte pairs per packet the driver should drain into
@@ -266,24 +267,31 @@ mod tests {
             (12_000, PollSrc::LineIdle),
             (100, PollSrc::ByteBatch),
         ] {
-            let timing = c.compute_slot_deadline(50_000, rdt, 12, src);
             let floored = c.effective_slot_rdt(rdt, src);
-            assert_eq!(timing.effective_rdt_ticks, floored);
             assert_eq!(
-                timing.deadline,
-                c.compute_status_deadline(50_000, floored, 12)
+                c.compute_slot_deadline(50_000, rdt, src),
+                c.compute_status_deadline(50_000, floored, 0)
             );
         }
     }
 
     #[test]
-    fn slot_timing_carries_the_rdt_the_deadline_was_derived_from() {
-        // The Fast Last grid anchors off `effective_rdt_ticks`; it MUST be
-        // the floored value the deadline folded, not the raw input.
+    fn slot_start_deadline_is_anchor_plus_whole_bytes_no_rdt_no_floor() {
+        // 14 offset bytes at 3M = 2240 ticks past the observed status
+        // start — no RDT term, no LineIdle floor, nothing else.
         let c = clock_at(BaudRate::B3000000);
-        let timing = c.compute_slot_deadline(50_000, 100, 0, PollSrc::LineIdle);
-        assert_eq!(timing.effective_rdt_ticks, BYTE_TICKS_3M);
-        assert_eq!(timing.deadline, 50_000 + BYTE_TICKS_3M);
+        assert_eq!(c.compute_slot_start_deadline(50_000, 14), 52_240);
+        assert_eq!(c.compute_slot_start_deadline(50_000, 0), 50_000);
+    }
+
+    #[test]
+    fn slot_start_deadline_wraps_cleanly_near_u32_max() {
+        let c = clock_at(BaudRate::B3000000);
+        let anchor = u32::MAX - 100;
+        assert_eq!(
+            c.compute_slot_start_deadline(anchor, 12),
+            anchor.wrapping_add(12 * BYTE_TICKS_3M)
+        );
     }
 
     #[test]
@@ -328,11 +336,25 @@ mod tests {
     fn slot_deadline_folds_the_same_phase_residual() {
         let c = clock_9600_with_residual(40);
         let rdt = 120_000;
-        let timing = c.compute_slot_deadline(50_000, rdt, 0, PollSrc::ByteBatch);
         assert_eq!(
-            timing.deadline,
+            c.compute_slot_deadline(50_000, rdt, PollSrc::ByteBatch),
             c.compute_status_deadline(50_000, rdt, 0),
             "slot and status paths must fold the residual identically"
+        );
+    }
+
+    #[test]
+    fn slot_start_deadline_folds_the_same_phase_residual() {
+        // Long-chain low-baud extrapolation: the drift residual must fold
+        // over the byte distance exactly as the status path folds it over
+        // an equal tick delay.
+        let c = clock_9600_with_residual(40);
+        let offset_bytes = 3; // 150_000 ticks at 9600 — a multi-ms span
+        let delay = c.bytes_to_ticks(offset_bytes);
+        assert_eq!(
+            c.compute_slot_start_deadline(50_000, offset_bytes),
+            c.compute_status_deadline(50_000, delay, 0),
+            "slot-start and status paths must fold the residual identically"
         );
     }
 }

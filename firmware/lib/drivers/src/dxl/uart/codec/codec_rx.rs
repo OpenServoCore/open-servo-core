@@ -666,6 +666,11 @@ impl<R: EdgeDma, CRC: CrcUmts, const RX_BUF_LEN: usize, const EDGE_BUF_LEN: usiz
         self.edge_capture
             .stage_tail_signature_for_test(tail_bytes, ticks_per_bit, anchor_tick)
     }
+
+    /// See [`EdgeCapture::stage_edge_at_head_for_test`].
+    pub(crate) fn stage_edge_at_head_for_test(&mut self, stamp: u16) -> u16 {
+        self.edge_capture.stage_edge_at_head_for_test(stamp)
+    }
 }
 
 #[cfg(test)]

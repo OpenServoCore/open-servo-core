@@ -185,16 +185,22 @@ pub(crate) fn mk_tx_bus() -> (MockTxBus, TxBusState) {
 #[derive(Clone, Default)]
 pub(crate) struct RxDmaState {
     remaining: Rc<Cell<u16>>,
+    status_start_watched: Rc<Cell<bool>>,
 }
 
 impl RxDmaState {
     pub(crate) fn stage_remaining(&self, n: u16) {
         self.remaining.set(n);
     }
+
+    /// Whether the per-byte status-start wake window is currently open.
+    pub(crate) fn status_start_watched(&self) -> bool {
+        self.status_start_watched.get()
+    }
 }
 
 /// `MockRxDma` whose `remaining()` reads the staged counter; `read_and_ack`
-/// returns quiet flags.
+/// returns quiet flags; the status-start watch toggles a readable flag.
 pub(crate) fn mk_rx_dma() -> (MockRxDma, RxDmaState) {
     let state = RxDmaState::default();
     let mut m = MockRxDma::new();
@@ -203,6 +209,16 @@ pub(crate) fn mk_rx_dma() -> (MockRxDma, RxDmaState) {
         m.expect_remaining().returning_st(move || r.get());
     }
     m.expect_read_and_ack().returning_st(DmaFlags::default);
+    {
+        let w = state.status_start_watched.clone();
+        m.expect_watch_status_start()
+            .returning_st(move || w.set(true));
+    }
+    {
+        let w = state.status_start_watched.clone();
+        m.expect_unwatch_status_start()
+            .returning_st(move || w.set(false));
+    }
     (m, state)
 }
 
@@ -325,11 +341,34 @@ pub(crate) fn mk_telemetry() -> (MockTelemetry, TelemetryState) {
     (m, state)
 }
 
-/// `MockWireClock` pinned at [`SEED_TICK`].
-pub(crate) fn mk_wire_clock() -> MockWireClock {
+#[derive(Clone)]
+pub(crate) struct WireClockState {
+    now: Rc<Cell<u32>>,
+}
+
+impl WireClockState {
+    pub(crate) fn stage_now(&self, now: u32) {
+        self.now.set(now);
+    }
+}
+
+impl Default for WireClockState {
+    fn default() -> Self {
+        Self {
+            now: Rc::new(Cell::new(SEED_TICK as u32)),
+        }
+    }
+}
+
+/// `MockWireClock` reading the staged `now` — defaults to [`SEED_TICK`].
+pub(crate) fn mk_wire_clock() -> (MockWireClock, WireClockState) {
+    let state = WireClockState::default();
     let mut m = MockWireClock::new();
-    m.expect_now().returning_st(|| SEED_TICK as u32);
-    m
+    {
+        let n = state.now.clone();
+        m.expect_now().returning_st(move || n.get());
+    }
+    (m, state)
 }
 
 // ------------------------------------------------------------------

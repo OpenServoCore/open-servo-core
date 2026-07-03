@@ -26,7 +26,7 @@ mod test_support;
 use dxl_protocol::streaming::Event;
 use osc_core::BootMode;
 
-use crate::traits::dxl::{Providers, RxDma, Telemetry, TxBus, TxScheduler, WireClock};
+use crate::traits::dxl::{Providers, RxDma, SendKind, Telemetry, TxBus, TxScheduler, WireClock};
 use clock::Clock;
 use codec::{Codec, PollAction, PollEvent};
 use fast_last::{FastLast, FoldExit};
@@ -163,6 +163,75 @@ impl<P: Providers, const RX_BUF_LEN: usize, const EDGE_BUF_LEN: usize, const TX_
         self.codec.on_byte_batch_wake(now);
     }
 
+    /// A per-byte wake landed inside the status-start watch window
+    /// (chip-side: USART1 RXNE trap; the window opens when `send_slot`
+    /// defers a FAST slot k > 0 per task #142). Resolve the observed
+    /// start tick of the chain's single Status packet from the ET ring
+    /// and schedule our slot's wire start `slot_offset_bytes` whole
+    /// bytes after it; for Last also start the fold pipeline off the
+    /// same anchor. Also called from the `poll` epilogue as the
+    /// enable-race backstop — when the reply's leading bytes arrived
+    /// before the watch opened, no further wake may come for them.
+    ///
+    /// Guard order:
+    /// 1. no wait parked → close a stale window (a lifecycle clear
+    ///    dropped the wait while RXNEIE was on) and return;
+    /// 2. no resolvable tick → keep waiting (spurious wake before any
+    ///    reply byte, or an EMI-lost edge — the next byte's wake retries
+    ///    via the multi-byte signature arm);
+    /// 3. stamp past `latest_start_tick` → stale traffic (the host's
+    ///    retry after a dead chain), never the awaited reply: drop the
+    ///    slot instead of scheduling a TX into the host's instruction.
+    pub fn on_status_start(&mut self) {
+        let Some(wait) = self.send_policy.awaited_status_start() else {
+            self.rx_dma.unwatch_status_start();
+            return;
+        };
+        let now = self.wire_clock.now();
+        let ticks_per_bit = self.clock.ticks_per_bit();
+        let (rx, _) = self.codec.split_mut();
+        let Some(status_start) =
+            rx.status_start_tick(&self.rx_dma, wait.status_start_cursor, ticks_per_bit, now)
+        else {
+            return;
+        };
+        if (status_start.wrapping_sub(wait.latest_start_tick) as i32) > 0 {
+            crate::log::debug!(
+                "dxl: status_start stale start={} latest={} — drop slot",
+                status_start,
+                wait.latest_start_tick
+            );
+            self.rx_dma.unwatch_status_start();
+            self.send_policy.on_status_start_scheduled();
+            return;
+        }
+        let deadline = self
+            .clock
+            .compute_slot_start_deadline(status_start, wait.slot_offset_bytes);
+        let byte_count = self.codec.tx_len();
+        crate::log::debug!(
+            "dxl: status_start observed start={} deadline={} is_last={}",
+            status_start,
+            deadline,
+            wait.is_last
+        );
+        if wait.is_last {
+            self.scheduler
+                .schedule(deadline, byte_count, SendKind::FastLast);
+            self.fast_last.start(fast_last::FastLastSchedule {
+                status_start_tick: status_start,
+                byte_ticks: self.clock.byte_ticks(),
+                predecessor_bytes: wait.slot_offset_bytes,
+                fold_start_cursor: wait.status_start_cursor,
+            });
+        } else {
+            self.scheduler
+                .schedule(deadline, byte_count, SendKind::Plain);
+        }
+        self.rx_dma.unwatch_status_start();
+        self.send_policy.on_status_start_scheduled();
+    }
+
     /// The TX-start tick has arrived (chip-side CC3 IRQ). Activates the
     /// wire driver FIRST so the first wire bit lands on the scheduled
     /// deadline; for Fast Last replies the body then tails with the
@@ -248,6 +317,12 @@ impl<P: Providers, const RX_BUF_LEN: usize, const EDGE_BUF_LEN: usize, const TX_
     pub fn on_tx_complete(&mut self) -> Option<BootMode> {
         self.tx_bus.release_bus();
         self.fast_last.cancel();
+        // Belt-and-suspenders sibling of the send-policy wait clear
+        // below: a status-start wake window left open past our own TX
+        // (the wake path closes it on every resolution, but a dropped
+        // exchange may not have resolved) must not leak per-byte wakes
+        // into the next exchange.
+        self.rx_dma.unwatch_status_start();
         // Per `dxl-streaming-rx.md` §5.3: our own TX completion is a
         // packet boundary at which stale chain state must reset. The
         // §5.3 "next instruction header" trigger is too late for the
@@ -300,6 +375,21 @@ impl<P: Providers, const RX_BUF_LEN: usize, const EDGE_BUF_LEN: usize, const TX_
         if self.fast_last.fold_active() {
             return;
         }
+        // Same ownership rule one stage earlier: a deferred Last slot's
+        // fold hasn't started yet (it starts at the status-start
+        // observation), but the Status packet's bytes already belong to
+        // it — a parser drain here would consume the leading header
+        // bytes before the fold ever sees them. The per-byte wake path
+        // (`on_status_start`) is not a poll, so observation still
+        // proceeds; a stale wait is bounded by the wake path's staleness
+        // window, which drops it and un-gates on the next wire traffic.
+        if self
+            .send_policy
+            .awaited_status_start()
+            .is_some_and(|w| w.is_last)
+        {
+            return;
+        }
         self.codec.on_rx_progress(self.rx_dma.remaining());
         let now = self.wire_clock.now();
         let id = self.send_policy.id();
@@ -307,6 +397,7 @@ impl<P: Providers, const RX_BUF_LEN: usize, const EDGE_BUF_LEN: usize, const TX_
         let Self {
             codec,
             clock,
+            rx_dma,
             scheduler,
             tx_bus,
             fast_last,
@@ -329,6 +420,7 @@ impl<P: Providers, const RX_BUF_LEN: usize, const EDGE_BUF_LEN: usize, const TX_
             clock,
             send_policy,
             telemetry,
+            rx_dma,
             id,
         };
         rx.poll(
@@ -352,8 +444,16 @@ impl<P: Providers, const RX_BUF_LEN: usize, const EDGE_BUF_LEN: usize, const TX_
                     // stops future polls only; without this bail-out the
                     // parser+skip path consumes the predecessor's leading
                     // bytes in the same poll that engaged the fold, and the
-                    // fold engine starves.
-                    if router.fast_last.fold_active() {
+                    // fold engine starves. A deferred Last wait
+                    // (`send_slot(Last)` k > 0, fold not yet started) owns
+                    // those bytes the same way — mirror of the poll entry
+                    // gate above, for the poll already in flight.
+                    if router.fast_last.fold_active()
+                        || router
+                            .send_policy
+                            .awaited_status_start()
+                            .is_some_and(|w| w.is_last)
+                    {
                         PollAction::Stop
                     } else {
                         action
@@ -377,6 +477,14 @@ impl<P: Providers, const RX_BUF_LEN: usize, const EDGE_BUF_LEN: usize, const TX_
         // `on_tx_complete` — still commit their drift samples per
         // [[drift_sampling_instruction_only]].
         router.clock.on_rx_packet_end();
+        // Enable-race backstop: `send_slot` (k > 0) may have deferred
+        // within THIS poll while the Status packet's leading bytes were
+        // already in the ring (low RDT + IDLE-late poll) — no further
+        // per-byte wake comes for bytes that already arrived, so resolve
+        // the observation here.
+        if self.send_policy.awaited_status_start().is_some() {
+            self.on_status_start();
+        }
     }
 
     // -- accessors ------------------------------------------------------------
@@ -425,8 +533,8 @@ mod tests {
     use super::codec::TAIL_BYTES_FOR_ANCHOR;
     use super::test_support::{
         EdgeDmaState, FastLastState, RxDmaState, SEED_TICK, SchedState, TEST_ID, TEST_RDT_US,
-        TICKS_PER_BIT_3M, TICKS_PER_US, TelemetryState, TxBusState, mk_clock_trim, mk_edge_dma,
-        mk_fast_last, mk_rx_dma, mk_scheduler, mk_telemetry, mk_tx_bus, mk_usart_baud,
+        TICKS_PER_BIT_3M, TICKS_PER_US, TelemetryState, TxBusState, WireClockState, mk_clock_trim,
+        mk_edge_dma, mk_fast_last, mk_rx_dma, mk_scheduler, mk_telemetry, mk_tx_bus, mk_usart_baud,
         mk_wire_clock, wire_ping, wire_status,
     };
     use super::*;
@@ -459,6 +567,7 @@ mod tests {
         edge: EdgeDmaState,
         fl: FastLastState,
         telemetry: TelemetryState,
+        wire: WireClockState,
     }
 
     fn make_clock(baud: BaudRate) -> Clock<MockUsartBaud, MockClockTrim> {
@@ -475,6 +584,7 @@ mod tests {
         let (tx_bus, tx_bus_state) = mk_tx_bus();
         let (fl_sched, fl_state) = mk_fast_last();
         let (telemetry, telemetry_state) = mk_telemetry();
+        let (wire_clock, wire_state) = mk_wire_clock();
         let bus = DxlUart::new(
             codec,
             make_clock(baud),
@@ -482,7 +592,7 @@ mod tests {
             scheduler,
             tx_bus,
             FastLast::new(fl_sched),
-            mk_wire_clock(),
+            wire_clock,
             telemetry,
             TEST_ID,
             TEST_RDT_US,
@@ -496,6 +606,7 @@ mod tests {
                 edge: edge_state,
                 fl: fl_state,
                 telemetry: telemetry_state,
+                wire: wire_state,
             },
         )
     }
@@ -616,6 +727,24 @@ mod tests {
         }
     }
 
+    /// Start-edge tick of the staged Status packet's first byte: one frame
+    /// plus a little trap lag before the pinned wire-clock `now`
+    /// ([`SEED_TICK`]) so the wake's acceptance window resolves it.
+    const STATUS_START_TICK: u16 = SEED_TICK - BITS_PER_FRAME * TICKS_PER_BIT_3M - 50;
+
+    /// Stage the chain Status packet's first byte (`0xFF`) at wire cursor
+    /// `start` with a matching ET start edge, then drive the per-byte wake
+    /// — the deferred FAST slot k > 0 resolves: wire start scheduled off
+    /// the observed anchor and (for Last) the fold pipeline starts.
+    fn observe_status_start(bus: &mut TestBus, state: &TestState, start: u16) {
+        stage_rx(bus, state, start, &[0xFF]);
+        let published = bus.codec.stage_edge_at_head_for_test(STATUS_START_TICK);
+        state
+            .edge
+            .stage_remaining((EDGE_BUF_LEN as u16).wrapping_sub(published));
+        bus.on_status_start();
+    }
+
     // ------------------------------------------------------------------
     // Deferred config staging
     // ------------------------------------------------------------------
@@ -714,17 +843,11 @@ mod tests {
     }
 
     #[test]
-    fn send_slot_last_schedules_fast_last() {
+    fn send_slot_last_defers_until_status_start_observation() {
         let req = wire_fast_sync_read(0, 2, &[0x42, TEST_ID]);
-        let (mut bus, state, packet_end_tick) = bus_seeded_with(&req);
+        let (mut bus, state, _) = bus_seeded_with(&req);
 
         let payload = [0xAA_u8, 0xBB];
-        // bytes_before for slot 1 = the First emission's wire bytes.
-        let first_bytes = FAST_RESPONSE_SLOT0_BYTES as u32 + payload.len() as u32;
-        let expected_ticks =
-            TEST_RDT_US.wrapping_mul(TICKS_PER_US) + bus.clock.bytes_to_ticks(first_bytes);
-        let expected = packet_end_tick.wrapping_add(expected_ticks);
-
         bus.poll(|_, _, reply| {
             let slot = Slot {
                 id: Id::new(TEST_ID),
@@ -734,6 +857,19 @@ mod tests {
             reply.send_slot(&slot).expect("encode fits");
         });
 
+        // Deferred: nothing scheduled, fold idle, wake window open.
+        assert!(state.sch.operations().is_empty());
+        assert!(state.fl.operations().is_empty());
+        assert!(!bus.fast_last.fold_active());
+        assert!(state.rx.status_start_watched());
+
+        observe_status_start(&mut bus, &state, req.len() as u16);
+
+        // bytes_before for slot 1 = the First emission's wire bytes; the
+        // deadline anchors on the OBSERVED status start, no RDT term.
+        let first_bytes = FAST_RESPONSE_SLOT0_BYTES as u32 + payload.len() as u32;
+        let expected =
+            (STATUS_START_TICK as u32).wrapping_add(bus.clock.bytes_to_ticks(first_bytes));
         let byte_count = bus.codec.tx_len();
         assert!(byte_count > 0);
         assert_eq!(
@@ -754,6 +890,126 @@ mod tests {
         ));
         assert!(bus.fast_last.fold_active());
         assert!(bus.fast_last.grid_active());
+        assert!(!state.rx.status_start_watched(), "window closes on resolve");
+        assert!(bus.send_policy.awaited_status_start().is_none());
+    }
+
+    #[test]
+    fn send_slot_middle_observation_schedules_plain() {
+        // Slot 1 of a 3-servo chain: Middle defers exactly like Last but
+        // resolves to a Plain schedule and never touches the fold.
+        let req = wire_fast_sync_read(0, 2, &[0x42, TEST_ID, 0x51]);
+        let (mut bus, state, _) = bus_seeded_with(&req);
+
+        let payload = [0xAA_u8, 0xBB];
+        bus.poll(|_, _, reply| {
+            let slot = Slot {
+                id: Id::new(TEST_ID),
+                error: StatusError::OK,
+                data: &payload,
+            };
+            reply.send_slot(&slot).expect("encode fits");
+        });
+        assert!(state.sch.operations().is_empty());
+        assert!(state.rx.status_start_watched());
+
+        observe_status_start(&mut bus, &state, req.len() as u16);
+
+        let first_bytes = FAST_RESPONSE_SLOT0_BYTES as u32 + payload.len() as u32;
+        let expected =
+            (STATUS_START_TICK as u32).wrapping_add(bus.clock.bytes_to_ticks(first_bytes));
+        assert_eq!(
+            state.sch.operations(),
+            alloc::vec![ScheduleOp::Schedule {
+                deadline: expected,
+                byte_count: bus.codec.tx_len(),
+                kind: SendKind::Plain,
+            }]
+        );
+        assert!(!bus.fast_last.fold_active());
+        assert!(state.fl.operations().is_empty());
+        assert!(!state.rx.status_start_watched());
+    }
+
+    #[test]
+    fn spurious_wake_before_any_reply_byte_keeps_waiting() {
+        // V006 residual-drain quirk: a wake with no byte past the status
+        // cursor must not resolve, drop, or close the window.
+        let req = wire_fast_sync_read(0, 2, &[0x42, TEST_ID]);
+        let (mut bus, state, _) = bus_seeded_with(&req);
+        bus.poll(|_, _, reply| {
+            let slot = Slot {
+                id: Id::new(TEST_ID),
+                error: StatusError::OK,
+                data: &[0xAA, 0xBB],
+            };
+            reply.send_slot(&slot).expect("encode fits");
+        });
+
+        bus.on_status_start();
+
+        assert!(state.sch.operations().is_empty());
+        assert!(bus.send_policy.awaited_status_start().is_some());
+        assert!(state.rx.status_start_watched());
+    }
+
+    #[test]
+    fn stale_status_start_drops_the_slot_instead_of_scheduling() {
+        // Host-retry regression: the chain died, the host resent the
+        // instruction, and its bytes advance the cursor. The observed
+        // stamp lands past `latest_start_tick` — the wake must drop the
+        // slot (close window, clear wait, no TX into the host's packet).
+        let req = wire_fast_sync_read(0, 2, &[0x42, TEST_ID]);
+        let (mut bus, state, _) = bus_seeded_with(&req);
+        bus.poll(|_, _, reply| {
+            let slot = Slot {
+                id: Id::new(TEST_ID),
+                error: StatusError::OK,
+                data: &[0xAA, 0xBB],
+            };
+            reply.send_slot(&slot).expect("encode fits");
+        });
+
+        // Advance well past packet_end + rdt + slack, then present a
+        // "fresh byte" whose stamp is one frame back from the new now.
+        let late_now = (SEED_TICK as u32) + TEST_RDT_US * TICKS_PER_US + 2 * 500 * TICKS_PER_US;
+        state.wire.stage_now(late_now);
+        let stamp = (late_now - (BITS_PER_FRAME * TICKS_PER_BIT_3M) as u32 - 50) as u16;
+        stage_rx(&mut bus, &state, req.len() as u16, &[0xFF]);
+        let published = bus.codec.stage_edge_at_head_for_test(stamp);
+        state
+            .edge
+            .stage_remaining((EDGE_BUF_LEN as u16).wrapping_sub(published));
+
+        bus.on_status_start();
+
+        assert!(state.sch.operations().is_empty(), "no TX scheduled");
+        assert!(bus.send_policy.awaited_status_start().is_none());
+        assert!(!state.rx.status_start_watched());
+        assert!(!bus.fast_last.fold_active(), "fold never engaged");
+    }
+
+    #[test]
+    fn wake_with_no_wait_closes_a_stale_window() {
+        // Lifecycle cleared the wait while RXNEIE was still on — the next
+        // wake self-heals by closing the window.
+        let req = wire_fast_sync_read(0, 2, &[0x42, TEST_ID]);
+        let (mut bus, state, _) = bus_seeded_with(&req);
+        bus.poll(|_, _, reply| {
+            let slot = Slot {
+                id: Id::new(TEST_ID),
+                error: StatusError::OK,
+                data: &[0xAA, 0xBB],
+            };
+            reply.send_slot(&slot).expect("encode fits");
+        });
+        assert!(state.rx.status_start_watched());
+        let _ = bus.on_tx_complete(); // clears the wait AND the window
+
+        state.rx.stage_remaining(RX_BUF_LEN as u16); // reset for clarity
+        bus.on_status_start();
+        assert!(!state.rx.status_start_watched());
+        assert!(state.sch.operations().is_empty());
     }
 
     #[test]
@@ -769,6 +1025,7 @@ mod tests {
             };
             reply.send_slot(&slot).expect("encode fits");
         });
+        observe_status_start(&mut bus, &state, req.len() as u16);
         assert!(bus.fast_last.grid_active());
         assert!(bus.fast_last.fold_active());
 
@@ -889,27 +1146,27 @@ mod tests {
             };
             reply.send_slot(&slot).expect("encode fits");
         });
-        // FastLast started via `send_slot(Last)` above. Fold's start_cursor
-        // = fold_start_cursor = req.len(); stage predecessor bytes at
-        // that wire-byte position so the drain's cursor matches
-        // `start_cursor` on the first byte folded. SyncRead has 2 slots
-        // → bytes_before for our slot = 12 wire bytes; stage fewer so
-        // the FSM doesn't hit its busy-wait target this poll.
+        // FastLast starts at the status-start observation (task #142):
+        // the observation stages the predecessor's leading `0xFF` at
+        // fold_start_cursor = req.len() and starts the fold there. Stage
+        // three more predecessor bytes past it — fewer than the 12-byte
+        // bytes_before, so the FSM doesn't hit its busy-wait target this
+        // poll — and expect the drain to fold all four.
         let start = req.len() as u16;
-        let predecessor = [0x11_u8, 0x22, 0x33, 0x44];
-        stage_rx(&mut bus, &state, start, &predecessor);
-        // RxDma.remaining = N − (start + len) so on_publish leaves
-        // write_seq at start+len.
-        let new_head = start.wrapping_add(predecessor.len() as u16);
+        observe_status_start(&mut bus, &state, start);
+        let more = [0x22_u8, 0x33, 0x44];
+        stage_rx(&mut bus, &state, start + 1, &more);
+        // RxDma.remaining = N − head so on_publish leaves write_seq at
+        // start + 4.
+        let new_head = start.wrapping_add(1 + more.len() as u16);
         state
             .rx
             .stage_remaining((RX_BUF_LEN as u16).wrapping_sub(new_head));
 
-        bus.codec.set_rx_read_seq_for_test(start);
         let before = bus.fast_last.bytes_folded();
         bus.on_fold_step();
         let after = bus.fast_last.bytes_folded();
-        assert_eq!(after - before, predecessor.len() as u32);
+        assert_eq!(after - before, 1 + more.len() as u32);
     }
 
     #[test]
@@ -930,18 +1187,19 @@ mod tests {
             reply.send_slot(&slot).expect("encode fits");
         });
         // bytes_before for slot 1 of Fast SyncRead length=2 is
-        // `FAST_RESPONSE_SLOT0_BYTES(10) + data(2) = 12`; stage exactly
-        // that many so finalize lands inside on_tx_start.
+        // `FAST_RESPONSE_SLOT0_BYTES(10) + data(2) = 12`; the observation
+        // supplies byte 0 (the leading `0xFF`), stage the other 11 so
+        // finalize lands inside on_tx_start.
         let start = req.len() as u16;
-        let predecessor = [
-            0xA1, 0xA2, 0xA3, 0xA4, 0xA5, 0xA6, 0xA7, 0xA8, 0xA9, 0xAA, 0xAB, 0xAC,
+        observe_status_start(&mut bus, &state, start);
+        let rest = [
+            0xA2_u8, 0xA3, 0xA4, 0xA5, 0xA6, 0xA7, 0xA8, 0xA9, 0xAA, 0xAB, 0xAC,
         ];
-        stage_rx(&mut bus, &state, start, &predecessor);
-        let new_head = start.wrapping_add(predecessor.len() as u16);
+        stage_rx(&mut bus, &state, start + 1, &rest);
+        let new_head = start.wrapping_add(1 + rest.len() as u16);
         state
             .rx
             .stage_remaining((RX_BUF_LEN as u16).wrapping_sub(new_head));
-        bus.codec.set_rx_read_seq_for_test(start);
 
         assert_eq!(bus.codec.tx.trailing_crc_slot_for_test(), [0x00, 0x00]);
 
@@ -981,17 +1239,11 @@ mod tests {
             };
             reply.send_slot(&slot).expect("encode fits");
         });
-        // Pin write_seq == read_seq == start. NDTR = LEN - write_seq
-        // keeps on_publish a no-op (ring_pos = LEN - remaining = start,
-        // prev_pos = start → delta = 0). Setting remaining = LEN would
-        // advance the publisher by LEN - start bytes of garbage and
-        // mask the plateau backstop under test.
+        // Observation supplies exactly one predecessor byte; nothing
+        // further arrives, so the CC3 body folds it and then observes no
+        // progress between drain passes — the plateau backstop exits.
         let start = req.len() as u16;
-        stage_rx(&mut bus, &state, start, &[]);
-        bus.codec.set_rx_read_seq_for_test(start);
-        state
-            .rx
-            .stage_remaining((RX_BUF_LEN as u16).wrapping_sub(start));
+        observe_status_start(&mut bus, &state, start);
 
         bus.on_tx_start();
         assert!(bus.fast_last.fold_active(), "active stays set on bail");
@@ -1018,6 +1270,7 @@ mod tests {
             };
             reply.send_slot(&slot).expect("encode fits");
         });
+        observe_status_start(&mut bus, &state, req.len() as u16);
         state.fl.stage_patch_window_expired(true);
 
         bus.on_tx_start();

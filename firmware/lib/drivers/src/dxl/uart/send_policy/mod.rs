@@ -14,6 +14,7 @@ mod reply_context;
 mod reply_gate;
 
 pub(super) use reply_context::ReplyContext;
+pub(super) use reply_gate::StatusStartWait;
 
 use config_mediator::ConfigMediator;
 use dxl_protocol::streaming::{InstructionHeader, InstructionPayload};
@@ -101,6 +102,13 @@ impl SendPolicy {
         self.reply.on_skip_complete(pred)
     }
 
+    /// The deferred FAST slot's wire start was scheduled off the observed
+    /// status-start (or the wait was judged stale and dropped) — the wait
+    /// is over.
+    pub(super) fn on_status_start_scheduled(&mut self) {
+        self.reply.on_status_start_scheduled()
+    }
+
     /// Our reply fully drained the wire — the safe commit window for
     /// staged config; also drops any stale predecessor wait. Returns any
     /// staged reboot for the composite to route chip-side.
@@ -123,6 +131,12 @@ impl SendPolicy {
     /// skipping — the Plain chain k > 0 deferral.
     pub(super) fn defer_to_predecessor(&mut self, pred: u8) {
         self.reply.defer_to_predecessor(pred)
+    }
+
+    /// Hold the encoded reply until the Status packet's first byte is
+    /// observed on the wire — the FAST chain k > 0 deferral.
+    pub(super) fn defer_to_status_start(&mut self, wait: StatusStartWait) {
+        self.reply.defer_to_status_start(wait)
     }
 
     /// Drop the staged reply context and any predecessor wait.
@@ -166,6 +180,13 @@ impl SendPolicy {
     /// The predecessor id a deferred chain reply is waiting on, if any.
     pub(super) fn awaited_predecessor(&self) -> Option<u8> {
         self.reply.awaited_predecessor()
+    }
+
+    /// The status-start wait a deferred FAST slot is parked on, if any.
+    /// Non-consuming: the composite re-reads it across polls until the
+    /// observation resolves or the wait goes stale.
+    pub(super) fn awaited_status_start(&self) -> Option<StatusStartWait> {
+        self.reply.awaited_status_start()
     }
 }
 
@@ -240,6 +261,27 @@ mod tests {
     fn sync_read_slot_zero_has_no_predecessor() {
         let ctx = staged_after_walk(sync_read(), &[sync_slot(TEST_ID, 0)]);
         assert_eq!(ctx.predecessor_id, None);
+    }
+
+    // FAST chain k > 0 deferral: the wait routes through the gate intact
+    // and resolves at the composite's status-start observation.
+
+    #[test]
+    fn status_start_wait_round_trips_through_the_gate() {
+        let mut p = SendPolicy::new(TEST_ID, 250);
+        p.defer_to_status_start(StatusStartWait {
+            status_start_cursor: 10,
+            slot_offset_bytes: 14,
+            latest_start_tick: 5000,
+            is_last: true,
+        });
+        let w = p.awaited_status_start().expect("wait staged");
+        assert_eq!(w.status_start_cursor, 10);
+        assert_eq!(w.slot_offset_bytes, 14);
+        assert_eq!(w.latest_start_tick, 5000);
+        assert!(w.is_last);
+        p.on_status_start_scheduled();
+        assert!(p.awaited_status_start().is_none());
     }
 
     #[test]

@@ -9,9 +9,17 @@ use osc_core::{BaudRate, BootMode, DxlReply};
 
 use super::clock::Clock;
 use super::codec::CodecTx;
-use super::fast_last::{FastLast, FastLastSchedule};
-use super::send_policy::{ReplyContext, SendPolicy};
-use crate::traits::dxl::{Providers, SendKind, TxScheduler};
+use super::send_policy::{ReplyContext, SendPolicy, StatusStartWait};
+use crate::traits::dxl::{Providers, RxDma, SendKind, TxScheduler};
+
+/// Allowance past `packet_end + effective RDT` for the observed status
+/// start of a FAST chain — covers slot 0's chip-side turnaround (measured
+/// ~50 µs/servo on real MX chains, Bestmann RoboCup 2019) with generous
+/// margin while staying well under any host retry timeout (≥ ~1 ms). A
+/// status-start stamp past `packet_end + effective_rdt + this` is stale
+/// traffic (the host's retry after a dead chain), never the awaited
+/// reply — see `DxlUart::on_status_start`.
+const STATUS_START_SLACK_US: u32 = 500;
 
 /// The context's RDT in scheduler ticks — the single µs→ticks conversion
 /// point for both the status and slot schedule paths. The factor is a
@@ -36,8 +44,10 @@ fn rdt_ticks<P: Providers>(ctx: &ReplyContext) -> u32 {
 pub struct ReplyHandle<'a, P: Providers, const TX_BUF_LEN: usize> {
     pub(super) tx: &'a mut CodecTx<P::Crc, TX_BUF_LEN>,
     pub(super) scheduler: &'a mut P::TxScheduler,
-    pub(super) fast_last: &'a mut FastLast<P::FastLastScheduler, P::Crc>,
     pub(super) clock: &'a mut Clock<P::UsartBaud, P::ClockTrim>,
+    /// RX-side provider — the FAST k > 0 defer path opens the per-byte
+    /// status-start wake window here; `cancel` closes it.
+    pub(super) rx_dma: &'a mut P::RxDma,
     /// Send-policy sub-composite on the parent — bus identity, the
     /// staged-config mailbox the `stage_*` commands write into, and the
     /// reply gate holding the staged [`ReplyContext`] / chain-pending
@@ -192,51 +202,53 @@ impl<P: Providers, const TX_BUF_LEN: usize> ReplyHandle<'_, P, TX_BUF_LEN> {
         Some((ctx, position))
     }
 
-    /// Post-encode scheduling for a slot reply: anchor against
-    /// `packet_end_tick`, fold RDT + per-source floor + slot offset into
-    /// the deadline, tag the entry `FastLast` for Last, and start the
-    /// chain-CRC fold engine on Last.
+    /// Post-encode scheduling for a slot reply. Slot 0 (Only/First)
+    /// schedules at `packet_end + effective RDT` per the DXL spec — the
+    /// source-floored RDT (see `Clock::effective_slot_rdt`) keeps an
+    /// IDLE-observed packet end from scheduling before this chip could
+    /// have seen it. Slots k > 0 (Middle/Last) defer instead: the wire
+    /// start anchors on the OBSERVED start of the chain's single Status
+    /// packet (task #142) — the reply gate parks a [`StatusStartWait`],
+    /// the per-byte wake window opens, and `DxlUart::on_status_start`
+    /// schedules (and, for Last, starts the fold pipeline) when the
+    /// packet's first byte lands.
     fn schedule_after_slot_encode(&mut self, ctx: ReplyContext, position: SlotPosition) {
-        let byte_count = self.tx.tx_len();
-        let packet_end_tick = ctx.packet_end_tick;
-        // The source-floored effective RDT (see `Clock::effective_slot_rdt`)
-        // keeps every slot in a Fast chain anchored off the same base above
-        // `packet_end_tick`, so the wire stays contiguous instead of slot
-        // k > 0 starting inside slot 0's trailing TX.
-        let timing = self.clock.compute_slot_deadline(
-            packet_end_tick,
-            rdt_ticks::<P>(&ctx),
-            ctx.slot_offset_bytes,
-            ctx.src,
-        );
-        let kind = match position {
-            SlotPosition::Last { .. } => SendKind::FastLast,
-            _ => SendKind::Plain,
-        };
-        self.scheduler.schedule(timing.deadline, byte_count, kind);
-        if matches!(position, SlotPosition::Last { .. }) {
-            // `SlotTiming` carries the effective RDT the deadline above was
-            // derived from, so the fold grid back-dates from the same
-            // anchor by construction. `FastLastSchedule::rdt_ticks` is u16
-            // per doc §10.6 — the effective RDT stays well under 16 bits
-            // at every supported baud (9600 floor = 50_000 ticks).
-            debug_assert!(timing.effective_rdt_ticks <= u16::MAX as u32);
-            self.fast_last.start(FastLastSchedule {
-                packet_end_tick,
-                rdt_ticks: timing.effective_rdt_ticks as u16,
-                byte_ticks: self.clock.byte_ticks(),
-                predecessor_bytes: ctx.slot_offset_bytes,
-                fold_start_cursor: ctx.fold_start_cursor,
-            });
+        match position {
+            SlotPosition::Only { .. } | SlotPosition::First { .. } => {
+                let deadline = self.clock.compute_slot_deadline(
+                    ctx.packet_end_tick,
+                    rdt_ticks::<P>(&ctx),
+                    ctx.src,
+                );
+                self.scheduler
+                    .schedule(deadline, self.tx.tx_len(), SendKind::Plain);
+            }
+            SlotPosition::Middle | SlotPosition::Last { .. } => {
+                let slack = STATUS_START_SLACK_US
+                    .wrapping_mul(<P::TxScheduler as TxScheduler>::TICKS_PER_US as u32);
+                let latest_start_tick = ctx
+                    .packet_end_tick
+                    .wrapping_add(self.clock.effective_slot_rdt(rdt_ticks::<P>(&ctx), ctx.src))
+                    .wrapping_add(slack);
+                self.send_policy.defer_to_status_start(StatusStartWait {
+                    status_start_cursor: ctx.fold_start_cursor,
+                    slot_offset_bytes: ctx.slot_offset_bytes,
+                    latest_start_tick,
+                    is_last: matches!(position, SlotPosition::Last { .. }),
+                });
+                self.rx_dma.watch_status_start();
+            }
         }
     }
 
-    /// Drop any scheduled TX, clear chain-pending state, and clear the
+    /// Drop any scheduled TX, clear chain-pending state (including a
+    /// parked status-start wait and its wake window), and clear the
     /// staged request context so the next reply must come through a fresh
     /// `poll()`.
     pub fn cancel(&mut self) {
         self.scheduler.cancel();
         self.send_policy.cancel();
+        self.rx_dma.unwatch_status_start();
     }
 
     /// Stage a deferred ID change — applies at the next `on_tx_complete`.
@@ -315,12 +327,11 @@ mod tests {
     use super::*;
     use crate::dxl::uart::poll_src::PollSrc;
     use crate::dxl::uart::test_support::{
-        FastLastState, SEED_TICK, SchedState, TEST_ID, TEST_RDT_US, TICKS_PER_US, mk_clock_trim,
-        mk_fast_last, mk_scheduler, mk_usart_baud,
+        RxDmaState, SEED_TICK, SchedState, TEST_ID, TEST_RDT_US, TICKS_PER_US, mk_clock_trim,
+        mk_rx_dma, mk_scheduler, mk_usart_baud,
     };
     use crate::mocks::{
-        FastLastSchedulerOp, MockClockTrim, MockFastLastScheduler, MockTxScheduler, MockUsartBaud,
-        ScheduleOp, TestProviders,
+        MockClockTrim, MockRxDma, MockTxScheduler, MockUsartBaud, ScheduleOp, TestProviders,
     };
     use dxl_protocol::SoftwareCrcUmts;
 
@@ -334,8 +345,8 @@ mod tests {
         tx: CodecTx<SoftwareCrcUmts, TX_BUF_LEN>,
         scheduler: MockTxScheduler,
         sched: SchedState,
-        fast_last: FastLast<MockFastLastScheduler, SoftwareCrcUmts>,
-        fl: FastLastState,
+        rx_dma: MockRxDma,
+        rx: RxDmaState,
         clock: Clock<MockUsartBaud, MockClockTrim>,
         send_policy: SendPolicy,
     }
@@ -343,13 +354,13 @@ mod tests {
     impl Harness {
         fn new() -> Self {
             let (scheduler, sched) = mk_scheduler();
-            let (fl_sched, fl) = mk_fast_last();
+            let (rx_dma, rx) = mk_rx_dma();
             Self {
                 tx: CodecTx::new_for_test(),
                 scheduler,
                 sched,
-                fast_last: FastLast::new(fl_sched),
-                fl,
+                rx_dma,
+                rx,
                 clock: Clock::new(BaudRate::B3000000, mk_usart_baud().0, mk_clock_trim().0),
                 send_policy: SendPolicy::new(TEST_ID, TEST_RDT_US),
             }
@@ -363,8 +374,8 @@ mod tests {
             ReplyHandle {
                 tx: &mut self.tx,
                 scheduler: &mut self.scheduler,
-                fast_last: &mut self.fast_last,
                 clock: &mut self.clock,
+                rx_dma: &mut self.rx_dma,
                 send_policy: &mut self.send_policy,
             }
         }
@@ -456,11 +467,12 @@ mod tests {
     }
 
     #[test]
-    fn send_slot_non_last_positions_schedule_plain_and_leave_the_fold_idle() {
+    fn send_slot_first_positions_schedule_plain_at_packet_end_plus_rdt() {
+        // Slot 0 of a chain (First) and a single-servo chain (Only) keep
+        // the DXL-spec RDT formula — no slot offset term exists anymore.
         for position in [
             SlotPosition::Only { packet_length: 7 },
             SlotPosition::First { packet_length: 15 },
-            SlotPosition::Middle,
         ] {
             let mut h = Harness::new();
             h.stage(ReplyContext {
@@ -480,9 +492,66 @@ mod tests {
                 }],
                 "position {position:?}"
             );
-            assert!(h.fl.operations().is_empty());
-            assert!(!h.fast_last.fold_active());
+            assert!(!h.rx.status_start_watched(), "position {position:?}");
         }
+    }
+
+    #[test]
+    fn send_slot_k_gt_zero_defers_to_status_start_and_opens_the_watch() {
+        // Middle and Last both park a StatusStartWait instead of
+        // scheduling (task #142): the wire start anchors on the observed
+        // Status packet start, resolved later by `on_status_start`.
+        for (position, is_last) in [
+            (SlotPosition::Middle, false),
+            (SlotPosition::Last { crc: 0 }, true),
+        ] {
+            let mut h = Harness::new();
+            h.stage(ReplyContext {
+                fast_slot_position: Some(position),
+                slot_offset_bytes: 12,
+                fold_start_cursor: 30,
+                ..ctx()
+            });
+            h.handle()
+                .send_slot(&own_slot(&[0xAA, 0xBB]))
+                .expect("encode fits");
+
+            assert!(h.sched_ops().is_empty(), "position {position:?}");
+            assert!(h.rx.status_start_watched(), "position {position:?}");
+            let wait = h.send_policy.awaited_status_start().expect("wait parked");
+            assert_eq!(wait.status_start_cursor, 30);
+            assert_eq!(wait.slot_offset_bytes, 12);
+            assert_eq!(wait.is_last, is_last, "position {position:?}");
+            // Latest plausible status start: packet_end + effective RDT +
+            // the turnaround slack — the stale-traffic bound.
+            assert_eq!(
+                wait.latest_start_tick,
+                SEED + RDT_TICKS + STATUS_START_SLACK_US * TICKS_PER_US
+            );
+        }
+    }
+
+    #[test]
+    fn send_slot_k_gt_zero_stale_bound_floors_the_rdt_by_source() {
+        // The staleness bound composes the SAME source-floored RDT the
+        // slot-0 deadline would use — an IDLE-observed packet end shifts
+        // slot 0 by a byte time, so the bound must shift with it.
+        let mut h = Harness::new();
+        h.stage(ReplyContext {
+            fast_slot_position: Some(SlotPosition::Middle),
+            rdt_us: 1,
+            src: PollSrc::LineIdle,
+            ..ctx()
+        });
+        h.handle()
+            .send_slot(&own_slot(&[0x11]))
+            .expect("encode fits");
+
+        let wait = h.send_policy.awaited_status_start().expect("wait parked");
+        assert_eq!(
+            wait.latest_start_tick,
+            SEED + BYTE_TICKS_3M + STATUS_START_SLACK_US * TICKS_PER_US
+        );
     }
 
     #[test]
@@ -494,39 +563,6 @@ mod tests {
             .expect("encode fits");
 
         assert!(h.sched_ops().is_empty());
-    }
-
-    #[test]
-    fn send_slot_last_tags_fast_last_and_arms_the_grid_off_the_same_rdt() {
-        let mut h = Harness::new();
-        h.stage(ReplyContext {
-            fast_slot_position: Some(SlotPosition::Last { crc: 0 }),
-            slot_offset_bytes: 12,
-            fold_start_cursor: 30,
-            ..ctx()
-        });
-        h.handle()
-            .send_slot(&own_slot(&[0xAA, 0xBB]))
-            .expect("encode fits");
-
-        assert_eq!(
-            h.sched_ops(),
-            alloc::vec![ScheduleOp::Schedule {
-                deadline: SEED + RDT_TICKS + 12 * BYTE_TICKS_3M,
-                byte_count: h.tx.tx_len(),
-                kind: SendKind::FastLast,
-            }]
-        );
-        // The grid's stop-fold deadline composes the SAME effective RDT the
-        // schedule used: packet_end + rdt + predecessor·byte − GUARD·byte.
-        assert_eq!(
-            h.fl.operations().first(),
-            Some(&FastLastSchedulerOp::SetBusyWaitDeadline {
-                deadline: SEED + RDT_TICKS + 12 * BYTE_TICKS_3M - BYTE_TICKS_3M,
-            })
-        );
-        assert!(h.fast_last.fold_active());
-        assert!(h.fast_last.grid_active());
     }
 
     #[test]

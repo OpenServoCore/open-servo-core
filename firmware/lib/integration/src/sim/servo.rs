@@ -470,6 +470,20 @@ impl Servo {
         let remaining = (RX_BUF_LEN - pos) as u16;
         self.rx_dma_state.stage_remaining(remaining);
 
+        // Per-byte status-start wake (USART1 RXNE trap model): while the
+        // watch window is open every received byte routes one wake, so a
+        // deferred FAST slot k > 0 observes the Status packet's first
+        // byte within a byte-time of its arrival. Runs before the HT/TC
+        // poll below, mirroring the chip where RXNE asserts at the byte's
+        // stop bit. The wake can schedule (slot wire start, fold CMP) —
+        // drain both op logs so the sim stages the fires.
+        if self.rx_dma_state.status_start_watched() {
+            self.wire_clock_state.stage_now(self.chip_tick(at));
+            self.uart.on_status_start();
+            self.drain_tx_scheduler_ops(at);
+            self.drain_fast_last_ops(at);
+        }
+
         let crossed_ht = pos == RX_BUF_LEN / 2;
         let crossed_tc = pos == 0;
         if crossed_ht || crossed_tc {

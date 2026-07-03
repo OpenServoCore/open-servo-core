@@ -297,8 +297,9 @@ fn bulk_read_unknown_id_in_entries_collapses_tail(baud_idx: u8, rdt_us: u32) {
 // ---------------- Fast SyncRead ----------------
 
 /// Middle servo SRL=None → `handle_fast_read` returns silent → no slot 1
-/// wire bytes. Slot 2 still fires (Fast Sync schedules slot k>0 by
-/// CC-compare, not snoop), so its `[err, id, data]` lands on the wire —
+/// wire bytes. Slot 2 still fires (FAST slot k>0 anchors on the chain's
+/// observed status START — slot 0 is alive, so the grid holds regardless
+/// of slot 1's silence), so its `[err, id, data]` lands on the wire —
 /// but the Fast Last fold can't reach the predecessor-bytes threshold
 /// without slot 1's bytes, so the trailing Status CRC never gets patched.
 /// Wire shape is slot 0 + slot 2 with broken CRC; a real host rejects
@@ -343,7 +344,8 @@ fn fast_sync_read_srl_none_predecessor_collapses_tail(baud_idx: u8, rdt_us: u32)
 }
 
 /// Data-line disconnect on the middle servo — slot 1 emits no bytes. Slot
-/// 2 fires anyway (CC-compare-driven) so its frame lands on the wire,
+/// 2 fires anyway (status-start-anchored grid; slot 0 supplied the
+/// anchor) so its frame lands on the wire,
 /// but the trailing Status CRC can't be patched without slot 1's bytes
 /// feeding the Fast Last fold. Wire = slot 0 + slot 2 + broken CRC; host
 /// rejects via CRC validation. Reconnect + `assert_bus_healthy` confirms
@@ -389,7 +391,7 @@ fn fast_sync_read_data_line_disconnect_collapses_tail(baud_idx: u8, rdt_us: u32)
 
 /// Middle id doesn't exist on the bus — no slot 1 frame, same CRC
 /// collapse as the disconnect / SRL=None cases. Slot 2 still fires via
-/// CC-compare; trailing CRC fails validation; host rejects the Status
+/// the status-start grid; trailing CRC fails validation; host rejects the Status
 /// reply.
 #[apply(matrix)]
 #[test_log::test]
@@ -430,7 +432,7 @@ fn fast_sync_read_unknown_id_in_ids_collapses_tail(baud_idx: u8, rdt_us: u32) {
 // ---------------- Fast BulkRead ----------------
 
 /// Middle servo SRL=None → `handle_fast_read` returns silent → no slot 1
-/// wire bytes. Slot 2 still fires (Fast schedules slot k>0 by CC-compare),
+/// wire bytes. Slot 2 still fires (status-start-anchored grid),
 /// but the Fast Last fold can't patch the trailing CRC without slot 1's
 /// bytes. Same collapse mechanic as the fast_sync_read mirror.
 #[apply(matrix)]
@@ -478,7 +480,7 @@ fn fast_bulk_read_srl_none_predecessor_collapses_tail(baud_idx: u8, rdt_us: u32)
 }
 
 /// Data-line disconnect on the middle servo — slot 1 emits no bytes. Slot
-/// 2 fires anyway (CC-compare-driven) so its frame lands on the wire, but
+/// 2 fires anyway (status-start-anchored grid) so its frame lands on the wire, but
 /// the trailing Status CRC can't be patched without slot 1's bytes feeding
 /// the Fast Last fold. Reconnect + `assert_bus_healthy` confirms no Fast
 /// Last state stays latched across the collapse.
@@ -529,7 +531,7 @@ fn fast_bulk_read_data_line_disconnect_collapses_tail(baud_idx: u8, rdt_us: u32)
 
 /// Middle entry targets an id that doesn't exist on the bus — no slot 1
 /// frame, same CRC collapse as the disconnect / SRL=None cases. Slot 2
-/// still fires via CC-compare; trailing CRC fails validation.
+/// still fires on the status-start grid; trailing CRC fails validation.
 #[apply(matrix)]
 #[test_log::test]
 fn fast_bulk_read_unknown_id_in_entries_collapses_tail(baud_idx: u8, rdt_us: u32) {

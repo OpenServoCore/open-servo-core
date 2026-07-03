@@ -24,6 +24,10 @@ pub(super) struct PollRouter<'a, P: Providers, const TX_BUF_LEN: usize> {
     pub(super) clock: &'a mut Clock<P::UsartBaud, P::ClockTrim>,
     pub(super) send_policy: &'a mut SendPolicy,
     pub(super) telemetry: &'a mut P::Telemetry,
+    /// Threaded through to [`ReplyHandle`] for the FAST k > 0 defer
+    /// path's status-start wake window; the router itself never touches
+    /// it.
+    pub(super) rx_dma: &'a mut P::RxDma,
     /// Live bus ID snapshot for log lines — stable for the poll's duration
     /// (staged ID commits only at `on_tx_complete`).
     pub(super) id: u8,
@@ -163,15 +167,14 @@ impl<P: Providers, const TX_BUF_LEN: usize> PollRouter<'_, P, TX_BUF_LEN> {
 
 impl<P: Providers, const TX_BUF_LEN: usize> PollRouter<'_, P, TX_BUF_LEN> {
     /// Per-event reply handle over the router's borrowed halves — built
-    /// fresh for each dispatcher call, reborrowing the five send-side
-    /// fields.
+    /// fresh for each dispatcher call, reborrowing the send-side fields.
     #[inline(always)]
     pub(super) fn reply(&mut self) -> ReplyHandle<'_, P, TX_BUF_LEN> {
         ReplyHandle {
             tx: &mut *self.tx,
             scheduler: &mut *self.scheduler,
-            fast_last: &mut *self.fast_last,
             clock: &mut *self.clock,
+            rx_dma: &mut *self.rx_dma,
             send_policy: &mut *self.send_policy,
         }
     }
