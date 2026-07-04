@@ -59,10 +59,37 @@ pub const BOOT_BAUD: u32 = 1_000_000;
 /// >> the inter-servo gap in a broadcast Ping chain.
 pub const DEFAULT_IDLE_US: u32 = 10_000;
 
-/// Backstop on total wall-clock spent in a single xfer. The idle-window
-/// exit handles every normal case (responsive, unresponsive, broadcast);
-/// this only catches a malfunctioning pirate that never goes quiet.
+/// Backstop on total wall-clock spent in a single xfer, on top of twice
+/// the caller's idle window. The idle-window exit handles every normal
+/// case (responsive, unresponsive, broadcast); this only catches a
+/// malfunctioning pirate that never goes quiet. Scaled by the idle
+/// window because a healthy exchange can structurally outlast any fixed
+/// cap: a 9600-baud broadcast Ping legitimately spends `idle`-sized
+/// stretches waiting (the id-scaled reply delay) before its `idle`-long
+/// quiet exit even starts counting.
 const MAX_TOTAL_WAIT: Duration = Duration::from_secs(5);
+
+/// Longest contiguous burst the bench puts on a wire, with margin: a
+/// full-payload FAST chain status frame runs ~150 bytes. Sizes the
+/// stamp-delivery lag pad in `collect_until_silent` — the walker can
+/// hold a whole burst back until one character-time after it ends, so
+/// the idle window must outlast the longest burst's wire time.
+const MAX_BURST_BYTES: u64 = 160;
+
+/// Wall-clock margin on top of the burst wire time: the trailing
+/// character-time that arms USART3 IDLE, the walker run, and a couple of
+/// USB-CDC round-trips.
+const DELIVERY_MARGIN_US: u64 = 3_000;
+
+/// Stamp-delivery lag pad for `collect_until_silent`'s idle window at
+/// `baud`. Negligible at 1 M+ (~4.6 ms), decisive at 9600 (~170 ms —
+/// wire bytes take ~1 ms each and arrive in per-burst batches). A
+/// `start_pirate_only` session that never set a baud reports the `0`
+/// sentinel; pad as if at [`BOOT_BAUD`].
+fn delivery_lag_us(baud: u32) -> u64 {
+    let baud = if baud == 0 { BOOT_BAUD } else { baud };
+    MAX_BURST_BYTES * 10 * 1_000_000 / baud as u64 + DELIVERY_MARGIN_US
+}
 
 /// Pause between consecutive *empty* `bbatch` polls. Avoids hammering
 /// the pirate's USB-CDC stack at the bare USB-RTT rate (~1 ms/poll =
@@ -854,21 +881,20 @@ fn xfer_inner(client: &mut pirate::Client, req: &[u8], idle_us: u32) -> Result<R
     collect_until_silent(client, req, idle_us)
 }
 
-/// Collect post-send stamps until `idle_us` of host wall-clock has
-/// elapsed since the most recent non-empty `bbatch`. Each new batch
-/// resets the silence timer; no explicit "first byte arrived" gate is
-/// needed because the timer starts at the call boundary and only an
-/// unresponsive bus (no bytes, ever) will trip it before the wire
-/// quiesces.
+/// Collect post-send stamps until `idle_us` of host wall-clock — plus
+/// the baud-scaled stamp-delivery lag — has elapsed since the most
+/// recent non-empty `bbatch`.
 ///
-/// Two hardware floors shape the lower bound on `idle_us`:
-///
-/// - Walker cadence ~114 µs (§3.2 of `tools/uart-pirate/TIMING.md`):
-///   stamps lag the wire by up to one quarter-wrap.
-/// - `bbatch` USB-CDC RTT ~1 ms per poll.
-///
-/// `DEFAULT_IDLE_US = 5 ms` clears both with margin; callers can pass
-/// larger values to absorb longer expected inter-byte gaps.
+/// Stamp delivery lags the wire by up to one full burst: the walker
+/// flushes on IC ring HT/TC or USART3 IDLE (§3.2 of
+/// `tools/uart-pirate/TIMING.md`), so a burst too edge-sparse to cross
+/// an HT threshold sits unstamped until one character-time after it
+/// ends. At 9600 the 10-byte ping echo lands as ONE batch ~13 ms after
+/// send — past a bare 10 ms idle window, which would declare the chip
+/// dead while its reply is still in flight. (`BICSNAP` counters can't
+/// help here: `falling_total`/`rx_total` are walker-cached, exactly as
+/// stale as the stamps.) The pad sizes for the longest burst the bench
+/// puts on a wire so the idle window can only expire on true silence.
 ///
 /// `MAX_TOTAL_WAIT` is a hang-protection backstop only — a healthy
 /// pirate never reaches it because `collect_until_silent`'s exit
@@ -878,7 +904,8 @@ fn collect_until_silent(
     req: &[u8],
     idle_us: u32,
 ) -> Result<ReplyCapture> {
-    let idle = Duration::from_micros(idle_us as u64);
+    let idle = Duration::from_micros(idle_us as u64 + delivery_lag_us(client.current_baud()));
+    let max_total_wait = MAX_TOTAL_WAIT + 2 * idle;
     let start = Instant::now();
     let mut stamps: Vec<BStamp> = Vec::new();
     let mut last_byte_time = Instant::now();
@@ -894,10 +921,10 @@ fn collect_until_silent(
             stamps.extend(batch);
             last_byte_time = Instant::now();
         }
-        if start.elapsed() >= MAX_TOTAL_WAIT {
+        if start.elapsed() >= max_total_wait {
             bail!(
                 "pirate xfer exceeded {} s without bus going quiet — pirate likely wedged",
-                MAX_TOTAL_WAIT.as_secs()
+                max_total_wait.as_secs()
             );
         }
     }
