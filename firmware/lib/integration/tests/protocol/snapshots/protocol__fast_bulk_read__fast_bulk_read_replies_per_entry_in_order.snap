@@ -1,5 +1,6 @@
 ---
 source: integration/tests/protocol/fast_bulk_read.rs
+assertion_line: 46
 expression: format_hex(&rx)
 ---
-ff ff fd 00 fe 0d 00 55 00 01 01 00 02 de c0 00 03 01 1e 0e
+ff ff fd 00 fe 11 00 55 00 01 01 24 c5 00 02 de c0 32 93 00 03 01 4e ad

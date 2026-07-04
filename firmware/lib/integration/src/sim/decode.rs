@@ -205,6 +205,7 @@ fn walk_fast_slots<'a>(
     body: &'a [u8],
     slot_data_len: impl Fn(u8) -> Option<usize>,
 ) -> Vec<Slot<'a>> {
+    const CRC_BYTES: usize = dxl_protocol::wire::CRC_BYTES;
     let mut slots = Vec::new();
     let mut cursor = 0usize;
     let mut first = true;
@@ -213,7 +214,7 @@ fn walk_fast_slots<'a>(
             // Slot 0: error hoisted into Status header; body starts at id.
             (header.error, body[cursor], cursor + 1)
         } else {
-            // Slot k>0: [error, id, data...] inline.
+            // Slot k>0: [error, id, data, crc...] inline.
             if cursor + 1 >= body.len() {
                 break;
             }
@@ -227,6 +228,10 @@ fn walk_fast_slots<'a>(
             break;
         };
         let data_end = after_id + data_len;
+        // Every block ends with its cumulative chain CRC (official
+        // layout). The FINAL block's CRC doubles as the packet CRC the
+        // parser already consumed, so it sits past `body` — allow the
+        // walk to end exactly at `data_end` there.
         if data_end > body.len() {
             break;
         }
@@ -235,7 +240,7 @@ fn walk_fast_slots<'a>(
             error,
             data: &body[after_id..data_end],
         });
-        cursor = data_end;
+        cursor = data_end + CRC_BYTES;
         first = false;
     }
     slots

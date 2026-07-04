@@ -155,7 +155,7 @@ impl DxlReply for FakeReply {
         };
         SlotEncoder::<_, TestDxlCrc>::new(&mut self.tx).emit(
             &slot,
-            dxl_protocol::SlotPosition::Only { packet_length: len },
+            dxl_protocol::SlotPosition::First { packet_length: len },
         )?;
         self.send_count += 1;
         self.last_kind = Some(ReplyKind::Slot);
