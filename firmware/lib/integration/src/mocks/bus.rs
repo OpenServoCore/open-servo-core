@@ -25,12 +25,6 @@ pub fn mock_tx_bus() -> (MockTxBus, TxBusState) {
     }
     {
         let ops = state.operations.clone();
-        m.expect_take_bus().returning_st(move || {
-            ops.borrow_mut().push(TxBusOp::TakeBus);
-        });
-    }
-    {
-        let ops = state.operations.clone();
         m.expect_release_bus().returning_st(move || {
             ops.borrow_mut().push(TxBusOp::ReleaseBus);
         });

@@ -103,16 +103,24 @@ pub(crate) fn mk_clock_trim() -> (MockClockTrim, ClockTrimState) {
 #[derive(Clone, Default)]
 pub(crate) struct SchedState {
     ops: Rc<RefCell<alloc::vec::Vec<ScheduleOp>>>,
+    schedule_due_owned: Rc<Cell<bool>>,
 }
 
 impl SchedState {
     pub(crate) fn operations(&self) -> alloc::vec::Vec<ScheduleOp> {
         self.ops.borrow().clone()
     }
+
+    /// Stage the next `on_schedule_due` return — `true` models the
+    /// SysTick handoff arm owning the match.
+    pub(crate) fn stage_schedule_due_owned(&self, v: bool) {
+        self.schedule_due_owned.set(v);
+    }
 }
 
 /// `MockTxScheduler` logging `schedule` / `commit_pending` / `cancel` into
-/// its state companion; `on_schedule_due` wired to `false`.
+/// its state companion; `on_schedule_due` reads the staged ownership flag
+/// (default `false`).
 pub(crate) fn mk_scheduler() -> (MockTxScheduler, SchedState) {
     let state = SchedState::default();
     let mut m = MockTxScheduler::new();
@@ -139,7 +147,10 @@ pub(crate) fn mk_scheduler() -> (MockTxScheduler, SchedState) {
             ops.borrow_mut().push(ScheduleOp::Cancel);
         });
     }
-    m.expect_on_schedule_due().returning_st(|| false);
+    {
+        let owned = state.schedule_due_owned.clone();
+        m.expect_on_schedule_due().returning_st(move || owned.get());
+    }
     (m, state)
 }
 
@@ -165,12 +176,6 @@ pub(crate) fn mk_tx_bus() -> (MockTxBus, TxBusState) {
         let ops = state.ops.clone();
         m.expect_start_now().returning_st(move |byte_count| {
             ops.borrow_mut().push(TxBusOp::StartNow { byte_count });
-        });
-    }
-    {
-        let ops = state.ops.clone();
-        m.expect_take_bus().returning_st(move || {
-            ops.borrow_mut().push(TxBusOp::TakeBus);
         });
     }
     {
@@ -250,7 +255,6 @@ pub(crate) fn mk_edge_dma() -> (MockEdgeDma, EdgeDmaState) {
 #[derive(Clone, Default)]
 pub(crate) struct FastLastState {
     ops: Rc<RefCell<alloc::vec::Vec<FastLastSchedulerOp>>>,
-    deadline_passed: Rc<Cell<bool>>,
     patch_window_expired: Rc<Cell<bool>>,
 }
 
@@ -258,37 +262,22 @@ impl FastLastState {
     pub(crate) fn operations(&self) -> alloc::vec::Vec<FastLastSchedulerOp> {
         self.ops.borrow().clone()
     }
-    pub(crate) fn stage_deadline_passed(&self, v: bool) {
-        self.deadline_passed.set(v);
-    }
     pub(crate) fn stage_patch_window_expired(&self, v: bool) {
         self.patch_window_expired.set(v);
     }
 }
 
 /// `MockFastLastScheduler` logging grid ops into its state companion, with
-/// `deadline_passed` / `patch_window_expired` reading the staged flags.
+/// `patch_window_expired` reading the staged flag.
 pub(crate) fn mk_fast_last() -> (MockFastLastScheduler, FastLastState) {
     let state = FastLastState::default();
     let mut m = MockFastLastScheduler::new();
-    {
-        let ops = state.ops.clone();
-        m.expect_set_busy_wait_deadline()
-            .returning_st(move |deadline| {
-                ops.borrow_mut()
-                    .push(FastLastSchedulerOp::SetBusyWaitDeadline { deadline });
-            });
-    }
     {
         let ops = state.ops.clone();
         m.expect_schedule().returning_st(move |deadline| {
             ops.borrow_mut()
                 .push(FastLastSchedulerOp::Schedule { deadline });
         });
-    }
-    {
-        let dp = state.deadline_passed.clone();
-        m.expect_deadline_passed().returning_st(move || dp.get());
     }
     {
         let pwe = state.patch_window_expired.clone();

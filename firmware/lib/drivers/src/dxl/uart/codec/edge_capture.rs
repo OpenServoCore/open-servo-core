@@ -77,12 +77,25 @@ impl<R: EdgeDma, const EDGE_BUF_LEN: usize> EdgeCapture<R, EDGE_BUF_LEN> {
     /// bookkeeping — no walking, no anchor mutation. Called from ISR
     /// entries and from [`Self::anchor_at_tail`] to refresh before the
     /// edge walker reads.
+    ///
+    /// The chip may time-share the edge channel with the TX kickoff
+    /// (doc §5/§6): while that window is open `remaining()` stays frozen
+    /// at its arm-time value (the channel captures nothing there), and
+    /// the hardware restore re-arms the ring from its base. Consuming the
+    /// restart flag here — before every head read — makes the resync
+    /// self-healing on whichever publish comes first after the restore
+    /// (mid-TX IDLE, TC-path refresh, or a cancel-path back-search). The
+    /// restore happens during our own TX (RX silent, no self-echo), so
+    /// resetting the bookkeeping never drops a captured edge.
     fn publish_edges(&mut self) {
-        let remaining = self.ring.remaining();
         // SAFETY: the edges buffer is mutated only by DMA1_CH7 (hardware
         // writer) and read here from a PFIC-HIGH ISR; no other code path
         // takes a `&mut` into it.
         let edges = unsafe { &mut *self.edges.get() };
+        if self.ring.take_ring_restart() {
+            edges.reset();
+        }
+        let remaining = self.ring.remaining();
         edges.on_publish(remaining);
     }
 }
@@ -254,5 +267,63 @@ impl<R: EdgeDma, const EDGE_BUF_LEN: usize> EdgeCapture<R, EDGE_BUF_LEN> {
         let at = edges.write_seq_for_test();
         edges.stage(at, &[stamp]);
         at.wrapping_add(1)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::cell::Cell;
+    use std::rc::Rc;
+
+    use super::*;
+
+    /// Hand-rolled double for the time-share restart contract —
+    /// `MockEdgeDma` deliberately leaves `take_ring_restart` on the trait
+    /// default (`false`), so the restart path needs a real toggle.
+    #[derive(Default)]
+    struct RestartState {
+        remaining: Cell<u16>,
+        restart: Cell<bool>,
+    }
+
+    struct RestartingEdgeDma(Rc<RestartState>);
+
+    impl EdgeDma for RestartingEdgeDma {
+        fn remaining(&self) -> u16 {
+            self.0.remaining.get()
+        }
+        fn take_ring_restart(&mut self) -> bool {
+            self.0.restart.replace(false)
+        }
+    }
+
+    #[test]
+    fn publish_consumes_ring_restart_and_resets_bookkeeping() {
+        const LEN: usize = 8;
+        let state = Rc::new(RestartState::default());
+        let mut cap: EdgeCapture<_, LEN> = EdgeCapture::new(RestartingEdgeDma(state.clone()));
+        let seq = |cap: &EdgeCapture<_, LEN>| {
+            // SAFETY: test-only read; no DMA.
+            unsafe { (*cap.edges.get()).write_seq_for_test() }
+        };
+
+        // Producer wrote 5 stamps → head at slot 5 (remaining 3).
+        state.remaining.set(3);
+        cap.on_idle(0);
+        assert_eq!(seq(&cap), 5);
+
+        // Hardware restore: NDTR reloads full, restart flag pends. The
+        // next publish must reset bookkeeping FIRST — without it, the
+        // head at slot 0 reads as a (0 − 5) mod 8 = 3-slot phantom
+        // advance.
+        state.remaining.set(LEN as u16);
+        state.restart.set(true);
+        cap.on_idle(0);
+        assert_eq!(seq(&cap), 0);
+
+        // Captures after the restore advance from the ring base.
+        state.remaining.set(6);
+        cap.on_idle(0);
+        assert_eq!(seq(&cap), 2);
     }
 }

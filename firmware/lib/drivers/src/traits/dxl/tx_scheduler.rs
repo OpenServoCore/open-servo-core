@@ -35,10 +35,14 @@ pub trait TxScheduler {
     /// any prior schedule).
     ///
     /// - `kind == SendKind::Plain` — schedule per the chip-side decision tree.
-    /// - `kind == SendKind::FastLast` — stash; the composite triggers the
-    ///   commit via [`Self::commit_pending`] when the FastLast walk reaches
-    ///   its final anchor (chain-CRC catchup co-owns the long-horizon timer
-    ///   during the predecessor window, so the scheduler defers).
+    /// - `kind == SendKind::FastLast` — arm the hardware NOW when the
+    ///   deadline sits within the provider's direct-arm horizon (the wire
+    ///   start is then locked in regardless of CPU state while the fold
+    ///   grid runs in parallel); beyond it, stash — the FastLast walk
+    ///   co-owns the long-horizon timer during the predecessor window, so
+    ///   a long-horizon handoff here would clobber the grid's CMP. The
+    ///   composite commits the stash via [`Self::commit_pending`] at the
+    ///   walk's final anchor.
     ///
     /// `byte_count` is the size of the encoded packet sitting in the
     /// driver-owned TX buffer (codec's `tx_len`); the provider hands it to
@@ -47,10 +51,9 @@ pub trait TxScheduler {
 
     /// Composite signals "the FastLast walk reached its final anchor — commit
     /// the stashed schedule now." Provider runs its time-remaining decision
-    /// against the stashed deadline; by construction the caller invokes this
-    /// within ~1 byte_time of the wire deadline, so the decision lands in
-    /// the direct-schedule or software-start branch. No-op when nothing stashed;
-    /// idempotent.
+    /// against the stashed deadline. Only the far-horizon `FastLast` case
+    /// stashes (see [`Self::schedule`]); when `schedule` armed immediately
+    /// this is a no-op. Idempotent.
     fn commit_pending(&mut self);
 
     /// Drop any pending TX schedule. Idempotent. The wire driver itself is

@@ -60,6 +60,18 @@ impl<T: Copy, const N: usize> HwRing<T, N> {
         self.data.as_ptr()
     }
 
+    /// Reset producer/consumer bookkeeping to the freshly-constructed
+    /// state. For rings whose hardware producer gets re-armed from the
+    /// buffer base (NDTR reloaded to full, writes restarting at slot 0 —
+    /// the TX-kickoff time-share restoring the edge channel): the next
+    /// [`Self::on_publish`] must see the restart as "no new slots", not
+    /// as a full-lap delta against the pre-restart position.
+    pub fn reset(&mut self) {
+        self.write_seq = 0;
+        self.read_seq = 0;
+        self.lapped = false;
+    }
+
     /// Publish the producer's head from a DMA channel's NDTR readback
     /// (`remaining` slots left before the channel wraps). Computes the
     /// ring position as `LEN - remaining`, then the monotonic seq delta
@@ -474,6 +486,20 @@ mod tests {
         let (front, _) = r.peek_slices();
         assert_eq!(front.first(), Some(&3));
         assert_eq!(b.read_seq_for_test(), 2);
+    }
+
+    #[test]
+    fn reset_returns_bookkeeping_to_construction_state() {
+        let mut b: HwBuf = HwRing::new(0);
+        b.on_publish(3); // head at slot 5
+        b.reader().advance(2);
+        b.reset();
+        assert_eq!(b.write_seq_for_test(), 0);
+        assert_eq!(b.read_seq_for_test(), 0);
+        // Re-armed producer at base: a full `remaining` readback is a
+        // zero-delta publish, not a full-lap advance.
+        b.on_publish(8);
+        assert_eq!(b.write_seq_for_test(), 0);
     }
 
     #[test]

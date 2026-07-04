@@ -2,7 +2,10 @@
 ///
 /// Drives the periodic walks that classify edges, drain the parser, and
 /// fold predecessor wire bytes into the running CRC during a Fast Sync /
-/// Bulk Read predecessor window.
+/// Bulk Read predecessor window. The wire start itself is hardware-armed
+/// through [`super::TxScheduler`] — the grid's only job is landing the
+/// chain-CRC patch before the TX DMA's read cursor reaches the trailing
+/// CRC slot.
 ///
 /// The driver works entirely in absolute u32 deadlines (WireClock domain).
 /// The chip-side provider applies these directly — no lifting, no
@@ -21,17 +24,6 @@ pub trait FastLastScheduler {
     /// before re-scheduling the next CMP one grid step ahead.
     const BYTES_PER_INTERVAL: u16;
 
-    /// Pre-start fold residue cap, in predecessor wire bytes. The final
-    /// busy-wait exits at `deadline = t_prior_end − GUARD_BYTES × byte_ticks`,
-    /// leaving up to `GUARD_BYTES` predecessor bytes for the TX-start
-    /// body's tail to fold inline. At 3M GUARD=1 keeps `patch_crc` ahead
-    /// of CH4's DMA-prefetch on byte[n − 2].
-    const GUARD_BYTES: u16;
-
-    /// Cache the busy-wait exit `deadline` (WireClock u32 domain).
-    /// Subsequent `deadline_passed()` calls compare against it.
-    fn set_busy_wait_deadline(&mut self, deadline: u32);
-
     /// Schedule the next CMP at the absolute `deadline` (caller has already
     /// back-dated by `FAST_LAST_ENTRY_TICKS`). Idempotent on re-schedule.
     ///
@@ -41,16 +33,13 @@ pub trait FastLastScheduler {
     /// grid step advances cleanly from there.
     fn schedule(&mut self, deadline: u32);
 
-    /// True once the wall clock has passed the deadline staged via
-    /// `set_busy_wait_deadline`. Polled by the final-step busy-wait.
-    fn deadline_passed(&self) -> bool;
-
     /// True when the TX DMA channel's read cursor has reached the trailing
     /// CRC slot. Once true, any further `patch_crc` write into
     /// `tx_buf[len-CRC_BYTES..len]` ships too late — placeholder bytes are
-    /// already on the wire. Polled by `on_tx_start`'s post-start fold loop
-    /// alongside the predecessor-byte-plateau backstop; whichever trips
-    /// first ends the loop.
+    /// already on the wire. The terminal guard on the grid's completion
+    /// body: the hardware kickoff fires in parallel with the fold, so a
+    /// starved fold (silent predecessor) converges here once the TX
+    /// drains.
     fn patch_window_expired(&self) -> bool;
 
     /// Drop any pending CMP and return to idle. Idempotent.

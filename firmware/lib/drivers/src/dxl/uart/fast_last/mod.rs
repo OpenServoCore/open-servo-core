@@ -2,11 +2,15 @@
 //! independent halves:
 //!
 //! - [`FsmScheduler`] — the periodic-walk CMP grid that paces classifier +
-//!   parser + fold work across the predecessor window, plus the final-step
-//!   busy-wait.
+//!   parser + fold work across the predecessor window, plus the completion
+//!   body that lands the chain-CRC patch after the last predecessor byte.
 //! - [`FoldEngine`] — the running chain CRC and the bookkeeping that decides
 //!   which wire bytes feed it, finalizing into a consumer-owned
 //!   [`CrcPatchSink`].
+//!
+//! The wire start is hardware-armed through the TX scheduler and fires in
+//! parallel with the grid — no fold work sits on the wire deadline; the
+//! patch only races the TX DMA's read of the trailing CRC slot.
 //!
 //! The composite owns no timing state of its own — `start` routes the shared
 //! [`FastLastSchedule`] to each half, and the driver reaches the halves
@@ -29,22 +33,23 @@ pub use fold_engine::FoldEngine;
 pub use fsm_scheduler::FsmScheduler;
 pub use schedule::FastLastSchedule;
 
-/// Exit disposition of [`FastLast::on_tx_start`]'s residue fold. The
-/// composite routes [`Self::WindowExpired`] / [`Self::Plateau`] to the
-/// `crc_patch_deadline_miss` telemetry counter — both ship a placeholder
+/// Exit disposition of one [`FsmScheduler::on_step`] grid body. The
+/// composite routes [`Self::WindowExpired`] to the
+/// `crc_patch_deadline_miss` telemetry counter — it ships a placeholder
 /// CRC observable to the host as a bad-CRC packet.
 #[derive(Copy, Clone, PartialEq, Eq, Debug)]
 pub enum FoldExit {
-    /// Fold wasn't active — nothing to do.
+    /// Grid wasn't active — spurious CMP, nothing to do.
     Idle,
+    /// Grid continues — the body re-armed the next CMP.
+    Pending,
     /// Predecessor-byte target reached; trailing CRC patched in time.
     Finalized,
     /// The TX DMA channel prefetched into the trailing CRC slot before
-    /// finalize — any patch would ship too late.
+    /// finalize — any patch would ship too late. Terminal for a starved
+    /// fold (silent predecessor): the hardware kickoff fired regardless
+    /// and the TX drain closed the window.
     WindowExpired,
-    /// A drain pass folded nothing new — predecessor starvation backstop
-    /// ([[busy-wait-plateau-backstop]]).
-    Plateau,
 }
 
 /// Fast Last pipeline composite. Generic over its scheduler provider `S` and
@@ -59,40 +64,6 @@ impl<S: FastLastScheduler, CRC: CrcUmts> FastLast<S, CRC> {
         Self {
             scheduler: FsmScheduler::new(scheduler),
             crc: FoldEngine::new(),
-        }
-    }
-
-    // -- events -----------------------------------------------------------------
-
-    /// The TX-start tick arrived with the fold still active — run the
-    /// post-start residue fold that absorbs any GUARD bytes in flight at
-    /// TX-start time and patches the trailing CRC slot before DMA1_CH4's
-    /// prefetch reads it (doc §10.6.2 CC3 body). `drain` is one pass of
-    /// the caller's RX drain, folding fresh bytes into the handed
-    /// [`FoldEngine`]. No-op when the fold is idle.
-    ///
-    /// Returns the [`FoldExit`] disposition; the composite routes the two
-    /// miss variants to telemetry (this half only decides *when* to stop,
-    /// not what the miss means chip-side).
-    pub fn on_tx_start<D>(&mut self, mut drain: D) -> FoldExit
-    where
-        D: FnMut(&mut FoldEngine<CRC>),
-    {
-        if !self.crc.is_active() {
-            return FoldExit::Idle;
-        }
-        loop {
-            if self.scheduler.patch_window_expired() {
-                return FoldExit::WindowExpired;
-            }
-            let before = self.crc.bytes_folded();
-            drain(&mut self.crc);
-            if !self.crc.is_active() {
-                return FoldExit::Finalized;
-            }
-            if self.crc.bytes_folded() == before {
-                return FoldExit::Plateau;
-            }
         }
     }
 

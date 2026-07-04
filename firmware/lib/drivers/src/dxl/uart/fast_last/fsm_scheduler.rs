@@ -1,8 +1,11 @@
 //! Periodic-walk grid FSM for the Fast Last fold pipeline. Owns the CMP
 //! grid that paces classifier + parser + fold work across a Fast Sync /
-//! Bulk Read predecessor window, plus the final-step busy-wait that brings
-//! `bytes_walked` up to `predecessor_bytes − GUARD` before the TX-start body
-//! folds the residue inline.
+//! Bulk Read predecessor window, plus the completion body that lands the
+//! chain-CRC patch after the last predecessor byte. The wire start itself
+//! is hardware-armed (TX kickoff, doc §5) and fires in parallel — no grid
+//! body sits on the wire deadline; the only race the grid runs is
+//! `patch_crc` against the TX DMA's read of the trailing CRC slot
+//! (~`own_reply_bytes · byte_time` wide).
 //!
 //! Half of the [`FastLast`] sub-composite (§4.3): the scheduling half. The
 //! fold half is [`FoldEngine`]. This half works in absolute u32 deadlines
@@ -13,6 +16,7 @@
 //! [`FastLast`]: super::FastLast
 //! [`FoldEngine`]: super::fold_engine::FoldEngine
 
+use super::FoldExit;
 use super::schedule::FastLastSchedule;
 use crate::traits::dxl::FastLastScheduler;
 
@@ -23,12 +27,18 @@ enum FastLastPhase {
     /// No reply in flight.
     Idle,
     /// CMP-match-driven grid: one body per `BYTES_PER_INTERVAL` step from
-    /// `t_prior_start` to `final_anchor_offset`. The final body runs the
-    /// busy-wait fold loop, then returns to [`Idle`] (the TX-start body owns
-    /// the post-start residue).
+    /// `t_prior_start` to `final_anchor_offset`. The final-anchor body
+    /// commits any far-horizon TX stash and hands off to [`Completion`].
     ///
-    /// [`Idle`]: FastLastPhase::Idle
+    /// [`Completion`]: FastLastPhase::Completion
     PeriodicWalk,
+    /// Post-grid completion: one CMP just past the predecessor's wire end
+    /// folds the tail bytes + our own reply and patches the chain CRC. A
+    /// starved body (silent predecessor) re-arms at the grid stride until
+    /// the fold finalizes or the patch window expires — the hardware
+    /// kickoff fires regardless, so a doomed fold converges via the TX
+    /// drain closing the window.
+    Completion,
 }
 
 /// Grid geometry for one Last reply, derived by [`FsmScheduler::plan`] from
@@ -37,15 +47,15 @@ struct GridPlan {
     /// First scheduled CMP — `final_anchor_offset` stepped back by whole
     /// intervals until ≤ one step from the predecessor's first wire byte.
     first_anchor_offset: u32,
-    /// The terminal (busy-wait) body's anchor.
+    /// The last periodic-walk body's anchor.
     final_anchor_offset: u32,
     /// `BYTES_PER_INTERVAL · byte_ticks` — grid step in scheduler ticks.
     interval_ticks: u32,
-    /// `predecessor_bytes − GUARD_BYTES` — the final body's busy-wait exit.
-    busy_wait_target: u32,
-    /// Stop-fold deadline: predecessor wire-end minus the GUARD window the
-    /// TX-start body absorbs.
-    deadline_offset: u32,
+    /// The completion body's anchor: one byte-time past the predecessor's
+    /// wire end, so the last predecessor byte has landed and published.
+    completion_offset: u32,
+    /// `predecessor_bytes` — the fold finalizes (and patches) on reaching it.
+    fold_target: u32,
 }
 
 /// Grid math + FSM for the Fast Last fold pipeline.
@@ -60,17 +70,19 @@ pub struct FsmScheduler<S: FastLastScheduler> {
     /// the scheduler. Body bumps this by `interval_ticks` before re-scheduling —
     /// drift in any one body's ISR-entry latency doesn't propagate.
     next_anchor_offset: u32,
-    /// Wall-clock offset (from status_start) of the terminal (busy-wait) body.
+    /// Wall-clock offset (from status_start) of the last periodic-walk body.
     /// Set once at `start`; on equality with `next_anchor_offset` the body
-    /// switches from "advance grid" to "busy-wait and return".
+    /// commits any far-horizon TX stash and hands off to the completion body.
     final_anchor_offset: u32,
     /// `BYTES_PER_INTERVAL · byte_ticks` — grid step in scheduler ticks.
     /// Cached at `start` for fast re-scheduling.
     interval_ticks: u32,
-    /// `predecessor_bytes − GUARD_BYTES`, derived once at `start`. The final
-    /// body's busy-wait exits when the walked count reaches it; the trailing
-    /// GUARD bytes are folded by the TX-start body.
-    busy_wait_target: u32,
+    /// Wall-clock offset (from status_start) of the completion body.
+    completion_offset: u32,
+    /// `predecessor_bytes`, derived once at `start`. The completion body
+    /// finalizes when the walked count reaches it — the fold engine has
+    /// patched the chain CRC by then.
+    fold_target: u32,
     /// WireClock u32 anchor cached at `start` — every subsequent grid
     /// `schedule(deadline)` is `status_start_tick + offset`.
     status_start_tick: u32,
@@ -84,7 +96,8 @@ impl<S: FastLastScheduler> FsmScheduler<S> {
             next_anchor_offset: 0,
             final_anchor_offset: 0,
             interval_ticks: 0,
-            busy_wait_target: 0,
+            completion_offset: 0,
+            fold_target: 0,
             status_start_tick: 0,
         }
     }
@@ -97,21 +110,25 @@ impl<S: FastLastScheduler> FsmScheduler<S> {
     /// `walker` runs the classifier + parser-drain + per-byte fold for
     /// whatever bytes have landed since the last body, and returns the
     /// composite-side cumulative count of predecessor bytes folded so far.
-    /// Called at least once per invocation. The final-anchor busy-wait exits
-    /// when the returned count reaches `predecessor_bytes − GUARD`.
+    /// Called exactly once per body — no busy-wait: the wire start is
+    /// hardware-armed and needs no CPU at the deadline, so a body that
+    /// hasn't reached `fold_target` just re-arms and returns.
     ///
-    /// `commit_pending` is invoked exactly once on entry to the final-anchor
-    /// body, *before* the busy-wait starts. The composite wires it to
-    /// `TxScheduler::commit_pending` so the wire-start schedule the
-    /// TxScheduler stashed at `send_slot(Last)` time is committed while
-    /// there's still ~1 byte_time of headroom — the hardware match latches
-    /// during the busy-wait spin and the wire-start ISR runs as soon as the
-    /// busy-wait exits. Not called from intermediate-step bodies.
+    /// `commit_pending` is invoked exactly once, on the final periodic-walk
+    /// body. The composite wires it to `TxScheduler::commit_pending` so a
+    /// far-horizon TX stash (low baud — the grid co-owned the long-horizon
+    /// timer until here) commits while the remaining wait fits the
+    /// provider's direct-arm horizon. A no-op when `schedule` armed the
+    /// hardware at observation time.
+    ///
+    /// Returns the body's [`FoldExit`]; the composite routes
+    /// [`FoldExit::WindowExpired`] to the `crc_patch_deadline_miss`
+    /// counter.
     ///
     /// Single walker closure (not `(walker, bytes_walked)`) so the composite
     /// can capture `&mut FoldEngine` once for both the walk and the read —
     /// splitting them would force interior mutability on the count.
-    pub fn on_step<W, C>(&mut self, mut walker: W, commit_pending: C)
+    pub fn on_step<W, C>(&mut self, mut walker: W, commit_pending: C) -> FoldExit
     where
         W: FnMut() -> u32,
         C: FnOnce(),
@@ -119,72 +136,66 @@ impl<S: FastLastScheduler> FsmScheduler<S> {
         match self.phase {
             FastLastPhase::PeriodicWalk => {
                 let bytes_walked = walker();
-                if self.next_anchor_offset == self.final_anchor_offset {
-                    // Final anchor — commit the TxScheduler stash so the
-                    // wire-start path stages while there's still a byte_time of
-                    // headroom, then busy-wait. Uncontested at high baud
-                    // because the composite paused DMA1_CH7 HT/TC at start
-                    // time, so this body is the sole HIGH consumer in the
-                    // window. Exit when `bytes_walked >= busy_wait_target` OR
-                    // scheduler reports deadline passed; the remaining GUARD
-                    // bytes are absorbed by the TX-start body's tail fold.
-                    commit_pending();
-                    //
-                    // SAFETY: the plateau check (no progress between walker
-                    // calls) is a hard backstop — in production the deadline
-                    // is the primary exit, but if scheduler state ever
-                    // diverges (set_busy_wait_deadline math wrong, CMP latched but
-                    // mask-cleared, etc.) the chip must not spin forever
-                    // inside ISR. Bytes can only stall when the wire is
-                    // silent — the predecessor either dropped its reply
-                    // entirely or finished early — both of which mean there's
-                    // no more work to do here regardless.
-                    let target = self.busy_wait_target;
-                    if bytes_walked < target {
-                        let mut prev_walked = bytes_walked;
-                        loop {
-                            let walked = walker();
-                            if walked >= target {
-                                break;
-                            }
-                            if self.scheduler.deadline_passed() {
-                                break;
-                            }
-                            if walked == prev_walked {
-                                break;
-                            }
-                            prev_walked = walked;
-                        }
-                    }
-                    self.phase = FastLastPhase::Idle;
-                    self.scheduler.cancel();
-                    return;
+                if self.next_anchor_offset != self.final_anchor_offset {
+                    self.next_anchor_offset =
+                        self.next_anchor_offset.wrapping_add(self.interval_ticks);
+                    self.schedule_walk_cmp(self.next_anchor_offset);
+                    return FoldExit::Pending;
+                }
+                // Final periodic-walk body — commit any far-horizon TX
+                // stash so the hardware kickoff arms, then hand off to the
+                // completion body (or finish outright when every
+                // predecessor byte already landed).
+                commit_pending();
+                if bytes_walked >= self.fold_target {
+                    self.finish();
+                    return FoldExit::Finalized;
+                }
+                self.phase = FastLastPhase::Completion;
+                self.next_anchor_offset = self.completion_offset;
+                self.schedule_completion_cmp(self.completion_offset);
+                FoldExit::Pending
+            }
+            FastLastPhase::Completion => {
+                let bytes_walked = walker();
+                if bytes_walked >= self.fold_target {
+                    self.finish();
+                    return FoldExit::Finalized;
+                }
+                if self.scheduler.patch_window_expired() {
+                    // The TX DMA's read cursor reached the trailing CRC
+                    // slot — a patch can no longer ship. Predecessor
+                    // starvation lands here (the hardware kickoff fired
+                    // regardless and the drain closed the window).
+                    self.finish();
+                    return FoldExit::WindowExpired;
                 }
                 self.next_anchor_offset = self.next_anchor_offset.wrapping_add(self.interval_ticks);
-                self.schedule_walk_cmp(self.next_anchor_offset);
+                self.schedule_completion_cmp(self.next_anchor_offset);
+                FoldExit::Pending
             }
             FastLastPhase::Idle => {
                 // Spurious CMP entry — defensive cancel.
                 self.scheduler.cancel();
+                FoldExit::Idle
             }
         }
     }
 
     // -- commands ---------------------------------------------------------------
 
-    /// Compute the periodic-walk grid, stage the deadline, schedule the first CMP,
-    /// and flip the FSM into [`FastLastPhase::PeriodicWalk`].
+    /// Compute the periodic-walk grid, schedule the first CMP, and flip the
+    /// FSM into [`FastLastPhase::PeriodicWalk`].
     pub fn start(&mut self, p: FastLastSchedule) {
         let plan = Self::plan(&p);
         self.next_anchor_offset = plan.first_anchor_offset;
         self.final_anchor_offset = plan.final_anchor_offset;
         self.interval_ticks = plan.interval_ticks;
-        self.busy_wait_target = plan.busy_wait_target;
+        self.completion_offset = plan.completion_offset;
+        self.fold_target = plan.fold_target;
         self.status_start_tick = p.status_start_tick;
         self.phase = FastLastPhase::PeriodicWalk;
 
-        self.scheduler
-            .set_busy_wait_deadline(p.status_start_tick.wrapping_add(plan.deadline_offset));
         self.schedule_walk_cmp(plan.first_anchor_offset);
     }
 
@@ -193,7 +204,6 @@ impl<S: FastLastScheduler> FsmScheduler<S> {
         let byte_ticks = p.byte_ticks as u32;
         let predecessor_bytes = p.predecessor_bytes;
         let interval_ticks = S::BYTES_PER_INTERVAL as u32 * byte_ticks;
-        let t_guard = S::GUARD_BYTES as u32 * byte_ticks;
 
         // Offsets from the observed status start: the predecessor window
         // begins AT the anchor, so the first predecessor byte completes one
@@ -202,17 +212,9 @@ impl<S: FastLastScheduler> FsmScheduler<S> {
         let t_prior_start_offset = byte_ticks;
         let t_prior_end_offset = predecessor_bytes * byte_ticks;
         let t_prior_duration = predecessor_bytes.saturating_sub(1) * byte_ticks;
-        // Our reply must land at predecessor_end (no inter-slot gap).
-        let tx_start_offset = t_prior_end_offset;
 
-        let deadline_offset = t_prior_end_offset.wrapping_sub(t_guard);
-        let final_anchor_offset = if predecessor_bytes > S::GUARD_BYTES as u32 {
-            tx_start_offset
-                .wrapping_sub(core::cmp::min(interval_ticks, t_prior_duration))
-                .wrapping_sub(t_guard)
-        } else {
-            tx_start_offset
-        };
+        let final_anchor_offset =
+            t_prior_end_offset.wrapping_sub(core::cmp::min(interval_ticks, t_prior_duration));
 
         // Step back by `interval` until ≤ one step from t_prior_start_offset.
         // The i32 cast handles the small-predecessor case where
@@ -229,14 +231,13 @@ impl<S: FastLastScheduler> FsmScheduler<S> {
             first_anchor_offset,
             final_anchor_offset,
             interval_ticks,
-            busy_wait_target: predecessor_bytes.saturating_sub(S::GUARD_BYTES as u32),
-            deadline_offset,
+            completion_offset: t_prior_end_offset.wrapping_add(byte_ticks),
+            fold_target: predecessor_bytes,
         }
     }
 
     /// Schedule one periodic-walk CMP at `anchor_offset` past the status-start
-    /// anchor. Single scheduling point for the grid — EVERY CMP, intermediates
-    /// AND the final one, back-dates by `FAST_LAST_ENTRY_TICKS` so
+    /// anchor. Every walk CMP back-dates by `FAST_LAST_ENTRY_TICKS` so
     /// ISR-entry latency lands the body ON the grid point, not after it
     /// (back-dating only the last CMP is exactly how the legacy fold grid
     /// drifted into contention).
@@ -246,6 +247,26 @@ impl<S: FastLastScheduler> FsmScheduler<S> {
             self.status_start_tick
                 .wrapping_add(anchor_offset.wrapping_sub(S::FAST_LAST_ENTRY_TICKS as u32)),
         );
+    }
+
+    /// Schedule a completion-phase CMP at `anchor_offset` — NOT entry-lag
+    /// back-dated. The completion body has no wire punctuality requirement
+    /// (the hardware kickoff fires in parallel; the patch window is
+    /// `own_reply` bytes wide), so entry latency only delays the patch
+    /// INTO its window. Back-dating would instead let a fast ISR entry run
+    /// the body BEFORE the last predecessor byte has published — the fold
+    /// comes up one byte short, the retry burns a whole grid interval, and
+    /// the TX-complete cleanup can cancel the fold before the retry lands.
+    #[inline]
+    fn schedule_completion_cmp(&mut self, anchor_offset: u32) {
+        self.scheduler
+            .schedule(self.status_start_tick.wrapping_add(anchor_offset));
+    }
+
+    /// Shared terminal transition: drop the pending CMP, return to idle.
+    fn finish(&mut self) {
+        self.phase = FastLastPhase::Idle;
+        self.scheduler.cancel();
     }
 
     /// Drop any pending CMP and return to [`FastLastPhase::Idle`]. Idempotent.
@@ -258,14 +279,6 @@ impl<S: FastLastScheduler> FsmScheduler<S> {
 
     pub fn is_active(&self) -> bool {
         !matches!(self.phase, FastLastPhase::Idle)
-    }
-
-    /// Polled by the [`FastLast::on_tx_start`] post-start fold loop — see
-    /// [`FastLastScheduler::patch_window_expired`].
-    ///
-    /// [`FastLast::on_tx_start`]: super::FastLast::on_tx_start
-    pub fn patch_window_expired(&self) -> bool {
-        self.scheduler.patch_window_expired()
     }
 }
 
@@ -318,16 +331,17 @@ mod tests {
     }
 
     #[test]
-    fn start_stages_deadline_and_first_cmp_at_anchor_minus_entry() {
+    fn start_schedules_first_cmp_at_anchor_minus_entry() {
         // predecessor_bytes=2 anchored on the observed status start:
-        // tx_start = 2·160 = 320; single-step grid (t_prior_duration =
-        // 160 < interval), so the final anchor doubles as the first and
-        // sits AT the window start (offset 0).
+        // t_prior_end = 320, t_prior_duration = 160 < interval → single-
+        // step grid: the final anchor doubles as the first and sits at
+        // the predecessor's first byte boundary (offset 160).
         let p = sched(2000, 2);
         let plan = FsmScheduler::<MockFastLastScheduler>::plan(&p);
-        assert_eq!(plan.final_anchor_offset, 0);
+        assert_eq!(plan.final_anchor_offset, 160);
         assert_eq!(plan.first_anchor_offset, plan.final_anchor_offset);
-        assert_eq!(plan.deadline_offset, 320 - 160);
+        assert_eq!(plan.completion_offset, 320 + 160);
+        assert_eq!(plan.fold_target, 2);
 
         let (mut d, state) = mk_fast_last();
         d.start(p);
@@ -336,39 +350,33 @@ mod tests {
         assert_eq!(d.final_anchor_offset_for_test(), plan.final_anchor_offset);
         assert_eq!(
             state.operations().as_slice(),
-            &[
-                FastLastSchedulerOp::SetBusyWaitDeadline {
-                    deadline: 2000 + plan.deadline_offset,
-                },
-                FastLastSchedulerOp::Schedule {
-                    deadline: 2000u32.wrapping_add(plan.first_anchor_offset.wrapping_sub(ENTRY)),
-                },
-            ]
+            &[FastLastSchedulerOp::Schedule {
+                deadline: 2000u32.wrapping_add(plan.first_anchor_offset.wrapping_sub(ENTRY)),
+            }]
         );
     }
 
     #[test]
     fn start_step_back_handles_small_predecessor_modular_wrap() {
-        // predecessor_bytes=2: t_prior_start = 160, t_prior_end = 320,
-        // t_prior_duration = 160, final_anchor_offset = 320 − 160 −
-        // 160 = 0. Step-back: (0 − 160 as i32) = -160 < INTERVAL → loop
-        // doesn't execute. Without i32 cast the diff is ~4G ≥ 2400 → spin.
+        // predecessor_bytes=2: t_prior_start = 160, final_anchor_offset =
+        // 160. Step-back: (160 − 160 as i32) = 0 < INTERVAL → loop doesn't
+        // execute. Without the i32 cast a wrapped diff is ~4G ≥ 2400 → spin.
         let (mut d, state) = mk_fast_last();
         d.start(sched(0, 2));
 
-        assert_eq!(d.next_anchor_offset_for_test(), 0);
-        // SetBusyWaitDeadline + exactly one Schedule — step-back didn't spin.
-        assert_eq!(state.operations().len(), 2);
+        assert_eq!(d.next_anchor_offset_for_test(), 160);
+        // Exactly one Schedule — step-back didn't spin.
+        assert_eq!(state.operations().len(), 1);
     }
 
     #[test]
     fn intermediate_step_advances_grid_by_interval() {
         // predecessor_bytes=50 spans three anchors: the final anchor backs
-        // off tx_start (8000) by one interval + guard, then the step-back
-        // loop retreats two whole intervals toward the predecessor's start.
+        // off t_prior_end (8000) by one interval, then the step-back loop
+        // retreats two whole intervals toward the predecessor's start.
         let p = sched(0, 50);
         let plan = FsmScheduler::<MockFastLastScheduler>::plan(&p);
-        assert_eq!(plan.final_anchor_offset, 8000 - INTERVAL_3M - 160);
+        assert_eq!(plan.final_anchor_offset, 8000 - INTERVAL_3M);
         assert_eq!(
             plan.first_anchor_offset,
             plan.final_anchor_offset - 2 * INTERVAL_3M
@@ -380,15 +388,12 @@ mod tests {
         assert_eq!(d.next_anchor_offset_for_test(), plan.first_anchor_offset);
         assert_eq!(d.final_anchor_offset_for_test(), plan.final_anchor_offset);
 
-        d.on_step(|| 0, || {});
-        d.on_step(|| 0, || {});
+        assert_eq!(d.on_step(|| 0, || {}), FoldExit::Pending);
+        assert_eq!(d.on_step(|| 0, || {}), FoldExit::Pending);
 
         assert_eq!(
             state.operations().as_slice(),
             &[
-                FastLastSchedulerOp::SetBusyWaitDeadline {
-                    deadline: 50 * BYTE_TICKS_3M_U32 - BYTE_TICKS_3M_U32,
-                },
                 FastLastSchedulerOp::Schedule {
                     deadline: plan.first_anchor_offset - ENTRY,
                 },
@@ -405,10 +410,9 @@ mod tests {
     }
 
     #[test]
-    fn final_anchor_busy_waits_until_bytes_walked_target() {
-        // predecessor_bytes=5 with GUARD=1 → target=4. Pre-loop walker →
-        // bytes=1; three loop iters bring bytes to 4 → break. Total walker
-        // calls = 4. deadline_passed stays false the entire time.
+    fn final_anchor_with_all_bytes_folded_finalizes_without_completion_body() {
+        // predecessor_bytes=5: everything already landed by the final
+        // body — one walker call, commit once, straight to Idle.
         let (mut d, state) = mk_fast_last();
         d.start(sched(0, 5));
         assert_eq!(
@@ -417,21 +421,19 @@ mod tests {
         );
 
         let walker_calls = Cell::new(0u32);
-        let bytes = Cell::new(0u32);
         let commit_calls = Cell::new(0u32);
-        d.on_step(
+        let exit = d.on_step(
             || {
                 walker_calls.set(walker_calls.get() + 1);
-                bytes.set(bytes.get() + 1);
-                bytes.get()
+                5
             },
             || {
                 commit_calls.set(commit_calls.get() + 1);
             },
         );
 
-        assert_eq!(walker_calls.get(), 4);
-        // commit_pending runs exactly once, on entry to the final-anchor body.
+        assert_eq!(exit, FoldExit::Finalized);
+        assert_eq!(walker_calls.get(), 1, "no busy-wait — one walk per body");
         assert_eq!(commit_calls.get(), 1);
         assert!(!d.is_active());
         assert!(matches!(
@@ -441,54 +443,30 @@ mod tests {
     }
 
     #[test]
-    fn final_anchor_busy_waits_until_deadline_passed_when_bytes_lag() {
+    fn final_anchor_short_of_target_hands_off_to_completion_body() {
+        // predecessor_bytes=14 (bench-traced chain shape): the final body
+        // sees only part of the window — it commits the TX stash and
+        // re-arms one completion CMP at t_prior_end + 1 byte, NOT
+        // entry-lag back-dated (a fast entry must never land before the
+        // last predecessor byte publishes). The follow-up body with all
+        // bytes folded finalizes.
         let (mut d, state) = mk_fast_last();
-        d.start(sched(0, 3));
-        // Drive the deadline-passed branch on the first inner-loop check.
-        state.stage_deadline_passed(true);
+        d.start(sched(0, 14));
 
-        let walker_calls = Cell::new(0u32);
-        d.on_step(
-            || {
-                walker_calls.set(walker_calls.get() + 1);
-                0_u32 // bytes never arrive
-            },
-            || {},
-        );
-
-        // Pre-loop walker + one inside the loop before the deadline branch
-        // catches: 2 calls.
-        assert_eq!(walker_calls.get(), 2);
-        assert!(!d.is_active());
-    }
-
-    #[test]
-    fn final_anchor_busy_wait_breaks_on_byte_plateau_when_deadline_stuck() {
-        // Backstop for the production-safety hazard the on_fold_step_*
-        // composite test surfaced: if the scheduler's `deadline_passed`
-        // ever lies (CMP misconfigured, IF cleared but match missed, etc.)
-        // the busy-wait must still exit when no new bytes arrive between
-        // walker calls. predecessor_bytes=10 / target=9; walker returns 4
-        // every call (no progress); deadline_passed stays false. Expected:
-        // 2 walker calls (1 pre-loop + 1 inside loop that observes the
-        // plateau against pre-loop's count) then break.
-        let (mut d, state) = mk_fast_last();
-        d.start(sched(0, 10));
+        let commit_calls = Cell::new(0u32);
+        let exit = d.on_step(|| 4, || commit_calls.set(commit_calls.get() + 1));
+        assert_eq!(exit, FoldExit::Pending);
+        assert_eq!(commit_calls.get(), 1);
+        assert!(d.is_active());
         assert_eq!(
-            d.next_anchor_offset_for_test(),
-            d.final_anchor_offset_for_test()
+            state.operations().last(),
+            Some(&FastLastSchedulerOp::Schedule {
+                deadline: 14 * BYTE_TICKS_3M_U32 + BYTE_TICKS_3M_U32,
+            }),
         );
 
-        let walker_calls = Cell::new(0u32);
-        d.on_step(
-            || {
-                walker_calls.set(walker_calls.get() + 1);
-                4 // never advances
-            },
-            || {},
-        );
-
-        assert_eq!(walker_calls.get(), 2);
+        let exit = d.on_step(|| 14, || panic!("commit must not re-run"));
+        assert_eq!(exit, FoldExit::Finalized);
         assert!(!d.is_active());
         assert!(matches!(
             state.operations().last(),
@@ -497,23 +475,41 @@ mod tests {
     }
 
     #[test]
-    fn final_anchor_returns_to_idle_and_cancels_after_busy_wait() {
+    fn starved_completion_body_reschedules_until_window_expires() {
+        // Silent predecessor: bytes never arrive. The completion body
+        // re-arms at the grid stride while the patch window is open, then
+        // exits WindowExpired once the TX drain closes it — the hardware
+        // kickoff fired in parallel, so the window always closes.
         let (mut d, state) = mk_fast_last();
-        d.start(sched(0, 2));
-        let bytes = Cell::new(0u32);
-        d.on_step(
-            || {
-                bytes.set(bytes.get() + 1);
-                bytes.get()
-            },
-            || {},
+        d.start(sched(0, 14));
+        assert_eq!(d.on_step(|| 1, || {}), FoldExit::Pending); // → Completion
+
+        let ops_before = state.operations().len();
+        assert_eq!(d.on_step(|| 1, || {}), FoldExit::Pending);
+        assert!(d.is_active());
+        assert_eq!(
+            state.operations().len(),
+            ops_before + 1,
+            "starved body re-arms one CMP"
         );
 
+        state.stage_patch_window_expired(true);
+        assert_eq!(d.on_step(|| 1, || {}), FoldExit::WindowExpired);
         assert!(!d.is_active());
-        // Log: SetBusyWaitDeadline + Schedule (from start) then Cancel (from on_step exit).
-        let ops = state.operations();
-        assert_eq!(ops.len(), 3);
-        assert!(matches!(ops[2], FastLastSchedulerOp::Cancel));
+        assert!(matches!(
+            state.operations().last(),
+            Some(FastLastSchedulerOp::Cancel)
+        ));
+    }
+
+    #[test]
+    fn spurious_cmp_in_idle_cancels_defensively() {
+        let (mut d, state) = mk_fast_last();
+        assert_eq!(d.on_step(|| 0, || {}), FoldExit::Idle);
+        assert!(matches!(
+            state.operations().last(),
+            Some(FastLastSchedulerOp::Cancel)
+        ));
     }
 
     #[test]
@@ -531,38 +527,33 @@ mod tests {
         ));
     }
 
-    /// Grid-math pin at 3M GUARD=1 predecessor_bytes=14 (the bench-traced
-    /// chain shape, re-anchored on the observed status start per #142).
-    /// Single-step grid case (`t_prior_duration < interval`):
-    /// `final_anchor_offset` and the first anchor land AT the window start
-    /// (offset 0), scheduled CMP is `anchor − ENTRY`, deadline_offset =
-    /// `t_prior_end − GUARD · byte` = 2080.
+    /// Grid-math pin at 3M predecessor_bytes=14 (the bench-traced chain
+    /// shape, anchored on the observed status start per #142). Single-step
+    /// grid case (`t_prior_duration < interval`): `final_anchor_offset`
+    /// and the first anchor land at the predecessor's first byte boundary
+    /// (offset 160), scheduled CMP is `anchor − ENTRY`, completion body at
+    /// `t_prior_end + byte = 2400`.
     #[test]
     fn deadline_grid_correctness_3m_predecessor_bytes_14() {
         let p = sched(20000, 14);
         let plan = FsmScheduler::<MockFastLastScheduler>::plan(&p);
-        assert_eq!(plan.final_anchor_offset, 0);
-        assert_eq!(plan.first_anchor_offset, 0);
+        assert_eq!(plan.final_anchor_offset, 160);
+        assert_eq!(plan.first_anchor_offset, 160);
         assert_eq!(plan.interval_ticks, INTERVAL_3M);
-        assert_eq!(plan.deadline_offset, 2080);
-        assert_eq!(plan.busy_wait_target, 13);
+        assert_eq!(plan.completion_offset, 2400);
+        assert_eq!(plan.fold_target, 14);
 
         let (mut d, state) = mk_fast_last();
         d.start(p);
 
-        assert_eq!(d.final_anchor_offset_for_test(), 0);
-        assert_eq!(d.next_anchor_offset_for_test(), 0);
+        assert_eq!(d.final_anchor_offset_for_test(), 160);
+        assert_eq!(d.next_anchor_offset_for_test(), 160);
         assert_eq!(d.interval_ticks_for_test(), INTERVAL_3M);
         assert_eq!(
             state.operations().as_slice(),
-            &[
-                FastLastSchedulerOp::SetBusyWaitDeadline {
-                    deadline: 20000 + 2080
-                },
-                FastLastSchedulerOp::Schedule {
-                    deadline: 20000 - ENTRY,
-                },
-            ]
+            &[FastLastSchedulerOp::Schedule {
+                deadline: 20000 + 160 - ENTRY,
+            }]
         );
     }
 }

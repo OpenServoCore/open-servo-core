@@ -49,21 +49,15 @@ pub fn mock_tx_scheduler() -> (MockTxScheduler, TxSchedulerState) {
     (m, state)
 }
 
-/// `deadline_passed` / `patch_window_expired` are staged via interior
-/// mutability so the trait methods stay `&self`-compatible with
-/// production's register-read impls.
+/// `patch_window_expired` is staged via interior mutability so the trait
+/// method stays `&self`-compatible with production's register-read impl.
 #[derive(Clone, Default)]
 pub struct FastLastSchedulerState {
-    deadline_passed: Rc<Cell<bool>>,
     patch_window_expired: Rc<Cell<bool>>,
     operations: Rc<RefCell<Vec<FastLastSchedulerOp>>>,
 }
 
 impl FastLastSchedulerState {
-    pub fn stage_deadline_passed(&self, v: bool) {
-        self.deadline_passed.set(v);
-    }
-
     pub fn stage_patch_window_expired(&self, v: bool) {
         self.patch_window_expired.set(v);
     }
@@ -78,22 +72,10 @@ pub fn mock_fast_last_scheduler() -> (MockFastLastScheduler, FastLastSchedulerSt
     let mut m = MockFastLastScheduler::new();
     {
         let ops = state.operations.clone();
-        m.expect_set_busy_wait_deadline()
-            .returning_st(move |deadline| {
-                ops.borrow_mut()
-                    .push(FastLastSchedulerOp::SetBusyWaitDeadline { deadline });
-            });
-    }
-    {
-        let ops = state.operations.clone();
         m.expect_schedule().returning_st(move |deadline| {
             ops.borrow_mut()
                 .push(FastLastSchedulerOp::Schedule { deadline });
         });
-    }
-    {
-        let dp = state.deadline_passed.clone();
-        m.expect_deadline_passed().returning_st(move || dp.get());
     }
     {
         let pwe = state.patch_window_expired.clone();

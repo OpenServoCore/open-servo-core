@@ -65,14 +65,16 @@ pub struct DxlUart<
     clock: Clock<P::UsartBaud, P::ClockTrim>,
     /// NDTR-only readback for DMA1_CH5 (the RX byte ring). Plumbed
     /// independently of the parser-path `on_rx_progress` calls so the
-    /// Fast Last fold body's intra-loop refresh doesn't go through the
-    /// chip-side ISR — see [`Self::on_fold_step`] / [`Self::on_tx_start`].
+    /// Fast Last fold body's refresh doesn't go through the chip-side
+    /// ISR — see [`Self::on_fold_step`].
     rx_dma: P::RxDma,
     scheduler: P::TxScheduler,
-    /// Chip-side bus-control provider. Used by [`Self::on_tx_start`] /
-    /// [`Self::on_tx_complete`] for the scheduled wire-driver lifecycle,
-    /// and by [`Self::poll`]'s SkipComplete arm for the Plain chain
-    /// k > 0 sequence-driven start path (`docs/dxl-streaming-rx.md` §5.2).
+    /// Chip-side bus-control provider. Used by [`Self::on_tx_complete`]
+    /// to release the wire driver (the scheduled take-over is pure
+    /// hardware — the TX kickoff enables the TX DMA at the compare
+    /// match), and by [`Self::poll`]'s SkipComplete arm for the Plain
+    /// chain k > 0 sequence-driven start path
+    /// (`docs/dxl-streaming-rx.md` §5.2).
     tx_bus: P::TxBus,
     /// Fast Last fold pipeline for Fast Sync / Bulk Read Last replies — a
     /// §4.3 sub-composite of the periodic-walk grid scheduler and the
@@ -88,8 +90,8 @@ pub struct DxlUart<
     wire_clock: P::WireClock,
     /// Wire-condition miss counters. The composite records at the point
     /// of detection ([`Self::poll`]'s Crc arm for anchor misses,
-    /// [`Self::on_tx_start`]'s fold exit for patch misses); the provider
-    /// owns where the counts live chip-side.
+    /// [`Self::on_fold_step`]'s window-expired exit for patch misses);
+    /// the provider owns where the counts live chip-side.
     telemetry: P::Telemetry,
 
     /// Send-side policy sub-composite — bus identity + staged-config
@@ -232,43 +234,15 @@ impl<P: Providers, const RX_BUF_LEN: usize, const EDGE_BUF_LEN: usize, const TX_
         self.send_policy.on_status_start_scheduled();
     }
 
-    /// The TX-start tick has arrived (chip-side CC3 IRQ). Activates the
-    /// wire driver FIRST so the first wire bit lands on the scheduled
-    /// deadline; for Fast Last replies the body then tails with the
-    /// post-TX-start residue fold — exit policy lives in
-    /// [`FastLast::on_tx_start`]; the composite supplies one drain pass
-    /// per iteration. Each [`CodecRx::drain_raw`] pass refreshes the
-    /// byte-ring producer head from [`RxDma::remaining`] so newly-arrived
-    /// GUARD bytes become visible inside the spin (per
-    /// `dxl-streaming-rx.md` §6, the `crc_patch_deadline_miss` counter is
-    /// a bench-defended floor signal at the 3 Mbaud floor, not a
-    /// wire-correctness failure).
-    ///
-    /// [`CodecRx::drain_raw`]: codec::CodecRx::drain_raw
-    pub fn on_tx_start(&mut self) {
-        self.tx_bus.take_bus();
-        let Self {
-            codec,
-            rx_dma,
-            fast_last,
-            ..
-        } = self;
-        let (rx, tx) = codec.split_mut();
-        let exit = fast_last.on_tx_start(|fl_crc| {
-            rx.drain_raw(rx_dma, |slice, base_cursor| {
-                fl_crc.on_slice(slice, base_cursor, tx);
-            });
-        });
-        if matches!(exit, FoldExit::WindowExpired | FoldExit::Plateau) {
-            self.telemetry.record_crc_patch_deadline_miss();
-        }
-    }
-
     /// One Fast Last periodic-walk fold body is due (chip-side SysTick
     /// CMP). Body drives [`FsmScheduler::on_step`] forward — the walker
     /// closure drains pending RX bytes raw through [`FoldEngine::on_slice`]
-    /// and returns the cumulative folded count for the FSM's `target =
-    /// predecessor_bytes − GUARD` busy-wait exit (`fast_last/`).
+    /// and returns the cumulative folded count. The wire start is
+    /// hardware-armed and fires in parallel; a body short of the fold
+    /// target just re-arms the next CMP, and the completion body's
+    /// [`FoldExit::WindowExpired`] exit (patch lost the race against the
+    /// TX DMA's read of the trailing CRC slot — starved fold, or a body
+    /// landing pathologically late) routes to `crc_patch_deadline_miss`.
     ///
     /// [`FsmScheduler::on_step`]: fast_last::FsmScheduler::on_step
     /// [`FoldEngine::on_slice`]: fast_last::FoldEngine::on_slice
@@ -282,7 +256,7 @@ impl<P: Providers, const RX_BUF_LEN: usize, const EDGE_BUF_LEN: usize, const TX_
         } = self;
         let (rx, tx) = codec.split_mut();
         let (fl_sched, fl_crc) = fast_last.split_mut();
-        fl_sched.on_step(
+        let exit = fl_sched.on_step(
             || {
                 rx.drain_raw(rx_dma, |slice, base_cursor| {
                     fl_crc.on_slice(slice, base_cursor, tx);
@@ -291,15 +265,21 @@ impl<P: Providers, const RX_BUF_LEN: usize, const EDGE_BUF_LEN: usize, const TX_
             },
             || scheduler.commit_pending(),
         );
+        if matches!(exit, FoldExit::WindowExpired) {
+            self.telemetry.record_crc_patch_deadline_miss();
+        }
     }
 
     /// Long-horizon timer match triggered (chip-side: SysTick CMP). Two consumers
     /// share the CMP — the TX-scheduler handoff arm (multi-wrap distances
-    /// where direct TIM2 CC3 can't span the wait) and the Fast Last walk
-    /// grid. The TX-scheduler reports whether the match was its own; if so,
-    /// we're done, otherwise it's a Fast Last grid step.
+    /// where the direct hardware arm can't span the wait) and the Fast
+    /// Last walk grid. The TX-scheduler reports whether the match was its
+    /// own; if not, it's a Fast Last grid step. When the scheduler owned
+    /// the match while the grid is active, the handoff arm clobbered the
+    /// grid's pending CMP (both share the one CMP register) — run a fold
+    /// body anyway so the grid re-arms its own.
     pub fn on_schedule_due(&mut self) {
-        if self.scheduler.on_schedule_due() {
+        if self.scheduler.on_schedule_due() && !self.fast_last.grid_active() {
             return;
         }
         self.on_fold_step();
@@ -883,10 +863,7 @@ mod tests {
         let fl_ops = state.fl.operations();
         assert!(matches!(
             fl_ops.as_slice(),
-            [
-                FastLastSchedulerOp::SetBusyWaitDeadline { .. },
-                FastLastSchedulerOp::Schedule { .. },
-            ]
+            [FastLastSchedulerOp::Schedule { .. }]
         ));
         assert!(bus.fast_last.fold_active());
         assert!(bus.fast_last.grid_active());
@@ -1040,14 +1017,6 @@ mod tests {
     }
 
     #[test]
-    fn on_tx_start_routes_to_take_bus() {
-        let (mut bus, state) = make_bus();
-        bus.on_tx_start();
-        assert_eq!(state.tx_bus.operations(), alloc::vec![TxBusOp::TakeBus]);
-        assert!(state.sch.operations().is_empty());
-    }
-
-    #[test]
     fn on_tx_complete_releases_wire_before_draining_pending_config() {
         let ping = wire_ping(TEST_ID);
         let (mut bus, state, _) = bus_seeded_with(&ping);
@@ -1170,11 +1139,12 @@ mod tests {
     }
 
     #[test]
-    fn on_tx_start_folds_residue_and_patches_crc() {
-        // CC3 wire-start body folds the GUARD residue and patches the trailing
-        // CRC. Stage `predecessor_bytes` worth so finalize lands on the
-        // last drained byte; assert the TX buffer's trailing slot is no
-        // longer the placeholder `[0x00, 0x00]`.
+    fn fold_step_with_full_window_patches_crc_and_finalizes() {
+        // The wire start is hardware-armed at the observation; the grid
+        // body's only job is landing the chain-CRC patch. Stage the whole
+        // `predecessor_bytes` window so the (single-step) grid body folds
+        // everything, commits the far-horizon stash, and finalizes —
+        // trailing slot no longer the placeholder `[0x00, 0x00]`.
         let req = wire_fast_sync_read(0, 2, &[0x42, TEST_ID]);
         let (mut bus, state, _) = bus_seeded_with(&req);
         let payload = [0xAA_u8, 0xBB];
@@ -1189,7 +1159,7 @@ mod tests {
         // bytes_before for slot 1 of Fast SyncRead length=2 is
         // `FAST_RESPONSE_SLOT0_BYTES(10) + data(2) = 12`; the observation
         // supplies byte 0 (the leading `0xFF`), stage the other 11 so
-        // finalize lands inside on_tx_start.
+        // finalize lands in this fold body.
         let start = req.len() as u16;
         observe_status_start(&mut bus, &state, start);
         let rest = [
@@ -1203,12 +1173,7 @@ mod tests {
 
         assert_eq!(bus.codec.tx.trailing_crc_slot_for_test(), [0x00, 0x00]);
 
-        bus.on_tx_start();
-        assert_eq!(
-            state.tx_bus.operations().last(),
-            Some(&TxBusOp::TakeBus),
-            "on_tx_start must call take_bus once",
-        );
+        bus.on_fold_step();
 
         assert_ne!(
             bus.codec.tx.trailing_crc_slot_for_test(),
@@ -1216,6 +1181,11 @@ mod tests {
             "patch_crc should overwrite the placeholder slot"
         );
         assert!(!bus.fast_last.fold_active());
+        assert!(!bus.fast_last.grid_active());
+        assert!(
+            state.sch.operations().contains(&ScheduleOp::CommitPending),
+            "final grid body commits any far-horizon TX stash",
+        );
         assert_eq!(
             state.telemetry.patch_miss_count(),
             0,
@@ -1224,41 +1194,14 @@ mod tests {
     }
 
     #[test]
-    fn on_tx_start_plateau_records_miss() {
-        // Bytes-starved CC3 body must not hang. With no predecessor
-        // bytes staged the plateau check (no progress between drain
-        // passes) exits the loop; trailing CRC stays at the placeholder.
-        let req = wire_fast_sync_read(0, 2, &[0x42, TEST_ID]);
-        let (mut bus, state, _) = bus_seeded_with(&req);
-        let payload = [0xAA_u8, 0xBB];
-        bus.poll(|_, _, reply| {
-            let slot = Slot {
-                id: Id::new(TEST_ID),
-                error: StatusError::OK,
-                data: &payload,
-            };
-            reply.send_slot(&slot).expect("encode fits");
-        });
-        // Observation supplies exactly one predecessor byte; nothing
-        // further arrives, so the CC3 body folds it and then observes no
-        // progress between drain passes — the plateau backstop exits.
-        let start = req.len() as u16;
-        observe_status_start(&mut bus, &state, start);
-
-        bus.on_tx_start();
-        assert!(bus.fast_last.fold_active(), "active stays set on bail");
-        assert_eq!(
-            state.telemetry.patch_miss_count(),
-            1,
-            "plateau-exit must bump the deadline-miss counter",
-        );
-    }
-
-    #[test]
-    fn on_tx_start_window_expiry_records_miss() {
-        // CH4 prefetch reached the trailing CRC slot before finalize
-        // landed. The expired-window check exits the loop and bumps
-        // `crc_patch_deadline_miss`.
+    fn fold_step_starved_reschedules_then_window_expiry_records_miss() {
+        // Silent predecessor: only the observed leading byte ever
+        // arrives. The final grid body hands off to a completion body
+        // (fold stays active, one CMP re-armed); the completion body
+        // re-arms while the patch window is open, and exits with one
+        // `crc_patch_deadline_miss` once the TX drain closes it — the
+        // hardware kickoff fired in parallel, so the window always
+        // closes.
         let req = wire_fast_sync_read(0, 2, &[0x42, TEST_ID]);
         let (mut bus, state, _) = bus_seeded_with(&req);
         let payload = [0xAA_u8, 0xBB];
@@ -1271,17 +1214,70 @@ mod tests {
             reply.send_slot(&slot).expect("encode fits");
         });
         observe_status_start(&mut bus, &state, req.len() as u16);
-        state.fl.stage_patch_window_expired(true);
 
-        bus.on_tx_start();
+        bus.on_fold_step();
+        assert!(bus.fast_last.grid_active(), "completion body pending");
+        assert!(bus.fast_last.fold_active());
+        assert_eq!(state.telemetry.patch_miss_count(), 0);
+        let cmp_count = state.fl.operations().len();
+
+        bus.on_fold_step();
+        assert_eq!(
+            state.fl.operations().len(),
+            cmp_count + 1,
+            "starved completion body re-arms one CMP",
+        );
+
+        state.fl.stage_patch_window_expired(true);
+        bus.on_fold_step();
+        assert!(!bus.fast_last.grid_active());
         assert!(
             bus.fast_last.fold_active(),
-            "active stays set on expired-window exit",
+            "fold state stays for on_tx_complete's cleanup",
         );
         assert_eq!(
             state.telemetry.patch_miss_count(),
             1,
             "expired-window exit must bump the deadline-miss counter",
+        );
+    }
+
+    #[test]
+    fn schedule_due_owned_match_still_runs_fold_body_when_grid_active() {
+        // Far-horizon FastLast commit: the SysTick handoff arm and the
+        // fold grid share the one CMP register, so a handoff arm clobbers
+        // the grid's pending CMP. After the scheduler consumes its match,
+        // a fold body must run so the grid re-arms its own.
+        let req = wire_fast_sync_read(0, 2, &[0x42, TEST_ID]);
+        let (mut bus, state, _) = bus_seeded_with(&req);
+        bus.poll(|_, _, reply| {
+            let slot = Slot {
+                id: Id::new(TEST_ID),
+                error: StatusError::OK,
+                data: &[0xAA, 0xBB],
+            };
+            reply.send_slot(&slot).expect("encode fits");
+        });
+        observe_status_start(&mut bus, &state, req.len() as u16);
+        assert!(bus.fast_last.grid_active());
+
+        state.sch.stage_schedule_due_owned(true);
+        let cmp_count = state.fl.operations().len();
+        bus.on_schedule_due();
+        assert!(
+            state.fl.operations().len() > cmp_count,
+            "grid re-armed its CMP after the handoff consumed the match",
+        );
+    }
+
+    #[test]
+    fn schedule_due_owned_match_without_grid_stops_there() {
+        let (mut bus, state) = make_bus();
+        state.sch.stage_schedule_due_owned(true);
+        bus.on_schedule_due();
+        assert!(
+            state.fl.operations().is_empty(),
+            "no fold body (not even a defensive cancel) without an active grid",
         );
     }
 }
