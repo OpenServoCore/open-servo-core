@@ -502,6 +502,11 @@ impl<R: EdgeDma, CRC: CrcUmts, const RX_BUF_LEN: usize, const EDGE_BUF_LEN: usiz
     /// (`dxl-hw-timed-transport.md` §10.6.3), and `poll()` self-gates on
     /// `fast_last.fold_active()` at entry (`dxl-streaming-rx.md` §6),
     /// so the parser and this drain never race on `rx_buf`.
+    // RAM placement is load-bearing — see the note on `FsmScheduler::on_step`.
+    // No `inline(never)`: the only caller is the (RAM-placed) spin body, and
+    // fusing into it drops a call frame per live wire byte; the section is
+    // the fallback when the inliner declines.
+    #[cfg_attr(target_arch = "riscv32", unsafe(link_section = ".highcode"))]
     pub fn drain_raw<D: RxDma, F: FnMut(&[u8], u32)>(&mut self, rx_dma: &D, mut fold_slice: F) {
         // SAFETY: rx_buf is single-consumer at PFIC HIGH (same as `poll`).
         // The fold-window contract above keeps `poll()` and this drain

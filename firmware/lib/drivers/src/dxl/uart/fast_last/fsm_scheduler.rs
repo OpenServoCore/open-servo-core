@@ -136,6 +136,13 @@ impl<S: FastLastScheduler> FsmScheduler<S> {
     /// Single walker closure (not `(walker, bytes_walked)`) so the composite
     /// can capture `&mut FoldEngine` once for both the walk and the read —
     /// splitting them would force interior mutability on the count.
+    // RAM placement is load-bearing: from flash, one spin iteration's
+    // i-fetch stalls cost ≥ one 3M byte-time and the fold can never gain
+    // on the wire (ledger-measured; the pre-rewrite fold ran its loop
+    // from .highcode for the same reason). `inline(never)` keeps the body
+    // out of flash-resident callers so the section actually applies.
+    #[cfg_attr(target_arch = "riscv32", unsafe(link_section = ".highcode"))]
+    #[inline(never)]
     pub fn on_step<W, C>(&mut self, mut walker: W, commit_pending: C) -> FoldExit
     where
         W: FnMut() -> u32,

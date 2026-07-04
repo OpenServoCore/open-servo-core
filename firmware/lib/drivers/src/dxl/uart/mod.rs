@@ -84,7 +84,7 @@ pub struct DxlUart<
     /// the grid drives one body per CMP, the fold engine's per-byte hook is
     /// wired into the codec's `drain_raw` callback and finalize patches our
     /// own trailing CRC slot before DMA1_CH4 reads it.
-    fast_last: FastLast<P::FastLastScheduler, P::Crc>,
+    fast_last: FastLast<P::FastLastScheduler>,
     /// WireClock u32 readout used by `on_rx_advance`, `on_rx_idle`, and
     /// `poll` to source `now` without taking it as a parameter. The
     /// chip-side provider hides any peripheral-side composition (TIM2 u16
@@ -115,7 +115,7 @@ impl<P: Providers, const RX_BUF_LEN: usize, const EDGE_BUF_LEN: usize, const TX_
         rx_dma: P::RxDma,
         scheduler: P::TxScheduler,
         tx_bus: P::TxBus,
-        fast_last: FastLast<P::FastLastScheduler, P::Crc>,
+        fast_last: FastLast<P::FastLastScheduler>,
         wire_clock: P::WireClock,
         telemetry: P::Telemetry,
         id: u8,
@@ -186,6 +186,13 @@ impl<P: Providers, const RX_BUF_LEN: usize, const EDGE_BUF_LEN: usize, const TX_
     /// 3. stamp past `latest_start_tick` → stale traffic (the host's
     ///    retry after a dead chain), never the awaited reply: drop the
     ///    slot instead of scheduling a TX into the host's instruction.
+    // RAM placement is load-bearing — the resolve → schedule → inline-fold
+    // path runs while the predecessor streams at wire rate; every tick of
+    // flash i-fetch here is a byte of fold backlog the spin must claw back
+    // before the TX DMA reads the trailing CRC slot (see
+    // `FsmScheduler::on_step`).
+    #[cfg_attr(target_arch = "riscv32", unsafe(link_section = ".highcode"))]
+    #[inline(never)]
     pub fn on_status_start(&mut self) {
         let Some(wait) = self.send_policy.awaited_status_start() else {
             self.rx_dma.unwatch_status_start();
@@ -281,6 +288,9 @@ impl<P: Providers, const RX_BUF_LEN: usize, const EDGE_BUF_LEN: usize, const TX_
     ///
     /// [`FsmScheduler::on_step`]: fast_last::FsmScheduler::on_step
     /// [`FoldEngine::on_slice`]: fast_last::FoldEngine::on_slice
+    // RAM placement is load-bearing — see `Self::on_status_start`.
+    #[cfg_attr(target_arch = "riscv32", unsafe(link_section = ".highcode"))]
+    #[inline(never)]
     pub fn on_fold_step(&mut self) {
         let Self {
             codec,

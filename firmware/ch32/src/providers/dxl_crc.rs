@@ -28,6 +28,7 @@ impl CrcUmts for DxlCrc {
         Self { state: 0 }
     }
 
+    #[inline]
     fn update(&mut self, bytes: &[u8]) {
         let mut digest = ENGINE.digest_with_initial(self.state);
         digest.update(bytes);

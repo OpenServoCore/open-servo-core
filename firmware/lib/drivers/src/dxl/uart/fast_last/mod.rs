@@ -24,8 +24,6 @@ mod fold_engine;
 mod fsm_scheduler;
 mod schedule;
 
-use dxl_protocol::CrcUmts;
-
 use crate::traits::dxl::FastLastScheduler;
 
 pub use crc_patch_sink::CrcPatchSink;
@@ -54,12 +52,12 @@ pub enum FoldExit {
 
 /// Fast Last pipeline composite. Generic over its scheduler provider `S` and
 /// CRC engine `CRC`; holds the two halves and routes between them.
-pub struct FastLast<S: FastLastScheduler, CRC: CrcUmts> {
+pub struct FastLast<S: FastLastScheduler> {
     scheduler: FsmScheduler<S>,
-    crc: FoldEngine<CRC>,
+    crc: FoldEngine,
 }
 
-impl<S: FastLastScheduler, CRC: CrcUmts> FastLast<S, CRC> {
+impl<S: FastLastScheduler> FastLast<S> {
     pub fn new(scheduler: S) -> Self {
         Self {
             scheduler: FsmScheduler::new(scheduler),
@@ -91,7 +89,7 @@ impl<S: FastLastScheduler, CRC: CrcUmts> FastLast<S, CRC> {
     /// The two halves, mutably and disjointly, for the driver's `on_fold_step`
     /// / `on_tx_start` bodies: the FSM advances the grid while the walker
     /// closure folds freshly-drained bytes into the engine in the same borrow.
-    pub fn split_mut(&mut self) -> (&mut FsmScheduler<S>, &mut FoldEngine<CRC>) {
+    pub fn split_mut(&mut self) -> (&mut FsmScheduler<S>, &mut FoldEngine) {
         (&mut self.scheduler, &mut self.crc)
     }
 

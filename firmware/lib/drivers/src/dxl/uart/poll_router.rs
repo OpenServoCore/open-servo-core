@@ -20,7 +20,7 @@ pub(super) struct PollRouter<'a, P: Providers, const TX_BUF_LEN: usize> {
     pub(super) tx: &'a mut CodecTx<P::Crc, TX_BUF_LEN>,
     pub(super) scheduler: &'a mut P::TxScheduler,
     pub(super) tx_bus: &'a mut P::TxBus,
-    pub(super) fast_last: &'a mut FastLast<P::FastLastScheduler, P::Crc>,
+    pub(super) fast_last: &'a mut FastLast<P::FastLastScheduler>,
     pub(super) clock: &'a mut Clock<P::UsartBaud, P::ClockTrim>,
     pub(super) send_policy: &'a mut SendPolicy,
     pub(super) telemetry: &'a mut P::Telemetry,

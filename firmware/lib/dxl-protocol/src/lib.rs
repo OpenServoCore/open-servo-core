@@ -17,9 +17,9 @@ pub mod wire;
 pub mod test_util;
 
 pub use buf::{Chunk, WriteBuf, WriteError};
-pub use crc::CrcUmts;
 #[cfg(feature = "software-crc")]
 pub use crc::SoftwareCrcUmts;
+pub use crc::{CrcUmts, crc16_umts_continue};
 pub use encoder::{InstructionEncoder, SlotEncoder, StatusEncoder};
 pub use types::{
     BulkReadEntry, ErrorCode, Id, Instruction, PingStatus, Slot, SlotPosition, Status, StatusError,

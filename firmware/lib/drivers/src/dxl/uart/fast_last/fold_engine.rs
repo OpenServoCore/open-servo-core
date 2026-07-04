@@ -1,7 +1,7 @@
 //! Chain-CRC fold engine for Fast Sync / Bulk Read Last replies.
 //!
-//! Half of the [`FastLast`] sub-composite (§4.3): the fold half. Owns a
-//! running [`CrcUmts`] engine plus the bookkeeping that decides when to feed
+//! Half of the [`FastLast`] sub-composite (§4.3): the fold half. Owns the
+//! running CRC-16/UMTS state plus the bookkeeping that decides when to feed
 //! wire bytes into it. The slice hook ([`Self::on_slice`]) is wired into
 //! [`CodecRx::drain_raw`]'s slice callback so every wire byte the
 //! post-parser drain surfaces — own, foreign, Status-frame, resync'd prefix
@@ -27,7 +27,7 @@
 //! [`DxlUart::on_tx_complete`]: super::super::DxlUart::on_tx_complete
 //! [`SlotPosition`]: dxl_protocol::SlotPosition
 
-use dxl_protocol::CrcUmts;
+use dxl_protocol::crc16_umts_continue;
 
 use super::crc_patch_sink::CrcPatchSink;
 
@@ -37,8 +37,14 @@ use super::crc_patch_sink::CrcPatchSink;
 /// receives `(slice, base_cursor)` where `base_cursor` is the pre-advance
 /// value of the codec's `wire_bytes_consumed` counter, so `slice[i]` sits at
 /// wire cursor `base_cursor + i`.
-pub struct FoldEngine<CRC: CrcUmts> {
-    crc: CRC,
+pub struct FoldEngine {
+    /// Running CRC-16/UMTS state over the folded predecessor bytes. Raw
+    /// protocol state (not a [`CrcUmts`] engine) so the per-byte step is a
+    /// guaranteed-inline table fold — the spin path cannot afford a call
+    /// that may resolve into flash (see the placement note on `on_slice`).
+    ///
+    /// [`CrcUmts`]: dxl_protocol::CrcUmts
+    state: u16,
     /// Lower bound on the wire-byte cursor that contributes to the fold.
     /// Bytes with `cursor < start_cursor` were already past at [`Self::start`]
     /// time (the parser had already moved on); the chain CRC begins from the
@@ -53,10 +59,10 @@ pub struct FoldEngine<CRC: CrcUmts> {
     active: bool,
 }
 
-impl<CRC: CrcUmts> FoldEngine<CRC> {
+impl FoldEngine {
     pub fn new() -> Self {
         Self {
-            crc: CRC::new(),
+            state: 0,
             start_cursor: 0,
             bytes_folded: 0,
             predecessor_bytes: 0,
@@ -78,6 +84,16 @@ impl<CRC: CrcUmts> FoldEngine<CRC> {
     /// sink must already be encoded by the caller's earlier `send_slot(Last)`
     /// — empty `own_reply_bytes()` is a programmer error the engine doesn't
     /// try to catch.
+    ///
+    /// (A predicted-tail shortcut — patching `CRC_BYTES` early by treating
+    /// the window's last two bytes as the running chain CRC — was tried and
+    /// reverted: this codebase's FAST chain carries ONE trailing CRC, so a
+    /// predecessor window ends in plain slot data, not a predictable value.
+    /// See task #2 notes; under ROBOTIS' per-slot-CRC FAST layout the trick
+    /// would be sound.)
+    // RAM placement is load-bearing — see the note on `FsmScheduler::on_step`.
+    // No `inline(never)`: see `CodecRx::drain_raw` — same fusion rationale.
+    #[cfg_attr(target_arch = "riscv32", unsafe(link_section = ".highcode"))]
     pub fn on_slice(&mut self, slice: &[u8], base_cursor: u32, sink: &mut impl CrcPatchSink) {
         if !self.active {
             return;
@@ -92,11 +108,11 @@ impl<CRC: CrcUmts> FoldEngine<CRC> {
         if take == 0 {
             return;
         }
-        self.crc.update(&active[..take]);
+        self.state = crc16_umts_continue(self.state, &active[..take]);
         self.bytes_folded = self.bytes_folded.wrapping_add(take as u32);
         if self.bytes_folded >= self.predecessor_bytes {
-            self.crc.update(sink.own_reply_bytes());
-            sink.patch_crc(self.crc.finalize());
+            self.state = crc16_umts_continue(self.state, sink.own_reply_bytes());
+            sink.patch_crc(self.state);
             self.active = false;
         }
     }
@@ -109,7 +125,7 @@ impl<CRC: CrcUmts> FoldEngine<CRC> {
     /// lands at cursor == start_cursor); `predecessor_bytes` is
     /// `FastSlotInfo::bytes_before`. Resets the running CRC; idempotent.
     pub fn start(&mut self, start_cursor: u32, predecessor_bytes: u32) {
-        self.crc.reset();
+        self.state = 0;
         self.start_cursor = start_cursor;
         self.bytes_folded = 0;
         self.predecessor_bytes = predecessor_bytes;
@@ -140,7 +156,7 @@ impl<CRC: CrcUmts> FoldEngine<CRC> {
     }
 }
 
-impl<CRC: CrcUmts> Default for FoldEngine<CRC> {
+impl Default for FoldEngine {
     fn default() -> Self {
         Self::new()
     }
@@ -152,7 +168,7 @@ mod tests {
     use crate::dxl::uart::codec::Codec;
     use crate::mocks::MockEdgeDma;
     use dxl_protocol::types::{Id, Slot, StatusError};
-    use dxl_protocol::{SlotPosition, SoftwareCrcUmts};
+    use dxl_protocol::{CrcUmts, SlotPosition, SoftwareCrcUmts};
 
     const RX_BUF_LEN: usize = 64;
     const EDGE_BUF_LEN: usize = 128;
@@ -189,7 +205,7 @@ mod tests {
     #[test]
     fn skips_bytes_before_start_cursor() {
         let mut codec = make_codec_with_last_reply();
-        let mut fl = FoldEngine::<SoftwareCrcUmts>::new();
+        let mut fl = FoldEngine::new();
         fl.start(
             /* start_cursor = */ 10, /* predecessor_bytes = */ 4,
         );
@@ -203,7 +219,7 @@ mod tests {
     #[test]
     fn folds_byte_at_start_cursor() {
         let mut codec = make_codec_with_last_reply();
-        let mut fl = FoldEngine::<SoftwareCrcUmts>::new();
+        let mut fl = FoldEngine::new();
         fl.start(5, 4);
 
         // Slice base_cursor == start_cursor; byte IS included.
@@ -211,26 +227,37 @@ mod tests {
         assert_eq!(fl.bytes_folded(), 1);
     }
 
+    /// Arbitrary predecessor window bytes for fold tests (body plus two
+    /// trailing bytes standing in for wherever the window happens to end).
+    fn chain_window(body: &[u8]) -> alloc::vec::Vec<u8> {
+        let mut w = body.to_vec();
+        w.extend_from_slice(&crc16_umts_continue(0, body).to_le_bytes());
+        w
+    }
+
+    extern crate alloc;
+
     #[test]
     fn finalize_patches_trailing_crc_slot_on_target_hit() {
         let mut codec = make_codec_with_last_reply();
         // Pre-patch: placeholder 0x0000 LE from `send_slot(Last {crc: 0 })`.
         assert_eq!(tx_trailing::<2>(&codec), [0x00, 0x00]);
 
-        let mut fl = FoldEngine::<SoftwareCrcUmts>::new();
-        fl.start(0, 3);
-        // Slice of 3 bytes trips finalize on the third byte → patch.
-        fl.on_slice(&[0x11, 0x22, 0x33], 0, &mut codec.tx);
+        let window = chain_window(&[0x11, 0x22, 0x33]);
+        let mut fl = FoldEngine::new();
+        fl.start(0, window.len() as u32);
+        fl.on_slice(&window, 0, &mut codec.tx);
 
         assert!(!fl.is_active(), "finalize should clear active");
         let patched = tx_trailing::<2>(&codec);
         assert_ne!(patched, [0x00, 0x00], "patch_crc should overwrite slot");
 
-        // Independently compute the expected CRC: chain-CRC over the
-        // three predecessor bytes + own_reply_bytes (= the encoded reply
-        // minus its trailing 2-byte placeholder slot).
+        // Independently compute the expected CRC the host would: chain-CRC
+        // over ALL predecessor wire bytes (incl. the predecessor's own CRC
+        // slot) + own_reply_bytes — the predicted-tail shortcut must be
+        // byte-for-byte equivalent.
         let mut expected = SoftwareCrcUmts::new();
-        expected.update(&[0x11, 0x22, 0x33]);
+        expected.update(&window);
         expected.update(codec.own_reply_bytes());
         assert_eq!(u16::from_le_bytes(patched), expected.finalize());
     }
@@ -238,14 +265,15 @@ mod tests {
     #[test]
     fn extra_bytes_after_finalize_are_dropped() {
         let mut codec = make_codec_with_last_reply();
-        let mut fl = FoldEngine::<SoftwareCrcUmts>::new();
-        fl.start(0, 2);
-        fl.on_slice(&[0x11, 0x22], 0, &mut codec.tx);
+        let window = chain_window(&[0x11]);
+        let mut fl = FoldEngine::new();
+        fl.start(0, window.len() as u32);
+        fl.on_slice(&window, 0, &mut codec.tx);
         assert!(!fl.is_active());
 
         // Already cleared; this is a no-op (doesn't fold, doesn't panic).
-        fl.on_slice(&[0x33], 2, &mut codec.tx);
-        assert_eq!(fl.bytes_folded(), 2);
+        fl.on_slice(&[0x33], window.len() as u32, &mut codec.tx);
+        assert_eq!(fl.bytes_folded(), window.len() as u32);
     }
 
     #[test]
@@ -253,7 +281,7 @@ mod tests {
         let mut codec = make_codec_with_last_reply();
         let trailing_before: [u8; 2] = tx_trailing(&codec);
 
-        let mut fl = FoldEngine::<SoftwareCrcUmts>::new();
+        let mut fl = FoldEngine::new();
         fl.start(0, 4);
         fl.on_slice(&[0x11], 0, &mut codec.tx);
         fl.cancel();
@@ -270,19 +298,21 @@ mod tests {
     #[test]
     fn restart_resets_running_crc() {
         let mut codec = make_codec_with_last_reply();
-        let mut fl = FoldEngine::<SoftwareCrcUmts>::new();
+        let mut fl = FoldEngine::new();
 
         // First cycle.
-        fl.start(0, 1);
-        fl.on_slice(&[0xFF], 0, &mut codec.tx);
+        let first_window = chain_window(&[0xFF]);
+        fl.start(0, first_window.len() as u32);
+        fl.on_slice(&first_window, 0, &mut codec.tx);
         let first_patch: [u8; 2] = tx_trailing(&codec);
 
         // Re-start; same start_cursor and predecessor_bytes but different byte.
-        fl.start(0, 1);
-        fl.on_slice(&[0x42], 0, &mut codec.tx);
+        let second_window = chain_window(&[0x42]);
+        fl.start(0, second_window.len() as u32);
+        fl.on_slice(&second_window, 0, &mut codec.tx);
         let second_patch: [u8; 2] = tx_trailing(&codec);
 
-        // Different inputs → different patches; proves crc.reset() ran on
+        // Different inputs → different patches; proves the state reset on
         // re-start rather than continuing the prior run.
         assert_ne!(first_patch, second_patch);
     }
