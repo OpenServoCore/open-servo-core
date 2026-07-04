@@ -19,12 +19,16 @@
 /// raises the driver — the missing-first-FF signature per
 /// [[tx-en-lead-via-k]].
 ///
-/// Spike-measured upper bound: 24 ticks including the poll-loop read
-/// granularity (`osc-dev-v006-bringup` `tim2_ch4_oc_dma_kickoff`, RESULTS
-/// slot 6); the true request→DR path is a fraction of that. Start
-/// conservative-small (wire-bit late is the safe direction) —
-/// re-calibrate with tool-tune-tx-start when the bench returns.
-pub const TX_KICKOFF_FLOOR_TICKS: u16 = 8;
+/// Measured 0 (2026-07-04): at K=8, tool-tune-tx-start put the p0.1 wire
+/// excess at −0.15 µs — the first bits of an on-time send emerge BEFORE
+/// CCR2 raises TX_EN. Single-target replies lead with `0xFF`, where a
+/// clipped start bit is harmless (zero `DroppedLeadingFf` in 20 k), but
+/// FAST slot emissions lead with `0x00`/err bytes and the direction-
+/// switch clip garbles them (bench: intermittent truncated Last
+/// emissions at 3M with on-time fires). K=0 aims CCR4 at the deadline
+/// itself; the silicon request→DR path (~20-30 ticks) supplies the
+/// positive TX_EN lead. Median excess ≈ +0.6 µs, p0.1 ≈ +0.02 µs.
+pub const TX_KICKOFF_FLOOR_TICKS: u16 = 0;
 
 /// Set-and-recheck threshold for the §5.4 wrap-into-past guard. Largest
 /// legitimate `(CCR4 - CNT) & 0xFFFF` value expected at `schedule` time —

@@ -112,7 +112,25 @@ pub fn arm(compare: u16) {
         RESTORED.store(false, Ordering::Relaxed);
         WINDOW_OPEN.store(true, Ordering::Relaxed);
     }
+    // Ordering is the load-bearing part. On the on-time path the
+    // predecessor's bytes are STILL STREAMING during this arm — every IC
+    // capture pulses the CC4 request line. The sequence must guarantee no
+    // stale capture request (or stale CC4IF held level) can reach
+    // kickoff-configured CH7, or the enable word lands in CH4 the moment
+    // CH7 turns on and the send fires early into a not-yet-raised TX_EN
+    // (bench signature: clipped/garbled emission tails, noreply at 3M):
+    //
+    // 1. CH7 off — capture requests pulse into a disabled channel and drop.
+    // 2. CH4 leaves IC mode (captures stop), CCR4 = compare, CC4IF wiped
+    //    LAST — from here the flag can only re-set on a real new-compare
+    //    match.
+    // 3. CH7 reconfigures and enables as the kickoff.
+    //
+    // A real match inside step 2-3's dead window drops its request; the
+    // caller's §5.4 recheck sees CNT past CCR4 and re-aims via
+    // `trigger_asap`.
     dma::disable(dma::Channel::CH7);
+    timer::tim2_ch4_to_oc(compare);
     // SAFETY: CH7 is disabled — no DMA read of the word can race this.
     unsafe { *KICKOFF_WORD.get() = ch4_cr_with_en() };
     let cfg = dma::Config {
@@ -136,7 +154,6 @@ pub fn arm(compare: u16) {
     // the moment the vector unmasks.
     dma::clear_tc_flag(dma::Channel::CH7);
     dma::enable(dma::Channel::CH7);
-    timer::tim2_ch4_to_oc(compare);
 }
 
 /// Past-deadline retry: re-aim CCR4 just ahead of CNT so a REAL compare

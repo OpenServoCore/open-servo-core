@@ -155,8 +155,13 @@ pub fn tim2_ch4_to_oc(compare: u16) {
         w.set_ocm(1, Ocm::FROZEN);
         w.set_ocpe(1, false);
     });
-    clear_tim2_cc4_flag();
+    // CCR4 before the flag clear: a stale match on the OLD compare value
+    // between these two writes still gets wiped, so once the flag is
+    // clean any CC4 request can only come from a real match on the new
+    // compare. The caller enables the kickoff channel only after this
+    // returns — see `tx_kickoff::arm`'s ordering contract.
     TIM2.chcvr(3).write_value(compare);
+    clear_tim2_cc4_flag();
 }
 
 /// Restore CH4 to the falling-edge input capture after a TX-kickoff OC
