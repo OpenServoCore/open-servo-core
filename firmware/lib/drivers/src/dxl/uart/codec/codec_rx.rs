@@ -523,60 +523,21 @@ impl<R: EdgeDma, CRC: CrcUmts, const RX_BUF_LEN: usize, const EDGE_BUF_LEN: usiz
     }
 
     /// FAST status-start query — start tick (WireClock u32) of the
-    /// awaited Status packet's FIRST wire byte. Called from the RXNE
-    /// trap during a FAST slot k>0 wait ([`dxl-streaming-rx.md`] §4.3);
-    /// `now` must be the trap-entry wire-clock reading and
-    /// `reply_start_cursor` the wire cursor where the Status packet
-    /// begins (the instruction Crc's `next_status_pos`).
+    /// awaited Status packet's FIRST wire byte, read straight off the
+    /// ET-ring mark planted at the chain instruction's `Crc(Good)`
+    /// anchor (the first edge past the instruction's last edge — the
+    /// wire between is idle, so it can only be the Status packet's
+    /// start bit). Called from the RXNE trap during a FAST slot k > 0
+    /// wait; `now` must be a fresh wire-clock reading for the u16 lift.
     ///
-    /// Two arms on how many reply bytes have arrived:
-    /// - exactly 1 (the common on-time trap): the newest ET stamp one
-    ///   frame back IS the byte's start edge — `0xFF` has exactly one
-    ///   falling edge. See [`edge_parser::first_status_byte_start`].
-    /// - 2 or more (late watch enable, or a retry after a lost edge):
-    ///   signature back-search over the newest arrived bytes, then
-    ///   extrapolate back to the first byte in whole frames — the reply
-    ///   burst is contiguous, so the walk-back is exact.
-    ///
-    /// `None` when no reply byte has arrived yet (spurious trap — the
-    /// V006 residual-drain quirk), on a signature miss (EMI-lost edge;
-    /// caller keeps the watch armed and retries on the next byte's
-    /// trap), or on a nonsensical cursor (defensive, never panics).
-    pub fn status_start_tick<D: RxDma>(
-        &mut self,
-        rx_dma: &D,
-        reply_start_cursor: u32,
-        ticks_per_bit: u16,
-        now: u32,
-    ) -> Option<u32> {
-        // SAFETY: rx_buf is single-consumer at PFIC HIGH (same as `poll`);
-        // the RXNE trap and the poll ISRs share that priority.
-        let rx_buf = unsafe { &mut *self.rx_buf.get() };
-        rx_buf.on_publish(rx_dma.remaining());
-        let arrived = self
-            .wire_bytes_consumed
-            .wrapping_add(rx_buf.reader().avail() as u32)
-            .wrapping_sub(reply_start_cursor);
-        if arrived == 0 || arrived > RX_BUF_LEN as u32 {
-            return None;
-        }
-        if arrived == 1 {
-            return self
-                .edge_capture
-                .first_status_byte_start(ticks_per_bit, now);
-        }
-        let n = (arrived as usize).min(TAIL_BYTES_FOR_ANCHOR);
-        let mut tail = [0u8; TAIL_BYTES_FOR_ANCHOR];
-        // Oldest → newest: recent(n-1) … recent(0).
-        for (i, slot) in tail[..n].iter_mut().enumerate() {
-            *slot = *rx_buf.recent((n - 1 - i) as u16)?;
-        }
-        let newest_start =
-            self.edge_capture
-                .reply_tail_newest_start(ticks_per_bit, &tail[..n], now)?;
-        // recent(0) is reply byte index `arrived - 1`; walk back to byte 0.
-        let frame_ticks = (ticks_per_bit as u32).wrapping_mul(BITS_PER_FRAME as u32);
-        Some(newest_start.wrapping_sub(arrived.wrapping_sub(1).wrapping_mul(frame_ticks)))
+    /// O(1) and immune to byte-ring/edge-ring sampling skew: no byte
+    /// counting, no age window — the mark's slot IS the answer once any
+    /// edge lands there. `None` while nothing has landed on the mark
+    /// (spurious trap — the V006 residual-drain quirk) or when no mark
+    /// exists (defensive: FAST k > 0 slots are dropped on an anchor
+    /// miss, so a parked wait always planted one).
+    pub fn status_start_tick(&mut self, now: u32) -> Option<u32> {
+        self.edge_capture.status_start_from_mark(now)
     }
 
     /// Clear any in-flight universal byte-skip. Called by the composite at
@@ -671,6 +632,16 @@ impl<R: EdgeDma, CRC: CrcUmts, const RX_BUF_LEN: usize, const EDGE_BUF_LEN: usiz
     pub(crate) fn stage_edge_at_head_for_test(&mut self, stamp: u16) -> u16 {
         self.edge_capture.stage_edge_at_head_for_test(stamp)
     }
+
+    /// See [`EdgeCapture::plant_reply_mark_for_test`].
+    pub(crate) fn plant_reply_mark_for_test(&mut self, seq: u16) {
+        self.edge_capture.plant_reply_mark_for_test(seq)
+    }
+
+    /// See [`EdgeCapture::edge_head_seq_for_test`].
+    pub(crate) fn edge_head_seq_for_test(&mut self) -> u16 {
+        self.edge_capture.edge_head_seq_for_test()
+    }
 }
 
 #[cfg(test)]
@@ -679,7 +650,7 @@ mod tests {
 
     use super::*;
     use crate::dxl::uart::test_support::{TEST_ID, wire_ping, wire_status};
-    use crate::mocks::{MockEdgeDma, MockRxDma};
+    use crate::mocks::MockEdgeDma;
     use dxl_protocol::streaming::InstructionHeader;
     use dxl_protocol::types::Id;
     use dxl_protocol::{InstructionEncoder, SoftwareCrcUmts};
@@ -1099,69 +1070,51 @@ mod tests {
         CodecRx::new(edge_dma)
     }
 
-    fn rx_dma_with_remaining(remaining: u16) -> MockRxDma {
-        let mut m = MockRxDma::default();
-        m.expect_remaining().returning(move || remaining);
-        m
-    }
-
     #[test]
-    fn status_start_tick_none_before_any_reply_byte() {
-        // Spurious RXNE trap (V006 residual-drain quirk): no byte past
-        // the reply-start cursor yet — refuse without touching the ET
-        // ring.
+    fn status_start_tick_none_without_mark() {
+        // No instruction anchored → no mark planted → refuse (defensive;
+        // FAST k > 0 slots drop on an anchor miss, so a parked wait
+        // always planted one in production).
         let mut rx = make();
-        let rx_dma = rx_dma_with_remaining(RX_BUF_LEN as u16);
-        assert_eq!(rx.status_start_tick(&rx_dma, 0, TPB_3M, 5000), None);
+        assert_eq!(rx.status_start_tick(5000), None);
     }
 
     #[test]
-    fn status_start_tick_single_byte_resolves_first_edge() {
+    fn status_start_tick_none_before_edge_lands_on_mark() {
+        // Spurious RXNE trap (V006 residual-drain quirk): the mark is
+        // planted but no edge has landed on it yet.
+        let mut rx = make_with_edge_remaining(EDGE_BUF_LEN as u16);
+        let mark = rx.edge_head_seq_for_test();
+        rx.plant_reply_mark_for_test(mark);
+        assert_eq!(rx.status_start_tick(5000), None);
+    }
+
+    #[test]
+    fn status_start_tick_resolves_the_marked_edge() {
+        // The first edge past the mark IS the Status packet's first
+        // byte's start — resolved directly, no window, no byte count.
         let mut rx = make_with_edge_remaining(EDGE_BUF_LEN as u16 - 1);
-        rx.stage_rx_bytes_for_test(0, &[0xFF]);
+        let mark = rx.edge_head_seq_for_test();
+        rx.plant_reply_mark_for_test(mark);
         let n = rx.stage_tail_signature_for_test(&[0xFF], TPB_3M, 1000);
         assert_eq!(n, 1, "0xFF must contribute exactly one falling edge");
-        let rx_dma = rx_dma_with_remaining(RX_BUF_LEN as u16 - 1);
         let now = 1000 + BYTE_TICKS_3M + 50;
-        assert_eq!(rx.status_start_tick(&rx_dma, 0, TPB_3M, now), Some(1000));
+        assert_eq!(rx.status_start_tick(now), Some(1000));
     }
 
     #[test]
-    fn status_start_tick_multi_byte_extrapolates_to_first() {
-        // Late watch enable: four header bytes already arrived. The
-        // signature resolves the NEWEST byte's start; the query walks
-        // back three whole frames to the packet's first byte.
-        let hdr = [0xFF, 0xFF, 0xFD, 0x00];
+    fn status_start_tick_ignores_later_edges_past_the_mark() {
+        // Coalesced wake several bytes in: later stamps (whole or partial
+        // bytes) are irrelevant — the marked slot alone answers, so
+        // byte-ring/edge-ring sampling skew can't mis-index the start.
         let mut rx = make_with_edge_remaining(EDGE_BUF_LEN as u16 - 5);
-        rx.stage_rx_bytes_for_test(0, &hdr);
-        rx.stage_tail_signature_for_test(&hdr, TPB_3M, 2000);
-        let rx_dma = rx_dma_with_remaining(RX_BUF_LEN as u16 - 4);
-        let now = 2000 + 200;
-        assert_eq!(
-            rx.status_start_tick(&rx_dma, 0, TPB_3M, now),
-            Some(2000 - 3 * BYTE_TICKS_3M)
-        );
-    }
-
-    #[test]
-    fn status_start_tick_single_byte_without_edge_is_none() {
-        // The byte arrived but its start edge was lost (EMI): refuse so
-        // the caller keeps the watch armed and retries multi-byte on the
-        // next trap.
-        let mut rx = make();
-        rx.stage_rx_bytes_for_test(0, &[0xFF]);
-        let rx_dma = rx_dma_with_remaining(RX_BUF_LEN as u16 - 1);
-        assert_eq!(rx.status_start_tick(&rx_dma, 0, TPB_3M, 5000), None);
-    }
-
-    #[test]
-    fn status_start_tick_nonsensical_cursor_is_none() {
-        // Cursor ahead of everything the wire has produced (stale wait
-        // surviving a codec reset): the wrapped distance is huge —
-        // refuse, never panic.
-        let mut rx = make();
-        rx.stage_rx_bytes_for_test(0, &[0xFF; 4]);
-        let rx_dma = rx_dma_with_remaining(RX_BUF_LEN as u16 - 4);
-        assert_eq!(rx.status_start_tick(&rx_dma, 1000, TPB_3M, 5000), None);
+        let mark = rx.edge_head_seq_for_test();
+        rx.plant_reply_mark_for_test(mark);
+        let hdr = [0xFF, 0xFF, 0xFD, 0x00];
+        rx.stage_tail_signature_for_test(&hdr, TPB_3M, 2000 + 3 * BYTE_TICKS_3M as u16);
+        // The staged signature's OLDEST edge (byte 0's start) sits at the
+        // mark; the query must return it, not the newer stamps.
+        let now = 2000 + 4 * BYTE_TICKS_3M + 200;
+        assert_eq!(rx.status_start_tick(now), Some(2000));
     }
 }

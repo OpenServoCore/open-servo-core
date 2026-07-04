@@ -60,6 +60,21 @@ impl<T: Copy, const N: usize> HwRing<T, N> {
         self.data.as_ptr()
     }
 
+    /// Producer head in monotonic u16 seq space — the seq the NEXT
+    /// published slot will occupy. Consumers that mark a position to
+    /// revisit later (the FAST status-start mark) pair this with
+    /// [`Self::slot`].
+    pub fn write_seq(&self) -> u16 {
+        self.write_seq
+    }
+
+    /// Read a slot by absolute seq. Valid while the producer hasn't
+    /// lapped past it (`write_seq − seq ≤ N`) — the caller owns that
+    /// check; this is a plain modular index.
+    pub fn slot(&self, seq: u16) -> &T {
+        &self.data[(seq as usize) % N]
+    }
+
     /// Reset producer/consumer bookkeeping to the freshly-constructed
     /// state. For rings whose hardware producer gets re-armed from the
     /// buffer base (NDTR reloaded to full, writes restarting at slot 0 —

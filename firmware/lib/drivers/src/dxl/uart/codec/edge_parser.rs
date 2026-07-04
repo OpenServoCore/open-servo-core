@@ -152,6 +152,13 @@ fn byte_edge_positions(b: u8) -> ([u8; 5], usize) {
 /// reference sits more than a u16-wrap past the stamp the result aliases
 /// to a value one wrap too high. See [`drain_ref`] for the per-source
 /// reference correction the composite applies before calling.
+/// [`lift`] surfaced for the codec's mark-based status-start read —
+/// same single-wrap contract on `ref_tick − stamp`.
+#[inline]
+pub(super) fn lift_stamp(stamp: u16, ref_tick: u32) -> u32 {
+    lift(stamp, ref_tick)
+}
+
 #[inline]
 fn lift(stamp: u16, ref_tick: u32) -> u32 {
     let delta = (ref_tick as u16).wrapping_sub(stamp) as u32;
@@ -292,13 +299,21 @@ fn try_anchor_at_tail_offset<const EDGE_BUF_LEN: usize>(
 /// The 4-byte tail signature includes both CRC bytes, so per-shift
 /// false-positive entropy is ~2^-16 — comfortably below the packet
 /// rate.
+///
+/// On match, additionally returns the absolute ring seq of the first
+/// edge PAST the anchored packet — the FAST status-start mark: the
+/// wire after this packet is idle until the chain's Status packet, so
+/// whatever edge lands at that seq is the Status packet's first byte's
+/// start bit. `d_min > 0` (reply bytes already in the ring at Crc —
+/// the enable race) is covered by construction: the mark lands on the
+/// first of those pre-arrived edges.
 pub(super) fn anchor_at_tail<const EDGE_BUF_LEN: usize>(
     edges: &mut HwRing<u16, EDGE_BUF_LEN>,
     anchor: &mut AnchorCache,
     ticks_per_bit: u16,
     tail_bytes: &[u8],
     d_min: u16,
-) -> bool {
+) -> Option<u16> {
     match search_tail_signature(edges, anchor, ticks_per_bit, tail_bytes, d_min) {
         Some((o, starts)) => {
             anchor.tail_anchor = Some(starts[TAIL_STARTS - 1]);
@@ -307,20 +322,32 @@ pub(super) fn anchor_at_tail<const EDGE_BUF_LEN: usize>(
             // tail byte's start edge, by the sig_idx=0 invariant in
             // `try_anchor_at_tail_offset`.
             anchor.tail_starts_oldest_ring_off = Some(o);
-            true
+            // The packet's newest edge sits `total − 1` slots forward of
+            // `o`; the mark is one past it. In absolute seq space:
+            // `write_seq − 1 − (o − (total − 1)) + 1`.
+            let mut total: u16 = 0;
+            for &b in tail_bytes {
+                total = total.wrapping_add(EDGES_PER_BYTE[b as usize] as u16);
+            }
+            Some(
+                edges
+                    .write_seq()
+                    .wrapping_sub(o)
+                    .wrapping_add(total)
+                    .wrapping_sub(1),
+            )
         }
         None => {
             anchor.tail_anchor = None;
             anchor.tail_starts_oldest_ring_off = None;
-            false
+            None
         }
     }
 }
 
-/// Window-bounded search for `tail_bytes`' falling-edge signature —
-/// the shared core of [`anchor_at_tail`] (Crc-time drift anchor, writes
-/// [`AnchorCache`]) and [`reply_tail_newest_start`] (FAST status-start
-/// query, read-only). Returns the matched probe offset (= the FIRST
+/// Window-bounded search for `tail_bytes`' falling-edge signature — the
+/// core of [`anchor_at_tail`] (Crc-time drift anchor, writes
+/// [`AnchorCache`]). Returns the matched probe offset (= the FIRST
 /// tail byte's start-edge ring offset) and the per-byte start ticks
 /// (oldest at `[0]`; entries past `tail_bytes.len()` stay zeroed for
 /// short slices). Mutates nothing beyond the ring's lap resync.
@@ -417,86 +444,6 @@ pub(super) fn packet_end_tick(
 /// duplicating the match.
 pub(super) fn packet_end_tick_fallback(src: PollSrc, now: u32, ticks_per_bit: u16) -> u32 {
     drain_ref(now, src, ticks_per_bit)
-}
-
-/// Max ticks between the first Status byte's wire end (RXNE assertion at
-/// its stop bit) and the `now` the status-start query receives — PFIC
-/// trap-entry latency plus the RXNE-set-vs-stop-bit sampling skew.
-/// 240 HCLK ticks = 5 µs at 48 MHz, generous against the measured ~1-2 µs
-/// entry latencies elsewhere (`FAST_LAST_ENTRY_TICKS` class). Bounds the
-/// acceptance window that separates the first Status byte's start edge
-/// from an in-flight second byte's edge (too young) and stale
-/// instruction-tail edges (too old).
-const STATUS_START_ENTRY_LAG_TICKS: u32 = 240;
-
-/// Start tick of the awaited Status packet's FIRST byte, resolved from
-/// the newest ET-ring stamps at the byte's RXNE trap. The DXL 2.0 header
-/// starts `0xFF` — exactly one falling edge (the start bit) — so the
-/// byte's stamp sits one frame (+ trap lag) before `now`:
-///
-/// - If the second-newest stamp lands in that window AND the newest sits
-///   one frame after it, the newest is the in-flight second header
-///   byte's start edge (also `0xFF`, captured before the trap entered) —
-///   take the second-newest.
-/// - Else the newest stamp in the window is the byte itself.
-/// - Nothing in the window → `None` (edge lost to EMI; the caller
-///   retries on the next byte's trap via the multi-byte signature path).
-///
-/// `now` must be a wire-clock reading taken at the trap entry — the
-/// window math assumes the stamp is at most one frame plus
-/// [`STATUS_START_ENTRY_LAG_TICKS`] old, which also keeps the u16 lift
-/// sub-wrap at every supported baud (10 bits at 9600 = 50 000 ticks).
-/// Residual alias risk: an edge more than one u16 wrap old can lift into
-/// the window only if the true first-byte edge was ALSO lost — a dual
-/// failure below the EMI-degraded baseline, accepted.
-pub(super) fn first_status_byte_start<const EDGE_BUF_LEN: usize>(
-    edges: &mut HwRing<u16, EDGE_BUF_LEN>,
-    anchor: &AnchorCache,
-    ticks_per_bit: u16,
-    now: u32,
-) -> Option<u32> {
-    edges.reader().resync_if_lapped();
-    let frame_ticks = (ticks_per_bit as u32).wrapping_mul(BITS_PER_FRAME as u32);
-    let window_lo = frame_ticks.wrapping_sub(ticks_per_bit as u32);
-    let window_hi = frame_ticks.wrapping_add(STATUS_START_ENTRY_LAG_TICKS);
-    let comp = anchor.rx_edge_comp_ticks;
-
-    let lifted_age = |offset: u16| -> Option<(u32, u32)> {
-        let &raw = edges.recent(offset)?;
-        let lifted = lift(raw.wrapping_sub(comp), now);
-        Some((lifted, now.wrapping_sub(lifted)))
-    };
-
-    let (l0, age0) = lifted_age(0)?;
-    if let Some((l1, age1)) = lifted_age(1) {
-        let gap = age1.wrapping_sub(age0);
-        let paired = gap.abs_diff(frame_ticks) <= ticks_per_bit as u32;
-        if paired && (window_lo..=window_hi).contains(&age1) {
-            return Some(l1);
-        }
-    }
-    (window_lo..=window_hi).contains(&age0).then_some(l0)
-}
-
-/// Start tick of the NEWEST of `tail_bytes` — the multi-byte arm of the
-/// FAST status-start query, for traps that observe the Status packet
-/// `n ≥ 2` bytes in (late watch enable, missed first-byte edge). Runs
-/// the same window-bounded signature search as the Crc-time anchor with
-/// `d_min = 0` (the bytes ARE the ring's newest), reads nothing from and
-/// writes nothing to the [`AnchorCache`] beyond its edge compensation,
-/// and lifts against the caller's fresh `now` — the newest byte's start
-/// is ~one frame old, sub-wrap at every baud; the caller extrapolates
-/// back to the packet's first byte in u32 ticks.
-pub(super) fn reply_tail_newest_start<const EDGE_BUF_LEN: usize>(
-    edges: &mut HwRing<u16, EDGE_BUF_LEN>,
-    anchor: &AnchorCache,
-    ticks_per_bit: u16,
-    tail_bytes: &[u8],
-    now: u32,
-) -> Option<u32> {
-    let (_, starts) = search_tail_signature(edges, anchor, ticks_per_bit, tail_bytes, 0)?;
-    let newest = starts[tail_bytes.len() - 1];
-    Some(lift(newest, now))
 }
 
 /// Retroactive integrator walk. Emits pairs going backward from
@@ -730,7 +677,7 @@ mod tests {
             tail_bytes: &[u8],
             d_min: u16,
         ) -> bool {
-            anchor_at_tail(edges, &mut self.anchor, ticks_per_bit, tail_bytes, d_min)
+            anchor_at_tail(edges, &mut self.anchor, ticks_per_bit, tail_bytes, d_min).is_some()
         }
 
         fn walk_pairs_back<const EDGE_BUF_LEN: usize, const PAIRS_LEN: usize>(
@@ -882,142 +829,68 @@ mod tests {
         assert_eq!(c.anchor.tail_anchor, None);
     }
 
-    // ---------- FAST status-start query ----------
+    // ---------- FAST status-start mark ----------
 
-    #[test]
-    fn status_start_single_edge_in_window_resolves() {
-        let c = make();
-        let mut edges = edges16(&[1000]);
-        // RXNE trap enters one frame (+ some lag) after the start edge.
-        let now = 1000 + BYTE_TICKS_3M as u32 + 50;
-        assert_eq!(
-            first_status_byte_start(&mut edges, &c.anchor, TPB_3M, now),
-            Some(1000)
-        );
-    }
-
-    #[test]
-    fn status_start_prefers_paired_older_edge() {
-        // The second header byte (also 0xFF) is in flight at trap entry;
-        // its start edge is already captured one frame after the first
-        // byte's. The query must take the OLDER of the frame-spaced pair.
-        let c = make();
-        let mut edges = edges16(&[1000, 1000 + BYTE_TICKS_3M]);
-        let now = (1000 + BYTE_TICKS_3M) as u32 + BYTE_TICKS_3M as u32 + 30;
-        assert_eq!(
-            first_status_byte_start(&mut edges, &c.anchor, TPB_3M, now),
-            Some(1000)
-        );
-    }
-
-    #[test]
-    fn status_start_ignores_unpaired_older_edge() {
-        // An older edge NOT one frame away (instruction-tail residue)
-        // must not steal the anchor from the in-window newest edge.
-        let c = make();
-        let mut edges = edges16(&[200, 1000]);
-        let now = 1000 + BYTE_TICKS_3M as u32 + 50;
-        assert_eq!(
-            first_status_byte_start(&mut edges, &c.anchor, TPB_3M, now),
-            Some(1000)
-        );
-    }
-
-    #[test]
-    fn status_start_stale_edge_is_none() {
-        // Newest edge far older than one frame + trap lag: the awaited
-        // byte's own edge was lost — refuse rather than mis-anchor.
-        let c = make();
-        let mut edges = edges16(&[1000]);
-        let now = 1000 + 4 * BYTE_TICKS_3M as u32;
-        assert_eq!(
-            first_status_byte_start(&mut edges, &c.anchor, TPB_3M, now),
-            None
-        );
-    }
-
-    #[test]
-    fn status_start_empty_ring_is_none() {
-        let c = make();
-        let mut edges = edges16(&[]);
-        assert_eq!(
-            first_status_byte_start(&mut edges, &c.anchor, TPB_3M, 1210),
-            None
-        );
-    }
-
-    #[test]
-    fn status_start_sub_wrap_at_9600() {
-        // One frame at 9600 = 50_000 ticks — near the u16 wrap. The lift
-        // must land the stamp in the right wrap window off a trap-entry
-        // `now` one frame + lag out.
-        let c = make();
-        let mut edges = edges16(&[1000]);
-        let now = 0x0002_0000_u32 + 1000 + 10 * TPB_9600 as u32 + 100;
-        assert_eq!(
-            first_status_byte_start(&mut edges, &c.anchor, TPB_9600, now),
-            Some(0x0002_0000 + 1000)
-        );
-    }
-
-    #[test]
-    fn reply_tail_newest_start_lifts_matched_signature() {
-        let c = make();
-        let tail = [0xFF, 0xFF, 0xFD, 0x00];
+    /// Anchor a 4-byte tail signature and return the produced mark. The
+    /// staging starts at ring seq 0, so the mark equals the staged edge
+    /// count — the seq the NEXT (reply) edge will occupy.
+    fn anchor_and_mark(c: &mut Fixture, tail: &[u8], anchor_tick: u16) -> (HwRing<u16, 16>, u16) {
         let mut edges: HwRing<u16, 16> = HwRing::new(0);
-        let n = stage_tail_signature_for_test(&mut edges, &tail, TPB_3M, 2000);
+        let n = stage_tail_signature_for_test(&mut edges, tail, TPB_3M, anchor_tick);
         edges.on_publish(HwRing::<u16, 16>::LEN - n);
-        let now = 2000 + 300;
-        assert_eq!(
-            reply_tail_newest_start(&mut edges, &c.anchor, TPB_3M, &tail, now),
-            Some(2000)
-        );
+        let mark = anchor_at_tail(&mut edges, &mut c.anchor, TPB_3M, tail, 0)
+            .expect("staged signature must anchor");
+        (edges, mark)
     }
 
     #[test]
-    fn reply_tail_newest_start_leaves_anchor_untouched() {
-        // Read-only contract: the FAST query must never plant a tail
-        // anchor the Crc-time drift path could mistake for its own.
+    fn anchor_at_tail_mark_is_the_seq_after_the_packet() {
+        // No reply bytes in the ring at Crc: the mark is the producer
+        // head itself — the next captured edge is the reply's first.
         let mut c = make();
-        c.anchor.tail_anchor = Some(777);
+        let tail = [0xFF, 0xFF, 0xFD, 0x00];
+        let (edges, mark) = anchor_and_mark(&mut c, &tail, 2000);
+        assert_eq!(mark, edges.write_seq());
+    }
+
+    #[test]
+    fn anchor_at_tail_mark_lands_on_prearrived_reply_edge() {
+        // Enable race: the reply's first edge is ALREADY captured when
+        // the instruction anchors (d_min counts its edge). The mark must
+        // point at that edge, not at the head.
+        let mut c = make();
         let tail = [0xFF, 0xFF, 0xFD, 0x00];
         let mut edges: HwRing<u16, 16> = HwRing::new(0);
         let n = stage_tail_signature_for_test(&mut edges, &tail, TPB_3M, 2000);
-        edges.on_publish(HwRing::<u16, 16>::LEN - n);
-        reply_tail_newest_start(&mut edges, &c.anchor, TPB_3M, &tail, 2300);
-        assert_eq!(c.anchor.tail_anchor, Some(777));
+        // One pre-arrived reply edge past the packet.
+        let reply_edge = 2000 + 12 * BYTE_TICKS_3M;
+        edges.stage(n, &[reply_edge]);
+        edges.on_publish(HwRing::<u16, 16>::LEN - n - 1);
+        let mark = anchor_at_tail(&mut edges, &mut c.anchor, TPB_3M, &tail, 1)
+            .expect("staged signature must anchor past the pre-arrived edge");
+        assert_eq!(mark, n, "mark = first slot after the instruction");
+        assert_eq!(*edges.slot(mark), reply_edge);
     }
 
     #[test]
-    fn reply_tail_newest_start_two_byte_tail_resolves() {
-        // FAST middle segments can be 3 wire bytes; a late watch enable
-        // may have only 2 bytes to sign with.
-        let c = make();
-        let tail = [0x55, 0x00];
-        let mut edges: HwRing<u16, 16> = HwRing::new(0);
-        let n = stage_tail_signature_for_test(&mut edges, &tail, TPB_3M, 3000);
-        edges.on_publish(HwRing::<u16, 16>::LEN - n);
-        assert_eq!(
-            reply_tail_newest_start(&mut edges, &c.anchor, TPB_3M, &tail, 3200),
-            Some(3000)
-        );
-    }
-
-    #[test]
-    fn reply_tail_newest_start_without_enough_edges_is_none() {
-        // Queried bytes need 10 edges but the ring only captured 5 —
-        // the search must refuse, not fabricate. (Band-mismatch misses
-        // are pinned by the anchor_at_tail tests; the search core is
-        // shared.)
-        let c = make();
+    fn anchor_at_tail_miss_returns_no_mark() {
+        let mut c = make();
         let staged = [0xFF, 0xFF, 0xFD, 0x00];
         let mut edges: HwRing<u16, 16> = HwRing::new(0);
         let n = stage_tail_signature_for_test(&mut edges, &staged, TPB_3M, 2000);
         edges.on_publish(HwRing::<u16, 16>::LEN - n);
+        // Band-mismatched query bytes → miss → no mark, anchor cleared.
         assert_eq!(
-            reply_tail_newest_start(&mut edges, &c.anchor, TPB_3M, &[0x55, 0x55], 2300),
+            anchor_at_tail(
+                &mut edges,
+                &mut c.anchor,
+                TPB_3M,
+                &[0x55, 0x55, 0x55, 0x55],
+                0
+            ),
             None
         );
+        assert_eq!(c.anchor.tail_anchor, None);
     }
 
     // ---------- tail-signature back-search ----------
