@@ -218,14 +218,33 @@ impl<P: Providers, const RX_BUF_LEN: usize, const EDGE_BUF_LEN: usize, const TX_
             wait.is_last
         );
         if wait.is_last {
-            self.scheduler
-                .schedule(deadline, byte_count, SendKind::FastLast);
             self.fast_last.start(fast_last::FastLastSchedule {
                 status_start_tick: status_start,
                 byte_ticks: self.clock.byte_ticks(),
                 predecessor_bytes: wait.slot_offset_bytes,
                 fold_start_cursor: wait.status_start_cursor,
             });
+            // Late observation (short predecessor at high baud): the
+            // deadline is already past, so the schedule below fires the
+            // hardware kickoff ASAP — and with a short own reply the TX
+            // DMA reads the trailing CRC slot within a few byte-times,
+            // sooner than any grid CMP body can land the patch (measured:
+            // patch ~800 ticks behind the read at 3M). Every predecessor
+            // byte is already on the wire (deadline past ⇒ the
+            // predecessor window is over), so fold + patch inline FIRST;
+            // the wire start slips by the fold's ~20 µs, which a late
+            // fire-ASAP send absorbs — a valid chain CRC a little later
+            // beats a placeholder on time.
+            // Freshly-read clock, NOT the entry-time `now`: the stamp
+            // query above can burn enough ticks that a deadline the entry
+            // read saw as future is already past — and the entry read
+            // deciding "not late" is exactly the case that ships a
+            // placeholder CRC (measured on hardware at 3M).
+            if (deadline.wrapping_sub(self.wire_clock.now()) as i32) <= 0 {
+                self.on_fold_step();
+            }
+            self.scheduler
+                .schedule(deadline, byte_count, SendKind::FastLast);
         } else {
             self.scheduler
                 .schedule(deadline, byte_count, SendKind::Plain);
@@ -1191,6 +1210,72 @@ mod tests {
             0,
             "finalize path must not bump the deadline-miss counter",
         );
+    }
+
+    #[test]
+    fn late_last_observation_folds_inline_and_patches_crc() {
+        // Short predecessor at high baud: the observation lands AFTER the
+        // slot deadline (the whole 12-byte First is already in the ring),
+        // so the hardware kickoff fires ASAP and the CRC patch races the
+        // TX DMA's read of the trailing slot. `on_status_start` must fold
+        // inline — a pended grid CMP would arrive one PFIC re-entry too
+        // late for a short own reply. Hardware regression pin
+        // (fast_injected::fast_last at 3M shipped the placeholder CRC).
+        let req = wire_fast_sync_read(0, 2, &[0x42, TEST_ID]);
+        let (mut bus, state, _) = bus_seeded_with(&req);
+        bus.poll(|_, _, reply| {
+            let slot = Slot {
+                id: Id::new(TEST_ID),
+                error: StatusError::OK,
+                data: &[0xAA, 0xBB],
+            };
+            reply.send_slot(&slot).expect("encode fits");
+        });
+        assert!(state.rx.status_start_watched());
+
+        // The full injected-First emission (10 + L = 12 bytes) staged in
+        // the byte ring, its newest-4 tail signature in the ET ring. The
+        // newest byte's start sits just over one frame before `now`; the
+        // frame's first byte is then 12 frames back, putting the slot
+        // deadline (status_start + 12 byte-times) 50 ticks in the past.
+        let pred = [
+            0xFF_u8, 0xFF, 0xFD, 0x00, 0xFE, 0x0B, 0x00, 0x55, 0x00, 0x32, 0xAA, 0xBB,
+        ];
+        stage_rx(&mut bus, &state, req.len() as u16, &pred);
+        let frame = (BITS_PER_FRAME * TICKS_PER_BIT_3M) as u32;
+        let late_now = SEED_TICK as u32 + 20_000;
+        state.wire.stage_now(late_now);
+        let newest_start = (late_now - frame - 50) as u16;
+        let published =
+            bus.codec
+                .stage_tail_signature_for_test(&pred[8..], TICKS_PER_BIT_3M, newest_start);
+        state
+            .edge
+            .stage_remaining((EDGE_BUF_LEN as u16).wrapping_sub(published));
+        assert_eq!(bus.codec.tx.trailing_crc_slot_for_test(), [0x00, 0x00]);
+
+        bus.on_status_start();
+
+        assert_ne!(
+            bus.codec.tx.trailing_crc_slot_for_test(),
+            [0x00, 0x00],
+            "inline fold must patch before the wake returns"
+        );
+        assert!(!bus.fast_last.fold_active());
+        assert!(!bus.fast_last.grid_active());
+        // Fold-before-fire: the inline fold (whose early-exit fires the
+        // commit closure) must complete BEFORE the wire start is armed.
+        assert!(matches!(
+            state.sch.operations().as_slice(),
+            [
+                ScheduleOp::CommitPending,
+                ScheduleOp::Schedule {
+                    kind: SendKind::FastLast,
+                    ..
+                },
+            ]
+        ));
+        assert_eq!(state.telemetry.patch_miss_count(), 0);
     }
 
     #[test]

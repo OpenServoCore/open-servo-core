@@ -654,13 +654,15 @@ pub(super) fn walk_pairs_back<const EDGE_BUF_LEN: usize, const PAIRS_LEN: usize>
 }
 
 /// Stage a matching falling-edge signature for `tail_bytes` into `edges`
-/// so a follow-up [`anchor_at_tail`] resolves the tail anchor to
-/// `anchor_tick`. Composite-test scaffolding — real code populates the
-/// ET ring from the DMA1_CH7 IC-capture. Writes stamps oldest-first
-/// starting at ring index 0; caller advances `write_seq` via
-/// `on_publish(EDGE_BUF_LEN - total_edges)`. Assumes
-/// `rx_edge_comp_ticks == 0` on the cache (test-baud default). Returns
-/// the number of stamps written.
+/// so a follow-up [`anchor_at_tail`] / [`reply_tail_newest_start`]
+/// resolves to `anchor_tick`. Composite-test scaffolding — real code
+/// populates the ET ring from the DMA1_CH7 IC-capture. Writes stamps
+/// oldest-first at the current producer head so multi-packet tests can
+/// layer signatures (instruction anchor, then a reply tail); caller
+/// advances `write_seq` via `on_publish(EDGE_BUF_LEN - returned_total)`.
+/// Assumes `rx_edge_comp_ticks == 0` on the cache (test-baud default).
+/// Returns the resulting produced-slot total (head position + stamps
+/// written).
 #[cfg(test)]
 pub(super) fn stage_tail_signature_for_test<const EDGE_BUF_LEN: usize>(
     edges: &mut HwRing<u16, EDGE_BUF_LEN>,
@@ -685,8 +687,9 @@ pub(super) fn stage_tail_signature_for_test<const EDGE_BUF_LEN: usize>(
             n = n.wrapping_add(1);
         }
     }
-    edges.stage(0, &stamps[..n as usize]);
-    n
+    let at = edges.write_seq_for_test();
+    edges.stage(at, &stamps[..n as usize]);
+    at.wrapping_add(n)
 }
 
 #[cfg(test)]

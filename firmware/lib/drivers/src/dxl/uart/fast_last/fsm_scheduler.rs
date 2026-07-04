@@ -136,6 +136,16 @@ impl<S: FastLastScheduler> FsmScheduler<S> {
         match self.phase {
             FastLastPhase::PeriodicWalk => {
                 let bytes_walked = walker();
+                if bytes_walked >= self.fold_target {
+                    // Fold complete at whatever body this is — a late
+                    // observation (deadline already past → kickoff firing
+                    // ASAP) lands every predecessor byte in one walk. The
+                    // wire start still depends on any far-horizon stash:
+                    // commit before finishing.
+                    commit_pending();
+                    self.finish();
+                    return FoldExit::Finalized;
+                }
                 if self.next_anchor_offset != self.final_anchor_offset {
                     self.next_anchor_offset =
                         self.next_anchor_offset.wrapping_add(self.interval_ticks);
@@ -144,13 +154,9 @@ impl<S: FastLastScheduler> FsmScheduler<S> {
                 }
                 // Final periodic-walk body — commit any far-horizon TX
                 // stash so the hardware kickoff arms, then hand off to the
-                // completion body (or finish outright when every
-                // predecessor byte already landed).
+                // completion body (the fold is short of target here; the
+                // complete case exited above).
                 commit_pending();
-                if bytes_walked >= self.fold_target {
-                    self.finish();
-                    return FoldExit::Finalized;
-                }
                 self.phase = FastLastPhase::Completion;
                 self.next_anchor_offset = self.completion_offset;
                 self.schedule_completion_cmp(self.completion_offset);
@@ -434,6 +440,33 @@ mod tests {
 
         assert_eq!(exit, FoldExit::Finalized);
         assert_eq!(walker_calls.get(), 1, "no busy-wait — one walk per body");
+        assert_eq!(commit_calls.get(), 1);
+        assert!(!d.is_active());
+        assert!(matches!(
+            state.operations().last(),
+            Some(FastLastSchedulerOp::Cancel)
+        ));
+    }
+
+    #[test]
+    fn early_fold_completion_at_intermediate_body_commits_and_finishes() {
+        // predecessor_bytes=50 (multi-interval grid) observed LATE: every
+        // byte is already in the ring, so the first walk body folds all
+        // of them. It must still commit the far-horizon stash (the wire
+        // start depends on it) and finish without stepping the remaining
+        // grid.
+        let (mut d, state) = mk_fast_last();
+        d.start(sched(0, 50));
+        assert_ne!(
+            d.next_anchor_offset_for_test(),
+            d.final_anchor_offset_for_test(),
+            "multi-interval grid — first body is an intermediate",
+        );
+
+        let commit_calls = Cell::new(0u32);
+        let exit = d.on_step(|| 50, || commit_calls.set(commit_calls.get() + 1));
+
+        assert_eq!(exit, FoldExit::Finalized);
         assert_eq!(commit_calls.get(), 1);
         assert!(!d.is_active());
         assert!(matches!(
