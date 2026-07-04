@@ -62,5 +62,27 @@ mod fast_last {
     /// folds up to this many bytes of newly-classified residue before
     /// re-arming the next CMP one grid step ahead. See doc §10.6.2.
     pub const FAST_LAST_BYTES_PER_INTERVAL: u16 = 15;
+
+    /// Run the observation-time fold body inline when the slot's wire-start
+    /// deadline is within this many ticks (an RXNE-ISR occupancy budget of
+    /// 50 µs at HCLK = 48 MHz). The SysTick pend → body-entry dispatch
+    /// costs ~500 ticks; inline entry starts the fold that much earlier
+    /// with a correspondingly smaller byte backlog (ledger at 3M, 14-byte
+    /// predecessor: entry ss+800 / ~5-byte backlog vs CMP-dispatched
+    /// ss+1214 / ~7.6-byte).
+    ///
+    /// Measured limit (2026-07-04): the fold sustains only ~150 ticks/byte
+    /// against 160-tick wire bytes, so neither entry point clears its
+    /// backlog before the window ends — finalize lands ~wire-end +630 and
+    /// a SHORT own reply's trailing CRC slot is read at ~wire-end
+    /// +320..+480: the 3M / 1-byte-DUT patch still ships the placeholder
+    /// (fast-stress crc bucket). The inline entry is kept because it
+    /// strictly shrinks the backlog; closing the race needs the per-byte
+    /// fold cost cut to ≲100 ticks (#103 follow-on). Windows longer than
+    /// this bound ride the CMP grid, whose completion path has
+    /// byte-scaled margin at the bauds that produce them.
+    pub const FAST_LAST_INLINE_FOLD_HORIZON_TICKS: u16 = 2400;
 }
-pub use fast_last::{FAST_LAST_BYTES_PER_INTERVAL, FAST_LAST_ENTRY_TICKS};
+pub use fast_last::{
+    FAST_LAST_BYTES_PER_INTERVAL, FAST_LAST_ENTRY_TICKS, FAST_LAST_INLINE_FOLD_HORIZON_TICKS,
+};

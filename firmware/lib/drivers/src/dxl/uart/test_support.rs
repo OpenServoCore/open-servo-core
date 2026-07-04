@@ -255,12 +255,16 @@ pub(crate) fn mk_edge_dma() -> (MockEdgeDma, EdgeDmaState) {
 #[derive(Clone, Default)]
 pub(crate) struct FastLastState {
     ops: Rc<RefCell<alloc::vec::Vec<FastLastSchedulerOp>>>,
+    deadline_passed: Rc<Cell<bool>>,
     patch_window_expired: Rc<Cell<bool>>,
 }
 
 impl FastLastState {
     pub(crate) fn operations(&self) -> alloc::vec::Vec<FastLastSchedulerOp> {
         self.ops.borrow().clone()
+    }
+    pub(crate) fn stage_deadline_passed(&self, v: bool) {
+        self.deadline_passed.set(v);
     }
     pub(crate) fn stage_patch_window_expired(&self, v: bool) {
         self.patch_window_expired.set(v);
@@ -269,9 +273,27 @@ impl FastLastState {
 
 /// `MockFastLastScheduler` logging grid ops into its state companion, with
 /// `patch_window_expired` reading the staged flag.
+///
+/// `deadline_passed` defaults to TRUE: test time can't advance inside the
+/// final body's busy-fold, so a live-streaming tail would spin forever —
+/// the default degenerates the spin to a single walk (fall through to the
+/// completion CMP). Stage `false` to exercise in-spin behavior.
 pub(crate) fn mk_fast_last() -> (MockFastLastScheduler, FastLastState) {
     let state = FastLastState::default();
+    state.stage_deadline_passed(true);
     let mut m = MockFastLastScheduler::new();
+    {
+        let ops = state.ops.clone();
+        m.expect_set_busy_wait_deadline()
+            .returning_st(move |deadline| {
+                ops.borrow_mut()
+                    .push(FastLastSchedulerOp::SetBusyWaitDeadline { deadline });
+            });
+    }
+    {
+        let dp = state.deadline_passed.clone();
+        m.expect_deadline_passed().returning_st(move || dp.get());
+    }
     {
         let ops = state.ops.clone();
         m.expect_schedule().returning_st(move |deadline| {

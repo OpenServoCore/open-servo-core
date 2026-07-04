@@ -24,6 +24,26 @@ pub trait FastLastScheduler {
     /// before re-scheduling the next CMP one grid step ahead.
     const BYTES_PER_INTERVAL: u16;
 
+    /// Run the first fold body inline at the status-start observation when
+    /// the slot's wire-start deadline is within this many ticks. Short
+    /// predecessor windows at high baud can't afford the CMP dispatch
+    /// latency: the fold barely out-paces the wire per byte, so entering
+    /// one dispatch late leaves the chain-CRC patch behind the TX DMA's
+    /// read of a short reply's trailing CRC slot. The bound is an ISR-
+    /// occupancy budget — the inline body busy-folds at most until the
+    /// predecessor window closes.
+    const INLINE_FOLD_HORIZON_TICKS: u16;
+
+    /// Cache the final-body spin's exit `deadline` (WireClock u32 domain).
+    /// Subsequent `deadline_passed()` calls compare against it.
+    fn set_busy_wait_deadline(&mut self, deadline: u32);
+
+    /// True once the wall clock has passed the deadline staged via
+    /// `set_busy_wait_deadline`. Polled by the final grid body's spin —
+    /// the bytes-late/silent-predecessor exit that hands the fold to the
+    /// completion CMP instead of spinning past the predecessor window.
+    fn deadline_passed(&self) -> bool;
+
     /// Schedule the next CMP at the absolute `deadline` (caller has already
     /// back-dated by `FAST_LAST_ENTRY_TICKS`). Idempotent on re-schedule.
     ///

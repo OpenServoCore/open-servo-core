@@ -126,7 +126,7 @@ impl Drivers {
             RxDma,
             DxlTxScheduler::default(),
             DxlTxBus,
-            FastLast::new(FastLastScheduler),
+            FastLast::new(FastLastScheduler::default()),
             WireClock,
             Telemetry,
             dxl_id,

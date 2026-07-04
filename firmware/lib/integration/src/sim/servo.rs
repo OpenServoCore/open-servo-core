@@ -590,6 +590,9 @@ impl Servo {
         let ops = self.fast_last_scheduler_state.operations();
         for op in &ops[self.fast_last_drained..] {
             match *op {
+                FastLastSchedulerOp::SetBusyWaitDeadline { .. } => {
+                    // Spin threshold only — no wall-clock fire to stage.
+                }
                 FastLastSchedulerOp::Schedule { deadline } => {
                     let mut fire = self.deadline_to_wall(deadline, t);
                     if fire <= t {

@@ -54,6 +54,10 @@ struct GridPlan {
     /// The completion body's anchor: one byte-time past the predecessor's
     /// wire end, so the last predecessor byte has landed and published.
     completion_offset: u32,
+    /// The final body's spin exit: one byte-time past the predecessor's
+    /// wire end — bytes still short of target by then are late (silent
+    /// predecessor) and the fold falls back to the completion CMP.
+    spin_deadline_offset: u32,
     /// `predecessor_bytes` — the fold finalizes (and patches) on reaching it.
     fold_target: u32,
 }
@@ -79,9 +83,9 @@ pub struct FsmScheduler<S: FastLastScheduler> {
     interval_ticks: u32,
     /// Wall-clock offset (from status_start) of the completion body.
     completion_offset: u32,
-    /// `predecessor_bytes`, derived once at `start`. The completion body
-    /// finalizes when the walked count reaches it — the fold engine has
-    /// patched the chain CRC by then.
+    /// `predecessor_bytes`, derived once at `start`. The fold finalizes
+    /// when the walked count reaches it — the fold engine has patched the
+    /// chain CRC by then.
     fold_target: u32,
     /// WireClock u32 anchor cached at `start` — every subsequent grid
     /// `schedule(deadline)` is `status_start_tick + offset`.
@@ -107,12 +111,16 @@ impl<S: FastLastScheduler> FsmScheduler<S> {
     /// Drive one grid body. Composite calls this from its long-horizon timer
     /// demux when our CMP triggers.
     ///
-    /// `walker` runs the classifier + parser-drain + per-byte fold for
-    /// whatever bytes have landed since the last body, and returns the
-    /// composite-side cumulative count of predecessor bytes folded so far.
-    /// Called exactly once per body — no busy-wait: the wire start is
-    /// hardware-armed and needs no CPU at the deadline, so a body that
-    /// hasn't reached `fold_target` just re-arms and returns.
+    /// `walker` runs the parser-raw drain + per-byte fold for whatever
+    /// bytes have landed since the last body, and returns the
+    /// composite-side cumulative count of predecessor bytes folded so
+    /// far. Intermediate and completion bodies call it once and re-arm;
+    /// the FINAL walk body spins it across the predecessor's tail so the
+    /// chain-CRC patch lands within a couple hundred ticks of the last
+    /// predecessor byte — the only way to beat the TX DMA's read of a
+    /// short reply's CRC slot (see the spin comment in the body). The
+    /// wire start itself is hardware-armed and never waits on any of
+    /// this.
     ///
     /// `commit_pending` is invoked exactly once, on the final periodic-walk
     /// body. The composite wires it to `TxScheduler::commit_pending` so a
@@ -153,10 +161,34 @@ impl<S: FastLastScheduler> FsmScheduler<S> {
                     return FoldExit::Pending;
                 }
                 // Final periodic-walk body — commit any far-horizon TX
-                // stash so the hardware kickoff arms, then hand off to the
-                // completion body (the fold is short of target here; the
-                // complete case exited above).
+                // stash so the hardware kickoff arms, then SPIN the
+                // predecessor's tail. The spin is what beats the patch
+                // race for short own replies: the completion-CMP path
+                // costs a PFIC re-entry (~240 ticks) after the last
+                // predecessor byte, but a 5-byte emission's CRC slot is
+                // read ~2 byte-times after the (hardware, parallel) fire
+                // — only a body already running at wire-end can patch in
+                // time. Bounded: bytes stream in live, so the spin lasts
+                // at most the remaining tail (≤ one grid interval, the
+                // pre-#134 site-1 envelope); a silent predecessor exits
+                // via `deadline_passed` (one byte past the window) or
+                // `patch_window_expired` (the armed fire drains CH4
+                // regardless) and falls back to the completion CMP.
                 commit_pending();
+                loop {
+                    let walked = walker();
+                    if walked >= self.fold_target {
+                        self.finish();
+                        return FoldExit::Finalized;
+                    }
+                    if self.scheduler.patch_window_expired() {
+                        self.finish();
+                        return FoldExit::WindowExpired;
+                    }
+                    if self.scheduler.deadline_passed() {
+                        break;
+                    }
+                }
                 self.phase = FastLastPhase::Completion;
                 self.next_anchor_offset = self.completion_offset;
                 self.schedule_completion_cmp(self.completion_offset);
@@ -202,6 +234,8 @@ impl<S: FastLastScheduler> FsmScheduler<S> {
         self.status_start_tick = p.status_start_tick;
         self.phase = FastLastPhase::PeriodicWalk;
 
+        self.scheduler
+            .set_busy_wait_deadline(p.status_start_tick.wrapping_add(plan.spin_deadline_offset));
         self.schedule_walk_cmp(plan.first_anchor_offset);
     }
 
@@ -238,6 +272,7 @@ impl<S: FastLastScheduler> FsmScheduler<S> {
             final_anchor_offset,
             interval_ticks,
             completion_offset: t_prior_end_offset.wrapping_add(byte_ticks),
+            spin_deadline_offset: t_prior_end_offset.wrapping_add(byte_ticks),
             fold_target: predecessor_bytes,
         }
     }
@@ -347,6 +382,7 @@ mod tests {
         assert_eq!(plan.final_anchor_offset, 160);
         assert_eq!(plan.first_anchor_offset, plan.final_anchor_offset);
         assert_eq!(plan.completion_offset, 320 + 160);
+        assert_eq!(plan.spin_deadline_offset, plan.completion_offset);
         assert_eq!(plan.fold_target, 2);
 
         let (mut d, state) = mk_fast_last();
@@ -356,9 +392,14 @@ mod tests {
         assert_eq!(d.final_anchor_offset_for_test(), plan.final_anchor_offset);
         assert_eq!(
             state.operations().as_slice(),
-            &[FastLastSchedulerOp::Schedule {
-                deadline: 2000u32.wrapping_add(plan.first_anchor_offset.wrapping_sub(ENTRY)),
-            }]
+            &[
+                FastLastSchedulerOp::SetBusyWaitDeadline {
+                    deadline: 2000 + plan.spin_deadline_offset,
+                },
+                FastLastSchedulerOp::Schedule {
+                    deadline: 2000u32.wrapping_add(plan.first_anchor_offset.wrapping_sub(ENTRY)),
+                },
+            ]
         );
     }
 
@@ -372,7 +413,14 @@ mod tests {
 
         assert_eq!(d.next_anchor_offset_for_test(), 160);
         // Exactly one Schedule — step-back didn't spin.
-        assert_eq!(state.operations().len(), 1);
+        assert_eq!(
+            state
+                .operations()
+                .iter()
+                .filter(|op| matches!(op, FastLastSchedulerOp::Schedule { .. }))
+                .count(),
+            1
+        );
     }
 
     #[test]
@@ -400,6 +448,9 @@ mod tests {
         assert_eq!(
             state.operations().as_slice(),
             &[
+                FastLastSchedulerOp::SetBusyWaitDeadline {
+                    deadline: plan.spin_deadline_offset,
+                },
                 FastLastSchedulerOp::Schedule {
                     deadline: plan.first_anchor_offset - ENTRY,
                 },
@@ -508,6 +559,53 @@ mod tests {
     }
 
     #[test]
+    fn final_body_spin_folds_live_tail_and_finalizes() {
+        // The case the spin exists for: the final body enters short of
+        // target and the remaining bytes stream in while it spins —
+        // finalize in-body, no completion CMP. Deadline held open so the
+        // spin actually iterates (the mock default degenerates it).
+        let (mut d, state) = mk_fast_last();
+        d.start(sched(0, 14));
+        state.stage_deadline_passed(false);
+
+        let walked = Cell::new(4u32);
+        let exit = d.on_step(
+            || {
+                let w = walked.get();
+                walked.set(w + 5);
+                w
+            },
+            || {},
+        );
+
+        assert_eq!(exit, FoldExit::Finalized);
+        assert!(!d.is_active());
+        assert_eq!(walked.get(), 19, "walker re-ran inside the spin");
+        assert_eq!(
+            state.operations().len(),
+            3,
+            "start's SetBusyWaitDeadline + walk CMP + finish's Cancel — no completion CMP",
+        );
+    }
+
+    #[test]
+    fn final_body_spin_exits_window_expired_when_drain_closes_window() {
+        // Bounded even with a silent predecessor: the hardware kickoff
+        // fired in parallel, so the TX drain eventually closes the patch
+        // window and the spin exits WindowExpired.
+        let (mut d, state) = mk_fast_last();
+        d.start(sched(0, 14));
+        state.stage_patch_window_expired(true);
+
+        assert_eq!(d.on_step(|| 4, || {}), FoldExit::WindowExpired);
+        assert!(!d.is_active());
+        assert!(matches!(
+            state.operations().last(),
+            Some(FastLastSchedulerOp::Cancel)
+        ));
+    }
+
+    #[test]
     fn starved_completion_body_reschedules_until_window_expires() {
         // Silent predecessor: bytes never arrive. The completion body
         // re-arms at the grid stride while the patch window is open, then
@@ -584,9 +682,14 @@ mod tests {
         assert_eq!(d.interval_ticks_for_test(), INTERVAL_3M);
         assert_eq!(
             state.operations().as_slice(),
-            &[FastLastSchedulerOp::Schedule {
-                deadline: 20000 + 160 - ENTRY,
-            }]
+            &[
+                FastLastSchedulerOp::SetBusyWaitDeadline {
+                    deadline: 20000 + 2400,
+                },
+                FastLastSchedulerOp::Schedule {
+                    deadline: 20000 + 160 - ENTRY,
+                },
+            ]
         );
     }
 }

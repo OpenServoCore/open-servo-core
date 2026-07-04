@@ -17,13 +17,27 @@ use dxl_protocol::wire::CRC_BYTES;
 use osc_drivers::traits::dxl::FastLastScheduler as FastLastSchedulerTrait;
 
 use crate::hal::{dma, pfic, systick};
-use crate::measurements::{FAST_LAST_BYTES_PER_INTERVAL, FAST_LAST_ENTRY_TICKS};
+use crate::measurements::{
+    FAST_LAST_BYTES_PER_INTERVAL, FAST_LAST_ENTRY_TICKS, FAST_LAST_INLINE_FOLD_HORIZON_TICKS,
+};
 
-pub struct FastLastScheduler;
+#[derive(Default)]
+pub struct FastLastScheduler {
+    deadline: u32,
+}
 
 impl FastLastSchedulerTrait for FastLastScheduler {
     const FAST_LAST_ENTRY_TICKS: u16 = FAST_LAST_ENTRY_TICKS;
     const BYTES_PER_INTERVAL: u16 = FAST_LAST_BYTES_PER_INTERVAL;
+    const INLINE_FOLD_HORIZON_TICKS: u16 = FAST_LAST_INLINE_FOLD_HORIZON_TICKS;
+
+    fn set_busy_wait_deadline(&mut self, deadline: u32) {
+        self.deadline = deadline;
+    }
+
+    fn deadline_passed(&self) -> bool {
+        (systick::ticks().wrapping_sub(self.deadline) as i32) >= 0
+    }
 
     fn schedule(&mut self, deadline: u32) {
         // Past-CMP handling: the parser path (IDLE → Crc event → send_slot
