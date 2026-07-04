@@ -306,7 +306,7 @@ impl<P: Providers, const RX_BUF_LEN: usize, const EDGE_BUF_LEN: usize, const TX_
                     // for this body to do.
                     return true;
                 }
-                match rx.take_checkpoint(rx_dma, fl_crc.window_end_cursor()) {
+                match rx.poll_checkpoint(rx_dma, fl_crc.window_end_cursor()) {
                     Some(checkpoint) => {
                         fl_crc.finalize_from_checkpoint(checkpoint, tx);
                         true
@@ -347,6 +347,13 @@ impl<P: Providers, const RX_BUF_LEN: usize, const EDGE_BUF_LEN: usize, const TX_
     /// happens; the driver only knows it was asked.
     pub fn on_tx_complete(&mut self) -> Option<BootMode> {
         self.tx_bus.release_bus();
+        // A pickup window canceled before its checkpoint ran still owns
+        // its published bytes — dispose of them so the parser resumes at
+        // the wire frontier, never inside the stale chain frame.
+        if self.fast_last.fold_active() {
+            let (rx, _) = self.codec.split_mut();
+            rx.release_window(&self.rx_dma, self.fast_last.window_end_cursor());
+        }
         self.fast_last.cancel();
         // Belt-and-suspenders sibling of the send-policy wait clear
         // below: a status-start wake window left open past our own TX

@@ -463,7 +463,7 @@ impl<R: EdgeDma, CRC: CrcUmts, const RX_BUF_LEN: usize, const EDGE_BUF_LEN: usiz
 
             match sink_exit {
                 // On Stop: leave any unconsumed bytes in the ring so the
-                // fold engine — driven by `take_checkpoint` on `on_fold_step` /
+                // fold engine — driven by `poll_checkpoint` on `on_fold_step` /
                 // `on_tx_start` — owns them. Continuing to feed here would
                 // let the parser eat predecessor reply bytes before the
                 // fold ever gets a turn (per `dxl-streaming-rx.md` §6 —
@@ -495,7 +495,25 @@ impl<R: EdgeDma, CRC: CrcUmts, const RX_BUF_LEN: usize, const EDGE_BUF_LEN: usiz
     /// so the parser and this pickup never race on `rx_buf`.
     // RAM placement is load-bearing — see `FsmScheduler::on_step`.
     #[cfg_attr(target_arch = "riscv32", unsafe(link_section = ".highcode"))]
-    pub fn take_checkpoint<D: RxDma>(
+    /// One spin iteration of the checkpoint pickup: publish the ring head,
+    /// consume the published window prefix (pure cursor arithmetic — no
+    /// reads, no slices; keeping the reader caught up is also what keeps
+    /// `avail()` lap-free on windows deeper than the ring), and — once the
+    /// window (through `end_cursor`) has fully arrived — return its
+    /// trailing [`CRC_BYTES`]: the predecessor's cumulative chain CRC,
+    /// i.e. the running chain state. `None` while the checkpoint is still
+    /// on the wire. Single-pass so the succeeding iteration pays no
+    /// re-publish ceremony — at 3M the patch races the TX DMA's read of
+    /// the trailing CRC slot with ~a quarter byte-time to spare.
+    ///
+    /// The pipeline owns the RX ring tail for the duration of the window:
+    /// the chip-side caller masks DMA1_CH7 HT/TC at start
+    /// (`dxl-hw-timed-transport.md` §10.6.3), and `poll()` self-gates on
+    /// `fast_last.fold_active()` at entry (`dxl-streaming-rx.md` §6),
+    /// so the parser and this pickup never race on `rx_buf`.
+    // RAM placement is load-bearing — see `FsmScheduler::on_step`.
+    #[cfg_attr(target_arch = "riscv32", unsafe(link_section = ".highcode"))]
+    pub fn poll_checkpoint<D: RxDma>(
         &mut self,
         rx_dma: &D,
         end_cursor: u32,
@@ -505,33 +523,19 @@ impl<R: EdgeDma, CRC: CrcUmts, const RX_BUF_LEN: usize, const EDGE_BUF_LEN: usiz
         // from racing on the ring.
         let rx_buf = unsafe { &mut *self.rx_buf.get() };
         rx_buf.on_publish(rx_dma.remaining());
-        // SAFETY-net: a cursor already behind consumption means the window
-        // was consumed by an earlier path — nothing coherent to read.
-        if (end_cursor.wrapping_sub(self.wire_bytes_consumed) as i32) < 0 {
-            return None;
+        let mut reader = rx_buf.reader();
+        let published = self.wire_bytes_consumed.wrapping_add(reader.avail() as u32);
+        let ready = (published.wrapping_sub(end_cursor) as i32) >= 0;
+        // Consume up to (never past) the window end. The checkpoint bytes
+        // themselves stay readable — the read below resolves by producer
+        // offset, which consumption doesn't disturb.
+        if (end_cursor.wrapping_sub(self.wire_bytes_consumed) as i32) >= 0 {
+            let target = if ready { end_cursor } else { published };
+            let advance = target.wrapping_sub(self.wire_bytes_consumed);
+            reader.advance(advance as u16);
+            self.wire_bytes_consumed = target;
         }
-        let published = self
-            .wire_bytes_consumed
-            .wrapping_add(rx_buf.reader().avail() as u32);
-        // Consume window bytes RAW as they publish, capped at the window
-        // end — the pipeline owns them (they must never reach the parser:
-        // a First header inside the window advertises the whole chain's
-        // length, and parsing it after a collapsed chain would swallow
-        // the next instruction). This also leaves the cursor at the wire
-        // frontier if the pipeline is canceled mid-window (own TX
-        // complete after a starved wait), so the parser resumes at live
-        // traffic. Consuming into the checkpoint itself is fine — the
-        // read below resolves by producer offset, which consumption
-        // doesn't disturb.
-        let target = if (published.wrapping_sub(end_cursor) as i32) >= 0 {
-            end_cursor
-        } else {
-            published
-        };
-        let advance = target.wrapping_sub(self.wire_bytes_consumed);
-        rx_buf.reader().advance(advance as u16);
-        self.wire_bytes_consumed = target;
-        if (published.wrapping_sub(end_cursor) as i32) < 0 {
+        if !ready {
             return None;
         }
         let mut checkpoint = [0u8; wire::CRC_BYTES];
@@ -543,6 +547,34 @@ impl<R: EdgeDma, CRC: CrcUmts, const RX_BUF_LEN: usize, const EDGE_BUF_LEN: usiz
             *slot = *rx_buf.recent(back as u16)?;
         }
         Some(checkpoint)
+    }
+
+    /// Release a canceled pickup window: consume (raw, unparsed) whatever
+    /// of it has published, capped at `end_cursor`. Called when the
+    /// pipeline gives the ring tail back before its pickup ran (own TX
+    /// complete after a starved wait) — the window's bytes must never
+    /// reach the parser (a First header inside advertises the whole
+    /// chain's length; parsing it after a collapsed chain swallows the
+    /// next instruction), and the cursor must land at the wire frontier
+    /// so live traffic parses cleanly.
+    pub fn release_window<D: RxDma>(&mut self, rx_dma: &D, end_cursor: u32) {
+        // SAFETY: rx_buf is single-consumer at PFIC HIGH (same as `poll`).
+        let rx_buf = unsafe { &mut *self.rx_buf.get() };
+        rx_buf.on_publish(rx_dma.remaining());
+        if (end_cursor.wrapping_sub(self.wire_bytes_consumed) as i32) < 0 {
+            return;
+        }
+        let published = self
+            .wire_bytes_consumed
+            .wrapping_add(rx_buf.reader().avail() as u32);
+        let target = if (published.wrapping_sub(end_cursor) as i32) >= 0 {
+            end_cursor
+        } else {
+            published
+        };
+        let advance = target.wrapping_sub(self.wire_bytes_consumed);
+        rx_buf.reader().advance(advance as u16);
+        self.wire_bytes_consumed = target;
     }
 
     /// FAST status-start query — start tick (WireClock u32) of the
@@ -1142,7 +1174,7 @@ mod tests {
     }
 
     #[test]
-    fn take_checkpoint_returns_the_window_tail_and_advances_consumption() {
+    fn poll_checkpoint_returns_the_window_tail_and_advances_consumption() {
         let mut rx = make();
         // Cursor parked just before the ring's wrap; the 8-byte window
         // spans it, its checkpoint (last 2 bytes) lands after the wrap.
@@ -1154,21 +1186,21 @@ mod tests {
 
         // wire_bytes_consumed starts at 0 in a fresh codec, so the window
         // occupies cursors 0..8.
-        assert_eq!(rx.take_checkpoint(&rx_dma, 8), Some([0xCD, 0xAB]));
+        assert_eq!(rx.poll_checkpoint(&rx_dma, 8), Some([0xCD, 0xAB]));
 
         // Consumption advanced to the window end: nothing left unread.
-        let again = rx.take_checkpoint(&rx_dma, 8);
+        let again = rx.poll_checkpoint(&rx_dma, 8);
         assert_eq!(again, Some([0xCD, 0xAB]), "idempotent re-read is lap-safe");
     }
 
     #[test]
-    fn take_checkpoint_waits_while_the_tail_is_still_on_the_wire() {
+    fn poll_checkpoint_waits_while_the_tail_is_still_on_the_wire() {
         let mut rx = make();
         // Only 6 of the 8 window bytes published — checkpoint incomplete.
         rx.stage_rx_bytes_for_test(0, &[1, 2, 3, 4, 5, 6]);
         let mut rx_dma = crate::mocks::MockRxDma::new();
         rx_dma.expect_remaining().returning(|| 64 - 6);
 
-        assert_eq!(rx.take_checkpoint(&rx_dma, 8), None);
+        assert_eq!(rx.poll_checkpoint(&rx_dma, 8), None);
     }
 }

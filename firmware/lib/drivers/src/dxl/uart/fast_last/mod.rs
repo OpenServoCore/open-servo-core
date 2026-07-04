@@ -105,4 +105,10 @@ impl<S: FastLastScheduler> FastLast<S> {
     pub fn fold_active(&self) -> bool {
         self.crc.is_active()
     }
+
+    /// Wire cursor one past the armed pickup window — the composite's
+    /// cancel path disposes of the window's published bytes up to here.
+    pub fn window_end_cursor(&self) -> u32 {
+        self.crc.window_end_cursor()
+    }
 }
