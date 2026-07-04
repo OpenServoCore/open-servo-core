@@ -480,20 +480,22 @@ impl<R: EdgeDma, CRC: CrcUmts, const RX_BUF_LEN: usize, const EDGE_BUF_LEN: usiz
 
     /// Drain newly-published RX bytes through `fold_slice` without invoking
     /// the parser. Used by the Fast Last fold path during the predecessor
-    /// window: the SysTick CMP body and the CC3 post-TX-start body each
-    /// spin inside this drain, refreshing the producer head from
-    /// `rx_dma.remaining()` on every pass so newly-DMA'd bytes become
-    /// reader-visible mid-loop without re-entering the chip-side ISR.
-    /// Advances `wire_bytes_consumed` by each handed-off slice so a
+    /// window. Advances `wire_bytes_consumed` by each handed-off slice so a
     /// subsequent `poll()` resumes at the right cursor.
+    ///
+    /// SINGLE PASS: one producer-head refresh from `rx_dma.remaining()`,
+    /// one wrap-aware peek, at most two `fold_slice` calls (front + back
+    /// slice), one cursor advance. Bytes that land while the fold runs are
+    /// picked up by the caller's next call — the final grid body spins this
+    /// drain continuously, so the pass structure bounds the per-iteration
+    /// cost the fold pays per live wire byte (the pre-single-pass loop paid
+    /// the full publish/reader/advance ceremony per contiguous run, which
+    /// at 3M is per byte — the measured ~150 ticks/byte that lost the CRC
+    /// patch race).
     ///
     /// `fold_slice` receives `(slice, base_cursor)` where `base_cursor` is
     /// the value of `wire_bytes_consumed` BEFORE this slice is folded —
-    /// i.e. `slice[i]` sits at wire cursor `base_cursor + i`. The callback
-    /// runs once per ring front-slice (typically one call per drain pass),
-    /// so a bulk CRC fold and a single skip-before-`start_cursor` check
-    /// suffice. Multiple ring laps still surface as multiple calls because
-    /// `peek_slices` returns a wrap-aware front slice.
+    /// i.e. `slice[i]` sits at wire cursor `base_cursor + i`.
     ///
     /// The Fast Last fold owns the RX ring tail for the duration of the
     /// window: the chip-side caller masks DMA1_CH7 HT/TC at fold start
@@ -505,21 +507,24 @@ impl<R: EdgeDma, CRC: CrcUmts, const RX_BUF_LEN: usize, const EDGE_BUF_LEN: usiz
         // The fold-window contract above keeps `poll()` and this drain
         // from racing on the ring.
         let rx_buf = unsafe { &mut *self.rx_buf.get() };
-        loop {
-            rx_buf.on_publish(rx_dma.remaining());
-            let n = {
-                let mut reader = rx_buf.reader();
-                let (front, _back) = reader.peek_slices();
-                if front.is_empty() {
-                    return;
-                }
-                fold_slice(front, self.wire_bytes_consumed);
-                self.wire_bytes_consumed =
-                    self.wire_bytes_consumed.wrapping_add(front.len() as u32);
-                front.len() as u16
-            };
-            rx_buf.reader().advance(n);
-        }
+        rx_buf.on_publish(rx_dma.remaining());
+        let mut reader = rx_buf.reader();
+        let consumed = {
+            let (front, back) = reader.peek_slices();
+            if front.is_empty() {
+                return;
+            }
+            fold_slice(front, self.wire_bytes_consumed);
+            if !back.is_empty() {
+                fold_slice(
+                    back,
+                    self.wire_bytes_consumed.wrapping_add(front.len() as u32),
+                );
+            }
+            front.len() + back.len()
+        };
+        self.wire_bytes_consumed = self.wire_bytes_consumed.wrapping_add(consumed as u32);
+        reader.advance(consumed as u16);
     }
 
     /// FAST status-start query — start tick (WireClock u32) of the
@@ -1116,5 +1121,30 @@ mod tests {
         // mark; the query must return it, not the newer stamps.
         let now = 2000 + 4 * BYTE_TICKS_3M + 200;
         assert_eq!(rx.status_start_tick(now), Some(2000));
+    }
+
+    #[test]
+    fn drain_raw_single_pass_hands_wrapped_region_as_two_slices() {
+        let mut rx = make();
+        // Cursor parked just before the ring's wrap; 8 staged bytes span it.
+        rx.set_rx_read_seq_for_test(60);
+        rx.stage_rx_bytes_for_test(60, &[1, 2, 3, 4, 5, 6, 7, 8]);
+        let mut rx_dma = crate::mocks::MockRxDma::new();
+        // Producer head at ring pos 4 (seq 68) → NDTR remaining = 64 − 4.
+        rx_dma.expect_remaining().returning(|| 60);
+
+        let mut calls: alloc::vec::Vec<(alloc::vec::Vec<u8>, u32)> = alloc::vec::Vec::new();
+        rx.drain_raw(&rx_dma, |slice, base| calls.push((slice.to_vec(), base)));
+
+        assert_eq!(
+            calls,
+            alloc::vec![(alloc::vec![1, 2, 3, 4], 0), (alloc::vec![5, 6, 7, 8], 4)],
+            "one pass: front slice to the wrap boundary, back slice after it",
+        );
+
+        // Fully consumed — a second pass hands nothing.
+        calls.clear();
+        rx.drain_raw(&rx_dma, |slice, base| calls.push((slice.to_vec(), base)));
+        assert!(calls.is_empty());
     }
 }

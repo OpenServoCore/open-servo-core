@@ -175,11 +175,21 @@ impl<S: FastLastScheduler> FsmScheduler<S> {
                 // `patch_window_expired` (the armed fire drains CH4
                 // regardless) and falls back to the completion CMP.
                 commit_pending();
+                let mut last_walked = bytes_walked;
                 loop {
                     let walked = walker();
                     if walked >= self.fold_target {
                         self.finish();
                         return FoldExit::Finalized;
+                    }
+                    if walked != last_walked {
+                        // Live bytes are flowing — skip the exit checks
+                        // (two peripheral reads) and put every tick into
+                        // the fold. Both exits only matter once the wire
+                        // has gone quiet, and a starved iteration always
+                        // follows the last live one.
+                        last_walked = walked;
+                        continue;
                     }
                     if self.scheduler.patch_window_expired() {
                         self.finish();
@@ -586,6 +596,31 @@ mod tests {
             3,
             "start's SetBusyWaitDeadline + walk CMP + finish's Cancel — no completion CMP",
         );
+    }
+
+    #[test]
+    fn final_body_spin_skips_exit_checks_while_bytes_flow() {
+        // Progress-gated exits: as long as every iteration folds new
+        // bytes, the spin never consults the (peripheral-read) exit
+        // conditions — even a staged-expired window can't preempt a live
+        // fold that reaches target.
+        let (mut d, state) = mk_fast_last();
+        d.start(sched(0, 14));
+        state.stage_deadline_passed(false);
+        state.stage_patch_window_expired(true);
+
+        let walked = Cell::new(10u32);
+        let exit = d.on_step(
+            || {
+                let w = walked.get();
+                walked.set(w + 1);
+                w
+            },
+            || {},
+        );
+
+        assert_eq!(exit, FoldExit::Finalized, "live fold outranks the exits");
+        assert!(!d.is_active());
     }
 
     #[test]
