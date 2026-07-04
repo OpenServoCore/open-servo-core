@@ -37,7 +37,7 @@ fn fast_sync_read_solo() {
 
 #[test]
 #[serial]
-fn fast_sync_read_first_emits_header_and_body_only() {
+fn fast_sync_read_first_emits_header_body_and_checkpoint() {
     let mut bus = bus();
     let id = servo_id(&bus);
     let baud = bus.baud();
@@ -46,14 +46,21 @@ fn fast_sync_read_first_emits_header_and_body_only() {
         .xfer_reply(&frame, silent_window_us(baud, 2, 2))
         .unwrap()
         .expect("no reply");
-    assert_eq!(chunk.len(), 12, "expected 12 bytes, got {}", chunk.len());
+    // Official layout: slot 0 emits header + block + its cumulative CRC.
+    assert_eq!(chunk.len(), 14, "expected 14 bytes, got {}", chunk.len());
     assert_eq!(&chunk[..4], &HEADER);
     assert_eq!(chunk[4], BROADCAST_ID);
     let packet_length = u16::from_le_bytes([chunk[5], chunk[6]]);
-    assert_eq!(packet_length, 15, "LEN field = {packet_length}, want 15");
+    assert_eq!(packet_length, 19, "LEN field = {packet_length}, want 19");
     assert_eq!(chunk[7], INSTR_STATUS);
     assert_eq!(chunk[8], 0, "err = 0x{:02X}", chunk[8]);
     assert_eq!(chunk[9], id.as_byte());
+    let wire_crc = u16::from_le_bytes([chunk[12], chunk[13]]);
+    assert_eq!(
+        dxl_protocol::crc16_umts_continue(0, &chunk[..12]),
+        wire_crc,
+        "slot 0 checkpoint must be the cumulative packet CRC",
+    );
 }
 
 /// Slot 1 with an absent slot 0: no Status packet ever starts, so the

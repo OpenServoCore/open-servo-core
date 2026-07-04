@@ -300,24 +300,40 @@ impl<P: Providers, const RX_BUF_LEN: usize, const EDGE_BUF_LEN: usize, const TX_
         let (rx, tx) = codec.split_mut();
         let (fl_sched, fl_crc) = fast_last.split_mut();
         let exit = fl_sched.on_step(
-            || {
-                if !fl_crc.is_active() {
-                    // Already finalized (or never armed) — nothing left
-                    // for this body to do.
-                    return true;
-                }
-                match rx.poll_checkpoint(rx_dma, fl_crc.window_end_cursor()) {
-                    Some(checkpoint) => {
-                        fl_crc.finalize_from_checkpoint(checkpoint, tx);
-                        true
-                    }
-                    None => false,
-                }
-            },
+            || Self::checkpoint_pickup_body(rx, rx_dma, fl_crc, tx),
             || scheduler.commit_pending(),
         );
         if matches!(exit, FoldExit::WindowExpired) {
             self.telemetry.record_crc_patch_deadline_miss();
+        }
+    }
+
+    /// One checkpoint-pickup attempt — the wake body's spin iteration.
+    /// Returns true once the trailing CRC slot is patched (or nothing is
+    /// armed). A named function rather than closure logic so the RAM
+    /// placement is verifiable: a closure is its own (unsectioned) symbol,
+    /// and when `poll_checkpoint`/`finalize_from_checkpoint` inline into
+    /// it the whole per-iteration body lands back in flash — measured as
+    /// exactly the i-fetch cost that loses the patch-vs-DMA race at 3M.
+    // RAM placement is load-bearing — see `FsmScheduler::on_step`.
+    #[cfg_attr(target_arch = "riscv32", unsafe(link_section = ".highcode"))]
+    #[inline(never)]
+    fn checkpoint_pickup_body(
+        rx: &mut codec::CodecRx<P::EdgeDma, P::Crc, RX_BUF_LEN, EDGE_BUF_LEN>,
+        rx_dma: &mut P::RxDma,
+        fl_crc: &mut fast_last::FoldEngine,
+        tx: &mut codec::CodecTx<P::Crc, TX_BUF_LEN>,
+    ) -> bool {
+        if !fl_crc.is_active() {
+            // Already finalized (or never armed) — nothing left to do.
+            return true;
+        }
+        match rx.poll_checkpoint(rx_dma, fl_crc.window_end_cursor()) {
+            Some(checkpoint) => {
+                fl_crc.finalize_from_checkpoint(checkpoint, tx);
+                true
+            }
+            None => false,
         }
     }
 

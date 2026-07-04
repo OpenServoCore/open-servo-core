@@ -743,9 +743,10 @@ fn shot_middle(bus: &mut Bus, id: Id, ctx: &CellCtx) -> Result<ShotOutcome> {
     let reply = reply_bytes(&cap, request.len());
     let timing = cap.timing;
 
-    // Captured reply ends at chip's last middle byte; FOREIGN never replies.
-    let first_slot_bytes = 10 + ctx.inj_len;
-    let middle_bytes = 2 + ctx.dut_len;
+    // Captured reply ends at the chip's block CRC; FOREIGN never replies.
+    // Official layout: every block ends with the cumulative chain CRC.
+    let first_slot_bytes = 12 + ctx.inj_len;
+    let middle_bytes = 4 + ctx.dut_len;
     let expected = first_slot_bytes + middle_bytes;
     if reply.len() < expected {
         return Ok(ShotOutcome {
@@ -770,8 +771,14 @@ fn shot_middle(bus: &mut Bus, id: Id, ctx: &CellCtx) -> Result<ShotOutcome> {
         });
     }
     let chip_id = reply[first_slot_bytes + 1];
+    // The chip's mid-chain checkpoint must be the cumulative packet CRC
+    // through its own data — the checkpoint-relay contract on the wire.
+    let crc_end = first_slot_bytes + 2 + ctx.dut_len;
+    let wire_crc = u16::from_le_bytes([reply[crc_end], reply[crc_end + 1]]);
     let bucket = if chip_id != id.as_byte() {
         Bucket::Other
+    } else if dxl_protocol::crc16_umts_continue(0, &reply[..crc_end]) != wire_crc {
+        Bucket::Crc
     } else if extra_idle {
         Bucket::ExtraIdle
     } else {
