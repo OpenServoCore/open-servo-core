@@ -22,7 +22,7 @@ The hardware-timed design fixes all three at once: the TX start becomes a TIM2 c
 
 The design got here in two steps. The first replaced the SysTick fire with a software-fired TIM2 CC3 ISR: ~1 µs PFIC + body floor, but ISR-entry jitter set the p99.9 wire-excess tail (+1.22 µs at 3M, +2.85 µs max — over half a byte-time). The second step (task #134) removed the CPU from the deadline entirely: CC4's compare match fires a one-transfer DMA write of the CH4 enable word, so the remaining spread is pure silicon (compare → DMA request → AHB → USART DR).
 
-**Not "pure hardware timing."** TIM2 has a single shared prescaler; PSC=0 is mandatory for the IC side's 16-tick resolution at 3M, which fixes CNT to 16 bits / 1.365 ms. At lower bauds the Fast Last catchup grid step (15 byte-times) can exceed a wrap, and at very low baud with Fast Sync chains the TX deadline can be many wraps out. SysTick (32-bit at HCLK) handles long-horizon catchup scheduling where ~5 µs PFIC entry is dwarfed by ~27 µs body cost (§10.6.4). **Allocation principle: TIM2 is reserved for jitter-critical wire-edge events (CC4 IC capture / OC kickoff, CC2 TX_EN OC); SysTick covers long-horizon scheduling where jitter doesn't propagate to the wire.**
+**Not "pure hardware timing."** TIM2 has a single shared prescaler; PSC=0 is mandatory for the IC side's 16-tick resolution at 3M, which fixes CNT to 16 bits / 1.365 ms. At lower bauds the Fast successor pickup's wake (and at very low baud the TX deadline itself) can be many wraps out. SysTick (32-bit at HCLK) handles long-horizon scheduling where ~5 µs PFIC entry is absorbed by the early-biased wake lead (§10.6.2). **Allocation principle: TIM2 is reserved for jitter-critical wire-edge events (CC4 IC capture / OC kickoff, CC2 TX_EN OC); SysTick covers long-horizon scheduling where jitter doesn't propagate to the wire.**
 
 ---
 
@@ -36,7 +36,7 @@ The design got here in two steps. The first replaced the SysTick fire with a sof
 
 **USART1** — HDSEL half-duplex single-wire on PC0 (TX) + PC1 (RX). Unchanged.
 
-**SysTick** — 32-bit at HCLK. Drives the Fast Last catchup ISR (§10.6) and the wall clock for telemetry. No wire-edge events.
+**SysTick** — 32-bit at HCLK. Drives the Fast successor pickup wake (§10.6) and the wall clock for telemetry. No wire-edge events.
 
 ---
 
@@ -107,7 +107,7 @@ This is the BT ring: byte-time, sized to match RX, indexed parallel.
 
 Zero CPU in the deadline path. CC4 already owns DMA1_CH7's request line — CC4DE=1 drives the ET ring in IC mode — so the kickoff reuses the exact request wire; the swap changes what *generates* the CC4 event (IC edge → OC match) and what CH7 *does* with it (ring capture → one-shot enable-word write). Two silicon behaviors the RM doesn't state verbatim were spike-verified (`osc-dev-v006-bringup` `tim2_ch4_oc_dma_kickoff`): an OC compare match with CC4E=0 / OC4M=Frozen still fires the CC4DE request, and DMA1_CH7 may target the DMA controller's own register block as a peripheral address.
 
-**Edge-capture blackout.** While the window is open (arm → CH7-TC restore) the ET ring captures nothing — acceptable by construction: the arm happens after the instruction's packet-end anchor (slot 0) or after the status-start stamp is read (FAST k > 0, §10.6.2), and nothing needs edge capture again until after our own TX (drift sampling is instruction-only, the fold reads the byte ring, and the RX line is silent during our TX — no self-echo). The chip-side `tx_kickoff` module freezes the `EdgeDma::remaining()` readback at its arm-time value for the whole window and hands the driver a one-shot ring-restart flag; the driver's edge-publish path consumes it and zeroes its ring bookkeeping before the next head read. A mid-window cancel (host retry into an armed window) restores immediately but has lost the retry packet's leading edges — the packet-end anchor for that instruction may miss and the reply drops through the existing `edge_anchor_miss` path; byte-ring parsing is unaffected.
+**Edge-capture blackout.** While the window is open (arm → CH7-TC restore) the ET ring captures nothing — acceptable by construction: the arm happens after the instruction's packet-end anchor (slot 0) or after the status-start stamp is read (FAST k > 0, §10.6.2), and nothing needs edge capture again until after our own TX (drift sampling is instruction-only, the pickup reads the byte ring, and the RX line is silent during our TX — no self-echo). The chip-side `tx_kickoff` module freezes the `EdgeDma::remaining()` readback at its arm-time value for the whole window and hands the driver a one-shot ring-restart flag; the driver's edge-publish path consumes it and zeroes its ring bookkeeping before the next head read. A mid-window cancel (host retry into an armed window) restores immediately but has lost the retry packet's leading edges — the packet-end anchor for that instruction may miss and the reply drops through the existing `edge_anchor_miss` path; byte-ring parsing is unaffected.
 
 **Floor compensation.** Measure CC4-match → first-wire-bit latency on hardware and store `TX_KICKOFF_FLOOR_TICKS` (`firmware/ch32/src/measurements.rs`) calibrated so first-bit lands **slightly after** `start_tick` — small positive wire excess at the p0.1 tail. CCR4 is then armed at `start_tick − TX_KICKOFF_FLOOR_TICKS`. Positive excess (not "at or after") is the target because CCR2 fires TX_EN at `start_tick` verbatim (§5.3); the transceiver + downstream RX (bench pirate at 3M) need TX_EN active *before* the first bit appears, or the leading `0xFF` gets lost in the direction-switch window. `tool-tune-tx-start` measures both signals — wire excess (ground truth) and any missing-leading-FF `DroppedLeadingFf` events (K-too-aggressive drops, direct evidence CCR2 raced first-bit). With no PFIC entry in the path the value is an order smaller than the ISR-era 40-60 ticks, and the p99.9 spread collapses to the silicon path.
 
@@ -216,11 +216,11 @@ ET overflow is detected by comparing NDTR against the consumer's last drained in
 
 64 entries × 16-bit = 128 B (with a separate 32-bit cumulative-byte counter for wrap disambiguation). Sized to match the RX ring so byte index `i` in RX maps to byte time `BT[i mod 64]`.
 
-In Plain mode the classifier writes BT at HT/TC of DMA1_CH7. In Fast Last mode the catchup ISR writes BT (classifier ISR is masked — §10.6). Consumers read by index regardless of which ISR wrote — same High priority, no locking.
+In Plain mode the classifier writes BT at HT/TC of DMA1_CH7. During a Fast successor window the classifier ISR is masked (§10.6) and no BT entries are produced — the pickup needs none. Consumers read by index regardless of which ISR wrote — same High priority, no locking.
 
 ### 8.4 ET sizing: 128 (default) vs 64 (memory-tight)
 
-The Fast Last catchup ISR runs at fixed-byte intervals (default 15 bytes); the classifier is masked between intervals, so ET must absorb one interval's edges without overwriting. Worst-case 5 edges/byte (0x55-heavy stream): 15 × 5 = 75 edges → **128 is the safe choice** (with margin for one body's overrun). Total ring memory: 64 + 256 + 128 = **448 B**.
+During a Fast successor window the classifier is masked and the TX kickoff borrows the ET channel anyway (§5.1 blackout), so the ET ring only needs to absorb normal Plain-mode traffic between HT/TC services. Worst-case 5 edges/byte (0x55-heavy stream) over half the ring: 32 × 5 = 160 edge slots would overrun a 128 ring under a pathological full-half-ring lag — in practice HT/TC cadence keeps lag far below that, and **128 remains the safe choice**. Total ring memory: 64 + 256 + 128 = **448 B**.
 
 Dropping ET to 64 (saves 128 B) requires a 12-byte interval (12 × 5 = 60 edges). The CPU delta is ~1% (per-byte work dominates per-ISR overhead); 128 B on an 8 KB chip is modest. Default to **A**; revisit if SRAM tightens. Plain mode is unaffected either way — its classifier-end drain handles peak rates at ET = 64 already.
 
@@ -235,7 +235,7 @@ Same two priority levels (V006 PFIC has nothing more). DXL-related IRQs stay at 
 | High | USART1 | IDLE (parser kick) + TC (release bus) + RX errors + status-start wake (RXNEIE window, task #142) | flash |
 | High | DMA1_CH5 HT/TC | RX byte-ring publish + parser drain (`dxl-streaming-rx.md` §3) | flash |
 | High | DMA1_CH7 TC | Kickoff-role only (once per scheduled send): restore CH4 → IC and CH7 → ET ring. Post-deadline — TX is already streaming when it runs. No EdgeRing-role IRQ exists; the ET ring drains passively. | flash |
-| High | SysTick CMP | TX-scheduler handoff demux + Fast Last catchup ISR: parser-raw drain + CRC fold at fixed-byte intervals, then the completion body that lands `patch_crc` (§10.6.2). | flash |
+| High | SysTick CMP | TX-scheduler handoff demux + Fast successor pickup: ring drains for long windows, then the wake body that reads the checkpoint and lands `patch_crc` (§10.6.2). | flash entry; pickup body in `.highcode` |
 | Low | DMA1_CH1 | ADC kernel pump (unchanged) | flash |
 
 No vector sits on the wire deadline anymore — the TX start is the CC4→CH7 hardware kickoff (§5.1), so every ISR lives in flash (`lowcode`); per-grid-step and per-packet-end slack absorb flash-fetch jitter. All wire-side IRQs at High serialize cleanly via same-priority no-preemption; the kickoff-restore body shares High so it serializes with the arm/cancel sites that reconfigure the same channel.
@@ -246,14 +246,14 @@ No vector sits on the wire deadline anymore — the TX start is the CC4→CH7 ha
 
 1. **Driver-state exclusivity.** Every vector that reaches the DXL driver (`&mut` into parser/codec/scheduler state) shares High — no preemption between them means no concurrent borrow, with zero locking.
 2. **TC release before master's next start bit.** TX_EN drop in TC must land before any next request's start edge to avoid bus contention. TC at High keeps that bounded.
-3. **Catchup interval cadence.** §10.6 budgets ~54% CPU per interval; SysTick CMP at High keeps Low work from eating the headroom.
+3. **Pickup wake latency.** The wake is early-biased (§10.6.2); SysTick CMP at High keeps Low work from stretching the worst-case entry the lead is sized for.
 4. **Kickoff restore vs arm/cancel.** The DMA1_CH7 TC body reconfigures the same channel the scheduler's arm/cancel paths touch; sharing High serializes them.
 
 **TC tail budget.** `apply_pending_after_tc` must run after wire activity ends, but *computation* of new values (BRR, capture filter, fine-trim) moves to **parse time**: the parser stores the computed result, TC tail does only the atomic register writes — bounded under 1 µs.
 
 **USART1's role shrinks.** IDLE as a parser-kick signal (no timing value derived from it), TC for "reply done, release the bus" + apply pending, RX errors for telemetry, and the per-byte RXNEIE wake window while a FAST slot k > 0 awaits its status-start observation (task #142).
 
-**SysTick CMP drives the TX-scheduler handoff and the Fast Last catchup ISR** (§10.6.2); the wall-clock side stays free-running for telemetry. **TX_EN is hardware-driven** on CCR2 → PC2 via OC mode (§5.2). **The TX start is hardware-driven** on CCR4 → CH7 kickoff (§5.1) — no ISR runs at the deadline for any reply kind; the Fast Last chain-CRC patch rides the SysTick grid's completion body (§10.6.2) and only races the TX DMA's read of the trailing CRC slot.
+**SysTick CMP drives the TX-scheduler handoff and the Fast successor pickup wake** (§10.6.2); the wall-clock side stays free-running for telemetry. **TX_EN is hardware-driven** on CCR2 → PC2 via OC mode (§5.2). **The TX start is hardware-driven** on CCR4 → CH7 kickoff (§5.1) — no ISR runs at the deadline for any reply kind; the Fast successor chain-CRC patch rides the checkpoint pickup (§10.6.2) and beats the TX DMA's read of the trailing CRC slot by construction.
 
 ---
 
@@ -352,106 +352,165 @@ No backdate constant, no char-time math.
 
 **Plain mode:** classifier HT/TC + IDLE drain the parser; no CRC fold, no Fast Last state.
 
-**Fast Last mode:** the catchup ISR (§10.6) replaces both. At first catchup entry, classifier HT/TC is masked; from then until USART1 TC, the catchup ISR owns the full classifier + parser + CRC fold cadence. IDLE doesn't run during a Fast Last reply window.
+**Fast successor mode:** the pickup pipeline (§10.6) replaces both. From the parked wait until USART1 TC, the pipeline owns the ring tail; the classifier stays masked and no parser or CRC-fold cadence exists — the wake body reads the checkpoint once. IDLE doesn't run during a Fast successor reply window.
 
-### 10.6 Fast Last CRC fold
+### 10.6 Fast successor chain-CRC checkpoint pickup
 
-Fast Last CRC accumulates the predecessor's reply bytes into a running CRC, then patches the trailing CRC slot of our own reply so the wire bytes form one continuous CRC stream covering header + predecessors + our own bytes. ("Fast Last" is internal shorthand for the Fast Sync/Bulk Read reply at the last slot — not a Robotis spec term.) The mechanism factors into **state + trigger**:
+Under the official Fast Sync/Bulk Read layout every slot's block ends with
+the **cumulative packet CRC** — the running chain state, checkpointed on
+the wire after each device (e-manual: "CRC values are used for internal
+calculation in DYNAMIXEL to confirm packet integrity between DYNAMIXELs").
+A successor slot (k > 0) therefore never folds the predecessor window: the
+window's last two wire bytes ARE the chain state. The pipeline reads that
+checkpoint, extends the state over the checkpoint's own two bytes and the
+chip's reply bytes (`err, id, data`), and patches the reply's trailing CRC
+slot before DMA1_CH4's read cursor reaches it. **O(own reply) CPU per
+exchange, independent of chain length** — the wire hands each device the
+baton; nobody re-runs the race.
 
-- **State** lives composite-side: a running bulk CRC, a snoop-head index (the parsed index at arm time), a byte counter, and the predecessor-byte budget. The per-byte fold operation, called from the parser drain, is a no-op when not armed. When the byte counter hits the budget, fold finalizes over our own reply bytes, patches the TX buffer's trailing CRC slot, and disarms — idempotent across redundant trigger sites.
-- **Trigger** is the SysTick-driven catchup ISR. Same path at every baud; the per-byte fold operation is identical and the grid step scales with byte_time.
+The mechanism factors into **state + trigger**:
+
+- **State** lives composite-side: the window's start cursor and byte
+  budget (`FoldEngine` — the CRC half of the FastLast sub-composite). The
+  finalize seeds `u16::from_le_bytes(checkpoint)`, extends via the
+  monomorphic table step (`dxl_protocol::crc16_umts_continue`), and
+  patches; idempotent and a no-op when not armed.
+- **Trigger** is a single SysTick CMP **wake** just before the checkpoint
+  lands, plus O(1) ring-drain CMPs for long windows (§10.6.2). Same path
+  at every baud.
+
+RAM placement of the wake body is load-bearing and must be **verified in
+the ELF, not assumed**: the pickup runs against a live 3M wire, and one
+flash-resident hop in the per-iteration chain costs more than the whole
+patch margin. The hot path is `#[link_section = ".highcode"]` end to end,
+and the composite's pickup body is a *named* function rather than closure
+logic — a closure is its own unsectioned symbol, and when the sectioned
+callees inline into it the entire body silently lands back in flash
+(bench-measured as exactly the difference between 50/50 CRC failures and
+0/50 at 3M).
 
 #### 10.6.1 Why SysTick, not TIM2_CH1
 
-An earlier draft of this design put the catchup ISR on TIM2_CH1 OC, keeping the whole transport on one timer. That doesn't work below ≈1 Mbaud:
+An earlier draft put the trigger on TIM2_CH1 OC, keeping the whole
+transport on one timer. That doesn't work below ≈1 Mbaud:
 
-- **u32 fit.** `interval_ticks = 15 × byte_time` at 9600 baud = 750 k HCLK ticks ≈ 15.6 ms — many TIM2 wraps. Even at 1 Mbaud, slot_offset = n_pred × byte_time can exceed one wrap (1.365 ms) for any non-trivial Fast Sync chain. SysTick is 32-bit (89.5 s horizon at HCLK), and the math just works.
-- **Shared prescaler.** TIM2's PSC is shared across CC channels (§7). PSC=0 is mandatory for the IC side's 16-tick resolution at 3M. Rescaling per-baud isn't possible without breaking the ET capture path mid-flight.
-- **Jitter cost.** SysTick PFIC entry is ~5 µs vs ~1 µs for TIM2 CC. But the catchup body itself is ~27 µs (§10.6.4), so the extra 4 µs is < 15% of body cost — invisible against the back-dated grid (below). And catchup jitter doesn't propagate to the wire at all: the wire start is hardware-armed, and the grid only races the much wider patch window (§10.6.2).
+- **u32 fit.** A predecessor window at 9600 baud spans many TIM2 wraps
+  (16-bit at PSC=0 wraps every 1.365 ms). SysTick is 32-bit (89.5 s
+  horizon at HCLK), and the math just works.
+- **Shared prescaler.** TIM2's PSC is shared across CC channels (§7);
+  PSC=0 is mandatory for the IC side's 16-tick resolution at 3M.
+- **Jitter cost.** SysTick PFIC entry (~5 µs) doesn't propagate to the
+  wire at all: the wire start is hardware-armed, and the wake is
+  early-biased by `FAST_CRC_WAKE_LEAD_TICKS` (sized to worst-case entry
+  latency plus margin) so a late vector entry costs spin time, never
+  patch margin.
 
-The TIM2 budget is spent on what jitter actually buys: CC4 IC (per-byte timestamps) / CC4 OC (wire-bit precision on the kickoff), CC2 TX_EN OC (hardware-deterministic driver enable).
+The TIM2 budget is spent on what jitter actually buys: CC4 IC (per-byte
+timestamps) / CC4 OC (wire-bit precision on the kickoff), CC2 TX_EN OC
+(hardware-deterministic driver enable).
 
-#### 10.6.2 Catchup grid path (SysTick)
+#### 10.6.2 Wake path (SysTick)
 
-The catchup ISR runs at fixed-byte intervals on SysTick CMP during the predecessor reception window. Its ONLY deadline is the chain-CRC patch — the wire start is hardware-armed at observation time (or committed at the final grid anchor for far horizons) and fires in parallel, needing nothing from the grid.
+**Defer time** (`send_slot` for any successor slot, task #142): the reply
+is encoded (placeholder CRC) but nothing is armed. The reply gate parks a
+status-start wait and the RxDma provider opens the per-byte RXNE wake
+window; `poll()` gates on the parked wait so the parser leaves the Status
+packet's bytes to the pipeline.
 
-**Defer time** (`send_slot(Last)`, task #142): the reply is encoded but nothing is armed. The reply gate parks a status-start wait and the RxDma provider opens the per-byte RXNE wake window; `poll()` gates on the parked wait so the parser leaves the Status packet's bytes for the fold.
-
-**Arm time** (status-start wake — the Status packet's first byte observed on the wire):
+**Arm time** (status-start wake — the Status packet's first byte observed
+on the wire):
 
     status_start_tick = ET-resolved start of the Status packet's first byte
-    start_deadline    = status_start_tick + expected_n_pred × byte_time   # = t_prior_end, no RDT term
-    schedule(start_deadline, SendKind::FastLast); unwatch RXNE
+    window_end        = status_start_tick + bytes_before × byte_time   # = fire deadline, no RDT term
+    schedule(window_end, SendKind::FastLast); unwatch RXNE
         # within the direct-arm horizon: hardware kickoff arms NOW (§5.1) —
-        # CH4 IC→OC + CH7 kickoff reload; the wire start is locked in
-        # regardless of CPU state from this point. CCR2 composes per §5.3.
-        # beyond the horizon (low baud, long predecessor): stash — the grid
-        # co-owns SysTick CMP, so the commit waits for the final anchor.
-    arm Fast Last CRC state with (snoop_head = status_start_cursor, expected_n_pred)
-    final_anchor_tick     = t_prior_end - min(interval, t_prior_duration)
-    next_anchor_tick      = step_back(final_anchor_tick, interval, t_prior_start)
-    completion_tick       = t_prior_end + byte_time
-    SysTick CMP = next_anchor_tick - FAST_LAST_ENTRY_TICKS  # every walk CMP back-dated
+        # the wire start is locked in regardless of CPU state from here.
+        # beyond the horizon (low baud, long predecessor): stash — committed
+        # by the first wake/drain body via commit_pending().
+    arm pickup state (start_cursor, bytes_before)
+    set_busy_wait_deadline(window_end + byte_time)        # checkpoint-late bound
+    if bytes_before > drain_stride: SysTick CMP = status_start + stride  # §ring drains
+    else:                           SysTick CMP = window_end − WAKE_LEAD
 
-The wake's ET read is the IC↔OC boundary: the status-start stamp is the last thing that needs edge capture until our TX completes — drift sampling is instruction-only, the fold reads the byte ring, and the next packet-end anchor isn't needed until after TC. The kickoff's arm consumes the edge channel right there (§5.1 blackout).
+**Ring drains (long windows only).** The RX ring publishes its producer
+head from an NDTR readback *modulo the ring depth*, so `on_publish` must
+run at least once per ring period or the head aliases and the pickup
+reads the wrong bytes. Windows longer than half the ring get intermediate
+CMPs at half-ring stride whose body is one O(1) pickup attempt — publish
++ consume-to-cap by pure cursor arithmetic, **no CRC work, no per-byte
+walk**. The old per-byte catchup fold (and its ~54 % CPU during the
+window) is gone; a drain body is a few register reads.
 
-All anchor math is u32 in HCLK ticks off the observed `status_start_tick`. `interval_ticks = 15 × byte_time`. Every walk CMP is back-dated by `FAST_LAST_ENTRY_TICKS` so the body's fold-start lands on the formula's wall-clock anchor instead of `anchor + ISR_entry_latency`. Tracking `next_anchor_tick` in state and advancing by fixed `+ interval` keeps the grid rigid regardless of per-body overhead. For a small predecessor budget (≤ interval bytes) the final anchor lands near the window start; the observation happens a byte or more in, so the first CMP is already past — the provider's past-CMP pend path runs the body immediately and the grid self-heals forward.
+**The wake body** (final CMP, `window_end − WAKE_LEAD`; also entered
+inline from the observation when the window is within
+`INLINE_FOLD_HORIZON_TICKS` — a short window can't afford the CMP
+dispatch):
 
-**At every SysTick CMP IRQ (intermediate walk):**
+    commit_pending()                     # far-horizon stash → no-op if armed at observation
+    loop:
+        if poll_checkpoint():            # publish + cursor consume; Some(cp) once the window is in
+            finalize(cp); patch_crc; done
+        if patch_window_expired(): done  # CH4 read cursor reached the CRC slot → CrcPatchDeadlineMiss
+        if deadline_passed(): break      # checkpoint late (silent predecessor)
+    SysTick CMP += byte_time             # starve retry until the TX drain closes the window
 
-    walker():
-        drain parser-raw, folding Fast Last CRC per byte
-    next_anchor_tick += interval_ticks       # grid advance, drift-free
-    SysTick CMP = next_anchor_tick - FAST_LAST_ENTRY_TICKS
+The wake is deliberately **early-biased**: waking early costs a short
+spin (the pickup iteration is a fraction of a byte-time); waking late
+eats directly into the patch-vs-fetch margin. A silent predecessor exits
+via the deadline arm to byte-stride retries and converges at
+`patch_window_expired` — the hardware kickoff fired regardless, so the TX
+drain always closes the loop, recording one `CrcPatchDeadlineMiss` and
+shipping the placeholder (host sees a bad block, as it should).
 
-**At the final walk anchor:**
+**Late observation** (wake resolves after the slot deadline — short
+predecessor at high baud): every window byte is already in the ring, so
+the inline body's first pickup succeeds immediately; `on_status_start`
+runs it BEFORE `schedule`, so a valid chain CRC ships on a slightly-late
+fire rather than a placeholder on time. The pickup is O(1), so the late
+fire slips by ~2 µs (the old streaming fold slipped ~25 µs here).
 
-    walker()
-    commit_pending()                         # far-horizon stash → decision tree; no-op if armed at observation
-    if bytes_folded >= expected_n_pred: done # everything already landed — finalize ran, patch is in
-    else: SysTick CMP = completion_tick      # NOT entry-back-dated (below)
+**Patch-vs-fetch budget.** `patch_crc` must land in `tx_buf[len-2..len]`
+before DMA1_CH4's read cursor reaches them — for a short own reply
+(err+id+1B data+crc = 5 bytes) that's ~2–3 byte-times after the fire. The
+checkpoint publishes one DMA-write after the window's last stop bit, the
+succeeding pickup iteration reads + finalizes in well under a byte-time
+(RAM-resident, table-step CRC), and the patch lands with ~a quarter
+byte-time to spare at 3M (bench: 50/50 valid chain CRCs at the 1-byte-DUT
+corner, the previous design's 50/50 failure case).
 
-**At the completion body (t_prior_end + 1 byte):**
+**At USART1 TC (own reply complete):**
 
-    walker()                                 # tail bytes + own reply → finalize → patch_crc
-    if bytes_folded >= expected_n_pred: done
-    elif patch_window_expired(): done        # CH4 read cursor reached the CRC slot → CrcPatchDeadlineMiss
-    else: SysTick CMP += interval            # starved (silent predecessor) — retry until the TX drain closes the window
+    release_window()                     # consume the window's published bytes raw, up to its end —
+                                         # a stale First header inside advertises the whole chain's
+                                         # LENGTH; parsing it after a collapsed chain swallows the
+                                         # next instruction
+    disarm pickup state; cancel SysTick CMP; unwatch RXNE   # all idempotent
 
-No busy-wait anywhere: a body that comes up short re-arms and returns. The completion CMP is deliberately **not** back-dated by `FAST_LAST_ENTRY_TICKS` — it has no wire punctuality requirement (the kickoff fires in parallel), so entry latency only delays the patch INTO its window, while back-dating would let a fast ISR entry run the body *before* the last predecessor byte has published: the fold comes up one byte short, the retry burns a whole grid interval, and the TC cleanup can cancel the fold before the retry lands.
+#### 10.6.3 Pipeline ownership of the RX tail
 
-**Late observation folds inline, before the arm.** When the status-start wake resolves after the slot deadline has already passed (short predecessor at high baud — the wake path's resolution latency exceeds the predecessor's wire time), the schedule fires ASAP, and with a short own reply the TX DMA reads the trailing CRC slot within a few byte-times — sooner than any pended grid CMP can land the patch (bench-measured at 3M: patch ~800 ticks behind the read; 100 % placeholder CRCs). Every predecessor byte is already on the wire in that case, so `on_status_start` runs one fold body inline BEFORE calling `schedule`: fold + patch first, fire after. The lateness check reads the wire clock freshly at the branch — the entry-time reading predates the stamp query and can still see the deadline as future. Cost: the wire start slips by the fold (~25 µs at 3M) on an already-late send; a valid chain CRC slightly later beats a placeholder on time. (Bench: 100/100 CRC-valid at 3M with the inline fold, vs 0/100 without.)
+The parked successor wait and then the armed pickup own the RX ring tail
+from `send_slot` until finalize or TC (`dxl-streaming-rx.md` §6): `poll()`
+gates on both, so only pickup/drain bodies consume Status-packet bytes.
+DMA1_CH5 HT/TC stays live throughout for byte-ring publish; its parser
+drain is a no-op behind the poll gate. There is no edge-side IRQ to
+contend with — the ET channel has no EdgeRing-role interrupt, and during
+most of the window it's swapped into kickoff duty anyway (§5.1).
 
-`patch_crc` must land in `tx_buf[len-2..len]` before DMA1_CH4's read cursor reaches them; CH4 reads byte[N-2] at ≈ `start + (tx_len-2) × byte_time` (~40 µs at 3M for a 14-byte reply). The completion body runs at `t_prior_end + byte_time + ENTRY` ≈ `start + 2.5 byte_times` — slack of many byte_times for typical replies. **Short own replies at 3M are the thin case:** a 5-6-byte emission closes the window ~3 byte-times (≈480 ticks) after an on-time fire, while the completion-CMP path (pend + PFIC entry + walk) costs ~1300-1500 ticks — an on-time observation with a long predecessor and a short reply can lose the race that the late-observation inline fold and the wide typical window both dodge. Open #103 item: measure, and if real traffic hits it, bound it (candidate: a final-anchor spin gated to high baud — the fire is always hardware-armed by then, so `patch_window_expired` bounds any spin). A fold that can't finalize before `dma::remaining(CH4) ≤ 2` is reported as a `CrcPatchDeadlineMiss` telemetry event; predecessor starvation (silent middle slot) converges here because the hardware kickoff fired regardless and the TX drain closes the window.
+#### 10.6.4 CPU cost
 
-**At USART1 TC (reply complete):**
-
-    disarm Fast Last CRC state               # idempotent — fold already disarmed on the finalize path
-    cancel SysTick CMP                       # idempotent
-    unwatch RXNE                             # idempotent — wake window already closed at arm
-    # the edge-ring restart is consumed by the driver's next edge publish (§5.1)
-
-#### 10.6.3 Grid ownership of the RX tail
-
-The parked Last wait and then the active fold own the RX ring tail from `send_slot(Last)` until finalize or TC (`dxl-streaming-rx.md` §6): `poll()` gates on both, so only the grid bodies consume Status-packet bytes. DMA1_CH5 HT/TC stays live throughout for byte-ring publish; its parser drain is a no-op behind the poll gate. There is no edge-side IRQ to contend with — the ET channel has no EdgeRing-role interrupt, and during most of the window it's swapped into kickoff duty anyway (§5.1).
-
-#### 10.6.4 Per-interval cost at 3M
-
-Default 15-byte interval, mid-range edge density:
-
-| Work | Cycles | µs |
-| --- | --- | --- |
-| Classifier walk (~45 edges) | ~360 | 7.5 |
-| Parser drain (15 bytes × 50 cyc) | 750 | 15.6 |
-| CRC fold (15 bytes × ~10 cyc) | 150 | 3.1 |
-| ISR entry/exit + bookkeeping | ~50 | 1.0 |
-| **Total per interval** | **~1310** | **~27.3 µs** |
-
-Against a 50 µs cadence (15 × 3.33 µs) that's ~54% CPU during the Fast Last reception window — same order as the Plain-mode (classifier + parser drain) cost during sustained RX. The work hasn't grown; it's just relocated into the SysTick catchup cadence.
+Per exchange, any chain length: one wake body (a short spin + ~a dozen
+table steps + two byte writes) plus, for windows deeper than half the RX
+ring, one O(1) drain body per half-ring of predecessor bytes. The old
+design's per-byte fold — ~54 % CPU for the whole reception window,
+scaling with packet length across every servo in the chain — is deleted;
+kernel-side work is untouched while predecessors stream.
 
 #### 10.6.5 Plain replies
 
-Plain replies skip both the Fast Last CRC arm and the SysTick catchup ISR. Classifier HT/TC stays armed; parser drains at classifier-end (§10.5). The per-byte fold is a no-op when not armed, so the HT/TC + IDLE callbacks remain safe to invoke unconditionally.
+Plain replies skip the pickup arm and the SysTick wake entirely.
+Classifier HT/TC stays armed; parser drains at classifier-end (§10.5).
+Every pickup entry point is a no-op when not armed, so the HT/TC + IDLE
+callbacks remain safe to invoke unconditionally.
 
 ### 10.7 HSI drift and the bit_time assumption
 
@@ -513,8 +572,7 @@ The CPU savings aren't load-bearing — §10's 25% peak leaves comfortable margi
 - **Kickoff spike answers (2026-07-03, `osc-dev-v006-bringup` `tim2_ch4_oc_dma_kickoff`).** (i) A CC4 OC compare match with CC4E=0 / OC4M=Frozen fires the CC4DE DMA request — CC4E gates only the pin/capture, not the event. (ii) DMA1_CH7 legally targets `DMA1_CH4.CR` as a peripheral address; the one-word EN write starts USART TX. (iii) `SWEVGR.CC4G` is dead silicon — CC4IF never latches (metapac field and raw bit-4 write alike); the past-deadline path re-aims CCR4 instead (§5.4). (iv) In IC mode, the DMA read of CCR4 clears CC4IF — don't use CC4IF as an edge-liveness signal.
 - **ET sizing + interval (§8.4 Option A vs B).** Default plan is 17-byte interval / ET depth = 128. Option B (12-byte interval / ET depth = 64) saves 128 B of SRAM at ~1% extra CPU. Decide based on memory pressure measured during integration.
 - **Fast Last CRC fold cost.** §10.6 estimates ~10 cyc/byte for CRC16 update. If the implementation lands closer to 20 cyc/byte, peak CPU during Fast Last RX climbs from ~54% to ~60%. Still well under the 75% spike target.
-- **Classifier-pending-at-catchup-entry race.** §10.6.3 proposes "mask + clear pending" at first SysTick catchup entry to defeat a classifier IRQ that latched right before the catchup ISR fired. Confirm the clear-pending write to `PFIC.IPRR.CH7` actually drops the latched IRQ on V006 (not just future ones).
-- **SysTick PFIC entry latency baseline.** Sizes `FAST_LAST_ENTRY_TICKS` for the catchup grid back-date. Estimate ~5 µs (~240 HCLK ticks); confirm under bench load.
+- **SysTick PFIC entry latency baseline.** Sizes `FAST_CRC_WAKE_LEAD_TICKS` — the pickup wake's early bias must cover the WORST-case entry, not the typical (waking early costs a short spin; waking late costs patch margin). Currently 500 ticks; bench-tune downward once characterized.
 - **Completion-body patch margin.** The grid's completion body lands `patch_crc` at `t_prior_end + byte_time + ENTRY`; the window closes when CH4 reads `tx_buf[len-2]`. Verify the margin at 3M/4M with the smallest own-reply (`L = 1`) under bench load.
 - **Slot-k>0 arm budget under dense chains.** From status-start observation to CCR4 written (CH7 reload + CH4 swap + recheck) is ~30 register writes; measure it doesn't erode short-predecessor margins at 3M.
 - **HSI drift convergence.** §10.7.1's BT-averaged drift estimator needs N packets for a usable estimate. Measure σ on bench at the target traffic mix to set the smoothing window.

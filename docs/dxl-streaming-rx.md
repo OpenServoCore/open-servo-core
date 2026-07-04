@@ -2,7 +2,7 @@
 
 ## Abstract
 
-A streaming, event-driven RX design for the DXL 2.0 transport on the CH32V006, decoupling protocol parsing from byte-time recovery. The parser consumes the RX DMA ring one byte at a time and emits typed protocol events; the edge parser advances in lockstep, one byte-boundary per byte the parser consumed, and exposes per-byte ticks at the consumer's point of interest, eliminating the derived byte-time ring used by the prior hardware-timed design. Per-packet anchors are recovered from the DXL header's unique on-wire edge signature, so timing drift cannot cross packet boundaries. Foreign packets — in-chain predecessor packets, foreign single-target instructions and replies — are consumed by a universal byte-skip that advances the RX ring tail past each packet's body without parser walk, CRC fold, or timestamp; the skip is load-bearing for keeping the parser's view of the ring tail synchronized with the wire. Plain (non-Fast) Sync / Bulk Read chain timing — left at fixed slot offsets in the prior design — reduces for slots k > 0 to a single piece of state: the chip records its immediate predecessor's ID at slot-demarcation parsing and starts its TX in-handler at that ID's byte-skip exhaust, under whichever of USART1 IDLE, DMA1_CH5 HT, or DMA1_CH5 TC drains the predecessor's last byte. Slot 0 falls outside the chain mechanic — it is mechanically a single-target reply to the chain instruction and is scheduled at `packet_end + RDT`, inheriting the existing single-target reply path unchanged. The chain mechanic (slots k > 0) schedules nothing and so has nothing to cancel; a silent predecessor manifests as a missing reply at the host's transaction layer. No forward arithmetic, no derived timestamps inside the chain. The Fast Last chain-CRC fold reduces to a short NDTR-driven loop over raw bytes, with no edge-parser involvement. Transport-owned RAM drops from 704 B to ~320 B, and CPU during foreign-packet handling scales linearly with what the chip actually consumes rather than with bus traffic.
+A streaming, event-driven RX design for the DXL 2.0 transport on the CH32V006, decoupling protocol parsing from byte-time recovery. The parser consumes the RX DMA ring one byte at a time and emits typed protocol events; the edge parser advances in lockstep, one byte-boundary per byte the parser consumed, and exposes per-byte ticks at the consumer's point of interest, eliminating the derived byte-time ring used by the prior hardware-timed design. Per-packet anchors are recovered from the DXL header's unique on-wire edge signature, so timing drift cannot cross packet boundaries. Foreign packets — in-chain predecessor packets, foreign single-target instructions and replies — are consumed by a universal byte-skip that advances the RX ring tail past each packet's body without parser walk, CRC fold, or timestamp; the skip is load-bearing for keeping the parser's view of the ring tail synchronized with the wire. Plain (non-Fast) Sync / Bulk Read chain timing — left at fixed slot offsets in the prior design — reduces for slots k > 0 to a single piece of state: the chip records its immediate predecessor's ID at slot-demarcation parsing and starts its TX in-handler at that ID's byte-skip exhaust, under whichever of USART1 IDLE, DMA1_CH5 HT, or DMA1_CH5 TC drains the predecessor's last byte. Slot 0 falls outside the chain mechanic — it is mechanically a single-target reply to the chain instruction and is scheduled at `packet_end + RDT`, inheriting the existing single-target reply path unchanged. The chain mechanic (slots k > 0) schedules nothing and so has nothing to cancel; a silent predecessor manifests as a missing reply at the host's transaction layer. No forward arithmetic, no derived timestamps inside the chain. The Fast successor chain-CRC pipeline reduces to a checkpoint pickup — the official per-block layout puts the running chain CRC on the wire after every slot, so a successor reads its predecessor's checkpoint instead of folding the window; no edge-parser involvement, O(own reply) CPU. Transport-owned RAM drops from 704 B to ~320 B, and CPU during foreign-packet handling scales linearly with what the chip actually consumes rather than with bus traffic.
 
 **Terminology.** *Chain* and *slot* both appear throughout, each carrying a specific semantic load. *Chain* names the Plain Sync / Bulk Read mode — a multi-reply transaction where slot 0 fires per the standard single-target rule (`packet_end + RDT`) and slots k > 0 fire sequence-driven on their immediate predecessor's packet-end. When "chain mechanic" or "chain fire" appears unqualified, it refers to the sequence behavior of slots k > 0; slot 0 is the bootstrap and inherits the single-target reply path unchanged. *Slot* serves two roles, both standard DXL vocabulary: the position of a servo ID in a request's param list (used for both Plain and Fast contexts — "slot 0", "the chip's slot"), and a timing-driven reply window in the Fast Sync / Bulk Read variant (the "slot grid" of §6). The shorthand: Plain semantics = chain (sequence, slots k > 0) + single-target bootstrap (slot 0); Fast semantics = slot (timing window).
 
@@ -56,9 +56,9 @@ Three layers compose the receive path. The **universal streaming parser** is a b
 
 **Driver rules.**
 
-- *Drop foreign packet bodies at the ring tail, not in the parser.* When a header event identifies a foreign packet (a foreign single-target instruction, a foreign single-target reply, or any foreign status during a chain the chip is participating in), the driver breaks the iterator, records the body byte count from `length` and the packet's ID, resets the parser, and advances the RX ring tail past those bytes as they arrive — no parser invocation on the body, no CRC fold, no timestamp consumer. The parser is fed again only after the skipped byte count reaches zero. The parser owns no skip FSM; the universal byte-skip is a driver concern, load-bearing for keeping the parser fed only at packet boundaries across packets the chip does not parse fully. The chain-fire check (§5.2) hooks onto the skip-exhaust event as a separate driver concern. Fast Last (§6) is parser-independent: it reads RX ring bytes directly to accumulate the CRC over predecessor packets, via the SysTick catchup grid and CC3 NDTR-tap. The chip's outgoing reply CRC folds these bytes without parser involvement.
+- *Drop foreign packet bodies at the ring tail, not in the parser.* When a header event identifies a foreign packet (a foreign single-target instruction, a foreign single-target reply, or any foreign status during a chain the chip is participating in), the driver breaks the iterator, records the body byte count from `length` and the packet's ID, resets the parser, and advances the RX ring tail past those bytes as they arrive — no parser invocation on the body, no CRC fold, no timestamp consumer. The parser is fed again only after the skipped byte count reaches zero. The parser owns no skip FSM; the universal byte-skip is a driver concern, load-bearing for keeping the parser fed only at packet boundaries across packets the chip does not parse fully. The chain-fire check (§5.2) hooks onto the skip-exhaust event as a separate driver concern. The Fast successor pipeline (§6) is parser-independent: it consumes the predecessor window raw and reads the chain-state checkpoint (the window's trailing CRC bytes) directly off the RX ring via the SysTick wake. The chip's outgoing reply CRC extends that checkpoint without parser involvement.
 - *Never reset the parser inside an outer chain instruction.* For mixed-ownership Sync Write or Bulk Write packets, the parser is mid-packet inside the outer instruction; the outer CRC accumulator must be preserved end-to-end. The driver feeds all bytes uniformly and gates dispatcher forwarding at the slot level — forward chunks for the chip's own slot, drop chunks for foreign slots.
-- *CRC matters in two places only.* Inbound instructions the chip will act on (verdict reported at the closing CRC event) and the chip's own Fast Last reply (where the trailing CRC is patched after folding predecessor bytes — §6). Everywhere else the parser still folds the bytes it sees, but the driver does not consult the verdict.
+- *CRC matters in two places only.* Inbound instructions the chip will act on (verdict reported at the closing CRC event) and the chip's own Fast successor reply (where the trailing CRC is patched from the predecessor's wire checkpoint — §6). Everywhere else the parser still folds the bytes it sees, but the driver does not consult the verdict.
 
 **Dispatcher rule.**
 
@@ -195,34 +195,78 @@ The Robotis per-servo RDT-in-chain quirk is not inherited — RDT applies only a
 
 ### 5.6 FAST chain timing (status-start anchor)
 
-FAST Sync/Bulk Read inverts the Plain shape: the whole chain reply is ONE Status packet (slot 0 emits the header; slot k appends `err, id, data`; the Last slot appends the chain CRC), so there are no per-slot frames for the skip-exhaust rule to observe. Slots k > 0 instead anchor on the observed start of that single Status packet (task #142):
+FAST Sync/Bulk Read inverts the Plain shape: the whole chain reply is ONE Status packet in the official per-block layout — slot 0 emits the header plus its block, and every block (slot 0 included) ends with the CUMULATIVE packet CRC, the chain-state checkpoint the next device picks up. There are no per-slot frames for the skip-exhaust rule to observe. Slots k > 0 instead anchor on the observed start of that single Status packet (task #142):
 
     deadline_slot_k = status_start_tick + bytes_before(k) × byte_time
 
 - **Slot 0** stays a single-target reply: `packet_end + RDT` per spec, exactly as §5.2.
-- **Slots k > 0** carry no RDT term (RDT is single-target-reply-only) and no IDLE floor — the anchor is a hardware IC edge stamp strictly in the past. At `send_slot` the reply is encoded and *deferred*: the reply gate parks a status-start wait and the RxDma provider opens a per-byte wake window (USART1 RXNEIE on V006 — wake-only; the tick always comes from the ET ring, never from wake-entry time, per [[no_idle_timing]]). The first wake with a byte past the Status packet's wire cursor resolves the anchor (§4.3) and arms the hardware TX kickoff — from that point the wire start is locked in regardless of CPU state ([dxl-hw-timed-transport.md §5.1](dxl-hw-timed-transport.md); the anchor read is deliberately the last ET consumer before the kickoff borrows the edge channel). The Last slot also starts the fold grid off the same anchor; only a far-horizon deadline (low baud, long predecessor) defers the hardware arm to the grid's final anchor via the scheduler's stash + commit.
+- **Slots k > 0** carry no RDT term (RDT is single-target-reply-only) and no IDLE floor — the anchor is a hardware IC edge stamp strictly in the past. At `send_slot` the reply is encoded and *deferred*: the reply gate parks a status-start wait and the RxDma provider opens a per-byte wake window (USART1 RXNEIE on V006 — wake-only; the tick always comes from the ET ring, never from wake-entry time, per [[no_idle_timing]]). The first wake with a byte past the Status packet's wire cursor resolves the anchor (§4.3) and arms the hardware TX kickoff — from that point the wire start is locked in regardless of CPU state ([dxl-hw-timed-transport.md §5.1](dxl-hw-timed-transport.md); the anchor read is deliberately the last ET consumer before the kickoff borrows the edge channel). Every successor slot also starts the checkpoint pickup off the same anchor; only a far-horizon deadline (low baud, long predecessor) defers the hardware arm to the pickup's wake body via the scheduler's stash + commit.
 
 Because every osc chip in the chain computes its deadline from the SAME physical edge, the response grid is coherent chain-wide — contiguity by construction at any baud, including RDT = 0, and slot 0's chip-side turnaround (the dominant real-world unknown, ~50 µs/servo on measured MX chains [1]) is absorbed by observation rather than assumed by formula. The design assumes grid-keeping (osc) servos in the chain; a mixed chain with slow third-party servos mid-chain should use Plain Sync/Bulk Read, whose per-predecessor skip-exhaust rule tolerates arbitrary turnaround.
 
 Failure shape mirrors §5.3's Plain contract at the chain level:
 
 - **Silent slot 0** → the Status packet never starts → no slot k > 0 has an anchor → the whole chain stays silent. Nothing was armed; nothing needs cleanup.
-- **Silent middle slot** → the anchor already exists, so later slots still fire on the grid; the frame arrives with a hole and the trailing chain CRC fails host-side validation (the Fast Last fold can't reach its predecessor-byte budget). Host retries.
+- **Silent middle slot** → the anchor already exists, so later slots still fire on schedule; the frame arrives with a hole, the starved pickup ships its placeholder CRC (one `CrcPatchDeadlineMiss`), and host-side per-block validation localizes the dead slot. Host retries.
 - **Stale wake traffic.** A parked wait survives a dead chain until new bytes arrive. Those bytes are the host's retry — same `FF FF FD 00` preamble shape as the awaited reply — so the wake path bounds acceptance by a staleness window: `latest_start = packet_end + effective_RDT + slack` (slack ≈ 500 µs, covering legitimate slot-0 turnaround while staying far under host retry timeouts). A stamp past the window drops the parked slot instead of scheduling a TX into the host's instruction, and the window closes.
-- **Ring ownership.** A parked Last wait owns the Status bytes the same way the active fold does (§6): `poll()` gates on it at entry and the in-flight poll stops at the event that parked it, so the parser never consumes the header bytes the fold must CRC. The per-byte wake is not a poll and proceeds regardless; the staleness drop un-gates the parser on the next wire traffic.
+- **Ring ownership.** A parked successor wait owns the Status bytes the same way the armed pickup does (§6): `poll()` gates on it at entry and the in-flight poll stops at the event that parked it, so the parser never consumes the window bytes the pipeline owns. The per-byte wake is not a poll and proceeds regardless; the staleness drop un-gates the parser on the next wire traffic.
 
-## 6. Fast Last chain-CRC fold
+## 6. Fast successor chain-CRC checkpoint pickup
 
-The Fast Last fold rides the SysTick catchup grid plus a completion body one byte past the predecessor's wire end — no fire-time CPU site exists, so there is no "post-fire residue"; see [dxl-hw-timed-transport.md §10.6.2](dxl-hw-timed-transport.md) for the full path. The fold consumes raw bytes directly off the RX DMA ring and accumulates them into the running CRC. No event emission, no walker advance, no per-byte tick. NDTR supplies the byte count; nothing in the fold path needs a tick.
+Under the official Fast layout every block ends with the cumulative
+packet CRC — the running chain state, checkpointed on the wire after each
+device. A successor slot never folds the predecessor window: its wake
+body reads the window's trailing two bytes (the predecessor's checkpoint)
+directly off the RX DMA ring, seeds the chain state from their value,
+extends over those same two bytes and the chip's own reply bytes, and
+patches the reply's trailing CRC slot. One SysTick wake just before the
+checkpoint lands (plus O(1) ring drains for windows deeper than half the
+ring), no fire-time CPU site, no per-byte fold — see
+[dxl-hw-timed-transport.md §10.6](dxl-hw-timed-transport.md) for the full
+path and the patch-vs-DMA budget. No event emission, no walker advance,
+no per-byte tick. NDTR supplies the byte accounting; nothing in the
+pickup path needs a tick.
 
-**RX-tail ownership during the fold.** Three consumers can advance the RX ring tail: the parser drain, the universal byte-skip (§5.2), and the Fast Last fold. While the fold is active they are mutually exclusive — the fold's CRC depends on observing exactly the `predecessor_bytes` between arm-time tail and the wire end of the chip's last predecessor, and any parser-side or skip-driven advance during that window silently steals bytes the fold needs. The fold owns the tail for the duration of the window, bracketed by two events:
+**RX-tail ownership during the window.** Three consumers can advance the
+RX ring tail: the parser drain, the universal byte-skip (§5.2), and the
+pickup pipeline. While the pipeline is armed they are mutually exclusive
+— the checkpoint's position is pure cursor arithmetic from the observed
+status start, and any parser-side or skip-driven advance during the
+window would desynchronize it (and could mis-parse a First header whose
+LENGTH advertises the whole chain). The pipeline owns the tail for the
+duration of the window, bracketed by two events:
 
-- **Arm** — at the status-start observation (`send_slot(Last)` parks the wait; the per-byte wake resolves it — §5.6). Between `send_slot(Last)` and the observation the parked wait already owns the ring tail via the `poll()` gate, so the Status packet's leading bytes survive for the fold. The in-flight `poll()` call that parked the wait yields without draining further bytes. The edge channel needs no masking — it has no IRQ of its own, and the TX kickoff borrows it for the window anyway (hw-doc §5.1).
-- **Release** — the fold finalizes naturally when `predecessor_bytes` have been consumed (CRC patched, active cleared) or cancels at `on_tx_complete` if a silent predecessor stalled the chain (matching the universal-skip clear in §5.3; the hardware kickoff fired regardless, so TC always comes). Both transitions implicitly re-open the tail to the parser, and the next poll re-enters normally.
+- **Arm** — at the status-start observation (`send_slot` for a successor
+  parks the wait; the per-byte wake resolves it — §5.6). Between
+  `send_slot` and the observation the parked wait already owns the ring
+  tail via the `poll()` gate, so the Status packet's leading bytes stay
+  unparsed. The in-flight `poll()` call that parked the wait yields
+  without draining further bytes. The edge channel needs no masking — it
+  has no IRQ of its own, and the TX kickoff borrows it for the window
+  anyway (hw-doc §5.1).
+- **Release** — the pickup finalizes naturally (checkpoint read, CRC
+  patched, active cleared; window bytes consumed raw up to its end) or
+  cancels at `on_tx_complete` if a silent predecessor stalled the chain
+  (matching the universal-skip clear in §5.3; the hardware kickoff fired
+  regardless, so TC always comes). The cancel path disposes of the
+  window's published bytes raw (`release_window`) so the parser resumes
+  at the wire frontier — never inside the stale chain frame. Both
+  transitions re-open the tail to the parser, and the next poll re-enters
+  normally.
 
-Between arm and release, USART1 IDLE and DMA1_CH5 HT/TC continue to fire — they cannot be masked without losing TX-half awareness — and may re-trigger `poll()`. Each such entry checks whether a fold is active and returns immediately without touching the parser or the tail cursor.
+Between arm and release, USART1 IDLE and DMA1_CH5 HT/TC continue to fire
+— they cannot be masked without losing TX-half awareness — and may
+re-trigger `poll()`. Each such entry checks whether the pipeline is armed
+and returns immediately without touching the parser or the tail cursor.
 
-The patch window — `patch_crc` landing before the TX DMA reads `tx_buf[len-2]` — is ~`(tx_len − 2) × byte_time` past the wire start (~40 µs at 3M for a 14-byte reply), an order wider than the old fire-ISR residue budget. A fold that can't finalize in time (predecessor starvation) surfaces as one `crc_patch_deadline_miss`; the frame ships with its placeholder CRC and the host retries.
+The patch window — `patch_crc` landing before the TX DMA reads
+`tx_buf[len-2..len]` — is `(tx_len − 2) × byte_time` past the wire start.
+The checkpoint publishes ~one byte-time BEFORE the fire, and the pickup
+completes in a fraction of a byte-time, so the patch beats the read by
+construction even for the shortest reply at 3M. A starved pickup (silent
+predecessor) surfaces as one `crc_patch_deadline_miss`; the frame ships
+with its placeholder CRC, host-side per-block validation localizes the
+dead slot, and the host retries.
 
 ## 7. Resource shape
 
@@ -235,7 +279,7 @@ Savings are chain-deployment dependent — and that is the design point. DXL dep
 | Single-servo instruction → own reply | Per-byte advance across the instruction; anchor recovery at header | anchor, packet-end tick, drift accumulator |
 | N-servo Plain Sync / Bulk Read, in-chain receive, slots k > 0 | Walker advances per byte across instruction + every predecessor (for anchor coherence); parser drains only the instruction and each foreign packet's header — foreign packet bodies are byte-skipped past the ring tail (universal mechanic, §3) | anchor, drift accumulator, `predecessor_id` (u8), `chain_pending` (bool); universal-skip state (`skip_remaining: u8`, `current_skip_id: u8`) — no fire-side ticks |
 | N-servo Plain Sync / Bulk Read, slot 0 | Same as single-servo instruction → own reply; slot 0 takes the single-target path at `packet_end + RDT` | Same as single-servo |
-| N-servo Fast Sync / Bulk Read, Fast Last slot | Per-byte advance across instruction + each predecessor (for anchor coherence); fold reads RX ring raw | Single-servo state + Fast Last CRC state |
+| N-servo Fast Sync / Bulk Read, successor slot | Per-byte advance across the instruction (for anchor coherence); the predecessor window is consumed raw by the pickup, no walker | Single-servo state + pickup window state |
 
 Per-byte fixed cost still scales with byte count — the walker has to keep its anchor synchronized for the quiet-window check at the next header — but the store drops to scalars and the consume drops to zero on uninterested bytes.
 
