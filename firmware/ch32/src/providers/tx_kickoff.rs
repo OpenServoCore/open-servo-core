@@ -114,23 +114,38 @@ pub fn arm(compare: u16) {
     }
     // Ordering is the load-bearing part. On the on-time path the
     // predecessor's bytes are STILL STREAMING during this arm — every IC
-    // capture pulses the CC4 request line. The sequence must guarantee no
-    // stale capture request (or stale CC4IF held level) can reach
-    // kickoff-configured CH7, or the enable word lands in CH4 the moment
-    // CH7 turns on and the send fires early into a not-yet-raised TX_EN
-    // (bench signature: clipped/garbled emission tails, noreply at 3M):
+    // capture pulses the CC4 request line, and a request LATCHES in the
+    // DMA controller: disabling CH7 does NOT drop it (bench: the kickoff
+    // transferred its word the instant CH7 re-enabled, CC4IF clear and
+    // CNT ~1700 ticks short of CCR4 — the enable word landed in CH4 and
+    // the send fired early into a not-yet-raised TX_EN; wedge signature:
+    // all-noreply + one crc_patch_deadline_miss per shot). The sequence
+    // must therefore DRAIN any latched request through the edge-ring role
+    // before CH7 switches identities:
     //
-    // 1. CH7 off — capture requests pulse into a disabled channel and drop.
-    // 2. CH4 leaves IC mode (captures stop), CCR4 = compare, CC4IF wiped
-    //    LAST — from here the flag can only re-set on a real new-compare
-    //    match.
-    // 3. CH7 reconfigures and enables as the kickoff.
+    // 1. CH4 leaves IC mode (captures stop), CCR4 = compare, CC4IF wiped
+    //    LAST — from here the request line can only pulse on a real
+    //    new-compare match.
+    // 2. CH7, still in edge-ring role, services whatever request was in
+    //    flight — one stale edge lands in the (already NDTR-latched) ring,
+    //    which the post-window resync discards. Spin until NDTR settles;
+    //    at most one request can be pending, so the bound is a formality.
+    // 3. CH7 reconfigures and enables as the kickoff, with no request
+    //    source and no latch left.
     //
-    // A real match inside step 2-3's dead window drops its request; the
-    // caller's §5.4 recheck sees CNT past CCR4 and re-aims via
-    // `trigger_asap`.
-    dma::disable(dma::Channel::CH7);
+    // A real match between steps 1 and 3 leaves CC4IF set and its request
+    // consumed by the edge role; the caller's §5.4 recheck sees CNT past
+    // CCR4 and re-aims via `trigger_asap`.
     timer::tim2_ch4_to_oc(compare);
+    let mut prev = dma::remaining(dma::Channel::CH7);
+    for _ in 0..4 {
+        let curr = dma::remaining(dma::Channel::CH7);
+        if curr == prev {
+            break;
+        }
+        prev = curr;
+    }
+    dma::disable(dma::Channel::CH7);
     // SAFETY: CH7 is disabled — no DMA read of the word can race this.
     unsafe { *KICKOFF_WORD.get() = ch4_cr_with_en() };
     let cfg = dma::Config {
@@ -168,6 +183,11 @@ pub fn trigger_asap() {
 /// Restore CH4 to input capture and CH7 to ET-ring duty; the window-flag
 /// pair stays set until the driver consumes the restart.
 pub fn on_kickoff_complete() {
+    if !dma::is_tc_flag(dma::Channel::CH7) {
+        // Spurious vector entry with no TC (a stale PFIC pend) — restoring
+        // here would flip CH4 back to IC mid-window.
+        return;
+    }
     dma::clear_tc_flag(dma::Channel::CH7);
     if !WINDOW_OPEN.load(Ordering::Relaxed) || RESTORED.load(Ordering::Relaxed) {
         // Spurious entry — nothing armed, or already restored (a cancel
