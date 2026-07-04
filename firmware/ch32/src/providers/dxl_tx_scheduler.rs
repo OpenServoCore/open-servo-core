@@ -41,9 +41,13 @@ use crate::hal::{dma, systick, timer, usart};
 use crate::measurements::{SCHEDULE_WRAP_GUARD_TICKS, TX_KICKOFF_FLOOR_TICKS};
 
 /// Upper threshold for the direct-arm branch: `remaining ≤ FITS_U16`
-/// means we can arm CCR4 single-wrap from now. Below TIM2's 65 536-tick
-/// wrap (1.365 ms at HCLK) with ~15k ticks of headroom against jitter.
-const FITS_U16_COMFORTABLY: u32 = 50_000;
+/// means we can arm CCR4 single-wrap from now. Must stay strictly below
+/// `SCHEDULE_WRAP_GUARD_TICKS` (with margin for the arm sequence itself)
+/// so the §5.4 modular recheck is unambiguous: every direct-arm distance
+/// reads `ccr4 − cnt < guard`, and only a genuinely crossed CCR4 wraps
+/// past it. At the old 50 000 value, a legal 33k–50k future arm read as
+/// "wrapped" and fired ASAP — a spurious early wire start.
+const FITS_U16_COMFORTABLY: u32 = SCHEDULE_WRAP_GUARD_TICKS as u32 - 2_048;
 
 /// Headroom between SysTick CMP match and TIM2 CCR4 match for the handoff
 /// path. Sized to cover worst-case (preceding HIGH ISR body ≈ 255 ticks
@@ -84,11 +88,11 @@ impl DxlTxScheduler {
             return;
         }
         // Single TIM2 wrap fits the wait — direct hardware arm. Past or
-        // too-close deadlines are caught by the recheck inside.
-        self.arm_hw_kickoff(deadline as u16, byte_count);
+        // too-close deadlines are caught inside.
+        self.arm_hw_kickoff(deadline as u16, byte_count, remaining);
     }
 
-    fn arm_hw_kickoff(&mut self, deadline_u16: u16, byte_count: u16) {
+    fn arm_hw_kickoff(&mut self, deadline_u16: u16, byte_count: u16, remaining: i32) {
         let ccr4 = deadline_u16.wrapping_sub(TX_KICKOFF_FLOOR_TICKS);
 
         // DMA channel must be disabled before NDTR is written.
@@ -102,13 +106,17 @@ impl DxlTxScheduler {
         timer::tim2_ch2_active_on_match();
         tx_kickoff::arm(ccr4);
 
-        // §5.4 set-and-recheck: if CNT just passed CCR4, the next compare
-        // match is a full wrap (~1.365 ms) away. Detect modular underflow
-        // → force TX_EN active (its CC2 match is equally in the past) and
-        // re-aim CCR4 just ahead of CNT so a real compare fires the
-        // already-armed kickoff ASAP.
+        // Past deadline at entry, or §5.4 set-and-recheck: CNT crossed
+        // CCR4 during the arm sequence — either way the next compare
+        // match is a full wrap (~1.365 ms) away. Force TX_EN active (its
+        // CC2 match is equally in the past) and re-aim CCR4 just ahead of
+        // CNT so a real compare fires the already-armed kickoff ASAP.
+        // The `remaining` term is load-bearing at low baud: an
+        // IDLE-parsed 9600 frame lands here 40k+ ticks past its RDT
+        // deadline, where the u16 modular recheck aliases back into the
+        // "still ahead" band and would silently eat a wrap.
         let cnt = timer::tim2_cnt();
-        if cc4_arm_wrapped(cnt, ccr4, SCHEDULE_WRAP_GUARD_TICKS) {
+        if remaining <= 0 || cc4_arm_wrapped(cnt, ccr4, SCHEDULE_WRAP_GUARD_TICKS) {
             timer::tim2_ch2_force_active();
             tx_kickoff::trigger_asap();
         }
@@ -132,7 +140,7 @@ impl TxSchedulerTrait for DxlTxScheduler {
                     // Within the direct-arm horizon: lock the wire start
                     // into hardware NOW — late grid bodies can no longer
                     // move it.
-                    self.arm_hw_kickoff(deadline as u16, byte_count);
+                    self.arm_hw_kickoff(deadline as u16, byte_count, remaining);
                 }
             }
             SendKind::Plain => {
