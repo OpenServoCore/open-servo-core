@@ -465,7 +465,7 @@ impl CellCtx {
         let rdt_us = bus.read_ct_u8(id, RETURN_DELAY_2US_ADDR)? as f64 * 2.0;
         let target_ticks = match args.position {
             Position::Last => {
-                let packet_length = 1 + (2 + args.inj_len) + (2 + args.dut_len) + 2;
+                let packet_length = 1 + (4 + args.inj_len) + (4 + args.dut_len);
                 let reply_bytes = 7 + packet_length;
                 (reply_bytes - 1) as f64 * byte_time_ticks
             }
@@ -659,7 +659,7 @@ fn shot_first(bus: &mut Bus, id: Id, ctx: &CellCtx) -> Result<ShotOutcome> {
 
 fn shot_last(bus: &mut Bus, id: Id, ctx: &CellCtx) -> Result<ShotOutcome> {
     let inj_data = vec![0xAAu8; ctx.inj_len];
-    let packet_length = (1 + (2 + ctx.inj_len) + (2 + ctx.dut_len) + 2) as u16;
+    let packet_length = (1 + (4 + ctx.inj_len) + (4 + ctx.dut_len)) as u16;
     let inj_bytes =
         build_inj_first_bytes(Id::new(INJ_ID), StatusError::OK, &inj_data, packet_length)?;
     let entries = [
@@ -717,7 +717,7 @@ fn shot_middle(bus: &mut Bus, id: Id, ctx: &CellCtx) -> Result<ShotOutcome> {
     let inj_data = vec![0xAAu8; ctx.inj_len];
     // 3-slot chain reply: STATUS + (err+id+inj_data) + (err+id+chip_data) +
     // (err+id+1B_foreign) + CRC.
-    let packet_length = (1 + (2 + ctx.inj_len) + (2 + ctx.dut_len) + (2 + 1) + 2) as u16;
+    let packet_length = (1 + (4 + ctx.inj_len) + (4 + ctx.dut_len) + (4 + 1)) as u16;
     let inj_bytes =
         build_inj_first_bytes(Id::new(INJ_ID), StatusError::OK, &inj_data, packet_length)?;
     let entries = [

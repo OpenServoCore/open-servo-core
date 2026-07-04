@@ -48,10 +48,10 @@ const INJ_AFTER_IDLE_US: u32 = 250;
 const SUCCESSOR_AFTER_IDLE_US: u32 = 430;
 
 /// `LEN` field of the coalesced Status frame for an n-slot chain:
-/// instruction byte + err + n·(id-tag + data) … per the Fast wire shape
-/// `1 + Σ(2 + L_k) + 2`.
+/// instruction byte + n·(err + id + data + crc) per the official Fast
+/// wire shape — every block ends with the cumulative chain CRC.
 fn chain_packet_length(slot_count: usize) -> u16 {
-    (1 + slot_count * (2 + L) + 2) as u16
+    (1 + slot_count * (4 + L)) as u16
 }
 
 /// Per-byte wire duration in µs at `baud` (10 bits per frame).
@@ -109,7 +109,11 @@ fn fast_middle_with_injected_first_emits_on_wire() {
         chain_packet_length(3),
     )
     .unwrap();
-    assert_eq!(inj.len(), 10 + L, "First emission wire shape");
+    assert_eq!(
+        inj.len(),
+        12 + L,
+        "First emission wire shape (incl. its CRC)"
+    );
     let req = build_fast_sync_read(0, L as u16, &[INJ_ID, id.as_byte(), FOREIGN_A]).unwrap();
 
     let cap = bus
@@ -123,15 +127,25 @@ fn fast_middle_with_injected_first_emits_on_wire() {
 
     let frame = frame_bytes(&cap, req.len());
     assert!(
-        frame.len() >= inj.len() + 2 + L,
-        "expected injected First + chip Middle bytes, got {} wire bytes: {frame:02X?}",
+        frame.len() >= inj.len() + 4 + L,
+        "expected injected First + chip successor block, got {} wire bytes: {frame:02X?}",
         frame.len(),
     );
     assert_eq!(&frame[..inj.len()], &inj[..], "injected slot 0 echo");
     let chip = &frame[inj.len()..];
-    assert_eq!(chip.len(), 2 + L, "chip Middle = err + id + data");
+    assert_eq!(chip.len(), 4 + L, "chip block = err + id + data + crc");
     assert_eq!(chip[0], 0, "err = 0x{:02X}", chip[0]);
     assert_eq!(chip[1], id.as_byte());
+    // Mid-chain checkpoint: the chip's block CRC must be the cumulative
+    // packet CRC over the request-free frame through its own data — the
+    // checkpoint-relay contract, validated host-side.
+    let crc_end = inj.len() + 2 + L;
+    let wire = u16::from_le_bytes([chip[2 + L], chip[3 + L]]);
+    assert_eq!(
+        dxl_protocol::crc16_umts_continue(0, &frame[..crc_end]),
+        wire,
+        "chip block checkpoint must be the cumulative chain CRC",
+    );
 
     report_k_gt_zero_timing("middle", &cap, req.len(), inj.len(), baud, hz);
     assert_healthy(&mut bus, id);
@@ -164,7 +178,7 @@ fn fast_last_with_injected_first_patches_chain_crc() {
         .expect("pirate xfer");
 
     let frame = frame_bytes(&cap, req.len());
-    let expected = inj.len() + 2 + L + 2; // + own body + chain CRC
+    let expected = inj.len() + 4 + L; // + own block (err id data crc)
     assert!(
         frame.len() >= expected,
         "expected full chain frame ({expected} bytes), got {}: {frame:02X?}",
@@ -193,11 +207,11 @@ fn fast_first_with_injected_successor_stays_healthy() {
     let baud = bus.baud();
     let hz = bus.hz_per_us().expect("pirate hz") as f64;
 
-    // Successor (k = 1, Last of a 2-slot chain): body + placeholder CRC.
-    // The chain CRC can't be precomputed host-side (it covers the chip's
-    // First bytes, whose register values we don't fix) — the target here
-    // is the chip's own First timing and its tolerance of trailing
-    // foreign bytes, not host-side frame acceptance.
+    // Successor (k = 1, Last of a 2-slot chain): block with a placeholder
+    // CRC. The chain CRC can't be precomputed host-side (it covers the
+    // chip's First bytes, whose register values we don't fix) — the
+    // target here is the chip's own First timing and its tolerance of
+    // trailing foreign bytes, not host-side frame acceptance.
     let mut successor = vec![0x00, INJ_ID];
     successor.extend_from_slice(&INJ_DATA);
     successor.extend_from_slice(&[0x00, 0x00]);
@@ -213,7 +227,7 @@ fn fast_first_with_injected_successor_stays_healthy() {
         .expect("pirate xfer");
 
     let frame = frame_bytes(&cap, req.len());
-    let first_len = 10 + L;
+    let first_len = 12 + L;
     assert!(
         frame.len() >= first_len,
         "expected chip First emission, got {} wire bytes: {frame:02X?}",

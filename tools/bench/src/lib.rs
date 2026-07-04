@@ -459,6 +459,7 @@ pub fn parse_fast_response(bytes: &[u8], slot_lengths: &[usize]) -> Result<Vec<F
     let body = &decoded.data;
     let mut slots = Vec::with_capacity(slot_lengths.len());
     let mut cursor = 0usize;
+    let last = slot_lengths.len().saturating_sub(1);
     for (idx, &slot_len) in slot_lengths.iter().enumerate() {
         if idx == 0 {
             if body.len() < cursor + 1 + slot_len {
@@ -487,6 +488,24 @@ pub fn parse_fast_response(bytes: &[u8], slot_lengths: &[usize]) -> Result<Vec<F
                 error: StatusError::from_byte(err_byte),
                 data,
             });
+        }
+        // Official layout: every block ends with the cumulative chain
+        // CRC. Validate each intermediate checkpoint against the wire
+        // prefix (the FINAL block's CRC doubles as the packet CRC the
+        // parser already verified, and sits past `body`).
+        if idx != last {
+            if body.len() < cursor + 2 {
+                bail!("fast reply too short for slot {idx} checkpoint: {bytes:02X?}");
+            }
+            let wire = u16::from_le_bytes([body[cursor], body[cursor + 1]]);
+            // Checkpoint = cumulative CRC over the raw frame prefix.
+            // `body[0]` is slot 0's id at frame offset 9 (hdr4 + id +
+            // len2 + inst + err), so body cursor c sits at frame 9 + c.
+            let crc_end = 9 + cursor;
+            if dxl_protocol::crc16_umts_continue(0, &bytes[..crc_end]) != wire {
+                bail!("fast reply slot {idx} checkpoint mismatch (wire {wire:04X}): {bytes:02X?}");
+            }
+            cursor += 2;
         }
     }
     if cursor != body.len() {
