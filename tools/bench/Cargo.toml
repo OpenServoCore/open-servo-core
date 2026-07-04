@@ -27,6 +27,10 @@ name = "tool-tune-tx-start"
 path = "src/bin/tool-tune-tx-start.rs"
 
 [[bin]]
+name = "tool-ct-read"
+path = "src/bin/tool-ct-read.rs"
+
+[[bin]]
 name = "tool-pirate-tune"
 path = "src/bin/tool-pirate-tune.rs"
 

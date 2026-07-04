@@ -627,8 +627,8 @@ fn shot_first(bus: &mut Bus, id: Id, ctx: &CellCtx) -> Result<ShotOutcome> {
     let timing = cap.timing;
 
     // First-slot wire bytes: 4 sync + bcast_id + 2 len + STATUS + err +
-    // slot_id + N data — total 10 + N.
-    let first_slot_bytes = 10 + ctx.dut_len;
+    // slot_id + N data + cumulative CRC — total 12 + N (official layout).
+    let first_slot_bytes = 12 + ctx.dut_len;
     if reply.len() < first_slot_bytes {
         return Ok(ShotOutcome {
             bucket: Bucket::Noreply,
@@ -680,7 +680,8 @@ fn shot_last(bus: &mut Bus, id: Id, ctx: &CellCtx) -> Result<ShotOutcome> {
     let reply = reply_bytes(&cap, request.len());
     let timing = cap.timing;
 
-    let expected = 11 + ctx.inj_len + 2 + ctx.dut_len;
+    // Full chain frame: hdr(8) + inj block(4+inj) + own block(4+dut).
+    let expected = 16 + ctx.inj_len + ctx.dut_len;
     if reply.len() < expected {
         return Ok(ShotOutcome {
             bucket: Bucket::Noreply,
