@@ -8,46 +8,38 @@
 //! with the SysTick fire path). Constants don't carry forward — the TIM2
 //! OC fire path has its own entry-latency profile.
 
-/// CC3-match → first wire bit, in TIM2 ticks at HCLK=48 MHz. Subtracted
-/// from `deadline_tick` to back-date CCR3 so the wire-bit lands on time.
+/// CC4-match → first wire bit, in TIM2 ticks at HCLK=48 MHz. Subtracted
+/// from `deadline_tick` to back-date CCR4 so the wire-bit lands on time.
 ///
-/// Sized to match the *minimum* observed path so the wire-bit always lands
-/// at or after `deadline_tick`: jitter widens the slot (harmless) instead
-/// of encroaching on the previous slot's RDT (collision).
+/// The path is pure hardware — no PFIC entry, no ISR body: CC4 compare
+/// match → CC4DE DMA request → DMA1_CH7 one-word write of the EN=1 config
+/// into DMA1_CH4.CR → CH4 fetches byte 0 → USART DR (doc §5). Sized to
+/// the *minimum* path so the wire-bit always lands at or after
+/// `deadline_tick`: too-large K starts the shift before TX_EN's CC2 match
+/// raises the driver — the missing-first-FF signature per
+/// [[tx-en-lead-via-k]].
 ///
-/// Breakdown (CC3 match → DMA pumps first byte into USART DR). Under O3
-/// the full driver dispatch (`on_tim2_cc3` → `Drivers::dxl_uart()` →
-/// `on_tx_start` → `take_bus`) inlines into the IRQ vector body. Only
-/// the DMA-enable path is on the critical path — the CC3IE mask that
-/// follows is housekeeping after DMA is already pumping:
-///
-/// | Stage                                  | Ticks |
-/// | -------------------------------------- | ----- |
-/// | PFIC entry (accept + reg save)         | 26-27 |
-/// | qingke_rt context save                 | 8-12  |
-/// | `dma::enable(CH4)` — CS + RMW          | 6-8   |
-/// | DMA AHB arbitration + USART DR write   | 6-8   |
-/// |                                        | ~46   |
-///
-/// USART bit-clock alignment (0-16 ticks at 3 Mbaud) is *excluded* — that
-/// jitter pushes the wire-bit later, which is the safe direction.
-///
-/// Measured: 60 (tool-tune-tx-start @ 3 Mbaud, 20 × 1000 pings, p0.1
-/// estimator). p0.1 wire excess sits at ≈0 µs and p95-median spread is
-/// ~0.3 µs — well below the ~1.5 µs cliff where CCR3 lands too close to
-/// TIM2 CNT at schedule time and the USART/DMA setup races with CC3 IRQ
-/// (corrupting the reply's first byte → snoop-CRC rejection on Fast Sync
-/// chains). The median (+0.6 µs after deadline) is the post-stamp floor:
-/// `dma::enable` + DMA AHB arb + USART DR write cannot be squeezed
-/// further. K bigger than ~63 starts hitting the cliff.
-pub const TX_START_ENTRY_TICKS: u16 = 40;
+/// Spike-measured upper bound: 24 ticks including the poll-loop read
+/// granularity (`osc-dev-v006-bringup` `tim2_ch4_oc_dma_kickoff`, RESULTS
+/// slot 6); the true request→DR path is a fraction of that. Start
+/// conservative-small (wire-bit late is the safe direction) —
+/// re-calibrate with tool-tune-tx-start when the bench returns.
+pub const TX_KICKOFF_FLOOR_TICKS: u16 = 8;
 
 /// Set-and-recheck threshold for the §5.4 wrap-into-past guard. Largest
-/// legitimate `(CCR3 - CNT) & 0xFFFF` value expected at `schedule` time —
+/// legitimate `(CCR4 - CNT) & 0xFFFF` value expected at `schedule` time —
 /// `RDT_max + slot_offset_max`. Anything above means modular subtraction
 /// wrapped backward (we scheduled in the past). Estimated conservative:
 /// 32 k ticks (~667 µs). Measured: TBD (bench).
 pub const SCHEDULE_WRAP_GUARD_TICKS: u16 = 0x8000;
+
+/// CNT lead for the past-deadline retry: after the §5.4 recheck detects a
+/// missed CC4 match, CCR4 re-aims at `CNT + this` so a REAL compare event
+/// fires the kickoff ASAP — TIM2's SWEVGR.CC4G is dead silicon on V006
+/// (spike-verified: CC4IF never latches). Must cover the CNT-read →
+/// CCR4-write latency (a few ticks) with margin; the whole lead is ~1.3 µs
+/// of extra latency on an already-late send.
+pub const KICKOFF_RETRY_LEAD_TICKS: u16 = 64;
 
 mod fast_last {
     /// SysTick CMP-match → catchup-body fold-start latency, in HCLK ticks.
@@ -66,13 +58,5 @@ mod fast_last {
     /// folds up to this many bytes of newly-classified residue before
     /// re-arming the next CMP one grid step ahead. See doc §10.6.2.
     pub const FAST_LAST_BYTES_PER_INTERVAL: u16 = 15;
-
-    /// Pre-start fold residue cap, in predecessor wire bytes. The final
-    /// busy-wait exits at `t_prior_end − GUARD × byte_ticks`, leaving up
-    /// to this many predecessor bytes for the TX-start body's tail to
-    /// fold inline. At 3M GUARD=1 keeps `patch_crc` ahead of CH4's
-    /// DMA-prefetch on byte[n − 2]. See doc §10.6.2 and
-    /// `[[crc_patch_deadline_miss_semantics]]`.
-    pub const FAST_LAST_GUARD_BYTES: u16 = 1;
 }
-pub use fast_last::{FAST_LAST_BYTES_PER_INTERVAL, FAST_LAST_ENTRY_TICKS, FAST_LAST_GUARD_BYTES};
+pub use fast_last::{FAST_LAST_BYTES_PER_INTERVAL, FAST_LAST_ENTRY_TICKS};

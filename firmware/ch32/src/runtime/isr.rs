@@ -13,16 +13,17 @@ pub fn install_irqs() {
     // ring head + drives the parser drain (see `on_dma1_ch5`). Shares HIGH
     // with the other DXL ISRs so parser-state mutations serialize.
     pfic::set_priority(pfic::Interrupt::DMA1_CHANNEL5, pfic::Priority::High);
-    // TIM2 CC3 IRQ kicks the wire-driver activate sequence; shares HIGH so
-    // the DXL transport ISR sources serialize.
-    pfic::set_priority(pfic::Interrupt::TIM2, pfic::Priority::High);
+    // DMA1_CH7's TC fires once per TX kickoff (one-transfer MEM→PER write
+    // of the CH4 enable word); the body restores CH4→IC + CH7→edge-ring.
+    // Shares HIGH so the restore serializes with the arm/cancel sites.
+    pfic::set_priority(pfic::Interrupt::DMA1_CHANNEL7, pfic::Priority::High);
     // SysTick CMP fires the Fast Last periodic-walk fold body; shares HIGH
     // so all DXL ISR sources serialize.
     pfic::set_systick_priority(pfic::Priority::High);
     pfic::set_priority(pfic::Interrupt::DMA1_CHANNEL1, pfic::Priority::Low);
     pfic::enable(pfic::Interrupt::USART1);
     pfic::enable(pfic::Interrupt::DMA1_CHANNEL5);
-    pfic::enable(pfic::Interrupt::TIM2);
+    pfic::enable(pfic::Interrupt::DMA1_CHANNEL7);
     pfic::enable_systick();
     pfic::enable(pfic::Interrupt::DMA1_CHANNEL1);
     crate::log::info!("ISRs live");
@@ -61,12 +62,12 @@ pub fn on_usart1() {
 /// streaming parser over the freshly-published bytes. Per
 /// `dxl-streaming-rx.md` §3 / §4.4 / §5.2, parser drains on three
 /// triggers (USART1 IDLE, DMA1_CH5 HT, DMA1_CH5 TC); same-handler
-/// drain is what makes the §5.1 chain-slot fire rule (observe
-/// predecessor skip-exhaust → arm CCR3 inline) hold under low-RDT
+/// drain is what makes the §5.1 chain-slot start rule (observe
+/// predecessor skip-exhaust → start TX inline) hold under low-RDT
 /// timing.
 ///
 /// SAFETY: driver installed before this vector unmasks, and DMA1_CH5
-/// shares PFIC HIGH with USART1 / TIM2 / SysTick so no concurrent `&mut`
+/// shares PFIC HIGH with USART1 / DMA1_CH7 / SysTick so no concurrent `&mut`
 /// into the driver is possible.
 pub fn on_dma1_ch5() {
     unsafe { Drivers::dxl_uart() }.on_rx_advance();
@@ -97,6 +98,17 @@ fn on_usart1_rx_errors() {
     usart::clear_rx_errors(USART1);
 }
 
+/// DMA1_CH7 TC — the TX kickoff's one-word transfer completed, meaning the
+/// hardware just enabled CH4 at the CC4 compare match and TX is streaming.
+/// Restore the channel pair to RX duty (CH4→IC, CH7→edge ring): our own
+/// TX produces no RX edges (no self-echo), so the ring comes back live and
+/// silent well before the bus turns around. Pure chip-side — no driver
+/// routing; the driver observes the restart through
+/// `EdgeDma::take_ring_restart` on its next edge publish.
+pub fn on_dma1_ch7() {
+    crate::providers::tx_kickoff::on_kickoff_complete();
+}
+
 fn on_usart1_idle() {
     if !usart::is_idle(USART1) {
         return;
@@ -113,9 +125,9 @@ fn on_usart1_idle() {
     // per [[no_idle_timing]] never enters the anchored path — the
     // fallback is only consumed at Crc when the classifier was
     // unanchored.
-    // SAFETY: see `on_dma1_ch7`.
+    // SAFETY: see `on_dma1_ch5`.
     unsafe { Drivers::dxl_uart() }.on_rx_idle();
-    // SAFETY: see `on_dma1_ch7`.
+    // SAFETY: see `on_dma1_ch5`.
     let services = unsafe { (*SERVICES.get()).assume_init_mut() };
     services.poll(&SHARED);
 }
@@ -139,7 +151,7 @@ fn on_usart1_tc() {
         return;
     }
     usart::clear_tc(USART1);
-    // SAFETY: see `on_dma1_ch7`.
+    // SAFETY: see `on_dma1_ch5`.
     let pending_reboot = unsafe { Drivers::dxl_uart() }.on_tx_complete();
     if let Some(mode) = pending_reboot {
         flash::set_boot_mode(matches!(mode, BootMode::Bootloader));
@@ -164,43 +176,27 @@ fn on_usart1_status_start() {
     unsafe { Drivers::dxl_uart() }.on_status_start();
 }
 
-/// TIM2 CC3 compare-match — TX-start deadline reached. Routes into the
-/// driver's `on_tx_start`, which delegates to the scheduler provider to
-/// activate the wire driver.
-///
-/// Hot path: no pending-flag check (CC3IE is the only IRQ enabled on TIM2
-/// — nothing else can fire this vector) and no flag clear (the scheduler
-/// provider masks CC3IE in `take_bus`; CC3IF stays set but harmless,
-/// and the next `schedule()` clears it before re-arming CC3IE).
-///
-/// SAFETY: see `on_dma1_ch7` — TIM2 shares PFIC HIGH with USART1 / DMA1_CH7
-/// so no concurrent `&mut` into the driver is possible.
-pub fn on_tim2_cc3() {
-    unsafe { Drivers::dxl_uart() }.on_tx_start();
-}
-
 /// SysTick CMP-match — a long-horizon scheduling deadline arrived. Two
 /// consumers share the CMP: the TX-scheduler handoff (multi-wrap-distance
-/// arms that direct TIM2 CC3 can't span) and the Fast Last periodic-walk
+/// arms that a direct TIM2 compare can't span) and the Fast Last periodic-walk
 /// fold body. The driver's `on_schedule_due` demuxes; if the TX scheduler
 /// armed the match it consumes, otherwise the fold body runs. CNTIF must
 /// be cleared at entry: the final fold body returns without re-arming and
 /// a stale-but-latched CNTIF would re-fire the IRQ the moment we return.
 ///
-/// SAFETY: see `on_dma1_ch7` — SysTick shares PFIC HIGH with USART1 /
-/// DMA1_CH7 / TIM2 so no concurrent `&mut` into the driver is possible.
+/// SAFETY: see `on_dma1_ch5` — SysTick shares PFIC HIGH with USART1 /
+/// DMA1_CH5 / DMA1_CH7 so no concurrent `&mut` into the driver is possible.
 pub fn on_systick() {
     systick::clear_match();
     unsafe { Drivers::dxl_uart() }.on_schedule_due();
 }
 
 /// Wires osc-ch32 ISR bodies into the vector table. Caller must depend on
-/// `qingke-rt`. Only the TIM2 vector lands in `.highcode` (RAM) — its
-/// CC3 post-fire fold races CH4's DMA prefetch with ~10 byte-times slack
-/// at 3 Mbaud GUARD=1, so the body must skip the flash-fetch path. The
-/// other DXL/ADC ISRs opt out via `#[interrupt(lowcode)]` (upstream
-/// qingke-rt API): their bodies land in `.text.{NAME}` (flash) since
-/// per-grid-step or per-packet-end slack absorbs any flash-fetch jitter.
+/// `qingke-rt`. Every ISR opts out of `.highcode` via
+/// `#[interrupt(lowcode)]` (upstream qingke-rt API): nothing CPU-driven
+/// sits on the wire deadline anymore — the TX start is a pure-hardware
+/// CC4→DMA kickoff — and per-grid-step / per-packet-end slack absorbs any
+/// flash-fetch jitter in the remaining bodies.
 #[macro_export]
 macro_rules! install_isrs {
     () => {
@@ -219,9 +215,9 @@ macro_rules! install_isrs {
             $crate::runtime::isr::on_dma1_ch5();
         }
 
-        #[::qingke_rt::interrupt]
-        fn TIM2() {
-            $crate::runtime::isr::on_tim2_cc3();
+        #[::qingke_rt::interrupt(lowcode)]
+        fn DMA1_CHANNEL7() {
+            $crate::runtime::isr::on_dma1_ch7();
         }
 
         #[::qingke_rt::interrupt(core, lowcode)]

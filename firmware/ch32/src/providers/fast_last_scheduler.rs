@@ -1,11 +1,11 @@
 //! Fast Last catchup scheduler — SysTick CMP triggers the catchup ISR at
 //! fixed byte intervals during a Fast Sync / Bulk Read predecessor window.
 //! Per `docs/dxl-hw-timed-transport.md` §10.6 + §12: TIM2 is reserved for
-//! jitter-critical wire-edge events (CC4 IC, CC3 TX start, CC2 TX_EN OC);
-//! long-horizon catchup scheduling rides SysTick instead. TIM2's shared
-//! prescaler is pinned at PSC=0 for the IC side's 16-tick resolution at
-//! 3M, so its 16-bit CNT wraps every 1.365 ms — the grid step at low baud
-//! (`15 × byte_ticks`) can exceed that and the wire-start deadline can be
+//! jitter-critical wire-edge events (CC4 IC capture / OC kickoff, CC2
+//! TX_EN OC); long-horizon catchup scheduling rides SysTick instead. TIM2's
+//! shared prescaler is pinned at PSC=0 for the IC side's 16-tick resolution
+//! at 3M, so its 16-bit CNT wraps every 1.365 ms — the grid step at low
+//! baud (`15 × byte_ticks`) can exceed that and the completion body can be
 //! many wraps out. SysTick is 32-bit at HCLK with ~89.5 s horizon, a
 //! separate IRQ vector from TIM2, and its ~5 µs PFIC-entry jitter is
 //! dwarfed by the fold body cost.
@@ -17,46 +17,13 @@ use dxl_protocol::wire::CRC_BYTES;
 use osc_drivers::traits::dxl::FastLastScheduler as FastLastSchedulerTrait;
 
 use crate::hal::{dma, pfic, systick};
-use crate::measurements::{
-    FAST_LAST_BYTES_PER_INTERVAL, FAST_LAST_ENTRY_TICKS, FAST_LAST_GUARD_BYTES,
-};
+use crate::measurements::{FAST_LAST_BYTES_PER_INTERVAL, FAST_LAST_ENTRY_TICKS};
 
-#[derive(Default)]
-pub struct FastLastScheduler {
-    deadline: u32,
-}
-
-/// DEBUG-ONLY: ring of last 8 schedule() captures, written via volatile RMW.
-/// Read via wlink after a wedge — `nm` the symbols for addresses.
-/// Removed once the wedge investigation lands.
-#[repr(C)]
-#[derive(Copy, Clone)]
-pub struct FlSchedSample {
-    pub now: u32,
-    pub deadline: u32,
-    pub diff: i32,
-    pub safe_cmp: u32,
-}
-
-#[unsafe(no_mangle)]
-pub static mut FL_SCHED_RING: [FlSchedSample; 8] = [FlSchedSample {
-    now: 0,
-    deadline: 0,
-    diff: 0,
-    safe_cmp: 0,
-}; 8];
-
-#[unsafe(no_mangle)]
-pub static mut FL_SCHED_HEAD: u32 = 0;
+pub struct FastLastScheduler;
 
 impl FastLastSchedulerTrait for FastLastScheduler {
     const FAST_LAST_ENTRY_TICKS: u16 = FAST_LAST_ENTRY_TICKS;
     const BYTES_PER_INTERVAL: u16 = FAST_LAST_BYTES_PER_INTERVAL;
-    const GUARD_BYTES: u16 = FAST_LAST_GUARD_BYTES;
-
-    fn set_busy_wait_deadline(&mut self, deadline: u32) {
-        self.deadline = deadline;
-    }
 
     fn schedule(&mut self, deadline: u32) {
         // Past-CMP handling: the parser path (IDLE → Crc event → send_slot
@@ -74,18 +41,6 @@ impl FastLastSchedulerTrait for FastLastScheduler {
         // stale forward value the next body will overwrite.
         let now = systick::ticks();
         let diff = deadline.wrapping_sub(now) as i32;
-        // SAFETY: debug-only scratch; same-prio ISR serialization (HIGH).
-        unsafe {
-            let head = (FL_SCHED_HEAD as usize) & 7;
-            let p = &raw mut FL_SCHED_RING[head];
-            p.write_volatile(FlSchedSample {
-                now,
-                deadline,
-                diff,
-                safe_cmp: if diff < 0 { 0 } else { deadline },
-            });
-            FL_SCHED_HEAD = FL_SCHED_HEAD.wrapping_add(1);
-        }
         systick::clear_match();
         systick::set_irq(true);
         if diff < 0 {
@@ -93,10 +48,6 @@ impl FastLastSchedulerTrait for FastLastScheduler {
         } else {
             systick::set_cmp(deadline);
         }
-    }
-
-    fn deadline_passed(&self) -> bool {
-        (systick::ticks().wrapping_sub(self.deadline) as i32) >= 0
     }
 
     fn patch_window_expired(&self) -> bool {

@@ -1,4 +1,4 @@
-use super::registry::{DXL_EDGE_BUF_LEN, DXL_RX_BUF_LEN};
+use super::registry::DXL_RX_BUF_LEN;
 use ch32_metapac::{ADC, adc::vals::Extsel, dma::vals::Dir, timer::vals::FilterValue};
 use osc_core::{ConfigDefaults, RegionStorage};
 use osc_drivers::Level;
@@ -309,36 +309,18 @@ fn bring_up_dxl(brr: u32, boot_filter: FilterValue) {
 }
 
 /// TIM2_CH4 input capture on the RX pin (falling edge) feeds DMA1_CH7 into
-/// the RX driver's edges buffer. The HT/TC ISR walks newly-captured
-/// edges through the window classifier; IDLE drains the tail when a packet
-/// doesn't fill a half. PL=VeryHigh is the only such channel (ADC + USART
-/// RX/TX all sit at LOW per doc §6) so CC4 stores can't be delayed.
+/// the RX driver's edges buffer. The channel config lives in
+/// `providers::tx_kickoff` — the TX kickoff time-shares CH7 and re-applies
+/// the same ET-ring shape at every post-send restore.
 fn bring_up_edge_ts_capture(boot_filter: FilterValue) {
     timer::init_tim2_ch4_ic_capture(boot_filter);
 
-    let edge_ts_cfg = dma::Config {
-        dir: Dir::FROMPERIPHERAL,
-        circ: true,
-        pinc: false,
-        minc: true,
-        size: dma::Size::BITS16,
-        htie: false,
-        tcie: false,
-        pl: dma::Pl::VERYHIGH,
-    };
     // SAFETY: `Drivers::install` ran in `run()` before `bring_up_dxl`; the
     // returned address points into the driver's registry cell and stays
     // valid for the lifetime of the program. The driver yields `usize`
     // (chip-agnostic); we narrow to the V006 DMA-MAR width here.
     let edges_addr = unsafe { Drivers::dxl_uart() }.edges_addr() as u32;
-    dma::configure(
-        dma::Channel::CH7,
-        &edge_ts_cfg,
-        timer::tim2_ch4_capture_addr(),
-        edges_addr,
-        DXL_EDGE_BUF_LEN as u16,
-    );
-    dma::enable(dma::Channel::CH7);
+    crate::providers::tx_kickoff::install_edge_ring(edges_addr);
 }
 
 fn start_center_aligned_pwm(psc: u16, arr: u16) {

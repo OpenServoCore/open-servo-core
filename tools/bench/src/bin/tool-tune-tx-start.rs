@@ -1,4 +1,4 @@
-//! Measure the chip's `TX_START_ENTRY_TICKS` floor — the back-date the
+//! Measure the chip's `TX_KICKOFF_FLOOR_TICKS` floor — the back-date the
 //! `arm_tim2` path applies to CCR3 so the wire-bit lands slightly after
 //! CC2 activates TX_EN.
 //!
@@ -7,7 +7,7 @@
 //! stable-clock measurement of when the chip's first wire bit lands vs
 //! the deadline implied by `RDT`. Covers the full path
 //! CC3-match → wire-bit. The 0.1th-percentile (p0.1) wire excess is the
-//! robust slack we can shrink into `TX_START_ENTRY_TICKS` while still
+//! robust slack we can shrink into `TX_KICKOFF_FLOOR_TICKS` while still
 //! keeping 99.9% of wire bits *after* CC2 (TX_EN active). 99.9% (not
 //! 99%) because Fast Sync chains snoop each predecessor's reply — a
 //! single first-byte drop collapses the chain tail, so a 1-in-1000
@@ -26,7 +26,7 @@
 //!
 //! Output (all ticks HCLK = 48 MHz): per-batch distribution plus an
 //! across-batch summary with the recommended *delta* to apply to the
-//! current `TX_START_ENTRY_TICKS` in `firmware/ch32/src/measurements.rs`.
+//! current `TX_KICKOFF_FLOOR_TICKS` in `firmware/ch32/src/measurements.rs`.
 //! Operator adds the delta to the current value. Delta sign convention:
 //! positive → enlarge K (wire bit was landing too late); negative →
 //! shrink K (wire bit was landing too early).
@@ -48,7 +48,7 @@ use dxl_protocol::types::Id;
 /// 20-batch × 1000-shot run from ~3 minutes to ~20 seconds.
 const PING_REPLY_IDLE_US: u32 = 1_000;
 
-/// V006 HCLK ticks per µs — TIM2 / chip-side `TX_START_ENTRY_TICKS` are
+/// V006 HCLK ticks per µs — TIM2 / chip-side `TX_KICKOFF_FLOOR_TICKS` are
 /// in this domain. Pirate ticks are at a different rate (144 MHz HCLK)
 /// and must be converted to HCLK before adding to K.
 const HCLK_TICKS_PER_US: f64 = 48.0;
@@ -72,13 +72,13 @@ const CLIFF_SPREAD_THRESHOLD_US: f64 = 1.5;
 const SOFTWARE_FIRE_EXCESS_THRESHOLD_US: f64 = 50.0;
 
 #[derive(Parser, Debug)]
-#[command(about = "Sample the chip's TX_START_ENTRY_TICKS floor + wire RDT distribution.")]
+#[command(about = "Sample the chip's TX_KICKOFF_FLOOR_TICKS floor + wire RDT distribution.")]
 struct Args {
     /// Pirate USB-CDC device. Default: autodetect by VID/PID.
     #[arg(short, long)]
     port: Option<String>,
     /// Wire baud to drive at. Default 3M: worst-case slot-timing margin
-    /// (byte_time = 3.33 µs) where TX_START_ENTRY_TICKS most needs to be
+    /// (byte_time = 3.33 µs) where TX_KICKOFF_FLOOR_TICKS most needs to be
     /// pinned; chip-side CC3 latency is HCLK-domain so the floor is
     /// baud-independent in principle, but the wire-excess deep tail
     /// matters most here. Override to sanity-check across bauds.
@@ -124,7 +124,7 @@ fn main() -> Result<()> {
 fn print_k_too_aggressive_advice(drops: u32) {
     eprintln!();
     eprintln!(
-        "=== ⚠  TX_START_ENTRY_TICKS TOO AGGRESSIVE — {drops} K-drop event(s) during run ==="
+        "=== ⚠  TX_KICKOFF_FLOOR_TICKS TOO AGGRESSIVE — {drops} K-drop event(s) during run ==="
     );
     eprintln!(
         "  One or more chip Status replies dropped their leading 0xFF byte: the chip's first"
@@ -132,7 +132,7 @@ fn print_k_too_aggressive_advice(drops: u32) {
     eprintln!(
         "  bit-on-wire landed BEFORE CC2 activated TX_EN, so the transceiver + pirate lost the"
     );
-    eprintln!("  first byte in the direction-switch window. Reduce TX_START_ENTRY_TICKS in");
+    eprintln!("  first byte in the direction-switch window. Reduce TX_KICKOFF_FLOOR_TICKS in");
     eprintln!(
         "  firmware/ch32/src/measurements.rs by ~5-10 HCLK ticks and re-flash before re-running."
     );
@@ -310,14 +310,14 @@ fn print_summary(wire_us: &[f64], expected_first_us: f64) {
              of the reply gets garbled on the wire, breaking snoop CRC."
         );
         println!(
-            "  Roll TX_START_ENTRY_TICKS back -3 (or more for margin) and re-measure; ignore \
+            "  Roll TX_KICKOFF_FLOOR_TICKS back -3 (or more for margin) and re-measure; ignore \
              any p0.1-based suggestion this run."
         );
         return;
     }
     println!("=== suggestion (99.9% wire-excess safety bound) ===");
     println!(
-        "  shift TX_START_ENTRY_TICKS by {p0_1_excess_hclk:+} HCLK ticks (new = current{p0_1_excess_hclk:+})"
+        "  shift TX_KICKOFF_FLOOR_TICKS by {p0_1_excess_hclk:+} HCLK ticks (new = current{p0_1_excess_hclk:+})"
     );
     if p0_1_excess_hclk < 0 {
         println!(

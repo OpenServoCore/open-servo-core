@@ -1,7 +1,15 @@
-use ch32_metapac::timer::vals::{CcmrInputCcs, Ckd, Cms, FilterValue, Mms, Ocm};
+use ch32_metapac::timer::vals::{CcmrInputCcs, CcmrOutputCcs, Ckd, Cms, FilterValue, Mms, Ocm};
 use ch32_metapac::{TIM1, TIM2};
+use portable_atomic::{AtomicU8, Ordering};
 
 use crate::hal::clocks::TIM_CLK_HZ;
+
+/// Last-applied CH4 input-capture filter, cached so [`tim2_ch4_to_ic`] can
+/// restore it after a TX-kickoff OC window — the OC-mode CCMR2 rewrite
+/// aliases the ICF bits away. Written by [`init_tim2_ch4_ic_capture`] and
+/// [`set_tim2_ch4_icf`] (the baud provider's runtime path); all writers and
+/// the restore ISR share PFIC HIGH.
+static TIM2_CH4_ICF: AtomicU8 = AtomicU8::new(0);
 
 #[derive(Copy, Clone)]
 pub enum Polarity {
@@ -93,15 +101,8 @@ pub fn init_tim2_ch4_ic_capture(boot_filter: FilterValue) {
     TIM2.psc().write_value(0);
     TIM2.atrlr().write_value(0xFFFF);
     TIM2.ctlr1().modify(|w| w.set_ckd(Ckd::DIV_1));
-    TIM2.chctlr_input(1).modify(|w| {
-        w.set_ccs(1, CcmrInputCcs::TI4);
-        w.set_icpsc(1, 0);
-        w.set_icf(1, boot_filter);
-    });
-    TIM2.ccer().modify(|w| {
-        w.set_ccp(3, true);
-        w.set_cce(3, true);
-    });
+    TIM2_CH4_ICF.store(boot_filter.to_bits(), Ordering::Relaxed);
+    ch4_input_shape(boot_filter);
     TIM2.dmaintenr().modify(|w| w.set_ccde(3, true));
     // `EdgeParser` lifts u16 IC4 stamps to u32 wire-time against
     // `WireClock::now()` (SysTick u32) by assuming the low 16 bits match.
@@ -120,7 +121,65 @@ pub fn init_tim2_ch4_ic_capture(boot_filter: FilterValue) {
 /// invoked by the USART baud provider at `apply_baud`.
 #[inline]
 pub fn set_tim2_ch4_icf(value: FilterValue) {
+    TIM2_CH4_ICF.store(value.to_bits(), Ordering::Relaxed);
     TIM2.chctlr_input(1).modify(|w| w.set_icf(1, value));
+}
+
+/// CH4's input-capture register shape: TI4 direct, no prescaler, falling
+/// edge, capture enabled. Shared by boot init and the post-kickoff
+/// restore. CC4E drops first — CC4S is only writable while the channel is
+/// disabled (RM §12.4.8).
+fn ch4_input_shape(filter: FilterValue) {
+    TIM2.ccer().modify(|w| w.set_cce(3, false));
+    TIM2.chctlr_input(1).modify(|w| {
+        w.set_ccs(1, CcmrInputCcs::TI4);
+        w.set_icpsc(1, 0);
+        w.set_icf(1, filter);
+    });
+    TIM2.ccer().modify(|w| {
+        w.set_ccp(3, true);
+        w.set_cce(3, true);
+    });
+}
+
+/// Swap CH4 from input capture to output compare and arm CCR4 — the TX
+/// kickoff window (doc §5). OC4M=Frozen keeps OC4REF off PC1 (the live RX
+/// pin) and CC4E stays 0 (no pin drive); the CC4 compare EVENT still fires
+/// the CC4DE-gated DMA request (spike-verified — the RM only documents
+/// CC4E as an output/capture enable).
+#[inline]
+pub fn tim2_ch4_to_oc(compare: u16) {
+    TIM2.ccer().modify(|w| w.set_cce(3, false));
+    TIM2.chctlr_output(1).modify(|w| {
+        w.set_ccs(1, CcmrOutputCcs::OUTPUT);
+        w.set_ocm(1, Ocm::FROZEN);
+        w.set_ocpe(1, false);
+    });
+    clear_tim2_cc4_flag();
+    TIM2.chcvr(3).write_value(compare);
+}
+
+/// Restore CH4 to the falling-edge input capture after a TX-kickoff OC
+/// window, re-applying the cached IC filter.
+#[inline]
+pub fn tim2_ch4_to_ic() {
+    ch4_input_shape(FilterValue::from_bits(TIM2_CH4_ICF.load(Ordering::Relaxed)));
+    clear_tim2_cc4_flag();
+}
+
+/// CC4IF is rc_w0 — write 0 to clear (bit 4), 1 elsewhere to leave alone.
+#[inline]
+pub fn clear_tim2_cc4_flag() {
+    TIM2.intfr().write(|w| {
+        w.0 = !(1u32 << 4);
+    });
+}
+
+/// Re-aim an armed CC4 compare — the past-deadline retry writes
+/// `CNT + lead` here after the §5.4 recheck detects a missed match.
+#[inline]
+pub fn set_tim2_ccr4(value: u16) {
+    TIM2.chcvr(3).write_value(value);
 }
 
 /// Peripheral address of TIM2.CCR4 for the DMA1_CH7 PAR. CCR4 is the 16-bit
@@ -130,45 +189,28 @@ pub fn tim2_ch4_capture_addr() -> u32 {
     TIM2.chcvr(3).as_ptr() as u32
 }
 
-/// CH2 + CH3 as output-compare on top of the already-running TIM2 free-run.
-/// CH2 lives on PC2 (TX_EN, hardware-driven on CC2 match) under the
-/// board's Remap2; CH3 has no pin output — only its CC3IF interrupt fires
-/// the wire-driver activate sequence. Caller hands the TX_EN polarity from
-/// the board wiring so CCMR1/CCER reflect it.
-///
-/// Both channels start with idle settings (OC2M=Force-inactive, OC3M=Frozen,
-/// CC3IE off). The provider arms each fire by writing CCRs and flipping
-/// OC2M to Active-on-match + enabling CC3IE.
+/// CH2 as output-compare on top of the already-running TIM2 free-run. CH2
+/// lives on PC2 (TX_EN, hardware-driven on CC2 match) under the board's
+/// Remap2. Caller hands the TX_EN polarity from the board wiring so
+/// CCMR1/CCER reflect it. Starts idle (OC2M=Force-inactive); the provider
+/// arms each send by writing CCR2 and flipping OC2M to Active-on-match.
+/// The wire start itself rides CH4's compare → DMA kickoff (doc §5) —
+/// no CH3 involvement.
 pub fn init_tim2_tx_oc_channels(tx_active_high: bool) {
     TIM2.chctlr_output(0).modify(|w| {
-        w.set_ccs(1, ch32_metapac::timer::vals::CcmrOutputCcs::OUTPUT);
+        w.set_ccs(1, CcmrOutputCcs::OUTPUT);
         w.set_ocm(1, Ocm::FORCEINACTIVE);
         w.set_ocpe(1, false);
-    });
-    TIM2.chctlr_output(1).modify(|w| {
-        w.set_ccs(0, ch32_metapac::timer::vals::CcmrOutputCcs::OUTPUT);
-        w.set_ocm(0, Ocm::FROZEN);
-        w.set_ocpe(0, false);
     });
     TIM2.ccer().modify(|w| {
         w.set_cce(1, true);
         w.set_ccp(1, !tx_active_high);
-        w.set_cce(2, false);
-    });
-    TIM2.dmaintenr().modify(|w| w.set_ccie(2, false));
-    TIM2.intfr().write(|w| {
-        w.0 = !(1u32 << 3);
     });
 }
 
 #[inline]
 pub fn set_tim2_ccr2(value: u16) {
     TIM2.chcvr(1).write_value(value);
-}
-
-#[inline]
-pub fn set_tim2_ccr3(value: u16) {
-    TIM2.chcvr(2).write_value(value);
 }
 
 /// `OC2M = Active-on-match`: PC2 rises at the next CC2 compare match. Wire-edge
@@ -196,27 +238,8 @@ pub fn tim2_ch2_force_active() {
 }
 
 #[inline]
-pub fn enable_tim2_cc3_irq(enable: bool) {
-    TIM2.dmaintenr().modify(|w| w.set_ccie(2, enable));
-}
-
-/// CC3IF is rc_w0 — write 0 to clear, 1 to leave alone. CC2IF (bit 2) gets
-/// preserved alongside other flags via the `!0u32 & !mask` pattern.
-#[inline]
-pub fn clear_tim2_cc3_flag() {
-    TIM2.intfr().write(|w| {
-        w.0 = !(1u32 << 3);
-    });
-}
-
-#[inline]
 pub fn tim2_cnt() -> u16 {
     TIM2.cnt().read()
-}
-
-#[inline]
-pub fn tim2_ccr3() -> u16 {
-    TIM2.chcvr(2).read()
 }
 
 #[cfg(test)]
