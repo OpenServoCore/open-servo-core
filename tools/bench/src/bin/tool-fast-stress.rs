@@ -15,8 +15,8 @@
 //!   first   Fast Bulk Read [(chip), (FOREIGN_ID)] — chip emits slot 0,
 //!           bus IDLEs after (FOREIGN_ID never replies).
 //!   middle  Fast Bulk Read [(INJ_ID), (chip), (FOREIGN_ID)] — pirate
-//!           sends INJ predecessor, chip emits middle-slot body (no
-//!           header, no CRC), FOREIGN_ID never replies.
+//!           sends INJ predecessor, chip emits its block ending in the
+//!           cumulative checkpoint CRC, FOREIGN_ID never replies.
 //!   last    Fast Bulk Read [(INJ_ID), (chip)] — pirate sends INJ
 //!           predecessor reply so chip's snoop walk + chain CRC patch
 //!           run as in production.
@@ -470,7 +470,10 @@ impl CellCtx {
                 (reply_bytes - 1) as f64 * byte_time_ticks
             }
             Position::Middle => {
-                let reply_bytes = 10 + args.inj_len + 2 + args.dut_len;
+                // Captured span ends at the chip's checkpoint CRC (FOREIGN
+                // never replies): injected first slot (12+inj) + own block
+                // (4+dut).
+                let reply_bytes = 16 + args.inj_len + args.dut_len;
                 (reply_bytes - 1) as f64 * byte_time_ticks
             }
             _ => rdt_us * ticks_per_us + byte_time_ticks,
@@ -518,8 +521,13 @@ impl CellStats {
             self.first_fail = Some((shot, out.bucket, out.request.clone(), out.reply.clone()));
         }
         if let (Bucket::Clean | Bucket::ExtraIdle, Some(t)) = (out.bucket, out.timing) {
+            // Middle/Last span the whole reply chain: injection start →
+            // chip's final byte. `reply_first - req_end` would measure the
+            // pirate's injection delay, not the chip.
             let raw = match ctx.position {
-                Position::Last => t.reply_last.wrapping_sub(t.reply_first) as f64,
+                Position::Middle | Position::Last => {
+                    t.reply_last.wrapping_sub(t.reply_first) as f64
+                }
                 _ => t.reply_first.wrapping_sub(t.req_end) as f64,
             };
             self.offsets.push(raw - ctx.target_ticks);
