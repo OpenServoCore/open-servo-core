@@ -202,19 +202,19 @@ impl<P: Providers, const TX_BUF_LEN: usize> ReplyHandle<'_, P, TX_BUF_LEN> {
         Some((ctx, position))
     }
 
-    /// Post-encode scheduling for a slot reply. Slot 0 (Only/First)
-    /// schedules at `packet_end + effective RDT` per the DXL spec — the
+    /// Post-encode scheduling for a slot reply. Slot 0 (First) schedules
+    /// at `packet_end + effective RDT` per the DXL spec — the
     /// source-floored RDT (see `Clock::effective_slot_rdt`) keeps an
     /// IDLE-observed packet end from scheduling before this chip could
-    /// have seen it. Slots k > 0 (Middle/Last) defer instead: the wire
+    /// have seen it. Successor slots (k > 0) defer instead: the wire
     /// start anchors on the OBSERVED start of the chain's single Status
     /// packet (task #142) — the reply gate parks a [`StatusStartWait`],
     /// the per-byte wake window opens, and `DxlUart::on_status_start`
-    /// schedules (and, for Last, starts the fold pipeline) when the
-    /// packet's first byte lands.
+    /// schedules and starts the chain-CRC pipeline when the packet's
+    /// first byte lands.
     fn schedule_after_slot_encode(&mut self, ctx: ReplyContext, position: SlotPosition) {
         match position {
-            SlotPosition::Only { .. } | SlotPosition::First { .. } => {
+            SlotPosition::First { .. } => {
                 let deadline = self.clock.compute_slot_deadline(
                     ctx.packet_end_tick,
                     rdt_ticks::<P>(&ctx),
@@ -223,7 +223,7 @@ impl<P: Providers, const TX_BUF_LEN: usize> ReplyHandle<'_, P, TX_BUF_LEN> {
                 self.scheduler
                     .schedule(deadline, self.tx.tx_len(), SendKind::Plain);
             }
-            SlotPosition::Middle | SlotPosition::Last { .. } => {
+            SlotPosition::Successor { .. } => {
                 let slack = STATUS_START_SLACK_US
                     .wrapping_mul(<P::TxScheduler as TxScheduler>::TICKS_PER_US as u32);
                 let latest_start_tick = ctx
@@ -234,7 +234,6 @@ impl<P: Providers, const TX_BUF_LEN: usize> ReplyHandle<'_, P, TX_BUF_LEN> {
                     status_start_cursor: ctx.fold_start_cursor,
                     slot_offset_bytes: ctx.slot_offset_bytes,
                     latest_start_tick,
-                    is_last: matches!(position, SlotPosition::Last { .. }),
                 });
                 self.rx_dma.watch_status_start();
             }
@@ -468,11 +467,11 @@ mod tests {
 
     #[test]
     fn send_slot_first_positions_schedule_plain_at_packet_end_plus_rdt() {
-        // Slot 0 of a chain (First) and a single-servo chain (Only) keep
-        // the DXL-spec RDT formula — no slot offset term exists anymore.
+        // Slot 0 keeps the DXL-spec RDT formula — no slot offset term.
+        // packet_length 7 is the single-slot degenerate; 19 a 3-slot chain.
         for position in [
-            SlotPosition::Only { packet_length: 7 },
-            SlotPosition::First { packet_length: 15 },
+            SlotPosition::First { packet_length: 7 },
+            SlotPosition::First { packet_length: 19 },
         ] {
             let mut h = Harness::new();
             h.stage(ReplyContext {
@@ -497,38 +496,32 @@ mod tests {
     }
 
     #[test]
-    fn send_slot_k_gt_zero_defers_to_status_start_and_opens_the_watch() {
-        // Middle and Last both park a StatusStartWait instead of
+    fn send_slot_successor_defers_to_status_start_and_opens_the_watch() {
+        // Every successor slot parks a StatusStartWait instead of
         // scheduling (task #142): the wire start anchors on the observed
         // Status packet start, resolved later by `on_status_start`.
-        for (position, is_last) in [
-            (SlotPosition::Middle, false),
-            (SlotPosition::Last { crc: 0 }, true),
-        ] {
-            let mut h = Harness::new();
-            h.stage(ReplyContext {
-                fast_slot_position: Some(position),
-                slot_offset_bytes: 12,
-                fold_start_cursor: 30,
-                ..ctx()
-            });
-            h.handle()
-                .send_slot(&own_slot(&[0xAA, 0xBB]))
-                .expect("encode fits");
+        let mut h = Harness::new();
+        h.stage(ReplyContext {
+            fast_slot_position: Some(SlotPosition::Successor { crc: 0 }),
+            slot_offset_bytes: 12,
+            fold_start_cursor: 30,
+            ..ctx()
+        });
+        h.handle()
+            .send_slot(&own_slot(&[0xAA, 0xBB]))
+            .expect("encode fits");
 
-            assert!(h.sched_ops().is_empty(), "position {position:?}");
-            assert!(h.rx.status_start_watched(), "position {position:?}");
-            let wait = h.send_policy.awaited_status_start().expect("wait parked");
-            assert_eq!(wait.status_start_cursor, 30);
-            assert_eq!(wait.slot_offset_bytes, 12);
-            assert_eq!(wait.is_last, is_last, "position {position:?}");
-            // Latest plausible status start: packet_end + effective RDT +
-            // the turnaround slack — the stale-traffic bound.
-            assert_eq!(
-                wait.latest_start_tick,
-                SEED + RDT_TICKS + STATUS_START_SLACK_US * TICKS_PER_US
-            );
-        }
+        assert!(h.sched_ops().is_empty());
+        assert!(h.rx.status_start_watched());
+        let wait = h.send_policy.awaited_status_start().expect("wait parked");
+        assert_eq!(wait.status_start_cursor, 30);
+        assert_eq!(wait.slot_offset_bytes, 12);
+        // Latest plausible status start: packet_end + effective RDT +
+        // the turnaround slack — the stale-traffic bound.
+        assert_eq!(
+            wait.latest_start_tick,
+            SEED + RDT_TICKS + STATUS_START_SLACK_US * TICKS_PER_US
+        );
     }
 
     #[test]
@@ -538,7 +531,7 @@ mod tests {
         // slot 0 by a byte time, so the bound must shift with it.
         let mut h = Harness::new();
         h.stage(ReplyContext {
-            fast_slot_position: Some(SlotPosition::Middle),
+            fast_slot_position: Some(SlotPosition::Successor { crc: 0 }),
             rdt_us: 1,
             src: PollSrc::LineIdle,
             ..ctx()
@@ -573,7 +566,7 @@ mod tests {
         {
             let mut h = Harness::new();
             h.stage(ReplyContext {
-                fast_slot_position: Some(SlotPosition::Only { packet_length: 7 }),
+                fast_slot_position: Some(SlotPosition::First { packet_length: 7 }),
                 rdt_us: 1,
                 src,
                 ..ctx()

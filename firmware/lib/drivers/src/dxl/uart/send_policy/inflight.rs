@@ -7,7 +7,7 @@ use dxl_protocol::wire::BROADCAST_ID;
 
 use super::fast_shape::{
     PING_STATUS_FRAME_BYTES, compute_fast_position, fast_bytes_before, fast_chain_packet_length,
-    fast_first_bytes, fast_middle_bytes,
+    fast_first_bytes, fast_successor_bytes,
 };
 use super::reply_context::ReplyContext;
 use crate::dxl::uart::poll_src::PollSrc;
@@ -107,7 +107,7 @@ impl InflightCtx {
             let bytes = if k == 0 {
                 fast_first_bytes(length)
             } else {
-                fast_middle_bytes(length)
+                fast_successor_bytes(length)
             };
             self.bytes_before += bytes;
         }
@@ -144,14 +144,14 @@ impl InflightCtx {
             (InstructionHeader::FastSyncRead { length, .. }, Some(k)) => {
                 let n = self.next_slot_index;
                 let packet_length = fast_chain_packet_length(n, (n as u32) * (length as u32));
-                let position = compute_fast_position(k, n, packet_length);
+                let position = compute_fast_position(k, packet_length);
                 let bytes_before = fast_bytes_before(k, length as u32);
                 (bytes_before, Some(position), rdt_us)
             }
             (InstructionHeader::FastBulkRead { .. }, Some(k)) => {
                 let n = self.next_slot_index;
                 let packet_length = fast_chain_packet_length(n, self.chain_data_bytes);
-                let position = compute_fast_position(k, n, packet_length);
+                let position = compute_fast_position(k, packet_length);
                 (self.bytes_before, Some(position), rdt_us)
             }
             _ => (0, None, rdt_us),
@@ -347,9 +347,12 @@ mod tests {
             ],
         );
         let reply = resolve(ctx);
-        // Slot 1 of 3 follows one First emission: 10 + 2 = 12 wire bytes.
-        assert_eq!(reply.slot_offset_bytes, 12);
-        assert_eq!(reply.fast_slot_position, Some(SlotPosition::Middle));
+        // Slot 1 of 3 follows one First emission: 10 + 2 + crc(2) = 14.
+        assert_eq!(reply.slot_offset_bytes, 14);
+        assert_eq!(
+            reply.fast_slot_position,
+            Some(SlotPosition::Successor { crc: 0 })
+        );
         assert_eq!(reply.rdt_us, 250);
     }
 
@@ -367,9 +370,12 @@ mod tests {
             ],
         );
         let reply = resolve(ctx);
-        // First emission for the length-4 predecessor: 10 + 4 = 14 bytes.
-        assert_eq!(reply.slot_offset_bytes, 14);
-        assert_eq!(reply.fast_slot_position, Some(SlotPosition::Middle));
+        // First emission for the length-4 predecessor: 10 + 4 + crc(2) = 16.
+        assert_eq!(reply.slot_offset_bytes, 16);
+        assert_eq!(
+            reply.fast_slot_position,
+            Some(SlotPosition::Successor { crc: 0 })
+        );
     }
 
     #[test]
@@ -381,9 +387,9 @@ mod tests {
         let reply = resolve(ctx);
         assert_eq!(
             reply.fast_slot_position,
-            Some(SlotPosition::Last { crc: 0 })
+            Some(SlotPosition::Successor { crc: 0 })
         );
-        assert_eq!(reply.slot_offset_bytes, 12);
+        assert_eq!(reply.slot_offset_bytes, 14);
     }
 
     #[test]
@@ -399,7 +405,7 @@ mod tests {
         );
         ctx.on_slot(&sync_slot(TEST_ID, 1), TEST_ID);
         // Own slot still lands at k = 1 — the chunk didn't bump the cursor.
-        assert_eq!(resolve(ctx).slot_offset_bytes, 12);
+        assert_eq!(resolve(ctx).slot_offset_bytes, 14);
     }
 
     #[test]

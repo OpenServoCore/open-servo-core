@@ -6,7 +6,7 @@
 use dxl_protocol::SlotPosition;
 use dxl_protocol::streaming::InstructionHeader;
 use dxl_protocol::wire::{
-    BROADCAST_ID, CRC_BYTES, FAST_RESPONSE_SLOT_BYTES, FAST_RESPONSE_SLOT0_BYTES, PACKET_LEN_MIN,
+    BROADCAST_ID, CRC_BYTES, FAST_RESPONSE_SLOT_BYTES, FAST_RESPONSE_SLOT0_BYTES,
     PING_STATUS_PARAM_BYTES, RESPONSE_HEADER_BYTES,
 };
 
@@ -16,17 +16,17 @@ use dxl_protocol::wire::{
 pub(super) const PING_STATUS_FRAME_BYTES: u32 =
     (RESPONSE_HEADER_BYTES + PING_STATUS_PARAM_BYTES + CRC_BYTES) as u32;
 
-/// Wire bytes a Fast First emission consumes for a per-slot `length`: chain
-/// header + slot 0's `error + id` prefix + data, no trailing CRC
-/// (successors continue).
+/// Wire bytes a Fast slot-0 emission consumes for a per-slot `length`:
+/// chain header + slot 0's `error + id` prefix + data + its cumulative
+/// CRC (official layout: every block ends with the chain CRC).
 pub(super) fn fast_first_bytes(length: u32) -> u32 {
-    FAST_RESPONSE_SLOT0_BYTES as u32 + length
+    FAST_RESPONSE_SLOT0_BYTES as u32 + length + CRC_BYTES as u32
 }
 
-/// Wire bytes a Fast Middle emission consumes for a per-slot `length`:
-/// `error + id` prefix + data.
-pub(super) fn fast_middle_bytes(length: u32) -> u32 {
-    FAST_RESPONSE_SLOT_BYTES as u32 + length
+/// Wire bytes a Fast successor (k > 0) emission consumes for a per-slot
+/// `length`: `error + id` prefix + data + its cumulative CRC.
+pub(super) fn fast_successor_bytes(length: u32) -> u32 {
+    FAST_RESPONSE_SLOT_BYTES as u32 + length + CRC_BYTES as u32
 }
 
 /// True when the instruction's target is the chip's own ID or BROADCAST.
@@ -42,32 +42,29 @@ pub(super) fn fast_bytes_before(k: u8, length: u32) -> u32 {
     if k == 0 {
         0
     } else {
-        fast_first_bytes(length) + ((k as u32) - 1) * fast_middle_bytes(length)
+        fast_first_bytes(length) + ((k as u32) - 1) * fast_successor_bytes(length)
     }
 }
 
 /// Wire length carried by the Fast chain Status header — bytes from `INST`
-/// through trailing CRC inclusive. Encoder-input for both Only and First
-/// `packet_length`. Per-slot wire shape is `err(1) + id(1) + data(L_k)`,
-/// so the sum is `INST(1) + CRC(2) + n·2 + Σ L_k`.
+/// through the final block's CRC inclusive. Per-block wire shape is
+/// `err(1) + id(1) + data(L_k) + crc(2)`, so the sum is
+/// `INST(1) + n·4 + Σ L_k` (matches the e-manual example: 3 × 4-byte
+/// reads → LEN 25).
 pub(super) fn fast_chain_packet_length(n_total: u8, chain_data_bytes: u32) -> u16 {
-    (PACKET_LEN_MIN as u32 + FAST_RESPONSE_SLOT_BYTES as u32 * (n_total as u32) + chain_data_bytes)
-        as u16
+    (1 + (FAST_RESPONSE_SLOT_BYTES + CRC_BYTES) as u32 * (n_total as u32) + chain_data_bytes) as u16
 }
 
-/// Map a chain `(slot_index, total_slots, packet_length)` to the
-/// [`SlotPosition`] the encoder consumes. `packet_length` on First/Only is
-/// the chain's advertised wire length — emitted straight onto the wire by
-/// [`dxl_protocol::encoder::SlotEncoder::emit`].
-pub(super) fn compute_fast_position(k: u8, n_total: u8, packet_length: u16) -> SlotPosition {
-    if n_total == 1 {
-        SlotPosition::Only { packet_length }
-    } else if k == 0 {
+/// Map a chain slot index to the [`SlotPosition`] the encoder consumes.
+/// `packet_length` on First is the chain's advertised wire length —
+/// emitted straight onto the wire by
+/// [`dxl_protocol::encoder::SlotEncoder::emit`]. Successors carry the
+/// placeholder CRC the fire-time patch overwrites.
+pub(super) fn compute_fast_position(k: u8, packet_length: u16) -> SlotPosition {
+    if k == 0 {
         SlotPosition::First { packet_length }
-    } else if k + 1 == n_total {
-        SlotPosition::Last { crc: 0 }
     } else {
-        SlotPosition::Middle
+        SlotPosition::Successor { crc: 0 }
     }
 }
 
@@ -84,40 +81,41 @@ mod tests {
     }
 
     #[test]
-    fn fast_first_carries_chain_header_plus_slot_prefix() {
-        // FF FF FD 00 + id + len(2) + inst + err + servo_id = 10, then data.
-        assert_eq!(fast_first_bytes(2), 12);
-        assert_eq!(fast_middle_bytes(2), 4);
+    fn fast_first_carries_chain_header_slot_prefix_and_crc() {
+        // FF FF FD 00 + id + len(2) + inst + err + servo_id = 10, data, crc(2).
+        assert_eq!(fast_first_bytes(2), 14);
+        assert_eq!(fast_successor_bytes(2), 6);
     }
 
     #[test]
-    fn fast_bytes_before_walks_first_then_middles() {
+    fn fast_bytes_before_walks_first_then_successors() {
         assert_eq!(fast_bytes_before(0, 2), 0);
-        assert_eq!(fast_bytes_before(1, 2), 12);
-        assert_eq!(fast_bytes_before(3, 2), 12 + 2 * 4);
+        assert_eq!(fast_bytes_before(1, 2), 14);
+        assert_eq!(fast_bytes_before(3, 2), 14 + 2 * 6);
     }
 
     #[test]
-    fn fast_chain_packet_length_counts_inst_crc_and_slots() {
-        // INST(1) + CRC(2) + n·(err+id) + Σ data.
+    fn fast_chain_packet_length_counts_inst_and_per_crc_blocks() {
+        // INST(1) + n·(err+id+crc2) + Σ data.
         assert_eq!(fast_chain_packet_length(1, 2), 7);
-        assert_eq!(fast_chain_packet_length(3, 6), 15);
+        assert_eq!(fast_chain_packet_length(3, 6), 19);
+        // The e-manual Fast Sync Read example: 3 devices × 4 bytes → 25.
+        assert_eq!(fast_chain_packet_length(3, 12), 25);
     }
 
     #[test]
     fn compute_fast_position_maps_the_chain_walk() {
         assert_eq!(
-            compute_fast_position(0, 1, 7),
-            SlotPosition::Only { packet_length: 7 }
+            compute_fast_position(0, 7),
+            SlotPosition::First { packet_length: 7 }
         );
         assert_eq!(
-            compute_fast_position(0, 3, 15),
-            SlotPosition::First { packet_length: 15 }
+            compute_fast_position(1, 19),
+            SlotPosition::Successor { crc: 0 }
         );
-        assert_eq!(compute_fast_position(1, 3, 15), SlotPosition::Middle);
         assert_eq!(
-            compute_fast_position(2, 3, 15),
-            SlotPosition::Last { crc: 0 }
+            compute_fast_position(2, 19),
+            SlotPosition::Successor { crc: 0 }
         );
     }
 

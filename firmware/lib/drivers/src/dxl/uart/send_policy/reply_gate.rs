@@ -27,9 +27,6 @@ pub(crate) struct StatusStartWait {
     /// awaited reply: drop the slot instead of scheduling into the
     /// host's instruction. Hygiene bound only, never a wire TX deadline.
     pub(crate) latest_start_tick: u32,
-    /// Slot position is Last — on observation the composite also starts
-    /// the Fast Last fold/grid off the observed anchor.
-    pub(crate) is_last: bool,
 }
 
 /// Wire-placement phase of the staged reply.
@@ -239,7 +236,6 @@ mod tests {
             status_start_cursor: 10,
             slot_offset_bytes: 14,
             latest_start_tick: 5000,
-            is_last: false,
         }
     }
 

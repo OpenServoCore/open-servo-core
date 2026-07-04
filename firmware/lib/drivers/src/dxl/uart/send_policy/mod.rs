@@ -273,13 +273,11 @@ mod tests {
             status_start_cursor: 10,
             slot_offset_bytes: 14,
             latest_start_tick: 5000,
-            is_last: true,
         });
         let w = p.awaited_status_start().expect("wait staged");
         assert_eq!(w.status_start_cursor, 10);
         assert_eq!(w.slot_offset_bytes, 14);
         assert_eq!(w.latest_start_tick, 5000);
-        assert!(w.is_last);
         p.on_status_start_scheduled();
         assert!(p.awaited_status_start().is_none());
     }

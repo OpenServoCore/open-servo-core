@@ -185,7 +185,7 @@ mod tests {
             data: &payload,
         };
         // Placeholder CRC; fold patches it.
-        c.send_slot(&slot, SlotPosition::Last { crc: 0x0000 })
+        c.send_slot(&slot, SlotPosition::Successor { crc: 0x0000 })
             .expect("encode fits");
         c
     }

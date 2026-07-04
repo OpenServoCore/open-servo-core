@@ -218,43 +218,40 @@ impl<P: Providers, const RX_BUF_LEN: usize, const EDGE_BUF_LEN: usize, const TX_
             .compute_slot_start_deadline(status_start, wait.slot_offset_bytes);
         let byte_count = self.codec.tx_len();
         crate::log::debug!(
-            "dxl: status_start observed start={} deadline={} is_last={}",
+            "dxl: status_start observed start={} deadline={}",
             status_start,
-            deadline,
-            wait.is_last
+            deadline
         );
-        if wait.is_last {
-            self.fast_last.start(fast_last::FastLastSchedule {
-                status_start_tick: status_start,
-                byte_ticks: self.clock.byte_ticks(),
-                predecessor_bytes: wait.slot_offset_bytes,
-                fold_start_cursor: wait.status_start_cursor,
-            });
-            // Late observation (short predecessor at high baud): the
-            // deadline is already past, so the schedule below fires the
-            // hardware kickoff ASAP — and with a short own reply the TX
-            // DMA reads the trailing CRC slot within a few byte-times,
-            // sooner than any grid CMP body can land the patch (measured:
-            // patch ~800 ticks behind the read at 3M). Every predecessor
-            // byte is already on the wire (deadline past ⇒ the
-            // predecessor window is over), so fold + patch inline FIRST;
-            // the wire start slips by the fold's ~20 µs, which a late
-            // fire-ASAP send absorbs — a valid chain CRC a little later
-            // beats a placeholder on time.
-            // Freshly-read clock, NOT the entry-time `now`: the stamp
-            // query above can burn enough ticks that a deadline the entry
-            // read saw as future is already past — and the entry read
-            // deciding "not late" is exactly the case that ships a
-            // placeholder CRC (measured on hardware at 3M).
-            if (deadline.wrapping_sub(self.wire_clock.now()) as i32) <= 0 {
-                self.on_fold_step();
-            }
-            self.scheduler
-                .schedule(deadline, byte_count, SendKind::FastLast);
-        } else {
-            self.scheduler
-                .schedule(deadline, byte_count, SendKind::Plain);
+        // Every parked wait is a successor slot (k > 0) under the official
+        // per-block-CRC layout — the chain-CRC pipeline runs for all of
+        // them, not just the chain's final slot.
+        self.fast_last.start(fast_last::FastLastSchedule {
+            status_start_tick: status_start,
+            byte_ticks: self.clock.byte_ticks(),
+            predecessor_bytes: wait.slot_offset_bytes,
+            fold_start_cursor: wait.status_start_cursor,
+        });
+        // Late observation (short predecessor at high baud): the
+        // deadline is already past, so the schedule below fires the
+        // hardware kickoff ASAP — and with a short own reply the TX
+        // DMA reads the trailing CRC slot within a few byte-times,
+        // sooner than any grid CMP body can land the patch (measured:
+        // patch ~800 ticks behind the read at 3M). Every predecessor
+        // byte is already on the wire (deadline past ⇒ the
+        // predecessor window is over), so fold + patch inline FIRST;
+        // the wire start slips by the fold's ~20 µs, which a late
+        // fire-ASAP send absorbs — a valid chain CRC a little later
+        // beats a placeholder on time.
+        // Freshly-read clock, NOT the entry-time `now`: the stamp
+        // query above can burn enough ticks that a deadline the entry
+        // read saw as future is already past — and the entry read
+        // deciding "not late" is exactly the case that ships a
+        // placeholder CRC (measured on hardware at 3M).
+        if (deadline.wrapping_sub(self.wire_clock.now()) as i32) <= 0 {
+            self.on_fold_step();
         }
+        self.scheduler
+            .schedule(deadline, byte_count, SendKind::FastLast);
         self.rx_dma.unwatch_status_start();
         self.send_policy.on_status_start_scheduled();
         // On-time observation with a short predecessor window: run the
@@ -400,19 +397,15 @@ impl<P: Providers, const RX_BUF_LEN: usize, const EDGE_BUF_LEN: usize, const TX_
         if self.fast_last.fold_active() {
             return;
         }
-        // Same ownership rule one stage earlier: a deferred Last slot's
-        // fold hasn't started yet (it starts at the status-start
+        // Same ownership rule one stage earlier: a deferred successor
+        // slot's fold hasn't started yet (it starts at the status-start
         // observation), but the Status packet's bytes already belong to
         // it — a parser drain here would consume the leading header
         // bytes before the fold ever sees them. The per-byte wake path
         // (`on_status_start`) is not a poll, so observation still
         // proceeds; a stale wait is bounded by the wake path's staleness
         // window, which drops it and un-gates on the next wire traffic.
-        if self
-            .send_policy
-            .awaited_status_start()
-            .is_some_and(|w| w.is_last)
-        {
+        if self.send_policy.awaited_status_start().is_some() {
             return;
         }
         self.codec.on_rx_progress(self.rx_dma.remaining());
@@ -469,15 +462,12 @@ impl<P: Providers, const RX_BUF_LEN: usize, const EDGE_BUF_LEN: usize, const TX_
                     // stops future polls only; without this bail-out the
                     // parser+skip path consumes the predecessor's leading
                     // bytes in the same poll that engaged the fold, and the
-                    // fold engine starves. A deferred Last wait
-                    // (`send_slot(Last)` k > 0, fold not yet started) owns
+                    // fold engine starves. A deferred successor wait
+                    // (`send_slot` k > 0, fold not yet started) owns
                     // those bytes the same way — mirror of the poll entry
                     // gate above, for the poll already in flight.
                     if router.fast_last.fold_active()
-                        || router
-                            .send_policy
-                            .awaited_status_start()
-                            .is_some_and(|w| w.is_last)
+                        || router.send_policy.awaited_status_start().is_some()
                     {
                         PollAction::Stop
                     } else {
@@ -570,7 +560,7 @@ mod tests {
     use crate::traits::dxl::SendKind;
     use dxl_protocol::streaming::{HeaderEvent, InstructionHeader};
     use dxl_protocol::types::StatusError;
-    use dxl_protocol::wire::FAST_RESPONSE_SLOT0_BYTES;
+    use dxl_protocol::wire::{CRC_BYTES, FAST_RESPONSE_SLOT0_BYTES};
     use dxl_protocol::{Id, InstructionEncoder, Slot, SoftwareCrcUmts, Status};
     use heapless::Vec;
     use osc_core::BaudRate;
@@ -892,7 +882,7 @@ mod tests {
 
         // bytes_before for slot 1 = the First emission's wire bytes; the
         // deadline anchors on the OBSERVED status start, no RDT term.
-        let first_bytes = FAST_RESPONSE_SLOT0_BYTES as u32 + payload.len() as u32;
+        let first_bytes = (FAST_RESPONSE_SLOT0_BYTES + CRC_BYTES) as u32 + payload.len() as u32;
         let expected =
             (STATUS_START_TICK as u32).wrapping_add(bus.clock.bytes_to_ticks(first_bytes));
         let byte_count = bus.codec.tx_len();
@@ -930,9 +920,11 @@ mod tests {
     }
 
     #[test]
-    fn send_slot_middle_observation_schedules_plain() {
-        // Slot 1 of a 3-servo chain: Middle defers exactly like Last but
-        // resolves to a Plain schedule and never touches the fold.
+    fn send_slot_mid_chain_successor_defers_and_joins_the_fold_pipeline() {
+        // Slot 1 of a 3-servo chain: under the official per-block-CRC
+        // layout a mid-chain successor defers exactly like the final one
+        // and starts the chain-CRC pipeline at observation — its own
+        // block ends with a CRC that needs the fire-time patch.
         let req = wire_fast_sync_read(0, 2, &[0x42, TEST_ID, 0x51]);
         let (mut bus, state, _) = bus_seeded_with(&req);
 
@@ -950,19 +942,27 @@ mod tests {
 
         observe_status_start(&mut bus, &state, req.len() as u16);
 
-        let first_bytes = FAST_RESPONSE_SLOT0_BYTES as u32 + payload.len() as u32;
+        let first_bytes = (FAST_RESPONSE_SLOT0_BYTES + CRC_BYTES) as u32 + payload.len() as u32;
         let expected =
             (STATUS_START_TICK as u32).wrapping_add(bus.clock.bytes_to_ticks(first_bytes));
+        assert!(matches!(
+            state.sch.operations().as_slice(),
+            [
+                ScheduleOp::Schedule {
+                    kind: SendKind::FastLast,
+                    ..
+                },
+                ScheduleOp::CommitPending,
+            ]
+        ));
         assert_eq!(
-            state.sch.operations(),
-            alloc::vec![ScheduleOp::Schedule {
-                deadline: expected,
-                byte_count: bus.codec.tx_len(),
-                kind: SendKind::Plain,
-            }]
+            match state.sch.operations()[0] {
+                ScheduleOp::Schedule { deadline, .. } => deadline,
+                _ => unreachable!("matched above"),
+            },
+            expected
         );
-        assert!(!bus.fast_last.fold_active());
-        assert!(state.fl.operations().is_empty());
+        assert!(bus.fast_last.fold_active());
         assert!(!state.rx.status_start_watched());
     }
 
@@ -1215,13 +1215,13 @@ mod tests {
             reply.send_slot(&slot).expect("encode fits");
         });
         // bytes_before for slot 1 of Fast SyncRead length=2 is
-        // `FAST_RESPONSE_SLOT0_BYTES(10) + data(2) = 12`; the observation
-        // supplies byte 0 (the leading `0xFF`), stage the other 11 so
-        // finalize lands in this fold body.
+        // `FAST_RESPONSE_SLOT0_BYTES(10) + data(2) + crc(2) = 14`; the
+        // observation supplies byte 0 (the leading `0xFF`), stage the
+        // other 13 so finalize lands in this fold body.
         let start = req.len() as u16;
         observe_status_start(&mut bus, &state, start);
         let rest = [
-            0xA2_u8, 0xA3, 0xA4, 0xA5, 0xA6, 0xA7, 0xA8, 0xA9, 0xAA, 0xAB, 0xAC,
+            0xA2_u8, 0xA3, 0xA4, 0xA5, 0xA6, 0xA7, 0xA8, 0xA9, 0xAA, 0xAB, 0xAC, 0xAD, 0xAE,
         ];
         stage_rx(&mut bus, &state, start + 1, &rest);
         let new_head = start.wrapping_add(1 + rest.len() as u16);
@@ -1254,7 +1254,7 @@ mod tests {
     #[test]
     fn late_last_observation_folds_inline_and_patches_crc() {
         // Short predecessor at high baud: the observation lands AFTER the
-        // slot deadline (the whole 12-byte First is already in the ring),
+        // slot deadline (the whole 14-byte First is already in the ring),
         // so the hardware kickoff fires ASAP and the CRC patch races the
         // TX DMA's read of the trailing slot. `on_status_start` must fold
         // inline — a pended grid CMP would arrive one PFIC re-entry too
@@ -1272,18 +1272,18 @@ mod tests {
         });
         assert!(state.rx.status_start_watched());
 
-        // The full injected-First emission (10 + L = 12 bytes) staged in
-        // the byte ring; the packet's first-byte start stamp lands on
-        // the ET-ring mark (the mark query needs nothing else). Its
-        // whole 12-byte window is over 50 ticks before `now`, putting
+        // The full injected-First emission (10 + L + crc2 = 14 bytes)
+        // staged in the byte ring; the packet's first-byte start stamp
+        // lands on the ET-ring mark (the mark query needs nothing else).
+        // Its whole 14-byte window is over 50 ticks before `now`, putting
         // the slot deadline in the past.
         let pred = [
-            0xFF_u8, 0xFF, 0xFD, 0x00, 0xFE, 0x0B, 0x00, 0x55, 0x00, 0x32, 0xAA, 0xBB,
+            0xFF_u8, 0xFF, 0xFD, 0x00, 0xFE, 0x0B, 0x00, 0x55, 0x00, 0x32, 0xAA, 0xBB, 0x12, 0x34,
         ];
         stage_rx(&mut bus, &state, req.len() as u16, &pred);
         let late_now = SEED_TICK as u32 + 20_000;
         state.wire.stage_now(late_now);
-        let bytes_ticks = 12 * (BITS_PER_FRAME * TICKS_PER_BIT_3M) as u32;
+        let bytes_ticks = 14 * (BITS_PER_FRAME * TICKS_PER_BIT_3M) as u32;
         let status_start_stamp = (late_now - bytes_ticks - 50) as u16;
         let published = bus.codec.stage_edge_at_head_for_test(status_start_stamp);
         state
@@ -1333,7 +1333,7 @@ mod tests {
         });
         let start = req.len() as u16;
         let window = [
-            0xFF_u8, 0xA2, 0xA3, 0xA4, 0xA5, 0xA6, 0xA7, 0xA8, 0xA9, 0xAA, 0xAB, 0xAC,
+            0xFF_u8, 0xA2, 0xA3, 0xA4, 0xA5, 0xA6, 0xA7, 0xA8, 0xA9, 0xAA, 0xAB, 0xAC, 0xAD, 0xAE,
         ];
         stage_rx(&mut bus, &state, start, &window);
         let published = bus.codec.stage_edge_at_head_for_test(STATUS_START_TICK);

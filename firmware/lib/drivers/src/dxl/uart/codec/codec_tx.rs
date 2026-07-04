@@ -248,14 +248,14 @@ mod tests {
             error: StatusError::OK,
             data: &payload,
         };
-        tx.send_slot(&slot, SlotPosition::Only { packet_length: 8 })
+        tx.send_slot(&slot, SlotPosition::First { packet_length: 8 })
             .expect("encode fits");
 
         assert_eq!(&wire_view(&tx)[0..4], &[0xFF, 0xFF, 0xFD, 0x00]);
 
         let mut expected: Vec<u8, TX_BUF_LEN> = Vec::new();
         SlotEncoder::<_, SoftwareCrcUmts>::new(&mut expected)
-            .emit(&slot, SlotPosition::Only { packet_length: 8 })
+            .emit(&slot, SlotPosition::First { packet_length: 8 })
             .unwrap();
         assert_eq!(wire_view(&tx), expected.as_slice());
     }
@@ -269,7 +269,7 @@ mod tests {
             error: StatusError::OK,
             data: &payload,
         };
-        tx.send_slot(&slot, SlotPosition::Last { crc: 0xDEAD })
+        tx.send_slot(&slot, SlotPosition::Successor { crc: 0xDEAD })
             .expect("encode fits");
 
         let wire = wire_view(&tx);
@@ -285,7 +285,7 @@ mod tests {
             error: StatusError::OK,
             data: &payload,
         };
-        tx.send_slot(&slot, SlotPosition::Last { crc: 0x0000 })
+        tx.send_slot(&slot, SlotPosition::Successor { crc: 0x0000 })
             .expect("encode fits");
 
         tx.patch_crc(0xBEEF);
@@ -310,7 +310,7 @@ mod tests {
             error: StatusError::OK,
             data: &payload,
         };
-        tx.send_slot(&slot, SlotPosition::Last { crc: 0xDEAD })
+        tx.send_slot(&slot, SlotPosition::Successor { crc: 0xDEAD })
             .expect("encode fits");
 
         let len = tx.tx_len() as usize;
