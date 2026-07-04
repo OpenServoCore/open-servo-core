@@ -105,9 +105,4 @@ impl<S: FastLastScheduler> FastLast<S> {
     pub fn fold_active(&self) -> bool {
         self.crc.is_active()
     }
-
-    /// Cumulative predecessor bytes folded since [`Self::start`].
-    pub fn bytes_folded(&self) -> u32 {
-        self.crc.bytes_folded()
-    }
 }

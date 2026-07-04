@@ -1,11 +1,11 @@
-/// Long-horizon CMP scheduler for the Fast Last CRC fold pipeline.
+/// Long-horizon CMP scheduler for the Fast successor CRC pipeline.
 ///
-/// Drives the periodic walks that classify edges, drain the parser, and
-/// fold predecessor wire bytes into the running CRC during a Fast Sync /
-/// Bulk Read predecessor window. The wire start itself is hardware-armed
-/// through [`super::TxScheduler`] — the grid's only job is landing the
-/// chain-CRC patch before the TX DMA's read cursor reaches the trailing
-/// CRC slot.
+/// Drives the single checkpoint wake (plus starve retries) that reads the
+/// predecessor window's trailing chain-CRC bytes and patches our block's
+/// trailing slot during a Fast Sync / Bulk Read exchange. The wire start
+/// itself is hardware-armed through [`super::TxScheduler`] — this
+/// scheduler's only job is landing the chain-CRC patch before the TX
+/// DMA's read cursor reaches the trailing CRC slot.
 ///
 /// The driver works entirely in absolute u32 deadlines (WireClock domain).
 /// The chip-side provider applies these directly — no lifting, no
@@ -13,44 +13,37 @@
 /// WireClock contract guarantees a u32 horizon wide enough to span any
 /// supported Fast Sync / Bulk Read predecessor window.
 pub trait FastLastScheduler {
-    /// CMP-match → body fold-start latency, in scheduler ticks. Driver
-    /// subtracts this from every grid anchor before handing it to
-    /// `schedule` so the body's actual fold-start lands on the formula's
-    /// intended wall-clock anchor.
-    const FAST_LAST_ENTRY_TICKS: u16;
+    /// Early bias applied to the checkpoint wake CMP, in scheduler ticks:
+    /// the CMP targets `window_end − WAKE_LEAD_TICKS` so the body arrives
+    /// BEFORE the predecessor's trailing CRC bytes and spins them in.
+    /// Sized to worst-case CMP-vector entry latency plus margin — waking
+    /// early costs a short spin; waking late eats directly into the
+    /// patch-vs-fetch margin.
+    const WAKE_LEAD_TICKS: u16;
 
-    /// Periodic-walk grid step, in predecessor wire bytes. Each fold body
-    /// folds up to `BYTES_PER_INTERVAL` bytes of newly-classified residue
-    /// before re-scheduling the next CMP one grid step ahead.
-    const BYTES_PER_INTERVAL: u16;
-
-    /// Run the first fold body inline at the status-start observation when
-    /// the slot's wire-start deadline is within this many ticks. Short
-    /// predecessor windows at high baud can't afford the CMP dispatch
-    /// latency: the fold barely out-paces the wire per byte, so entering
-    /// one dispatch late leaves the chain-CRC patch behind the TX DMA's
-    /// read of a short reply's trailing CRC slot. The bound is an ISR-
-    /// occupancy budget — the inline body busy-folds at most until the
-    /// predecessor window closes.
+    /// Run the wake body inline at the status-start observation when the
+    /// slot's wire-start deadline is within this many ticks — an ISR-
+    /// occupancy budget: the inline body spins at most until the
+    /// predecessor window closes, and skips the CMP dispatch latency a
+    /// short window can't afford.
     const INLINE_FOLD_HORIZON_TICKS: u16;
 
-    /// Cache the final-body spin's exit `deadline` (WireClock u32 domain).
+    /// Cache the wake body's starve bound (WireClock u32 domain).
     /// Subsequent `deadline_passed()` calls compare against it.
     fn set_busy_wait_deadline(&mut self, deadline: u32);
 
     /// True once the wall clock has passed the deadline staged via
-    /// `set_busy_wait_deadline`. Polled by the final grid body's spin —
-    /// the bytes-late/silent-predecessor exit that hands the fold to the
-    /// completion CMP instead of spinning past the predecessor window.
+    /// `set_busy_wait_deadline`. Polled by the wake body's spin — the
+    /// checkpoint-is-late/silent-predecessor exit that hands the pipeline
+    /// to a byte-stride retry instead of spinning past the window.
     fn deadline_passed(&self) -> bool;
 
     /// Schedule the next CMP at the absolute `deadline` (caller has already
-    /// back-dated by `FAST_LAST_ENTRY_TICKS`). Idempotent on re-schedule.
+    /// applied the early bias). Idempotent on re-schedule.
     ///
-    /// A CMP target that lands in the past — possible at low RDT + small
-    /// predecessor counts where back-dating by ENTRY underflows — triggers
-    /// the IRQ ASAP; the body's first run lands ENTRY ticks late but the
-    /// grid step advances cleanly from there.
+    /// A CMP target that lands in the past — a late observation of a
+    /// short window — triggers the IRQ ASAP; the body runs one dispatch
+    /// late and the pickup proceeds from whatever has published.
     fn schedule(&mut self, deadline: u32);
 
     /// True when the TX DMA channel's read cursor has reached the trailing

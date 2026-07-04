@@ -10,6 +10,7 @@ use osc_integration::sim::{
     DEFAULT_FIRMWARE_VERSION, DEFAULT_MODEL_NUMBER, FastStatusCrc, format_hex,
     parse_fast_bulk_status,
 };
+use osc_integration::sim::{HOST_INTER_BYTE_TIMEOUT, SimTime};
 use rstest::rstest;
 use rstest_reuse::apply;
 
@@ -142,6 +143,16 @@ fn fast_bulk_read_zero_length_entry_collapses_tail(baud_idx: u8, rdt_us: u32) {
             },
         ],
     );
+    // The advertised chain LENGTH stays live as the universal byte-skip's
+    // give-up horizon on every listening servo even though the chain
+    // collapsed — an instruction sent inside that horizon is (correctly)
+    // consumed as skipped bytes; the skip is byte-count + deadline
+    // driven and blind to fresh headers. Quiesce past the horizon the
+    // way a real host's retry timeout does before the health check
+    // (worst case: ~150 ms for a 147-byte frame at 9600).
+    sim.with_host(host, |h| {
+        h.wait_for_reply_within(SimTime::from_ms(200), HOST_INTER_BYTE_TIMEOUT);
+    });
     assert_bus_healthy(&mut sim, host, &servos);
 }
 
@@ -187,6 +198,16 @@ fn fast_bulk_read_length_over_cap_entry_collapses_tail(baud_idx: u8, rdt_us: u32
             },
         ],
     );
+    // The advertised chain LENGTH stays live as the universal byte-skip's
+    // give-up horizon on every listening servo even though the chain
+    // collapsed — an instruction sent inside that horizon is (correctly)
+    // consumed as skipped bytes; the skip is byte-count + deadline
+    // driven and blind to fresh headers. Quiesce past the horizon the
+    // way a real host's retry timeout does before the health check
+    // (worst case: ~150 ms for a 147-byte frame at 9600).
+    sim.with_host(host, |h| {
+        h.wait_for_reply_within(SimTime::from_ms(200), HOST_INTER_BYTE_TIMEOUT);
+    });
     assert_bus_healthy(&mut sim, host, &servos);
 }
 

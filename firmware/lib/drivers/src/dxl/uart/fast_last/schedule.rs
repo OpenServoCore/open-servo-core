@@ -30,4 +30,12 @@ pub struct FastLastSchedule {
     /// before it). The scheduler ignores it; it exists so the composite can
     /// start both halves from one record.
     pub fold_start_cursor: u32,
+    /// Ring-drain stride in wire bytes — half the RX byte ring's depth,
+    /// supplied by the composite (the ring size is its const generic).
+    /// Windows longer than this get intermediate drain CMPs: the RX ring's
+    /// producer head is an NDTR readback modulo the ring depth, so
+    /// `on_publish` must run at least once per ring period or the head
+    /// aliases and the checkpoint pickup reads the wrong bytes. The drain
+    /// body is O(1) — publish + consume-to-cap, no CRC work.
+    pub drain_stride_bytes: u32,
 }

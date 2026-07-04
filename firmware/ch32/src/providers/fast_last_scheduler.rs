@@ -17,9 +17,7 @@ use dxl_protocol::wire::CRC_BYTES;
 use osc_drivers::traits::dxl::FastLastScheduler as FastLastSchedulerTrait;
 
 use crate::hal::{dma, pfic, systick};
-use crate::measurements::{
-    FAST_LAST_BYTES_PER_INTERVAL, FAST_LAST_ENTRY_TICKS, FAST_LAST_INLINE_FOLD_HORIZON_TICKS,
-};
+use crate::measurements::{FAST_CRC_WAKE_LEAD_TICKS, FAST_LAST_INLINE_FOLD_HORIZON_TICKS};
 
 #[derive(Default)]
 pub struct FastLastScheduler {
@@ -27,8 +25,7 @@ pub struct FastLastScheduler {
 }
 
 impl FastLastSchedulerTrait for FastLastScheduler {
-    const FAST_LAST_ENTRY_TICKS: u16 = FAST_LAST_ENTRY_TICKS;
-    const BYTES_PER_INTERVAL: u16 = FAST_LAST_BYTES_PER_INTERVAL;
+    const WAKE_LEAD_TICKS: u16 = FAST_CRC_WAKE_LEAD_TICKS;
     const INLINE_FOLD_HORIZON_TICKS: u16 = FAST_LAST_INLINE_FOLD_HORIZON_TICKS;
 
     fn set_busy_wait_deadline(&mut self, deadline: u32) {

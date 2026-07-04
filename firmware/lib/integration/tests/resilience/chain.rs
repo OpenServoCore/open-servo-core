@@ -24,7 +24,8 @@ use dxl_protocol::types::{BulkReadEntry, Id, Instruction, Slot, Status, StatusEr
 use osc_core::regions::config::addr::comms;
 use osc_core::{BaudRate, StatusReturnLevel};
 use osc_integration::sim::{
-    FastStatusCrc, parse_fast_bulk_status, parse_fast_sync_status, parse_status_stream,
+    FastStatusCrc, HOST_INTER_BYTE_TIMEOUT, SimTime, parse_fast_bulk_status,
+    parse_fast_sync_status, parse_status_stream,
 };
 use rstest::rstest;
 use rstest_reuse::apply;
@@ -476,6 +477,12 @@ fn fast_bulk_read_srl_none_predecessor_collapses_tail(baud_idx: u8, rdt_us: u32)
             },
         ],
     );
+    // Quiesce past the advertised chain frame's byte-skip horizon before
+    // the health check — see the collapse tests in
+    // `protocol/fast_bulk_read.rs` for the rationale.
+    sim.with_host(host, |h| {
+        h.wait_for_reply_within(SimTime::from_ms(200), HOST_INTER_BYTE_TIMEOUT);
+    });
     assert_bus_healthy(&mut sim, host, &servos);
 }
 
@@ -571,6 +578,12 @@ fn fast_bulk_read_unknown_id_in_entries_collapses_tail(baud_idx: u8, rdt_us: u32
             },
         ],
     );
+    // Quiesce past the advertised chain frame's byte-skip horizon before
+    // the health check — see the collapse tests in
+    // `protocol/fast_bulk_read.rs` for the rationale.
+    sim.with_host(host, |h| {
+        h.wait_for_reply_within(SimTime::from_ms(200), HOST_INTER_BYTE_TIMEOUT);
+    });
     assert_bus_healthy(&mut sim, host, &servos);
 }
 

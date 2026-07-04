@@ -9,6 +9,7 @@ use core::ops::ControlFlow;
 
 use dxl_protocol::CrcUmts;
 use dxl_protocol::streaming::{Event, HeaderEvent, InstructionPayload, Parser, PayloadEvent};
+use dxl_protocol::wire;
 
 use super::edge_capture::EdgeCapture;
 use super::edge_parser;
@@ -462,7 +463,7 @@ impl<R: EdgeDma, CRC: CrcUmts, const RX_BUF_LEN: usize, const EDGE_BUF_LEN: usiz
 
             match sink_exit {
                 // On Stop: leave any unconsumed bytes in the ring so the
-                // fold engine — driven by `drain_raw` on `on_fold_step` /
+                // fold engine — driven by `take_checkpoint` on `on_fold_step` /
                 // `on_tx_start` — owns them. Continuing to feed here would
                 // let the parser eat predecessor reply bytes before the
                 // fold ever gets a turn (per `dxl-streaming-rx.md` §6 —
@@ -478,58 +479,70 @@ impl<R: EdgeDma, CRC: CrcUmts, const RX_BUF_LEN: usize, const EDGE_BUF_LEN: usiz
         }
     }
 
-    /// Drain newly-published RX bytes through `fold_slice` without invoking
-    /// the parser. Used by the Fast Last fold path during the predecessor
-    /// window. Advances `wire_bytes_consumed` by each handed-off slice so a
-    /// subsequent `poll()` resumes at the right cursor.
+    /// Checkpoint pickup for the Fast successor CRC pipeline: once the RX
+    /// ring has published through `end_cursor` (the predecessor window's
+    /// wire end), return the window's trailing [`CRC_BYTES`] — the
+    /// predecessor's cumulative chain CRC, i.e. the running chain state —
+    /// and advance consumption to `end_cursor` so the parser resumes at
+    /// our own block's cursor. Returns `None` while the checkpoint bytes
+    /// are still on the wire; the wake body spins this against the live
+    /// ring (one NDTR publish per call).
     ///
-    /// SINGLE PASS: one producer-head refresh from `rx_dma.remaining()`,
-    /// one wrap-aware peek, at most two `fold_slice` calls (front + back
-    /// slice), one cursor advance. Bytes that land while the fold runs are
-    /// picked up by the caller's next call — the final grid body spins this
-    /// drain continuously, so the pass structure bounds the per-iteration
-    /// cost the fold pays per live wire byte (the pre-single-pass loop paid
-    /// the full publish/reader/advance ceremony per contiguous run, which
-    /// at 3M is per byte — the measured ~150 ticks/byte that lost the CRC
-    /// patch race).
-    ///
-    /// `fold_slice` receives `(slice, base_cursor)` where `base_cursor` is
-    /// the value of `wire_bytes_consumed` BEFORE this slice is folded —
-    /// i.e. `slice[i]` sits at wire cursor `base_cursor + i`.
-    ///
-    /// The Fast Last fold owns the RX ring tail for the duration of the
-    /// window: the chip-side caller masks DMA1_CH7 HT/TC at fold start
+    /// The pipeline owns the RX ring tail for the duration of the window:
+    /// the chip-side caller masks DMA1_CH7 HT/TC at start
     /// (`dxl-hw-timed-transport.md` §10.6.3), and `poll()` self-gates on
     /// `fast_last.fold_active()` at entry (`dxl-streaming-rx.md` §6),
-    /// so the parser and this drain never race on `rx_buf`.
-    // RAM placement is load-bearing — see the note on `FsmScheduler::on_step`.
-    // No `inline(never)`: the only caller is the (RAM-placed) spin body, and
-    // fusing into it drops a call frame per live wire byte; the section is
-    // the fallback when the inliner declines.
+    /// so the parser and this pickup never race on `rx_buf`.
+    // RAM placement is load-bearing — see `FsmScheduler::on_step`.
     #[cfg_attr(target_arch = "riscv32", unsafe(link_section = ".highcode"))]
-    pub fn drain_raw<D: RxDma, F: FnMut(&[u8], u32)>(&mut self, rx_dma: &D, mut fold_slice: F) {
+    pub fn take_checkpoint<D: RxDma>(
+        &mut self,
+        rx_dma: &D,
+        end_cursor: u32,
+    ) -> Option<[u8; wire::CRC_BYTES]> {
         // SAFETY: rx_buf is single-consumer at PFIC HIGH (same as `poll`).
-        // The fold-window contract above keeps `poll()` and this drain
+        // The ownership contract above keeps `poll()` and this pickup
         // from racing on the ring.
         let rx_buf = unsafe { &mut *self.rx_buf.get() };
         rx_buf.on_publish(rx_dma.remaining());
-        let mut reader = rx_buf.reader();
-        let consumed = {
-            let (front, back) = reader.peek_slices();
-            if front.is_empty() {
-                return;
-            }
-            fold_slice(front, self.wire_bytes_consumed);
-            if !back.is_empty() {
-                fold_slice(
-                    back,
-                    self.wire_bytes_consumed.wrapping_add(front.len() as u32),
-                );
-            }
-            front.len() + back.len()
+        // SAFETY-net: a cursor already behind consumption means the window
+        // was consumed by an earlier path — nothing coherent to read.
+        if (end_cursor.wrapping_sub(self.wire_bytes_consumed) as i32) < 0 {
+            return None;
+        }
+        let published = self
+            .wire_bytes_consumed
+            .wrapping_add(rx_buf.reader().avail() as u32);
+        // Consume window bytes RAW as they publish, capped at the window
+        // end — the pipeline owns them (they must never reach the parser:
+        // a First header inside the window advertises the whole chain's
+        // length, and parsing it after a collapsed chain would swallow
+        // the next instruction). This also leaves the cursor at the wire
+        // frontier if the pipeline is canceled mid-window (own TX
+        // complete after a starved wait), so the parser resumes at live
+        // traffic. Consuming into the checkpoint itself is fine — the
+        // read below resolves by producer offset, which consumption
+        // doesn't disturb.
+        let target = if (published.wrapping_sub(end_cursor) as i32) >= 0 {
+            end_cursor
+        } else {
+            published
         };
-        self.wire_bytes_consumed = self.wire_bytes_consumed.wrapping_add(consumed as u32);
-        reader.advance(consumed as u16);
+        let advance = target.wrapping_sub(self.wire_bytes_consumed);
+        rx_buf.reader().advance(advance as u16);
+        self.wire_bytes_consumed = target;
+        if (published.wrapping_sub(end_cursor) as i32) < 0 {
+            return None;
+        }
+        let mut checkpoint = [0u8; wire::CRC_BYTES];
+        for (i, slot) in checkpoint.iter_mut().enumerate() {
+            let cursor = end_cursor
+                .wrapping_sub(wire::CRC_BYTES as u32)
+                .wrapping_add(i as u32);
+            let back = published.wrapping_sub(1).wrapping_sub(cursor);
+            *slot = *rx_buf.recent(back as u16)?;
+        }
+        Some(checkpoint)
     }
 
     /// FAST status-start query — start tick (WireClock u32) of the
@@ -1129,27 +1142,33 @@ mod tests {
     }
 
     #[test]
-    fn drain_raw_single_pass_hands_wrapped_region_as_two_slices() {
+    fn take_checkpoint_returns_the_window_tail_and_advances_consumption() {
         let mut rx = make();
-        // Cursor parked just before the ring's wrap; 8 staged bytes span it.
+        // Cursor parked just before the ring's wrap; the 8-byte window
+        // spans it, its checkpoint (last 2 bytes) lands after the wrap.
         rx.set_rx_read_seq_for_test(60);
-        rx.stage_rx_bytes_for_test(60, &[1, 2, 3, 4, 5, 6, 7, 8]);
+        rx.stage_rx_bytes_for_test(60, &[1, 2, 3, 4, 5, 6, 0xCD, 0xAB]);
         let mut rx_dma = crate::mocks::MockRxDma::new();
         // Producer head at ring pos 4 (seq 68) → NDTR remaining = 64 − 4.
         rx_dma.expect_remaining().returning(|| 60);
 
-        let mut calls: alloc::vec::Vec<(alloc::vec::Vec<u8>, u32)> = alloc::vec::Vec::new();
-        rx.drain_raw(&rx_dma, |slice, base| calls.push((slice.to_vec(), base)));
+        // wire_bytes_consumed starts at 0 in a fresh codec, so the window
+        // occupies cursors 0..8.
+        assert_eq!(rx.take_checkpoint(&rx_dma, 8), Some([0xCD, 0xAB]));
 
-        assert_eq!(
-            calls,
-            alloc::vec![(alloc::vec![1, 2, 3, 4], 0), (alloc::vec![5, 6, 7, 8], 4)],
-            "one pass: front slice to the wrap boundary, back slice after it",
-        );
+        // Consumption advanced to the window end: nothing left unread.
+        let again = rx.take_checkpoint(&rx_dma, 8);
+        assert_eq!(again, Some([0xCD, 0xAB]), "idempotent re-read is lap-safe");
+    }
 
-        // Fully consumed — a second pass hands nothing.
-        calls.clear();
-        rx.drain_raw(&rx_dma, |slice, base| calls.push((slice.to_vec(), base)));
-        assert!(calls.is_empty());
+    #[test]
+    fn take_checkpoint_waits_while_the_tail_is_still_on_the_wire() {
+        let mut rx = make();
+        // Only 6 of the 8 window bytes published — checkpoint incomplete.
+        rx.stage_rx_bytes_for_test(0, &[1, 2, 3, 4, 5, 6]);
+        let mut rx_dma = crate::mocks::MockRxDma::new();
+        rx_dma.expect_remaining().returning(|| 64 - 6);
+
+        assert_eq!(rx.take_checkpoint(&rx_dma, 8), None);
     }
 }

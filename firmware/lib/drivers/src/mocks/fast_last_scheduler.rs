@@ -14,10 +14,9 @@ pub enum FastLastSchedulerOp {
 mock! {
     pub FastLastScheduler {}
     impl FastLastScheduler for FastLastScheduler {
-        // Values match the V006 measurements.rs defaults so driver-side grid
+        // Values match the V006 measurements.rs defaults so driver-side wake
         // math lines up with the chip-side reference.
-        const FAST_LAST_ENTRY_TICKS: u16 = 240;
-        const BYTES_PER_INTERVAL: u16 = 15;
+        const WAKE_LEAD_TICKS: u16 = 500;
         const INLINE_FOLD_HORIZON_TICKS: u16 = 2400;
 
         fn set_busy_wait_deadline(&mut self, deadline: u32);
