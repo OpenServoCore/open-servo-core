@@ -24,25 +24,29 @@ pub struct Slot<'a> {
     pub data: &'a [u8],
 }
 
-/// Position of one slot in a coalesced Fast Status response. Header-emitting
-/// variants carry the DXL `Length` of the whole multi-slot frame; `Last`
-/// carries the chain CRC.
+/// Position of one slot in a coalesced Fast Status response.
 ///
-/// Chain producers don't know the running CRC at build time (it depends on
-/// every prior slave's wire bytes), so they pass a placeholder and let the
-/// fire-time ISR overwrite the trailing two bytes. Callers that *do* know
-/// the CRC (single-slot tests, replay tools, sniffers) pass the real value.
+/// Per the official Fast Sync/Bulk Read layout, EVERY slot's block ends
+/// with a CRC — the cumulative packet CRC from the header through that
+/// slot's data (the e-manual: "CRC values are used for internal
+/// calculation in DYNAMIXEL to confirm packet integrity between
+/// DYNAMIXELs"). That leaves exactly two wire shapes: slot 0 emits the
+/// Status header and can compute its CRC locally (every covered byte is
+/// its own output); every later slot appends a block whose CRC depends on
+/// prior slaves' wire bytes, so chain producers pass a placeholder and
+/// let the fire-time ISR overwrite the trailing two bytes. Callers that
+/// *do* know the chain CRC (tests, replay tools, sniffers) pass the real
+/// value.
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
 pub enum SlotPosition {
-    /// Single-slot response -- emits full header and locally-computed CRC.
-    Only { packet_length: u16 },
-    /// First of N -- emits header + body, no CRC (successors continue).
+    /// Slot 0 — Status header + own block + locally-computed CRC.
+    /// `packet_length` is the DXL `Length` of the whole chain frame
+    /// (degenerates to the single-block value when the chain is one slot).
     First { packet_length: u16 },
-    /// Body only.
-    Middle,
-    /// Body + caller-supplied CRC bytes.
-    Last { crc: u16 },
+    /// Slot k > 0 — block only (`err, id, data, crc`), appended
+    /// mid-packet with a caller-supplied cumulative CRC.
+    Successor { crc: u16 },
 }
 
 /// Unified slave-originated reply. Encoder input for [`StatusEncoder::emit`].

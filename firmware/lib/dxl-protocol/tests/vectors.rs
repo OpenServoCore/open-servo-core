@@ -80,48 +80,13 @@ const BODY_6: &[u8] = &[0x02, 0x00, 0x00, 0x00];
 const BODY_7: &[u8] = &[0x03, 0x00, 0x00, 0x00];
 
 #[test]
-fn write_slot_first_emits_header_then_body() {
+fn write_slot_first_emits_header_body_and_computed_crc() {
     let mut out: HVec<u8, 32> = HVec::new();
     SlotEncoder::<_, Crc>::new(&mut out)
         .first(&slot(5, StatusError::OK, BODY_5), 0x0015)
         .unwrap();
-    assert_eq!(
-        out.as_slice(),
-        &[
-            0xFF, 0xFF, 0xFD, 0x00, 0xFE, 0x15, 0x00, 0x55, 0x00, 0x05, 0x01, 0x00, 0x00, 0x00,
-        ]
-    );
-}
-
-#[test]
-fn write_slot_middle_emits_body_only() {
-    let mut out: HVec<u8, 32> = HVec::new();
-    SlotEncoder::<_, Crc>::new(&mut out)
-        .middle(&slot(6, StatusError::OK, BODY_6))
-        .unwrap();
-    assert_eq!(out.as_slice(), &[0x00, 0x06, 0x02, 0x00, 0x00, 0x00]);
-}
-
-#[test]
-fn write_slot_last_reserves_crc_placeholder() {
-    let mut out: HVec<u8, 32> = HVec::new();
-    SlotEncoder::<_, Crc>::new(&mut out)
-        .last(&slot(7, StatusError::OK, BODY_7), 0xBBAA)
-        .unwrap();
-    assert_eq!(
-        out.as_slice(),
-        &[0x00, 0x07, 0x03, 0x00, 0x00, 0x00, 0xAA, 0xBB]
-    );
-}
-
-#[test]
-fn write_slot_only_emits_header_body_and_computed_crc() {
-    let mut out: HVec<u8, 32> = HVec::new();
-    SlotEncoder::<_, Crc>::new(&mut out)
-        .only(&slot(5, StatusError::OK, BODY_5), 0x0009)
-        .unwrap();
     let header_and_body = [
-        0xFF, 0xFF, 0xFD, 0x00, 0xFE, 0x09, 0x00, 0x55, 0x00, 0x05, 0x01, 0x00, 0x00, 0x00,
+        0xFF, 0xFF, 0xFD, 0x00, 0xFE, 0x15, 0x00, 0x55, 0x00, 0x05, 0x01, 0x00, 0x00, 0x00,
     ];
     let crc = crc_oneshot(0, &header_and_body).to_le_bytes();
     let mut expected = [0u8; 16];
@@ -131,30 +96,51 @@ fn write_slot_only_emits_header_body_and_computed_crc() {
 }
 
 #[test]
+fn write_slot_successor_reserves_crc_placeholder() {
+    let mut out: HVec<u8, 32> = HVec::new();
+    SlotEncoder::<_, Crc>::new(&mut out)
+        .successor(&slot(6, StatusError::OK, BODY_6), 0xDDCC)
+        .unwrap();
+    assert_eq!(
+        out.as_slice(),
+        &[0x00, 0x06, 0x02, 0x00, 0x00, 0x00, 0xCC, 0xDD]
+    );
+}
+
+#[test]
 fn write_slot_three_slave_response_assembles_to_valid_status_frame() {
+    // Official per-block-CRC layout: len = INST(1) + 3 × (err+id+data4+crc2).
+    let length: u16 = 1 + 3 * 10;
     let mut out: HVec<u8, 64> = HVec::new();
     {
         let mut w = SlotEncoder::<_, Crc>::new(&mut out);
-        w.first(&slot(5, StatusError::OK, BODY_5), 0x0015).unwrap();
-        w.middle(&slot(6, StatusError::OK, BODY_6)).unwrap();
-        w.last(&slot(7, StatusError::OK, BODY_7), 0xBBAA).unwrap();
+        w.first(&slot(5, StatusError::OK, BODY_5), length).unwrap();
+        w.successor(&slot(6, StatusError::OK, BODY_6), 0x0000)
+            .unwrap();
+        w.successor(&slot(7, StatusError::OK, BODY_7), 0x0000)
+            .unwrap();
     }
 
-    assert_eq!(out.len(), 28);
-    assert_eq!(out.as_slice()[26..28], [0xAA, 0xBB]);
-
-    let crc_offset = out.len() - 2;
-    let crc = crc_oneshot(0, &out.as_slice()[..crc_offset]);
-    let bytes = crc.to_le_bytes();
-    out[crc_offset] = bytes[0];
-    out[crc_offset + 1] = bytes[1];
-
+    // hdr(4) + id + len(2) + inst + 3 × (1+1+4+2) = 32.
+    assert_eq!(out.len(), 32);
     let length_field = u16::from_le_bytes([out[5], out[6]]);
-    assert_eq!(length_field as usize, 1 + 3 * 6 + 2);
-    assert_eq!(
-        crc_oneshot(0, &out.as_slice()[..crc_offset]),
-        u16::from_le_bytes([out[crc_offset], out[crc_offset + 1]])
-    );
+    assert_eq!(length_field, length);
+
+    // Patch the middle and last cumulative CRCs the way fire-time ISRs do,
+    // then verify every block checkpoint is the cumulative packet CRC.
+    for crc_offset in [22usize, 30] {
+        let crc = crc_oneshot(0, &out.as_slice()[..crc_offset]).to_le_bytes();
+        out[crc_offset] = crc[0];
+        out[crc_offset + 1] = crc[1];
+    }
+    for block_end in [16usize, 24, 32] {
+        let crc_offset = block_end - 2;
+        assert_eq!(
+            crc_oneshot(0, &out.as_slice()[..crc_offset]),
+            u16::from_le_bytes([out[crc_offset], out[crc_offset + 1]]),
+            "checkpoint at {crc_offset}",
+        );
+    }
 }
 
 #[test]
@@ -172,13 +158,15 @@ fn write_slot_error_emits_caller_supplied_payload_with_error_byte() {
     let zero = [0u8; 4];
     let mut out: HVec<u8, 32> = HVec::new();
     SlotEncoder::<_, Crc>::new(&mut out)
-        .middle(&slot(7, StatusError::code(ErrorCode::DataRange), &zero))
+        .successor(&slot(7, StatusError::code(ErrorCode::DataRange), &zero), 0)
         .unwrap();
     assert_eq!(
         out.as_slice(),
         &[
             StatusError::code(ErrorCode::DataRange).as_byte(),
             0x07,
+            0,
+            0,
             0,
             0,
             0,
