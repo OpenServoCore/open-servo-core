@@ -3,9 +3,9 @@
 //! stack-level gear that covers the same spec-scenario behavior end-to-end.
 
 use crc::{CRC_16_UMTS, Crc};
-use dxl_protocol::encode::{encode_instruction, encode_slot, encode_status, encode_status_chunked};
+use dxl_protocol::encode::{encode_instruction, encode_slot, encode_status};
 use dxl_protocol::types::{BulkReadEntry, ErrorCode, Id, Slot, SlotPosition, Status, StatusError};
-use dxl_protocol::{Chunk, CrcUmts, WriteError};
+use dxl_protocol::{CrcUmts, WriteError};
 use heapless::Vec;
 
 const BROADCAST_ID: Id = Id::BROADCAST;
@@ -131,58 +131,11 @@ impl DxlReply for FakeReply {
         Ok(())
     }
 
-    fn send_status_read_chunked<'c, I>(
-        &mut self,
-        id: Id,
-        error: StatusError,
-        chunks: I,
-    ) -> Result<(), WriteError>
-    where
-        I: IntoIterator<Item = Chunk<'c>>,
-    {
-        let mut buf = [0u8; 256];
-        let n = encode_status_chunked::<TestDxlCrc, _>(&mut buf, id, error, chunks)?;
-        self.tx.clear();
-        self.tx
-            .extend_from_slice(&buf[..n])
-            .map_err(|_| WriteError::Overflow)?;
-        self.send_count += 1;
-        self.last_kind = Some(ReplyKind::Plain);
-        Ok(())
-    }
-
-    fn send_slot_chunked<'c, I>(
-        &mut self,
-        id: Id,
-        error: StatusError,
-        chunks: I,
-    ) -> Result<(), WriteError>
-    where
-        I: IntoIterator<Item = Chunk<'c>>,
-    {
-        // Match the slice-path mock: force `Only` + compute the framing length
-        // by buffering the chunks into a tiny scratch first. Production never
-        // routes the chunked slot through this position; the buffering is
-        // bounded by the test slot payloads (sub-32 B).
-        let mut scratch: Vec<u8, 64> = Vec::new();
-        for chunk in chunks {
-            match chunk {
-                Chunk::Slice(s) => scratch
-                    .extend_from_slice(s)
-                    .map_err(|_| WriteError::Overflow)?,
-                Chunk::Zero(n) => {
-                    for _ in 0..n {
-                        scratch.push(0).map_err(|_| WriteError::Overflow)?;
-                    }
-                }
-            }
-        }
-        let len = (3 + scratch.len() + 2) as u16;
-        let slot = Slot {
-            id,
-            error,
-            data: &scratch,
-        };
+    fn send_slot(&mut self, id: Id, error: StatusError, data: &[u8]) -> Result<(), WriteError> {
+        // Production routes the slot through a driver-side position; this
+        // stand-in forces `First` so the framing length is computable.
+        let len = (3 + data.len() + 2) as u16;
+        let slot = Slot { id, error, data };
         let mut buf = [0u8; 128];
         let n =
             encode_slot::<TestDxlCrc>(&mut buf, &slot, SlotPosition::First { packet_length: len })?;

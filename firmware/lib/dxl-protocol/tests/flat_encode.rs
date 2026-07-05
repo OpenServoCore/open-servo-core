@@ -1,82 +1,20 @@
-//! Round-trip and equivalence coverage for the fused single-pass emitters in
+//! Round-trip coverage for the fused single-pass emitters in
 //! [`dxl_protocol::encode`]: new output feeds back through the flat codec and
-//! decodes to the inputs, the chunked paths match their slice counterparts,
-//! and capacity checks stay panic-free.
+//! decodes to the inputs, and capacity checks stay panic-free.
 
-use dxl_protocol::encode::{
-    encode_instruction, encode_slot, encode_slot_chunked, encode_status, encode_status_chunked,
-};
+use dxl_protocol::encode::{encode_instruction, encode_slot, encode_status};
 use dxl_protocol::frame::{FrameKind, parse};
 use dxl_protocol::types::packet::{
     ChainStatusBlock, ChainStatusBlocks, Instruction as Decoded, StatusReply, decode_instruction,
     decode_status,
 };
 use dxl_protocol::{
-    Bytes, Chunk, Id, Instruction, Slot, SlotPosition, SoftwareCrcUmts as Crc, Status, StatusError,
+    Bytes, Id, Instruction, Slot, SlotPosition, SoftwareCrcUmts as Crc, Status, StatusError,
 };
 use heapless::Vec as HVec;
 
 fn unstuffed(b: &Bytes) -> HVec<u8, 256> {
     b.iter().collect()
-}
-
-// -- chunked / slice equivalence -----------------------------------------
-
-#[test]
-fn status_chunked_matches_slice_path() {
-    let id = Id::new(0x09);
-    let payload = [0x10, 0x00, 0x00, 0x40, 0xFF, 0xFF, 0xFD];
-
-    let mut by_slice = [0u8; 64];
-    let a = encode_status::<Crc>(&mut by_slice, id, StatusError::OK, &payload).unwrap();
-
-    let mut by_chunks = [0u8; 64];
-    let b = encode_status_chunked::<Crc, _>(
-        &mut by_chunks,
-        id,
-        StatusError::OK,
-        [
-            Chunk::Slice(&payload[..1]),
-            Chunk::Zero(2),
-            Chunk::Slice(&payload[3..]),
-        ],
-    )
-    .unwrap();
-    assert_eq!(&by_slice[..a], &by_chunks[..b]);
-}
-
-#[test]
-fn slot_chunked_matches_slice_path() {
-    let id = Id::new(0x0A);
-    let error = StatusError::from_byte(0x07);
-    let data = [0x11, 0x00, 0x00, 0x44, 0x55];
-    let slot = Slot {
-        id,
-        error,
-        data: &data,
-    };
-    for position in [
-        SlotPosition::First { packet_length: 13 },
-        SlotPosition::Successor { crc: 0x1234 },
-    ] {
-        let mut by_slice = [0u8; 64];
-        let a = encode_slot::<Crc>(&mut by_slice, &slot, position).unwrap();
-
-        let mut by_chunks = [0u8; 64];
-        let b = encode_slot_chunked::<Crc, _>(
-            &mut by_chunks,
-            id,
-            error,
-            position,
-            [
-                Chunk::Slice(&data[..1]),
-                Chunk::Zero(2),
-                Chunk::Slice(&data[3..]),
-            ],
-        )
-        .unwrap();
-        assert_eq!(&by_slice[..a], &by_chunks[..b], "position={position:?}");
-    }
 }
 
 // -- round-trip through the flat codec -----------------------------------

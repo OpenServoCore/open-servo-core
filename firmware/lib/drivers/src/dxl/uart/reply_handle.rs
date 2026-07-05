@@ -4,7 +4,7 @@
 //!
 //! [`DxlUart::poll`]: super::DxlUart::poll
 
-use dxl_protocol::{Chunk, Id, Slot, SlotPosition, Status, StatusError, WriteError};
+use dxl_protocol::{Id, Slot, SlotPosition, Status, StatusError, WriteError};
 use osc_core::{BaudRate, BootMode, DxlReply};
 
 use super::clock::Clock;
@@ -85,29 +85,10 @@ impl<P: Providers, const TX_BUF_LEN: usize> ReplyHandle<'_, P, TX_BUF_LEN> {
         Ok(())
     }
 
-    /// Streamed counterpart of [`Self::send_status`] for `Status::Read`
-    /// replies: the dispatcher hands a [`Chunk`] iterator from a
-    /// control-table read, skipping the 128 B scratch buffer. Encode +
-    /// scheduling shape are identical to [`Self::send_status`].
-    pub fn send_status_read_chunked<'c, I>(
-        &mut self,
-        id: Id,
-        error: StatusError,
-        chunks: I,
-    ) -> Result<(), WriteError>
-    where
-        I: IntoIterator<Item = Chunk<'c>>,
-    {
-        crate::log::trace!("dxl: send_status_read_chunked entry");
-        self.tx.send_status_read_chunked(id, error, chunks)?;
-        self.schedule_after_status_encode();
-        Ok(())
-    }
-
-    /// Post-encode scheduling shared by [`Self::send_status`] and the
-    /// streamed variants. Plain chain k > 0 defers to predecessor; every
-    /// other path lands a single `Plain` schedule entry against the
-    /// cached `packet_end_tick` + RDT + slot offset.
+    /// Post-encode scheduling shared by [`Self::send_status`] and the slot
+    /// paths. Plain chain k > 0 defers to predecessor; every other path
+    /// lands a single `Plain` schedule entry against the cached
+    /// `packet_end_tick` + RDT + slot offset.
     fn schedule_after_status_encode(&mut self) {
         let Some(ctx) = self.send_policy.take_reply_context() else {
             crate::log::debug!("dxl: send_status drop (no reply ctx)");
@@ -153,35 +134,6 @@ impl<P: Providers, const TX_BUF_LEN: usize> ReplyHandle<'_, P, TX_BUF_LEN> {
             position
         );
         self.tx.send_slot(slot, position)?;
-        self.schedule_after_slot_encode(ctx, position);
-        Ok(())
-    }
-
-    /// Streamed counterpart of [`Self::send_slot`]: slot body bytes come
-    /// from a [`Chunk`] iterator sourced directly from a control-table
-    /// read. The cached `ReplyContext` provides the slot position; the
-    /// post-encode schedule + Fast Last start path is identical to
-    /// [`Self::send_slot`].
-    pub fn send_slot_chunked<'c, I>(
-        &mut self,
-        id: Id,
-        error: StatusError,
-        chunks: I,
-    ) -> Result<(), WriteError>
-    where
-        I: IntoIterator<Item = Chunk<'c>>,
-    {
-        let Some((ctx, position)) = self.take_slot_ctx() else {
-            return Ok(());
-        };
-        crate::log::debug!(
-            "dxl[id={}]: send_slot_chunked id={} err={:?} position={:?}",
-            self.send_policy.id(),
-            id.as_byte(),
-            error,
-            position,
-        );
-        self.tx.send_slot_chunked(id, error, position, chunks)?;
         self.schedule_after_slot_encode(ctx, position);
         Ok(())
     }
@@ -283,28 +235,8 @@ impl<P: Providers, const TX_BUF_LEN: usize> DxlReply for ReplyHandle<'_, P, TX_B
         ReplyHandle::send_status(self, status)
     }
 
-    fn send_status_read_chunked<'c, I>(
-        &mut self,
-        id: Id,
-        error: StatusError,
-        chunks: I,
-    ) -> Result<(), WriteError>
-    where
-        I: IntoIterator<Item = Chunk<'c>>,
-    {
-        ReplyHandle::send_status_read_chunked(self, id, error, chunks)
-    }
-
-    fn send_slot_chunked<'c, I>(
-        &mut self,
-        id: Id,
-        error: StatusError,
-        chunks: I,
-    ) -> Result<(), WriteError>
-    where
-        I: IntoIterator<Item = Chunk<'c>>,
-    {
-        ReplyHandle::send_slot_chunked(self, id, error, chunks)
+    fn send_slot(&mut self, id: Id, error: StatusError, data: &[u8]) -> Result<(), WriteError> {
+        ReplyHandle::send_slot(self, &Slot { id, error, data })
     }
 
     fn stage_id(&mut self, id: u8) {

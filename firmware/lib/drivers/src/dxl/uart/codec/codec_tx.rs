@@ -6,12 +6,9 @@
 
 use core::marker::PhantomData;
 
-use dxl_protocol::types::{Id, Slot, Status, StatusError};
+use dxl_protocol::types::{Slot, Status};
 use dxl_protocol::wire::CRC_BYTES;
-use dxl_protocol::{
-    Chunk, CrcUmts, SlotPosition, WriteError, encode_slot, encode_slot_chunked, encode_status,
-    encode_status_chunked,
-};
+use dxl_protocol::{CrcUmts, SlotPosition, WriteError, encode_slot, encode_status};
 
 pub struct CodecTx<CRC: CrcUmts, const TX_BUF_LEN: usize> {
     /// DMA1_CH4 source for transmitted bytes. Single-shot DMA per reply:
@@ -91,40 +88,6 @@ impl<CRC: CrcUmts, const TX_BUF_LEN: usize> CodecTx<CRC, TX_BUF_LEN> {
         Ok(())
     }
 
-    /// Streamed counterpart of [`Self::send_status`] for `Status::Read`
-    /// replies: the dispatcher hands an iterator of [`Chunk`]s sourced
-    /// directly from a control-table read; the stuffer consumes them in
-    /// place of a scratch buffer.
-    pub fn send_status_read_chunked<'c, I>(
-        &mut self,
-        id: Id,
-        error: StatusError,
-        chunks: I,
-    ) -> Result<(), WriteError>
-    where
-        I: IntoIterator<Item = Chunk<'c>>,
-    {
-        self.tx_len = encode_status_chunked::<CRC, _>(&mut self.tx_buf, id, error, chunks)?;
-        Ok(())
-    }
-
-    /// Streamed counterpart of [`Self::send_slot`]: slot body bytes come
-    /// from a chunk iterator. Slot bodies are unstuffed, so each
-    /// `Chunk::Slice` / `Chunk::Zero` run copies straight into the buffer.
-    pub fn send_slot_chunked<'c, I>(
-        &mut self,
-        id: Id,
-        error: StatusError,
-        position: SlotPosition,
-        chunks: I,
-    ) -> Result<(), WriteError>
-    where
-        I: IntoIterator<Item = Chunk<'c>>,
-    {
-        self.tx_len = encode_slot_chunked::<CRC, _>(&mut self.tx_buf, id, error, position, chunks)?;
-        Ok(())
-    }
-
     /// Overwrite the trailing [`CRC_BYTES`] of the encoded TX buffer with
     /// `crc` in little-endian. The Fast Last chain-CRC fold path calls this
     /// once the predecessor wire bytes have been folded and our own reply
@@ -187,6 +150,7 @@ impl<CRC: CrcUmts, const TX_BUF_LEN: usize> crate::dxl::uart::fast_last::CrcPatc
 mod tests {
     use super::*;
     use dxl_protocol::SoftwareCrcUmts;
+    use dxl_protocol::types::{Id, StatusError};
 
     /// `DXL_TX_MAX_BYTES` per `osc-core::services::dxl::limits` — chip-side
     /// registry uses the same value.

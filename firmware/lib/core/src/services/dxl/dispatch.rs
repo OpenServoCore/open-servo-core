@@ -1,4 +1,3 @@
-use dxl_protocol::Chunk;
 use dxl_protocol::types::{ErrorCode, Id, PingStatus, Status, StatusError};
 use dxl_protocol::unstuff::Bytes;
 
@@ -145,11 +144,17 @@ impl Dispatch<'_> {
         }
         match RegisterFile::read(&self.shared.table, address, length) {
             Ok(data) => {
-                let chunks = [Chunk::Slice(data)];
                 if ctx.slot_reply {
-                    let _ = reply.send_slot_chunked(c.id, StatusError::OK, chunks);
+                    let _ = reply.send_slot(c.id, StatusError::OK, data);
                 } else {
-                    let _ = reply.send_status_read_chunked(c.id, StatusError::OK, chunks);
+                    Self::send_status(
+                        reply,
+                        Status::Read {
+                            id: c.id,
+                            error: StatusError::OK,
+                            data,
+                        },
+                    );
                 }
             }
             Err(_) => {

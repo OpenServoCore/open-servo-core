@@ -16,14 +16,9 @@
 //!   `0xFD` cannot complete a trigger and skip to a window update), then one
 //!   fused pass writes the frame and folds every byte into the running CRC.
 //! - **FAST slot blocks**: slot data is never stuffed and the block length is
-//!   caller-supplied, so the CRC fuses into the write with no pre-measure — even
-//!   for a lazy chunk source.
-//! - **Chunked Status frames** ([`encode_status_chunked`]): the control-table
-//!   read iterator is single-pass and lazy, so the stuffed length cannot be
-//!   known before the params are consumed. This path writes the stuffed params,
-//!   backfills `LENGTH`, then folds the frame's CRC in one trailing pass.
+//!   caller-supplied, so the CRC fuses into the write with no pre-measure.
 
-use crate::buf::{Chunk, WriteError};
+use crate::buf::WriteError;
 use crate::crc::{CRC_AFTER_SYNC, CrcUmts};
 use crate::types::{Id, Instruction, Slot, SlotPosition, StatusError};
 use crate::wire::{CRC_BYTES, HEADER, REQUEST_HEADER_BYTES};
@@ -66,14 +61,6 @@ impl Window {
             [] => {}
         }
     }
-
-    fn absorb_zeros(&mut self, n: usize) {
-        if n >= 2 {
-            self.0 = [0, 0];
-        } else if n == 1 {
-            self.0 = [self.0[1], 0];
-        }
-    }
 }
 
 /// Insertions a param slice contributes, advancing `win`. Slices with no
@@ -96,9 +83,9 @@ fn measure_slice(win: &mut Window, s: &[u8]) -> usize {
 // -- checked cursor (lazy / per-run capacity) ----------------------------
 
 /// A write cursor over a caller buffer with per-write bounds checks. Used by
-/// the FAST slot and chunked Status paths, whose lazy sources preclude a single
-/// up-front capacity check; checks stay per-run (per chunk / field), never a
-/// per-byte `Result` in a byte loop.
+/// the FAST slot path, whose caller-supplied block length precludes a single
+/// up-front capacity check; checks stay per-run (per field), never a per-byte
+/// `Result` in a byte loop.
 struct Cursor<'a> {
     buf: &'a mut [u8],
     pos: usize,
@@ -124,55 +111,6 @@ impl<'a> Cursor<'a> {
             .ok_or(WriteError::Overflow)?;
         dst.copy_from_slice(s);
         self.pos = end;
-        Ok(())
-    }
-
-    fn fill_zero(&mut self, n: usize) -> Result<(), WriteError> {
-        let end = self.pos.checked_add(n).ok_or(WriteError::Overflow)?;
-        let dst = self
-            .buf
-            .get_mut(self.pos..end)
-            .ok_or(WriteError::Overflow)?;
-        dst.fill(0);
-        self.pos = end;
-        Ok(())
-    }
-
-    /// Overwrite an already-written cell (LENGTH backfill). No-op if out of
-    /// range; callers only target header positions they have written.
-    fn set(&mut self, idx: usize, b: u8) {
-        if let Some(cell) = self.buf.get_mut(idx) {
-            *cell = b;
-        }
-    }
-
-    fn written(&self, end: usize) -> &[u8] {
-        self.buf.get(..end).unwrap_or(&[])
-    }
-
-    fn stuff_byte(&mut self, b: u8, win: &mut Window) -> Result<(), WriteError> {
-        self.put(b)?;
-        if win.step(b) {
-            self.put(STUFF_BYTE)?;
-        }
-        Ok(())
-    }
-
-    fn stuff_slice(&mut self, s: &[u8], win: &mut Window) -> Result<(), WriteError> {
-        if !s.contains(&STUFF_BYTE) {
-            self.put_slice(s)?;
-            win.absorb_tail(s);
-            return Ok(());
-        }
-        for &b in s {
-            self.stuff_byte(b, win)?;
-        }
-        Ok(())
-    }
-
-    fn stuff_zeros(&mut self, n: usize, win: &mut Window) -> Result<(), WriteError> {
-        self.fill_zero(n)?;
-        win.absorb_zeros(n);
         Ok(())
     }
 }
@@ -281,63 +219,6 @@ pub fn encode_status<C: CrcUmts>(
     encode_framed::<C>(out, id, Instruction::Status.as_u8(), &[&err, payload])
 }
 
-/// Chunked counterpart of [`encode_status`]: the payload comes from a lazy,
-/// single-pass [`Chunk`] iterator (a control-table read straight into `out`).
-///
-/// Because the source is single-pass, the stuffed length is unknown until the
-/// params are written, so `LENGTH` is backfilled and the CRC folded in one
-/// trailing pass over the written frame rather than fused per byte.
-#[inline(always)]
-pub fn encode_status_chunked<'c, C, I>(
-    out: &mut [u8],
-    id: Id,
-    error: StatusError,
-    chunks: I,
-) -> Result<usize, WriteError>
-where
-    C: CrcUmts,
-    I: IntoIterator<Item = Chunk<'c>>,
-{
-    if id.as_byte() == 0xFF {
-        return Err(WriteError::Invalid);
-    }
-
-    let mut cur = Cursor::new(out);
-    let header = [
-        HEADER[0],
-        HEADER[1],
-        HEADER[2],
-        HEADER[3],
-        id.as_byte(),
-        0,
-        0,
-        Instruction::Status.as_u8(),
-    ];
-    cur.put_slice(&header)?;
-    let params_start = cur.pos;
-
-    let mut win = Window::new(Instruction::Status.as_u8());
-    cur.stuff_byte(error.as_byte(), &mut win)?;
-    for chunk in chunks {
-        match chunk {
-            Chunk::Slice(s) => cur.stuff_slice(s, &mut win)?,
-            Chunk::Zero(n) => cur.stuff_zeros(n as usize, &mut win)?,
-        }
-    }
-    let params_end = cur.pos;
-
-    let length = (1 + (params_end - params_start) + CRC_BYTES) as u16;
-    let lb = length.to_le_bytes();
-    cur.set(HEADER.len() + 1, lb[0]);
-    cur.set(HEADER.len() + 2, lb[1]);
-
-    let mut crc = C::new_with_state(CRC_AFTER_SYNC);
-    crc.update(&cur.written(params_end)[HEADER.len().min(params_end)..]);
-    let crc_bytes = crc.finalize().to_le_bytes();
-    cur.put_slice(&crc_bytes)?;
-    Ok(cur.pos)
-}
-
 // -- FAST slot blocks (fused, unstuffed) ---------------------------------
 
 /// Emit one slot block of a coalesced FAST Sync/Bulk Read reply chain into
@@ -349,30 +230,8 @@ pub fn encode_slot<C: CrcUmts>(
     slot: &Slot<'_>,
     position: SlotPosition,
 ) -> Result<usize, WriteError> {
-    encode_slot_chunked::<C, _>(
-        out,
-        slot.id,
-        slot.error,
-        position,
-        [Chunk::Slice(slot.data)],
-    )
-}
-
-/// Chunked counterpart of [`encode_slot`]: the slot data comes from a
-/// [`Chunk`] iterator (control-table read into `out`) instead of a slice.
-/// Unstuffed like [`encode_slot`], so the CRC fuses into the write.
-pub fn encode_slot_chunked<'c, C, I>(
-    out: &mut [u8],
-    id: Id,
-    error: StatusError,
-    position: SlotPosition,
-    chunks: I,
-) -> Result<usize, WriteError>
-where
-    C: CrcUmts,
-    I: IntoIterator<Item = Chunk<'c>>,
-{
     let mut cur = Cursor::new(out);
+    let (id, error, data) = (slot.id, slot.error, slot.data);
     match position {
         SlotPosition::First { packet_length } => {
             let lb = packet_length.to_le_bytes();
@@ -393,31 +252,14 @@ where
                 cur.put(b)?;
                 crc.update_byte(b);
             }
-            for chunk in chunks {
-                match chunk {
-                    Chunk::Slice(s) => {
-                        cur.put_slice(s)?;
-                        crc.update(s);
-                    }
-                    Chunk::Zero(n) => {
-                        cur.fill_zero(n as usize)?;
-                        for _ in 0..n {
-                            crc.update_byte(0);
-                        }
-                    }
-                }
-            }
+            cur.put_slice(data)?;
+            crc.update(data);
             cur.put_slice(&crc.finalize().to_le_bytes())?;
         }
         SlotPosition::Successor { crc } => {
             cur.put(error.as_byte())?;
             cur.put(id.as_byte())?;
-            for chunk in chunks {
-                match chunk {
-                    Chunk::Slice(s) => cur.put_slice(s)?,
-                    Chunk::Zero(n) => cur.fill_zero(n as usize)?,
-                }
-            }
+            cur.put_slice(data)?;
             cur.put_slice(&crc.to_le_bytes())?;
         }
     }

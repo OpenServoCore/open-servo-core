@@ -15,13 +15,11 @@ pub mod types;
 pub mod unstuff;
 pub mod wire;
 
-pub use buf::{Chunk, WriteError};
+pub use buf::WriteError;
 #[cfg(feature = "software-crc")]
 pub use crc::SoftwareCrcUmts;
 pub use crc::{CrcUmts, crc16_umts_continue};
-pub use encode::{
-    encode_instruction, encode_slot, encode_slot_chunked, encode_status, encode_status_chunked,
-};
+pub use encode::{encode_instruction, encode_slot, encode_status};
 pub use frame::{FrameKind, ParseError, Probe, RawFrame, parse, probe};
 pub use types::{
     BulkReadEntry, ErrorCode, Id, Instruction, PingStatus, Slot, SlotPosition, Status, StatusError,
