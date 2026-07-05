@@ -199,8 +199,11 @@ impl<P: Providers, const RX_BUF_LEN: usize, const EDGE_BUF_LEN: usize, const TX_
             return;
         };
         let now = self.wire_clock.now();
+        let byte_ticks = self.clock.byte_ticks() as u32;
         let (rx, _) = self.codec.split_mut();
-        let Some(status_start) = rx.status_start_tick(now) else {
+        let Some(status_start) =
+            rx.status_start_tick(&self.rx_dma, wait.status_start_cursor, now, byte_ticks)
+        else {
             return;
         };
         if (status_start.wrapping_sub(wait.latest_start_tick) as i32) > 0 {
@@ -774,21 +777,19 @@ mod tests {
         }
     }
 
-    /// Start-edge tick of the staged Status packet's first byte: one frame
-    /// plus a little trap lag before the pinned wire-clock `now`
-    /// ([`SEED_TICK`]) so the wake's acceptance window resolves it.
-    const STATUS_START_TICK: u16 = SEED_TICK - BITS_PER_FRAME * TICKS_PER_BIT_3M - 50;
+    /// Software estimate of the staged Status packet's first-byte start
+    /// tick: the pinned wire-clock `now` ([`SEED_TICK`]) back-dated by the
+    /// single `0xFF` byte [`observe_status_start`] stages past the status
+    /// cursor (one whole frame).
+    const STATUS_START_TICK: u32 = SEED_TICK as u32 - (BITS_PER_FRAME * TICKS_PER_BIT_3M) as u32;
 
     /// Stage the chain Status packet's first byte (`0xFF`) at wire cursor
-    /// `start` with a matching ET start edge, then drive the per-byte wake
-    /// — the deferred FAST slot k > 0 resolves: wire start scheduled off
-    /// the observed anchor and (for Last) the fold pipeline starts.
+    /// `start`, then drive the per-byte wake — the deferred FAST slot
+    /// k > 0 resolves: the observed start estimates as `now − 1·byte_ticks`,
+    /// its wire start schedules off that anchor and (for Last) the fold
+    /// pipeline starts.
     fn observe_status_start(bus: &mut TestBus, state: &TestState, start: u16) {
         stage_rx(bus, state, start, &[0xFF]);
-        let published = bus.codec.stage_edge_at_head_for_test(STATUS_START_TICK);
-        state
-            .edge
-            .stage_remaining((EDGE_BUF_LEN as u16).wrapping_sub(published));
         bus.on_status_start();
     }
 
@@ -907,8 +908,7 @@ mod tests {
         // bytes_before for slot 1 = the First emission's wire bytes; the
         // deadline anchors on the OBSERVED status start, no RDT term.
         let first_bytes = (FAST_RESPONSE_SLOT0_BYTES + CRC_BYTES) as u32 + payload.len() as u32;
-        let expected =
-            (STATUS_START_TICK as u32).wrapping_add(bus.clock.bytes_to_ticks(first_bytes));
+        let expected = STATUS_START_TICK.wrapping_add(bus.clock.bytes_to_ticks(first_bytes));
         let byte_count = bus.codec.tx_len();
         assert!(byte_count > 0);
         // The inline fold body (short window → runs within the
@@ -967,8 +967,7 @@ mod tests {
         observe_status_start(&mut bus, &state, req.len() as u16);
 
         let first_bytes = (FAST_RESPONSE_SLOT0_BYTES + CRC_BYTES) as u32 + payload.len() as u32;
-        let expected =
-            (STATUS_START_TICK as u32).wrapping_add(bus.clock.bytes_to_ticks(first_bytes));
+        let expected = STATUS_START_TICK.wrapping_add(bus.clock.bytes_to_ticks(first_bytes));
         assert!(matches!(
             state.sch.operations().as_slice(),
             [
@@ -1030,15 +1029,11 @@ mod tests {
         });
 
         // Advance well past packet_end + rdt + slack, then present a
-        // "fresh byte" whose stamp is one frame back from the new now.
+        // single fresh reply byte — the estimate back-dates `now` by one
+        // frame, landing the observed start past `latest_start_tick`.
         let late_now = (SEED_TICK as u32) + TEST_RDT_US * TICKS_PER_US + 2 * 500 * TICKS_PER_US;
         state.wire.stage_now(late_now);
-        let stamp = (late_now - (BITS_PER_FRAME * TICKS_PER_BIT_3M) as u32 - 50) as u16;
         stage_rx(&mut bus, &state, req.len() as u16, &[0xFF]);
-        let published = bus.codec.stage_edge_at_head_for_test(stamp);
-        state
-            .edge
-            .stage_remaining((EDGE_BUF_LEN as u16).wrapping_sub(published));
 
         bus.on_status_start();
 
@@ -1296,23 +1291,18 @@ mod tests {
         });
         assert!(state.rx.status_start_watched());
 
-        // The full injected-First emission (10 + L + crc2 = 14 bytes)
-        // staged in the byte ring; the packet's first-byte start stamp
-        // lands on the ET-ring mark (the mark query needs nothing else).
-        // Its whole 14-byte window is over 50 ticks before `now`, putting
-        // the slot deadline in the past.
+        // The full injected-First emission (10 + L + crc2 = 14 bytes) plus
+        // one leading byte of the next slot already in the ring; the
+        // estimate back-dates `now` by all 15 whole bytes, so the observed
+        // status start — and the derived slot deadline — sit before `now`:
+        // the slot window is already over.
         let pred = [
             0xFF_u8, 0xFF, 0xFD, 0x00, 0xFE, 0x0B, 0x00, 0x55, 0x00, 0x32, 0xAA, 0xBB, 0x12, 0x34,
+            0x56,
         ];
         stage_rx(&mut bus, &state, req.len() as u16, &pred);
         let late_now = SEED_TICK as u32 + 20_000;
         state.wire.stage_now(late_now);
-        let bytes_ticks = 14 * (BITS_PER_FRAME * TICKS_PER_BIT_3M) as u32;
-        let status_start_stamp = (late_now - bytes_ticks - 50) as u16;
-        let published = bus.codec.stage_edge_at_head_for_test(status_start_stamp);
-        state
-            .edge
-            .stage_remaining((EDGE_BUF_LEN as u16).wrapping_sub(published));
         assert_eq!(bus.codec.tx.trailing_crc_slot_for_test(), [0x00, 0x00]);
 
         bus.on_status_start();
@@ -1340,11 +1330,13 @@ mod tests {
     }
 
     #[test]
-    fn on_time_observation_with_full_window_inline_folds_and_patches() {
-        // Short predecessor window (deadline within INLINE_FOLD_HORIZON_TICKS):
-        // the observation runs the first fold body inline — with the whole
-        // window already in the ring, the CRC patch lands before
-        // `on_status_start` returns, no CMP dispatch involved.
+    fn full_window_at_observation_inline_folds_and_patches() {
+        // The whole 14-byte First window is already in the ring, so the
+        // byte-count estimate back-dates `now` by 14 frames — the derived
+        // slot deadline lands exactly at `now` (window just ended). The
+        // observation folds inline (deadline reached) and, with the full
+        // window present, the CRC patch lands before `on_status_start`
+        // returns, no CMP dispatch involved.
         let req = wire_fast_sync_read(0, 2, &[0x42, TEST_ID]);
         let (mut bus, state, _) = bus_seeded_with(&req);
         bus.poll(|_, _, reply| {
@@ -1360,10 +1352,8 @@ mod tests {
             0xFF_u8, 0xA2, 0xA3, 0xA4, 0xA5, 0xA6, 0xA7, 0xA8, 0xA9, 0xAA, 0xAB, 0xAC, 0xAD, 0xAE,
         ];
         stage_rx(&mut bus, &state, start, &window);
-        let published = bus.codec.stage_edge_at_head_for_test(STATUS_START_TICK);
-        state
-            .edge
-            .stage_remaining((EDGE_BUF_LEN as u16).wrapping_sub(published));
+        let full_window = window.len() as u32 * (BITS_PER_FRAME * TICKS_PER_BIT_3M) as u32;
+        state.wire.stage_now(SEED_TICK as u32 + full_window);
         assert_eq!(bus.codec.tx.trailing_crc_slot_for_test(), [0x00, 0x00]);
 
         bus.on_status_start();

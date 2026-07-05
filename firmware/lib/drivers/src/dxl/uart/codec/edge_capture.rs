@@ -51,14 +51,6 @@ pub struct EdgeCapture<R: EdgeDma, const EDGE_BUF_LEN: usize> {
     /// NDTR`) maps cleanly to a ring position.
     edges: SyncUnsafeCell<HwRing<u16, EDGE_BUF_LEN>>,
     ring: R,
-    /// Absolute ET-ring seq of the first edge PAST the most recently
-    /// anchored packet — the FAST status-start mark: the wire between
-    /// the chain instruction and the chain's single Status packet is
-    /// idle, so whatever edge lands at this seq IS the Status packet's
-    /// first byte's start bit. Set by [`Self::anchor_at_tail`] on every
-    /// match (FAST k > 0 waits always have one — anchor misses drop the
-    /// slot); consumed read-only by [`Self::status_start_from_mark`].
-    reply_first_edge_seq: Option<u16>,
     /// Most recent ISR's wake capture — WireClock u32 tick at ISR entry
     /// plus the source flavor. Set on every [`Self::on_idle`] /
     /// [`Self::on_byte_batch_wake`] entry; consumed by
@@ -76,7 +68,6 @@ impl<R: EdgeDma, const EDGE_BUF_LEN: usize> EdgeCapture<R, EDGE_BUF_LEN> {
             anchor: AnchorCache::new(),
             edges: SyncUnsafeCell::new(HwRing::new(0)),
             ring,
-            reply_first_edge_seq: None,
             last_isr: (0, PollSrc::ByteBatch),
         }
     }
@@ -152,10 +143,8 @@ impl<R: EdgeDma, const EDGE_BUF_LEN: usize> EdgeCapture<R, EDGE_BUF_LEN> {
         self.publish_edges();
         // SAFETY: see `publish_edges`.
         let edges = unsafe { &mut *self.edges.get() };
-        let mark =
-            edge_parser::anchor_at_tail(edges, &mut self.anchor, ticks_per_bit, tail_bytes, d_min);
-        self.reply_first_edge_seq = mark;
-        mark.is_some()
+        edge_parser::anchor_at_tail(edges, &mut self.anchor, ticks_per_bit, tail_bytes, d_min)
+            .is_some()
     }
 
     /// Retroactive integrator walk. Codec calls after the wire-schedule
@@ -176,37 +165,6 @@ impl<R: EdgeDma, const EDGE_BUF_LEN: usize> EdgeCapture<R, EDGE_BUF_LEN> {
     /// event (packet boundary) and Resync event (parser abort).
     pub fn reset_anchor(&mut self) {
         self.anchor.reset();
-    }
-
-    /// Start tick of the awaited Status packet's FIRST byte — read
-    /// straight off the mark: the first edge captured past the anchored
-    /// instruction is that byte's start bit, regardless of how many
-    /// bytes (whole or partial) have arrived by the time the wake runs.
-    /// O(1); no window, no byte counting, immune to byte-ring/edge-ring
-    /// sampling skew. `None` while no edge has landed on the mark
-    /// (spurious wake) or when the ring lapped past it (heavy foreign
-    /// traffic on a dead chain — the staleness window upstream already
-    /// covers that exchange).
-    ///
-    /// The lift assumes the marked stamp is under one u16 wrap old
-    /// (1.365 ms at HCLK) — true whenever a per-byte wake resolves it;
-    /// a wake delayed beyond that aliases the start EARLIER, which at
-    /// worst turns the send into the fire-ASAP late path (fold-first,
-    /// CRC still correct).
-    pub fn status_start_from_mark(&mut self, now: u32) -> Option<u32> {
-        self.publish_edges();
-        let mark = self.reply_first_edge_seq?;
-        // SAFETY: see `publish_edges`.
-        let edges = unsafe { &mut *self.edges.get() };
-        let produced = edges.write_seq().wrapping_sub(mark);
-        if produced == 0 || produced as usize > EDGE_BUF_LEN {
-            return None;
-        }
-        let raw = *edges.slot(mark);
-        Some(edge_parser::lift_stamp(
-            raw.wrapping_sub(self.anchor.rx_edge_comp_ticks),
-            now,
-        ))
     }
 }
 
@@ -265,30 +223,6 @@ impl<R: EdgeDma, const EDGE_BUF_LEN: usize> EdgeCapture<R, EDGE_BUF_LEN> {
         // SAFETY: test-only mut access; no DMA in tests.
         let edges = unsafe { &mut *self.edges.get() };
         edge_parser::stage_tail_signature_for_test(edges, tail_bytes, ticks_per_bit, anchor_tick)
-    }
-
-    /// Plant the FAST status-start mark directly — unit-test stand-in
-    /// for the `anchor_at_tail` match that plants it in production.
-    pub fn plant_reply_mark_for_test(&mut self, seq: u16) {
-        self.reply_first_edge_seq = Some(seq);
-    }
-
-    /// Current ET producer head seq (test observability for the mark).
-    pub fn edge_head_seq_for_test(&mut self) -> u16 {
-        // SAFETY: test-only read; no DMA in tests.
-        unsafe { (*self.edges.get()).write_seq() }
-    }
-
-    /// Stage one falling-edge stamp at the ET producer head — the shape a
-    /// newly-arrived `0xFF` (exactly one edge) leaves in the ring. Returns
-    /// the produced-slot count the caller publishes via the staged
-    /// `EdgeDma::remaining` (`EDGE_BUF_LEN − count`).
-    pub fn stage_edge_at_head_for_test(&mut self, stamp: u16) -> u16 {
-        // SAFETY: test-only mut access; no DMA in tests.
-        let edges = unsafe { &mut *self.edges.get() };
-        let at = edges.write_seq_for_test();
-        edges.stage(at, &[stamp]);
-        at.wrapping_add(1)
     }
 }
 

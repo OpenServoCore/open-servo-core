@@ -143,22 +143,6 @@ fn byte_edge_positions(b: u8) -> ([u8; 5], usize) {
     (positions, n)
 }
 
-/// Lift a 16-bit IC stamp into the WireClock u32 domain. The contract
-/// (see [`crate::traits::dxl::WireClock`]) guarantees the low 16 bits of
-/// `ref_tick` equal the IC stamp captured at the same instant, so the
-/// modular delta from `stamp` to `ref_tick as u16` is the elapsed ticks —
-/// subtract that from `ref_tick` to recover the u32 reading at capture
-/// time. **Caller must ensure `ref_tick − stamp_u32 < 65536`**; if the
-/// reference sits more than a u16-wrap past the stamp the result aliases
-/// to a value one wrap too high. See [`drain_ref`] for the per-source
-/// reference correction the composite applies before calling.
-/// [`lift`] surfaced for the codec's mark-based status-start read —
-/// same single-wrap contract on `ref_tick − stamp`.
-#[inline]
-pub(super) fn lift_stamp(stamp: u16, ref_tick: u32) -> u32 {
-    lift(stamp, ref_tick)
-}
-
 #[inline]
 fn lift(stamp: u16, ref_tick: u32) -> u32 {
     let delta = (ref_tick as u16).wrapping_sub(stamp) as u32;

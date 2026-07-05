@@ -585,22 +585,38 @@ impl<R: EdgeDma, CRC: CrcUmts, const RX_BUF_LEN: usize, const EDGE_BUF_LEN: usiz
         self.wire_bytes_consumed = target;
     }
 
-    /// FAST status-start query — start tick (WireClock u32) of the
-    /// awaited Status packet's FIRST wire byte, read straight off the
-    /// ET-ring mark planted at the chain instruction's `Crc(Good)`
-    /// anchor (the first edge past the instruction's last edge — the
-    /// wire between is idle, so it can only be the Status packet's
-    /// start bit). Called from the RXNE trap during a FAST slot k > 0
-    /// wait; `now` must be a fresh wire-clock reading for the u16 lift.
+    /// FAST status-start query — start tick (WireClock u32) of the awaited
+    /// Status packet's FIRST wire byte, estimated by back-dating the wake
+    /// tick `now` by the whole bytes already published past the packet's
+    /// `start_cursor`. Publishes the RX byte ring from `rx_dma.remaining()`,
+    /// counts `n = published − start_cursor` whole frames, and returns
+    /// `now − n · byte_ticks`. Called from the RXNE trap during a FAST slot
+    /// k > 0 wait; `now` must be a fresh wire-clock reading.
     ///
-    /// O(1) and immune to byte-ring/edge-ring sampling skew: no byte
-    /// counting, no age window — the mark's slot IS the answer once any
-    /// edge lands there. `None` while nothing has landed on the mark
-    /// (spurious trap — the V006 residual-drain quirk) or when no mark
-    /// exists (defensive: FAST k > 0 slots are dropped on an anchor
-    /// miss, so a parked wait always planted one).
-    pub fn status_start_tick(&mut self, now: u32) -> Option<u32> {
-        self.edge_capture.status_start_from_mark(now)
+    /// The estimate carries the wake's ISR-entry latency, which only
+    /// *delays* the observed start — never advances it into the
+    /// predecessor's window — so the derived slot start can slip late but
+    /// can never fire early. `None` while no whole byte has landed past the
+    /// cursor (spurious wake — the V006 residual-drain quirk; same contract
+    /// as before).
+    pub fn status_start_tick<D: RxDma>(
+        &mut self,
+        rx_dma: &D,
+        start_cursor: u32,
+        now: u32,
+        byte_ticks: u32,
+    ) -> Option<u32> {
+        // SAFETY: rx_buf is single-consumer at PFIC HIGH (same as `poll`).
+        let rx_buf = unsafe { &mut *self.rx_buf.get() };
+        rx_buf.on_publish(rx_dma.remaining());
+        let published = self
+            .wire_bytes_consumed
+            .wrapping_add(rx_buf.reader().avail() as u32);
+        let n = published.wrapping_sub(start_cursor) as i32;
+        if n <= 0 {
+            return None;
+        }
+        Some(now.wrapping_sub(byte_ticks.wrapping_mul(n as u32)))
     }
 
     /// Clear any in-flight universal byte-skip. Called by the composite at
@@ -689,21 +705,6 @@ impl<R: EdgeDma, CRC: CrcUmts, const RX_BUF_LEN: usize, const EDGE_BUF_LEN: usiz
     ) -> u16 {
         self.edge_capture
             .stage_tail_signature_for_test(tail_bytes, ticks_per_bit, anchor_tick)
-    }
-
-    /// See [`EdgeCapture::stage_edge_at_head_for_test`].
-    pub(crate) fn stage_edge_at_head_for_test(&mut self, stamp: u16) -> u16 {
-        self.edge_capture.stage_edge_at_head_for_test(stamp)
-    }
-
-    /// See [`EdgeCapture::plant_reply_mark_for_test`].
-    pub(crate) fn plant_reply_mark_for_test(&mut self, seq: u16) {
-        self.edge_capture.plant_reply_mark_for_test(seq)
-    }
-
-    /// See [`EdgeCapture::edge_head_seq_for_test`].
-    pub(crate) fn edge_head_seq_for_test(&mut self) -> u16 {
-        self.edge_capture.edge_head_seq_for_test()
     }
 }
 
@@ -1127,58 +1128,59 @@ mod tests {
     const TPB_3M: u16 = 16;
     const BYTE_TICKS_3M: u32 = 10 * TPB_3M as u32;
 
-    fn make_with_edge_remaining(remaining: u16) -> TestRx {
-        let mut edge_dma = MockEdgeDma::default();
-        edge_dma.expect_remaining().returning(move || remaining);
-        CodecRx::new(edge_dma)
+    /// `MockRxDma` whose `remaining()` returns a fixed NDTR readback so the
+    /// estimate's `on_publish` sees the ring head the test staged.
+    fn rx_dma_with_remaining(remaining: u16) -> crate::mocks::MockRxDma {
+        let mut m = crate::mocks::MockRxDma::new();
+        m.expect_remaining().returning(move || remaining);
+        m
     }
 
     #[test]
-    fn status_start_tick_none_without_mark() {
-        // No instruction anchored → no mark planted → refuse (defensive;
-        // FAST k > 0 slots drop on an anchor miss, so a parked wait
-        // always planted one in production).
+    fn status_start_tick_none_before_any_reply_byte() {
+        // Spurious wake (V006 residual-drain quirk): nothing published past
+        // the cursor yet, so no whole byte to back-date from.
         let mut rx = make();
-        assert_eq!(rx.status_start_tick(5000), None);
+        let rx_dma = rx_dma_with_remaining(RX_BUF_LEN as u16);
+        assert_eq!(rx.status_start_tick(&rx_dma, 0, 5000, BYTE_TICKS_3M), None);
     }
 
     #[test]
-    fn status_start_tick_none_before_edge_lands_on_mark() {
-        // Spurious RXNE trap (V006 residual-drain quirk): the mark is
-        // planted but no edge has landed on it yet.
-        let mut rx = make_with_edge_remaining(EDGE_BUF_LEN as u16);
-        let mark = rx.edge_head_seq_for_test();
-        rx.plant_reply_mark_for_test(mark);
-        assert_eq!(rx.status_start_tick(5000), None);
+    fn status_start_tick_backdates_one_byte() {
+        // One whole byte past the cursor → back-date the wake by one frame.
+        let mut rx = make();
+        rx.stage_rx_bytes_for_test(0, &[0xFF]);
+        let rx_dma = rx_dma_with_remaining(RX_BUF_LEN as u16 - 1);
+        let now = 5000;
+        assert_eq!(
+            rx.status_start_tick(&rx_dma, 0, now, BYTE_TICKS_3M),
+            Some(now - BYTE_TICKS_3M)
+        );
     }
 
     #[test]
-    fn status_start_tick_resolves_the_marked_edge() {
-        // The first edge past the mark IS the Status packet's first
-        // byte's start — resolved directly, no window, no byte count.
-        let mut rx = make_with_edge_remaining(EDGE_BUF_LEN as u16 - 1);
-        let mark = rx.edge_head_seq_for_test();
-        rx.plant_reply_mark_for_test(mark);
-        let n = rx.stage_tail_signature_for_test(&[0xFF], TPB_3M, 1000);
-        assert_eq!(n, 1, "0xFF must contribute exactly one falling edge");
-        let now = 1000 + BYTE_TICKS_3M + 50;
-        assert_eq!(rx.status_start_tick(now), Some(1000));
+    fn status_start_tick_counts_whole_bytes_past_the_cursor() {
+        // Coalesced wake several bytes in: the estimate back-dates by every
+        // whole byte published past the cursor, not just the first.
+        let mut rx = make();
+        rx.stage_rx_bytes_for_test(0, &[0xFF, 0xFF, 0xFD, 0x00]);
+        let rx_dma = rx_dma_with_remaining(RX_BUF_LEN as u16 - 4);
+        let now = 8000;
+        // Cursor at 1 → 3 whole bytes (seqs 1..4) sit past it.
+        assert_eq!(
+            rx.status_start_tick(&rx_dma, 1, now, BYTE_TICKS_3M),
+            Some(now - 3 * BYTE_TICKS_3M)
+        );
     }
 
     #[test]
-    fn status_start_tick_ignores_later_edges_past_the_mark() {
-        // Coalesced wake several bytes in: later stamps (whole or partial
-        // bytes) are irrelevant — the marked slot alone answers, so
-        // byte-ring/edge-ring sampling skew can't mis-index the start.
-        let mut rx = make_with_edge_remaining(EDGE_BUF_LEN as u16 - 5);
-        let mark = rx.edge_head_seq_for_test();
-        rx.plant_reply_mark_for_test(mark);
-        let hdr = [0xFF, 0xFF, 0xFD, 0x00];
-        rx.stage_tail_signature_for_test(&hdr, TPB_3M, 2000 + 3 * BYTE_TICKS_3M as u16);
-        // The staged signature's OLDEST edge (byte 0's start) sits at the
-        // mark; the query must return it, not the newer stamps.
-        let now = 2000 + 4 * BYTE_TICKS_3M + 200;
-        assert_eq!(rx.status_start_tick(now), Some(2000));
+    fn status_start_tick_none_when_cursor_is_past_published() {
+        // Defensive: a stale cursor ahead of the published head yields a
+        // non-positive count — refuse rather than back-date into the future.
+        let mut rx = make();
+        rx.stage_rx_bytes_for_test(0, &[0xFF]);
+        let rx_dma = rx_dma_with_remaining(RX_BUF_LEN as u16 - 1);
+        assert_eq!(rx.status_start_tick(&rx_dma, 4, 5000, BYTE_TICKS_3M), None);
     }
 
     #[test]
