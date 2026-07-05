@@ -341,6 +341,7 @@ Two subsystems that this doc once specified are deleted; they are named here so 
 - **`SCHEDULE_WRAP_GUARD_TICKS` measurement (§5.4).** Conservative 0x8000 today; measure the true `RDT_max + slot_offset_max` bound.
 - **`FAST_CRC_WAKE_LEAD_TICKS` down-tune (§10.6).** 500 ticks covers worst-case SysTick entry with margin; bench-tune downward once pickup timing is characterized (waking early costs spin, waking late costs patch margin — size to the WORST entry, not the typical).
 - **Drift staleness/give-up bounds (§8.3).** `DRIFT_WINDOW_MAX_PACKETS = 4` and `DRIFT_STALENESS_INSTRUCTIONS = 64` are reasoned, not swept. Confirm on a real traffic mix that temperature drift stays tracked without leaving RXNEIE on wastefully.
+- **Rule-eval flash tax on validated writes.** The flat register file cut the Write poll body hard (16 B unruled: 65 → 16.8 µs; 4 B unruled: 10.7 µs; 1 B locked+hooked: 9.4 µs) but a compare rule with a register RHS costs ~17 µs (goal_position, two cross-register compares: 45 µs total) — each `View::read_into` round-trip through flash-resident copy/overlay code runs ~8 µs. Levers if goal-rate writes need it: RAM-place (or `inline(always)`) the `View` read path, or evaluate rules from raw pointers instead of the copy-into-scratch shape. Same family as the mask loop's ~0.5 µs/B slope.
 
 ---
 
