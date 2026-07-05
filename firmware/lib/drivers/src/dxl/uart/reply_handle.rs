@@ -9,8 +9,9 @@ use osc_core::{BaudRate, BootMode, DxlReply};
 
 use super::clock::Clock;
 use super::codec::CodecTx;
+use super::drift_window::RxWakeGate;
 use super::send_policy::{ReplyContext, SendPolicy, StatusStartWait};
-use crate::traits::dxl::{Providers, RxDma, SendKind, TxScheduler};
+use crate::traits::dxl::{Providers, SendKind, TxScheduler};
 
 /// Allowance past `packet_end + effective RDT` for the observed status
 /// start of a FAST chain — covers slot 0's chip-side turnaround (measured
@@ -18,7 +19,7 @@ use crate::traits::dxl::{Providers, RxDma, SendKind, TxScheduler};
 /// margin while staying well under any host retry timeout (≥ ~1 ms). A
 /// status-start stamp past `packet_end + effective_rdt + this` is stale
 /// traffic (the host's retry after a dead chain), never the awaited
-/// reply — see `DxlUart::on_status_start`.
+/// reply — see `DxlUart::on_rx_byte_wake`.
 const STATUS_START_SLACK_US: u32 = 500;
 
 /// The context's RDT in scheduler ticks — the single µs→ticks conversion
@@ -45,9 +46,13 @@ pub struct ReplyHandle<'a, P: Providers, const TX_BUF_LEN: usize> {
     pub(super) tx: &'a mut CodecTx<P::Crc, TX_BUF_LEN>,
     pub(super) scheduler: &'a mut P::TxScheduler,
     pub(super) clock: &'a mut Clock<P::UsartBaud, P::ClockTrim>,
-    /// RX-side provider — the FAST k > 0 defer path opens the per-byte
-    /// status-start wake window here; `cancel` closes it.
+    /// RX-side provider — passed to [`RxWakeGate::set_fast`] so the FAST
+    /// k > 0 defer path opens the per-byte status-start wake through the
+    /// shared reason set; `cancel` closes it.
     pub(super) rx_dma: &'a mut P::RxDma,
+    /// RXNEIE reason set — the FAST defer/cancel toggles the FAST reason
+    /// here so a concurrent drift window keeps the wake open (OR-edge).
+    pub(super) rx_wake: &'a mut RxWakeGate,
     /// Send-policy sub-composite on the parent — bus identity, the
     /// staged-config mailbox the `stage_*` commands write into, and the
     /// reply gate holding the staged [`ReplyContext`] / chain-pending
@@ -209,7 +214,7 @@ impl<P: Providers, const TX_BUF_LEN: usize> ReplyHandle<'_, P, TX_BUF_LEN> {
     /// have seen it. Successor slots (k > 0) defer instead: the wire
     /// start anchors on the OBSERVED start of the chain's single Status
     /// packet (task #142) — the reply gate parks a [`StatusStartWait`],
-    /// the per-byte wake window opens, and `DxlUart::on_status_start`
+    /// the per-byte wake window opens, and `DxlUart::on_rx_byte_wake`
     /// schedules and starts the chain-CRC pipeline when the packet's
     /// first byte lands.
     fn schedule_after_slot_encode(&mut self, ctx: ReplyContext, position: SlotPosition) {
@@ -235,7 +240,7 @@ impl<P: Providers, const TX_BUF_LEN: usize> ReplyHandle<'_, P, TX_BUF_LEN> {
                     slot_offset_bytes: ctx.slot_offset_bytes,
                     latest_start_tick,
                 });
-                self.rx_dma.watch_status_start();
+                self.rx_wake.set_fast(self.rx_dma, true);
             }
         }
     }
@@ -247,7 +252,7 @@ impl<P: Providers, const TX_BUF_LEN: usize> ReplyHandle<'_, P, TX_BUF_LEN> {
     pub fn cancel(&mut self) {
         self.scheduler.cancel();
         self.send_policy.cancel();
-        self.rx_dma.unwatch_status_start();
+        self.rx_wake.set_fast(self.rx_dma, false);
     }
 
     /// Stage a deferred ID change — applies at the next `on_tx_complete`.
@@ -346,6 +351,7 @@ mod tests {
         sched: SchedState,
         rx_dma: MockRxDma,
         rx: RxDmaState,
+        rx_wake: RxWakeGate,
         clock: Clock<MockUsartBaud, MockClockTrim>,
         send_policy: SendPolicy,
     }
@@ -360,6 +366,9 @@ mod tests {
                 sched,
                 rx_dma,
                 rx,
+                // Drift window closed: these tests exercise the FAST reason
+                // in isolation, so RXNEIE reflects only the FAST wait.
+                rx_wake: RxWakeGate::new(),
                 clock: Clock::new(BaudRate::B3000000, mk_usart_baud().0, mk_clock_trim().0),
                 send_policy: SendPolicy::new(TEST_ID, TEST_RDT_US),
             }
@@ -375,6 +384,7 @@ mod tests {
                 scheduler: &mut self.scheduler,
                 clock: &mut self.clock,
                 rx_dma: &mut self.rx_dma,
+                rx_wake: &mut self.rx_wake,
                 send_policy: &mut self.send_policy,
             }
         }
@@ -499,7 +509,7 @@ mod tests {
     fn send_slot_successor_defers_to_status_start_and_opens_the_watch() {
         // Every successor slot parks a StatusStartWait instead of
         // scheduling (task #142): the wire start anchors on the observed
-        // Status packet start, resolved later by `on_status_start`.
+        // Status packet start, resolved later by `on_rx_byte_wake`.
         let mut h = Harness::new();
         h.stage(ReplyContext {
             fast_slot_position: Some(SlotPosition::Successor { crc: 0 }),

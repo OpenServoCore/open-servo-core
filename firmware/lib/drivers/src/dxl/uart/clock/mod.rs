@@ -52,25 +52,31 @@ impl<U: UsartBaud, T: ClockTrim> Clock<U, T> {
     /// USART-idle boundary after our own TX — the only safe point to commit
     /// a staged baud (BRR can't change mid-frame). On an applied change the
     /// new `ticks_per_bit` fans out to the drift integrator so its per-baud
-    /// constants and reference tpb track the wire.
-    pub fn on_tx_complete(&mut self) {
-        if self.cache.on_tx_complete().is_some() {
+    /// constants and reference tpb track the wire. Returns whether a baud
+    /// change landed so the driver can reopen the drift window (a new
+    /// divisor invalidates the in-flight batch).
+    pub fn on_tx_complete(&mut self) -> bool {
+        let changed = self.cache.on_tx_complete().is_some();
+        if changed {
             self.drift
                 .on_baud_change(self.cache.baud(), self.cache.ticks_per_bit());
         }
+        changed
     }
 
     /// RX-side packet boundary — commits any pending trim correction and
-    /// runs the drift integrator's boot→steady transition. See
+    /// runs the drift integrator's boot→steady transition. Returns whether
+    /// the boot batch closed (correction landed or not) so the driver can
+    /// close its drift window on any batch close. See
     /// [`DriftIntegrator::on_rx_packet_end`].
-    pub fn on_rx_packet_end(&mut self) {
-        self.drift.on_rx_packet_end();
+    pub fn on_rx_packet_end(&mut self) -> bool {
+        self.drift.on_rx_packet_end()
     }
 
-    /// One NDTR/byte-count span for the drift integrator. See
-    /// [`DriftIntegrator::on_span`].
-    pub fn on_span(&mut self, d_ticks: u32, d_bytes: u32) {
-        self.drift.on_span(d_ticks, d_bytes);
+    /// One NDTR/byte-count span for the drift integrator. Returns whether
+    /// the span closed a steady batch. See [`DriftIntegrator::on_span`].
+    pub fn on_span(&mut self, d_ticks: u32, d_bytes: u32) -> bool {
+        self.drift.on_span(d_ticks, d_bytes)
     }
 
     // -- commands ---------------------------------------------------------------

@@ -2,21 +2,22 @@
 //! drift and assert the driver-side integrator brings the chip clock back
 //! toward nominal.
 //!
-//! The integrator now samples drift from NDTR/byte-count *spans* — pairs of
-//! same-flavor drain-ISR stamps over one contiguous burst — rather than the
-//! deleted edge-pair walk. Isolated Ping exchanges form no spans (each short
-//! packet trips a single drain ISR, and the same-burst gate rejects any pair
-//! straddling an inter-packet gap), so the ping-driven convergence tests
-//! below are `#[ignore]`d pending chunk c2's RXNE cold-start window, which
-//! restores short-packet drift sampling. The span mechanism itself is unit-
-//! tested in `osc-drivers` (`clock::drift_integrator`, `codec::span`); the
-//! `hsi_at_nominal_emits_no_trim_ops` case here stays live as a
-//! spurious-emit guard.
+//! The integrator samples drift from NDTR/byte-count *spans*. Long bursts
+//! form drain-ISR span pairs; isolated short packets (a Ping trips a single
+//! drain ISR, and the same-burst gate rejects any pair straddling an
+//! inter-packet gap) are covered by the RXNE cold-start *window*, which
+//! accumulates one long span per burst from per-byte wakes. Both feed the
+//! same integrator, so the ping-driven convergence tests below hold. The
+//! span/window mechanisms are unit-tested in `osc-drivers`
+//! (`clock::drift_integrator`, `codec::span`, `dxl::uart::drift_window`);
+//! the `hsi_at_nominal_emits_no_trim_ops` case here is the spurious-emit
+//! guard.
 //!
 //! Two-phase control law:
-//! - **Boot** (until first batch close after `Clock::new`): 6-span batch
-//!   with a full-step deadband and a 16-step emit cap. One emit lands the
-//!   correction inside the ±20 000 ppm envelope.
+//! - **Boot** (until the first batch close after `Clock::new`): the batch
+//!   closes at the first RX packet boundary holding ≥ 1 span, with a
+//!   full-step deadband and a 16-step emit cap. One emit lands the
+//!   correction inside the ±20 000 ppm envelope on the first exchange.
 //! - **Steady** (every subsequent batch): 20-span batch with a half-step
 //!   deadband and a 4-step emit cap.
 //!
@@ -32,11 +33,10 @@ use osc_integration::sim::DEFAULT_RDT_US;
 use rstest::rstest;
 use rstest_reuse::apply;
 
-/// Pings to drive per test. The boot phase closes one batch on Ping 1
-/// (6 byte pairs from the reply). Steady phase closes every ~3.3 pings
-/// (20 / 6). 64 pings leaves ~19 steady batches of headroom over the
-/// first-emit landing — enough margin to surface any regression in the
-/// steady-phase deadband or residual squeeze.
+/// Pings to drive per test. The boot phase lands its correction on Ping 1
+/// (one window span) and closes the drift window; that single landing fully
+/// cancels ±2% factory drift, so the surplus pings are headroom to surface
+/// any regression that would perturb an already-converged loop.
 const PING_BUDGET: u32 = 64;
 
 const TARGET: Id = Id::new(1);
@@ -51,6 +51,11 @@ const FOREIGN_TARGET: Id = Id::new(99);
 /// every baud. Any spurious emit signals a threshold-compute bug — most
 /// likely 1-tick chip-stamp quantization at high baud crossing the
 /// half-step boundary, or a precomputed-reciprocal sign error at low baud.
+///
+/// Also the per-byte IRQ budget guard: the boot batch closes at Ping 1's
+/// packet boundary even though it lands nothing (below-deadband close =
+/// drift ≈ 0 learned), and the drift window must close with it — a
+/// perfectly-trimmed chip must not hold per-byte RXNE wakes open forever.
 #[apply(baud_matrix)]
 #[test_log::test]
 fn hsi_at_nominal_emits_no_trim_ops(baud_idx: u8) {
@@ -60,8 +65,22 @@ fn hsi_at_nominal_emits_no_trim_ops(baud_idx: u8) {
         host,
         servos,
     } = setup_with(1, baud, DEFAULT_RDT_US);
+    assert!(
+        sim.servo(servos[0]).rx_byte_wake_watched(),
+        "cold-boot drift window open before any traffic (baud_idx={baud_idx})",
+    );
 
-    for _ in 0..PING_BUDGET {
+    sim.with_host(host, |h| {
+        h.send_ping(TARGET);
+        h.wait_for_reply();
+    });
+    assert!(
+        !sim.servo(servos[0]).rx_byte_wake_watched(),
+        "boot batch closed below the deadband — the drift window must \
+         close with it, landed or not (baud_idx={baud_idx})",
+    );
+
+    for _ in 1..PING_BUDGET {
         sim.with_host(host, |h| {
             h.send_ping(TARGET);
             h.wait_for_reply();
@@ -82,7 +101,6 @@ fn hsi_at_nominal_emits_no_trim_ops(baud_idx: u8) {
 /// tight, etc.) without fully cancelling.
 #[apply(baud_matrix)]
 #[test_log::test]
-#[ignore = "drift spans need contiguous RX bursts; isolated ping exchanges form none until c2 RXNE cold-start"]
 fn hsi_hot_corner_converges(baud_idx: u8) {
     let baud = BaudRate::from_idx(baud_idx).expect("valid baud idx");
     let Setup {
@@ -112,7 +130,6 @@ fn hsi_hot_corner_converges(baud_idx: u8) {
 /// -2% factory drift (HSI runs slow). Symmetric to the hot-corner case.
 #[apply(baud_matrix)]
 #[test_log::test]
-#[ignore = "drift spans need contiguous RX bursts; isolated ping exchanges form none until c2 RXNE cold-start"]
 fn hsi_cold_corner_converges(baud_idx: u8) {
     let baud = BaudRate::from_idx(baud_idx).expect("valid baud idx");
     let Setup {
@@ -151,8 +168,8 @@ fn live_residual_ppm(
     ((live_hz - nominal_hz) * 1_000_000 / nominal_hz) as i32
 }
 
-/// +2% factory drift, one Ping. Boot phase closes a 6-sample batch
-/// during the first instruction body and the magnitude-aware estimator
+/// +2% factory drift, one Ping. The boot batch closes at Ping 1's packet
+/// boundary holding the one window span, and the magnitude-aware estimator
 /// emits exactly the opposing nudge: -20 000 ppm = 8 steps × 2500 ppm.
 /// The post-apply residual is `(1.02 × 0.98 - 1) × 10⁶ ≈ -400 ppm` —
 /// inside the steady-phase ½-step deadband (~1250 ppm) so the integrator
@@ -160,7 +177,6 @@ fn live_residual_ppm(
 /// HCLK; non-Fast commands work immediately.
 #[apply(baud_matrix)]
 #[test_log::test]
-#[ignore = "drift spans need contiguous RX bursts; isolated ping exchanges form none until c2 RXNE cold-start"]
 fn hsi_hot_corner_lands_in_one_ping(baud_idx: u8) {
     let baud = BaudRate::from_idx(baud_idx).expect("valid baud idx");
     let Setup {
@@ -202,7 +218,6 @@ fn hsi_hot_corner_lands_in_one_ping(baud_idx: u8) {
 /// -2% factory drift, one Ping. Symmetric to the hot-corner one-Ping case.
 #[apply(baud_matrix)]
 #[test_log::test]
-#[ignore = "drift spans need contiguous RX bursts; isolated ping exchanges form none until c2 RXNE cold-start"]
 fn hsi_cold_corner_lands_in_one_ping(baud_idx: u8) {
     let baud = BaudRate::from_idx(baud_idx).expect("valid baud idx");
     let Setup {
@@ -241,18 +256,24 @@ fn hsi_cold_corner_lands_in_one_ping(baud_idx: u8) {
     );
 }
 
-/// Steady-phase tracks a mid-operation drift shift. Boot at nominal HSI
-/// (Ping 1 closes the boot batch with no emit). Then a +0.5% drift
-/// appears — models the chip warming up under load — and the steady
-/// integrator must squeeze it back into the deadband within a handful of
-/// pings. Steady batch closes every ~5.3 pings (32 / 6); 16 pings give
-/// ~3 steady batches of headroom. At 3M (worst SNR) +0.5% drift produces
-/// `drift_sum_q8 / drift_per_step_q8 ≈ 2 steps` → emit -5 000 ppm,
-/// residual `(1.005 × 0.995 - 1) × 10⁶ ≈ -25 ppm`.
+/// Steady-phase tracks a mid-operation drift shift. Boot at nominal HSI:
+/// Ping 1 closes the boot batch below the deadband (no emit) and the drift
+/// window closes with it — per-byte IRQs never outlive the sampling. Then a
+/// +0.5% drift appears — models the chip warming up under load. The shift
+/// goes untracked until the staleness reopen (64 instructions since the
+/// last accepted span), after which one 20-span steady batch measures and
+/// squeezes it back into the deadband. At 3M (worst SNR) +0.5% drift
+/// produces ≈ 2 steps → emit -5 000 ppm, residual
+/// `(1.005 × 0.995 - 1) × 10⁶ ≈ -25 ppm`, and the batch close ends the
+/// reopened window again.
 #[apply(baud_matrix)]
 #[test_log::test]
-#[ignore = "drift spans need contiguous RX bursts; isolated ping exchanges form none until c2 RXNE cold-start"]
 fn hsi_steady_phase_tracks_dynamic_drift(baud_idx: u8) {
+    // Staleness reopen at instruction 65 (64 past Ping 1's accepted span),
+    // then one 20-span steady batch (one span per ping) closes at ~85, plus
+    // margin for the apply and the residual read.
+    const STEADY_PINGS: u32 = 88;
+
     let baud = BaudRate::from_idx(baud_idx).expect("valid baud idx");
     let Setup {
         mut sim,
@@ -273,7 +294,7 @@ fn hsi_steady_phase_tracks_dynamic_drift(baud_idx: u8) {
     // the applied correction — only the live HCLK.
     sim.servo_mut(servos[0]).set_hsi_drift(1, 200);
 
-    for _ in 0..16 {
+    for _ in 0..STEADY_PINGS {
         sim.with_host(host, |h| {
             h.send_ping(TARGET);
             h.wait_for_reply();
@@ -285,7 +306,7 @@ fn hsi_steady_phase_tracks_dynamic_drift(baud_idx: u8) {
     assert!(
         residual_ppm.abs() < 1000,
         "steady phase failed to converge: residual_ppm={residual_ppm} \
-         after 16 pings under +0.5% temp shift \
+         after {STEADY_PINGS} pings under +0.5% temp shift \
          (baud_idx={baud_idx}, ops_after_boot={ops_after_boot:?}, ops={ops:?})",
     );
     assert!(
@@ -294,21 +315,20 @@ fn hsi_steady_phase_tracks_dynamic_drift(baud_idx: u8) {
          (baud_idx={baud_idx}, ops={ops:?})",
     );
     log::info!(
-        "baud_idx={baud_idx} dynamic +0.5% drift after 16 pings → \
+        "baud_idx={baud_idx} dynamic +0.5% drift after {STEADY_PINGS} pings → \
          residual_ppm={residual_ppm} ops={ops:?}",
     );
 }
 
 /// +2% drift, foreign-instruction sampling path. Each Ping targets id=99
 /// (no servo answers) so the lone servo at id=1 parses Sync + Header then
-/// drops into byte-skip for the remaining CRC. The byte-parser-driven
-/// edge walker advances in lockstep through both regions, so the
-/// integrator gets the same 6 byte pairs per Ping it would get from an
-/// own-target reception. Convergence must therefore match the own-target
-/// hot-corner case.
+/// drops into byte-skip for the remaining CRC. The per-byte wakes record
+/// across both regions and the window settles the same one span at the
+/// skip-complete boundary (foreign instructions pass the instruction gate)
+/// it would get from an own-target reception. Convergence must therefore
+/// match the own-target hot-corner case.
 #[apply(baud_matrix)]
 #[test_log::test]
-#[ignore = "drift spans need contiguous RX bursts; isolated ping exchanges form none until c2 RXNE cold-start"]
 fn hsi_hot_corner_converges_via_foreign_ping(baud_idx: u8) {
     let baud = BaudRate::from_idx(baud_idx).expect("valid baud idx");
     let Setup {
@@ -339,7 +359,6 @@ fn hsi_hot_corner_converges_via_foreign_ping(baud_idx: u8) {
 /// foreign-ping hot-corner case.
 #[apply(baud_matrix)]
 #[test_log::test]
-#[ignore = "drift spans need contiguous RX bursts; isolated ping exchanges form none until c2 RXNE cold-start"]
 fn hsi_cold_corner_converges_via_foreign_ping(baud_idx: u8) {
     let baud = BaudRate::from_idx(baud_idx).expect("valid baud idx");
     let Setup {
@@ -366,13 +385,12 @@ fn hsi_cold_corner_converges_via_foreign_ping(baud_idx: u8) {
     log::info!("baud_idx={baud_idx} -2% drift, foreign pings → final_ppm={final_ppm}, ops={ops:?}",);
 }
 
-/// +2% drift, one foreign Ping. The boot batch closes during the skip
-/// phase of the first Ping the same way it closes during the body of an
-/// own-target reception. Emit must equal exactly -20_000 ppm — same byte
-/// pair count, same magnitude-aware estimator, same boot-phase emit cap.
+/// +2% drift, one foreign Ping. The boot batch closes at the first Ping's
+/// skip-complete boundary the same way it closes at an own-target Crc.
+/// Emit must equal exactly -20_000 ppm — same one window span, same
+/// magnitude-aware estimator, same boot-phase emit cap.
 #[apply(baud_matrix)]
 #[test_log::test]
-#[ignore = "drift spans need contiguous RX bursts; isolated ping exchanges form none until c2 RXNE cold-start"]
 fn hsi_hot_corner_lands_in_one_foreign_ping(baud_idx: u8) {
     let baud = BaudRate::from_idx(baud_idx).expect("valid baud idx");
     let Setup {
@@ -416,7 +434,6 @@ fn hsi_hot_corner_lands_in_one_foreign_ping(baud_idx: u8) {
 /// one-Ping case.
 #[apply(baud_matrix)]
 #[test_log::test]
-#[ignore = "drift spans need contiguous RX bursts; isolated ping exchanges form none until c2 RXNE cold-start"]
 fn hsi_cold_corner_lands_in_one_foreign_ping(baud_idx: u8) {
     let baud = BaudRate::from_idx(baud_idx).expect("valid baud idx");
     let Setup {

@@ -159,21 +159,21 @@ fn on_usart1_tc() {
     }
 }
 
-/// Per-byte status-start wake for a deferred FAST slot k > 0 (task
-/// #142). Gated on CTLR1.RXNEIE — the watch window the RxDma provider
-/// opens at `send_slot` and the driver closes on resolution — NOT on
-/// `STATR.RXNE`, which always reads 0 in DMA-RX mode (DMA wins the clear
-/// race; see the provider doc). While the window is open every USART1
-/// vector entry routes one wake; spurious entries (residual-drain race,
-/// IDLE sharing the vector) are cursor-qualified inside
-/// `on_status_start`, so no flag inspection happens here. Runs after the
+/// Per-byte RX wake — demuxed driver-side to the drift sampler and/or a
+/// deferred FAST slot k > 0's status-start observation. Gated on
+/// CTLR1.RXNEIE — the watch window the RxDma provider opens for either
+/// consumer — NOT on `STATR.RXNE`, which always reads 0 in DMA-RX mode
+/// (DMA wins the clear race; see the provider doc). While the window is
+/// open every USART1 vector entry routes one wake; spurious entries
+/// (residual-drain race, IDLE sharing the vector) are qualified inside
+/// `on_rx_byte_wake`, so no flag inspection happens here. Runs after the
 /// existing IDLE/TC bodies — additive per [[isr-ordering]].
 fn on_usart1_status_start() {
     if !usart::is_rxneie(USART1) {
         return;
     }
     // SAFETY: see `on_dma1_ch5`.
-    unsafe { Drivers::dxl_uart() }.on_status_start();
+    unsafe { Drivers::dxl_uart() }.on_rx_byte_wake();
 }
 
 /// SysTick CMP-match — a long-horizon scheduling deadline arrived. Two

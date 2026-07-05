@@ -8,7 +8,7 @@
 
 /// Everything the Fast Last pipeline needs to start one Last reply, composed
 /// by the composite at the status-start observation (task #142 model:
-/// `DxlUart::on_status_start`). `status_start_tick` is the ET-ring-derived
+/// `DxlUart::on_rx_byte_wake`). `status_start_tick` is the ET-ring-derived
 /// start of the chain's single Status packet; all grid timing derives from
 /// it — the predecessor window literally begins at the anchor, so no RDT
 /// term exists ([[rdt-single-target-only]]).

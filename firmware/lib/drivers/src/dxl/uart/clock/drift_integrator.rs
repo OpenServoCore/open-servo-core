@@ -5,10 +5,11 @@
 //! [`DriftIntegrator::on_rx_packet_end`]:
 //!
 //! - **Boot** ([`DriftPhase::Boot`], active until the first batch close from
-//!   [`DriftIntegrator::new`]): batch closes at [`DRIFT_MIN_SAMPLES_BOOT`]
-//!   spans with a full-step deadband and an emit cap of 16 register steps
-//!   (full envelope). Lands ±20 000 ppm factory drift in a single batch so
-//!   non-Fast commands work as soon as enough RX traffic has flowed.
+//!   [`DriftIntegrator::new`]): the batch closes at the first RX packet
+//!   boundary that holds ≥ 1 span, with a full-step deadband and an emit cap
+//!   of 16 register steps (full envelope). Window spans are long/high-quality
+//!   by construction, so one lands the ±20 000 ppm factory drift inside the
+//!   first exchange — non-Fast commands work as soon as one packet flowed.
 //! - **Steady** ([`DriftPhase::Steady`], every batch after the first): batch
 //!   closes at [`DRIFT_MIN_SAMPLES_STEADY`] spans with a half-step deadband
 //!   and an emit cap of 4 steps. Bounds noise risk and squeezes the residual
@@ -28,7 +29,7 @@ use core::marker::PhantomData;
 
 use osc_core::BaudRate;
 
-use super::drift_consts::{DRIFT_MIN_SAMPLES_BOOT, DRIFT_MIN_SAMPLES_STEADY};
+use super::drift_consts::DRIFT_MIN_SAMPLES_STEADY;
 use crate::dxl::uart::BITS_PER_FRAME;
 use crate::traits::dxl::{ClockTrim, UsartBaud};
 
@@ -92,15 +93,6 @@ enum DriftPhase {
 }
 
 impl DriftPhase {
-    /// Spans that close a batch. Boot's short window lands factory drift
-    /// fast; steady's longer window clears sampling noise.
-    fn min_samples(self) -> u16 {
-        match self {
-            Self::Boot => DRIFT_MIN_SAMPLES_BOOT,
-            Self::Steady => DRIFT_MIN_SAMPLES_STEADY,
-        }
-    }
-
     /// Emission cap in trim steps — see [`EMIT_CAP_STEPS_BOOT`] /
     /// [`EMIT_CAP_STEPS_STEADY`].
     fn emit_cap_steps(self) -> i32 {
@@ -166,9 +158,12 @@ impl<U: UsartBaud, T: ClockTrim> DriftIntegrator<U, T> {
     /// The tracker's same-burst gate has already bounded `d_ticks` to within
     /// `d_bytes · byte_ticks / 16` of nominal, so `drift_ticks` here is a
     /// small honest offset, never an inter-packet gap.
-    pub fn on_span(&mut self, d_ticks: u32, d_bytes: u32) {
+    /// Returns whether this span closed a (steady) batch — the driver
+    /// closes the drift window on any batch close, so the per-byte wake
+    /// IRQs never outlive the sampling they exist for.
+    pub fn on_span(&mut self, d_ticks: u32, d_bytes: u32) -> bool {
         if d_bytes == 0 {
-            return;
+            return false;
         }
         let drift = (d_ticks as i64 - d_bytes as i64 * self.byte_ticks_spec())
             .clamp(i32::MIN as i64, i32::MAX as i64) as i32;
@@ -189,9 +184,16 @@ impl<U: UsartBaud, T: ClockTrim> DriftIntegrator<U, T> {
             None => cand,
         });
         self.span_count += 1;
-        if self.span_count >= self.state.min_samples() {
+        // Boot's batch closes at the packet boundary (see
+        // [`Self::on_rx_packet_end`]), not on a span count — one long
+        // window span is enough to land factory drift. Steady's longer
+        // window closes on count so its half-step deadband has the SNR
+        // margin.
+        if !self.is_boot() && self.span_count >= DRIFT_MIN_SAMPLES_STEADY {
             self.close_batch();
+            return true;
         }
+        false
     }
 
     /// Close one batch: convert the minimum per-byte drift to ppm, stage the
@@ -238,16 +240,26 @@ impl<U: UsartBaud, T: ClockTrim> DriftIntegrator<U, T> {
         self.span_count = 0;
     }
 
-    /// RX-side packet boundary — applies any pending trim correction and
-    /// transitions boot→steady. Trim writes HSITRIM directly (no BRR
-    /// mid-frame constraint), so the earliest safe apply point is the first
-    /// quiet moment after the integrator has folded a packet's spans.
-    /// Called by the driver at every poll boundary — own-Crc,
-    /// foreign-SkipComplete, and Bad-CRC / Resync alike, so foreign-
-    /// instruction sampling per [[drift_sampling_instruction_only]]
-    /// converges the same as own. Idempotent: with no pending correction and
-    /// already in [`DriftPhase::Steady`], the call is a no-op.
-    pub fn on_rx_packet_end(&mut self) {
+    /// RX-side packet boundary — closes the boot batch (if it holds a span),
+    /// applies any pending trim correction, and transitions boot→steady.
+    /// Trim writes HSITRIM directly (no BRR mid-frame constraint), so the
+    /// earliest safe apply point is the first quiet moment after the
+    /// integrator has folded a packet's spans. Called by the driver at every
+    /// poll boundary — own-Crc, foreign-SkipComplete, and Bad-CRC / Resync
+    /// alike, so foreign-instruction sampling per
+    /// [[drift_sampling_instruction_only]] converges the same as own.
+    /// Returns whether the boot batch closed this call, regardless of
+    /// whether it landed a correction — a below-deadband close is a success
+    /// (drift ≈ 0 learned), and the driver closes its drift window on any
+    /// batch close. Idempotent: with no held span and already in
+    /// [`DriftPhase::Steady`], the call is a no-op.
+    pub fn on_rx_packet_end(&mut self) -> bool {
+        // Boot closes on the first packet boundary that holds a span;
+        // steady batches close (and report) in `on_span` at the span count.
+        let batch_closed = self.is_boot() && self.span_count >= 1;
+        if batch_closed {
+            self.close_batch();
+        }
         if let Some(applied) = self.pending_applied_ppm.take() {
             self.trim.apply_ppm(applied);
             self.applied_ppm = applied;
@@ -256,6 +268,7 @@ impl<U: UsartBaud, T: ClockTrim> DriftIntegrator<U, T> {
             self.state = DriftPhase::Steady;
             self.reset_batch();
         }
+        batch_closed
     }
 }
 
@@ -297,18 +310,21 @@ mod tests {
 
     /// Feed one span whose per-byte drift is `drift_ppm` ppm relative to the
     /// nominal byte time — the sign convention the hardware span carries
-    /// (positive = HSI fast = more ticks per byte).
-    fn feed_ppm(c: &mut TestIntegrator, drift_ppm: i32) {
+    /// (positive = HSI fast = more ticks per byte). Returns `on_span`'s
+    /// batch-closed signal.
+    fn feed_ppm(c: &mut TestIntegrator, drift_ppm: i32) -> bool {
         let spec = BITS_PER_FRAME as i64 * SPEC_9600 as i64;
         let nominal = SPAN_BYTES as i64 * spec;
         let d_ticks = nominal + (nominal * drift_ppm as i64) / 1_000_000;
-        c.on_span(d_ticks as u32, SPAN_BYTES);
+        c.on_span(d_ticks as u32, SPAN_BYTES)
     }
 
     // ---------- boot integrator ----------
 
     #[test]
     fn single_span_does_not_stage_ppm() {
+        // A span alone never stages in boot — the batch closes at the
+        // packet boundary, not on a span count.
         let mut c = integrator_9600();
         feed_ppm(&mut c, 20_000);
         assert_eq!(c.pending_applied_ppm, None);
@@ -316,49 +332,60 @@ mod tests {
     }
 
     #[test]
-    fn boot_batch_at_zero_drift_stages_nothing() {
-        let mut c = integrator_9600();
-        for _ in 0..DRIFT_MIN_SAMPLES_BOOT {
-            feed_ppm(&mut c, 0);
-        }
+    fn boot_lands_at_packet_end_with_one_span() {
+        // +20 000 ppm (HSI fast) → 8 steps → counter −8 → −20 000 ppm,
+        // applied on the first packet boundary that holds a span.
+        let (mut c, t_state) = make(BaudRate::B9600, SPEC_9600);
+        feed_ppm(&mut c, 20_000);
+        assert!(c.on_rx_packet_end(), "batch closed");
+        assert_eq!(t_state.apply_ppm_log(), alloc::vec![-20_000]);
+        assert_eq!(c.applied_ppm, -20_000);
         assert_eq!(c.pending_applied_ppm, None);
+        assert!(!c.is_boot(), "boot landing transitions to steady");
     }
 
     #[test]
-    fn boot_batch_within_deadband_stages_nothing() {
+    fn boot_packet_end_without_a_span_closes_no_batch() {
+        // No span this exchange → nothing to close; still transitions.
+        let mut c = integrator_9600();
+        assert!(!c.on_rx_packet_end());
+        assert_eq!(c.applied_ppm, 0);
+        assert!(!c.is_boot());
+    }
+
+    #[test]
+    fn boot_at_zero_drift_closes_the_batch_without_applying() {
+        // A below-deadband close is still a batch close — drift ≈ 0
+        // learned; the returned signal ends the driver's drift window even
+        // though no correction was worth emitting.
+        let mut c = integrator_9600();
+        feed_ppm(&mut c, 0);
+        assert!(c.on_rx_packet_end(), "nominal batch still closes");
+        assert_eq!(c.applied_ppm, 0);
+    }
+
+    #[test]
+    fn boot_within_deadband_closes_the_batch_without_applying() {
         // 1000 ppm < the full-step (2500 ppm) boot deadband.
         let mut c = integrator_9600();
-        for _ in 0..DRIFT_MIN_SAMPLES_BOOT {
-            feed_ppm(&mut c, 1000);
-        }
-        assert_eq!(c.pending_applied_ppm, None);
+        feed_ppm(&mut c, 1000);
+        assert!(c.on_rx_packet_end(), "sub-deadband batch still closes");
+        assert_eq!(c.applied_ppm, 0);
     }
 
     #[test]
-    fn boot_batch_positive_drift_stages_negative_ppm() {
-        // +20 000 ppm (HSI fast) → 8 steps → counter −8 → −20 000 ppm.
+    fn boot_negative_drift_applies_positive_ppm() {
         let mut c = integrator_9600();
-        for _ in 0..DRIFT_MIN_SAMPLES_BOOT {
-            feed_ppm(&mut c, 20_000);
-        }
-        assert_eq!(c.pending_applied_ppm, Some(-20_000));
+        feed_ppm(&mut c, -20_000);
+        assert!(c.on_rx_packet_end());
+        assert_eq!(c.applied_ppm, 20_000);
     }
 
     #[test]
-    fn boot_batch_negative_drift_stages_positive_ppm() {
+    fn integrator_resets_after_boot_close() {
         let mut c = integrator_9600();
-        for _ in 0..DRIFT_MIN_SAMPLES_BOOT {
-            feed_ppm(&mut c, -20_000);
-        }
-        assert_eq!(c.pending_applied_ppm, Some(20_000));
-    }
-
-    #[test]
-    fn integrator_resets_after_batch_close() {
-        let mut c = integrator_9600();
-        for _ in 0..DRIFT_MIN_SAMPLES_BOOT {
-            feed_ppm(&mut c, 20_000);
-        }
+        feed_ppm(&mut c, 20_000);
+        c.on_rx_packet_end();
         assert!(c.best.is_none());
         assert_eq!(c.span_count, 0);
     }
@@ -366,13 +393,14 @@ mod tests {
     #[test]
     fn min_statistic_rejects_a_one_sided_inflated_span() {
         // Entry-latency delay only inflates d_ticks; the minimum per-byte
-        // drift is the honest estimate. A batch of true-20 000-ppm spans
-        // with one badly-delayed (inflated) span still lands at −8 steps.
+        // drift is the honest estimate. A boot batch of true-20 000-ppm
+        // spans with one badly-delayed (inflated) span still lands at −8.
         let mut c = integrator_9600();
-        for i in 0..DRIFT_MIN_SAMPLES_BOOT {
-            feed_ppm(&mut c, if i == 0 { 60_000 } else { 20_000 });
-        }
-        assert_eq!(c.pending_applied_ppm, Some(-20_000));
+        feed_ppm(&mut c, 60_000);
+        feed_ppm(&mut c, 20_000);
+        feed_ppm(&mut c, 20_000);
+        assert!(c.on_rx_packet_end());
+        assert_eq!(c.applied_ppm, -20_000);
     }
 
     // ---------- envelope clamp ----------
@@ -382,10 +410,9 @@ mod tests {
         // −40 000 ppm drift → 16 steps (at the boot emit cap) → counter
         // +16 → +40 000 ppm, clamped to the +37 500 envelope rail.
         let mut c = integrator_9600();
-        for _ in 0..DRIFT_MIN_SAMPLES_BOOT {
-            feed_ppm(&mut c, -40_000);
-        }
-        assert_eq!(c.pending_applied_ppm, Some(MockClockTrim::ENVELOPE_PPM.1));
+        feed_ppm(&mut c, -40_000);
+        assert!(c.on_rx_packet_end());
+        assert_eq!(c.applied_ppm, MockClockTrim::ENVELOPE_PPM.1);
     }
 
     // ---------- boot → steady transition ----------
@@ -399,36 +426,19 @@ mod tests {
     }
 
     #[test]
-    fn steady_batch_closes_at_20_spans_not_6() {
+    fn steady_batch_closes_at_twenty_spans() {
         let mut c = integrator_9600();
         c.on_rx_packet_end(); // boot → steady, batch reset.
         // +5000 ppm = 2 steps, inside the 4-step steady cap.
-        for _ in 0..DRIFT_MIN_SAMPLES_BOOT {
-            feed_ppm(&mut c, 5000);
+        for _ in 0..DRIFT_MIN_SAMPLES_STEADY - 1 {
+            assert!(!feed_ppm(&mut c, 5000), "mid-batch span closes nothing");
         }
         assert_eq!(
             c.pending_applied_ppm, None,
-            "6 spans don't close a steady batch"
+            "a short steady batch does not close"
         );
-        for _ in DRIFT_MIN_SAMPLES_BOOT..DRIFT_MIN_SAMPLES_STEADY {
-            feed_ppm(&mut c, 5000);
-        }
+        assert!(feed_ppm(&mut c, 5000), "20th span reports the batch close");
         assert_eq!(c.pending_applied_ppm, Some(-5000));
-    }
-
-    // ---------- trim apply ----------
-
-    #[test]
-    fn on_rx_packet_end_applies_pending_ppm_to_trim() {
-        let (mut c, t_state) = make(BaudRate::B9600, SPEC_9600);
-        for _ in 0..DRIFT_MIN_SAMPLES_BOOT {
-            feed_ppm(&mut c, 20_000);
-        }
-        assert_eq!(c.pending_applied_ppm, Some(-20_000));
-        c.on_rx_packet_end();
-        assert_eq!(t_state.apply_ppm_log(), alloc::vec![-20_000]);
-        assert_eq!(c.applied_ppm, -20_000);
-        assert_eq!(c.pending_applied_ppm, None);
     }
 
     // ---------- steady emit cap ----------
@@ -467,12 +477,11 @@ mod tests {
         // the divisor.
         let (mut c, _) = make(BaudRate::B3000000, 16);
         let spec = BITS_PER_FRAME as i64 * 16;
-        for _ in 0..DRIFT_MIN_SAMPLES_BOOT {
-            let nominal = SPAN_BYTES as i64 * spec;
-            let d_ticks = nominal + (nominal * 20_000) / 1_000_000;
-            c.on_span(d_ticks as u32, SPAN_BYTES);
-        }
-        assert_eq!(c.pending_applied_ppm, Some(-20_000));
+        let nominal = SPAN_BYTES as i64 * spec;
+        let d_ticks = nominal + (nominal * 20_000) / 1_000_000;
+        c.on_span(d_ticks as u32, SPAN_BYTES);
+        assert!(c.on_rx_packet_end());
+        assert_eq!(c.applied_ppm, -20_000);
     }
 
     #[test]

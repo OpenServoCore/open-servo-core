@@ -13,6 +13,13 @@ use crate::dxl::uart::poll_src::PollSrc;
 /// while the largest real trim offset (~2 %) passes with wide margin.
 const SAME_BURST_GATE_DIV: u32 = 16;
 
+/// Shortest per-byte window span the drift integrator will accept. A 1-byte
+/// span at 3M has ±6250 ppm stamp quantization (±1 tick / 160), worse than
+/// the ~2500 ppm trim step; 8 bytes brings it to ≤781 ppm (1 / 1280 ticks),
+/// finer at every lower baud. Below this the span is dropped rather than fed
+/// as a poison low-SNR sample.
+const DRIFT_WINDOW_MIN_BYTES: u32 = 8;
+
 struct Stamp {
     now: u32,
     cursor: u32,
@@ -67,6 +74,79 @@ impl SpanTracker {
             return None;
         }
         Some((d_ticks, d_bytes))
+    }
+}
+
+/// One-span-per-burst sampler for the RXNE cold-start window. While the
+/// window is open the driver records the FIRST per-byte wake's
+/// `(now, cursor)` and keeps overwriting the LAST one; at the packet
+/// boundary [`Self::settle`] emits a single long span from the pair — the
+/// path that restores drift sampling for isolated short packets, which
+/// trip only one drain ISR and so form no [`SpanTracker`] pair.
+///
+/// One span per burst by design: pairing consecutive per-byte wakes would
+/// hand the integrator 1-byte spans whose ±quantization dwarfs the trim
+/// step and biases the batch minimum. The accumulated span is instead
+/// gated on [`DRIFT_WINDOW_MIN_BYTES`] and the same-burst rule before it
+/// ever reaches the integrator.
+pub(super) struct DriftWindow {
+    /// `(now, cursor)` of the burst's first per-byte wake; `None` between
+    /// bursts.
+    first: Option<(u32, u32)>,
+    /// `(now, cursor)` of the burst's most recent per-byte wake.
+    last: Option<(u32, u32)>,
+    pending: Option<(u32, u32)>,
+}
+
+impl DriftWindow {
+    pub(super) const fn new() -> Self {
+        Self {
+            first: None,
+            last: None,
+            pending: None,
+        }
+    }
+
+    /// Record one per-byte wake. The first wake of a burst anchors the
+    /// span; every later wake advances its end. `cursor` is the published
+    /// wire-byte cursor (monotonic).
+    pub(super) fn record(&mut self, now: u32, cursor: u32) {
+        if self.first.is_none() {
+            self.first = Some((now, cursor));
+        }
+        self.last = Some((now, cursor));
+    }
+
+    /// Packet boundary — close the current burst's window. Emits a single
+    /// span into [`Self::take_span`] iff the burst was an Instruction, the
+    /// accumulated length clears [`DRIFT_WINDOW_MIN_BYTES`], and the tick
+    /// length passes the same-burst gate; resets the anchor for the next
+    /// burst either way. Returns whether a qualifying span was produced.
+    pub(super) fn settle(&mut self, byte_ticks: u32, instruction: bool) -> bool {
+        let (first, last) = match (self.first.take(), self.last.take()) {
+            (Some(f), Some(l)) => (f, l),
+            _ => return false,
+        };
+        if !instruction {
+            return false;
+        }
+        let d_bytes = last.1.wrapping_sub(first.1);
+        if d_bytes < DRIFT_WINDOW_MIN_BYTES || (d_bytes as i32) < 0 {
+            return false;
+        }
+        let d_ticks = last.0.wrapping_sub(first.0);
+        let expected = d_bytes.wrapping_mul(byte_ticks);
+        if d_ticks.abs_diff(expected) > expected / SAME_BURST_GATE_DIV {
+            return false;
+        }
+        self.pending = Some((d_ticks, d_bytes));
+        true
+    }
+
+    /// Take the accumulated span for the drift integrator, if the last
+    /// [`Self::settle`] produced one. Take-once.
+    pub(super) fn take_span(&mut self) -> Option<(u32, u32)> {
+        self.pending.take()
     }
 }
 
@@ -162,5 +242,81 @@ mod tests {
             ),
             Some((8 * BYTE_TICKS, 8))
         );
+    }
+
+    // ---------- drift window ----------
+
+    fn window() -> DriftWindow {
+        DriftWindow::new()
+    }
+
+    #[test]
+    fn window_emits_one_span_for_a_short_instruction_burst() {
+        let mut w = window();
+        // 10-byte ping: wakes at cursors 1..=10, one byte-time apart.
+        for i in 1..=10u32 {
+            w.record(i * BYTE_TICKS, i);
+        }
+        assert!(w.settle(BYTE_TICKS, true));
+        // first cursor 1, last cursor 10 → 9 whole bytes.
+        assert_eq!(w.take_span(), Some((9 * BYTE_TICKS, 9)));
+        // Take-once.
+        assert_eq!(w.take_span(), None);
+    }
+
+    #[test]
+    fn window_resets_between_bursts() {
+        let mut w = window();
+        for i in 1..=10u32 {
+            w.record(i * BYTE_TICKS, i);
+        }
+        assert!(w.settle(BYTE_TICKS, true));
+        let _ = w.take_span();
+        // Next burst continues the monotonic cursor; the span must span
+        // only the new burst, not straddle the reset.
+        for i in 11..=20u32 {
+            w.record(i * BYTE_TICKS, i);
+        }
+        assert!(w.settle(BYTE_TICKS, true));
+        assert_eq!(w.take_span(), Some((9 * BYTE_TICKS, 9)));
+    }
+
+    #[test]
+    fn window_below_min_bytes_is_dropped() {
+        let mut w = window();
+        // 8 wakes → 7 whole bytes, under the 8-byte floor.
+        for i in 1..=8u32 {
+            w.record(i * BYTE_TICKS, i);
+        }
+        assert!(!w.settle(BYTE_TICKS, true));
+        assert_eq!(w.take_span(), None);
+    }
+
+    #[test]
+    fn window_non_instruction_burst_is_dropped() {
+        let mut w = window();
+        for i in 1..=10u32 {
+            w.record(i * BYTE_TICKS, i);
+        }
+        assert!(!w.settle(BYTE_TICKS, false));
+        assert_eq!(w.take_span(), None);
+    }
+
+    #[test]
+    fn window_inter_packet_gap_blows_the_same_burst_gate() {
+        let mut w = window();
+        w.record(0, 0);
+        // 10 bytes of cursor but a millisecond of ticks between first and
+        // last — a straddled inter-packet gap, rejected.
+        w.record(1_000_000, 10);
+        assert!(!w.settle(BYTE_TICKS, true));
+        assert_eq!(w.take_span(), None);
+    }
+
+    #[test]
+    fn window_settle_without_wakes_is_a_no_op() {
+        let mut w = window();
+        assert!(!w.settle(BYTE_TICKS, true));
+        assert_eq!(w.take_span(), None);
     }
 }

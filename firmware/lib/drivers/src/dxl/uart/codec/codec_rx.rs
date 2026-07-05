@@ -14,7 +14,7 @@ use dxl_protocol::wire;
 use super::edge_capture::EdgeCapture;
 use super::poll_event::{PollAction, PollEvent};
 use super::skip::SkipFsm;
-use super::span::SpanTracker;
+use super::span::{DriftWindow, SpanTracker};
 use crate::dxl::uart::BITS_PER_FRAME;
 use crate::dxl::uart::poll_src::PollSrc;
 use crate::ring::HwRing;
@@ -77,6 +77,10 @@ pub struct CodecRx<R: EdgeDma, CRC: CrcUmts, const RX_BUF_LEN: usize, const EDGE
     /// Drift-span tracker — pairs consecutive drain-ISR stamps into
     /// `(d_ticks, d_bytes)` spans for the HSI integrator.
     span: SpanTracker,
+    /// RXNE cold-start window — accumulates per-byte wake stamps into one
+    /// long span per burst, the isolated-short-packet path the drain-ISR
+    /// [`SpanTracker`] can't cover (a short packet trips a single drain).
+    window: DriftWindow,
 }
 
 impl<R: EdgeDma, CRC: CrcUmts, const RX_BUF_LEN: usize, const EDGE_BUF_LEN: usize>
@@ -91,6 +95,7 @@ impl<R: EdgeDma, CRC: CrcUmts, const RX_BUF_LEN: usize, const EDGE_BUF_LEN: usiz
             wire_bytes_consumed: 0,
             skip_fsm: SkipFsm::new(),
             span: SpanTracker::new(),
+            window: DriftWindow::new(),
         }
     }
 }
@@ -149,6 +154,24 @@ impl<R: EdgeDma, CRC: CrcUmts, const RX_BUF_LEN: usize, const EDGE_BUF_LEN: usiz
         )
     }
 
+    /// One per-byte RX wake landed while the drift window is open — publish
+    /// the byte ring from `remaining` (NDTR) so the cursor is current, then
+    /// record `(now, published_cursor)`. The burst's accumulated span is
+    /// emitted later at the packet boundary during [`Self::poll`]; see
+    /// [`DriftWindow`](super::span::DriftWindow).
+    pub fn record_drift_wake(&mut self, now: u32, remaining: u16) {
+        self.on_rx_progress(remaining);
+        let cursor = self.published_cursor();
+        self.window.record(now, cursor);
+    }
+
+    /// Take the drift window's accumulated span from the most recent
+    /// packet boundary, if one qualified. Take-once; the caller feeds it
+    /// to `Clock::on_span`.
+    pub fn take_window_span(&mut self) -> Option<(u32, u32)> {
+        self.window.take_span()
+    }
+
     /// The producer head as a monotonic wire-byte cursor —
     /// `wire_bytes_consumed + reader.avail()`. The span tracker diffs it
     /// across stamps to get `d_bytes`; the caller must have published the
@@ -200,7 +223,11 @@ impl<R: EdgeDma, CRC: CrcUmts, const RX_BUF_LEN: usize, const EDGE_BUF_LEN: usiz
             // Skip phase first: an armed byte-skip owns the ring tail
             // until it exhausts. Break = ring starved mid-skip; resume
             // on a later poll.
-            if self.skip_fsm.is_skipping() && self.drain_skip(now, &mut on_event).is_break() {
+            if self.skip_fsm.is_skipping()
+                && self
+                    .drain_skip(now, ticks_per_bit, &mut on_event)
+                    .is_break()
+            {
                 return;
             }
             // Feed phase: parser drains the ring until it runs dry or the
@@ -226,7 +253,7 @@ impl<R: EdgeDma, CRC: CrcUmts, const RX_BUF_LEN: usize, const EDGE_BUF_LEN: usiz
     /// — once the expected duration has elapsed the ring's contents belong
     /// to whatever came next.
     #[inline]
-    fn drain_skip<F>(&mut self, now: u32, on_event: &mut F) -> ControlFlow<()>
+    fn drain_skip<F>(&mut self, now: u32, ticks_per_bit: u16, on_event: &mut F) -> ControlFlow<()>
     where
         F: FnMut(PollEvent<'_>) -> PollAction,
     {
@@ -255,6 +282,9 @@ impl<R: EdgeDma, CRC: CrcUmts, const RX_BUF_LEN: usize, const EDGE_BUF_LEN: usiz
         if let Some(id) = self.skip_fsm.finish() {
             on_event(PollEvent::SkipComplete { id });
         }
+        let byte_ticks = (ticks_per_bit as u32).wrapping_mul(BITS_PER_FRAME as u32);
+        self.window
+            .settle(byte_ticks, self.skip_fsm.should_sample_drift());
         self.skip_fsm.on_packet_end();
         ControlFlow::Continue(())
     }
@@ -361,6 +391,9 @@ impl<R: EdgeDma, CRC: CrcUmts, const RX_BUF_LEN: usize, const EDGE_BUF_LEN: usiz
                     }
 
                     if matches!(ev, Event::Crc(_) | Event::Resync(_)) {
+                        let byte_ticks = (ticks_per_bit as u32).wrapping_mul(BITS_PER_FRAME as u32);
+                        self.window
+                            .settle(byte_ticks, self.skip_fsm.should_sample_drift());
                         self.skip_fsm.on_packet_end();
                     }
                 }

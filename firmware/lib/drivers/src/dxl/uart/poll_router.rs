@@ -11,6 +11,7 @@ use dxl_protocol::streaming::{CrcResult, Event, HeaderEvent, PayloadEvent};
 
 use super::clock::Clock;
 use super::codec::{CodecTx, PacketEnd, PollAction};
+use super::drift_window::RxWakeGate;
 use super::fast_last::FastLast;
 use super::reply_handle::ReplyHandle;
 use super::send_policy::SendPolicy;
@@ -27,6 +28,10 @@ pub(super) struct PollRouter<'a, P: Providers, const TX_BUF_LEN: usize> {
     /// path's status-start wake window; the router itself never touches
     /// it.
     pub(super) rx_dma: &'a mut P::RxDma,
+    /// RXNEIE reason set — threaded to [`ReplyHandle`] so the FAST defer
+    /// path opens the wake through the shared gate (OR-edge), not by
+    /// toggling `rx_dma` directly.
+    pub(super) rx_wake: &'a mut RxWakeGate,
     /// Live bus ID snapshot for log lines — stable for the poll's duration
     /// (staged ID commits only at `on_tx_complete`).
     pub(super) id: u8,
@@ -154,6 +159,7 @@ impl<P: Providers, const TX_BUF_LEN: usize> PollRouter<'_, P, TX_BUF_LEN> {
             scheduler: &mut *self.scheduler,
             clock: &mut *self.clock,
             rx_dma: &mut *self.rx_dma,
+            rx_wake: &mut *self.rx_wake,
             send_policy: &mut *self.send_policy,
         }
     }

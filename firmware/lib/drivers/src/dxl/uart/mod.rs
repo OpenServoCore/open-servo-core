@@ -11,6 +11,7 @@
 
 pub mod clock;
 pub mod codec;
+mod drift_window;
 pub mod fast_last;
 mod poll_router;
 mod poll_src;
@@ -31,6 +32,7 @@ use crate::traits::dxl::{
 };
 use clock::Clock;
 use codec::{Codec, PollAction, PollEvent};
+use drift_window::RxWakeGate;
 use fast_last::{FastLast, FoldExit};
 use poll_router::PollRouter;
 use send_policy::SendPolicy;
@@ -97,6 +99,12 @@ pub struct DxlUart<
     /// driver-pattern §7.4 — driver-derivable wire shape stays in the
     /// driver, not on the trait surface.
     send_policy: SendPolicy,
+
+    /// Per-byte RX wake reason set + drift-window lifecycle. Reconciles the
+    /// FAST k > 0 status-start wait and the drift sampler, which share the
+    /// one RXNEIE bit — toggled only on the OR-edge so neither closes the
+    /// window the other still holds. See [`drift_window`].
+    rx_wake: RxWakeGate,
 }
 
 impl<P: Providers, const RX_BUF_LEN: usize, const EDGE_BUF_LEN: usize, const TX_BUF_LEN: usize>
@@ -125,12 +133,17 @@ impl<P: Providers, const RX_BUF_LEN: usize, const EDGE_BUF_LEN: usize, const TX_
             wire_clock,
             telemetry,
             send_policy: SendPolicy::new(id, rdt_us),
+            rx_wake: RxWakeGate::new(),
         };
         // Seed the codec's edge parser with the Clock's initial-baud
         // edge-stamp compensation. Subsequent baud changes re-publish via
         // `Self::on_tx_complete` after `Clock::on_tx_complete` applies the
         // pending baud.
         s.codec.on_baud_change(s.clock.rx_edge_comp_ticks());
+        // Cold-start drift window: hold the per-byte RX wake open from boot
+        // so the first short-packet exchange lands the factory-drift
+        // correction (isolated pings form no drain-ISR span pairs).
+        s.rx_wake.open_drift(&mut s.rx_dma, 0);
         s
     }
 
@@ -148,7 +161,11 @@ impl<P: Providers, const RX_BUF_LEN: usize, const EDGE_BUF_LEN: usize, const TX_
         // current — the IDLE path doesn't otherwise refresh it.
         self.codec.on_rx_progress(self.rx_dma.remaining());
         if let Some((d_ticks, d_bytes)) = self.codec.on_idle(now, byte_ticks) {
-            self.clock.on_span(d_ticks, d_bytes);
+            if self.clock.on_span(d_ticks, d_bytes) {
+                self.rx_wake.on_batch_closed(&mut self.rx_dma);
+            }
+            self.rx_wake
+                .note_accept(self.codec.instruction_count(), false);
         }
     }
 
@@ -166,23 +183,33 @@ impl<P: Providers, const RX_BUF_LEN: usize, const EDGE_BUF_LEN: usize, const TX_
         let byte_ticks = self.clock.byte_ticks() as u32;
         self.codec.on_rx_progress(self.rx_dma.remaining());
         if let Some((d_ticks, d_bytes)) = self.codec.on_byte_batch_wake(now, byte_ticks) {
-            self.clock.on_span(d_ticks, d_bytes);
+            if self.clock.on_span(d_ticks, d_bytes) {
+                self.rx_wake.on_batch_closed(&mut self.rx_dma);
+            }
+            self.rx_wake
+                .note_accept(self.codec.instruction_count(), false);
         }
     }
 
-    /// A per-byte wake landed inside the status-start watch window
-    /// (chip-side: USART1 RXNE trap; the window opens when `send_slot`
-    /// defers a FAST slot k > 0 per task #142). Resolve the observed
-    /// start tick of the chain's single Status packet from the ET ring
-    /// and schedule our slot's wire start `slot_offset_bytes` whole
-    /// bytes after it; for Last also start the fold pipeline off the
-    /// same anchor. Also called from the `poll` epilogue as the
-    /// enable-race backstop — when the reply's leading bytes arrived
-    /// before the watch opened, no further wake may come for them.
+    /// A per-byte RX wake fired (chip-side: USART1 RXNE trap). The wake is
+    /// the demux point for the two consumers that hold the RXNEIE window
+    /// open — served in order:
     ///
-    /// Guard order:
-    /// 1. no wait parked → close a stale window (a lifecycle clear
-    ///    dropped the wait while RXNEIE was on) and return;
+    /// 1. **Drift window** (cheap): while open, record this byte's stamp so
+    ///    the burst's accumulated span can land at the packet boundary. This
+    ///    is the isolated-short-packet drift path (a short packet trips one
+    ///    drain ISR and forms no `SpanTracker` pair).
+    /// 2. **FAST k > 0 status-start wait**: resolve the observed start tick
+    ///    of the chain's single Status packet from the ET ring, schedule our
+    ///    slot's wire start `slot_offset_bytes` whole bytes after it, and for
+    ///    Last start the fold pipeline off the same anchor. Also called from
+    ///    the `poll` epilogue as the enable-race backstop — when the reply's
+    ///    leading bytes arrived before the watch opened, no further wake may
+    ///    come for them.
+    ///
+    /// FAST guard order:
+    /// 1. no wait parked → clear the FAST reason (the drift window may still
+    ///    hold RXNEIE) and return;
     /// 2. no resolvable tick → keep waiting (spurious wake before any
     ///    reply byte, or an EMI-lost edge — the next byte's wake retries
     ///    via the multi-byte signature arm);
@@ -196,9 +223,15 @@ impl<P: Providers, const RX_BUF_LEN: usize, const EDGE_BUF_LEN: usize, const TX_
     // `FsmScheduler::on_step`).
     #[cfg_attr(target_arch = "riscv32", unsafe(link_section = ".highcode"))]
     #[inline(never)]
-    pub fn on_status_start(&mut self) {
+    pub fn on_rx_byte_wake(&mut self) {
+        if self.rx_wake.drift_open() {
+            let now = self.wire_clock.now();
+            let remaining = self.rx_dma.remaining();
+            let (rx, _) = self.codec.split_mut();
+            rx.record_drift_wake(now, remaining);
+        }
         let Some(wait) = self.send_policy.awaited_status_start() else {
-            self.rx_dma.unwatch_status_start();
+            self.rx_wake.set_fast(&mut self.rx_dma, false);
             return;
         };
         let now = self.wire_clock.now();
@@ -215,7 +248,7 @@ impl<P: Providers, const RX_BUF_LEN: usize, const EDGE_BUF_LEN: usize, const TX_
                 status_start,
                 wait.latest_start_tick
             );
-            self.rx_dma.unwatch_status_start();
+            self.rx_wake.set_fast(&mut self.rx_dma, false);
             self.send_policy.on_status_start_scheduled();
             return;
         }
@@ -259,7 +292,7 @@ impl<P: Providers, const RX_BUF_LEN: usize, const EDGE_BUF_LEN: usize, const TX_
         }
         self.scheduler
             .schedule(deadline, byte_count, SendKind::FastLast);
-        self.rx_dma.unwatch_status_start();
+        self.rx_wake.set_fast(&mut self.rx_dma, false);
         self.send_policy.on_status_start_scheduled();
         // On-time observation with a short predecessor window: run the
         // first fold body inline instead of waiting for the CMP dispatch.
@@ -292,7 +325,7 @@ impl<P: Providers, const RX_BUF_LEN: usize, const EDGE_BUF_LEN: usize, const TX_
     ///
     /// [`FsmScheduler::on_step`]: fast_last::FsmScheduler::on_step
     /// [`FoldEngine::on_slice`]: fast_last::FoldEngine::on_slice
-    // RAM placement is load-bearing — see `Self::on_status_start`.
+    // RAM placement is load-bearing — see `Self::on_rx_byte_wake`.
     #[cfg_attr(target_arch = "riscv32", unsafe(link_section = ".highcode"))]
     #[inline(never)]
     pub fn on_fold_step(&mut self) {
@@ -380,9 +413,10 @@ impl<P: Providers, const RX_BUF_LEN: usize, const EDGE_BUF_LEN: usize, const TX_
         // Belt-and-suspenders sibling of the send-policy wait clear
         // below: a status-start wake window left open past our own TX
         // (the wake path closes it on every resolution, but a dropped
-        // exchange may not have resolved) must not leak per-byte wakes
-        // into the next exchange.
-        self.rx_dma.unwatch_status_start();
+        // exchange may not have resolved) must not leak the FAST reason
+        // into the next exchange. Clears the FAST reason only — the drift
+        // window persists across our own reply.
+        self.rx_wake.set_fast(&mut self.rx_dma, false);
         // Per `dxl-streaming-rx.md` §5.3: our own TX completion is a
         // packet boundary at which stale chain state must reset. The
         // §5.3 "next instruction header" trigger is too late for the
@@ -391,11 +425,17 @@ impl<P: Providers, const RX_BUF_LEN: usize, const EDGE_BUF_LEN: usize, const TX_
         // before the parser ever reaches the header event.
         self.codec.cancel_skip();
         let reboot = self.send_policy.on_tx_complete();
-        self.clock.on_tx_complete();
+        let baud_changed = self.clock.on_tx_complete();
         // Clock just applied any pending baud — refresh the codec's edge
         // parser with the new per-baud edge-stamp compensation. Idempotent
         // when no baud change landed (the value is the same as before).
         self.codec.on_baud_change(self.clock.rx_edge_comp_ticks());
+        // A new divisor invalidates the in-flight drift batch — reopen the
+        // window so the first packet at the new baud re-lands the trim.
+        if baud_changed {
+            self.rx_wake
+                .open_drift(&mut self.rx_dma, self.codec.instruction_count());
+        }
         reboot
     }
 
@@ -439,7 +479,7 @@ impl<P: Providers, const RX_BUF_LEN: usize, const EDGE_BUF_LEN: usize, const TX_
         // observation), but the Status packet's bytes already belong to
         // it — a parser drain here would consume the leading header
         // bytes before the fold ever sees them. The per-byte wake path
-        // (`on_status_start`) is not a poll, so observation still
+        // (`on_rx_byte_wake`) is not a poll, so observation still
         // proceeds; a stale wait is bounded by the wake path's staleness
         // window, which drops it and un-gates on the next wire traffic.
         if self.send_policy.awaited_status_start().is_some() {
@@ -458,6 +498,7 @@ impl<P: Providers, const RX_BUF_LEN: usize, const EDGE_BUF_LEN: usize, const TX_
             tx_bus,
             fast_last,
             send_policy,
+            rx_wake,
             ..
         } = self;
         let (rx, tx) = codec.split_mut();
@@ -469,6 +510,7 @@ impl<P: Providers, const RX_BUF_LEN: usize, const EDGE_BUF_LEN: usize, const TX_
             clock,
             send_policy,
             rx_dma,
+            rx_wake,
             id,
         };
         rx.poll(now, ticks_per_bit, packet_end_comp, |pe| match pe {
@@ -504,19 +546,39 @@ impl<P: Providers, const RX_BUF_LEN: usize, const EDGE_BUF_LEN: usize, const TX_
                 PollAction::Continue
             }
         });
+        // Feed the drift window's accumulated span (isolated short packet)
+        // to the integrator BEFORE the packet-end close, so a boot batch
+        // holds it and lands the correction on this exchange. The span can
+        // itself close a steady batch — a batch close by any route ends
+        // the window below.
+        let mut batch_closed = false;
+        let window_accepted = if let Some((d_ticks, d_bytes)) = rx.take_window_span() {
+            batch_closed |= router.clock.on_span(d_ticks, d_bytes);
+            true
+        } else {
+            false
+        };
         // Apply any pending trim correction at the RX-side packet
         // boundary. Idempotent when nothing changed; necessary so
         // foreign-instruction packets — which never reach
         // `on_tx_complete` — still commit their drift samples per
-        // [[drift_sampling_instruction_only]].
-        router.clock.on_rx_packet_end();
+        // [[drift_sampling_instruction_only]]. Returns whether the boot
+        // batch closed — landed or below-deadband alike, the drift
+        // window's job is done.
+        batch_closed |= router.clock.on_rx_packet_end();
+        // Reconcile the drift window lifecycle (close on batch close /
+        // give-up, reopen on staleness). Runs after the router borrow is
+        // spent.
+        let instr = self.codec.instruction_count();
+        self.rx_wake
+            .service(&mut self.rx_dma, batch_closed, window_accepted, instr);
         // Enable-race backstop: `send_slot` (k > 0) may have deferred
         // within THIS poll while the Status packet's leading bytes were
         // already in the ring (low RDT + IDLE-late poll) — no further
         // per-byte wake comes for bytes that already arrived, so resolve
         // the observation here.
         if self.send_policy.awaited_status_start().is_some() {
-            self.on_status_start();
+            self.on_rx_byte_wake();
         }
     }
 
@@ -766,7 +828,7 @@ mod tests {
     /// pipeline starts.
     fn observe_status_start(bus: &mut TestBus, state: &TestState, start: u16) {
         stage_rx(bus, state, start, &[0xFF]);
-        bus.on_status_start();
+        bus.on_rx_byte_wake();
     }
 
     // ------------------------------------------------------------------
@@ -915,7 +977,10 @@ mod tests {
         ));
         assert!(bus.fast_last.fold_active());
         assert!(bus.fast_last.grid_active());
-        assert!(!state.rx.status_start_watched(), "window closes on resolve");
+        assert!(
+            !bus.rx_wake.fast_for_test(),
+            "FAST reason clears on resolve"
+        );
         assert!(bus.send_policy.awaited_status_start().is_none());
     }
 
@@ -962,7 +1027,7 @@ mod tests {
             expected
         );
         assert!(bus.fast_last.fold_active());
-        assert!(!state.rx.status_start_watched());
+        assert!(!bus.rx_wake.fast_for_test());
     }
 
     #[test]
@@ -980,7 +1045,7 @@ mod tests {
             reply.send_slot(&slot).expect("encode fits");
         });
 
-        bus.on_status_start();
+        bus.on_rx_byte_wake();
 
         assert!(state.sch.operations().is_empty());
         assert!(bus.send_policy.awaited_status_start().is_some());
@@ -1011,18 +1076,19 @@ mod tests {
         state.wire.stage_now(late_now);
         stage_rx(&mut bus, &state, req.len() as u16, &[0xFF]);
 
-        bus.on_status_start();
+        bus.on_rx_byte_wake();
 
         assert!(state.sch.operations().is_empty(), "no TX scheduled");
         assert!(bus.send_policy.awaited_status_start().is_none());
-        assert!(!state.rx.status_start_watched());
+        assert!(!bus.rx_wake.fast_for_test());
         assert!(!bus.fast_last.fold_active(), "fold never engaged");
     }
 
     #[test]
-    fn wake_with_no_wait_closes_a_stale_window() {
-        // Lifecycle cleared the wait while RXNEIE was still on — the next
-        // wake self-heals by closing the window.
+    fn wake_with_no_wait_clears_the_fast_reason() {
+        // Lifecycle cleared the wait while the FAST reason was still on —
+        // the next wake self-heals by clearing it (the drift window, a
+        // separate reason, keeps RXNEIE up and does not schedule anything).
         let req = wire_fast_sync_read(0, 2, &[0x42, TEST_ID]);
         let (mut bus, state, _) = bus_seeded_with(&req);
         bus.poll(|_, _, reply| {
@@ -1033,12 +1099,13 @@ mod tests {
             };
             reply.send_slot(&slot).expect("encode fits");
         });
-        assert!(state.rx.status_start_watched());
-        let _ = bus.on_tx_complete(); // clears the wait AND the window
+        assert!(bus.rx_wake.fast_for_test());
+        let _ = bus.on_tx_complete(); // clears the wait AND the FAST reason
+        assert!(!bus.rx_wake.fast_for_test());
 
         state.rx.stage_remaining(RX_BUF_LEN as u16); // reset for clarity
-        bus.on_status_start();
-        assert!(!state.rx.status_start_watched());
+        bus.on_rx_byte_wake();
+        assert!(!bus.rx_wake.fast_for_test());
         assert!(state.sch.operations().is_empty());
     }
 
@@ -1251,7 +1318,7 @@ mod tests {
         // Short predecessor at high baud: the observation lands AFTER the
         // slot deadline (the whole 14-byte First is already in the ring),
         // so the hardware kickoff fires ASAP and the CRC patch races the
-        // TX DMA's read of the trailing slot. `on_status_start` must fold
+        // TX DMA's read of the trailing slot. `on_rx_byte_wake` must fold
         // inline — a pended grid CMP would arrive one PFIC re-entry too
         // late for a short own reply. Hardware regression pin
         // (fast_injected::fast_last at 3M shipped the placeholder CRC).
@@ -1281,7 +1348,7 @@ mod tests {
         state.wire.stage_now(late_now);
         assert_eq!(bus.codec.tx.trailing_crc_slot_for_test(), [0x00, 0x00]);
 
-        bus.on_status_start();
+        bus.on_rx_byte_wake();
 
         assert_ne!(
             bus.codec.tx.trailing_crc_slot_for_test(),
@@ -1311,7 +1378,7 @@ mod tests {
         // byte-count estimate back-dates `now` by 14 frames — the derived
         // slot deadline lands exactly at `now` (window just ended). The
         // observation folds inline (deadline reached) and, with the full
-        // window present, the CRC patch lands before `on_status_start`
+        // window present, the CRC patch lands before `on_rx_byte_wake`
         // returns, no CMP dispatch involved.
         let req = wire_fast_sync_read(0, 2, &[0x42, TEST_ID]);
         let (mut bus, state, _) = bus_seeded_with(&req);
@@ -1332,7 +1399,7 @@ mod tests {
         state.wire.stage_now(SEED_TICK as u32 + full_window);
         assert_eq!(bus.codec.tx.trailing_crc_slot_for_test(), [0x00, 0x00]);
 
-        bus.on_status_start();
+        bus.on_rx_byte_wake();
 
         assert_ne!(
             bus.codec.tx.trailing_crc_slot_for_test(),

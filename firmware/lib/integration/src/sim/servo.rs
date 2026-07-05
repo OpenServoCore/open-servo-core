@@ -339,6 +339,14 @@ impl Servo {
         self.clock_trim_state.operations()
     }
 
+    /// Whether the per-byte RX wake window (chip-side RXNEIE) is open —
+    /// the drift window and the FAST status-start wait both hold it.
+    /// Timing tests assert the drift window closes once the integrator
+    /// closes a batch, so per-byte IRQs never outlive the sampling.
+    pub fn rx_byte_wake_watched(&self) -> bool {
+        self.rx_dma_state.status_start_watched()
+    }
+
     fn rebuild_uart(&mut self) {
         let (baud, dxl_id, rdt_us) = self.shared.table.config.with(|c| {
             (
@@ -442,12 +450,13 @@ impl Servo {
     /// — production runs `services.poll` from the same vector so drain
     /// cadence tracks complete-byte boundaries (`dxl-streaming-rx.md` §3 /
     /// §4.4 / §5.2).
-    fn handle_byte(&mut self, byte: u8, at: SimTime) {
+    fn handle_byte(&mut self, byte: u8, at: SimTime, complete_at: SimTime) {
         log::trace!(
-            "servo[{:?}]: handle_byte byte=0x{:02X} at={:?}",
+            "servo[{:?}]: handle_byte byte=0x{:02X} at={:?} complete_at={:?}",
             self.id,
             byte,
-            at
+            at,
+            complete_at
         );
         let slot = (self.rx_seq as usize) % RX_BUF_LEN;
         // SAFETY: byte ring at a known address; slot is in-range.
@@ -467,9 +476,18 @@ impl Servo {
         // poll below, mirroring the chip where RXNE asserts at the byte's
         // stop bit. The wake can schedule (slot wire start, fold CMP) —
         // drain both op logs so the sim stages the fires.
+        //
+        // Stamps the byte's deterministic completion time (`complete_at` =
+        // start + 10 bit-times), NOT the event-drain time `at`: the
+        // edge-based RX decoder finalizes a byte via whichever later edge
+        // or idle-timeout tick trips its boundary, carrying ±1 bit-time of
+        // value-dependent jitter — negligible for the FAST byte-count
+        // back-date but ruinous for the drift window's short per-byte spans
+        // (±1 bit over ~9 bytes ≈ ±1 %). Real RXNE asserts at the stop-bit
+        // sample with no such dependence.
         if self.rx_dma_state.status_start_watched() {
-            self.wire_clock_state.stage_now(self.chip_tick(at));
-            self.uart.on_status_start();
+            self.wire_clock_state.stage_now(self.chip_tick(complete_at));
+            self.uart.on_rx_byte_wake();
             self.drain_tx_scheduler_ops(at);
             self.drain_fast_last_ops(at);
         }
@@ -646,7 +664,10 @@ impl EventSource for Servo {
         if self.connected {
             for eff in rx_effects {
                 match eff {
-                    RxEffect::ByteComplete { byte, .. } => self.handle_byte(byte, t),
+                    RxEffect::ByteComplete {
+                        byte,
+                        complete_at_ns,
+                    } => self.handle_byte(byte, t, SimTime::from_ns(complete_at_ns)),
                     RxEffect::IdleDetected { .. } => self.handle_idle(t),
                 }
             }
