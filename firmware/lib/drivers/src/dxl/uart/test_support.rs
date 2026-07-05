@@ -11,7 +11,8 @@ extern crate alloc;
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
-use dxl_protocol::{Id, InstructionEncoder, SoftwareCrcUmts, StatusEncoder, StatusError};
+use dxl_protocol::encode::{encode_instruction, encode_status};
+use dxl_protocol::{Id, Instruction, SoftwareCrcUmts, StatusError};
 use osc_core::BaudRate;
 
 use crate::mocks::{
@@ -346,17 +347,19 @@ pub(crate) fn mk_wire_clock() -> (MockWireClock, WireClockState) {
 // ------------------------------------------------------------------
 
 pub(crate) fn wire_ping(id: u8) -> heapless::Vec<u8, 32> {
-    let mut out: heapless::Vec<u8, 32> = heapless::Vec::new();
-    InstructionEncoder::<_, SoftwareCrcUmts>::new(&mut out)
-        .ping(Id::new(id))
-        .unwrap();
-    out
+    let mut buf = [0u8; 32];
+    let n = encode_instruction::<SoftwareCrcUmts>(
+        &mut buf,
+        Id::new(id),
+        Instruction::Ping.as_u8(),
+        &[],
+    )
+    .unwrap();
+    heapless::Vec::from_slice(&buf[..n]).unwrap()
 }
 
 pub(crate) fn wire_status(id: u8) -> heapless::Vec<u8, 32> {
-    let mut out: heapless::Vec<u8, 32> = heapless::Vec::new();
-    StatusEncoder::<_, SoftwareCrcUmts>::new(&mut out)
-        .empty(Id::new(id), StatusError::OK)
-        .unwrap();
-    out
+    let mut buf = [0u8; 32];
+    let n = encode_status::<SoftwareCrcUmts>(&mut buf, Id::new(id), StatusError::OK, &[]).unwrap();
+    heapless::Vec::from_slice(&buf[..n]).unwrap()
 }

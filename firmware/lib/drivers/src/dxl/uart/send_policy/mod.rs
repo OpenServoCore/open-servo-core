@@ -1,34 +1,30 @@
 //! Send-side policy sub-composite — the state that decides how this servo
 //! participates in a DXL exchange, split out of the `DxlUart` composite per
 //! driver-pattern §4.3. Owns [`ConfigMediator`] (bus identity + staged-
-//! config mailbox), [`InstructionTracker`] (parse-side FSM over the
-//! in-flight host Instruction), and [`ReplyGate`] (reply-side FSM over the
-//! staged Status reply); routes the config's identity into the tracker's
-//! addressing and hands the tracker's Crc output to the gate.
+//! config mailbox) and [`ReplyGate`] (reply-side FSM over the staged Status
+//! reply). [`SendPolicy::on_instruction`] walks a decoded instruction's
+//! typed views into the [`ReplyContext`] the gate stages and the
+//! [`DxlRequest`] the single-shot dispatcher consumes.
 
 mod config_mediator;
+mod dispatch;
 mod fast_shape;
 mod inflight;
-mod instruction_tracker;
 mod reply_context;
 mod reply_gate;
-mod synth;
 
 pub(super) use reply_context::ReplyContext;
 pub(super) use reply_gate::StatusStartWait;
-pub(super) use synth::synthesize;
 
 use config_mediator::ConfigMediator;
-use dxl_protocol::streaming::{InstructionHeader, InstructionPayload};
-use instruction_tracker::InstructionTracker;
-use osc_core::BootMode;
+use dxl_protocol::types::packet::Instruction;
+use osc_core::{BootMode, DxlRequest, DxlRequestCtx};
 use reply_gate::ReplyGate;
 
 use crate::dxl::uart::poll_src::PollSrc;
 
 pub(super) struct SendPolicy {
     config: ConfigMediator,
-    instruction: InstructionTracker,
     reply: ReplyGate,
 }
 
@@ -36,7 +32,6 @@ impl SendPolicy {
     pub(super) const fn new(id: u8, rdt_us: u32) -> Self {
         Self {
             config: ConfigMediator::new(id, rdt_us),
-            instruction: InstructionTracker::new(),
             reply: ReplyGate::new(),
         }
     }
@@ -45,43 +40,37 @@ impl SendPolicy {
 // -- events -------------------------------------------------------------
 
 impl SendPolicy {
-    /// An Instruction header parsed. Clears any stale predecessor wait on
-    /// the reply gate (`dxl-streaming-rx.md` §5.3), then routes the
-    /// config's live ID into the tracker's addressing decision: `None` =
-    /// ours, keep parsing; `Some(target)` = foreign, the caller
-    /// byte-skips the body under `target`'s id.
-    pub(super) fn on_instruction_header(&mut self, h: &InstructionHeader) -> Option<u8> {
-        self.reply.on_new_instruction();
-        self.instruction.on_instruction_header(h, self.config.id())
-    }
-
-    /// Per-slot demarcation payload — advances the tracker's slot walk
-    /// against the config's live ID.
-    pub(super) fn on_slot(&mut self, payload: &InstructionPayload) {
-        self.instruction.on_slot(payload, self.config.id());
-    }
-
-    /// Crc-good on a tracked Instruction: consume the tracker's context,
-    /// resolve it against the config's identity into a [`ReplyContext`],
-    /// and stage it on the reply gate for the dispatcher's `send_*` call.
-    /// Returns the staged packet-end tick, or `None` when nothing was
-    /// tracked.
-    pub(super) fn on_crc_good(
+    /// Walk a decoded own/broadcast instruction: stage the derived
+    /// [`ReplyContext`] on the reply gate and return the [`DxlRequest`] +
+    /// [`DxlRequestCtx`] this servo dispatches, if it participates. `wr`
+    /// backs the destuffed write payload for Write-family requests; the
+    /// returned request borrows it. `None` when this servo is not a target
+    /// (own id absent from a Sync/Bulk chain) — the reply gate bookkeeping
+    /// still ran. Clears any stale predecessor wait first
+    /// (`dxl-streaming-rx.md` §5.3): a foreign Status whose id happens to
+    /// match must not trigger a spurious wire start on the new chain.
+    pub(super) fn on_instruction<'w>(
         &mut self,
-        packet_end_tick: Option<u32>,
+        instr: &Instruction<'_>,
+        broadcast: bool,
+        packet_end_tick: u32,
         fold_start_cursor: u32,
         src: PollSrc,
-    ) -> Option<u32> {
-        let ctx = self.instruction.on_crc_good()?;
-        let packet_end_tick = packet_end_tick?;
+        wr: &'w mut [u8],
+    ) -> Option<(DxlRequest<'w>, DxlRequestCtx)> {
+        self.reply.on_new_instruction();
+        let id = self.config.id();
+        let (ctx, request) = dispatch::walk(instr, broadcast, id, wr);
+        // Stage the reply context for participants and non-participants alike
+        // (a broadcast chain we're absent from still resets stale waits).
         self.reply.on_reply_context(ctx.into_reply_context(
-            self.config.id(),
+            id,
             self.config.rdt_us(),
             packet_end_tick,
             fold_start_cursor,
             src,
         ));
-        Some(packet_end_tick)
+        request
     }
 
     /// A foreign packet's byte-skip completed under `pred`'s id. `true`
@@ -189,44 +178,31 @@ impl SendPolicy {
 mod tests {
     use super::*;
     use crate::dxl::uart::test_support::TEST_ID;
-    use dxl_protocol::Id;
-    use dxl_protocol::wire::BROADCAST_ID;
+    use dxl_protocol::Bytes;
 
-    fn sync_slot(id: u8, index: u8) -> InstructionPayload {
-        InstructionPayload::SyncSlot {
-            id: Id::new(id),
-            index,
-        }
-    }
-
-    fn bulk_slot(id: u8, index: u8) -> InstructionPayload {
-        InstructionPayload::BulkSlot {
-            id: Id::new(id),
-            index,
-            address: 0,
-            length: 2,
-        }
-    }
-
-    /// Drive one addressed Instruction through header → slot walk →
-    /// Crc-good and peek the staged context.
-    fn staged_after_walk(header: InstructionHeader, slots: &[InstructionPayload]) -> ReplyContext {
+    /// Walk one addressed Instruction and peek the staged reply context.
+    fn staged_after(instr: &Instruction<'_>) -> ReplyContext {
         let mut p = SendPolicy::new(TEST_ID, 250);
-        assert_eq!(p.on_instruction_header(&header), None, "addressed to us");
-        for s in slots {
-            p.on_slot(s);
-        }
-        p.on_crc_good(Some(1000), 0, PollSrc::ByteBatch)
-            .expect("stages a context");
+        let mut wr = [0u8; 64];
+        p.on_instruction(instr, true, 1000, 0, PollSrc::ByteBatch, &mut wr);
         p.staged_reply_for_test().expect("context staged")
     }
 
-    fn sync_read() -> InstructionHeader {
-        InstructionHeader::SyncRead {
-            id: Id::new(BROADCAST_ID),
+    fn sync_read(ids: &[u8]) -> Instruction<'_> {
+        Instruction::SyncRead {
             address: 0,
             length: 2,
+            ids: Bytes::raw(ids),
         }
+    }
+
+    /// A BulkRead body of `[id, addr16=0, len16=2]` entries.
+    fn bulk_read_body(ids: &[u8]) -> heapless::Vec<u8, 64> {
+        let mut body: heapless::Vec<u8, 64> = heapless::Vec::new();
+        for &id in ids {
+            body.extend_from_slice(&[id, 0, 0, 2, 0]).unwrap();
+        }
+        body
     }
 
     // Chain start for slots k > 0 (`docs/dxl-streaming-rx.md` §5.2): the
@@ -235,7 +211,7 @@ mod tests {
 
     #[test]
     fn sync_read_slot_zero_has_no_predecessor() {
-        let ctx = staged_after_walk(sync_read(), &[sync_slot(TEST_ID, 0)]);
+        let ctx = staged_after(&sync_read(&[TEST_ID]));
         assert_eq!(ctx.predecessor_id, None);
     }
 
@@ -260,23 +236,16 @@ mod tests {
 
     #[test]
     fn sync_read_slot_k_gt_zero_records_immediate_predecessor() {
-        let ctx = staged_after_walk(
-            sync_read(),
-            &[
-                sync_slot(0x42, 0),
-                sync_slot(0x09, 1),
-                sync_slot(TEST_ID, 2),
-            ],
-        );
+        let ctx = staged_after(&sync_read(&[0x42, 0x09, TEST_ID]));
         assert_eq!(ctx.predecessor_id, Some(0x09));
     }
 
     #[test]
     fn bulk_read_slot_k_gt_zero_records_immediate_predecessor() {
-        let header = InstructionHeader::BulkRead {
-            id: Id::new(BROADCAST_ID),
-        };
-        let ctx = staged_after_walk(header, &[bulk_slot(0x42, 0), bulk_slot(TEST_ID, 1)]);
+        let body = bulk_read_body(&[0x42, TEST_ID]);
+        let ctx = staged_after(&Instruction::BulkRead {
+            body: Bytes::raw(&body),
+        });
         assert_eq!(ctx.predecessor_id, Some(0x42));
     }
 
@@ -285,12 +254,11 @@ mod tests {
         // Fast chains carry no per-slot Status headers → chain-start is
         // absolute-deadline, not sequence-driven. `predecessor_id` must
         // stay None per `docs/dxl-streaming-rx.md` §5.2.
-        let header = InstructionHeader::FastSyncRead {
-            id: Id::new(BROADCAST_ID),
+        let ctx = staged_after(&Instruction::FastSyncRead {
             address: 0,
             length: 2,
-        };
-        let ctx = staged_after_walk(header, &[sync_slot(0x42, 0), sync_slot(TEST_ID, 1)]);
+            ids: Bytes::raw(&[0x42, TEST_ID]),
+        });
         assert_eq!(ctx.predecessor_id, None);
     }
 }

@@ -107,14 +107,6 @@ impl ReplyGate {
         self.clear_awaiting();
     }
 
-    /// Crc-bad / parser resync — the wire state is void; drop the wait. The
-    /// framer drops malformed frames without notifying the gate now, so this
-    /// is exercised only by the gate's own FSM tests.
-    #[cfg(test)]
-    pub(super) fn on_resync(&mut self) {
-        self.clear_awaiting();
-    }
-
     /// Our reply fully drained the wire. Belt-and-suspenders — the
     /// SkipComplete path clears the wait on success, but a silent
     /// predecessor would leave it staged across the next reply; clearing
@@ -244,11 +236,7 @@ mod tests {
 
     #[test]
     fn packet_boundaries_clear_the_waits_but_keep_a_staged_context() {
-        for clear in [
-            ReplyGate::on_new_instruction,
-            ReplyGate::on_resync,
-            ReplyGate::on_tx_complete,
-        ] {
+        for clear in [ReplyGate::on_new_instruction, ReplyGate::on_tx_complete] {
             let mut g = ReplyGate::new();
             g.defer_to_predecessor(0x42);
             clear(&mut g);

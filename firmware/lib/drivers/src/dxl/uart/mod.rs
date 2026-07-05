@@ -86,11 +86,10 @@ pub struct DxlUart<P: Providers, const RX_BUF_LEN: usize, const TX_BUF_LEN: usiz
     telemetry: P::Telemetry,
 
     /// Send-side policy sub-composite — bus identity + staged-config
-    /// mailbox (committed at [`Self::on_tx_complete`]), the parse-side
-    /// Instruction tracker, and the reply gate holding the staged
-    /// [`ReplyContext`] / chain-pending predecessor wait. Per
-    /// driver-pattern §7.4 — driver-derivable wire shape stays in the
-    /// driver, not on the trait surface.
+    /// mailbox (committed at [`Self::on_tx_complete`]) and the reply gate
+    /// holding the staged [`ReplyContext`] / chain-pending predecessor
+    /// wait. Per driver-pattern §7.4 — driver-derivable wire shape stays in
+    /// the driver, not on the trait surface.
     send_policy: SendPolicy,
 
     /// Per-byte RX wake reason set + drift-window lifecycle. Reconciles the
@@ -594,9 +593,10 @@ mod tests {
         FastLastSchedulerOp, MockClockTrim, MockUsartBaud, ScheduleOp, TestProviders, TxBusOp,
     };
     use crate::traits::dxl::SendKind;
+    use dxl_protocol::encode::encode_instruction;
     use dxl_protocol::types::StatusError;
     use dxl_protocol::wire::{CRC_BYTES, FAST_RESPONSE_SLOT0_BYTES};
-    use dxl_protocol::{Id, InstructionEncoder, Slot, SoftwareCrcUmts, Status};
+    use dxl_protocol::{Id, Instruction, Slot, SoftwareCrcUmts, Status};
     use heapless::Vec;
     use osc_core::BaudRate;
 
@@ -707,19 +707,27 @@ mod tests {
     }
 
     fn wire_sync_read(addr: u16, length: u16, ids: &[u8]) -> Vec<u8, 32> {
-        let mut out: Vec<u8, 32> = Vec::new();
-        InstructionEncoder::<_, SoftwareCrcUmts>::new(&mut out)
-            .sync_read(addr, length, ids)
-            .unwrap();
-        out
+        let mut buf = [0u8; 32];
+        let n = encode_instruction::<SoftwareCrcUmts>(
+            &mut buf,
+            Id::BROADCAST,
+            Instruction::SyncRead.as_u8(),
+            &[&addr.to_le_bytes(), &length.to_le_bytes(), ids],
+        )
+        .unwrap();
+        Vec::from_slice(&buf[..n]).unwrap()
     }
 
     fn wire_fast_sync_read(addr: u16, length: u16, ids: &[u8]) -> Vec<u8, 64> {
-        let mut out: Vec<u8, 64> = Vec::new();
-        InstructionEncoder::<_, SoftwareCrcUmts>::new(&mut out)
-            .fast_sync_read(addr, length, ids)
-            .unwrap();
-        out
+        let mut buf = [0u8; 64];
+        let n = encode_instruction::<SoftwareCrcUmts>(
+            &mut buf,
+            Id::BROADCAST,
+            Instruction::FastSyncRead.as_u8(),
+            &[&addr.to_le_bytes(), &length.to_le_bytes(), ids],
+        )
+        .unwrap();
+        Vec::from_slice(&buf[..n]).unwrap()
     }
 
     /// Construct a bus pre-loaded with `pkt` bytes and a stashed ByteBatch

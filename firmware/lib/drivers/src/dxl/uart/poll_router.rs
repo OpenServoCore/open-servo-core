@@ -15,7 +15,7 @@ use super::codec::{CodecTx, FrameAction, HELD_FRAME_MAX, PacketEnd};
 use super::drift_window::RxWakeGate;
 use super::fast_last::FastLast;
 use super::reply_handle::ReplyHandle;
-use super::send_policy::{SendPolicy, synthesize};
+use super::send_policy::SendPolicy;
 use crate::traits::dxl::{Providers, TxBus};
 
 pub(super) struct PollRouter<'a, P: Providers, const TX_BUF_LEN: usize> {
@@ -61,8 +61,7 @@ impl<P: Providers, const TX_BUF_LEN: usize> PollRouter<'_, P, TX_BUF_LEN> {
         // Backs the destuffed write payload for a Write-family request; the
         // derived request borrows it for the duration of the dispatch call.
         let mut wr = [0u8; HELD_FRAME_MAX];
-        let derived = synthesize(
-            &mut *self.send_policy,
+        let derived = self.send_policy.on_instruction(
             &instr,
             broadcast,
             packet_end.tick,

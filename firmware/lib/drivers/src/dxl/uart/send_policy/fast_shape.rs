@@ -4,10 +4,9 @@
 //! thread theirs.
 
 use dxl_protocol::SlotPosition;
-use dxl_protocol::streaming::InstructionHeader;
 use dxl_protocol::wire::{
-    BROADCAST_ID, CRC_BYTES, FAST_RESPONSE_SLOT_BYTES, FAST_RESPONSE_SLOT0_BYTES,
-    PING_STATUS_PARAM_BYTES, RESPONSE_HEADER_BYTES,
+    CRC_BYTES, FAST_RESPONSE_SLOT_BYTES, FAST_RESPONSE_SLOT0_BYTES, PING_STATUS_PARAM_BYTES,
+    RESPONSE_HEADER_BYTES,
 };
 
 /// Wire bytes of a single Ping Status reply. Multi-servo broadcast Ping
@@ -38,12 +37,6 @@ pub(super) fn fast_successor_bytes(length: u32) -> u32 {
     FAST_RESPONSE_SLOT_BYTES as u32 + length + CRC_BYTES as u32
 }
 
-/// True when the instruction's target is the chip's own ID or BROADCAST.
-pub(super) fn target_addressable(h: &InstructionHeader, id: u8) -> bool {
-    let target = h.target();
-    target.as_byte() == id || target.as_byte() == BROADCAST_ID
-}
-
 /// Wire bytes preceding slot `k` in a Fast Sync Read chain with uniform
 /// per-slot register length. Slot 0 sits at offset 0 (it carries the chain
 /// header). Slot k > 0 follows a First emission and `k-1` Middle emissions.
@@ -66,9 +59,8 @@ pub(super) fn fast_chain_packet_length(n_total: u8, chain_data_bytes: u32) -> u1
 
 /// Map a chain slot index to the [`SlotPosition`] the encoder consumes.
 /// `packet_length` on First is the chain's advertised wire length —
-/// emitted straight onto the wire by
-/// [`dxl_protocol::encoder::SlotEncoder::emit`]. Successors carry the
-/// placeholder CRC the fire-time patch overwrites.
+/// emitted straight onto the wire by [`dxl_protocol::encode::encode_slot`].
+/// Successors carry the placeholder CRC the patch overwrites.
 pub(super) fn compute_fast_position(k: u8, packet_length: u16) -> SlotPosition {
     if k == 0 {
         SlotPosition::First { packet_length }
@@ -80,8 +72,6 @@ pub(super) fn compute_fast_position(k: u8, packet_length: u16) -> SlotPosition {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::dxl::uart::test_support::TEST_ID;
-    use dxl_protocol::Id;
 
     #[test]
     fn ping_status_frame_is_fourteen_wire_bytes() {
@@ -126,19 +116,5 @@ mod tests {
             compute_fast_position(2, 19),
             SlotPosition::Successor { crc: 0 }
         );
-    }
-
-    #[test]
-    fn target_addressable_accepts_own_id_and_broadcast_only() {
-        let own = InstructionHeader::Ping {
-            id: Id::new(TEST_ID),
-        };
-        let broadcast = InstructionHeader::Ping {
-            id: Id::new(BROADCAST_ID),
-        };
-        let foreign = InstructionHeader::Ping { id: Id::new(0x42) };
-        assert!(target_addressable(&own, TEST_ID));
-        assert!(target_addressable(&broadcast, TEST_ID));
-        assert!(!target_addressable(&foreign, TEST_ID));
     }
 }

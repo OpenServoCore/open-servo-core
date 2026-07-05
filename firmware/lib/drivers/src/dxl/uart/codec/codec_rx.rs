@@ -544,9 +544,10 @@ mod tests {
 
     use super::*;
     use crate::dxl::uart::test_support::{TEST_ID, wire_ping, wire_status};
+    use dxl_protocol::SoftwareCrcUmts;
+    use dxl_protocol::encode::encode_instruction;
     use dxl_protocol::types::Id;
     use dxl_protocol::types::packet::Instruction;
-    use dxl_protocol::{InstructionEncoder, SoftwareCrcUmts};
     use heapless::Vec;
 
     const RX_BUF_LEN: usize = 64;
@@ -559,11 +560,15 @@ mod tests {
     }
 
     fn wire_write(id: u8, addr: u16, body: &[u8]) -> Vec<u8, 64> {
-        let mut out: Vec<u8, 64> = Vec::new();
-        InstructionEncoder::<_, SoftwareCrcUmts>::new(&mut out)
-            .write(Id::new(id), addr, body)
-            .unwrap();
-        out
+        let mut buf = [0u8; 64];
+        let n = encode_instruction::<SoftwareCrcUmts>(
+            &mut buf,
+            Id::new(id),
+            dxl_protocol::Instruction::Write.as_u8(),
+            &[&addr.to_le_bytes(), body],
+        )
+        .unwrap();
+        Vec::from_slice(&buf[..n]).unwrap()
     }
 
     /// One captured frame verdict, flattened to the facts the tests assert.
