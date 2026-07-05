@@ -1,8 +1,8 @@
 //! Fast Last CRC fold pipeline — a mini §4.3 sub-composite of two
 //! independent halves:
 //!
-//! - [`FsmScheduler`] — the periodic-walk CMP grid that paces classifier +
-//!   parser + fold work across the predecessor window, plus the completion
+//! - [`FsmScheduler`] — the periodic-walk CMP grid that paces parser +
+//!   fold work across the predecessor window, plus the completion
 //!   body that lands the chain-CRC patch after the last predecessor byte.
 //! - [`FoldEngine`] — the running chain CRC and the bookkeeping that decides
 //!   which wire bytes feed it, finalizing into a consumer-owned

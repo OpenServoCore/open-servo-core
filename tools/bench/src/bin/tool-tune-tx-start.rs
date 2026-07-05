@@ -35,7 +35,7 @@ use std::time::Duration;
 
 use anyhow::Result;
 use bench::{
-    Bus, BusArgs, DroppedLeadingFf, LinkCounters, RETURN_DELAY_2US_ADDR, build_ping, retry_on_drop,
+    Bus, BusArgs, DroppedLeadingFf, RETURN_DELAY_2US_ADDR, build_ping, retry_on_drop,
 };
 use clap::Parser;
 use dxl_protocol::types::Id;
@@ -175,13 +175,11 @@ fn run(args: &Args, drops: &mut u32) -> Result<()> {
     println!();
 
     println!(
-        "  {:>5}  {:>11}  {:>11}  {:>11}  {:>11}  {:>6}  {:>10}",
-        "batch", "wire_med_us", "wire_p95_us", "wire_p99_us", "wire_max_us", "rounds", "anchor_ms",
+        "  {:>5}  {:>11}  {:>11}  {:>11}  {:>11}  {:>6}",
+        "batch", "wire_med_us", "wire_p95_us", "wire_p99_us", "wire_max_us", "rounds",
     );
 
     let mut all_round_us: Vec<f64> = Vec::with_capacity((args.batches * args.shots) as usize);
-    let mut total_anchor_miss: u32 = 0;
-    let mut prev_counters = LinkCounters::default();
     retry_on_drop(2, drops, || bus.clear_counters(id))?;
 
     let mut batches_with_wire: u32 = 0;
@@ -200,13 +198,6 @@ fn run(args: &Args, drops: &mut u32) -> Result<()> {
             batches_with_wire += 1;
         }
 
-        let counters = retry_on_drop(2, drops, || bus.read_counters(id))?;
-        let anchor_miss = counters
-            .edge_anchor_miss
-            .wrapping_sub(prev_counters.edge_anchor_miss);
-        total_anchor_miss = total_anchor_miss.wrapping_add(anchor_miss);
-        prev_counters = counters;
-
         print!("  {b:>5}  ");
         if has_wire {
             let med = quantile_us(&batch_rounds_us, 0.50);
@@ -220,7 +211,7 @@ fn run(args: &Args, drops: &mut u32) -> Result<()> {
         } else {
             print!("{:>11}  {:>11}  {:>11}  {:>11}  ", "-", "-", "-", "-");
         }
-        println!("{:>6}  {anchor_miss:>10}", batch_rounds_us.len());
+        println!("{:>6}", batch_rounds_us.len());
 
         std::thread::sleep(Duration::from_millis(args.inter_batch_ms));
     }
@@ -240,15 +231,6 @@ fn run(args: &Args, drops: &mut u32) -> Result<()> {
         return Ok(());
     }
 
-    let total_shots = args.batches.saturating_mul(args.shots);
-    let miss_pct = if total_shots > 0 {
-        100.0 * total_anchor_miss as f64 / total_shots as f64
-    } else {
-        0.0
-    };
-    println!("=== edge-anchor misses (packet_end_tick fallback fired, SW-timed) ===",);
-    println!("  total_misses={total_anchor_miss} / {total_shots} pings ({miss_pct:.2}%)",);
-    println!();
     print_summary(&all_round_us, expected_first_us);
     Ok(())
 }

@@ -12,10 +12,9 @@ use dxl_protocol::SlotPosition;
 /// passes data; the driver derives wire shape from its cached request state.
 #[derive(Copy, Clone, Debug)]
 pub(crate) struct ReplyContext {
-    /// Packet-end tick (WireClock u32 domain) — anchored from the
-    /// classifier at the parser's Crc-good event, or the codec's
-    /// per-source fallback estimate when the classifier was unanchored
-    /// (interference / edge loss).
+    /// Packet-end tick (WireClock u32 domain) — the codec's software
+    /// packet-end estimate at the parser's Crc-good event (drain-source-
+    /// corrected ISR-entry tick).
     pub(crate) packet_end_tick: u32,
     /// Wire-byte offset from request wire-end to this reply's wire-start moment.
     /// Zero for direct unicast; non-zero for broadcast Ping and

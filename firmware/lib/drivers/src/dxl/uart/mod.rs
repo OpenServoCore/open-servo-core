@@ -46,7 +46,8 @@ pub(crate) const BITS_PER_FRAME: u16 = 10;
 /// The DXL bus composite. `P` bundles the chip-side leaf interfaces this
 /// driver pulls — see [`Providers`]. The const generics are storage sizes:
 ///
-/// - `RX_BUF_LEN`: DMA1_CH5 byte-ring depth (typically 64 per doc §8.1).
+/// - `RX_BUF_LEN`: DMA1_CH5 byte-ring depth (typically 64 per
+///   `dxl-streaming-rx.md` §4.5).
 /// - `TX_BUF_LEN`: DMA1_CH4 source-buffer depth sized to
 ///   `osc_core::services::dxl::limits::DXL_TX_MAX_BYTES` (140 with the
 ///   default control-RW). Held by `Codec` so encoder methods write into
@@ -76,8 +77,8 @@ pub struct DxlUart<P: Providers, const RX_BUF_LEN: usize, const TX_BUF_LEN: usiz
     fast_last: FastLast<P::FastLastScheduler>,
     /// WireClock u32 readout used by `on_rx_advance`, `on_rx_idle`, and
     /// `poll` to source `now` without taking it as a parameter. The
-    /// chip-side provider hides any peripheral-side composition (TIM2 u16
-    /// IC stamps lifted via SysTick u32, etc.) — see [`WireClock`].
+    /// chip-side provider hides any peripheral-side detail (on V006 `now`
+    /// is a direct SysTick u32 readout) — see [`WireClock`].
     wire_clock: P::WireClock,
     /// Wire-condition miss counters. The composite records at the point
     /// of detection ([`Self::poll`]'s Crc arm for anchor misses,
@@ -188,7 +189,8 @@ impl<P: Providers, const RX_BUF_LEN: usize, const TX_BUF_LEN: usize>
     ///    is the isolated-short-packet drift path (a short packet trips one
     ///    drain ISR and forms no `SpanTracker` pair).
     /// 2. **FAST k > 0 status-start wait**: resolve the observed start tick
-    ///    of the chain's single Status packet from the ET ring, schedule our
+    ///    of the chain's single Status packet from the byte-count estimate,
+    ///    schedule our
     ///    slot's wire start `slot_offset_bytes` whole bytes after it, and for
     ///    Last start the fold pipeline off the same anchor. Also called from
     ///    the `poll` epilogue as the enable-race backstop — when the reply's
@@ -612,9 +614,9 @@ mod tests {
     use heapless::Vec;
     use osc_core::BaudRate;
 
-    /// Test-side storage sizing — matches V006 defaults per doc §§8.1, 8.3,
-    /// 8.4 so any drift between driver tests and chip-side reality stays
-    /// visible.
+    /// Test-side storage sizing — matches V006 defaults per
+    /// `dxl-streaming-rx.md` §4.5 so any drift between driver tests and
+    /// chip-side reality stays visible.
     const RX_BUF_LEN: usize = 64;
     const TX_BUF_LEN: usize = 140;
 

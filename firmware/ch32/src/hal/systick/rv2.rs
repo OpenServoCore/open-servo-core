@@ -18,10 +18,10 @@ pub fn ticks() -> u32 {
 }
 
 /// Zero SYSTICK.CNT in a single store. Used at boot from
-/// `init_tim2_ch4_ic_capture` to align SysTick's low 16 bits with TIM2.CNT
-/// immediately before TIM2 starts counting, so the IC4 u16 stamps and
-/// `WireClock::now()` u32 share their low 16 bits (the contract `EdgeParser`
-/// lifts u16 stamps against). Post-boot: no code may call this.
+/// `init_tim2_ch4_oc_kickoff` to align SysTick's low 16 bits with TIM2.CNT
+/// immediately before TIM2 starts counting, so the TX scheduler can truncate
+/// a u32 `WireClock::now()` deadline into a 16-bit TIM2 CCR4/CCR2 compare (the
+/// low 16 bits of `now()` equal TIM2.CNT). Post-boot: no code may call this.
 #[inline(always)]
 pub fn reset_cnt() {
     SYSTICK.cnt().write_value(0);

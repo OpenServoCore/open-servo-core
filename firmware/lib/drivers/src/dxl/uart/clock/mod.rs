@@ -2,8 +2,8 @@
 //! independent halves (§4.3):
 //!
 //! - [`BaudCache`] — the per-baud `ticks_per_bit` / byte-time cache plus the
-//!   staged-baud mailbox. Everything downstream (RX classifier window, TX
-//!   scheduler wire-end math, snoop tick) reads its ticks; µs conversion
+//!   staged-baud mailbox. Everything downstream (RX drift-span math, TX
+//!   scheduler wire-end math, status-start estimate) reads its ticks; µs conversion
 //!   only at the edge (telemetry).
 //! - [`DriftIntegrator`] — the boot/steady HSI drift-correction control law
 //!   and the trim mailbox.

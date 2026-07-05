@@ -14,8 +14,8 @@
 //! If the consumer falls more than `N` behind the producer, the in-window
 //! data is gone. [`Reader::peek_slices`] detects this
 //! (`write_seq - read_seq > N`) and bumps `read_seq` to `write_seq - N` so
-//! the oldest still-valid slot is the next read. Downstream decoders /
-//! classifiers self-heal at their next decision point (CRC mismatch →
+//! the oldest still-valid slot is the next read. Downstream decoders
+//! self-heal at their next decision point (CRC mismatch →
 //! Resync; large delta → GAP re-anchor).
 
 /// Fixed-size circular buffer with producer + consumer state coupled
@@ -77,10 +77,9 @@ impl<T: Copy, const N: usize> HwRing<T, N> {
 
     /// Reset producer/consumer bookkeeping to the freshly-constructed
     /// state. For rings whose hardware producer gets re-armed from the
-    /// buffer base (NDTR reloaded to full, writes restarting at slot 0 —
-    /// the TX-kickoff time-share restoring the edge channel): the next
-    /// [`Self::on_publish`] must see the restart as "no new slots", not
-    /// as a full-lap delta against the pre-restart position.
+    /// buffer base (NDTR reloaded to full, writes restarting at slot 0):
+    /// the next [`Self::on_publish`] must see the restart as "no new
+    /// slots", not as a full-lap delta against the pre-restart position.
     pub fn reset(&mut self) {
         self.write_seq = 0;
         self.read_seq = 0;
@@ -223,8 +222,8 @@ impl<'a, T: Copy, const N: usize> Reader<'a, T, N> {
     /// Force `read_seq` to `write_seq − N` if the producer has lapped
     /// the consumer (`write_seq − read_seq > N`). Otherwise a no-op.
     /// Called internally by [`Self::peek_slices`]; also `pub` so
-    /// producer-side primitives (e.g. the edge-ring back-search after a
-    /// heavy wire-noise burst) can establish a known cursor before
+    /// producer-side primitives (e.g. a producer-head-relative read after
+    /// a heavy wire-traffic burst) can establish a known cursor before
     /// computing relative advances — without this, a post-lap
     /// `advance(n)` lands at `pre_lap_read_seq + n` and a subsequent
     /// `peek_slices` auto-resyncs past the caller's intended target.
@@ -347,8 +346,9 @@ mod tests {
         // The last N writes overwrote exactly the same physical slots,
         // so `recent(0..N-1)` must still resolve to the producer's
         // most-recent values rather than parroting Reader::avail's
-        // "lapped → 0" convention. This is the load-bearing path the
-        // edge-ring back-search relies on after a long wire-noise burst.
+        // "lapped → 0" convention. This is the load-bearing path the FAST
+        // checkpoint pickup's producer-head-relative read relies on after a
+        // long wire-traffic burst.
         let mut b: HwBuf = HwRing::new(0);
         b.stage(0, &[1, 2, 3, 4, 5, 6, 7, 8]);
         b.set_write_seq_for_test(20);

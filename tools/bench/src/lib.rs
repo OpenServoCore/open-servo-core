@@ -396,7 +396,6 @@ pub struct LinkCounters {
     pub previous_slot_timeout: u32,
     pub slot_timing_miss: u32,
     pub crc_patch_deadline_miss: u32,
-    pub edge_anchor_miss: u32,
     pub dma_overrun: u32,
     pub parity_error: u32,
     pub framing_error: u32,
@@ -410,7 +409,6 @@ impl LinkCounters {
         "previous_slot_timeout",
         "slot_timing_miss",
         "crc_patch_deadline_miss",
-        "edge_anchor_miss",
         "dma_overrun",
         "parity_error",
         "framing_error",
@@ -418,14 +416,13 @@ impl LinkCounters {
     ];
     pub const LEN: usize = 4 * Self::FIELDS.len();
 
-    pub fn as_slice(&self) -> [u32; 10] {
+    pub fn as_slice(&self) -> [u32; 9] {
         [
             self.illegal_transition,
             self.unexpected_byte_count,
             self.previous_slot_timeout,
             self.slot_timing_miss,
             self.crc_patch_deadline_miss,
-            self.edge_anchor_miss,
             self.dma_overrun,
             self.parity_error,
             self.framing_error,
@@ -454,7 +451,7 @@ impl LinkCounters {
                 buf.len()
             );
         }
-        let mut words = [0u32; 10];
+        let mut words = [0u32; 9];
         for (i, w) in words.iter_mut().enumerate() {
             let off = i * 4;
             *w = u32::from_le_bytes([buf[off], buf[off + 1], buf[off + 2], buf[off + 3]]);
@@ -465,11 +462,10 @@ impl LinkCounters {
             previous_slot_timeout: words[2],
             slot_timing_miss: words[3],
             crc_patch_deadline_miss: words[4],
-            edge_anchor_miss: words[5],
-            dma_overrun: words[6],
-            parity_error: words[7],
-            framing_error: words[8],
-            noise_error: words[9],
+            dma_overrun: words[5],
+            parity_error: words[6],
+            framing_error: words[7],
+            noise_error: words[8],
         })
     }
 }

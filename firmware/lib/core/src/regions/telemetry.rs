@@ -86,8 +86,6 @@ pub struct TelemetryDxlLink {
     #[ct_field(access = rw)]
     pub crc_patch_deadline_miss: u32,
     #[ct_field(access = rw)]
-    pub edge_anchor_miss: u32,
-    #[ct_field(access = rw)]
     pub dma_overrun: u32,
     #[ct_field(access = rw)]
     pub parity_error: u32,

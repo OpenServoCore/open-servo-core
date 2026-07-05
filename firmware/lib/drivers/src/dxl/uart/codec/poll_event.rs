@@ -70,7 +70,7 @@ pub enum PollEvent<'a> {
 /// engine) that must own all subsequent ring bytes; leaving them in the
 /// ring is the only way to hand them off without losing the cursor. Used
 /// to honor the RX-tail ownership contract across the fold-start boundary
-/// itself (`dxl-streaming-rx.md` §6) — the edge-IRQ mask at fold start
+/// itself (`dxl-streaming-rx.md` §6) — the poll's `fold_active()` self-gate
 /// only stops *future* polls.
 pub enum PollAction {
     Continue,

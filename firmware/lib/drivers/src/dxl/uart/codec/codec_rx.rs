@@ -394,8 +394,8 @@ impl<CRC: CrcUmts, const RX_BUF_LEN: usize> CodecRx<CRC, RX_BUF_LEN> {
                 // `on_tx_start` — owns them. Continuing to feed here would
                 // let the parser eat predecessor reply bytes before the
                 // fold ever gets a turn (per `dxl-streaming-rx.md` §6 —
-                // edge-IRQ masking at fold start shuts the door on future
-                // polls only).
+                // the poll's `fold_active()` self-gate shuts the door on
+                // future polls only).
                 Some(exit) => return exit,
                 // Parser made no progress on the front slice — it's
                 // idling at end-of-input.
@@ -416,10 +416,9 @@ impl<CRC: CrcUmts, const RX_BUF_LEN: usize> CodecRx<CRC, RX_BUF_LEN> {
     /// ring (one NDTR publish per call).
     ///
     /// The pipeline owns the RX ring tail for the duration of the window:
-    /// the chip-side caller masks DMA1_CH7 HT/TC at start
-    /// (`dxl-hw-timed-transport.md` §10.6.3), and `poll()` self-gates on
-    /// `fast_last.fold_active()` at entry (`dxl-streaming-rx.md` §6),
-    /// so the parser and this pickup never race on `rx_buf`.
+    /// `poll()` self-gates on `fast_last.fold_active()` at entry
+    /// (`dxl-streaming-rx.md` §6), so the parser and this pickup never
+    /// race on `rx_buf` — there is no edge channel to mask.
     // RAM placement is load-bearing — see `FsmScheduler::on_step`.
     #[cfg_attr(target_arch = "riscv32", unsafe(link_section = ".highcode"))]
     /// One spin iteration of the checkpoint pickup: publish the ring head,
@@ -434,10 +433,9 @@ impl<CRC: CrcUmts, const RX_BUF_LEN: usize> CodecRx<CRC, RX_BUF_LEN> {
     /// the trailing CRC slot with ~a quarter byte-time to spare.
     ///
     /// The pipeline owns the RX ring tail for the duration of the window:
-    /// the chip-side caller masks DMA1_CH7 HT/TC at start
-    /// (`dxl-hw-timed-transport.md` §10.6.3), and `poll()` self-gates on
-    /// `fast_last.fold_active()` at entry (`dxl-streaming-rx.md` §6),
-    /// so the parser and this pickup never race on `rx_buf`.
+    /// `poll()` self-gates on `fast_last.fold_active()` at entry
+    /// (`dxl-streaming-rx.md` §6), so the parser and this pickup never
+    /// race on `rx_buf` — there is no edge channel to mask.
     // RAM placement is load-bearing — see `FsmScheduler::on_step`.
     #[cfg_attr(target_arch = "riscv32", unsafe(link_section = ".highcode"))]
     pub fn poll_checkpoint<D: RxDma>(

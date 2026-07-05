@@ -117,8 +117,9 @@ impl InflightCtx {
 // -- commands -------------------------------------------------------------
 
 impl InflightCtx {
-    /// Final ReplyContext at Crc-good. `packet_end_tick` is captured from the
-    /// classifier at the same event; `fold_start_cursor` is the codec's
+    /// Final ReplyContext at Crc-good. `packet_end_tick` is the codec's
+    /// software packet-end estimate at the same event; `fold_start_cursor`
+    /// is the codec's
     /// wire-byte cursor at the parser's Crc emit point — the cursor where
     /// the First predecessor reply byte will land (the host's chain
     /// instruction is fully consumed by then, so the next wire byte is the

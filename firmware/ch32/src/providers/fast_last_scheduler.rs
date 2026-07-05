@@ -1,10 +1,9 @@
 //! Fast Last catchup scheduler — SysTick CMP triggers the catchup ISR at
 //! fixed byte intervals during a Fast Sync / Bulk Read predecessor window.
 //! Per `docs/dxl-hw-timed-transport.md` §10.6 + §12: TIM2 is reserved for
-//! jitter-critical wire-edge events (CC4 IC capture / OC kickoff, CC2
-//! TX_EN OC); long-horizon catchup scheduling rides SysTick instead. TIM2's
-//! shared prescaler is pinned at PSC=0 for the IC side's 16-tick resolution
-//! at 3M, so its 16-bit CNT wraps every 1.365 ms — the grid step at low
+//! jitter-critical wire-edge events (CC4 OC kickoff, CC2 TX_EN OC);
+//! long-horizon catchup scheduling rides SysTick instead. TIM2's 16-bit
+//! CNT at PSC=0 wraps every 1.365 ms — the grid step at low
 //! baud (`15 × byte_ticks`) can exceed that and the completion body can be
 //! many wraps out. SysTick is 32-bit at HCLK with ~89.5 s horizon, a
 //! separate IRQ vector from TIM2, and its ~5 µs PFIC-entry jitter is
