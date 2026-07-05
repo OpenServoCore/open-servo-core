@@ -1,6 +1,6 @@
-use crate::desc::{Error, ValidationKind};
 use crate::rules::Rule;
 use crate::stage::{Snapshot, StagedWrites};
+use crate::{Error, ValidationKind};
 
 /// Compile-time description of a flat register map. Implemented by the Table
 /// derive; hand-implemented in tests.

@@ -1,5 +1,5 @@
-use crate::desc::{Error, ValidationKind};
 use crate::map::View;
+use crate::{Error, ValidationKind};
 
 #[derive(Copy, Clone)]
 pub struct Rule {

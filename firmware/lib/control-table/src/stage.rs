@@ -1,5 +1,4 @@
-use crate::desc::Error;
-use crate::route::{Router, router_read_bytes};
+use crate::Error;
 
 /// Total staging buffer for pending RegWrite data, in bytes. Must be at
 /// least `MAX_CONTROL_RW` from the DXL services layer (asserted in
@@ -127,45 +126,5 @@ impl StagedWrites {
 impl Default for StagedWrites {
     fn default() -> Self {
         Self::new()
-    }
-}
-
-/// Overlays staged-but-uncommitted bytes onto live-table reads so validators
-/// see the value about to be committed.
-pub struct StagedView<'a> {
-    router: &'a dyn Router,
-    staged: &'a StagedWrites,
-    snap: Snapshot,
-}
-
-impl<'a> StagedView<'a> {
-    pub fn new(router: &'a dyn Router, staged: &'a StagedWrites, snap: Snapshot) -> Self {
-        Self {
-            router,
-            staged,
-            snap,
-        }
-    }
-
-    pub fn read_bytes(&self, addr: u16, dst: &mut [u8]) -> Result<(), Error> {
-        router_read_bytes(self.router, addr, dst)?;
-        if dst.is_empty() {
-            return Ok(());
-        }
-        let req_lo = addr as usize;
-        let req_hi = req_lo + dst.len();
-        for (s_addr, s_data) in self.staged.iter_from(&self.snap) {
-            let s_lo = s_addr as usize;
-            let s_hi = s_lo + s_data.len();
-            let lo = req_lo.max(s_lo);
-            let hi = req_hi.min(s_hi);
-            if lo < hi {
-                let dst_off = lo - req_lo;
-                let src_off = lo - s_lo;
-                dst[dst_off..dst_off + (hi - lo)]
-                    .copy_from_slice(&s_data[src_off..src_off + (hi - lo)]);
-            }
-        }
-        Ok(())
     }
 }

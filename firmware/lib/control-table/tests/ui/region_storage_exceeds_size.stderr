@@ -1,5 +1,0 @@
-error[E0080]: evaluation panicked: assertion failed: ::core::mem::size_of::<TooSmall>() <= (4 as usize)
-  --> tests/ui/region_storage_exceeds_size.rs:12:10
-   |
-12 | #[derive(Region)]
-   |          ^^^^^^ evaluation of `_` failed here

@@ -1,5 +1,0 @@
-error: unknown ct_region key (expected addr_mod)
-  --> tests/ui/table_field_unknown_ct_region_key.rs:33:17
-   |
-33 |     #[ct_region(nope = 1)]
-   |                 ^^^^

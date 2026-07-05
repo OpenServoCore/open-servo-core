@@ -31,7 +31,7 @@ pub use telemetry::{
 };
 
 use crate::regions::config::ConfigDefaults;
-use control_table::{FlatTable, RegionStorage};
+use control_table::{RegionStorage, Table};
 
 pub const CONFIG_REGION_SIZE: u16 = 128;
 pub const CALIB_REGION_SIZE: u16 = 256;
@@ -44,7 +44,7 @@ pub const CONTROL_BASE_ADDR: u16 = 0x180;
 pub const TELEMETRY_BASE_ADDR: u16 = 0x200;
 
 #[repr(C)]
-#[derive(FlatTable)]
+#[derive(Table)]
 #[ct_table(size = 1024, hooks = crate::regions::hooks::ControlTableHookEvents)]
 pub struct ControlTable {
     pub config: ConfigRegs,

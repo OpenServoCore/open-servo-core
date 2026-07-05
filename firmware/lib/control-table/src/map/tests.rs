@@ -1,5 +1,5 @@
 use super::*;
-use crate::desc::ValidationKind;
+use crate::ValidationKind;
 use crate::rules::{CmpOp, Rhs, Rule, RuleKind};
 use core::cell::UnsafeCell;
 

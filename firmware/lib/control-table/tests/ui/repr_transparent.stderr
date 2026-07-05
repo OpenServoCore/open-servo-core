@@ -1,5 +1,0 @@
-error: Block derive requires #[repr(C)] and forbids alternate reprs
- --> tests/ui/repr_transparent.rs:3:8
-  |
-3 | #[repr(transparent)]
-  |        ^^^^^^^^^^^

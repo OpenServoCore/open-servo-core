@@ -1,5 +1,0 @@
-error: Region requires `#[ct_region(size = ...)]`
-  --> tests/ui/region_missing_size.rs:12:8
-   |
-12 | struct MissingSize {
-   |        ^^^^^^^^^^^

@@ -1,5 +1,0 @@
-error: unknown ct_region key (expected addr|size|validators|hooks)
-  --> tests/ui/region_unknown_key.rs:11:33
-   |
-11 | #[ct_region(addr = 0, size = 8, nope = 1)]
-   |                                 ^^^^

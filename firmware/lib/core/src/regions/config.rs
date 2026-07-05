@@ -1,4 +1,4 @@
-use control_table::{Enum, FlatBlock, Section};
+use control_table::{Block, Enum, Section};
 
 /// DXL X-series baud rate indices. V006 USART caps at 3 Mbps; indices 6–7
 /// (4 Mbps, 4.5 Mbps) are absent and host writes of them get rejected.
@@ -81,7 +81,7 @@ pub enum StatusReturnLevel {
 }
 
 #[repr(C)]
-#[derive(Copy, Clone, FlatBlock)]
+#[derive(Copy, Clone, Block)]
 pub struct ConfigIdentity {
     #[ct_field(access = ro)]
     pub model_number: u16,
@@ -97,7 +97,7 @@ pub struct ConfigIdentity {
 
 /// Writes gated on torque (section `write_locked_by`).
 #[repr(C)]
-#[derive(Copy, Clone, FlatBlock)]
+#[derive(Copy, Clone, Block)]
 #[ct_block(hooks = crate::regions::hooks::ControlTableHookEvents)]
 pub struct ConfigComms {
     #[ct_field(le = 252u8, hook = on_id_write)]
@@ -110,7 +110,7 @@ pub struct ConfigComms {
 }
 
 #[repr(C)]
-#[derive(Copy, Clone, FlatBlock)]
+#[derive(Copy, Clone, Block)]
 pub struct ConfigPosLimits {
     #[ct_field(lt = &addr::pos_limits::POS_MAX_PHYS_URAD)]
     pub pos_min_phys_urad: i32,
@@ -131,7 +131,7 @@ pub struct ConfigPosLimits {
 }
 
 #[repr(C)]
-#[derive(Copy, Clone, FlatBlock)]
+#[derive(Copy, Clone, Block)]
 pub struct ConfigStall {
     pub stall_response: StallResponse,
     #[ct_field(skip)]
@@ -143,7 +143,7 @@ pub struct ConfigStall {
 }
 
 #[repr(C)]
-#[derive(Copy, Clone, FlatBlock)]
+#[derive(Copy, Clone, Block)]
 pub struct ConfigThermal {
     pub motor_thermal_k_q88: u16,
     pub motor_thermal_tau_ms: u16,
@@ -158,7 +158,7 @@ pub struct ConfigThermal {
 
 /// `vdd_mv` is the DMM-measured VDD-at-chip-pin baked in per board.
 #[repr(C)]
-#[derive(Copy, Clone, FlatBlock)]
+#[derive(Copy, Clone, Block)]
 pub struct ConfigCalibration {
     pub vdd_mv: u16,
     #[ct_field(skip)]
@@ -166,7 +166,7 @@ pub struct ConfigCalibration {
 }
 
 #[repr(C)]
-#[derive(Copy, Clone, FlatBlock)]
+#[derive(Copy, Clone, Block)]
 pub struct ConfigControlPosition {
     pub pid_kp_q88: u16,
     pub pid_ki_q88: u16,

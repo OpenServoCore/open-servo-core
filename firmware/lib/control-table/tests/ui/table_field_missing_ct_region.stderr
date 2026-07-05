@@ -1,5 +1,0 @@
-error: Table field must carry `#[ct_region]`
-  --> tests/ui/table_field_missing_ct_region.rs:33:5
-   |
-33 |     pub r: SyncUnsafeCell<Reg>,
-   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^

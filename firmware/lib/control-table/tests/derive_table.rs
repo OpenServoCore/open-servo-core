@@ -1,167 +1,312 @@
 #![feature(sync_unsafe_cell)]
 
-use control_table::{Router, Table};
-use core::cell::SyncUnsafeCell;
-use core::mem::size_of;
+use control_table::rules::{CmpOp, Rhs, RuleKind};
+use control_table::{Block, Enum, Error, RegisterFile, RegisterMap, Table, ValidationKind};
+use core::mem::{offset_of, size_of};
+
+#[repr(u8)]
+#[derive(Copy, Clone, PartialEq, Debug, Enum)]
+pub enum Mode {
+    Idle = 0,
+    Run = 1,
+}
+
+// --- Blocks --------------------------------------------------------------
+
+#[repr(C)]
+#[derive(Block)]
+pub struct Ident {
+    #[ct_field(access = ro)]
+    pub model: u16,
+    pub id: u8,
+    pub lock: u8,
+}
+
+#[repr(C)]
+#[derive(Block)]
+pub struct Limits {
+    #[ct_field(le = 100u8)]
+    pub max_ratio: u8,
+    pub mode: Mode,
+    pub enabled: bool,
+    pub _rsvd: u8,
+}
+
+#[repr(C)]
+#[derive(Block)]
+#[ct_block(hooks = GoalHooks)]
+pub struct Goal {
+    // Cross-section compare: goal stays <= the config ceiling byte.
+    #[ct_field(le = &config::addr::limits::MAX_RATIO)]
+    pub target: u8,
+    #[ct_field(hook = on_target)]
+    pub commit: u8,
+}
+
+pub trait GoalHooks {
+    fn on_target(&mut self, v: u8);
+}
+
+// --- Sections ------------------------------------------------------------
 
 mod config {
-    use control_table::{Block, Region};
+    use super::{Ident, Limits};
+    use control_table::Section;
 
     #[repr(C)]
-    #[derive(Block)]
-    pub struct CfgA {
-        pub a0: u8,
-        pub a1: u16,
-    }
-
-    #[repr(C)]
-    #[derive(Region)]
-    #[ct_region(addr = 0x0000, size = 16)]
-    pub struct ConfigRegs {
-        pub a: CfgA,
+    #[derive(Section)]
+    #[ct_section(base = 0x0000, size = 12)]
+    pub struct Config {
+        pub ident: Ident,
+        pub limits: Limits,
+        #[ct_section(skip)]
+        pub _rsvd: [u8; 4],
     }
 }
 
-mod telemetry {
-    use control_table::{Block, Region};
+mod control {
+    use super::Goal;
+    use control_table::Section;
 
     #[repr(C)]
-    #[derive(Block)]
-    pub struct TlmA {
-        pub t0: u32,
-    }
-
-    #[repr(C)]
-    #[derive(Region)]
-    #[ct_region(addr = 0x0100, size = 8)]
-    pub struct TelemetryRegs {
-        pub a: TlmA,
+    #[derive(Section)]
+    #[ct_section(
+        base = 0x000C,
+        size = 4,
+        write_locked_by = super::config::addr::ident::LOCK,
+        hooks = super::GoalHooks,
+    )]
+    pub struct Control {
+        pub goal: Goal,
+        #[ct_section(skip)]
+        pub _rsvd: [u8; 2],
     }
 }
 
-use config::ConfigRegs;
-use telemetry::TelemetryRegs;
+use config::Config;
+use control::Control;
 
 #[repr(C)]
 #[derive(Table)]
-#[ct_table(max_sram = 1024)]
-struct ControlTable {
-    #[ct_region]
-    pub config: SyncUnsafeCell<ConfigRegs>,
-    #[ct_region]
-    pub telemetry: SyncUnsafeCell<TelemetryRegs>,
+#[ct_table(size = 24, hooks = GoalHooks)]
+struct Table {
+    pub config: Config,
+    pub control: Control,
+    #[ct_table(skip)]
+    pub _rsvd: [u8; 8],
 }
 
-#[test]
-fn regions_const_lists_each_region_desc_in_field_order() {
-    let regions = ControlTable::REGIONS;
-    assert_eq!(regions.len(), 2);
-    assert_eq!(regions[0].addr, ConfigRegs::DESC.addr);
-    assert_eq!(regions[1].addr, TelemetryRegs::DESC.addr);
-}
+// -------------------------------------------------------------------------
 
 #[test]
-fn new_constructs_each_region_via_its_new() {
-    static TBL: ControlTable = ControlTable::new();
-    let cfg = unsafe { &*TBL.config.get() };
-    assert_eq!(cfg.a.a0, 0);
-    assert_eq!(cfg.a.a1, 0);
-    let tlm = unsafe { &*TBL.telemetry.get() };
-    assert_eq!(tlm.a.t0, 0);
-}
-
-#[test]
-fn router_regions_returns_the_regions_const() {
-    let t = ControlTable::new();
-    let regions = t.regions();
-    assert_eq!(regions.len(), 2);
-    assert_eq!(regions[0].addr, ConfigRegs::DESC.addr);
-}
-
-#[test]
-fn region_base_resolves_each_region_to_its_cell_pointer() {
-    let t = ControlTable::new();
-    let cfg_base = t.region_base(ConfigRegs::DESC).unwrap();
-    let tlm_base = t.region_base(TelemetryRegs::DESC).unwrap();
-    assert_eq!(cfg_base, t.config.get() as *mut u8);
-    assert_eq!(tlm_base, t.telemetry.get() as *mut u8);
-    assert_ne!(cfg_base, tlm_base);
-}
-
-#[test]
-fn region_base_returns_none_for_descriptor_we_did_not_emit() {
-    let t = ControlTable::new();
-    let stranger = control_table::RegionDesc {
-        addr: ConfigRegs::DESC.addr,
-        size: ConfigRegs::DESC.size,
-        blocks: &[],
-        validators: &[],
-    };
-    assert!(t.region_base(&stranger).is_none());
-}
-
-#[test]
-fn addr_hub_reexports_each_region_addr_module() {
+fn addr_consts_are_base_plus_offset() {
     assert_eq!(
-        addr::config::a::A0,
-        ConfigRegs::DESC.addr
-            + core::mem::offset_of!(ConfigRegs, a) as u16
-            + core::mem::offset_of!(config::CfgA, a0) as u16,
+        addr::config::ident::MODEL,
+        Config::BASE + offset_of!(Config, ident) as u16 + offset_of!(Ident, model) as u16
     );
     assert_eq!(
-        addr::telemetry::a::T0,
-        TelemetryRegs::DESC.addr
-            + core::mem::offset_of!(TelemetryRegs, a) as u16
-            + core::mem::offset_of!(telemetry::TlmA, t0) as u16,
+        addr::config::ident::LOCK,
+        Config::BASE + offset_of!(Config, ident) as u16 + offset_of!(Ident, lock) as u16
+    );
+    assert_eq!(
+        addr::config::limits::MAX_RATIO,
+        Config::BASE + offset_of!(Config, limits) as u16 + offset_of!(Limits, max_ratio) as u16
+    );
+    assert_eq!(
+        addr::control::goal::TARGET,
+        Control::BASE + offset_of!(Control, goal) as u16 + offset_of!(Goal, target) as u16
     );
 }
 
 #[test]
-fn table_storage_size_fits_max_sram_const_assert() {
-    assert!(size_of::<ControlTable>() <= 1024);
+fn section_base_and_size_consts() {
+    assert_eq!(Config::BASE, 0x0000);
+    assert_eq!(Config::SECTION_SIZE, 12);
+    assert_eq!(Control::BASE, 0x000C);
+    assert_eq!(Control::SECTION_SIZE, 4);
 }
 
-mod renamed {
-    use control_table::{Block, Region};
+#[test]
+fn config_rules_rebased_to_absolute() {
+    // Field order: ident (no rules) then limits (compare, enum, bool).
+    let r = Config::CT_RULES_ABS;
+    assert_eq!(r.len(), 3);
 
-    #[repr(C)]
-    #[derive(Block)]
-    pub struct Blk {
-        pub x: u8,
+    assert_eq!(r[0].offset, addr::config::limits::MAX_RATIO);
+    match r[0].kind {
+        RuleKind::Cmp {
+            op: CmpOp::Le,
+            rhs: Rhs::Imm(100),
+            ..
+        } => {}
+        _ => panic!("wrong max_ratio rule"),
     }
 
-    #[repr(C)]
-    #[derive(Region)]
-    #[ct_region(addr = 0x0200, size = 8)]
-    pub struct RenamedRegs {
-        pub b: Blk,
+    assert_eq!(r[1].offset, addr::config::limits::MODE);
+    match r[1].kind {
+        RuleKind::Enum { allowed } => assert_eq!(allowed, Mode::ALLOWED),
+        _ => panic!("wrong mode rule"),
     }
+
+    assert_eq!(r[2].offset, addr::config::limits::ENABLED);
+    assert!(matches!(r[2].kind, RuleKind::Enum { .. }));
 }
 
-mod with_override {
-    use super::renamed;
-    use control_table::Table;
-    use core::cell::SyncUnsafeCell;
-
-    #[repr(C)]
-    #[derive(Table)]
-    #[ct_table(max_sram = 256)]
-    pub struct OverrideTable {
-        #[ct_region(addr_mod = super::super::renamed)]
-        pub renamed_field: SyncUnsafeCell<renamed::RenamedRegs>,
+#[test]
+fn control_rule_is_cross_section_reg_compare() {
+    let c = Control::CT_RULES_ABS;
+    assert_eq!(c.len(), 1);
+    assert_eq!(c[0].offset, addr::control::goal::TARGET);
+    match c[0].kind {
+        RuleKind::Cmp {
+            op: CmpOp::Le,
+            rhs: Rhs::Reg(a),
+            ..
+        } => assert_eq!(a, addr::config::limits::MAX_RATIO),
+        _ => panic!("wrong control rule"),
     }
 }
 
 #[test]
-fn addr_mod_override_re_exports_from_explicit_path_not_field_name() {
-    static TBL: with_override::OverrideTable = with_override::OverrideTable::new();
-    let r = unsafe { &*TBL.renamed_field.get() };
-    assert_eq!(r.b.x, 0);
+fn writable_words_track_ro_rw_and_reserved() {
+    let words = Table::WRITABLE_WORDS;
+    assert_eq!(words.len(), 24usize.div_ceil(32));
 
+    let bit = |a: u16| (words[a as usize / 32] >> (a as usize % 32)) & 1 == 1;
+
+    // ro model bytes clear.
+    assert!(!bit(addr::config::ident::MODEL));
+    assert!(!bit(addr::config::ident::MODEL + 1));
+    // rw bytes set.
+    assert!(bit(addr::config::ident::ID));
+    assert!(bit(addr::config::ident::LOCK));
+    assert!(bit(addr::config::limits::MAX_RATIO));
+    assert!(bit(addr::control::goal::TARGET));
+    // reserved / skip tails clear.
+    assert!(!bit(8)); // config._rsvd tail
+    assert!(!bit(14)); // control._rsvd tail
+    assert!(!bit(20)); // table-level _rsvd
+}
+
+#[test]
+fn sections_metadata_exposed_through_register_map() {
+    let secs = <TableCell as RegisterMap>::SECTIONS;
+    assert_eq!(secs.len(), 2);
+
+    assert_eq!(secs[0].base, Config::BASE);
+    assert_eq!(secs[0].size, Config::SECTION_SIZE);
+    assert_eq!(secs[0].rules.len(), Config::CT_RULES_ABS.len());
+    assert!(secs[0].write_lock.is_none());
+
+    assert_eq!(secs[1].base, Control::BASE);
+    assert_eq!(secs[1].size, Control::SECTION_SIZE);
+    assert_eq!(secs[1].rules.len(), Control::CT_RULES_ABS.len());
+    assert_eq!(secs[1].write_lock, Some(addr::config::ident::LOCK));
+
+    assert_eq!(<TableCell as RegisterMap>::SIZE, 24);
+}
+
+fn fresh() -> TableCell {
+    TableCell::new()
+}
+
+#[test]
+fn read_round_trips_written_bytes() {
+    let t = fresh();
+    t.write(addr::config::ident::ID, &[0x42]).unwrap();
+    assert_eq!(t.read(addr::config::ident::ID, 1).unwrap(), &[0x42]);
+}
+
+#[test]
+fn write_to_ro_byte_rejected_by_mask() {
+    let t = fresh();
+    let err = t.write(addr::config::ident::MODEL, &[1, 2]).unwrap_err();
+    assert_eq!(err, Error::AccessError);
+}
+
+#[test]
+fn write_rejected_by_enum_rule() {
+    let t = fresh();
+    let err = t.write(addr::config::limits::MODE, &[9]).unwrap_err();
+    assert_eq!(err, Error::ValidationError(ValidationKind::Enum));
+    t.write(addr::config::limits::MODE, &[Mode::Run as u8])
+        .unwrap();
+}
+
+#[test]
+fn write_rejected_by_compare_rule() {
+    let t = fresh();
+    let err = t
+        .write(addr::config::limits::MAX_RATIO, &[200])
+        .unwrap_err();
+    assert_eq!(err, Error::ValidationError(ValidationKind::Compare));
+    t.write(addr::config::limits::MAX_RATIO, &[100]).unwrap();
+}
+
+#[test]
+fn cross_section_compare_reads_config_ceiling() {
+    let t = fresh();
+    t.write(addr::config::limits::MAX_RATIO, &[50]).unwrap();
     assert_eq!(
-        with_override::addr::renamed_field::b::X,
-        renamed::RenamedRegs::DESC.addr
-            + core::mem::offset_of!(renamed::RenamedRegs, b) as u16
-            + core::mem::offset_of!(renamed::Blk, x) as u16,
+        t.write(addr::control::goal::TARGET, &[80]).unwrap_err(),
+        Error::ValidationError(ValidationKind::Compare)
     );
+    t.write(addr::control::goal::TARGET, &[40]).unwrap();
+    assert_eq!(t.read(addr::control::goal::TARGET, 1).unwrap(), &[40]);
+}
+
+#[test]
+fn write_lock_blocks_locked_section_only() {
+    let t = fresh();
+    // Raise the ceiling so target=1 clears the compare rule; the lock (not the
+    // rule) must be what rejects it. Rules are evaluated before the lock check.
+    t.write(addr::config::limits::MAX_RATIO, &[100]).unwrap();
+    t.write(addr::config::ident::LOCK, &[1]).unwrap();
+    assert_eq!(
+        t.write(addr::control::goal::TARGET, &[1]).unwrap_err(),
+        Error::ValidationError(ValidationKind::Locked)
+    );
+    // config itself is not gated by the lock.
+    t.write(addr::config::ident::ID, &[7]).unwrap();
+
+    t.write(addr::config::ident::LOCK, &[0]).unwrap();
+    t.write(addr::control::goal::TARGET, &[1]).unwrap();
+    assert_eq!(t.read(addr::control::goal::TARGET, 1).unwrap(), &[1]);
+}
+
+struct Rec {
+    hit: Option<u8>,
+}
+
+impl GoalHooks for Rec {
+    fn on_target(&mut self, v: u8) {
+        self.hit = Some(v);
+    }
+}
+
+#[test]
+fn hook_dispatches_through_table_for_hooked_field() {
+    let mut tbl = Table::new();
+    tbl.control.goal.commit = 0xAB;
+
+    let mut rec = Rec { hit: None };
+    tbl.dispatch_events(addr::control::goal::COMMIT, 1, &mut rec);
+    assert_eq!(rec.hit, Some(0xAB));
+
+    // A window entirely inside config must not fire the control hook.
+    let mut miss = Rec { hit: None };
+    tbl.dispatch_events(addr::config::ident::ID, 1, &mut miss);
+    assert_eq!(miss.hit, None);
+}
+
+#[test]
+fn new_zero_initializes_including_skips() {
+    let t = Table::new();
+    assert_eq!(t.config.ident.model, 0);
+    assert_eq!(t.config.limits.max_ratio, 0);
+    assert_eq!(t.config.limits.mode, Mode::Idle);
+    assert!(!t.config.limits.enabled);
+    assert_eq!(t.control.goal.target, 0);
+    assert_eq!(t._rsvd, [0u8; 8]);
+    assert_eq!(size_of::<Table>(), 24);
 }

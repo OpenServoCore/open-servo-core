@@ -1,5 +1,0 @@
-error[E0080]: evaluation panicked: assertion failed: ::core::mem::size_of::<TooBig>() <= (64 as usize)
-  --> tests/ui/table_storage_exceeds_max_sram.rs:34:10
-   |
-34 | #[derive(Table)]
-   |          ^^^^^ evaluation of `_` failed here

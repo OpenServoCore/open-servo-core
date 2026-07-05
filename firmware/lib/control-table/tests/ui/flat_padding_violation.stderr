@@ -1,5 +1,0 @@
-error[E0080]: evaluation panicked: FlatBlock struct has repr(C) padding; add explicit `_rsvd` fields so the flat read path never exposes uninitialized bytes
- --> tests/ui/flat_padding_violation.rs:4:10
-  |
-4 | #[derive(FlatBlock)]
-  |          ^^^^^^^^^ evaluation of `_` failed here

@@ -1,5 +1,0 @@
-error: Table derive requires #[repr(C)]
-  --> tests/ui/table_missing_repr_c.rs:31:8
-   |
-31 | struct NoReprC {
-   |        ^^^^^^^

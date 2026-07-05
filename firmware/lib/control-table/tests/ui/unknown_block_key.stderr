@@ -1,5 +1,0 @@
-error: unknown ct_block key (expected `validators = [...]` or `hooks = TraitPath`)
- --> tests/ui/unknown_block_key.rs:5:12
-  |
-5 | #[ct_block(nope = 1)]
-  |            ^^^^

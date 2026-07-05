@@ -1,7 +1,7 @@
-use control_table::{FlatBlock, Section};
+use control_table::{Block, Section};
 
 #[repr(C)]
-#[derive(Copy, Clone, FlatBlock)]
+#[derive(Copy, Clone, Block)]
 pub struct PotLutBlock {
     pub raw_min: u16,
     pub raw_max: u16,
@@ -9,7 +9,7 @@ pub struct PotLutBlock {
 }
 
 #[repr(C)]
-#[derive(Copy, Clone, FlatBlock)]
+#[derive(Copy, Clone, Block)]
 pub struct BemfCalibBlock {
     pub ke_uvs_per_rad: u16,
     pub r_motor_mohm: u16,

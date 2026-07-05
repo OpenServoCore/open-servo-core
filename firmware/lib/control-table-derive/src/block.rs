@@ -3,13 +3,12 @@ use quote::quote;
 use syn::punctuated::Punctuated;
 use syn::spanned::Spanned;
 use syn::token::PathSep;
-use syn::{Attribute, Data, DeriveInput, Expr, ExprArray, Fields, Ident, Path, PathSegment, Type};
+use syn::{Attribute, Data, DeriveInput, Expr, Fields, Ident, Path, PathSegment, Type};
 
 #[derive(Copy, Clone)]
 enum AccessMode {
     Ro,
     Rw,
-    Reserved,
 }
 
 #[derive(Copy, Clone)]
@@ -25,12 +24,12 @@ enum CmpOp {
 impl CmpOp {
     fn token(self) -> TokenStream2 {
         match self {
-            CmpOp::Lt => quote!(::control_table::CompareOp::Lt),
-            CmpOp::Le => quote!(::control_table::CompareOp::Le),
-            CmpOp::Gt => quote!(::control_table::CompareOp::Gt),
-            CmpOp::Ge => quote!(::control_table::CompareOp::Ge),
-            CmpOp::Eq => quote!(::control_table::CompareOp::Eq),
-            CmpOp::Ne => quote!(::control_table::CompareOp::Ne),
+            CmpOp::Lt => quote!(::control_table::rules::CmpOp::Lt),
+            CmpOp::Le => quote!(::control_table::rules::CmpOp::Le),
+            CmpOp::Gt => quote!(::control_table::rules::CmpOp::Gt),
+            CmpOp::Ge => quote!(::control_table::rules::CmpOp::Ge),
+            CmpOp::Eq => quote!(::control_table::rules::CmpOp::Eq),
+            CmpOp::Ne => quote!(::control_table::rules::CmpOp::Ne),
         }
     }
 }
@@ -38,8 +37,6 @@ impl CmpOp {
 struct FieldAttrs {
     skip: bool,
     access: AccessMode,
-    allowed: Option<Expr>,
-    custom: Vec<Path>,
     compares: Vec<(CmpOp, Expr)>,
     abs: bool,
     hook: Option<Path>,
@@ -50,18 +47,11 @@ impl Default for FieldAttrs {
         Self {
             skip: false,
             access: AccessMode::Rw,
-            allowed: None,
-            custom: Vec::new(),
             compares: Vec::new(),
             abs: false,
             hook: None,
         }
     }
-}
-
-struct BlockAttrs {
-    validators: Vec<TokenStream2>,
-    hooks_trait: Option<Path>,
 }
 
 struct HookBinding<'a> {
@@ -90,21 +80,23 @@ pub fn expand(input: &DeriveInput) -> syn::Result<TokenStream2> {
         ));
     };
 
-    let block_attrs = parse_block_attrs(&input.attrs)?;
-    let block_validators = &block_attrs.validators;
+    let hooks_trait = parse_block_attrs(&input.attrs)?;
 
-    let mut field_inits: Vec<TokenStream2> = Vec::new();
+    let mut rules: Vec<TokenStream2> = Vec::new();
+    let mut writable: Vec<TokenStream2> = Vec::new();
+    let mut size_terms: Vec<TokenStream2> = Vec::new();
+    let mut new_inits: Vec<TokenStream2> = Vec::new();
     let mut kept_idents: Vec<&Ident> = Vec::new();
     let mut kept_upper: Vec<Ident> = Vec::new();
-    let mut new_inits: Vec<TokenStream2> = Vec::new();
     let mut hook_bindings: Vec<HookBinding> = Vec::new();
+
     for field in &fields.named {
         let name = field.ident.as_ref().unwrap();
         let ty = &field.ty;
         let attrs = parse_field_attrs(&field.attrs)?;
 
         if let Some(hook_path) = &attrs.hook {
-            let resolved = resolve_hook_path(hook_path, block_attrs.hooks_trait.as_ref())?;
+            let resolved = resolve_hook_path(hook_path, hooks_trait.as_ref())?;
             hook_bindings.push(HookBinding {
                 field_ident: name,
                 field_ty: ty,
@@ -113,49 +105,73 @@ pub fn expand(input: &DeriveInput) -> syn::Result<TokenStream2> {
             });
         }
 
-        let init = default_init_for_type(ty);
+        let init = crate::block::default_init_for_type(ty);
         new_inits.push(quote!(#name: #init));
+        size_terms.push(quote!(::core::mem::size_of::<#ty>()));
+
+        let is_ro = matches!(attrs.access, AccessMode::Ro);
+        if !attrs.compares.is_empty() && (attrs.skip || is_ro) {
+            return Err(syn::Error::new(
+                name.span(),
+                "compare clause on a skipped or read-only field never runs (drop the compare or make the field rw)",
+            ));
+        }
 
         if attrs.skip {
             continue;
         }
-        let access = match attrs.access {
-            AccessMode::Ro => quote!(::control_table::Access::Ro),
-            AccessMode::Rw => quote!(::control_table::Access::Rw),
-            AccessMode::Reserved => quote!(::control_table::Access::Reserved),
-        };
-        let validators = build_validators(ty, &attrs)?;
 
         let rel_addr = quote!(::core::mem::offset_of!(#struct_ty, #name) as u16);
-        let size = quote!(::core::mem::size_of::<#ty>() as u16);
 
-        field_inits.push(quote! {
-            ::control_table::FieldDesc {
-                addr: #rel_addr,
-                size: #size,
-                struct_offset: #rel_addr,
-                access: #access,
-                validators: &[#(#validators),*],
+        if !is_ro {
+            if let Some(allowed) = auto_enum_allowed(ty) {
+                rules.push(quote! {
+                    ::control_table::rules::Rule {
+                        offset: #rel_addr,
+                        width: 1,
+                        kind: ::control_table::rules::RuleKind::Enum { allowed: #allowed },
+                    }
+                });
             }
-        });
+
+            if !attrs.compares.is_empty() {
+                let (width, signed) = cmp_width_signed(ty)?;
+                let abs = attrs.abs;
+                for (op, expr) in &attrs.compares {
+                    let op_tok = op.token();
+                    let rhs = build_rhs(expr);
+                    rules.push(quote! {
+                        ::control_table::rules::Rule {
+                            offset: #rel_addr,
+                            width: #width,
+                            kind: ::control_table::rules::RuleKind::Cmp {
+                                op: #op_tok,
+                                rhs: #rhs,
+                                signed: #signed,
+                                abs: #abs,
+                            },
+                        }
+                    });
+                }
+            }
+
+            writable.push(quote!((#rel_addr, ::core::mem::size_of::<#ty>() as u16)));
+        }
+
         kept_upper.push(Ident::new(&name.to_string().to_uppercase(), name.span()));
         kept_idents.push(name);
     }
 
-    let count = field_inits.len();
-    let meta_macro = Ident::new(&meta_macro_name(struct_ty), struct_ty.span());
+    let n_rules = rules.len();
+    let n_writable = writable.len();
+    let meta_macro = Ident::new(&flat_meta_macro_name(struct_ty), struct_ty.span());
     let hooks_emit = build_hooks_emit(struct_ty, &hook_bindings);
 
     Ok(quote! {
         impl #struct_ty {
-            pub const FIELDS: [::control_table::FieldDesc; #count] = [#(#field_inits),*];
-            pub const DESC: ::control_table::BlockDesc = ::control_table::BlockDesc {
-                addr: 0,
-                size: ::core::mem::size_of::<Self>() as u16,
-                struct_offset: 0,
-                fields: &Self::FIELDS,
-                validators: &[#(#block_validators),*],
-            };
+            pub const CT_SIZE: u16 = ::core::mem::size_of::<Self>() as u16;
+            pub const CT_RULES: [::control_table::rules::Rule; #n_rules] = [#(#rules),*];
+            pub const CT_WRITABLE: [(u16, u16); #n_writable] = [#(#writable),*];
         }
 
         #[allow(clippy::new_without_default)]
@@ -166,6 +182,13 @@ pub fn expand(input: &DeriveInput) -> syn::Result<TokenStream2> {
         }
 
         #hooks_emit
+
+        const _: () = {
+            assert!(
+                0 #(+ #size_terms)* == ::core::mem::size_of::<#struct_ty>(),
+                "Block struct has repr(C) padding; add explicit `_rsvd` fields so the flat read path never exposes uninitialized bytes",
+            );
+        };
 
         #[doc(hidden)]
         #[macro_export]
@@ -288,13 +311,11 @@ fn check_repr(attrs: &[Attribute], struct_span: proc_macro2::Span) -> syn::Resul
                 has_c = true;
                 Ok(())
             } else if m.path.is_ident("packed") {
-                // accept `packed` and `packed(N)`; reject either
                 if m.input.peek(syn::token::Paren) {
                     let _: proc_macro2::Group = m.input.parse()?;
                 }
                 Err(m.error("Block derive forbids #[repr(packed)] (unaligned reads + offset_of are unsound)"))
             } else if m.path.is_ident("align") {
-                // align(N) is fine; consume the (N)
                 if m.input.peek(syn::token::Paren) {
                     let _: proc_macro2::Group = m.input.parse()?;
                 }
@@ -313,34 +334,24 @@ fn check_repr(attrs: &[Attribute], struct_span: proc_macro2::Span) -> syn::Resul
     Ok(())
 }
 
-fn parse_block_attrs(attrs: &[Attribute]) -> syn::Result<BlockAttrs> {
-    let mut out = BlockAttrs {
-        validators: Vec::new(),
-        hooks_trait: None,
-    };
+fn parse_block_attrs(attrs: &[Attribute]) -> syn::Result<Option<Path>> {
+    let mut hooks_trait = None;
     for attr in attrs {
         if !attr.path().is_ident("ct_block") {
             continue;
         }
         attr.parse_nested_meta(|m| {
-            if m.path.is_ident("validators") {
-                let value = m.value()?;
-                let array: ExprArray = value.parse()?;
-                for elem in array.elems {
-                    out.validators.push(quote!(#elem));
-                }
+            if m.path.is_ident("hooks") {
+                hooks_trait = Some(m.value()?.parse()?);
                 Ok(())
-            } else if m.path.is_ident("hooks") {
-                out.hooks_trait = Some(m.value()?.parse()?);
-                Ok(())
+            } else if m.path.is_ident("validators") {
+                Err(m.error("block validators are gone in Block; move the check to a field rule"))
             } else {
-                Err(m.error(
-                    "unknown ct_block key (expected `validators = [...]` or `hooks = TraitPath`)",
-                ))
+                Err(m.error("unknown ct_block key (expected `hooks = TraitPath`)"))
             }
         })?;
     }
-    Ok(out)
+    Ok(hooks_trait)
 }
 
 fn parse_field_attrs(attrs: &[Attribute]) -> syn::Result<FieldAttrs> {
@@ -353,9 +364,6 @@ fn parse_field_attrs(attrs: &[Attribute]) -> syn::Result<FieldAttrs> {
             if m.path.is_ident("skip") {
                 out.skip = true;
                 Ok(())
-            } else if m.path.is_ident("reserved") {
-                out.access = AccessMode::Reserved;
-                Ok(())
             } else if m.path.is_ident("abs") {
                 out.abs = true;
                 Ok(())
@@ -365,6 +373,12 @@ fn parse_field_attrs(attrs: &[Attribute]) -> syn::Result<FieldAttrs> {
                 out.access = match ident.to_string().as_str() {
                     "ro" => AccessMode::Ro,
                     "rw" => AccessMode::Rw,
+                    "reserved" => {
+                        return Err(syn::Error::new(
+                            ident.span(),
+                            "`access = reserved` is gone; use `skip` for padding fields",
+                        ));
+                    }
                     other => {
                         return Err(syn::Error::new(
                             ident.span(),
@@ -372,14 +386,6 @@ fn parse_field_attrs(attrs: &[Attribute]) -> syn::Result<FieldAttrs> {
                         ));
                     }
                 };
-                Ok(())
-            } else if m.path.is_ident("allowed") {
-                let val = m.value()?;
-                out.allowed = Some(val.parse()?);
-                Ok(())
-            } else if m.path.is_ident("custom") {
-                let val = m.value()?;
-                out.custom.push(val.parse()?);
                 Ok(())
             } else if m.path.is_ident("hook") {
                 let val = m.value()?;
@@ -411,62 +417,21 @@ fn cmp_op_for_path(path: &Path) -> Option<CmpOp> {
     })
 }
 
-fn build_validators(ty: &Type, attrs: &FieldAttrs) -> syn::Result<Vec<TokenStream2>> {
-    let mut out = Vec::new();
-
-    if let Some(expr) = &attrs.allowed {
-        out.push(quote!(::control_table::FieldValidator::EnumU8 { allowed: #expr }));
-    } else if let Some(default) = default_enum_for_type(ty) {
-        out.push(default);
-    }
-
-    if !attrs.compares.is_empty() {
-        let variant = compare_variant_for_type(ty).ok_or_else(|| {
-            syn::Error::new(
-                ty.span(),
-                "compare clauses require a primitive integer (u8/u16/i8/i16/i32)",
-            )
-        })?;
-        let abs_lit = attrs.abs;
-        for (op, expr) in &attrs.compares {
-            let op_tok = op.token();
-            let rhs = build_rhs(expr);
-            out.push(quote! {
-                ::control_table::FieldValidator::#variant {
-                    op: #op_tok,
-                    abs: #abs_lit,
-                    rhs: #rhs,
-                }
-            });
-        }
-    }
-
-    for path in &attrs.custom {
-        out.push(quote!(::control_table::FieldValidator::Custom(#path)));
-    }
-
-    Ok(out)
-}
-
-/// Array / tuple / reference types fall through `Type::Path` and get no default
-/// validator; user must opt in via `allowed = …` or `custom = …`.
-fn default_enum_for_type(ty: &Type) -> Option<TokenStream2> {
+/// Auto enum rule source: `bool` -> `BOOL_ALLOWED`; any non-primitive, non-array
+/// path type -> `<Ty as HasAllowed>::ALLOWED`; primitives and arrays -> none.
+fn auto_enum_allowed(ty: &Type) -> Option<TokenStream2> {
     let Type::Path(tp) = ty else { return None };
     let path = &tp.path;
     if let Some(ident) = path.get_ident() {
         let name = ident.to_string();
         if name == "bool" {
-            return Some(quote!(::control_table::FieldValidator::EnumU8 {
-                allowed: ::control_table::BOOL_ALLOWED
-            }));
+            return Some(quote!(::control_table::BOOL_ALLOWED));
         }
         if is_primitive(&name) {
             return None;
         }
     }
-    Some(quote!(::control_table::FieldValidator::EnumU8 {
-        allowed: <#path as ::control_table::HasAllowed>::ALLOWED
-    }))
+    Some(quote!(<#path as ::control_table::HasAllowed>::ALLOWED))
 }
 
 fn is_primitive(name: &str) -> bool {
@@ -488,18 +453,42 @@ fn is_primitive(name: &str) -> bool {
     )
 }
 
-fn compare_variant_for_type(ty: &Type) -> Option<Ident> {
-    let Type::Path(tp) = ty else { return None };
-    let ident = tp.path.get_ident()?;
-    let name = match ident.to_string().as_str() {
-        "u8" => "CompareU8",
-        "u16" => "CompareU16",
-        "i8" => "CompareI8",
-        "i16" => "CompareI16",
-        "i32" => "CompareI32",
-        _ => return None,
-    };
-    Some(Ident::new(name, ident.span()))
+/// `(width, signed)` for a Cmp rule; errors on u32/arrays/other (no wider Cmp).
+fn cmp_width_signed(ty: &Type) -> syn::Result<(u8, bool)> {
+    if let Type::Path(tp) = ty
+        && let Some(ident) = tp.path.get_ident()
+    {
+        match ident.to_string().as_str() {
+            "u8" => return Ok((1, false)),
+            "i8" => return Ok((1, true)),
+            "u16" => return Ok((2, false)),
+            "i16" => return Ok((2, true)),
+            "i32" => return Ok((4, true)),
+            _ => {}
+        }
+    }
+    Err(syn::Error::new(
+        ty.span(),
+        "compare clauses require a primitive integer (u8/u16/i8/i16/i32)",
+    ))
+}
+
+fn build_rhs(expr: &Expr) -> TokenStream2 {
+    if let Expr::Reference(r) = expr {
+        let inner = &r.expr;
+        quote!(::control_table::rules::Rhs::Reg(#inner))
+    } else {
+        quote!(::control_table::rules::Rhs::Imm((#expr) as i32))
+    }
+}
+
+/// `__flat_meta_<crate>_<Block>` — the `<crate>` prefix prevents name collisions
+/// at the consumer's crate root when two crates each derive a block with the
+/// same name. The Section derive must compute the same name for its invocation.
+fn flat_meta_macro_name(struct_ty: &Ident) -> String {
+    let crate_name = std::env::var("CARGO_CRATE_NAME").unwrap_or_default();
+    let crate_part = crate_name.replace('-', "_");
+    format!("__flat_meta_{crate_part}_{struct_ty}")
 }
 
 /// Type-driven default for the auto-emitted `new()`. Primitives get their
@@ -539,22 +528,4 @@ pub(crate) fn default_init_for_type(ty: &Type) -> TokenStream2 {
         }
     }
     quote!(<#ty>::new())
-}
-
-/// `__ct_meta_<crate>_<Block>` — the `<crate>` prefix prevents name collisions
-/// at the consumer's crate root when two crates each derive a Block with the
-/// same name. Region derive must compute the same name for its invocation.
-pub(crate) fn meta_macro_name(struct_ty: &Ident) -> String {
-    let crate_name = std::env::var("CARGO_CRATE_NAME").unwrap_or_default();
-    let crate_part = crate_name.replace('-', "_");
-    format!("__ct_meta_{crate_part}_{struct_ty}")
-}
-
-fn build_rhs(expr: &Expr) -> TokenStream2 {
-    if let Expr::Reference(r) = expr {
-        let inner = &r.expr;
-        quote!(::control_table::Rhs::Addr(#inner))
-    } else {
-        quote!(::control_table::Rhs::Value(#expr))
-    }
 }

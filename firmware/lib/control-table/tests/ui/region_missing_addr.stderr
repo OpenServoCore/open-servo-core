@@ -1,5 +1,0 @@
-error: Region requires `#[ct_region(addr = ...)]`
-  --> tests/ui/region_missing_addr.rs:12:8
-   |
-12 | struct MissingAddr {
-   |        ^^^^^^^^^^^

@@ -1,7 +1,7 @@
-use control_table::{FlatBlock, Section};
+use control_table::{Block, Section};
 
 #[repr(C)]
-#[derive(Copy, Clone, FlatBlock)]
+#[derive(Copy, Clone, Block)]
 pub struct TelemetryConverted {
     #[ct_field(access = ro)]
     pub present_position: i32,
@@ -18,7 +18,7 @@ pub struct TelemetryConverted {
 }
 
 #[repr(C)]
-#[derive(Copy, Clone, FlatBlock)]
+#[derive(Copy, Clone, Block)]
 pub struct TelemetryIntermediaries {
     #[ct_field(access = ro)]
     pub vbus_filt_mv: u16,
@@ -40,7 +40,7 @@ pub struct TelemetryIntermediaries {
 
 /// `fault_flags` writable-RO carve-out: host writing 0x00 clears non-latched bits.
 #[repr(C)]
-#[derive(Copy, Clone, FlatBlock)]
+#[derive(Copy, Clone, Block)]
 pub struct TelemetryFault {
     #[ct_field(access = ro)]
     pub mode_active: u8,
@@ -53,7 +53,7 @@ pub struct TelemetryFault {
 }
 
 #[repr(C)]
-#[derive(Copy, Clone, FlatBlock)]
+#[derive(Copy, Clone, Block)]
 pub struct TelemetryRaw {
     #[ct_field(access = ro)]
     pub raw_pos: u16,
@@ -77,7 +77,7 @@ pub struct TelemetryRaw {
 /// Chip-side `report_fault` increments via raw pointer, bypassing the regmap.
 /// Concurrent host clear + ISR increment may drop one update — acceptable for bench.
 #[repr(C)]
-#[derive(Copy, Clone, FlatBlock)]
+#[derive(Copy, Clone, Block)]
 pub struct TelemetryDxlLink {
     #[ct_field(access = rw)]
     pub illegal_transition: u32,

@@ -1,5 +1,0 @@
-error: unknown ct_field key
- --> tests/ui/unknown_field_key.rs:6:16
-  |
-6 |     #[ct_field(nope = 1)]
-  |                ^^^^

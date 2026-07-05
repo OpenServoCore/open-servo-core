@@ -1,8 +1,0 @@
-error: Table requires a struct with named fields
-  --> tests/ui/table_tuple_struct.rs:29:1
-   |
-29 | / #[repr(C)]
-30 | | #[derive(Table)]
-31 | | #[ct_table(max_sram = 1024)]
-32 | | struct TupleTable(SyncUnsafeCell<Reg>);
-   | |_______________________________________^

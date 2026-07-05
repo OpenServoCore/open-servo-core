@@ -310,7 +310,7 @@ fn block_type_ident(ty: &Type) -> syn::Result<&Ident> {
     let Type::Path(TypePath { qself: None, path }) = ty else {
         return Err(syn::Error::new(
             ty.span(),
-            "Section field type must be a simple path to a FlatBlock-derived struct",
+            "Section field type must be a simple path to a Block-derived struct",
         ));
     };
     let last = path
@@ -320,7 +320,7 @@ fn block_type_ident(ty: &Type) -> syn::Result<&Ident> {
     Ok(&last.ident)
 }
 
-/// Recomputes `block2.rs`'s `__flat_meta_<crate>_<Block>` macro name so the
+/// Recomputes `block.rs`'s `__flat_meta_<crate>_<Block>` macro name so the
 /// Section can invoke each block's addr-const macro. Both derives run in the
 /// consumer's compilation, so `CARGO_CRATE_NAME` matches.
 fn flat_meta_macro_name(struct_ty: &Ident) -> String {

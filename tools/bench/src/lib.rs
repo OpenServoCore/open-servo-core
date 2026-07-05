@@ -25,10 +25,10 @@ pub use pirate::{
 // Constants — wire bauds + DXL register addresses
 // ---------------------------------------------------------------------------
 
-/// `comms::BAUD_RATE_IDX` — see `firmware/lib/core/src/regions/config.rs`.
+/// = `osc_core::regions::config::addr::comms::BAUD_RATE_IDX`.
 pub const BAUD_RATE_IDX_ADDR: u16 = 13;
 
-/// `comms::RETURN_DELAY_2US` — see `firmware/lib/core/src/regions/config.rs`.
+/// = `osc_core::regions::config::addr::comms::RETURN_DELAY_2US`.
 /// One unit = 2 µs of slave-side reply delay.
 pub const RETURN_DELAY_2US_ADDR: u16 = 14;
 
@@ -382,6 +382,7 @@ pub fn decode_ping_status(bytes: &[u8], expected_id: Option<Id>) -> Result<PingI
 
 pub const FOREIGN_ID: u8 = 199;
 pub const INJ_ID: u8 = 50;
+/// = `osc_core::regions::telemetry::addr::link::ILLEGAL_TRANSITION` (link block base).
 pub const LINK_BASE: u16 = 0x023C;
 
 #[derive(Copy, Clone, Debug, Default, PartialEq, Eq)]

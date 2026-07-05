@@ -1,276 +1,234 @@
-use control_table::{
-    Access, BOOL_ALLOWED, Block, CompareOp, Enum, FieldValidator, Rhs, StagedView,
-};
+use control_table::rules::{CmpOp, Rhs, RuleKind};
+use control_table::{BOOL_ALLOWED, Block, Enum};
 use core::mem::{offset_of, size_of};
-
-#[repr(C)]
-#[derive(Block)]
-struct Basic {
-    a: u8,
-    b: u16,
-    c: bool,
-}
-
-#[test]
-fn at_zero_addrs_track_offset_of_each_field() {
-    assert_eq!(Basic::DESC.size, size_of::<Basic>() as u16);
-    assert_eq!(Basic::FIELDS.len(), 3);
-    let f = Basic::FIELDS;
-    assert_eq!(f[0].addr, offset_of!(Basic, a) as u16);
-    assert_eq!(f[0].size, 1);
-    assert_eq!(f[0].struct_offset, f[0].addr);
-    assert_eq!(f[1].addr, offset_of!(Basic, b) as u16);
-    assert_eq!(f[1].size, 2);
-    assert_eq!(f[2].addr, offset_of!(Basic, c) as u16);
-    assert_eq!(f[2].size, 1);
-}
-
-#[test]
-fn bool_field_gets_default_enum_u8_bool_allowed() {
-    let v = Basic::FIELDS[2].validators;
-    assert_eq!(v.len(), 1);
-    let FieldValidator::EnumU8 { allowed } = v[0] else {
-        panic!("expected EnumU8")
-    };
-    assert_eq!(allowed, BOOL_ALLOWED);
-}
-
-#[test]
-fn primitive_int_fields_get_no_default_validator() {
-    assert!(Basic::FIELDS[0].validators.is_empty());
-    assert!(Basic::FIELDS[1].validators.is_empty());
-}
-
-#[test]
-fn default_block_validators_empty() {
-    assert!(Basic::DESC.validators.is_empty());
-}
-
-#[repr(C)]
-#[derive(Block)]
-struct WithPad {
-    a: u8,
-    #[ct_field(skip)]
-    _pad: [u8; 3],
-    b: u32,
-}
-
-#[test]
-fn skip_excludes_field_but_preserves_struct_size() {
-    assert_eq!(WithPad::FIELDS.len(), 2);
-    assert_eq!(WithPad::DESC.size, size_of::<WithPad>() as u16);
-    let f = WithPad::FIELDS;
-    assert_eq!(f[0].addr, 0);
-    assert_eq!(f[1].addr, 4);
-    assert_eq!(f[1].size, 4);
-}
-
-#[repr(C)]
-#[derive(Block)]
-struct RoRw {
-    #[ct_field(access = ro)]
-    a: u8,
-    b: u8,
-}
-
-#[test]
-fn access_attr_overrides_default_rw() {
-    assert_eq!(RoRw::FIELDS[0].access, Access::Ro);
-    assert_eq!(RoRw::FIELDS[1].access, Access::Rw);
-}
-
-#[repr(C)]
-#[derive(Block)]
-struct WithReserved {
-    a: u8,
-    #[ct_field(reserved)]
-    rsvd: u16,
-    b: u8,
-}
-
-#[test]
-fn reserved_attr_marks_field_access_reserved_and_keeps_layout() {
-    assert_eq!(WithReserved::FIELDS.len(), 3);
-    assert_eq!(WithReserved::FIELDS[1].access, Access::Reserved);
-    assert_eq!(
-        WithReserved::FIELDS[1].addr,
-        offset_of!(WithReserved, rsvd) as u16
-    );
-    assert_eq!(WithReserved::FIELDS[1].size, 2);
-    assert_eq!(WithReserved::FIELDS[0].access, Access::Rw);
-    assert_eq!(WithReserved::FIELDS[2].access, Access::Rw);
-}
-
-#[repr(C)]
-#[derive(Block)]
-struct CompLit {
-    #[ct_field(le = 100u8)]
-    x: u8,
-}
-
-#[test]
-fn literal_rhs_dispatches_to_value_variant() {
-    match CompLit::FIELDS[0].validators[0] {
-        FieldValidator::CompareU8 {
-            op: CompareOp::Le,
-            abs: false,
-            rhs: Rhs::Value(100),
-        } => {}
-        _ => panic!("wrong validator shape"),
-    }
-}
-
-const OTHER_ADDR: u16 = 42;
-
-#[repr(C)]
-#[derive(Block)]
-struct CompAddr {
-    #[ct_field(lt = &OTHER_ADDR)]
-    x: i32,
-}
-
-#[test]
-fn reference_rhs_dispatches_to_addr_variant() {
-    match CompAddr::FIELDS[0].validators[0] {
-        FieldValidator::CompareI32 {
-            op: CompareOp::Lt,
-            abs: false,
-            rhs: Rhs::Addr(42),
-        } => {}
-        _ => panic!("wrong validator shape"),
-    }
-}
-
-#[repr(C)]
-#[derive(Block)]
-struct AbsMulti {
-    #[ct_field(ge = 0i32, le = 100i32, abs)]
-    x: i32,
-}
-
-#[test]
-fn multiple_compare_ops_share_abs_and_field() {
-    let v = AbsMulti::FIELDS[0].validators;
-    assert_eq!(v.len(), 2);
-    let mut ge_ok = false;
-    let mut le_ok = false;
-    for val in v {
-        match *val {
-            FieldValidator::CompareI32 {
-                op: CompareOp::Ge,
-                abs: true,
-                rhs: Rhs::Value(0),
-            } => ge_ok = true,
-            FieldValidator::CompareI32 {
-                op: CompareOp::Le,
-                abs: true,
-                rhs: Rhs::Value(100),
-            } => le_ok = true,
-            _ => panic!("unexpected variant"),
-        }
-    }
-    assert!(ge_ok && le_ok);
-}
-
-fn my_custom(_v: &StagedView, _a: u16, _s: u16) -> Result<(), control_table::Error> {
-    Ok(())
-}
-
-#[repr(C)]
-#[derive(Block)]
-struct WithCustom {
-    #[ct_field(custom = my_custom)]
-    x: u8,
-}
-
-#[test]
-fn custom_attr_emits_custom_validator() {
-    let v = WithCustom::FIELDS[0].validators;
-    assert_eq!(v.len(), 1);
-    assert!(matches!(v[0], FieldValidator::Custom(_)));
-}
-
-const SMALL: &[u8] = &[7, 8];
-
-#[repr(C)]
-#[derive(Block)]
-struct AllowOverride {
-    #[ct_field(allowed = SMALL)]
-    x: u8,
-}
-
-#[test]
-fn allowed_overrides_default_with_provided_set() {
-    let v = AllowOverride::FIELDS[0].validators;
-    assert_eq!(v.len(), 1);
-    let FieldValidator::EnumU8 { allowed } = v[0] else {
-        panic!("expected EnumU8")
-    };
-    assert_eq!(allowed, SMALL);
-}
 
 #[repr(u8)]
 #[derive(Copy, Clone, Enum)]
-enum FakeMode {
+enum Mode {
     Stop = 0,
     Go = 1,
 }
 
+// Field order keeps the struct dense (no repr(C) padding) so the derive's
+// zero-padding const assert accepts it.
 #[repr(C)]
 #[derive(Block)]
-struct WithMode {
-    mode: FakeMode,
+struct Basic {
+    b: u16,
+    a: u8,
+    c: bool,
+    mode: Mode,
+    d: u8,
 }
 
 #[test]
-fn user_type_field_gets_ty_allowed_default() {
-    let v = WithMode::FIELDS[0].validators;
-    assert_eq!(v.len(), 1);
-    let FieldValidator::EnumU8 { allowed } = v[0] else {
-        panic!("expected EnumU8")
-    };
-    assert_eq!(allowed, FakeMode::ALLOWED);
+fn ct_size_tracks_struct_size() {
+    assert_eq!(Basic::CT_SIZE, size_of::<Basic>() as u16);
+    assert_eq!(Basic::CT_SIZE, 6);
 }
 
-fn block_check(_v: &StagedView, _a: u16, _s: u16) -> Result<(), control_table::Error> {
-    Ok(())
+#[test]
+fn auto_enum_rules_for_bool_and_enum_fields_only() {
+    let r = Basic::CT_RULES;
+    assert_eq!(r.len(), 2);
+
+    let bool_rule = &r[0];
+    assert_eq!(bool_rule.offset, offset_of!(Basic, c) as u16);
+    assert_eq!(bool_rule.width, 1);
+    match bool_rule.kind {
+        RuleKind::Enum { allowed } => assert_eq!(allowed, BOOL_ALLOWED),
+        _ => panic!("expected bool enum rule"),
+    }
+
+    let mode_rule = &r[1];
+    assert_eq!(mode_rule.offset, offset_of!(Basic, mode) as u16);
+    assert_eq!(mode_rule.width, 1);
+    match mode_rule.kind {
+        RuleKind::Enum { allowed } => assert_eq!(allowed, Mode::ALLOWED),
+        _ => panic!("expected mode enum rule"),
+    }
 }
+
+#[test]
+fn writable_covers_every_rw_field() {
+    let w = Basic::CT_WRITABLE;
+    assert_eq!(
+        w,
+        [
+            (offset_of!(Basic, b) as u16, 2),
+            (offset_of!(Basic, a) as u16, 1),
+            (offset_of!(Basic, c) as u16, 1),
+            (offset_of!(Basic, mode) as u16, 1),
+            (offset_of!(Basic, d) as u16, 1),
+        ]
+    );
+}
+
+const LIMIT: u16 = 500;
 
 #[repr(C)]
 #[derive(Block)]
-#[ct_block(validators = [block_check])]
-struct WithBlockVal {
+struct Comp {
+    #[ct_field(lt = &LIMIT)]
+    y: u16,
+    #[ct_field(le = 100u8)]
     x: u8,
+    #[ct_field(ge = -5i8, le = 5i8, abs)]
+    z: i8,
 }
 
 #[test]
-fn ct_block_validators_list_populates_validators_const() {
-    assert_eq!(WithBlockVal::DESC.validators.len(), 1);
+fn cmp_rules_infer_width_signed_and_dispatch_rhs() {
+    let r = Comp::CT_RULES;
+    assert_eq!(r.len(), 4);
+
+    // y: unsigned u16, reference rhs -> Reg.
+    assert_eq!(r[0].offset, offset_of!(Comp, y) as u16);
+    assert_eq!(r[0].width, 2);
+    match r[0].kind {
+        RuleKind::Cmp {
+            op: CmpOp::Lt,
+            rhs: Rhs::Reg(v),
+            signed: false,
+            abs: false,
+        } => assert_eq!(v, LIMIT),
+        _ => panic!("wrong y rule"),
+    }
+
+    // x: unsigned u8, literal rhs -> Imm.
+    assert_eq!(r[1].offset, offset_of!(Comp, x) as u16);
+    assert_eq!(r[1].width, 1);
+    match r[1].kind {
+        RuleKind::Cmp {
+            op: CmpOp::Le,
+            rhs: Rhs::Imm(100),
+            signed: false,
+            abs: false,
+        } => {}
+        _ => panic!("wrong x rule"),
+    }
+
+    // z: signed i8, two compares sharing abs, negative literal.
+    assert_eq!(r[2].offset, offset_of!(Comp, z) as u16);
+    assert_eq!(r[2].width, 1);
+    match r[2].kind {
+        RuleKind::Cmp {
+            op: CmpOp::Ge,
+            rhs: Rhs::Imm(-5),
+            signed: true,
+            abs: true,
+        } => {}
+        _ => panic!("wrong z ge rule"),
+    }
+    match r[3].kind {
+        RuleKind::Cmp {
+            op: CmpOp::Le,
+            rhs: Rhs::Imm(5),
+            signed: true,
+            abs: true,
+        } => {}
+        _ => panic!("wrong z le rule"),
+    }
 }
 
 #[repr(C)]
 #[derive(Block)]
-struct MetaTarget {
-    alpha: u8,
+struct Access {
+    #[ct_field(access = ro)]
+    ro_field: u16,
+    rw_field: u16,
     #[ct_field(skip)]
-    _skip: u8,
-    bravo: u16,
-}
-
-mod hub_via_meta_macro {
-    // Drives the Block-derive-emitted __ct_meta macro the same way Region
-    // derive will, producing an `addr::*` style submodule of consts.
-    __ct_meta_derive_block_MetaTarget!(@addr_consts base = 100u16, block_ty = super::MetaTarget);
+    _rsvd: [u8; 2],
+    #[ct_field(access = ro)]
+    ro_bool: bool,
+    tail: u8,
 }
 
 #[test]
-fn meta_macro_emits_named_consts_for_kept_fields() {
+fn ro_and_skip_excluded_from_writable_and_rules() {
+    // ro (incl. ro bool) and skip fields emit no rules at all.
+    assert_eq!(Access::CT_RULES.len(), 0);
+
     assert_eq!(
-        hub_via_meta_macro::ALPHA,
-        100 + offset_of!(MetaTarget, alpha) as u16
+        Access::CT_WRITABLE,
+        [
+            (offset_of!(Access, rw_field) as u16, 2),
+            (offset_of!(Access, tail) as u16, 1),
+        ]
     );
-    assert_eq!(
-        hub_via_meta_macro::BRAVO,
-        100 + offset_of!(MetaTarget, bravo) as u16
-    );
+    // skip field still counts toward layout size.
+    assert_eq!(Access::CT_SIZE, size_of::<Access>() as u16);
+    assert_eq!(Access::CT_SIZE, 8);
+}
+
+trait MyHooks {
+    fn on_a(&mut self, v: u8);
+}
+
+struct HookRec {
+    last: Option<u8>,
+}
+
+impl MyHooks for HookRec {
+    fn on_a(&mut self, v: u8) {
+        self.last = Some(v);
+    }
+}
+
+#[repr(C)]
+#[derive(Block)]
+#[ct_block(hooks = MyHooks)]
+struct Hooked {
+    #[ct_field(hook = on_a)]
+    pub a: u8,
+    pub b: u8,
+}
+
+#[test]
+fn hook_fires_only_when_write_window_overlaps_field() {
+    let h = Hooked { a: 7, b: 0 };
+
+    let mut hit = HookRec { last: None };
+    h.dispatch_events(0, 1, 0, &mut hit);
+    assert_eq!(hit.last, Some(7));
+
+    // window on field `b` (offset 1) must not fire `a`'s hook.
+    let mut miss = HookRec { last: None };
+    h.dispatch_events(1, 1, 0, &mut miss);
+    assert_eq!(miss.last, None);
+
+    // block rebased by base: field `a` now lives at abs 10.
+    let mut rebased = HookRec { last: None };
+    h.dispatch_events(10, 1, 10, &mut rebased);
+    assert_eq!(rebased.last, Some(7));
+}
+
+#[repr(C)]
+#[derive(Block)]
+struct Dense {
+    w: u32,
+    h: u16,
+    a: u8,
+    b: u8,
+}
+
+#[test]
+fn zero_padding_assert_accepts_dense_struct() {
+    // Compiling this struct at all proves the const assert passed.
+    assert_eq!(Dense::CT_SIZE, size_of::<Dense>() as u16);
+    assert_eq!(Dense::CT_SIZE, 8);
+    let sum: u16 = Dense::CT_WRITABLE.iter().map(|(_, len)| len).sum();
+    assert_eq!(sum, Dense::CT_SIZE);
+}
+
+// `new()` zero-initializes every field (enum/bool included) in const context.
+const _: Basic = Basic::new();
+
+#[test]
+fn new_zero_initializes() {
+    let v = Basic::new();
+    assert_eq!(v.a, 0);
+    assert_eq!(v.b, 0);
+    assert!(!v.c);
+    assert_eq!(v.d, 0);
 }

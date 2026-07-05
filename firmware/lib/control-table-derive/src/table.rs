@@ -1,28 +1,18 @@
 use proc_macro2::TokenStream as TokenStream2;
-use quote::quote;
+use quote::{format_ident, quote};
 use syn::spanned::Spanned;
-use syn::{
-    Attribute, Data, DeriveInput, Expr, Field, Fields, GenericArgument, Ident, Path, PathArguments,
-    Type, TypePath,
-};
+use syn::{Attribute, Data, DeriveInput, Expr, Fields, Ident, Path, Type};
 
 #[derive(Default)]
 struct TableAttrs {
-    max_sram: Option<Expr>,
+    size: Option<Expr>,
     hooks: Option<Path>,
-}
-
-struct RegionField<'a> {
-    ident: &'a Ident,
-    storage_ty: &'a Type,
-    inner_ty: &'a Type,
-    addr_mod: Option<Path>,
 }
 
 pub fn expand(input: &DeriveInput) -> syn::Result<TokenStream2> {
     let table_ty = &input.ident;
 
-    check_repr_c(&input.attrs, table_ty.span())?;
+    check_repr(&input.attrs, table_ty.span())?;
 
     let Data::Struct(s) = &input.data else {
         return Err(syn::Error::new(
@@ -37,110 +27,123 @@ pub fn expand(input: &DeriveInput) -> syn::Result<TokenStream2> {
         ));
     };
 
-    let table_attrs = parse_table_attrs(&input.attrs)?;
-    let max_sram = table_attrs.max_sram.ok_or_else(|| {
-        syn::Error::new(
-            table_ty.span(),
-            "Table requires `#[ct_table(max_sram = ...)]`",
-        )
+    let attrs = parse_table_attrs(&input.attrs)?;
+    let size = attrs.size.ok_or_else(|| {
+        syn::Error::new(table_ty.span(), "Table requires `#[ct_table(size = ...)]`")
     })?;
+    let hooks_bound = attrs.hooks;
 
-    let mut region_fields: Vec<RegionField> = Vec::new();
-    for f in &fields.named {
-        let Some(field_attrs) = parse_ct_region_attrs(&f.attrs)? else {
-            return Err(syn::Error::new(
-                f.span(),
-                "Table field must carry `#[ct_region]`",
-            ));
-        };
-        region_fields.push(RegionField {
-            ident: f.ident.as_ref().unwrap(),
-            storage_ty: &f.ty,
-            inner_ty: extract_storage_inner_ty(f)?,
-            addr_mod: field_attrs.addr_mod,
-        });
+    let mut size_terms: Vec<TokenStream2> = Vec::new();
+    let mut new_inits: Vec<TokenStream2> = Vec::new();
+
+    let mut sec_tys: Vec<&Type> = Vec::new();
+    let mut sec_idents: Vec<&Ident> = Vec::new();
+
+    for field in &fields.named {
+        let name = field.ident.as_ref().unwrap();
+        let ty = &field.ty;
+
+        let init = crate::block::default_init_for_type(ty);
+        new_inits.push(quote!(#name: #init));
+        size_terms.push(quote!(::core::mem::size_of::<#ty>()));
+
+        if parse_field_skip(&field.attrs)? {
+            continue;
+        }
+        sec_tys.push(ty);
+        sec_idents.push(name);
     }
 
-    if region_fields.is_empty() {
-        return Err(syn::Error::new(
-            input.span(),
-            "Table requires at least one `#[ct_region]` field",
-        ));
-    }
+    let words = quote!((#size as usize).div_ceil(32));
 
-    let region_refs = region_fields.iter().map(|rf| {
-        let ty = rf.inner_ty;
-        quote!(&<#ty>::DESC)
-    });
-
-    let region_extents = region_fields.iter().map(|rf| {
-        let ty = rf.inner_ty;
-        quote!((<#ty>::DESC.addr, <#ty>::DESC.size))
-    });
-
-    let new_inits = region_fields.iter().map(|rf| {
-        let ident = rf.ident;
-        let storage_ty = rf.storage_ty;
-        let inner_ty = rf.inner_ty;
-        quote!(#ident: <#storage_ty>::new(<#inner_ty>::new()))
-    });
-
-    let region_base_arms = region_fields.iter().map(|rf| {
-        let ident = rf.ident;
-        let inner_ty = rf.inner_ty;
-        quote! {
-            if ::core::ptr::eq(desc, <#inner_ty>::DESC) {
-                return ::core::option::Option::Some(
-                    ::control_table::RegionStorageRaw::region_ptr(&self.#ident) as *mut u8,
-                );
-            }
-        }
-    });
-
-    let addr_reexports = region_fields.iter().map(|rf| {
-        let ident = rf.ident;
-        match &rf.addr_mod {
-            Some(path) => quote!(pub use #path::addr as #ident;),
-            None => quote!(pub use super::#ident::addr as #ident;),
-        }
-    });
-
-    let region_dispatch_calls: Vec<TokenStream2> = region_fields
+    let writable_fill: Vec<TokenStream2> = sec_tys
         .iter()
-        .map(|rf| {
-            let ident = rf.ident;
-            let inner_ty = rf.inner_ty;
+        .map(|ty| {
             quote! {
                 {
-                    let __r_lo = <#inner_ty>::DESC.addr as u32;
-                    let __r_hi = __r_lo + <#inner_ty>::DESC.size as u32;
-                    let __w_lo = abs_addr as u32;
-                    let __w_hi = __w_lo + len as u32;
-                    if __w_lo >= __r_lo && __w_hi <= __r_hi {
-                        ::control_table::RegionStorage::with(&self.#ident, |__r| {
-                            __r.dispatch_events(abs_addr, len, hooks);
-                        });
-                        return;
+                    let spans = <#ty>::CT_WRITABLE_ABS;
+                    let mut si = 0;
+                    while si < spans.len() {
+                        let (off, len) = spans[si];
+                        let mut b = off as usize;
+                        let end = off as usize + len as usize;
+                        while b < end {
+                            w[b / 32] |= 1u32 << (b % 32);
+                            b += 1;
+                        }
+                        si += 1;
                     }
                 }
             }
         })
         .collect();
 
-    let hooks_where = match &table_attrs.hooks {
+    let section_metas: Vec<TokenStream2> = sec_tys
+        .iter()
+        .map(|ty| {
+            quote! {
+                ::control_table::map::SectionMeta {
+                    base: <#ty>::BASE,
+                    size: <#ty>::SECTION_SIZE,
+                    rules: &<#ty>::CT_RULES_ABS,
+                    write_lock: <#ty>::WRITE_LOCK,
+                }
+            }
+        })
+        .collect();
+
+    let dispatch_calls: Vec<TokenStream2> = sec_idents
+        .iter()
+        .map(|name| quote!(self.#name.dispatch_events(abs_addr, len, hooks);))
+        .collect();
+
+    let addr_reexports: Vec<TokenStream2> = sec_idents
+        .iter()
+        .map(|name| quote!(pub use super::#name::addr as #name;))
+        .collect();
+
+    let base_offset_asserts: Vec<TokenStream2> = sec_idents
+        .iter()
+        .zip(&sec_tys)
+        .map(|(name, ty)| {
+            quote! {
+                assert!(
+                    ::core::mem::offset_of!(#table_ty, #name) as u16 == <#ty>::BASE,
+                    "section base must equal its byte offset in the table (address IS offset)",
+                );
+            }
+        })
+        .collect();
+
+    let extents: Vec<TokenStream2> = sec_tys
+        .iter()
+        .map(|ty| quote!((<#ty>::BASE, <#ty>::SECTION_SIZE)))
+        .collect();
+
+    let where_clause = match &hooks_bound {
         Some(path) => quote!(where H: #path),
         None => quote!(),
     };
-    let dispatch_args = if region_dispatch_calls.is_empty() {
+    let dispatch_args = if dispatch_calls.is_empty() {
         quote!(_abs_addr: u16, _len: u16, _hooks: &mut H)
     } else {
         quote!(abs_addr: u16, len: u16, hooks: &mut H)
     };
 
+    // Orphan rules forbid `impl RegisterMap for SyncUnsafeCell<#table_ty>` in the
+    // consumer crate (foreign trait, non-fundamental foreign wrapper). A local
+    // #[repr(transparent)] newtype is orphan-legal, and its interior UnsafeCell
+    // keeps `base()`'s pointer mutably-provenanced (writes through a `&#table_ty`
+    // would be UB).
+    let cell_ty = format_ident!("{table_ty}Cell");
+
     Ok(quote! {
         impl #table_ty {
-            pub const REGIONS: &'static [&'static ::control_table::RegionDesc] =
-                &[#(#region_refs),*];
+            pub const WRITABLE_WORDS: [u32; #words] = {
+                let mut w = [0u32; #words];
+                #(#writable_fill)*
+                w
+            };
         }
 
         #[allow(clippy::new_without_default)]
@@ -150,17 +153,53 @@ pub fn expand(input: &DeriveInput) -> syn::Result<TokenStream2> {
             }
         }
 
-        impl ::control_table::Router for #table_ty {
-            fn regions(&self) -> &'static [&'static ::control_table::RegionDesc] {
-                Self::REGIONS
+        #[repr(transparent)]
+        pub struct #cell_ty(::core::cell::SyncUnsafeCell<#table_ty>);
+
+        #[allow(clippy::new_without_default)]
+        impl #cell_ty {
+            pub const fn new() -> Self {
+                Self(::core::cell::SyncUnsafeCell::new(#table_ty::new()))
             }
 
-            fn region_base(
-                &self,
-                desc: &::control_table::RegionDesc,
-            ) -> ::core::option::Option<*mut u8> {
-                #(#region_base_arms)*
-                ::core::option::Option::None
+            /// Shared view of the underlying table (e.g. for `dispatch_events`).
+            ///
+            /// # Safety
+            /// Caller upholds the single-writer contract: no `&mut` to the table
+            /// may be live for the borrow.
+            pub unsafe fn table(&self) -> &#table_ty {
+                unsafe { &*self.0.get() }
+            }
+        }
+
+        impl ::control_table::Region for #table_ty {}
+
+        impl ::control_table::RegionStorage<#table_ty> for #cell_ty {
+            fn with<T>(&self, f: impl FnOnce(&#table_ty) -> T) -> T {
+                // SAFETY: caller upholds RegionStorage's single-writer contract.
+                unsafe { f(&*self.0.get()) }
+            }
+            fn with_mut<T>(&self, f: impl FnOnce(&mut #table_ty) -> T) -> T {
+                // SAFETY: caller upholds RegionStorage's single-writer contract.
+                unsafe { f(&mut *self.0.get()) }
+            }
+        }
+
+        // SAFETY: the interior `SyncUnsafeCell::get` returns a valid aligned
+        // pointer to the table, valid for the cell's lifetime.
+        unsafe impl ::control_table::RegionStorageRaw<#table_ty> for #cell_ty {
+            fn region_ptr(&self) -> *mut #table_ty {
+                self.0.get()
+            }
+        }
+
+        impl ::control_table::map::RegisterMap for #cell_ty {
+            const SIZE: usize = #size as usize;
+            const WRITABLE: &'static [u32] = &#table_ty::WRITABLE_WORDS;
+            const SECTIONS: &'static [::control_table::map::SectionMeta] =
+                &[#(#section_metas),*];
+            fn base(&self) -> *mut u8 {
+                self.0.get() as *mut u8
             }
         }
 
@@ -168,8 +207,8 @@ pub fn expand(input: &DeriveInput) -> syn::Result<TokenStream2> {
             pub fn dispatch_events<H>(
                 &self,
                 #dispatch_args,
-            ) #hooks_where {
-                #(#region_dispatch_calls)*
+            ) #where_clause {
+                #(#dispatch_calls)*
             }
         }
 
@@ -178,25 +217,34 @@ pub fn expand(input: &DeriveInput) -> syn::Result<TokenStream2> {
         }
 
         const _: () = {
-            assert!(::core::mem::size_of::<#table_ty>() <= (#max_sram as usize));
-        };
+            assert!(
+                ::core::mem::size_of::<#table_ty>() == (#size as usize),
+                "Table struct size does not equal its declared size; add an explicit `_rsvd` tail array to fill the table budget",
+            );
+            assert!(
+                0 #(+ #size_terms)* == ::core::mem::size_of::<#table_ty>(),
+                "Table struct has repr(C) padding; add explicit `_rsvd` fields so the flat read path never exposes uninitialized bytes",
+            );
 
-        const _: () = {
-            const EXTENTS: &[(u16, u16)] = &[#(#region_extents),*];
+            #(#base_offset_asserts)*
+
+            const EXTENTS: &[(u16, u16)] = &[#(#extents),*];
             let mut i = 0;
             while i < EXTENTS.len() {
                 let (ai, si) = EXTENTS[i];
-                if (ai as u32) + (si as u32) > 0x10000 {
-                    panic!("Table region exceeds u16 address space");
-                }
+                assert!(
+                    (ai as u32) + (si as u32) <= (#size as u32),
+                    "section extends past the table end",
+                );
                 let mut j = i + 1;
                 while j < EXTENTS.len() {
                     let (aj, sj) = EXTENTS[j];
                     let i_end = (ai as u32) + (si as u32);
                     let j_end = (aj as u32) + (sj as u32);
-                    if (ai as u32) < j_end && (aj as u32) < i_end {
-                        panic!("Table regions overlap");
-                    }
+                    assert!(
+                        (ai as u32) >= j_end || (aj as u32) >= i_end,
+                        "sections overlap within the table",
+                    );
                     j += 1;
                 }
                 i += 1;
@@ -205,7 +253,7 @@ pub fn expand(input: &DeriveInput) -> syn::Result<TokenStream2> {
     })
 }
 
-fn check_repr_c(attrs: &[Attribute], struct_span: proc_macro2::Span) -> syn::Result<()> {
+fn check_repr(attrs: &[Attribute], struct_span: proc_macro2::Span) -> syn::Result<()> {
     let mut has_c = false;
     for a in attrs {
         if !a.path().is_ident("repr") {
@@ -245,70 +293,41 @@ fn parse_table_attrs(attrs: &[Attribute]) -> syn::Result<TableAttrs> {
         if !attr.path().is_ident("ct_table") {
             continue;
         }
+        if matches!(attr.meta, syn::Meta::Path(_)) {
+            continue;
+        }
         attr.parse_nested_meta(|m| {
-            if m.path.is_ident("max_sram") {
-                out.max_sram = Some(m.value()?.parse()?);
+            if m.path.is_ident("size") {
+                out.size = Some(m.value()?.parse()?);
                 Ok(())
             } else if m.path.is_ident("hooks") {
                 out.hooks = Some(m.value()?.parse()?);
                 Ok(())
             } else {
-                Err(m.error("unknown ct_table key (expected `max_sram` or `hooks`)"))
+                Err(m.error("unknown ct_table key (expected `size` or `hooks`)"))
             }
         })?;
     }
     Ok(out)
 }
 
-#[derive(Default)]
-struct CtRegionAttrs {
-    addr_mod: Option<Path>,
-}
-
-fn parse_ct_region_attrs(attrs: &[Attribute]) -> syn::Result<Option<CtRegionAttrs>> {
-    let mut out: Option<CtRegionAttrs> = None;
+fn parse_field_skip(attrs: &[Attribute]) -> syn::Result<bool> {
+    let mut skip = false;
     for attr in attrs {
-        if !attr.path().is_ident("ct_region") {
+        if !attr.path().is_ident("ct_table") {
             continue;
         }
-        let entry = out.get_or_insert_with(CtRegionAttrs::default);
         if matches!(attr.meta, syn::Meta::Path(_)) {
             continue;
         }
         attr.parse_nested_meta(|m| {
-            if m.path.is_ident("addr_mod") {
-                entry.addr_mod = Some(m.value()?.parse()?);
+            if m.path.is_ident("skip") {
+                skip = true;
                 Ok(())
             } else {
-                Err(m.error("unknown ct_region key (expected addr_mod)"))
+                Err(m.error("unknown ct_table field key (expected `skip`)"))
             }
         })?;
     }
-    Ok(out)
-}
-
-fn extract_storage_inner_ty(field: &Field) -> syn::Result<&Type> {
-    const MSG: &str = "Table field must be a single-type-parameter storage type \
-        (e.g. `SyncUnsafeCell<R>`) impl'ing `RegionStorageRaw<R>`";
-    let Type::Path(TypePath { qself: None, path }) = &field.ty else {
-        return Err(syn::Error::new(field.ty.span(), MSG));
-    };
-    let last = path
-        .segments
-        .last()
-        .ok_or_else(|| syn::Error::new(field.ty.span(), MSG))?;
-    let PathArguments::AngleBracketed(args) = &last.arguments else {
-        return Err(syn::Error::new(field.ty.span(), MSG));
-    };
-    let mut tys = args.args.iter().filter_map(|a| match a {
-        GenericArgument::Type(t) => Some(t),
-        _ => None,
-    });
-    let inner = tys
-        .next()
-        .ok_or_else(|| syn::Error::new(field.ty.span(), MSG))?;
-    if tys.next().is_some() {
-        return Err(syn::Error::new(field.ty.span(), MSG));
-    }
-    Ok(inner)
+    Ok(skip)
 }

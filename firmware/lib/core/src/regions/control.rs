@@ -1,5 +1,5 @@
 use crate::regions::config;
-use control_table::{Enum, FlatBlock, Section};
+use control_table::{Block, Enum, Section};
 
 /// Position controller mode. `repr(u8)` so the byte-level commit path round-trips
 /// cleanly; validators MUST gate writes to `Mode::ALLOWED` because constructing a
@@ -21,7 +21,7 @@ pub enum BootMode {
 }
 
 #[repr(C)]
-#[derive(Copy, Clone, FlatBlock)]
+#[derive(Copy, Clone, Block)]
 pub struct ControlLifecycle {
     pub torque_enable: bool,
     pub mode: Mode,
@@ -40,7 +40,7 @@ pub struct ControlLifecycle {
 }
 
 #[repr(C)]
-#[derive(Copy, Clone, FlatBlock)]
+#[derive(Copy, Clone, Block)]
 pub struct ControlStreaming {
     pub stream_enable: bool,
     pub stream_decimation: u8,
@@ -52,7 +52,7 @@ pub struct ControlStreaming {
 }
 
 #[repr(C)]
-#[derive(Copy, Clone, FlatBlock)]
+#[derive(Copy, Clone, Block)]
 pub struct ControlSystem {
     pub boot_mode: BootMode,
 }

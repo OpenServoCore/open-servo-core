@@ -1,0 +1,5 @@
+error: `access = reserved` is gone; use `skip` for padding fields
+ --> tests/ui/access_reserved.rs:6:25
+  |
+6 |     #[ct_field(access = reserved)]
+  |                         ^^^^^^^^
