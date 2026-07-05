@@ -1,0 +1,5 @@
+error[E0080]: evaluation panicked: Section struct size does not equal its declared section budget; add an explicit `_rsvd` tail array to fill the section budget
+  --> tests/ui/flat_section_size_mismatch.rs:10:10
+   |
+10 | #[derive(Section)]
+   |          ^^^^^^^ evaluation of `_` failed here

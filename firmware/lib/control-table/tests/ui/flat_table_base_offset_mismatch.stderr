@@ -1,0 +1,5 @@
+error[E0080]: evaluation panicked: section base must equal its byte offset in the table (address IS offset)
+  --> tests/ui/flat_table_base_offset_mismatch.rs:37:10
+   |
+37 | #[derive(FlatTable)]
+   |          ^^^^^^^^^ evaluation of `_` failed here
