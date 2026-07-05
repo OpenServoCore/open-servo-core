@@ -97,6 +97,8 @@ pub struct DxlUart<P: Providers, const RX_BUF_LEN: usize, const TX_BUF_LEN: usiz
     /// one RXNEIE bit — toggled only on the OR-edge so neither closes the
     /// window the other still holds. See [`drift_window`].
     rx_wake: RxWakeGate,
+    /// Destuff scratch for Write-family dispatch payloads (see PollRouter).
+    wr: [u8; codec::HELD_FRAME_MAX],
 }
 
 impl<P: Providers, const RX_BUF_LEN: usize, const TX_BUF_LEN: usize>
@@ -125,6 +127,7 @@ impl<P: Providers, const RX_BUF_LEN: usize, const TX_BUF_LEN: usize>
             wire_clock,
             telemetry,
             send_policy: SendPolicy::new(id, rdt_us),
+            wr: [0; codec::HELD_FRAME_MAX],
             rx_wake: RxWakeGate::new(),
         };
         // Cold-start drift window: hold the per-byte RX wake open from boot
@@ -479,6 +482,7 @@ impl<P: Providers, const RX_BUF_LEN: usize, const TX_BUF_LEN: usize>
             fast_last,
             send_policy,
             rx_wake,
+            wr,
             ..
         } = self;
         let (rx, tx) = codec.split_mut();
@@ -492,6 +496,7 @@ impl<P: Providers, const RX_BUF_LEN: usize, const TX_BUF_LEN: usize>
             rx_dma,
             rx_wake,
             id,
+            wr,
         };
         // The Stop bail-out lives in `router.on_instruction`: if the
         // dispatch engaged the Fast Last fold (`send_slot(Last)`) or parked a

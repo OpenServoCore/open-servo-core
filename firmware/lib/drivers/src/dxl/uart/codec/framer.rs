@@ -153,6 +153,10 @@ impl<CRC: CrcUmts> Framer<CRC> {
     /// folding each byte at wire index `< total-2` into the CRC. Returns the
     /// number of bytes consumed (the caller advances the ring by that much).
     /// Stops at `total`; the trailing 2 CRC bytes are copied but not folded.
+    // RAM placement — flash-resident per-byte loops run ~100 cy/B on V006
+    // (no cache); verified via nm + DXL_PERF itemization 2026-07-05.
+    #[cfg_attr(target_arch = "riscv32", unsafe(link_section = ".highcode"))]
+    #[inline(never)]
     pub(super) fn absorb(&mut self, front: &[u8], back: &[u8]) -> usize {
         let Framer { scratch, crc, mode } = self;
         let Mode::Copy(cs) = mode else {

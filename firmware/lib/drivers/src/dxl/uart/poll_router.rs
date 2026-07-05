@@ -35,6 +35,8 @@ pub(super) struct PollRouter<'a, P: Providers, const TX_BUF_LEN: usize> {
     /// Live bus ID snapshot for log lines — stable for the poll's duration
     /// (staged ID commits only at `on_tx_complete`).
     pub(super) id: u8,
+    /// Composite-owned destuff scratch for Write-family payloads.
+    pub(super) wr: &'a mut [u8; HELD_FRAME_MAX],
 }
 
 // -- events -------------------------------------------------------------
@@ -60,14 +62,15 @@ impl<P: Providers, const TX_BUF_LEN: usize> PollRouter<'_, P, TX_BUF_LEN> {
     {
         // Backs the destuffed write payload for a Write-family request; the
         // derived request borrows it for the duration of the dispatch call.
-        let mut wr = [0u8; HELD_FRAME_MAX];
+        // Persistent (composite-owned) so the hot path never re-zeroes it —
+        // only the destuffed prefix is ever read.
         let derived = self.send_policy.on_instruction(
             &instr,
             broadcast,
             packet_end.tick,
             fold_start_cursor,
             packet_end.src,
-            &mut wr,
+            &mut *self.wr,
         );
         if let Some((req, ctx)) = derived {
             crate::log::trace!(
@@ -76,7 +79,14 @@ impl<P: Providers, const TX_BUF_LEN: usize> PollRouter<'_, P, TX_BUF_LEN> {
                 ctx.broadcast,
                 ctx.may_reply
             );
-            let mut reply = self.reply();
+            let mut reply = ReplyHandle {
+                tx: &mut *self.tx,
+                scheduler: &mut *self.scheduler,
+                clock: &mut *self.clock,
+                rx_dma: &mut *self.rx_dma,
+                rx_wake: &mut *self.rx_wake,
+                send_policy: &mut *self.send_policy,
+            };
             f(req, ctx, &mut reply);
         }
         if self.fast_last.fold_active() || self.send_policy.awaited_status_start().is_some() {
@@ -112,18 +122,4 @@ impl<P: Providers, const TX_BUF_LEN: usize> PollRouter<'_, P, TX_BUF_LEN> {
 
 // -- accessors ------------------------------------------------------------
 
-impl<P: Providers, const TX_BUF_LEN: usize> PollRouter<'_, P, TX_BUF_LEN> {
-    /// Per-verdict reply handle over the router's borrowed halves — built
-    /// fresh for each dispatcher call, reborrowing the send-side fields.
-    #[inline(always)]
-    pub(super) fn reply(&mut self) -> ReplyHandle<'_, P, TX_BUF_LEN> {
-        ReplyHandle {
-            tx: &mut *self.tx,
-            scheduler: &mut *self.scheduler,
-            clock: &mut *self.clock,
-            rx_dma: &mut *self.rx_dma,
-            rx_wake: &mut *self.rx_wake,
-            send_policy: &mut *self.send_policy,
-        }
-    }
-}
+impl<P: Providers, const TX_BUF_LEN: usize> PollRouter<'_, P, TX_BUF_LEN> {}
