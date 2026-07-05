@@ -49,6 +49,9 @@ impl InstructionTracker {
     }
 
     /// A Status header parsed — a foreign reply frame; drop any tracking.
+    /// The framer byte-skips Status frames without touching the tracker now,
+    /// so this transition is exercised only by the tracker's own FSM tests.
+    #[cfg(test)]
     pub(super) fn on_status_header(&mut self) {
         self.phase = InstructionPhase::Idle;
     }
@@ -69,7 +72,10 @@ impl InstructionTracker {
         }
     }
 
-    /// Crc-bad / parser resync — the packet is void; drop any tracking.
+    /// Crc-bad / parser resync — the packet is void; drop any tracking. The
+    /// framer drops malformed frames without notifying the tracker now, so
+    /// this transition is exercised only by the tracker's own FSM tests.
+    #[cfg(test)]
     pub(super) fn on_resync(&mut self) {
         self.phase = InstructionPhase::Idle;
     }
@@ -78,8 +84,10 @@ impl InstructionTracker {
 // -- accessors ----------------------------------------------------------
 
 impl InstructionTracker {
-    /// An addressed Instruction is mid-walk — the caller resolves a
-    /// packet-end tick at Crc only in this state.
+    /// An addressed Instruction is mid-walk. Consulted only by the tracker's
+    /// own FSM tests now — the synthesis path always runs the full
+    /// header → slot* → crc sequence in one shot.
+    #[cfg(test)]
     pub(super) fn is_tracking(&self) -> bool {
         matches!(self.phase, InstructionPhase::Tracking(_))
     }

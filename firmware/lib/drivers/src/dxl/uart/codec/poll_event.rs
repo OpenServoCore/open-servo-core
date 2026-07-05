@@ -1,22 +1,22 @@
-//! Poll-surface vocabulary for [`CodecRx::poll`] — the event the codec
-//! fans to its sink callback and the action the sink returns. Split out
-//! per the one-type-per-file convention; the types are re-exported at the
-//! `codec` root so consumers keep the `codec::{PollEvent, PollAction}`
+//! Poll-surface vocabulary for [`CodecRx::poll`] — the verdict the framer
+//! fans to its sink callback and the action the sink returns. Split out per
+//! the one-type-per-file convention; the types are re-exported at the
+//! `codec` root so consumers keep the `codec::{FrameVerdict, FrameAction}`
 //! paths.
 //!
 //! [`CodecRx::poll`]: super::codec_rx::CodecRx::poll
 
-use dxl_protocol::streaming::Event;
+use dxl_protocol::types::packet::Instruction;
 
 use crate::dxl::uart::poll_src::PollSrc;
 
-/// Packet-end timing the codec resolves and attaches to every `Crc`
-/// [`PollEvent::Parser`] — a primitive per driver-pattern §3.3, so the
-/// sink never reaches into the codec's drain-ISR stash.
+/// Packet-end timing the codec resolves and attaches to every
+/// [`FrameVerdict::Instruction`] — a primitive per driver-pattern §3.3, so
+/// the sink never reaches into the codec's drain-ISR stash.
 ///
-/// `tick` is the drain-source-corrected ISR-entry estimate of the wire
-/// end (`LineIdle` → `now − one frame`; `ByteBatch` → `now`), less the
-/// chip's entry-latency compensation (`WireClock::PACKET_END_ENTRY_COMP_TICKS`).
+/// `tick` is the drain-source-corrected ISR-entry estimate of the wire end
+/// (`LineIdle` → `now − one frame`; `ByteBatch` → `now`), less the chip's
+/// entry-latency compensation (`WireClock::PACKET_END_ENTRY_COMP_TICKS`).
 /// `src` is the drain source that produced it.
 #[derive(Clone, Copy)]
 pub struct PacketEnd {
@@ -24,32 +24,28 @@ pub struct PacketEnd {
     pub src: PollSrc,
 }
 
-/// Event surfaced from [`CodecRx::poll`] to its sink callback.
+/// Verdict surfaced from [`CodecRx::poll`] to its sink callback.
 ///
-/// `Parser { .. }` is a 1:1 forward of [`Event`]; the codec translates
-/// `WriteDataChunk` `(offset, length)` into a contiguous ring slice via
-/// `ring` (empty for other events). `next_status_pos` is the codec's
-/// wire-byte position at this event's emit point — the value
-/// `wire_bytes_consumed` will hold after the parser has consumed the
-/// bytes that produced this event. Named for its load-bearing use: the
-/// Fast Last fold path captures it at the chain instruction's Crc event
-/// as `fold_start_cursor` — at that point it equals the wire position
-/// where the First predecessor's status packet will start (the next byte
-/// on the wire). At Header / Payload events the value is still the
-/// codec's running cursor, but no consumer reads it there today.
-/// `packet_end` is `Some` exactly at `Crc` events — see [`PacketEnd`].
-/// `SkipComplete` emits when the universal byte-skip's remaining-byte
-/// counter hits zero — `id` round-trips the value the sink passed in
-/// [`PollAction::Skip`], so the chain predecessor-match check
-/// (doc §5.2) can compare against `predecessor_id`.
+/// The `Instruction` variant is one whole own/broadcast instruction frame,
+/// CRC-verified and decoded from a contiguous scratch copy — the sink derives
+/// the request plus reply context and dispatches once. Its `broadcast` field
+/// is whether the frame arrived via the broadcast id (an SRL gating input);
+/// `packet_end` is the wire-end estimate for reply timing; `fold_start_cursor`
+/// is the codec's wire-byte cursor just past the frame, where a chain First
+/// predecessor's leading `0xFF` will land (the Fast Last fold's start cursor).
+///
+/// The `SkipComplete` variant emits when a byte-skipped foreign or Status
+/// frame's counter hits zero; its `id` round-trips the frame id so the chain
+/// predecessor-match (`docs/dxl-streaming-rx.md` §5.2) can compare against
+/// `predecessor_id`.
 ///
 /// [`CodecRx::poll`]: super::codec_rx::CodecRx::poll
-pub enum PollEvent<'a> {
-    Parser {
-        ev: Event,
-        ring: &'a [u8],
-        next_status_pos: u32,
-        packet_end: Option<PacketEnd>,
+pub enum FrameVerdict<'a> {
+    Instruction {
+        instr: Instruction<'a>,
+        broadcast: bool,
+        packet_end: PacketEnd,
+        fold_start_cursor: u32,
     },
     SkipComplete {
         id: u8,
@@ -58,22 +54,13 @@ pub enum PollEvent<'a> {
 
 /// Return value from the sink callback.
 ///
-/// `Skip` is meaningful only after [`PollEvent::Parser`] carrying a
-/// [`Event::Header`]; on other events the codec ignores it and continues
-/// normally. On `Skip`, the codec reads `Parser::packet_remaining`,
-/// resets the parser, and consumes the indicated count from the RX ring
-/// tail before surfacing [`PollEvent::SkipComplete`].
-///
-/// `Stop` exits the poll immediately after committing the bytes the
-/// parser already consumed for the in-flight event. Returned when the
-/// sink engages a per-byte consumer (today: the Fast Last CRC fold
-/// engine) that must own all subsequent ring bytes; leaving them in the
-/// ring is the only way to hand them off without losing the cursor. Used
-/// to honor the RX-tail ownership contract across the fold-start boundary
-/// itself (`dxl-streaming-rx.md` §6) — the poll's `fold_active()` self-gate
-/// only stops *future* polls.
-pub enum PollAction {
+/// `Stop` exits the poll immediately, leaving the remaining ring bytes in
+/// place. Returned when the sink engaged a per-byte consumer (the Fast Last
+/// CRC fold engine, or a deferred successor slot's status-start wait) that
+/// must own all subsequent ring bytes — the poll's `fold_active()` /
+/// `awaited_status_start()` self-gate only stops *future* polls, so the poll
+/// already in flight bails here (`docs/dxl-streaming-rx.md` §6).
+pub enum FrameAction {
     Continue,
-    Skip { id: u8 },
     Stop,
 }

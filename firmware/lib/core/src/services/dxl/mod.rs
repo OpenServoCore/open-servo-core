@@ -1,6 +1,5 @@
 mod api;
 mod dispatch;
-mod dispatcher;
 pub mod limits;
 
 #[cfg(test)]

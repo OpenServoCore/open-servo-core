@@ -3,17 +3,20 @@
 //! stack-level gear that covers the same spec-scenario behavior end-to-end.
 
 use crc::{CRC_16_UMTS, Crc};
-use dxl_protocol::streaming::{
-    Event, HeaderEvent, InstructionPayload, Parser, PayloadEvent, StatusPayload,
-};
+use dxl_protocol::streaming::{Event, HeaderEvent, Parser, PayloadEvent, StatusPayload};
 use dxl_protocol::types::{BulkReadEntry, ErrorCode, Id, Slot, Status, StatusError};
 use dxl_protocol::{Chunk, CrcUmts, InstructionEncoder, SlotEncoder, StatusEncoder, WriteError};
 use heapless::Vec;
 
 const BROADCAST_ID: Id = Id::BROADCAST;
 
+use dxl_protocol::frame::{ParseError, parse};
+use dxl_protocol::types::packet::{Instruction, decode_instruction};
+use dxl_protocol::unstuff::{ByteIter, Bytes};
+use dxl_protocol::wire::BROADCAST_ID as BROADCAST_ID_BYTE;
+
 use crate::regions::config::BaudRate;
-use crate::traits::{DxlBus, DxlDispatcher, DxlReply};
+use crate::traits::{DxlBus, DxlDispatch, DxlReply, DxlRequest, DxlRequestCtx};
 use crate::{BootMode, RegionStorage, Shared, StatusReturnLevel};
 
 use super::Dxl;
@@ -181,31 +184,31 @@ impl DxlReply for FakeReply {
     }
 }
 
+/// Stand-in DXL bus for the single-shot [`DxlDispatch`] surface. Accumulates
+/// fed wire bytes and, on `poll`, frames + decodes them into one
+/// [`DxlRequest`] per frame — resolving this servo's participation and its
+/// own slot's data the way the production framer does — then hands each to
+/// the dispatcher. Mirrors production, where a packet can straddle two
+/// `Dxl::poll` wakes: bytes stay buffered until a whole frame arrives.
 struct FakeBus {
-    burst: Vec<u8, 256>,
-    burst_fresh: bool,
-    /// Persistent across polls, mirroring production where the parser
-    /// lives in the codec and a packet can straddle two `Dxl::poll` wakes
-    /// (edge HT vs IDLE). Tests that split a burst across two `feed`
-    /// calls rely on this carrying mid-packet state through.
-    parser: Parser<TestDxlCrc>,
+    pending: Vec<u8, 256>,
+    /// This servo's id — `Shared::new()` defaults the config id to 0, so the
+    /// bus's addressing filter uses 0 unless a test overrides it.
+    our_id: u8,
     reply: FakeReply,
 }
 
 impl FakeBus {
     fn new() -> Self {
         Self {
-            burst: Vec::new(),
-            burst_fresh: false,
-            parser: Parser::<TestDxlCrc>::new(),
+            pending: Vec::new(),
+            our_id: 0,
             reply: FakeReply::new(),
         }
     }
 
     fn feed(&mut self, bytes: &[u8]) {
-        self.burst.clear();
-        self.burst.extend_from_slice(bytes).unwrap();
-        self.burst_fresh = true;
+        self.pending.extend_from_slice(bytes).unwrap();
     }
 
     /// Models the bus-collision / no-IDLE case where bytes never surface.
@@ -213,33 +216,292 @@ impl FakeBus {
 }
 
 impl DxlBus for FakeBus {
-    fn poll<D: DxlDispatcher>(&mut self, dispatcher: &mut D) {
-        if !self.burst_fresh {
-            return;
+    fn poll<D: DxlDispatch>(&mut self, dispatcher: &mut D) {
+        let FakeBus {
+            pending,
+            our_id,
+            reply,
+        } = self;
+        let mut cursor = 0;
+        loop {
+            let rest = &pending[cursor..];
+            match parse::<TestDxlCrc>(rest) {
+                Ok((frame, n)) => {
+                    let mut wr = [0u8; 128];
+                    if let Ok(instr) = decode_instruction(&frame)
+                        && let Some((req, ctx)) = derive_request(&instr, *our_id, &mut wr)
+                    {
+                        dispatcher.dispatch(req, ctx, reply);
+                    }
+                    cursor += n;
+                }
+                Err(ParseError::Incomplete) => break,
+                Err(
+                    ParseError::Junk { skip }
+                    | ParseError::BadLength { skip }
+                    | ParseError::BadCrc { skip },
+                ) => cursor += skip,
+            }
         }
-        self.burst_fresh = false;
-        let burst: &[u8] = &self.burst;
-        let reply = &mut self.reply;
-        for ev in self.parser.feed(burst) {
-            let chunk = chunk_for(&ev, burst);
-            dispatcher.on_event(ev, chunk, reply);
+        // Drop the consumed prefix; keep any incomplete tail for the next feed.
+        if cursor > 0 {
+            let tail: Vec<u8, 256> = pending[cursor..].iter().copied().collect();
+            *pending = tail;
         }
     }
 }
 
-/// Resolve a chunked-payload event's `(offset, length)` into a burst slice.
-fn chunk_for<'a>(ev: &Event, burst: &'a [u8]) -> &'a [u8] {
-    match *ev {
-        Event::Payload(PayloadEvent::Instruction(InstructionPayload::WriteDataChunk {
-            offset,
-            length,
-        })) => {
-            let lo = offset as usize;
-            let hi = lo + length as usize;
-            &burst[lo..hi]
-        }
-        _ => &[],
+/// `Some(broadcast)` when a direct instruction targets this servo (own id or
+/// broadcast); `None` when it's foreign.
+fn addressed(tid: Id, our_id: u8) -> Option<bool> {
+    let t = tid.as_byte();
+    if t == our_id {
+        Some(false)
+    } else if t == BROADCAST_ID_BYTE {
+        Some(true)
+    } else {
+        None
     }
+}
+
+fn ctx_for(broadcast: bool, may_reply: bool, slot_reply: bool) -> DxlRequestCtx {
+    DxlRequestCtx {
+        broadcast,
+        may_reply,
+        slot_reply,
+    }
+}
+
+/// Copy the next `n` logical bytes of `it` into `dst`, returning the count.
+fn take_bytes(it: &mut ByteIter<'_>, n: usize, dst: &mut [u8]) -> usize {
+    let mut w = 0;
+    for _ in 0..n {
+        match it.next() {
+            Some(b) if w < dst.len() => {
+                dst[w] = b;
+                w += 1;
+            }
+            Some(_) => {}
+            None => break,
+        }
+    }
+    w
+}
+
+fn take_u16(it: &mut ByteIter<'_>) -> Option<u16> {
+    let lo = it.next()?;
+    let hi = it.next()?;
+    Some(u16::from_le_bytes([lo, hi]))
+}
+
+fn destuff_into(data: &Bytes<'_>, wr: &mut [u8]) -> usize {
+    let mut n = 0;
+    for b in data.iter() {
+        if n >= wr.len() {
+            break;
+        }
+        wr[n] = b;
+        n += 1;
+    }
+    n
+}
+
+/// Resolve a decoded instruction into the request this servo dispatches, if
+/// it participates — the bus-side derivation the production framer performs.
+fn derive_request<'w>(
+    instr: &Instruction<'_>,
+    our_id: u8,
+    wr: &'w mut [u8],
+) -> Option<(DxlRequest<'w>, DxlRequestCtx)> {
+    match *instr {
+        Instruction::Ping { id } => {
+            let broadcast = addressed(id, our_id)?;
+            Some((DxlRequest::Ping, ctx_for(broadcast, true, false)))
+        }
+        Instruction::Read {
+            id,
+            address,
+            length,
+        } => {
+            let broadcast = addressed(id, our_id)?;
+            Some((
+                DxlRequest::Read { address, length },
+                ctx_for(broadcast, !broadcast, false),
+            ))
+        }
+        Instruction::Write { id, address, data } => {
+            let broadcast = addressed(id, our_id)?;
+            let n = destuff_into(&data, wr);
+            Some((
+                DxlRequest::Write {
+                    address,
+                    data: Bytes::raw(&wr[..n]),
+                },
+                ctx_for(broadcast, !broadcast, false),
+            ))
+        }
+        Instruction::RegWrite { id, address, data } => {
+            let broadcast = addressed(id, our_id)?;
+            let n = destuff_into(&data, wr);
+            Some((
+                DxlRequest::RegWrite {
+                    address,
+                    data: Bytes::raw(&wr[..n]),
+                },
+                ctx_for(broadcast, !broadcast, false),
+            ))
+        }
+        Instruction::Action { id } => {
+            let broadcast = addressed(id, our_id)?;
+            Some((DxlRequest::Action, ctx_for(broadcast, !broadcast, false)))
+        }
+        Instruction::Reboot { id } => {
+            let broadcast = addressed(id, our_id)?;
+            Some((DxlRequest::Reboot, ctx_for(broadcast, !broadcast, false)))
+        }
+        Instruction::FactoryReset { id, mode } => {
+            let broadcast = addressed(id, our_id)?;
+            Some((
+                DxlRequest::FactoryReset { mode },
+                ctx_for(broadcast, !broadcast, false),
+            ))
+        }
+        Instruction::Clear { id, .. } => {
+            let broadcast = addressed(id, our_id)?;
+            Some((
+                DxlRequest::Clear {
+                    body: Bytes::raw(&[]),
+                },
+                ctx_for(broadcast, !broadcast, false),
+            ))
+        }
+        Instruction::ControlTableBackup { id, .. } => {
+            let broadcast = addressed(id, our_id)?;
+            Some((
+                DxlRequest::ControlTableBackup {
+                    body: Bytes::raw(&[]),
+                },
+                ctx_for(broadcast, !broadcast, false),
+            ))
+        }
+        Instruction::Ext {
+            id, instruction, ..
+        } => {
+            let broadcast = addressed(id, our_id)?;
+            Some((
+                DxlRequest::Ext {
+                    instruction,
+                    params: Bytes::raw(&[]),
+                },
+                ctx_for(broadcast, !broadcast, false),
+            ))
+        }
+        Instruction::SyncRead {
+            address,
+            length,
+            ids,
+        } => sync_read_slot(&ids, our_id).then_some((
+            DxlRequest::Read { address, length },
+            ctx_for(true, true, false),
+        )),
+        Instruction::FastSyncRead {
+            address,
+            length,
+            ids,
+        } => sync_read_slot(&ids, our_id).then_some((
+            DxlRequest::Read { address, length },
+            ctx_for(true, true, true),
+        )),
+        Instruction::SyncWrite {
+            address,
+            length,
+            body,
+        } => sync_write_slot(&body, length, our_id, wr).map(|n| {
+            (
+                DxlRequest::Write {
+                    address,
+                    data: Bytes::raw(&wr[..n]),
+                },
+                ctx_for(true, false, false),
+            )
+        }),
+        Instruction::BulkRead { body } => bulk_read_slot(&body, our_id).map(|(a, l)| {
+            (
+                DxlRequest::Read {
+                    address: a,
+                    length: l,
+                },
+                ctx_for(true, true, false),
+            )
+        }),
+        Instruction::FastBulkRead { body } => bulk_read_slot(&body, our_id).map(|(a, l)| {
+            (
+                DxlRequest::Read {
+                    address: a,
+                    length: l,
+                },
+                ctx_for(true, true, true),
+            )
+        }),
+        Instruction::BulkWrite { body } => bulk_write_slot(&body, our_id, wr).map(|(a, n)| {
+            (
+                DxlRequest::Write {
+                    address: a,
+                    data: Bytes::raw(&wr[..n]),
+                },
+                ctx_for(true, false, false),
+            )
+        }),
+    }
+}
+
+/// Whether `our_id` appears in a Sync Read id list.
+fn sync_read_slot(ids: &Bytes<'_>, our_id: u8) -> bool {
+    ids.iter().any(|slot_id| slot_id == our_id)
+}
+
+/// Capture our slot's write data (`[id, data(length)]*`); `Some(n)` when present.
+fn sync_write_slot(body: &Bytes<'_>, length: u16, our_id: u8, wr: &mut [u8]) -> Option<usize> {
+    let mut it = body.iter();
+    while let Some(slot_id) = it.next() {
+        if slot_id == our_id {
+            return Some(take_bytes(&mut it, length as usize, wr));
+        }
+        for _ in 0..length {
+            it.next()?;
+        }
+    }
+    None
+}
+
+/// Our slot's `(address, length)` in a Bulk Read body (`[id, addr16, len16]*`).
+fn bulk_read_slot(body: &Bytes<'_>, our_id: u8) -> Option<(u16, u16)> {
+    let mut it = body.iter();
+    while let Some(slot_id) = it.next() {
+        let address = take_u16(&mut it)?;
+        let length = take_u16(&mut it)?;
+        if slot_id == our_id {
+            return Some((address, length));
+        }
+    }
+    None
+}
+
+/// Our slot's `(address, data_len)` in a Bulk Write body (`[id, addr16, len16,
+/// data(len)]*`), capturing the data into `wr`.
+fn bulk_write_slot(body: &Bytes<'_>, our_id: u8, wr: &mut [u8]) -> Option<(u16, usize)> {
+    let mut it = body.iter();
+    while let Some(slot_id) = it.next() {
+        let address = take_u16(&mut it)?;
+        let length = take_u16(&mut it)?;
+        if slot_id == our_id {
+            return Some((address, take_bytes(&mut it, length as usize, wr)));
+        }
+        for _ in 0..length {
+            it.next()?;
+        }
+    }
+    None
 }
 
 fn encode<F>(f: F) -> Vec<u8, 256>

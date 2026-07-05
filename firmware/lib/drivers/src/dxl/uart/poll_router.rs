@@ -1,20 +1,21 @@
-//! Per-poll event router — disjoint borrows of the `DxlUart` composite's
-//! sub-drivers, bundled once per [`DxlUart::poll`] so the poll closure
-//! routes each codec event through named methods instead of one inline
-//! match. Sibling of [`ReplyHandle`] (the same §4.3 borrow-bundle shape,
-//! aimed at the dispatcher instead of the poll loop); [`Self::reply`]
-//! reborrows the handle's five fields per event.
+//! Per-poll verdict router — disjoint borrows of the `DxlUart` composite's
+//! sub-drivers, bundled once per [`DxlUart::poll`] so the poll closure routes
+//! each frame verdict through named methods instead of one inline match.
+//! Sibling of [`ReplyHandle`] (the same §4.3 borrow-bundle shape, aimed at
+//! the dispatcher instead of the poll loop); [`Self::reply`] reborrows the
+//! handle's fields per verdict.
 //!
 //! [`DxlUart::poll`]: super::DxlUart::poll
 
-use dxl_protocol::streaming::{CrcResult, Event, HeaderEvent, PayloadEvent};
+use dxl_protocol::types::packet::Instruction;
+use osc_core::{DxlRequest, DxlRequestCtx};
 
 use super::clock::Clock;
-use super::codec::{CodecTx, PacketEnd, PollAction};
+use super::codec::{CodecTx, FrameAction, HELD_FRAME_MAX, PacketEnd};
 use super::drift_window::RxWakeGate;
 use super::fast_last::FastLast;
 use super::reply_handle::ReplyHandle;
-use super::send_policy::SendPolicy;
+use super::send_policy::{SendPolicy, synthesize};
 use crate::traits::dxl::{Providers, TxBus};
 
 pub(super) struct PollRouter<'a, P: Providers, const TX_BUF_LEN: usize> {
@@ -24,9 +25,8 @@ pub(super) struct PollRouter<'a, P: Providers, const TX_BUF_LEN: usize> {
     pub(super) fast_last: &'a mut FastLast<P::FastLastScheduler>,
     pub(super) clock: &'a mut Clock<P::UsartBaud, P::ClockTrim>,
     pub(super) send_policy: &'a mut SendPolicy,
-    /// Threaded through to [`ReplyHandle`] for the FAST k > 0 defer
-    /// path's status-start wake window; the router itself never touches
-    /// it.
+    /// Threaded through to [`ReplyHandle`] for the FAST k > 0 defer path's
+    /// status-start wake window; the router itself never touches it.
     pub(super) rx_dma: &'a mut P::RxDma,
     /// RXNEIE reason set — threaded to [`ReplyHandle`] so the FAST defer
     /// path opens the wake through the shared gate (OR-edge), not by
@@ -40,89 +40,57 @@ pub(super) struct PollRouter<'a, P: Providers, const TX_BUF_LEN: usize> {
 // -- events -------------------------------------------------------------
 
 impl<P: Providers, const TX_BUF_LEN: usize> PollRouter<'_, P, TX_BUF_LEN> {
-    /// Route one parser [`Event`] into the send policy. The returned
-    /// action is the skip/continue decision the codec resumes with —
-    /// `Skip` engages the universal byte-skip on foreign bodies
-    /// (doc §3 driver rule).
+    /// Route one decoded own/broadcast instruction frame: replay it onto the
+    /// send policy (staging the reply context), derive the request + ctx,
+    /// and hand them to the dispatcher closure `f` once. Returns
+    /// [`FrameAction::Stop`] when the dispatch engaged the Fast Last fold or
+    /// a deferred successor wait — the in-flight poll must bail so those
+    /// consumers own the remaining ring bytes (doc §6).
     #[inline(always)]
-    pub(super) fn on_parser_event(
+    pub(super) fn on_instruction<F>(
         &mut self,
-        ev: Event,
-        next_status_pos: u32,
-        packet_end: Option<PacketEnd>,
-    ) -> PollAction {
-        match ev {
-            Event::Header(HeaderEvent::Instruction(h)) => {
-                let skip_target = self.send_policy.on_instruction_header(&h);
-                crate::log::trace!(
-                    "dxl[id={}]: event=header_instruction target={} addressable={}",
-                    self.id,
-                    h.target().as_byte(),
-                    skip_target.is_none()
-                );
-                match skip_target {
-                    None => PollAction::Continue,
-                    Some(target) => PollAction::Skip { id: target },
-                }
-            }
-            Event::Header(HeaderEvent::Status(sh)) => {
-                crate::log::trace!(
-                    "dxl[id={}]: event=header_status status_id={}",
-                    self.id,
-                    sh.id.as_byte()
-                );
-                self.send_policy.on_status_header();
-                PollAction::Skip {
-                    id: sh.id.as_byte(),
-                }
-            }
-            Event::Payload(PayloadEvent::Instruction(p)) => {
-                crate::log::trace!("dxl[id={}]: event=payload_instruction", self.id);
-                self.send_policy.on_slot(&p);
-                PollAction::Continue
-            }
-            Event::Payload(PayloadEvent::Status(_)) => {
-                debug_assert!(false, "Status payload should have been byte-skipped");
-                PollAction::Continue
-            }
-            Event::Crc(CrcResult::Good) => self.on_crc_good(next_status_pos, packet_end),
-            Event::Crc(CrcResult::Bad) | Event::Resync(_) => {
-                crate::log::trace!("dxl[id={}]: event=crc(bad)/resync", self.id);
-                self.send_policy.on_resync();
-                PollAction::Continue
-            }
-            Event::Sync => PollAction::Continue,
+        instr: Instruction<'_>,
+        broadcast: bool,
+        packet_end: PacketEnd,
+        fold_start_cursor: u32,
+        f: &mut F,
+    ) -> FrameAction
+    where
+        F: FnMut(DxlRequest<'_>, DxlRequestCtx, &mut ReplyHandle<'_, P, TX_BUF_LEN>),
+    {
+        // Backs the destuffed write payload for a Write-family request; the
+        // derived request borrows it for the duration of the dispatch call.
+        let mut wr = [0u8; HELD_FRAME_MAX];
+        let derived = synthesize(
+            &mut *self.send_policy,
+            &instr,
+            broadcast,
+            packet_end.tick,
+            fold_start_cursor,
+            packet_end.src,
+            &mut wr,
+        );
+        if let Some((req, ctx)) = derived {
+            crate::log::trace!(
+                "dxl[id={}]: dispatch broadcast={} may_reply={}",
+                self.id,
+                ctx.broadcast,
+                ctx.may_reply
+            );
+            let mut reply = self.reply();
+            f(req, ctx, &mut reply);
+        }
+        if self.fast_last.fold_active() || self.send_policy.awaited_status_start().is_some() {
+            FrameAction::Stop
+        } else {
+            FrameAction::Continue
         }
     }
 
-    /// Crc-good on the in-flight packet. The event carries the codec's
-    /// packet-end estimate (drain-source-corrected ISR-entry tick); the
-    /// send policy stages it into the reply context.
-    #[inline(always)]
-    fn on_crc_good(&mut self, next_status_pos: u32, packet_end: Option<PacketEnd>) -> PollAction {
-        crate::log::trace!("dxl[id={}]: event=crc(good)", self.id);
-        if self.send_policy.is_tracking()
-            && let Some(pe) = packet_end
-        {
-            // At Crc-of-host-instruction, the codec's wire position has
-            // just walked past the request's last CRC byte — the next
-            // byte on the wire is the First predecessor's leading `0xFF`.
-            // So `next_status_pos` is exactly the fold-start cursor for
-            // the Fast Last CRC engine.
-            if let Some(t) = self
-                .send_policy
-                .on_crc_good(Some(pe.tick), next_status_pos, pe.src)
-            {
-                crate::log::debug!("dxl[id={}]: crc packet_end_tick={}", self.id, t);
-            }
-        }
-        PollAction::Continue
-    }
-
-    /// A foreign packet's byte-skip completed under `pred`'s id. When it
-    /// was the awaited chain predecessor, start the deferred wire send
-    /// now — the Plain chain k > 0 sequence-driven path
-    /// (`docs/dxl-streaming-rx.md` §5.2).
+    /// A foreign packet's byte-skip completed under `pred`'s id. When it was
+    /// the awaited chain predecessor, start the deferred wire send now — the
+    /// Plain chain k > 0 sequence-driven path (`docs/dxl-streaming-rx.md`
+    /// §5.2).
     #[inline(always)]
     pub(super) fn on_skip_complete(&mut self, pred: u8) {
         crate::log::trace!(
@@ -140,17 +108,13 @@ impl<P: Providers, const TX_BUF_LEN: usize> PollRouter<'_, P, TX_BUF_LEN> {
             );
             self.tx_bus.start_now(self.tx.tx_len());
         }
-        // Codec clears `packet_is_instruction` internally on
-        // SkipComplete; no anchor is set between the previous Crc (where
-        // the codec resets it) and here, so no driver-side invalidation
-        // is required.
     }
 }
 
 // -- accessors ------------------------------------------------------------
 
 impl<P: Providers, const TX_BUF_LEN: usize> PollRouter<'_, P, TX_BUF_LEN> {
-    /// Per-event reply handle over the router's borrowed halves — built
+    /// Per-verdict reply handle over the router's borrowed halves — built
     /// fresh for each dispatcher call, reborrowing the send-side fields.
     #[inline(always)]
     pub(super) fn reply(&mut self) -> ReplyHandle<'_, P, TX_BUF_LEN> {

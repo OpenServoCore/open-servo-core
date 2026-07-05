@@ -6,6 +6,7 @@
 
 mod codec_rx;
 mod codec_tx;
+mod framer;
 mod packet_end;
 mod poll_event;
 mod skip;
@@ -13,7 +14,8 @@ mod span;
 
 pub use codec_rx::CodecRx;
 pub use codec_tx::CodecTx;
-pub use poll_event::{PacketEnd, PollAction, PollEvent};
+pub(crate) use framer::HELD_FRAME_MAX;
+pub use poll_event::{FrameAction, FrameVerdict, PacketEnd};
 
 use dxl_protocol::CrcUmts;
 

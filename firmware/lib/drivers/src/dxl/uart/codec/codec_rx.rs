@@ -8,11 +8,11 @@ use core::cell::SyncUnsafeCell;
 use core::ops::ControlFlow;
 
 use dxl_protocol::CrcUmts;
-use dxl_protocol::streaming::{Event, HeaderEvent, InstructionPayload, Parser, PayloadEvent};
 use dxl_protocol::wire;
 
+use super::framer::{FrameClass, FrameOutcome, Framer};
 use super::packet_end;
-use super::poll_event::{PollAction, PollEvent};
+use super::poll_event::{FrameAction, FrameVerdict};
 use super::skip::SkipFsm;
 use super::span::{DriftWindow, SpanTracker};
 use crate::dxl::uart::BITS_PER_FRAME;
@@ -20,24 +20,9 @@ use crate::dxl::uart::poll_src::PollSrc;
 use crate::ring::HwRing;
 use crate::traits::dxl::RxDma;
 
-/// Exit disposition of one [`CodecRx::feed_parser`] phase — why the feed
-/// stopped, decided by ring supply or by the sink's [`PollAction`]. The
-/// poll loop dispatches on this instead of re-inspecting a
-/// bool + `Option<u8>` flag pair.
-enum FeedExit {
-    /// Ring supplied no (more) parseable bytes — the poll is done.
-    Exhausted,
-    /// Sink rejected the in-flight Header; the poll arms the universal
-    /// byte-skip for `id` and re-enters the skip phase.
-    Skip { id: u8 },
-    /// Sink engaged a per-byte consumer (Fast Last fold) that owns all
-    /// remaining ring bytes — the poll exits without touching them.
-    Stop,
-}
-
-/// RX half — streaming parser, RX byte ring, drift-sampling gate.
+/// RX half — frame classifier, RX byte ring, drift-sampling gate.
 pub struct CodecRx<CRC: CrcUmts, const RX_BUF_LEN: usize> {
-    parser: Parser<CRC>,
+    framer: Framer<CRC>,
     /// DMA1_CH5 destination for received bytes. `SyncUnsafeCell` because
     /// USART1's DMA writes it concurrently with the parser's reads — both
     /// reads happen at PFIC HIGH (no preemption from another consumer)
@@ -77,7 +62,7 @@ pub struct CodecRx<CRC: CrcUmts, const RX_BUF_LEN: usize> {
 impl<CRC: CrcUmts, const RX_BUF_LEN: usize> CodecRx<CRC, RX_BUF_LEN> {
     pub(super) fn new() -> Self {
         Self {
-            parser: Parser::new(),
+            framer: Framer::new(),
             rx_buf: SyncUnsafeCell::new(HwRing::new(0)),
             instruction_count: 0,
             wire_bytes_consumed: 0,
@@ -174,78 +159,171 @@ impl<CRC: CrcUmts, const RX_BUF_LEN: usize> CodecRx<CRC, RX_BUF_LEN> {
 // -- commands -----------------------------------------------------------
 
 impl<CRC: CrcUmts, const RX_BUF_LEN: usize> CodecRx<CRC, RX_BUF_LEN> {
-    /// Drain the RX byte ring through the streaming parser, fanning each
-    /// event (or skip-complete pseudo-event) to `on_event`. Reads the
-    /// front (pre-wrap) slice first, then the back (post-wrap) slice if
-    /// any; advances the ring tail by what the parser consumed. The sink
-    /// decides per-Header whether to forward the body or universal-byte-
-    /// skip past it (doc §3 driver rule). The skip is observable as
-    /// [`PollEvent::SkipComplete`] when its counter hits zero — the
-    /// chain predecessor-match check (doc §5.2) rides there.
+    /// Drive the RX byte ring through the frame classifier, fanning one
+    /// verdict per whole frame to `on_verdict`. Own/broadcast instruction
+    /// frames are copied into the framer's scratch (fused with the CRC fold)
+    /// and surfaced as [`FrameVerdict::Instruction`] once complete and
+    /// CRC-verified; foreign / Status / ChainStatus / oversize frames are
+    /// byte-skipped whole and surfaced as [`FrameVerdict::SkipComplete`] on
+    /// exhaust (the chain predecessor-match check, doc §5.2, rides there).
     ///
-    /// `instruction_count` ticks on every emitted Instruction Header
-    /// regardless of subsequent Skip; Status frames never tick. The
-    /// `wire_bytes_consumed` cursor advances over both parser- and
-    /// skip-consumed bytes.
+    /// `instruction_count` ticks on every classified Instruction frame (own
+    /// or foreign) regardless of subsequent skip; Status / ChainStatus
+    /// frames never tick. The `wire_bytes_consumed` cursor advances over
+    /// copied, skipped, and dropped bytes alike.
     ///
-    /// `now` and `ticks_per_bit` are read on entry to bound the universal
-    /// byte-skip: skip entry stamps a give-up deadline from the expected
-    /// byte count (see [`SkipFsm::arm`]), and each `poll()` drops a stale
-    /// skip whose deadline has passed. The deadline path suppresses
-    /// `SkipComplete` — it's a truncation recovery, not a successful
-    /// drain, so the chain predecessor-match must not ride.
-    pub fn poll<F>(&mut self, now: u32, ticks_per_bit: u16, packet_end_comp: u32, mut on_event: F)
-    where
-        F: FnMut(PollEvent<'_>) -> PollAction,
+    /// `now` / `ticks_per_bit` bound the universal byte-skip (skip entry
+    /// stamps a give-up deadline; a stale skip is dropped without a
+    /// `SkipComplete`). `our_id` decides own vs foreign for plain
+    /// instructions. `on_verdict` returns [`FrameAction::Stop`] to bail the
+    /// in-flight poll after engaging the Fast Last fold / a successor wait
+    /// (doc §6).
+    pub fn poll<F>(
+        &mut self,
+        now: u32,
+        ticks_per_bit: u16,
+        packet_end_comp: u32,
+        our_id: u8,
+        mut on_verdict: F,
+    ) where
+        F: FnMut(FrameVerdict<'_>) -> FrameAction,
     {
+        let byte_ticks = (ticks_per_bit as u32).wrapping_mul(BITS_PER_FRAME as u32);
+        // SAFETY: rx_buf is single-consumer at PFIC HIGH; the raw pointer
+        // keeps the ring reference independent of the `&mut self` counter
+        // borrows below (see the original streaming path's contract).
+        let rx_buf_ptr = self.rx_buf.get();
         loop {
-            // Skip phase first: an armed byte-skip owns the ring tail
-            // until it exhausts. Break = ring starved mid-skip; resume
-            // on a later poll.
+            // Skip phase: an armed byte-skip owns the ring tail until it
+            // exhausts. Break = ring starved mid-skip; resume on a later poll.
             if self.skip_fsm.is_skipping()
-                && self
-                    .drain_skip(now, ticks_per_bit, &mut on_event)
-                    .is_break()
+                && self.drain_skip(now, byte_ticks, &mut on_verdict).is_break()
             {
                 return;
             }
-            // Feed phase: parser drains the ring until it runs dry or the
-            // sink redirects the poll.
-            match self.feed_parser(ticks_per_bit, packet_end_comp, &mut on_event) {
-                FeedExit::Exhausted | FeedExit::Stop => return,
-                FeedExit::Skip { id } => {
-                    let bytes_remaining = self.parser.packet_remaining();
-                    self.parser.reset();
-                    let frame_ticks = (ticks_per_bit as u32).wrapping_mul(BITS_PER_FRAME as u32);
-                    self.skip_fsm.arm(bytes_remaining, id, now, frame_ticks);
+
+            // Copy phase: absorb newly-published bytes of an own frame.
+            if self.framer.is_copying() {
+                let consumed = {
+                    // SAFETY: see note above.
+                    let rx_buf = unsafe { &mut *rx_buf_ptr };
+                    let mut reader = rx_buf.reader();
+                    let (front, back) = reader.peek_slices();
+                    let n = self.framer.absorb(front, back);
+                    reader.advance(n as u16);
+                    n
+                };
+                self.wire_bytes_consumed = self.wire_bytes_consumed.wrapping_add(consumed as u32);
+                if !self.framer.copy_complete() {
+                    return; // ring starved mid-copy; resume on a later poll
+                }
+                // The whole frame is a packet boundary regardless of verdict.
+                let sample = self.skip_fsm.should_sample_drift();
+                self.window.settle(byte_ticks, sample);
+                self.skip_fsm.on_packet_end();
+                match self.framer.finish() {
+                    FrameOutcome::Good { instr, broadcast } => {
+                        let (isr_now, isr_src) = self.last_isr;
+                        let packet_end =
+                            packet_end::resolve(isr_src, isr_now, ticks_per_bit, packet_end_comp);
+                        // The whole frame is consumed, so the cursor now sits
+                        // where the First predecessor reply's leading `0xFF`
+                        // will land — the Fast Last fold's start cursor.
+                        let fold_start_cursor = self.wire_bytes_consumed;
+                        let action = on_verdict(FrameVerdict::Instruction {
+                            instr,
+                            broadcast,
+                            packet_end,
+                            fold_start_cursor,
+                        });
+                        self.framer.reset();
+                        if matches!(action, FrameAction::Stop) {
+                            return;
+                        }
+                    }
+                    FrameOutcome::Bad => {
+                        // Silent drop: the copy already consumed the whole
+                        // frame off the ring, so re-probe resumes past it —
+                        // matching the streaming parser's "move on after a
+                        // Crc(Bad)" behavior. No extra advance.
+                        self.framer.reset();
+                    }
+                }
+                continue;
+            }
+
+            // Hunt phase: classify the frame at the ring head.
+            let class = {
+                // SAFETY: see note above.
+                let rx_buf = unsafe { &mut *rx_buf_ptr };
+                let mut reader = rx_buf.reader();
+                let (front, back) = reader.peek_slices();
+                self.framer.classify(front, back, our_id)
+            };
+            match class {
+                FrameClass::NeedMore => return,
+                FrameClass::Junk { skip } => {
+                    // SAFETY: see note above.
+                    let rx_buf = unsafe { &mut *rx_buf_ptr };
+                    rx_buf.reader().advance(skip as u16);
+                    self.wire_bytes_consumed = self.wire_bytes_consumed.wrapping_add(skip as u32);
+                }
+                FrameClass::Copy {
+                    total,
+                    id,
+                    instruction,
+                } => {
+                    self.skip_fsm.on_header(true);
+                    self.instruction_count = self.instruction_count.wrapping_add(1);
+                    self.framer.begin(total, id, instruction);
+                }
+                FrameClass::Skip {
+                    total,
+                    id,
+                    is_instruction,
+                } => {
+                    self.skip_fsm.on_header(is_instruction);
+                    if is_instruction {
+                        self.instruction_count = self.instruction_count.wrapping_add(1);
+                    }
+                    // Consume the classified header off the ring, then skip only
+                    // the body + CRC — mirrors the streaming parser's
+                    // header-then-skip split so the skip's give-up deadline
+                    // bounds the remaining body, not the whole frame. A
+                    // truncated over-advertised frame (collapsed Fast chain
+                    // reply) must drop soon enough that the next packet's bytes
+                    // don't get counted into the stale skip.
+                    let header = wire::REQUEST_HEADER_BYTES.min(total);
+                    {
+                        // SAFETY: see note above.
+                        let rx_buf = unsafe { &mut *rx_buf_ptr };
+                        rx_buf.reader().advance(header as u16);
+                    }
+                    self.wire_bytes_consumed = self.wire_bytes_consumed.wrapping_add(header as u32);
+                    self.skip_fsm
+                        .arm((total - header) as u16, id, now, byte_ticks);
                 }
             }
         }
     }
 
     /// Skip phase of [`Self::poll`]: drain the ring up to the armed skip's
-    /// remaining count; emit [`PollEvent::SkipComplete`] on exhaust.
+    /// remaining count; emit [`FrameVerdict::SkipComplete`] on exhaust.
     /// `Break` = the ring starved mid-skip (resume on a later poll);
-    /// `Continue` = the skip finished (or its deadline dropped it) and the
-    /// feed phase may run. The deadline check rides first so a truncated
-    /// upstream packet can't leak its uncounted bytes into the next packet
-    /// — once the expected duration has elapsed the ring's contents belong
-    /// to whatever came next.
+    /// `Continue` = the skip finished (or its deadline dropped it). The
+    /// deadline check rides first so a truncated upstream packet can't leak
+    /// its uncounted bytes into the next packet on the wire.
     #[inline]
-    fn drain_skip<F>(&mut self, now: u32, ticks_per_bit: u16, on_event: &mut F) -> ControlFlow<()>
+    fn drain_skip<F>(&mut self, now: u32, byte_ticks: u32, on_verdict: &mut F) -> ControlFlow<()>
     where
-        F: FnMut(PollEvent<'_>) -> PollAction,
+        F: FnMut(FrameVerdict<'_>) -> FrameAction,
     {
         if self.skip_fsm.deadline_passed(now) {
             self.skip_fsm.clear();
             self.skip_fsm.on_packet_end();
             return ControlFlow::Continue(());
         }
-        // SAFETY: rx_buf lives in a SyncUnsafeCell; this is the codec's
-        // single consumer path. The reference is independent of any
-        // borrow on `self` for the counters because it's constructed via
-        // a raw pointer (`SyncUnsafeCell::get` takes `&self`, returns
-        // `*mut T`; the &mut deref is fresh).
+        // SAFETY: rx_buf is single-consumer at PFIC HIGH (same as `poll`).
         let rx_buf_ptr = self.rx_buf.get();
         // SAFETY: see note above.
         let rx_buf = unsafe { &mut *rx_buf_ptr };
@@ -259,151 +337,12 @@ impl<CRC: CrcUmts, const RX_BUF_LEN: usize> CodecRx<CRC, RX_BUF_LEN> {
             return ControlFlow::Break(());
         }
         if let Some(id) = self.skip_fsm.finish() {
-            on_event(PollEvent::SkipComplete { id });
+            on_verdict(FrameVerdict::SkipComplete { id });
         }
-        let byte_ticks = (ticks_per_bit as u32).wrapping_mul(BITS_PER_FRAME as u32);
         self.window
             .settle(byte_ticks, self.skip_fsm.should_sample_drift());
         self.skip_fsm.on_packet_end();
         ControlFlow::Continue(())
-    }
-
-    /// Feed phase of [`Self::poll`]: extract contiguous front slices from
-    /// the ring, feed each to the parser, and advance by what was consumed
-    /// — until the ring runs dry ([`FeedExit::Exhausted`]) or the sink
-    /// redirects the poll ([`FeedExit::Skip`] / [`FeedExit::Stop`]).
-    #[inline]
-    fn feed_parser<F>(
-        &mut self,
-        ticks_per_bit: u16,
-        packet_end_comp: u32,
-        on_event: &mut F,
-    ) -> FeedExit
-    where
-        F: FnMut(PollEvent<'_>) -> PollAction,
-    {
-        // SAFETY: see `drain_skip` — same single-consumer contract.
-        let rx_buf_ptr = self.rx_buf.get();
-        loop {
-            let (input_ptr, input_len) = {
-                // SAFETY: see note above.
-                let rx_buf = unsafe { &mut *rx_buf_ptr };
-                let mut reader = rx_buf.reader();
-                let (front, _back) = reader.peek_slices();
-                (front.as_ptr(), front.len())
-            };
-            if input_len == 0 {
-                return FeedExit::Exhausted;
-            }
-            // SAFETY: `input_ptr` points into `rx_buf.data`, owned by
-            // self for the lifetime of this poll. The data is not
-            // mutated until we call `reader.advance(consumed)` after
-            // the parser loop. The parser only reads; on_event has no
-            // access path back to rx_buf.
-            let input: &[u8] = unsafe { core::slice::from_raw_parts(input_ptr, input_len) };
-
-            // Set when the sink's `PollAction` breaks the parser loop;
-            // returned only after the consumed bytes are committed below.
-            let mut sink_exit: Option<FeedExit> = None;
-            let consumed = {
-                let mut stream = self.parser.feed(input);
-                // `while let` rather than `for ... by_ref()` so each iteration
-                // releases the `&mut stream` borrow before we read
-                // `stream.consumed()` to compute the per-event wire position.
-                while let Some(ev) = stream.next() {
-                    let ring: &[u8] = if let Event::Payload(PayloadEvent::Instruction(
-                        InstructionPayload::WriteDataChunk { offset, length },
-                    )) = ev
-                    {
-                        // SAFETY: the parser emits chunk coordinates inside
-                        // the slice it was fed, so the range is always in
-                        // bounds; defensive empty slice (never panic) on a
-                        // contract violation.
-                        input
-                            .get(offset as usize..(offset as usize + length as usize))
-                            .unwrap_or(&[])
-                    } else {
-                        &[]
-                    };
-                    if matches!(ev, Event::Header(HeaderEvent::Instruction(_))) {
-                        self.instruction_count = self.instruction_count.wrapping_add(1);
-                    }
-                    let next_status_pos = self
-                        .wire_bytes_consumed
-                        .wrapping_add(stream.consumed() as u32);
-
-                    // Track packet kind for the span tracker's drift gate:
-                    // Instruction packets (own or foreign) contribute drift
-                    // samples per [[drift_sampling_instruction_only]]; Status
-                    // frames don't.
-                    match ev {
-                        Event::Header(HeaderEvent::Instruction(_)) => {
-                            self.skip_fsm.on_header(true);
-                        }
-                        Event::Header(HeaderEvent::Status(_)) => {
-                            self.skip_fsm.on_header(false);
-                        }
-                        _ => {}
-                    }
-
-                    // Resolve packet-end timing so the Crc event carries a
-                    // primitive and the sink never reaches into the codec's
-                    // drain-ISR stash.
-                    let (isr_now, isr_src) = self.last_isr;
-                    let packet_end = matches!(ev, Event::Crc(_)).then(|| {
-                        packet_end::resolve(isr_src, isr_now, ticks_per_bit, packet_end_comp)
-                    });
-
-                    match on_event(PollEvent::Parser {
-                        ev,
-                        ring,
-                        next_status_pos,
-                        packet_end,
-                    }) {
-                        PollAction::Continue => {}
-                        PollAction::Skip { id } => {
-                            sink_exit = Some(FeedExit::Skip { id });
-                            break;
-                        }
-                        PollAction::Stop => {
-                            sink_exit = Some(FeedExit::Stop);
-                            break;
-                        }
-                    }
-
-                    if matches!(ev, Event::Crc(_) | Event::Resync(_)) {
-                        let byte_ticks = (ticks_per_bit as u32).wrapping_mul(BITS_PER_FRAME as u32);
-                        self.window
-                            .settle(byte_ticks, self.skip_fsm.should_sample_drift());
-                        self.skip_fsm.on_packet_end();
-                    }
-                }
-                stream.consumed()
-            };
-
-            if consumed > 0 {
-                self.wire_bytes_consumed = self.wire_bytes_consumed.wrapping_add(consumed as u32);
-                // SAFETY: see note above.
-                let rx_buf = unsafe { &mut *rx_buf_ptr };
-                rx_buf.reader().advance(consumed as u16);
-            }
-
-            match sink_exit {
-                // On Stop: leave any unconsumed bytes in the ring so the
-                // fold engine — driven by `poll_checkpoint` on `on_fold_step` /
-                // `on_tx_start` — owns them. Continuing to feed here would
-                // let the parser eat predecessor reply bytes before the
-                // fold ever gets a turn (per `dxl-streaming-rx.md` §6 —
-                // the poll's `fold_active()` self-gate shuts the door on
-                // future polls only).
-                Some(exit) => return exit,
-                // Parser made no progress on the front slice — it's
-                // idling at end-of-input.
-                None if consumed == 0 => return FeedExit::Exhausted,
-                // Progress without a sink redirect: feed the next slice.
-                None => {}
-            }
-        }
     }
 
     /// Checkpoint pickup for the Fast successor CRC pipeline: once the RX
@@ -605,8 +544,8 @@ mod tests {
 
     use super::*;
     use crate::dxl::uart::test_support::{TEST_ID, wire_ping, wire_status};
-    use dxl_protocol::streaming::InstructionHeader;
     use dxl_protocol::types::Id;
+    use dxl_protocol::types::packet::Instruction;
     use dxl_protocol::{InstructionEncoder, SoftwareCrcUmts};
     use heapless::Vec;
 
@@ -627,63 +566,51 @@ mod tests {
         out
     }
 
-    /// Drain the RX half into a `Vec` of captured events. `decide` controls
-    /// per-Header skip behavior; default `|_| PollAction::Continue` forwards
-    /// everything.
-    fn collect_events<F>(rx: &mut TestRx, mut decide: F) -> alloc::vec::Vec<Capture>
-    where
-        F: FnMut(&Event) -> PollAction,
-    {
-        let mut out = alloc::vec::Vec::new();
-        rx.poll(0, 160, 0, |pe| match pe {
-            PollEvent::Parser { ev, ring, .. } => {
-                let action = if matches!(ev, Event::Header(_)) {
-                    decide(&ev)
-                } else {
-                    PollAction::Continue
-                };
-                out.push(Capture::Event {
-                    ev,
-                    ring: ring.into(),
-                });
-                action
-            }
-            PollEvent::SkipComplete { id } => {
-                out.push(Capture::SkipComplete { id });
-                PollAction::Continue
-            }
-        });
-        out
-    }
-
+    /// One captured frame verdict, flattened to the facts the tests assert.
     #[derive(Debug)]
-    enum Capture {
-        Event {
-            ev: Event,
-            ring: alloc::vec::Vec<u8>,
+    enum Cap {
+        Ping,
+        Write {
+            address: u16,
+            data: alloc::vec::Vec<u8>,
         },
-        SkipComplete {
+        OtherInstr,
+        Skip {
             id: u8,
         },
     }
 
-    fn saw_crc(captures: &[Capture]) -> bool {
-        captures.iter().any(|c| {
-            matches!(
-                c,
-                Capture::Event {
-                    ev: Event::Crc(_),
-                    ..
-                }
-            )
-        })
+    /// Drive the RX half addressed as `TEST_ID`, capturing one [`Cap`] per
+    /// frame verdict. Own/foreign classification is intrinsic to the wire
+    /// id now (no per-header sink decision), so there is no `decide` hook.
+    fn collect(rx: &mut TestRx) -> alloc::vec::Vec<Cap> {
+        let mut out = alloc::vec::Vec::new();
+        rx.poll(0, 160, 0, TEST_ID, |v| {
+            match v {
+                FrameVerdict::Instruction { instr, .. } => out.push(match instr {
+                    Instruction::Ping { .. } => Cap::Ping,
+                    Instruction::Write { address, data, .. } => Cap::Write {
+                        address,
+                        data: data.iter().collect(),
+                    },
+                    _ => Cap::OtherInstr,
+                }),
+                FrameVerdict::SkipComplete { id } => out.push(Cap::Skip { id }),
+            }
+            FrameAction::Continue
+        });
+        out
+    }
+
+    fn saw_instruction(caps: &[Cap]) -> bool {
+        caps.iter().any(|c| !matches!(c, Cap::Skip { .. }))
     }
 
     #[test]
     fn poll_no_op_when_ring_empty() {
         let mut rx = make();
-        let captures = collect_events(&mut rx, |_| PollAction::Continue);
-        assert!(captures.is_empty());
+        let caps = collect(&mut rx);
+        assert!(caps.is_empty());
         assert_eq!(rx.instruction_count(), 0);
         assert_eq!(rx.wire_byte_cursor_for_test(), 0);
     }
@@ -703,69 +630,28 @@ mod tests {
         let split = pkt.len() - 1;
 
         rx.stage_rx_bytes_for_test(0, &pkt[..split]);
-        let captures = collect_events(&mut rx, |_| PollAction::Continue);
-        assert!(!saw_crc(&captures));
+        let caps = collect(&mut rx);
+        assert!(!saw_instruction(&caps), "frame not complete yet");
+        // The framer ticks instruction_count once, at classification.
         assert_eq!(rx.instruction_count(), 1);
 
         rx.stage_rx_bytes_for_test(split as u16, &pkt[split..]);
-        let captures = collect_events(&mut rx, |_| PollAction::Continue);
-        assert!(saw_crc(&captures));
-        assert_eq!(rx.instruction_count(), 1, "same packet, no re-parse");
+        let caps = collect(&mut rx);
+        assert!(saw_instruction(&caps), "frame completes on the second poll");
+        assert_eq!(rx.instruction_count(), 1, "same packet, no re-classify");
     }
 
     #[test]
-    fn poll_emits_sync_header_chunk_crc_for_own_write() {
+    fn poll_decodes_own_write_in_one_verdict() {
         let mut rx = make();
         let wire = wire_write(TEST_ID, 0x0050, &[0xAA, 0xBB, 0xCC, 0xDD]);
         rx.stage_rx_bytes_for_test(0, &wire);
 
-        let captures = collect_events(&mut rx, |_| PollAction::Continue);
-
-        // Walk: Sync, Header(Write), Payload(WriteDataChunk), Crc.
-        let mut iter = captures.iter();
-        match iter.next() {
-            Some(Capture::Event {
-                ev: Event::Sync, ..
-            }) => {}
-            other => panic!("expected Sync, got {other:?}"),
-        }
-        match iter.next() {
-            Some(Capture::Event {
-                ev:
-                    Event::Header(HeaderEvent::Instruction(InstructionHeader::Write {
-                        id,
-                        address,
-                        length,
-                    })),
-                ..
-            }) => {
-                assert_eq!(*id, Id::new(TEST_ID));
-                assert_eq!(*address, 0x0050);
-                assert_eq!(*length, 4);
-            }
-            other => panic!("expected Header(Write), got {other:?}"),
-        }
-        match iter.next() {
-            Some(Capture::Event {
-                ev:
-                    Event::Payload(PayloadEvent::Instruction(InstructionPayload::WriteDataChunk {
-                        length,
-                        ..
-                    })),
-                ring,
-            }) => {
-                assert_eq!(*length, 4);
-                assert_eq!(ring.as_slice(), &[0xAA, 0xBB, 0xCC, 0xDD]);
-            }
-            other => panic!("expected WriteDataChunk, got {other:?}"),
-        }
-        match iter.next() {
-            Some(Capture::Event {
-                ev: Event::Crc(_), ..
-            }) => {}
-            other => panic!("expected Crc, got {other:?}"),
-        }
-        assert!(iter.next().is_none());
+        let caps = collect(&mut rx);
+        assert!(matches!(
+            caps.as_slice(),
+            [Cap::Write { address: 0x0050, data }] if data.as_slice() == [0xAA, 0xBB, 0xCC, 0xDD]
+        ));
     }
 
     #[test]
@@ -774,32 +660,9 @@ mod tests {
         let wire = wire_ping(FOREIGN_ID);
         rx.stage_rx_bytes_for_test(0, &wire);
 
-        let captures = collect_events(&mut rx, |ev| match ev {
-            Event::Header(HeaderEvent::Instruction(_)) => PollAction::Skip { id: FOREIGN_ID },
-            _ => PollAction::Continue,
-        });
-
-        // Sync, Header, SkipComplete. The skip distance is body(0) + CRC(2).
-        let mut iter = captures.iter();
-        assert!(matches!(
-            iter.next(),
-            Some(Capture::Event {
-                ev: Event::Sync,
-                ..
-            })
-        ));
-        assert!(matches!(
-            iter.next(),
-            Some(Capture::Event {
-                ev: Event::Header(HeaderEvent::Instruction(InstructionHeader::Ping { .. })),
-                ..
-            })
-        ));
-        assert!(matches!(
-            iter.next(),
-            Some(Capture::SkipComplete { id }) if *id == FOREIGN_ID
-        ));
-        assert!(iter.next().is_none());
+        let caps = collect(&mut rx);
+        // Only a SkipComplete carrying the foreign id — no instruction verdict.
+        assert!(matches!(caps.as_slice(), [Cap::Skip { id }] if *id == FOREIGN_ID));
         // Wire cursor advanced over the full packet.
         assert_eq!(rx.wire_byte_cursor_for_test() as usize, wire.len());
     }
@@ -810,63 +673,31 @@ mod tests {
         let wire = wire_write(FOREIGN_ID, 0x0050, &[1, 2, 3, 4]);
         rx.stage_rx_bytes_for_test(0, &wire);
 
-        let captures = collect_events(&mut rx, |ev| match ev {
-            Event::Header(HeaderEvent::Instruction(_)) => PollAction::Skip { id: FOREIGN_ID },
-            _ => PollAction::Continue,
-        });
-
-        // No Payload / Crc events past Header — the parser was reset.
-        let payloads = captures
-            .iter()
-            .filter(|c| {
-                matches!(
-                    c,
-                    Capture::Event {
-                        ev: Event::Payload(_),
-                        ..
-                    }
-                )
-            })
-            .count();
-        assert_eq!(payloads, 0);
-        let crcs = captures
-            .iter()
-            .filter(|c| {
-                matches!(
-                    c,
-                    Capture::Event {
-                        ev: Event::Crc(_),
-                        ..
-                    }
-                )
-            })
-            .count();
-        assert_eq!(crcs, 0);
+        let caps = collect(&mut rx);
+        assert!(!saw_instruction(&caps), "foreign frame is never decoded");
         assert!(
-            captures
-                .iter()
-                .any(|c| matches!(c, Capture::SkipComplete { id } if *id == FOREIGN_ID))
+            caps.iter()
+                .any(|c| matches!(c, Cap::Skip { id } if *id == FOREIGN_ID))
         );
         assert_eq!(rx.wire_byte_cursor_for_test() as usize, wire.len());
     }
 
     #[test]
-    fn poll_skip_complete_carries_id() {
+    fn poll_skip_complete_carries_frame_id() {
         let mut rx = make();
         let wire = wire_ping(FOREIGN_ID);
         rx.stage_rx_bytes_for_test(0, &wire);
 
-        let custom = 0x33u8;
-        let captures = collect_events(&mut rx, |_| PollAction::Skip { id: custom });
-        let id = captures.iter().find_map(|c| match c {
-            Capture::SkipComplete { id } => Some(*id),
+        let caps = collect(&mut rx);
+        let id = caps.iter().find_map(|c| match c {
+            Cap::Skip { id } => Some(*id),
             _ => None,
         });
-        assert_eq!(id, Some(custom));
+        assert_eq!(id, Some(FOREIGN_ID));
     }
 
     #[test]
-    fn poll_skip_then_own_packet_parses_clean() {
+    fn poll_skip_then_own_packet_decodes_clean() {
         let mut rx = make();
         let foreign = wire_ping(FOREIGN_ID);
         let own = wire_write(TEST_ID, 0x0060, &[0x11, 0x22]);
@@ -875,45 +706,19 @@ mod tests {
         combined.extend_from_slice(&own).unwrap();
         rx.stage_rx_bytes_for_test(0, &combined);
 
-        let captures = collect_events(&mut rx, |ev| match ev {
-            Event::Header(HeaderEvent::Instruction(InstructionHeader::Ping { id }))
-                if id.as_byte() == FOREIGN_ID =>
-            {
-                PollAction::Skip { id: FOREIGN_ID }
-            }
-            _ => PollAction::Continue,
-        });
-
-        let skip_done = captures
-            .iter()
-            .any(|c| matches!(c, Capture::SkipComplete { id } if *id == FOREIGN_ID));
-        assert!(skip_done);
-        let saw_write = captures.iter().any(|c| {
-            matches!(
-                c,
-                Capture::Event {
-                    ev: Event::Header(HeaderEvent::Instruction(InstructionHeader::Write { .. })),
-                    ..
-                }
-            )
-        });
-        assert!(saw_write);
-        let saw_chunk = captures.iter().any(|c| {
-            matches!(
-                c,
-                Capture::Event {
-                    ev: Event::Payload(PayloadEvent::Instruction(
-                        InstructionPayload::WriteDataChunk { .. }
-                    )),
-                    ring,
-                } if ring.as_slice() == [0x11, 0x22]
-            )
-        });
-        assert!(saw_chunk);
+        let caps = collect(&mut rx);
+        assert!(
+            caps.iter()
+                .any(|c| matches!(c, Cap::Skip { id } if *id == FOREIGN_ID))
+        );
+        assert!(caps.iter().any(|c| matches!(
+            c,
+            Cap::Write { address: 0x0060, data } if data.as_slice() == [0x11, 0x22]
+        )));
     }
 
     #[test]
-    fn wire_bytes_consumed_counts_parser_and_skip_bytes() {
+    fn wire_bytes_consumed_counts_copied_and_skipped_bytes() {
         let mut rx = make();
         let foreign = wire_ping(FOREIGN_ID);
         let own = wire_ping(TEST_ID);
@@ -922,19 +727,12 @@ mod tests {
         combined.extend_from_slice(&own).unwrap();
         rx.stage_rx_bytes_for_test(0, &combined);
 
-        let _ = collect_events(&mut rx, |ev| match ev {
-            Event::Header(HeaderEvent::Instruction(InstructionHeader::Ping { id }))
-                if id.as_byte() == FOREIGN_ID =>
-            {
-                PollAction::Skip { id: FOREIGN_ID }
-            }
-            _ => PollAction::Continue,
-        });
+        let _ = collect(&mut rx);
         assert_eq!(rx.wire_byte_cursor_for_test() as usize, combined.len());
     }
 
     #[test]
-    fn instruction_count_ticks_on_every_instruction_header() {
+    fn instruction_count_ticks_on_every_instruction_frame() {
         let mut rx = make();
         let foreign = wire_ping(FOREIGN_ID);
         let own = wire_ping(TEST_ID);
@@ -943,44 +741,36 @@ mod tests {
         combined.extend_from_slice(&own).unwrap();
         rx.stage_rx_bytes_for_test(0, &combined);
 
-        let _ = collect_events(&mut rx, |_| PollAction::Continue);
-        // Two Instruction headers (foreign + own).
+        let _ = collect(&mut rx);
+        // Two Instruction frames (foreign skip + own decode).
         assert_eq!(rx.instruction_count(), 2);
     }
 
     #[test]
-    fn instruction_count_does_not_tick_on_status_header() {
+    fn instruction_count_does_not_tick_on_status_frame() {
         let mut rx = make();
         let status = wire_status(TEST_ID);
         rx.stage_rx_bytes_for_test(0, &status);
 
-        let _ = collect_events(&mut rx, |_| PollAction::Continue);
+        let _ = collect(&mut rx);
         assert_eq!(rx.instruction_count(), 0);
     }
 
     #[test]
-    fn poll_emits_crc_bad_verdict_on_bad_crc() {
+    fn poll_drops_own_frame_with_bad_crc() {
         let mut rx = make();
         let mut wire = wire_ping(TEST_ID);
         let last = wire.len() - 1;
         wire[last] ^= 0xFF;
         rx.stage_rx_bytes_for_test(0, &wire);
 
-        let captures = collect_events(&mut rx, |_| PollAction::Continue);
-        let saw_bad = captures.iter().any(|c| {
-            matches!(
-                c,
-                Capture::Event {
-                    ev: Event::Crc(dxl_protocol::streaming::CrcResult::Bad),
-                    ..
-                }
-            )
-        });
-        assert!(saw_bad);
+        let caps = collect(&mut rx);
+        // Silent drop: no instruction verdict surfaces for a bad-CRC frame.
+        assert!(!saw_instruction(&caps));
     }
 
     #[test]
-    fn poll_handles_ring_wrap_across_two_feed_slices() {
+    fn poll_handles_ring_wrap_across_two_slices() {
         let mut rx = make();
         // Pre-position the read/write seqs so the packet straddles the
         // wrap boundary. RX_BUF_LEN = 64; start at seq 60 so 4 bytes fit
@@ -989,19 +779,13 @@ mod tests {
         rx.set_rx_read_seq_for_test(60);
         rx.stage_rx_bytes_for_test(60, &wire);
 
-        let captures = collect_events(&mut rx, |_| PollAction::Continue);
-        let saw_crc = captures.iter().any(|c| {
-            matches!(
-                c,
-                Capture::Event {
-                    ev: Event::Crc(_),
-                    ..
-                }
-            )
-        });
+        let caps = collect(&mut rx);
         assert!(
-            saw_crc,
-            "expected Crc after wrap parse; got captures: {captures:?}"
+            caps.iter().any(|c| matches!(
+                c,
+                Cap::Write { address: 0x0050, data } if data.as_slice() == [0xAA, 0xBB, 0xCC, 0xDD]
+            )),
+            "expected decoded Write after wrap; got {caps:?}"
         );
     }
 

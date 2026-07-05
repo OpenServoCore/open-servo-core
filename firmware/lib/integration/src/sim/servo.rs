@@ -11,7 +11,7 @@ use std::any::Any;
 use dxl_protocol::SoftwareCrcUmts;
 use dxl_protocol::types::Id;
 use osc_core::services::dxl::Dxl;
-use osc_core::traits::{DxlBus, DxlDispatcher};
+use osc_core::traits::{DxlBus, DxlDispatch};
 use osc_core::{BaudRate, ConfigDefaults, RegionStorage, Shared, StatusReturnLevel};
 use osc_drivers::dxl::uart::DxlUart;
 use osc_drivers::dxl::uart::clock::Clock as DxlClock;
@@ -740,9 +740,9 @@ struct ServoBus<'a, P: Providers, const RX: usize, const TX: usize> {
 }
 
 impl<P: Providers, const RX: usize, const TX: usize> DxlBus for ServoBus<'_, P, RX, TX> {
-    fn poll<D: DxlDispatcher>(&mut self, dispatcher: &mut D) {
+    fn poll<D: DxlDispatch>(&mut self, dispatcher: &mut D) {
         self.uart
-            .poll(|ev, ring, reply| dispatcher.on_event(ev, ring, reply));
+            .poll(|req, ctx, reply| dispatcher.dispatch(req, ctx, reply));
     }
 }
 

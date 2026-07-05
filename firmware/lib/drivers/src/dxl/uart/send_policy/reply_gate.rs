@@ -107,7 +107,10 @@ impl ReplyGate {
         self.clear_awaiting();
     }
 
-    /// Crc-bad / parser resync — the wire state is void; drop the wait.
+    /// Crc-bad / parser resync — the wire state is void; drop the wait. The
+    /// framer drops malformed frames without notifying the gate now, so this
+    /// is exercised only by the gate's own FSM tests.
+    #[cfg(test)]
     pub(super) fn on_resync(&mut self) {
         self.clear_awaiting();
     }

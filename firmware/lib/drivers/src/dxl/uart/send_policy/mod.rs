@@ -12,9 +12,11 @@ mod inflight;
 mod instruction_tracker;
 mod reply_context;
 mod reply_gate;
+mod synth;
 
 pub(super) use reply_context::ReplyContext;
 pub(super) use reply_gate::StatusStartWait;
+pub(super) use synth::synthesize;
 
 use config_mediator::ConfigMediator;
 use dxl_protocol::streaming::{InstructionHeader, InstructionPayload};
@@ -53,11 +55,6 @@ impl SendPolicy {
         self.instruction.on_instruction_header(h, self.config.id())
     }
 
-    /// A Status header parsed — foreign reply frame; drops any tracking.
-    pub(super) fn on_status_header(&mut self) {
-        self.instruction.on_status_header();
-    }
-
     /// Per-slot demarcation payload — advances the tracker's slot walk
     /// against the config's live ID.
     pub(super) fn on_slot(&mut self, payload: &InstructionPayload) {
@@ -85,13 +82,6 @@ impl SendPolicy {
             src,
         ));
         Some(packet_end_tick)
-    }
-
-    /// Crc-bad / parser resync — the packet is void; drops any tracking
-    /// and any predecessor wait.
-    pub(super) fn on_resync(&mut self) {
-        self.instruction.on_resync();
-        self.reply.on_resync();
     }
 
     /// A foreign packet's byte-skip completed under `pred`'s id. `true`
@@ -161,12 +151,6 @@ impl SendPolicy {
 impl SendPolicy {
     pub(super) fn id(&self) -> u8 {
         self.config.id()
-    }
-
-    /// An addressed Instruction is mid-walk — the composite resolves a
-    /// packet-end tick at Crc only in this state.
-    pub(super) fn is_tracking(&self) -> bool {
-        self.instruction.is_tracking()
     }
 
     /// The predecessor id a deferred chain reply is waiting on, if any.

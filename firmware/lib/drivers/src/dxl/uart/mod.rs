@@ -24,14 +24,13 @@ pub use reply_handle::ReplyHandle;
 #[cfg(test)]
 mod test_support;
 
-use dxl_protocol::streaming::Event;
-use osc_core::BootMode;
+use osc_core::{BootMode, DxlRequest, DxlRequestCtx};
 
 use crate::traits::dxl::{
     FastLastScheduler, Providers, RxDma, SendKind, Telemetry, TxBus, TxScheduler, WireClock,
 };
 use clock::Clock;
-use codec::{Codec, PollAction, PollEvent};
+use codec::{Codec, FrameAction, FrameVerdict};
 use drift_window::RxWakeGate;
 use fast_last::{FastLast, FoldExit};
 use poll_router::PollRouter;
@@ -427,28 +426,26 @@ impl<P: Providers, const RX_BUF_LEN: usize, const TX_BUF_LEN: usize>
 
     // -- commands -------------------------------------------------------------
 
-    /// Drive the codec event stream, manage wire-level state (anchor,
-    /// drift gating, universal byte-skip, slot-walk, reply context) and
-    /// forward every parser [`Event`] to the dispatcher closure alongside
-    /// the ring slice and a [`ReplyHandle`]. The closure shape matches
-    /// `osc_core::DxlDispatcher::on_event` so the chip-side
-    /// `Ch32Bus::poll` forwarder is a one-liner.
+    /// Drive the codec frame classifier, manage wire-level state (drift
+    /// gating, universal byte-skip, slot-walk, reply context) and hand the
+    /// dispatcher closure one fully-decoded [`DxlRequest`] + [`DxlRequestCtx`]
+    /// per own/broadcast instruction frame, alongside a [`ReplyHandle`]. The
+    /// closure shape matches `osc_core::DxlDispatch::dispatch` so the
+    /// chip-side `Ch32Bus::poll` forwarder is a one-liner.
     ///
     /// Per [doc §3 / §4.3]:
-    /// - Instruction Header → mark packet as Instruction (drift sampling).
-    /// - Instruction Header (foreign) → universal byte-skip on the body.
-    /// - Status Header → universal byte-skip on the body.
-    /// - SyncSlot / BulkSlot → slot-walk against the servo ID.
-    /// - Crc → stamp packet-end tick, derive [`ReplyContext`].
-    /// - Resync → drop inflight.
+    /// - own/broadcast instruction frame → decode, derive request, dispatch.
+    /// - foreign / Status / ChainStatus / oversize frame → universal
+    ///   byte-skip; a Status frame's completion is the Plain chain k > 0
+    ///   sequence-driven start trigger.
     ///
     /// Closure-based shape exists to break the borrow conflict between the
-    /// parser-event borrow on the codec RX half and the `&mut` access the
+    /// framer's scratch borrow on the codec RX half and the `&mut` access the
     /// send path needs on the TX half. [`Codec::split_mut`] returns the two
     /// halves disjointly so the closure sees both at once.
     pub fn poll<F>(&mut self, mut f: F)
     where
-        F: FnMut(Event, &[u8], &mut ReplyHandle<'_, P, TX_BUF_LEN>),
+        F: FnMut(DxlRequest<'_>, DxlRequestCtx, &mut ReplyHandle<'_, P, TX_BUF_LEN>),
     {
         // Fold window is owned by `drain_raw` via `on_fold_step` /
         // `on_tx_start`; the parser path must not touch the ring or its
@@ -497,39 +494,29 @@ impl<P: Providers, const RX_BUF_LEN: usize, const TX_BUF_LEN: usize>
             rx_wake,
             id,
         };
-        rx.poll(now, ticks_per_bit, packet_end_comp, |pe| match pe {
-            PollEvent::Parser {
-                ev,
-                ring,
-                next_status_pos,
-                packet_end,
-            } => {
-                let action = router.on_parser_event(ev, next_status_pos, packet_end);
-                f(ev, ring, &mut router.reply());
-                // If `f()` engaged the Fast Last fold (via
-                // `send_slot(Last)`), the in-flight poll must exit before
-                // the parser eats any more bytes — those bytes belong to
-                // the fold engine. The poll entry gate above stops FUTURE
-                // polls only; without this bail-out the parser+skip path
-                // consumes the predecessor's leading bytes in the same poll
-                // that engaged the fold, and the fold engine starves. A
-                // deferred successor wait
-                // (`send_slot` k > 0, fold not yet started) owns
-                // those bytes the same way — mirror of the poll entry
-                // gate above, for the poll already in flight.
-                if router.fast_last.fold_active()
-                    || router.send_policy.awaited_status_start().is_some()
-                {
-                    PollAction::Stop
-                } else {
-                    action
+        // The Stop bail-out lives in `router.on_instruction`: if the
+        // dispatch engaged the Fast Last fold (`send_slot(Last)`) or parked a
+        // successor wait, those consumers own the remaining ring bytes, so
+        // the in-flight poll must exit before the framer touches them (the
+        // poll entry gates above stop FUTURE polls only — doc §6).
+        rx.poll(
+            now,
+            ticks_per_bit,
+            packet_end_comp,
+            id,
+            |verdict| match verdict {
+                FrameVerdict::Instruction {
+                    instr,
+                    broadcast,
+                    packet_end,
+                    fold_start_cursor,
+                } => router.on_instruction(instr, broadcast, packet_end, fold_start_cursor, &mut f),
+                FrameVerdict::SkipComplete { id: pred } => {
+                    router.on_skip_complete(pred);
+                    FrameAction::Continue
                 }
-            }
-            PollEvent::SkipComplete { id: pred } => {
-                router.on_skip_complete(pred);
-                PollAction::Continue
-            }
-        });
+            },
+        );
         // Feed the drift window's accumulated span (isolated short packet)
         // to the integrator BEFORE the packet-end close, so a boot batch
         // holds it and lands the correction on this exchange. The span can
@@ -607,7 +594,6 @@ mod tests {
         FastLastSchedulerOp, MockClockTrim, MockUsartBaud, ScheduleOp, TestProviders, TxBusOp,
     };
     use crate::traits::dxl::SendKind;
-    use dxl_protocol::streaming::{HeaderEvent, InstructionHeader};
     use dxl_protocol::types::StatusError;
     use dxl_protocol::wire::{CRC_BYTES, FAST_RESPONSE_SLOT0_BYTES};
     use dxl_protocol::{Id, InstructionEncoder, Slot, SoftwareCrcUmts, Status};
@@ -691,48 +677,33 @@ mod tests {
         state.rx.stage_remaining((n - head_pos) % n);
     }
 
+    /// One dispatched request, tagged for the poll-dispatch tests.
     #[derive(Debug, PartialEq, Eq)]
     enum Tag {
-        Sync,
-        InstrPing(u8),
-        InstrSyncRead,
-        InstrFastSyncRead,
-        StatusHeader(u8),
-        Crc,
-        Resync,
+        Ping,
+        Read,
+        Write,
         Other,
     }
 
-    fn ev_tag(ev: Event) -> Tag {
-        match ev {
-            Event::Sync => Tag::Sync,
-            Event::Header(HeaderEvent::Instruction(InstructionHeader::Ping { id })) => {
-                Tag::InstrPing(id.as_byte())
-            }
-            Event::Header(HeaderEvent::Instruction(InstructionHeader::SyncRead { .. })) => {
-                Tag::InstrSyncRead
-            }
-            Event::Header(HeaderEvent::Instruction(InstructionHeader::FastSyncRead { .. })) => {
-                Tag::InstrFastSyncRead
-            }
-            Event::Header(HeaderEvent::Status(sh)) => Tag::StatusHeader(sh.id.as_byte()),
-            Event::Crc(_) => Tag::Crc,
-            Event::Resync(_) => Tag::Resync,
+    fn req_tag(req: &DxlRequest<'_>) -> Tag {
+        match req {
+            DxlRequest::Ping => Tag::Ping,
+            DxlRequest::Read { .. } => Tag::Read,
+            DxlRequest::Write { .. } => Tag::Write,
             _ => Tag::Other,
         }
     }
 
+    /// Poll the bus over `bytes`, capturing one [`Tag`] per dispatched
+    /// request (foreign / non-participant frames dispatch nothing).
     fn poll_capture(bus: &mut TestBus, state: &TestState, bytes: &[u8]) -> alloc::vec::Vec<Tag> {
         stage_rx(bus, state, 0, bytes);
         let mut tags = alloc::vec::Vec::new();
-        bus.poll(|ev, _ring, _reply| {
-            tags.push(ev_tag(ev));
+        bus.poll(|req, _ctx, _reply| {
+            tags.push(req_tag(&req));
         });
         tags
-    }
-
-    fn saw_crc(tags: &[Tag]) -> bool {
-        tags.iter().any(|t| matches!(t, Tag::Crc))
     }
 
     fn wire_sync_read(addr: u16, length: u16, ids: &[u8]) -> Vec<u8, 32> {
@@ -811,12 +782,11 @@ mod tests {
     // ------------------------------------------------------------------
 
     #[test]
-    fn poll_streams_instruction_addressed_to_us_through_crc() {
+    fn poll_dispatches_instruction_addressed_to_us() {
         let (mut bus, state) = make_bus();
         let pkt = wire_ping(TEST_ID);
         let tags = poll_capture(&mut bus, &state, &pkt);
-        assert!(tags.contains(&Tag::InstrPing(TEST_ID)));
-        assert!(saw_crc(&tags));
+        assert_eq!(tags, alloc::vec![Tag::Ping]);
         assert_eq!(bus.instruction_count(), 1);
     }
 
@@ -825,18 +795,27 @@ mod tests {
         let (mut bus, state) = make_bus();
         let pkt = wire_ping(0x42);
         let tags = poll_capture(&mut bus, &state, &pkt);
-        assert!(tags.contains(&Tag::InstrPing(0x42)));
-        assert!(!saw_crc(&tags));
+        assert!(tags.is_empty(), "foreign frame dispatches nothing");
         assert_eq!(bus.instruction_count(), 1);
     }
 
     #[test]
-    fn poll_surfaces_broadcast_instruction() {
+    fn poll_dispatches_broadcast_chain_slot_addressed_to_us() {
         let (mut bus, state) = make_bus();
+        // TEST_ID (0x07) present in the chain → we participate with a Read.
+        let pkt = wire_sync_read(0x84, 4, &[0x01, TEST_ID, 0x03]);
+        let tags = poll_capture(&mut bus, &state, &pkt);
+        assert_eq!(tags, alloc::vec![Tag::Read]);
+        assert_eq!(bus.instruction_count(), 1);
+    }
+
+    #[test]
+    fn poll_counts_broadcast_chain_without_our_slot() {
+        let (mut bus, state) = make_bus();
+        // TEST_ID absent → classified (count ticks) but no dispatch.
         let pkt = wire_sync_read(0x84, 4, &[0x01, 0x02, 0x03]);
         let tags = poll_capture(&mut bus, &state, &pkt);
-        assert!(tags.contains(&Tag::InstrSyncRead));
-        assert!(saw_crc(&tags));
+        assert!(tags.is_empty());
         assert_eq!(bus.instruction_count(), 1);
     }
 
@@ -845,8 +824,7 @@ mod tests {
         let (mut bus, state) = make_bus();
         let pkt = wire_status(TEST_ID);
         let tags = poll_capture(&mut bus, &state, &pkt);
-        assert!(tags.contains(&Tag::StatusHeader(TEST_ID)));
-        assert!(!saw_crc(&tags));
+        assert!(tags.is_empty(), "status frame dispatches nothing");
         assert_eq!(bus.instruction_count(), 0);
     }
 

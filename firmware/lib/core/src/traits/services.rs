@@ -78,7 +78,7 @@ pub trait DxlDispatcher {
 /// bus-internal state, paired with the parser borrowing the wire ring — see
 /// `docs/driver-pattern.md` §7.4 for the data-centric principle.
 pub trait DxlBus {
-    fn poll<D: DxlDispatcher>(&mut self, dispatcher: &mut D);
+    fn poll<D: DxlDispatch>(&mut self, dispatcher: &mut D);
 }
 
 /// A decoded instruction addressed to this servo, addressing and chain slot
