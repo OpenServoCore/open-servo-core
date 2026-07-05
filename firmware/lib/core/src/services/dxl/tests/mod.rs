@@ -59,6 +59,10 @@ impl CrcUmts for TestDxlCrc {
         self.state
     }
 
+    fn new_with_state(state: u16) -> Self {
+        Self { state }
+    }
+
     fn reset(&mut self) {
         self.state = 0;
     }

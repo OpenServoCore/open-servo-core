@@ -24,7 +24,7 @@
 //!   backfills `LENGTH`, then folds the frame's CRC in one trailing pass.
 
 use crate::buf::{Chunk, WriteError};
-use crate::crc::CrcUmts;
+use crate::crc::{CRC_AFTER_SYNC, CrcUmts};
 use crate::types::{Id, Instruction, Slot, SlotPosition, StatusError};
 use crate::wire::{CRC_BYTES, HEADER, REQUEST_HEADER_BYTES};
 
@@ -183,6 +183,7 @@ impl<'a> Cursor<'a> {
 /// returning the frame length. One pass: the header and every param byte fold
 /// into the running CRC as they are written, the stuffed length having been
 /// pre-measured so `LENGTH` is correct at fold time.
+#[inline(always)]
 fn encode_framed<C: CrcUmts>(
     out: &mut [u8],
     id: Id,
@@ -227,8 +228,8 @@ fn encode_framed<C: CrcUmts>(
     ];
     head.copy_from_slice(&header);
 
-    let mut crc = C::new();
-    crc.update(&header);
+    let mut crc = C::new_with_state(CRC_AFTER_SYNC);
+    crc.update(&header[HEADER.len()..]);
 
     // `body` is sized to exactly `stuffed`, which equals the byte count emitted
     // below (`raw` params + `inserts` inline FDs), so every `next()` yields
@@ -269,6 +270,7 @@ pub fn encode_instruction<C: CrcUmts>(
 /// Encode a servo->host single-target Status reply (`id, error, payload`).
 /// `payload` is the post-error param region (already in wire byte order);
 /// stuffing spans the error byte and the payload. Returns the frame length.
+#[inline(always)]
 pub fn encode_status<C: CrcUmts>(
     out: &mut [u8],
     id: Id,
@@ -285,6 +287,7 @@ pub fn encode_status<C: CrcUmts>(
 /// Because the source is single-pass, the stuffed length is unknown until the
 /// params are written, so `LENGTH` is backfilled and the CRC folded in one
 /// trailing pass over the written frame rather than fused per byte.
+#[inline(always)]
 pub fn encode_status_chunked<'c, C, I>(
     out: &mut [u8],
     id: Id,
@@ -328,8 +331,8 @@ where
     cur.set(HEADER.len() + 1, lb[0]);
     cur.set(HEADER.len() + 2, lb[1]);
 
-    let mut crc = C::new();
-    crc.update(cur.written(params_end));
+    let mut crc = C::new_with_state(CRC_AFTER_SYNC);
+    crc.update(&cur.written(params_end)[HEADER.len().min(params_end)..]);
     let crc_bytes = crc.finalize().to_le_bytes();
     cur.put_slice(&crc_bytes)?;
     Ok(cur.pos)
@@ -383,9 +386,9 @@ where
                 lb[1],
                 Instruction::Status.as_u8(),
             ];
-            let mut crc = C::new();
+            let mut crc = C::new_with_state(CRC_AFTER_SYNC);
             cur.put_slice(&header)?;
-            crc.update(&header);
+            crc.update(&header[HEADER.len()..]);
             for b in [error.as_byte(), id.as_byte()] {
                 cur.put(b)?;
                 crc.update_byte(b);

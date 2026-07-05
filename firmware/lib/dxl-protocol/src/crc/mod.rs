@@ -31,7 +31,28 @@ pub trait CrcUmts: Sized {
     fn update_byte(&mut self, b: u8) {
         self.update(core::slice::from_ref(&b));
     }
+
+    /// Engine resumed from an intermediate `state` — for prefolded
+    /// constant prefixes ([`CRC_AFTER_SYNC`]) and chain-CRC handoff.
+    fn new_with_state(state: u16) -> Self;
 }
+
+/// `const` counterpart of [`crc16_umts_continue`] (while-loop form; `for`
+/// is not const-stable).
+pub const fn crc16_umts_fold(state: u16, bytes: &[u8]) -> u16 {
+    let mut crc = state;
+    let mut i = 0;
+    while i < bytes.len() {
+        crc = (crc << 8) ^ CRC16_UMTS_TABLE[(((crc >> 8) as u8) ^ bytes[i]) as usize];
+        i += 1;
+    }
+    crc
+}
+
+/// CRC state after the constant 4-byte sync prefix `FF FF FD 00` — every
+/// DXL 2.0 frame's fold starts here; emitters seed with it and skip four
+/// per-byte steps.
+pub const CRC_AFTER_SYNC: u16 = crc16_umts_fold(0, &crate::wire::HEADER);
 
 const fn crc16_umts_entry(index: u16) -> u16 {
     let mut crc = index << 8;

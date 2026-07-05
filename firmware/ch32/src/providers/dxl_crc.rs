@@ -45,6 +45,10 @@ impl CrcUmts for DxlCrc {
     fn reset(&mut self) {
         self.state = 0;
     }
+
+    fn new_with_state(state: u16) -> Self {
+        Self { state }
+    }
 }
 
 impl Default for DxlCrc {

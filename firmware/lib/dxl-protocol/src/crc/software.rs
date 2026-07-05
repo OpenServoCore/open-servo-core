@@ -38,6 +38,10 @@ impl CrcUmts for SoftwareCrcUmts {
         self.state = 0;
     }
 
+    fn new_with_state(state: u16) -> Self {
+        Self { state }
+    }
+
     fn update_byte(&mut self, b: u8) {
         self.state = crc16_umts_continue(self.state, core::slice::from_ref(&b));
     }
