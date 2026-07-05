@@ -8,7 +8,10 @@ use core::marker::PhantomData;
 
 use dxl_protocol::types::{Id, Slot, Status, StatusError};
 use dxl_protocol::wire::CRC_BYTES;
-use dxl_protocol::{Chunk, CrcUmts, SlotEncoder, SlotPosition, StatusEncoder, WriteError};
+use dxl_protocol::{
+    Chunk, CrcUmts, SlotPosition, WriteError, encode_slot, encode_slot_chunked, encode_status,
+    encode_status_chunked,
+};
 
 pub struct CodecTx<CRC: CrcUmts, const TX_BUF_LEN: usize> {
     /// DMA1_CH4 source for transmitted bytes. Single-shot DMA per reply:
@@ -18,14 +21,18 @@ pub struct CodecTx<CRC: CrcUmts, const TX_BUF_LEN: usize> {
     /// (DMA shift-out) phases are exclusive — the composite holds the only
     /// `&mut CodecTx` and stops writing once it routes to the scheduler —
     /// so no `SyncUnsafeCell`.
-    tx_buf: heapless::Vec<u8, TX_BUF_LEN>,
+    tx_buf: [u8; TX_BUF_LEN],
+    /// Valid byte count of the most-recent encoded frame — the DMA transfer
+    /// count. Bytes past it in `tx_buf` are stale and never shifted out.
+    tx_len: usize,
     _crc: PhantomData<CRC>,
 }
 
 impl<CRC: CrcUmts, const TX_BUF_LEN: usize> CodecTx<CRC, TX_BUF_LEN> {
     pub(super) fn new() -> Self {
         Self {
-            tx_buf: heapless::Vec::new(),
+            tx_buf: [0; TX_BUF_LEN],
+            tx_len: 0,
             _crc: PhantomData,
         }
     }
@@ -42,7 +49,7 @@ impl<CRC: CrcUmts, const TX_BUF_LEN: usize> CodecTx<CRC, TX_BUF_LEN> {
     /// The trailing CRC slot of the encoded TX buffer — fold tests assert
     /// the placeholder → patched transition without raw-pointer reads.
     pub(crate) fn trailing_crc_slot_for_test(&self) -> [u8; CRC_BYTES] {
-        self.tx_buf[self.tx_buf.len() - CRC_BYTES..]
+        self.tx_buf[self.tx_len - CRC_BYTES..self.tx_len]
             .try_into()
             .unwrap()
     }
@@ -51,23 +58,37 @@ impl<CRC: CrcUmts, const TX_BUF_LEN: usize> CodecTx<CRC, TX_BUF_LEN> {
 // -- commands -----------------------------------------------------------
 
 impl<CRC: CrcUmts, const TX_BUF_LEN: usize> CodecTx<CRC, TX_BUF_LEN> {
-    /// Encode a Status reply into the TX buffer. Clears any previous
-    /// contents first, then drives [`StatusEncoder`] over `tx_buf` —
-    /// `Vec::push` propagates `WriteError::Overflow` if the encoded form
-    /// exceeds `TX_BUF_LEN`. The composite reads [`Self::tx_len`] after
-    /// for the DMA transfer count.
+    /// Encode a Status reply into the TX buffer from offset 0, recording the
+    /// frame length in [`Self::tx_len`] for the DMA transfer count. The fused
+    /// [`encode_status`] returns `WriteError::Overflow` if the frame exceeds
+    /// `TX_BUF_LEN`; `tx_len` is left untouched on error.
     pub fn send_status(&mut self, status: Status<'_>) -> Result<(), WriteError> {
-        self.tx_buf.clear();
-        StatusEncoder::<_, CRC>::new(&mut self.tx_buf).emit(status)
+        let n = match status {
+            Status::Empty { id, error } => encode_status::<CRC>(&mut self.tx_buf, id, error, &[])?,
+            Status::Ping { id, error, status } => {
+                let m = status.model.to_le_bytes();
+                let payload = [m[0], m[1], status.fw_version];
+                encode_status::<CRC>(&mut self.tx_buf, id, error, &payload)?
+            }
+            Status::Read { id, error, data } => {
+                encode_status::<CRC>(&mut self.tx_buf, id, error, data)?
+            }
+            Status::Raw { id, error, payload }
+            | Status::FastSyncRead { id, error, payload }
+            | Status::FastBulkRead { id, error, payload } => {
+                encode_status::<CRC>(&mut self.tx_buf, id, error, payload)?
+            }
+        };
+        self.tx_len = n;
+        Ok(())
     }
 
-    /// Encode one Fast slot reply into the TX buffer. Same buffer-clear
-    /// and emitter shape as [`Self::send_status`]; [`SlotEncoder::emit`]
-    /// dispatches on `position` (Only/First/Middle/Last) and writes the
-    /// header, payload, and (locally-computed or caller-supplied) CRC.
+    /// Encode one Fast slot reply into the TX buffer from offset 0. The fused
+    /// [`encode_slot`] dispatches on `position` (First/Successor) and writes
+    /// the header, payload, and (locally-computed or caller-supplied) CRC.
     pub fn send_slot(&mut self, slot: &Slot<'_>, position: SlotPosition) -> Result<(), WriteError> {
-        self.tx_buf.clear();
-        SlotEncoder::<_, CRC>::new(&mut self.tx_buf).emit(slot, position)
+        self.tx_len = encode_slot::<CRC>(&mut self.tx_buf, slot, position)?;
+        Ok(())
     }
 
     /// Streamed counterpart of [`Self::send_status`] for `Status::Read`
@@ -83,14 +104,13 @@ impl<CRC: CrcUmts, const TX_BUF_LEN: usize> CodecTx<CRC, TX_BUF_LEN> {
     where
         I: IntoIterator<Item = Chunk<'c>>,
     {
-        self.tx_buf.clear();
-        StatusEncoder::<_, CRC>::new(&mut self.tx_buf).read_chunked(id, error, chunks)
+        self.tx_len = encode_status_chunked::<CRC, _>(&mut self.tx_buf, id, error, chunks)?;
+        Ok(())
     }
 
     /// Streamed counterpart of [`Self::send_slot`]: slot body bytes come
     /// from a chunk iterator. Slot bodies are unstuffed, so each
-    /// `Chunk::Slice` is a single `push_slice` and `Chunk::Zero` a
-    /// single `push_zero` on the TX buffer.
+    /// `Chunk::Slice` / `Chunk::Zero` run copies straight into the buffer.
     pub fn send_slot_chunked<'c, I>(
         &mut self,
         id: Id,
@@ -101,8 +121,8 @@ impl<CRC: CrcUmts, const TX_BUF_LEN: usize> CodecTx<CRC, TX_BUF_LEN> {
     where
         I: IntoIterator<Item = Chunk<'c>>,
     {
-        self.tx_buf.clear();
-        SlotEncoder::<_, CRC>::new(&mut self.tx_buf).emit_chunked(id, error, position, chunks)
+        self.tx_len = encode_slot_chunked::<CRC, _>(&mut self.tx_buf, id, error, position, chunks)?;
+        Ok(())
     }
 
     /// Overwrite the trailing [`CRC_BYTES`] of the encoded TX buffer with
@@ -113,11 +133,11 @@ impl<CRC: CrcUmts, const TX_BUF_LEN: usize> CodecTx<CRC, TX_BUF_LEN> {
     /// cursor reaches the trailing slot (doc §10.6). No-op when `tx_buf`
     /// hasn't been encoded yet.
     pub fn patch_crc(&mut self, crc: u16) {
-        let n = self.tx_buf.len();
+        let n = self.tx_len;
         if n < CRC_BYTES {
             return;
         }
-        self.tx_buf[n - CRC_BYTES..].copy_from_slice(&crc.to_le_bytes());
+        self.tx_buf[n - CRC_BYTES..n].copy_from_slice(&crc.to_le_bytes());
     }
 }
 
@@ -134,14 +154,14 @@ impl<CRC: CrcUmts, const TX_BUF_LEN: usize> CodecTx<CRC, TX_BUF_LEN> {
     /// Length in bytes of the most-recent encoded packet — the DMA1_CH4
     /// transfer count for the next reply. Zero until the first send.
     pub fn tx_len(&self) -> u16 {
-        self.tx_buf.len() as u16
+        self.tx_len as u16
     }
 
     /// Slice of our own reply bytes excluding the trailing [`CRC_BYTES`]
     /// slot — the bytes the Fast Last fold mixes into the chain CRC
     /// before patching. Empty when no reply has been encoded yet.
     pub fn own_reply_bytes(&self) -> &[u8] {
-        let n = self.tx_buf.len();
+        let n = self.tx_len;
         if n < CRC_BYTES {
             return &[];
         }
@@ -167,7 +187,6 @@ impl<CRC: CrcUmts, const TX_BUF_LEN: usize> crate::dxl::uart::fast_last::CrcPatc
 mod tests {
     use super::*;
     use dxl_protocol::SoftwareCrcUmts;
-    use heapless::Vec;
 
     /// `DXL_TX_MAX_BYTES` per `osc-core::services::dxl::limits` — chip-side
     /// registry uses the same value.
@@ -196,13 +215,13 @@ mod tests {
         })
         .expect("encode fits");
 
-        let mut expected: Vec<u8, TX_BUF_LEN> = Vec::new();
-        StatusEncoder::<_, SoftwareCrcUmts>::new(&mut expected)
-            .empty(Id::new(TEST_ID), StatusError::OK)
-            .unwrap();
+        let mut expected = [0u8; TX_BUF_LEN];
+        let n =
+            encode_status::<SoftwareCrcUmts>(&mut expected, Id::new(TEST_ID), StatusError::OK, &[])
+                .unwrap();
         assert!(tx.tx_len() > 0);
-        assert_eq!(tx.tx_len() as usize, expected.len());
-        assert_eq!(wire_view(&tx), expected.as_slice());
+        assert_eq!(tx.tx_len() as usize, n);
+        assert_eq!(wire_view(&tx), &expected[..n]);
     }
 
     #[test]
@@ -253,11 +272,14 @@ mod tests {
 
         assert_eq!(&wire_view(&tx)[0..4], &[0xFF, 0xFF, 0xFD, 0x00]);
 
-        let mut expected: Vec<u8, TX_BUF_LEN> = Vec::new();
-        SlotEncoder::<_, SoftwareCrcUmts>::new(&mut expected)
-            .emit(&slot, SlotPosition::First { packet_length: 8 })
-            .unwrap();
-        assert_eq!(wire_view(&tx), expected.as_slice());
+        let mut expected = [0u8; TX_BUF_LEN];
+        let n = encode_slot::<SoftwareCrcUmts>(
+            &mut expected,
+            &slot,
+            SlotPosition::First { packet_length: 8 },
+        )
+        .unwrap();
+        assert_eq!(wire_view(&tx), &expected[..n]);
     }
 
     #[test]
