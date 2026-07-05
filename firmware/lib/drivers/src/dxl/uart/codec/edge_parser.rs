@@ -52,6 +52,9 @@ const EDGES_PER_BYTE: [u8; 256] = {
 /// CRC in the RX ring — those bytes' edges sit between the ET head and
 /// CRC's tail edge. Keeps [`EDGES_PER_BYTE`] private to the edge parser
 /// while the byte-ring iteration stays with the codec that owns that ring.
+// Orphaned with the tail-anchor back-search; removed in the edge-subsystem
+// deletion chunk.
+#[allow(dead_code)]
 pub(super) fn edges_in_byte(b: u8) -> u8 {
     EDGES_PER_BYTE[b as usize]
 }

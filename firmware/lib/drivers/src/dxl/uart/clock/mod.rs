@@ -11,9 +11,9 @@
 //! The two inputs that determine `ticks_per_bit` are both committed at
 //! `on_tx_complete` (USART can't change BRR mid-frame): baud, staged by
 //! control-table writes via [`Clock::stage_baud`]; and clock-trim
-//! correction, integrated from drift samples fed via [`Clock::on_byte_pair`].
-//! The composite owns no state of its own — it routes each event, command,
-//! and accessor to the half that owns it.
+//! correction, integrated from NDTR/byte-count spans fed via
+//! [`Clock::on_span`]. The composite owns no state of its own — it routes
+//! each event, command, and accessor to the half that owns it.
 
 mod baud_cache;
 mod drift_consts;
@@ -67,10 +67,10 @@ impl<U: UsartBaud, T: ClockTrim> Clock<U, T> {
         self.drift.on_rx_packet_end();
     }
 
-    /// One classifier byte-pair for the drift integrator. See
-    /// [`DriftIntegrator::on_byte_pair`].
-    pub fn on_byte_pair(&mut self, prev: u16, curr: u16) {
-        self.drift.on_byte_pair(prev, curr);
+    /// One NDTR/byte-count span for the drift integrator. See
+    /// [`DriftIntegrator::on_span`].
+    pub fn on_span(&mut self, d_ticks: u32, d_bytes: u32) {
+        self.drift.on_span(d_ticks, d_bytes);
     }
 
     // -- commands ---------------------------------------------------------------
@@ -121,8 +121,7 @@ impl<U: UsartBaud, T: ClockTrim> Clock<U, T> {
     }
 
     /// Plain (status / non-Fast) reply deadline: anchor `rdt_ticks` + the
-    /// slot-offset gap against `packet_end_tick`, folding the drift
-    /// integrator's projected phase error over that distance.
+    /// slot-offset gap against `packet_end_tick`.
     pub fn compute_status_deadline(
         &self,
         packet_end_tick: u32,
@@ -151,9 +150,7 @@ impl<U: UsartBaud, T: ClockTrim> Clock<U, T> {
     /// single-target-reply-only per spec) and no LineIdle floor: the
     /// anchor is a hardware edge stamp strictly in the past, physically
     /// received before the query could run, so there is nothing to floor
-    /// against. Folds the drift phase residual over the extrapolated
-    /// distance like every other schedule site — load-bearing for long
-    /// chains at low baud, where the distance spans many milliseconds.
+    /// against.
     pub fn compute_slot_start_deadline(
         &self,
         status_start_tick: u32,
@@ -165,26 +162,10 @@ impl<U: UsartBaud, T: ClockTrim> Clock<U, T> {
         )
     }
 
-    /// Max byte pairs per packet the driver should drain into
-    /// [`Self::on_byte_pair`]. See [`DriftIntegrator::samples_wanted_per_packet`].
-    pub fn samples_wanted_per_packet(&self) -> u8 {
-        self.drift.samples_wanted_per_packet()
-    }
-
-    /// Project the drift integrator's pending residual onto a scheduled
-    /// deadline distance. See [`DriftIntegrator::projected_phase_error_hclk`].
-    pub fn projected_phase_error_hclk(&self, distance_hclk: u32) -> i32 {
-        self.drift.projected_phase_error_hclk(distance_hclk)
-    }
-
-    /// Anchor a `delay_ticks` distance against `packet_end_tick` and fold in
-    /// the drift integrator's projected phase error over that distance.
-    /// Shared tail of both deadline computations.
+    /// Anchor a `delay_ticks` distance against `packet_end_tick`. Shared
+    /// tail of both deadline computations.
     fn deadline_after(&self, packet_end_tick: u32, delay_ticks: u32) -> u32 {
-        let phase_adjust = self.drift.projected_phase_error_hclk(delay_ticks);
-        packet_end_tick
-            .wrapping_add(delay_ticks)
-            .wrapping_add_signed(phase_adjust)
+        packet_end_tick.wrapping_add(delay_ticks)
     }
 }
 
@@ -192,9 +173,7 @@ impl<U: UsartBaud, T: ClockTrim> Clock<U, T> {
 mod tests {
     use super::*;
     use crate::dxl::uart::BITS_PER_FRAME;
-    use crate::dxl::uart::test_support::{
-        TICKS_PER_BIT_3M, TICKS_PER_BIT_9600, mk_clock_trim, mk_usart_baud,
-    };
+    use crate::dxl::uart::test_support::{TICKS_PER_BIT_3M, mk_clock_trim, mk_usart_baud};
     use crate::mocks::{MockClockTrim, MockUsartBaud};
 
     type TestClock = Clock<MockUsartBaud, MockClockTrim>;
@@ -203,18 +182,6 @@ mod tests {
         let (usart, _) = mk_usart_baud();
         let (trim, _) = mk_clock_trim();
         Clock::new(baud, usart, trim)
-    }
-
-    /// Close one boot drift batch at B9600 with per-sample drift
-    /// `delta_tpb` bits — leaves a same-signed sub-step residual for the
-    /// phase-fold tests (mirrors the `drift_integrator` fixtures).
-    fn clock_9600_with_residual(delta_tpb: i16) -> TestClock {
-        let mut c = clock_at(BaudRate::B9600);
-        let observed = (TICKS_PER_BIT_9600 as i32 + delta_tpb as i32) as u16;
-        for _ in 0..6 {
-            c.on_byte_pair(0, observed.wrapping_mul(BITS_PER_FRAME));
-        }
-        c
     }
 
     const BYTE_TICKS_3M: u32 = TICKS_PER_BIT_3M as u32 * BITS_PER_FRAME as u32;
@@ -301,60 +268,6 @@ mod tests {
         assert_eq!(
             c.compute_status_deadline(packet_end, 1_000, 0),
             packet_end.wrapping_add(1_000)
-        );
-    }
-
-    // ---------- drift phase fold ----------
-
-    #[test]
-    fn deadline_folds_positive_phase_residual_later() {
-        // HSI fast → positive residual → the reply must start LATER in
-        // chip ticks to land on the host's reference.
-        let c = clock_9600_with_residual(40);
-        let delay = 120_000;
-        let adjust = c.projected_phase_error_hclk(delay);
-        assert!(adjust > 0, "boot batch must leave a positive residual");
-        assert_eq!(
-            c.compute_status_deadline(50_000, delay, 0),
-            50_000 + delay + adjust as u32
-        );
-    }
-
-    #[test]
-    fn deadline_folds_negative_phase_residual_earlier() {
-        let c = clock_9600_with_residual(-40);
-        let delay = 120_000;
-        let adjust = c.projected_phase_error_hclk(delay);
-        assert!(adjust < 0, "boot batch must leave a negative residual");
-        assert_eq!(
-            c.compute_status_deadline(50_000, delay, 0),
-            (50_000 + delay).wrapping_add_signed(adjust)
-        );
-    }
-
-    #[test]
-    fn slot_deadline_folds_the_same_phase_residual() {
-        let c = clock_9600_with_residual(40);
-        let rdt = 120_000;
-        assert_eq!(
-            c.compute_slot_deadline(50_000, rdt, PollSrc::ByteBatch),
-            c.compute_status_deadline(50_000, rdt, 0),
-            "slot and status paths must fold the residual identically"
-        );
-    }
-
-    #[test]
-    fn slot_start_deadline_folds_the_same_phase_residual() {
-        // Long-chain low-baud extrapolation: the drift residual must fold
-        // over the byte distance exactly as the status path folds it over
-        // an equal tick delay.
-        let c = clock_9600_with_residual(40);
-        let offset_bytes = 3; // 150_000 ticks at 9600 — a multi-ms span
-        let delay = c.bytes_to_ticks(offset_bytes);
-        assert_eq!(
-            c.compute_slot_start_deadline(50_000, offset_bytes),
-            c.compute_status_deadline(50_000, delay, 0),
-            "slot-start and status paths must fold the residual identically"
         );
     }
 }

@@ -339,14 +339,6 @@ impl Servo {
         self.clock_trim_state.operations()
     }
 
-    /// Sub-step phase-error projection — chains through `DxlUart` to the
-    /// integrator's residual×distance/window calculation. Tests sample
-    /// this after driving drift convergence to assert the residual is
-    /// signed correctly and bounded by the steady-phase deadband.
-    pub fn projected_phase_error_hclk(&self, distance_hclk: u32) -> i32 {
-        self.uart.projected_phase_error_hclk(distance_hclk)
-    }
-
     fn rebuild_uart(&mut self) {
         let (baud, dxl_id, rdt_us) = self.shared.table.config.with(|c| {
             (

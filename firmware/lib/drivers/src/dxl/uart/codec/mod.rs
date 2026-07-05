@@ -11,6 +11,7 @@ mod edge_capture;
 mod edge_parser;
 mod poll_event;
 mod skip;
+mod span;
 
 pub use codec_rx::CodecRx;
 #[cfg(test)]
@@ -52,19 +53,27 @@ impl<
 
     // -- events -------------------------------------------------------------
 
-    pub fn on_idle(&mut self, now: u32) {
-        self.rx.on_idle(now);
+    /// Line-IDLE drain-ISR entry. Returns a drift span when this stamp pairs
+    /// with the previous same-flavor stamp over a contiguous Instruction
+    /// burst — see [`CodecRx::on_idle`].
+    pub fn on_idle(&mut self, now: u32, byte_ticks: u32) -> Option<(u32, u32)> {
+        self.rx.on_idle(now, byte_ticks)
     }
 
     pub fn on_rx_progress(&mut self, remaining: u16) {
         self.rx.on_rx_progress(remaining);
     }
 
-    pub fn on_byte_batch_wake(&mut self, now: u32) {
-        self.rx.on_byte_batch_wake(now);
+    /// Byte-ring HT/TC drain-ISR entry. Returns a drift span on a paired
+    /// contiguous burst — see [`CodecRx::on_byte_batch_wake`].
+    pub fn on_byte_batch_wake(&mut self, now: u32, byte_ticks: u32) -> Option<(u32, u32)> {
+        self.rx.on_byte_batch_wake(now, byte_ticks)
     }
 
-    /// Forward to [`CodecRx::on_baud_change`].
+    /// Forward to [`CodecRx::on_baud_change`]. The `rx_edge_comp_ticks`
+    /// plumbing now feeds only the edge parser's tail-anchor/walk, which
+    /// lost its live callers with the drift-span swap — kept until the
+    /// edge subsystem is removed in the deletion chunk.
     pub fn on_baud_change(&mut self, rx_edge_comp_ticks: u16) {
         self.rx.on_baud_change(rx_edge_comp_ticks);
     }

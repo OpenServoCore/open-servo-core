@@ -1,112 +1,68 @@
 //! HSI drift integrator for the DXL transport — a two-phase control law
-//! that corrects the servo oscillator against the host's byte-pair timing.
-//! Fed by classifier byte pairs via [`DriftIntegrator::on_byte_pair`],
-//! commits its correction at the RX packet boundary via
+//! that corrects the servo oscillator against the host's byte-timing.
+//! Fed by NDTR/byte-count spans via [`DriftIntegrator::on_span`], commits
+//! its correction at the RX packet boundary via
 //! [`DriftIntegrator::on_rx_packet_end`]:
 //!
 //! - **Boot** ([`DriftPhase::Boot`], active until the first batch close from
-//!   [`DriftIntegrator::new`]): batch closes at [`DRIFT_MIN_SAMPLES_BOOT`] =
-//!   6 byte pairs (one Ping reply's worth) with a full-step threshold and an
-//!   emit cap of 16 register steps (full envelope). Lands ±20 000 ppm
-//!   factory drift in a single packet so non-Fast commands work immediately
-//!   after init.
+//!   [`DriftIntegrator::new`]): batch closes at [`DRIFT_MIN_SAMPLES_BOOT`]
+//!   spans with a full-step deadband and an emit cap of 16 register steps
+//!   (full envelope). Lands ±20 000 ppm factory drift in a single batch so
+//!   non-Fast commands work as soon as enough RX traffic has flowed.
 //! - **Steady** ([`DriftPhase::Steady`], every batch after the first): batch
-//!   closes at [`DRIFT_MIN_SAMPLES_STEADY`] = 20 pairs with a half-step
-//!   threshold and an emit cap of 4 steps. Bounds noise risk and squeezes
-//!   the residual gap before the host issues Fast commands.
+//!   closes at [`DRIFT_MIN_SAMPLES_STEADY`] spans with a half-step deadband
+//!   and an emit cap of 4 steps. Bounds noise risk and squeezes the residual
+//!   gap before the host issues Fast commands.
+//!
+//! Each span is `(d_ticks, d_bytes)`: the servo-clock ticks elapsed and the
+//! whole wire bytes received between two same-flavor drain-ISR stamps of one
+//! contiguous burst (see [`super::super::codec`]'s span tracker). The
+//! per-span drift is `d_ticks − d_bytes · byte_ticks_spec`; a fast HSI reads
+//! more ticks per byte, so a positive drift means the servo runs fast.
 //!
 //! HSI drift is intrinsic to the oscillator, not the divider — baud changes
-//! ([`DriftIntegrator::on_baud_change`]) rebuild the per-baud constants but
+//! ([`DriftIntegrator::on_baud_change`]) re-derive `byte_ticks_spec` but
 //! never re-engage boot mode.
 
 use core::marker::PhantomData;
 
 use osc_core::BaudRate;
 
-use super::drift_consts::{
-    DRIFT_MIN_SAMPLES_BOOT, DRIFT_MIN_SAMPLES_STEADY, Q8_SHIFT, drift_consts_at,
-};
+use super::drift_consts::{DRIFT_MIN_SAMPLES_BOOT, DRIFT_MIN_SAMPLES_STEADY};
 use crate::dxl::uart::BITS_PER_FRAME;
 use crate::traits::dxl::{ClockTrim, UsartBaud};
 
-/// Boot-phase emission cap = full register range. Estimator at 6
-/// samples has ~3.4σ SNR margin over chip-stamp quantization noise at
-/// the worst baud (3M, tpb=16); for a real ±20 000 ppm factory drift
-/// it produces 8 ± 0.3 step estimates that commit cleanly to the
-/// envelope clamp in one go.
+/// Boot-phase emission cap = full register range. One batch of spans over a
+/// real ±20 000 ppm factory drift produces an 8-step estimate that commits
+/// cleanly to the envelope clamp in a single emit.
 const EMIT_CAP_STEPS_BOOT: i32 = 16;
-/// Steady-phase emission cap. Bounds noise sensitivity: a single
-/// anomalous batch can't swing the applied correction past
-/// `EMIT_CAP_STEPS_STEADY × STEP_PPM` ppm. Magnitude-aware otherwise —
-/// the integrator estimates accumulated drift in step units, emits the
-/// opposing magnitude clamped to the cap, then re-samples.
+/// Steady-phase emission cap. Bounds noise sensitivity: a single anomalous
+/// batch can't swing the applied correction past
+/// `EMIT_CAP_STEPS_STEADY × STEP_PPM` ppm. Magnitude-aware otherwise — the
+/// integrator estimates accumulated drift in ppm, emits the opposing
+/// magnitude clamped to the cap, then re-samples.
 const EMIT_CAP_STEPS_STEADY: i32 = 4;
-
-/// Steady-phase drain cap, in byte pairs per packet. Caller (the driver)
-/// reads via [`DriftIntegrator::samples_wanted_per_packet`] and truncates
-/// the per-packet pair buffer before draining into
-/// [`DriftIntegrator::on_byte_pair`]. At 4/packet ×
-/// [`DRIFT_MIN_SAMPLES_STEADY`] = 20 → 5 packets fill a batch (vs 1–2
-/// today), trading convergence latency for ~2–4 µs/cycle of drain work.
-/// Per-packet skew tolerance unchanged: the integrator is already
-/// noise-tolerant by design, and the missed pairs are time-uniform so no
-/// systematic bias.
-const STEADY_SAMPLES_PER_PACKET: u8 = 4;
-
-/// Boot-phase drain cap, in byte pairs per packet. Matches
-/// [`DRIFT_MIN_SAMPLES_BOOT`] so a single Ping's worth of pairs closes
-/// the boot batch in one packet (the walker's cache emits 3 pairs from
-/// the tail signature, ring walk adds the rest). Bounded — not
-/// `u8::MAX` — so the walker doesn't spin ~250 free-run iterations per
-/// Crc waiting for edges past the packet's boundary.
-const BOOT_SAMPLES_PER_PACKET: u8 = DRIFT_MIN_SAMPLES_BOOT as u8;
 
 pub struct DriftIntegrator<U: UsartBaud, T: ClockTrim> {
     trim: T,
-    /// The reference clock rate (`U::CLOCK_HZ`) parameterizes the per-baud
-    /// integrator constants even though the USART instance itself lives in
-    /// [`super::baud_cache::BaudCache`]. `PhantomData` binds `U` so the
-    /// const-fold arms in [`Self::drift_consts_at`] resolve `U::CLOCK_HZ`
-    /// at monomorphization ([[const_fold_integrator_rebuild_divides]]).
+    /// `U::CLOCK_HZ` never leaves the reference-clock derivation of
+    /// `ticks_per_bit` in [`super::baud_cache::BaudCache`]; `PhantomData`
+    /// only binds `U` so this type stays parameterized alongside the cache.
     _usart: PhantomData<U>,
-    baud: BaudRate,
+    /// Nominal ticks per bit at the current baud — `BITS_PER_FRAME × this`
+    /// is `byte_ticks_spec`, the tick count one wire byte should take on a
+    /// perfectly-trimmed clock. The per-span drift subtracts it.
     ticks_per_bit: u16,
 
     state: DriftPhase,
-    /// Sum of `(byte_ticks − BITS_PER_FRAME × tpb) << Q8_SHIFT` across the
-    /// current batch. Tracking the raw byte-time delta (not `byte_ticks
-    /// / BITS_PER_FRAME`) keeps 1-tick chip-stamp quantization noise
-    /// below threshold at small `ticks_per_bit` (V006 at 3M baud:
-    /// tpb=16, 1 tick = 6% of a bit).
-    drift_sum_q8: i32,
-    drift_samples: u16,
-    /// `|drift_sum_q8|` value that flags a worth-emitting batch. Boot
-    /// phase uses a full-step threshold (= `drift_per_step_q8`);
-    /// steady uses a half-step (= `drift_per_step_q8 >> 1`).
-    /// Precomputed on baud change and on phase transition.
-    drift_threshold_q8: u32,
-    /// One full trim step's worth of accumulated byte-tick drift over N
-    /// samples, in Q8.8 ticks. Used at batch close to compute the
-    /// sub-step residual (`drift_sum - actual_applied_steps × step_q8`).
-    drift_per_step_q8: u32,
-    /// Reciprocal of one full step's drift in Q32. Lets `on_byte_pair`
-    /// estimate accumulated drift in trim-step units via a single 64-bit
-    /// multiply + shift instead of a runtime divide. Precomputed
-    /// alongside `drift_threshold_q8`.
-    drift_per_step_recip_q32: u32,
-    /// Reciprocal of the steady-phase integrator window (`N_steady × BPF ×
-    /// tpb` HCLK ticks) in Q32. Lets [`Self::projected_phase_error_hclk`]
-    /// scale the residual by `distance_hclk / window` via multiply + shift
-    /// instead of a runtime divide. Precomputed alongside the other
-    /// integrator consts (baud change is the only mutator).
-    window_recip_q32: u32,
-    /// Predicted next-window drift_sum after the most recent batch's apply
-    /// takes effect — i.e. the sub-step residual the integer-step
-    /// quantization couldn't cancel. Signed Q8.8 byte-ticks; sign matches
-    /// drift convention (positive = HSI fast). Persists across batches
-    /// until the next batch close overwrites it; consumers (the TX
-    /// scheduler's phase-adjust math) read the latest estimate.
-    residual_q8: i32,
+    /// Robust batch statistic: the span with the smallest per-byte drift
+    /// seen this batch. Entry-latency noise only ever *delays* a stamp, so
+    /// it can only inflate `d_ticks` — the minimum per-byte drift is the
+    /// least-corrupted estimate. Stored raw as `(drift_ticks, d_bytes)` and
+    /// compared by cross-multiply so no per-span division is needed (RV32EC
+    /// has no hardware divide); one division converts it to ppm at close.
+    best: Option<SpanDrift>,
+    span_count: u16,
     /// Currently-applied absolute correction relative to factory cal, in
     /// ppm. Mirrors the value last handed to `T::apply_ppm`; clamped to
     /// `T::ENVELOPE_PPM` before emission so we never request a correction
@@ -115,7 +71,17 @@ pub struct DriftIntegrator<U: UsartBaud, T: ClockTrim> {
     pending_applied_ppm: Option<i32>,
 }
 
-/// Two-phase drift control state. Boot lands factory drift in one packet;
+/// One batch's minimum per-byte drift, kept raw so the ppm conversion (the
+/// one division) defers to batch close.
+#[derive(Copy, Clone)]
+struct SpanDrift {
+    /// `d_ticks − d_bytes · byte_ticks_spec` for the span, in servo ticks.
+    drift_ticks: i32,
+    /// The span's whole-byte length; always > 0 for a stored span.
+    d_bytes: u32,
+}
+
+/// Two-phase drift control state. Boot lands factory drift in one batch;
 /// the one-shot transition to Steady tightens the deadband for the rest of
 /// the integrator's lifetime. HSI drift is the oscillator's, not the
 /// divider's, so baud changes never re-engage Boot.
@@ -125,10 +91,9 @@ enum DriftPhase {
     Steady,
 }
 
-/// The per-phase control-law parameters, each next to its rationale.
 impl DriftPhase {
-    /// Byte pairs that close a batch. Boot: one Ping's worth. Steady: the
-    /// 20-pair window whose half-step deadband clears quantization noise.
+    /// Spans that close a batch. Boot's short window lands factory drift
+    /// fast; steady's longer window clears sampling noise.
     fn min_samples(self) -> u16 {
         match self {
             Self::Boot => DRIFT_MIN_SAMPLES_BOOT,
@@ -145,43 +110,26 @@ impl DriftPhase {
         }
     }
 
-    /// Per-packet drain cap — see [`BOOT_SAMPLES_PER_PACKET`] /
-    /// [`STEADY_SAMPLES_PER_PACKET`].
-    fn samples_per_packet(self) -> u8 {
+    /// Worth-emitting deadband on the batch's ppm estimate. Boot: full-step
+    /// (`STEP_PPM`), conservative over the shorter window. Steady: half-step
+    /// (`STEP_PPM / 2`), tighter once the longer window has the SNR margin.
+    fn threshold_ppm(self, step_ppm: u32) -> u32 {
         match self {
-            Self::Boot => BOOT_SAMPLES_PER_PACKET,
-            Self::Steady => STEADY_SAMPLES_PER_PACKET,
-        }
-    }
-
-    /// Worth-emitting deadband on `|drift_sum_q8|`. Boot: full-step (more
-    /// conservative over the smaller 6-sample window). Steady: half-step
-    /// (tighter; the 20-sample window has enough SNR margin to spot
-    /// half-step drift).
-    fn threshold_q8(self, per_step_q8: u32) -> u32 {
-        match self {
-            Self::Boot => per_step_q8,
-            Self::Steady => per_step_q8 >> 1,
+            Self::Boot => step_ppm,
+            Self::Steady => step_ppm >> 1,
         }
     }
 }
 
 impl<U: UsartBaud, T: ClockTrim> DriftIntegrator<U, T> {
-    pub fn new(baud: BaudRate, ticks_per_bit: u16, trim: T) -> Self {
-        let consts = drift_consts_at::<U, T>(baud, true);
+    pub fn new(_baud: BaudRate, ticks_per_bit: u16, trim: T) -> Self {
         Self {
             trim,
             _usart: PhantomData,
-            baud,
             ticks_per_bit,
             state: DriftPhase::Boot,
-            drift_sum_q8: 0,
-            drift_samples: 0,
-            drift_threshold_q8: DriftPhase::Boot.threshold_q8(consts.per_step_q8),
-            drift_per_step_q8: consts.per_step_q8,
-            drift_per_step_recip_q32: consts.recip_q32,
-            window_recip_q32: consts.window_recip_q32,
-            residual_q8: 0,
+            best: None,
+            span_count: 0,
             applied_ppm: 0,
             pending_applied_ppm: None,
         }
@@ -192,200 +140,133 @@ impl<U: UsartBaud, T: ClockTrim> DriftIntegrator<U, T> {
         matches!(self.state, DriftPhase::Boot)
     }
 
-    /// Recompute integrator constants from the current `(baud, phase)`.
-    /// Called on baud change (in [`Self::on_baud_change`]) and on phase
-    /// transition (in [`Self::on_rx_packet_end`]) — both cold paths (at
-    /// most twice per integrator lifetime in steady state).
-    fn rebuild_integrator_consts(&mut self) {
-        let consts = drift_consts_at::<U, T>(self.baud, self.is_boot());
-        self.drift_threshold_q8 = self.state.threshold_q8(consts.per_step_q8);
-        self.drift_per_step_q8 = consts.per_step_q8;
-        self.drift_per_step_recip_q32 = consts.recip_q32;
-        self.window_recip_q32 = consts.window_recip_q32;
+    /// `byte_ticks_spec` — the tick count a wire byte should take on a
+    /// perfectly-trimmed clock at the current baud.
+    #[inline(always)]
+    fn byte_ticks_spec(&self) -> i64 {
+        BITS_PER_FRAME as i64 * self.ticks_per_bit as i64
     }
 
     // -- events -----------------------------------------------------------------
 
-    /// A committed baud change from the composite. Rebinds the per-baud
-    /// integrator constants and resets the in-flight batch; the phase is
-    /// untouched (drift is the oscillator's, not the divider's). The stale
-    /// residual is dropped — it was measured against the old
-    /// `drift_per_step_q8`.
-    pub fn on_baud_change(&mut self, baud: BaudRate, ticks_per_bit: u16) {
-        self.baud = baud;
+    /// A committed baud change from the composite. Re-derives
+    /// `byte_ticks_spec` and drops the in-flight batch; the phase is
+    /// untouched (drift is the oscillator's, not the divider's).
+    pub fn on_baud_change(&mut self, _baud: BaudRate, ticks_per_bit: u16) {
         self.ticks_per_bit = ticks_per_bit;
-        self.rebuild_integrator_consts();
-        self.drift_sum_q8 = 0;
-        self.drift_samples = 0;
-        self.residual_q8 = 0;
+        self.reset_batch();
     }
 
-    /// One classifier byte-pair from the codec — `prev`/`curr` are
-    /// consecutive start-bit edge timestamps the classifier walked out
-    /// of the EXTI/DMA edge ring. The classifier gates on its HIT window
-    /// `[WINDOW_LO_MUL·tpb, WINDOW_HI_MUL·tpb]` (doc §10.7.1) before
-    /// emitting, so every pair reaching here is a real
-    /// `BITS_PER_FRAME`-bit byte-time delta.
+    /// One NDTR/byte-count span from the codec's span tracker — `d_ticks`
+    /// servo-clock ticks and `d_bytes` whole wire bytes over one contiguous
+    /// same-flavor burst of Instruction bytes. Folds the span into the
+    /// batch's minimum per-byte drift and closes the batch once it has
+    /// enough spans.
     ///
-    /// Despite the per-pair callback shape, the accumulator is *one
-    /// multi-byte stride measurement*: each pair contributes
-    /// `(e_k − e_{k−1}) − BITS_PER_FRAME·tpb`, and over N samples the
-    /// intermediate edge stamps telescope to give `(e_N − e_0) −
-    /// N·BITS_PER_FRAME·tpb`. Noise on `drift_sum_q8` is therefore
-    /// `√2·σ_edge` regardless of N — independent of sample count.
-    pub fn on_byte_pair(&mut self, prev: u16, curr: u16) {
-        let byte_ticks = curr.wrapping_sub(prev);
-        // Drift on raw byte_ticks (no `/BITS_PER_FRAME` truncation) — at
-        // small `ticks_per_bit` (V006 at 3M: tpb=16, byte=160) a 1-tick
-        // chip-stamp quantization is ~6% of one bit and would otherwise
-        // dominate the per-sample signal. Threshold scales by
-        // `BITS_PER_FRAME` to match.
-        let drift = byte_ticks as i32 - BITS_PER_FRAME as i32 * self.ticks_per_bit as i32;
-        self.drift_sum_q8 = self.drift_sum_q8.saturating_add(drift << Q8_SHIFT);
-        self.drift_samples += 1;
-        if self.drift_samples < self.state.min_samples() {
+    /// The tracker's same-burst gate has already bounded `d_ticks` to within
+    /// `d_bytes · byte_ticks / 16` of nominal, so `drift_ticks` here is a
+    /// small honest offset, never an inter-packet gap.
+    pub fn on_span(&mut self, d_ticks: u32, d_bytes: u32) {
+        if d_bytes == 0 {
             return;
         }
-        self.close_batch();
+        let drift = (d_ticks as i64 - d_bytes as i64 * self.byte_ticks_spec())
+            .clamp(i32::MIN as i64, i32::MAX as i64) as i32;
+        let cand = SpanDrift {
+            drift_ticks: drift,
+            d_bytes,
+        };
+        self.best = Some(match self.best {
+            // Compare per-byte drift `a/da < b/db` by cross-multiply (both
+            // `d_bytes` > 0, so the inequality direction is preserved).
+            Some(cur)
+                if (cand.drift_ticks as i64 * cur.d_bytes as i64)
+                    < (cur.drift_ticks as i64 * cand.d_bytes as i64) =>
+            {
+                cand
+            }
+            Some(cur) => cur,
+            None => cand,
+        });
+        self.span_count += 1;
+        if self.span_count >= self.state.min_samples() {
+            self.close_batch();
+        }
     }
 
-    /// Close one batch: estimate accumulated drift, stage the capped
-    /// counter-correction if it clears the deadband, record the sub-step
-    /// residual, and reset the accumulator for the next window.
+    /// Close one batch: convert the minimum per-byte drift to ppm, stage the
+    /// capped counter-correction if it clears the deadband, and reset the
+    /// accumulator for the next window.
     #[inline]
     fn close_batch(&mut self) {
-        // Steps the upcoming apply will actually shift HSITRIM by (signed,
-        // same direction as `applied_ppm` delta). 0 below threshold; may
-        // be less than `capped` magnitude if the envelope clamps.
-        let mut applied_steps: i32 = 0;
-        if self.drift_sum_q8.unsigned_abs() >= self.drift_threshold_q8 {
-            // Magnitude-aware: estimate accumulated drift in trim steps,
-            // emit the opposing correction capped to bound noise risk.
-            // Servo fast → observed ticks/bit short → counter ppm DOWN.
-            let drift_steps = self.drift_in_steps();
-            let counter = -drift_steps;
-            let cap = self.state.emit_cap_steps();
-            let capped = counter.clamp(-cap, cap);
-            let nudge_ppm = capped.saturating_mul(T::STEP_PPM as i32);
-            let new_applied = self
-                .applied_ppm
-                .saturating_add(nudge_ppm)
-                .clamp(T::ENVELOPE_PPM.0, T::ENVELOPE_PPM.1);
-            applied_steps = (new_applied - self.applied_ppm) / T::STEP_PPM as i32;
-            if new_applied != self.applied_ppm {
-                self.pending_applied_ppm = Some(new_applied);
+        if let Some(best) = self.best {
+            let ppm = self.batch_ppm(best);
+            if ppm.unsigned_abs() >= self.state.threshold_ppm(T::STEP_PPM) {
+                // Magnitude-aware: estimate accumulated drift in whole trim
+                // steps, emit the opposing correction capped to bound noise
+                // risk. Servo fast → positive drift → counter ppm DOWN.
+                let drift_steps = round_div(ppm, T::STEP_PPM as i32);
+                let cap = self.state.emit_cap_steps();
+                let capped = (-drift_steps).clamp(-cap, cap);
+                let nudge_ppm = capped.saturating_mul(T::STEP_PPM as i32);
+                let new_applied = self
+                    .applied_ppm
+                    .saturating_add(nudge_ppm)
+                    .clamp(T::ENVELOPE_PPM.0, T::ENVELOPE_PPM.1);
+                if new_applied != self.applied_ppm {
+                    self.pending_applied_ppm = Some(new_applied);
+                }
             }
         }
-        // Predicted next-window drift_sum after the apply takes effect —
-        // the sub-step residual that integer-step quantization couldn't
-        // cancel. Applying +1 step nudges HSI faster by STEP_PPM ppm,
-        // which adds `drift_per_step_q8` to next window's drift_sum (per
-        // the `drift_per_step_q8` derivation). For signed `applied_steps`:
-        //
-        //   predicted = drift_sum + applied_steps × drift_per_step_q8
-        //
-        // Example: drift_sum = +30 (HSI fast), applied_steps = -1 (slowing
-        // direction), drift_per_step_q8 = 24 → predicted = +6, still
-        // slightly fast — quantization under-corrected by 6.
-        let delta = (applied_steps as i64 * self.drift_per_step_q8 as i64)
-            .clamp(i32::MIN as i64, i32::MAX as i64) as i32;
-        self.residual_q8 = self.drift_sum_q8.saturating_add(delta);
-        self.drift_sum_q8 = 0;
-        self.drift_samples = 0;
+        self.reset_batch();
+    }
+
+    /// The batch's minimum per-byte drift as a signed ppm estimate. The one
+    /// division of the whole integrator (RV32EC has no hardware divide, but
+    /// a single 64-bit divide at batch close is acceptable — the per-span
+    /// path stays divide-free).
+    fn batch_ppm(&self, best: SpanDrift) -> i32 {
+        let denom = best.d_bytes as i64 * self.byte_ticks_spec();
+        if denom == 0 {
+            return 0;
+        }
+        (best.drift_ticks as i64 * 1_000_000 / denom) as i32
+    }
+
+    fn reset_batch(&mut self) {
+        self.best = None;
+        self.span_count = 0;
     }
 
     /// RX-side packet boundary — applies any pending trim correction and
     /// transitions boot→steady. Trim writes HSITRIM directly (no BRR
-    /// mid-frame constraint), so the earliest safe apply point is the
-    /// first quiet moment after the integrator has seen all of a
-    /// packet's byte pairs. Called by the driver at every poll after
-    /// the byte-pair buffer is drained into [`Self::on_byte_pair`] — at
-    /// own-Crc, foreign-SkipComplete, and Bad-CRC / Resync boundaries
-    /// alike, so foreign-instruction sampling per
-    /// [[drift_sampling_instruction_only]] converges the same as own.
-    /// Idempotent: with no pending correction and already in
-    /// [`DriftPhase::Steady`], the call is a no-op.
+    /// mid-frame constraint), so the earliest safe apply point is the first
+    /// quiet moment after the integrator has folded a packet's spans.
+    /// Called by the driver at every poll boundary — own-Crc,
+    /// foreign-SkipComplete, and Bad-CRC / Resync alike, so foreign-
+    /// instruction sampling per [[drift_sampling_instruction_only]]
+    /// converges the same as own. Idempotent: with no pending correction and
+    /// already in [`DriftPhase::Steady`], the call is a no-op.
     pub fn on_rx_packet_end(&mut self) {
-        let mut reset_integrator = false;
         if let Some(applied) = self.pending_applied_ppm.take() {
             self.trim.apply_ppm(applied);
             self.applied_ppm = applied;
-            reset_integrator = true;
         }
         if self.is_boot() {
             self.state = DriftPhase::Steady;
-            reset_integrator = true;
-            self.rebuild_integrator_consts();
-            // Boot batch close stored a residual accumulated over only
-            // `DRIFT_MIN_SAMPLES_BOOT` (6) pairs, but the projection scales
-            // by the steady window (20 pairs). Drop it; the first steady
-            // batch overwrites in ~20 byte pairs of wall-clock and host-
-            // side Fast TX is unlikely to start in that gap (host has to
-            // finish init protocol first).
-            self.residual_q8 = 0;
-        }
-        if reset_integrator {
-            self.drift_sum_q8 = 0;
-            self.drift_samples = 0;
+            self.reset_batch();
         }
     }
+}
 
-    // -- accessors --------------------------------------------------------------
-
-    /// Max byte pairs per packet the driver should drain into
-    /// [`Self::on_byte_pair`]. Boot: [`BOOT_SAMPLES_PER_PACKET`] — one
-    /// Ping's worth of pairs closes the boot batch in a single packet.
-    /// Steady: [`STEADY_SAMPLES_PER_PACKET`] — drift is slow, so a
-    /// sparser feed across more packets is fine, and the saved drain
-    /// work shows up as ~2–4 µs/cycle on the chip-side floor.
-    ///
-    /// Per [[drift_sampling_instruction_only]]: both own + foreign
-    /// Instruction packets feed (gated by `hsi_active` upstream at the
-    /// codec); Status frames never contribute regardless of cap.
-    pub fn samples_wanted_per_packet(&self) -> u8 {
-        self.state.samples_per_packet()
-    }
-
-    /// Project the integrator's pending residual to a chip-HCLK-tick
-    /// offset that, added to a wall-clock-relative deadline, lands the
-    /// wire-start moment on the host's reference. Sign: positive = HSI fast =
-    /// chip-clock ticks accumulate ahead of wall clock → deadline must
-    /// shift LATER (added) by the projected amount. Linear scaling: the
-    /// integrator's window-summed residual scales by `distance_hclk /
-    /// window` to the deadline distance, then strips Q8.
-    ///
-    /// Uses the precomputed [`Self::window_recip_q32`] reciprocal — a
-    /// `__udivdi3` here would land on every scheduled deadline, and
-    /// RV32EC has no hardware divide. The wide multiply lowers to a
-    /// single `__multi3` call (~tens of cycles) instead.
-    pub fn projected_phase_error_hclk(&self, distance_hclk: u32) -> i32 {
-        if self.residual_q8 == 0 || distance_hclk == 0 {
-            return 0;
-        }
-        // residual_q8 × distance / (window × Q8_SCALE)
-        //   = residual_q8 × distance × window_recip_q32 >> (32 + Q8_SHIFT)
-        //
-        // u128 keeps the multiply correct for the rare saturated
-        // residual_q8 (near i32::MAX) case without silently truncating.
-        let abs_res = self.residual_q8.unsigned_abs() as u128;
-        let prod = abs_res * distance_hclk as u128 * self.window_recip_q32 as u128;
-        let mag = (prod >> (32 + Q8_SHIFT)).min(i32::MAX as u128) as i32;
-        if self.residual_q8 >= 0 { mag } else { -mag }
-    }
-
-    /// Accumulated drift estimate in signed trim-step units. Uses the
-    /// precomputed Q32 reciprocal — single 64-bit multiply + shift, no
-    /// runtime divide. Rounds half-away-from-zero so a single
-    /// threshold-crossing batch produces `±1` instead of truncating to 0.
-    fn drift_in_steps(&self) -> i32 {
-        let abs_sum = self.drift_sum_q8.unsigned_abs() as u64;
-        let prod = abs_sum * self.drift_per_step_recip_q32 as u64;
-        let steps_abs = ((prod + (1u64 << 31)) >> 32) as i32;
-        if self.drift_sum_q8 >= 0 {
-            steps_abs
-        } else {
-            -steps_abs
-        }
+/// Signed integer division rounded half-away-from-zero, so a batch just past
+/// the deadband produces `±1` step instead of truncating to 0.
+fn round_div(num: i32, den: i32) -> i32 {
+    let half = den / 2;
+    if num >= 0 {
+        (num + half) / den
+    } else {
+        (num - half) / den
     }
 }
 
@@ -401,6 +282,9 @@ mod tests {
 
     /// `ticks_per_bit` at B9600, HCLK 48 MHz — matches the mock's CLOCK_HZ.
     const SPEC_9600: u16 = 5000;
+    /// A representative span byte length (one RX_BUF_LEN/2 batch at the
+    /// V006 default ring). Drift is per-byte, so any positive length works.
+    const SPAN_BYTES: u32 = 16;
 
     fn make(baud: BaudRate, ticks_per_bit: u16) -> (TestIntegrator, ClockTrimState) {
         let (trim, t_state) = mk_clock_trim();
@@ -411,101 +295,100 @@ mod tests {
         make(BaudRate::B9600, SPEC_9600).0
     }
 
-    /// Feed one classifier byte pair where `observed_tpb` sets `byte_ticks =
-    /// observed_tpb * BITS_PER_FRAME`. Per-sample drift is
-    /// `BITS_PER_FRAME × (observed_tpb − tpb)`.
-    fn feed(c: &mut TestIntegrator, observed_tpb: u16) {
-        c.on_byte_pair(0, observed_tpb.wrapping_mul(BITS_PER_FRAME));
+    /// Feed one span whose per-byte drift is `drift_ppm` ppm relative to the
+    /// nominal byte time — the sign convention the hardware span carries
+    /// (positive = HSI fast = more ticks per byte).
+    fn feed_ppm(c: &mut TestIntegrator, drift_ppm: i32) {
+        let spec = BITS_PER_FRAME as i64 * SPEC_9600 as i64;
+        let nominal = SPAN_BYTES as i64 * spec;
+        let d_ticks = nominal + (nominal * drift_ppm as i64) / 1_000_000;
+        c.on_span(d_ticks as u32, SPAN_BYTES);
     }
 
     // ---------- boot integrator ----------
-    //
-    // At B9600: tpb = 5000; boot batch = 6 pairs; drift_per_step_q8 =
-    // STEP_PPM · tpb · 6 · BITS_PER_FRAME · Q8_SCALE / 10⁶ = 2500 · 5000 · 6
-    // · 10 · 256 / 10⁶ = 192_000. Full-step boot deadband = 192_000.
 
     #[test]
-    fn single_sample_does_not_stage_ppm() {
+    fn single_span_does_not_stage_ppm() {
         let mut c = integrator_9600();
-        feed(&mut c, SPEC_9600 + 40);
+        feed_ppm(&mut c, 20_000);
         assert_eq!(c.pending_applied_ppm, None);
-        assert_eq!(c.drift_samples, 1);
+        assert_eq!(c.span_count, 1);
     }
 
     #[test]
     fn boot_batch_at_zero_drift_stages_nothing() {
         let mut c = integrator_9600();
         for _ in 0..DRIFT_MIN_SAMPLES_BOOT {
-            feed(&mut c, SPEC_9600);
+            feed_ppm(&mut c, 0);
         }
         assert_eq!(c.pending_applied_ppm, None);
     }
 
     #[test]
     fn boot_batch_within_deadband_stages_nothing() {
-        // Per-sample drift = 40 (raw ticks); 6 · 40 · 256 = 61_440 <
-        // 192_000 full-step boot deadband.
+        // 1000 ppm < the full-step (2500 ppm) boot deadband.
         let mut c = integrator_9600();
         for _ in 0..DRIFT_MIN_SAMPLES_BOOT {
-            feed(&mut c, SPEC_9600 + 4);
+            feed_ppm(&mut c, 1000);
         }
         assert_eq!(c.pending_applied_ppm, None);
     }
 
     #[test]
     fn boot_batch_positive_drift_stages_negative_ppm() {
-        // Per-sample drift = 400; 6 · 400 · 256 = 614_400 > 192_000.
-        // drift_in_steps rounds to 3; counter = −3; nudge = −7500 ppm.
+        // +20 000 ppm (HSI fast) → 8 steps → counter −8 → −20 000 ppm.
         let mut c = integrator_9600();
         for _ in 0..DRIFT_MIN_SAMPLES_BOOT {
-            feed(&mut c, SPEC_9600 + 40);
+            feed_ppm(&mut c, 20_000);
         }
-        assert_eq!(c.pending_applied_ppm, Some(-7500));
+        assert_eq!(c.pending_applied_ppm, Some(-20_000));
     }
 
     #[test]
     fn boot_batch_negative_drift_stages_positive_ppm() {
         let mut c = integrator_9600();
         for _ in 0..DRIFT_MIN_SAMPLES_BOOT {
-            feed(&mut c, SPEC_9600 - 40);
+            feed_ppm(&mut c, -20_000);
         }
-        assert_eq!(c.pending_applied_ppm, Some(7500));
+        assert_eq!(c.pending_applied_ppm, Some(20_000));
     }
 
     #[test]
     fn integrator_resets_after_batch_close() {
         let mut c = integrator_9600();
         for _ in 0..DRIFT_MIN_SAMPLES_BOOT {
-            feed(&mut c, SPEC_9600 + 40);
+            feed_ppm(&mut c, 20_000);
         }
-        assert_eq!(c.drift_sum_q8, 0);
-        assert_eq!(c.drift_samples, 0);
+        assert!(c.best.is_none());
+        assert_eq!(c.span_count, 0);
+    }
+
+    #[test]
+    fn min_statistic_rejects_a_one_sided_inflated_span() {
+        // Entry-latency delay only inflates d_ticks; the minimum per-byte
+        // drift is the honest estimate. A batch of true-20 000-ppm spans
+        // with one badly-delayed (inflated) span still lands at −8 steps.
+        let mut c = integrator_9600();
+        for i in 0..DRIFT_MIN_SAMPLES_BOOT {
+            feed_ppm(&mut c, if i == 0 { 60_000 } else { 20_000 });
+        }
+        assert_eq!(c.pending_applied_ppm, Some(-20_000));
     }
 
     // ---------- envelope clamp ----------
 
     #[test]
     fn upper_envelope_bound_clamps_positive_nudge() {
-        // Per-sample drift = −2000; 6 · −2000 · 256 = −3_072_000; magnitude
-        // matches 16 · drift_per_step_q8 → drift_in_steps = 16 (at emit cap
-        // ceiling), counter = +16, nudge = +40_000. Envelope upper bound
-        // 37_500 clamps → stage = Some(37_500).
+        // −40 000 ppm drift → 16 steps (at the boot emit cap) → counter
+        // +16 → +40 000 ppm, clamped to the +37 500 envelope rail.
         let mut c = integrator_9600();
         for _ in 0..DRIFT_MIN_SAMPLES_BOOT {
-            feed(&mut c, SPEC_9600 - 200);
+            feed_ppm(&mut c, -40_000);
         }
         assert_eq!(c.pending_applied_ppm, Some(MockClockTrim::ENVELOPE_PPM.1));
     }
 
     // ---------- boot → steady transition ----------
-
-    #[test]
-    fn samples_wanted_per_packet_reflects_phase() {
-        let mut c = integrator_9600();
-        assert_eq!(c.samples_wanted_per_packet(), BOOT_SAMPLES_PER_PACKET);
-        c.on_rx_packet_end();
-        assert_eq!(c.samples_wanted_per_packet(), STEADY_SAMPLES_PER_PACKET);
-    }
 
     #[test]
     fn on_rx_packet_end_transitions_out_of_boot() {
@@ -516,19 +399,21 @@ mod tests {
     }
 
     #[test]
-    fn steady_batch_closes_at_20_pairs_not_6() {
+    fn steady_batch_closes_at_20_spans_not_6() {
         let mut c = integrator_9600();
-        c.on_rx_packet_end(); // boot → steady, integrator reset.
-        // 6 pairs at boot-trip drift no longer close a batch in steady.
+        c.on_rx_packet_end(); // boot → steady, batch reset.
+        // +5000 ppm = 2 steps, inside the 4-step steady cap.
         for _ in 0..DRIFT_MIN_SAMPLES_BOOT {
-            feed(&mut c, SPEC_9600 + 40);
+            feed_ppm(&mut c, 5000);
         }
-        assert_eq!(c.pending_applied_ppm, None);
-        // Fill to the 20-pair steady window; drift trips the (halved) deadband.
+        assert_eq!(
+            c.pending_applied_ppm, None,
+            "6 spans don't close a steady batch"
+        );
         for _ in DRIFT_MIN_SAMPLES_BOOT..DRIFT_MIN_SAMPLES_STEADY {
-            feed(&mut c, SPEC_9600 + 40);
+            feed_ppm(&mut c, 5000);
         }
-        assert_eq!(c.pending_applied_ppm, Some(-7500));
+        assert_eq!(c.pending_applied_ppm, Some(-5000));
     }
 
     // ---------- trim apply ----------
@@ -537,79 +422,25 @@ mod tests {
     fn on_rx_packet_end_applies_pending_ppm_to_trim() {
         let (mut c, t_state) = make(BaudRate::B9600, SPEC_9600);
         for _ in 0..DRIFT_MIN_SAMPLES_BOOT {
-            feed(&mut c, SPEC_9600 + 40);
+            feed_ppm(&mut c, 20_000);
         }
-        assert_eq!(c.pending_applied_ppm, Some(-7500));
+        assert_eq!(c.pending_applied_ppm, Some(-20_000));
         c.on_rx_packet_end();
-        assert_eq!(t_state.apply_ppm_log(), alloc::vec![-7500]);
-        assert_eq!(c.applied_ppm, -7500);
+        assert_eq!(t_state.apply_ppm_log(), alloc::vec![-20_000]);
+        assert_eq!(c.applied_ppm, -20_000);
         assert_eq!(c.pending_applied_ppm, None);
-    }
-
-    // ---------- projected_phase_error_hclk ----------
-
-    #[test]
-    fn projected_phase_error_zero_with_no_residual() {
-        let c = integrator_9600();
-        assert_eq!(c.projected_phase_error_hclk(100_000), 0);
-    }
-
-    #[test]
-    fn projected_phase_error_zero_at_zero_distance() {
-        let mut c = integrator_9600();
-        for _ in 0..DRIFT_MIN_SAMPLES_BOOT {
-            feed(&mut c, SPEC_9600 + 40);
-        }
-        assert_ne!(c.residual_q8, 0);
-        assert_eq!(c.projected_phase_error_hclk(0), 0);
-    }
-
-    // ---------- baud change ----------
-
-    #[test]
-    fn on_baud_change_resets_batch_and_drops_residual() {
-        // Close a boot batch to seed a residual, then change baud: the
-        // residual was measured against the old `drift_per_step_q8`, so
-        // keeping it would project a wrong-scaled phase error onto every
-        // scheduled deadline at the new baud.
-        let mut c = integrator_9600();
-        for _ in 0..DRIFT_MIN_SAMPLES_BOOT {
-            feed(&mut c, SPEC_9600 + 40);
-        }
-        assert_ne!(c.residual_q8, 0);
-        // Partial batch in flight on top.
-        feed(&mut c, SPEC_9600 + 40);
-        assert_eq!(c.drift_samples, 1);
-
-        c.on_baud_change(BaudRate::B3000000, 16);
-        assert_eq!(c.drift_sum_q8, 0);
-        assert_eq!(c.drift_samples, 0);
-        assert_eq!(c.residual_q8, 0);
-        assert_eq!(c.projected_phase_error_hclk(100_000), 0);
-    }
-
-    #[test]
-    fn on_baud_change_rebuilds_consts_for_new_baud() {
-        // Boot at 3M: per_step_q8 = 2500 · 16 · 6 · 10 · 256 / 10⁶ = 614.
-        let mut c = integrator_9600();
-        assert_eq!(c.drift_per_step_q8, 192_000);
-        c.on_baud_change(BaudRate::B3000000, 16);
-        assert_eq!(c.drift_per_step_q8, 614);
-        assert_eq!(c.drift_threshold_q8, 614);
     }
 
     // ---------- steady emit cap ----------
 
     #[test]
     fn steady_emit_cap_clamps_to_four_steps() {
-        // Per-sample drift = 600 raw ticks → sum = 20 · 600 · 256 =
-        // 3_072_000 → drift_in_steps = round(3_072_000 / 640_000) = 5.
-        // The steady cap clamps the counter-nudge to −4 steps = −10_000
-        // ppm even though the estimate says −5.
+        // +15 000 ppm → 6 steps, clamped to the 4-step steady cap =
+        // −10 000 ppm even though the estimate says −6.
         let mut c = integrator_9600();
         c.on_rx_packet_end(); // boot → steady
         for _ in 0..DRIFT_MIN_SAMPLES_STEADY {
-            feed(&mut c, SPEC_9600 + 60);
+            feed_ppm(&mut c, 15_000);
         }
         assert_eq!(
             c.pending_applied_ppm,
@@ -617,22 +448,38 @@ mod tests {
         );
     }
 
-    #[test]
-    fn projected_phase_error_sign_matches_residual() {
-        // Positive drift → positive drift_sum → integer quantization leaves a
-        // positive residual after the −3 emit; projected error is positive.
-        let mut c = integrator_9600();
-        for _ in 0..DRIFT_MIN_SAMPLES_BOOT {
-            feed(&mut c, SPEC_9600 + 40);
-        }
-        assert!(c.residual_q8 > 0);
-        assert!(c.projected_phase_error_hclk(100_000) > 0);
+    // ---------- baud change ----------
 
+    #[test]
+    fn on_baud_change_resets_batch() {
         let mut c = integrator_9600();
+        feed_ppm(&mut c, 20_000);
+        assert_eq!(c.span_count, 1);
+        c.on_baud_change(BaudRate::B3000000, 16);
+        assert!(c.best.is_none());
+        assert_eq!(c.span_count, 0);
+    }
+
+    #[test]
+    fn drift_measure_scales_with_baud_byte_ticks() {
+        // Same +20 000 ppm span at 3M (tpb 16) still lands −8 steps: the
+        // per-byte drift is baud-independent because byte_ticks_spec tracks
+        // the divisor.
+        let (mut c, _) = make(BaudRate::B3000000, 16);
+        let spec = BITS_PER_FRAME as i64 * 16;
         for _ in 0..DRIFT_MIN_SAMPLES_BOOT {
-            feed(&mut c, SPEC_9600 - 40);
+            let nominal = SPAN_BYTES as i64 * spec;
+            let d_ticks = nominal + (nominal * 20_000) / 1_000_000;
+            c.on_span(d_ticks as u32, SPAN_BYTES);
         }
-        assert!(c.residual_q8 < 0);
-        assert!(c.projected_phase_error_hclk(100_000) < 0);
+        assert_eq!(c.pending_applied_ppm, Some(-20_000));
+    }
+
+    #[test]
+    fn zero_byte_span_is_ignored() {
+        let mut c = integrator_9600();
+        c.on_span(1234, 0);
+        assert_eq!(c.span_count, 0);
+        assert!(c.best.is_none());
     }
 }

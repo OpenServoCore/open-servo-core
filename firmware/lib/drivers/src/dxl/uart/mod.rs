@@ -1,8 +1,8 @@
 //! DXL-over-UART transport. Composite over the codec (bytes ↔ packets)
 //! and the clock (tick math + drift integration). The chip-side ISR layer
 //! only ever reaches through `DxlUart`; cross-sub-driver routing (e.g.
-//! the BT-pair walk that feeds drift samples from codec into clock) lives
-//! in this file per driver-pattern §4 + §10.1.
+//! the drift spans that feed from the codec's span tracker into the clock)
+//! lives in this file per driver-pattern §4 + §10.1.
 //!
 //! Generic over its leaf providers AND its three storage sizes — see the
 //! [`DxlUart`] doc. `firmware/ch32/src/runtime/registry.rs` binds each to
@@ -40,12 +40,6 @@ use send_policy::SendPolicy;
 /// scheduler ticks. Also the IDLE detection threshold — CH32V00X RM §UART:
 /// "an idle frame is 10-or-11-bit high, including the stop bit"; M=0 → 10.
 pub(crate) const BITS_PER_FRAME: u16 = 10;
-
-/// Capacity bound for the per-poll drift-pair scratch buffer. The
-/// retroactive walk emits at most `Clock::samples_wanted_per_packet`
-/// pairs per packet (single digits) and the cap is enforced inside the
-/// walk — 32 is generous headroom without a meaningful ISR stack cost.
-const DRIFT_PAIRS_MAX: usize = 32;
 
 /// The DXL bus composite. `P` bundles the chip-side leaf interfaces this
 /// driver pulls — see [`Providers`]. The const generics are storage sizes:
@@ -149,7 +143,13 @@ impl<P: Providers, const RX_BUF_LEN: usize, const EDGE_BUF_LEN: usize, const TX_
     /// before RX HT/TC tripped).
     pub fn on_rx_idle(&mut self) {
         let now = self.wire_clock.now();
-        self.codec.on_idle(now);
+        let byte_ticks = self.clock.byte_ticks() as u32;
+        // Publish the byte ring before stamping so the span cursor is
+        // current — the IDLE path doesn't otherwise refresh it.
+        self.codec.on_rx_progress(self.rx_dma.remaining());
+        if let Some((d_ticks, d_bytes)) = self.codec.on_idle(now, byte_ticks) {
+            self.clock.on_span(d_ticks, d_bytes);
+        }
     }
 
     /// DMA1_CH5 HT/TC ISR entry — clear flags, refresh the codec's view
@@ -163,8 +163,11 @@ impl<P: Providers, const RX_BUF_LEN: usize, const EDGE_BUF_LEN: usize, const TX_
     pub fn on_rx_advance(&mut self) {
         let _ = self.rx_dma.read_and_ack();
         let now = self.wire_clock.now();
+        let byte_ticks = self.clock.byte_ticks() as u32;
         self.codec.on_rx_progress(self.rx_dma.remaining());
-        self.codec.on_byte_batch_wake(now);
+        if let Some((d_ticks, d_bytes)) = self.codec.on_byte_batch_wake(now, byte_ticks) {
+            self.clock.on_span(d_ticks, d_bytes);
+        }
     }
 
     /// A per-byte wake landed inside the status-start watch window
@@ -410,9 +413,8 @@ impl<P: Providers, const RX_BUF_LEN: usize, const EDGE_BUF_LEN: usize, const TX_
     /// - Instruction Header (foreign) → universal byte-skip on the body.
     /// - Status Header → universal byte-skip on the body.
     /// - SyncSlot / BulkSlot → slot-walk against the servo ID.
-    /// - Crc → stamp packet-end tick, derive [`ReplyContext`]. Anchor
-    ///   reset is codec-owned (after `walk_pairs_back` at the same Crc).
-    /// - Resync → drop inflight (codec resets anchor).
+    /// - Crc → stamp packet-end tick, derive [`ReplyContext`].
+    /// - Resync → drop inflight.
     ///
     /// Closure-based shape exists to break the borrow conflict between the
     /// parser-event borrow on the codec RX half and the `&mut` access the
@@ -458,12 +460,6 @@ impl<P: Providers, const RX_BUF_LEN: usize, const EDGE_BUF_LEN: usize, const TX_
             send_policy,
             ..
         } = self;
-        // Drift pairs from the codec's retroactive walk at Crc drain into
-        // `clock.on_byte_pair` after the codec poll returns — routing them
-        // through `clock` inside the poll would force a second `&mut
-        // clock` capture concurrent with the router's.
-        let mut pair_buf: heapless::Vec<(u16, u16), DRIFT_PAIRS_MAX> = heapless::Vec::new();
-        let n_pairs_wanted = clock.samples_wanted_per_packet();
         let (rx, tx) = codec.split_mut();
         let mut router = PollRouter::<P, TX_BUF_LEN> {
             tx,
@@ -475,52 +471,39 @@ impl<P: Providers, const RX_BUF_LEN: usize, const EDGE_BUF_LEN: usize, const TX_
             rx_dma,
             id,
         };
-        rx.poll(
-            now,
-            ticks_per_bit,
-            packet_end_comp,
-            n_pairs_wanted,
-            &mut pair_buf,
-            |pe| match pe {
-                PollEvent::Parser {
-                    ev,
-                    ring,
-                    next_status_pos,
-                    packet_end,
-                } => {
-                    let action = router.on_parser_event(ev, next_status_pos, packet_end);
-                    f(ev, ring, &mut router.reply());
-                    // If `f()` engaged the Fast Last fold (via
-                    // `send_slot(Last)`), the in-flight poll must exit before
-                    // the parser eats any more bytes — those bytes belong to
-                    // the fold engine. The SysTick CMP grid's `pause_edges()`
-                    // stops future polls only; without this bail-out the
-                    // parser+skip path consumes the predecessor's leading
-                    // bytes in the same poll that engaged the fold, and the
-                    // fold engine starves. A deferred successor wait
-                    // (`send_slot` k > 0, fold not yet started) owns
-                    // those bytes the same way — mirror of the poll entry
-                    // gate above, for the poll already in flight.
-                    if router.fast_last.fold_active()
-                        || router.send_policy.awaited_status_start().is_some()
-                    {
-                        PollAction::Stop
-                    } else {
-                        action
-                    }
+        rx.poll(now, ticks_per_bit, packet_end_comp, |pe| match pe {
+            PollEvent::Parser {
+                ev,
+                ring,
+                next_status_pos,
+                packet_end,
+            } => {
+                let action = router.on_parser_event(ev, next_status_pos, packet_end);
+                f(ev, ring, &mut router.reply());
+                // If `f()` engaged the Fast Last fold (via
+                // `send_slot(Last)`), the in-flight poll must exit before
+                // the parser eats any more bytes — those bytes belong to
+                // the fold engine. The SysTick CMP grid's `pause_edges()`
+                // stops future polls only; without this bail-out the
+                // parser+skip path consumes the predecessor's leading
+                // bytes in the same poll that engaged the fold, and the
+                // fold engine starves. A deferred successor wait
+                // (`send_slot` k > 0, fold not yet started) owns
+                // those bytes the same way — mirror of the poll entry
+                // gate above, for the poll already in flight.
+                if router.fast_last.fold_active()
+                    || router.send_policy.awaited_status_start().is_some()
+                {
+                    PollAction::Stop
+                } else {
+                    action
                 }
-                PollEvent::SkipComplete { id: pred } => {
-                    router.on_skip_complete(pred);
-                    PollAction::Continue
-                }
-            },
-        );
-        // Drain the codec's retroactive-walk pairs into the drift
-        // integrator. Cap is already applied inside the walk
-        // (`n_pairs_wanted`), so the drain is unbounded here.
-        for &(prev, curr) in pair_buf.iter() {
-            router.clock.on_byte_pair(prev, curr);
-        }
+            }
+            PollEvent::SkipComplete { id: pred } => {
+                router.on_skip_complete(pred);
+                PollAction::Continue
+            }
+        });
         // Apply any pending trim correction at the RX-side packet
         // boundary. Idempotent when nothing changed; necessary so
         // foreign-instruction packets — which never reach
@@ -544,14 +527,6 @@ impl<P: Providers, const RX_BUF_LEN: usize, const EDGE_BUF_LEN: usize, const TX_
     /// tick source.
     pub fn instruction_count(&self) -> u32 {
         self.codec.instruction_count()
-    }
-
-    /// Inspection passthrough to [`Clock::projected_phase_error_hclk`] —
-    /// production scheduler call sites read this directly off `self.clock`;
-    /// this exists so sim/test code can sample the same value externally
-    /// without exposing the integrator state itself.
-    pub fn projected_phase_error_hclk(&self, distance_hclk: u32) -> i32 {
-        self.clock.projected_phase_error_hclk(distance_hclk)
     }
 
     /// Stable peripheral-memory address for DMA1_CH7's destination buffer.
@@ -682,7 +657,8 @@ mod tests {
         state
             .edge
             .stage_remaining((EDGE_BUF_LEN as u16) - total_edges);
-        bus.codec.on_byte_batch_wake(SEED_TICK as u32);
+        let byte_ticks = bus.clock.byte_ticks() as u32;
+        let _ = bus.codec.on_byte_batch_wake(SEED_TICK as u32, byte_ticks);
     }
 
     /// Stage `bytes` into the codec's RX byte ring at sequence `at` AND

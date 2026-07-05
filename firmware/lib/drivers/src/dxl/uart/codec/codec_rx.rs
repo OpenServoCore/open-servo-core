@@ -12,10 +12,11 @@ use dxl_protocol::streaming::{Event, HeaderEvent, InstructionPayload, Parser, Pa
 use dxl_protocol::wire;
 
 use super::edge_capture::EdgeCapture;
-use super::edge_parser;
 use super::poll_event::{PollAction, PollEvent};
 use super::skip::SkipFsm;
+use super::span::SpanTracker;
 use crate::dxl::uart::BITS_PER_FRAME;
+use crate::dxl::uart::poll_src::PollSrc;
 use crate::ring::HwRing;
 use crate::traits::dxl::{EdgeDma, RxDma};
 
@@ -30,39 +31,10 @@ use crate::traits::dxl::{EdgeDma, RxDma};
 /// lands inside the starts cache — a longer tail slice would silently
 /// never anchor (every packet degrading to the fallback path with no
 /// error).
+// Only the edge-subsystem test scaffolding reads this now; removed with the
+// rest of the edge subsystem in the deletion chunk.
+#[allow(dead_code)]
 pub(crate) const TAIL_BYTES_FOR_ANCHOR: usize = super::anchor::TAIL_STARTS;
-
-/// Read the last 4 wire bytes of a just-consumed packet + the summed
-/// edge count of any bytes DMA already latched past that tail. Shared
-/// between the parser `Event::Crc` path and the byte-skip `SkipComplete`
-/// path — both anchor the drift walker at the CRC byte's start tick and
-/// need the same signature bytes and `d_min` shift on the ET back-search.
-///
-/// `head_gap` = bytes from parser/skip cursor to producer head (bytes
-/// DMA'd but not yet parsed/skipped). At `head_gap = 0` (typical IDLE
-/// drain), the ring's most-recent 4 bytes ARE the packet's tail. Under
-/// byte-ring HT/TC drain `head_gap` can be nonzero (next packet's
-/// leading bytes already in the ring), so the tail sits `head_gap`
-/// slots back from head. Returns `None` if the ring can't resolve the
-/// tail slots (cold-start, not yet enough bytes published).
-fn read_tail_and_d_min<const RX_BUF_LEN: usize>(
-    rx_buf: &HwRing<u8, RX_BUF_LEN>,
-    head_gap: u16,
-) -> Option<([u8; TAIL_BYTES_FOR_ANCHOR], u16)> {
-    let mut tail = [0u8; TAIL_BYTES_FOR_ANCHOR];
-    // Oldest → newest: recent(head_gap + 3) … recent(head_gap).
-    for (i, slot) in tail.iter_mut().enumerate() {
-        let off = head_gap.wrapping_add((TAIL_BYTES_FOR_ANCHOR - 1 - i) as u16);
-        *slot = *rx_buf.recent(off)?;
-    }
-    let mut d_min: u16 = 0;
-    for off in 0..head_gap {
-        if let Some(&b) = rx_buf.recent(off) {
-            d_min = d_min.wrapping_add(edge_parser::edges_in_byte(b) as u16);
-        }
-    }
-    Some((tail, d_min))
-}
 
 /// Exit disposition of one [`CodecRx::feed_parser`] phase — why the feed
 /// stopped, decided by ring supply or by the sink's [`PollAction`]. The
@@ -102,6 +74,9 @@ pub struct CodecRx<R: EdgeDma, CRC: CrcUmts, const RX_BUF_LEN: usize, const EDGE
     /// packet-kind and skip-counter state, owned together off the ring
     /// bookkeeping.
     skip_fsm: SkipFsm,
+    /// Drift-span tracker — pairs consecutive drain-ISR stamps into
+    /// `(d_ticks, d_bytes)` spans for the HSI integrator.
+    span: SpanTracker,
 }
 
 impl<R: EdgeDma, CRC: CrcUmts, const RX_BUF_LEN: usize, const EDGE_BUF_LEN: usize>
@@ -115,6 +90,7 @@ impl<R: EdgeDma, CRC: CrcUmts, const RX_BUF_LEN: usize, const EDGE_BUF_LEN: usiz
             instruction_count: 0,
             wire_bytes_consumed: 0,
             skip_fsm: SkipFsm::new(),
+            span: SpanTracker::new(),
         }
     }
 }
@@ -124,10 +100,24 @@ impl<R: EdgeDma, CRC: CrcUmts, const RX_BUF_LEN: usize, const EDGE_BUF_LEN: usiz
 impl<R: EdgeDma, CRC: CrcUmts, const RX_BUF_LEN: usize, const EDGE_BUF_LEN: usize>
     CodecRx<R, CRC, RX_BUF_LEN, EDGE_BUF_LEN>
 {
-    /// USART1 IDLE ISR entry — publishes the ET producer head, stashes
-    /// the ISR-entry tick + LineIdle source for the Crc-time fallback path.
-    pub fn on_idle(&mut self, now: u32) {
+    /// USART1 IDLE ISR entry — publishes the ET producer head, stashes the
+    /// ISR-entry tick + LineIdle source for the packet-end fallback path,
+    /// and records a drift-span stamp. IDLE latches one frame after the
+    /// last stop bit, so `now` is back-dated by `byte_ticks` before storing
+    /// — both flavors then sit on the same last-byte reference, which the
+    /// same-flavor rule needs for the IDLE→IDLE pair spanning one packet.
+    /// The caller must publish the byte ring (via [`Self::on_rx_progress`])
+    /// before this so the span's cursor is current.
+    pub fn on_idle(&mut self, now: u32, byte_ticks: u32) -> Option<(u32, u32)> {
         self.edge_capture.on_idle(now);
+        let cursor = self.published_cursor();
+        self.span.on_stamp(
+            now.wrapping_sub(byte_ticks),
+            cursor,
+            PollSrc::LineIdle,
+            byte_ticks,
+            self.skip_fsm.should_sample_drift(),
+        )
     }
 
     /// USART1 RX DMA published progress — `remaining` is the channel's
@@ -143,11 +133,31 @@ impl<R: EdgeDma, CRC: CrcUmts, const RX_BUF_LEN: usize, const EDGE_BUF_LEN: usiz
         rx_buf.on_publish(remaining);
     }
 
-    /// Stash `(now, ByteBatch)` for the Crc-time fallback path. Called from
-    /// the DMA1_CH5 HT/TC ISR entry — that vector drives the parser drain,
-    /// so its wake tick is what Crc's fallback formula expects.
-    pub fn on_byte_batch_wake(&mut self, now: u32) {
+    /// Stash `(now, ByteBatch)` for the packet-end fallback path and record
+    /// a drift-span stamp. Called from the DMA1_CH5 HT/TC ISR entry, whose
+    /// caller publishes the byte ring (via [`Self::on_rx_progress`]) first,
+    /// so the span's cursor is current.
+    pub fn on_byte_batch_wake(&mut self, now: u32, byte_ticks: u32) -> Option<(u32, u32)> {
         self.edge_capture.on_byte_batch_wake(now);
+        let cursor = self.published_cursor();
+        self.span.on_stamp(
+            now,
+            cursor,
+            PollSrc::ByteBatch,
+            byte_ticks,
+            self.skip_fsm.should_sample_drift(),
+        )
+    }
+
+    /// The producer head as a monotonic wire-byte cursor —
+    /// `wire_bytes_consumed + reader.avail()`. The span tracker diffs it
+    /// across stamps to get `d_bytes`; the caller must have published the
+    /// ring from NDTR first.
+    fn published_cursor(&self) -> u32 {
+        // SAFETY: rx_buf is single-consumer at PFIC HIGH (same as `poll`).
+        let rx_buf = unsafe { &mut *self.rx_buf.get() };
+        self.wire_bytes_consumed
+            .wrapping_add(rx_buf.reader().avail() as u32)
     }
 
     /// Refresh the edge parser's per-baud RX edge-stamp compensation.
@@ -182,37 +192,20 @@ impl<R: EdgeDma, CRC: CrcUmts, const RX_BUF_LEN: usize, const EDGE_BUF_LEN: usiz
     /// skip whose deadline has passed. The deadline path suppresses
     /// `SkipComplete` — it's a truncation recovery, not a successful
     /// drain, so the chain predecessor-match must not ride.
-    pub fn poll<F, const PAIRS_LEN: usize>(
-        &mut self,
-        now: u32,
-        ticks_per_bit: u16,
-        packet_end_comp: u32,
-        n_pairs_wanted: u8,
-        pairs: &mut heapless::Vec<(u16, u16), PAIRS_LEN>,
-        mut on_event: F,
-    ) where
+    pub fn poll<F>(&mut self, now: u32, ticks_per_bit: u16, packet_end_comp: u32, mut on_event: F)
+    where
         F: FnMut(PollEvent<'_>) -> PollAction,
     {
         loop {
             // Skip phase first: an armed byte-skip owns the ring tail
             // until it exhausts. Break = ring starved mid-skip; resume
             // on a later poll.
-            if self.skip_fsm.is_skipping()
-                && self
-                    .drain_skip(now, ticks_per_bit, n_pairs_wanted, pairs, &mut on_event)
-                    .is_break()
-            {
+            if self.skip_fsm.is_skipping() && self.drain_skip(now, &mut on_event).is_break() {
                 return;
             }
             // Feed phase: parser drains the ring until it runs dry or the
             // sink redirects the poll.
-            match self.feed_parser(
-                ticks_per_bit,
-                packet_end_comp,
-                n_pairs_wanted,
-                pairs,
-                &mut on_event,
-            ) {
+            match self.feed_parser(ticks_per_bit, packet_end_comp, &mut on_event) {
                 FeedExit::Exhausted | FeedExit::Stop => return,
                 FeedExit::Skip { id } => {
                     let bytes_remaining = self.parser.packet_remaining();
@@ -233,14 +226,7 @@ impl<R: EdgeDma, CRC: CrcUmts, const RX_BUF_LEN: usize, const EDGE_BUF_LEN: usiz
     /// — once the expected duration has elapsed the ring's contents belong
     /// to whatever came next.
     #[inline]
-    fn drain_skip<F, const PAIRS_LEN: usize>(
-        &mut self,
-        now: u32,
-        ticks_per_bit: u16,
-        n_pairs_wanted: u8,
-        pairs: &mut heapless::Vec<(u16, u16), PAIRS_LEN>,
-        on_event: &mut F,
-    ) -> ControlFlow<()>
+    fn drain_skip<F>(&mut self, now: u32, on_event: &mut F) -> ControlFlow<()>
     where
         F: FnMut(PollEvent<'_>) -> PollAction,
     {
@@ -269,30 +255,6 @@ impl<R: EdgeDma, CRC: CrcUmts, const RX_BUF_LEN: usize, const EDGE_BUF_LEN: usiz
         if let Some(id) = self.skip_fsm.finish() {
             on_event(PollEvent::SkipComplete { id });
         }
-        // Foreign Instruction packets never emit a parser `Event::Crc`
-        // (parser byte-skipped past the tail), so anchor + retroactive
-        // walk piggyback here. Skip drain just consumed both CRC bytes,
-        // so the ring's last 4 bytes past `head_gap` are the packet's
-        // tail signature. Runs AFTER `on_event` for deadline-path hygiene
-        // — SkipComplete's sink (chain predecessor-match -> `start_now`)
-        // is deadline-sensitive but doesn't read `packet_end_tick`, so
-        // the walk cost sits off it. Gated on the instruction-only drift
-        // rule per [[drift_sampling_instruction_only]] — Status skips
-        // never contribute.
-        if self.skip_fsm.should_sample_drift() {
-            // SAFETY: see note above.
-            let rx_buf = unsafe { &mut *rx_buf_ptr };
-            let head_gap = rx_buf.reader().avail();
-            if let Some((tail, d_min)) = read_tail_and_d_min(rx_buf, head_gap)
-                && self
-                    .edge_capture
-                    .anchor_at_tail(ticks_per_bit, &tail, d_min)
-            {
-                self.edge_capture
-                    .walk_pairs_back(n_pairs_wanted, ticks_per_bit, pairs);
-            }
-            self.edge_capture.reset_anchor();
-        }
         self.skip_fsm.on_packet_end();
         ControlFlow::Continue(())
     }
@@ -301,17 +263,11 @@ impl<R: EdgeDma, CRC: CrcUmts, const RX_BUF_LEN: usize, const EDGE_BUF_LEN: usiz
     /// the ring, feed each to the parser, and advance by what was consumed
     /// — until the ring runs dry ([`FeedExit::Exhausted`]) or the sink
     /// redirects the poll ([`FeedExit::Skip`] / [`FeedExit::Stop`]).
-    ///
-    /// The parser only sees `front`, but `avail_at_iter_start =
-    /// input_len + back_len` is what maps parser cursor → producer-head
-    /// distance at Crc time.
     #[inline]
-    fn feed_parser<F, const PAIRS_LEN: usize>(
+    fn feed_parser<F>(
         &mut self,
         ticks_per_bit: u16,
         packet_end_comp: u32,
-        n_pairs_wanted: u8,
-        pairs: &mut heapless::Vec<(u16, u16), PAIRS_LEN>,
         on_event: &mut F,
     ) -> FeedExit
     where
@@ -320,12 +276,12 @@ impl<R: EdgeDma, CRC: CrcUmts, const RX_BUF_LEN: usize, const EDGE_BUF_LEN: usiz
         // SAFETY: see `drain_skip` — same single-consumer contract.
         let rx_buf_ptr = self.rx_buf.get();
         loop {
-            let (input_ptr, input_len, back_len) = {
+            let (input_ptr, input_len) = {
                 // SAFETY: see note above.
                 let rx_buf = unsafe { &mut *rx_buf_ptr };
                 let mut reader = rx_buf.reader();
-                let (front, back) = reader.peek_slices();
-                (front.as_ptr(), front.len(), back.len())
+                let (front, _back) = reader.peek_slices();
+                (front.as_ptr(), front.len())
             };
             if input_len == 0 {
                 return FeedExit::Exhausted;
@@ -340,11 +296,6 @@ impl<R: EdgeDma, CRC: CrcUmts, const RX_BUF_LEN: usize, const EDGE_BUF_LEN: usiz
             // Set when the sink's `PollAction` breaks the parser loop;
             // returned only after the consumed bytes are committed below.
             let mut sink_exit: Option<FeedExit> = None;
-            // Ring depth from parser cursor to producer head at the start
-            // of this feed iteration. Stays fixed for the parser loop
-            // (no `on_publish` runs mid-poll), so `head_gap` at any point
-            // inside the loop is `avail_at_iter_start - stream.consumed()`.
-            let avail_at_iter_start = input_len + back_len;
             let consumed = {
                 let mut stream = self.parser.feed(input);
                 // `while let` rather than `for ... by_ref()` so each iteration
@@ -372,10 +323,10 @@ impl<R: EdgeDma, CRC: CrcUmts, const RX_BUF_LEN: usize, const EDGE_BUF_LEN: usiz
                         .wire_bytes_consumed
                         .wrapping_add(stream.consumed() as u32);
 
-                    // Track packet kind for the Crc-time retroactive walk
-                    // gate: Instruction packets (own or foreign) contribute
-                    // drift samples per [[drift_sampling_instruction_only]];
-                    // Status frames don't.
+                    // Track packet kind for the span tracker's drift gate:
+                    // Instruction packets (own or foreign) contribute drift
+                    // samples per [[drift_sampling_instruction_only]]; Status
+                    // frames don't.
                     match ev {
                         Event::Header(HeaderEvent::Instruction(_)) => {
                             self.skip_fsm.on_header(true);
@@ -384,33 +335,6 @@ impl<R: EdgeDma, CRC: CrcUmts, const RX_BUF_LEN: usize, const EDGE_BUF_LEN: usiz
                             self.skip_fsm.on_header(false);
                         }
                         _ => {}
-                    }
-
-                    // At Crc: back-search the ET ring against the last 4
-                    // raw wire bytes the parser just consumed. Sets
-                    // `tail_anchor` so `packet_end_tick` reads in wire-
-                    // edge time anchored on the CRC byte's start.
-                    //
-                    // Read the tail bytes directly from the RX ring via
-                    // `recent(offset)` back from the producer head.
-                    // `head_gap` is the byte distance between the parser
-                    // cursor and the producer head — 0 when Crc lands as
-                    // the very last byte in the ring; nonzero under batch
-                    // drain (RX HT/TC) when bytes past CRC still sit
-                    // unread. Those past-CRC bytes' edges contributed to
-                    // ET, so their summed `EDGES_PER_BYTE` becomes `d_min`
-                    // — the anchor search origin shift.
-                    if matches!(ev, Event::Crc(_)) {
-                        // SAFETY: `rx_buf_ptr` is valid for the duration of
-                        // this poll; `stream` only reads `input` (not the
-                        // ring), so a fresh shared borrow here doesn't
-                        // alias the parser's slice.
-                        let rx_buf = unsafe { &*rx_buf_ptr };
-                        let head_gap = (avail_at_iter_start - stream.consumed() as usize) as u16;
-                        if let Some((tail, d_min)) = read_tail_and_d_min(rx_buf, head_gap) {
-                            self.edge_capture
-                                .anchor_at_tail(ticks_per_bit, &tail, d_min);
-                        }
                     }
 
                     // Resolve packet-end timing so the Crc event carries a
@@ -436,27 +360,8 @@ impl<R: EdgeDma, CRC: CrcUmts, const RX_BUF_LEN: usize, const EDGE_BUF_LEN: usiz
                         }
                     }
 
-                    // Retroactive integrator walk. Runs AFTER `on_event`
-                    // — i.e. after the wire-schedule call
-                    // (`scheduler.schedule`) has completed inside the sink
-                    // — so the walk cost sits off the deadline path. Gated
-                    // on Instruction packets only; Status frames don't
-                    // contribute drift samples ([[drift_sampling_instruction_only]]).
-                    if matches!(ev, Event::Crc(_))
-                        && self.skip_fsm.should_sample_drift()
-                        && self.edge_capture.tail_anchor().is_some()
-                    {
-                        self.edge_capture
-                            .walk_pairs_back(n_pairs_wanted, ticks_per_bit, pairs);
-                    }
-
                     if matches!(ev, Event::Crc(_) | Event::Resync(_)) {
                         self.skip_fsm.on_packet_end();
-                        // Packet boundary — anchor state is stale.
-                        // Owned here (not in the driver's `on_event`) so
-                        // `walk_pairs_back` above still sees the anchor
-                        // set by `anchor_at_tail` for THIS packet.
-                        self.edge_capture.reset_anchor();
                     }
                 }
                 stream.consumed()
@@ -745,15 +650,13 @@ mod tests {
 
     /// Drain the RX half into a `Vec` of captured events. `decide` controls
     /// per-Header skip behavior; default `|_| PollAction::Continue` forwards
-    /// everything. The walker args are unused here (`n_pairs_wanted = 0`) —
-    /// these tests validate parser/skip behavior, not drift sampling.
+    /// everything.
     fn collect_events<F>(rx: &mut TestRx, mut decide: F) -> alloc::vec::Vec<Capture>
     where
         F: FnMut(&Event) -> PollAction,
     {
         let mut out = alloc::vec::Vec::new();
-        let mut pairs: heapless::Vec<(u16, u16), 4> = heapless::Vec::new();
-        rx.poll(0, 160, 0, 0, &mut pairs, |pe| match pe {
+        rx.poll(0, 160, 0, |pe| match pe {
             PollEvent::Parser { ev, ring, .. } => {
                 let action = if matches!(ev, Event::Header(_)) {
                     decide(&ev)

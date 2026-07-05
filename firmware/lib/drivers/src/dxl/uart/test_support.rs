@@ -30,19 +30,13 @@ pub(crate) const TEST_RDT_US: u32 = 250;
 pub(crate) const TICKS_PER_US: u32 = 48;
 
 /// Deterministic packet-end reference tick used by `bus_seeded_with` /
-/// `force_anchor` in composite tests. Held below `TICKS_PER_BIT_9600` so
-/// `lift`-under-wrap invariants stay well inside a single u16 window at all
-/// tested bauds.
+/// `force_anchor` in composite tests. Small so `lift`-under-wrap invariants
+/// stay well inside a single u16 window at all tested bauds.
 pub(crate) const SEED_TICK: u16 = 1000;
 
 /// `ticks_per_bit` at `BaudRate::B3000000`, HCLK 48 MHz. Matches
 /// `edge_parser::tests::TPB_3M`.
 pub(crate) const TICKS_PER_BIT_3M: u16 = 16;
-
-/// `ticks_per_bit` at `BaudRate::B9600`, HCLK 48 MHz. Byte-time
-/// (`BITS_PER_FRAME · tpb = 50_000`) exceeds i16 range — regression fixture
-/// for signed-distance walker aliasing.
-pub(crate) const TICKS_PER_BIT_9600: u16 = 5000;
 
 // ------------------------------------------------------------------
 // Mock state companions
