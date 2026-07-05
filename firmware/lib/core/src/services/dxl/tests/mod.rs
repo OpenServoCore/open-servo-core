@@ -20,6 +20,7 @@ use super::Dxl;
 
 mod bulk_read;
 mod bulk_write;
+mod dispatch;
 mod fast_bulk_read;
 mod fast_sync_read;
 mod lifecycle;

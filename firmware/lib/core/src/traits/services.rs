@@ -1,6 +1,6 @@
 use dxl_protocol::streaming::Event;
 use dxl_protocol::types::{Id, Status, StatusError};
-use dxl_protocol::{Chunk, WriteError};
+use dxl_protocol::{Bytes, Chunk, WriteError};
 
 use crate::{BaudRate, BootMode};
 
@@ -79,4 +79,50 @@ pub trait DxlDispatcher {
 /// `docs/driver-pattern.md` §7.4 for the data-centric principle.
 pub trait DxlBus {
     fn poll<D: DxlDispatcher>(&mut self, dispatcher: &mut D);
+}
+
+/// A decoded instruction addressed to this servo, addressing and chain slot
+/// geometry already resolved by the bus. Core sees no wire bytes.
+///
+/// There is no Sync/Bulk/Fast variant: the bus resolves a chain to this
+/// servo's own slot and hands a plain [`Read`](Self::Read) /
+/// [`Write`](Self::Write), with [`DxlRequestCtx`] conveying the reply rules
+/// (`slot_reply` for the FAST block form, `may_reply` for the SyncWrite/
+/// BulkWrite no-reply slots).
+pub enum DxlRequest<'a> {
+    Ping,
+    Read { address: u16, length: u16 },
+    Write { address: u16, data: Bytes<'a> },
+    RegWrite { address: u16, data: Bytes<'a> },
+    Action,
+    FactoryReset { mode: u8 },
+    Reboot,
+    Clear { body: Bytes<'a> },
+    ControlTableBackup { body: Bytes<'a> },
+    Ext { instruction: u8, params: Bytes<'a> },
+}
+
+/// Bus-derived context accompanying a [`DxlRequest`]: what core may not derive
+/// itself once wire bytes and addressing stay behind the bus boundary.
+pub struct DxlRequestCtx {
+    /// Instruction arrived via the broadcast id (SRL gating input).
+    pub broadcast: bool,
+    /// The wire contract permits a Status for this request (e.g. false for
+    /// SyncWrite/BulkWrite slots and for a broadcast Write/RegWrite/Action;
+    /// true for a broadcast Ping, which still replies).
+    pub may_reply: bool,
+    /// TRANSITIONAL until the reply surface unifies in a later chunk: the
+    /// reply must be emitted as a FAST slot block rather than a standalone
+    /// Status ([`DxlReply::send_slot_chunked`] vs
+    /// [`DxlReply::send_status_read_chunked`]).
+    pub slot_reply: bool,
+}
+
+/// Single-shot typed dispatch: the bus hands one fully-decoded, addressing-
+/// resolved [`DxlRequest`] plus its [`DxlRequestCtx`]. Unlike [`DxlDispatcher`]
+/// there is no per-packet reassembly state — the request carries its whole
+/// payload up front. `R` is generic per call so the hot path avoids
+/// `dyn DxlReply`.
+pub trait DxlDispatch {
+    fn dispatch<R: DxlReply>(&mut self, req: DxlRequest<'_>, ctx: DxlRequestCtx, reply: &mut R);
 }

@@ -26,6 +26,9 @@ pub use regions::{
 };
 pub use sample::{ConversionVariables, RawSamples, Sample};
 pub use services::Services;
-pub use services::dxl::Dxl;
+pub use services::dxl::{Dispatch, Dxl};
 pub use shared::Shared;
-pub use traits::{Capabilities, ControlIo, DecayMode, DxlBus, DxlReply, Motor, MotorCmd, Sensors};
+pub use traits::{
+    Capabilities, ControlIo, DecayMode, DxlBus, DxlDispatch, DxlReply, DxlRequest, DxlRequestCtx,
+    Motor, MotorCmd, Sensors,
+};
