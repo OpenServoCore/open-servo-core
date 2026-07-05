@@ -1,5 +1,5 @@
 use ch32_metapac::{DMA1, USART1};
-use osc_core::{BootMode, ControlIo, ConversionVariables, Sensors};
+use osc_core::{BootMode, ControlIo, ConversionVariables, RegionStorageRaw, Sensors};
 
 use crate::hal::{dma, flash, pfic, systick, usart};
 use crate::runtime::Drivers;
@@ -35,7 +35,10 @@ pub fn on_adc_dma_tc() {
 
     unsafe {
         // Volatile pair: load-bearing against optimizer hoisting in the pump.
-        let tick = &raw mut (*SHARED.table.telemetry.get()).intermediaries.sample_tick;
+        let tick = &raw mut (*SHARED.table.region_ptr())
+            .telemetry
+            .intermediaries
+            .sample_tick;
         tick.write_volatile(tick.read_volatile().wrapping_add(1));
 
         // SAFETY: PFIC unmasks DMA1_CHANNEL1 only after install_kernel writes KERNEL.

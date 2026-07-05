@@ -11,7 +11,9 @@ pub mod services;
 pub mod shared;
 pub mod traits;
 
-pub use control_table::{Error, Region, RegionStorage, StagedWrites, ValidationKind};
+pub use control_table::{
+    Error, Region, RegionStorage, RegionStorageRaw, StagedWrites, ValidationKind,
+};
 pub use kernel::{Kernel, KernelState};
 pub use page::{PageHeader, PageMagic};
 pub use regions::config::{BaudRate, ConfigDefaults};

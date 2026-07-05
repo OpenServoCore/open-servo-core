@@ -48,8 +48,8 @@ pub fn bringup(
     // *after* this and wins if a stored ID is present.
     let dxl_id = derive_dxl_id_from_uid();
     crate::log::info!("seed comms.id={} from UID", dxl_id);
-    SHARED.table.config.with_mut(|c| {
-        c.comms.id = dxl_id;
+    SHARED.table.with_mut(|t| {
+        t.config.comms.id = dxl_id;
     });
 
     // SAFETY: bringup-only, pre-IRQ; sole writer.

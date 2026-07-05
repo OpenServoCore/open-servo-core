@@ -1,6 +1,6 @@
 use core::cell::SyncUnsafeCell;
 use core::mem::MaybeUninit;
-use osc_core::{Kernel, Services, Shared};
+use osc_core::{Kernel, RegionStorageRaw, Services, Shared};
 
 use crate::control::Ch32ControlIo;
 use crate::services::Ch32Bus;
@@ -31,7 +31,10 @@ pub fn install(io: Ch32ControlIo) {
 /// because LLVM can't see the DMA TC ISR writing this asynchronously.
 pub fn read_sample_tick() -> u32 {
     unsafe {
-        let p = &raw const (*SHARED.table.telemetry.get()).intermediaries.sample_tick;
+        let p = &raw const (*SHARED.table.region_ptr())
+            .telemetry
+            .intermediaries
+            .sample_tick;
         p.read_volatile()
     }
 }
