@@ -62,8 +62,13 @@ impl Providers for DxlUartProviders {
 /// DMA1_CH5 RX-byte ring depth. Chip-facing design knob for the DXL RX
 /// path. Gated from below by Fast Last's `RX_BUF_LEN/2 ≥ grid_interval`
 /// (= 15 bytes; see `firmware/ch32/src/measurements.rs`) — pick a power
-/// of two ≥ 32. V006 (48 MHz, 8 KiB SRAM) uses 32.
-pub(crate) const DXL_RX_BUF_LEN: usize = 32;
+/// of two ≥ 32. V006 (48 MHz, 8 KiB SRAM) uses 256: large enough that a
+/// held-until-CRC-verdict frame can never be lapped by the producer (the
+/// 32-deep ring lapped on >32-byte Writes at 3M — the phantom-counter
+/// corruption; `tools/bench` `tool-phantom-repro` is the regression
+/// harness), and HT/TC publish every `N/2` bytes so consecutive
+/// `on_publish` deltas stay under one lap by construction.
+pub(crate) const DXL_RX_BUF_LEN: usize = 256;
 /// DMA1_CH4 TX-source buffer depth — mirrors
 /// `osc_core::services::dxl::limits::DXL_TX_MAX_BYTES` so the driver-owned
 /// buffer can hold any Status / Slot reply the dispatcher emits.
