@@ -1,6 +1,6 @@
 # DXL 2.0 Hardware-Timed TX + Software-Timed RX on the CH32V006
 
-A design note for the DXL transport on the V006. Read [dxl-rx-timing.md](dxl-rx-timing.md) and [dxl-streaming-rx.md](dxl-streaming-rx.md) first — this doc covers the timing subsystem: how a reply's wire start is placed on a hardware tick (TX side) and how the transport recovers the timing it needs to place it (RX side). The pieces that don't live here (USART1 framing, half-duplex muxing, the streaming parser, Fast Last CRC composition, baud/RDT decision rule) are covered in the docs above.
+A design note for the DXL transport on the V006. Read [dxl-rx-timing.md](dxl-rx-timing.md) and [dxl-streaming-rx.md](dxl-streaming-rx.md) first — this doc covers the timing subsystem: how a reply's wire start is placed on a hardware tick (TX side) and how the transport recovers the timing it needs to place it (RX side). The pieces that don't live here (USART1 framing, half-duplex muxing, the flat frame classifier, Fast Last CRC composition, baud/RDT decision rule) are covered in the docs above.
 
 The transport is **asymmetric**: TX timing is hardware, RX timing is software.
 
@@ -66,7 +66,7 @@ TIM2_CH4 has **no pin** — it is an internal compare event only (§5). This is 
 The RX side produces exactly one timing datum per reply-bound request — the **packet-end tick**, in the WireClock (SysTick u32) domain — plus a running HSI drift estimate. Both derive from the WireClock value read at the entry of whichever ISR drains the request's last byte, corrected by which drain fired. The details are §8; the shape is:
 
 - The codec stashes `(now, PollSrc)` at every drain-ISR entry, where `now = WireClock::now()` and `PollSrc ∈ {ByteBatch, LineIdle}` names the drain flavor.
-- At the parser's `Crc` event the codec resolves the stash into a packet-end tick via a per-flavor formula (§8.1) and hands it to the reply scheduler as `packet_end_tick`.
+- When the framer completes a frame (CRC-verified) the codec resolves the stash into a packet-end tick via a per-flavor formula (§8.1) and hands it to the reply scheduler as `packet_end_tick`.
 - The reply schedules at `packet_end_tick + RDT` (single-target / slot 0) through the TX kickoff (§5).
 
 No IDLE-derived measurement enters the number: IDLE only selects *which* formula applies; the tick itself is a WireClock reading taken at ISR entry (`[[no_idle_timing]]`). The drift estimate rides the same drain stamps as `(Δticks, Δbytes)` spans (§8.3).
@@ -110,7 +110,7 @@ PC2 is TIM2_CH2's alternate-function output. The OC mode sequence is an explicit
 | Phase | OC2M setting | PC2 state |
 | --- | --- | --- |
 | Idle (no reply armed) | Force inactive (`OC2M = 100`) | Idle level (low for active-high TX_EN) |
-| Arm time (parser scheduled reply) | Write CCR2, then Active-on-match (`OC2M = 001`) | Still idle until match |
+| Arm time (reply scheduled) | Write CCR2, then Active-on-match (`OC2M = 001`) | Still idle until match |
 | CCR2 match (== fire_tick) | unchanged | Active level (TX_EN asserted, ~2 ticks later by OC pad lag) |
 | USART1 TC (reply done) | Force inactive (`OC2M = 100`) | Back to idle level |
 
@@ -158,7 +158,7 @@ CH32V006 DMA1 has a fixed source-to-channel mux. Allocation:
 | --- | --- | --- |
 | CH1 | ADC pump | unchanged |
 | CH4 | USART1_TX (single-shot) | Enabled by CH7's kickoff write at the CC4 match; per-send NDTR staged at arm |
-| CH5 | USART1_RX (circular) | RX byte ring; HT/TC enabled for byte-ring publish + parser drain (§9). `PL = LOW`. |
+| CH5 | USART1_RX (circular) | RX byte ring; HT/TC enabled for byte-ring publish + framer drain (§9). `PL = LOW`. |
 | CH7 | **TX kickoff only** | One-transfer MEM→PER (`&KICKOFF_WORD` → `&DMA1_CH4.CR`); TC IRQ parks it. `PL = VERYHIGH`. Parked disabled between sends. |
 
 CH7 is no longer bimodal. In the hardware-RX draft it time-shared between an "ET ring" edge-capture role and the kickoff; the edge role is gone, so CH7 sits idle between sends and `arm`/`cancel`/`on_kickoff_complete` own its whole lifecycle (§5.1). ADC's pump is untouched — no channel moves. The RX DMA provider still exposes an intra-loop NDTR refresh (`rx_dma.rs`) so the codec sees the freshest published byte cursor on every drain and pickup spin.
@@ -182,7 +182,7 @@ Everything the RX side produces — packet-end tick, FAST status-start, HSI drif
 
 ### 8.1 Packet-end estimate (`codec/packet_end.rs`)
 
-The codec stashes the most recent drain ISR's `(now, PollSrc)` and resolves it at the parser's `Crc` event:
+The codec stashes the most recent drain ISR's `(now, PollSrc)` and resolves it when the framer completes a frame (CRC-verified):
 
     packet_end_tick = drain_ref(now, src, ticks_per_bit) − PACKET_END_ENTRY_COMP_TICKS
 
@@ -229,15 +229,15 @@ Two priority levels (V006 PFIC has nothing more). All DXL-side IRQs at High; onl
 
 | Priority | IRQ | Body | Where |
 | --- | --- | --- | --- |
-| High | USART1 | IDLE (parser kick) + TC (release bus, apply pending) + RX errors + per-byte RXNE wake (FAST status-start + drift window, §8.2/§8.3) | flash |
-| High | DMA1_CH5 HT/TC | RX byte-ring publish + parser drain ([dxl-streaming-rx.md](dxl-streaming-rx.md) §3) | flash |
+| High | USART1 | IDLE (framer kick) + TC (release bus, apply pending) + RX errors + per-byte RXNE wake (FAST status-start + drift window, §8.2/§8.3) | flash |
+| High | DMA1_CH5 HT/TC | RX byte-ring publish + framer drain ([dxl-streaming-rx.md](dxl-streaming-rx.md) §3) | flash |
 | High | DMA1_CH7 TC | Kickoff restore only (once per send): park CH7 disabled, drop CC4DE. Post-deadline. | flash |
 | High | SysTick CMP | FAST successor pickup: ring drains for long windows, then the wake body that reads the checkpoint and lands `patch_crc` (§10.6). | flash entry; pickup body in `.highcode` |
 | Low | DMA1_CH1 | ADC kernel pump | flash |
 
 No vector sits on the wire deadline — the TX start is the CC4→CH7 hardware kickoff (§5). Every ISR lives in flash (`lowcode`); per-drain and per-packet-end slack absorbs flash-fetch jitter (the FAST pickup body is the one `.highcode` exception, §10.6).
 
-**DMA1_CH5 HT/TC publishes the byte ring and drives the parser drain.** Pinning publish to byte-ring HT/TC bounds `write_seq` lag to `RX_BUF_LEN/2` regardless of traffic content — load-bearing under long byte-skip windows where the universal byte-skip consumes payload faster than any other event would fire. CH5 stays `PL = LOW`.
+**DMA1_CH5 HT/TC publishes the byte ring and drives the framer drain.** Pinning publish to byte-ring HT/TC bounds `write_seq` lag to `RX_BUF_LEN/2` regardless of traffic content — load-bearing under long byte-skip windows where the universal byte-skip consumes payload faster than any other event would fire. CH5 stays `PL = LOW`.
 
 **Why all DXL-side IRQs share High.**
 
@@ -275,7 +275,7 @@ An earlier draft put the trigger on a TIM2 CC channel to keep the transport on o
 
 #### 10.6.2 Wake path (SysTick)
 
-**Defer time** (`send_slot` for a successor slot): the reply is encoded (placeholder CRC) but nothing is armed. The reply gate parks a status-start wait and the RxDma provider opens the per-byte RXNE wake; `poll()` gates on the parked wait so the parser leaves the Status packet's bytes to the pipeline.
+**Defer time** (`send_slot` for a successor slot): the reply is encoded (placeholder CRC) but nothing is armed. The reply gate parks a status-start wait and the RxDma provider opens the per-byte RXNE wake; `poll()` gates on the parked wait so the framer leaves the Status packet's bytes to the pipeline.
 
 **Arm time** (status-start wake — the Status packet's first byte observed):
 
@@ -311,7 +311,7 @@ The wake is deliberately **early-biased**: waking early costs a short spin (a pi
 
 #### 10.6.3 Pipeline ownership of the RX tail
 
-The parked successor wait and then the armed pickup own the RX ring tail from `send_slot` until finalize or TC ([dxl-streaming-rx.md](dxl-streaming-rx.md) §6): `poll()` gates on both, so only pickup/drain bodies consume Status-packet bytes. DMA1_CH5 HT/TC stays live throughout for byte-ring publish; its parser drain is a no-op behind the poll gate. **There is no edge channel to mask** — the fold's RX-tail ownership is enforced by the poll gates alone. (In the hardware-RX draft this section masked the edge channel's HT/TC; that machinery is deleted.)
+The parked successor wait and then the armed pickup own the RX ring tail from `send_slot` until finalize or TC ([dxl-streaming-rx.md](dxl-streaming-rx.md) §6): `poll()` gates on both, so only pickup/drain bodies consume Status-packet bytes. DMA1_CH5 HT/TC stays live throughout for byte-ring publish; its framer drain is a no-op behind the poll gate. **There is no edge channel to mask** — the fold's RX-tail ownership is enforced by the poll gates alone. (In the hardware-RX draft this section masked the edge channel's HT/TC; that machinery is deleted.)
 
 #### 10.6.4 CPU cost
 

@@ -13,6 +13,18 @@
 //!
 //! Run:  cargo run --release --bin tool-phantom-repro -- [BAUD] [ITERS]
 //!   BAUD default 3000000   ITERS default 300
+//!
+//! Status: the RX byte ring is now **256** bytes (`[[rx_ring_lap_bug]]` fix),
+//! so a Write frame at these sweep lengths (frame <= 52 B) can no longer lap
+//! it — every length reports `clean`. This tool is retained as the regression
+//! harness: a non-clean row at any L means the 256-ring invariant (held frame
+//! never lapped by the producer) or the N/2-byte publish deadline has
+//! regressed. The `RING = 32` constant and `% 32` prediction below are
+//! historical — they describe the original 32-byte lap they were built to
+//! detect, not the shipped ring depth. The sweep writes to `LINK_BASE` (a
+//! plain control-table region, not a size-capped link block), so no L is
+//! bounded from above by control-table geometry; the L range only walks the
+//! lap arithmetic.
 
 use anyhow::Result;
 use bench::{Bus, BusArgs, build_write};

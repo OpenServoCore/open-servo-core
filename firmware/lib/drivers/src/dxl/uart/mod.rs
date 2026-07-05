@@ -45,7 +45,7 @@ pub(crate) const BITS_PER_FRAME: u16 = 10;
 /// The DXL bus composite. `P` bundles the chip-side leaf interfaces this
 /// driver pulls — see [`Providers`]. The const generics are storage sizes:
 ///
-/// - `RX_BUF_LEN`: DMA1_CH5 byte-ring depth (typically 64 per
+/// - `RX_BUF_LEN`: DMA1_CH5 byte-ring depth (256 on V006 per
 ///   `dxl-streaming-rx.md` §4.5).
 /// - `TX_BUF_LEN`: DMA1_CH4 source-buffer depth sized to
 ///   `osc_core::services::dxl::limits::DXL_TX_MAX_BYTES` (140 with the

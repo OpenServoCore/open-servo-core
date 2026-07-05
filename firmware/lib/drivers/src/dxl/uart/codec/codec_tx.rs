@@ -1,8 +1,8 @@
 //! TX half — encoder + TX byte ring. Splits off from
 //! [`CodecRx`](super::codec_rx::CodecRx) under [`Codec`](super::Codec) so
 //! the parent driver's split-borrow `poll` can hand the dispatcher's reply
-//! handle a `&mut CodecTx` alongside a parser event stream that borrows
-//! the disjoint RX half.
+//! handle a `&mut CodecTx` alongside a frame verdict that borrows the
+//! disjoint RX half.
 
 use core::marker::PhantomData;
 

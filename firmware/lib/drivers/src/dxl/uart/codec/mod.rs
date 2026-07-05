@@ -1,8 +1,8 @@
 //! Bytes ↔ packets. Composite over two field-projection halves — `CodecRx`
-//! (streaming parser + RX byte ring + drift bookkeeping) and `CodecTx`
+//! (flat frame classifier + RX byte ring + drift bookkeeping) and `CodecTx`
 //! (encoder + TX byte ring) — joined under `Codec`. The split lets the
 //! parent driver hand a `&mut CodecTx` reply handle to the dispatcher while
-//! a parser-event borrow lives in `CodecRx`.
+//! a frame-verdict borrow lives in `CodecRx`.
 
 mod codec_rx;
 mod codec_tx;
@@ -61,7 +61,7 @@ impl<CRC: CrcUmts, const RX_BUF_LEN: usize, const TX_BUF_LEN: usize>
 
     /// Disjoint mutable borrow of the RX and TX halves. The parent driver's
     /// `poll` uses this to hand the dispatcher a `&mut CodecTx` reply handle
-    /// while a parser event borrow lives in `&mut CodecRx`.
+    /// while a frame-verdict borrow lives in `&mut CodecRx`.
     pub fn split_mut(&mut self) -> (&mut CodecRx<CRC, RX_BUF_LEN>, &mut CodecTx<CRC, TX_BUF_LEN>) {
         (&mut self.rx, &mut self.tx)
     }

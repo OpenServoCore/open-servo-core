@@ -1,8 +1,8 @@
-//! RX half — streaming parser, RX byte ring, drift-sampling gate. Splits
-//! off from [`CodecTx`](super::codec_tx::CodecTx) under
+//! RX half — flat frame classifier, RX byte ring, drift-sampling gate.
+//! Splits off from [`CodecTx`](super::codec_tx::CodecTx) under
 //! [`Codec`](super::Codec) so the parent driver can hand the dispatcher a
-//! `&mut CodecTx` reply handle alongside the parser event stream the
-//! dispatcher is consuming.
+//! `&mut CodecTx` reply handle alongside the frame verdicts the dispatcher
+//! is consuming.
 
 use core::cell::SyncUnsafeCell;
 use core::ops::ControlFlow;
@@ -191,7 +191,7 @@ impl<CRC: CrcUmts, const RX_BUF_LEN: usize> CodecRx<CRC, RX_BUF_LEN> {
         let byte_ticks = (ticks_per_bit as u32).wrapping_mul(BITS_PER_FRAME as u32);
         // SAFETY: rx_buf is single-consumer at PFIC HIGH; the raw pointer
         // keeps the ring reference independent of the `&mut self` counter
-        // borrows below (see the original streaming path's contract).
+        // borrows below (the ring stays single-consumer for the whole poll).
         let rx_buf_ptr = self.rx_buf.get();
         loop {
             // Skip phase: an armed byte-skip owns the ring tail until it
@@ -243,9 +243,8 @@ impl<CRC: CrcUmts, const RX_BUF_LEN: usize> CodecRx<CRC, RX_BUF_LEN> {
                     }
                     FrameOutcome::Bad => {
                         // Silent drop: the copy already consumed the whole
-                        // frame off the ring, so re-probe resumes past it —
-                        // matching the streaming parser's "move on after a
-                        // Crc(Bad)" behavior. No extra advance.
+                        // frame off the ring, so re-probe (Hunt) resumes past
+                        // it on the next iteration. No extra advance.
                         self.framer.reset();
                     }
                 }
@@ -287,9 +286,9 @@ impl<CRC: CrcUmts, const RX_BUF_LEN: usize> CodecRx<CRC, RX_BUF_LEN> {
                         self.instruction_count = self.instruction_count.wrapping_add(1);
                     }
                     // Consume the classified header off the ring, then skip only
-                    // the body + CRC — mirrors the streaming parser's
-                    // header-then-skip split so the skip's give-up deadline
-                    // bounds the remaining body, not the whole frame. A
+                    // the body + CRC — the header-then-skip split keeps the
+                    // skip's give-up deadline bounding the remaining body, not
+                    // the whole frame. A
                     // truncated over-advertised frame (collapsed Fast chain
                     // reply) must drop soon enough that the next packet's bytes
                     // don't get counted into the stale skip.
