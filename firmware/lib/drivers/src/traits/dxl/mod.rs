@@ -5,7 +5,6 @@
 use dxl_protocol::CrcUmts;
 
 mod clock_trim;
-mod edge_dma;
 mod fast_last_scheduler;
 mod rx_dma;
 mod telemetry;
@@ -15,7 +14,6 @@ mod usart_baud;
 mod wire_clock;
 
 pub use clock_trim::ClockTrim;
-pub use edge_dma::EdgeDma;
 pub use fast_last_scheduler::FastLastScheduler;
 pub use rx_dma::{DmaFlags, RxDma};
 pub use telemetry::Telemetry;
@@ -42,7 +40,6 @@ pub use wire_clock::WireClock;
 pub trait Providers {
     type UsartBaud: UsartBaud;
     type ClockTrim: ClockTrim;
-    type EdgeDma: EdgeDma;
     type RxDma: RxDma;
     type TxScheduler: TxScheduler;
     type TxBus: TxBus;

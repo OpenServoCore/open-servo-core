@@ -14,8 +14,8 @@ pub fn install_irqs() {
     // with the other DXL ISRs so parser-state mutations serialize.
     pfic::set_priority(pfic::Interrupt::DMA1_CHANNEL5, pfic::Priority::High);
     // DMA1_CH7's TC fires once per TX kickoff (one-transfer MEM→PER write
-    // of the CH4 enable word); the body restores CH4→IC + CH7→edge-ring.
-    // Shares HIGH so the restore serializes with the arm/cancel sites.
+    // of the CH4 enable word); the body parks CH7 disabled until the next
+    // arm. Shares HIGH so the park serializes with the arm/cancel sites.
     pfic::set_priority(pfic::Interrupt::DMA1_CHANNEL7, pfic::Priority::High);
     // SysTick CMP fires the Fast Last periodic-walk fold body; shares HIGH
     // so all DXL ISR sources serialize.
@@ -100,11 +100,9 @@ fn on_usart1_rx_errors() {
 
 /// DMA1_CH7 TC — the TX kickoff's one-word transfer completed, meaning the
 /// hardware just enabled CH4 at the CC4 compare match and TX is streaming.
-/// Restore the channel pair to RX duty (CH4→IC, CH7→edge ring): our own
-/// TX produces no RX edges (no self-echo), so the ring comes back live and
-/// silent well before the bus turns around. Pure chip-side — no driver
-/// routing; the driver observes the restart through
-/// `EdgeDma::take_ring_restart` on its next edge publish.
+/// Park CH7 disabled until the next arm so no stray CC4 match can latch a
+/// kickoff request while the channel sits idle (see `tx_kickoff`'s #134
+/// note). Pure chip-side — no driver routing.
 pub fn on_dma1_ch7() {
     crate::providers::tx_kickoff::on_kickoff_complete();
 }
@@ -114,17 +112,14 @@ fn on_usart1_idle() {
         return;
     }
     usart::clear_idle(USART1);
-    // Backstop the RX classifier: for packets shorter than half the ET ring
-    // the HT/TC ISR never fires, so IDLE is the only chance to walk those
-    // edges. `on_rx_idle` refreshes the codec's edge-ring view (`(now,
-    // Idle)` ISR-capture stash for the Crc fallback path); the parser
-    // drain itself runs via `services.poll` below — IDLE is one of the
-    // three parser-drive triggers per `dxl-streaming-rx.md` §3 / §4.4.
-    // Anchor invalidation lives at the parser's Crc / Resync event
-    // (deterministic packet boundary), not here. IDLE-derived timing
-    // per [[no_idle_timing]] never enters the anchored path — the
-    // fallback is only consumed at Crc when the classifier was
-    // unanchored.
+    // Backstop for short packets: for packets shorter than half the RX byte
+    // ring the DMA1_CH5 HT/TC ISR never fires, so IDLE is the last chance to
+    // drain them. `on_rx_idle` stashes the `(now, LineIdle)` drain-ISR
+    // reference for the codec's Crc-time packet-end estimate; the parser
+    // drain itself runs via `services.poll` below — IDLE is one of the three
+    // parser-drive triggers per `dxl-streaming-rx.md` §3 / §4.4. IDLE-derived
+    // timing per [[no_idle_timing]] only selects the packet-end formula, it
+    // never measures the wire end.
     // SAFETY: see `on_dma1_ch5`.
     unsafe { Drivers::dxl_uart() }.on_rx_idle();
     // SAFETY: see `on_dma1_ch5`.

@@ -7,7 +7,6 @@ pub mod digital_out;
 pub mod dxl_crc;
 pub mod dxl_tx_bus;
 pub mod dxl_tx_scheduler;
-pub mod edge_dma;
 pub mod fast_last_scheduler;
 pub mod monotonic;
 pub mod rx_dma;

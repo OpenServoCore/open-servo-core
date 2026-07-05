@@ -1,7 +1,7 @@
 //! Per-baud timing cache + staged-baud mailbox for the DXL transport.
 //! Owns the authoritative `ticks_per_bit` (one UART bit in TIM2/HCLK ticks)
-//! plus the Q16 wire byte-time and the RX edge-stamp compensation, all
-//! recomputed only when the baud actually changes. Baud is staged by
+//! plus the Q16 wire byte-time, both recomputed only when the baud actually
+//! changes. Baud is staged by
 //! control-table writes via [`Self::stage_baud`] and committed at
 //! `on_tx_complete` (USART can't change BRR mid-frame) via
 //! [`Self::on_tx_complete`].
@@ -26,13 +26,6 @@ pub struct BaudCache<U: UsartBaud> {
     /// Fast Last CRC patch deadline. Ceil-rounded so per-byte error stays
     /// non-negative and bounded well past any packet size.
     ticks_per_byte_q16: u32,
-    /// Per-baud RX edge-stamp compensation, in HCLK ticks. Refreshed from
-    /// `U::rx_edge_comp_ticks(baud)` at `new` and on every committed baud
-    /// change. Codec reads it via [`Self::rx_edge_comp_ticks`] once per poll
-    /// and threads through to the edge walker, which subtracts it from every IC
-    /// stamp at read-from-ring time so anchors, pairs, and `packet_end_tick`
-    /// all live in wire-edge time.
-    rx_edge_comp_ticks: u16,
     pending_baud: Option<BaudRate>,
 }
 
@@ -89,7 +82,6 @@ impl<U: UsartBaud> BaudCache<U> {
             baud,
             ticks_per_bit: 0,
             ticks_per_byte_q16: 0,
-            rx_edge_comp_ticks: 0,
             pending_baud: None,
         };
         s.apply_baud_change(baud);
@@ -105,7 +97,6 @@ impl<U: UsartBaud> BaudCache<U> {
         self.baud = baud;
         self.ticks_per_bit = Self::ticks_per_bit_at(baud);
         self.ticks_per_byte_q16 = Self::ticks_per_byte_at(baud);
-        self.rx_edge_comp_ticks = self.usart.rx_edge_comp_ticks(baud);
     }
 
     // -- events -----------------------------------------------------------------
@@ -150,14 +141,6 @@ impl<U: UsartBaud> BaudCache<U> {
     #[inline(always)]
     pub fn byte_ticks(&self) -> u16 {
         self.ticks_per_bit.wrapping_mul(BITS_PER_FRAME)
-    }
-
-    /// Per-baud RX edge-stamp compensation in HCLK ticks. Codec reads once
-    /// per poll and threads to the edge walker so anchors, pairs, and
-    /// `packet_end_tick` live in wire-edge time. See the field doc.
-    #[inline(always)]
-    pub fn rx_edge_comp_ticks(&self) -> u16 {
-        self.rx_edge_comp_ticks
     }
 
     /// Wire-byte duration in monotonic timer ticks at the current baud.
@@ -262,25 +245,5 @@ mod tests {
         }
         // The doc's example: integer cache would give 24_999 here.
         assert_eq!(c.bytes_to_ticks(3), 25_000);
-    }
-
-    #[test]
-    fn on_tx_complete_refreshes_rx_edge_comp() {
-        // Per-baud edge-stamp compensation must track the committed baud,
-        // not the construction-time one — the codec re-reads it after
-        // every applied change.
-        let mut usart = MockUsartBaud::new();
-        usart.expect_apply_baud().returning_st(|_| ());
-        usart
-            .expect_rx_edge_comp_ticks()
-            .returning_st(|baud| match baud {
-                BaudRate::B3000000 => 7,
-                _ => 3,
-            });
-        let mut c = BaudCache::new(BaudRate::B9600, usart);
-        assert_eq!(c.rx_edge_comp_ticks(), 3);
-        c.stage_baud(BaudRate::B3000000);
-        c.on_tx_complete();
-        assert_eq!(c.rx_edge_comp_ticks(), 7);
     }
 }

@@ -17,7 +17,6 @@ use osc_drivers::Level;
 use osc_drivers::dxl::uart::DxlUart;
 use osc_drivers::dxl::uart::clock::Clock;
 use osc_drivers::dxl::uart::codec::Codec;
-use osc_drivers::dxl::uart::codec::edge_buf_len;
 use osc_drivers::dxl::uart::fast_last::FastLast;
 use osc_drivers::led::Led;
 use osc_drivers::traits::dxl::Providers;
@@ -29,7 +28,6 @@ use crate::providers::digital_out::DigitalOut;
 use crate::providers::dxl_crc::DxlCrc;
 use crate::providers::dxl_tx_bus::DxlTxBus;
 use crate::providers::dxl_tx_scheduler::DxlTxScheduler;
-use crate::providers::edge_dma::EdgeDma;
 use crate::providers::fast_last_scheduler::FastLastScheduler;
 use crate::providers::monotonic::Monotonic;
 use crate::providers::rx_dma::RxDma;
@@ -52,7 +50,6 @@ pub struct DxlUartProviders;
 impl Providers for DxlUartProviders {
     type UsartBaud = UsartBaud;
     type ClockTrim = ClockTrim;
-    type EdgeDma = EdgeDma;
     type RxDma = RxDma;
     type TxScheduler = DxlTxScheduler;
     type TxBus = DxlTxBus;
@@ -67,14 +64,11 @@ impl Providers for DxlUartProviders {
 /// (= 15 bytes; see `firmware/ch32/src/measurements.rs`) — pick a power
 /// of two ≥ 32. V006 (48 MHz, 8 KiB SRAM) uses 32.
 pub(crate) const DXL_RX_BUF_LEN: usize = 32;
-/// DMA1_CH7 edge-timestamp ring depth, derived from [`DXL_RX_BUF_LEN`] via
-/// [`osc_drivers::dxl::uart::codec::edge_buf_len`].
-pub(crate) const DXL_EDGE_BUF_LEN: usize = edge_buf_len(DXL_RX_BUF_LEN);
 /// DMA1_CH4 TX-source buffer depth — mirrors
 /// `osc_core::services::dxl::limits::DXL_TX_MAX_BYTES` so the driver-owned
 /// buffer can hold any Status / Slot reply the dispatcher emits.
 pub(crate) const DXL_TX_BUF_LEN: usize = osc_core::services::dxl::limits::DXL_TX_MAX_BYTES;
-type DxlUartCh = DxlUart<DxlUartProviders, DXL_RX_BUF_LEN, DXL_EDGE_BUF_LEN, DXL_TX_BUF_LEN>;
+type DxlUartCh = DxlUart<DxlUartProviders, DXL_RX_BUF_LEN, DXL_TX_BUF_LEN>;
 
 struct Cells {
     dbg: SyncUnsafeCell<Option<DigitalOut>>,
@@ -121,7 +115,7 @@ impl Drivers {
         let dxl_uart = unsafe { &mut *CELLS.dxl_uart.get() };
         debug_assert!(dxl_uart.is_none(), "Drivers: dxl_uart already installed");
         *dxl_uart = Some(DxlUart::new(
-            Codec::new(EdgeDma),
+            Codec::new(),
             Clock::new(defaults.dxl_baud, UsartBaud, ClockTrim),
             RxDma,
             DxlTxScheduler::default(),

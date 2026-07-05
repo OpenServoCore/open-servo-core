@@ -19,7 +19,6 @@ use crate::traits::dxl::Providers;
 
 pub mod clock_trim;
 pub mod digital_out;
-pub mod edge_dma;
 pub mod fast_last_scheduler;
 pub mod monotonic;
 pub mod rx_dma;
@@ -31,7 +30,6 @@ pub mod wire_clock;
 
 pub use clock_trim::MockClockTrim;
 pub use digital_out::MockDigitalOut;
-pub use edge_dma::MockEdgeDma;
 pub use fast_last_scheduler::{FastLastSchedulerOp, MockFastLastScheduler};
 pub use monotonic::MockMonotonic;
 pub use rx_dma::MockRxDma;
@@ -53,7 +51,6 @@ pub struct TestProviders;
 impl Providers for TestProviders {
     type UsartBaud = MockUsartBaud;
     type ClockTrim = MockClockTrim;
-    type EdgeDma = MockEdgeDma;
     type RxDma = MockRxDma;
     type TxScheduler = MockTxScheduler;
     type TxBus = MockTxBus;

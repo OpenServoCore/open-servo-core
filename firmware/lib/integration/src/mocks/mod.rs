@@ -14,17 +14,13 @@
 
 pub mod bus;
 pub mod clock;
-pub mod dma;
 pub mod primitives;
 pub mod rx;
 pub mod scheduler;
 pub mod telemetry;
 
 pub use bus::{TxBusState, mock_tx_bus};
-pub use clock::{
-    ClockTrimState, UsartBaudState, mock_clock_trim, mock_usart_baud, mock_usart_baud_with_comp,
-};
-pub use dma::{EdgeDmaState, mock_edge_dma};
+pub use clock::{ClockTrimState, UsartBaudState, mock_clock_trim, mock_usart_baud};
 pub use primitives::{
     DigitalOutState, MonotonicState, WireClockState, mock_digital_out, mock_monotonic,
     mock_wire_clock,

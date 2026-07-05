@@ -1,5 +1,5 @@
 use super::registry::DXL_RX_BUF_LEN;
-use ch32_metapac::{ADC, adc::vals::Extsel, dma::vals::Dir, timer::vals::FilterValue};
+use ch32_metapac::{ADC, adc::vals::Extsel, dma::vals::Dir};
 use osc_core::{ConfigDefaults, RegionStorage};
 use osc_drivers::Level;
 
@@ -9,7 +9,6 @@ use crate::hal::{
     gpio::{self, PinMode},
     opa, rcc, systick, timer, usart,
 };
-use crate::providers::usart_baud;
 use crate::runtime::Drivers;
 use crate::runtime::statics::SHARED;
 
@@ -76,7 +75,7 @@ pub fn bringup(
         shunt_bias_raw,
     );
 
-    bring_up_dxl(pre.usart_brr, usart_baud::filter_for(defaults.dxl_baud));
+    bring_up_dxl(pre.usart_brr);
     crate::log::debug!("dxl usart + dma rx armed");
 
     start_center_aligned_pwm(pre.pwm_psc, pre.pwm_arr);
@@ -246,17 +245,14 @@ fn configure_adc_dma_scan(sensors: &AdcPins) {
     dma::enable(dma::Channel::CH1);
 }
 
-fn bring_up_dxl(brr: u32, boot_filter: FilterValue) {
+fn bring_up_dxl(brr: u32) {
     let regs = chip::DXL_USART_MAPPING.regs();
     usart::init(regs, brr);
 
-    // ADC (CH1) + USART RX/TX channels stay at LOW per
-    // `docs/dxl-hw-timed-transport.md` §6, so ET (CH7) is the only DMA
-    // channel at VERYHIGH — guaranteeing IC capture writes win arbitration
-    // against the byte-rate USART RX snoop. HT/TC enabled for byte-ring
-    // publish (§9): the ISR is publish-only (clear flags, advance
-    // `write_seq`), bounding the codec's view-lag to `RX_BUF_LEN/2` under
-    // long byte-skip windows that edge HT/TC alone can miss.
+    // HT/TC enabled for byte-ring publish
+    // (`docs/dxl-hw-timed-transport.md` §9): the ISR is publish-only (clear
+    // flags, advance `write_seq`), bounding the codec's view-lag to
+    // `RX_BUF_LEN/2` under long byte-skip windows.
     let dma_cfg = dma::Config {
         dir: Dir::FROMPERIPHERAL,
         circ: true,
@@ -267,7 +263,10 @@ fn bring_up_dxl(brr: u32, boot_filter: FilterValue) {
         tcie: true,
         pl: dma::Pl::LOW,
     };
-    // SAFETY: see `bring_up_edge_ts_capture`.
+    // SAFETY: `Drivers::install` ran in `run()` before `bring_up_dxl`; the
+    // returned address points into the driver's registry cell and stays
+    // valid for the lifetime of the program. The driver yields `usize`
+    // (chip-agnostic); we narrow to the V006 DMA-MAR width here.
     let rx_addr = unsafe { Drivers::dxl_uart() }.rx_buf_addr() as u32;
     dma::configure(
         dma::Channel::CH5,
@@ -305,22 +304,9 @@ fn bring_up_dxl(brr: u32, boot_filter: FilterValue) {
 
     usart::set_idle_irq(regs, true);
 
-    bring_up_edge_ts_capture(boot_filter);
-}
-
-/// TIM2_CH4 input capture on the RX pin (falling edge) feeds DMA1_CH7 into
-/// the RX driver's edges buffer. The channel config lives in
-/// `providers::tx_kickoff` — the TX kickoff time-shares CH7 and re-applies
-/// the same ET-ring shape at every post-send restore.
-fn bring_up_edge_ts_capture(boot_filter: FilterValue) {
-    timer::init_tim2_ch4_ic_capture(boot_filter);
-
-    // SAFETY: `Drivers::install` ran in `run()` before `bring_up_dxl`; the
-    // returned address points into the driver's registry cell and stays
-    // valid for the lifetime of the program. The driver yields `usize`
-    // (chip-agnostic); we narrow to the V006 DMA-MAR width here.
-    let edges_addr = unsafe { Drivers::dxl_uart() }.edges_addr() as u32;
-    crate::providers::tx_kickoff::install_edge_ring(edges_addr);
+    // TIM2_CH4 is a permanent pin-less output compare feeding the DMA1_CH7
+    // TX kickoff; the scheduler writes CCR4 per fire (`providers::tx_kickoff`).
+    timer::init_tim2_ch4_oc_kickoff();
 }
 
 fn start_center_aligned_pwm(psc: u16, arr: u16) {

@@ -119,18 +119,16 @@ impl Default for FoldEngine {
 mod tests {
     use super::*;
     use crate::dxl::uart::codec::Codec;
-    use crate::mocks::MockEdgeDma;
     use dxl_protocol::types::{Id, Slot, StatusError};
     use dxl_protocol::{CrcUmts, SlotPosition, SoftwareCrcUmts};
 
     const RX_BUF_LEN: usize = 64;
-    const EDGE_BUF_LEN: usize = 128;
     const TX_BUF_LEN: usize = 140;
 
-    type TestCodec = Codec<MockEdgeDma, SoftwareCrcUmts, RX_BUF_LEN, EDGE_BUF_LEN, TX_BUF_LEN>;
+    type TestCodec = Codec<SoftwareCrcUmts, RX_BUF_LEN, TX_BUF_LEN>;
 
     fn make_codec_with_successor_reply() -> TestCodec {
-        let mut c: TestCodec = Codec::new(MockEdgeDma::default());
+        let mut c: TestCodec = Codec::new();
         let payload = [0xAA_u8, 0xBB];
         let slot = Slot {
             id: Id::new(0x07),

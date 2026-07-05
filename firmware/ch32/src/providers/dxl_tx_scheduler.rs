@@ -160,8 +160,8 @@ impl TxSchedulerTrait for DxlTxScheduler {
         usart::set_tc_irq(USART1_REGS, false);
         usart::set_dma_tx(USART1_REGS, false);
         dma::disable(dma::Channel::CH4);
-        // Undo an armed kickoff window — restores CH4→IC + CH7→edge ring.
-        // No-op when nothing was hardware-armed.
+        // Undo an armed kickoff window — parks CH7 disabled and wipes its
+        // TC latch. No-op when nothing was hardware-armed.
         tx_kickoff::cancel();
         // Drop both stashes — cancel covers both deferred FastLast and an
         // armed handoff. The SysTick CMP IRQ stays armed (FastLast walk

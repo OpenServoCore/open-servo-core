@@ -1,36 +1,38 @@
-//! TX-start hardware kickoff — the DMA1_CH7 time-share
-//! (`docs/dxl-hw-timed-transport.md` §5/§6).
+//! TX-start hardware kickoff (`docs/dxl-hw-timed-transport.md` §5).
 //!
-//! During a scheduled send, TIM2_CH4 swaps from input capture (edge ring)
-//! to output compare, and DMA1_CH7 — normally the ET-ring drain riding
-//! CH4's CC4DE request line — becomes a one-transfer MEM→PER write of an
-//! EN=1 config word into `DMA1_CH4.CR`. The CC4 compare match then starts
-//! the USART1 TX stream with zero CPU in the deadline path. CH7's TC
-//! (~5 HCLK after the match — one transfer) raises the DMA1_CH7 IRQ whose
-//! body restores CH4→IC and CH7→edge-ring long before our own bytes
-//! finish streaming; the RX line is silent during our TX (no self-echo),
-//! so no edge is ever missed.
+//! TIM2_CH4 is a permanent, pin-less output compare (OC4M=Frozen, CC4E=0 —
+//! the compare EVENT fires CC4DE without driving the live RX pin,
+//! spike-verified). DMA1_CH7 is the permanent kickoff channel: a
+//! one-transfer MEM→PER write of an EN=1 config word into `DMA1_CH4.CR`.
+//! At the scheduled deadline the CH4 compare match fires DMA1_CH7, which
+//! enables the TX DMA and starts the USART1 stream with zero CPU in the
+//! deadline path.
 //!
-//! Free functions + module statics rather than provider-struct state: the
-//! arm/cancel sites live on [`DxlTxScheduler`] (driver-called), the
-//! restore lives in the DMA1_CH7 ISR (no driver involvement), and the
-//! edge-ring window latch is read by [`EdgeDma`] — three consumers, one
-//! PFIC-HIGH-serialized state. Atomics are `portable-atomic` (V006 has no
-//! native atomics), Relaxed throughout — same-priority no-preemption is
-//! the actual synchronization.
+//! Free functions + a module static rather than provider-struct state: the
+//! arm/cancel sites live on [`DxlTxScheduler`] (driver-called) and the
+//! TC-park lives in the DMA1_CH7 ISR (no driver involvement) — one
+//! PFIC-HIGH-serialized state.
+//!
+//! ## #134 silicon discipline
+//!
+//! A CC4 DMA request LATCHES in the V006 DMA controller and survives a
+//! channel disable — but a request only latches into an *enabled* channel.
+//! With CH4 permanently OC there are no input captures, so the only CC4
+//! requests are real compare matches. Between windows CH7 is parked
+//! disabled ([`on_kickoff_complete`] / [`cancel`]) so a stray match (CNT
+//! wrapping past a stale CCR4) can't latch; [`arm`] then points the compare
+//! strictly ahead of CNT and re-enables CH7 with a clean TC flag, leaving
+//! no latched request to fire the kickoff early.
 //!
 //! [`DxlTxScheduler`]: super::dxl_tx_scheduler::DxlTxScheduler
-//! [`EdgeDma`]: super::edge_dma::EdgeDma
 
 use core::cell::SyncUnsafeCell;
 
 use ch32_metapac::DMA1;
 use ch32_metapac::dma::vals::{Dir, Pl, Size};
-use portable_atomic::{AtomicBool, AtomicU16, AtomicU32, Ordering};
 
 use crate::hal::{dma, timer};
 use crate::measurements::KICKOFF_RETRY_LEAD_TICKS;
-use crate::runtime::registry::DXL_EDGE_BUF_LEN;
 
 /// The word CH7 writes into `DMA1_CH4.CR` at the compare match: CH4's
 /// bring-up TX config (`runtime/init.rs`) plus EN. Populated at every
@@ -38,23 +40,6 @@ use crate::runtime::registry::DXL_EDGE_BUF_LEN;
 /// drift. `SyncUnsafeCell` because DMA reads it while the CPU owns it —
 /// writes happen only while CH7 is disabled.
 static KICKOFF_WORD: SyncUnsafeCell<u32> = SyncUnsafeCell::new(0);
-
-/// Edge-ring buffer address, cached at bring-up for the restore path
-/// (the driver's `edges_addr()` isn't reachable from the ISR).
-static EDGES_ADDR: AtomicU32 = AtomicU32::new(0);
-
-/// True from [`arm`] until the driver consumes [`take_ring_restart`] —
-/// the span where [`edge_remaining`] must return the arm-time latch.
-static WINDOW_OPEN: AtomicBool = AtomicBool::new(false);
-
-/// True once [`restore`] has re-armed the edge ring for the current
-/// window; [`take_ring_restart`] hands it to the driver exactly once.
-static RESTORED: AtomicBool = AtomicBool::new(false);
-
-/// CH7 NDTR frozen at the EdgeRing→Kickoff transition. Exact for the
-/// whole window: CH4 stops capturing the moment it leaves IC mode, so the
-/// ring content is static until the driver resyncs.
-static LATCHED_EDGE_NDTR: AtomicU16 = AtomicU16::new(0);
 
 fn ch4_cr_with_en() -> u32 {
     let mut cr = ch32_metapac::dma::regs::Cr(0);
@@ -69,82 +54,18 @@ fn ch4_cr_with_en() -> u32 {
     cr.0
 }
 
-/// Bring-up entry: cache the edge-ring destination and configure CH7 for
-/// ET-ring duty. Also the shared restore shape — [`restore`] re-runs the
-/// same configuration after each kickoff window.
-pub fn install_edge_ring(edges_addr: u32) {
-    EDGES_ADDR.store(edges_addr, Ordering::Relaxed);
-    configure_edge_ring();
-    dma::enable(dma::Channel::CH7);
-}
-
-/// CH7 as the ET ring: circular PER→MEM from TIM2.CCR4. PL=VeryHigh is
-/// the only channel at that priority (ADC + USART RX/TX all sit at LOW
-/// per doc §6) so CC4 capture stores can't be delayed. No HT/TC IRQ in
-/// EdgeRing role — TCIE belongs to the kickoff role only.
-fn configure_edge_ring() {
-    let cfg = dma::Config {
-        dir: Dir::FROMPERIPHERAL,
-        circ: true,
-        pinc: false,
-        minc: true,
-        size: Size::BITS16,
-        htie: false,
-        tcie: false,
-        pl: Pl::VERYHIGH,
-    };
-    dma::configure(
-        dma::Channel::CH7,
-        &cfg,
-        timer::tim2_ch4_capture_addr(),
-        EDGES_ADDR.load(Ordering::Relaxed),
-        DXL_EDGE_BUF_LEN as u16,
-    );
-}
-
-/// Open the kickoff window and arm the hardware: CH7 → one-transfer
-/// kickoff, CH4 → OC with CCR4 = `compare`. A re-arm inside an open
-/// window (schedule without intervening cancel) keeps the original NDTR
-/// latch — the kickoff-mode NDTR must never leak into it.
+/// Arm the hardware kickoff for a compare at TIM2 CCR4 = `compare`.
+///
+/// CH4 is permanently OC (`timer::init_tim2_ch4_oc_kickoff`): point its
+/// compare at the deadline and wipe CC4IF so the only CC4 request that can
+/// pulse comes from a real match on THIS value. Then (re)configure CH7 as
+/// the one-transfer kickoff and enable it. See the module's #134 note —
+/// CH7 is parked disabled between windows, so re-enabling here can't
+/// inherit a latched request.
 pub fn arm(compare: u16) {
-    if !WINDOW_OPEN.load(Ordering::Relaxed) {
-        LATCHED_EDGE_NDTR.store(dma::remaining(dma::Channel::CH7), Ordering::Relaxed);
-        RESTORED.store(false, Ordering::Relaxed);
-        WINDOW_OPEN.store(true, Ordering::Relaxed);
-    }
-    // Ordering is the load-bearing part. On the on-time path the
-    // predecessor's bytes are STILL STREAMING during this arm — every IC
-    // capture pulses the CC4 request line, and a request LATCHES in the
-    // DMA controller: disabling CH7 does NOT drop it (bench: the kickoff
-    // transferred its word the instant CH7 re-enabled, CC4IF clear and
-    // CNT ~1700 ticks short of CCR4 — the enable word landed in CH4 and
-    // the send fired early into a not-yet-raised TX_EN; wedge signature:
-    // all-noreply + one crc_patch_deadline_miss per shot). The sequence
-    // must therefore DRAIN any latched request through the edge-ring role
-    // before CH7 switches identities:
-    //
-    // 1. CH4 leaves IC mode (captures stop), CCR4 = compare, CC4IF wiped
-    //    LAST — from here the request line can only pulse on a real
-    //    new-compare match.
-    // 2. CH7, still in edge-ring role, services whatever request was in
-    //    flight — one stale edge lands in the (already NDTR-latched) ring,
-    //    which the post-window resync discards. Spin until NDTR settles;
-    //    at most one request can be pending, so the bound is a formality.
-    // 3. CH7 reconfigures and enables as the kickoff, with no request
-    //    source and no latch left.
-    //
-    // A real match between steps 1 and 3 leaves CC4IF set and its request
-    // consumed by the edge role; the caller's §5.4 recheck sees CNT past
-    // CCR4 and re-aims via `trigger_asap`.
-    timer::tim2_ch4_to_oc(compare);
-    let mut prev = dma::remaining(dma::Channel::CH7);
-    for _ in 0..4 {
-        let curr = dma::remaining(dma::Channel::CH7);
-        if curr == prev {
-            break;
-        }
-        prev = curr;
-    }
+    timer::set_tim2_ccr4(compare);
+    timer::clear_tim2_cc4_flag();
+
     dma::disable(dma::Channel::CH7);
     // SAFETY: CH7 is disabled — no DMA read of the word can race this.
     unsafe { *KICKOFF_WORD.get() = ch4_cr_with_en() };
@@ -165,7 +86,7 @@ pub fn arm(compare: u16) {
         KICKOFF_WORD.get() as u32,
         1,
     );
-    // A stale TC latch from the previous kickoff must not re-run restore
+    // A stale TC latch from the previous kickoff must not re-run the ISR
     // the moment the vector unmasks.
     dma::clear_tc_flag(dma::Channel::CH7);
     dma::enable(dma::Channel::CH7);
@@ -180,60 +101,25 @@ pub fn trigger_asap() {
 }
 
 /// DMA1_CH7 TC ISR body — the kickoff word landed, TX DMA is streaming.
-/// Restore CH4 to input capture and CH7 to ET-ring duty; the window-flag
-/// pair stays set until the driver consumes the restart.
+/// Park CH7 disabled until the next [`arm`]: with CH4 permanently OC the
+/// only CC4 requests are compare matches, and a match can only LATCH into
+/// an ENABLED channel (#134), so disabling here closes the window between
+/// the kickoff and the next arm against a stray match arming the kickoff
+/// early. TC-flag-gated so a stale PFIC pend can't disable a freshly-armed
+/// channel mid-window.
 pub fn on_kickoff_complete() {
     if !dma::is_tc_flag(dma::Channel::CH7) {
-        // Spurious vector entry with no TC (a stale PFIC pend) — restoring
-        // here would flip CH4 back to IC mid-window.
         return;
     }
     dma::clear_tc_flag(dma::Channel::CH7);
-    if !WINDOW_OPEN.load(Ordering::Relaxed) || RESTORED.load(Ordering::Relaxed) {
-        // Spurious entry — nothing armed, or already restored (a cancel
-        // raced the TC). Never touch a live edge ring.
-        return;
-    }
-    restore();
-}
-
-/// Cancel-path restore: a schedule was dropped while the window was open
-/// (host retry canceling an armed reply). No-op when nothing is armed.
-pub fn cancel() {
-    if WINDOW_OPEN.load(Ordering::Relaxed) && !RESTORED.load(Ordering::Relaxed) {
-        restore();
-    }
-}
-
-fn restore() {
     dma::disable(dma::Channel::CH7);
-    timer::tim2_ch4_to_ic();
-    configure_edge_ring();
-    dma::enable(dma::Channel::CH7);
-    RESTORED.store(true, Ordering::Relaxed);
 }
 
-/// `EdgeDma::remaining` source: the live CH7 NDTR, or the arm-time latch
-/// while the kickoff window is open (CH7's NDTR is the kickoff count
-/// then, and after restore the ring restarted — either value would
-/// corrupt the driver's ring bookkeeping until it consumes the restart).
-pub fn edge_remaining() -> u16 {
-    if WINDOW_OPEN.load(Ordering::Relaxed) {
-        LATCHED_EDGE_NDTR.load(Ordering::Relaxed)
-    } else {
-        dma::remaining(dma::Channel::CH7)
-    }
-}
-
-/// `EdgeDma::take_ring_restart` source: true exactly once per completed
-/// window — the driver resets its ring bookkeeping and `edge_remaining`
-/// goes live again.
-pub fn take_ring_restart() -> bool {
-    if WINDOW_OPEN.load(Ordering::Relaxed) && RESTORED.load(Ordering::Relaxed) {
-        WINDOW_OPEN.store(false, Ordering::Relaxed);
-        RESTORED.store(false, Ordering::Relaxed);
-        true
-    } else {
-        false
-    }
+/// Cancel-path park: a schedule was dropped while the kickoff was armed
+/// (host retry canceling an armed reply). Disable CH7 and wipe its TC latch
+/// so a later CC4 match can't fire the stale enable word. No-op if nothing
+/// was armed.
+pub fn cancel() {
+    dma::disable(dma::Channel::CH7);
+    dma::clear_tc_flag(dma::Channel::CH7);
 }

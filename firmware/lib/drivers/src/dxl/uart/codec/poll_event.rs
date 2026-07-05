@@ -12,7 +12,7 @@ use crate::dxl::uart::poll_src::PollSrc;
 
 /// Packet-end timing the codec resolves and attaches to every `Crc`
 /// [`PollEvent::Parser`] — a primitive per driver-pattern §3.3, so the
-/// sink never reaches into the codec's edge-capture half.
+/// sink never reaches into the codec's drain-ISR stash.
 ///
 /// `tick` is the drain-source-corrected ISR-entry estimate of the wire
 /// end (`LineIdle` → `now − one frame`; `ByteBatch` → `now`), less the

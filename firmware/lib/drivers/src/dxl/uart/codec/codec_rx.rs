@@ -11,30 +11,14 @@ use dxl_protocol::CrcUmts;
 use dxl_protocol::streaming::{Event, HeaderEvent, InstructionPayload, Parser, PayloadEvent};
 use dxl_protocol::wire;
 
-use super::edge_capture::EdgeCapture;
+use super::packet_end;
 use super::poll_event::{PollAction, PollEvent};
 use super::skip::SkipFsm;
 use super::span::{DriftWindow, SpanTracker};
 use crate::dxl::uart::BITS_PER_FRAME;
 use crate::dxl::uart::poll_src::PollSrc;
 use crate::ring::HwRing;
-use crate::traits::dxl::{EdgeDma, RxDma};
-
-/// Number of raw wire bytes at the tail of a just-parsed packet handed to
-/// the tail-signature back-search at `Event::Crc`. 4 bytes — including
-/// both CRC bytes plus the last 2 data bytes — gives high signature
-/// uniqueness (intra-byte deltas across at least one non-`0xFF` byte
-/// disambiguate from any same-spacing window elsewhere in the ring) while
-/// keeping the worst-case back-search work bounded at ~20 edges checked.
-/// Defined as [`super::anchor::TAIL_STARTS`] because the two MUST agree:
-/// the walker's signature match only completes when the last tail byte
-/// lands inside the starts cache — a longer tail slice would silently
-/// never anchor (every packet degrading to the fallback path with no
-/// error).
-// Only the edge-subsystem test scaffolding reads this now; removed with the
-// rest of the edge subsystem in the deletion chunk.
-#[allow(dead_code)]
-pub(crate) const TAIL_BYTES_FOR_ANCHOR: usize = super::anchor::TAIL_STARTS;
+use crate::traits::dxl::RxDma;
 
 /// Exit disposition of one [`CodecRx::feed_parser`] phase — why the feed
 /// stopped, decided by ring supply or by the sink's [`PollAction`]. The
@@ -52,8 +36,7 @@ enum FeedExit {
 }
 
 /// RX half — streaming parser, RX byte ring, drift-sampling gate.
-pub struct CodecRx<R: EdgeDma, CRC: CrcUmts, const RX_BUF_LEN: usize, const EDGE_BUF_LEN: usize> {
-    edge_capture: EdgeCapture<R, EDGE_BUF_LEN>,
+pub struct CodecRx<CRC: CrcUmts, const RX_BUF_LEN: usize> {
     parser: Parser<CRC>,
     /// DMA1_CH5 destination for received bytes. `SyncUnsafeCell` because
     /// USART1's DMA writes it concurrently with the parser's reads — both
@@ -81,14 +64,19 @@ pub struct CodecRx<R: EdgeDma, CRC: CrcUmts, const RX_BUF_LEN: usize, const EDGE
     /// long span per burst, the isolated-short-packet path the drain-ISR
     /// [`SpanTracker`] can't cover (a short packet trips a single drain).
     window: DriftWindow,
+    /// Most recent drain-ISR's wake capture — WireClock u32 tick at ISR
+    /// entry plus the source flavor. Set on every [`Self::on_idle`] /
+    /// [`Self::on_byte_batch_wake`] entry; consumed at the parser's Crc
+    /// event by [`packet_end::resolve`] to derive the packet-end tick.
+    /// Default `(0, PollSrc::ByteBatch)` is unreachable in production — Crc
+    /// follows bytes which follow an ISR — but keeps the field non-Optional
+    /// so the hot path carries no `unwrap`.
+    last_isr: (u32, PollSrc),
 }
 
-impl<R: EdgeDma, CRC: CrcUmts, const RX_BUF_LEN: usize, const EDGE_BUF_LEN: usize>
-    CodecRx<R, CRC, RX_BUF_LEN, EDGE_BUF_LEN>
-{
-    pub(super) fn new(ring: R) -> Self {
+impl<CRC: CrcUmts, const RX_BUF_LEN: usize> CodecRx<CRC, RX_BUF_LEN> {
+    pub(super) fn new() -> Self {
         Self {
-            edge_capture: EdgeCapture::new(ring),
             parser: Parser::new(),
             rx_buf: SyncUnsafeCell::new(HwRing::new(0)),
             instruction_count: 0,
@@ -96,25 +84,24 @@ impl<R: EdgeDma, CRC: CrcUmts, const RX_BUF_LEN: usize, const EDGE_BUF_LEN: usiz
             skip_fsm: SkipFsm::new(),
             span: SpanTracker::new(),
             window: DriftWindow::new(),
+            last_isr: (0, PollSrc::ByteBatch),
         }
     }
 }
 
 // -- events -------------------------------------------------------------
 
-impl<R: EdgeDma, CRC: CrcUmts, const RX_BUF_LEN: usize, const EDGE_BUF_LEN: usize>
-    CodecRx<R, CRC, RX_BUF_LEN, EDGE_BUF_LEN>
-{
-    /// USART1 IDLE ISR entry — publishes the ET producer head, stashes the
-    /// ISR-entry tick + LineIdle source for the packet-end fallback path,
-    /// and records a drift-span stamp. IDLE latches one frame after the
+impl<CRC: CrcUmts, const RX_BUF_LEN: usize> CodecRx<CRC, RX_BUF_LEN> {
+    /// USART1 IDLE ISR entry — stashes the ISR-entry tick + LineIdle source
+    /// for the packet-end estimate and records a drift-span stamp. IDLE
+    /// latches one frame after the
     /// last stop bit, so `now` is back-dated by `byte_ticks` before storing
     /// — both flavors then sit on the same last-byte reference, which the
     /// same-flavor rule needs for the IDLE→IDLE pair spanning one packet.
     /// The caller must publish the byte ring (via [`Self::on_rx_progress`])
     /// before this so the span's cursor is current.
     pub fn on_idle(&mut self, now: u32, byte_ticks: u32) -> Option<(u32, u32)> {
-        self.edge_capture.on_idle(now);
+        self.last_isr = (now, PollSrc::LineIdle);
         let cursor = self.published_cursor();
         self.span.on_stamp(
             now.wrapping_sub(byte_ticks),
@@ -143,7 +130,7 @@ impl<R: EdgeDma, CRC: CrcUmts, const RX_BUF_LEN: usize, const EDGE_BUF_LEN: usiz
     /// caller publishes the byte ring (via [`Self::on_rx_progress`]) first,
     /// so the span's cursor is current.
     pub fn on_byte_batch_wake(&mut self, now: u32, byte_ticks: u32) -> Option<(u32, u32)> {
-        self.edge_capture.on_byte_batch_wake(now);
+        self.last_isr = (now, PollSrc::ByteBatch);
         let cursor = self.published_cursor();
         self.span.on_stamp(
             now,
@@ -182,19 +169,11 @@ impl<R: EdgeDma, CRC: CrcUmts, const RX_BUF_LEN: usize, const EDGE_BUF_LEN: usiz
         self.wire_bytes_consumed
             .wrapping_add(rx_buf.reader().avail() as u32)
     }
-
-    /// Refresh the edge parser's per-baud RX edge-stamp compensation.
-    /// Routed from the composite after every applied baud change.
-    pub fn on_baud_change(&mut self, rx_edge_comp_ticks: u16) {
-        self.edge_capture.on_baud_change(rx_edge_comp_ticks);
-    }
 }
 
 // -- commands -----------------------------------------------------------
 
-impl<R: EdgeDma, CRC: CrcUmts, const RX_BUF_LEN: usize, const EDGE_BUF_LEN: usize>
-    CodecRx<R, CRC, RX_BUF_LEN, EDGE_BUF_LEN>
-{
+impl<CRC: CrcUmts, const RX_BUF_LEN: usize> CodecRx<CRC, RX_BUF_LEN> {
     /// Drain the RX byte ring through the streaming parser, fanning each
     /// event (or skip-complete pseudo-event) to `on_event`. Reads the
     /// front (pre-wrap) slice first, then the back (post-wrap) slice if
@@ -368,10 +347,12 @@ impl<R: EdgeDma, CRC: CrcUmts, const RX_BUF_LEN: usize, const EDGE_BUF_LEN: usiz
                     }
 
                     // Resolve packet-end timing so the Crc event carries a
-                    // primitive and the sink never reaches into the capture
-                    // half.
-                    let packet_end = matches!(ev, Event::Crc(_))
-                        .then(|| self.edge_capture.packet_end(ticks_per_bit, packet_end_comp));
+                    // primitive and the sink never reaches into the codec's
+                    // drain-ISR stash.
+                    let (isr_now, isr_src) = self.last_isr;
+                    let packet_end = matches!(ev, Event::Crc(_)).then(|| {
+                        packet_end::resolve(isr_src, isr_now, ticks_per_bit, packet_end_comp)
+                    });
 
                     match on_event(PollEvent::Parser {
                         ev,
@@ -571,20 +552,12 @@ impl<R: EdgeDma, CRC: CrcUmts, const RX_BUF_LEN: usize, const EDGE_BUF_LEN: usiz
 
 // -- accessors ------------------------------------------------------------
 
-impl<R: EdgeDma, CRC: CrcUmts, const RX_BUF_LEN: usize, const EDGE_BUF_LEN: usize>
-    CodecRx<R, CRC, RX_BUF_LEN, EDGE_BUF_LEN>
-{
+impl<CRC: CrcUmts, const RX_BUF_LEN: usize> CodecRx<CRC, RX_BUF_LEN> {
     /// Monotonic count of Instruction headers the parser has emitted.
     /// Foreign IDs count too (sink filters at its layer); Status frames
     /// don't.
     pub fn instruction_count(&self) -> u32 {
         self.instruction_count
-    }
-
-    /// Stable peripheral-memory address for DMA1_CH7's destination buffer.
-    /// Bringup hands this to `dma::configure(CH7, ...)`.
-    pub fn edges_addr(&self) -> usize {
-        self.edge_capture.edges_addr()
     }
 
     /// Stable peripheral-memory address for DMA1_CH5's destination buffer.
@@ -600,9 +573,7 @@ impl<R: EdgeDma, CRC: CrcUmts, const RX_BUF_LEN: usize, const EDGE_BUF_LEN: usiz
 }
 
 #[cfg(test)]
-impl<R: EdgeDma, CRC: CrcUmts, const RX_BUF_LEN: usize, const EDGE_BUF_LEN: usize>
-    CodecRx<R, CRC, RX_BUF_LEN, EDGE_BUF_LEN>
-{
+impl<CRC: CrcUmts, const RX_BUF_LEN: usize> CodecRx<CRC, RX_BUF_LEN> {
     /// Stage `bytes` into `rx_buf` starting at sequence `at` and publish
     /// the producer head to `at + bytes.len()`. Mirrors the chip-side
     /// DMA1_CH5 writer for host tests.
@@ -628,22 +599,6 @@ impl<R: EdgeDma, CRC: CrcUmts, const RX_BUF_LEN: usize, const EDGE_BUF_LEN: usiz
     pub(crate) fn wire_byte_cursor_for_test(&self) -> u32 {
         self.wire_bytes_consumed
     }
-
-    /// Stage ET-ring stamps matching `tail_bytes`' falling-edge signature so
-    /// [`EdgeCapture::anchor_at_tail`] resolves to `tail_anchor = anchor_tick`
-    /// when the codec's poll reaches the packet's Crc event. Returns the
-    /// number of edge stamps written — the caller staggers
-    /// `MockEdgeDma::remaining` so `EdgeCapture`'s edge publish advances
-    /// `write_seq` by that count.
-    pub(crate) fn stage_tail_signature_for_test(
-        &mut self,
-        tail_bytes: &[u8],
-        ticks_per_bit: u16,
-        anchor_tick: u16,
-    ) -> u16 {
-        self.edge_capture
-            .stage_tail_signature_for_test(tail_bytes, ticks_per_bit, anchor_tick)
-    }
 }
 
 #[cfg(test)]
@@ -652,25 +607,18 @@ mod tests {
 
     use super::*;
     use crate::dxl::uart::test_support::{TEST_ID, wire_ping, wire_status};
-    use crate::mocks::MockEdgeDma;
     use dxl_protocol::streaming::InstructionHeader;
     use dxl_protocol::types::Id;
     use dxl_protocol::{InstructionEncoder, SoftwareCrcUmts};
     use heapless::Vec;
 
     const RX_BUF_LEN: usize = 64;
-    const EDGE_BUF_LEN: usize = 128;
     const FOREIGN_ID: u8 = 0x42;
 
-    type TestRx = CodecRx<MockEdgeDma, SoftwareCrcUmts, RX_BUF_LEN, EDGE_BUF_LEN>;
+    type TestRx = CodecRx<SoftwareCrcUmts, RX_BUF_LEN>;
 
     fn make() -> TestRx {
-        // Tests stage bytes manually via `stage_rx_bytes_for_test`; the
-        // edge-ring DMA counter is never advanced by anything real, so
-        // `remaining()` can return a fixed value for every call.
-        let mut edge_dma = MockEdgeDma::default();
-        edge_dma.expect_remaining().returning(|| 0);
-        CodecRx::new(edge_dma)
+        CodecRx::new()
     }
 
     fn wire_write(id: u8, addr: u16, body: &[u8]) -> Vec<u8, 64> {

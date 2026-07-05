@@ -1,52 +1,33 @@
 //! Bytes ↔ packets. Composite over two field-projection halves — `CodecRx`
-//! (streaming parser + RX byte ring + edge capture + drift bookkeeping) and
-//! `CodecTx` (encoder + TX byte ring) — joined under `Codec`. The split lets
-//! the parent driver hand a `&mut CodecTx` reply handle to the dispatcher
-//! while a parser-event borrow lives in `CodecRx`.
+//! (streaming parser + RX byte ring + drift bookkeeping) and `CodecTx`
+//! (encoder + TX byte ring) — joined under `Codec`. The split lets the
+//! parent driver hand a `&mut CodecTx` reply handle to the dispatcher while
+//! a parser-event borrow lives in `CodecRx`.
 
-mod anchor;
 mod codec_rx;
 mod codec_tx;
-mod edge_capture;
-mod edge_parser;
+mod packet_end;
 mod poll_event;
 mod skip;
 mod span;
 
 pub use codec_rx::CodecRx;
-#[cfg(test)]
-pub(crate) use codec_rx::TAIL_BYTES_FOR_ANCHOR;
 pub use codec_tx::CodecTx;
-pub use edge_capture::EdgeCapture;
-pub use edge_parser::edge_buf_len;
 pub use poll_event::{PacketEnd, PollAction, PollEvent};
 
 use dxl_protocol::CrcUmts;
 
-use crate::traits::dxl::EdgeDma;
-
-pub struct Codec<
-    R: EdgeDma,
-    CRC: CrcUmts,
-    const RX_BUF_LEN: usize,
-    const EDGE_BUF_LEN: usize,
-    const TX_BUF_LEN: usize,
-> {
-    pub(super) rx: CodecRx<R, CRC, RX_BUF_LEN, EDGE_BUF_LEN>,
+pub struct Codec<CRC: CrcUmts, const RX_BUF_LEN: usize, const TX_BUF_LEN: usize> {
+    pub(super) rx: CodecRx<CRC, RX_BUF_LEN>,
     pub(super) tx: CodecTx<CRC, TX_BUF_LEN>,
 }
 
-impl<
-    R: EdgeDma,
-    CRC: CrcUmts,
-    const RX_BUF_LEN: usize,
-    const EDGE_BUF_LEN: usize,
-    const TX_BUF_LEN: usize,
-> Codec<R, CRC, RX_BUF_LEN, EDGE_BUF_LEN, TX_BUF_LEN>
+impl<CRC: CrcUmts, const RX_BUF_LEN: usize, const TX_BUF_LEN: usize>
+    Codec<CRC, RX_BUF_LEN, TX_BUF_LEN>
 {
-    pub fn new(ring: R) -> Self {
+    pub fn new() -> Self {
         Self {
-            rx: CodecRx::new(ring),
+            rx: CodecRx::new(),
             tx: CodecTx::new(),
         }
     }
@@ -70,14 +51,6 @@ impl<
         self.rx.on_byte_batch_wake(now, byte_ticks)
     }
 
-    /// Forward to [`CodecRx::on_baud_change`]. The `rx_edge_comp_ticks`
-    /// plumbing now feeds only the edge parser's tail-anchor/walk, which
-    /// lost its live callers with the drift-span swap — kept until the
-    /// edge subsystem is removed in the deletion chunk.
-    pub fn on_baud_change(&mut self, rx_edge_comp_ticks: u16) {
-        self.rx.on_baud_change(rx_edge_comp_ticks);
-    }
-
     // -- commands -----------------------------------------------------------
 
     pub fn cancel_skip(&mut self) {
@@ -87,12 +60,7 @@ impl<
     /// Disjoint mutable borrow of the RX and TX halves. The parent driver's
     /// `poll` uses this to hand the dispatcher a `&mut CodecTx` reply handle
     /// while a parser event borrow lives in `&mut CodecRx`.
-    pub fn split_mut(
-        &mut self,
-    ) -> (
-        &mut CodecRx<R, CRC, RX_BUF_LEN, EDGE_BUF_LEN>,
-        &mut CodecTx<CRC, TX_BUF_LEN>,
-    ) {
+    pub fn split_mut(&mut self) -> (&mut CodecRx<CRC, RX_BUF_LEN>, &mut CodecTx<CRC, TX_BUF_LEN>) {
         (&mut self.rx, &mut self.tx)
     }
 
@@ -100,10 +68,6 @@ impl<
 
     pub fn instruction_count(&self) -> u32 {
         self.rx.instruction_count()
-    }
-
-    pub fn edges_addr(&self) -> usize {
-        self.rx.edges_addr()
     }
 
     pub fn rx_buf_addr(&self) -> usize {
@@ -119,14 +83,17 @@ impl<
     }
 }
 
+impl<CRC: CrcUmts, const RX_BUF_LEN: usize, const TX_BUF_LEN: usize> Default
+    for Codec<CRC, RX_BUF_LEN, TX_BUF_LEN>
+{
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 #[cfg(test)]
-impl<
-    R: EdgeDma,
-    CRC: CrcUmts,
-    const RX_BUF_LEN: usize,
-    const EDGE_BUF_LEN: usize,
-    const TX_BUF_LEN: usize,
-> Codec<R, CRC, RX_BUF_LEN, EDGE_BUF_LEN, TX_BUF_LEN>
+impl<CRC: CrcUmts, const RX_BUF_LEN: usize, const TX_BUF_LEN: usize>
+    Codec<CRC, RX_BUF_LEN, TX_BUF_LEN>
 {
     // Test-only forwarders — production reaches both halves through
     // `split_mut`; only this crate's tests drive the halves through the
@@ -146,15 +113,5 @@ impl<
 
     pub(crate) fn stage_rx_bytes_for_test(&mut self, at: u16, bytes: &[u8]) {
         self.rx.stage_rx_bytes_for_test(at, bytes);
-    }
-
-    pub(crate) fn stage_tail_signature_for_test(
-        &mut self,
-        tail_bytes: &[u8],
-        ticks_per_bit: u16,
-        anchor_tick: u16,
-    ) -> u16 {
-        self.rx
-            .stage_tail_signature_for_test(tail_bytes, ticks_per_bit, anchor_tick)
     }
 }

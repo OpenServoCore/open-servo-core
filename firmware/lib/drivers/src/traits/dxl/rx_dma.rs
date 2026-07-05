@@ -8,8 +8,8 @@ pub struct DmaFlags {
 /// RX byte-ring DMA channel — NDTR accessor + HT/TC flag ack. The RX DMA
 /// channel itself runs unconditionally (USART RX → byte ring); HT/TC
 /// triggers a publish-only ISR (no parser drain, no codec poll) so the
-/// codec's view of `write_seq` stays within `RX_BUF_LEN/2` of the wire
-/// regardless of edge-ring cadence. The driver borrows one through its
+/// codec's view of `write_seq` stays within `RX_BUF_LEN/2` of the wire.
+/// The driver borrows one through its
 /// [`Providers`] bundle. Always live — no pause/resume; redundant
 /// publishes during Fast Last cost ~10 cycles and don't perturb the
 /// catchup body's `drain_raw`-driven NDTR refresh.
@@ -27,10 +27,11 @@ pub trait RxDma {
     /// Open the per-byte wake window a deferred FAST slot k > 0 uses to
     /// observe the Status packet's first byte: each received byte routes
     /// one `DxlUart::on_status_start` wake until [`Self::unwatch_status_start`]
-    /// closes the window. The wake is timing-agnostic — the observed tick
-    /// comes from the edge-capture ring, never from the wake itself.
-    /// Spurious wakes are the driver's problem (cursor-qualified there),
-    /// so the provider needs no per-byte state.
+    /// closes the window. The wake is timing-agnostic — the observed start
+    /// tick is derived by back-dating the byte ring's published cursor, not
+    /// from the wake's own entry time. Spurious wakes are the driver's
+    /// problem (cursor-qualified there), so the provider needs no per-byte
+    /// state.
     fn watch_status_start(&mut self);
 
     /// Close the per-byte wake window — the status start was observed

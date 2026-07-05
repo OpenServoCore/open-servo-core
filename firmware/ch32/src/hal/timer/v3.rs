@@ -1,15 +1,7 @@
-use ch32_metapac::timer::vals::{CcmrInputCcs, CcmrOutputCcs, Ckd, Cms, FilterValue, Mms, Ocm};
+use ch32_metapac::timer::vals::{CcmrOutputCcs, Ckd, Cms, Mms, Ocm};
 use ch32_metapac::{TIM1, TIM2};
-use portable_atomic::{AtomicU8, Ordering};
 
 use crate::hal::clocks::TIM_CLK_HZ;
-
-/// Last-applied CH4 input-capture filter, cached so [`tim2_ch4_to_ic`] can
-/// restore it after a TX-kickoff OC window — the OC-mode CCMR2 rewrite
-/// aliases the ICF bits away. Written by [`init_tim2_ch4_ic_capture`] and
-/// [`set_tim2_ch4_icf`] (the baud provider's runtime path); all writers and
-/// the restore ISR share PFIC HIGH.
-static TIM2_CH4_ICF: AtomicU8 = AtomicU8::new(0);
 
 #[derive(Copy, Clone)]
 pub enum Polarity {
@@ -88,88 +80,44 @@ pub fn start() {
     TIM1.ctlr1().modify(|w| w.set_cen(true));
 }
 
-/// Free-run TIM2 @ HCLK (ARR=0xFFFF, PSC=0) with CH4 as a falling-edge
-/// input capture, no input prescaler, baud-derived input filter. Each
-/// capture latches the 16-bit TIM2 count into CCR4 and fires a DMA1_CH7
-/// request (CCDE.CC4). Caller wires PC1 to TIM2 via the AFIO remap and
-/// picks `boot_filter` for the baud at boot; this just programs the timer.
+/// Free-run TIM2 @ HCLK (ARR=0xFFFF, PSC=0) with CH4 as a permanent,
+/// pin-less output compare feeding the DMA1_CH7 TX kickoff (doc §5).
+/// OC4M=Frozen keeps OC4REF off PC1 (the live RX pin) and CC4E stays 0 (no
+/// pin drive); the CC4 compare EVENT still fires the CC4DE-gated DMA
+/// request (spike-verified — the RM only documents CC4E as an
+/// output/capture enable). The scheduler writes CCR4 per fire via
+/// [`set_tim2_ccr4`] / `tx_kickoff::arm`.
 ///
-/// CKD=0 pins `fDTS = fck_int = HCLK = 48 MHz`. RM default is already 0,
-/// but the IC4F picker math (`docs/dxl-hw-timed-transport.md` §8.1) is
-/// only valid under that assumption — defensive coupling.
-pub fn init_tim2_ch4_ic_capture(boot_filter: FilterValue) {
+/// CKD=0 pins `fDTS = fck_int = HCLK = 48 MHz`. The SysTick/TIM2 co-zero
+/// below locks the low-16-bit alignment the TX scheduler relies on to
+/// truncate a u32 WireClock deadline into a CCR4/CCR2 compare.
+pub fn init_tim2_ch4_oc_kickoff() {
     TIM2.psc().write_value(0);
     TIM2.atrlr().write_value(0xFFFF);
     TIM2.ctlr1().modify(|w| w.set_ckd(Ckd::DIV_1));
-    TIM2_CH4_ICF.store(boot_filter.to_bits(), Ordering::Relaxed);
-    ch4_input_shape(boot_filter);
+    ch4_oc_frozen();
     TIM2.dmaintenr().modify(|w| w.set_ccde(3, true));
-    // `EdgeParser` lifts u16 IC4 stamps to u32 wire-time against
-    // `WireClock::now()` (SysTick u32) by assuming the low 16 bits match.
-    // The two counters share HCLK, so co-zeroing them in adjacent writes
-    // immediately before TIM2.CEN=true locks the invariant in. Residual
-    // offset is the HCLK gap between this SysTick CNT store and the TIM2
-    // CEN store taking effect — one APB1 RMW, ~10 HCLK cycles, sub-tick
-    // at any DXL baud. TIM2.CNT is already 0 (peripheral reset, CEN was
-    // never on). Post-boot: no code may reset CNT on either timer or the
-    // lift contract is broken silently.
+    // TIM2.CNT and SysTick share HCLK; co-zeroing them in adjacent writes
+    // immediately before TIM2.CEN=true aligns their low 16 bits so the TX
+    // scheduler can arm CCR4/CCR2 by truncating a u32 SysTick deadline.
+    // Residual offset is the HCLK gap between this SysTick CNT store and
+    // the TIM2 CEN store taking effect — one APB1 RMW, ~10 HCLK cycles,
+    // sub-tick at any DXL baud. TIM2.CNT is already 0 (peripheral reset,
+    // CEN was never on). Post-boot: no code may reset CNT on either timer
+    // or the alignment breaks silently.
     crate::hal::systick::reset_cnt();
     TIM2.ctlr1().modify(|w| w.set_cen(true));
 }
 
-/// Update the CH4 input-capture filter (IC4F) — the runtime mutation path
-/// invoked by the USART baud provider at `apply_baud`.
-#[inline]
-pub fn set_tim2_ch4_icf(value: FilterValue) {
-    TIM2_CH4_ICF.store(value.to_bits(), Ordering::Relaxed);
-    TIM2.chctlr_input(1).modify(|w| w.set_icf(1, value));
-}
-
-/// CH4's input-capture register shape: TI4 direct, no prescaler, falling
-/// edge, capture enabled. Shared by boot init and the post-kickoff
-/// restore. CC4E drops first — CC4S is only writable while the channel is
-/// disabled (RM §12.4.8).
-fn ch4_input_shape(filter: FilterValue) {
-    TIM2.ccer().modify(|w| w.set_cce(3, false));
-    TIM2.chctlr_input(1).modify(|w| {
-        w.set_ccs(1, CcmrInputCcs::TI4);
-        w.set_icpsc(1, 0);
-        w.set_icf(1, filter);
-    });
-    TIM2.ccer().modify(|w| {
-        w.set_ccp(3, true);
-        w.set_cce(3, true);
-    });
-}
-
-/// Swap CH4 from input capture to output compare and arm CCR4 — the TX
-/// kickoff window (doc §5). OC4M=Frozen keeps OC4REF off PC1 (the live RX
-/// pin) and CC4E stays 0 (no pin drive); the CC4 compare EVENT still fires
-/// the CC4DE-gated DMA request (spike-verified — the RM only documents
-/// CC4E as an output/capture enable).
-#[inline]
-pub fn tim2_ch4_to_oc(compare: u16) {
+/// CH4 as a pin-less output compare: OC4M=Frozen, CC4E=0. CC4E drops first
+/// — CC4S is only writable while the channel is disabled (RM §12.4.8).
+fn ch4_oc_frozen() {
     TIM2.ccer().modify(|w| w.set_cce(3, false));
     TIM2.chctlr_output(1).modify(|w| {
         w.set_ccs(1, CcmrOutputCcs::OUTPUT);
         w.set_ocm(1, Ocm::FROZEN);
         w.set_ocpe(1, false);
     });
-    // CCR4 before the flag clear: a stale match on the OLD compare value
-    // between these two writes still gets wiped, so once the flag is
-    // clean any CC4 request can only come from a real match on the new
-    // compare. The caller enables the kickoff channel only after this
-    // returns — see `tx_kickoff::arm`'s ordering contract.
-    TIM2.chcvr(3).write_value(compare);
-    clear_tim2_cc4_flag();
-}
-
-/// Restore CH4 to the falling-edge input capture after a TX-kickoff OC
-/// window, re-applying the cached IC filter.
-#[inline]
-pub fn tim2_ch4_to_ic() {
-    ch4_input_shape(FilterValue::from_bits(TIM2_CH4_ICF.load(Ordering::Relaxed)));
-    clear_tim2_cc4_flag();
 }
 
 /// CC4IF is rc_w0 — write 0 to clear (bit 4), 1 elsewhere to leave alone.
@@ -185,13 +133,6 @@ pub fn clear_tim2_cc4_flag() {
 #[inline]
 pub fn set_tim2_ccr4(value: u16) {
     TIM2.chcvr(3).write_value(value);
-}
-
-/// Peripheral address of TIM2.CCR4 for the DMA1_CH7 PAR. CCR4 is the 16-bit
-/// capture register — `chcvr(3)` is metapac's zero-based accessor.
-#[inline]
-pub fn tim2_ch4_capture_addr() -> u32 {
-    TIM2.chcvr(3).as_ptr() as u32
 }
 
 /// CH2 as output-compare on top of the already-running TIM2 free-run. CH2

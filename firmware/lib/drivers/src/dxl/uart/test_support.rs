@@ -15,8 +15,8 @@ use dxl_protocol::{Id, InstructionEncoder, SoftwareCrcUmts, StatusEncoder, Statu
 use osc_core::BaudRate;
 
 use crate::mocks::{
-    FastLastSchedulerOp, MockClockTrim, MockEdgeDma, MockFastLastScheduler, MockRxDma,
-    MockTelemetry, MockTxBus, MockTxScheduler, MockUsartBaud, MockWireClock, ScheduleOp, TxBusOp,
+    FastLastSchedulerOp, MockClockTrim, MockFastLastScheduler, MockRxDma, MockTelemetry, MockTxBus,
+    MockTxScheduler, MockUsartBaud, MockWireClock, ScheduleOp, TxBusOp,
 };
 use crate::traits::dxl::DmaFlags;
 
@@ -34,8 +34,7 @@ pub(crate) const TICKS_PER_US: u32 = 48;
 /// stay well inside a single u16 window at all tested bauds.
 pub(crate) const SEED_TICK: u16 = 1000;
 
-/// `ticks_per_bit` at `BaudRate::B3000000`, HCLK 48 MHz. Matches
-/// `edge_parser::tests::TPB_3M`.
+/// `ticks_per_bit` at `BaudRate::B3000000`, HCLK 48 MHz.
 pub(crate) const TICKS_PER_BIT_3M: u16 = 16;
 
 // ------------------------------------------------------------------
@@ -53,9 +52,8 @@ impl UsartBaudState {
     }
 }
 
-/// `MockUsartBaud` with a call log for `apply_baud` and `rx_edge_comp_ticks`
-/// wired to a constant `0`. Tests that don't care about the log drop the
-/// state via `let (m, _) = mk_usart_baud()`.
+/// `MockUsartBaud` with a call log for `apply_baud`. Tests that don't care
+/// about the log drop the state via `let (m, _) = mk_usart_baud()`.
 pub(crate) fn mk_usart_baud() -> (MockUsartBaud, UsartBaudState) {
     let state = UsartBaudState::default();
     let mut m = MockUsartBaud::new();
@@ -65,7 +63,6 @@ pub(crate) fn mk_usart_baud() -> (MockUsartBaud, UsartBaudState) {
             log.borrow_mut().push(b);
         });
     }
-    m.expect_rx_edge_comp_ticks().returning_st(|_| 0);
     (m, state)
 }
 
@@ -221,28 +218,6 @@ pub(crate) fn mk_rx_dma() -> (MockRxDma, RxDmaState) {
     (m, state)
 }
 
-#[derive(Clone, Default)]
-pub(crate) struct EdgeDmaState {
-    remaining: Rc<Cell<u16>>,
-}
-
-impl EdgeDmaState {
-    pub(crate) fn stage_remaining(&self, n: u16) {
-        self.remaining.set(n);
-    }
-}
-
-/// `MockEdgeDma` whose `remaining()` reads the staged counter.
-pub(crate) fn mk_edge_dma() -> (MockEdgeDma, EdgeDmaState) {
-    let state = EdgeDmaState::default();
-    let mut m = MockEdgeDma::default();
-    {
-        let r = state.remaining.clone();
-        m.expect_remaining().returning_st(move || r.get());
-    }
-    (m, state)
-}
-
 /// Unified state companion for `MockFastLastScheduler` — carries every knob
 /// any consumer stages (composite, `FsmScheduler`, and `ReplyHandle` tests
 /// share this one shape).
@@ -309,33 +284,23 @@ pub(crate) fn mk_fast_last() -> (MockFastLastScheduler, FastLastState) {
     (m, state)
 }
 
-/// Counter companion for `MockTelemetry` — both miss counters accumulate
-/// so composite tests assert on observed telemetry.
+/// Counter companion for `MockTelemetry` — the miss counter accumulates so
+/// composite tests assert on observed telemetry.
 #[derive(Clone, Default)]
 pub(crate) struct TelemetryState {
-    edge_anchor_misses: Rc<Cell<u32>>,
     patch_misses: Rc<Cell<u32>>,
 }
 
 impl TelemetryState {
-    pub(crate) fn edge_anchor_miss_count(&self) -> u32 {
-        self.edge_anchor_misses.get()
-    }
     pub(crate) fn patch_miss_count(&self) -> u32 {
         self.patch_misses.get()
     }
 }
 
-/// `MockTelemetry` bumping the state companion's counters.
+/// `MockTelemetry` bumping the state companion's counter.
 pub(crate) fn mk_telemetry() -> (MockTelemetry, TelemetryState) {
     let state = TelemetryState::default();
     let mut m = MockTelemetry::new();
-    {
-        let c = state.edge_anchor_misses.clone();
-        m.expect_record_edge_anchor_miss().returning_st(move || {
-            c.set(c.get().wrapping_add(1));
-        });
-    }
     {
         let c = state.patch_misses.clone();
         m.expect_record_crc_patch_deadline_miss()

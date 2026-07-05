@@ -47,19 +47,12 @@ pub(crate) const BITS_PER_FRAME: u16 = 10;
 /// driver pulls — see [`Providers`]. The const generics are storage sizes:
 ///
 /// - `RX_BUF_LEN`: DMA1_CH5 byte-ring depth (typically 64 per doc §8.1).
-/// - `EDGE_BUF_LEN`: DMA1_CH7 edge-timestamp ring depth (typically 128 /
-///   option A in doc §8.4; 64 / option B trades CPU for memory).
 /// - `TX_BUF_LEN`: DMA1_CH4 source-buffer depth sized to
 ///   `osc_core::services::dxl::limits::DXL_TX_MAX_BYTES` (140 with the
 ///   default control-RW). Held by `Codec` so encoder methods write into
 ///   driver-owned storage instead of a chip-side static.
-pub struct DxlUart<
-    P: Providers,
-    const RX_BUF_LEN: usize,
-    const EDGE_BUF_LEN: usize,
-    const TX_BUF_LEN: usize,
-> {
-    codec: Codec<P::EdgeDma, P::Crc, RX_BUF_LEN, EDGE_BUF_LEN, TX_BUF_LEN>,
+pub struct DxlUart<P: Providers, const RX_BUF_LEN: usize, const TX_BUF_LEN: usize> {
+    codec: Codec<P::Crc, RX_BUF_LEN, TX_BUF_LEN>,
     clock: Clock<P::UsartBaud, P::ClockTrim>,
     /// NDTR-only readback for DMA1_CH5 (the RX byte ring). Plumbed
     /// independently of the parser-path `on_rx_progress` calls so the
@@ -107,12 +100,12 @@ pub struct DxlUart<
     rx_wake: RxWakeGate,
 }
 
-impl<P: Providers, const RX_BUF_LEN: usize, const EDGE_BUF_LEN: usize, const TX_BUF_LEN: usize>
-    DxlUart<P, RX_BUF_LEN, EDGE_BUF_LEN, TX_BUF_LEN>
+impl<P: Providers, const RX_BUF_LEN: usize, const TX_BUF_LEN: usize>
+    DxlUart<P, RX_BUF_LEN, TX_BUF_LEN>
 {
     #[allow(clippy::too_many_arguments)]
     pub fn new(
-        codec: Codec<P::EdgeDma, P::Crc, RX_BUF_LEN, EDGE_BUF_LEN, TX_BUF_LEN>,
+        codec: Codec<P::Crc, RX_BUF_LEN, TX_BUF_LEN>,
         clock: Clock<P::UsartBaud, P::ClockTrim>,
         rx_dma: P::RxDma,
         scheduler: P::TxScheduler,
@@ -135,11 +128,6 @@ impl<P: Providers, const RX_BUF_LEN: usize, const EDGE_BUF_LEN: usize, const TX_
             send_policy: SendPolicy::new(id, rdt_us),
             rx_wake: RxWakeGate::new(),
         };
-        // Seed the codec's edge parser with the Clock's initial-baud
-        // edge-stamp compensation. Subsequent baud changes re-publish via
-        // `Self::on_tx_complete` after `Clock::on_tx_complete` applies the
-        // pending baud.
-        s.codec.on_baud_change(s.clock.rx_edge_comp_ticks());
         // Cold-start drift window: hold the per-byte RX wake open from boot
         // so the first short-packet exchange lands the factory-drift
         // correction (isolated pings form no drain-ISR span pairs).
@@ -358,7 +346,7 @@ impl<P: Providers, const RX_BUF_LEN: usize, const EDGE_BUF_LEN: usize, const TX_
     #[cfg_attr(target_arch = "riscv32", unsafe(link_section = ".highcode"))]
     #[inline(never)]
     fn checkpoint_pickup_body(
-        rx: &mut codec::CodecRx<P::EdgeDma, P::Crc, RX_BUF_LEN, EDGE_BUF_LEN>,
+        rx: &mut codec::CodecRx<P::Crc, RX_BUF_LEN>,
         rx_dma: &mut P::RxDma,
         fl_crc: &mut fast_last::FoldEngine,
         tx: &mut codec::CodecTx<P::Crc, TX_BUF_LEN>,
@@ -426,10 +414,6 @@ impl<P: Providers, const RX_BUF_LEN: usize, const EDGE_BUF_LEN: usize, const TX_
         self.codec.cancel_skip();
         let reboot = self.send_policy.on_tx_complete();
         let baud_changed = self.clock.on_tx_complete();
-        // Clock just applied any pending baud — refresh the codec's edge
-        // parser with the new per-baud edge-stamp compensation. Idempotent
-        // when no baud change landed (the value is the same as before).
-        self.codec.on_baud_change(self.clock.rx_edge_comp_ticks());
         // A new divisor invalidates the in-flight drift batch — reopen the
         // window so the first packet at the new baud re-lands the trim.
         if baud_changed {
@@ -466,11 +450,9 @@ impl<P: Providers, const RX_BUF_LEN: usize, const EDGE_BUF_LEN: usize, const TX_
     {
         // Fold window is owned by `drain_raw` via `on_fold_step` /
         // `on_tx_start`; the parser path must not touch the ring or its
-        // cursor while a Fast Last fold is in flight. `pause_edges()`
-        // stops future edge-DMA advancing, but IDLE-triggered and RX
-        // byte-ring HT/TC-triggered polls still need this entry gate to
-        // honor the RX-tail ownership contract in
-        // `dxl-streaming-rx.md` §6.
+        // cursor while a Fast Last fold is in flight. IDLE-triggered and RX
+        // byte-ring HT/TC-triggered polls need this entry gate to honor the
+        // RX-tail ownership contract in `dxl-streaming-rx.md` §6.
         if self.fast_last.fold_active() {
             return;
         }
@@ -525,11 +507,11 @@ impl<P: Providers, const RX_BUF_LEN: usize, const EDGE_BUF_LEN: usize, const TX_
                 // If `f()` engaged the Fast Last fold (via
                 // `send_slot(Last)`), the in-flight poll must exit before
                 // the parser eats any more bytes — those bytes belong to
-                // the fold engine. The SysTick CMP grid's `pause_edges()`
-                // stops future polls only; without this bail-out the
-                // parser+skip path consumes the predecessor's leading
-                // bytes in the same poll that engaged the fold, and the
-                // fold engine starves. A deferred successor wait
+                // the fold engine. The poll entry gate above stops FUTURE
+                // polls only; without this bail-out the parser+skip path
+                // consumes the predecessor's leading bytes in the same poll
+                // that engaged the fold, and the fold engine starves. A
+                // deferred successor wait
                 // (`send_slot` k > 0, fold not yet started) owns
                 // those bytes the same way — mirror of the poll entry
                 // gate above, for the poll already in flight.
@@ -591,11 +573,6 @@ impl<P: Providers, const RX_BUF_LEN: usize, const EDGE_BUF_LEN: usize, const TX_
         self.codec.instruction_count()
     }
 
-    /// Stable peripheral-memory address for DMA1_CH7's destination buffer.
-    pub fn edges_addr(&self) -> usize {
-        self.codec.edges_addr()
-    }
-
     /// Stable peripheral-memory address for DMA1_CH5's destination buffer.
     pub fn rx_buf_addr(&self) -> usize {
         self.codec.rx_buf_addr()
@@ -617,17 +594,15 @@ impl<P: Providers, const RX_BUF_LEN: usize, const EDGE_BUF_LEN: usize, const TX_
 mod tests {
     extern crate alloc;
 
-    use super::codec::TAIL_BYTES_FOR_ANCHOR;
     use super::test_support::{
-        EdgeDmaState, FastLastState, RxDmaState, SEED_TICK, SchedState, TEST_ID, TEST_RDT_US,
-        TICKS_PER_BIT_3M, TICKS_PER_US, TelemetryState, TxBusState, WireClockState, mk_clock_trim,
-        mk_edge_dma, mk_fast_last, mk_rx_dma, mk_scheduler, mk_telemetry, mk_tx_bus, mk_usart_baud,
-        mk_wire_clock, wire_ping, wire_status,
+        FastLastState, RxDmaState, SEED_TICK, SchedState, TEST_ID, TEST_RDT_US, TICKS_PER_BIT_3M,
+        TICKS_PER_US, TelemetryState, TxBusState, WireClockState, mk_clock_trim, mk_fast_last,
+        mk_rx_dma, mk_scheduler, mk_telemetry, mk_tx_bus, mk_usart_baud, mk_wire_clock, wire_ping,
+        wire_status,
     };
     use super::*;
     use crate::mocks::{
-        FastLastSchedulerOp, MockClockTrim, MockEdgeDma, MockUsartBaud, ScheduleOp, TestProviders,
-        TxBusOp,
+        FastLastSchedulerOp, MockClockTrim, MockUsartBaud, ScheduleOp, TestProviders, TxBusOp,
     };
     use crate::traits::dxl::SendKind;
     use dxl_protocol::streaming::{HeaderEvent, InstructionHeader};
@@ -641,17 +616,15 @@ mod tests {
     /// 8.4 so any drift between driver tests and chip-side reality stays
     /// visible.
     const RX_BUF_LEN: usize = 64;
-    const EDGE_BUF_LEN: usize = 128;
     const TX_BUF_LEN: usize = 140;
 
-    type TestCodec = Codec<MockEdgeDma, SoftwareCrcUmts, RX_BUF_LEN, EDGE_BUF_LEN, TX_BUF_LEN>;
-    type TestBus = DxlUart<TestProviders, RX_BUF_LEN, EDGE_BUF_LEN, TX_BUF_LEN>;
+    type TestCodec = Codec<SoftwareCrcUmts, RX_BUF_LEN, TX_BUF_LEN>;
+    type TestBus = DxlUart<TestProviders, RX_BUF_LEN, TX_BUF_LEN>;
 
     struct TestState {
         sch: SchedState,
         tx_bus: TxBusState,
         rx: RxDmaState,
-        edge: EdgeDmaState,
         fl: FastLastState,
         telemetry: TelemetryState,
         wire: WireClockState,
@@ -661,11 +634,7 @@ mod tests {
         Clock::new(baud, mk_usart_baud().0, mk_clock_trim().0)
     }
 
-    fn make_bus_with(
-        codec: TestCodec,
-        edge_state: EdgeDmaState,
-        baud: BaudRate,
-    ) -> (TestBus, TestState) {
+    fn make_bus_with(codec: TestCodec, baud: BaudRate) -> (TestBus, TestState) {
         let (rx_dma, rx_state) = mk_rx_dma();
         let (scheduler, sch_state) = mk_scheduler();
         let (tx_bus, tx_bus_state) = mk_tx_bus();
@@ -690,7 +659,6 @@ mod tests {
                 sch: sch_state,
                 tx_bus: tx_bus_state,
                 rx: rx_state,
-                edge: edge_state,
                 fl: fl_state,
                 telemetry: telemetry_state,
                 wire: wire_state,
@@ -699,26 +667,13 @@ mod tests {
     }
 
     fn make_bus() -> (TestBus, TestState) {
-        let (edge_dma, edge_state) = mk_edge_dma();
-        make_bus_with(Codec::new(edge_dma), edge_state, BaudRate::B3000000)
+        make_bus_with(Codec::new(), BaudRate::B3000000)
     }
 
-    /// Stage a matching falling-edge signature for the last 4 bytes of `pkt`
-    /// so `codec.poll`'s `anchor_at_tail` at Crc-good plants the FAST
-    /// status-start mark, and stash the ByteBatch wake at `SEED_TICK` so the
-    /// codec's packet-end estimate reads `SEED_TICK` (ByteBatch fallback =
-    /// `now`).
-    fn force_anchor(bus: &mut TestBus, state: &TestState, pkt: &[u8]) {
-        let tail_len = TAIL_BYTES_FOR_ANCHOR.min(pkt.len());
-        let tail = &pkt[pkt.len() - tail_len..];
-        let total_edges =
-            bus.codec
-                .stage_tail_signature_for_test(tail, TICKS_PER_BIT_3M, SEED_TICK);
-        // `on_publish(remaining)` will advance `write_seq` by `total_edges`
-        // (from ring position 0 to `total_edges`).
-        state
-            .edge
-            .stage_remaining((EDGE_BUF_LEN as u16) - total_edges);
+    /// Stash a ByteBatch drain-ISR wake at `SEED_TICK` so the codec's
+    /// packet-end estimate reads `SEED_TICK` at the next Crc (ByteBatch
+    /// fallback = `now`, entry-comp 0).
+    fn seed_packet_end_wake(bus: &mut TestBus) {
         let byte_ticks = bus.clock.byte_ticks() as u32;
         let _ = bus.codec.on_byte_batch_wake(SEED_TICK as u32, byte_ticks);
     }
@@ -797,13 +752,11 @@ mod tests {
     /// Construct a bus pre-loaded with `pkt` bytes and a stashed ByteBatch
     /// wake at [`SEED_TICK`] so the codec's packet-end estimate reads
     /// `SEED_TICK` (ByteBatch fallback = `now`, entry-comp 0) at Crc-good.
-    /// Also stages the tail signature so `anchor_at_tail` plants the FAST
-    /// status-start mark for the deferred-slot tests. Returns the bus,
-    /// state, and expected packet-end tick.
+    /// Returns the bus, state, and expected packet-end tick.
     fn bus_seeded_with(pkt: &[u8]) -> (TestBus, TestState, u32) {
         let (mut bus, state) = make_bus();
         stage_rx(&mut bus, &state, 0, pkt);
-        force_anchor(&mut bus, &state, pkt);
+        seed_packet_end_wake(&mut bus);
         let packet_end_tick = SEED_TICK as u32;
         (bus, state, packet_end_tick)
     }
@@ -863,9 +816,6 @@ mod tests {
         assert!(tags.contains(&Tag::InstrPing(TEST_ID)));
         assert!(saw_crc(&tags));
         assert_eq!(bus.instruction_count(), 1);
-        // Packet-end is the fallback estimate now — no anchor back-search,
-        // so the edge-anchor-miss counter never ticks.
-        assert_eq!(state.telemetry.edge_anchor_miss_count(), 0);
     }
 
     #[test]

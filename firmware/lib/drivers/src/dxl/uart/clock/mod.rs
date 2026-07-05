@@ -92,13 +92,6 @@ impl<U: UsartBaud, T: ClockTrim> Clock<U, T> {
         self.cache.ticks_per_bit()
     }
 
-    /// Per-baud RX edge-stamp compensation in HCLK ticks. See
-    /// [`BaudCache::rx_edge_comp_ticks`].
-    #[inline(always)]
-    pub fn rx_edge_comp_ticks(&self) -> u16 {
-        self.cache.rx_edge_comp_ticks()
-    }
-
     /// Wire-byte duration in monotonic timer ticks at the current baud. See
     /// [`BaudCache::bytes_to_ticks`].
     pub fn bytes_to_ticks(&self, bytes: u32) -> u32 {
