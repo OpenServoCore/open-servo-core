@@ -8,9 +8,11 @@
 mod buf;
 pub mod crc;
 pub mod encoder;
+pub mod frame;
 pub mod log;
 pub mod streaming;
 pub mod types;
+pub mod unstuff;
 pub mod wire;
 
 #[cfg(any(test, feature = "test-util"))]
@@ -21,6 +23,8 @@ pub use buf::{Chunk, WriteBuf, WriteError};
 pub use crc::SoftwareCrcUmts;
 pub use crc::{CrcUmts, crc16_umts_continue};
 pub use encoder::{InstructionEncoder, SlotEncoder, StatusEncoder};
+pub use frame::{FrameKind, ParseError, Probe, RawFrame, parse, probe};
 pub use types::{
     BulkReadEntry, ErrorCode, Id, Instruction, PingStatus, Slot, SlotPosition, Status, StatusError,
 };
+pub use unstuff::Bytes;

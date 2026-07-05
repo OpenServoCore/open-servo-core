@@ -4,6 +4,7 @@
 
 mod id;
 mod instruction;
+pub mod packet;
 mod reply;
 mod status;
 
