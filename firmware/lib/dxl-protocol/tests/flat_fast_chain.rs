@@ -1,12 +1,13 @@
 //! FAST Sync/Bulk Read coalesced reply: build an official-format chain with
-//! the existing `SlotEncoder`, then walk it with the new codec and verify
+//! the `encode_slot` emitter, then walk it with the new codec and verify
 //! every cumulative checkpoint. Corruption must surface at the offending
 //! block index, not at the end.
 
 use dxl_protocol::SoftwareCrcUmts as Crc;
+use dxl_protocol::encode::encode_slot;
 use dxl_protocol::frame::{FrameKind, parse};
 use dxl_protocol::types::packet::{ChainStatusBlocks, ChainStatusError};
-use dxl_protocol::{Id, Slot, SlotEncoder, SlotPosition, StatusError, crc16_umts_continue};
+use dxl_protocol::{Id, Slot, SlotPosition, StatusError, crc16_umts_continue};
 use heapless::Vec as HVec;
 
 type Buf = HVec<u8, 256>;
@@ -26,35 +27,38 @@ fn build_chain(blocks: &[Block]) -> Buf {
     // INST(1) + n*(err+id+crc = 4) + Σ data.
     let packet_length = (1 + n * 4 + data_bytes) as u16;
 
-    let mut buf = Buf::new();
+    let mut scratch = [0u8; 256];
+    let mut pos = 0;
     {
         let first = &blocks[0];
-        SlotEncoder::<_, Crc>::new(&mut buf)
-            .emit(
-                &Slot {
-                    id: Id::new(first.id),
-                    error: first.error,
-                    data: first.data,
-                },
-                SlotPosition::First { packet_length },
-            )
-            .unwrap();
+        pos += encode_slot::<Crc>(
+            &mut scratch[pos..],
+            &Slot {
+                id: Id::new(first.id),
+                error: first.error,
+                data: first.data,
+            },
+            SlotPosition::First { packet_length },
+        )
+        .unwrap();
     }
     for b in &blocks[1..] {
-        let mut crc = crc16_umts_continue(0, &buf);
+        let mut crc = crc16_umts_continue(0, &scratch[..pos]);
         crc = crc16_umts_continue(crc, &[b.error.as_byte(), b.id]);
         crc = crc16_umts_continue(crc, b.data);
-        SlotEncoder::<_, Crc>::new(&mut buf)
-            .emit(
-                &Slot {
-                    id: Id::new(b.id),
-                    error: b.error,
-                    data: b.data,
-                },
-                SlotPosition::Successor { crc },
-            )
-            .unwrap();
+        pos += encode_slot::<Crc>(
+            &mut scratch[pos..],
+            &Slot {
+                id: Id::new(b.id),
+                error: b.error,
+                data: b.data,
+            },
+            SlotPosition::Successor { crc },
+        )
+        .unwrap();
     }
+    let mut buf = Buf::new();
+    buf.extend_from_slice(&scratch[..pos]).unwrap();
     buf
 }
 

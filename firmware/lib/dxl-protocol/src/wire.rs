@@ -1,6 +1,6 @@
-//! Framing constants shared by encoder and decoder.
+//! Framing constants shared by the frame emitters and the decoder.
 //!
-//! Encoder-private stuffing constants live in [`crate::encoder::stuffing`].
+//! The stuffing byte-window lives inside [`crate::encode`].
 
 pub const HEADER: [u8; 4] = [0xFF, 0xFF, 0xFD, 0x00];
 pub const BROADCAST_ID: u8 = 0xFE;

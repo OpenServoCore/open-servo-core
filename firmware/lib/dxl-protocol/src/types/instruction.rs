@@ -93,11 +93,8 @@ impl Instruction {
     }
 }
 
-/// Per-slot entry passed to [`InstructionEncoder::bulk_read`] /
-/// [`InstructionEncoder::fast_bulk_read`].
-///
-/// [`InstructionEncoder::bulk_read`]: crate::InstructionEncoder::bulk_read
-/// [`InstructionEncoder::fast_bulk_read`]: crate::InstructionEncoder::fast_bulk_read
+/// Per-slot entry describing one servo's `(id, address, length)` in a Bulk
+/// Read / Fast Bulk Read request body.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
 pub struct BulkReadEntry {

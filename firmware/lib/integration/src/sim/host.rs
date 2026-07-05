@@ -1,16 +1,42 @@
 //! `Host` — DXL master device. Encodes instruction frames via
-//! `dxl_protocol::InstructionEncoder` and queues per-byte transmissions onto
-//! its [`UartTx`]; decodes incoming Status replies via [`UartRx`]. All edge
-//! buffering, byte scheduling, and RX/TX logging live one layer down in the
-//! UART halves — the Host is a thin device-layer over them.
+//! `dxl_protocol::encode::encode_instruction` and queues per-byte
+//! transmissions onto its [`UartTx`]; decodes incoming Status replies via
+//! [`UartRx`]. All edge buffering, byte scheduling, and RX/TX logging live one
+//! layer down in the UART halves — the Host is a thin device-layer over them.
 
 use std::any::Any;
 
 use dxl_protocol::{
-    InstructionEncoder, SoftwareCrcUmts,
-    types::{BulkReadEntry, Id},
+    SoftwareCrcUmts,
+    encode::encode_instruction,
+    types::{BulkReadEntry, Id, Instruction},
 };
 use osc_core::BaudRate;
+
+/// Encode one host->servo instruction frame into an owned byte buffer via the
+/// flat emitter. `params` is the instruction's ordered param runs (the
+/// stuffing window straddles run boundaries).
+fn build_frame(id: Id, instruction: u8, params: &[&[u8]]) -> Vec<u8> {
+    // Header + fully-stuffed params (worst case < 2×raw) + CRC, with margin —
+    // the over-cap resilience tests deliberately push oversized bodies.
+    let raw: usize = params.iter().map(|p| p.len()).sum();
+    let mut buf = vec![0u8; raw * 2 + 16];
+    let n = encode_instruction::<SoftwareCrcUmts>(&mut buf, id, instruction, params)
+        .expect("instruction frame encodes");
+    buf.truncate(n);
+    buf
+}
+
+/// Flatten Bulk Read entries into their `[id, addr_le, len_le]*` wire body.
+fn flatten_bulk(entries: &[BulkReadEntry]) -> Vec<u8> {
+    let mut flat = Vec::with_capacity(entries.len() * 5);
+    for e in entries {
+        flat.push(e.id.as_byte());
+        flat.extend_from_slice(&e.address.to_le_bytes());
+        flat.extend_from_slice(&e.length.to_le_bytes());
+    }
+    flat
+}
 
 use crate::sim::defaults::{DEFAULT_BAUD, default_host_clock};
 use crate::sim::uart::{RxLogEntry, RxLogKind, TxLogEntry, UartRx, UartTx, byte_time_ns};
@@ -153,118 +179,114 @@ impl Host {
     /// Encode a Ping for `target` and queue the frame onto [`UartTx`] at
     /// baud-stride pacing starting at the host's current sim time.
     pub fn send_ping(&mut self, target: Id) {
-        let mut buf: Vec<u8> = Vec::new();
-        InstructionEncoder::<_, SoftwareCrcUmts>::new(&mut buf)
-            .ping(target)
-            .expect("ping frame encodes");
+        let buf = build_frame(target, Instruction::Ping.as_u8(), &[]);
         self.queue_frame(&buf);
     }
 
     /// Encode a Read for `target` at `addr` for `length` bytes and queue the
     /// frame onto [`UartTx`] at baud-stride pacing.
     pub fn send_read(&mut self, target: Id, addr: u16, length: u16) {
-        let mut buf: Vec<u8> = Vec::new();
-        InstructionEncoder::<_, SoftwareCrcUmts>::new(&mut buf)
-            .read(target, addr, length)
-            .expect("read frame encodes");
+        let buf = build_frame(
+            target,
+            Instruction::Read.as_u8(),
+            &[&addr.to_le_bytes(), &length.to_le_bytes()],
+        );
         self.queue_frame(&buf);
     }
 
     /// Encode a Write of `data` to `target` at `addr` and queue the frame.
     pub fn send_write(&mut self, target: Id, addr: u16, data: &[u8]) {
-        let mut buf: Vec<u8> = Vec::new();
-        InstructionEncoder::<_, SoftwareCrcUmts>::new(&mut buf)
-            .write(target, addr, data)
-            .expect("write frame encodes");
+        let buf = build_frame(
+            target,
+            Instruction::Write.as_u8(),
+            &[&addr.to_le_bytes(), data],
+        );
         self.queue_frame(&buf);
     }
 
     /// Encode a RegWrite of `data` to `target` at `addr` and queue the frame.
     /// The receiver stages the bytes; an Action frame commits them atomically.
     pub fn send_reg_write(&mut self, target: Id, addr: u16, data: &[u8]) {
-        let mut buf: Vec<u8> = Vec::new();
-        InstructionEncoder::<_, SoftwareCrcUmts>::new(&mut buf)
-            .reg_write(target, addr, data)
-            .expect("reg_write frame encodes");
+        let buf = build_frame(
+            target,
+            Instruction::RegWrite.as_u8(),
+            &[&addr.to_le_bytes(), data],
+        );
         self.queue_frame(&buf);
     }
 
     /// Encode an Action for `target` and queue the frame, committing any
     /// previously staged RegWrite chain on the receiver.
     pub fn send_action(&mut self, target: Id) {
-        let mut buf: Vec<u8> = Vec::new();
-        InstructionEncoder::<_, SoftwareCrcUmts>::new(&mut buf)
-            .action(target)
-            .expect("action frame encodes");
+        let buf = build_frame(target, Instruction::Action.as_u8(), &[]);
         self.queue_frame(&buf);
     }
 
     /// Encode a Sync Read broadcast (one `addr`/`length` applied to every id
     /// in `ids`) and queue the frame.
     pub fn send_sync_read(&mut self, addr: u16, length: u16, ids: &[u8]) {
-        let mut buf: Vec<u8> = Vec::new();
-        InstructionEncoder::<_, SoftwareCrcUmts>::new(&mut buf)
-            .sync_read(addr, length, ids)
-            .expect("sync_read frame encodes");
+        let buf = build_frame(
+            Id::BROADCAST,
+            Instruction::SyncRead.as_u8(),
+            &[&addr.to_le_bytes(), &length.to_le_bytes(), ids],
+        );
         self.queue_frame(&buf);
     }
 
     /// Encode a Sync Write broadcast (one `addr`/`length` applied to every
     /// `[id, data...]` chunk in `body`) and queue the frame.
     pub fn send_sync_write(&mut self, addr: u16, length: u16, body: &[u8]) {
-        let mut buf: Vec<u8> = Vec::new();
-        InstructionEncoder::<_, SoftwareCrcUmts>::new(&mut buf)
-            .sync_write(addr, length, body)
-            .expect("sync_write frame encodes");
+        let buf = build_frame(
+            Id::BROADCAST,
+            Instruction::SyncWrite.as_u8(),
+            &[&addr.to_le_bytes(), &length.to_le_bytes(), body],
+        );
         self.queue_frame(&buf);
     }
 
     /// Encode a Bulk Read broadcast (per-tuple `(id, addr, length)`) and
     /// queue the frame.
     pub fn send_bulk_read(&mut self, entries: &[BulkReadEntry]) {
-        let mut buf: Vec<u8> = Vec::new();
-        InstructionEncoder::<_, SoftwareCrcUmts>::new(&mut buf)
-            .bulk_read(entries)
-            .expect("bulk_read frame encodes");
+        let buf = build_frame(
+            Id::BROADCAST,
+            Instruction::BulkRead.as_u8(),
+            &[&flatten_bulk(entries)],
+        );
         self.queue_frame(&buf);
     }
 
     /// Encode a Bulk Write broadcast (`body` is a flat
     /// `[id, addr_le, length_le, data...]+` per servo) and queue the frame.
     pub fn send_bulk_write(&mut self, body: &[u8]) {
-        let mut buf: Vec<u8> = Vec::new();
-        InstructionEncoder::<_, SoftwareCrcUmts>::new(&mut buf)
-            .bulk_write(body)
-            .expect("bulk_write frame encodes");
+        let buf = build_frame(Id::BROADCAST, Instruction::BulkWrite.as_u8(), &[body]);
         self.queue_frame(&buf);
     }
 
     /// Encode a Fast Sync Read broadcast (shared `addr` / `length`, list of
     /// `ids` in chain order) and queue the frame.
     pub fn send_fast_sync_read(&mut self, addr: u16, length: u16, ids: &[u8]) {
-        let mut buf: Vec<u8> = Vec::new();
-        InstructionEncoder::<_, SoftwareCrcUmts>::new(&mut buf)
-            .fast_sync_read(addr, length, ids)
-            .expect("fast_sync_read frame encodes");
+        let buf = build_frame(
+            Id::BROADCAST,
+            Instruction::FastSyncRead.as_u8(),
+            &[&addr.to_le_bytes(), &length.to_le_bytes(), ids],
+        );
         self.queue_frame(&buf);
     }
 
     /// Encode a Fast Bulk Read broadcast (per-entry `(id, addr, length)`) and
     /// queue the frame.
     pub fn send_fast_bulk_read(&mut self, entries: &[BulkReadEntry]) {
-        let mut buf: Vec<u8> = Vec::new();
-        InstructionEncoder::<_, SoftwareCrcUmts>::new(&mut buf)
-            .fast_bulk_read(entries)
-            .expect("fast_bulk_read frame encodes");
+        let buf = build_frame(
+            Id::BROADCAST,
+            Instruction::FastBulkRead.as_u8(),
+            &[&flatten_bulk(entries)],
+        );
         self.queue_frame(&buf);
     }
 
     /// Encode a Reboot for `target` and queue the frame.
     pub fn send_reboot(&mut self, target: Id) {
-        let mut buf: Vec<u8> = Vec::new();
-        InstructionEncoder::<_, SoftwareCrcUmts>::new(&mut buf)
-            .reboot(target)
-            .expect("reboot frame encodes");
+        let buf = build_frame(target, Instruction::Reboot.as_u8(), &[]);
         self.queue_frame(&buf);
     }
 
@@ -278,13 +300,10 @@ impl Host {
     }
 
     /// Encode an arbitrary instruction byte (with optional params) for `target`.
-    /// Use for non-standard / unsupported instruction tests; the servo's
-    /// streaming parser surfaces the byte as `Instruction::Ext(byte)`.
+    /// Use for non-standard / unsupported instruction tests; the servo
+    /// surfaces the byte as `Instruction::Ext(byte)`.
     pub fn send_ext(&mut self, target: Id, instr: u8, params: &[u8]) {
-        let mut buf: Vec<u8> = Vec::new();
-        InstructionEncoder::<_, SoftwareCrcUmts>::new(&mut buf)
-            .ext(target, instr, params)
-            .expect("ext frame encodes");
+        let buf = build_frame(target, instr, &[params]);
         self.queue_frame(&buf);
     }
 
@@ -413,14 +432,9 @@ mod tests {
     use crate::sim::Sim;
     use crate::sim::defaults::DEFAULT_BAUD;
     use crate::sim::uart::RxLogKind;
-    use dxl_protocol::InstructionEncoder;
 
     fn expected_ping_bytes(target: Id) -> Vec<u8> {
-        let mut buf: Vec<u8> = Vec::new();
-        InstructionEncoder::<_, SoftwareCrcUmts>::new(&mut buf)
-            .ping(target)
-            .unwrap();
-        buf
+        build_frame(target, Instruction::Ping.as_u8(), &[])
     }
 
     #[test]

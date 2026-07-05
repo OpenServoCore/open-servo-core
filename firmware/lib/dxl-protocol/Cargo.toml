@@ -11,7 +11,7 @@ defmt         = { version = "1", optional = true }
 log           = { version = "0.4", optional = true }
 
 [dev-dependencies]
-dxl-protocol = { path = ".", features = ["heapless", "software-crc", "test-util"] }
+dxl-protocol = { path = ".", features = ["heapless", "software-crc"] }
 
 [features]
 default      = []
@@ -25,6 +25,3 @@ log          = ["dep:log"]
 # dxl-protocol's own tests; downstream test crates that want a stock impl can
 # turn it on too.
 software-crc = []
-# Exposes `dxl_protocol::test_util` for downstream test crates. Pulls in
-# `alloc` since the helpers return owned `Vec`s of events / bytes.
-test-util    = ["alloc"]

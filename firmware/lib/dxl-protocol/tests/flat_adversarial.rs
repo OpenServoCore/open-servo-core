@@ -8,9 +8,11 @@
 //!    `Incomplete` rather than a phantom skip — `parse` no longer bakes in a
 //!    FAST policy; the caller decides (see the two phantom tests below).
 
+use dxl_protocol::encode::encode_instruction;
 use dxl_protocol::frame::{ParseError, parse};
+use dxl_protocol::types::Instruction;
 use dxl_protocol::wire::{HEADER, PACKET_LEN_GUARD};
-use dxl_protocol::{Id, InstructionEncoder, SoftwareCrcUmts as Crc};
+use dxl_protocol::{Id, SoftwareCrcUmts as Crc};
 use heapless::Vec as HVec;
 
 // xorshift64*.
@@ -38,10 +40,11 @@ impl Rng {
 }
 
 fn ping_frame(id: u8) -> HVec<u8, 32> {
+    let mut buf = [0u8; 32];
+    let n =
+        encode_instruction::<Crc>(&mut buf, Id::new(id), Instruction::Ping.as_u8(), &[]).unwrap();
     let mut f: HVec<u8, 32> = HVec::new();
-    InstructionEncoder::<_, Crc>::new(&mut f)
-        .ping(Id::new(id))
-        .unwrap();
+    f.extend_from_slice(&buf[..n]).unwrap();
     f
 }
 

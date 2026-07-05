@@ -12,10 +12,8 @@ pub struct PingStatus {
 }
 
 /// One slave's contribution to a Fast Sync/Bulk Read reply chain. Used by
-/// [`SlotEncoder`] for chain emission and as the per-slot view a master
-/// reconstructs from streaming events.
-///
-/// [`SlotEncoder`]: crate::SlotEncoder
+/// [`encode_slot`](crate::encode_slot) for chain emission and as the per-slot
+/// view a master reconstructs from a decoded chain.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
 pub struct Slot<'a> {
@@ -49,9 +47,8 @@ pub enum SlotPosition {
     Successor { crc: u16 },
 }
 
-/// Unified slave-originated reply. Encoder input for [`StatusEncoder::emit`].
-///
-/// [`StatusEncoder::emit`]: crate::StatusEncoder::emit
+/// Unified slave-originated reply. Encoder input for
+/// [`encode_status`](crate::encode_status).
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
 pub enum Status<'a> {
@@ -74,10 +71,9 @@ pub enum Status<'a> {
     },
 
     /// Fast Sync Read coalesced reply. Slaves participating in a chain emit
-    /// one slot at a time via [`SlotEncoder`] instead; this variant exists for
-    /// relays, sniffers, or single-slave-with-all-data masters.
-    ///
-    /// [`SlotEncoder`]: crate::SlotEncoder
+    /// one slot at a time via [`encode_slot`](crate::encode_slot) instead; this
+    /// variant exists for relays, sniffers, or single-slave-with-all-data
+    /// masters.
     FastSyncRead {
         id: Id,
         error: StatusError,

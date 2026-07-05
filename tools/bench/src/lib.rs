@@ -7,9 +7,11 @@ use std::thread::sleep;
 use std::time::{Duration, Instant};
 
 use anyhow::{Result, anyhow, bail};
-use dxl_protocol::streaming::{CrcResult, Event, HeaderEvent, Parser, PayloadEvent, StatusPayload};
-use dxl_protocol::types::{BulkReadEntry, Id, Slot, SlotPosition, StatusError};
-use dxl_protocol::{InstructionEncoder, SlotEncoder, SoftwareCrcUmts};
+use dxl_protocol::SoftwareCrcUmts;
+use dxl_protocol::encode::{encode_instruction, encode_slot};
+use dxl_protocol::frame::{FrameKind, ParseError, parse};
+use dxl_protocol::types::packet::{ChainStatusBlocks, ChainStatusError, decode_status};
+use dxl_protocol::types::{BulkReadEntry, Id, Instruction, Slot, SlotPosition, StatusError};
 use heapless::Vec as HVec;
 
 mod pirate;
@@ -195,92 +197,101 @@ pub fn retry_on_drop<T>(
     }
 }
 
-pub fn build_ping(id: Id) -> Result<HVec<u8, 16>> {
-    let mut frame: HVec<u8, 16> = HVec::new();
-    InstructionEncoder::<_, SoftwareCrcUmts>::new(&mut frame)
-        .ping(id)
-        .map_err(|e| anyhow!("encode ping: {e:?}"))?;
+/// Encode one host->servo instruction frame into a heapless buffer via the
+/// flat emitter. `params` is the instruction's ordered param runs (the
+/// stuffing window straddles run boundaries).
+fn build_instr<const N: usize>(id: Id, instruction: u8, params: &[&[u8]]) -> Result<HVec<u8, N>> {
+    let mut buf = [0u8; N];
+    let n = encode_instruction::<SoftwareCrcUmts>(&mut buf, id, instruction, params)
+        .map_err(|e| anyhow!("encode instruction {instruction:#04X}: {e:?}"))?;
+    let mut frame: HVec<u8, N> = HVec::new();
+    frame
+        .extend_from_slice(&buf[..n])
+        .map_err(|_| anyhow!("frame exceeds {N} bytes"))?;
     Ok(frame)
+}
+
+/// Flatten Bulk Read entries into their `[id, addr_le, len_le]*` wire body.
+fn flatten_bulk(entries: &[BulkReadEntry]) -> HVec<u8, 128> {
+    let mut flat: HVec<u8, 128> = HVec::new();
+    for e in entries {
+        let _ = flat.push(e.id.as_byte());
+        let _ = flat.extend_from_slice(&e.address.to_le_bytes());
+        let _ = flat.extend_from_slice(&e.length.to_le_bytes());
+    }
+    flat
+}
+
+pub fn build_ping(id: Id) -> Result<HVec<u8, 16>> {
+    build_instr(id, Instruction::Ping.as_u8(), &[])
 }
 
 pub fn build_write(id: Id, addr: u16, data: &[u8]) -> Result<HVec<u8, 64>> {
-    let mut frame: HVec<u8, 64> = HVec::new();
-    InstructionEncoder::<_, SoftwareCrcUmts>::new(&mut frame)
-        .write(id, addr, data)
-        .map_err(|e| anyhow!("encode write: {e:?}"))?;
-    Ok(frame)
+    build_instr(id, Instruction::Write.as_u8(), &[&addr.to_le_bytes(), data])
 }
 
 pub fn build_read(id: Id, addr: u16, length: u16) -> Result<HVec<u8, 16>> {
-    let mut frame: HVec<u8, 16> = HVec::new();
-    InstructionEncoder::<_, SoftwareCrcUmts>::new(&mut frame)
-        .read(id, addr, length)
-        .map_err(|e| anyhow!("encode read: {e:?}"))?;
-    Ok(frame)
+    build_instr(
+        id,
+        Instruction::Read.as_u8(),
+        &[&addr.to_le_bytes(), &length.to_le_bytes()],
+    )
 }
 
 pub fn build_reboot(id: Id) -> Result<HVec<u8, 16>> {
-    let mut frame: HVec<u8, 16> = HVec::new();
-    InstructionEncoder::<_, SoftwareCrcUmts>::new(&mut frame)
-        .reboot(id)
-        .map_err(|e| anyhow!("encode reboot: {e:?}"))?;
-    Ok(frame)
+    build_instr(id, Instruction::Reboot.as_u8(), &[])
 }
 
 pub fn build_fast_bulk_read(entries: &[BulkReadEntry]) -> Result<HVec<u8, 64>> {
-    let mut frame: HVec<u8, 64> = HVec::new();
-    InstructionEncoder::<_, SoftwareCrcUmts>::new(&mut frame)
-        .fast_bulk_read(entries)
-        .map_err(|e| anyhow!("encode fast_bulk_read: {e:?}"))?;
-    Ok(frame)
+    build_instr(
+        Id::BROADCAST,
+        Instruction::FastBulkRead.as_u8(),
+        &[&flatten_bulk(entries)],
+    )
 }
 
 pub fn build_reg_write(id: Id, addr: u16, data: &[u8]) -> Result<HVec<u8, 64>> {
-    let mut frame: HVec<u8, 64> = HVec::new();
-    InstructionEncoder::<_, SoftwareCrcUmts>::new(&mut frame)
-        .reg_write(id, addr, data)
-        .map_err(|e| anyhow!("encode reg_write: {e:?}"))?;
-    Ok(frame)
+    build_instr(
+        id,
+        Instruction::RegWrite.as_u8(),
+        &[&addr.to_le_bytes(), data],
+    )
 }
 
 pub fn build_action(id: Id) -> Result<HVec<u8, 16>> {
-    let mut frame: HVec<u8, 16> = HVec::new();
-    InstructionEncoder::<_, SoftwareCrcUmts>::new(&mut frame)
-        .action(id)
-        .map_err(|e| anyhow!("encode action: {e:?}"))?;
-    Ok(frame)
+    build_instr(id, Instruction::Action.as_u8(), &[])
 }
 
 pub fn build_sync_read(addr: u16, length: u16, ids: &[u8]) -> Result<HVec<u8, 128>> {
-    let mut frame: HVec<u8, 128> = HVec::new();
-    InstructionEncoder::<_, SoftwareCrcUmts>::new(&mut frame)
-        .sync_read(addr, length, ids)
-        .map_err(|e| anyhow!("encode sync_read: {e:?}"))?;
-    Ok(frame)
+    build_instr(
+        Id::BROADCAST,
+        Instruction::SyncRead.as_u8(),
+        &[&addr.to_le_bytes(), &length.to_le_bytes(), ids],
+    )
 }
 
 pub fn build_sync_write(addr: u16, length: u16, body: &[u8]) -> Result<HVec<u8, 128>> {
-    let mut frame: HVec<u8, 128> = HVec::new();
-    InstructionEncoder::<_, SoftwareCrcUmts>::new(&mut frame)
-        .sync_write(addr, length, body)
-        .map_err(|e| anyhow!("encode sync_write: {e:?}"))?;
-    Ok(frame)
+    build_instr(
+        Id::BROADCAST,
+        Instruction::SyncWrite.as_u8(),
+        &[&addr.to_le_bytes(), &length.to_le_bytes(), body],
+    )
 }
 
 pub fn build_bulk_read(entries: &[BulkReadEntry]) -> Result<HVec<u8, 128>> {
-    let mut frame: HVec<u8, 128> = HVec::new();
-    InstructionEncoder::<_, SoftwareCrcUmts>::new(&mut frame)
-        .bulk_read(entries)
-        .map_err(|e| anyhow!("encode bulk_read: {e:?}"))?;
-    Ok(frame)
+    build_instr(
+        Id::BROADCAST,
+        Instruction::BulkRead.as_u8(),
+        &[&flatten_bulk(entries)],
+    )
 }
 
 pub fn build_fast_sync_read(addr: u16, length: u16, ids: &[u8]) -> Result<HVec<u8, 128>> {
-    let mut frame: HVec<u8, 128> = HVec::new();
-    InstructionEncoder::<_, SoftwareCrcUmts>::new(&mut frame)
-        .fast_sync_read(addr, length, ids)
-        .map_err(|e| anyhow!("encode fast_sync_read: {e:?}"))?;
-    Ok(frame)
+    build_instr(
+        Id::BROADCAST,
+        Instruction::FastSyncRead.as_u8(),
+        &[&addr.to_le_bytes(), &length.to_le_bytes(), ids],
+    )
 }
 
 /// Encode the synthetic First-slot bytes used by `--position last`. The
@@ -292,75 +303,59 @@ pub fn build_inj_first_bytes(
     data: &[u8],
     packet_length: u16,
 ) -> Result<HVec<u8, 64>> {
-    let mut frame: HVec<u8, 64> = HVec::new();
     let slot = Slot {
         id: slot_id,
         error,
         data,
     };
-    SlotEncoder::<_, SoftwareCrcUmts>::new(&mut frame)
-        .emit(&slot, SlotPosition::First { packet_length })
+    let mut buf = [0u8; 64];
+    let n = encode_slot::<SoftwareCrcUmts>(&mut buf, &slot, SlotPosition::First { packet_length })
         .map_err(|e| anyhow!("encode inj first slot: {e:?}"))?;
+    let mut frame: HVec<u8, 64> = HVec::new();
+    frame
+        .extend_from_slice(&buf[..n])
+        .map_err(|_| anyhow!("inj first slot exceeds 64 bytes"))?;
     Ok(frame)
 }
 
-/// Decode a Status reply via the dxl-protocol streaming parser. Pass
+/// Decode a single-target Status reply via the dxl-protocol flat codec. Pass
 /// `expected_id == None` to accept any id (e.g. broadcast-Ping discovery).
 pub fn parse_status_reply(bytes: &[u8], expected_id: Option<Id>) -> Result<StatusReply> {
-    let mut parser = Parser::<SoftwareCrcUmts>::new();
-    let mut header_id: Option<Id> = None;
-    let mut header_err = StatusError::OK;
-    let mut data: Vec<u8> = Vec::new();
-    let mut done = false;
-    for evt in parser.feed(bytes) {
-        if done {
-            bail!("trailing bytes after Status reply CRC: {bytes:02X?}");
+    let (frame, consumed) = match parse::<SoftwareCrcUmts>(bytes) {
+        Ok(v) => v,
+        Err(ParseError::BadCrc { .. }) => bail!("bad CRC on Status reply: {bytes:02X?}"),
+        Err(ParseError::Incomplete) => {
+            if is_dropped_leading_ff(bytes) {
+                return Err(anyhow::Error::new(DroppedLeadingFf {
+                    bytes: bytes.to_vec(),
+                }));
+            }
+            bail!(
+                "incomplete Status reply ({} bytes, no terminal CRC event): {bytes:02X?}",
+                bytes.len()
+            );
         }
-        match evt {
-            Event::Sync => {}
-            Event::Header(HeaderEvent::Status(h)) => {
-                header_id = Some(h.id);
-                header_err = h.error;
-            }
-            Event::Header(HeaderEvent::Instruction(_)) => {
-                bail!("expected Status reply, got Instruction frame: {bytes:02X?}");
-            }
-            Event::Payload(PayloadEvent::Status(StatusPayload::ReadDataChunk {
-                offset,
-                length,
-            })) => {
-                let lo = offset as usize;
-                let hi = lo + length as usize;
-                data.extend_from_slice(&bytes[lo..hi]);
-            }
-            Event::Payload(_) => {
-                bail!("unexpected payload event in Status reply: {bytes:02X?}");
-            }
-            Event::Crc(CrcResult::Good) => done = true,
-            Event::Crc(CrcResult::Bad) => bail!("bad CRC on Status reply: {bytes:02X?}"),
-            Event::Resync(kind) => bail!("parser resync ({kind:?}) on: {bytes:02X?}"),
-        }
+        Err(e) => bail!("Status reply parse failed ({e:?}): {bytes:02X?}"),
+    };
+    if consumed != bytes.len() {
+        bail!("trailing bytes after Status reply CRC: {bytes:02X?}");
     }
-    if !done {
-        if is_dropped_leading_ff(bytes) {
-            return Err(anyhow::Error::new(DroppedLeadingFf {
-                bytes: bytes.to_vec(),
-            }));
-        }
-        bail!(
-            "incomplete Status reply ({} bytes, no terminal CRC event): {bytes:02X?}",
-            bytes.len()
-        );
-    }
-    let id = header_id.ok_or_else(|| anyhow!("no Status header in reply: {bytes:02X?}"))?;
+    let reply = decode_status(&frame).map_err(|_| {
+        anyhow!(
+            "expected Status reply, got {:?} frame: {bytes:02X?}",
+            frame.kind
+        )
+    })?;
+    let id = reply.id;
     if let Some(e) = expected_id
         && id.as_byte() != e.as_byte()
     {
         bail!("reply id {} != expected {}", id.as_byte(), e.as_byte());
     }
+    let data: Vec<u8> = reply.params.iter().collect();
     Ok(StatusReply {
         id,
-        error: header_err,
+        error: reply.error,
         data,
     })
 }
@@ -478,65 +473,45 @@ pub struct FastSlot {
 }
 
 pub fn parse_fast_response(bytes: &[u8], slot_lengths: &[usize]) -> Result<Vec<FastSlot>> {
-    let decoded = parse_status_reply(bytes, None)?;
-    let body = &decoded.data;
-    let mut slots = Vec::with_capacity(slot_lengths.len());
-    let mut cursor = 0usize;
-    let last = slot_lengths.len().saturating_sub(1);
-    for (idx, &slot_len) in slot_lengths.iter().enumerate() {
-        if idx == 0 {
-            if body.len() < cursor + 1 + slot_len {
-                bail!("fast reply too short for slot 0 (len {slot_len}): {bytes:02X?}");
-            }
-            let id_byte = body[cursor];
-            cursor += 1;
-            let data = body[cursor..cursor + slot_len].to_vec();
-            cursor += slot_len;
-            slots.push(FastSlot {
-                id: Id::new(id_byte),
-                error: decoded.error,
-                data,
-            });
-        } else {
-            if body.len() < cursor + 2 + slot_len {
-                bail!("fast reply too short for slot {idx} (len {slot_len}): {bytes:02X?}");
-            }
-            let err_byte = body[cursor];
-            let id_byte = body[cursor + 1];
-            cursor += 2;
-            let data = body[cursor..cursor + slot_len].to_vec();
-            cursor += slot_len;
-            slots.push(FastSlot {
-                id: Id::new(id_byte),
-                error: StatusError::from_byte(err_byte),
-                data,
-            });
-        }
-        // Official layout: every block ends with the cumulative chain
-        // CRC. Validate each intermediate checkpoint against the wire
-        // prefix (the FINAL block's CRC doubles as the packet CRC the
-        // parser already verified, and sits past `body`).
-        if idx != last {
-            if body.len() < cursor + 2 {
-                bail!("fast reply too short for slot {idx} checkpoint: {bytes:02X?}");
-            }
-            let wire = u16::from_le_bytes([body[cursor], body[cursor + 1]]);
-            // Checkpoint = cumulative CRC over the raw frame prefix.
-            // `body[0]` is slot 0's id at frame offset 9 (hdr4 + id +
-            // len2 + inst + err), so body cursor c sits at frame 9 + c.
-            let crc_end = 9 + cursor;
-            if dxl_protocol::crc16_umts_continue(0, &bytes[..crc_end]) != wire {
-                bail!("fast reply slot {idx} checkpoint mismatch (wire {wire:04X}): {bytes:02X?}");
-            }
-            cursor += 2;
-        }
+    let (frame, consumed) = parse::<SoftwareCrcUmts>(bytes)
+        .map_err(|e| anyhow!("fast reply parse failed ({e:?}): {bytes:02X?}"))?;
+    if consumed != bytes.len() {
+        bail!("trailing bytes after fast reply frame: {bytes:02X?}");
     }
-    if cursor != body.len() {
+    if frame.kind != FrameKind::ChainStatus {
         bail!(
-            "fast reply has {} trailing body bytes after {} slots: {bytes:02X?}",
-            body.len() - cursor,
+            "expected FAST chain reply, got {:?} frame: {bytes:02X?}",
+            frame.kind
+        );
+    }
+    // Every block is `err id data crc` with no stuffing (official FAST
+    // layout), so the whole body is exactly `Σ (len + 4)` bytes.
+    let expected_body: usize = slot_lengths.iter().map(|l| l + 4).sum();
+    if frame.body.len() != expected_body {
+        bail!(
+            "fast reply body {} bytes, expected {} for {} slots: {bytes:02X?}",
+            frame.body.len(),
+            expected_body,
             slot_lengths.len()
         );
+    }
+
+    let lengths: Vec<u16> = slot_lengths.iter().map(|&l| l as u16).collect();
+    let mut slots = Vec::with_capacity(slot_lengths.len());
+    for block in ChainStatusBlocks::with_lengths(&frame, &lengths) {
+        match block {
+            Ok(b) => slots.push(FastSlot {
+                id: b.id,
+                error: b.error,
+                data: b.data.to_vec(),
+            }),
+            Err(ChainStatusError::Checkpoint { block }) => {
+                bail!("fast reply slot {block} checkpoint mismatch: {bytes:02X?}")
+            }
+            Err(ChainStatusError::Truncated { block }) => {
+                bail!("fast reply too short for slot {block}: {bytes:02X?}")
+            }
+        }
     }
     Ok(slots)
 }

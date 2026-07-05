@@ -4,10 +4,22 @@
 // clippy stays green across all three test binaries.
 #![allow(unused_macros)]
 
+use dxl_protocol::SoftwareCrcUmts;
+use dxl_protocol::encode::encode_instruction;
 use dxl_protocol::types::{Id, Instruction, PingStatus, Status, StatusError};
 use dxl_protocol::wire::HEADER;
-use dxl_protocol::{InstructionEncoder, SoftwareCrcUmts};
 use osc_core::BaudRate;
+
+/// Encode one instruction frame into an owned buffer via the flat emitter.
+#[allow(dead_code)]
+fn build_frame(id: Id, instruction: u8, params: &[&[u8]]) -> Vec<u8> {
+    let raw: usize = params.iter().map(|p| p.len()).sum();
+    let mut buf = vec![0u8; raw * 2 + 16];
+    let n = encode_instruction::<SoftwareCrcUmts>(&mut buf, id, instruction, params)
+        .expect("instruction frame encodes");
+    buf.truncate(n);
+    buf
+}
 use osc_integration::sim::{
     DEFAULT_BAUD, DEFAULT_RDT_US, DeviceId, Host, Servo, Sim, parse_status_stream,
 };
@@ -22,44 +34,36 @@ use rstest_reuse::template;
 /// concatenate a Ping onto a prior instruction with no inter-packet IDLE.
 #[allow(dead_code)]
 pub fn encode_ping(id: u8) -> Vec<u8> {
-    let mut buf: Vec<u8> = Vec::new();
-    InstructionEncoder::<_, SoftwareCrcUmts>::new(&mut buf)
-        .ping(Id::new(id))
-        .expect("ping encodes");
-    buf
+    build_frame(Id::new(id), Instruction::Ping.as_u8(), &[])
 }
 
 /// Encode a complete SyncRead packet — same shape as `Host::send_sync_read`
 /// but returns the bytes for callers that want to prefix / concatenate.
 #[allow(dead_code)]
 pub fn encode_sync_read(addr: u16, length: u16, ids: &[u8]) -> Vec<u8> {
-    let mut buf: Vec<u8> = Vec::new();
-    InstructionEncoder::<_, SoftwareCrcUmts>::new(&mut buf)
-        .sync_read(addr, length, ids)
-        .expect("sync_read encodes");
-    buf
+    build_frame(
+        Id::BROADCAST,
+        Instruction::SyncRead.as_u8(),
+        &[&addr.to_le_bytes(), &length.to_le_bytes(), ids],
+    )
 }
 
 /// Encode a complete SyncWrite packet — returns the bytes for callers that
 /// want to concatenate a Write with a following instruction (no IDLE gap).
 #[allow(dead_code)]
 pub fn encode_sync_write(addr: u16, length: u16, body: &[u8]) -> Vec<u8> {
-    let mut buf: Vec<u8> = Vec::new();
-    InstructionEncoder::<_, SoftwareCrcUmts>::new(&mut buf)
-        .sync_write(addr, length, body)
-        .expect("sync_write encodes");
-    buf
+    build_frame(
+        Id::BROADCAST,
+        Instruction::SyncWrite.as_u8(),
+        &[&addr.to_le_bytes(), &length.to_le_bytes(), body],
+    )
 }
 
 /// Encode a complete BulkWrite packet — returns the bytes for callers that
 /// want to concatenate a Write with a following instruction (no IDLE gap).
 #[allow(dead_code)]
 pub fn encode_bulk_write(body: &[u8]) -> Vec<u8> {
-    let mut buf: Vec<u8> = Vec::new();
-    InstructionEncoder::<_, SoftwareCrcUmts>::new(&mut buf)
-        .bulk_write(body)
-        .expect("bulk_write encodes");
-    buf
+    build_frame(Id::BROADCAST, Instruction::BulkWrite.as_u8(), &[body])
 }
 
 /// Wire-format DXL 2.0 header signature (`FF FF FD 00`). Resilience

@@ -46,7 +46,11 @@ fn main() -> Result<()> {
         target_baud: baud,
     })?;
     let id = Id::new(bus.id());
-    println!("chip {} @ {} baud, {iters} iters/length\n", bus.id(), bus.baud());
+    println!(
+        "chip {} @ {} baud, {iters} iters/length\n",
+        bus.id(),
+        bus.baud()
+    );
     println!("  L   frame   CRC     predicted   observed (offset: value xNN)");
     println!("  --  -----   -----   ---------   ---------------------------");
 
@@ -96,7 +100,10 @@ fn main() -> Result<()> {
                 .collect();
             format!("{}/{iters}  [{}]", hit_iters, parts.join(", "))
         };
-        println!("  {l:<2}  {:<5}   {crc_l:02x} {crc_h:02x}   {pred:<9}   {obs}", l + 12);
+        println!(
+            "  {l:<2}  {:<5}   {crc_l:02x} {crc_h:02x}   {pred:<9}   {obs}",
+            l + 12
+        );
     }
     Ok(())
 }

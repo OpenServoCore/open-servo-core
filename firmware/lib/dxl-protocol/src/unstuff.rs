@@ -1,8 +1,8 @@
 //! DXL 2.0 byte-*de*stuffing over a borrowed param slice.
 //!
-//! The encoder's [`Stuffer`](crate::encoder) inserts an inline `0xFD` after
-//! every `FF FF FD` window so an embedded sequence can't synthesize a fake
-//! header. [`Bytes`] wraps the stuffed wire slice and its [`ByteIter`] yields
+//! The [`encode`](crate::encode) emitters insert an inline `0xFD` after every
+//! `FF FF FD` window so an embedded sequence can't synthesize a fake header.
+//! [`Bytes`] wraps the stuffed wire slice and its [`ByteIter`] yields
 //! the logical bytes lazily, dropping those inserted `0xFD`s on the way out.
 //! Nothing is copied until the caller consumes.
 

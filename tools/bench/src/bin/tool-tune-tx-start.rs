@@ -34,9 +34,7 @@
 use std::time::Duration;
 
 use anyhow::Result;
-use bench::{
-    Bus, BusArgs, DroppedLeadingFf, RETURN_DELAY_2US_ADDR, build_ping, retry_on_drop,
-};
+use bench::{Bus, BusArgs, DroppedLeadingFf, RETURN_DELAY_2US_ADDR, build_ping, retry_on_drop};
 use clap::Parser;
 use dxl_protocol::types::Id;
 

@@ -1,10 +1,8 @@
 //! Fused single-pass DXL 2.0 frame emitters over a caller-owned `&mut [u8]`.
 //!
-//! The legacy [`encoder`](crate::encoder) module pushes each param byte through
-//! a per-byte capacity-checked [`WriteBuf`](crate::WriteBuf), then makes a
-//! *second* full pass to compute the CRC. These emitters instead write into a
-//! caller-provided buffer (the driver's DMA TX buffer; hosts pass arrays),
-//! check capacity once up front, and fold the CRC into the write pass.
+//! Each emitter writes into a caller-provided buffer (the driver's DMA TX
+//! buffer; hosts pass arrays), checks capacity once up front, and folds the
+//! CRC into the write pass rather than making a second pass over the frame.
 //!
 //! ## Why the CRC handling differs by source shape
 //!
@@ -37,7 +35,7 @@ const STUFF_BYTE: u8 = HEADER[2];
 
 /// Sliding 2-byte window over the pre-stuffing param stream. Seeded with the
 /// instruction byte so a trigger straddling the instruction->params boundary
-/// still inserts the stuffing `FD` (mirrors `encoder::stuffing::Stuffer`).
+/// still inserts the stuffing `FD`.
 struct Window([u8; 2]);
 
 impl Window {
@@ -192,7 +190,7 @@ fn encode_framed<C: CrcUmts>(
     params: &[&[u8]],
 ) -> Result<usize, WriteError> {
     // `id == 0xFF` would let the unstuffed header..instruction prefix complete
-    // a stuffing trigger, breaking framing (legacy `emit_frame_with` guard).
+    // a stuffing trigger, breaking framing.
     if id.as_byte() == 0xFF {
         return Err(WriteError::Invalid);
     }

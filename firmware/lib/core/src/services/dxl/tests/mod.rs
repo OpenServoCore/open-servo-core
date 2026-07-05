@@ -3,15 +3,16 @@
 //! stack-level gear that covers the same spec-scenario behavior end-to-end.
 
 use crc::{CRC_16_UMTS, Crc};
-use dxl_protocol::streaming::{Event, HeaderEvent, Parser, PayloadEvent, StatusPayload};
-use dxl_protocol::types::{BulkReadEntry, ErrorCode, Id, Slot, Status, StatusError};
-use dxl_protocol::{Chunk, CrcUmts, InstructionEncoder, SlotEncoder, StatusEncoder, WriteError};
+use dxl_protocol::encode::{encode_instruction, encode_slot, encode_status, encode_status_chunked};
+use dxl_protocol::types::{BulkReadEntry, ErrorCode, Id, Slot, SlotPosition, Status, StatusError};
+use dxl_protocol::{Chunk, CrcUmts, WriteError};
 use heapless::Vec;
 
 const BROADCAST_ID: Id = Id::BROADCAST;
 
 use dxl_protocol::frame::{ParseError, parse};
-use dxl_protocol::types::packet::{Instruction, decode_instruction};
+use dxl_protocol::types::Instruction as Op;
+use dxl_protocol::types::packet::{Instruction, decode_instruction, decode_status};
 use dxl_protocol::unstuff::{ByteIter, Bytes};
 use dxl_protocol::wire::BROADCAST_ID as BROADCAST_ID_BYTE;
 
@@ -101,8 +102,26 @@ impl FakeReply {
 
 impl DxlReply for FakeReply {
     fn send_status(&mut self, status: Status<'_>) -> Result<(), WriteError> {
+        let mut buf = [0u8; 256];
+        let n = match status {
+            Status::Empty { id, error } => encode_status::<TestDxlCrc>(&mut buf, id, error, &[])?,
+            Status::Ping { id, error, status } => {
+                let m = status.model.to_le_bytes();
+                encode_status::<TestDxlCrc>(&mut buf, id, error, &[m[0], m[1], status.fw_version])?
+            }
+            Status::Read { id, error, data } => {
+                encode_status::<TestDxlCrc>(&mut buf, id, error, data)?
+            }
+            Status::Raw { id, error, payload }
+            | Status::FastSyncRead { id, error, payload }
+            | Status::FastBulkRead { id, error, payload } => {
+                encode_status::<TestDxlCrc>(&mut buf, id, error, payload)?
+            }
+        };
         self.tx.clear();
-        StatusEncoder::<_, TestDxlCrc>::new(&mut self.tx).emit(status)?;
+        self.tx
+            .extend_from_slice(&buf[..n])
+            .map_err(|_| WriteError::Overflow)?;
         self.send_count += 1;
         self.last_kind = Some(ReplyKind::Plain);
         Ok(())
@@ -117,8 +136,12 @@ impl DxlReply for FakeReply {
     where
         I: IntoIterator<Item = Chunk<'c>>,
     {
+        let mut buf = [0u8; 256];
+        let n = encode_status_chunked::<TestDxlCrc, _>(&mut buf, id, error, chunks)?;
         self.tx.clear();
-        StatusEncoder::<_, TestDxlCrc>::new(&mut self.tx).read_chunked(id, error, chunks)?;
+        self.tx
+            .extend_from_slice(&buf[..n])
+            .map_err(|_| WriteError::Overflow)?;
         self.send_count += 1;
         self.last_kind = Some(ReplyKind::Plain);
         Ok(())
@@ -137,7 +160,6 @@ impl DxlReply for FakeReply {
         // by buffering the chunks into a tiny scratch first. Production never
         // routes the chunked slot through this position; the buffering is
         // bounded by the test slot payloads (sub-32 B).
-        self.tx.clear();
         let mut scratch: Vec<u8, 64> = Vec::new();
         for chunk in chunks {
             match chunk {
@@ -157,10 +179,13 @@ impl DxlReply for FakeReply {
             error,
             data: &scratch,
         };
-        SlotEncoder::<_, TestDxlCrc>::new(&mut self.tx).emit(
-            &slot,
-            dxl_protocol::SlotPosition::First { packet_length: len },
-        )?;
+        let mut buf = [0u8; 128];
+        let n =
+            encode_slot::<TestDxlCrc>(&mut buf, &slot, SlotPosition::First { packet_length: len })?;
+        self.tx.clear();
+        self.tx
+            .extend_from_slice(&buf[..n])
+            .map_err(|_| WriteError::Overflow)?;
         self.send_count += 1;
         self.last_kind = Some(ReplyKind::Slot);
         Ok(())
@@ -504,12 +529,105 @@ fn bulk_write_slot(body: &Bytes<'_>, our_id: u8, wr: &mut [u8]) -> Option<(u16, 
     None
 }
 
+/// Thin fluent builder over [`encode_instruction`], preserving the per-method
+/// request API the tests drive through [`encode`]. Each method marshals its
+/// params and folds a single frame into the local buffer.
+struct Enc {
+    buf: [u8; 256],
+    len: usize,
+}
+
+impl Enc {
+    fn new() -> Self {
+        Self {
+            buf: [0u8; 256],
+            len: 0,
+        }
+    }
+
+    fn emit(&mut self, id: Id, instruction: u8, params: &[&[u8]]) -> Result<(), WriteError> {
+        self.len = encode_instruction::<TestDxlCrc>(&mut self.buf, id, instruction, params)?;
+        Ok(())
+    }
+
+    fn ping(&mut self, id: Id) -> Result<(), WriteError> {
+        self.emit(id, Op::Ping.as_u8(), &[])
+    }
+    fn read(&mut self, id: Id, addr: u16, length: u16) -> Result<(), WriteError> {
+        self.emit(
+            id,
+            Op::Read.as_u8(),
+            &[&addr.to_le_bytes(), &length.to_le_bytes()],
+        )
+    }
+    fn write(&mut self, id: Id, addr: u16, data: &[u8]) -> Result<(), WriteError> {
+        self.emit(id, Op::Write.as_u8(), &[&addr.to_le_bytes(), data])
+    }
+    fn reg_write(&mut self, id: Id, addr: u16, data: &[u8]) -> Result<(), WriteError> {
+        self.emit(id, Op::RegWrite.as_u8(), &[&addr.to_le_bytes(), data])
+    }
+    fn action(&mut self, id: Id) -> Result<(), WriteError> {
+        self.emit(id, Op::Action.as_u8(), &[])
+    }
+    fn reboot(&mut self, id: Id) -> Result<(), WriteError> {
+        self.emit(id, Op::Reboot.as_u8(), &[])
+    }
+    fn factory_reset(&mut self, id: Id, mode: u8) -> Result<(), WriteError> {
+        self.emit(id, Op::FactoryReset.as_u8(), &[&[mode]])
+    }
+    fn sync_read(&mut self, addr: u16, length: u16, ids: &[u8]) -> Result<(), WriteError> {
+        self.emit(
+            Id::BROADCAST,
+            Op::SyncRead.as_u8(),
+            &[&addr.to_le_bytes(), &length.to_le_bytes(), ids],
+        )
+    }
+    fn sync_write(&mut self, addr: u16, length: u16, body: &[u8]) -> Result<(), WriteError> {
+        self.emit(
+            Id::BROADCAST,
+            Op::SyncWrite.as_u8(),
+            &[&addr.to_le_bytes(), &length.to_le_bytes(), body],
+        )
+    }
+    fn bulk_read(&mut self, entries: &[BulkReadEntry]) -> Result<(), WriteError> {
+        let flat = flatten_bulk(entries);
+        self.emit(Id::BROADCAST, Op::BulkRead.as_u8(), &[&flat])
+    }
+    fn bulk_write(&mut self, body: &[u8]) -> Result<(), WriteError> {
+        self.emit(Id::BROADCAST, Op::BulkWrite.as_u8(), &[body])
+    }
+    fn fast_sync_read(&mut self, addr: u16, length: u16, ids: &[u8]) -> Result<(), WriteError> {
+        self.emit(
+            Id::BROADCAST,
+            Op::FastSyncRead.as_u8(),
+            &[&addr.to_le_bytes(), &length.to_le_bytes(), ids],
+        )
+    }
+    fn fast_bulk_read(&mut self, entries: &[BulkReadEntry]) -> Result<(), WriteError> {
+        let flat = flatten_bulk(entries);
+        self.emit(Id::BROADCAST, Op::FastBulkRead.as_u8(), &[&flat])
+    }
+}
+
+/// Flatten Bulk Read entries into their `[id, addr_le, len_le]*` wire body.
+fn flatten_bulk(entries: &[BulkReadEntry]) -> Vec<u8, 128> {
+    let mut flat: Vec<u8, 128> = Vec::new();
+    for e in entries {
+        flat.push(e.id.as_byte()).unwrap();
+        flat.extend_from_slice(&e.address.to_le_bytes()).unwrap();
+        flat.extend_from_slice(&e.length.to_le_bytes()).unwrap();
+    }
+    flat
+}
+
 fn encode<F>(f: F) -> Vec<u8, 256>
 where
-    F: FnOnce(&mut InstructionEncoder<'_, Vec<u8, 256>, TestDxlCrc>) -> Result<(), WriteError>,
+    F: FnOnce(&mut Enc) -> Result<(), WriteError>,
 {
+    let mut enc = Enc::new();
+    f(&mut enc).unwrap();
     let mut buf: Vec<u8, 256> = Vec::new();
-    f(&mut InstructionEncoder::<_, TestDxlCrc>::new(&mut buf)).unwrap();
+    buf.extend_from_slice(&enc.buf[..enc.len]).unwrap();
     buf
 }
 
@@ -524,41 +642,13 @@ fn bre(id: u8, address: u16, length: u16) -> BulkReadEntry {
 /// Returns `(id, error_byte, payload)`. Payload is the post-error wire bytes:
 /// data for Read-family, `(model_lo, model_hi, fw)` for Ping, empty for Empty.
 fn parse_status(bytes: &[u8]) -> (u8, u8, Vec<u8, 64>) {
-    let mut parser = Parser::<TestDxlCrc>::new();
-    let mut id: u8 = 0;
-    let mut err: u8 = 0;
+    let (frame, _) = parse::<TestDxlCrc>(bytes).expect("status parse (CRC checked)");
+    let reply = decode_status(&frame).expect("decode_status");
     let mut data: Vec<u8, 64> = Vec::new();
-    let mut saw_crc = false;
-    for ev in parser.feed(bytes) {
-        match ev {
-            Event::Header(HeaderEvent::Status(h)) => {
-                id = h.id.as_byte();
-                err = h.error.as_byte();
-            }
-            Event::Payload(PayloadEvent::Status(StatusPayload::ReadDataChunk {
-                offset,
-                length,
-            })) => {
-                let lo = offset as usize;
-                let hi = lo + length as usize;
-                data.extend_from_slice(&bytes[lo..hi]).unwrap();
-            }
-            Event::Payload(PayloadEvent::Status(StatusPayload::Ping { model, fw_version })) => {
-                data.extend_from_slice(&[(model & 0xFF) as u8, (model >> 8) as u8, fw_version])
-                    .unwrap();
-            }
-            Event::Crc(verdict) => {
-                use dxl_protocol::streaming::CrcResult;
-                assert_eq!(verdict, CrcResult::Good, "status parser saw bad CRC");
-                saw_crc = true;
-                break;
-            }
-            Event::Resync(kind) => panic!("status parser resync: {kind:?}"),
-            _ => {}
-        }
+    for b in reply.params.iter() {
+        data.push(b).unwrap();
     }
-    assert!(saw_crc, "status parser did not reach Crc");
-    (id, err, data)
+    (reply.id.as_byte(), reply.error.as_byte(), data)
 }
 
 fn set_level(shared: &Shared, level: StatusReturnLevel) {

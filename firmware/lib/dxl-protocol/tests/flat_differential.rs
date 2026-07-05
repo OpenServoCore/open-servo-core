@@ -1,15 +1,14 @@
-//! Differential: encode with the existing encoders, parse + decode with the
-//! new flat codec, assert the decoded structs equal the inputs. The tests
-//! read as a spec for the round-trip contract.
+//! Differential: encode with the frame emitters, parse + decode with the new
+//! flat codec, assert the decoded structs equal the inputs. The tests read as
+//! a spec for the round-trip contract.
 
+use dxl_protocol::encode::{encode_instruction, encode_status};
 use dxl_protocol::frame::{FrameKind, RawFrame, parse};
+use dxl_protocol::types::Instruction;
 use dxl_protocol::types::packet::{
     DecodeError, Instruction as Decoded, StatusReply, decode_instruction, decode_status,
 };
-use dxl_protocol::{
-    BulkReadEntry, Bytes, Id, InstructionEncoder, SoftwareCrcUmts as Crc, StatusEncoder,
-    StatusError,
-};
+use dxl_protocol::{BulkReadEntry, Bytes, Id, SoftwareCrcUmts as Crc, StatusError, WriteError};
 use heapless::Vec as HVec;
 
 type Buf = HVec<u8, 256>;
@@ -18,16 +17,119 @@ fn unstuffed(b: &Bytes) -> HVec<u8, 256> {
     b.iter().collect()
 }
 
+/// Thin fluent builder over [`encode_instruction`], mirroring the per-method
+/// request API so the differential call sites read as a spec. Each method
+/// marshals its params and folds a single frame into the local buffer.
+struct Enc {
+    buf: [u8; 256],
+    len: usize,
+}
+
+impl Enc {
+    fn new() -> Self {
+        Self {
+            buf: [0u8; 256],
+            len: 0,
+        }
+    }
+
+    fn emit(&mut self, id: Id, instruction: u8, params: &[&[u8]]) -> Result<(), WriteError> {
+        self.len = encode_instruction::<Crc>(&mut self.buf, id, instruction, params)?;
+        Ok(())
+    }
+
+    fn ping(&mut self, id: Id) -> Result<(), WriteError> {
+        self.emit(id, Instruction::Ping.as_u8(), &[])
+    }
+    fn read(&mut self, id: Id, addr: u16, length: u16) -> Result<(), WriteError> {
+        self.emit(
+            id,
+            Instruction::Read.as_u8(),
+            &[&addr.to_le_bytes(), &length.to_le_bytes()],
+        )
+    }
+    fn write(&mut self, id: Id, addr: u16, data: &[u8]) -> Result<(), WriteError> {
+        self.emit(id, Instruction::Write.as_u8(), &[&addr.to_le_bytes(), data])
+    }
+    fn reg_write(&mut self, id: Id, addr: u16, data: &[u8]) -> Result<(), WriteError> {
+        self.emit(
+            id,
+            Instruction::RegWrite.as_u8(),
+            &[&addr.to_le_bytes(), data],
+        )
+    }
+    fn action(&mut self, id: Id) -> Result<(), WriteError> {
+        self.emit(id, Instruction::Action.as_u8(), &[])
+    }
+    fn reboot(&mut self, id: Id) -> Result<(), WriteError> {
+        self.emit(id, Instruction::Reboot.as_u8(), &[])
+    }
+    fn factory_reset(&mut self, id: Id, mode: u8) -> Result<(), WriteError> {
+        self.emit(id, Instruction::FactoryReset.as_u8(), &[&[mode]])
+    }
+    fn clear(&mut self, id: Id, body: &[u8]) -> Result<(), WriteError> {
+        self.emit(id, Instruction::Clear.as_u8(), &[body])
+    }
+    fn control_table_backup(&mut self, id: Id, body: &[u8]) -> Result<(), WriteError> {
+        self.emit(id, Instruction::ControlTableBackup.as_u8(), &[body])
+    }
+    fn sync_read(&mut self, addr: u16, length: u16, ids: &[u8]) -> Result<(), WriteError> {
+        self.emit(
+            Id::BROADCAST,
+            Instruction::SyncRead.as_u8(),
+            &[&addr.to_le_bytes(), &length.to_le_bytes(), ids],
+        )
+    }
+    fn sync_write(&mut self, addr: u16, length: u16, body: &[u8]) -> Result<(), WriteError> {
+        self.emit(
+            Id::BROADCAST,
+            Instruction::SyncWrite.as_u8(),
+            &[&addr.to_le_bytes(), &length.to_le_bytes(), body],
+        )
+    }
+    fn bulk_read(&mut self, entries: &[BulkReadEntry]) -> Result<(), WriteError> {
+        let flat = flatten_bulk(entries);
+        self.emit(Id::BROADCAST, Instruction::BulkRead.as_u8(), &[&flat])
+    }
+    fn bulk_write(&mut self, body: &[u8]) -> Result<(), WriteError> {
+        self.emit(Id::BROADCAST, Instruction::BulkWrite.as_u8(), &[body])
+    }
+    fn fast_sync_read(&mut self, addr: u16, length: u16, ids: &[u8]) -> Result<(), WriteError> {
+        self.emit(
+            Id::BROADCAST,
+            Instruction::FastSyncRead.as_u8(),
+            &[&addr.to_le_bytes(), &length.to_le_bytes(), ids],
+        )
+    }
+    fn fast_bulk_read(&mut self, entries: &[BulkReadEntry]) -> Result<(), WriteError> {
+        let flat = flatten_bulk(entries);
+        self.emit(Id::BROADCAST, Instruction::FastBulkRead.as_u8(), &[&flat])
+    }
+    fn ext(&mut self, id: Id, instruction: u8, params: &[u8]) -> Result<(), WriteError> {
+        self.emit(id, instruction, &[params])
+    }
+}
+
+/// Flatten Bulk Read entries into their `[id, addr_le, len_le]*` wire body.
+fn flatten_bulk(entries: &[BulkReadEntry]) -> HVec<u8, 128> {
+    let mut flat: HVec<u8, 128> = HVec::new();
+    for e in entries {
+        flat.push(e.id.as_byte()).unwrap();
+        flat.extend_from_slice(&e.address.to_le_bytes()).unwrap();
+        flat.extend_from_slice(&e.length.to_le_bytes()).unwrap();
+    }
+    flat
+}
+
 /// Encode via `f`, then parse the single frame back out.
 fn round_trip<F>(f: F) -> Buf
 where
-    F: FnOnce(&mut InstructionEncoder<'_, Buf, Crc>),
+    F: FnOnce(&mut Enc),
 {
+    let mut enc = Enc::new();
+    f(&mut enc);
     let mut buf = Buf::new();
-    {
-        let mut enc = InstructionEncoder::<_, Crc>::new(&mut buf);
-        f(&mut enc);
-    }
+    buf.extend_from_slice(&enc.buf[..enc.len]).unwrap();
     buf
 }
 
@@ -280,15 +382,14 @@ fn write_payload_with_stuffing_trigger_round_trips() {
 
 #[test]
 fn status_reply_round_trips() {
-    let mut buf = Buf::new();
+    let mut buf = [0u8; 64];
     let params = [0x10, 0x20, 0xFF, 0xFF, 0xFD, 0x40];
     let err = StatusError::from_byte(0x81);
-    StatusEncoder::<_, Crc>::new(&mut buf)
-        .read(Id::new(0x0C), err, &params)
-        .unwrap();
+    let n = encode_status::<Crc>(&mut buf, Id::new(0x0C), err, &params).unwrap();
+    let buf = &buf[..n];
 
-    let (frame, n) = parse::<Crc>(&buf).expect("parse");
-    assert_eq!(n, buf.len());
+    let (frame, consumed) = parse::<Crc>(buf).expect("parse");
+    assert_eq!(consumed, buf.len());
     assert_eq!(frame.kind, FrameKind::Status);
     let StatusReply {
         id,
@@ -302,11 +403,9 @@ fn status_reply_round_trips() {
 
 #[test]
 fn decode_instruction_rejects_a_status_frame() {
-    let mut buf = Buf::new();
-    StatusEncoder::<_, Crc>::new(&mut buf)
-        .empty(Id::new(0x01), StatusError::OK)
-        .unwrap();
-    let (frame, _) = parse::<Crc>(&buf).unwrap();
+    let mut buf = [0u8; 64];
+    let n = encode_status::<Crc>(&mut buf, Id::new(0x01), StatusError::OK, &[]).unwrap();
+    let (frame, _) = parse::<Crc>(&buf[..n]).unwrap();
     assert!(matches!(
         decode_instruction(&frame),
         Err(DecodeError::WrongKind)

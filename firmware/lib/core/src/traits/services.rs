@@ -1,4 +1,3 @@
-use dxl_protocol::streaming::Event;
 use dxl_protocol::types::{Id, Status, StatusError};
 use dxl_protocol::{Bytes, Chunk, WriteError};
 
@@ -57,25 +56,12 @@ pub trait DxlReply {
     fn stage_reboot(&mut self, mode: BootMode);
 }
 
-/// Streaming dispatcher: bus hands one parser [`Event`] at a time, plus an
-/// optional contiguous ring slice for chunked-payload events (driver resolves
-/// wrap-around). `R` is generic per method so we avoid `dyn DxlReply` in the
-/// hot path; each bus impl monomorphizes over its concrete reply type.
-///
-/// `ring` is empty for non-chunk events. For
-/// `Event::Payload(Instruction(WriteDataChunk { .. }))` the slice is the
-/// resolved contiguous wire bytes for that chunk (length matches the event).
-pub trait DxlDispatcher {
-    fn on_event<R: DxlReply>(&mut self, ev: Event, ring: &[u8], reply: &mut R);
-}
-
-/// Bus surface the DXL services layer drives. The bus owns the streaming
-/// parser; on `poll` it feeds buffered wire bytes to the parser and forwards
-/// each [`Event`] to the dispatcher together with the resolved `ring` slice
-/// for chunked-payload events.
+/// Bus surface the DXL services layer drives. The bus owns the flat framer;
+/// on `poll` it frames + decodes buffered wire bytes into fully-resolved
+/// [`DxlRequest`]s and hands each to the dispatcher.
 ///
 /// The dispatcher's `&mut R: DxlReply` is borrowed from a disjoint field of
-/// bus-internal state, paired with the parser borrowing the wire ring — see
+/// bus-internal state, paired with the framer borrowing the wire ring — see
 /// `docs/driver-pattern.md` §7.4 for the data-centric principle.
 pub trait DxlBus {
     fn poll<D: DxlDispatch>(&mut self, dispatcher: &mut D);
@@ -119,10 +105,9 @@ pub struct DxlRequestCtx {
 }
 
 /// Single-shot typed dispatch: the bus hands one fully-decoded, addressing-
-/// resolved [`DxlRequest`] plus its [`DxlRequestCtx`]. Unlike [`DxlDispatcher`]
-/// there is no per-packet reassembly state — the request carries its whole
-/// payload up front. `R` is generic per call so the hot path avoids
-/// `dyn DxlReply`.
+/// resolved [`DxlRequest`] plus its [`DxlRequestCtx`]. There is no per-packet
+/// reassembly state — the request carries its whole payload up front. `R` is
+/// generic per call so the hot path avoids `dyn DxlReply`.
 pub trait DxlDispatch {
     fn dispatch<R: DxlReply>(&mut self, req: DxlRequest<'_>, ctx: DxlRequestCtx, reply: &mut R);
 }
