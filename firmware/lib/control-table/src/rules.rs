@@ -1,12 +1,14 @@
 use crate::desc::{Error, ValidationKind};
 use crate::map::View;
 
+#[derive(Copy, Clone)]
 pub struct Rule {
     pub offset: u16,
     pub width: u8,
     pub kind: RuleKind,
 }
 
+#[derive(Copy, Clone)]
 pub enum RuleKind {
     Enum {
         allowed: &'static [u8],
@@ -19,6 +21,7 @@ pub enum RuleKind {
     },
 }
 
+#[derive(Copy, Clone)]
 pub enum Rhs {
     Imm(i32),
     Reg(u16),

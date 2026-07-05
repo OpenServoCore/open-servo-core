@@ -1,0 +1,5 @@
+error: compare clauses require a primitive integer (u8/u16/i8/i16/i32)
+ --> tests/ui/flat_compare_on_u32.rs:7:8
+  |
+7 |     x: u32,
+  |        ^^^

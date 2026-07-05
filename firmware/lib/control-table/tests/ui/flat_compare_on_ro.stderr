@@ -1,0 +1,5 @@
+error: compare clause on a skipped or read-only field never runs (drop the compare or make the field rw)
+ --> tests/ui/flat_compare_on_ro.rs:7:5
+  |
+7 |     x: u8,
+  |     ^

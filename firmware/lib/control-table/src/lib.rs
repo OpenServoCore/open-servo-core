@@ -20,4 +20,4 @@ pub use region::{Region, RegionStorage, RegionStorageRaw};
 pub use route::{ReadChunk, ReadIter, Router};
 pub use stage::{STAGE_DATA_CAP, STAGE_ENTRY_CAP, Snapshot, StagedView, StagedWrites};
 
-pub use control_table_derive::{Block, Enum, Region, Table};
+pub use control_table_derive::{Block, Enum, FlatBlock, Region, Table};

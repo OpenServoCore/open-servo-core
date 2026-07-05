@@ -2,6 +2,7 @@ use proc_macro::TokenStream;
 use syn::{DeriveInput, parse_macro_input};
 
 mod block;
+mod block2;
 mod enums;
 mod region;
 mod table;
@@ -10,6 +11,14 @@ mod table;
 pub fn derive_block(input: TokenStream) -> TokenStream {
     let input = parse_macro_input!(input as DeriveInput);
     block::expand(&input)
+        .unwrap_or_else(syn::Error::into_compile_error)
+        .into()
+}
+
+#[proc_macro_derive(FlatBlock, attributes(ct_field, ct_block))]
+pub fn derive_flat_block(input: TokenStream) -> TokenStream {
+    let input = parse_macro_input!(input as DeriveInput);
+    block2::expand(&input)
         .unwrap_or_else(syn::Error::into_compile_error)
         .into()
 }
