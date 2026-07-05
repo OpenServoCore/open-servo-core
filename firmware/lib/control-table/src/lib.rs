@@ -2,8 +2,10 @@
 #![cfg_attr(feature = "sync-unsafe-cell", feature(sync_unsafe_cell))]
 
 mod desc;
+pub mod map;
 mod region;
 mod route;
+pub mod rules;
 mod stage;
 mod validate;
 
