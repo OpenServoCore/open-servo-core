@@ -1,6 +1,6 @@
 use crc::{CRC_16_UMTS, Crc};
 
-use super::CrcUmts;
+use super::{CrcUmts, crc16_umts_continue};
 
 const ENGINE: Crc<u16> = Crc::<u16>::new(&CRC_16_UMTS);
 
@@ -36,6 +36,10 @@ impl CrcUmts for SoftwareCrcUmts {
 
     fn reset(&mut self) {
         self.state = 0;
+    }
+
+    fn update_byte(&mut self, b: u8) {
+        self.state = crc16_umts_continue(self.state, core::slice::from_ref(&b));
     }
 }
 

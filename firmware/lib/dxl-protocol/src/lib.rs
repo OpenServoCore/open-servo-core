@@ -7,6 +7,7 @@
 
 mod buf;
 pub mod crc;
+pub mod encode;
 pub mod encoder;
 pub mod frame;
 pub mod log;
@@ -22,6 +23,9 @@ pub use buf::{Chunk, WriteBuf, WriteError};
 #[cfg(feature = "software-crc")]
 pub use crc::SoftwareCrcUmts;
 pub use crc::{CrcUmts, crc16_umts_continue};
+pub use encode::{
+    encode_instruction, encode_slot, encode_slot_chunked, encode_status, encode_status_chunked,
+};
 pub use encoder::{InstructionEncoder, SlotEncoder, StatusEncoder};
 pub use frame::{FrameKind, ParseError, Probe, RawFrame, parse, probe};
 pub use types::{

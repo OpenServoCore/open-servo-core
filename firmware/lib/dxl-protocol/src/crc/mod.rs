@@ -24,6 +24,13 @@ pub trait CrcUmts: Sized {
     /// Reset to initial state -- equivalent to a fresh engine but cheaper
     /// for peripheral-backed impls.
     fn reset(&mut self);
+
+    /// Fold a single byte. The fused single-pass encoder's hot loop calls this
+    /// per param byte; peripheral- or table-backed impls override it to avoid
+    /// the per-byte engine setup the default's slice round-trip would pay.
+    fn update_byte(&mut self, b: u8) {
+        self.update(core::slice::from_ref(&b));
+    }
 }
 
 const fn crc16_umts_entry(index: u16) -> u16 {
