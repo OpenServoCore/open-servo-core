@@ -14,7 +14,7 @@ use super::codec::{CodecTx, PacketEnd, PollAction};
 use super::fast_last::FastLast;
 use super::reply_handle::ReplyHandle;
 use super::send_policy::SendPolicy;
-use crate::traits::dxl::{Providers, Telemetry, TxBus};
+use crate::traits::dxl::{Providers, TxBus};
 
 pub(super) struct PollRouter<'a, P: Providers, const TX_BUF_LEN: usize> {
     pub(super) tx: &'a mut CodecTx<P::Crc, TX_BUF_LEN>,
@@ -23,7 +23,6 @@ pub(super) struct PollRouter<'a, P: Providers, const TX_BUF_LEN: usize> {
     pub(super) fast_last: &'a mut FastLast<P::FastLastScheduler>,
     pub(super) clock: &'a mut Clock<P::UsartBaud, P::ClockTrim>,
     pub(super) send_policy: &'a mut SendPolicy,
-    pub(super) telemetry: &'a mut P::Telemetry,
     /// Threaded through to [`ReplyHandle`] for the FAST k > 0 defer
     /// path's status-start wake window; the router itself never touches
     /// it.
@@ -91,45 +90,25 @@ impl<P: Providers, const TX_BUF_LEN: usize> PollRouter<'_, P, TX_BUF_LEN> {
         }
     }
 
-    /// Crc-good on the in-flight packet. The event carries codec-resolved
-    /// packet-end timing (anchored wire-end tick, or `None` when
-    /// interference / edge loss starved the tail-anchor back-search, plus
-    /// the per-source ISR-entry estimate). Policy lives here: the anchor
-    /// miss counts as telemetry, and the fallback estimate is
-    /// acceptable only for ops that allow it — FAST chain ops don't, see
-    /// `SendPolicy::allows_packet_end_fallback`.
+    /// Crc-good on the in-flight packet. The event carries the codec's
+    /// packet-end estimate (drain-source-corrected ISR-entry tick); the
+    /// send policy stages it into the reply context.
     #[inline(always)]
     fn on_crc_good(&mut self, next_status_pos: u32, packet_end: Option<PacketEnd>) -> PollAction {
         crate::log::trace!("dxl[id={}]: event=crc(good)", self.id);
         if self.send_policy.is_tracking()
             && let Some(pe) = packet_end
         {
-            let packet_end_tick = match pe.tick {
-                Some(t) => Some(t),
-                None => {
-                    self.telemetry.record_edge_anchor_miss();
-                    self.send_policy
-                        .allows_packet_end_fallback()
-                        .then_some(pe.fallback_tick)
-                }
-            };
             // At Crc-of-host-instruction, the codec's wire position has
             // just walked past the request's last CRC byte — the next
             // byte on the wire is the First predecessor's leading `0xFF`.
             // So `next_status_pos` is exactly the fold-start cursor for
             // the Fast Last CRC engine.
-            match self
+            if let Some(t) = self
                 .send_policy
-                .on_crc_good(packet_end_tick, next_status_pos, pe.src)
+                .on_crc_good(Some(pe.tick), next_status_pos, pe.src)
             {
-                Some(t) => {
-                    crate::log::debug!("dxl[id={}]: crc packet_end_tick={}", self.id, t);
-                }
-                None => {
-                    crate::log::debug!(
-                        "dxl: crc anchor missing and fallback disallowed — drop reply"
-                    );
-                }
+                crate::log::debug!("dxl[id={}]: crc packet_end_tick={}", self.id, t);
             }
         }
         PollAction::Continue

@@ -186,6 +186,7 @@ impl<R: EdgeDma, CRC: CrcUmts, const RX_BUF_LEN: usize, const EDGE_BUF_LEN: usiz
         &mut self,
         now: u32,
         ticks_per_bit: u16,
+        packet_end_comp: u32,
         n_pairs_wanted: u8,
         pairs: &mut heapless::Vec<(u16, u16), PAIRS_LEN>,
         mut on_event: F,
@@ -205,7 +206,13 @@ impl<R: EdgeDma, CRC: CrcUmts, const RX_BUF_LEN: usize, const EDGE_BUF_LEN: usiz
             }
             // Feed phase: parser drains the ring until it runs dry or the
             // sink redirects the poll.
-            match self.feed_parser(ticks_per_bit, n_pairs_wanted, pairs, &mut on_event) {
+            match self.feed_parser(
+                ticks_per_bit,
+                packet_end_comp,
+                n_pairs_wanted,
+                pairs,
+                &mut on_event,
+            ) {
                 FeedExit::Exhausted | FeedExit::Stop => return,
                 FeedExit::Skip { id } => {
                     let bytes_remaining = self.parser.packet_remaining();
@@ -302,6 +309,7 @@ impl<R: EdgeDma, CRC: CrcUmts, const RX_BUF_LEN: usize, const EDGE_BUF_LEN: usiz
     fn feed_parser<F, const PAIRS_LEN: usize>(
         &mut self,
         ticks_per_bit: u16,
+        packet_end_comp: u32,
         n_pairs_wanted: u8,
         pairs: &mut heapless::Vec<(u16, u16), PAIRS_LEN>,
         on_event: &mut F,
@@ -405,11 +413,11 @@ impl<R: EdgeDma, CRC: CrcUmts, const RX_BUF_LEN: usize, const EDGE_BUF_LEN: usiz
                         }
                     }
 
-                    // Resolve packet-end timing while the anchor set above
-                    // is still fresh, so the Crc event carries primitives
-                    // and the sink never reaches into the capture half.
+                    // Resolve packet-end timing so the Crc event carries a
+                    // primitive and the sink never reaches into the capture
+                    // half.
                     let packet_end = matches!(ev, Event::Crc(_))
-                        .then(|| self.edge_capture.packet_end(ticks_per_bit));
+                        .then(|| self.edge_capture.packet_end(ticks_per_bit, packet_end_comp));
 
                     match on_event(PollEvent::Parser {
                         ev,
@@ -744,7 +752,7 @@ mod tests {
     {
         let mut out = alloc::vec::Vec::new();
         let mut pairs: heapless::Vec<(u16, u16), 4> = heapless::Vec::new();
-        rx.poll(0, 160, 0, &mut pairs, |pe| match pe {
+        rx.poll(0, 160, 0, 0, &mut pairs, |pe| match pe {
             PollEvent::Parser { ev, ring, .. } => {
                 let action = if matches!(ev, Event::Header(_)) {
                     decide(&ev)

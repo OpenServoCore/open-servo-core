@@ -11,18 +11,16 @@ use dxl_protocol::streaming::Event;
 use crate::dxl::uart::poll_src::PollSrc;
 
 /// Packet-end timing the codec resolves and attaches to every `Crc`
-/// [`PollEvent::Parser`] — primitives per driver-pattern §3.3, so the
+/// [`PollEvent::Parser`] — a primitive per driver-pattern §3.3, so the
 /// sink never reaches into the codec's edge-capture half.
 ///
-/// `tick` is the anchored wire-end tick (CRC byte start + one byte-time,
-/// lifted into the WireClock u32 domain); `None` means interference /
-/// edge loss starved the tail-anchor back-search — the sink owns the
-/// anchor-miss telemetry and the decision whether `fallback_tick` (the
-/// per-`src` ISR-entry estimate) is an acceptable substitute.
+/// `tick` is the drain-source-corrected ISR-entry estimate of the wire
+/// end (`LineIdle` → `now − one frame`; `ByteBatch` → `now`), less the
+/// chip's entry-latency compensation (`WireClock::PACKET_END_ENTRY_COMP_TICKS`).
+/// `src` is the drain source that produced it.
 #[derive(Clone, Copy)]
 pub struct PacketEnd {
-    pub tick: Option<u32>,
-    pub fallback_tick: u32,
+    pub tick: u32,
     pub src: PollSrc,
 }
 

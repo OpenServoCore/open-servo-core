@@ -1,11 +1,13 @@
 //! DXL 2.0 broadcast Ping wire-timing — pin servo k's first start-bit at
-//! `packet_end + DEFAULT_RDT + k × PING_STATUS_FRAME_BYTES × byte_time`.
+//! `packet_end + DEFAULT_RDT + k × (PING_STATUS_FRAME_BYTES +
+//! PING_REPLY_GUARD_BYTES) × byte_time`.
 //!
 //! RDT is sourced from the uniform driver default
 //! (`osc_drivers::dxl::DEFAULT_RDT_2US`), not from the per-instance
-//! register-table value. The per-id `k × frame_bytes` spacer already owns
-//! collision avoidance — adding self-rdt on top would let a low-id,
-//! high-rdt servo extend into the next id's slot.
+//! register-table value. The per-id `k × (frame + guard)` spacer already
+//! owns collision avoidance — the guard bytes absorb per-servo skew in the
+//! drain-ISR packet-end estimates, and adding self-rdt on top would let a
+//! low-id, high-rdt servo extend into the next id's slot.
 //!
 //! `long_reply_delays.rs::broadcast_ping_at_12_servos_replies_in_order`
 //! covers ordering + content; this test pins the byte-arrival schedule
@@ -26,6 +28,9 @@ use rstest_reuse::apply;
 /// constant is chip-side; the test asserts the host observes the same
 /// shape.
 const PING_STATUS_FRAME_BYTES: u64 = (RESPONSE_HEADER_BYTES + 3 + CRC_BYTES) as u64;
+
+/// Mirrors `drivers/dxl/uart/send_policy/fast_shape.rs::PING_REPLY_GUARD_BYTES`.
+const PING_REPLY_GUARD_BYTES: u64 = 2;
 
 /// Stride `rx_byte_starts_ns` by `PING_STATUS_FRAME_BYTES` to keep the
 /// first byte of each slot's frame; drops the 13 intra-frame bytes that
@@ -48,7 +53,9 @@ fn assert_slot_schedule(starts: &[u64], packet_end: u64, baud: BaudRate, baud_id
     let byte_time = byte_time_ns(baud);
     for (idx, &actual_start) in starts.iter().enumerate() {
         let k = (idx + 1) as u64;
-        let expected_start = packet_end + DEFAULT_RDT_NS + k * PING_STATUS_FRAME_BYTES * byte_time;
+        let expected_start = packet_end
+            + DEFAULT_RDT_NS
+            + k * (PING_STATUS_FRAME_BYTES + PING_REPLY_GUARD_BYTES) * byte_time;
         let drift = actual_start.abs_diff(expected_start);
         // 1 bit_period absorbs integer-tick rounding in the firmware's
         // `bytes_to_ticks`; larger drift signals real schedule error.

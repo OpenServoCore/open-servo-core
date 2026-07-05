@@ -407,10 +407,13 @@ fn search_tail_signature<const EDGE_BUF_LEN: usize>(
 }
 
 /// Wire-end tick of the just-completed packet, lifted into the WireClock
-/// u32 domain. Composite stamps `packet_end_tick` at the parser's
-/// CRC-good event — the CRC byte's start sits at the tail anchor, the
-/// wire-end one byte-time later. `now` / `src` route through
-/// [`drain_ref`] so the lift stays sub-wrap at low baud.
+/// u32 domain — the CRC byte's start sits at the tail anchor, the wire-end
+/// one byte-time later. `now` / `src` route through [`drain_ref`] so the
+/// lift stays sub-wrap at low baud.
+///
+/// Unused since packet-end resolves from the fallback estimate; retained
+/// with the rest of the edge subsystem until its removal chunk.
+#[allow(dead_code)]
 pub(super) fn packet_end_tick(
     anchor: &AnchorCache,
     ticks_per_bit: u16,

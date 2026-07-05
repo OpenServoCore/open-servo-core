@@ -45,6 +45,14 @@ pub const SCHEDULE_WRAP_GUARD_TICKS: u16 = 0x8000;
 /// of extra latency on an already-late send.
 pub const KICKOFF_RETRY_LEAD_TICKS: u16 = 64;
 
+/// Entry-latency compensation subtracted from the packet-end estimate, in
+/// HCLK ticks (baud-independent). The estimate is the drain-ISR entry
+/// `now`, so it carries that vector's fixed entry latency; biasing it down
+/// keeps the residual wire excess slightly positive. Seeded 0; bench-tune
+/// at band end via `tool-tune-tx-start` (measured ~+150 ticks median at
+/// 3M, biased so the residual stays slightly positive).
+pub const PACKET_END_ENTRY_COMP_TICKS: u32 = 0;
+
 mod fast_last {
     /// Early bias for the checkpoint wake CMP, in HCLK ticks: the wake
     /// targets `window_end − this` so the body arrives BEFORE the

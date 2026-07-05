@@ -83,15 +83,6 @@ impl InstructionTracker {
     pub(super) fn is_tracking(&self) -> bool {
         matches!(self.phase, InstructionPhase::Tracking(_))
     }
-
-    /// Forward of [`InflightCtx::allows_packet_end_fallback`] for the
-    /// tracked Instruction; `false` when idle.
-    pub(super) fn allows_packet_end_fallback(&self) -> bool {
-        match &self.phase {
-            InstructionPhase::Tracking(ctx) => ctx.allows_packet_end_fallback(),
-            InstructionPhase::Idle => false,
-        }
-    }
 }
 
 #[cfg(test)]
@@ -140,22 +131,5 @@ mod tests {
         t.on_instruction_header(&ping(TEST_ID), TEST_ID);
         t.on_resync();
         assert!(!t.is_tracking());
-    }
-
-    #[test]
-    fn fallback_allowance_reads_tracked_header_and_is_false_when_idle() {
-        let mut t = InstructionTracker::new();
-        assert!(!t.allows_packet_end_fallback());
-        t.on_instruction_header(&ping(TEST_ID), TEST_ID);
-        assert!(t.allows_packet_end_fallback());
-        t.on_instruction_header(
-            &InstructionHeader::FastSyncRead {
-                id: Id::new(BROADCAST_ID),
-                address: 0,
-                length: 2,
-            },
-            TEST_ID,
-        );
-        assert!(!t.allows_packet_end_fallback());
     }
 }

@@ -26,6 +26,8 @@ use crate::hal::systick;
 pub struct WireClock;
 
 impl dxl::WireClock for WireClock {
+    const PACKET_END_ENTRY_COMP_TICKS: u32 = crate::measurements::PACKET_END_ENTRY_COMP_TICKS;
+
     #[inline(always)]
     fn now(&self) -> u32 {
         systick::ticks()

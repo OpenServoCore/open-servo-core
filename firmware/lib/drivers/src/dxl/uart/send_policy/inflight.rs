@@ -6,8 +6,8 @@ use dxl_protocol::streaming::{InstructionHeader, InstructionPayload};
 use dxl_protocol::wire::BROADCAST_ID;
 
 use super::fast_shape::{
-    PING_STATUS_FRAME_BYTES, compute_fast_position, fast_bytes_before, fast_chain_packet_length,
-    fast_first_bytes, fast_successor_bytes,
+    PING_REPLY_GUARD_BYTES, PING_STATUS_FRAME_BYTES, compute_fast_position, fast_bytes_before,
+    fast_chain_packet_length, fast_first_bytes, fast_successor_bytes,
 };
 use super::reply_context::ReplyContext;
 use crate::dxl::uart::poll_src::PollSrc;
@@ -137,7 +137,7 @@ impl InflightCtx {
         // `ReplyHandle::send_status`, which never reads slot_offset_bytes.
         let (slot_offset_bytes, fast_slot_position, reply_rdt_us) = match (self.header, self.slot) {
             (InstructionHeader::Ping { id: target }, _) if target.as_byte() == BROADCAST_ID => (
-                (id as u32) * PING_STATUS_FRAME_BYTES,
+                (id as u32) * (PING_STATUS_FRAME_BYTES + PING_REPLY_GUARD_BYTES),
                 None,
                 crate::dxl::DEFAULT_RDT_US,
             ),
@@ -176,86 +176,11 @@ impl InflightCtx {
     }
 }
 
-// -- accessors ------------------------------------------------------------
-
-impl InflightCtx {
-    /// Whether a `packet_end_tick` fallback estimate is safe to use when
-    /// the classifier lost anchor. FAST chain ops drive chain-CRC
-    /// fold-grid back-dating; a guessed anchor mispatches the CRC by ≥1
-    /// byte and corrupts the entire downstream chain — strictly worse
-    /// than silence. Single-target replies (Ping / Read / Write /
-    /// RegWrite) absorb the ~µs-scale fallback jitter inside RDT slack;
-    /// plain Sync/Bulk Read slot k>0 schedules sequence-driven from the
-    /// predecessor and ignores `packet_end_tick` entirely.
-    pub(super) fn allows_packet_end_fallback(&self) -> bool {
-        !matches!(
-            self.header,
-            InstructionHeader::FastSyncRead { .. } | InstructionHeader::FastBulkRead { .. },
-        )
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::dxl::uart::test_support::TEST_ID;
     use dxl_protocol::Id;
-
-    // InflightCtx fallback allowance (per-instruction packet-end policy)
-
-    fn allows_fallback(header: InstructionHeader) -> bool {
-        InflightCtx::new(header).allows_packet_end_fallback()
-    }
-
-    #[test]
-    fn inflight_for_single_target_allows_packet_end_fallback() {
-        assert!(allows_fallback(InstructionHeader::Ping {
-            id: Id::new(TEST_ID),
-        }));
-        assert!(allows_fallback(InstructionHeader::Read {
-            id: Id::new(TEST_ID),
-            address: 0,
-            length: 2,
-        }));
-        assert!(allows_fallback(InstructionHeader::Write {
-            id: Id::new(TEST_ID),
-            address: 0,
-            length: 2,
-        }));
-        assert!(allows_fallback(InstructionHeader::RegWrite {
-            id: Id::new(TEST_ID),
-            address: 0,
-            length: 2,
-        }));
-    }
-
-    #[test]
-    fn inflight_for_plain_sync_and_bulk_allows_packet_end_fallback() {
-        assert!(allows_fallback(InstructionHeader::SyncRead {
-            id: Id::new(BROADCAST_ID),
-            address: 0,
-            length: 2,
-        }));
-        assert!(allows_fallback(InstructionHeader::BulkRead {
-            id: Id::new(BROADCAST_ID),
-        }));
-    }
-
-    #[test]
-    fn inflight_for_fast_sync_read_disallows_packet_end_fallback() {
-        assert!(!allows_fallback(InstructionHeader::FastSyncRead {
-            id: Id::new(BROADCAST_ID),
-            address: 0,
-            length: 2,
-        }));
-    }
-
-    #[test]
-    fn inflight_for_fast_bulk_read_disallows_packet_end_fallback() {
-        assert!(!allows_fallback(InstructionHeader::FastBulkRead {
-            id: Id::new(BROADCAST_ID),
-        }));
-    }
 
     // InflightCtx slot walk → ReplyContext derivation
 
@@ -416,7 +341,7 @@ mod tests {
         let reply = resolve(ctx);
         assert_eq!(
             reply.slot_offset_bytes,
-            TEST_ID as u32 * PING_STATUS_FRAME_BYTES
+            TEST_ID as u32 * (PING_STATUS_FRAME_BYTES + PING_REPLY_GUARD_BYTES)
         );
         assert_eq!(reply.rdt_us, crate::dxl::DEFAULT_RDT_US);
         assert_eq!(reply.fast_slot_position, None);

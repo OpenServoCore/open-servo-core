@@ -13,5 +13,12 @@
 /// responsible for satisfying the contract, e.g. by clocking a u32 counter
 /// and the capture timer from the same source and zeroing them together.
 pub trait WireClock {
+    /// Entry-latency compensation subtracted from the packet-end estimate,
+    /// in HCLK ticks (baud-independent). The estimate is the drain-ISR's
+    /// entry `now`, which carries the vector's fixed entry latency; biasing
+    /// it down by this const keeps the residual wire excess slightly
+    /// positive. Bench-tuned at band end via `tool-tune-tx-start`.
+    const PACKET_END_ENTRY_COMP_TICKS: u32;
+
     fn now(&self) -> u32;
 }

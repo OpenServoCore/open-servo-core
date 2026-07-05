@@ -442,6 +442,7 @@ impl<P: Providers, const RX_BUF_LEN: usize, const EDGE_BUF_LEN: usize, const TX_
         }
         self.codec.on_rx_progress(self.rx_dma.remaining());
         let now = self.wire_clock.now();
+        let packet_end_comp = <P::WireClock as WireClock>::PACKET_END_ENTRY_COMP_TICKS;
         let id = self.send_policy.id();
         let ticks_per_bit = self.clock.ticks_per_bit();
         let Self {
@@ -451,7 +452,6 @@ impl<P: Providers, const RX_BUF_LEN: usize, const EDGE_BUF_LEN: usize, const TX_
             scheduler,
             tx_bus,
             fast_last,
-            telemetry,
             send_policy,
             ..
         } = self;
@@ -469,13 +469,13 @@ impl<P: Providers, const RX_BUF_LEN: usize, const EDGE_BUF_LEN: usize, const TX_
             fast_last,
             clock,
             send_policy,
-            telemetry,
             rx_dma,
             id,
         };
         rx.poll(
             now,
             ticks_per_bit,
+            packet_end_comp,
             n_pairs_wanted,
             &mut pair_buf,
             |pe| match pe {
@@ -664,11 +664,10 @@ mod tests {
     }
 
     /// Stage a matching falling-edge signature for the last 4 bytes of `pkt`
-    /// so `codec.poll`'s `anchor_at_tail` at Crc-good resolves
-    /// `tail_anchor = SEED_TICK` — the composite then reads
-    /// `packet_end_tick = SEED_TICK + BITS_PER_FRAME·tpb`. Also stashes the
-    /// DMA-ISR capture at `SEED_TICK` so `lift`'s u16→u32 reconstruction
-    /// stays in-wrap.
+    /// so `codec.poll`'s `anchor_at_tail` at Crc-good plants the FAST
+    /// status-start mark, and stash the ByteBatch wake at `SEED_TICK` so the
+    /// codec's packet-end estimate reads `SEED_TICK` (ByteBatch fallback =
+    /// `now`).
     fn force_anchor(bus: &mut TestBus, state: &TestState, pkt: &[u8]) {
         let tail_len = TAIL_BYTES_FOR_ANCHOR.min(pkt.len());
         let tail = &pkt[pkt.len() - tail_len..];
@@ -754,16 +753,17 @@ mod tests {
         out
     }
 
-    /// Construct a bus pre-loaded with `pkt` bytes and a forced classifier
-    /// anchor at [`SEED_TICK`] so `packet_end_tick` reads
-    /// `SEED_TICK + BITS_PER_FRAME·tpb` at Crc-good. Returns the bus, state,
-    /// and expected packet-end tick.
+    /// Construct a bus pre-loaded with `pkt` bytes and a stashed ByteBatch
+    /// wake at [`SEED_TICK`] so the codec's packet-end estimate reads
+    /// `SEED_TICK` (ByteBatch fallback = `now`, entry-comp 0) at Crc-good.
+    /// Also stages the tail signature so `anchor_at_tail` plants the FAST
+    /// status-start mark for the deferred-slot tests. Returns the bus,
+    /// state, and expected packet-end tick.
     fn bus_seeded_with(pkt: &[u8]) -> (TestBus, TestState, u32) {
         let (mut bus, state) = make_bus();
         stage_rx(&mut bus, &state, 0, pkt);
         force_anchor(&mut bus, &state, pkt);
-        let packet_end_tick = (SEED_TICK as u32)
-            .wrapping_add((TICKS_PER_BIT_3M as u32).wrapping_mul(BITS_PER_FRAME as u32));
+        let packet_end_tick = SEED_TICK as u32;
         (bus, state, packet_end_tick)
     }
 
@@ -824,16 +824,8 @@ mod tests {
         assert!(tags.contains(&Tag::InstrPing(TEST_ID)));
         assert!(saw_crc(&tags));
         assert_eq!(bus.instruction_count(), 1);
-        // No edge signature was staged, so the classifier had no anchor at
-        // Crc — the composite must record exactly one edge-anchor miss.
-        assert_eq!(state.telemetry.edge_anchor_miss_count(), 1);
-    }
-
-    #[test]
-    fn anchored_crc_records_no_edge_anchor_miss() {
-        let ping = wire_ping(TEST_ID);
-        let (mut bus, state, _) = bus_seeded_with(&ping);
-        bus.poll(|_, _, _| {});
+        // Packet-end is the fallback estimate now — no anchor back-search,
+        // so the edge-anchor-miss counter never ticks.
         assert_eq!(state.telemetry.edge_anchor_miss_count(), 0);
     }
 

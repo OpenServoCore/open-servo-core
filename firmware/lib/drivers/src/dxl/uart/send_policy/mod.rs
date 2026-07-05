@@ -68,8 +68,7 @@ impl SendPolicy {
     /// resolve it against the config's identity into a [`ReplyContext`],
     /// and stage it on the reply gate for the dispatcher's `send_*` call.
     /// Returns the staged packet-end tick, or `None` when nothing was
-    /// tracked or the caller couldn't supply a tick (anchor miss with
-    /// fallback disallowed) — the reply is dropped.
+    /// tracked.
     pub(super) fn on_crc_good(
         &mut self,
         packet_end_tick: Option<u32>,
@@ -165,16 +164,9 @@ impl SendPolicy {
     }
 
     /// An addressed Instruction is mid-walk — the composite resolves a
-    /// packet-end tick at Crc (and records anchor-miss telemetry) only in
-    /// this state.
+    /// packet-end tick at Crc only in this state.
     pub(super) fn is_tracking(&self) -> bool {
         self.instruction.is_tracking()
-    }
-
-    /// Whether a `packet_end_tick` fallback estimate is safe for the
-    /// tracked Instruction — see `InflightCtx::allows_packet_end_fallback`.
-    pub(super) fn allows_packet_end_fallback(&self) -> bool {
-        self.instruction.allows_packet_end_fallback()
     }
 
     /// The predecessor id a deferred chain reply is waiting on, if any.

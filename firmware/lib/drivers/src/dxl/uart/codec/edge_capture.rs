@@ -233,20 +233,16 @@ impl<R: EdgeDma, const EDGE_BUF_LEN: usize> EdgeCapture<R, EDGE_BUF_LEN> {
         self.anchor.tail_anchor()
     }
 
-    /// Packet-end timing snapshot at the parser's Crc event — the anchored
-    /// wire-end tick lifted into the WireClock u32 domain (one byte-time
-    /// past the CRC byte's start; `None` when the tail-anchor back-search
-    /// missed) plus the per-source fallback estimate. `now` / `src` come
-    /// from [`Self::last_isr`]; both route through the drain-reference
-    /// correction (`edge_parser::drain_ref`) so the u16-stamp lift picks
-    /// the right reference — HT/TC ≈ stamp + 1·byte vs IDLE ≈ stamp +
-    /// 2·`BITS_PER_FRAME`·tpb — critical at 9600 baud where the IDLE
-    /// elapsed exceeds the u16 wrap.
-    pub(super) fn packet_end(&self, ticks_per_bit: u16) -> PacketEnd {
+    /// Packet-end estimate at the parser's Crc event — the drain-source-
+    /// corrected ISR-entry tick (`now` for [`PollSrc::ByteBatch`], `now −
+    /// BITS_PER_FRAME · ticks_per_bit` for [`PollSrc::LineIdle`]), less
+    /// `entry_comp` (the chip's entry-latency compensation). `now` / `src`
+    /// come from [`Self::last_isr`].
+    pub(super) fn packet_end(&self, ticks_per_bit: u16, entry_comp: u32) -> PacketEnd {
         let (now, src) = self.last_isr;
         PacketEnd {
-            tick: edge_parser::packet_end_tick(&self.anchor, ticks_per_bit, now, src),
-            fallback_tick: edge_parser::packet_end_tick_fallback(src, now, ticks_per_bit),
+            tick: edge_parser::packet_end_tick_fallback(src, now, ticks_per_bit)
+                .wrapping_sub(entry_comp),
             src,
         }
     }

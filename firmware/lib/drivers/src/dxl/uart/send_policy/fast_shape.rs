@@ -11,10 +11,19 @@ use dxl_protocol::wire::{
 };
 
 /// Wire bytes of a single Ping Status reply. Multi-servo broadcast Ping
-/// convention positions servo N's reply at `N × PING_STATUS_FRAME_BYTES`
-/// wire bytes past wire-end so the servos don't collide.
+/// convention positions servo N's reply at
+/// `N × (PING_STATUS_FRAME_BYTES + PING_REPLY_GUARD_BYTES)` wire bytes
+/// past wire-end so the servos don't collide.
 pub(super) const PING_STATUS_FRAME_BYTES: u32 =
     (RESPONSE_HEADER_BYTES + PING_STATUS_PARAM_BYTES + CRC_BYTES) as u32;
+
+/// Inter-reply guard for broadcast-Ping packing, in wire bytes. Every
+/// servo schedules from its own drain-ISR packet-end estimate, so adjacent
+/// replies skew by the per-servo entry-latency difference — zero-gap
+/// packing is only sound when all servos share a tick-exact reference.
+/// Two byte-times bound the skew at 3M with margin and grow with byte
+/// time at lower bauds.
+pub(super) const PING_REPLY_GUARD_BYTES: u32 = 2;
 
 /// Wire bytes a Fast slot-0 emission consumes for a per-slot `length`:
 /// chain header + slot 0's `error + id` prefix + data + its cumulative
