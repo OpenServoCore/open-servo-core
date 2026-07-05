@@ -4,10 +4,7 @@
 //! driven implementation; the trait surface (`dxl_protocol::CrcUmts`) is
 //! the same.
 
-use crc::{CRC_16_UMTS, Crc};
-use dxl_protocol::CrcUmts;
-
-const ENGINE: Crc<u16> = Crc::<u16>::new(&CRC_16_UMTS);
+use dxl_protocol::{CrcUmts, crc16_umts_continue};
 
 #[derive(Copy, Clone, Debug)]
 pub struct DxlCrc {
@@ -30,9 +27,15 @@ impl CrcUmts for DxlCrc {
 
     #[inline]
     fn update(&mut self, bytes: &[u8]) {
-        let mut digest = ENGINE.digest_with_initial(self.state);
-        digest.update(bytes);
-        self.state = digest.finalize();
+        self.state = crc16_umts_continue(self.state, bytes);
+    }
+
+    // The default's slice round-trip pays the `crc` crate's digest
+    // setup/finalize PER BYTE — the framer fold and fused encode call this
+    // once per wire byte on the reply-turnaround path.
+    #[inline(always)]
+    fn update_byte(&mut self, b: u8) {
+        self.state = crc16_umts_continue(self.state, core::slice::from_ref(&b));
     }
 
     fn finalize(&self) -> u16 {
