@@ -44,8 +44,7 @@ fn reg_write_alone_replies_ok_and_does_not_mutate_table(baud_idx: u8, rdt_us: u3
         !sim.servo(servos[0])
             .shared()
             .table
-            .control
-            .with(|c| c.lifecycle.torque_enable),
+            .with(|t| t.control.lifecycle.torque_enable),
         "RegWrite must stage only — table mutation belongs to Action",
     );
 }
@@ -81,8 +80,7 @@ fn action_alone_with_no_staged_writes_replies_ok(baud_idx: u8, rdt_us: u32) {
         !sim.servo(servos[0])
             .shared()
             .table
-            .control
-            .with(|c| c.lifecycle.torque_enable),
+            .with(|t| t.control.lifecycle.torque_enable),
     );
 }
 
@@ -126,8 +124,7 @@ fn reg_write_then_action_commits_to_table(baud_idx: u8, rdt_us: u32) {
         sim.servo(servos[0])
             .shared()
             .table
-            .control
-            .with(|c| c.lifecycle.torque_enable),
+            .with(|t| t.control.lifecycle.torque_enable),
     );
 }
 
@@ -170,8 +167,7 @@ fn chain_of_two_reg_writes_commits_atomically_on_action(baud_idx: u8, rdt_us: u3
         .servo(servos[0])
         .shared()
         .table
-        .control
-        .with(|c| c.lifecycle);
+        .with(|t| t.control.lifecycle);
     assert!(lc.torque_enable);
     assert_eq!(lc.mode, Mode::PositionPid);
 }
@@ -198,8 +194,7 @@ fn action_clears_staged_queue_subsequent_action_is_noop(baud_idx: u8, rdt_us: u3
         sim.servo(servos[0])
             .shared()
             .table
-            .control
-            .with(|c| c.lifecycle.torque_enable),
+            .with(|t| t.control.lifecycle.torque_enable),
     );
 
     sim.servo(servos[0]).set_torque_enabled(false);
@@ -213,8 +208,7 @@ fn action_clears_staged_queue_subsequent_action_is_noop(baud_idx: u8, rdt_us: u3
         !sim.servo(servos[0])
             .shared()
             .table
-            .control
-            .with(|c| c.lifecycle.torque_enable),
+            .with(|t| t.control.lifecycle.torque_enable),
         "Action #2 must commit an empty queue; A's staged entry must not replay",
     );
 }
@@ -291,8 +285,7 @@ fn prior_staged_writes_survive_a_failed_reg_write(baud_idx: u8, rdt_us: u32) {
         sim.servo(servos[0])
             .shared()
             .table
-            .control
-            .with(|c| c.lifecycle.torque_enable),
+            .with(|t| t.control.lifecycle.torque_enable),
         "A's staged TORQUE_ENABLE=1 must survive B's rejection and commit on Action",
     );
 }
@@ -325,8 +318,7 @@ fn reg_write_broadcast_stages_silently_action_broadcast_commits_silently(
         sim.servo(servos[0])
             .shared()
             .table
-            .control
-            .with(|c| c.lifecycle.torque_enable),
+            .with(|t| t.control.lifecycle.torque_enable),
     );
 }
 
@@ -370,8 +362,7 @@ fn reg_write_silent_when_srl_is_read_but_action_still_commits(baud_idx: u8, rdt_
         sim.servo(servo)
             .shared()
             .table
-            .control
-            .with(|c| c.lifecycle.torque_enable),
+            .with(|t| t.control.lifecycle.torque_enable),
     );
 }
 
@@ -409,8 +400,7 @@ fn action_silent_when_srl_is_read_after_visible_reg_write(baud_idx: u8, rdt_us: 
         sim.servo(servo)
             .shared()
             .table
-            .control
-            .with(|c| c.lifecycle.torque_enable),
+            .with(|t| t.control.lifecycle.torque_enable),
     );
 }
 
@@ -455,8 +445,7 @@ fn reg_write_under_torque_lock_replies_access_error(baud_idx: u8, rdt_us: u32) {
         sim.servo(servos[0])
             .shared()
             .table
-            .config
-            .with(|c| c.comms.id),
+            .with(|t| t.config.comms.id),
         1,
         "Action must not replay the rejected RegWrite",
     );
@@ -506,8 +495,7 @@ fn inline_write_between_reg_writes_does_not_drain_staged_queue(baud_idx: u8, rdt
         .servo(servos[0])
         .shared()
         .table
-        .control
-        .with(|c| c.lifecycle);
+        .with(|t| t.control.lifecycle);
     assert!(lc.torque_enable, "RegWrite A must commit on Action");
     assert_eq!(
         lc.mode,

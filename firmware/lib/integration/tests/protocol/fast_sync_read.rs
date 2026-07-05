@@ -7,7 +7,7 @@ use osc_integration::sim::{FastStatusCrc, format_hex, parse_fast_sync_status};
 use rstest::rstest;
 use rstest_reuse::apply;
 
-const CONFIG_REGION_END_ADDR: u16 = CONFIG_REGION_SIZE as u16;
+const CONFIG_REGION_END_ADDR: u16 = CONFIG_REGION_SIZE;
 const OVER_MAX_CONTROL_RW: u16 = MAX_CONTROL_RW as u16 + 1;
 
 #[apply(matrix)]

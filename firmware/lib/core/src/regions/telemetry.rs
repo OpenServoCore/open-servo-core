@@ -1,7 +1,7 @@
-use control_table::{Block, Region};
+use control_table::{FlatBlock, Section};
 
 #[repr(C)]
-#[derive(Copy, Clone, Block)]
+#[derive(Copy, Clone, FlatBlock)]
 pub struct TelemetryConverted {
     #[ct_field(access = ro)]
     pub present_position: i32,
@@ -13,10 +13,12 @@ pub struct TelemetryConverted {
     pub present_temp: i16,
     #[ct_field(access = ro)]
     pub present_vbus_mv: u16,
+    #[ct_field(skip)]
+    pub _rsvd_tail: u16,
 }
 
 #[repr(C)]
-#[derive(Copy, Clone, Block)]
+#[derive(Copy, Clone, FlatBlock)]
 pub struct TelemetryIntermediaries {
     #[ct_field(access = ro)]
     pub vbus_filt_mv: u16,
@@ -38,7 +40,7 @@ pub struct TelemetryIntermediaries {
 
 /// `fault_flags` writable-RO carve-out: host writing 0x00 clears non-latched bits.
 #[repr(C)]
-#[derive(Copy, Clone, Block)]
+#[derive(Copy, Clone, FlatBlock)]
 pub struct TelemetryFault {
     #[ct_field(access = ro)]
     pub mode_active: u8,
@@ -46,10 +48,12 @@ pub struct TelemetryFault {
     pub fault_flags: u8,
     #[ct_field(access = ro)]
     pub fault_code: u8,
+    #[ct_field(skip)]
+    pub _rsvd_align: u8,
 }
 
 #[repr(C)]
-#[derive(Copy, Clone, Block)]
+#[derive(Copy, Clone, FlatBlock)]
 pub struct TelemetryRaw {
     #[ct_field(access = ro)]
     pub raw_pos: u16,
@@ -73,7 +77,7 @@ pub struct TelemetryRaw {
 /// Chip-side `report_fault` increments via raw pointer, bypassing the regmap.
 /// Concurrent host clear + ISR increment may drop one update — acceptable for bench.
 #[repr(C)]
-#[derive(Copy, Clone, Block)]
+#[derive(Copy, Clone, FlatBlock)]
 pub struct TelemetryDxlLink {
     #[ct_field(access = rw)]
     pub illegal_transition: u32,
@@ -96,12 +100,14 @@ pub struct TelemetryDxlLink {
 }
 
 #[repr(C)]
-#[derive(Copy, Clone, Region)]
-#[ct_region(addr = crate::regions::TELEMETRY_BASE_ADDR, size = crate::regions::TELEMETRY_REGION_SIZE)]
+#[derive(Section)]
+#[ct_section(base = crate::regions::TELEMETRY_BASE_ADDR, size = crate::regions::TELEMETRY_REGION_SIZE)]
 pub struct TelemetryRegs {
     pub converted: TelemetryConverted,
     pub intermediaries: TelemetryIntermediaries,
     pub fault: TelemetryFault,
     pub raw: TelemetryRaw,
     pub link: TelemetryDxlLink,
+    #[ct_section(skip)]
+    pub _rsvd_tail: [u8; 32],
 }

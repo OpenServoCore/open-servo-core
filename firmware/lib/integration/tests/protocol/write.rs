@@ -10,7 +10,7 @@ use rstest::rstest;
 use rstest_reuse::apply;
 
 const CONFIG_INTRA_GAP_ADDR: u16 = 100;
-const CONFIG_REGION_END_ADDR: u16 = CONFIG_REGION_SIZE as u16;
+const CONFIG_REGION_END_ADDR: u16 = CONFIG_REGION_SIZE;
 const OVER_MAX_CONTROL_RW: usize = 129;
 const NEW_ID: u8 = 2;
 
@@ -45,8 +45,7 @@ fn write_to_comms_id_returns_ok_and_mutates_table(baud_idx: u8, rdt_us: u32) {
         sim.servo(servos[0])
             .shared()
             .table
-            .config
-            .with(|c| c.comms.id),
+            .with(|t| t.config.comms.id),
         NEW_ID,
     );
 }
@@ -98,8 +97,7 @@ fn write_to_ro_field_replies_access_error(baud_idx: u8, rdt_us: u32) {
         sim.servo(servos[0])
             .shared()
             .table
-            .config
-            .with(|c| c.identity.firmware_version),
+            .with(|t| t.config.identity.firmware_version),
         DEFAULT_FIRMWARE_VERSION,
     );
 }
@@ -120,7 +118,10 @@ fn write_to_intra_region_gap_replies_access_error(baud_idx: u8, rdt_us: u32) {
 
 #[apply(matrix)]
 #[test_log::test]
-fn write_across_region_boundary_replies_data_range(baud_idx: u8, rdt_us: u32) {
+fn write_across_reserved_boundary_replies_access_error(baud_idx: u8, rdt_us: u32) {
+    // The flat map is contiguous: config's reserved tail (byte 127) abuts the
+    // calib section. A write straddling that boundary touches the non-writable
+    // reserved byte first, so it fails with Access (not DataRange).
     let baud = BaudRate::from_idx(baud_idx).expect("valid baud idx");
     let rx = write_with(
         Id::new(1),
@@ -133,7 +134,7 @@ fn write_across_region_boundary_replies_data_range(baud_idx: u8, rdt_us: u32) {
         parse_status(Instruction::Write, &rx),
         Status::Empty {
             id: Id::new(1),
-            error: StatusError::code(ErrorCode::DataRange),
+            error: StatusError::code(ErrorCode::Access),
         },
     );
 }
@@ -166,8 +167,7 @@ fn write_under_torque_lock_replies_access_error(baud_idx: u8, rdt_us: u32) {
         sim.servo(servos[0])
             .shared()
             .table
-            .config
-            .with(|c| c.comms.id),
+            .with(|t| t.config.comms.id),
         1,
     );
 }
@@ -193,8 +193,7 @@ fn write_to_wrong_id_yields_no_reply(baud_idx: u8, rdt_us: u32) {
         sim.servo(servos[0])
             .shared()
             .table
-            .config
-            .with(|c| c.comms.id),
+            .with(|t| t.config.comms.id),
         1,
     );
 }
@@ -224,8 +223,7 @@ fn write_broadcast_mutates_table_silently(baud_idx: u8, rdt_us: u32) {
         sim.servo(servos[0])
             .shared()
             .table
-            .config
-            .with(|c| c.comms.id),
+            .with(|t| t.config.comms.id),
         NEW_ID,
     );
 }
@@ -283,6 +281,6 @@ fn write_under_srl(
     });
 
     let rx = sim.host(host).rx_bytes();
-    let id_after = sim.servo(servo).shared().table.config.with(|c| c.comms.id);
+    let id_after = sim.servo(servo).shared().table.with(|t| t.config.comms.id);
     (rx, id_after)
 }

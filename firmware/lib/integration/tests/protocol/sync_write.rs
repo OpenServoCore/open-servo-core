@@ -9,11 +9,11 @@ use osc_integration::sim::{DEFAULT_FIRMWARE_VERSION, DeviceId, Sim};
 use rstest::rstest;
 use rstest_reuse::apply;
 
-const CONFIG_REGION_END_ADDR: u16 = CONFIG_REGION_SIZE as u16;
+const CONFIG_REGION_END_ADDR: u16 = CONFIG_REGION_SIZE;
 const OVER_MAX_CONTROL_RW: u16 = MAX_CONTROL_RW as u16 + 1;
 
 fn servo_id(sim: &Sim, servo: DeviceId) -> u8 {
-    sim.servo(servo).shared().table.config.with(|c| c.comms.id)
+    sim.servo(servo).shared().table.with(|t| t.config.comms.id)
 }
 
 #[apply(matrix)]
@@ -156,8 +156,7 @@ fn sync_write_to_ro_field_does_not_mutate(baud_idx: u8, rdt_us: u32) {
             .servo(*servo)
             .shared()
             .table
-            .config
-            .with(|c| c.identity.firmware_version);
+            .with(|t| t.config.identity.firmware_version);
         assert_eq!(
             fw, DEFAULT_FIRMWARE_VERSION,
             "servo[{}] firmware_version preserved",

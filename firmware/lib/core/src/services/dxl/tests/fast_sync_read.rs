@@ -58,9 +58,9 @@ fn fast_sync_read_return_level_none_silences_reply() {
 }
 
 #[test]
-fn fast_sync_read_at_unmapped_address_emits_zero_payload_slot() {
-    // Per the memory-shaped read contract the slot carries `length` zero bytes
-    // with error=OK, not stale buf contents.
+fn fast_sync_read_past_map_end_is_silent() {
+    // A FAST slot block has no error-only form: a read past the 1024-byte map
+    // end (which the flat map rejects) drops the slot silently.
     let shared = Shared::new();
     let mut bus = FakeBus::new();
     let mut h = Dxl::new();
@@ -69,11 +69,6 @@ fn fast_sync_read_at_unmapped_address_emits_zero_payload_slot() {
     bus.feed(&req);
     h.poll(&shared, &mut bus);
 
-    assert_eq!(bus.reply.send_count, 1);
-    assert_eq!(bus.reply.last_kind, Some(ReplyKind::Slot));
-    // HEADER(4) + 0xFE + LEN(2) + 0x55 + error + id + 2 data + CRC(2)
-    assert_eq!(bus.reply.tx.len(), 14);
-    assert_eq!(bus.reply.tx[8], 0);
-    assert_eq!(bus.reply.tx[9], 0);
-    assert_eq!(&bus.reply.tx[10..12], &[0, 0]);
+    assert_eq!(bus.reply.send_count, 0);
+    assert!(bus.reply.tx.is_empty());
 }

@@ -2,13 +2,12 @@ use dxl_protocol::Chunk;
 use dxl_protocol::types::{ErrorCode, Id, PingStatus, Status, StatusError};
 use dxl_protocol::unstuff::Bytes;
 
-use control_table::ReadChunk;
+use control_table::RegisterFile;
 
 use crate::regions::hooks::ControlTableHooks;
 use crate::traits::{DxlDispatch, DxlReply, DxlRequest, DxlRequestCtx};
 use crate::{
-    ConfigIdentity, Error, RegionStorage, Router, Shared, StagedWrites, StatusReturnLevel,
-    ValidationKind,
+    ConfigIdentity, Error, RegionStorage, Shared, StagedWrites, StatusReturnLevel, ValidationKind,
 };
 
 use super::limits::MAX_CONTROL_RW;
@@ -45,11 +44,13 @@ impl<'a> Dispatch<'a> {
     }
 
     fn ctx(&self) -> Ctx {
-        let (id, level, identity) = self
-            .shared
-            .table
-            .config
-            .with(|c| (c.comms.id, c.comms.status_return_level, c.identity));
+        let (id, level, identity) = self.shared.table.with(|t| {
+            (
+                t.config.comms.id,
+                t.config.comms.status_return_level,
+                t.config.identity,
+            )
+        });
         Ctx {
             id: Id::new(id),
             level,
@@ -142,11 +143,27 @@ impl Dispatch<'_> {
             );
             return;
         }
-        let chunks = self.shared.table.read_iter(address, length).map(into_chunk);
-        if ctx.slot_reply {
-            let _ = reply.send_slot_chunked(c.id, StatusError::OK, chunks);
-        } else {
-            let _ = reply.send_status_read_chunked(c.id, StatusError::OK, chunks);
+        match RegisterFile::read(&self.shared.table, address, length) {
+            Ok(data) => {
+                let chunks = [Chunk::Slice(data)];
+                if ctx.slot_reply {
+                    let _ = reply.send_slot_chunked(c.id, StatusError::OK, chunks);
+                } else {
+                    let _ = reply.send_status_read_chunked(c.id, StatusError::OK, chunks);
+                }
+            }
+            Err(_) => {
+                if ctx.slot_reply {
+                    return;
+                }
+                Self::send_status(
+                    reply,
+                    Status::Empty {
+                        id: c.id,
+                        error: StatusError::code(ErrorCode::DataRange),
+                    },
+                );
+            }
         }
     }
 
@@ -159,28 +176,18 @@ impl Dispatch<'_> {
         reply: &mut R,
     ) {
         let mut scratch = [0u8; MAX_CONTROL_RW];
-        let snap = self.staged.snapshot();
         let n = match data.copy_into(&mut scratch) {
             Ok(n) => n,
             Err(_) => return Self::ack(c, ctx, Err(Error::OutOfRange), reply),
         };
-        if self.staged.push(address, &scratch[..n]).is_err() {
-            self.staged.rewind_to(snap);
-            return Self::ack(c, ctx, Err(Error::OutOfRange), reply);
-        }
-        // On both success and failure `write_bytes_iter` rewinds `staged` back
-        // to `snap`, so any RegWrite chain staged below survives.
-        let result = self
-            .shared
-            .table
-            .write_bytes_iter(address, self.staged, &snap);
+        let result = self.shared.table.write(address, &scratch[..n]);
         let ok = result.is_ok();
         Self::ack(c, ctx, result, reply);
         if ok {
             let mut hooks = ControlTableHooks::new(reply);
             self.shared
                 .table
-                .dispatch_events(address, n as u16, &mut hooks);
+                .with(|t| t.dispatch_events(address, n as u16, &mut hooks));
         }
     }
 
@@ -193,20 +200,11 @@ impl Dispatch<'_> {
         reply: &mut R,
     ) {
         let mut scratch = [0u8; MAX_CONTROL_RW];
-        let snap = self.staged.snapshot();
         let n = match data.copy_into(&mut scratch) {
             Ok(n) => n,
             Err(_) => return Self::ack(c, ctx, Err(Error::OutOfRange), reply),
         };
-        if self.staged.push(address, &scratch[..n]).is_err() {
-            self.staged.rewind_to(snap);
-            return Self::ack(c, ctx, Err(Error::OutOfRange), reply);
-        }
-        // Kept staged on success for a later Action; rewound to `snap` on error.
-        let result = self
-            .shared
-            .table
-            .stage_bytes_iter(address, self.staged, &snap);
+        let result = self.shared.table.stage(address, &scratch[..n], self.staged);
         Self::ack(c, ctx, result, reply);
     }
 
@@ -216,7 +214,7 @@ impl Dispatch<'_> {
     }
 
     fn reboot<R: DxlReply>(&mut self, c: &Ctx, ctx: &DxlRequestCtx, reply: &mut R) {
-        let mode = self.shared.table.control.with(|c| c.system.boot_mode);
+        let mode = self.shared.table.with(|t| t.control.system.boot_mode);
         Self::ack(c, ctx, Ok(()), reply);
         reply.stage_reboot(mode);
     }
@@ -232,12 +230,5 @@ impl Dispatch<'_> {
                 error: StatusError::code(ErrorCode::Instruction),
             },
         );
-    }
-}
-
-fn into_chunk(c: ReadChunk<'_>) -> Chunk<'_> {
-    match c {
-        ReadChunk::Copy(s) => Chunk::Slice(s),
-        ReadChunk::Zero(n) => Chunk::Zero(n),
     }
 }

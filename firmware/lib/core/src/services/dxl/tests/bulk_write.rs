@@ -15,7 +15,7 @@ fn bulk_write_to_our_id_mutates_and_silent() {
     h.poll(&shared, &mut bus);
 
     assert_eq!(bus.reply.send_count, 0);
-    assert!(shared.table.control.with(|c| c.lifecycle.torque_enable));
+    assert!(shared.table.with(|t| t.control.lifecycle.torque_enable));
 }
 
 #[test]
@@ -33,7 +33,7 @@ fn bulk_write_to_other_id_silent_and_does_not_mutate() {
     h.poll(&shared, &mut bus);
 
     assert_eq!(bus.reply.send_count, 0);
-    assert!(!shared.table.control.with(|c| c.lifecycle.torque_enable));
+    assert!(!shared.table.with(|t| t.control.lifecycle.torque_enable));
 }
 
 #[test]
@@ -69,9 +69,9 @@ fn bulk_write_uses_our_tuples_address_not_a_preceding_slots() {
     h.poll(&shared, &mut bus);
 
     assert_eq!(bus.reply.send_count, 0);
-    assert!(!shared.table.control.with(|c| c.lifecycle.torque_enable));
+    assert!(!shared.table.with(|t| t.control.lifecycle.torque_enable));
     assert_eq!(
-        shared.table.control.with(|c| c.lifecycle.mode),
+        shared.table.with(|t| t.control.lifecycle.mode),
         Mode::PositionPid,
     );
 }

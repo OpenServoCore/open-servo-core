@@ -15,7 +15,7 @@ fn write_to_rw_address_succeeds_and_mutates() {
     assert_eq!(id, 0);
     assert_eq!(err, 0);
     assert!(params.is_empty());
-    let lc = shared.table.control.with(|c| c.lifecycle);
+    let lc = shared.table.with(|t| t.control.lifecycle);
     assert!(lc.torque_enable);
 }
 
@@ -31,7 +31,7 @@ fn write_to_ro_address_replies_access_error() {
 
     let (_, err, _) = parse_status(&bus.reply.tx);
     assert_eq!(err, StatusError::code(ErrorCode::Access).as_byte());
-    let identity = shared.table.config.with(|c| c.identity);
+    let identity = shared.table.with(|t| t.config.identity);
     assert_eq!(identity.model_number, 0);
 }
 
@@ -61,7 +61,7 @@ fn write_to_other_id_silent_and_does_not_mutate() {
     h.poll(&shared, &mut bus);
 
     assert_eq!(bus.reply.send_count, 0);
-    let lc = shared.table.control.with(|c| c.lifecycle);
+    let lc = shared.table.with(|t| t.control.lifecycle);
     assert!(!lc.torque_enable);
 }
 
@@ -77,7 +77,7 @@ fn broadcast_write_applies_but_silent() {
     h.poll(&shared, &mut bus);
 
     assert_eq!(bus.reply.send_count, 0);
-    let lc = shared.table.control.with(|c| c.lifecycle);
+    let lc = shared.table.with(|t| t.control.lifecycle);
     assert!(lc.torque_enable);
 }
 

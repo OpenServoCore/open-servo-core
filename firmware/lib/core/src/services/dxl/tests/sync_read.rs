@@ -46,7 +46,9 @@ fn sync_read_skips_when_no_idle_anchor() {
 }
 
 #[test]
-fn sync_read_at_unmapped_address_replies_zero_bytes() {
+fn sync_read_past_map_end_replies_data_range() {
+    // A coordinated (plain-Status) slot read past the 1024-byte map end
+    // answers with a DataRange error Status rather than zero bytes.
     let shared = Shared::new();
     let mut bus = FakeBus::new();
     let mut h = Dxl::new();
@@ -56,9 +58,8 @@ fn sync_read_at_unmapped_address_replies_zero_bytes() {
     h.poll(&shared, &mut bus);
 
     assert_eq!(bus.reply.send_count, 1);
-    let (_, err, params) = parse_status(&bus.reply.tx);
-    assert_eq!(err, 0);
-    assert_eq!(&params[..], &[0]);
+    let (_, err, _) = parse_status(&bus.reply.tx);
+    assert_eq!(err, StatusError::code(ErrorCode::DataRange).as_byte());
 }
 
 #[test]

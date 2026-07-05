@@ -1,6 +1,7 @@
 use osc_units::{CentiCelsius, Microrads, Milliamps, Millivolts};
 
 use crate::Shared;
+use control_table::RegionStorageRaw;
 
 /// Per-frame snapshot of the live config slice the sample-conversion math
 /// needs. Lifted from `ControlTable` regions (`pos_limits`, `calibration`)
@@ -16,11 +17,11 @@ impl ConversionVariables {
     pub fn snapshot(shared: &Shared) -> Self {
         // SAFETY: per-field raw-pointer copy, no `&` into ConfigRegs/ConfigPosLimits.
         unsafe {
-            let cfg = shared.table.config.get();
+            let t = shared.table.region_ptr();
             Self {
-                pos_min_phys_urad: (&raw const (*cfg).pos_limits.pos_min_phys_urad).read(),
-                pos_max_phys_urad: (&raw const (*cfg).pos_limits.pos_max_phys_urad).read(),
-                vdd_mv: (&raw const (*cfg).calibration.vdd_mv).read(),
+                pos_min_phys_urad: (&raw const (*t).config.pos_limits.pos_min_phys_urad).read(),
+                pos_max_phys_urad: (&raw const (*t).config.pos_limits.pos_max_phys_urad).read(),
+                vdd_mv: (&raw const (*t).config.calibration.vdd_mv).read(),
             }
         }
     }

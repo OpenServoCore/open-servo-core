@@ -14,7 +14,7 @@ fn sync_write_to_our_id_mutates_and_silent() {
     h.poll(&shared, &mut bus);
 
     assert_eq!(bus.reply.send_count, 0);
-    assert!(shared.table.control.with(|c| c.lifecycle.torque_enable));
+    assert!(shared.table.with(|t| t.control.lifecycle.torque_enable));
 }
 
 #[test]
@@ -30,7 +30,7 @@ fn sync_write_to_other_ids_only_does_not_mutate() {
     h.poll(&shared, &mut bus);
 
     assert_eq!(bus.reply.send_count, 0);
-    assert!(!shared.table.control.with(|c| c.lifecycle.torque_enable));
+    assert!(!shared.table.with(|t| t.control.lifecycle.torque_enable));
 }
 
 #[test]
@@ -53,10 +53,10 @@ fn sync_write_preserves_pending_reg_write_chain() {
     bus.feed(&req);
     h.poll(&shared, &mut bus);
     assert_eq!(
-        shared.table.control.with(|c| c.lifecycle.mode),
+        shared.table.with(|t| t.control.lifecycle.mode),
         Mode::PositionPid,
     );
-    assert!(!shared.table.control.with(|c| c.lifecycle.torque_enable));
+    assert!(!shared.table.with(|t| t.control.lifecycle.torque_enable));
 
     // Action commits the still-pending RegWrite.
     let req = encode(|w| w.action(Id::new(0)));
@@ -64,5 +64,5 @@ fn sync_write_preserves_pending_reg_write_chain() {
     h.poll(&shared, &mut bus);
     let (_, err, _) = parse_status(&bus.reply.tx);
     assert_eq!(err, 0);
-    assert!(shared.table.control.with(|c| c.lifecycle.torque_enable));
+    assert!(shared.table.with(|t| t.control.lifecycle.torque_enable));
 }

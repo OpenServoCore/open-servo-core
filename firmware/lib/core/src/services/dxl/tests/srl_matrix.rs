@@ -13,7 +13,7 @@ fn return_level_none_silences_write_ack_but_ping_replies() {
     h.poll(&shared, &mut bus);
     assert_eq!(bus.reply.send_count, 0);
     assert!(bus.reply.tx.is_empty());
-    assert!(shared.table.control.with(|c| c.lifecycle.torque_enable));
+    assert!(shared.table.with(|t| t.control.lifecycle.torque_enable));
 
     let req = encode(|w| w.ping(Id::new(0)));
     bus.feed(&req);
@@ -103,7 +103,7 @@ fn return_level_none_silences_action_ack() {
     h.poll(&shared, &mut bus);
 
     assert_eq!(bus.reply.send_count, 0);
-    assert!(shared.table.control.with(|c| c.lifecycle.torque_enable));
+    assert!(shared.table.with(|t| t.control.lifecycle.torque_enable));
 }
 
 #[test]
@@ -142,9 +142,10 @@ fn return_level_none_still_replies_to_ping() {
 }
 
 #[test]
-fn return_level_read_replies_to_unmapped_read_with_zero_bytes() {
-    // Per DXL 2.0 the table is memory-shaped: unmapped addresses read back
-    // as zero rather than erroring. SRL=Read still produces the reply.
+fn return_level_read_rejects_read_past_map_end_with_data_range() {
+    // The flat map is bounded at 1024 bytes: a read whose span runs past the
+    // end errors (DataRange) rather than zero-filling. SRL=Read still emits
+    // the error Status.
     let shared = Shared::new();
     set_level(&shared, StatusReturnLevel::Read);
     let mut bus = FakeBus::new();
@@ -154,7 +155,6 @@ fn return_level_read_replies_to_unmapped_read_with_zero_bytes() {
     bus.feed(&req);
     h.poll(&shared, &mut bus);
 
-    let (_, err, params) = parse_status(&bus.reply.tx);
-    assert_eq!(err, 0);
-    assert_eq!(&params[..], &[0]);
+    let (_, err, _) = parse_status(&bus.reply.tx);
+    assert_eq!(err, StatusError::code(ErrorCode::DataRange).as_byte());
 }

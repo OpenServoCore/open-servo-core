@@ -159,7 +159,9 @@ fn read_srl_none_silences_reply() {
 }
 
 #[test]
-fn read_unmapped_returns_zero_bytes() {
+fn read_past_map_end_rejects_with_data_range() {
+    // 0xFFFE + 1 lands past the 1024-byte map; the read errors rather than
+    // zero-filling beyond the map end.
     let shared = Shared::new();
     set_level(&shared, StatusReturnLevel::Read);
     let mut staged = StagedWrites::new();
@@ -172,9 +174,8 @@ fn read_unmapped_returns_zero_bytes() {
         },
         direct(),
     );
-    let (_, err, params) = parse_status(&reply.tx);
-    assert_eq!(err, 0);
-    assert_eq!(&params[..], &[0]);
+    let (_, err, _) = parse_status(&reply.tx);
+    assert_eq!(err, StatusError::code(ErrorCode::DataRange).as_byte());
 }
 
 #[test]
@@ -265,7 +266,7 @@ fn write_to_rw_address_succeeds_and_mutates() {
     assert_eq!(id, 0);
     assert_eq!(err, 0);
     assert!(params.is_empty());
-    assert!(shared.table.control.with(|c| c.lifecycle.torque_enable));
+    assert!(shared.table.with(|t| t.control.lifecycle.torque_enable));
 }
 
 #[test]
@@ -283,7 +284,7 @@ fn write_to_ro_address_replies_access_error() {
     );
     let (_, err, _) = parse_status(&reply.tx);
     assert_eq!(err, StatusError::code(ErrorCode::Access).as_byte());
-    assert_eq!(shared.table.config.with(|c| c.identity.model_number), 0);
+    assert_eq!(shared.table.with(|t| t.config.identity.model_number), 0);
 }
 
 #[test]
@@ -337,7 +338,7 @@ fn broadcast_write_applies_but_silent() {
         silent(),
     );
     assert_eq!(reply.send_count, 0);
-    assert!(shared.table.control.with(|c| c.lifecycle.torque_enable));
+    assert!(shared.table.with(|t| t.control.lifecycle.torque_enable));
 }
 
 #[test]
@@ -356,7 +357,7 @@ fn write_srl_none_silences_ack_but_applies() {
         direct(),
     );
     assert_eq!(reply.send_count, 0);
-    assert!(shared.table.control.with(|c| c.lifecycle.torque_enable));
+    assert!(shared.table.with(|t| t.control.lifecycle.torque_enable));
 }
 
 #[test]
@@ -465,12 +466,12 @@ fn reg_write_then_action_commits_to_live_table() {
     );
     let (_, err, _) = parse_status(&reply.tx);
     assert_eq!(err, 0);
-    assert!(!shared.table.control.with(|c| c.lifecycle.torque_enable));
+    assert!(!shared.table.with(|t| t.control.lifecycle.torque_enable));
 
     let reply = go(&shared, &mut staged, DxlRequest::Action, direct());
     let (_, err, _) = parse_status(&reply.tx);
     assert_eq!(err, 0);
-    assert!(shared.table.control.with(|c| c.lifecycle.torque_enable));
+    assert!(shared.table.with(|t| t.control.lifecycle.torque_enable));
 }
 
 #[test]
@@ -511,7 +512,7 @@ fn reg_write_invalid_value_rejected_at_stage_time() {
     let reply = go(&shared, &mut staged, DxlRequest::Action, direct());
     let (_, err, _) = parse_status(&reply.tx);
     assert_eq!(err, 0);
-    assert!(!shared.table.control.with(|c| c.lifecycle.torque_enable));
+    assert!(!shared.table.with(|t| t.control.lifecycle.torque_enable));
 }
 
 #[test]
@@ -540,15 +541,15 @@ fn write_preserves_pending_reg_write_chain() {
         direct(),
     );
     assert_eq!(
-        shared.table.control.with(|c| c.lifecycle.mode),
+        shared.table.with(|t| t.control.lifecycle.mode),
         Mode::PositionPid,
     );
-    assert!(!shared.table.control.with(|c| c.lifecycle.torque_enable));
+    assert!(!shared.table.with(|t| t.control.lifecycle.torque_enable));
 
     let reply = go(&shared, &mut staged, DxlRequest::Action, direct());
     let (_, err, _) = parse_status(&reply.tx);
     assert_eq!(err, 0);
-    assert!(shared.table.control.with(|c| c.lifecycle.torque_enable));
+    assert!(shared.table.with(|t| t.control.lifecycle.torque_enable));
 }
 
 #[test]
@@ -570,7 +571,7 @@ fn broadcast_reg_write_and_action_silent_but_commits() {
 
     let reply = go(&shared, &mut staged, DxlRequest::Action, silent());
     assert_eq!(reply.send_count, 0);
-    assert!(shared.table.control.with(|c| c.lifecycle.torque_enable));
+    assert!(shared.table.with(|t| t.control.lifecycle.torque_enable));
 }
 
 #[test]
@@ -600,7 +601,7 @@ fn action_srl_none_silences_ack_but_commits() {
     );
     let reply = go(&shared, &mut staged, DxlRequest::Action, direct());
     assert_eq!(reply.send_count, 0);
-    assert!(shared.table.control.with(|c| c.lifecycle.torque_enable));
+    assert!(shared.table.with(|t| t.control.lifecycle.torque_enable));
 }
 
 // --- Reboot ---------------------------------------------------------------

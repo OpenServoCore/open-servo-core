@@ -10,7 +10,7 @@ use rstest::rstest;
 use rstest_reuse::apply;
 
 const CONFIG_INTRA_GAP_ADDR: u16 = 100;
-const CONFIG_REGION_END_ADDR: u16 = CONFIG_REGION_SIZE as u16;
+const CONFIG_REGION_END_ADDR: u16 = CONFIG_REGION_SIZE;
 const OVER_MAX_CONTROL_RW: u16 = 129;
 
 #[apply(matrix)]
@@ -180,8 +180,7 @@ fn read_on_torque_locked_config_succeeds_locks_gate_writes_only(baud_idx: u8, rd
     sim.servo(servos[0])
         .shared()
         .table
-        .control
-        .with_mut(|c| c.lifecycle.torque_enable = true);
+        .with_mut(|t| t.control.lifecycle.torque_enable = true);
 
     sim.with_host(host, |h| {
         h.send_read(Id::new(1), comms::ID, 1);

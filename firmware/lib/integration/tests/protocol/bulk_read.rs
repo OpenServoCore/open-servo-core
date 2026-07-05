@@ -11,7 +11,7 @@ use osc_integration::sim::{
 use rstest::rstest;
 use rstest_reuse::apply;
 
-const CONFIG_REGION_END_ADDR: u16 = CONFIG_REGION_SIZE as u16;
+const CONFIG_REGION_END_ADDR: u16 = CONFIG_REGION_SIZE;
 
 fn entry(id: u8, address: u16, length: u16) -> BulkReadEntry {
     BulkReadEntry {

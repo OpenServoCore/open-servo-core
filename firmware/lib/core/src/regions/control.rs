@@ -1,5 +1,5 @@
 use crate::regions::config;
-use control_table::{Block, Enum, Region};
+use control_table::{Enum, FlatBlock, Section};
 
 /// Position controller mode. `repr(u8)` so the byte-level commit path round-trips
 /// cleanly; validators MUST gate writes to `Mode::ALLOWED` because constructing a
@@ -21,7 +21,7 @@ pub enum BootMode {
 }
 
 #[repr(C)]
-#[derive(Copy, Clone, Block)]
+#[derive(Copy, Clone, FlatBlock)]
 pub struct ControlLifecycle {
     pub torque_enable: bool,
     pub mode: Mode,
@@ -35,10 +35,12 @@ pub struct ControlLifecycle {
     pub goal_velocity: i32,
     #[ct_field(le = &config::addr::ctrl_pos::MAX_EFFORT, abs)]
     pub goal_effort: i16,
+    #[ct_field(skip)]
+    pub _rsvd_tail: [u8; 2],
 }
 
 #[repr(C)]
-#[derive(Copy, Clone, Block)]
+#[derive(Copy, Clone, FlatBlock)]
 pub struct ControlStreaming {
     pub stream_enable: bool,
     pub stream_decimation: u8,
@@ -50,18 +52,20 @@ pub struct ControlStreaming {
 }
 
 #[repr(C)]
-#[derive(Copy, Clone, Block)]
+#[derive(Copy, Clone, FlatBlock)]
 pub struct ControlSystem {
     pub boot_mode: BootMode,
 }
 
 #[repr(C)]
-#[derive(Copy, Clone, Region)]
-#[ct_region(addr = crate::regions::CONTROL_BASE_ADDR, size = crate::regions::CONTROL_REGION_SIZE)]
+#[derive(Section)]
+#[ct_section(base = crate::regions::CONTROL_BASE_ADDR, size = crate::regions::CONTROL_REGION_SIZE)]
 pub struct ControlRegs {
     pub lifecycle: ControlLifecycle,
     pub streaming: ControlStreaming,
     pub system: ControlSystem,
+    #[ct_section(skip)]
+    pub _rsvd_tail: [u8; 99],
 }
 
 #[cfg(test)]
@@ -71,6 +75,9 @@ mod tests {
 
     #[test]
     fn region_fits_declared_size() {
-        assert!(size_of::<ControlRegs>() <= crate::regions::CONTROL_REGION_SIZE);
+        assert_eq!(
+            size_of::<ControlRegs>(),
+            crate::regions::CONTROL_REGION_SIZE as usize
+        );
     }
 }

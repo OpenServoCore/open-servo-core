@@ -1,6 +1,4 @@
-use crate::page::PageHeader;
-use crate::regions::locks;
-use control_table::{Block, Enum, Region};
+use control_table::{Enum, FlatBlock, Section};
 
 /// DXL X-series baud rate indices. V006 USART caps at 3 Mbps; indices 6–7
 /// (4 Mbps, 4.5 Mbps) are absent and host writes of them get rejected.
@@ -83,7 +81,7 @@ pub enum StatusReturnLevel {
 }
 
 #[repr(C)]
-#[derive(Copy, Clone, Block)]
+#[derive(Copy, Clone, FlatBlock)]
 pub struct ConfigIdentity {
     #[ct_field(access = ro)]
     pub model_number: u16,
@@ -97,9 +95,9 @@ pub struct ConfigIdentity {
     pub capability_flags: u32,
 }
 
-/// Writes gated on torque (FAULT_CFG_LOCK).
+/// Writes gated on torque (section `write_locked_by`).
 #[repr(C)]
-#[derive(Copy, Clone, Block)]
+#[derive(Copy, Clone, FlatBlock)]
 #[ct_block(hooks = crate::regions::hooks::ControlTableHookEvents)]
 pub struct ConfigComms {
     #[ct_field(le = 252u8, hook = on_id_write)]
@@ -112,7 +110,7 @@ pub struct ConfigComms {
 }
 
 #[repr(C)]
-#[derive(Copy, Clone, Block)]
+#[derive(Copy, Clone, FlatBlock)]
 pub struct ConfigPosLimits {
     #[ct_field(lt = &addr::pos_limits::POS_MAX_PHYS_URAD)]
     pub pos_min_phys_urad: i32,
@@ -133,7 +131,7 @@ pub struct ConfigPosLimits {
 }
 
 #[repr(C)]
-#[derive(Copy, Clone, Block)]
+#[derive(Copy, Clone, FlatBlock)]
 pub struct ConfigStall {
     pub stall_response: StallResponse,
     #[ct_field(skip)]
@@ -145,7 +143,7 @@ pub struct ConfigStall {
 }
 
 #[repr(C)]
-#[derive(Copy, Clone, Block)]
+#[derive(Copy, Clone, FlatBlock)]
 pub struct ConfigThermal {
     pub motor_thermal_k_q88: u16,
     pub motor_thermal_tau_ms: u16,
@@ -154,11 +152,13 @@ pub struct ConfigThermal {
     #[ct_field(lt = &addr::thermal::WINDING_CUTOFF_CC)]
     pub winding_recover_cc: i16,
     pub v_undervolt_mv: u16,
+    #[ct_field(skip)]
+    pub _rsvd_tail: u16,
 }
 
 /// `vdd_mv` is the DMM-measured VDD-at-chip-pin baked in per board.
 #[repr(C)]
-#[derive(Copy, Clone, Block)]
+#[derive(Copy, Clone, FlatBlock)]
 pub struct ConfigCalibration {
     pub vdd_mv: u16,
     #[ct_field(skip)]
@@ -166,7 +166,7 @@ pub struct ConfigCalibration {
 }
 
 #[repr(C)]
-#[derive(Copy, Clone, Block)]
+#[derive(Copy, Clone, FlatBlock)]
 pub struct ConfigControlPosition {
     pub pid_kp_q88: u16,
     pub pid_ki_q88: u16,
@@ -180,15 +180,18 @@ pub struct ConfigControlPosition {
     pub v_comp_enable: bool,
     pub max_effort: i16,
     pub v_nominal_mv: u16,
+    #[ct_field(skip)]
+    pub _rsvd_tail: u16,
 }
 
-/// Compact in-RAM mirror; on-flash page is full 512 B with reserved gaps.
+/// Persistent config section. Torque-gated writes fail with `Access` while
+/// `lifecycle.torque_enable` is set.
 #[repr(C)]
-#[derive(Copy, Clone, Region)]
-#[ct_region(
-    addr = crate::regions::CONFIG_BASE_ADDR,
+#[derive(Section)]
+#[ct_section(
+    base = crate::regions::CONFIG_BASE_ADDR,
     size = crate::regions::CONFIG_REGION_SIZE,
-    validators = [locks::torque_locked],
+    write_locked_by = super::control::addr::lifecycle::TORQUE_ENABLE,
     hooks = crate::regions::hooks::ControlTableHookEvents,
 )]
 pub struct ConfigRegs {
@@ -199,9 +202,8 @@ pub struct ConfigRegs {
     pub thermal: ConfigThermal,
     pub ctrl_pos: ConfigControlPosition,
     pub calibration: ConfigCalibration,
-    /// Persistence-layer metadata; not exposed via the protocol.
-    #[ct_region(skip)]
-    pub header: PageHeader,
+    #[ct_section(skip)]
+    pub _rsvd_tail: [u8; 44],
 }
 
 /// Boot-time seed for `ControlTable.config`; stamped pre-IRQ, then host-owned.

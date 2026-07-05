@@ -6,7 +6,7 @@ use osc_integration::sim::{format_hex, parse_status_stream};
 use rstest::rstest;
 use rstest_reuse::apply;
 
-const CONFIG_REGION_END_ADDR: u16 = CONFIG_REGION_SIZE as u16;
+const CONFIG_REGION_END_ADDR: u16 = CONFIG_REGION_SIZE;
 
 #[apply(matrix)]
 #[test_log::test]

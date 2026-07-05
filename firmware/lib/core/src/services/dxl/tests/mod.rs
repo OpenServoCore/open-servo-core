@@ -658,6 +658,5 @@ fn parse_status(bytes: &[u8]) -> (u8, u8, Vec<u8, 64>) {
 fn set_level(shared: &Shared, level: StatusReturnLevel) {
     shared
         .table
-        .config
-        .with_mut(|c| c.comms.status_return_level = level);
+        .with_mut(|t| t.config.comms.status_return_level = level);
 }

@@ -185,32 +185,28 @@ impl Servo {
     pub fn set_dxl_id(&mut self, dxl_id: Id) {
         self.shared
             .table
-            .config
-            .with_mut(|c| c.comms.id = dxl_id.as_byte());
+            .with_mut(|t| t.config.comms.id = dxl_id.as_byte());
         self.rebuild_uart();
     }
 
     pub fn set_rdt_us(&mut self, rdt_us: u32) {
         self.shared
             .table
-            .config
-            .with_mut(|c| c.comms.return_delay_2us = (rdt_us / 2) as u8);
+            .with_mut(|t| t.config.comms.return_delay_2us = (rdt_us / 2) as u8);
         self.rebuild_uart();
     }
 
     pub fn set_baud(&mut self, baud: BaudRate) {
         self.shared
             .table
-            .config
-            .with_mut(|c| c.comms.baud_rate_idx = baud);
+            .with_mut(|t| t.config.comms.baud_rate_idx = baud);
         self.rebuild_uart();
     }
 
     pub fn set_status_return_level(&mut self, level: StatusReturnLevel) {
         self.shared
             .table
-            .config
-            .with_mut(|c| c.comms.status_return_level = level);
+            .with_mut(|t| t.config.comms.status_return_level = level);
     }
 
     /// Extra RX→TX turnaround before every wire emission, in wall ns.
@@ -252,8 +248,7 @@ impl Servo {
     pub fn set_torque_enabled(&self, enabled: bool) {
         self.shared
             .table
-            .control
-            .with_mut(|c| c.lifecycle.torque_enable = enabled);
+            .with_mut(|t| t.control.lifecycle.torque_enable = enabled);
     }
 
     pub fn clock(&self) -> Clock {
@@ -265,15 +260,15 @@ impl Servo {
     }
 
     pub fn baud(&self) -> BaudRate {
-        self.shared.table.config.with(|c| c.comms.baud_rate_idx)
+        self.shared.table.with(|t| t.config.comms.baud_rate_idx)
     }
 
     pub fn dxl_id(&self) -> Id {
-        Id::new(self.shared.table.config.with(|c| c.comms.id))
+        Id::new(self.shared.table.with(|t| t.config.comms.id))
     }
 
     pub fn rdt_us(&self) -> u32 {
-        self.shared.table.config.with(|c| c.comms.return_delay_2us) as u32 * 2
+        self.shared.table.with(|t| t.config.comms.return_delay_2us) as u32 * 2
     }
 
     pub fn shared(&self) -> &Shared {
@@ -309,7 +304,8 @@ impl Servo {
     }
 
     fn rebuild_uart(&mut self) {
-        let (baud, dxl_id, rdt_us) = self.shared.table.config.with(|c| {
+        let (baud, dxl_id, rdt_us) = self.shared.table.with(|t| {
+            let c = &t.config;
             (
                 c.comms.baud_rate_idx,
                 Id::new(c.comms.id),
@@ -351,7 +347,8 @@ impl Servo {
     fn reset_table(&mut self) {
         self.shared = Shared::new();
         self.shared.table.seed_config_defaults(&SIM_CONFIG_DEFAULTS);
-        self.shared.table.config.with_mut(|c| {
+        self.shared.table.with_mut(|t| {
+            let c = &mut t.config;
             c.identity.model_number = DEFAULT_MODEL_NUMBER;
             c.identity.firmware_version = DEFAULT_FIRMWARE_VERSION;
         });
@@ -822,8 +819,7 @@ mod tests {
             .servo(servo)
             .shared()
             .table
-            .control
-            .with(|c| c.lifecycle.torque_enable);
+            .with(|t| t.control.lifecycle.torque_enable);
         assert!(torque, "data-line disconnect preserves RAM state");
     }
 
@@ -846,8 +842,7 @@ mod tests {
             .servo(servo)
             .shared()
             .table
-            .control
-            .with(|c| c.lifecycle.torque_enable);
+            .with(|t| t.control.lifecycle.torque_enable);
         assert!(!torque, "power-cycle reset wipes RAM state");
     }
 
@@ -868,7 +863,7 @@ mod tests {
         let s = sim.servo(servo);
         assert_eq!(s.dxl_id(), DEFAULT_DXL_ID);
         assert_eq!(
-            s.shared().table.config.with(|c| c.comms.id),
+            s.shared().table.with(|t| t.config.comms.id),
             DEFAULT_DXL_ID.as_byte()
         );
         assert!(

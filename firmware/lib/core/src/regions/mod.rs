@@ -1,24 +1,22 @@
-//! Host-visible register state. Reserved slots have no SRAM mirror; regmap
-//! returns AccessError. Per-region block descriptors translate protocol
-//! addresses; flash save/load uses the same descriptors.
+//! Host-visible register state as a flat 1024-byte map. Sections carve
+//! contiguous byte ranges; every address in `[0, 1024)` reads back (reserved
+//! and skip bytes read as zero). Writes to non-writable bytes fail with
+//! `AccessError`; addresses past the map end fail with `DataRange`.
 //!
-//!   CONFIG    0x0000..=0x01FF  (512 B)  — persistent A/B
-//!   TELEMETRY 0x0200..=0x02FF  (256 B)  — RO from host
-//!   CONTROL   0x0300..=0x08FF  (1536 B) — RW volatile
-//!   CALIB     0x0900..=0x18FF  (4096 B) — single-copy + per-block CRC
+//!   CONFIG    0x000..0x080  (128 B) — persistent, torque-gated
+//!   CALIB     0x080..0x180  (256 B) — persistent, torque-gated
+//!   CONTROL   0x180..0x200  (128 B) — RW volatile
+//!   TELEMETRY 0x200..0x280  (128 B) — RO from host
+//!   (reserved 0x280..0x400  384 B)
 //!
-//! Owners go through `RegionStorage::with`/`with_mut`. Cross-domain readers
-//! that must avoid forming `&T` (aliasing-sensitive paths) use raw-pointer
-//! per-field reads directly on `cell.get()`.
-
-use control_table::RegionStorage;
-use core::cell::SyncUnsafeCell;
+//! Owners go through `RegionStorage::with`/`with_mut` on the storage cell.
+//! Cross-domain readers that must avoid forming `&T` (aliasing-sensitive
+//! paths) use raw-pointer reads via `RegionStorageRaw::region_ptr`.
 
 pub mod calib;
 pub mod config;
 pub mod control;
 pub(crate) mod hooks;
-pub mod locks;
 pub mod telemetry;
 
 pub use calib::{BemfCalibBlock, CalibRegs, PotLutBlock};
@@ -33,33 +31,31 @@ pub use telemetry::{
 };
 
 use crate::regions::config::ConfigDefaults;
-use control_table::Table;
+use control_table::{FlatTable, RegionStorage};
 
-pub const CONFIG_REGION_SIZE: usize = 512;
-pub const TELEMETRY_REGION_SIZE: usize = 256;
-pub const CONTROL_REGION_SIZE: usize = 1536;
-pub const CALIB_REGION_SIZE: usize = 4096;
+pub const CONFIG_REGION_SIZE: u16 = 128;
+pub const CALIB_REGION_SIZE: u16 = 256;
+pub const CONTROL_REGION_SIZE: u16 = 128;
+pub const TELEMETRY_REGION_SIZE: u16 = 128;
 
-pub const CONFIG_BASE_ADDR: u16 = 0x0000;
-pub const TELEMETRY_BASE_ADDR: u16 = 0x0200;
-pub const CONTROL_BASE_ADDR: u16 = 0x0300;
-pub const CALIB_BASE_ADDR: u16 = 0x0900;
+pub const CONFIG_BASE_ADDR: u16 = 0x000;
+pub const CALIB_BASE_ADDR: u16 = 0x080;
+pub const CONTROL_BASE_ADDR: u16 = 0x180;
+pub const TELEMETRY_BASE_ADDR: u16 = 0x200;
 
 #[repr(C)]
-#[derive(Table)]
-#[ct_table(max_sram = 1024, hooks = crate::regions::hooks::ControlTableHookEvents)]
+#[derive(FlatTable)]
+#[ct_table(size = 1024, hooks = crate::regions::hooks::ControlTableHookEvents)]
 pub struct ControlTable {
-    #[ct_region]
-    pub config: SyncUnsafeCell<ConfigRegs>,
-    #[ct_region]
-    pub telemetry: SyncUnsafeCell<TelemetryRegs>,
-    #[ct_region]
-    pub control: SyncUnsafeCell<ControlRegs>,
-    #[ct_region]
-    pub calib: SyncUnsafeCell<CalibRegs>,
+    pub config: ConfigRegs,
+    pub calib: CalibRegs,
+    pub control: ControlRegs,
+    pub telemetry: TelemetryRegs,
+    #[ct_table(skip)]
+    _rsvd: [u8; 384],
 }
 
-impl ControlTable {
+impl ControlTableCell {
     /// Soft limits init to physical limits per control-table doc.
     /// Caller must be sole writer (install-time, pre-IRQ).
     pub fn seed_config_defaults(&self, defaults: &ConfigDefaults) {
@@ -72,7 +68,8 @@ impl ControlTable {
             defaults.dxl_baud.as_idx(),
         );
         // SAFETY: install-time, pre-IRQ, sole writer.
-        self.config.with_mut(|cfg| {
+        self.with_mut(|t| {
+            let cfg = &mut t.config;
             cfg.pos_limits.pos_min_phys_urad = defaults.pos_min_phys_urad;
             cfg.pos_limits.pos_max_phys_urad = defaults.pos_max_phys_urad;
             cfg.pos_limits.pos_min_soft_urad = defaults.pos_min_phys_urad;
