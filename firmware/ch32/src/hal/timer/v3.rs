@@ -96,7 +96,6 @@ pub fn init_tim2_ch4_oc_kickoff() {
     TIM2.atrlr().write_value(0xFFFF);
     TIM2.ctlr1().modify(|w| w.set_ckd(Ckd::DIV_1));
     ch4_oc_frozen();
-    TIM2.dmaintenr().modify(|w| w.set_ccde(3, true));
     // TIM2.CNT and SysTick share HCLK; co-zeroing them in adjacent writes
     // immediately before TIM2.CEN=true aligns their low 16 bits so the TX
     // scheduler can arm CCR4/CCR2 by truncating a u32 SysTick deadline.
@@ -107,6 +106,18 @@ pub fn init_tim2_ch4_oc_kickoff() {
     // or the alignment breaks silently.
     crate::hal::systick::reset_cnt();
     TIM2.ctlr1().modify(|w| w.set_cen(true));
+}
+
+/// Gate the CC4 compare event's DMA request line (CC4DE). The kickoff arm
+/// enables it LAST — after CH7 is live — and the park paths disable it
+/// first: a request pulsed while CC4DE is on LATCHES in the DMA controller
+/// even with the destination channel disabled (probe-verified: a boot-time
+/// stale match fired the kickoff word the instant CH7 re-enabled, ~720
+/// ticks before the compare). With CC4DE off between windows there is
+/// never a request to latch.
+#[inline]
+pub fn set_tim2_cc4_dma(enable: bool) {
+    TIM2.dmaintenr().modify(|w| w.set_ccde(3, enable));
 }
 
 /// CH4 as a pin-less output compare: OC4M=Frozen, CC4E=0. CC4E drops first

@@ -16,13 +16,14 @@
 //! ## #134 silicon discipline
 //!
 //! A CC4 DMA request LATCHES in the V006 DMA controller and survives a
-//! channel disable — but a request only latches into an *enabled* channel.
-//! With CH4 permanently OC there are no input captures, so the only CC4
-//! requests are real compare matches. Between windows CH7 is parked
-//! disabled ([`on_kickoff_complete`] / [`cancel`]) so a stray match (CNT
-//! wrapping past a stale CCR4) can't latch; [`arm`] then points the compare
-//! strictly ahead of CNT and re-enables CH7 with a clean TC flag, leaving
-//! no latched request to fire the kickoff early.
+//! channel disable — even a request pulsed into a DISABLED channel is
+//! delivered the moment the channel re-enables (probe-verified: a
+//! boot-time stale match fired the kickoff word at enable, ~720 ticks
+//! before the compare — TX streamed 2 bytes before TX_EN). Clearing CC4IF
+//! does not purge the latch, so the gate is CC4DE itself: parked windows
+//! ([`on_kickoff_complete`] / [`cancel`]) hold CC4DE off — no request is
+//! ever generated to latch — and [`arm`] enables CC4DE only after CCR4
+//! points strictly ahead, CC4IF is wiped, and CH7 is live.
 //!
 //! [`DxlTxScheduler`]: super::dxl_tx_scheduler::DxlTxScheduler
 
@@ -90,6 +91,11 @@ pub fn arm(compare: u16) {
     // the moment the vector unmasks.
     dma::clear_tc_flag(dma::Channel::CH7);
     dma::enable(dma::Channel::CH7);
+    // CC4DE last, once CH7 is live: the request line stays dead between
+    // windows, so nothing can have latched (see the module note). A match
+    // that lands inside this arm window sets CC4IF but pulses no request;
+    // the caller's set-and-recheck sees CNT past CCR4 and re-aims.
+    timer::set_tim2_cc4_dma(true);
 }
 
 /// Past-deadline retry: re-aim CCR4 just ahead of CNT so a REAL compare
@@ -111,6 +117,7 @@ pub fn on_kickoff_complete() {
     if !dma::is_tc_flag(dma::Channel::CH7) {
         return;
     }
+    timer::set_tim2_cc4_dma(false);
     dma::clear_tc_flag(dma::Channel::CH7);
     dma::disable(dma::Channel::CH7);
 }
@@ -120,6 +127,7 @@ pub fn on_kickoff_complete() {
 /// so a later CC4 match can't fire the stale enable word. No-op if nothing
 /// was armed.
 pub fn cancel() {
+    timer::set_tim2_cc4_dma(false);
     dma::disable(dma::Channel::CH7);
     dma::clear_tc_flag(dma::Channel::CH7);
 }

@@ -46,11 +46,13 @@ pub const SCHEDULE_WRAP_GUARD_TICKS: u16 = 0x8000;
 pub const KICKOFF_RETRY_LEAD_TICKS: u16 = 64;
 
 /// Entry-latency compensation subtracted from the packet-end estimate, in
-/// HCLK ticks (baud-independent). The estimate is the drain-ISR entry
-/// `now`, so it carries that vector's fixed entry latency; biasing it down
-/// keeps the residual wire excess slightly positive. Seeded 0; bench-tune
-/// at band end via `tool-tune-tx-start` (measured ~+150 ticks median at
-/// 3M, biased so the residual stays slightly positive).
+/// HCLK ticks (baud-independent). Bench-calibrated to 0 and pinned there
+/// by the drain-flavor split: ByteBatch drains (HT/TC lands on the CRC
+/// byte) carry near-zero latency (min wire excess +0.17 µs at 3M), while
+/// IDLE drains carry ~5 µs — any nonzero comp would fire ByteBatch-drained
+/// replies BEFORE the deadline. The residual median excess (~5 µs at RDT
+/// scale) is protocol-irrelevant; per-flavor comps are the lever if that
+/// ever changes.
 pub const PACKET_END_ENTRY_COMP_TICKS: u32 = 0;
 
 mod fast_last {
