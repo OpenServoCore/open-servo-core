@@ -322,7 +322,9 @@ fn wait_tx_complete() -> Result<(), TxTimeout> {
 pub const BREAK_MAX_COUNT: u32 = 200;
 pub const BREAK_MAX_GAP_US: u32 = 10_000;
 pub const LOW_PULSE_MAX_US: u32 = 100_000;
-pub const BRK_PAYLOAD_MAX: usize = 64;
+/// Fits any osc-native frame (`footprint(u8::MAX)` = 258 wire bytes) with
+/// slack.
+pub const BRK_PAYLOAD_MAX: usize = 272;
 
 /// Send `count` UART breaks via SBK, `gap_us` apart. Returns after the
 /// last break has shifted out.
@@ -343,31 +345,34 @@ pub fn send_breaks(count: u32, gap_us: u32) -> Result<(), SendError> {
     Ok(())
 }
 
-/// One break immediately followed by poll-fed `payload` bytes — the
-/// tightest break→data spacing the USART allows (the first byte sits
-/// in TDR while the break shifts out). Bypasses DMA; spike-only.
+/// One 10-bit-exact break immediately followed by poll-fed `payload`
+/// bytes — the osc-native host send primitive.
+///
+/// The break is NOT SBK: CH32 SBK stretches to ~14 bit-times
+/// (bench-measured on both chips), and an 8N1 receiver resyncs inside
+/// the stretched low with a bogus frame that swallows the first data
+/// byte. Instead the break is one 9-bit frame of 0x00 (M=1, bit 8 = 0):
+/// start + 9 data lows = 10 low bit-times, then a clean stop — exactly
+/// the shape of an 8N1 break with a deterministic 1-frame resync point
+/// (the FEINJ `bad=00` technique, promoted). The M flip back costs a
+/// sub-frame gap at TC that never reaches the receiver's IDLE threshold.
 pub fn send_break_then(payload: &[u8]) -> Result<(), SendError> {
     if payload.is_empty() || payload.len() > BRK_PAYLOAD_MAX {
         return Err(SendError::TooLong);
     }
     wait_tx_complete().map_err(|TxTimeout| SendError::Busy)?;
     pb10_drive(true);
-    let bit_ticks = USART3.brr().read().0;
-    USART3.ctlr1().modify(|w| w.set_sbk(true));
-    for &b in payload {
-        let t0 = read_tick32();
-        while !USART3.statr().read().txe() {
-            if read_tick32().wrapping_sub(t0) > bit_ticks * 64 {
-                pb10_drive(false);
-                return Err(SendError::Busy);
-            }
-        }
-        USART3.datar().write(|w| w.set_dr(b as u16));
-    }
-    // DR writes cleared TC, so this waits for the last stop bit.
-    let done = wait_tx_complete();
+    let r = (|| {
+        USART3.ctlr1().modify(|w| w.set_m(true));
+        let r = feed_bytes(&[0x00])
+            .and_then(|()| wait_tx_complete().map_err(|TxTimeout| SendError::Busy));
+        USART3.ctlr1().modify(|w| w.set_m(false));
+        r?;
+        feed_bytes(payload)?;
+        wait_tx_complete().map_err(|TxTimeout| SendError::Busy)
+    })();
     pb10_drive(false);
-    done.map_err(|TxTimeout| SendError::Busy)
+    r
 }
 
 /// Mid-stream framing-error injection: `pre` bytes as normal 8N1, then

@@ -47,8 +47,9 @@
 //!       1000) apart. Blocks until the last break has shifted out.
 //!       Break-framing spike command.
 //!   `BRKSEND bytes=<hex>`
-//!       One break immediately followed by `bytes` (poll-fed, ≤ 64 B) —
-//!       the tightest break→data spacing the USART allows.
+//!       One 10-bit-exact break (a 9-bit 0x00 frame, not SBK) followed
+//!       back-to-back by `bytes` (poll-fed, ≤ 272 B) — the osc-native
+//!       host send primitive.
 //!   `LOWPULSE us=<n>`
 //!       Drive TX low as a GPIO for `n` µs (≤ 100 ms), then restore AF.
 //!       The osc-native "rescue break" shape — detectable at any baud.
