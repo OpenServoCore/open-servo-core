@@ -38,9 +38,9 @@ impl Crc {
     /// the whole program — `reset` re-zeros the accumulator per frame.
     pub fn init() {
         rcc::enable_spi1();
-        // Park the SPI functions off the motor pins (module doc). PCFR1
-        // readback is unreliable on this die — verify by behavior (CRC
-        // stays bit-exact), never by register dump.
+        // Park the SPI functions off the motor pins (module doc). Verify
+        // by behavior (CRC stays bit-exact): a debugger PCFR1 dump has
+        // disagreed with behaviorally-proven remap state before.
         afio::set_spi_remap(1, 0b101);
         SPI1.ctlr1().write(|w| {
             w.set_mstr(true);
