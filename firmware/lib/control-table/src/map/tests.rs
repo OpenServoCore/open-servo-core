@@ -199,6 +199,42 @@ fn partial_field_overwrite_revalidates_whole_field() {
 }
 
 #[test]
+fn straddle_low_pending_high_live() {
+    // field12 (i32, <= 100_000): low bytes pending, high bytes live. Live high
+    // byte 14 = 0x01 contributes 0x00010000 = 65536, so the rule must see both
+    // the overlay low half and the live high half to reach the right verdict.
+    let mut init = [0u8; BASIC_SIZE];
+    init[14] = 0x01;
+    // overlay low = 0x86A0 -> total 100_000, passes.
+    let m = Basic::new(init);
+    assert!(m.write(12, &[0xA0, 0x86]).is_ok());
+    // overlay low = 0x86A1 -> total 100_001, fails (proves live-high seen too).
+    let m = Basic::new(init);
+    assert_eq!(
+        m.write(12, &[0xA1, 0x86]),
+        Err(Error::ValidationError(ValidationKind::Compare))
+    );
+}
+
+#[test]
+fn straddle_high_pending_low_live() {
+    // field12 (i32, <= 100_000): high bytes pending, low bytes live. Live low
+    // half = 0x86A0 = 34464.
+    let mut init = [0u8; BASIC_SIZE];
+    init[12] = 0xA0;
+    init[13] = 0x86;
+    // overlay high = 0x0001 -> total 100_000, passes.
+    let m = Basic::new(init);
+    assert!(m.write(14, &[0x01, 0x00]).is_ok());
+    // overlay high = 0x0002 -> total 165_536, fails (proves live-low seen too).
+    let m = Basic::new(init);
+    assert_eq!(
+        m.write(14, &[0x02, 0x00]),
+        Err(Error::ValidationError(ValidationKind::Compare))
+    );
+}
+
+#[test]
 fn stage_validates_then_pushes() {
     let m = Basic::new([0; BASIC_SIZE]);
     let mut staged = StagedWrites::new();
@@ -328,4 +364,72 @@ fn rules_run_before_lock() {
         m.write(8, &[5]),
         Err(Error::ValidationError(ValidationKind::Enum))
     );
+}
+
+// --- Mask fixture: 3 words (96 B), no rules/lock, so only the writable-mask
+// scan runs. Two read-only holes: byte 50 (mid word 1) and byte 64 (start of
+// word 2, a word boundary). Ranges are positioned so a hole falls just inside
+// vs just outside each edge shape. ---
+
+const MASK_SIZE: usize = 96;
+
+// word0 all writable; word1 hole at bit 18 (byte 50); word2 hole at bit 0 (byte 64).
+const MASK_WRITABLE: &[u32] = &[0xFFFF_FFFF, !(1u32 << 18), !(1u32 << 0)];
+
+static MASK_SECTIONS: &[SectionMeta] = &[SectionMeta {
+    base: 0,
+    size: MASK_SIZE as u16,
+    rules: &[],
+    write_lock: None,
+}];
+
+struct MaskFix {
+    store: UnsafeCell<[u8; MASK_SIZE]>,
+}
+
+// SAFETY: tests are single-threaded.
+unsafe impl Sync for MaskFix {}
+
+impl MaskFix {
+    fn new() -> Self {
+        Self {
+            store: UnsafeCell::new([0; MASK_SIZE]),
+        }
+    }
+}
+
+impl RegisterMap for MaskFix {
+    const SIZE: usize = MASK_SIZE;
+    const WRITABLE: &'static [u32] = MASK_WRITABLE;
+    const SECTIONS: &'static [SectionMeta] = MASK_SECTIONS;
+    fn base(&self) -> *mut u8 {
+        self.store.get() as *mut u8
+    }
+}
+
+#[test]
+fn mask_word_at_a_time_edges() {
+    let z = [0u8; MASK_SIZE];
+    let m = MaskFix::new();
+
+    // start mid-word: [51,56) excludes hole@50 -> ok; [50,56) includes -> Access.
+    assert!(m.write(51, &z[..5]).is_ok());
+    assert_eq!(m.write(50, &z[..6]), Err(Error::AccessError));
+
+    // end mid-word: [46,50) excludes hole@50 -> ok; [46,51) includes -> Access.
+    assert!(m.write(46, &z[..4]).is_ok());
+    assert_eq!(m.write(46, &z[..5]), Err(Error::AccessError));
+
+    // span exactly one word: [0,32) no hole -> ok; [32,64) has hole@50 -> Access.
+    assert!(m.write(0, &z[..32]).is_ok());
+    assert_eq!(m.write(32, &z[..32]), Err(Error::AccessError));
+
+    // span multiple words: [10,48) excludes hole@50 -> ok; [10,51) includes -> Access.
+    assert!(m.write(10, &z[..38]).is_ok());
+    assert_eq!(m.write(10, &z[..41]), Err(Error::AccessError));
+
+    // 1-byte range at a word boundary: [63,64) excludes hole@64 -> ok;
+    // [64,65) is the boundary hole -> Access.
+    assert!(m.write(63, &z[..1]).is_ok());
+    assert_eq!(m.write(64, &z[..1]), Err(Error::AccessError));
 }

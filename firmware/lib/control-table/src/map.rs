@@ -39,33 +39,38 @@ pub struct View<'a> {
 }
 
 impl View<'_> {
-    pub fn read_into(&self, addr: u16, dst: &mut [u8]) -> Result<(), Error> {
+    /// Load `[addr, addr+len)` (`len <= 4`) into a `[u8; 4]`, taking each byte
+    /// from the pending overlay where it lands inside `[overlay_addr,
+    /// overlay_addr+overlay.len())` and from live storage otherwise. Bounds-
+    /// checked once up front (same `OutOfRange` conditions as a slice read); the
+    /// per-byte picks then need no further checks.
+    #[inline(always)]
+    pub(crate) fn read_fixed(&self, addr: u16, len: usize) -> Result<[u8; 4], Error> {
         let lo = addr as usize;
-        let hi = match lo.checked_add(dst.len()) {
+        let hi = match lo.checked_add(len) {
             Some(h) => h,
             None => return Err(Error::OutOfRange),
         };
         if hi > self.size {
             return Err(Error::OutOfRange);
         }
-        if dst.is_empty() {
-            return Ok(());
-        }
-        // SAFETY: `[lo, hi)` lies in `size` bytes of live storage; the caller
-        // upholds RegisterMap's single-writer contract, so this shared read
-        // does not race a commit.
-        let live = unsafe { core::slice::from_raw_parts(self.base.add(lo), dst.len()) };
-        dst.copy_from_slice(live);
         let o_lo = self.overlay_addr as usize;
         let o_hi = o_lo + self.overlay.len();
-        let p_lo = lo.max(o_lo);
-        let p_hi = hi.min(o_hi);
-        if p_lo < p_hi {
-            let d = p_lo - lo;
-            let s = p_lo - o_lo;
-            dst[d..d + (p_hi - p_lo)].copy_from_slice(&self.overlay[s..s + (p_hi - p_lo)]);
+        let mut out = [0u8; 4];
+        for (i, slot) in out.iter_mut().take(len).enumerate() {
+            let a = lo + i;
+            *slot = if a >= o_lo && a < o_hi {
+                // `a - o_lo < overlay.len()` by the bounds above; get keeps the
+                // never-panic contract regardless.
+                self.overlay.get(a - o_lo).copied().unwrap_or(0)
+            } else {
+                // SAFETY: `a < hi <= size` bytes of live storage; the caller
+                // upholds RegisterMap's single-writer contract, so this shared
+                // read does not race a commit.
+                unsafe { *self.base.add(a) }
+            };
         }
-        Ok(())
+        Ok(out)
     }
 }
 
@@ -84,9 +89,19 @@ fn validate<M: RegisterMap + ?Sized>(m: &M, addr: u16, src: &[u8]) -> Result<(),
     if hi > M::SIZE {
         return Err(Error::OutOfRange);
     }
-    for i in lo..hi {
-        let w = M::WRITABLE.get(i / 32).copied().unwrap_or(0);
-        if ((w >> (i % 32)) & 1) == 0 {
+    // Writable-mask check a word at a time: interior words must equal `!0`; the
+    // (up to two) edge words test only their covered bit-spans. `src` is non-
+    // empty here, so `hi - 1` never underflows.
+    let first = lo / 32;
+    let last = (hi - 1) / 32;
+    for wi in first..=last {
+        let word_lo = wi * 32;
+        let start_bit = lo.saturating_sub(word_lo);
+        let end_bit = (hi - word_lo).min(32);
+        // Build in u64 so the shift amount never reaches 32 (Rust UB on u32).
+        let mask = (((1u64 << end_bit) - 1) & !((1u64 << start_bit) - 1)) as u32;
+        let w = M::WRITABLE.get(wi).copied().unwrap_or(0);
+        if (w & mask) != mask {
             return Err(Error::AccessError);
         }
     }
@@ -115,8 +130,7 @@ fn validate<M: RegisterMap + ?Sized>(m: &M, addr: u16, src: &[u8]) -> Result<(),
             continue;
         }
         if let Some(lock) = sec.write_lock {
-            let mut b = [0u8; 1];
-            view.read_into(lock, &mut b)?;
+            let b = view.read_fixed(lock, 1)?;
             if b[0] != 0 {
                 return Err(Error::ValidationError(ValidationKind::Locked));
             }

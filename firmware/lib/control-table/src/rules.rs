@@ -51,11 +51,11 @@ impl CmpOp {
 }
 
 impl Rule {
+    #[inline(always)]
     pub fn eval(&self, view: &View) -> Result<(), Error> {
         match &self.kind {
             RuleKind::Enum { allowed } => {
-                let mut b = [0u8; 1];
-                view.read_into(self.offset, &mut b)?;
+                let b = view.read_fixed(self.offset, 1)?;
                 if allowed.contains(&b[0]) {
                     Ok(())
                 } else {
@@ -94,9 +94,9 @@ impl Rule {
     }
 }
 
+#[inline(always)]
 fn read_widened(view: &View, addr: u16, width: u8, signed: bool) -> Result<i32, Error> {
-    let mut b = [0u8; 4];
-    view.read_into(addr, &mut b[..width as usize])?;
+    let b = view.read_fixed(addr, width as usize)?;
     Ok(match (width, signed) {
         (1, false) => b[0] as i32,
         (1, true) => b[0] as i8 as i32,
