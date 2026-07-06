@@ -95,15 +95,23 @@ fn init_clocks_and_remap() {
     });
 }
 
-/// PB10/PB11 (USART3_TX/RX): TX as AF push-pull (50 MHz), RX as input
-/// pull-up.
+/// PB10/PB11 (USART3_TX/RX): TX idles as AF open-drain (released), RX
+/// as input pull-up.
 ///
-/// Push-pull on PB10 (vs the spec-correct open-drain) is bench-only:
-/// PB10↔PB11 are bridged through open air with no transceiver, so the
-/// only pull on the wire is PB11's ~30 kΩ internal pull-up, giving
-/// τ ≈ 500–900 ns rise time and USART RX mis-sample at ≥ 2 Mbaud. Push-
-/// pull actively drives both edges. The multi-drop "no PP fighting OD"
-/// concern doesn't apply to this rig.
+/// Drive discipline: PB10 sits open-drain (released, wire held high by
+/// the bus pull-ups) whenever the pirate isn't transmitting, and flips
+/// to AF push-pull only while a send shifts out — both edges actively
+/// driven at 3M, then the wire is handed back. A permanently push-pull
+/// idle-high PB10 clamps any direct-wire (buffer-less HDSEL) device
+/// trying to talk: its GPIO can't win the fight the 74LVC2G241 used to
+/// win. Rise time through the pull-ups only matters at the DC arm/
+/// release boundaries, never for data edges.
+///
+/// Window note: scheduled sends arm push-pull at schedule time (the
+/// kickoff itself is TIM4-hardware-timed with no CPU in the path), so
+/// the wire is driven idle-high from schedule to wire-start. The host
+/// owns the bus when it schedules, so nothing else should be talking in
+/// that window.
 fn init_pins() {
     // ODR high before AF lock: guards against a transient ODR-LOW
     // pulling the bus while the AF block is mid-init.
@@ -111,17 +119,40 @@ fn init_pins() {
         w.set_odr(10, true);
         w.set_odr(11, true); // select PB11 input pullup (see below)
     });
-    //   PB10: Mode=11 (50 MHz), CNF=10 (AF PP) → 0b1011.
+    //   PB10: Mode=11 (50 MHz), CNF=11 (AF OD) → 0b1111.
     //   PB11: Mode=00 (input),  CNF=10 (input w/ pull) → 0b1000;
     //         ODR(11)=1 above selects pull-up.
     GPIOB.cfghr().modify(|w| {
         let mut v = w.0;
         v &= !(0xF << 8);
         v &= !(0xF << 12);
-        v |= 0b1011u32 << 8;
+        v |= 0b1111u32 << 8;
         v |= 0b1000u32 << 12;
         w.0 = v;
     });
+}
+
+/// PB10 CNF: AF push-pull while transmitting, AF open-drain (released)
+/// otherwise.
+fn pb10_drive(pp: bool) {
+    set_pb10_cnf(if pp { 0b1011 } else { 0b1111 });
+}
+
+/// Arm the drive for a scheduled (DMA) send: push-pull now, and a TC
+/// interrupt to hand the wire back when the last stop bit clears the
+/// shifter. TC is cleared first so a stale complete flag can't release
+/// the drive before this send even starts.
+fn arm_drive_release() {
+    pb10_drive(true);
+    USART3.statr().modify(|w| w.set_tc(false));
+    USART3.ctlr1().modify(|w| w.set_tcie(true));
+}
+
+/// Called from the USART3 ISR on TC while TCIE is armed: release the
+/// wire and disarm.
+pub fn on_tx_complete() {
+    USART3.ctlr1().modify(|w| w.set_tcie(false));
+    pb10_drive(false);
 }
 
 /// USART3: 8N1, full-duplex, DMAT, DMAR, IDLEIE. Init order matters —
@@ -168,6 +199,7 @@ pub fn schedule_send_at(payload: &[u8], at: u32) -> Result<(), SendError> {
     critical_section::with(|_| {
         scheduler::cancel();
         load_payload_main(payload)?;
+        arm_drive_release();
         scheduler::schedule_or_send_now(at);
         Ok(())
     })
@@ -247,6 +279,7 @@ pub fn on_idle(idle_tick: u32) {
     }
 
     let send_at = idle_tick.wrapping_add(after);
+    arm_drive_release();
     scheduler::schedule_or_send_now(send_at);
 }
 
@@ -281,6 +314,114 @@ fn wait_tx_complete() -> Result<(), TxTimeout> {
         }
     }
     Ok(())
+}
+
+/// Break-framing spike surface (`BREAK` / `BRKSEND` / `LOWPULSE`).
+/// All three block the CDC command context; the caps keep the worst
+/// case well under `wait_tx_complete`'s own 200 ms ceiling.
+pub const BREAK_MAX_COUNT: u32 = 200;
+pub const BREAK_MAX_GAP_US: u32 = 10_000;
+pub const LOW_PULSE_MAX_US: u32 = 100_000;
+pub const BRK_PAYLOAD_MAX: usize = 64;
+
+/// Send `count` UART breaks via SBK, `gap_us` apart. Returns after the
+/// last break has shifted out.
+pub fn send_breaks(count: u32, gap_us: u32) -> Result<(), SendError> {
+    if count == 0 || count > BREAK_MAX_COUNT || gap_us > BREAK_MAX_GAP_US {
+        return Err(SendError::TooLong);
+    }
+    wait_tx_complete().map_err(|TxTimeout| SendError::Busy)?;
+    pb10_drive(true);
+    for i in 0..count {
+        if i != 0 {
+            spin_us(gap_us);
+        }
+        pulse_sbk();
+    }
+    spin_ticks(USART3.brr().read().0 * 2);
+    pb10_drive(false);
+    Ok(())
+}
+
+/// One break immediately followed by poll-fed `payload` bytes — the
+/// tightest break→data spacing the USART allows (the first byte sits
+/// in TDR while the break shifts out). Bypasses DMA; spike-only.
+pub fn send_break_then(payload: &[u8]) -> Result<(), SendError> {
+    if payload.is_empty() || payload.len() > BRK_PAYLOAD_MAX {
+        return Err(SendError::TooLong);
+    }
+    wait_tx_complete().map_err(|TxTimeout| SendError::Busy)?;
+    pb10_drive(true);
+    let bit_ticks = USART3.brr().read().0;
+    USART3.ctlr1().modify(|w| w.set_sbk(true));
+    for &b in payload {
+        let t0 = read_tick32();
+        while !USART3.statr().read().txe() {
+            if read_tick32().wrapping_sub(t0) > bit_ticks * 64 {
+                pb10_drive(false);
+                return Err(SendError::Busy);
+            }
+        }
+        USART3.datar().write(|w| w.set_dr(b as u16));
+    }
+    // DR writes cleared TC, so this waits for the last stop bit.
+    let done = wait_tx_complete();
+    pb10_drive(false);
+    done.map_err(|TxTimeout| SendError::Busy)
+}
+
+/// Drive PB10 low as a plain GPIO for `us`, then restore AF. The
+/// osc-native "rescue break" shape — a low far longer than any frame,
+/// detectable by a servo EXTI at any configured baud.
+pub fn low_pulse_us(us: u32) -> Result<(), SendError> {
+    if us == 0 || us > LOW_PULSE_MAX_US {
+        return Err(SendError::TooLong);
+    }
+    wait_tx_complete().map_err(|TxTimeout| SendError::Busy)?;
+    // ODR low before the CNF switch so the line drops exactly at the
+    // switch; restore in the reverse order so it never glitches low.
+    GPIOB.outdr().modify(|w| w.set_odr(10, false));
+    set_pb10_cnf(0b0011); // GP push-pull 50 MHz
+    spin_us(us);
+    GPIOB.outdr().modify(|w| w.set_odr(10, true));
+    spin_us(1);
+    set_pb10_cnf(0b1111); // back to idle drive (AF open-drain)
+    Ok(())
+}
+
+/// Set SBK and wait for the hardware clear (during the break's stop
+/// bit), then one extra bit-time so back-to-back callers keep a clean
+/// idle-high delimiter between breaks. Bounded at 32 bit-times.
+fn pulse_sbk() {
+    // BRR holds APB1 ticks per bit and tick32 runs at APB1 rate, so it
+    // doubles as the bit-time in tick32 units.
+    let bit_ticks = USART3.brr().read().0;
+    USART3.ctlr1().modify(|w| w.set_sbk(true));
+    let t0 = read_tick32();
+    while USART3.ctlr1().read().sbk() {
+        if read_tick32().wrapping_sub(t0) > bit_ticks * 32 {
+            break;
+        }
+    }
+    spin_ticks(bit_ticks);
+}
+
+fn set_pb10_cnf(bits: u32) {
+    GPIOB.cfghr().modify(|w| {
+        let mut v = w.0;
+        v &= !(0xF << 8);
+        v |= bits << 8;
+        w.0 = v;
+    });
+}
+
+fn spin_ticks(ticks: u32) {
+    let t0 = read_tick32();
+    while read_tick32().wrapping_sub(t0) < ticks {}
+}
+
+fn spin_us(us: u32) {
+    spin_ticks(us.saturating_mul(crate::tick::wire_ticks_per_us()));
 }
 
 fn load_payload_main(payload: &[u8]) -> Result<(), SendError> {

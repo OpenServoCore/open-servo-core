@@ -52,6 +52,11 @@ fn DMA1_CHANNEL3() {
 #[interrupt]
 fn USART3() {
     let statr = USART3.statr().read();
+    // TCIE is armed per-send by tx::arm_drive_release; TC here means the
+    // last stop bit cleared the shifter — hand the wire back (PB10 → OD).
+    if statr.tc() && USART3.ctlr1().read().tcie() {
+        crate::tx::on_tx_complete();
+    }
     if statr.idle() {
         // STATR read above + DATAR read clears IDLE.
         let _ = USART3.datar().read();

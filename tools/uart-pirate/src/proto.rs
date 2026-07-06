@@ -42,6 +42,16 @@
 //!       unchanged); `TX_COMP_TICKS` is recomputed for the current baud
 //!       immediately. Bypasses the desync guard so bench can calibrate
 //!       after a trip.
+//!   `BREAK [n=<count>] [gap_us=<us>]`
+//!       Send `n` (default 1) UART breaks via SBK, `gap_us` (default
+//!       1000) apart. Blocks until the last break has shifted out.
+//!       Break-framing spike command.
+//!   `BRKSEND bytes=<hex>`
+//!       One break immediately followed by `bytes` (poll-fed, ≤ 64 B) —
+//!       the tightest break→data spacing the USART allows.
+//!   `LOWPULSE us=<n>`
+//!       Drive TX low as a GPIO for `n` µs (≤ 100 ms), then restore AF.
+//!       The osc-native "rescue break" shape — detectable at any baud.
 //!   `TICK?`      → `TICK <tick32:u32>`
 //!   `LAST?`      → `LAST <tick32:u32>` last send kickoff
 //!   `HZ`         → `HZ <u32>` tick32 ticks per microsecond
@@ -156,6 +166,18 @@ pub fn handle_line(line: &[u8]) -> Reply {
     if let Some(rest) = line.strip_prefix("SEND ") {
         return send(rest);
     }
+    if line == "BREAK" {
+        return brk("");
+    }
+    if let Some(rest) = line.strip_prefix("BREAK ") {
+        return brk(rest);
+    }
+    if let Some(rest) = line.strip_prefix("BRKSEND ") {
+        return brksend(rest);
+    }
+    if let Some(rest) = line.strip_prefix("LOWPULSE ") {
+        return lowpulse(rest);
+    }
 
     match line {
         "TICK?" => Reply::Tick(tick::read_tick32()),
@@ -222,6 +244,75 @@ fn baud(rest: &str) -> Reply {
         return Reply::Err("baud");
     }
     Reply::Ok
+}
+
+fn brk(rest: &str) -> Reply {
+    let mut n: u32 = 1;
+    let mut gap_us: u32 = 1000;
+    for tok in rest.split_ascii_whitespace() {
+        let Some((k, v)) = tok.split_once('=') else {
+            return Reply::Err("kv");
+        };
+        match k {
+            "n" => match v.parse() {
+                Ok(x) => n = x,
+                Err(_) => return Reply::Err("n"),
+            },
+            "gap_us" => match v.parse() {
+                Ok(x) => gap_us = x,
+                Err(_) => return Reply::Err("gap_us"),
+            },
+            _ => return Reply::Err("key"),
+        }
+    }
+    match tx::send_breaks(n, gap_us) {
+        Ok(()) => Reply::Ok,
+        Err(tx::SendError::TooLong) => Reply::Err("range"),
+        Err(tx::SendError::Busy) => Reply::Err("busy"),
+    }
+}
+
+fn brksend(rest: &str) -> Reply {
+    let mut buf = [0u8; tx::BRK_PAYLOAD_MAX];
+    let mut len: Option<usize> = None;
+    for tok in rest.split_ascii_whitespace() {
+        let Some((k, v)) = tok.split_once('=') else {
+            return Reply::Err("kv");
+        };
+        match k {
+            "bytes" => len = decode_hex(v, &mut buf),
+            _ => return Reply::Err("key"),
+        }
+    }
+    let Some(len) = len else {
+        return Reply::Err("missing");
+    };
+    match tx::send_break_then(&buf[..len]) {
+        Ok(()) => Reply::Ok,
+        Err(tx::SendError::TooLong) => Reply::Err("toolong"),
+        Err(tx::SendError::Busy) => Reply::Err("busy"),
+    }
+}
+
+fn lowpulse(rest: &str) -> Reply {
+    let mut us: Option<u32> = None;
+    for tok in rest.split_ascii_whitespace() {
+        let Some((k, v)) = tok.split_once('=') else {
+            return Reply::Err("kv");
+        };
+        match k {
+            "us" => us = v.parse().ok(),
+            _ => return Reply::Err("key"),
+        }
+    }
+    let Some(us) = us else {
+        return Reply::Err("missing");
+    };
+    match tx::low_pulse_us(us) {
+        Ok(()) => Reply::Ok,
+        Err(tx::SendError::TooLong) => Reply::Err("range"),
+        Err(tx::SendError::Busy) => Reply::Err("busy"),
+    }
 }
 
 fn send(rest: &str) -> Reply {
