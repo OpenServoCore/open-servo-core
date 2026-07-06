@@ -46,6 +46,12 @@ pub fn set_irq(enable: bool) {
     });
 }
 
+/// CNTIF latched â a compare match occurred since the last clear.
+#[inline(always)]
+pub fn matched() -> bool {
+    SYSTICK.sr().read().cntif()
+}
+
 #[inline(always)]
 pub fn clear_match() {
     SYSTICK.sr().write(|w| w.set_cntif(false));

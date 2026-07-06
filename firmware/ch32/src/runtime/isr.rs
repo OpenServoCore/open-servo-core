@@ -12,6 +12,10 @@ use crate::runtime::statics::{KERNEL, SESSION, SHARED};
 /// deadlines) share PFIC HIGH so all `&mut` access into the `ServoBus`
 /// composite serializes. The ADC DMA channel sits at LOW. DMA1_CH5 (RX ring)
 /// runs silent circular — no HT/TC IRQ — and CH4/CH3 raise none either.
+/// Bound on the FE→DMA settle spin: the RXNE→ring DMA write is ~10 AHB
+/// cycles; 64 spins is orders of magnitude past it while staying sub-µs.
+const FE_DMA_SETTLE_SPINS: u32 = 64;
+
 pub fn install_irqs() {
     pfic::set_priority(pfic::Interrupt::USART1, pfic::Priority::High);
     pfic::set_systick_priority(pfic::Priority::High);
@@ -52,11 +56,23 @@ pub fn on_adc_dma_tc() {
 /// is possible. Statement ordering is load-bearing: the break handoff runs
 /// off the RX-error read, then the TC branch does release work first.
 pub fn on_usart1() {
+    crate::log::trace!("usart1 isr");
     // (a) RX errors: an FE marks a break (or mid-frame garble) → the framer
     // anchors on the just-ringed 0x00 (F2: the DMA write beats the ISR).
     let errs = usart::rx_errors(USART1);
     if errs.fe || errs.ore || errs.pe || errs.ne {
         if errs.fe {
+            // The ERR interrupt beats the DMA drain: at entry the break's 0x00
+            // may still sit in DR (RXNE set), so the ring cursor hasn't counted
+            // it yet — and the framer's anchor would land one byte early
+            // (bench-observed: every header read as [stale, 00, ID, LEN] →
+            // BadId). Wait, bounded, for the DMA to take the byte before the
+            // driver samples the cursor.
+            let mut settle = FE_DMA_SETTLE_SPINS;
+            while usart::is_rxne(USART1) && settle > 0 {
+                settle -= 1;
+                core::hint::spin_loop();
+            }
             // SAFETY: see fn doc.
             unsafe { Drivers::bus() }.on_break();
         }
@@ -85,6 +101,7 @@ pub fn on_usart1() {
 /// SAFETY: SysTick shares PFIC HIGH with USART1, so no concurrent `&mut` into
 /// the composite (or the session) is possible.
 pub fn on_systick() {
+    crate::log::trace!("systick isr");
     systick::clear_match();
     // SAFETY: see fn doc — SESSION is installed before this vector unmasks.
     let session = unsafe { (*SESSION.get()).assume_init_mut() };
@@ -93,26 +110,70 @@ pub fn on_systick() {
     unsafe { Drivers::bus() }.on_deadline(&mut dispatcher);
 }
 
-/// Wires osc-ch32 ISR bodies into the vector table. Caller must depend on
-/// `qingke-rt`. Every ISR opts out of `.highcode` via `#[interrupt(lowcode)]`:
-/// the break makes reply timing non-critical (no hardware-timed kickoff on the
-/// wire deadline), and the framer's per-deadline slack absorbs any flash-fetch
-/// jitter in the remaining bodies.
+/// Wires osc-ch32 ISR bodies into the vector table via hand-rolled full-save
+/// trampolines, NOT `#[qingke_rt::interrupt]`. The qingke-rt trampoline saves
+/// only `ra` and relies on HPE hardware stacking, which on this silicon
+/// corrupts the interrupted context's t0/t2 (bench-observed here as a
+/// misaligned-load trap in the main loop right after `wfi`; first seen in the
+/// break-framing spike). Full software caller-save (ra, t0–t2, a0–a5 — the
+/// RV32E set) plus `INTSYSCR = 0` (set in `run!`: no HPE, no nesting) removes
+/// the silicon variable entirely. Cost: ISRs no longer preempt each other —
+/// fine while the kernel tick is a stub; revisit nesting with the control
+/// loop.
 #[macro_export]
 macro_rules! install_isrs {
     () => {
-        #[::qingke_rt::interrupt(lowcode)]
-        fn DMA1_CHANNEL1() {
+        ::core::arch::global_asm!(
+            r#"
+            .macro ISR_TRAMPOLINE name, body
+            .section .text.\name
+            .global \name
+            .align 2
+        \name:
+            addi sp, sp, -40
+            sw ra,  0(sp)
+            sw t0,  4(sp)
+            sw t1,  8(sp)
+            sw t2, 12(sp)
+            sw a0, 16(sp)
+            sw a1, 20(sp)
+            sw a2, 24(sp)
+            sw a3, 28(sp)
+            sw a4, 32(sp)
+            sw a5, 36(sp)
+            call \body
+            lw ra,  0(sp)
+            lw t0,  4(sp)
+            lw t1,  8(sp)
+            lw t2, 12(sp)
+            lw a0, 16(sp)
+            lw a1, 20(sp)
+            lw a2, 24(sp)
+            lw a3, 28(sp)
+            lw a4, 32(sp)
+            lw a5, 36(sp)
+            addi sp, sp, 40
+            mret
+            .endm
+
+            ISR_TRAMPOLINE DMA1_CHANNEL1, __osc_isr_adc_dma
+            ISR_TRAMPOLINE USART1, __osc_isr_usart1
+            ISR_TRAMPOLINE SysTick, __osc_isr_systick
+            "#
+        );
+
+        #[unsafe(no_mangle)]
+        extern "C" fn __osc_isr_adc_dma() {
             $crate::runtime::isr::on_adc_dma_tc();
         }
 
-        #[::qingke_rt::interrupt(lowcode)]
-        fn USART1() {
+        #[unsafe(no_mangle)]
+        extern "C" fn __osc_isr_usart1() {
             $crate::runtime::isr::on_usart1();
         }
 
-        #[::qingke_rt::interrupt(core, lowcode)]
-        fn SysTick() {
+        #[unsafe(no_mangle)]
+        extern "C" fn __osc_isr_systick() {
             $crate::runtime::isr::on_systick();
         }
     };

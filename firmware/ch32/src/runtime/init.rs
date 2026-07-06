@@ -137,9 +137,13 @@ fn configure_pins(w: &BoardWiring) {
 }
 
 fn configure_bus_pins() {
-    // PC0 idle: AF open-drain — the wire is released, the pull-up holds mark;
-    // TxWire flips it to AF push-pull for the DUT's own TX window (§2, F8).
-    gpio::configure(chip::BUS_USART_MAPPING.tx_pin(), PinMode::AF_OPEN_DRAIN);
+    // PC0 idle: input-with-pull-up — the buffer-less wire has no external
+    // pull-up (bench-measured: a released line floats low, tripping rescue),
+    // so the servo's own ~40k biases the bus to mark while listening. The
+    // pin's input path still feeds HDSEL RX in input mode; TxWire drives AF
+    // push-pull for the TX window, so data edges never ride the pull-up
+    // (§2, F8).
+    gpio::configure(chip::BUS_USART_MAPPING.tx_pin(), PinMode::INPUT_PULL_UP);
     // The 74LVC2G241 direction buffer is bypassed on this board: park its
     // disable pin LOW once and never touch it again (§2, F7).
     gpio::configure(chip::BUS_BUF_DISABLE_PIN, PinMode::OUTPUT_PUSH_PULL);

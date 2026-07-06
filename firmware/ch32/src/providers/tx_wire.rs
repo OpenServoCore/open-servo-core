@@ -19,6 +19,7 @@ pub struct TxWire;
 
 impl bus::TxWire for TxWire {
     fn start_frame(&mut self) {
+        crate::log::trace!("tx.start");
         // Claim the wire: PC0 → AF push-pull for the TX window.
         gpio::configure(chip::BUS_USART_MAPPING.tx_pin(), PinMode::AF_PUSH_PULL);
         // Clear any stale TC (STATR reset = 0xC0) before enabling TCIE so the
@@ -57,8 +58,10 @@ impl bus::TxWire for TxWire {
     }
 
     fn release(&mut self) {
-        // Release the wire: PC0 → AF open-drain, TX DMA + TCIE off.
-        gpio::configure(chip::BUS_USART_MAPPING.tx_pin(), PinMode::AF_OPEN_DRAIN);
+        // Back to the listening bias: input-with-pull-up — the servo IS the
+        // bus pull-up on this buffer-less wire (see `configure_bus_pins`),
+        // and HDSEL RX keeps hearing through the pin's input path.
+        gpio::configure(chip::BUS_USART_MAPPING.tx_pin(), PinMode::INPUT_PULL_UP);
         usart::set_tc_irq(USART1, false);
         usart::set_dma_tx(USART1, false);
         dma::disable(dma::Channel::CH4);

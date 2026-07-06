@@ -18,6 +18,10 @@ macro_rules! run {
         const _: () = __OSC_CH32_CFG.wiring.assert_valid();
         // qingke-rt sets WFITOWFE=1; undo it so `wfi` wakes on pending IRQs.
         unsafe { ::qingke::pfic::wfi_to_wfe(false) };
+        // INTSYSCR = 0: no HPE, no nesting — the install_isrs! trampolines do
+        // a full software caller-save because HPE corrupts t0/t2 on this
+        // silicon (see runtime/isr.rs).
+        unsafe { ::core::arch::asm!("csrw 0x804, zero") };
         $crate::runtime::run::__run(__OSC_CH32_CFG, __OSC_CH32_PRE)
     }};
 }
