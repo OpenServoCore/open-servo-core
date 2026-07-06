@@ -148,70 +148,32 @@ pub fn on_deadline_irq() {
     DBG[3].store(d.framing_drop_count, core::sync::atomic::Ordering::Relaxed);
 }
 
-/// Wires osc-ch32 ISR bodies into the vector table via hand-rolled full-save
-/// trampolines, NOT `#[qingke_rt::interrupt]`. The qingke-rt trampoline saves
-/// only `ra` and relies on HPE hardware stacking, which on this silicon
-/// corrupts the interrupted context's t0/t2 (bench-observed here as a
-/// misaligned-load trap in the main loop right after `wfi`; first seen in the
-/// break-framing spike). Full software caller-save (ra, t0–t2, a0–a5 — the
-/// RV32E set) plus `INTSYSCR = 0` (set in `run!`: no HPE, no nesting) removes
-/// the silicon variable entirely. Cost: ISRs no longer preempt each other —
-/// fine while the kernel tick is a stub; revisit nesting with the control
-/// loop.
+/// Wires osc-ch32 ISR bodies into the vector table via the stock
+/// `#[qingke_rt::interrupt]` trampolines (save-ra + HPE hardware stacking,
+/// INTSYSCR=0x3 from qingke-rt's startup).
+///
+/// The "HPE corrupts t0/t2" episode is DEBUNKED (bringup `hpe_matrix`,
+/// 2026-07-06): stock trampolines survived ~8M IRQ crossings across
+/// single/nested/tail-chain/critical-section/100 kHz-storm legs with zero
+/// corruption. The corruptor was `wlink write-mem`, which resumes the hart
+/// with its scratch registers leaked into the running context — t0 = the
+/// poked address, t2 = the poked value (canary-captured verbatim). Debug
+/// pokes perturb t0/t2; the runtime is sound.
 #[macro_export]
 macro_rules! install_isrs {
     () => {
-        ::core::arch::global_asm!(
-            r#"
-            .macro ISR_TRAMPOLINE name, body
-            .section .text.\name
-            .global \name
-            .align 2
-        \name:
-            addi sp, sp, -40
-            sw ra,  0(sp)
-            sw t0,  4(sp)
-            sw t1,  8(sp)
-            sw t2, 12(sp)
-            sw a0, 16(sp)
-            sw a1, 20(sp)
-            sw a2, 24(sp)
-            sw a3, 28(sp)
-            sw a4, 32(sp)
-            sw a5, 36(sp)
-            call \body
-            lw ra,  0(sp)
-            lw t0,  4(sp)
-            lw t1,  8(sp)
-            lw t2, 12(sp)
-            lw a0, 16(sp)
-            lw a1, 20(sp)
-            lw a2, 24(sp)
-            lw a3, 28(sp)
-            lw a4, 32(sp)
-            lw a5, 36(sp)
-            addi sp, sp, 40
-            mret
-            .endm
-
-            ISR_TRAMPOLINE DMA1_CHANNEL1, __osc_isr_adc_dma
-            ISR_TRAMPOLINE USART1, __osc_isr_usart1
-            ISR_TRAMPOLINE SysTick, __osc_isr_deadline
-            "#
-        );
-
-        #[unsafe(no_mangle)]
-        extern "C" fn __osc_isr_adc_dma() {
+        #[::qingke_rt::interrupt]
+        fn DMA1_CHANNEL1() {
             $crate::runtime::isr::on_adc_dma_tc();
         }
 
-        #[unsafe(no_mangle)]
-        extern "C" fn __osc_isr_usart1() {
+        #[::qingke_rt::interrupt]
+        fn USART1() {
             $crate::runtime::isr::on_usart1();
         }
 
-        #[unsafe(no_mangle)]
-        extern "C" fn __osc_isr_deadline() {
+        #[::qingke_rt::interrupt(core)]
+        fn SysTick() {
             $crate::runtime::isr::on_deadline_irq();
         }
     };
