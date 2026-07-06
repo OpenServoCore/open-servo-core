@@ -1,29 +1,22 @@
 use ch32_metapac::{DMA1, USART1};
-use osc_core::{BootMode, ControlIo, ConversionVariables, RegionStorageRaw, Sensors};
+use osc_core::{ControlIo, ConversionVariables, RegionStorageRaw, Sensors};
 
-use crate::hal::{dma, flash, pfic, systick, usart};
+use crate::hal::{pfic, systick, usart};
 use crate::runtime::Drivers;
-use crate::runtime::statics::{KERNEL, SERVICES, SHARED};
+use crate::runtime::statics::{KERNEL, SESSION, SHARED};
 
-/// Configures PFIC priorities and unmasks every DXL-transport + ADC IRQ.
-/// Called once during bringup, after the drivers and statics are installed.
+/// Configures PFIC priorities and unmasks the transport + ADC IRQs. Called
+/// once during bringup, after the drivers and statics are installed.
+///
+/// The transport vectors (USART1 for break/TC, SysTick for the framer
+/// deadlines) share PFIC HIGH so all `&mut` access into the `ServoBus`
+/// composite serializes. The ADC DMA channel sits at LOW. DMA1_CH5 (RX ring)
+/// runs silent circular — no HT/TC IRQ — and CH4/CH3 raise none either.
 pub fn install_irqs() {
     pfic::set_priority(pfic::Interrupt::USART1, pfic::Priority::High);
-    // DMA1_CH5 carries USART1 RX bytes; the HT/TC ISR publishes the byte-
-    // ring head + drives the parser drain (see `on_dma1_ch5`). Shares HIGH
-    // with the other DXL ISRs so parser-state mutations serialize.
-    pfic::set_priority(pfic::Interrupt::DMA1_CHANNEL5, pfic::Priority::High);
-    // DMA1_CH7's TC fires once per TX kickoff (one-transfer MEM→PER write
-    // of the CH4 enable word); the body parks CH7 disabled until the next
-    // arm. Shares HIGH so the park serializes with the arm/cancel sites.
-    pfic::set_priority(pfic::Interrupt::DMA1_CHANNEL7, pfic::Priority::High);
-    // SysTick CMP fires the Fast Last periodic-walk fold body; shares HIGH
-    // so all DXL ISR sources serialize.
     pfic::set_systick_priority(pfic::Priority::High);
     pfic::set_priority(pfic::Interrupt::DMA1_CHANNEL1, pfic::Priority::Low);
     pfic::enable(pfic::Interrupt::USART1);
-    pfic::enable(pfic::Interrupt::DMA1_CHANNEL5);
-    pfic::enable(pfic::Interrupt::DMA1_CHANNEL7);
     pfic::enable_systick();
     pfic::enable(pfic::Interrupt::DMA1_CHANNEL1);
     crate::log::info!("ISRs live");
@@ -52,149 +45,59 @@ pub fn on_adc_dma_tc() {
     }
 }
 
+/// USART1 vector — break detection (RX framing error) and TX arm completion.
+///
+/// SAFETY: the bus driver is installed before this vector unmasks, and USART1
+/// shares PFIC HIGH with SysTick, so no concurrent `&mut` into the composite
+/// is possible. Statement ordering is load-bearing: the break handoff runs
+/// off the RX-error read, then the TC branch does release work first.
 pub fn on_usart1() {
-    on_usart1_rx_errors();
-    on_usart1_idle();
-    on_usart1_tc();
-    on_usart1_status_start();
-}
-
-/// DMA1_CH5 HT/TC handler — byte-ring publish plus parser drain. `on_rx_advance`
-/// clears the channel's HT/TC flags via the `RxDma` provider and refreshes
-/// the codec's `write_seq` from NDTR; `services.poll` then drives the
-/// streaming parser over the freshly-published bytes. Per
-/// `dxl-streaming-rx.md` §3 / §4.4 / §5.2, parser drains on three
-/// triggers (USART1 IDLE, DMA1_CH5 HT, DMA1_CH5 TC); same-handler
-/// drain is what makes the §5.1 chain-slot start rule (observe
-/// predecessor skip-exhaust → start TX inline) hold under low-RDT
-/// timing.
-///
-/// SAFETY: driver installed before this vector unmasks, and DMA1_CH5
-/// shares PFIC HIGH with USART1 / DMA1_CH7 / SysTick so no concurrent `&mut`
-/// into the driver is possible.
-pub fn on_dma1_ch5() {
-    unsafe { Drivers::dxl_uart() }.on_rx_advance();
-    // SAFETY: see fn doc.
-    let services = unsafe { (*SERVICES.get()).assume_init_mut() };
-    services.poll(&SHARED);
-}
-
-fn on_usart1_rx_errors() {
+    // (a) RX errors: an FE marks a break (or mid-frame garble) → the framer
+    // anchors on the just-ringed 0x00 (F2: the DMA write beats the ISR).
     let errs = usart::rx_errors(USART1);
-    if !(errs.ore || errs.pe || errs.fe || errs.ne) {
-        return;
+    if errs.fe || errs.ore || errs.pe || errs.ne {
+        if errs.fe {
+            // SAFETY: see fn doc.
+            unsafe { Drivers::bus() }.on_break();
+        }
+        // SR-then-DR is the only V006 error clear. DMA already drained DR for
+        // the ring byte, so this read cannot steal a payload byte (spike-
+        // validated: NDTR unchanged across the DR read).
+        usart::clear_rx_errors(USART1);
     }
-    // M2 (#33): RX-error counters previously routed through `legacy::dxl::state`
-    // — gone with the legacy drain. M3+ will surface them via the driver's
-    // telemetry surface (TBD). For now the log line is the only visible
-    // record of an RX-error edge.
-    crate::log::info!(
-        "rxerr: ore={} pe={} fe={} ne={}",
-        errs.ore,
-        errs.pe,
-        errs.fe,
-        errs.ne,
-    );
-    // SR-then-DR clear is the only V006 path. Called only from on_usart1
-    // entry — post-IDLE or post-TC, both packet boundaries — so DMA has
-    // already drained DR and the extra DR read can't steal a pending byte.
-    usart::clear_rx_errors(USART1);
-}
 
-/// DMA1_CH7 TC — the TX kickoff's one-word transfer completed, meaning the
-/// hardware just enabled CH4 at the CC4 compare match and TX is streaming.
-/// Park CH7 disabled until the next arm so no stray CC4 match can latch a
-/// kickoff request while the channel sits idle (see `tx_kickoff`'s #134
-/// note). Pure chip-side — no driver routing.
-pub fn on_dma1_ch7() {
-    crate::providers::tx_kickoff::on_kickoff_complete();
-}
-
-fn on_usart1_idle() {
-    if !usart::is_idle(USART1) {
-        return;
-    }
-    usart::clear_idle(USART1);
-    // Backstop for short packets: for packets shorter than half the RX byte
-    // ring the DMA1_CH5 HT/TC ISR never fires, so IDLE is the last chance to
-    // drain them. `on_rx_idle` stashes the `(now, LineIdle)` drain-ISR
-    // reference for the codec's Crc-time packet-end estimate; the parser
-    // drain itself runs via `services.poll` below — IDLE is one of the three
-    // parser-drive triggers per `dxl-streaming-rx.md` §3 / §4.4. IDLE-derived
-    // timing per [[no_idle_timing]] only selects the packet-end formula, it
-    // never measures the wire end.
-    // SAFETY: see `on_dma1_ch5`.
-    unsafe { Drivers::dxl_uart() }.on_rx_idle();
-    // SAFETY: see `on_dma1_ch5`.
-    let services = unsafe { (*SERVICES.get()).assume_init_mut() };
-    services.poll(&SHARED);
-}
-
-fn on_usart1_tc() {
-    // TCIE gates arbitration: the peripheral would not have raised this vector
-    // for TC unless the scheduler armed TCIE=1. The shared USART1 vector fans
-    // in RX-errors / IDLE / TC — a foreign source can enter here with TC=1
-    // stale from silicon reset (STATR reset = 0xC0). Gate on TCIE so a stale
-    // TC bit at boot does not walk into `on_tx_complete` and disarm the first
-    // reply's SysTick handoff.
-    if !usart::is_tcie(USART1) || !usart::is_tc(USART1) {
-        return;
-    }
-    // Guard against spurious mid-stream TC: a per-byte TC oscillation can
-    // fire ISR before CH4 has DMA'd all bytes. Acting on it would cut the
-    // stream short. NDTR>0 means TX still in progress — clear flag, keep
-    // TCIE on, wait for real end.
-    if dma::remaining(dma::Channel::CH4) != 0 {
+    // (b) TC: an armed TX arm drained (shifter empty). TCIE gates arbitration
+    // — the shared vector fans in RX-errors + TC, and a foreign source could
+    // enter with a stale reset-value TC. Gate on TCIE so it can't walk into
+    // on_tx_complete before the first reply is armed.
+    if usart::is_tcie(USART1) && usart::is_tc(USART1) {
         usart::clear_tc(USART1);
-        return;
-    }
-    usart::clear_tc(USART1);
-    // SAFETY: see `on_dma1_ch5`.
-    let pending_reboot = unsafe { Drivers::dxl_uart() }.on_tx_complete();
-    if let Some(mode) = pending_reboot {
-        flash::set_boot_mode(matches!(mode, BootMode::Bootloader));
-        pfic::software_reset();
+        // SAFETY: see fn doc.
+        unsafe { Drivers::bus() }.on_tx_complete();
     }
 }
 
-/// Per-byte RX wake — demuxed driver-side to the drift sampler and/or a
-/// deferred FAST slot k > 0's status-start observation. Gated on
-/// CTLR1.RXNEIE — the watch window the RxDma provider opens for either
-/// consumer — NOT on `STATR.RXNE`, which always reads 0 in DMA-RX mode
-/// (DMA wins the clear race; see the provider doc). While the window is
-/// open every USART1 vector entry routes one wake; spurious entries
-/// (residual-drain race, IDLE sharing the vector) are qualified inside
-/// `on_rx_byte_wake`, so no flag inspection happens here. Runs after the
-/// existing IDLE/TC bodies — additive per [[isr-ordering]].
-fn on_usart1_status_start() {
-    if !usart::is_rxneie(USART1) {
-        return;
-    }
-    // SAFETY: see `on_dma1_ch5`.
-    unsafe { Drivers::dxl_uart() }.on_rx_byte_wake();
-}
-
-/// SysTick CMP-match — a long-horizon scheduling deadline arrived. Two
-/// consumers share the CMP: the TX-scheduler handoff (multi-wrap-distance
-/// arms that a direct TIM2 compare can't span) and the Fast Last periodic-walk
-/// fold body. The driver's `on_schedule_due` demuxes; if the TX scheduler
-/// armed the match it consumes, otherwise the fold body runs. CNTIF must
-/// be cleared at entry: the final fold body returns without re-arming and
-/// a stale-but-latched CNTIF would re-fire the IRQ the moment we return.
+/// SysTick CMP-match — one or more framer/chain/rescue deadlines are due.
+/// CNTIF is cleared first: a final deadline body returns without re-arming
+/// and a stale-but-latched CNTIF would re-fire the IRQ the moment we return.
+/// The dispatcher is built per-call from the shared table + the session.
 ///
-/// SAFETY: see `on_dma1_ch5` — SysTick shares PFIC HIGH with USART1 /
-/// DMA1_CH5 / DMA1_CH7 so no concurrent `&mut` into the driver is possible.
+/// SAFETY: SysTick shares PFIC HIGH with USART1, so no concurrent `&mut` into
+/// the composite (or the session) is possible.
 pub fn on_systick() {
     systick::clear_match();
-    unsafe { Drivers::dxl_uart() }.on_schedule_due();
+    // SAFETY: see fn doc — SESSION is installed before this vector unmasks.
+    let session = unsafe { (*SESSION.get()).assume_init_mut() };
+    let mut dispatcher = session.dispatcher(&SHARED);
+    // SAFETY: see fn doc.
+    unsafe { Drivers::bus() }.on_deadline(&mut dispatcher);
 }
 
 /// Wires osc-ch32 ISR bodies into the vector table. Caller must depend on
-/// `qingke-rt`. Every ISR opts out of `.highcode` via
-/// `#[interrupt(lowcode)]` (upstream qingke-rt API): nothing CPU-driven
-/// sits on the wire deadline anymore — the TX start is a pure-hardware
-/// CC4→DMA kickoff — and per-grid-step / per-packet-end slack absorbs any
-/// flash-fetch jitter in the remaining bodies.
+/// `qingke-rt`. Every ISR opts out of `.highcode` via `#[interrupt(lowcode)]`:
+/// the break makes reply timing non-critical (no hardware-timed kickoff on the
+/// wire deadline), and the framer's per-deadline slack absorbs any flash-fetch
+/// jitter in the remaining bodies.
 #[macro_export]
 macro_rules! install_isrs {
     () => {
@@ -206,16 +109,6 @@ macro_rules! install_isrs {
         #[::qingke_rt::interrupt(lowcode)]
         fn USART1() {
             $crate::runtime::isr::on_usart1();
-        }
-
-        #[::qingke_rt::interrupt(lowcode)]
-        fn DMA1_CHANNEL5() {
-            $crate::runtime::isr::on_dma1_ch5();
-        }
-
-        #[::qingke_rt::interrupt(lowcode)]
-        fn DMA1_CHANNEL7() {
-            $crate::runtime::isr::on_dma1_ch7();
         }
 
         #[::qingke_rt::interrupt(core, lowcode)]

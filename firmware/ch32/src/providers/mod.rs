@@ -2,15 +2,11 @@
 //! over HAL primitives. Drivers depend on providers only via the type
 //! parameter; this folder is the only place that talks to both layers.
 
-pub mod clock_trim;
+pub mod crc;
+pub mod deadline;
 pub mod digital_out;
-pub mod dxl_crc;
-pub mod dxl_tx_bus;
-pub mod dxl_tx_scheduler;
-pub mod fast_last_scheduler;
+pub mod line;
 pub mod monotonic;
-pub mod rx_dma;
-pub mod telemetry;
-pub mod tx_kickoff;
+pub mod ring;
+pub mod tx_wire;
 pub mod usart_baud;
-pub mod wire_clock;

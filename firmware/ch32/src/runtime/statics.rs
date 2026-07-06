@@ -1,30 +1,29 @@
 use core::cell::SyncUnsafeCell;
 use core::mem::MaybeUninit;
-use osc_core::{Kernel, RegionStorageRaw, Services, Shared};
+use osc_core::{Kernel, RegionStorageRaw, Session, Shared};
 
 use crate::control::Ch32ControlIo;
-use crate::services::Ch32Bus;
 
 pub static SHARED: Shared = Shared::new();
 
-/// Initialised by `install`; DMA TC IRQ is PFIC-masked until then.
+/// Initialised by `install`; the ADC DMA TC IRQ is PFIC-masked until then.
 pub(crate) static KERNEL: SyncUnsafeCell<MaybeUninit<Kernel<Ch32ControlIo>>> =
     SyncUnsafeCell::new(MaybeUninit::uninit());
 
-/// Initialised by `install`; `&mut` access lives on the DXL ISR family
-/// (DMA1_CH7 HT/TC and USART1 IDLE — the parser-drain triggers per
-/// `dxl-streaming-rx.md` §3 / §4.4 / §5.2). All DXL-side ISRs share PFIC
-/// HIGH so same-priority no-preemption serializes the access; the main
-/// loop never reaches in.
-pub(crate) static SERVICES: SyncUnsafeCell<MaybeUninit<Services<Ch32Bus>>> =
+/// The per-servo dispatch session (HOLD-write staging). The SysTick ISR
+/// borrows it to build a `Dispatcher` each time the framer hands up a
+/// decoded request. `&mut` access lives on SysTick (PFIC HIGH), which shares
+/// HIGH with USART1 so the two transport ISRs never preempt each other; the
+/// main loop never reaches in.
+pub(crate) static SESSION: SyncUnsafeCell<MaybeUninit<Session>> =
     SyncUnsafeCell::new(MaybeUninit::uninit());
 
 pub fn install(io: Ch32ControlIo) {
     unsafe {
         (*KERNEL.get()).write(Kernel::new(io));
-        (*SERVICES.get()).write(Services::new(Ch32Bus::new()));
+        (*SESSION.get()).write(Session::new());
     }
-    crate::log::info!("kernel + services installed");
+    crate::log::info!("kernel + session installed");
 }
 
 /// `read_volatile` is load-bearing: a plain read gets hoisted out of spin loops

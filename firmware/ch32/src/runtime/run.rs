@@ -2,8 +2,11 @@
 //! the `BoardConfig` literal at compile time, calls into bringup, installs
 //! the kernel + IRQs, and enters the main loop.
 
+use osc_core::BootMode;
+
 use crate::cfg::{BoardConfig, Precomputed};
 use crate::control::Ch32ControlIo;
+use crate::hal::{flash, pfic};
 
 /// Const-asserts pin-uniqueness on the `BoardConfig` literal, then runs.
 #[macro_export]
@@ -25,16 +28,24 @@ pub fn __run(cfg: BoardConfig, pre: Precomputed) -> ! {
     crate::runtime::statics::install(io);
     crate::runtime::isr::install_irqs();
     loop {
-        // DXL parser drain runs on the three RX triggers (DMA1_CH7 HT/TC,
-        // USART1 IDLE) per `dxl-streaming-rx.md` §3 / §4.4 / §5.2 — see
-        // `runtime::isr::on_dma1_ch7` / `on_usart1_idle`. Main loop owns
-        // only LED housekeeping + sleep.
+        // Transport RX/TX/deadlines are ISR-driven (USART1 + SysTick, PFIC
+        // HIGH). Main loop owns LED housekeeping, the deferred-reboot poll,
+        // and sleep.
         // SAFETY: stat_led installed in bringup; main-loop sole accessor.
         unsafe { crate::runtime::Drivers::stat_led() }.poll();
-        // M2 (#33) → M5+ regression: the stat LED's TX-activity blink moved
-        // here via `legacy::dxl::tx_activity::poll` against a legacy TX
-        // counter. The driver doesn't expose a TX-tick accessor yet; restore
-        // when M3 (#5) lands and a driver-side counter is wired.
+
+        // Deferred reboot (§9.5), honored after the ack has drained. The
+        // critical section is load-bearing: `bus()` is otherwise `&mut`-owned
+        // by the HIGH transport ISRs, so masking them is what makes this
+        // main-loop reach-in non-aliasing. Flash writes stay out of the ISR
+        // bodies — the stall is lethal under a live control loop.
+        let reboot: Option<BootMode> =
+            critical_section::with(|_| unsafe { crate::runtime::Drivers::bus() }.take_reboot());
+        if let Some(mode) = reboot {
+            flash::set_boot_mode(matches!(mode, BootMode::Bootloader));
+            pfic::software_reset();
+        }
+
         riscv::asm::wfi();
     }
 }

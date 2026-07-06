@@ -50,6 +50,13 @@ pub fn configure(pin: Pin, mode: PinMode) {
     }
 }
 
+/// Raw input level of a pin (INDR read); `true` iff the pin reads low.
+#[inline]
+pub fn is_low(pin: Pin) -> bool {
+    let mask = 1u32 << pin.pin_number();
+    pin.gpio_regs().indr().read().0 & mask == 0
+}
+
 #[inline]
 pub fn set_level(pin: Pin, level: Level) {
     if level == Level::High {

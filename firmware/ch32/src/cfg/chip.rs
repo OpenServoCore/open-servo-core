@@ -2,17 +2,15 @@
 //! board-tunable; anything here is determined by the chip + this board's
 //! schematic and lives in one place.
 
-use osc_drivers::Level;
+use crate::hal::{Pin, Tim1Mapping, UsartMapping, adc, opa, timer};
 
-use crate::hal::{Pin, Tim1Mapping, Tim2Mapping, UsartMapping, adc, gpio::Pull, opa, timer};
+// === osc-native bus (USART1 + HDSEL on PC0, single-wire) ===
 
-// === DXL transport ===
-
-pub const DXL_USART_MAPPING: UsartMapping = UsartMapping::Usart1Remap3;
-pub const DXL_TIM2_MAPPING: Tim2Mapping = Tim2Mapping::Remap2;
-pub const DXL_TX_EN_PIN: Pin = DXL_TIM2_MAPPING.ch2_pin();
-pub const DXL_TX_EN_LEVEL: Level = Level::High;
-pub const DXL_RX_PULL: Pull = Pull::None;
+pub const BUS_USART_MAPPING: UsartMapping = UsartMapping::Usart1Remap3;
+/// Legacy 74LVC2G241 direction pin (PC2). The buffer is bypassed on this
+/// board — TX is wired straight to the data line — so this pin is parked LOW
+/// once at init to hold the buffer disabled forever, then never touched.
+pub const BUS_BUF_DISABLE_PIN: Pin = Pin::PC2;
 
 // === OPA current sense ===
 

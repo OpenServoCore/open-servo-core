@@ -12,6 +12,32 @@ pub fn init(r: Regs, brr: u32) {
     r.ctlr1().modify(|w| w.set_ue(true));
 }
 
+/// osc-native single-wire bring-up: TE/RE, then HDSEL + RX-DMA + error IRQ in
+/// CTLR3, BRR, and UE last (HDSEL must latch before UE, per the break-framing
+/// spike). No IDLE interrupt — the framer sources all timing from the ring
+/// cursor and SysTick, never from IDLE.
+#[inline]
+pub fn init_bus(r: Regs, brr: u32) {
+    r.ctlr1().modify(|w| {
+        w.set_te(true);
+        w.set_re(true);
+    });
+    r.ctlr3().modify(|w| {
+        w.set_hdsel(true);
+        w.set_dmar(true);
+        w.set_eie(true);
+    });
+    r.brr().write_value(ch32_metapac::usart::regs::Brr(brr));
+    r.ctlr1().modify(|w| w.set_ue(true));
+}
+
+/// Send a UART break (SBK). Self-times over the break's stop bit — set it and
+/// return; the caller never spins (§7).
+#[inline(always)]
+pub fn send_break(r: Regs) {
+    r.ctlr1().modify(|w| w.set_sbk(true));
+}
+
 /// Bounces UE around a BRR change. Caller must ensure no TX/RX is in flight —
 /// retuning mid-byte will garbage the wire.
 #[inline]

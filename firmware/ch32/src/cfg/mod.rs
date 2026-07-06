@@ -36,7 +36,7 @@ impl Precomputed {
             scales: Scales::new(&cfg.calibration, gain_factor),
             pwm_psc,
             pwm_arr,
-            usart_brr: usart_baud::brr_for(cfg.defaults.dxl_baud),
+            usart_brr: usart_baud::brr_for(cfg.defaults.baud),
         }
     }
 }

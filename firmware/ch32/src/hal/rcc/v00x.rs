@@ -59,6 +59,11 @@ pub fn enable_usart1() {
     RCC.pb2pcenr().modify(|w| w.set_usart1en(true));
 }
 
+#[inline]
+pub fn enable_spi1() {
+    RCC.pb2pcenr().modify(|w| w.set_spi1en(true));
+}
+
 /// HSITRIM[4:0] reset value — the V006 factory mid-trim default.
 const HSITRIM_DEFAULT: i16 = 16;
 /// HSITRIM[4:0] valid range upper bound.

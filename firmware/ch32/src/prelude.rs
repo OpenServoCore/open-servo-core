@@ -1,5 +1,4 @@
 pub use osc_drivers::Level;
-pub use osc_drivers::dxl::DEFAULT_RDT_2US;
 
 pub use crate::cfg::{
     AdcPins, AnalogChannel, BoardConfig, BoardWiring, Calibration, CurrentSenseConfig, DigitalPin,

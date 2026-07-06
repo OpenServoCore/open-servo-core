@@ -1,6 +1,5 @@
-use super::registry::DXL_RX_BUF_LEN;
 use ch32_metapac::{ADC, adc::vals::Extsel, dma::vals::Dir};
-use osc_core::{ConfigDefaults, RegionStorage};
+use osc_core::ConfigDefaults;
 use osc_drivers::Level;
 
 use crate::control::sensors::scan::{ADC_DMA_BUF, ADC_DMA_BUF_LEN, ADC_SCAN_LEN, ADC_SENSOR_COUNT};
@@ -9,6 +8,8 @@ use crate::hal::{
     gpio::{self, PinMode},
     opa, rcc, systick, timer, usart,
 };
+use crate::providers::crc::Crc;
+use crate::providers::ring::RxRing;
 use crate::runtime::Drivers;
 use crate::runtime::statics::SHARED;
 
@@ -29,38 +30,18 @@ pub fn bringup(
     enable_clocks_and_remaps(wiring);
     crate::log::debug!("clocks + remaps configured");
 
-    // Must run before `configure_pins`: TIM2 OC2M=Force-inactive sets the
-    // idle level on PC2's CC2 output, so the moment AF mode latches the pin
-    // sees the inactive level instead of an indeterminate window. CC3 has no
-    // pin output — initialized here so the IRQ stays masked at boot.
-    bring_up_tim2_oc();
     configure_pins(wiring);
-
-    // Sole writer to CONFIG: pre-IRQ, pre-`Drivers::install`. The driver's
-    // own-id filter and the dispatcher's snapshot both read `c.comms.id`;
-    // seeding before install lets `Drivers::install` pick up the resolved
-    // ID so the two layers agree from the first poll.
-    SHARED.table.seed_config_defaults(defaults);
-
-    // Override `ConfigDefaults::dxl_id` with a UID-derived ID so a freshly
-    // flashed chip plugged into an existing bus doesn't collide on the
-    // default. EEPROM persistence (when landed) layers on top — it loads
-    // *after* this and wins if a stored ID is present.
-    let dxl_id = derive_dxl_id_from_uid();
-    crate::log::info!("seed comms.id={} from UID", dxl_id);
-    SHARED.table.with_mut(|t| {
-        t.config.comms.id = dxl_id;
-    });
-
-    // SAFETY: bringup-only, pre-IRQ; sole writer.
-    unsafe { Drivers::install(wiring, defaults, dxl_id) };
     crate::log::debug!("gpio configured");
+
+    // Sole writer to CONFIG: pre-IRQ, pre-`Drivers::install`. Seeds the
+    // dispatcher's view of id/baud/deadline from the board defaults.
+    SHARED.table.seed_config_defaults(defaults);
 
     bring_up_analog_chain(&wiring.current_sense);
     crate::log::debug!("opa settled");
 
-    // SysTick drives `Monotonic` (LED blinker) and the Fast Last CMP
-    // scheduler. Initialize *after* `bring_up_analog_chain` because
+    // SysTick drives both `Monotonic` (LED blinker) and the transport
+    // deadline compare. Initialize *after* `bring_up_analog_chain` because
     // `delay_ms` reinitializes SYSTICK on every call; doing it here puts
     // SysTick in a known state (CMP=u32::MAX, CNT=0, STE=on, STIE=off)
     // independent of any further `delay_ms` use.
@@ -75,8 +56,14 @@ pub fn bringup(
         shunt_bias_raw,
     );
 
-    bring_up_dxl(pre.usart_brr);
-    crate::log::debug!("dxl usart + dma rx armed");
+    bring_up_bus(pre.usart_brr);
+    crate::log::debug!("bus usart + rx ring + crc engine armed");
+
+    // Drivers::install runs after the bus peripherals are live: `ServoBus
+    // ::new` applies `defaults.baud` to the already-configured BRR.
+    // SAFETY: bringup-only, pre-IRQ; sole writer.
+    unsafe { Drivers::install(wiring, defaults) };
+    crate::log::debug!("drivers installed");
 
     start_center_aligned_pwm(pre.pwm_psc, pre.pwm_arr);
     crate::log::debug!(
@@ -90,30 +77,6 @@ pub fn bringup(
     super::diag::dump_init_regs();
 
     BringupResult { shunt_bias_raw }
-}
-
-/// XOR-fold the 12-byte chip UID (`ESIG_UNIID1..3` at 0x1FFFF7E8/EC/F0, per
-/// RM §19.2) into a single byte, then map to a valid DXL ID in [1, 252] —
-/// avoids 0xFD (reserved), 0xFE (broadcast), 0xFF (invalid). Lets identical
-/// firmware images on a shared bus seed unique IDs without persistence;
-/// EEPROM-stored IDs (when landed) override this in a later boot phase.
-fn derive_dxl_id_from_uid() -> u8 {
-    const ESIG_UNIID_BASE: *const u32 = 0x1FFFF7E8 as *const u32;
-    // SAFETY: ESIG block is ROM-mapped, always present, 4-byte aligned.
-    let words = unsafe {
-        [
-            core::ptr::read_volatile(ESIG_UNIID_BASE),
-            core::ptr::read_volatile(ESIG_UNIID_BASE.add(1)),
-            core::ptr::read_volatile(ESIG_UNIID_BASE.add(2)),
-        ]
-    };
-    let mut fold: u8 = 0;
-    for w in words {
-        for shift in (0..32).step_by(8) {
-            fold ^= (w >> shift) as u8;
-        }
-    }
-    1u8 + (fold % 252)
 }
 
 // Order must mirror the scan tail in `configure_adc_dma_scan`.
@@ -138,20 +101,17 @@ fn enable_clocks_and_remaps(w: &BoardWiring) {
     for ch in sensor_channels(&w.sensors) {
         rcc::enable_gpio(ch.pin().port_index());
     }
-    rcc::enable_gpio(chip::DXL_USART_MAPPING.tx_pin().port_index());
-    rcc::enable_gpio(chip::DXL_USART_MAPPING.rx_pin().port_index());
-    rcc::enable_gpio(chip::DXL_TX_EN_PIN.port_index());
+    rcc::enable_gpio(chip::BUS_USART_MAPPING.tx_pin().port_index());
+    rcc::enable_gpio(chip::BUS_BUF_DISABLE_PIN.port_index());
     rcc::enable_tim1();
-    rcc::enable_tim2();
     rcc::enable_adc1();
     rcc::enable_dma1();
     rcc::enable_usart1();
 
     afio::set_tim_remap(1, chip::MOTOR_TIM1_MAPPING.remap_value());
-    afio::set_tim_remap(2, chip::DXL_TIM2_MAPPING.remap_value());
     afio::set_usart_remap(
-        chip::DXL_USART_MAPPING.peripheral_index(),
-        chip::DXL_USART_MAPPING.remap_value(),
+        chip::BUS_USART_MAPPING.peripheral_index(),
+        chip::BUS_USART_MAPPING.remap_value(),
     );
 }
 
@@ -173,21 +133,19 @@ fn configure_pins(w: &BoardWiring) {
         gpio::configure(ch.pin(), PinMode::ANALOG);
     }
 
-    configure_dxl_pins();
+    configure_bus_pins();
 }
 
-fn configure_dxl_pins() {
-    gpio::configure(chip::DXL_USART_MAPPING.tx_pin(), PinMode::AF_PUSH_PULL);
-    gpio::configure(
-        chip::DXL_USART_MAPPING.rx_pin(),
-        PinMode::input_pull(chip::DXL_RX_PULL),
-    );
-    gpio::configure(chip::DXL_TX_EN_PIN, PinMode::AF_PUSH_PULL);
-}
-
-fn bring_up_tim2_oc() {
-    let tx_active_high = matches!(chip::DXL_TX_EN_LEVEL, Level::High);
-    timer::init_tim2_tx_oc_channels(tx_active_high);
+fn configure_bus_pins() {
+    // PC0 idle: AF open-drain — the wire is released, the pull-up holds mark;
+    // TxWire flips it to AF push-pull for the DUT's own TX window (§2, F8).
+    gpio::configure(chip::BUS_USART_MAPPING.tx_pin(), PinMode::AF_OPEN_DRAIN);
+    // The 74LVC2G241 direction buffer is bypassed on this board: park its
+    // disable pin LOW once and never touch it again (§2, F7).
+    gpio::configure(chip::BUS_BUF_DISABLE_PIN, PinMode::OUTPUT_PUSH_PULL);
+    gpio::set_level(chip::BUS_BUF_DISABLE_PIN, Level::Low);
+    // The dedicated RX pin (PC1) is left unconfigured — HDSEL ties RX to the
+    // TX pin internally and ignores it.
 }
 
 fn bring_up_analog_chain(cs: &CurrentSenseConfig) {
@@ -245,68 +203,38 @@ fn configure_adc_dma_scan(sensors: &AdcPins) {
     dma::enable(dma::Channel::CH1);
 }
 
-fn bring_up_dxl(brr: u32) {
-    let regs = chip::DXL_USART_MAPPING.regs();
-    usart::init(regs, brr);
+/// osc-native transport bring-up: USART1 in single-wire HDSEL mode, the
+/// circular RX ring on DMA1_CH5 (armed once), and the SPI-CRC engine. TX arms
+/// (DMA1_CH4) are configured per-arm by `TxWire`, so no channel init here.
+fn bring_up_bus(brr: u32) {
+    let regs = chip::BUS_USART_MAPPING.regs();
 
-    // HT/TC enabled for byte-ring publish
-    // (`docs/dxl-hw-timed-transport.md` §9): the ISR is publish-only (clear
-    // flags, advance `write_seq`), bounding the codec's view-lag to
-    // `RX_BUF_LEN/2` under long byte-skip windows.
-    let dma_cfg = dma::Config {
+    // Arm the RX ring before UE/DMAR come up so the channel is live the
+    // moment the first byte's DMA request fires (spike ordering).
+    let rx_cfg = dma::Config {
         dir: Dir::FROMPERIPHERAL,
         circ: true,
         pinc: false,
         minc: true,
         size: dma::Size::BITS8,
-        htie: true,
-        tcie: true,
-        pl: dma::Pl::LOW,
-    };
-    // SAFETY: `Drivers::install` ran in `run()` before `bring_up_dxl`; the
-    // returned address points into the driver's registry cell and stays
-    // valid for the lifetime of the program. The driver yields `usize`
-    // (chip-agnostic); we narrow to the V006 DMA-MAR width here.
-    let rx_addr = unsafe { Drivers::dxl_uart() }.rx_buf_addr() as u32;
-    dma::configure(
-        dma::Channel::CH5,
-        &dma_cfg,
-        usart::data_addr(regs),
-        rx_addr,
-        DXL_RX_BUF_LEN as u16,
-    );
-    dma::enable(dma::Channel::CH5);
-    usart::set_dma_rx(regs, true);
-
-    // DMA1_CH4 source is the driver's TX buffer — M2 (#33) replaces the
-    // legacy DXL_TX_BUF static. The channel stays armed but disabled;
-    // `DxlTxScheduler` (M3 #5) will enable it per-fire alongside the
-    // hardware TX_EN on TIM2_CH2. Until M3, the channel never enables and
-    // wire TX is silent by design.
-    let tx_cfg = dma::Config {
-        dir: Dir::FROMMEMORY,
-        circ: false,
-        pinc: false,
-        minc: true,
-        size: dma::Size::BITS8,
         htie: false,
         tcie: false,
-        pl: dma::Pl::LOW,
+        pl: dma::Pl::HIGH,
     };
-    let tx_src = unsafe { Drivers::dxl_uart() }.tx_buf_addr() as u32;
     dma::configure(
-        dma::Channel::CH4,
-        &tx_cfg,
+        dma::Channel::CH5,
+        &rx_cfg,
         usart::data_addr(regs),
-        tx_src,
-        0,
+        RxRing::base_addr(),
+        RxRing::LEN as u16,
     );
+    dma::enable(dma::Channel::CH5);
 
-    usart::set_idle_irq(regs, true);
+    // TE/RE, then HDSEL + RX-DMA + error IRQ, BRR, UE last. No IDLE IRQ.
+    usart::init_bus(regs, brr);
 
-    // TIM2_CH4 is a permanent pin-less output compare feeding the DMA1_CH7
-    // TX kickoff; the scheduler writes CCR4 per fire (`providers::tx_kickoff`).
-    timer::init_tim2_ch4_oc_kickoff();
+    // One-shot SPI-CRC engine setup (clock-gate + config; held live).
+    Crc::init();
 }
 
 fn start_center_aligned_pwm(psc: u16, arr: u16) {
