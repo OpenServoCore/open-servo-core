@@ -1,17 +1,29 @@
-//! Deadline provider (osc-native §4.1) — binds `Deadline` to the SysTick
-//! compare. SysTick's free-running CNT is also the `Monotonic` time source
-//! for the LED; the transport owns only the CMP + STIE compare on top of it.
+//! Deadline provider (osc-native §4.1) — `now()` from SysTick's free-running
+//! CNT, the compare from TIM2 CH4 (pin-less frozen OC, CC4IE interrupt).
+//!
+//! SysTick's own compare is NOT used: bench characterization showed its
+//! CNTIF does not reliably latch on an upward CNT crossing (armed CMP
+//! provably crossed with SR staying 0). TIM2's CC compares carried the DXL
+//! scheduler for months at these timescales — same 48 MHz domain, and
+//! `init_tim2_ch4_oc_kickoff`'s co-zero locks TIM2.CNT to SysTick's low 16
+//! bits, so a u32 deadline truncates straight into CCR4.
+//!
+//! TIM2 is 16-bit: deadlines beyond [`HORIZON`] are reached by hopping —
+//! an early wake is harmless by design (the mux due-checks against fresh
+//! `now` and re-arms, §4.1).
 
-use osc_drivers::traits::bus;
+use osc_drivers::traits::bus::{self, tick_reached};
 
-use crate::hal::systick;
+use crate::hal::{systick, timer};
 
-/// Re-aim distance when a compare write lands behind the running counter:
-/// far enough that the next write beats the counter, close enough to keep
-/// the wake effectively immediate (~330 ns at 48 MHz).
-const SET_RETRY_TICKS: u32 = 16;
+/// Hop distance for far deadlines: well under the 16-bit wrap so a hop can
+/// never alias, comfortably over any near-deadline (683 µs at 48 MHz).
+const HORIZON: u32 = 0x8000;
 
-/// Production binding to the SysTick compare on HCLK (48 MHz).
+/// Re-aim lead when an arm lands behind the running counter (~330 ns).
+const SET_RETRY_TICKS: u16 = 16;
+
+/// Production binding: SysTick CNT (time) + TIM2 CC4 (compare) on HCLK.
 pub struct Deadline;
 
 impl bus::Deadline for Deadline {
@@ -23,28 +35,35 @@ impl bus::Deadline for Deadline {
     }
 
     fn set(&mut self, at: u32) {
-        // SysTick's compare is equality-only: a CMP the counter has already
-        // passed (a stale slot re-armed by the mux, or CNT crossing `at`
-        // during these writes) never matches until the 89 s wrap. Re-aim a
-        // hair ahead until the target is provably in the future or the match
-        // already latched — the ISR due-checks against the mux slots, so a
-        // slightly-late wake is always correct (§4.1 wakes are verified).
-        crate::log::trace!("dl.set at={}", at);
-        let mut target = at;
-        loop {
-            systick::set_cmp(target);
-            let now = systick::ticks();
-            if !bus::tick_reached(now, target) || systick::matched() {
-                break;
+        let now = systick::ticks();
+        let delta = at.wrapping_sub(now);
+        let ccr = if delta >= HORIZON {
+            timer::tim2_cnt().wrapping_add(HORIZON as u16)
+        } else {
+            at as u16
+        };
+        timer::set_tim2_ccr4(ccr);
+        // A stale match from a previous arm would fire the ISR immediately;
+        // the mux would just re-arm, but clearing keeps wakes purposeful.
+        timer::clear_tim2_cc4_flag();
+        timer::set_tim2_cc4_irq(true);
+        // TIM2 compare is equality-only too: if CNT slipped past `ccr`
+        // between the reads (a past `at`, or a long preemption), re-aim a
+        // hair ahead until the match is pending or provably in the future —
+        // the DXL scheduler's recheck pattern.
+        if delta < HORIZON {
+            loop {
+                let n2 = systick::ticks();
+                if !tick_reached(n2, at) || timer::tim2_cc4_matched() {
+                    break;
+                }
+                timer::set_tim2_ccr4((n2 as u16).wrapping_add(SET_RETRY_TICKS));
             }
-            target = now.wrapping_add(SET_RETRY_TICKS);
         }
-        systick::set_irq(true);
     }
 
     #[inline(always)]
     fn cancel(&mut self) {
-        crate::log::trace!("dl.cancel");
-        systick::set_irq(false);
+        timer::set_tim2_cc4_irq(false);
     }
 }

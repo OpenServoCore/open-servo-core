@@ -108,6 +108,19 @@ pub fn init_tim2_ch4_oc_kickoff() {
     TIM2.ctlr1().modify(|w| w.set_cen(true));
 }
 
+/// Gate the CC4 compare-match interrupt (CC4IE) — the osc-native deadline
+/// engine's wake source (the DXL era used the CC4DE DMA request instead).
+#[inline]
+pub fn set_tim2_cc4_irq(enable: bool) {
+    TIM2.dmaintenr().modify(|w| w.set_ccie(3, enable));
+}
+
+/// CC4 compare matched since the last clear.
+#[inline]
+pub fn tim2_cc4_matched() -> bool {
+    TIM2.intfr().read().ccif(3)
+}
+
 /// Gate the CC4 compare event's DMA request line (CC4DE). The kickoff arm
 /// enables it LAST — after CH7 is live — and the park paths disable it
 /// first: a request pulsed while CC4DE is on LATCHES in the DMA controller

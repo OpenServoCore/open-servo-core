@@ -211,6 +211,10 @@ fn configure_adc_dma_scan(sensors: &AdcPins) {
 /// circular RX ring on DMA1_CH5 (armed once), and the SPI-CRC engine. TX arms
 /// (DMA1_CH4) are configured per-arm by `TxWire`, so no channel init here.
 fn bring_up_bus(brr: u32) {
+    // Deadline engine: TIM2 free-run + pin-less CH4 OC (co-zeroed with
+    // SysTick so a u32 deadline truncates into CCR4 — see the provider).
+    rcc::enable_tim2();
+    timer::init_tim2_ch4_oc_kickoff();
     let regs = chip::BUS_USART_MAPPING.regs();
 
     // Arm the RX ring before UE/DMAR come up so the channel is live the

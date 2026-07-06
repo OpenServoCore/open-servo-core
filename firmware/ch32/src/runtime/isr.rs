@@ -1,7 +1,7 @@
 use ch32_metapac::{DMA1, USART1};
 use osc_core::{ControlIo, ConversionVariables, RegionStorageRaw, Sensors};
 
-use crate::hal::{pfic, systick, usart};
+use crate::hal::{pfic, usart};
 use crate::runtime::Drivers;
 use crate::runtime::statics::{KERNEL, SESSION, SHARED};
 
@@ -18,10 +18,10 @@ const FE_DMA_SETTLE_SPINS: u32 = 64;
 
 pub fn install_irqs() {
     pfic::set_priority(pfic::Interrupt::USART1, pfic::Priority::High);
-    pfic::set_systick_priority(pfic::Priority::High);
+    pfic::set_priority(pfic::Interrupt::TIM2, pfic::Priority::High);
     pfic::set_priority(pfic::Interrupt::DMA1_CHANNEL1, pfic::Priority::Low);
     pfic::enable(pfic::Interrupt::USART1);
-    pfic::enable_systick();
+    pfic::enable(pfic::Interrupt::TIM2);
     pfic::enable(pfic::Interrupt::DMA1_CHANNEL1);
     crate::log::info!("ISRs live");
 }
@@ -109,17 +109,17 @@ pub fn on_usart1() {
     }
 }
 
-/// SysTick CMP-match — one or more framer/chain/rescue deadlines are due.
-/// CNTIF is cleared first: a final deadline body returns without re-arming
-/// and a stale-but-latched CNTIF would re-fire the IRQ the moment we return.
+/// TIM2 CC4 compare — one or more framer/chain/rescue deadlines are due.
+/// CC4IF is cleared first: a final deadline body returns without re-arming
+/// and a stale-but-latched flag would re-fire the IRQ the moment we return.
 /// The dispatcher is built per-call from the shared table + the session.
 ///
-/// SAFETY: SysTick shares PFIC HIGH with USART1, so no concurrent `&mut` into
+/// SAFETY: TIM2 shares PFIC HIGH with USART1, so no concurrent `&mut` into
 /// the composite (or the session) is possible.
-pub fn on_systick() {
-    crate::log::trace!("systick isr");
+pub fn on_deadline_irq() {
+    crate::log::trace!("deadline isr");
     dbg_bump(1);
-    systick::clear_match();
+    crate::hal::timer::clear_tim2_cc4_flag();
     // SAFETY: see fn doc — SESSION is installed before this vector unmasks.
     let session = unsafe { (*SESSION.get()).assume_init_mut() };
     let mut dispatcher = session.dispatcher(&SHARED);
@@ -179,7 +179,7 @@ macro_rules! install_isrs {
 
             ISR_TRAMPOLINE DMA1_CHANNEL1, __osc_isr_adc_dma
             ISR_TRAMPOLINE USART1, __osc_isr_usart1
-            ISR_TRAMPOLINE SysTick, __osc_isr_systick
+            ISR_TRAMPOLINE TIM2, __osc_isr_deadline
             "#
         );
 
@@ -194,8 +194,8 @@ macro_rules! install_isrs {
         }
 
         #[unsafe(no_mangle)]
-        extern "C" fn __osc_isr_systick() {
-            $crate::runtime::isr::on_systick();
+        extern "C" fn __osc_isr_deadline() {
+            $crate::runtime::isr::on_deadline_irq();
         }
     };
 }
