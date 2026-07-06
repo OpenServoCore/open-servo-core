@@ -2,7 +2,14 @@
 //! coprocessor. DMA1_CH3 shifts the covered span through SPI1's CRC unit
 //! (CRC-16/BUYPASS over 16-bit big-endian halfwords = osc-CRC-16); the
 //! accumulator holds across arms so a ring-wrap split or a multi-span read
-//! sums into one CRC. No pins are AF-mapped — nothing leaves the package.
+//! sums into one CRC.
+//!
+//! A remap places FUNCTIONS, used or not (the TIM1-Remap7 CH1N-on-PC0
+//! lesson): SPI1's reset mapping puts SCK/PC5 and MOSI/PC6 on the motor's
+//! TIM1 AF pins, where every CRC feed would burst 24 MHz clock into the
+//! gate-drive mux. Remap 101 parks SCK/PA1 and MOSI/PA2 on analog-mode
+//! pins (digital driver disconnected — provably inert on this board),
+//! MISO/PB5 is an input, and NSS stays internal under SSM.
 //!
 //! Register recipe ported from the `spi_crc` bringup spike (case 9: CRCEN
 //! held across feeds accumulates).
@@ -11,8 +18,7 @@ use ch32_metapac::SPI1;
 use ch32_metapac::spi::vals::BaudRate as SpiBaud;
 use osc_drivers::traits::bus;
 
-use crate::hal::dma;
-use crate::hal::rcc;
+use crate::hal::{afio, dma, rcc};
 
 /// osc-CRC-16 polynomial (§3.2: CRC-16/BUYPASS).
 const OSC_CRC_POLY: u16 = 0x8005;
@@ -32,6 +38,10 @@ impl Crc {
     /// the whole program — `reset` re-zeros the accumulator per frame.
     pub fn init() {
         rcc::enable_spi1();
+        // Park the SPI functions off the motor pins (module doc). PCFR1
+        // readback is unreliable on this die — verify by behavior (CRC
+        // stays bit-exact), never by register dump.
+        afio::set_spi_remap(1, 0b101);
         SPI1.ctlr1().write(|w| {
             w.set_mstr(true);
             w.set_ssm(true);

@@ -17,3 +17,10 @@ pub fn set_tim_remap(n: u8, remap: u8) {
         _ => {}
     }
 }
+
+#[inline]
+pub fn set_spi_remap(n: u8, remap: u8) {
+    if n == 1 {
+        AFIO.pcfr1().modify(|w| w.set_spi1_rm(remap));
+    }
+}
