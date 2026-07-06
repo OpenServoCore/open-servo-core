@@ -345,32 +345,24 @@ pub fn send_breaks(count: u32, gap_us: u32) -> Result<(), SendError> {
     Ok(())
 }
 
-/// One 10-bit-exact break immediately followed by poll-fed `payload`
-/// bytes — the osc-native host send primitive.
+/// One SBK break, a ≥1-bit mark gap, then poll-fed `payload` bytes — the
+/// osc-native host send primitive, unified with the servo's break shape.
 ///
-/// The break is NOT SBK: CH32 SBK stretches to ~14 bit-times
-/// (bench-measured on both chips), and an 8N1 receiver resyncs inside
-/// the stretched low with a bogus frame that swallows the first data
-/// byte. Instead the break is one 9-bit frame of 0x00 (M=1, bit 8 = 0):
-/// start + 9 data lows = 10 low bit-times, then a clean stop — exactly
-/// the shape of an 8N1 break with a deterministic 1-frame resync point
-/// (the FEINJ `bad=00` technique, promoted). The M flip back costs a
-/// sub-frame gap at TC that never reaches the receiver's IDLE threshold.
+/// The gap is load-bearing: an SBK break runs 10-11 low bits plus sync
+/// slop (wire-measured ~12-13 bits fall-to-fall), and a receiver is
+/// still resyncing inside the stretched low at bit 10 — data launched
+/// with zero gap gets swallowed into the resync frame (the historical
+/// "01 -> 74" byte-0 loss). `pulse_sbk` waits out the self-clear plus
+/// one bit-time of mark, giving every receiver a clean start edge.
 pub fn send_break_then(payload: &[u8]) -> Result<(), SendError> {
     if payload.is_empty() || payload.len() > BRK_PAYLOAD_MAX {
         return Err(SendError::TooLong);
     }
     wait_tx_complete().map_err(|TxTimeout| SendError::Busy)?;
     pb10_drive(true);
-    let r = (|| {
-        USART3.ctlr1().modify(|w| w.set_m(true));
-        let r = feed_bytes(&[0x00])
-            .and_then(|()| wait_tx_complete().map_err(|TxTimeout| SendError::Busy));
-        USART3.ctlr1().modify(|w| w.set_m(false));
-        r?;
-        feed_bytes(payload)?;
-        wait_tx_complete().map_err(|TxTimeout| SendError::Busy)
-    })();
+    pulse_sbk();
+    let r = feed_bytes(payload)
+        .and_then(|()| wait_tx_complete().map_err(|TxTimeout| SendError::Busy));
     pb10_drive(false);
     r
 }
