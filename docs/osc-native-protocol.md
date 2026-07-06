@@ -12,15 +12,23 @@ protocol-shaped, so both stacks share dispatch and the register file.
 
 ## 1. Goals and non-goals
 
+The philosophy in one line: **an efficient wire and a quick turnaround —
+low latency as the product of both.** Spend the fewest bytes per exchange,
+and never make the wire wait on the CPU. Simplicity is the mechanism, not
+a trade-off: every byte and every microsecond this protocol saves over
+DXL comes from deleting machinery, not adding it.
+
 Goals, in priority order:
 
 1. **Simplicity** — the servo-side transport should be a two-state framer, a
    counted DMA ring, and a dispatcher. No per-byte parsing, no byte stuffing,
    no unstuffing pass, no hardware-timed reply grid, no RDT tuning surface.
-2. **Turnaround** — length is known two bytes into a frame, so dispatch and
-   reply staging overlap the instruction's own wire time; the reply's first
-   byte no longer waits for a completed encode (streaming TX) or a folded
-   CRC (hardware CRC engine).
+2. **Wire efficiency and turnaround** — 5 overhead bytes + a break per
+   frame (DXL: 10–12 plus stuffing), and length is known two bytes in, so
+   dispatch and reply staging overlap the instruction's own wire time; the
+   reply's first byte waits on nothing — not a completed encode (streaming
+   TX), not a folded CRC (hardware CRC engine), not a reply grid
+   (enable-when-ready).
 3. **Cheap-MCU fit** — everything must run on the V006 tier: one UART, one
    DMA ring, the SPI block as a CRC engine, no input capture, no crystal.
 4. **Recoverability in the field** — a servo must be reachable regardless of
@@ -263,7 +271,7 @@ split into multiple frames (§5.1), each still zero-copy.
 | op  | name    | payload                                                              | reply                                 |
 | --- | ------- | -------------------------------------------------------------------- | ------------------------------------- |
 | 0x0 | invalid | (INST 0x00 never valid, like ID 0x00)                                |                                       |
-| 0x1 | PING    | —                                                                    | status: model(2), fw(1), UID(8)       |
+| 0x1 | PING    | —                                                                    | status: model(2), fw(1) — no UID: it would triple the reply of the hottest liveness check; UID lives in the read-only table and MGMT ENUM (§9.2) |
 | 0x2 | READ    | addr(2), count(2)                                                    | status: data(count)                   |
 | 0x3 | WRITE   | addr(2), data(n)                                                     | status: empty (ack)                   |
 | 0x4 | COMMIT  | — (broadcast)                                                        | none                                  |
@@ -386,11 +394,19 @@ DXL checkpoint format solved does not exist here.
 | break length (TX)       | hardware SBK (~14 bit-times measured [F5]) | spec floor is 10; no tuning                                                                |
 | inter-frame gap (host)  | none required                              | breaks self-delimit; back-to-back host frames are legal                                    |
 
-Projected single-target turnaround at 3 M (components all measured): ping
-instruction 5 B + break ≈ 21.4 µs wire; dispatch overlaps arrival; reply =
-T_turn (0.7 µs) + break (4.7 µs) + first byte — the post-frame tail is
-CRC-check + dispatch remainder only. Target: comfortably under half of
-DXL's 62.8 µs ping round trip; to be measured, not promised.
+Projected ping round trip at 3 M (components all measured): instruction
+5 B + break ≈ 21.4 µs wire; dispatch overlaps arrival; tail (hardware
+CRC-check + pre-staged dispatch, ~3 µs) + T_turn (0.7 µs) + break
+(4.7 µs) + 9 B reply (model+fw, padded, 30 µs) ≈ **41 µs** vs DXL's
+measured 62.8 µs — with the turnaround component alone dropping ~16 µs →
+~8 µs. To be measured, not promised.
+
+The intended hot loop leans on writes being free of turnaround entirely:
+`GWRITE(HOLD|NOREPLY) × groups → COMMIT (broadcast, silent) → GREAD
+telemetry chain` — writes cost pure wire time (back-to-back frames are
+legal), the apply instant is one broadcast, and the telemetry chain is
+the implicit ack: a rejected write surfaces within one cycle as the
+ALERT bit on that servo's status (§5.3).
 
 ## 8. Host requirements
 
