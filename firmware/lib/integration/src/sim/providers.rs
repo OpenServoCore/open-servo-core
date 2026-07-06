@@ -194,8 +194,15 @@ impl Deadline for SimDeadline {
 
         let sim_now = self.core.borrow().now();
         let now_sk = skewed(sim_now, self.skew_ppm);
-        // The driver always arms a small positive delta ahead of `now`.
-        let delta_sk = at.wrapping_sub(now_sk) as u64;
+        // A past `at` fires immediately — the chip provider pends reached
+        // deadlines rather than waiting out the u32 wrap (deadline-mux
+        // contract; ISR bodies legitimately overrun pending deadlines).
+        let delta_sk = at.wrapping_sub(now_sk);
+        let delta_sk = if delta_sk > i32::MAX as u32 {
+            0
+        } else {
+            delta_sk as u64
+        };
         let mut fire = sim_now + unskew(delta_sk, self.skew_ppm);
         // Rounding must never land the wake *before* `at` (the driver's `due`
         // check is a >= test) — nudge forward until the skewed clock reaches it.

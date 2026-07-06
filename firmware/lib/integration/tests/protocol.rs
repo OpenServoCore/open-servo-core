@@ -74,6 +74,30 @@ fn read_returns_table_bytes() {
 }
 
 #[test]
+fn read_front_loaded_reply_matches_and_leaves_table() {
+    // A READ is dispatched at covered-complete and CRC-verified at the frame end
+    // (the front-loaded path): the reply is byte-identical and the read-only op
+    // never touches the table.
+    let mut sim = Sim::new(BaudRate::B1000000);
+    let s = sim.add_servo(ID5);
+    let before = sim.servo_table(s, |t| t.config.identity.model_number);
+
+    sim.host_send(&instruction(ID5, Opcode::Read, 0, &[0, 0, 4, 0]));
+    let frames = sim.run();
+
+    let (inst, payload) = status(sole_reply(&frames));
+    assert_eq!(inst.result(), Some(ResultCode::Ok));
+    let m = before.to_le_bytes();
+    assert_eq!(payload, &[m[0], m[1], 0x56, 0]);
+    assert_eq!(sim.servo_diag(s).crc_fail_count, 0);
+    assert_eq!(
+        sim.servo_table(s, |t| t.config.identity.model_number),
+        before,
+        "a read leaves the table untouched"
+    );
+}
+
+#[test]
 fn read_count_zero_is_range() {
     let mut sim = Sim::new(BaudRate::B1000000);
     sim.add_servo(ID5);

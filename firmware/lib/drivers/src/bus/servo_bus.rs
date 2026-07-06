@@ -6,7 +6,7 @@
 
 use osc_core::traits::{Dispatch, Reply, SendError, Status};
 use osc_core::{BaudRate, BootMode};
-use osc_protocol::wire::{Inst, ResultCode};
+use osc_protocol::wire::{Inst, Opcode, ResultCode};
 
 use super::FRAME_MAX;
 use super::chain::{Chain, ChainOut};
@@ -29,6 +29,11 @@ const RESCUE_CONFIRM_US: u32 = 100;
 /// deadline-B margin on the predecessor's frame end.
 const FRAME_ALLOWANCE_SLACK_BYTES: u32 = 8;
 
+/// Deadline-B slack past the packet-end estimate: fixed µs, not byte-times —
+/// it covers ISR-entry + settle latencies (silicon-time, baud-independent);
+/// the wire-proportional drift term lives in the estimate itself.
+const END_SLACK_US: u32 = 5;
+
 /// Transport health counters the chip publishes into the telemetry region
 /// (§5.3 layer 1: dropped frames are counted, never answered).
 pub struct LinkDiag {
@@ -40,6 +45,26 @@ pub struct LinkDiag {
 /// hot path decodes in place out of the ring.
 #[repr(align(2))]
 struct Scratch([u8; FRAME_MAX]);
+
+/// A frame whose CRC feed + dispatch were front-loaded at covered-complete; its
+/// wire CRC is verified and its reply sequenced at the frame end. Kept only
+/// between a [`FramerOut::Covered`] and its matching [`FramerOut::Frame`].
+struct Speculation {
+    anchor: u16,
+    footprint: u16,
+    packet_end: u32,
+    slot: u8,
+    staged: bool,
+}
+
+/// What a framer output means to the frame pipeline once the deadline muxing
+/// has been applied.
+enum FrameEvent {
+    /// Covered-complete: front-load CRC feed + dispatch (read-only frames).
+    Covered(FrameSpan),
+    /// Frame end: verify the wire CRC and sequence the reply.
+    End(FrameSpan),
+}
 
 pub struct ServoBus<P: Providers> {
     framer: Framer,
@@ -59,6 +84,8 @@ pub struct ServoBus<P: Providers> {
     pending_reboot: Option<BootMode>,
     crc_fails: u32,
     scratch: Scratch,
+    // A read-only frame front-loaded at covered-complete, awaiting CRC verify.
+    speculated: Option<Speculation>,
     // Deadline mux (§4.1/§6/§9.1): the soonest live slot arms the compare.
     framer_at: Option<u32>,
     chain_at: Option<u32>,
@@ -91,7 +118,7 @@ impl<P: Providers> ServoBus<P> {
     ) -> Self {
         baud.apply(rate);
         Self {
-            framer: Framer::new(),
+            framer: Framer::new(END_SLACK_US * <P::Deadline as Deadline>::TICKS_PER_US),
             chain: Chain::new(),
             tx: TxEngine::new(tx),
             crc,
@@ -108,6 +135,7 @@ impl<P: Providers> ServoBus<P> {
             pending_reboot: None,
             crc_fails: 0,
             scratch: Scratch([0; FRAME_MAX]),
+            speculated: None,
             framer_at: None,
             chain_at: None,
             rescue_at: None,
@@ -121,6 +149,9 @@ impl<P: Providers> ServoBus<P> {
             .framer
             .on_break(self.ring.bytes(), self.ring.cursor(), now, self.tpb);
         let _ = self.apply_framer_out(out); // on_break never yields a Frame
+        // Any FE while a frame is front-loaded (break preempt or mid-frame
+        // garble) compromises it: drop the speculated reply before it can fire.
+        self.cancel_speculation();
         // §6: a break while we hold a staged chain slot means the predecessor
         // is alive — suspend its reclaim window while the frame plays out.
         let out = self.chain.on_break_observed(now);
@@ -141,8 +172,10 @@ impl<P: Providers> ServoBus<P> {
             let out = self
                 .framer
                 .on_deadline(self.ring.bytes(), self.ring.cursor(), now, self.tpb);
-            if let Some(span) = self.apply_framer_out(out) {
-                self.process_frame(span, d, now);
+            match self.apply_framer_out(out) {
+                Some(FrameEvent::Covered(span)) => self.speculate(span, d),
+                Some(FrameEvent::End(span)) => self.on_frame_end(span, d),
+                None => {}
             }
         }
         if due(now, self.chain_at) {
@@ -200,16 +233,28 @@ impl<P: Providers> ServoBus<P> {
         (super::FRAME_MAX as u32 + FRAME_ALLOWANCE_SLACK_BYTES) * self.tpb
     }
 
-    /// Arm the compare at the soonest live slot, or cancel if none.
+    /// Arm the compare at the soonest live slot, or cancel if none. A slot
+    /// already reached counts as due NOW, not as a full wrap away — an ISR
+    /// body that overruns a pending deadline (front-loaded dispatch inside
+    /// the covered window does, routinely) must pend it, not push it behind
+    /// every future slot (bench signature: deadline B riding the +100 µs
+    /// rescue wake).
     fn arm_deadline(&mut self) {
         let now = self.deadline.now();
+        let remaining = |at: u32| {
+            if tick_reached(now, at) {
+                0
+            } else {
+                at.wrapping_sub(now)
+            }
+        };
         let mut best: Option<u32> = None;
         for at in [self.framer_at, self.chain_at, self.rescue_at]
             .into_iter()
             .flatten()
         {
             best = Some(match best {
-                Some(b) if b.wrapping_sub(now) <= at.wrapping_sub(now) => b,
+                Some(b) if remaining(b) <= remaining(at) => b,
                 _ => at,
             });
         }
@@ -219,7 +264,7 @@ impl<P: Providers> ServoBus<P> {
         }
     }
 
-    fn apply_framer_out(&mut self, out: FramerOut) -> Option<FrameSpan> {
+    fn apply_framer_out(&mut self, out: FramerOut) -> Option<FrameEvent> {
         match out {
             FramerOut::None => {
                 self.framer_at = None;
@@ -232,11 +277,18 @@ impl<P: Providers> ServoBus<P> {
             FramerOut::Rearm => {
                 self.ring.rearm();
                 self.framer_at = None;
+                // A doomed frame never speculates, but drop defensively so a
+                // reply can never outlive the frame that staged it.
+                self.cancel_speculation();
                 None
+            }
+            FramerOut::Covered { span, end_due } => {
+                self.framer_at = Some(end_due);
+                Some(FrameEvent::Covered(span))
             }
             FramerOut::Frame(span) => {
                 self.framer_at = None;
-                Some(span)
+                Some(FrameEvent::End(span))
             }
         }
     }
@@ -272,23 +324,116 @@ impl<P: Providers> ServoBus<P> {
         self.framer.abort();
         self.chain.reset();
         self.tx.abort();
+        self.speculated = None;
         self.framer_at = None;
         self.chain_at = None;
     }
 
-    fn process_frame<D: Dispatch>(&mut self, span: FrameSpan, d: &mut D, now: u32) {
+    /// Frame end (deadline B). A front-loaded read-only frame only needs its
+    /// wire CRC verified and its reply sequenced; every other frame takes the
+    /// full path here.
+    fn on_frame_end<D: Dispatch>(&mut self, span: FrameSpan, d: &mut D) {
+        if let Some(spec) = self.speculated.take() {
+            if spec.anchor == span.anchor && spec.footprint == span.footprint {
+                self.verify_speculation(spec);
+                return;
+            }
+            // Defensive: a stale speculation that isn't this frame — drop it.
+            self.drop_staged();
+        }
+        self.process_frame(span, d);
+    }
+
+    /// Covered-complete: front-load the CRC feed + dispatch of a read-only frame
+    /// so deadline B only has to verify the wire CRC and trigger. Mutating ops
+    /// and status frames do nothing here — they take the full path at the end.
+    fn speculate<D: Dispatch>(&mut self, span: FrameSpan, d: &mut D) {
+        let anchor = span.anchor;
+        let footprint = span.footprint;
+        // Ping/Read/Gread never touch the table (read-only by contract), so
+        // dispatching before the CRC is verified is side-effect free.
+        let inst = self.ring_inst(anchor);
+        if !matches!(
+            inst.opcode(),
+            Some(Opcode::Ping | Opcode::Read | Opcode::Gread)
+        ) {
+            return;
+        }
+        // Speculate only from an idle reply pipeline: superseding a live
+        // chain or staged reply belongs AFTER the CRC gate (a garbled frame
+        // must touch nothing, §5.3 L1) — those rare overlaps fall back to
+        // the full path at the frame end.
+        if self.chain.active() || self.tx.busy() {
+            return;
+        }
+        // Start the RX CRC feed now; the result is polled at the frame end.
+        self.crc_feed(anchor, footprint);
+        let (staged, slot) = self
+            .dispatch_frame(anchor, footprint, d)
+            .unwrap_or((false, 0));
+        self.speculated = Some(Speculation {
+            anchor,
+            footprint,
+            packet_end: span.packet_end,
+            slot,
+            staged,
+        });
+    }
+
+    /// Verify a front-loaded frame's wire CRC and sequence its reply. A fail
+    /// (or spin miss) drops the staged reply and counts, exactly as the full
+    /// path does (§5.3 L1) — the table was never touched (read-only op).
+    fn verify_speculation(&mut self, spec: Speculation) {
+        if !self.crc_verify(spec.anchor, spec.footprint) {
+            self.drop_staged();
+            self.crc_fails = self.crc_fails.wrapping_add(1);
+            return;
+        }
+        if spec.staged {
+            let t_turn = self.t_turn();
+            let reclaim = self.reclaim();
+            let allowance = self.frame_allowance();
+            // T_turn is a wire gap measured from the packet end (§7), not
+            // from this (later) verify wake — the estimate is the framer's,
+            // conservative by the drift adder.
+            let out =
+                self.chain
+                    .on_reply_staged(spec.slot, spec.packet_end, t_turn, reclaim, allowance);
+            self.route_chain(out);
+        }
+    }
+
+    /// A break / garble / rearm / rescue landed on a front-loaded frame: it can
+    /// no longer complete, so drop its staged reply before it could fire.
+    fn cancel_speculation(&mut self) {
+        if self.speculated.take().is_some() {
+            self.drop_staged();
+        }
+    }
+
+    /// Drop a not-yet-streaming staged reply and any chain sequencing it began.
+    fn drop_staged(&mut self) {
+        if self.tx.staged() {
+            self.tx.abort();
+        }
+        self.chain.reset();
+        self.chain_at = None;
+    }
+
+    fn process_frame<D: Dispatch>(&mut self, span: FrameSpan, d: &mut D) {
         // FrameSpan is not Copy; work from its primitive fields.
         let anchor = span.anchor;
         let footprint = span.footprint;
+        let packet_end = span.packet_end;
         // 1. Validate in place; a fail (or spin miss) drops silently (§5.3 L1).
         if !self.crc_ok(anchor, footprint) {
             self.crc_fails = self.crc_fails.wrapping_add(1);
             return;
         }
-        // 2. Status frames only advance the snoop chain (§6). `now` as the end
-        // tick is conservative by the deadline-B margin — extra gap, never short.
+        // 2. Status frames only advance the snoop chain (§6), timed from the
+        // parser's packet-end estimate.
         if self.ring_inst(anchor).is_status() {
-            let out = self.chain.on_status_end(now);
+            let out = self.chain.on_status_end(packet_end);
             self.route_chain(out);
             return;
         }
@@ -298,7 +443,30 @@ impl<P: Providers> ServoBus<P> {
         if self.tx.staged() {
             self.tx.abort();
         }
-        // 4. Linearize: zero-copy from the ring unless the frame wraps the seam.
+        // 4. Decode + dispatch; 5. sequence a staged reply (slot 0 = unicast).
+        let Some((staged, slot)) = self.dispatch_frame(anchor, footprint, d) else {
+            return; // Skip (not ours); Status is handled above
+        };
+        if staged {
+            let t_turn = self.t_turn();
+            let reclaim = self.reclaim();
+            let allowance = self.frame_allowance();
+            let out = self
+                .chain
+                .on_reply_staged(slot, packet_end, t_turn, reclaim, allowance);
+            self.route_chain(out);
+        }
+    }
+
+    /// Linearize the frame (zero-copy from the ring unless it wraps the seam),
+    /// decode, and dispatch over disjoint borrows (driver-pattern §4.3).
+    /// Returns `(staged, slot)`, or `None` for a frame that isn't ours.
+    fn dispatch_frame<D: Dispatch>(
+        &mut self,
+        anchor: u16,
+        footprint: u16,
+        d: &mut D,
+    ) -> Option<(bool, u8)> {
         let anchor = anchor as usize;
         let footprint = footprint as usize;
         let ring = self.ring.bytes();
@@ -311,10 +479,9 @@ impl<P: Providers> ServoBus<P> {
             self.scratch.0[n1..footprint].copy_from_slice(&ring[..footprint - n1]);
             &self.scratch.0[..footprint]
         };
-        // 5. Decode + dispatch over disjoint borrows (driver-pattern §4.3).
         let (req, ctx, slot) = match decode(frame, self.id) {
             Decoded::Own(req, ctx, slot) => (req, ctx, slot),
-            _ => return, // Skip (not ours); Status is handled above
+            _ => return None,
         };
         let mut handle = ReplyHandle {
             tx: &mut self.tx,
@@ -326,33 +493,18 @@ impl<P: Providers> ServoBus<P> {
             staged: false,
         };
         d.dispatch(req, ctx, &mut handle);
-        let staged = handle.staged;
-        // 6. A staged reply enters chain sequencing (slot 0 = unicast).
-        if staged {
-            let t_turn = self.t_turn();
-            let reclaim = self.reclaim();
-            let allowance = self.frame_allowance();
-            let out = self
-                .chain
-                .on_reply_staged(slot, now, t_turn, reclaim, allowance);
-            self.route_chain(out);
-        }
+        Some((handle.staged, slot))
     }
 
-    /// Feed the covered span (1 or 2 wrap halves) and compare against the wire
-    /// CRC. Both halves stay even-length and even-addressed (F12): the ring
+    /// Feed the covered span (1 or 2 wrap halves) into the CRC engine, no result
+    /// poll. Both halves stay even-length and even-addressed (F12): the ring
     /// length and anchor are both even, so any wrap split lands on a halfword
-    /// boundary. A spin miss counts as a fail — indistinguishable from a bad
-    /// frame, and never wedges the wire (§3.2).
-    fn crc_ok(&mut self, anchor: u16, footprint: u16) -> bool {
+    /// boundary.
+    fn crc_feed(&mut self, anchor: u16, footprint: u16) {
         let ring = self.ring.bytes();
         let len = ring.len();
-        let footprint = footprint as usize;
-        if len == 0 || footprint < 2 {
-            return false;
-        }
         let anchor = anchor as usize;
-        let covered = footprint - 2;
+        let covered = footprint as usize - 2;
         self.crc.reset();
         let end = anchor + covered;
         if end <= len {
@@ -361,6 +513,17 @@ impl<P: Providers> ServoBus<P> {
             self.crc.feed(&ring[anchor..len]);
             self.crc.feed(&ring[..end - len]);
         }
+    }
+
+    /// Poll the CRC result and compare against the little-endian wire CRC at the
+    /// covered-span end. A spin miss counts as a fail — indistinguishable from a
+    /// bad frame, and never wedges the wire (§3.2). Requires a prior
+    /// [`Self::crc_feed`] of the same span.
+    fn crc_verify(&mut self, anchor: u16, footprint: u16) -> bool {
+        let ring = self.ring.bytes();
+        let len = ring.len();
+        let covered = footprint as usize - 2;
+        let end = anchor as usize + covered;
         let wire = u16::from_le_bytes([ring[end % len], ring[(end + 1) % len]]);
         let mut budget = super::SPIN_PER_BYTE * covered as u32;
         loop {
@@ -373,6 +536,16 @@ impl<P: Providers> ServoBus<P> {
             budget -= 1;
             core::hint::spin_loop();
         }
+    }
+
+    /// Feed then verify the covered span against the wire CRC (the full,
+    /// non-front-loaded path).
+    fn crc_ok(&mut self, anchor: u16, footprint: u16) -> bool {
+        if self.ring.bytes().is_empty() || (footprint as usize) < 2 {
+            return false;
+        }
+        self.crc_feed(anchor, footprint);
+        self.crc_verify(anchor, footprint)
     }
 
     /// The INST byte, 3 slots past the anchor (`[0x00][ID][LEN][INST]`).

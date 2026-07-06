@@ -45,8 +45,12 @@ fn status(id: u8, result: ResultCode, data: &[u8]) -> std::vec::Vec<u8> {
 
 // --- drivers --------------------------------------------------------------
 
-/// Deliver a whole frame: break, header deadline, then the end deadline (which
-/// dispatches). Returns the end tick used.
+/// Deliver a whole frame: break, header deadline, the covered-complete
+/// checkpoint (non-doomed frames), then the end deadline (which dispatches).
+/// Returns the framer's packet-end estimate — the tick reply T_turn is
+/// measured from: break tick + (footprint − 1) byte-times + the drift adder.
+/// Doomed frames rearm at their boundary with no covered checkpoint, so the
+/// covered fire is their terminal event.
 fn deliver<D: Dispatch>(
     bus: &mut crate::bus::ServoBus<crate::mocks::bus::TestProviders>,
     h: &Harness,
@@ -66,11 +70,22 @@ fn deliver<D: Dispatch>(
     h.ring.set_cursor(((anchor + 4) % RING_LEN) as u16);
     bus.on_deadline(d);
 
-    let b = h.deadline.armed().expect("deadline B");
-    h.deadline.set_now(b);
+    // Covered checkpoint (non-doomed) or the doomed frame's boundary rearm.
+    let c = h.deadline.armed().expect("covered/end deadline");
+    h.deadline.set_now(c);
     h.ring.set_cursor(((anchor + fp) % RING_LEN) as u16);
     bus.on_deadline(d);
-    b
+
+    // A doomed frame left no framer deadline; a live one re-armed the end.
+    if let Some(b) = h.deadline.armed() {
+        h.deadline.set_now(b);
+        h.ring.set_cursor(((anchor + fp) % RING_LEN) as u16);
+        bus.on_deadline(d);
+    }
+    // The framer's packet_end (see `lock_end`): anchor tick + remaining
+    // byte-times + footprint>>6 drift adder.
+    now0.wrapping_add((fp as u32 - 1) * TPB)
+        .wrapping_add(fp as u32 * TPB >> 6)
 }
 
 fn fire<D: Dispatch>(
@@ -348,6 +363,61 @@ fn s10_rescue_break_switches_to_500k() {
     let applied = h.baud.applied();
     assert_eq!(applied.first(), Some(&RATE)); // new() applied the configured rate
     assert_eq!(applied.last(), Some(&BaudRate::B500000));
+}
+
+#[test]
+fn s11_break_after_covered_cancels_speculation() {
+    let h = Harness::new();
+    let mut bus = h.build(ID, RATE, 60);
+    let shared = shared_seeded();
+    let mut session = Session::new();
+    let mut d = session.dispatcher(&shared);
+
+    // Drive a READ up to its covered checkpoint: the reply is front-loaded
+    // (dispatched + staged) but not yet on the wire.
+    let frame = instruction(ID, Opcode::Read, 0, &[0, 0, 4, 0]);
+    let anchor = 100usize;
+    let fp = frame.len();
+    h.ring.place(anchor, &frame);
+    h.deadline.set_now(1000);
+    h.ring.set_cursor(((anchor + 1) % RING_LEN) as u16);
+    bus.on_break();
+    let a = h.deadline.armed().expect("deadline A");
+    h.deadline.set_now(a);
+    h.ring.set_cursor(((anchor + 4) % RING_LEN) as u16);
+    bus.on_deadline(&mut d);
+    let c = h.deadline.armed().expect("covered deadline");
+    h.deadline.set_now(c);
+    h.ring.set_cursor(((anchor + fp) % RING_LEN) as u16);
+    bus.on_deadline(&mut d);
+    assert!(!h.wire.started(), "reply is staged, not yet triggered");
+
+    // A fresh break lands before the end deadline: it preempts the frame and
+    // must cancel the staged reply (no phantom read reply may reach the wire).
+    let m = 300usize; // ring[m] defaults to 0x00 → a real break
+    h.deadline.set_now(c + 1);
+    h.ring.set_cursor(((m + 1) % RING_LEN) as u16);
+    bus.on_break();
+    assert_eq!(
+        bus.diag().framing_drop_count,
+        1,
+        "preempted read is dropped"
+    );
+
+    // Drain whatever the new break armed (a starving header): still silent.
+    if h.deadline.armed().is_some() {
+        fire(&mut bus, &h, &mut d);
+    }
+    assert!(!h.wire.started(), "the cancelled reply never fires");
+
+    // The following read exchange still works.
+    let next = instruction(ID, Opcode::Read, 0, &[0, 0, 4, 0]);
+    deliver(&mut bus, &h, 100, &next, c + 5000, &mut d);
+    fire(&mut bus, &h, &mut d);
+    let (id, inst, data) = last_reply(&h.wire);
+    assert_eq!(id, ID);
+    assert_eq!(inst.result(), Some(ResultCode::Ok));
+    assert_eq!(&data[..2], &[0x34, 0x12]);
 }
 
 /// Rewrite a frame's ID field to broadcast (group ops address via their list).

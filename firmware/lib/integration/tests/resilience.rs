@@ -142,6 +142,78 @@ fn break_preempts_partial_frame() {
 }
 
 #[test]
+fn corrupt_crc_tail_cancels_front_loaded_read() {
+    let mut sim = Sim::new(BaudRate::B1000000);
+    let s = sim.add_servo(ID5);
+
+    // A READ whose covered span is intact but whose trailing CRC is corrupted:
+    // the read is front-loaded (dispatched + reply staged) at covered-complete,
+    // then the wire-CRC check at the frame end fails → the staged reply is
+    // dropped and counted, and the read-only op never touched the table.
+    let mut frame = instruction(ID5, Opcode::Read, 0, &[0, 0, 4, 0]);
+    let last = frame.len() - 1;
+    frame[last] ^= 0xFF; // corrupt CRC-hi only; the covered span stays valid
+    sim.host_send(&frame);
+    let frames = sim.run();
+
+    assert!(
+        servo_frames(&frames).is_empty(),
+        "a bad-CRC read gets no reply: {frames:#?}"
+    );
+    let d = sim.servo_diag(s);
+    assert_eq!(d.crc_fail_count, 1, "the wire-CRC check failed");
+    assert_eq!(d.framing_drop_count, 0);
+
+    // The next read is answered — speculation was cleanly cancelled.
+    sim.host_send_at(1000, &instruction(ID5, Opcode::Read, 0, &[0, 0, 4, 0]));
+    let frames = sim.run();
+    let (inst, _) = status(sole_reply(&frames));
+    assert_eq!(inst.result(), Some(ResultCode::Ok));
+}
+
+#[test]
+fn break_after_covered_cancels_front_loaded_read() {
+    let mut sim = Sim::new(BaudRate::B1000000);
+    let s = sim.add_servo(ID5);
+
+    // A READ is front-loaded at covered-complete (~86 µs, two byte-times
+    // before the packet-end estimate) and CRC-verified at its end (~106 µs).
+    // A fresh break dropped into that window preempts the frame and must
+    // cancel the staged reply — no phantom read reply.
+    sim.host_send_at(0, &instruction(ID5, Opcode::Read, 0, &[0, 0, 4, 0]));
+    sim.inject_garble_at(95, 0x00); // 0x00 FE byte = a break
+
+    let frames = sim.run();
+    assert!(
+        servo_frames(&frames).is_empty(),
+        "the cancelled read never replies: {frames:#?}"
+    );
+    let d = sim.servo_diag(s);
+    assert_eq!(d.crc_fail_count, 0, "a break-cancel is not a CRC fail");
+    assert!(
+        d.framing_drop_count >= 1,
+        "the read was preempted by the break"
+    );
+
+    // The bus heals (§3.2) and answers a following read within the heal bound.
+    let mut answered = false;
+    for k in 0..3u64 {
+        sim.host_send_at(
+            200 + k * 200,
+            &instruction(ID5, Opcode::Read, 0, &[0, 0, 4, 0]),
+        );
+        let frames = sim.run();
+        if let [r] = servo_frames(&frames)[..] {
+            assert_valid(r);
+            assert_eq!(status(r).0.result(), Some(ResultCode::Ok));
+            answered = true;
+            break;
+        }
+    }
+    assert!(answered, "a following read is answered after the break");
+}
+
+#[test]
 fn rescue_pulse_drops_to_500k() {
     let mut sim = Sim::new(BaudRate::B1000000);
     let s = sim.add_servo(ID5);
