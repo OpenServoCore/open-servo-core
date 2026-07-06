@@ -1,8 +1,9 @@
 //! Status-reply TX engine (`docs/osc-native-protocol.md` §4.2): stage a frame
-//! layout, then trigger — break + up to three DMA arms, with the CRC computed
-//! by the hardware engine and patched into the trailing bytes while earlier
-//! bytes are already on the wire (fire-first append-later: the engine outruns
-//! the wire 8:1, F6, and DMA fetches just-in-time).
+//! layout, then trigger — break + up to four DMA arms, the last always the
+//! 2-byte CRC. The wire starts before the CRC is known; the hardware engine
+//! chews the covered span in parallel and the value is patched into that final
+//! arm at the boundary before it (the engine outruns the wire 8:1, F6, and DMA
+//! fetches just-in-time, so the patch beats the read).
 
 use crate::traits::bus::{CrcEngine, TxWire};
 use osc_core::traits::SendError;
@@ -33,8 +34,9 @@ pub enum TxOut {
 #[derive(Copy, Clone)]
 enum Arm {
     // len is u16: the odd-pointer copy path can arm up to footprint-1 = 257
-    // bytes (a 251-byte payload from an odd table address).
-    Buf { off: u8, len: u16 },
+    // bytes (a 251-byte payload from an odd table address). off is u16 too:
+    // the CRC tail of that same maximal frame sits at offset 256.
+    Buf { off: u16, len: u16 },
     Ext { ptr: *const u8, len: u16 },
 }
 
@@ -49,13 +51,14 @@ enum State {
 pub struct TxEngine<W: TxWire> {
     wire: W,
     buf: FrameBuf<REPLY_BUF>,
-    arms: [Arm; 3],
+    // The CRC tail is always the final arm (index `n_feeds`); the `n_feeds`
+    // arms before it map 1:1 to feed spans, fed one per arm boundary.
+    arms: [Arm; 4],
     n_arms: u8,
     feeds: [Arm; 3],
     n_feeds: u8,
     /// Buffer offset of the CRC tail slot (zeroed at stage as the placeholder).
     crc_off: u16,
-    covered: u16,
     state: State,
     result: ResultCode,
     pad: bool,
@@ -68,12 +71,11 @@ impl<W: TxWire> TxEngine<W> {
         Self {
             wire,
             buf: FrameBuf::new(),
-            arms: [NO_ARM; 3],
+            arms: [NO_ARM; 4],
             n_arms: 0,
             feeds: [NO_ARM; 3],
             n_feeds: 0,
             crc_off: 0,
-            covered: 0,
             state: State::Idle,
             result: ResultCode::Ok,
             pad: false,
@@ -130,11 +132,16 @@ impl<W: TxWire> TxEngine<W> {
             self.buf.finish(p);
             let len = wire::len_for(p);
             let cov = wire::covered_len(len);
+            // Header + payload + pad, then the 2 CRC bytes as their own arm.
             self.arms[0] = Arm::Buf {
                 off: 1,
-                len: (wire::footprint(len) - 1) as u16,
+                len: (cov - 1) as u16,
             };
-            self.n_arms = 1;
+            self.arms[1] = Arm::Buf {
+                off: cov as u16,
+                len: 2,
+            };
+            self.n_arms = 2;
             self.feeds[0] = Arm::Buf {
                 off: 0,
                 len: cov as u16,
@@ -156,31 +163,28 @@ impl<W: TxWire> TxEngine<W> {
             if pad {
                 b[4] = data[data.len() - 1];
                 b[5] = 0;
-                self.arms = [
-                    Arm::Buf { off: 1, len: 3 },
-                    Arm::Ext {
-                        ptr,
-                        len: (p - 1) as u16,
-                    },
-                    Arm::Buf { off: 4, len: 4 },
-                ];
-                self.n_arms = 3;
-                self.feeds = [
-                    Arm::Buf { off: 0, len: 4 },
-                    Arm::Ext {
-                        ptr,
-                        len: (p - 1) as u16,
-                    },
-                    Arm::Buf { off: 4, len: 2 },
-                ];
+                self.arms[0] = Arm::Buf { off: 1, len: 3 };
+                self.arms[1] = Arm::Ext {
+                    ptr,
+                    len: (p - 1) as u16,
+                };
+                // Tail (moved last byte + pad), then the CRC as its own arm.
+                self.arms[2] = Arm::Buf { off: 4, len: 2 };
+                self.arms[3] = Arm::Buf { off: 6, len: 2 };
+                self.n_arms = 4;
+                self.feeds[0] = Arm::Buf { off: 0, len: 4 };
+                self.feeds[1] = Arm::Ext {
+                    ptr,
+                    len: (p - 1) as u16,
+                };
+                self.feeds[2] = Arm::Buf { off: 4, len: 2 };
                 self.n_feeds = 3;
                 self.crc_off = 6;
             } else {
-                self.arms = [
-                    Arm::Buf { off: 1, len: 3 },
-                    Arm::Ext { ptr, len: p as u16 },
-                    Arm::Buf { off: 4, len: 2 },
-                ];
+                self.arms[0] = Arm::Buf { off: 1, len: 3 };
+                self.arms[1] = Arm::Ext { ptr, len: p as u16 };
+                // The buffer's bytes 4..6 double as the CRC tail arm.
+                self.arms[2] = Arm::Buf { off: 4, len: 2 };
                 self.n_arms = 3;
                 self.feeds[0] = Arm::Buf { off: 0, len: 4 };
                 self.feeds[1] = Arm::Ext { ptr, len: p as u16 };
@@ -191,7 +195,6 @@ impl<W: TxWire> TxEngine<W> {
         // Placeholder CRC: what ships if the patch window is missed.
         let off = self.crc_off as usize;
         self.buf.bytes_mut()[off..off + 2].copy_from_slice(&[0, 0]);
-        self.covered = wire::covered_len(wire::len_for(p)) as u16;
         self.result = result;
         self.pad = pad;
         self.alert = alert;
@@ -200,8 +203,10 @@ impl<W: TxWire> TxEngine<W> {
     }
 
     /// Finalize and start: optional result override (chain reclaim's
-    /// predecessor-silent, §6) rewrites INST, then CRC-feed + patch, then
-    /// break + first arm.
+    /// predecessor-silent, §6) rewrites INST, then break + first arm with the
+    /// first CRC feed armed behind it. The CRC value lands later, at the
+    /// boundary before its own trailing arm ([`on_arm_complete`]) — the wire
+    /// starts before the CRC is known so the engine chews in parallel (§4.2).
     pub fn trigger<C: CrcEngine>(&mut self, crc: &mut C, over: Option<ResultCode>) {
         if !matches!(self.state, State::Staged) {
             debug_assert!(false, "trigger without a staged frame");
@@ -209,41 +214,29 @@ impl<W: TxWire> TxEngine<W> {
         }
         self.buf.bytes_mut()[3] = Inst::status(over.unwrap_or(self.result), self.pad, self.alert).0;
         crc.reset();
-        for i in 0..self.n_feeds as usize {
-            let span = resolve(&self.buf, self.feeds[i]);
-            crc.feed(span);
-        }
-        let mut budget = super::SPIN_PER_BYTE * self.covered as u32;
-        let crc = loop {
-            if let Some(v) = crc.result() {
-                break Some(v);
-            }
-            if budget == 0 {
-                break None;
-            }
-            budget -= 1;
-            core::hint::spin_loop();
-        };
-        match crc {
-            Some(v) => {
-                let off = self.crc_off as usize;
-                self.buf.bytes_mut()[off..off + 2].copy_from_slice(&v.to_le_bytes());
-            }
-            // Ship the placeholder zeros: the host sees a CRC-fail frame and
-            // retries; never wedge the wire on a sick CRC engine.
-            None => self.crc_misses = self.crc_misses.wrapping_add(1),
-        }
         self.wire.start_frame();
         self.wire.send(resolve(&self.buf, self.arms[0]));
+        crc.feed(resolve(&self.buf, self.feeds[0]));
         self.state = State::Streaming { next: 1 };
     }
 
-    /// Per-arm DMA TC. Streams the next arm, or releases the wire after the
-    /// last one (caller then applies deferred config).
-    pub fn on_arm_complete(&mut self) -> TxOut {
+    /// Per-arm DMA TC. Feeds the next CRC span and streams the next arm; before
+    /// the final CRC arm, patches the computed CRC into the buffer; after the
+    /// last arm, releases the wire (caller then applies deferred config).
+    pub fn on_arm_complete<C: CrcEngine>(&mut self, crc: &mut C) -> TxOut {
         match self.state {
             State::Streaming { next } if next < self.n_arms => {
-                self.wire.send(resolve(&self.buf, self.arms[next as usize]));
+                let i = next as usize;
+                if i < self.n_feeds as usize {
+                    // Arm the next feed span. A full arm's wire-time has elapsed
+                    // since the previous feed, so the chip drain-spin is a no-op.
+                    crc.feed(resolve(&self.buf, self.feeds[i]));
+                } else {
+                    // Next arm is the CRC tail: land the value before the DMA
+                    // reaches it.
+                    self.patch_crc(crc);
+                }
+                self.wire.send(resolve(&self.buf, self.arms[i]));
                 self.state = State::Streaming { next: next + 1 };
                 TxOut::Armed
             }
@@ -257,6 +250,34 @@ impl<W: TxWire> TxEngine<W> {
                 debug_assert!(false, "arm completion while idle");
                 TxOut::Released
             }
+        }
+    }
+
+    /// Poll the CRC and patch the trailing 2 bytes. Called at the boundary
+    /// before the CRC arm: the DMA is physically reading the buffer as we
+    /// write here — by design. The CRC arm is last (>= header's worth of head
+    /// start) and the engine runs ~8x wire speed (F6), so the patch wins.
+    fn patch_crc<C: CrcEngine>(&mut self, crc: &mut C) {
+        // Every feed was armed at least one arm's wire-time ago, so `result()`
+        // is Some on the first poll in any healthy exchange; the fixed bound
+        // only guards a sick engine (placeholder zeros ship, host retries).
+        let mut budget = super::SPIN_PER_BYTE;
+        let value = loop {
+            if let Some(v) = crc.result() {
+                break Some(v);
+            }
+            if budget == 0 {
+                break None;
+            }
+            budget -= 1;
+            core::hint::spin_loop();
+        };
+        match value {
+            Some(v) => {
+                let off = self.crc_off as usize;
+                self.buf.bytes_mut()[off..off + 2].copy_from_slice(&v.to_le_bytes());
+            }
+            None => self.crc_misses = self.crc_misses.wrapping_add(1),
         }
     }
 
@@ -350,12 +371,14 @@ mod tests {
         b.seal().to_vec()
     }
 
-    /// Drive a staged frame to completion, returning the arm outcomes.
+    /// Drive a staged frame to completion, returning the arm outcomes. The one
+    /// CRC engine spans trigger and every arm boundary, as on the chip.
     fn run(eng: &mut TxEngine<FakeWire>, over: Option<ResultCode>) -> Vec<TxOut> {
-        eng.trigger(&mut FakeCrc(0), over);
+        let mut crc = FakeCrc(0);
+        eng.trigger(&mut crc, over);
         let mut outs = Vec::new();
         loop {
-            let out = eng.on_arm_complete();
+            let out = eng.on_arm_complete(&mut crc);
             outs.push(out);
             if out == TxOut::Released {
                 return outs;
@@ -387,7 +410,11 @@ mod tests {
         let log = log.borrow();
         let reference = reference(7, ResultCode::Ok, false, &[]);
         assert_eq!(log[0], Event::Start);
-        assert_eq!(sends(&log).len(), 1);
+        let s = sends(&log);
+        // Header arm, then the CRC as its own final 2-byte arm, patched to
+        // the same value the single-shot software seal produces.
+        assert_eq!(s.iter().map(Vec::len).collect::<Vec<_>>(), vec![3, 2]);
+        assert_eq!(*s.last().unwrap(), reference[reference.len() - 2..]);
         assert_eq!(wire_bytes(&log), reference[1..]);
         assert_eq!(*log.last().unwrap(), Event::Release);
         // No pad on an empty payload: status bit set, PAD clear.
@@ -402,7 +429,10 @@ mod tests {
         run(&mut eng, None);
         let log = log.borrow();
         let reference = reference(1, ResultCode::Ok, true, &data);
-        assert_eq!(sends(&log).len(), 1);
+        let s = sends(&log);
+        // Header + payload + pad, then the CRC tail as its own final arm.
+        assert_eq!(s.iter().map(Vec::len).collect::<Vec<_>>(), vec![7, 2]);
+        assert_eq!(*s.last().unwrap(), reference[reference.len() - 2..]);
         assert_eq!(wire_bytes(&log), reference[1..]);
         let inst = Inst(wire_bytes(&log)[2]);
         assert!(inst.is_status());
@@ -418,8 +448,10 @@ mod tests {
         run(&mut eng, None);
         let log = log.borrow();
         let s = sends(&log);
+        // Header, Ext payload, then the CRC as its own final 2-byte arm.
         assert_eq!(s.iter().map(Vec::len).collect::<Vec<_>>(), vec![3, 40, 2]);
         let reference = reference(9, ResultCode::Ok, false, &data.0);
+        assert_eq!(*s.last().unwrap(), reference[reference.len() - 2..]);
         assert_eq!(wire_bytes(&log), reference[1..]);
         // CRC over prefix + covered span matches the reference flavor.
         let covered_len = wire::covered_len(wire::len_for(40));
@@ -435,10 +467,15 @@ mod tests {
         run(&mut eng, None);
         let log = log.borrow();
         let s = sends(&log);
-        assert_eq!(s.iter().map(Vec::len).collect::<Vec<_>>(), vec![3, 40, 4]);
+        // Odd payload: last byte + pad form the tail arm, CRC is its own arm.
+        assert_eq!(
+            s.iter().map(Vec::len).collect::<Vec<_>>(),
+            vec![3, 40, 2, 2]
+        );
         let reference = reference(5, ResultCode::Ok, false, &data.0);
         assert_eq!(s[2][0], data.0[40]);
         assert_eq!(s[2][1], 0x00);
+        assert_eq!(*s.last().unwrap(), reference[reference.len() - 2..]);
         assert_eq!(wire_bytes(&log), reference[1..]);
     }
 

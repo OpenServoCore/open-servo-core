@@ -161,7 +161,7 @@ impl<P: Providers> ServoBus<P> {
     /// once the whole reply has drained (§4.2) — the ack always leaves at the
     /// old id/baud, the change lands after.
     pub fn on_tx_complete(&mut self) {
-        if self.tx.on_arm_complete() == TxOut::Released {
+        if self.tx.on_arm_complete(&mut self.crc) == TxOut::Released {
             if let Some(id) = self.pending_id.take() {
                 self.id = id;
             }

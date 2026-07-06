@@ -83,6 +83,17 @@ fn fire<D: Dispatch>(
     bus.on_deadline(d);
 }
 
+/// Pump arm-completions until the reply drains: the CRC ships as its own final
+/// arm, so a full reply now spans more than one TC.
+fn drain_tx(bus: &mut crate::bus::ServoBus<crate::mocks::bus::TestProviders>, h: &Harness) {
+    loop {
+        bus.on_tx_complete();
+        if matches!(h.wire.log().last(), Some(WireEvent::Release)) {
+            break;
+        }
+    }
+}
+
 /// Parse the most recent reply frame from the wire log into (id, inst, payload).
 fn last_reply(wire: &FakeWire) -> (u8, Inst, std::vec::Vec<u8>) {
     let log = wire.log();
@@ -124,6 +135,7 @@ fn s1_ping_round_trip() {
 
     fire(&mut bus, &h, &mut d);
     assert!(h.wire.started());
+    drain_tx(&mut bus, &h);
 
     // Exact bytes: sealed status(model, fw), padded, valid CRC.
     let reference = status(ID, ResultCode::Ok, &[0x34, 0x12, 0x56]);
@@ -208,7 +220,7 @@ fn s4_write_id_acks_from_old_id_then_applies() {
     assert_eq!(id, ID);
 
     // TX drains → deferred id apply. A ping to 42 now replies.
-    bus.on_tx_complete();
+    drain_tx(&mut bus, &h);
     let ping = instruction(42, Opcode::Ping, 0, &[]);
     deliver(&mut bus, &h, 200, &ping, 5000, &mut d);
     fire(&mut bus, &h, &mut d);
