@@ -22,11 +22,11 @@ pub mod telemetry;
 pub use calib::{BemfCalibBlock, CalibRegs, PotLutBlock};
 pub use config::{
     BaudRate, ConfigCalibration, ConfigComms, ConfigControlPosition, ConfigIdentity,
-    ConfigPosLimits, ConfigRegs, ConfigStall, ConfigThermal, StallResponse, StatusReturnLevel,
+    ConfigPosLimits, ConfigRegs, ConfigStall, ConfigThermal, StallResponse,
 };
 pub use control::{BootMode, ControlLifecycle, ControlRegs, ControlStreaming, ControlSystem, Mode};
 pub use telemetry::{
-    TelemetryConverted, TelemetryDxlLink, TelemetryFault, TelemetryIntermediaries, TelemetryRaw,
+    TelemetryBusLink, TelemetryConverted, TelemetryFault, TelemetryIntermediaries, TelemetryRaw,
     TelemetryRegs,
 };
 
@@ -60,12 +60,12 @@ impl ControlTableCell {
     /// Caller must be sole writer (install-time, pre-IRQ).
     pub fn seed_config_defaults(&self, defaults: &ConfigDefaults) {
         crate::log::debug!(
-            "seed CONFIG: phys=[{}, {}] urad  vdd_mv={}  dxl_id={}  baud_idx={}",
+            "seed CONFIG: phys=[{}, {}] urad  vdd_mv={}  id={}  baud_idx={}",
             defaults.pos_min_phys_urad,
             defaults.pos_max_phys_urad,
             defaults.vdd_mv,
-            defaults.dxl_id,
-            defaults.dxl_baud.as_idx(),
+            defaults.id,
+            defaults.baud.as_idx(),
         );
         // SAFETY: install-time, pre-IRQ, sole writer.
         self.with_mut(|t| {
@@ -75,9 +75,9 @@ impl ControlTableCell {
             cfg.pos_limits.pos_min_soft_urad = defaults.pos_min_phys_urad;
             cfg.pos_limits.pos_max_soft_urad = defaults.pos_max_phys_urad;
             cfg.calibration.vdd_mv = defaults.vdd_mv;
-            cfg.comms.id = defaults.dxl_id;
-            cfg.comms.baud_rate_idx = defaults.dxl_baud;
-            cfg.comms.return_delay_2us = defaults.dxl_return_delay_2us;
+            cfg.comms.id = defaults.id;
+            cfg.comms.baud_rate_idx = defaults.baud;
+            cfg.comms.response_deadline_us = defaults.response_deadline_us;
         });
     }
 

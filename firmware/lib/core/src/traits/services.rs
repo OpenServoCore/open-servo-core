@@ -1,93 +1,70 @@
-use dxl_protocol::types::{Id, Status, StatusError};
-use dxl_protocol::{Bytes, WriteError};
+use osc_protocol::wire::{MgmtOp, ResultCode};
 
 use crate::{BaudRate, BootMode};
 
-/// Dispatcher-facing reply surface: encode a Status / encode a Fast slot /
-/// stage a deferred config change. Per driver-pattern §7.4 these methods are
-/// **data-centric** — they carry only "what to do," never "where on the wire
-/// to position it." Slot positioning, RDT, chain-CRC anchoring, wire-end
-/// timing all live inside the bus impl, derived from the request the bus just
-/// handed the dispatcher.
-pub trait DxlReply {
-    /// Encode a standalone Status reply and arm its fire. Bus folds RDT +
-    /// slot offset (broadcast Ping / Sync/Bulk Read slot N) from its cached
-    /// request state; the dispatcher passes only the reply data. Read
-    /// replies flow through here as [`Status::Read`], carrying the
-    /// control-table read slice directly.
-    fn send_status(&mut self, status: Status<'_>) -> Result<(), WriteError>;
+/// Reply-side runtime failure. Overflow is a sizing bug (reply exceeds the
+/// bus's staging buffer); Busy means a previous reply is still draining.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub enum SendError {
+    Busy,
+    Overflow,
+}
 
-    /// Encode one Fast Sync/Bulk Read slot reply and arm its fire. Slot
-    /// body bytes are a control-table read slice; slot position
-    /// (Only/First/Middle/Last) and chain-CRC anchor come from the bus's
-    /// cached request state; Last engages the chain-CRC fold scheduler arm.
-    fn send_slot(&mut self, id: Id, error: StatusError, data: &[u8]) -> Result<(), WriteError>;
+/// One encoded status reply, data-centric per driver-pattern §7.4: the bus
+/// derives all wire placement (frame layout, chain slot timing, PAD) from
+/// its cached request state; core hands only result + payload.
+/// `alert` mirrors the device-level alarm state (osc-native §5.3 layer 3).
+pub struct Status<'a> {
+    pub result: ResultCode,
+    pub alert: bool,
+    pub data: &'a [u8],
+}
 
-    /// Stage a deferred ID change — applies after the next TX completes.
+/// A decoded instruction addressed to this servo; addressing and group-op
+/// slot resolution already done by the bus. Core sees no wire bytes.
+pub enum Request<'a> {
+    Ping,
+    Read {
+        addr: u16,
+        count: u16,
+    },
+    Write {
+        addr: u16,
+        data: &'a [u8],
+        hold: bool,
+    },
+    Commit,
+    Mgmt {
+        op: MgmtOp,
+        args: &'a [u8],
+    },
+    /// Valid frame the bus cannot resolve (unknown opcode/flag combination).
+    /// Dispatch answers `ResultCode::Instruction` (§5.3 layer 2).
+    Unsupported,
+}
+
+/// Bus-derived context core may not derive itself.
+pub struct RequestCtx {
+    /// The wire contract permits a status for this request (false for
+    /// NOREPLY-flagged instructions and non-acking broadcasts).
+    pub may_reply: bool,
+}
+
+/// Dispatcher-facing reply surface.
+pub trait Reply {
+    fn send_status(&mut self, status: Status<'_>) -> Result<(), SendError>;
+    /// Deferred ID change — applies after the in-flight TX completes.
     fn stage_id(&mut self, id: u8);
-
-    /// Stage a deferred baud-rate change. Applied at the next USART TC so
-    /// the in-flight reply finishes at the old baud.
+    /// Deferred baud change — applied at TX complete so the ack leaves at the old rate.
     fn stage_baud(&mut self, baud: BaudRate);
-
-    /// Stage a deferred Return Delay Time change in µs.
-    fn stage_rdt(&mut self, us: u32);
-
-    /// Stage a deferred reboot, honored after any in-flight TX drains.
+    /// Immediate: the bus caches this for chain-reclaim timing (§6).
+    fn set_response_deadline(&mut self, us: u16);
+    /// Deferred reboot, honored after any in-flight TX drains.
     fn stage_reboot(&mut self, mode: BootMode);
 }
 
-/// Bus surface the DXL services layer drives. The bus owns the flat framer;
-/// on `poll` it frames + decodes buffered wire bytes into fully-resolved
-/// [`DxlRequest`]s and hands each to the dispatcher.
-///
-/// The dispatcher's `&mut R: DxlReply` is borrowed from a disjoint field of
-/// bus-internal state, paired with the framer borrowing the wire ring — see
-/// `docs/driver-pattern.md` §7.4 for the data-centric principle.
-pub trait DxlBus {
-    fn poll<D: DxlDispatch>(&mut self, dispatcher: &mut D);
-}
-
-/// A decoded instruction addressed to this servo, addressing and chain slot
-/// geometry already resolved by the bus. Core sees no wire bytes.
-///
-/// There is no Sync/Bulk/Fast variant: the bus resolves a chain to this
-/// servo's own slot and hands a plain [`Read`](Self::Read) /
-/// [`Write`](Self::Write), with [`DxlRequestCtx`] conveying the reply rules
-/// (`slot_reply` for the FAST block form, `may_reply` for the SyncWrite/
-/// BulkWrite no-reply slots).
-pub enum DxlRequest<'a> {
-    Ping,
-    Read { address: u16, length: u16 },
-    Write { address: u16, data: Bytes<'a> },
-    RegWrite { address: u16, data: Bytes<'a> },
-    Action,
-    FactoryReset { mode: u8 },
-    Reboot,
-    Clear { body: Bytes<'a> },
-    ControlTableBackup { body: Bytes<'a> },
-    Ext { instruction: u8, params: Bytes<'a> },
-}
-
-/// Bus-derived context accompanying a [`DxlRequest`]: what core may not derive
-/// itself once wire bytes and addressing stay behind the bus boundary.
-pub struct DxlRequestCtx {
-    /// Instruction arrived via the broadcast id (SRL gating input).
-    pub broadcast: bool,
-    /// The wire contract permits a Status for this request (e.g. false for
-    /// SyncWrite/BulkWrite slots and for a broadcast Write/RegWrite/Action;
-    /// true for a broadcast Ping, which still replies).
-    pub may_reply: bool,
-    /// TRANSITIONAL until the reply surface unifies in a later chunk: the
-    /// reply must be emitted as a FAST slot block ([`DxlReply::send_slot`])
-    /// rather than a standalone Status ([`DxlReply::send_status`]).
-    pub slot_reply: bool,
-}
-
-/// Single-shot typed dispatch: the bus hands one fully-decoded, addressing-
-/// resolved [`DxlRequest`] plus its [`DxlRequestCtx`]. There is no per-packet
-/// reassembly state — the request carries its whole payload up front. `R` is
-/// generic per call so the hot path avoids `dyn DxlReply`.
-pub trait DxlDispatch {
-    fn dispatch<R: DxlReply>(&mut self, req: DxlRequest<'_>, ctx: DxlRequestCtx, reply: &mut R);
+/// Single-shot typed dispatch: the bus hands one fully-decoded request plus
+/// its ctx. `R` is generic per call so the hot path avoids `dyn Reply`.
+pub trait Dispatch {
+    fn dispatch<R: Reply>(&mut self, req: Request<'_>, ctx: RequestCtx, reply: &mut R);
 }

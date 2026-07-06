@@ -78,25 +78,11 @@ pub struct TelemetryRaw {
 /// Concurrent host clear + ISR increment may drop one update — acceptable for bench.
 #[repr(C)]
 #[derive(Copy, Clone, Block)]
-pub struct TelemetryDxlLink {
+pub struct TelemetryBusLink {
     #[ct_field(access = rw)]
-    pub illegal_transition: u32,
+    pub crc_fail_count: u32,
     #[ct_field(access = rw)]
-    pub unexpected_byte_count: u32,
-    #[ct_field(access = rw)]
-    pub previous_slot_timeout: u32,
-    #[ct_field(access = rw)]
-    pub slot_timing_miss: u32,
-    #[ct_field(access = rw)]
-    pub crc_patch_deadline_miss: u32,
-    #[ct_field(access = rw)]
-    pub dma_overrun: u32,
-    #[ct_field(access = rw)]
-    pub parity_error: u32,
-    #[ct_field(access = rw)]
-    pub framing_error: u32,
-    #[ct_field(access = rw)]
-    pub noise_error: u32,
+    pub framing_drop_count: u32,
 }
 
 #[repr(C)]
@@ -107,7 +93,7 @@ pub struct TelemetryRegs {
     pub intermediaries: TelemetryIntermediaries,
     pub fault: TelemetryFault,
     pub raw: TelemetryRaw,
-    pub link: TelemetryDxlLink,
+    pub link: TelemetryBusLink,
     #[ct_section(skip)]
-    pub _rsvd_tail: [u8; 32],
+    pub _rsvd_tail: [u8; 60],
 }

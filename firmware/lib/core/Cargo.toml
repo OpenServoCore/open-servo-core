@@ -15,14 +15,13 @@ defmt                      = { version = "1", optional = true }
 log                        = { version = "0.4", optional = true }
 
 osc-units.workspace     = true
-dxl-protocol.workspace  = true
+osc-protocol.workspace  = true
 control-table.workspace = true
 
 [dev-dependencies]
-crc          = { workspace = true }
-dxl-protocol = { workspace = true, features = ["heapless"] }
+crc = { workspace = true }
 
 [features]
 default = []
-defmt   = ["dep:defmt", "control-table/defmt", "dxl-protocol/defmt"]
+defmt   = ["dep:defmt", "control-table/defmt"]
 log     = ["dep:log"]

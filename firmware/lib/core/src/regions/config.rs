@@ -1,18 +1,19 @@
 use control_table::{Block, Enum, Section};
 
-/// DXL X-series baud rate indices. V006 USART caps at 3 Mbps; indices 6–7
-/// (4 Mbps, 4.5 Mbps) are absent and host writes of them get rejected.
+/// osc-native operational baud (§2). Recovery is the rescue break's job, not a
+/// crawl-speed fallback, so only the four operational rates exist.
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Default, Enum)]
 #[repr(u8)]
 pub enum BaudRate {
-    B9600 = 0,
-    B57600 = 1,
-    B115200 = 2,
+    B500000 = 0,
     #[default]
-    B1000000 = 3,
-    B2000000 = 4,
-    B3000000 = 5,
+    B1000000 = 1,
+    B2000000 = 2,
+    B3000000 = 3,
 }
+
+/// osc-native §7 default: chain reclaim + host timeout, not a reply-time floor.
+pub const DEFAULT_RESPONSE_DEADLINE_US: u16 = 60;
 
 impl BaudRate {
     pub const fn as_idx(self) -> u8 {
@@ -21,39 +22,19 @@ impl BaudRate {
 
     pub const fn as_hz(self) -> u32 {
         match self {
-            BaudRate::B9600 => 9_600,
-            BaudRate::B57600 => 57_600,
-            BaudRate::B115200 => 115_200,
+            BaudRate::B500000 => 500_000,
             BaudRate::B1000000 => 1_000_000,
             BaudRate::B2000000 => 2_000_000,
             BaudRate::B3000000 => 3_000_000,
         }
     }
 
-    /// Q16.16 µs per byte. Compile-time precomputed so slot math avoids the
-    /// software u64 divide on RV32EC.
-    pub const fn us_per_byte_q16(self) -> u32 {
-        const fn q16(baud_hz: u32) -> u32 {
-            (10u64 * 1_000_000 * (1u64 << 16) / baud_hz as u64) as u32
-        }
-        match self {
-            BaudRate::B9600 => const { q16(9_600) },
-            BaudRate::B57600 => const { q16(57_600) },
-            BaudRate::B115200 => const { q16(115_200) },
-            BaudRate::B1000000 => const { q16(1_000_000) },
-            BaudRate::B2000000 => const { q16(2_000_000) },
-            BaudRate::B3000000 => const { q16(3_000_000) },
-        }
-    }
-
     pub const fn from_idx(idx: u8) -> Option<Self> {
         match idx {
-            0 => Some(BaudRate::B9600),
-            1 => Some(BaudRate::B57600),
-            2 => Some(BaudRate::B115200),
-            3 => Some(BaudRate::B1000000),
-            4 => Some(BaudRate::B2000000),
-            5 => Some(BaudRate::B3000000),
+            0 => Some(BaudRate::B500000),
+            1 => Some(BaudRate::B1000000),
+            2 => Some(BaudRate::B2000000),
+            3 => Some(BaudRate::B3000000),
             _ => None,
         }
     }
@@ -67,17 +48,6 @@ pub enum StallResponse {
     #[default]
     Disable = 0,
     Comply = 1,
-}
-
-/// DXL Status Return Level. Ordered None < Read < All. Ping replies regardless.
-#[derive(Copy, Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Default, Enum)]
-#[cfg_attr(feature = "defmt", derive(defmt::Format))]
-#[repr(u8)]
-pub enum StatusReturnLevel {
-    None = 0,
-    Read = 1,
-    #[default]
-    All = 2,
 }
 
 #[repr(C)]
@@ -100,13 +70,12 @@ pub struct ConfigIdentity {
 #[derive(Copy, Clone, Block)]
 #[ct_block(hooks = crate::regions::hooks::ControlTableHookEvents)]
 pub struct ConfigComms {
-    #[ct_field(le = 252u8, hook = on_id_write)]
+    #[ct_field(ge = 1u8, le = 249u8, hook = on_id_write)]
     pub id: u8,
     #[ct_field(hook = on_baud_rate_idx_write)]
     pub baud_rate_idx: BaudRate,
-    #[ct_field(hook = on_return_delay_2us_write)]
-    pub return_delay_2us: u8,
-    pub status_return_level: StatusReturnLevel,
+    #[ct_field(hook = on_response_deadline_us_write)]
+    pub response_deadline_us: u16,
 }
 
 #[repr(C)]
@@ -213,8 +182,7 @@ pub struct ConfigDefaults {
     pub pos_max_phys_urad: i32,
     /// VDD-at-chip-pin in mV; the v006 ADC reference is VDD itself.
     pub vdd_mv: u16,
-    pub dxl_id: u8,
-    pub dxl_baud: BaudRate,
-    /// DXL 2.0 RDT encoding: 2 µs units. Spec factory default = 125 (250 µs).
-    pub dxl_return_delay_2us: u8,
+    pub id: u8,
+    pub baud: BaudRate,
+    pub response_deadline_us: u16,
 }

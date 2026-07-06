@@ -17,6 +17,7 @@ crc              = { version = "3", default-features = false }
 
 osc-units            = { path = "units" }
 dxl-protocol         = { path = "dxl-protocol" }
+osc-protocol         = { path = "osc-protocol" }
 osc-core             = { path = "core" }
 osc-drivers          = { path = "drivers" }
 control-table        = { path = "control-table" }
