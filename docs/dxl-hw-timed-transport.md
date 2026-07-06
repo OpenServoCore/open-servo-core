@@ -1,5 +1,11 @@
 # DXL 2.0 Hardware-Timed TX + Software-Timed RX on the CH32V006
 
+> **Status: frozen-track (2026-07-05).** Describes the feature-frozen DXL 2.0
+> transport. New transport work happens against
+> [osc-native-protocol.md](osc-native-protocol.md), which deletes every
+> mechanism documented here (hardware kickoff, RDT, packet-end estimate,
+> catchup grid, drift estimation).
+
 A design note for the DXL transport on the V006. Read [dxl-rx-timing.md](dxl-rx-timing.md) and [dxl-streaming-rx.md](dxl-streaming-rx.md) first — this doc covers the timing subsystem: how a reply's wire start is placed on a hardware tick (TX side) and how the transport recovers the timing it needs to place it (RX side). The pieces that don't live here (USART1 framing, half-duplex muxing, the flat frame classifier, Fast Last CRC composition, baud/RDT decision rule) are covered in the docs above.
 
 The transport is **asymmetric**: TX timing is hardware, RX timing is software.

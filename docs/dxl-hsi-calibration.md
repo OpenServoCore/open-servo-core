@@ -1,5 +1,11 @@
 # Runtime HSI Trim and Fire-Intercept Calibration for DXL Fast on the CH32V006
 
+> **Status: frozen-track (2026-07-05).** Describes the feature-frozen DXL 2.0
+> transport; pairs with the tune-fast-last tools. osc-native has no clock
+> calibration at all ([osc-native-protocol.md](osc-native-protocol.md) §9.3).
+> The dxl-fast-chain-crc*.md companions linked below are retired to git
+> history.
+
 Companion to [dxl-rx-timing.md](dxl-rx-timing.md) and [dxl-fast-chain-crc.md](dxl-fast-chain-crc.md). Read those first — they cover what "wire-end timestamp," "Fast last-slave coalesce," and "the V006's SysTick CMP fire path" mean. This doc covers what to do when the chip's internal clock isn't accurate enough for those mechanisms to work without help.
 
 The V006 has no crystal — its 24 MHz HSI oscillator drifts ±1% from chip to chip and with temperature. For most embedded work that's fine. For DXL Fast mode at 3 Mbaud, where slaves stitch their replies onto the bus with less than ~3.3 µs of slop, ±1% drift turns into 15+ µs of wire-side error on a 128-byte predecessor — guaranteed bus collision or visible gap, either way coalesce breaks.

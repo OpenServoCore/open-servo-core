@@ -1,5 +1,11 @@
 # DXL 2.0 RX Timing on the CH32V006
 
+> **Status: frozen-track (2026-07-05).** Describes the feature-frozen DXL 2.0
+> transport; early sections predate even the frozen stack (RXNE/IDLE-switch
+> era). New transport work happens against
+> [osc-native-protocol.md](osc-native-protocol.md). The dxl-fast-chain-crc*.md
+> companions linked below are retired to git history.
+
 A design note for anyone bringing up a Dynamixel 2.0 slave on the CH32V006. You don't need prior DXL or RISC-V expertise — read it top to bottom.
 
 A DXL slave has to start its reply exactly N microseconds after the host's request ends on the wire. N is configurable and can be as small as zero. The CH32V006's USART gives us two ways to detect "the request ended": a per-byte interrupt (RXNE) or a per-packet interrupt (IDLE). Neither one works across the full baud range — IDLE is too slow at low baud, RXNE costs too much at high baud. The fix is to switch between them based on baud and reply-delay, and to glue on a bag of tricks (highcode, DMA prefetch riding, SysTick CMP scheduling, priority pinning) to hit DXL 2.0's timing budgets all the way up to 3 Mbaud — the V006's USART ceiling.
