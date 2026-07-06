@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["control-table", "control-table-derive", "core", "drivers", "dxl-protocol", "integration", "osc-protocol", "units"]
+members = ["control-table", "control-table-derive", "core", "drivers", "dxl-protocol", "osc-protocol", "units"]
 
 [workspace.package]
 edition = "2024"
