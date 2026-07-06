@@ -73,37 +73,53 @@ pub fn on_usart1() {
         let cur = 512 - crate::hal::dma::remaining(crate::hal::dma::Channel::CH5);
         DBG[4].store(0x1_0000 | cur as u32, core::sync::atomic::Ordering::Relaxed);
     }
-    // (a) RX errors: an FE marks a break (or mid-frame garble) → the framer
-    // anchors on the just-ringed 0x00 (F2: the DMA write beats the ISR).
+    // (a) RX errors: a break (or mid-frame garble) → the framer anchors on
+    // the just-ringed 0x00 (F2: the DMA write beats the ISR). The IRQ is
+    // the break signal, NOT the flags: with RX-DMA, the hardware's SR→DR
+    // clear sequence can complete between the IRQ pend and this read (the
+    // DMA's DR drain is the DR half), leaving STATR clean — bench: gating
+    // on FE went deaf on every other exchange, entry seen with STATR=0xC0.
+    // This vector has exactly two sources (EIE errors, gated TC), so any
+    // non-TC entry is an RX error whether or not its flags survived.
     let errs = usart::rx_errors(USART1);
-    if errs.fe || errs.ore || errs.pe || errs.ne {
-        if errs.fe {
-            // The ERR interrupt beats the DMA drain: at entry the break's 0x00
-            // may still sit in DR (RXNE set), so the ring cursor hasn't counted
-            // it yet — and the framer's anchor would land one byte early
-            // (bench-observed: every header read as [stale, 00, ID, LEN] →
-            // BadId). Wait, bounded, for the DMA to take the byte before the
-            // driver samples the cursor.
-            let mut settle = FE_DMA_SETTLE_SPINS;
-            while usart::is_rxne(USART1) && settle > 0 {
-                settle -= 1;
-                core::hint::spin_loop();
-            }
-            // SAFETY: see fn doc.
-            unsafe { Drivers::bus() }.on_break();
+    let any_err = errs.fe || errs.ore || errs.pe || errs.ne;
+    let tc = usart::is_tcie(USART1) && usart::is_tc(USART1);
+    // Bench forensics: STATR image + entry ordinal of the latest entry.
+    DBG[5].store(
+        (usart::raw_statr(USART1) << 8) | DBG[0].load(core::sync::atomic::Ordering::Relaxed),
+        core::sync::atomic::Ordering::Relaxed,
+    );
+    if any_err || !tc {
+        // The ERR interrupt can beat the DMA drain: at entry the break's
+        // 0x00 may still sit in DR (RXNE set), so the ring cursor hasn't
+        // counted it yet — and the framer's anchor would land one byte
+        // early (bench-observed: every header read as [stale, 00, ID, LEN]
+        // → BadId). Wait, bounded, for the DMA to take the byte before the
+        // driver samples the cursor.
+        let mut settle = FE_DMA_SETTLE_SPINS;
+        while usart::is_rxne(USART1) && settle > 0 {
+            settle -= 1;
+            core::hint::spin_loop();
         }
-        // SR-then-DR is the only V006 error clear. DMA already drained DR for
-        // the ring byte, so this read cannot steal a payload byte (spike-
-        // validated: NDTR unchanged across the DR read).
-        usart::clear_rx_errors(USART1);
+        // SAFETY: see fn doc.
+        unsafe { Drivers::bus() }.on_break();
+        if any_err {
+            // SR-then-DR is the only V006 error clear. DMA already drained
+            // DR for the ring byte, so this read cannot steal a payload
+            // byte (spike-validated: NDTR unchanged across the DR read).
+            usart::clear_rx_errors(USART1);
+        }
     }
 
     // (b) TC: an armed TX arm drained (shifter empty). TCIE gates arbitration
     // — the shared vector fans in RX-errors + TC, and a foreign source could
     // enter with a stale reset-value TC. Gate on TCIE so it can't walk into
     // on_tx_complete before the first reply is armed.
-    if usart::is_tcie(USART1) && usart::is_tc(USART1) {
-        usart::clear_tc(USART1);
+    //
+    // TC is NOT cleared here — `TxWire::send` clears it per-arm once the
+    // next arm's first byte is in flight, and the final arm's release drops
+    // TCIE, leaving TC=1 as the natural idle state (STATR reset 0xC0).
+    if tc {
         // SAFETY: see fn doc.
         unsafe { Drivers::bus() }.on_tx_complete();
     }

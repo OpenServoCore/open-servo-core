@@ -12,31 +12,37 @@ pub fn init(r: Regs, brr: u32) {
     r.ctlr1().modify(|w| w.set_ue(true));
 }
 
-/// osc-native single-wire bring-up: TE/RE, then HDSEL + RX-DMA + error IRQ in
-/// CTLR3, BRR, and UE last (HDSEL must latch before UE, per the break-framing
-/// spike). No IDLE interrupt — the framer sources all timing from the ring
-/// cursor and SysTick, never from IDLE.
+/// osc-native single-wire bring-up, in the break-framing spike's exact
+/// order: HDSEL alone, TE/RE, BRR, UE — and only then DMAR + EIE in a
+/// second CTLR3 write. The sequencing is load-bearing for the released
+/// idle level: deviations (TE before HDSEL, or DMAR/EIE folded into the
+/// HDSEL write) leave the HDSEL TX signal latched LOW — through the AF_OD
+/// listening pin that clamps the whole bus (bench-measured: wire stuck
+/// low at idle, rose the moment PC0 left AF mode). No IDLE interrupt —
+/// the framer sources all timing from the ring cursor and SysTick, never
+/// from IDLE.
 #[inline]
 pub fn init_bus(r: Regs, brr: u32) {
+    r.ctlr3().modify(|w| w.set_hdsel(true));
     r.ctlr1().modify(|w| {
         w.set_te(true);
         w.set_re(true);
     });
+    r.brr().write_value(ch32_metapac::usart::regs::Brr(brr));
+    r.ctlr1().modify(|w| w.set_ue(true));
     r.ctlr3().modify(|w| {
-        w.set_hdsel(true);
         w.set_dmar(true);
         w.set_eie(true);
     });
-    r.brr().write_value(ch32_metapac::usart::regs::Brr(brr));
-    r.ctlr1().modify(|w| w.set_ue(true));
 }
 
-/// Send a UART break (SBK) and wait, bounded, for the hardware to commit it
-/// to the shifter (SBK self-clears). Without the wait, a DR byte loaded by
-/// DMA right after SBK shifts out FIRST and the break follows — leaving DR
-/// empty at break-end so TC fires one byte into the reply (bench-observed:
-/// DMA CNTR frozen at n-1, wire showed data-then-break). The spike's
-/// `pulse_sbk` used the same bounded poll.
+/// Send a UART break (SBK, the spike's `pulse_sbk`) and wait, bounded, for
+/// the hardware to commit it — SBK self-clears during the break's stop
+/// bit. Without the wait, a DR byte loaded by DMA right after SBK shifts
+/// out FIRST and the break follows (bench-observed: DMA CNTR frozen at
+/// n-1, wire showed data-then-break). Blocking keeps the shifter-state
+/// contract `TxWire::send` relies on: when this returns, the wire has
+/// carried the whole break and DR is free for arm0's first byte.
 #[inline(always)]
 pub fn send_break(r: Regs) {
     r.ctlr1().modify(|w| w.set_sbk(true));
@@ -47,17 +53,20 @@ pub fn send_break(r: Regs) {
     }
 }
 
-/// SBK self-clear poll bound: a break is ~14 bit-times (~14 µs at 1M, 4.7 µs
-/// at 3M); this covers it at the slowest operational rate with slack.
+/// SBK self-clear poll bound: a break is ~14 bit-times (~28 µs at the 0.5M
+/// rescue floor ≈ 1350 HCLK cycles); 4096 covers it with slack.
 const SBK_COMMIT_SPINS: u32 = 4096;
 
-/// Bounces UE around a BRR change. Caller must ensure no TX/RX is in flight —
-/// retuning mid-byte will garbage the wire.
+/// Live BRR write — no UE bounce. Caller must ensure no TX/RX is in flight
+/// (retuning mid-byte garbages the wire); the driver applies baud changes
+/// only on an idle bus (§4.2 deferred config). The DXL-era UE bounce is
+/// gone for cause: dropping UE re-latches the HDSEL TX output to the
+/// inactive-AF level (0), and through the AF_OD listening pin that clamps
+/// the whole bus until the next own-TX (bench-measured; the break-framing
+/// spike never bounces UE and its idle line sits released-high).
 #[inline]
 pub fn set_baud(r: Regs, brr: u32) {
-    r.ctlr1().modify(|w| w.set_ue(false));
     r.brr().write_value(ch32_metapac::usart::regs::Brr(brr));
-    r.ctlr1().modify(|w| w.set_ue(true));
 }
 
 // SAFETY: see hal/SAFETY.md. CTLR3 is written from MAIN and the USART1 TC
@@ -144,6 +153,12 @@ pub struct RxErrors {
     pub pe: bool,
     pub fe: bool,
     pub ne: bool,
+}
+
+/// Bench forensics: raw STATR image.
+#[inline]
+pub fn raw_statr(r: Regs) -> u32 {
+    r.statr().read().0
 }
 
 #[inline]

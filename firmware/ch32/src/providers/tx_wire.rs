@@ -3,10 +3,14 @@
 //! USART1 TC ISR (shifter empty), never a CH4 TC — so the final release's
 //! CNF flip and any deferred config can never garble in-flight bits.
 //!
-//! Drive discipline is purely PC0's mode (spike `pc0_drive`): input-with-
-//! pull-up while listening (the servo biases the buffer-less wire, see
-//! `configure_bus_pins`), AF push-pull for the servo's own TX window. The
-//! 74LVC2G241 direction buffer is bypassed on this board (§2, F7/F8).
+//! Drive discipline is purely PC0's CNF (spike `pc0_drive`, break_framing):
+//! AF open-drain while listening — released, the external bus pull-up
+//! holds mark — and AF push-pull for the servo's own TX window, so both
+//! wire edges are driven at 3M instead of riding the pull-up's RC rise.
+//! HDSEL and RE stay on throughout: V006 HDSEL does not echo own TX [F9],
+//! and with RE on the USART hands the released line back cleanly at
+//! transmission end. The 74LVC2G241 direction buffer is bypassed on this
+//! board (§2, F7/F8).
 
 use ch32_metapac::USART1;
 use osc_drivers::traits::bus;
@@ -23,14 +27,13 @@ impl bus::TxWire for TxWire {
         crate::log::trace!("tx.start");
         // Claim the wire: PC0 → AF push-pull for the TX window.
         gpio::configure(chip::BUS_USART_MAPPING.tx_pin(), PinMode::AF_PUSH_PULL);
-        // Clear any stale TC (STATR reset = 0xC0) before enabling TCIE so the
-        // break can't raise a spurious TC → on_tx_complete before arm0 is
-        // queued: the driver calls start_frame then send(arm0) synchronously,
-        // and DMAT is enabled while the break still shifts, so TC stays held
-        // off until the arm drains (§4.2, the #134-class TC-flag-gate lesson).
-        usart::clear_tc(USART1);
-        usart::set_tc_irq(USART1, true);
-        // SBK self-times over the break's stop bit — set it and move on (§7).
+        // send_break blocks until the break has committed through its stop
+        // bit (a non-blocking SBK queues behind DR data — bench-observed).
+        // The shifter is therefore EMPTY when send(arm0) runs: TCIE must
+        // stay off until the arm's first byte is in flight, or the gap TC
+        // latches, reads as arm-drained on ISR return, and release() tears
+        // the reply down mid-byte-0 (bench signature: break, one garbled
+        // byte, silence). TCIE is armed per-arm in `send`.
         usart::send_break(USART1);
     }
 
@@ -56,13 +59,19 @@ impl bus::TxWire for TxWire {
         );
         usart::set_dma_tx(USART1, true);
         dma::enable(dma::Channel::CH4);
+        // Byte 0 is in DR within a couple of AHB cycles of the enable.
+        // Clear the TC that latched while the shifter sat empty (post-break
+        // or between arms), THEN arm the real arm-drained interrupt. A real
+        // drain can't race the clear: the shortest arm holds the shifter
+        // ≥ 10 bit-times, orders of magnitude past these two writes.
+        usart::clear_tc(USART1);
+        usart::set_tc_irq(USART1, true);
     }
 
     fn release(&mut self) {
-        // Back to the listening bias: input-with-pull-up — the servo IS the
-        // bus pull-up on this buffer-less wire (see `configure_bus_pins`),
-        // and HDSEL RX keeps hearing through the pin's input path.
-        gpio::configure(chip::BUS_USART_MAPPING.tx_pin(), PinMode::INPUT_PULL_UP);
+        // Hand the wire back: AF open-drain releases the driver and the
+        // bus pull-up holds mark; HDSEL RX keeps hearing through the pin.
+        gpio::configure(chip::BUS_USART_MAPPING.tx_pin(), PinMode::AF_OPEN_DRAIN);
         usart::set_tc_irq(USART1, false);
         usart::set_dma_tx(USART1, false);
         dma::disable(dma::Channel::CH4);

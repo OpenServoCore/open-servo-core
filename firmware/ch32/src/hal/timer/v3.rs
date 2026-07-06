@@ -1,5 +1,5 @@
-use ch32_metapac::timer::vals::{Cms, Mms, Ocm};
 use ch32_metapac::TIM1;
+use ch32_metapac::timer::vals::{Cms, Mms, Ocm};
 
 use crate::hal::clocks::TIM_CLK_HZ;
 
