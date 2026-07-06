@@ -85,76 +85,95 @@ Both directions use one shape (symmetric framing keeps the framer identical
 for hosts, servos, and chain-snooping peers):
 
 ```
-BREAK | ID | LEN_lo | LEN_hi | INST | payload[0..p] | (PAD) | CRC_lo | CRC_hi
+BREAK | ID | LEN | INST | payload[0..p] | (PAD) | CRC_lo | CRC_hi
 ```
 
 - `ID` — 1 byte. `0x01..0xF9` unicast, `0xFE` broadcast, `0x00`/`0xFF`
   invalid (never valid on the wire: `0x00` is the break's ring byte, `0xFF`
   is idle-line noise), `0xFA..0xFD` reserved. In status frames, `ID` is the
   responder's ID.
-- `LEN` — u16 little-endian: count of bytes following it (`INST` + payload
-  - pad + CRC). Frame end is knowable at byte 3:
-    `end = len_pos + 2 + LEN`. Frames are arbitrarily large in the spec;
-    what a servo _accepts_ is bounded by its capability registers (§5.1) —
-    and a `LEN` beyond the receiver's ceiling is rejected at the header
-    deadline, returning to HUNT immediately. A corrupted-huge `LEN` cannot
-    wedge the framer: any subsequent break re-anchors it (FE fires in
-    LOCKED too).
+- `LEN` — u8: count of bytes following it (`INST` + payload + pad + CRC =
+  `3 + p + pad`). Frame end is knowable at byte 2:
+  `end = len_pos + 1 + LEN`. Max payload is 252 bytes — deliberately
+  sized so the largest legal frame (258 ring bytes) fits whole in the RX
+  ring, which deletes chunked consumption from the framer (§4.1) and all
+  per-transfer capability limits (§5.1). Fleet-scale group ops fit
+  comfortably (§5.1); bigger transfers split into frames. A corrupted
+  `LEN` cannot wedge the framer: the frame fails CRC at deadline B, and
+  any subsequent break re-anchors (FE fires in LOCKED too).
 - `INST` — bit 7: `0` = instruction, `1` = status (snoopers classify frames
   without state; there is no status opcode). Instructions: bits [6:4]
   opcode, bits [3:0] flags (§5). Status: bits [6:2] result code, bit 1 =
   PAD, bit 0 = ALERT (§5.3).
-- `PAD` — one `0x00`, present iff the PAD flag is set. Rule: **pad iff the
-  payload length is even.** This makes the CRC-covered span
-  (`5 + p + pad`) even _and_ the frame's total ring footprint
-  (`covered + 2`) even — one rule, both invariants (§3.2).
-- `CRC` — little-endian osc-CRC-16 (§3.2) over
-  `[0x00, ID, LEN_lo, LEN_hi, INST, payload, PAD?]` — i.e. the break's
-  ring byte through the pad, excluding the CRC itself.
-
-Including the leading `0x00` in the coverage is deliberate: on RX the
-covered span is exactly the frame's ring footprint starting at the break
-byte, and on TX the frame buffer is built with a literal `0x00` at offset 0
-so the CRC engine DMA reads from offset 0 while the UART TX DMA reads from
-offset 1 — one buffer, two channel MARs, no copies.
+- `PAD` — one `0x00` after the payload, present iff the PAD flag is set.
+  Rule: **pad iff the payload length is odd** — an invariant, not an
+  option. It keeps the CRC-covered span (`4 + p + pad`) and the frame's
+  ring footprint (`6 + p + pad`) even, which is what lets halfword CRC
+  hardware validate every frame and holds frame anchors at constant
+  parity (§3.2). Corollary: the `LEN` value is always odd — an even
+  `LEN` is malformed, rejected at the header deadline. (The flag is
+  still load-bearing: `LEN` alone cannot distinguish an even payload
+  from an odd one plus pad.)
+- `CRC` — little-endian osc-CRC-16 (§3.2) over the frame bytes
+  `ID .. PAD` behind a fixed one-byte prefix.
 
 ### 3.2 osc-CRC-16
 
+The covered bytes are **a fixed `0x00` prefix byte, then the frame bytes
+`ID, LEN, INST, payload, PAD?`** — `4 + p + pad` bytes, always even (PAD
+rule, §3.1). Over that span:
+
 **CRC-16 poly `0x8005`, init `0x0000`, no reflection, no output XOR,
-computed over the covered bytes with each 2-byte pair swapped** —
-equivalently, CRC-16/BUYPASS fed as little-endian 16-bit halfwords,
-MSB-first. The covered span is always even (the leading `0x00` plus the PAD
-rule guarantee it).
+computed with each 2-byte pair swapped** — equivalently, CRC-16/BUYPASS
+fed as little-endian 16-bit halfwords, MSB-first. Hosts implement it as:
+prepend `0x00`, swap byte pairs, standard CRC-16/BUYPASS.
 
-Rationale: this is precisely what the V006 SPI CRC unit computes when DMA
-feeds 16-bit frames straight from the byte buffer — bit-exact, accumulating
-across split DMA arms (ring wrap), at ~0.36 µs/B wall and ~zero CPU, vs
-635 ns/B of pure CPU for the production table loop (~25× CPU saving on a
-64 B frame) [F6][F11]. Since we own the protocol, we adopt the flavor the
-silicon computes for free rather than pay a per-pair swap on every frame.
-Hosts implement it as: swap byte pairs, then standard CRC-16/BUYPASS.
+The prefix byte is protocol, not silicon: it exists so that on receivers
+where a break rings a `0x00` into the buffer (V006, V203, and any UART
+that DMAs FE bytes — a break is by definition an all-zero frame), the
+covered span is *physically present* as the frame's exact ring footprint
+starting at the anchor. Such receivers CRC the ring in place; everyone
+else prepends the constant. On TX the frame buffer is built with a
+literal `0x00` at offset 0 — the CRC engine DMA reads from offset 0 while
+the UART TX DMA reads from offset 1: one buffer, two channel MARs, no
+copies.
 
-Servo usage: hardware engine for status **generation** (buffers we build
-are aligned and even by construction) and for validating long inbound
-writes; the plain table loop (`crc16_umts_continue` shape, adjusted for the
-pair swap) remains as the short-frame / odd-ring-offset fallback — V006 DMA
-rounds odd addresses down, so unaligned ring spans can't be hardware-fed
-[F12].
+Rationale for the flavor: it is precisely what the V006 SPI CRC unit
+computes when DMA feeds 16-bit frames straight from the byte buffer —
+bit-exact, accumulating across split DMA arms (ring wrap), at ~0.36 µs/B
+wall and ~zero CPU, vs 635 ns/B of pure CPU for the production table loop
+(~25× CPU saving on a 64 B frame) [F6][F11]. Since we own the protocol, we
+adopt the flavor the silicon computes for free rather than pay a per-pair
+swap on every frame. The 4-byte covered prefix (`0x00, ID, LEN, INST`) is
+2 whole halfwords, so payload halfword pairing is position-independent —
+multi-arm TX (§4.2) feeds even-addressed table spans to the engine with
+no re-packing.
 
-Because the ring footprint of every frame is even (§3.1), frame anchors
-hold constant parity — with an even ring base, every anchor lands
-halfword-aligned and the hardware engine covers every frame. Wire noise
-(an odd number of stray ring bytes) flips the parity; odd-anchor frames
-simply take the software path (correct, just CPU-paid) until parity flips
-back — a bare break (one ring byte) is a deliberate parity corrector the
-host may send at any time.
+Servo usage: the hardware engine is the **only** CRC implementation on
+the servo — status generation (own buffers are even by construction) and
+inbound validation both. There is no software CRC fallback, because there
+is nothing for it to fall back on:
+
+**Even anchors are an invariant, not an optimization.** Every frame's
+ring footprint is even (§3.1); a mid-frame FE still rings its byte, so
+garble is parity-neutral [F4]; own TX never rings (no echo [F9]); and the
+servo arms its RX ring on a quiet line at boot, so it joins aligned. With
+an even ring base, every anchor therefore lands halfword-aligned and the
+engine covers every frame. An odd anchor is a *fault* — noise rang a
+stray byte, or a transmitter violated framing — and V006 DMA cannot feed
+an odd address anyway [F12], so the frame is dropped at layer 1 (§5.3):
+no reply, diagnostics counter. Parity is bus-global (every listener hears
+the same bytes), so recovery is one bare break (one ring byte) from the
+host, flipping the whole bus back at once. Corollary: hosts must not send
+bare breaks casually — a resync breather is *two* breaks, parity-neutral.
 
 Test vectors (covered bytes → CRC):
 
 ```
-00 01 04 00 12 00                 → 0x783C  (PING id 1; p=0 → padded)
-00 05 08 00 32 80 01 2C 01 00     → 0x9024  (WRITE id 5, addr 0x0180, data 2C 01)
-00 03 08 00 22 00 02 08 00 00     → 0x8767  (READ id 3, addr 0x0200, count 8)
+00 01 03 10                 → 0x740A  (PING id 1)
+00 05 07 30 80 01 2C 01     → 0xC9AE  (WRITE id 5, addr 0x0180, data 2C 01)
+00 03 07 20 00 02 08 00     → 0x1970  (READ id 3, addr 0x0200, count 8)
+00 02 07 32 00 01 AA 00     → 0x46A8  (WRITE id 2, addr 0x0100, data AA; p=3 → padded)
 ```
 
 ### 3.3 Resync
@@ -174,45 +193,48 @@ the #134 class). Two states:
 
 - **HUNT** — on FE IRQ (break): record the anchor = current ring position
   (the `0x00` just ringed). Enter LOCKED.
-- **LOCKED** — deadline A at anchor + 4 byte-times: read ID+LEN from the
-  ring, compute frame end, set deadline B at end + margin. At B: confirm
+- **LOCKED** — deadline A at anchor + 4 byte-times: the full header
+  (ID, LEN, INST) is in the ring — read it, compute frame end, prime the
+  dispatcher from INST, set deadline B at end + margin. At B: confirm
   NDTR reached the end, CRC-check, dispatch. Short/failed → HUNT.
 
 Deadlines come from SysTick compare; both are computed, not discovered —
 "frame end is predictable at header time." Dispatch and reply staging run
 under the instruction's own remaining wire time.
 
-Frames that fit comfortably in the ring use only the two deadlines — no
-per-chunk work. Frames longer than half the ring switch LOCKED into
-**chunked consumption**: the RX DMA channel's HT/TC interrupts (the ring is
-circular; they fire every half-ring) drain the body incrementally —
-discard foreign group slices, copy the own slice to staging, feed the
-hardware CRC engine arm-by-arm (it accumulates across arms [F6]). The
-latency budget is generous by construction: a half-ring (256 B of 512) fills
-in 853 µs at 3 M, and consuming a chunk is skip-or-copy plus a DMA re-arm —
-microseconds. The consumer only has to beat 375 kB/s sustained, not be
-"fast".
+Every frame fits whole in the ring by construction: the largest legal
+frame is 258 ring bytes (§3.1) against a 512 B ring. LOCKED is therefore
+the entire framer — two deadlines, no per-chunk work, no HT/TC draining,
+no staging buffers. The dispatch budget is generous: after deadline B the
+frame's bytes stay valid until the host sends another ~254 bytes (~850 µs
+at 3 M, more at lower bauds) — and a scheduling host is awaiting the
+reply anyway.
 
 ### 4.2 TX path
 
-Reply buffer: `[0x00][ID][LEN][INST|0x80][payload][PAD?][crc][crc]` in an
-aligned static. Sequence: flip pin to push-pull → `SBK` → enable UART TX
-DMA from offset 1 → simultaneously enable SPI-CRC DMA from offset 0 → the
-CRC engine outruns the wire 8:1, so `TCRCR` is patched into the trailing
-CRC bytes long before the shifter needs them (fire-first, append-later,
-no deadline race) [F6]. On TC: release pin to open-drain.
+Reply buffer: `[0x00][ID][LEN][INST|0x80][payload][PAD?][crc][crc]`
+in a halfword-aligned static — the `0x00` at offset 0 is the CRC prefix
+(§3.2), and the PAD rule keeps the buffer even, so it is hardware-CRC-able
+by construction. Sequence: flip pin to
+push-pull → `SBK` → enable UART TX DMA from offset 1 → simultaneously
+enable SPI-CRC DMA from offset 0 → the CRC engine outruns the wire 8:1,
+so `TCRCR` is patched into the trailing CRC bytes long before the shifter
+needs them (fire-first, append-later, no deadline race) [F6]. On TC:
+release pin to open-drain.
 
 No hardware-timed kickoff: TX start is "enable the channel when ready" —
 the break makes reply timing non-critical, which deletes the TIM-compare
 kickoff machinery, the RDT register, and its whole tuning surface (K clip,
 TX-start lead calibration).
 
-Large reads are **zero-copy and unbounded**: the header comes from the
+Large reads are **zero-copy**: the header comes from the
 small reply buffer, then the TX DMA is re-armed directly onto the control
 table region (UART bytes tolerate arbitrary inter-byte gaps, so the µs-
 scale re-arm between DMA arms is invisible framing-wise — nothing in this
-protocol times on idle). The CRC engine consumes the same spans; a
-whole-table dump is one frame, no staging.
+protocol times on idle). The CRC engine consumes the same spans: the
+4-byte covered prefix is 2 whole halfwords, so even-addressed table spans
+arrive halfword-paired with no re-packing (§3.2, §5.2). Reads over 252 B
+split into multiple frames (§5.1), each still zero-copy.
 
 ## 5. Instruction set
 
@@ -244,26 +266,24 @@ Notes:
   update. Addressing mode is one flag, and it stops there.
 - Status result codes: see §5.3.
 - The flat control table carries over unchanged (address == offset,
-  1024 B); `addr` is 2 bytes, `count` is 2 bytes for reads (replies stream
-  zero-copy, so read size is unbounded) and 1 byte per GWRITE slice.
+  1024 B); `addr` is 2 bytes, `count` is 2 bytes for reads (kept u16 for
+  field alignment in the payload view; values cap at 252, §5.1) and
+  1 byte per GWRITE slice.
 
-### 5.1 Size limits (capability registers)
+### 5.1 Size limits
 
-Frame size is unbounded by the _protocol_; what bounds it is what the
-receiver must retain, and that differs by operation:
+`LEN` is the only size limit — one ceiling, no capability registers:
 
-- **GWRITE / GREAD instructions of any total size** stream through the ring
-  under chunked consumption (§4.1) — a servo keeps only the frame header,
-  the running CRC, and its own slice. Per-servo slice size is capped by
-  staging RAM: `SLICE_MAX`, a read-only capability register (V006: 128 B
-  class).
-- **Unicast WRITE** data must sit whole in the ring until the frame CRC
-  passes (nothing is applied from an unverified frame — no partial-apply,
-  no rollback). Cap: `WRITE_MAX`, read-only capability (V006: ~half the
-  ring, 256 B class). Larger transfers split into multiple WRITEs, or a
-  WRITE+HOLD sequence with one COMMIT for atomicity.
-- **Reads** have no servo-side cap (zero-copy TX, §4.2); hosts bound them
-  by their own buffers.
+- Payload caps at 252 B. Fleet-scale group ops fit in one frame: a
+  uniform GREAD lists 248 IDs (the whole ID space), a PER_TARGET GREAD
+  50 targets, a uniform 4 B-data GWRITE 49 targets.
+- Every frame sits whole in the ring until its CRC passes (§4.1), so
+  nothing is applied from an unverified frame — no partial-apply, no
+  rollback, and no per-transfer staging caps (the `SLICE_MAX` /
+  `WRITE_MAX` capability registers of earlier drafts are deleted).
+- Larger transfers split into multiple frames; a WRITE+HOLD sequence
+  with one COMMIT keeps a multi-frame update atomic. Reads are status
+  frames under the same ceiling: a whole-table dump is five READs.
 
 ### 5.2 Read profiles (indirect addressing, span-granular)
 
@@ -286,7 +306,7 @@ table sections) is met span-granularly instead:
 - Constraint: **spans must be even-addressed and even-length** so the
   hardware CRC's halfword pairing survives concatenation (an odd span
   shifts the pairing of everything after it). Lone `u8` fields round up to
-  2 bytes.
+  2 bytes. A slot's total span length caps at 252 B like any reply (§5.1).
 - Scattered _writes_ need no counterpart: `WRITE+HOLD` per span plus one
   `COMMIT` is already atomic — inline scatter-writes would add cross-span
   validation complexity for no capability gain.
@@ -312,7 +332,8 @@ code shares the byte (bits [6:2], 32 values). Errors split by layer:
    code, empty payload — `OK`, `instruction` (unknown op/flags), `range`
    (addr/count out of bounds), `access` (read-only / torque-locked),
    `validation` (value rejected by field rules), `busy`, `limit`
-   (`WRITE_MAX` / `SLICE_MAX` exceeded), `predecessor-silent` (§6),
+   (requested reply exceeds the frame ceiling, §5.1), `predecessor-silent`
+   (§6),
    `hardware`. Exact numeric assignments live with the implementation.
 3. **Device-level** (alarms: overtemperature, overcurrent, encoder fault):
    orthogonal to any one instruction's result, so it takes no result-code
@@ -362,7 +383,7 @@ DXL's 62.8 µs ping round trip; to be measured, not promised.
 
 - Crystal-clocked UART with break send (any USB-serial with SBK, or the
   pirate).
-- osc-CRC (pair-swap + BUYPASS).
+- osc-CRC (prefix + pair-swap + BUYPASS, §3.2) and the PAD rule (§3.1).
 - Drive discipline if on a buffer-less bus (release when idle) [F8].
 - Schedule the bus: one outstanding instruction / chain at a time;
   timeout = RESPONSE_DEADLINE + frame time.
@@ -471,8 +492,9 @@ hunter, fold-CRC machinery, the 74LVC2G241 + TX_EN pin.
 
 ## 11. Open items
 
-1. Ring size (512 B proposed) and the `SLICE_MAX` / `WRITE_MAX` values:
-   set against the RAM budget when the transport band is planned.
+1. Ring size: 512 B proposed (must exceed the 258 B max frame with lap
+   margin); confirm against the RAM budget when the transport band is
+   planned.
 2. RESPONSE_DEADLINE default and T_turn value: set from bench measurement
    of dispatch-under-arrival, not theory.
 3. Status error-code assignment and control-table register moves (RDT
