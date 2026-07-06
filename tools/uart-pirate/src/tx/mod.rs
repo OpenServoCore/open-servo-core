@@ -370,6 +370,54 @@ pub fn send_break_then(payload: &[u8]) -> Result<(), SendError> {
     done.map_err(|TxTimeout| SendError::Busy)
 }
 
+/// Mid-stream framing-error injection: `pre` bytes as normal 8N1, then
+/// `bad` bytes as 9-bit frames with bit 8 = 0 — an 8N1 receiver samples
+/// that 9th bit at its stop position and flags FE with the byte's real
+/// data levels on the wire (unlike a break's solid low) — then `post`
+/// bytes as 8N1 again. The M-bit flips happen at TC, costing a sub-frame
+/// gap that never reaches the receiver's IDLE threshold, so the whole
+/// sequence reads as one back-to-back stream.
+pub fn send_fe_inject(pre: &[u8], bad: &[u8], post: &[u8]) -> Result<(), SendError> {
+    if pre.len() > FE_INJECT_MAX || bad.len() > FE_INJECT_MAX || post.len() > FE_INJECT_MAX {
+        return Err(SendError::TooLong);
+    }
+    wait_tx_complete().map_err(|TxTimeout| SendError::Busy)?;
+    pb10_drive(true);
+    let r = (|| {
+        feed_bytes(pre)?;
+        wait_tx_complete().map_err(|TxTimeout| SendError::Busy)?;
+        USART3.ctlr1().modify(|w| w.set_m(true));
+        let r = feed_bytes(bad).and_then(|()| {
+            wait_tx_complete().map_err(|TxTimeout| SendError::Busy)
+        });
+        USART3.ctlr1().modify(|w| w.set_m(false));
+        r?;
+        feed_bytes(post)?;
+        wait_tx_complete().map_err(|TxTimeout| SendError::Busy)
+    })();
+    pb10_drive(false);
+    r
+}
+
+pub const FE_INJECT_MAX: usize = 32;
+
+/// TXE-poll byte feed; bounded per byte. `dr` writes are 9 bits wide —
+/// a `u8` payload always carries bit 8 = 0, which is exactly what the
+/// 9-bit FE-injection frames need.
+fn feed_bytes(payload: &[u8]) -> Result<(), SendError> {
+    let bit_ticks = USART3.brr().read().0;
+    for &b in payload {
+        let t0 = read_tick32();
+        while !USART3.statr().read().txe() {
+            if read_tick32().wrapping_sub(t0) > bit_ticks * 64 {
+                return Err(SendError::Busy);
+            }
+        }
+        USART3.datar().write(|w| w.set_dr(b as u16));
+    }
+    Ok(())
+}
+
 /// Drive PB10 low as a plain GPIO for `us`, then restore AF. The
 /// osc-native "rescue break" shape — a low far longer than any frame,
 /// detectable by a servo EXTI at any configured baud.

@@ -52,6 +52,11 @@
 //!   `LOWPULSE us=<n>`
 //!       Drive TX low as a GPIO for `n` µs (≤ 100 ms), then restore AF.
 //!       The osc-native "rescue break" shape — detectable at any baud.
+//!   `FEINJ pre=<hex> bad=<hex> post=<hex>`
+//!       Back-to-back stream where the `bad` bytes go out as 9-bit
+//!       frames with bit 8 = 0 — a mid-stream framing error at an 8N1
+//!       receiver, with real data levels (not a break). Any of the
+//!       three keys may be omitted (empty).
 //!   `TICK?`      → `TICK <tick32:u32>`
 //!   `LAST?`      → `LAST <tick32:u32>` last send kickoff
 //!   `HZ`         → `HZ <u32>` tick32 ticks per microsecond
@@ -178,6 +183,9 @@ pub fn handle_line(line: &[u8]) -> Reply {
     if let Some(rest) = line.strip_prefix("LOWPULSE ") {
         return lowpulse(rest);
     }
+    if let Some(rest) = line.strip_prefix("FEINJ ") {
+        return feinj(rest);
+    }
 
     match line {
         "TICK?" => Reply::Tick(tick::read_tick32()),
@@ -288,6 +296,32 @@ fn brksend(rest: &str) -> Reply {
         return Reply::Err("missing");
     };
     match tx::send_break_then(&buf[..len]) {
+        Ok(()) => Reply::Ok,
+        Err(tx::SendError::TooLong) => Reply::Err("toolong"),
+        Err(tx::SendError::Busy) => Reply::Err("busy"),
+    }
+}
+
+fn feinj(rest: &str) -> Reply {
+    let mut pre = [0u8; tx::FE_INJECT_MAX];
+    let mut bad = [0u8; tx::FE_INJECT_MAX];
+    let mut post = [0u8; tx::FE_INJECT_MAX];
+    let (mut n_pre, mut n_bad, mut n_post) = (0usize, 0usize, 0usize);
+    for tok in rest.split_ascii_whitespace() {
+        let Some((k, v)) = tok.split_once('=') else {
+            return Reply::Err("kv");
+        };
+        let n = match k {
+            "pre" => decode_hex(v, &mut pre).map(|n| n_pre = n),
+            "bad" => decode_hex(v, &mut bad).map(|n| n_bad = n),
+            "post" => decode_hex(v, &mut post).map(|n| n_post = n),
+            _ => return Reply::Err("key"),
+        };
+        if n.is_none() {
+            return Reply::Err("hex");
+        }
+    }
+    match tx::send_fe_inject(&pre[..n_pre], &bad[..n_bad], &post[..n_post]) {
         Ok(()) => Reply::Ok,
         Err(tx::SendError::TooLong) => Reply::Err("toolong"),
         Err(tx::SendError::Busy) => Reply::Err("busy"),
