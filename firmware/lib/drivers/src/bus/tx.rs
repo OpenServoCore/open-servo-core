@@ -92,6 +92,11 @@ impl<W: TxWire> TxEngine<W> {
         matches!(self.state, State::Staged)
     }
 
+    /// Arms are on the wire — the servo owns the line until the final TC.
+    pub fn streaming(&self) -> bool {
+        matches!(self.state, State::Streaming { .. })
+    }
+
     /// Build the frame layout for a status reply; touches no wire state
     /// (enable-when-ready is [`trigger`](Self::trigger), §4.2).
     ///

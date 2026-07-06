@@ -253,6 +253,14 @@ impl<P: Providers> ServoBus<P> {
     }
 
     fn try_rescue(&mut self) {
+        // Our own reply is on the wire — a low sample here reads our own
+        // data bits, not a host rescue pulse (bench-observed at 1M: the
+        // recheck armed by the request's break lands mid-reply and the
+        // phantom confirm aborts the reply + drops the rate mid-frame). A
+        // real rescue pulse re-arms via its own FE once the wire is back.
+        if self.tx.streaming() {
+            return;
+        }
         // Line risen → it was an ordinary break, not a rescue pulse.
         if !self.line.is_low() {
             return;
