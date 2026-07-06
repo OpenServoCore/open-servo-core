@@ -3,8 +3,9 @@
 //! USART1 TC ISR (shifter empty), never a CH4 TC — so the final release's
 //! CNF flip and any deferred config can never garble in-flight bits.
 //!
-//! Drive discipline is purely PC0's CNF (spike `pc0_drive`): AF open-drain
-//! while listening, AF push-pull for the DUT's own TX window. The
+//! Drive discipline is purely PC0's mode (spike `pc0_drive`): input-with-
+//! pull-up while listening (the servo biases the buffer-less wire, see
+//! `configure_bus_pins`), AF push-pull for the servo's own TX window. The
 //! 74LVC2G241 direction buffer is bypassed on this board (§2, F7/F8).
 
 use ch32_metapac::USART1;
