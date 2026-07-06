@@ -54,9 +54,9 @@ fn main() -> ! {
             pos_min_phys_urad: -1_570_796,
             pos_max_phys_urad: 1_570_796,
             vdd_mv: 3300,
-            dxl_id: 1,
-            dxl_baud: BaudRate::B1000000,
-            dxl_return_delay_2us: DEFAULT_RDT_2US,
+            id: 1,
+            baud: BaudRate::B1000000,
+            response_deadline_us: DEFAULT_RESPONSE_DEADLINE_US,
         },
     })
 }

@@ -6,3 +6,4 @@ pub use crate::cfg::{
 };
 pub use crate::hal::opa;
 pub use crate::{BaudRate, ConfigDefaults};
+pub use osc_core::regions::config::DEFAULT_RESPONSE_DEADLINE_US;
