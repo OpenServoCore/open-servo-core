@@ -14,7 +14,7 @@ osc-ch32      = { path = "../../../ch32", default-features = false, features = [
 tinyboot-ch32 = { git = "https://github.com/OpenServoCore/tinyboot.git", tag = "tinyboot-ch32-v0.4.1", default-features = false, features = ["ch32v006x8x6", "system-flash"] }
 # Bleeding-edge: track ch32-rs/qingke main.
 qingke        = { git = "https://github.com/ch32-rs/qingke.git", branch = "main", features = ["v2", "critical-section-impl"] }
-qingke-rt     = { git = "https://github.com/ch32-rs/qingke.git", branch = "main", features = ["v2", "highcode"] }
+qingke-rt     = { git = "https://github.com/ch32-rs/qingke.git", branch = "main", features = ["v2"] }
 panic-halt    = "1"
 defmt         = { version = "1", optional = true }
 defmt-rtt     = { version = "1", optional = true }
