@@ -31,12 +31,25 @@ pub fn init_bus(r: Regs, brr: u32) {
     r.ctlr1().modify(|w| w.set_ue(true));
 }
 
-/// Send a UART break (SBK). Self-times over the break's stop bit — set it and
-/// return; the caller never spins (§7).
+/// Send a UART break (SBK) and wait, bounded, for the hardware to commit it
+/// to the shifter (SBK self-clears). Without the wait, a DR byte loaded by
+/// DMA right after SBK shifts out FIRST and the break follows — leaving DR
+/// empty at break-end so TC fires one byte into the reply (bench-observed:
+/// DMA CNTR frozen at n-1, wire showed data-then-break). The spike's
+/// `pulse_sbk` used the same bounded poll.
 #[inline(always)]
 pub fn send_break(r: Regs) {
     r.ctlr1().modify(|w| w.set_sbk(true));
+    let mut bound = SBK_COMMIT_SPINS;
+    while r.ctlr1().read().sbk() && bound > 0 {
+        bound -= 1;
+        core::hint::spin_loop();
+    }
 }
+
+/// SBK self-clear poll bound: a break is ~14 bit-times (~14 µs at 1M, 4.7 µs
+/// at 3M); this covers it at the slowest operational rate with slack.
+const SBK_COMMIT_SPINS: u32 = 4096;
 
 /// Bounces UE around a BRR change. Caller must ensure no TX/RX is in flight —
 /// retuning mid-byte will garbage the wire.
