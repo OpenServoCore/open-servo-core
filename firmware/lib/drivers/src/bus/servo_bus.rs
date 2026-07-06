@@ -25,6 +25,10 @@ const BYTE_TIME_NUMERATOR: u32 = 10_000_000;
 /// this many µs later is a rescue pulse, not a frame delimiter.
 const RESCUE_CONFIRM_US: u32 = 100;
 
+/// Slack on the reclaim-suspension frame allowance (§6): covers the snooper's
+/// deadline-B margin on the predecessor's frame end.
+const FRAME_ALLOWANCE_SLACK_BYTES: u32 = 8;
+
 /// Transport health counters the chip publishes into the telemetry region
 /// (§5.3 layer 1: dropped frames are counted, never answered).
 pub struct LinkDiag {
@@ -117,6 +121,10 @@ impl<P: Providers> ServoBus<P> {
             .framer
             .on_break(self.ring.bytes(), self.ring.cursor(), now, self.tpb);
         let _ = self.apply_framer_out(out); // on_break never yields a Frame
+        // §6: a break while we hold a staged chain slot means the predecessor
+        // is alive — suspend its reclaim window while the frame plays out.
+        let out = self.chain.on_break_observed(now);
+        self.route_chain(out);
         // §9.1 rescue candidacy: confirm a held-low line ~100 µs on.
         if self.line.is_low() {
             let at = now.wrapping_add(RESCUE_CONFIRM_US * <P::Deadline as Deadline>::TICKS_PER_US);
@@ -184,6 +192,12 @@ impl<P: Providers> ServoBus<P> {
 
     fn reclaim(&self) -> u32 {
         self.response_deadline_us as u32 * <P::Deadline as Deadline>::TICKS_PER_US
+    }
+
+    /// How long an observed predecessor break suspends its reclaim window:
+    /// the largest legal frame plus the snooper's own end-detection slack.
+    fn frame_allowance(&self) -> u32 {
+        (super::FRAME_MAX as u32 + FRAME_ALLOWANCE_SLACK_BYTES) * self.tpb
     }
 
     /// Arm the compare at the soonest live slot, or cancel if none.
@@ -309,7 +323,10 @@ impl<P: Providers> ServoBus<P> {
         if staged {
             let t_turn = self.t_turn();
             let reclaim = self.reclaim();
-            let out = self.chain.on_reply_staged(slot, now, t_turn, reclaim);
+            let allowance = self.frame_allowance();
+            let out = self
+                .chain
+                .on_reply_staged(slot, now, t_turn, reclaim, allowance);
             self.route_chain(out);
         }
     }

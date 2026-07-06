@@ -38,6 +38,7 @@ pub struct Chain {
     // Baud is fixed for a chain, so these are captured once at staging (§7).
     t_turn: u32,
     reclaim: u32,
+    allowance: u32,
 }
 
 impl Default for Chain {
@@ -52,6 +53,7 @@ impl Chain {
             state: State::Idle,
             t_turn: 0,
             reclaim: 0,
+            allowance: 0,
         }
     }
 
@@ -65,10 +67,21 @@ impl Chain {
     }
 
     /// Own reply staged for `slot` (0 = unicast or first chain slot) after the
-    /// instruction frame ended at `end`.
-    pub fn on_reply_staged(&mut self, slot: u8, end: u32, t_turn: u32, reclaim: u32) -> ChainOut {
+    /// instruction frame ended at `end`. `reclaim` covers a predecessor's
+    /// trigger → break lead only (§6 keys reclaim off the break, so the
+    /// default stays baud-independent); `allowance` bounds how long an
+    /// observed break suspends reclaim while its frame plays out.
+    pub fn on_reply_staged(
+        &mut self,
+        slot: u8,
+        end: u32,
+        t_turn: u32,
+        reclaim: u32,
+        allowance: u32,
+    ) -> ChainOut {
         self.t_turn = t_turn;
         self.reclaim = reclaim;
+        self.allowance = allowance;
         if slot == 0 {
             // §7: reply ≥ T_turn after the instruction end, like a unicast read.
             self.state = State::Pending { silent: false };
@@ -82,6 +95,19 @@ impl Chain {
                 silent: false,
             };
             ChainOut::Wait(end.wrapping_add(t_turn).wrapping_add(reclaim))
+        }
+    }
+
+    /// A break landed on the wire while we hold a staged reply. §6: reclaim
+    /// fires only when a predecessor produces *no break* within its window —
+    /// a break means it is alive, so the window suspends for the bounded
+    /// frame allowance while its frame plays out. The frame's completion
+    /// re-sequences via [`Self::on_status_end`]; a frame that garbles or
+    /// wedges instead lets the suspended deadline fire as the reclaim.
+    pub fn on_break_observed(&mut self, now: u32) -> ChainOut {
+        match self.state {
+            State::Waiting { .. } => ChainOut::Wait(now.wrapping_add(self.allowance)),
+            _ => ChainOut::None,
         }
     }
 
@@ -141,6 +167,7 @@ mod tests {
     const END: u32 = 1000;
     const T_TURN: u32 = 60;
     const RECLAIM: u32 = 600;
+    const ALLOWANCE: u32 = 5000;
 
     fn wait_tick(out: ChainOut) -> u32 {
         match out {
@@ -160,7 +187,7 @@ mod tests {
     fn slot0_triggers_after_t_turn() {
         let mut c = Chain::new();
         assert_eq!(
-            wait_tick(c.on_reply_staged(0, END, T_TURN, RECLAIM)),
+            wait_tick(c.on_reply_staged(0, END, T_TURN, RECLAIM, ALLOWANCE)),
             END + T_TURN
         );
         assert!(c.active());
@@ -173,7 +200,7 @@ mod tests {
         let mut c = Chain::new();
         // reclaim guards slot 0's trigger.
         assert_eq!(
-            wait_tick(c.on_reply_staged(2, END, T_TURN, RECLAIM)),
+            wait_tick(c.on_reply_staged(2, END, T_TURN, RECLAIM, ALLOWANCE)),
             END + T_TURN + RECLAIM
         );
         // predecessor 0 replies.
@@ -187,7 +214,7 @@ mod tests {
     fn slot1_reclaim_triggers_silent() {
         let mut c = Chain::new();
         assert_eq!(
-            wait_tick(c.on_reply_staged(1, END, T_TURN, RECLAIM)),
+            wait_tick(c.on_reply_staged(1, END, T_TURN, RECLAIM, ALLOWANCE)),
             END + T_TURN + RECLAIM
         );
         // No status arrives: the reclaim window expires and we take the slot.
@@ -199,7 +226,7 @@ mod tests {
     fn slot3_one_status_then_two_reclaims() {
         let mut c = Chain::new();
         assert_eq!(
-            wait_tick(c.on_reply_staged(3, END, T_TURN, RECLAIM)),
+            wait_tick(c.on_reply_staged(3, END, T_TURN, RECLAIM, ALLOWANCE)),
             END + T_TURN + RECLAIM
         );
         // predecessor 0 replies (real).
@@ -208,6 +235,37 @@ mod tests {
         assert_eq!(wait_tick(c.on_deadline(1860)), 1860 + RECLAIM);
         // predecessor 2 goes silent: last one → trigger, silent.
         assert!(trigger_silent(c.on_deadline(2460)));
+    }
+
+    #[test]
+    fn break_suspends_reclaim_for_frame_allowance() {
+        let mut c = Chain::new();
+        c.on_reply_staged(1, END, T_TURN, RECLAIM, ALLOWANCE);
+        // Predecessor's break lands inside its reclaim window: alive — the
+        // window suspends for the frame allowance instead of expiring.
+        assert_eq!(wait_tick(c.on_break_observed(1100)), 1100 + ALLOWANCE);
+        // Its frame completes: normal sequencing resumes.
+        assert_eq!(wait_tick(c.on_status_end(1500)), 1500 + T_TURN);
+        assert!(!trigger_silent(c.on_deadline(1500 + T_TURN)));
+    }
+
+    #[test]
+    fn wedged_after_break_reclaims_at_allowance() {
+        let mut c = Chain::new();
+        c.on_reply_staged(1, END, T_TURN, RECLAIM, ALLOWANCE);
+        c.on_break_observed(1100);
+        // The frame never resolves (garbled/wedged): the suspended deadline
+        // fires as the reclaim.
+        assert!(trigger_silent(c.on_deadline(1100 + ALLOWANCE)));
+    }
+
+    #[test]
+    fn break_while_idle_or_pending_is_none() {
+        let mut c = Chain::new();
+        assert!(matches!(c.on_break_observed(500), ChainOut::None));
+        c.on_reply_staged(0, END, T_TURN, RECLAIM, ALLOWANCE);
+        // Pending our own trigger: a break is not a predecessor signal.
+        assert!(matches!(c.on_break_observed(1010), ChainOut::None));
     }
 
     #[test]
@@ -220,7 +278,7 @@ mod tests {
     #[test]
     fn reset_mid_chain_goes_idle() {
         let mut c = Chain::new();
-        c.on_reply_staged(2, END, T_TURN, RECLAIM);
+        c.on_reply_staged(2, END, T_TURN, RECLAIM, ALLOWANCE);
         assert!(c.active());
         c.reset();
         assert!(!c.active());

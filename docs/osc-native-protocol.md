@@ -377,7 +377,13 @@ makes it cheap and robust:
   here rather than inherited): if slot k's predecessor produces no break
   within RESPONSE_DEADLINE of its own trigger, slot k takes the slot and
   sets `predecessor-silent` in its status error field. The host sees both
-  the gap and the flag.
+  the gap and the flag. The window covers the trigger→break lead only —
+  once the predecessor's break is observed it is alive, and the window
+  suspends for a bounded max-frame allowance while its frame plays out
+  (completion re-sequences the chain; a frame that garbles or wedges lets
+  the suspended deadline fire as the reclaim). Keying on the break rather
+  than the frame end is what keeps the default baud-independent: a
+  frame's wire time exceeds 60 µs below 3 M, its break lead never does.
 - Error statuses keep the chain alive; only silence triggers reclaim.
 
 There is no FAST/regular split and no per-block checkpoint CRC: each chain
@@ -390,7 +396,7 @@ DXL checkpoint format solved does not exist here.
 | parameter               | value                                      | rationale                                                                                  |
 | ----------------------- | ------------------------------------------ | ------------------------------------------------------------------------------------------ |
 | T_turn (min reply lead) | 2 byte-times after frame end               | previous driver's TC→release margin; measured release is a register poke, this is headroom |
-| RESPONSE_DEADLINE       | config register, default ~60 µs @3 M       | chain reclaim + host timeout; NOT a reply-time prescription — a servo replies when ready   |
+| RESPONSE_DEADLINE       | config register, default 60 µs (all bauds) | chain reclaim (trigger→break lead, §6) + host timeout; NOT a reply-time prescription — a servo replies when ready |
 | break length (TX)       | hardware SBK (~14 bit-times measured [F5]) | spec floor is 10; no tuning                                                                |
 | inter-frame gap (host)  | none required                              | breaks self-delimit; back-to-back host frames are legal                                    |
 

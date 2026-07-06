@@ -16,12 +16,13 @@ const RATE: BaudRate = BaudRate::B1000000;
 const BYTE_TICKS: u64 = 480;
 const T_TURN: u64 = 2 * BYTE_TICKS;
 
-/// Chain RESPONSE_DEADLINE for the 1 M cases. The reclaim window is measured
-/// against a predecessor's whole status frame, so it must exceed a reply's own
-/// transmission time (~84 µs for a short reply at 1 M) or a present-but-slow
-/// predecessor is falsely reclaimed. The 60 µs default is tuned for 3 M, where a
-/// reply is ~28 µs; at 1 M the host would configure a wider window.
-const CHAIN_DEADLINE_US: u16 = 300;
+/// The default RESPONSE_DEADLINE (60 µs) works at every baud: §6 keys reclaim
+/// off the predecessor's *break* (its trigger → break lead), and an observed
+/// break suspends the window while the frame plays out. These 1 M chains are
+/// the regression for that — a short 1 M reply spends ~84 µs on the wire, so
+/// frame-end-keyed reclaim (the original defect) would falsely reclaim every
+/// present-but-slow predecessor here.
+const CHAIN_DEADLINE_US: u16 = 60;
 
 /// Broadcast frame ID for group ops (§5: the id-list, not the frame ID, selects
 /// responders).
