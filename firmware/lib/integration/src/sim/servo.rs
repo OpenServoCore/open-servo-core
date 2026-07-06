@@ -102,4 +102,10 @@ impl SimServo {
     pub fn with_table<R>(&self, f: impl FnOnce(&ControlTable) -> R) -> R {
         self.shared.table.with(f)
     }
+
+    /// Chip-side table mutation (e.g. a fault ISR raising `fault_flags`) —
+    /// state the wire cannot set on a read-only field.
+    pub fn with_table_mut<R>(&self, f: impl FnOnce(&mut ControlTable) -> R) -> R {
+        self.shared.table.with_mut(f)
+    }
 }

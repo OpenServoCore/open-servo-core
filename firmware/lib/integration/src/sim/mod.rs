@@ -94,6 +94,12 @@ impl Sim {
         self.servos[i].with_table(f)
     }
 
+    /// Chip-side mutation of a servo's table (fault flags, telemetry) — the
+    /// sim's stand-in for the control/fault ISRs the chip band will own.
+    pub fn servo_table_mut<R>(&self, i: usize, f: impl FnOnce(&mut ControlTable) -> R) -> R {
+        self.servos[i].with_table_mut(f)
+    }
+
     pub fn servo_diag(&self, i: usize) -> LinkDiag {
         self.servos[i].diag()
     }
