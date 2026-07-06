@@ -75,13 +75,22 @@ pub fn expand(input: &DeriveInput) -> syn::Result<TokenStream2> {
     let n_writable = quote!(0 #(+ <#block_tys>::CT_WRITABLE.len())*);
 
     // Blocks in declaration order (= address order): preserves the old
-    // sorted-by-offset first-failure precedence.
+    // sorted-by-offset first-failure precedence. Each call is gated on the
+    // block's byte range so a write that misses a block skips its whole
+    // field-guard walk (the compiled checks have no interpreter-style
+    // sorted-scan early exit; this is its replacement).
     let check_calls: Vec<TokenStream2> = block_tys
         .iter()
         .zip(&base_exprs)
         .map(|(ty, base_expr)| {
             quote! {
-                <#ty>::ct_check(view, lo, hi, #base_expr)?;
+                {
+                    let b_lo = (#base_expr) as usize;
+                    let b_hi = b_lo + ::core::mem::size_of::<#ty>();
+                    if b_lo < hi && b_hi > lo {
+                        <#ty>::ct_check(view, lo, hi, #base_expr)?;
+                    }
+                }
             }
         })
         .collect();
