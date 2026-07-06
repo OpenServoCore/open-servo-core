@@ -98,8 +98,15 @@ fn validate<M: RegisterMap + ?Sized>(m: &M, addr: u16, src: &[u8]) -> Result<(),
         let word_lo = wi * 32;
         let start_bit = lo.saturating_sub(word_lo);
         let end_bit = (hi - word_lo).min(32);
-        // Build in u64 so the shift amount never reaches 32 (Rust UB on u32).
-        let mask = (((1u64 << end_bit) - 1) & !((1u64 << start_bit) - 1)) as u32;
+        // u32 shifts only — a runtime u64 shift is an __ashldi3 libcall on
+        // RV32E. `start_bit < 32` always; branch on the one amount that would
+        // overflow a u32 shift.
+        let covered = if end_bit == 32 {
+            !0u32
+        } else {
+            (1u32 << end_bit) - 1
+        };
+        let mask = covered & !((1u32 << start_bit) - 1);
         let w = M::WRITABLE.get(wi).copied().unwrap_or(0);
         if (w & mask) != mask {
             return Err(Error::AccessError);
@@ -120,6 +127,10 @@ fn validate<M: RegisterMap + ?Sized>(m: &M, addr: u16, src: &[u8]) -> Result<(),
             continue;
         }
         for rule in sec.rules {
+            // Sorted by offset: nothing at or past `hi` can overlap.
+            if rule.offset as usize >= hi {
+                break;
+            }
             if overlaps(rule.offset as usize, rule.width as usize, lo, hi) {
                 rule.eval(&view)?;
             }

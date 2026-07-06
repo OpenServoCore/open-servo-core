@@ -51,7 +51,14 @@ impl CmpOp {
 }
 
 impl Rule {
-    #[inline(always)]
+    // A real call, taken only for rules overlapping the write: inlining the
+    // eval body into the scan loop bloats the no-match iterations that
+    // dominate small writes (flash-resident loop, measured +8 µs on a 1 B
+    // write). Deliberately NOT RAM-placed: DXL_PERF measured eval+reads in
+    // .highcode at −5 µs for ~1.2 K of stack budget (band-2 wedge margin) —
+    // the residual tax is the Rule/SectionMeta rodata reads from flash, so
+    // the real lever is rules-in-.data, a separate RAM-budget decision.
+    #[inline(never)]
     pub fn eval(&self, view: &View) -> Result<(), Error> {
         match &self.kind {
             RuleKind::Enum { allowed } => {
