@@ -78,14 +78,18 @@ pub fn expand(input: &DeriveInput) -> syn::Result<TokenStream2> {
         })
         .collect();
 
+    let n_sections = sec_tys.len();
     let section_metas: Vec<TokenStream2> = sec_tys
         .iter()
-        .map(|ty| {
+        .zip(&sec_idents)
+        .map(|(ty, name)| {
+            // `#name::CT_RULES`: field-name == section-module-name, same
+            // convention the `addr` reexports ride.
             quote! {
                 ::control_table::map::SectionMeta {
                     base: <#ty>::BASE,
                     size: <#ty>::SECTION_SIZE,
-                    rules: &<#ty>::CT_RULES_ABS,
+                    rules: &#name::CT_RULES,
                     write_lock: <#ty>::WRITE_LOCK,
                 }
             }
@@ -193,11 +197,20 @@ pub fn expand(input: &DeriveInput) -> syn::Result<TokenStream2> {
             }
         }
 
+        // Section table in `.data` (SRAM): its `SectionMeta`s and the rule
+        // slices they point at avoid the wait-stated flash reads every
+        // validated write would otherwise pay.
+        #[doc(hidden)]
+        #[cfg_attr(target_arch = "riscv32", unsafe(link_section = ".data.ct_rules"))]
+        pub static CT_SECTIONS: [::control_table::map::SectionMeta; #n_sections] =
+            [#(#section_metas),*];
+
         impl ::control_table::map::RegisterMap for #cell_ty {
             const SIZE: usize = #size as usize;
             const WRITABLE: &'static [u32] = &#table_ty::WRITABLE_WORDS;
-            const SECTIONS: &'static [::control_table::map::SectionMeta] =
-                &[#(#section_metas),*];
+            fn sections() -> &'static [::control_table::map::SectionMeta] {
+                &CT_SECTIONS
+            }
             fn base(&self) -> *mut u8 {
                 self.0.get() as *mut u8
             }

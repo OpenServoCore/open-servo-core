@@ -160,20 +160,26 @@ pub fn expand(input: &DeriveInput) -> syn::Result<TokenStream2> {
     };
 
     Ok(quote! {
+        // Rebased rules live in `.data` (SRAM) so rule evaluation reads its
+        // operands without the wait-stated flash tax. Rides the one-section-
+        // per-module convention: the fixed name `CT_RULES` lets the Table
+        // derive path to it as `#field::CT_RULES`, like the `addr` module.
+        #[doc(hidden)]
+        #[cfg_attr(target_arch = "riscv32", unsafe(link_section = ".data.ct_rules"))]
+        pub static CT_RULES: [::control_table::rules::Rule; #n_rules] = {
+            let mut out = [::control_table::rules::Rule {
+                offset: 0,
+                width: 0,
+                kind: ::control_table::rules::RuleKind::Enum { allowed: &[] },
+            }; #n_rules];
+            let mut __n = 0;
+            #(#rules_copy)*
+            out
+        };
+
         impl #struct_ty {
             pub const BASE: u16 = #base;
             pub const SECTION_SIZE: u16 = #size;
-
-            pub const CT_RULES_ABS: [::control_table::rules::Rule; #n_rules] = {
-                let mut out = [::control_table::rules::Rule {
-                    offset: 0,
-                    width: 0,
-                    kind: ::control_table::rules::RuleKind::Enum { allowed: &[] },
-                }; #n_rules];
-                let mut __n = 0;
-                #(#rules_copy)*
-                out
-            };
 
             pub const CT_WRITABLE_ABS: [(u16, u16); #n_writable] = {
                 let mut out = [(0u16, 0u16); #n_writable];

@@ -83,7 +83,9 @@ impl Basic {
 impl RegisterMap for Basic {
     const SIZE: usize = BASIC_SIZE;
     const WRITABLE: &'static [u32] = BASIC_WRITABLE;
-    const SECTIONS: &'static [SectionMeta] = BASIC_SECTIONS;
+    fn sections() -> &'static [SectionMeta] {
+        BASIC_SECTIONS
+    }
     fn base(&self) -> *mut u8 {
         self.store.get() as *mut u8
     }
@@ -311,7 +313,9 @@ impl Locked {
 impl RegisterMap for Locked {
     const SIZE: usize = LOCK_SIZE;
     const WRITABLE: &'static [u32] = LOCK_WRITABLE;
-    const SECTIONS: &'static [SectionMeta] = LOCK_SECTIONS;
+    fn sections() -> &'static [SectionMeta] {
+        LOCK_SECTIONS
+    }
     fn base(&self) -> *mut u8 {
         self.store.get() as *mut u8
     }
@@ -401,7 +405,9 @@ impl MaskFix {
 impl RegisterMap for MaskFix {
     const SIZE: usize = MASK_SIZE;
     const WRITABLE: &'static [u32] = MASK_WRITABLE;
-    const SECTIONS: &'static [SectionMeta] = MASK_SECTIONS;
+    fn sections() -> &'static [SectionMeta] {
+        MASK_SECTIONS
+    }
     fn base(&self) -> *mut u8 {
         self.store.get() as *mut u8
     }
