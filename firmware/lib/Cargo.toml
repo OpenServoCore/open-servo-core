@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["control-table", "control-table-derive", "core", "drivers", "dxl-protocol", "osc-protocol", "units"]
+members = ["control-table", "control-table-derive", "core", "drivers", "osc-protocol", "units"]
 
 [workspace.package]
 edition = "2024"
@@ -16,7 +16,6 @@ bitflags         = "2"
 crc              = { version = "3", default-features = false }
 
 osc-units            = { path = "units" }
-dxl-protocol         = { path = "dxl-protocol" }
 osc-protocol         = { path = "osc-protocol" }
 osc-core             = { path = "core" }
 osc-drivers          = { path = "drivers" }

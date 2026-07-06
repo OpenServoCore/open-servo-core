@@ -173,7 +173,6 @@ name = "dxl-protocol"
 version = "0.0.0"
 dependencies = [
  "crc",
- "defmt",
  "heapless",
 ]
 
@@ -359,9 +358,9 @@ dependencies = [
  "control-table",
  "critical-section",
  "defmt",
- "dxl-protocol",
  "embedded-storage",
  "heapless",
+ "osc-protocol",
  "osc-units",
  "portable-atomic",
 ]
@@ -395,7 +394,12 @@ dependencies = [
  "defmt",
  "heapless",
  "osc-core",
+ "osc-protocol",
 ]
+
+[[package]]
+name = "osc-protocol"
+version = "0.0.0"
 
 [[package]]
 name = "osc-units"
