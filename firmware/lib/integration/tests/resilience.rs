@@ -1,1 +1,193 @@
+//! Framing faults and recovery (`docs/osc-native-protocol.md` §3.2, §3.3,
+//! §9.1). These document the break-framed convergence story: a single stray
+//! ring byte flips anchor parity, and the framer heals at the next frame
+//! boundary. Plain assertions on the observed diagnostics counters.
 
+use osc_core::BaudRate;
+use osc_core::regions::control::addr::lifecycle::GOAL_VELOCITY;
+use osc_integration::sim::{Sim, Source, WireFrame, assert_valid, instruction, status};
+use osc_protocol::wire::{Opcode, ResultCode};
+
+const ID5: u8 = 5;
+
+fn servo_frames(frames: &[WireFrame]) -> Vec<&WireFrame> {
+    frames
+        .iter()
+        .filter(|f| matches!(f.from, Source::Servo(_)))
+        .collect()
+}
+
+fn sole_reply(frames: &[WireFrame]) -> &WireFrame {
+    let replies = servo_frames(frames);
+    assert_eq!(replies.len(), 1, "expected one servo reply: {frames:#?}");
+    assert_valid(replies[0]);
+    replies[0]
+}
+
+/// A WRITE of a 4-byte goal_velocity — payload 6 B (even, no pad), footprint
+/// 12 B: a comfortably long frame to time a mid-flight garble against.
+fn write_gv(id: u8, val: i32) -> Vec<u8> {
+    let a = GOAL_VELOCITY.to_le_bytes();
+    let v = val.to_le_bytes();
+    instruction(id, Opcode::Write, 0, &[a[0], a[1], v[0], v[1], v[2], v[3]])
+}
+
+#[test]
+fn midframe_garble_costs_one_frame() {
+    let mut sim = Sim::new(BaudRate::B1000000);
+    let s = sim.add_servo(ID5);
+
+    // Frame A: one stray ring byte injected inside its wire window. The break
+    // anchored A at even parity and its header parsed, but the extra byte
+    // shifts every byte after it, so the CRC-covered span reads misaligned →
+    // CRC fail. No ack, not applied.
+    sim.host_send_at(0, &write_gv(ID5, 0x0A0A0A0A));
+    sim.inject_garble_at(50, 0xAA);
+
+    // Frame B: the stray byte advanced the ring by one, so the next break's
+    // ring byte lands at ODD parity → §3.2 layer-1 fault → framing_drop +
+    // boundary rearm (ring cursor reset to 0). No ack, not applied.
+    sim.host_send_at(1000, &write_gv(ID5, 0x0B0B0B0B));
+
+    // Frame C: the rearm re-aligned the ring, so C anchors even → clean parse,
+    // ack, applied. Convergence in exactly two lost frames (§3.2).
+    sim.host_send_at(2000, &write_gv(ID5, 0x0C0C0C0C));
+
+    let frames = sim.run();
+
+    let (inst, _) = status(sole_reply(&frames)); // the sole reply is C's ack
+    assert_eq!(inst.result(), Some(ResultCode::Ok));
+    assert_eq!(
+        sim.servo_table(s, |t| t.control.lifecycle.goal_velocity),
+        0x0C0C0C0C,
+        "only frame C applied"
+    );
+    let d = sim.servo_diag(s);
+    assert_eq!(
+        d.crc_fail_count, 1,
+        "A: even anchor, misaligned span → CRC fail"
+    );
+    assert_eq!(
+        d.framing_drop_count, 1,
+        "B: odd anchor from the parity flip → dropped + rearm"
+    );
+}
+
+#[test]
+fn lone_garble_self_heals_in_one_frame() {
+    let mut sim = Sim::new(BaudRate::B1000000);
+    let s = sim.add_servo(ID5);
+
+    // A lone garble byte on an idle bus advances the ring by one → odd parity.
+    sim.inject_garble_at(10, 0xAA);
+
+    // Ping #1 anchors odd → dropped at its computed end + boundary rearm; silent.
+    sim.host_send_at(100, &instruction(ID5, Opcode::Ping, 0, &[]));
+    let frames = sim.run();
+    assert!(servo_frames(&frames).is_empty());
+    let d = sim.servo_diag(s);
+    assert_eq!(d.framing_drop_count, 1);
+    assert_eq!(d.crc_fail_count, 0);
+
+    // Ping #2 anchors even again → answered. The bus self-healed in one frame.
+    sim.host_send_at(1000, &instruction(ID5, Opcode::Ping, 0, &[]));
+    let frames = sim.run();
+    let (inst, _) = status(sole_reply(&frames));
+    assert_eq!(inst.result(), Some(ResultCode::Ok));
+}
+
+#[test]
+fn truncated_frame_starves_then_recovers() {
+    let mut sim = Sim::new(BaudRate::B1000000);
+    let s = sim.add_servo(ID5);
+
+    // A sealed WRITE cut to 6 ring bytes (break + ID,LEN,INST,addr0,addr1): the
+    // header parses and computes a frame end that never arrives → the framer's
+    // end-recheck plateau exhausts and the frame is dropped (§4.1). 6 B is even,
+    // so ring parity is preserved (no rearm needed).
+    let full = write_gv(ID5, 0x11223344);
+    sim.host_send_at(0, &full[..6]);
+    let frames = sim.run();
+    assert!(servo_frames(&frames).is_empty());
+    assert_eq!(sim.servo_diag(s).framing_drop_count, 1);
+
+    // A complete ping afterwards is answered.
+    sim.host_send_at(1000, &instruction(ID5, Opcode::Ping, 0, &[]));
+    let frames = sim.run();
+    let (inst, _) = status(sole_reply(&frames));
+    assert_eq!(inst.result(), Some(ResultCode::Ok));
+}
+
+#[test]
+fn break_preempts_partial_frame() {
+    let mut sim = Sim::new(BaudRate::B1000000);
+    let s = sim.add_servo(ID5);
+
+    // A truncated frame immediately followed by a complete ping (back-to-back):
+    // the ping's fresh break preempts the in-flight partial frame (§3.3) →
+    // one framing_drop, and the ping re-anchors and is answered.
+    let full = write_gv(ID5, 0x11223344);
+    sim.host_send(&full[..6]);
+    sim.host_send(&instruction(ID5, Opcode::Ping, 0, &[]));
+    let frames = sim.run();
+
+    let (inst, _) = status(sole_reply(&frames));
+    assert_eq!(inst.result(), Some(ResultCode::Ok));
+    let d = sim.servo_diag(s);
+    assert_eq!(
+        d.framing_drop_count, 1,
+        "the fresh break preempts the partial"
+    );
+    assert_eq!(d.crc_fail_count, 0);
+}
+
+#[test]
+fn rescue_pulse_drops_to_500k() {
+    let mut sim = Sim::new(BaudRate::B1000000);
+    let s = sim.add_servo(ID5);
+
+    // A ≥300 µs dominant low is a rescue command (§9.1): volatile switch to 0.5M.
+    sim.hold_line_low_at(0, 400);
+    sim.run();
+
+    // Volatile: the config register still reads the operational baud.
+    assert_eq!(
+        sim.servo_table(s, |t| t.config.comms.baud_rate_idx),
+        BaudRate::B1000000
+    );
+
+    // A ping at the operational 1M baud now mismatches the 0.5M servo → no reply.
+    sim.host_send_at(600, &instruction(ID5, Opcode::Ping, 0, &[]));
+    let frames = sim.run();
+    assert!(servo_frames(&frames).is_empty());
+
+    // Talk at the rescue rate → answered.
+    sim.set_host_baud(BaudRate::B500000);
+    sim.host_send_at(1200, &instruction(ID5, Opcode::Ping, 0, &[]));
+    let frames = sim.run();
+    let (inst, _) = status(sole_reply(&frames));
+    assert_eq!(inst.result(), Some(ResultCode::Ok));
+}
+
+#[test]
+fn short_break_is_not_rescue() {
+    let mut sim = Sim::new(BaudRate::B1000000);
+    let s = sim.add_servo(ID5);
+
+    // Ordinary frames, each led by a normal break (risen by ISR entry, §9.1) —
+    // no false rescue, diagnostics stay clean across several exchanges.
+    for k in 0..4 {
+        sim.host_send(&instruction(ID5, Opcode::Ping, 0, &[]));
+        let frames = sim.run();
+        let (inst, _) = status(sole_reply(&frames));
+        assert_eq!(inst.result(), Some(ResultCode::Ok), "frame {k}");
+    }
+
+    let d = sim.servo_diag(s);
+    assert_eq!(d.crc_fail_count, 0);
+    assert_eq!(d.framing_drop_count, 0);
+    assert_eq!(
+        sim.servo_table(s, |t| t.config.comms.baud_rate_idx),
+        BaudRate::B1000000
+    );
+}

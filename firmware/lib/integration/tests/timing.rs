@@ -1,1 +1,202 @@
+//! Sequencing-time properties of the osc-native transport (§4.1, §6, §7, §9.3).
+//!
+//! The `Sim` dispatches with a ZERO CPU-time model: dispatch and CRC are
+//! instantaneous, so every tick here is pure wire/scheduling time. These are
+//! therefore SEQUENCING assertions — they pin T_turn behaviour, chain-gap
+//! ordering, and drift tolerance against the ideal sim clock. Wall-clock
+//! turnaround (the ~41 µs projection of §7) is the bench's job, not this suite.
 
+use osc_core::BaudRate;
+use osc_core::regions::calib::addr::pot_lut::LUT;
+use osc_core::regions::config::addr::identity::MODEL_NUMBER;
+use osc_integration::sim::{Sim, Source, WireFrame, assert_valid, instruction, status};
+use osc_protocol::wire::{Opcode, ResultCode};
+
+const TICKS_PER_US: u64 = 48;
+
+/// 1 byte-time (10 bits) in sim ticks at `rate`.
+fn byte_ticks(rate: BaudRate) -> u64 {
+    TICKS_PER_US * 1_000_000 / rate.as_hz() as u64 * 10
+}
+
+const BCAST: u8 = 0xFE;
+
+fn gread_uniform(addr: u16, count: u16, ids: &[u8]) -> Vec<u8> {
+    let mut p = Vec::new();
+    p.extend_from_slice(&addr.to_le_bytes());
+    p.extend_from_slice(&count.to_le_bytes());
+    p.extend_from_slice(ids);
+    p
+}
+
+fn host_frame(frames: &[WireFrame]) -> &WireFrame {
+    frames
+        .iter()
+        .find(|f| f.from == Source::Host)
+        .expect("host frame recorded")
+}
+
+fn replies(frames: &[WireFrame]) -> Vec<&WireFrame> {
+    frames
+        .iter()
+        .filter(|f| matches!(f.from, Source::Servo(_)))
+        .collect()
+}
+
+#[test]
+fn reply_lead_respects_t_turn_at_1m_and_3m() {
+    for rate in [BaudRate::B1000000, BaudRate::B3000000] {
+        let mut sim = Sim::new(rate);
+        sim.add_servo(1);
+        let instr = instruction(1, Opcode::Ping, 0, &[]);
+        sim.host_send(&instr);
+        let frames = sim.run();
+
+        let host = host_frame(&frames);
+        let reps = replies(&frames);
+        assert_eq!(reps.len(), 1, "ping → one reply at {rate:?}: {frames:#?}");
+        assert_valid(reps[0]);
+
+        let bt = byte_ticks(rate);
+        let lead = reps[0].at - host.end;
+
+        // Hard floor: T_turn = 2 byte-times (§7).
+        assert!(lead >= 2 * bt, "{rate:?}: lead {lead} < T_turn {}", 2 * bt);
+
+        // Generous ceiling from the framer's deadline-B margin (framer.rs):
+        // T_turn (2 bt) + end-slack (2 bt) + header-lead rounding + drift term
+        // (footprint >> 6). footprint = full instruction frame incl. break.
+        let fp = instr.len() as u64;
+        let ceil = 6 * bt + ((fp * bt) >> 6);
+        assert!(lead <= ceil, "{rate:?}: lead {lead} > ceiling {ceil}");
+    }
+}
+
+#[test]
+fn chain_gaps_scale_with_baud() {
+    let rate = BaudRate::B3000000;
+    let mut sim = Sim::new(rate);
+    for id in [1u8, 2, 3] {
+        sim.add_servo(id);
+    }
+    sim.host_send(&instruction(
+        BCAST,
+        Opcode::Gread,
+        0,
+        &gread_uniform(MODEL_NUMBER, 2, &[1, 2, 3]),
+    ));
+    let frames = sim.run();
+    let reps = replies(&frames);
+    assert_eq!(reps.len(), 3, "{frames:#?}");
+
+    let bt = byte_ticks(rate);
+    let t_turn = 2 * bt;
+    for w in reps.windows(2) {
+        let gap = w[1].at - w[0].end;
+        assert!(gap >= t_turn, "gap {gap} < T_turn {t_turn}");
+        // Snoop-driven: a slot fires T_turn after its predecessor's status end,
+        // so the gap stays within a few byte-times (no reclaim in a full chain).
+        assert!(gap <= t_turn + 6 * bt, "gap {gap} unexpectedly wide");
+    }
+    // Whole chain completes in well under a millisecond of wire time.
+    let span = reps.last().unwrap().end - host_frame(&frames).end;
+    assert!(
+        span < 1_000 * TICKS_PER_US,
+        "chain span {span} ticks too long"
+    );
+}
+
+#[test]
+fn skewed_servo_still_answers() {
+    // ±1 % is the worst untrimmed-HSI throw (§9.3). Cursor-verified wakes absorb
+    // the drift; nothing drops.
+    let rate = BaudRate::B3000000;
+    for skew in [-10_000i32, 10_000] {
+        let mut sim = Sim::new(rate);
+        sim.add_servo_with(1, skew, 60);
+        sim.host_send(&instruction(1, Opcode::Ping, 0, &[]));
+        let frames = sim.run();
+        let reps = replies(&frames);
+        assert_eq!(reps.len(), 1, "skew {skew}: ping answered: {frames:#?}");
+        assert_valid(reps[0]);
+        let (inst, _) = status(reps[0]);
+        assert_eq!(inst.result(), Some(ResultCode::Ok));
+
+        let diag = sim.servo_diag(0);
+        assert_eq!(diag.crc_fail_count, 0, "skew {skew}: no CRC drops");
+        assert_eq!(diag.framing_drop_count, 0, "skew {skew}: no framing drops");
+    }
+}
+
+#[test]
+fn skewed_servo_survives_long_frame() {
+    // The framer's deadline-B margin scales with footprint (footprint >> 6), so
+    // a long frame keeps enough slack for +1 % drift (§4.1 regression).
+    let rate = BaudRate::B3000000;
+    let mut sim = Sim::new(rate);
+    sim.add_servo_with(1, 10_000, 60);
+
+    // 50 i32 words = 200 B into the rule-free calibration LUT (torque off by
+    // default → the persistent section is writable).
+    let words: Vec<i32> = (0..50).map(|i| 0x0100_0000 + i).collect();
+    let addr = LUT.to_le_bytes();
+    let mut payload = vec![addr[0], addr[1]];
+    for w in &words {
+        payload.extend_from_slice(&w.to_le_bytes());
+    }
+    sim.host_send(&instruction(1, Opcode::Write, 0, &payload));
+    let frames = sim.run();
+    let reps = replies(&frames);
+    assert_eq!(reps.len(), 1, "long write acked: {frames:#?}");
+    let (inst, data) = status(reps[0]);
+    assert_eq!(inst.result(), Some(ResultCode::Ok), "long write applies");
+    assert!(data.is_empty(), "write ack is empty");
+
+    let stored = sim.servo_table(0, |t| t.calib.pot_lut.lut);
+    assert_eq!(&stored[..50], &words[..], "all 200 B landed under drift");
+    assert_eq!(sim.servo_diag(0).framing_drop_count, 0);
+}
+
+#[test]
+fn skewed_chain_sequences_correctly() {
+    let rate = BaudRate::B3000000;
+    let mut sim = Sim::new(rate);
+    let skews = [-10_000i32, 0, 10_000];
+    for (id, skew) in (1u8..=3).zip(skews.iter()) {
+        sim.add_servo_with(id, *skew, 60);
+    }
+
+    sim.host_send(&instruction(
+        BCAST,
+        Opcode::Gread,
+        0,
+        &gread_uniform(MODEL_NUMBER, 2, &[1, 2, 3]),
+    ));
+    let frames = sim.run();
+    let reps = replies(&frames);
+    assert_eq!(reps.len(), 3, "{frames:#?}");
+
+    // In list order, no reclaim flags despite the ±1 % clock spread.
+    assert_eq!(
+        reps.iter().map(|f| f.bytes[1]).collect::<Vec<_>>(),
+        vec![1, 2, 3]
+    );
+    let bt = byte_ticks(rate);
+    for f in &reps {
+        assert_valid(f);
+        let (inst, _) = status(f);
+        assert_eq!(
+            inst.result(),
+            Some(ResultCode::Ok),
+            "no predecessor-silent under drift"
+        );
+    }
+    // Gaps measured on the ideal sim clock still honour T_turn.
+    for w in reps.windows(2) {
+        let gap = w[1].at - w[0].end;
+        assert!(gap >= 2 * bt, "gap {gap} < T_turn {}", 2 * bt);
+    }
+    for i in 0..3 {
+        assert_eq!(sim.servo_diag(i).crc_fail_count, 0);
+    }
+}
