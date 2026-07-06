@@ -20,9 +20,16 @@ pub const CURRENT_SENSE_OPA_INPUT: opa::InputMode = opa::InputMode::Differential
 };
 pub const CURRENT_SENSE_OPA_OUTPUT: opa::Output = opa::Output::Internal;
 
-// === Motor + STAT (TIM1 Remap7) ===
-
-pub const MOTOR_TIM1_MAPPING: Tim1Mapping = Tim1Mapping::Remap7;
+// === Motor + STAT (TIM1 Remap8) ===
+//
+// Remap8, not Remap7: identical CH1–CH4 pins (PC4–PC7), but Remap7 also
+// maps the unused complementary outputs CH1N/CH2N/CH3N onto PC0/PC1/PC2 —
+// and a clocked TIM1 holds an idle CH1N's mux level LOW, clamping the bus
+// pin (PC0) against the USART's released mark (bench-measured: wire stuck
+// low at idle, rose the instant TIM1EN dropped). Remap8 parks the CHxN
+// functions on PA3/PB0/PB1 instead, which carry no digital AF on this
+// board.
+pub const MOTOR_TIM1_MAPPING: Tim1Mapping = Tim1Mapping::Remap8;
 pub const MOTOR_IN1_CH: timer::Channel = timer::Channel::CH3;
 pub const MOTOR_IN2_CH: timer::Channel = timer::Channel::CH2;
 pub const MOTOR_IN1_PIN: Pin = tim1_channel_pin(MOTOR_TIM1_MAPPING, MOTOR_IN1_CH);
