@@ -290,6 +290,15 @@ Notes:
   1024 B); `addr` is 2 bytes, `count` is 2 bytes for reads (kept u16 for
   field alignment in the payload view; values cap at 252, §5.1) and
   1 byte per GWRITE slice.
+- **READ/GREAD `addr` must be even** — the same rule §5.2 imposes on
+  profile spans, for the same reason: replies stream zero-copy from the
+  table through the halfword CRC engine, and an odd-addressed span breaks
+  its pairing [F12]. An odd `addr` is rejected with `range`. The table's
+  `repr(C)` layout keeps every multi-byte field even-aligned anyway; a
+  host that wants an odd-placed byte reads the enclosing even pair (odd
+  *count* stays legal — the PAD rule absorbs payload-length parity).
+  WRITE addressing is unconstrained: inbound payloads validate through
+  the ring anchor, not the table address.
 
 ### 5.1 Size limits
 
@@ -351,7 +360,8 @@ code shares the byte (bits [6:2], 32 values). Errors split by layer:
    answering a question nobody can safely ask.
 2. **Instruction-level** (valid frame, rejected request): the 5-bit result
    code, empty payload — `OK`, `instruction` (unknown op/flags), `range`
-   (addr/count out of bounds), `access` (read-only / torque-locked),
+   (addr/count out of bounds, or a read at an odd address — §5),
+   `access` (read-only / torque-locked),
    `validation` (value rejected by field rules), `busy`, `limit`
    (requested reply exceeds the frame ceiling, §5.1), `predecessor-silent`
    (§6),

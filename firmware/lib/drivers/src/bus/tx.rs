@@ -10,8 +10,11 @@ use osc_core::traits::SendError;
 use osc_protocol::reply::FrameBuf;
 use osc_protocol::wire::{self, Id, Inst, ResultCode};
 
-/// Staging buffer size: the largest legal frame footprint (§3.1), 258.
-pub const REPLY_BUF: usize = super::FRAME_MAX;
+/// Staging buffer size. Payloads stream zero-copy from the table (§4.2), so
+/// the buffer holds only the header, tail pair, and CRC (offsets 0..8) plus
+/// the ≤ [`SMALL_COPY_MAX`] copy path — reads at odd addresses, the one case
+/// that would need a whole-frame copy, are rejected at dispatch (§5).
+pub const REPLY_BUF: usize = 16;
 
 /// Payloads at or below this are copied into the staging buffer. Kept minimal:
 /// the copy costs ~0.3 µs/byte of turnaround (bench-measured at 3M), so
@@ -20,9 +23,9 @@ pub const REPLY_BUF: usize = super::FRAME_MAX;
 /// that would leave a zero-length DMA arm.
 const SMALL_COPY_MAX: usize = 2;
 
-/// Copy-path capacity: `FrameBuf::payload_mut` reserves pad + CRC space, so
-/// a copied payload caps one byte short of `MAX_PAYLOAD`. Only odd-addressed
-/// maximal payloads hit this; the dispatcher never produces them.
+/// Copy-path capacity: `FrameBuf::payload_mut` reserves pad + CRC space.
+/// Only the defensive odd-pointer arm can exceed this — the dispatcher never
+/// produces odd-addressed slices (even-addr reads enforced at dispatch, §5).
 const COPY_PAYLOAD_MAX: usize = REPLY_BUF - 7;
 
 /// Outcome of an arm-completion event.
@@ -366,8 +369,10 @@ mod tests {
     }
 
     /// Software-sealed frame for the same reply, including the 0x00 prefix.
+    /// Built in its own full-size buffer — REPLY_BUF only fits streamed
+    /// layouts, and the reference is a whole linearized frame.
     fn reference(id: u8, result: ResultCode, alert: bool, data: &[u8]) -> Vec<u8> {
-        let mut b = FrameBuf::<REPLY_BUF>::new();
+        let mut b = FrameBuf::<64>::new();
         b.start(Id::new(id), Inst::status(result, false, alert));
         b.payload_mut()[..data.len()].copy_from_slice(data);
         b.finish(data.len() as u8);

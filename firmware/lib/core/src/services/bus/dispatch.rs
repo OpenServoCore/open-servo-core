@@ -126,7 +126,10 @@ impl Dispatcher<'_> {
         if !ctx.may_reply {
             return;
         }
-        if count == 0 {
+        // §5: read addresses must be even — replies stream zero-copy through
+        // the halfword CRC engine, and an odd-addressed span breaks its
+        // pairing (F12). Same rule as §5.2 profile spans.
+        if count == 0 || addr & 1 == 1 {
             return Self::send(
                 reply,
                 Status {

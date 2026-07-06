@@ -150,6 +150,22 @@ fn read_count_zero_rejects_range() {
 }
 
 #[test]
+fn read_odd_addr_rejects_range() {
+    // §5: read addresses must be even (halfword CRC pairing on the zero-copy
+    // reply path); the enclosing even pair serves odd-placed bytes.
+    let shared = Shared::new();
+    let mut staged = StagedWrites::new();
+    let reply = go(
+        &shared,
+        &mut staged,
+        Request::Read { addr: 1, count: 2 },
+        true,
+    );
+    assert_eq!(reply.last().result, ResultCode::Range);
+    assert!(reply.last().data.is_empty());
+}
+
+#[test]
 fn read_over_ceiling_rejects_limit() {
     let shared = Shared::new();
     let mut staged = StagedWrites::new();
