@@ -99,7 +99,17 @@ fn ping_once(client: &mut Client, ping: &[u8], bit_ticks: u32, retries: u32) -> 
 
 fn ping_attempt(client: &mut Client, ping: &[u8], bit_ticks: u32) -> Result<u32> {
     drain(client)?;
-    client.brksend(ping)?;
+    // "ERR busy" is a pirate-side transport nuisance (poll-fed TX losing a
+    // TXE bound to walker/USB ISR bursts, ~2%): the send never launched, so
+    // one retry measures nothing falsely. TODO: bump the pirate's TXE poll
+    // bound next ISP flash and drop this.
+    if let Err(e) = client.brksend(ping) {
+        if !e.to_string().contains("busy") {
+            return Err(e);
+        }
+        sleep(Duration::from_millis(2));
+        client.brksend(ping)?;
+    }
     sleep(Duration::from_millis(5));
     let stamps = drain(client)?;
     let ex = parse_exchange(&stamps, ping, bit_ticks).map_err(|e| anyhow!("{e}"))?;
