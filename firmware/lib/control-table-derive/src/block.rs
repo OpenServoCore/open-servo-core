@@ -22,14 +22,14 @@ enum CmpOp {
 }
 
 impl CmpOp {
-    fn token(self) -> TokenStream2 {
+    fn op_tokens(self) -> TokenStream2 {
         match self {
-            CmpOp::Lt => quote!(::control_table::rules::CmpOp::Lt),
-            CmpOp::Le => quote!(::control_table::rules::CmpOp::Le),
-            CmpOp::Gt => quote!(::control_table::rules::CmpOp::Gt),
-            CmpOp::Ge => quote!(::control_table::rules::CmpOp::Ge),
-            CmpOp::Eq => quote!(::control_table::rules::CmpOp::Eq),
-            CmpOp::Ne => quote!(::control_table::rules::CmpOp::Ne),
+            CmpOp::Lt => quote!(<),
+            CmpOp::Le => quote!(<=),
+            CmpOp::Gt => quote!(>),
+            CmpOp::Ge => quote!(>=),
+            CmpOp::Eq => quote!(==),
+            CmpOp::Ne => quote!(!=),
         }
     }
 }
@@ -82,7 +82,7 @@ pub fn expand(input: &DeriveInput) -> syn::Result<TokenStream2> {
 
     let hooks_trait = parse_block_attrs(&input.attrs)?;
 
-    let mut rules: Vec<TokenStream2> = Vec::new();
+    let mut field_checks: Vec<TokenStream2> = Vec::new();
     let mut writable: Vec<TokenStream2> = Vec::new();
     let mut size_terms: Vec<TokenStream2> = Vec::new();
     let mut new_inits: Vec<TokenStream2> = Vec::new();
@@ -124,35 +124,41 @@ pub fn expand(input: &DeriveInput) -> syn::Result<TokenStream2> {
         let rel_addr = quote!(::core::mem::offset_of!(#struct_ty, #name) as u16);
 
         if !is_ro {
+            let mut body: Vec<TokenStream2> = Vec::new();
+
             if let Some(allowed) = auto_enum_allowed(ty) {
-                rules.push(quote! {
-                    ::control_table::rules::Rule {
-                        offset: #rel_addr,
-                        width: 1,
-                        kind: ::control_table::rules::RuleKind::Enum { allowed: #allowed },
+                body.push(quote! {
+                    let __e = view.read_fixed(f_lo as u16, 1)?;
+                    if !#allowed.contains(&__e[0]) {
+                        return ::core::result::Result::Err(
+                            ::control_table::Error::ValidationError(
+                                ::control_table::ValidationKind::Enum));
                     }
                 });
             }
 
             if !attrs.compares.is_empty() {
                 let (width, signed) = cmp_width_signed(ty)?;
-                let abs = attrs.abs;
+                let abs = attrs.abs && signed;
+                let lhs = widened_load(&quote!(f_lo as u16), width, signed);
                 for (op, expr) in &attrs.compares {
-                    let op_tok = op.token();
-                    let rhs = build_rhs(expr);
-                    rules.push(quote! {
-                        ::control_table::rules::Rule {
-                            offset: #rel_addr,
-                            width: #width,
-                            kind: ::control_table::rules::RuleKind::Cmp {
-                                op: #op_tok,
-                                rhs: #rhs,
-                                signed: #signed,
-                                abs: #abs,
-                            },
-                        }
-                    });
+                    let op_tok = op.op_tokens();
+                    let rhs = build_rhs_load(expr, width, signed);
+                    body.push(emit_compare(&lhs, &rhs, &op_tok, abs, width));
                 }
+            }
+
+            if !body.is_empty() {
+                field_checks.push(quote! {
+                    {
+                        let f_lo = base as usize
+                            + ::core::mem::offset_of!(#struct_ty, #name);
+                        let f_hi = f_lo + ::core::mem::size_of::<#ty>();
+                        if f_lo < hi && f_hi > lo {
+                            #(#body)*
+                        }
+                    }
+                });
             }
 
             writable.push(quote!((#rel_addr, ::core::mem::size_of::<#ty>() as u16)));
@@ -162,16 +168,30 @@ pub fn expand(input: &DeriveInput) -> syn::Result<TokenStream2> {
         kept_idents.push(name);
     }
 
-    let n_rules = rules.len();
     let n_writable = writable.len();
     let meta_macro = Ident::new(&flat_meta_macro_name(struct_ty), struct_ty.span());
     let hooks_emit = build_hooks_emit(struct_ty, &hook_bindings);
 
+    // Empty-body blocks still emit `ct_check` so the Section derive can call it
+    // uniformly; underscore-prefix the args to keep them warning-free.
+    let check_args = if field_checks.is_empty() {
+        quote!(_view: &::control_table::View, _lo: usize, _hi: usize, _base: u16)
+    } else {
+        quote!(view: &::control_table::View, lo: usize, hi: usize, base: u16)
+    };
+
     Ok(quote! {
         impl #struct_ty {
             pub const CT_SIZE: u16 = ::core::mem::size_of::<Self>() as u16;
-            pub const CT_RULES: [::control_table::rules::Rule; #n_rules] = [#(#rules),*];
             pub const CT_WRITABLE: [(u16, u16); #n_writable] = [#(#writable),*];
+
+            #[doc(hidden)]
+            pub fn ct_check(
+                #check_args,
+            ) -> ::core::result::Result<(), ::control_table::Error> {
+                #(#field_checks)*
+                ::core::result::Result::Ok(())
+            }
         }
 
         #[allow(clippy::new_without_default)]
@@ -473,12 +493,68 @@ fn cmp_width_signed(ty: &Type) -> syn::Result<(u8, bool)> {
     ))
 }
 
-fn build_rhs(expr: &Expr) -> TokenStream2 {
+/// Emits an `i32`-valued expression loading `[addr, addr+width)` from the view
+/// and widening it exactly as the old interpreter's `read_widened` did (pinned
+/// per-width sign extension). `addr` is a `u16` expression.
+fn widened_load(addr: &TokenStream2, width: u8, signed: bool) -> TokenStream2 {
+    let conv = match (width, signed) {
+        (1, false) => quote!(__b[0] as i32),
+        (1, true) => quote!(__b[0] as i8 as i32),
+        (2, false) => quote!(u16::from_le_bytes([__b[0], __b[1]]) as i32),
+        (2, true) => quote!(i16::from_le_bytes([__b[0], __b[1]]) as i32),
+        _ => quote!(i32::from_le_bytes(__b)),
+    };
+    quote!({ let __b = view.read_fixed(#addr, #width as usize)?; #conv })
+}
+
+/// RHS of a compare as an `i32`-valued expression: a `&path` reference loads the
+/// referenced register widened the SAME way as the LHS (same width+signedness —
+/// pinned); any other expression is the immediate `as i32`.
+fn build_rhs_load(expr: &Expr, width: u8, signed: bool) -> TokenStream2 {
     if let Expr::Reference(r) = expr {
         let inner = &r.expr;
-        quote!(::control_table::rules::Rhs::Reg(#inner))
+        widened_load(&quote!(#inner), width, signed)
     } else {
-        quote!(::control_table::rules::Rhs::Imm((#expr) as i32))
+        quote!(((#expr) as i32))
+    }
+}
+
+/// A single straight-line compare: bind LHS/RHS, apply saturating-abs to both
+/// (only when the field is signed and `abs` is set — mirrors the old eval), then
+/// `Err(Compare)` unless the comparison holds.
+fn emit_compare(
+    lhs: &TokenStream2,
+    rhs: &TokenStream2,
+    op: &TokenStream2,
+    abs: bool,
+    width: u8,
+) -> TokenStream2 {
+    let fail = quote! {
+        return ::core::result::Result::Err(
+            ::control_table::Error::ValidationError(
+                ::control_table::ValidationKind::Compare));
+    };
+    if abs {
+        let sat_max = match width {
+            1 => quote!(i8::MAX as i32),
+            2 => quote!(i16::MAX as i32),
+            _ => quote!(i32::MAX),
+        };
+        quote! {
+            {
+                let __a = #lhs.saturating_abs().min(#sat_max);
+                let __r = #rhs.saturating_abs().min(#sat_max);
+                if !(__a #op __r) { #fail }
+            }
+        }
+    } else {
+        quote! {
+            {
+                let __a = #lhs;
+                let __r = #rhs;
+                if !(__a #op __r) { #fail }
+            }
+        }
     }
 }
 

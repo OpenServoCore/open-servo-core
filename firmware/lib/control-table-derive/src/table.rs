@@ -85,7 +85,7 @@ pub fn expand(input: &DeriveInput) -> syn::Result<TokenStream2> {
                 ::control_table::map::SectionMeta {
                     base: <#ty>::BASE,
                     size: <#ty>::SECTION_SIZE,
-                    rules: &<#ty>::CT_RULES_ABS,
+                    check: <#ty>::ct_check,
                     write_lock: <#ty>::WRITE_LOCK,
                 }
             }

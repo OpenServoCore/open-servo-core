@@ -1,64 +1,63 @@
 use super::*;
 use crate::ValidationKind;
-use crate::rules::{CmpOp, Rhs, Rule, RuleKind};
 use core::cell::UnsafeCell;
 
-// --- Basic fixture: rules + a read-only byte, no lock. ---
+// --- Basic fixture: checks + a read-only byte, no lock. Hand-written to mirror
+// what the derive emits: enum [0,1]@0, i16 >= 0 @4, u16 < reg(8) @6, i8 |x| <= 5
+// @10, i32 <= 100_000 @12 — each overlap-guarded against the pending range. ---
 
 const BASIC_SIZE: usize = 16;
 
-static BASIC_RULES: &[Rule] = &[
-    Rule {
-        offset: 0,
-        width: 1,
-        kind: RuleKind::Enum { allowed: &[0, 1] },
-    },
-    Rule {
-        offset: 4,
-        width: 2,
-        kind: RuleKind::Cmp {
-            op: CmpOp::Ge,
-            rhs: Rhs::Imm(0),
-            signed: true,
-            abs: false,
-        },
-    },
-    Rule {
-        offset: 6,
-        width: 2,
-        kind: RuleKind::Cmp {
-            op: CmpOp::Lt,
-            rhs: Rhs::Reg(8),
-            signed: false,
-            abs: false,
-        },
-    },
-    Rule {
-        offset: 10,
-        width: 1,
-        kind: RuleKind::Cmp {
-            op: CmpOp::Le,
-            rhs: Rhs::Imm(5),
-            signed: true,
-            abs: true,
-        },
-    },
-    Rule {
-        offset: 12,
-        width: 4,
-        kind: RuleKind::Cmp {
-            op: CmpOp::Le,
-            rhs: Rhs::Imm(100_000),
-            signed: true,
-            abs: false,
-        },
-    },
-];
+fn basic_check(view: &View, lo: usize, hi: usize) -> Result<(), Error> {
+    // enum [0,1] at offset 0.
+    if 0 < hi && 1 > lo {
+        let b = view.read_fixed(0, 1)?;
+        if b[0] > 1 {
+            return Err(Error::ValidationError(ValidationKind::Enum));
+        }
+    }
+    // i16 >= 0 at offset 4.
+    if 4 < hi && 6 > lo {
+        let b = view.read_fixed(4, 2)?;
+        let a = i16::from_le_bytes([b[0], b[1]]) as i32;
+        if a < 0 {
+            return Err(Error::ValidationError(ValidationKind::Compare));
+        }
+    }
+    // u16 < reg(8) at offset 6.
+    if 6 < hi && 8 > lo {
+        let b = view.read_fixed(6, 2)?;
+        let a = u16::from_le_bytes([b[0], b[1]]) as i32;
+        let b = view.read_fixed(8, 2)?;
+        let r = u16::from_le_bytes([b[0], b[1]]) as i32;
+        if a >= r {
+            return Err(Error::ValidationError(ValidationKind::Compare));
+        }
+    }
+    // i8 |x| <= 5 at offset 10.
+    if 10 < hi && 11 > lo {
+        let b = view.read_fixed(10, 1)?;
+        let a = (b[0] as i8 as i32).saturating_abs().min(i8::MAX as i32);
+        let r = 5i32.saturating_abs().min(i8::MAX as i32);
+        if a > r {
+            return Err(Error::ValidationError(ValidationKind::Compare));
+        }
+    }
+    // i32 <= 100_000 at offset 12.
+    if 12 < hi && 16 > lo {
+        let b = view.read_fixed(12, 4)?;
+        let a = i32::from_le_bytes(b);
+        if a > 100_000 {
+            return Err(Error::ValidationError(ValidationKind::Compare));
+        }
+    }
+    Ok(())
+}
 
 static BASIC_SECTIONS: &[SectionMeta] = &[SectionMeta {
     base: 0,
     size: BASIC_SIZE as u16,
-    rules: BASIC_RULES,
+    check: basic_check,
     write_lock: None,
 }];
 
@@ -270,23 +269,32 @@ fn commit_staged_order_later_wins_no_revalidation() {
 
 const LOCK_SIZE: usize = 16;
 
-static LOCK_B_RULES: &[Rule] = &[Rule {
-    offset: 8,
-    width: 1,
-    kind: RuleKind::Enum { allowed: &[0, 1] },
-}];
+fn lock_a_check(_view: &View, _lo: usize, _hi: usize) -> Result<(), Error> {
+    Ok(())
+}
+
+fn lock_b_check(view: &View, lo: usize, hi: usize) -> Result<(), Error> {
+    // enum [0,1] at offset 8.
+    if 8 < hi && 9 > lo {
+        let b = view.read_fixed(8, 1)?;
+        if b[0] > 1 {
+            return Err(Error::ValidationError(ValidationKind::Enum));
+        }
+    }
+    Ok(())
+}
 
 static LOCK_SECTIONS: &[SectionMeta] = &[
     SectionMeta {
         base: 0,
         size: 8,
-        rules: &[],
+        check: lock_a_check,
         write_lock: None,
     },
     SectionMeta {
         base: 8,
         size: 8,
-        rules: LOCK_B_RULES,
+        check: lock_b_check,
         write_lock: Some(0),
     },
 ];
@@ -376,10 +384,14 @@ const MASK_SIZE: usize = 96;
 // word0 all writable; word1 hole at bit 18 (byte 50); word2 hole at bit 0 (byte 64).
 const MASK_WRITABLE: &[u32] = &[0xFFFF_FFFF, !(1u32 << 18), !(1u32 << 0)];
 
+fn mask_check(_view: &View, _lo: usize, _hi: usize) -> Result<(), Error> {
+    Ok(())
+}
+
 static MASK_SECTIONS: &[SectionMeta] = &[SectionMeta {
     base: 0,
     size: MASK_SIZE as u16,
-    rules: &[],
+    check: mask_check,
     write_lock: None,
 }];
 

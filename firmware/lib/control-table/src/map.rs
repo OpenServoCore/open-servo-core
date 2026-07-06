@@ -1,4 +1,3 @@
-use crate::rules::Rule;
 use crate::stage::{Snapshot, StagedWrites};
 use crate::{Error, ValidationKind};
 
@@ -22,15 +21,18 @@ pub trait RegisterMap {
 pub struct SectionMeta {
     pub base: u16,
     pub size: u16,
-    /// Sorted by offset; offsets absolute and inside the section.
-    pub rules: &'static [Rule],
+    /// Straight-line validator for this section: given the pending write range
+    /// `[lo, hi)`, re-checks every validated field the range overlaps and
+    /// returns the field's `ValidationKind` on the first failure. Emitted by
+    /// the Section derive; the interpreter it replaced is gone.
+    pub check: fn(&View, usize, usize) -> Result<(), Error>,
     /// Byte offset of a lock register: when it reads nonzero (through the
     /// overlay), writes into this section fail with `ValidationError(Locked)`.
     pub write_lock: Option<u16>,
 }
 
 /// Live base pointer + size plus one pending `(addr, bytes)` overlay, so a
-/// rule sees the value about to be committed on top of live storage.
+/// check sees the value about to be committed on top of live storage.
 pub struct View<'a> {
     base: *const u8,
     size: usize,
@@ -38,14 +40,30 @@ pub struct View<'a> {
     overlay: &'a [u8],
 }
 
-impl View<'_> {
-    /// Load `[addr, addr+len)` (`len <= 4`) into a `[u8; 4]`, taking each byte
-    /// from the pending overlay where it lands inside `[overlay_addr,
-    /// overlay_addr+overlay.len())` and from live storage otherwise. Bounds-
-    /// checked once up front (same `OutOfRange` conditions as a slice read); the
-    /// per-byte picks then need no further checks.
+impl<'a> View<'a> {
+    /// Build a view over `[base, base+size)` with one pending overlay of
+    /// `overlay` bytes starting at `overlay_addr`.
+    ///
+    /// # Safety
+    /// `base` must point to `size` valid bytes that outlive the view; the caller
+    /// upholds `RegisterMap`'s single-writer contract for shared reads.
+    pub fn new(base: *const u8, size: usize, overlay_addr: u16, overlay: &'a [u8]) -> View<'a> {
+        View {
+            base,
+            size,
+            overlay_addr,
+            overlay,
+        }
+    }
+
+    /// Load `[addr, addr+len)` (`len <= 4`) into a `[u8; 4]` as little-endian
+    /// bytes, taking each byte from the pending overlay where it lands inside
+    /// `[overlay_addr, overlay_addr+overlay.len())` and from live storage
+    /// otherwise. Returns `OutOfRange` when `[addr, addr+len)` leaves the map.
+    /// Bounds-checked once up front; the per-byte picks then need no further
+    /// checks. Bytes past `len` in the returned array are zero.
     #[inline(always)]
-    pub(crate) fn read_fixed(&self, addr: u16, len: usize) -> Result<[u8; 4], Error> {
+    pub fn read_fixed(&self, addr: u16, len: usize) -> Result<[u8; 4], Error> {
         let lo = addr as usize;
         let hi = match lo.checked_add(len) {
             Some(h) => h,
@@ -113,28 +131,15 @@ fn validate<M: RegisterMap + ?Sized>(m: &M, addr: u16, src: &[u8]) -> Result<(),
         }
     }
 
-    let view = View {
-        base: m.base() as *const u8,
-        size: M::SIZE,
-        overlay_addr: addr,
-        overlay: src,
-    };
+    let view = View::new(m.base() as *const u8, M::SIZE, addr, src);
 
-    // Rules across every overlapping section first, so a bad value in a locked
+    // Checks across every overlapping section first, so a bad value in a locked
     // section reports its own kind (e.g. Enum), not Locked.
     for sec in M::SECTIONS {
         if !overlaps(sec.base as usize, sec.size as usize, lo, hi) {
             continue;
         }
-        for rule in sec.rules {
-            // Sorted by offset: nothing at or past `hi` can overlap.
-            if rule.offset as usize >= hi {
-                break;
-            }
-            if overlaps(rule.offset as usize, rule.width as usize, lo, hi) {
-                rule.eval(&view)?;
-            }
-        }
+        (sec.check)(&view, lo, hi)?;
     }
     for sec in M::SECTIONS {
         if !overlaps(sec.base as usize, sec.size as usize, lo, hi) {

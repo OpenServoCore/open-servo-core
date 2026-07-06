@@ -1,5 +1,6 @@
-use control_table::rules::{CmpOp, Rhs, RuleKind};
-use control_table::{BOOL_ALLOWED, Block, Enum};
+#![feature(sync_unsafe_cell)]
+
+use control_table::{Block, Enum, Error, RegisterFile, Table, ValidationKind};
 use core::mem::{offset_of, size_of};
 
 #[repr(u8)]
@@ -28,28 +29,6 @@ fn ct_size_tracks_struct_size() {
 }
 
 #[test]
-fn auto_enum_rules_for_bool_and_enum_fields_only() {
-    let r = Basic::CT_RULES;
-    assert_eq!(r.len(), 2);
-
-    let bool_rule = &r[0];
-    assert_eq!(bool_rule.offset, offset_of!(Basic, c) as u16);
-    assert_eq!(bool_rule.width, 1);
-    match bool_rule.kind {
-        RuleKind::Enum { allowed } => assert_eq!(allowed, BOOL_ALLOWED),
-        _ => panic!("expected bool enum rule"),
-    }
-
-    let mode_rule = &r[1];
-    assert_eq!(mode_rule.offset, offset_of!(Basic, mode) as u16);
-    assert_eq!(mode_rule.width, 1);
-    match mode_rule.kind {
-        RuleKind::Enum { allowed } => assert_eq!(allowed, Mode::ALLOWED),
-        _ => panic!("expected mode enum rule"),
-    }
-}
-
-#[test]
 fn writable_covers_every_rw_field() {
     let w = Basic::CT_WRITABLE;
     assert_eq!(
@@ -64,71 +43,83 @@ fn writable_covers_every_rw_field() {
     );
 }
 
-const LIMIT: u16 = 500;
-
+// Behavioral coverage of the generated `ct_check`: enum, an immediate compare, a
+// signed abs compare, a cross-field register compare, and mask-driven ro
+// rejection — the write-outcome facts the old structural `CT_RULES` assertions
+// encoded. `target < &checks::CEILING` is an in-table register reference (same
+// shape the derive emits) so `read_fixed` stays in bounds.
 #[repr(C)]
 #[derive(Block)]
-struct Comp {
-    #[ct_field(lt = &LIMIT)]
-    y: u16,
+struct Checks {
     #[ct_field(le = 100u8)]
-    x: u8,
+    ratio: u8,
     #[ct_field(ge = -5i8, le = 5i8, abs)]
-    z: i8,
+    trim: i8,
+    ceiling: u8,
+    #[ct_field(lt = &bt::addr::checks::CEILING)]
+    target: u8,
+    flag: bool,
+    #[ct_field(access = ro)]
+    ro: u8,
+}
+
+mod bt {
+    use super::Checks;
+    use control_table::Section;
+
+    #[repr(C)]
+    #[derive(Section)]
+    #[ct_section(base = 0, size = 6)]
+    pub struct Sect {
+        pub checks: Checks,
+    }
+}
+
+#[repr(C)]
+#[derive(Table)]
+#[ct_table(size = 6)]
+struct Bt {
+    pub bt: bt::Sect,
 }
 
 #[test]
-fn cmp_rules_infer_width_signed_and_dispatch_rhs() {
-    let r = Comp::CT_RULES;
-    assert_eq!(r.len(), 4);
+fn ct_check_write_outcomes() {
+    use bt::addr::checks as a;
 
-    // y: unsigned u16, reference rhs -> Reg.
-    assert_eq!(r[0].offset, offset_of!(Comp, y) as u16);
-    assert_eq!(r[0].width, 2);
-    match r[0].kind {
-        RuleKind::Cmp {
-            op: CmpOp::Lt,
-            rhs: Rhs::Reg(v),
-            signed: false,
-            abs: false,
-        } => assert_eq!(v, LIMIT),
-        _ => panic!("wrong y rule"),
-    }
+    let t = BtCell::new();
+    // Seed the ceiling used by the register compare.
+    t.write(a::CEILING, &[50]).unwrap();
 
-    // x: unsigned u8, literal rhs -> Imm.
-    assert_eq!(r[1].offset, offset_of!(Comp, x) as u16);
-    assert_eq!(r[1].width, 1);
-    match r[1].kind {
-        RuleKind::Cmp {
-            op: CmpOp::Le,
-            rhs: Rhs::Imm(100),
-            signed: false,
-            abs: false,
-        } => {}
-        _ => panic!("wrong x rule"),
-    }
+    // enum: good then bad.
+    assert!(t.write(a::FLAG, &[1]).is_ok());
+    assert_eq!(
+        t.write(a::FLAG, &[2]),
+        Err(Error::ValidationError(ValidationKind::Enum))
+    );
 
-    // z: signed i8, two compares sharing abs, negative literal.
-    assert_eq!(r[2].offset, offset_of!(Comp, z) as u16);
-    assert_eq!(r[2].width, 1);
-    match r[2].kind {
-        RuleKind::Cmp {
-            op: CmpOp::Ge,
-            rhs: Rhs::Imm(-5),
-            signed: true,
-            abs: true,
-        } => {}
-        _ => panic!("wrong z ge rule"),
-    }
-    match r[3].kind {
-        RuleKind::Cmp {
-            op: CmpOp::Le,
-            rhs: Rhs::Imm(5),
-            signed: true,
-            abs: true,
-        } => {}
-        _ => panic!("wrong z le rule"),
-    }
+    // immediate compare: ratio <= 100.
+    assert!(t.write(a::RATIO, &[100]).is_ok());
+    assert_eq!(
+        t.write(a::RATIO, &[101]),
+        Err(Error::ValidationError(ValidationKind::Compare))
+    );
+
+    // signed abs compare: |trim| <= 5. -5 (0xFB) passes, -6 (0xFA) fails.
+    assert!(t.write(a::TRIM, &[0xFB]).is_ok());
+    assert_eq!(
+        t.write(a::TRIM, &[0xFA]),
+        Err(Error::ValidationError(ValidationKind::Compare))
+    );
+
+    // register compare: target < ceiling (50).
+    assert!(t.write(a::TARGET, &[49]).is_ok());
+    assert_eq!(
+        t.write(a::TARGET, &[50]),
+        Err(Error::ValidationError(ValidationKind::Compare))
+    );
+
+    // ro field rejected by the writable mask.
+    assert_eq!(t.write(a::RO, &[0]), Err(Error::AccessError));
 }
 
 #[repr(C)]
@@ -146,9 +137,7 @@ struct Access {
 
 #[test]
 fn ro_and_skip_excluded_from_writable_and_rules() {
-    // ro (incl. ro bool) and skip fields emit no rules at all.
-    assert_eq!(Access::CT_RULES.len(), 0);
-
+    // ro (incl. ro bool) and skip fields never enter the writable mask.
     assert_eq!(
         Access::CT_WRITABLE,
         [

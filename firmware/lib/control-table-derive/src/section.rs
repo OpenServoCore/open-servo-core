@@ -72,29 +72,25 @@ pub fn expand(input: &DeriveInput) -> syn::Result<TokenStream2> {
         .map(|name| quote!(#struct_ty::BASE + ::core::mem::offset_of!(#struct_ty, #name) as u16))
         .collect();
 
-    let n_rules = quote!(0 #(+ <#block_tys>::CT_RULES.len())*);
     let n_writable = quote!(0 #(+ <#block_tys>::CT_WRITABLE.len())*);
 
-    let rules_copy: Vec<TokenStream2> = block_tys
+    // Blocks in declaration order (= address order): preserves the old
+    // sorted-by-offset first-failure precedence.
+    let check_calls: Vec<TokenStream2> = block_tys
         .iter()
         .zip(&base_exprs)
         .map(|(ty, base_expr)| {
             quote! {
-                {
-                    let src = <#ty>::CT_RULES;
-                    let base = #base_expr;
-                    let mut i = 0;
-                    while i < src.len() {
-                        let mut r = src[i];
-                        r.offset += base;
-                        out[__n] = r;
-                        __n += 1;
-                        i += 1;
-                    }
-                }
+                <#ty>::ct_check(view, lo, hi, #base_expr)?;
             }
         })
         .collect();
+
+    let check_args = if check_calls.is_empty() {
+        quote!(_view: &::control_table::View, _lo: usize, _hi: usize)
+    } else {
+        quote!(view: &::control_table::View, lo: usize, hi: usize)
+    };
 
     let writable_copy: Vec<TokenStream2> = block_tys
         .iter()
@@ -164,16 +160,13 @@ pub fn expand(input: &DeriveInput) -> syn::Result<TokenStream2> {
             pub const BASE: u16 = #base;
             pub const SECTION_SIZE: u16 = #size;
 
-            pub const CT_RULES_ABS: [::control_table::rules::Rule; #n_rules] = {
-                let mut out = [::control_table::rules::Rule {
-                    offset: 0,
-                    width: 0,
-                    kind: ::control_table::rules::RuleKind::Enum { allowed: &[] },
-                }; #n_rules];
-                let mut __n = 0;
-                #(#rules_copy)*
-                out
-            };
+            #[doc(hidden)]
+            pub fn ct_check(
+                #check_args,
+            ) -> ::core::result::Result<(), ::control_table::Error> {
+                #(#check_calls)*
+                ::core::result::Result::Ok(())
+            }
 
             pub const CT_WRITABLE_ABS: [(u16, u16); #n_writable] = {
                 let mut out = [(0u16, 0u16); #n_writable];

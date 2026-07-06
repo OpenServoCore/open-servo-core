@@ -3,7 +3,6 @@
 
 pub mod map;
 mod region;
-pub mod rules;
 mod stage;
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
@@ -41,4 +40,4 @@ pub use stage::{STAGE_DATA_CAP, STAGE_ENTRY_CAP, Snapshot, StagedWrites};
 
 pub use control_table_derive::{Block, Enum, Section, Table};
 
-pub use map::{RegisterFile, RegisterMap, SectionMeta};
+pub use map::{RegisterFile, RegisterMap, SectionMeta, View};

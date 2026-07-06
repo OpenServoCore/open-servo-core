@@ -1,6 +1,5 @@
 #![feature(sync_unsafe_cell)]
 
-use control_table::rules::{CmpOp, Rhs, RuleKind};
 use control_table::{Block, Enum, Error, RegisterFile, RegisterMap, Table, ValidationKind};
 use core::mem::{offset_of, size_of};
 
@@ -127,47 +126,6 @@ fn section_base_and_size_consts() {
 }
 
 #[test]
-fn config_rules_rebased_to_absolute() {
-    // Field order: ident (no rules) then limits (compare, enum, bool).
-    let r = Config::CT_RULES_ABS;
-    assert_eq!(r.len(), 3);
-
-    assert_eq!(r[0].offset, addr::config::limits::MAX_RATIO);
-    match r[0].kind {
-        RuleKind::Cmp {
-            op: CmpOp::Le,
-            rhs: Rhs::Imm(100),
-            ..
-        } => {}
-        _ => panic!("wrong max_ratio rule"),
-    }
-
-    assert_eq!(r[1].offset, addr::config::limits::MODE);
-    match r[1].kind {
-        RuleKind::Enum { allowed } => assert_eq!(allowed, Mode::ALLOWED),
-        _ => panic!("wrong mode rule"),
-    }
-
-    assert_eq!(r[2].offset, addr::config::limits::ENABLED);
-    assert!(matches!(r[2].kind, RuleKind::Enum { .. }));
-}
-
-#[test]
-fn control_rule_is_cross_section_reg_compare() {
-    let c = Control::CT_RULES_ABS;
-    assert_eq!(c.len(), 1);
-    assert_eq!(c[0].offset, addr::control::goal::TARGET);
-    match c[0].kind {
-        RuleKind::Cmp {
-            op: CmpOp::Le,
-            rhs: Rhs::Reg(a),
-            ..
-        } => assert_eq!(a, addr::config::limits::MAX_RATIO),
-        _ => panic!("wrong control rule"),
-    }
-}
-
-#[test]
 fn writable_words_track_ro_rw_and_reserved() {
     let words = Table::WRITABLE_WORDS;
     assert_eq!(words.len(), 24usize.div_ceil(32));
@@ -195,12 +153,10 @@ fn sections_metadata_exposed_through_register_map() {
 
     assert_eq!(secs[0].base, Config::BASE);
     assert_eq!(secs[0].size, Config::SECTION_SIZE);
-    assert_eq!(secs[0].rules.len(), Config::CT_RULES_ABS.len());
     assert!(secs[0].write_lock.is_none());
 
     assert_eq!(secs[1].base, Control::BASE);
     assert_eq!(secs[1].size, Control::SECTION_SIZE);
-    assert_eq!(secs[1].rules.len(), Control::CT_RULES_ABS.len());
     assert_eq!(secs[1].write_lock, Some(addr::config::ident::LOCK));
 
     assert_eq!(<TableCell as RegisterMap>::SIZE, 24);
