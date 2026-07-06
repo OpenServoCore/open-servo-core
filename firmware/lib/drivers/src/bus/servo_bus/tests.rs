@@ -10,11 +10,14 @@ use osc_protocol::reply::FrameBuf;
 use osc_protocol::wire::{self, Id, Inst, MgmtOp, Opcode, ResultCode};
 
 use crate::mocks::bus::{FakeWire, Harness, RING_LEN, WireEvent};
+use crate::traits::bus::tick_reached;
 
 const ID: u8 = 7;
 const RATE: BaudRate = BaudRate::B1000000;
 const TPB: u32 = 10; // TICKS_PER_US(1) * 1e7 / 1e6
 const T_TURN: u32 = 2 * TPB;
+// END_SLACK_US(5) × TestProviders TICKS_PER_US(1).
+const END_SLACK: u32 = 5;
 
 fn shared_seeded() -> Shared {
     let shared = Shared::new();
@@ -45,12 +48,13 @@ fn status(id: u8, result: ResultCode, data: &[u8]) -> std::vec::Vec<u8> {
 
 // --- drivers --------------------------------------------------------------
 
-/// Deliver a whole frame: break, header deadline, the covered-complete
-/// checkpoint (non-doomed frames), then the end deadline (which dispatches).
+/// Deliver a whole frame: break, header deadline (which emits Covered for
+/// frames whose covered span is already ringed), then every remaining framer
+/// wake through the end deadline (which dispatches). Framer wakes all land at
+/// or before `end_due` = packet_end + slack; the chain's T_turn deadline lies
+/// beyond it, so the loop leaves reply sequencing to `fire`.
 /// Returns the framer's packet-end estimate — the tick reply T_turn is
 /// measured from: break tick + (footprint − 1) byte-times + the drift adder.
-/// Doomed frames rearm at their boundary with no covered checkpoint, so the
-/// covered fire is their terminal event.
 fn deliver<D: Dispatch>(
     bus: &mut crate::bus::ServoBus<crate::mocks::bus::TestProviders>,
     h: &Harness,
@@ -70,22 +74,21 @@ fn deliver<D: Dispatch>(
     h.ring.set_cursor(((anchor + 4) % RING_LEN) as u16);
     bus.on_deadline(d);
 
-    // Covered checkpoint (non-doomed) or the doomed frame's boundary rearm.
-    let c = h.deadline.armed().expect("covered/end deadline");
-    h.deadline.set_now(c);
-    h.ring.set_cursor(((anchor + fp) % RING_LEN) as u16);
-    bus.on_deadline(d);
-
-    // A doomed frame left no framer deadline; a live one re-armed the end.
-    if let Some(b) = h.deadline.armed() {
-        h.deadline.set_now(b);
+    // The framer's packet_end (see `lock_end`): anchor tick + remaining
+    // byte-times + footprint>>6 drift adder.
+    let end = now0
+        .wrapping_add((fp as u32 - 1) * TPB)
+        .wrapping_add((fp as u32 * TPB) >> 6);
+    let end_due = end.wrapping_add(END_SLACK);
+    while let Some(t) = h.deadline.armed() {
+        if !tick_reached(end_due, t) {
+            break; // beyond the frame window: chain/rescue, not the framer
+        }
+        h.deadline.set_now(t);
         h.ring.set_cursor(((anchor + fp) % RING_LEN) as u16);
         bus.on_deadline(d);
     }
-    // The framer's packet_end (see `lock_end`): anchor tick + remaining
-    // byte-times + footprint>>6 drift adder.
-    now0.wrapping_add((fp as u32 - 1) * TPB)
-        .wrapping_add(fp as u32 * TPB >> 6)
+    end
 }
 
 fn fire<D: Dispatch>(

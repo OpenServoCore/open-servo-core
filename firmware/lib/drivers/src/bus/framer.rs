@@ -309,7 +309,7 @@ impl Framer {
         ring: &[u8],
         anchor: u16,
         anchor_tick: u32,
-        _received: u16,
+        received: u16,
         tpb: u32,
     ) -> FramerOut {
         let len = ring.len();
@@ -352,6 +352,29 @@ impl Framer {
         // Non-doomed frames get a covered-complete checkpoint one CRC-tail ahead
         // of the end (same margin, two byte-times earlier). Doomed frames are
         // never dispatched, so they skip straight to their end.
+        // Short frames (a ping's covered span IS its header) may have the whole
+        // covered span ringed already at header lock — emit Covered from this
+        // same wake instead of arming an aim that is already in the past.
+        if doom.is_none() && received >= footprint - COVERED_TAIL_BYTES as u16 {
+            self.state = State::AwaitEnd {
+                anchor,
+                footprint,
+                packet_end,
+                end_due,
+                rechecks: 0,
+                doom,
+                covered_seen: true,
+                due: end_due,
+            };
+            return FramerOut::Covered {
+                span: FrameSpan {
+                    anchor,
+                    footprint,
+                    packet_end,
+                },
+                end_due,
+            };
+        }
         let (due, covered_seen) = match doom {
             Option::None => (
                 end_due.wrapping_sub(COVERED_TAIL_BYTES.wrapping_mul(tpb)),
@@ -448,14 +471,12 @@ mod tests {
         // deadline A = anchor + 3 byte-times + half-byte slack.
         assert_eq!(wait_tick(out), 100 + 3 * TPB + TPB / 2);
 
-        // Deadline A completes the header and arms the covered checkpoint.
-        let cov_due = wait_tick(f.on_deadline(&ring, (k + 4) as u16, 200, TPB));
-
-        // Covered-complete fires first, one CRC-tail (2 byte-times) before end.
-        let (span, end_due) = covered(f.on_deadline(&ring, (k + 6) as u16, cov_due, TPB));
+        // A ping's covered span IS its header: deadline A locks the header and
+        // emits Covered from the same wake (no separate checkpoint wake).
+        let (span, end_due) = covered(f.on_deadline(&ring, (k + 4) as u16, 200, TPB));
         assert_eq!(span.anchor, k as u16);
         assert_eq!(span.footprint, 6);
-        assert_eq!(end_due, cov_due + COVERED_TAIL_BYTES * TPB);
+        assert_eq!(end_due, 100 + 5 * TPB + ((6 * TPB) >> 6) + TEST_SLACK);
 
         // Deadline B then verifies the whole frame.
         let span = frame_span(f.on_deadline(&ring, (k + 6) as u16, end_due, TPB));
@@ -472,8 +493,7 @@ mod tests {
         let mut f = Framer::new(TEST_SLACK);
 
         f.on_break(&ring, ((k + 1) % 32) as u16, 100, TPB);
-        let cov_due = wait_tick(f.on_deadline(&ring, ((k + 4) % 32) as u16, 200, TPB));
-        let (_, end_due) = covered(f.on_deadline(&ring, ((k + 6) % 32) as u16, cov_due, TPB));
+        let (_, end_due) = covered(f.on_deadline(&ring, ((k + 4) % 32) as u16, 200, TPB));
         let span = frame_span(f.on_deadline(&ring, ((k + 6) % 32) as u16, end_due, TPB));
         assert_eq!(span.anchor, 30);
         assert_eq!(span.footprint, 6);
@@ -487,9 +507,8 @@ mod tests {
         let mut f = Framer::new(TEST_SLACK);
 
         f.on_break(&ring, (k + 1) as u16, 100, TPB);
-        let cov_due = wait_tick(f.on_deadline(&ring, (k + 4) as u16, 200, TPB));
-        // Covered fires (received = footprint - 2), then aims at the end.
-        let (_, end_due) = covered(f.on_deadline(&ring, (k + 4) as u16, cov_due, TPB));
+        // Covered fires at header lock (received = footprint - 2).
+        let (_, end_due) = covered(f.on_deadline(&ring, (k + 4) as u16, 200, TPB));
         // End deadline fires one byte short (drift): recheck armed one byte out.
         let out = f.on_deadline(&ring, (k + 5) as u16, end_due, TPB);
         assert_eq!(wait_tick(out), end_due + TPB);
@@ -503,18 +522,21 @@ mod tests {
     fn covered_short_then_completes() {
         let mut ring = [0xFFu8; 32];
         let k = 6usize;
-        place(&mut ring, k, &PING);
+        // LEN 5 → footprint 8, covered target 6: the covered span outruns the
+        // header, so header lock arms the aim instead of falling through.
+        let frame = [0x00, 0x01, 0x05, 0x10, 0xAA, 0xBB, 0xCC, 0xDD];
+        place(&mut ring, k, &frame);
         let mut f = Framer::new(TEST_SLACK);
 
         f.on_break(&ring, (k + 1) as u16, 100, TPB);
         let cov_due = wait_tick(f.on_deadline(&ring, (k + 4) as u16, 200, TPB));
-        // Covered deadline fires early (drift): only 3 of the 4 covered bytes in
-        // (footprint 6 → covered target 4). Recheck one byte-time out.
-        let out = f.on_deadline(&ring, (k + 3) as u16, cov_due, TPB);
+        // Covered deadline fires early (drift): only 5 of the 6 covered bytes
+        // in. Recheck one byte-time out.
+        let out = f.on_deadline(&ring, (k + 5) as u16, cov_due, TPB);
         assert_eq!(wait_tick(out), cov_due + TPB);
         // Covered span now complete → Covered fires exactly once.
-        let (span, _) = covered(f.on_deadline(&ring, (k + 4) as u16, cov_due + TPB, TPB));
-        assert_eq!(span.footprint, 6);
+        let (span, _) = covered(f.on_deadline(&ring, (k + 6) as u16, cov_due + TPB, TPB));
+        assert_eq!(span.footprint, 8);
         assert_eq!(f.drops(), 0);
     }
 
@@ -526,8 +548,7 @@ mod tests {
         let mut f = Framer::new(TEST_SLACK);
 
         f.on_break(&ring, (k + 1) as u16, 100, TPB);
-        let cov_due = wait_tick(f.on_deadline(&ring, (k + 4) as u16, 200, TPB));
-        let (_, end_due) = covered(f.on_deadline(&ring, (k + 6) as u16, cov_due, TPB));
+        let (_, end_due) = covered(f.on_deadline(&ring, (k + 4) as u16, 200, TPB));
         // A second wake at the end yields the Frame, never another Covered.
         let out = f.on_deadline(&ring, (k + 6) as u16, end_due, TPB);
         assert!(matches!(out, FramerOut::Frame(_)));
@@ -620,13 +641,12 @@ mod tests {
         let mut f = Framer::new(TEST_SLACK);
 
         f.on_break(&ring, (k + 1) as u16, 100, TPB);
-        let cov_due = wait_tick(f.on_deadline(&ring, (k + 4) as u16, 200, TPB));
+        let (_, end_due) = covered(f.on_deadline(&ring, (k + 4) as u16, 200, TPB));
         // FE fires mid-frame on a nonzero data byte (ring[k+4] = 0xAA).
         let out = f.on_break(&ring, (k + 5) as u16, 250, TPB);
-        assert_eq!(wait_tick(out), cov_due); // pending deadline untouched
+        assert_eq!(wait_tick(out), end_due); // pending deadline untouched
         assert_eq!(f.drops(), 0);
-        // Frame still completes (covered checkpoint, then end).
-        let (_, end_due) = covered(f.on_deadline(&ring, (k + 6) as u16, cov_due, TPB));
+        // Frame still completes at the end.
         let span = frame_span(f.on_deadline(&ring, (k + 6) as u16, end_due, TPB));
         assert_eq!(span.footprint, 6);
     }
@@ -657,8 +677,7 @@ mod tests {
         let k0 = 6usize;
         place(&mut ring, k0, &PING);
         f.on_break(&ring, (k0 + 1) as u16, 100, TPB);
-        let c0 = wait_tick(f.on_deadline(&ring, (k0 + 4) as u16, 200, TPB));
-        let (_, e0) = covered(f.on_deadline(&ring, (k0 + 6) as u16, c0, TPB));
+        let (_, e0) = covered(f.on_deadline(&ring, (k0 + 4) as u16, 200, TPB));
         let s0 = frame_span(f.on_deadline(&ring, (k0 + 6) as u16, e0, TPB));
         assert_eq!(s0.anchor, k0 as u16);
 
@@ -666,8 +685,7 @@ mod tests {
         let k1 = k0 + 6; // 12, even
         place(&mut ring, k1, &PING);
         f.on_break(&ring, (k1 + 1) as u16, 400, TPB);
-        let c1 = wait_tick(f.on_deadline(&ring, (k1 + 4) as u16, 500, TPB));
-        let (_, e1) = covered(f.on_deadline(&ring, (k1 + 6) as u16, c1, TPB));
+        let (_, e1) = covered(f.on_deadline(&ring, (k1 + 4) as u16, 500, TPB));
         let s1 = frame_span(f.on_deadline(&ring, (k1 + 6) as u16, e1, TPB));
         assert_eq!(s1.anchor, k1 as u16);
         assert_eq!(f.drops(), 0);

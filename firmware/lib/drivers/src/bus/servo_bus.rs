@@ -34,6 +34,12 @@ const FRAME_ALLOWANCE_SLACK_BYTES: u32 = 8;
 /// the wire-proportional drift term lives in the estimate itself.
 const END_SLACK_US: u32 = 5;
 
+/// Bound on same-wake deadline draining. Generous: one frame consumes at most
+/// a handful of due slots per wake (header lock, covered, end, chain, rescue);
+/// anything past the bound falls out to `arm_deadline`, whose pend-on-past
+/// contract re-enters the ISR rather than losing the slot.
+const DEADLINE_DRAIN_MAX: u32 = 8;
+
 /// Transport health counters the chip publishes into the telemetry region
 /// (§5.3 layer 1: dropped frames are counted, never answered).
 pub struct LinkDiag {
@@ -164,28 +170,40 @@ impl<P: Providers> ServoBus<P> {
         self.arm_deadline();
     }
 
-    /// Tick-compare ISR: one or more muxed deadlines are due.
+    /// Tick-compare ISR: one or more muxed deadlines are due. Every slot a
+    /// handler body overruns (front-loaded dispatch inside the covered window
+    /// routinely overruns `end_due`) is drained in this same invocation — a
+    /// pend→exit→re-enter round trip costs ~10 µs of turnaround.
     pub fn on_deadline<D: Dispatch>(&mut self, d: &mut D) {
-        let now = self.deadline.now();
-        if due(now, self.framer_at) {
-            self.framer_at = None;
-            let out = self
-                .framer
-                .on_deadline(self.ring.bytes(), self.ring.cursor(), now, self.tpb);
-            match self.apply_framer_out(out) {
-                Some(FrameEvent::Covered(span)) => self.speculate(span, d),
-                Some(FrameEvent::End(span)) => self.on_frame_end(span, d),
-                None => {}
+        for _ in 0..DEADLINE_DRAIN_MAX {
+            let now = self.deadline.now();
+            let mut progressed = false;
+            if due(now, self.framer_at) {
+                progressed = true;
+                self.framer_at = None;
+                let out =
+                    self.framer
+                        .on_deadline(self.ring.bytes(), self.ring.cursor(), now, self.tpb);
+                match self.apply_framer_out(out) {
+                    Some(FrameEvent::Covered(span)) => self.speculate(span, d),
+                    Some(FrameEvent::End(span)) => self.on_frame_end(span, d),
+                    None => {}
+                }
             }
-        }
-        if due(now, self.chain_at) {
-            self.chain_at = None;
-            let out = self.chain.on_deadline(now);
-            self.route_chain(out);
-        }
-        if due(now, self.rescue_at) {
-            self.rescue_at = None;
-            self.try_rescue();
+            if due(now, self.chain_at) {
+                progressed = true;
+                self.chain_at = None;
+                let out = self.chain.on_deadline(now);
+                self.route_chain(out);
+            }
+            if due(now, self.rescue_at) {
+                progressed = true;
+                self.rescue_at = None;
+                self.try_rescue();
+            }
+            if !progressed {
+                break;
+            }
         }
         self.arm_deadline();
     }
