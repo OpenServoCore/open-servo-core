@@ -7,10 +7,13 @@ use crate::wire::{self, Id, Inst};
 
 /// A frame under construction: `[0x00][ID][LEN][INST][payload][PAD?][crc][crc]`.
 ///
-/// `align(2)` matters — the hardware CRC DMA reads halfwords from offset 0
-/// (§3.2). `N` bounds the largest frame this buffer can hold; the finished
-/// `LEN` is read back from `bytes[2]`, so the struct stays just the array.
-#[repr(C, align(2))]
+/// Alignment matters twice over — the hardware CRC DMA reads halfwords from
+/// offset 0 (§3.2, needs 2), and payload copies land at offset 4, so word
+/// alignment lets `copy_from_slice` word-copy from word-aligned sources
+/// instead of byte-looping. `N` bounds the largest frame this buffer can
+/// hold; the finished `LEN` is read back from `bytes[2]`, so the struct stays
+/// just the array.
+#[repr(C, align(4))]
 pub struct FrameBuf<const N: usize> {
     bytes: [u8; N],
 }

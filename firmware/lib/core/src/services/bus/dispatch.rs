@@ -96,19 +96,21 @@ impl Dispatcher<'_> {
         if !ctx.may_reply {
             return;
         }
-        let (model, fw) = self.shared.table.with(|t| {
-            (
-                t.config.identity.model_number,
-                t.config.identity.firmware_version,
-            )
-        });
-        let m = model.to_le_bytes();
+        // model_number + firmware_version are contiguous at the identity base:
+        // reply straight from the table so the TX engine streams in place (a
+        // stack copy would force the slow copy-stage path).
+        let data = RegisterFile::read(
+            &self.shared.table,
+            crate::regions::config::addr::identity::MODEL_NUMBER,
+            3,
+        )
+        .unwrap_or(&[]);
         Self::send(
             reply,
             Status {
                 result: ResultCode::Ok,
                 alert,
-                data: &[m[0], m[1], fw],
+                data,
             },
         );
     }

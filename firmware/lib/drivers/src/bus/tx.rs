@@ -13,9 +13,12 @@ use osc_protocol::wire::{self, Id, Inst, ResultCode};
 /// Staging buffer size: the largest legal frame footprint (§3.1), 258.
 pub const REPLY_BUF: usize = super::FRAME_MAX;
 
-/// Payloads at or below this are copied into the staging buffer; a second
-/// and third DMA arm cost more than a small memcpy.
-const SMALL_COPY_MAX: usize = 32;
+/// Payloads at or below this are copied into the staging buffer. Kept minimal:
+/// the copy costs ~0.3 µs/byte of turnaround (bench-measured at 3M), so
+/// anything the DMA can stream in place should stream. The floor exists
+/// because an odd payload donates its last byte to the tail arm — at p = 1
+/// that would leave a zero-length DMA arm.
+const SMALL_COPY_MAX: usize = 2;
 
 /// Copy-path capacity: `FrameBuf::payload_mut` reserves pad + CRC space, so
 /// a copied payload caps one byte short of `MAX_PAYLOAD`. Only odd-addressed
@@ -422,22 +425,61 @@ mod tests {
     }
 
     #[test]
-    fn small_padded_reply_matches_sealed_reference() {
+    fn small_copy_reply_matches_sealed_reference() {
         let (mut eng, log) = engine();
-        let data = [0xDE, 0xAD, 0xBE];
+        // 2 bytes ≤ SMALL_COPY_MAX → the copy path, even payload (no pad).
+        let data = [0xDE, 0xAD];
         eng.stage(1, ResultCode::Ok, true, &data).unwrap();
         run(&mut eng, None);
         let log = log.borrow();
         let reference = reference(1, ResultCode::Ok, true, &data);
         let s = sends(&log);
-        // Header + payload + pad, then the CRC tail as its own final arm.
-        assert_eq!(s.iter().map(Vec::len).collect::<Vec<_>>(), vec![7, 2]);
+        // Header + payload, then the CRC tail as its own final arm.
+        assert_eq!(s.iter().map(Vec::len).collect::<Vec<_>>(), vec![5, 2]);
+        assert_eq!(*s.last().unwrap(), reference[reference.len() - 2..]);
+        assert_eq!(wire_bytes(&log), reference[1..]);
+        let inst = Inst(wire_bytes(&log)[2]);
+        assert!(inst.is_status());
+        assert!(!inst.pad());
+        assert!(inst.alert());
+    }
+
+    #[test]
+    fn small_odd_zero_copy_moves_last_byte_into_tail() {
+        let (mut eng, log) = engine();
+        // 3 even-addressed bytes: above SMALL_COPY_MAX → zero-copy, odd → the
+        // last byte pairs with the pad in the tail arm.
+        let data = Aligned([0xDE, 0xAD, 0xBE, 0]);
+        eng.stage(1, ResultCode::Ok, true, &data.0[..3]).unwrap();
+        run(&mut eng, None);
+        let log = log.borrow();
+        let reference = reference(1, ResultCode::Ok, true, &data.0[..3]);
+        let s = sends(&log);
+        // Header, streamed payload head, tail (moved byte + pad), CRC.
+        assert_eq!(s.iter().map(Vec::len).collect::<Vec<_>>(), vec![3, 2, 2, 2]);
         assert_eq!(*s.last().unwrap(), reference[reference.len() - 2..]);
         assert_eq!(wire_bytes(&log), reference[1..]);
         let inst = Inst(wire_bytes(&log)[2]);
         assert!(inst.is_status());
         assert!(inst.pad());
         assert!(inst.alert());
+    }
+
+    #[test]
+    fn small_odd_pointer_takes_copy_path() {
+        let (mut eng, log) = engine();
+        // Odd-addressed source: the CRC DMA can't pair it (F12) → copy path
+        // regardless of size.
+        let backing = Aligned([0u8, 0xDE, 0xAD, 0xBE]);
+        let data = &backing.0[1..4];
+        eng.stage(1, ResultCode::Ok, true, data).unwrap();
+        run(&mut eng, None);
+        let log = log.borrow();
+        let reference = reference(1, ResultCode::Ok, true, data);
+        let s = sends(&log);
+        // Header + payload + pad, then the CRC tail as its own final arm.
+        assert_eq!(s.iter().map(Vec::len).collect::<Vec<_>>(), vec![7, 2]);
+        assert_eq!(wire_bytes(&log), reference[1..]);
     }
 
     #[test]

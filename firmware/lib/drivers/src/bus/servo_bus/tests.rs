@@ -177,6 +177,7 @@ fn s2_read_returns_table_bytes() {
     let frame = instruction(ID, Opcode::Read, 0, &[0, 0, 4, 0]);
     deliver(&mut bus, &h, 100, &frame, 1000, &mut d);
     fire(&mut bus, &h, &mut d);
+    drain_tx(&mut bus, &h);
 
     let (_, inst, data) = last_reply(&h.wire);
     assert_eq!(inst.result(), Some(ResultCode::Ok));
@@ -242,6 +243,7 @@ fn s4_write_id_acks_from_old_id_then_applies() {
     let ping = instruction(42, Opcode::Ping, 0, &[]);
     deliver(&mut bus, &h, 200, &ping, 5000, &mut d);
     fire(&mut bus, &h, &mut d);
+    drain_tx(&mut bus, &h);
     let (id2, inst2, _) = last_reply(&h.wire);
     assert_eq!(id2, 42);
     assert!(inst2.is_status());
@@ -270,6 +272,7 @@ fn s5_gread_slot1_waits_for_predecessor() {
 
     // Now the T_turn deadline triggers our reply, not silent.
     fire(&mut bus, &h, &mut d);
+    drain_tx(&mut bus, &h);
     let (id, inst, _) = last_reply(&h.wire);
     assert_eq!(id, ID);
     assert_eq!(inst.result(), Some(ResultCode::Ok));
@@ -287,6 +290,7 @@ fn s6_gread_slot1_reclaim_marks_predecessor_silent() {
     deliver(&mut bus, &h, 100, &gread, 1000, &mut d);
     // No predecessor: the reclaim window expires and we take the slot.
     fire(&mut bus, &h, &mut d);
+    drain_tx(&mut bus, &h);
     let (id, inst, _) = last_reply(&h.wire);
     assert_eq!(id, ID);
     assert_eq!(inst.result(), Some(ResultCode::PredecessorSilent));
@@ -338,6 +342,7 @@ fn s9_frame_wrapping_ring_boundary_decodes() {
     let frame = instruction(ID, Opcode::Ping, 0, &[]);
     deliver(&mut bus, &h, RING_LEN - 4, &frame, 1000, &mut d);
     fire(&mut bus, &h, &mut d);
+    drain_tx(&mut bus, &h);
 
     let (id, inst, data) = last_reply(&h.wire);
     assert_eq!(id, ID);
@@ -417,6 +422,7 @@ fn s11_break_after_covered_cancels_speculation() {
     let next = instruction(ID, Opcode::Read, 0, &[0, 0, 4, 0]);
     deliver(&mut bus, &h, 100, &next, c + 5000, &mut d);
     fire(&mut bus, &h, &mut d);
+    drain_tx(&mut bus, &h);
     let (id, inst, data) = last_reply(&h.wire);
     assert_eq!(id, ID);
     assert_eq!(inst.result(), Some(ResultCode::Ok));
