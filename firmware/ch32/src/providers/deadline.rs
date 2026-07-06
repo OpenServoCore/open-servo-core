@@ -1,29 +1,22 @@
-//! Deadline provider (osc-native §4.1) — `now()` from SysTick's free-running
-//! CNT, the compare from TIM2 CH4 (pin-less frozen OC, CC4IE interrupt).
+//! Deadline provider (osc-native §4.1) — SysTick's free-running CNT for
+//! `now()`, its 32-bit CMP + STIE compare for the wake.
 //!
-//! SysTick's own compare is NOT used: bench characterization showed its
-//! CNTIF does not reliably latch on an upward CNT crossing (armed CMP
-//! provably crossed with SR staying 0). TIM2's CC compares carried the DXL
-//! scheduler for months at these timescales — same 48 MHz domain, and
-//! `init_tim2_ch4_oc_kickoff`'s co-zero locks TIM2.CNT to SysTick's low 16
-//! bits, so a u32 deadline truncates straight into CCR4.
-//!
-//! TIM2 is 16-bit: deadlines beyond [`HORIZON`] are reached by hopping —
-//! an early wake is harmless by design (the mux due-checks against fresh
-//! `now` and re-arms, §4.1).
+//! The compare is EQUALITY-ONLY: CNTIF latches when CNT counts up through
+//! CMP exactly; a CMP the counter has already passed never matches until
+//! the ~89 s wrap. Two disciplines make that safe (both carried over from
+//! the DXL fast-fire scheduler, bench-proven for months): CNTIF is cleared
+//! before every arm so a stale latch can't fire a ghost wake, and a set
+//! that lands behind the running counter — the CMP store races CNT by a
+//! few HCLK cycles — is caught by the post-arm recheck and converted into
+//! a PFIC software pend (`pend_systick`), which dispatches the same vector
+//! without needing the comparator. The mux due-checks every wake against
+//! fresh `now` (§4.1), so an extra wake is harmless.
 
 use osc_drivers::traits::bus::{self, tick_reached};
 
-use crate::hal::{systick, timer};
+use crate::hal::{pfic, systick};
 
-/// Hop distance for far deadlines: well under the 16-bit wrap so a hop can
-/// never alias, comfortably over any near-deadline (683 µs at 48 MHz).
-const HORIZON: u32 = 0x8000;
-
-/// Re-aim lead when an arm lands behind the running counter (~330 ns).
-const SET_RETRY_TICKS: u16 = 16;
-
-/// Production binding: SysTick CNT (time) + TIM2 CC4 (compare) on HCLK.
+/// Production binding: SysTick CNT + CMP/STIE on HCLK (48 MHz).
 pub struct Deadline;
 
 impl bus::Deadline for Deadline {
@@ -35,35 +28,19 @@ impl bus::Deadline for Deadline {
     }
 
     fn set(&mut self, at: u32) {
-        let now = systick::ticks();
-        let delta = at.wrapping_sub(now);
-        let ccr = if delta >= HORIZON {
-            timer::tim2_cnt().wrapping_add(HORIZON as u16)
-        } else {
-            at as u16
-        };
-        timer::set_tim2_ccr4(ccr);
-        // A stale match from a previous arm would fire the ISR immediately;
-        // the mux would just re-arm, but clearing keeps wakes purposeful.
-        timer::clear_tim2_cc4_flag();
-        timer::set_tim2_cc4_irq(true);
-        // TIM2 compare is equality-only too: if CNT slipped past `ccr`
-        // between the reads (a past `at`, or a long preemption), re-aim a
-        // hair ahead until the match is pending or provably in the future —
-        // the DXL scheduler's recheck pattern.
-        if delta < HORIZON {
-            loop {
-                let n2 = systick::ticks();
-                if !tick_reached(n2, at) || timer::tim2_cc4_matched() {
-                    break;
-                }
-                timer::set_tim2_ccr4((n2 as u16).wrapping_add(SET_RETRY_TICKS));
-            }
+        crate::log::trace!("dl.set at={}", at);
+        systick::set_irq(false);
+        systick::clear_match();
+        systick::set_cmp(at);
+        systick::set_irq(true);
+        if tick_reached(systick::ticks(), at) && !systick::matched() {
+            pfic::pend_systick();
         }
     }
 
     #[inline(always)]
     fn cancel(&mut self) {
-        timer::set_tim2_cc4_irq(false);
+        crate::log::trace!("dl.cancel");
+        systick::set_irq(false);
     }
 }

@@ -40,11 +40,6 @@ pub fn enable_tim1() {
 }
 
 #[inline]
-pub fn enable_tim2() {
-    RCC.pb1pcenr().modify(|w| w.set_tim2en(true));
-}
-
-#[inline]
 pub fn enable_adc1() {
     RCC.pb2pcenr().modify(|w| w.set_adcen(true));
 }
