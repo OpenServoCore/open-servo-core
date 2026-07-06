@@ -7,15 +7,17 @@ license.workspace = true
 [features]
 defmt = ["dep:defmt", "osc-core/defmt"]
 log   = ["dep:log"]
-mocks = ["dep:mockall"]
+mocks = ["dep:mockall", "osc-protocol/software-crc"]
 
 [dependencies]
 osc-core.workspace = true
+osc-protocol.workspace = true
 heapless.workspace = true
 mockall            = { version = "0.14", optional = true }
 defmt              = { version = "1", optional = true }
 log                = { version = "0.4", optional = true }
 
 [dev-dependencies]
+osc-protocol = { workspace = true, features = ["software-crc"] }
 heapless.workspace = true
 mockall      = "0.14"
