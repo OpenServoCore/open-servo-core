@@ -18,6 +18,10 @@ path = "src/bin/tool-osc-ping.rs"
 name = "tool-osc-read"
 path = "src/bin/tool-osc-read.rs"
 
+[[bin]]
+name = "tool-osc-baud"
+path = "src/bin/tool-osc-baud.rs"
+
 [dependencies]
 osc-protocol = { path = "../../firmware/lib/osc-protocol", features = ["software-crc"] }
 serialport   = "4"
