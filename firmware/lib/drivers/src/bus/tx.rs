@@ -21,10 +21,6 @@ const SMALL_COPY_MAX: usize = 32;
 /// maximal payloads hit this; the dispatcher never produces them.
 const COPY_PAYLOAD_MAX: usize = REPLY_BUF - 7;
 
-/// CRC spin backstop, iterations per covered byte: the engine runs ~8x wire
-/// speed (F6), so this is orders of magnitude past any healthy completion.
-const SPIN_PER_BYTE: u32 = 64;
-
 /// Outcome of an arm-completion event.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub enum TxOut {
@@ -50,8 +46,7 @@ enum State {
     Streaming { next: u8 },
 }
 
-pub struct TxEngine<C: CrcEngine, W: TxWire> {
-    crc: C,
+pub struct TxEngine<W: TxWire> {
     wire: W,
     buf: FrameBuf<REPLY_BUF>,
     arms: [Arm; 3],
@@ -68,10 +63,9 @@ pub struct TxEngine<C: CrcEngine, W: TxWire> {
     crc_misses: u32,
 }
 
-impl<C: CrcEngine, W: TxWire> TxEngine<C, W> {
-    pub fn new(crc: C, wire: W) -> Self {
+impl<W: TxWire> TxEngine<W> {
+    pub fn new(wire: W) -> Self {
         Self {
-            crc,
             wire,
             buf: FrameBuf::new(),
             arms: [NO_ARM; 3],
@@ -90,6 +84,12 @@ impl<C: CrcEngine, W: TxWire> TxEngine<C, W> {
 
     pub fn busy(&self) -> bool {
         !matches!(self.state, State::Idle)
+    }
+
+    /// A frame is staged but not yet triggered — safe to abort (a fresh
+    /// instruction supersedes it). Streaming frames must not be aborted.
+    pub fn staged(&self) -> bool {
+        matches!(self.state, State::Staged)
     }
 
     /// Build the frame layout for a status reply; touches no wire state
@@ -197,20 +197,20 @@ impl<C: CrcEngine, W: TxWire> TxEngine<C, W> {
     /// Finalize and start: optional result override (chain reclaim's
     /// predecessor-silent, §6) rewrites INST, then CRC-feed + patch, then
     /// break + first arm.
-    pub fn trigger(&mut self, over: Option<ResultCode>) {
+    pub fn trigger<C: CrcEngine>(&mut self, crc: &mut C, over: Option<ResultCode>) {
         if !matches!(self.state, State::Staged) {
             debug_assert!(false, "trigger without a staged frame");
             return;
         }
         self.buf.bytes_mut()[3] = Inst::status(over.unwrap_or(self.result), self.pad, self.alert).0;
-        self.crc.reset();
+        crc.reset();
         for i in 0..self.n_feeds as usize {
             let span = resolve(&self.buf, self.feeds[i]);
-            self.crc.feed(span);
+            crc.feed(span);
         }
-        let mut budget = SPIN_PER_BYTE * self.covered as u32;
+        let mut budget = super::SPIN_PER_BYTE * self.covered as u32;
         let crc = loop {
-            if let Some(v) = self.crc.result() {
+            if let Some(v) = crc.result() {
                 break Some(v);
             }
             if budget == 0 {
@@ -330,10 +330,10 @@ mod tests {
         }
     }
 
-    fn engine() -> (TxEngine<FakeCrc, FakeWire>, Rc<RefCell<Vec<Event>>>) {
+    fn engine() -> (TxEngine<FakeWire>, Rc<RefCell<Vec<Event>>>) {
         let wire = FakeWire::default();
         let log = wire.0.clone();
-        (TxEngine::new(FakeCrc(0), wire), log)
+        (TxEngine::new(wire), log)
     }
 
     /// Software-sealed frame for the same reply, including the 0x00 prefix.
@@ -346,8 +346,8 @@ mod tests {
     }
 
     /// Drive a staged frame to completion, returning the arm outcomes.
-    fn run(eng: &mut TxEngine<FakeCrc, FakeWire>, over: Option<ResultCode>) -> Vec<TxOut> {
-        eng.trigger(over);
+    fn run(eng: &mut TxEngine<FakeWire>, over: Option<ResultCode>) -> Vec<TxOut> {
+        eng.trigger(&mut FakeCrc(0), over);
         let mut outs = Vec::new();
         loop {
             let out = eng.on_arm_complete();
@@ -481,7 +481,7 @@ mod tests {
         assert!(!eng.busy());
         eng.stage(2, ResultCode::Ok, false, &[]).unwrap();
         // Aborting mid-stream also releases.
-        eng.trigger(None);
+        eng.trigger(&mut FakeCrc(0), None);
         eng.abort();
         assert_eq!(*log.borrow().last().unwrap(), Event::Release);
         assert!(!eng.busy());
