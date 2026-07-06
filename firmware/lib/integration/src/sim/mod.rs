@@ -24,6 +24,10 @@ use self::core::{Core, Event, TICKS_PER_US, Talker, break_ticks, byte_ticks};
 use self::providers::Handles;
 use self::servo::SimServo;
 
+/// XOR mask applied to bytes ringed at a baud-mismatched receiver: arbitrary
+/// but nonzero, so mismatched data never survives as valid content.
+const MISMATCH_GARBLE: u8 = 0xA5;
+
 pub use self::support::{assert_valid, instruction, status};
 
 /// Who put a frame on the wire, as recorded.
@@ -229,10 +233,14 @@ impl Sim {
                 continue;
             }
             let matched = self.handles[j].baud.current() == baud;
-            self.handles[j].ring.push(byte);
-            // A baud mismatch corrupts the byte into a framing error (§2
-            // approximation — enough for rescue-flow tests).
-            if !matched {
+            if matched {
+                self.handles[j].ring.push(byte);
+            } else {
+                // A baud mismatch garbles both value and framing (§2
+                // approximation): the sampled bits are wrong-rate noise, so
+                // the ringed byte must not survive as valid data at either a
+                // faster or slower receiver.
+                self.handles[j].ring.push(byte ^ MISMATCH_GARBLE);
                 self.servos[j].on_break();
             }
         }

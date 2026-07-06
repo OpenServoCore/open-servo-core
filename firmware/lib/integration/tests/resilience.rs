@@ -161,11 +161,25 @@ fn rescue_pulse_drops_to_500k() {
     let frames = sim.run();
     assert!(servo_frames(&frames).is_empty());
 
-    // Talk at the rescue rate → answered.
+    // Talk at the rescue rate. The mismatched traffic left unparseable garble
+    // in the ring (byte count at a wrong-rate receiver is arbitrary), so §3.2
+    // allows one frame for the parity self-heal: the first valid ping may be
+    // spent on drop + rearm, the second must answer.
     sim.set_host_baud(BaudRate::B500000);
-    sim.host_send_at(1200, &instruction(ID5, Opcode::Ping, 0, &[]));
-    let frames = sim.run();
-    let (inst, _) = status(sole_reply(&frames));
+    let mut reply = None;
+    for attempt in 0..2u64 {
+        sim.host_send_at(
+            1200 + attempt * 600,
+            &instruction(ID5, Opcode::Ping, 0, &[]),
+        );
+        let frames = sim.run();
+        if let [r] = servo_frames(&frames)[..] {
+            assert_valid(r);
+            reply = Some(status(r).0);
+            break;
+        }
+    }
+    let inst = reply.expect("rescue ping answered within the §3.2 heal bound");
     assert_eq!(inst.result(), Some(ResultCode::Ok));
 }
 

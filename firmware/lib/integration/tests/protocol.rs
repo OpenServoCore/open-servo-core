@@ -324,17 +324,18 @@ fn baud_change_acks_then_switches() {
     let (inst, _) = status(sole_reply(&frames));
     assert_eq!(inst.result(), Some(ResultCode::Ok));
 
+    // A ping still at the old 1M baud garbles at the now-3M servo: silence.
+    sim.host_send_at(600, &instruction(ID5, Opcode::Ping, 0, &[]));
+    let frames = sim.run();
+    assert!(
+        servo_frames(&frames).is_empty(),
+        "old-baud ping must garble after the switch: {frames:#?}"
+    );
+
     // Host follows the servo to 3M; a ping at the new baud is answered, proving
     // the switch took effect after the ack drained.
-    //
-    // The reciprocal "a ping still at the old 1M baud now garbles" holds on
-    // hardware but is not asserted here: the sim's baud-mismatch model only
-    // drops the slower-servo direction (a 3M servo's generous recheck plateau
-    // absorbs the 1M byte cadence and the intact bytes still pass CRC). That
-    // garble-after-switch path is exercised down-shift by
-    // `resilience::rescue_pulse_drops_to_500k`.
     sim.set_host_baud(BaudRate::B3000000);
-    sim.host_send_at(600, &instruction(ID5, Opcode::Ping, 0, &[]));
+    sim.host_send_at(1200, &instruction(ID5, Opcode::Ping, 0, &[]));
     let frames = sim.run();
     let (inst, _) = status(sole_reply(&frames));
     assert_eq!(inst.result(), Some(ResultCode::Ok));
