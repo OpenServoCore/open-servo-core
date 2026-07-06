@@ -78,6 +78,20 @@ impl<const N: usize> FrameBuf<N> {
         &self.bytes[..wire::footprint(self.bytes[2])]
     }
 
+    /// Raw storage — escape hatch for the chip driver's zero-copy tail layout
+    /// (§4.2), where the buffer holds only header and CRC tail around an
+    /// externally streamed payload. Layout invariants become the caller's.
+    #[inline]
+    pub fn bytes(&self) -> &[u8; N] {
+        &self.bytes
+    }
+
+    /// Mutable counterpart of [`bytes`](Self::bytes); same contract.
+    #[inline]
+    pub fn bytes_mut(&mut self) -> &mut [u8; N] {
+        &mut self.bytes
+    }
+
     /// Compute and store the CRC over the covered span, returning the frame.
     #[cfg(feature = "software-crc")]
     #[inline]
