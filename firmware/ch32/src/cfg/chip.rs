@@ -22,13 +22,16 @@ pub const CURRENT_SENSE_OPA_OUTPUT: opa::Output = opa::Output::Internal;
 
 // === Motor + STAT (TIM1 Remap8) ===
 //
-// Remap8, not Remap7: identical CH1–CH4 pins (PC4–PC7), but Remap7 also
-// maps the unused complementary outputs CH1N/CH2N/CH3N onto PC0/PC1/PC2 —
-// and a clocked TIM1 holds an idle CH1N's mux level LOW, clamping the bus
-// pin (PC0) against the USART's released mark (bench-measured: wire stuck
-// low at idle, rose the instant TIM1EN dropped). Remap8 parks the CHxN
-// functions on PA3/PB0/PB1 instead, which carry no digital AF on this
-// board.
+// Remap8, not Remap7: identical pins for every channel this board uses
+// (CH2/PC5, CH3/PC6, CH4/PC7 — the schematic's T1Cx_7 pins), but a remap
+// places FUNCTIONS, used or not, and Remap7 also puts the complementary
+// outputs CH1N/CH2N/CH3N on PC0/PC1/PC2 — double-tenanting the bus pin
+// (PC0 = USART1_TX under Usart1Remap3), which the RM forbids. A
+// never-enabled OC function's AF signal is its reset state (0), so
+// whenever HDSEL released the pin the mux fell through to CH1N's 0 and
+// clamped the bus (bench: wire stuck low at idle, rose the instant
+// TIM1EN dropped). Remap8 parks the unused CHxN functions on PA3 (analog
+// VPOS — digital mux disconnected) and PB0/PB1 (not bonded on TSSOP20).
 pub const MOTOR_TIM1_MAPPING: Tim1Mapping = Tim1Mapping::Remap8;
 pub const MOTOR_IN1_CH: timer::Channel = timer::Channel::CH3;
 pub const MOTOR_IN2_CH: timer::Channel = timer::Channel::CH2;
