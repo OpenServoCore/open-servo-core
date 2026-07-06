@@ -156,16 +156,27 @@ is nothing for it to fall back on:
 
 **Even anchors are an invariant, not an optimization.** Every frame's
 ring footprint is even (§3.1); a mid-frame FE still rings its byte, so
-garble is parity-neutral [F4]; own TX never rings (no echo [F9]); and the
-servo arms its RX ring on a quiet line at boot, so it joins aligned. With
-an even ring base, every anchor therefore lands halfword-aligned and the
-engine covers every frame. An odd anchor is a *fault* — noise rang a
+garble is parity-neutral [F4]; and own TX never rings (no echo [F9]).
+With an even ring base, every anchor therefore lands halfword-aligned and
+the engine covers every frame. An odd anchor is a *fault* — noise rang a
 stray byte, or a transmitter violated framing — and V006 DMA cannot feed
 an odd address anyway [F12], so the frame is dropped at layer 1 (§5.3):
-no reply, diagnostics counter. Parity is bus-global (every listener hears
-the same bytes), so recovery is one bare break (one ring byte) from the
-host, flipping the whole bus back at once. Corollary: hosts must not send
-bare breaks casually — a resync breather is *two* breaks, parity-neutral.
+no reply, diagnostics counter.
+
+Recovery is local and immediate — the host is never involved. The dropped
+frame's end is still computable (its header is byte-readable at any
+parity), and at that boundary the servo re-arms the RX ring: channel off,
+NDTR reloaded, channel on — sub-µs, and done at a frame boundary, so the
+next break's ring byte lands at index 0, even by construction. The reset
+races nothing: even against back-to-back host frames, the next frame's
+first ring byte is its break's `0x00`, which cannot land before the
+current frame ends. A stale request latched across the disable window
+(the #134 class) deposits one byte at index 0, which re-triggers
+detection on the next frame — the retry converges. Booting mid-traffic
+(a partial first frame in the ring) heals the same way: one dropped
+frame, then aligned. Corollary: a bare break is never needed and never
+free — its lone ring byte makes the next anchor odd at every listener,
+costing one frame bus-wide; hosts simply should not send them.
 
 Test vectors (covered bytes → CRC):
 
@@ -187,9 +198,11 @@ A mid-frame FE costs one frame (CRC rejects it), never the stream [F4].
 
 ### 4.1 RX framer
 
-One circular RX DMA channel, armed once at boot, never reconfigured; NDTR
-is read as a cursor, never reloaded (reloading drops or latches requests —
-the #134 class). Two states:
+One circular RX DMA channel, armed once at boot; NDTR is read as a
+cursor, never reloaded in normal operation (reloading drops or latches
+requests — the #134 class). The one sanctioned reload is the
+parity-recovery re-arm (§3.2), performed at a computed frame boundary.
+Two states:
 
 - **HUNT** — on FE IRQ (break): record the anchor = current ring position
   (the `0x00` just ringed). Enter LOCKED.
