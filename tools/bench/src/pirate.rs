@@ -297,6 +297,15 @@ impl Client {
         self.expect_ok(&format!("SEND bytes={}", hex(data)))
     }
 
+    /// Transmit a break followed by `data`. The pirate's own TX echoes back
+    /// into its stamp stream, so a capture shows the `0x00` break then `data`.
+    pub fn brksend(&mut self, data: &[u8]) -> Result<()> {
+        if data.len() > 272 {
+            bail!("brksend payload {} bytes exceeds 272", data.len());
+        }
+        self.expect_ok(&format!("BRKSEND bytes={}", hex(data)))
+    }
+
     /// Stage `data` to send `after_idle_us` microseconds after the next
     /// wire IDLE. Wall-clock units; converts to ticks via cached
     /// `hz_per_us`.
