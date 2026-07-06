@@ -351,6 +351,27 @@ fn s9_frame_wrapping_ring_boundary_decodes() {
 }
 
 #[test]
+fn s12_write_wrapping_ring_boundary_mutates_and_acks() {
+    let h = Harness::new();
+    let mut bus = h.build(ID, RATE, 60);
+    let shared = Shared::new();
+    let mut session = Session::new();
+    let mut d = session.dispatcher(&shared);
+
+    // WRITE torque_enable=1 (footprint 10) placed so its payload wraps the seam:
+    // anchor 506 lays header+addr at 506..512, the data byte + CRC at 0..4.
+    let addr = CONTROL_BASE_ADDR.to_le_bytes();
+    let frame = instruction(ID, Opcode::Write, 0, &[addr[0], addr[1], 1]);
+    deliver(&mut bus, &h, RING_LEN - 6, &frame, 1000, &mut d);
+    fire(&mut bus, &h, &mut d);
+
+    let (_, inst, data) = last_reply(&h.wire);
+    assert_eq!(inst.result(), Some(ResultCode::Ok));
+    assert!(data.is_empty());
+    assert!(shared.table.with(|t| t.control.lifecycle.torque_enable));
+}
+
+#[test]
 fn s10_rescue_break_switches_to_500k() {
     let h = Harness::new();
     let mut bus = h.build(ID, RATE, 60);

@@ -94,17 +94,28 @@ impl StagedWrites {
     }
 
     pub fn push(&mut self, addr: u16, src: &[u8]) -> Result<(), Error> {
+        self.push_split(addr, src, &[])
+    }
+
+    /// As [`push`](Self::push) but with the source split across the ring seam:
+    /// `head` then `tail` land contiguously in one staged entry.
+    pub fn push_split(&mut self, addr: u16, head: &[u8], tail: &[u8]) -> Result<(), Error> {
         let data_off = self.data.len();
-        if data_off + src.len() > STAGE_DATA_CAP {
+        let total = head.len() + tail.len();
+        if data_off + total > STAGE_DATA_CAP {
             return Err(Error::StagingFull);
         }
         self.data
-            .extend_from_slice(src)
+            .extend_from_slice(head)
             .map_err(|_| Error::StagingFull)?;
+        self.data.extend_from_slice(tail).map_err(|_| {
+            self.data.truncate(data_off);
+            Error::StagingFull
+        })?;
         self.entries
             .push(StagedEntry {
                 addr,
-                len: src.len() as u16,
+                len: total as u16,
                 data_off: data_off as u16,
             })
             .map_err(|_| {

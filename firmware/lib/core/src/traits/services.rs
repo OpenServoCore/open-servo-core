@@ -1,3 +1,4 @@
+use osc_protocol::FrameBytes;
 use osc_protocol::wire::{MgmtOp, ResultCode};
 
 use crate::{BaudRate, BootMode};
@@ -30,13 +31,13 @@ pub enum Request<'a> {
     },
     Write {
         addr: u16,
-        data: &'a [u8],
+        data: FrameBytes<'a>,
         hold: bool,
     },
     Commit,
     Mgmt {
         op: MgmtOp,
-        args: &'a [u8],
+        args: FrameBytes<'a>,
     },
     /// Valid frame the bus cannot resolve (unknown opcode/flag combination).
     /// Dispatch answers `ResultCode::Instruction` (§5.3 layer 2).

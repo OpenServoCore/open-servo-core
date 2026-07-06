@@ -10,6 +10,7 @@
 //! self-filtering is coded here.
 
 use osc_core::traits::{Request, RequestCtx};
+use osc_protocol::FrameBytes;
 use osc_protocol::frame::{Header, MgmtReq, ReadReq, WriteReq};
 use osc_protocol::group::{GreadPerTarget, GreadUniform, GwritePerTarget, GwriteUniform};
 use osc_protocol::wire::{Id, Inst, Opcode};
@@ -24,11 +25,17 @@ pub enum Decoded<'a> {
     Own(Request<'a>, RequestCtx, u8),
 }
 
-pub fn decode(frame: &[u8], id: u8) -> Decoded<'_> {
-    let Ok(head) = <&[u8; 4]>::try_from(frame.get(..Header::SIZE).unwrap_or(&[])) else {
+pub fn decode(frame: FrameBytes<'_>, id: u8) -> Decoded<'_> {
+    let (Some(b0), Some(b1), Some(b2), Some(b3)) = (
+        frame.u8_at(0),
+        frame.u8_at(1),
+        frame.u8_at(2),
+        frame.u8_at(3),
+    ) else {
         return Decoded::Skip;
     };
-    let h = Header::from_bytes(head);
+    let head = [b0, b1, b2, b3];
+    let h = Header::from_bytes(&head);
     if h.inst.is_status() {
         return Decoded::Status;
     }
@@ -36,7 +43,7 @@ pub fn decode(frame: &[u8], id: u8) -> Decoded<'_> {
         return Decoded::Skip; // framer already rejects opcode 0
     };
     let p = h.payload_len() as usize;
-    let Some(pay) = frame.get(Header::SIZE..Header::SIZE + p) else {
+    let Some(pay) = frame.sub(Header::SIZE, p) else {
         return Decoded::Skip;
     };
     let inst = h.inst;
@@ -50,7 +57,7 @@ pub fn decode(frame: &[u8], id: u8) -> Decoded<'_> {
 }
 
 /// PING / READ / WRITE / COMMIT / MGMT: addressed by frame ID, reply at slot 0.
-fn plain<'a>(op: Opcode, inst: Inst, frame_id: Id, pay: &'a [u8], own: Id) -> Decoded<'a> {
+fn plain<'a>(op: Opcode, inst: Inst, frame_id: Id, pay: FrameBytes<'a>, own: Id) -> Decoded<'a> {
     let broadcast = frame_id.is_broadcast();
     if !frame_id.addresses(own) {
         return Decoded::Skip;
@@ -94,7 +101,7 @@ fn plain<'a>(op: Opcode, inst: Inst, frame_id: Id, pay: &'a [u8], own: Id) -> De
 /// GREAD: our span comes from the id-list; the chain slot is our list position.
 /// A GREAD slot always replies (that is the chain, §6). A list we can't parse
 /// leaves our addressing unknowable — skip rather than answer blind.
-fn gread(inst: Inst, pay: &[u8], own: Id) -> Decoded<'_> {
+fn gread<'a>(inst: Inst, pay: FrameBytes<'a>, own: Id) -> Decoded<'a> {
     if inst.per_target() {
         match GreadPerTarget::parse(pay).and_then(|g| g.find(own)) {
             Some((slot, t)) => own_read(t.addr, t.count, slot),
@@ -120,7 +127,7 @@ fn own_read<'a>(addr: u16, count: u16, slot: u8) -> Decoded<'a> {
 }
 
 /// GWRITE: our entry's span + data, applied silently (§5: no reply implied).
-fn gwrite(inst: Inst, pay: &[u8], own: Id) -> Decoded<'_> {
+fn gwrite<'a>(inst: Inst, pay: FrameBytes<'a>, own: Id) -> Decoded<'a> {
     let hold = inst.hold();
     if inst.per_target() {
         match GwritePerTarget::parse(pay).and_then(|g| g.find(own)) {
@@ -138,7 +145,7 @@ fn gwrite(inst: Inst, pay: &[u8], own: Id) -> Decoded<'_> {
     }
 }
 
-fn own_write(addr: u16, data: &[u8], hold: bool) -> Decoded<'_> {
+fn own_write<'a>(addr: u16, data: FrameBytes<'a>, hold: bool) -> Decoded<'a> {
     Decoded::Own(
         Request::Write { addr, data, hold },
         RequestCtx { may_reply: false },

@@ -31,13 +31,16 @@ pub struct SectionMeta {
     pub write_lock: Option<u16>,
 }
 
-/// Live base pointer + size plus one pending `(addr, bytes)` overlay, so a
-/// check sees the value about to be committed on top of live storage.
+/// Live base pointer + size plus one pending overlay, so a check sees the value
+/// about to be committed on top of live storage. The overlay is up to two
+/// contiguous ranges — `o2` logically follows `o1` at `overlay_addr + o1.len()`
+/// — because a ring-seam write arrives as head + tail (`o2` empty otherwise).
 pub struct View<'a> {
     base: *const u8,
     size: usize,
     overlay_addr: u16,
-    overlay: &'a [u8],
+    o1: &'a [u8],
+    o2: &'a [u8],
 }
 
 impl<'a> View<'a> {
@@ -48,21 +51,41 @@ impl<'a> View<'a> {
     /// `base` must point to `size` valid bytes that outlive the view; the caller
     /// upholds `RegisterMap`'s single-writer contract for shared reads.
     pub fn new(base: *const u8, size: usize, overlay_addr: u16, overlay: &'a [u8]) -> View<'a> {
+        View::new_split(base, size, overlay_addr, overlay, &[])
+    }
+
+    /// As [`View::new`] but with the overlay split across the ring seam: `o1`
+    /// starts at `overlay_addr`, `o2` continues at `overlay_addr + o1.len()`.
+    ///
+    /// # Safety
+    /// Same contract as [`View::new`].
+    pub fn new_split(
+        base: *const u8,
+        size: usize,
+        overlay_addr: u16,
+        o1: &'a [u8],
+        o2: &'a [u8],
+    ) -> View<'a> {
         View {
             base,
             size,
             overlay_addr,
-            overlay,
+            o1,
+            o2,
         }
     }
 
     /// Load `[addr, addr+len)` (`len <= 4`) into a `[u8; 4]` as little-endian
     /// bytes, taking each byte from the pending overlay where it lands inside
-    /// `[overlay_addr, overlay_addr+overlay.len())` and from live storage
+    /// `[overlay_addr, overlay_addr+o1.len()+o2.len())` and from live storage
     /// otherwise. Returns `OutOfRange` when `[addr, addr+len)` leaves the map.
     /// Bounds-checked once up front; the per-byte picks then need no further
     /// checks. Bytes past `len` in the returned array are zero.
-    #[inline(always)]
+    ///
+    /// Outlined: every generated field-rule check calls this, and inlining
+    /// the split-overlay pick at each site cost ~6 KB of flash (write-path
+    /// only, so the call overhead is noise against the write budget).
+    #[inline(never)]
     pub fn read_fixed(&self, addr: u16, len: usize) -> Result<[u8; 4], Error> {
         let lo = addr as usize;
         let hi = match lo.checked_add(len) {
@@ -73,14 +96,17 @@ impl<'a> View<'a> {
             return Err(Error::OutOfRange);
         }
         let o_lo = self.overlay_addr as usize;
-        let o_hi = o_lo + self.overlay.len();
+        let split = o_lo + self.o1.len();
+        let o_hi = split + self.o2.len();
         let mut out = [0u8; 4];
         for (i, slot) in out.iter_mut().take(len).enumerate() {
             let a = lo + i;
-            *slot = if a >= o_lo && a < o_hi {
-                // `a - o_lo < overlay.len()` by the bounds above; get keeps the
-                // never-panic contract regardless.
-                self.overlay.get(a - o_lo).copied().unwrap_or(0)
+            *slot = if a >= o_lo && a < split {
+                // Bounds guaranteed by `a < split = o_lo + o1.len()`; get keeps
+                // the never-panic contract regardless.
+                self.o1.get(a - o_lo).copied().unwrap_or(0)
+            } else if a >= split && a < o_hi {
+                self.o2.get(a - split).copied().unwrap_or(0)
             } else {
                 // SAFETY: `a < hi <= size` bytes of live storage; the caller
                 // upholds RegisterMap's single-writer contract, so this shared
@@ -92,15 +118,18 @@ impl<'a> View<'a> {
     }
 }
 
-/// Validate `[addr, addr+src.len())` against the flat map: bounds → writable
-/// mask → rules → lock, in that precedence. The view is live storage plus this
-/// op's `src` only (previously staged entries are not visible).
-fn validate<M: RegisterMap + ?Sized>(m: &M, addr: u16, src: &[u8]) -> Result<(), Error> {
-    if src.is_empty() {
+/// Validate `[addr, addr+o1.len()+o2.len())` against the flat map: bounds →
+/// writable mask → rules → lock, in that precedence. The view is live storage
+/// plus this op's `o1`/`o2` overlay only (previously staged entries are not
+/// visible). `o2` continues after `o1` at the ring seam; it is empty for a
+/// contiguous write.
+fn validate<M: RegisterMap + ?Sized>(m: &M, addr: u16, o1: &[u8], o2: &[u8]) -> Result<(), Error> {
+    let total = o1.len() + o2.len();
+    if total == 0 {
         return Ok(());
     }
     let lo = addr as usize;
-    let hi = match lo.checked_add(src.len()) {
+    let hi = match lo.checked_add(total) {
         Some(h) => h,
         None => return Err(Error::OutOfRange),
     };
@@ -131,7 +160,7 @@ fn validate<M: RegisterMap + ?Sized>(m: &M, addr: u16, src: &[u8]) -> Result<(),
         }
     }
 
-    let view = View::new(m.base() as *const u8, M::SIZE, addr, src);
+    let view = View::new_split(m.base() as *const u8, M::SIZE, addr, o1, o2);
 
     // Checks across every overlapping section first, so a bad value in a locked
     // section reports its own kind (e.g. Enum), not Locked.
@@ -180,18 +209,42 @@ pub trait RegisterFile: RegisterMap {
     }
 
     fn write(&self, addr: u16, src: &[u8]) -> Result<(), Error> {
-        validate(self, addr, src)?;
-        // SAFETY: validate confirmed `[addr, addr+len)` is in bounds; the caller
-        // upholds RegisterMap's single-writer contract.
+        self.write_split(addr, src, &[])
+    }
+
+    /// As [`write`](RegisterFile::write) but with the source split across the
+    /// ring seam: `head` at `addr`, `tail` continuing after it.
+    fn write_split(&self, addr: u16, head: &[u8], tail: &[u8]) -> Result<(), Error> {
+        validate(self, addr, head, tail)?;
+        // SAFETY: validate confirmed `[addr, addr+head.len()+tail.len())` is in
+        // bounds; the caller upholds RegisterMap's single-writer contract.
         unsafe {
-            core::ptr::copy_nonoverlapping(src.as_ptr(), self.base().add(addr as usize), src.len());
+            let base = self.base();
+            core::ptr::copy_nonoverlapping(head.as_ptr(), base.add(addr as usize), head.len());
+            core::ptr::copy_nonoverlapping(
+                tail.as_ptr(),
+                base.add(addr as usize + head.len()),
+                tail.len(),
+            );
         }
         Ok(())
     }
 
     fn stage(&self, addr: u16, src: &[u8], staged: &mut StagedWrites) -> Result<(), Error> {
-        validate(self, addr, src)?;
-        staged.push(addr, src)
+        self.stage_split(addr, src, &[], staged)
+    }
+
+    /// As [`stage`](RegisterFile::stage) but with the source split across the
+    /// ring seam.
+    fn stage_split(
+        &self,
+        addr: u16,
+        head: &[u8],
+        tail: &[u8],
+        staged: &mut StagedWrites,
+    ) -> Result<(), Error> {
+        validate(self, addr, head, tail)?;
+        staged.push_split(addr, head, tail)
     }
 
     fn commit_staged(&self, staged: &mut StagedWrites) {

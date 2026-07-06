@@ -4,6 +4,7 @@
 
 use heapless::Vec;
 
+use osc_protocol::FrameBytes;
 use osc_protocol::wire::{MgmtOp, ResultCode};
 
 use crate::regions::CONTROL_BASE_ADDR;
@@ -221,7 +222,7 @@ fn write_acks_ok_and_mutates() {
         &mut staged,
         Request::Write {
             addr: CONTROL_BASE_ADDR,
-            data: &[1],
+            data: FrameBytes::from(&[1][..]),
             hold: false,
         },
         true,
@@ -241,7 +242,7 @@ fn write_validation_reject_maps_to_validation() {
         &mut staged,
         Request::Write {
             addr: CONTROL_BASE_ADDR,
-            data: &[2],
+            data: FrameBytes::from(&[2][..]),
             hold: false,
         },
         true,
@@ -260,7 +261,7 @@ fn write_torque_locked_config_maps_to_access() {
         &mut staged,
         Request::Write {
             addr: ID,
-            data: &[5],
+            data: FrameBytes::from(&[5][..]),
             hold: false,
         },
         true,
@@ -277,7 +278,7 @@ fn write_applies_even_when_may_reply_false() {
         &mut staged,
         Request::Write {
             addr: CONTROL_BASE_ADDR,
-            data: &[1],
+            data: FrameBytes::from(&[1][..]),
             hold: false,
         },
         false,
@@ -296,7 +297,7 @@ fn write_id_stages_via_reply() {
         &mut staged,
         Request::Write {
             addr: ID,
-            data: &[42],
+            data: FrameBytes::from(&[42][..]),
             hold: false,
         },
         true,
@@ -315,7 +316,7 @@ fn write_baud_stages_via_reply() {
         &mut staged,
         Request::Write {
             addr: BAUD_RATE_IDX,
-            data: &[BaudRate::B2000000 as u8],
+            data: FrameBytes::from(&[BaudRate::B2000000 as u8][..]),
             hold: false,
         },
         true,
@@ -334,7 +335,7 @@ fn write_response_deadline_sets_via_reply() {
         &mut staged,
         Request::Write {
             addr: RESPONSE_DEADLINE_US,
-            data: &200u16.to_le_bytes(),
+            data: FrameBytes::from(&200u16.to_le_bytes()[..]),
             hold: false,
         },
         true,
@@ -354,7 +355,7 @@ fn hold_write_stages_without_touching_live_table() {
         &mut staged,
         Request::Write {
             addr: CONTROL_BASE_ADDR,
-            data: &[1],
+            data: FrameBytes::from(&[1][..]),
             hold: true,
         },
         true,
@@ -376,7 +377,7 @@ fn commit_silent_when_may_reply_false() {
         &mut staged,
         Request::Write {
             addr: CONTROL_BASE_ADDR,
-            data: &[1],
+            data: FrameBytes::from(&[1][..]),
             hold: true,
         },
         false,
@@ -397,7 +398,7 @@ fn mgmt_reboot_acks_and_stages_boot_mode() {
         &mut staged,
         Request::Mgmt {
             op: MgmtOp::Reboot,
-            args: &[],
+            args: FrameBytes::from(&[][..]),
         },
         true,
     );
@@ -415,7 +416,7 @@ fn mgmt_reboot_stages_without_ack_when_silent() {
         &mut staged,
         Request::Mgmt {
             op: MgmtOp::Reboot,
-            args: &[],
+            args: FrameBytes::from(&[][..]),
         },
         false,
     );
@@ -428,7 +429,15 @@ fn mgmt_non_reboot_ops_reply_instruction() {
     let shared = Shared::new();
     let mut staged = StagedWrites::new();
     for op in [MgmtOp::Save, MgmtOp::Factory, MgmtOp::Enum, MgmtOp::Assign] {
-        let reply = go(&shared, &mut staged, Request::Mgmt { op, args: &[] }, true);
+        let reply = go(
+            &shared,
+            &mut staged,
+            Request::Mgmt {
+                op,
+                args: FrameBytes::from(&[][..]),
+            },
+            true,
+        );
         assert_eq!(reply.last().result, ResultCode::Instruction);
     }
 }

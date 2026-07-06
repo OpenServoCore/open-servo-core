@@ -7,8 +7,11 @@
 //! osc-CRC-16 definition.
 #![no_std]
 
+pub mod bytes;
 pub mod crc;
 pub mod frame;
 pub mod group;
 pub mod reply;
 pub mod wire;
+
+pub use bytes::FrameBytes;

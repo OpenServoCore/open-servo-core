@@ -1,4 +1,5 @@
 use control_table::RegisterFile;
+use osc_protocol::FrameBytes;
 use osc_protocol::wire::{MAX_PAYLOAD, MgmtOp, ResultCode};
 
 use crate::regions::hooks::ControlTableHooks;
@@ -174,15 +175,16 @@ impl Dispatcher<'_> {
         alert: bool,
         ctx: &RequestCtx,
         addr: u16,
-        data: &[u8],
+        data: FrameBytes<'_>,
         hold: bool,
         reply: &mut R,
     ) {
+        let (head, tail) = data.segments();
         if hold {
-            let result = self.shared.table.stage(addr, data, self.staged);
+            let result = self.shared.table.stage_split(addr, head, tail, self.staged);
             return Self::ack(alert, ctx, result, reply);
         }
-        let result = self.shared.table.write(addr, data);
+        let result = self.shared.table.write_split(addr, head, tail);
         let ok = result.is_ok();
         Self::ack(alert, ctx, result, reply);
         if ok {

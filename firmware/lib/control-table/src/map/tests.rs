@@ -445,3 +445,76 @@ fn mask_word_at_a_time_edges() {
     assert!(m.write(63, &z[..1]).is_ok());
     assert_eq!(m.write(64, &z[..1]), Err(Error::AccessError));
 }
+
+// --- Split (ring-seam) write/stage: the source arrives as head + tail, the
+// split landing MID a multi-byte field. Behaviour must match the equivalent
+// contiguous write. Field12 (i32 <= 100_000) spans bytes 12..16 on Basic. ---
+
+#[test]
+fn write_split_mid_field_accepts_valid_value() {
+    let m = Basic::new([0; BASIC_SIZE]);
+    // 50_000 across bytes 12..16, split after byte 13 (mid-field).
+    let v = 50_000i32.to_le_bytes();
+    assert!(m.write_split(12, &v[..2], &v[2..]).is_ok());
+    assert_eq!(m.read(12, 4), Ok(&v[..]));
+}
+
+#[test]
+fn write_split_mid_field_rejects_and_leaves_table_untouched() {
+    let m = Basic::new([0; BASIC_SIZE]);
+    // 200_000 fails the <= 100_000 rule; the split must not mutate the table.
+    let v = 200_000i32.to_le_bytes();
+    assert_eq!(
+        m.write_split(12, &v[..2], &v[2..]),
+        Err(Error::ValidationError(ValidationKind::Compare))
+    );
+    assert_eq!(m.read(12, 4), Ok(&[0, 0, 0, 0][..]));
+}
+
+#[test]
+fn write_split_into_locked_section_rejects() {
+    let mut init = [0u8; LOCK_SIZE];
+    init[0] = 1; // section B locked via byte 0
+    let m = Locked::new(init);
+    // Enum field at offset 8 (section B), split mid the 2-byte write.
+    assert_eq!(
+        m.write_split(8, &[1], &[0]),
+        Err(Error::ValidationError(ValidationKind::Locked))
+    );
+    assert_eq!(m.read(8, 2), Ok(&[0, 0][..]));
+}
+
+#[test]
+fn write_split_matches_contiguous_at_every_split_point() {
+    let v = 50_000i32.to_le_bytes();
+    for k in 0..=v.len() {
+        let m = Basic::new([0; BASIC_SIZE]);
+        assert!(m.write_split(12, &v[..k], &v[k..]).is_ok());
+        assert_eq!(m.read(12, 4), Ok(&v[..]));
+    }
+}
+
+#[test]
+fn stage_split_validates_then_pushes_contiguously() {
+    let m = Basic::new([0; BASIC_SIZE]);
+    let mut staged = StagedWrites::new();
+    let v = 50_000i32.to_le_bytes();
+    // Bad value rejected, nothing staged.
+    let bad = 200_000i32.to_le_bytes();
+    assert_eq!(
+        m.stage_split(12, &bad[..2], &bad[2..], &mut staged),
+        Err(Error::ValidationError(ValidationKind::Compare))
+    );
+    assert!(staged.is_empty());
+    // Good split stages one contiguous 4-byte entry; commit lands it.
+    assert!(m.stage_split(12, &v[..1], &v[1..], &mut staged).is_ok());
+    let mut count = 0;
+    for (a, d) in staged.iter_from(&crate::stage::Snapshot::ZERO) {
+        assert_eq!(a, 12);
+        assert_eq!(d, &v[..]);
+        count += 1;
+    }
+    assert_eq!(count, 1);
+    m.commit_staged(&mut staged);
+    assert_eq!(m.read(12, 4), Ok(&v[..]));
+}

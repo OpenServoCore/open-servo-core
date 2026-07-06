@@ -2,6 +2,7 @@
 //! payload parsers (`docs/osc-native-protocol.md` §3.1, §5). Layout only — the
 //! chip owns the ring and its cursor; these borrow into it.
 
+use crate::bytes::FrameBytes;
 use crate::wire::{self, Id, Inst, MgmtOp};
 
 /// Why a header cannot be dispatched. Frame-level rejects (§5.3 layer 1): the
@@ -87,11 +88,13 @@ pub struct ReadReq {
 
 impl ReadReq {
     #[inline]
-    pub fn parse(payload: &[u8]) -> Option<ReadReq> {
-        let b: &[u8; 4] = payload.try_into().ok()?;
+    pub fn parse(payload: FrameBytes) -> Option<ReadReq> {
+        if payload.len() != 4 {
+            return None;
+        }
         Some(ReadReq {
-            addr: u16::from_le_bytes([b[0], b[1]]),
-            count: u16::from_le_bytes([b[2], b[3]]),
+            addr: payload.u16_le_at(0)?,
+            count: payload.u16_le_at(2)?,
         })
     }
 }
@@ -100,17 +103,15 @@ impl ReadReq {
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub struct WriteReq<'a> {
     pub addr: u16,
-    pub data: &'a [u8],
+    pub data: FrameBytes<'a>,
 }
 
 impl<'a> WriteReq<'a> {
     #[inline]
-    pub fn parse(payload: &'a [u8]) -> Option<WriteReq<'a>> {
-        let (addr, data) = payload.split_first_chunk::<2>()?;
-        Some(WriteReq {
-            addr: u16::from_le_bytes(*addr),
-            data,
-        })
+    pub fn parse(payload: FrameBytes<'a>) -> Option<WriteReq<'a>> {
+        let addr = payload.u16_le_at(0)?;
+        let data = payload.sub(2, payload.len().checked_sub(2)?)?;
+        Some(WriteReq { addr, data })
     }
 }
 
@@ -118,17 +119,15 @@ impl<'a> WriteReq<'a> {
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub struct MgmtReq<'a> {
     pub op: MgmtOp,
-    pub args: &'a [u8],
+    pub args: FrameBytes<'a>,
 }
 
 impl<'a> MgmtReq<'a> {
     #[inline]
-    pub fn parse(payload: &'a [u8]) -> Option<MgmtReq<'a>> {
-        let (&op, args) = payload.split_first()?;
-        Some(MgmtReq {
-            op: MgmtOp::from_byte(op)?,
-            args,
-        })
+    pub fn parse(payload: FrameBytes<'a>) -> Option<MgmtReq<'a>> {
+        let op = MgmtOp::from_byte(payload.u8_at(0)?)?;
+        let args = payload.sub(1, payload.len().checked_sub(1)?)?;
+        Some(MgmtReq { op, args })
     }
 }
 
@@ -175,50 +174,54 @@ mod tests {
         );
     }
 
+    fn fb(b: &[u8]) -> FrameBytes<'_> {
+        FrameBytes::from(b)
+    }
+
     #[test]
     fn read_req_parse() {
         assert_eq!(
-            ReadReq::parse(&[0x00, 0x02, 0x08, 0x00]),
+            ReadReq::parse(fb(&[0x00, 0x02, 0x08, 0x00])),
             Some(ReadReq {
                 addr: 0x0200,
                 count: 8
             })
         );
-        assert_eq!(ReadReq::parse(&[0x00, 0x02, 0x08]), None);
-        assert_eq!(ReadReq::parse(&[0, 0, 0, 0, 0]), None);
+        assert_eq!(ReadReq::parse(fb(&[0x00, 0x02, 0x08])), None);
+        assert_eq!(ReadReq::parse(fb(&[0, 0, 0, 0, 0])), None);
     }
 
     #[test]
     fn write_req_parse() {
         assert_eq!(
-            WriteReq::parse(&[0x80, 0x01, 0x2C, 0x01]),
+            WriteReq::parse(fb(&[0x80, 0x01, 0x2C, 0x01])),
             Some(WriteReq {
                 addr: 0x0180,
-                data: &[0x2C, 0x01]
+                data: fb(&[0x2C, 0x01])
             })
         );
         // Empty data is legal (>= 2 bytes = addr only).
         assert_eq!(
-            WriteReq::parse(&[0x00, 0x01]),
+            WriteReq::parse(fb(&[0x00, 0x01])),
             Some(WriteReq {
                 addr: 0x0100,
-                data: &[]
+                data: fb(&[])
             })
         );
-        assert_eq!(WriteReq::parse(&[0x80]), None);
+        assert_eq!(WriteReq::parse(fb(&[0x80])), None);
     }
 
     #[test]
     fn mgmt_req_parse() {
         assert_eq!(
-            MgmtReq::parse(&[0x02, 0xAA]),
+            MgmtReq::parse(fb(&[0x02, 0xAA])),
             Some(MgmtReq {
                 op: MgmtOp::Assign,
-                args: &[0xAA]
+                args: fb(&[0xAA])
             })
         );
-        assert_eq!(MgmtReq::parse(&[]), None);
-        assert_eq!(MgmtReq::parse(&[0x00]), None);
+        assert_eq!(MgmtReq::parse(fb(&[])), None);
+        assert_eq!(MgmtReq::parse(fb(&[0x00])), None);
     }
 
     #[test]

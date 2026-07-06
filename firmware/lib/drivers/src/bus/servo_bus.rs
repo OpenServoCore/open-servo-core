@@ -6,9 +6,9 @@
 
 use osc_core::traits::{Dispatch, Reply, SendError, Status};
 use osc_core::{BaudRate, BootMode};
+use osc_protocol::FrameBytes;
 use osc_protocol::wire::{Inst, Opcode, ResultCode};
 
-use super::FRAME_MAX;
 use super::chain::{Chain, ChainOut};
 use super::decode::{Decoded, decode};
 use super::framer::{FrameSpan, Framer, FramerOut};
@@ -47,11 +47,6 @@ pub struct LinkDiag {
     pub framing_drop_count: u32,
 }
 
-/// Halfword-aligned linearization scratch for the rare ring-seam frame; the
-/// hot path decodes in place out of the ring.
-#[repr(align(2))]
-struct Scratch([u8; FRAME_MAX]);
-
 /// A frame whose CRC feed + dispatch were front-loaded at covered-complete; its
 /// wire CRC is verified and its reply sequenced at the frame end. Kept only
 /// between a [`FramerOut::Covered`] and its matching [`FramerOut::Frame`].
@@ -89,7 +84,6 @@ pub struct ServoBus<P: Providers> {
     pending_baud: Option<BaudRate>,
     pending_reboot: Option<BootMode>,
     crc_fails: u32,
-    scratch: Scratch,
     // A read-only frame front-loaded at covered-complete, awaiting CRC verify.
     speculated: Option<Speculation>,
     // Deadline mux (§4.1/§6/§9.1): the soonest live slot arms the compare.
@@ -140,7 +134,6 @@ impl<P: Providers> ServoBus<P> {
             pending_baud: None,
             pending_reboot: None,
             crc_fails: 0,
-            scratch: Scratch([0; FRAME_MAX]),
             speculated: None,
             framer_at: None,
             chain_at: None,
@@ -476,8 +469,8 @@ impl<P: Providers> ServoBus<P> {
         }
     }
 
-    /// Linearize the frame (zero-copy from the ring unless it wraps the seam),
-    /// decode, and dispatch over disjoint borrows (driver-pattern §4.3).
+    /// View the frame as up to two ring segments (one span unless it wraps the
+    /// seam), decode, and dispatch over disjoint borrows (driver-pattern §4.3).
     /// Returns `(staged, slot)`, or `None` for a frame that isn't ours.
     fn dispatch_frame<D: Dispatch>(
         &mut self,
@@ -489,13 +482,10 @@ impl<P: Providers> ServoBus<P> {
         let footprint = footprint as usize;
         let ring = self.ring.bytes();
         let len = ring.len();
-        let frame: &[u8] = if anchor + footprint <= len {
-            &ring[anchor..anchor + footprint]
+        let frame = if anchor + footprint <= len {
+            FrameBytes::from(&ring[anchor..anchor + footprint])
         } else {
-            let n1 = len - anchor;
-            self.scratch.0[..n1].copy_from_slice(&ring[anchor..]);
-            self.scratch.0[n1..footprint].copy_from_slice(&ring[..footprint - n1]);
-            &self.scratch.0[..footprint]
+            FrameBytes::new(&ring[anchor..], &ring[..footprint - (len - anchor)])
         };
         let (req, ctx, slot) = match decode(frame, self.id) {
             Decoded::Own(req, ctx, slot) => (req, ctx, slot),
