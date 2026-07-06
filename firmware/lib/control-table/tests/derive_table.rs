@@ -129,7 +129,7 @@ fn section_base_and_size_consts() {
 #[test]
 fn config_rules_rebased_to_absolute() {
     // Field order: ident (no rules) then limits (compare, enum, bool).
-    let r = config::CT_RULES;
+    let r = Config::CT_RULES_ABS;
     assert_eq!(r.len(), 3);
 
     assert_eq!(r[0].offset, addr::config::limits::MAX_RATIO);
@@ -154,7 +154,7 @@ fn config_rules_rebased_to_absolute() {
 
 #[test]
 fn control_rule_is_cross_section_reg_compare() {
-    let c = control::CT_RULES;
+    let c = Control::CT_RULES_ABS;
     assert_eq!(c.len(), 1);
     assert_eq!(c[0].offset, addr::control::goal::TARGET);
     match c[0].kind {
@@ -190,17 +190,17 @@ fn writable_words_track_ro_rw_and_reserved() {
 
 #[test]
 fn sections_metadata_exposed_through_register_map() {
-    let secs = <TableCell as RegisterMap>::sections();
+    let secs = <TableCell as RegisterMap>::SECTIONS;
     assert_eq!(secs.len(), 2);
 
     assert_eq!(secs[0].base, Config::BASE);
     assert_eq!(secs[0].size, Config::SECTION_SIZE);
-    assert_eq!(secs[0].rules.len(), config::CT_RULES.len());
+    assert_eq!(secs[0].rules.len(), Config::CT_RULES_ABS.len());
     assert!(secs[0].write_lock.is_none());
 
     assert_eq!(secs[1].base, Control::BASE);
     assert_eq!(secs[1].size, Control::SECTION_SIZE);
-    assert_eq!(secs[1].rules.len(), control::CT_RULES.len());
+    assert_eq!(secs[1].rules.len(), Control::CT_RULES_ABS.len());
     assert_eq!(secs[1].write_lock, Some(addr::config::ident::LOCK));
 
     assert_eq!(<TableCell as RegisterMap>::SIZE, 24);

@@ -15,7 +15,7 @@ pub trait RegisterMap {
     /// host-writable. `len == SIZE.div_ceil(32)`.
     const WRITABLE: &'static [u32];
     /// Sorted by `base`, non-overlapping.
-    fn sections() -> &'static [SectionMeta];
+    const SECTIONS: &'static [SectionMeta];
     fn base(&self) -> *mut u8;
 }
 
@@ -122,7 +122,7 @@ fn validate<M: RegisterMap + ?Sized>(m: &M, addr: u16, src: &[u8]) -> Result<(),
 
     // Rules across every overlapping section first, so a bad value in a locked
     // section reports its own kind (e.g. Enum), not Locked.
-    for sec in M::sections() {
+    for sec in M::SECTIONS {
         if !overlaps(sec.base as usize, sec.size as usize, lo, hi) {
             continue;
         }
@@ -136,7 +136,7 @@ fn validate<M: RegisterMap + ?Sized>(m: &M, addr: u16, src: &[u8]) -> Result<(),
             }
         }
     }
-    for sec in M::sections() {
+    for sec in M::SECTIONS {
         if !overlaps(sec.base as usize, sec.size as usize, lo, hi) {
             continue;
         }
