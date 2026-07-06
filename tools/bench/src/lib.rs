@@ -4,6 +4,7 @@
 
 pub mod osc;
 pub mod pirate;
+pub mod run;
 
 /// Wire bauds the firmware supports, in ascending order.
 pub const SUPPORTED_BAUDS: [u32; 4] = [500_000, 1_000_000, 2_000_000, 3_000_000];
