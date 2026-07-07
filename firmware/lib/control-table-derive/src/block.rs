@@ -83,7 +83,8 @@ pub fn expand(input: &DeriveInput) -> syn::Result<TokenStream2> {
 
     let hooks_trait = parse_block_attrs(&input.attrs)?;
 
-    let mut field_checks: Vec<TokenStream2> = Vec::new();
+    let mut cmp_rules: Vec<TokenStream2> = Vec::new();
+    let mut allowed_rules: Vec<TokenStream2> = Vec::new();
     let mut writable: Vec<TokenStream2> = Vec::new();
     let mut size_terms: Vec<TokenStream2> = Vec::new();
     let mut new_inits: Vec<TokenStream2> = Vec::new();
@@ -125,11 +126,9 @@ pub fn expand(input: &DeriveInput) -> syn::Result<TokenStream2> {
         let rel_addr = quote!(::core::mem::offset_of!(#struct_ty, #name) as u16);
 
         if !is_ro {
-            let mut body: Vec<TokenStream2> = Vec::new();
-
             if let Some(allowed) = auto_enum_allowed(ty) {
-                body.push(quote! {
-                    ::control_table::rules::check_allowed(view, f_lo as u16, #allowed)?;
+                allowed_rules.push(quote! {
+                    ::control_table::rules::AllowedRule { addr: #rel_addr, allowed: #allowed }
                 });
             }
 
@@ -138,29 +137,17 @@ pub fn expand(input: &DeriveInput) -> syn::Result<TokenStream2> {
                 let abs = attrs.abs && signed;
                 for (op, expr) in &attrs.compares {
                     let op_const = op.const_tokens();
-                    let rhs = build_rhs(expr);
-                    body.push(quote! {
-                        ::control_table::rules::check_cmp(
-                            view,
-                            f_lo as u16,
-                            const { ::control_table::rules::spec(#width, #signed, #abs, #op_const) },
-                            #rhs,
-                        )?;
+                    let (is_reg, val) = build_rule_val(expr);
+                    let spec = if is_reg {
+                        quote!(::control_table::rules::spec(#width, #signed, #abs, #op_const)
+                            | ::control_table::rules::SPEC_RHS_REG)
+                    } else {
+                        quote!(::control_table::rules::spec(#width, #signed, #abs, #op_const))
+                    };
+                    cmp_rules.push(quote! {
+                        ::control_table::rules::CmpRule { addr: #rel_addr, spec: #spec, val: #val }
                     });
                 }
-            }
-
-            if !body.is_empty() {
-                field_checks.push(quote! {
-                    {
-                        let f_lo = base as usize
-                            + ::core::mem::offset_of!(#struct_ty, #name);
-                        let f_hi = f_lo + ::core::mem::size_of::<#ty>();
-                        if f_lo < hi && f_hi > lo {
-                            #(#body)*
-                        }
-                    }
-                });
             }
 
             writable.push(quote!((#rel_addr, ::core::mem::size_of::<#ty>() as u16)));
@@ -171,29 +158,22 @@ pub fn expand(input: &DeriveInput) -> syn::Result<TokenStream2> {
     }
 
     let n_writable = writable.len();
+    let n_cmp = cmp_rules.len();
+    let n_allowed = allowed_rules.len();
     let meta_macro = Ident::new(&flat_meta_macro_name(struct_ty), struct_ty.span());
     let hooks_emit = build_hooks_emit(struct_ty, &hook_bindings);
-
-    // Empty-body blocks still emit `ct_check` so the Section derive can call it
-    // uniformly; underscore-prefix the args to keep them warning-free.
-    let check_args = if field_checks.is_empty() {
-        quote!(_view: &::control_table::View, _lo: usize, _hi: usize, _base: u16)
-    } else {
-        quote!(view: &::control_table::View, lo: usize, hi: usize, base: u16)
-    };
 
     Ok(quote! {
         impl #struct_ty {
             pub const CT_SIZE: u16 = ::core::mem::size_of::<Self>() as u16;
             pub const CT_WRITABLE: [(u16, u16); #n_writable] = [#(#writable),*];
 
-            #[doc(hidden)]
-            pub fn ct_check(
-                #check_args,
-            ) -> ::core::result::Result<(), ::control_table::Error> {
-                #(#field_checks)*
-                ::core::result::Result::Ok(())
-            }
+            // Block-relative rule descriptors; the Section derive rebases `addr`
+            // into table-absolute form (register RHS addrs are already absolute).
+            pub const CT_CMP_RULES: [::control_table::rules::CmpRule; #n_cmp] =
+                [#(#cmp_rules),*];
+            pub const CT_ALLOWED_RULES: [::control_table::rules::AllowedRule; #n_allowed] =
+                [#(#allowed_rules),*];
         }
 
         #[allow(clippy::new_without_default)]
@@ -495,15 +475,16 @@ fn cmp_width_signed(ty: &Type) -> syn::Result<(u8, bool)> {
     ))
 }
 
-/// RHS of a compare as a `rules::Rhs`: a `&path` reference names another
-/// register (loaded by the helper with the SAME width+signedness as the LHS —
-/// pinned); any other expression is the immediate `as i32`.
-fn build_rhs(expr: &Expr) -> TokenStream2 {
+/// RHS of a compare as `(is_reg, val_bits)` for a `CmpRule`: a `&path`
+/// reference names another register (its addr const is already table-absolute,
+/// widened by the helper to the LHS width+signedness — pinned); any other
+/// expression is the immediate's `i32` bits.
+fn build_rule_val(expr: &Expr) -> (bool, TokenStream2) {
     if let Expr::Reference(r) = expr {
         let inner = &r.expr;
-        quote!(::control_table::rules::Rhs::Reg(#inner))
+        (true, quote!((#inner) as u32))
     } else {
-        quote!(::control_table::rules::Rhs::Imm((#expr) as i32))
+        (false, quote!(((#expr) as i32) as u32))
     }
 }
 

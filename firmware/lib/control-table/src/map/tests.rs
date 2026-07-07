@@ -8,56 +8,40 @@ use core::cell::UnsafeCell;
 
 const BASIC_SIZE: usize = 16;
 
-fn basic_check(view: &View, lo: usize, hi: usize) -> Result<(), Error> {
-    // enum [0,1] at offset 0.
-    if 0 < hi && 1 > lo {
-        let b = view.read_fixed(0, 1)?;
-        if b[0] > 1 {
-            return Err(Error::ValidationError(ValidationKind::Enum));
-        }
-    }
-    // i16 >= 0 at offset 4.
-    if 4 < hi && 6 > lo {
-        let b = view.read_fixed(4, 2)?;
-        let a = i16::from_le_bytes([b[0], b[1]]) as i32;
-        if a < 0 {
-            return Err(Error::ValidationError(ValidationKind::Compare));
-        }
-    }
-    // u16 < reg(8) at offset 6.
-    if 6 < hi && 8 > lo {
-        let b = view.read_fixed(6, 2)?;
-        let a = u16::from_le_bytes([b[0], b[1]]) as i32;
-        let b = view.read_fixed(8, 2)?;
-        let r = u16::from_le_bytes([b[0], b[1]]) as i32;
-        if a >= r {
-            return Err(Error::ValidationError(ValidationKind::Compare));
-        }
-    }
-    // i8 |x| <= 5 at offset 10.
-    if 10 < hi && 11 > lo {
-        let b = view.read_fixed(10, 1)?;
-        let a = (b[0] as i8 as i32).saturating_abs().min(i8::MAX as i32);
-        let r = 5i32.saturating_abs().min(i8::MAX as i32);
-        if a > r {
-            return Err(Error::ValidationError(ValidationKind::Compare));
-        }
-    }
-    // i32 <= 100_000 at offset 12.
-    if 12 < hi && 16 > lo {
-        let b = view.read_fixed(12, 4)?;
-        let a = i32::from_le_bytes(b);
-        if a > 100_000 {
-            return Err(Error::ValidationError(ValidationKind::Compare));
-        }
-    }
-    Ok(())
-}
+// The same five rules the old `basic_check` encoded, now as flash descriptors:
+// enum [0,1]@0, i16 >= 0 @4, u16 < reg(8) @6, i8 |x| <= 5 @10, i32 <= 100_000 @12.
+const BASIC_ALLOWED_RULES: &[crate::rules::AllowedRule] = &[crate::rules::AllowedRule {
+    addr: 0,
+    allowed: &[0, 1],
+}];
+const BASIC_CMP_RULES: &[crate::rules::CmpRule] = &[
+    crate::rules::CmpRule {
+        addr: 4,
+        spec: crate::rules::spec(2, true, false, crate::rules::OP_GE),
+        val: 0,
+    },
+    crate::rules::CmpRule {
+        addr: 6,
+        spec: crate::rules::spec(2, false, false, crate::rules::OP_LT) | crate::rules::SPEC_RHS_REG,
+        val: 8,
+    },
+    crate::rules::CmpRule {
+        addr: 10,
+        spec: crate::rules::spec(1, true, true, crate::rules::OP_LE),
+        val: 5,
+    },
+    crate::rules::CmpRule {
+        addr: 12,
+        spec: crate::rules::spec(4, true, false, crate::rules::OP_LE),
+        val: 100_000,
+    },
+];
 
 static BASIC_SECTIONS: &[SectionMeta] = &[SectionMeta {
     base: 0,
     size: BASIC_SIZE as u16,
-    check: basic_check,
+    cmp_rules: (0, 4),
+    allowed_rules: (0, 1),
     write_lock: None,
 }];
 
@@ -83,6 +67,8 @@ impl RegisterMap for Basic {
     const SIZE: usize = BASIC_SIZE;
     const WRITABLE: &'static [u32] = BASIC_WRITABLE;
     const SECTIONS: &'static [SectionMeta] = BASIC_SECTIONS;
+    const CMP_RULES: &'static [crate::rules::CmpRule] = BASIC_CMP_RULES;
+    const ALLOWED_RULES: &'static [crate::rules::AllowedRule] = BASIC_ALLOWED_RULES;
     fn base(&self) -> *mut u8 {
         self.store.get() as *mut u8
     }
@@ -269,32 +255,25 @@ fn commit_staged_order_later_wins_no_revalidation() {
 
 const LOCK_SIZE: usize = 16;
 
-fn lock_a_check(_view: &View, _lo: usize, _hi: usize) -> Result<(), Error> {
-    Ok(())
-}
-
-fn lock_b_check(view: &View, lo: usize, hi: usize) -> Result<(), Error> {
-    // enum [0,1] at offset 8.
-    if 8 < hi && 9 > lo {
-        let b = view.read_fixed(8, 1)?;
-        if b[0] > 1 {
-            return Err(Error::ValidationError(ValidationKind::Enum));
-        }
-    }
-    Ok(())
-}
+// Section A has no rules; section B carries one enum [0,1]@8.
+const LOCK_ALLOWED_RULES: &[crate::rules::AllowedRule] = &[crate::rules::AllowedRule {
+    addr: 8,
+    allowed: &[0, 1],
+}];
 
 static LOCK_SECTIONS: &[SectionMeta] = &[
     SectionMeta {
         base: 0,
         size: 8,
-        check: lock_a_check,
+        cmp_rules: (0, 0),
+        allowed_rules: (0, 0),
         write_lock: None,
     },
     SectionMeta {
         base: 8,
         size: 8,
-        check: lock_b_check,
+        cmp_rules: (0, 0),
+        allowed_rules: (0, 1),
         write_lock: Some(0),
     },
 ];
@@ -320,6 +299,7 @@ impl RegisterMap for Locked {
     const SIZE: usize = LOCK_SIZE;
     const WRITABLE: &'static [u32] = LOCK_WRITABLE;
     const SECTIONS: &'static [SectionMeta] = LOCK_SECTIONS;
+    const ALLOWED_RULES: &'static [crate::rules::AllowedRule] = LOCK_ALLOWED_RULES;
     fn base(&self) -> *mut u8 {
         self.store.get() as *mut u8
     }
@@ -384,14 +364,11 @@ const MASK_SIZE: usize = 96;
 // word0 all writable; word1 hole at bit 18 (byte 50); word2 hole at bit 0 (byte 64).
 const MASK_WRITABLE: &[u32] = &[0xFFFF_FFFF, !(1u32 << 18), !(1u32 << 0)];
 
-fn mask_check(_view: &View, _lo: usize, _hi: usize) -> Result<(), Error> {
-    Ok(())
-}
-
 static MASK_SECTIONS: &[SectionMeta] = &[SectionMeta {
     base: 0,
     size: MASK_SIZE as u16,
-    check: mask_check,
+    cmp_rules: (0, 0),
+    allowed_rules: (0, 0),
     write_lock: None,
 }];
 

@@ -73,33 +73,53 @@ pub fn expand(input: &DeriveInput) -> syn::Result<TokenStream2> {
         .collect();
 
     let n_writable = quote!(0 #(+ <#block_tys>::CT_WRITABLE.len())*);
+    let n_cmp = quote!(0 #(+ <#block_tys>::CT_CMP_RULES.len())*);
+    let n_allowed = quote!(0 #(+ <#block_tys>::CT_ALLOWED_RULES.len())*);
 
     // Blocks in declaration order (= address order): preserves the old
-    // sorted-by-offset first-failure precedence. Each call is gated on the
-    // block's byte range so a write that misses a block skips its whole
-    // field-guard walk (the compiled checks have no interpreter-style
-    // sorted-scan early exit; this is its replacement).
-    let check_calls: Vec<TokenStream2> = block_tys
+    // sorted-by-offset first-failure precedence. Only `addr` is rebased into
+    // table-absolute form; register-RHS `val` addrs are already absolute.
+    let cmp_copy: Vec<TokenStream2> = block_tys
         .iter()
         .zip(&base_exprs)
         .map(|(ty, base_expr)| {
             quote! {
                 {
-                    let b_lo = (#base_expr) as usize;
-                    let b_hi = b_lo + ::core::mem::size_of::<#ty>();
-                    if b_lo < hi && b_hi > lo {
-                        <#ty>::ct_check(view, lo, hi, #base_expr)?;
+                    let src = <#ty>::CT_CMP_RULES;
+                    let base = #base_expr;
+                    let mut i = 0;
+                    while i < src.len() {
+                        let mut r = src[i];
+                        r.addr += base;
+                        out[__n] = r;
+                        __n += 1;
+                        i += 1;
                     }
                 }
             }
         })
         .collect();
 
-    let check_args = if check_calls.is_empty() {
-        quote!(_view: &::control_table::View, _lo: usize, _hi: usize)
-    } else {
-        quote!(view: &::control_table::View, lo: usize, hi: usize)
-    };
+    let allowed_copy: Vec<TokenStream2> = block_tys
+        .iter()
+        .zip(&base_exprs)
+        .map(|(ty, base_expr)| {
+            quote! {
+                {
+                    let src = <#ty>::CT_ALLOWED_RULES;
+                    let base = #base_expr;
+                    let mut i = 0;
+                    while i < src.len() {
+                        let mut r = src[i];
+                        r.addr += base;
+                        out[__n] = r;
+                        __n += 1;
+                        i += 1;
+                    }
+                }
+            }
+        })
+        .collect();
 
     let writable_copy: Vec<TokenStream2> = block_tys
         .iter()
@@ -169,18 +189,25 @@ pub fn expand(input: &DeriveInput) -> syn::Result<TokenStream2> {
             pub const BASE: u16 = #base;
             pub const SECTION_SIZE: u16 = #size;
 
-            #[doc(hidden)]
-            pub fn ct_check(
-                #check_args,
-            ) -> ::core::result::Result<(), ::control_table::Error> {
-                #(#check_calls)*
-                ::core::result::Result::Ok(())
-            }
-
             pub const CT_WRITABLE_ABS: [(u16, u16); #n_writable] = {
                 let mut out = [(0u16, 0u16); #n_writable];
                 let mut __n = 0;
                 #(#writable_copy)*
+                out
+            };
+
+            pub const CT_CMP_RULES_ABS: [::control_table::rules::CmpRule; #n_cmp] = {
+                let mut out = [::control_table::rules::CmpRule { addr: 0, spec: 0, val: 0 }; #n_cmp];
+                let mut __n = 0;
+                #(#cmp_copy)*
+                out
+            };
+
+            pub const CT_ALLOWED_RULES_ABS: [::control_table::rules::AllowedRule; #n_allowed] = {
+                let mut out =
+                    [::control_table::rules::AllowedRule { addr: 0, allowed: &[] }; #n_allowed];
+                let mut __n = 0;
+                #(#allowed_copy)*
                 out
             };
 

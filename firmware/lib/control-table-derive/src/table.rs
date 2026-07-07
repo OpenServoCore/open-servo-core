@@ -78,15 +78,64 @@ pub fn expand(input: &DeriveInput) -> syn::Result<TokenStream2> {
         })
         .collect();
 
+    // Per-section index range into the table-level rule arrays: start is the
+    // cumulative rule count of preceding sections (section declaration order).
     let section_metas: Vec<TokenStream2> = sec_tys
         .iter()
-        .map(|ty| {
+        .enumerate()
+        .map(|(i, ty)| {
+            let cmp_pre = &sec_tys[..i];
+            let allowed_pre = &sec_tys[..i];
             quote! {
                 ::control_table::map::SectionMeta {
                     base: <#ty>::BASE,
                     size: <#ty>::SECTION_SIZE,
-                    check: <#ty>::ct_check,
+                    cmp_rules: {
+                        let start = 0u16 #(+ <#cmp_pre>::CT_CMP_RULES_ABS.len() as u16)*;
+                        (start, start + <#ty>::CT_CMP_RULES_ABS.len() as u16)
+                    },
+                    allowed_rules: {
+                        let start = 0u16 #(+ <#allowed_pre>::CT_ALLOWED_RULES_ABS.len() as u16)*;
+                        (start, start + <#ty>::CT_ALLOWED_RULES_ABS.len() as u16)
+                    },
                     write_lock: <#ty>::WRITE_LOCK,
+                }
+            }
+        })
+        .collect();
+
+    let n_cmp = quote!(0 #(+ <#sec_tys>::CT_CMP_RULES_ABS.len())*);
+    let n_allowed = quote!(0 #(+ <#sec_tys>::CT_ALLOWED_RULES_ABS.len())*);
+
+    let cmp_fill: Vec<TokenStream2> = sec_tys
+        .iter()
+        .map(|ty| {
+            quote! {
+                {
+                    let src = <#ty>::CT_CMP_RULES_ABS;
+                    let mut i = 0;
+                    while i < src.len() {
+                        out[__n] = src[i];
+                        __n += 1;
+                        i += 1;
+                    }
+                }
+            }
+        })
+        .collect();
+
+    let allowed_fill: Vec<TokenStream2> = sec_tys
+        .iter()
+        .map(|ty| {
+            quote! {
+                {
+                    let src = <#ty>::CT_ALLOWED_RULES_ABS;
+                    let mut i = 0;
+                    while i < src.len() {
+                        out[__n] = src[i];
+                        __n += 1;
+                        i += 1;
+                    }
                 }
             }
         })
@@ -144,6 +193,22 @@ pub fn expand(input: &DeriveInput) -> syn::Result<TokenStream2> {
                 #(#writable_fill)*
                 w
             };
+
+            pub const CMP_RULES: [::control_table::rules::CmpRule; #n_cmp] = {
+                let mut out =
+                    [::control_table::rules::CmpRule { addr: 0, spec: 0, val: 0 }; #n_cmp];
+                let mut __n = 0;
+                #(#cmp_fill)*
+                out
+            };
+
+            pub const ALLOWED_RULES: [::control_table::rules::AllowedRule; #n_allowed] = {
+                let mut out =
+                    [::control_table::rules::AllowedRule { addr: 0, allowed: &[] }; #n_allowed];
+                let mut __n = 0;
+                #(#allowed_fill)*
+                out
+            };
         }
 
         #[allow(clippy::new_without_default)]
@@ -198,6 +263,10 @@ pub fn expand(input: &DeriveInput) -> syn::Result<TokenStream2> {
             const WRITABLE: &'static [u32] = &#table_ty::WRITABLE_WORDS;
             const SECTIONS: &'static [::control_table::map::SectionMeta] =
                 &[#(#section_metas),*];
+            const CMP_RULES: &'static [::control_table::rules::CmpRule] =
+                &#table_ty::CMP_RULES;
+            const ALLOWED_RULES: &'static [::control_table::rules::AllowedRule] =
+                &#table_ty::ALLOWED_RULES;
             fn base(&self) -> *mut u8 {
                 self.0.get() as *mut u8
             }

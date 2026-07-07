@@ -20,6 +20,26 @@ pub const OP_NE: u8 = 5;
 const SPEC_SIGNED: u16 = 1 << 4;
 const SPEC_ABS: u16 = 1 << 5;
 
+/// Rhs flavor bit in a spec word: set = `val` names another register.
+pub const SPEC_RHS_REG: u16 = 1 << 6; // must not collide: width [3:0], signed 4, abs 5, op [15:8]
+
+/// One compare rule as flash data: `addr` is table-absolute after section
+/// concat, `spec` is `spec(..)` (possibly | SPEC_RHS_REG), `val` is the
+/// immediate's i32 bits or the RHS register's table-absolute address.
+#[derive(Copy, Clone)]
+pub struct CmpRule {
+    pub addr: u16,
+    pub spec: u16,
+    pub val: u32,
+}
+
+/// One enum/bool rule as flash data (field width is always 1).
+#[derive(Copy, Clone)]
+pub struct AllowedRule {
+    pub addr: u16,
+    pub allowed: &'static [u8],
+}
+
 /// Pack a compare rule's shape into one word: width in bits [3:0], signed at
 /// bit 4, abs at bit 5, op in bits [15:8]. Const-folded at every call site.
 pub const fn spec(width: u8, signed: bool, abs: bool, op: u8) -> u16 {

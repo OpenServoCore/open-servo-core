@@ -1,3 +1,4 @@
+use crate::rules;
 use crate::stage::{Snapshot, StagedWrites};
 use crate::{Error, ValidationKind};
 
@@ -15,17 +16,22 @@ pub trait RegisterMap {
     const WRITABLE: &'static [u32];
     /// Sorted by `base`, non-overlapping.
     const SECTIONS: &'static [SectionMeta];
+    /// All sections' compare rules concatenated in section order (table-absolute
+    /// addresses); each section owns the `cmp_rules` sub-slice of this array.
+    const CMP_RULES: &'static [rules::CmpRule] = &[];
+    /// All sections' enum/bool rules concatenated in section order; each section
+    /// owns the `allowed_rules` sub-slice of this array.
+    const ALLOWED_RULES: &'static [rules::AllowedRule] = &[];
     fn base(&self) -> *mut u8;
 }
 
 pub struct SectionMeta {
     pub base: u16,
     pub size: u16,
-    /// Straight-line validator for this section: given the pending write range
-    /// `[lo, hi)`, re-checks every validated field the range overlaps and
-    /// returns the field's `ValidationKind` on the first failure. Emitted by
-    /// the Section derive; the interpreter it replaced is gone.
-    pub check: fn(&View, usize, usize) -> Result<(), Error>,
+    /// `[start, end)` range into `RegisterMap::CMP_RULES` for this section.
+    pub cmp_rules: (u16, u16),
+    /// `[start, end)` range into `RegisterMap::ALLOWED_RULES` for this section.
+    pub allowed_rules: (u16, u16),
     /// Byte offset of a lock register: when it reads nonzero (through the
     /// overlay), writes into this section fail with `ValidationError(Locked)`.
     pub write_lock: Option<u16>,
@@ -163,12 +169,45 @@ fn validate<M: RegisterMap + ?Sized>(m: &M, addr: u16, o1: &[u8], o2: &[u8]) -> 
     let view = View::new_split(m.base() as *const u8, M::SIZE, addr, o1, o2);
 
     // Checks across every overlapping section first, so a bad value in a locked
-    // section reports its own kind (e.g. Enum), not Locked.
+    // section reports its own kind (e.g. Enum), not Locked. Within a section
+    // allowed rules now run before compare rules (previously interleaved in
+    // field order — only observable when one write spans multiple invalid
+    // fields of different kinds; not spec-pinned).
     for sec in M::SECTIONS {
         if !overlaps(sec.base as usize, sec.size as usize, lo, hi) {
             continue;
         }
-        (sec.check)(&view, lo, hi)?;
+        // Both stripes are address-ordered (blocks and fields emit in
+        // declaration = address order), so the scan ends at the first rule
+        // past the write.
+        let (a0, a1) = sec.allowed_rules;
+        if let Some(rs) = M::ALLOWED_RULES.get(a0 as usize..a1 as usize) {
+            for r in rs {
+                if r.addr as usize >= hi {
+                    break;
+                }
+                if overlaps(r.addr as usize, 1, lo, hi) {
+                    rules::check_allowed(&view, r.addr, r.allowed)?;
+                }
+            }
+        }
+        let (c0, c1) = sec.cmp_rules;
+        if let Some(rs) = M::CMP_RULES.get(c0 as usize..c1 as usize) {
+            for r in rs {
+                if r.addr as usize >= hi {
+                    break;
+                }
+                let width = (r.spec & 0xF) as usize;
+                if overlaps(r.addr as usize, width, lo, hi) {
+                    let rhs = if r.spec & rules::SPEC_RHS_REG != 0 {
+                        rules::Rhs::Reg(r.val as u16)
+                    } else {
+                        rules::Rhs::Imm(r.val as i32)
+                    };
+                    rules::check_cmp(&view, r.addr, r.spec, rhs)?;
+                }
+            }
+        }
     }
     for sec in M::SECTIONS {
         if !overlaps(sec.base as usize, sec.size as usize, lo, hi) {
